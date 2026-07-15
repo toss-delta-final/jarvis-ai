@@ -1,0 +1,64 @@
+"""SSE·Spring 스키마 camelCase 직렬화 계약 테스트 (api-spec v0.4.0 §2.2/§3.1/§4).
+
+와이어 포맷이 camelCase 인지(별칭 배선)와 입력 시 snake/camel 양쪽 허용을 고정한다.
+"""
+
+from __future__ import annotations
+
+from app.schemas.chat import ChatRequest, DoneData, ProductsReadyData
+from app.schemas.spring import (
+    ProductSearchFilters,
+    RecommendationItem,
+    RecommendationPush,
+)
+
+
+def test_products_ready_serializes_camel() -> None:
+    """products.ready 는 sessionId/listId 로 직렬화된다 (snake 속성 → camel 별칭)."""
+    d = ProductsReadyData(session_id="s-1", list_id="l-1").model_dump(by_alias=True)
+    assert d == {"sessionId": "s-1", "listId": "l-1"}
+
+
+def test_done_serializes_camel() -> None:
+    """done 은 finishReason 으로 직렬화된다."""
+    assert DoneData(finish_reason="stop").model_dump(by_alias=True) == {"finishReason": "stop"}
+
+
+def test_chat_request_accepts_camel_input() -> None:
+    """요청 본문(camelCase)이 snake 속성으로 파싱된다 (populate_by_name)."""
+    req = ChatRequest.model_validate(
+        {"sessionId": "s", "threadId": "t", "message": "m"}
+    )
+    assert req.session_id == "s"
+    assert req.thread_id == "t"
+
+
+def test_search_filters_serialize_camel() -> None:
+    """검색 필터는 excludeProductIds/priceMax 등 camelCase 로 나간다 (§4.2 와이어)."""
+    f = ProductSearchFilters(price_max=50000, exclude_product_ids=["P-1"], limit=30)
+    d = f.model_dump(by_alias=True)
+    assert d["priceMax"] == 50000
+    assert d["excludeProductIds"] == ["P-1"]
+    assert d["limit"] == 30
+
+
+def test_recommendation_push_serializes_camel_no_display_fields() -> None:
+    """추천 push 는 camelCase 이고 표시 필드(price/image)를 포함하지 않는다 (§4.3)."""
+    push = RecommendationPush(
+        session_id="s-1",
+        thread_id="t-1",
+        groups=[
+            {
+                "title": "여행 방수",
+                "category": "여행용품",
+                "items": [RecommendationItem(product_id="P-1", rank=1, reason="방수 등급 높음")],
+            }
+        ],
+    )
+    d = push.model_dump(by_alias=True)
+    assert d["sessionId"] == "s-1"
+    item = d["groups"][0]["items"][0]
+    assert item == {"productId": "P-1", "rank": 1, "reason": "방수 등급 높음"}
+    # 표시 필드 부재 확인.
+    assert "price" not in item
+    assert "mainImage" not in item

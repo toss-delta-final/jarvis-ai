@@ -1,0 +1,11 @@
+# FE/BE/AI 통합 데모용 compose (플레이스홀더).
+#
+# 팀별 이미지(FE 정적 번들, Spring 백엔드, AI 서버)가 준비되면 채운다.
+# 목적: 프론트엔드 ↔ Spring ↔ AI 서버를 한 네트워크에서 띄워 end-to-end 데모를 시연.
+#
+# TODO:
+#   - services.fe      : FE 정적 서빙 이미지 (팀 이미지 확정 후)
+#   - services.spring  : Spring 백엔드 이미지 + 서비스 토큰 발급/장바구니/point-lookup
+#   - services.ai      : 본 저장소 Dockerfile 빌드 (../docker-compose.yml 의 app 재사용)
+#   - services.pg-*    : pg-catalog / pg-profile (../docker-compose.yml 참고)
+#   - 공용 네트워크·환경변수(서비스 토큰, CORS 오리진) 정합

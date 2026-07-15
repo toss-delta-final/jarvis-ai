@@ -1,0 +1,21 @@
+# pre-commit 훅 — 사람·Claude 커밋 모두에 적용 (git hook, 팀 공유).
+# 설치(각자 1회): uv run pre-commit install
+#   → default_install_hook_types 덕분에 pre-commit + commit-msg 단계가 한 번에 걸린다.
+default_install_hook_types: [pre-commit, commit-msg]
+
+repos:
+  # 커밋 직전 — 린트 + 포맷 (pyproject [tool.ruff] 설정을 그대로 사용)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.6            # dev 의존성 ruff 와 버전 대략 맞춤 — `pre-commit autoupdate` 로 갱신
+    hooks:
+      - id: ruff          # 린트 (자동 수정)
+        args: [--fix]
+      - id: ruff-format   # 포맷
+
+  # 메시지 작성 직후 — Conventional Commits 형식 검사
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v3.6.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+        # 허용 type: feat/fix/docs/refactor/test/chore/style/perf/build/ci/revert

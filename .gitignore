@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+*.egg
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Test / lint caches
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# uv (uv.lock is committed on purpose — single source of truth for dev + Docker)
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Model / data artifacts (self-hosted embedding weights, seed dumps)
+models/
+*.safetensors
+
+# Claude Code 개인 설정 (팀 공유 안 함)
+.claude/settings.local.json

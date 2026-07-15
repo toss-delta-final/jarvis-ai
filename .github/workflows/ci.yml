@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    env:
+      AUTH_MODE: dev          # 테스트는 서명 검증 없이 (시크릿 불필요, api-spec §2.3)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true   # 의존성 캐시로 CI 가속
+
+      - name: Sync deps (dev 그룹 — embedding/torch 제외로 가볍게)
+        run: uv sync
+
+      - name: Lint (ruff)
+        run: uv run ruff check
+
+      - name: Test (pytest)
+        run: uv run pytest
