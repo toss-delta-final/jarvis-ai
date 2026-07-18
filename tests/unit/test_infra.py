@@ -117,6 +117,22 @@ async def test_total_cap_truncates_with_done(monkeypatch: pytest.MonkeyPatch) ->
     assert not get_registry().is_active("cap-sess")
 
 
+async def test_disconnect_before_first_token_releases_fast(monkeypatch: pytest.MonkeyPatch) -> None:
+    """첫 이벤트 도착 전 연결 종료 시 first-token 상한을 기다리지 않고 즉시 정리한다(§2.9 b)."""
+    s = get_settings()
+    monkeypatch.setattr(s, "stream_first_token_timeout_s", 5.0)
+    monkeypatch.setattr(s, "stream_disconnect_poll_s", 0.02)
+
+    async def slow_first():
+        await asyncio.sleep(2.0)  # 첫 이벤트 전 지연
+        yield "data: never\n\n"
+
+    resp = await open_stream(_FakeRequest(disconnected=True), "pref-sess", slow_first)
+    parts = [c async for c in resp.body_iterator]
+    assert parts == []  # 첫 이벤트 전 disconnect → 빈 스트림
+    assert not get_registry().is_active("pref-sess")  # 슬롯 즉시 해제
+
+
 async def test_first_frame_error_releases_registry() -> None:
     """첫 프레임 전 상류 오류(비-타임아웃) 시에도 레지스트리를 해제한다(§409 누수 방지)."""
 
@@ -253,18 +269,20 @@ def test_limiter_evicts_stale_keys() -> None:
     assert "k2" in lim._hits
 
 
-def test_host_prefers_forwarded_for_when_trusted(monkeypatch: pytest.MonkeyPatch) -> None:
-    """trust_forwarded_for 시 XFF 최좌측을 클라이언트 IP 로 쓴다(프록시 뒤 백스톱 복원)."""
+def test_host_uses_rightmost_forwarded_for_when_trusted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """trust_forwarded_for 시 XFF 최우측(자사 프록시 관측 IP)을 쓰고, 앞부분 위조는 무시한다."""
     from app.core import ratelimit
     from app.core.config import get_settings
 
     settings = get_settings()
 
     class _Req:
-        headers = {"x-forwarded-for": "203.0.113.7, 10.0.0.1"}
+        # 좌측(9.9.9.9)은 공격자가 넣은 위조, 최우측(203.0.113.7)이 자사 프록시 관측 IP.
+        headers = {"x-forwarded-for": "9.9.9.9, 1.1.1.1, 203.0.113.7"}
         client = types.SimpleNamespace(host="10.0.0.1")
 
     monkeypatch.setattr(settings, "trust_forwarded_for", True)
+    monkeypatch.setattr(settings, "forwarded_for_trusted_hops", 1)
     assert ratelimit._host(_Req()) == "203.0.113.7"
     monkeypatch.setattr(settings, "trust_forwarded_for", False)
     assert ratelimit._host(_Req()) == "10.0.0.1"

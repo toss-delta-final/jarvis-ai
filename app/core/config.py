@@ -88,9 +88,12 @@ class Settings(BaseSettings):
     # IP 백스톱 배수 — 토큰 sub 스코프를 회전 우회해도 클라이언트 IP 상한으로 남용 차단.
     # NAT 뒤 다수 정상 사용자 오탐을 줄이려 sub 상한보다 관대하게 둔다.
     rate_limit_host_multiplier: int = 5
-    # 신뢰 리버스 프록시 뒤 배포 시 True — 클라이언트 IP 를 X-Forwarded-For 최좌측에서 읽는다.
-    # 프록시가 XFF 를 정화한다는 전제(신뢰 안 되면 위조 가능)이며, 직접 노출 배포는 False 유지.
+    # 신뢰 리버스 프록시 뒤 배포 시 True — 클라이언트 IP 를 X-Forwarded-For 에서 읽는다.
+    # append 형 프록시($proxy_add_x_forwarded_for)는 자사 프록시가 관측한 IP 를 **최우측**에
+    # 붙이므로, 우측에서 신뢰 홉 수만큼 센 위치를 클라이언트 IP 로 쓴다(최좌측은 위조 가능).
     trust_forwarded_for: bool = False
+    # 신뢰하는 프록시 홉 수(우측부터). 자사 프록시 1대면 1 = 최우측 값.
+    forwarded_for_trusted_hops: int = 1
 
 
 @lru_cache

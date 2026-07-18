@@ -107,28 +107,58 @@ async def open_stream(
     start = loop.time()
     agen = inner_factory()
 
-    # (c) first-token 상한 — 첫 이벤트 도착 전이므로 아직 200 헤더 전. 초과 시 504(§2.5).
-    # 스트림을 반환하기 전에 실패하면 _wrapped 의 finally 가 돌지 않으므로 여기서 해제해야 한다.
-    # 반대로 정상/빈 스트림은 _wrapped 의 finally 한 곳에서만 해제한다(이중 해제 레이스 방지).
-    try:
-        first = await asyncio.wait_for(agen.__anext__(), settings.stream_first_token_timeout_s)
-    except asyncio.TimeoutError as exc:
-        registry.release(session_id)
-        await agen.aclose()
-        raise HTTPException(
-            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail={"code": "UPSTREAM_TIMEOUT", "message": "상류(LLM) 응답 지연"},
-        ) from exc
-    except StopAsyncIteration:
-        first = None  # 빈 스트림 — 해제는 _wrapped finally 에서(이중 해제 방지)
-    except BaseException:
-        # 첫 프레임 전 상류 오류(LLM/Spring 등)·취소 — 세션 누수 방지 위해 해제 후 전파.
-        registry.release(session_id)
-        await agen.aclose()
-        raise
-
     poll = settings.stream_disconnect_poll_s
     deadline = start + settings.stream_total_timeout_s
+    ft_deadline = start + settings.stream_first_token_timeout_s
+
+    async def _empty_stream() -> AsyncIterator[str]:
+        return
+        yield  # pragma: no cover - 빈 스트림(제너레이터화용 unreachable)
+
+    # (c) first-token 상한 — 첫 이벤트 도착 전이므로 아직 200 헤더 전. 초과 시 504(§2.5).
+    # (b) 이 대기 구간에서도 disconnect 를 폴링한다 — 첫 이벤트 전에 클라이언트가 떠나면
+    #     상류 LLM 비용·레지스트리 슬롯을 first-token 상한(기본 10s)까지 붙들지 않는다.
+    # wait_for 로 __anext__ 를 취소하면 제너레이터가 손상되므로 task 폴링을 쓴다(_wrapped 동일).
+    # 스트림 반환 전 실패는 _wrapped finally 가 안 도므로 여기서 해제하고, 정상/빈 스트림만
+    # _wrapped finally 한 곳에서 해제한다(이중 해제 레이스 방지).
+    ft_task = asyncio.ensure_future(agen.__anext__())
+
+    async def _abort_prestream() -> None:
+        registry.release(session_id)
+        if not ft_task.done():
+            ft_task.cancel()
+        await asyncio.gather(ft_task, return_exceptions=True)
+        await agen.aclose()
+
+    first: str | None = None
+    while True:
+        remaining = ft_deadline - loop.time()
+        if remaining <= 0:
+            await _abort_prestream()
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                detail={"code": "UPSTREAM_TIMEOUT", "message": "상류(LLM) 응답 지연"},
+            )
+        completed, _ = await asyncio.wait({ft_task}, timeout=min(remaining, poll))
+        if ft_task in completed:
+            try:
+                first = ft_task.result()
+            except StopAsyncIteration:
+                first = None  # 빈 스트림 — 해제는 _wrapped finally 에서.
+            except BaseException:
+                # 첫 프레임 전 상류 오류(LLM/Spring 등)·취소 — 누수 방지 후 전파.
+                await _abort_prestream()
+                raise
+            break
+        if await request.is_disconnected():
+            # (b) 첫 이벤트 전 연결 종료 — 정리 후 즉시 종료(소비될 응답 없음).
+            logger.info("stream cancelled before first token session=%s", session_id)
+            await _abort_prestream()
+            return StreamingResponse(
+                _empty_stream(),
+                media_type="text/event-stream; charset=utf-8",
+                headers=_SSE_HEADERS,
+            )
 
     async def _wrapped() -> AsyncIterator[str]:
         # 다음 이벤트 대기는 지속 task 로 폴링한다 — wait_for 로 __anext__ 를 취소하면

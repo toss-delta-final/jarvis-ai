@@ -83,14 +83,20 @@ def _extract_bearer(authorization: str | None) -> str | None:
 
 
 def _host(request: Request) -> str:
-    """클라이언트 IP. 신뢰 프록시 뒤(config)에서는 X-Forwarded-For 최좌측(원 클라이언트)을 쓴다.
+    """클라이언트 IP. 신뢰 프록시 뒤(config)에서는 X-Forwarded-For 의 **최우측 신뢰 홉**을 쓴다.
 
-    프록시가 XFF 를 정화한다는 전제다 — 직접 노출 배포(trust_forwarded_for=False)에서는
-    XFF 를 신뢰하지 않고 TCP peer 를 쓴다(위조 방지)."""
-    if get_settings().trust_forwarded_for:
+    append 형 프록시($proxy_add_x_forwarded_for)는 자사 프록시가 관측한 IP 를 우측에 붙이고,
+    좌측은 클라이언트가 임의로 채울 수 있다. 따라서 우측에서 forwarded_for_trusted_hops 만큼
+    센 위치를 취한다(최좌측을 쓰면 공격자가 앞부분을 회전시켜 IP 백스톱을 우회함). 직접 노출
+    배포(trust_forwarded_for=False)에서는 XFF 를 신뢰하지 않고 TCP peer 를 쓴다."""
+    settings = get_settings()
+    if settings.trust_forwarded_for:
         xff = request.headers.get("x-forwarded-for")
         if xff:
-            return xff.split(",")[0].strip()
+            parts = [p.strip() for p in xff.split(",") if p.strip()]
+            hops = max(1, settings.forwarded_for_trusted_hops)
+            if len(parts) >= hops:
+                return parts[-hops]  # 우측에서 신뢰 홉 수만큼 센 값 = 자사 프록시 관측 IP
     return request.client.host if request.client else "unknown"
 
 
