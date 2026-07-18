@@ -28,6 +28,7 @@ _STATUS_CODE_MAP: dict[int, str] = {
     403: "FORBIDDEN",
     409: "STREAM_IN_PROGRESS",
     429: "RATE_LIMITED",
+    500: "INTERNAL",
     504: "UPSTREAM_TIMEOUT",
 }
 _DEFAULT_MESSAGE: dict[int, str] = {
@@ -36,6 +37,7 @@ _DEFAULT_MESSAGE: dict[int, str] = {
     403: "권한 없음",
     409: "동일 세션에 진행 중인 스트림이 있습니다",
     429: "요청이 너무 많습니다",
+    500: "서버 내부 오류",
     504: "상류(LLM/Spring) 응답 지연",
 }
 
@@ -63,6 +65,9 @@ def _resolve(status_code: int, detail: Any) -> tuple[str, str]:
     """(status, detail) → (code, 안전 메시지). detail 의 code/message 가 매핑을 덮어쓴다."""
     code = _STATUS_CODE_MAP.get(status_code, "ERROR")
     message = _DEFAULT_MESSAGE.get(status_code, "오류가 발생했습니다")
+    if status_code >= 500:
+        # 5xx 는 detail(내부 오류 메시지/PII 가능)을 무시하고 항상 고정 안전 메시지를 쓴다.
+        return code, message
     if isinstance(detail, dict):
         code = str(detail.get("code", code))
         message = str(detail.get("message", message))

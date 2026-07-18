@@ -240,6 +240,56 @@ def test_unhandled_exception_returns_500_envelope() -> None:
     assert env["requestId"]
 
 
+def test_limiter_evicts_stale_keys() -> None:
+    """만료 키가 전역 스윕으로 제거돼 메모리가 무한 증가하지 않는다."""
+    from app.core.ratelimit import SlidingWindowLimiter
+
+    lim = SlidingWindowLimiter()
+    lim.allow("k1", 1000.0, 10, 100)
+    assert "k1" in lim._hits
+    # +4000s: 1시간(3600) 창 밖 + 스윕 간격(300) 초과 → 새 키 접근 시 k1 정리.
+    lim.allow("k2", 5000.0, 10, 100)
+    assert "k1" not in lim._hits
+    assert "k2" in lim._hits
+
+
+def test_host_prefers_forwarded_for_when_trusted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """trust_forwarded_for 시 XFF 최좌측을 클라이언트 IP 로 쓴다(프록시 뒤 백스톱 복원)."""
+    from app.core import ratelimit
+    from app.core.config import get_settings
+
+    settings = get_settings()
+
+    class _Req:
+        headers = {"x-forwarded-for": "203.0.113.7, 10.0.0.1"}
+        client = types.SimpleNamespace(host="10.0.0.1")
+
+    monkeypatch.setattr(settings, "trust_forwarded_for", True)
+    assert ratelimit._host(_Req()) == "203.0.113.7"
+    monkeypatch.setattr(settings, "trust_forwarded_for", False)
+    assert ratelimit._host(_Req()) == "10.0.0.1"
+
+
+def test_5xx_hides_internal_detail() -> None:
+    """5xx HTTPException 의 detail 메시지는 클라이언트에 노출되지 않는다(고정 안전 메시지)."""
+    from fastapi import HTTPException as _HTTPExc
+
+    from app.main import create_app
+
+    app2 = create_app()
+
+    async def _leak() -> None:
+        raise _HTTPExc(status_code=500, detail="internal secret trace xyz")
+
+    app2.add_api_route("/_leak", _leak, methods=["GET"])
+    c = TestClient(app2, raise_server_exceptions=False)
+    r = c.get("/_leak")
+    assert r.status_code == 500
+    env = r.json()["error"]
+    assert env["code"] == "INTERNAL"
+    assert "secret" not in env["message"]
+
+
 def test_registry_key_binds_identity() -> None:
     """레지스트리 키가 인증 신원에 묶여 사용자 간 슬롯 침범을 막는다(§2.9 a)."""
     from app.core.auth import Identity

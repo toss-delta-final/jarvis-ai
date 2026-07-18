@@ -33,13 +33,20 @@ _LIMITED_PATHS = frozenset({"/chat", "/seller/chat"})
 
 class SlidingWindowLimiter:
     """스코프별 sliding-window 카운터. allow() 호출마다 분/시간 상한을 검사한다.
-    상한은 호출 인자로 받아 스코프별(sub vs IP 백스톱)로 다른 값을 적용할 수 있다."""
+    상한은 호출 인자로 받아 스코프별(sub vs IP 백스톱)로 다른 값을 적용할 수 있다.
+
+    키가 매 요청 새로 생기는 경우(IP/토큰 회전) 재접근이 없어 개별 trim 이 안 도므로,
+    주기적 전역 스윕으로 만료(1시간 경과) 키를 제거해 메모리 무한 증가를 막는다."""
+
+    _SWEEP_INTERVAL = 300.0  # 5분마다 만료 키 전역 정리
 
     def __init__(self) -> None:
         self._hits: dict[str, deque[float]] = {}
+        self._last_sweep = 0.0
 
     def allow(self, key: str, now: float, per_min: int, per_hour: int) -> bool:
         """호출 1건을 기록·판정한다. 상한 초과면 기록하지 않고 False."""
+        self._maybe_sweep(now)
         hits = self._hits.setdefault(key, deque())
         hour_ago = now - 3600.0
         while hits and hits[0] <= hour_ago:
@@ -49,6 +56,21 @@ class SlidingWindowLimiter:
             return False
         hits.append(now)
         return True
+
+    def _maybe_sweep(self, now: float) -> None:
+        """만료 키 전역 정리 — 최소 _SWEEP_INTERVAL 간격으로만 수행(비용 상각)."""
+        if now - self._last_sweep < self._SWEEP_INTERVAL:
+            return
+        self._last_sweep = now
+        hour_ago = now - 3600.0
+        stale = []
+        for key, hits in self._hits.items():
+            while hits and hits[0] <= hour_ago:
+                hits.popleft()
+            if not hits:
+                stale.append(key)
+        for key in stale:
+            del self._hits[key]
 
 
 def _extract_bearer(authorization: str | None) -> str | None:
@@ -61,6 +83,14 @@ def _extract_bearer(authorization: str | None) -> str | None:
 
 
 def _host(request: Request) -> str:
+    """클라이언트 IP. 신뢰 프록시 뒤(config)에서는 X-Forwarded-For 최좌측(원 클라이언트)을 쓴다.
+
+    프록시가 XFF 를 정화한다는 전제다 — 직접 노출 배포(trust_forwarded_for=False)에서는
+    XFF 를 신뢰하지 않고 TCP peer 를 쓴다(위조 방지)."""
+    if get_settings().trust_forwarded_for:
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            return xff.split(",")[0].strip()
     return request.client.host if request.client else "unknown"
 
 
