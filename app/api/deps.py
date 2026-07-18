@@ -52,11 +52,19 @@ def require_seller(authorization: str | None = Header(default=None)) -> Identity
     """판매자 스코프 필수 의존성 (api-spec §3.2).
 
     판매자 스코프(seller_id)가 없는 토큰의 /seller/chat 호출은 403 으로 거부한다.
+    반환 Identity 의 brand_id(§4.4/§4.5 {brandId} path용)는 검증된 토큰 클레임 유래다.
     """
     identity = get_identity(authorization)
     if not identity.seller_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={"code": "FORBIDDEN", "message": "seller scope required"},
+        )
+    if not identity.brand_id:
+        # §2.3: 판매자 토큰엔 brandId 클레임 필수 — 없으면 판매자 역호출(§4.4/§4.5) 불가.
+        # 요청 본문/발화로 우회하지 않도록 검증된 클레임 부재 시 거부한다(IDOR 방지).
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "FORBIDDEN", "message": "seller token missing brandId claim"},
         )
     return identity
