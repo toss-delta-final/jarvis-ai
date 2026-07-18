@@ -69,6 +69,23 @@ class Settings(BaseSettings):
     # ── 프로필 (SPEC-PROFILE-001, 내부 전용) ──
     profile_summary_max_chars: int = 1000
 
+    # ── SSE 스트림 수명주기 (api-spec §2.9, 값은 config 기본값·운영 조정 가능) ──
+    # first-token: 첫 이벤트까지 상한. 초과 시 스트림 시작 전이면 504, 후면 in-stream error.
+    stream_first_token_timeout_s: float = 10.0
+    # 스트림 전체 상한. 초과 시 done(finishReason "stop")으로 정상 절단.
+    stream_total_timeout_s: float = 90.0
+    # disconnect 감지 폴링 간격 (취소 = 연결 종료, §2.9 b).
+    stream_disconnect_poll_s: float = 0.5
+    # AI→Spring 콜백 타임아웃 (§2.9 c, BE I-2 기준 통일). 실제 호출부에서 사용.
+    spring_timeout_s: float = 3.0
+    # AI→LLM 단일 호출 타임아웃 + 재시도 횟수 (§2.9 c).
+    llm_timeout_s: float = 30.0
+    llm_max_retries: int = 1
+
+    # ── 레이트 리밋 (api-spec §2.8, 토큰 sub 스코프, 인메모리·단일 인스턴스 전제) ──
+    rate_limit_per_min: int = 10
+    rate_limit_per_hour: int = 100
+
 
 @lru_cache
 def get_settings() -> Settings:
