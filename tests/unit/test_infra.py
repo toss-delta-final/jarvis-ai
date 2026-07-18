@@ -107,6 +107,18 @@ async def test_total_cap_truncates_with_done(monkeypatch: pytest.MonkeyPatch) ->
     assert not get_registry().is_active("cap-sess")
 
 
+async def test_first_frame_error_releases_registry() -> None:
+    """첫 프레임 전 상류 오류(비-타임아웃) 시에도 레지스트리를 해제한다(§409 누수 방지)."""
+
+    async def boom():
+        raise RuntimeError("upstream boom")
+        yield  # pragma: no cover - 도달 불가
+
+    with pytest.raises(RuntimeError):
+        await open_stream(_FakeRequest(), "boom-sess", boom)
+    assert not get_registry().is_active("boom-sess")
+
+
 async def test_disconnect_cancels_stream(monkeypatch: pytest.MonkeyPatch) -> None:
     """연결 종료 감지 시 스트림을 중단하고 레지스트리를 해제한다(§2.9 b)."""
     s = get_settings()

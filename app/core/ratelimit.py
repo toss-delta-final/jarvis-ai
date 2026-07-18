@@ -8,13 +8,13 @@ FastAPI 미들웨어 + in-memory(단일 인스턴스 전제 — 다중 인스턴
 
 from __future__ import annotations
 
+import hashlib
 import time
 from collections import deque
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
-from app.core.auth import AuthError, decode_token
 from app.core.config import get_settings
 from app.core.errors import REQUEST_ID_HEADER, error_envelope, get_request_id
 from app.core.logging import get_logger
@@ -56,22 +56,18 @@ def _extract_bearer(authorization: str | None) -> str | None:
 
 
 def _scope_key(request: Request) -> str:
-    """레이트 리밋 스코프 키 = 토큰 sub(§2.8). 게스트/무토큰은 클라이언트 호스트로 분리."""
-    settings = get_settings()
+    """레이트 리밋 스코프 키 = 토큰 해시(§2.8 토큰 스코프). 무토큰은 클라이언트 호스트로 분리.
+
+    미들웨어에서 JWT 를 디코드하지 않는다 — jwks 모드의 동기 JWKS HTTP 가 이벤트 루프를
+    블로킹(진행 중 SSE 스트림 폴링까지 정지)하고, 게스트 JWT 의 `sub` 는 Identity 에 보존되지
+    않아 게스트가 전부 host 한 버킷을 공유하는 문제가 생기기 때문. 토큰 원문을 해시해 키로
+    쓰면 회원·게스트 모두 토큰별로 분리된다(§2.8 남용 차단 목적 충족). 토큰 원문은 로그·키에
+    노출하지 않도록 해시한다. 동일 sub 다중 토큰 병합은 post-MVP.
+    """
     token = _extract_bearer(request.headers.get("authorization"))
-    try:
-        identity = decode_token(
-            token,
-            auth_mode=settings.auth_mode,
-            jwks_url=settings.jwks_url,
-            issuer=settings.jwt_issuer,
-            audience=settings.jwt_audience,
-        )
-        subject = identity.user_id or identity.seller_id
-        if subject:
-            return f"sub:{subject}"
-    except AuthError:
-        pass  # 무효 토큰의 401 판정은 다운스트림 인증 의존성 소관. 여기선 스코프만 나눈다.
+    if token:
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+        return f"tok:{digest}"
     host = request.client.host if request.client else "unknown"
     return f"anon:{host}"
 

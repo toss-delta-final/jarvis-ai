@@ -94,6 +94,8 @@ async def open_stream(
     agen = inner_factory()
 
     # (c) first-token 상한 — 첫 이벤트 도착 전이므로 아직 200 헤더 전. 초과 시 504(§2.5).
+    # 스트림을 반환하기 전에 실패하면 _wrapped 의 finally 가 돌지 않으므로 여기서 해제해야 한다.
+    # 반대로 정상/빈 스트림은 _wrapped 의 finally 한 곳에서만 해제한다(이중 해제 레이스 방지).
     try:
         first = await asyncio.wait_for(agen.__anext__(), settings.stream_first_token_timeout_s)
     except asyncio.TimeoutError as exc:
@@ -104,8 +106,12 @@ async def open_stream(
             detail={"code": "UPSTREAM_TIMEOUT", "message": "상류(LLM) 응답 지연"},
         ) from exc
     except StopAsyncIteration:
+        first = None  # 빈 스트림 — 해제는 _wrapped finally 에서(이중 해제 방지)
+    except BaseException:
+        # 첫 프레임 전 상류 오류(LLM/Spring 등)·취소 — 세션 누수 방지 위해 해제 후 전파.
         registry.release(session_id)
-        first = None
+        await agen.aclose()
+        raise
 
     poll = settings.stream_disconnect_poll_s
     deadline = start + settings.stream_total_timeout_s
