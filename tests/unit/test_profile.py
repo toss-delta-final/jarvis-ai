@@ -81,6 +81,8 @@ def test_is_remember_command() -> None:
     assert not is_remember_command("어제 일 기억해내려고 했는데 잘 안 되네")  # 비명령 부분매칭 제외
     assert is_remember_command("이거 기억해두세요")
     assert is_remember_command("매운맛 좋아해요, 기억해줘! 다른 것도 추천해줄래?")  # 명령+질문 혼합도 인식
+    assert not is_remember_command("이거 안 잊게 기억해줘야 할 것 같아")  # 활용형(줘야) 제외
+    assert not is_remember_command("기억해줘도 상관없어")  # 활용형(줘도) 제외
 
 
 # ─────────── builder (델타·consolidation) ───────────
@@ -268,3 +270,33 @@ def test_append_session_ctx_caps_count() -> None:
     for i in range(10):
         store.append_session_ctx("k", f"turn-{i}", cap=3)
     assert store.get_session_ctx("k") == ["turn-7", "turn-8", "turn-9"]
+
+
+async def test_session_end_unmarks_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """처리 실패(LLM 오류) 시 eventId 마킹 해제 + 버퍼 보존 — 재전송이 재처리 가능(멱등은 성공에만)."""
+    import app.api.events as ev
+    from app.core.llm import LLMError
+
+    class _Raise:
+        async def complete(self, **k):
+            raise LLMError("transient")
+
+        async def stream(self, **k):
+            yield "x"
+
+    monkeypatch.setattr(ev, "get_llm", lambda: _Raise())
+    key = conversation_key("44", "s")
+    get_profile_store().append_session_ctx(key, "취향 신호")
+    r = client.post("/events/session-end", json={"eventId": "f-1", "userId": "44", "sessionId": "s"})
+    assert r.status_code == 202
+    assert not get_profile_store().seen_event("f-1")  # 언마크 → 재전송 시 재처리
+    assert get_profile_store().get_session_ctx(key) != []  # 버퍼 보존
+
+
+def test_internal_token_required_in_jwks_mode() -> None:
+    """운영(jwks)에서 internal_api_token 미주입이면 Settings 기동 실패(inbound fail-open 방지)."""
+    from app.core.config import Settings
+
+    with pytest.raises(Exception):
+        Settings(auth_mode="jwks", jwks_url="http://x", pii_hash_pepper="p", internal_api_token="")
+    Settings(auth_mode="jwks", jwks_url="http://x", pii_hash_pepper="p", internal_api_token="tok")  # ok

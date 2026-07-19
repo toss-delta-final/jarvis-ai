@@ -46,6 +46,9 @@ async def session_end(event: SessionEndEvent, _token: None = Depends(verify_serv
         ran = False
 
     if ran:
-        # LLM 이 실제 처리한 경우에만 버퍼 정리(정상 반려 포함). degrade/오류 시 보존(회수 여지, REQ-PROF-050/051).
+        # LLM 이 실제 처리한 경우에만 버퍼 정리(정상 반려 포함).
         store.clear_session_ctx(key)
+    else:
+        # degrade/오류 → 마킹 해제(멱등은 성공에만) + 버퍼 보존 → 재전송·다음 배치가 재처리(REQ-PROF-050/051).
+        store.unmark_event(event.event_id)
     return {"status": "accepted"}

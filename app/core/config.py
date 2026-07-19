@@ -128,6 +128,9 @@ class Settings(BaseSettings):
         """운영(jwks)에서 PII pepper 미주입이면 기동 실패 — 조용히 약한 해시로 도는 것 방지."""
         if self.auth_mode == "jwks" and not self.pii_hash_pepper:
             raise ValueError("PII_HASH_PEPPER must be set when auth_mode=jwks")
+        # inbound write 엔드포인트(§3.5) 서비스 토큰 — 운영은 필수(미설정 시 조용히 fail-open 방지).
+        if self.auth_mode == "jwks" and not self.internal_api_token:
+            raise ValueError("INTERNAL_API_TOKEN must be set when auth_mode=jwks")
         return self
 
 

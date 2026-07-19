@@ -81,6 +81,10 @@ class ProfileStore:
         self._processed.add(event_id)
         return True
 
+    def unmark_event(self, event_id: str) -> None:
+        """마킹 해제 — 처리 실패 시 재전송이 재처리 가능하게(멱등은 성공에만 적용)."""
+        self._processed.discard(event_id)
+
     def clear(self) -> None:
         self._summary.clear()
         self._facts.clear()

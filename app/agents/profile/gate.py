@@ -7,12 +7,11 @@
 
 from __future__ import annotations
 
+import re
+
 # "기억해" 계열 명시 **명령** 마커(줘/둬/주세요 등 저장 명령형) — hot-path 즉시 승격 트리거.
-# 바레 "기억해"는 제외("기억해내다" 등 비명령 오탐 방지, 정밀도 우선).
-_REMEMBER_MARKERS = (
-    "기억해줘", "기억해 줘", "기억해둬", "기억해 둬",
-    "기억해주세요", "기억해두세요", "기억해둘래", "remember this", "remember that",
-)
+# 뒤에 한글 활용 음절이 붙으면 제외(기억해줘야/기억해줘도/기억해줘봤자 등 비명령 오탐 방지, 정밀도 우선).
+_REMEMBER_RE = re.compile(r"기억해\s?(?:줘|둬|주세요|두세요)(?![가-힣])|remember\s+th(?:is|at)")
 
 
 def should_promote(
@@ -39,6 +38,5 @@ def is_remember_command(text: str | None) -> bool:
     """
     if not text:
         return False
-    # 명시 명령형 마커(줘/둬/주세요)만 매칭 — 같은 턴에 질문이 섞여도 명령 마커가 있으면 인식.
-    lowered = text.strip().lower()
-    return any(marker in lowered for marker in _REMEMBER_MARKERS)
+    # 명령 마커가 문장 끝/구두점 앞(활용형 아님)일 때만 명령으로 인식 — 같은 턴에 질문이 섞여도 인식.
+    return bool(_REMEMBER_RE.search(text.lower()))
