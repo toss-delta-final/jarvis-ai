@@ -53,9 +53,13 @@ class ProfileStore:
             del facts[: len(facts) - cap]  # 최신 cap 개만 유지(recency-wins, 무제한 누적 방어)
 
     # ── transient 세션 버퍼 (승격 전 격리, REQ-PROF transient) ──
-    def append_session_ctx(self, key: str, text: str) -> None:
-        if text:
-            self._session_ctx.setdefault(key, []).append(text)
+    def append_session_ctx(self, key: str, text: str, *, cap: int | None = None) -> None:
+        if not text:
+            return
+        buf = self._session_ctx.setdefault(key, [])
+        buf.append(text)
+        if cap and cap > 0 and len(buf) > cap:
+            del buf[: len(buf) - cap]  # 최신 cap 개만 유지(무제한 누적 방어)
 
     def get_session_ctx(self, key: str) -> list[str]:
         return list(self._session_ctx.get(key, []))

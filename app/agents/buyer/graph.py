@@ -107,7 +107,7 @@ async def run_buyer_turn(
         # transient 세션 버퍼에 발화 누적(승격 전 격리, SPEC-PROFILE-001) — 세션 종료 델타 소스.
         # "기억해"류 명시 명령은 게이트 없이 즉시 승격(hot-path, REQ-PROF).
         pstore = get_profile_store()
-        pstore.append_session_ctx(conversation_key(identity.user_id, request.session_id), request.message)
+        pstore.append_session_ctx(conversation_key(identity.user_id, request.session_id), request.message, cap=settings.profile_session_buffer_cap)
         if is_remember_command(request.message):
             record_remember(identity.user_id, request.message)
 

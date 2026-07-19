@@ -260,3 +260,11 @@ def test_add_fact_count_cap(monkeypatch: pytest.MonkeyPatch) -> None:
         record_remember("cap2", f"fact-{i}")
     facts = get_profile_store().get_facts("cap2")
     assert len(facts) == 3 and facts == ["fact-7", "fact-8", "fact-9"]
+
+
+def test_append_session_ctx_caps_count() -> None:
+    """세션 버퍼 개수 상한 — 최신 cap 개만 유지."""
+    store = get_profile_store()
+    for i in range(10):
+        store.append_session_ctx("k", f"turn-{i}", cap=3)
+    assert store.get_session_ctx("k") == ["turn-7", "turn-8", "turn-9"]

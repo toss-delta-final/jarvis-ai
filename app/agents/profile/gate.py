@@ -34,7 +34,8 @@ def should_promote(
 def is_remember_command(text: str | None) -> bool:
     """발화가 "기억해"류 명시 **명령**인지 — hot-path 즉시 기록 트리거(REQ-PROF).
 
-    질문·비확정 발화("~기억해?", "기억나?")는 오탐 방지를 위해 제외한다.
+    저장 명령형 마커(줘/둬/주세요)만 매칭한다 — 바레 "기억해"("기억해내다" 등 비명령)는 제외해
+    오탐을 줄인다. 명령 마커가 있으면 같은 턴에 물음표가 섞여도 명령으로 인식한다(자연 대화 패턴).
     """
     if not text:
         return False
