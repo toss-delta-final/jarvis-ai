@@ -1,14 +1,14 @@
-"""Spring 역방향 호출 클라이언트 (api-spec v0.15.x §4).
+"""Spring 역방향 호출 클라이언트 (api-spec v0.15.x §4 — 판매자 SpringClient 는 §4.4/§4.5).
 
-AI → Spring 질의 시점 역방향 + 배치:
+AI → Spring 질의 시점 역방향 + 배치 (구매자, 모듈 레벨 함수):
   - search_products        : 후보 확보 (I-1, GET /internal/products/search, §4.6, C-15) — [배선 완료]
   - get_recent_purchases   : 구매 이력 조회 (I-19, GET /internal/members/{id}/orders, §4.7, C-6) — dedup·프로필 소스
   - add_to_cart            : 장바구니 담기 (I-2, POST /internal/cart/items, 단건, §4.1)
   - get_cart               : 장바구니 조회 (I-18, GET /internal/cart, §4.9, C-16)
   - push_recommendations   : 최종 랭크 id push (I-21, POST /internal/recommendations, 경로 B, §4.2) — [배선 완료]
-  - get_seller_aggregates  : 판매자 집계 조회 (I-6 등 5종, §4.4, C-13)
-  - get_product_detail     : draft before-source 읽기 (I-9, §4.5, C-14)
   - fetch_product_changes  : AI 생성물 갱신 배치 pull (I-17, §4.8, C-4)
+판매자 조회 8종 + 쓰기 3종(I-6~I-16 집계, I-9~I-12 CRUD)은 아래 `SpringClient` 클래스 소관 —
+구스텁 get_seller_aggregates·get_product_detail 은 대체·삭제(DESIGN-SELLER-TOOLS-STAGE1).
 AI 는 커머스 DB 에 직접 write 하지 않는다. 와이어 포맷은 camelCase (스키마 alias).
 
 인증 레인 (api-spec §2.3, v0.13.0 통일): AI→Spring 역호출은 전 구간 X-Internal-Token 서비스 토큰
@@ -18,29 +18,51 @@ AI 는 커머스 DB 에 직접 write 하지 않는다. 와이어 포맷은 camel
 [배선 v이슈#2] search_products = **GET**(사용자 확정 "그냥 GET으로") — BE I-1 파라미터
   keyword/categoryName/minPrice/maxPrice/brandName/size. dedup·평점·정렬은 요청 파라미터가 아니라
   AI 사후필터(§4.6 v0.15.5, C-15). push_recommendations = POST I-21(productIds 만, 경로 B).
+
+[변경 DESIGN-SELLER-TOOLS-STAGE1] 판매자 조회 8종 + 쓰기 3종은 아래 `SpringClient` 클래스로
+신설한다(구스텁 `get_seller_aggregates`·`get_product_detail`는 대체·삭제) — 구매자 함수는
+불변이다. `SpringClient`는 X-Internal-Token 서비스 토큰 + `{brandId}` path + 3s 타임아웃
+(api-spec §2.3 v0.13.0·§2.9 c)을 한 곳에 바인딩하고, `transport` 인자로 테스트용
+`httpx.MockTransport`를 주입할 수 있다(respx 미설치, §0 의존성 실측).
 """
 
 from __future__ import annotations
 
 import logging
 import math
+from typing import TypeVar
 
 import httpx
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from app.core.config import get_settings
 from app.schemas.spring import (
+    AccountEventsResult,
     AddToCartRequest,
     CartOption,
     AddToCartResult,
+    BehaviorEventsResult,
     CartView,
+    ChurnResult,
+    FunnelResult,
+    OrderEventsResult,
+    ProductChangeLogResult,
     ProductChangesPage,
+    ProductCreate,
+    ProductCreateResult,
+    ProductDeleteResult,
     ProductSearchFilters,
     ProductSearchResult,
+    ProductUpdate,
+    ProductUpdateResult,
     RecentPurchases,
     RecommendationPush,
+    SalesResult,
+    SellerProductList,
     SpringProduct,
 )
+
+_ModelT = TypeVar("_ModelT", bound=BaseModel)
 
 
 _log = logging.getLogger(__name__)
@@ -307,22 +329,293 @@ async def push_recommendations(push: RecommendationPush) -> bool:
     return True
 
 
-async def get_seller_aggregates(brand_id: str, metric: str, group_by: str | None = None) -> dict:
-    """판매자 집계 조회 — I-6 등 5종 (스텁, api-spec §4.4 / C-13 최우선). 이슈 #9 소관."""
-    raise SpringUnavailableError(
-        "get_seller_aggregates not wired to live Spring yet (api-spec §4.4, I-6, C-13)"
-    )
-
-
-async def get_product_detail(brand_id: str, product_id: str) -> dict:
-    """draft before-source 읽기 — I-9 자사 상품 목록 (스텁, api-spec §4.5 / C-14). 이슈 #9 소관."""
-    raise SpringUnavailableError(
-        "get_product_detail not wired to live Spring yet (api-spec §4.5, I-9, C-14)"
-    )
-
-
 async def fetch_product_changes(cursor: str | None, limit: int = 500) -> ProductChangesPage:
     """상품 변경분 pull — I-17, AI 생성물 갱신 배치 (스텁, api-spec §4.8 / C-4). 이슈 #7 소관."""
     raise SpringUnavailableError(
         "fetch_product_changes not wired to live Spring yet (api-spec §4.8, I-17, C-4)"
     )
+
+
+class SpringClient:
+    """판매자 internal API 콜백 클라이언트 (api-spec §4.4/§4.5, DESIGN-SELLER-TOOLS-STAGE1 §2).
+
+    X-Internal-Token 서비스 토큰 + `{brandId}` path + 3s 타임아웃(§2.3 v0.13.0·§2.9 c).
+    brand_id 는 메서드 인자로 명시 전달한다 — 호출자(app/agents/seller/tools.py 클로저)가
+    검증된 Identity.brand_id 를 넣는다. 이 클래스는 신원을 스스로 판단하지 않는다(IDOR 방지).
+
+    조회 실패는 SpringUnavailableError 로 변환해 raise 한다(타임아웃·4xx/5xx·연결 실패 공통).
+    "Error: ..." 문자열 degrade 로의 변환은 상위 도구 계층(app/agents/seller/tools.py)의
+    책임이다 — 이 클래스는 관심사 분리를 위해 예외만 던진다.
+
+    테스트는 transport 인자로 httpx.MockTransport 를 주입한다(respx 미설치, §0).
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        internal_token: str | None,
+        *,
+        transport: httpx.BaseTransport | None = None,
+        timeout: float | None = None,
+    ) -> None:
+        self._base_url = base_url
+        self._internal_token = internal_token
+        self._transport = transport
+        # timeout 미지정 시 Settings 기본값 사용 — 하드코딩 금지(§5), AI→Spring 전 구간 3s.
+        self._timeout = timeout if timeout is not None else get_settings().spring_timeout_s
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict | None = None,
+        json_body: dict | None = None,
+    ) -> dict:
+        """공용 요청 헬퍼. X-Internal-Token 헤더 부착 + raise_for_status +
+        예외를 SpringUnavailableError 로 통일 변환한다."""
+        headers = {"X-Internal-Token": self._internal_token} if self._internal_token else {}
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url, transport=self._transport, timeout=self._timeout
+            ) as client:
+                response = await client.request(
+                    method, path, params=params, json=json_body, headers=headers
+                )
+                response.raise_for_status()
+                payload = response.json()
+                # [변경 2026-07-19, REALIGN ②-3] BE 확정 명세(I-13 실측)가
+                # {success, data:{...}} 봉투를 쓴다 — data 만 벗겨 모델에 넘긴다.
+                # 봉투 없는 응답(과도기·타 API)은 그대로 통과(하위 호환).
+                if (
+                    isinstance(payload, dict)
+                    and "success" in payload
+                    and isinstance(payload.get("data"), dict)
+                ):
+                    return payload["data"]
+                return payload
+        except httpx.TimeoutException as exc:
+            raise SpringUnavailableError(
+                f"Spring 콜백 타임아웃({self._timeout}s): {method} {path}"
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            raise SpringUnavailableError(
+                f"Spring 콜백 오류 응답({exc.response.status_code}): {method} {path}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise SpringUnavailableError(f"Spring 콜백 실패: {method} {path} ({exc})") from exc
+
+    def _validate(self, model: type[_ModelT], data: dict) -> _ModelT:
+        """Spring 응답을 스키마로 검증하는 단일 지점(opus 리뷰 M1).
+
+        판매자 스키마는 전부 초안(🔴 C-13/C-14)이라 실측 필드 불일치 가능성이 높다.
+        pydantic.ValidationError 를 여기서 한 번에 SpringUnavailableError 로 변환해,
+        도구 계층(app/agents/seller/tools.py)이 `except SpringUnavailableError` 하나만으로
+        degrade 문자열("Error: ...")을 반환할 수 있게 한다(개별 도구에서 ValidationError 를
+        따로 잡을 필요가 없다).
+        """
+        try:
+            return model.model_validate(data)
+        except ValidationError as exc:
+            raise SpringUnavailableError(
+                f"Spring 응답 형식이 예상과 다릅니다({model.__name__}): {exc}"
+            ) from exc
+
+    # ── 조회 8종 (전부 GET, api-spec §4.4/§4.5) ──
+
+    async def get_sales(
+        self, brand_id: str, from_: str, to: str, granularity: str = "daily"
+    ) -> SalesResult:
+        """I-6 매출 시계열 조회 (§4.4). granularity: daily/weekly/monthly/summary."""
+        data = await self._request(
+            "GET",
+            f"/internal/seller/{brand_id}/sales",
+            params={"from": from_, "to": to, "granularity": granularity},
+        )
+        return self._validate(SalesResult, data)
+
+    async def get_funnel(self, brand_id: str, from_: str, to: str) -> FunnelResult:
+        """I-7 구매전환 퍼널 조회 (§4.4). view→cart→checkout→purchase 4단."""
+        data = await self._request(
+            "GET", f"/internal/seller/{brand_id}/funnel", params={"from": from_, "to": to}
+        )
+        return self._validate(FunnelResult, data)
+
+    async def get_events(
+        self,
+        brand_id: str,
+        from_: str,
+        to: str,
+        event_type: list[str] | None = None,
+        product_id: int | None = None,
+        group_by: str | None = None,
+    ) -> BehaviorEventsResult:
+        """I-13 행동 이벤트 집계 조회 (§4.4 — 07/17 BE 확정, REALIGN ②-3).
+
+        eventType 은 상품 연계 4종 복수 선택(미지정 = 4종 전체), groupBy 는
+        product(기본)/eventType/date. 실패 코드: INVALID_PERIOD/INVALID_GROUP_BY(400).
+        """
+        params: dict = {"from": from_, "to": to}
+        if event_type:
+            params["eventType"] = event_type  # httpx 가 리스트를 반복 쿼리로 직렬화
+        if product_id is not None:
+            params["productId"] = product_id
+        if group_by:
+            params["groupBy"] = group_by
+        data = await self._request("GET", f"/internal/seller/{brand_id}/events", params=params)
+        return self._validate(BehaviorEventsResult, data)
+
+    async def get_order_events(
+        self,
+        brand_id: str,
+        from_: str,
+        to: str,
+        to_status: list[str] | None = None,
+        actor_type: str | None = None,
+        group_by: str | None = None,
+        stats: bool | None = None,
+    ) -> OrderEventsResult:
+        """I-14 주문 상태 전이/조회 (§4.4). toStatus 는 복수 허용, stats 는 집계 모드 플래그.
+
+        [혼동 금지] 구매자 get_recent_purchases(GET /orders/recent, §4.7)와 다른 계약이다.
+        """
+        params: dict = {"from": from_, "to": to}
+        if to_status:
+            params["toStatus"] = to_status
+        if actor_type:
+            params["actorType"] = actor_type
+        if group_by:
+            params["groupBy"] = group_by
+        if stats is not None:
+            params["stats"] = stats
+        data = await self._request(
+            "GET", f"/internal/seller/{brand_id}/order-events", params=params
+        )
+        return self._validate(OrderEventsResult, data)
+
+    async def get_product_changes(
+        self,
+        brand_id: str,
+        from_: str,
+        to: str,
+        change_type: str | None = None,
+        product_id: int | None = None,
+    ) -> ProductChangeLogResult:
+        """I-15 상품 변경 이력(판매자 감사 로그) 조회 (§4.4). changeType: PRICE/STOCK/STATUS.
+
+        [혼동 금지] 구매자 fetch_product_changes(I-8, §4.8 AI 생성물 배치)와 다른 계약이다.
+        """
+        params: dict = {"from": from_, "to": to}
+        if change_type:
+            params["changeType"] = change_type
+        if product_id:
+            params["productId"] = product_id
+        data = await self._request(
+            "GET", f"/internal/seller/{brand_id}/product-changes", params=params
+        )
+        return self._validate(ProductChangeLogResult, data)
+
+    async def get_churn(self, brand_id: str, inactive_days: int) -> ChurnResult:
+        """I-16 이탈 코호트 조회 (§4.4). inactiveDays 무활동 기준일."""
+        data = await self._request(
+            "GET",
+            f"/internal/seller/{brand_id}/churn",
+            params={"inactiveDays": inactive_days},
+        )
+        return self._validate(ChurnResult, data)
+
+    async def get_account_events(
+        self,
+        event_type: str | None = None,
+        from_: str | None = None,
+        to: str | None = None,
+        group_by: str | None = None,
+    ) -> AccountEventsResult:
+        """I-8 계정/보안 이벤트 집계 조회 (§4.4). ⚠️ brandId path 없음 — 전역·admin 소유 🔴."""
+        params: dict = {}
+        if event_type:
+            params["eventType"] = event_type
+        if from_:
+            params["from"] = from_
+        if to:
+            params["to"] = to
+        if group_by:
+            params["groupBy"] = group_by
+        data = await self._request("GET", "/internal/account-events", params=params)
+        return self._validate(AccountEventsResult, data)
+
+    async def list_products(
+        self,
+        brand_id: str,
+        status: str | None = None,
+        q: str | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> SellerProductList:
+        """I-9 자사 상품 목록 조회 (§4.5). status: ON_SALE/HIDDEN. draft/product 도구의 before 소스."""
+        params: dict = {}
+        if status:
+            params["status"] = status
+        if q:
+            params["q"] = q
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        data = await self._request("GET", f"/internal/seller/{brand_id}/products", params=params)
+        return self._validate(SellerProductList, data)
+
+    # ── 쓰기 3종 (product_agent 전용, HITL 승인 후에만 호출, api-spec §4.5) ──
+
+    async def create_product(self, brand_id: str, payload: ProductCreate) -> ProductCreateResult:
+        """I-10 상품 등록 (§4.5). name/price/stockQuantity 필수(price ≤ originalPrice).
+
+        미설정 옵션 필드(originalPrice/category/description/imageUrl 등)는 exclude_none 으로
+        본문에서 제외한다(opus 리뷰 m4) — null 전송 대신 필드 자체를 생략한다.
+        """
+        data = await self._request(
+            "POST",
+            f"/internal/seller/{brand_id}/products",
+            json_body=payload.model_dump(by_alias=True, exclude_none=True),
+        )
+        return self._validate(ProductCreateResult, data)
+
+    async def update_product(
+        self, brand_id: str, product_id: int, patch: ProductUpdate
+    ) -> ProductUpdateResult:
+        """I-11 상품 수정 (§4.5). 바꿀 필드만 전송 — 재고도 이 API로 통합(별도 재고 API 없음)."""
+        data = await self._request(
+            "PATCH",
+            f"/internal/seller/{brand_id}/products/{product_id}",
+            json_body=patch.model_dump(by_alias=True, exclude_none=True),
+        )
+        return self._validate(ProductUpdateResult, data)
+
+    async def delete_product(self, brand_id: str, product_id: int) -> ProductDeleteResult:
+        """I-12 상품 삭제(soft) (§4.5). 물리 삭제 없음 — status=HIDDEN 전환."""
+        data = await self._request("DELETE", f"/internal/seller/{brand_id}/products/{product_id}")
+        return self._validate(ProductDeleteResult, data)
+
+
+# ── 싱글턴 (2026-07-18 ToolRuntime 전환 — 신원은 SellerContext, 클라이언트는 앱 소유) ──
+
+_default_client: SpringClient | None = None
+
+
+def get_spring_client() -> SpringClient:
+    """앱 수명주기 공유 SpringClient 를 반환한다(커넥션 풀 재사용).
+
+    도구(app/agents/seller/tools.py)는 이 싱글턴을 쓰고, 신원(brand_id)은
+    ToolRuntime[SellerContext] 로 요청마다 주입받는다. 테스트는 set_spring_client()
+    로 이중(double)을 끼운다.
+    """
+    global _default_client
+    if _default_client is None:
+        _default_client = SpringClient()
+    return _default_client
+
+
+def set_spring_client(client: SpringClient | None) -> None:
+    """싱글턴 교체(테스트 주입)·해제(None). 앱 종료 훅에서도 사용한다."""
+    global _default_client
+    _default_client = client
