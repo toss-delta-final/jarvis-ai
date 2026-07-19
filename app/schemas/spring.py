@@ -135,14 +135,15 @@ class RecentPurchases(CamelModel):
 
         since 가 주어지면 그보다 오래된 주문은 제외한다(오래 전 구매를 영구 제외하지 않게).
         exclude_statuses(예: CANCELED/RETURNED)의 아이템은 사용자가 보유하지 않으므로 제외 대상에서 뺀다.
-        ordered_at 파싱 실패 주문은 윈도우를 적용하지 않고 포함(보수적).
+        since 지정 시 ordered_at 파싱 실패(불명) 주문도 제외 대상에서 뺀다 — 나이를 확인할 수 없는
+        구매를 영구 제외하지 않기 위함(윈도우 취지).
         """
         blocked = {s.upper() for s in exclude_statuses}
         ids: set[int] = set()
         for order in self.orders:
             if since is not None:
                 dt = _parse_ordered_at(order.ordered_at)
-                if dt is not None and dt < since:
+                if dt is None or dt < since:
                     continue
             order_status = (order.status or "").upper()
             for item in order.items:

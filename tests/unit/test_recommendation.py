@@ -473,9 +473,10 @@ def test_purchased_product_ids_window_excludes_old() -> None:
     rp = RecentPurchases(orders=[
         OrderHistory(order_id=1, ordered_at="2026-07-15T00:00:00", items=[OrderHistoryItem(order_item_id=1, product_id=101)]),
         OrderHistory(order_id=2, ordered_at="2025-01-01T00:00:00", items=[OrderHistoryItem(order_item_id=2, product_id=102)]),
+        OrderHistory(order_id=3, ordered_at="bad-date", items=[OrderHistoryItem(order_item_id=3, product_id=103)]),
     ])
-    assert rp.purchased_product_ids(since=datetime(2026, 7, 1)) == {101}  # 오래된 102 제외
-    assert rp.purchased_product_ids() == {101, 102}  # since 없으면 전체
+    assert rp.purchased_product_ids(since=datetime(2026, 7, 1)) == {101}  # 오래된 102·불명 103 제외
+    assert rp.purchased_product_ids() == {101, 102, 103}  # since 없으면 전체(불명 포함)
 
 
 async def test_get_recent_purchases_parses_and_collects_ids(monkeypatch: pytest.MonkeyPatch) -> None:
