@@ -88,10 +88,10 @@ async def stream_cart_add(
     ):
         cart_store.clear_pending(thread_key)
         pending = None
-    was_pending = pending is not None
     if pending is not None:
         product_id: int | None = pending.product_id
-        quantity = pending.quantity
+        # 옵션 답변과 함께 수량을 다시 말하면("레드로 5개") 새 수량을 우선한다(기본 1이면 pending 유지).
+        quantity = cart.quantity if cart.quantity != 1 else pending.quantity
         attempts = pending.attempts
     else:
         product_id = cart.product_id
@@ -123,24 +123,24 @@ async def stream_cart_add(
     try:
         req = AddToCartRequest(user_id=user_id, guest_id=guest_id, product_id=product_id, option_id=option_id, quantity=quantity)
         result = await add_fn(req)
-    except (CartOptionRequired, CartOptionInvalid) as exc:
-        # 옵션 되물음 — 최초 안내는 자유, 이후 **재질문(was_pending)은 cart_option_reask_max 로 상한**한다.
-        # REQUIRED 도 상한 대상 — optionId 를 끝내 못 뽑으면 매번 REQUIRED 로 떨어져 무한 되물음이 되므로.
-        if was_pending:
-            new_attempts = attempts + 1
-            if new_attempts > settings.cart_option_reask_max:
-                cart_store.clear_pending(thread_key)
-                yield sse("action", ActionData(type="CART_ADD_FAILED", message="옵션을 확인하지 못했어요. 다시 시도해 주세요.", reason="CART_ERROR").model_dump(by_alias=True))
-                yield _done()
-                return
-        else:
-            new_attempts = 0  # 최초 안내(재질문 아님)
+    except CartOptionRequired as exc:
+        # api-spec §4.1 — REQUIRED 는 **상한 없는 되물음 멀티턴**(사용자가 옵션을 아직 안 준 정상 흐름).
+        # 각 되물음은 사용자 입력을 요구하므로 서버 무한 루프가 아니다. INVALID 카운터(attempts)는
+        # 리셋하지 않고 보존해 사이에 끼어도 INVALID 상한이 유지되게 한다.
+        cart_store.set_pending(thread_key, PendingAdd(product_id=product_id, quantity=quantity, options=exc.options, attempts=attempts))
+        yield sse("token", TokenData(text=f"옵션을 선택해 주세요: {_options_text(exc.options)}. 어떤 걸로 담을까요?").model_dump(by_alias=True))
+        yield _done()
+        return
+    except CartOptionInvalid as exc:
+        # api-spec §4.1 — INVALID 는 재시도 상한(config cart_option_reask_max, 기본 1) 후 CART_ERROR.
+        new_attempts = attempts + 1
+        if new_attempts > settings.cart_option_reask_max:
+            cart_store.clear_pending(thread_key)
+            yield sse("action", ActionData(type="CART_ADD_FAILED", message="옵션을 확인하지 못했어요. 다시 시도해 주세요.", reason="CART_ERROR").model_dump(by_alias=True))
+            yield _done()
+            return
         cart_store.set_pending(thread_key, PendingAdd(product_id=product_id, quantity=quantity, options=exc.options, attempts=new_attempts))
-        if isinstance(exc, CartOptionRequired):
-            text = f"옵션을 선택해 주세요: {_options_text(exc.options)}. 어떤 걸로 담을까요?"
-        else:
-            text = f"그 옵션을 찾지 못했어요. 다시 골라 주세요: {_options_text(exc.options)}"
-        yield sse("token", TokenData(text=text).model_dump(by_alias=True))
+        yield sse("token", TokenData(text=f"그 옵션을 찾지 못했어요. 다시 골라 주세요: {_options_text(exc.options)}").model_dump(by_alias=True))
         yield _done()
         return
     except CartProductNotFound:

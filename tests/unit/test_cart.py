@@ -568,10 +568,9 @@ async def test_last_reco_not_stored_when_push_fails() -> None:
     assert reco == []  # 저장 안 됨 → 다음 턴 "그거 담아줘"가 미노출 상품을 담지 못함
 
 
-async def test_cart_add_option_required_reask_capped() -> None:
-    """optionId 를 끝내 못 뽑아 REQUIRED 가 반복돼도 상한 초과 시 CART_ERROR(R2 — 무한 되물음 방지)."""
+async def test_cart_add_option_required_is_uncapped() -> None:
+    """api-spec §4.1 — REQUIRED 는 상한 없는 되물음 멀티턴(INVALID 상한과 분리). 반복돼도 재질문."""
     store = CartStateStore()
-    # 이미 1회 되물은 상태(attempts=1), 다시 REQUIRED → 상한(기본 1) 초과 → CART_ERROR
     store.set_pending("m:t", PendingAdd(product_id=1, quantity=1, options=[CartOption(option_id=3, name="블루")], attempts=1))
 
     async def add_fn(req):
@@ -584,9 +583,29 @@ async def test_cart_add_option_required_reask_capped() -> None:
             add_fn=add_fn, get_cart_fn=_empty_cart(),
         )
     )
-    action = next(e for e in events if e["type"] == "action")["data"]
-    assert action["type"] == "CART_ADD_FAILED" and action["reason"] == "CART_ERROR"
-    assert store.get_pending("m:t") is None
+    assert "action" not in _types(events)  # CART_ERROR 아님 — 계속 재질문(§4.1)
+    pending = store.get_pending("m:t")
+    assert pending is not None and pending.attempts == 1  # INVALID 카운터 보존(리셋 안 함)
+
+
+async def test_cart_add_reask_prefers_new_quantity() -> None:
+    """옵션 답변과 함께 수량을 다시 말하면("레드로 5개") 새 수량을 우선한다(라운드5)."""
+    store = CartStateStore()
+    store.set_pending("m:t", PendingAdd(product_id=1, quantity=1, options=[CartOption(option_id=4, name="레드")]))
+    captured = {}
+
+    async def add_fn(req):
+        captured["quantity"] = req.quantity
+        return AddToCartResult(success=True, cart_item_id=1)
+
+    await _collect(
+        stream_cart_add(
+            identity=_member(), cart=CartIntent(product_id=1, option_id=4, quantity=5),
+            cart_store=store, thread_key="m:t", settings=get_settings(),
+            add_fn=add_fn, get_cart_fn=_empty_cart(),
+        )
+    )
+    assert captured["quantity"] == 5  # pending 의 1 이 아니라 이번 턴 5
 
 
 # ─────────── 리뷰 라운드 3 회귀 ───────────
