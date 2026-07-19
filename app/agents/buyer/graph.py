@@ -167,6 +167,7 @@ async def run_buyer_turn(
         llm=llm,
         search=search,
         push_fn=push_fn,
+        identity=identity,
         profile=profile,
         settings=settings,
         cart_store=cart_store,

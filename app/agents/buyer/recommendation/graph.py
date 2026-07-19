@@ -15,6 +15,7 @@ from app.agents.buyer._frames import sse
 from app.agents.buyer.recommendation.rerank import rerank
 from app.agents.buyer.recommendation.state import RouteDecision, build_condition_chips
 from app.core.llm import LLMClient, LLMError
+from app.services import spring_client
 from app.schemas.chat import ConditionsData, DoneData, ErrorData, ProductsReadyData, TokenData
 from app.schemas.spring import ProductSearchResult, RecommendationPush
 from app.services.spring_client import SpringUnavailableError
@@ -27,8 +28,10 @@ async def stream_recommendation(
     llm: LLMClient,
     search,
     push_fn,
+    identity=None,
     profile: str | None,
     settings,
+    get_purchases_fn=None,
     cart_store=None,
     thread_key: str | None = None,
     observer=None,
@@ -38,9 +41,22 @@ async def stream_recommendation(
     chips = build_condition_chips(decision.filters)
     yield sse("conditions", ConditionsData(chips=chips).model_dump(by_alias=True))
 
+    # dedup — 회원이면 최근 구매(I-19)를 조회해 exact productId 제외 목록을 만든다(결정 14-F).
+    # I-1 엔 제외 파라미터가 없어(C-15) 검색 응답 뒤 AI 사후필터(search_catalog)로 제외한다.
+    # 게스트는 스킵(이력 없음), I-19 실패·비숫자 sub 는 degrade(dedup 없이 진행, §4.7).
+    exclude_ids: list[int] | None = None
+    if identity is not None and not identity.is_guest and identity.user_id:
+        get_purchases_fn = get_purchases_fn or spring_client.get_recent_purchases
+        try:
+            purchases = await get_purchases_fn(int(identity.user_id))
+            ids = purchases.purchased_product_ids()
+            exclude_ids = list(ids) if ids else None
+        except (SpringUnavailableError, ValueError, TypeError):
+            exclude_ids = None
+
     # search — Spring GET 위임 (§4.6). 실패 시 SEARCH_FAILED(종료).
     try:
-        result: ProductSearchResult = await search(decision.filters, exclude_product_ids=None)
+        result: ProductSearchResult = await search(decision.filters, exclude_product_ids=exclude_ids)
     except SpringUnavailableError:
         yield sse("error", ErrorData(code="SEARCH_FAILED", message="상품 검색에 실패했어요.").model_dump(by_alias=True))
         return

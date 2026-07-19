@@ -96,7 +96,7 @@ class OrderHistory(CamelModel):
 
     order_id: int
     ordered_at: str  # ISO-8601
-    representative_status: str | None = None  # 대표 상태 enum 8종(표시 문구는 FE 매핑)
+    status: str | None = None  # [v0.15.5 정정] 주문 상태 6종(PAID/PREPARING/SHIPPING/DELIVERED/CANCELED/RETURNED)
     items: list[OrderHistoryItem] = Field(default_factory=list)
     items_total: int | None = None
     shipping_fee: int = 0
@@ -112,6 +112,10 @@ class RecentPurchases(CamelModel):
     """
 
     orders: list[OrderHistory] = Field(default_factory=list)
+
+    def purchased_product_ids(self) -> set[int]:
+        """전 주문 아이템의 productId 집합 — exact 제외 dedup(결정 14-F) 소스."""
+        return {item.product_id for order in self.orders for item in order.items}
 
 
 # ── 3. 장바구니 담기 (I-2, §4.1) — BE 문서 채택, 단건 ──
