@@ -51,10 +51,10 @@ def _options_text(options: list[CartOption]) -> str:
     for opt in options:
         if not opt.name:
             continue
-        if opt.extra_price:
+        if opt.extra_price and opt.extra_price > 0:
             parts.append(f"{opt.name}(+{opt.extra_price:,}원)")
         else:
-            parts.append(opt.name)
+            parts.append(opt.name)  # 0/음수 추가금은 미표시("(+-1,000원)" 깨짐 방지)
     return " / ".join(parts) if parts else "옵션"
 
 

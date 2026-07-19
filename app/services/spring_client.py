@@ -22,6 +22,8 @@ AI 는 커머스 DB 에 직접 write 하지 않는다. 와이어 포맷은 camel
 
 from __future__ import annotations
 
+import logging
+
 import httpx
 from pydantic import ValidationError
 
@@ -38,6 +40,9 @@ from app.schemas.spring import (
     RecommendationPush,
     SpringProduct,
 )
+
+
+_log = logging.getLogger(__name__)
 
 
 class SpringUnavailableError(Exception):
@@ -155,7 +160,11 @@ def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption
                     )
                 )
             except (ValidationError, ValueError, TypeError):
+                _log.warning("cart 옵션 항목 파싱 실패 — 건너뜀: %r", opt)
                 continue  # 형식 이상 옵션은 건너뜀 — 되물음 흐름 전체가 죽지 않게(방어적)
+    if raw and not options:
+        # error.detail.options 는 BE 확정 계약(§4.1 v0.15.8) — 전멸은 계약 위반 신호라 로그 남김.
+        _log.warning("CART_OPTION_REQUIRED options 전부 파싱 실패(계약 위반 가능): %r", raw)
     return code, options
 
 

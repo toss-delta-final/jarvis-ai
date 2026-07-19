@@ -778,3 +778,37 @@ async def test_add_to_cart_malformed_option_skipped(monkeypatch: pytest.MonkeyPa
     with pytest.raises(sc.CartOptionRequired) as ei:
         await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=1))
     assert [o.option_id for o in ei.value.options] == [3]  # 깨진 항목 제외, 정상만
+
+
+async def test_cart_add_reask_hides_nonpositive_surcharge() -> None:
+    """음수/0 추가금은 문구에 표시하지 않는다('(+-1,000원)' 깨짐 방지, Claude #18)."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        raise CartOptionRequired([CartOption(option_id=4, name="레드", extra_price=-1000), CartOption(option_id=5, name="블랙", extra_price=0)])
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(), cart=CartIntent(product_id=1, quantity=1),
+            cart_store=store, thread_key="m:t", settings=get_settings(),
+            add_fn=add_fn, get_cart_fn=_empty_cart(),
+        )
+    )
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert "레드" in token and "블랙" in token and "+-" not in token and "원)" not in token
+
+
+def test_parse_cart_error_logs_when_all_options_dropped(caplog: pytest.LogCaptureFixture) -> None:
+    """옵션이 전부 파싱 실패하면 계약 위반 신호로 경고 로그를 남긴다(Claude #18)."""
+    import logging
+    import app.services.spring_client as sc
+
+    class _R:
+        status_code = 400
+        def json(self):
+            return {"error": {"code": "CART_OPTION_REQUIRED", "detail": {"options": [{"optionId": "bad"}]}}}
+
+    with caplog.at_level(logging.WARNING, logger="app.services.spring_client"):
+        code, options = sc._parse_cart_error(_R())
+    assert options == [] and code == "CART_OPTION_REQUIRED"
+    assert any("전부 파싱 실패" in r.getMessage() for r in caplog.records)
