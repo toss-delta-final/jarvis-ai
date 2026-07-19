@@ -91,7 +91,10 @@ async def stream_cart_add(
     if pending is not None:
         product_id: int | None = pending.product_id
         # 옵션 답변과 함께 수량을 다시 말하면("레드로 5개") 새 수량을 우선한다(기본 1이면 pending 유지).
-        quantity = cart.quantity if cart.quantity != 1 else pending.quantity
+        # 단 이번 턴이 pending 상품을 겨냥할 때만 — 순수 옵션 답변(productId=None)이거나 같은 상품일 때.
+        # (다른/미추천 상품을 가리켜 전환이 성립 안 한 경우의 수량을 옛 상품에 잘못 적용하지 않게.)
+        same_target = cart.product_id is None or cart.product_id == pending.product_id
+        quantity = cart.quantity if (cart.quantity != 1 and same_target) else pending.quantity
         attempts = pending.attempts
     else:
         product_id = cart.product_id

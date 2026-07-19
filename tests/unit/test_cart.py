@@ -608,6 +608,29 @@ async def test_cart_add_reask_prefers_new_quantity() -> None:
     assert captured["quantity"] == 5  # pending 의 1 이 아니라 이번 턴 5
 
 
+async def test_cart_add_reask_ignores_quantity_for_other_target() -> None:
+    """전환이 성립 안 한(미추천 상품 언급) 턴의 수량은 옛 pending 상품에 적용하지 않는다(라운드6)."""
+    store = CartStateStore()
+    store.set_pending("m:t", PendingAdd(product_id=1, quantity=2, options=[CartOption(option_id=4, name="레드")]))
+    captured = {}
+
+    async def add_fn(req):
+        captured["productId"] = req.product_id
+        captured["quantity"] = req.quantity
+        return AddToCartResult(success=True, cart_item_id=1)
+
+    # cart.product_id=99(미추천 → allowed 밖, 전환 미성립), quantity=5 는 옛 상품(1)에 적용 금지.
+    await _collect(
+        stream_cart_add(
+            identity=_member(), cart=CartIntent(product_id=99, option_id=4, quantity=5),
+            cart_store=store, thread_key="m:t", settings=get_settings(),
+            allowed_product_ids={1, 2}, add_fn=add_fn, get_cart_fn=_empty_cart(),
+        )
+    )
+    assert captured["productId"] == 1  # 옛 pending 상품
+    assert captured["quantity"] == 2  # 이번 턴 5 가 아니라 pending 의 2
+
+
 # ─────────── 리뷰 라운드 3 회귀 ───────────
 
 
