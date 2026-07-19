@@ -176,7 +176,8 @@ def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption
                 continue  # 형식 이상 옵션은 건너뜀 — 되물음 흐름 전체가 죽지 않게(방어적)
     if raw and not options:
         # error.detail.options 는 BE 확정 계약(§4.1 v0.15.8) — 전멸은 계약 위반 신호라 로그 남김.
-        _log.warning("CART_OPTION_REQUIRED options 전부 파싱 실패(계약 위반 가능): %r", raw)
+        # REQUIRED/INVALID 공통 파서라 실제 code 를 찍어 진단 오도 방지.
+        _log.warning("cart 옵션 응답(code=%r) options 전부 파싱 실패(계약 위반 가능): %r", code, raw)
     return code, options
 
 
