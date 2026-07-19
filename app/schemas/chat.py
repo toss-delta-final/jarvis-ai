@@ -35,7 +35,7 @@ class ChatRequest(CamelModel):
 
     session_id: str = Field(..., description="Spring 발급 불투명 스레드 키 (만료 없음, §2.6)")
     thread_id: str = Field(..., description="대화 스레드 식별자. 멀티턴 필터 누적 대상")
-    message: str = Field(..., description="현재 턴 사용자 원문 질의")
+    message: str = Field(..., max_length=4000, description="현재 턴 사용자 원문 질의 (PII·메모리 방어 상한 4000자)")
 
 
 # ── SSE 이벤트 data 페이로드 모델 (api-spec §3.1, 6종) ──

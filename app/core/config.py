@@ -68,6 +68,8 @@ class Settings(BaseSettings):
 
     # ── 프로필 (SPEC-PROFILE-001, 내부 전용) ──
     profile_summary_max_chars: int = 1000
+    # PII 로그 지문 pepper (§6.3 b) — 운영은 실제 secret 주입 필수. 빈 값은 개발용.
+    pii_hash_pepper: str = ""
 
     # ── SSE 스트림 수명주기 (api-spec §2.9, 값은 config 기본값·운영 조정 가능) ──
     # first-token: 첫 이벤트까지 상한. 초과 시 스트림 시작 전이면 504, 후면 in-stream error.

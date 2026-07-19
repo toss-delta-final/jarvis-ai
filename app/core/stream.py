@@ -224,10 +224,12 @@ async def open_stream(
         try:
             if first is not None:
                 first_err = _error_code_of(first)
+                yield first  # first 는 위에서 record_frame 됨(중복 누적 방지)
                 if first_err is not None:
+                    # in-stream error 는 종결 이벤트(§3.1) — 이후 이벤트 당기지 않는다.
                     stream_status = TurnStatus.FAILED
                     error_type = first_err
-                yield first  # first 는 위에서 record_frame 됨(중복 누적 방지)
+                    return
             next_task = asyncio.ensure_future(agen.__anext__())
             while True:
                 remaining = deadline - loop.time()
@@ -260,12 +262,13 @@ async def open_stream(
                 if observer is not None:
                     observer.record_frame(item)  # 부분 텍스트 누적(§6.3 a)
                 item_err = _error_code_of(item)
+                yield item
                 if item_err is not None:
-                    # 그래프가 자체 in-stream error(LLM_UNAVAILABLE 등)를 emit — 클라이언트는
-                    # 실패를 받았으므로 저장/로그도 FAILED 로 마감(§6.3, 성공 오기록 방지).
+                    # 그래프가 자체 in-stream error(LLM_UNAVAILABLE 등)를 emit — 실패로 마감하고
+                    # 종결한다(§3.1/§6.3). break 없으면 이후 token/done 이 저장소를 오염시킨다.
                     stream_status = TurnStatus.FAILED
                     error_type = item_err
-                yield item
+                    break
                 next_task = asyncio.ensure_future(agen.__anext__())
         except asyncio.CancelledError:
             # Starlette 가 클라이언트 disconnect 로 응답 task 를 취소한 경우 — CANCELLED 로 마감.

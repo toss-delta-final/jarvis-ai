@@ -189,3 +189,47 @@ def test_rate_limit_emits_structured_observation(caplog: pytest.LogCaptureFixtur
     rate_logs = [entry for entry in logs if entry.get("errorType") == "RATE_LIMITED"]
     assert rate_logs, "429 구조화 로그 없음"
     assert rate_logs[0]["streamStatus"] is None
+
+
+async def test_error_frame_terminates_stream() -> None:
+    """in-stream error 후 스트림을 종결 — 이후 이벤트가 응답·저장소를 오염시키지 않는다."""
+    obs = _obs("et")
+
+    async def token_error_token():
+        yield 'data: {"type":"token","data":{"text":"before"}}\n\n'
+        yield 'data: {"type":"error","data":{"code":"LLM_UNAVAILABLE","message":"x"}}\n\n'
+        yield 'data: {"type":"token","data":{"text":"AFTER"}}\n\n'
+
+    resp = await open_stream(_FakeRequest(), "member:et", token_error_token, observer=obs)
+    text = "".join([c async for c in resp.body_iterator])
+    assert "before" in text and "error" in text
+    assert "AFTER" not in text  # error 이후 종결
+    turn = get_conversation_store().get_turn(obs.turn_id)
+    assert turn is not None and turn.status == TurnStatus.FAILED
+    assert "AFTER" not in turn.assistant_text  # 저장 오염 없음
+
+
+def test_message_length_limit_rejected() -> None:
+    """상한 초과 message 는 400(메모리·PII 방어)."""
+    r = client.post("/chat", json={"sessionId": "ml", "threadId": "t", "message": "x" * 100000})
+    assert r.status_code == 400
+
+
+def test_store_evicts_oldest_beyond_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """저장소가 상한을 넘으면 오래된 턴부터 축출한다(무제한 증가 방지)."""
+    store = get_conversation_store()
+    monkeypatch.setattr(type(store), "_MAX_TURNS", 2)
+    store.save_user_message("k", "u", "member", "a")
+    store.save_user_message("k", "u", "member", "b")
+    store.save_user_message("k", "u", "member", "c")
+    assert len(store._turns) == 2  # a 축출
+
+
+def test_fingerprint_uses_pepper(monkeypatch: pytest.MonkeyPatch) -> None:
+    """pepper 가 바뀌면 지문이 달라진다(HMAC — salt 없는 sha256 역산 방어)."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "pii_hash_pepper", "pep1")
+    _, d1 = message_fingerprint("hello")
+    monkeypatch.setattr(settings, "pii_hash_pepper", "pep2")
+    _, d2 = message_fingerprint("hello")
+    assert d1 != d2

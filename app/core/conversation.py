@@ -8,6 +8,7 @@ sessionId = thread 키)로의 이관은 그래프 연결(#2 이후) 시점에 **
 from __future__ import annotations
 
 import itertools
+from collections import deque
 from dataclasses import dataclass
 from enum import Enum
 
@@ -37,9 +38,13 @@ class Turn:
 class ConversationStore:
     """인메모리 대화 저장소. conversationId(=sessionId) 별로 턴을 순서대로 보관한다."""
 
+    # 인메모리 안전 상한(placeholder) — Postgres checkpointer 이관 시 불필요. 초과 시 FIFO 축출.
+    _MAX_TURNS = 5000
+
     def __init__(self) -> None:
         self._turns: dict[str, Turn] = {}
         self._by_conversation: dict[str, list[str]] = {}
+        self._order: deque[str] = deque()
         self._seq = itertools.count(1)
 
     def save_user_message(
@@ -55,7 +60,22 @@ class ConversationStore:
             user_text=text,
         )
         self._by_conversation.setdefault(conversation_id, []).append(turn_id)
+        self._order.append(turn_id)
+        self._evict_if_needed()
         return turn_id
+
+    def _evict_if_needed(self) -> None:
+        """상한 초과 시 오래된 턴부터 축출(무제한 메모리 증가 방지)."""
+        while len(self._turns) > self._MAX_TURNS:
+            old_id = self._order.popleft()
+            turn = self._turns.pop(old_id, None)
+            if turn is None:
+                continue
+            ids = self._by_conversation.get(turn.conversation_id)
+            if ids and old_id in ids:
+                ids.remove(old_id)
+                if not ids:
+                    del self._by_conversation[turn.conversation_id]
 
     def finalize_assistant(self, turn_id: str, assistant_text: str, status: TurnStatus) -> None:
         """어시스턴트 응답을 상태와 함께 마감한다. FAILED/CANCELLED 도 부분 텍스트를 보존한다."""
