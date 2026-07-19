@@ -136,6 +136,9 @@ async def open_stream(
             detail={"code": "STREAM_IN_PROGRESS", "message": "동일 세션에 진행 중인 스트림이 있습니다"},
         )
 
+    if observer is not None:
+        observer.commit_user_message()  # 슬롯 확보 후에만 사용자 메시지 저장(§6.3 a, 유령 턴 방지)
+
     start = loop.time()
     try:
         agen = inner_factory()

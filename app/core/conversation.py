@@ -44,6 +44,8 @@ class ConversationStore:
     """인메모리 대화 저장소. conversationId(=sessionId) 별로 턴을 순서대로 보관한다."""
 
     # 인메모리 안전 상한(placeholder) — Postgres checkpointer 이관 시 불필요. 초과 시 FIFO 축출.
+    # [한계] 전역 FIFO라 한 사용자가 상한을 채우면 무관한 타 사용자의 확정 턴도 축출될 수 있다
+    # (cross-tenant). Postgres 이관 전까지의 MVP 한계이며, 사용자/대화 단위 쿼터는 post-MVP.
     _MAX_TURNS = 5000
 
     def __init__(self) -> None:

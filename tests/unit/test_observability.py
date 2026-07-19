@@ -153,8 +153,8 @@ def test_conversation_scoped_by_identity() -> None:
     store = get_conversation_store()
     id_a = Identity(user_id="A", is_guest=False, seller_id=None, subject="A")
     id_b = Identity(user_id="B", is_guest=False, seller_id=None, subject="B")
-    start_observation(request_id="r", identity=id_a, conversation_id="s1", message="a", store=store, now=0.0)
-    start_observation(request_id="r", identity=id_b, conversation_id="s1", message="b", store=store, now=0.0)
+    start_observation(request_id="r", identity=id_a, conversation_id="s1", message="a", store=store, now=0.0).commit_user_message()
+    start_observation(request_id="r", identity=id_b, conversation_id="s1", message="b", store=store, now=0.0).commit_user_message()
     turns_a = store.turns_for(conversation_key("A", "s1"))
     turns_b = store.turns_for(conversation_key("B", "s1"))
     assert len(turns_a) == 1 and turns_a[0].user_text == "a"
@@ -255,3 +255,19 @@ def test_eviction_skips_pending_turns(monkeypatch: pytest.MonkeyPatch) -> None:
         store.finalize_assistant(tid, "done", TurnStatus.COMPLETED)
     turn = store.get_turn(pending)
     assert turn is not None and turn.status == TurnStatus.PENDING
+
+
+def test_409_does_not_store_ghost_turn() -> None:
+    """409(동시 스트림 거절) 요청은 대화 저장소에 유령 턴을 남기지 않는다(save-after-acquire)."""
+    from app.core.conversation import conversation_key
+    from app.core.stream import get_registry
+
+    store = get_conversation_store()
+    # dev 게스트 → registry_key/conversation_key owner="anon"
+    get_registry().acquire("anon:dup")  # 슬롯 선점 → 다음 요청은 409
+    try:
+        r = client.post("/chat", json={"sessionId": "dup", "threadId": "t", "message": "중복요청"})
+        assert r.status_code == 409
+    finally:
+        get_registry().release("anon:dup")
+    assert store.turns_for(conversation_key(None, "dup")) == []  # 유령 턴 없음

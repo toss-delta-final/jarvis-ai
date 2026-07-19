@@ -62,14 +62,26 @@ class RequestObservation:
     user_id: str | None
     role: str
     store: ConversationStore
-    turn_id: str
     message_length: int
     message_hash: str
     started: float
+    pending_message: str
+    pending_key: str
+    turn_id: str | None = None
     first_token_at: float | None = None
     assistant_parts: list[str] = field(default_factory=list)
     model_calls: list[ModelCall] = field(default_factory=list)
     finished: bool = False
+
+    def commit_user_message(self) -> None:
+        """스트림 슬롯 확보(§2.9 a 409 통과) **후** 사용자 메시지를 저장한다(§6.3 a).
+
+        409로 거절된 중복/더블클릭 요청은 이 호출에 도달하지 않으므로 유령 턴(응답 없는
+        FAILED 턴)이 다음 컨텍스트를 오염시키지 않는다."""
+        if self.turn_id is None:
+            self.turn_id = self.store.save_user_message(
+                self.pending_key, self.user_id, self.role, self.pending_message
+            )
 
     def record_model_call(self, model: str, prompt_tokens: int = 0, completion_tokens: int = 0) -> None:
         """노드별 LLM 호출 기록(model·tokens). 그래프가 호출한다."""
@@ -90,8 +102,11 @@ class RequestObservation:
         if self.finished:
             return
         self.finished = True
-        assistant_text = "".join(self.assistant_parts)
-        self.store.finalize_assistant(self.turn_id, assistant_text, status)
+        if self.turn_id is not None:
+            self.store.finalize_assistant(self.turn_id, "".join(self.assistant_parts), status)
+            stream_status = status.value
+        else:
+            stream_status = None  # 스트림 시작 전 거부(409 등) — 저장된 턴 없음
 
         latency_total_ms = round((now - self.started) * 1000)
         latency_first_ms = (
@@ -111,7 +126,7 @@ class RequestObservation:
             "promptTokens": sum(m.prompt_tokens for m in self.model_calls),
             "completionTokens": sum(m.completion_tokens for m in self.model_calls),
             "errorType": error_type,
-            "streamStatus": status.value,
+            "streamStatus": stream_status,
             "messageLength": self.message_length,
             "messageHash": self.message_hash,
             # [PII] 사용자 message 원문은 여기에 절대 포함하지 않는다(§6.3 b).
@@ -148,18 +163,19 @@ def start_observation(
     length, digest = message_fingerprint(message)
     role = role_of(identity)
     subject = identity.user_id or identity.subject
-    # 저장 키는 신원 스코프(IDOR 방지) — 로그의 conversationId 는 원 sessionId 유지(상관관계용).
-    turn_id = store.save_user_message(conversation_key(subject, conversation_id), subject, role, message)
+    # 메시지 저장은 open_stream 의 슬롯 확보 후 commit_user_message()에서(유령 턴 방지).
+    # 저장 키는 신원 스코프(IDOR 방지) — 로그 conversationId 는 원 sessionId 유지(상관관계).
     return RequestObservation(
         request_id=request_id,
         conversation_id=conversation_id,
         user_id=subject,
         role=role,
         store=store,
-        turn_id=turn_id,
         message_length=length,
         message_hash=digest,
         started=now,
+        pending_message=message,
+        pending_key=conversation_key(subject, conversation_id),
     )
 
 
