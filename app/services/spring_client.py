@@ -146,13 +146,16 @@ def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption
     options: list[CartOption] = []
     for opt in raw if isinstance(raw, list) else []:
         if isinstance(opt, dict) and opt.get("optionId") is not None:
-            options.append(
-                CartOption(
-                    option_id=opt["optionId"],
-                    name=opt.get("name") or opt.get("optionName") or "",
-                    extra_price=opt.get("extraPrice"),
+            try:
+                options.append(
+                    CartOption(
+                        option_id=opt["optionId"],
+                        name=opt.get("name") or opt.get("optionName") or "",
+                        extra_price=opt.get("extraPrice"),
+                    )
                 )
-            )
+            except (ValidationError, ValueError, TypeError):
+                continue  # 형식 이상 옵션은 건너뜀 — 되물음 흐름 전체가 죽지 않게(방어적)
     return code, options
 
 
