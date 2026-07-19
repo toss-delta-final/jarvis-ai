@@ -38,8 +38,6 @@ def is_remember_command(text: str | None) -> bool:
     """
     if not text:
         return False
-    stripped = text.strip()
-    if "?" in stripped:  # 질문은 명령이 아님
-        return False
-    lowered = stripped.lower()
+    # 명시 명령형 마커(줘/둬/주세요)만 매칭 — 같은 턴에 질문이 섞여도 명령 마커가 있으면 인식.
+    lowered = text.strip().lower()
     return any(marker in lowered for marker in _REMEMBER_MARKERS)

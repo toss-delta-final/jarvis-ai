@@ -66,6 +66,13 @@ class ProfileStore:
     def mark_event(self, event_id: str) -> None:
         self._processed.add(event_id)
 
+    def mark_if_new(self, event_id: str) -> bool:
+        """미처리면 마킹하고 True, 이미 처리됐으면 False (원자적 check-and-set, 멱등 레이스 차단)."""
+        if event_id in self._processed:
+            return False
+        self._processed.add(event_id)
+        return True
+
     def clear(self) -> None:
         self._summary.clear()
         self._facts.clear()

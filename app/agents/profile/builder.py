@@ -95,7 +95,7 @@ async def consolidate(user_id: str, *, llm, settings) -> bool:
         raw = await llm.complete(system=_CONSOLIDATE_SYSTEM, user="\n".join(facts), model=settings.sonnet_model_id, max_tokens=1000)
     except LLMError:
         return False
-    markdown = (raw or "").strip()[: settings.profile_summary_char_cap]
+    markdown = (raw or "").strip()[: settings.profile_summary_max_chars]
     if not markdown:
         return False
     store.set_summary(user_id, markdown, _now_iso())

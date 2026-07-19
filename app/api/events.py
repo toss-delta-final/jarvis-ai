@@ -24,7 +24,8 @@ router = APIRouter(tags=["events"])
 async def session_end(event: SessionEndEvent, _token: None = Depends(verify_service_token)) -> dict:
     """세션 종료 → 프로필 델타 추출 + consolidation(best-effort·멱등, 202 Accepted)."""
     store = get_profile_store()
-    if store.seen_event(event.event_id):
+    # 원자적 마킹(await 전) — 짧은 간격 재전송(at-least-once)이 둘 다 통과해 중복 처리되는 레이스 차단.
+    if not store.mark_if_new(event.event_id):
         return {"status": "duplicate"}  # 멱등 — 중복 수신 무시(§2.7)
 
     # [신뢰경계] session-end 는 Spring→AI(레인 b) — 신원(userId/sessionId)은 §3.5 계약상 본문으로

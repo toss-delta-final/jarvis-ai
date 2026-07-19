@@ -80,6 +80,7 @@ def test_is_remember_command() -> None:
     assert not is_remember_command("이거 기억해두면 좋을까?")
     assert not is_remember_command("어제 일 기억해내려고 했는데 잘 안 되네")  # 비명령 부분매칭 제외
     assert is_remember_command("이거 기억해두세요")
+    assert is_remember_command("매운맛 좋아해요, 기억해줘! 다른 것도 추천해줄래?")  # 명령+질문 혼합도 인식
 
 
 # ─────────── builder (델타·consolidation) ───────────
@@ -137,7 +138,7 @@ def test_record_remember_caps_length(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def test_consolidate_respects_char_cap(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(get_settings(), "profile_summary_char_cap", 10)
+    monkeypatch.setattr(get_settings(), "profile_summary_max_chars", 10)
     get_profile_store().add_fact("10", "x")
     await consolidate("10", llm=_ProfileLLM(summary="가" * 50), settings=get_settings())
     assert len(get_profile_store().get_summary("10").markdown) == 10
@@ -191,6 +192,7 @@ def test_session_end_202_and_idempotent(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_session_end_service_token_enforced(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(get_settings(), "auth_mode", "jwks")  # 운영: 서비스 토큰 fail-closed
     monkeypatch.setattr(get_settings(), "internal_api_token", "secret-xyz")
     payload = {"eventId": "se-2", "userId": "1", "sessionId": "s"}
     # 토큰 없음 → 401
