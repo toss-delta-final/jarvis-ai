@@ -67,6 +67,18 @@ async def stream_recommendation(
         ranked_ids = [p.product_id for p in candidates[: settings.expose_max]]
         comment = "요청하신 조건으로 찾은 상품들이에요."
 
+    # 노출 개수 보정 — rerank 가 expose_min 미만을 내면 검색순서(하드 제약 반영)로 채우고
+    # expose_max 로 상한한다(REQ-REC-021 5~8개 계약, 후보가 부족하면 있는 만큼).
+    if len(ranked_ids) < settings.expose_min:
+        have = set(ranked_ids)
+        for product in candidates:
+            if product.product_id not in have:
+                ranked_ids.append(product.product_id)
+                have.add(product.product_id)
+                if len(ranked_ids) >= settings.expose_min:
+                    break
+    ranked_ids = ranked_ids[: settings.expose_max]
+
     if comment:
         yield sse("token", TokenData(text=comment).model_dump(by_alias=True))
 
@@ -79,5 +91,9 @@ async def stream_recommendation(
         pushed = False
     if pushed:
         yield sse("products.ready", ProductsReadyData(session_id=request.session_id, list_id=list_id).model_dump(by_alias=True))
+    else:
+        # push 실패 → products.ready 없음. rerank 코멘트가 "찾았다"고 했으니 목록 지연을 고지하고
+        # 정상 종료한다(경로 B 실패 계약 — error 아님, done 유지).
+        yield sse("token", TokenData(text="목록을 준비하는 데 문제가 있었어요. 잠시 후 다시 시도해 주세요.").model_dump(by_alias=True))
 
     yield sse("done", DoneData(finish_reason="stop").model_dump(by_alias=True))

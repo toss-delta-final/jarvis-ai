@@ -7,8 +7,10 @@
 
 from __future__ import annotations
 
+from pydantic import ValidationError
+
 from app.agents.buyer.recommendation.state import RouteDecision, extract_json
-from app.core.llm import LLMClient
+from app.core.llm import LLMClient, LLMError
 from app.schemas.spring import ProductSearchFilters
 
 _SYSTEM = """당신은 커머스 추천 어시스턴트의 질의 분해기입니다.
@@ -58,11 +60,18 @@ async def decompose(
     data = extract_json(raw)
 
     intent = "general" if data.get("intent") == "general" else "recommend"
-    filters = ProductSearchFilters.model_validate(data.get("filters") or {})
+    # JSON 파싱은 됐지만 필드 값이 스키마와 안 맞을 수 있다(예: priceMin 이 비수치, case 가 임의 텍스트).
+    # decompose 는 첫 프레임 이전 실행이라 raw 예외가 나가면 in-stream error 가 아닌 500 봉투로 샌다 —
+    # extract_json 처럼 LLMError 로 통일해 상위(graph.py)의 LLM_* error 이벤트로 흐르게 한다.
+    try:
+        filters = ProductSearchFilters.model_validate(data.get("filters") or {})
+        case = int(data.get("case") or 2)
+    except (ValidationError, ValueError, TypeError) as exc:
+        raise LLMError("decompose 필터/케이스 파싱 실패") from exc
     return RouteDecision(
         intent=intent,
         filters=filters,
         semantic_query=str(data.get("semanticQuery") or query),
-        case=int(data.get("case") or 2),
+        case=case,
         reply=str(data.get("reply") or ""),
     )

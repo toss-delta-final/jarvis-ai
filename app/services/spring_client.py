@@ -23,6 +23,7 @@ AI 는 커머스 DB 에 직접 write 하지 않는다. 와이어 포맷은 camel
 from __future__ import annotations
 
 import httpx
+from pydantic import ValidationError
 
 from app.core.config import get_settings
 from app.schemas.spring import (
@@ -108,9 +109,11 @@ async def search_products(filters: ProductSearchFilters) -> ProductSearchResult:
             resp = await client.get("/internal/products/search", params=params)
             resp.raise_for_status()
             data = resp.json()
-    except (httpx.HTTPError, ValueError) as exc:
+        # 응답 파싱·검증도 같은 경계 안 — 200 이지만 스키마 불일치인 malformed 응답도
+        # SEARCH_FAILED degrade(§7)로 흐르게 한다(ValidationError 가 그대로 새어 500 되지 않게).
+        return _parse_search_response(data)
+    except (httpx.HTTPError, ValueError, ValidationError) as exc:
         raise SpringUnavailableError(f"search_products 실패: {exc}") from exc
-    return _parse_search_response(data)
 
 
 async def get_recent_purchases(user_id: int, status: str | None = None) -> RecentPurchases:

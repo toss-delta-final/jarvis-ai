@@ -14,7 +14,7 @@ import pytest
 from app.agents.buyer.graph import get_thread_store, run_buyer_turn
 from app.core.auth import Identity
 from app.core.conversation import conversation_key
-from app.schemas.spring import ProductSearchResult
+from app.schemas.spring import ProductSearchResult, SpringProduct
 from app.services.spring_client import SpringUnavailableError
 from tests._fakes import DEFAULT_PRODUCTS, FakeLLM
 
@@ -84,9 +84,10 @@ async def test_happy_path_pipeline() -> None:
     assert types[-1] == "done"
     assert types.index("conditions") < types.index("products.ready") < types.index("done")
 
-    # push 된 productIds = rerank 산출(101,102) — 경로 B(표시필드 없음).
+    # push 된 productIds — rerank 순서(101,102)가 앞, expose_min 보충으로 검색순서 103 추가.
     assert len(push.pushes) == 1
-    assert push.pushes[0].product_ids == [101, 102]
+    assert push.pushes[0].product_ids[:2] == [101, 102]
+    assert set(push.pushes[0].product_ids) <= {101, 102, 103}
 
     done = next(e for e in events if e["type"] == "done")["data"]
     assert done["finishReason"] == "stop"
@@ -210,7 +211,9 @@ async def test_rerank_ids_subset_of_candidates() -> None:
     push = _RecordingPush()
     llm = FakeLLM(rerank={"ranked": [{"productId": 999, "rationale": "환각"}, {"productId": 101, "rationale": "ok"}], "overallComment": "c"})
     await _collect(run_buyer_turn(_req(), _member(), llm=llm, search=_make_search(DEFAULT_PRODUCTS), push_fn=push))
-    assert push.pushes[0].product_ids == [101]  # 999(후보 외) 제거
+    ids = push.pushes[0].product_ids
+    assert 999 not in ids  # 후보 외 id 제거(REQ-REC-081)
+    assert ids[0] == 101  # rerank 유효 산출이 선두, 나머지는 expose_min 보충
 
 
 async def test_multiturn_filters_persisted_and_fed_back() -> None:
@@ -252,3 +255,101 @@ async def test_search_catalog_post_filters_exclude_and_rating() -> None:
         ProductSearchFilters(rating_min=4.0), exclude_product_ids=[101], backend=FakeBackend()
     )
     assert [p.product_id for p in res.products] == [102]
+
+
+# ─────────── 리뷰 수정 회귀 (Fix A~E) ───────────
+
+
+class _FakeResp:
+    def __init__(self, data) -> None:
+        self._data = data
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self):
+        return self._data
+
+
+class _FakeClient:
+    def __init__(self, data) -> None:
+        self._data = data
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc) -> bool:
+        return False
+
+    async def get(self, url, params=None):
+        return _FakeResp(self._data)
+
+
+def test_spring_product_maps_i1_wire_fields() -> None:
+    """SpringProduct 가 BE I-1 응답 필드명(categoryName/brandName/originalPrice/imageUrl)을 매핑한다."""
+    from app.schemas.spring import SpringProduct
+
+    p = SpringProduct.model_validate(
+        {
+            "productId": 1,
+            "name": "린넨 셔츠",
+            "price": 29900,
+            "originalPrice": 39900,
+            "categoryName": "여성의류",
+            "brandName": "더센트",
+            "imageUrl": "https://x/1.jpg",
+            "rating": 4.8,
+        }
+    )
+    assert p.product_id == 1
+    assert p.category == "여성의류"  # categoryName → category (None 유실 방지)
+    assert p.brand == "더센트"
+    assert p.list_price == 39900
+    assert p.main_image == "https://x/1.jpg"
+
+
+async def test_search_products_parses_i1_items(monkeypatch: pytest.MonkeyPatch) -> None:
+    """search_products 가 {success,data:{items}} 응답을 SpringProduct 로 파싱한다(§4.6)."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    payload = {"success": True, "data": {"items": [{"productId": 1, "name": "셔츠", "price": 29900, "categoryName": "의류", "brandName": "B", "rating": 4.8}]}}
+    monkeypatch.setattr(sc, "_client", lambda: _FakeClient(payload))
+    res = await sc.search_products(ProductSearchFilters())
+    assert len(res.products) == 1
+    assert res.products[0].category == "의류" and res.products[0].brand == "B"
+
+
+async def test_search_products_malformed_maps_to_search_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """200 이지만 스키마 불일치(필수 price 결측) 응답은 SpringUnavailableError 로 degrade(§7)."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    payload = {"success": True, "data": {"items": [{"productId": 1, "name": "x"}]}}  # price 없음
+    monkeypatch.setattr(sc, "_client", lambda: _FakeClient(payload))
+    with pytest.raises(SpringUnavailableError):
+        await sc.search_products(ProductSearchFilters())
+
+
+async def test_expose_min_fill_from_search_order() -> None:
+    """rerank 가 expose_min 미만을 내면 검색순서로 보충한다(REQ-REC-021 5~8개)."""
+    products = [
+        SpringProduct(product_id=pid, name=f"P{pid}", price=1000 * pid, rating=4.0, category="c", brand="b")
+        for pid in range(201, 207)  # 6개 후보
+    ]
+    push = _RecordingPush()
+    llm = FakeLLM(rerank={"ranked": [{"productId": 201, "rationale": "top"}], "overallComment": "c"})
+    await _collect(run_buyer_turn(_req(), _member(), llm=llm, search=_make_search(products), push_fn=push))
+    ids = push.pushes[0].product_ids
+    assert ids[0] == 201  # rerank 선두 유지
+    assert len(ids) == 5  # expose_min 까지 검색순서로 보충
+
+
+async def test_push_failure_emits_notice_token() -> None:
+    """push 실패 시 목록 지연 안내 token 을 낸다(경로 B 실패 계약, error 아님)."""
+    events = await _collect(
+        run_buyer_turn(_req(), _member(), llm=FakeLLM(), search=_make_search(DEFAULT_PRODUCTS), push_fn=_failing_push)
+    )
+    texts = " ".join(e["data"].get("text", "") for e in events if e["type"] == "token")
+    assert "잠시 후" in texts or "문제" in texts
+    assert _types(events)[-1] == "done"
