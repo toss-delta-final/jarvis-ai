@@ -819,3 +819,18 @@ def test_parse_cart_error_logs_when_all_options_dropped(caplog: pytest.LogCaptur
         code, options = sc._parse_cart_error(_R())
     assert options == [] and code == "CART_OPTION_REQUIRED"
     assert any("전부 파싱 실패" in r.getMessage() for r in caplog.records)
+
+
+async def test_add_to_cart_bad_extra_price_keeps_option(monkeypatch: pytest.MonkeyPatch) -> None:
+    """extraPrice(표시용)가 이상해도 옵션 자체는 버리지 않는다(extra_price=None, Claude #18)."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import AddToCartRequest
+
+    body = {"error": {"code": "CART_OPTION_REQUIRED", "detail": {"options": [
+        {"optionId": 3, "name": "블루", "extraPrice": "weird"},  # extraPrice 이상 → None 으로, 옵션 유지
+    ]}}}
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
+    with pytest.raises(sc.CartOptionRequired) as ei:
+        await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=1))
+    assert [o.option_id for o in ei.value.options] == [3]
+    assert ei.value.options[0].extra_price is None

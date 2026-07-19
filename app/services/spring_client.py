@@ -151,12 +151,15 @@ def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption
     options: list[CartOption] = []
     for opt in raw if isinstance(raw, list) else []:
         if isinstance(opt, dict) and opt.get("optionId") is not None:
+            # extraPrice 는 표시용 부가 필드 — 형식이 이상해도 옵션 자체를 버리지 않게 방어적으로 분리.
+            raw_extra = opt.get("extraPrice")
+            extra = raw_extra if isinstance(raw_extra, int) and not isinstance(raw_extra, bool) else None
             try:
                 options.append(
                     CartOption(
                         option_id=opt["optionId"],
                         name=opt.get("name") or opt.get("optionName") or "",
-                        extra_price=opt.get("extraPrice"),
+                        extra_price=extra,
                     )
                 )
             except (ValidationError, ValueError, TypeError):
