@@ -101,16 +101,16 @@ async def test_generate_session_delta_gate_rejects_low_signal() -> None:
     store.append_session_ctx(key, "음")
     llm = _ProfileLLM(deltas=[{"fact": "잡담", "salience": 0.1, "explicit": False, "repetitionEma": 0.0}])
     promoted = await generate_session_delta("7", key, llm=llm, settings=get_settings())
-    assert promoted == [] and store.get_facts("7") == []
+    assert promoted == [] and store.get_facts("7") == []  # 처리됨(non-None)이나 승격 0
 
 
 async def test_generate_session_delta_degrades_without_llm_or_buffer() -> None:
     store = get_profile_store()
-    # 버퍼 없음
-    assert await generate_session_delta("7", conversation_key("7", "empty"), llm=_ProfileLLM(), settings=get_settings()) == []
-    # LLM 미구성
+    # 버퍼 없음 → None(degrade 신호)
+    assert await generate_session_delta("7", conversation_key("7", "empty"), llm=_ProfileLLM(), settings=get_settings()) is None
+    # LLM 미구성 → None
     store.append_session_ctx(conversation_key("7", "s3"), "x")
-    assert await generate_session_delta("7", conversation_key("7", "s3"), llm=None, settings=get_settings()) == []
+    assert await generate_session_delta("7", conversation_key("7", "s3"), llm=None, settings=get_settings()) is None
 
 
 async def test_consolidate_writes_summary() -> None:
@@ -236,3 +236,27 @@ def test_session_end_rejects_oversized_identifier() -> None:
     big = "x" * 100000
     r = client.post("/events/session-end", json={"eventId": big, "userId": "1", "sessionId": "s"})
     assert r.status_code == 400  # 앱이 검증 오류를 400 봉투로 매핑(§2.5)
+
+
+async def test_session_end_clears_buffer_on_normal_rejection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """LLM 이 정상 실행됐으나 게이트가 전부 반려한 경우도 '처리됨'이라 버퍼를 정리한다(무한 보존 방지)."""
+    import app.api.events as ev
+
+    low = _ProfileLLM(deltas=[{"fact": "잡담", "salience": 0.1, "explicit": False, "repetitionEma": 0.0}])
+    monkeypatch.setattr(ev, "get_llm", lambda: low)
+    key = conversation_key("66", "s")
+    get_profile_store().append_session_ctx(key, "음 별로")
+    r = client.post("/events/session-end", json={"eventId": "rej-1", "userId": "66", "sessionId": "s"})
+    assert r.status_code == 202
+    assert get_profile_store().get_session_ctx(key) == []  # 정상 처리 → 버퍼 정리
+
+
+def test_add_fact_count_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """사용자별 fact 개수 상한 — 최신 cap 개만 유지(무제한 누적 방어)."""
+    from app.agents.profile.builder import record_remember
+
+    monkeypatch.setattr(get_settings(), "profile_max_facts", 3)
+    for i in range(10):
+        record_remember("cap2", f"fact-{i}")
+    facts = get_profile_store().get_facts("cap2")
+    assert len(facts) == 3 and facts == ["fact-7", "fact-8", "fact-9"]

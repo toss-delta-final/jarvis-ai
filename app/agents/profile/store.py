@@ -44,9 +44,13 @@ class ProfileStore:
     def get_facts(self, user_id: str) -> list[str]:
         return list(self._facts.get(user_id, []))
 
-    def add_fact(self, user_id: str, fact: str) -> None:
-        if fact:
-            self._facts.setdefault(user_id, []).append(fact)
+    def add_fact(self, user_id: str, fact: str, *, cap: int | None = None) -> None:
+        if not fact:
+            return
+        facts = self._facts.setdefault(user_id, [])
+        facts.append(fact)
+        if cap and cap > 0 and len(facts) > cap:
+            del facts[: len(facts) - cap]  # 최신 cap 개만 유지(recency-wins, 무제한 누적 방어)
 
     # ── transient 세션 버퍼 (승격 전 격리, REQ-PROF transient) ──
     def append_session_ctx(self, key: str, text: str) -> None:

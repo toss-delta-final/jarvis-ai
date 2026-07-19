@@ -85,6 +85,7 @@ class Settings(BaseSettings):
     profile_recency_highlights: int = 3   # §5.1 최근 맥락 하이라이트 개수
     profile_gate_threshold: float = 0.5   # §6.3 승격 게이트 임계(salience·repetition EMA)
     profile_fact_char_cap: int = 200      # "기억해" hot-path fact 길이 상한(오탐·남용 방어)
+    profile_max_facts: int = 200          # 사용자별 fact 개수 상한(무제한 누적 방어) — 최신 우선 유지
 
     profile_summary_max_chars: int = 1000  # §5.1 요약 상한(생성 측 압축 재작성)
     # PII 로그 지문 pepper (§6.3 b) — 운영(jwks)은 실제 secret 주입 필수(아래 검증). 빈 값은 개발용.

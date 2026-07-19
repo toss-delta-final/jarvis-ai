@@ -45,25 +45,25 @@ def record_remember(user_id: str, fact: str) -> None:
     """
     if not (user_id and fact):
         return
-    cleaned = fact.strip()[: get_settings().profile_fact_char_cap]
+    settings = get_settings()
+    cleaned = fact.strip()[: settings.profile_fact_char_cap]
     if cleaned:
-        get_profile_store().add_fact(user_id, cleaned)
+        get_profile_store().add_fact(user_id, cleaned, cap=settings.profile_max_facts)
 
 
-async def generate_session_delta(user_id: str, thread_key: str, *, llm, settings) -> list[str]:
+async def generate_session_delta(user_id: str, thread_key: str, *, llm, settings) -> list[str] | None:
     """세션 버퍼(transient)에서 후보 델타를 LLM 추출 → 게이트 승격. 승격된 fact 목록 반환.
 
-    best-effort — LLM 오류/미구성 시 승격 없이 빈 목록(다음 배치 회수). 게스트는 호출 안 함(상위 책임).
+    반환: None = degrade(버퍼 없음/LLM 미구성, 버퍼 보존 신호), list = 처리됨(승격 fact, 빈 목록 가능).
+    LLMError 는 전파 — 상위가 degrade 처리. 게스트는 호출 안 함(상위 책임).
     """
     store = get_profile_store()
     buffer = store.get_session_ctx(thread_key)
     if not buffer or llm is None:
-        return []
-    try:
-        raw = await llm.complete(system=_DELTA_SYSTEM, user="\n".join(buffer), model=settings.sonnet_model_id, max_tokens=800)
-        data = extract_json(raw)
-    except LLMError:
-        return []
+        return None  # degrade(버퍼 없음/LLM 미구성) — 처리 안 함(상위가 버퍼 보존)
+    # LLMError 는 전파 — 상위(events)가 degrade 로 처리해 버퍼를 보존(정상 반려와 구분).
+    raw = await llm.complete(system=_DELTA_SYSTEM, user="\n".join(buffer), model=settings.sonnet_model_id, max_tokens=800)
+    data = extract_json(raw)
     promoted: list[str] = []
     for delta in data.get("deltas", []) if isinstance(data, dict) else []:
         if not isinstance(delta, dict):
@@ -77,7 +77,7 @@ async def generate_session_delta(user_id: str, thread_key: str, *, llm, settings
             repetition_ema=_as_float(delta.get("repetitionEma")),
             threshold=settings.profile_gate_threshold,
         ):
-            store.add_fact(user_id, fact)
+            store.add_fact(user_id, fact, cap=settings.profile_max_facts)
             promoted.append(fact)
     return promoted
 
