@@ -1,8 +1,8 @@
 """챗봇 요청/응답 스키마 (api-spec v0.7.0 §3.1).
 
 [변경 v0.4.0] CH-2 명명 기준 채택 / [변경 v0.6.0] action.reason 재편(게스트 담기 허용):
-  - SSE 이벤트명 6종: token / conditions / action / products.ready / done / error
-    (구 text.delta / products / (done) 세트 폐기)
+  - SSE 이벤트명(구매자): token / conditions / action / suggestions / budget / products.ready /
+    done / error (구 text.delta / products / (done) 세트 폐기). suggestions=완화/되돌리기 칩(결정 14-D/14-F, §3.1).
   - 모든 페이로드 필드는 camelCase (Pydantic alias). Python 속성은 snake_case 유지,
     직렬화 시 by_alias=True 로 camelCase 출력, 입력은 populate_by_name 으로 양쪽 허용.
   - [HARD] SSE 는 상품 카드를 싣지 않는다 (경로 B). products.ready 는 {sessionId, listId}

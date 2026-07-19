@@ -116,6 +116,8 @@ async def stream_recommendation(
     result = ProductSearchResult(products=kept, total_count=len(kept))
 
     # 되돌리기 칩 — 억제된 소모품 카테고리별(estCount==0 제외, §3.1).
+    # estCount 는 **이번 검색 응답 내 억제 수**(page-local 근사) — I-1 엔 totalCount 가 없어(C-15 🔴)
+    # DB 전체 매칭 수를 알 수 없으므로 가용한 최선의 추정치를 쓴다.
     revert_chips = [
         SuggestionChip(label=f"{cat_samples[c]}은 최근 구매 — 다시 추천받기", revert=RevertRef(category=c), est_count=n)
         for c, n in suppressed_by_cat.items()
