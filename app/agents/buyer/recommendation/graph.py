@@ -29,6 +29,8 @@ async def stream_recommendation(
     push_fn,
     profile: str | None,
     settings,
+    cart_store=None,
+    thread_key: str | None = None,
     observer=None,
 ) -> AsyncIterator[str]:
     """추천 서브그래프 스트림. 프레임(SSE str)을 순서대로 산출한다."""
@@ -44,6 +46,9 @@ async def stream_recommendation(
         return
 
     candidates = result.products
+    # 직전 추천 목록을 장바구니 담기(productId 해소, 경로 B)를 위해 스레드에 보관.
+    if cart_store is not None and thread_key is not None:
+        cart_store.set_last_reco(thread_key, [(p.product_id, p.name) for p in candidates])
     if not candidates:
         yield sse("token", TokenData(text="조건에 맞는 상품을 찾지 못했어요. 조건을 조금 바꿔볼까요?").model_dump(by_alias=True))
         yield sse("done", DoneData(finish_reason="zero_result").model_dump(by_alias=True))
