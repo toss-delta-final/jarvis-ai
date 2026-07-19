@@ -1,8 +1,8 @@
 """챗봇 요청/응답 스키마 (api-spec v0.7.0 §3.1).
 
 [변경 v0.4.0] CH-2 명명 기준 채택 / [변경 v0.6.0] action.reason 재편(게스트 담기 허용):
-  - SSE 이벤트명 6종: token / conditions / action / products.ready / done / error
-    (구 text.delta / products / (done) 세트 폐기)
+  - SSE 이벤트명(구매자): token / conditions / action / suggestions / budget / products.ready /
+    done / error (구 text.delta / products / (done) 세트 폐기). suggestions=완화/되돌리기 칩(결정 14-D/14-F, §3.1).
   - 모든 페이로드 필드는 camelCase (Pydantic alias). Python 속성은 snake_case 유지,
     직렬화 시 by_alias=True 로 camelCase 출력, 입력은 populate_by_name 으로 양쪽 허용.
   - [HARD] SSE 는 상품 카드를 싣지 않는다 (경로 B). products.ready 는 {sessionId, listId}
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import field_validator, BaseModel, ConfigDict, Field
+from pydantic import field_validator, model_validator, BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 
@@ -81,6 +81,41 @@ class ConditionsData(CamelModel):
     """`conditions` 이벤트 — 추출 필터 조건 칩 목록 (0~1회)."""
 
     chips: list[ConditionChip] = Field(default_factory=list)
+
+
+class RevertRef(CamelModel):
+    """`revert` — 구매 이력 억제 되돌리기 대상 카테고리 (결정 14-F)."""
+
+    category: str
+
+
+class RelaxationRef(CamelModel):
+    """`relaxation` — 0건 완화 제안 대상 (결정 14-D)."""
+
+    field: str
+    value: Any
+
+
+class SuggestionChip(CamelModel):
+    """`suggestions` 칩 1건 — 완화(relaxation) 또는 되돌리기(revert). estCount==0 은 제외(§3.1)."""
+
+    label: str
+    revert: RevertRef | None = None
+    relaxation: RelaxationRef | None = None
+    est_count: int  # 재포함/완화 적용 시 예상 결과 수(COUNT)
+
+    @model_validator(mode="after")
+    def _exactly_one_kind(self) -> "SuggestionChip":
+        """§3.1 — 칩 1건은 relaxation 또는 revert 중 **정확히 하나**여야 한다."""
+        if (self.revert is None) == (self.relaxation is None):
+            raise ValueError("SuggestionChip 은 revert 또는 relaxation 중 정확히 하나여야 한다(§3.1)")
+        return self
+
+
+class SuggestionsData(CamelModel):
+    """`suggestions` 이벤트 — 완화·되돌리기 제안 칩 목록 (api-spec §3.1)."""
+
+    chips: list[SuggestionChip] = Field(default_factory=list)
 
 
 class ActionData(CamelModel):
