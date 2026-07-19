@@ -155,10 +155,9 @@ def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption
             raw_extra = opt.get("extraPrice")
             if isinstance(raw_extra, bool):
                 extra = None
-            elif isinstance(raw_extra, int):
-                extra = raw_extra
-            elif isinstance(raw_extra, float) and raw_extra.is_integer():
-                extra = int(raw_extra)  # BE(Java) BigDecimal/Double → 정수 금액이 1000.0 로 올 수 있음
+            elif isinstance(raw_extra, (int, float)):
+                # BE(Java) BigDecimal/Double 직렬화가 1000.0·999.9999998 처럼 올 수 있어 반올림 수용.
+                extra = round(raw_extra)
             else:
                 extra = None
             try:

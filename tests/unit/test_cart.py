@@ -841,8 +841,12 @@ async def test_add_to_cart_float_extra_price_coerced(monkeypatch: pytest.MonkeyP
     import app.services.spring_client as sc
     from app.schemas.spring import AddToCartRequest
 
-    body = {"error": {"code": "CART_OPTION_REQUIRED", "detail": {"options": [{"optionId": 7, "name": "골드", "extraPrice": 1500.0}]}}}
+    body = {"error": {"code": "CART_OPTION_REQUIRED", "detail": {"options": [
+        {"optionId": 7, "name": "골드", "extraPrice": 1500.0},
+        {"optionId": 8, "name": "실버", "extraPrice": 999.9999999998},  # BigDecimal.doubleValue 오차
+    ]}}}
     monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
     with pytest.raises(sc.CartOptionRequired) as ei:
         await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=1))
     assert ei.value.options[0].extra_price == 1500
+    assert ei.value.options[1].extra_price == 1000  # 반올림
