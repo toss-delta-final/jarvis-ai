@@ -27,6 +27,9 @@ async def session_end(event: SessionEndEvent, _token: None = Depends(verify_serv
     if store.seen_event(event.event_id):
         return {"status": "duplicate"}  # 멱등 — 중복 수신 무시(§2.7)
 
+    # [신뢰경계] session-end 는 Spring→AI(레인 b) — 신원(userId/sessionId)은 §3.5 계약상 본문으로
+    # 오며, 호출 인가는 **서비스 토큰**(verify_service_token)이 담당한다(Spring 은 인증된 호출자).
+    # 필드 길이 상한은 SessionEndEvent validator 가 강제(스토어 키 남용 방어).
     # best-effort 프로필 갱신 — LLM 미구성/버퍼 없음/오류는 no-op degrade. 어떤 오류도 202 를 막지 않는다(§3.5).
     key = conversation_key(event.user_id, event.session_id)
     settings = get_settings()

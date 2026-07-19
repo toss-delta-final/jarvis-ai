@@ -78,6 +78,8 @@ def test_is_remember_command() -> None:
     assert not is_remember_command("무선 이어폰 추천해줘")
     assert not is_remember_command("저번에 뭐 담았는지 기억해?")  # 질문 오탐 제외
     assert not is_remember_command("이거 기억해두면 좋을까?")
+    assert not is_remember_command("어제 일 기억해내려고 했는데 잘 안 되네")  # 비명령 부분매칭 제외
+    assert is_remember_command("이거 기억해두세요")
 
 
 # ─────────── builder (델타·consolidation) ───────────
@@ -225,3 +227,10 @@ async def test_end_to_end_profile_from_chat(monkeypatch: pytest.MonkeyPatch, buy
     # 조회
     body = client.get("/profile/me", headers=hdr).json()
     assert body["exists"] is True and "무선이어폰" in body["markdown"]
+
+
+def test_session_end_rejects_oversized_identifier() -> None:
+    """eventId/userId/sessionId 길이 상한 초과는 422(스토어 키 남용 방어)."""
+    big = "x" * 100000
+    r = client.post("/events/session-end", json={"eventId": big, "userId": "1", "sessionId": "s"})
+    assert r.status_code == 400  # 앱이 검증 오류를 400 봉투로 매핑(§2.5)

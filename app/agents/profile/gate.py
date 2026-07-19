@@ -7,8 +7,12 @@
 
 from __future__ import annotations
 
-# "기억해" 계열 명시 명령 마커 — hot-path 즉시 승격 트리거(감지 휴리스틱).
-_REMEMBER_MARKERS = ("기억해", "기억해줘", "기억해둬", "remember this", "remember that")
+# "기억해" 계열 명시 **명령** 마커(줘/둬/주세요 등 저장 명령형) — hot-path 즉시 승격 트리거.
+# 바레 "기억해"는 제외("기억해내다" 등 비명령 오탐 방지, 정밀도 우선).
+_REMEMBER_MARKERS = (
+    "기억해줘", "기억해 줘", "기억해둬", "기억해 둬",
+    "기억해주세요", "기억해두세요", "기억해둘래", "remember this", "remember that",
+)
 
 
 def should_promote(

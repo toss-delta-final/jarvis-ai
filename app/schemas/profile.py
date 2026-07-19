@@ -7,6 +7,8 @@ GET /profile/me 응답(마이페이지 자연어 마크다운 passthrough)과 PO
 
 from __future__ import annotations
 
+from pydantic import field_validator
+
 from app.schemas.chat import CamelModel
 
 
@@ -30,3 +32,14 @@ class SessionEndEvent(CamelModel):
     session_id: str  # 세션 버퍼 키의 필수 요소(§3.5 예시도 값 채움)
     ended_at: str | None = None
     reason: str | None = None
+
+    @field_validator("event_id", "user_id", "session_id")
+    @classmethod
+    def _limit_key_length(cls, v: str) -> str:
+        """식별자 길이 상한(config) — ProfileStore 딕셔너리 키 남용 방어(ChatRequest 와 동일 패턴)."""
+        from app.core.config import get_settings
+
+        cap = get_settings().chat_key_max_chars
+        if len(v) > cap:
+            raise ValueError(f"identifier exceeds {cap} characters")
+        return v
