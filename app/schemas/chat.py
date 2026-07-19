@@ -48,6 +48,17 @@ class ChatRequest(CamelModel):
             raise ValueError(f"message exceeds {cap} characters")
         return v
 
+    @field_validator("session_id", "thread_id")
+    @classmethod
+    def _limit_key_length(cls, v: str) -> str:
+        """불투명 식별자 길이 상한(config) — registry·저장소·로그 남용 방어. 초과 시 400."""
+        from app.core.config import get_settings
+
+        cap = get_settings().chat_key_max_chars
+        if len(v) > cap:
+            raise ValueError(f"identifier exceeds {cap} characters")
+        return v
+
 
 # ── SSE 이벤트 data 페이로드 모델 (api-spec §3.1, 6종) ──
 

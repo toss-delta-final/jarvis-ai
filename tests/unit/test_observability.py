@@ -271,3 +271,9 @@ def test_409_does_not_store_ghost_turn() -> None:
     finally:
         get_registry().release("anon:dup")
     assert store.turns_for(conversation_key(None, "dup")) == []  # 유령 턴 없음
+
+
+def test_identifier_length_limit_rejected() -> None:
+    """상한 초과 sessionId/threadId 는 400(불투명 키 남용 방어)."""
+    r = client.post("/chat", json={"sessionId": "s" * 10000, "threadId": "t", "message": "m"})
+    assert r.status_code == 400

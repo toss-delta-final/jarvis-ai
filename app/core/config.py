@@ -73,6 +73,8 @@ class Settings(BaseSettings):
     pii_hash_pepper: str = ""
     # 사용자 message 길이 상한 (api-spec §3.1 · PII·메모리 방어). 튜너블.
     chat_message_max_chars: int = 4000
+    # sessionId/threadId 길이 상한 — 불투명 키가 registry·저장소·로그에 쌓이는 남용 방어.
+    chat_key_max_chars: int = 200
 
     # ── SSE 스트림 수명주기 (api-spec §2.9, 값은 config 기본값·운영 조정 가능) ──
     # first-token: 첫 이벤트까지 상한. 초과 시 스트림 시작 전이면 504, 후면 in-stream error.
