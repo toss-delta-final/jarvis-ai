@@ -23,6 +23,7 @@ AI 는 커머스 DB 에 직접 write 하지 않는다. 와이어 포맷은 camel
 from __future__ import annotations
 
 import logging
+import math
 
 import httpx
 from pydantic import ValidationError
@@ -155,8 +156,9 @@ def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption
             raw_extra = opt.get("extraPrice")
             if isinstance(raw_extra, bool):
                 extra = None
-            elif isinstance(raw_extra, (int, float)):
+            elif isinstance(raw_extra, (int, float)) and math.isfinite(raw_extra):
                 # BE(Java) BigDecimal/Double 직렬화가 1000.0·999.9999998 처럼 올 수 있어 반올림 수용.
+                # NaN/Infinity(json.loads 가 파싱함)는 round 가 ValueError/OverflowError 라 isfinite 로 배제.
                 extra = round(raw_extra)
             else:
                 extra = None

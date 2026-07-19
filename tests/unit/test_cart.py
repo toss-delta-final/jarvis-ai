@@ -850,3 +850,19 @@ async def test_add_to_cart_float_extra_price_coerced(monkeypatch: pytest.MonkeyP
         await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=1))
     assert ei.value.options[0].extra_price == 1500
     assert ei.value.options[1].extra_price == 1000  # 반올림
+
+
+async def test_add_to_cart_naninf_extra_price_survives(monkeypatch: pytest.MonkeyPatch) -> None:
+    """NaN/Infinity extraPrice 여도 스트림이 죽지 않고 옵션은 유지된다(extra_price None, Claude #18)."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import AddToCartRequest
+
+    body = {"error": {"code": "CART_OPTION_REQUIRED", "detail": {"options": [
+        {"optionId": 9, "name": "네온", "extraPrice": float("nan")},
+        {"optionId": 10, "name": "무한", "extraPrice": float("inf")},
+    ]}}}
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
+    with pytest.raises(sc.CartOptionRequired) as ei:
+        await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=1))
+    assert [o.option_id for o in ei.value.options] == [9, 10]
+    assert all(o.extra_price is None for o in ei.value.options)
