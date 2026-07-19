@@ -12,6 +12,11 @@ from collections import deque
 from dataclasses import dataclass
 from enum import Enum
 
+from app.core.logging import get_logger
+
+
+logger = get_logger(__name__)
+
 
 class TurnStatus(str, Enum):
     """어시스턴트 응답 저장 상태 (api-spec §6.3 a). PENDING 은 user 저장 직후 초기값."""
@@ -65,12 +70,21 @@ class ConversationStore:
         return turn_id
 
     def _evict_if_needed(self) -> None:
-        """상한 초과 시 오래된 턴부터 축출(무제한 메모리 증가 방지)."""
-        while len(self._turns) > self._MAX_TURNS:
+        """상한 초과 시 **확정된** 턴부터 축출(무제한 메모리 증가 방지).
+
+        진행 중(PENDING) 턴은 건너뛴다 — 응답 중 축출되면 finalize 가 유실되기 때문.
+        모두 PENDING인 병리적 경우엔 축출을 보류(상한 일시 초과, 곧 확정되며 해소)."""
+        attempts = len(self._order)
+        while len(self._turns) > self._MAX_TURNS and attempts > 0:
+            attempts -= 1
             old_id = self._order.popleft()
-            turn = self._turns.pop(old_id, None)
+            turn = self._turns.get(old_id)
             if turn is None:
+                continue  # 이미 제거된 참조
+            if turn.status is TurnStatus.PENDING:
+                self._order.append(old_id)  # 진행 중 — 축출 보류, 뒤로 미룸
                 continue
+            self._turns.pop(old_id, None)
             ids = self._by_conversation.get(turn.conversation_id)
             if ids and old_id in ids:
                 ids.remove(old_id)
@@ -81,6 +95,8 @@ class ConversationStore:
         """어시스턴트 응답을 상태와 함께 마감한다. FAILED/CANCELLED 도 부분 텍스트를 보존한다."""
         turn = self._turns.get(turn_id)
         if turn is None:
+            # 축출됐거나 미지의 turn — 응답이 저장소에서 유실됨(관측 가능하게 경고).
+            logger.warning("finalize on evicted/unknown turn_id=%s (assistant 응답 유실)", turn_id)
             return
         turn.assistant_text = assistant_text
         turn.status = status

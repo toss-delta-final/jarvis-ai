@@ -112,7 +112,7 @@ def test_structured_log_has_fields_and_hides_raw_message(caplog: pytest.LogCaptu
     assert logs, "관측 로그가 없음"
     record = json.loads(logs[-1])
     for key in (
-        "requestId", "conversationId", "latencyTotalMs", "streamStatus",
+        "requestId", "conversationId", "latencyTotal", "streamStatus",
         "messageLength", "messageHash", "model", "promptTokens", "completionTokens",
     ):
         assert key in record, f"필드 누락: {key}"
@@ -219,10 +219,10 @@ def test_store_evicts_oldest_beyond_cap(monkeypatch: pytest.MonkeyPatch) -> None
     """저장소가 상한을 넘으면 오래된 턴부터 축출한다(무제한 증가 방지)."""
     store = get_conversation_store()
     monkeypatch.setattr(type(store), "_MAX_TURNS", 2)
-    store.save_user_message("k", "u", "member", "a")
-    store.save_user_message("k", "u", "member", "b")
-    store.save_user_message("k", "u", "member", "c")
-    assert len(store._turns) == 2  # a 축출
+    for text in ("a", "b", "c"):
+        tid = store.save_user_message("k", "u", "member", text)
+        store.finalize_assistant(tid, "x", TurnStatus.COMPLETED)  # 확정 → 축출 대상
+    assert len(store._turns) == 2  # 확정된 오래된 턴(a) 축출
 
 
 def test_fingerprint_uses_pepper(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -243,3 +243,15 @@ def test_pepper_required_in_jwks_mode() -> None:
         Settings(auth_mode="jwks", pii_hash_pepper="", jwks_url="http://x")
     # dev 모드는 빈 pepper 허용
     Settings(auth_mode="dev", pii_hash_pepper="")
+
+
+def test_eviction_skips_pending_turns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """진행 중(PENDING) 턴은 상한을 넘겨도 축출되지 않는다(응답 유실 방지)."""
+    store = get_conversation_store()
+    monkeypatch.setattr(type(store), "_MAX_TURNS", 1)
+    pending = store.save_user_message("k", "u", "member", "in-flight")  # 미완(PENDING)
+    for i in range(3):
+        tid = store.save_user_message("k", "u", "member", f"m{i}")
+        store.finalize_assistant(tid, "done", TurnStatus.COMPLETED)
+    turn = store.get_turn(pending)
+    assert turn is not None and turn.status == TurnStatus.PENDING
