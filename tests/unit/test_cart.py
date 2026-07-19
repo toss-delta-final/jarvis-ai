@@ -730,3 +730,36 @@ async def test_general_intent_clears_pending(monkeypatch: pytest.MonkeyPatch) ->
     llm = FakeLLM(decompose={"intent": "general", "reply": "네, 취소할게요."})
     await _collect(run_buyer_turn(_req(message="그만할래"), _member(), llm=llm))
     assert get_cart_store().get_pending(key) is None  # 정리됨
+
+
+# ─────────── #18 리뷰 수정 회귀 ───────────
+
+
+async def test_cart_add_reask_shows_option_surcharge() -> None:
+    """되물음 문구에 옵션 추가금(extraPrice)을 표시한다(Codex #18)."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        raise CartOptionRequired([CartOption(option_id=3, name="블루", extra_price=0), CartOption(option_id=4, name="레드", extra_price=1000)])
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(), cart=CartIntent(product_id=1, quantity=1),
+            cart_store=store, thread_key="m:t", settings=get_settings(),
+            add_fn=add_fn, get_cart_fn=_empty_cart(),
+        )
+    )
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert "레드(+1,000원)" in token and "블루" in token
+
+
+async def test_add_to_cart_empty_detail_options_no_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """detail.options 가 빈 배열이면 구버전 위치의 잔재 options 로 폴백하지 않는다(Claude #18)."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import AddToCartRequest
+
+    body = {"error": {"code": "CART_OPTION_REQUIRED", "detail": {"options": []}, "options": [{"optionId": 99, "name": "stale"}]}}
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
+    with pytest.raises(sc.CartOptionRequired) as ei:
+        await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=1))
+    assert ei.value.options == []  # 빈 배열 신뢰 — 99(잔재) 안 고름

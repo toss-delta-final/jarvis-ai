@@ -137,13 +137,12 @@ def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption
     err = body.get("error") if isinstance(body.get("error"), dict) else None
     code = (err or {}).get("code") or body.get("code")
     detail = (err or {}).get("detail") if isinstance((err or {}).get("detail"), dict) else None
-    raw = (
-        (detail or {}).get("options")  # BE 확정 위치
-        or (err or {}).get("options")
-        or body.get("options")
-        or (body.get("data") or {}).get("options")
-        or []
-    )
+    # BE 확정 위치(error.detail.options)는 '키 존재'로 우선한다 — 빈 배열이어도 그 값을 신뢰하고
+    # 구버전 위치로 조용히 폴백하지 않는다(잔재 options 오선택 방지).
+    if detail is not None and "options" in detail:
+        raw = detail.get("options") or []
+    else:
+        raw = (err or {}).get("options") or body.get("options") or (body.get("data") or {}).get("options") or []
     options: list[CartOption] = []
     for opt in raw if isinstance(raw, list) else []:
         if isinstance(opt, dict) and opt.get("optionId") is not None:

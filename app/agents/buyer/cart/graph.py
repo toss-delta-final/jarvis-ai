@@ -46,9 +46,16 @@ def cart_identity(identity) -> tuple[int | None, str | None]:
 
 
 def _options_text(options: list[CartOption]) -> str:
-    """옵션 목록을 되물음 문구로 나열한다."""
-    names = [o.name for o in options if o.name]
-    return " / ".join(names) if names else "옵션"
+    """옵션 목록을 되물음 문구로 나열한다 — 추가금(extraPrice)이 있으면 함께 표시."""
+    parts: list[str] = []
+    for opt in options:
+        if not opt.name:
+            continue
+        if opt.extra_price:
+            parts.append(f"{opt.name}(+{opt.extra_price:,}원)")
+        else:
+            parts.append(opt.name)
+    return " / ".join(parts) if parts else "옵션"
 
 
 def _done() -> str:
