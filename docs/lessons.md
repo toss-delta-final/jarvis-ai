@@ -13,6 +13,15 @@
 
 ---
 
+## [2026-07-20] SSE 응답 제너레이터의 finally 블록에서 던진 예외는 종결 프레임/취소 전파를 덮어쓴다
+- 증상: PR #48 후속 리뷰가 `app/core/stream.py::open_stream()`의 `_wrapped()` `finally` 블록(303행)에서 `observer.finish()`(이제 실제 conversation store DB I/O)가 보호 없이 호출된다고 지적. 이 시점은 이미 SSE 헤더/프레임이 클라이언트로 전송된 뒤라, `finish()`가 예외를 던지면 (1) 정상 종료 경로에서는 `StopAsyncIteration` 대신 그 새 예외가 `body_iterator` 소비자에게 전파되어 스트림이 비정상 종료되고, (2) `except asyncio.CancelledError: ... raise` 로 취소가 전파되던 중이라면 Python 의 `finally`-중 예외가 진행 중이던 예외를 덮어쓰는 규칙 때문에 정상 client disconnect(CancelledError)가 엉뚱한 새 예외로 둔갑한다. `finalize_assistant` 를 raise 하는 fake 로 재현 — 수정 전엔 `body_iterator` 소비 자체가 raise, 수정 후(try/except 로 감싸 로그만)엔 정상 종료.
+- 원인: 이 프로젝트에서 인메모리→외부 스토어 이관은 반복적으로 "이전엔 실패할 수 없던 호출이 이제 실패할 수 있다"는 패턴을 만드는데(PR #47 의 `session_end()`도 동일 클래스), 이번엔 그 호출이 **이미 응답이 시작된 SSE 스트림의 finally** 안에 있어 파급이 더 크다 — 응답 시작 전 실패(그냥 500)와 응답 시작 후 finally 실패(스트림 자체가 깨짐)는 심각도가 다르다.
+- 규칙:
+  - **SSE/스트리밍 응답의 `finally` 블록은 "여기서 예외가 나면 이미 보낸 프레임들과 무관하게 스트림 자체가 깨진다"는 걸 항상 의식한다** — 정리 로직(레지스트리 해제 등)과 부가적 관측/저장 로직(finish, 로깅)을 구분해, 후자는 반드시 자체 try/except 로 격리한다.
+  - **같은 함수 안에 여러 `observer.finish()` 호출부가 있어도, 응답이 이미 시작된 뒤(스트림 본문 생성기 안)의 호출부와 응답 시작 전(핸들러 동기 구간)의 호출부는 심각도가 다르다** — 전부 동일하게 취급해 한 번에 고치려 하지 말고, "이미 클라이언트에 데이터가 나간 뒤인가"를 기준으로 우선순위를 가른다(이번엔 딱 하나, `_wrapped()` finally 만 진짜 취약점이었다).
+  - 리뷰가 "이 패턴이 다른 호출부에도 있다"고 폭넓게 지적해도, 그 다른 호출부들이 실제로 같은 심각도인지(예: 응답 시작 전이라 그냥 500이 되는지) 확인하고 나서 고칠 범위를 정한다 — 전부 고치는 게 항상 정답은 아니다.
+- 관련: `app/core/stream.py::open_stream()._wrapped()`, `tests/unit/test_observability.py::test_stream_completes_when_finalize_assistant_fails`, PR #48 후속 리뷰
+
 ## [2026-07-20] 지연 정리 큐 패턴을 그대로 복사하면 안 되는 리소스가 있다 — AsyncConnectionPool 은 백그라운드 워커 태스크가 있어 cross-loop 정리가 그 자체로 새 버그다
 - 증상: PR #47 후속 리뷰가 `app/agents/profile/processed_events.py`의 `set_pool()`/`reset()`이 `app/core/pg_store.py`(PR #46 후속 리뷰)와 동일한 fire-and-forget 스킵 버그를 갖고 있다고 지적 — `_pending_cleanup` 큐 패턴을 그대로 복사해 적용했더니, `tests/integration/test_pg_profile_store.py`를 전체 실행하면(개별 실행은 통과) 엉뚱한 다른 테스트(`test_processed_events_unmark_allows_reprocessing`)까지 `CancelledError`로 실패했다.
 - 원인: `pg_store.py`가 감싸는 `AsyncPostgresStore`/`AsyncConnection`은 단일 커넥션이라 정리(`__aexit__`)가 비교적 단순하지만, `processed_events.py`의 `AsyncConnectionPool`은 **백그라운드 워커 태스크**를 그 풀을 만든 이벤트 루프에 묶어 둔다. pytest-asyncio 는 테스트 함수마다 새 이벤트 루프를 쓰므로, 이전 테스트(다른 루프)에서 큐에 쌓인 풀을 다음 테스트(새 루프)의 `_get_pool()`이 드레인하려 하면 이미 죽은 루프에 묶인 워커 태스크를 `await agather(...)`로 기다리게 되어 `CancelledError`(`asyncio.CancelledError`는 `BaseException` 상속 — `except Exception`으로 안 잡힘)가 새어 나온다. **"같은 이름의 버그"라고 반드시 같은 수정이 안전한 건 아니다** — 리소스의 내부 구현(워커 태스크 유무)에 따라 cross-loop 정리의 안전성이 다르다.

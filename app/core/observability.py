@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 
 from app.core.auth import Identity
 from app.core.config import get_settings
-from app.core.conversation import ConversationStore, TurnStatus, conversation_key
+from app.core.conversation import ConversationStoreProtocol, TurnStatus, conversation_key
 from app.core.logging import get_logger
 
 logger = get_logger("observability")
@@ -61,7 +61,7 @@ class RequestObservation:
     conversation_id: str
     user_id: str | None
     role: str
-    store: ConversationStore
+    store: ConversationStoreProtocol
     message_length: int
     message_hash: str
     started: float
@@ -73,17 +73,19 @@ class RequestObservation:
     model_calls: list[ModelCall] = field(default_factory=list)
     finished: bool = False
 
-    def commit_user_message(self) -> None:
+    async def commit_user_message(self) -> None:
         """스트림 슬롯 확보(§2.9 a 409 통과) **후** 사용자 메시지를 저장한다(§6.3 a).
 
         409로 거절된 중복/더블클릭 요청은 이 호출에 도달하지 않으므로 유령 턴(응답 없는
         FAILED 턴)이 다음 컨텍스트를 오염시키지 않는다."""
         if self.turn_id is None:
-            self.turn_id = self.store.save_user_message(
+            self.turn_id = await self.store.save_user_message(
                 self.pending_key, self.user_id, self.role, self.pending_message
             )
 
-    def record_model_call(self, model: str, prompt_tokens: int = 0, completion_tokens: int = 0) -> None:
+    def record_model_call(
+        self, model: str, prompt_tokens: int = 0, completion_tokens: int = 0
+    ) -> None:
         """노드별 LLM 호출 기록(model·tokens). 그래프가 호출한다."""
         self.model_calls.append(ModelCall(model, prompt_tokens, completion_tokens))
 
@@ -97,13 +99,25 @@ class RequestObservation:
         if text:
             self.assistant_parts.append(text)
 
-    def finish(self, now: float, status: TurnStatus, error_type: str | None = None) -> None:
+    async def finish(self, now: float, status: TurnStatus, error_type: str | None = None) -> None:
         """어시스턴트 응답을 상태와 함께 마감하고 요청 구조화 로그를 남긴다(멱등)."""
         if self.finished:
             return
         self.finished = True
         if self.turn_id is not None:
-            self.store.finalize_assistant(self.turn_id, "".join(self.assistant_parts), status)
+            try:
+                await self.store.finalize_assistant(
+                    self.turn_id, "".join(self.assistant_parts), status
+                )
+            except Exception:
+                # 대화 저장(§6.3 a) 실패가 아래 구조화 로그(§6.3 b) emit 까지 막으면 안 된다 —
+                # 별개 계약이라 한쪽 실패로 다른 쪽을 통째로 유실시키면 안 된다. finalize_assistant
+                # 는 이제 실 pg-profile I/O 라 실패할 수 있는데, 여기서 전파하면 아래 chat_request
+                # 로그(latency·model·tokens·streamStatus 등)가 통째로 유실되고 finished=True 라
+                # 재시도 여지도 없다(PR #48 후속 리뷰). 실패는 관측 가능하게 남기고 계속 진행한다.
+                logger.exception(
+                    "finalize_assistant 실패 turn_id=%s (대화 저장 유실)", self.turn_id
+                )
             stream_status = status.value
         else:
             stream_status = None  # 스트림 시작 전 거부(409 등) — 저장된 턴 없음
@@ -156,7 +170,7 @@ def start_observation(
     identity: Identity,
     conversation_id: str,
     message: str,
-    store: ConversationStore,
+    store: ConversationStoreProtocol,
     now: float,
 ) -> RequestObservation:
     """사용자 메시지를 저장(§6.3 a)하고 관측 컨텍스트를 만든다. 원문은 저장소에만, 로그엔 지문만."""
