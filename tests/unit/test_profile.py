@@ -105,11 +105,11 @@ async def test_generate_session_delta_promotes_via_gate() -> None:
     store = get_profile_store()
     key = conversation_key("7", "s1")
     store.append_session_ctx(key, "3만원대 무선 이어폰 위주로 보고 있어요")
-    promoted, processed_count = await generate_session_delta(
+    promoted, watermark = await generate_session_delta(
         "7", key, llm=_ProfileLLM(), settings=get_settings()
     )
     assert promoted == ["3~5만원 무선이어폰 선호"]
-    assert processed_count == 1
+    assert watermark == 1
     assert "3~5만원 무선이어폰 선호" in store.get_facts("7")
 
 
@@ -120,11 +120,9 @@ async def test_generate_session_delta_gate_rejects_low_signal() -> None:
     llm = _ProfileLLM(
         deltas=[{"fact": "잡담", "salience": 0.1, "explicit": False, "repetitionEma": 0.0}]
     )
-    promoted, processed_count = await generate_session_delta(
-        "7", key, llm=llm, settings=get_settings()
-    )
+    promoted, watermark = await generate_session_delta("7", key, llm=llm, settings=get_settings())
     assert promoted == [] and store.get_facts("7") == []  # 처리됨(non-None)이나 승격 0
-    assert processed_count == 1
+    assert watermark == 1
 
 
 async def test_clear_session_ctx_upto_preserves_concurrent_append() -> None:
@@ -135,14 +133,34 @@ async def test_clear_session_ctx_upto_preserves_concurrent_append() -> None:
     store = get_profile_store()
     key = conversation_key("7", "race")
     store.append_session_ctx(key, "A")
-    promoted, processed_count = await generate_session_delta(
+    promoted, watermark = await generate_session_delta(
         "7", key, llm=_ProfileLLM(), settings=get_settings()
     )
-    assert promoted == ["3~5만원 무선이어폰 선호"] and processed_count == 1
+    assert promoted == ["3~5만원 무선이어폰 선호"] and watermark == 1
     # LLM 호출이 끝나고 clear 하기 전, 그 사이에 새 턴이 도착했다고 가정.
     store.append_session_ctx(key, "B")
-    store.clear_session_ctx_upto(key, processed_count)
+    store.clear_session_ctx_upto(key, watermark)
     assert store.get_session_ctx(key) == ["B"]  # A(스냅샷분)만 지워지고 B는 보존
+
+
+async def test_clear_session_ctx_upto_survives_cap_eviction_during_llm_call() -> None:
+    """LLM 호출 중 버퍼 상한(cap)을 넘겨 스냅샷 항목 자체가 앞에서 밀려나도, 그 이후 추가분은 보존된다.
+
+    PR #37 리뷰 지적 — count(개수) 기반이면 cap 트리밍으로 위치가 밀린 새 항목을 스냅샷 항목으로
+    착각해 잘못 지울 수 있었다. seq 워터마크 기반으로 바꿔 위치와 무관하게 안전하도록 회귀 방지.
+    """
+    store = get_profile_store()
+    key = conversation_key("7", "cap-race")
+    store.append_session_ctx(key, "A", cap=2)
+    promoted, watermark = await generate_session_delta(
+        "7", key, llm=_ProfileLLM(), settings=get_settings()
+    )
+    assert promoted == ["3~5만원 무선이어폰 선호"] and watermark == 1
+    # LLM 호출 중 cap(2)을 넘겨 A가 앞에서 밀려나는 상황(둘 다 미분석 상태).
+    store.append_session_ctx(key, "B", cap=2)
+    store.append_session_ctx(key, "C", cap=2)  # len=3 > cap=2 → A 트리밍됨, 버퍼=[B, C]
+    store.clear_session_ctx_upto(key, watermark)
+    assert store.get_session_ctx(key) == ["B", "C"]  # A는 이미 없었고, B/C는 미분석이라 보존
 
 
 async def test_generate_session_delta_degrades_without_llm_or_buffer() -> None:
