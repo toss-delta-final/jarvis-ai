@@ -7,6 +7,9 @@ PgCatalogArtifactStore 클래스 자체를 fake 로 대체해 라이브 DB 연�
 
 from __future__ import annotations
 
+import threading
+import time
+
 from app.core.config import get_settings
 from app.pipelines import artifact_store as store_mod
 
@@ -21,6 +24,14 @@ class _FakePgStore:
 
     def close(self) -> None:
         _FakePgStore.closed.append(True)
+
+
+class _SlowFakePgStore(_FakePgStore):
+    """생성자에 인위적 지연을 둬 최초 호출 시 스레드 경합 창을 벌린다."""
+
+    def __init__(self, dsn: str) -> None:
+        time.sleep(0.05)
+        super().__init__(dsn)
 
 
 def test_get_catalog_store_returns_cached_pg_backed_singleton(monkeypatch):
@@ -39,3 +50,27 @@ def test_get_catalog_store_returns_cached_pg_backed_singleton(monkeypatch):
 
     store_mod.reset_catalog_store()
     assert _FakePgStore.closed == [True]
+
+
+def test_get_catalog_store_is_thread_safe_under_concurrent_first_call(monkeypatch):
+    """PR #42 리뷰 — 락 없는 check-then-act 는 동시 최초호출 시 커넥션 풀 중복 생성 위험."""
+    _FakePgStore.created_dsns.clear()
+    _FakePgStore.closed.clear()
+    monkeypatch.setattr("app.pipelines.pg_artifact_store.PgCatalogArtifactStore", _SlowFakePgStore)
+    store_mod.reset_catalog_store()
+
+    results: list[object] = []
+
+    def call() -> None:
+        results.append(store_mod.get_catalog_store())
+
+    threads = [threading.Thread(target=call) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(_FakePgStore.created_dsns) == 1  # 딱 한 번만 생성
+    assert len({id(r) for r in results}) == 1  # 전 스레드가 같은 인스턴스를 받음
+
+    store_mod.reset_catalog_store()

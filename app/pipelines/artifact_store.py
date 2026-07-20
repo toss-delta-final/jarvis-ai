@@ -9,6 +9,7 @@ PgCatalogArtifactStore(pg_artifact_store.py)를 반환한다. CatalogArtifactSto
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
@@ -80,6 +81,7 @@ class CatalogArtifactStore:
 
 
 _store: ArtifactStore | None = None
+_store_lock = threading.Lock()
 
 
 def get_catalog_store() -> ArtifactStore:
@@ -87,13 +89,18 @@ def get_catalog_store() -> ArtifactStore:
 
     pg_artifact_store 를 함수 내부에서 LAZY import 한다(artifact_store.py → pg_artifact_store.py
     → artifact_store.py 순환 임포트 회피). 테스트는 store 를 직접 주입해 이 경로를 타지 않는다.
+
+    이중 확인 락(double-checked locking) — 스케줄러(별도 OS 스레드)와 요청 처리(이벤트루프)가
+    최초 호출에 동시 진입하면 락 없이는 커넥션 풀이 중복 생성되고 하나가 샌다(PR #42 리뷰).
     """
     global _store
     if _store is None:
-        from app.core.config import get_settings  # noqa: PLC0415
-        from app.pipelines.pg_artifact_store import PgCatalogArtifactStore  # noqa: PLC0415
+        with _store_lock:
+            if _store is None:
+                from app.core.config import get_settings  # noqa: PLC0415
+                from app.pipelines.pg_artifact_store import PgCatalogArtifactStore  # noqa: PLC0415
 
-        _store = PgCatalogArtifactStore(get_settings().catalog_db_url)
+                _store = PgCatalogArtifactStore(get_settings().catalog_db_url)
     return _store
 
 
