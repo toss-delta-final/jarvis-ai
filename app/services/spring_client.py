@@ -149,6 +149,12 @@ def _parse_search_response(data: object) -> ProductSearchResult:
             items = payload["items"]
         elif isinstance(data.get("items"), list):
             items = data["items"]
+        elif payload not in (None, [], {}):
+            # data 밑에 값이 있는데 알려진 형태(list · {items} · 최상위 items)와 안 맞음 —
+            # envelope drift 의심. silent 0 건으로 오인하지 않도록 경고를 남긴다(§7 유지보수 계약).
+            _log.warning(
+                "검색 응답 envelope 형태 미인식(silent 0 아님) — data 타입=%s", type(payload).__name__
+            )
     products = [SpringProduct.model_validate(it) for it in items if isinstance(it, dict)]
     return ProductSearchResult(products=products, total_count=len(products))
 

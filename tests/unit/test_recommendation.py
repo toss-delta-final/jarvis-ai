@@ -449,6 +449,21 @@ async def test_search_products_malformed_maps_to_search_failed(
         await sc.search_products(ProductSearchFilters())
 
 
+async def test_search_products_unknown_envelope_warns(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """알려지지 않은 검색 envelope 는 조용한 0 건이 아니라 경고를 남긴다(§7 유지보수 계약)."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    payload = {"success": True, "data": {"products": [{"productId": 1}]}}  # 미인식 형태
+    monkeypatch.setattr(sc, "_client", lambda: _FakeClient(payload))
+    with caplog.at_level("WARNING"):
+        res = await sc.search_products(ProductSearchFilters())
+    assert res.products == []
+    assert "envelope" in caplog.text
+
+
 async def test_expose_min_fill_from_search_order() -> None:
     """rerank 가 expose_min 미만을 내면 검색순서로 보충한다(REQ-REC-021 5~8개)."""
     products = [
