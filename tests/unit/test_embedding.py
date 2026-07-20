@@ -61,3 +61,25 @@ def test_embed_texts_dim_mismatch_raises(monkeypatch):
 
     with pytest.raises(ValueError):
         emb.embed_texts(["hello"])
+
+
+def test_embed_texts_wraps_malformed_response_parsing_as_embedding_error(monkeypatch):
+    """PR #42 리뷰 — 응답 파싱(item.values 접근)이 try 밖에 있으면 예상 밖 응답 형태(세이프티
+    필터링 등)가 AttributeError/TypeError 를 원본 그대로 새게 한다. EmbeddingError 로 통일돼야 한다."""
+
+    class _BrokenModels:
+        def embed_content(self, *, model, contents, config):
+            class _Response:
+                embeddings = None  # 순회 시 TypeError
+
+            return _Response()
+
+    class _BrokenClient:
+        models = _BrokenModels()
+
+    settings = Settings(_env_file=None, google_api_key="test-key", embedding_dim=3)
+    monkeypatch.setattr(emb, "get_settings", lambda: settings)
+    monkeypatch.setattr(emb, "_client", lambda api_key: _BrokenClient())
+
+    with pytest.raises(emb.EmbeddingError):
+        emb.embed_texts(["hello"])

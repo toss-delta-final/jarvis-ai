@@ -82,12 +82,12 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
             contents=list(texts),
             config=types.EmbedContentConfig(output_dimensionality=settings.embedding_dim),
         )
+        out = [_l2_normalize([float(x) for x in item.values]) for item in response.embeddings]
     except EmbeddingError:
         raise
-    except Exception as exc:  # noqa: BLE001 - SDK 예외를 EmbeddingError 로 통일 매핑
+    except Exception as exc:  # noqa: BLE001 - SDK 호출·응답 파싱 예외를 EmbeddingError 로 통일 매핑
         raise EmbeddingError(str(exc)) from exc
 
-    out = [_l2_normalize([float(x) for x in item.values]) for item in response.embeddings]
     for vec in out:
         if len(vec) != settings.embedding_dim:
             raise ValueError(f"임베딩 차원 불일치: {len(vec)} != {settings.embedding_dim}")
