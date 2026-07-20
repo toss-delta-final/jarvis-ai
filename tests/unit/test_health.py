@@ -32,7 +32,7 @@ def _parse_sse(body: str) -> list[dict]:
     for raw in body.splitlines():
         line = raw.strip()
         if line.startswith("data:"):
-            events.append(json.loads(line[len("data:"):].strip()))
+            events.append(json.loads(line[len("data:") :].strip()))
     return events
 
 

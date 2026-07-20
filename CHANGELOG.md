@@ -20,6 +20,7 @@
 - Git hook(pre-commit) — ruff(lint+format) + Conventional Commits 검사 `.pre-commit-config.yaml`
 - MIT `LICENSE` · 이슈 템플릿 `.github/ISSUE_TEMPLATE/` (기능·버그) · 이슈 단위 워크플로
 - 팀 공유 스킬 `.claude/skills/implement-topic/` — MVP 주제 계약 우선 구현 절차
+- **판매자 3단계 — 분석 파이프라인·가드레일·SSE 1차 배선** (`app/agents/seller/pipeline.py`·`orchestrator.py`·`middleware.py` 신규, `app/api/seller.py` 재작성): planner(AnalysisPlan, 미지원 기간=되묻기) → asyncio.gather 팬아웃(degrade 수렴) → 검증 루프(D1~D3+judge, feedback 합산 ≤3회) → recommend(실패=빈 추천) → compose_response(순서=N번). 가드레일 scope(구조화 레인=코드 경로)·PII 3종·mask_output·ToolCallLimit. general astream→token/done/error(C1: 요청마다 재빌드). verifier R1(날짜 마스킹)·R2(구조 판정) 해소. opus 마감 리뷰 critical 0·M1~M3 반영 — 기록: `docs/specs/REVIEW-SELLER-STAGE3.md`·`HANDOFF-SELLER_2.md`
 
 ### Fixed
 - 프로필 세션 종료(session-end) 처리 중 동시에 새 채팅 턴이 들어오면 세션 버퍼가 통째로
@@ -32,6 +33,7 @@
 - api-spec 사본 동기화 **v0.11.0 → v0.12.0** — CH-1 스트림 티켓 발급(응답에 streamTicket) + 티켓 재발급 경로(CH-1b) 신설 필요 명시(티켓 TTL 30~60s ≪ 세션 10분)
 - api-spec 사본 동기화 **v0.12.0 → v0.13.0** — BE 명세 DB 실측 정합: AI→Spring 전 구간 서비스 토큰(방식2)으로 통일, 실제 I-number/경로(검색 I-1·배치 I-17·조회 I-18·구매자 챗 /ai/chat), S-3∥I-9 구분
 - api-spec 사본 동기화 **v0.13.0 → v0.14.0** — 구매 이력=I-19(/internal/members/{id}/orders), 세션 종료=I-20 채번 확정(BE DB Notion 수정)
+- **SPEC-SELLER-001 v0.1.0 초안 신설**(`docs/specs/`) — 판매자 멀티에이전트 그래프. 설계서 v3를 api-spec 정합 개정: 전 쓰기 HITL(draft→구조화 confirm, 발화≠동의)·spring_client 매핑(집계 7종+CRUD 4종, 데이터 API·MySQL 직접 접근 폐기)·계산 3층 분담(Spring 단순 수치/AI 고도화 계산/LLM 해석, 🔴 C-13 경계표)·Anthropic 2-tier 배정·분석 이력↔취향 프로필 분리(pg-profile/pg-catalog). `mvp-plan`·`mvp-todo` §4 동기 갱신, 차트 전달은 계약 미정으로 보류
 
 ### 진행 예정 (MVP)
 - 구매자 추천 그래프 · 장바구니(I-2/I-9) · 판매자(I-6/I-7) · 프로필 파이프라인 · AI 생성물 배치(I-8) · SSE 수명주기(§2.9)

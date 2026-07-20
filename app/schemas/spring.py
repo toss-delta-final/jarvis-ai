@@ -267,3 +267,202 @@ class ProductChangesPage(CamelModel):
     items: list[ProductChange] = Field(default_factory=list)
     next_cursor: str | None = None
     has_more: bool = False
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 판매자 조회/집계·상품 CRUD 스키마 (DESIGN-SELLER-TOOLS-STAGE1 §2.4, api-spec §4.4/§4.5).
+#
+# 전부 초안(🔴 C-13/C-14) — Spring 실측 필드 유동을 감안해 응답 모델 다수는
+# extra="allow" 로 여분 필드를 허용한다(파싱 실패로 도구가 죽지 않도록).
+# 확정 시 이 섹션의 어댑터만 수정한다(도구·calc 계층 불변).
+# ══════════════════════════════════════════════════════════════════════════
+
+
+class SellerAggregateModel(CamelModel):
+    """판매자 집계/이력 응답 공통 베이스 — 필드 유동 대비 extra="allow"."""
+
+    model_config = ConfigDict(extra="allow")
+
+
+# ── I-6 매출 시계열 (§4.4) ──
+
+
+class SalesSeriesPoint(SellerAggregateModel):
+    """매출 시계열 1건. isAnomaly/deviationPct 는 Spring 참고치 — calc.py 는 무시하고 원시
+    sales 로 재판정한다(§0.1 D, C-13)."""
+
+    date: str
+    sales: int
+    order_count: int
+    is_anomaly: bool = False
+    deviation_pct: float = 0.0
+
+
+class SalesResult(SellerAggregateModel):
+    """I-6 GET /internal/seller/{brandId}/sales 응답 (매출 시계열)."""
+
+    series: list[SalesSeriesPoint] = Field(default_factory=list)
+
+
+# ── I-7 구매전환 퍼널 (§4.4) ──
+
+
+class FunnelResult(SellerAggregateModel):
+    """I-7 GET /internal/seller/{brandId}/funnel 응답 — view→cart→checkout→purchase 4단."""
+
+    view: int = 0
+    cart: int = 0
+    checkout: int = 0
+    purchase: int = 0
+
+
+# ── I-13 행동 이벤트 집계 (§4.4 — 07/17 BE 확정 명세 반영, REALIGN F4/②-3) ──
+
+
+class BehaviorProductRow(CamelModel):
+    """I-13 groupBy=product rows[] 항목 — 상품별 행동 카운트·전환 보조 지표.
+
+    counts 키는 event_type 의 camelCase(productView/addToCart/checkoutStart/
+    purchaseComplete). viewToCartRate 는 addToCart/productView(분모 0 = null).
+    uniqueVisitors = distinct(memberId, guestId) — 비로그인 게스트 포함.
+    """
+
+    product_id: int
+    product_name: str | None = None
+    counts: dict[str, int] = Field(default_factory=dict)
+    view_to_cart_rate: float | None = None
+    unique_visitors: int | None = None
+
+
+class BehaviorEventsResult(SellerAggregateModel):
+    """I-13 GET /internal/seller/{brandId}/events 응답 (07/17 확정 — 구 events[] 폐기).
+
+    원천 = behavior_events(상품 연계 4종만 — session_start/login/search/page_view 는
+    브랜드 귀속 불가로 제외). groupBy 3형이 한 모델에 겹친다 — 채워지는 필드:
+      - product(기본) : rows (+ total)
+      - eventType     : counts
+      - date          : series (date + camelCase 이벤트 카운트, 키 동적 → dict 유지)
+    ⚠️ purchaseComplete 는 이벤트 기준(주문 완료 페이지 발사) — 매출·주문수의
+    권위는 I-6/I-14(order 기준)다(명세 집계 규칙 — 워커 해석 주의).
+    """
+
+    group_by: str = "product"
+    rows: list[BehaviorProductRow] = Field(default_factory=list)
+    counts: dict[str, int] | None = None
+    series: list[dict] = Field(default_factory=list)
+    total: int | None = None
+
+
+# ── I-14 주문 상태 전이/조회 (§4.4) ──
+
+
+class OrderEventsResult(SellerAggregateModel):
+    """I-14 GET /internal/seller/{brandId}/order-events 응답 — 필드 최소집합(🔴 확정 대기).
+
+    구매자 fetch_product_changes(I-8·§4.8)와 무관한 별개 계약(혼동 금지, §4.4 주)."""
+
+    events: list[dict] = Field(default_factory=list)
+    stats: dict | None = None
+
+
+# ── I-15 상품 변경 이력(판매자 감사 로그) (§4.4) ──
+
+
+class ProductChangeLogResult(SellerAggregateModel):
+    """I-15 GET /internal/seller/{brandId}/product-changes 응답 — 판매자 감사 로그.
+
+    [혼동 금지] 구매자 ProductChangesPage(I-8 AI 생성물 배치, §4.8)와 다른 계약이다."""
+
+    logs: list[dict] = Field(default_factory=list)
+
+
+# ── I-16 이탈 코호트 (§4.4) ──
+
+
+class ChurnResult(SellerAggregateModel):
+    """I-16 GET /internal/seller/{brandId}/churn 응답 — churnRate/preChurnSignals."""
+
+    churn_rate: float = 0.0
+    pre_churn_signals: list[dict] = Field(default_factory=list)
+
+
+# ── I-8 계정/보안 이벤트 집계 (전역, brandId 없음) (§4.4) ──
+
+
+class AccountEventsResult(SellerAggregateModel):
+    """I-8 GET /internal/account-events 응답 — 전역(브랜드 스코프 아님)·admin 소유 🔴."""
+
+    events: list[dict] = Field(default_factory=list)
+
+
+# ── I-9 자사 상품 목록 (§4.5) ──
+
+
+class SellerProductRow(CamelModel):
+    """I-9 rows[] 항목. originalPrice 는 구매자 SpringProduct.listPrice 와 필드명이 달라
+    별도 모델로 유지한다(§2.4)."""
+
+    product_id: int
+    name: str
+    price: int
+    original_price: int | None = None
+    stock_quantity: int = 0
+    status: str = "ON_SALE"  # ON_SALE | HIDDEN
+    displayed_sales_count: int | None = None
+    category: str | None = None
+    description: str | None = None
+    image_url: str | None = None
+
+
+class SellerProductList(CamelModel):
+    """I-9 GET /internal/seller/{brandId}/products 응답."""
+
+    rows: list[SellerProductRow] = Field(default_factory=list)
+
+
+# ── I-10/I-11/I-12 상품 쓰기 (§4.5, product_agent 전용, HITL 승인 후 호출) ──
+
+
+class ProductCreate(CamelModel):
+    """I-10 POST 요청 본문 — name/price/stockQuantity 필수(price ≤ originalPrice)."""
+
+    name: str
+    price: int
+    original_price: int | None = None
+    stock_quantity: int = Field(0, ge=0)
+    category: str | None = None
+    description: str | None = None
+    image_url: str | None = None
+
+
+class ProductUpdate(CamelModel):
+    """I-11 PATCH 요청 본문 — 바꿀 필드만(전 필드 Optional). 재고도 이 API로 통합."""
+
+    name: str | None = None
+    price: int | None = None
+    original_price: int | None = None
+    stock_quantity: int | None = Field(default=None, ge=0)
+    category: str | None = None
+    description: str | None = None
+    image_url: str | None = None
+    status: str | None = None  # ON_SALE | HIDDEN
+
+
+class ProductCreateResult(SellerAggregateModel):
+    """I-10 201 응답 — {productId, status:"ON_SALE"}."""
+
+    product_id: int
+    status: str = "ON_SALE"
+
+
+class ProductUpdateResult(SellerAggregateModel):
+    """I-11 200 응답 — 갱신분(🔴 스키마 미확정, extra="allow"로 여분 필드 보존)."""
+
+    product_id: int
+
+
+class ProductDeleteResult(SellerAggregateModel):
+    """I-12 200 응답 — soft delete, {productId, status:"HIDDEN"}."""
+
+    product_id: int
+    status: str = "HIDDEN"
