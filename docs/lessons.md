@@ -13,6 +13,15 @@
 
 ---
 
+## [2026-07-20] fire-and-forget 정리(`asyncio.get_running_loop().create_task`)는 sync autouse fixture 컨텍스트에서 매번 조용히 스킵됨
+- 증상: `set_store(None)`이 기존 실 연결을 "백그라운드 태스크로 정리"하도록 고쳤는데(이전 lessons 항목 — 당시엔 fire-and-forget 방식 자체의 검증 실패만 기록하고 원인 규명은 못 함), claude[bot] 후속 리뷰가 "`set_store()`는 sync 함수라 실행 중인 이벤트 루프가 없으면(`asyncio.get_running_loop()`가 RuntimeError) 정리가 스킵되는데, `tests/conftest.py`의 sync autouse fixture가 정확히 그 상황"이라고 지적. 직접 프로브 테스트로 확인한 결과 **실제로 conftest의 autouse fixture(setup 단계)는 항상 실행 중인 이벤트 루프가 없는 상태**였다 — 즉 이 정리 로직은 테스트 환경에서 단 한 번도 실제로 실행된 적이 없었다.
+- 원인: pytest-asyncio 는 async 테스트 함수 실행을 위해 그 함수 안에서만 이벤트 루프를 돌리고, sync autouse fixture(테스트 함수 진입 전 setup)는 그 루프 시작 **전**에 실행된다. `contextlib.suppress(RuntimeError)`로 감싸 "실행 중 루프 없으면 조용히 스킵"하게 만든 게, 겉보기엔 안전한 방어 코드처럼 보이지만 실제로는 "이 정리 코드가 의도한 경로에서 단 한 번도 실행되지 않는다"는 뜻이었다 — 예외를 삼키는 코드가 있으면 "잘 동작하는 중"과 "매번 조용히 실패하는 중"을 로그 없이는 구분할 수 없다.
+- 규칙:
+  - **"실행 중 이벤트 루프가 없으면 스킵"하는 fire-and-forget 패턴은, 그 코드가 실제로 실행되는 호출 경로들의 이벤트 루프 유무를 전부 실측 확인한다** — 특히 테스트 conftest 의 autouse fixture 는 sync 인 경우가 흔한데, sync fixture 라고 해서 "이벤트 루프가 있을 수도 있겠지"라고 가정하면 안 된다. 직접 `asyncio.get_running_loop()` 를 프로브해서 확인(이번처럼).
+  - **필요한 정리를 "당장 못하면 다음 기회에 확실히 한다"는 지연 큐 방식이 fire-and-forget 보다 안전하다** — `set_store()`(sync, 정리 대상을 리스트에 쌓기만 함) → 다음 `get_store()`(반드시 async 컨텍스트) 진입 시 그 큐를 `await` 로 확실히 비운다. 이러면 "이벤트 루프가 있는지 없는지"를 신경 쓸 필요가 없고, 타이밍에 의존하지 않아 `conn.closed` 로 결정론적으로 검증 가능하다(이전 fire-and-forget 은 검증 자체가 불가능했음).
+  - **`except`/`suppress`로 예외를 삼키는 코드를 작성할 때마다 "이 경로가 실제로 정상 실행되는지"를 별도로 검증할 방법을 만든다** — 삼켜진 예외는 로그 없이는 흔적이 안 남으므로, "예외가 안 났다"와 "정상 실행됐다"를 혼동하기 쉽다.
+- 관련: `app/core/pg_store.py::set_store/_drain_pending_cleanup`, `app/agents/profile/store.py::set_store/_drain_pending_cleanup`(동일 패턴 후속 적용), `tests/integration/test_buyer_thread_store.py::test_set_store_none_defers_cleanup_to_next_get_store_call`, PR #46/#47 후속 리뷰
+
 ## [2026-07-20] 모듈 전역 asyncio.Lock 을 pytest-asyncio function-scope 이벤트 루프에서 재사용하면 hang
 - 증상: PR #47 리뷰(락 없는 초기화 레이스) 반영 후 `tests/integration/test_pg_profile_store.py` 전체를 한 번에 실행하면 11번째 테스트(`test_processed_events_mark_if_new_atomic_under_concurrency`, 기존에 있던 테스트라 이번에 새로 건드리지 않음)에서 FAILED 가 뜬 뒤 그다음 테스트로 전혀 진행되지 않고 무한정 멈췄다(`timeout 30`으로 강제 종료해야 빠져나옴). 그런데 신규로 추가한 동시성 테스트 3건은 **개별 실행하면 전부 통과**했고, 실패한 그 테스트도 **단독 실행하면 통과**했다 — 오직 "여러 테스트가 순서대로 실행될 때"만 재현됐다.
 - 원인: `pytest.ini`(`pyproject.toml`)의 `asyncio_default_test_loop_scope=function` — 즉 pytest-asyncio 가 **테스트 함수마다 새 이벤트 루프**를 만든다. 반면 `_init_lock = asyncio.Lock()` 은 모듈이 세션 중 처음 import 될 때 **딱 한 번만** 생성되는 모듈 전역 객체다. 이 락이 어느 테스트의 루프에서 획득된 채로 그 루프가 닫혀버리면(`acquire()`는 됐는데 해당 루프에서 `release()`가 정상 실행되지 못한 채 루프가 종료되는 경우), 락의 내부 상태(`_locked=True`)는 그대로 남고 다음 테스트가 **다른 새 루프**에서 그 락을 `async with`로 얻으려 하면 영원히 풀리지 않는 `_locked=True` 를 보고 대기만 하다가 hang 된다. `asyncio.Lock`(Python 3.10+)은 생성자에서 루프를 요구하지 않아 이런 재사용이 "일단 되는 것처럼" 보이지만, 락 상태 자체는 루프와 무관하게 유지되므로 **정상 해제가 보장되지 않으면 그대로 다음 루프까지 전염**된다.
@@ -21,6 +30,15 @@
   - 재현이 안 되던 게 갑자기 "여러 테스트를 같이 돌릴 때만" 발생하면, 먼저 **개별 실행이 전부 통과하는지**부터 확인한다(이번처럼 개별 통과 + 조합 hang 이면 순서 의존 상태 공유가 원인일 확률이 높다).
   - `app/core/pg_store.py`(PR #46)에서 처음 이 락 패턴을 썼을 때는 이 문제가 안 드러났다 — 우연히 그 조합의 테스트에서는 락이 비정상 해제되는 시퀀스가 안 걸렸을 뿐, 근본 취약점은 동일하게 있었다(이번에 pg_store.py 의 `reset_store()`도 함께 고쳤다). "지금까지 안 터졌다"가 "안전하다"의 증거가 아니다.
 - 관련: `app/core/pg_store.py::reset_store()`, `app/agents/profile/store.py::reset_profile_store()`, `app/agents/profile/processed_events.py::reset()`, PR #46/#47 후속 리뷰
+
+## [2026-07-20] "락이 없으면 이론상 레이스"라는 리뷰 지적도 실제 데이터 구조를 보고 검증해야 한다
+- 증상: PR #47 후속 리뷰가 `ProfileStore.add_fact()`의 cap 트리밍(asearch→sort→adelete)에 락이 없어 lost update 가 가능하다고 지적. `append_session_ctx`(단일 값 get→put)와 같은 패턴으로 보고 동일하게 락을 추가했으나, 실제로 버그를 재현하려 했더니 **실 Postgres 동시 호출(gather)도, 강제로 인터리브시키는 fake store(asearch 에 `await asyncio.sleep(0)` 삽입)도 모두 락 없이 통과** — 두 가지 서로 다른 방법으로 재현을 시도했음에도 데이터 유실이 재현되지 않았다.
+- 원인: `append_session_ctx`는 "단일 값을 덮어쓰는" get→put(진짜 lost update 가능 — 나중 write 가 앞선 write 를 통째로 덮어씀)인 반면, `add_fact`의 cap 트리밍은 계속 늘어나기만 하는 항목 집합에서 "가장 오래된 초과분만 지우는" 연산이다. 임의 시점의 부분 스냅샷은 항상 "그 시점까지 커밋된 항목들의 시간순 앞부분(prefix)"이므로, 서로 다른 스냅샷을 본 동시 호출들의 삭제 대상은 항상 서로 부분집합 관계이고 `adelete`가 멱등이라 실제로는 자기 교정(self-correcting)된다 — 겉보기엔 같은 "락 없는 get→act" 패턴이어도 데이터 구조의 단조성(monotonicity)에 따라 실제 위험도가 다르다.
+- 규칙:
+  - **"이론상 레이스처럼 보인다"와 "실제로 데이터가 유실된다"는 다른 질문이다** — 리뷰가 지적한 패턴이 기존에 이미 고친 유사 버그와 겉모습이 같다고 곧바로 같은 수정을 적용하지 말고, 먼저 재현을 시도한다.
+  - **동시성 테스트가 실 인프라(Postgres) 타이밍에 의존하면 false negative 가 나올 수 있다** — 강제로 인터리브시키는 fake(예: `asyncio.sleep(0)` 삽입)로 별도 재현을 시도해, 두 방법이 일치하면 결론에 더 확신을 가질 수 있다.
+  - 재현에 실패했다고 반드시 코드를 되돌릴 필요는 없다 — 이미 만든 락이 무해하고(비용 거의 0) 다른 락(`_session_locks`)과 패턴 일관성이 있다면 "증명된 버그의 수정"이 아니라 "방어적 조치"라고 정직하게 문서화하고 유지해도 된다. 다만 **그 사실을 감추지 않는다** — 나중에 누가 "이 락이 막는 버그가 뭐냐"고 물었을 때 근거 없는 답을 하지 않도록.
+- 관련: `app/agents/profile/store.py::_fact_lock/add_fact()`, PR #47 후속 리뷰
 
 ## [2026-07-20] fire-and-forget 정리 태스크는 "참조를 든 채로 재사용" 방식으로는 검증 불가
 - 증상: `pg_store.set_store()`가 기존 실 연결을 백그라운드 태스크(`create_task`)로 닫도록 고친 뒤, 회귀 테스트로 `store.aget()` 재호출이 실패하는지 확인하려 했으나 **정리 로직을 일부러 빼도 테스트가 계속 통과**했다. `conn.closed` 로 직접 확인하도록 바꿨더니 이번엔 **정리 로직을 빼도(TEMP) `conn.closed`가 True로 나와** 신뢰할 수 없는 결과였다(원인 미규명 — psycopg 커넥션이 pytest 이벤트 루프 재사용 과정에서 어떤 이유로든 닫힌 것으로 보이나 확정 못 함).

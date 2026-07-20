@@ -26,26 +26,32 @@ _store: BaseStore | None = None
 _store_ctx: object | None = None  # AsyncPostgresStore cm — 앱 수명 동안 GC 방지
 _fallback_warned = False
 _init_lock = asyncio.Lock()
+_pending_cleanup: list[object] = []  # set_store() 가 못 닫은 이전 ctx — get_store() 진입 시 정리
 
 
 def set_store(store: BaseStore | None) -> None:
     """store 교체(테스트용) — None 이면 다음 사용 시 재초기화한다.
 
-    기존 `_store_ctx`(실제 연결된 AsyncPostgresStore)가 있으면 백그라운드 태스크로
-    close 를 시도한다 — 이 함수는 sync 라 여기서 직접 await 할 수 없다(PR #46 리뷰).
+    기존 `_store_ctx`(실제 연결된 AsyncPostgresStore)가 있으면 정리 대기열에 넣는다.
+    이 함수는 sync 라 여기서 직접 await 할 수 없고, `asyncio.get_running_loop()`
+    fire-and-forget 태스크 방식은 **실행 중인 루프가 없으면 조용히 스킵**된다 —
+    `tests/conftest.py` 의 sync autouse fixture 가 정확히 그 상황이라(이벤트 루프
+    시작 전) 실제로는 한 번도 정리가 안 됐었다(PR #46 후속 리뷰). 대신 다음
+    `get_store()` 호출(반드시 async 컨텍스트) 시점에 확실히 정리한다.
     """
     global _store, _store_ctx
     old_ctx = _store_ctx
     _store = store
     _store_ctx = None
     if old_ctx is not None:
-        with contextlib.suppress(RuntimeError):
-            asyncio.get_running_loop().create_task(_close_ctx(old_ctx))
+        _pending_cleanup.append(old_ctx)
 
 
-async def _close_ctx(ctx) -> None:  # noqa: ANN001 - AsyncPostgresStore 의 async context manager
-    with contextlib.suppress(Exception):
-        await ctx.__aexit__(None, None, None)
+async def _drain_pending_cleanup() -> None:
+    while _pending_cleanup:
+        ctx = _pending_cleanup.pop()
+        with contextlib.suppress(Exception):
+            await ctx.__aexit__(None, None, None)
 
 
 def reset_store() -> None:
@@ -68,6 +74,7 @@ async def get_store() -> BaseStore:
     블록 전체를 직렬화한다(PR #46 리뷰).
     """
     global _store, _store_ctx, _fallback_warned
+    await _drain_pending_cleanup()
     async with _init_lock:
         if _store is None:
             settings = get_settings()
