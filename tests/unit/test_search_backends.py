@@ -107,7 +107,8 @@ async def test_embedding_rerank_offloads_scoring_to_thread(monkeypatch):
     backend = EmbeddingRerankBackend(store=store, embed=_embed)
     result = await backend.search(ProductSearchFilters(keyword="여행 방수", limit=10))
 
-    assert len(calls) == 1  # 블로킹 store 조회·정렬이 스레드로 오프로드됨(PR #42 리뷰)
+    # 임베딩 호출(_embed)·store 조회+정렬(_rerank) 둘 다 스레드로 오프로드됨(PR #42 리뷰)
+    assert calls == [_embed, backend._rerank]
     assert result.products[0].product_id == 1
 
 
@@ -171,7 +172,8 @@ async def test_vector_backend_offloads_ranking_to_thread(monkeypatch):
     backend = VectorSearchBackend(store=store, embed=_embed, hydrate=hydrate)
     result = await backend.search(ProductSearchFilters(keyword="무선 이어폰", limit=3))
 
-    assert calls == [vector_rank]  # 블로킹 store.all() 스캔이 스레드로 오프로드됨(PR #42 리뷰)
+    # 임베딩 호출(_embed)·store.all() 스캔(vector_rank) 둘 다 스레드로 오프로드됨(PR #42 리뷰)
+    assert calls == [_embed, vector_rank]
     assert result.products
 
 

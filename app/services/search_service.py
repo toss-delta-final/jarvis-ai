@@ -73,7 +73,8 @@ class EmbeddingRerankBackend:
     후보의 저장 임베딩(artifact_store)과 query 임베딩의 코사인으로 재정렬한다. 임베딩이 없는 후보는
     맨 뒤로(−1.0). keyword 없거나 후보 없으면 Spring 순서 그대로 반환.
 
-    store 조회·정렬은 pg-catalog 대상이면 블로킹 I/O(psycopg 동기 드라이버, 이슈 #31)라
+    store 조회·정렬과 임베딩 호출 둘 다 블로킹 I/O 다 — store 는 pg-catalog 대상이면 psycopg
+    동기 드라이버(이슈 #31), 임베딩은 Google API 동기 HTTP 호출(embedding.py). 둘 다
     asyncio.to_thread 로 별도 스레드에 넘겨 FastAPI 이벤트루프를 막지 않는다(PR #42 리뷰).
     후보마다 store.get() 을 순차 호출하는 N+1 형태는 남아있다 — SQL 배치 조회로 바꾸는 건
     방식1/2 승격(§4.8 말미) 때 함께 재설계할 별도 과제로 남겨둔다.
@@ -94,7 +95,8 @@ class EmbeddingRerankBackend:
         result = await spring_client.search_products(filters)
         if not filters.keyword or not result.products:
             return result
-        qvec = self._embed([filters.keyword])[0]
+        embedded = await asyncio.to_thread(self._embed, [filters.keyword])
+        qvec = embedded[0]
         reranked = await asyncio.to_thread(self._rerank, result.products, qvec)
         return ProductSearchResult(products=reranked, total_count=result.total_count)
 
@@ -109,9 +111,10 @@ class VectorSearchBackend:
     오프라인 골든셋 비교는 vector_rank(랭킹)만 쓰고 hydrate 없이 한다.
 
     vector_rank 의 store.all() 은 pg-catalog 대상이면 카탈로그 전체를 블로킹으로 읽어오는
-    비용이 크다(이슈 #31) — asyncio.to_thread 로 이벤트루프 차단은 막았지만, "SQL 에서
-    ORDER BY embedding <-> %s LIMIT k 로 직접 top-k 만 조회"하는 근본 최적화는 아니다.
-    방식1 승격(§4.8 말미, 골든셋 확정 후) 시 함께 재설계할 과제로 남겨둔다(PR #42 리뷰).
+    비용이 크고, 임베딩 호출도 Google API 동기 HTTP 라 블로킹이다 — 둘 다 asyncio.to_thread 로
+    이벤트루프 차단은 막았지만(이슈 #31, PR #42 리뷰), "SQL 에서 ORDER BY embedding <-> %s
+    LIMIT k 로 직접 top-k 만 조회"하는 근본 최적화는 아니다. 방식1 승격(§4.8 말미, 골든셋
+    확정 후) 시 함께 재설계할 과제로 남겨둔다.
     """
 
     def __init__(
@@ -132,7 +135,8 @@ class VectorSearchBackend:
         )
 
     async def search(self, filters: ProductSearchFilters) -> ProductSearchResult:
-        qvec = self._embed([filters.keyword or ""])[0]
+        embedded = await asyncio.to_thread(self._embed, [filters.keyword or ""])
+        qvec = embedded[0]
         k = max(
             filters.limit, filters.limit * self._over_fetch
         )  # hydrate 필터/품절 제거 대비 여유조회
