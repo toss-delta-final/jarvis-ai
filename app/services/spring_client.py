@@ -141,7 +141,9 @@ def _parse_search_response(data: object) -> ProductSearchResult:
     totalCount 가 없어 total_count 는 수신 items 수로 둔다.
     """
     items: list = []
-    if isinstance(data, dict):
+    if isinstance(data, list):
+        items = data  # 래퍼 없이 바디가 곧 배열인 경우도 수용
+    elif isinstance(data, dict):
         payload = data.get("data")
         if isinstance(payload, list):
             items = payload
@@ -149,12 +151,14 @@ def _parse_search_response(data: object) -> ProductSearchResult:
             items = payload["items"]
         elif isinstance(data.get("items"), list):
             items = data["items"]
-        elif payload not in (None, [], {}):
-            # data 밑에 값이 있는데 알려진 형태(list · {items} · 최상위 items)와 안 맞음 —
-            # envelope drift 의심. silent 0 건으로 오인하지 않도록 경고를 남긴다(§7 유지보수 계약).
-            _log.warning(
-                "검색 응답 envelope 형태 미인식(silent 0 아님) — data 타입=%s", type(payload).__name__
-            )
+        elif payload is not None:
+            # data 키는 있으나 알려진 형태(list · {items})와 안 맞음 — silent 0 오인 방지 경고(§7).
+            _log.warning("검색 응답 data 형태 미인식(silent 0 아님) — data 타입=%s", type(payload).__name__)
+        elif "data" not in data:
+            # data 키 자체가 없음(= data:null 과 구분) — 더 의심스러운 drift.
+            _log.warning("검색 응답에 data 키가 없음(silent 0 아님) — envelope drift 의심")
+    else:
+        _log.warning("검색 응답 최상위 형태 미인식(silent 0 아님) — type=%s", type(data).__name__)
     products = [SpringProduct.model_validate(it) for it in items if isinstance(it, dict)]
     return ProductSearchResult(products=products, total_count=len(products))
 

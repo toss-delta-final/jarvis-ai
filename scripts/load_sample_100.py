@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -107,6 +108,10 @@ def main() -> None:
     parser.add_argument("--expected-count", type=int, default=100)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+
+    # 오프라인 벡터 적재는 인증과 무관 — jwks 의 GOOGLE_API_KEY fail-fast(config §2.3 검증)를
+    # 우회한다(§4 — 사전 임베딩 적재는 키 없이 가능).
+    os.environ["AUTH_MODE"] = "dev"
 
     for label, path in (("--documents", args.documents), ("--products-dir", args.products_dir)):
         if not path.exists():

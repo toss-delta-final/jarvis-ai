@@ -2,7 +2,17 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
+
+# 로컬 통합용 .env가 단위 테스트의 인증·외부 provider를 오염시키지 않게 한다.
+# 라이브 키를 그대로 읽으면 /chat 인프라 테스트가 실제 과금 API를 호출한다. 외부 호출을
+# 검증하는 smoke는 별도 마커이고, unit/integration은 fixture의 fake/명시 Settings만 사용한다.
+os.environ["AUTH_MODE"] = "dev"
+os.environ["OPENAI_API_KEY"] = ""
+os.environ["ANTHROPIC_API_KEY"] = ""
+os.environ["GOOGLE_API_KEY"] = ""
 
 from app.agents.buyer.cart.state import reset_cart_store
 from app.agents.buyer.graph import reset_thread_store
