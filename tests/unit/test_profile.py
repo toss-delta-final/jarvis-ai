@@ -383,5 +383,9 @@ def test_internal_token_required_in_jwks_mode() -> None:
     with pytest.raises(Exception):
         Settings(auth_mode="jwks", jwks_url="http://x", pii_hash_pepper="p", internal_api_token="")
     Settings(
-        auth_mode="jwks", jwks_url="http://x", pii_hash_pepper="p", internal_api_token="tok"
+        auth_mode="jwks",
+        jwks_url="http://x",
+        pii_hash_pepper="p",
+        internal_api_token="tok",
+        google_api_key="k",
     )  # ok

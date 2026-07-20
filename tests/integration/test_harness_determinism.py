@@ -28,6 +28,7 @@ def ambient_jwks_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("JWT_SCOPE", "chat:stream")
     monkeypatch.setenv("PII_HASH_PEPPER", "ambient-pepper")
     monkeypatch.setenv("INTERNAL_API_TOKEN", "ambient-token")
+    monkeypatch.setenv("GOOGLE_API_KEY", "ambient-google-key")
     # 자기검증 — 이 시점에 앰비언트를 읽으면 실제로 jwks 가 나온다. 이 단언이 없으면
     # "오염이 걸리지 않아서 통과한" 공허한 가드와 구분되지 않는다.
     assert Settings().auth_mode == "jwks"

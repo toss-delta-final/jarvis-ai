@@ -11,6 +11,7 @@
 
 ### Added
 - **E2E 통합 스모크 하니스 (#35)** — `tests/integration/` 신설: Spring을 `httpx.MockTransport` stub(I-1 검색·I-2/I-18 장바구니·I-19 이력·I-21 push·I-17 배치 + CH-5 목록 GET), LLM을 주입형 `ScriptedLLM`(decompose/rerank/enrich/delta/consolidate 5종 분기)으로 세워 라이브 의존 없이 결정적 검증. `spring_client` 함수를 patch하지 않고 **HTTP 경계에서만** 대역을 넣어 URL·`X-Internal-Token`·envelope 파싱이 실코드로 돈다. 커버: 구매자 경로 B 종단(발화→검색→rerank→push→`products.ready`→카드 조회)·프로필(session-end→델타→consolidation→`/profile/me`)·배치(I-17 pull→upsert, 페이지네이션·커서·DELISTED)·degrade 6종·**jwks 실인증 레인 완주**. README에 환경변수·키 세팅 표 + 하니스 실행법 추가 (37 tests, api-spec §1.2·§3.1·§3.3·§4)
+- **이슈 #31 임베딩 파이프라인 프로덕션화** — 셀프호스트 torch → Google `gemini-embedding-001` API 전환(dim 1536, MRL 절단 수동 L2 정규화, `embedding.py`), 인메모리 카탈로그 스토어를 pg-catalog(pgvector)로 이관(`db/catalog/init/00_products.sql` products/batch_state 스키마, `PgCatalogArtifactStore` 신설 — 기존 `CatalogArtifactStore`는 테스트 주입·재구축 임시버퍼용으로 존속, 공유 `ArtifactStore` Protocol로 인터페이스 고정), `get_catalog_store()` 프로덕션 진입점 pg-catalog 전환. 초기 전체 구축은 CLI(`run_batch.py --full`) 수동 트리거, 주기 증분 pull은 APScheduler `BackgroundScheduler`(별도 스레드, `config.catalog_batch_interval_s`)로 자동화해 FastAPI `lifespan`에 배선 (api-spec §4.8, v0.15.14)
 - FastAPI + LangGraph MVP 스캐폴드 — 인증(RS256/JWKS)·설정 주입·SSE 스텁 스트림 (부팅 검증)
 - Spring 역방향 클라이언트 스텁 8종 (검색·이력·장바구니 I-2/I-9·push·I-6/I-7·I-8 배치)
 - 팀 개발 문서 — `README`(아키텍처·기술·Git 규칙), `docs/`(mvp-plan·mvp-todo·roadmap), `docs/specs/`(SPEC 사본), `docs/api-spec.md`(계약 사본 v0.7.0)
