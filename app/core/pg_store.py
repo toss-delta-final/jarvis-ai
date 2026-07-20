@@ -29,15 +29,35 @@ _init_lock = asyncio.Lock()
 
 
 def set_store(store: BaseStore | None) -> None:
-    """store 교체(테스트용) — None 이면 다음 사용 시 재초기화한다."""
+    """store 교체(테스트용) — None 이면 다음 사용 시 재초기화한다.
+
+    기존 `_store_ctx`(실제 연결된 AsyncPostgresStore)가 있으면 백그라운드 태스크로
+    close 를 시도한다 — 이 함수는 sync 라 여기서 직접 await 할 수 없다(PR #46 리뷰).
+    """
     global _store, _store_ctx
+    old_ctx = _store_ctx
     _store = store
     _store_ctx = None
+    if old_ctx is not None:
+        with contextlib.suppress(RuntimeError):
+            asyncio.get_running_loop().create_task(_close_ctx(old_ctx))
+
+
+async def _close_ctx(ctx) -> None:  # noqa: ANN001 - AsyncPostgresStore 의 async context manager
+    with contextlib.suppress(Exception):
+        await ctx.__aexit__(None, None, None)
 
 
 def reset_store() -> None:
-    """테스트 격리용 — InMemoryStore 로 초기화(실제 연결 시도 없이 즉시 blank)."""
+    """테스트 격리용 — InMemoryStore 로 초기화(실제 연결 시도 없이 즉시 blank).
+
+    `_init_lock` 도 새로 만든다 — pytest-asyncio 는 테스트 함수마다 새 이벤트 루프를
+    쓰는데, 모듈 전역 asyncio.Lock 을 여러 루프에 걸쳐 재사용하면 이전 루프에 묶인
+    내부 상태로 다음 테스트에서 락 획득이 영원히 안 풀리는 hang 이 발생할 수 있다.
+    """
+    global _init_lock
     set_store(InMemoryStore())
+    _init_lock = asyncio.Lock()
 
 
 async def get_store() -> BaseStore:

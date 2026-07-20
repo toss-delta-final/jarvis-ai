@@ -19,6 +19,7 @@ import pytest
 from langgraph.store.postgres.aio import AsyncPostgresStore
 
 from app.agents.profile import processed_events
+from app.agents.profile import store as profile_store_module
 from app.agents.profile.store import ProfileStore
 from app.core.config import get_settings
 
@@ -101,6 +102,38 @@ async def test_facts_semantic_index_populated(pg_store) -> None:
     rows = await pg_store.asearch(("facts", user_id), query="임베딩 배선 확인용")
     assert len(rows) == 1
     assert rows[0].value["fact"] == "임베딩 배선 확인용 fact"
+
+
+async def test_append_session_ctx_concurrent_calls_no_lost_update(pg_store) -> None:
+    """동시 append_session_ctx 호출이 서로의 발화를 잃지 않는다(lost update 방지, PR #47 리뷰)."""
+    wrapper = ProfileStore(pg_store)
+    key = _user()
+    await asyncio.gather(
+        wrapper.append_session_ctx(key, "A"),
+        wrapper.append_session_ctx(key, "B"),
+        wrapper.append_session_ctx(key, "C"),
+    )
+    assert set(await wrapper.get_session_ctx(key)) == {"A", "B", "C"}
+
+
+async def test_get_profile_store_module_concurrent_calls_single_connection() -> None:
+    """동시 _get_store() 호출이 커넥션을 중복 생성하지 않는다(PR #47 리뷰)."""
+    profile_store_module.set_store(None)
+    try:
+        stores = await asyncio.gather(*(profile_store_module._get_store() for _ in range(10)))
+        assert len({id(s) for s in stores}) == 1
+    finally:
+        profile_store_module.set_store(None)
+
+
+async def test_processed_events_get_pool_concurrent_calls_single_connection() -> None:
+    """동시 _get_pool() 호출이 커넥션 풀을 중복 생성하지 않는다(PR #47 리뷰)."""
+    processed_events.set_pool(None)
+    try:
+        pools = await asyncio.gather(*(processed_events._get_pool() for _ in range(10)))
+        assert len({id(p) for p in pools}) == 1
+    finally:
+        processed_events.set_pool(None)
 
 
 async def test_state_persists_across_store_instances() -> None:
