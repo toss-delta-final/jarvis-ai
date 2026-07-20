@@ -145,22 +145,26 @@ class ProfileStore:
     async def add_fact(self, user_id: str, fact: str, *, cap: int | None = None) -> None:
         if not fact:
             return
+        settings = get_settings()
+        # dedup 조회 상한 — cap 지정 시 cap 기준, 미지정(테스트 등)이면 profile_max_facts 기준.
+        # 아래 트리밍이 항목 수를 이 값 이하로 유지하므로 dedup 스캔이 완전하다.
+        effective_cap = cap if (cap and cap > 0) else settings.profile_max_facts
         async with _fact_lock(user_id):  # dedup 확인→aput→cap 트리밍 원자화(위 _fact_locks 참조)
-            # cap 미지정이면 dedup 조회 없이 단순 append(호출부는 항상 cap 지정 — builder.py).
-            if not (cap and cap > 0):
-                await self._store.aput((_FACTS_NS_ROOT, user_id), uuid.uuid4().hex, {"fact": fact})
-                return
-            margin = get_settings().profile_facts_query_margin
-            items = await self._store.asearch((_FACTS_NS_ROOT, user_id), limit=cap + margin)
-            # 동일 텍스트가 이미 있으면 재승격 스킵(멱등) — session_end 재처리(clear_session_ctx_upto
-            # 실패·재전송·다음 sleep-time 배치)로 같은 델타가 다시 뽑혀도 중복 fact 가 누적돼 cap
-            # 트리밍에서 정상 fact 를 밀어내지 않게 한다(add_fact 자체를 멱등화, PR #47 후속 리뷰).
+            items = await self._store.asearch(
+                (_FACTS_NS_ROOT, user_id),
+                limit=effective_cap + settings.profile_facts_query_margin,
+            )
+            # 동일 텍스트가 이미 있으면 재승격 스킵(멱등) — cap 유무와 무관하게 항상 수행한다.
+            # session_end 재처리(clear_session_ctx_upto 실패·재전송·다음 sleep-time 배치)로 같은
+            # 델타가 다시 뽑혀도 중복 fact 가 안 쌓이게 하는데, dedup 을 cap 분기 안에만 두면 새
+            # 호출부가 cap 인자를 실수로 빠뜨렸을 때 이 보호가 조용히 무력화된다(PR #47 후속 리뷰).
             if any(it.value["fact"] == fact for it in items):
                 return
             await self._store.aput((_FACTS_NS_ROOT, user_id), uuid.uuid4().hex, {"fact": fact})
-            if len(items) + 1 > cap:  # 방금 추가분 포함 초과 시 최신 cap 개만 유지(recency-wins)
+            # cap 트리밍은 cap 이 지정된 경우에만 — 방금 추가분 포함 초과 시 최신 cap 개만 유지.
+            if cap and cap > 0 and len(items) + 1 > cap:
                 items.sort(key=lambda it: it.created_at)
-                for stale in items[: len(items) + 1 - cap]:
+                for stale in items[: len(items) + 1 - cap]:  # recency-wins
                     await self._store.adelete((_FACTS_NS_ROOT, user_id), stale.key)
 
     # ── transient 세션 버퍼 (승격 전 격리, REQ-PROF transient) ──
