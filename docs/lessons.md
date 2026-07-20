@@ -13,6 +13,15 @@
 
 ---
 
+## [2026-07-20] fire-and-forget 정리(`asyncio.get_running_loop().create_task`)는 sync autouse fixture 컨텍스트에서 매번 조용히 스킵됨
+- 증상: `set_store(None)`이 기존 실 연결을 "백그라운드 태스크로 정리"하도록 고쳤는데(이전 lessons 항목 — 당시엔 fire-and-forget 방식 자체의 검증 실패만 기록하고 원인 규명은 못 함), claude[bot] 후속 리뷰가 "`set_store()`는 sync 함수라 실행 중인 이벤트 루프가 없으면(`asyncio.get_running_loop()`가 RuntimeError) 정리가 스킵되는데, `tests/conftest.py`의 sync autouse fixture가 정확히 그 상황"이라고 지적. 직접 프로브 테스트로 확인한 결과 **실제로 conftest의 autouse fixture(setup 단계)는 항상 실행 중인 이벤트 루프가 없는 상태**였다 — 즉 이 정리 로직은 테스트 환경에서 단 한 번도 실제로 실행된 적이 없었다.
+- 원인: pytest-asyncio 는 async 테스트 함수 실행을 위해 그 함수 안에서만 이벤트 루프를 돌리고, sync autouse fixture(테스트 함수 진입 전 setup)는 그 루프 시작 **전**에 실행된다. `contextlib.suppress(RuntimeError)`로 감싸 "실행 중 루프 없으면 조용히 스킵"하게 만든 게, 겉보기엔 안전한 방어 코드처럼 보이지만 실제로는 "이 정리 코드가 의도한 경로에서 단 한 번도 실행되지 않는다"는 뜻이었다 — 예외를 삼키는 코드가 있으면 "잘 동작하는 중"과 "매번 조용히 실패하는 중"을 로그 없이는 구분할 수 없다.
+- 규칙:
+  - **"실행 중 이벤트 루프가 없으면 스킵"하는 fire-and-forget 패턴은, 그 코드가 실제로 실행되는 호출 경로들의 이벤트 루프 유무를 전부 실측 확인한다** — 특히 테스트 conftest 의 autouse fixture 는 sync 인 경우가 흔한데, sync fixture 라고 해서 "이벤트 루프가 있을 수도 있겠지"라고 가정하면 안 된다. 직접 `asyncio.get_running_loop()` 를 프로브해서 확인(이번처럼).
+  - **필요한 정리를 "당장 못하면 다음 기회에 확실히 한다"는 지연 큐 방식이 fire-and-forget 보다 안전하다** — `set_store()`(sync, 정리 대상을 리스트에 쌓기만 함) → 다음 `get_store()`(반드시 async 컨텍스트) 진입 시 그 큐를 `await` 로 확실히 비운다. 이러면 "이벤트 루프가 있는지 없는지"를 신경 쓸 필요가 없고, 타이밍에 의존하지 않아 `conn.closed` 로 결정론적으로 검증 가능하다(이전 fire-and-forget 은 검증 자체가 불가능했음).
+  - **`except`/`suppress`로 예외를 삼키는 코드를 작성할 때마다 "이 경로가 실제로 정상 실행되는지"를 별도로 검증할 방법을 만든다** — 삼켜진 예외는 로그 없이는 흔적이 안 남으므로, "예외가 안 났다"와 "정상 실행됐다"를 혼동하기 쉽다.
+- 관련: `app/core/pg_store.py::set_store/_drain_pending_cleanup`, `tests/integration/test_buyer_thread_store.py::test_set_store_none_defers_cleanup_to_next_get_store_call`, PR #46 후속 리뷰
+
 ## [2026-07-20] fire-and-forget 정리 태스크는 "참조를 든 채로 재사용" 방식으로는 검증 불가
 - 증상: `pg_store.set_store()`가 기존 실 연결을 백그라운드 태스크(`create_task`)로 닫도록 고친 뒤, 회귀 테스트로 `store.aget()` 재호출이 실패하는지 확인하려 했으나 **정리 로직을 일부러 빼도 테스트가 계속 통과**했다. `conn.closed` 로 직접 확인하도록 바꿨더니 이번엔 **정리 로직을 빼도(TEMP) `conn.closed`가 True로 나와** 신뢰할 수 없는 결과였다(원인 미규명 — psycopg 커넥션이 pytest 이벤트 루프 재사용 과정에서 어떤 이유로든 닫힌 것으로 보이나 확정 못 함).
 - 원인: (1) 테스트가 `store`/`conn` 객체를 로컬 변수로 계속 참조하고 있어, 모듈 전역 `_store_ctx`만 `None` 으로 바뀌어도 파이썬 GC 관점에서 그 객체는 죽지 않는다 — "참조가 끊겼는지"와 "실제로 `__aexit__`가 호출됐는지"는 다른 질문이다. (2) fire-and-forget(`asyncio.create_task`, await 로 완료를 기다리지 않음)은 태스크 완료 시점을 테스트가 통제할 수 없어 근본적으로 타이밍에 취약하다.

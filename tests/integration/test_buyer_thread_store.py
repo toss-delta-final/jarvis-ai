@@ -138,3 +138,26 @@ async def test_pg_store_get_store_concurrent_calls_single_connection() -> None:
         assert len({id(s) for s in stores}) == 1
     finally:
         pg_store_module.set_store(None)
+
+
+async def test_set_store_none_defers_cleanup_to_next_get_store_call() -> None:
+    """set_store(None) 이 sync 컨텍스트에서 놓친 정리를 다음 get_store() 가 확실히 처리한다.
+
+    fire-and-forget(asyncio.get_running_loop().create_task) 방식은 실행 중인
+    이벤트 루프가 없으면(예: conftest 의 sync autouse fixture) 조용히 스킵돼
+    실제로 한 번도 정리가 안 됐었다(PR #46 후속 리뷰) — 지연 정리 큐로 교체 후,
+    다음 get_store() 호출 시 확실히 __aexit__ 가 실행되는지 conn.closed 로 검증한다.
+    """
+    pg_store_module.set_store(None)
+    store = await pg_store_module.get_store()
+    assert isinstance(store, AsyncPostgresStore)
+    conn = store.conn
+    assert not conn.closed
+
+    pg_store_module.set_store(None)  # sync 호출 — 정리는 아직 큐에만 쌓인 상태
+    assert not conn.closed  # 아직 정리 안 됨(다음 get_store() 전까지)
+
+    await pg_store_module.get_store()  # 이 호출 진입 시 _drain_pending_cleanup() 이 실행됨
+    assert conn.closed
+
+    pg_store_module.set_store(None)
