@@ -134,14 +134,18 @@ def _search_query_params(filters: ProductSearchFilters) -> dict:
 
 
 def _parse_search_response(data: object) -> ProductSearchResult:
-    """BE I-1 응답 {success, data:{items:[...]}} → ProductSearchResult (§4.6, v0.15.5).
+    """BE I-1 응답 → ProductSearchResult (§4.6, v0.15.5).
 
-    BE 응답엔 totalCount 가 없어 total_count 는 수신 items 수로 둔다.
+    현재 Spring ``ApiResponse<List<...>>`` 는 data 자체가 배열({success, data:[...]})이다.
+    구 계약의 data:{items:[...]} 형태도 브랜치 간 호환을 위해 함께 수용한다. BE 응답엔
+    totalCount 가 없어 total_count 는 수신 items 수로 둔다.
     """
     items: list = []
     if isinstance(data, dict):
         payload = data.get("data")
-        if isinstance(payload, dict) and isinstance(payload.get("items"), list):
+        if isinstance(payload, list):
+            items = payload
+        elif isinstance(payload, dict) and isinstance(payload.get("items"), list):
             items = payload["items"]
         elif isinstance(data.get("items"), list):
             items = data["items"]

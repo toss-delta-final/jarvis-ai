@@ -412,6 +412,30 @@ async def test_search_products_parses_i1_items(monkeypatch: pytest.MonkeyPatch) 
     assert res.products[0].category == "의류" and res.products[0].brand == "B"
 
 
+async def test_search_products_parses_i1_array_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
+    """search_products 가 Spring ApiResponse<List> 인 {success,data:[...]} 배열도 파싱한다(§2.3 정합)."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    payload = {
+        "success": True,
+        "data": [
+            {
+                "productId": 1,
+                "name": "셔츠",
+                "price": 29900,
+                "categoryName": "의류",
+                "brandName": "B",
+                "rating": 4.8,
+            }
+        ],
+    }
+    monkeypatch.setattr(sc, "_client", lambda: _FakeClient(payload))
+    res = await sc.search_products(ProductSearchFilters())
+    assert len(res.products) == 1
+    assert res.products[0].category == "의류" and res.products[0].brand == "B"
+
+
 async def test_search_products_malformed_maps_to_search_failed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
