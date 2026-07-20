@@ -1,9 +1,8 @@
-"""판매자 챗봇 엔드포인트 — POST /seller/chat (S-4, Spring 패스스루).
+"""판매자 챗봇 엔드포인트 — POST /seller/chat (S-4, api-spec §3.2).
 
-[변경 2026-07-19, REALIGN D1/F1] FE 직접 호출 폐기 — FE → Spring(CH-6 세션) →
-Spring 이 S-4 로 본 엔드포인트를 호출하고 SSE 를 가공 없이 FE 로 패스스루한다
-(아키텍처 확정 07/17). 인증 = X-Internal-Token + Spring 주입 메아리 신원
-(require_seller_internal — 토큰 401, 신원 헤더 결손 400).
+FE 가 Spring 발급 판매자 JWT(role=seller)로 직접 호출한다. 인증 = require_seller
+(판매자 스코프·brandId 클레임 검증, 스코프 없으면 403). 신원(sellerId/brandId)은
+검증된 JWT 클레임에서만 도출한다 — 요청 본문 신원은 신뢰하지 않는다(IDOR 방지).
 
 MVP 범위(api-spec v0.14.0 §3.2, 결정 20 개정): 통계 Q&A + 상세 수정 draft 흐름.
 이벤트는 token / draft / done / error 만 — done.finishReason 은 "stop" 단일.
@@ -41,7 +40,7 @@ from app.agents.seller.orchestrator import route_question, run_analysis_pipeline
 from app.agents.seller.pipeline import parse_apply_message, parse_confirm_message
 from app.agents.seller.schemas import DraftProposal
 from app.agents.seller.workers import build_general_agent, build_product_agent
-from app.api.deps import require_seller_internal
+from app.api.deps import require_seller
 from app.core.auth import Identity
 from app.core.config import get_settings
 from app.core.conversation import get_conversation_store
@@ -427,12 +426,12 @@ async def _seller_stream(request: ChatRequest, identity: Identity) -> AsyncItera
 async def seller_chat(
     request: ChatRequest,
     http_request: Request,
-    identity: Identity = Depends(require_seller_internal),
+    identity: Identity = Depends(require_seller),
 ) -> StreamingResponse:
-    """판매자 챗봇 SSE 스트리밍 (S-4, api-spec §3.2 — Spring 패스스루).
+    """판매자 챗봇 SSE 스트리밍 (S-4, api-spec §3.2).
 
-    신원(sellerId/brandId)은 require_seller_internal 이 Spring 주입 헤더에서
-    확보를 보장한다(결손 400). 4-1b 부터 supervisor 3분기 디스패치가 배선됐다.
+    신원(sellerId/brandId)은 require_seller 가 검증된 판매자 JWT 클레임에서
+    확보한다(스코프 없으면 403). 4-1b 부터 supervisor 3분기 디스패치가 배선됐다.
 
     [합류 2026-07-20 rebase] 스트림 수명주기(§2.9)는 팀 공통 래퍼 open_stream 소관 —
     (a) sessionId 당 동시 1스트림(409) (b) 연결 종료 취소 (c) first-token/전체 타임아웃.

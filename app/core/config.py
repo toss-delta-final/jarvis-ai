@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     jwt_audience: str | None = "shopping-fastapi-ai"
 
     # [통일 2026-07-20 rebase 합류] 서비스 토큰은 팀 규약 `internal_api_token` 단일 키.
-    # 인바운드(S-4 require_seller_internal·§3.5 verify_service_token)와 아웃바운드
+    # 인바운드(§3.5 verify_service_token — 프로필 write I-20)와 아웃바운드
     # (spring_client — AI→Spring)가 같은 X-Internal-Token 값을 공유한다(아키텍처 07/17).
     # 구 seller 전용 키 service_token(인바운드)·internal_token(아웃바운드)은 폐기.
     # spring_timeout_s 도 팀 정의(아래 공통 블록)를 재사용한다 — 중복 정의 금지.
