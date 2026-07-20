@@ -1,19 +1,23 @@
-"""대화 저장 (api-spec §6.3 a) — user/assistant 턴 + 상태 + 부분 텍스트 보존.
+"""대화 저장 (api-spec §6.3 a) — user/assistant 턴 + 상태 + 부분 텍스트 보존 (이슈 #33).
 
-MVP 는 인메모리 스토어다. api-spec §6.3 이 명시한 LangGraph checkpointer(AI Postgres,
-sessionId = thread 키)로의 이관은 그래프 연결(#2 이후) 시점에 **동일 인터페이스로** 교체한다
-— 프로필 파이프라인의 세션 종료 스캔이 이 저장소를 원천으로 삼는다.
+pg-profile 의 conversation_turns 일반 테이블로 이관 — checkpointer 가 **아니다**(재개용이
+아니라 감사·구조화 로그 상관관계 조회용, db/profile/init/01_conversation_turns.sql). 유닛
+테스트는 계속 인메모리(ConversationStore)를 주입해 실 인프라 없이 빠르게 돈다
+(app/pipelines/artifact_store.py 와 동일 원칙 — 실 스토어 자체 검증은 tests/integration/).
 """
 
 from __future__ import annotations
 
+import asyncio
 import itertools
+import uuid
 from collections import deque
 from dataclasses import dataclass
 from enum import Enum
+from typing import Protocol
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
-
 
 logger = get_logger(__name__)
 
@@ -40,12 +44,28 @@ class Turn:
     status: TurnStatus = TurnStatus.PENDING
 
 
-class ConversationStore:
-    """인메모리 대화 저장소. conversationId(=sessionId) 별로 턴을 순서대로 보관한다."""
+class ConversationStoreProtocol(Protocol):
+    """대화 저장소 공유 계약 — ConversationStore(인메모리)·PgConversationStore(pg-profile)."""
 
-    # 인메모리 안전 상한(placeholder) — Postgres checkpointer 이관 시 불필요. 초과 시 FIFO 축출.
+    async def save_user_message(
+        self, conversation_id: str, user_id: str | None, role: str, text: str
+    ) -> str: ...
+
+    async def finalize_assistant(
+        self, turn_id: str, assistant_text: str, status: TurnStatus
+    ) -> None: ...
+
+    async def get_turn(self, turn_id: str) -> Turn | None: ...
+
+    async def turns_for(self, conversation_id: str) -> list[Turn]: ...
+
+
+class ConversationStore:
+    """인메모리 대화 저장소(테스트 전용). conversationId(=sessionId) 별로 턴을 순서대로 보관한다."""
+
+    # 인메모리 안전 상한(테스트/dev 폴백 전용) — pg-profile(디스크 기반)엔 적용하지 않는다.
     # [한계] 전역 FIFO라 한 사용자가 상한을 채우면 무관한 타 사용자의 확정 턴도 축출될 수 있다
-    # (cross-tenant). Postgres 이관 전까지의 MVP 한계이며, 사용자/대화 단위 쿼터는 post-MVP.
+    # (cross-tenant). 프로덕션 경로(PgConversationStore)는 이 한계가 없다.
     _MAX_TURNS = 5000
 
     def __init__(self) -> None:
@@ -54,7 +74,7 @@ class ConversationStore:
         self._order: deque[str] = deque()
         self._seq = itertools.count(1)
 
-    def save_user_message(
+    async def save_user_message(
         self, conversation_id: str, user_id: str | None, role: str, text: str
     ) -> str:
         """사용자 메시지 수신 즉시 저장(§6.3 a). turn_id 를 반환한다(assistant 마감에 사용)."""
@@ -93,7 +113,9 @@ class ConversationStore:
                 if not ids:
                     del self._by_conversation[turn.conversation_id]
 
-    def finalize_assistant(self, turn_id: str, assistant_text: str, status: TurnStatus) -> None:
+    async def finalize_assistant(
+        self, turn_id: str, assistant_text: str, status: TurnStatus
+    ) -> None:
         """어시스턴트 응답을 상태와 함께 마감한다. FAILED/CANCELLED 도 부분 텍스트를 보존한다."""
         turn = self._turns.get(turn_id)
         if turn is None:
@@ -103,14 +125,74 @@ class ConversationStore:
         turn.assistant_text = assistant_text
         turn.status = status
 
-    def get_turn(self, turn_id: str) -> Turn | None:
+    async def get_turn(self, turn_id: str) -> Turn | None:
         return self._turns.get(turn_id)
 
-    def turns_for(self, conversation_id: str) -> list[Turn]:
+    async def turns_for(self, conversation_id: str) -> list[Turn]:
         return [self._turns[t] for t in self._by_conversation.get(conversation_id, [])]
 
 
-_store = ConversationStore()
+class PgConversationStore:
+    """pg-profile conversation_turns 테이블 기반 스토어. ConversationStore 와 동일 인터페이스."""
+
+    def __init__(self, pool) -> None:  # noqa: ANN001 - psycopg_pool.AsyncConnectionPool(지연 임포트)
+        self._pool = pool
+
+    async def save_user_message(
+        self, conversation_id: str, user_id: str | None, role: str, text: str
+    ) -> str:
+        turn_id = uuid.uuid4().hex
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                "INSERT INTO conversation_turns "
+                "(turn_id, conversation_id, user_id, role, user_text) VALUES (%s, %s, %s, %s, %s)",
+                (turn_id, conversation_id, user_id, role, text),
+            )
+        return turn_id
+
+    async def finalize_assistant(
+        self, turn_id: str, assistant_text: str, status: TurnStatus
+    ) -> None:
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                "UPDATE conversation_turns SET assistant_text = %s, status = %s WHERE turn_id = %s",
+                (assistant_text, status.value, turn_id),
+            )
+
+    async def get_turn(self, turn_id: str) -> Turn | None:
+        async with self._pool.connection() as conn:
+            row = await (
+                await conn.execute(
+                    "SELECT turn_id, conversation_id, user_id, role, user_text, assistant_text, status "
+                    "FROM conversation_turns WHERE turn_id = %s",
+                    (turn_id,),
+                )
+            ).fetchone()
+        return _row_to_turn(row) if row else None
+
+    async def turns_for(self, conversation_id: str) -> list[Turn]:
+        async with self._pool.connection() as conn:
+            rows = await (
+                await conn.execute(
+                    "SELECT turn_id, conversation_id, user_id, role, user_text, assistant_text, status "
+                    "FROM conversation_turns WHERE conversation_id = %s ORDER BY created_at",
+                    (conversation_id,),
+                )
+            ).fetchall()
+        return [_row_to_turn(row) for row in rows]
+
+
+def _row_to_turn(row: tuple) -> Turn:
+    turn_id, conversation_id, user_id, role, user_text, assistant_text, status = row
+    return Turn(
+        turn_id=turn_id,
+        conversation_id=conversation_id,
+        user_id=user_id,
+        role=role,
+        user_text=user_text,
+        assistant_text=assistant_text,
+        status=TurnStatus(status),
+    )
 
 
 def conversation_key(subject: str | None, session_id: str) -> str:
@@ -123,12 +205,46 @@ def conversation_key(subject: str | None, session_id: str) -> str:
     return f"{subject or 'anon'}:{session_id}"
 
 
-def get_conversation_store() -> ConversationStore:
-    """대화 저장소 싱글턴."""
+_store: ConversationStoreProtocol | None = None
+_pool_ctx: object | None = None  # AsyncConnectionPool cm — 앱 수명 동안 GC 방지
+_fallback_warned = False
+
+
+def set_store(store: ConversationStoreProtocol | None) -> None:
+    """store 교체(테스트용) — None 이면 다음 사용 시 재초기화한다."""
+    global _store, _pool_ctx
+    _store = store
+    _pool_ctx = None
+
+
+async def get_conversation_store() -> ConversationStoreProtocol:
+    """대화 저장소 — pg-profile(conversation_turns) 지연 초기화, 실패 시 dev 한정 인메모리 폴백."""
+    global _store, _pool_ctx, _fallback_warned
+    if _store is None:
+        settings = get_settings()
+        try:
+            from psycopg_pool import AsyncConnectionPool  # noqa: PLC0415
+
+            pool = AsyncConnectionPool(settings.profile_db_url, open=False)
+            await asyncio.wait_for(
+                pool.open(wait=True), timeout=settings.state_store_connect_timeout_s
+            )
+            _pool_ctx = pool
+            _store = PgConversationStore(pool)
+        except Exception as exc:
+            if settings.auth_mode == "jwks":
+                raise  # 운영 — 폴백 금지(대화 저장·감사 로그가 조용히 증발하면 안 된다)
+            if not _fallback_warned:
+                logger.warning(
+                    "pg-profile conversation_turns 연결 실패(%s) — 인메모리 폴백 "
+                    "(dev 전용: 프로세스 재시작 시 대화 이력 증발)",
+                    exc,
+                )
+                _fallback_warned = True
+            _store = ConversationStore()
     return _store
 
 
 def reset_store() -> None:
-    """테스트용 — 저장소 초기화."""
-    global _store
-    _store = ConversationStore()
+    """테스트용 — 저장소 초기화(인메모리로 되돌림)."""
+    set_store(ConversationStore())

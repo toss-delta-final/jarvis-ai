@@ -89,7 +89,10 @@ def _error_frame(code: str, message: str) -> str:
     """스트림 시작 후 오류의 in-stream `error` 프레임 (api-spec §3.1, §2.9 c)."""
     import json
 
-    payload = {"type": "error", "data": ErrorData(code=code, message=message).model_dump(by_alias=True)}
+    payload = {
+        "type": "error",
+        "data": ErrorData(code=code, message=message).model_dump(by_alias=True),
+    }
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
@@ -130,14 +133,19 @@ async def open_stream(
 
     if not registry.acquire(session_id):
         if observer is not None:
-            observer.finish(loop.time(), TurnStatus.FAILED, "STREAM_IN_PROGRESS")
+            await observer.finish(loop.time(), TurnStatus.FAILED, "STREAM_IN_PROGRESS")
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "STREAM_IN_PROGRESS", "message": "동일 세션에 진행 중인 스트림이 있습니다"},
+            detail={
+                "code": "STREAM_IN_PROGRESS",
+                "message": "동일 세션에 진행 중인 스트림이 있습니다",
+            },
         )
 
     if observer is not None:
-        observer.commit_user_message()  # 슬롯 확보 후에만 사용자 메시지 저장(§6.3 a, 유령 턴 방지)
+        await (
+            observer.commit_user_message()
+        )  # 슬롯 확보 후에만 사용자 메시지 저장(§6.3 a, 유령 턴 방지)
 
     start = loop.time()
     try:
@@ -146,7 +154,7 @@ async def open_stream(
         # 그래프 진입 검증 등 inner_factory 동기 예외 — 슬롯·턴 누수 방지.
         registry.release(session_id)
         if observer is not None:
-            observer.finish(loop.time(), TurnStatus.FAILED, "INTERNAL")
+            await observer.finish(loop.time(), TurnStatus.FAILED, "INTERNAL")
         raise
 
     poll = settings.stream_disconnect_poll_s
@@ -178,7 +186,7 @@ async def open_stream(
         if remaining <= 0:
             await _abort_prestream()
             if observer is not None:
-                observer.finish(loop.time(), TurnStatus.FAILED, "UPSTREAM_TIMEOUT")
+                await observer.finish(loop.time(), TurnStatus.FAILED, "UPSTREAM_TIMEOUT")
             raise HTTPException(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
                 detail={"code": "UPSTREAM_TIMEOUT", "message": "상류(LLM) 응답 지연"},
@@ -192,13 +200,13 @@ async def open_stream(
             except asyncio.CancelledError:
                 await _abort_prestream()
                 if observer is not None:
-                    observer.finish(loop.time(), TurnStatus.CANCELLED)
+                    await observer.finish(loop.time(), TurnStatus.CANCELLED)
                 raise
             except Exception:
                 # 첫 프레임 전 상류 오류(LLM/Spring 등) — 누수 방지 후 전파.
                 await _abort_prestream()
                 if observer is not None:
-                    observer.finish(loop.time(), TurnStatus.FAILED, "INTERNAL")
+                    await observer.finish(loop.time(), TurnStatus.FAILED, "INTERNAL")
                 raise
             break
         if await request.is_disconnected():
@@ -206,7 +214,7 @@ async def open_stream(
             logger.info("stream cancelled before first token session=%s", session_id)
             await _abort_prestream()
             if observer is not None:
-                observer.finish(loop.time(), TurnStatus.CANCELLED)
+                await observer.finish(loop.time(), TurnStatus.CANCELLED)
             return StreamingResponse(
                 _empty_stream(),
                 media_type="text/event-stream; charset=utf-8",
@@ -286,7 +294,7 @@ async def open_stream(
             await agen.aclose()
             registry.release(session_id)
             if observer is not None:
-                observer.finish(loop.time(), stream_status, error_type)
+                await observer.finish(loop.time(), stream_status, error_type)
 
     return StreamingResponse(
         _wrapped(),

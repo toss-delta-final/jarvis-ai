@@ -442,7 +442,7 @@ async def seller_chat(
         identity=identity,
         conversation_id=request.session_id,
         message=request.message,
-        store=get_conversation_store(),
+        store=await get_conversation_store(),
         now=asyncio.get_running_loop().time(),
     )
     return await open_stream(
