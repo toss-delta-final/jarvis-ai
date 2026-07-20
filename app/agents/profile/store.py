@@ -19,7 +19,6 @@ dev 폴백은 app/agents/seller/history.py 와 동일 규약(InMemoryStore + 경
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import uuid
 from dataclasses import dataclass
@@ -59,17 +58,14 @@ def _session_lock(key: str) -> asyncio.Lock:
     return lock
 
 
-# user_id 별 asyncio.Lock — add_fact() 의 cap 트리밍(asearch→sort→adelete) 구간을 직렬화한다.
+# user_id 별 asyncio.Lock — add_fact() 의 "dedup 확인→aput→cap 트리밍" 구간을 직렬화한다.
 #
-# [검증 결과, PR #47 후속 리뷰] append_session_ctx 와 달리 이 트리밍은 단일 값을 덮어쓰는
-# get→put 이 아니라, 시간에 따라 계속 늘어나는 항목 집합에서 "가장 오래된 초과분만 지우는"
-# 연산이다 — 임의 시점의 부분 스냅샷은 항상 그 시점까지 커밋된 항목들의 시간순 앞부분(prefix)
-# 이므로, 서로 다른 스냅샷을 본 동시 호출들의 삭제 대상은 항상 서로 부분집합 관계이고
-# adelete 는 멱등이라 실제 데이터 유실로 이어지지 않는다(포워스트-인터리브 fake store 와
-# 실 Postgres 양쪽으로 재현 시도했으나 락 없이도 cap 을 넘기지 않음을 확인). 즉 이 락은
-# 증명된 버그의 수정이 아니라 _session_locks 와의 패턴 일관성을 위한 방어적 비용-제로 조치.
-# 한계는 _session_locks 와 동일(프로세스 로컬, user_id 별 무제한 누적) — reset_profile_store()
-# 로만 정리.
+# [PR #47 후속 리뷰] dedup 도입 전까지 이 락은 cap 트리밍만 감쌌고, 트리밍은 삭제 대상이
+# 항상 부분집합 관계(멱등)라 락 없이도 cap 을 넘기지 않아 "패턴 일관성용 방어"에 그쳤다.
+# 그러나 dedup(동일 텍스트 재승격 스킵)이 붙으면서 이 락은 load-bearing 이 됐다 — 락이
+# 없으면 같은 텍스트를 동시에 add_fact 하는 두 호출이 서로의 aput 전에 각자 asearch 로
+# "없음"을 보고 둘 다 aput 해 중복이 새기 때문(check-then-act 레이스). 한계는 _session_locks
+# 와 동일(프로세스 로컬, user_id 별 무제한 누적) — reset_profile_store() 로만 정리.
 _fact_locks: dict[str, asyncio.Lock] = {}
 
 
@@ -149,16 +145,23 @@ class ProfileStore:
     async def add_fact(self, user_id: str, fact: str, *, cap: int | None = None) -> None:
         if not fact:
             return
-        key = uuid.uuid4().hex
-        await self._store.aput((_FACTS_NS_ROOT, user_id), key, {"fact": fact})
-        if cap and cap > 0:
-            async with _fact_lock(user_id):  # asearch→adelete 구간 직렬화(방어적, 아래 참조)
-                margin = get_settings().profile_facts_query_margin
-                items = await self._store.asearch((_FACTS_NS_ROOT, user_id), limit=cap + margin)
-                if len(items) > cap:
-                    items.sort(key=lambda it: it.created_at)
-                    for stale in items[: len(items) - cap]:  # 최신 cap 개만 유지(recency-wins)
-                        await self._store.adelete((_FACTS_NS_ROOT, user_id), stale.key)
+        async with _fact_lock(user_id):  # dedup 확인→aput→cap 트리밍 원자화(위 _fact_locks 참조)
+            # cap 미지정이면 dedup 조회 없이 단순 append(호출부는 항상 cap 지정 — builder.py).
+            if not (cap and cap > 0):
+                await self._store.aput((_FACTS_NS_ROOT, user_id), uuid.uuid4().hex, {"fact": fact})
+                return
+            margin = get_settings().profile_facts_query_margin
+            items = await self._store.asearch((_FACTS_NS_ROOT, user_id), limit=cap + margin)
+            # 동일 텍스트가 이미 있으면 재승격 스킵(멱등) — session_end 재처리(clear_session_ctx_upto
+            # 실패·재전송·다음 sleep-time 배치)로 같은 델타가 다시 뽑혀도 중복 fact 가 누적돼 cap
+            # 트리밍에서 정상 fact 를 밀어내지 않게 한다(add_fact 자체를 멱등화, PR #47 후속 리뷰).
+            if any(it.value["fact"] == fact for it in items):
+                return
+            await self._store.aput((_FACTS_NS_ROOT, user_id), uuid.uuid4().hex, {"fact": fact})
+            if len(items) + 1 > cap:  # 방금 추가분 포함 초과 시 최신 cap 개만 유지(recency-wins)
+                items.sort(key=lambda it: it.created_at)
+                for stale in items[: len(items) + 1 - cap]:
+                    await self._store.adelete((_FACTS_NS_ROOT, user_id), stale.key)
 
     # ── transient 세션 버퍼 (승격 전 격리, REQ-PROF transient) ──
     async def append_session_ctx(self, key: str, text: str, *, cap: int | None = None) -> None:
@@ -295,8 +298,19 @@ async def _get_store() -> BaseStore:
             except Exception as exc:
                 if entered_ctx is not None:
                     # setup() 실패 등 부분 실패 — 이미 연 연결을 닫아 커넥션 누수를 막는다.
-                    with contextlib.suppress(Exception):
+                    # __aexit__ 정리 중 나는 CancelledError 는 suppress(Exception) 이 못 잡아
+                    # (BaseException) 전파되는데, 마침 이 태스크의 실제 취소가 아니라면(정리 잔재)
+                    # 그대로 새어 session_end 의 except Exception 도 못 잡아 §3.5 를 깬다 —
+                    # task.cancelling() 로 실제 취소만 재전파한다(_drain_pending_cleanup 과 동일,
+                    # PR #47 후속 리뷰).
+                    try:
                         await entered_ctx.__aexit__(type(exc), exc, exc.__traceback__)
+                    except asyncio.CancelledError:
+                        task = asyncio.current_task()
+                        if task is not None and task.cancelling() > 0:
+                            raise
+                    except Exception:
+                        pass
                 if settings.auth_mode == "jwks":
                     raise  # 운영 — 폴백 금지(프로필이 조용히 증발하면 안 된다)
                 if not _fallback_warned:

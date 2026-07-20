@@ -13,7 +13,6 @@ app/core/pg_store.py(BaseStore 공유 연결)와 별개 연결을 쓴다 — Bas
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 
 from psycopg_pool import AsyncConnectionPool
@@ -112,8 +111,19 @@ async def _get_pool() -> AsyncConnectionPool | None:
             except Exception as exc:
                 if pool is not None:
                     # open() 부분 실패(타임아웃 등) — 이미 생성된 풀을 닫아 커넥션 누수 방지.
-                    with contextlib.suppress(Exception):
+                    # pool.close() 정리 중 나는 CancelledError 는 suppress(Exception) 이 못 잡아
+                    # (BaseException) 전파되는데, 마침 이 태스크의 실제 취소가 아니라면(정리 잔재)
+                    # 그대로 새어 session_end 의 except Exception 도 못 잡아 §3.5 를 깬다 —
+                    # task.cancelling() 로 실제 취소만 재전파한다(_drain_pending_cleanup 과 동일,
+                    # PR #47 후속 리뷰).
+                    try:
                         await pool.close()
+                    except asyncio.CancelledError:
+                        task = asyncio.current_task()
+                        if task is not None and task.cancelling() > 0:
+                            raise
+                    except Exception:
+                        pass
                 if settings.auth_mode == "jwks":
                     raise  # 운영 — 폴백 금지(멱등이 조용히 깨지면 안 된다)
                 if not _fallback_warned:

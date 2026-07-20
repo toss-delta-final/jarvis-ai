@@ -356,6 +356,19 @@ async def test_add_fact_count_cap(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(facts) == 3 and facts == ["fact-7", "fact-8", "fact-9"]
 
 
+async def test_add_fact_dedup_skips_duplicate_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    """동일 텍스트 재승격은 스킵된다(멱등) — session_end 재처리(clear 실패·재전송·다음 배치)로
+    같은 델타가 다시 뽑혀도 중복 fact 가 누적되지 않는다(PR #47 후속 리뷰)."""
+    monkeypatch.setattr(get_settings(), "profile_max_facts", 5)
+    store = await get_profile_store()
+    await store.add_fact("dup1", "좋아하는 색은 파랑", cap=5)
+    await store.add_fact("dup1", "좋아하는 색은 파랑", cap=5)  # 동일 텍스트 재승격
+    await store.add_fact("dup1", "알러지: 땅콩", cap=5)
+    facts = await store.get_facts("dup1")
+    assert facts.count("좋아하는 색은 파랑") == 1  # 중복 저장 안 됨
+    assert set(facts) == {"좋아하는 색은 파랑", "알러지: 땅콩"}
+
+
 async def test_append_session_ctx_caps_count() -> None:
     """세션 버퍼 개수 상한 — 최신 cap 개만 유지."""
     store = await get_profile_store()
