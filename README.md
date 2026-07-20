@@ -170,6 +170,7 @@ SSE 이벤트 — 구매자: `token`·`conditions`·`action`·`suggestions`·`bu
 | 변수 | 로컬/CI | 운영 | 설명 |
 |---|---|---|---|
 | `ANTHROPIC_API_KEY` | 불필요 | **필수** | 미설정 시 `/chat`은 네트워크 호출 없이 `LLM_UNAVAILABLE` 반환 (E2E는 주입형 fake로 대체) |
+| `LLM_PROVIDER` | `anthropic` | `anthropic`/`openai` | LLM 백엔드 선택. `openai` 시 `OPENAI_API_KEY` 필요. 호출부는 tier(fast/smart) 추상화 — provider 가 모델 해석 (이슈 #40) |
 | `AUTH_MODE` | `dev` | `jwks` | `dev`=서명 검증 없이 클레임만 읽고 헤더 없으면 게스트(로컬 전용) |
 | `JWKS_URL` | — | **필수** | Spring `/.well-known/jwks.json` — `jwks` 모드에서 미설정 시 기동 실패 |
 | `JWT_ISSUER`·`JWT_AUDIENCE` | 기본값 | 확정값 주입 | 스트림 티켓 `iss`/`aud` 검증(§2.3) |
