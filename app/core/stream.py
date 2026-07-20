@@ -164,9 +164,17 @@ async def open_stream(
     if observer is not None:
         try:
             # 슬롯 확보 후에만 사용자 메시지 저장(§6.3 a, 유령 턴 방지). 이제 실제 pg-profile
-            # I/O 라 DB 오류로 예외를 던질 수 있다 — release 없이 전파되면 해당 session_id 가
-            # 프로세스 재시작 전까지 영구히 409 를 반환한다(슬롯 영구 누수, PR #48 리뷰).
+            # I/O 라 DB 오류·클라이언트 disconnect 로 예외를 던질 수 있다 — release 없이
+            # 전파되면 해당 session_id 가 프로세스 재시작 전까지 영구히 409 를 반환한다
+            # (슬롯 영구 누수, PR #48 리뷰).
             await observer.commit_user_message()
+        except asyncio.CancelledError:
+            # disconnect 로 이 DB 쓰기 중 취소되면 CancelledError(BaseException)라 아래
+            # except Exception 으로는 안 잡혀 release 가 스킵됐었다(슬롯 영구 누수, PR #48
+            # 후속 리뷰) — 명시적으로 잡아 슬롯을 풀고 CANCELLED 로 마감 후 취소를 재전파한다.
+            registry.release(session_id)
+            await _safe_finish(observer, session_id, loop.time(), TurnStatus.CANCELLED)
+            raise
         except Exception:
             registry.release(session_id)
             await _safe_finish(observer, session_id, loop.time(), TurnStatus.FAILED, "INTERNAL")

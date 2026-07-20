@@ -13,7 +13,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.auth import Identity
-from app.core.conversation import TurnStatus, conversation_key, get_conversation_store
+from app.core.conversation import (
+    PgConversationStore,
+    TurnStatus,
+    conversation_key,
+    get_conversation_store,
+)
 from app.core.config import get_settings
 from app.core.observability import message_fingerprint, start_observation
 from app.core.stream import get_registry
@@ -141,6 +146,56 @@ async def test_stream_completes_when_finalize_assistant_fails(
     assert any(
         rec.get("event") == "chat_request" for rec in records
     ), "finalize 실패 시 §6.3 b 구조화 로그가 유실됨"
+
+
+async def test_slot_released_when_commit_user_message_cancelled() -> None:
+    """commit_user_message(pg-profile write) 중 disconnect 로 취소돼도 슬롯이 해제된다.
+
+    CancelledError(BaseException)가 except Exception 을 뚫고 release 를 스킵하면 해당
+    session_id 가 재시작 전까지 영구히 409 를 반환한다(§2.9 a 슬롯 누수, PR #48 후속 리뷰).
+    """
+    obs = await _obs("cancel-commit")
+
+    async def cancel_commit() -> None:
+        raise asyncio.CancelledError
+
+    obs.commit_user_message = cancel_commit
+    registry = get_registry()
+
+    async def gen():
+        yield 'data: {"type":"token","data":{"text":"x"}}\n\n'
+
+    with pytest.raises(asyncio.CancelledError):
+        await open_stream(_FakeRequest(), "member:cancel-commit", gen, observer=obs)
+    assert not registry.is_active("member:cancel-commit")  # 슬롯 해제됨(영구 409 방지)
+
+
+async def test_pg_conversation_store_write_has_query_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """save_user_message 쿼리가 응답 없이 멈추면 실행 상한 초과로 종료된다.
+
+    타임아웃이 없으면 commit_user_message 가 영영 안 끝나 동시 스트림 슬롯이 영구히
+    잠긴다(§2.9 a, PR #48 후속 리뷰)."""
+    monkeypatch.setattr(get_settings(), "state_store_query_timeout_s", 0.05)
+
+    class _HangConn:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a) -> bool:
+            return False
+
+        async def execute(self, *a, **k) -> None:
+            await asyncio.sleep(10)  # 응답 없이 멈춘 pg 재현
+
+    class _HangPool:
+        def connection(self):
+            return _HangConn()
+
+    store = PgConversationStore(_HangPool())
+    with pytest.raises(TimeoutError):
+        await store.save_user_message("c", "u", "user", "hi")
 
 
 # ─────────── §6.3 (b) 구조화 로그 + PII ───────────

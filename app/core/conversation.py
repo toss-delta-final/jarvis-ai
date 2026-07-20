@@ -139,26 +139,37 @@ class PgConversationStore:
     def __init__(self, pool) -> None:  # noqa: ANN001 - psycopg_pool.AsyncConnectionPool(지연 임포트)
         self._pool = pool
 
+    async def _execute(self, sql: str, params: tuple) -> None:
+        """쓰기 쿼리(연결 획득+실행)를 실행 상한으로 감싼다.
+
+        pg 가 응답 없이 멈추면 이 await 가 영영 안 끝나 commit_user_message() 가 반환하지
+        못하고 해당 session_id 의 동시 스트림 슬롯이 영구히 잠긴다(§2.9 a, PR #48 후속 리뷰).
+        """
+
+        async def _run() -> None:
+            async with self._pool.connection() as conn:
+                await conn.execute(sql, params)
+
+        await asyncio.wait_for(_run(), timeout=get_settings().state_store_query_timeout_s)
+
     async def save_user_message(
         self, conversation_id: str, user_id: str | None, role: str, text: str
     ) -> str:
         turn_id = uuid.uuid4().hex
-        async with self._pool.connection() as conn:
-            await conn.execute(
-                "INSERT INTO conversation_turns "
-                "(turn_id, conversation_id, user_id, role, user_text) VALUES (%s, %s, %s, %s, %s)",
-                (turn_id, conversation_id, user_id, role, text),
-            )
+        await self._execute(
+            "INSERT INTO conversation_turns "
+            "(turn_id, conversation_id, user_id, role, user_text) VALUES (%s, %s, %s, %s, %s)",
+            (turn_id, conversation_id, user_id, role, text),
+        )
         return turn_id
 
     async def finalize_assistant(
         self, turn_id: str, assistant_text: str, status: TurnStatus
     ) -> None:
-        async with self._pool.connection() as conn:
-            await conn.execute(
-                "UPDATE conversation_turns SET assistant_text = %s, status = %s WHERE turn_id = %s",
-                (assistant_text, status.value, turn_id),
-            )
+        await self._execute(
+            "UPDATE conversation_turns SET assistant_text = %s, status = %s WHERE turn_id = %s",
+            (assistant_text, status.value, turn_id),
+        )
 
     async def get_turn(self, turn_id: str) -> Turn | None:
         async with self._pool.connection() as conn:
