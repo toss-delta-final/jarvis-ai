@@ -323,6 +323,20 @@ _checkpointer_ctx: object | None = None  # AsyncPostgresSaver cm — 앱 수명 
 _graph = None
 _fallback_warned = False
 
+# confirm 동시성 직렬화용 draftId→Lock 레지스트리(프로세스 내). draft 는 1회성이라
+# 항목 수는 프로세스 수명 동안의 draft 수로 유계 — 명시 정리는 생략한다.
+_confirm_locks: dict[str, asyncio.Lock] = {}
+
+
+def _confirm_lock(draft_id: str) -> asyncio.Lock:
+    """draftId 별 asyncio.Lock 을 반환한다(없으면 생성). 이벤트 루프 단일 스레드에서
+    dict 접근은 await 없이 원자적이라 별도 보호가 필요 없다."""
+    lock = _confirm_locks.get(draft_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _confirm_locks[draft_id] = lock
+    return lock
+
 
 def set_checkpointer(checkpointer: BaseCheckpointSaver | None) -> None:
     """checkpointer 교체(테스트용) — None 이면 다음 사용 시 재초기화한다."""
@@ -330,6 +344,7 @@ def set_checkpointer(checkpointer: BaseCheckpointSaver | None) -> None:
     _checkpointer = checkpointer
     _checkpointer_ctx = None
     _graph = None
+    _confirm_locks.clear()
 
 
 async def _init_checkpointer() -> BaseCheckpointSaver:
@@ -410,7 +425,7 @@ _NOT_FOUND_TEXT = (
 )
 
 
-async def confirm_draft(draft_id: str, *, brand_id: str) -> ConfirmOutcome:
+async def confirm_draft(draft_id: str, *, seller_id: str, brand_id: str) -> ConfirmOutcome:
     """스트림 2: confirm — 코드 검사(존재→소유→멱등→TTL) 통과 시에만 resume 실행.
 
     검사를 resume 이전에 두는 이유: 실패 사유(만료·소유 불일치)로 스레드를
@@ -419,31 +434,38 @@ async def confirm_draft(draft_id: str, *, brand_id: str) -> ConfirmOutcome:
     """
     graph = await _get_graph()
     config = _thread_config(draft_id)
-    snapshot = await graph.aget_state(config)
-    values = snapshot.values or {}
-    draft_data = values.get("draft")
-    if not draft_data:
-        return ConfirmOutcome("not_found", _NOT_FOUND_TEXT)
+    # 동시성(안전장치 ③ 보강): 같은 draftId 의 confirm 을 직렬화한다. 상태 조회→멱등
+    # 판정→resume 실행이 원자적이지 않으면, 동시 confirm 2건이 모두 result 미설정을
+    # 보고 각자 실행해 상품 쓰기가 중복된다(I-10/11/12). 락은 프로세스 내 직렬화 —
+    # 다중 워커 환경은 checkpoint 단일화(pg-profile)가 별도로 보장한다.
+    async with _confirm_lock(draft_id):
+        snapshot = await graph.aget_state(config)
+        values = snapshot.values or {}
+        draft_data = values.get("draft")
+        if not draft_data:
+            return ConfirmOutcome("not_found", _NOT_FOUND_TEXT)
 
-    record = DraftRecord.model_validate(draft_data)
-    if record.brand_id != brand_id:
-        logger.warning("draft 소유 불일치 confirm 차단 (draftId=%s)", draft_id)
-        return ConfirmOutcome("not_found", _NOT_FOUND_TEXT)
+        record = DraftRecord.model_validate(draft_data)
+        # 소유 검증(안전장치 ④): brand_id 만이 아니라 seller_id 까지 대조 — 같은
+        # 브랜드에 복수 판매자 계정이 있을 때 타 판매자 draftId 승인을 차단한다.
+        if record.brand_id != brand_id or record.seller_id != seller_id:
+            logger.warning("draft 소유 불일치 confirm 차단 (draftId=%s)", draft_id)
+            return ConfirmOutcome("not_found", _NOT_FOUND_TEXT)
 
-    if values.get("result"):  # 실행 완료 스레드 — 멱등(안전장치 ③)
-        return ConfirmOutcome(
-            "already_done",
-            f"이미 처리된 승인 요청입니다 — 중복 실행하지 않았습니다. 이전 결과: {values['result']}",
-        )
+        if values.get("result"):  # 실행 완료 스레드 — 멱등(안전장치 ③)
+            return ConfirmOutcome(
+                "already_done",
+                f"이미 처리된 승인 요청입니다 — 중복 실행하지 않았습니다. 이전 결과: {values['result']}",
+            )
 
-    settings = get_settings()
-    created = datetime.fromisoformat(record.created_at)
-    if datetime.now(UTC) - created > timedelta(minutes=settings.seller_draft_ttl_minutes):
-        return ConfirmOutcome(
-            "expired",
-            f"초안이 만료됐습니다(유효 {settings.seller_draft_ttl_minutes}분). "
-            "변경 내용을 다시 말씀해 주시면 새 초안을 만들어 드리겠습니다.",
-        )
+        settings = get_settings()
+        created = datetime.fromisoformat(record.created_at)
+        if datetime.now(UTC) - created > timedelta(minutes=settings.seller_draft_ttl_minutes):
+            return ConfirmOutcome(
+                "expired",
+                f"초안이 만료됐습니다(유효 {settings.seller_draft_ttl_minutes}분). "
+                "변경 내용을 다시 말씀해 주시면 새 초안을 만들어 드리겠습니다.",
+            )
 
-    result = await graph.ainvoke(Command(resume=True), config=config)
+        result = await graph.ainvoke(Command(resume=True), config=config)
     return ConfirmOutcome(result.get("outcome", "executed"), result.get("result", ""))

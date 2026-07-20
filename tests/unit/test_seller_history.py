@@ -255,7 +255,7 @@ def test_applied_draft_flows_into_confirm(monkeypatch: pytest.MonkeyPatch) -> No
         record, problem = await history.apply_recommendation(1, _CTX)
         assert problem is None
         await hitl.start_draft(record)
-        return await hitl.confirm_draft(record.draft_id, brand_id="3")
+        return await hitl.confirm_draft(record.draft_id, seller_id="7", brand_id="3")
 
     outcome = asyncio.run(run())
 

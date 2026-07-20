@@ -192,8 +192,8 @@ def test_confirm_executed_result_streams_token_done(monkeypatch: pytest.MonkeyPa
     """confirm 레인 — 실행 결과 text 가 그대로 token 으로 나간다(LLM 0회)."""
     monkeypatch.setattr(seller_api, "route_question", _no_route)
 
-    async def fake_confirm(draft_id, *, brand_id):
-        assert (draft_id, brand_id) == ("d-9", "3")  # 신원은 검증된 Identity 에서
+    async def fake_confirm(draft_id, *, seller_id, brand_id):
+        assert (draft_id, seller_id, brand_id) == ("d-9", "7", "3")  # 신원은 검증된 Identity 에서
         return hitl.ConfirmOutcome("executed", "변경을 반영했습니다 (productId=101).")
 
     monkeypatch.setattr(seller_api, "confirm_draft", fake_confirm)
@@ -212,7 +212,7 @@ def test_confirm_spring_down_maps_to_apology_and_error(
 
     monkeypatch.setattr(seller_api, "route_question", _no_route)
 
-    async def fake_confirm(draft_id, *, brand_id):
+    async def fake_confirm(draft_id, *, seller_id, brand_id):
         raise SpringUnavailableError("conn refused")
 
     monkeypatch.setattr(seller_api, "confirm_draft", fake_confirm)

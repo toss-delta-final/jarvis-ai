@@ -349,7 +349,9 @@ async def _confirm_stream(draft_id: str, identity: Identity) -> AsyncIterator[st
     token+done — Spring 장애만 사과 token + error(INTERNAL, draft 유지·재시도 가능).
     """
     try:
-        outcome = await confirm_draft(draft_id, brand_id=identity.brand_id or "")
+        outcome = await confirm_draft(
+            draft_id, seller_id=identity.seller_id or "", brand_id=identity.brand_id or ""
+        )
     except SpringUnavailableError:
         yield _token(_CONFIRM_SPRING_DOWN_TOKEN)
         yield _sse(
