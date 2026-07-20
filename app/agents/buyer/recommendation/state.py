@@ -26,6 +26,15 @@ _CATEGORIES_KEY = "categories"
 # key(thread_key)별 asyncio.Lock — RevertStore.add() 의 get→put(read-modify-write) 구간을
 # 직렬화한다. 동일 스레드로 겹치는 요청(멀티탭·연속 발화)이 오면 나중 aput 이 앞선 갱신을
 # 덮어써 되돌리기 카테고리가 유실될 수 있다(lost update, PR #46 리뷰).
+#
+# [한계, PR #46 후속 리뷰 — MVP 단일 인스턴스 전제] 이 락은 **프로세스 내부**에서만
+# 유효하다. 여러 uvicorn 워커·인스턴스가 같은 pg-profile 을 공유하는 배포(수평 확장)로
+# 바뀌면 서로 다른 프로세스의 동시 add() 호출은 이 락으로 전혀 직렬화되지 않아 lost
+# update 가 재현된다 — app/core/stream.py 의 ActiveStreamRegistry 와 동일한 "MVP 단일
+# 인스턴스" 전제(다중 인스턴스 확장 시 Postgres advisory lock 등 DB 레벨 직렬화로 교체
+# 필요). 또한 key(thread_key)마다 항목이 쌓이기만 하고 제거되지 않아, 장시간 구동 시
+# 누적 대화 수만큼 커지는 완만한 메모리 누수이기도 하다(reset_revert_store() 는 테스트
+# 격리용으로만 비운다) — TTL/LRU 정리는 현재 미구현(MVP 규모에서 실질적 위험 낮음으로 판단).
 _add_locks: dict[str, asyncio.Lock] = {}
 
 
@@ -155,5 +164,11 @@ async def get_revert_store() -> RevertStore:
 
 
 def reset_revert_store() -> None:
-    """테스트 격리용 — 공유 pg-profile store(InMemoryStore)를 비운다."""
+    """테스트 격리용 — 공유 pg-profile store(InMemoryStore)를 비우고 key별 락도 초기화한다.
+
+    `_add_locks` 도 비운다 — pg_store.py 의 `_init_lock` 과 동일한 이유로, pytest-asyncio
+    의 테스트 함수별 새 이벤트 루프에서 이전 루프에 묶인 stale `Lock` 을 재사용하면
+    hang 이 발생할 수 있다(app/core/pg_store.py 리뷰와 동일 클래스 버그).
+    """
     pg_store.reset_store()
+    _add_locks.clear()
