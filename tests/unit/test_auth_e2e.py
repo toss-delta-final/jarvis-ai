@@ -197,3 +197,10 @@ def test_settings_jwks_requires_internal_token() -> None:
     """auth_mode=jwks 인데 INTERNAL_API_TOKEN 미설정 → 기동 실패 (기존 규칙 회귀 가드)."""
     with pytest.raises(ValueError):
         _jwks_settings(internal_api_token="")
+
+
+def test_settings_jwt_scope_defaults_to_none() -> None:
+    """jwt_scope 기본값은 None(검증 생략) — C-1 확정 전 미확정 추정값을 활성 강제하면
+    Spring 발급 티켓과 어긋나는 순간 전면 401 장애가 된다 (PR #39 리뷰 반영).
+    운영 전환 시 확정값을 env JWT_SCOPE 로 명시 주입한다."""
+    assert Settings(_env_file=None).jwt_scope is None

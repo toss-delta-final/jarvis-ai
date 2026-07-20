@@ -61,9 +61,11 @@ class Settings(BaseSettings):
     jwks_url: str | None = None
     jwt_issuer: str | None = "shopping-spring-auth"
     jwt_audience: str | None = "shopping-fastapi-ai"
-    # 스트림 티켓 scope 검증값 (§2.3 v0.10.0 확정 검증 항목 — 제안값 chat:stream,
-    # 실값은 C-1 확정 시 env 교체). None 이면 scope 검증 생략(전환기 호환).
-    jwt_scope: str | None = "chat:stream"
+    # 스트림 티켓 scope 검증값 (§2.3 v0.10.0 확정 검증 항목). None 이면 scope 검증 생략 —
+    # issuer/audience=None 과 같은 규칙. 실값(제안 chat:stream)이 C-1 미확정이라 기본은
+    # None 이다: 미확정 추정값을 활성 강제하면 Spring 발급 티켓과 어긋나는 순간 전면 401
+    # 장애가 된다(PR #39 리뷰 반영). 운영(jwks) 전환 시 확정값을 env JWT_SCOPE 로 주입할 것.
+    jwt_scope: str | None = None
     # JWKS tier-1 캐시 TTL(s) — 만료 전에는 kid miss 시에만 refetch(§2.3), 요청마다 왕복 금지.
     jwks_cache_ttl_s: float = 300.0
 
