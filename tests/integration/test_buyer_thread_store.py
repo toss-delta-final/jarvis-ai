@@ -17,6 +17,7 @@ import uuid
 import pytest
 from langgraph.store.postgres.aio import AsyncPostgresStore
 
+from app.agents.buyer.cart import state as cart_state
 from app.agents.buyer.cart.state import CartStateStore, PendingAdd
 from app.agents.buyer.graph import ThreadFilterStore
 from app.agents.buyer.recommendation.state import RevertStore
@@ -101,16 +102,22 @@ async def test_revert_store_add_concurrent_calls_no_lost_update(pg_store) -> Non
 
 
 async def test_state_persists_across_store_instances() -> None:
-    """재시작·다중 인스턴스 스모크(이슈 #33 범위) — 새 연결로도 이전에 쓴 값이 보인다."""
+    """재시작·다중 인스턴스 스모크(이슈 #33 범위) — 새 연결로도 이전에 쓴 productId 가 보인다.
+
+    상품명(product.name 사본)은 규칙상 pg-profile 에 저장하지 않고 프로세스 로컬 캐시에만
+    두므로(PR #46 후속 리뷰), 재시작(=캐시 소실) 후에는 pid 만 복원되고 이름은 "" 로 degrade
+    한다("그거 담아줘" pid 해소는 계속 작동)."""
     key = _key()
     async with AsyncPostgresStore.from_conn_string(get_settings().profile_db_url) as store_a:
         await store_a.setup()
         await CartStateStore(store_a).set_last_reco(key, [(999, "영속성 테스트")])
 
+    cart_state._last_reco_names.clear()  # 프로세스 재시작 시 휘발성 이름 캐시 소실 재현
+
     async with AsyncPostgresStore.from_conn_string(get_settings().profile_db_url) as store_b:
         await store_b.setup()
         reco = await CartStateStore(store_b).get_last_reco(key)
-    assert reco == [(999, "영속성 테스트")]
+    assert reco == [(999, "")]  # pid 는 영속, 이름은 재시작 후 소실(graceful degrade)
 
 
 async def test_pg_store_module_connects_to_real_postgres() -> None:

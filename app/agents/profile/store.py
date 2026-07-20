@@ -283,7 +283,13 @@ async def _get_store() -> BaseStore:
                     ctx.__aenter__(), timeout=settings.state_store_connect_timeout_s
                 )
                 entered_ctx = ctx  # __aenter__ 성공 후에만 __aexit__ 대상(부분 실패 정리용)
-                await store.setup()
+                # setup()(DDL·pgvector 마이그레이션)도 동일 상한으로 감싼다 — 이 블록은 _init_lock
+                # 을 쥔 채 실행되어, 무제한 대기면 setup() 하나가 멈출 때 이후 모든 get_profile_store()
+                # 호출(프로필 조회·"기억해" 승격·세션 버퍼·session-end consolidation)이 함께 멈춘다
+                # (pg_store.py 와 동일 방어, PR #47 후속 리뷰).
+                await asyncio.wait_for(
+                    store.setup(), timeout=settings.state_store_connect_timeout_s
+                )
                 _store_ctx = ctx
                 _store = store
             except Exception as exc:
