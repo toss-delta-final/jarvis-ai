@@ -143,9 +143,15 @@ async def open_stream(
         )
 
     if observer is not None:
-        await (
-            observer.commit_user_message()
-        )  # 슬롯 확보 후에만 사용자 메시지 저장(§6.3 a, 유령 턴 방지)
+        try:
+            # 슬롯 확보 후에만 사용자 메시지 저장(§6.3 a, 유령 턴 방지). 이제 실제 pg-profile
+            # I/O 라 DB 오류로 예외를 던질 수 있다 — release 없이 전파되면 해당 session_id 가
+            # 프로세스 재시작 전까지 영구히 409 를 반환한다(슬롯 영구 누수, PR #48 리뷰).
+            await observer.commit_user_message()
+        except Exception:
+            registry.release(session_id)
+            await observer.finish(loop.time(), TurnStatus.FAILED, "INTERNAL")
+            raise
 
     start = loop.time()
     try:

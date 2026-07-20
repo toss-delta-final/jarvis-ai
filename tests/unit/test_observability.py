@@ -195,6 +195,38 @@ async def test_inner_factory_sync_error_releases_and_marks_failed() -> None:
     assert turn is not None and turn.status == TurnStatus.FAILED
 
 
+async def test_commit_user_message_failure_releases_slot() -> None:
+    """대화 저장(commit_user_message) 실패 시에도 스트림 슬롯이 해제된다(영구 누수 방지, PR #48 리뷰).
+
+    이전(인메모리 dict) 구현은 저장이 예외를 던질 수 없었지만, pg-profile 이관 후
+    실제 DB 오류로 던질 수 있다 — registry.acquire() 이후 release 담당 try/except
+    이전에 있으면 예외가 그대로 전파돼 슬롯이 프로세스 재시작까지 영구히 잠긴다.
+    """
+    obs = await _obs("slotfail")
+
+    class _FailingStore:
+        async def save_user_message(self, *a, **k):
+            raise RuntimeError("db down")
+
+        async def finalize_assistant(self, *a, **k):
+            return None
+
+        async def get_turn(self, *a, **k):
+            return None
+
+        async def turns_for(self, *a, **k):
+            return []
+
+    obs.store = _FailingStore()
+
+    async def unreachable():
+        yield "data: never\n\n"
+
+    with pytest.raises(RuntimeError):
+        await open_stream(_FakeRequest(), "member:slotfail", unreachable, observer=obs)
+    assert not get_registry().is_active("member:slotfail")
+
+
 def test_rate_limit_emits_structured_observation(caplog: pytest.LogCaptureFixture) -> None:
     """429 발동도 errorType=RATE_LIMITED 구조화 로그로 관측된다(§6.3 b)."""
     headers = _bearer("rl-obs")
