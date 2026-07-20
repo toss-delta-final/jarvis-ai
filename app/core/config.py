@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     # [2026-07-20 MVP 편입] 방식1(pgvector 벡터검색)·방식2(재정렬) 백엔드가 사용. torch 는 --group embedding.
     embedding_model_id: str = "dragonkue/snowflake-arctic-embed-l-v2.0-ko"
     embedding_dim: int = 1024
+    catalog_batch_page_size: int = 500  # I-17 배치 페이지 크기(§4.8, config 주입)
 
     # ── PostgreSQL / pgvector ×2 ──
     # catalog: AI 생성물(extras/search_doc/임베딩, §4.8 I-17 배치 upsert) 호스트, profile: 프로필 스토어+대화 저장(§6.3).

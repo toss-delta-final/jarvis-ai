@@ -322,7 +322,19 @@ async def get_product_detail(brand_id: str, product_id: str) -> dict:
 
 
 async def fetch_product_changes(cursor: str | None, limit: int = 500) -> ProductChangesPage:
-    """상품 변경분 pull — I-17, AI 생성물 갱신 배치 (스텁, api-spec §4.8 / C-4). 이슈 #7 소관."""
-    raise SpringUnavailableError(
-        "fetch_product_changes not wired to live Spring yet (api-spec §4.8, I-17, C-4)"
-    )
+    """상품 변경분 pull — I-17, AI 생성물 갱신 배치 (api-spec §4.8 / C-4). [배선 완료]
+
+    GET {spring_base_url}/internal/products/changes?since={cursor}&limit={limit} + X-Internal-Token.
+    응답 공통 envelope {success, data:{items, nextCursor, hasMore}}(BE 2026-07-18 확정). 도달 불가/오류/
+    스키마 불일치는 SpringUnavailableError — 배치는 커서 미전진으로 다음 주기 재개(자연 복구, §4.8).
+    """
+    params: dict[str, object] = {"since": cursor or "0", "limit": limit}
+    try:
+        async with _client() as client:
+            resp = await client.get("/internal/products/changes", params=params)
+            resp.raise_for_status()
+            data = resp.json()
+        payload = data.get("data") if isinstance(data, dict) else None
+        return ProductChangesPage.model_validate(payload or {})
+    except (httpx.HTTPError, ValueError, ValidationError) as exc:
+        raise SpringUnavailableError(f"fetch_product_changes 실패: {exc}") from exc
