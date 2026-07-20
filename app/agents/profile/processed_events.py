@@ -13,6 +13,7 @@ app/core/pg_store.py(BaseStore 공유 연결)와 별개 연결을 쓴다 — Bas
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 
 from psycopg_pool import AsyncConnectionPool
@@ -24,44 +25,76 @@ logger = logging.getLogger(__name__)
 _pool: AsyncConnectionPool | None = None
 _fallback_pool: set[str] | None = None  # dev 폴백 — InMemory set
 _fallback_warned = False
+_init_lock = asyncio.Lock()
 
 
 def set_pool(pool: AsyncConnectionPool | None) -> None:
-    """풀 교체(테스트용) — None 이면 다음 사용 시 재초기화한다."""
+    """풀 교체(테스트용) — None 이면 다음 사용 시 재초기화한다.
+
+    기존 실 연결 풀이 있으면 백그라운드 태스크로 close 를 시도한다 — 이 함수는
+    sync 라 여기서 직접 await 할 수 없다(app/core/pg_store.py 와 동일 패턴, PR #46 리뷰).
+    """
     global _pool, _fallback_pool
+    old_pool = _pool
     _pool = pool
     _fallback_pool = None
+    if old_pool is not None:
+        with contextlib.suppress(RuntimeError):
+            asyncio.get_running_loop().create_task(_close_pool(old_pool))
+
+
+async def _close_pool(pool: AsyncConnectionPool) -> None:
+    with contextlib.suppress(Exception):
+        await pool.close()
 
 
 def reset() -> None:
-    """테스트 격리용 — InMemory 폴백으로 초기화(실제 연결 시도 없이 즉시 blank)."""
-    global _pool, _fallback_pool
+    """테스트 격리용 — InMemory 폴백으로 초기화(실제 연결 시도 없이 즉시 blank).
+
+    `_init_lock` 도 새로 만든다 — pytest-asyncio 는 테스트 함수마다 새 이벤트 루프를
+    쓰는데(function-scoped), 모듈 전역 asyncio.Lock 을 여러 루프에 걸쳐 재사용하면
+    이전 루프에 묶인 내부 상태로 인해 다음 테스트에서 락 획득이 영원히 안 풀리는
+    hang 이 발생할 수 있다.
+    """
+    global _pool, _fallback_pool, _init_lock
     _pool = None
     _fallback_pool = set()
+    _init_lock = asyncio.Lock()
 
 
 async def _get_pool() -> AsyncConnectionPool | None:
-    """AsyncConnectionPool(pg-profile) 지연 초기화 — 실패 시 dev 한정 InMemory set 폴백(None 반환)."""
+    """AsyncConnectionPool(pg-profile) 지연 초기화 — 실패 시 dev 한정 InMemory set 폴백(None 반환).
+
+    락 없는 지연 초기화는 콜드 스타트 시 동시 요청이 풀을 중복 생성하는 레이스가
+    있다 — `_init_lock` 으로 초기화 블록 전체를 직렬화한다(pg_store.py 와 동일
+    패턴, PR #47 리뷰).
+    """
     global _pool, _fallback_pool, _fallback_warned
-    if _pool is None and _fallback_pool is None:
-        settings = get_settings()
-        try:
-            pool = AsyncConnectionPool(settings.profile_db_url, open=False)
-            await asyncio.wait_for(
-                pool.open(wait=True), timeout=settings.state_store_connect_timeout_s
-            )
-            _pool = pool
-        except Exception as exc:
-            if settings.auth_mode == "jwks":
-                raise  # 운영 — 폴백 금지(멱등이 조용히 깨지면 안 된다)
-            if not _fallback_warned:
-                logger.warning(
-                    "pg-profile processed_events 연결 실패(%s) — InMemory 폴백 "
-                    "(dev 전용: 프로세스 재시작 시 멱등 상태 증발)",
-                    exc,
+    async with _init_lock:
+        if _pool is None and _fallback_pool is None:
+            settings = get_settings()
+            pool = None
+            try:
+                pool = AsyncConnectionPool(settings.profile_db_url, open=False)
+                await asyncio.wait_for(
+                    pool.open(wait=True), timeout=settings.state_store_connect_timeout_s
                 )
-                _fallback_warned = True
-            _fallback_pool = set()
+                _pool = pool
+            except Exception as exc:
+                if pool is not None:
+                    # open() 부분 실패(타임아웃 등) — 이미 생성된 풀을 닫아 커넥션 누수 방지.
+                    with contextlib.suppress(Exception):
+                        await pool.close()
+                if settings.auth_mode == "jwks":
+                    raise  # 운영 — 폴백 금지(멱등이 조용히 깨지면 안 된다)
+                if not _fallback_warned:
+                    logger.warning(
+                        "pg-profile processed_events 연결 실패(%s) — InMemory 폴백 "
+                        "(dev 전용: 프로세스 재시작 시 멱등 상태 증발)",
+                        exc,
+                    )
+                    _fallback_warned = True
+                _fallback_pool = set()
     return _pool
 
 
