@@ -107,6 +107,7 @@ def test_get_llm_openai_no_key(monkeypatch) -> None:
     assert get_llm() is None
 
 
-def test_get_llm_defaults_to_anthropic(monkeypatch) -> None:
-    monkeypatch.setattr(llm_mod, "get_settings", lambda: _settings(anthropic_api_key="k"))
-    assert isinstance(get_llm(), AnthropicLLM)
+def test_get_llm_defaults_to_openai(monkeypatch) -> None:
+    # llm_provider 미지정 → config.py 기본값(openai)
+    monkeypatch.setattr(llm_mod, "get_settings", lambda: _settings(openai_api_key="k"))
+    assert isinstance(get_llm(), OpenAILLM)

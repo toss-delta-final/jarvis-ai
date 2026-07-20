@@ -30,8 +30,9 @@ class Settings(BaseSettings):
     )
 
     # ── LLM provider 토글 (이슈 #40) ──
-    # "anthropic"(기본) | "openai". 호출부는 tier("fast"|"smart")로 부르고 provider 가 모델을 해석한다.
-    llm_provider: str = "anthropic"
+    # "openai"(기본) | "anthropic". 호출부는 tier("fast"|"smart")로 부르고 provider 가 모델을 해석한다.
+    # 실행 오버라이드: .env / OS 환경변수 LLM_PROVIDER 가 이 기본값을 덮는다(pydantic-settings).
+    llm_provider: str = "openai"
 
     # ── Anthropic 2-tier LLM (fast=haiku / smart=sonnet) ──
     anthropic_api_key: str = ""
