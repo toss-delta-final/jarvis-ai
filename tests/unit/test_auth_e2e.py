@@ -44,7 +44,7 @@ def rsa_key() -> rsa.RSAPrivateKey:
 
 
 def _jwks_settings(**overrides) -> Settings:
-    """jwks 모드 Settings — 운영 필수값(pepper·internal 토큰·jwks_url) 포함, .env 미참조."""
+    """jwks 모드 Settings — 운영 필수값(pepper·internal 토큰·jwks_url·google_api_key) 포함, .env 미참조."""
     kwargs = dict(
         _env_file=None,
         auth_mode="jwks",
@@ -52,6 +52,7 @@ def _jwks_settings(**overrides) -> Settings:
         jwt_scope=SCOPE,
         pii_hash_pepper="test-pepper",
         internal_api_token="svc-token",
+        google_api_key="test-google-key",
     )
     kwargs.update(overrides)
     return Settings(**kwargs)
@@ -197,6 +198,13 @@ def test_settings_jwks_requires_internal_token() -> None:
     """auth_mode=jwks 인데 INTERNAL_API_TOKEN 미설정 → 기동 실패 (기존 규칙 회귀 가드)."""
     with pytest.raises(ValueError):
         _jwks_settings(internal_api_token="")
+
+
+def test_settings_jwks_requires_google_api_key() -> None:
+    """auth_mode=jwks 인데 GOOGLE_API_KEY 미설정 → 기동 실패 (PR #42 리뷰 — 배치가 조용히
+    영원히 실패하는 대신 fail-fast, 이슈 #31)."""
+    with pytest.raises(ValueError):
+        _jwks_settings(google_api_key="")
 
 
 def test_settings_jwt_scope_defaults_to_none() -> None:

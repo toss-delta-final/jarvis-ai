@@ -53,6 +53,7 @@ def jwks_auth(monkeypatch: pytest.MonkeyPatch, rsa_key: rsa.RSAPrivateKey, clien
         jwt_scope=SCOPE,
         pii_hash_pepper="e2e-pepper",
         internal_api_token=E2E_INTERNAL_TOKEN,
+        google_api_key="e2e-google-key",
     )
     # 운영 레인은 요청 인증(deps)과 레이트 리밋 sub 스코프가 **같은 검증 경로**를 탄다(#34) —
     # 둘 다 jwks 로 올려야 실제 배포 형상과 같다(JWKS fetch 는 install_jwks_fetch 로 대역).
@@ -81,7 +82,9 @@ def test_buyer_flow_completes_under_real_jwt(client, spring, llm, jwks_auth, rsa
     assert ready is not None and set(ready) == {"sessionId", "listId"}
 
 
-def test_identity_comes_from_verified_token_not_body(client, spring, llm, jwks_auth, rsa_key) -> None:
+def test_identity_comes_from_verified_token_not_body(
+    client, spring, llm, jwks_auth, rsa_key
+) -> None:
     """역호출 신원은 **검증된 티켓 sub** 에서만 도출된다 (IDOR 방지, §2.3·§2.6).
 
     본문에는 신원이 없고, I-19 경로의 memberId 는 토큰 sub 와 일치해야 한다.
