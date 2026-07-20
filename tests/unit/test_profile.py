@@ -369,6 +369,15 @@ async def test_add_fact_dedup_skips_duplicate_text(monkeypatch: pytest.MonkeyPat
     assert set(facts) == {"좋아하는 색은 파랑", "알러지: 땅콩"}
 
 
+async def test_add_fact_dedup_without_cap() -> None:
+    """cap 미지정이어도 동일 텍스트 재승격은 스킵된다 — 호출부가 cap 인자를 실수로 빠뜨려도
+    dedup·무제한 누적 방어가 조용히 무력화되지 않는다(PR #47 후속 리뷰)."""
+    store = await get_profile_store()
+    await store.add_fact("nocap", "탄산수 좋아함")
+    await store.add_fact("nocap", "탄산수 좋아함")  # cap 없이 동일 텍스트 재승격
+    assert (await store.get_facts("nocap")).count("탄산수 좋아함") == 1
+
+
 async def test_append_session_ctx_caps_count() -> None:
     """세션 버퍼 개수 상한 — 최신 cap 개만 유지."""
     store = await get_profile_store()
