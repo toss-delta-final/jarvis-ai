@@ -34,9 +34,7 @@ def dev_settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
     import app.core.ratelimit as ratelimit
     from app.api import deps
 
-    settings = Settings(
-        _env_file=None, auth_mode="dev", internal_api_token=E2E_INTERNAL_TOKEN
-    )
+    settings = Settings(_env_file=None, auth_mode="dev", internal_api_token=E2E_INTERNAL_TOKEN)
     monkeypatch.setattr(deps, "get_settings", lambda: settings)
     monkeypatch.setattr(ratelimit, "get_settings", lambda: settings)
     return settings
@@ -95,11 +93,18 @@ def llm(monkeypatch: pytest.MonkeyPatch) -> ScriptedLLM:
 
 
 @pytest.fixture
-def client(dev_settings: Settings) -> TestClient:
+def client(dev_settings: Settings, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     """AI 서버 앱 클라이언트. 인증 레인은 dev 로 고정된다(dev_settings — 앰비언트 env 무관).
 
     실인증 레인은 `jwks_auth` 가 이 핀을 덮어쓴다(같은 monkeypatch 대상, 나중 적용이 우선).
+    lifespan 이 진짜 BackgroundScheduler 를 기동하지 않도록 no-op 으로 대체한다 — 이 하니스가
+    검증하려는 건 auth/buyer flow 등이지 배치 스케줄러가 아니다. 스케줄러 자체 검증은
+    tests/unit/test_scheduler.py·test_main_lifespan.py 소관(PR #42 리뷰).
     """
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod, "start_scheduler", lambda: None)
+    monkeypatch.setattr(main_mod, "stop_scheduler", lambda: None)
     with TestClient(app) as test_client:
         yield test_client
 
@@ -110,7 +115,11 @@ def member_token(user_id: str = "42") -> str:
     실서명(RS256/JWKS) 경로는 test_auth_e2e_flow.py 가 jwks 모드로 별도 검증한다(#34 머지분).
     """
     # 32B 이상 더미 키 — dev 모드는 서명을 보지 않지만 짧은 HMAC 키 경고를 피한다.
-    return jwt.encode({"sub": user_id, "sub_type": "member"}, "dev-only-not-a-secret-0123456789", algorithm="HS256")
+    return jwt.encode(
+        {"sub": user_id, "sub_type": "member"},
+        "dev-only-not-a-secret-0123456789",
+        algorithm="HS256",
+    )
 
 
 def auth_header(user_id: str = "42") -> dict[str, str]:
