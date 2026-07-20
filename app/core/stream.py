@@ -96,6 +96,23 @@ def _error_frame(code: str, message: str) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+async def _safe_finish(
+    observer: RequestObservation, session_id: str, loop_time: float, *args: object
+) -> None:
+    """observer.finish() 를 방어적으로 호출한다.
+
+    finish() 는 이제 pg-profile 실 DB 쓰기(finalize_assistant)를 거쳐 실패할 수 있다.
+    호출부 대부분이 이 결과를 받아 곧장 HTTPException/CancelledError 를 (재)전파하는데,
+    방어 없이 await 하면 finish() 자신의 새 예외가 그 원래 예외를 가려버린다 —
+    _wrapped() finally 에서 고친 것과 동일한 문제가 open_stream() 앞부분 호출부들에도
+    있었다(PR #48 후속 리뷰). 로그만 남기고 삼켜 원래 흐름을 지킨다.
+    """
+    try:
+        await observer.finish(loop_time, *args)
+    except Exception:
+        logger.exception("observer.finish 실패 session=%s", session_id)
+
+
 def _error_code_of(frame: str) -> str | None:
     """SSE 프레임이 in-stream error 이벤트면 code 를 반환(그 외 None). 그래프 자체 error emit 감지용."""
     import json
@@ -133,7 +150,9 @@ async def open_stream(
 
     if not registry.acquire(session_id):
         if observer is not None:
-            await observer.finish(loop.time(), TurnStatus.FAILED, "STREAM_IN_PROGRESS")
+            await _safe_finish(
+                observer, session_id, loop.time(), TurnStatus.FAILED, "STREAM_IN_PROGRESS"
+            )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={
@@ -150,7 +169,7 @@ async def open_stream(
             await observer.commit_user_message()
         except Exception:
             registry.release(session_id)
-            await observer.finish(loop.time(), TurnStatus.FAILED, "INTERNAL")
+            await _safe_finish(observer, session_id, loop.time(), TurnStatus.FAILED, "INTERNAL")
             raise
 
     start = loop.time()
@@ -160,7 +179,7 @@ async def open_stream(
         # 그래프 진입 검증 등 inner_factory 동기 예외 — 슬롯·턴 누수 방지.
         registry.release(session_id)
         if observer is not None:
-            await observer.finish(loop.time(), TurnStatus.FAILED, "INTERNAL")
+            await _safe_finish(observer, session_id, loop.time(), TurnStatus.FAILED, "INTERNAL")
         raise
 
     poll = settings.stream_disconnect_poll_s
@@ -192,7 +211,9 @@ async def open_stream(
         if remaining <= 0:
             await _abort_prestream()
             if observer is not None:
-                await observer.finish(loop.time(), TurnStatus.FAILED, "UPSTREAM_TIMEOUT")
+                await _safe_finish(
+                    observer, session_id, loop.time(), TurnStatus.FAILED, "UPSTREAM_TIMEOUT"
+                )
             raise HTTPException(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
                 detail={"code": "UPSTREAM_TIMEOUT", "message": "상류(LLM) 응답 지연"},
@@ -206,13 +227,15 @@ async def open_stream(
             except asyncio.CancelledError:
                 await _abort_prestream()
                 if observer is not None:
-                    await observer.finish(loop.time(), TurnStatus.CANCELLED)
+                    await _safe_finish(observer, session_id, loop.time(), TurnStatus.CANCELLED)
                 raise
             except Exception:
                 # 첫 프레임 전 상류 오류(LLM/Spring 등) — 누수 방지 후 전파.
                 await _abort_prestream()
                 if observer is not None:
-                    await observer.finish(loop.time(), TurnStatus.FAILED, "INTERNAL")
+                    await _safe_finish(
+                        observer, session_id, loop.time(), TurnStatus.FAILED, "INTERNAL"
+                    )
                 raise
             break
         if await request.is_disconnected():
@@ -220,7 +243,7 @@ async def open_stream(
             logger.info("stream cancelled before first token session=%s", session_id)
             await _abort_prestream()
             if observer is not None:
-                await observer.finish(loop.time(), TurnStatus.CANCELLED)
+                await _safe_finish(observer, session_id, loop.time(), TurnStatus.CANCELLED)
             return StreamingResponse(
                 _empty_stream(),
                 media_type="text/event-stream; charset=utf-8",
@@ -305,10 +328,7 @@ async def open_stream(
                 # 위반), CancelledError 로 취소 전파 중이던 경우 그 취소가 이 새 예외로
                 # 대체돼 정상 client disconnect 가 엉뚱한 오류로 둔갑한다(PR #48 후속 리뷰).
                 # 관측 실패가 스트림 종료 자체를 막지 않도록 로그만 남기고 삼킨다.
-                try:
-                    await observer.finish(loop.time(), stream_status, error_type)
-                except Exception:
-                    logger.exception("observer.finish 실패 session=%s", session_id)
+                await _safe_finish(observer, session_id, loop.time(), stream_status, error_type)
 
     return StreamingResponse(
         _wrapped(),
