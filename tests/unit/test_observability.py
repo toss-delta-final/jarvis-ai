@@ -104,13 +104,17 @@ async def test_partial_text_preserved_on_error() -> None:
     assert "조금" in turn.assistant_text
 
 
-async def test_stream_completes_when_finalize_assistant_fails() -> None:
-    """finish()(대화 저장 DB I/O)가 실패해도 스트림 소비 자체는 예외 없이 끝난다(PR #48 후속 리뷰).
+async def test_stream_completes_when_finalize_assistant_fails(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """finish()(대화 저장 DB I/O)가 실패해도 (a) 스트림 소비가 예외 없이 끝나고,
+    (b) §6.3 b 구조화 로그(chat_request)는 그대로 남는다(PR #48 후속 리뷰).
 
     _wrapped() 의 finally 는 이미 SSE 헤더/프레임이 전송된 뒤 실행된다 — 여기서 finish() 가
     막히지 않고 예외를 던지면 done/error 종결 프레임 없이 스트림이 끊기거나(§2.9/§3.1 위반),
-    CancelledError 취소 전파 중이었다면 그 취소가 이 새 예외로 대체된다. finalize_assistant
-    가 raise 하도록 만들어도 body_iterator 소비 자체가 예외 없이 끝나는지 검증한다.
+    CancelledError 취소 전파 중이었다면 그 취소가 이 새 예외로 대체된다. 또한 대화 저장(§6.3 a)
+    실패가 관측 로그(§6.3 b) emit 까지 막으면 안 된다(별개 계약) — finalize_assistant 가
+    raise 해도 스트림 소비가 끝나고 chat_request 로그가 남는지 함께 검증한다.
     """
     obs = await _obs("finalize-boom")
 
@@ -122,9 +126,21 @@ async def test_stream_completes_when_finalize_assistant_fails() -> None:
     async def token_then_done():
         yield 'data: {"type":"token","data":{"text":"응답"}}\n\n'
 
-    resp = await open_stream(_FakeRequest(), "member:finalize-boom", token_then_done, observer=obs)
-    chunks = [c async for c in resp.body_iterator]  # 예외 없이 끝나야 한다
+    with caplog.at_level(logging.INFO, logger="observability"):
+        resp = await open_stream(
+            _FakeRequest(), "member:finalize-boom", token_then_done, observer=obs
+        )
+        chunks = [c async for c in resp.body_iterator]  # 예외 없이 끝나야 한다
     assert any("응답" in c for c in chunks)
+    # §6.3 b 구조화 로그가 finalize 실패와 무관하게 남았는지(계약 분리 검증)
+    records = [
+        json.loads(r.getMessage())
+        for r in caplog.records
+        if r.name == "observability" and r.getMessage().startswith("{")
+    ]
+    assert any(
+        rec.get("event") == "chat_request" for rec in records
+    ), "finalize 실패 시 §6.3 b 구조화 로그가 유실됨"
 
 
 # ─────────── §6.3 (b) 구조화 로그 + PII ───────────
