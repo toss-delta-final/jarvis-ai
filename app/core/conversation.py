@@ -297,6 +297,17 @@ async def get_conversation_store() -> ConversationStoreProtocol:
                 )
                 _pool_ctx = pool
                 _store = PgConversationStore(pool)
+            except asyncio.CancelledError:
+                # disconnect 등으로 pool.open() 도중 요청 태스크가 취소되면 CancelledError
+                # (BaseException)라 아래 except Exception 이 못 잡아, 방금 만든 풀(+백그라운드
+                # 워커)이 close 없이 샜다 — get_conversation_store() 는 open_stream 진입 전
+                # chat/seller 핸들러에서 호출되므로 이 취소가 실제로 도달한다(store.py·
+                # processed_events.py 와 동일 클래스, PR #48 후속 리뷰). 여기 풀은 이 루프에서
+                # 방금 만든 것이라 취소는 항상 실제 취소 — best-effort 로 닫고 그대로 전파한다.
+                if pool is not None:
+                    with contextlib.suppress(Exception):
+                        await pool.close()
+                raise
             except Exception as exc:
                 if pool is not None:
                     # open() 부분 실패(타임아웃 등) — 이미 생성된 풀을 닫아 커넥션 누수 방지.

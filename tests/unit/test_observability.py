@@ -202,6 +202,39 @@ async def test_pg_conversation_store_query_timeout(
         await store.turns_for("c")
 
 
+async def test_get_conversation_store_closes_pool_on_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """pool.open() 도중 취소(클라이언트 disconnect 등)돼도 방금 만든 풀을 닫고 취소를 전파한다.
+
+    get_conversation_store()는 open_stream 진입 전 호출돼 취소가 실제로 도달하는데, except
+    Exception 은 CancelledError(BaseException)를 못 잡아 풀(+워커)이 새던 문제(PR #48 후속 리뷰).
+    """
+    import app.core.conversation as conv
+    import psycopg_pool
+
+    closed = {"called": False}
+
+    class _FakePool:
+        def __init__(self, *a, **k) -> None:
+            pass
+
+        async def open(self, wait: bool = True) -> None:
+            raise asyncio.CancelledError
+
+        async def close(self) -> None:
+            closed["called"] = True
+
+    monkeypatch.setattr(psycopg_pool, "AsyncConnectionPool", _FakePool)
+    conv.set_store(None)  # 초기화 경로 강제
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await conv.get_conversation_store()
+        assert closed["called"]  # 취소돼도 방금 연 풀이 닫혔다(누수 방지)
+    finally:
+        conv.set_store(conv.ConversationStore())
+
+
 def test_chat_emits_rejection_log_when_conversation_store_fails(
     caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
