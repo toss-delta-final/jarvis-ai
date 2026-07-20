@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     embedding_model_id: str = "dragonkue/snowflake-arctic-embed-l-v2.0-ko"
     embedding_dim: int = 1024
     catalog_batch_page_size: int = 500  # I-17 배치 페이지 크기(§4.8, config 주입)
+    catalog_vector_overfetch: int = 4  # 방식1 hydrate 후 필터·품절 제거 대비 벡터 여유조회 배수
 
     # ── PostgreSQL / pgvector ×2 ──
     # catalog: AI 생성물(extras/search_doc/임베딩, §4.8 I-17 배치 upsert) 호스트, profile: 프로필 스토어+대화 저장(§6.3).

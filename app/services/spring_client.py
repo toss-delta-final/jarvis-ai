@@ -334,7 +334,10 @@ async def fetch_product_changes(cursor: str | None, limit: int = 500) -> Product
             resp = await client.get("/internal/products/changes", params=params)
             resp.raise_for_status()
             data = resp.json()
-        payload = data.get("data") if isinstance(data, dict) else None
-        return ProductChangesPage.model_validate(payload or {})
+        # 200 이어도 success=false / data=null 은 실패 envelope — 빈 페이지로 오인해 배치가
+        # 조기 종료(정합성 손상)되지 않게 명시 검증한다(리뷰 반영).
+        if not isinstance(data, dict) or data.get("success") is not True or not isinstance(data.get("data"), dict):
+            raise SpringUnavailableError(f"fetch_product_changes 비정상 envelope: {repr(data)[:200]}")
+        return ProductChangesPage.model_validate(data["data"])
     except (httpx.HTTPError, ValueError, ValidationError) as exc:
         raise SpringUnavailableError(f"fetch_product_changes 실패: {exc}") from exc

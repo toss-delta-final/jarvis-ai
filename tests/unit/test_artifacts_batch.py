@@ -192,3 +192,53 @@ async def test_fetch_product_changes_error_raises(monkeypatch):
     monkeypatch.setattr(sc, "_client", lambda: _Client(_Resp(500, {})))
     with pytest.raises(sc.SpringUnavailableError):
         await sc.fetch_product_changes("0", 500)
+
+
+async def test_batch_full_rebuild_replaces_stale():
+    store = CatalogArtifactStore()
+    store.upsert(CatalogArtifact(product_id=99, search_doc="old", embedding=[0.0, 1.0]))  # stale
+    store.set_cursor("old")
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=[_change(1)], next_cursor="c1", has_more=False)
+
+    result = await run_artifacts_batch(
+        fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store,
+        settings=get_settings(), full_rebuild=True,
+    )
+    assert store.get(99) is None  # stale 원자 교체로 제거(finding 1)
+    assert store.get(1) is not None
+    assert store.count() == 1
+    assert store.get_cursor() == "c1"
+    assert result.processed == 1
+
+
+async def test_batch_full_rebuild_preserves_on_failure():
+    store = CatalogArtifactStore()
+    store.upsert(CatalogArtifact(product_id=99, search_doc="old", embedding=[0.0, 1.0]))
+
+    async def fetch(cursor, limit):
+        raise RuntimeError("rebuild boom")
+
+    with pytest.raises(RuntimeError):
+        await run_artifacts_batch(
+            fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store,
+            settings=get_settings(), full_rebuild=True,
+        )
+    assert store.get(99) is not None  # 재구축 실패 시 기존 데이터 보존(원자 교체)
+
+
+async def test_fetch_product_changes_failure_envelope_raises(monkeypatch):
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(sc, "_client", lambda: _Client(_Resp(200, {"success": False, "data": None})))
+    with pytest.raises(sc.SpringUnavailableError):
+        await sc.fetch_product_changes("0", 500)
+
+
+async def test_fetch_product_changes_data_null_raises(monkeypatch):
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(sc, "_client", lambda: _Client(_Resp(200, {"success": True, "data": None})))
+    with pytest.raises(sc.SpringUnavailableError):
+        await sc.fetch_product_changes("0", 500)

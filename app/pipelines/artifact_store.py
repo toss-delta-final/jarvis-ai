@@ -36,6 +36,13 @@ class CatalogArtifactStore:
     def delete(self, product_id: int) -> None:
         self._items.pop(product_id, None)  # DELISTED — 생성물 제거(유령 상품 방지, §4.8)
 
+    def clear(self) -> None:
+        self._items.clear()
+
+    def replace_all(self, artifacts: list[CatalogArtifact]) -> None:
+        """전체 재구축 원자 교체 — 성공한 임시 결과로 한 번에 스왑(중간 실패 시 기존 데이터 보존)."""
+        self._items = {a.product_id: a for a in artifacts}
+
     def get(self, product_id: int) -> CatalogArtifact | None:
         return self._items.get(product_id)
 

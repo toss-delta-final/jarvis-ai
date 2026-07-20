@@ -82,18 +82,27 @@ async def test_vector_backend_without_hydrate_signals_c17():
         await backend.search(ProductSearchFilters(keyword="여행", limit=5))
 
 
-async def test_vector_backend_with_hydrate_returns_ranked():
+async def test_vector_backend_with_hydrate_returns_ranked_and_receives_filters():
     store = _seed_store()
+    seen = {}
 
-    async def hydrate(ids):
+    async def hydrate(ids, filters):
+        seen["ids"] = ids
+        seen["filters"] = filters
+        # Spring 이 필터·가용성 적용했다고 가정, 벡터 순서 보존해 상위 limit 반환
         return ProductSearchResult(
-            products=[SpringProduct(product_id=i, name="n", price=1) for i in ids],
+            products=[SpringProduct(product_id=i, name="n", price=1) for i in ids[: filters.limit]],
             total_count=len(ids),
         )
 
-    backend = VectorSearchBackend(store=store, embed=_embed, hydrate=hydrate)
-    result = await backend.search(ProductSearchFilters(keyword="무선 이어폰", limit=3))
+    backend = VectorSearchBackend(store=store, embed=_embed, hydrate=hydrate, over_fetch=4)
+    result = await backend.search(ProductSearchFilters(keyword="무선 이어폰", limit=3, category="이어폰"))
     assert result.products[0].product_id == 2
+    assert seen["filters"].category == "이어폰"  # 필터가 hydrate 로 전달됨(리뷰 반영, finding 2)
+
+
+def test_cosine_dim_mismatch_excluded():
+    assert _cosine([1.0, 0.0, 0.0], [1.0, 0.0]) == -1.0  # 차원 불일치 → 제외(finding 3)
 
 
 def test_recall_at_k():

@@ -16,6 +16,7 @@ from __future__ import annotations
 import math
 from typing import Protocol
 
+from app.core.config import get_settings
 from app.pipelines import embedding as _embedding
 from app.pipelines.artifact_store import CatalogArtifactStore, get_catalog_store
 from app.schemas.spring import ProductSearchFilters, ProductSearchResult
@@ -31,8 +32,11 @@ class SearchBackend(Protocol):
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
-    """코사인 유사도. 빈 벡터/0벡터는 -1.0(최하위)로 처리한다."""
-    if not a or not b:
+    """코사인 유사도. 빈 벡터/0벡터/차원 불일치는 -1.0(최하위=제외)로 처리한다.
+
+    차원이 다르면(모델 교체·마이그레이션) zip 절단으로 잘못된 값이 나오므로 조용히 계산하지 않고 제외한다.
+    """
+    if not a or not b or len(a) != len(b):
         return -1.0
     num = sum(x * y for x, y in zip(a, b, strict=False))
     na = math.sqrt(sum(x * x for x in a))
@@ -90,25 +94,37 @@ class EmbeddingRerankBackend:
 
 
 class VectorSearchBackend:
-    """방식1 — AI 벡터검색으로 상위 N productId 확보 → Spring hydrate(가용성·상세).
+    """방식1 — AI 벡터검색으로 상위 N productId 확보 → Spring hydrate(필터·가용성·상세).
 
     라이브 hydrate 는 C-17(§4.6 id 제약 조회) 필요 — 미주입(hydrate=None) 시 미착수 신호로
-    SpringUnavailableError 를 던진다. 오프라인 골든셋 비교는 vector_rank(랭킹)만 쓰고 hydrate 없이 한다.
+    SpringUnavailableError 를 던진다. hydrate 계약은 (ids, filters): 가격·카테고리·브랜드 등
+    ProductSearchFilters 를 Spring 이 함께 적용하고 품절·비활성을 제거한다. hydrate 후 후보가 줄 수 있어
+    벡터 후보는 limit 의 over_fetch 배로 여유 조회한다(config.catalog_vector_overfetch).
+    오프라인 골든셋 비교는 vector_rank(랭킹)만 쓰고 hydrate 없이 한다.
     """
 
-    def __init__(self, *, store: CatalogArtifactStore | None = None, embed=None, hydrate=None) -> None:
+    def __init__(
+        self,
+        *,
+        store: CatalogArtifactStore | None = None,
+        embed=None,
+        hydrate=None,
+        over_fetch: int | None = None,
+    ) -> None:
         self._store = store or get_catalog_store()
         self._embed = embed or _embedding.embed_texts
-        self._hydrate = hydrate  # Callable[[list[int]], Awaitable[ProductSearchResult]] | None
+        self._hydrate = hydrate  # Callable[[list[int], ProductSearchFilters], Awaitable[...]] | None
+        self._over_fetch = over_fetch if over_fetch is not None else get_settings().catalog_vector_overfetch
 
     async def search(self, filters: ProductSearchFilters) -> ProductSearchResult:
         qvec = self._embed([filters.keyword or ""])[0]
-        ids = vector_rank(qvec, self._store, k=filters.limit)
+        k = max(filters.limit, filters.limit * self._over_fetch)  # hydrate 필터/품절 제거 대비 여유조회
+        ids = vector_rank(qvec, self._store, k=k)
         if self._hydrate is None:
             raise spring_client.SpringUnavailableError(
                 "VectorSearchBackend(방식1) 라이브 hydrate 미착수 — C-17(§4.6 id 제약 조회) 필요"
             )
-        return await self._hydrate(ids)
+        return await self._hydrate(ids, filters)
 
 
 # MVP 기본 백엔드 — Spring 위임(§4.6). 임베딩 방식 승격은 골든셋 확정 후(§4.8 말미).
