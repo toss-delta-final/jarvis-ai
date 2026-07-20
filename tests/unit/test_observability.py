@@ -170,13 +170,13 @@ async def test_slot_released_when_commit_user_message_cancelled() -> None:
     assert not registry.is_active("member:cancel-commit")  # 슬롯 해제됨(영구 409 방지)
 
 
-async def test_pg_conversation_store_write_has_query_timeout(
+async def test_pg_conversation_store_query_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """save_user_message 쿼리가 응답 없이 멈추면 실행 상한 초과로 종료된다.
+    """쓰기·읽기 쿼리 모두 응답 없이 멈추면 실행 상한 초과로 종료된다.
 
-    타임아웃이 없으면 commit_user_message 가 영영 안 끝나 동시 스트림 슬롯이 영구히
-    잠긴다(§2.9 a, PR #48 후속 리뷰)."""
+    타임아웃이 없으면 commit_user_message 가 영영 안 끝나 동시 스트림 슬롯이 영구히 잠기고,
+    읽기도 연결을 문 채 풀 고갈로 쓰기 경로까지 연쇄로 막힌다(§2.9 a, PR #48 후속 리뷰)."""
     monkeypatch.setattr(get_settings(), "state_store_query_timeout_s", 0.05)
 
     class _HangConn:
@@ -196,6 +196,35 @@ async def test_pg_conversation_store_write_has_query_timeout(
     store = PgConversationStore(_HangPool())
     with pytest.raises(TimeoutError):
         await store.save_user_message("c", "u", "user", "hi")
+    with pytest.raises(TimeoutError):
+        await store.get_turn("t")
+    with pytest.raises(TimeoutError):
+        await store.turns_for("c")
+
+
+def test_chat_emits_rejection_log_when_conversation_store_fails(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """get_conversation_store()(pg-profile 지연 연결) 실패가 open_stream 안전망 밖이라도
+    §6.3 b chat_request 로그(errorType)를 남긴다(PR #48 후속 리뷰)."""
+    import app.api.chat as chat_mod
+
+    async def boom() -> None:
+        raise RuntimeError("pg-profile down")
+
+    monkeypatch.setattr(chat_mod, "get_conversation_store", boom)
+    with caplog.at_level(logging.INFO, logger="observability"):
+        try:
+            client.post("/chat", json={"sessionId": "cfail", "threadId": "t", "message": "hi"})
+        except RuntimeError:
+            pass  # 전역 500 핸들러가 §2.5 봉투를 낸 뒤 재전파(emit_rejection 은 그 전에 실행됨)
+    logs = [json.loads(r.getMessage()) for r in caplog.records if r.name == "observability"]
+    hits = [
+        e for e in logs if e.get("event") == "chat_request" and e.get("errorType") == "INTERNAL"
+    ]
+    assert hits, "pg-profile 장애 시 chat_request errorType 로그 누락"
+    assert hits[0]["streamStatus"] is None
+    assert hits[0].get("conversationId") == "cfail"
 
 
 # ─────────── §6.3 (b) 구조화 로그 + PII ───────────

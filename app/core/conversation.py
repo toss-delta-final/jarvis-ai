@@ -172,26 +172,35 @@ class PgConversationStore:
         )
 
     async def get_turn(self, turn_id: str) -> Turn | None:
-        async with self._pool.connection() as conn:
-            row = await (
-                await conn.execute(
-                    "SELECT turn_id, conversation_id, user_id, role, user_text, assistant_text, status "
-                    "FROM conversation_turns WHERE turn_id = %s",
-                    (turn_id,),
-                )
-            ).fetchone()
-        return _row_to_turn(row) if row else None
+        # 읽기도 쓰기(_execute)와 동일 실행 상한 — 타임아웃이 없으면 pg 가 멈출 때 이 await 가
+        # 영영 안 끝날 뿐 아니라 연결이 풀에 물린 채 반환되지 않아, 풀 고갈로 타임아웃이 걸린
+        # 쓰기 경로(슬롯 확보/마감)까지 연쇄로 막힌다(PR #48 후속 리뷰).
+        async def _run() -> Turn | None:
+            async with self._pool.connection() as conn:
+                row = await (
+                    await conn.execute(
+                        "SELECT turn_id, conversation_id, user_id, role, user_text, assistant_text, status "
+                        "FROM conversation_turns WHERE turn_id = %s",
+                        (turn_id,),
+                    )
+                ).fetchone()
+            return _row_to_turn(row) if row else None
+
+        return await asyncio.wait_for(_run(), timeout=get_settings().state_store_query_timeout_s)
 
     async def turns_for(self, conversation_id: str) -> list[Turn]:
-        async with self._pool.connection() as conn:
-            rows = await (
-                await conn.execute(
-                    "SELECT turn_id, conversation_id, user_id, role, user_text, assistant_text, status "
-                    "FROM conversation_turns WHERE conversation_id = %s ORDER BY created_at",
-                    (conversation_id,),
-                )
-            ).fetchall()
-        return [_row_to_turn(row) for row in rows]
+        async def _run() -> list[Turn]:
+            async with self._pool.connection() as conn:
+                rows = await (
+                    await conn.execute(
+                        "SELECT turn_id, conversation_id, user_id, role, user_text, assistant_text, status "
+                        "FROM conversation_turns WHERE conversation_id = %s ORDER BY created_at",
+                        (conversation_id,),
+                    )
+                ).fetchall()
+            return [_row_to_turn(row) for row in rows]
+
+        return await asyncio.wait_for(_run(), timeout=get_settings().state_store_query_timeout_s)
 
 
 def _row_to_turn(row: tuple) -> Turn:

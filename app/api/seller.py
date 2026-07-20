@@ -45,7 +45,7 @@ from app.core.auth import Identity
 from app.core.config import get_settings
 from app.core.conversation import get_conversation_store
 from app.core.errors import get_request_id
-from app.core.observability import start_observation
+from app.core.observability import emit_rejection, start_observation
 from app.core.stream import open_stream, registry_key
 from app.schemas.chat import ChatRequest, DoneData, ErrorData, TokenData
 from app.services.spring_client import SpringUnavailableError
@@ -437,12 +437,21 @@ async def seller_chat(
     (a) sessionId 당 동시 1스트림(409) (b) 연결 종료 취소 (c) first-token/전체 타임아웃.
     대화 저장·구조화 로그(obs #8)는 start_observation 이 담당한다(chat 과 동일 패턴).
     """
+    request_id = get_request_id(http_request)
+    try:
+        store = await get_conversation_store()
+    except Exception:
+        # chat.py 와 동일 — pg-profile 지연 연결 실패(운영 jwks raise)가 open_stream 안전망 밖이라
+        # §6.3 b chat_request 로그(errorType 집계)를 통째로 놓친다. rejection 로그를 남기고 전파한다
+        # (PR #48 후속 리뷰).
+        emit_rejection(request_id, "INTERNAL", conversationId=request.session_id)
+        raise
     observation = start_observation(
-        request_id=get_request_id(http_request),
+        request_id=request_id,
         identity=identity,
         conversation_id=request.session_id,
         message=request.message,
-        store=await get_conversation_store(),
+        store=store,
         now=asyncio.get_running_loop().time(),
     )
     return await open_stream(
