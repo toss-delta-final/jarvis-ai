@@ -253,7 +253,7 @@ async def test_profile_me_member_with_profile_camelcase() -> None:
 # ─────────── POST /events/session-end ───────────
 
 
-async def test_session_end_202_and_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_session_end_202_and_processes_buffer(monkeypatch: pytest.MonkeyPatch) -> None:
     import app.api.events as ev
 
     monkeypatch.setattr(ev, "get_llm", lambda: _ProfileLLM())
@@ -266,9 +266,51 @@ async def test_session_end_202_and_idempotent(monkeypatch: pytest.MonkeyPatch) -
     # 프로필 생성됨 + 버퍼 정리됨
     assert await store.get_summary("777") is not None
     assert await store.get_session_ctx(key) == []
-    # 멱등 — 같은 (userId, sessionId) 재수신은 duplicate
-    r2 = client.post("/events/session-end", json=payload)
-    assert r2.status_code == 202 and r2.json()["status"] == "duplicate"
+
+
+async def test_session_end_dedups_same_content_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """같은 내용(버퍼 해시 동일) 재전송은 duplicate — at-least-once 중복 방어(§2.7, PR #64)."""
+    import app.api.events as ev
+
+    monkeypatch.setattr(ev, "get_llm", lambda: _ProfileLLM())
+    store = await get_profile_store()
+    await store.append_session_ctx(conversation_key("777", "sess-dup"), "발화")
+    # 동일 통지가 이미 처리됐다고 가정 — 저장 대상 내용의 파생 멱등키를 선점.
+    dup_key = ev.session_end_dedup_key("777", "sess-dup", ["발화"])
+    assert await processed_events.mark_if_new(dup_key)
+    r = client.post("/events/session-end", json={"userId": 777, "sessionId": "sess-dup"})
+    assert r.status_code == 202 and r.json()["status"] == "duplicate"
+
+
+async def test_session_end_new_checkpoint_not_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """같은 sessionId 라도 새 대화가 쌓이면(워터마크 증가) 두 번째 저장이 씹히지 않는다(PR #64 회귀).
+
+    session-end 는 세션 종료가 아니라 저장 체크포인트라 한 세션에 여러 번 정당하게 온다.
+    """
+    import app.api.events as ev
+
+    monkeypatch.setattr(ev, "get_llm", lambda: _ProfileLLM())
+    store = await get_profile_store()
+    key = conversation_key("900", "sess-multi")
+    await store.append_session_ctx(key, "무선이어폰 3만원대")  # seq 1
+    r1 = client.post("/events/session-end", json={"userId": 900, "sessionId": "sess-multi"})
+    assert r1.json()["status"] == "accepted"
+    assert await store.get_session_ctx(key) == []  # 처리 후 정리(next_seq 는 보존)
+    # 같은 sessionId 로 재활동 — 새 발화 축적(seq 2, 워터마크 증가)
+    await store.append_session_ctx(key, "겨울 등산화도 볼래")
+    r2 = client.post("/events/session-end", json={"userId": 900, "sessionId": "sess-multi"})
+    assert r2.status_code == 202 and r2.json()["status"] == "accepted"  # 중복으로 씹히지 않음
+    assert await store.get_session_ctx(key) == []  # 두 번째도 처리·정리
+
+
+async def test_session_end_no_buffer_is_noop_accepted() -> None:
+    """저장할 내용(버퍼)이 없으면 202 accepted no-op — 멱등 마킹도 남기지 않는다(PR #64)."""
+    import app.api.events as ev
+
+    r = client.post("/events/session-end", json={"userId": 5, "sessionId": "empty-sess"})
+    assert r.status_code == 202 and r.json()["status"] == "accepted"
+    # 빈 버퍼는 해시 이전에 조기 반환 — 어떤 멱등키도 남지 않는다.
+    assert not await processed_events.seen_event(ev.session_end_dedup_key("5", "empty-sess", []))
 
 
 def test_session_end_rejects_missing_identity() -> None:
@@ -296,7 +338,7 @@ def test_session_end_rejects_userid_out_of_bigint_range() -> None:
 
 
 async def test_session_end_idempotency_scoped_per_user(monkeypatch: pytest.MonkeyPatch) -> None:
-    """멱등키는 (userId, sessionId) 파생 — 같은 sessionId라도 userId가 다르면 서로 중복 아님."""
+    """멱등키는 (userId, sessionId, 워터마크) 파생 — 같은 sessionId라도 userId가 다르면 서로 중복 아님."""
     import app.api.events as ev
 
     monkeypatch.setattr(ev, "get_llm", lambda: _ProfileLLM())
@@ -438,8 +480,8 @@ async def test_session_end_unmarks_on_failure(monkeypatch: pytest.MonkeyPatch) -
     await store.append_session_ctx(key, "취향 신호")
     r = client.post("/events/session-end", json={"userId": 44, "sessionId": "s"})
     assert r.status_code == 202
-    # 언마크 → 재전송 시 재처리 (멱등키 = session-end:{userId}:{sessionId})
-    assert not await processed_events.seen_event("session-end:44:s")
+    # 언마크 → 재전송 시 재처리 (멱등키 = 저장 대상 버퍼 내용 해시)
+    assert not await processed_events.seen_event(ev.session_end_dedup_key("44", "s", ["취향 신호"]))
     assert await store.get_session_ctx(key) != []  # 버퍼 보존
 
 
@@ -459,7 +501,8 @@ async def test_session_end_returns_202_when_profile_store_unavailable(
     monkeypatch.setattr(ev, "get_profile_store", _raise)
     r = client.post("/events/session-end", json={"userId": 44, "sessionId": "s"})
     assert r.status_code == 202 and r.json()["status"] == "accepted"
-    assert not await processed_events.seen_event("session-end:44:s")  # 언마크 → 재전송 시 재처리
+    # store 실패로 스냅샷·마킹 전에 중단 → 아무 멱등키도 남지 않는다(재전송 시 재처리)
+    assert not await processed_events.seen_event(ev.session_end_dedup_key("44", "s", ["취향 신호"]))
 
 
 async def test_session_end_returns_202_and_preserves_buffer_on_store_timeout(
