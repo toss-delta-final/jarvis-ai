@@ -19,6 +19,7 @@ from typing import Protocol
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.core.pg_resilience import hardened_pg_conninfo, run_with_query_timeout
 
 logger = get_logger(__name__)
 
@@ -139,18 +140,19 @@ class PgConversationStore:
     def __init__(self, pool) -> None:  # noqa: ANN001 - psycopg_pool.AsyncConnectionPool(지연 임포트)
         self._pool = pool
 
-    async def _execute(self, sql: str, params: tuple) -> None:
+    async def _execute(self, sql: str, params: tuple) -> int:
         """쓰기 쿼리(연결 획득+실행)를 실행 상한으로 감싼다.
 
         pg 가 응답 없이 멈추면 이 await 가 영영 안 끝나 commit_user_message() 가 반환하지
         못하고 해당 session_id 의 동시 스트림 슬롯이 영구히 잠긴다(§2.9 a, PR #48 후속 리뷰).
         """
 
-        async def _run() -> None:
+        async def _run() -> int:
             async with self._pool.connection() as conn:
-                await conn.execute(sql, params)
+                cursor = await conn.execute(sql, params)
+                return cursor.rowcount
 
-        await asyncio.wait_for(_run(), timeout=get_settings().state_store_query_timeout_s)
+        return await run_with_query_timeout(_run())
 
     async def save_user_message(
         self, conversation_id: str, user_id: str | None, role: str, text: str
@@ -166,10 +168,12 @@ class PgConversationStore:
     async def finalize_assistant(
         self, turn_id: str, assistant_text: str, status: TurnStatus
     ) -> None:
-        await self._execute(
+        rowcount = await self._execute(
             "UPDATE conversation_turns SET assistant_text = %s, status = %s WHERE turn_id = %s",
             (assistant_text, status.value, turn_id),
         )
+        if rowcount == 0:
+            logger.warning("conversation turn finalize 대상 없음: turn_id=%s", turn_id)
 
     async def get_turn(self, turn_id: str) -> Turn | None:
         # 읽기도 쓰기(_execute)와 동일 실행 상한 — 타임아웃이 없으면 pg 가 멈출 때 이 await 가
@@ -186,7 +190,7 @@ class PgConversationStore:
                 ).fetchone()
             return _row_to_turn(row) if row else None
 
-        return await asyncio.wait_for(_run(), timeout=get_settings().state_store_query_timeout_s)
+        return await run_with_query_timeout(_run())
 
     async def turns_for(self, conversation_id: str) -> list[Turn]:
         async def _run() -> list[Turn]:
@@ -194,13 +198,14 @@ class PgConversationStore:
                 rows = await (
                     await conn.execute(
                         "SELECT turn_id, conversation_id, user_id, role, user_text, assistant_text, status "
-                        "FROM conversation_turns WHERE conversation_id = %s ORDER BY created_at",
+                        "FROM conversation_turns WHERE conversation_id = %s "
+                        "ORDER BY created_at, turn_id",
                         (conversation_id,),
                     )
                 ).fetchall()
             return [_row_to_turn(row) for row in rows]
 
-        return await asyncio.wait_for(_run(), timeout=get_settings().state_store_query_timeout_s)
+        return await run_with_query_timeout(_run())
 
 
 def _row_to_turn(row: tuple) -> Turn:
@@ -291,7 +296,13 @@ async def get_conversation_store() -> ConversationStoreProtocol:
             try:
                 from psycopg_pool import AsyncConnectionPool  # noqa: PLC0415
 
-                pool = AsyncConnectionPool(settings.profile_db_url, open=False)
+                pool = AsyncConnectionPool(
+                    hardened_pg_conninfo(settings.profile_db_url),
+                    open=False,
+                    min_size=settings.state_store_pool_min_size,
+                    max_size=settings.state_store_pool_max_size,
+                    timeout=settings.state_store_query_timeout_s,
+                )
                 await asyncio.wait_for(
                     pool.open(wait=True), timeout=settings.state_store_connect_timeout_s
                 )

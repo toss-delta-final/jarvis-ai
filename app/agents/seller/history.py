@@ -41,6 +41,7 @@ from app.agents.seller.schemas import (
     RecommendationSet,
 )
 from app.core.config import get_settings
+from app.core.pg_resilience import hardened_pg_conninfo, state_store_pool_config
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,10 @@ async def _get_store() -> BaseStore:
         try:
             from langgraph.store.postgres.aio import AsyncPostgresStore
 
-            ctx = AsyncPostgresStore.from_conn_string(settings.profile_db_url)
+            ctx = AsyncPostgresStore.from_conn_string(
+                hardened_pg_conninfo(settings.profile_db_url),
+                pool_config=state_store_pool_config(),
+            )
             store = await asyncio.wait_for(
                 ctx.__aenter__(), timeout=settings.seller_checkpoint_connect_timeout_s
             )

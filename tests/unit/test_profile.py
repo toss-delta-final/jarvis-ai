@@ -7,6 +7,8 @@ conftest reset — 이슈 #33).
 
 from __future__ import annotations
 
+import asyncio
+import gc
 import json
 
 import jwt
@@ -17,7 +19,7 @@ from app.agents.profile import processed_events
 from app.agents.profile.builder import consolidate, generate_session_delta, record_remember
 from app.agents.profile.gate import is_remember_command, should_promote
 from app.agents.profile.reader import read_profile_summary
-from app.agents.profile.store import get_profile_store
+from app.agents.profile.store import ProfileStore, get_profile_store
 from app.core.config import get_settings
 from app.core.conversation import conversation_key
 from app.main import app
@@ -431,6 +433,29 @@ async def test_session_end_returns_202_when_profile_store_unavailable(
     assert not await processed_events.seen_event("store-down-1")  # 언마크 → 재전송 시 재처리
 
 
+async def test_session_end_returns_202_and_preserves_buffer_on_store_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """pg-profile query deadline도 §3.5 best-effort 경계에서 202 + 버퍼 보존으로 강등한다."""
+    import app.api.events as ev
+
+    key = conversation_key("44", "timeout-session")
+    store = await get_profile_store()
+    await store.append_session_ctx(key, "재시도할 취향 신호")
+
+    async def _timeout(*args, **kwargs):
+        raise TimeoutError("pg query deadline")
+
+    monkeypatch.setattr(ev.processed_events, "mark_if_new", _timeout)
+    response = client.post(
+        "/events/session-end",
+        json={"eventId": "timeout-1", "userId": "44", "sessionId": "timeout-session"},
+    )
+
+    assert response.status_code == 202
+    assert await store.get_session_ctx(key) == ["재시도할 취향 신호"]
+
+
 def test_internal_token_required_in_jwks_mode() -> None:
     """운영(jwks)에서 internal_api_token 미주입이면 Settings 기동 실패(inbound fail-open 방지)."""
     from app.core.config import Settings
@@ -444,3 +469,94 @@ def test_internal_token_required_in_jwks_mode() -> None:
         internal_api_token="tok",
         google_api_key="k",
     )  # ok
+
+
+async def test_profile_store_all_operations_have_query_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ProfileStore 공개 I/O가 모두 동일 deadline을 사용한다(이슈 #50)."""
+
+    class _HangStore:
+        async def aget(self, *args, **kwargs):
+            await asyncio.sleep(10)
+
+        async def aput(self, *args, **kwargs):
+            await asyncio.sleep(10)
+
+        async def asearch(self, *args, **kwargs):
+            await asyncio.sleep(10)
+
+        async def adelete(self, *args, **kwargs):
+            await asyncio.sleep(10)
+
+    monkeypatch.setattr(get_settings(), "state_store_query_timeout_s", 0.01)
+    store = ProfileStore(_HangStore())
+    operations = [
+        lambda: store.get_summary("u"),
+        lambda: store.set_summary("u", "m", "t"),
+        lambda: store.get_facts("u"),
+        lambda: store.add_fact("u", "f"),
+        lambda: store.append_session_ctx("k", "x"),
+        lambda: store.get_session_ctx("k"),
+        lambda: store.get_session_ctx_snapshot("k"),
+        lambda: store.clear_session_ctx_upto("k", 1),
+    ]
+    for operation in operations:
+        with pytest.raises(TimeoutError):
+            await operation()
+
+
+def test_profile_lock_registries_release_idle_keys() -> None:
+    """유휴 lock key는 GC로 회수되고, 사용 중 lock은 호출자가 참조하는 동안 유지된다."""
+    from app.agents.profile import store as profile_store_module
+
+    session_lock = profile_store_module._session_lock("session")
+    fact_lock = profile_store_module._fact_lock("user")
+    assert len(profile_store_module._session_locks) == 1
+    assert len(profile_store_module._fact_locks) == 1
+
+    del session_lock, fact_lock
+    gc.collect()
+
+    assert len(profile_store_module._session_locks) == 0
+    assert len(profile_store_module._fact_locks) == 0
+
+
+async def test_processed_events_operations_have_query_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """session-end 멱등 테이블의 모든 쿼리가 멈춘 DB에서 유한 시간 내 종료한다."""
+
+    class _HangConn:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def execute(self, *args, **kwargs):
+            await asyncio.sleep(10)
+
+    class _HangPool:
+        closed = False
+
+        def connection(self):
+            return _HangConn()
+
+        async def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(get_settings(), "state_store_query_timeout_s", 0.01)
+    processed_events.set_pool(_HangPool())
+    try:
+        operations = [
+            lambda: processed_events.mark_if_new("e"),
+            lambda: processed_events.seen_event("e"),
+            lambda: processed_events.mark_event("e"),
+            lambda: processed_events.unmark_event("e"),
+        ]
+        for operation in operations:
+            with pytest.raises(TimeoutError):
+                await operation()
+    finally:
+        processed_events.set_pool(None)

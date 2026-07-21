@@ -6,6 +6,8 @@ SSE 는 상품 카드를 싣지 않는다(경로 B) — products.ready 는 {sess
 
 from __future__ import annotations
 
+import asyncio
+import gc
 import json
 from datetime import datetime
 from types import SimpleNamespace
@@ -1067,3 +1069,42 @@ def test_suggestion_chip_requires_exactly_one_kind() -> None:
             relaxation=RelaxationRef(field="f", value=1),
             est_count=1,
         )
+
+
+async def test_thread_filter_and_revert_stores_have_query_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """buyer filter/revert BaseStore I/O도 cart/profile과 같은 deadline을 사용한다."""
+    from app.agents.buyer.graph import ThreadFilterStore
+    from app.agents.buyer.recommendation.state import RevertStore
+    from app.schemas.spring import ProductSearchFilters
+
+    class _HangStore:
+        async def aget(self, *args, **kwargs):
+            await asyncio.sleep(10)
+
+        async def aput(self, *args, **kwargs):
+            await asyncio.sleep(10)
+
+    monkeypatch.setattr(get_settings(), "state_store_query_timeout_s", 0.01)
+    thread = ThreadFilterStore(_HangStore())
+    revert = RevertStore(_HangStore())
+    operations = [
+        lambda: thread.get("k"),
+        lambda: thread.put("k", ProductSearchFilters(category="x")),
+        lambda: revert.get("k"),
+        lambda: revert.add("k", ["x"]),
+    ]
+    for operation in operations:
+        with pytest.raises(TimeoutError):
+            await operation()
+
+
+def test_revert_lock_registry_releases_idle_keys() -> None:
+    from app.agents.buyer.recommendation import state
+
+    lock = state._lock_for("k")
+    assert len(state._add_locks) == 1
+    del lock
+    gc.collect()
+    assert len(state._add_locks) == 0

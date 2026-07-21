@@ -22,12 +22,19 @@ import asyncio
 import logging
 import uuid
 from dataclasses import dataclass
+from weakref import WeakValueDictionary
 
 from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
 
 from app.agents.profile import processed_events
 from app.core.config import get_settings
+from app.core.pg_resilience import (
+    hardened_pg_conninfo,
+    mutation_lock,
+    run_with_query_timeout,
+    state_store_pool_config,
+)
 from app.pipelines.embedding import embed_texts
 
 logger = logging.getLogger(__name__)
@@ -42,12 +49,10 @@ _SESSION_KEY = "buffer"
 # get→put(read-modify-write) 구간을 직렬화한다. 동일 세션에 연속 발화가 빠르게 들어오면
 # lost update 로 앞선 발화가 통째로 유실될 수 있다(RevertStore.add() 와 동일 근거, PR #47 리뷰).
 #
-# [한계, PR #47 후속 리뷰 — RevertStore._add_locks 와 동일 전제] 이 락도 프로세스 로컬이라
-# 다중 인스턴스 배포에서는 직렬화되지 않고(app/core/stream.py 의 ActiveStreamRegistry 와
-# 동일 "MVP 단일 인스턴스" 전제), conversation_key 마다 항목이 쌓이기만 하고 제거되지
-# 않아 장시간 구동 시 완만한 메모리 누수다 — MVP 규모에서 실질적 위험 낮음으로 판단해
-# TTL/LRU 정리는 미구현(reset_profile_store() 는 테스트 격리용으로만 비운다).
-_session_locks: dict[str, asyncio.Lock] = {}
+# 실 PostgreSQL 경로는 mutation_lock의 advisory lock으로 인스턴스 간 직렬화하고, InMemory/test
+# 경로만 이 로컬 lock을 사용한다. WeakValueDictionary라 사용 중 lock은 호출자가 강하게 참조해
+# 유지되고, 호출 종료 후 유휴 key는 GC가 자동 회수한다(이슈 #50).
+_session_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
 
 def _session_lock(key: str) -> asyncio.Lock:
@@ -64,9 +69,9 @@ def _session_lock(key: str) -> asyncio.Lock:
 # 항상 부분집합 관계(멱등)라 락 없이도 cap 을 넘기지 않아 "패턴 일관성용 방어"에 그쳤다.
 # 그러나 dedup(동일 텍스트 재승격 스킵)이 붙으면서 이 락은 load-bearing 이 됐다 — 락이
 # 없으면 같은 텍스트를 동시에 add_fact 하는 두 호출이 서로의 aput 전에 각자 asearch 로
-# "없음"을 보고 둘 다 aput 해 중복이 새기 때문(check-then-act 레이스). 한계는 _session_locks
-# 와 동일(프로세스 로컬, user_id 별 무제한 누적) — reset_profile_store() 로만 정리.
-_fact_locks: dict[str, asyncio.Lock] = {}
+# "없음"을 보고 둘 다 aput 해 중복이 새기 때문이다. 실 PostgreSQL은 advisory lock,
+# InMemory/test는 이 weak 로컬 lock으로 보호한다(이슈 #50).
+_fact_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
 
 def _fact_lock(key: str) -> asyncio.Lock:
@@ -119,7 +124,9 @@ class ProfileStore:
 
     # ── 요약 (reader·GET·consolidation) ──
     async def get_summary(self, user_id: str) -> ProfileSummary | None:
-        item = await self._store.aget((_PROFILE_NS_ROOT, user_id), _SUMMARY_KEY)
+        item = await run_with_query_timeout(
+            self._store.aget((_PROFILE_NS_ROOT, user_id), _SUMMARY_KEY)
+        )
         if not item:
             return None
         return ProfileSummary(
@@ -127,18 +134,22 @@ class ProfileStore:
         )
 
     async def set_summary(self, user_id: str, markdown: str, generated_at: str) -> None:
-        await self._store.aput(
-            (_PROFILE_NS_ROOT, user_id),
-            _SUMMARY_KEY,
-            {"markdown": markdown, "generated_at": generated_at},
-            index=False,  # 요약 전문은 semantic 인덱스 대상이 아니다(REQ-PROF-071 — facts 전용)
+        await run_with_query_timeout(
+            self._store.aput(
+                (_PROFILE_NS_ROOT, user_id),
+                _SUMMARY_KEY,
+                {"markdown": markdown, "generated_at": generated_at},
+                index=False,  # 요약 전문은 semantic 인덱스 대상이 아니다(REQ-PROF-071 — facts 전용)
+            )
         )
 
     # ── 장기 fact (승격 결과·consolidation 입력) — fact 1개 = store item 1개(semantic 인덱스) ──
     async def get_facts(self, user_id: str) -> list[str]:
         settings = get_settings()
         limit = settings.profile_max_facts + settings.profile_facts_query_margin
-        items = await self._store.asearch((_FACTS_NS_ROOT, user_id), limit=limit)
+        items = await run_with_query_timeout(
+            self._store.asearch((_FACTS_NS_ROOT, user_id), limit=limit)
+        )
         items.sort(key=lambda it: it.created_at)
         return [it.value["fact"] for it in items]
 
@@ -149,10 +160,16 @@ class ProfileStore:
         # dedup 조회 상한 — cap 지정 시 cap 기준, 미지정(테스트 등)이면 profile_max_facts 기준.
         # 아래 트리밍이 항목 수를 이 값 이하로 유지하므로 dedup 스캔이 완전하다.
         effective_cap = cap if (cap and cap > 0) else settings.profile_max_facts
-        async with _fact_lock(user_id):  # dedup 확인→aput→cap 트리밍 원자화(위 _fact_locks 참조)
-            items = await self._store.asearch(
-                (_FACTS_NS_ROOT, user_id),
-                limit=effective_cap + settings.profile_facts_query_margin,
+        async with mutation_lock(
+            self._store,
+            f"profile:facts:{user_id}",
+            _fact_lock(user_id),
+        ):
+            items = await run_with_query_timeout(
+                self._store.asearch(
+                    (_FACTS_NS_ROOT, user_id),
+                    limit=effective_cap + settings.profile_facts_query_margin,
+                )
             )
             # 동일 텍스트가 이미 있으면 재승격 스킵(멱등) — cap 유무와 무관하게 항상 수행한다.
             # session_end 재처리(clear_session_ctx_upto 실패·재전송·다음 sleep-time 배치)로 같은
@@ -160,36 +177,55 @@ class ProfileStore:
             # 호출부가 cap 인자를 실수로 빠뜨렸을 때 이 보호가 조용히 무력화된다(PR #47 후속 리뷰).
             if any(it.value["fact"] == fact for it in items):
                 return
-            await self._store.aput((_FACTS_NS_ROOT, user_id), uuid.uuid4().hex, {"fact": fact})
+            await run_with_query_timeout(
+                self._store.aput((_FACTS_NS_ROOT, user_id), uuid.uuid4().hex, {"fact": fact})
+            )
             # cap 트리밍은 cap 이 지정된 경우에만 — 방금 추가분 포함 초과 시 최신 cap 개만 유지.
             if cap and cap > 0 and len(items) + 1 > cap:
                 items.sort(key=lambda it: it.created_at)
                 for stale in items[: len(items) + 1 - cap]:  # recency-wins
-                    await self._store.adelete((_FACTS_NS_ROOT, user_id), stale.key)
+                    await run_with_query_timeout(
+                        self._store.adelete((_FACTS_NS_ROOT, user_id), stale.key)
+                    )
 
     # ── transient 세션 버퍼 (승격 전 격리, REQ-PROF transient) ──
     async def append_session_ctx(self, key: str, text: str, *, cap: int | None = None) -> None:
         if not text:
             return
-        async with _session_lock(key):  # get→put 원자성 보장(lost update 방지)
-            item = await self._store.aget((_SESSION_NS_ROOT, key), _SESSION_KEY)
+        async with mutation_lock(
+            self._store,
+            f"profile:session:{key}",
+            _session_lock(key),
+        ):
+            item = await run_with_query_timeout(
+                self._store.aget((_SESSION_NS_ROOT, key), _SESSION_KEY)
+            )
             value = item.value if item else {"items": [], "next_seq": 0}
             seq = value["next_seq"] + 1
             buf: list[list] = value["items"]
             buf.append([seq, text])
             if cap and cap > 0 and len(buf) > cap:
                 del buf[: len(buf) - cap]  # 최신 cap 개만 유지(무제한 누적 방어)
-            await self._store.aput(
-                (_SESSION_NS_ROOT, key), _SESSION_KEY, {"items": buf, "next_seq": seq}, index=False
+            await run_with_query_timeout(
+                self._store.aput(
+                    (_SESSION_NS_ROOT, key),
+                    _SESSION_KEY,
+                    {"items": buf, "next_seq": seq},
+                    index=False,
+                )
             )
 
     async def get_session_ctx(self, key: str) -> list[str]:
-        item = await self._store.aget((_SESSION_NS_ROOT, key), _SESSION_KEY)
+        item = await run_with_query_timeout(
+            self._store.aget((_SESSION_NS_ROOT, key), _SESSION_KEY)
+        )
         return [text for _, text in item.value["items"]] if item else []
 
     async def get_session_ctx_snapshot(self, key: str) -> tuple[list[str], int]:
         """(발화 목록, 스냅샷 워터마크 seq) 반환 — 워터마크는 clear_session_ctx_upto 인자로 그대로 넘긴다."""
-        item = await self._store.aget((_SESSION_NS_ROOT, key), _SESSION_KEY)
+        item = await run_with_query_timeout(
+            self._store.aget((_SESSION_NS_ROOT, key), _SESSION_KEY)
+        )
         if not item:
             return [], 0
         buf = item.value["items"]
@@ -198,20 +234,30 @@ class ProfileStore:
     async def clear_session_ctx_upto(self, key: str, watermark: int) -> None:
         """watermark(seq) 이하 항목만 제거 — cap 트리밍으로 스냅샷 항목이 먼저 밀려나 있어도,
         그 사이 새로 추가된 항목(seq > watermark)은 위치와 무관하게 항상 보존된다."""
-        async with _session_lock(key):  # append_session_ctx 와 동일 key 락으로 직렬화
-            item = await self._store.aget((_SESSION_NS_ROOT, key), _SESSION_KEY)
+        async with mutation_lock(
+            self._store,
+            f"profile:session:{key}",
+            _session_lock(key),
+        ):
+            item = await run_with_query_timeout(
+                self._store.aget((_SESSION_NS_ROOT, key), _SESSION_KEY)
+            )
             if not item:
                 return
             remaining = [[seq, text] for seq, text in item.value["items"] if seq > watermark]
             if remaining:
-                await self._store.aput(
-                    (_SESSION_NS_ROOT, key),
-                    _SESSION_KEY,
-                    {"items": remaining, "next_seq": item.value["next_seq"]},
-                    index=False,
+                await run_with_query_timeout(
+                    self._store.aput(
+                        (_SESSION_NS_ROOT, key),
+                        _SESSION_KEY,
+                        {"items": remaining, "next_seq": item.value["next_seq"]},
+                        index=False,
+                    )
                 )
             else:
-                await self._store.adelete((_SESSION_NS_ROOT, key), _SESSION_KEY)
+                await run_with_query_timeout(
+                    self._store.adelete((_SESSION_NS_ROOT, key), _SESSION_KEY)
+                )
 
 
 _store: BaseStore | None = None
@@ -284,7 +330,9 @@ async def _get_store() -> BaseStore:
                 from langgraph.store.postgres.aio import AsyncPostgresStore  # noqa: PLC0415
 
                 ctx = AsyncPostgresStore.from_conn_string(
-                    settings.profile_db_url, index=_pg_index_config()
+                    hardened_pg_conninfo(settings.profile_db_url),
+                    pool_config=state_store_pool_config(),
+                    index=_pg_index_config(),
                 )
                 # __aenter__ 호출 '전'에 정리 대상으로 세팅한다 — wait_for 가 __aenter__ 실행
                 # 도중 타임아웃/취소로 끊으면 커넥션이 부분적으로 열린 채 남는데, "성공 후에만

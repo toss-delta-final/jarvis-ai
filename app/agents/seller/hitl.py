@@ -39,6 +39,7 @@ from pydantic import BaseModel, Field
 
 from app.agents.seller.schemas import DraftChange, DraftProposal
 from app.core.config import get_settings
+from app.core.pg_resilience import hardened_pg_conninfo
 from app.schemas.spring import ProductCreate, ProductUpdate, SellerProductRow
 from app.services.spring_client import get_spring_client
 
@@ -358,7 +359,9 @@ async def _init_checkpointer() -> BaseCheckpointSaver:
     try:
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
-        ctx = AsyncPostgresSaver.from_conn_string(settings.profile_db_url)
+        ctx = AsyncPostgresSaver.from_conn_string(
+            hardened_pg_conninfo(settings.profile_db_url)
+        )
         saver = await asyncio.wait_for(
             ctx.__aenter__(), timeout=settings.seller_checkpoint_connect_timeout_s
         )

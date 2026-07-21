@@ -23,6 +23,11 @@ from app.agents.buyer.graph import ThreadFilterStore
 from app.agents.buyer.recommendation.state import RevertStore
 from app.core import pg_store as pg_store_module
 from app.core.config import get_settings
+from app.core.pg_resilience import (
+    close_advisory_pool,
+    hardened_pg_conninfo,
+    state_store_pool_config,
+)
 from app.schemas.spring import CartOption, ProductSearchFilters
 
 pytestmark = pytest.mark.integration
@@ -30,6 +35,12 @@ pytestmark = pytest.mark.integration
 
 def _key() -> str:
     return f"it:{uuid.uuid4().hex}"
+
+
+@pytest.fixture(autouse=True)
+async def _close_lock_pool_after_test():
+    yield
+    await close_advisory_pool()
 
 
 @pytest.fixture
@@ -118,6 +129,45 @@ async def test_state_persists_across_store_instances() -> None:
         await store_b.setup()
         reco = await CartStateStore(store_b).get_last_reco(key)
     assert reco == [(999, "")]  # pid 는 영속, 이름은 재시작 후 소실(graceful degrade)
+
+
+async def test_revert_store_concurrent_writes_across_postgres_pools() -> None:
+    """서로 다른 앱 인스턴스(pool)의 RMW도 advisory lock으로 lost update가 없다."""
+    key = _key()
+    conninfo = hardened_pg_conninfo(get_settings().profile_db_url)
+    pool_config = state_store_pool_config()
+    async with AsyncPostgresStore.from_conn_string(
+        conninfo, pool_config=pool_config
+    ) as store_a, AsyncPostgresStore.from_conn_string(
+        conninfo, pool_config=pool_config
+    ) as store_b:
+        await store_a.setup()
+        await store_b.setup()
+        wrappers = [RevertStore(store_a), RevertStore(store_b)]
+        expected = {f"category-{i}" for i in range(20)}
+        await asyncio.gather(
+            *(wrappers[i % 2].add(key, [category]) for i, category in enumerate(expected))
+        )
+        assert await wrappers[0].get(key) == expected
+
+
+async def test_hardened_store_connection_parameters_are_active() -> None:
+    """실 pg-profile 세션에 statement/TCP timeout 설정이 적용된다."""
+    settings = get_settings()
+    async with AsyncPostgresStore.from_conn_string(
+        hardened_pg_conninfo(settings.profile_db_url),
+        pool_config=state_store_pool_config(),
+    ) as store:
+        async with store.conn.connection() as conn:
+            row = await (await conn.execute("SHOW statement_timeout")).fetchone()
+            statement_timeout = row["statement_timeout"]
+            params = conn.info.get_parameters()
+
+    assert statement_timeout in {
+        f"{int(settings.state_store_query_timeout_s * 1000)}ms",
+        f"{settings.state_store_query_timeout_s:g}s",
+    }
+    assert params["tcp_user_timeout"] == str(settings.state_store_tcp_user_timeout_ms)
 
 
 async def test_pg_store_module_connects_to_real_postgres() -> None:
