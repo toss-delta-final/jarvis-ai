@@ -251,7 +251,7 @@ async def test_pg_conversation_turns_for_uses_deterministic_order() -> None:
             return _Conn()
 
     await PgConversationStore(_Pool()).turns_for("c")
-    assert "ORDER BY created_at, turn_id" in captured["sql"]
+    assert "ORDER BY sequence_id" in captured["sql"]
 
 
 async def test_get_conversation_store_closes_pool_on_cancel(

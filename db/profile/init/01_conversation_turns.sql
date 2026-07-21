@@ -7,6 +7,7 @@
 
 CREATE TABLE IF NOT EXISTS conversation_turns (
     turn_id         text PRIMARY KEY,
+    sequence_id     bigint GENERATED ALWAYS AS IDENTITY,
     conversation_id text NOT NULL,
     user_id         text,
     role            text NOT NULL,
@@ -16,6 +17,6 @@ CREATE TABLE IF NOT EXISTS conversation_turns (
     created_at      timestamptz NOT NULL DEFAULT now()
 );
 
--- turns_for(conversation_id) 조회 + 생성 순서 정렬용.
-CREATE INDEX IF NOT EXISTS idx_conversation_turns_conversation
-    ON conversation_turns (conversation_id, created_at);
+-- turns_for(conversation_id) 조회 + 실제 INSERT 순서 정렬용.
+CREATE INDEX IF NOT EXISTS idx_conversation_turns_sequence
+    ON conversation_turns (conversation_id, sequence_id);

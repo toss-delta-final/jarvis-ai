@@ -60,7 +60,7 @@ async def run_with_query_timeout(awaitable: Awaitable[_T]) -> _T:
 
 
 def state_store_pool_config() -> dict[str, int | float]:
-    """AsyncPostgresStore가 advisory lock과 실제 쿼리에 별도 연결을 쓰도록 풀을 구성한다."""
+    """pg-profile BaseStore 풀 설정. advisory lock은 같은 상한의 전용 풀을 따로 쓴다."""
     settings = get_settings()
     return {
         "min_size": settings.state_store_pool_min_size,
@@ -131,8 +131,8 @@ async def mutation_lock(
     """RMW를 DB 인스턴스 간 직렬화하고, 비-PG 경로에서는 로컬 lock을 사용한다.
 
     transaction-scoped advisory lock이라 요청 태스크가 취소되거나 연결이 끊겨도 PostgreSQL이
-    자동 해제한다. 실제 BaseStore 작업은 같은 pool의 다른 연결을 쓰므로 pool max_size는
-    최소 2여야 한다(Settings 검증).
+    자동 해제한다. 잠금 연결과 BaseStore 쿼리 연결은 서로 다른 전용 pool에서 획득하며,
+    ``state_store_pool_max_size``는 각 pool의 독립적인 동시성 상한이다.
     """
     if _postgres_pool(store) is None:
         async with local_lock:

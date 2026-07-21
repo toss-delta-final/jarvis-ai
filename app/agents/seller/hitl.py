@@ -359,9 +359,10 @@ async def _init_checkpointer() -> BaseCheckpointSaver:
     try:
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
-        ctx = AsyncPostgresSaver.from_conn_string(
-            hardened_pg_conninfo(settings.profile_db_url)
-        )
+        # 현재 langgraph-checkpoint-postgres의 from_conn_string은 pool_config를 받지 않고
+        # 단일 AsyncConnection을 직접 연다. 따라서 BaseStore pool 상한 설정 대상이 아니며,
+        # 연결/서버/TCP 제한은 hardened conninfo로 적용한다.
+        ctx = AsyncPostgresSaver.from_conn_string(hardened_pg_conninfo(settings.profile_db_url))
         saver = await asyncio.wait_for(
             ctx.__aenter__(), timeout=settings.seller_checkpoint_connect_timeout_s
         )

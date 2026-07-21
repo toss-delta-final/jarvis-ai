@@ -140,6 +140,19 @@ class PgConversationStore:
     def __init__(self, pool) -> None:  # noqa: ANN001 - psycopg_pool.AsyncConnectionPool(지연 임포트)
         self._pool = pool
 
+    async def setup(self) -> None:
+        """기존 pg-profile 볼륨에도 삽입 순서 identity와 조회 인덱스를 멱등 적용한다."""
+        await self._execute(
+            "ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS "
+            "sequence_id bigint GENERATED ALWAYS AS IDENTITY",
+            (),
+        )
+        await self._execute(
+            "CREATE INDEX IF NOT EXISTS idx_conversation_turns_sequence "
+            "ON conversation_turns (conversation_id, sequence_id)",
+            (),
+        )
+
     async def _execute(self, sql: str, params: tuple) -> int:
         """쓰기 쿼리(연결 획득+실행)를 실행 상한으로 감싼다.
 
@@ -199,7 +212,7 @@ class PgConversationStore:
                     await conn.execute(
                         "SELECT turn_id, conversation_id, user_id, role, user_text, assistant_text, status "
                         "FROM conversation_turns WHERE conversation_id = %s "
-                        "ORDER BY created_at, turn_id",
+                        "ORDER BY sequence_id",
                         (conversation_id,),
                     )
                 ).fetchall()
@@ -306,8 +319,10 @@ async def get_conversation_store() -> ConversationStoreProtocol:
                 await asyncio.wait_for(
                     pool.open(wait=True), timeout=settings.state_store_connect_timeout_s
                 )
+                store = PgConversationStore(pool)
+                await store.setup()
                 _pool_ctx = pool
-                _store = PgConversationStore(pool)
+                _store = store
             except asyncio.CancelledError:
                 # disconnect 등으로 pool.open() 도중 요청 태스크가 취소되면 CancelledError
                 # (BaseException)라 아래 except Exception 이 못 잡아, 방금 만든 풀(+백그라운드

@@ -8,7 +8,7 @@ import pytest
 from psycopg.conninfo import conninfo_to_dict
 
 from app.core import pg_resilience
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.pg_resilience import BoundedLRUCache, hardened_pg_conninfo, run_with_query_timeout
 
 
@@ -144,3 +144,21 @@ def test_bounded_lru_cache_evicts_oldest_and_refreshes_reads() -> None:
 def test_bounded_lru_cache_rejects_non_positive_capacity() -> None:
     with pytest.raises(ValueError):
         BoundedLRUCache(max_entries=0)
+
+
+def test_state_store_pool_allows_one_connection_per_dedicated_pool() -> None:
+    settings = Settings(
+        _env_file=None,
+        state_store_pool_min_size=0,
+        state_store_pool_max_size=1,
+    )
+    assert settings.state_store_pool_max_size == 1
+
+
+def test_state_store_pool_rejects_zero_capacity() -> None:
+    with pytest.raises(ValueError, match="must be at least 1"):
+        Settings(
+            _env_file=None,
+            state_store_pool_min_size=0,
+            state_store_pool_max_size=0,
+        )

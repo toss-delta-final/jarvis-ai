@@ -176,8 +176,8 @@ class Settings(BaseSettings):
     state_store_keepalives_interval_s: int = 3
     state_store_keepalives_count: int = 3
     state_store_tcp_user_timeout_ms: int = 3000
-    # RMW advisory lock이 연결 하나를 점유한 동안 실제 BaseStore 쿼리가 다른 연결을 써야 하므로
-    # max_size는 최소 2. last_reco 표시명은 원본 사본 금지라 로컬 bounded LRU만 사용한다.
+    # BaseStore와 RMW advisory lock은 별도 pool을 쓰며 max_size는 각 pool의 동시성 상한이다.
+    # last_reco 표시명은 원본 사본 금지라 로컬 bounded LRU만 사용한다.
     state_store_pool_min_size: int = 1
     state_store_pool_max_size: int = 10
     state_store_local_cache_max_entries: int = 10_000
@@ -229,8 +229,8 @@ class Settings(BaseSettings):
         # 반복한다(PR #42 리뷰, 이슈 #31). 런타임 무한 no-op 대신 기동 시점에 fail-fast.
         if self.auth_mode == "jwks" and not self.google_api_key:
             raise ValueError("GOOGLE_API_KEY must be set when auth_mode=jwks")
-        if self.state_store_pool_max_size < 2:
-            raise ValueError("STATE_STORE_POOL_MAX_SIZE must be at least 2")
+        if self.state_store_pool_max_size < 1:
+            raise ValueError("STATE_STORE_POOL_MAX_SIZE must be at least 1")
         if self.state_store_pool_min_size < 0:
             raise ValueError("STATE_STORE_POOL_MIN_SIZE must be non-negative")
         if self.state_store_pool_min_size > self.state_store_pool_max_size:
