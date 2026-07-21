@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import itertools
+import math
 import uuid
 from collections import deque
 from dataclasses import dataclass
@@ -142,10 +143,22 @@ class PgConversationStore:
 
     async def setup(self) -> None:
         """기존 볼륨은 이전 논리 순서로 백필하고 신규 turn은 DB sequence로 정렬한다."""
+        settings = get_settings()
+        migration_timeout_ms = max(
+            1, math.ceil(settings.state_store_migration_timeout_s * 1000)
+        )
 
         async def _run() -> None:
             async with self._pool.connection() as conn:
                 async with conn.transaction():
+                    await conn.execute(
+                        "SELECT set_config('statement_timeout', %s, true)",
+                        (str(migration_timeout_ms),),
+                    )
+                    await conn.execute(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                        ("schema:conversation_turns:sequence_id",),
+                    )
                     await conn.execute(
                         """
                         DO $$
@@ -193,7 +206,7 @@ class PgConversationStore:
                         "ON conversation_turns (conversation_id, sequence_id)"
                     )
 
-        await run_with_query_timeout(_run())
+        await asyncio.wait_for(_run(), timeout=settings.state_store_migration_timeout_s)
 
     async def _execute(self, sql: str, params: tuple) -> int:
         """쓰기 쿼리(연결 획득+실행)를 실행 상한으로 감싼다.

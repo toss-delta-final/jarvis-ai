@@ -162,3 +162,8 @@ def test_state_store_pool_rejects_zero_capacity() -> None:
             state_store_pool_min_size=0,
             state_store_pool_max_size=0,
         )
+
+
+def test_state_store_migration_timeout_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="must be positive"):
+        Settings(_env_file=None, state_store_migration_timeout_s=0)

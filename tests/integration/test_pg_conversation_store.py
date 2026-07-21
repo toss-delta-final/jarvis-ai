@@ -92,7 +92,12 @@ async def test_setup_backfills_legacy_rows_in_previous_logical_order(pool) -> No
             )
         await conn.execute("ALTER TABLE conversation_turns DROP COLUMN sequence_id")
 
-    await store.setup()
+    other_pool = AsyncConnectionPool(get_settings().profile_db_url, open=False)
+    await other_pool.open(wait=True)
+    try:
+        await asyncio.gather(store.setup(), PgConversationStore(other_pool).setup())
+    finally:
+        await other_pool.close()
 
     turns = await store.turns_for(conversation_id)
     assert [turn.turn_id for turn in turns] == [second_id, first_id]

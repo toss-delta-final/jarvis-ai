@@ -170,6 +170,8 @@ class Settings(BaseSettings):
     # 있지만 매 요청 쿼리엔 없어, pg 가 응답 없이 멈추면 commit_user_message 가 영영 안 끝나 동시
     # 스트림 슬롯이 영구히 잠긴다(§2.9 a 슬롯 누수, PR #48 후속 리뷰). CLAUDE.md "타임아웃 전 구간".
     state_store_query_timeout_s: float = 3.0
+    # 기존 conversation_turns 스키마 백필은 일반 요청 쿼리보다 오래 걸릴 수 있어 별도 상한을 둔다.
+    state_store_migration_timeout_s: float = 30.0
     # libpq socket-level 이중 방어(이슈 #50). asyncio.wait_for/statement_timeout과 별개로
     # 네트워크 black-hole에서 커널이 연결을 유한 시간 내 폐기하도록 한다.
     state_store_keepalives_idle_s: int = 10
@@ -231,6 +233,8 @@ class Settings(BaseSettings):
             raise ValueError("GOOGLE_API_KEY must be set when auth_mode=jwks")
         if self.state_store_pool_max_size < 1:
             raise ValueError("STATE_STORE_POOL_MAX_SIZE must be at least 1")
+        if self.state_store_migration_timeout_s <= 0:
+            raise ValueError("STATE_STORE_MIGRATION_TIMEOUT_S must be positive")
         if self.state_store_pool_min_size < 0:
             raise ValueError("STATE_STORE_POOL_MIN_SIZE must be non-negative")
         if self.state_store_pool_min_size > self.state_store_pool_max_size:
