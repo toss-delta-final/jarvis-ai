@@ -154,6 +154,33 @@ def test_save_trims_to_max_items_and_truncates_report(monkeypatch: pytest.Monkey
     assert entries[0].report_summary == "6월 매출"[:5]  # 요약 절단
 
 
+def test_history_store_operations_have_query_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _HangReadStore:
+        async def aget(self, *args, **kwargs):
+            await asyncio.sleep(10)
+
+    class _HangWriteStore:
+        async def aget(self, *args, **kwargs):
+            return None
+
+        async def aput(self, *args, **kwargs):
+            await asyncio.sleep(10)
+
+    monkeypatch.setattr(history.get_settings(), "state_store_query_timeout_s", 0.01)
+
+    async def run() -> None:
+        history.set_store(_HangReadStore())
+        with pytest.raises(TimeoutError):
+            await history.load_recent("7")
+        history.set_store(_HangWriteStore())
+        with pytest.raises(TimeoutError):
+            await _save()
+
+    asyncio.run(run())
+
+
 # ── build_planner_input — 이력 주입(프롬프트 불변, 입력 메시지만) ────────────────
 
 

@@ -41,7 +41,11 @@ from app.agents.seller.schemas import (
     RecommendationSet,
 )
 from app.core.config import get_settings
-from app.core.pg_resilience import hardened_pg_conninfo, state_store_pool_config
+from app.core.pg_resilience import (
+    hardened_pg_conninfo,
+    run_with_query_timeout,
+    state_store_pool_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -141,18 +145,18 @@ async def save_history(
     )
     store = await _get_store()
     namespace = _namespace(seller_id)
-    item = await store.aget(namespace, _HISTORY_KEY)
+    item = await run_with_query_timeout(store.aget(namespace, _HISTORY_KEY))
     items: list[dict] = list(item.value.get("items", [])) if item else []
     items.insert(0, entry.model_dump())
     del items[settings.seller_history_max_items :]
-    await store.aput(namespace, _HISTORY_KEY, {"items": items})
+    await run_with_query_timeout(store.aput(namespace, _HISTORY_KEY, {"items": items}))
 
 
 async def load_recent(seller_id: str, n: int | None = None) -> list[HistoryEntry]:
     """최근 n건(기본 seller_history_recent_n)을 최신순으로 반환한다."""
     limit = n if n is not None else get_settings().seller_history_recent_n
     store = await _get_store()
-    item = await store.aget(_namespace(seller_id), _HISTORY_KEY)
+    item = await run_with_query_timeout(store.aget(_namespace(seller_id), _HISTORY_KEY))
     if not item:
         return []
     return [HistoryEntry.model_validate(raw) for raw in item.value.get("items", [])[:limit]]
