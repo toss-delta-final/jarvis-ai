@@ -11,12 +11,14 @@ import asyncio
 import json
 from dataclasses import dataclass, field
 from typing import Literal
+from weakref import WeakValueDictionary
 
 from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
 
 from app.core import pg_store
 from app.core.llm import LLMError
+from app.core.pg_resilience import mutation_lock, run_with_query_timeout
 from app.schemas.chat import ConditionChip
 from app.schemas.spring import ProductSearchFilters
 
@@ -27,15 +29,9 @@ _CATEGORIES_KEY = "categories"
 # 직렬화한다. 동일 스레드로 겹치는 요청(멀티탭·연속 발화)이 오면 나중 aput 이 앞선 갱신을
 # 덮어써 되돌리기 카테고리가 유실될 수 있다(lost update, PR #46 리뷰).
 #
-# [한계, PR #46 후속 리뷰 — MVP 단일 인스턴스 전제] 이 락은 **프로세스 내부**에서만
-# 유효하다. 여러 uvicorn 워커·인스턴스가 같은 pg-profile 을 공유하는 배포(수평 확장)로
-# 바뀌면 서로 다른 프로세스의 동시 add() 호출은 이 락으로 전혀 직렬화되지 않아 lost
-# update 가 재현된다 — app/core/stream.py 의 ActiveStreamRegistry 와 동일한 "MVP 단일
-# 인스턴스" 전제(다중 인스턴스 확장 시 Postgres advisory lock 등 DB 레벨 직렬화로 교체
-# 필요). 또한 key(thread_key)마다 항목이 쌓이기만 하고 제거되지 않아, 장시간 구동 시
-# 누적 대화 수만큼 커지는 완만한 메모리 누수이기도 하다(reset_revert_store() 는 테스트
-# 격리용으로만 비운다) — TTL/LRU 정리는 현재 미구현(MVP 규모에서 실질적 위험 낮음으로 판단).
-_add_locks: dict[str, asyncio.Lock] = {}
+# 실 PostgreSQL 경로는 mutation_lock의 advisory lock으로 인스턴스 간 직렬화한다. InMemory/test
+# 경로만 이 로컬 lock을 사용하며, WeakValueDictionary라 유휴 key는 GC가 자동 회수한다(이슈 #50).
+_add_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
 
 def _lock_for(key: str) -> asyncio.Lock:
@@ -144,17 +140,27 @@ class RevertStore:
         self._store = store or InMemoryStore()
 
     async def get(self, key: str) -> set[str]:
-        item = await self._store.aget((_NAMESPACE_ROOT, key), _CATEGORIES_KEY)
+        item = await run_with_query_timeout(
+            self._store.aget((_NAMESPACE_ROOT, key), _CATEGORIES_KEY)
+        )
         return set(item.value[_CATEGORIES_KEY]) if item else set()
 
     async def add(self, key: str, categories) -> None:
         if not categories:
             return
-        async with _lock_for(key):  # get→put 원자성 보장(lost update 방지)
+        async with mutation_lock(
+            self._store,
+            f"buyer:revert:{key}",
+            _lock_for(key),
+        ):
             current = await self.get(key)
             current.update(categories)
-            await self._store.aput(
-                (_NAMESPACE_ROOT, key), _CATEGORIES_KEY, {_CATEGORIES_KEY: sorted(current)}
+            await run_with_query_timeout(
+                self._store.aput(
+                    (_NAMESPACE_ROOT, key),
+                    _CATEGORIES_KEY,
+                    {_CATEGORIES_KEY: sorted(current)},
+                )
             )
 
 

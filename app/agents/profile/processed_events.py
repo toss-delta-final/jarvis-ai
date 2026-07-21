@@ -18,6 +18,7 @@ import logging
 from psycopg_pool import AsyncConnectionPool
 
 from app.core.config import get_settings
+from app.core.pg_resilience import hardened_pg_conninfo, run_with_query_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +104,13 @@ async def _get_pool() -> AsyncConnectionPool | None:
             settings = get_settings()
             pool = None
             try:
-                pool = AsyncConnectionPool(settings.profile_db_url, open=False)
+                pool = AsyncConnectionPool(
+                    hardened_pg_conninfo(settings.profile_db_url),
+                    open=False,
+                    min_size=settings.state_store_pool_min_size,
+                    max_size=settings.state_store_pool_max_size,
+                    timeout=settings.state_store_query_timeout_s,
+                )
                 await asyncio.wait_for(
                     pool.open(wait=True), timeout=settings.state_store_connect_timeout_s
                 )
@@ -142,11 +149,16 @@ async def seen_event(event_id: str) -> bool:
     if pool is None:
         assert _fallback_pool is not None
         return event_id in _fallback_pool
-    async with pool.connection() as conn:
-        row = await (
-            await conn.execute("SELECT 1 FROM processed_events WHERE event_id = %s", (event_id,))
-        ).fetchone()
-    return row is not None
+    async def _run() -> bool:
+        async with pool.connection() as conn:
+            row = await (
+                await conn.execute(
+                    "SELECT 1 FROM processed_events WHERE event_id = %s", (event_id,)
+                )
+            ).fetchone()
+        return row is not None
+
+    return await run_with_query_timeout(_run())
 
 
 async def mark_if_new(event_id: str) -> bool:
@@ -158,15 +170,18 @@ async def mark_if_new(event_id: str) -> bool:
             return False
         _fallback_pool.add(event_id)
         return True
-    async with pool.connection() as conn:
-        row = await (
-            await conn.execute(
-                "INSERT INTO processed_events (event_id) VALUES (%s) "
-                "ON CONFLICT DO NOTHING RETURNING event_id",
-                (event_id,),
-            )
-        ).fetchone()
-    return row is not None
+    async def _run() -> bool:
+        async with pool.connection() as conn:
+            row = await (
+                await conn.execute(
+                    "INSERT INTO processed_events (event_id) VALUES (%s) "
+                    "ON CONFLICT DO NOTHING RETURNING event_id",
+                    (event_id,),
+                )
+            ).fetchone()
+        return row is not None
+
+    return await run_with_query_timeout(_run())
 
 
 async def mark_event(event_id: str) -> None:
@@ -175,11 +190,14 @@ async def mark_event(event_id: str) -> None:
         assert _fallback_pool is not None
         _fallback_pool.add(event_id)
         return
-    async with pool.connection() as conn:
-        await conn.execute(
-            "INSERT INTO processed_events (event_id) VALUES (%s) ON CONFLICT DO NOTHING",
-            (event_id,),
-        )
+    async def _run() -> None:
+        async with pool.connection() as conn:
+            await conn.execute(
+                "INSERT INTO processed_events (event_id) VALUES (%s) ON CONFLICT DO NOTHING",
+                (event_id,),
+            )
+
+    await run_with_query_timeout(_run())
 
 
 async def unmark_event(event_id: str) -> None:
@@ -189,5 +207,8 @@ async def unmark_event(event_id: str) -> None:
         assert _fallback_pool is not None
         _fallback_pool.discard(event_id)
         return
-    async with pool.connection() as conn:
-        await conn.execute("DELETE FROM processed_events WHERE event_id = %s", (event_id,))
+    async def _run() -> None:
+        async with pool.connection() as conn:
+            await conn.execute("DELETE FROM processed_events WHERE event_id = %s", (event_id,))
+
+    await run_with_query_timeout(_run())

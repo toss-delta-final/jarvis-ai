@@ -33,6 +33,7 @@ async def pool():
     p = AsyncConnectionPool(get_settings().profile_db_url, open=False)
     await p.open(wait=True)
     try:
+        await PgConversationStore(p).setup()
         yield p
     finally:
         await p.close()
@@ -75,6 +76,52 @@ async def test_turns_for_returns_ordered_by_creation(pool) -> None:
     assert [t.user_text for t in turns] == ["m0", "m1", "m2"]
 
 
+async def test_setup_backfills_legacy_rows_in_previous_logical_order(pool) -> None:
+    store = PgConversationStore(pool)
+    conversation_id = _conversation_id()
+    suffix = uuid.uuid4().hex
+    first_id, second_id = f"z-{suffix}", f"a-{suffix}"
+    created_at = "2026-07-20T00:00:00+00:00"
+    async with pool.connection() as conn:
+        for turn_id, text in ((first_id, "physical-first"), (second_id, "physical-second")):
+            await conn.execute(
+                "INSERT INTO conversation_turns "
+                "(turn_id, conversation_id, role, user_text, created_at) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (turn_id, conversation_id, "member", text, created_at),
+            )
+        await conn.execute("ALTER TABLE conversation_turns DROP COLUMN sequence_id")
+
+    other_pool = AsyncConnectionPool(get_settings().profile_db_url, open=False)
+    await other_pool.open(wait=True)
+    try:
+        await asyncio.gather(store.setup(), PgConversationStore(other_pool).setup())
+    finally:
+        await other_pool.close()
+
+    turns = await store.turns_for(conversation_id)
+    assert [turn.turn_id for turn in turns] == [second_id, first_id]
+
+
+async def test_turns_for_uses_insert_order_when_timestamps_match(pool) -> None:
+    store = PgConversationStore(pool)
+    conversation_id = _conversation_id()
+    suffix = uuid.uuid4().hex
+    first_id, second_id = f"z-{suffix}", f"a-{suffix}"
+    created_at = "2026-07-21T00:00:00+00:00"
+    async with pool.connection() as conn:
+        for turn_id, text in ((first_id, "first"), (second_id, "second")):
+            await conn.execute(
+                "INSERT INTO conversation_turns "
+                "(turn_id, conversation_id, role, user_text, created_at) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (turn_id, conversation_id, "member", text, created_at),
+            )
+
+    turns = await store.turns_for(conversation_id)
+    assert [turn.turn_id for turn in turns] == [first_id, second_id]
+
+
 async def test_get_turn_missing_returns_none(pool) -> None:
     store = PgConversationStore(pool)
     assert await store.get_turn(f"missing-{uuid.uuid4().hex}") is None
@@ -97,9 +144,9 @@ async def test_state_persists_across_store_instances() -> None:
     pool_a = AsyncConnectionPool(get_settings().profile_db_url, open=False)
     await pool_a.open(wait=True)
     try:
-        turn_id = await PgConversationStore(pool_a).save_user_message(
-            conversation_id, "u1", "member", "영속성 확인"
-        )
+        store_a = PgConversationStore(pool_a)
+        await store_a.setup()
+        turn_id = await store_a.save_user_message(conversation_id, "u1", "member", "영속성 확인")
     finally:
         await pool_a.close()
 

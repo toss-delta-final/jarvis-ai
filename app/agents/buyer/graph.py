@@ -32,6 +32,7 @@ from app.core import pg_store
 from app.core.config import get_settings
 from app.core.conversation import conversation_key
 from app.core.llm import LLMError, get_llm
+from app.core.pg_resilience import run_with_query_timeout
 from app.agents.buyer.recommendation.state import CartIntent
 from app.schemas.chat import DoneData, ErrorData
 from app.schemas.spring import ProductSearchFilters
@@ -51,11 +52,15 @@ class ThreadFilterStore:
         self._store = store or InMemoryStore()
 
     async def get(self, key: str) -> ProductSearchFilters | None:
-        item = await self._store.aget((_NAMESPACE_ROOT, key), _FILTERS_KEY)
+        item = await run_with_query_timeout(
+            self._store.aget((_NAMESPACE_ROOT, key), _FILTERS_KEY)
+        )
         return ProductSearchFilters.model_validate(item.value) if item else None
 
     async def put(self, key: str, filters: ProductSearchFilters) -> None:
-        await self._store.aput((_NAMESPACE_ROOT, key), _FILTERS_KEY, filters.model_dump())
+        await run_with_query_timeout(
+            self._store.aput((_NAMESPACE_ROOT, key), _FILTERS_KEY, filters.model_dump())
+        )
 
 
 async def get_thread_store() -> ThreadFilterStore:

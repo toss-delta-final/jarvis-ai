@@ -34,6 +34,7 @@ from app.api import chat, events, profile, seller
 from app.core.config import get_settings
 from app.core.errors import install_error_handling
 from app.core.logging import configure_logging
+from app.core.pg_resilience import close_advisory_pool
 from app.core.ratelimit import rate_limit_middleware
 from app.pipelines.scheduler import start_scheduler, stop_scheduler
 
@@ -46,6 +47,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         stop_scheduler()
+        await close_advisory_pool()
 
 
 def create_app() -> FastAPI:

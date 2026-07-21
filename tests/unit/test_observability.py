@@ -202,6 +202,58 @@ async def test_pg_conversation_store_query_timeout(
         await store.turns_for("c")
 
 
+async def test_pg_conversation_finalize_missing_turn_warns(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class _Cursor:
+        rowcount = 0
+
+    class _Conn:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def execute(self, *args, **kwargs):
+            return _Cursor()
+
+    class _Pool:
+        def connection(self):
+            return _Conn()
+
+    store = PgConversationStore(_Pool())
+    with caplog.at_level(logging.WARNING, logger="app.core.conversation"):
+        await store.finalize_assistant("missing", "text", TurnStatus.COMPLETED)
+    assert any("missing" in record.getMessage() for record in caplog.records)
+
+
+async def test_pg_conversation_turns_for_uses_deterministic_order() -> None:
+    captured = {"sql": ""}
+
+    class _Cursor:
+        async def fetchall(self):
+            return []
+
+    class _Conn:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def execute(self, sql, *args, **kwargs):
+            captured["sql"] = sql
+            return _Cursor()
+
+    class _Pool:
+        def connection(self):
+            return _Conn()
+
+    await PgConversationStore(_Pool()).turns_for("c")
+    assert "ORDER BY sequence_id" in captured["sql"]
+
+
 async def test_get_conversation_store_closes_pool_on_cancel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -232,6 +284,24 @@ async def test_get_conversation_store_closes_pool_on_cancel(
             await conv.get_conversation_store()
         assert closed["called"]  # 취소돼도 방금 연 풀이 닫혔다(누수 방지)
     finally:
+        conv.set_store(conv.ConversationStore())
+
+
+async def test_get_conversation_store_init_lock_wait_has_query_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.conversation as conv
+
+    init_lock = asyncio.Lock()
+    await init_lock.acquire()
+    monkeypatch.setattr(get_settings(), "state_store_query_timeout_s", 0.01)
+    monkeypatch.setattr(conv, "_init_lock", init_lock)
+    conv.set_store(None)
+    try:
+        with pytest.raises(TimeoutError):
+            await conv.get_conversation_store()
+    finally:
+        init_lock.release()
         conv.set_store(conv.ConversationStore())
 
 

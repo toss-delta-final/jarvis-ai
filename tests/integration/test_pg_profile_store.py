@@ -22,6 +22,7 @@ from app.agents.profile import processed_events
 from app.agents.profile import store as profile_store_module
 from app.agents.profile.store import ProfileStore
 from app.core.config import get_settings
+from app.core.pg_resilience import hardened_pg_conninfo, state_store_pool_config
 
 pytestmark = pytest.mark.integration
 
@@ -190,6 +191,46 @@ async def test_state_persists_across_store_instances() -> None:
         await store_b.setup()
         summary = await ProfileStore(store_b).get_summary(user_id)
     assert summary is not None and summary.markdown == "# 영속성"
+
+
+async def test_profile_rmw_is_safe_across_postgres_pools() -> None:
+    """서로 다른 앱 인스턴스의 fact/session RMW가 중복·lost update 없이 직렬화된다."""
+    conninfo = hardened_pg_conninfo(get_settings().profile_db_url)
+    pool_config = state_store_pool_config()
+    index_config = {"dims": _DIM, "embed": _fake_embed, "fields": ["fact"]}
+    async with AsyncPostgresStore.from_conn_string(
+        conninfo, pool_config=pool_config, index=index_config
+    ) as store_a, AsyncPostgresStore.from_conn_string(
+        conninfo, pool_config=pool_config, index=index_config
+    ) as store_b:
+        await store_a.setup()
+        await store_b.setup()
+        profile_a, profile_b = ProfileStore(store_a), ProfileStore(store_b)
+
+        session_key = _user()
+        messages = {f"message-{i}" for i in range(20)}
+        await asyncio.gather(
+            *(
+                (profile_a if i % 2 == 0 else profile_b).append_session_ctx(session_key, message)
+                for i, message in enumerate(messages)
+            )
+        )
+        assert set(await profile_a.get_session_ctx(session_key)) == messages
+
+        user_id = _user()
+        await asyncio.gather(
+            *(profile.add_fact(user_id, "same-fact") for profile in (profile_a, profile_b) for _ in range(5))
+        )
+        assert (await profile_a.get_facts(user_id)).count("same-fact") == 1
+
+        clear_key = _user()
+        await profile_a.append_session_ctx(clear_key, "old")
+        _, watermark = await profile_a.get_session_ctx_snapshot(clear_key)
+        await asyncio.gather(
+            profile_a.clear_session_ctx_upto(clear_key, watermark),
+            profile_b.append_session_ctx(clear_key, "new"),
+        )
+        assert await profile_a.get_session_ctx(clear_key) == ["new"]
 
 
 # ─────────── processed_events (session-end 멱등 원자성) ───────────

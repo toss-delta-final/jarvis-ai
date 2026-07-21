@@ -18,6 +18,8 @@ from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
 
 from app.core import pg_store
+from app.core.config import get_settings
+from app.core.pg_resilience import BoundedLRUCache, run_with_query_timeout
 from app.schemas.spring import CartOption
 
 _NAMESPACE_ROOT = "buyer_cart"
@@ -30,10 +32,12 @@ _PENDING_KEY = "pending"
 # 로컬 휘발성 캐시(thread key → {productId: name})에 둔다. 같은 프로세스 수명 동안에는 이름
 # disambiguation("파란 니트 담아줘")이 정상 동작하고, 재시작(캐시 소실) 후에는 pid 만 pg-profile
 # 에서 복원되어 이름은 "" 로 degrade 한다("그거 담아줘" pid 해소는 계속 작동).
-# [한계] 스레드 키마다 누적되며 TTL/LRU 정리는 미구현(MVP 단일 인스턴스 전제, _session_locks 와
-# 동일) — 다중 인스턴스에선 추천/담기가 다른 인스턴스에 걸리면 이름만 캐시 미스로 "" degrade.
-# reset_cart_store() 는 테스트 격리용으로만 비운다.
-_last_reco_names: dict[str, dict[int, str]] = {}
+# 이름 캐시는 config 기반 bounded LRU라 무제한 증가하지 않는다(이슈 #50). 다중 인스턴스에서
+# 추천/담기가 다른 인스턴스에 걸리거나 LRU miss가 나면 이름만 ""로 degrade하고, pg-profile의
+# productId 허용 목록은 그대로 유지한다.
+_last_reco_names: BoundedLRUCache[str, dict[int, str]] = BoundedLRUCache(
+    max_entries=get_settings().state_store_local_cache_max_entries
+)
 
 
 @dataclass
@@ -57,32 +61,36 @@ class CartStateStore:
 
     async def set_last_reco(self, key: str, items: list[tuple[int, str]]) -> None:
         # pg-profile 엔 productId 만 영속(상품명 사본 금지). 이름은 휘발성 캐시에만 둔다.
-        await self._store.aput(
-            self._ns(key), _LAST_RECO_KEY, {"product_ids": [pid for pid, _ in items]}
+        await run_with_query_timeout(
+            self._store.aput(
+                self._ns(key), _LAST_RECO_KEY, {"product_ids": [pid for pid, _ in items]}
+            )
         )
         _last_reco_names[key] = {pid: name for pid, name in items}
 
     async def get_last_reco(self, key: str) -> list[tuple[int, str]]:
-        item = await self._store.aget(self._ns(key), _LAST_RECO_KEY)
+        item = await run_with_query_timeout(self._store.aget(self._ns(key), _LAST_RECO_KEY))
         if not item:
             return []
         names = _last_reco_names.get(key, {})  # 재시작·타 인스턴스면 미스 → 이름 "" degrade
         return [(pid, names.get(pid, "")) for pid in item.value["product_ids"]]
 
     async def set_pending(self, key: str, pending: PendingAdd) -> None:
-        await self._store.aput(
-            self._ns(key),
-            _PENDING_KEY,
-            {
-                "product_id": pending.product_id,
-                "quantity": pending.quantity,
-                "options": [o.model_dump() for o in pending.options],
-                "attempts": pending.attempts,
-            },
+        await run_with_query_timeout(
+            self._store.aput(
+                self._ns(key),
+                _PENDING_KEY,
+                {
+                    "product_id": pending.product_id,
+                    "quantity": pending.quantity,
+                    "options": [o.model_dump() for o in pending.options],
+                    "attempts": pending.attempts,
+                },
+            )
         )
 
     async def get_pending(self, key: str) -> PendingAdd | None:
-        item = await self._store.aget(self._ns(key), _PENDING_KEY)
+        item = await run_with_query_timeout(self._store.aget(self._ns(key), _PENDING_KEY))
         if not item:
             return None
         value = item.value
@@ -94,7 +102,7 @@ class CartStateStore:
         )
 
     async def clear_pending(self, key: str) -> None:
-        await self._store.adelete(self._ns(key), _PENDING_KEY)
+        await run_with_query_timeout(self._store.adelete(self._ns(key), _PENDING_KEY))
 
 
 async def get_cart_store() -> CartStateStore:
@@ -104,5 +112,8 @@ async def get_cart_store() -> CartStateStore:
 
 def reset_cart_store() -> None:
     """테스트 격리용 — 공유 pg-profile store(InMemoryStore)와 휘발성 이름 캐시를 비운다."""
+    global _last_reco_names
     pg_store.reset_store()
-    _last_reco_names.clear()
+    _last_reco_names = BoundedLRUCache(
+        max_entries=get_settings().state_store_local_cache_max_entries
+    )
