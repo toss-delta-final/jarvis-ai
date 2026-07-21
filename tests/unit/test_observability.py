@@ -287,6 +287,24 @@ async def test_get_conversation_store_closes_pool_on_cancel(
         conv.set_store(conv.ConversationStore())
 
 
+async def test_get_conversation_store_init_lock_wait_has_query_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.core.conversation as conv
+
+    init_lock = asyncio.Lock()
+    await init_lock.acquire()
+    monkeypatch.setattr(get_settings(), "state_store_query_timeout_s", 0.01)
+    monkeypatch.setattr(conv, "_init_lock", init_lock)
+    conv.set_store(None)
+    try:
+        with pytest.raises(TimeoutError):
+            await conv.get_conversation_store()
+    finally:
+        init_lock.release()
+        conv.set_store(conv.ConversationStore())
+
+
 def test_chat_emits_rejection_log_when_conversation_store_fails(
     caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:

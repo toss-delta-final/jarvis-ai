@@ -15,7 +15,7 @@
 per-item 키 대신 단일 목록을 쓰는 이유는 (a) "N번"의 기준인 '가장 최근 분석'과
 '최근 N건' 조회가 원자적 1회 읽기가 되고 (b) store.asearch 의 정렬 비보장을 피하기
 위해서다(정렬을 코드가 소유). 상한 seller_history_max_items 로 잘라 무한 성장 방지.
-동시 분석 2건의 읽고-쓰기 경합은 MVP 허용(마지막 쓰기 승리 — 이력은 부가 데이터).
+동시 분석의 읽고-쓰기는 seller별 mutation_lock으로 직렬화해 이력 유실을 막는다.
 워커별 탐지 상세 테이블(analysis_detections)은 4-3 범위 밖(SPEC §9.1, 고도화).
 
 checkpointer(hitl.py)와 동일한 dev 폴백 규약: pg-profile 연결 실패 시 InMemoryStore
@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime
+from weakref import WeakValueDictionary
 
 from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
@@ -43,6 +44,7 @@ from app.agents.seller.schemas import (
 from app.core.config import get_settings
 from app.core.pg_resilience import (
     hardened_pg_conninfo,
+    mutation_lock,
     run_with_query_timeout,
     state_store_pool_config,
 )
@@ -70,6 +72,15 @@ class HistoryEntry(BaseModel):
 _store: BaseStore | None = None
 _store_ctx: object | None = None  # AsyncPostgresStore cm — 앱 수명 동안 GC 방지
 _fallback_warned = False
+_save_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+
+
+def _save_lock(seller_id: str) -> asyncio.Lock:
+    lock = _save_locks.get(seller_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _save_locks[seller_id] = lock
+    return lock
 
 
 def set_store(store: BaseStore | None) -> None:
@@ -77,6 +88,7 @@ def set_store(store: BaseStore | None) -> None:
     global _store, _store_ctx
     _store = store
     _store_ctx = None
+    _save_locks.clear()
 
 
 async def _get_store() -> BaseStore:
@@ -145,11 +157,16 @@ async def save_history(
     )
     store = await _get_store()
     namespace = _namespace(seller_id)
-    item = await run_with_query_timeout(store.aget(namespace, _HISTORY_KEY))
-    items: list[dict] = list(item.value.get("items", [])) if item else []
-    items.insert(0, entry.model_dump())
-    del items[settings.seller_history_max_items :]
-    await run_with_query_timeout(store.aput(namespace, _HISTORY_KEY, {"items": items}))
+    async with mutation_lock(
+        store,
+        f"seller:history:{seller_id}",
+        _save_lock(seller_id),
+    ):
+        item = await run_with_query_timeout(store.aget(namespace, _HISTORY_KEY))
+        items: list[dict] = list(item.value.get("items", [])) if item else []
+        items.insert(0, entry.model_dump())
+        del items[settings.seller_history_max_items :]
+        await run_with_query_timeout(store.aput(namespace, _HISTORY_KEY, {"items": items}))
 
 
 async def load_recent(seller_id: str, n: int | None = None) -> list[HistoryEntry]:

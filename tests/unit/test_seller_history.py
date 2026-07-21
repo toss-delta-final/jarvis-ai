@@ -181,6 +181,24 @@ def test_history_store_operations_have_query_deadline(
     asyncio.run(run())
 
 
+def test_concurrent_history_saves_do_not_lose_entries() -> None:
+    class _SlowReadStore(InMemoryStore):
+        async def aget(self, *args, **kwargs):
+            item = await super().aget(*args, **kwargs)
+            await asyncio.sleep(0.01)
+            return item
+
+    history.set_store(_SlowReadStore())
+
+    async def run():
+        await asyncio.gather(_save(question="첫 분석"), _save(question="둘째 분석"))
+        return await history.load_recent("7", 5)
+
+    entries = asyncio.run(run())
+    assert len(entries) == 2
+    assert {entry.question for entry in entries} == {"첫 분석", "둘째 분석"}
+
+
 # ── build_planner_input — 이력 주입(프롬프트 불변, 입력 메시지만) ────────────────
 
 

@@ -357,9 +357,13 @@ async def get_conversation_store() -> ConversationStoreProtocol:
     """
     global _store, _pool_ctx, _fallback_warned
     await _drain_pending_cleanup()
-    async with _init_lock:
+    settings = get_settings()
+    await asyncio.wait_for(
+        _init_lock.acquire(),
+        timeout=settings.state_store_query_timeout_s,
+    )
+    try:
         if _store is None:
-            settings = get_settings()
             pool = None
             try:
                 from psycopg_pool import AsyncConnectionPool  # noqa: PLC0415
@@ -404,6 +408,8 @@ async def get_conversation_store() -> ConversationStoreProtocol:
                     )
                     _fallback_warned = True
                 _store = ConversationStore()
+    finally:
+        _init_lock.release()
     return _store
 
 
