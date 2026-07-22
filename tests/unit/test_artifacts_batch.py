@@ -149,7 +149,16 @@ async def test_batch_uses_raw_product_fields_without_retaining_separate_copies()
     artifact = store.get(1)
     assert artifact is not None
     assert "저장하면 안 되는 원본명" in artifact.search_doc
-    assert set(vars(artifact)) == {"product_id", "search_doc", "embedding", "extras"}
+    assert set(vars(artifact)) == {
+        "product_id",
+        "search_doc",
+        "embedding",
+        "extras",
+        "embed_model",
+        "embed_dim",
+        "embed_task",
+        "normalized",
+    }
 
 
 async def test_batch_hidden_removes_artifact():
