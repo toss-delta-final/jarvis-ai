@@ -118,11 +118,32 @@ VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())
 ON CONFLICT (product_id) DO UPDATE SET ...
 ```
 
-### 6. 볼륨 재적용 절차 (문서화)
+### 6. 스키마 진화 — 마이그레이션 파일 (init과 병행)
 
-`docker-entrypoint-initdb.d`는 빈 볼륨에서 1회만 실행되므로 기존 컨테이너 볼륨엔 자동 반영되지 않는다. 두 경로를 README/로컬 통합 가이드에 명시:
-- (a) `docker compose down -v` 후 재기동(빈 볼륨 재생성) — 로컬 개발 기본.
-- (b) 기존 볼륨 보존이 필요하면 수동 psql `ALTER TABLE products ADD COLUMN ...` 마이그레이션.
+`docker-entrypoint-initdb.d`는 빈 볼륨에서 1회만 실행되므로 기존 볼륨엔 자동 반영되지 않는다. **배포(deploy.yml)가 곧 도입되므로** `down -v`(볼륨 파기)는 프로덕션에서 못 쓰고, 스키마는 in-place `ALTER TABLE`로 진화시켜야 한다. 이슈 #76이 세운 마이그레이션 파일 관례(`ALTER TABLE IF EXISTS ... IF NOT EXISTS`, 기존 볼륨 반복 적용 안전)를 따른다.
+
+- **신규**: `db/catalog/migrations/20260723_add_embedding_provenance.sql`
+  ```sql
+  BEGIN;
+  ALTER TABLE IF EXISTS products
+      ADD COLUMN IF NOT EXISTS embed_model text,
+      ADD COLUMN IF NOT EXISTS embed_dim   int,
+      ADD COLUMN IF NOT EXISTS embed_task  text,
+      ADD COLUMN IF NOT EXISTS normalized  boolean;
+  -- CHECK 제약: 존재 여부 확인 후 조건부 추가(제약명 중복 회피).
+  DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'embedding_meta_complete') THEN
+          ALTER TABLE products ADD CONSTRAINT embedding_meta_complete
+              CHECK (embed_model IS NOT NULL AND embed_dim IS NOT NULL);
+      END IF;
+  END $$;
+  COMMIT;
+  ```
+- `00_products.sql`은 새 볼륨용으로 함께 갱신(둘은 동일 최종 스키마를 만들어야 함 — 드리프트 주의).
+- 기존 볼륨 적용: `psql "$catalog_db_url" -f db/catalog/migrations/20260723_add_embedding_provenance.sql`.
+- README/로컬 통합 가이드에 절차 명시.
+
+> **Future work**: 카탈로그 마이그레이션은 현재 수동 psql이다(자동 러너는 profile/state store 전용). 배포 파이프라인 도입 시 profile store의 "앱 연결 시 idempotent migration" 패턴을 카탈로그에도 도입해 배포가 자동 적용하도록 하는 것을 검토(별도 이슈).
 
 ## 테스트 (TDD)
 
@@ -141,7 +162,7 @@ ON CONFLICT (product_id) DO UPDATE SET ...
 - [ ] 호출부 비대칭 정합(문서=DOCUMENT / 질의=QUERY / eval=QUERY, profile 무변경)
 - [ ] `CatalogArtifact` + `pg_artifact_store` 프로비넌스 읽기/쓰기 정합
 - [ ] `load_sample_100.py` INSERT 프로비넌스 컬럼 추가
-- [ ] 볼륨 재적용 절차 문서화
+- [ ] 마이그레이션 파일 `20260723_add_embedding_provenance.sql` 추가 + 절차 문서화
 - [ ] `ruff check` / `pytest` 통과
 - [ ] PR 본문에 `Closes #65`
 
