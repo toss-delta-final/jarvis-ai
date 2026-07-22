@@ -352,6 +352,22 @@ def test_session_end_rejects_empty_session_id() -> None:
     )
 
 
+def test_session_end_reason_has_64_character_safety_cap() -> None:
+    """reason은 enum을 강제하지 않되 서비스 경계에서 무제한 문자열은 거부한다."""
+    accepted = client.post(
+        "/events/session-end",
+        json={"userId": 1, "sessionId": "reason-cap-ok", "reason": "r" * 64},
+    )
+    rejected = client.post(
+        "/events/session-end",
+        json={"userId": 1, "sessionId": "reason-cap-over", "reason": "r" * 65},
+    )
+
+    assert accepted.status_code == 202
+    assert rejected.status_code == 400
+    assert rejected.json()["error"]["code"] == "BAD_REQUEST"
+
+
 def test_session_end_rejects_userid_out_of_bigint_range() -> None:
     """userId 는 양의 BIGINT 범위만 허용 — 거대 정수 키 남용 방어(int 전환 후에도 유지)."""
     assert (

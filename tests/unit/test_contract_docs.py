@@ -17,3 +17,4 @@ def test_i20_mirror_has_no_stale_open_contract_markers() -> None:
     assert "X-Internal-Token: {SERVICE_TOKEN}" in event_auth
     assert "Authorization: Bearer {SERVICE_TOKEN}" not in event_auth
     assert "UUID 포함" in i20
+    assert "최대 64자" in i20

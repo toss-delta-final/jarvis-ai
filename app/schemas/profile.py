@@ -12,6 +12,7 @@ from pydantic import Field, field_validator
 from app.schemas.chat import CamelModel
 
 _BIGINT_MAX = 2**63 - 1  # PostgreSQL BIGINT 상한 — 신원 id 범위 방어
+_SESSION_END_REASON_MAX_CHARS = 64  # 알려진 enum 이름은 최대 17자; 확장 허용 + inbound 남용 방어
 
 
 class ProfileView(CamelModel):
@@ -30,7 +31,7 @@ class SessionEndEvent(CamelModel):
     number(BIGINT)로 정정. 멱등키는 `session-end:{userId}:{sessionId}` 고정키(app/api/events.py) —
     Spring 이 쏘는 종료(NEW_CONVERSATION·LOGOUT)는 모두 세션을 삭제하므로 "하나의 sessionId = 하나의
     논리적 종료" 가 성립한다(BE 실측: tabClose·idle 은 미발화). 같은 (userId, sessionId) 재전송만 중복 처리.
-    reason: logout | tabClose | inactivityTimeout | newConversation 등 — enum 미강제(방어적 수용).
+    reason: logout | tabClose | inactivityTimeout | newConversation 등 — enum 미강제, 최대 64자.
     """
 
     # 세션 소유 회원 id(BIGINT, JWT sub 와 동종) — 프로필 스코프·멱등키 요소.
@@ -39,7 +40,7 @@ class SessionEndEvent(CamelModel):
     # 종료된 세션 식별자(멱등키·세션 버퍼 키의 필수 요소) — 빈 문자열 거부(§3.5 essential):
     # 빈 값은 conversation_key/dedup_key 를 퇴화시키고, 최대 길이는 아래 validator 가 강제.
     session_id: str = Field(min_length=1)
-    reason: str | None = None
+    reason: str | None = Field(default=None, max_length=_SESSION_END_REASON_MAX_CHARS)
 
     @field_validator("session_id")
     @classmethod

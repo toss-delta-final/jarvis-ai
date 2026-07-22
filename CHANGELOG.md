@@ -63,7 +63,7 @@
 - **이슈 #62 — session-end(I-20) 계약 정렬** — `POST /events/session-end`가 상시 `400`을
   반환해 세션 종료 통지가 전부 실패하던 문제 수정. BE 실측 payload에 맞춰 `SessionEndEvent`에서
   `eventId`·`endedAt`를 제거하고 `userId`를 string → **number(BIGINT)**로 정정, `reason`은
-  optional·enum 미강제. 멱등키를 `eventId` 필드 대신 **`session-end:{userId}:{sessionId}`
+  optional·enum 미강제·최대 64자. 멱등키를 `eventId` 필드 대신 **`session-end:{userId}:{sessionId}`
   파생 복합키**로 전환(같은 sessionId라도 userId가 다르면 서로 중복 아님). `userId`는 양의
   BIGINT 정수만 엄격히 받아 string/float/bool coercion을 거부한다 (api-spec §3.5·§2.7, v0.15.17)
 - 프로필 세션 종료(session-end) 처리 중 동시에 새 채팅 턴이 들어오면 세션 버퍼가 통째로
