@@ -86,7 +86,10 @@ def embed_texts(texts: list[str], *, task_type: str | None = None) -> list[list[
                 **({"task_type": task_type} if task_type else {}),
             ),
         )
-        out = [_l2_normalize([float(x) for x in item.values]) for item in response.embeddings]
+        raw = [[float(x) for x in item.values] for item in response.embeddings]
+        # settings.embedding_normalized 를 실제 분기 조건으로 사용 — 기록되는 normalized
+        # 프로비넌스와 실제 정규화 동작이 어긋나지 않게 한다(이슈 #65 PR 리뷰).
+        out = [_l2_normalize(vec) for vec in raw] if settings.embedding_normalized else raw
     except EmbeddingError:
         raise
     except Exception as exc:  # noqa: BLE001 - SDK 호출·응답 파싱 예외를 EmbeddingError 로 통일 매핑

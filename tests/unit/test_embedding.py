@@ -61,6 +61,20 @@ def test_embed_texts_calls_google_and_l2_normalizes(monkeypatch):
     assert out[0] == pytest.approx([0.6, 0.8, 0.0])  # MRL 절단 응답 수동 L2 정규화(3-4-5)
 
 
+def test_embed_texts_skips_normalization_when_disabled(monkeypatch):
+    # embedding_normalized=False 면 실제로 정규화하지 않는다 — 기록되는 normalized
+    # 프로비넌스와 동작이 일치해야 한다(이슈 #65 PR 리뷰).
+    settings = Settings(
+        _env_file=None, google_api_key="test-key", embedding_dim=3, embedding_normalized=False
+    )
+    monkeypatch.setattr(emb, "get_settings", lambda: settings)
+    monkeypatch.setattr(emb, "_client", lambda api_key: _FakeClient([[3.0, 4.0, 0.0]]))
+
+    out = emb.embed_texts(["hello"])
+
+    assert out[0] == pytest.approx([3.0, 4.0, 0.0])  # 원시값 그대로(정규화 안 함)
+
+
 def test_embed_texts_raises_without_api_key(monkeypatch):
     settings = Settings(_env_file=None, google_api_key="")
     monkeypatch.setattr(emb, "get_settings", lambda: settings)

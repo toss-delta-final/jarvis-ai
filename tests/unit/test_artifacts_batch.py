@@ -578,7 +578,7 @@ async def test_batch_records_provenance_from_settings(monkeypatch):
     monkeypatch.setattr(
         _embedding,
         "embed_texts",
-        lambda texts, *, task_type=None: [[1.0, 0.0, 0.0] for _ in texts],
+        lambda texts, *, task_type=None: [[1.0] + [0.0] * 1535 for _ in texts],
     )
 
     async def fetch(cursor, size):
@@ -606,3 +606,35 @@ async def test_batch_records_provenance_from_settings(monkeypatch):
     assert art.embed_dim == 1536
     assert art.embed_task == "RETRIEVAL_DOCUMENT"
     assert art.normalized is True
+
+
+@pytest.mark.asyncio
+async def test_batch_embed_dim_reflects_actual_vector(monkeypatch):
+    """embed_dim 은 settings 상수가 아니라 실제 반환 벡터 길이에서 온다(이슈 #65 PR 리뷰)."""
+    monkeypatch.setattr(
+        _embedding,
+        "embed_texts",
+        lambda texts, *, task_type=None: [[0.0] * 8 for _ in texts],  # 8차원(설정 1536과 다름)
+    )
+
+    async def fetch(cursor, size):
+        return ProductChangesPage(
+            items=[
+                ProductChange(
+                    productId=8,
+                    status="ON_SALE",
+                    updatedAt="2026-07-20T00:00:00Z",
+                    name="상품-8",
+                    description="설명",
+                    category="여행용품",
+                    brand="브랜드",
+                )
+            ],
+            nextCursor=None,
+            hasMore=False,
+        )
+
+    store = CatalogArtifactStore()
+    await _batch.run_artifacts_batch(fetch=fetch, llm=ScriptedLLM(), store=store)
+
+    assert store.get(8).embed_dim == 8

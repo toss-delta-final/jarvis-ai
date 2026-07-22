@@ -70,9 +70,11 @@ async def _process_change(
             search_doc=doc,
             embedding=vec,
             extras=extras,
-            # 임베딩 프로비넌스 — settings 상수로 채움(이슈 #65, embedding_meta_complete CHECK 대응)
+            # 임베딩 프로비넌스(이슈 #65, embedding_meta_complete CHECK 대응).
+            # embed_dim 은 실제 반환 벡터 길이에서 도출 — embed 주입 교체 시에도 기록값이
+            # 실제 벡터와 어긋나지 않는다(PR 리뷰). model·task 는 벡터에 없어 settings 소관.
             embed_model=settings.embedding_model_id,
-            embed_dim=settings.embedding_dim,
+            embed_dim=len(vec),
             embed_task=settings.embedding_task_document,
             normalized=settings.embedding_normalized,
         )
