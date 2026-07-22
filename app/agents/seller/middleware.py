@@ -163,14 +163,23 @@ def mask_output(text: str) -> str:
 
 _API_TOKEN_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
 _BEARER_TOKEN_CHARS = _API_TOKEN_CHARS | {"."}
-_MAX_SENSITIVE_PREFIX = 64
+_MIN_SECRET_TOKEN_LENGTH = 16
+_MAX_SENSITIVE_PREFIX = max(
+    len("sk-") + _MIN_SECRET_TOKEN_LENGTH - 1,
+    len("Bearer ") + _MIN_SECRET_TOKEN_LENGTH - 1,
+    len("000000-1000000") - 1,
+)
 
 
 def _is_api_key_prefix(text: str) -> bool:
     if "sk-".startswith(text):
         return True
     token = text[3:] if text.startswith("sk-") else ""
-    return bool(token) and len(token) < 16 and all(char in _API_TOKEN_CHARS for char in token)
+    return (
+        bool(token)
+        and len(token) < _MIN_SECRET_TOKEN_LENGTH
+        and all(char in _API_TOKEN_CHARS for char in token)
+    )
 
 
 def _is_bearer_prefix(text: str) -> bool:
@@ -183,7 +192,9 @@ def _is_bearer_prefix(text: str) -> bool:
     if whitespace_length == 0:
         return False
     token = rest[whitespace_length:]
-    return len(token) < 16 and all(char in _BEARER_TOKEN_CHARS for char in token)
+    return len(token) < _MIN_SECRET_TOKEN_LENGTH and all(
+        char in _BEARER_TOKEN_CHARS for char in token
+    )
 
 
 def _is_rrn_prefix(text: str) -> bool:
@@ -273,7 +284,7 @@ class StreamingOutputGuard:
                 start, end = skeleton.source_span(*match.span())
                 fragments.extend((self._pending[:start], MASK_REPLACEMENT))
                 self._pending = self._pending[end:]
-                if rule_index < 2 and match.end() == len(skeleton.text):
+                if match.end() == len(skeleton.text):
                     self._consume_rule = rule_index
                 continue
 
@@ -305,7 +316,13 @@ class StreamingOutputGuard:
 
     def _consume_token_continuation(self) -> bool:
         skeleton = _security_skeleton(self._pending)
-        allowed = _API_TOKEN_CHARS if self._consume_rule == 0 else _BEARER_TOKEN_CHARS
+        allowed = (
+            _API_TOKEN_CHARS
+            if self._consume_rule == 0
+            else _BEARER_TOKEN_CHARS
+            if self._consume_rule == 1
+            else frozenset()
+        )
         delimiter_index = next(
             (index for index, char in enumerate(skeleton.text) if char not in allowed),
             None,

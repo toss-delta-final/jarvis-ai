@@ -136,3 +136,12 @@ def test_streaming_output_guard_bounds_bearer_whitespace_prefix() -> None:
     guard = middleware.StreamingOutputGuard()
     visible = "".join(guard.feed("앞 Bearer" + "\n" * 65))
     assert visible == "앞 " + middleware.MASK_REPLACEMENT
+
+
+def test_streaming_output_guard_absorbs_selector_after_fixed_secret_match() -> None:
+    """고정 길이 시크릿의 마지막 문자에 붙은 다음 청크 VS도 marker 범위에 포함한다."""
+    guard = middleware.StreamingOutputGuard()
+    parts = guard.feed("번호 9️9️0️1️0️1️-1️2️3️4️5️6️7")
+    parts.extend(guard.feed("️ 끝"))
+    parts.extend(guard.flush())
+    assert "".join(parts) == "번호 [민감 정보 차단] 끝"

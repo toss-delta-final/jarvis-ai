@@ -406,7 +406,7 @@ Commit boundary coverage and changelog together only if no production behavior c
 **Files:**
 - Review all changed files
 
-- [ ] **Step 1: Regenerate and require a clean generated diff**
+- [x] **Step 1: Regenerate and require a clean generated diff**
 
 ```bash
 uv run python scripts/generate_unicode_security_data.py
@@ -415,7 +415,7 @@ git diff --exit-code -- app/core/_unicode_variation_data.py
 
 Expected: no generated drift.
 
-- [ ] **Step 2: Format and lint**
+- [x] **Step 2: Format and lint**
 
 ```bash
 uv run ruff check --fix
@@ -425,7 +425,7 @@ uv run ruff check
 
 Expected: all checks pass; inspect any auto-fix before staging.
 
-- [ ] **Step 3: Full test suite**
+- [x] **Step 3: Full test suite**
 
 ```bash
 uv run pytest
@@ -433,7 +433,7 @@ uv run pytest
 
 Expected: all selected unit/non-infrastructure integration tests pass with zero failures.
 
-- [ ] **Step 4: Diff/security review**
+- [x] **Step 4: Diff/security review**
 
 Check:
 
@@ -444,10 +444,10 @@ Check:
 - no user-facing target call site bypasses `_strip_unsafe*` or the seller guard
 - no unrelated files changed
 
-- [ ] **Step 5: Final commit if formatter or review changed files**
+- [x] **Step 5: Final commit if formatter or review changed files**
 
 Use a Conventional Commit plus Lore trailers. `Tested:` must contain the fresh ruff and full pytest evidence.
 
-- [ ] **Step 6: Report completion evidence**
+- [x] **Step 6: Report completion evidence**
 
 Report worktree path, commits, changed files, generated Unicode versions, targeted/full test counts, and remaining risk: RGI tag support is intentionally limited to three sequences and ZWJ policy remains out of scope.
