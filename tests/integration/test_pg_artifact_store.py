@@ -228,3 +228,36 @@ def test_check_rejects_missing_provenance():
                     "INSERT INTO products (product_id, search_doc, embedding) VALUES (%s, %s, %s)",
                     (999999, "d", "[" + ",".join(["0"] * 1536) + "]"),
                 )
+
+
+@pytest.mark.integration
+def test_loader_persists_provenance(tmp_path):
+    import json
+
+    from app.core.config import get_settings
+    from scripts import load_sample_100
+
+    doc = {
+        "product_id": 123,
+        "search_doc": "문서",
+        "embedding": [0.0] * 1536,
+        "extras": {"tags": ["여행"]},
+        "embed_model": "gemini-embedding-001",
+        "embed_dim": 1536,
+        "embed_task": "RETRIEVAL_DOCUMENT",
+        "normalized": True,
+    }
+    # L2 norm=1 검증 통과 위해 한 성분을 1.0으로
+    doc["embedding"][0] = 1.0
+    path = tmp_path / "documents.jsonl"
+    path.write_text(json.dumps(doc, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    documents = load_sample_100.load_documents(
+        path, expected_count=1, expected_dim=1536, expected_model="gemini-embedding-001"
+    )
+    load_sample_100.upsert_documents(documents)
+
+    store = PgCatalogArtifactStore(get_settings().catalog_db_url)
+    got = store.get(123)
+    assert got.embed_task == "RETRIEVAL_DOCUMENT" and got.normalized is True
+    store.close()
