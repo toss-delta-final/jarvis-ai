@@ -101,35 +101,64 @@ def strip_invalid_invisible_sequences(text: str) -> str:
     return "".join(output)
 
 
-def _stream_pending_start(text: str) -> int:
-    """다음 청크와 합쳐 정상 시퀀스가 될 수 있는 suffix 시작점을 찾는다."""
-    minimum_start = max(0, len(text) - max(map(len, _SUPPORTED_RGI_TAG_SEQUENCES)))
-    for start in range(minimum_start, len(text)):
-        suffix = text[start:]
-        if any(sequence.startswith(suffix) for sequence in _SUPPORTED_RGI_TAG_SEQUENCES):
-            return start
-
-    if text and not (is_variation_selector(text[-1]) or is_tag_character(text[-1])):
-        return len(text) - 1
-    return len(text)
+_TAG_BASE = "\U0001f3f4"
 
 
 class UnicodeSequenceStreamSanitizer:
     """청크 경계에 걸친 Unicode VS·Tag 시퀀스를 문맥에 맞게 정제한다."""
 
     def __init__(self) -> None:
-        self._pending = ""
+        self._available_base: str | None = None
+        self._pending_tag_sequence: str | None = None
 
     def feed(self, text: str) -> str:
-        """확정할 수 있는 prefix를 정제하고 가능한 시퀀스 suffix는 보류한다."""
-        self._pending += text
-        pending_start = _stream_pending_start(self._pending)
-        ready = self._pending[:pending_start]
-        self._pending = self._pending[pending_start:]
-        return strip_invalid_invisible_sequences(ready)
+        """확정된 문자는 즉시 내보내고 미완성 RGI Tag prefix만 보류한다."""
+        output: list[str] = []
+        for char in text:
+            self._consume(char, output)
+        return "".join(output)
+
+    def _consume(self, char: str, output: list[str]) -> None:
+        if self._pending_tag_sequence is not None:
+            if is_tag_character(char):
+                candidate = self._pending_tag_sequence + char
+                if any(sequence.startswith(candidate) for sequence in _SUPPORTED_RGI_TAG_SEQUENCES):
+                    self._pending_tag_sequence = candidate
+                    if candidate in _SUPPORTED_RGI_TAG_SEQUENCES:
+                        output.append(candidate)
+                        self._pending_tag_sequence = None
+                        self._available_base = None
+                    return
+                output.append(_TAG_BASE)
+                self._pending_tag_sequence = None
+                self._available_base = None
+                return
+
+            had_tag_payload = len(self._pending_tag_sequence) > 1
+            output.append(_TAG_BASE)
+            self._pending_tag_sequence = None
+            self._available_base = None if had_tag_payload else _TAG_BASE
+
+        if char == _TAG_BASE:
+            self._pending_tag_sequence = _TAG_BASE
+            self._available_base = None
+            return
+        if is_variation_selector(char):
+            if self._available_base is not None and is_registered_variation_sequence(
+                self._available_base, char
+            ):
+                output.append(char)
+            self._available_base = None
+            return
+        if is_tag_character(char):
+            self._available_base = None
+            return
+        output.append(char)
+        self._available_base = char
 
     def flush(self) -> str:
-        """스트림 종료 시 보류한 문자를 최종 정제한다."""
-        ready = strip_invalid_invisible_sequences(self._pending)
-        self._pending = ""
+        """스트림 종료 시 미완성 Tag payload는 버리고 visible base만 내보낸다."""
+        ready = _TAG_BASE if self._pending_tag_sequence is not None else ""
+        self._pending_tag_sequence = None
+        self._available_base = None
         return ready

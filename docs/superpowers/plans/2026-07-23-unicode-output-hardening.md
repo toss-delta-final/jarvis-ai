@@ -296,7 +296,7 @@ Commit skeleton-based masking separately from streaming.
 - Produces: `StreamingOutputGuard.flush() -> list[str]`
 - Consumes: `UnicodeSequenceStreamSanitizer`, `_strip_unsafe_multiline`, `mask_output`
 
-- [ ] **Step 1: RED — Bearer/API key/RRN across chunks**
+- [x] **Step 1: RED — Bearer/API key/RRN across chunks**
 
 Add `_StubStreamAgent` cases where every pattern is split before the minimum match length. Join emitted token text and assert exactly one marker with no secret fragments that reconstruct the original token.
 
@@ -314,7 +314,7 @@ def test_stream_masks_bearer_token_split_across_chunks(monkeypatch: pytest.Monke
     assert text == "키는 [민감 정보 차단] 입니다"
 ```
 
-- [ ] **Step 2: GREEN — bounded sensitive-prefix retention**
+- [x] **Step 2: GREEN — bounded sensitive-prefix retention**
 
 The guard must retain the longest suffix that can still become one of:
 
@@ -324,11 +324,11 @@ The guard must retain the longest suffix that can still become one of:
 
 When a variable-length token reaches 16 characters, emit one marker and consume further allowed token characters until a delimiter. Emit safe prefixes immediately; do not buffer the full response.
 
-- [ ] **Step 3: RED/GREEN — Unicode sequence across chunks**
+- [x] **Step 3: RED/GREEN — Unicode sequence across chunks**
 
 Add general-stream tests splitting heart+VS, CJK+supplemental VS, and an RGI tag flag across chunks. Join token text and assert exact preservation. Add an invalid split tag payload and assert it is removed.
 
-- [ ] **Step 4: Preserve normal stream semantics**
+- [x] **Step 4: Preserve normal stream semantics**
 
 Update `_general_stream()` to instantiate one guard per request, emit every fragment returned by `feed()`, emit `flush()` fragments before `done`, and retain existing error behavior.
 
@@ -339,7 +339,7 @@ Run existing tests proving:
 - tool-use blocks remain excluded
 - `meta` first and `done` last
 
-- [ ] **Step 5: Focused verification and commit**
+- [x] **Step 5: Focused verification and commit**
 
 ```bash
 uv run pytest tests/unit/test_seller_api.py tests/unit/test_seller_middleware.py -q

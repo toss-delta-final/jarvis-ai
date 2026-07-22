@@ -129,3 +129,10 @@ def test_mask_output_preserves_unicode_around_masked_secret() -> None:
     """마스킹 구간 앞뒤의 정상 시퀀스는 원문 그대로 보존한다."""
     text = "❤️ sk-abcdefgh\ufe0fijklmnop1234 㐂\U000e0100"
     assert middleware.mask_output(text) == "❤️ [민감 정보 차단] 㐂\U000e0100"
+
+
+def test_streaming_output_guard_bounds_bearer_whitespace_prefix() -> None:
+    r"""무제한 `\s+` 후보는 고정 상한에서 차단해 스트림 메모리를 제한한다."""
+    guard = middleware.StreamingOutputGuard()
+    visible = "".join(guard.feed("앞 Bearer" + "\n" * 65))
+    assert visible == "앞 " + middleware.MASK_REPLACEMENT

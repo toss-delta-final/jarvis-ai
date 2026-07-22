@@ -19,23 +19,32 @@ _CTRL = re.compile(
 _WS_RUN = re.compile(r"\s+")
 
 
+def _strip_unsafe_controls(text: str) -> str:
+    """Unicode 문맥 검사가 끝난 한 줄에서 제어문자와 중복 공백을 제거한다."""
+    return _WS_RUN.sub(" ", _CTRL.sub("", text)).strip()
+
+
 def _strip_unsafe(text: str) -> str:
     """제어·zero-width·bidi 포맷 문자를 제거하고 공백류를 단일 공백으로 접는다."""
-    stripped = _CTRL.sub("", strip_invalid_invisible_sequences(text))
-    return _WS_RUN.sub(" ", stripped).strip()
+    return _strip_unsafe_controls(strip_invalid_invisible_sequences(text))
 
 
-def _strip_unsafe_multiline(text: str) -> str:
-    """장문의 구조적 개행은 보존하면서 각 줄에 `_strip_unsafe`를 적용한다."""
-    normalized = strip_invalid_invisible_sequences(text).replace("\r\n", "\n").replace("\r", "\n")
+def _strip_unsafe_multiline_controls(text: str) -> str:
+    """Unicode 문맥 검사가 끝난 장문에서 제어문자를 제거하고 개행을 보존한다."""
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     lines: list[str] = []
     for line in normalized.split("\n"):
         stripped = _CTRL.sub("", line)
         indent_len = len(stripped) - len(stripped.lstrip(" "))
-        body = _strip_unsafe(stripped[indent_len:])
+        body = _strip_unsafe_controls(stripped[indent_len:])
         lines.append((" " * indent_len) + body if body else "")
     cleaned = "\n".join(lines)
     return cleaned.strip("\n")
+
+
+def _strip_unsafe_multiline(text: str) -> str:
+    """장문의 구조적 개행을 보존하면서 Unicode·제어문자를 정제한다."""
+    return _strip_unsafe_multiline_controls(strip_invalid_invisible_sequences(text))
 
 
 @dataclass(frozen=True, slots=True)
