@@ -240,7 +240,7 @@ Commit the contextual sanitizer as one independently reviewable behavior.
 - `SecuritySkeleton.source_span(start: int, end: int) -> tuple[int, int]`
 - Preserves: `mask_output(text: str) -> str`
 
-- [ ] **Step 1: RED — direct VS/Tag masking bypass**
+- [x] **Step 1: RED — direct VS/Tag masking bypass**
 
 ```python
 @pytest.mark.parametrize(
@@ -258,13 +258,13 @@ def test_mask_output_detects_secrets_through_invisible_characters(text: str) -> 
 
 Confirm all cases fail under the current regex substitution.
 
-- [ ] **Step 2: GREEN — skeleton/source-span mapping**
+- [x] **Step 2: GREEN — skeleton/source-span mapping**
 
 `_security_skeleton()` removes `_CTRL` targets, all Variation Selectors, and all Tag characters only from the inspection string. It records each retained code point's source start. `source_span()` ends at the next retained code point so trailing invisible characters within a match are included.
 
 Gather all pattern matches against the skeleton, convert to source spans, merge overlapping spans, and replace in reverse source order. Do not mutate non-matching normal text.
 
-- [ ] **Step 3: RED/GREEN — legitimate sequence fidelity**
+- [x] **Step 3: RED/GREEN — legitimate sequence fidelity**
 
 ```python
 @pytest.mark.parametrize("text", ["정상 ❤️", "번호 #️⃣", "한자 㐂\U000e0100", ENGLAND_FLAG])
@@ -274,7 +274,7 @@ def test_mask_output_preserves_normal_unicode_sequences(text: str) -> None:
 
 Also verify normal sequence before/after a masked secret remains byte-for-byte identical.
 
-- [ ] **Step 4: Run focused tests and commit**
+- [x] **Step 4: Run focused tests and commit**
 
 ```bash
 uv run pytest tests/unit/test_seller_middleware.py tests/unit/test_unicode_security.py -q

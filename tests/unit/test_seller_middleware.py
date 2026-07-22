@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from app.agents.seller import middleware
@@ -95,3 +96,36 @@ def test_mask_output_keeps_normal_text() -> None:
     """정상 보고서 문안(매출·날짜·금액)은 그대로 통과한다."""
     text = "2026-06-12 매출 180,000원, 전일 대비 42.1% 하락했습니다."
     assert middleware.mask_output(text) == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "sk-abcdefgh\ufe0fijklmnop1234",
+        "Bearer abcdefgh\U000e0061ijklmnop1234",
+        "9\ufe0f9\ufe0f0\ufe0f1\ufe0f0\ufe0f1\ufe0f-1\ufe0f2\ufe0f3\ufe0f4\ufe0f5\ufe0f6\ufe0f7\ufe0f",
+    ],
+)
+def test_mask_output_detects_secrets_through_invisible_characters(text: str) -> None:
+    """VS·Tag 삽입으로 시크릿 패턴을 분절해도 한 번에 마스킹한다."""
+    assert middleware.mask_output(text) == middleware.MASK_REPLACEMENT
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "정상 ❤️",
+        "번호 #️⃣",
+        "한자 㐂\U000e0100",
+        "국기 🏴\U000e0067\U000e0062\U000e0065\U000e006e\U000e0067\U000e007f",
+    ],
+)
+def test_mask_output_preserves_normal_unicode_sequences(text: str) -> None:
+    """민감정보가 없는 등록 Unicode 시퀀스는 코드포인트 그대로 둔다."""
+    assert middleware.mask_output(text) == text
+
+
+def test_mask_output_preserves_unicode_around_masked_secret() -> None:
+    """마스킹 구간 앞뒤의 정상 시퀀스는 원문 그대로 보존한다."""
+    text = "❤️ sk-abcdefgh\ufe0fijklmnop1234 㐂\U000e0100"
+    assert middleware.mask_output(text) == "❤️ [민감 정보 차단] 㐂\U000e0100"

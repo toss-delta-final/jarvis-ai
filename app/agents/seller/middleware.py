@@ -31,6 +31,7 @@ from langchain.agents.middleware import (
 )
 
 from app.core.config import get_settings
+from app.core.text import _security_skeleton
 
 # ── 1. scope — 차단 규칙 (사유 → 트리거 부분 문자열, 소문자 비교) ────────────────
 
@@ -140,9 +141,22 @@ _OUTPUT_SECRET_RES: tuple[re.Pattern[str], ...] = (
 
 
 def mask_output(text: str) -> str:
-    """최종 출력에서 시크릿·주민번호 패턴을 마스킹한다 (SSE 계층이 호출)."""
-    for pattern in _OUTPUT_SECRET_RES:
-        text = pattern.sub(MASK_REPLACEMENT, text)
+    """은닉 문자를 무시해 탐지한 시크릿·주민번호의 원문 범위를 마스킹한다."""
+    skeleton = _security_skeleton(text)
+    spans = sorted(
+        skeleton.source_span(*match.span())
+        for pattern in _OUTPUT_SECRET_RES
+        for match in pattern.finditer(skeleton.text)
+    )
+    merged: list[tuple[int, int]] = []
+    for start, end in spans:
+        if merged and start < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+
+    for start, end in reversed(merged):
+        text = text[:start] + MASK_REPLACEMENT + text[end:]
     return text
 
 
