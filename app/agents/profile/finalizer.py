@@ -98,6 +98,7 @@ async def finalize_profile_session(
     session_id: str,
     *,
     activity_claim: ActivityClaim | None = None,
+    terminal: bool = True,
     settings: Settings | None = None,
     store_factory: Callable[[], Awaitable[ProfileStore]] | None = None,
     llm_factory: Callable[[], LLMClient | None] | None = None,
@@ -105,8 +106,10 @@ async def finalize_profile_session(
 ) -> FinalizationResult:
     """한 세션 버퍼를 실패 안전 멱등 lifecycle로 처리한다.
 
-    외부 I-20은 RETRYABLE도 wire상 ``accepted``로 강등하고, idle scheduler는 이를 다음
-    sweep 재시도 카운트로 사용한다. CancelledError만 호출자에게 재전파한다.
+    외부 I-20은 ``terminal=True``로 fixed dedup을 완료한다. idle scheduler는
+    ``terminal=False``로 같은 claim을 세션 단위 mutex로만 쓰고 성공 뒤 해제하여, 같은
+    sessionId가 재활동하면 다음 idle checkpoint를 다시 처리할 수 있게 한다.
+    CancelledError만 호출자에게 재전파한다.
     """
     target_log = log or logger
     resolved_settings = settings or get_settings()
@@ -157,9 +160,10 @@ async def finalize_profile_session(
             # 처리 중 추가된 새 발화(seq > watermark)는 보존한다.
             await store.clear_session_ctx_upto(key, watermark)
 
-        processed_completed = await processed_events.complete_claim(dedup_key, processed_token)
-        if not processed_completed:
-            raise RuntimeError("session-end claim ownership lost")
+        if terminal:
+            processed_completed = await processed_events.complete_claim(dedup_key, processed_token)
+            if not processed_completed:
+                raise RuntimeError("session-end claim ownership lost")
         activity_completed = await _complete_activity_best_effort(
             numeric_user_id,
             session_id,

@@ -2,7 +2,7 @@
 --
 -- user message INSERT와 같은 transaction에서 last_activity_at=DB now()를 touch한다.
 -- 스케줄러는 (status, last_activity_at) 인덱스로 bounded claim하고, crash 잔재는
--- lease_expires_at 만료 뒤 재선점한다. COMPLETED sessionId는 재활성화하지 않는다.
+-- lease_expires_at 만료 뒤 재선점한다. idle COMPLETED sessionId도 새 회원 발화가 오면 ACTIVE로 재개한다.
 
 CREATE TABLE IF NOT EXISTS profile_session_activity (
     user_id          bigint NOT NULL,

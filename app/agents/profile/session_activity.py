@@ -179,7 +179,7 @@ async def _get_pool() -> AsyncConnectionPool | None:
 
 
 async def touch_on_connection(conn, user_id: int, session_id: str) -> bool:  # noqa: ANN001
-    """현재 DB transaction에서 활동을 touch한다. COMPLETED 세션은 재활성화하지 않는다."""
+    """현재 DB transaction에서 활동을 touch한다. idle-completed 세션도 새 발화로 재개한다."""
     row = await (
         await conn.execute(
             """
@@ -189,7 +189,6 @@ async def touch_on_connection(conn, user_id: int, session_id: str) -> bool:  # n
             ON CONFLICT (user_id, session_id) DO UPDATE
             SET last_activity_at = now(), status = 'active',
                 claim_token = NULL, lease_expires_at = NULL, updated_at = now()
-            WHERE profile_session_activity.status <> 'completed'
             RETURNING user_id
             """,
             (user_id, session_id),
@@ -204,9 +203,6 @@ async def touch_session(user_id: int, session_id: str) -> bool:
     if pool is None:
         assert _fallback_rows is not None
         key = (user_id, session_id)
-        current = _fallback_rows.get(key)
-        if current is not None and current.status == "completed":
-            return False
         _fallback_rows[key] = _FallbackActivity(last_activity_at=_monotonic())
         return True
 

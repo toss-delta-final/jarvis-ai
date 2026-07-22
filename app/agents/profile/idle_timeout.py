@@ -38,23 +38,23 @@ async def _release_claim_best_effort(claim: ActivityClaim) -> None:
 async def _process_claim(claim: ActivityClaim, *, idle_timeout_s: float) -> str:
     registry = get_registry()
     stream_key = conversation_key(str(claim.user_id), claim.session_id)
-    # check만 하지 않고 동일 슬롯을 예약한다. 검증 뒤 finalizer 진입 사이에 새 stream이
-    # 들어오는 TOCTOU를 막고, 이미 진행 중이면 이번 claim을 ACTIVE로 되돌린다.
-    if not registry.acquire(stream_key):
+    # 실제 라이브 스트림 슬롯을 scheduler가 예약하면 finalizer의 LLM 처리 동안 정상 채팅이
+    # false-positive 409를 받는다. 기존 stream만 거르고, 이후 새 활동은 DB touch가 activity
+    # claim을 무효화한다. idle finalizer는 fixed processed claim을 완료하지 않고 해제하므로
+    # 처리 중/후 같은 sessionId가 재개되어도 다음 checkpoint가 가능하다.
+    if registry.is_active(stream_key):
         await _release_claim_best_effort(claim)
         return "skipped"
-    try:
-        if not await session_activity.claim_is_current(claim, idle_timeout_s=idle_timeout_s):
-            await _release_claim_best_effort(claim)
-            return "skipped"
-        outcome = await finalize_profile_session(
-            claim.user_id,
-            claim.session_id,
-            activity_claim=claim,
-        )
-        return outcome.status.value
-    finally:
-        registry.release(stream_key)
+    if not await session_activity.claim_is_current(claim, idle_timeout_s=idle_timeout_s):
+        await _release_claim_best_effort(claim)
+        return "skipped"
+    outcome = await finalize_profile_session(
+        claim.user_id,
+        claim.session_id,
+        activity_claim=claim,
+        terminal=False,
+    )
+    return outcome.status.value
 
 
 async def run_idle_sweep() -> IdleSweepResult:

@@ -145,7 +145,12 @@ async def test_internal_timeout_and_explicit_end_share_one_idempotent_finalizer(
 
     explicit, timeout = await asyncio.gather(
         finalizer.finalize_profile_session("74", "race"),
-        finalizer.finalize_profile_session("74", "race", activity_claim=claim),
+        finalizer.finalize_profile_session(
+            "74",
+            "race",
+            activity_claim=claim,
+            terminal=False,
+        ),
     )
 
     assert {explicit.status, timeout.status} == {
@@ -156,6 +161,70 @@ async def test_internal_timeout_and_explicit_end_share_one_idempotent_finalizer(
     assert await processed_events.get_status("session-end:74:race") == "completed"
     row = await session_activity.get_session(74, "race")
     assert row is not None and row.status == "completed"
+
+
+async def test_idle_checkpoint_allows_same_session_to_resume_and_flush_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _CountingLLM(_LLM):
+        delta_calls = 0
+
+        async def complete(self, **kwargs):
+            if "델타 추출기" in kwargs["system"]:
+                self.delta_calls += 1
+            return await super().complete(**kwargs)
+
+    llm = _CountingLLM()
+    monkeypatch.setattr(finalizer, "get_llm", lambda: llm)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "profile_session_idle_timeout_s", 600.0)
+    monkeypatch.setattr(settings, "profile_idle_claim_ttl_s", 900.0)
+    monkeypatch.setattr(settings, "profile_idle_sweep_batch_size", 10)
+    monkeypatch.setattr(settings, "profile_idle_max_concurrency", 2)
+    now = 0.0
+    monkeypatch.setattr(session_activity, "_monotonic", lambda: now)
+    store = await get_profile_store()
+    key = conversation_key("75", "resume")
+    await store.append_session_ctx(key, "첫 번째 취향")
+    await session_activity.touch_session(75, "resume")
+
+    now = 600.0
+    first = await idle_timeout.run_idle_sweep()
+    assert first.accepted == 1
+    assert await processed_events.get_status("session-end:75:resume") is None
+
+    now = 601.0
+    assert await session_activity.touch_session(75, "resume")
+    await store.append_session_ctx(key, "복귀 후 두 번째 취향")
+    now = 1201.0
+    second = await idle_timeout.run_idle_sweep()
+
+    assert second.accepted == 1
+    assert llm.delta_calls == 2
+    assert await store.get_session_ctx(key) == []
+
+
+async def test_idle_finalizer_does_not_reserve_live_stream_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    claim = await _expired_claim(monkeypatch, 76, "stream-race")
+    finalizer_started = asyncio.Event()
+    allow_finalizer = asyncio.Event()
+
+    async def _blocking_finalizer(*args, **kwargs):
+        finalizer_started.set()
+        await allow_finalizer.wait()
+        return finalizer.FinalizationResult(finalizer.FinalizationStatus.ACCEPTED)
+
+    monkeypatch.setattr(idle_timeout, "finalize_profile_session", _blocking_finalizer)
+    task = asyncio.create_task(idle_timeout._process_claim(claim, idle_timeout_s=600))
+    await finalizer_started.wait()
+    stream_key = conversation_key("76", "stream-race")
+
+    assert get_registry().acquire(stream_key)
+    get_registry().release(stream_key)
+    allow_finalizer.set()
+    assert await task == finalizer.FinalizationStatus.ACCEPTED.value
 
 
 async def test_idle_sweep_enforces_configured_finalizer_concurrency(

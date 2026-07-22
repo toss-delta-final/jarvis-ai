@@ -354,9 +354,9 @@ async def test_session_activity_atomic_claim_touch_invalidation_and_completion()
             session_id,
             token=claims[0].claim_token,
         )
-        assert not await session_activity.touch_session(user_id, session_id)
+        assert await session_activity.touch_session(user_id, session_id)
         row = await session_activity.get_session(user_id, session_id)
-        assert row is not None and row.status == "completed"
+        assert row is not None and row.status == "active"
     finally:
         await _delete_activity(user_id, session_id)
         session_activity.set_pool(None)

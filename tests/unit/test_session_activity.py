@@ -86,7 +86,7 @@ async def test_new_activity_invalidates_processing_claim(
     assert row is not None and row.status == "active" and row.claim_token is None
 
 
-async def test_completed_session_cannot_be_reopened(
+async def test_completed_idle_session_reopens_on_new_member_activity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     now = 0.0
@@ -101,9 +101,9 @@ async def test_completed_session_cannot_be_reopened(
     assert await session_activity.complete_session(3, "closed", token=claim.claim_token)
 
     now = 700.0
-    assert not await session_activity.touch_session(3, "closed")
+    assert await session_activity.touch_session(3, "closed")
     row = await session_activity.get_session(3, "closed")
-    assert row is not None and row.status == "completed" and row.last_activity_at == 0.0
+    assert row is not None and row.status == "active" and row.last_activity_at == 700.0
 
 
 async def test_expired_processing_claim_is_recoverable(
