@@ -261,7 +261,9 @@ def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption
         if isinstance(raw_stock, int) and raw_stock >= 0:
             available_stock = raw_stock
         elif isinstance(raw_stock, float) and math.isfinite(raw_stock) and raw_stock >= 0:
-            available_stock = int(raw_stock)
+            # BE(Java) Double 직렬화가 4.9999998·5.0000002 처럼 올 수 있어 반올림(extraPrice 파싱과 동일).
+            # int() 절삭은 실제보다 1 적게 안내할 수 있음(재고는 정수 count).
+            available_stock = round(raw_stock)
     return code, options, available_stock
 
 

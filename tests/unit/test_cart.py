@@ -746,6 +746,18 @@ async def test_add_to_cart_stock_insufficient_parses_available(
     assert ei.value.available_stock == 3
 
 
+async def test_add_to_cart_stock_available_float_rounds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """availableStock 이 BE Double 직렬화로 4.9999998 처럼 오면 round → 5(절삭 아님, 리뷰 #75)."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import AddToCartRequest
+
+    body = {"error": {"code": "CART_STOCK_INSUFFICIENT", "detail": {"availableStock": 4.9999998}}}
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
+    with pytest.raises(sc.CartStockInsufficient) as ei:
+        await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=5))
+    assert ei.value.available_stock == 5
+
+
 async def test_add_to_cart_stock_insufficient_missing_available(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
