@@ -13,6 +13,25 @@
 
 ---
 
+## [2026-07-22] FE 오류 계약을 논할 때 "FastAPI 기본 422" 로 단정하지 말 것 — 이 앱은 검증 오류를 400 으로 매핑한다
+- 증상: 판매자 챗 FE 계약 1차 분석에서 "요청 본문 검증 실패(threadId 누락 등)는 FastAPI 기본 422 로 나온다, 노션의 400 은 틀렸다"고 적었는데 반대였다 — 앱은 `RequestValidationError` 를 **400 `BAD_REQUEST` 봉투**로 매핑한다(`app/core/errors.py::_validation_exception_handler`, `add_exception_handler(RequestValidationError, ...)`). 노션의 400 이 옳았고 내 진단이 틀렸다.
+- 원인: FastAPI의 프레임워크 기본값(422)을 앱의 실제 동작으로 착각했다. 이 리포는 모든 오류를 공통 봉투(§2.5)로 통일하려고 검증 오류까지 400 으로 재매핑하는 커스텀 핸들러를 둔다 — 기본값 지식이 아니라 코드를 봐야 알 수 있다.
+- 규칙:
+  - **HTTP 상태·오류 코드를 문서에 단정하기 전에 `app/core/errors.py`(예외 핸들러 등록부)를 먼저 확인한다.** "FastAPI/Starlette 기본은 X" 라는 일반 지식은 커스텀 핸들러가 있으면 무효다.
+  - 특히 **422 vs 400**: 이 앱에서 요청 스키마(Pydantic) 검증 실패는 항상 **400 BAD_REQUEST**다. FE 계약·명세에 422 라고 쓰면 틀린다.
+  - **"미구현" 도 마찬가지로 코드로 확인한다.** 같은 문서 작업에서 `429 RATE_LIMITED` 를 "미구현" 으로 단정했는데, 실제로는 `app/core/ratelimit.py` 가 `/seller/chat` 에 적용돼 있었다(`_LIMITED_PATHS`, config 상한). 미들웨어·핸들러는 라우터 코드에 안 보이므로 `app/main.py` 등록부와 `app/core/` 를 훑고 나서 "없다" 고 말한다.
+- 관련: `app/core/errors.py`, `app/core/ratelimit.py`, `app/main.py`, `app/schemas/seller.py::SellerChatRequest`, `docs/specs/FE-CONTRACT-SELLER-CHAT.md` §4.1
+
+## [2026-07-22] 샌드박스에서 `git rm` 을 쓰면 지우지 못하는 `.git/index.lock` 이 남아 이후 모든 git 작업이 막힌다
+- 증상: docs/specs 판매자 문서 정리 중 샌드박스 셸에서 `git rm` 실행 → `error: the following files have local modifications` 로 실패했는데, 동시에 `warning: unable to unlink '.git/index.lock': Operation not permitted` 가 떴다. 실패한 커맨드가 만든 0바이트 `index.lock` 이 남았고 `rm -f` 로도 지워지지 않아, 그대로 뒀으면 Windows 쪽 git 도 전부 `Unable to create index.lock: File exists` 로 막힐 뻔했다.
+- 원인: 두 겹이다. ① 샌드박스는 `.git/` 에 쓰기 권한이 없어 git 의 lock 해제가 실패한다. ② `local modifications` 자체가 허상 — 이 리포는 CRLF/LF 때문에 워킹트리 전 파일이 ` M` 으로 보이지만 `git diff --ignore-cr-at-eol --stat` 은 비어 있다(HANDOFF-GIT-SYNC-20260719 에서 이미 진단된 것과 동일한 현상). 즉 "수정됐으니 못 지운다"는 git 의 안전장치가 줄바꿈 노이즈 때문에 오작동한 것이다.
+- 규칙:
+  - **샌드박스에서 index 를 쓰는 git 명령(`git rm`·`add`·`commit`·`checkout`)을 실행하지 않는다** — 읽기 전용 조회(`log`·`diff`·`status`·`show`)만 쓴다. 스테이징·커밋은 Windows 터미널에서 사용자가 한다.
+  - 샌드박스에서 파일을 지워야 하면 **git 을 거치지 않고 파일시스템 `rm`** 을 쓴다(Cowork 에선 삭제 권한 승인 후 가능). git 은 나중에 ` D` 로 알아서 인식한다.
+  - 실수로 lock 을 만들었으면 **즉시** `rm -f .git/index.lock` 을 시도하고, 실패하면 사용자에게 Windows 에서 `del .git\index.lock` 을 요청한다 — 방치하면 사용자 쪽 git 이 전부 막힌다.
+  - 이 리포에서 "전 파일이 수정됨"으로 보이면 실제 변경이 아니라 CRLF 노이즈를 먼저 의심한다 — 판단 기준은 항상 `git diff --ignore-cr-at-eol`.
+- 관련: `docs/specs/` 판매자 문서 정리(2026-07-22), 구 `HANDOFF-GIT-SYNC-20260719`(삭제됨 — git 히스토리 참조)
+
 ## [2026-07-20] SSE 응답 제너레이터의 finally 블록에서 던진 예외는 종결 프레임/취소 전파를 덮어쓴다
 - 증상: PR #48 후속 리뷰가 `app/core/stream.py::open_stream()`의 `_wrapped()` `finally` 블록(303행)에서 `observer.finish()`(이제 실제 conversation store DB I/O)가 보호 없이 호출된다고 지적. 이 시점은 이미 SSE 헤더/프레임이 클라이언트로 전송된 뒤라, `finish()`가 예외를 던지면 (1) 정상 종료 경로에서는 `StopAsyncIteration` 대신 그 새 예외가 `body_iterator` 소비자에게 전파되어 스트림이 비정상 종료되고, (2) `except asyncio.CancelledError: ... raise` 로 취소가 전파되던 중이라면 Python 의 `finally`-중 예외가 진행 중이던 예외를 덮어쓰는 규칙 때문에 정상 client disconnect(CancelledError)가 엉뚱한 새 예외로 둔갑한다. `finalize_assistant` 를 raise 하는 fake 로 재현 — 수정 전엔 `body_iterator` 소비 자체가 raise, 수정 후(try/except 로 감싸 로그만)엔 정상 종료.
 - 원인: 이 프로젝트에서 인메모리→외부 스토어 이관은 반복적으로 "이전엔 실패할 수 없던 호출이 이제 실패할 수 있다"는 패턴을 만드는데(PR #47 의 `session_end()`도 동일 클래스), 이번엔 그 호출이 **이미 응답이 시작된 SSE 스트림의 finally** 안에 있어 파급이 더 크다 — 응답 시작 전 실패(그냥 500)와 응답 시작 후 finally 실패(스트림 자체가 깨짐)는 심각도가 다르다.
