@@ -13,6 +13,16 @@
 
 ---
 
+## [2026-07-22] 멱등 row 하나로 PROCESSING과 COMPLETED를 겸하면 부분 실패가 영구 duplicate가 된다
+- 증상: I-20이 버퍼 처리 전에 영구 마커를 넣은 뒤 consolidation의 `False` 반환을 무시해 버퍼를 삭제했고, 요청 취소·프로세스 crash 때는 cleanup이 실행되지 않아 미완료 통지가 이후 영구 `duplicate`가 됐다.
+- 원인: 수신 선점 락과 처리 완료 기록을 같은 불변 row로 표현했고, consolidation도 정상 no-op과 실패를 같은 boolean `False`로 표현했다. 서로 다른 상태를 합치니 호출자가 실패와 성공을 구분할 수 없었다.
+- 규칙:
+  - 외부 부수효과 전 멱등 선점이 필요하면 `PROCESSING` claim(token+lease)과 `COMPLETED`를 분리한다.
+  - 실패·취소는 소유 token이 일치하는 claim만 해제하고, crash 잔재는 lease 만료 뒤 재선점한다. 완료 row는 lease와 무관하게 영구 중복 처리한다.
+  - 다단계 결과는 `updated/no_work/failed`처럼 의미를 분리한다. 실패 때는 입력 버퍼와 재시도 경로를 모두 보존한다.
+  - 기존 볼륨에 상태 컬럼을 추가할 때는 init script만 믿지 말고 앱 기동 idempotent migration을 제공한다.
+- 관련: `app/api/events.py`, `app/agents/profile/{builder,processed_events}.py`, `db/profile/init/00_processed_events.sql`, api-spec §3.5(v0.15.17)
+
 ## [2026-07-22] 멱등 응답 판정은 처리 대상 조회보다 먼저 해야 빈 버퍼 재전송도 duplicate가 된다
 - 증상: PR #64 구현은 session-end 버퍼를 먼저 조회해 비어 있으면 즉시 `accepted`를 반환했다. 첫 통지를 정상 처리해 버퍼가 비워진 뒤 같은 통지가 재전송되면, 이미 저장된 멱등키가 있어도 확인하지 않아 `duplicate`가 아니라 `accepted`로 잘못 응답했다. 기존 테스트는 두 응답의 HTTP 202만 확인해 응답 본문 회귀를 놓쳤다.
 - 원인: "처리할 데이터가 없으면 no-op"과 "이 통지를 이미 수신했는가"를 같은 조건으로 취급했다. 멱등성은 현재 버퍼 상태가 아니라 통지 신원 `(userId, sessionId)`의 이력에 관한 계약이라 버퍼 조회보다 우선해야 한다.

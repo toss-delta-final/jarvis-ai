@@ -16,13 +16,20 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.agents.profile import processed_events
-from app.agents.profile.builder import consolidate, generate_session_delta, record_remember
+from app.agents.profile.builder import (
+    ConsolidationResult,
+    consolidate,
+    generate_session_delta,
+    record_remember,
+)
 from app.agents.profile.gate import is_remember_command, should_promote
 from app.agents.profile.reader import read_profile_summary
 from app.agents.profile.store import ProfileStore, get_profile_store
 from app.core.config import get_settings
 from app.core.conversation import conversation_key
+from app.core.llm import LLMError
 from app.main import app
+from app.schemas.profile import SessionEndEvent
 
 client = TestClient(app)
 
@@ -190,14 +197,15 @@ async def test_generate_session_delta_degrades_without_llm_or_buffer() -> None:
 async def test_consolidate_writes_summary() -> None:
     store = await get_profile_store()
     await store.add_fact("8", "무선이어폰 선호")
-    ok = await consolidate("8", llm=_ProfileLLM(), settings=get_settings())
-    assert ok is True
+    result = await consolidate("8", llm=_ProfileLLM(), settings=get_settings())
+    assert result is ConsolidationResult.UPDATED
     summary = await store.get_summary("8")
     assert summary and "취향 요약" in summary.markdown and summary.generated_at
 
 
 async def test_consolidate_degrades_without_facts() -> None:
-    assert await consolidate("nofacts", llm=_ProfileLLM(), settings=get_settings()) is False
+    result = await consolidate("nofacts", llm=_ProfileLLM(), settings=get_settings())
+    assert result is ConsolidationResult.NO_WORK
 
 
 async def test_record_remember_hot_path() -> None:
@@ -514,6 +522,117 @@ async def test_session_end_unmarks_on_failure(monkeypatch: pytest.MonkeyPatch) -
     assert await store.get_session_ctx(key) != []  # 버퍼 보존
 
 
+async def test_session_end_preserves_buffer_when_consolidation_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """델타 성공 뒤 consolidation 실패도 미처리로 남겨 재시도할 수 있어야 한다."""
+    import app.api.events as ev
+
+    class _ConsolidationFails(_ProfileLLM):
+        async def complete(self, *, system, user, tier, max_tokens=1024, json_output=True):
+            if "델타 추출기" in system:
+                return await super().complete(
+                    system=system,
+                    user=user,
+                    tier=tier,
+                    max_tokens=max_tokens,
+                    json_output=json_output,
+                )
+            raise LLMError("consolidation unavailable")
+
+    monkeypatch.setattr(ev, "get_llm", lambda: _ConsolidationFails())
+    key = conversation_key("45", "consolidation-failure")
+    store = await get_profile_store()
+    await store.append_session_ctx(key, "파란색 상품을 선호해")
+
+    response = client.post(
+        "/events/session-end",
+        json={"userId": 45, "sessionId": "consolidation-failure"},
+    )
+
+    assert response.status_code == 202 and response.json()["status"] == "accepted"
+    assert await store.get_session_ctx(key) == ["파란색 상품을 선호해"]
+    assert await store.get_summary("45") is None
+    assert not await processed_events.seen_event("session-end:45:consolidation-failure")
+
+
+async def test_session_end_releases_claim_when_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """선마킹 뒤 요청이 취소돼도 처리 중 claim이 영구 멱등 마커로 남지 않는다."""
+    import app.api.events as ev
+
+    started = asyncio.Event()
+
+    async def _block_until_cancelled():
+        started.set()
+        await asyncio.Future()
+
+    monkeypatch.setattr(ev, "get_profile_store", _block_until_cancelled)
+    task = asyncio.create_task(
+        ev.session_end(
+            SessionEndEvent(userId=46, sessionId="cancelled-session"),
+            None,
+        )
+    )
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert not await processed_events.seen_event("session-end:46:cancelled-session")
+
+
+async def test_processed_event_stale_claim_can_be_reclaimed_but_completed_cannot() -> None:
+    """crash로 남은 PROCESSING claim만 lease 만료 후 재선점하고 완료 row는 영구 중복 처리한다."""
+    event_id = "session-end:47:lease-recovery"
+    first = await processed_events.claim_event(event_id, lease_s=0.001)
+    assert first is not None
+
+    await asyncio.sleep(0.01)
+    second = await processed_events.claim_event(event_id, lease_s=0.001)
+    assert second is not None and second != first
+    assert not await processed_events.release_claim(event_id, first)
+    assert await processed_events.complete_claim(event_id, second)
+
+    await asyncio.sleep(0.01)
+    assert await processed_events.claim_event(event_id, lease_s=0.001) is None
+
+
+async def test_session_end_release_failure_falls_back_to_lease_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """claim 해제 DB까지 실패해도 202를 유지하고 lease 만료 뒤 영구 poison 없이 재선점한다."""
+    import app.api.events as ev
+
+    async def _store_failure():
+        raise RuntimeError("profile store unavailable")
+
+    async def _release_failure(*args, **kwargs):
+        raise RuntimeError("processed_events unavailable")
+
+    original_release = processed_events.release_claim
+    monkeypatch.setattr(get_settings(), "session_end_claim_ttl_s", 0.001)
+    monkeypatch.setattr(ev, "get_profile_store", _store_failure)
+    monkeypatch.setattr(processed_events, "release_claim", _release_failure)
+
+    response = client.post(
+        "/events/session-end",
+        json={"userId": 48, "sessionId": "release-failure"},
+    )
+    assert response.status_code == 202 and response.json()["status"] == "accepted"
+    assert await processed_events.seen_event("session-end:48:release-failure")
+
+    monkeypatch.setattr(processed_events, "release_claim", original_release)
+    await asyncio.sleep(0.01)
+    reclaimed = await processed_events.claim_event(
+        "session-end:48:release-failure",
+        lease_s=1,
+    )
+    assert reclaimed is not None
+    assert await processed_events.release_claim("session-end:48:release-failure", reclaimed)
+
+
 async def test_session_end_returns_202_when_profile_store_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -547,7 +666,7 @@ async def test_session_end_returns_202_and_preserves_buffer_on_store_timeout(
     async def _timeout(*args, **kwargs):
         raise TimeoutError("pg query deadline")
 
-    monkeypatch.setattr(ev.processed_events, "mark_if_new", _timeout)
+    monkeypatch.setattr(ev.processed_events, "claim_event", _timeout)
     response = client.post(
         "/events/session-end",
         json={"userId": 44, "sessionId": "timeout-session"},
@@ -655,6 +774,9 @@ async def test_processed_events_operations_have_query_deadline(
             lambda: processed_events.seen_event("e"),
             lambda: processed_events.mark_event("e"),
             lambda: processed_events.unmark_event("e"),
+            lambda: processed_events.claim_event("e", lease_s=1),
+            lambda: processed_events.complete_claim("e", "token"),
+            lambda: processed_events.release_claim("e", "token"),
         ]
         for operation in operations:
             with pytest.raises(TimeoutError):
