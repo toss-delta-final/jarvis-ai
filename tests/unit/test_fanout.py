@@ -380,21 +380,22 @@ async def test_mapper_failure_is_logged(caplog) -> None:
     assert any(r.msg == "category_map_failed" for r in caplog.records)
 
 
-async def test_multiturn_empty_queries_carries_prior_not_utterance() -> None:
-    """리파인 턴에 LLM 이 categoryQueries 를 비우면, 발화 임베딩 폴백(무관 카테고리 오염) 전에
-    prior.category 를 categoryQueries 로 주입해 이전 카테고리를 승계한다(PR #73 리뷰 #12).
+def _garbage_mapper():
+    """실제 map 처럼: raw 있으면 그대로, 없으면 발화폴백(무관 garbage). 가드가 매핑을 우회하면 호출 안 됨."""
 
-    never-null 폴백은 카테고리와 무관한 리파인 발화("더 저렴한 걸로")도 최근접 canonical 로
-    바꿔 이전 카테고리를 덮어쓴다 — 매핑(발화 임베딩) 전에 prior 를 주입해 이를 막는다.
-    """
-    received: list = []
-
-    async def _map_record(*, category_queries, utterance, settings):
-        received.append(list(category_queries))
+    async def _map(*, category_queries, utterance, settings):
         legs = [(q.raw_category, q.query) for q in category_queries if q.raw_category]
-        return legs or [("발화폴백_무관카테고리", None)]  # 빈 입력 → 발화폴백 garbage
+        return legs or [("발화폴백_무관카테고리", None)]
+
+    return _map
+
+
+async def _run_two_turns(turn2_decompose: dict) -> list:
+    """턴1(카테고리 확립)→턴2(turn2_decompose) 를 돌리고 각 턴의 검색 카테고리를 반환한다."""
+    calls: list = []
 
     async def _search(filters, exclude_product_ids=None):
+        calls.append(filters.category)
         return _res(101)
 
     d1 = {
@@ -412,80 +413,45 @@ async def test_multiturn_empty_queries_carries_prior_not_utterance() -> None:
             llm=FakeLLM(decompose=d1),
             search=_search,
             push_fn=_RecordingPush(),
-            map_categories=_map_record,
+            map_categories=_garbage_mapper(),
         )
     )
-    # 턴 2 — LLM 이 categoryQueries 를 비움(승계 놓침)
-    d2 = {"intent": "recommend", "reply": "", "case": 2, "semanticQuery": "", "filters": {}}
     await _collect(
         run_buyer_turn(
             _req(thread_id="tm", message="더 저렴한 걸로"),
             _member(),
-            llm=FakeLLM(decompose=d2),
+            llm=FakeLLM(decompose=turn2_decompose),
             search=_search,
             push_fn=_RecordingPush(),
-            map_categories=_map_record,
+            map_categories=_garbage_mapper(),
         )
     )
+    return calls
 
-    turn2_queries = received[-1]
-    assert len(turn2_queries) == 1
-    assert turn2_queries[0].raw_category == "여행 > 여행용품"  # 발화 아님 — prior 주입
+
+async def test_multiturn_empty_queries_carries_prior_not_utterance() -> None:
+    """리파인 턴에 LLM 이 categoryQueries 를 비우면, 발화 임베딩 폴백(무관 카테고리 오염) 없이
+    prior.category(이미 canonical)를 그대로 승계해 검색에 실린다(PR #73 리뷰 #12).
+
+    가드가 없으면 turn2 는 빈 queries → 매퍼 발화폴백 → garbage 로 검색이 나간다.
+    """
+    calls = await _run_two_turns({"intent": "recommend", "reply": "", "case": 2, "filters": {}})
+    assert calls[0] == "여행 > 여행용품"  # 턴 1
+    assert calls[-1] == "여행 > 여행용품"  # 턴 2 도 prior 승계(발화 garbage 아님)
 
 
 async def test_multiturn_null_category_queries_carries_prior() -> None:
     """LLM 이 category=null 항목만 낸 경우도(빈 리스트와 동일한 발화폴백 위험) prior 를 승계한다(#12).
 
-    map_categories 는 raw=null 이면 발화를 임베딩하므로, 빈 리스트뿐 아니라 null-카테고리만
-    있는 입력도 발화 오염 대상이다 — 실제 카테고리가 하나도 없으면 prior 를 주입한다.
+    실제 카테고리가 하나도 없으면(빈 리스트든 null 만이든) 발화 오염 대상이라 prior 를 승계한다.
     """
-    received: list = []
-
-    async def _map_record(*, category_queries, utterance, settings):
-        received.append(list(category_queries))
-        legs = [(q.raw_category, q.query) for q in category_queries if q.raw_category]
-        return legs or [("발화폴백_무관카테고리", None)]
-
-    async def _search(filters, exclude_product_ids=None):
-        return _res(101)
-
-    d1 = {
-        "intent": "recommend",
-        "reply": "",
-        "case": 2,
-        "semanticQuery": "",
-        "filters": {},
-        "categoryQueries": [{"category": "여행 > 여행용품", "query": "파우치"}],
-    }
-    await _collect(
-        run_buyer_turn(
-            _req(thread_id="tn"),
-            _member(),
-            llm=FakeLLM(decompose=d1),
-            search=_search,
-            push_fn=_RecordingPush(),
-            map_categories=_map_record,
-        )
+    calls = await _run_two_turns(
+        {
+            "intent": "recommend",
+            "reply": "",
+            "case": 2,
+            "filters": {},
+            "categoryQueries": [{"category": None, "query": "저렴한"}],
+        }
     )
-    # 턴 2 — category=null 만(빈 리스트 아님) → 여전히 prior 승계
-    d2 = {
-        "intent": "recommend",
-        "reply": "",
-        "case": 2,
-        "semanticQuery": "",
-        "filters": {},
-        "categoryQueries": [{"category": None, "query": "저렴한"}],
-    }
-    await _collect(
-        run_buyer_turn(
-            _req(thread_id="tn", message="더 저렴한 걸로"),
-            _member(),
-            llm=FakeLLM(decompose=d2),
-            search=_search,
-            push_fn=_RecordingPush(),
-            map_categories=_map_record,
-        )
-    )
-    turn2_queries = received[-1]
-    assert len(turn2_queries) == 1
-    assert turn2_queries[0].raw_category == "여행 > 여행용품"  # null 만 왔어도 prior 주입
+    assert calls[-1] == "여행 > 여행용품"  # null 만 왔어도 prior 승계

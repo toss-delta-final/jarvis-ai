@@ -36,7 +36,7 @@ from app.core.conversation import conversation_key
 from app.core.llm import LLMError, get_llm, resolve_model_id
 from app.core.pg_resilience import run_with_query_timeout
 from app.core.text import _strip_unsafe
-from app.agents.buyer.recommendation.state import CartIntent, CategoryQuery
+from app.agents.buyer.recommendation.state import CartIntent
 from app.schemas.chat import DoneData, ErrorData
 from app.schemas.spring import ProductSearchFilters
 from app.services import search_service, spring_client
@@ -196,41 +196,39 @@ async def run_buyer_turn(
 
     # recommend — 카테고리 하이브리드 매핑(이슈 #59, 방식 A): decompose 추측을 canonical 로
     # 보정(never-null). 매핑 자체가 죽어도 추천 스트림은 계속(최후 방어 — raw 그대로).
-    # 리파인 턴(예: "더 저렴한 걸로")에 LLM 이 실제 카테고리를 하나도 안 냈고(빈 리스트 또는
-    # category=null 만) 이전 카테고리가 있으면, 매핑의 발화 임베딩 폴백이 무관한 발화를 최근접
-    # canonical 로 바꿔 이전 카테고리를 덮어쓴다(never-null). 매핑 전에 prior.category 를 주입해
-    # 이전 canonical 을 그대로 승계한다(코드 레벨 방어, PR #73 #12). 실제 카테고리가 하나라도
-    # 있으면(상황형 질의의 null 혼합 포함) 건드리지 않아 발화 폴백 의도를 보존한다.
     if (
         prior is not None
         and prior.category
         and not any(q.raw_category for q in decision.category_queries)
     ):
-        decision.category_queries = [CategoryQuery(raw_category=prior.category)]
-    mapper = map_categories or _map_categories
-    try:
-        decision.category_legs = await mapper(
-            category_queries=decision.category_queries,
-            utterance=request.message,
-            settings=settings,
-        )
-    except Exception as exc:  # noqa: BLE001 - 매핑 최후 방어(내부 하드실패 처리와 별개의 안전망)
-        # 내부 하드실패(category_hard_fail)와 달리 이 바깥 경로는 시그니처 불일치·settings 결측
-        # 같은 진짜 버그로 터져도 흔적이 없어, 최소한 관측 가능하게 남긴다(PR #73 리뷰).
-        logger.warning("category_map_failed", extra={"reason": str(exc)})
-        # 정상·내부 하드실패 경로(_dedup_truncate)와 일관되게 canonical(raw) 기준 dedup +
-        # fanout_max 절단 — LLM 이 같은 카테고리를 중복 추출해도 fan-out leg 가 중복되지 않게.
-        seen: set[str] = set()
-        legs: list[tuple[str, str | None]] = []
-        for q in decision.category_queries:
-            if q.raw_category and q.raw_category not in seen:
-                seen.add(q.raw_category)
-                legs.append((q.raw_category, q.query))
-        decision.category_legs = legs[: settings.category_fanout_max]
+        # 리파인 턴(예: "더 저렴한 걸로") — 실제 카테고리 신호 없음(빈 리스트 또는 category=null 만).
+        # prior 는 이미 canonical(§7)이라 재매핑(pg 왕복) 없이 그대로 승계한다. 매핑에 태우면 raw=null
+        # 발화 임베딩 폴백이 무관한 발화를 최근접 canonical 로 바꿔 이전 카테고리를 덮어쓴다
+        # (never-null, PR #73 #12). 실제 카테고리가 하나라도 있으면(상황형 null 혼합) 아래 매핑을 탄다.
+        decision.category_legs = [(prior.category, None)]
+    else:
+        mapper = map_categories or _map_categories
+        try:
+            decision.category_legs = await mapper(
+                category_queries=decision.category_queries,
+                utterance=request.message,
+                settings=settings,
+            )
+        except Exception as exc:  # noqa: BLE001 - 매핑 최후 방어(내부 하드실패와 별개의 안전망)
+            # 내부 하드실패(category_hard_fail)와 달리 이 바깥 경로는 시그니처 불일치·settings
+            # 결측 같은 진짜 버그로 터져도 흔적이 없어, 최소한 관측 가능하게 남긴다(PR #73 리뷰).
+            logger.warning("category_map_failed", extra={"reason": str(exc)})
+            # 정상·내부 하드실패 경로(_dedup_truncate)와 일관되게 canonical(raw) 기준 dedup +
+            # fanout_max 절단 — LLM 이 같은 카테고리를 중복 추출해도 fan-out leg 가 중복되지 않게.
+            seen: set[str] = set()
+            legs: list[tuple[str, str | None]] = []
+            for q in decision.category_queries:
+                if q.raw_category and q.raw_category not in seen:
+                    seen.add(q.raw_category)
+                    legs.append((q.raw_category, q.query))
+            decision.category_legs = legs[: settings.category_fanout_max]
     if decision.category_legs:
         # 대표 canonical — 단일 filters.category 필드·조건 칩·멀티턴 승계 호환(§7).
-        # 멀티턴 카테고리 승계는 price/brand 와 동일하게 decompose 프롬프트("PRIOR_FILTERS 병합")로
-        # LLM 이 처리한다 — category 도 리파인 턴에 이전 값을 categoryQueries 로 실어 유지(PR #73 #10 (a)).
         decision.filters.category = decision.category_legs[0][0]
 
     # 멀티턴 병합 필터는 추천 intent 에서만 저장(담기/조회가 덮어쓰지 않게).
