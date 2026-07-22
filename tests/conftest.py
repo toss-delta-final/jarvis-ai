@@ -63,6 +63,20 @@ async def _reset_advisory_state():
     reset_advisory_pool()
 
 
+@pytest.fixture(autouse=True)
+def _fake_category_mapping(monkeypatch):
+    """buyer 그래프 테스트가 라이브 map_categories(Google 임베딩·pg-catalog)를 안 타게 결정적
+    fake 를 주입한다 — 추측 category(raw)를 그대로 canonical 로 echo 한다(매핑 정확도 검증은
+    test_category_mapping.py 소관). map_categories 를 명시 주입하는 테스트는 이 기본값을 덮는다.
+    """
+    import app.agents.buyer.graph as bg
+
+    async def _fake_map(*, category_queries, utterance, settings):
+        return [(q.raw_category, q.query) for q in category_queries if q.raw_category]
+
+    monkeypatch.setattr(bg, "_map_categories", _fake_map)
+
+
 @pytest.fixture
 def buyer_fakes(monkeypatch):
     """/chat 을 실 buyer 그래프 + fake LLM/검색/push 로 구동한다(라이브 의존 없이 해피패스)."""

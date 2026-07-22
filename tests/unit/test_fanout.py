@@ -455,3 +455,49 @@ async def test_multiturn_null_category_queries_carries_prior() -> None:
         }
     )
     assert calls[-1] == "여행 > 여행용품"  # null 만 왔어도 prior 승계
+
+
+# ─────────── 미검증 category 유출 차단 (PR #73 리뷰 #13/#15/#16) ───────────
+
+
+async def test_empty_legs_clears_unvalidated_filters_category() -> None:
+    """매핑 결과가 없으면(category_legs 빈) LLM 이 echo 한 미검증 filters.category 를 비운다 —
+    canonical 아닌 원문이 Spring 단일검색 fallback 으로 새지 않게(PR #73 #13/#15)."""
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters.category)
+        return _res(101)
+
+    async def _map_empty(*, category_queries, utterance, settings):
+        return []  # 매핑 전량 실패(미시드·하드실패)
+
+    # decompose 가 구식 습관으로 filters.category 를 echo
+    d = {
+        "intent": "recommend",
+        "reply": "",
+        "case": 2,
+        "semanticQuery": "",
+        "filters": {"category": "미검증_원문카테고리"},
+    }
+    await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(decompose=d),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_map_empty,
+        )
+    )
+    assert calls[0] is None  # 미검증 category 가 검색에 안 실림
+
+
+def test_condition_chips_empty_categories_no_fallback() -> None:
+    """categories=[] (fan-out 매핑 결과 없음)이면 filters.category 로 폴백하지 않는다 — 미검증
+    category 가 칩에 새지 않게. None(미지정)만 filters.category 파생(PR #73 #16)."""
+    chips = build_condition_chips(ProductSearchFilters(category="미검증"), categories=[])
+    assert not any(c.field == "category" for c in chips)
+    # 미지정(None)은 기존대로 filters.category 파생 유지
+    chips2 = build_condition_chips(ProductSearchFilters(category="가전 > TV"))
+    assert any(c.field == "category" and c.value == "가전 > TV" for c in chips2)

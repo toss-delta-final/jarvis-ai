@@ -230,6 +230,11 @@ async def run_buyer_turn(
     if decision.category_legs:
         # 대표 canonical — 단일 filters.category 필드·조건 칩·멀티턴 승계 호환(§7).
         decision.filters.category = decision.category_legs[0][0]
+    else:
+        # 매핑 결과 없음 → LLM 이 echo 했을 수 있는 미검증 filters.category 를 비운다. category 는
+        # 이제 전적으로 category_legs(canonical) 경유로만 흐른다 — 미시드·매핑 실패 시에도 보정 안 된
+        # 원문이 Spring 검색·조건 칩으로 새지 않게(PR #73 리뷰 #13/#15).
+        decision.filters.category = None
 
     # 멀티턴 병합 필터는 추천 intent 에서만 저장(담기/조회가 덮어쓰지 않게).
     await thread_store.put(thread_key, decision.filters)

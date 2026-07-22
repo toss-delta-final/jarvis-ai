@@ -424,7 +424,8 @@ async def test_general_reply_and_condition_chips_strip_unsafe_text() -> None:
     recommend = FakeLLM(
         decompose={
             "intent": "recommend",
-            "filters": {"category": "여행\n용품\u200b\u202e", "brand": ["정상\t브랜드"]},
+            "categoryQueries": [{"category": "여행\n용품\u200b\u202e", "query": "여행"}],
+            "filters": {"brand": ["정상\t브랜드"]},
             "case": 2,
         }
     )

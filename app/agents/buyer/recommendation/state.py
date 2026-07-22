@@ -123,7 +123,12 @@ def build_condition_chips(
     카테고리 칩은 멀티여도 1개로 유지한다. 미지정이면 filters.category 로 파생(비-fan-out 보존).
     """
     chips: list[ConditionChip] = []
-    cats = [c for c in (categories or ([filters.category] if filters.category else [])) if c]
+    # categories(fan-out canonical 전체)는 빈 리스트(매핑 결과 없음)와 None(미지정·비-fan-out)을
+    # 구분한다 — 빈 리스트는 filters.category 로 폴백하지 않아 미검증 원문이 칩에 새지 않는다(#16).
+    source = (
+        categories if categories is not None else ([filters.category] if filters.category else [])
+    )
+    cats = [c for c in source if c]
     if cats:
         cats = [_strip_unsafe(c) for c in cats]
         joined = " · ".join(cats)  # 단일=그 값, 멀티=전체 조인(스칼라 문자열 — §3.1 정합)

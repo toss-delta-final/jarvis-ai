@@ -106,7 +106,10 @@ async def test_multi_null_raw_uses_per_leg_query_anchor() -> None:
         [CategoryQuery(None, "이어폰"), CategoryQuery(None, "노트북")],
         utterance="싼거 추천",
     )
-    assert [c for c, _ in out] == ["가전 > 이어폰/헤드폰", "컴퓨터 > 노트북"]  # 발화 공유로 합쳐지지 않음
+    assert [c for c, _ in out] == [
+        "가전 > 이어폰/헤드폰",
+        "컴퓨터 > 노트북",
+    ]  # 발화 공유로 합쳐지지 않음
 
 
 async def test_empty_queries_normalizes_to_utterance_fallback() -> None:
