@@ -121,13 +121,21 @@ async def stream_recommendation(
                 return None
 
         # fan-out — canonical 카테고리마다 leg 를 병렬 검색(§6). leg 별 filters 는 category·
-        # keyword(그 카테고리 query, 없으면 base)·size(per_cat_limit)만 교체한다.
+        # keyword(그 카테고리 query, 없으면 base)·size 만 교체한다.
+        # 단일 카테고리(leg 1개)는 후보 폭을 좁히지 않게 merge_cap(=단일 rerank 입력 예산)을 쓰고,
+        # 멀티 fan-out 일 때만 leg 당 per_cat_limit 으로 제한한다(합쳐서 merge_cap 로 재절단).
+        leg_limit = (
+            settings.category_fanout_per_cat_limit
+            if len(legs) > 1
+            else settings.category_fanout_merge_cap
+        )
+
         async def _leg(canonical: str, query: str | None) -> ProductSearchResult | None:
             leg_filters = decision.filters.model_copy(
                 update={
                     "category": canonical,
                     "keyword": query or decision.filters.keyword,
-                    "limit": settings.category_fanout_per_cat_limit,
+                    "limit": leg_limit,
                 }
             )
             try:

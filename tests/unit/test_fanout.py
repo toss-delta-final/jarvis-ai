@@ -160,6 +160,34 @@ async def test_fanout_all_legs_fail_emits_search_failed() -> None:
     assert events[-1]["data"]["code"] == "SEARCH_FAILED"
 
 
+async def test_fanout_single_category_preserves_candidate_width() -> None:
+    """단일 카테고리(leg 1개)는 후보 폭을 좁히지 않게 per_cat_limit(10) 이 아니라 merge_cap(30) 을
+    size 로 쓴다. never-null 로 단일 질의도 fan-out 경로를 타므로, 기존 단일검색(limit 30) 대비
+    rerank 입력 후보가 줄면 추천 품질이 조용히 저하된다(PR #73 리뷰)."""
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters)
+        return _res(101, 102)
+
+    async def _one_leg(*, category_queries, utterance, settings):
+        return [("가전 > 이어폰/헤드폰", "무선 이어폰")]
+
+    await _collect(
+        run_buyer_turn(
+            _req("무선 이어폰 추천"),
+            _member(),
+            llm=FakeLLM(),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_one_leg,
+        )
+    )
+    assert len(calls) == 1
+    # merge_cap(기본 30) — per_cat_limit(10) 로 좁히지 않는다(단일 = rerank 입력 예산 전량)
+    assert calls[0].limit == 30
+
+
 async def test_fanout_partial_leg_failure_uses_survivors() -> None:
     """일부 leg 만 실패하면 살아남은 leg 결과로 계속 진행한다(§6 leg 별 실패 흡수)."""
 
