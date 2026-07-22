@@ -124,6 +124,20 @@ def test_stream_masks_output_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "[민감 정보 차단]" in events[0]["data"]["text"]
 
 
+def test_stream_masks_secret_obfuscated_with_unsafe_character(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """위험 문자로 시크릿 정규식을 우회해도 정제 후 마스킹되어야 한다."""
+    agent = _StubStreamAgent([AIMessageChunk(content="키는 sk-abcdefgh\u200bijklmnop1234 입니다")])
+    monkeypatch.setattr(seller_api, "build_general_agent", lambda today: agent)
+
+    events = _collect(_request("설정 알려줘"))
+
+    text = events[0]["data"]["text"]
+    assert "sk-abcdefghijklmnop1234" not in text
+    assert "[민감 정보 차단]" in text
+
+
 def test_stream_scope_refusal_without_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     """scope 위반 → 에이전트 미빌드(LLM 0회), 거절 token + done."""
 
@@ -306,6 +320,28 @@ def test_analysis_token_strips_unsafe_report_text(monkeypatch: pytest.MonkeyPatc
     assert events[0]["data"]["text"] == "6월[31m 매출\n보고서\n   기대 효과: 유지"
 
 
+def test_analysis_token_masks_secret_after_stripping_unsafe_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """분석 결과도 정제 후 마스킹해 zero-width 기반 시크릿 우회를 차단한다."""
+    from app.agents.seller.orchestrator import PipelineResult
+
+    async def fake_pipeline(question, context, *, today, emit):
+        return PipelineResult(
+            kind="report",
+            text="키는 Bearer abcdefgh\u200bijklmnop1234 입니다",
+        )
+
+    monkeypatch.setattr(seller_api, "route_question", _route_stub("analysis"))
+    monkeypatch.setattr(seller_api, "run_analysis_pipeline", fake_pipeline)
+
+    events = _collect_seller(_request("지난달 매출 분석해줘"))
+
+    text = events[0]["data"]["text"]
+    assert "Bearer abcdefghijklmnop1234" not in text
+    assert "[민감 정보 차단]" in text
+
+
 def test_analysis_route_clarification_is_token_done(monkeypatch: pytest.MonkeyPatch) -> None:
     """되묻기(kind=clarification)도 동일 계약 — text→token→done (error 아님)."""
     from app.agents.seller.orchestrator import PipelineResult
@@ -397,8 +433,8 @@ def test_product_draft_strips_llm_and_seller_text(monkeypatch: pytest.MonkeyPatc
         changes=[
             DraftChange(
                 field="description",
-                before="기존\x1b[31m 설명 sk-abcdefghijklmnop1234\u200b\u202e",
-                after="새\n설명 Bearer abcdefghijklmnop1234\x00",
+                before="기존\x1b[31m 설명 sk-abcdefgh\u200bijklmnop1234\u202e",
+                after="새\n설명 Bearer abcdefgh\u200bijklmnop1234\x00",
             )
         ],
         summary="설명\t수정\u200b\u202e",
@@ -422,7 +458,7 @@ def test_product_draft_strips_llm_and_seller_text(monkeypatch: pytest.MonkeyPatc
 def test_product_draft_executes_the_sanitized_after_value(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """HITL 승인 시 FE에 보여준 정제 after와 Spring에 실행하는 값이 같아야 한다."""
+    """실행값은 정제하되 SSE 전용 시크릿 마스킹으로 영구 오염하지 않는다."""
     from app.agents.seller.schemas import DraftChange, DraftProposal
     from app.schemas.spring import ProductUpdateResult, SellerProductList, SellerProductRow
     from app.services.spring_client import set_spring_client
@@ -472,7 +508,7 @@ def test_product_draft_executes_the_sanitized_after_value(
 
     assert [e["type"] for e in confirm_events] == ["token", "done"]
     assert draft["changes"][0]["after"] == "새\n설명 [민감 정보 차단]"
-    assert spring.patch.description == draft["changes"][0]["after"]
+    assert spring.patch.description == "새\n설명 Bearer abcdefghijklmnop1234"
 
 
 def test_product_route_clarification_is_token_done(monkeypatch: pytest.MonkeyPatch) -> None:

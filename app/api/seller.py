@@ -76,7 +76,8 @@ def _sse(event_type: str, data: dict) -> str:
 
 
 def _token(text: str) -> str:
-    return _sse("token", TokenData(text=_strip_unsafe_multiline(text)).model_dump(by_alias=True))
+    visible = mask_output(_strip_unsafe_multiline(text))
+    return _sse("token", TokenData(text=visible).model_dump(by_alias=True))
 
 
 def _token_chunk(text: str, *, previous_ended_space: bool) -> tuple[str | None, bool]:
@@ -91,8 +92,9 @@ def _token_chunk(text: str, *, previous_ended_space: bool) -> tuple[str | None, 
         cleaned = cleaned[1:]
     if not cleaned:
         return None, previous_ended_space
-    frame = _sse("token", TokenData(text=cleaned).model_dump(by_alias=True))
-    return frame, cleaned.endswith(" ")
+    visible = mask_output(cleaned)
+    frame = _sse("token", TokenData(text=visible).model_dump(by_alias=True))
+    return frame, visible.endswith(" ")
 
 
 def _done() -> str:
@@ -154,7 +156,7 @@ async def _general_stream(request: ChatRequest, identity: Identity) -> AsyncIter
             text = _chunk_text(message_chunk.content)
             if text:
                 frame, previous_ended_space = _token_chunk(
-                    mask_output(text), previous_ended_space=previous_ended_space
+                    text, previous_ended_space=previous_ended_space
                 )
                 if frame is not None:
                     yield frame
@@ -223,7 +225,7 @@ async def _analysis_stream(request: ChatRequest, context: SellerContext) -> Asyn
             ),
         )
         return
-    yield _token(mask_output(result.text))
+    yield _token(result.text)
     yield _done()
 
 
@@ -265,7 +267,7 @@ async def _product_stream(request: ChatRequest, context: SellerContext) -> Async
         return
 
     if proposal.clarification:
-        yield _token(mask_output(proposal.clarification))
+        yield _token(proposal.clarification)
         yield _done()
         return
 
@@ -274,7 +276,7 @@ async def _product_stream(request: ChatRequest, context: SellerContext) -> Async
         proposal, seller_id=context.seller_id, brand_id=context.brand_id
     )
     if record is None:
-        yield _token(mask_output(problem or "초안을 만들지 못했습니다. 다시 요청해 주세요."))
+        yield _token(problem or "초안을 만들지 못했습니다. 다시 요청해 주세요.")
         yield _done()
         return
 
@@ -306,19 +308,19 @@ def _draft_event(record: DraftRecord) -> str:
                 {
                     "field": c.field,
                     "before": (
-                        _strip_unsafe_multiline(mask_output(c.before))
+                        mask_output(_strip_unsafe_multiline(c.before))
                         if c.field == "description"
-                        else _strip_unsafe(mask_output(c.before))
+                        else mask_output(_strip_unsafe(c.before))
                     ),
                     "after": (
-                        _strip_unsafe_multiline(mask_output(c.after))
+                        mask_output(_strip_unsafe_multiline(c.after))
                         if c.field == "description"
-                        else _strip_unsafe(mask_output(c.after))
+                        else mask_output(_strip_unsafe(c.after))
                     ),
                 }
                 for c in record.changes
             ],
-            "summary": _strip_unsafe(mask_output(record.summary)),
+            "summary": mask_output(_strip_unsafe(record.summary)),
         },
     )
 
@@ -355,7 +357,7 @@ async def _apply_stream(n: int, request: ChatRequest, context: SellerContext) ->
         return
 
     if record is None:
-        yield _token(mask_output(problem or "추천을 적용하지 못했습니다. 다시 요청해 주세요."))
+        yield _token(problem or "추천을 적용하지 못했습니다. 다시 요청해 주세요.")
         yield _done()
         return
 
@@ -404,7 +406,7 @@ async def _confirm_stream(draft_id: str, identity: Identity) -> AsyncIterator[st
             ),
         )
         return
-    yield _token(mask_output(outcome.text))
+    yield _token(outcome.text)
     yield _done()
 
 

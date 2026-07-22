@@ -15,7 +15,8 @@
    변동하므로 제외한다. stock 변동은 실행 결과 안내에 현재값 표기로 보완.
 
 안전장치 5종(§6.2) 구현 지점:
-① draftId 바인딩 — thread_id=f"seller-draft:{draftId}", checkpoint 가 draft 원본 보유.
+① draftId 바인딩 — thread_id=f"seller-draft:{draftId}", checkpoint 가 정제된 실행 정본 보유.
+   SSE diff 는 같은 정본에서 만들되 시크릿 형태만 표시 계층에서 마스킹한다.
 ② 명시 액션만 — confirm 판정은 pipeline.parse_confirm_message(입구 ①, 코드 선판정).
 ③ 멱등성 — 실행 완료 스레드(result 보유) 재confirm 은 재실행 없이 안내만.
 ④ Spring 소유권 하드게이트 — brandId 불일치 confirm 은 존재 비노출 거절(+Spring 최종 방어).
@@ -37,7 +38,6 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field
 
-from app.agents.seller.middleware import mask_output
 from app.agents.seller.schemas import DraftChange, DraftProposal
 from app.core.config import get_settings
 from app.core.pg_resilience import hardened_pg_conninfo
@@ -111,15 +111,15 @@ def validate_draft(
     받은 뒤에야 실패하는 것보다, 스트림 1에서 되묻는 쪽이 계약(보여준 것==실행)에
     부합한다. 여기서 통과한 draft 는 confirm 시점에 캐스팅이 실패하지 않는다.
     """
-    # after 는 FE diff 카드와 승인 후 Spring 쓰기가 같은 실행 정본을 공유해야 한다.
-    # 노출 시점에만 정제하면 "보여준 것 == 실행" HITL 계약이 깨지므로 record 생성 전에 정제한다.
+    # after 는 승인 후 Spring 쓰기의 실행 정본이므로 위험 문자만 제거한다.
+    # 시크릿 마스킹은 표시 계층 전용이며 여기에 적용하면 정상 상품 데이터가 오염된다.
     changes = [
         change.model_copy(
             update={
                 "after": (
-                    _strip_unsafe_multiline(mask_output(change.after))
+                    _strip_unsafe_multiline(change.after)
                     if change.field == "description"
-                    else _strip_unsafe(mask_output(change.after))
+                    else _strip_unsafe(change.after)
                 )
             }
         )
