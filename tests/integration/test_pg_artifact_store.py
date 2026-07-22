@@ -47,6 +47,8 @@ def test_upsert_and_get_roundtrip(store):
             search_doc="여행 방수 파우치",
             embedding=_vec(0.6, 0.8),
             extras={"tags": ["여행"]},
+            embed_model="gemini-embedding-001",
+            embed_dim=1536,
         )
     )
     art = store.get(1)
@@ -58,14 +60,38 @@ def test_upsert_and_get_roundtrip(store):
 
 
 def test_upsert_is_idempotent_update(store):
-    store.upsert(CatalogArtifact(product_id=1, search_doc="old", embedding=_vec(1.0)))
-    store.upsert(CatalogArtifact(product_id=1, search_doc="new", embedding=_vec(0.0, 1.0)))
+    store.upsert(
+        CatalogArtifact(
+            product_id=1,
+            search_doc="old",
+            embedding=_vec(1.0),
+            embed_model="gemini-embedding-001",
+            embed_dim=1536,
+        )
+    )
+    store.upsert(
+        CatalogArtifact(
+            product_id=1,
+            search_doc="new",
+            embedding=_vec(0.0, 1.0),
+            embed_model="gemini-embedding-001",
+            embed_dim=1536,
+        )
+    )
     assert store.count() == 1
     assert store.get(1).search_doc == "new"
 
 
 def test_delete_removes_artifact(store):
-    store.upsert(CatalogArtifact(product_id=1, search_doc="x", embedding=_vec(1.0)))
+    store.upsert(
+        CatalogArtifact(
+            product_id=1,
+            search_doc="x",
+            embedding=_vec(1.0),
+            embed_model="gemini-embedding-001",
+            embed_dim=1536,
+        )
+    )
     store.delete(1)
     assert store.get(1) is None
 
@@ -75,26 +101,76 @@ def test_get_missing_returns_none(store):
 
 
 def test_all_returns_every_artifact(store):
-    store.upsert(CatalogArtifact(product_id=1, search_doc="a", embedding=_vec(1.0)))
-    store.upsert(CatalogArtifact(product_id=2, search_doc="b", embedding=_vec(0.0, 1.0)))
+    store.upsert(
+        CatalogArtifact(
+            product_id=1,
+            search_doc="a",
+            embedding=_vec(1.0),
+            embed_model="gemini-embedding-001",
+            embed_dim=1536,
+        )
+    )
+    store.upsert(
+        CatalogArtifact(
+            product_id=2,
+            search_doc="b",
+            embedding=_vec(0.0, 1.0),
+            embed_model="gemini-embedding-001",
+            embed_dim=1536,
+        )
+    )
     ids = {a.product_id for a in store.all()}
     assert ids == {1, 2}
 
 
 def test_replace_all_atomic_swap_removes_stale(store):
-    store.upsert(CatalogArtifact(product_id=99, search_doc="stale", embedding=_vec(1.0)))
-    store.replace_all([CatalogArtifact(product_id=1, search_doc="fresh", embedding=_vec(0.0, 1.0))])
+    store.upsert(
+        CatalogArtifact(
+            product_id=99,
+            search_doc="stale",
+            embedding=_vec(1.0),
+            embed_model="gemini-embedding-001",
+            embed_dim=1536,
+        )
+    )
+    store.replace_all(
+        [
+            CatalogArtifact(
+                product_id=1,
+                search_doc="fresh",
+                embedding=_vec(0.0, 1.0),
+                embed_model="gemini-embedding-001",
+                embed_dim=1536,
+            )
+        ]
+    )
     assert store.get(99) is None
     assert store.get(1) is not None
     assert store.count() == 1
 
 
 def test_replace_all_and_cursor_commit_together(store):
-    store.upsert(CatalogArtifact(product_id=99, search_doc="stale", embedding=_vec(1.0)))
+    store.upsert(
+        CatalogArtifact(
+            product_id=99,
+            search_doc="stale",
+            embedding=_vec(1.0),
+            embed_model="gemini-embedding-001",
+            embed_dim=1536,
+        )
+    )
     store.set_cursor("old")
 
     store.replace_all_and_set_cursor(
-        [CatalogArtifact(product_id=1, search_doc="fresh", embedding=_vec(0.0, 1.0))],
+        [
+            CatalogArtifact(
+                product_id=1,
+                search_doc="fresh",
+                embedding=_vec(0.0, 1.0),
+                embed_model="gemini-embedding-001",
+                embed_dim=1536,
+            )
+        ],
         "fresh-cursor",
     )
 
@@ -120,6 +196,25 @@ def test_pg_store_satisfies_shared_protocol(store):
     from app.pipelines.artifact_store import ArtifactStore
 
     assert isinstance(store, ArtifactStore)
+
+
+def test_provenance_roundtrip(store):
+    store.upsert(
+        CatalogArtifact(
+            product_id=42,
+            search_doc="문서",
+            embedding=_vec(1.0),
+            embed_model="gemini-embedding-001",
+            embed_dim=1536,
+            embed_task="RETRIEVAL_DOCUMENT",
+            normalized=True,
+        )
+    )
+    got = store.get(42)
+    assert got.embed_model == "gemini-embedding-001"
+    assert got.embed_dim == 1536
+    assert got.embed_task == "RETRIEVAL_DOCUMENT"
+    assert got.normalized is True
 
 
 @pytest.mark.integration
