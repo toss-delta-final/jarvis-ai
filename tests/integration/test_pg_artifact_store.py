@@ -120,3 +120,16 @@ def test_pg_store_satisfies_shared_protocol(store):
     from app.pipelines.artifact_store import ArtifactStore
 
     assert isinstance(store, ArtifactStore)
+
+
+@pytest.mark.integration
+def test_check_rejects_missing_provenance():
+    import psycopg
+
+    with psycopg.connect(get_settings().catalog_db_url) as conn:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            with conn.transaction():
+                conn.execute(
+                    "INSERT INTO products (product_id, search_doc, embedding) VALUES (%s, %s, %s)",
+                    (999999, "d", "[" + ",".join(["0"] * 1536) + "]"),
+                )
