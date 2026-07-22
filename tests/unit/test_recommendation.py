@@ -295,6 +295,16 @@ def test_sanitize_reason_strips_control_and_format_chars() -> None:
     assert "방수" in clean and "등급" in clean and "높아요" in clean
 
 
+def test_sanitize_reason_nonpositive_cap_blocks() -> None:
+    """max_len<=0(오설정)이면 방어캡이 원문을 차단한다 — 경계값에서 무력화되지 않음(PR #66 리뷰)."""
+    from app.agents.buyer.recommendation.graph import _sanitize_reason
+
+    text = "가나다라마바사"  # 7자
+    assert _sanitize_reason(text, 0) == ""  # 0 = 사실상 차단(빈 문자열 → reasons 에서 생략)
+    assert _sanitize_reason(text, -5) == ""  # 음수도 통과 안 함
+    assert len(_sanitize_reason(text, 3)) <= 3  # 작은 양수 상한은 지켜짐
+
+
 async def test_reason_sanitized_and_capped_before_push() -> None:
     """reason 은 push 전 정제된다 — 개행/제어문자 제거 + 안전 상한 truncate (이슈 #61 보안).
 

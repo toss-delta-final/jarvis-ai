@@ -61,6 +61,8 @@ def _sanitize_reason(text: str, max_len: int) -> str:
     """
     stripped = _CTRL.sub("", text)
     collapsed = _WS_RUN.sub(" ", stripped).strip()
+    if max_len <= 0:  # 오설정 방어 — 0 이하 상한은 음수 슬라이스로 뒤집히지 않게 차단
+        return ""
     if len(collapsed) > max_len:
         collapsed = collapsed[: max_len - 1].rstrip() + "…"
     return collapsed
