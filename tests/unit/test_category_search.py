@@ -53,7 +53,7 @@ def test_get_pool_caches_single_pool(monkeypatch: pytest.MonkeyPatch) -> None:
 
     from app.pipelines import category_search as cs
 
-    monkeypatch.setattr(cs, "_pool", None)  # 캐시 초기화(테스트 격리)
+    monkeypatch.setattr(cs, "_pools", {})  # 캐시 초기화(테스트 격리)
     created: dict = {"n": 0, "kw": []}
 
     class _FakePool:
@@ -68,3 +68,27 @@ def test_get_pool_caches_single_pool(monkeypatch: pytest.MonkeyPatch) -> None:
     assert created["n"] == 1  # 두 번 호출해도 풀 생성은 1회(재사용)
     assert p1 is p2
     assert created["kw"][0].get("configure") is not None  # vector 쿼리용 register_vector configure
+
+
+def test_get_pool_distinct_per_dsn(monkeypatch: pytest.MonkeyPatch) -> None:
+    """서로 다른 dsn 은 서로 다른 풀을 받는다 — _get_pool 이 받은 dsn 을 존중한다(PR #73 리뷰 #8).
+
+    첫 호출 dsn 에 고정되면 config 변경·다른 DSN 주입 시에도 첫 DB 로만 쿼리가 나가는 footgun.
+    """
+    import psycopg_pool
+
+    from app.pipelines import category_search as cs
+
+    monkeypatch.setattr(cs, "_pools", {}, raising=False)
+    seen: list = []
+
+    class _FakePool:
+        def __init__(self, dsn: str, **kw) -> None:
+            seen.append(dsn)
+
+    monkeypatch.setattr(psycopg_pool, "ConnectionPool", _FakePool)
+
+    pa = cs._get_pool("postgresql://A")
+    pb = cs._get_pool("postgresql://B")
+    assert seen == ["postgresql://A", "postgresql://B"]  # dsn 마다 각각 생성
+    assert pa is not pb

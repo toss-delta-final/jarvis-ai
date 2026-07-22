@@ -15,27 +15,30 @@ from collections.abc import Sequence
 
 from app.services.search_service import _cosine
 
-_pool = None  # 모듈 전역 ConnectionPool (lazy 생성·프로세스 수명 재사용)
+_pools: dict = {}  # dsn별 ConnectionPool 캐시 (lazy 생성·프로세스 수명 재사용)
 _pool_lock = threading.Lock()
 
 
 def _get_pool(dsn: str):
-    """모듈 전역 ConnectionPool 을 lazy 하게 한 번만 만들어 재사용한다(요청마다 open/close 회피).
+    """dsn별 모듈 전역 ConnectionPool 을 lazy 하게 한 번만 만들어 재사용한다(요청마다 open/close 회피).
 
     exact_lookup·search_categories_pg 가 recommend 턴마다 여러 번 호출되는데 매번 풀을 새로
     open/close 하면 연결 수립 비용이 직렬로 쌓인다(PR #73 리뷰). pg_artifact_store·
     processed_events 등 다른 pg 경로와 동일한 모듈 캐싱 패턴이다. vector 쿼리를 위해
-    register_vector 를 configure 로 걸어 exact_lookup(비-vector)과 단일 풀을 공유한다.
+    register_vector 를 configure 로 걸어 exact_lookup(비-vector)과 풀을 공유한다.
+    캐시 키는 dsn — 받은 dsn 을 존중한다(단일 DB 라도 config 변경·다른 DSN 주입 시 오조회 방지).
     """
-    global _pool
-    if _pool is None:
+    pool = _pools.get(dsn)
+    if pool is None:
         with _pool_lock:
-            if _pool is None:
+            pool = _pools.get(dsn)
+            if pool is None:
                 from pgvector.psycopg import register_vector  # noqa: PLC0415 - LAZY(유닛 pg 의존 회피)
                 from psycopg_pool import ConnectionPool  # noqa: PLC0415
 
-                _pool = ConnectionPool(dsn, configure=register_vector, open=True)
-    return _pool
+                pool = ConnectionPool(dsn, configure=register_vector, open=True)
+                _pools[dsn] = pool
+    return pool
 
 
 def rank_categories(
