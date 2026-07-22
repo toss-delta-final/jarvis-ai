@@ -345,6 +345,15 @@ async def add_to_cart(request: AddToCartRequest) -> AddToCartResult:
     if resp.status_code == 400 and code == "CART_STOCK_INSUFFICIENT":
         raise CartStockInsufficient(available_stock)
     if resp.status_code == 400 and code == "VALIDATION_ERROR":
+        # 현 계약(api-spec §4.1)상 이 엔드포인트의 VALIDATION_ERROR 는 "합산 수량 > 99"뿐 → 수량 상한으로 매핑.
+        # BE 가 다른 검증 실패를 같은 코드로 재사용하면 계약 드리프트이므로 message 를 남겨 관측 가능하게 한다.
+        try:
+            body = resp.json()
+        except ValueError:
+            body = None
+        err = body.get("error") if isinstance(body, dict) else None
+        be_message = err.get("message") if isinstance(err, dict) else None
+        _log.warning("cart VALIDATION_ERROR → 수량초과로 매핑(드리프트 관측): message=%r", be_message)
         raise CartQuantityExceeded(f"add_to_cart 수량 상한 초과: {code}")
     if resp.status_code == 404:
         raise CartProductNotFound()

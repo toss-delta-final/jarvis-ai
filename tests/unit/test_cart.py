@@ -773,19 +773,24 @@ async def test_add_to_cart_stock_insufficient_missing_available(
 
 
 async def test_add_to_cart_validation_error_raises_quantity_exceeded(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """400 VALIDATION_ERROR(합산 > 99) → CartQuantityExceeded(CartError 하위)."""
+    """400 VALIDATION_ERROR(합산 > 99) → CartQuantityExceeded(CartError 하위) + 드리프트 관측 로그."""
+    import logging
+
     import app.services.spring_client as sc
     from app.schemas.spring import AddToCartRequest
 
     body = {"error": {"code": "VALIDATION_ERROR", "message": "수량은 최대 99개까지 담을 수 있습니다."}}
     monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
-    with pytest.raises(sc.CartQuantityExceeded):
-        # 각 요청 수량은 <=99(클라 검증), 합산 초과는 BE가 VALIDATION_ERROR 로 낸다
-        await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=5))
+    with caplog.at_level(logging.WARNING, logger="app.services.spring_client"):
+        with pytest.raises(sc.CartQuantityExceeded):
+            # 각 요청 수량은 <=99(클라 검증), 합산 초과는 BE가 VALIDATION_ERROR 로 낸다
+            await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=5))
     # CartError 하위라 일반 캐치로도 낙성(전용 핸들러 누락 시 CART_ERROR degrade)
     assert issubclass(sc.CartQuantityExceeded, sc.CartError)
+    # 드리프트 관측: BE message 를 WARN 으로 남긴다(코드가 다른 사유로 재사용될 때 감지용)
+    assert "VALIDATION_ERROR" in caplog.text and "수량은 최대 99개까지" in caplog.text
 
 
 async def test_get_cart_parses_items(monkeypatch: pytest.MonkeyPatch) -> None:
