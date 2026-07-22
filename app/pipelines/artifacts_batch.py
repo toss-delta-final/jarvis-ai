@@ -69,8 +69,6 @@ async def _process_change(
             search_doc=doc,
             embedding=vec,
             extras=extras,
-            name=change.name,
-            category=change.category,
         )
     )
 
@@ -133,25 +131,36 @@ async def run_artifacts_batch(
             "run_artifacts_batch: LLM 미구성 — enrichment 불가(config anthropic_api_key)"
         )
 
-    if full_rebuild:
+    async def rebuild() -> BatchResult:
         # 임시 스토어에 전체 구축 후 성공 시 원자 교체 — 중간 실패해도 기존 데이터 보존 + stale 제거.
         work = CatalogArtifactStore()
-        result = await _drain(
+        rebuilt = await _drain(
             fetch, "0", work, llm=llm, embed=embed, settings=settings, persist_cursor=False
         )
-        store.replace_all(work.all())
-        store.set_cursor(result.cursor)
+        store.replace_all_and_set_cursor(work.all(), rebuilt.cursor)
+        return rebuilt
+
+    did_rebuild = full_rebuild
+    if full_rebuild:
+        result = await rebuild()
     else:
         start = store.get_cursor() or "0"
-        result = await _drain(
-            fetch, start, store, llm=llm, embed=embed, settings=settings, persist_cursor=True
-        )
+        try:
+            result = await _drain(
+                fetch, start, store, llm=llm, embed=embed, settings=settings, persist_cursor=True
+            )
+        except spring_client.InvalidCursorError:
+            if start == "0":
+                raise
+            _log.warning("I-17 커서 무효 — since=0 원자적 전체 재구축으로 복구")
+            result = await rebuild()
+            did_rebuild = True
 
     _log.info(
         "artifacts batch: processed=%d delisted=%d pages=%d rebuild=%s",
         result.processed,
         result.delisted,
         result.pages,
-        full_rebuild,
+        did_rebuild,
     )
     return result
