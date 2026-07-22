@@ -215,13 +215,15 @@ async def test_fanout_partial_leg_failure_uses_survivors() -> None:
 # ─────────── conditions 칩 멀티 카테고리 반영 (PR #73 리뷰 #6) ───────────
 
 
-def test_condition_chips_multi_category_single_chip_list_value() -> None:
-    """멀티 카테고리는 카테고리 칩 1개에 리스트 값으로 담는다(brand 칩과 동일 패턴, 칩 제거 왕복 유지)."""
+def test_condition_chips_multi_category_joined_string_value() -> None:
+    """멀티 카테고리는 카테고리 칩 1개에 조인 문자열 값으로 담는다 — api-spec §3.1 예시가 value 를
+    스칼라 문자열로 명시하므로(계약 정합) 리스트가 아니라 문자열로 전체를 표현한다(칩 제거 왕복 유지)."""
     cats = ["여행/캠핑 > 여행용품", "가전 > 어댑터", "패션 > 의류"]
     chips = build_condition_chips(ProductSearchFilters(category=cats[0]), categories=cats)
     cat_chips = [c for c in chips if c.field == "category"]
     assert len(cat_chips) == 1
-    assert cat_chips[0].value == cats  # 리스트 값 — 전체 표시
+    assert isinstance(cat_chips[0].value, str)  # 스칼라 문자열 — 계약(§3.1) 정합
+    assert all(c in cat_chips[0].value for c in cats)  # 값에 전체 포함
     assert all(c in cat_chips[0].label for c in cats)
 
 
@@ -261,7 +263,9 @@ async def test_fanout_conditions_reflect_all_categories() -> None:
     conditions = next(e for e in events if e["type"] == "conditions")["data"]
     cat_chips = [c for c in conditions["chips"] if c["field"] == "category"]
     assert len(cat_chips) == 1
-    assert set(cat_chips[0]["value"]) == {"여행/캠핑 > 여행용품", "가전 > 어댑터"}
+    val = cat_chips[0]["value"]
+    assert isinstance(val, str)  # 스칼라 문자열(계약 정합)
+    assert "여행/캠핑 > 여행용품" in val and "가전 > 어댑터" in val
 
 
 # ─────────── mapper 예외 시 최후 방어 fallback dedup (PR #73 리뷰 #9) ───────────

@@ -118,22 +118,16 @@ def build_condition_chips(
     카테고리 칩을 먼저 둔다(api-spec §3.1 (2) 예시 순).
 
     categories 가 주어지면(fan-out 매핑 결과 canonical 전체)로 카테고리 칩을 만든다 — 멀티면
-    검색한 카테고리 전부를 표시한다(brand 칩과 동일하게 리스트 값·조인 라벨). 칩 제거 왕복은
-    field 단위라 카테고리 칩은 멀티여도 1개로 유지한다. 미지정이면 filters.category 로 파생
-    (비-fan-out 경로 보존).
+    검색한 카테고리 전부를 조인 문자열 하나로 표시한다(api-spec §3.1 예시가 value 를 스칼라
+    문자열로 명시하므로 계약 정합을 위해 리스트가 아닌 문자열). 칩 제거 왕복은 field 단위라
+    카테고리 칩은 멀티여도 1개로 유지한다. 미지정이면 filters.category 로 파생(비-fan-out 보존).
     """
     chips: list[ConditionChip] = []
     cats = [c for c in (categories or ([filters.category] if filters.category else [])) if c]
     if cats:
         cats = [_strip_unsafe(c) for c in cats]
-        if len(cats) == 1:
-            chips.append(
-                ConditionChip(field="category", label=f"카테고리 · {cats[0]}", value=cats[0])
-            )
-        else:
-            chips.append(
-                ConditionChip(field="category", label="카테고리 · " + " · ".join(cats), value=cats)
-            )
+        joined = " · ".join(cats)  # 단일=그 값, 멀티=전체 조인(스칼라 문자열 — §3.1 정합)
+        chips.append(ConditionChip(field="category", label=f"카테고리 · {joined}", value=joined))
     if filters.price_max is not None:
         chips.append(
             ConditionChip(
