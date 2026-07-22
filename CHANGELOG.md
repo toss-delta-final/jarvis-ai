@@ -10,6 +10,7 @@
 ## [Unreleased]
 
 ### Security
+- **이슈 #67 — AI·판매자 영향 텍스트의 사용자 노출 정제 전수 적용** — `reason`의 위험 문자 제거를 공용 `_strip_unsafe`로 추출하고, 길이 캡 없이 rerank `overall_comment`에 재사용했다. 구매자 일반답변·조건/되돌리기 칩·장바구니 상품/옵션 문구, 판매자 `token`·`draft`, 프로필 조회의 LLM 마크다운까지 실제 SSE/HTTP 신뢰경계를 조사해 제어문자·zero-width·bidi 포맷 문자 제거와 공백 접기를 적용하되 보고서·마크다운·목록·상품 설명의 구조적 개행은 보존했다. 하드코딩 `action.message`와 현재 미구현 `budget`은 비오염 경로라 제외했으며 와이어 계약은 변경하지 않았다.
 - **이슈 #61 후속 — I-21 `reason` 방어 정제 + 길이 목표(PR #66 리뷰 반영)** — rerank rationale 은 판매자 입력(상품명·브랜드)에 영향받는 자유 텍스트인데, #61로 처음 신뢰경계(AI→Spring→CH-5→FE)를 넘어 최종 사용자에게 노출된다. push 직전 `_sanitize_reason`으로 **비-whitespace 제어문자(NUL·ESC·DEL 등)·zero-width·bidi 포맷 문자를 제거하고 공백류(개행 포함)를 접은 뒤 안전 상한(config `reason_max_len`=200)으로 truncate**해 ANSI 이스케이프·양방향 조작·인젝션성 텍스트·초장문을 차단(`\s`로는 안 걸리는 표시 조작 문자 포함). 표시 목표는 rerank 프롬프트로 **한글 ≤40자 1문장** 유도(소프트), 시각적 오버플로(줄임/더보기)는 FE 소관(경로 B). 긴/개행 rationale 정제 회귀 테스트 추가.
 
 ### Docs
