@@ -104,6 +104,34 @@ async def test_setup_backfills_legacy_rows_in_previous_logical_order(pool) -> No
     assert [turn.turn_id for turn in turns] == [second_id, first_id]
 
 
+async def test_setup_holds_shared_activity_schema_advisory_lock(
+    pool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observer_pool = AsyncConnectionPool(get_settings().profile_db_url, open=False)
+    await observer_pool.open(wait=True)
+    original = session_activity.ensure_schema_on_connection
+
+    async def _assert_shared_lock(conn):
+        async with observer_pool.connection() as observer:
+            acquired = (
+                await (
+                    await observer.execute(
+                        "SELECT pg_try_advisory_xact_lock(hashtextextended(%s, 0))",
+                        (session_activity.SCHEMA_LOCK_KEY,),
+                    )
+                ).fetchone()
+            )[0]
+        assert acquired is False
+        await original(conn)
+
+    monkeypatch.setattr(session_activity, "ensure_schema_on_connection", _assert_shared_lock)
+    try:
+        await PgConversationStore(pool).setup()
+    finally:
+        await observer_pool.close()
+
+
 async def test_turns_for_uses_insert_order_when_timestamps_match(pool) -> None:
     store = PgConversationStore(pool)
     conversation_id = _conversation_id()

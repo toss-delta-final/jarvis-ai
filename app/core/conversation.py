@@ -219,6 +219,12 @@ class PgConversationStore:
                         "CREATE INDEX IF NOT EXISTS idx_conversation_turns_sequence "
                         "ON conversation_turns (conversation_id, sequence_id)"
                     )
+                    # session_activity 자체 migration pool과 같은 lock을 사용해야 두 connection이
+                    # profile_session_activity CREATE TABLE/INDEX를 동시에 시작하지 않는다.
+                    await conn.execute(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                        (session_activity.SCHEMA_LOCK_KEY,),
+                    )
                     await session_activity.ensure_schema_on_connection(conn)
 
         await asyncio.wait_for(_run(), timeout=settings.state_store_migration_timeout_s)

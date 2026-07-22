@@ -27,6 +27,7 @@ _fallback_rows: dict[tuple[int, str], "_FallbackActivity"] | None = None
 _fallback_warned = False
 _init_lock = asyncio.Lock()
 _pending_cleanup: list[AsyncConnectionPool] = []
+SCHEMA_LOCK_KEY = "schema:profile_session_activity"
 
 # 테스트가 실제 sleep 없이 경계를 고정할 수 있는 dev/fallback 전용 clock.
 _monotonic = time.monotonic
@@ -129,7 +130,7 @@ async def _ensure_schema(pool: AsyncConnectionPool) -> None:
                 )
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                    ("schema:profile_session_activity",),
+                    (SCHEMA_LOCK_KEY,),
                 )
                 await ensure_schema_on_connection(conn)
 
