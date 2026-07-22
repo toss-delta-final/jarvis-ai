@@ -214,19 +214,13 @@ async def run_buyer_turn(
                 utterance=request.message,
                 settings=settings,
             )
-        except Exception as exc:  # noqa: BLE001 - 매핑 최후 방어(내부 하드실패와 별개의 안전망)
-            # 내부 하드실패(category_hard_fail)와 달리 이 바깥 경로는 시그니처 불일치·settings
-            # 결측 같은 진짜 버그로 터져도 흔적이 없어, 최소한 관측 가능하게 남긴다(PR #73 리뷰).
+        except Exception as exc:  # noqa: BLE001 - 매핑 호출 자체의 예외(시그니처 불일치·버그 등)
+            # embed/DB 하드실패는 map_categories 내부에서 raw 폴백(§5, 의도된 degrade)으로 처리된다.
+            # 여기까지 오는 건 map_categories 호출 자체의 버그라 raw(DB 미검증)를 신뢰할 근거가 없다 —
+            # canonical-or-null 불변식대로 빈 legs 로 degrade(→ filters.category=None). 미검증 원문이
+            # Spring·조건 칩·멀티턴 승계로 새지 않게(PR #73 리뷰). 관측 로그는 남긴다.
             logger.warning("category_map_failed", extra={"reason": str(exc)})
-            # 정상·내부 하드실패 경로(_dedup_truncate)와 일관되게 canonical(raw) 기준 dedup +
-            # fanout_max 절단 — LLM 이 같은 카테고리를 중복 추출해도 fan-out leg 가 중복되지 않게.
-            seen: set[str] = set()
-            legs: list[tuple[str, str | None]] = []
-            for q in decision.category_queries:
-                if q.raw_category and q.raw_category not in seen:
-                    seen.add(q.raw_category)
-                    legs.append((q.raw_category, q.query))
-            decision.category_legs = legs[: settings.category_fanout_max]
+            decision.category_legs = []
     if decision.category_legs:
         # 대표 canonical — 단일 filters.category 필드·조건 칩·멀티턴 승계 호환(§7).
         decision.filters.category = decision.category_legs[0][0]

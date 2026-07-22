@@ -268,50 +268,6 @@ async def test_fanout_conditions_reflect_all_categories() -> None:
     assert "여행/캠핑 > 여행용품" in val and "가전 > 어댑터" in val
 
 
-# ─────────── mapper 예외 시 최후 방어 fallback dedup (PR #73 리뷰 #9) ───────────
-
-
-async def test_mapper_failure_fallback_dedups_legs() -> None:
-    """mapper() 자체가 예외를 던지면 category_queries 로 폴백하되 중복 raw_category 는 dedup·절단한다.
-
-    정상 경로/내부 하드실패는 _dedup_truncate 를 거치는데 이 바깥 catch 만 원본을 그대로 써,
-    LLM 이 같은 카테고리를 두 번 추출하면 fan-out leg 가 중복 생성됐다(중복 검색). 일관되게 dedup.
-    """
-    calls: list = []
-
-    async def _search(filters, exclude_product_ids=None):
-        calls.append(filters.category)
-        return _res(101)
-
-    async def _boom_mapper(*, category_queries, utterance, settings):
-        raise RuntimeError("mapper down")
-
-    llm = FakeLLM(
-        decompose={
-            "intent": "recommend",
-            "reply": "",
-            "case": 2,
-            "semanticQuery": "여행",
-            "categoryQueries": [
-                {"category": "여행 > 여행용품", "query": "파우치"},
-                {"category": "여행 > 여행용품", "query": "가방"},  # 중복 raw_category
-            ],
-            "filters": {},
-        }
-    )
-    await _collect(
-        run_buyer_turn(
-            _req(),
-            _member(),
-            llm=llm,
-            search=_search,
-            push_fn=_RecordingPush(),
-            map_categories=_boom_mapper,
-        )
-    )
-    assert calls == ["여행 > 여행용품"]  # 중복 카테고리는 leg 1개로 → 검색 1회
-
-
 # ─────────── 멀티턴 카테고리 승계 (PR #73 리뷰 #10) ───────────
 
 
@@ -378,6 +334,39 @@ async def test_mapper_failure_is_logged(caplog) -> None:
             )
         )
     assert any(r.msg == "category_map_failed" for r in caplog.records)
+
+
+async def test_mapper_failure_degrades_to_null_not_raw() -> None:
+    """mapper() 호출 자체가 예외면 raw(DB 미검증 추측)를 신뢰하지 않고 빈 legs 로 degrade한다 —
+    filters.category=None(canonical-or-null 불변식). embed/DB 하드실패(§5, 내부 raw 폴백)와 달리
+    호출 버그엔 raw 를 믿을 근거가 없어, 미검증 원문이 Spring·칩·멀티턴에 새지 않게(PR #73 리뷰)."""
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters.category)
+        return _res(101)
+
+    async def _boom(*, category_queries, utterance, settings):
+        raise RuntimeError("mapper bug")
+
+    d = {
+        "intent": "recommend",
+        "reply": "",
+        "case": 2,
+        "filters": {},
+        "categoryQueries": [{"category": "미검증_추측카테고리", "query": "q"}],
+    }
+    await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(decompose=d),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_boom,
+        )
+    )
+    assert calls[0] is None  # raw "미검증_추측카테고리" 가 검색에 안 실림
 
 
 def _garbage_mapper():
