@@ -86,6 +86,7 @@ async def _drain(
     """start_cursor 부터 hasMore 소진까지 target 에 반영한다. persist_cursor=True 면 페이지마다 커서 전진.
 
     페이지 처리 중 예외는 그대로 전파 — 해당 페이지 커서 미전진으로 다음 주기 재개(자연 복구).
+    이미 성공한 앞 페이지는 artifact와 커서가 함께 저장된 유효 체크포인트이므로 롤백하지 않는다.
     """
     cursor = start_cursor
     processed = delisted = pages = 0
@@ -152,6 +153,8 @@ async def run_artifacts_batch(
         except spring_client.InvalidCursorError:
             if start == "0":
                 raise
+            # 앞서 성공한 페이지가 있으면 그 artifact·cursor 체크포인트는 유지한다. rebuild는 별도
+            # 임시 스토어에서 수행하므로 실패해도 이 마지막 성공 체크포인트를 덮어쓰지 않는다.
             _log.warning("I-17 커서 무효 — since=0 원자적 전체 재구축으로 복구")
             result = await rebuild()
             did_rebuild = True
