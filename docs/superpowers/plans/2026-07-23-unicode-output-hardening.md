@@ -53,7 +53,7 @@
 - Produces: metadata constants `UNICODE_VERSION`, `IVD_VERSION`, `VARIATION_KEY_COUNT`, `SOURCE_SHA256`
 - Consumes: fixed official data URLs from the approved design
 
-- [ ] **Step 1: Write a failing policy test against the existing sanitizer**
+- [x] **Step 1: Write a failing policy test against the existing sanitizer**
 
 ```python
 from app.core.text import _strip_unsafe
@@ -65,7 +65,7 @@ def test_strip_unsafe_removes_unregistered_variation_pair() -> None:
 
 This uses an existing public behavior surface, so RED is an assertion failure rather than a missing-module collection error.
 
-- [ ] **Step 2: Run the test and confirm RED**
+- [x] **Step 2: Run the test and confirm RED**
 
 Run:
 
@@ -75,7 +75,7 @@ uv run pytest tests/unit/test_unicode_security.py::test_strip_unsafe_removes_unr
 
 Expected: FAIL because the actual value is `"A\ufe0fB"`.
 
-- [ ] **Step 3: Implement the generator, compact lookup, and minimal registered-pair scanner**
+- [x] **Step 3: Implement the generator, compact lookup, and minimal registered-pair scanner**
 
 The generator must:
 
@@ -99,7 +99,7 @@ SOURCE_URLS = {
 
 The runtime lookup must decode once into `array('I')`, byte-swap on little-endian hosts, and use `bisect_left` without a runtime network call. Add `strip_invalid_invisible_sequences()` just far enough to remove unregistered/orphan selector characters while preserving registered pairs, then wire it into `_strip_unsafe()`.
 
-- [ ] **Step 4: Generate the pinned module and verify GREEN**
+- [x] **Step 4: Generate the pinned module and verify GREEN**
 
 Run:
 
@@ -110,7 +110,7 @@ uv run pytest tests/unit/test_unicode_security.py::test_strip_unsafe_removes_unr
 
 Expected: PASS. Generated metadata reports Unicode `17.0.0`, IVD `2025-07-14`, and a non-zero record count.
 
-- [ ] **Step 5: Add deterministic metadata checks**
+- [x] **Step 5: Add deterministic metadata checks**
 
 ```python
 def test_generated_variation_data_is_pinned_and_nonempty() -> None:
@@ -124,7 +124,7 @@ def test_generated_variation_data_is_pinned_and_nonempty() -> None:
 
 Run the targeted file and confirm PASS.
 
-- [ ] **Step 6: Commit the data foundation**
+- [x] **Step 6: Commit the data foundation**
 
 Commit only the generator, generated module, runtime lookup, and their tests with a Conventional Commit plus Lore trailers.
 
@@ -144,7 +144,7 @@ Commit only the generator, generated module, runtime lookup, and their tests wit
 - Produces: `UnicodeSequenceStreamSanitizer.flush() -> str`
 - Consumes: `is_registered_variation_sequence()` from Task 1
 
-- [ ] **Step 1: RED — orphan/unregistered selector removal**
+- [x] **Step 1: RED — orphan/unregistered selector removal**
 
 ```python
 @pytest.mark.parametrize(
@@ -164,13 +164,13 @@ def test_strip_unsafe_removes_orphan_unregistered_and_repeated_selectors(
 
 Run the parametrized test and confirm current output still contains selectors.
 
-- [ ] **Step 2: GREEN — minimal selector scanner**
+- [x] **Step 2: GREEN — minimal selector scanner**
 
 Implement one-pass code-point scanning. A selector is preserved only when it immediately follows a visible base and the exact pair is registered. After consuming one registered pair, subsequent selector characters are orphaned and removed.
 
 Wire `strip_invalid_invisible_sequences()` before `_CTRL.sub()` in both `_strip_unsafe` paths. Run the RED test and existing text tests.
 
-- [ ] **Step 3: RED — registered normal sequence preservation**
+- [x] **Step 3: RED — registered normal sequence preservation**
 
 ```python
 @pytest.mark.parametrize(
@@ -183,7 +183,7 @@ def test_strip_unsafe_preserves_registered_variation_sequences(text: str) -> Non
 
 Confirm the test protects the exact sequence, not only the rendered glyph.
 
-- [ ] **Step 4: RED — Tag allow/deny policy**
+- [x] **Step 4: RED — Tag allow/deny policy**
 
 Use constants for the three RGI strings and test:
 
@@ -199,11 +199,11 @@ def test_strip_unsafe_drops_ill_formed_and_unsupported_tag_payloads() -> None:
     assert _strip_unsafe(ENGLAND_FLAG + "\U000e0061") == ENGLAND_FLAG
 ```
 
-- [ ] **Step 5: GREEN — exact RGI prefix scanner**
+- [x] **Step 5: GREEN — exact RGI prefix scanner**
 
 Preserve only exact supported sequences. For invalid/incomplete tag runs, emit the visible base and discard only tag code points. Do not reject the whole response.
 
-- [ ] **Step 6: RED/GREEN — stream sequence state**
+- [x] **Step 6: RED/GREEN — stream sequence state**
 
 Test `UnicodeSequenceStreamSanitizer` directly:
 
@@ -217,7 +217,7 @@ def test_stream_sanitizer_preserves_sequences_split_across_chunks() -> None:
 
 Also split malicious selector/tag runs across chunks and assert removal. Implement pending-base/RGI-prefix state until both tests pass.
 
-- [ ] **Step 7: Run focused regressions and commit**
+- [x] **Step 7: Run focused regressions and commit**
 
 ```bash
 uv run pytest tests/unit/test_unicode_security.py tests/unit/test_recommendation.py -q
