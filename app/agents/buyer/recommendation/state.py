@@ -109,18 +109,31 @@ def extract_json(text: str) -> dict:
     return obj
 
 
-def build_condition_chips(filters: ProductSearchFilters) -> list[ConditionChip]:
+def build_condition_chips(
+    filters: ProductSearchFilters, *, categories: list[str] | None = None
+) -> list[ConditionChip]:
     """병합 필터에서 conditions 칩을 결정론적으로 파생한다(FE 제거 가능, 카드 아님).
 
     LLM 의 임의 conditions 출력에 의존하지 않고 확정된 필터에서 파생 — 테스트 가능·일관.
     카테고리 칩을 먼저 둔다(api-spec §3.1 (2) 예시 순).
+
+    categories 가 주어지면(fan-out 매핑 결과 canonical 전체)로 카테고리 칩을 만든다 — 멀티면
+    검색한 카테고리 전부를 표시한다(brand 칩과 동일하게 리스트 값·조인 라벨). 칩 제거 왕복은
+    field 단위라 카테고리 칩은 멀티여도 1개로 유지한다. 미지정이면 filters.category 로 파생
+    (비-fan-out 경로 보존).
     """
     chips: list[ConditionChip] = []
-    if filters.category:
-        category = _strip_unsafe(filters.category)
-        chips.append(
-            ConditionChip(field="category", label=f"카테고리 · {category}", value=category)
-        )
+    cats = [c for c in (categories or ([filters.category] if filters.category else [])) if c]
+    if cats:
+        cats = [_strip_unsafe(c) for c in cats]
+        if len(cats) == 1:
+            chips.append(
+                ConditionChip(field="category", label=f"카테고리 · {cats[0]}", value=cats[0])
+            )
+        else:
+            chips.append(
+                ConditionChip(field="category", label="카테고리 · " + " · ".join(cats), value=cats)
+            )
     if filters.price_max is not None:
         chips.append(
             ConditionChip(

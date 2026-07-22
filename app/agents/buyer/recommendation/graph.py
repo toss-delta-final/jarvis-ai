@@ -105,8 +105,10 @@ async def stream_recommendation(
     observer=None,
 ) -> AsyncIterator[str]:
     """추천 서브그래프 스트림. 프레임(SSE str)을 순서대로 산출한다."""
-    # conditions 칩 (병합 필터에서 결정론적 파생)
-    chips = build_condition_chips(decision.filters)
+    # conditions 칩 (병합 필터에서 결정론적 파생) — fan-out 이면 canonical 전체를 표시한다(§3.1)
+    chips = build_condition_chips(
+        decision.filters, categories=[c for c, _ in decision.category_legs]
+    )
     yield sse("conditions", ConditionsData(chips=chips).model_dump(by_alias=True))
 
     # dedup 소스(I-19)와 검색(§4.6)을 **병렬 실행** — §4.7 지연 가드(순차 시 최악 6s, first-token 예산 잠식).

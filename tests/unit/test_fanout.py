@@ -11,8 +11,9 @@ from types import SimpleNamespace
 
 from app.agents.buyer.graph import run_buyer_turn
 from app.agents.buyer.recommendation.graph import _merge_fanout_results
+from app.agents.buyer.recommendation.state import build_condition_chips
 from app.core.auth import Identity
-from app.schemas.spring import ProductSearchResult, SpringProduct
+from app.schemas.spring import ProductSearchFilters, ProductSearchResult, SpringProduct
 from app.services.spring_client import SpringUnavailableError
 from tests._fakes import FakeLLM
 
@@ -209,3 +210,55 @@ async def test_fanout_partial_leg_failure_uses_survivors() -> None:
     )
     assert "error" not in [e["type"] for e in events]
     assert set(push.pushes[0].product_ids) <= {101, 102}
+
+
+# ─────────── conditions 칩 멀티 카테고리 반영 (PR #73 리뷰 #6) ───────────
+
+
+def test_condition_chips_multi_category_single_chip_list_value() -> None:
+    """멀티 카테고리는 카테고리 칩 1개에 리스트 값으로 담는다(brand 칩과 동일 패턴, 칩 제거 왕복 유지)."""
+    cats = ["여행/캠핑 > 여행용품", "가전 > 어댑터", "패션 > 의류"]
+    chips = build_condition_chips(ProductSearchFilters(category=cats[0]), categories=cats)
+    cat_chips = [c for c in chips if c.field == "category"]
+    assert len(cat_chips) == 1
+    assert cat_chips[0].value == cats  # 리스트 값 — 전체 표시
+    assert all(c in cat_chips[0].label for c in cats)
+
+
+def test_condition_chips_single_category_keeps_string_value() -> None:
+    """단일 카테고리는 기존처럼 문자열 값·라벨을 유지한다(계약 무변경)."""
+    chips = build_condition_chips(
+        ProductSearchFilters(category="가전 > 이어폰"), categories=["가전 > 이어폰"]
+    )
+    cat = next(c for c in chips if c.field == "category")
+    assert cat.value == "가전 > 이어폰"
+    assert cat.label == "카테고리 · 가전 > 이어폰"
+
+
+def test_condition_chips_fallback_to_filters_when_no_categories() -> None:
+    """categories 미지정(비-fan-out 경로)이면 filters.category 로 파생한다(기존 동작 보존)."""
+    chips = build_condition_chips(ProductSearchFilters(category="가전 > TV"))
+    cat = next(c for c in chips if c.field == "category")
+    assert cat.value == "가전 > TV"
+
+
+async def test_fanout_conditions_reflect_all_categories() -> None:
+    """멀티 fan-out 시 conditions 이벤트가 대표 1개가 아니라 검색한 카테고리 전체를 표시한다(#6)."""
+
+    async def _search(filters, exclude_product_ids=None):
+        return _res(101) if "여행용품" in filters.category else _res(201)
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_two_leg_mapper(),
+        )
+    )
+    conditions = next(e for e in events if e["type"] == "conditions")["data"]
+    cat_chips = [c for c in conditions["chips"] if c["field"] == "category"]
+    assert len(cat_chips) == 1
+    assert set(cat_chips[0]["value"]) == {"여행/캠핑 > 여행용품", "가전 > 어댑터"}
