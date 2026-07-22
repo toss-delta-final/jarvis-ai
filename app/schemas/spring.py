@@ -229,6 +229,8 @@ class RecoReason(CamelModel):
 
     productId 로 키잉한다(순서 권위는 RecommendationPush.product_ids). rerank 가 산출한
     상품별 1문장 근거를 담으며, 근거를 생성하지 못한 상품은 생략(부분집합/순서무관 허용).
+    생성 목표는 한글 40자 이내 1문장(rerank 프롬프트) — reason 은 판매자 입력 영향 자유 텍스트라
+    push 전 그래프에서 개행 제거·안전 상한(config reason_max_len)으로 방어 정제한다. 표시 오버플로는 FE.
     """
 
     product_id: int  # 숫자(BIGINT, product.id) — internal 계약(§2.6)

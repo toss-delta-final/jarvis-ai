@@ -280,6 +280,32 @@ async def test_rerank_ids_subset_of_candidates() -> None:
     assert ids[0] == 101  # rerank 유효 산출이 선두, 나머지는 expose_min 보충
 
 
+async def test_reason_sanitized_and_capped_before_push() -> None:
+    """reason 은 push 전 정제된다 — 개행/제어문자 제거 + 안전 상한 truncate (이슈 #61 보안).
+
+    rerank rationale 은 판매자 입력(상품명·브랜드)에 영향받는 자유 텍스트라 신뢰경계를 넘기 전에
+    방어한다. 정상 40자 reason 은 무영향, 비정상 초장문/개행만 차단.
+    """
+    settings = get_settings()
+    long_reason = "방수\n등급이\t높아요 " + ("가" * (settings.reason_max_len + 50))
+    push = _RecordingPush()
+    llm = FakeLLM(
+        rerank={
+            "ranked": [{"productId": 101, "rationale": long_reason}],
+            "overallComment": "c",
+        }
+    )
+    await _collect(
+        run_buyer_turn(
+            _req(), _member(), llm=llm, search=_make_search(DEFAULT_PRODUCTS), push_fn=push
+        )
+    )
+    reason_by_id = {r.product_id: r.reason for r in push.pushes[0].reasons}
+    sent = reason_by_id[101]
+    assert "\n" not in sent and "\t" not in sent  # 개행/제어문자 제거
+    assert len(sent) <= settings.reason_max_len  # 안전 상한 이내
+
+
 async def test_multiturn_filters_persisted_and_fed_back() -> None:
     """1턴 병합 필터가 스레드 스토어(신원 스코프)에 저장되고 2턴 decompose 로 다시 주입된다."""
     llm = FakeLLM()

@@ -691,7 +691,7 @@ X-Internal-Token: {서비스 토큰}   ← internal 그룹, 3s
 | `sessionId` | string(UUID) | 상관관계 키(`products.ready`와 상관) |
 | `listId` | string | **FastAPI가 생성**해 넘기는 목록 식별자 — Spring이 Redis에 이 키로 TTL 저장, FE가 CH-5로 조회 |
 | `productIds` | number[] | 최종 랭크 상품 id(Top5). **순서 유지 = 렌더 순서**(리랭킹 순서). 숫자 id(§2.6 internal) |
-| `reasons` | array | **[확정 v0.15.15, BE 구현 2026-07-18] 상품별 추천 근거** `{productId(숫자), reason}` — productId로 키잉(순서 권위는 `productIds`, 부분집합/순서무관). Spring이 Redis 저장 → **CH-5 카드에 `reason` echo**(§4.3). 선택 필드 — 근거 없는 상품은 생략(🟢) |
+| `reasons` | array | **[확정 v0.15.15, BE 구현 2026-07-18] 상품별 추천 근거** `{productId(숫자), reason}` — productId로 키잉(순서 권위는 `productIds`, 부분집합/순서무관). Spring이 Redis 저장 → **CH-5 카드에 `reason` echo**(§4.3). 선택 필드 — 근거 없는 상품은 생략(🟢). **`reason` 생성 목표 = 한글 ≤40자 1문장**(rerank 프롬프트). AI가 push 전 개행 제거·안전 상한(config `reason_max_len`) 방어 정제하고, **표시 오버플로(줄임/더보기)는 FE 소관**(경로 B, 표시 권위=FE) |
 
 - **[변경 07/17] payload = id 배열만** — 구 §4.2 `groups[{title,category,items[{productId,rank,reason}]}]` 구조는 **폐기**. 묶음 제목·순위·근거는 콜백에 싣지 않는다.
 - **`listId`는 FastAPI 생성** — 구 "Spring이 listId 발급" 가정 폐기. **TTL = 10분(config, 세션 TTL 이하) 제안** — FE가 products.ready 직후 CH-5 조회하므로 짧아도 됨, 🔴 확정.

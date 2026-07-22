@@ -9,6 +9,7 @@ SSE 는 상품 카드를 싣지 않는다(경로 B) — products.ready 는 {sess
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -39,6 +40,22 @@ _INACTIVE_STATUSES = frozenset(
 def _now() -> datetime:
     """현재 시각 — naive-UTC(ordered_at 정규화와 동일 기준으로 비교, 테스트 주입 지점)."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+_WS_RUN = re.compile(r"\s+")
+
+
+def _sanitize_reason(text: str, max_len: int) -> str:
+    """I-21 reason 방어 정제 — 개행·제어문자·연속 공백을 단일 공백으로 접고 안전 상한으로 자른다.
+
+    rerank rationale 은 판매자 입력(상품명·브랜드)에 영향받는 자유 텍스트라 신뢰경계(→Spring→CH-5→FE)를
+    넘기 전에 정제한다(§4.2 이슈 #61). 표시 목표(한글 40자)는 프롬프트로 유도하고, 여기 max_len 은
+    비정상 초장문·인젝션성 텍스트를 막는 방어캡이라 넉넉하다(정상값은 걸리지 않음). 초과 시 말줄임표 부착.
+    """
+    collapsed = _WS_RUN.sub(" ", text).strip()
+    if len(collapsed) > max_len:
+        collapsed = collapsed[: max_len - 1].rstrip() + "…"
+    return collapsed
 
 
 async def stream_recommendation(
@@ -192,10 +209,11 @@ async def stream_recommendation(
     list_id = uuid4().hex
     # reasons — 근거가 있는 상품만(빈 rationale·expose_min 보충 상품은 제외). productId 로 키잉,
     # 순서 권위는 product_ids 라 정렬 불필요(부분집합 허용, §4.2 이슈 #61).
+    # push(신뢰경계) 직전 정제 — 개행 제거·안전 상한(config, 판매자 입력 영향 자유 텍스트 방어).
     reasons = [
-        RecoReason(product_id=pid, reason=reason_by_id[pid])
+        RecoReason(product_id=pid, reason=cleaned)
         for pid in ranked_ids
-        if reason_by_id.get(pid)
+        if (cleaned := _sanitize_reason(reason_by_id.get(pid, ""), settings.reason_max_len))
     ]
     push = RecommendationPush(
         session_id=request.session_id,
