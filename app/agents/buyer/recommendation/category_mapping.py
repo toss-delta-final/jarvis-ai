@@ -68,7 +68,9 @@ async def map_categories(
         exact = await asyncio.to_thread(exact_lookup, non_null, dsn) if non_null else set()
         # 보정(임베딩) 필요한 것: exact 가 아닌 raw(=raw 앵커) 또는 null(=발화 앵커)
         need_idx = [i for i, r in enumerate(raws) if not (r and r in exact)]
-        anchors = [raws[i] or utterance for i in need_idx]
+        # 앵커 우선순위: raw(추측 카테고리) → 그 leg 의 query(고유 키워드) → 발화. null-raw leg 이
+        # 여럿일 때 발화를 공유하면 같은 최근접으로 합쳐져 fan-out 폭이 준다(PR #73 #17).
+        anchors = [raws[i] or qtexts[i] or utterance for i in need_idx]
         vecs = await asyncio.to_thread(embed, anchors) if anchors else []
         # 앵커별 최근접 조회를 병렬 실행 — 카테고리 여러 개(상황형 질의)일수록 직렬 지연이
         # leg 수만큼 쌓이므로 gather 로 동시 실행한다(순서 보존 → need_idx 매핑 유지, §6).

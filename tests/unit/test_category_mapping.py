@@ -82,15 +82,35 @@ async def test_offlist_uses_nearest() -> None:
     assert out == [("가전 > 이어폰/헤드폰", "이어폰")]
 
 
-async def test_null_raw_falls_back_to_utterance() -> None:
-    """raw==null → embed(발화) → top-1, query(있으면) 보존."""
-    m = _FakeMapper(exact=set(), nearest={"집들이 선물 추천": "생활/건강 > 생활용품"})
+async def test_null_raw_uses_leg_query_as_anchor() -> None:
+    """raw==null 이면 그 leg 의 query 를 앵커로 embed → top-1(발화 아님), query 보존(PR #73 #17).
+
+    leg 고유 query 가 있으면 발화 전체가 아니라 query 로 임베딩해야 leg 별로 구분된다.
+    """
+    m = _FakeMapper(exact=set(), nearest={"집들이 선물": "생활/건강 > 생활용품"})
     out = await m.run([CategoryQuery(None, "집들이 선물")], utterance="집들이 선물 추천")
     assert out == [("생활/건강 > 생활용품", "집들이 선물")]
 
 
+async def test_multi_null_raw_uses_per_leg_query_anchor() -> None:
+    """null-raw leg 이 여럿이면 각 leg 의 query 를 앵커로 써서 서로 다른 canonical 로 매핑한다(PR #73 #17).
+
+    발화 전체를 공유 앵커로 쓰면 서로 다른 아이템이 같은 최근접으로 붙어 dedup 으로 fan-out
+    폭이 조용히 줄어든다 — leg 고유 query 로 임베딩해 이를 막는다.
+    """
+    m = _FakeMapper(
+        exact=set(),
+        nearest={"이어폰": "가전 > 이어폰/헤드폰", "노트북": "컴퓨터 > 노트북"},
+    )
+    out = await m.run(
+        [CategoryQuery(None, "이어폰"), CategoryQuery(None, "노트북")],
+        utterance="싼거 추천",
+    )
+    assert [c for c, _ in out] == ["가전 > 이어폰/헤드폰", "컴퓨터 > 노트북"]  # 발화 공유로 합쳐지지 않음
+
+
 async def test_empty_queries_normalizes_to_utterance_fallback() -> None:
-    """categoryQueries 빈 리스트 → 발화 폴백 1건(query 없음)으로 정규화."""
+    """categoryQueries 빈 리스트 → query 도 없어 발화 폴백 1건(query 없음)으로 정규화."""
     m = _FakeMapper(exact=set(), nearest={"유럽여행 준비물": "여행/캠핑 > 여행용품"})
     out = await m.run([], utterance="유럽여행 준비물")
     assert out == [("여행/캠핑 > 여행용품", None)]
