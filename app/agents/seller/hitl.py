@@ -37,9 +37,11 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field
 
+from app.agents.seller.middleware import mask_output
 from app.agents.seller.schemas import DraftChange, DraftProposal
 from app.core.config import get_settings
 from app.core.pg_resilience import hardened_pg_conninfo
+from app.core.text import _strip_unsafe, _strip_unsafe_multiline
 from app.schemas.spring import ProductCreate, ProductUpdate, SellerProductRow
 from app.services.spring_client import get_spring_client
 
@@ -109,7 +111,20 @@ def validate_draft(
     받은 뒤에야 실패하는 것보다, 스트림 1에서 되묻는 쪽이 계약(보여준 것==실행)에
     부합한다. 여기서 통과한 draft 는 confirm 시점에 캐스팅이 실패하지 않는다.
     """
-    changes = list(proposal.changes)
+    # after 는 FE diff 카드와 승인 후 Spring 쓰기가 같은 실행 정본을 공유해야 한다.
+    # 노출 시점에만 정제하면 "보여준 것 == 실행" HITL 계약이 깨지므로 record 생성 전에 정제한다.
+    changes = [
+        change.model_copy(
+            update={
+                "after": (
+                    _strip_unsafe_multiline(mask_output(change.after))
+                    if change.field == "description"
+                    else _strip_unsafe(mask_output(change.after))
+                )
+            }
+        )
+        for change in proposal.changes
+    ]
     fields = {c.field for c in changes}
 
     if proposal.op in ("update", "delete") and proposal.product_id is None:
@@ -145,7 +160,7 @@ def validate_draft(
         op=proposal.op,
         product_id=None if proposal.op == "create" else proposal.product_id,
         changes=changes,
-        summary=proposal.summary,
+        summary=_strip_unsafe(proposal.summary),
         seller_id=seller_id,
         brand_id=brand_id,
         created_at=datetime.now(UTC).isoformat(),

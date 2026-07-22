@@ -47,6 +47,7 @@ from app.core.conversation import get_conversation_store
 from app.core.errors import get_request_id
 from app.core.observability import emit_rejection, start_observation
 from app.core.stream import open_stream, registry_key
+from app.core.text import _strip_unsafe, _strip_unsafe_multiline
 from app.schemas.chat import ChatRequest, DoneData, ErrorData, TokenData
 from app.services.spring_client import SpringUnavailableError
 
@@ -75,7 +76,23 @@ def _sse(event_type: str, data: dict) -> str:
 
 
 def _token(text: str) -> str:
-    return _sse("token", TokenData(text=text).model_dump(by_alias=True))
+    return _sse("token", TokenData(text=_strip_unsafe_multiline(text)).model_dump(by_alias=True))
+
+
+def _token_chunk(text: str, *, previous_ended_space: bool) -> tuple[str | None, bool]:
+    """스트리밍 청크를 정제하되 청크 경계의 정상 공백을 잃지 않는다.
+
+    `_strip_unsafe`의 양끝 strip이 토큰 사이 공백까지 없애지 않도록 센티널로 감싸
+    청크 내부 공백을 접고, 직전 청크와 맞닿은 중복 공백만 제거한다.
+    """
+    framed = _strip_unsafe_multiline(f"\ue000{text}\ue001")
+    cleaned = framed[1:-1]
+    if previous_ended_space and cleaned.startswith(" "):
+        cleaned = cleaned[1:]
+    if not cleaned:
+        return None, previous_ended_space
+    frame = _sse("token", TokenData(text=cleaned).model_dump(by_alias=True))
+    return frame, cleaned.endswith(" ")
 
 
 def _done() -> str:
@@ -125,6 +142,7 @@ async def _general_stream(request: ChatRequest, identity: Identity) -> AsyncIter
         context = SellerContext(
             seller_id=identity.seller_id or "", brand_id=identity.brand_id or ""
         )
+        previous_ended_space = False
         async for item in agent.astream(
             {"messages": [HumanMessage(content=request.message)]},
             context=context,
@@ -135,7 +153,11 @@ async def _general_stream(request: ChatRequest, identity: Identity) -> AsyncIter
                 continue
             text = _chunk_text(message_chunk.content)
             if text:
-                yield _token(mask_output(text))
+                frame, previous_ended_space = _token_chunk(
+                    mask_output(text), previous_ended_space=previous_ended_space
+                )
+                if frame is not None:
+                    yield frame
         yield _done()
     except (TimeoutError, asyncio.TimeoutError):
         yield _sse(
@@ -281,9 +303,22 @@ def _draft_event(record: DraftRecord) -> str:
             "op": record.op,
             "productId": record.product_id,  # int | None(create) — F2 숫자 확정
             "changes": [
-                {"field": c.field, "before": c.before, "after": c.after} for c in record.changes
+                {
+                    "field": c.field,
+                    "before": (
+                        _strip_unsafe_multiline(mask_output(c.before))
+                        if c.field == "description"
+                        else _strip_unsafe(mask_output(c.before))
+                    ),
+                    "after": (
+                        _strip_unsafe_multiline(mask_output(c.after))
+                        if c.field == "description"
+                        else _strip_unsafe(mask_output(c.after))
+                    ),
+                }
+                for c in record.changes
             ],
-            "summary": mask_output(record.summary),
+            "summary": _strip_unsafe(mask_output(record.summary)),
         },
     )
 
