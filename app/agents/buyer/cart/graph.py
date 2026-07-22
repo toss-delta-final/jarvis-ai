@@ -26,6 +26,7 @@ from app.services.spring_client import (
     CartOptionInvalid,
     CartOptionRequired,
     CartProductNotFound,
+    CartStockInsufficient,
     SpringUnavailableError,
 )
 
@@ -208,6 +209,23 @@ async def stream_cart_add(
                 type="CART_ADD_FAILED",
                 message="해당 상품을 찾지 못했어요.",
                 reason="PRODUCT_NOT_FOUND",
+            ).model_dump(by_alias=True),
+        )
+        yield _done()
+        return
+    except CartStockInsufficient as exc:
+        # I-2 재고 부족 — 남은 재고 수를 알면 노출("재고가 N개뿐이에요"), 모르면 일반 안내(§4.1, 2026-07-22).
+        await cart_store.clear_pending(thread_key)
+        if exc.available_stock is not None:
+            message = f"재고가 {exc.available_stock}개뿐이에요."
+        else:
+            message = "재고가 부족해 담지 못했어요."
+        yield sse(
+            "action",
+            ActionData(
+                type="CART_ADD_FAILED",
+                message=message,
+                reason="STOCK_INSUFFICIENT",
             ).model_dump(by_alias=True),
         )
         yield _done()

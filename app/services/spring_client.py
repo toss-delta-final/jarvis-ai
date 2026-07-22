@@ -96,6 +96,18 @@ class CartError(Exception):
     """I-2 담기 운영 오류(401 INTERNAL_TOKEN_INVALID·도달 불가·미상 코드) → action CART_ERROR."""
 
 
+class CartStockInsufficient(Exception):
+    """I-2 담기 재고 부족(400 CART_STOCK_INSUFFICIENT) → action reason STOCK_INSUFFICIENT.
+
+    합산 수량 > 재고(재고는 상품 단위, 옵션별 재고 없음, 2026-07-22 신설). available_stock 은
+    BE error.detail.availableStock(남은 재고) — LLM "재고가 N개뿐이에요" 안내용. 없으면 None.
+    """
+
+    def __init__(self, available_stock: int | None) -> None:
+        self.available_stock = available_stock
+        super().__init__(f"CART_STOCK_INSUFFICIENT (available={available_stock})")
+
+
 def _client() -> httpx.AsyncClient:
     """공용 httpx.AsyncClient 팩토리. base_url·서비스 토큰은 설정에서 주입한다.
 
@@ -167,7 +179,7 @@ def _parse_search_response(data: object) -> ProductSearchResult:
     return ProductSearchResult(products=products, total_count=len(products))
 
 
-def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption]]:
+def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption], int | None]:
     """I-2 실패 응답에서 code·options 를 방어적으로 파싱한다(§4.1, BE 스키마 🔴).
 
     code 는 error.code | code. options 는 [BE 확정 2026-07-18] **error.detail.options**
@@ -177,9 +189,9 @@ def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption
     try:
         body = resp.json()
     except ValueError:
-        return None, []
+        return None, [], None
     if not isinstance(body, dict):
-        return None, []
+        return None, [], None
     err = body.get("error") if isinstance(body.get("error"), dict) else None
     code = (err or {}).get("code") or body.get("code")
     detail = (err or {}).get("detail") if isinstance((err or {}).get("detail"), dict) else None
@@ -232,7 +244,17 @@ def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption
             )
         elif dropped:
             _log.warning("cart 옵션 %d/%d개 파싱 실패(부분, code=%r)", dropped, len(raw), code)
-    return code, options
+    # 재고 부족(CART_STOCK_INSUFFICIENT)일 때 error.detail.availableStock(남은 재고). 병적 입력 방어.
+    available_stock: int | None = None
+    if detail is not None:
+        raw_stock = detail.get("availableStock")
+        if isinstance(raw_stock, bool):
+            raw_stock = None
+        if isinstance(raw_stock, int) and raw_stock >= 0:
+            available_stock = raw_stock
+        elif isinstance(raw_stock, float) and math.isfinite(raw_stock) and raw_stock >= 0:
+            available_stock = int(raw_stock)
+    return code, options, available_stock
 
 
 async def search_products(filters: ProductSearchFilters) -> ProductSearchResult:
@@ -284,9 +306,10 @@ async def add_to_cart(request: AddToCartRequest) -> AddToCartResult:
     """장바구니 담기 — BE I-2 문서 채택 (api-spec §4.1). [배선 완료]
 
     POST {spring_base_url}/internal/cart/items + X-Internal-Token. 본문 신원(userId|guestId)은
-    AI-검증 JWT sub 유래(요청 본문 불신, §2.3). 담기 시 재고검증 없음(C-3 해소 v0.15.5 — OUT_OF_STOCK 폐기).
-    실패 코드는 typed 예외로 전파: CART_OPTION_REQUIRED→CartOptionRequired(options),
-    CART_OPTION_INVALID→CartOptionInvalid(options), 404→CartProductNotFound, 그 외→CartError.
+    AI-검증 JWT sub 유래(요청 본문 불신, §2.3). 담기 시 BE 재고검증 있음(합산 수량 > 재고 →
+    CART_STOCK_INSUFFICIENT + availableStock, 2026-07-22). 실패 코드는 typed 예외로 전파:
+    CART_OPTION_REQUIRED→CartOptionRequired(options), CART_OPTION_INVALID→CartOptionInvalid(options),
+    CART_STOCK_INSUFFICIENT→CartStockInsufficient(availableStock), 404→CartProductNotFound, 그 외→CartError.
     """
     try:
         async with _client() as client:
@@ -303,11 +326,13 @@ async def add_to_cart(request: AddToCartRequest) -> AddToCartResult:
         cart_item_id = payload.get("cartItemId") if isinstance(payload, dict) else None
         return AddToCartResult(success=True, cart_item_id=cart_item_id)
 
-    code, options = _parse_cart_error(resp)
+    code, options, available_stock = _parse_cart_error(resp)
     if resp.status_code == 400 and code == "CART_OPTION_REQUIRED":
         raise CartOptionRequired(options)
     if resp.status_code == 400 and code == "CART_OPTION_INVALID":
         raise CartOptionInvalid(options)
+    if resp.status_code == 400 and code == "CART_STOCK_INSUFFICIENT":
+        raise CartStockInsufficient(available_stock)
     if resp.status_code == 404:
         raise CartProductNotFound()
     # 401 INTERNAL_TOKEN_INVALID·미상 코드 → 운영 오류

@@ -30,6 +30,7 @@ from app.services.spring_client import (
     CartOptionInvalid,
     CartOptionRequired,
     CartProductNotFound,
+    CartStockInsufficient,
     SpringUnavailableError,
 )
 
@@ -288,6 +289,51 @@ async def test_cart_add_product_not_found() -> None:
     )
     action = next(e for e in events if e["type"] == "action")["data"]
     assert action["type"] == "CART_ADD_FAILED" and action["reason"] == "PRODUCT_NOT_FOUND"
+
+
+async def test_cart_add_stock_insufficient_exposes_remaining() -> None:
+    """재고 부족 → reason STOCK_INSUFFICIENT + 남은 재고 수 노출(2026-07-22)."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        raise CartStockInsufficient(3)
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(product_id=1, quantity=5),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
+        )
+    )
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADD_FAILED" and action["reason"] == "STOCK_INSUFFICIENT"
+    assert "3" in action["message"]
+
+
+async def test_cart_add_stock_insufficient_without_count_falls_back() -> None:
+    """남은 재고 수 미상(None) → 일반 재고부족 안내(reason 은 여전히 STOCK_INSUFFICIENT)."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        raise CartStockInsufficient(None)
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(product_id=1, quantity=5),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
+        )
+    )
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADD_FAILED" and action["reason"] == "STOCK_INSUFFICIENT"
 
 
 async def test_cart_add_error_maps_to_cart_error() -> None:
@@ -637,6 +683,34 @@ async def test_add_to_cart_product_not_found_raises(monkeypatch: pytest.MonkeyPa
     )
     with pytest.raises(sc.CartProductNotFound):
         await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=999, quantity=1))
+
+
+async def test_add_to_cart_stock_insufficient_parses_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """400 CART_STOCK_INSUFFICIENT + error.detail.availableStock → CartStockInsufficient(3)."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import AddToCartRequest
+
+    body = {"error": {"code": "CART_STOCK_INSUFFICIENT", "detail": {"availableStock": 3}}}
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
+    with pytest.raises(sc.CartStockInsufficient) as ei:
+        await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=5))
+    assert ei.value.available_stock == 3
+
+
+async def test_add_to_cart_stock_insufficient_missing_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """availableStock 누락 시에도 CartStockInsufficient(None) 로 전파(방어)."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import AddToCartRequest
+
+    body = {"error": {"code": "CART_STOCK_INSUFFICIENT"}}
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
+    with pytest.raises(sc.CartStockInsufficient) as ei:
+        await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=5))
+    assert ei.value.available_stock is None
 
 
 async def test_get_cart_parses_items(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1109,7 +1183,7 @@ def test_parse_cart_error_logs_when_all_options_dropped(caplog: pytest.LogCaptur
             }
 
     with caplog.at_level(logging.WARNING, logger="app.services.spring_client"):
-        code, options = sc._parse_cart_error(_R())
+        code, options, _stock = sc._parse_cart_error(_R())
     assert options == [] and code == "CART_OPTION_REQUIRED"
     assert any("전부 파싱 실패" in r.getMessage() for r in caplog.records)
 
