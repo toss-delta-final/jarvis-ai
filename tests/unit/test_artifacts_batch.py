@@ -11,11 +11,13 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.config import get_settings
+from app.pipelines import artifacts_batch as _batch
 from app.pipelines import embedding as _embedding
 from app.pipelines.artifact_store import ArtifactStore, CatalogArtifact, CatalogArtifactStore
 from app.pipelines.artifacts_batch import run_artifacts_batch
 from app.pipelines.enrichment import enrich_product
 from app.schemas.spring import ProductChange, ProductChangesPage
+from tests.integration._stubs import ScriptedLLM  # 배치 enrichment LLM 대역
 
 
 def test_catalog_artifact_store_satisfies_shared_protocol():
@@ -524,3 +526,39 @@ async def test_fetch_product_changes_data_null_raises(monkeypatch):
     monkeypatch.setattr(sc, "_client", lambda: _Client(_Resp(200, {"success": True, "data": None})))
     with pytest.raises(sc.SpringUnavailableError):
         await sc.fetch_product_changes("0", 500)
+
+
+# ── 이슈 #65: 비대칭 임베딩 바인딩 — 배치 미주입 기본값이 문서(DOCUMENT) task_type 을 바인딩하는지 ──
+
+
+async def test_batch_default_embed_binds_document_task(monkeypatch):
+    seen = {}
+
+    def spy(texts, *, task_type=None):
+        seen["task_type"] = task_type
+        return [[float(len(t)), 0.0, 1.0] for t in texts]
+
+    monkeypatch.setattr(_embedding, "embed_texts", spy)
+
+    async def fetch(cursor, size):
+        return ProductChangesPage(
+            items=[
+                ProductChange(
+                    productId=1,
+                    status="ON_SALE",
+                    updatedAt="2026-07-20T00:00:00Z",
+                    name="상품-1",
+                    description="설명",
+                    category="여행용품",  # 주의: ProductChange 의 별칭은 category(SpringProduct 의 categoryName 과 다름)
+                    brand="브랜드",  # 주의: ProductChange 의 별칭은 brand(SpringProduct 의 brandName 과 다름)
+                )
+            ],
+            nextCursor=None,
+            hasMore=False,
+        )
+
+    store = CatalogArtifactStore()
+    await _batch.run_artifacts_batch(
+        fetch=fetch, llm=ScriptedLLM(), store=store, settings=None, full_rebuild=False
+    )
+    assert seen["task_type"] == "RETRIEVAL_DOCUMENT"

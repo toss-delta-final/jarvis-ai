@@ -13,6 +13,7 @@ fetch·llm·embed·store 는 주입형(테스트·오프라인 대체) — torch
 
 from __future__ import annotations
 
+import functools
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -125,7 +126,10 @@ async def run_artifacts_batch(
     settings = settings or get_settings()
     fetch = fetch or spring_client.fetch_product_changes
     llm = llm or get_llm()
-    embed = embed or _embedding.embed_texts
+    # 미주입 기본값은 문서(document) 임베딩 — 비대칭 임베딩 바인딩(이슈 #65)
+    embed = embed or functools.partial(
+        _embedding.embed_texts, task_type=settings.embedding_task_document
+    )
     store = store or get_catalog_store()
     if llm is None:
         raise RuntimeError(
