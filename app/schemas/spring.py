@@ -224,13 +224,25 @@ class CartView(CamelModel):
 # ── 5. 추천 목록 push (I-21, §4.2, 경로 B) ──
 
 
+class RecoReason(CamelModel):
+    """I-21 추천 근거 항목 — Spring 이 Redis 저장 → CH-5 카드에 echo (§4.2 v0.15.2, C-9).
+
+    productId 로 키잉한다(순서 권위는 RecommendationPush.product_ids). rerank 가 산출한
+    상품별 1문장 근거를 담으며, 근거를 생성하지 못한 상품은 생략(부분집합/순서무관 허용).
+    """
+
+    product_id: int  # 숫자(BIGINT, product.id) — internal 계약(§2.6)
+    reason: str
+
+
 class RecommendationPush(CamelModel):
     """I-21 POST /internal/recommendations 요청 (경로 B, api-spec §4.2, v0.15.0).
 
     최종 랭크 상품 id(Top-N)만 전달한다 — listId 는 FastAPI 가 생성해 넘기고(Spring 이 Redis 에
     이 키로 TTL 저장), FE 는 CH-5 GET /api/chat/lists/{listId} 로 카드를 조회한다.
     [변경 v0.15.0] 구 groups/items 구조 폐기. [Q2 역제안 v0.15.2] reason 은 이 콜백에 포함
-    (reasons[{productId, reason}]) → Spring 이 CH-5 카드에 echo. BE 확정 시 reasons 필드 추가(§4.2).
+    (reasons[{productId, reason}]) → Spring 이 CH-5 카드에 echo(§4.2). 선택 필드이므로 Spring
+    미수용 상태여도 전송은 무해(하위호환) — 비면 [] 로 직렬화.
     productId 는 internal 계약이라 숫자(BIGINT, §2.6). 순서 유지 = 렌더 순서.
     노출 개수(Top-N)는 config(expose_min~expose_max)로 recommendation 그래프가 결정 —
     이 스키마는 전송 컨테이너라 하드 개수 대신 방어적 상한(max_length)만 둔다.
@@ -240,6 +252,7 @@ class RecommendationPush(CamelModel):
     session_id: str
     list_id: str
     product_ids: list[int] = Field(default_factory=list, max_length=50)  # 방어적 상한(실제 개수는 config)
+    reasons: list[RecoReason] = Field(default_factory=list, max_length=50)  # productId로 키잉(§4.2)
 
 
 # ── 6. 상품 변경분 pull (I-17, §4.8, C-4) — AI 생성물 갱신 배치 ──

@@ -28,7 +28,7 @@ from app.schemas.chat import (
     SuggestionsData,
     TokenData,
 )
-from app.schemas.spring import ProductSearchResult, RecommendationPush
+from app.schemas.spring import ProductSearchResult, RecoReason, RecommendationPush
 from app.services.spring_client import SpringUnavailableError
 
 _INACTIVE_STATUSES = frozenset(
@@ -163,9 +163,11 @@ async def stream_recommendation(
             expose_max=settings.expose_max,
         )
         ranked_ids = [pid for pid, _ in rr.ranked]
+        reason_by_id = dict(rr.ranked)  # 상품별 근거(§4.2) — (productId, rationale) 튜플 → 맵
         comment = rr.overall_comment
     except LLMError:
         ranked_ids = [p.product_id for p in candidates[: settings.expose_max]]
+        reason_by_id = {}  # degrade 경로엔 rerank 근거 없음 — reasons 는 빈 배열(계약상 선택)
         comment = "요청하신 조건으로 찾은 상품들이에요."
 
     # 노출 개수 보정 — rerank 가 expose_min 미만을 내면 검색순서(하드 제약 반영)로 채우고
@@ -188,8 +190,18 @@ async def stream_recommendation(
 
     # push — I-21(경로 B). 성공 시에만 products.ready emit(§3.3).
     list_id = uuid4().hex
+    # reasons — 근거가 있는 상품만(빈 rationale·expose_min 보충 상품은 제외). productId 로 키잉,
+    # 순서 권위는 product_ids 라 정렬 불필요(부분집합 허용, §4.2 이슈 #61).
+    reasons = [
+        RecoReason(product_id=pid, reason=reason_by_id[pid])
+        for pid in ranked_ids
+        if reason_by_id.get(pid)
+    ]
     push = RecommendationPush(
-        session_id=request.session_id, list_id=list_id, product_ids=ranked_ids
+        session_id=request.session_id,
+        list_id=list_id,
+        product_ids=ranked_ids,
+        reasons=reasons,
     )
     try:
         pushed = bool(await push_fn(push))

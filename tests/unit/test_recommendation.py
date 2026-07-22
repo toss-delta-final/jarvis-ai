@@ -95,6 +95,10 @@ async def test_happy_path_pipeline() -> None:
     assert push.pushes[0].product_ids[:2] == [101, 102]
     assert set(push.pushes[0].product_ids) <= {101, 102, 103}
 
+    # reasons — rerank rationale 있는 상품만(101,102). expose_min 보충 103 은 근거 없어 제외(이슈 #61).
+    reasons = {r.product_id: r.reason for r in push.pushes[0].reasons}
+    assert reasons == {101: "가성비가 좋아요", 102: "음질이 우수해요"}
+
     done = next(e for e in events if e["type"] == "done")["data"]
     assert done["finishReason"] == "stop"
 
@@ -154,6 +158,8 @@ async def test_rerank_failure_degrades_to_search_order() -> None:
     assert types[-1] == "done"
     # 검색 순서(101,102,103) 상위 노출 — rerank 없이도 하드 제약(검색 반영) 유지.
     assert push.pushes[0].product_ids == [101, 102, 103]
+    # degrade 경로엔 rerank rationale 이 없으므로 reasons 는 빈 배열(계약상 선택 필드, 이슈 #61).
+    assert push.pushes[0].reasons == []
 
 
 async def test_push_failure_skips_products_ready() -> None:
