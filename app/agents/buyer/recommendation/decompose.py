@@ -9,7 +9,12 @@ from __future__ import annotations
 
 from pydantic import ValidationError
 
-from app.agents.buyer.recommendation.state import CartIntent, RouteDecision, extract_json
+from app.agents.buyer.recommendation.state import (
+    CartIntent,
+    CategoryQuery,
+    RouteDecision,
+    extract_json,
+)
 from app.core.llm import LLMClient, LLMError
 from app.schemas.spring import ProductSearchFilters
 
@@ -21,8 +26,9 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
   "reply": "intent가 general일 때만 줄 짧은 한국어 답변, 아니면 빈 문자열",
   "case": 1 | 2 | 3,
   "semanticQuery": "정형 제약을 제외한 벡터 검색용 자연어",
+  "categoryQueries": [ {"category": string|null, "query": string|null} ],
   "filters": {
-    "category": string|null, "priceMin": int|null, "priceMax": int|null,
+    "priceMin": int|null, "priceMax": int|null,
     "brand": [string]|null, "ratingMin": number|null, "keyword": string|null
   },
   "cart": { "productId": int|null, "optionId": int|null, "quantity": int },
@@ -31,9 +37,15 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
 규칙:
 - intent 판별: 상품을 찾아달라는 요청이면 recommend, "담아줘/장바구니에 넣어"면 cart_add,
   "장바구니 보여줘/뭐 있어?"면 cart_view, 그 외 잡담·무관 질문이면 general.
-- recommend: 상품명이 뚜렷하면 case 1, 필터 위주면 case 2, 상황/목적이면 case 3.
-  정확한 수치·카테고리 제약은 filters 에 넣고 semanticQuery 로 근사하지 마세요.
+- recommend: 정확한 수치 제약은 filters 에 넣고 semanticQuery 로 근사하지 마세요.
   PRIOR_FILTERS 가 있으면 병합(좁히면 add, 모순되면 replace)하세요.
+- categoryQueries: 사용자가 원하는 상품/목적별로 **카테고리를 최대한 추출**하세요.
+  단일 상품 질의("무선 이어폰")면 1개, 상황형 질의("유럽여행 준비물")면 필요한 카테고리를
+  여러 개 나눠 담으세요(예: 여행용품·전자기기·의류). category 는 best-guess(정말 모르면 null),
+  query 는 그 카테고리 검색용 짧은 키워드입니다. 카테고리는 최대 CATEGORY_FANOUT_MAX 개까지.
+  이번 발화가 **새 카테고리·상품을 언급하지 않은 조건 다듬기**(예: "더 저렴한 걸로", "다른 브랜드")
+  이고 PRIOR_FILTERS.category 가 있으면, 그 값을 categoryQueries 에 그대로 실어 **이전 카테고리를
+  유지**하세요(카테고리를 비우면 직전 맥락이 사라집니다).
 - cart_add: LAST_RECOMMENDATIONS(직전 추천 목록: productId+이름)에서 사용자가 가리킨 상품의
   productId 를 고르세요. 못 고르면 productId=null. quantity 기본 1.
 - PENDING_CART(옵션 되물음 대기)가 있으면 보통 이번 발화는 옵션 답변입니다 — options 목록에서
@@ -54,6 +66,7 @@ async def decompose(
     tier: str,
     last_recommendations: list[tuple[int, str]] | None = None,
     pending_cart: dict | None = None,
+    category_fanout_max: int = 5,
 ) -> RouteDecision:
     """Haiku 1회 호출로 intent(추천/담기/조회/일반)·필터·장바구니 의도를 산출한다.
 
@@ -76,6 +89,7 @@ async def decompose(
     pending_json = "null" if not pending_cart else json.dumps(pending_cart, ensure_ascii=False)
     prof = profile_summary or "(없음)"
     user = (
+        f"CATEGORY_FANOUT_MAX: {category_fanout_max}\n"
         f"PRIOR_FILTERS: {prior_json}\n"
         f"LAST_RECOMMENDATIONS: {reco_json}\n"
         f"PENDING_CART: {pending_json}\n"
@@ -104,6 +118,7 @@ async def decompose(
             if isinstance(raw_revert, list)
             else []
         )
+        category_queries = _parse_category_queries(data.get("categoryQueries"), category_fanout_max)
     except (ValidationError, ValueError, TypeError) as exc:
         raise LLMError("decompose 필터/케이스/장바구니 파싱 실패") from exc
     return RouteDecision(
@@ -114,7 +129,37 @@ async def decompose(
         reply=str(data.get("reply") or ""),
         cart=cart,
         revert_categories=revert_categories,
+        category_queries=category_queries,
     )
+
+
+def _parse_category_queries(raw: object, fanout_max: int) -> list[CategoryQuery]:
+    """decompose 의 categoryQueries → list[CategoryQuery] (방식 A, 이슈 #59).
+
+    리스트가 아니면 빈 리스트(카테고리 신호 없음 → 그래프에서 무필터 검색, #22). 각 원소 dict 에서 category(str|None)·
+    query(str|None)를 관대 파싱하고, fanout_max 로 개수를 절단한다(하드코딩 금지 상한).
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[CategoryQuery] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        cat = item.get("category")
+        qry = item.get("query")
+        out.append(
+            CategoryQuery(
+                raw_category=str(cat) if isinstance(cat, str) and cat else None,
+                query=str(qry) if isinstance(qry, str) and qry else None,
+            )
+        )
+    # 신호(raw·query) 있는 leg 만 남기고 절단 — 빈 leg(둘 다 없음)는 map_categories 에서 어차피
+    # 스킵되므로, 절단 전에 빼지 않으면 LLM 이 앞쪽에 빈 항목을 섞어낼 때 fanout 예산만 먹고 뒤쪽
+    # 실제 카테고리를 밀어낸다(§9 상한 의도 훼손, PR #73 리뷰).
+    signal = [q for q in out if q.raw_category or q.query]
+    # slice 절단 — category_mapping 의 _dedup_truncate·_merge_fanout_results 와 동일 규약
+    # (fanout_max<=0 이면 정확히 0개; append 후 체크는 첫 항목이 남아 절단 의미가 어긋난다, PR #73 리뷰).
+    return signal[:fanout_max]
 
 
 def _as_int(value: object) -> int | None:

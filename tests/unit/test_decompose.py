@@ -1,0 +1,110 @@
+"""decompose 카테고리 추출 파싱 테스트 (이슈 #59, 방식 A).
+
+decompose 가 `categoryQueries: [{category, query}]` 를 `RouteDecision.category_queries`
+(list[CategoryQuery])로 파싱하는지 검증한다. 실제 매핑(임베딩 보정)은 그래프 단계 소관.
+"""
+
+from __future__ import annotations
+
+import json
+
+from app.agents.buyer.recommendation.decompose import decompose
+
+
+class _FakeLLM:
+    """지정 raw JSON 문자열을 fast tier 에서 돌려주는 최소 LLM."""
+
+    def __init__(self, raw: str) -> None:
+        self._raw = raw
+
+    async def complete(
+        self, *, system: str, user: str, tier: str, max_tokens: int = 1024, json_output: bool = True
+    ) -> str:
+        return self._raw
+
+    async def stream(self, *, system: str, user: str, tier: str, max_tokens: int = 1024):
+        yield "x"
+
+
+def _raw(**over) -> str:
+    base = {"intent": "recommend", "reply": "", "semanticQuery": "q", "filters": {}}
+    base.update(over)
+    return json.dumps(base, ensure_ascii=False)
+
+
+async def _run(raw: str, **kw):
+    return await decompose(
+        _FakeLLM(raw), query="발화", prior_filters=None, profile_summary=None, tier="fast", **kw
+    )
+
+
+async def test_parses_single_category_query() -> None:
+    """단일 카테고리 추측 → category_queries 길이 1, raw/query 매핑."""
+    d = await _run(
+        _raw(categoryQueries=[{"category": "가전 > 이어폰/헤드폰", "query": "무선 이어폰"}])
+    )
+    assert len(d.category_queries) == 1
+    assert d.category_queries[0].raw_category == "가전 > 이어폰/헤드폰"
+    assert d.category_queries[0].query == "무선 이어폰"
+
+
+async def test_parses_multiple_category_queries() -> None:
+    """상황형 → 여러 카테고리 추출."""
+    d = await _run(
+        _raw(
+            categoryQueries=[
+                {"category": "여행/캠핑 > 여행용품", "query": "여행 자물쇠"},
+                {"category": "가전 > 어댑터", "query": "여행용 어댑터"},
+            ]
+        )
+    )
+    assert [c.raw_category for c in d.category_queries] == ["여행/캠핑 > 여행용품", "가전 > 어댑터"]
+
+
+async def test_missing_category_queries_yields_empty() -> None:
+    """categoryQueries 누락 → 빈 리스트(카테고리 신호 없음 → 그래프에서 무필터 검색, #22)."""
+    d = await _run(_raw())
+    assert d.category_queries == []
+
+
+async def test_null_category_allowed() -> None:
+    """category=null 추측 허용(query 있으면 그 leg 의 query 로 매핑해 흡수, #17)."""
+    d = await _run(_raw(categoryQueries=[{"category": None, "query": "집들이 선물"}]))
+    assert len(d.category_queries) == 1
+    assert d.category_queries[0].raw_category is None
+    assert d.category_queries[0].query == "집들이 선물"
+
+
+async def test_truncates_to_fanout_max() -> None:
+    """category_fanout_max 로 추출 개수를 절단한다(하드코딩 금지)."""
+    many = [{"category": f"c{i} > m{i}", "query": f"q{i}"} for i in range(10)]
+    d = await _run(_raw(categoryQueries=many), category_fanout_max=3)
+    assert len(d.category_queries) == 3
+
+
+async def test_empty_legs_do_not_consume_fanout_budget() -> None:
+    """category·query 둘 다 없는 빈 leg 가 앞에 섞여도 실제 신호 leg 를 밀어내지 않는다.
+
+    LLM 이 [{null,null} x N, {실제}...] 처럼 빈 항목을 앞에 내보내면, 원본 순서 절단(out[:max])은
+    빈 항목이 fanout 예산을 먹어 뒤쪽 실제 카테고리를 잘라낸다. map_categories 는 어차피 빈 leg 를
+    스킵하므로, 절단 전에 신호(raw·query) 있는 leg 만 남겨 §9 상한 의도를 지킨다(PR #73 리뷰).
+    """
+    cq = [
+        {"category": None, "query": None},
+        {"category": None, "query": None},
+        {"category": "c1 > m1", "query": "q1"},
+        {"category": "c2 > m2", "query": "q2"},
+    ]
+    d = await _run(_raw(categoryQueries=cq), category_fanout_max=2)
+    assert [c.raw_category for c in d.category_queries] == ["c1 > m1", "c2 > m2"]
+
+
+async def test_fanout_max_zero_truncates_to_empty() -> None:
+    """fanout_max<=0(운영 설정 실수)면 정확히 0개로 절단한다 — slice 의미와 일치(PR #73 리뷰).
+
+    append 후 체크 방식이면 첫 항목이 항상 남아 매핑의 _dedup_truncate(out[:cap])와 절단 의미가
+    어긋난다. 두 절단 지점을 같은 slice 규약으로 통일해 상한 전제를 지킨다.
+    """
+    many = [{"category": f"c{i} > m{i}", "query": f"q{i}"} for i in range(3)]
+    d = await _run(_raw(categoryQueries=many), category_fanout_max=0)
+    assert d.category_queries == []

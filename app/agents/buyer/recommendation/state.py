@@ -53,16 +53,35 @@ class CartIntent:
 
 
 @dataclass
+class CategoryQuery:
+    """decompose 가 추출한 카테고리 추측 1건(이슈 #59, 방식 A).
+
+    raw_category 는 LLM 의 자유 추측(매핑 전, DB 실재값이 아닐 수 있음), query 는 그 카테고리
+    전용 검색 키워드(fan-out leg 에서 사용). 그래프가 raw_category 를 임베딩 보정해 canonical
+    카테고리로 바꾼다.
+    """
+
+    raw_category: str | None = None
+    query: str | None = None
+
+
+@dataclass
 class RouteDecision:
     """decompose(Haiku) 1회 산출 — intent 라우팅 + 병합 필터/의미쿼리/case + 폴백 답변 + 장바구니 의도."""
 
     intent: Literal["recommend", "cart_add", "cart_view", "general"]
     filters: ProductSearchFilters
     semantic_query: str
-    case: int = 2
+    case: int = 2  # [폐기, 이슈 #59] 미사용 — 단일/멀티는 len(category_queries)로 판정, 파싱만 유지
     reply: str = ""  # intent == general 일 때만 사용자에게 줄 답변
     cart: CartIntent | None = None  # intent == cart_add/cart_view 일 때
     revert_categories: list[str] = field(default_factory=list)  # 소모품 억제 되돌리기(결정 14-F)
+    # 카테고리 하이브리드 매핑(이슈 #59, 방식 A):
+    category_queries: list[CategoryQuery] = field(default_factory=list)  # decompose 추측(매핑 전)
+    # 매핑 후 (canonical, query) leg 리스트(그래프가 채움; 신호 없거나 실패 시 빈 리스트 → 무필터,
+    # #22) — fan-out 검색 leg 단위(§6).
+    # query 는 그 카테고리 전용 검색 키워드. 대표 카테고리 = category_legs[0][0](칩·멀티턴 승계).
+    category_legs: list[tuple[str, str | None]] = field(default_factory=list)
 
 
 @dataclass
@@ -91,18 +110,30 @@ def extract_json(text: str) -> dict:
     return obj
 
 
-def build_condition_chips(filters: ProductSearchFilters) -> list[ConditionChip]:
+def build_condition_chips(
+    filters: ProductSearchFilters, *, categories: list[str] | None = None
+) -> list[ConditionChip]:
     """병합 필터에서 conditions 칩을 결정론적으로 파생한다(FE 제거 가능, 카드 아님).
 
     LLM 의 임의 conditions 출력에 의존하지 않고 확정된 필터에서 파생 — 테스트 가능·일관.
     카테고리 칩을 먼저 둔다(api-spec §3.1 (2) 예시 순).
+
+    categories 가 주어지면(fan-out 매핑 결과 canonical 전체)로 카테고리 칩을 만든다 — 멀티면
+    검색한 카테고리 전부를 조인 문자열 하나로 표시한다(api-spec §3.1 예시가 value 를 스칼라
+    문자열로 명시하므로 계약 정합을 위해 리스트가 아닌 문자열). 칩 제거 왕복은 field 단위라
+    카테고리 칩은 멀티여도 1개로 유지한다. 미지정이면 filters.category 로 파생(비-fan-out 보존).
     """
     chips: list[ConditionChip] = []
-    if filters.category:
-        category = _strip_unsafe(filters.category)
-        chips.append(
-            ConditionChip(field="category", label=f"카테고리 · {category}", value=category)
-        )
+    # categories(fan-out canonical 전체)는 빈 리스트(매핑 결과 없음)와 None(미지정·비-fan-out)을
+    # 구분한다 — 빈 리스트는 filters.category 로 폴백하지 않아 미검증 원문이 칩에 새지 않는다(#16).
+    source = (
+        categories if categories is not None else ([filters.category] if filters.category else [])
+    )
+    cats = [c for c in source if c]
+    if cats:
+        cats = [_strip_unsafe(c) for c in cats]
+        joined = " · ".join(cats)  # 단일=그 값, 멀티=전체 조인(스칼라 문자열 — §3.1 정합)
+        chips.append(ConditionChip(field="category", label=f"카테고리 · {joined}", value=joined))
     if filters.price_max is not None:
         chips.append(
             ConditionChip(

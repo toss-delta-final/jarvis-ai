@@ -9,6 +9,7 @@ SSE 는 상품 카드를 싣지 않는다(경로 B) — products.ready 는 {sess
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -29,8 +30,15 @@ from app.schemas.chat import (
     SuggestionsData,
     TokenData,
 )
-from app.schemas.spring import ProductSearchResult, RecoReason, RecommendationPush
+from app.schemas.spring import (
+    ProductSearchResult,
+    RecoReason,
+    RecommendationPush,
+    SpringProduct,
+)
 from app.services.spring_client import SpringUnavailableError
+
+logger = logging.getLogger(__name__)
 
 _INACTIVE_STATUSES = frozenset(
     {"CANCELED", "CANCELLED", "RETURNED"}
@@ -59,6 +67,31 @@ def _sanitize_reason(text: str, max_len: int) -> str:
     return collapsed
 
 
+def _merge_fanout_results(results: list[ProductSearchResult], cap: int) -> ProductSearchResult:
+    """fan-out leg 결과를 round-robin 인터리브 + productId dedup + cap 절단으로 병합한다(§6).
+
+    leg 순서대로 한 상품씩 번갈아 뽑아(한 카테고리가 rerank 입력을 독점하지 않게) 최초 등장
+    productId 만 남기고, cap 으로 절단해 rerank 입력 상한을 지킨다. 빈 leg 는 건너뛴다.
+    """
+    lists = [r.products for r in results]
+    depth = max((len(pl) for pl in lists), default=0)
+    seen: set[int] = set()
+    merged: list[SpringProduct] = []
+    for i in range(depth):
+        for pl in lists:
+            if i >= len(pl):
+                continue
+            product = pl[i]
+            if product.product_id in seen:
+                continue
+            seen.add(product.product_id)
+            merged.append(product)
+    # slice 절단 — decompose 의 _parse_category_queries·_dedup_truncate 와 동일 규약
+    # (cap<=0 이면 정확히 0개; append 후 체크는 첫 상품이 남아 절단 의미가 어긋난다, PR #73 리뷰).
+    merged = merged[:cap]
+    return ProductSearchResult(products=merged, total_count=len(merged))
+
+
 async def stream_recommendation(
     *,
     request,
@@ -76,17 +109,63 @@ async def stream_recommendation(
     observer=None,
 ) -> AsyncIterator[str]:
     """추천 서브그래프 스트림. 프레임(SSE str)을 순서대로 산출한다."""
-    # conditions 칩 (병합 필터에서 결정론적 파생)
-    chips = build_condition_chips(decision.filters)
+    # conditions 칩 (병합 필터에서 결정론적 파생) — fan-out 이면 canonical 전체를 표시한다(§3.1)
+    chips = build_condition_chips(
+        decision.filters, categories=[c for c, _ in decision.category_legs]
+    )
     yield sse("conditions", ConditionsData(chips=chips).model_dump(by_alias=True))
 
     # dedup 소스(I-19)와 검색(§4.6)을 **병렬 실행** — §4.7 지연 가드(순차 시 최악 6s, first-token 예산 잠식).
     # dedup 은 검색 응답 뒤 사후필터라 두 호출은 독립적이다. 각 호출이 자체 실패를 삼켜 gather 는 안 깨진다.
     async def _run_search() -> ProductSearchResult | None:
-        try:
-            return await search(decision.filters, exclude_product_ids=None)
-        except SpringUnavailableError:
+        legs = decision.category_legs
+        if not legs:
+            # 카테고리 매핑 결과 없음(매핑 degrade·비-매핑 경로) → 단일 filters 검색(기존 경로).
+            try:
+                return await search(decision.filters, exclude_product_ids=None)
+            except SpringUnavailableError:
+                return None
+            except Exception as exc:  # noqa: BLE001 - 예상외 예외도 삼켜 SEARCH_FAILED 로 degrade
+                # 검색 호출이 SpringUnavailable 아닌 예외를 던져도 SSE 스트림을 미처리 예외로 죽이지
+                # 않는다 — None → 상위에서 SEARCH_FAILED(§6). CancelledError(BaseException)는 전파.
+                logger.warning("search_failed", extra={"reason": str(exc)})
+                return None
+
+        # fan-out — canonical 카테고리마다 leg 를 병렬 검색(§6). leg 별 filters 는 category·
+        # keyword(그 카테고리 query, 없으면 base)·size 만 교체한다.
+        # 단일 카테고리(leg 1개)는 후보 폭을 좁히지 않게 merge_cap(=단일 rerank 입력 예산)을 쓰고,
+        # 멀티 fan-out 일 때만 leg 당 per_cat_limit 으로 제한한다(합쳐서 merge_cap 로 재절단).
+        leg_limit = (
+            settings.category_fanout_per_cat_limit
+            if len(legs) > 1
+            else settings.category_fanout_merge_cap
+        )
+
+        async def _leg(canonical: str, query: str | None) -> ProductSearchResult | None:
+            # leg 전체를 try 로 감싼다 — model_copy·search 어디서 실패해도 그 leg 만 드롭한다.
+            try:
+                leg_filters = decision.filters.model_copy(
+                    update={
+                        "category": canonical,
+                        "keyword": query or decision.filters.keyword,
+                        "limit": leg_limit,
+                    }
+                )
+                return await search(leg_filters, exclude_product_ids=None)
+            except SpringUnavailableError:
+                return None  # leg 별 실패는 삼켜 다른 leg 는 계속(§6)
+            except Exception as exc:  # noqa: BLE001 - 예상외 예외도 그 leg 만 격리(SSE 스트림 보호)
+                # SpringUnavailable 아닌 예외가 gather → 스트림 상위로 전파돼 SSE 전체가 죽지 않게
+                # 격리한다. return_exceptions 대신 여기서 잡아 로그 + None — CancelledError(BaseException)
+                # 는 전파돼 협조적 취소가 보존된다. category_mapping fan-out(§6)과 격리 목적 일관.
+                logger.warning("search_leg_failed", extra={"reason": str(exc)})
+                return None
+
+        leg_results = await asyncio.gather(*(_leg(c, q) for c, q in legs))
+        survived = [r for r in leg_results if r is not None]
+        if not survived:  # 전량 leg 실패 → SEARCH_FAILED(§6)
             return None
+        return _merge_fanout_results(survived, settings.category_fanout_merge_cap)
 
     async def _fetch_purchases():
         # 게스트/비회원/판매자/비숫자 sub 는 스킵, I-19 실패는 degrade(dedup 없이 진행, §4.7).
@@ -101,6 +180,10 @@ async def stream_recommendation(
         try:
             return await fn(uid)
         except SpringUnavailableError:
+            return None
+        except Exception as exc:  # noqa: BLE001 - I-19 실패는 degrade(dedup 없이 진행, SSE 유지)
+            # 최근구매 조회가 예상외 예외를 던져도 추천 스트림을 죽이지 않는다 — None → dedup 스킵(§4.7).
+            logger.warning("purchases_fetch_failed", extra={"reason": str(exc)})
             return None
 
     search_result, purchases = await asyncio.gather(_run_search(), _fetch_purchases())

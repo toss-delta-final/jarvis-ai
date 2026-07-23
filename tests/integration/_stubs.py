@@ -252,7 +252,9 @@ DEFAULT_DECOMPOSE = {
     "reply": "",
     "case": 2,
     "semanticQuery": "여행용 파우치",
-    "filters": {"category": "여행용품", "priceMax": 30000, "keyword": "여행 파우치"},
+    # category 는 이제 filters 가 아니라 categoryQueries 로(이슈 #59, 새 스키마 정합)
+    "categoryQueries": [{"category": "여행용품", "query": "여행 파우치"}],
+    "filters": {"priceMax": 30000, "keyword": "여행 파우치"},
 }
 
 DEFAULT_RERANK = {

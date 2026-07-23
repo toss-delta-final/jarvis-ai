@@ -16,7 +16,9 @@ DEFAULT_DECOMPOSE = {
     "reply": "",
     "case": 2,
     "semanticQuery": "무선 이어폰",
-    "filters": {"category": "무선이어폰", "priceMax": 50000, "keyword": "무선 이어폰"},
+    # category 는 이제 filters 가 아니라 categoryQueries 로(이슈 #59, 새 스키마 정합)
+    "categoryQueries": [{"category": "무선이어폰", "query": "무선 이어폰"}],
+    "filters": {"priceMax": 50000, "keyword": "무선 이어폰"},
 }
 
 DEFAULT_RERANK = {

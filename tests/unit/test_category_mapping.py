@@ -1,0 +1,291 @@
+"""카테고리 매핑(방식 A) canonical-or-null 테스트 (이슈 #59).
+
+decompose 추측(raw)을 임베딩으로 실제 DB 카테고리에 보정한다. embed·search·exact 를 주입형
+fake 로 대체해 매핑 분기(exact/raw 최근접/query 앵커/신호 없음→빈 결과·무필터/하드실패degrade)와
+멀티 dedup·상한 절단을 검증한다.
+결과는 fan-out leg 용 (canonical, query) 페어 — query 는 그 카테고리의 검색 키워드(§6·§9).
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from types import SimpleNamespace
+
+from app.agents.buyer.recommendation.category_mapping import map_categories
+from app.agents.buyer.recommendation.state import CategoryQuery
+
+
+def _settings(*, top_k: int = 5, fanout_max: int = 5) -> SimpleNamespace:
+    return SimpleNamespace(
+        catalog_db_url="postgresql://x",
+        category_top_k=top_k,
+        category_fanout_max=fanout_max,
+        embedding_task_query="RETRIEVAL_QUERY",
+    )
+
+
+class _FakeMapper:
+    """embed↔search 를 인덱스 인코딩으로 연결해, anchor 텍스트별 최근접을 제어한다."""
+
+    def __init__(
+        self,
+        *,
+        exact: set[str],
+        nearest: dict[str, str],
+        embed_raises: bool = False,
+        search_raises_for: set[str] | None = None,
+    ):
+        self._exact = exact
+        self._nearest = nearest
+        self._embed_raises = embed_raises
+        self._search_raises_for = search_raises_for or set()  # 이 앵커 텍스트의 search 만 예외
+        self._embedded: list[str] = []
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        if self._embed_raises:
+            raise RuntimeError("embed down")
+        self._embedded = list(texts)
+        return [[float(i)] for i in range(len(texts))]  # vec[0] = 배치 인덱스
+
+    def search(self, vec: list[float], dsn: str, *, k: int) -> list[str]:
+        text = self._embedded[int(vec[0])]
+        if text in self._search_raises_for:
+            raise RuntimeError(f"search down for {text}")
+        hit = self._nearest.get(text)
+        return [hit] if hit else []
+
+    def exact_lookup(self, values, dsn: str) -> set[str]:
+        return {v for v in values if v in self._exact}
+
+    async def run(self, queries, utterance="발화", settings=None):
+        return await map_categories(
+            category_queries=queries,
+            utterance=utterance,
+            settings=settings or _settings(),
+            embed=self.embed,
+            search_top_k=self.search,
+            exact_lookup=self.exact_lookup,
+        )
+
+
+async def test_default_embed_carries_query_task_type(monkeypatch) -> None:
+    """embed 미주입(프로덕션 경로)이면 질의 task_type(RETRIEVAL_QUERY)로 임베딩한다.
+
+    저장소 비대칭 임베딩 관례(search_service=query / artifacts_batch=document, 이슈 #65)에서
+    이 앵커(raw 추측·leg query)는 질의 쪽이다. task_type 이 안 실리면 Google 기본 모드로
+    떨어져, 문서 쪽(category_seed=document)과 task 불일치 시 코사인이 왜곡된다(PR #73 리뷰).
+    """
+    import app.agents.buyer.recommendation.category_mapping as cm
+
+    captured: dict = {}
+
+    def fake_embed_texts(texts, *, task_type=None):
+        captured["task_type"] = task_type
+        return [[0.0] for _ in texts]
+
+    monkeypatch.setattr(cm, "_embed_texts", fake_embed_texts)
+    await map_categories(
+        category_queries=[CategoryQuery("여행용품", "파우치")],  # exact 아님 → 임베딩 경로
+        utterance="발화",
+        settings=_settings(),
+        search_top_k=lambda vec, dsn, *, k: [],
+        exact_lookup=lambda values, dsn: set(),
+    )
+    assert captured["task_type"] == "RETRIEVAL_QUERY"
+
+
+async def test_exact_match_uses_raw() -> None:
+    """raw 가 DB에 exact match → raw 그대로 canonical, query 보존."""
+    m = _FakeMapper(exact={"PC부품 > CPU"}, nearest={})
+    out = await m.run([CategoryQuery("PC부품 > CPU", "cpu")])
+    assert out == [("PC부품 > CPU", "cpu")]
+
+
+async def test_unmapped_anchor_is_logged(caplog) -> None:
+    """임베딩 조회는 정상인데 히트 0건이라 드롭되는 앵커를 관측 로그로 남긴다(PR #73 리뷰 #4).
+
+    categories 미시드·임베딩 결측이면 매 턴 전부 이 분기로 빠져 매핑이 조용히 무력화되는데,
+    로그가 없으면 운영 중 감지 불가 — canonical 을 못 낸 앵커를 warning 으로 남긴다.
+    """
+    m = _FakeMapper(exact=set(), nearest={})  # 모든 앵커 히트 0건
+    with caplog.at_level("WARNING"):
+        out = await m.run([CategoryQuery("없는카테고리", "q")])
+    assert out == []
+    assert any(r.msg == "category_unmapped" for r in caplog.records)
+
+
+async def test_offlist_uses_nearest() -> None:
+    """raw 가 exact 아님 → embed(raw) → 최근접 채택(거리 무관 항상), query 보존."""
+    m = _FakeMapper(exact=set(), nearest={"무선 이어폰": "가전 > 이어폰/헤드폰"})
+    out = await m.run([CategoryQuery("무선 이어폰", "이어폰")])
+    assert out == [("가전 > 이어폰/헤드폰", "이어폰")]
+
+
+async def test_null_raw_uses_leg_query_as_anchor() -> None:
+    """raw==null 이면 그 leg 의 query 를 앵커로 embed → top-1(발화 아님), query 보존(PR #73 #17).
+
+    leg 고유 query 가 있으면 발화 전체가 아니라 query 로 임베딩해야 leg 별로 구분된다.
+    """
+    m = _FakeMapper(exact=set(), nearest={"집들이 선물": "생활/건강 > 생활용품"})
+    out = await m.run([CategoryQuery(None, "집들이 선물")], utterance="집들이 선물 추천")
+    assert out == [("생활/건강 > 생활용품", "집들이 선물")]
+
+
+async def test_multi_null_raw_uses_per_leg_query_anchor() -> None:
+    """null-raw leg 이 여럿이면 각 leg 의 query 를 앵커로 써서 서로 다른 canonical 로 매핑한다(PR #73 #17).
+
+    발화 전체를 공유 앵커로 쓰면 서로 다른 아이템이 같은 최근접으로 붙어 dedup 으로 fan-out
+    폭이 조용히 줄어든다 — leg 고유 query 로 임베딩해 이를 막는다.
+    """
+    m = _FakeMapper(
+        exact=set(),
+        nearest={"이어폰": "가전 > 이어폰/헤드폰", "노트북": "컴퓨터 > 노트북"},
+    )
+    out = await m.run(
+        [CategoryQuery(None, "이어폰"), CategoryQuery(None, "노트북")],
+        utterance="싼거 추천",
+    )
+    assert [c for c, _ in out] == [
+        "가전 > 이어폰/헤드폰",
+        "컴퓨터 > 노트북",
+    ]  # 발화 공유로 합쳐지지 않음
+
+
+async def test_empty_queries_yields_no_category() -> None:
+    """categoryQueries 빈 리스트(카테고리 신호 없음) → 빈 결과 → 무필터 검색(카테고리 강제 안 함, PR #73 #22).
+
+    "5만원 이하 아무거나" 같은 category-agnostic 질의를 발화 임베딩으로 엉뚱한 카테고리에 좁히지 않는다.
+    """
+    m = _FakeMapper(exact=set(), nearest={"유럽여행 준비물": "여행/캠핑 > 여행용품"})
+    out = await m.run([], utterance="유럽여행 준비물")
+    assert out == []
+
+
+async def test_null_null_leg_skipped_no_category_forced() -> None:
+    """raw·query 모두 없는 leg(신호 없음)는 발화로 강제 매핑하지 않고 스킵한다(PR #73 #22)."""
+    m = _FakeMapper(exact=set(), nearest={"싼거 추천": "여행/캠핑 > 여행용품"})
+    out = await m.run([CategoryQuery(None, None)], utterance="싼거 추천")
+    assert out == []
+
+
+async def test_embed_failure_without_exact_degrades_to_empty_not_raw() -> None:
+    """exact 매치가 없는데 embed 까지 다운 → 미검증 raw 를 신뢰하지 않고 빈 legs 로 degrade한다.
+
+    raw 는 검증이 필요할 만큼 자주 틀린다(이 PR의 전제) — 검증 불가 시 raw 를 보내면 가짜
+    categoryName 으로 0건이 날 수 있어, 카테고리 없이(전체) 검색하도록 빈 리스트로 degrade 한다
+    (canonical-or-null, PR #73 #20). exact 매치가 있으면 §5·별도 테스트대로 보존된다(여기선 없음).
+    """
+    m = _FakeMapper(exact=set(), nearest={}, embed_raises=True)
+    out = await m.run([CategoryQuery("PC부품 > CPU", "cpu"), CategoryQuery(None, "뭐")])
+    assert out == []
+
+
+async def test_search_failure_logs_leg_failed_not_unmapped(caplog) -> None:
+    """조회가 예외로 실패한 leg 는 category_leg_search_failed 로만 남기고 category_unmapped 로는
+    이중 기록하지 않는다(PR #73 리뷰).
+
+    category_unmapped 는 "신호 있으나 히트 0건"(top-k 미스율 품질 신호, §11)이라 인프라 실패
+    (조회 예외)가 이 메트릭을 오염시키면 안 된다 — 실패 leg 는 실패 로그로만 관측한다.
+    """
+    m = _FakeMapper(exact=set(), nearest={}, search_raises_for={"이어폰"})
+    with caplog.at_level("WARNING"):
+        out = await m.run([CategoryQuery(None, "이어폰")])
+    assert out == []
+    msgs = [r.msg for r in caplog.records]
+    assert "category_leg_search_failed" in msgs  # 인프라 실패는 남김
+    assert "category_unmapped" not in msgs  # 품질 메트릭은 오염 안 됨
+
+
+async def test_exact_match_survives_embed_failure() -> None:
+    """embed/search 가 실패해도 이미 DB 검증된 exact 매치 leg 는 보존한다(PR #73 리뷰).
+
+    exact 조회(DB 직접)는 임베딩 경로와 독립이라 그 자체로 canonical 검증이다 — 임베딩 API
+    일시 오류가 확정된 exact canonical 까지 무필터로 날리면 안 된다. exact leg 유지 +
+    임베딩 필요 leg 만 드롭(canonical-or-null 은 exact·search 히트 둘 다 canonical 이라 성립).
+    """
+    m = _FakeMapper(exact={"전자기기 > 노트북"}, nearest={}, embed_raises=True)
+    out = await m.run(
+        [
+            CategoryQuery("전자기기 > 노트북", "노트북"),  # exact match(DB 검증)
+            CategoryQuery("여행용품", "파우치"),  # 임베딩 보정 필요 → embed 실패로 드롭
+        ]
+    )
+    assert out == [("전자기기 > 노트북", "노트북")]  # exact 보존, 여행용품 leg 만 드롭
+
+
+async def test_one_leg_search_failure_does_not_drop_other_legs() -> None:
+    """leg 하나의 search_top_k 실패는 그 leg 만 unmapped 로 드롭하고 나머지는 유지한다(PR #73 리뷰).
+
+    fan-out gather 를 return_exceptions 로 돌려 부분 실패를 격리한다 — recommendation/graph 의
+    leg 별 SpringUnavailable 격리(§6)와 일관. return_exceptions 없이 던지면 gather 가 즉시 예외 →
+    전체 빈 legs 로 degrade 돼, 정상 매핑된 leg 까지 무필터로 새는 걸 이 테스트가 막는다.
+    """
+    m = _FakeMapper(
+        exact=set(),
+        nearest={"이어폰": "가전 > 이어폰/헤드폰", "노트북": "컴퓨터 > 노트북"},
+        search_raises_for={"노트북"},  # 노트북 leg 의 search 만 예외
+    )
+    out = await m.run([CategoryQuery(None, "이어폰"), CategoryQuery(None, "노트북")])
+    assert out == [("가전 > 이어폰/헤드폰", "이어폰")]  # 실패한 노트북 leg 만 드롭, 이어폰 leg 유지
+
+
+async def test_multi_dedup_and_truncate() -> None:
+    """서로 다른 raw 가 같은 canonical 로 모이면 dedup(첫 query 유지), fanout_max 로 절단."""
+    m = _FakeMapper(
+        exact=set(),
+        nearest={
+            "이어폰": "가전 > 이어폰/헤드폰",
+            "무선이어폰": "가전 > 이어폰/헤드폰",
+            "TV": "가전 > TV",
+        },
+    )
+    out = await m.run(
+        [
+            CategoryQuery("이어폰", "이어폰검색"),
+            CategoryQuery("무선이어폰", "무선검색"),
+            CategoryQuery("TV", "티비검색"),
+        ],
+        settings=_settings(fanout_max=5),
+    )
+    # 중복 canonical 합침 — 첫 leg 의 query 유지
+    assert out == [("가전 > 이어폰/헤드폰", "이어폰검색"), ("가전 > TV", "티비검색")]
+
+
+async def test_search_lookups_run_in_parallel() -> None:
+    """need_idx 앵커별 search_top_k 를 병렬 실행한다 — 순차면 동시성 peak 1 (PR #73 리뷰 #3).
+
+    검색 조회를 asyncio.to_thread 로 넘기므로, gather 병렬화 시 여러 조회가 동시에 스레드에서
+    돌아 peak concurrency ≥2. 순차 for-loop 면 항상 1이라 이 테스트가 회귀를 잡는다.
+    """
+    lock = threading.Lock()
+    state = {"cur": 0, "peak": 0}
+
+    def _slow_search(vec: list[float], dsn: str, *, k: int) -> list[str]:
+        with lock:
+            state["cur"] += 1
+            state["peak"] = max(state["peak"], state["cur"])
+        time.sleep(0.05)  # 겹칠 시간 확보(병렬이면 동시 진입)
+        with lock:
+            state["cur"] -= 1
+        return ["가전 > X"]
+
+    def _embed(texts: list[str]) -> list[list[float]]:
+        return [[float(i)] for i in range(len(texts))]
+
+    def _exact(values, dsn: str) -> set[str]:
+        return set()
+
+    await map_categories(
+        category_queries=[
+            CategoryQuery("a", None),
+            CategoryQuery("b", None),
+            CategoryQuery("c", None),
+        ],
+        utterance="u",
+        settings=_settings(),
+        embed=_embed,
+        search_top_k=_slow_search,
+        exact_lookup=_exact,
+    )
+    assert state["peak"] >= 2  # 병렬이면 동시 진입 ≥2, 순차면 1

@@ -15,7 +15,7 @@ import logging
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LLMProvider = Literal["openai", "anthropic"]
@@ -150,6 +150,21 @@ class Settings(BaseSettings):
     )
     llm_call_limit: int = 2
     relaxation_max_rounds: int = 3
+
+    # ── 카테고리 하이브리드 매핑 (이슈 #59, DESIGN-CATEGORY-HYBRID-59) ──
+    # 방식 A: decompose 추측 → 임베딩 보정(exact/최근접). canonical-or-null·멀티 fan-out.
+    category_top_k: int = 5  # raw·query 앵커 최근접 조회 top-k
+    # 턴당 최대 카테고리 수(프롬프트 상한 + 코드 절단). ge=0 — 음수면 out[:fanout_max] 가
+    # 뒤에서 잘려 "fanout_max<=0 이면 정확히 0개" 절단 불변식이 깨진다(PR #73 리뷰).
+    category_fanout_max: int = Field(default=5, ge=0)
+    # per_cat_limit·merge_cap 도 fanout_max 와 같은 절단 규약(Spring size·merged[:cap]). 음수면
+    # merged[:cap] 이 "뒤에서 제외"로 뒤집혀 "cap<=0 이면 0개" 불변식이 깨진다(PR #73 리뷰).
+    category_fanout_per_cat_limit: int = Field(default=10, ge=0)  # 카테고리별 Spring 검색 size(≤30)
+    category_fanout_merge_cap: int = Field(default=30, ge=0)  # 병합 후 rerank 입력 상한
+    # pg-catalog 검색 풀 max_size — fan-out 은 한 턴에 최대 category_fanout_max leg 를 gather 로
+    # 동시 조회하므로, psycopg_pool 기본값(4)이면 그 이상 leg 가 커넥션을 기다린다. fanout 이상 +
+    # 동시 요청 헤드룸으로 명시(암묵 하드코딩 제거, PR #73 리뷰).
+    category_search_pool_max_size: int = 10
 
     # ── 장바구니 (이슈 #3, api-spec §4.1) ──
     # CART_OPTION_INVALID 재질문 상한 — 초과 시 action CART_ERROR(§4.1). 하드코딩 금지.

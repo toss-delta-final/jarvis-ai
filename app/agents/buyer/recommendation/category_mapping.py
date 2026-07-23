@@ -1,0 +1,146 @@
+"""카테고리 매핑 오케스트레이션 (이슈 #59, 방식 A — LLM 추측 → 임베딩 보정).
+
+decompose 가 추측한 카테고리(raw)들을 실제 DB 카테고리(canonical)로 보정한다. LLM 재호출
+없이 exact match → 임베딩 최근접(raw, 없으면 그 leg 의 query) 순으로 처리한다. 카테고리 신호가
+있는 leg 는 성공 시 canonical 을 내고, 신호 없는 leg(raw·query 모두 없음)는 카테고리를 강제하지
+않는다 → **canonical-or-null**(Spring 엔 canonical 또는 null 만, 미검증 raw 는 안 나간다, #22·#20).
+embed·search·exact 는 주입형 seam 이라 유닛테스트가 pg·API 없이 돈다.
+
+블로킹 호출(embed_texts·pgvector 조회·exact SELECT)은 asyncio.to_thread 로 감싸 이벤트 루프를
+막지 않는다(search_service 와 동일 패턴).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import functools
+import logging
+from collections.abc import Callable, Sequence
+
+from app.agents.buyer.recommendation.state import CategoryQuery
+from app.pipelines.category_search import exact_lookup as _exact_lookup
+from app.pipelines.category_search import search_categories_pg as _search_top_k
+from app.pipelines.embedding import embed_texts as _embed_texts
+
+logger = logging.getLogger(__name__)
+
+EmbedFn = Callable[[list[str]], list[list[float]]]
+SearchFn = Callable[..., list[str]]
+ExactFn = Callable[[Sequence[str], str], set[str]]
+
+
+def _dedup_truncate(
+    legs: list[tuple[str, str | None]], fanout_max: int
+) -> list[tuple[str, str | None]]:
+    """canonical 기준 순서보존 dedup(첫 query 유지) 후 fanout_max 로 절단."""
+    seen: set[str] = set()
+    out: list[tuple[str, str | None]] = []
+    for cat, query in legs:
+        if cat not in seen:
+            seen.add(cat)
+            out.append((cat, query))
+    return out[:fanout_max]
+
+
+async def map_categories(
+    *,
+    category_queries: Sequence[CategoryQuery],
+    utterance: str,
+    settings,
+    embed: EmbedFn | None = None,
+    search_top_k: SearchFn = _search_top_k,
+    exact_lookup: ExactFn = _exact_lookup,
+) -> list[tuple[str, str | None]]:
+    """decompose 추측들을 canonical (category, query) leg 리스트로 보정한다.
+
+    각 leg 의 query 는 그 카테고리 전용 검색 키워드(fan-out leg keyword, §6·§9) — 매핑 전
+    추측(raw)이 어디로 보정되든 원 추측의 query 를 그대로 이어 붙인다.
+    per-leg 규칙(우선순위): (1) raw 가 exact match → raw. (2) raw 있으나 exact 아님 →
+    embed(raw) 최근접. (3) raw==null 이나 query 있음 → embed(query) 최근접. (4) raw·query 모두
+    없음(빈 리스트 포함) → 신호 없음으로 보고 leg 를 만들지 않는다 → 무필터 검색(카테고리 강제
+    금지, PR #73 #22). (5) 실패는 leg 단위로 격리 — exact 매치는 DB 검증값이라 임베딩 경로 실패와
+    무관하게 보존하고, 임베딩 경로 실패(embed 전면·leg별 search)는 그 leg 만 unmapped 드롭한다
+    (canonical-or-null, #20·PR #73 리뷰). 모든 leg 가 드롭되면 빈 리스트를 낸다 — Spring 엔 canonical
+    또는 null(생략)만 나간다.
+
+    (utterance 는 매퍼 인터페이스 파라미터로 유지하되, 현재 앵커는 leg 별 raw·query 만 쓴다.)
+    """
+    dsn = settings.catalog_db_url
+    k = settings.category_top_k
+    fanout_max = settings.category_fanout_max
+    # 미주입 기본값은 질의(query) 임베딩 — 앵커(raw 추측·leg query)는 질의 쪽이므로 비대칭 검색
+    # 관례에 맞춰 RETRIEVAL_QUERY 로 바인딩한다(문서 쪽 category_seed=document, 이슈 #65·PR #73 리뷰).
+    embed = embed or functools.partial(_embed_texts, task_type=settings.embedding_task_query)
+    queries = list(category_queries)  # 빈 리스트를 강제로 채우지 않는다 — 신호 없으면 빈 결과(#22)
+    raws = [q.raw_category for q in queries]
+    qtexts = [q.query for q in queries]  # leg keyword 로 이어 붙일 원 추측 query
+
+    # exact match(DB 직접 조회)는 그 자체로 canonical 검증 — 임베딩 경로(embed/search) 실패와
+    # 독립적으로 보존한다. exact 조회 실패는 미검증 raw 를 canonical 처럼 내보내지 않으려 exact 를
+    # 비우고 임베딩 경로로 넘긴다(canonical-or-null, PR #73 #20).
+    non_null = [r for r in raws if r]
+    try:
+        exact = await asyncio.to_thread(exact_lookup, non_null, dsn) if non_null else set()
+    except Exception as exc:  # noqa: BLE001 - exact 조회 실패: exact 없음으로 두고 임베딩 경로 시도
+        logger.warning("category_exact_failed", extra={"reason": str(exc)})
+        exact = set()
+
+    # 보정(임베딩) 필요한 leg = 신호가 있는 것만: exact 아닌 raw, 또는 raw 없지만 query 있음.
+    # raw·query 모두 없는 leg(및 빈 리스트)은 카테고리를 강제하지 않는다 — 발화 전체를 앵커로
+    # 쓰지 않아 category-agnostic 질의("5만원 이하 아무거나")를 엉뚱한 카테고리로 안 좁힌다(#22).
+    need_idx = [
+        i
+        for i in range(len(raws))
+        if (raws[i] and raws[i] not in exact) or (not raws[i] and qtexts[i])
+    ]
+    nearest: dict[int, str | None] = {}
+    failed_idx: set[int] = set()  # 조회가 예외로 실패한 leg — category_unmapped(품질) 오염 방지
+    try:
+        # 앵커: raw(추측 카테고리) → 그 leg 의 query(고유 키워드). null-raw leg 이 여럿이어도 각자
+        # query 로 임베딩해 fan-out 폭을 지킨다(PR #73 #17).
+        anchors = [raws[i] or qtexts[i] for i in need_idx]
+        vecs = await asyncio.to_thread(embed, anchors) if anchors else []
+        # 앵커별 최근접 조회를 병렬 실행 — 카테고리 여러 개(상황형 질의)일수록 직렬 지연이
+        # leg 수만큼 쌓이므로 gather 로 동시 실행한다(순서 보존 → need_idx 매핑 유지, §6).
+        # return_exceptions=True — leg 하나의 순간 실패(pg 경합·타임아웃)가 gather 전체를 던져
+        # 정상 leg 까지 무필터로 날리지 않게 격리한다(그 leg 만 unmapped 로 드롭). recommendation/
+        # graph 의 leg 별 SpringUnavailable 격리(§6)와 일관 — 부분 성공 보존(PR #73 리뷰).
+        hit_lists = await asyncio.gather(
+            *(asyncio.to_thread(search_top_k, vecs[j], dsn, k=k) for j in range(len(need_idx))),
+            return_exceptions=True,
+        )
+        for j, hits in enumerate(hit_lists):
+            if isinstance(hits, Exception):
+                # 이 앵커 조회만 실패 — 사유를 남기고 그 leg 만 canonical 없이 드롭(무필터 아님).
+                logger.warning("category_leg_search_failed", extra={"reason": str(hits)})
+                failed_idx.add(need_idx[j])
+                nearest[need_idx[j]] = None
+            else:
+                nearest[need_idx[j]] = hits[0] if hits else None
+    except Exception as exc:  # noqa: BLE001 - embed 전면 실패 등: 임베딩 경로 leg 만 드롭
+        # 임베딩 경로(embed 배치·전면 조회)가 통째로 죽어도, 이미 DB 검증된 exact 매치는 아래
+        # result 에서 보존한다(canonical-or-null 은 exact·search 히트 둘 다 canonical 이라 성립).
+        # need_idx(임베딩 필요) leg 는 전부 실패로 표시 → canonical 없이 드롭된다(PR #73 리뷰).
+        logger.warning("category_embed_failed", extra={"reason": str(exc)})
+        failed_idx.update(need_idx)
+
+    result: list[tuple[str, str | None]] = []
+    for i, r in enumerate(raws):
+        if r and r in exact:
+            logger.info("category_mapped", extra={"raw": r, "canonical": r})
+            result.append((r, qtexts[i]))
+            continue
+        if i not in need_idx:
+            continue  # 신호 없는 leg(raw·query 모두 없음) → 카테고리 강제 없이 스킵(#22)
+        canonical = nearest.get(i)
+        if canonical:
+            event = "category_repaired" if r else "category_fallback_top1"
+            logger.info(event, extra={"raw": r, "canonical": canonical})
+            result.append((canonical, qtexts[i]))
+        elif i in failed_idx:
+            continue  # 조회 예외로 실패 — 이미 실패 로그로 관측됨. 품질 메트릭 오염 방지로 드롭만.
+        else:
+            # 신호(raw/query)는 있었고 조회도 정상이나 히트 0건 → canonical 없이 드롭(top-k 미스율
+            # 품질 신호, §11). categories 미시드·임베딩 결측 등 드문 상태라 관측 가능하게 남긴다(#4).
+            logger.warning("category_unmapped", extra={"raw": r})
+    return _dedup_truncate(result, fanout_max)

@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 
 from langgraph.store.base import BaseStore
@@ -21,6 +22,7 @@ from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.graph import stream_cart_add, stream_cart_view
 from app.agents.buyer.cart.state import get_cart_store
 from app.agents.buyer.fallback import stream_fallback
+from app.agents.buyer.recommendation.category_mapping import map_categories as _map_categories
 from app.agents.buyer.recommendation.decompose import decompose
 from app.agents.buyer.recommendation.state import get_revert_store
 from app.agents.buyer.recommendation.graph import stream_recommendation
@@ -38,6 +40,8 @@ from app.agents.buyer.recommendation.state import CartIntent
 from app.schemas.chat import DoneData, ErrorData
 from app.schemas.spring import ProductSearchFilters
 from app.services import search_service, spring_client
+
+logger = logging.getLogger(__name__)
 
 _NAMESPACE_ROOT = "buyer_thread_filters"
 _FILTERS_KEY = "filters"
@@ -84,11 +88,12 @@ async def run_buyer_turn(
     llm=None,
     search=None,
     push_fn=None,
+    map_categories=None,
     observer=None,
 ) -> AsyncIterator[str]:
     """구매자 1턴을 SSE 프레임으로 스트리밍한다(open_stream 이 감싸는 inner).
 
-    llm/search/push_fn 미지정 시 라이브 기본값 — 테스트는 fake 를 주입한다.
+    llm/search/push_fn/map_categories 미지정 시 라이브 기본값 — 테스트는 fake 를 주입한다.
     LLM 미구성(개발·CI)이면 네트워크 호출 없이 곧바로 LLM_UNAVAILABLE error 를 낸다.
     """
     settings = get_settings()
@@ -149,6 +154,7 @@ async def run_buyer_turn(
             tier="fast",
             last_recommendations=last_reco,
             pending_cart=pending_dict,
+            category_fanout_max=settings.category_fanout_max,
         )
     except LLMError as exc:
         code = "LLM_TIMEOUT" if _is_timeout(exc) else "LLM_UNAVAILABLE"
@@ -188,7 +194,45 @@ async def run_buyer_turn(
             yield frame
         return
 
-    # recommend — 멀티턴 병합 필터는 추천 intent 에서만 저장(담기/조회가 덮어쓰지 않게).
+    # recommend — 카테고리 하이브리드 매핑(이슈 #59, 방식 A): decompose 추측을 canonical 로
+    # 보정(canonical-or-null). 매핑이 죽거나 신호가 없으면 category 없이(전체) 검색으로 degrade.
+    if (
+        prior is not None
+        and prior.category
+        and not any(q.raw_category or q.query for q in decision.category_queries)
+    ):
+        # 리파인 턴(예: "더 저렴한 걸로") — 이번 턴에 카테고리 신호가 전혀 없음(빈 리스트, 또는
+        # raw·query 가 모두 없는 leg 만). prior 는 이미 canonical(§7)이라 재매핑(pg 왕복) 없이 그대로
+        # 승계한다. 매핑에 태우면 신호가 없어 빈 legs 가 나오고(#22), 아래 else 의 category=None 으로
+        # 직전 카테고리가 지워진다 — 리파인인데 필터가 풀려버린다(PR #73 #12).
+        # 단, raw 는 null 이라도 유의미한 query 가 있으면(신규 상황형 질의) 검색 의도가 있는 것이라
+        # 아래 매핑을 태워야 한다 — prior 로 하이재킹하면 fan-out 이 죽고 #59 문제가 재발(PR #73 #19).
+        decision.category_legs = [(prior.category, None)]
+    else:
+        mapper = map_categories or _map_categories
+        try:
+            decision.category_legs = await mapper(
+                category_queries=decision.category_queries,
+                utterance=request.message,
+                settings=settings,
+            )
+        except Exception as exc:  # noqa: BLE001 - 매핑 호출 자체의 예외(시그니처 불일치·버그 등)
+            # embed/DB 실패는 map_categories 내부에서 leg 단위 격리(exact 보존·§5·#20)로 처리된다.
+            # 여기까지 오는 건 map_categories 호출 자체의 버그라 raw(DB 미검증)를 신뢰할 근거가 없다 —
+            # canonical-or-null 불변식대로 빈 legs 로 degrade(→ filters.category=None). 미검증 원문이
+            # Spring·조건 칩·멀티턴 승계로 새지 않게(PR #73 리뷰). 관측 로그는 남긴다.
+            logger.warning("category_map_failed", extra={"reason": str(exc)})
+            decision.category_legs = []
+    if decision.category_legs:
+        # 대표 canonical — 단일 filters.category 필드·조건 칩·멀티턴 승계 호환(§7).
+        decision.filters.category = decision.category_legs[0][0]
+    else:
+        # 매핑 결과 없음 → LLM 이 echo 했을 수 있는 미검증 filters.category 를 비운다. category 는
+        # 이제 전적으로 category_legs(canonical) 경유로만 흐른다 — 미시드·매핑 실패 시에도 보정 안 된
+        # 원문이 Spring 검색·조건 칩으로 새지 않게(PR #73 리뷰 #13/#15).
+        decision.filters.category = None
+
+    # 멀티턴 병합 필터는 추천 intent 에서만 저장(담기/조회가 덮어쓰지 않게).
     await thread_store.put(thread_key, decision.filters)
     # 소모품 억제 되돌리기(결정 14-F) — 이번 턴 revert + 스레드 누적을 합쳐 억제 제외.
     # LLM 이 뽑은 임의 문자열을 무한 누적하지 않게 소모품 화이트리스트(억제 대상)와 대조해 통과분만 저장.
