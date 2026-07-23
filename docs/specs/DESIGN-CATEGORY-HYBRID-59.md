@@ -91,6 +91,19 @@ category-agnostic 질의**("5만원 이하 아무거나")는 카테고리를 강
 `categoryName` 에 넣으므로 코드 변경 없음. → **OPEN-1**(BE 형식 검증; 슬래시 결합 등이면 변환
 한 줄 추가).
 
+### 4.2 임베딩 task_type — 비대칭 검색 (이슈 #65·PR #73 리뷰)
+
+임베딩 API(gemini-embedding-001)는 질의와 문서에 **다른 `task_type`을 실어야** 검색 품질이
+오른다(비대칭 검색). 저장소 공통 규약(`search_service`=질의 / `artifacts_batch`=문서)에 맞춰
+카테고리 경로 양끝을 바인딩한다:
+
+- **매핑 앵커(질의 쪽)**: `map_categories` 의 미주입 기본 embed 는
+  `functools.partial(embed_texts, task_type=RETRIEVAL_QUERY)` — raw 추측·leg query 는 질의다.
+- **categories 시드(문서 쪽)**: `seed_from_file` 의 기본 embed 는 `RETRIEVAL_DOCUMENT` — 저장
+  임베딩은 문서다.
+- 한쪽만 태깅되면(예: 시드만 문서 task) 질의·문서 task 불일치로 코사인이 왜곡돼 top-k 매칭
+  품질이 **에러 없이 조용히** 떨어진다. 두 기본값을 항상 짝으로 유지한다.
+
 ## 5. 실패 degrade — leg 단위 격리 (canonical-or-null, PR #73 #20·리뷰)
 
 임베딩 API(Google)나 카테고리 DB(pg-catalog)가 요청 시점에 죽으면 추측을 DB로 보정할 수
@@ -190,6 +203,10 @@ decompose 프롬프트("PRIOR_FILTERS 병합")로도 유도하지만(#10a), Haik
   **매핑이 leg 별 query 를 보존**하는 이유: fan-out leg 마다 그 카테고리 전용 query 를 keyword 로
   써야 하므로(§6), canonical 만 담는 `list[str]` 로는 leg keyword 를 복원할 수 없다.
 - `case: int`는 유지하되 미사용 명시(단일/멀티는 `len(categoryQueries)`로 판정).
+- **절단 규약(PR #73 리뷰)**: `_parse_category_queries` 는 `category_fanout_max` 로 개수를 절단하되,
+  **절단 전에 raw·query 중 하나라도 있는(신호) leg 만 남긴다**. 빈 leg(둘 다 null)은 map_categories
+  에서 어차피 스킵되므로, LLM 이 앞쪽에 빈 항목을 섞어내도 fanout 예산만 먹고 뒤쪽 실제 카테고리를
+  밀어내지 않는다(§6 상한 의도 보존). `_dedup_truncate`·`_merge_fanout_results` 와 동일 slice 규약.
 
 ## 10. config (하드코딩 금지)
 
@@ -200,6 +217,11 @@ decompose 프롬프트("PRIOR_FILTERS 병합")로도 유도하지만(#10a), Haik
 | `category_fanout_per_cat_limit` | 10 | leg 별 Spring `size`(≤30) |
 | `category_fanout_merge_cap` | 30 | 병합 후 rerank 입력 상한 |
 | `category_search_pool_max_size` | 10 | pg-catalog 검색 풀 max_size(fan-out 동시성 ≥ fanout, PR #73 리뷰) |
+
+**절단 튜너블 불변식(PR #73 리뷰):** `category_fanout_max`·`category_fanout_per_cat_limit`·
+`category_fanout_merge_cap` 은 모두 slice 절단(`out[:cap]`·Spring `size`)에 쓰이므로 `Field(ge=0)` 로
+음수를 거부한다 — 음수면 Python slice 가 "뒤에서 N 개 제외"로 뒤집혀 "≤0 이면 정확히 0개" 규약이
+조용히 깨진다.
 
 `category_distance_cut`은 **도입 안 함**(never-null 정책상 거리 컷 null 없음). 3s 타임아웃은
 `spring_timeout_s` 재사용. `stream_first_token_timeout_s`는 로컬 미커밋 — 손대지 않음.
