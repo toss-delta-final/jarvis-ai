@@ -398,4 +398,26 @@ finding으로 바꾸면 API의 `LLM_UNAVAILABLE` 계약이 깨진다. gather 병
 - [x] **Step 3: gather 결과에서 `LLMNotConfigured`를 finding 변환 전에 재전파한다**
 - [x] **Step 4: 일반 예외·timeout의 기존 partial degrade 테스트를 함께 실행한다**
 - [x] **Step 5: ruff·전체 pytest·diff 검토 후 Lore 커밋과 push를 수행한다**
+- [x] **Step 6: 리뷰 답변·resolve 후 새 CI/Claude Review를 다시 확인한다**
+
+### Task 8: Claude Review follow-up — provider 미구성 관측성
+
+**Review:** PR #88 unresolved thread `PRRT_kwDOTZymn86THW11`
+
+**Decision:** 반영한다. API key 미주입은 모든 판매자 요청에 반복되는 전역 배포 오류이므로
+클라이언트 SSE만으로 끝내면 운영자가 원인을 찾기 어렵다. 네 catch가 공용 helper를 호출하게
+해 provider·lane·threadId를 error level로 기록한다. API key와 예외 원문은 로그하지 않으며,
+요청당 실제 매핑 경계 한 곳에서만 남긴다.
+
+**Files:**
+- Modify: `docs/specs/SPEC-SELLER-001.md`
+- Modify: `tests/unit/test_seller_api.py`
+- Modify: `app/api/seller.py`
+- Modify: `CHANGELOG.md`
+
+- [x] **Step 1: SPEC v1.1.3에 비밀값 없는 provider 오류 로그 계약을 기록한다**
+- [x] **Step 2: general·routing 미구성 경로가 provider/lane/thread를 로그하는 RED 테스트를 추가한다**
+- [x] **Step 3: `_llm_unavailable` 공용 helper가 오류 로그와 SSE 생성을 함께 담당하게 한다**
+- [x] **Step 4: 네 `LLMNotConfigured` catch가 lane/thread context를 전달하도록 변경한다**
+- [x] **Step 5: ruff·전체 pytest·diff 검토 후 Lore 커밋과 push를 수행한다**
 - [ ] **Step 6: 리뷰 답변·resolve 후 새 CI/Claude Review를 다시 확인한다**
