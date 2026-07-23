@@ -157,8 +157,10 @@ class Settings(BaseSettings):
     # 턴당 최대 카테고리 수(프롬프트 상한 + 코드 절단). ge=0 — 음수면 out[:fanout_max] 가
     # 뒤에서 잘려 "fanout_max<=0 이면 정확히 0개" 절단 불변식이 깨진다(PR #73 리뷰).
     category_fanout_max: int = Field(default=5, ge=0)
-    category_fanout_per_cat_limit: int = 10  # 카테고리별 Spring 검색 size(≤30)
-    category_fanout_merge_cap: int = 30  # 병합 후 rerank 입력 상한
+    # per_cat_limit·merge_cap 도 fanout_max 와 같은 절단 규약(Spring size·merged[:cap]). 음수면
+    # merged[:cap] 이 "뒤에서 제외"로 뒤집혀 "cap<=0 이면 0개" 불변식이 깨진다(PR #73 리뷰).
+    category_fanout_per_cat_limit: int = Field(default=10, ge=0)  # 카테고리별 Spring 검색 size(≤30)
+    category_fanout_merge_cap: int = Field(default=30, ge=0)  # 병합 후 rerank 입력 상한
     # pg-catalog 검색 풀 max_size — fan-out 은 한 턴에 최대 category_fanout_max leg 를 gather 로
     # 동시 조회하므로, psycopg_pool 기본값(4)이면 그 이상 leg 가 커넥션을 기다린다. fanout 이상 +
     # 동시 요청 헤드룸으로 명시(암묵 하드코딩 제거, PR #73 리뷰).

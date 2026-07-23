@@ -38,3 +38,15 @@ def test_negative_fanout_max_rejected() -> None:
     """
     with pytest.raises(ValidationError):
         Settings(_env_file=None, category_fanout_max=-1)
+
+
+def test_negative_slice_tunables_rejected() -> None:
+    """merge_cap·per_cat_limit 도 같은 절단 규약(merged[:cap]·Spring size)이라 음수를 거부한다.
+
+    _merge_fanout_results 의 merged[:cap] 은 cap 이 음수면 "뒤에서 제외"가 되어 "cap<=0 이면 0개"
+    주석이 깨지고, per_cat_limit 은 음수 그대로 Spring 검색 limit 으로 나간다(PR #73 리뷰).
+    """
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, category_fanout_merge_cap=-1)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, category_fanout_per_cat_limit=-1)
