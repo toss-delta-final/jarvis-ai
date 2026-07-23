@@ -13,6 +13,7 @@ embed·search·exact 는 주입형 seam 이라 유닛테스트가 pg·API 없이
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 from collections.abc import Callable, Sequence
 
@@ -46,7 +47,7 @@ async def map_categories(
     category_queries: Sequence[CategoryQuery],
     utterance: str,
     settings,
-    embed: EmbedFn = _embed_texts,
+    embed: EmbedFn | None = None,
     search_top_k: SearchFn = _search_top_k,
     exact_lookup: ExactFn = _exact_lookup,
 ) -> list[tuple[str, str | None]]:
@@ -67,6 +68,9 @@ async def map_categories(
     dsn = settings.catalog_db_url
     k = settings.category_top_k
     fanout_max = settings.category_fanout_max
+    # 미주입 기본값은 질의(query) 임베딩 — 앵커(raw 추측·leg query)는 질의 쪽이므로 비대칭 검색
+    # 관례에 맞춰 RETRIEVAL_QUERY 로 바인딩한다(문서 쪽 category_seed=document, 이슈 #65·PR #73 리뷰).
+    embed = embed or functools.partial(_embed_texts, task_type=settings.embedding_task_query)
     queries = list(category_queries)  # 빈 리스트를 강제로 채우지 않는다 — 신호 없으면 빈 결과(#22)
     raws = [q.raw_category for q in queries]
     qtexts = [q.query for q in queries]  # leg keyword 로 이어 붙일 원 추측 query

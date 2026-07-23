@@ -18,7 +18,10 @@ from app.agents.buyer.recommendation.state import CategoryQuery
 
 def _settings(*, top_k: int = 5, fanout_max: int = 5) -> SimpleNamespace:
     return SimpleNamespace(
-        catalog_db_url="postgresql://x", category_top_k=top_k, category_fanout_max=fanout_max
+        catalog_db_url="postgresql://x",
+        category_top_k=top_k,
+        category_fanout_max=fanout_max,
+        embedding_task_query="RETRIEVAL_QUERY",
     )
 
 
@@ -64,6 +67,32 @@ class _FakeMapper:
             search_top_k=self.search,
             exact_lookup=self.exact_lookup,
         )
+
+
+async def test_default_embed_carries_query_task_type(monkeypatch) -> None:
+    """embed 미주입(프로덕션 경로)이면 질의 task_type(RETRIEVAL_QUERY)로 임베딩한다.
+
+    저장소 비대칭 임베딩 관례(search_service=query / artifacts_batch=document, 이슈 #65)에서
+    이 앵커(raw 추측·leg query)는 질의 쪽이다. task_type 이 안 실리면 Google 기본 모드로
+    떨어져, 문서 쪽(category_seed=document)과 task 불일치 시 코사인이 왜곡된다(PR #73 리뷰).
+    """
+    import app.agents.buyer.recommendation.category_mapping as cm
+
+    captured: dict = {}
+
+    def fake_embed_texts(texts, *, task_type=None):
+        captured["task_type"] = task_type
+        return [[0.0] for _ in texts]
+
+    monkeypatch.setattr(cm, "_embed_texts", fake_embed_texts)
+    await map_categories(
+        category_queries=[CategoryQuery("여행용품", "파우치")],  # exact 아님 → 임베딩 경로
+        utterance="발화",
+        settings=_settings(),
+        search_top_k=lambda vec, dsn, *, k: [],
+        exact_lookup=lambda values, dsn: set(),
+    )
+    assert captured["task_type"] == "RETRIEVAL_QUERY"
 
 
 async def test_exact_match_uses_raw() -> None:

@@ -6,6 +6,7 @@ DB upsert(pg-catalog)는 통합 테스트 소관(@pytest.mark.integration).
 
 from __future__ import annotations
 
+import app.pipelines.category_seed as category_seed
 from app.pipelines.category_seed import embed_categories
 
 
@@ -44,3 +45,24 @@ def test_empty_leaves_skip_embed() -> None:
 
     assert embed_categories([], fake_embed) == []
     assert called is False
+
+
+def test_seed_from_file_default_embed_uses_document_task_type(monkeypatch, tmp_path) -> None:
+    """embed 미주입(프로덕션 시드 경로)이면 문서 task_type(RETRIEVAL_DOCUMENT)로 임베딩한다.
+
+    categories 테이블 저장 임베딩은 문서 쪽 — artifacts_batch 처럼 embedding_task_document 를
+    실어야 map_categories 질의(RETRIEVAL_QUERY)와 비대칭 검색 관례가 맞는다(이슈 #65·PR #73 리뷰).
+    """
+    captured: dict = {}
+
+    def fake_embed_texts(texts, *, task_type=None):
+        captured["task_type"] = task_type
+        return [[0.0] for _ in texts]
+
+    monkeypatch.setattr(category_seed, "_embed_texts", fake_embed_texts)
+    monkeypatch.setattr(category_seed, "upsert_categories", lambda dsn, rows, model: len(rows))
+    src = tmp_path / "categories.json"
+    src.write_text('["가전 > TV"]', encoding="utf-8")
+
+    category_seed.seed_from_file(str(src), "postgresql://x")
+    assert captured["task_type"] == "RETRIEVAL_DOCUMENT"

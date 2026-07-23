@@ -10,9 +10,13 @@
 
 from __future__ import annotations
 
+import functools
 import json
 from collections.abc import Callable, Sequence
 from pathlib import Path
+
+from app.core.config import get_settings
+from app.pipelines.embedding import embed_texts as _embed_texts
 
 EmbedFn = Callable[[list[str]], list[list[float]]]
 
@@ -66,7 +70,16 @@ def upsert_categories(dsn: str, rows: Sequence[tuple[str, list[float]]], model: 
         pool.close()
 
 
-def seed_from_file(source_path: str, dsn: str, embed: EmbedFn, model: str) -> int:
-    """소스 파일 → 임베딩 → categories upsert 를 한 번에 수행한다(1회 빌드)."""
+def seed_from_file(
+    source_path: str, dsn: str, embed: EmbedFn | None = None, model: str | None = None
+) -> int:
+    """소스 파일 → 임베딩 → categories upsert 를 한 번에 수행한다(1회 빌드).
+
+    미주입 기본값은 문서(document) 임베딩 — categories 저장 임베딩은 문서 쪽이므로 비대칭 검색
+    관례에 맞춰 RETRIEVAL_DOCUMENT 로 바인딩한다(질의 쪽 map_categories=query, 이슈 #65·PR #73 리뷰).
+    """
+    settings = get_settings()
+    embed = embed or functools.partial(_embed_texts, task_type=settings.embedding_task_document)
+    model = model or settings.embedding_model_id
     rows = embed_categories(load_leaves(source_path), embed)
     return upsert_categories(dsn, rows, model)
