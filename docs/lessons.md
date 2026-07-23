@@ -13,6 +13,22 @@
 
 ---
 
+## [2026-07-23] bounded suffix scan 밖으로 밀린 시크릿 prefix는 partial token이 붙은 뒤에도 별도로 추적해야 한다
+- 증상: `Bearer` 뒤 연속 newline이 보류 상한을 정확히 채운 다음 첫 token 문자가 도착하면, suffix scan은 prefix 시작점을 놓치고 overlong 판정은 `rest.isspace()`가 깨져 전체 후보를 평문으로 방출했다.
+- 원인: scan window 경계와 overlong fallback을 독립적으로 설계하면서, whitespace-only 상태에서 partial token 상태로 전이되는 한 지점을 두 조건 모두가 놓쳤다.
+- 규칙:
+  - bounded prefix guard는 임계값 직전·정확히 일치·직후에 다음 상태 문자가 붙는 전이를 각각 테스트한다.
+  - overlong Bearer 판정은 선행 whitespace 뒤의 token이 최소 길이 미만인 동안에도 후보로 유지하고, 명백한 delimiter가 나타날 때만 안전 텍스트로 해제한다.
+- 관련: `app/agents/seller/middleware.py::_overlong_bearer_prefix_start`, `tests/unit/test_seller_middleware.py`, PR #87 리뷰
+
+## [2026-07-23] 스트림에서 고정 길이 시크릿을 즉시 마스킹해도 다음 청크의 결합 문자를 먼저 흡수해야 한다
+- 증상: 주민번호 마지막 숫자까지 도착한 청크에서 marker를 즉시 내보낸 뒤, 다음 청크에 그 숫자의 등록 Variation Selector가 오면 selector 하나가 marker 뒤에 남아 full-string 정제 결과와 달라졌다.
+- 원인: 가변 길이 API/Bearer token만 후속 continuation 상태로 전환했고, 고정 길이 주민번호는 매치 순간 완결됐다고 간주했다. Unicode 결합 문맥은 visible 패턴의 끝보다 한 청크 늦게 확정될 수 있다.
+- 규칙:
+  - 스트림 매치가 현재 skeleton 끝에서 끝나면 패턴 길이와 무관하게 후속 skeleton-empty invisibles를 첫 visible delimiter 전까지 흡수한다.
+  - full-string sanitizer+mask 결과와 stream guard 결과를 여러 청크 분할로 비교하는 differential 검증을 수행한다.
+- 관련: `app/agents/seller/middleware.py::StreamingOutputGuard`, `tests/unit/test_seller_middleware.py`, 이슈 #72
+
 ## [2026-07-22] 멱등 row 하나로 PROCESSING과 COMPLETED를 겸하면 부분 실패가 영구 duplicate가 된다
 - 증상: I-20이 버퍼 처리 전에 영구 마커를 넣은 뒤 consolidation의 `False` 반환을 무시해 버퍼를 삭제했고, 요청 취소·프로세스 crash 때는 cleanup이 실행되지 않아 미완료 통지가 이후 영구 `duplicate`가 됐다.
 - 원인: 수신 선점 락과 처리 완료 기록을 같은 불변 row로 표현했고, consolidation도 정상 no-op과 실패를 같은 boolean `False`로 표현했다. 서로 다른 상태를 합치니 호출자가 실패와 성공을 구분할 수 없었다.
