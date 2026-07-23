@@ -82,6 +82,23 @@ async def test_truncates_to_fanout_max() -> None:
     assert len(d.category_queries) == 3
 
 
+async def test_empty_legs_do_not_consume_fanout_budget() -> None:
+    """category·query 둘 다 없는 빈 leg 가 앞에 섞여도 실제 신호 leg 를 밀어내지 않는다.
+
+    LLM 이 [{null,null} x N, {실제}...] 처럼 빈 항목을 앞에 내보내면, 원본 순서 절단(out[:max])은
+    빈 항목이 fanout 예산을 먹어 뒤쪽 실제 카테고리를 잘라낸다. map_categories 는 어차피 빈 leg 를
+    스킵하므로, 절단 전에 신호(raw·query) 있는 leg 만 남겨 §9 상한 의도를 지킨다(PR #73 리뷰).
+    """
+    cq = [
+        {"category": None, "query": None},
+        {"category": None, "query": None},
+        {"category": "c1 > m1", "query": "q1"},
+        {"category": "c2 > m2", "query": "q2"},
+    ]
+    d = await _run(_raw(categoryQueries=cq), category_fanout_max=2)
+    assert [c.raw_category for c in d.category_queries] == ["c1 > m1", "c2 > m2"]
+
+
 async def test_fanout_max_zero_truncates_to_empty() -> None:
     """fanout_max<=0(운영 설정 실수)면 정확히 0개로 절단한다 — slice 의미와 일치(PR #73 리뷰).
 
