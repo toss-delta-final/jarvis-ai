@@ -14,13 +14,74 @@ stream(평문 채팅)에서는 제외한다.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Any, Protocol, runtime_checkable
+from dataclasses import dataclass, field
+from typing import Any, Literal, Protocol, runtime_checkable
 
-from app.core.config import get_settings
+from app.core.config import LLMProvider, Settings, get_settings
+
+ModelTier = Literal["fast", "smart"]
+
+
+@dataclass(frozen=True)
+class ResolvedModel:
+    """활성 provider에서 tier에 대응하는 모델 설정."""
+
+    provider: LLMProvider
+    tier: ModelTier
+    model_id: str
+    api_key: str = field(repr=False)
+    reasoning_effort: str | None = None
 
 
 class LLMError(Exception):
     """LLM 호출 실패(오류/타임아웃/미구성). 상위에서 LLM_UNAVAILABLE / LLM_TIMEOUT 로 매핑한다."""
+
+
+class LLMNotConfigured(LLMError):
+    """활성 provider의 API key가 없어 모델을 만들 수 없다."""
+
+
+def resolve_model_id(settings: Settings, tier: ModelTier) -> str:
+    """API key와 무관하게 활성 provider의 tier별 모델 ID를 해석한다."""
+    if tier not in ("fast", "smart"):
+        raise LLMError(f"unknown tier: {tier!r}")
+
+    if settings.llm_provider == "openai":
+        return {
+            "fast": settings.openai_fast_model_id,
+            "smart": settings.openai_smart_model_id,
+        }[tier]
+    return {"fast": settings.haiku_model_id, "smart": settings.sonnet_model_id}[tier]
+
+
+def resolve_provider_model(settings: Settings, tier: ModelTier) -> ResolvedModel:
+    """provider/tier를 모델 ID·API key·reasoning effort로 해석한다."""
+    model_id = resolve_model_id(settings, tier)
+
+    provider = settings.llm_provider
+    if provider == "openai":
+        if not settings.openai_api_key:
+            raise LLMNotConfigured("openai API key is not configured")
+        reasoning = {
+            "fast": settings.openai_fast_reasoning_effort,
+            "smart": settings.openai_smart_reasoning_effort,
+        }
+        return ResolvedModel(
+            provider=provider,
+            tier=tier,
+            model_id=model_id,
+            api_key=settings.openai_api_key,
+            reasoning_effort=reasoning[tier],
+        )
+
+    if not settings.anthropic_api_key:
+        raise LLMNotConfigured("anthropic API key is not configured")
+    return ResolvedModel(
+        provider=provider,
+        tier=tier,
+        model_id=model_id,
+        api_key=settings.anthropic_api_key,
+    )
 
 
 @runtime_checkable
@@ -217,28 +278,27 @@ def get_llm() -> LLMClient | None:
     키가 없는 개발·CI 에서 네트워크 호출 없이 곧바로 미구성 경로(LLM_UNAVAILABLE)로 빠지게 한다.
     """
     settings = get_settings()
-    provider = settings.llm_provider.lower()
+    try:
+        fast = resolve_provider_model(settings, "fast")
+        smart = resolve_provider_model(settings, "smart")
+    except LLMNotConfigured:
+        return None
 
-    if provider == "openai":
-        if not settings.openai_api_key:
-            return None
+    if fast.provider == "openai":
         return OpenAILLM(
-            settings.openai_api_key,
-            fast_model=settings.openai_fast_model_id,
-            smart_model=settings.openai_smart_model_id,
+            fast.api_key,
+            fast_model=fast.model_id,
+            smart_model=smart.model_id,
             timeout=settings.llm_timeout_s,
             max_retries=settings.llm_max_retries,
-            fast_reasoning_effort=settings.openai_fast_reasoning_effort,
-            smart_reasoning_effort=settings.openai_smart_reasoning_effort,
+            fast_reasoning_effort=fast.reasoning_effort or "",
+            smart_reasoning_effort=smart.reasoning_effort or "",
         )
 
-    # 기본값: anthropic
-    if not settings.anthropic_api_key:
-        return None
     return AnthropicLLM(
-        settings.anthropic_api_key,
-        fast_model=settings.haiku_model_id,
-        smart_model=settings.sonnet_model_id,
+        fast.api_key,
+        fast_model=fast.model_id,
+        smart_model=smart.model_id,
         timeout=settings.llm_timeout_s,
         max_retries=settings.llm_max_retries,
     )

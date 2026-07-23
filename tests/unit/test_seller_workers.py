@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.agents.seller import models as seller_models
 from app.agents.seller.prompts import (
     ABUSE_PROMPT,
     BEHAVIOR_PROMPT,
@@ -44,6 +45,16 @@ from app.agents.seller.workers import (
     build_report_judge,
     build_sales_anomaly_agent,
 )
+from app.core.config import Settings
+
+
+@pytest.fixture(autouse=True)
+def _configured_seller_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """에이전트 조립 테스트에 네트워크 호출 없는 dummy OpenAI 설정을 주입한다."""
+    seller_models._cached_model.cache_clear()
+    settings = Settings(_env_file=None, openai_api_key="test-key")
+    monkeypatch.setattr(seller_models, "get_settings", lambda: settings)
+
 
 # (analysis_type, 도구 목록, 프롬프트, 빌더, 배정표 기대 도구명) — 워커 추가 시 여기만 확장.
 WORKERS = [

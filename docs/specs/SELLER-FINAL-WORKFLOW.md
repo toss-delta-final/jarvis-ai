@@ -1,6 +1,6 @@
 # SELLER-FINAL — 워크플로우 명세서
 
-> **버전**: v1.0.0 · **기준일**: 2026-07-20 · **상태**: MVP 확정
+> **버전**: v1.1.0 · **기준일**: 2026-07-23 · **상태**: MVP 확정
 > 판매자 멀티에이전트 MVP(1~4-3단계) 완료 시점의 **요청 수명주기 정본**.
 > 계약 근거: api-spec 사본 v0.14.0 §3.2·§4.4·§4.5, [SPEC-SELLER-001](SPEC-SELLER-001.md), BE·FE 확정(2026-07-17).
 >
@@ -30,7 +30,7 @@ FE ──(JWT)──> Spring ──(CH-6 세션 발급)──┐
 | ① | confirm (`{"action":"confirm","draftId":"…"}`) | 코드 JSON 파싱, LLM 0회 | HITL 실행 레인(§5) |
 | ①.5 | 추천 적용 ("N번 적용해줘" 정형 발화) | 코드 정규식 전체매칭, LLM 0회 | 추천 적용 레인(§6) |
 | ② | scope 위반 (경쟁사·타 판매자 등) | 코드 패턴(check_scope), LLM 0회 | 거절 token → done |
-| ③ | supervisor 3분기 라우팅 | Haiku t=0 + 코드 후처리 | analysis / product / general |
+| ③ | supervisor 3분기 라우팅 | fast tier + 코드 후처리 | analysis / product / general |
 
 라우팅 코드 후처리(4-1a): supervisor 장애(예외·타임아웃·비정형) = **general 폴백** + warning /
 confidence < 0.6 (`seller_route_confidence_min`) = **analysis 보수 재지정**(원분류 analysis 는 유지).
@@ -38,15 +38,15 @@ confidence < 0.6 (`seller_route_confidence_min`) = **analysis 보수 재지정**
 ## 3. analysis 레인 — 분석 파이프라인
 
 ```
-질문 → [이력 주입] → planner(Haiku) → resolve_plan(코드: 기간 환산) 
-     → 워커 팬아웃(asyncio.gather, 1~5종) → report(Sonnet) ⇄ 검증 루프 ≤3회
-     → recommend(Sonnet) → compose → save_history → SSE token → done
+질문 → [이력 주입] → planner(fast) → resolve_plan(코드: 기간 환산)
+     → 워커 팬아웃(asyncio.gather, 1~5종) → report(smart) ⇄ 검증 루프 ≤3회
+     → recommend(smart) → compose → save_history → SSE token → done
 ```
 
 1. **이력 주입(4-3)**: pg-profile 에서 최근 5건을 planner **입력 메시지**에 주입(프롬프트 불변). 조회 실패 시 주입 없이 계속.
 2. **planner**: 워커 선택 + 기간 정규 어휘 재표현만. 날짜 환산은 코드(`calc.normalize_period`) — "이번 달" 등 미지원 표현·clarification 은 되묻기 token → done.
-3. **워커 5종**(sales_anomaly·conversion·behavior·churn·abuse): Haiku t=0, Spring 집계 콜백 도구만(쓰기 도구 구조적 부재), `AnalysisFinding` 구조화 출력. 진행 token 을 유형별 방출.
-4. **검증 루프**: 결정론 검사(수치 정합 등) + judge(Haiku) 채점 21/30 — 판정·재작성 지시는 전부 코드. 루프 소진/LLM 장애 시 마지막 보고서 미달 채택(degrade).
+3. **워커 5종**(sales_anomaly·conversion·behavior·churn·abuse): fast tier, Spring 집계 콜백 도구만(쓰기 도구 구조적 부재), `AnalysisFinding` 구조화 출력. 진행 token 을 유형별 방출.
+4. **검증 루프**: 결정론 검사(수치 정합 등) + judge(fast) 채점 21/30 — 판정·재작성 지시는 전부 코드. 루프 소진/LLM 장애 시 마지막 보고서 미달 채택(degrade).
 5. **recommend**: `RecommendationSet`(≤5건, **목록 순서 = "N번" 계약**). 실패는 빈 추천 degrade — 보고서를 죽이지 않는다.
 6. **save_history**: 질문·유형·기간·보고서 요약(500자)·구조화 추천을 pg-profile 저장. 실패는 warning 후 계속.
 
@@ -55,7 +55,7 @@ confidence < 0.6 (`seller_route_confidence_min`) = **analysis 보수 재지정**
 ## 4. product 레인 — draft 제안 (HITL 스트림 1)
 
 ```
-질문 → product_agent(Haiku, 조회 도구만 — A안) → DraftProposal
+질문 → product_agent(fast, 조회 도구만 — A안) → DraftProposal
      → validate_draft(코드 선검증) → start_draft(checkpoint 저장 + interrupt)
      → SSE draft{draftId, op, productId, changes[], summary} → done
      → FE: diff 카드 + [적용]/[취소]
@@ -98,7 +98,7 @@ confirm{draftId} → 코드 검사: 존재 → 소유(brandId) → 멱등 → TT
 
 ## 7. general 레인
 
-Haiku + 읽기 도구(매출·주문·상품 목록·계산기), 자유 텍스트 astream → token 스트림. 요청마다 재빌드(today 주입 stale 방지). 출력은 mask_output 청크 단위 적용.
+fast tier + 읽기 도구(매출·주문·상품 목록·계산기), 자유 텍스트 astream → token 스트림. 요청마다 재빌드(today 주입 stale 방지). 출력은 mask_output 청크 단위 적용.
 
 ## 8. SSE 이벤트 계약 (판매자)
 

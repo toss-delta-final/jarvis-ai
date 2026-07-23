@@ -16,7 +16,7 @@ from uuid import uuid4
 from app.agents.buyer._frames import sse
 from app.agents.buyer.recommendation.rerank import rerank
 from app.agents.buyer.recommendation.state import RouteDecision, build_condition_chips
-from app.core.llm import LLMClient, LLMError
+from app.core.llm import LLMClient, LLMError, resolve_model_id
 from app.core.text import _strip_unsafe
 from app.services import spring_client
 from app.schemas.chat import (
@@ -168,9 +168,9 @@ async def stream_recommendation(
         yield sse("done", DoneData(finish_reason="zero_result").model_dump(by_alias=True))
         return
 
-    # rerank — Sonnet 1회. 실패/타임아웃/유효후보 0건 시 검색순서 상위 N 으로 degrade(하드 제약 유지).
+    # rerank — smart tier 1회. 실패/타임아웃/유효후보 0건 시 검색순서 상위 N 으로 degrade(하드 제약 유지).
     if observer is not None:
-        observer.record_model_call(settings.model_for_tier("smart"))
+        observer.record_model_call(resolve_model_id(settings, "smart"))
     try:
         rr = await rerank(
             llm,

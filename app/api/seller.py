@@ -51,6 +51,7 @@ from app.core.auth import Identity
 from app.core.config import get_settings
 from app.core.conversation import get_conversation_store
 from app.core.errors import get_request_id
+from app.core.llm import LLMNotConfigured
 from app.core.observability import emit_rejection, start_observation
 from app.core.stream import open_stream, registry_key
 from app.core.text import _strip_unsafe, _strip_unsafe_multiline
@@ -90,6 +91,22 @@ def _visible_token(text: str) -> str:
 def _token(text: str) -> str:
     visible = mask_output(_strip_unsafe_multiline(text))
     return _visible_token(visible)
+
+
+def _llm_unavailable(*, lane: str, thread_id: str) -> str:
+    """활성 provider 미구성을 비밀값 없는 오류 로그와 계약 이벤트로 변환한다."""
+    logger.error(
+        "판매자 LLM provider 미구성: provider=%s lane=%s thread=%s",
+        get_settings().llm_provider,
+        lane,
+        thread_id,
+    )
+    return _sse(
+        "error",
+        ErrorData(code="LLM_UNAVAILABLE", message="현재 AI 모델을 사용할 수 없습니다.").model_dump(
+            by_alias=True
+        ),
+    )
 
 
 # ── 화면 전환 신호 (FE 계약 B, 2026-07-22 — 판매자 스트림 전용, 구매자 무관) ──────────
@@ -186,6 +203,8 @@ async def _general_stream(request: SellerChatRequest, identity: Identity) -> Asy
         for visible in output_guard.flush():
             yield _visible_token(visible)
         yield _done("keep")
+    except LLMNotConfigured:
+        yield _llm_unavailable(lane="general", thread_id=request.thread_id)
     except (TimeoutError, asyncio.TimeoutError):
         yield _sse(
             "error",
@@ -237,6 +256,9 @@ async def _analysis_stream(
 
     try:
         result = await pipeline_task
+    except LLMNotConfigured:
+        yield _llm_unavailable(lane="analysis", thread_id=request.thread_id)
+        return
     except (TimeoutError, asyncio.TimeoutError):
         yield _token(_ANALYSIS_APOLOGY_TOKEN)
         yield _sse(
@@ -282,6 +304,9 @@ async def _product_stream(request: SellerChatRequest, context: SellerContext) ->
         proposal = result.get("structured_response")
         if not isinstance(proposal, DraftProposal):
             raise TypeError("product_agent 가 DraftProposal 을 반환하지 않았다")
+    except LLMNotConfigured:
+        yield _llm_unavailable(lane="product", thread_id=request.thread_id)
+        return
     except (TimeoutError, asyncio.TimeoutError):
         yield _sse(
             "error",
@@ -488,7 +513,12 @@ async def _seller_stream(request: SellerChatRequest, identity: Identity) -> Asyn
     context = SellerContext(seller_id=identity.seller_id or "", brand_id=identity.brand_id or "")
 
     # ③ supervisor 라우팅 — 장애 시 general 폴백은 route_question 내부(4-1a).
-    decision = await route_question(request.message, context)
+    try:
+        decision = await route_question(request.message, context)
+    except LLMNotConfigured:
+        yield _meta("general")
+        yield _llm_unavailable(lane="routing", thread_id=request.thread_id)
+        return
     logger.info(
         "판매자 라우팅: %s (confidence=%.2f, thread=%s) — %s",
         decision.category,

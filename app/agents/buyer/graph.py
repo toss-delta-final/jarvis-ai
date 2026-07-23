@@ -31,7 +31,7 @@ from app.agents.profile.store import get_profile_store
 from app.core import pg_store
 from app.core.config import get_settings
 from app.core.conversation import conversation_key
-from app.core.llm import LLMError, get_llm
+from app.core.llm import LLMError, get_llm, resolve_model_id
 from app.core.pg_resilience import run_with_query_timeout
 from app.core.text import _strip_unsafe
 from app.agents.buyer.recommendation.state import CartIntent
@@ -136,9 +136,9 @@ async def run_buyer_turn(
             "options": [{"optionId": o.option_id, "name": o.name} for o in pending.options],
         }
 
-    # decompose — Haiku 1회 (intent 4-way 라우팅 + 필터 + 장바구니 의도)
+    # decompose — fast tier 1회 (intent 4-way 라우팅 + 필터 + 장바구니 의도)
     if observer is not None:
-        observer.record_model_call(settings.model_for_tier("fast"))
+        observer.record_model_call(resolve_model_id(settings, "fast"))
     last_reco = await cart_store.get_last_reco(thread_key)
     try:
         decision = await decompose(

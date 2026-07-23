@@ -15,8 +15,10 @@ import logging
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+LLMProvider = Literal["openai", "anthropic"]
 
 
 class Settings(BaseSettings):
@@ -32,7 +34,7 @@ class Settings(BaseSettings):
     # ── LLM provider 토글 (이슈 #40) ──
     # "openai"(기본) | "anthropic". 호출부는 tier("fast"|"smart")로 부르고 provider 가 모델을 해석한다.
     # 실행 오버라이드: .env / OS 환경변수 LLM_PROVIDER 가 이 기본값을 덮는다(pydantic-settings).
-    llm_provider: str = "openai"
+    llm_provider: LLMProvider = "openai"
 
     # ── Anthropic 2-tier LLM (fast=haiku / smart=sonnet) ──
     anthropic_api_key: str = ""
@@ -132,10 +134,11 @@ class Settings(BaseSettings):
     seller_route_confidence_min: float = 0.6  # 이 값 미만이면 analysis 로 보수 재지정
     seller_route_timeout_s: float = 10.0  # 라우팅 LLM 상한 — first-token 10s 목표 내(§2.9)
 
-    # ── 판매자 모델 배정 (SPEC-SELLER-001 §8 — Anthropic 2-tier temperature) ──
-    # 모델 ID 는 위 haiku_model_id/sonnet_model_id 가 단일 출처(중복 필드 금지).
-    seller_haiku_temperature: float = 0.0  # supervisor·planner·워커 5종·judge (일관성 장치 ①)
-    seller_sonnet_temperature: float = 0.2  # report·recommend (서술 품질)
+    # ── 판매자 Anthropic temperature (SPEC-SELLER-001 §8) ──
+    # 역할은 fast/smart tier만 선택한다. 이 값은 Anthropic 활성 시에만 적용하며,
+    # 기존 환경변수 호환을 위해 haiku/sonnet 이름을 유지한다.
+    seller_haiku_temperature: float = 0.0  # fast tier(일관성 장치 ①)
+    seller_sonnet_temperature: float = 0.2  # smart tier(서술 품질)
 
     # ── 검색/추천 튜너블 (SPEC-RECOMMEND-001) ──
     search_default_limit: int = 30
@@ -234,6 +237,12 @@ class Settings(BaseSettings):
     # 신뢰하는 프록시 홉 수(우측부터). 자사 프록시 1대면 1 = 최우측 값.
     forwarded_for_trusted_hops: int = 1
 
+    @field_validator("llm_provider", mode="before")
+    @classmethod
+    def _normalize_llm_provider(cls, value: object) -> object:
+        """기존 환경변수 호환을 위해 provider 값의 ASCII 대소문자를 정규화한다."""
+        return value.lower() if isinstance(value, str) else value
+
     @model_validator(mode="after")
     def _require_pepper_in_prod(self) -> "Settings":
         """운영(jwks)에서 PII pepper 미주입이면 기동 실패 — 조용히 약한 해시로 도는 것 방지."""
@@ -287,20 +296,6 @@ class Settings(BaseSettings):
                 "기동합니다 (C-1 확정 후 반드시 주입)"
             )
         return self
-
-    def model_for_tier(self, tier: str) -> str:
-        """활성 provider 기준 tier("fast"|"smart") → 모델 id. 관측(record_model_call)용.
-
-        get_llm 의 provider 분기와 동일한 config 필드를 읽는다 — telemetry 가 실제 호출 모델과 일치.
-        """
-        if self.llm_provider.lower() == "openai":
-            mapping = {"fast": self.openai_fast_model_id, "smart": self.openai_smart_model_id}
-        else:
-            mapping = {"fast": self.haiku_model_id, "smart": self.sonnet_model_id}
-        try:
-            return mapping[tier]
-        except KeyError:
-            raise ValueError(f"unknown tier: {tier!r}") from None
 
 
 @lru_cache

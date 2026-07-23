@@ -1,6 +1,6 @@
 # SELLER-FINAL — 핵심 기술 명세서
 
-> **버전**: v1.0.0 · **기준일**: 2026-07-20 · **상태**: MVP 확정
+> **버전**: v1.1.0 · **기준일**: 2026-07-23 · **상태**: MVP 확정
 > 판매자 멀티에이전트 MVP 의 기술 선택과 그 **이유** 정본. 워크플로우는 [SELLER-FINAL-WORKFLOW](SELLER-FINAL-WORKFLOW.md),
 > 미결·리스크는 [SELLER-FINAL-RISKS](SELLER-FINAL-RISKS.md), 확장은 [SELLER-FINAL-ROADMAP](SELLER-FINAL-ROADMAP.md) 참조.
 
@@ -10,21 +10,21 @@
 |---|---|---|
 | 런타임 | Python 3.12 + FastAPI + uv | SSE = StreamingResponse |
 | 에이전트 | langchain `create_agent` + LangGraph | langgraph 1.2.9 / langchain 1.3.14 — StateGraph 수작업 조립 금지(HITL 그래프만 예외) |
-| LLM | Anthropic 2-tier | Haiku 4.5(라우팅·계획·워커·judge, t=0) / Sonnet 5(보고서·추천, t=0.2) |
+| LLM | provider 토글 2-tier | OpenAI 기본(`reasoning_effort`) / Anthropic 전환(`temperature`), 역할은 `fast`/`smart`만 선택 |
 | 영속화 | PostgreSQL ×2 | pg-catalog(5433, AI 생성물·post-MVP pgvector) / pg-profile(5434, checkpoint·분석 이력) |
 | 검증 | pytest 293종(스텁) + ruff | 실 LLM 스모크는 별도(SMOKE-SELLER-41) |
 
 ## 2. 모델 배정 (SPEC §8 — 일관성 장치 ①)
 
-| 역할 | 모델 | temp | 출력 계약 |
+| 역할 | tier | provider별 제어 | 출력 계약 |
 |---|---|---|---|
-| supervisor | Haiku | 0 | `RouteDecision` (Literal 3분기 + confidence) |
-| analysis_planner | Haiku | 0 | `AnalysisPlan` (워커 선택 + 기간 정규 어휘) |
-| 분석 워커 5종 | Haiku | 0 | `AnalysisFinding` |
-| report judge | Haiku | 0 | `ReportScore` (축 3×10점, total 은 코드 property) |
-| report_agent | Sonnet | 0.2 | 자유 텍스트 (검증 루프 통과 필요) |
-| recommend_agent | Sonnet | 0.2 | `RecommendationSet` (순서 = "N번" 계약) |
-| product_agent | Haiku | 0 | `DraftProposal` (조회 도구만 — A안) |
+| supervisor | fast | OpenAI minimal / Anthropic t=0 | `RouteDecision` (Literal 3분기 + confidence) |
+| analysis_planner | fast | OpenAI minimal / Anthropic t=0 | `AnalysisPlan` (워커 선택 + 기간 정규 어휘) |
+| 분석 워커 5종 | fast | OpenAI minimal / Anthropic t=0 | `AnalysisFinding` |
+| report judge | fast | OpenAI minimal / Anthropic t=0 | `ReportScore` (축 3×10점, total 은 코드 property) |
+| report_agent | smart | OpenAI medium / Anthropic t=0.2 | 자유 텍스트 (검증 루프 통과 필요) |
+| recommend_agent | smart | OpenAI medium / Anthropic t=0.2 | `RecommendationSet` (순서 = "N번" 계약) |
+| product_agent | fast | OpenAI minimal / Anthropic t=0 | `DraftProposal` (조회 도구만 — A안) |
 
 ## 3. 핵심 설계 원칙 4가지
 
@@ -70,5 +70,5 @@
 ## 8. 테스트 체계
 
 - **유닛 293종**(스텁 기준, LLM·PG·HTTP 0): 스키마 계약·라우팅 후처리·degrade 매핑·HITL 안전장치 5종·이력·SSE 와이어 포맷. `tests/unit/conftest.py` 가 전 테스트에 InMemory 백엔드를 자동 주입 — 로컬 PG 가동 여부와 무관하게 결정적.
-- **실 LLM 스모크**(SMOKE-SELLER-41, 미실행 — API 키 미발급): 라우팅 정확도 6건 + LLM 0회 경로 2건 + 스트림 종료 보장. ⚠️ confirm 행 기대값은 4-2 반영 갱신 필요("준비 중" → "찾을 수 없습니다").
+- **실 LLM 스모크**(SMOKE-SELLER-41, 미실행 — provider별 API 키 필요): OpenAI/Anthropic 각각 라우팅 정확도·ToolStrategy 구조화 출력·general 스트리밍 종료를 검증한다. ⚠️ confirm 행 기대값은 4-2 반영 갱신 필요("준비 중" → "찾을 수 없습니다").
 - 커밋 게이트: `uv run ruff check --fix && uv run ruff format` → `uv run pytest` → Conventional Commit.
