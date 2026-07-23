@@ -15,7 +15,7 @@ import logging
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LLMProvider = Literal["openai", "anthropic"]
@@ -236,6 +236,12 @@ class Settings(BaseSettings):
     trust_forwarded_for: bool = False
     # 신뢰하는 프록시 홉 수(우측부터). 자사 프록시 1대면 1 = 최우측 값.
     forwarded_for_trusted_hops: int = 1
+
+    @field_validator("llm_provider", mode="before")
+    @classmethod
+    def _normalize_llm_provider(cls, value: object) -> object:
+        """기존 환경변수 호환을 위해 provider 값의 ASCII 대소문자를 정규화한다."""
+        return value.lower() if isinstance(value, str) else value
 
     @model_validator(mode="after")
     def _require_pepper_in_prod(self) -> "Settings":

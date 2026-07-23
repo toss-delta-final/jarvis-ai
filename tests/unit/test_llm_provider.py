@@ -140,6 +140,22 @@ def test_resolve_provider_model_unknown_tier_raises() -> None:
         llm_mod.resolve_provider_model(settings, "turbo")
 
 
+@pytest.mark.parametrize(
+    ("raw_provider", "expected"),
+    [("OpenAI", "openai"), ("OPENAI", "openai"), ("Anthropic", "anthropic")],
+)
+def test_settings_normalizes_provider_value_case(raw_provider: str, expected: str) -> None:
+    settings = _settings(llm_provider=raw_provider)
+
+    assert settings.llm_provider == expected
+
+
+def test_settings_normalizes_provider_environment_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "Anthropic")
+
+    assert Settings(_env_file=None).llm_provider == "anthropic"
+
+
 def test_settings_rejects_unknown_provider() -> None:
     with pytest.raises(ValidationError):
         _settings(llm_provider="other")

@@ -351,3 +351,28 @@
 - Spec coverage: provider/tier mapping, temperature/reasoning split, key-missing degrade, cache, telemetry, structured output, docs and tests are each assigned to a task.
 - Placeholder scan: no TODO/TBD steps; every behavior-changing step names an exact test and command.
 - Type consistency: `LLMProvider`, `ModelTier`, `ResolvedModel`, `LLMNotConfigured`, `resolve_provider_model(settings, tier)` are defined in Task 2 and consumed unchanged by later tasks.
+
+---
+
+### Task 6: Claude Review follow-up — provider 값 대소문자 하위호환
+
+**Review:** PR #88 unresolved thread `PRRT_kwDOTZymn86THE25`
+
+**Decision:** 반영한다. 기존 `str` 설정과 `.lower()` 분기는 `OpenAI`/`Anthropic`처럼
+대소문자가 섞인 환경변수 값을 허용했는데, `Literal` 전환이 이 동작을 조용히 깨뜨렸다.
+타입 제한과 unknown-provider fail-fast는 유지하되 Settings 입력 경계에서 값만 소문자로
+정규화한다. 공백 허용은 기존 보장사항이 아니므로 추가하지 않는다.
+
+**Files:**
+- Modify: `docs/specs/SPEC-SELLER-001.md`
+- Modify: `tests/unit/test_llm_provider.py`
+- Modify: `app/core/config.py`
+- Modify: `CHANGELOG.md`
+
+- [x] **Step 1: SPEC v1.1.1에 대소문자 비구분·unknown 거부 계약을 먼저 기록한다**
+- [x] **Step 2: `OpenAI`/`ANTHROPIC` 입력이 canonical lowercase로 저장되는 실패 테스트를 추가한다**
+- [x] **Step 3: 알 수 없는 provider가 계속 `ValidationError`인지 기존 테스트로 잠근다**
+- [x] **Step 4: `field_validator(mode="before")`에서 문자열 값에만 `.lower()`를 적용한다**
+- [x] **Step 5: 집중 테스트 → ruff → 전체 pytest 순서로 검증한다**
+- [x] **Step 6: CHANGELOG에 하위호환 복구를 기록하고 Lore 커밋 후 push한다**
+- [ ] **Step 7: 리뷰 스레드에 변경·테스트를 답변하고 resolve한다**

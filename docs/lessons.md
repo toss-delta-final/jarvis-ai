@@ -13,6 +13,12 @@
 
 ---
 
+## [2026-07-23] Python 도구 실행은 저장소의 uv 환경을 통해 호출한다
+- 증상: PR 리뷰 스레드 조회 스크립트를 시스템 `python`으로 실행하려다 PATH에 해당 명령이 없어 즉시 실패했다.
+- 원인: 이 저장소가 `uv run`으로 Python 실행 환경을 고정한다는 명령 규약을 외부 플러그인 스크립트에도 동일하게 적용하지 않았다.
+- 규칙: 저장소 작업 중 Python 스크립트는 경로가 외부 플러그인에 있더라도 `uv run python <script>`로 실행한다. 시스템 `python`/`python3` 존재 여부를 가정하지 않는다.
+- 관련: PR #88 Claude Review 스레드 조회
+
 ## [2026-07-23] bounded suffix scan 밖으로 밀린 시크릿 prefix는 partial token이 붙은 뒤에도 별도로 추적해야 한다
 - 증상: `Bearer` 뒤 연속 newline이 보류 상한을 정확히 채운 다음 첫 token 문자가 도착하면, suffix scan은 prefix 시작점을 놓치고 overlong 판정은 `rest.isspace()`가 깨져 전체 후보를 평문으로 방출했다.
 - 원인: scan window 경계와 overlong fallback을 독립적으로 설계하면서, whitespace-only 상태에서 partial token 상태로 전이되는 한 지점을 두 조건 모두가 놓쳤다.
