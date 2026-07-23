@@ -84,7 +84,7 @@ def format_worker_input(question: str, plan: ResolvedPlan) -> str:
 def format_findings_block(findings: list[AnalysisFinding]) -> str:
     """AnalysisFinding 목록을 report/judge 공용 번호 블록으로 직렬화한다.
 
-    번호·유형·심각도·요약·근거를 사람이 읽는 형태로 — JSON 덤프보다 Sonnet 서술
+    번호·유형·심각도·요약·근거를 사람이 읽는 형태로 — JSON 덤프보다 smart tier 서술
     품질이 안정적이고, judge 의 축별 대조(수치·누락)도 같은 표현을 본다.
     """
     lines: list[str] = []

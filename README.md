@@ -169,8 +169,9 @@ SSE 이벤트 — 구매자: `token`·`conditions`·`action`·`suggestions`·`bu
 
 | 변수 | 로컬/CI | 운영 | 설명 |
 |---|---|---|---|
-| `ANTHROPIC_API_KEY` | 불필요 | **필수** | 미설정 시 `/chat`은 네트워크 호출 없이 `LLM_UNAVAILABLE` 반환 (E2E는 주입형 fake로 대체) |
 | `LLM_PROVIDER` | `openai`(기본) | `openai`/`anthropic` | LLM 백엔드 선택. `openai`(기본)는 `OPENAI_API_KEY`, `anthropic`은 `ANTHROPIC_API_KEY` 필요. 호출부는 tier(fast/smart) 추상화 — provider 가 모델 해석. `.env`/OS env 가 config 기본값보다 우선 (이슈 #40) |
+| `OPENAI_API_KEY` | 불필요 | OpenAI 활성 시 **필수** | 미설정 시 구매자·판매자 스트림은 네트워크 호출 없이 `LLM_UNAVAILABLE` 반환 (E2E는 주입형 fake로 대체) |
+| `ANTHROPIC_API_KEY` | 불필요 | Anthropic 활성 시 **필수** | `LLM_PROVIDER=anthropic`일 때 사용. 미설정 동작은 OpenAI와 동일 |
 | `AUTH_MODE` | `dev` | `jwks` | `dev`=서명 검증 없이 클레임만 읽고 헤더 없으면 게스트(로컬 전용) |
 | `JWKS_URL` | — | **필수** | Spring `/.well-known/jwks.json` — `jwks` 모드에서 미설정 시 기동 실패 |
 | `JWT_ISSUER`·`JWT_AUDIENCE` | 기본값 | 확정값 주입 | 스트림 티켓 `iss`/`aud` 검증(§2.3) |
@@ -190,7 +191,7 @@ cp .env.example .env    # 이후 위 표를 참고해 채운다 (.env 는 커밋
 
 ### E2E 스모크 하니스 (구매자 라인)
 
-`tests/integration/`은 **라이브 Spring·Anthropic 없이** AI↔Spring 전 구간을 결정적으로 돌린다 — Spring은 `httpx.MockTransport` stub(`_stubs.py`), LLM은 주입형 `ScriptedLLM`. `spring_client` 함수를 patch하지 않고 **HTTP 경계에서만** 대역을 넣으므로 URL 조립·`X-Internal-Token` 헤더·응답 envelope 파싱이 실코드로 검증된다.
+`tests/integration/`은 **라이브 Spring·LLM provider 없이** AI↔Spring 전 구간을 결정적으로 돌린다 — Spring은 `httpx.MockTransport` stub(`_stubs.py`), LLM은 주입형 `ScriptedLLM`. `spring_client` 함수를 patch하지 않고 **HTTP 경계에서만** 대역을 넣으므로 URL 조립·`X-Internal-Token` 헤더·응답 envelope 파싱이 실코드로 검증된다.
 
 ```bash
 uv run pytest tests/integration -q          # 전체 스모크
@@ -205,7 +206,7 @@ uv run pytest tests/integration/test_buyer_flow_e2e.py -q
 | `test_degrade_e2e.py` | `SEARCH_FAILED`·`LLM_UNAVAILABLE`/`LLM_TIMEOUT`·rerank 폴백·push 실패(`done` 종료)·이력 실패·옵션 되물음 |
 | `test_auth_e2e_flow.py` | **운영 인증 레인** — RS256 스트림 티켓 + JWKS 로컬 검증 위에서 같은 흐름 완주, 신원=검증된 `sub`(IDOR), 무토큰 401 |
 
-실 Spring·실 Anthropic 키로 돌리는 수동 검증은 위 환경변수를 채우고 `docker compose up -d pg-catalog pg-profile` 후 `uv run uvicorn app.main:app --reload`로 서버를 띄워 진행한다 — CI 스모크는 항상 fake/stub 경로로 결정적으로 돈다.
+실 Spring·실 OpenAI/Anthropic 키로 돌리는 수동 검증은 활성 provider에 맞춰 위 환경변수를 채우고 `docker compose up -d pg-catalog pg-profile` 후 `uv run uvicorn app.main:app --reload`로 서버를 띄워 진행한다 — CI 스모크는 항상 fake/stub 경로로 결정적으로 돈다.
 
 ---
 

@@ -19,7 +19,7 @@ AnalysisType = Literal["sales_anomaly", "conversion", "behavior", "churn", "abus
 
 
 class RouteDecision(BaseModel):
-    """supervisor 의 3분기 라우팅 결과 (SPEC §2 — 구조화 출력 라우팅, Haiku t=0).
+    """supervisor 의 3분기 라우팅 결과 (SPEC §2 — fast tier 구조화 출력 라우팅).
 
     category 는 Literal 로 세 값만 허용 — LLM 이 신규 카테고리를 지어낼 수 없다(장치 ⑤).
     confidence 는 "애매하면 analysis 보수적 라우팅" 규칙의 코드 분기 재료다.
@@ -59,7 +59,7 @@ class AnalysisFinding(BaseModel):
 
 
 class AnalysisPlan(BaseModel):
-    """analysis_planner 의 구조화 출력 (SPEC §2 — 워커 선택 + 기간 표현, Haiku t=0).
+    """analysis_planner 의 구조화 출력 (SPEC §2 — 워커 선택 + 기간 표현, fast tier).
 
     기간의 날짜 환산은 LLM 소관이 아니다(장치 ④) — planner 는 질문의 기간 표현을
     정규 어휘(period_expr)로 재표현만 하고, 실제 (from, to) 환산은 파이프라인 코드가
@@ -110,7 +110,7 @@ SCORE_AXIS_MAX = (
 
 
 class ReportScore(BaseModel):
-    """report_verifier 의 Haiku judge 채점 결과 (SPEC §10-⑦ — 21/30 판정 재료, ≤3회 루프).
+    """report_verifier의 fast-tier judge 결과 (SPEC §10-⑦ — 21/30 판정 재료, ≤3회 루프).
 
     총점·통과 여부는 LLM 필드로 두지 않는다 — LLM 산수 오류를 배제하기 위해
     total 은 코드 property 로 합산하고, 임계·루프 횟수는 verifier 노드(3단계)가

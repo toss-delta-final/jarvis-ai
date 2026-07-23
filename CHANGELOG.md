@@ -28,6 +28,7 @@
   SPEC-PROFILE-001 v0.4.0)
 
 ### Changed
+- **이슈 #82 — 판매자 LLM을 공용 provider 토글에 연결** — 판매자 역할이 Anthropic 모델을 직접 고르던 경로를 `fast`/`smart` tier와 공용 resolver로 전환했다. 기본 OpenAI는 tier별 reasoning effort를 사용하고 `temperature`를 보내지 않으며, Anthropic 전환 시 기존 temperature 정책을 유지한다. 활성 provider 키 누락은 SDK 호출 전에 차단해 판매자 SSE `LLM_UNAVAILABLE`로 반환하고, 구조화 출력은 provider 간 동일한 `ToolStrategy` 계약을 유지한다. 와이어 계약 변경 없음.
 - 런타임 I-17 배치·sample_100 로더가 임베딩 프로비넌스를 함께 적재(#65).
 - **이슈 #63 — I-17 상품 상태 계약을 Spring과 정합화** — `ProductChange.status`를 `ON_SALE | HIDDEN`으로 제한하고, 배치가 `ON_SALE`은 생성·갱신, `HIDDEN`은 기존 AI artifact 삭제로 처리한다. 구 `ACTIVE | DELISTED` 등 미정의 값은 항목별로 skip하지 않고 페이지 전체를 fail-closed 처리해 artifact·커서를 유지하며, Spring 수정 후 같은 `since`부터 재처리한다. 단위·HTTP 경계·E2E 테스트와 관련 문서·로그 용어를 함께 갱신했다. (api-spec §4.8, v0.15.18)
 

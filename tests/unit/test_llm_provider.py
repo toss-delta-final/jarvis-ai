@@ -9,6 +9,7 @@ resolve/분기 로직만 확인한다.
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from app.core import llm as llm_mod
 from app.core.config import Settings
@@ -60,25 +61,88 @@ def test_openai_unknown_tier_raises() -> None:
         c._resolve("turbo")
 
 
-# ─────────── settings.model_for_tier (관측용 telemetry) ───────────
+# ─────────── 공용 provider/tier resolver ───────────
 
 
-def test_settings_model_for_tier_anthropic() -> None:
-    s = _settings(llm_provider="anthropic")
-    assert s.model_for_tier("fast") == s.haiku_model_id
-    assert s.model_for_tier("smart") == s.sonnet_model_id
+def test_resolve_provider_model_anthropic_tiers() -> None:
+    settings = _settings(llm_provider="anthropic", anthropic_api_key="anthropic-key")
+
+    fast = llm_mod.resolve_provider_model(settings, "fast")
+    smart = llm_mod.resolve_provider_model(settings, "smart")
+
+    assert (fast.provider, fast.model_id, fast.api_key, fast.reasoning_effort) == (
+        "anthropic",
+        settings.haiku_model_id,
+        "anthropic-key",
+        None,
+    )
+    assert (smart.provider, smart.model_id, smart.api_key, smart.reasoning_effort) == (
+        "anthropic",
+        settings.sonnet_model_id,
+        "anthropic-key",
+        None,
+    )
 
 
-def test_settings_model_for_tier_openai() -> None:
-    s = _settings(llm_provider="openai")
-    assert s.model_for_tier("fast") == s.openai_fast_model_id
-    assert s.model_for_tier("smart") == s.openai_smart_model_id
-    assert s.openai_fast_reasoning_effort == "minimal"
+def test_resolve_provider_model_openai_tiers() -> None:
+    settings = _settings(llm_provider="openai", openai_api_key="openai-key")
+
+    fast = llm_mod.resolve_provider_model(settings, "fast")
+    smart = llm_mod.resolve_provider_model(settings, "smart")
+
+    assert (fast.provider, fast.model_id, fast.api_key, fast.reasoning_effort) == (
+        "openai",
+        settings.openai_fast_model_id,
+        "openai-key",
+        settings.openai_fast_reasoning_effort,
+    )
+    assert (smart.provider, smart.model_id, smart.api_key, smart.reasoning_effort) == (
+        "openai",
+        settings.openai_smart_model_id,
+        "openai-key",
+        settings.openai_smart_reasoning_effort,
+    )
+    assert "openai-key" not in repr(fast)
 
 
-def test_settings_model_for_tier_unknown_raises() -> None:
-    with pytest.raises(ValueError):
-        _settings().model_for_tier("turbo")
+@pytest.mark.parametrize(
+    ("provider", "tier", "expected_field"),
+    [
+        ("openai", "fast", "openai_fast_model_id"),
+        ("openai", "smart", "openai_smart_model_id"),
+        ("anthropic", "fast", "haiku_model_id"),
+        ("anthropic", "smart", "sonnet_model_id"),
+    ],
+)
+def test_resolve_model_id_does_not_require_api_key(
+    provider: str, tier: str, expected_field: str
+) -> None:
+    settings = _settings(llm_provider=provider, openai_api_key="", anthropic_api_key="")
+
+    assert llm_mod.resolve_model_id(settings, tier) == getattr(settings, expected_field)
+
+
+@pytest.mark.parametrize(
+    ("provider", "key_field"),
+    [("openai", "openai_api_key"), ("anthropic", "anthropic_api_key")],
+)
+def test_resolve_provider_model_missing_active_key_raises(provider: str, key_field: str) -> None:
+    settings = _settings(llm_provider=provider, **{key_field: ""})
+
+    with pytest.raises(llm_mod.LLMNotConfigured):
+        llm_mod.resolve_provider_model(settings, "fast")
+
+
+def test_resolve_provider_model_unknown_tier_raises() -> None:
+    settings = _settings(openai_api_key="openai-key")
+
+    with pytest.raises(LLMError):
+        llm_mod.resolve_provider_model(settings, "turbo")
+
+
+def test_settings_rejects_unknown_provider() -> None:
+    with pytest.raises(ValidationError):
+        _settings(llm_provider="other")
 
 
 # ─────────── get_llm 분기 ───────────

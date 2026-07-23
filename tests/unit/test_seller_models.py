@@ -1,78 +1,155 @@
-"""판매자 모델 팩토리 테스트 (SPEC-SELLER-001 §8 — 2-tier·temperature·캐시).
-
-실 API 호출 없음 — dummy 키로 인스턴스 속성(model·temperature)만 검증한다.
-"""
+"""판매자 모델 팩토리 테스트 (SPEC-SELLER-001 §8 — provider-neutral 2-tier)."""
 
 from __future__ import annotations
+
+from collections.abc import Callable
+from typing import Any
 
 import pytest
 
 from app.agents.seller import models as seller_models
 from app.agents.seller.models import ROLE_TIER, init_seller_model
+from app.core import llm as llm_mod
 from app.core.config import Settings
 
 
 @pytest.fixture(autouse=True)
-def _fresh_cache_and_settings(monkeypatch: pytest.MonkeyPatch) -> None:
-    """테스트마다 캐시 초기화 + dummy 키 Settings 주입 — env 오염·실 키 의존 차단."""
+def _fresh_model_cache() -> None:
+    """테스트마다 모델 인스턴스 캐시를 비운다."""
     seller_models._cached_model.cache_clear()
-    settings = Settings(_env_file=None, anthropic_api_key="test-key")
-    monkeypatch.setattr(seller_models, "get_settings", lambda: settings)
 
 
-def test_role_tier_matches_spec() -> None:
-    """SPEC §8 표와 일치 — 라우팅·분류·판정=haiku / 서술·추천=sonnet."""
+def _record_factory(
+    monkeypatch: pytest.MonkeyPatch, settings_factory: Callable[[], Settings]
+) -> tuple[list[dict[str, Any]], list[object]]:
+    """Settings와 init_chat_model을 대역으로 바꾸고 실제 생성 인자를 수집한다."""
+    calls: list[dict[str, Any]] = []
+    models: list[object] = []
+
+    def fake_init_chat_model(*args: Any, **kwargs: Any) -> object:
+        calls.append({"args": args, **kwargs})
+        model = object()
+        models.append(model)
+        return model
+
+    monkeypatch.setattr(seller_models, "get_settings", settings_factory)
+    monkeypatch.setattr(seller_models, "init_chat_model", fake_init_chat_model)
+    return calls, models
+
+
+def test_role_tier_matches_provider_neutral_spec() -> None:
     assert ROLE_TIER == {
-        "supervisor": "haiku",
-        "planner": "haiku",
-        "worker": "haiku",
-        "judge": "haiku",
-        "product": "haiku",  # §8 미명시 — 정형 변환이라 Haiku 배정(2-7 확정)
-        "report": "sonnet",
-        "recommend": "sonnet",
+        "supervisor": "fast",
+        "planner": "fast",
+        "worker": "fast",
+        "judge": "fast",
+        "product": "fast",
+        "report": "smart",
+        "recommend": "smart",
     }
 
 
-def test_haiku_roles_use_haiku_t0() -> None:
-    """supervisor·planner·worker·judge 는 Haiku, temperature=0 (일관성 장치 ①)."""
-    expected_id = Settings(_env_file=None).haiku_model_id
-    for role in ("supervisor", "planner", "worker", "judge", "product"):
-        model = init_seller_model(role)
-        assert model.model == expected_id
-        assert model.temperature == 0.0
+def test_openai_fast_roles_use_reasoning_without_temperature(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(_env_file=None, openai_api_key="openai-key")
+    calls, _ = _record_factory(monkeypatch, lambda: settings)
+
+    instances = [
+        init_seller_model(role) for role in ("supervisor", "planner", "worker", "judge", "product")
+    ]
+
+    assert all(model is instances[0] for model in instances)
+    assert calls == [
+        {
+            "args": (),
+            "model": settings.openai_fast_model_id,
+            "model_provider": "openai",
+            "api_key": "openai-key",
+            "timeout": settings.llm_timeout_s,
+            "max_retries": settings.llm_max_retries,
+            "reasoning_effort": settings.openai_fast_reasoning_effort,
+        }
+    ]
 
 
-def test_sonnet_roles_use_sonnet_t02() -> None:
-    """report·recommend 는 Sonnet, temperature=0.2 (서술 품질)."""
-    expected_id = Settings(_env_file=None).sonnet_model_id
-    for role in ("report", "recommend"):
-        model = init_seller_model(role)
-        assert model.model == expected_id
-        assert model.temperature == 0.2
+def test_openai_smart_roles_use_smart_reasoning_without_temperature(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(_env_file=None, openai_api_key="openai-key")
+    calls, _ = _record_factory(monkeypatch, lambda: settings)
+
+    assert init_seller_model("report") is init_seller_model("recommend")
+
+    assert calls[0]["model"] == settings.openai_smart_model_id
+    assert calls[0]["reasoning_effort"] == settings.openai_smart_reasoning_effort
+    assert "temperature" not in calls[0]
 
 
-def test_settings_override_reflected(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Settings 주입이 팩토리에 반영된다 — 모델ID·temperature 하드코딩이 아님을 강제."""
-    custom = Settings(
+def test_anthropic_tiers_keep_seller_temperatures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
         _env_file=None,
-        anthropic_api_key="test-key",
-        sonnet_model_id="claude-sonnet-custom",
-        seller_sonnet_temperature=0.5,
+        llm_provider="anthropic",
+        anthropic_api_key="anthropic-key",
+        seller_haiku_temperature=0.1,
+        seller_sonnet_temperature=0.3,
     )
-    monkeypatch.setattr(seller_models, "get_settings", lambda: custom)
-    model = init_seller_model("report")
-    assert model.model == "claude-sonnet-custom"
-    assert model.temperature == 0.5
+    calls, _ = _record_factory(monkeypatch, lambda: settings)
+
+    init_seller_model("worker")
+    init_seller_model("report")
+
+    assert calls == [
+        {
+            "args": (),
+            "model": settings.haiku_model_id,
+            "model_provider": "anthropic",
+            "api_key": "anthropic-key",
+            "timeout": settings.llm_timeout_s,
+            "max_retries": settings.llm_max_retries,
+            "temperature": 0.1,
+        },
+        {
+            "args": (),
+            "model": settings.sonnet_model_id,
+            "model_provider": "anthropic",
+            "api_key": "anthropic-key",
+            "timeout": settings.llm_timeout_s,
+            "max_retries": settings.llm_max_retries,
+            "temperature": 0.3,
+        },
+    ]
+    assert all("reasoning_effort" not in call for call in calls)
 
 
-def test_same_role_shares_instance() -> None:
-    """같은 (모델ID, temperature) 조합은 같은 인스턴스 — 요청마다 재생성하지 않는다."""
-    assert init_seller_model("worker") is init_seller_model("worker")
-    # supervisor 도 haiku t=0 이라 동일 조합 — 캐시 키가 역할이 아니라 조합임을 확인.
-    assert init_seller_model("supervisor") is init_seller_model("worker")
+def test_provider_switch_does_not_reuse_cached_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    active = [Settings(_env_file=None, openai_api_key="same-key")]
+    calls, _ = _record_factory(monkeypatch, lambda: active[0])
+
+    openai_model = init_seller_model("worker")
+    active[0] = Settings(
+        _env_file=None,
+        llm_provider="anthropic",
+        anthropic_api_key="same-key",
+    )
+    anthropic_model = init_seller_model("worker")
+
+    assert openai_model is not anthropic_model
+    assert [call["model_provider"] for call in calls] == ["openai", "anthropic"]
+
+
+def test_missing_provider_key_fails_before_sdk_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = Settings(_env_file=None, openai_api_key="")
+    calls, _ = _record_factory(monkeypatch, lambda: settings)
+
+    with pytest.raises(llm_mod.LLMNotConfigured):
+        init_seller_model("worker")
+
+    assert calls == []
 
 
 def test_unknown_role_raises() -> None:
-    """미등록 역할은 KeyError 즉시 실패 — chart(§12 보류) 등은 등록 후에만 사용."""
     with pytest.raises(KeyError):
         init_seller_model("chart")  # type: ignore[arg-type]

@@ -13,6 +13,30 @@
 
 ---
 
+## [2026-07-23] 관측용 모델명 조회가 SDK 자격증명 검증에 결합되면 fake 주입 테스트가 깨진다
+- 증상: Issue #82 전체 테스트에서 주입형 `ScriptedLLM`을 쓰는 구매자 경로도 telemetry 모델명을 기록하려다 활성 provider API key 누락 예외를 발생시켜 34개 테스트가 실패했다.
+- 원인: 부수효과 없는 모델 ID 선택과 실제 SDK 생성 전에 필요한 자격증명 검증을 하나의 strict resolver로 합친 뒤, 관측 코드가 그 strict 경로를 재사용했다.
+- 규칙: 설정 해석은 `provider+tier → model ID` 순수 함수와 `model ID+API key → SDK 설정` 검증 함수로 분리한다. fake/injected 실행의 관측은 전자만 호출하고, 실제 provider client 생성 경계에서만 key를 요구한다.
+- 관련: `app/core/llm.py`, `app/agents/buyer/{graph,recommendation/graph}.py`, Issue #82 전체 테스트
+
+## [2026-07-23] 복합 셸 명령의 정규식 인용은 실행 전에 셸 문법으로 검증한다
+- 증상: provider 하드코딩 검색과 테스트를 한 명령으로 묶다가 작은따옴표가 포함된 정규식을 zsh 문자열 안에 잘못 중첩해 `unmatched "`로 전체 명령이 실행 전에 실패했다.
+- 원인: JSON·zsh·정규식의 세 인용 계층을 한 줄에서 섞고, 검색과 테스트처럼 실패 영향이 다른 작업을 불필요하게 결합했다.
+- 규칙: 인용이 복잡한 정규식은 단순한 패턴 여러 개로 나누거나 별도 명령으로 실행한다. 테스트 명령은 사전 검색과 분리해 검색 인용 오류가 검증 실행을 막지 않게 한다.
+- 관련: Issue #82 provider 하드코딩 검색·집중 테스트
+
+## [2026-07-23] zsh 스크립트에서 `path` 변수명을 쓰면 명령 검색 경로가 사라진다
+- 증상: Issue #82 worktree 생성 스크립트에서 `path=/...`를 대입한 직후 후속 `git` 명령들이 `command not found`로 실패했다. worktree 생성 전이라 저장소 변경은 없었다.
+- 원인: zsh의 `path`는 `PATH`와 연결된 특수 배열 변수인데 일반 경로 변수로 덮어써 실행 파일 검색 경로가 단일 디렉터리로 바뀌었다.
+- 규칙: zsh 셸 스크립트에서는 `path`를 일반 변수명으로 사용하지 않고 `worktree_path`, `target_path`처럼 구체적인 이름을 쓴다. 여러 단계 셸 명령은 특수 변수 충돌을 피하도록 변수명을 명시적으로 선택한다.
+- 관련: Issue #82 worktree 생성 준비
+
+## [2026-07-23] `omx explore`는 제거된 명령이므로 저장소 조회에 사용하지 않는다
+- 증상: Issue #82의 현재 구현 상태를 재확인하려고 `omx explore --prompt ...`를 실행했으나, 명령이 hard-deprecated되어 즉시 종료 코드 1로 실패했다.
+- 원인: AGENTS.md의 구형 command-routing 안내를 현재 OMX 런타임의 migration 안내보다 우선해 적용했다. 현재 설치본은 일반 Codex 조회 도구/역할 표면을 사용하도록 명시한다.
+- 규칙: 저장소 파일·심볼 조회는 일반 읽기 도구를 사용하고, 명시적인 셸 증거가 필요할 때만 `omx sparkshell -- <command>`를 사용한다. `omx explore`는 재시도하지 않는다.
+- 관련: Issue #82 재검증, OMX CLI hard-deprecation 안내
+
 ## [2026-07-22] 멱등 row 하나로 PROCESSING과 COMPLETED를 겸하면 부분 실패가 영구 duplicate가 된다
 - 증상: I-20이 버퍼 처리 전에 영구 마커를 넣은 뒤 consolidation의 `False` 반환을 무시해 버퍼를 삭제했고, 요청 취소·프로세스 crash 때는 cleanup이 실행되지 않아 미완료 통지가 이후 영구 `duplicate`가 됐다.
 - 원인: 수신 선점 락과 처리 완료 기록을 같은 불변 row로 표현했고, consolidation도 정상 no-op과 실패를 같은 boolean `False`로 표현했다. 서로 다른 상태를 합치니 호출자가 실패와 성공을 구분할 수 없었다.

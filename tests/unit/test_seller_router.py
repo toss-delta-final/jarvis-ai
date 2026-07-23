@@ -19,6 +19,7 @@ import pytest
 from app.agents.seller import orchestrator
 from app.agents.seller.context import SellerContext
 from app.agents.seller.schemas import RouteDecision
+from app.core.llm import LLMNotConfigured
 
 _CTX = SellerContext(seller_id="7", brand_id="3")
 
@@ -102,6 +103,14 @@ def test_supervisor_exception_falls_back_to_general(monkeypatch: pytest.MonkeyPa
 
     assert result.category == "general"
     assert result.reason == orchestrator.ROUTE_FALLBACK_REASON
+
+
+def test_model_configuration_error_does_not_fall_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    """provider 키 누락은 general도 실행 불가하므로 라우팅 폴백으로 삼키지 않는다."""
+    _patch(monkeypatch, _StubSupervisor(exc=LLMNotConfigured("openai key missing")))
+
+    with pytest.raises(LLMNotConfigured):
+        _route()
 
 
 def test_supervisor_timeout_falls_back_to_general(monkeypatch: pytest.MonkeyPatch) -> None:

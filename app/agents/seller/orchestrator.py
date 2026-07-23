@@ -64,6 +64,7 @@ from app.agents.seller.workers import (
     build_supervisor,
 )
 from app.core.config import get_settings
+from app.core.llm import LLMNotConfigured
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +110,8 @@ async def route_question(question: str, context: SellerContext) -> RouteDecision
         decision = result.get("structured_response")
         if not isinstance(decision, RouteDecision):
             raise TypeError("supervisor 가 RouteDecision 을 반환하지 않았다")
+    except LLMNotConfigured:
+        raise
     except Exception:
         logger.warning("supervisor 라우팅 장애 — general 폴백", exc_info=True)
         return RouteDecision(category="general", reason=ROUTE_FALLBACK_REASON, confidence=0.0)
@@ -227,7 +230,7 @@ class VerifiedReport:
 
 
 def _content_to_text(content: object) -> str:
-    """메시지 content 를 텍스트로 — Anthropic 은 str 또는 블록 리스트를 반환한다."""
+    """provider별 문자열·블록 메시지 content를 텍스트로 정규화한다."""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -245,7 +248,7 @@ async def write_verified_report(
 ) -> VerifiedReport:
     """보고서 작성 → 검증 → 재작성 루프 (판정은 전부 코드 소관, LLM 필드 없음).
 
-    한 시도 = report(Sonnet) 작성 → 결정론 검사(D1~D3) → judge(Haiku) 채점.
+    한 시도 = report(smart) 작성 → 결정론 검사(D1~D3) → judge(fast) 채점.
     통과 = 결정론 실패 0건 AND score.total >= Settings 임계(21/30).
     미달 시 결정론 사유 + judge feedback 을 **합산**해 재작성에 주입한다
     (2026-07-18 확정 — 결정론 실패여도 judge 는 항상 실행).

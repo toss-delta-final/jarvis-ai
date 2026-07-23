@@ -16,6 +16,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from app.agents.seller import hitl
 from app.api import seller as seller_api
 from app.core.auth import Identity
+from app.core.llm import LLMNotConfigured
 from app.schemas.seller import SellerChatRequest
 
 _IDENTITY = Identity(user_id=None, is_guest=False, seller_id="7", brand_id="3")
@@ -173,6 +174,22 @@ def test_stream_error_event_on_build_failure(monkeypatch: pytest.MonkeyPatch) ->
 
     assert [e["type"] for e in events] == ["meta", "error"]
     assert events[1]["data"]["code"] == "INTERNAL"
+
+
+def test_stream_model_not_configured_maps_to_llm_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """활성 provider 키 누락은 일반 INTERNAL이 아니라 LLM_UNAVAILABLE이다."""
+
+    def _not_configured(today: str):
+        raise LLMNotConfigured("openai key missing")
+
+    monkeypatch.setattr(seller_api, "build_general_agent", _not_configured)
+
+    events = _collect(_request("매출 알려줘"))
+
+    assert [event["type"] for event in events] == ["meta", "error"]
+    assert events[-1]["data"]["code"] == "LLM_UNAVAILABLE"
 
 
 def test_stream_error_event_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -334,7 +351,10 @@ def test_analysis_token_strips_unsafe_report_text(monkeypatch: pytest.MonkeyPatc
 
     events = _collect_seller(_request("지난달 매출 분석해줘"))
 
-    assert "".join(e["data"]["text"] for e in events if e["type"] == "token") == "6월[31m 매출\n보고서\n   기대 효과: 유지"
+    assert (
+        "".join(e["data"]["text"] for e in events if e["type"] == "token")
+        == "6월[31m 매출\n보고서\n   기대 효과: 유지"
+    )
 
 
 def test_analysis_token_masks_secret_after_stripping_unsafe_text(
@@ -520,9 +540,7 @@ def test_product_draft_executes_the_sanitized_after_value(
     try:
         draft_events = _collect_seller(_request("설명 바꿔줘"))
         draft = next(e for e in draft_events if e["type"] == "draft")["data"]
-        confirm_events = _collect_seller(
-            _confirm_request(draft["draftId"])
-        )
+        confirm_events = _collect_seller(_confirm_request(draft["draftId"]))
     finally:
         set_spring_client(None)
 
@@ -704,6 +722,22 @@ def test_general_route_uses_general_stream(monkeypatch: pytest.MonkeyPatch) -> N
     assert [e["type"] for e in events] == ["meta", "token", "done"]
     assert events[0]["data"]["lane"] == "general"
     assert "도와드릴까요" in events[1]["data"]["text"]
+
+
+def test_route_model_not_configured_emits_llm_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """supervisor 생성 전 provider 미구성은 error 이벤트로 안전하게 종료한다."""
+
+    async def not_configured(question, context):
+        raise LLMNotConfigured("openai key missing")
+
+    monkeypatch.setattr(seller_api, "route_question", not_configured)
+
+    events = _collect_seller(_request("매출 알려줘"))
+
+    assert [event["type"] for event in events] == ["error"]
+    assert events[0]["data"]["code"] == "LLM_UNAVAILABLE"
 
 
 # ── 화면 전환 신호(meta/panel) 계약 — FE 요구 1~3 (2026-07-22 B) ──────────────────
