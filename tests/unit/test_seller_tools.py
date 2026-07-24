@@ -44,7 +44,7 @@ class FakeSpringClient:
     """SpringClient 이중(double). 실 HTTP 없이 브랜드 스코프 주입·오류 경로만 검증한다."""
 
     def __init__(self, *, fail: set[str] | None = None) -> None:
-        self.recorded_brand_id: str | None = None
+        self.recorded_brand_id: int | None = None
         self.recorded_stats: bool | None = None
         self.recorded_event_args: tuple | None = None
         self.behavior_result = BehaviorEventsResult()  # I-13 기본 빈 응답(3형 공통)
@@ -131,11 +131,11 @@ class FakeSpringClient:
 class FakeRuntime:
     """ToolRuntime 이중 — 도구 본문은 runtime.context 만 읽으므로 덕 타이핑으로 충분하다."""
 
-    def __init__(self, brand_id: str = "brand-42") -> None:
-        self.context = SellerContext(seller_id="seller-1", brand_id=brand_id)
+    def __init__(self, brand_id: int = 42) -> None:
+        self.context = SellerContext(seller_id=1, brand_id=brand_id)
 
 
-async def _call_runtime_tool(tool: BaseTool, args: dict, fake, brand_id: str = "brand-42"):
+async def _call_runtime_tool(tool: BaseTool, args: dict, fake, brand_id: int = 42):
     """ToolRuntime 도구를 단위 테스트에서 직접 호출한다.
 
     에이전트 런타임 없이 원본 코루틴(tool.coroutine)에 FakeRuntime 을 키워드로 넘기고,
@@ -178,10 +178,10 @@ async def test_context_injects_brand_id() -> None:
         get_sales_timeseries,
         {"from_date": "2026-07-01", "to_date": "2026-07-14"},
         fake,
-        brand_id="brand-777",
+        brand_id=777,
     )
 
-    assert fake.recorded_brand_id == "brand-777"
+    assert fake.recorded_brand_id == 777
 
 
 async def test_tool_returns_error_string_on_spring_failure() -> None:

@@ -536,7 +536,7 @@ class SpringClient:
     # ── 조회 8종 (전부 GET, api-spec §4.4/§4.5) ──
 
     async def get_sales(
-        self, brand_id: str, from_: str, to: str, granularity: str = "daily"
+        self, brand_id: int, from_: str, to: str, granularity: str = "daily"
     ) -> SalesResult:
         """I-6 매출 시계열 조회 (§4.4). granularity: daily/weekly/monthly/summary."""
         data = await self._request(
@@ -546,7 +546,7 @@ class SpringClient:
         )
         return self._validate(SalesResult, data)
 
-    async def get_funnel(self, brand_id: str, from_: str, to: str) -> FunnelResult:
+    async def get_funnel(self, brand_id: int, from_: str, to: str) -> FunnelResult:
         """I-7 구매전환 퍼널 조회 (§4.4). view→cart→checkout→purchase 4단."""
         data = await self._request(
             "GET", f"/internal/seller/{brand_id}/funnel", params={"from": from_, "to": to}
@@ -555,7 +555,7 @@ class SpringClient:
 
     async def get_events(
         self,
-        brand_id: str,
+        brand_id: int,
         from_: str,
         to: str,
         event_type: list[str] | None = None,
@@ -579,7 +579,7 @@ class SpringClient:
 
     async def get_order_events(
         self,
-        brand_id: str,
+        brand_id: int,
         from_: str,
         to: str,
         to_status: list[str] | None = None,
@@ -607,7 +607,7 @@ class SpringClient:
 
     async def get_product_changes(
         self,
-        brand_id: str,
+        brand_id: int,
         from_: str,
         to: str,
         change_type: str | None = None,
@@ -627,7 +627,7 @@ class SpringClient:
         )
         return self._validate(ProductChangeLogResult, data)
 
-    async def get_churn(self, brand_id: str, inactive_days: int) -> ChurnResult:
+    async def get_churn(self, brand_id: int, inactive_days: int) -> ChurnResult:
         """I-16 이탈 코호트 조회 (§4.4). inactiveDays 무활동 기준일."""
         data = await self._request(
             "GET",
@@ -658,7 +658,7 @@ class SpringClient:
 
     async def list_products(
         self,
-        brand_id: str,
+        brand_id: int,
         status: str | None = None,
         q: str | None = None,
         limit: int | None = None,
@@ -679,7 +679,7 @@ class SpringClient:
 
     # ── 쓰기 3종 (product_agent 전용, HITL 승인 후에만 호출, api-spec §4.5) ──
 
-    async def create_product(self, brand_id: str, payload: ProductCreate) -> ProductCreateResult:
+    async def create_product(self, brand_id: int, payload: ProductCreate) -> ProductCreateResult:
         """I-10 상품 등록 (§4.5). name/price/stockQuantity 필수(price ≤ originalPrice).
 
         미설정 옵션 필드(originalPrice/category/description/imageUrl 등)는 exclude_none 으로
@@ -693,7 +693,7 @@ class SpringClient:
         return self._validate(ProductCreateResult, data)
 
     async def update_product(
-        self, brand_id: str, product_id: int, patch: ProductUpdate
+        self, brand_id: int, product_id: int, patch: ProductUpdate
     ) -> ProductUpdateResult:
         """I-11 상품 수정 (§4.5). 바꿀 필드만 전송 — 재고도 이 API로 통합(별도 재고 API 없음)."""
         data = await self._request(
@@ -703,7 +703,7 @@ class SpringClient:
         )
         return self._validate(ProductUpdateResult, data)
 
-    async def delete_product(self, brand_id: str, product_id: int) -> ProductDeleteResult:
+    async def delete_product(self, brand_id: int, product_id: int) -> ProductDeleteResult:
         """I-12 상품 삭제(soft) (§4.5). 물리 삭제 없음 — status=HIDDEN 전환."""
         data = await self._request("DELETE", f"/internal/seller/{brand_id}/products/{product_id}")
         return self._validate(ProductDeleteResult, data)

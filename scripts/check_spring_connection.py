@@ -20,13 +20,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--brand-id",
-        default="7",
+        type=int,
+        default=7,
         help="조회할 판매자 브랜드 ID (기본값: 7)",
     )
     return parser.parse_args()
 
 
-async def check_connection(brand_id: str) -> int:
+async def check_connection(brand_id: int) -> int:
     settings = get_settings()
     if not settings.internal_api_token:
         print("FAIL: FastAPI의 INTERNAL_API_TOKEN이 비어 있습니다.")

@@ -72,10 +72,10 @@ class HistoryEntry(BaseModel):
 _store: BaseStore | None = None
 _store_ctx: object | None = None  # AsyncPostgresStore cm — 앱 수명 동안 GC 방지
 _fallback_warned = False
-_save_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+_save_locks: WeakValueDictionary[int, asyncio.Lock] = WeakValueDictionary()
 
 
-def _save_lock(seller_id: str) -> asyncio.Lock:
+def _save_lock(seller_id: int) -> asyncio.Lock:
     lock = _save_locks.get(seller_id)
     if lock is None:
         lock = asyncio.Lock()
@@ -123,15 +123,16 @@ async def _get_store() -> BaseStore:
     return _store
 
 
-def _namespace(seller_id: str) -> tuple[str, str]:
-    return (_NAMESPACE_ROOT, seller_id)
+def _namespace(seller_id: int) -> tuple[str, str]:
+    # store 네임스페이스 원소는 str — 숫자 신원(§2.6)을 저장 키로만 문자열화한다.
+    return (_NAMESPACE_ROOT, str(seller_id))
 
 
 # ── 저장·조회 ────────────────────────────────────────────────────────────────────
 
 
 async def save_history(
-    seller_id: str,
+    seller_id: int,
     *,
     question: str,
     analyses: list[str],
@@ -169,7 +170,7 @@ async def save_history(
         await run_with_query_timeout(store.aput(namespace, _HISTORY_KEY, {"items": items}))
 
 
-async def load_recent(seller_id: str, n: int | None = None) -> list[HistoryEntry]:
+async def load_recent(seller_id: int, n: int | None = None) -> list[HistoryEntry]:
     """최근 n건(기본 seller_history_recent_n)을 최신순으로 반환한다."""
     limit = n if n is not None else get_settings().seller_history_recent_n
     store = await _get_store()
