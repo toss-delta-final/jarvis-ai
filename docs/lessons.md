@@ -13,6 +13,15 @@
 
 ---
 
+## [2026-07-24] dev→main 승격 후 main→dev back-merge를 안 하면 다음 승격에서 "out of date"로 막힌다
+- 증상: 새 dev→main 승격 PR(#106)에 "This branch is out-of-date with the base branch"가 뜨고, GitHub "Update branch" 클릭 시 "Repository rule violations found — Changes must be made through a pull request"로 거부됐다. main·dev 실제 파일 차이는 승격 대상 1건뿐이었는데도 막혔다.
+- 원인: 승격은 merge commit으로 하는데(#104), 그 후 main→dev back-merge를 하지 않아 직전 승격 merge commit이 dev 히스토리에 없어 그래프가 갈라졌다. main의 "up-to-date 필수" 보호 규칙이 이 drift를 잡아 머지를 막았고, dev도 보호 브랜치라 update-branch 직접 push조차 PR 없이는 불가였다.
+- 규칙:
+  - **dev→main 승격 PR을 머지한 직후, main→dev back-merge PR을 만들어 머지한다**(고정 단계). back-merge는 **merge commit**으로(squash 금지) 그래프를 재동기화한다 — 보통 파일 변경 0건이라 CI만 통과하면 된다.
+  - dev·main 둘 다 보호 브랜치라 재동기화도 반드시 PR 경유. "Update branch" 버튼/`update-branch` API는 rule violation으로 막히니 처음부터 PR로 간다.
+  - 완료 확인은 `git log origin/dev..origin/main`이 비어 있는지로 한다(비면 dev가 main을 포함).
+- 관련: PR #105→#106(승격)→#107(back-merge), CLAUDE.md Git 절
+
 ## [2026-07-23] 진단 스크립트도 실제 응답 모델 계약으로 성공 경로를 테스트한다
 - 증상: FastAPI→Spring 연결과 internal token 인증은 성공했지만, 연결 확인 스크립트가
   `SellerProductList`에 없는 `total` 속성을 출력하려다 `AttributeError`로 종료되어 실제 연결
