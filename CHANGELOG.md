@@ -50,6 +50,7 @@
 - **판매자 챗 화면 전환 신호 — `meta`/`progress` 이벤트 + `done.panel` (S-4, api-spec §3.2 v0.14.1, FE 계약 B)** — 판매자 대시보드(좌 채팅/우 패널)가 "우측을 바꿀지"를 판단하도록 3신호를 추가했다(판매자 스트림 전용, 구매자 계약 무변경): `meta{lane}`(매 스트림 첫 프레임 — analysis/product/general/confirm/apply/refused), `progress{text}`(분석 진행 로딩 — 최종 답변 `token` 과 분리), `done{finishReason,panel}`(패널 조치 — replace/keep/refresh). 레인×패널로 FE 요구 1~3(첫 질문 분할·분석 우측 출력·상품 CRUD 초안/HITL·무관 질문 유지)이 전부 결정된다. `_seller_stream` 6개 substream 에 배선, `_done()` 이 panel 을 싣도록 변경(구매자 `DoneData` 무변경). analysis 진행 문구를 `token`→`progress` 로 이관. `docs/specs/FE-CONTRACT-SELLER-CHAT.md` 에 분기별 요청→응답 시퀀스(성공·실패 전수) 문서화. 노션 S-4·api-spec §3.2 동기화. meta/panel 계약 테스트 3종 추가 — seller 282 통과·전체 574 통과·ruff clean. (api-spec §3.2)
 
 ### Fixed
+- **#100 P0 — I-1 응답 `summary`·`attributes` 유실 방지** — BE I-1이 리랭킹·세부조건용으로 반환하는 `summary`·`attributes`가 `SpringProduct` 스키마에 없어 Pydantic 파싱에서 조용히 제거되던 것을, 두 필드를 명시해 보존하도록 고쳤다. 소비(attributes 유연매칭·summary 시맨틱)는 #101 2차 압축의 몫이며, 본 수정은 계약(api-spec §4.6 응답표에 이미 존재)에 코드를 맞추는 것으로 와이어 계약 변경은 없다.
 - **FastAPI→Spring 연결 진단 결과 출력 복구** — internal token과 자사 상품 목록 API를
   확인하는 읽기 전용 스크립트를 추가하고, 성공 응답 모델에 없는 `total` 대신 실제 계약인
   `SellerProductList.rows` 길이를 출력하도록 수정했다. 빈 결과도 연결 성공으로 처리하며

@@ -64,10 +64,14 @@ class SpringProduct(CamelModel):
     categoryName·brandName·originalPrice·imageUrl. to_camel 기본 별칭(category/brand/…)과
     달라 명시 별칭으로 덮는다 — 안 그러면 rerank 가 category/brand 를 None 으로 받는다.
     BE 응답에 stock·totalCount 없음(§4.6 주의) — stock 은 optional None.
+    [#100 P0] summary·attributes 는 BE 가 반환하는 리랭킹용 필드다 — 필드가 없으면 파싱에서
+    유실되므로 명시한다(소비는 #101 2차 압축: attributes 유연매칭·summary 시맨틱).
     """
 
     product_id: int  # 숫자(BIGINT, product.id §2.6) — 별칭 productId
     name: str
+    summary: str | None = None  # BE I-1 요약(#100 P0) — 소비는 #101
+    attributes: dict[str, str] | None = None  # Layer2 속성(소재·핏 등, #100 P0) — 유연매칭(#101)
     price: int | None = None  # I-1 최소 응답 시 생략 가능(§2.4)
     list_price: int | None = Field(default=None, alias="originalPrice")  # 정가
     stock: int | None = None  # BE I-1 응답엔 없음(§4.6) — 담기/주문 시점 판정

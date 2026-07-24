@@ -584,6 +584,28 @@ def test_spring_product_maps_i1_wire_fields() -> None:
     assert p.main_image == "https://x/1.jpg"
 
 
+def test_spring_product_preserves_summary_and_attributes() -> None:
+    """[#100 P0] BE I-1이 주는 summary·attributes 를 SpringProduct 가 유실하지 않고 보존한다.
+
+    Spring 은 세부조건 후처리·리랭킹(#101 2차 압축)용으로 summary·attributes 를 반환하는데,
+    스키마에 필드가 없으면 Pydantic 파싱에서 조용히 제거된다.
+    """
+    from app.schemas.spring import SpringProduct
+
+    p = SpringProduct.model_validate(
+        {
+            "productId": 1,
+            "name": "린넨 셔츠",
+            "summary": "시원한 여름 린넨 셔츠",
+            "attributes": {"소재": "린넨", "핏": "오버핏"},
+            "categoryName": "여성의류",
+            "brandName": "더센트",
+        }
+    )
+    assert p.summary == "시원한 여름 린넨 셔츠"
+    assert p.attributes == {"소재": "린넨", "핏": "오버핏"}
+
+
 async def test_search_products_parses_i1_items(monkeypatch: pytest.MonkeyPatch) -> None:
     """search_products 가 {success,data:{items}} 응답을 SpringProduct 로 파싱한다(§4.6)."""
     import app.services.spring_client as sc
