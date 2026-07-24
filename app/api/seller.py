@@ -162,7 +162,21 @@ def _chunk_text(content: object) -> str:
     return "".join(parts)
 
 
-async def _general_stream(request: SellerChatRequest, identity: Identity) -> AsyncIterator[str]:
+def _seller_context(identity: Identity) -> SellerContext:
+    """검증된 Identity → SellerContext 숫자 캐스팅 (판매자·브랜드 id는 숫자 계약, §2.6).
+
+    JWT `sub`/`brandId` 클레임은 발급자에 따라 문자열("1")·숫자(1)로 올 수 있어
+    int 로 정규화한다 — SellerContext·DraftRecord·spring_client 의 int 타입과
+    일치시켜 Pydantic 직렬화 경고/검증 실패를 막는다. 빈 값은 require_seller 가
+    이미 403 으로 걸렀다. 숫자가 아닌 클레임은 ValueError — 호출부(_seller_stream)
+    가 error 이벤트로 봉투 종료한다.
+    """
+    return SellerContext(
+        seller_id=int(identity.seller_id or 0), brand_id=int(identity.brand_id or 0)
+    )
+
+
+async def _general_stream(request: SellerChatRequest, context: SellerContext) -> AsyncIterator[str]:
     """general_agent astream → token/done (3-7 — SPEC §7 수명주기·degrade).
 
     - C1(REVIEW-SELLER-STAGE2): build_general_agent 는 **요청마다 재빌드** —
@@ -185,9 +199,6 @@ async def _general_stream(request: SellerChatRequest, identity: Identity) -> Asy
     try:
         # 빌드도 try 안 — 실패 시 error 이벤트 봉투로 종료(마감 리뷰 M2 반영).
         agent = build_general_agent(today=date.today().isoformat())
-        context = SellerContext(
-            seller_id=identity.seller_id or "", brand_id=identity.brand_id or ""
-        )
         output_guard = StreamingOutputGuard()
         async for item in agent.astream(
             {"messages": [HumanMessage(content=request.message)]},
@@ -447,7 +458,7 @@ async def _apply_stream(
     yield _done("replace")  # diff 카드 = 우측 패널 교체
 
 
-async def _confirm_stream(draft_id: str, identity: Identity) -> AsyncIterator[str]:
+async def _confirm_stream(draft_id: str, context: SellerContext) -> AsyncIterator[str]:
     """confirm 레인 (4-2 스트림 2) — 코드 검사 후 resume 실행, LLM 0회.
 
     hitl.confirm_draft 가 존재→소유→멱등→TTL 검사를 통과한 경우에만 그래프를
@@ -458,7 +469,7 @@ async def _confirm_stream(draft_id: str, identity: Identity) -> AsyncIterator[st
     yield _meta("confirm")
     try:
         outcome = await confirm_draft(
-            draft_id, seller_id=identity.seller_id or "", brand_id=identity.brand_id or ""
+            draft_id, seller_id=context.seller_id, brand_id=context.brand_id
         )
     except SpringUnavailableError:
         yield _token(_CONFIRM_SPRING_DOWN_TOKEN)
@@ -485,20 +496,35 @@ async def _confirm_stream(draft_id: str, identity: Identity) -> AsyncIterator[st
 
 async def _seller_stream(request: SellerChatRequest, identity: Identity) -> AsyncIterator[str]:
     """판매자 챗 통합 스트림 (4-1b) — 입구 판정 ①②③ 후 3분기 위임."""
+    # ⓪ 신원 숫자 캐스팅 — 전 레인 공통(§2.6 숫자 계약). 숫자가 아닌 클레임은
+    # 토큰 발급 결함이므로 fail-closed 로 봉투 종료한다(레인 진입 전 차단).
+    try:
+        context = _seller_context(identity)
+    except (TypeError, ValueError):
+        logger.warning(
+            "판매자 신원 클레임이 숫자가 아니다 (sub=%r, brandId=%r)",
+            identity.seller_id,
+            identity.brand_id,
+        )
+        yield _sse(
+            "error",
+            ErrorData(code="INTERNAL", message="일시적인 오류가 발생했습니다.").model_dump(
+                by_alias=True
+            ),
+        )
+        return
+
     # ① confirm 필드 선판정 (A-2 최상위 구조화 필드, LLM 0회) → HITL 실행 레인(4-2).
     # action=="confirm" 이면 draftId 는 스키마 validator 가 보장한다(발화 ≠ 동의 [HARD]).
     if request.action == "confirm":
-        async for line in _confirm_stream(request.draft_id or "", identity):
+        async for line in _confirm_stream(request.draft_id or "", context):
             yield line
         return
 
     # ①.5 추천 적용 코드 선판정 ("N번 적용해줘" 정형 발화, LLM 0회) — 4-3 §6.3.
     apply_n = parse_apply_message(request.message)
     if apply_n is not None:
-        apply_context = SellerContext(
-            seller_id=identity.seller_id or "", brand_id=identity.brand_id or ""
-        )
-        async for line in _apply_stream(apply_n, request, apply_context):
+        async for line in _apply_stream(apply_n, request, context):
             yield line
         return
 
@@ -509,8 +535,6 @@ async def _seller_stream(request: SellerChatRequest, identity: Identity) -> Asyn
         yield _token(refusal)
         yield _done("keep")
         return
-
-    context = SellerContext(seller_id=identity.seller_id or "", brand_id=identity.brand_id or "")
 
     # ③ supervisor 라우팅 — 장애 시 general 폴백은 route_question 내부(4-1a).
     try:
@@ -534,7 +558,7 @@ async def _seller_stream(request: SellerChatRequest, identity: Identity) -> Asyn
         async for line in _product_stream(request, context):
             yield line
     else:
-        async for line in _general_stream(request, identity):
+        async for line in _general_stream(request, context):
             yield line
 
 

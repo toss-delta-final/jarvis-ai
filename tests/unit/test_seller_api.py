@@ -312,7 +312,7 @@ def test_confirm_executed_result_streams_token_done(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(seller_api, "route_question", _no_route)
 
     async def fake_confirm(draft_id, *, seller_id, brand_id):
-        assert (draft_id, seller_id, brand_id) == ("d-9", "7", "3")  # 신원은 검증된 Identity 에서
+        assert (draft_id, seller_id, brand_id) == ("d-9", 7, 3)  # Identity → int 캐스팅
         return hitl.ConfirmOutcome("executed", "변경을 반영했습니다 (productId=101).")
 
     monkeypatch.setattr(seller_api, "confirm_draft", fake_confirm)
@@ -748,7 +748,7 @@ def test_apply_message_with_history_emits_draft(monkeypatch: pytest.MonkeyPatch)
     try:
         asyncio.run(
             history.save_history(
-                "7",
+                7,
                 question="지난달 매출 분석",
                 analyses=["sales_anomaly"],
                 date_from="2026-06-01",

@@ -74,8 +74,8 @@ class DraftRecord(BaseModel):
     product_id: int | None = None
     changes: list[DraftChange] = Field(default_factory=list)
     summary: str = ""
-    seller_id: str
-    brand_id: str
+    seller_id: int  # JWT sub — 숫자 계약(api-spec §2.6), SellerContext 와 동일 타입
+    brand_id: int  # JWT brandId 클레임 — 숫자 계약, SellerContext 와 동일 타입
     created_at: str  # ISO8601(UTC) — TTL(안전장치 ⑤) 판정 기준
 
 
@@ -103,7 +103,7 @@ def _typed_after(change: DraftChange) -> int | str:
 
 
 def validate_draft(
-    proposal: DraftProposal, *, seller_id: str, brand_id: str
+    proposal: DraftProposal, *, seller_id: int, brand_id: int
 ) -> tuple[DraftRecord | None, str | None]:
     """DraftProposal(LLM) → DraftRecord(실행 정본). 불성립은 (None, 되묻기 문구).
 
@@ -202,7 +202,7 @@ def find_stale_changes(
     return mismatches
 
 
-async def _find_product(brand_id: str, product_id: int) -> SellerProductRow | None:
+async def _find_product(brand_id: int, product_id: int) -> SellerProductRow | None:
     """I-9 목록에서 대상 상품 행을 찾는다 — productId 필터가 없어 페이지 순회.
 
     페이지 크기·상한은 Settings 주입(seller_list_default_limit·
@@ -444,7 +444,7 @@ _NOT_FOUND_TEXT = (
 )
 
 
-async def confirm_draft(draft_id: str, *, seller_id: str, brand_id: str) -> ConfirmOutcome:
+async def confirm_draft(draft_id: str, *, seller_id: int, brand_id: int) -> ConfirmOutcome:
     """스트림 2: confirm — 코드 검사(존재→소유→멱등→TTL) 통과 시에만 resume 실행.
 
     검사를 resume 이전에 두는 이유: 실패 사유(만료·소유 불일치)로 스레드를
