@@ -35,10 +35,15 @@ class CamelModel(BaseModel):
 
 
 class ProductSearchFilters(CamelModel):
-    """POST /products/search 요청 (decompose 산출, api-spec §4.6).
+    """AI 검색 명세 (decompose 산출, api-spec §4.6) — 와이어로 나가는 건 subset 뿐이다.
 
-    필수는 limit 만 — 나머지 필터는 전부 선택. 구조화 필터 + 키워드(MVP 는 Spring DB 텍스트 검색).
-    excludeProductIds 는 최근 구매 dedup (결정 14-F, 원천 = GET /orders/recent §4.7). 게스트는 빈 배열.
+    Spring I-1 요청으로 실제 전송되는 건 `_search_query_params`(spring_client)가 추출하는 와이어
+    필드(keyword·category·price·brand)뿐이다. exclude_product_ids·rating_min·sort·limit 은 Spring 에
+    보내지 않고 AI 가 사후처리에 쓰는 필드다 — dedup(결정 14-F)·평점 하한·정렬은 사후필터,
+    limit 은 **AI 후보 상한(rerank 입력 top-K)**. excludeProductIds 원천 = GET /orders/recent(§4.7),
+    게스트는 빈 배열.
+    [2026-07-23, BE 합의] size 제거로 limit 은 더 이상 Spring 요청 size 가 아니다(§4.6) — Spring 은
+    전량 반환하고, limit 은 search_catalog 가 top-K 절단에 쓴다.
     """
 
     category: str | None = None
@@ -49,7 +54,7 @@ class ProductSearchFilters(CamelModel):
     keyword: str | None = None
     exclude_product_ids: list[int] = Field(default_factory=list)
     sort: str | None = None
-    limit: int = 30
+    limit: int = 30  # AI 후보 상한(rerank 입력 top-K) — Spring size 아님(§4.6, 2026-07-23)
 
 
 class SpringProduct(CamelModel):
@@ -266,7 +271,9 @@ class RecommendationPush(CamelModel):
 
     session_id: str
     list_id: str
-    product_ids: list[int] = Field(default_factory=list, max_length=50)  # 방어적 상한(실제 개수는 config)
+    product_ids: list[int] = Field(
+        default_factory=list, max_length=50
+    )  # 방어적 상한(실제 개수는 config)
     reasons: list[RecoReason] = Field(default_factory=list, max_length=50)  # productId로 키잉(§4.2)
 
 

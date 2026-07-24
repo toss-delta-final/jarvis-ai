@@ -6,8 +6,8 @@
 
 | 항목 | 값 |
 |---|---|
-| 문서 버전 | v0.15.19 |
-| 작성일 | 2026-07-14 (v0.15.19 개정 2026-07-23) |
+| 문서 버전 | v0.15.20 |
+| 작성일 | 2026-07-14 (v0.15.20 개정 2026-07-23 — I-1 `size` 제거, §4.6) |
 | 상태 | draft |
 | 대상 독자 | Spring 백엔드 팀, React 프론트엔드(FE) 팀 |
 | 소유 | AI 에이전트 서버 팀 |
@@ -823,9 +823,10 @@ X-Internal-Token: {서비스 토큰}
 | `categoryName` | string \| null | 아니오 | 대분류명이면 하위 소분류 전체 포함, 소분류명이면 해당만(BE I-1·02 D20). LLM은 대분류명이 기본 |
 | `minPrice` / `maxPrice` | int \| null | 아니오 | 가격 필터. 질의 시점이라 항상 최신(freshness) |
 | `brandName` | string \| null | 아니오 | **단일 브랜드**(BE I-1). decompose가 다중이면 AI가 브랜드별 분할 호출 또는 사후필터 |
-| `size` | int | 아니오 | 반환 상한. 기본 10, **최대 30**(BE I-1) |
+| ~~`size`~~ | — | — | **[2026-07-23 개정, BE 합의] 제거됨** — 아래 노트 참조 |
 
-- **[해소 v0.15.5, C-15] dedup·평점·정렬 = AI 사후필터(post-filter)**: BE I-1엔 `excludeProductIds`·`ratingMin`·`sort` 파라미터가 **없다**. 따라서 정확 제외 dedup(결정 14-F)은 **응답 수신 후 AI가 최근 구매 productId(I-19) 집합으로 제외**하고, 평점 필터·정렬도 rerank 단계에서 AI가 처리한다. `size` 한도 안에서의 후보 낭비는 감수(BE 계약 우선). 구 "요청 파라미터 제외" 기본안 폐기.
+- **[2026-07-23, BE 합의] `size` 제거 — 라운드1 전량 반환**: I-1(라운드1)은 고정필터(category·price·brand) 매칭 상품을 **전량 반환**한다(반환 상한 없음). 결과 수 제한(top-K)은 **AI 쪽**에서 적용한다 — 후보를 받아 pgvector 임베딩 유사도로 재정렬 후 `limit`(config, AI 후보 상한)만큼 압축해 rerank 입력을 만든다(§4.8 방식2). 즉 "몇 개로 줄일지"는 Spring 요청 파라미터가 아니라 AI 파이프라인 소관이다.
+- **[해소 v0.15.5, C-15] dedup·평점·정렬 = AI 사후필터(post-filter)**: BE I-1엔 `excludeProductIds`·`ratingMin`·`sort` 파라미터가 **없다**. 따라서 정확 제외 dedup(결정 14-F)은 **응답 수신 후 AI가 최근 구매 productId(I-19) 집합으로 제외**하고, 평점 필터·정렬도 rerank 단계에서 AI가 처리한다. 구 "요청 파라미터 제외" 기본안 폐기.
 
 #### AI가 받는 응답 (BE Notion I-1 기준, 타입=DDL)
 

@@ -166,10 +166,12 @@ async def search_catalog(
 ) -> ProductSearchResult:
     """활성 백엔드로 카탈로그를 검색하고 AI 사후필터(dedup 제외·평점 하한)를 적용한다.
 
-    BE I-1 에 dedup·평점 파라미터가 없어(C-15), Spring 검색은 keyword/category/price/brand/size 만
+    BE I-1 에 dedup·평점 파라미터가 없어(C-15), Spring 검색은 keyword/category/price/brand 만
     보내고 exclude_product_ids(최근 구매 dedup, §4.7 결정 14-F)·rating_min 은 여기서 사후 제외한다.
     정렬(sort)은 rerank 단계 소관 — 여기서는 검색순서를 보존한다.
-    backend 미지정 시 default_backend(Spring 위임) 사용 — 테스트에서 주입 가능.
+    [2026-07-23, BE 합의] size 제거로 Spring 이 전량 반환 → 사후필터 뒤 filters.limit(AI top-K)로
+    절단해 rerank 입력 상한을 지킨다(api-spec §4.6). 절단은 사후필터 이후라, 제외분만큼 후보가
+    낭비되지 않고 상위 limit 을 채운다. backend 미지정 시 default_backend 사용 — 테스트에서 주입 가능.
     """
     used = backend or default_backend
     result = await used.search(filters)
@@ -182,5 +184,8 @@ async def search_catalog(
     if filters.rating_min is not None:
         threshold = filters.rating_min
         products = [p for p in products if (p.rating or 0.0) >= threshold]
+
+    # AI top-K 절단 — Spring 이 size 없이 전량 반환하므로(§4.6) 여기서 rerank 입력 상한을 지킨다.
+    products = products[: filters.limit]
 
     return ProductSearchResult(products=products, total_count=len(products))

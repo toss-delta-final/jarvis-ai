@@ -16,7 +16,7 @@ AI 는 커머스 DB 에 직접 write 하지 않는다. 와이어 포맷은 camel
 타임아웃: AI→Spring 전 구간 3s 통일 (api-spec §2.9 c — BE I-2 문서 기준).
 
 [배선 v이슈#2] search_products = **GET**(사용자 확정 "그냥 GET으로") — BE I-1 파라미터
-  keyword/categoryName/minPrice/maxPrice/brandName/size. dedup·평점·정렬은 요청 파라미터가 아니라
+  keyword/categoryName/minPrice/maxPrice/brandName (size 제거 v2026-07-23, top-K 는 AI 쪽). dedup·평점·정렬은 요청 파라미터가 아니라
   AI 사후필터(§4.6 v0.15.5, C-15). push_recommendations = POST I-21(productIds 만, 경로 B).
 
 [변경 DESIGN-SELLER-TOOLS-STAGE1] 판매자 조회 8종 + 쓰기 3종은 아래 `SpringClient` 클래스로
@@ -140,9 +140,11 @@ def _client() -> httpx.AsyncClient:
 def _search_query_params(filters: ProductSearchFilters) -> dict:
     """decompose 필터 → BE I-1 GET 쿼리 파라미터 (§4.6, C-15).
 
-    BE I-1 파라미터는 keyword/categoryName/minPrice/maxPrice/brandName/size(≤30) 뿐이다.
-    brandName 은 단수 — MVP 는 첫 브랜드만 보내고(복수 브랜드는 후속) 나머지 필터
-    (excludeProductIds·ratingMin·sort)는 여기 싣지 않고 AI 사후필터(search_service)로 처리한다.
+    BE I-1 파라미터는 keyword/categoryName/minPrice/maxPrice/brandName 뿐이다.
+    [2026-07-23, BE 합의] size 제거 — 라운드1은 고정필터 매칭을 전량 반환하고, 결과 수 제한(top-K)은
+    AI 쪽(search_catalog 가 filters.limit 로 절단)에서 적용한다(api-spec §4.6). brandName 은 단수 —
+    MVP 는 첫 브랜드만 보내고(복수 브랜드는 후속) 나머지 필터(excludeProductIds·ratingMin·sort)는 여기
+    싣지 않고 AI 사후필터(search_service)로 처리한다.
     """
     params: dict[str, object] = {}
     if filters.keyword:
@@ -155,7 +157,6 @@ def _search_query_params(filters: ProductSearchFilters) -> dict:
         params["maxPrice"] = filters.price_max
     if filters.brand:
         params["brandName"] = filters.brand[0]
-    params["size"] = min(filters.limit, 30)
     return params
 
 
@@ -357,7 +358,9 @@ async def add_to_cart(request: AddToCartRequest) -> AddToCartResult:
             body = None
         err = body.get("error") if isinstance(body, dict) else None
         be_message = err.get("message") if isinstance(err, dict) else None
-        _log.warning("cart VALIDATION_ERROR → 수량초과로 매핑(드리프트 관측): message=%r", be_message)
+        _log.warning(
+            "cart VALIDATION_ERROR → 수량초과로 매핑(드리프트 관측): message=%r", be_message
+        )
         raise CartQuantityExceeded(f"add_to_cart 수량 상한 초과: {code}")
     if resp.status_code == 404:
         raise CartProductNotFound()

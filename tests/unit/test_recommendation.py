@@ -508,6 +508,31 @@ async def test_search_catalog_post_filters_exclude_and_rating() -> None:
     assert [p.product_id for p in res.products] == [102]
 
 
+def test_search_query_params_omits_size() -> None:
+    """[2026-07-23, BE 합의] I-1 요청에서 size 제거 — 라운드1 전량 반환, top-K 는 AI 쪽(api-spec §4.6)."""
+    from app.schemas.spring import ProductSearchFilters
+    from app.services.spring_client import _search_query_params
+
+    params = _search_query_params(ProductSearchFilters(keyword="무선 이어폰", limit=30))
+    assert "size" not in params
+
+
+async def test_search_catalog_caps_candidates_to_limit() -> None:
+    """size 제거로 Spring 이 전량 반환 → search_catalog 가 filters.limit(AI top-K)로 절단한다.
+
+    사후필터(dedup·평점) 이후 검색순서 상위 limit 만 rerank 입력으로 남긴다(§4.6).
+    """
+    from app.schemas.spring import ProductSearchFilters, SpringProduct
+    from app.services.search_service import search_catalog
+    from tests._fakes import FakeBackend
+
+    products = [SpringProduct(product_id=i, name=f"p{i}", price=1000) for i in range(1, 6)]  # 5개
+    res = await search_catalog(
+        ProductSearchFilters(limit=2), backend=FakeBackend(products=products)
+    )
+    assert [p.product_id for p in res.products] == [1, 2]  # top-K=2 로 절단(검색순서 보존)
+
+
 # ─────────── 리뷰 수정 회귀 (Fix A~E) ───────────
 
 
