@@ -10,6 +10,7 @@
 ## [Unreleased]
 
 ### Added
+- **#100 P1 — I-1 `color` 검색 조건 연결** — Spring I-1이 `attributes` LIKE로 지원하는 `color` 필터를 AI가 쓰도록, `ProductSearchFilters.color`와 `_search_query_params`의 `color` 전송을 추가하고 decompose 프롬프트가 색상 조건("빨간"·"검정" 등)을 `filters.color`로 추출하게 했다. 그동안 요청 모델·쿼리 변환에 `color`가 없어 Spring의 색상 검색을 못 쓰던 것을 해소. (api-spec §4.6, v0.15.21)
 - pg-catalog `products` 임베딩 프로비넌스 컬럼(`embed_model·embed_dim·embed_task·normalized`) + `embedding_meta_complete` CHECK, 기존 볼륨용 마이그레이션(#65).
 - `embed_texts(task_type=...)` 및 비대칭 임베딩 바인딩(질의=RETRIEVAL_QUERY / 문서=RETRIEVAL_DOCUMENT)(#65).
 - **이슈 #79 — AI 내부 프로필 inactivity timeout** — 회원 발화 저장과 같은 pg-profile

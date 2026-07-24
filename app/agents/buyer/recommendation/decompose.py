@@ -29,7 +29,8 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
   "categoryQueries": [ {"category": string|null, "query": string|null} ],
   "filters": {
     "priceMin": int|null, "priceMax": int|null,
-    "brand": [string]|null, "ratingMin": number|null, "keyword": string|null
+    "brand": [string]|null, "ratingMin": number|null, "keyword": string|null,
+    "color": string|null
   },
   "cart": { "productId": int|null, "optionId": int|null, "quantity": int },
   "revertCategories": [string]
@@ -39,6 +40,7 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
   "장바구니 보여줘/뭐 있어?"면 cart_view, 그 외 잡담·무관 질문이면 general.
 - recommend: 정확한 수치 제약은 filters 에 넣고 semanticQuery 로 근사하지 마세요.
   PRIOR_FILTERS 가 있으면 병합(좁히면 add, 모순되면 replace)하세요.
+  색상 조건(예: "빨간", "검정")이 있으면 filters.color 에 넣으세요.
 - categoryQueries: 사용자가 원하는 상품/목적별로 **카테고리를 최대한 추출**하세요.
   단일 상품 질의("무선 이어폰")면 1개, 상황형 질의("유럽여행 준비물")면 필요한 카테고리를
   여러 개 나눠 담으세요(예: 여행용품·전자기기·의류). category 는 best-guess(정말 모르면 null),

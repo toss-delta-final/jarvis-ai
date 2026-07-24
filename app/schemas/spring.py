@@ -52,6 +52,7 @@ class ProductSearchFilters(CamelModel):
     brand: list[str] | None = None
     rating_min: float | None = None
     keyword: str | None = None
+    color: str | None = None  # 색상 조건(#100 P1) — BE I-1 attributes LIKE 로 필터
     exclude_product_ids: list[int] = Field(default_factory=list)
     sort: str | None = None
     limit: int = 30  # AI 후보 상한(rerank 입력 top-K) — Spring size 아님(§4.6, 2026-07-23)

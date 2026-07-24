@@ -67,6 +67,12 @@ async def test_missing_category_queries_yields_empty() -> None:
     assert d.category_queries == []
 
 
+async def test_parses_color_filter() -> None:
+    """[#100 P1] decompose 가 filters.color(색상 조건)를 파싱한다."""
+    d = await _run(_raw(filters={"color": "빨강", "keyword": "원피스"}))
+    assert d.filters.color == "빨강"
+
+
 async def test_null_category_allowed() -> None:
     """category=null 추측 허용(query 있으면 그 leg 의 query 로 매핑해 흡수, #17)."""
     d = await _run(_raw(categoryQueries=[{"category": None, "query": "집들이 선물"}]))

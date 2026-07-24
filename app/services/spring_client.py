@@ -140,7 +140,7 @@ def _client() -> httpx.AsyncClient:
 def _search_query_params(filters: ProductSearchFilters) -> dict:
     """decompose 필터 → BE I-1 GET 쿼리 파라미터 (§4.6, C-15).
 
-    BE I-1 파라미터는 keyword/categoryName/minPrice/maxPrice/brandName 뿐이다.
+    BE I-1 파라미터는 keyword/categoryName/minPrice/maxPrice/brandName/color 뿐이다(color=#100 P1).
     [2026-07-23, BE 합의] size 제거 — 라운드1은 고정필터 매칭을 전량 반환하고, 결과 수 제한(top-K)은
     AI 쪽(search_catalog 가 filters.limit 로 절단)에서 적용한다(api-spec §4.6). brandName 은 단수 —
     MVP 는 첫 브랜드만 보내고(복수 브랜드는 후속) 나머지 필터(excludeProductIds·ratingMin·sort)는 여기
@@ -157,6 +157,8 @@ def _search_query_params(filters: ProductSearchFilters) -> dict:
         params["maxPrice"] = filters.price_max
     if filters.brand:
         params["brandName"] = filters.brand[0]
+    if filters.color:
+        params["color"] = filters.color
     return params
 
 

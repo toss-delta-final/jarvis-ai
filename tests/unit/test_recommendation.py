@@ -517,6 +517,15 @@ def test_search_query_params_omits_size() -> None:
     assert "size" not in params
 
 
+def test_search_query_params_sends_color() -> None:
+    """[#100 P1] color 조건이 있으면 Spring 요청에 실린다 (BE I-1 attributes LIKE)."""
+    from app.schemas.spring import ProductSearchFilters
+    from app.services.spring_client import _search_query_params
+
+    params = _search_query_params(ProductSearchFilters(keyword="원피스", color="빨강"))
+    assert params.get("color") == "빨강"
+
+
 async def test_search_catalog_caps_candidates_to_limit() -> None:
     """size 제거로 Spring 이 전량 반환 → search_catalog 가 filters.limit(AI top-K)로 절단한다.
 
