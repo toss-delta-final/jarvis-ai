@@ -1,0 +1,109 @@
+name: Jarvis AI Server CI/CD
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:   # Actions 탭에서 수동 실행 가능
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}   # ghcr.io/toss-delta-final/jarvis-ai
+
+jobs:
+  # 1단계: 이미지 빌드 — EC2 대신 러너에서 빌드 (테스트/린트는 ci.yml이 담당)
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # GHCR 푸시에 필요
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}   # 자동 발급 토큰, 별도 등록 불필요
+
+      # latest + 커밋 해시 태그 (해시 태그는 롤백 시 사용)
+      - name: 이미지 빌드 및 푸시
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max   # 레이어 캐시로 빌드 가속
+
+  # 2단계: 자동 배포 (CD)
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      packages: read   # EC2에서 GHCR pull 시 필요 (조직 기본 권한에 의존하지 않도록 명시)
+    steps:
+      - name: AI 서버 무중단 배포
+        uses: appleboy/ssh-action@v1.0.3   # 버전 고정 — @master는 예고 없이 깨짐
+        with:
+          host: ${{ secrets.EC2_AI_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          timeout: 10m
+          command_timeout: 10m
+          script: |
+            set -e   # 명령 하나라도 실패하면 뒤 단계 실행 안 함
+
+            # 1. 시크릿·변수를 env 파일로 기록 (umask 077로 소유자만 읽기 가능)
+            umask 077
+            cat << 'ENVEOF' > /home/ubuntu/jarvis-ai.env
+            AUTH_MODE=${{ vars.AUTH_MODE }}
+            LLM_PROVIDER=${{ vars.LLM_PROVIDER }}
+            CATALOG_DB_URL=${{ secrets.CATALOG_DB_URL }}
+            PROFILE_DB_URL=${{ secrets.PROFILE_DB_URL }}
+            SPRING_BASE_URL=${{ secrets.SPRING_BASE_URL }}
+            JWKS_URL=${{ vars.JWKS_URL }}
+            JWT_ISSUER=${{ vars.JWT_ISSUER }}
+            JWT_AUDIENCE=${{ vars.JWT_AUDIENCE }}
+            JWT_SCOPE=${{ vars.JWT_SCOPE }}
+            INTERNAL_API_TOKEN=${{ secrets.INTERNAL_API_TOKEN }}
+            OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+            OPENAI_FAST_MODEL_ID=${{ vars.OPENAI_FAST_MODEL_ID }}
+            OPENAI_SMART_MODEL_ID=${{ vars.OPENAI_SMART_MODEL_ID }}
+            OPENAI_FAST_REASONING_EFFORT=${{ vars.OPENAI_FAST_REASONING_EFFORT }}
+            OPENAI_SMART_REASONING_EFFORT=${{ vars.OPENAI_SMART_REASONING_EFFORT }}
+            GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}
+            PII_HASH_PEPPER=${{ secrets.PII_HASH_PEPPER }}
+            EMBEDDING_MODEL_ID=${{ vars.EMBEDDING_MODEL_ID }}
+            EMBEDDING_DIM=${{ vars.EMBEDDING_DIM }}
+            CORS_ORIGINS=${{ vars.CORS_ORIGINS }}
+            ENVEOF
+
+            # 2. [무중단 최적화] 기존 컨테이너 유지한 채 새 이미지 먼저 받아 대기
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            docker pull ${{ env.IMAGE }}:${{ github.sha }}
+
+            # 3. [충돌 원천 차단] 실행 직전 기존 컨테이너 중지 및 강제 삭제
+            docker stop jarvis-ai || true
+            docker rm -f jarvis-ai || true
+
+            # 4. 새 컨테이너 가동
+            docker run -d \
+              --name jarvis-ai \
+              --restart always \
+              -p 8000:8000 \
+              --env-file /home/ubuntu/jarvis-ai.env \
+              ${{ env.IMAGE }}:${{ github.sha }}
+
+            # 5. 헬스체크 — 최대 60초 대기 후 실패 시 로그 출력하고 배포 실패 처리
+            for i in $(seq 1 30); do
+              if curl -fs http://localhost:8000/health > /dev/null; then
+                docker image prune -f
+                exit 0
+              fi
+              sleep 2
+            done
+            docker logs --tail 100 jarvis-ai
+            exit 1
