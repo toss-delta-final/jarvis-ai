@@ -214,12 +214,12 @@ decompose 프롬프트("PRIOR_FILTERS 병합")로도 유도하지만(#10a), Haik
 |---|---|---|
 | `category_top_k` | 5 | raw·query 앵커 최근접 조회 top-k |
 | `category_fanout_max` | 5 | 턴당 최대 카테고리 수(프롬프트 상한 + 코드 절단) |
-| `category_fanout_per_cat_limit` | 10 | leg 별 Spring `size`(≤30) |
+| `category_fanout_per_cat_limit` | 10 | leg 별 AI top-K(leg `limit`, size 제거 2026-07-23 §4.6) |
 | `category_fanout_merge_cap` | 30 | 병합 후 rerank 입력 상한 |
 | `category_search_pool_max_size` | 10 | pg-catalog 검색 풀 max_size(fan-out 동시성 ≥ fanout, PR #73 리뷰) |
 
 **절단 튜너블 불변식(PR #73 리뷰):** `category_fanout_max`·`category_fanout_per_cat_limit`·
-`category_fanout_merge_cap` 은 모두 slice 절단(`out[:cap]`·Spring `size`)에 쓰이므로 `Field(ge=0)` 로
+`category_fanout_merge_cap` 은 모두 slice 절단(`out[:cap]`·AI top-K)에 쓰이므로 `Field(ge=0)` 로
 음수를 거부한다 — 음수면 Python slice 가 "뒤에서 N 개 제외"로 뒤집혀 "≤0 이면 정확히 0개" 규약이
 조용히 깨진다.
 

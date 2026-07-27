@@ -16,7 +16,7 @@ AI 는 커머스 DB 에 직접 write 하지 않는다. 와이어 포맷은 camel
 타임아웃: AI→Spring 전 구간 3s 통일 (api-spec §2.9 c — BE I-2 문서 기준).
 
 [배선 v이슈#2] search_products = **GET**(사용자 확정 "그냥 GET으로") — BE I-1 파라미터
-  keyword/categoryName/minPrice/maxPrice/brandName/size. dedup·평점·정렬은 요청 파라미터가 아니라
+  keyword/categoryName/minPrice/maxPrice/brandName (size 제거 v2026-07-23, top-K 는 AI 쪽). dedup·평점·정렬은 요청 파라미터가 아니라
   AI 사후필터(§4.6 v0.15.5, C-15). push_recommendations = POST I-21(productIds 만, 경로 B).
 
 [변경 DESIGN-SELLER-TOOLS-STAGE1] 판매자 조회 8종 + 쓰기 3종은 아래 `SpringClient` 클래스로
@@ -140,22 +140,33 @@ def _client() -> httpx.AsyncClient:
 def _search_query_params(filters: ProductSearchFilters) -> dict:
     """decompose 필터 → BE I-1 GET 쿼리 파라미터 (§4.6, C-15).
 
-    BE I-1 파라미터는 keyword/categoryName/minPrice/maxPrice/brandName/size(≤30) 뿐이다.
-    brandName 은 단수 — MVP 는 첫 브랜드만 보내고(복수 브랜드는 후속) 나머지 필터
-    (excludeProductIds·ratingMin·sort)는 여기 싣지 않고 AI 사후필터(search_service)로 처리한다.
+    BE I-1 파라미터는 keyword/categoryName/minPrice/maxPrice/brandName/color 뿐이다(color=#100 P1).
+    [2026-07-23, BE 합의] size 제거 — 라운드1은 고정필터 매칭을 전량 반환하고, 결과 수 제한(top-K)은
+    AI 쪽(search_catalog 가 filters.limit 로 절단)에서 적용한다(api-spec §4.6). brandName 은 다중 —
+    브랜드 전량을 반복 파라미터로 실어 BE IN 필터에 맡긴다(방법 D, #100 P1, BE 배열 수용 협의 대상).
+    나머지 필터(excludeProductIds·ratingMin)는 여기 싣지 않고 AI 사후필터(search_service)로 처리한다.
+    정렬은 rerank(LLM) 소관(#100 P2, sort 필드 제거).
     """
     params: dict[str, object] = {}
-    if filters.keyword:
+    # LLM(decompose) 산출 텍스트 필터는 공백-only('  ') 도 빈 값으로 보고 미전송한다 —
+    # `if filters.X:` 는 ''(falsy)만 막고 ' '(truthy)는 통과시켜 BE 에 빈값이 나갔다(#127 리뷰).
+    if filters.keyword and filters.keyword.strip():
         params["keyword"] = filters.keyword
-    if filters.category:
+    if filters.category and filters.category.strip():
         params["categoryName"] = filters.category
     if filters.price_min is not None:
         params["minPrice"] = filters.price_min
     if filters.price_max is not None:
         params["maxPrice"] = filters.price_max
     if filters.brand:
-        params["brandName"] = filters.brand[0]
-    params["size"] = min(filters.limit, 30)
+        # 다중 브랜드 전량 전송(방법 D) — httpx 가 brandName=A&brandName=B 반복 파라미터로
+        # 직렬화 → BE IN 필터(#100 P1). 조건칩(state)도 전 브랜드를 표시하므로 요청·표시가 일치한다.
+        # 빈/공백 요소는 제거(LLM 이 [""] 등을 낼 수 있음 — brandName= 빈값 전송 방지, #127 리뷰).
+        brands = [b for b in filters.brand if b and b.strip()]
+        if brands:
+            params["brandName"] = brands
+    if filters.color and filters.color.strip():
+        params["color"] = filters.color
     return params
 
 
@@ -163,31 +174,81 @@ def _parse_search_response(data: object) -> ProductSearchResult:
     """BE I-1 응답 → ProductSearchResult (§4.6, v0.15.5).
 
     현재 Spring ``ApiResponse<List<...>>`` 는 data 자체가 배열({success, data:[...]})이다.
-    구 계약의 data:{items:[...]} 형태도 브랜치 간 호환을 위해 함께 수용한다. BE 응답엔
-    totalCount 가 없어 total_count 는 수신 items 수로 둔다.
+    구 계약의 data:{items:[...]} 형태도 브랜치 간 호환을 위해 함께 수용한다. total_count 는
+    파싱 성공 후보 수다.
+    [PR#127 리뷰] 항목은 **개별 검증**한다 — 후보 1건의 스키마 위반(누락 필드·타입 이상)이
+    단일 comprehension 이면 리스트 전체 생성을 실패시켜, 멀쩡한 나머지 후보까지 통째로 버려진다.
+    실패분만 WARNING 로그로 남기고 skip 해 나머지를 보존한다. 단 dict 항목이 있었는데 **전부**
+    검증 실패(정상 0건)면 개별 이상이 아니라 systematic 스키마 붕괴이므로 조용한 zero-result 로
+    위장하지 않고 예외를 재발생시켜 SEARCH_FAILED 로 degrade 한다(§7 fail-closed 유지).
+    [PR#127 리뷰] 최상위 envelope 자체가 어긋난 경우도 같은 §7 원칙으로 fail-closed 한다 —
+    (1) `success:false`(200 이어도 실패 envelope, fetch_product_changes 와 동일 규약),
+    (2) data 키 없음·미인식 형태·비 list/dict. 정상 0건과 구분 안 되는 빈 결과로 삼키지 않는다.
+    단 `data:null`·`data:[]` 은 정상 0건이라 예외 없이 빈 결과를 반환한다. 구 wrapped 형태
+    (data:{items:[...]})만 호환 수용하고, data 키 없는 top-level items 레거시 분기는 제거했다.
     """
     items: list = []
     if isinstance(data, list):
         items = data  # 래퍼 없이 바디가 곧 배열인 경우도 수용
     elif isinstance(data, dict):
+        # [PR#127 리뷰] success:false 는 200 이어도 실패 envelope — fetch_product_changes 와 동일
+        # 규약. 정상 0건(빈 결과)으로 삼키지 않고 fail-closed(§7)로 degrade 한다.
+        if data.get("success") is False:
+            _log.warning("검색 응답 success=false — 실패 envelope, SEARCH_FAILED degrade(§7)")
+            raise ValueError("검색 응답 success=false(실패 envelope)")
         payload = data.get("data")
         if isinstance(payload, list):
             items = payload
         elif isinstance(payload, dict) and isinstance(payload.get("items"), list):
+            # 구 계약 wrapped 형태(data:{items:[...]}) 만 호환 수용. top-level items(data 키 없이)는
+            # data 키 부재 drift 로 아래 fail-closed 가 잡는다(#127 리뷰, 레거시 분기 제거).
             items = payload["items"]
-        elif isinstance(data.get("items"), list):
-            items = data["items"]
         elif payload is not None:
-            # data 키는 있으나 알려진 형태(list · {items})와 안 맞음 — silent 0 오인 방지 경고(§7).
+            # data 키는 있으나 알려진 형태(list · {items})와 안 맞음 — envelope drift.
+            # [PR#127 리뷰] 정상 0건과 구분 안 되는 빈 결과 대신 fail-closed(§7) — 항목 단위와 일관.
             _log.warning(
-                "검색 응답 data 형태 미인식(silent 0 아님) — data 타입=%s", type(payload).__name__
+                "검색 응답 data 형태 미인식 — envelope drift, SEARCH_FAILED degrade(§7), 타입=%s",
+                type(payload).__name__,
+            )
+            raise ValueError(
+                f"검색 응답 data 형태 미인식(envelope drift): {type(payload).__name__}"
             )
         elif "data" not in data:
-            # data 키 자체가 없음(= data:null 과 구분) — 더 의심스러운 drift.
-            _log.warning("검색 응답에 data 키가 없음(silent 0 아님) — envelope drift 의심")
+            # data 키 자체가 없음(= data:null 과 구분) — 더 의심스러운 drift → fail-closed(§7).
+            _log.warning("검색 응답에 data 키가 없음 — envelope drift, SEARCH_FAILED degrade(§7)")
+            raise ValueError("검색 응답에 data 키가 없음(envelope drift)")
+        # (payload is None 이고 data 키는 있음 = data:null → 정상 0건, 예외 아님)
     else:
-        _log.warning("검색 응답 최상위 형태 미인식(silent 0 아님) — type=%s", type(data).__name__)
-    products = [SpringProduct.model_validate(it) for it in items if isinstance(it, dict)]
+        _log.warning(
+            "검색 응답 최상위 형태 미인식 — envelope drift, SEARCH_FAILED degrade(§7), type=%s",
+            type(data).__name__,
+        )
+        raise ValueError(f"검색 응답 최상위 형태 미인식(envelope drift): {type(data).__name__}")
+    products: list[SpringProduct] = []
+    invalid = 0  # 검증 실패로 skip 된 항목 수(비-object 포함)
+    last_err: ValidationError | None = None
+    for it in items:
+        if not isinstance(it, dict):
+            # 항목이 object 조차 아님 — 개별 필드 결측보다 심각한 최상위 타입 붕괴다. skip 하되
+            # invalid 로 세어 아래 fail-closed 가드가 이 케이스도 잡게 한다(PR#127 리뷰).
+            invalid += 1
+            _log.warning("검색 후보가 object 아님(skip) — type=%s", type(it).__name__)
+            continue
+        try:
+            products.append(SpringProduct.model_validate(it))
+        except ValidationError as exc:
+            # 후보 1건의 스키마 이상은 그 항목만 skip — 나머지 정상 후보 보존(PR#127 리뷰).
+            invalid += 1
+            last_err = exc
+            _log.warning("검색 후보 파싱 실패로 skip(전체 실패 아님) — %s", exc)
+    # §7 fail-closed: 항목이 있었는데 **전부** 무효(정상 0건)면 개별 이상이 아니라 systematic
+    # 스키마 붕괴다 → 조용한 zero-result 로 위장하지 않고 SEARCH_FAILED 로 degrade. dict 항목의
+    # ValidationError 는 그대로 재발생, 전부 비-object 등 재발생할 예외가 없으면 ValueError 로.
+    if invalid and not products:
+        _log.warning("검색 후보 전량 무효(%d건) — SEARCH_FAILED degrade(§7)", invalid)
+        raise last_err or ValueError("검색 응답 항목이 전부 유효하지 않음(스키마 붕괴, §7)")
+    if invalid:
+        _log.warning("검색 후보 %d건 skip(스키마 이상) / 정상 %d건", invalid, len(products))
     return ProductSearchResult(products=products, total_count=len(products))
 
 

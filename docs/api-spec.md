@@ -6,8 +6,8 @@
 
 | 항목 | 값 |
 |---|---|
-| 문서 버전 | v0.15.20 |
-| 작성일 | 2026-07-14 (v0.15.20 개정 2026-07-27) |
+| 문서 버전 | v0.15.23 |
+| 작성일 | 2026-07-14 (v0.15.23 개정 2026-07-27 — I-1 §4.6 실측 정합: 표시필드(imageUrl·originalPrice·reviewCount·options) CH-5 이관 명시·`price`/`rating` 계산용 명기·`brandName` 다중, #100) |
 | 상태 | draft |
 | 대상 독자 | Spring 백엔드 팀, React 프론트엔드(FE) 팀 |
 | 소유 | AI 에이전트 서버 팀 |
@@ -813,7 +813,7 @@ X-Internal-Token: {서비스 토큰}
 > **[확정 v0.15.5] I-1 = GET 그대로 수용**(사용자 지시 2026-07-19). 구 POST 역제안 폐기. **BE Notion I-1 파라미터를 기준으로 채택**(판정규칙: API 표면=Notion, 타입=DDL). Query string 스칼라 파라미터. 신원(userId/guestId)은 서비스 토큰 레인이라 AI가 도출해 쿼리로 전달(§2.6).
 
 ```
-GET {SPRING_BASE_URL}/internal/products/search?keyword=방수파우치&categoryName=여행용품&maxPrice=50000&brandName=샘소나이트&size=30
+GET {SPRING_BASE_URL}/internal/products/search?keyword=방수파우치&categoryName=여행용품&maxPrice=50000&brandName=샘소나이트&brandName=레스포삭
 X-Internal-Token: {서비스 토큰}
 ```
 
@@ -822,51 +822,47 @@ X-Internal-Token: {서비스 토큰}
 | `keyword` | string \| null | 아니오 | 상품명+summary+attributes LIKE(BE I-1). FULLTEXT 없음·LIKE 2단(DDL D7) |
 | `categoryName` | string \| null | 아니오 | 대분류명이면 하위 소분류 전체 포함, 소분류명이면 해당만(BE I-1·02 D20). LLM은 대분류명이 기본 |
 | `minPrice` / `maxPrice` | int \| null | 아니오 | 가격 필터. 질의 시점이라 항상 최신(freshness) |
-| `brandName` | string \| null | 아니오 | **단일 브랜드**(BE I-1). decompose가 다중이면 AI가 브랜드별 분할 호출 또는 사후필터 |
-| `size` | int | 아니오 | 반환 상한. 기본 10, **최대 30**(BE I-1) |
+| `brandName` | string[] \| null | 아니오 | **다중 브랜드**(#100 P1, 방법 D). 반복 파라미터(`brandName=A&brandName=B`)로 전량 전송 → BE `WHERE brand IN (...)` OR 매칭. 단일은 값 1개(기존과 동일), 미전송 시 브랜드 필터 없음. **BE 배열 수용 협의 대상** |
+| `color` | string \| null | 아니오 | 색상 조건. BE I-1이 `attributes` LIKE로 필터(#100 P1). decompose가 색상 언급 시 추출·전송 |
+| ~~`size`~~ | — | — | **[2026-07-23 개정, BE 합의] 제거됨** — 아래 노트 참조 |
 
-- **[해소 v0.15.5, C-15] dedup·평점·정렬 = AI 사후필터(post-filter)**: BE I-1엔 `excludeProductIds`·`ratingMin`·`sort` 파라미터가 **없다**. 따라서 정확 제외 dedup(결정 14-F)은 **응답 수신 후 AI가 최근 구매 productId(I-19) 집합으로 제외**하고, 평점 필터·정렬도 rerank 단계에서 AI가 처리한다. `size` 한도 안에서의 후보 낭비는 감수(BE 계약 우선). 구 "요청 파라미터 제외" 기본안 폐기.
+- **[2026-07-23, BE 합의] `size` 제거 — 라운드1 전량 반환**: I-1(라운드1)은 고정필터(category·price·brand) 매칭 상품을 **전량 반환**한다(반환 상한 없음). 결과 수 제한(top-K)은 **AI 쪽**에서 적용한다 — 후보를 받아 pgvector 임베딩 유사도로 재정렬 후 `limit`(config, AI 후보 상한)만큼 압축해 rerank 입력을 만든다(§4.8 방식2). 즉 "몇 개로 줄일지"는 Spring 요청 파라미터가 아니라 AI 파이프라인 소관이다.
+- **[해소 v0.15.5, C-15] dedup·평점·정렬 = AI 사후필터(post-filter)**: BE I-1엔 `excludeProductIds`·`ratingMin`·`sort` 파라미터가 **없다**. 따라서 정확 제외 dedup(결정 14-F)은 **응답 수신 후 AI가 최근 구매 productId(I-19) 집합으로 제외**하고, 평점 필터·정렬도 rerank 단계에서 AI가 처리한다. 구 "요청 파라미터 제외" 기본안 폐기.
 
 #### AI가 받는 응답 (BE Notion I-1 기준, 타입=DDL)
 
 ```json
 {
   "success": true,
-  "data": {
-    "items": [
-      {
-        "productId": 1,
-        "name": "린넨 셔츠",
-        "price": 29900,
-        "originalPrice": 39000,
-        "imageUrl": "https://.../1.jpg",
-        "categoryName": "여성의류",
-        "brandName": "더센트",
-        "summary": "시원한 여름 린넨 셔츠",
-        "attributes": { "소재": "린넨", "핏": "오버핏" },
-        "rating": 4.8,
-        "reviewCount": 2847,
-        "options": [ { "optionId": 10, "name": "화이트/M", "extraPrice": 0 } ]
-      }
-    ]
-  }
+  "data": [
+    {
+      "productId": 1,
+      "name": "린넨 셔츠",
+      "summary": "시원한 여름 린넨 셔츠",
+      "attributes": { "소재": "린넨", "핏": "오버핏" },
+      "categoryName": "여성의류",
+      "brandName": "더센트",
+      "price": 29900,
+      "rating": 4.8
+    }
+  ]
 }
 ```
 
 | 응답 필드 | 타입 | 설명 |
 |---|---|---|
-| `data.items[]` | array | 후보 배열(rerank 입력) |
-| `items[].productId` | number | 후보 식별자(숫자 BIGINT, DDL) |
-| `items[].name` | string | 상품명(rerank·근거 생성용) |
-| `items[].price` / `originalPrice` | int | 질의 시점 판매가/정가 — 예산 검증(`verifiedSum`, §3.1 budget)·`maxPrice` 판정 |
-| `items[].imageUrl` / `categoryName` / `brandName` | string | rerank 신호·필터 검증용 |
-| `items[].summary` | string \| null | 요약 |
-| `items[].attributes` | object \| null | **[해소 v0.15.5, C-5] 축 = `category.attribute_schema`(키 배열, 예 `["소재","핏"]`), 값 자유텍스트**(DDL D7·D11) — 2차 압축 속성 매칭 대상 |
-| `items[].rating` / `reviewCount` | number/int | **조회 시 집계**(저장 avg 없음, DDL D9) |
-| `items[].options[]` | array | `{optionId(number), name, extraPrice}` — 되물음·표시용 |
+| `data[]` | array | 후보 배열(rerank 입력). envelope = `{success, data:[...]}`(BE 실측, ApiResponse<List>) — 파서는 구 `data:{items:[...]}` 도 호환 수용 |
+| `[].productId` | number | 후보 식별자(숫자 BIGINT, DDL) |
+| `[].name` | string | 상품명(rerank·근거 생성용) |
+| `[].summary` | string \| null | 요약(#100 P0 — rerank/세부조건용, 소비는 #101 2차 압축) |
+| `[].attributes` | object \| null | **[해소 v0.15.5, C-5] 축 = `category.attribute_schema`(키 배열, 예 `["소재","핏"]`), 값 자유텍스트**(DDL D7·D11) — 2차 압축 속성 매칭 대상 |
+| `[].categoryName` / `brandName` | string | rerank 신호·필터 검증용 |
+| `[].price` | int | 질의 시점 판매가 — **AI 계산용(비표시, #100 P1)**: 예산 검증(`verifiedSum`, §3.1 budget)·`maxPrice` 판정·rerank 신호. 표시가는 CH-5(§4.3) |
+| `[].rating` | number | **조회 시 집계**(저장 avg 없음, DDL D9) — **AI 계산용(비표시, #100 P0)**: 평점 사후필터·rerank 신호. 표시는 CH-5 |
 
-- **[주의 v0.15.5] BE I-1 응답에 `stock`·`totalCount` 없음**: (1) 재고는 후보에 안 실림 → 예산검증은 `price`만, 재고/품절 판정은 담기·주문 시점(§4.1). (2) `totalCount` 미제공 → **완화 칩 `estCount`(§3.1 suggestions) 산정 소스 부재** → BE에 count 추가 요청 또는 estCount 미지원으로 재검토(🔴 잔여).
-- **envelope = `{success, data:{items}}`**(BE 공통). 구 `{products, totalCount}` 폐기.
+- **[#100 결정] 표시 전용 필드는 I-1 미반환 → CH-5(§4.3) 하이드레이션**: `imageUrl`·`originalPrice`·`reviewCount`·`options`는 카드 표시·장바구니 되물음 몫이라 I-1이 반환하지 않는다(BE 2026-07-18 재설계). AI 추천 경로(rerank·예산·평점필터)는 이들을 쓰지 않으며, 표시는 경로 B(§4.3)·옵션 되물음은 I-2(§4.1) 소관이다. 구 §4.6 응답표의 이 4필드 나열은 폐기.
+- **[#100 P0/P1] `price`·`rating` = 계산용(비표시) 반환**: display 로 오분류해 CH-5로만 넘기면 안 된다 — rerank·예산검증·평점필터는 CH-5(표시 시점)보다 앞선 질의 시점에 이 값이 필요하다(후보와 함께 받아야 함). BE 협의 완료, 반환 구현 대기.
+- **[주의] BE I-1 응답에 `stock`·`totalCount` 없음**: (1) 재고는 후보에 안 실림 → 예산검증은 `price`만, 재고/품절 판정은 담기·주문 시점(§4.1). (2) `totalCount`는 **[#100 P2 결정] 별도 필드 불필요** — `size` 제거(전량 반환)로 AI `search_catalog`가 **top-K 절단 전에** 사후필터 통과 매칭 수를 `total_count`로 확정하므로(절단값 min(매칭, limit)이 아님) 현재 필터의 매칭 수를 안다. 완화 칩 `estCount`(§3.1 suggestions)는 '완화된 다른 필터'의 count 라 이 값으로 못 구하고(완화 칩 미구현·별도 이슈 — 재쿼리/BE count 필요), 되돌리기 칩은 **top-K 절단된 응답 후보 내** 억제 수라 page-local 근사다(전량 기준 진짜 억제 수보다 작을 수 있음).
 - **freshness(신선도) — 트레이드오프 없음**: 질의 시점 검색이므로 **가격·재고 필터는 항상 최신**이다. v0.4.0 미러 배치의 "필터 경계 오류(stale price로 인한 오포함/오제외)" 트레이드오프는 **본 구조에서 소멸**한다. (표시가는 여전히 경로 B로 Spring이 목록 GET에서 채운다, §4.3.)
 - **rerank는 AI-side**: 이 API는 후보만 반환하고, profile_summary 반영 rerank·근거 생성은 AI 경계에서 수행한다(하드 제약 유지).
 - **[방식1 대비 — id 제약 조회 신규 요청, C-17 🔴]** §4.8 결합 **방식1**(AI 벡터검색 → Spring hydrate)에는 벡터가 뽑은 `productId` 집합의 **가용성(재고·활성)·상세를 id로 재조회**하는 변형이 필요하다(원본 컬럼 사본 금지 원칙상 AI가 재고를 저장 못 하므로 Spring 권위 확인 필수). **요청**: I-1에 `productIds`(숫자 배열) 필터 추가 또는 별도 by-id 조회 엔드포인트. **방식2는 불요**(기존 I-1 재사용). BE 협의 대상(C-17) — 오프라인 골든셋 비교는 이 변형에 무의존.
@@ -1086,6 +1082,9 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 
 | 버전 | 날짜 | 변경 |
 |---|---|---|
+| v0.15.23 | 2026-07-27 | **[#100 P0/P1/P2] I-1 §4.6 실측 정합.** 표시 전용 필드(`imageUrl`·`originalPrice`·`reviewCount`·`options`)를 응답표에서 제거하고 CH-5(§4.3) 하이드레이션 이관 명시(AI 추천 경로 미사용), `price`·`rating`을 "AI 계산용(비표시 — 예산검증 `verifiedSum`·평점 사후필터·rerank 신호, 질의 시점 필요)"으로 명기해 display 오분류 재발 차단, envelope 예시를 실측 `{success, data:[...]}`(bare array)로 정정, 요청 `brandName` 단일→다중(반복 파라미터 → `WHERE brand IN`, 방법 D), `totalCount` 필드 불필요 결정 반영. |
+| v0.15.22 | 2026-07-26 | **[#100 P1] I-1 `color` 요청 파라미터 연결.** decompose가 색상 조건("빨간"·"검정")을 `filters.color`로 추출·전송하고, BE I-1이 `attributes` LIKE로 필터. 요청 모델·쿼리 변환에 `color`가 없어 Spring 색상 검색을 못 쓰던 것을 해소. |
+| v0.15.21 | 2026-07-24 | **[#100 P2] I-1 `size` 제거 → 라운드1 전량 반환 + AI top-K.** BE 합의로 Spring 요청에서 `size`를 제거(반환 상한 없음)하고, 결과 수 제한(top-K)은 AI `search_catalog`가 사후필터(dedup·평점) 뒤 `filters.limit`로 절단. `ProductSearchFilters.limit`은 Spring `size`가 아니라 AI 후보 상한(rerank 입력)이다. |
 | v0.15.20 | 2026-07-27 | **[C-1 해소] 인증 계약을 Spring 코드 실측으로 확정.** 명세가 🔴 협의 대기로 남겨둔 항목이 BE에는 이미 구현돼 있어 역반영한다. (1) **스트림 티켓 클레임 실값 확정** — `iss`=`jarvis-spring-auth`, `aud`=`jarvis-fastapi-ai`, `scope`=`chat:stream`, TTL **60초**(구 "30~60초" 범위 → 실값). CH-1/CH-1b 응답이 `ticketTtlSeconds`로 실값을 함께 반환한다. (2) **판매자 티켓 형식 확정** — `role="seller"`(**소문자**) + `brandId`(**숫자**). `role` 클레임은 **판매자 티켓에만** 실리고 구매자·게스트는 `sub_type`만 갖는다. (3) **CH-1b `POST /api/chat/tickets` 구현 확인** — 구 "가칭·신설 필요"를 확정으로 전환. 요청 `{sessionId}`, 응답은 CH-1과 동일 DTO. 세션에 보관된 `sub_type`+`sub`으로 **소유자를 검증**하고(불일치 거부), 재발급과 함께 세션 TTL을 sliding 갱신하며, 판매자 세션은 보관된 `brandId`로 SELLER 스코프 티켓을 재발급한다. (4) **CH-6 `POST /api/chat/seller/sessions` 등재**(레인 d) — 판매자 챗 입구. `brandId`는 BE가 JWT 검증 후 DB에서 도출해 클레임에 박는다(클라이언트·LLM 주장 무시). (5) CH-1 응답 필드에 `llmSseUrl`(FE→AI SSE 직결 주소) 명시. **AI 측 와이어 동작 변경 없음** — `_norm_role`이 대소문자 무관 비교라 소문자 `seller`도 기존대로 매칭된다. C-1 🔴 잔여는 **서비스 토큰 회전·만료·mTLS 운영 정책**만 남는다. |
 | v0.15.19 | 2026-07-23 | **[이슈 #79] 프로필 세션 종료 트리거의 MVP 소유권 확정.** Spring I-20의 알려진 사유는 `logout`/`newConversation` 2종으로 한정하고 탭 닫기 신호는 제거한다. AI는 회원 발화 저장 시 DB 서버 시각의 `lastActivityAt`을 갱신하며, 단일 인스턴스 스케줄러가 기본 60초마다 10분 이상 비활성 세션을 bounded batch로 선점한다. 내부 timeout은 HTTP 자기 호출 없이 I-20과 같은 finalizer 및 고정키 claim으로 직렬화하되, idle 성공은 영구 멱등 완료가 아닌 재개 가능한 checkpoint로 claim을 해제한다. 새 활동은 completed activity를 active로 되돌리고 이전 processing/completed 종료 generation을 같은 저장 transaction에서 무효화한다. terminal finalizer는 처리 중 새 activity를 영구 완료로 덮지 않으며 scheduler는 라이브 스트림 슬롯을 점유하지 않는다. 처리 전 활동·활성 스트림을 재확인하며 claim별 실패·crash는 해제/lease로 재시도한다. 외부 요청 스키마에는 변경이 없다. |
 | v0.15.18 | 2026-07-23 | **[C-4/I-17 상태 계약 정합] `items[].status`를 Spring `ProductStatus`와 동일한 `ON_SALE`/`HIDDEN`으로 확정.** Spring은 별도 매핑 없이 enum 값을 그대로 반환하고, AI 배치는 `ON_SALE`을 생성·갱신하며 `HIDDEN`의 기존 artifact를 삭제한다. 구 `ACTIVE`/`DELISTED`를 포함한 미정의 값은 응답 계약 위반으로 페이지 전체를 fail-closed 처리한다. 해당 항목만 skip하지 않고 커서를 유지해 Spring 수정 뒤 같은 `since`부터 재처리한다. §4.8 응답 예시·필드 설명·배치 흐름·복구 규약 갱신. |

@@ -508,6 +508,252 @@ async def test_search_catalog_post_filters_exclude_and_rating() -> None:
     assert [p.product_id for p in res.products] == [102]
 
 
+async def test_search_catalog_rating_filter_preserves_unrated() -> None:
+    """[#100 P0] 평점 하한 사후필터는 '반증된 것만' 제거한다.
+
+    rating 이 있고 미달인 상품(3.9)은 버리되, rating=None 신상품(리뷰 없음)은
+    데이터 부재일 뿐 미달이 반증된 게 아니므로 후보에 보존해 rerank 가 판단하게 한다.
+    """
+    from app.schemas.spring import ProductSearchFilters, SpringProduct
+    from app.services.search_service import search_catalog
+    from tests._fakes import FakeBackend
+
+    products = [
+        SpringProduct(product_id=201, name="신상품", rating=None, category="c", brand="b"),
+        SpringProduct(product_id=202, name="저평점", rating=3.9, category="c", brand="b"),
+        SpringProduct(product_id=203, name="고평점", rating=4.5, category="c", brand="b"),
+    ]
+    res = await search_catalog(ProductSearchFilters(rating_min=4.0), backend=FakeBackend(products))
+    # 무평점(201) 보존, 저평점(202) 탈락, 고평점(203) 통과.
+    assert [p.product_id for p in res.products] == [201, 203]
+
+
+def test_i1_envelope_preserves_rerank_fields() -> None:
+    """[#100 P0/P1] BE I-1 실제 envelope({success, data:[...]}) 파싱 계약 테스트.
+
+    rerank·예산검증 입력 필드(price·rating·summary·attributes)와 별칭 필드
+    (categoryName·brandName)가 파싱 후 보존됨을 고정한다. SpringProduct 에 필드가 없으면
+    Pydantic 이 조용히 버리는 사고(summary·attributes 유실 P0)의 재발 방지 가드다.
+    """
+    from app.services.spring_client import _parse_search_response
+
+    raw = {
+        "success": True,
+        "data": [
+            {
+                "productId": 1,
+                "name": "린넨 셔츠",
+                "price": 29900,
+                "rating": 4.8,
+                "summary": "시원한 여름 린넨 셔츠",
+                "attributes": {"소재": "린넨", "핏": "오버핏"},
+                "categoryName": "여성의류",
+                "brandName": "더센트",
+            }
+        ],
+    }
+    result = _parse_search_response(raw)
+    assert len(result.products) == 1
+    p = result.products[0]
+    assert p.price == 29900  # 예산검증(verifiedSum §3.1)·maxPrice 판정
+    assert p.rating == 4.8  # 평점 사후필터·rerank 신호
+    assert p.summary == "시원한 여름 린넨 셔츠"
+    assert p.attributes == {"소재": "린넨", "핏": "오버핏"}
+    assert p.category == "여성의류"  # categoryName 별칭
+    assert p.brand == "더센트"  # brandName 별칭
+
+
+def test_i1_attributes_accepts_non_string_values() -> None:
+    """[PR#127 리뷰] attributes 값이 문자열이 아니어도(bool·숫자) 파싱이 실패하지 않는다.
+
+    dict[str, str] 로 엄격하면 {"방수": true} 같은 값 1건이 SpringProduct.model_validate 를
+    ValidationError 로 터뜨려 검색 전체(수십 건)가 SEARCH_FAILED 로 낙성한다 — attributes 소비는
+    #101 이라 지금 값 타입을 강제할 이유가 없고, 오히려 전체 검색을 무너뜨릴 리스크가 크다.
+    """
+    from app.services.spring_client import _parse_search_response
+
+    raw = {
+        "success": True,
+        "data": [{"productId": 1, "name": "우산", "attributes": {"방수": True, "소재": "나일론"}}],
+    }
+    result = _parse_search_response(raw)
+    assert len(result.products) == 1  # 값 타입 때문에 드롭되지 않음
+    assert result.products[0].attributes == {"방수": True, "소재": "나일론"}
+
+
+def test_i1_parse_skips_malformed_item_keeps_valid() -> None:
+    """[PR#127 리뷰] 후보 1건이 스키마 위반이어도 나머지 정상 후보는 반환한다.
+
+    단일 list comprehension 이면 1건 ValidationError 가 리스트 전체 생성을 실패시켜
+    SEARCH_FAILED 로 이어진다 — 멀쩡한 수십 건까지 통째로 버려진다. 항목별 검증으로
+    실패분만 skip(로그)하고 나머지를 보존한다.
+    """
+    from app.services.spring_client import _parse_search_response
+
+    raw = {
+        "success": True,
+        "data": [
+            {"productId": 1, "name": "우산"},  # 정상
+            {"productId": 2},  # name 누락 → ValidationError
+            {"productId": 3, "name": "장화"},  # 정상
+        ],
+    }
+    result = _parse_search_response(raw)
+    assert [p.product_id for p in result.products] == [1, 3]  # 2번만 skip
+    assert result.total_count == 2
+
+
+def test_i1_parse_all_non_object_items_fail_closed() -> None:
+    """[PR#127 리뷰] data 는 배열인데 원소가 전부 비-object 면 §7 fail-closed(예외)여야 한다.
+
+    필드 결측보다 심각한 최상위 타입 붕괴가 조용한 zero-result 로 새면 안 된다 — non-dict
+    항목도 invalid 로 세어, 정상 0건이면 예외를 내 SEARCH_FAILED 로 degrade 한다.
+    """
+    import pytest
+    from pydantic import ValidationError
+
+    from app.services.spring_client import _parse_search_response
+
+    with pytest.raises((ValidationError, ValueError)):
+        _parse_search_response({"success": True, "data": ["oops", "oops2"]})
+
+
+def test_i1_parse_empty_data_is_valid_zero_result() -> None:
+    """[PR#127 리뷰] data 가 빈 배열이면 진짜 0건 — fail-closed 아님(예외 없이 빈 결과)."""
+    from app.services.spring_client import _parse_search_response
+
+    result = _parse_search_response({"success": True, "data": []})
+    assert result.products == []
+    assert result.total_count == 0
+
+
+def test_i1_parse_success_false_fails_closed() -> None:
+    """[PR#127 리뷰] 200 이어도 success:false 는 실패 envelope — 정상 0건으로 삼키지 않고 fail-closed(§7).
+
+    fetch_product_changes 가 이미 `data.get("success") is not True` 로 막는 같은 클래스의 실패다.
+    """
+    import pytest
+
+    from app.services.spring_client import _parse_search_response
+
+    with pytest.raises(ValueError):
+        _parse_search_response({"success": False, "data": None, "error": {"code": "X"}})
+    # data 에 값이 있어도 success:false 면 실패
+    with pytest.raises(ValueError):
+        _parse_search_response({"success": False, "data": [{"productId": 1, "name": "x"}]})
+
+
+def test_i1_parse_top_level_items_without_data_fails_closed() -> None:
+    """[PR#127 리뷰] data 키 없이 top-level items 만 오는 레거시 형태도 fail-closed(§7).
+
+    실 BE envelope 는 {success, data:[...]} — data 키 부재는 의심스러운 drift 라 예외로 degrade.
+    """
+    import pytest
+
+    from app.services.spring_client import _parse_search_response
+
+    with pytest.raises(ValueError):
+        _parse_search_response({"success": True, "items": [{"productId": 1, "name": "x"}]})
+
+
+def test_search_query_params_drops_blank_brands() -> None:
+    """[PR#127 리뷰] 빈/공백 브랜드 요소는 걸러낸다(LLM 이 [''] 등을 낼 수 있음)."""
+    from app.schemas.spring import ProductSearchFilters
+    from app.services.spring_client import _search_query_params
+
+    params = _search_query_params(ProductSearchFilters(brand=["삼성", "", "  ", "애플"]))
+    assert params.get("brandName") == ["삼성", "애플"]  # 빈/공백 제거, 나머지 유지
+    # 전부 빈 값이면 brandName 미전송
+    params2 = _search_query_params(ProductSearchFilters(brand=["", "  "]))
+    assert "brandName" not in params2
+
+
+def test_search_query_params_drops_blank_text_filters() -> None:
+    """[PR#127 리뷰] LLM 산출 텍스트 필터(keyword·category·color)의 공백-only 값은 미전송.
+
+    `if filters.X:` 는 빈 문자열('')만 막고 공백(' ')은 truthy 라 통과했다 — brand 와 동일
+    근거로 .strip() 가드를 맞춘다. 정상 값은 그대로 전송한다.
+    """
+    from app.schemas.spring import ProductSearchFilters
+    from app.services.spring_client import _search_query_params
+
+    blank = _search_query_params(ProductSearchFilters(keyword="  ", category="\t", color=" "))
+    assert "keyword" not in blank
+    assert "categoryName" not in blank
+    assert "color" not in blank
+
+    ok = _search_query_params(
+        ProductSearchFilters(keyword="셔츠", category="여성의류", color="빨강")
+    )
+    assert ok.get("keyword") == "셔츠"
+    assert ok.get("categoryName") == "여성의류"
+    assert ok.get("color") == "빨강"
+
+
+def test_search_query_params_omits_size() -> None:
+    """[2026-07-23, BE 합의] I-1 요청에서 size 제거 — 라운드1 전량 반환, top-K 는 AI 쪽(api-spec §4.6)."""
+    from app.schemas.spring import ProductSearchFilters
+    from app.services.spring_client import _search_query_params
+
+    params = _search_query_params(ProductSearchFilters(keyword="무선 이어폰", limit=30))
+    assert "size" not in params
+
+
+def test_search_query_params_sends_color() -> None:
+    """[#100 P1] color 조건이 있으면 Spring 요청에 실린다 (BE I-1 attributes LIKE)."""
+    from app.schemas.spring import ProductSearchFilters
+    from app.services.spring_client import _search_query_params
+
+    params = _search_query_params(ProductSearchFilters(keyword="원피스", color="빨강"))
+    assert params.get("color") == "빨강"
+
+
+def test_search_query_params_sends_all_brands() -> None:
+    """[#100 P1] 다중 브랜드는 전부 brandName 배열로 실린다(반복 파라미터 → BE IN 필터, 방법 D).
+
+    구 brand[0] 만 전송(2번째 이후 유실 + 칩 거짓표시) 폐기. httpx 는 리스트 값을
+    brandName=A&brandName=B 반복 파라미터로 직렬화한다.
+    """
+    from app.schemas.spring import ProductSearchFilters
+    from app.services.spring_client import _search_query_params
+
+    params = _search_query_params(ProductSearchFilters(brand=["삼성", "애플"]))
+    assert params.get("brandName") == ["삼성", "애플"]
+
+
+async def test_search_catalog_caps_candidates_to_limit() -> None:
+    """size 제거로 Spring 이 전량 반환 → search_catalog 가 filters.limit(AI top-K)로 절단한다.
+
+    사후필터(dedup·평점) 이후 검색순서 상위 limit 만 rerank 입력으로 남긴다(§4.6).
+    """
+    from app.schemas.spring import ProductSearchFilters, SpringProduct
+    from app.services.search_service import search_catalog
+    from tests._fakes import FakeBackend
+
+    products = [SpringProduct(product_id=i, name=f"p{i}", price=1000) for i in range(1, 6)]  # 5개
+    res = await search_catalog(
+        ProductSearchFilters(limit=2), backend=FakeBackend(products=products)
+    )
+    assert [p.product_id for p in res.products] == [1, 2]  # top-K=2 로 절단(검색순서 보존)
+    # [PR#127 리뷰] total_count 는 top-K 절단 전 사후필터 통과 매칭 수(5) — 절단값(2)이 아니다.
+    assert res.total_count == 5
+
+
+def test_search_filters_limit_rejects_negative() -> None:
+    """[PR#127 리뷰] limit 은 products[:limit] slice 절단에 직접 쓰이므로 ge=0 이어야 한다.
+
+    음수면 Python slice 가 '뒤에서 N개 제외'로 뒤집혀 '≤0 → 0개' 절단 불변식이 깨진다
+    (형제 category_fanout_* 필드가 PR#73 에서 같은 이유로 ge=0 을 건 것과 정합).
+    """
+    import pytest
+    from pydantic import ValidationError
+
+    from app.schemas.spring import ProductSearchFilters
+
+    with pytest.raises(ValidationError):
+        ProductSearchFilters(limit=-1)
+
+
 # ─────────── 리뷰 수정 회귀 (Fix A~E) ───────────
 
 
@@ -557,6 +803,28 @@ def test_spring_product_maps_i1_wire_fields() -> None:
     assert p.brand == "더센트"
     assert p.list_price == 39900
     assert p.main_image == "https://x/1.jpg"
+
+
+def test_spring_product_preserves_summary_and_attributes() -> None:
+    """[#100 P0] BE I-1이 주는 summary·attributes 를 SpringProduct 가 유실하지 않고 보존한다.
+
+    Spring 은 세부조건 후처리·리랭킹(#101 2차 압축)용으로 summary·attributes 를 반환하는데,
+    스키마에 필드가 없으면 Pydantic 파싱에서 조용히 제거된다.
+    """
+    from app.schemas.spring import SpringProduct
+
+    p = SpringProduct.model_validate(
+        {
+            "productId": 1,
+            "name": "린넨 셔츠",
+            "summary": "시원한 여름 린넨 셔츠",
+            "attributes": {"소재": "린넨", "핏": "오버핏"},
+            "categoryName": "여성의류",
+            "brandName": "더센트",
+        }
+    )
+    assert p.summary == "시원한 여름 린넨 셔츠"
+    assert p.attributes == {"소재": "린넨", "핏": "오버핏"}
 
 
 async def test_search_products_parses_i1_items(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -622,18 +890,23 @@ async def test_search_products_malformed_maps_to_search_failed(
         await sc.search_products(ProductSearchFilters())
 
 
-async def test_search_products_unknown_envelope_warns(
+async def test_search_products_unknown_envelope_fails_closed(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """알려지지 않은 검색 envelope 는 조용한 0 건이 아니라 경고를 남긴다(§7 유지보수 계약)."""
+    """[PR#127 리뷰] 미인식 envelope drift 는 조용한 0 건이 아니라 SEARCH_FAILED 로 degrade한다.
+
+    항목 단위 fail-closed 와 동일 원칙(§7) — envelope 자체가 어긋나면(예: data 가 미인식
+    형태) 정상 0건과 구분되지 않는 빈 결과 대신 예외를 내 상위가 SEARCH_FAILED 로 낸다.
+    경고 로그도 남긴다.
+    """
     import app.services.spring_client as sc
     from app.schemas.spring import ProductSearchFilters
 
     payload = {"success": True, "data": {"products": [{"productId": 1}]}}  # 미인식 형태
     monkeypatch.setattr(sc, "_client", lambda: _FakeClient(payload))
     with caplog.at_level("WARNING"):
-        res = await sc.search_products(ProductSearchFilters())
-    assert res.products == []
+        with pytest.raises(SpringUnavailableError):
+            await sc.search_products(ProductSearchFilters())
     assert "미인식" in caplog.text
 
 
@@ -650,17 +923,17 @@ async def test_search_products_parses_bare_list_body(monkeypatch: pytest.MonkeyP
     assert [p.product_id for p in res.products] == [7]
 
 
-async def test_search_products_missing_data_key_warns(
+async def test_search_products_missing_data_key_fails_closed(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """data 키가 없는 응답은 조용한 0 이 아니라 경고를 남긴다(§7)."""
+    """[PR#127 리뷰] data 키가 없는 envelope drift 는 조용한 0 이 아니라 SEARCH_FAILED 로 degrade(§7)."""
     import app.services.spring_client as sc
     from app.schemas.spring import ProductSearchFilters
 
     monkeypatch.setattr(sc, "_client", lambda: _FakeClient({"success": True}))
     with caplog.at_level("WARNING"):
-        res = await sc.search_products(ProductSearchFilters())
-    assert res.products == []
+        with pytest.raises(SpringUnavailableError):
+            await sc.search_products(ProductSearchFilters())
     assert "data 키" in caplog.text
 
 

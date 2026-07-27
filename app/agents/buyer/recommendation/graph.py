@@ -132,7 +132,7 @@ async def stream_recommendation(
                 return None
 
         # fan-out — canonical 카테고리마다 leg 를 병렬 검색(§6). leg 별 filters 는 category·
-        # keyword(그 카테고리 query, 없으면 base)·size 만 교체한다.
+        # keyword(그 카테고리 query, 없으면 base)·limit(leg 별 AI top-K, §4.6 size 아님) 만 교체한다.
         # 단일 카테고리(leg 1개)는 후보 폭을 좁히지 않게 merge_cap(=단일 rerank 입력 예산)을 쓰고,
         # 멀티 fan-out 일 때만 leg 당 per_cat_limit 으로 제한한다(합쳐서 merge_cap 로 재절단).
         leg_limit = (
@@ -224,8 +224,10 @@ async def stream_recommendation(
     result = ProductSearchResult(products=kept, total_count=len(kept))
 
     # 되돌리기 칩 — 억제된 소모품 카테고리별(estCount==0 제외, §3.1).
-    # estCount 는 **이번 검색 응답 내 억제 수**(page-local 근사) — I-1 엔 totalCount 가 없어(C-15 🔴)
-    # DB 전체 매칭 수를 알 수 없으므로 가용한 최선의 추정치를 쓴다.
+    # estCount 는 **이번 검색 응답 내 억제 수**(page-local 근사)다 — 이 시점 search_result 는
+    # search_catalog 가 filters.limit(fan-out 이면 merge_cap/per_cat_limit)로 이미 top-K 절단한
+    # 뒤라 '전량 매칭'이 아니다(PR#127 리뷰). DB 전체 기준 진짜 억제 수보다 작게 나올 수 있어
+    # 가용한 최선의 추정치를 쓴다. 별도 totalCount 필드는 불필요로 확정(#100 P2).
     revert_chips = [
         SuggestionChip(
             label=_strip_unsafe(f"{cat_samples[c]}은 최근 구매 — 다시 추천받기"),

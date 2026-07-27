@@ -10,6 +10,7 @@
 ## [Unreleased]
 
 ### Added
+- **#100 P1 — I-1 `color` 검색 조건 연결** — Spring I-1이 `attributes` LIKE로 지원하는 `color` 필터를 AI가 쓰도록, `ProductSearchFilters.color`와 `_search_query_params`의 `color` 전송을 추가하고 decompose 프롬프트가 색상 조건("빨간"·"검정" 등)을 `filters.color`로 추출하게 했다. 그동안 요청 모델·쿼리 변환에 `color`가 없어 Spring의 색상 검색을 못 쓰던 것을 해소. (api-spec §4.6, v0.15.22)
 - pg-catalog `products` 임베딩 프로비넌스 컬럼(`embed_model·embed_dim·embed_task·normalized`) + `embedding_meta_complete` CHECK, 기존 볼륨용 마이그레이션(#65).
 - `embed_texts(task_type=...)` 및 비대칭 임베딩 바인딩(질의=RETRIEVAL_QUERY / 문서=RETRIEVAL_DOCUMENT)(#65).
 - **이슈 #79 — AI 내부 프로필 inactivity timeout** — 회원 발화 저장과 같은 pg-profile
@@ -28,11 +29,14 @@
   SPEC-PROFILE-001 v0.4.0)
 
 ### Changed
+- **I-1 검색 `size` 제거 → 라운드1 전량 반환 + AI top-K** — BE 합의(2026-07-23)로 Spring `GET /internal/products/search` 요청에서 `size` 파라미터를 제거했다. 라운드1은 고정필터(category·price·brand) 매칭을 전량 반환하고, 결과 수 제한(top-K)은 AI가 `search_catalog`에서 사후필터(dedup·평점) 뒤 `filters.limit`로 절단한다 — `ProductSearchFilters.limit`은 이제 Spring `size`가 아니라 **AI 후보 상한(rerank 입력 top-K)**이다. 기본 백엔드(`SpringSearchBackend`)·팬아웃 경로 모두 동일하게 적용되며, 절단이 사후필터 이후라 제외분만큼 후보가 낭비되지 않는다. pgvector 재정렬 백엔드(`EmbeddingRerankBackend`)로의 `default_backend` 전환은 후속. (api-spec §4.6, v0.15.21)
+- **#100 P1 — I-1 다중 브랜드 전량 전송** — `_search_query_params`가 `brand[0]`만 `brandName`으로 보내 2번째 이후 브랜드가 유실되고 조건칩은 전 브랜드를 표시하던 거짓표시를, 브랜드 전량을 `brandName` 반복 파라미터(`brandName=A&brandName=B`)로 실어 보내도록 바꿨다 — 요청이 조건칩과 일치한다. 실제 다중 필터링(`WHERE brand IN`)은 BE의 `brandName` 배열 수용이 전제라 price·rating 응답 반환과 함께 I-1 계약 협의에 포함(방법 D). (api-spec §4.6)
 - **이슈 #82 — 판매자 LLM을 공용 provider 토글에 연결** — 판매자 역할이 Anthropic 모델을 직접 고르던 경로를 `fast`/`smart` tier와 공용 resolver로 전환했다. 기본 OpenAI는 tier별 reasoning effort를 사용하고 `temperature`를 보내지 않으며, Anthropic 전환 시 기존 temperature 정책을 유지한다. 활성 provider 키 누락은 SDK 호출 전에 차단해 판매자 SSE `LLM_UNAVAILABLE`로 반환하고, 구조화 출력은 provider 간 동일한 `ToolStrategy` 계약을 유지한다. 와이어 계약 변경 없음.
 - 런타임 I-17 배치·sample_100 로더가 임베딩 프로비넌스를 함께 적재(#65).
 - **이슈 #63 — I-17 상품 상태 계약을 Spring과 정합화** — `ProductChange.status`를 `ON_SALE | HIDDEN`으로 제한하고, 배치가 `ON_SALE`은 생성·갱신, `HIDDEN`은 기존 AI artifact 삭제로 처리한다. 구 `ACTIVE | DELISTED` 등 미정의 값은 항목별로 skip하지 않고 페이지 전체를 fail-closed 처리해 artifact·커서를 유지하며, Spring 수정 후 같은 `since`부터 재처리한다. 단위·HTTP 경계·E2E 테스트와 관련 문서·로그 용어를 함께 갱신했다. (api-spec §4.8, v0.15.18)
 
 ### Removed
+- **#100 P2 — I-1 dead field `sort` 제거** — `ProductSearchFilters.sort`는 decompose가 추출하지도 않고 Spring 전송·로컬 정렬·rerank 어디에도 쓰이지 않는 dead field였다. 정렬은 rerank(LLM)가 price·rating 등을 보고 전담하므로 필드를 제거하고 관련 docstring(`spring.py`·`spring_client.py`·`search_service.py`)을 "정렬은 rerank 소관"으로 정합화했다. 와이어 계약이 아닌 AI 내부 필드라 Spring 계약에는 영향이 없다.
 - **이슈 #124 — 죽은 시드 모듈 3종 제거** — 실행 참조가 0건인 `app/services/order_seed.py`·`app/pipelines/seed_loader.py`와 미사용 `db/catalog/init/01_order_seed.sql`을 삭제했다. order_seed는 "주문 미러/시드 노선을 채택하지 않는다"(2026-07-15 확정)로 기각된 경로이며 구매 이력은 I-19 질의 시점 조회(§4.7), 판매자 통계는 집계 콜백(§4.4)이 이미 대체했다 — 자체 삭제 조건("C-6/C-13 확정 시")도 충족됐고 docstring이 안내하던 `get_seller_aggregates`는 이미 삭제된 함수였다. seed_loader의 TODO(`run_once()`)는 `app/pipelines/run_batch.py`(이슈 #31)가 이미 구현해 방치 시 같은 기능의 CLI 진입점이 둘이 된다. `order_seed` 테이블은 init 스크립트라 pg-catalog를 새로 띄울 때마다 미사용 테이블이 생성됐고, 스키마가 상품·주문 원본 사본이라 "AI Postgres에는 AI 생성물만 저장" 규칙에도 어긋났다(이슈 #65의 `products` 원본 컬럼 제거와 같은 취지). 기존 볼륨용 `DROP TABLE` 마이그레이션(`20260727_drop_order_seed.sql`)과 `docker-compose.yml`·`DEPLOY.md`·`CLAUDE.md`·`mvp-plan.md` 참조 정리를 함께 포함한다. 와이어 계약 변경 없음.
 
 ### Security
@@ -47,6 +51,8 @@
 - **이슈 #92 후속 — 리뷰 게이트를 배포 경계로 이동** — `dev`는 **PR+CI 필수·사람 승인 리뷰 면제**(리뷰 0), 사람 1인 리뷰는 **`dev → main` 승격 PR**에서만 강제하도록 브랜치 보호·문서(README·CLAUDE.md)를 정합화. dev·main 모두 직접 push 금지·`lint-test` 필수는 유지.
 - **이슈 #92 — `main`=배포 라인 고정 + `dev` 통합 브랜치 도입** — 배포팀 CD가 `main` push 기준 EC2 자동배포(`jarvis-backend/.github/workflows/deploy.yml` 패턴)임에 맞춰, 일상 개발을 통합 라인 `dev`로 모으고 `main`은 배포 라인으로 고정했다. README §Git 워크플로에 `main`(배포)+`dev`(통합)+topic 3계층·분기 기준 `dev`·`dev → main` 승격/핫픽스 절차를 반영하고, CLAUDE.md §Git의 브랜치·PR·worktree 분기 기준을 `dev`로 개정. `dev` 브랜치 보호(직접 push 금지·CI 필수·리뷰 1인)는 repo admin 웹 설정 필요.
 - **api-spec §4.2 `reasons` 확정 반영(v0.15.15)** — I-21 콜백의 상품별 근거 `reasons[{productId, reason}]`를 🔴 역제안(v0.15.2)에서 🟢 확정(BE 구현 2026-07-18)으로 개정. §4.2 필드표·주석·C-9·Q2 마커 갱신. 코드(이슈 #61)의 `reasons` 전송이 확정 계약을 따르도록 사본 동기화 — 계약 우선(명세 개정 선행) 원칙 충족. 정본(기획 repo) 백포트 완료(2026-07-22).
+- **#100 P2 — I-1 `totalCount` 필드 불필요 결정** — 별도 `totalCount`를 두지 않기로 결정했다. `size` 제거(전량 반환)로 AI `search_catalog`가 **top-K 절단 전에** 사후필터 통과 매칭 수를 `total_count`로 확정하므로(PR#127 리뷰 반영 — 절단값 `min(매칭, limit)`이 아님) 현재 필터의 매칭 수를 안다. 완화 칩 estCount는 '완화된 다른 필터'의 count라 이 값으로는 구할 수 없고(완화 칩 자체가 미구현이며 별도 이슈 — 재쿼리/BE count 필요), 되돌리기 칩은 top-K 절단된 응답 후보 내 억제 수라 page-local 근사다(전량 기준 진짜 억제 수보다 작을 수 있음). `ProductSearchResult`·`graph.py` 주석을 이 결정으로 정합화했다.
+- **#100 P0/P1/P2 — I-1 §4.6 실측 정합** — repo `docs/api-spec.md` §4.6이 BE 2026-07-18 재설계 이전 상태로 남아 실제 계약과 어긋나던 것을 Notion I-1(정본)+#100 결정에 맞췄다. (1) 표시 전용 필드(`imageUrl`·`originalPrice`·`reviewCount`·`options`)를 응답표에서 제거하고 "I-1 미반환 → CH-5(§4.3) 하이드레이션"으로 이관 명시(AI 추천 경로 미사용), (2) `price`·`rating`을 "AI 계산용(비표시 — 예산검증·평점필터·rerank, 질의 시점 필요)"으로 명기해 display 오분류 재발 차단, (3) envelope 예시를 실측 `{success, data:[...]}`(bare array)로 정정, (4) 요청 `brandName` 단일→다중(반복 파라미터→`WHERE IN`), 예시 `size` 제거, (5) `totalCount` 필드 불필요 결정 반영. `SpringProduct` docstring·필드 주석도 정합. (api-spec §4.6, v0.15.23)
 
 ### Added
 - **이슈 #59 — 카테고리 하이브리드 분류(임베딩 보정 매핑 + 멀티 fan-out)** — decompose 가 자유 문자열로 내던 `filters.category` 를 제거하고, LLM 추측(`categoryQueries`)을 **임베딩으로 실재 DB 카테고리(canonical)에 보정**(방식 A: exact match → 임베딩 최근접(raw, 없으면 그 leg 의 query 앵커); canonical-or-null — 카테고리 신호가 없으면 강제하지 않고 무필터 검색)해 Spring I-1 에 실재 카테고리만 나가게 했다(가짜 `categoryName` 으로 인한 0건 방지). 매핑은 `(canonical, query)` leg 를 산출하고, 상황형 멀티 카테고리 질의("유럽여행 준비물")는 leg 마다 Spring I-1 을 **병렬 검색 후 round-robin 병합**(productId dedup·`category_fanout_merge_cap` 절단 — 한 카테고리가 rerank 입력을 독점하지 않게)한다. leg 별 `SpringUnavailable` 은 흡수하고 전량 실패만 `SEARCH_FAILED`, 매핑 결과가 없으면 단일 filters 검색으로 fallback. LLM 호출은 2회(decompose+rerank) 유지 — 매핑은 임베딩·DB 만(LLM 0회). 튜너블 `category_top_k`·`category_fanout_max`·`category_fanout_per_cat_limit`·`category_fanout_merge_cap` 주입(하드코딩 금지). 계약 무변경(I-1 `categoryName`·SSE 경로 B). 설계 `docs/specs/DESIGN-CATEGORY-HYBRID-59.md`. **OPEN-1(Spring `category` 컬럼 `"top > mid"` 통 전송 가정)은 통합 스모크 대기**. fan-out 병합/병렬/degrade·매핑 분기(exact·최근접·신호 없음→무필터·하드실패 degrade)·decompose `categoryQueries` 파싱 유닛 테스트 추가.
@@ -54,6 +60,8 @@
 - **판매자 챗 화면 전환 신호 — `meta`/`progress` 이벤트 + `done.panel` (S-4, api-spec §3.2 v0.14.1, FE 계약 B)** — 판매자 대시보드(좌 채팅/우 패널)가 "우측을 바꿀지"를 판단하도록 3신호를 추가했다(판매자 스트림 전용, 구매자 계약 무변경): `meta{lane}`(매 스트림 첫 프레임 — analysis/product/general/confirm/apply/refused), `progress{text}`(분석 진행 로딩 — 최종 답변 `token` 과 분리), `done{finishReason,panel}`(패널 조치 — replace/keep/refresh). 레인×패널로 FE 요구 1~3(첫 질문 분할·분석 우측 출력·상품 CRUD 초안/HITL·무관 질문 유지)이 전부 결정된다. `_seller_stream` 6개 substream 에 배선, `_done()` 이 panel 을 싣도록 변경(구매자 `DoneData` 무변경). analysis 진행 문구를 `token`→`progress` 로 이관. `docs/specs/FE-CONTRACT-SELLER-CHAT.md` 에 분기별 요청→응답 시퀀스(성공·실패 전수) 문서화. 노션 S-4·api-spec §3.2 동기화. meta/panel 계약 테스트 3종 추가 — seller 282 통과·전체 574 통과·ruff clean. (api-spec §3.2)
 
 ### Fixed
+- **#100 P0 — I-1 응답 `summary`·`attributes` 유실 방지** — BE I-1이 리랭킹·세부조건용으로 반환하는 `summary`·`attributes`가 `SpringProduct` 스키마에 없어 Pydantic 파싱에서 조용히 제거되던 것을, 두 필드를 명시해 보존하도록 고쳤다. 소비(attributes 유연매칭·summary 시맨틱)는 #101 2차 압축의 몫이며, 본 수정은 계약(api-spec §4.6 응답표에 이미 존재)에 코드를 맞추는 것으로 와이어 계약 변경은 없다.
+- **#100 P0 — I-1 평점 사후필터가 무평점 신상품을 보존** — `rating_min` 사후필터가 `(p.rating or 0.0)`으로 `rating=None`(리뷰 없는 신상품)을 0점 취급해 "평점 N 이상" 검색에서 무조건 탈락시키던 것을, '반증된 것만' 제거하도록 고쳤다 — 평점이 있고 미달인 상품만 탈락시키고 무평점은 보존해 rerank 판단에 맡긴다. 필터는 여전히 사용자가 평점을 발화한 경우에만 동작한다. 아울러 실제 BE 응답 envelope(`{success, data:[...]}`) 기준 필드 보존 계약 테스트(price·rating·summary·attributes + categoryName·brandName 별칭)를 추가해 파싱 유실 재발을 막았다.
 - **FastAPI→Spring 연결 진단 결과 출력 복구** — internal token과 자사 상품 목록 API를
   확인하는 읽기 전용 스크립트를 추가하고, 성공 응답 모델에 없는 `total` 대신 실제 계약인
   `SellerProductList.rows` 길이를 출력하도록 수정했다. 빈 결과도 연결 성공으로 처리하며

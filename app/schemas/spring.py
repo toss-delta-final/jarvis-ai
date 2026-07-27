@@ -35,10 +35,15 @@ class CamelModel(BaseModel):
 
 
 class ProductSearchFilters(CamelModel):
-    """POST /products/search 요청 (decompose 산출, api-spec §4.6).
+    """AI 검색 명세 (decompose 산출, api-spec §4.6) — 와이어로 나가는 건 subset 뿐이다.
 
-    필수는 limit 만 — 나머지 필터는 전부 선택. 구조화 필터 + 키워드(MVP 는 Spring DB 텍스트 검색).
-    excludeProductIds 는 최근 구매 dedup (결정 14-F, 원천 = GET /orders/recent §4.7). 게스트는 빈 배열.
+    Spring I-1 요청으로 실제 전송되는 건 `_search_query_params`(spring_client)가 추출하는 와이어
+    필드(keyword·category·price·brand)뿐이다. exclude_product_ids·rating_min·limit 은 Spring 에
+    보내지 않고 AI 가 사후처리에 쓰는 필드다 — dedup(결정 14-F)·평점 하한은 사후필터,
+    limit 은 **AI 후보 상한(rerank 입력 top-K)**. 정렬은 rerank(LLM) 소관이라 별도 필드가 없다(#100 P2).
+    excludeProductIds 원천 = GET /orders/recent(§4.7), 게스트는 빈 배열.
+    [2026-07-23, BE 합의] size 제거로 limit 은 더 이상 Spring 요청 size 가 아니다(§4.6) — Spring 은
+    전량 반환하고, limit 은 search_catalog 가 top-K 절단에 쓴다.
     """
 
     category: str | None = None
@@ -47,33 +52,52 @@ class ProductSearchFilters(CamelModel):
     brand: list[str] | None = None
     rating_min: float | None = None
     keyword: str | None = None
+    color: str | None = None  # 색상 조건(#100 P1) — BE I-1 attributes LIKE 로 필터
     exclude_product_ids: list[int] = Field(default_factory=list)
-    sort: str | None = None
-    limit: int = 30
+    # AI 후보 상한(rerank 입력 top-K) — Spring size 아님(§4.6, 2026-07-23). ge=0: products[:limit]
+    # slice 절단이라 음수면 '뒤에서 제외'로 뒤집혀 불변식 붕괴(형제 category_fanout_* 와 정합, PR#73).
+    limit: int = Field(default=30, ge=0)
 
 
 class SpringProduct(CamelModel):
-    """Spring 검색 응답(BE I-1)의 상품 1건. I-1 최소 응답은 표시 필드(price 등)를 생략할 수 있어 optional 이다(표시 권위는 CH-5, §2.4).
+    """Spring 검색 응답(BE I-1)의 상품 1건 (api-spec §4.6 응답표).
 
-    [정합 v이슈#2] 별칭을 BE I-1 응답 실측 필드명에 맞춘다(api-spec §4.6 응답표):
-    categoryName·brandName·originalPrice·imageUrl. to_camel 기본 별칭(category/brand/…)과
-    달라 명시 별칭으로 덮는다 — 안 그러면 rerank 가 category/brand 를 None 으로 받는다.
-    BE 응답에 stock·totalCount 없음(§4.6 주의) — stock 은 optional None.
+    [#100 정합] I-1 이 실제 반환하는 필드 = productId·name·summary·attributes·categoryName·
+    brandName·price·rating. 별칭은 categoryName·brandName(to_camel 기본과 달라 명시 별칭으로
+    덮는다 — 안 그러면 rerank 가 category/brand 를 None 으로 받는다).
+    [#100 P0/P1] price·rating 은 display 가 아니라 **AI 계산용**(예산검증 verifiedSum·평점 사후
+    필터·rerank 신호) — 질의 시점(rerank 이전)에 필요해 후보와 함께 받는다(§4.6). 표시는 CH-5.
+    [#100 P0] summary·attributes 는 필드가 없으면 파싱에서 유실되므로 명시(소비는 #101).
+    list_price(originalPrice)·main_image(imageUrl)·stock 은 **I-1 미반환**(표시 전용 → CH-5 §4.3,
+    재고는 담기/주문 시점 §4.1) — 방어적 optional None 으로 남겨두되 추천 경로는 쓰지 않는다.
     """
 
     product_id: int  # 숫자(BIGINT, product.id §2.6) — 별칭 productId
     name: str
-    price: int | None = None  # I-1 최소 응답 시 생략 가능(§2.4)
-    list_price: int | None = Field(default=None, alias="originalPrice")  # 정가
-    stock: int | None = None  # BE I-1 응답엔 없음(§4.6) — 담기/주문 시점 판정
+    summary: str | None = None  # BE I-1 요약(#100 P0) — 소비는 #101
+    # Layer2 속성(소재·핏 등, #100 P0) — 유연매칭(#101). 값 타입은 dict[str, object](비-str 관대):
+    # BE 가 {"방수": true} 등 bool·숫자를 주면 dict[str, str] 은 후보 1건이 ValidationError 로
+    # 검색 전체를 무너뜨린다(PR#127 리뷰). 소비는 #101 이라 지금 값 타입을 강제하지 않는다.
+    attributes: dict[str, object] | None = None
+    price: int | None = None  # 판매가 — AI 계산용(예산·maxPrice·rerank, #100 P1), 표시 아님
+    rating: float | None = None  # 조회 시 집계(DDL D9) — AI 계산용(평점필터·rerank, #100 P0)
     category: str | None = Field(default=None, alias="categoryName")
     brand: str | None = Field(default=None, alias="brandName")
-    rating: float | None = None  # 조회 시 집계(DDL D9)
+    # ↓ I-1 미반환(표시 전용 → CH-5 §4.3 / 재고는 §4.1) — 방어적 optional, 추천 경로 미사용
+    list_price: int | None = Field(default=None, alias="originalPrice")
+    stock: int | None = None
     main_image: str | None = Field(default=None, alias="imageUrl")
 
 
 class ProductSearchResult(CamelModel):
-    """POST /products/search 응답. totalCount 는 완화 칩 estCount(COUNT) 산정용 (§4.6)."""
+    """POST /products/search 응답. total_count 는 사후필터 통과 후보 수(top-K 절단 전).
+
+    [#100 P2 결정] 별도 totalCount 필드는 두지 않는다. size 제거(전량 반환)로 search_catalog 가
+    **top-K 절단 전에** total_count 를 확정하므로(PR#127 리뷰 반영) 이는 현재 필터를 통과한 매칭
+    수이지 절단값(min(매칭, limit))이 아니다. 완화 칩 estCount 는 '완화된 다른 필터'의 count 라 이
+    값으로 못 구하고(재쿼리/BE count 필요 — 완화 칩 자체가 미구현, 별도 이슈), 되돌리기 칩은
+    top-K 절단된 응답 후보 내 억제 수라 page-local 근사다(전량 기준 진짜 억제 수보다 작을 수 있음).
+    """
 
     products: list[SpringProduct] = Field(default_factory=list)
     total_count: int = 0

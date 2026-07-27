@@ -59,7 +59,8 @@ def test_search_call_carries_internal_token_and_filters(client, spring, llm) -> 
     # decompose 산출 필터(카테고리·상한가)가 BE I-1 파라미터로 변환됐는지
     assert search["query"]["categoryName"] == "여행용품"
     assert search["query"]["maxPrice"] == "30000"
-    assert int(search["query"]["size"]) <= 30
+    # [2026-07-23, BE 합의] size 제거 — 라운드1 전량 반환, top-K 는 AI 쪽(§4.6)
+    assert "size" not in search["query"]
 
 
 def test_path_b_list_id_resolves_to_cards_via_spring(client, spring, spring_http, llm) -> None:

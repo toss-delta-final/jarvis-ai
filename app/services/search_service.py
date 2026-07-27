@@ -1,8 +1,9 @@
 """카탈로그 검색 서비스 — SearchBackend 심(seam) (확정 2026-07-15, 이슈 #2 배선).
 
 MVP: 질의 시점 Spring 위임(GET /internal/products/search, I-1, §4.6). decompose 필터를 Spring 에
-넘기고 후보를 받는다. **BE I-1 은 excludeProductIds·ratingMin·sort 파라미터가 없으므로**
+넘기고 후보를 받는다. **BE I-1 은 excludeProductIds·ratingMin 파라미터가 없으므로**
 (v0.15.5, C-15 해소) dedup 제외·평점 하한은 **응답 수신 후 AI 사후필터**로 적용한다.
+정렬은 rerank(LLM) 소관이라 sort 필드를 두지 않는다(#100 P2).
 
 [결정 2026-07-20, api-spec §4.8 말미] 임베딩 검색을 두 방식으로 구현해 골든셋 확정:
   방식2 EmbeddingRerankBackend — Spring 후보를 AI 임베딩으로 재정렬(라이브, BE 계약 변경 없음).
@@ -166,10 +167,20 @@ async def search_catalog(
 ) -> ProductSearchResult:
     """활성 백엔드로 카탈로그를 검색하고 AI 사후필터(dedup 제외·평점 하한)를 적용한다.
 
-    BE I-1 에 dedup·평점 파라미터가 없어(C-15), Spring 검색은 keyword/category/price/brand/size 만
+    BE I-1 에 dedup·평점 파라미터가 없어(C-15), Spring 검색은 keyword/category/price/brand 만
     보내고 exclude_product_ids(최근 구매 dedup, §4.7 결정 14-F)·rating_min 은 여기서 사후 제외한다.
-    정렬(sort)은 rerank 단계 소관 — 여기서는 검색순서를 보존한다.
-    backend 미지정 시 default_backend(Spring 위임) 사용 — 테스트에서 주입 가능.
+    rating_min 사후필터는 '반증된 것만' 제거한다 — 평점이 있고 미달인 상품만 탈락, rating=None
+    신상품은 보존(#100 P0).
+    정렬은 rerank(LLM) 소관이라 별도 sort 필드가 없다(#100 P2) — 여기서는 검색순서를 보존한다.
+    [2026-07-23, BE 합의] size 제거로 Spring 이 전량 반환 → 여기서 filters.limit(AI top-K)로 절단해
+    rerank 입력 상한을 지킨다(api-spec §4.6).
+    [주의 — PR#127 리뷰] 이 절단은 **이 함수 안의** exclude_product_ids·rating_min 사후필터 뒤에만
+    적용된다. 다만 실호출부(graph._run_search/_leg)는 exclude_product_ids=None 으로 넘기고, 최근 구매
+    dedup·소모품 카테고리 억제는 search_catalog 리턴 **뒤** stream_recommendation(graph.py)에서
+    수행한다. 따라서 그 graph dedup 대상이 상위 limit 안에 몰리면 rerank 최종 후보가 limit 보다
+    적어질 수 있다(= dedup 경로엔 후보 낭비가 남음). 근본 해소는 #101(임베딩 rerank 가 전량을 dedup
+    후 embedding_rerank_limit 으로 압축)에서 절단을 dedup 이후로 옮겨 처리한다.
+    backend 미지정 시 default_backend 사용 — 테스트에서 주입 가능.
     """
     used = backend or default_backend
     result = await used.search(filters)
@@ -181,6 +192,15 @@ async def search_catalog(
 
     if filters.rating_min is not None:
         threshold = filters.rating_min
-        products = [p for p in products if (p.rating or 0.0) >= threshold]
+        # '반증된 것만' 제거: 평점이 있고 미달인 상품만 탈락시키고, rating=None(리뷰 없는
+        # 신상품)은 미달이 반증된 게 아니라 데이터 부재이므로 보존해 rerank 가 판단하게 한다(#100 P0).
+        products = [p for p in products if p.rating is None or p.rating >= threshold]
 
-    return ProductSearchResult(products=products, total_count=len(products))
+    # total_count 는 top-K 절단 **전** 사후필터 통과 후보 수 — 절단 뒤 len 을 세면 min(매칭, limit)
+    # 으로 캡돼 '전체 매칭 수' 의미가 깨진다(PR#127 리뷰). 절단 전에 확정한다.
+    matched_count = len(products)
+
+    # AI top-K 절단 — Spring 이 size 없이 전량 반환하므로(§4.6) 여기서 rerank 입력 상한을 지킨다.
+    products = products[: filters.limit]
+
+    return ProductSearchResult(products=products, total_count=matched_count)
