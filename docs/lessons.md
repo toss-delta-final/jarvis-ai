@@ -13,16 +13,44 @@
 
 ---
 
-<<<<<<< Updated upstream
-## [2026-07-24] dev→main 승격 후 main→dev back-merge를 안 하면 다음 승격에서 "out of date"로 막힌다
-- 증상: 새 dev→main 승격 PR(#106)에 "This branch is out-of-date with the base branch"가 뜨고, GitHub "Update branch" 클릭 시 "Repository rule violations found — Changes must be made through a pull request"로 거부됐다. main·dev 실제 파일 차이는 승격 대상 1건뿐이었는데도 막혔다.
-- 원인: 승격은 merge commit으로 하는데(#104), 그 후 main→dev back-merge를 하지 않아 직전 승격 merge commit이 dev 히스토리에 없어 그래프가 갈라졌다. main의 "up-to-date 필수" 보호 규칙이 이 drift를 잡아 머지를 막았고, dev도 보호 브랜치라 update-branch 직접 push조차 PR 없이는 불가였다.
+## [2026-07-27] 체크리스트·명세를 갱신하지 않으면 "이미 끝난 일"을 미착수로 오판한다
+- 증상: `docs/mvp-todo.md`를 근거로 남은 작업을 추리려다, 미체크(`[ ]`/`[~]`) 55개 중 **52개가
+  이미 구현·테스트 완료**임을 코드 대조로 확인했다. §0 공통 인프라(SSE 동시 스트림 제한·요청
+  취소·타임아웃·레이트 리밋·오류 봉투)는 5개 전부 `[ ]`인데 실제로는 `core/stream.py`·
+  `ratelimit.py`·`errors.py`에 구현 + `tests/unit/test_infra.py` 13개 테스트까지 있었다.
+  같은 drift가 `docs/api-spec.md` C-1에도 있어, "CH-1b 티켓 재발급 경로 신설 필요(🔴)"로 적힌
+  항목이 백엔드에는 이미 `POST /api/chat/tickets`로 구현돼 있었다 — 명세만 믿고 "실서비스
+  블로커"라고 잘못 진단할 뻔했다.
+- 원인: CHANGELOG 갱신은 CLAUDE.md 하네스로 강제되는데 **mvp-todo 체크박스·api-spec 🔴 해소
+  표시에는 같은 강제가 없었다.** 구현 PR이 병합돼도 체크리스트는 그대로 남아 문서가 "미착수"를
+  계속 주장한다. 코드 주석도 같은 문제 — `app/api/seller.py`는 "스트림 수명주기는 구현 TODO"라고
+  써놓고 같은 파일에서 `open_stream()`을 호출하고 있었다.
 - 규칙:
-  - **dev→main 승격 PR을 머지한 직후, main→dev back-merge PR을 만들어 머지한다**(고정 단계). back-merge는 **merge commit**으로(squash 금지) 그래프를 재동기화한다 — 보통 파일 변경 0건이라 CI만 통과하면 된다.
-  - dev·main 둘 다 보호 브랜치라 재동기화도 반드시 PR 경유. "Update branch" 버튼/`update-branch` API는 rule violation으로 막히니 처음부터 PR로 간다.
-  - 완료 확인은 `git log origin/dev..origin/main`이 비어 있는지로 한다(비면 dev가 main을 포함).
-- 관련: PR #105→#106(승격)→#107(back-merge), CLAUDE.md Git 절
-=======
+  - **기능 PR에 `docs/mvp-todo.md` 체크박스 갱신을 포함한다** — CHANGELOG와 동일 취급.
+    주제 완료 = 코드 + 테스트 + CHANGELOG + 체크박스.
+  - **스텁을 구현으로 바꿀 때 그 자리의 TODO 주석·docstring도 같이 지운다.** "스텁은
+    `NotImplementedError` + § 참조 주석 유지" 규칙의 짝이다 — 구현되면 근거 주석도 현재형으로.
+  - **명세의 🔴(협의 대기)를 근거로 판단하기 전에 상대 repo 코드를 먼저 확인한다.** BE가 먼저
+    구현하고 명세 역반영이 늦는 경우가 실재한다. "명세에 없다 = 구현 안 됐다"가 아니다.
+  - 문서와 코드가 어긋나면 **코드를 정본으로 보고 문서를 고친다**(계약 자체를 바꾸는 경우는
+    예외 — 그때는 명세 개정이 먼저).
+- 관련: `docs/mvp-todo.md`(52개 일괄 정정) · `docs/api-spec.md` C-1 · 이슈 #122(대조로 발견된
+  유일한 미구현) · CLAUDE.md "변경 기록" 절
+
+## [2026-07-27] `git stash pop` 충돌 마커가 해소되지 않은 채 dev에 커밋됐다
+- 증상: `docs/lessons.md` HEAD 버전에 `<<<<<<< Updated upstream` / `=======` /
+  `>>>>>>> Stashed changes` 마커가 그대로 들어 있었다. `git status`는 깨끗하다고 보고해
+  (이미 커밋된 상태라) 작업 중에는 드러나지 않았고, 같은 파일을 편집하려다 발견했다.
+  두 lesson 항목(back-merge · 신원 타입)이 뒤엉켜 한쪽이 사실상 읽히지 않는 상태였다.
+- 원인: stash pop 충돌을 해소하지 않고 `git add` → 커밋했다. 마크다운은 문법 검사가 없어
+  ruff·pytest 어느 것도 잡지 못하고, CI에도 충돌 마커 검사가 없었다.
+- 규칙:
+  - **stash pop·rebase·merge 충돌 후에는 커밋 전에 `git diff --cached`로 마커 잔존을 눈으로
+    확인한다.** 특히 문서/마크다운은 도구가 안 잡아준다.
+  - 커밋 워크플로 1단계 "diff 전체 검토"에 **`grep -rn '^<<<<<<< \|^>>>>>>> '` 확인을 포함**한다.
+  - pre-commit hook 또는 CI에 충돌 마커 검사 추가를 검토한다(현재 `ruff`만 돌아 사각지대).
+- 관련: 커밋 `c6e9919`(마커 유입), `docs/lessons.md`, `.pre-commit-config.yaml`
+
 ## [2026-07-24] 신원(id) 타입은 auth 경계에서 정규화하고 전 계층 한 타입으로 통일한다
 - 증상: 운영 로그에 `PydanticSerializationUnexpectedValue(Expected 'str' ... input_value=1, input_type=int)`
   경고(field=brand_id). JWT `brandId` 클레임이 숫자(1)로 발급되는데 `SellerContext`/`DraftRecord`/
@@ -36,7 +64,15 @@
   dataclass 는 타입을 검증하지 않으므로 힌트만 믿지 말고 경계 캐스팅을 명시한다.
 - 관련: app/api/seller.py `_seller_context`, app/agents/seller/{context,hitl,history}.py,
   app/services/spring_client.py, api-spec §2.6
->>>>>>> Stashed changes
+
+## [2026-07-24] dev→main 승격 후 main→dev back-merge를 안 하면 다음 승격에서 "out of date"로 막힌다
+- 증상: 새 dev→main 승격 PR(#106)에 "This branch is out-of-date with the base branch"가 뜨고, GitHub "Update branch" 클릭 시 "Repository rule violations found — Changes must be made through a pull request"로 거부됐다. main·dev 실제 파일 차이는 승격 대상 1건뿐이었는데도 막혔다.
+- 원인: 승격은 merge commit으로 하는데(#104), 그 후 main→dev back-merge를 하지 않아 직전 승격 merge commit이 dev 히스토리에 없어 그래프가 갈라졌다. main의 "up-to-date 필수" 보호 규칙이 이 drift를 잡아 머지를 막았고, dev도 보호 브랜치라 update-branch 직접 push조차 PR 없이는 불가였다.
+- 규칙:
+  - **dev→main 승격 PR을 머지한 직후, main→dev back-merge PR을 만들어 머지한다**(고정 단계). back-merge는 **merge commit**으로(squash 금지) 그래프를 재동기화한다 — 보통 파일 변경 0건이라 CI만 통과하면 된다.
+  - dev·main 둘 다 보호 브랜치라 재동기화도 반드시 PR 경유. "Update branch" 버튼/`update-branch` API는 rule violation으로 막히니 처음부터 PR로 간다.
+  - 완료 확인은 `git log origin/dev..origin/main`이 비어 있는지로 한다(비면 dev가 main을 포함).
+- 관련: PR #105→#106(승격)→#107(back-merge), CLAUDE.md Git 절
 
 ## [2026-07-23] 진단 스크립트도 실제 응답 모델 계약으로 성공 경로를 테스트한다
 - 증상: FastAPI→Spring 연결과 internal token 인증은 성공했지만, 연결 확인 스크립트가
