@@ -1,6 +1,6 @@
 ---
 name: implement-topic
-description: Implement one MVP topic end-to-end in this repo (jarvis-ai AI server), contract-first. Use when starting or continuing an mvp-todo topic — recommendation graph, cart (I-2/I-9), seller (I-6/I-7), profile, AI-artifacts batch (I-8), SSE lifecycle. Reads api-spec § + SPEC, wires the stub with tests, runs ruff+pytest, commits.
+description: Implement one MVP topic end-to-end in this repo (jarvis-ai AI server), contract-first. Use when starting or continuing an mvp-todo topic — recommendation graph (I-1/I-21), cart (I-2/I-18), seller (I-6~I-16), profile (I-19/I-20), AI-artifacts batch (I-17), SSE lifecycle. Reads api-spec § + SPEC, wires the stub with tests, runs ruff+pytest, commits.
 argument-hint: "[topic-or-issue]"
 ---
 
