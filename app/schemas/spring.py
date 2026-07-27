@@ -58,26 +58,29 @@ class ProductSearchFilters(CamelModel):
 
 
 class SpringProduct(CamelModel):
-    """Spring 검색 응답(BE I-1)의 상품 1건. I-1 최소 응답은 표시 필드(price 등)를 생략할 수 있어 optional 이다(표시 권위는 CH-5, §2.4).
+    """Spring 검색 응답(BE I-1)의 상품 1건 (api-spec §4.6 응답표).
 
-    [정합 v이슈#2] 별칭을 BE I-1 응답 실측 필드명에 맞춘다(api-spec §4.6 응답표):
-    categoryName·brandName·originalPrice·imageUrl. to_camel 기본 별칭(category/brand/…)과
-    달라 명시 별칭으로 덮는다 — 안 그러면 rerank 가 category/brand 를 None 으로 받는다.
-    BE 응답에 stock·totalCount 없음(§4.6 주의) — stock 은 optional None.
-    [#100 P0] summary·attributes 는 BE 가 반환하는 리랭킹용 필드다 — 필드가 없으면 파싱에서
-    유실되므로 명시한다(소비는 #101 2차 압축: attributes 유연매칭·summary 시맨틱).
+    [#100 정합] I-1 이 실제 반환하는 필드 = productId·name·summary·attributes·categoryName·
+    brandName·price·rating. 별칭은 categoryName·brandName(to_camel 기본과 달라 명시 별칭으로
+    덮는다 — 안 그러면 rerank 가 category/brand 를 None 으로 받는다).
+    [#100 P0/P1] price·rating 은 display 가 아니라 **AI 계산용**(예산검증 verifiedSum·평점 사후
+    필터·rerank 신호) — 질의 시점(rerank 이전)에 필요해 후보와 함께 받는다(§4.6). 표시는 CH-5.
+    [#100 P0] summary·attributes 는 필드가 없으면 파싱에서 유실되므로 명시(소비는 #101).
+    list_price(originalPrice)·main_image(imageUrl)·stock 은 **I-1 미반환**(표시 전용 → CH-5 §4.3,
+    재고는 담기/주문 시점 §4.1) — 방어적 optional None 으로 남겨두되 추천 경로는 쓰지 않는다.
     """
 
     product_id: int  # 숫자(BIGINT, product.id §2.6) — 별칭 productId
     name: str
     summary: str | None = None  # BE I-1 요약(#100 P0) — 소비는 #101
     attributes: dict[str, str] | None = None  # Layer2 속성(소재·핏 등, #100 P0) — 유연매칭(#101)
-    price: int | None = None  # I-1 최소 응답 시 생략 가능(§2.4)
-    list_price: int | None = Field(default=None, alias="originalPrice")  # 정가
-    stock: int | None = None  # BE I-1 응답엔 없음(§4.6) — 담기/주문 시점 판정
+    price: int | None = None  # 판매가 — AI 계산용(예산·maxPrice·rerank, #100 P1), 표시 아님
+    rating: float | None = None  # 조회 시 집계(DDL D9) — AI 계산용(평점필터·rerank, #100 P0)
     category: str | None = Field(default=None, alias="categoryName")
     brand: str | None = Field(default=None, alias="brandName")
-    rating: float | None = None  # 조회 시 집계(DDL D9)
+    # ↓ I-1 미반환(표시 전용 → CH-5 §4.3 / 재고는 §4.1) — 방어적 optional, 추천 경로 미사용
+    list_price: int | None = Field(default=None, alias="originalPrice")
+    stock: int | None = None
     main_image: str | None = Field(default=None, alias="imageUrl")
 
 
