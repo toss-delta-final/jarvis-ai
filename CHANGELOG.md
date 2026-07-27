@@ -32,6 +32,9 @@
 - 런타임 I-17 배치·sample_100 로더가 임베딩 프로비넌스를 함께 적재(#65).
 - **이슈 #63 — I-17 상품 상태 계약을 Spring과 정합화** — `ProductChange.status`를 `ON_SALE | HIDDEN`으로 제한하고, 배치가 `ON_SALE`은 생성·갱신, `HIDDEN`은 기존 AI artifact 삭제로 처리한다. 구 `ACTIVE | DELISTED` 등 미정의 값은 항목별로 skip하지 않고 페이지 전체를 fail-closed 처리해 artifact·커서를 유지하며, Spring 수정 후 같은 `since`부터 재처리한다. 단위·HTTP 경계·E2E 테스트와 관련 문서·로그 용어를 함께 갱신했다. (api-spec §4.8, v0.15.18)
 
+### Removed
+- **이슈 #124 — 죽은 시드 모듈 3종 제거** — 실행 참조가 0건인 `app/services/order_seed.py`·`app/pipelines/seed_loader.py`와 미사용 `db/catalog/init/01_order_seed.sql`을 삭제했다. order_seed는 "주문 미러/시드 노선을 채택하지 않는다"(2026-07-15 확정)로 기각된 경로이며 구매 이력은 I-19 질의 시점 조회(§4.7), 판매자 통계는 집계 콜백(§4.4)이 이미 대체했다 — 자체 삭제 조건("C-6/C-13 확정 시")도 충족됐고 docstring이 안내하던 `get_seller_aggregates`는 이미 삭제된 함수였다. seed_loader의 TODO(`run_once()`)는 `app/pipelines/run_batch.py`(이슈 #31)가 이미 구현해 방치 시 같은 기능의 CLI 진입점이 둘이 된다. `order_seed` 테이블은 init 스크립트라 pg-catalog를 새로 띄울 때마다 미사용 테이블이 생성됐고, 스키마가 상품·주문 원본 사본이라 "AI Postgres에는 AI 생성물만 저장" 규칙에도 어긋났다(이슈 #65의 `products` 원본 컬럼 제거와 같은 취지). 기존 볼륨용 `DROP TABLE` 마이그레이션(`20260727_drop_order_seed.sql`)과 `docker-compose.yml`·`DEPLOY.md`·`CLAUDE.md`·`mvp-plan.md` 참조 정리를 함께 포함한다. 와이어 계약 변경 없음.
+
 ### Security
 - **이슈 #72 — Unicode Variation Selector·Tag 출력 하드닝** — 공식 Unicode 17.0.0·IVD 2025-07-14 등록 pair와 England/Scotland/Wales RGI Tag flag만 문맥적으로 보존하고, 고아·반복·비지원 은닉 payload는 제거한다. invisible-free skeleton 및 요청 단위 bounded 스트림 guard로 VS/Tag 삽입과 청크 분할을 이용한 API key·Bearer token·주민번호 마스킹 우회를 차단하되, Spring 실행 정본에는 표시용 차단 문구를 저장하지 않는다. 와이어 계약은 변경하지 않았다.
 - **이슈 #67 — AI·판매자 영향 텍스트의 사용자 노출 정제 전수 적용** — `reason`의 위험 문자 제거를 공용 `_strip_unsafe`로 추출하고, 길이 캡 없이 rerank `overall_comment`에 재사용했다. 구매자 일반답변·조건/되돌리기 칩·장바구니 상품/옵션 문구, 판매자 `token`·`draft`, 프로필 조회의 LLM 마크다운까지 실제 SSE/HTTP 신뢰경계를 조사해 제어문자·zero-width·bidi 포맷 문자 제거와 공백 접기를 적용하되 보고서·마크다운·목록·상품 설명의 구조적 개행은 보존했다. 하드코딩 `action.message`와 현재 미구현 `budget`은 비오염 경로라 제외했으며 와이어 계약은 변경하지 않았다.

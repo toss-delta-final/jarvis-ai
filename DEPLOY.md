@@ -56,16 +56,16 @@ repo에는 **키 목록(`.env.example`)만** 있고 실제 시크릿은 없다(�
 
 두 DB 모두 **pgvector 확장**이 필요하다(`pgvector/pgvector:pg16` 이미지 권장). `catalog`·`profile`로 분리:
 
-- **catalog** — 상품 AI 생성물(`products`: search_doc·embedding vector(1536)·extras + HNSW), `order_seed`, `categories`.
+- **catalog** — 상품 AI 생성물(`products`: search_doc·embedding vector(1536)·extras + HNSW), `categories`.
 - **profile** — 프로필/스레드 상태, `processed_events`(session-end 멱등 lifecycle) 등.
 
 **A. 컨테이너로 띄우는 경우(권장 — compose와 동일):** `pgvector/pgvector:pg16` 두 개를 각각 띄우고 init 스크립트를 `/docker-entrypoint-initdb.d`로 마운트하면 **빈 볼륨 최초 부팅 시 자동 생성**된다.
-- catalog init: [`db/catalog/init/`](db/catalog/init/) (`00_products.sql` → `01_order_seed.sql` → `02_categories.sql`)
+- catalog init: [`db/catalog/init/`](db/catalog/init/) (`00_products.sql` → `02_categories.sql`)
 - profile init: [`db/profile/init/`](db/profile/init/) (`00_processed_events.sql` → `01_conversation_turns.sql` → `02_profile_session_activity.sql`)
 
 **B. 관리형 PostgreSQL(RDS 등)인 경우:** pgvector 확장 가용 확인 후 위 init SQL을 순서대로 수동 적용. **기존 볼륨 업그레이드**는 [`db/catalog/migrations/`](db/catalog/migrations/)의 마이그레이션도 적용:
 ```bash
-psql "$CATALOG_DB_URL" -f db/catalog/init/00_products.sql   # 이후 01, 02
+psql "$CATALOG_DB_URL" -f db/catalog/init/00_products.sql   # 이후 02
 psql "$PROFILE_DB_URL" -f db/profile/init/00_processed_events.sql   # 이후 01, 02
 # 기존 볼륨: db/catalog/migrations/*.sql 을 날짜순 적용
 ```

@@ -27,8 +27,8 @@
 - 스텁은 `NotImplementedError` + api-spec § 참조 주석 유지 — § 번호가 코드↔명세 링크다. 로직 상세는 `docs/specs/`.
 - 튜너블 하드코딩 금지 — `app/core/config.py` 주입.
 - 주석·docstring은 한국어, 코드 식별자(함수/변수/클래스)는 영어.
-- `order_seed`는 폐기 예정 — 신규 코드에서 참조 금지 (`GET /internal/members/{id}/orders`(I-19)로 대체).
 - AI Postgres에는 **AI 생성물(extras·search_doc·임베딩)만** 저장 — 상품 원본 컬럼 사본 금지.
+  구매 이력은 질의 시점 I-19 조회(§4.7), 판매자 통계는 집계 콜백(§4.4)이며 AI DB에 시드하지 않는다.
 
 ## Git
 

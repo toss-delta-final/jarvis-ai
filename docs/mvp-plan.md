@@ -59,7 +59,7 @@ MVP 목표: **데모 시나리오 최소셋 동작** — 단일 검색+필터 �
 - 응답 3필드(productId·category·purchasedAt). search와 병렬 호출.
 - **dedup(결정 14-F, AI-side)**: exact productId 제외 → §4.6 `excludeProductIds`로 전달 + 소모품 카테고리 억제 + 되돌리기 제안 칩(`suggestions`).
 - 게스트는 호출 스킵. **degrade**: 실패/타임아웃 시 dedup 없이 추천 진행(막지 않음).
-- 주의: `order_seed`는 폐기 예정 — 신규 코드에서 참조 금지.
+- 주의: 구 `order_seed` 시드 노선은 기각·삭제됨(이슈 #124) — 구매 이력은 I-19 질의 시점 조회가 유일 경로다.
 
 ## 4. 판매자 그래프 (SPEC-SELLER-001 — 분석 · 상품관리 · 일반질문)
 
