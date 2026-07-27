@@ -148,9 +148,11 @@ def _search_query_params(filters: ProductSearchFilters) -> dict:
     정렬은 rerank(LLM) 소관(#100 P2, sort 필드 제거).
     """
     params: dict[str, object] = {}
-    if filters.keyword:
+    # LLM(decompose) 산출 텍스트 필터는 공백-only('  ') 도 빈 값으로 보고 미전송한다 —
+    # `if filters.X:` 는 ''(falsy)만 막고 ' '(truthy)는 통과시켜 BE 에 빈값이 나갔다(#127 리뷰).
+    if filters.keyword and filters.keyword.strip():
         params["keyword"] = filters.keyword
-    if filters.category:
+    if filters.category and filters.category.strip():
         params["categoryName"] = filters.category
     if filters.price_min is not None:
         params["minPrice"] = filters.price_min
@@ -163,7 +165,7 @@ def _search_query_params(filters: ProductSearchFilters) -> dict:
         brands = [b for b in filters.brand if b and b.strip()]
         if brands:
             params["brandName"] = brands
-    if filters.color:
+    if filters.color and filters.color.strip():
         params["color"] = filters.color
     return params
 

@@ -668,6 +668,28 @@ def test_search_query_params_drops_blank_brands() -> None:
     assert "brandName" not in params2
 
 
+def test_search_query_params_drops_blank_text_filters() -> None:
+    """[PR#127 리뷰] LLM 산출 텍스트 필터(keyword·category·color)의 공백-only 값은 미전송.
+
+    `if filters.X:` 는 빈 문자열('')만 막고 공백(' ')은 truthy 라 통과했다 — brand 와 동일
+    근거로 .strip() 가드를 맞춘다. 정상 값은 그대로 전송한다.
+    """
+    from app.schemas.spring import ProductSearchFilters
+    from app.services.spring_client import _search_query_params
+
+    blank = _search_query_params(ProductSearchFilters(keyword="  ", category="\t", color=" "))
+    assert "keyword" not in blank
+    assert "categoryName" not in blank
+    assert "color" not in blank
+
+    ok = _search_query_params(
+        ProductSearchFilters(keyword="셔츠", category="여성의류", color="빨강")
+    )
+    assert ok.get("keyword") == "셔츠"
+    assert ok.get("categoryName") == "여성의류"
+    assert ok.get("color") == "빨강"
+
+
 def test_search_query_params_omits_size() -> None:
     """[2026-07-23, BE 합의] I-1 요청에서 size 제거 — 라운드1 전량 반환, top-K 는 AI 쪽(api-spec §4.6)."""
     from app.schemas.spring import ProductSearchFilters
