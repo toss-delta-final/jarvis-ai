@@ -788,6 +788,37 @@ async def test_graph_caps_rerank_input_to_embedding_rerank_limit() -> None:
     assert [c["productId"] for c in cands] == list(range(1, cap + 1))  # 검색순서 상위 cap 보존
 
 
+async def test_pipeline_logs_stage_candidate_counts(caplog) -> None:
+    """[#101 #8] 관측성 — 단계별 후보 수(received→after_dedup→compressed→final)를 구조화 로그로 남긴다.
+
+    recall 손실 추적·자원 진단을 위해 파이프라인 깔때기를 한 줄 구조화 로그로 남긴다. 비-fanout·guest
+    (dedup 없음)로 received==compressed 를 확인한다.
+    """
+    import logging
+
+    from app.schemas.spring import SpringProduct
+
+    products = [
+        SpringProduct(product_id=i, name=f"p{i}", price=1000, category=f"c{i}") for i in range(1, 6)
+    ]
+    llm = FakeLLM(
+        decompose={**DEFAULT_DECOMPOSE, "categoryQueries": []},
+        rerank={"ranked": [{"productId": 1, "rationale": "좋아요"}], "overallComment": ""},
+    )
+    with caplog.at_level(logging.INFO, logger="app.agents.buyer.recommendation.graph"):
+        await _collect(
+            run_buyer_turn(
+                _req(), _guest(), llm=llm, search=_make_search(products), push_fn=_RecordingPush()
+            )
+        )
+    rec = next((r for r in caplog.records if r.msg == "recommend_pipeline"), None)
+    assert rec is not None, "단계별 후보 수 구조화 로그가 있어야 한다"
+    assert rec.received == 5  # Spring/merge 수신
+    assert rec.after_dedup == 5  # guest → 최근구매 dedup 없음
+    assert rec.compressed == 5  # 5 < embedding_rerank_limit → 절단 없음
+    assert rec.rerank_degraded is False
+
+
 def test_search_filters_limit_rejects_negative() -> None:
     """[PR#127 리뷰] limit 은 slice 절단(방식1 VectorSearchBackend 의 over_fetch k)에 쓰이므로 ge=0.
 

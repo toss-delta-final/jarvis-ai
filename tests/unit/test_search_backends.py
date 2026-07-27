@@ -306,6 +306,45 @@ def test_compare_backends_reports_both_methods():
     assert 0.0 <= report.mean_overlap <= 1.0
 
 
+async def test_golden_spring_rank_beyond_limit_enters_after_compression(monkeypatch):
+    """[#101 인수조건] Spring 정렬 상한(embedding_rerank_limit) 밖이지만 semanticQuery 와 유사도 높은
+    상품이 pgvector 재정렬+압축 후 후보에 진입한다 — recall@limit 로 고정(compare.recall_at_k 재사용).
+
+    타깃을 Spring 순서 맨 끝(= 상한 밖)에 두고 query 와 동일 임베딩을 준다. Spring 순서 상위-limit
+    엔 없지만(recall 0), 방식2 재정렬 후 상위-limit 에 진입한다(recall 1). 이게 #101 의 핵심 인수조건.
+    """
+    from app.core.config import get_settings
+    from app.pipelines.artifact_store import CatalogArtifact
+
+    cap = get_settings().embedding_rerank_limit
+    n = cap + 5
+    target = n  # Spring 순서 맨 끝 = 상한(cap) 밖
+    qvec = _embed(["여행 방수"])[0]
+
+    store = CatalogArtifactStore()
+    for pid in range(1, n + 1):
+        # 타깃만 query 와 동일 임베딩(코사인 1.0), 나머지는 무관(어휘 겹침 없음 → 코사인 -1.0, 맨 뒤)
+        emb = qvec if pid == target else _embed(["무관"])[0]
+        store.upsert(CatalogArtifact(product_id=pid, search_doc=f"d{pid}", embedding=emb))
+
+    spring_order = [
+        SpringProduct(product_id=pid, name=f"p{pid}", price=10) for pid in range(1, n + 1)
+    ]
+
+    async def fake_search(_filters):
+        return ProductSearchResult(products=list(spring_order), total_count=n)
+
+    monkeypatch.setattr(spring_client, "search_products", fake_search)
+    backend = EmbeddingRerankBackend(store=store, embed=_embed)
+    result = await backend.search(ProductSearchFilters(semantic_query="여행 방수"))
+
+    reranked_ids = [p.product_id for p in result.products]
+    spring_ids = [p.product_id for p in spring_order]
+    # recall@cap = 압축(상위-cap 절단) 후 진입 여부. Spring 순서엔 없고(0), 재정렬 후엔 있다(1).
+    assert recall_at_k(spring_ids, {target}, cap) == 0.0
+    assert recall_at_k(reranked_ids, {target}, cap) == 1.0
+
+
 # ── 이슈 #65: 비대칭 임베딩 바인딩 — 미주입 기본값이 질의(QUERY) task_type 을 바인딩하는지 ──
 
 

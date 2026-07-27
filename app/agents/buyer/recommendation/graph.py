@@ -211,6 +211,7 @@ async def stream_recommendation(
 
     # 사후필터: exact productId 제외 + 소모품 카테고리 억제(§4.7, C-15).
     result: ProductSearchResult = search_result
+    received = len(result.products)  # [#101 #8] 관측성 — dedup 이전 수신 후보 수(Spring/merge)
     had_candidates = bool(result.products)
     suppressed_by_cat: dict[str, int] = {}
     kept = []
@@ -261,6 +262,7 @@ async def stream_recommendation(
     # rerank — smart tier 1회. 실패/타임아웃/유효후보 0건 시 검색순서 상위 N 으로 degrade(하드 제약 유지).
     if observer is not None:
         observer.record_model_call(resolve_model_id(settings, "smart"))
+    rerank_degraded = False
     try:
         rr = await rerank(
             llm,
@@ -274,6 +276,7 @@ async def stream_recommendation(
         reason_by_id = dict(rr.ranked)  # 상품별 근거(§4.2) — (productId, rationale) 튜플 → 맵
         comment = _strip_unsafe(rr.overall_comment)
     except LLMError:
+        rerank_degraded = True
         ranked_ids = [p.product_id for p in candidates[: settings.expose_max]]
         reason_by_id = {}  # degrade 경로엔 rerank 근거 없음 — reasons 는 빈 배열(계약상 선택)
         comment = "요청하신 조건으로 찾은 상품들이에요."
@@ -289,6 +292,20 @@ async def stream_recommendation(
                 if len(ranked_ids) >= settings.expose_min:
                     break
     ranked_ids = ranked_ids[: settings.expose_max]
+
+    # [#101 #8] 관측성 — 파이프라인 후보 깔때기를 한 줄 구조화 로그로 남긴다(recall 손실·자원 진단).
+    # received(수신) → after_dedup(최근구매 제외 후) → compressed(embedding_rerank_limit 절단 후)
+    # → final(노출). 임베딩 재정렬 degrade 사유는 backend(_log.warning), rerank degrade 는 여기서.
+    logger.info(
+        "recommend_pipeline",
+        extra={
+            "received": received,
+            "after_dedup": matched_after_dedup,
+            "compressed": len(candidates),
+            "final": len(ranked_ids),
+            "rerank_degraded": rerank_degraded,
+        },
+    )
 
     if comment:
         yield sse("token", TokenData(text=comment).model_dump(by_alias=True))
