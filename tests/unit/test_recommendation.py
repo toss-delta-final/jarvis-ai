@@ -827,18 +827,23 @@ async def test_search_products_malformed_maps_to_search_failed(
         await sc.search_products(ProductSearchFilters())
 
 
-async def test_search_products_unknown_envelope_warns(
+async def test_search_products_unknown_envelope_fails_closed(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """알려지지 않은 검색 envelope 는 조용한 0 건이 아니라 경고를 남긴다(§7 유지보수 계약)."""
+    """[PR#127 리뷰] 미인식 envelope drift 는 조용한 0 건이 아니라 SEARCH_FAILED 로 degrade한다.
+
+    항목 단위 fail-closed 와 동일 원칙(§7) — envelope 자체가 어긋나면(예: data 가 미인식
+    형태) 정상 0건과 구분되지 않는 빈 결과 대신 예외를 내 상위가 SEARCH_FAILED 로 낸다.
+    경고 로그도 남긴다.
+    """
     import app.services.spring_client as sc
     from app.schemas.spring import ProductSearchFilters
 
     payload = {"success": True, "data": {"products": [{"productId": 1}]}}  # 미인식 형태
     monkeypatch.setattr(sc, "_client", lambda: _FakeClient(payload))
     with caplog.at_level("WARNING"):
-        res = await sc.search_products(ProductSearchFilters())
-    assert res.products == []
+        with pytest.raises(SpringUnavailableError):
+            await sc.search_products(ProductSearchFilters())
     assert "미인식" in caplog.text
 
 
@@ -855,17 +860,17 @@ async def test_search_products_parses_bare_list_body(monkeypatch: pytest.MonkeyP
     assert [p.product_id for p in res.products] == [7]
 
 
-async def test_search_products_missing_data_key_warns(
+async def test_search_products_missing_data_key_fails_closed(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """data 키가 없는 응답은 조용한 0 이 아니라 경고를 남긴다(§7)."""
+    """[PR#127 리뷰] data 키가 없는 envelope drift 는 조용한 0 이 아니라 SEARCH_FAILED 로 degrade(§7)."""
     import app.services.spring_client as sc
     from app.schemas.spring import ProductSearchFilters
 
     monkeypatch.setattr(sc, "_client", lambda: _FakeClient({"success": True}))
     with caplog.at_level("WARNING"):
-        res = await sc.search_products(ProductSearchFilters())
-    assert res.products == []
+        with pytest.raises(SpringUnavailableError):
+            await sc.search_products(ProductSearchFilters())
     assert "data 키" in caplog.text
 
 

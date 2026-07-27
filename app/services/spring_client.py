@@ -176,6 +176,9 @@ def _parse_search_response(data: object) -> ProductSearchResult:
     실패분만 WARNING 로그로 남기고 skip 해 나머지를 보존한다. 단 dict 항목이 있었는데 **전부**
     검증 실패(정상 0건)면 개별 이상이 아니라 systematic 스키마 붕괴이므로 조용한 zero-result 로
     위장하지 않고 예외를 재발생시켜 SEARCH_FAILED 로 degrade 한다(§7 fail-closed 유지).
+    [PR#127 리뷰] 최상위 envelope 자체가 어긋난 경우(data 키 없음·미인식 형태·비 list/dict)도
+    같은 §7 원칙으로 예외를 내 fail-closed 한다 — 정상 0건과 구분 안 되는 빈 결과로 삼키지 않는다.
+    단 `data:null`·`data:[]` 은 정상 0건이라 예외 없이 빈 결과를 반환한다.
     """
     items: list = []
     if isinstance(data, list):
@@ -189,15 +192,26 @@ def _parse_search_response(data: object) -> ProductSearchResult:
         elif isinstance(data.get("items"), list):
             items = data["items"]
         elif payload is not None:
-            # data 키는 있으나 알려진 형태(list · {items})와 안 맞음 — silent 0 오인 방지 경고(§7).
+            # data 키는 있으나 알려진 형태(list · {items})와 안 맞음 — envelope drift.
+            # [PR#127 리뷰] 정상 0건과 구분 안 되는 빈 결과 대신 fail-closed(§7) — 항목 단위와 일관.
             _log.warning(
-                "검색 응답 data 형태 미인식(silent 0 아님) — data 타입=%s", type(payload).__name__
+                "검색 응답 data 형태 미인식 — envelope drift, SEARCH_FAILED degrade(§7), 타입=%s",
+                type(payload).__name__,
+            )
+            raise ValueError(
+                f"검색 응답 data 형태 미인식(envelope drift): {type(payload).__name__}"
             )
         elif "data" not in data:
-            # data 키 자체가 없음(= data:null 과 구분) — 더 의심스러운 drift.
-            _log.warning("검색 응답에 data 키가 없음(silent 0 아님) — envelope drift 의심")
+            # data 키 자체가 없음(= data:null 과 구분) — 더 의심스러운 drift → fail-closed(§7).
+            _log.warning("검색 응답에 data 키가 없음 — envelope drift, SEARCH_FAILED degrade(§7)")
+            raise ValueError("검색 응답에 data 키가 없음(envelope drift)")
+        # (payload is None 이고 data 키는 있음 = data:null → 정상 0건, 예외 아님)
     else:
-        _log.warning("검색 응답 최상위 형태 미인식(silent 0 아님) — type=%s", type(data).__name__)
+        _log.warning(
+            "검색 응답 최상위 형태 미인식 — envelope drift, SEARCH_FAILED degrade(§7), type=%s",
+            type(data).__name__,
+        )
+        raise ValueError(f"검색 응답 최상위 형태 미인식(envelope drift): {type(data).__name__}")
     products: list[SpringProduct] = []
     invalid = 0  # 검증 실패로 skip 된 항목 수(비-object 포함)
     last_err: ValidationError | None = None
