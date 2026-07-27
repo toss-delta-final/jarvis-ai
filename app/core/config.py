@@ -19,6 +19,9 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LLMProvider = Literal["openai", "anthropic"]
+# 검색 백엔드 선택(#101) — spring: Spring 위임만(방식1 이전 MVP), embedding_rerank: Spring 전량 →
+# pgvector 의미 재정렬(방식2, MVP 기본), vector: AI 벡터검색 → Spring hydrate(방식1, C-17 미착수).
+SearchBackend = Literal["spring", "embedding_rerank", "vector"]
 
 
 class Settings(BaseSettings):
@@ -141,6 +144,11 @@ class Settings(BaseSettings):
     seller_sonnet_temperature: float = 0.2  # smart tier(서술 품질)
 
     # ── 검색/추천 튜너블 (SPEC-RECOMMEND-001) ──
+    # [#101] hot path 기본 검색 백엔드 = 방식2(Spring 전량 → pgvector 압축). 토글은 provider 처럼 전역.
+    search_backend: SearchBackend = "embedding_rerank"
+    # pgvector 의미 재정렬 후 Sonnet 입력 상한(옛 "FastAPI 30" 이관처, §4.6). products[:limit] 절단이라
+    # ge=0 — 음수면 slice 가 뒤에서 잘려 "<=0 이면 0개" 불변식이 깨진다(형제 category_fanout_* 규약).
+    embedding_rerank_limit: int = Field(default=30, ge=0)
     search_default_limit: int = 30
     top_k: int = 30
     expose_min: int = 5
@@ -159,7 +167,9 @@ class Settings(BaseSettings):
     category_fanout_max: int = Field(default=5, ge=0)
     # per_cat_limit·merge_cap 도 fanout_max 와 같은 절단 규약(leg top-K·merged[:cap]). 음수면
     # merged[:cap] 이 "뒤에서 제외"로 뒤집혀 "cap<=0 이면 0개" 불변식이 깨진다(PR #73 리뷰).
-    category_fanout_per_cat_limit: int = Field(default=10, ge=0)  # 카테고리별 AI top-K(leg limit, §4.6 size 아님)
+    category_fanout_per_cat_limit: int = Field(
+        default=10, ge=0
+    )  # 카테고리별 AI top-K(leg limit, §4.6 size 아님)
     category_fanout_merge_cap: int = Field(default=30, ge=0)  # 병합 후 rerank 입력 상한
     # pg-catalog 검색 풀 max_size — fan-out 은 한 턴에 최대 category_fanout_max leg 를 gather 로
     # 동시 조회하므로, psycopg_pool 기본값(4)이면 그 이상 leg 가 커넥션을 기다린다. fanout 이상 +
