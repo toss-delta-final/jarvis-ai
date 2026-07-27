@@ -2,7 +2,7 @@
 name: 버그 (Bug)
 about: 오류/비정상 동작 리포트
 title: "[bug] "
-labels: bug
+type: Bug
 ---
 
 ## 증상
