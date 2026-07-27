@@ -169,8 +169,13 @@ def _parse_search_response(data: object) -> ProductSearchResult:
     """BE I-1 응답 → ProductSearchResult (§4.6, v0.15.5).
 
     현재 Spring ``ApiResponse<List<...>>`` 는 data 자체가 배열({success, data:[...]})이다.
-    구 계약의 data:{items:[...]} 형태도 브랜치 간 호환을 위해 함께 수용한다. BE 응답엔
-    totalCount 가 없어 total_count 는 수신 items 수로 둔다.
+    구 계약의 data:{items:[...]} 형태도 브랜치 간 호환을 위해 함께 수용한다. total_count 는
+    파싱 성공 후보 수다.
+    [PR#127 리뷰] 항목은 **개별 검증**한다 — 후보 1건의 스키마 위반(누락 필드·타입 이상)이
+    단일 comprehension 이면 리스트 전체 생성을 실패시켜, 멀쩡한 나머지 후보까지 통째로 버려진다.
+    실패분만 WARNING 로그로 남기고 skip 해 나머지를 보존한다. 단 dict 항목이 있었는데 **전부**
+    검증 실패(정상 0건)면 개별 이상이 아니라 systematic 스키마 붕괴이므로 조용한 zero-result 로
+    위장하지 않고 예외를 재발생시켜 SEARCH_FAILED 로 degrade 한다(§7 fail-closed 유지).
     """
     items: list = []
     if isinstance(data, list):
@@ -193,7 +198,26 @@ def _parse_search_response(data: object) -> ProductSearchResult:
             _log.warning("검색 응답에 data 키가 없음(silent 0 아님) — envelope drift 의심")
     else:
         _log.warning("검색 응답 최상위 형태 미인식(silent 0 아님) — type=%s", type(data).__name__)
-    products = [SpringProduct.model_validate(it) for it in items if isinstance(it, dict)]
+    products: list[SpringProduct] = []
+    invalid = 0  # 스키마 위반으로 skip 된 dict 항목 수
+    last_err: ValidationError | None = None
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        try:
+            products.append(SpringProduct.model_validate(it))
+        except ValidationError as exc:
+            # 후보 1건의 스키마 이상은 그 항목만 skip — 나머지 정상 후보 보존(PR#127 리뷰).
+            invalid += 1
+            last_err = exc
+            _log.warning("검색 후보 파싱 실패로 skip(전체 실패 아님) — %s", exc)
+    # §7 fail-closed: dict 항목이 있었는데 **전부** 검증 실패(정상 0건)면 개별 이상이 아니라
+    # systematic 스키마 붕괴다 → 조용한 zero-result 로 위장하지 않고 SEARCH_FAILED 로 degrade.
+    if invalid and not products:
+        _log.warning("검색 후보 전량 파싱 실패(%d건) — SEARCH_FAILED degrade(§7)", invalid)
+        raise last_err  # type: ignore[misc]  # invalid>0 이면 last_err 는 반드시 설정됨
+    if invalid:
+        _log.warning("검색 후보 %d건 skip(스키마 이상) / 정상 %d건", invalid, len(products))
     return ProductSearchResult(products=products, total_count=len(products))
 
 

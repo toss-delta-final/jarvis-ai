@@ -581,6 +581,28 @@ def test_i1_attributes_accepts_non_string_values() -> None:
     assert result.products[0].attributes == {"방수": True, "소재": "나일론"}
 
 
+def test_i1_parse_skips_malformed_item_keeps_valid() -> None:
+    """[PR#127 리뷰] 후보 1건이 스키마 위반이어도 나머지 정상 후보는 반환한다.
+
+    단일 list comprehension 이면 1건 ValidationError 가 리스트 전체 생성을 실패시켜
+    SEARCH_FAILED 로 이어진다 — 멀쩡한 수십 건까지 통째로 버려진다. 항목별 검증으로
+    실패분만 skip(로그)하고 나머지를 보존한다.
+    """
+    from app.services.spring_client import _parse_search_response
+
+    raw = {
+        "success": True,
+        "data": [
+            {"productId": 1, "name": "우산"},  # 정상
+            {"productId": 2},  # name 누락 → ValidationError
+            {"productId": 3, "name": "장화"},  # 정상
+        ],
+    }
+    result = _parse_search_response(raw)
+    assert [p.product_id for p in result.products] == [1, 3]  # 2번만 skip
+    assert result.total_count == 2
+
+
 def test_search_query_params_omits_size() -> None:
     """[2026-07-23, BE 합의] I-1 요청에서 size 제거 — 라운드1 전량 반환, top-K 는 AI 쪽(api-spec §4.6)."""
     from app.schemas.spring import ProductSearchFilters
