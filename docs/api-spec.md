@@ -6,8 +6,8 @@
 
 | 항목 | 값 |
 |---|---|
-| 문서 버전 | v0.15.23 |
-| 작성일 | 2026-07-14 (v0.15.23 개정 2026-07-27 — I-1 §4.6 실측 정합: 표시필드(imageUrl·originalPrice·reviewCount·options) CH-5 이관 명시·`price`/`rating` 계산용 명기·`brandName` 다중, #100) |
+| 문서 버전 | v0.15.24 |
+| 작성일 | 2026-07-14 (v0.15.24 개정 2026-07-27 — 사본 동기화: S-5 폐기(2026-07-21 정본 결정) 반영, 상품 수정은 챗봇 HITL(I-11) 유일 경로) |
 | 상태 | draft |
 | 대상 독자 | Spring 백엔드 팀, React 프론트엔드(FE) 팀 |
 | 소유 | AI 에이전트 서버 팀 |
@@ -1064,7 +1064,7 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 **판매자(`/seller/chat`) 흐름**
 
 5. 이벤트는 `token`/`draft`/`done`/`error`만 디스패치한다.
-6. **`draft` → diff 카드**: `changes[]`의 필드별 before/after를 diff 카드로 렌더하고 `[적용]`/`[취소]`를 노출한다. **`[적용]` 시 FE는 `{action:"confirm", draftId}`를 판매자 챗(S-4)으로 보내고, AI가 HITL resume으로 Spring internal API(I-11 등)를 호출해 반영**한다(§3.2). 채팅 발화만으로는 반영되지 않는다. (판매자가 챗봇이 아니라 **화면에서 직접** 상품을 고칠 때는 별도 경로 **S-5 `PATCH /api/seller/products/{id}`**(FE→Spring, AI 표면 밖, 07/17 신설)를 쓴다 — 챗봇 수정(I-11)과 병존.)
+6. **`draft` → diff 카드**: `changes[]`의 필드별 before/after를 diff 카드로 렌더하고 `[적용]`/`[취소]`를 노출한다. **`[적용]` 시 FE는 `{action:"confirm", draftId}`를 판매자 챗(S-4)으로 보내고, AI가 HITL resume으로 Spring internal API(I-11 등)를 호출해 반영**한다(§3.2). 채팅 발화만으로는 반영되지 않는다. (**[v0.15.24] S-5 `PATCH /api/seller/products/{id}` 폐기 — 2026-07-21 미채택.** 07/17 신설했던 판매자 화면 직접 수정 경로는 채택되지 않았고, **상품 수정은 챗봇 HITL(I-11)이 유일 경로**다. Spring 코드에도 해당 엔드포인트가 없다.)
 
 - **버퍼링 주의**: FE 직접 호출이므로 Spring 중계 버퍼링 이슈는 없다. 남는 주의점은 **FastAPI 앞단 리버스 프록시**의 응답 버퍼링 비활성화뿐이다(§2.4).
 - **[v0.7.0] 취소·동시 스트림**: 사용자가 응답 중단 시 `AbortController.abort()`로 연결을 끊는다(별도 취소 API 없음, §2.9 b). 스트리밍 중에는 입력창을 비활성화한다 — 중복 전송 시 서버가 `409 STREAM_IN_PROGRESS`를 반환한다(§2.9 a). `504 UPSTREAM_TIMEOUT`(스트림 전)·in-stream `error`(스트림 중) 구분은 §2.9 c.
@@ -1082,6 +1082,7 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 
 | 버전 | 날짜 | 변경 |
 |---|---|---|
+| v0.15.24 | 2026-07-27 | **[사본 동기화] S-5 폐기 반영 — 정본(기획 저장소 Notion "📡 API 명세서" DB) 2026-07-21 결정이 본 사본에 미반영이었다.** S-5 `PATCH /api/seller/products/{id}`(판매자 화면 직접 수정, 07/17 신설)는 **미채택**이며 **상품 수정은 챗봇 HITL(I-11)이 유일 경로**다. §3.2 draft 절의 "챗봇 수정(I-11)과 병존" 서술을 폐기 표기로 교체. Spring 코드 실측에서도 `/api/seller/**`에 PATCH 엔드포인트가 없어 정본·코드 모두와 일치시켰다. 계약 변경이 아니라 **사본 drift 정정**이다. |
 | v0.15.23 | 2026-07-27 | **[#100 P0/P1/P2] I-1 §4.6 실측 정합.** 표시 전용 필드(`imageUrl`·`originalPrice`·`reviewCount`·`options`)를 응답표에서 제거하고 CH-5(§4.3) 하이드레이션 이관 명시(AI 추천 경로 미사용), `price`·`rating`을 "AI 계산용(비표시 — 예산검증 `verifiedSum`·평점 사후필터·rerank 신호, 질의 시점 필요)"으로 명기해 display 오분류 재발 차단, envelope 예시를 실측 `{success, data:[...]}`(bare array)로 정정, 요청 `brandName` 단일→다중(반복 파라미터 → `WHERE brand IN`, 방법 D), `totalCount` 필드 불필요 결정 반영. |
 | v0.15.22 | 2026-07-26 | **[#100 P1] I-1 `color` 요청 파라미터 연결.** decompose가 색상 조건("빨간"·"검정")을 `filters.color`로 추출·전송하고, BE I-1이 `attributes` LIKE로 필터. 요청 모델·쿼리 변환에 `color`가 없어 Spring 색상 검색을 못 쓰던 것을 해소. |
 | v0.15.21 | 2026-07-24 | **[#100 P2] I-1 `size` 제거 → 라운드1 전량 반환 + AI top-K.** BE 합의로 Spring 요청에서 `size`를 제거(반환 상한 없음)하고, 결과 수 제한(top-K)은 AI `search_catalog`가 사후필터(dedup·평점) 뒤 `filters.limit`로 절단. `ProductSearchFilters.limit`은 Spring `size`가 아니라 AI 후보 상한(rerank 입력)이다. |
