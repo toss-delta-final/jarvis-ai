@@ -54,7 +54,9 @@ class ProductSearchFilters(CamelModel):
     keyword: str | None = None
     color: str | None = None  # 색상 조건(#100 P1) — BE I-1 attributes LIKE 로 필터
     exclude_product_ids: list[int] = Field(default_factory=list)
-    limit: int = 30  # AI 후보 상한(rerank 입력 top-K) — Spring size 아님(§4.6, 2026-07-23)
+    # AI 후보 상한(rerank 입력 top-K) — Spring size 아님(§4.6, 2026-07-23). ge=0: products[:limit]
+    # slice 절단이라 음수면 '뒤에서 제외'로 뒤집혀 불변식 붕괴(형제 category_fanout_* 와 정합, PR#73).
+    limit: int = Field(default=30, ge=0)
 
 
 class SpringProduct(CamelModel):

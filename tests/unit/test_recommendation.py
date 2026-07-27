@@ -610,6 +610,21 @@ async def test_search_catalog_caps_candidates_to_limit() -> None:
     assert [p.product_id for p in res.products] == [1, 2]  # top-K=2 로 절단(검색순서 보존)
 
 
+def test_search_filters_limit_rejects_negative() -> None:
+    """[PR#127 리뷰] limit 은 products[:limit] slice 절단에 직접 쓰이므로 ge=0 이어야 한다.
+
+    음수면 Python slice 가 '뒤에서 N개 제외'로 뒤집혀 '≤0 → 0개' 절단 불변식이 깨진다
+    (형제 category_fanout_* 필드가 PR#73 에서 같은 이유로 ge=0 을 건 것과 정합).
+    """
+    import pytest
+    from pydantic import ValidationError
+
+    from app.schemas.spring import ProductSearchFilters
+
+    with pytest.raises(ValidationError):
+        ProductSearchFilters(limit=-1)
+
+
 # ─────────── 리뷰 수정 회귀 (Fix A~E) ───────────
 
 

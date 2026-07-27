@@ -172,9 +172,15 @@ async def search_catalog(
     rating_min 사후필터는 '반증된 것만' 제거한다 — 평점이 있고 미달인 상품만 탈락, rating=None
     신상품은 보존(#100 P0).
     정렬은 rerank(LLM) 소관이라 별도 sort 필드가 없다(#100 P2) — 여기서는 검색순서를 보존한다.
-    [2026-07-23, BE 합의] size 제거로 Spring 이 전량 반환 → 사후필터 뒤 filters.limit(AI top-K)로
-    절단해 rerank 입력 상한을 지킨다(api-spec §4.6). 절단은 사후필터 이후라, 제외분만큼 후보가
-    낭비되지 않고 상위 limit 을 채운다. backend 미지정 시 default_backend 사용 — 테스트에서 주입 가능.
+    [2026-07-23, BE 합의] size 제거로 Spring 이 전량 반환 → 여기서 filters.limit(AI top-K)로 절단해
+    rerank 입력 상한을 지킨다(api-spec §4.6).
+    [주의 — PR#127 리뷰] 이 절단은 **이 함수 안의** exclude_product_ids·rating_min 사후필터 뒤에만
+    적용된다. 다만 실호출부(graph._run_search/_leg)는 exclude_product_ids=None 으로 넘기고, 최근 구매
+    dedup·소모품 카테고리 억제는 search_catalog 리턴 **뒤** stream_recommendation(graph.py)에서
+    수행한다. 따라서 그 graph dedup 대상이 상위 limit 안에 몰리면 rerank 최종 후보가 limit 보다
+    적어질 수 있다(= dedup 경로엔 후보 낭비가 남음). 근본 해소는 #101(임베딩 rerank 가 전량을 dedup
+    후 embedding_rerank_limit 으로 압축)에서 절단을 dedup 이후로 옮겨 처리한다.
+    backend 미지정 시 default_backend 사용 — 테스트에서 주입 가능.
     """
     used = backend or default_backend
     result = await used.search(filters)
