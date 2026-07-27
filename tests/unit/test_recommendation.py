@@ -627,6 +627,47 @@ def test_i1_parse_empty_data_is_valid_zero_result() -> None:
     assert result.total_count == 0
 
 
+def test_i1_parse_success_false_fails_closed() -> None:
+    """[PR#127 리뷰] 200 이어도 success:false 는 실패 envelope — 정상 0건으로 삼키지 않고 fail-closed(§7).
+
+    fetch_product_changes 가 이미 `data.get("success") is not True` 로 막는 같은 클래스의 실패다.
+    """
+    import pytest
+
+    from app.services.spring_client import _parse_search_response
+
+    with pytest.raises(ValueError):
+        _parse_search_response({"success": False, "data": None, "error": {"code": "X"}})
+    # data 에 값이 있어도 success:false 면 실패
+    with pytest.raises(ValueError):
+        _parse_search_response({"success": False, "data": [{"productId": 1, "name": "x"}]})
+
+
+def test_i1_parse_top_level_items_without_data_fails_closed() -> None:
+    """[PR#127 리뷰] data 키 없이 top-level items 만 오는 레거시 형태도 fail-closed(§7).
+
+    실 BE envelope 는 {success, data:[...]} — data 키 부재는 의심스러운 drift 라 예외로 degrade.
+    """
+    import pytest
+
+    from app.services.spring_client import _parse_search_response
+
+    with pytest.raises(ValueError):
+        _parse_search_response({"success": True, "items": [{"productId": 1, "name": "x"}]})
+
+
+def test_search_query_params_drops_blank_brands() -> None:
+    """[PR#127 리뷰] 빈/공백 브랜드 요소는 걸러낸다(LLM 이 [''] 등을 낼 수 있음)."""
+    from app.schemas.spring import ProductSearchFilters
+    from app.services.spring_client import _search_query_params
+
+    params = _search_query_params(ProductSearchFilters(brand=["삼성", "", "  ", "애플"]))
+    assert params.get("brandName") == ["삼성", "애플"]  # 빈/공백 제거, 나머지 유지
+    # 전부 빈 값이면 brandName 미전송
+    params2 = _search_query_params(ProductSearchFilters(brand=["", "  "]))
+    assert "brandName" not in params2
+
+
 def test_search_query_params_omits_size() -> None:
     """[2026-07-23, BE 합의] I-1 요청에서 size 제거 — 라운드1 전량 반환, top-K 는 AI 쪽(api-spec §4.6)."""
     from app.schemas.spring import ProductSearchFilters

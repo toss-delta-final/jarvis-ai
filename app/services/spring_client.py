@@ -159,7 +159,10 @@ def _search_query_params(filters: ProductSearchFilters) -> dict:
     if filters.brand:
         # 다중 브랜드 전량 전송(방법 D) — httpx 가 brandName=A&brandName=B 반복 파라미터로
         # 직렬화 → BE IN 필터(#100 P1). 조건칩(state)도 전 브랜드를 표시하므로 요청·표시가 일치한다.
-        params["brandName"] = filters.brand
+        # 빈/공백 요소는 제거(LLM 이 [""] 등을 낼 수 있음 — brandName= 빈값 전송 방지, #127 리뷰).
+        brands = [b for b in filters.brand if b and b.strip()]
+        if brands:
+            params["brandName"] = brands
     if filters.color:
         params["color"] = filters.color
     return params
@@ -176,21 +179,28 @@ def _parse_search_response(data: object) -> ProductSearchResult:
     실패분만 WARNING 로그로 남기고 skip 해 나머지를 보존한다. 단 dict 항목이 있었는데 **전부**
     검증 실패(정상 0건)면 개별 이상이 아니라 systematic 스키마 붕괴이므로 조용한 zero-result 로
     위장하지 않고 예외를 재발생시켜 SEARCH_FAILED 로 degrade 한다(§7 fail-closed 유지).
-    [PR#127 리뷰] 최상위 envelope 자체가 어긋난 경우(data 키 없음·미인식 형태·비 list/dict)도
-    같은 §7 원칙으로 예외를 내 fail-closed 한다 — 정상 0건과 구분 안 되는 빈 결과로 삼키지 않는다.
-    단 `data:null`·`data:[]` 은 정상 0건이라 예외 없이 빈 결과를 반환한다.
+    [PR#127 리뷰] 최상위 envelope 자체가 어긋난 경우도 같은 §7 원칙으로 fail-closed 한다 —
+    (1) `success:false`(200 이어도 실패 envelope, fetch_product_changes 와 동일 규약),
+    (2) data 키 없음·미인식 형태·비 list/dict. 정상 0건과 구분 안 되는 빈 결과로 삼키지 않는다.
+    단 `data:null`·`data:[]` 은 정상 0건이라 예외 없이 빈 결과를 반환한다. 구 wrapped 형태
+    (data:{items:[...]})만 호환 수용하고, data 키 없는 top-level items 레거시 분기는 제거했다.
     """
     items: list = []
     if isinstance(data, list):
         items = data  # 래퍼 없이 바디가 곧 배열인 경우도 수용
     elif isinstance(data, dict):
+        # [PR#127 리뷰] success:false 는 200 이어도 실패 envelope — fetch_product_changes 와 동일
+        # 규약. 정상 0건(빈 결과)으로 삼키지 않고 fail-closed(§7)로 degrade 한다.
+        if data.get("success") is False:
+            _log.warning("검색 응답 success=false — 실패 envelope, SEARCH_FAILED degrade(§7)")
+            raise ValueError("검색 응답 success=false(실패 envelope)")
         payload = data.get("data")
         if isinstance(payload, list):
             items = payload
         elif isinstance(payload, dict) and isinstance(payload.get("items"), list):
+            # 구 계약 wrapped 형태(data:{items:[...]}) 만 호환 수용. top-level items(data 키 없이)는
+            # data 키 부재 drift 로 아래 fail-closed 가 잡는다(#127 리뷰, 레거시 분기 제거).
             items = payload["items"]
-        elif isinstance(data.get("items"), list):
-            items = data["items"]
         elif payload is not None:
             # data 키는 있으나 알려진 형태(list · {items})와 안 맞음 — envelope drift.
             # [PR#127 리뷰] 정상 0건과 구분 안 되는 빈 결과 대신 fail-closed(§7) — 항목 단위와 일관.
