@@ -581,6 +581,19 @@ def test_search_query_params_sends_color() -> None:
     assert params.get("color") == "빨강"
 
 
+def test_search_query_params_sends_all_brands() -> None:
+    """[#100 P1] 다중 브랜드는 전부 brandName 배열로 실린다(반복 파라미터 → BE IN 필터, 방법 D).
+
+    구 brand[0] 만 전송(2번째 이후 유실 + 칩 거짓표시) 폐기. httpx 는 리스트 값을
+    brandName=A&brandName=B 반복 파라미터로 직렬화한다.
+    """
+    from app.schemas.spring import ProductSearchFilters
+    from app.services.spring_client import _search_query_params
+
+    params = _search_query_params(ProductSearchFilters(brand=["삼성", "애플"]))
+    assert params.get("brandName") == ["삼성", "애플"]
+
+
 async def test_search_catalog_caps_candidates_to_limit() -> None:
     """size 제거로 Spring 이 전량 반환 → search_catalog 가 filters.limit(AI top-K)로 절단한다.
 

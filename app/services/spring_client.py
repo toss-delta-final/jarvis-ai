@@ -142,9 +142,10 @@ def _search_query_params(filters: ProductSearchFilters) -> dict:
 
     BE I-1 파라미터는 keyword/categoryName/minPrice/maxPrice/brandName/color 뿐이다(color=#100 P1).
     [2026-07-23, BE 합의] size 제거 — 라운드1은 고정필터 매칭을 전량 반환하고, 결과 수 제한(top-K)은
-    AI 쪽(search_catalog 가 filters.limit 로 절단)에서 적용한다(api-spec §4.6). brandName 은 단수 —
-    MVP 는 첫 브랜드만 보내고(복수 브랜드는 후속) 나머지 필터(excludeProductIds·ratingMin)는 여기
-    싣지 않고 AI 사후필터(search_service)로 처리한다. 정렬은 rerank(LLM) 소관(#100 P2, sort 필드 제거).
+    AI 쪽(search_catalog 가 filters.limit 로 절단)에서 적용한다(api-spec §4.6). brandName 은 다중 —
+    브랜드 전량을 반복 파라미터로 실어 BE IN 필터에 맡긴다(방법 D, #100 P1, BE 배열 수용 협의 대상).
+    나머지 필터(excludeProductIds·ratingMin)는 여기 싣지 않고 AI 사후필터(search_service)로 처리한다.
+    정렬은 rerank(LLM) 소관(#100 P2, sort 필드 제거).
     """
     params: dict[str, object] = {}
     if filters.keyword:
@@ -156,7 +157,9 @@ def _search_query_params(filters: ProductSearchFilters) -> dict:
     if filters.price_max is not None:
         params["maxPrice"] = filters.price_max
     if filters.brand:
-        params["brandName"] = filters.brand[0]
+        # 다중 브랜드 전량 전송(방법 D) — httpx 가 brandName=A&brandName=B 반복 파라미터로
+        # 직렬화 → BE IN 필터(#100 P1). 조건칩(state)도 전 브랜드를 표시하므로 요청·표시가 일치한다.
+        params["brandName"] = filters.brand
     if filters.color:
         params["color"] = filters.color
     return params
