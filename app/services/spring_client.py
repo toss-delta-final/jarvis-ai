@@ -199,10 +199,14 @@ def _parse_search_response(data: object) -> ProductSearchResult:
     else:
         _log.warning("검색 응답 최상위 형태 미인식(silent 0 아님) — type=%s", type(data).__name__)
     products: list[SpringProduct] = []
-    invalid = 0  # 스키마 위반으로 skip 된 dict 항목 수
+    invalid = 0  # 검증 실패로 skip 된 항목 수(비-object 포함)
     last_err: ValidationError | None = None
     for it in items:
         if not isinstance(it, dict):
+            # 항목이 object 조차 아님 — 개별 필드 결측보다 심각한 최상위 타입 붕괴다. skip 하되
+            # invalid 로 세어 아래 fail-closed 가드가 이 케이스도 잡게 한다(PR#127 리뷰).
+            invalid += 1
+            _log.warning("검색 후보가 object 아님(skip) — type=%s", type(it).__name__)
             continue
         try:
             products.append(SpringProduct.model_validate(it))
@@ -211,11 +215,12 @@ def _parse_search_response(data: object) -> ProductSearchResult:
             invalid += 1
             last_err = exc
             _log.warning("검색 후보 파싱 실패로 skip(전체 실패 아님) — %s", exc)
-    # §7 fail-closed: dict 항목이 있었는데 **전부** 검증 실패(정상 0건)면 개별 이상이 아니라
-    # systematic 스키마 붕괴다 → 조용한 zero-result 로 위장하지 않고 SEARCH_FAILED 로 degrade.
+    # §7 fail-closed: 항목이 있었는데 **전부** 무효(정상 0건)면 개별 이상이 아니라 systematic
+    # 스키마 붕괴다 → 조용한 zero-result 로 위장하지 않고 SEARCH_FAILED 로 degrade. dict 항목의
+    # ValidationError 는 그대로 재발생, 전부 비-object 등 재발생할 예외가 없으면 ValueError 로.
     if invalid and not products:
-        _log.warning("검색 후보 전량 파싱 실패(%d건) — SEARCH_FAILED degrade(§7)", invalid)
-        raise last_err  # type: ignore[misc]  # invalid>0 이면 last_err 는 반드시 설정됨
+        _log.warning("검색 후보 전량 무효(%d건) — SEARCH_FAILED degrade(§7)", invalid)
+        raise last_err or ValueError("검색 응답 항목이 전부 유효하지 않음(스키마 붕괴, §7)")
     if invalid:
         _log.warning("검색 후보 %d건 skip(스키마 이상) / 정상 %d건", invalid, len(products))
     return ProductSearchResult(products=products, total_count=len(products))

@@ -603,6 +603,30 @@ def test_i1_parse_skips_malformed_item_keeps_valid() -> None:
     assert result.total_count == 2
 
 
+def test_i1_parse_all_non_object_items_fail_closed() -> None:
+    """[PR#127 리뷰] data 는 배열인데 원소가 전부 비-object 면 §7 fail-closed(예외)여야 한다.
+
+    필드 결측보다 심각한 최상위 타입 붕괴가 조용한 zero-result 로 새면 안 된다 — non-dict
+    항목도 invalid 로 세어, 정상 0건이면 예외를 내 SEARCH_FAILED 로 degrade 한다.
+    """
+    import pytest
+    from pydantic import ValidationError
+
+    from app.services.spring_client import _parse_search_response
+
+    with pytest.raises((ValidationError, ValueError)):
+        _parse_search_response({"success": True, "data": ["oops", "oops2"]})
+
+
+def test_i1_parse_empty_data_is_valid_zero_result() -> None:
+    """[PR#127 리뷰] data 가 빈 배열이면 진짜 0건 — fail-closed 아님(예외 없이 빈 결과)."""
+    from app.services.spring_client import _parse_search_response
+
+    result = _parse_search_response({"success": True, "data": []})
+    assert result.products == []
+    assert result.total_count == 0
+
+
 def test_search_query_params_omits_size() -> None:
     """[2026-07-23, BE 합의] I-1 요청에서 size 제거 — 라운드1 전량 반환, top-K 는 AI 쪽(api-spec §4.6)."""
     from app.schemas.spring import ProductSearchFilters
