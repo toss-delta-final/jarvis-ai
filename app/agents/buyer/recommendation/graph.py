@@ -224,8 +224,9 @@ async def stream_recommendation(
     result = ProductSearchResult(products=kept, total_count=len(kept))
 
     # 되돌리기 칩 — 억제된 소모품 카테고리별(estCount==0 제외, §3.1).
-    # estCount 는 **이번 검색 응답 내 억제 수**(page-local 근사) — I-1 엔 totalCount 가 없어(C-15 🔴)
-    # DB 전체 매칭 수를 알 수 없으므로 가용한 최선의 추정치를 쓴다.
+    # estCount 는 **이번 검색 응답 내 억제 수**로 정확하다 — dedup 은 AI 사후필터라 억제분이 응답에
+    # 있고(page-local), size 제거로 응답=전량 매칭이라 근사가 아니다. 별도 totalCount 필드는
+    # 불필요로 확정(#100 P2) — 완화 칩 estCount(완화된 다른 필터의 count)는 이 값으로 못 구한다.
     revert_chips = [
         SuggestionChip(
             label=_strip_unsafe(f"{cat_samples[c]}은 최근 구매 — 다시 추천받기"),

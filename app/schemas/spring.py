@@ -82,7 +82,13 @@ class SpringProduct(CamelModel):
 
 
 class ProductSearchResult(CamelModel):
-    """POST /products/search 응답. totalCount 는 완화 칩 estCount(COUNT) 산정용 (§4.6)."""
+    """POST /products/search 응답. total_count 는 수신 후보 수다.
+
+    [#100 P2 결정] 별도 totalCount 필드는 두지 않는다. size 제거(전량 반환)로 total_count(=len)가
+    이미 현재 필터의 전체 매칭 수라 정확하다. 완화 칩 estCount 는 '완화된 다른 필터'의 count 라 이
+    값으로 못 구하고(재쿼리/BE count 필요 — 완화 칩 자체가 미구현, 별도 이슈), 되돌리기 칩은
+    AI 사후필터(dedup)라 억제분이 응답에 있어 page-local 로 정확히 센다.
+    """
 
     products: list[SpringProduct] = Field(default_factory=list)
     total_count: int = 0
