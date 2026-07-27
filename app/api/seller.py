@@ -21,7 +21,8 @@ MVP 범위(api-spec v0.14.0 §3.2, 결정 20 개정): 통계 Q&A + 상세 수정
 분기: analysis → run_analysis_pipeline(emit 큐 중계, 예외 2경우만 사과+error) /
 product → draft 검증(validate_draft)·checkpoint 저장(start_draft)·draft emit /
 general → 기존 astream 스트림.
-스트림 수명주기(409·취소·타임아웃 §2.9 공통)는 구현 TODO — app/api/chat.py 참고.
+스트림 수명주기(409·취소·타임아웃 §2.9 공통)는 팀 공통 래퍼 open_stream 소관 —
+chat.py 와 동일하게 registry_key(identity, sessionId) 로 세션당 1스트림을 강제한다.
 """
 
 from __future__ import annotations

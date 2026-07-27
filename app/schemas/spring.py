@@ -266,7 +266,9 @@ class RecommendationPush(CamelModel):
 
     session_id: str
     list_id: str
-    product_ids: list[int] = Field(default_factory=list, max_length=50)  # 방어적 상한(실제 개수는 config)
+    product_ids: list[int] = Field(
+        default_factory=list, max_length=50
+    )  # 방어적 상한(실제 개수는 config)
     reasons: list[RecoReason] = Field(default_factory=list, max_length=50)  # productId로 키잉(§4.2)
 
 

@@ -14,6 +14,7 @@ AI 서버는 커머스 DB 에 직접 write 하지 않는다 — 담기 실행·�
 [변경 v0.6.0] 게스트 담기 허용(BE 02 D30, 결정 8 개정) — 구 게스트 선차단/가입 유도 폐기.
 로그인 유도는 결제 시점 FE 몫.
 
-TODO: intent 추출 노드(상품/옵션/수량) + 되물음 상태 관리 + add_to_cart/get_cart 호출
-      + 응답 분기 (PRODUCT_NOT_FOUND/STOCK_INSUFFICIENT/CART_ERROR, api-spec §4.1).
+구성: intent(상품/옵션/수량) 추출은 decompose 가 CartIntent 로 함께 산출하고, graph.py 가
+되물음 상태 관리(CartStateStore.pending)·add_to_cart/get_cart 호출·응답 분기
+(PRODUCT_NOT_FOUND/STOCK_INSUFFICIENT/CART_ERROR, api-spec §4.1)를 담당한다.
 """
