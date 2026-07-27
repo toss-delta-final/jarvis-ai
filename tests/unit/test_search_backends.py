@@ -52,6 +52,34 @@ def _seed_store():
     return store
 
 
+def test_make_default_backend_from_config(monkeypatch):
+    """[#101] hot path 기본 백엔드는 config search_backend 로 결정된다(전역 토글).
+
+    embedding_rerank 는 pgvector store 를 쓰므로 get_catalog_store 를 인메모리로 우회해 pg 연결을
+    막고 클래스만 확인한다.
+    """
+    from app.core.config import Settings
+    from app.services.search_service import (
+        EmbeddingRerankBackend,
+        SpringSearchBackend,
+        _make_default_backend,
+    )
+
+    monkeypatch.setattr(search_service, "get_catalog_store", CatalogArtifactStore)
+
+    monkeypatch.setattr(
+        search_service, "get_settings", lambda: Settings(_env_file=None, search_backend="spring")
+    )
+    assert isinstance(_make_default_backend(), SpringSearchBackend)
+
+    monkeypatch.setattr(
+        search_service,
+        "get_settings",
+        lambda: Settings(_env_file=None, search_backend="embedding_rerank"),
+    )
+    assert isinstance(_make_default_backend(), EmbeddingRerankBackend)
+
+
 def test_cosine_basic():
     assert _cosine([1.0, 0.0], [1.0, 0.0]) == pytest.approx(1.0)
     assert _cosine([1.0, 0.0], [0.0, 1.0]) == pytest.approx(0.0)
@@ -108,6 +136,29 @@ async def test_embedding_rerank_embeds_semantic_query_not_keyword(monkeypatch):
     )
     assert embedded == ["여행 방수"]  # keyword 가 아니라 semantic_query 를 임베딩
     assert [p.product_id for p in result.products][0] == 1  # keyword 없어도 재정렬됨
+
+
+async def test_embedding_rerank_degrades_to_spring_order_on_embed_failure(monkeypatch):
+    """[#101 #7] 임베딩/pgvector 실패 시 추천 전체를 죽이지 않고 Spring 순서로 degrade한다.
+
+    Spring I-1 자체 실패만 SEARCH_FAILED — 재정렬 단계(embed/store) 실패는 Spring 순서를 보존한다.
+    """
+    store = _seed_store()
+
+    def boom_embed(texts):
+        raise RuntimeError("google embedding down")
+
+    async def fake_search(filters):
+        return ProductSearchResult(
+            products=[SpringProduct(product_id=i, name=f"p{i}", price=10) for i in (3, 2, 1)],
+            total_count=3,
+        )
+
+    monkeypatch.setattr(spring_client, "search_products", fake_search)
+    backend = EmbeddingRerankBackend(store=store, embed=boom_embed)
+    result = await backend.search(ProductSearchFilters(semantic_query="여행 방수", limit=10))
+    assert [p.product_id for p in result.products] == [3, 2, 1]  # Spring 순서 그대로(재정렬 skip)
+    assert result.total_count == 3
 
 
 async def test_embedding_rerank_backend_uses_batch_get(monkeypatch):

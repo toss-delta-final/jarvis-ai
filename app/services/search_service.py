@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import logging
 import math
 from typing import Protocol
 
@@ -24,6 +25,8 @@ from app.pipelines import embedding as _embedding
 from app.pipelines.artifact_store import ArtifactStore, get_catalog_store
 from app.schemas.spring import ProductSearchFilters, ProductSearchResult
 from app.services import spring_client
+
+_log = logging.getLogger(__name__)
 
 
 class SearchBackend(Protocol):
@@ -106,9 +109,16 @@ class EmbeddingRerankBackend:
         query_text = filters.semantic_query or filters.keyword
         if not query_text or not result.products:
             return result
-        embedded = await asyncio.to_thread(self._embed, [query_text])
-        qvec = embedded[0]
-        reranked = await asyncio.to_thread(self._rerank, result.products, qvec)
+        try:
+            # 재정렬 단계(query 임베딩·후보 embedding batch 조회)만 별도 격리 — Spring I-1 자체 실패는
+            # 위에서 이미 전파됐다(SEARCH_FAILED). 여기 실패(임베딩 API·pgvector 장애)는 추천 전체를
+            # 죽이지 않고 Spring 순서로 degrade 한다(#101 #7). CancelledError(BaseException)는 전파.
+            embedded = await asyncio.to_thread(self._embed, [query_text])
+            qvec = embedded[0]
+            reranked = await asyncio.to_thread(self._rerank, result.products, qvec)
+        except Exception as exc:  # noqa: BLE001 - 재정렬 degrade(Spring 순서 보존)
+            _log.warning("임베딩 재정렬 실패 → Spring 순서 degrade(SEARCH_FAILED 아님) — %s", exc)
+            return result
         return ProductSearchResult(products=reranked, total_count=result.total_count)
 
 
@@ -162,8 +172,22 @@ class VectorSearchBackend:
         return await self._hydrate(ids, filters)
 
 
-# MVP 기본 백엔드 — Spring 위임(§4.6). 임베딩 방식 승격은 골든셋 확정 후(§4.8 말미).
-default_backend: SearchBackend = SpringSearchBackend()
+# hot path 기본 백엔드 — config search_backend 로 결정(#101). 방식2(embedding_rerank)가 MVP 기본.
+# None = 아직 미해결(lazy) — import 시점에 EmbeddingRerankBackend 를 만들면 get_catalog_store() 가
+# pg 풀을 즉시 열어 단위테스트를 깨므로, search_catalog 가 첫 사용 시 config 로 생성한다.
+# 테스트(conftest.buyer_fakes)는 이 모듈 attr 를 FakeBackend 로 override 한다 — 그 값이 우선한다.
+_BACKENDS: dict[str, type] = {
+    "spring": SpringSearchBackend,
+    "embedding_rerank": EmbeddingRerankBackend,
+    "vector": VectorSearchBackend,
+}
+default_backend: SearchBackend | None = None
+
+
+def _make_default_backend() -> SearchBackend:
+    """config search_backend 로 hot path 기본 백엔드를 생성한다(#101). vector(방식1)는 hydrate 미주입
+    이라 search() 시 SpringUnavailableError 로 미착수 신호를 낸다(구성 자체는 가능)."""
+    return _BACKENDS[get_settings().search_backend]()
 
 
 async def search_catalog(
@@ -186,9 +210,10 @@ async def search_catalog(
     수행한다. 따라서 그 graph dedup 대상이 상위 limit 안에 몰리면 rerank 최종 후보가 limit 보다
     적어질 수 있다(= dedup 경로엔 후보 낭비가 남음). 근본 해소는 #101(임베딩 rerank 가 전량을 dedup
     후 embedding_rerank_limit 으로 압축)에서 절단을 dedup 이후로 옮겨 처리한다.
-    backend 미지정 시 default_backend 사용 — 테스트에서 주입 가능.
+    backend 미지정 시: 테스트 override(default_backend) 우선, 없으면 config 로 생성(#101).
     """
-    used = backend or default_backend
+    # 우선순위: 명시 주입 backend → 테스트 override default_backend → config 기반 생성(prod hot path).
+    used = backend or default_backend or _make_default_backend()
     result = await used.search(filters)
     products = result.products
 
