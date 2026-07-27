@@ -781,7 +781,9 @@ async def test_add_to_cart_validation_error_raises_quantity_exceeded(
     import app.services.spring_client as sc
     from app.schemas.spring import AddToCartRequest
 
-    body = {"error": {"code": "VALIDATION_ERROR", "message": "수량은 최대 99개까지 담을 수 있습니다."}}
+    body = {
+        "error": {"code": "VALIDATION_ERROR", "message": "수량은 최대 99개까지 담을 수 있습니다."}
+    }
     monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
     with caplog.at_level(logging.WARNING, logger="app.services.spring_client"):
         with pytest.raises(sc.CartQuantityExceeded):

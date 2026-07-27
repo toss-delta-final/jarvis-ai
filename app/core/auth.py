@@ -57,7 +57,9 @@ class Identity:
     user_id: str | None
     is_guest: bool
     seller_id: str | None
-    brand_id: str | None = None
+    # 발급자에 따라 숫자(1)·문자열("1") 클레임이 모두 관측됨 — Identity 는 검증된
+    # 클레임을 원형 보존하고, 숫자 정규화는 소비처(seller.py _seller_context)가 한다.
+    brand_id: str | int | None = None
     # subject: 검증된 raw `sub` 클레임 — 게스트 UUID 포함 모든 역할에 보존한다.
     # 레이트 리밋·동시성 레지스트리의 신원 스코프 키로 일관되게 쓴다(§2.8/§2.9).
     subject: str | None = None

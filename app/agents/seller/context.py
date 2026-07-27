@@ -19,5 +19,5 @@ class SellerContext:
     컨텍스트는 '요청 스코프 값'만 담는다는 원칙(2026-07-18 확정).
     """
 
-    seller_id: str  # JWT sub (role=seller, api-spec §2.6)
-    brand_id: str  # JWT brandId 클레임 — 도구 인자로 절대 노출 금지
+    seller_id: int  # JWT sub (role=seller, api-spec §2.6)
+    brand_id: int  # JWT brandId 클레임 — 도구 인자로 절대 노출 금지

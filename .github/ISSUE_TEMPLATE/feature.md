@@ -2,7 +2,7 @@
 name: 기능 (Feature)
 about: MVP 주제/기능 단위 작업
 title: "[feat] "
-labels: enhancement
+type: Feature
 ---
 
 ## 목표

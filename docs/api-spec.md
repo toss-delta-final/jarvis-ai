@@ -6,8 +6,8 @@
 
 | 항목 | 값 |
 |---|---|
-| 문서 버전 | v0.15.21 |
-| 작성일 | 2026-07-14 (v0.15.22 개정 2026-07-27 — I-1 §4.6 실측 정합: 표시필드(imageUrl·originalPrice·reviewCount·options) CH-5 이관 명시·`price`/`rating` 계산용 명기·`brandName` 다중, #100) |
+| 문서 버전 | v0.15.23 |
+| 작성일 | 2026-07-14 (v0.15.23 개정 2026-07-27 — I-1 §4.6 실측 정합: 표시필드(imageUrl·originalPrice·reviewCount·options) CH-5 이관 명시·`price`/`rating` 계산용 명기·`brandName` 다중, #100) |
 | 상태 | draft |
 | 대상 독자 | Spring 백엔드 팀, React 프론트엔드(FE) 팀 |
 | 소유 | AI 에이전트 서버 팀 |
@@ -47,12 +47,12 @@ FE가 사용자 대면 API에 대해 **AI 서버를 직접 호출**하고(결정
 | (a) 사용자 대면 | **FE → AI (직접)** | `POST /chat`, `POST /seller/chat`, `GET /profile/me` | 사용자 JWT (§2.3 a) | 결정 19 |
 | (b) 이벤트 | **Spring → AI** | `POST /events/session-end` | 서비스 간 토큰 (§2.3 b) | 결정 12/16/21 |
 | (c) 역방향(질의 시점) | **AI → Spring** | 후보 검색(I-1, §4.6), 구매 이력 조회(I-19, §4.7), **주문상태 요약(I-4 — CH-2 흡수, v0.15.2)**, 장바구니 담기(I-2, §4.1)·조회(I-18, §4.9), 추천 목록 push(I-21, §4.2), 판매자 집계(I-6/7/13/14/15/16, §4.4), 상품 CRUD(I-9/10/11/12, §4.5), 생성물 배치(I-17, §4.8·고도화) | **전부 서비스 토큰(internal, `X-Internal-Token`) + 본문/쿼리 신원**(AI가 JWT `sub`에서 도출) — BE 실측 정합(v0.13.0) | 결정 7 / 경로 B / BE DB 정합 |
-| (d) 전제 계약 | **FE → Spring** | 세션+스트림 티켓 발급(CH-1)·티켓 재발급(CH-1b), 추천 목록 GET(§4.3), (판매자 FE 직접 상품편집 — AI 표면 밖) | Spring 소관 | 결정 19 / 경로 B / v0.12.0 |
+| (d) 전제 계약 | **FE → Spring** | 세션+스트림 티켓 발급(CH-1)·티켓 재발급(CH-1b)·판매자 세션(CH-6), 추천 목록 GET(§4.3), (판매자 FE 직접 상품편집 — AI 표면 밖) | Spring 소관 | 결정 19 / 경로 B / v0.15.20 |
 
 - 레인 (a): 사용자(회원·게스트·판매자)의 요청. 신원은 **토큰 클레임**에서 추출한다(§2.3, §2.6). AI는 사용자 요청 본문의 식별자를 신뢰하지 않는다.
 - 레인 (b): Spring → AI 이벤트는 **세션 종료 통지(`/events/session-end`, 프로필 조기 트리거) 1건**이다. 주문 알림은 채택하지 않는다 — 구매 이력은 질의 시점 조회(§4.7)로 확보하며, 카탈로그 변경 이벤트도 존재하지 않는다(사본 없음).
 - 레인 (c): AI → Spring 질의 시점 역방향이 **7건**이다 — (1) **후보 검색(`POST /products/search`, §4.6, v0.5.0 신규)** — 추천 후보를 질의 시점에 Spring에 위임(가장 중요한 신규 계약, 검색 품질이 추천 품질을 좌우), (2) **구매 이력 조회(`GET /internal/members/{id}/orders`, §4.7, v0.5.0 신규)** — dedup(exact 제외·소모품 억제·되돌리기 칩)과 프로필 구매 소스의 입력, (3) 장바구니 담기(I-2, §4.1, `X-Internal-Token` 서비스 토큰 — v0.6.0에서 BE 문서 기준으로 전환), (4) **장바구니 조회(§4.9, v0.6.0 신규)** — 장바구니 질의 응답·기존 보유 안내, (5) 추천 목록 push(§4.2, 경로 B), (6) 판매자 집계 조회(I-6, §4.4) — 판매자 통계 답변 원천, (7) 상세 읽기(I-7, §4.5) — draft 흐름의 현재 상세 조회.
-- 레인 (d): FE ↔ Spring 전제 계약(Spring 소유). (1) **세션+스트림 티켓 발급(CH-1, `POST /api/chat/sessions`)** — 응답에 `sessionId`(TTL 10분 sliding) + 첫 `streamTicket`(RS256, TTL 30~60s). (2) **스트림 티켓 재발급(CH-1b, 제안 `POST /api/chat/tickets`)** — 세션 유지한 채 새 티켓만 발급(2번째 메시지·`401` 시). **CH-1 재호출은 새 세션(맥락 단절)이라 티켓 재발급에 쓸 수 없어 별도 경로가 필요**하다. (3) 추천 목록 GET(§4.3). (4) 판매자가 FE에서 직접 상품을 편집하는 경로(AI 표면 밖). ※ 구 "draft 적용 = FE가 S-3 PATCH"는 **폐기** — 채팅 경로 쓰기는 AI 직접(§3.2), `S-3`은 자사 상품 목록 조회(=I-9)다.
+- 레인 (d): FE ↔ Spring 전제 계약(Spring 소유). **[v0.15.20] BE 구현 실측으로 경로·응답 확정.** (1) **세션+스트림 티켓 발급(CH-1, `POST /api/chat/sessions`)** — 응답 `{sessionId, ttlSeconds, streamTicket, ticketTtlSeconds, llmSseUrl}`. 세션 TTL 10분 sliding, 티켓 TTL 60s(RS256). `llmSseUrl`은 FE가 AI 서버에 직결할 SSE 주소로, Spring이 내려준다. (2) **스트림 티켓 재발급(CH-1b, `POST /api/chat/tickets`)** — 요청 `{sessionId}`, 응답은 CH-1과 동일 DTO. 세션 유지한 채 새 티켓만 발급(2번째 메시지·`401` 시)하며 세션 TTL도 함께 갱신한다. **CH-1 재호출은 새 세션(맥락 단절)이라 티켓 재발급에 쓸 수 없다.** (3) **판매자 세션 발급(CH-6, `POST /api/chat/seller/sessions`)** — 판매자 챗 입구. `brandId`는 **BE가 JWT 검증 후 DB에서 도출해** 티켓 클레임에 박는다(클라이언트·LLM 주장 무시). (4) 추천 목록 GET(§4.3). (5) 판매자가 FE에서 직접 상품을 편집하는 경로(AI 표면 밖). ※ 구 "draft 적용 = FE가 S-3 PATCH"는 **폐기** — 채팅 경로 쓰기는 AI 직접(§3.2), `S-3`은 자사 상품 목록 조회(=I-9)다.
 
 > **[HARD] 후보 확보 = 질의 시점 Spring 검색(v0.5.0, 유일·영구)**: 구매자 추천 후보는 **질의 시점에 Spring `POST /products/search`(§4.6)를 위임 호출**하여 확보한다. 상품 원본 컬럼의 AI측 사본은 두지 않는다. **[v0.5.1]** AI 생성물(extras·search_doc·임베딩)은 AI Postgres에 저장하며(§4.8), 질의 시점에 AI 임베딩과 Spring 검색을 어떻게 결합할지는 OPEN(§4.8 말미)이다. rerank(profile_summary 반영)는 여전히 AI 경계에서 수행한다.
 >
@@ -112,17 +112,17 @@ Authorization: Bearer {STREAM_TICKET}   ← Spring이 스트림 단위로 발급
 
 - **[개정 v0.10.0] SSE에 쓰는 토큰 = 스트림 단명 티켓** — 로그인 AT(전권 토큰)를 SSE에 직접 싣지 않는다. Spring이 **채팅 진입 시 신원을 확인하고 스트림 단위로 단명 JWT(RS256, TTL 30~60초)를 발급**하며, FE는 이 티켓으로 AI 서버에 SSE 연결한다. ("JWKS 검토 후 제안" 최종안 채택.)
   - **발급 흐름**: `FE → Spring`(회원=AT / 게스트=`guest_id` 쿠키) → `Spring`(신원 확인 후 스트림 티켓 발급, RS256) → `FE → AI`(티켓으로 SSE) → `AI`(JWKS 검증 후 스트리밍). **첫 티켓**은 **CH-1**(세션 발급, `POST /api/chat/sessions`) 응답에 얹어 추가 왕복이 없다(응답에 `sessionId` + `streamTicket`).
-  - **[중요] 티켓 재발급 경로 필요** — 스트림 티켓 TTL(30~60초)이 세션 TTL(10분 sliding)보다 **훨씬 짧아**, CH-1 1회로는 첫 스트림만 커버된다. 2번째 메시지부터는 **세션을 유지한 채 티켓만 재발급**하는 별도 경로(가칭 **CH-1b `POST /api/chat/tickets`**)가 필요하다 — CH-1 재호출은 새 세션(맥락 단절)이라 쓸 수 없다. Spring 소유 전제 계약(§1.2 레인 d, 🔴 C-1).
+  - **[확정 v0.15.20] 티켓 재발급 경로 = CH-1b `POST /api/chat/tickets`** — 스트림 티켓 TTL(60초)이 세션 TTL(10분 sliding)보다 **훨씬 짧아**, CH-1 1회로는 첫 스트림만 커버된다. 2번째 메시지부터는 **세션을 유지한 채 티켓만 재발급**한다(CH-1 재호출은 새 세션이라 맥락이 끊겨 쓸 수 없다). BE 구현 실측: 요청 `{sessionId}`, 응답은 CH-1과 동일 DTO. **호출자 신원이 세션 소유자와 다르면 거부**하며(BE가 세션에 보관한 `sub_type`+`sub` 대조), 재발급과 함께 세션 TTL도 sliding 갱신한다. 판매자 세션은 보관된 `brandId`를 복원해 SELLER 스코프 티켓으로 재발급한다. Spring 소유 전제 계약(§1.2 레인 d).
   - **채택 이유**: (1) **게스트 커버** — 게스트는 로그인 AT가 없으므로 Spring이 `guest_id` 쿠키를 확인해 동일 경로로 티켓 발급(`sub_type: guest`). (2) **전권 AT 비노출** — SSE 쿼리스트링/헤더에는 30~60초짜리 읽기 전용 티켓만 나가 유출 시 피해가 "스트림 1회 연결"로 한정. (3) **aud 규율** — 로그인 AT는 Spring 전용, FastAPI용 `aud`는 티켓에만. (4) **발급 = 인증 관문** — 모든 SSE 연결이 스트림마다 Spring 신원 검증을 1회 통과.
 - **[확정] 서명·검증 = RS256 + JWKS** — Spring이 **JWKS 엔드포인트**(`GET /.well-known/jwks.json`)를 노출하고, AI 서버가 JWKS 공개키를 **fetch·캐시하여 로컬 검증**한다(RS256, `kid`로 키 선택). **`kid` miss 시에만 refetch**하며, 요청마다 Spring에 왕복하지 않는다(FastAPI 기동 시 Spring이 잠깐 죽어 있어도 캐시로 동작).
 - **[확정] 스트림 티켓 필수 클레임**:
   - `sub` — 사용자/판매자/게스트 식별자(숫자 id를 문자열로, §2.5·§2.6).
   - `sub_type` — `member` | `guest`. (구 `role`을 대체/보완 — 회원/게스트 구분. **판매자 role·`brandId` 표현 방식은 🔴 확인**, 아래 참고.)
-  - `iss` — 발급자, 제안값 `"jarvis-spring-auth"`.
-  - `aud` — 대상, 제안값 `"jarvis-fastapi-ai"`. **AI는 `aud`를 검증**한다(토큰 혼용 방지 — 로그인 AT는 이 aud가 없어 SSE에 못 씀).
-  - `scope` — 제안값 `"chat:stream"`. **AI는 `scope`를 검증**한다.
-  - `exp` — 발급 후 **30~60초**. (완전 1회용은 아니며 짧은 TTL로 근사 — Redis는 Spring 전용 결정 유지, stateless 검증.)
-  - **판매자(`/seller/chat`)**: `role == "seller"` 판정 + **`brandId` 클레임이 티켓에 실린다 — [확정]**. 집계·CRUD 역호출(§4.4·§4.5)의 `{brandId}` path에 이 값을 쓴다. AI는 `brandId`를 **요청 본문에서 받지 않고 검증된 티켓 클레임에서만** 얻는다(userId와 동일 원칙 — IDOR 방지, 판매자가 남의 brandId로 조회 불가, §2.6). 다만 클레임 예시가 구매자(`sub_type`) 기준이라 **정확한 클레임 이름·`role` 병행 표현(형식)만 🔴 BE 확인**(C-1). AI는 신원을 **오직 토큰 클레임에서만** 추출한다(요청 본문 금지, §2.5·§3.1·§3.2).
+  - `iss` — 발급자 **`"jarvis-spring-auth"` [확정 v0.15.20]** (BE `StreamTicketProvider.ISSUER` 실측).
+  - `aud` — 대상 **`"jarvis-fastapi-ai"` [확정 v0.15.20]** (BE `StreamTicketProvider.AUDIENCE` 실측). **AI는 `aud`를 검증**한다(토큰 혼용 방지 — 로그인 AT는 이 aud가 없어 SSE에 못 씀).
+  - `scope` — **`"chat:stream"` [확정 v0.15.20]** (BE `StreamTicketProvider.SCOPE_CHAT_STREAM` 실측). **AI는 `scope`를 검증**한다.
+  - `exp` — 발급 후 **60초 [확정 v0.15.20]** (BE `app.stream-ticket.ttl-seconds: 60`. 구 "30~60초" 범위의 상단값). 완전 1회용은 아니며 짧은 TTL로 근사 — Redis는 Spring 전용 결정 유지, stateless 검증. CH-1/CH-1b 응답이 `ticketTtlSeconds`로 실값을 함께 반환한다.
+  - **판매자(`/seller/chat`)**: **`role == "seller"`(소문자) + `brandId`(숫자) — [확정 v0.15.20]** (BE `StreamTicketProvider.buildTicket` 실측). 집계·CRUD 역호출(§4.4·§4.5)의 `{brandId}` path에 이 값을 쓴다. AI는 `brandId`를 **요청 본문에서 받지 않고 검증된 티켓 클레임에서만** 얻는다(userId와 동일 원칙 — IDOR 방지, 판매자가 남의 brandId로 조회 불가, §2.6). **`role` 클레임은 판매자 티켓에만 실린다** — 구매자·게스트 티켓에는 `role`이 없고 `sub_type`만 있다. AI는 신원을 **오직 토큰 클레임에서만** 추출한다(요청 본문 금지, §2.5·§3.1·§3.2).
   - 검증 항목: **signature / exp / iss / aud / scope**.
 - **[확정] 401 통일 규약**: 토큰이 **없음/무효/만료**이면 AI 서버는 항상 **`401`** 을 반환한다.
   - `code == "TOKEN_EXPIRED"` — `exp` 경과.
@@ -1007,7 +1007,7 @@ Spring/FE 팀과 확정이 필요한 항목을 통합한다. 각 항목은 본 �
 
 | # | 항목 | 현재 상태 | 소유/근거 | 상태 |
 |---|---|---|---|---|
-| C-1 | **인증(auth)** | **확정**: RS256 + JWKS(Spring JWKS 노출, AI 로컬 검증·kid miss refetch), `401` 통일, `/seller/chat` role=seller(403)(§2.3). **[v0.10.0] SSE = 스트림 단명 티켓**(로그인 AT 아님, TTL 30~60s, CH-1 발급) — 클레임 `sub`+`sub_type`(member/guest)+`iss`+`aud`+`scope`+`exp`, 검증 signature/exp/iss/aud/scope. **[v0.8.0·확정] `brandId` = 판매자 티켓 클레임**(body 금지, `{brandId}` path용 — userId와 동일 IDOR 원칙, §2.6). **[v0.12.0] CH-1 티켓 발급 + 재발급(CH-1b)** — CH-1 응답에 `streamTicket` 추가, 세션 유지 티켓 재발급 경로 신설 필요(TTL 30~60s ≪ 세션 10분, §1.2 레인 d) | 결정 19 / JWKS 검토 후 제안 | 🔴 잔여 — **iss/aud/scope 값·TTL·판매자 티켓 클레임 형식·CH-1b 경로/응답(Spring 소유)** |
+| C-1 | **인증(auth)** | **확정**: RS256 + JWKS(Spring JWKS 노출, AI 로컬 검증·kid miss refetch), `401` 통일, `/seller/chat` role=seller(403)(§2.3). **[v0.10.0] SSE = 스트림 단명 티켓**(로그인 AT 아님, CH-1 발급) — 클레임 `sub`+`sub_type`(member/guest)+`iss`+`aud`+`scope`+`exp`, 검증 signature/exp/iss/aud/scope. **[v0.8.0·확정] `brandId` = 판매자 티켓 클레임**(body 금지, `{brandId}` path용 — userId와 동일 IDOR 원칙, §2.6). **[v0.15.20·BE 코드 실측 확정]** `iss`=`jarvis-spring-auth` · `aud`=`jarvis-fastapi-ai` · `scope`=`chat:stream` · 티켓 TTL **60초** · 판매자 `role="seller"`(**소문자**)+`brandId`(숫자, 판매자 티켓에만) · **CH-1b `POST /api/chat/tickets` 구현 완료**(요청 `{sessionId}`, 세션 소유자 검증, 세션 TTL 동시 갱신) · CH-6 `POST /api/chat/seller/sessions` 신설 | 결정 19 / BE 실측(2026-07-27) | ✅ 해소 — 🔴 잔여는 **서비스 토큰(`X-Internal-Token`) 회전 주체·만료 정책·mTLS 병용 여부**(운영 정책, 현재 단일 공유 시크릿) |
 | C-2 | **스트림 전 오류 봉투** | **확정안 반영**: `error.{code,message,requestId}` + 상태 매핑(`400`/`401`/`403`/`429`)(§2.5) | 본 문서 제안 | 🔴 Spring 수용 전 |
 | C-3 | **[v0.6.0 재작성] 장바구니 담기 API(I-2)** | **BE 문서 채택**: `POST /internal/cart/items` 단건 + `X-Internal-Token` + 본문 신원(JWT `sub` 유래) + `optionId` + quantity 1~99 합산 + **게스트 담기 허용**. 옵션 되물음 멀티턴(`CART_OPTION_REQUIRED` options 목록)(§4.1) | BE I-2 문서 / 결정 7 / 결정 8 개정(§8 항목 7) | 🟢 **[재개정 v0.15.16] 담기 재고검증 있음** — BE `CART_STOCK_INSUFFICIENT`+`availableStock`(2026-07-22) → `STOCK_INSUFFICIENT`(`OUT_OF_STOCK` 폐기 유지). 🟢 **[해소 v0.15.8] options 스키마**(BE 2026-07-18) — `error.detail.options:[{optionId,name,extraPrice}]`. 🔴 잔여 — 서비스 토큰 발급만 |
 | C-4 | **[BE 확정 2026-07-18] AI 생성물 갱신 배치 = I-17** | `GET /internal/products/changes`(§4.8, BE "상품 정보 Batch") — 골격 확정: `X-Internal-Token`·envelope `{success,data}`·숫자 `productId`·오류(INVALID_CURSOR/INTERNAL_TOKEN_INVALID/FORBIDDEN)·`since="0"` 초기구축·`hasMore` 루프. 상품 원본 사본 없음 | I-17 / BE Notion | 🟡 잔여 3건 저영향(커서 형식=opaque·`attributes` 스키마·리뷰 포함). 주기=AI config·페이지=`limit`(기본 500). **스코프(MVP?)는 스키마 아님 — 별건** |
@@ -1082,6 +1082,10 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 
 | 버전 | 날짜 | 변경 |
 |---|---|---|
+| v0.15.23 | 2026-07-27 | **[#100 P0/P1/P2] I-1 §4.6 실측 정합.** 표시 전용 필드(`imageUrl`·`originalPrice`·`reviewCount`·`options`)를 응답표에서 제거하고 CH-5(§4.3) 하이드레이션 이관 명시(AI 추천 경로 미사용), `price`·`rating`을 "AI 계산용(비표시 — 예산검증 `verifiedSum`·평점 사후필터·rerank 신호, 질의 시점 필요)"으로 명기해 display 오분류 재발 차단, envelope 예시를 실측 `{success, data:[...]}`(bare array)로 정정, 요청 `brandName` 단일→다중(반복 파라미터 → `WHERE brand IN`, 방법 D), `totalCount` 필드 불필요 결정 반영. |
+| v0.15.22 | 2026-07-26 | **[#100 P1] I-1 `color` 요청 파라미터 연결.** decompose가 색상 조건("빨간"·"검정")을 `filters.color`로 추출·전송하고, BE I-1이 `attributes` LIKE로 필터. 요청 모델·쿼리 변환에 `color`가 없어 Spring 색상 검색을 못 쓰던 것을 해소. |
+| v0.15.21 | 2026-07-24 | **[#100 P2] I-1 `size` 제거 → 라운드1 전량 반환 + AI top-K.** BE 합의로 Spring 요청에서 `size`를 제거(반환 상한 없음)하고, 결과 수 제한(top-K)은 AI `search_catalog`가 사후필터(dedup·평점) 뒤 `filters.limit`로 절단. `ProductSearchFilters.limit`은 Spring `size`가 아니라 AI 후보 상한(rerank 입력)이다. |
+| v0.15.20 | 2026-07-27 | **[C-1 해소] 인증 계약을 Spring 코드 실측으로 확정.** 명세가 🔴 협의 대기로 남겨둔 항목이 BE에는 이미 구현돼 있어 역반영한다. (1) **스트림 티켓 클레임 실값 확정** — `iss`=`jarvis-spring-auth`, `aud`=`jarvis-fastapi-ai`, `scope`=`chat:stream`, TTL **60초**(구 "30~60초" 범위 → 실값). CH-1/CH-1b 응답이 `ticketTtlSeconds`로 실값을 함께 반환한다. (2) **판매자 티켓 형식 확정** — `role="seller"`(**소문자**) + `brandId`(**숫자**). `role` 클레임은 **판매자 티켓에만** 실리고 구매자·게스트는 `sub_type`만 갖는다. (3) **CH-1b `POST /api/chat/tickets` 구현 확인** — 구 "가칭·신설 필요"를 확정으로 전환. 요청 `{sessionId}`, 응답은 CH-1과 동일 DTO. 세션에 보관된 `sub_type`+`sub`으로 **소유자를 검증**하고(불일치 거부), 재발급과 함께 세션 TTL을 sliding 갱신하며, 판매자 세션은 보관된 `brandId`로 SELLER 스코프 티켓을 재발급한다. (4) **CH-6 `POST /api/chat/seller/sessions` 등재**(레인 d) — 판매자 챗 입구. `brandId`는 BE가 JWT 검증 후 DB에서 도출해 클레임에 박는다(클라이언트·LLM 주장 무시). (5) CH-1 응답 필드에 `llmSseUrl`(FE→AI SSE 직결 주소) 명시. **AI 측 와이어 동작 변경 없음** — `_norm_role`이 대소문자 무관 비교라 소문자 `seller`도 기존대로 매칭된다. C-1 🔴 잔여는 **서비스 토큰 회전·만료·mTLS 운영 정책**만 남는다. |
 | v0.15.19 | 2026-07-23 | **[이슈 #79] 프로필 세션 종료 트리거의 MVP 소유권 확정.** Spring I-20의 알려진 사유는 `logout`/`newConversation` 2종으로 한정하고 탭 닫기 신호는 제거한다. AI는 회원 발화 저장 시 DB 서버 시각의 `lastActivityAt`을 갱신하며, 단일 인스턴스 스케줄러가 기본 60초마다 10분 이상 비활성 세션을 bounded batch로 선점한다. 내부 timeout은 HTTP 자기 호출 없이 I-20과 같은 finalizer 및 고정키 claim으로 직렬화하되, idle 성공은 영구 멱등 완료가 아닌 재개 가능한 checkpoint로 claim을 해제한다. 새 활동은 completed activity를 active로 되돌리고 이전 processing/completed 종료 generation을 같은 저장 transaction에서 무효화한다. terminal finalizer는 처리 중 새 activity를 영구 완료로 덮지 않으며 scheduler는 라이브 스트림 슬롯을 점유하지 않는다. 처리 전 활동·활성 스트림을 재확인하며 claim별 실패·crash는 해제/lease로 재시도한다. 외부 요청 스키마에는 변경이 없다. |
 | v0.15.18 | 2026-07-23 | **[C-4/I-17 상태 계약 정합] `items[].status`를 Spring `ProductStatus`와 동일한 `ON_SALE`/`HIDDEN`으로 확정.** Spring은 별도 매핑 없이 enum 값을 그대로 반환하고, AI 배치는 `ON_SALE`을 생성·갱신하며 `HIDDEN`의 기존 artifact를 삭제한다. 구 `ACTIVE`/`DELISTED`를 포함한 미정의 값은 응답 계약 위반으로 페이지 전체를 fail-closed 처리한다. 해당 항목만 skip하지 않고 커서를 유지해 Spring 수정 뒤 같은 `since`부터 재처리한다. §4.8 응답 예시·필드 설명·배치 흐름·복구 규약 갱신. |
 | v0.15.17 | 2026-07-22 | **[이슈 #62/#64] I-20 실측 계약과 실패 안전 멱등 lifecycle 확정.** 요청을 `{sessionId,userId(number BIGINT),reason?}`로 정렬하고 `eventId`·`endedAt` 제거. `userId`는 양의 정수만 엄격히 허용하고 enum 미강제 `reason`은 최대 64자로 방어한다. 검증 → `(userId,sessionId)` `PROCESSING` claim(token+lease) → 버퍼 처리 → 성공 시 `COMPLETED` 순서다. 첫 빈 버퍼 통지는 `202 accepted`, 활성/완료 동일 통지는 `202 duplicate`. delta/consolidation 실패·취소는 버퍼 보존+claim 해제, crash/해제 실패 claim은 lease 만료 후 재선점한다. Spring PR #24 송신 계약과 정합하며 C-8/Q1 해소. |

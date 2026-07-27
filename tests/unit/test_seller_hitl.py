@@ -88,9 +88,7 @@ def _proposal(**kwargs) -> DraftProposal:
 
 
 def _record(proposal: DraftProposal | None = None, **kwargs) -> hitl.DraftRecord:
-    record, problem = hitl.validate_draft(
-        proposal or _proposal(**kwargs), seller_id="7", brand_id="3"
-    )
+    record, problem = hitl.validate_draft(proposal or _proposal(**kwargs), seller_id=7, brand_id=3)
     assert problem is None, problem
     assert record is not None
     return record
@@ -103,7 +101,7 @@ def test_validate_draft_issues_id_and_identity() -> None:
     """draftId·신원·created_at 은 코드 발급 — LLM 필드가 아니다."""
     record = _record()
     assert record.draft_id
-    assert record.seller_id == "7" and record.brand_id == "3"
+    assert record.seller_id == 7 and record.brand_id == 3
     assert datetime.fromisoformat(record.created_at).tzinfo is not None  # UTC aware
 
 
@@ -133,8 +131,8 @@ def test_validate_draft_rejects_uncastable_int() -> None:
     """정수 불가 수치는 되묻기 — confirm 시점 캐스팅 실패를 선차단한다."""
     record, problem = hitl.validate_draft(
         _proposal(changes=[DraftChange(field="price", before="15000", after="열두배")]),
-        seller_id="7",
-        brand_id="3",
+        seller_id=7,
+        brand_id=3,
     )
     assert record is None and "price" in problem
 
@@ -142,19 +140,19 @@ def test_validate_draft_rejects_uncastable_int() -> None:
 def test_validate_draft_rejects_bad_status() -> None:
     record, problem = hitl.validate_draft(
         _proposal(changes=[DraftChange(field="status", before="ON_SALE", after="SOLD_OUT")]),
-        seller_id="7",
-        brand_id="3",
+        seller_id=7,
+        brand_id=3,
     )
     assert record is None and "status" in problem
 
 
 def test_validate_draft_update_requires_product_id() -> None:
-    record, problem = hitl.validate_draft(_proposal(product_id=None), seller_id="7", brand_id="3")
+    record, problem = hitl.validate_draft(_proposal(product_id=None), seller_id=7, brand_id=3)
     assert record is None and "상품" in problem
 
 
 def test_validate_draft_update_requires_changes() -> None:
-    record, problem = hitl.validate_draft(_proposal(changes=[]), seller_id="7", brand_id="3")
+    record, problem = hitl.validate_draft(_proposal(changes=[]), seller_id=7, brand_id=3)
     assert record is None and problem
 
 
@@ -166,8 +164,8 @@ def test_validate_draft_create_requires_mandatory_fields() -> None:
             product_id=None,
             changes=[DraftChange(field="name", before="", after="한라봉청")],
         ),
-        seller_id="7",
-        brand_id="3",
+        seller_id=7,
+        brand_id=3,
     )
     assert record is None
     assert "price" in problem and "stock_quantity" in problem
@@ -186,8 +184,8 @@ def test_validate_draft_create_forbids_image_and_status() -> None:
                 DraftChange(field="image_url", before="", after="http://x/img.png"),
             ],
         ),
-        seller_id="7",
-        brand_id="3",
+        seller_id=7,
+        brand_id=3,
     )
     assert record is None and "이미지" in problem
 
@@ -245,7 +243,7 @@ def test_confirm_executes_update_with_draft_args() -> None:
     async def run():
         await hitl.start_draft(record)
         assert spring.write_calls() == []  # 승인 전 쓰기 0회(발화 ≠ 동의)
-        return await hitl.confirm_draft(record.draft_id, seller_id="7", brand_id="3")
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
 
     outcome = asyncio.run(run())
 
@@ -254,7 +252,7 @@ def test_confirm_executes_update_with_draft_args() -> None:
     writes = spring.write_calls()
     assert len(writes) == 1
     op, brand_id, product_id, patch = writes[0]
-    assert (op, brand_id, product_id) == ("update", "3", 101)
+    assert (op, brand_id, product_id) == ("update", 3, 101)
     assert patch.price == 12900  # draft after 그대로 — LLM 재개입 없음
 
 
@@ -266,8 +264,8 @@ def test_confirm_is_idempotent() -> None:
 
     async def run():
         await hitl.start_draft(record)
-        first = await hitl.confirm_draft(record.draft_id, seller_id="7", brand_id="3")
-        second = await hitl.confirm_draft(record.draft_id, seller_id="7", brand_id="3")
+        first = await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+        second = await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
         return first, second
 
     first, second = asyncio.run(run())
@@ -281,7 +279,7 @@ def test_confirm_unknown_draft_id() -> None:
     spring = _StubSpring()
     set_spring_client(spring)
 
-    outcome = asyncio.run(hitl.confirm_draft("no-such-draft", seller_id="7", brand_id="3"))
+    outcome = asyncio.run(hitl.confirm_draft("no-such-draft", seller_id=7, brand_id=3))
 
     assert outcome.status == "not_found"
     assert spring.write_calls() == []
@@ -295,7 +293,7 @@ def test_confirm_brand_mismatch_hides_existence() -> None:
 
     async def run():
         await hitl.start_draft(record)
-        return await hitl.confirm_draft(record.draft_id, seller_id="7", brand_id="999")
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=999)
 
     outcome = asyncio.run(run())
 
@@ -313,7 +311,7 @@ def test_confirm_seller_mismatch_same_brand_blocks() -> None:
 
     async def run():
         await hitl.start_draft(record)
-        return await hitl.confirm_draft(record.draft_id, seller_id="8", brand_id="3")
+        return await hitl.confirm_draft(record.draft_id, seller_id=8, brand_id=3)
 
     outcome = asyncio.run(run())
 
@@ -332,8 +330,8 @@ def test_confirm_concurrent_executes_once() -> None:
     async def run():
         await hitl.start_draft(record)
         return await asyncio.gather(
-            hitl.confirm_draft(record.draft_id, seller_id="7", brand_id="3"),
-            hitl.confirm_draft(record.draft_id, seller_id="7", brand_id="3"),
+            hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3),
+            hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3),
         )
 
     outcomes = asyncio.run(run())
@@ -353,7 +351,7 @@ def test_confirm_expired_draft_blocks_execution() -> None:
 
     async def run():
         await hitl.start_draft(expired)
-        return await hitl.confirm_draft(expired.draft_id, seller_id="7", brand_id="3")
+        return await hitl.confirm_draft(expired.draft_id, seller_id=7, brand_id=3)
 
     outcome = asyncio.run(run())
 
@@ -371,7 +369,7 @@ def test_confirm_stale_price_blocks_and_asks_again() -> None:
 
     async def run():
         await hitl.start_draft(record)
-        return await hitl.confirm_draft(record.draft_id, seller_id="7", brand_id="3")
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
 
     outcome = asyncio.run(run())
 
@@ -392,7 +390,7 @@ def test_confirm_stock_drift_executes_with_note() -> None:
 
     async def run():
         await hitl.start_draft(record)
-        return await hitl.confirm_draft(record.draft_id, seller_id="7", brand_id="3")
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
 
     outcome = asyncio.run(run())
 
@@ -409,7 +407,7 @@ def test_confirm_missing_product_is_stale() -> None:
 
     async def run():
         await hitl.start_draft(record)
-        return await hitl.confirm_draft(record.draft_id, seller_id="7", brand_id="3")
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
 
     outcome = asyncio.run(run())
 
@@ -429,13 +427,13 @@ def test_confirm_delete_maps_to_i12() -> None:
 
     async def run():
         await hitl.start_draft(record)
-        return await hitl.confirm_draft(record.draft_id, seller_id="7", brand_id="3")
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
 
     outcome = asyncio.run(run())
 
     assert outcome.status == "executed"
     assert "HIDDEN" in outcome.text
-    assert spring.write_calls() == [("delete", "3", 101)]
+    assert spring.write_calls() == [("delete", 3, 101)]
 
 
 def test_confirm_create_maps_to_i10_without_image() -> None:
@@ -456,7 +454,7 @@ def test_confirm_create_maps_to_i10_without_image() -> None:
 
     async def run():
         await hitl.start_draft(record)
-        return await hitl.confirm_draft(record.draft_id, seller_id="7", brand_id="3")
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
 
     outcome = asyncio.run(run())
 
@@ -476,9 +474,9 @@ def test_confirm_spring_down_keeps_draft_retryable() -> None:
     async def run():
         await hitl.start_draft(record)
         with pytest.raises(SpringUnavailableError):
-            await hitl.confirm_draft(record.draft_id, seller_id="7", brand_id="3")
+            await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
         spring.fail_list = False  # 복구 후 재시도
-        return await hitl.confirm_draft(record.draft_id, seller_id="7", brand_id="3")
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
 
     outcome = asyncio.run(run())
 
@@ -492,7 +490,7 @@ def test_find_product_paginates_until_found() -> None:
     spring = _StubSpring(rows=[*filler, _ROW.model_copy(update={"product_id": 500})])
     set_spring_client(spring)
 
-    row = asyncio.run(hitl._find_product("3", 500))
+    row = asyncio.run(hitl._find_product(3, 500))
 
     assert row is not None and row.product_id == 500
     assert len([c for c in spring.calls if c[0] == "list"]) == 3  # 20건 × 3페이지

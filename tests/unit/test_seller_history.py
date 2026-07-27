@@ -23,7 +23,7 @@ from app.agents.seller.schemas import (
 from app.schemas.spring import SellerProductList, SellerProductRow
 from app.services.spring_client import set_spring_client
 
-_CTX = SellerContext(seller_id="7", brand_id="3")
+_CTX = SellerContext(seller_id=7, brand_id=3)
 
 
 @pytest.fixture(autouse=True)
@@ -53,7 +53,7 @@ def _rec(product_id: int = 101, changes: list[ProposedChange] | None = None):
 
 async def _save(question: str = "지난달 매출 분석", recs: RecommendationSet | None = None):
     await history.save_history(
-        "7",
+        7,
         question=question,
         analyses=["sales_anomaly"],
         date_from="2026-06-01",
@@ -114,7 +114,7 @@ def test_save_and_load_recent_newest_first() -> None:
     async def run():
         await _save(question="첫 분석")
         await _save(question="둘째 분석")
-        return await history.load_recent("7", 5)
+        return await history.load_recent(7, 5)
 
     entries = asyncio.run(run())
 
@@ -127,8 +127,8 @@ def test_load_recent_respects_limit_and_isolation() -> None:
     async def run():
         for i in range(7):
             await _save(question=f"분석 {i}")
-        other = await history.load_recent("999", 5)  # 다른 판매자 — 격리
-        mine = await history.load_recent("7", 5)
+        other = await history.load_recent(999, 5)  # 다른 판매자 — 격리
+        mine = await history.load_recent(7, 5)
         return other, mine
 
     other, mine = asyncio.run(run())
@@ -146,7 +146,7 @@ def test_save_trims_to_max_items_and_truncates_report(monkeypatch: pytest.Monkey
     async def run():
         for i in range(5):
             await _save(question=f"분석 {i}")
-        return await history.load_recent("7", 10)
+        return await history.load_recent(7, 10)
 
     entries = asyncio.run(run())
 
@@ -173,7 +173,7 @@ def test_history_store_operations_have_query_deadline(
     async def run() -> None:
         history.set_store(_HangReadStore())
         with pytest.raises(TimeoutError):
-            await history.load_recent("7")
+            await history.load_recent(7)
         history.set_store(_HangWriteStore())
         with pytest.raises(TimeoutError):
             await _save()
@@ -192,7 +192,7 @@ def test_concurrent_history_saves_do_not_lose_entries() -> None:
 
     async def run():
         await asyncio.gather(_save(question="첫 분석"), _save(question="둘째 분석"))
-        return await history.load_recent("7", 5)
+        return await history.load_recent(7, 5)
 
     entries = asyncio.run(run())
     assert len(entries) == 2
@@ -209,7 +209,7 @@ def test_planner_input_without_history_is_question_verbatim() -> None:
 def test_planner_input_with_history_appends_block() -> None:
     async def run():
         await _save(question="지난달 매출 분석")
-        return await history.load_recent("7")
+        return await history.load_recent(7)
 
     entries = asyncio.run(run())
     text = history.build_planner_input("이번 주는?", entries)
@@ -238,7 +238,7 @@ def test_apply_converts_recommendation_to_draft_with_current_before() -> None:
     assert record.changes[0].before == "15000"  # I-9 조회 시점 현재값
     assert record.changes[0].after == "13500"
     assert record.summary == "감귤청 가격 10% 인하"
-    assert record.brand_id == "3"  # confirm 소유 검증 재료
+    assert record.brand_id == 3  # confirm 소유 검증 재료
 
 
 def test_apply_without_history_asks_for_analysis() -> None:
@@ -300,7 +300,7 @@ def test_applied_draft_flows_into_confirm(monkeypatch: pytest.MonkeyPatch) -> No
         record, problem = await history.apply_recommendation(1, _CTX)
         assert problem is None
         await hitl.start_draft(record)
-        return await hitl.confirm_draft(record.draft_id, seller_id="7", brand_id="3")
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
 
     outcome = asyncio.run(run())
 

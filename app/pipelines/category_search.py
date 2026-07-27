@@ -42,9 +42,7 @@ def _get_pool(dsn: str):
                 # psycopg_pool 기본 max_size(4)면 그 이상 leg 가 커넥션을 기다려 병렬화가 죽으므로
                 # config 값(fanout 이상)으로 명시한다(암묵 하드코딩 제거, PR #73 리뷰).
                 max_size = get_settings().category_search_pool_max_size
-                pool = ConnectionPool(
-                    dsn, configure=register_vector, open=True, max_size=max_size
-                )
+                pool = ConnectionPool(dsn, configure=register_vector, open=True, max_size=max_size)
                 _pools[dsn] = pool
     return pool
 

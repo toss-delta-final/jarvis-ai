@@ -35,7 +35,7 @@ def _settings(timeout_s: float = 5.0) -> SimpleNamespace:
     )
 
 
-_CTX = SellerContext(seller_id="7", brand_id="3")  # 계약 타입 = str (context.py)
+_CTX = SellerContext(seller_id=7, brand_id=3)  # 계약 타입 = int (context.py, §2.6 숫자 신원)
 
 
 def _plan(*analyses: str) -> ResolvedPlan:
@@ -541,7 +541,7 @@ def test_pipeline_saves_history_after_report(monkeypatch: pytest.MonkeyPatch) ->
             "지난달 매출 왜 떨어졌어?", _CTX, today=dt.date(2026, 7, 18), emit=emit
         )
     )
-    entries = asyncio.run(history.load_recent("7"))
+    entries = asyncio.run(history.load_recent(7))
 
     assert len(entries) == 1
     assert entries[0].question == "지난달 매출 왜 떨어졌어?"
@@ -557,7 +557,7 @@ def test_pipeline_injects_history_into_planner_input(monkeypatch: pytest.MonkeyP
 
     asyncio.run(
         history.save_history(
-            "7",
+            7,
             question="6월 매출 분석",
             analyses=["sales_anomaly"],
             date_from="2026-06-01",

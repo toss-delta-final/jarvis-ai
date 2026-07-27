@@ -10,7 +10,7 @@ from scripts import check_spring_connection
 async def test_check_connection_reports_returned_row_count(monkeypatch, capsys):
     class StubSpringClient:
         async def list_products(self, **kwargs):
-            assert kwargs == {"brand_id": "9", "limit": 1, "offset": 0}
+            assert kwargs == {"brand_id": 9, "limit": 1, "offset": 0}
             return SellerProductList(rows=[])
 
     monkeypatch.setattr(
@@ -27,7 +27,7 @@ async def test_check_connection_reports_returned_row_count(monkeypatch, capsys):
         lambda: StubSpringClient(),
     )
 
-    result = await check_spring_connection.check_connection("9")
+    result = await check_spring_connection.check_connection(9)
 
     assert result == 0
     assert "returned=0" in capsys.readouterr().out
