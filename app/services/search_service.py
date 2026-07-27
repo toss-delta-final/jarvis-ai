@@ -196,7 +196,11 @@ async def search_catalog(
         # 신상품)은 미달이 반증된 게 아니라 데이터 부재이므로 보존해 rerank 가 판단하게 한다(#100 P0).
         products = [p for p in products if p.rating is None or p.rating >= threshold]
 
+    # total_count 는 top-K 절단 **전** 사후필터 통과 후보 수 — 절단 뒤 len 을 세면 min(매칭, limit)
+    # 으로 캡돼 '전체 매칭 수' 의미가 깨진다(PR#127 리뷰). 절단 전에 확정한다.
+    matched_count = len(products)
+
     # AI top-K 절단 — Spring 이 size 없이 전량 반환하므로(§4.6) 여기서 rerank 입력 상한을 지킨다.
     products = products[: filters.limit]
 
-    return ProductSearchResult(products=products, total_count=len(products))
+    return ProductSearchResult(products=products, total_count=matched_count)

@@ -563,6 +563,24 @@ def test_i1_envelope_preserves_rerank_fields() -> None:
     assert p.brand == "더센트"  # brandName 별칭
 
 
+def test_i1_attributes_accepts_non_string_values() -> None:
+    """[PR#127 리뷰] attributes 값이 문자열이 아니어도(bool·숫자) 파싱이 실패하지 않는다.
+
+    dict[str, str] 로 엄격하면 {"방수": true} 같은 값 1건이 SpringProduct.model_validate 를
+    ValidationError 로 터뜨려 검색 전체(수십 건)가 SEARCH_FAILED 로 낙성한다 — attributes 소비는
+    #101 이라 지금 값 타입을 강제할 이유가 없고, 오히려 전체 검색을 무너뜨릴 리스크가 크다.
+    """
+    from app.services.spring_client import _parse_search_response
+
+    raw = {
+        "success": True,
+        "data": [{"productId": 1, "name": "우산", "attributes": {"방수": True, "소재": "나일론"}}],
+    }
+    result = _parse_search_response(raw)
+    assert len(result.products) == 1  # 값 타입 때문에 드롭되지 않음
+    assert result.products[0].attributes == {"방수": True, "소재": "나일론"}
+
+
 def test_search_query_params_omits_size() -> None:
     """[2026-07-23, BE 합의] I-1 요청에서 size 제거 — 라운드1 전량 반환, top-K 는 AI 쪽(api-spec §4.6)."""
     from app.schemas.spring import ProductSearchFilters
@@ -608,6 +626,8 @@ async def test_search_catalog_caps_candidates_to_limit() -> None:
         ProductSearchFilters(limit=2), backend=FakeBackend(products=products)
     )
     assert [p.product_id for p in res.products] == [1, 2]  # top-K=2 로 절단(검색순서 보존)
+    # [PR#127 리뷰] total_count 는 top-K 절단 전 사후필터 통과 매칭 수(5) — 절단값(2)이 아니다.
+    assert res.total_count == 5
 
 
 def test_search_filters_limit_rejects_negative() -> None:

@@ -75,7 +75,10 @@ class SpringProduct(CamelModel):
     product_id: int  # 숫자(BIGINT, product.id §2.6) — 별칭 productId
     name: str
     summary: str | None = None  # BE I-1 요약(#100 P0) — 소비는 #101
-    attributes: dict[str, str] | None = None  # Layer2 속성(소재·핏 등, #100 P0) — 유연매칭(#101)
+    # Layer2 속성(소재·핏 등, #100 P0) — 유연매칭(#101). 값 타입은 dict[str, object](비-str 관대):
+    # BE 가 {"방수": true} 등 bool·숫자를 주면 dict[str, str] 은 후보 1건이 ValidationError 로
+    # 검색 전체를 무너뜨린다(PR#127 리뷰). 소비는 #101 이라 지금 값 타입을 강제하지 않는다.
+    attributes: dict[str, object] | None = None
     price: int | None = None  # 판매가 — AI 계산용(예산·maxPrice·rerank, #100 P1), 표시 아님
     rating: float | None = None  # 조회 시 집계(DDL D9) — AI 계산용(평점필터·rerank, #100 P0)
     category: str | None = Field(default=None, alias="categoryName")
@@ -87,12 +90,13 @@ class SpringProduct(CamelModel):
 
 
 class ProductSearchResult(CamelModel):
-    """POST /products/search 응답. total_count 는 수신 후보 수다.
+    """POST /products/search 응답. total_count 는 사후필터 통과 후보 수(top-K 절단 전).
 
-    [#100 P2 결정] 별도 totalCount 필드는 두지 않는다. size 제거(전량 반환)로 total_count(=len)가
-    이미 현재 필터의 전체 매칭 수라 정확하다. 완화 칩 estCount 는 '완화된 다른 필터'의 count 라 이
+    [#100 P2 결정] 별도 totalCount 필드는 두지 않는다. size 제거(전량 반환)로 search_catalog 가
+    **top-K 절단 전에** total_count 를 확정하므로(PR#127 리뷰 반영) 이는 현재 필터를 통과한 매칭
+    수이지 절단값(min(매칭, limit))이 아니다. 완화 칩 estCount 는 '완화된 다른 필터'의 count 라 이
     값으로 못 구하고(재쿼리/BE count 필요 — 완화 칩 자체가 미구현, 별도 이슈), 되돌리기 칩은
-    AI 사후필터(dedup)라 억제분이 응답에 있어 page-local 로 정확히 센다.
+    top-K 절단된 응답 후보 내 억제 수라 page-local 근사다(전량 기준 진짜 억제 수보다 작을 수 있음).
     """
 
     products: list[SpringProduct] = Field(default_factory=list)
