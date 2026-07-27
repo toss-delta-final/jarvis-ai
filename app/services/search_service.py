@@ -101,9 +101,12 @@ class EmbeddingRerankBackend:
 
     async def search(self, filters: ProductSearchFilters) -> ProductSearchResult:
         result = await spring_client.search_products(filters)
-        if not filters.keyword or not result.products:
+        # 의미검색 입력은 semantic_query(#101) — 없으면 상품명 keyword 로 폴백. 둘 다 없거나 후보가
+        # 없으면 Spring 순서 그대로(재정렬 skip). keyword 유무와 무관하게 semantic 이 있으면 재정렬.
+        query_text = filters.semantic_query or filters.keyword
+        if not query_text or not result.products:
             return result
-        embedded = await asyncio.to_thread(self._embed, [filters.keyword])
+        embedded = await asyncio.to_thread(self._embed, [query_text])
         qvec = embedded[0]
         reranked = await asyncio.to_thread(self._rerank, result.products, qvec)
         return ProductSearchResult(products=reranked, total_count=result.total_count)

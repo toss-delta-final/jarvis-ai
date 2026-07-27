@@ -51,7 +51,10 @@ class ProductSearchFilters(CamelModel):
     price_max: int | None = None
     brand: list[str] | None = None
     rating_min: float | None = None
-    keyword: str | None = None
+    keyword: str | None = None  # 상품명 LIKE — Spring I-1 와이어 파라미터
+    # 의미검색용 자연어(#101) — AI 내부 필드. keyword(상품명 LIKE)와 분리되며 Spring 에 안 나가고
+    # EmbeddingRerankBackend(방식2)가 pgvector 재정렬의 query 임베딩 입력으로 쓴다(§4.8 방식2).
+    semantic_query: str | None = None
     color: str | None = None  # 색상 조건(#100 P1) — BE I-1 attributes LIKE 로 필터
     exclude_product_ids: list[int] = Field(default_factory=list)
     # AI 후보 상한(rerank 입력 top-K) — Spring size 아님(§4.6, 2026-07-23). ge=0: products[:limit]

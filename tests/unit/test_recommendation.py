@@ -668,6 +668,19 @@ def test_search_query_params_drops_blank_brands() -> None:
     assert "brandName" not in params2
 
 
+def test_search_query_params_omits_semantic_query() -> None:
+    """[#101] semantic_query 는 AI 내부(임베딩 재정렬용) 필드 — Spring I-1 로 전송하지 않는다."""
+    from app.schemas.spring import ProductSearchFilters
+    from app.services.spring_client import _search_query_params
+
+    params = _search_query_params(
+        ProductSearchFilters(keyword="셔츠", semantic_query="시원한 여름 셔츠")
+    )
+    assert "semanticQuery" not in params
+    assert "semantic_query" not in params
+    assert params.get("keyword") == "셔츠"  # keyword(상품명 LIKE)는 그대로 전송
+
+
 def test_search_query_params_drops_blank_text_filters() -> None:
     """[PR#127 리뷰] LLM 산출 텍스트 필터(keyword·category·color)의 공백-only 값은 미전송.
 

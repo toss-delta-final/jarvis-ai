@@ -112,6 +112,9 @@ async def decompose(
     # 상위(graph.py)의 LLM_* error 이벤트로 흐르게 한다(첫 프레임 이전 raw 예외 → 500 방지).
     try:
         filters = ProductSearchFilters.model_validate(data.get("filters") or {})
+        # semanticQuery 는 filters 밖(최상위)에 오는 의미검색 입력 — 검색 백엔드까지 흐르도록
+        # filters 에 실어준다(#101). 누락/빈값이면 사용자 발화(query)로 폴백해 재정렬 입력을 보장.
+        filters.semantic_query = str(data.get("semanticQuery") or query)
         case = int(data.get("case") or 2)
         cart = _parse_cart(data.get("cart"))
         raw_revert = data.get("revertCategories")
@@ -126,7 +129,6 @@ async def decompose(
     return RouteDecision(
         intent=intent,
         filters=filters,
-        semantic_query=str(data.get("semanticQuery") or query),
         case=case,
         reply=str(data.get("reply") or ""),
         cart=cart,

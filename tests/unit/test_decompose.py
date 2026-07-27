@@ -38,6 +38,18 @@ async def _run(raw: str, **kw):
     )
 
 
+async def test_semantic_query_lands_on_filters() -> None:
+    """[#101] semanticQuery 는 의미검색 입력이라 filters.semantic_query 로 실려 백엔드까지 흐른다."""
+    d = await _run(_raw(semanticQuery="시원한 여름 셔츠"))
+    assert d.filters.semantic_query == "시원한 여름 셔츠"
+
+
+async def test_semantic_query_falls_back_to_user_query_when_missing() -> None:
+    """semanticQuery 누락/빈값 시 사용자 발화(query)로 폴백한다(재정렬이 항상 입력을 갖도록)."""
+    d = await _run(_raw(semanticQuery=""))
+    assert d.filters.semantic_query == "발화"
+
+
 async def test_parses_single_category_query() -> None:
     """단일 카테고리 추측 → category_queries 길이 1, raw/query 매핑."""
     d = await _run(

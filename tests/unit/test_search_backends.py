@@ -83,6 +83,33 @@ async def test_embedding_rerank_backend_reorders(monkeypatch):
     assert [p.product_id for p in result.products][0] == 1  # 재정렬로 여행 방수가 최상위
 
 
+async def test_embedding_rerank_embeds_semantic_query_not_keyword(monkeypatch):
+    """[#101] 백엔드는 filters.semantic_query 를 임베딩한다(상품명 LIKE keyword 아님).
+
+    keyword 가 없어도 semantic_query 가 있으면 재정렬을 수행한다(의미검색과 LIKE 분리).
+    """
+    store = _seed_store()
+    embedded: list[str] = []
+
+    def spy_embed(texts):
+        embedded.append(texts[0])
+        return _embed(texts)
+
+    async def fake_search(filters):
+        return ProductSearchResult(
+            products=[SpringProduct(product_id=i, name=f"p{i}", price=10) for i in (3, 2, 1)],
+            total_count=3,
+        )
+
+    monkeypatch.setattr(spring_client, "search_products", fake_search)
+    backend = EmbeddingRerankBackend(store=store, embed=spy_embed)
+    result = await backend.search(
+        ProductSearchFilters(keyword=None, semantic_query="여행 방수", limit=10)
+    )
+    assert embedded == ["여행 방수"]  # keyword 가 아니라 semantic_query 를 임베딩
+    assert [p.product_id for p in result.products][0] == 1  # keyword 없어도 재정렬됨
+
+
 async def test_embedding_rerank_backend_uses_batch_get(monkeypatch):
     """[#101] 재정렬은 후보 embedding 을 get_many 1회로 조회한다(후보별 get() N+1 아님)."""
     store = _seed_store()
