@@ -38,10 +38,10 @@ class ProductSearchFilters(CamelModel):
     """AI 검색 명세 (decompose 산출, api-spec §4.6) — 와이어로 나가는 건 subset 뿐이다.
 
     Spring I-1 요청으로 실제 전송되는 건 `_search_query_params`(spring_client)가 추출하는 와이어
-    필드(keyword·category·price·brand)뿐이다. exclude_product_ids·rating_min·sort·limit 은 Spring 에
-    보내지 않고 AI 가 사후처리에 쓰는 필드다 — dedup(결정 14-F)·평점 하한·정렬은 사후필터,
-    limit 은 **AI 후보 상한(rerank 입력 top-K)**. excludeProductIds 원천 = GET /orders/recent(§4.7),
-    게스트는 빈 배열.
+    필드(keyword·category·price·brand)뿐이다. exclude_product_ids·rating_min·limit 은 Spring 에
+    보내지 않고 AI 가 사후처리에 쓰는 필드다 — dedup(결정 14-F)·평점 하한은 사후필터,
+    limit 은 **AI 후보 상한(rerank 입력 top-K)**. 정렬은 rerank(LLM) 소관이라 별도 필드가 없다(#100 P2).
+    excludeProductIds 원천 = GET /orders/recent(§4.7), 게스트는 빈 배열.
     [2026-07-23, BE 합의] size 제거로 limit 은 더 이상 Spring 요청 size 가 아니다(§4.6) — Spring 은
     전량 반환하고, limit 은 search_catalog 가 top-K 절단에 쓴다.
     """
@@ -54,7 +54,6 @@ class ProductSearchFilters(CamelModel):
     keyword: str | None = None
     color: str | None = None  # 색상 조건(#100 P1) — BE I-1 attributes LIKE 로 필터
     exclude_product_ids: list[int] = Field(default_factory=list)
-    sort: str | None = None
     limit: int = 30  # AI 후보 상한(rerank 입력 top-K) — Spring size 아님(§4.6, 2026-07-23)
 
 

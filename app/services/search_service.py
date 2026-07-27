@@ -1,8 +1,9 @@
 """카탈로그 검색 서비스 — SearchBackend 심(seam) (확정 2026-07-15, 이슈 #2 배선).
 
 MVP: 질의 시점 Spring 위임(GET /internal/products/search, I-1, §4.6). decompose 필터를 Spring 에
-넘기고 후보를 받는다. **BE I-1 은 excludeProductIds·ratingMin·sort 파라미터가 없으므로**
+넘기고 후보를 받는다. **BE I-1 은 excludeProductIds·ratingMin 파라미터가 없으므로**
 (v0.15.5, C-15 해소) dedup 제외·평점 하한은 **응답 수신 후 AI 사후필터**로 적용한다.
+정렬은 rerank(LLM) 소관이라 sort 필드를 두지 않는다(#100 P2).
 
 [결정 2026-07-20, api-spec §4.8 말미] 임베딩 검색을 두 방식으로 구현해 골든셋 확정:
   방식2 EmbeddingRerankBackend — Spring 후보를 AI 임베딩으로 재정렬(라이브, BE 계약 변경 없음).
@@ -170,7 +171,7 @@ async def search_catalog(
     보내고 exclude_product_ids(최근 구매 dedup, §4.7 결정 14-F)·rating_min 은 여기서 사후 제외한다.
     rating_min 사후필터는 '반증된 것만' 제거한다 — 평점이 있고 미달인 상품만 탈락, rating=None
     신상품은 보존(#100 P0).
-    정렬(sort)은 rerank 단계 소관 — 여기서는 검색순서를 보존한다.
+    정렬은 rerank(LLM) 소관이라 별도 sort 필드가 없다(#100 P2) — 여기서는 검색순서를 보존한다.
     [2026-07-23, BE 합의] size 제거로 Spring 이 전량 반환 → 사후필터 뒤 filters.limit(AI top-K)로
     절단해 rerank 입력 상한을 지킨다(api-spec §4.6). 절단은 사후필터 이후라, 제외분만큼 후보가
     낭비되지 않고 상위 limit 을 채운다. backend 미지정 시 default_backend 사용 — 테스트에서 주입 가능.
