@@ -202,14 +202,12 @@ async def search_catalog(
     rating_min 사후필터는 '반증된 것만' 제거한다 — 평점이 있고 미달인 상품만 탈락, rating=None
     신상품은 보존(#100 P0).
     정렬은 rerank(LLM) 소관이라 별도 sort 필드가 없다(#100 P2) — 여기서는 검색순서를 보존한다.
-    [2026-07-23, BE 합의] size 제거로 Spring 이 전량 반환 → 여기서 filters.limit(AI top-K)로 절단해
-    rerank 입력 상한을 지킨다(api-spec §4.6).
-    [주의 — PR#127 리뷰] 이 절단은 **이 함수 안의** exclude_product_ids·rating_min 사후필터 뒤에만
-    적용된다. 다만 실호출부(graph._run_search/_leg)는 exclude_product_ids=None 으로 넘기고, 최근 구매
-    dedup·소모품 카테고리 억제는 search_catalog 리턴 **뒤** stream_recommendation(graph.py)에서
-    수행한다. 따라서 그 graph dedup 대상이 상위 limit 안에 몰리면 rerank 최종 후보가 limit 보다
-    적어질 수 있다(= dedup 경로엔 후보 낭비가 남음). 근본 해소는 #101(임베딩 rerank 가 전량을 dedup
-    후 embedding_rerank_limit 으로 압축)에서 절단을 dedup 이후로 옮겨 처리한다.
+    [2026-07-23, BE 합의] size 제거로 Spring 이 전량 반환한다(api-spec §4.6).
+    [#101] **여기서 top-K 절단하지 않는다** — 재정렬·사후필터(dedup 제외·평점 하한)만 하고 전량을
+    반환한다. 최종 rerank 입력 상한(embedding_rerank_limit) 절단은 graph 가 최근구매 dedup·소모품
+    억제(stream_recommendation) **이후**에 적용한다. 이전엔 여기서 filters.limit 로 dedup 이전에
+    절단해, dedup 대상이 상위에 몰리면 rerank 후보가 상한 미만이 되는 recall 손실이 있었다 — 절단을
+    dedup 이후로 옮겨 근본 해소한다(방식1 VectorSearchBackend 는 자체 경로에서 filters.limit 사용).
     backend 미지정 시: 테스트 override(default_backend) 우선, 없으면 config 로 생성(#101).
     """
     # 우선순위: 명시 주입 backend → 테스트 override default_backend → config 기반 생성(prod hot path).
@@ -227,11 +225,5 @@ async def search_catalog(
         # 신상품)은 미달이 반증된 게 아니라 데이터 부재이므로 보존해 rerank 가 판단하게 한다(#100 P0).
         products = [p for p in products if p.rating is None or p.rating >= threshold]
 
-    # total_count 는 top-K 절단 **전** 사후필터 통과 후보 수 — 절단 뒤 len 을 세면 min(매칭, limit)
-    # 으로 캡돼 '전체 매칭 수' 의미가 깨진다(PR#127 리뷰). 절단 전에 확정한다.
-    matched_count = len(products)
-
-    # AI top-K 절단 — Spring 이 size 없이 전량 반환하므로(§4.6) 여기서 rerank 입력 상한을 지킨다.
-    products = products[: filters.limit]
-
-    return ProductSearchResult(products=products, total_count=matched_count)
+    # total_count = 사후필터 통과 매칭 수(전량). top-K 절단은 graph dedup 이후로 이동(#101).
+    return ProductSearchResult(products=products, total_count=len(products))

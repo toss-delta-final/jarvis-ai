@@ -20,7 +20,7 @@ from app.core.config import get_settings
 from app.core.conversation import conversation_key
 from app.schemas.spring import ProductSearchResult, SpringProduct
 from app.services.spring_client import SpringUnavailableError
-from tests._fakes import DEFAULT_PRODUCTS, FakeLLM
+from tests._fakes import DEFAULT_DECOMPOSE, DEFAULT_PRODUCTS, FakeLLM
 
 
 def _req(message: str = "무선 이어폰 추천해줘", session_id: str = "s1", thread_id: str = "t1"):
@@ -734,10 +734,13 @@ def test_search_query_params_sends_all_brands() -> None:
     assert params.get("brandName") == ["삼성", "애플"]
 
 
-async def test_search_catalog_caps_candidates_to_limit() -> None:
-    """size 제거로 Spring 이 전량 반환 → search_catalog 가 filters.limit(AI top-K)로 절단한다.
+async def test_search_catalog_returns_all_after_postfilter() -> None:
+    """[#101] search_catalog 는 더 이상 top-K 절단하지 않는다 — 절단은 graph dedup 이후로 이동했다.
 
-    사후필터(dedup·평점) 이후 검색순서 상위 limit 만 rerank 입력으로 남긴다(§4.6).
+    이전엔 filters.limit 로 dedup **이전**에 절단해, 최근구매 dedup·소모품 억제가 상위 후보에
+    몰리면 rerank 입력이 상한 미만이 되는 recall 손실이 있었다(#101). 이제 search_catalog 는
+    재정렬·사후필터(dedup 제외·평점 하한)만 하고 전량을 반환하며, 최종 절단(embedding_rerank_limit)은
+    graph 가 dedup 이후에 적용한다. total_count 는 사후필터 통과 매칭 수 그대로.
     """
     from app.schemas.spring import ProductSearchFilters, SpringProduct
     from app.services.search_service import search_catalog
@@ -747,16 +750,50 @@ async def test_search_catalog_caps_candidates_to_limit() -> None:
     res = await search_catalog(
         ProductSearchFilters(limit=2), backend=FakeBackend(products=products)
     )
-    assert [p.product_id for p in res.products] == [1, 2]  # top-K=2 로 절단(검색순서 보존)
-    # [PR#127 리뷰] total_count 는 top-K 절단 전 사후필터 통과 매칭 수(5) — 절단값(2)이 아니다.
+    # limit=2 여도 절단하지 않는다 — 전량 반환(절단은 graph 몫).
+    assert [p.product_id for p in res.products] == [1, 2, 3, 4, 5]
     assert res.total_count == 5
 
 
-def test_search_filters_limit_rejects_negative() -> None:
-    """[PR#127 리뷰] limit 은 products[:limit] slice 절단에 직접 쓰이므로 ge=0 이어야 한다.
+async def test_graph_caps_rerank_input_to_embedding_rerank_limit() -> None:
+    """[#101] 후보 절단은 search_catalog(사전) 이 아니라 graph 의 dedup 이후에 embedding_rerank_limit
+    으로 적용된다 — 절단 위치 이동. dedup 이 상위 후보를 지워도 rerank 입력이 상한까지 채워진다.
 
-    음수면 Python slice 가 '뒤에서 N개 제외'로 뒤집혀 '≤0 → 0개' 절단 불변식이 깨진다
-    (형제 category_fanout_* 필드가 PR#73 에서 같은 이유로 ge=0 을 건 것과 정합).
+    비-fanout 경로(categoryQueries 비움 → merge_cap 미개입)로 격리하고, guest 로 최근구매 dedup 을
+    회피해 'graph 가 embedding_rerank_limit 로 절단하는지'만 본다. rerank(smart) 프롬프트의
+    CANDIDATES 개수로 rerank 입력 후보 수를 관측한다.
+    """
+    from app.schemas.spring import SpringProduct
+
+    settings = get_settings()
+    cap = settings.embedding_rerank_limit
+    # cap 초과 후보 — 서로 다른 category 로 소모품 억제 회피.
+    products = [
+        SpringProduct(product_id=i, name=f"p{i}", price=1000, category=f"c{i}")
+        for i in range(1, cap + 6)
+    ]
+    llm = FakeLLM(
+        decompose={**DEFAULT_DECOMPOSE, "categoryQueries": []},
+        rerank={"ranked": [{"productId": 1, "rationale": "좋아요"}], "overallComment": ""},
+    )
+    await _collect(
+        run_buyer_turn(
+            _req(), _guest(), llm=llm, search=_make_search(products), push_fn=_RecordingPush()
+        )
+    )
+    smart = [u for t, u in llm.calls if t == "smart"]
+    assert smart, "rerank(smart) 호출이 있어야 한다"
+    cands = json.loads(smart[0].split("CANDIDATES: ", 1)[1])
+    assert len(cands) == cap  # graph 가 embedding_rerank_limit 로 절단
+    assert [c["productId"] for c in cands] == list(range(1, cap + 1))  # 검색순서 상위 cap 보존
+
+
+def test_search_filters_limit_rejects_negative() -> None:
+    """[PR#127 리뷰] limit 은 slice 절단(방식1 VectorSearchBackend 의 over_fetch k)에 쓰이므로 ge=0.
+
+    #101 로 hot path(방식2) 사전 절단은 제거됐지만, 방식1 VectorSearchBackend 는 여전히
+    filters.limit*over_fetch 로 top-k slice 를 하므로 음수면 '뒤에서 N개 제외'로 뒤집혀 '≤0 → 0개'
+    절단 불변식이 깨진다(형제 category_fanout_* 필드가 PR#73 에서 같은 이유로 ge=0 을 건 것과 정합).
     """
     import pytest
     from pydantic import ValidationError

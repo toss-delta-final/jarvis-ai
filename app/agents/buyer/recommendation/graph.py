@@ -221,12 +221,17 @@ async def stream_recommendation(
             suppressed_by_cat[product.category] = suppressed_by_cat.get(product.category, 0) + 1
             continue
         kept.append(product)
-    result = ProductSearchResult(products=kept, total_count=len(kept))
+    # [#101] 최종 rerank 입력 상한 절단 — search_catalog(사전) 가 아니라 최근구매 dedup·소모품 억제
+    # **이후** 여기서 embedding_rerank_limit 으로 압축한다. 사전 절단이면 dedup 대상이 상위에 몰릴 때
+    # rerank 후보가 상한 미만이 되는 recall 손실이 있어, 절단을 dedup 이후로 옮겼다(비-fanout 전량·
+    # fan-out merge_cap 병합 결과 모두 이 지점에서 최종 절단). matched_after_dedup 은 절단 전 매칭 수.
+    matched_after_dedup = len(kept)
+    kept = kept[: settings.embedding_rerank_limit]
+    result = ProductSearchResult(products=kept, total_count=matched_after_dedup)
 
     # 되돌리기 칩 — 억제된 소모품 카테고리별(estCount==0 제외, §3.1).
-    # estCount 는 **이번 검색 응답 내 억제 수**(page-local 근사)다 — 이 시점 search_result 는
-    # search_catalog 가 filters.limit(fan-out 이면 merge_cap/per_cat_limit)로 이미 top-K 절단한
-    # 뒤라 '전량 매칭'이 아니다(PR#127 리뷰). DB 전체 기준 진짜 억제 수보다 작게 나올 수 있어
+    # estCount 는 **이번 검색 응답 내 억제 수**(page-local 근사)다 — 소모품 억제는 embedding_rerank_limit
+    # 최종 절단 **전** 후보 전량을 훑어 세므로(위 loop) DB 전체 기준 진짜 억제 수보다 작을 수 있어
     # 가용한 최선의 추정치를 쓴다. 별도 totalCount 필드는 불필요로 확정(#100 P2).
     revert_chips = [
         SuggestionChip(
