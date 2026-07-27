@@ -90,8 +90,11 @@ class EmbeddingRerankBackend:
         )
 
     def _rerank(self, products: list, qvec: list[float]) -> list:
+        # 후보 embedding 을 1회 batch 로 조회(N+1 제거, #101). 없거나 빈 embedding 은 −1.0(맨 뒤).
+        arts = self._store.get_many([p.product_id for p in products])
+
         def score(product) -> float:
-            art = self._store.get(product.product_id)
+            art = arts.get(product.product_id)
             return _cosine(qvec, art.embedding) if art and art.embedding else -1.0
 
         return sorted(products, key=score, reverse=True)

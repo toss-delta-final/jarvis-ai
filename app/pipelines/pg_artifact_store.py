@@ -147,6 +147,19 @@ class PgCatalogArtifactStore:
             ).fetchone()
         return _row_to_artifact(row) if row else None
 
+    def get_many(self, product_ids: list[int]) -> dict[int, CatalogArtifact]:
+        """요청 id 를 1회 쿼리(WHERE product_id = ANY(%s))로 조회 — 방식2 재정렬 N+1 제거(#101).
+
+        psycopg 는 list[int] 를 ANY(%s) 에 바인딩한다. 빈 입력은 쿼리 없이 빈 dict. 없는 id 는 생략.
+        """
+        if not product_ids:
+            return {}
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                f"SELECT {_SELECT_COLS} FROM products WHERE product_id = ANY(%s)", (product_ids,)
+            ).fetchall()
+        return {row[0]: _row_to_artifact(row) for row in rows}
+
     def all(self) -> list[CatalogArtifact]:
         with self._pool.connection() as conn:
             rows = conn.execute(f"SELECT {_SELECT_COLS} FROM products").fetchall()

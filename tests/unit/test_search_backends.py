@@ -83,6 +83,36 @@ async def test_embedding_rerank_backend_reorders(monkeypatch):
     assert [p.product_id for p in result.products][0] == 1  # 재정렬로 여행 방수가 최상위
 
 
+async def test_embedding_rerank_backend_uses_batch_get(monkeypatch):
+    """[#101] 재정렬은 후보 embedding 을 get_many 1회로 조회한다(후보별 get() N+1 아님)."""
+    store = _seed_store()
+    calls = {"get": 0, "get_many": 0}
+    orig_get_many = store.get_many
+
+    def spy_get(pid):
+        calls["get"] += 1
+        return CatalogArtifactStore.get(store, pid)
+
+    def spy_get_many(ids):
+        calls["get_many"] += 1
+        return orig_get_many(ids)
+
+    monkeypatch.setattr(store, "get", spy_get)
+    monkeypatch.setattr(store, "get_many", spy_get_many)
+
+    async def fake_search(filters):
+        return ProductSearchResult(
+            products=[SpringProduct(product_id=i, name=f"p{i}", price=10) for i in (3, 2, 1)],
+            total_count=3,
+        )
+
+    monkeypatch.setattr(spring_client, "search_products", fake_search)
+    backend = EmbeddingRerankBackend(store=store, embed=_embed)
+    await backend.search(ProductSearchFilters(keyword="여행 방수", limit=10))
+    assert calls["get_many"] == 1  # 1회 batch 조회
+    assert calls["get"] == 0  # 후보별 get() 없음(N+1 제거)
+
+
 async def test_embedding_rerank_offloads_scoring_to_thread(monkeypatch):
     store = _seed_store()
     calls = []
