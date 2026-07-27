@@ -528,6 +528,41 @@ async def test_search_catalog_rating_filter_preserves_unrated() -> None:
     assert [p.product_id for p in res.products] == [201, 203]
 
 
+def test_i1_envelope_preserves_rerank_fields() -> None:
+    """[#100 P0/P1] BE I-1 실제 envelope({success, data:[...]}) 파싱 계약 테스트.
+
+    rerank·예산검증 입력 필드(price·rating·summary·attributes)와 별칭 필드
+    (categoryName·brandName)가 파싱 후 보존됨을 고정한다. SpringProduct 에 필드가 없으면
+    Pydantic 이 조용히 버리는 사고(summary·attributes 유실 P0)의 재발 방지 가드다.
+    """
+    from app.services.spring_client import _parse_search_response
+
+    raw = {
+        "success": True,
+        "data": [
+            {
+                "productId": 1,
+                "name": "린넨 셔츠",
+                "price": 29900,
+                "rating": 4.8,
+                "summary": "시원한 여름 린넨 셔츠",
+                "attributes": {"소재": "린넨", "핏": "오버핏"},
+                "categoryName": "여성의류",
+                "brandName": "더센트",
+            }
+        ],
+    }
+    result = _parse_search_response(raw)
+    assert len(result.products) == 1
+    p = result.products[0]
+    assert p.price == 29900  # 예산검증(verifiedSum §3.1)·maxPrice 판정
+    assert p.rating == 4.8  # 평점 사후필터·rerank 신호
+    assert p.summary == "시원한 여름 린넨 셔츠"
+    assert p.attributes == {"소재": "린넨", "핏": "오버핏"}
+    assert p.category == "여성의류"  # categoryName 별칭
+    assert p.brand == "더센트"  # brandName 별칭
+
+
 def test_search_query_params_omits_size() -> None:
     """[2026-07-23, BE 합의] I-1 요청에서 size 제거 — 라운드1 전량 반환, top-K 는 AI 쪽(api-spec §4.6)."""
     from app.schemas.spring import ProductSearchFilters
