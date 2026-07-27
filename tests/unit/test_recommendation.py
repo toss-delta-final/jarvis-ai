@@ -508,6 +508,26 @@ async def test_search_catalog_post_filters_exclude_and_rating() -> None:
     assert [p.product_id for p in res.products] == [102]
 
 
+async def test_search_catalog_rating_filter_preserves_unrated() -> None:
+    """[#100 P0] 평점 하한 사후필터는 '반증된 것만' 제거한다.
+
+    rating 이 있고 미달인 상품(3.9)은 버리되, rating=None 신상품(리뷰 없음)은
+    데이터 부재일 뿐 미달이 반증된 게 아니므로 후보에 보존해 rerank 가 판단하게 한다.
+    """
+    from app.schemas.spring import ProductSearchFilters, SpringProduct
+    from app.services.search_service import search_catalog
+    from tests._fakes import FakeBackend
+
+    products = [
+        SpringProduct(product_id=201, name="신상품", rating=None, category="c", brand="b"),
+        SpringProduct(product_id=202, name="저평점", rating=3.9, category="c", brand="b"),
+        SpringProduct(product_id=203, name="고평점", rating=4.5, category="c", brand="b"),
+    ]
+    res = await search_catalog(ProductSearchFilters(rating_min=4.0), backend=FakeBackend(products))
+    # 무평점(201) 보존, 저평점(202) 탈락, 고평점(203) 통과.
+    assert [p.product_id for p in res.products] == [201, 203]
+
+
 def test_search_query_params_omits_size() -> None:
     """[2026-07-23, BE 합의] I-1 요청에서 size 제거 — 라운드1 전량 반환, top-K 는 AI 쪽(api-spec §4.6)."""
     from app.schemas.spring import ProductSearchFilters
