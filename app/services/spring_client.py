@@ -357,7 +357,9 @@ async def add_to_cart(request: AddToCartRequest) -> AddToCartResult:
             body = None
         err = body.get("error") if isinstance(body, dict) else None
         be_message = err.get("message") if isinstance(err, dict) else None
-        _log.warning("cart VALIDATION_ERROR → 수량초과로 매핑(드리프트 관측): message=%r", be_message)
+        _log.warning(
+            "cart VALIDATION_ERROR → 수량초과로 매핑(드리프트 관측): message=%r", be_message
+        )
         raise CartQuantityExceeded(f"add_to_cart 수량 상한 초과: {code}")
     if resp.status_code == 404:
         raise CartProductNotFound()
