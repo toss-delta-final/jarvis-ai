@@ -235,49 +235,65 @@ async def test_attr_conditions_carries_prior_when_llm_omits() -> None:
     assert d.filters.attr_conditions == {"소재": "린넨"}  # 직전 하드 조건 유지
 
 
-async def test_attr_conditions_empty_dict_clears_prior() -> None:
-    """[PR② PR#169 리뷰] 빈 객체 {} = 명시적 초기화 — 직전 속성조건을 승계하지 않는다(누락과 구분)."""
+async def test_attr_conditions_merge_keeps_unmentioned_prior_axis() -> None:
+    """[PR② PR#169 리뷰] 기본은 merge — LLM 이 일부 축만 내도(핏 깜빡) 이전 축이 유지된다.
+
+    "완전 vs 일부" 폴백 고민을 없앤다: 제거는 명시 신호(attrRemovals)로만 하고, 그 외에는 prior 와
+    이번 턴 값을 병합해 언급 안 한 이전 축이 조용히 유실되지 않게 한다.
+    """
     from app.schemas.spring import ProductSearchFilters
 
-    prior = ProductSearchFilters(attr_conditions={"소재": "린넨"})
+    prior = ProductSearchFilters(attr_conditions={"소재": "린넨", "핏": "오버핏"})
     d = await decompose(
-        _FakeLLM(_raw(attrConditions={})),
-        query="소재는 상관없어",
-        prior_filters=prior,
-        profile_summary=None,
-        tier="fast",
-    )
-    assert d.filters.attr_conditions is None  # 명시 초기화 → 승계 안 함
-
-
-async def test_attr_conditions_new_value_replaces_prior() -> None:
-    """LLM 이 새 속성을 주면(병합은 프롬프트가 처리) 그 값을 쓴다 — 직전 폴백 안 함."""
-    from app.schemas.spring import ProductSearchFilters
-
-    prior = ProductSearchFilters(attr_conditions={"소재": "린넨"})
-    d = await decompose(
-        _FakeLLM(_raw(attrConditions={"소재": "면"})),
+        _FakeLLM(_raw(attrConditions={"소재": "면"})),  # 핏 미언급
         query="면으로 바꿔",
         prior_filters=prior,
         profile_summary=None,
         tier="fast",
     )
-    assert d.filters.attr_conditions == {"소재": "면"}
+    assert d.filters.attr_conditions == {"소재": "면", "핏": "오버핏"}  # 소재 변경, 핏 유지
 
 
-async def test_attr_conditions_prompt_instructs_multiturn_carry() -> None:
-    """[PR②] 멀티턴 정제발화에서 이전 명시 속성조건을 유지하도록 프롬프트가 지시한다.
+async def test_attr_conditions_explicit_removal() -> None:
+    """[PR② PR#169 리뷰] 사용자가 명시 제거("핏은 상관없어")하면 attrRemovals 로 그 축만 뺀다.
 
-    decompose 는 이번 턴 LLM 출력으로 attr_conditions 를 세팅하므로, LLM 이 정제발화에서 이전
-    속성(소재:린넨)을 안 실으면 하드 조건이 유실된다 — semanticQuery 승계와 동일 교훈으로 프롬프트에
-    명시 승계 지시를 둔다(코드가 아니라 LLM 이 PRIOR_FILTERS 로 병합).
+    일부러 빼는 건 항상 사용자 발화에 드러나므로, dict 모양 추측이 아니라 명시 신호로 제거한다.
     """
+    from app.schemas.spring import ProductSearchFilters
+
+    prior = ProductSearchFilters(attr_conditions={"소재": "린넨", "핏": "오버핏"})
+    d = await decompose(
+        _FakeLLM(_raw(attrRemovals=["핏"])),
+        query="핏은 상관없어",
+        prior_filters=prior,
+        profile_summary=None,
+        tier="fast",
+    )
+    assert d.filters.attr_conditions == {"소재": "린넨"}  # 핏만 제거, 소재 유지
+
+
+async def test_attr_conditions_removal_all_yields_none() -> None:
+    """모든 축을 명시 제거하면 None(속성 하드필터 미적용)."""
+    from app.schemas.spring import ProductSearchFilters
+
+    prior = ProductSearchFilters(attr_conditions={"소재": "린넨"})
+    d = await decompose(
+        _FakeLLM(_raw(attrRemovals=["소재"])),
+        query="속성 다 빼줘",
+        prior_filters=prior,
+        profile_summary=None,
+        tier="fast",
+    )
+    assert d.filters.attr_conditions is None
+
+
+async def test_attr_conditions_prompt_teaches_merge_and_removal() -> None:
+    """[PR②] 프롬프트가 merge 기본(이전 유지)과 명시 제거(attrRemovals)를 지시한다."""
     from app.agents.buyer.recommendation.decompose import _SYSTEM
 
-    assert "attrConditions" in _SYSTEM
-    # 이전/유지 승계 취지가 attrConditions 규칙에 포함돼야 한다.
-    attr_rule = _SYSTEM.split("attrConditions:", 1)[1].split("- categoryQueries", 1)[0]
-    assert "PRIOR_FILTERS" in attr_rule and "유지" in attr_rule
+    assert "attrConditions" in _SYSTEM and "attrRemovals" in _SYSTEM
+    attr_rule = _SYSTEM.split("attrConditions", 1)[1].split("- categoryQueries", 1)[0]
+    assert "유지" in attr_rule and "attrRemovals" in attr_rule
 
 
 async def test_attr_conditions_type_and_blank_guards() -> None:
