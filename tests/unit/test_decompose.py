@@ -204,6 +204,45 @@ async def test_blank_revert_category_excluded() -> None:
     assert d.revert_categories == ["조미료"]
 
 
+async def test_attr_conditions_extracted() -> None:
+    """[PR②] decompose 가 명시 속성조건을 filters.attr_conditions(축→값)로 추출한다."""
+    d = await _run(_raw(attrConditions={"소재": "린넨", "핏": "오버핏"}))
+    assert d.filters.attr_conditions == {"소재": "린넨", "핏": "오버핏"}
+
+
+async def test_attr_conditions_absent_is_none() -> None:
+    """attrConditions 누락 → None(속성 하드필터 미적용)."""
+    d = await _run(_raw())
+    assert d.filters.attr_conditions is None
+
+
+async def test_attr_conditions_prompt_instructs_multiturn_carry() -> None:
+    """[PR②] 멀티턴 정제발화에서 이전 명시 속성조건을 유지하도록 프롬프트가 지시한다.
+
+    decompose 는 이번 턴 LLM 출력으로 attr_conditions 를 세팅하므로, LLM 이 정제발화에서 이전
+    속성(소재:린넨)을 안 실으면 하드 조건이 유실된다 — semanticQuery 승계와 동일 교훈으로 프롬프트에
+    명시 승계 지시를 둔다(코드가 아니라 LLM 이 PRIOR_FILTERS 로 병합).
+    """
+    from app.agents.buyer.recommendation.decompose import _SYSTEM
+
+    assert "attrConditions" in _SYSTEM
+    # 이전/유지 승계 취지가 attrConditions 규칙에 포함돼야 한다.
+    attr_rule = _SYSTEM.split("attrConditions:", 1)[1].split("- categoryQueries", 1)[0]
+    assert "PRIOR_FILTERS" in attr_rule and "유지" in attr_rule
+
+
+async def test_attr_conditions_type_and_blank_guards() -> None:
+    """[PR② — PR① 교훈] 비-dict·비문자열 값·공백 키/값은 걸러 매칭 오염·크래시를 막는다."""
+    # 비 dict → None (리스트·문자열)
+    assert (await _run(_raw(attrConditions=["소재", "린넨"]))).filters.attr_conditions is None
+    assert (await _run(_raw(attrConditions="린넨"))).filters.attr_conditions is None
+    # 비문자열 값(123)·공백 값('   ')·공백 키('  ') 제외, 유효 항목만 남김
+    d = await _run(_raw(attrConditions={"소재": "린넨", "핏": "   ", "용도": 123, "  ": "x"}))
+    assert d.filters.attr_conditions == {"소재": "린넨"}
+    # 전부 무효 → None(빈 dict 아님)
+    assert (await _run(_raw(attrConditions={"핏": "  "}))).filters.attr_conditions is None
+
+
 async def test_parses_single_category_query() -> None:
     """단일 카테고리 추측 → category_queries 길이 1, raw/query 매핑."""
     d = await _run(

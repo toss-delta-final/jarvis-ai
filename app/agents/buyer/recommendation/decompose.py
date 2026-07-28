@@ -26,6 +26,7 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
   "reply": "intent가 general일 때만 줄 짧은 한국어 답변, 아니면 빈 문자열",
   "case": 1 | 2 | 3,
   "semanticQuery": "정형 제약을 제외한 벡터 검색용 자연어",
+  "attrConditions": { "<속성축>": "<희망값>" },
   "categoryQueries": [ {"category": string|null, "query": string|null} ],
   "filters": {
     "priceMin": int|null, "priceMax": int|null,
@@ -45,6 +46,14 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
   같은 **조건 다듬기 발화면 그 문구를 semanticQuery 로 쓰지 말고** PRIOR_FILTERS.semanticQuery(직전
   상품 의미)를 그대로 유지하세요 — 가격·브랜드 다듬기는 filters(priceMax·brand 등)로 가고,
   semanticQuery 는 직전 상품 의미를 이어야 벡터 재정렬이 뜻을 잃지 않습니다.
+- attrConditions: 사용자가 **명시한** 상품 속성 조건만 {축: 값}으로 담으세요(예: "린넨 오버핏 셔츠"
+  → {"소재":"린넨","핏":"오버핏"}, "방수 파우치" → {"방수":"true"}). 축은 소재·핏·용도·방수 등
+  자유롭게, 값은 짧은 자연어. 사용자가 **말하지 않은** 속성은 넣지 마세요 — "여름 셔츠"처럼 속성을
+  추측해야 하는 선호는 attrConditions 가 아니라 semanticQuery/발화 맥락에 맡깁니다(재랭킹이 판단).
+  명시 속성이 없으면 빈 객체 {} 또는 생략하세요. 색상은 filters.color 로 갑니다(중복 금지).
+  멀티턴: 이번 발화가 언급 안 한 이전 속성조건은 PRIOR_FILTERS.attrConditions 값을 그대로 유지하세요
+  (예: 1턴 "린넨 셔츠" → 2턴 "더 저렴한 걸로"면 소재:린넨 유지). 사용자가 명시적으로 바꾸거나 뺀
+  속성만 갱신/삭제하세요.
 - categoryQueries: 사용자가 원하는 상품/목적별로 **카테고리를 최대한 추출**하세요.
   단일 상품 질의("무선 이어폰")면 1개, 상황형 질의("유럽여행 준비물")면 필요한 카테고리를
   여러 개 나눠 담으세요(예: 여행용품·전자기기·의류). category 는 best-guess(정말 모르면 null),
@@ -147,6 +156,8 @@ async def decompose(
         raw_sq = data.get("semanticQuery")
         llm_sq = raw_sq.strip() if isinstance(raw_sq, str) else ""
         filters.semantic_query = llm_sq or cat_signal or prior_sq or query
+        # 명시 속성조건(하드) 추출(PR②) — search_catalog 가 SpringProduct.attributes 와 관대 매칭.
+        filters.attr_conditions = _parse_attr_conditions(data.get("attrConditions"))
     except (ValidationError, ValueError, TypeError) as exc:
         raise LLMError("decompose 필터/케이스/장바구니 파싱 실패") from exc
     return RouteDecision(
@@ -158,6 +169,23 @@ async def decompose(
         revert_categories=revert_categories,
         category_queries=category_queries,
     )
+
+
+def _parse_attr_conditions(raw: object) -> dict[str, str] | None:
+    """decompose 의 attrConditions → {축: 값} (PR②, 명시 속성 하드조건).
+
+    dict 가 아니면 None. 키·값이 str 이고 공백-only 가 아닌 항목만 남긴다(빈 dict 면 None) —
+    LLM 이 비문자열/공백을 내도 관대 매칭(값.strip() 부분비교)이 크래시·오염되지 않게 한다
+    (PR① 리뷰 교훈: 미검증 raw LLM 값은 isinstance + strip 가드). 값은 strip 해 저장한다.
+    """
+    if not isinstance(raw, dict):
+        return None
+    out = {
+        k.strip(): v.strip()
+        for k, v in raw.items()
+        if isinstance(k, str) and k.strip() and isinstance(v, str) and v.strip()
+    }
+    return out or None
 
 
 def _parse_category_queries(raw: object, fanout_max: int) -> list[CategoryQuery]:
