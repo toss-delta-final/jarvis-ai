@@ -197,19 +197,31 @@ def _norm_attr(value: object) -> str:
     return str(value).strip().casefold()
 
 
+def _attr_value_matches(want: str, have: object) -> bool:
+    """속성 값 비교(PR② PR#169 리뷰) — 숫자 조건은 완전 일치, 문자열은 관대 부분매칭.
+
+    부분매칭만 쓰면 숫자·짧은 값 축(사이즈·용량·무게)에서 "1" 이 "100"·"21" 을 통과시켜 하드필터
+    취지가 깨진다. 조건값이 순수 숫자면 완전 일치를, 아니면(자연어 값) 부분포함을 쓴다.
+    """
+    nw, nh = _norm_attr(want), _norm_attr(have)
+    if nw.isdigit():
+        return nw == nh
+    return nw in nh
+
+
 def _matches_attr_conditions(product, conditions: dict[str, str]) -> bool:
-    """SpringProduct.attributes 가 명시 속성조건을 모두 만족하는지(하드 AND) — 관대 부분매칭(PR②).
+    """SpringProduct.attributes 가 명시 속성조건을 모두 만족하는지(하드 AND) — _attr_value_matches(PR②).
 
     축이 상품에 없으면 '반증 아님'으로 보존한다(#100 P0 rating 정책과 정합 — 데이터 부재 ≠ 불일치).
-    축이 있는데 값이 조건을 부분포함하지 않으면 반증 → 탈락. bool/숫자 값(dict[str, object])은
-    문자열화해 비교한다(예: 방수=true).
+    축이 있는데 값이 조건을 만족하지 않으면(문자열 부분매칭·숫자 완전일치, PR#169) 반증 → 탈락.
+    bool/숫자 값(dict[str, object])은 문자열화해 비교한다(예: 방수=true).
     """
     attrs = product.attributes or {}
     for axis, want in conditions.items():
         have = attrs.get(axis)
         if have is None:
             continue  # 축 부재 → 보존(반증 아님)
-        if _norm_attr(want) not in _norm_attr(have):
+        if not _attr_value_matches(want, have):
             return False
     return True
 

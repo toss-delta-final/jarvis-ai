@@ -940,6 +940,28 @@ async def test_attr_conditions_lenient_match() -> None:
     assert 2 in {p.product_id for p in r2.products}  # bool True ~ "true"
 
 
+async def test_attr_conditions_numeric_exact_match() -> None:
+    """[PR② PR#169 리뷰] 숫자값 조건은 완전 일치 — "1" 이 "100"·"21" 을 부분매칭으로 통과시키지 않는다.
+
+    부분매칭이면 `"1" in "100"` 이 True 라 하드필터 취지가 깨진다(사이즈·용량 등 숫자 축). 문자열
+    값은 기존대로 관대 부분매칭.
+    """
+    from app.schemas.spring import ProductSearchFilters, SpringProduct
+    from app.services.search_service import search_catalog
+    from tests._fakes import FakeBackend
+
+    products = [
+        SpringProduct(product_id=1, name="a", price=1, attributes={"사이즈": "1"}),
+        SpringProduct(product_id=2, name="b", price=1, attributes={"사이즈": "100"}),
+        SpringProduct(product_id=3, name="c", price=1, attributes={"사이즈": "21"}),
+    ]
+    res = await search_catalog(
+        ProductSearchFilters(attr_conditions={"사이즈": "1"}),
+        backend=FakeBackend(products=products),
+    )
+    assert [p.product_id for p in res.products] == [1]  # 100·21 은 부분포함이어도 제외
+
+
 async def test_attr_conditions_relax_per_axis_on_zero() -> None:
     """[PR②] 하드 필터가 0건이면 축을 완화해 과다제외를 막는다(완화칩 emit 은 #113 소관).
 
