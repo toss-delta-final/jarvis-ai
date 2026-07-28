@@ -17,15 +17,12 @@ jobs:
       packages: write   # GHCR 푸시에 필요
     steps:
       - uses: actions/checkout@v4
-
       - uses: docker/setup-buildx-action@v3
-
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}   # 자동 발급 토큰, 별도 등록 불필요
-
       # latest + 커밋 해시 태그 (해시 태그는 롤백 시 사용)
       - name: 이미지 빌드 및 푸시
         uses: docker/build-push-action@v5
@@ -39,26 +36,45 @@ jobs:
           cache-to: type=gha,mode=max   # 레이어 캐시로 빌드 가속
 
   # 2단계: 자동 배포 (CD)
+  #   AI 서버는 1대뿐이라 대체할 인스턴스가 없음 — 실패 시 자동 복구가 필수
   deploy:
     needs: build
     runs-on: ubuntu-latest
     permissions:
       packages: read   # EC2에서 GHCR pull 시 필요 (조직 기본 권한에 의존하지 않도록 명시)
     steps:
-      - name: AI 서버 무중단 배포
+      - name: AI 서버 배포 및 기동 검증
         uses: appleboy/ssh-action@v1.0.3   # 버전 고정 — @master는 예고 없이 깨짐
         with:
           host: ${{ secrets.EC2_AI_HOST }}
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          timeout: 10m
-          command_timeout: 10m
+          timeout: 15m
+          command_timeout: 15m
           script: |
             set -e   # 명령 하나라도 실패하면 뒤 단계 실행 안 함
 
-            # 1. 시크릿·변수를 env 파일로 기록 (umask 077로 소유자만 읽기 가능)
+            ENV_FILE=/home/ubuntu/jarvis-ai.env
+            ENV_PREV=/home/ubuntu/jarvis-ai.env.prev
+            LAST_GOOD=/home/ubuntu/jarvis-ai.last-good
+
+            # 1. 롤백 대상 확보 — 교체 전에 현재 실행 중인 이미지를 기억
+            PREV_IMAGE=$(docker inspect -f '{{.Config.Image}}' jarvis-ai 2>/dev/null || true)
+
+            # 2. 기존 컨테이너 유지한 채 새 이미지 먼저 받아 대기
+            #    여기서 실패하면 아래로 진행하지 않으므로 서비스는 그대로 유지됨
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            docker pull ${{ env.IMAGE }}:${{ github.sha }}
+
+            # 3. env 파일 백업 후 새 시크릿·변수 기록
+            #    pull 성공 후에 수행 — pull 이 실패했을 때 기존 env 를 건드리지 않기 위함
+            #    백업 이유: 실패 원인이 잘못된 시크릿 값일 수 있으므로
+            #    이미지만 되돌리면 옛 이미지도 깨진 env 를 물려받아 똑같이 죽음
             umask 077
-            cat << 'ENVEOF' > /home/ubuntu/jarvis-ai.env
+            if [ -f "$ENV_FILE" ]; then
+              cp "$ENV_FILE" "$ENV_PREV"
+            fi
+            cat << 'ENVEOF' > "$ENV_FILE"
             AUTH_MODE=${{ vars.AUTH_MODE }}
             LLM_PROVIDER=${{ vars.LLM_PROVIDER }}
             CATALOG_DB_URL=${{ secrets.CATALOG_DB_URL }}
@@ -84,29 +100,75 @@ jobs:
             CORS_ORIGINS=${{ vars.CORS_ORIGINS }}
             ENVEOF
 
-            # 2. [무중단 최적화] 기존 컨테이너 유지한 채 새 이미지 먼저 받아 대기
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-            docker pull ${{ env.IMAGE }}:${{ github.sha }}
-
-            # 3. [충돌 원천 차단] 실행 직전 기존 컨테이너 중지 및 강제 삭제
+            # 4. 교체 — 8000 포트를 새 컨테이너가 이어받아야 하므로 중지 후 기동
+            #    docker run 뒤의 || true 는 필수: 기동 명령 자체가 실패해도
+            #    스크립트를 중단시키지 않고 아래 롤백 경로로 흘려보내기 위함
             docker stop jarvis-ai || true
             docker rm -f jarvis-ai || true
-
-            # 4. 새 컨테이너 가동
             docker run -d \
               --name jarvis-ai \
               --restart always \
               -p 8000:8000 \
-              --env-file /home/ubuntu/jarvis-ai.env \
-              ${{ env.IMAGE }}:${{ github.sha }}
+              --log-opt max-size=10m \
+              --log-opt max-file=3 \
+              --env-file "$ENV_FILE" \
+              ${{ env.IMAGE }}:${{ github.sha }} || true
 
-            # 5. 헬스체크 — 최대 60초 대기 후 실패 시 로그 출력하고 배포 실패 처리
-            for i in $(seq 1 30); do
-              if curl -fs http://localhost:8000/health > /dev/null; then
-                docker image prune -f
-                exit 0
-              fi
+            # 5. 기동 확인 — 2초 간격 최대 45회(약 90초)
+            #    모델 로딩·DB 초기화가 느려질 수 있어 기존 60초에서 상향
+            OK=0
+            for i in $(seq 1 45); do
+              if curl -fs http://localhost:8000/health > /dev/null; then OK=1; break; fi
               sleep 2
             done
-            docker logs --tail 100 jarvis-ai
-            exit 1
+
+            # 6. 실패 시 롤백 — AI 서버는 대체 인스턴스가 없으므로 반드시 되살려야 함
+            if [ "$OK" != "1" ]; then
+              docker logs --tail 100 jarvis-ai || true
+              docker rm -f jarvis-ai || true
+
+              ROLLBACK_IMAGE="$PREV_IMAGE"
+              if [ -z "$ROLLBACK_IMAGE" ] && [ -f "$LAST_GOOD" ]; then
+                ROLLBACK_IMAGE=$(cat "$LAST_GOOD")
+              fi
+
+              # 되돌릴 대상이 아예 없는 경우 — 수동 개입 필요
+              if [ -z "$ROLLBACK_IMAGE" ]; then
+                docker images ${{ env.IMAGE }} --format '{{.Tag}} {{.CreatedSince}}' | head -10
+                exit 1
+              fi
+
+              # env 파일도 함께 원복
+              if [ -f "$ENV_PREV" ]; then
+                cp "$ENV_PREV" "$ENV_FILE"
+              fi
+
+              docker run -d \
+                --name jarvis-ai \
+                --restart always \
+                -p 8000:8000 \
+                --log-opt max-size=10m \
+                --log-opt max-file=3 \
+                --env-file "$ENV_FILE" \
+                "$ROLLBACK_IMAGE" || true
+
+              # 롤백이 실제로 살아났는지 검증 — 최대 60초
+              RB=0
+              for i in $(seq 1 30); do
+                if curl -fs http://localhost:8000/health > /dev/null; then RB=1; break; fi
+                sleep 2
+              done
+
+              # 롤백까지 실패한 경우에만 두 번째 로그 블록이 찍힘 — 즉시 수동 개입 신호
+              if [ "$RB" != "1" ]; then
+                docker ps -a --filter 'name=jarvis-ai' --format '{{.Names}} {{.Status}}'
+                docker logs --tail 50 jarvis-ai || true
+              fi
+              exit 1
+            fi
+
+            # 7. 정상 기동 확인됨 — 이 이미지를 '마지막 정상'으로 기록
+            docker inspect -f '{{.Config.Image}}' jarvis-ai > "$LAST_GOOD"
+
+            # 8. 48시간 이상 지난 미사용 이미지 정리 (sha 태그 누적 방지)
+            docker image prune -af --filter "until=48h"
