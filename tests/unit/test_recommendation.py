@@ -326,6 +326,89 @@ def test_rerank_system_prompt_forbids_quoting_nondisplay_numbers() -> None:
     assert "reviewCount" in _SYSTEM and "rating" in _SYSTEM
 
 
+def test_redact_leaked_number_only_flags_display_context_quotes() -> None:
+    """[#171 PR#172 리뷰] 코드 레벨 하드 가드 — '값 + 표시 단위 맥락'일 때만 문장을 버린다.
+
+    프롬프트(soft)를 어겨 price/rating/reviewCount 가 표시 맥락(원/점·평점/리뷰 개)으로 박히면
+    신뢰경계 전에 통째 제거하되, 값이 우연히 겹치는 스펙 숫자(128GB·12개월·장점)는 표시 단위
+    맥락이 없어 보존한다(오탐 최소화).
+    """
+    from app.agents.buyer.recommendation.graph import _redact_leaked_number
+    from app.schemas.spring import SpringProduct
+
+    prods = [SpringProduct(product_id=1, name="x", price=29900, rating=4.8, review_count=128)]
+    # 표시 맥락 인용 → 문장 통째 제거
+    assert _redact_leaked_number("리뷰 128개라 믿을 만해요", prods) == ""
+    assert _redact_leaked_number("평점 4.8로 우수해요", prods) == ""
+    assert _redact_leaked_number("4.8점이라 만족도 높아요", prods) == ""
+    assert _redact_leaked_number("29,900원으로 합리적이에요", prods) == ""  # 콤마 무시
+    # 값이 같아도 표시 단위 맥락이 없으면(스펙 숫자) 보존
+    assert _redact_leaked_number("128GB 대용량이라 넉넉해요", prods) == "128GB 대용량이라 넉넉해요"
+    assert (
+        _redact_leaked_number("여름에 시원한 린넨 소재예요", prods) == "여름에 시원한 린넨 소재예요"
+    )
+
+    # reviewCount=12 여도 '12개월'(개월·리뷰맥락 없음)은 보존, '리뷰 12개'는 제거
+    prods2 = [SpringProduct(product_id=2, name="y", review_count=12, rating=3.0)]
+    assert _redact_leaked_number("12개월 무이자 할부돼요", prods2) == "12개월 무이자 할부돼요"
+    assert _redact_leaked_number("리뷰 12개 있는 신상이에요", prods2) == ""
+    # rating=3.0 이어도 '장점'의 '점'과 안 겹침(값 인접만), '3.0점'은 제거
+    assert (
+        _redact_leaked_number("장점이 정말 많은 제품이에요", prods2)
+        == "장점이 정말 많은 제품이에요"
+    )
+    assert _redact_leaked_number("3.0점이라 조금 아쉬워요", prods2) == ""
+
+    # 무평점·무리뷰·가격없음(0·None) 후보로는 아무 것도 안 지운다
+    empty = [SpringProduct(product_id=3, name="z", price=None, rating=None, review_count=0)]
+    assert _redact_leaked_number("리뷰 0개지만 신상이에요", empty) == "리뷰 0개지만 신상이에요"
+
+
+async def test_push_drops_rationale_that_leaks_nondisplay_number() -> None:
+    """[#171 PR#172 리뷰] LLM 이 근거문에 비표시 수치를 인용해도 push 전 코드로 제거된다.
+
+    프롬프트 가드를 어긴 응답 시뮬레이션 — 101 근거문은 자신의 price(39000)를 인용해 통째
+    드롭(근거 없이 상품만 노출)되고, 102 의 정상 근거문은 보존된다.
+    """
+    push = _RecordingPush()
+    llm = FakeLLM(
+        rerank={
+            "ranked": [
+                {"productId": 101, "rationale": "39,000원이라 가성비 최고예요"},  # price 유출
+                {"productId": 102, "rationale": "음질이 우수해요"},  # 정상
+            ],
+            "overallComment": "요청 조건에 맞는 추천이에요",
+        }
+    )
+    await _collect(
+        run_buyer_turn(
+            _req(), _member(), llm=llm, search=_make_search(DEFAULT_PRODUCTS), push_fn=push
+        )
+    )
+    reasons = {r.product_id: r.reason for r in push.pushes[0].reasons}
+    assert 101 not in reasons  # price 유출 근거문 → 드롭
+    assert reasons.get(102) == "음질이 우수해요"  # 정상 근거문 보존
+    assert 101 in push.pushes[0].product_ids  # 근거만 빠지고 상품 자체 노출은 유지
+
+
+async def test_overall_comment_that_leaks_number_is_dropped() -> None:
+    """[#171 PR#172 리뷰] overallComment 가 비표시 수치를 인용하면 token 으로 안 나간다."""
+    push = _RecordingPush()
+    llm = FakeLLM(
+        rerank={
+            "ranked": [{"productId": 101, "rationale": "가벼워요"}],
+            "overallComment": "평점 4.5짜리 좋은 상품이에요",  # 101 rating 유출
+        }
+    )
+    events = await _collect(
+        run_buyer_turn(
+            _req(), _member(), llm=llm, search=_make_search(DEFAULT_PRODUCTS), push_fn=push
+        )
+    )
+    texts = [e["data"].get("text", "") for e in events if e["type"] == "token"]
+    assert all("4.5" not in t for t in texts)  # 유출 comment 는 통째 드롭 → 미emit
+
+
 def test_sanitize_reason_strips_control_and_format_chars() -> None:
     """_sanitize_reason 은 비-whitespace 제어문자(NUL/ESC/DEL)·zero-width·bidi 포맷 문자를 제거한다.
 

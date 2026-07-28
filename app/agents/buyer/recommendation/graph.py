@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+import re
+from collections.abc import AsyncIterator, Iterable
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -65,6 +66,50 @@ def _sanitize_reason(text: str, max_len: int) -> str:
     if len(collapsed) > max_len:
         collapsed = collapsed[: max_len - 1].rstrip() + "…"
     return collapsed
+
+
+def _reason_leaks_nondisplay(text: str, products: Iterable[SpringProduct]) -> bool:
+    """근거문이 후보의 비표시 수치(price·rating·reviewCount)를 '표시 맥락'으로 인용하는지 판정.
+
+    api-spec §4.6 상 price·rating·reviewCount 는 '비표시(AI 계산용)'라 근거문(→Spring→CH-5→FE)에
+    노출되면 안 된다. LLM 이 프롬프트 가드(soft)를 어겨 이 값을 박는 경우를 코드로 잡되, '모든
+    숫자'가 아니라 '후보 실제 값 + 표시 단위 맥락(원/점·평점/리뷰 개·건)'이 함께 있을 때만 트리거해
+    스펙성 숫자(128GB·15인치·12개월 등 정상 상품설명)는 보존한다(오탐 최소화, REQ-REC-082 결정적
+    대조 정합). 콤마(천단위)는 무시하고, 다른 수의 일부는 자릿수 경계로 배제한다.
+    """
+    nc = text.replace(",", "")
+    for p in products:
+        # 가격: 값 바로 뒤 '원'(통화 단위 필수) — 스펙 숫자와 달리 "39,000원" 형태만 잡는다.
+        if isinstance(p.price, int) and p.price > 0:
+            if re.search(rf"(?<!\d){p.price}(?!\d)\s*원", nc):
+                return True
+        # 평점: 값에 '점' 인접 또는 '평점/별점' 접두 — '장점/단점'의 '점'과 안 겹치게 값 인접만 본다.
+        if isinstance(p.rating, (int, float)) and p.rating > 0:
+            g = re.escape(str(p.rating))
+            if re.search(rf"(?<!\d){g}(?!\d)\s*점", nc) or re.search(
+                rf"(평점|별점)\D{{0,3}}(?<!\d){g}(?!\d)", nc
+            ):
+                return True
+        # 리뷰수: 값 뒤 '개/건'('개월' 제외) + 문장에 '리뷰/후기' 동반 — "리뷰 128개"는 잡고
+        # "128GB"·"12개월"은 보존한다.
+        if isinstance(p.review_count, int) and p.review_count > 0:
+            if re.search(rf"(?<!\d){p.review_count}(?!\d)\s*(개|건)(?!월)", nc) and (
+                "리뷰" in nc or "후기" in nc
+            ):
+                return True
+    return False
+
+
+def _redact_leaked_number(text: str, products: Iterable[SpringProduct]) -> str:
+    """비표시 수치를 표시 맥락으로 인용한 근거문은 통째 버린다(#171 PR#172).
+
+    시스템 프롬프트 가드는 soft(LLM 이 어길 수 있음)라, rationale·overallComment 가 신뢰경계를
+    넘기 전에 코드로 이중화한다. 부분 제거는 문장을 훼손하므로('리뷰 개라…') 유출 감지 시 문장
+    전체를 버려 근거 없이 노출한다. 판정은 _reason_leaks_nondisplay(값+표시단위 맥락) 소관.
+    """
+    if not text:
+        return text
+    return "" if _reason_leaks_nondisplay(text, products) else text
 
 
 def _merge_fanout_results(results: list[ProductSearchResult], cap: int) -> ProductSearchResult:
@@ -291,7 +336,7 @@ async def stream_recommendation(
         )
         ranked_ids = [pid for pid, _ in rr.ranked]
         reason_by_id = dict(rr.ranked)  # 상품별 근거(§4.2) — (productId, rationale) 튜플 → 맵
-        comment = _strip_unsafe(rr.overall_comment)
+        comment = _redact_leaked_number(_strip_unsafe(rr.overall_comment), candidates)
     except LLMError:
         rerank_degraded = True
         ranked_ids = [p.product_id for p in candidates[: settings.expose_max]]
@@ -334,11 +379,16 @@ async def stream_recommendation(
     list_id = uuid4().hex
     # reasons — 근거가 있는 상품만(빈 rationale·expose_min 보충 상품은 제외). productId 로 키잉,
     # 순서 권위는 product_ids 라 정렬 불필요(부분집합 허용, §4.2 이슈 #61).
-    # push(신뢰경계) 직전 정제 — 개행 제거·안전 상한(config, 판매자 입력 영향 자유 텍스트 방어).
+    # push(신뢰경계) 직전 정제 — 개행 제거·안전 상한(config, 판매자 입력 영향 자유 텍스트 방어) +
+    # 비표시 수치 유출 제거(#171 PR#172). 정제 후 텍스트로 대조하면 zero-width 삽입 회피도 막는다.
     reasons = [
         RecoReason(product_id=pid, reason=cleaned)
         for pid in ranked_ids
-        if (cleaned := _sanitize_reason(reason_by_id.get(pid, ""), settings.reason_max_len))
+        if (
+            cleaned := _redact_leaked_number(
+                _sanitize_reason(reason_by_id.get(pid, ""), settings.reason_max_len), candidates
+            )
+        )
     ]
     push = RecommendationPush(
         session_id=request.session_id,
