@@ -47,11 +47,20 @@ def build_search_doc(product: dict) -> str:
 
 
 def _client(api_key: str):
-    """genai.Client 를 api_key 별로 캐시해 반환한다 (라이브 호출 seam — 테스트가 대체 주입)."""
+    """genai.Client 를 api_key 별로 캐시해 반환한다 (라이브 호출 seam — 테스트가 대체 주입).
+
+    config embedding_timeout_s 를 http_options(밀리초)로 걸어 요청 상한을 둔다 — 방식2가 hot path
+    기본이라 임베딩 API 가 느려지면 SSE 가 무기한 대기하는 것을 막는다(PR#166 리뷰). 초과 시 SDK 가
+    예외를 던지고 상위(embed_texts→EmbeddingRerankBackend)가 Spring 순서로 degrade 한다.
+    """
     from google import genai  # noqa: PLC0415
+    from google.genai import types  # noqa: PLC0415
 
     if api_key not in _CLIENT_CACHE:
-        _CLIENT_CACHE[api_key] = genai.Client(api_key=api_key)
+        timeout_ms = int(get_settings().embedding_timeout_s * 1000)
+        _CLIENT_CACHE[api_key] = genai.Client(
+            api_key=api_key, http_options=types.HttpOptions(timeout=timeout_ms)
+        )
     return _CLIENT_CACHE[api_key]
 
 
