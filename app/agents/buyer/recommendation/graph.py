@@ -223,7 +223,12 @@ async def stream_recommendation(
 
     # 사후필터: exact productId 제외 + 소모품 카테고리 억제(§4.7, C-15).
     result: ProductSearchResult = search_result
-    received = len(result.products)  # [#101 #8] 관측성 — dedup 이전 수신 후보 수(Spring/merge)
+    # [#101 #8] 관측성 — dedup 이전 수신 후보 수. **경로별 의미 주의(PR#166 리뷰)**: 비-fanout 은
+    # Spring 매칭 전량(#101 로 search_catalog 절단 제거)이지만, fan-out 은 _run_search 안에서 이미
+    # _merge_fanout_results(merge_cap) 로 절단된 **뒤** 값이라 leg 별 실제 수신 합계가 아니다 — fan-out
+    # 의 가장 큰 recall 손실(leg 검색 → merge_cap 절단)은 이 수치 이전에 일어나 로그에 안 잡힌다.
+    # leg-합 관측은 별도 과제(관측 이슈 #136/#137 라인, _run_search 가 pre-merge 합을 노출해야 함).
+    received = len(result.products)
     had_candidates = bool(result.products)
     suppressed_by_cat: dict[str, int] = {}
     kept = []
