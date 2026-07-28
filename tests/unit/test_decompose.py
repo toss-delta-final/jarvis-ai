@@ -216,6 +216,55 @@ async def test_attr_conditions_absent_is_none() -> None:
     assert d.filters.attr_conditions is None
 
 
+async def test_attr_conditions_carries_prior_when_llm_omits() -> None:
+    """[PR② PR#169 리뷰] LLM 이 정제발화에서 attrConditions 를 누락하면 코드가 직전 값으로 폴백한다.
+
+    프롬프트 순응에만 의존하면 Haiku 가 정제발화("더 저렴한 걸로")에서 attrConditions 를 빠뜨릴 때
+    하드 필터가 영속(thread_store) 유실된다 — semantic_query 처럼 코드 레벨 폴백으로 이중 방어한다.
+    """
+    from app.schemas.spring import ProductSearchFilters
+
+    prior = ProductSearchFilters(attr_conditions={"소재": "린넨"})
+    d = await decompose(
+        _FakeLLM(_raw()),  # attrConditions 누락
+        query="더 저렴한 걸로",
+        prior_filters=prior,
+        profile_summary=None,
+        tier="fast",
+    )
+    assert d.filters.attr_conditions == {"소재": "린넨"}  # 직전 하드 조건 유지
+
+
+async def test_attr_conditions_empty_dict_clears_prior() -> None:
+    """[PR② PR#169 리뷰] 빈 객체 {} = 명시적 초기화 — 직전 속성조건을 승계하지 않는다(누락과 구분)."""
+    from app.schemas.spring import ProductSearchFilters
+
+    prior = ProductSearchFilters(attr_conditions={"소재": "린넨"})
+    d = await decompose(
+        _FakeLLM(_raw(attrConditions={})),
+        query="소재는 상관없어",
+        prior_filters=prior,
+        profile_summary=None,
+        tier="fast",
+    )
+    assert d.filters.attr_conditions is None  # 명시 초기화 → 승계 안 함
+
+
+async def test_attr_conditions_new_value_replaces_prior() -> None:
+    """LLM 이 새 속성을 주면(병합은 프롬프트가 처리) 그 값을 쓴다 — 직전 폴백 안 함."""
+    from app.schemas.spring import ProductSearchFilters
+
+    prior = ProductSearchFilters(attr_conditions={"소재": "린넨"})
+    d = await decompose(
+        _FakeLLM(_raw(attrConditions={"소재": "면"})),
+        query="면으로 바꿔",
+        prior_filters=prior,
+        profile_summary=None,
+        tier="fast",
+    )
+    assert d.filters.attr_conditions == {"소재": "면"}
+
+
 async def test_attr_conditions_prompt_instructs_multiturn_carry() -> None:
     """[PR②] 멀티턴 정제발화에서 이전 명시 속성조건을 유지하도록 프롬프트가 지시한다.
 

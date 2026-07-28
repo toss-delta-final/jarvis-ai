@@ -50,10 +50,11 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
   → {"소재":"린넨","핏":"오버핏"}, "방수 파우치" → {"방수":"true"}). 축은 소재·핏·용도·방수 등
   자유롭게, 값은 짧은 자연어. 사용자가 **말하지 않은** 속성은 넣지 마세요 — "여름 셔츠"처럼 속성을
   추측해야 하는 선호는 attrConditions 가 아니라 semanticQuery/발화 맥락에 맡깁니다(재랭킹이 판단).
-  명시 속성이 없으면 빈 객체 {} 또는 생략하세요. 색상은 filters.color 로 갑니다(중복 금지).
-  멀티턴: 이번 발화가 언급 안 한 이전 속성조건은 PRIOR_FILTERS.attrConditions 값을 그대로 유지하세요
-  (예: 1턴 "린넨 셔츠" → 2턴 "더 저렴한 걸로"면 소재:린넨 유지). 사용자가 명시적으로 바꾸거나 뺀
-  속성만 갱신/삭제하세요.
+  색상은 filters.color 로 갑니다(중복 금지).
+  멀티턴: 이번 발화가 언급 안 한 이전 속성조건은 PRIOR_FILTERS.attrConditions 를 그대로 유지하세요
+  (예: 1턴 "린넨 셔츠" → 2턴 "더 저렴한 걸로"면 {"소재":"린넨"} 유지). 일부만 바꾸거나 빼면 나머지를
+  포함한 전체를 주세요. 새 명시 속성도 없고 유지할 이전 속성도 없으면 생략하세요. 단, 사용자가 이전
+  속성을 **전부 없애라**고 하면(예: "소재 상관없어") 빈 객체 {} 를 주세요 — 코드가 초기화로 봅니다.
 - categoryQueries: 사용자가 원하는 상품/목적별로 **카테고리를 최대한 추출**하세요.
   단일 상품 질의("무선 이어폰")면 1개, 상황형 질의("유럽여행 준비물")면 필요한 카테고리를
   여러 개 나눠 담으세요(예: 여행용품·전자기기·의류). category 는 best-guess(정말 모르면 null),
@@ -157,7 +158,17 @@ async def decompose(
         llm_sq = raw_sq.strip() if isinstance(raw_sq, str) else ""
         filters.semantic_query = llm_sq or cat_signal or prior_sq or query
         # 명시 속성조건(하드) 추출(PR②) — search_catalog 가 SpringProduct.attributes 와 관대 매칭.
-        filters.attr_conditions = _parse_attr_conditions(data.get("attrConditions"))
+        # 멀티턴 승계는 프롬프트가 처리하되(병합), semantic_query 처럼 코드 폴백을 이중으로 둔다
+        # (PR#169 리뷰): LLM 이 정제발화에서 attrConditions 를 빠뜨리면 thread_store 로 영속돼 하드
+        # 필터가 영구 유실되므로, 이번 턴에 값이 없으면 직전 값으로 폴백한다. 단 빈 객체 {}는 '명시적
+        # 초기화'라 폴백하지 않는다(누락과 구분 — 사용자가 "소재 상관없어"로 조건을 뺀 경우).
+        raw_attr = data.get("attrConditions")
+        if isinstance(raw_attr, dict) and not raw_attr:
+            filters.attr_conditions = None  # {} = 명시 초기화
+        else:
+            parsed_attr = _parse_attr_conditions(raw_attr)
+            prior_attr = prior_filters.attr_conditions if prior_filters else None
+            filters.attr_conditions = parsed_attr if parsed_attr is not None else prior_attr
     except (ValidationError, ValueError, TypeError) as exc:
         raise LLMError("decompose 필터/케이스/장바구니 파싱 실패") from exc
     return RouteDecision(
