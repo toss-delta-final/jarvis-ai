@@ -56,6 +56,10 @@ class ProductSearchFilters(CamelModel):
     # EmbeddingRerankBackend(방식2)가 pgvector 재정렬의 query 임베딩 입력으로 쓴다(§4.8 방식2).
     semantic_query: str | None = None
     color: str | None = None  # 색상 조건(#100 P1) — BE I-1 attributes LIKE 로 필터
+    # 명시 속성조건(PR②, api-spec §4.6 "2차 압축 속성 매칭 대상") — 축→희망값(예 {소재:린넨, 핏:오버핏}).
+    # AI 내부 필드(Spring 에 안 나감) — search_catalog 가 SpringProduct.attributes 와 관대 하드 매칭한다.
+    # 사용자 명시 조건만 담는다(하드). 추측 선호(소프트)는 rerank(원문+attributes)가 판단(별도 필드 없음).
+    attr_conditions: dict[str, str] | None = None
     exclude_product_ids: list[int] = Field(default_factory=list)
     # AI 후보 상한(rerank 입력 top-K) — Spring size 아님(§4.6, 2026-07-23). ge=0: products[:limit]
     # slice 절단이라 음수면 '뒤에서 제외'로 뒤집혀 불변식 붕괴(형제 category_fanout_* 와 정합, PR#73).

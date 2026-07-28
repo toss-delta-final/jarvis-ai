@@ -681,6 +681,22 @@ def test_search_query_params_omits_semantic_query() -> None:
     assert params.get("keyword") == "셔츠"  # keyword(상품명 LIKE)는 그대로 전송
 
 
+def test_attr_conditions_is_ai_internal_not_sent_to_spring() -> None:
+    """[PR② #101] attr_conditions(명시 속성조건)는 AI 사후 속성매칭용 내부 필드 — Spring I-1 에 안 나간다.
+
+    semantic_query 처럼 _search_query_params 가 추출하지 않는 와이어 제외 필드라 계약 변경이 없다.
+    """
+    from app.schemas.spring import ProductSearchFilters
+    from app.services.spring_client import _search_query_params
+
+    f = ProductSearchFilters(keyword="셔츠", attr_conditions={"소재": "린넨", "핏": "오버핏"})
+    assert f.attr_conditions == {"소재": "린넨", "핏": "오버핏"}  # 필드가 값을 보관
+    params = _search_query_params(f)
+    assert "attrConditions" not in params
+    assert "attr_conditions" not in params
+    assert params.get("keyword") == "셔츠"  # 와이어 필드는 그대로 전송
+
+
 def test_search_query_params_drops_blank_text_filters() -> None:
     """[PR#127 리뷰] LLM 산출 텍스트 필터(keyword·category·color)의 공백-only 값은 미전송.
 
@@ -866,6 +882,105 @@ async def test_search_catalog_returns_all_after_postfilter() -> None:
     # limit=2 여도 절단하지 않는다 — 전량 반환(절단은 graph 몫).
     assert [p.product_id for p in res.products] == [1, 2, 3, 4, 5]
     assert res.total_count == 5
+
+
+async def test_attr_conditions_hard_filter_excludes_disproven() -> None:
+    """[PR②] 명시 속성조건에 반하는 상품(축 있고 값 불일치)은 하드 제외한다."""
+    from app.schemas.spring import ProductSearchFilters, SpringProduct
+    from app.services.search_service import search_catalog
+    from tests._fakes import FakeBackend
+
+    products = [
+        SpringProduct(product_id=1, name="a", price=1, attributes={"소재": "린넨"}),
+        SpringProduct(product_id=2, name="b", price=1, attributes={"소재": "면"}),  # 반증
+    ]
+    res = await search_catalog(
+        ProductSearchFilters(attr_conditions={"소재": "린넨"}),
+        backend=FakeBackend(products=products),
+    )
+    assert [p.product_id for p in res.products] == [1]
+
+
+async def test_attr_conditions_preserve_axis_absent() -> None:
+    """[PR② — #100 P0 정합] 조건 축이 없는 상품은 '반증 아님'이라 보존한다(rerank 가 판단)."""
+    from app.schemas.spring import ProductSearchFilters, SpringProduct
+    from app.services.search_service import search_catalog
+    from tests._fakes import FakeBackend
+
+    products = [
+        SpringProduct(product_id=1, name="a", price=1, attributes={"소재": "린넨"}),
+        SpringProduct(product_id=2, name="b", price=1, attributes={"색상": "빨강"}),  # 소재 축 없음
+    ]
+    res = await search_catalog(
+        ProductSearchFilters(attr_conditions={"소재": "린넨"}),
+        backend=FakeBackend(products=products),
+    )
+    assert {p.product_id for p in res.products} == {1, 2}  # 축 부재 2 보존
+
+
+async def test_attr_conditions_lenient_match() -> None:
+    """[PR②] 관대 매칭 — 부분·대소문자 무시. bool/숫자 값(dict[str,object])도 문자열화 비교."""
+    from app.schemas.spring import ProductSearchFilters, SpringProduct
+    from app.services.search_service import search_catalog
+    from tests._fakes import FakeBackend
+
+    products = [
+        SpringProduct(product_id=1, name="a", price=1, attributes={"소재": "린넨 혼방"}),
+        SpringProduct(product_id=2, name="b", price=1, attributes={"방수": True}),
+    ]
+    r1 = await search_catalog(
+        ProductSearchFilters(attr_conditions={"소재": "린넨"}),
+        backend=FakeBackend(products=products),
+    )
+    assert 1 in {p.product_id for p in r1.products}  # "린넨" ⊂ "린넨 혼방"
+    r2 = await search_catalog(
+        ProductSearchFilters(attr_conditions={"방수": "true"}),
+        backend=FakeBackend(products=products),
+    )
+    assert 2 in {p.product_id for p in r2.products}  # bool True ~ "true"
+
+
+async def test_attr_conditions_numeric_exact_match() -> None:
+    """[PR② PR#169 리뷰] 숫자값 조건은 완전 일치 — "1" 이 "100"·"21" 을 부분매칭으로 통과시키지 않는다.
+
+    부분매칭이면 `"1" in "100"` 이 True 라 하드필터 취지가 깨진다(사이즈·용량 등 숫자 축). 문자열
+    값은 기존대로 관대 부분매칭.
+    """
+    from app.schemas.spring import ProductSearchFilters, SpringProduct
+    from app.services.search_service import search_catalog
+    from tests._fakes import FakeBackend
+
+    products = [
+        SpringProduct(product_id=1, name="a", price=1, attributes={"사이즈": "1"}),
+        SpringProduct(product_id=2, name="b", price=1, attributes={"사이즈": "100"}),
+        SpringProduct(product_id=3, name="c", price=1, attributes={"사이즈": "21"}),
+    ]
+    res = await search_catalog(
+        ProductSearchFilters(attr_conditions={"사이즈": "1"}),
+        backend=FakeBackend(products=products),
+    )
+    assert [p.product_id for p in res.products] == [1]  # 100·21 은 부분포함이어도 제외
+
+
+async def test_attr_conditions_relax_per_axis_on_zero() -> None:
+    """[PR②] 하드 필터가 0건이면 축을 완화해 과다제외를 막는다(완화칩 emit 은 #113 소관).
+
+    축별 완화 — 두 조건 모두 반증(0건)이면 한 축을 빼고 재시도해, 남은 축이라도 만족하는 상품을 살린다.
+    """
+    from app.schemas.spring import ProductSearchFilters, SpringProduct
+    from app.services.search_service import search_catalog
+    from tests._fakes import FakeBackend
+
+    products = [
+        SpringProduct(product_id=1, name="a", price=1, attributes={"소재": "린넨", "핏": "슬림"}),
+        SpringProduct(product_id=2, name="b", price=1, attributes={"소재": "면", "핏": "슬림"}),
+    ]
+    # {소재:린넨, 핏:오버핏} → 둘 다 0건 → 핏 완화 → 소재=린넨 인 1만(2는 소재 반증 유지)
+    res = await search_catalog(
+        ProductSearchFilters(attr_conditions={"소재": "린넨", "핏": "오버핏"}),
+        backend=FakeBackend(products=products),
+    )
+    assert [p.product_id for p in res.products] == [1]
 
 
 async def test_graph_caps_rerank_input_to_embedding_rerank_limit() -> None:

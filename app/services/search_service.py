@@ -192,6 +192,56 @@ def _make_default_backend() -> SearchBackend:
     return _BACKENDS[get_settings().search_backend]()
 
 
+def _norm_attr(value: object) -> str:
+    """속성 값 관대 비교용 정규화 — 문자열화 + 양끝 공백 제거 + casefold(대소문자 무시)."""
+    return str(value).strip().casefold()
+
+
+def _attr_value_matches(want: str, have: object) -> bool:
+    """속성 값 비교(PR② PR#169 리뷰) — 숫자 조건은 완전 일치, 문자열은 관대 부분매칭.
+
+    부분매칭만 쓰면 숫자·짧은 값 축(사이즈·용량·무게)에서 "1" 이 "100"·"21" 을 통과시켜 하드필터
+    취지가 깨진다. 조건값이 순수 숫자면 완전 일치를, 아니면(자연어 값) 부분포함을 쓴다.
+    """
+    nw, nh = _norm_attr(want), _norm_attr(have)
+    if nw.isdigit():
+        return nw == nh
+    return nw in nh
+
+
+def _matches_attr_conditions(product, conditions: dict[str, str]) -> bool:
+    """SpringProduct.attributes 가 명시 속성조건을 모두 만족하는지(하드 AND) — _attr_value_matches(PR②).
+
+    축이 상품에 없으면 '반증 아님'으로 보존한다(#100 P0 rating 정책과 정합 — 데이터 부재 ≠ 불일치).
+    축이 있는데 값이 조건을 만족하지 않으면(문자열 부분매칭·숫자 완전일치, PR#169) 반증 → 탈락.
+    bool/숫자 값(dict[str, object])은 문자열화해 비교한다(예: 방수=true).
+    """
+    attrs = product.attributes or {}
+    for axis, want in conditions.items():
+        have = attrs.get(axis)
+        if have is None:
+            continue  # 축 부재 → 보존(반증 아님)
+        if not _attr_value_matches(want, have):
+            return False
+    return True
+
+
+def _apply_attr_conditions(products: list, conditions: dict[str, str]) -> list:
+    """명시 속성 하드필터 + 0건 축별 완화(PR②).
+
+    모든 축 매칭이 0건이면 마지막 축부터 하나씩 빼며 재시도해 과다제외를 막는다 — 남은 축이라도
+    만족하는 상품을 살린다. 완화칩 emit·축 중요도 기반 완화 순서는 #113 소관(여기선 과다제외만 방지).
+    전부 완화해도 0이면 속성 필터를 미적용(원본 반환)해 zero-result 를 강제하지 않는다.
+    """
+    axes = list(conditions.items())
+    while axes:
+        matched = [p for p in products if _matches_attr_conditions(p, dict(axes))]
+        if matched:
+            return matched
+        axes = axes[:-1]  # 마지막 축 완화 후 재시도
+    return products
+
+
 async def search_catalog(
     filters: ProductSearchFilters,
     exclude_product_ids: list[int] | None = None,
@@ -226,6 +276,11 @@ async def search_catalog(
         # '반증된 것만' 제거: 평점이 있고 미달인 상품만 탈락시키고, rating=None(리뷰 없는
         # 신상품)은 미달이 반증된 게 아니라 데이터 부재이므로 보존해 rerank 가 판단하게 한다(#100 P0).
         products = [p for p in products if p.rating is None or p.rating >= threshold]
+
+    # 명시 속성 하드필터(PR②) — SpringProduct.attributes 관대 매칭, 축 부재는 보존(#100 P0), 0건이면
+    # 축별 완화. 추측 선호(소프트)는 여기서 안 거르고 rerank(원문+attributes)에 맡긴다.
+    if filters.attr_conditions:
+        products = _apply_attr_conditions(products, filters.attr_conditions)
 
     # total_count = 사후필터 통과 매칭 수(전량). top-K 절단은 graph dedup 이후로 이동(#101).
     return ProductSearchResult(products=products, total_count=len(products))

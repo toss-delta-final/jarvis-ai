@@ -204,6 +204,110 @@ async def test_blank_revert_category_excluded() -> None:
     assert d.revert_categories == ["조미료"]
 
 
+async def test_attr_conditions_extracted() -> None:
+    """[PR②] decompose 가 명시 속성조건을 filters.attr_conditions(축→값)로 추출한다."""
+    d = await _run(_raw(attrConditions={"소재": "린넨", "핏": "오버핏"}))
+    assert d.filters.attr_conditions == {"소재": "린넨", "핏": "오버핏"}
+
+
+async def test_attr_conditions_absent_is_none() -> None:
+    """attrConditions 누락 → None(속성 하드필터 미적용)."""
+    d = await _run(_raw())
+    assert d.filters.attr_conditions is None
+
+
+async def test_attr_conditions_carries_prior_when_llm_omits() -> None:
+    """[PR② PR#169 리뷰] LLM 이 정제발화에서 attrConditions 를 누락하면 코드가 직전 값으로 폴백한다.
+
+    프롬프트 순응에만 의존하면 Haiku 가 정제발화("더 저렴한 걸로")에서 attrConditions 를 빠뜨릴 때
+    하드 필터가 영속(thread_store) 유실된다 — semantic_query 처럼 코드 레벨 폴백으로 이중 방어한다.
+    """
+    from app.schemas.spring import ProductSearchFilters
+
+    prior = ProductSearchFilters(attr_conditions={"소재": "린넨"})
+    d = await decompose(
+        _FakeLLM(_raw()),  # attrConditions 누락
+        query="더 저렴한 걸로",
+        prior_filters=prior,
+        profile_summary=None,
+        tier="fast",
+    )
+    assert d.filters.attr_conditions == {"소재": "린넨"}  # 직전 하드 조건 유지
+
+
+async def test_attr_conditions_merge_keeps_unmentioned_prior_axis() -> None:
+    """[PR② PR#169 리뷰] 기본은 merge — LLM 이 일부 축만 내도(핏 깜빡) 이전 축이 유지된다.
+
+    "완전 vs 일부" 폴백 고민을 없앤다: 제거는 명시 신호(attrRemovals)로만 하고, 그 외에는 prior 와
+    이번 턴 값을 병합해 언급 안 한 이전 축이 조용히 유실되지 않게 한다.
+    """
+    from app.schemas.spring import ProductSearchFilters
+
+    prior = ProductSearchFilters(attr_conditions={"소재": "린넨", "핏": "오버핏"})
+    d = await decompose(
+        _FakeLLM(_raw(attrConditions={"소재": "면"})),  # 핏 미언급
+        query="면으로 바꿔",
+        prior_filters=prior,
+        profile_summary=None,
+        tier="fast",
+    )
+    assert d.filters.attr_conditions == {"소재": "면", "핏": "오버핏"}  # 소재 변경, 핏 유지
+
+
+async def test_attr_conditions_explicit_removal() -> None:
+    """[PR② PR#169 리뷰] 사용자가 명시 제거("핏은 상관없어")하면 attrRemovals 로 그 축만 뺀다.
+
+    일부러 빼는 건 항상 사용자 발화에 드러나므로, dict 모양 추측이 아니라 명시 신호로 제거한다.
+    """
+    from app.schemas.spring import ProductSearchFilters
+
+    prior = ProductSearchFilters(attr_conditions={"소재": "린넨", "핏": "오버핏"})
+    d = await decompose(
+        _FakeLLM(_raw(attrRemovals=["핏"])),
+        query="핏은 상관없어",
+        prior_filters=prior,
+        profile_summary=None,
+        tier="fast",
+    )
+    assert d.filters.attr_conditions == {"소재": "린넨"}  # 핏만 제거, 소재 유지
+
+
+async def test_attr_conditions_removal_all_yields_none() -> None:
+    """모든 축을 명시 제거하면 None(속성 하드필터 미적용)."""
+    from app.schemas.spring import ProductSearchFilters
+
+    prior = ProductSearchFilters(attr_conditions={"소재": "린넨"})
+    d = await decompose(
+        _FakeLLM(_raw(attrRemovals=["소재"])),
+        query="속성 다 빼줘",
+        prior_filters=prior,
+        profile_summary=None,
+        tier="fast",
+    )
+    assert d.filters.attr_conditions is None
+
+
+async def test_attr_conditions_prompt_teaches_merge_and_removal() -> None:
+    """[PR②] 프롬프트가 merge 기본(이전 유지)과 명시 제거(attrRemovals)를 지시한다."""
+    from app.agents.buyer.recommendation.decompose import _SYSTEM
+
+    assert "attrConditions" in _SYSTEM and "attrRemovals" in _SYSTEM
+    attr_rule = _SYSTEM.split("attrConditions", 1)[1].split("- categoryQueries", 1)[0]
+    assert "유지" in attr_rule and "attrRemovals" in attr_rule
+
+
+async def test_attr_conditions_type_and_blank_guards() -> None:
+    """[PR② — PR① 교훈] 비-dict·비문자열 값·공백 키/값은 걸러 매칭 오염·크래시를 막는다."""
+    # 비 dict → None (리스트·문자열)
+    assert (await _run(_raw(attrConditions=["소재", "린넨"]))).filters.attr_conditions is None
+    assert (await _run(_raw(attrConditions="린넨"))).filters.attr_conditions is None
+    # 비문자열 값(123)·공백 값('   ')·공백 키('  ') 제외, 유효 항목만 남김
+    d = await _run(_raw(attrConditions={"소재": "린넨", "핏": "   ", "용도": 123, "  ": "x"}))
+    assert d.filters.attr_conditions == {"소재": "린넨"}
+    # 전부 무효 → None(빈 dict 아님)
+    assert (await _run(_raw(attrConditions={"핏": "  "}))).filters.attr_conditions is None
+
+
 async def test_parses_single_category_query() -> None:
     """단일 카테고리 추측 → category_queries 길이 1, raw/query 매핑."""
     d = await _run(
