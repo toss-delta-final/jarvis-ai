@@ -9,6 +9,9 @@
 
 ## [Unreleased]
 
+### Docs
+- **CH-2 계약 확장 사본 동기화 — `conditionActions`·`screen`·`error` 추적 필드** (api-spec §3.1, v0.15.25). 정본(Notion「📡 API 명세서」CH-2) 2026-07-28 개정을 사본에 반영했다. (1) 조건 칩 제거를 `conditionActions`(`[{op:"remove", field}]`) 구조화 배열로 받는다 — 구 규약 문자열(`"[조건 제거] priceMax"`) 왕복은 폐기(#84). FE는 구 방식으로 구현돼 있으나 AI에 수신부가 없어 현재 칩 제거가 무동작이다. (2) `conditions` 칩 `field` 허용값 6종(`category`·`priceMax`·`priceMin`·`brand`·`ratingMin`·`keyword`)을 등재 — `conditionActions.field` 검증의 전제인데 종전엔 예시 둘뿐이라 계약에 없었다. (3) `screen`(`path`·`label`·`filters`·`products`) 신설 — 07-17 FE 제안과 #118의 "노출 상품 목록" 요구를 한 필드로 통합했고, 담기 가드의 "두 목록 밖 id 차단"은 유지한다. (4) in-stream `error`에 `requestId`·`retryable` 추가 — 스트림 전 실패(§2.5 봉투)에만 있던 추적 id를 스트림 내부 실패에도 싣는다. **계약 문서만 갱신했고 구현은 #84·#118에서 진행한다.**
+
 ### Added
 - **#101 PR② — attributes 유연 하드매칭** — 사용자가 명시한 상품 속성(소재·핏·용도·방수 등)을 `SpringProduct.attributes`와 관대 매칭해 하드 필터한다. `ProductSearchFilters.attr_conditions`(AI 내부, 와이어 제외)를 decompose가 추출하고, `search_catalog`가 문자열은 부분매칭·숫자는 완전일치로 비교한다. 조건 축이 없는 상품은 '반증 아님'으로 보존(#100 P0 rating 정책과 정합), 0건이면 축별 완화한다. 멀티턴은 merge(prior∪이번턴) 기본에 `attrRemovals` 명시 제거 신호로 처리 — LLM이 이전 축을 빠뜨려도 유실되지 않는다. 추측 선호(소프트)는 코드 없이 Sonnet 재랭킹이 판단. (api-spec §4.6·§4.8)
 - **#100 P1 — I-1 `color` 검색 조건 연결** — Spring I-1이 `attributes` LIKE로 지원하는 `color` 필터를 AI가 쓰도록, `ProductSearchFilters.color`와 `_search_query_params`의 `color` 전송을 추가하고 decompose 프롬프트가 색상 조건("빨간"·"검정" 등)을 `filters.color`로 추출하게 했다. 그동안 요청 모델·쿼리 변환에 `color`가 없어 Spring의 색상 검색을 못 쓰던 것을 해소. (api-spec §4.6, v0.15.22)

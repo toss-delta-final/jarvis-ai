@@ -6,8 +6,8 @@
 
 | 항목 | 값 |
 |---|---|
-| 문서 버전 | v0.15.24 |
-| 작성일 | 2026-07-14 (v0.15.24 개정 2026-07-27 — 사본 동기화: S-5 폐기(2026-07-21 정본 결정) 반영, 상품 수정은 챗봇 HITL(I-11) 유일 경로) |
+| 문서 버전 | v0.15.25 |
+| 작성일 | 2026-07-14 (v0.15.25 개정 2026-07-28 — 사본 동기화: §3.1 `conditionActions`(칩 제거, #84)·`screen`(화면 맥락, #118) 신설, `conditions` 칩 `field` 6종 확정, in-stream `error`에 `requestId`·`retryable` 추가) |
 | 상태 | draft |
 | 대상 독자 | Spring 백엔드 팀, React 프론트엔드(FE) 팀 |
 | 소유 | AI 에이전트 서버 팀 |
@@ -269,7 +269,14 @@ FE가 AI 서버(FastAPI)를 **다른 오리진에서 직접 호출**하므로 �
 {
   "sessionId": "string",
   "threadId": "string",
-  "message": "string"
+  "message": "string",
+  "conditionActions": [{ "op": "remove", "field": "category" }],
+  "screen": {
+    "path": "/products/popular",
+    "label": "인기 상품",
+    "filters": { "category": "이어폰" },
+    "products": [{ "productId": 101, "name": "무선 이어폰" }]
+  }
 }
 ```
 
@@ -277,9 +284,35 @@ FE가 AI 서버(FastAPI)를 **다른 오리진에서 직접 호출**하므로 �
 |---|---|---|---|
 | `sessionId` | string | 예 | Spring 발급 세션 식별자(불투명 스레드 키, 만료 없음, §2.6). 세션 종료 통지(§3.5)와 상관관계. **[v0.15.7] 최대 길이 = config `chat_key_max_chars`(기본 200자)** — 초과 시 `400`(불투명 키 남용 방어) |
 | `threadId` | string | 예 | 대화 스레드 식별자. 멀티턴 필터 누적·프로필 델타 워터마크 대상. **[v0.15.7] 길이 상한 동일**(`chat_key_max_chars`) |
-| `message` | string | 예 | 현재 턴 사용자 원문 질의. **[v0.15.6] 최대 길이 = config `chat_message_max_chars`(기본 4000자)** — 초과 시 `400 BAD_REQUEST`(§2.5). PII·메모리 방어(`/seller/chat` 동일). |
+| `message` | string | 예 | 현재 턴 사용자 원문 질의. **[v0.15.6] 최대 길이 = config `chat_message_max_chars`(기본 4000자)** — 초과 시 `400 BAD_REQUEST`(§2.5). PII·메모리 방어(`/seller/chat` 동일). **[v0.15.25] `conditionActions`가 1건 이상이면 빈 문자열을 허용**한다 — 둘 다 비면 `400`. |
+| `conditionActions` | array | 아니오 | **[v0.15.25 신설]** FE 조건 칩 제거 액션. 미지정 기본값은 빈 배열. **구매자 전용** — 아래 상세. |
+| `screen` | object | 아니오 | **[v0.15.25 신설]** 사용자가 지금 보고 있는 화면. 지시어("이거") 해석·담기 대상 확정에 쓴다 — 아래 상세. |
 
-> **[보안] `userId`는 요청 본문에 없다** — 사용자 식별자·역할은 `Authorization` 헤더의 JWT 클레임(`sub`/`role`)에서만 추출한다(사칭 방지, §2.3 a·§2.5).
+> **[보안] `userId`는 요청 본문에 없다** — 사용자 식별자·역할은 `Authorization` 헤더의 JWT 클레임(`sub`/`role`)에서만 추출한다(사칭 방지, §2.3 a·§2.5). `conditionActions`·`screen` 도 신원을 싣지 않는다.
+
+##### `conditionActions` — FE 조건 칩 제거 (선택) **[v0.15.25]**
+
+`conditions` 칩(아래 (2))의 X 버튼을 눌렀을 때 FE가 보내는 **구조화 신호**다. 어떤 칩을 지웠는지는 UI만 아는 사실이라 서버가 발화만으로 복원할 수 없다.
+
+- `op` — **`remove`만 허용**한다. add·replace 범용화는 필요해질 때 확장.
+- `field` — `conditions` 칩의 계약 필드 **6종만** 허용(아래 (2) 참조). 그 밖의 값은 `400`.
+- **멱등하다** — 이미 없는 필드를 지워도 성공 no-op, 같은 `field` 중복은 dedup. 재전송에 안전해야 한다.
+- **구매자 전용 계약** — 판매자 요청(§3.2)에는 없다. AI는 `BuyerChatRequest`를 따로 두어 공통 `ChatRequest`를 오염시키지 않는다.
+
+> **[폐기 v0.15.25]** 구 규약 — *"칩 제거는 왕복(round-trip), 다음 턴 `message`에 규약 문자열(예: `"[조건 제거] priceMax"`)로 실어 재분해를 트리거"* — 는 **폐기**한다(이슈 #84). FE는 이 방식으로 구현돼 있으나 AI에 수신부가 없어 **현재 칩 제거가 무동작**이다. 전환 시 FE는 제어 메시지를 사용자 말풍선으로 남기지 않는다.
+
+##### `screen` — 현재 보고 있는 화면 (선택) **[v0.15.25]**
+
+사이드 채팅은 사용자가 페이지를 옮겨 다니는 동안 열려 있다. 그 상태의 **"이거"** 는 발화만으로 확정할 수 없다 — 무엇을 보고 있었는지는 FE만 아는 사실이다(이슈 #118, 07-17 FE 제안).
+
+| 필드 | 타입 | 필수 | 설명 |
+|---|---|---|---|
+| `path` | string | 예 | 라우트 경로 |
+| `label` | string | 예 | **LLM 프롬프트에 그대로 넣을 한글 화면명**("주문 목록"). `path`를 AI가 해석하게 하지 않는다 — 라우트 변경이 프롬프트를 깨뜨리지 않게 |
+| `filters` | object | 아니오 | 화면에 걸린 필터. 판매자 "이 목록 왜 비어?" 류 질문에 필요 |
+| `products` | array | 아니오 | **화면에 노출 중인 상품** `[{productId, name}]`. `name`은 "무선 이어폰 담아줘" 발화를 productId로 확정하는 데 쓴다 |
+
+> **[보안] `screen.products`는 담기 허용 목록을 넓히는 입력이지 프리패스가 아니다.** 담기 가드는 **(직전 추천 ∪ `screen.products`의 productId)** 를 allowed로 취급하며, **두 목록 밖의 id는 여전히 차단**한다 — LLM이 발화 속 임의 숫자를 오추출해 담는 것을 막는 기존 가드는 유지된다. 실제 담기는 I-2(§4.1)가 재고·판매상태를 다시 검증한다.
 
 #### 응답 (Response) — `text/event-stream`
 
@@ -305,8 +338,9 @@ SSE로 스트리밍한다. 표준 `EventSource`는 GET 전용이므로 FE는 **f
 }
 ```
 
-- FE는 각 칩을 제거 가능한 형태로 노출한다. **칩 제거는 왕복(round-trip)** — 다음 턴의 `message`에 **규약 문자열**(예: `"[조건 제거] priceMax"`)로 실어 재분해를 트리거한다.
-- **규약 문자열 정확 포맷은 🔴 협의(LLM 팀 소유)**.
+- FE는 각 칩을 제거 가능한 형태로 노출한다. **[v0.15.25] 칩 제거는 위 `conditionActions`로 보낸다** — 구 규약 문자열 왕복 방식은 폐기됐다(이슈 #84).
+- **[v0.15.25] `field` 허용값 6종** — `category`(카테고리 · 이어폰) / `priceMax`(50,000원 이하) / `priceMin`(30,000원 이상) / `brand`(삼성 · LG) / `ratingMin`(평점 4.5+) / `keyword`(방수). **`conditions`가 내보내는 집합과 `conditionActions`가 지우는 집합은 동일하다.** 종전에는 예시 둘만 있어 허용 집합이 계약에 없었다.
+- 칩은 LLM 출력이 아니라 **확정된 병합 필터에서 결정론적으로 파생**된다(`build_condition_chips`) — 같은 필터면 항상 같은 칩이 나온다.
 
 **(3) `action`** — 장바구니 담기 결과 (0회 이상). §4.1(I-2)과 연동.
 
@@ -373,10 +407,21 @@ SSE로 스트리밍한다. 표준 `EventSource`는 GET 전용이므로 FE는 **f
 **(6) `error`** — 오류 종료 (스트림 내부)
 
 ```json
-{ "type": "error", "data": { "code": "LLM_TIMEOUT", "message": "일시적으로 응답이 지연됐어요." } }
+{
+  "type": "error",
+  "data": {
+    "code": "LLM_TIMEOUT",
+    "message": "일시적으로 응답이 지연됐어요.",
+    "requestId": "9f2c1a7e4b8d43f5a0c6e1d97b3f8a24",
+    "retryable": true
+  }
+}
 ```
 
 - **스트림 내부 `error.code` 허용값(4종)**: `LLM_TIMEOUT` / `LLM_UNAVAILABLE` / `SEARCH_FAILED` / `INTERNAL`.
+- **[v0.15.25] `requestId`** — 이 요청의 추적 id. 스트림 시작 **전** 실패는 §2.5 오류 봉투에 이미 `requestId`를 싣는데 스트림 **내부** 실패에는 없어, 정작 사용자가 "오류 났어요"라고 신고하는 쪽을 로그에서 찾을 수 없었다. 봉투와 같은 값을 쓴다.
+- **[v0.15.25] `retryable`** (boolean) — FE가 재시도를 권할지 판단하는 근거. **`code`로는 복원할 수 없다** — 같은 `LLM_UNAVAILABLE`이라도 "LLM 미구성"(재시도 무의미)과 "모델 일시 불가"(재시도 유효)가 섞이므로 **emit 지점이 값을 정한다**.
+- **판매자 스트림(§3.2)도 동일** — `error` 페이로드는 구매자·판매자 공용 스키마다(`ErrorData`).
 - **단계별 상세는 서버 로그 전용** — decompose/rerank 등 스테이지 단위 실패 코드는 사용자 스트림에 노출하지 않는다. rerank 실패는 검색 상위로 degrade 후 `done`으로 종료한다(하드 제약 유지).
 
 #### MVP 추가 페이로드 — SSE 측 탑재 (구매자)
@@ -1084,6 +1129,7 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 
 | 버전 | 날짜 | 변경 |
 |---|---|---|
+| v0.15.25 | 2026-07-28 | **[사본 동기화] §3.1 요청 계약 확장 + in-stream `error` 추적 필드 — 정본(Notion "📡 API 명세서" CH-2) 2026-07-28 개정 반영.** (1) **`conditionActions` 신설**(이슈 #84) — 조건 칩 제거를 `[{op:"remove", field}]` 구조화 배열로 받는다. 구 규약 문자열(`"[조건 제거] priceMax"`) 왕복 방식은 **폐기** — FE는 그 방식으로 구현돼 있으나 AI에 수신부가 없어 현재 칩 제거가 무동작이다. `conditionActions`가 있으면 `message` 빈 문자열 허용, 둘 다 비면 `400`. 구매자 전용(`BuyerChatRequest`). (2) **`conditions` 칩 `field` 허용값 6종 확정** — `category`/`priceMax`/`priceMin`/`brand`/`ratingMin`/`keyword`. 종전에는 예시 둘만 있어 허용 집합이 계약에 없었는데, `conditionActions.field` 검증의 전제라 등재했다(코드 `build_condition_chips` 실측과 일치). (3) **`screen` 신설**(이슈 #118) — `{path, label, filters?, products?}`. 07-17 FE 제안(`ChatScreenContext`)과 #118의 "노출 상품 목록" 요구를 **한 필드로 통합**했다(같은 사실의 두 측면). `products`는 담기 허용 목록을 넓히는 입력이며 **두 목록 밖 id 차단 가드는 유지**한다. (4) **in-stream `error`에 `requestId`·`retryable` 추가** — 스트림 전 실패(§2.5 봉투)에는 `requestId`가 있는데 스트림 내부 실패에는 없어 추적이 끊겼다. `retryable`은 `code`로 복원 불가(같은 `LLM_UNAVAILABLE`이 미구성/일시불가에 겸용)라 emit 지점이 정한다. §3.2 판매자 스트림도 동일(`ErrorData` 공용). |
 | v0.15.24 | 2026-07-27 | **[사본 동기화] S-5 폐기 반영 — 정본(기획 저장소 Notion "📡 API 명세서" DB) 2026-07-21 결정이 본 사본에 미반영이었다.** S-5 `PATCH /api/seller/products/{id}`(판매자 화면 직접 수정, 07/17 신설)는 **미채택**이며 **상품 수정은 챗봇 HITL(I-11)이 유일 경로**다. §3.2 draft 절의 "챗봇 수정(I-11)과 병존" 서술을 폐기 표기로 교체. Spring 코드 실측에서도 `/api/seller/**`에 PATCH 엔드포인트가 없어 정본·코드 모두와 일치시켰다. 계약 변경이 아니라 **사본 drift 정정**이다. |
 | v0.15.23 | 2026-07-27 | **[#100 P0/P1/P2] I-1 §4.6 실측 정합.** 표시 전용 필드(`imageUrl`·`originalPrice`·`reviewCount`·`options`)를 응답표에서 제거하고 CH-5(§4.3) 하이드레이션 이관 명시(AI 추천 경로 미사용), `price`·`rating`을 "AI 계산용(비표시 — 예산검증 `verifiedSum`·평점 사후필터·rerank 신호, 질의 시점 필요)"으로 명기해 display 오분류 재발 차단, envelope 예시를 실측 `{success, data:[...]}`(bare array)로 정정, 요청 `brandName` 단일→다중(반복 파라미터 → `WHERE brand IN`, 방법 D), `totalCount` 필드 불필요 결정 반영. |
 | v0.15.22 | 2026-07-26 | **[#100 P1] I-1 `color` 요청 파라미터 연결.** decompose가 색상 조건("빨간"·"검정")을 `filters.color`로 추출·전송하고, BE I-1이 `attributes` LIKE로 필터. 요청 모델·쿼리 변환에 `color`가 없어 Spring 색상 검색을 못 쓰던 것을 해소. |
