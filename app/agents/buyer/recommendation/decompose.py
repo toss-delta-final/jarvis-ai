@@ -127,16 +127,13 @@ async def decompose(
         category_queries = _parse_category_queries(data.get("categoryQueries"), category_fanout_max)
         # semanticQuery 는 filters 밖(최상위)에 오는 의미검색 입력 — 검색 백엔드까지 흐르도록
         # filters 에 실어준다(#101). 폴백 순서(PR#166 리뷰):
-        #   LLM 값 → 이번 턴 categoryQueries 신호 → 직전 턴 값 → 이번 턴 원문(query).
-        # categoryQueries 파생을 prior_sq 보다 **먼저** 둬 재정렬 앵커를 category 와 정합시킨다 —
-        # 주제 전환(예: "운동화")에서 LLM 이 semanticQuery 만 비우면 prior 로 폴백 시 category=운동화인데
-        # 앵커=직전 상품이 되는 불일치가 생긴다. 정제발화("더 저렴한")는 categoryQueries 에 직전
-        # 카테고리가 승계돼 그 값이 앵커가 되므로 오염되지 않는다. categoryQueries 자체가 비면
-        # (신호 없음) 직전 semantic_query 로, 그마저 없으면 원문으로 폴백한다.
-        cat_signal = next(
-            (cq.query or cq.raw_category for cq in category_queries if cq.query or cq.raw_category),
-            None,
-        )
+        #   LLM 값 → 이번 턴 categoryQueries **query** 신호 → 직전 턴 값 → 이번 턴 원문(query).
+        # cat_signal 은 cq.query(자연어 검색어) 있는 leg 만 취한다 — raw_category("가전 > 이어폰/헤드폰"
+        # 같은 분류 경로 breadcrumb)는 임베딩 앵커로 부적합하고, 정제발화("더 저렴한")에서 LLM 이
+        # 카테고리만 승계(query=null)한 경우까지 신호로 잡으면 breadcrumb 가 prior_sq(자연어)를
+        # 밀어내 dc5094b 가 고친 오염이 재발한다. 즉 query 유무가 '주제 전환(query 채움)' vs
+        # '정제발화 카테고리 승계(query=null)'를 가른다 — 전자는 cat_signal, 후자는 prior_sq 로.
+        cat_signal = next((cq.query for cq in category_queries if cq.query), None)
         prior_sq = prior_filters.semantic_query if prior_filters else None
         filters.semantic_query = str(data.get("semanticQuery") or cat_signal or prior_sq or query)
     except (ValidationError, ValueError, TypeError) as exc:

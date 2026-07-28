@@ -93,6 +93,33 @@ async def test_semantic_query_prefers_current_category_over_prior_on_topic_chang
     assert d.filters.semantic_query == "운동화"  # prior("빨간 원피스") 아님, 이번 카테고리 신호
 
 
+async def test_semantic_query_carries_prior_when_only_category_carried_no_query() -> None:
+    """[#101 PR#166 리뷰] 정제발화에서 카테고리만 승계(categoryQueries query=null)하고 semanticQuery
+    를 비우면, raw_category(분류 경로 breadcrumb)가 아니라 직전 자연어 semantic_query 로 폴백한다.
+
+    cat_signal 은 cq.query 있는 leg 만 취한다 — 순수 카테고리 승계(정제발화)는 신호가 아니다.
+    raw_category("가전 > 이어폰/헤드폰")를 앵커로 쓰면 breadcrumb 문자열로 재정렬돼 dc5094b 가
+    고친 정제발화 오염이 categoryQueries 경로로 재발한다.
+    """
+    from app.schemas.spring import ProductSearchFilters
+
+    prior = ProductSearchFilters(semantic_query="가성비 좋은 무선 이어폰")
+    d = await decompose(
+        _FakeLLM(
+            _raw(
+                semanticQuery="",
+                categoryQueries=[{"category": "가전 > 이어폰/헤드폰", "query": None}],
+            )
+        ),
+        query="더 저렴한 걸로",
+        prior_filters=prior,
+        profile_summary=None,
+        tier="fast",
+    )
+    # raw_category breadcrumb 아님 — 직전 자연어 semantic_query 유지.
+    assert d.filters.semantic_query == "가성비 좋은 무선 이어폰"
+
+
 async def test_parses_single_category_query() -> None:
     """단일 카테고리 추측 → category_queries 길이 1, raw/query 매핑."""
     d = await _run(
