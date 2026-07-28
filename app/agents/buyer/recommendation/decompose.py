@@ -141,7 +141,11 @@ async def decompose(
         # _parse_category_queries 가 이미 공백을 None 으로 거른다. 최종 원문(query)만 raw 폴백.
         cat_signal = category_queries[0].query if len(category_queries) == 1 else None
         prior_sq = (prior_filters.semantic_query or "").strip() if prior_filters else ""
-        llm_sq = (data.get("semanticQuery") or "").strip()
+        # data.get("semanticQuery")는 미검증 raw LLM 값 — 비문자열 truthy(숫자·리스트)면 `x or ""`가
+        # 그 값을 그대로 반환해 .strip()에서 AttributeError(위 except 가 안 잡아 SSE 를 깬다). 형제
+        # 필드(revert·categoryQueries)처럼 isinstance(str) 가드 후 strip 한다(구 str() 안전장치 복원).
+        raw_sq = data.get("semanticQuery")
+        llm_sq = raw_sq.strip() if isinstance(raw_sq, str) else ""
         filters.semantic_query = llm_sq or cat_signal or prior_sq or query
     except (ValidationError, ValueError, TypeError) as exc:
         raise LLMError("decompose 필터/케이스/장바구니 파싱 실패") from exc

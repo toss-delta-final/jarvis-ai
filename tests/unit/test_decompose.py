@@ -166,6 +166,25 @@ async def test_semantic_query_blank_only_treated_as_missing() -> None:
     assert d.filters.semantic_query == "무선 이어폰"  # 공백 아님, 직전 값 유지
 
 
+async def test_semantic_query_non_string_value_does_not_crash() -> None:
+    """[#101 PR#166 리뷰] LLM 이 semanticQuery 를 문자열 아닌 truthy(숫자·리스트·dict)로 내도
+    AttributeError 로 스트림을 깨지 않는다.
+
+    `(123 or "").strip()` 은 123 이 truthy 라 그대로 반환돼 123.strip() 에서 AttributeError 가
+    나는데, 그 예외는 except (ValidationError, ValueError, TypeError) 에 안 잡혀 SSE 를 깬다.
+    형제 필드(revert·categoryQueries)처럼 isinstance(str) 가드가 필요하다(구 str() 안전장치 복원).
+    """
+    for bad in (123, ["여행", "이어폰"], {"k": "v"}):
+        d = await decompose(
+            _FakeLLM(_raw(semanticQuery=bad)),
+            query="원문 발화",
+            prior_filters=None,
+            profile_summary=None,
+            tier="fast",
+        )
+        assert d.filters.semantic_query == "원문 발화"  # 비문자열 무시 → 원문 폴백
+
+
 async def test_blank_category_query_not_promoted_to_cat_signal() -> None:
     """[#101 PR#166 리뷰] 공백-only categoryQuery.query 는 신호가 아니다 — cat_signal 로 승격되지
     않고 폴백한다(_parse_category_queries 가 공백을 None 으로 정규화)."""
