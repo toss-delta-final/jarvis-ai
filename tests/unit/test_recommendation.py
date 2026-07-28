@@ -330,6 +330,28 @@ def test_rerank_system_prompt_forbids_quoting_price() -> None:
     assert "price" in _SYSTEM and "ratingLevel" in _SYSTEM and "reviewLevel" in _SYSTEM
 
 
+def test_rerank_prompt_lists_all_tier_return_values() -> None:
+    """[#171 PR#172 리뷰⑦] 프롬프트 enum 이 실제 티어 반환값을 모두 포함한다.
+
+    _review_tier 는 review_count is None(BE 미전송)에 '정보없음'을 반환하는데, 이 값이 프롬프트
+    reviewLevel 목록에 없으면 LLM 이 예고 못 받은 값을 만나 임의 해석·근거 날조할 수 있다. 실제
+    반환값 집합과 프롬프트 enum 을 일치시켜 드리프트를 막는다(rating 은 이미 일치).
+    """
+    from app.agents.buyer.recommendation.rerank import _SYSTEM, _rating_tier, _review_tier
+    from app.schemas.spring import SpringProduct
+
+    def _p(**kw) -> SpringProduct:
+        return SpringProduct(product_id=1, name="x", **kw)
+
+    rating_vals = {
+        _rating_tier(_p(rating=r, review_count=rc))
+        for r, rc in [(None, 5), (0.0, 0), (0.0, 5), (3.5, 5), (4.2, 5), (4.8, 5)]
+    }
+    review_vals = {_review_tier(_p(review_count=rc)) for rc in [None, 0, 3, 10, 50, 200]}
+    for v in rating_vals | review_vals:
+        assert v in _SYSTEM, f"티어값 {v!r} 이 프롬프트 enum 에 없음"
+
+
 def test_redact_leaked_price_only_flags_currency_context() -> None:
     """[#171 PR#172] 코드 가드는 price(정밀값) 유출만 backstop 으로 잡는다.
 
