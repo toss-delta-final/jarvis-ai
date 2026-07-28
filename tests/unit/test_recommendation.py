@@ -772,6 +772,46 @@ async def test_fanout_legs_rerank_with_leg_specific_semantic_query() -> None:
     assert set(seen_sq) == {"여행 자물쇠", "여행용 어댑터"}
 
 
+async def test_fanout_query_null_leg_falls_to_global_not_breadcrumb_canonical() -> None:
+    """[#101 PR#166 리뷰] 멀티 fan-out 에서 query=null 인 leg 는 canonical(분류 경로 breadcrumb)이
+    아니라 전역 semantic_query(자연어)로 폴백한다.
+
+    canonical 은 "가전 > 이어폰/헤드폰" 같은 분류 경로라 임베딩 앵커로 부적합하다(decompose 의
+    cat_signal 이 raw_category 를 배제하는 것과 동일 원칙). query 있는 leg 는 leg 검색어를, query=null
+    leg 는 broad 해도 자연어인 전역값을 앵커로 쓴다.
+    """
+    seen: dict[str, str | None] = {}
+
+    async def _spy_search(filters, exclude_product_ids=None):
+        seen[filters.category] = filters.semantic_query
+        return ProductSearchResult(
+            products=list(DEFAULT_PRODUCTS), total_count=len(DEFAULT_PRODUCTS)
+        )
+
+    decompose = {
+        "intent": "recommend",
+        "reply": "",
+        "semanticQuery": "유럽여행 준비물",
+        "categoryQueries": [
+            {"category": "여행용품", "query": "여행 자물쇠"},
+            {"category": "가전 > 이어폰/헤드폰", "query": None},
+        ],
+        "filters": {},
+    }
+    await _collect(
+        run_buyer_turn(
+            _req(),
+            _guest(),
+            llm=FakeLLM(decompose=decompose),
+            search=_spy_search,
+            push_fn=_RecordingPush(),
+        )
+    )
+    assert seen["여행용품"] == "여행 자물쇠"  # query 있는 leg → leg 검색어
+    # query=null leg → breadcrumb canonical 아니라 전역 자연어.
+    assert seen["가전 > 이어폰/헤드폰"] == "유럽여행 준비물"
+
+
 async def test_single_category_leg_keeps_global_semantic_query() -> None:
     """[#101 PR#166 리뷰] 단일 카테고리(leg 1개)는 전역 semantic_query(가장 풍부한 전체 의도)를
     재정렬 앵커로 유지한다 — leg 검색 키워드로 다운그레이드하지 않는다.

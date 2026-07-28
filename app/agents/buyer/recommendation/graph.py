@@ -144,13 +144,14 @@ async def stream_recommendation(
         async def _leg(canonical: str, query: str | None) -> ProductSearchResult | None:
             # leg 전체를 try 로 감싼다 — model_copy·search 어디서 실패해도 그 leg 만 드롭한다.
             try:
-                # [#101 PR#166] 멀티 카테고리면 semantic_query 도 leg 값으로 override 한다 — 안 하면
-                # 전 leg 가 동일 전역 벡터로 pgvector 재정렬돼 leg 관련성이 깨진다("유럽여행 준비물"로
-                # 여행용품·전자기기·의류를 똑같이 정렬). leg 검색어(query)→canonical 카테고리명 순 앵커.
-                # 단일 카테고리(leg 1개)는 전역 semantic_query(LLM 의 가장 풍부한 전체 의도)가 곧 그
-                # leg 의 의도라 유지한다 — leg 검색 키워드로 다운그레이드하지 않는다.
+                # [#101 PR#166] 멀티 카테고리면 semantic_query 도 leg 검색어(query)로 override 한다 —
+                # 안 하면 전 leg 가 동일 전역 벡터로 pgvector 재정렬돼 leg 관련성이 깨진다("유럽여행
+                # 준비물"로 여행용품·전자기기·의류를 똑같이 정렬). query=null 인 leg 는 canonical
+                # ("가전 > 이어폰/헤드폰" 같은 분류 경로 breadcrumb)이 아니라 전역 semantic_query(broad
+                # 해도 자연어)로 폴백한다 — breadcrumb 는 임베딩 앵커로 부적합(decompose cat_signal 과
+                # 동일 원칙). 단일 카테고리(leg 1개)는 전역값(LLM 의 가장 풍부한 전체 의도)을 유지한다.
                 leg_semantic = (
-                    (query or canonical or decision.filters.semantic_query)
+                    (query or decision.filters.semantic_query)
                     if len(legs) > 1
                     else decision.filters.semantic_query
                 )
