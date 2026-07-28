@@ -1,9 +1,9 @@
 ---
 id: SPEC-RECOMMEND-001
-version: 0.8.0
+version: 0.9.0
 status: draft
 created: 2026-07-07
-updated: 2026-07-13
+updated: 2026-07-28
 author: navis
 priority: high
 issue_number: null
@@ -25,6 +25,7 @@ issue_number: null
 > v0.6.0은 추가로 **결정 14-F**(구매 이력 기반 추천 제외 — `search` 단계 필터로 Case 1/2·3 공통 적용, exact `product_id` 항상 제외 + 소모품 카테고리 억제[MVP는 단순판=소모품 boolean 플래그], non-blocking 되돌리기 제안 칩[결정 14-D `suggestions` 재사용], 게스트 스킵[결정 8], 정교한 재구매 주기·다양성 모델은 고도화 유예)를 구속 제약으로 반영한다.
 > v0.7.0은 추가로 **결정 14-G**(멀티턴 주제 전환 초기화 — 기존 add/replace에 **reset** 전이 추가, `decompose`가 판단[LLM 추가 호출 없음], 범용 명시 제약[가격 등 `source: user`]은 config `multiturn.carry_on_reset`[기본 `["price"]`]로 캐리, "~도/그리고 + 둘 다 상품"은 reset이 아니라 Case 3 다중 니즈로 승격, 정교한 부분 캐리·병렬 승격 판별은 고도화 유예)를 구속 제약으로 반영한다.
 > v0.8.0은 추가로 **결정 14-H**(Case 3 니즈 우선순위 3단계 — `essential` boolean을 `priority`[1 필수/2 권장/3 선택]로 개정, 판정 기준 "이게 빠지면 그 상황/요리가 성립하는가"는 decompose 프롬프트, 활용은 노출 순서·예산 배분·예산 부족 시 제거 순서[선택→권장, 필수 최후], 하드 절단 금지 불변)를 구속 제약으로 반영한다.
+> **v0.9.0 (2026-07-28, #101 정합) — 검색 아키텍처 supersede 노트**: 본 SPEC은 결정 3 시절 **"질의 시점 단일 SQL(WHERE + pgvector 유사도)"**·**결정 9-B "Spring MySQL 원본 → AI Postgres 필터 컬럼 미러"** 를 전제로 서술한 부분이 있으나(§0 EX-5·§2 `search` tool·§4 결정 3·결정 9 표 등), 이는 **api-spec v0.5.0의 Spring 위임 피벗으로 폐기**됐다(상품 원본 컬럼 AI 사본 금지, AI Postgres엔 생성물[extras·search_doc·임베딩]만). **#101이 채택·구현한 실제 검색 아키텍처 = api-spec §4.8 방식2**: ① Spring I-1(`GET /internal/products/search`, §4.6)이 고정필터(카테고리·가격·브랜드) 후보를 전량 반환(원본 SQL 아님), ② AI가 그 후보의 attribute를 decompose 명시 속성조건(`attr_conditions`)과 관대 하드 매칭 + catalog DB(pgvector) 임베딩과 `semantic_query`의 코사인으로 재정렬, ③ 최근구매 dedup 이후 `embedding_rerank_limit`으로 압축해 rerank(Sonnet) 입력 생성. 즉 "단일 SQL"은 **Spring 1차 위임 + AI 2차 압축(`EmbeddingRerankBackend`)** 으로, "미러"는 **AI 생성물만 저장(원본 미러 없음)** 으로 읽는다. 계약이 어긋나면 **api-spec을 따른다**(상단 mirror 노트). 요구사항 번호·State 스키마·인수 기준은 무개정.
 
 ## HISTORY
 

@@ -5,7 +5,9 @@
 | 문서 상태 | draft |
 | 작성일 | 2026-07-17 (2026-07-17 카탈로그 데이터 구축을 별도 문서로 분리) |
 | 담당 범위 | 상품 추천 에이전트(추천 서브그래프) + 프로필 구축/개인화 에이전트(프로필 파이프라인) + 장바구니 에이전트(cart 서브그래프) |
-| 관계 정본 | 계약: [api-spec.md](api-spec.md) v0.15.8 · 기술 명세: [SPEC-RECOMMEND-001](specs/SPEC-RECOMMEND-001.md) v0.8.0 / [SPEC-PROFILE-001](specs/SPEC-PROFILE-001.md) v0.2.0 |
+| 관계 정본 | 계약: [api-spec.md](api-spec.md) v0.15.8 · 기술 명세: [SPEC-RECOMMEND-001](specs/SPEC-RECOMMEND-001.md) v0.9.0 / [SPEC-PROFILE-001](specs/SPEC-PROFILE-001.md) v0.2.0 |
+
+> **[#101 정합 노트]** 본 PRD가 §3.1/§6.2에서 기술한 "1차 Spring 위임 + 2차 AI 압축(attribute 매칭 + 임베딩 유사도)" = api-spec §4.8 **방식2**를 #101이 채택·구현했다(hot path 기본 `EmbeddingRerankBackend`, config `search_backend`). attribute 유연 매칭은 #101 PR②(`attr_conditions` 하드 매칭)로 구현. PRD 설계와 코드가 일치한다.
 
 ## 0. 이 문서를 읽는 법 — 문서 간 관계
 

@@ -10,6 +10,7 @@
 ## [Unreleased]
 
 ### Added
+- **#101 PR② — attributes 유연 하드매칭** — 사용자가 명시한 상품 속성(소재·핏·용도·방수 등)을 `SpringProduct.attributes`와 관대 매칭해 하드 필터한다. `ProductSearchFilters.attr_conditions`(AI 내부, 와이어 제외)를 decompose가 추출하고, `search_catalog`가 문자열은 부분매칭·숫자는 완전일치로 비교한다. 조건 축이 없는 상품은 '반증 아님'으로 보존(#100 P0 rating 정책과 정합), 0건이면 축별 완화한다. 멀티턴은 merge(prior∪이번턴) 기본에 `attrRemovals` 명시 제거 신호로 처리 — LLM이 이전 축을 빠뜨려도 유실되지 않는다. 추측 선호(소프트)는 코드 없이 Sonnet 재랭킹이 판단. (api-spec §4.6·§4.8)
 - **#100 P1 — I-1 `color` 검색 조건 연결** — Spring I-1이 `attributes` LIKE로 지원하는 `color` 필터를 AI가 쓰도록, `ProductSearchFilters.color`와 `_search_query_params`의 `color` 전송을 추가하고 decompose 프롬프트가 색상 조건("빨간"·"검정" 등)을 `filters.color`로 추출하게 했다. 그동안 요청 모델·쿼리 변환에 `color`가 없어 Spring의 색상 검색을 못 쓰던 것을 해소. (api-spec §4.6, v0.15.22)
 - pg-catalog `products` 임베딩 프로비넌스 컬럼(`embed_model·embed_dim·embed_task·normalized`) + `embedding_meta_complete` CHECK, 기존 볼륨용 마이그레이션(#65).
 - `embed_texts(task_type=...)` 및 비대칭 임베딩 바인딩(질의=RETRIEVAL_QUERY / 문서=RETRIEVAL_DOCUMENT)(#65).
@@ -29,6 +30,7 @@
   SPEC-PROFILE-001 v0.4.0)
 
 ### Changed
+- **#101 PR① — 추천 방식2(pgvector 2차 압축) hot path 복구** — 기본 검색 백엔드를 config `search_backend`(기본 `embedding_rerank`) 기반 지연 팩토리로 전환해 hot path가 `EmbeddingRerankBackend`(방식2)를 쓴다: Spring I-1 전량 → `semanticQuery` 임베딩 pgvector 코사인 재정렬 → dedup 이후 `embedding_rerank_limit`(30) 압축 → Sonnet. `semanticQuery`를 keyword와 분리해 백엔드까지 배선하고(fan-out은 leg별 검색어를 앵커로), 후보 embedding을 `get_many` 배치로 조회(N+1 제거)한다. **top-K 절단을 `search_catalog`(사전)에서 graph의 최근구매 dedup 이후로 이동** — dedup이 상위를 지워도 rerank 후보가 상한까지 채워진다(recall 손실 해소). 임베딩/pgvector 장애는 `SEARCH_FAILED`가 아니라 Spring 순서 degrade(#7). 단계별 후보 수 관측 로그 추가. api-spec §4.8 OPEN(방식1/2 골든셋)을 방식2 채택으로 해소(방식1 `VectorSearchBackend`는 C-17 미착수 오프라인 존치). (api-spec §4.8)
 - **I-1 검색 `size` 제거 → 라운드1 전량 반환 + AI top-K** — BE 합의(2026-07-23)로 Spring `GET /internal/products/search` 요청에서 `size` 파라미터를 제거했다. 라운드1은 고정필터(category·price·brand) 매칭을 전량 반환하고, 결과 수 제한(top-K)은 AI가 `search_catalog`에서 사후필터(dedup·평점) 뒤 `filters.limit`로 절단한다 — `ProductSearchFilters.limit`은 이제 Spring `size`가 아니라 **AI 후보 상한(rerank 입력 top-K)**이다. 기본 백엔드(`SpringSearchBackend`)·팬아웃 경로 모두 동일하게 적용되며, 절단이 사후필터 이후라 제외분만큼 후보가 낭비되지 않는다. pgvector 재정렬 백엔드(`EmbeddingRerankBackend`)로의 `default_backend` 전환은 후속. (api-spec §4.6, v0.15.21)
 - **#100 P1 — I-1 다중 브랜드 전량 전송** — `_search_query_params`가 `brand[0]`만 `brandName`으로 보내 2번째 이후 브랜드가 유실되고 조건칩은 전 브랜드를 표시하던 거짓표시를, 브랜드 전량을 `brandName` 반복 파라미터(`brandName=A&brandName=B`)로 실어 보내도록 바꿨다 — 요청이 조건칩과 일치한다. 실제 다중 필터링(`WHERE brand IN`)은 BE의 `brandName` 배열 수용이 전제라 price·rating 응답 반환과 함께 I-1 계약 협의에 포함(방법 D). (api-spec §4.6)
 - **이슈 #82 — 판매자 LLM을 공용 provider 토글에 연결** — 판매자 역할이 Anthropic 모델을 직접 고르던 경로를 `fast`/`smart` tier와 공용 resolver로 전환했다. 기본 OpenAI는 tier별 reasoning effort를 사용하고 `temperature`를 보내지 않으며, Anthropic 전환 시 기존 temperature 정책을 유지한다. 활성 provider 키 누락은 SDK 호출 전에 차단해 판매자 SSE `LLM_UNAVAILABLE`로 반환하고, 구조화 출력은 provider 간 동일한 `ToolStrategy` 계약을 유지한다. 와이어 계약 변경 없음.
