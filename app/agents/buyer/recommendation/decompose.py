@@ -41,6 +41,10 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
 - recommend: 정확한 수치 제약은 filters 에 넣고 semanticQuery 로 근사하지 마세요.
   PRIOR_FILTERS 가 있으면 병합(좁히면 add, 모순되면 replace)하세요.
   색상 조건(예: "빨간", "검정")이 있으면 filters.color 에 넣으세요.
+  semanticQuery 는 **찾는 상품의 의미**(예: "무선 이어폰")입니다. "더 저렴한 걸로", "다른 브랜드로"
+  같은 **조건 다듬기 발화면 그 문구를 semanticQuery 로 쓰지 말고** PRIOR_FILTERS.semanticQuery(직전
+  상품 의미)를 그대로 유지하세요 — 가격·브랜드 다듬기는 filters(priceMax·brand 등)로 가고,
+  semanticQuery 는 직전 상품 의미를 이어야 벡터 재정렬이 뜻을 잃지 않습니다.
 - categoryQueries: 사용자가 원하는 상품/목적별로 **카테고리를 최대한 추출**하세요.
   단일 상품 질의("무선 이어폰")면 1개, 상황형 질의("유럽여행 준비물")면 필요한 카테고리를
   여러 개 나눠 담으세요(예: 여행용품·전자기기·의류). category 는 best-guess(정말 모르면 null),
@@ -116,17 +120,38 @@ async def decompose(
         cart = _parse_cart(data.get("cart"))
         raw_revert = data.get("revertCategories")
         revert_categories = (
-            [str(c) for c in raw_revert if isinstance(c, str) and c]
+            [
+                str(c) for c in raw_revert if isinstance(c, str) and c.strip()
+            ]  # 공백-only 제외(PR#166)
             if isinstance(raw_revert, list)
             else []
         )
         category_queries = _parse_category_queries(data.get("categoryQueries"), category_fanout_max)
+        # semanticQuery 는 filters 밖(최상위)에 오는 의미검색 입력 — 검색 백엔드까지 흐르도록
+        # filters 에 실어준다(#101). 폴백 순서(PR#166 리뷰):
+        #   LLM 값 → (단일 카테고리면) 그 leg query → 직전 턴 값 → 이번 턴 원문(query).
+        # cat_signal 은 **단일 카테고리**일 때만 그 leg query(자연어 검색어)를 전역으로 승격한다.
+        # (1) raw_category("가전 > 이어폰/헤드폰" 분류 경로 breadcrumb)는 앵커로 부적합해 query 만 본다.
+        # (2) 멀티 카테고리면 승격하지 않는다 — 전역 semantic_query 는 graph 의 query-null leg 폴백으로
+        #     재사용되므로, 한 leg 검색어("여행 자물쇠")가 전역이 되면 무관한 leg(전자기기) 앵커로 샌다.
+        #     멀티는 broad 한 prior_sq/원문으로 폴백하고, query 있는 멀티 leg 는 graph 가 자기 query 로
+        #     override 한다(len(legs)>1). 단일 정제발화(query=null)면 cat_signal=None → prior_sq(#6).
+        # 각 후보는 공백-only 를 falsy 로 정규화(spring_client._search_query_params 와 동일 규약,
+        # PR#166) — LLM 이 "   " 를 내도 truthy 라 폴백 체인을 밀어내지 않게 한다. cat_signal 은
+        # _parse_category_queries 가 이미 공백을 None 으로 거른다. 최종 원문(query)만 raw 폴백.
+        cat_signal = category_queries[0].query if len(category_queries) == 1 else None
+        prior_sq = (prior_filters.semantic_query or "").strip() if prior_filters else ""
+        # data.get("semanticQuery")는 미검증 raw LLM 값 — 비문자열 truthy(숫자·리스트)면 `x or ""`가
+        # 그 값을 그대로 반환해 .strip()에서 AttributeError(위 except 가 안 잡아 SSE 를 깬다). 형제
+        # 필드(revert·categoryQueries)처럼 isinstance(str) 가드 후 strip 한다(구 str() 안전장치 복원).
+        raw_sq = data.get("semanticQuery")
+        llm_sq = raw_sq.strip() if isinstance(raw_sq, str) else ""
+        filters.semantic_query = llm_sq or cat_signal or prior_sq or query
     except (ValidationError, ValueError, TypeError) as exc:
         raise LLMError("decompose 필터/케이스/장바구니 파싱 실패") from exc
     return RouteDecision(
         intent=intent,
         filters=filters,
-        semantic_query=str(data.get("semanticQuery") or query),
         case=case,
         reply=str(data.get("reply") or ""),
         cart=cart,
@@ -149,10 +174,12 @@ def _parse_category_queries(raw: object, fanout_max: int) -> list[CategoryQuery]
             continue
         cat = item.get("category")
         qry = item.get("query")
+        # 공백-only('  ')는 None 으로 정규화 — LLM 텍스트를 truthy 로 두면 빈 카테고리/검색어가
+        # 신호로 잡혀 cat_signal 승격·leg 앵커를 오염시킨다(spring_client 와 동일 blank=falsy 규약, PR#166).
         out.append(
             CategoryQuery(
-                raw_category=str(cat) if isinstance(cat, str) and cat else None,
-                query=str(qry) if isinstance(qry, str) and qry else None,
+                raw_category=str(cat) if isinstance(cat, str) and cat.strip() else None,
+                query=str(qry) if isinstance(qry, str) and qry.strip() else None,
             )
         )
     # 신호(raw·query) 있는 leg 만 남기고 절단 — 빈 leg(둘 다 없음)는 map_categories 에서 어차피

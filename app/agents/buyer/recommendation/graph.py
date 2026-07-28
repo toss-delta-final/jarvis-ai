@@ -144,10 +144,22 @@ async def stream_recommendation(
         async def _leg(canonical: str, query: str | None) -> ProductSearchResult | None:
             # leg 전체를 try 로 감싼다 — model_copy·search 어디서 실패해도 그 leg 만 드롭한다.
             try:
+                # [#101 PR#166] 멀티 카테고리면 semantic_query 도 leg 검색어(query)로 override 한다 —
+                # 안 하면 전 leg 가 동일 전역 벡터로 pgvector 재정렬돼 leg 관련성이 깨진다("유럽여행
+                # 준비물"로 여행용품·전자기기·의류를 똑같이 정렬). query=null 인 leg 는 canonical
+                # ("가전 > 이어폰/헤드폰" 같은 분류 경로 breadcrumb)이 아니라 전역 semantic_query(broad
+                # 해도 자연어)로 폴백한다 — breadcrumb 는 임베딩 앵커로 부적합(decompose cat_signal 과
+                # 동일 원칙). 단일 카테고리(leg 1개)는 전역값(LLM 의 가장 풍부한 전체 의도)을 유지한다.
+                leg_semantic = (
+                    (query or decision.filters.semantic_query)
+                    if len(legs) > 1
+                    else decision.filters.semantic_query
+                )
                 leg_filters = decision.filters.model_copy(
                     update={
                         "category": canonical,
                         "keyword": query or decision.filters.keyword,
+                        "semantic_query": leg_semantic,
                         "limit": leg_limit,
                     }
                 )
@@ -211,6 +223,12 @@ async def stream_recommendation(
 
     # 사후필터: exact productId 제외 + 소모품 카테고리 억제(§4.7, C-15).
     result: ProductSearchResult = search_result
+    # [#101 #8] 관측성 — dedup 이전 수신 후보 수. **경로별 의미 주의(PR#166 리뷰)**: 비-fanout 은
+    # Spring 매칭 전량(#101 로 search_catalog 절단 제거)이지만, fan-out 은 _run_search 안에서 이미
+    # _merge_fanout_results(merge_cap) 로 절단된 **뒤** 값이라 leg 별 실제 수신 합계가 아니다 — fan-out
+    # 의 가장 큰 recall 손실(leg 검색 → merge_cap 절단)은 이 수치 이전에 일어나 로그에 안 잡힌다.
+    # leg-합 관측은 별도 과제(관측 이슈 #136/#137 라인, _run_search 가 pre-merge 합을 노출해야 함).
+    received = len(result.products)
     had_candidates = bool(result.products)
     suppressed_by_cat: dict[str, int] = {}
     kept = []
@@ -221,12 +239,17 @@ async def stream_recommendation(
             suppressed_by_cat[product.category] = suppressed_by_cat.get(product.category, 0) + 1
             continue
         kept.append(product)
-    result = ProductSearchResult(products=kept, total_count=len(kept))
+    # [#101] 최종 rerank 입력 상한 절단 — search_catalog(사전) 가 아니라 최근구매 dedup·소모품 억제
+    # **이후** 여기서 embedding_rerank_limit 으로 압축한다. 사전 절단이면 dedup 대상이 상위에 몰릴 때
+    # rerank 후보가 상한 미만이 되는 recall 손실이 있어, 절단을 dedup 이후로 옮겼다(비-fanout 전량·
+    # fan-out merge_cap 병합 결과 모두 이 지점에서 최종 절단). matched_after_dedup 은 절단 전 매칭 수.
+    matched_after_dedup = len(kept)
+    kept = kept[: settings.embedding_rerank_limit]
+    result = ProductSearchResult(products=kept, total_count=matched_after_dedup)
 
     # 되돌리기 칩 — 억제된 소모품 카테고리별(estCount==0 제외, §3.1).
-    # estCount 는 **이번 검색 응답 내 억제 수**(page-local 근사)다 — 이 시점 search_result 는
-    # search_catalog 가 filters.limit(fan-out 이면 merge_cap/per_cat_limit)로 이미 top-K 절단한
-    # 뒤라 '전량 매칭'이 아니다(PR#127 리뷰). DB 전체 기준 진짜 억제 수보다 작게 나올 수 있어
+    # estCount 는 **이번 검색 응답 내 억제 수**(page-local 근사)다 — 소모품 억제는 embedding_rerank_limit
+    # 최종 절단 **전** 후보 전량을 훑어 세므로(위 loop) DB 전체 기준 진짜 억제 수보다 작을 수 있어
     # 가용한 최선의 추정치를 쓴다. 별도 totalCount 필드는 불필요로 확정(#100 P2).
     revert_chips = [
         SuggestionChip(
@@ -256,6 +279,7 @@ async def stream_recommendation(
     # rerank — smart tier 1회. 실패/타임아웃/유효후보 0건 시 검색순서 상위 N 으로 degrade(하드 제약 유지).
     if observer is not None:
         observer.record_model_call(resolve_model_id(settings, "smart"))
+    rerank_degraded = False
     try:
         rr = await rerank(
             llm,
@@ -269,6 +293,7 @@ async def stream_recommendation(
         reason_by_id = dict(rr.ranked)  # 상품별 근거(§4.2) — (productId, rationale) 튜플 → 맵
         comment = _strip_unsafe(rr.overall_comment)
     except LLMError:
+        rerank_degraded = True
         ranked_ids = [p.product_id for p in candidates[: settings.expose_max]]
         reason_by_id = {}  # degrade 경로엔 rerank 근거 없음 — reasons 는 빈 배열(계약상 선택)
         comment = "요청하신 조건으로 찾은 상품들이에요."
@@ -284,6 +309,20 @@ async def stream_recommendation(
                 if len(ranked_ids) >= settings.expose_min:
                     break
     ranked_ids = ranked_ids[: settings.expose_max]
+
+    # [#101 #8] 관측성 — 파이프라인 후보 깔때기를 한 줄 구조화 로그로 남긴다(recall 손실·자원 진단).
+    # received(수신) → after_dedup(최근구매 제외 후) → compressed(embedding_rerank_limit 절단 후)
+    # → final(노출). 임베딩 재정렬 degrade 사유는 backend(_log.warning), rerank degrade 는 여기서.
+    logger.info(
+        "recommend_pipeline",
+        extra={
+            "received": received,
+            "after_dedup": matched_after_dedup,
+            "compressed": len(candidates),
+            "final": len(ranked_ids),
+            "rerank_degraded": rerank_degraded,
+        },
+    )
 
     if comment:
         yield sse("token", TokenData(text=comment).model_dump(by_alias=True))

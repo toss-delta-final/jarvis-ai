@@ -20,7 +20,7 @@ from app.core.config import get_settings
 from app.core.conversation import conversation_key
 from app.schemas.spring import ProductSearchResult, SpringProduct
 from app.services.spring_client import SpringUnavailableError
-from tests._fakes import DEFAULT_PRODUCTS, FakeLLM
+from tests._fakes import DEFAULT_DECOMPOSE, DEFAULT_PRODUCTS, FakeLLM
 
 
 def _req(message: str = "무선 이어폰 추천해줘", session_id: str = "s1", thread_id: str = "t1"):
@@ -668,6 +668,19 @@ def test_search_query_params_drops_blank_brands() -> None:
     assert "brandName" not in params2
 
 
+def test_search_query_params_omits_semantic_query() -> None:
+    """[#101] semantic_query 는 AI 내부(임베딩 재정렬용) 필드 — Spring I-1 로 전송하지 않는다."""
+    from app.schemas.spring import ProductSearchFilters
+    from app.services.spring_client import _search_query_params
+
+    params = _search_query_params(
+        ProductSearchFilters(keyword="셔츠", semantic_query="시원한 여름 셔츠")
+    )
+    assert "semanticQuery" not in params
+    assert "semantic_query" not in params
+    assert params.get("keyword") == "셔츠"  # keyword(상품명 LIKE)는 그대로 전송
+
+
 def test_search_query_params_drops_blank_text_filters() -> None:
     """[PR#127 리뷰] LLM 산출 텍스트 필터(keyword·category·color)의 공백-only 값은 미전송.
 
@@ -721,10 +734,126 @@ def test_search_query_params_sends_all_brands() -> None:
     assert params.get("brandName") == ["삼성", "애플"]
 
 
-async def test_search_catalog_caps_candidates_to_limit() -> None:
-    """size 제거로 Spring 이 전량 반환 → search_catalog 가 filters.limit(AI top-K)로 절단한다.
+async def test_fanout_legs_rerank_with_leg_specific_semantic_query() -> None:
+    """[#101 PR#166 리뷰] fan-out 각 leg 는 자기 leg 검색어를 재정렬 앵커(semantic_query)로 쓴다.
 
-    사후필터(dedup·평점) 이후 검색순서 상위 limit 만 rerank 입력으로 남긴다(§4.6).
+    leg 별 keyword 만 override 하고 semantic_query 는 전역 값 하나로 두면, 모든 leg 가 동일 벡터로
+    pgvector 재정렬돼 leg 관련성이 깨진다("유럽여행 준비물"로 여행용품·전자기기·의류를 똑같이 정렬).
+    _leg 가 semantic_query 도 leg 값으로 override 하는지 주입 search 가 받은 filters 로 확인한다.
+    """
+    seen_sq: list[str | None] = []
+
+    async def _spy_search(filters, exclude_product_ids=None):
+        seen_sq.append(filters.semantic_query)
+        return ProductSearchResult(
+            products=list(DEFAULT_PRODUCTS), total_count=len(DEFAULT_PRODUCTS)
+        )
+
+    decompose = {
+        "intent": "recommend",
+        "reply": "",
+        "semanticQuery": "유럽여행 준비물",
+        "categoryQueries": [
+            {"category": "여행용품", "query": "여행 자물쇠"},
+            {"category": "전자기기", "query": "여행용 어댑터"},
+        ],
+        "filters": {},
+    }
+    await _collect(
+        run_buyer_turn(
+            _req(),
+            _guest(),
+            llm=FakeLLM(decompose=decompose),
+            search=_spy_search,
+            push_fn=_RecordingPush(),
+        )
+    )
+    # 각 leg 가 자기 검색어를 앵커로 — 전역 "유럽여행 준비물" 아님.
+    assert set(seen_sq) == {"여행 자물쇠", "여행용 어댑터"}
+
+
+async def test_fanout_query_null_leg_falls_to_global_not_breadcrumb_canonical() -> None:
+    """[#101 PR#166 리뷰] 멀티 fan-out 에서 query=null 인 leg 는 canonical(분류 경로 breadcrumb)이
+    아니라 전역 semantic_query(자연어)로 폴백한다.
+
+    canonical 은 "가전 > 이어폰/헤드폰" 같은 분류 경로라 임베딩 앵커로 부적합하다(decompose 의
+    cat_signal 이 raw_category 를 배제하는 것과 동일 원칙). query 있는 leg 는 leg 검색어를, query=null
+    leg 는 broad 해도 자연어인 전역값을 앵커로 쓴다.
+    """
+    seen: dict[str, str | None] = {}
+
+    async def _spy_search(filters, exclude_product_ids=None):
+        seen[filters.category] = filters.semantic_query
+        return ProductSearchResult(
+            products=list(DEFAULT_PRODUCTS), total_count=len(DEFAULT_PRODUCTS)
+        )
+
+    decompose = {
+        "intent": "recommend",
+        "reply": "",
+        "semanticQuery": "유럽여행 준비물",
+        "categoryQueries": [
+            {"category": "여행용품", "query": "여행 자물쇠"},
+            {"category": "가전 > 이어폰/헤드폰", "query": None},
+        ],
+        "filters": {},
+    }
+    await _collect(
+        run_buyer_turn(
+            _req(),
+            _guest(),
+            llm=FakeLLM(decompose=decompose),
+            search=_spy_search,
+            push_fn=_RecordingPush(),
+        )
+    )
+    assert seen["여행용품"] == "여행 자물쇠"  # query 있는 leg → leg 검색어
+    # query=null leg → breadcrumb canonical 아니라 전역 자연어.
+    assert seen["가전 > 이어폰/헤드폰"] == "유럽여행 준비물"
+
+
+async def test_single_category_leg_keeps_global_semantic_query() -> None:
+    """[#101 PR#166 리뷰] 단일 카테고리(leg 1개)는 전역 semantic_query(가장 풍부한 전체 의도)를
+    재정렬 앵커로 유지한다 — leg 검색 키워드로 다운그레이드하지 않는다.
+
+    leg 별 override 는 멀티 카테고리에서 leg 관련성을 살리기 위한 것이라 단일 leg 엔 적용하지
+    않는다. 예: global "가성비 좋은 무선 이어폰"(리치)를 leg query "무선 이어폰"으로 낮추지 않는다.
+    """
+    seen_sq: list[str | None] = []
+
+    async def _spy_search(filters, exclude_product_ids=None):
+        seen_sq.append(filters.semantic_query)
+        return ProductSearchResult(
+            products=list(DEFAULT_PRODUCTS), total_count=len(DEFAULT_PRODUCTS)
+        )
+
+    decompose = {
+        "intent": "recommend",
+        "reply": "",
+        "semanticQuery": "가성비 좋은 무선 이어폰",
+        "categoryQueries": [{"category": "무선이어폰", "query": "무선 이어폰"}],
+        "filters": {},
+    }
+    await _collect(
+        run_buyer_turn(
+            _req(),
+            _guest(),
+            llm=FakeLLM(decompose=decompose),
+            search=_spy_search,
+            push_fn=_RecordingPush(),
+        )
+    )
+    # 단일 leg — 전역 리치 앵커 유지, leg query("무선 이어폰")로 다운그레이드 안 함.
+    assert seen_sq == ["가성비 좋은 무선 이어폰"]
+
+
+async def test_search_catalog_returns_all_after_postfilter() -> None:
+    """[#101] search_catalog 는 더 이상 top-K 절단하지 않는다 — 절단은 graph dedup 이후로 이동했다.
+
+    이전엔 filters.limit 로 dedup **이전**에 절단해, 최근구매 dedup·소모품 억제가 상위 후보에
+    몰리면 rerank 입력이 상한 미만이 되는 recall 손실이 있었다(#101). 이제 search_catalog 는
+    재정렬·사후필터(dedup 제외·평점 하한)만 하고 전량을 반환하며, 최종 절단(embedding_rerank_limit)은
+    graph 가 dedup 이후에 적용한다. total_count 는 사후필터 통과 매칭 수 그대로.
     """
     from app.schemas.spring import ProductSearchFilters, SpringProduct
     from app.services.search_service import search_catalog
@@ -734,16 +863,81 @@ async def test_search_catalog_caps_candidates_to_limit() -> None:
     res = await search_catalog(
         ProductSearchFilters(limit=2), backend=FakeBackend(products=products)
     )
-    assert [p.product_id for p in res.products] == [1, 2]  # top-K=2 로 절단(검색순서 보존)
-    # [PR#127 리뷰] total_count 는 top-K 절단 전 사후필터 통과 매칭 수(5) — 절단값(2)이 아니다.
+    # limit=2 여도 절단하지 않는다 — 전량 반환(절단은 graph 몫).
+    assert [p.product_id for p in res.products] == [1, 2, 3, 4, 5]
     assert res.total_count == 5
 
 
-def test_search_filters_limit_rejects_negative() -> None:
-    """[PR#127 리뷰] limit 은 products[:limit] slice 절단에 직접 쓰이므로 ge=0 이어야 한다.
+async def test_graph_caps_rerank_input_to_embedding_rerank_limit() -> None:
+    """[#101] 후보 절단은 search_catalog(사전) 이 아니라 graph 의 dedup 이후에 embedding_rerank_limit
+    으로 적용된다 — 절단 위치 이동. dedup 이 상위 후보를 지워도 rerank 입력이 상한까지 채워진다.
 
-    음수면 Python slice 가 '뒤에서 N개 제외'로 뒤집혀 '≤0 → 0개' 절단 불변식이 깨진다
-    (형제 category_fanout_* 필드가 PR#73 에서 같은 이유로 ge=0 을 건 것과 정합).
+    비-fanout 경로(categoryQueries 비움 → merge_cap 미개입)로 격리하고, guest 로 최근구매 dedup 을
+    회피해 'graph 가 embedding_rerank_limit 로 절단하는지'만 본다. rerank(smart) 프롬프트의
+    CANDIDATES 개수로 rerank 입력 후보 수를 관측한다.
+    """
+    from app.schemas.spring import SpringProduct
+
+    settings = get_settings()
+    cap = settings.embedding_rerank_limit
+    # cap 초과 후보 — 서로 다른 category 로 소모품 억제 회피.
+    products = [
+        SpringProduct(product_id=i, name=f"p{i}", price=1000, category=f"c{i}")
+        for i in range(1, cap + 6)
+    ]
+    llm = FakeLLM(
+        decompose={**DEFAULT_DECOMPOSE, "categoryQueries": []},
+        rerank={"ranked": [{"productId": 1, "rationale": "좋아요"}], "overallComment": ""},
+    )
+    await _collect(
+        run_buyer_turn(
+            _req(), _guest(), llm=llm, search=_make_search(products), push_fn=_RecordingPush()
+        )
+    )
+    smart = [u for t, u in llm.calls if t == "smart"]
+    assert smart, "rerank(smart) 호출이 있어야 한다"
+    cands = json.loads(smart[0].split("CANDIDATES: ", 1)[1])
+    assert len(cands) == cap  # graph 가 embedding_rerank_limit 로 절단
+    assert [c["productId"] for c in cands] == list(range(1, cap + 1))  # 검색순서 상위 cap 보존
+
+
+async def test_pipeline_logs_stage_candidate_counts(caplog) -> None:
+    """[#101 #8] 관측성 — 단계별 후보 수(received→after_dedup→compressed→final)를 구조화 로그로 남긴다.
+
+    recall 손실 추적·자원 진단을 위해 파이프라인 깔때기를 한 줄 구조화 로그로 남긴다. 비-fanout·guest
+    (dedup 없음)로 received==compressed 를 확인한다.
+    """
+    import logging
+
+    from app.schemas.spring import SpringProduct
+
+    products = [
+        SpringProduct(product_id=i, name=f"p{i}", price=1000, category=f"c{i}") for i in range(1, 6)
+    ]
+    llm = FakeLLM(
+        decompose={**DEFAULT_DECOMPOSE, "categoryQueries": []},
+        rerank={"ranked": [{"productId": 1, "rationale": "좋아요"}], "overallComment": ""},
+    )
+    with caplog.at_level(logging.INFO, logger="app.agents.buyer.recommendation.graph"):
+        await _collect(
+            run_buyer_turn(
+                _req(), _guest(), llm=llm, search=_make_search(products), push_fn=_RecordingPush()
+            )
+        )
+    rec = next((r for r in caplog.records if r.msg == "recommend_pipeline"), None)
+    assert rec is not None, "단계별 후보 수 구조화 로그가 있어야 한다"
+    assert rec.received == 5  # Spring/merge 수신
+    assert rec.after_dedup == 5  # guest → 최근구매 dedup 없음
+    assert rec.compressed == 5  # 5 < embedding_rerank_limit → 절단 없음
+    assert rec.rerank_degraded is False
+
+
+def test_search_filters_limit_rejects_negative() -> None:
+    """[PR#127 리뷰] limit 은 slice 절단(방식1 VectorSearchBackend 의 over_fetch k)에 쓰이므로 ge=0.
+
+    #101 로 hot path(방식2) 사전 절단은 제거됐지만, 방식1 VectorSearchBackend 는 여전히
+    filters.limit*over_fetch 로 top-k slice 를 하므로 음수면 '뒤에서 N개 제외'로 뒤집혀 '≤0 → 0개'
+    절단 불변식이 깨진다(형제 category_fanout_* 필드가 PR#73 에서 같은 이유로 ge=0 을 건 것과 정합).
     """
     import pytest
     from pydantic import ValidationError

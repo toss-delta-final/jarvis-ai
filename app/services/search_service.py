@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import logging
 import math
 from typing import Protocol
 
@@ -24,6 +25,8 @@ from app.pipelines import embedding as _embedding
 from app.pipelines.artifact_store import ArtifactStore, get_catalog_store
 from app.schemas.spring import ProductSearchFilters, ProductSearchResult
 from app.services import spring_client
+
+_log = logging.getLogger(__name__)
 
 
 class SearchBackend(Protocol):
@@ -90,19 +93,34 @@ class EmbeddingRerankBackend:
         )
 
     def _rerank(self, products: list, qvec: list[float]) -> list:
+        # 후보 embedding 을 1회 batch 로 조회(N+1 제거, #101). 없거나 빈 embedding 은 −1.0(맨 뒤).
+        arts = self._store.get_many([p.product_id for p in products])
+
         def score(product) -> float:
-            art = self._store.get(product.product_id)
+            art = arts.get(product.product_id)
             return _cosine(qvec, art.embedding) if art and art.embedding else -1.0
 
         return sorted(products, key=score, reverse=True)
 
     async def search(self, filters: ProductSearchFilters) -> ProductSearchResult:
         result = await spring_client.search_products(filters)
-        if not filters.keyword or not result.products:
+        # 의미검색 입력은 semantic_query(#101) — 없으면 상품명 keyword 로 폴백. 둘 다 없거나 후보가
+        # 없으면 Spring 순서 그대로(재정렬 skip). keyword 유무와 무관하게 semantic 이 있으면 재정렬.
+        # 최종 소비 지점 방어 — semantic_query/keyword 가 공백-only('  ')여도 truthy 라 무의미한
+        # 텍스트로 임베딩 API 호출·정렬하게 되므로 strip 후 빈 값이면 Spring 순서 그대로(PR#166 리뷰).
+        query_text = (filters.semantic_query or filters.keyword or "").strip()
+        if not query_text or not result.products:
             return result
-        embedded = await asyncio.to_thread(self._embed, [filters.keyword])
-        qvec = embedded[0]
-        reranked = await asyncio.to_thread(self._rerank, result.products, qvec)
+        try:
+            # 재정렬 단계(query 임베딩·후보 embedding batch 조회)만 별도 격리 — Spring I-1 자체 실패는
+            # 위에서 이미 전파됐다(SEARCH_FAILED). 여기 실패(임베딩 API·pgvector 장애)는 추천 전체를
+            # 죽이지 않고 Spring 순서로 degrade 한다(#101 #7). CancelledError(BaseException)는 전파.
+            embedded = await asyncio.to_thread(self._embed, [query_text])
+            qvec = embedded[0]
+            reranked = await asyncio.to_thread(self._rerank, result.products, qvec)
+        except Exception as exc:  # noqa: BLE001 - 재정렬 degrade(Spring 순서 보존)
+            _log.warning("임베딩 재정렬 실패 → Spring 순서 degrade(SEARCH_FAILED 아님) — %s", exc)
+            return result
         return ProductSearchResult(products=reranked, total_count=result.total_count)
 
 
@@ -156,8 +174,22 @@ class VectorSearchBackend:
         return await self._hydrate(ids, filters)
 
 
-# MVP 기본 백엔드 — Spring 위임(§4.6). 임베딩 방식 승격은 골든셋 확정 후(§4.8 말미).
-default_backend: SearchBackend = SpringSearchBackend()
+# hot path 기본 백엔드 — config search_backend 로 결정(#101). 방식2(embedding_rerank)가 MVP 기본.
+# None = 아직 미해결(lazy) — import 시점에 EmbeddingRerankBackend 를 만들면 get_catalog_store() 가
+# pg 풀을 즉시 열어 단위테스트를 깨므로, search_catalog 가 첫 사용 시 config 로 생성한다.
+# 테스트(conftest.buyer_fakes)는 이 모듈 attr 를 FakeBackend 로 override 한다 — 그 값이 우선한다.
+_BACKENDS: dict[str, type] = {
+    "spring": SpringSearchBackend,
+    "embedding_rerank": EmbeddingRerankBackend,
+    "vector": VectorSearchBackend,
+}
+default_backend: SearchBackend | None = None
+
+
+def _make_default_backend() -> SearchBackend:
+    """config search_backend 로 hot path 기본 백엔드를 생성한다(#101). vector(방식1)는 hydrate 미주입
+    이라 search() 시 SpringUnavailableError 로 미착수 신호를 낸다(구성 자체는 가능)."""
+    return _BACKENDS[get_settings().search_backend]()
 
 
 async def search_catalog(
@@ -172,17 +204,16 @@ async def search_catalog(
     rating_min 사후필터는 '반증된 것만' 제거한다 — 평점이 있고 미달인 상품만 탈락, rating=None
     신상품은 보존(#100 P0).
     정렬은 rerank(LLM) 소관이라 별도 sort 필드가 없다(#100 P2) — 여기서는 검색순서를 보존한다.
-    [2026-07-23, BE 합의] size 제거로 Spring 이 전량 반환 → 여기서 filters.limit(AI top-K)로 절단해
-    rerank 입력 상한을 지킨다(api-spec §4.6).
-    [주의 — PR#127 리뷰] 이 절단은 **이 함수 안의** exclude_product_ids·rating_min 사후필터 뒤에만
-    적용된다. 다만 실호출부(graph._run_search/_leg)는 exclude_product_ids=None 으로 넘기고, 최근 구매
-    dedup·소모품 카테고리 억제는 search_catalog 리턴 **뒤** stream_recommendation(graph.py)에서
-    수행한다. 따라서 그 graph dedup 대상이 상위 limit 안에 몰리면 rerank 최종 후보가 limit 보다
-    적어질 수 있다(= dedup 경로엔 후보 낭비가 남음). 근본 해소는 #101(임베딩 rerank 가 전량을 dedup
-    후 embedding_rerank_limit 으로 압축)에서 절단을 dedup 이후로 옮겨 처리한다.
-    backend 미지정 시 default_backend 사용 — 테스트에서 주입 가능.
+    [2026-07-23, BE 합의] size 제거로 Spring 이 전량 반환한다(api-spec §4.6).
+    [#101] **여기서 top-K 절단하지 않는다** — 재정렬·사후필터(dedup 제외·평점 하한)만 하고 전량을
+    반환한다. 최종 rerank 입력 상한(embedding_rerank_limit) 절단은 graph 가 최근구매 dedup·소모품
+    억제(stream_recommendation) **이후**에 적용한다. 이전엔 여기서 filters.limit 로 dedup 이전에
+    절단해, dedup 대상이 상위에 몰리면 rerank 후보가 상한 미만이 되는 recall 손실이 있었다 — 절단을
+    dedup 이후로 옮겨 근본 해소한다(방식1 VectorSearchBackend 는 자체 경로에서 filters.limit 사용).
+    backend 미지정 시: 테스트 override(default_backend) 우선, 없으면 config 로 생성(#101).
     """
-    used = backend or default_backend
+    # 우선순위: 명시 주입 backend → 테스트 override default_backend → config 기반 생성(prod hot path).
+    used = backend or default_backend or _make_default_backend()
     result = await used.search(filters)
     products = result.products
 
@@ -196,11 +227,5 @@ async def search_catalog(
         # 신상품)은 미달이 반증된 게 아니라 데이터 부재이므로 보존해 rerank 가 판단하게 한다(#100 P0).
         products = [p for p in products if p.rating is None or p.rating >= threshold]
 
-    # total_count 는 top-K 절단 **전** 사후필터 통과 후보 수 — 절단 뒤 len 을 세면 min(매칭, limit)
-    # 으로 캡돼 '전체 매칭 수' 의미가 깨진다(PR#127 리뷰). 절단 전에 확정한다.
-    matched_count = len(products)
-
-    # AI top-K 절단 — Spring 이 size 없이 전량 반환하므로(§4.6) 여기서 rerank 입력 상한을 지킨다.
-    products = products[: filters.limit]
-
-    return ProductSearchResult(products=products, total_count=matched_count)
+    # total_count = 사후필터 통과 매칭 수(전량). top-K 절단은 graph dedup 이후로 이동(#101).
+    return ProductSearchResult(products=products, total_count=len(products))

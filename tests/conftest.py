@@ -64,6 +64,24 @@ async def _reset_advisory_state():
 
 
 @pytest.fixture(autouse=True)
+def _pg_free_default_backend(monkeypatch):
+    """[#101] hot path 기본 백엔드를 pg-free 인 Spring 위임으로 고정한다(테스트 전역).
+
+    prod 기본은 config search_backend=embedding_rerank 라 default_backend 를 지연 생성하면
+    EmbeddingRerankBackend.__init__ 이 get_catalog_store()로 pg-catalog 풀을 즉시 연다 — pg 미기동
+    테스트 환경에선 연결 재시도로 hang 한다. #101 이전 기본(SpringSearchBackend)과 동일하게
+    되돌려, backend 를 명시 주입하지 않는 테스트가 실 pg/임베딩을 건드리지 않게 한다.
+
+    autouse 라 buyer_fakes(FakeBackend override)보다 먼저 세팅돼 그쪽이 이긴다. embedding 재정렬
+    자체를 검증하는 테스트는 EmbeddingRerankBackend(store=...) 를 직접 주입한다.
+    """
+    import app.services.search_service as ss
+    from app.services.search_service import SpringSearchBackend
+
+    monkeypatch.setattr(ss, "default_backend", SpringSearchBackend())
+
+
+@pytest.fixture(autouse=True)
 def _fake_category_mapping(monkeypatch):
     """buyer 그래프 테스트가 라이브 map_categories(Google 임베딩·pg-catalog)를 안 타게 결정적
     fake 를 주입한다 — 추측 category(raw)를 그대로 canonical 로 echo 한다(매핑 정확도 검증은

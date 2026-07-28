@@ -71,7 +71,8 @@ class RouteDecision:
 
     intent: Literal["recommend", "cart_add", "cart_view", "general"]
     filters: ProductSearchFilters
-    semantic_query: str
+    # [#101] 의미쿼리는 검색 입력이라 filters.semantic_query 로 이관(decompose 가 세팅). 하류가
+    # 그 필드를 읽으므로 RouteDecision 에는 더 두지 않는다.
     case: int = 2  # [폐기, 이슈 #59] 미사용 — 단일/멀티는 len(category_queries)로 판정, 파싱만 유지
     reply: str = ""  # intent == general 일 때만 사용자에게 줄 답변
     cart: CartIntent | None = None  # intent == cart_add/cart_view 일 때

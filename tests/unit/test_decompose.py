@@ -38,6 +38,172 @@ async def _run(raw: str, **kw):
     )
 
 
+async def test_semantic_query_lands_on_filters() -> None:
+    """[#101] semanticQuery 는 의미검색 입력이라 filters.semantic_query 로 실려 백엔드까지 흐른다."""
+    d = await _run(_raw(semanticQuery="시원한 여름 셔츠"))
+    assert d.filters.semantic_query == "시원한 여름 셔츠"
+
+
+async def test_semantic_query_falls_back_to_user_query_when_missing() -> None:
+    """semanticQuery 누락/빈값 시 사용자 발화(query)로 폴백한다(재정렬이 항상 입력을 갖도록)."""
+    d = await _run(_raw(semanticQuery=""))
+    assert d.filters.semantic_query == "발화"
+
+
+async def test_semantic_query_falls_back_to_prior_before_raw_query() -> None:
+    """[#101 PR#166 리뷰] 정제발화("더 저렴한 걸로")로 LLM 이 semanticQuery 를 비우면, 이번 턴
+    원문(query)이 아니라 **직전 턴의 semantic_query** 로 폴백한다.
+
+    "더 저렴한 걸로" 같은 문구를 임베딩 재정렬 앵커로 쓰면 의미 신호가 오염돼(가격순 정렬도 못 하면서
+    '무선 이어폰' 의미만 잃음) 이 PR 이 개선한 recall 을 되레 해친다. 가격 선호는 filters·Sonnet
+    재랭킹이 처리하고, semantic_query 는 직전 턴의 상품 의미를 이어받는다.
+    """
+    from app.schemas.spring import ProductSearchFilters
+
+    prior = ProductSearchFilters(semantic_query="무선 이어폰")
+    d = await decompose(
+        _FakeLLM(_raw(semanticQuery="")),
+        query="더 저렴한 걸로",
+        prior_filters=prior,
+        profile_summary=None,
+        tier="fast",
+    )
+    assert d.filters.semantic_query == "무선 이어폰"  # 이번 턴 원문 아님, 직전 값 승계
+
+
+async def test_semantic_query_prefers_current_category_over_prior_on_topic_change() -> None:
+    """[#101 PR#166 리뷰] 주제 전환("운동화")에서 LLM 이 semanticQuery 를 비워도, 직전 상품 의미가
+    아니라 **이번 턴 categoryQueries 신호**로 폴백한다.
+
+    폴백이 prior_sq 만 보면, category 는 운동화로 바뀌었는데 재정렬 앵커는 직전 상품(원피스)이 되는
+    불일치가 생긴다. categoryQueries 파생을 prior_sq 보다 우선해 앵커를 category 와 정합시킨다.
+    """
+    from app.schemas.spring import ProductSearchFilters
+
+    prior = ProductSearchFilters(semantic_query="빨간 원피스")
+    d = await decompose(
+        _FakeLLM(
+            _raw(semanticQuery="", categoryQueries=[{"category": "운동화", "query": "운동화"}])
+        ),
+        query="이번엔 운동화 찾아줘",
+        prior_filters=prior,
+        profile_summary=None,
+        tier="fast",
+    )
+    assert d.filters.semantic_query == "운동화"  # prior("빨간 원피스") 아님, 이번 카테고리 신호
+
+
+async def test_semantic_query_carries_prior_when_only_category_carried_no_query() -> None:
+    """[#101 PR#166 리뷰] 정제발화에서 카테고리만 승계(categoryQueries query=null)하고 semanticQuery
+    를 비우면, raw_category(분류 경로 breadcrumb)가 아니라 직전 자연어 semantic_query 로 폴백한다.
+
+    cat_signal 은 cq.query 있는 leg 만 취한다 — 순수 카테고리 승계(정제발화)는 신호가 아니다.
+    raw_category("가전 > 이어폰/헤드폰")를 앵커로 쓰면 breadcrumb 문자열로 재정렬돼 dc5094b 가
+    고친 정제발화 오염이 categoryQueries 경로로 재발한다.
+    """
+    from app.schemas.spring import ProductSearchFilters
+
+    prior = ProductSearchFilters(semantic_query="가성비 좋은 무선 이어폰")
+    d = await decompose(
+        _FakeLLM(
+            _raw(
+                semanticQuery="",
+                categoryQueries=[{"category": "가전 > 이어폰/헤드폰", "query": None}],
+            )
+        ),
+        query="더 저렴한 걸로",
+        prior_filters=prior,
+        profile_summary=None,
+        tier="fast",
+    )
+    # raw_category breadcrumb 아님 — 직전 자연어 semantic_query 유지.
+    assert d.filters.semantic_query == "가성비 좋은 무선 이어폰"
+
+
+async def test_semantic_query_not_promoted_from_single_leg_when_multi_category() -> None:
+    """[#101 PR#166 리뷰] 멀티 카테고리에서 LLM 이 top-level semanticQuery 를 비우면, 한 leg 의
+    구체 검색어를 전역 앵커로 승격하지 않는다.
+
+    전역 semantic_query 는 graph 의 query-null leg 폴백으로 재사용되므로, 첫 leg 검색어("여행
+    자물쇠")가 전역이 되면 무관한 leg(전자기기)의 재정렬 앵커로 샌다. 멀티면 cat_signal 을 쓰지 않고
+    broad 한 원문(query)으로 폴백한다 — query 있는 멀티 leg 는 graph 가 자기 query 로 override 한다.
+    """
+    d = await decompose(
+        _FakeLLM(
+            _raw(
+                semanticQuery="",
+                categoryQueries=[
+                    {"category": "여행용품", "query": "여행 자물쇠"},
+                    {"category": "전자기기", "query": None},
+                ],
+            )
+        ),
+        query="유럽여행 준비물",
+        prior_filters=None,
+        profile_summary=None,
+        tier="fast",
+    )
+    # 첫 leg "여행 자물쇠" 아님 — broad 한 원문(전 leg 관련)으로.
+    assert d.filters.semantic_query == "유럽여행 준비물"
+
+
+async def test_semantic_query_blank_only_treated_as_missing() -> None:
+    """[#101 PR#166 리뷰] LLM 이 semanticQuery 를 공백-only('   ')로 내도 빈 값으로 보고 폴백한다.
+
+    공백 문자열은 Python truthy 라 가드 없이 두면 폴백 체인(cat_signal/prior_sq/query)이 통째로
+    건너뛰어져, 정제발화 오염(공백이 벡터 재정렬 앵커가 됨)이 dc5094b 수정에도 재발한다.
+    """
+    from app.schemas.spring import ProductSearchFilters
+
+    prior = ProductSearchFilters(semantic_query="무선 이어폰")
+    d = await decompose(
+        _FakeLLM(_raw(semanticQuery="   ")),
+        query="더 저렴한 걸로",
+        prior_filters=prior,
+        profile_summary=None,
+        tier="fast",
+    )
+    assert d.filters.semantic_query == "무선 이어폰"  # 공백 아님, 직전 값 유지
+
+
+async def test_semantic_query_non_string_value_does_not_crash() -> None:
+    """[#101 PR#166 리뷰] LLM 이 semanticQuery 를 문자열 아닌 truthy(숫자·리스트·dict)로 내도
+    AttributeError 로 스트림을 깨지 않는다.
+
+    `(123 or "").strip()` 은 123 이 truthy 라 그대로 반환돼 123.strip() 에서 AttributeError 가
+    나는데, 그 예외는 except (ValidationError, ValueError, TypeError) 에 안 잡혀 SSE 를 깬다.
+    형제 필드(revert·categoryQueries)처럼 isinstance(str) 가드가 필요하다(구 str() 안전장치 복원).
+    """
+    for bad in (123, ["여행", "이어폰"], {"k": "v"}):
+        d = await decompose(
+            _FakeLLM(_raw(semanticQuery=bad)),
+            query="원문 발화",
+            prior_filters=None,
+            profile_summary=None,
+            tier="fast",
+        )
+        assert d.filters.semantic_query == "원문 발화"  # 비문자열 무시 → 원문 폴백
+
+
+async def test_blank_category_query_not_promoted_to_cat_signal() -> None:
+    """[#101 PR#166 리뷰] 공백-only categoryQuery.query 는 신호가 아니다 — cat_signal 로 승격되지
+    않고 폴백한다(_parse_category_queries 가 공백을 None 으로 정규화)."""
+    d = await decompose(
+        _FakeLLM(_raw(semanticQuery="", categoryQueries=[{"category": "운동화", "query": "   "}])),
+        query="운동화 찾아줘",
+        prior_filters=None,
+        profile_summary=None,
+        tier="fast",
+    )
+    assert d.filters.semantic_query == "운동화 찾아줘"  # 공백 query 아님, 원문 폴백
+
+
+async def test_blank_revert_category_excluded() -> None:
+    """[#101 PR#166 리뷰] 공백-only revertCategories 항목은 제외한다(LLM 공백 텍스트 = falsy 일관)."""
+    d = await _run(_raw(revertCategories=["   ", "조미료", ""]))
+    assert d.revert_categories == ["조미료"]
+
+
 async def test_parses_single_category_query() -> None:
     """단일 카테고리 추측 → category_queries 길이 1, raw/query 매핑."""
     d = await _run(

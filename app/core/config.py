@@ -19,6 +19,9 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LLMProvider = Literal["openai", "anthropic"]
+# 검색 백엔드 선택(#101) — spring: Spring 위임만(방식1 이전 MVP), embedding_rerank: Spring 전량 →
+# pgvector 의미 재정렬(방식2, MVP 기본), vector: AI 벡터검색 → Spring hydrate(방식1, C-17 미착수).
+SearchBackend = Literal["spring", "embedding_rerank", "vector"]
 
 
 class Settings(BaseSettings):
@@ -60,6 +63,10 @@ class Settings(BaseSettings):
     embedding_task_document: str = "RETRIEVAL_DOCUMENT"  # 저장 문서 임베딩 task(비대칭 검색)
     embedding_task_query: str = "RETRIEVAL_QUERY"  # 질의 임베딩 task(문서와 달라야 함)
     embedding_normalized: bool = True  # MRL 절단 후 수동 L2 정규화 여부(embedding.py)
+    # Google 임베딩 API 요청 상한 — 방식2(embedding_rerank)가 hot path 기본이라 매 추천 턴이 이 호출을
+    # 탄다. 상한 없으면 느린 응답이 SSE first-token 을 무기한 블로킹한다(CLAUDE.md 'AI→외부 3s' 규약).
+    # 초과 시 embed_texts 가 예외 → EmbeddingRerankBackend 가 Spring 순서 degrade(#101 #7, PR#166).
+    embedding_timeout_s: float = 3.0
     catalog_batch_page_size: int = 500  # I-17 배치 페이지 크기(§4.8, config 주입)
     catalog_vector_overfetch: int = 4  # 방식1 hydrate 후 필터·품절 제거 대비 벡터 여유조회 배수
     catalog_batch_interval_s: float = 300.0  # 주기 증분 pull 배치 스케줄러 간격(이슈 #31)
@@ -141,6 +148,11 @@ class Settings(BaseSettings):
     seller_sonnet_temperature: float = 0.2  # smart tier(서술 품질)
 
     # ── 검색/추천 튜너블 (SPEC-RECOMMEND-001) ──
+    # [#101] hot path 기본 검색 백엔드 = 방식2(Spring 전량 → pgvector 압축). 토글은 provider 처럼 전역.
+    search_backend: SearchBackend = "embedding_rerank"
+    # pgvector 의미 재정렬 후 Sonnet 입력 상한(옛 "FastAPI 30" 이관처, §4.6). products[:limit] 절단이라
+    # ge=0 — 음수면 slice 가 뒤에서 잘려 "<=0 이면 0개" 불변식이 깨진다(형제 category_fanout_* 규약).
+    embedding_rerank_limit: int = Field(default=30, ge=0)
     search_default_limit: int = 30
     top_k: int = 30
     expose_min: int = 5
@@ -159,7 +171,14 @@ class Settings(BaseSettings):
     category_fanout_max: int = Field(default=5, ge=0)
     # per_cat_limit·merge_cap 도 fanout_max 와 같은 절단 규약(leg top-K·merged[:cap]). 음수면
     # merged[:cap] 이 "뒤에서 제외"로 뒤집혀 "cap<=0 이면 0개" 불변식이 깨진다(PR #73 리뷰).
-    category_fanout_per_cat_limit: int = Field(default=10, ge=0)  # 카테고리별 AI top-K(leg limit, §4.6 size 아님)
+    # [#101 PR#166] leg 별 filters.limit 로 실리지만, hot path 방식2(EmbeddingRerankBackend)·
+    # SpringSearchBackend 는 filters.limit 을 읽지 않아(절단은 graph dedup 이후 embedding_rerank_limit)
+    # 현재 사실상 무효다 — 방식1(VectorSearchBackend, hydrate 미주입이라 hot path 미탑재)만 참조한다.
+    # leg 균형은 _merge_fanout_results 의 round-robin + merge_cap 이 담당한다. 값 변경이 방식2
+    # 동작에 영향 없음(fan-out 절단 재배치는 별도 과제).
+    category_fanout_per_cat_limit: int = Field(
+        default=10, ge=0
+    )  # leg top-K(§4.6 size 아님) — 방식2 hot path 에선 현재 무효(위 주석)
     category_fanout_merge_cap: int = Field(default=30, ge=0)  # 병합 후 rerank 입력 상한
     # pg-catalog 검색 풀 max_size — fan-out 은 한 턴에 최대 category_fanout_max leg 를 gather 로
     # 동시 조회하므로, psycopg_pool 기본값(4)이면 그 이상 leg 가 커넥션을 기다린다. fanout 이상 +
