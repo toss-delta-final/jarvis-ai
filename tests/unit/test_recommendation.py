@@ -734,6 +734,79 @@ def test_search_query_params_sends_all_brands() -> None:
     assert params.get("brandName") == ["삼성", "애플"]
 
 
+async def test_fanout_legs_rerank_with_leg_specific_semantic_query() -> None:
+    """[#101 PR#166 리뷰] fan-out 각 leg 는 자기 leg 검색어를 재정렬 앵커(semantic_query)로 쓴다.
+
+    leg 별 keyword 만 override 하고 semantic_query 는 전역 값 하나로 두면, 모든 leg 가 동일 벡터로
+    pgvector 재정렬돼 leg 관련성이 깨진다("유럽여행 준비물"로 여행용품·전자기기·의류를 똑같이 정렬).
+    _leg 가 semantic_query 도 leg 값으로 override 하는지 주입 search 가 받은 filters 로 확인한다.
+    """
+    seen_sq: list[str | None] = []
+
+    async def _spy_search(filters, exclude_product_ids=None):
+        seen_sq.append(filters.semantic_query)
+        return ProductSearchResult(
+            products=list(DEFAULT_PRODUCTS), total_count=len(DEFAULT_PRODUCTS)
+        )
+
+    decompose = {
+        "intent": "recommend",
+        "reply": "",
+        "semanticQuery": "유럽여행 준비물",
+        "categoryQueries": [
+            {"category": "여행용품", "query": "여행 자물쇠"},
+            {"category": "전자기기", "query": "여행용 어댑터"},
+        ],
+        "filters": {},
+    }
+    await _collect(
+        run_buyer_turn(
+            _req(),
+            _guest(),
+            llm=FakeLLM(decompose=decompose),
+            search=_spy_search,
+            push_fn=_RecordingPush(),
+        )
+    )
+    # 각 leg 가 자기 검색어를 앵커로 — 전역 "유럽여행 준비물" 아님.
+    assert set(seen_sq) == {"여행 자물쇠", "여행용 어댑터"}
+
+
+async def test_single_category_leg_keeps_global_semantic_query() -> None:
+    """[#101 PR#166 리뷰] 단일 카테고리(leg 1개)는 전역 semantic_query(가장 풍부한 전체 의도)를
+    재정렬 앵커로 유지한다 — leg 검색 키워드로 다운그레이드하지 않는다.
+
+    leg 별 override 는 멀티 카테고리에서 leg 관련성을 살리기 위한 것이라 단일 leg 엔 적용하지
+    않는다. 예: global "가성비 좋은 무선 이어폰"(리치)를 leg query "무선 이어폰"으로 낮추지 않는다.
+    """
+    seen_sq: list[str | None] = []
+
+    async def _spy_search(filters, exclude_product_ids=None):
+        seen_sq.append(filters.semantic_query)
+        return ProductSearchResult(
+            products=list(DEFAULT_PRODUCTS), total_count=len(DEFAULT_PRODUCTS)
+        )
+
+    decompose = {
+        "intent": "recommend",
+        "reply": "",
+        "semanticQuery": "가성비 좋은 무선 이어폰",
+        "categoryQueries": [{"category": "무선이어폰", "query": "무선 이어폰"}],
+        "filters": {},
+    }
+    await _collect(
+        run_buyer_turn(
+            _req(),
+            _guest(),
+            llm=FakeLLM(decompose=decompose),
+            search=_spy_search,
+            push_fn=_RecordingPush(),
+        )
+    )
+    # 단일 leg — 전역 리치 앵커 유지, leg query("무선 이어폰")로 다운그레이드 안 함.
+    assert seen_sq == ["가성비 좋은 무선 이어폰"]
+
+
 async def test_search_catalog_returns_all_after_postfilter() -> None:
     """[#101] search_catalog 는 더 이상 top-K 절단하지 않는다 — 절단은 graph dedup 이후로 이동했다.
 
