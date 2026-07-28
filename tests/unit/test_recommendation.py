@@ -377,6 +377,17 @@ def test_redact_leaked_number_only_flags_display_context_quotes() -> None:
     none_all = [SpringProduct(product_id=5, name="w", price=None, rating=None, review_count=None)]
     assert _redact_leaked_number("리뷰 3개 있는 좋은 제품", none_all) == "리뷰 3개 있는 좋은 제품"
 
+    # [리뷰⑤] reviewCount 근접 조건 — '리뷰/후기'가 값+개/건에 인접할 때만 유출로 본다.
+    rc = [SpringProduct(product_id=6, name="u", review_count=12)]
+    assert _redact_leaked_number("리뷰 12개 있어 믿을 만해요", rc) == ""  # 인접 → 유출
+    assert _redact_leaked_number("후기 12건이나 달렸어요", rc) == ""  # 후기+건 인접
+    assert _redact_leaked_number("12개 리뷰가 쌓였어요", rc) == ""  # 값→개→리뷰 인접
+    # 과탐 방지: '리뷰'가 멀리 있고 12개는 무관한 수량(색상 등)이면 보존
+    assert (
+        _redact_leaked_number("리뷰도 많고 색상이 12개나 있어요", rc)
+        == "리뷰도 많고 색상이 12개나 있어요"
+    )
+
 
 async def test_push_drops_rationale_that_leaks_nondisplay_number() -> None:
     """[#171 PR#172 리뷰] LLM 이 근거문에 비표시 수치를 인용해도 push 전 코드로 제거된다.
@@ -421,6 +432,34 @@ async def test_overall_comment_that_leaks_number_is_dropped() -> None:
     )
     texts = [e["data"].get("text", "") for e in events if e["type"] == "token"]
     assert all("4.5" not in t for t in texts)  # 유출 comment 는 통째 드롭 → 미emit
+
+
+async def test_push_leak_check_runs_before_truncation() -> None:
+    """[#171 PR#172 리뷰④] 유출 검사는 truncate 이전 원문에서 수행한다.
+
+    reason_max_len(200) 경계에서 단위 문자('원')가 잘려나가면 '숫자+단위' 패턴이 안 걸려
+    정확한 가격이 새는 우회를 막는다 — 잘리면 단위가 사라져도, 온전한 문장에서 먼저 유출로
+    판정해 근거문 전체를 버린다.
+    """
+    push = _RecordingPush()
+    # reason_max_len=200 → _sanitize_reason 은 [:199] 로 자른다. 필러 194자 + "39000" 이 인덱스
+    # 194~198 을 채우고 '원'은 199 에 놓여, truncate 를 먼저 하면 정확히 '원'이 잘려나간다.
+    leaky = ("가" * 194) + "39000원이라 합리적이에요"  # 101 price=39000 유출, 경계에 단위
+    llm = FakeLLM(
+        rerank={
+            "ranked": [{"productId": 101, "rationale": leaky}],
+            "overallComment": "추천이에요",
+        }
+    )
+    await _collect(
+        run_buyer_turn(
+            _req(), _member(), llm=llm, search=_make_search(DEFAULT_PRODUCTS), push_fn=push
+        )
+    )
+    reasons = {r.product_id: r.reason for r in push.pushes[0].reasons}
+    # 101 price=39000 유출 → 온전한 문장에서 검사되어 근거문 전체 드롭(잘린 '39000'이 안 남는다).
+    assert 101 not in reasons
+    assert all("39000" not in (r.reason or "") for r in push.pushes[0].reasons)
 
 
 def test_sanitize_reason_strips_control_and_format_chars() -> None:

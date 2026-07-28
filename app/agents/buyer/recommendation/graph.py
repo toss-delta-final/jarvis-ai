@@ -96,11 +96,13 @@ def _reason_leaks_nondisplay(text: str, products: Iterable[SpringProduct]) -> bo
                 return True
             if re.search(rf"(평점|별점)\D{{0,3}}(?<!\d){dec}(?!\d)", nc):
                 return True
-        # 리뷰수: 값 뒤 '개/건'('개월' 제외) + 문장에 '리뷰/후기' 동반 — "리뷰 128개"·"리뷰 0개"는
-        # 잡고 "128GB"·"12개월"은 보존한다.
+        # 리뷰수: 값+'개/건'('개월' 제외)에 '리뷰/후기'가 근접(앞뒤 4자 이내)할 때만 — "리뷰 128개"·
+        # "128개 후기"는 잡고, "128GB"·"12개월"·"리뷰도 많고 색상 12개"(리뷰 단어가 멀리)는 보존한다
+        # (#171 PR#172 리뷰⑤ 과탐 방지 — '리뷰' 문장 전체 존재만 보면 무관한 동일 수량을 오탐).
         if isinstance(p.review_count, int):
-            if re.search(rf"(?<!\d){p.review_count}(?!\d)\s*(개|건)(?!월)", nc) and (
-                "리뷰" in nc or "후기" in nc
+            unit = rf"(?<!\d){p.review_count}(?!\d)\s*(개|건)(?!월)"
+            if re.search(rf"(리뷰|후기)\D{{0,4}}{unit}", nc) or re.search(
+                rf"{unit}\D{{0,4}}(리뷰|후기)", nc
             ):
                 return True
     return False
@@ -385,14 +387,17 @@ async def stream_recommendation(
     list_id = uuid4().hex
     # reasons — 근거가 있는 상품만(빈 rationale·expose_min 보충 상품은 제외). productId 로 키잉,
     # 순서 권위는 product_ids 라 정렬 불필요(부분집합 허용, §4.2 이슈 #61).
-    # push(신뢰경계) 직전 정제 — 개행 제거·안전 상한(config, 판매자 입력 영향 자유 텍스트 방어) +
-    # 비표시 수치 유출 제거(#171 PR#172). 정제 후 텍스트로 대조하면 zero-width 삽입 회피도 막는다.
+    # push(신뢰경계) 직전 정제 — 제어/zero-width 제거·공백 접기(_strip_unsafe) → 비표시 수치 유출
+    # 제거(#171 PR#172) → 안전 상한 truncate(_sanitize_reason). [리뷰④] 유출 검사는 truncate 전
+    # 온전한 문장에서 한다 — reason_max_len 경계에서 단위('원' 등)가 잘리면 '숫자+단위' 패턴을
+    # 못 잡아 정확한 값이 새는 우회를 막기 위함(정제 후 대조라 zero-width 삽입 회피도 차단).
     reasons = [
         RecoReason(product_id=pid, reason=cleaned)
         for pid in ranked_ids
         if (
-            cleaned := _redact_leaked_number(
-                _sanitize_reason(reason_by_id.get(pid, ""), settings.reason_max_len), candidates
+            cleaned := _sanitize_reason(
+                _redact_leaked_number(_strip_unsafe(reason_by_id.get(pid, "")), candidates),
+                settings.reason_max_len,
             )
         )
     ]
