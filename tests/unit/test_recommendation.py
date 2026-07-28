@@ -359,9 +359,23 @@ def test_redact_leaked_number_only_flags_display_context_quotes() -> None:
     )
     assert _redact_leaked_number("3.0점이라 조금 아쉬워요", prods2) == ""
 
-    # 무평점·무리뷰·가격없음(0·None) 후보로는 아무 것도 안 지운다
-    empty = [SpringProduct(product_id=3, name="z", price=None, rating=None, review_count=0)]
-    assert _redact_leaked_number("리뷰 0개지만 신상이에요", empty) == "리뷰 0개지만 신상이에요"
+    # [리뷰③] 값 0 도 대상 — is not None. price=0·rating=0.0·reviewCount=0 인용 차단.
+    zero = [SpringProduct(product_id=3, name="z", price=0, rating=0.0, review_count=0)]
+    assert _redact_leaked_number("0원 무료 이벤트예요", zero) == ""  # price=0
+    assert _redact_leaked_number("0점이라 좀 아쉬워요", zero) == ""  # rating=0.0 진짜 저평점
+    assert _redact_leaked_number("리뷰 0개뿐인 신상이에요", zero) == ""  # reviewCount=0 표시맥락
+    # 단, 숫자 없는 정성 표현은 통과(권장 서술)
+    assert (
+        _redact_leaked_number("아직 리뷰가 없는 신상이에요", zero) == "아직 리뷰가 없는 신상이에요"
+    )
+
+    # [리뷰③ 핵심] 리뷰는 있는데(review_count>0) 실제 rating=0.0 인 후보의 '0점' 인용 차단
+    low = [SpringProduct(product_id=4, name="v", review_count=8, rating=0.0)]
+    assert _redact_leaked_number("0점이라 별로예요", low) == ""
+
+    # 필드가 전부 None 인 후보로는 아무 것도 안 지운다(데이터 부재)
+    none_all = [SpringProduct(product_id=5, name="w", price=None, rating=None, review_count=None)]
+    assert _redact_leaked_number("리뷰 3개 있는 좋은 제품", none_all) == "리뷰 3개 있는 좋은 제품"
 
 
 async def test_push_drops_rationale_that_leaks_nondisplay_number() -> None:

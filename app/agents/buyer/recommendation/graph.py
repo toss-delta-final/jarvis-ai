@@ -76,23 +76,29 @@ def _reason_leaks_nondisplay(text: str, products: Iterable[SpringProduct]) -> bo
     숫자'가 아니라 '후보 실제 값 + 표시 단위 맥락(원/점·평점/리뷰 개·건)'이 함께 있을 때만 트리거해
     스펙성 숫자(128GB·15인치·12개월 등 정상 상품설명)는 보존한다(오탐 최소화, REQ-REC-082 결정적
     대조 정합). 콤마(천단위)는 무시하고, 다른 수의 일부는 자릿수 경계로 배제한다.
+    값 0 도 대상이다(#171 PR#172 리뷰③) — None(데이터 부재)만 스킵하고, 0원(무료)·0점(진짜
+    저평점, review_count>0)·리뷰 0개(검색~표시 사이 리뷰 생기면 CH-5 값과 불일치)까지 잡는다.
     """
     nc = text.replace(",", "")
     for p in products:
-        # 가격: 값 바로 뒤 '원'(통화 단위 필수) — 스펙 숫자와 달리 "39,000원" 형태만 잡는다.
-        if isinstance(p.price, int) and p.price > 0:
+        # 가격: 값 바로 뒤 '원'(통화 단위 필수) — 스펙 숫자와 달리 "39,000원"·"0원" 형태만 잡는다.
+        if isinstance(p.price, int):
             if re.search(rf"(?<!\d){p.price}(?!\d)\s*원", nc):
                 return True
-        # 평점: 값에 '점' 인접 또는 '평점/별점' 접두 — '장점/단점'의 '점'과 안 겹치게 값 인접만 본다.
-        if isinstance(p.rating, (int, float)) and p.rating > 0:
-            g = re.escape(str(p.rating))
-            if re.search(rf"(?<!\d){g}(?!\d)\s*점", nc) or re.search(
-                rf"(평점|별점)\D{{0,3}}(?<!\d){g}(?!\d)", nc
-            ):
+        # 평점: 값에 '점' 인접(소수·정수 표기 모두 — "0점"·"4점"·"4.8점") 또는 '평점/별점' 접두
+        # (오탐 안전한 소수형만). '장점/단점'의 '점'과 안 겹치게 값이 점에 인접할 때만 본다.
+        if isinstance(p.rating, (int, float)):
+            dec = re.escape(str(p.rating))  # "4.8"·"0.0"
+            suffix_forms = {dec}
+            if float(p.rating).is_integer():
+                suffix_forms.add(re.escape(str(int(p.rating))))  # "0"·"4" — 접미(점)에서만
+            if any(re.search(rf"(?<!\d){g}(?!\d)\s*점", nc) for g in suffix_forms):
                 return True
-        # 리뷰수: 값 뒤 '개/건'('개월' 제외) + 문장에 '리뷰/후기' 동반 — "리뷰 128개"는 잡고
-        # "128GB"·"12개월"은 보존한다.
-        if isinstance(p.review_count, int) and p.review_count > 0:
+            if re.search(rf"(평점|별점)\D{{0,3}}(?<!\d){dec}(?!\d)", nc):
+                return True
+        # 리뷰수: 값 뒤 '개/건'('개월' 제외) + 문장에 '리뷰/후기' 동반 — "리뷰 128개"·"리뷰 0개"는
+        # 잡고 "128GB"·"12개월"은 보존한다.
+        if isinstance(p.review_count, int):
             if re.search(rf"(?<!\d){p.review_count}(?!\d)\s*(개|건)(?!월)", nc) and (
                 "리뷰" in nc or "후기" in nc
             ):
