@@ -50,6 +50,27 @@ async def test_semantic_query_falls_back_to_user_query_when_missing() -> None:
     assert d.filters.semantic_query == "발화"
 
 
+async def test_semantic_query_falls_back_to_prior_before_raw_query() -> None:
+    """[#101 PR#166 리뷰] 정제발화("더 저렴한 걸로")로 LLM 이 semanticQuery 를 비우면, 이번 턴
+    원문(query)이 아니라 **직전 턴의 semantic_query** 로 폴백한다.
+
+    "더 저렴한 걸로" 같은 문구를 임베딩 재정렬 앵커로 쓰면 의미 신호가 오염돼(가격순 정렬도 못 하면서
+    '무선 이어폰' 의미만 잃음) 이 PR 이 개선한 recall 을 되레 해친다. 가격 선호는 filters·Sonnet
+    재랭킹이 처리하고, semantic_query 는 직전 턴의 상품 의미를 이어받는다.
+    """
+    from app.schemas.spring import ProductSearchFilters
+
+    prior = ProductSearchFilters(semantic_query="무선 이어폰")
+    d = await decompose(
+        _FakeLLM(_raw(semanticQuery="")),
+        query="더 저렴한 걸로",
+        prior_filters=prior,
+        profile_summary=None,
+        tier="fast",
+    )
+    assert d.filters.semantic_query == "무선 이어폰"  # 이번 턴 원문 아님, 직전 값 승계
+
+
 async def test_parses_single_category_query() -> None:
     """단일 카테고리 추측 → category_queries 길이 1, raw/query 매핑."""
     d = await _run(

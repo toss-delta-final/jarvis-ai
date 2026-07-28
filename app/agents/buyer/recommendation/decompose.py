@@ -41,6 +41,10 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
 - recommend: 정확한 수치 제약은 filters 에 넣고 semanticQuery 로 근사하지 마세요.
   PRIOR_FILTERS 가 있으면 병합(좁히면 add, 모순되면 replace)하세요.
   색상 조건(예: "빨간", "검정")이 있으면 filters.color 에 넣으세요.
+  semanticQuery 는 **찾는 상품의 의미**(예: "무선 이어폰")입니다. "더 저렴한 걸로", "다른 브랜드로"
+  같은 **조건 다듬기 발화면 그 문구를 semanticQuery 로 쓰지 말고** PRIOR_FILTERS.semanticQuery(직전
+  상품 의미)를 그대로 유지하세요 — 가격·브랜드 다듬기는 filters(priceMax·brand 등)로 가고,
+  semanticQuery 는 직전 상품 의미를 이어야 벡터 재정렬이 뜻을 잃지 않습니다.
 - categoryQueries: 사용자가 원하는 상품/목적별로 **카테고리를 최대한 추출**하세요.
   단일 상품 질의("무선 이어폰")면 1개, 상황형 질의("유럽여행 준비물")면 필요한 카테고리를
   여러 개 나눠 담으세요(예: 여행용품·전자기기·의류). category 는 best-guess(정말 모르면 null),
@@ -113,8 +117,12 @@ async def decompose(
     try:
         filters = ProductSearchFilters.model_validate(data.get("filters") or {})
         # semanticQuery 는 filters 밖(최상위)에 오는 의미검색 입력 — 검색 백엔드까지 흐르도록
-        # filters 에 실어준다(#101). 누락/빈값이면 사용자 발화(query)로 폴백해 재정렬 입력을 보장.
-        filters.semantic_query = str(data.get("semanticQuery") or query)
+        # filters 에 실어준다(#101). 폴백 순서: LLM 값 → 직전 턴 값 → 이번 턴 원문(query).
+        # 정제발화("더 저렴한 걸로")에서 LLM 이 semanticQuery 를 비우면 원문 대신 직전 턴 값을
+        # 이어받는다 — 원문을 임베딩 앵커로 쓰면 상품 의미 신호가 오염돼 재정렬 recall 이 나빠진다
+        # (가격 선호는 filters·Sonnet 재랭킹 몫, PR#166 리뷰). prior 없거나 그 값도 없으면 원문 폴백.
+        prior_sq = prior_filters.semantic_query if prior_filters else None
+        filters.semantic_query = str(data.get("semanticQuery") or prior_sq or query)
         case = int(data.get("case") or 2)
         cart = _parse_cart(data.get("cart"))
         raw_revert = data.get("revertCategories")
