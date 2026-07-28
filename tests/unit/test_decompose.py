@@ -147,6 +147,44 @@ async def test_semantic_query_not_promoted_from_single_leg_when_multi_category()
     assert d.filters.semantic_query == "유럽여행 준비물"
 
 
+async def test_semantic_query_blank_only_treated_as_missing() -> None:
+    """[#101 PR#166 리뷰] LLM 이 semanticQuery 를 공백-only('   ')로 내도 빈 값으로 보고 폴백한다.
+
+    공백 문자열은 Python truthy 라 가드 없이 두면 폴백 체인(cat_signal/prior_sq/query)이 통째로
+    건너뛰어져, 정제발화 오염(공백이 벡터 재정렬 앵커가 됨)이 dc5094b 수정에도 재발한다.
+    """
+    from app.schemas.spring import ProductSearchFilters
+
+    prior = ProductSearchFilters(semantic_query="무선 이어폰")
+    d = await decompose(
+        _FakeLLM(_raw(semanticQuery="   ")),
+        query="더 저렴한 걸로",
+        prior_filters=prior,
+        profile_summary=None,
+        tier="fast",
+    )
+    assert d.filters.semantic_query == "무선 이어폰"  # 공백 아님, 직전 값 유지
+
+
+async def test_blank_category_query_not_promoted_to_cat_signal() -> None:
+    """[#101 PR#166 리뷰] 공백-only categoryQuery.query 는 신호가 아니다 — cat_signal 로 승격되지
+    않고 폴백한다(_parse_category_queries 가 공백을 None 으로 정규화)."""
+    d = await decompose(
+        _FakeLLM(_raw(semanticQuery="", categoryQueries=[{"category": "운동화", "query": "   "}])),
+        query="운동화 찾아줘",
+        prior_filters=None,
+        profile_summary=None,
+        tier="fast",
+    )
+    assert d.filters.semantic_query == "운동화 찾아줘"  # 공백 query 아님, 원문 폴백
+
+
+async def test_blank_revert_category_excluded() -> None:
+    """[#101 PR#166 리뷰] 공백-only revertCategories 항목은 제외한다(LLM 공백 텍스트 = falsy 일관)."""
+    d = await _run(_raw(revertCategories=["   ", "조미료", ""]))
+    assert d.revert_categories == ["조미료"]
+
+
 async def test_parses_single_category_query() -> None:
     """단일 카테고리 추측 → category_queries 길이 1, raw/query 매핑."""
     d = await _run(

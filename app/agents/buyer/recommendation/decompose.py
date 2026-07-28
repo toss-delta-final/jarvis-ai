@@ -120,7 +120,9 @@ async def decompose(
         cart = _parse_cart(data.get("cart"))
         raw_revert = data.get("revertCategories")
         revert_categories = (
-            [str(c) for c in raw_revert if isinstance(c, str) and c]
+            [
+                str(c) for c in raw_revert if isinstance(c, str) and c.strip()
+            ]  # 공백-only 제외(PR#166)
             if isinstance(raw_revert, list)
             else []
         )
@@ -134,9 +136,13 @@ async def decompose(
         #     재사용되므로, 한 leg 검색어("여행 자물쇠")가 전역이 되면 무관한 leg(전자기기) 앵커로 샌다.
         #     멀티는 broad 한 prior_sq/원문으로 폴백하고, query 있는 멀티 leg 는 graph 가 자기 query 로
         #     override 한다(len(legs)>1). 단일 정제발화(query=null)면 cat_signal=None → prior_sq(#6).
+        # 각 후보는 공백-only 를 falsy 로 정규화(spring_client._search_query_params 와 동일 규약,
+        # PR#166) — LLM 이 "   " 를 내도 truthy 라 폴백 체인을 밀어내지 않게 한다. cat_signal 은
+        # _parse_category_queries 가 이미 공백을 None 으로 거른다. 최종 원문(query)만 raw 폴백.
         cat_signal = category_queries[0].query if len(category_queries) == 1 else None
-        prior_sq = prior_filters.semantic_query if prior_filters else None
-        filters.semantic_query = str(data.get("semanticQuery") or cat_signal or prior_sq or query)
+        prior_sq = (prior_filters.semantic_query or "").strip() if prior_filters else ""
+        llm_sq = (data.get("semanticQuery") or "").strip()
+        filters.semantic_query = llm_sq or cat_signal or prior_sq or query
     except (ValidationError, ValueError, TypeError) as exc:
         raise LLMError("decompose 필터/케이스/장바구니 파싱 실패") from exc
     return RouteDecision(
@@ -164,10 +170,12 @@ def _parse_category_queries(raw: object, fanout_max: int) -> list[CategoryQuery]
             continue
         cat = item.get("category")
         qry = item.get("query")
+        # 공백-only('  ')는 None 으로 정규화 — LLM 텍스트를 truthy 로 두면 빈 카테고리/검색어가
+        # 신호로 잡혀 cat_signal 승격·leg 앵커를 오염시킨다(spring_client 와 동일 blank=falsy 규약, PR#166).
         out.append(
             CategoryQuery(
-                raw_category=str(cat) if isinstance(cat, str) and cat else None,
-                query=str(qry) if isinstance(qry, str) and qry else None,
+                raw_category=str(cat) if isinstance(cat, str) and cat.strip() else None,
+                query=str(qry) if isinstance(qry, str) and qry.strip() else None,
             )
         )
     # 신호(raw·query) 있는 leg 만 남기고 절단 — 빈 leg(둘 다 없음)는 map_categories 에서 어차피

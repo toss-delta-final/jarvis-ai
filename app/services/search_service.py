@@ -106,7 +106,9 @@ class EmbeddingRerankBackend:
         result = await spring_client.search_products(filters)
         # 의미검색 입력은 semantic_query(#101) — 없으면 상품명 keyword 로 폴백. 둘 다 없거나 후보가
         # 없으면 Spring 순서 그대로(재정렬 skip). keyword 유무와 무관하게 semantic 이 있으면 재정렬.
-        query_text = filters.semantic_query or filters.keyword
+        # 최종 소비 지점 방어 — semantic_query/keyword 가 공백-only('  ')여도 truthy 라 무의미한
+        # 텍스트로 임베딩 API 호출·정렬하게 되므로 strip 후 빈 값이면 Spring 순서 그대로(PR#166 리뷰).
+        query_text = (filters.semantic_query or filters.keyword or "").strip()
         if not query_text or not result.products:
             return result
         try:

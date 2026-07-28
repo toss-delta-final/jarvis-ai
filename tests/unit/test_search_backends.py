@@ -215,6 +215,32 @@ async def test_embedding_rerank_offloads_scoring_to_thread(monkeypatch):
     assert result.products[0].product_id == 1
 
 
+async def test_embedding_rerank_blank_semantic_query_passthrough(monkeypatch):
+    """[#101 PR#166 리뷰] semantic_query 가 공백-only 면 재정렬을 건너뛰고 Spring 순서를 유지한다.
+
+    공백 문자열은 truthy 라 `if not query_text` 가드를 통과해 무의미한 텍스트로 임베딩 API 를
+    호출·정렬하게 된다 — 최종 소비 지점에서도 blank-only 를 걸러 불필요한 외부 호출을 막는다.
+    """
+    store = _seed_store()
+    embed_calls: list = []
+
+    def spy_embed(texts):
+        embed_calls.append(texts)
+        return _embed(texts)
+
+    async def fake_search(filters):
+        return ProductSearchResult(
+            products=[SpringProduct(product_id=i, name=f"p{i}", price=10) for i in (3, 2, 1)],
+            total_count=3,
+        )
+
+    monkeypatch.setattr(spring_client, "search_products", fake_search)
+    backend = EmbeddingRerankBackend(store=store, embed=spy_embed)
+    result = await backend.search(ProductSearchFilters(semantic_query="   ", keyword=None))
+    assert [p.product_id for p in result.products] == [3, 2, 1]  # Spring 순서 그대로(재정렬 skip)
+    assert embed_calls == []  # 공백은 임베딩 호출조차 안 함
+
+
 async def test_embedding_rerank_passthrough_without_keyword(monkeypatch):
     store = _seed_store()
 
