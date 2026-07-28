@@ -312,6 +312,20 @@ async def test_rerank_neutralizes_rating_for_no_review_candidate() -> None:
     assert by_id[2]["reviewCount"] == 10
 
 
+def test_rerank_system_prompt_forbids_quoting_nondisplay_numbers() -> None:
+    """[#171 PR#172 리뷰] 비표시 수치(rating·reviewCount·price) 인용 금지 가드가 프롬프트에 있다.
+
+    reviewCount/rating/price 는 api-spec §4.6 '비표시(AI 계산용)' 필드다. rerank 가 이 수치를
+    근거문에 그대로 인용하면 '비표시' 계약 필드가 자유텍스트를 타고 FE 에 노출되고, CH-5 가
+    채우는 표시값(시점·소스 상이)과 불일치할 수 있다. 프롬프트 드리프트로 가드가 사라지는
+    회귀를 막는 최소 고정 테스트다.
+    """
+    from app.agents.buyer.recommendation.rerank import _SYSTEM
+
+    assert "인용하지 마세요" in _SYSTEM
+    assert "reviewCount" in _SYSTEM and "rating" in _SYSTEM
+
+
 def test_sanitize_reason_strips_control_and_format_chars() -> None:
     """_sanitize_reason 은 비-whitespace 제어문자(NUL/ESC/DEL)·zero-width·bidi 포맷 문자를 제거한다.
 
