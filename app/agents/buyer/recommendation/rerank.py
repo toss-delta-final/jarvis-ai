@@ -40,7 +40,11 @@ async def rerank(
             "name": c.name,
             "brand": c.brand,
             "price": c.price,
-            "rating": c.rating,
+            # 리뷰가 없으면(review_count==0) rating=0 은 실제 저평점이 아니라 데이터 부재이므로
+            # None 으로 중립화해 저평점 신호로 오인되지 않게 한다(#171). reviewCount 는 신뢰 신호로
+            # 함께 전달한다(리뷰 많은 고평점이 더 확실). None(미전송)이면 rating 그대로.
+            "rating": None if c.review_count == 0 else c.rating,
+            "reviewCount": c.review_count,
             "category": c.category,
         }
         for c in candidates

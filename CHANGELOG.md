@@ -10,6 +10,7 @@
 ## [Unreleased]
 
 ### Added
+- **#171 — I-1 `reviewCount` 수신 + rating=0 의미 판별** — BE 합의(2026-07-28)로 I-1이 `reviewCount`(조회 시 집계 리뷰수)를 AI 계산용(비표시)으로 함께 반환한다. `SpringProduct.review_count`를 추가하고, `rating`과 짝지어 **"리뷰가 아예 없어 rating=0"(reviewCount==0, 데이터 부재)** 와 **"리뷰가 있고 하한 미달"(reviewCount>0)** 를 구분한다. ① `search_catalog`의 `rating_min` 사후필터는 reviewCount==0을 (rating=None 무평점과 동일하게) 보존하고 실제 리뷰가 있는 미달만 탈락시킨다. ② `rerank`는 reviewCount==0 후보의 rating을 None으로 중립화(저평점 오인 방지)하고 reviewCount를 신뢰 신호로 함께 전달한다. reviewCount가 None(BE 미전송)이면 rating이 지배하는 구 동작으로 폴백한다. **#100의 "reviewCount는 표시 전용·I-1 미반환" 결정을 부분 개정**. (api-spec §4.6, v0.15.25)
 - **#101 PR② — attributes 유연 하드매칭** — 사용자가 명시한 상품 속성(소재·핏·용도·방수 등)을 `SpringProduct.attributes`와 관대 매칭해 하드 필터한다. `ProductSearchFilters.attr_conditions`(AI 내부, 와이어 제외)를 decompose가 추출하고, `search_catalog`가 문자열은 부분매칭·숫자는 완전일치로 비교한다. 조건 축이 없는 상품은 '반증 아님'으로 보존(#100 P0 rating 정책과 정합), 0건이면 축별 완화한다. 멀티턴은 merge(prior∪이번턴) 기본에 `attrRemovals` 명시 제거 신호로 처리 — LLM이 이전 축을 빠뜨려도 유실되지 않는다. 추측 선호(소프트)는 코드 없이 Sonnet 재랭킹이 판단. (api-spec §4.6·§4.8)
 - **#100 P1 — I-1 `color` 검색 조건 연결** — Spring I-1이 `attributes` LIKE로 지원하는 `color` 필터를 AI가 쓰도록, `ProductSearchFilters.color`와 `_search_query_params`의 `color` 전송을 추가하고 decompose 프롬프트가 색상 조건("빨간"·"검정" 등)을 `filters.color`로 추출하게 했다. 그동안 요청 모델·쿼리 변환에 `color`가 없어 Spring의 색상 검색을 못 쓰던 것을 해소. (api-spec §4.6, v0.15.22)
 - pg-catalog `products` 임베딩 프로비넌스 컬럼(`embed_model·embed_dim·embed_task·normalized`) + `embedding_meta_complete` CHECK, 기존 볼륨용 마이그레이션(#65).

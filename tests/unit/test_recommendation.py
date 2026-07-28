@@ -280,6 +280,38 @@ async def test_rerank_ids_subset_of_candidates() -> None:
     assert ids[0] == 101  # rerank 유효 산출이 선두, 나머지는 expose_min 보충
 
 
+async def test_rerank_neutralizes_rating_for_no_review_candidate() -> None:
+    """[#171] 리뷰 없는 후보(reviewCount=0)의 rating 은 rerank 프롬프트에서 중립화된다.
+
+    리뷰가 없어 나온 rating=0 을 저평점 신호로 오인하지 않도록 None 으로 넘기고,
+    reviewCount 는 신뢰 신호로 함께 전달한다. 리뷰가 있는 후보의 rating 은 그대로 둔다.
+    """
+    import json as _json
+
+    from app.agents.buyer.recommendation.rerank import rerank
+    from app.schemas.spring import SpringProduct
+
+    llm = FakeLLM(rerank={"ranked": [{"productId": 1, "rationale": "ok"}], "overallComment": "c"})
+    candidates = [
+        SpringProduct(
+            product_id=1, name="무리뷰", rating=0.0, review_count=0, category="c", brand="b"
+        ),
+        SpringProduct(
+            product_id=2, name="리뷰있음", rating=4.2, review_count=10, category="c", brand="b"
+        ),
+    ]
+    await rerank(
+        llm, query="q", candidates=candidates, profile_summary=None, tier="smart", expose_max=8
+    )
+    _, user = llm.calls[-1]
+    payload = _json.loads(user.split("CANDIDATES: ", 1)[1])
+    by_id = {c["productId"]: c for c in payload}
+    assert by_id[1]["rating"] is None  # 무리뷰 rating=0 → 저평점 오인 방지 중립화
+    assert by_id[1]["reviewCount"] == 0
+    assert by_id[2]["rating"] == 4.2  # 리뷰 있는 후보는 rating 유지
+    assert by_id[2]["reviewCount"] == 10
+
+
 def test_sanitize_reason_strips_control_and_format_chars() -> None:
     """_sanitize_reason 은 비-whitespace 제어문자(NUL/ESC/DEL)·zero-width·bidi 포맷 문자를 제거한다.
 
@@ -528,6 +560,46 @@ async def test_search_catalog_rating_filter_preserves_unrated() -> None:
     assert [p.product_id for p in res.products] == [201, 203]
 
 
+async def test_search_catalog_rating_filter_distinguishes_no_review() -> None:
+    """[#171] reviewCount 로 '리뷰 없어 rating=0'과 '리뷰 있고 하한 미달'을 구분한다.
+
+    - reviewCount=0(리뷰 없음)의 rating=0 은 데이터 부재 → 보존(rerank 판단에 위임).
+    - reviewCount>0·rating<하한 은 반증된 낮은 평점 → 탈락.
+    - reviewCount=None(BE 미전송) 은 기존 동작(rating 이 지배) 으로 폴백.
+    - rating=None 무평점은 여전히 보존.
+    """
+    from app.schemas.spring import ProductSearchFilters, SpringProduct
+    from app.services.search_service import search_catalog
+    from tests._fakes import FakeBackend
+
+    products = [
+        SpringProduct(
+            product_id=301, name="무리뷰0점", rating=0.0, review_count=0, category="c", brand="b"
+        ),
+        SpringProduct(
+            product_id=302, name="리뷰저평점", rating=3.9, review_count=12, category="c", brand="b"
+        ),
+        SpringProduct(
+            product_id=303, name="리뷰고평점", rating=4.5, review_count=30, category="c", brand="b"
+        ),
+        SpringProduct(
+            product_id=304,
+            name="rc미전송저평점",
+            rating=3.9,
+            review_count=None,
+            category="c",
+            brand="b",
+        ),
+        SpringProduct(
+            product_id=305, name="무평점", rating=None, review_count=0, category="c", brand="b"
+        ),
+    ]
+    res = await search_catalog(ProductSearchFilters(rating_min=4.0), backend=FakeBackend(products))
+    # 무리뷰 0점(301) 보존, 리뷰 저평점(302) 탈락, 고평점(303) 통과,
+    # reviewCount 미전송 저평점(304) 폴백 탈락, 무평점(305) 보존.
+    assert [p.product_id for p in res.products] == [301, 303, 305]
+
+
 def test_i1_envelope_preserves_rerank_fields() -> None:
     """[#100 P0/P1] BE I-1 실제 envelope({success, data:[...]}) 파싱 계약 테스트.
 
@@ -561,6 +633,25 @@ def test_i1_envelope_preserves_rerank_fields() -> None:
     assert p.attributes == {"소재": "린넨", "핏": "오버핏"}
     assert p.category == "여성의류"  # categoryName 별칭
     assert p.brand == "더센트"  # brandName 별칭
+
+
+def test_i1_envelope_parses_review_count() -> None:
+    """[#171] I-1 응답의 reviewCount 가 SpringProduct.review_count 로 파싱된다.
+
+    reviewCount 는 rating 과 짝지어 '리뷰 없어 0'과 '리뷰 있고 저평점'을 가르는 판별자다.
+    """
+    from app.services.spring_client import _parse_search_response
+
+    raw = {
+        "success": True,
+        "data": [
+            {"productId": 1, "name": "무리뷰", "rating": 0.0, "reviewCount": 0},
+            {"productId": 2, "name": "리뷰있음", "rating": 4.2, "reviewCount": 37},
+        ],
+    }
+    products = _parse_search_response(raw).products
+    assert products[0].review_count == 0
+    assert products[1].review_count == 37
 
 
 def test_i1_attributes_accepts_non_string_values() -> None:
