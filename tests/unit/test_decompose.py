@@ -120,6 +120,33 @@ async def test_semantic_query_carries_prior_when_only_category_carried_no_query(
     assert d.filters.semantic_query == "가성비 좋은 무선 이어폰"
 
 
+async def test_semantic_query_not_promoted_from_single_leg_when_multi_category() -> None:
+    """[#101 PR#166 리뷰] 멀티 카테고리에서 LLM 이 top-level semanticQuery 를 비우면, 한 leg 의
+    구체 검색어를 전역 앵커로 승격하지 않는다.
+
+    전역 semantic_query 는 graph 의 query-null leg 폴백으로 재사용되므로, 첫 leg 검색어("여행
+    자물쇠")가 전역이 되면 무관한 leg(전자기기)의 재정렬 앵커로 샌다. 멀티면 cat_signal 을 쓰지 않고
+    broad 한 원문(query)으로 폴백한다 — query 있는 멀티 leg 는 graph 가 자기 query 로 override 한다.
+    """
+    d = await decompose(
+        _FakeLLM(
+            _raw(
+                semanticQuery="",
+                categoryQueries=[
+                    {"category": "여행용품", "query": "여행 자물쇠"},
+                    {"category": "전자기기", "query": None},
+                ],
+            )
+        ),
+        query="유럽여행 준비물",
+        prior_filters=None,
+        profile_summary=None,
+        tier="fast",
+    )
+    # 첫 leg "여행 자물쇠" 아님 — broad 한 원문(전 leg 관련)으로.
+    assert d.filters.semantic_query == "유럽여행 준비물"
+
+
 async def test_parses_single_category_query() -> None:
     """단일 카테고리 추측 → category_queries 길이 1, raw/query 매핑."""
     d = await _run(

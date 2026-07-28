@@ -127,13 +127,14 @@ async def decompose(
         category_queries = _parse_category_queries(data.get("categoryQueries"), category_fanout_max)
         # semanticQuery 는 filters 밖(최상위)에 오는 의미검색 입력 — 검색 백엔드까지 흐르도록
         # filters 에 실어준다(#101). 폴백 순서(PR#166 리뷰):
-        #   LLM 값 → 이번 턴 categoryQueries **query** 신호 → 직전 턴 값 → 이번 턴 원문(query).
-        # cat_signal 은 cq.query(자연어 검색어) 있는 leg 만 취한다 — raw_category("가전 > 이어폰/헤드폰"
-        # 같은 분류 경로 breadcrumb)는 임베딩 앵커로 부적합하고, 정제발화("더 저렴한")에서 LLM 이
-        # 카테고리만 승계(query=null)한 경우까지 신호로 잡으면 breadcrumb 가 prior_sq(자연어)를
-        # 밀어내 dc5094b 가 고친 오염이 재발한다. 즉 query 유무가 '주제 전환(query 채움)' vs
-        # '정제발화 카테고리 승계(query=null)'를 가른다 — 전자는 cat_signal, 후자는 prior_sq 로.
-        cat_signal = next((cq.query for cq in category_queries if cq.query), None)
+        #   LLM 값 → (단일 카테고리면) 그 leg query → 직전 턴 값 → 이번 턴 원문(query).
+        # cat_signal 은 **단일 카테고리**일 때만 그 leg query(자연어 검색어)를 전역으로 승격한다.
+        # (1) raw_category("가전 > 이어폰/헤드폰" 분류 경로 breadcrumb)는 앵커로 부적합해 query 만 본다.
+        # (2) 멀티 카테고리면 승격하지 않는다 — 전역 semantic_query 는 graph 의 query-null leg 폴백으로
+        #     재사용되므로, 한 leg 검색어("여행 자물쇠")가 전역이 되면 무관한 leg(전자기기) 앵커로 샌다.
+        #     멀티는 broad 한 prior_sq/원문으로 폴백하고, query 있는 멀티 leg 는 graph 가 자기 query 로
+        #     override 한다(len(legs)>1). 단일 정제발화(query=null)면 cat_signal=None → prior_sq(#6).
+        cat_signal = category_queries[0].query if len(category_queries) == 1 else None
         prior_sq = prior_filters.semantic_query if prior_filters else None
         filters.semantic_query = str(data.get("semanticQuery") or cat_signal or prior_sq or query)
     except (ValidationError, ValueError, TypeError) as exc:
