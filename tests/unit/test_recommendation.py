@@ -280,11 +280,13 @@ async def test_rerank_ids_subset_of_candidates() -> None:
     assert ids[0] == 101  # rerank 유효 산출이 선두, 나머지는 expose_min 보충
 
 
-async def test_rerank_neutralizes_rating_for_no_review_candidate() -> None:
-    """[#171] 리뷰 없는 후보(reviewCount=0)의 rating 은 rerank 프롬프트에서 중립화된다.
+async def test_rerank_sends_rating_review_as_tiers_not_numbers() -> None:
+    """[#171 PR#172] rerank LLM 입력의 rating·reviewCount 는 정확한 숫자가 아니라 등급이다.
 
-    리뷰가 없어 나온 rating=0 을 저평점 신호로 오인하지 않도록 None 으로 넘기고,
-    reviewCount 는 신뢰 신호로 함께 전달한다. 리뷰가 있는 후보의 rating 은 그대로 둔다.
+    정확한 4.2·10 을 LLM 에 주면 근거문에 "4.2 평점"·"리뷰 10개"처럼 흘려 CH-5 표시값과 어긋날 수
+    있어, 등급(ratingLevel/reviewLevel)만 준다 → 흘릴 숫자 자체가 없다(유출 원천 차단). review_count
+    ==0(리뷰 없음)은 '평가없음'으로 #171 rating=0 판별을 유지한다. 정확한 값은 원본에 남아 코드
+    필터·예산이 쓴다(질의 "평점 4.5 이상"은 search_catalog 사후필터 소관, 이 티어화 무영향).
     """
     import json as _json
 
@@ -306,87 +308,58 @@ async def test_rerank_neutralizes_rating_for_no_review_candidate() -> None:
     _, user = llm.calls[-1]
     payload = _json.loads(user.split("CANDIDATES: ", 1)[1])
     by_id = {c["productId"]: c for c in payload}
-    assert by_id[1]["rating"] is None  # 무리뷰 rating=0 → 저평점 오인 방지 중립화
-    assert by_id[1]["reviewCount"] == 0
-    assert by_id[2]["rating"] == 4.2  # 리뷰 있는 후보는 rating 유지
-    assert by_id[2]["reviewCount"] == 10
+    # 등급으로 전달 — 정확한 숫자 키(rating/reviewCount)는 없다.
+    assert by_id[1]["ratingLevel"] == "평가없음"  # review_count==0 → 데이터 부재(#171)
+    assert by_id[1]["reviewLevel"] == "없음"
+    assert by_id[2]["ratingLevel"] == "높음"  # 4.2 → 높음
+    assert by_id[2]["reviewLevel"] == "보통"  # 10 → 보통
+    assert "rating" not in by_id[1] and "reviewCount" not in by_id[1]
+    # 정확한 숫자(4.2·10)는 LLM 프롬프트에 등장하지 않는다(흘릴 값 없음).
+    assert "4.2" not in user
 
 
-def test_rerank_system_prompt_forbids_quoting_nondisplay_numbers() -> None:
-    """[#171 PR#172 리뷰] 비표시 수치(rating·reviewCount·price) 인용 금지 가드가 프롬프트에 있다.
+def test_rerank_system_prompt_forbids_quoting_price() -> None:
+    """[#171 PR#172] rerank 프롬프트가 금액(price) 숫자 인용 금지 규칙을 유지한다.
 
-    reviewCount/rating/price 는 api-spec §4.6 '비표시(AI 계산용)' 필드다. rerank 가 이 수치를
-    근거문에 그대로 인용하면 '비표시' 계약 필드가 자유텍스트를 타고 FE 에 노출되고, CH-5 가
-    채우는 표시값(시점·소스 상이)과 불일치할 수 있다. 프롬프트 드리프트로 가드가 사라지는
-    회귀를 막는 최소 고정 테스트다.
+    rating·reviewCount 는 등급으로만 넘겨 흘릴 숫자가 없지만, price 는 예산 판단용으로 정밀값을
+    주므로 근거문 금액 인용을 프롬프트로 막는다(코드 backstop 과 이중화). 프롬프트 드리프트 방지.
     """
     from app.agents.buyer.recommendation.rerank import _SYSTEM
 
     assert "인용하지 마세요" in _SYSTEM
-    assert "reviewCount" in _SYSTEM and "rating" in _SYSTEM
+    assert "price" in _SYSTEM and "ratingLevel" in _SYSTEM and "reviewLevel" in _SYSTEM
 
 
-def test_redact_leaked_number_only_flags_display_context_quotes() -> None:
-    """[#171 PR#172 리뷰] 코드 레벨 하드 가드 — '값 + 표시 단위 맥락'일 때만 문장을 버린다.
+def test_redact_leaked_price_only_flags_currency_context() -> None:
+    """[#171 PR#172] 코드 가드는 price(정밀값) 유출만 backstop 으로 잡는다.
 
-    프롬프트(soft)를 어겨 price/rating/reviewCount 가 표시 맥락(원/점·평점/리뷰 개)으로 박히면
-    신뢰경계 전에 통째 제거하되, 값이 우연히 겹치는 스펙 숫자(128GB·12개월·장점)는 표시 단위
-    맥락이 없어 보존한다(오탐 최소화).
+    rating·reviewCount 는 rerank 입력에서 등급으로 바꿔 LLM 에 숫자를 안 주므로 가드 대상이 아니다
+    (유출 원천 차단). price 만 예산용으로 정밀값을 주므로, 값 뒤 '원' 인용(0원 무료 포함)만 통째
+    제거하고 스펙 숫자(39000mAh 등 통화 단위 없음)는 보존한다.
     """
     from app.agents.buyer.recommendation.graph import _redact_leaked_number
     from app.schemas.spring import SpringProduct
 
     prods = [SpringProduct(product_id=1, name="x", price=29900, rating=4.8, review_count=128)]
-    # 표시 맥락 인용 → 문장 통째 제거
-    assert _redact_leaked_number("리뷰 128개라 믿을 만해요", prods) == ""
-    assert _redact_leaked_number("평점 4.8로 우수해요", prods) == ""
-    assert _redact_leaked_number("4.8점이라 만족도 높아요", prods) == ""
-    assert _redact_leaked_number("29,900원으로 합리적이에요", prods) == ""  # 콤마 무시
-    # 값이 같아도 표시 단위 맥락이 없으면(스펙 숫자) 보존
-    assert _redact_leaked_number("128GB 대용량이라 넉넉해요", prods) == "128GB 대용량이라 넉넉해요"
+    # price + '원' 맥락 → 문장 통째 제거(콤마 무시)
+    assert _redact_leaked_number("29,900원으로 합리적이에요", prods) == ""
+    # 통화 단위 없는 스펙/정상 숫자는 보존 — 티어화라 rating·reviewCount 는 아예 대상 아님
+    assert (
+        _redact_leaked_number("29900mAh 대용량 배터리예요", prods) == "29900mAh 대용량 배터리예요"
+    )
+    assert _redact_leaked_number("평점이 높고 리뷰도 많아요", prods) == "평점이 높고 리뷰도 많아요"
     assert (
         _redact_leaked_number("여름에 시원한 린넨 소재예요", prods) == "여름에 시원한 린넨 소재예요"
     )
 
-    # reviewCount=12 여도 '12개월'(개월·리뷰맥락 없음)은 보존, '리뷰 12개'는 제거
-    prods2 = [SpringProduct(product_id=2, name="y", review_count=12, rating=3.0)]
-    assert _redact_leaked_number("12개월 무이자 할부돼요", prods2) == "12개월 무이자 할부돼요"
-    assert _redact_leaked_number("리뷰 12개 있는 신상이에요", prods2) == ""
-    # rating=3.0 이어도 '장점'의 '점'과 안 겹침(값 인접만), '3.0점'은 제거
-    assert (
-        _redact_leaked_number("장점이 정말 많은 제품이에요", prods2)
-        == "장점이 정말 많은 제품이에요"
-    )
-    assert _redact_leaked_number("3.0점이라 조금 아쉬워요", prods2) == ""
+    # 값 0(무료 이벤트)도 대상 — is not None. '0원' 인용 차단, 숫자 없는 정성 표현은 통과.
+    zero = [SpringProduct(product_id=2, name="z", price=0)]
+    assert _redact_leaked_number("0원 무료 이벤트예요", zero) == ""
+    assert _redact_leaked_number("무료로 받을 수 있어요", zero) == "무료로 받을 수 있어요"
 
-    # [리뷰③] 값 0 도 대상 — is not None. price=0·rating=0.0·reviewCount=0 인용 차단.
-    zero = [SpringProduct(product_id=3, name="z", price=0, rating=0.0, review_count=0)]
-    assert _redact_leaked_number("0원 무료 이벤트예요", zero) == ""  # price=0
-    assert _redact_leaked_number("0점이라 좀 아쉬워요", zero) == ""  # rating=0.0 진짜 저평점
-    assert _redact_leaked_number("리뷰 0개뿐인 신상이에요", zero) == ""  # reviewCount=0 표시맥락
-    # 단, 숫자 없는 정성 표현은 통과(권장 서술)
-    assert (
-        _redact_leaked_number("아직 리뷰가 없는 신상이에요", zero) == "아직 리뷰가 없는 신상이에요"
-    )
-
-    # [리뷰③ 핵심] 리뷰는 있는데(review_count>0) 실제 rating=0.0 인 후보의 '0점' 인용 차단
-    low = [SpringProduct(product_id=4, name="v", review_count=8, rating=0.0)]
-    assert _redact_leaked_number("0점이라 별로예요", low) == ""
-
-    # 필드가 전부 None 인 후보로는 아무 것도 안 지운다(데이터 부재)
-    none_all = [SpringProduct(product_id=5, name="w", price=None, rating=None, review_count=None)]
-    assert _redact_leaked_number("리뷰 3개 있는 좋은 제품", none_all) == "리뷰 3개 있는 좋은 제품"
-
-    # [리뷰⑤] reviewCount 근접 조건 — '리뷰/후기'가 값+개/건에 인접할 때만 유출로 본다.
-    rc = [SpringProduct(product_id=6, name="u", review_count=12)]
-    assert _redact_leaked_number("리뷰 12개 있어 믿을 만해요", rc) == ""  # 인접 → 유출
-    assert _redact_leaked_number("후기 12건이나 달렸어요", rc) == ""  # 후기+건 인접
-    assert _redact_leaked_number("12개 리뷰가 쌓였어요", rc) == ""  # 값→개→리뷰 인접
-    # 과탐 방지: '리뷰'가 멀리 있고 12개는 무관한 수량(색상 등)이면 보존
-    assert (
-        _redact_leaked_number("리뷰도 많고 색상이 12개나 있어요", rc)
-        == "리뷰도 많고 색상이 12개나 있어요"
-    )
+    # price=None 후보로는 아무 것도 안 지운다
+    none_price = [SpringProduct(product_id=3, name="w", price=None)]
+    assert _redact_leaked_number("29,900원이라 저렴", none_price) == "29,900원이라 저렴"
 
 
 async def test_push_drops_rationale_that_leaks_nondisplay_number() -> None:
@@ -416,13 +389,13 @@ async def test_push_drops_rationale_that_leaks_nondisplay_number() -> None:
     assert 101 in push.pushes[0].product_ids  # 근거만 빠지고 상품 자체 노출은 유지
 
 
-async def test_overall_comment_that_leaks_number_is_dropped() -> None:
-    """[#171 PR#172 리뷰] overallComment 가 비표시 수치를 인용하면 token 으로 안 나간다."""
+async def test_overall_comment_that_leaks_price_is_dropped() -> None:
+    """[#171 PR#172 리뷰] overallComment 가 price 를 금액 맥락으로 인용하면 token 으로 안 나간다."""
     push = _RecordingPush()
     llm = FakeLLM(
         rerank={
             "ranked": [{"productId": 101, "rationale": "가벼워요"}],
-            "overallComment": "평점 4.5짜리 좋은 상품이에요",  # 101 rating 유출
+            "overallComment": "39,000원짜리 좋은 상품이에요",  # 101 price=39000 유출
         }
     )
     events = await _collect(
@@ -431,7 +404,7 @@ async def test_overall_comment_that_leaks_number_is_dropped() -> None:
         )
     )
     texts = [e["data"].get("text", "") for e in events if e["type"] == "token"]
-    assert all("4.5" not in t for t in texts)  # 유출 comment 는 통째 드롭 → 미emit
+    assert all("39000" not in t and "39,000" not in t for t in texts)  # 유출 comment 드롭 → 미emit
 
 
 async def test_push_leak_check_runs_before_truncation() -> None:
