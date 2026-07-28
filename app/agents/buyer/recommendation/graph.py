@@ -10,8 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -66,34 +65,6 @@ def _sanitize_reason(text: str, max_len: int) -> str:
     if len(collapsed) > max_len:
         collapsed = collapsed[: max_len - 1].rstrip() + "…"
     return collapsed
-
-
-def _reason_leaks_nondisplay(text: str, products: Iterable[SpringProduct]) -> bool:
-    """근거문이 후보의 정밀 비표시 수치(price)를 표시 맥락으로 인용하는지 판정(#171 PR#172).
-
-    rating·reviewCount 는 rerank 입력에서 등급(티어)으로 바꿔 LLM 에 정확한 숫자를 안 주므로 흘릴
-    값이 없다(rerank._rating_tier/_review_tier — 유출 원천 차단). price 만 예산 판단용으로 정밀값을
-    LLM 에 주므로, 값 뒤 '원' 형태의 인용을 backstop 으로 잡는다(1차 방어는 프롬프트 가드). '39,000원'·
-    '0원'(무료)은 잡고, 스펙 숫자(128GB 등)는 통화 단위가 없어 보존한다. 콤마 무시·자릿수 경계 매칭.
-    """
-    nc = text.replace(",", "")
-    for p in products:
-        # 가격: 값 바로 뒤 '원'(통화 단위 필수) — 스펙 숫자와 달리 "39,000원"·"0원" 형태만 잡는다.
-        if isinstance(p.price, int) and re.search(rf"(?<!\d){p.price}(?!\d)\s*원", nc):
-            return True
-    return False
-
-
-def _redact_leaked_number(text: str, products: Iterable[SpringProduct]) -> str:
-    """비표시 수치를 표시 맥락으로 인용한 근거문은 통째 버린다(#171 PR#172).
-
-    시스템 프롬프트 가드는 soft(LLM 이 어길 수 있음)라, rationale·overallComment 가 신뢰경계를
-    넘기 전에 코드로 이중화한다. 부분 제거는 문장을 훼손하므로('리뷰 개라…') 유출 감지 시 문장
-    전체를 버려 근거 없이 노출한다. 판정은 _reason_leaks_nondisplay(값+표시단위 맥락) 소관.
-    """
-    if not text:
-        return text
-    return "" if _reason_leaks_nondisplay(text, products) else text
 
 
 def _merge_fanout_results(results: list[ProductSearchResult], cap: int) -> ProductSearchResult:
@@ -320,7 +291,7 @@ async def stream_recommendation(
         )
         ranked_ids = [pid for pid, _ in rr.ranked]
         reason_by_id = dict(rr.ranked)  # 상품별 근거(§4.2) — (productId, rationale) 튜플 → 맵
-        comment = _redact_leaked_number(_strip_unsafe(rr.overall_comment), candidates)
+        comment = _strip_unsafe(rr.overall_comment)
     except LLMError:
         rerank_degraded = True
         ranked_ids = [p.product_id for p in candidates[: settings.expose_max]]
@@ -363,19 +334,11 @@ async def stream_recommendation(
     list_id = uuid4().hex
     # reasons — 근거가 있는 상품만(빈 rationale·expose_min 보충 상품은 제외). productId 로 키잉,
     # 순서 권위는 product_ids 라 정렬 불필요(부분집합 허용, §4.2 이슈 #61).
-    # push(신뢰경계) 직전 정제 — 제어/zero-width 제거·공백 접기(_strip_unsafe) → 비표시 수치 유출
-    # 제거(#171 PR#172) → 안전 상한 truncate(_sanitize_reason). [리뷰④] 유출 검사는 truncate 전
-    # 온전한 문장에서 한다 — reason_max_len 경계에서 단위('원' 등)가 잘리면 '숫자+단위' 패턴을
-    # 못 잡아 정확한 값이 새는 우회를 막기 위함(정제 후 대조라 zero-width 삽입 회피도 차단).
+    # push(신뢰경계) 직전 정제 — 개행 제거·안전 상한(config, 판매자 입력 영향 자유 텍스트 방어).
     reasons = [
         RecoReason(product_id=pid, reason=cleaned)
         for pid in ranked_ids
-        if (
-            cleaned := _sanitize_reason(
-                _redact_leaked_number(_strip_unsafe(reason_by_id.get(pid, "")), candidates),
-                settings.reason_max_len,
-            )
-        )
+        if (cleaned := _sanitize_reason(reason_by_id.get(pid, ""), settings.reason_max_len))
     ]
     push = RecommendationPush(
         session_id=request.session_id,

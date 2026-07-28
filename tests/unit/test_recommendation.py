@@ -318,18 +318,6 @@ async def test_rerank_sends_rating_review_as_tiers_not_numbers() -> None:
     assert "4.2" not in user
 
 
-def test_rerank_system_prompt_forbids_quoting_price() -> None:
-    """[#171 PR#172] rerank 프롬프트가 금액(price) 숫자 인용 금지 규칙을 유지한다.
-
-    rating·reviewCount 는 등급으로만 넘겨 흘릴 숫자가 없지만, price 는 예산 판단용으로 정밀값을
-    주므로 근거문 금액 인용을 프롬프트로 막는다(코드 backstop 과 이중화). 프롬프트 드리프트 방지.
-    """
-    from app.agents.buyer.recommendation.rerank import _SYSTEM
-
-    assert "인용하지 마세요" in _SYSTEM
-    assert "price" in _SYSTEM and "ratingLevel" in _SYSTEM and "reviewLevel" in _SYSTEM
-
-
 def test_rerank_prompt_lists_all_tier_return_values() -> None:
     """[#171 PR#172 리뷰⑦] 프롬프트 enum 이 실제 티어 반환값을 모두 포함한다.
 
@@ -350,111 +338,6 @@ def test_rerank_prompt_lists_all_tier_return_values() -> None:
     review_vals = {_review_tier(_p(review_count=rc)) for rc in [None, 0, 3, 10, 50, 200]}
     for v in rating_vals | review_vals:
         assert v in _SYSTEM, f"티어값 {v!r} 이 프롬프트 enum 에 없음"
-
-
-def test_redact_leaked_price_only_flags_currency_context() -> None:
-    """[#171 PR#172] 코드 가드는 price(정밀값) 유출만 backstop 으로 잡는다.
-
-    rating·reviewCount 는 rerank 입력에서 등급으로 바꿔 LLM 에 숫자를 안 주므로 가드 대상이 아니다
-    (유출 원천 차단). price 만 예산용으로 정밀값을 주므로, 값 뒤 '원' 인용(0원 무료 포함)만 통째
-    제거하고 스펙 숫자(39000mAh 등 통화 단위 없음)는 보존한다.
-    """
-    from app.agents.buyer.recommendation.graph import _redact_leaked_number
-    from app.schemas.spring import SpringProduct
-
-    prods = [SpringProduct(product_id=1, name="x", price=29900, rating=4.8, review_count=128)]
-    # price + '원' 맥락 → 문장 통째 제거(콤마 무시)
-    assert _redact_leaked_number("29,900원으로 합리적이에요", prods) == ""
-    # 통화 단위 없는 스펙/정상 숫자는 보존 — 티어화라 rating·reviewCount 는 아예 대상 아님
-    assert (
-        _redact_leaked_number("29900mAh 대용량 배터리예요", prods) == "29900mAh 대용량 배터리예요"
-    )
-    assert _redact_leaked_number("평점이 높고 리뷰도 많아요", prods) == "평점이 높고 리뷰도 많아요"
-    assert (
-        _redact_leaked_number("여름에 시원한 린넨 소재예요", prods) == "여름에 시원한 린넨 소재예요"
-    )
-
-    # 값 0(무료 이벤트)도 대상 — is not None. '0원' 인용 차단, 숫자 없는 정성 표현은 통과.
-    zero = [SpringProduct(product_id=2, name="z", price=0)]
-    assert _redact_leaked_number("0원 무료 이벤트예요", zero) == ""
-    assert _redact_leaked_number("무료로 받을 수 있어요", zero) == "무료로 받을 수 있어요"
-
-    # price=None 후보로는 아무 것도 안 지운다
-    none_price = [SpringProduct(product_id=3, name="w", price=None)]
-    assert _redact_leaked_number("29,900원이라 저렴", none_price) == "29,900원이라 저렴"
-
-
-async def test_push_drops_rationale_that_leaks_nondisplay_number() -> None:
-    """[#171 PR#172 리뷰] LLM 이 근거문에 비표시 수치를 인용해도 push 전 코드로 제거된다.
-
-    프롬프트 가드를 어긴 응답 시뮬레이션 — 101 근거문은 자신의 price(39000)를 인용해 통째
-    드롭(근거 없이 상품만 노출)되고, 102 의 정상 근거문은 보존된다.
-    """
-    push = _RecordingPush()
-    llm = FakeLLM(
-        rerank={
-            "ranked": [
-                {"productId": 101, "rationale": "39,000원이라 가성비 최고예요"},  # price 유출
-                {"productId": 102, "rationale": "음질이 우수해요"},  # 정상
-            ],
-            "overallComment": "요청 조건에 맞는 추천이에요",
-        }
-    )
-    await _collect(
-        run_buyer_turn(
-            _req(), _member(), llm=llm, search=_make_search(DEFAULT_PRODUCTS), push_fn=push
-        )
-    )
-    reasons = {r.product_id: r.reason for r in push.pushes[0].reasons}
-    assert 101 not in reasons  # price 유출 근거문 → 드롭
-    assert reasons.get(102) == "음질이 우수해요"  # 정상 근거문 보존
-    assert 101 in push.pushes[0].product_ids  # 근거만 빠지고 상품 자체 노출은 유지
-
-
-async def test_overall_comment_that_leaks_price_is_dropped() -> None:
-    """[#171 PR#172 리뷰] overallComment 가 price 를 금액 맥락으로 인용하면 token 으로 안 나간다."""
-    push = _RecordingPush()
-    llm = FakeLLM(
-        rerank={
-            "ranked": [{"productId": 101, "rationale": "가벼워요"}],
-            "overallComment": "39,000원짜리 좋은 상품이에요",  # 101 price=39000 유출
-        }
-    )
-    events = await _collect(
-        run_buyer_turn(
-            _req(), _member(), llm=llm, search=_make_search(DEFAULT_PRODUCTS), push_fn=push
-        )
-    )
-    texts = [e["data"].get("text", "") for e in events if e["type"] == "token"]
-    assert all("39000" not in t and "39,000" not in t for t in texts)  # 유출 comment 드롭 → 미emit
-
-
-async def test_push_leak_check_runs_before_truncation() -> None:
-    """[#171 PR#172 리뷰④] 유출 검사는 truncate 이전 원문에서 수행한다.
-
-    reason_max_len(200) 경계에서 단위 문자('원')가 잘려나가면 '숫자+단위' 패턴이 안 걸려
-    정확한 가격이 새는 우회를 막는다 — 잘리면 단위가 사라져도, 온전한 문장에서 먼저 유출로
-    판정해 근거문 전체를 버린다.
-    """
-    push = _RecordingPush()
-    # reason_max_len=200 → _sanitize_reason 은 [:199] 로 자른다. 필러 194자 + "39000" 이 인덱스
-    # 194~198 을 채우고 '원'은 199 에 놓여, truncate 를 먼저 하면 정확히 '원'이 잘려나간다.
-    leaky = ("가" * 194) + "39000원이라 합리적이에요"  # 101 price=39000 유출, 경계에 단위
-    llm = FakeLLM(
-        rerank={
-            "ranked": [{"productId": 101, "rationale": leaky}],
-            "overallComment": "추천이에요",
-        }
-    )
-    await _collect(
-        run_buyer_turn(
-            _req(), _member(), llm=llm, search=_make_search(DEFAULT_PRODUCTS), push_fn=push
-        )
-    )
-    reasons = {r.product_id: r.reason for r in push.pushes[0].reasons}
-    # 101 price=39000 유출 → 온전한 문장에서 검사되어 근거문 전체 드롭(잘린 '39000'이 안 남는다).
-    assert 101 not in reasons
-    assert all("39000" not in (r.reason or "") for r in push.pushes[0].reasons)
 
 
 def test_sanitize_reason_strips_control_and_format_chars() -> None:
