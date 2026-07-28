@@ -116,13 +116,6 @@ async def decompose(
     # 상위(graph.py)의 LLM_* error 이벤트로 흐르게 한다(첫 프레임 이전 raw 예외 → 500 방지).
     try:
         filters = ProductSearchFilters.model_validate(data.get("filters") or {})
-        # semanticQuery 는 filters 밖(최상위)에 오는 의미검색 입력 — 검색 백엔드까지 흐르도록
-        # filters 에 실어준다(#101). 폴백 순서: LLM 값 → 직전 턴 값 → 이번 턴 원문(query).
-        # 정제발화("더 저렴한 걸로")에서 LLM 이 semanticQuery 를 비우면 원문 대신 직전 턴 값을
-        # 이어받는다 — 원문을 임베딩 앵커로 쓰면 상품 의미 신호가 오염돼 재정렬 recall 이 나빠진다
-        # (가격 선호는 filters·Sonnet 재랭킹 몫, PR#166 리뷰). prior 없거나 그 값도 없으면 원문 폴백.
-        prior_sq = prior_filters.semantic_query if prior_filters else None
-        filters.semantic_query = str(data.get("semanticQuery") or prior_sq or query)
         case = int(data.get("case") or 2)
         cart = _parse_cart(data.get("cart"))
         raw_revert = data.get("revertCategories")
@@ -132,6 +125,20 @@ async def decompose(
             else []
         )
         category_queries = _parse_category_queries(data.get("categoryQueries"), category_fanout_max)
+        # semanticQuery 는 filters 밖(최상위)에 오는 의미검색 입력 — 검색 백엔드까지 흐르도록
+        # filters 에 실어준다(#101). 폴백 순서(PR#166 리뷰):
+        #   LLM 값 → 이번 턴 categoryQueries 신호 → 직전 턴 값 → 이번 턴 원문(query).
+        # categoryQueries 파생을 prior_sq 보다 **먼저** 둬 재정렬 앵커를 category 와 정합시킨다 —
+        # 주제 전환(예: "운동화")에서 LLM 이 semanticQuery 만 비우면 prior 로 폴백 시 category=운동화인데
+        # 앵커=직전 상품이 되는 불일치가 생긴다. 정제발화("더 저렴한")는 categoryQueries 에 직전
+        # 카테고리가 승계돼 그 값이 앵커가 되므로 오염되지 않는다. categoryQueries 자체가 비면
+        # (신호 없음) 직전 semantic_query 로, 그마저 없으면 원문으로 폴백한다.
+        cat_signal = next(
+            (cq.query or cq.raw_category for cq in category_queries if cq.query or cq.raw_category),
+            None,
+        )
+        prior_sq = prior_filters.semantic_query if prior_filters else None
+        filters.semantic_query = str(data.get("semanticQuery") or cat_signal or prior_sq or query)
     except (ValidationError, ValueError, TypeError) as exc:
         raise LLMError("decompose 필터/케이스/장바구니 파싱 실패") from exc
     return RouteDecision(

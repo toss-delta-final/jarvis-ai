@@ -71,6 +71,28 @@ async def test_semantic_query_falls_back_to_prior_before_raw_query() -> None:
     assert d.filters.semantic_query == "무선 이어폰"  # 이번 턴 원문 아님, 직전 값 승계
 
 
+async def test_semantic_query_prefers_current_category_over_prior_on_topic_change() -> None:
+    """[#101 PR#166 리뷰] 주제 전환("운동화")에서 LLM 이 semanticQuery 를 비워도, 직전 상품 의미가
+    아니라 **이번 턴 categoryQueries 신호**로 폴백한다.
+
+    폴백이 prior_sq 만 보면, category 는 운동화로 바뀌었는데 재정렬 앵커는 직전 상품(원피스)이 되는
+    불일치가 생긴다. categoryQueries 파생을 prior_sq 보다 우선해 앵커를 category 와 정합시킨다.
+    """
+    from app.schemas.spring import ProductSearchFilters
+
+    prior = ProductSearchFilters(semantic_query="빨간 원피스")
+    d = await decompose(
+        _FakeLLM(
+            _raw(semanticQuery="", categoryQueries=[{"category": "운동화", "query": "운동화"}])
+        ),
+        query="이번엔 운동화 찾아줘",
+        prior_filters=prior,
+        profile_summary=None,
+        tier="fast",
+    )
+    assert d.filters.semantic_query == "운동화"  # prior("빨간 원피스") 아님, 이번 카테고리 신호
+
+
 async def test_parses_single_category_query() -> None:
     """단일 카테고리 추측 → category_queries 길이 1, raw/query 매핑."""
     d = await _run(
