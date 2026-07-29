@@ -162,6 +162,14 @@ class Settings(BaseSettings):
     )
     llm_call_limit: int = 2
     relaxation_max_rounds: int = 3
+    # rating·reviewCount 등급화 경계(#171 PR#172) — 비표시 정밀값 유출 방지용으로 rerank LLM 에
+    # 정확한 숫자 대신 등급만 전달할 때 쓰는 임계. 내림차순(높은 등급부터). 데모 카탈로그 실측 후 조정.
+    rating_tier_excellent: float = 4.5  # ≥ → 매우높음
+    rating_tier_good: float = 4.0  # ≥ → 높음
+    rating_tier_fair: float = 3.0  # ≥ → 보통 (그 미만 낮음)
+    review_tier_many: int = 100  # ≥ → 매우많음
+    review_tier_some: int = 20  # ≥ → 많음
+    review_tier_few: int = 5  # ≥ → 보통 (그 미만 적음)
 
     # ── 카테고리 하이브리드 매핑 (이슈 #59, DESIGN-CATEGORY-HYBRID-59) ──
     # 방식 A: decompose 추측 → 임베딩 보정(exact/최근접). canonical-or-null·멀티 fan-out.
@@ -321,6 +329,19 @@ class Settings(BaseSettings):
             raise ValueError("STATE_STORE_POOL_MIN_SIZE must not exceed max size")
         if self.state_store_local_cache_max_entries <= 0:
             raise ValueError("STATE_STORE_LOCAL_CACHE_MAX_ENTRIES must be positive")
+        # 등급 티어 경계 순서 불변식(#171 PR#172) — _rating_tier/_review_tier 가 내림차순 순차
+        # 비교(if r>=excellent .. >=good .. >=fair)라, env 로 순서가 뒤집히면 중간 구간이 조용히
+        # 엉뚱한 등급으로 나간다. 기동 시점 fail-fast 로 오설정을 막는다.
+        if not (self.rating_tier_excellent >= self.rating_tier_good >= self.rating_tier_fair):
+            raise ValueError(
+                "RATING_TIER 경계는 excellent >= good >= fair 여야 합니다"
+                f" ({self.rating_tier_excellent}/{self.rating_tier_good}/{self.rating_tier_fair})"
+            )
+        if not (self.review_tier_many >= self.review_tier_some >= self.review_tier_few):
+            raise ValueError(
+                "REVIEW_TIER 경계는 many >= some >= few 여야 합니다"
+                f" ({self.review_tier_many}/{self.review_tier_some}/{self.review_tier_few})"
+            )
         # scope 는 §2.3 확정 검증 항목이지만 값이 C-1 미확정이라 fail-fast 로 막지 않는다
         # (미확정 추정값 강제 시 전면 401 장애 — PR #39 1R 리뷰). 대신 설정 누락이 조용히
         # 지나가지 않게 기동 경고를 남긴다(4R 리뷰). C-1 확정 후 JWT_SCOPE 주입 시 활성화.
