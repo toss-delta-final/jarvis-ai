@@ -1,12 +1,16 @@
 """판매자 그래프 모델 팩토리 (SPEC-SELLER-001 §8 — provider-neutral 2-tier).
 
-역할→티어 매핑을 코드로 고정한다: supervisor·planner·워커 5종·judge 는
-fast, report·recommend 는 smart. provider·모델 ID·API key는 공용 resolver에서
-해석하고, OpenAI는 reasoning effort를, Anthropic은 기존 temperature를 적용한다.
+역할→티어 매핑을 코드로 고정한다: 판매자 역할 7종을 **전부 smart** 로 올린다
+(2026-07-29) — 라우팅·분류·정형 분석까지 품질을 우선한다. provider·모델 ID·API key는
+공용 resolver에서 해석하고, OpenAI는 reasoning effort를, Anthropic은 기존
+temperature를 적용한다.
 
 워커 5종은 전부 같은 티어라 역할 "worker" 하나로 묶는다(2026-07-18 확정) —
 워커별 모델 차등이 필요해지면 SellerRole 에 세분 역할을 추가하고 ROLE_TIER 에
 등록하면 된다. 모델 버전 변경은 일관성 리셋 이벤트로 CHANGELOG 에 기록(§10-①).
+
+⚠️ 전 역할 smart 는 §7 의 90s 목표·seller_route_timeout_s(10s) 예산을 압박한다 —
+지연이 문제가 되면 supervisor·judge 부터 fast 로 되돌린다.
 """
 
 from __future__ import annotations
@@ -22,13 +26,13 @@ from app.core.llm import ModelTier, resolve_provider_model
 
 SellerRole = Literal["supervisor", "planner", "worker", "judge", "product", "report", "recommend"]
 
-# SPEC §8 표의 코드화 — 라우팅·분류·정형 분석은 fast, 서술·추천은 smart.
+# SPEC §8 표의 코드화 — 판매자 전 역할 smart(2026-07-29, 품질 우선 전환).
 ROLE_TIER: dict[SellerRole, ModelTier] = {
-    "supervisor": "fast",
-    "planner": "fast",
-    "worker": "fast",
-    "judge": "fast",
-    "product": "fast",
+    "supervisor": "smart",
+    "planner": "smart",
+    "worker": "smart",
+    "judge": "smart",
+    "product": "smart",
     "report": "smart",
     "recommend": "smart",
 }
