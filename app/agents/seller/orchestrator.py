@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import date
 from typing import Literal
@@ -27,6 +27,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.graph.state import CompiledStateGraph
 
 from app.agents.seller import history
+from app.agents.seller import thread as seller_thread
 from app.agents.seller.context import SellerContext
 from app.agents.seller.middleware import check_scope
 from app.agents.seller.pipeline import (
@@ -92,7 +93,11 @@ ROUTE_FALLBACK_REASON = "라우팅 장애 — general 폴백(코드 지정)"
 ROUTE_LOW_CONFIDENCE_REASON = "confidence 미달 — general 재지정(코드 지정)"
 
 
-async def route_question(question: str, context: SellerContext) -> RouteDecision:
+async def route_question(
+    question: str,
+    context: SellerContext,
+    recent_turns: Sequence[seller_thread.Turn] = (),
+) -> RouteDecision:
     """supervisor 3분기 라우팅 + 코드 후처리 (4-1a, REALIGN §4 → #180 개정).
 
     코드가 최종 판정한다(LLM 은 제안만):
@@ -105,12 +110,19 @@ async def route_question(question: str, context: SellerContext) -> RouteDecision
         장애 폴백과 방향이 일치한다 — "불확실하면 general" 단일 원칙.
     scope 선차단·confirm 코드 선판정은 호출부(SSE 배선) 소관 — 이 함수는
     라우팅만 담당한다(관심사 분리).
+
+    recent_turns(대화 스레드 최근 턴)는 **입력 메시지에만** 주입한다 — 프롬프트
+    불변(§9.1 이력 주입 선례). "그럼 지난주는?" 류 후속 발화가 직전 대화 맥락으로
+    분류된다. 맥락이 없으면 질문 원문 그대로다(기존 계약 불변).
     """
     settings = get_settings()
+    supervisor_input = seller_thread.build_contextual_input(question, recent_turns)
     try:
         supervisor = build_supervisor()
         result = await asyncio.wait_for(
-            supervisor.ainvoke({"messages": [HumanMessage(content=question)]}, context=context),
+            supervisor.ainvoke(
+                {"messages": [HumanMessage(content=supervisor_input)]}, context=context
+            ),
             timeout=settings.seller_route_timeout_s,
         )
         decision = result.get("structured_response")
@@ -391,6 +403,7 @@ async def run_analysis_pipeline(
     *,
     today: date,
     emit: Emit,
+    recent_turns: Sequence[seller_thread.Turn] = (),
 ) -> PipelineResult:
     """분석 레인 전체: planner → resolve → 팬아웃 → 검증 루프 → recommend → compose.
 
@@ -417,6 +430,15 @@ async def run_analysis_pipeline(
         planner_input = history.build_planner_input(question, entries)
     except Exception:
         logger.warning("분석 이력 조회 실패 — 이력 주입 없이 진행", exc_info=True)
+
+    # 대화 스레드 최근 턴 주입 — 순서: [최근 대화] → [최근 분석 이력] → [이번 질문].
+    # 이력 블록이 없으면(원문 그대로면) [이번 질문] 라벨은 대화 블록 쪽이 단다.
+    conversation_block = seller_thread.render_recent_turns(recent_turns)
+    if conversation_block:
+        if planner_input == question:
+            planner_input = seller_thread.build_contextual_input(question, recent_turns)
+        else:
+            planner_input = f"{conversation_block}\n\n{planner_input}"
 
     await emit(PROGRESS_TOKENS["planner"])
     planner = build_analysis_planner()

@@ -16,6 +16,7 @@ from __future__ import annotations
 from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.tools import BaseTool
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
 
 from app.agents.seller import tools as seller_tools
@@ -140,21 +141,31 @@ GENERAL_TOOLS = [
 ]
 
 
-def build_general_agent(today: str) -> CompiledStateGraph:
+def build_general_agent(
+    today: str, checkpointer: BaseCheckpointSaver | None = None
+) -> CompiledStateGraph:
     """일반 질문 에이전트 (해석 금지·calculate 강제·미지원 안내 — 자유 텍스트 응답).
 
     분석 워커와 달리 response_format 을 강제하지 않는다 — 3단계에서 astream→token
     SSE 1차 배선 대상이다. planner 를 거치지 않는 레인이라 기간 환산을 프롬프트가
     담당한다(2026-07-18 확정): today("YYYY-MM-DD")를 빌드 시점에 주입한다.
 
+    checkpointer 가 주어지면 대화 스레드 누적이 활성화된다 — 호출부(app/api/seller.py)
+    가 thread.chat_config 의 thread_id 를 함께 넘겨 멀티턴 대화를 잇는다. 유일한
+    대화형 레인이라 general 만 붙인다(2026-07-29 확정) — one-shot 구조화 출력
+    에이전트(supervisor/planner 등)는 checkpointer 없이 입력 메시지 주입으로 맥락을
+    받는다. 요청마다 재빌드(C1)해도 상태는 checkpointer 에 있어 스레드는 이어진다.
+
     Args:
         today: 오늘 날짜(YYYY-MM-DD) — 호출부(요청 시점)가 결정해 넘긴다.
+        checkpointer: 공용 checkpointer(checkpoint.get_checkpointer) — 미지정 시 무상태.
     """
     return create_agent(
         model=init_seller_model("worker"),
         tools=GENERAL_TOOLS,
         system_prompt=GENERAL_PROMPT_TEMPLATE.format(today=today),
         context_schema=SellerContext,
+        checkpointer=checkpointer,
         # 유일한 자유 텍스트 대면 에이전트 — scope 가드(end 점프)를 직접 붙인다(3-6).
         middleware=[
             ScopeGuardMiddleware(),
