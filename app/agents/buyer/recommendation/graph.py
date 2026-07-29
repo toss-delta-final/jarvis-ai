@@ -109,13 +109,19 @@ async def stream_recommendation(
     observer=None,
 ) -> AsyncIterator[str]:
     """추천 서브그래프 스트림. 프레임(SSE str)을 순서대로 산출한다."""
+    # [#51] keyword 드롭 판단은 **한 곳에서** 계산해 칩 표시(아래)와 leg 검색(_leg)이 같은 flag 를
+    # 공유하게 한다 — 두 지점이 독립 판단하면 전제(leg 엔 항상 canonical)가 미래 리팩터에서 깨질 때
+    # 표시-실제가 어긋날 수 있다(리뷰 반영). canonical category(= category_legs 존재) + config on 이면
+    # keyword(상품명 LIKE, retrieval AND-필터)를 드롭해 동의어("청바지" vs 상품명 "데님 팬츠")가
+    # retrieval 후보를 원천 배제하지 못하게 한다.
+    drop_keyword = settings.search_drop_keyword_with_category and bool(decision.category_legs)
+
     # conditions 칩 (병합 필터에서 결정론적 파생) — fan-out 이면 canonical 전체를 표시한다(§3.1)
-    # [#51] keyword 를 retrieval 에서 드롭할 때(canonical category 존재 + config on)는 조건 칩에서도
-    # keyword 를 빼 "적용되지 않는 필터를 제거 가능 조건으로 광고"하는 표시-실제 불일치를 막는다.
-    # keyword 값은 decision.filters 에 그대로 남겨 멀티턴 기억(PRIOR_FILTERS)으로만 쓰고, 칩 파생용
-    # 사본에서만 제거한다. (칩 제거 왕복 X 는 별개 관심사 — 여기선 표시 정합만 다룬다.)
+    # keyword 를 드롭하면 조건 칩에서도 keyword 를 빼 "적용되지 않는 필터를 제거 가능 조건으로 광고"
+    # 하는 표시-실제 불일치를 막는다. keyword 값은 decision.filters 에 그대로 남겨 멀티턴 기억
+    # (PRIOR_FILTERS)으로만 쓰고, 칩 파생용 사본에서만 제거한다(칩 제거 왕복 X 는 별개 관심사).
     chip_filters = decision.filters
-    if settings.search_drop_keyword_with_category and decision.category_legs:
+    if drop_keyword:
         chip_filters = decision.filters.model_copy(update={"keyword": None})
     chips = build_condition_chips(chip_filters, categories=[c for c, _ in decision.category_legs])
     yield sse("conditions", ConditionsData(chips=chips).model_dump(by_alias=True))
@@ -161,16 +167,11 @@ async def stream_recommendation(
                     if len(legs) > 1
                     else decision.filters.semantic_query
                 )
-                # [#51] canonical category 가 있으면 keyword(상품명 LIKE)를 드롭한다 — 상품명 글자
-                # 부분일치 AND-필터라 동의어("청바지" vs 상품명 "데님 팬츠")를 retrieval 에서 원천
-                # 배제한다. leg 검색어는 leg_semantic 으로 rerank 를 담당하고 category 가 후보를 확보
-                # 하므로 keyword 중복 투입은 불필요. leg 는 항상 canonical 이라 여기선 사실상 상시 드롭
-                # (config off 면 기존 동작 leg query→keyword 복원, 롤백 안전성).
-                leg_keyword = (
-                    None
-                    if settings.search_drop_keyword_with_category and canonical
-                    else (query or decision.filters.keyword)
-                )
+                # [#51] keyword 는 위에서 계산한 drop_keyword flag 를 공유한다 — 칩 파생과 동일 판단이라
+                # 표시-실제가 어긋나지 않는다. 드롭 시 leg 검색어는 leg_semantic 으로 rerank 를 담당하고
+                # category 가 후보를 확보하므로 keyword 중복 투입은 불필요(config off 면 leg query→keyword
+                # 로 복원, 롤백 안전성). _leg 는 legs 비어있지 않을 때만 호출돼 canonical 은 항상 truthy.
+                leg_keyword = None if drop_keyword else (query or decision.filters.keyword)
                 leg_filters = decision.filters.model_copy(
                     update={
                         "category": canonical,
