@@ -2035,3 +2035,156 @@ def test_revert_lock_registry_releases_idle_keys() -> None:
     del lock
     gc.collect()
     assert len(state._add_locks) == 0
+
+
+# ─────────── #51 동의어 확장 — retrieval keyword 완화 (A) ───────────
+
+
+def _filter_recording_search(products, *, honor_keyword: bool = False):
+    """leg 에 전달된 filters 를 리스트로 기록하는 검색 fake.
+
+    기존 _recording_search(products, sink) 는 exclude 만 기록하므로 filters 확인용으로 별도로 둔다.
+    honor_keyword=True 면 Spring keyword(상품명 LIKE 부분일치)를 흉내내 필터링한다 —
+    발화≠상품명일 때 keyword 가 살아있으면 탈락함을 재현(동의어 통합 검증용).
+    """
+    seen: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        seen.append(filters)
+        items = list(products)
+        if honor_keyword and filters.keyword:
+            items = [p for p in items if filters.keyword in (p.name or "")]
+        return ProductSearchResult(products=items, total_count=len(items))
+
+    return _search, seen
+
+
+async def test_leg_drops_keyword_when_category_present() -> None:
+    """[#51 A] canonical category 가 있으면 Spring keyword(상품명 LIKE)를 드롭한다.
+
+    leg 는 항상 canonical 이므로(map_categories 는 canonical-or-drop) keyword=None 이어야 —
+    동의어(글자 다름)가 retrieval 후보를 원천 배제하지 못하게 한다. category 는 그대로 실린다.
+    """
+    search, seen = _filter_recording_search(DEFAULT_PRODUCTS)
+    await _collect(
+        run_buyer_turn(_req(), _member(), llm=FakeLLM(), search=search, push_fn=_RecordingPush())
+    )
+    assert seen, "검색이 호출되지 않았다"
+    leg = seen[0]
+    assert leg.category  # category 는 retrieval 앵커로 실린다
+    assert leg.keyword is None  # keyword(글자 필터)는 드롭
+
+
+async def test_leg_keeps_keyword_when_config_disabled(monkeypatch) -> None:
+    """[#51 A] search_drop_keyword_with_category=False 면 기존 동작(leg query→keyword) 복원 — 롤백 안전성.
+
+    leg query 와 filters.keyword 를 서로 다르게 둬 `query or filters.keyword` 의 leg query 우선을
+    명확히 핀한다(둘이 같으면 어느 분기가 값을 줬는지 구분 못 함).
+    """
+    monkeypatch.setattr(get_settings(), "search_drop_keyword_with_category", False)
+    decompose = {
+        "intent": "recommend",
+        "reply": "",
+        "case": 2,
+        "semanticQuery": "무선 이어폰",
+        "categoryQueries": [{"category": "무선이어폰", "query": "레그검색어"}],
+        "filters": {"keyword": "베이스키워드"},
+    }
+    search, seen = _filter_recording_search(DEFAULT_PRODUCTS)
+    await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(decompose=decompose),
+            search=search,
+            push_fn=_RecordingPush(),
+        )
+    )
+    # config off → leg query 가 keyword 로(우선), base keyword 는 아님
+    assert seen[0].keyword == "레그검색어"
+
+
+async def test_conditions_omit_keyword_chip_when_dropped() -> None:
+    """[#51 A] keyword 를 retrieval 에서 드롭하면 conditions 칩에서도 keyword 를 빼 표시-실제를 맞춘다.
+
+    적용되지 않는 필터를 "제거 가능 조건"으로 광고하는 dead chip 을 막는다. category 칩은 남는다.
+    """
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(),
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+        )
+    )
+    cond = next(e for e in events if e["type"] == "conditions")["data"]
+    fields = {c["field"] for c in cond["chips"]}
+    assert "keyword" not in fields  # 드롭된 keyword 는 칩으로 노출하지 않는다
+    assert "category" in fields  # 실제 적용되는 category 는 칩으로 노출
+
+
+async def test_conditions_keep_keyword_chip_when_config_disabled(monkeypatch) -> None:
+    """[#51 A] config off 면 keyword 를 retrieval 에 쓰므로 conditions 칩에도 그대로 노출(정합)."""
+    monkeypatch.setattr(get_settings(), "search_drop_keyword_with_category", False)
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(),
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+        )
+    )
+    cond = next(e for e in events if e["type"] == "conditions")["data"]
+    fields = {c["field"] for c in cond["chips"]}
+    assert "keyword" in fields  # 적용되는 keyword 는 칩으로 노출
+
+
+async def test_leg_keeps_keyword_when_backend_not_embedding_rerank(monkeypatch) -> None:
+    """[#51 리뷰] keyword 드롭은 embedding_rerank 백엔드에서만 안전 — spring/vector 면 플래그가
+    True 여도 유지한다.
+
+    spring 은 재정렬이 없어 keyword 가 유일한 텍스트 신호이고, vector 는 filters.keyword 를 쿼리
+    임베딩 입력으로 쓴다(드롭 시 빈 문자열 임베딩). 둘 다 드롭하면 품질이 급락하므로 유지해야 한다.
+    """
+    monkeypatch.setattr(get_settings(), "search_drop_keyword_with_category", True)
+    monkeypatch.setattr(get_settings(), "search_backend", "spring")
+    search, seen = _filter_recording_search(DEFAULT_PRODUCTS)
+    await _collect(
+        run_buyer_turn(_req(), _member(), llm=FakeLLM(), search=search, push_fn=_RecordingPush())
+    )
+    assert seen[0].keyword == "무선 이어폰"  # embedding_rerank 아님 → keyword 유지
+
+
+async def test_synonym_product_survives_keyword_drop() -> None:
+    """[#51 A] 발화("청바지")와 상품명("데님 팬츠")이 달라도 keyword 드롭 덕에 후보로 살아남는다.
+
+    honor_keyword=True 로 Spring keyword LIKE 를 흉내 — keyword 가 살아있으면 '데님 팬츠'는
+    '청바지' 부분일치 실패로 탈락하지만, category 로 드롭돼 후보에 남아 products.ready 가 뜬다.
+    """
+    denim = SpringProduct(
+        product_id=201, name="데님 팬츠", price=39000, rating=4.4, category="청바지", brand="B"
+    )
+    decompose = {
+        "intent": "recommend",
+        "reply": "",
+        "case": 2,
+        "semanticQuery": "청바지 데님 팬츠",
+        "categoryQueries": [{"category": "청바지", "query": "청바지"}],
+        "filters": {"keyword": "청바지"},
+    }
+    rerank = {"ranked": [{"productId": 201, "rationale": "핏이 좋아요"}], "overallComment": "c"}
+    search, _seen = _filter_recording_search([denim], honor_keyword=True)
+    push = _RecordingPush()
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="청바지 추천해줘"),
+            _member(),
+            llm=FakeLLM(decompose=decompose, rerank=rerank),
+            search=search,
+            push_fn=push,
+        )
+    )
+    assert "products.ready" in _types(events)  # 동의어 상품이 살아 노출된다
+    assert push.pushes and 201 in push.pushes[0].product_ids

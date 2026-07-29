@@ -124,9 +124,13 @@ async def test_fanout_searches_each_canonical_category() -> None:
     )
     by_cat = {f.category: f for f in calls}
     assert set(by_cat) == {"여행/캠핑 > 여행용품", "가전 > 어댑터"}
-    # leg 별 keyword = 그 카테고리의 query, size = category_fanout_per_cat_limit(기본 10)
-    assert by_cat["여행/캠핑 > 여행용품"].keyword == "파우치"
-    assert by_cat["가전 > 어댑터"].keyword == "어댑터"
+    # [#51] canonical category 가 있으면 keyword(상품명 LIKE)는 드롭한다 — leg query 는
+    # semantic_query 로 흘러 임베딩 rerank 를 담당(동의어가 retrieval 을 원천 배제하지 않게).
+    # limit = category_fanout_per_cat_limit(기본 10).
+    assert by_cat["여행/캠핑 > 여행용품"].keyword is None
+    assert by_cat["여행/캠핑 > 여행용품"].semantic_query == "파우치"
+    assert by_cat["가전 > 어댑터"].keyword is None
+    assert by_cat["가전 > 어댑터"].semantic_query == "어댑터"
     assert by_cat["가전 > 어댑터"].limit == 10
 
 

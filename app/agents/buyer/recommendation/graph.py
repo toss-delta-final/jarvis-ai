@@ -109,10 +109,30 @@ async def stream_recommendation(
     observer=None,
 ) -> AsyncIterator[str]:
     """추천 서브그래프 스트림. 프레임(SSE str)을 순서대로 산출한다."""
-    # conditions 칩 (병합 필터에서 결정론적 파생) — fan-out 이면 canonical 전체를 표시한다(§3.1)
-    chips = build_condition_chips(
-        decision.filters, categories=[c for c, _ in decision.category_legs]
+    # [#51] keyword 드롭 판단은 **한 곳에서** 계산해 칩 표시(아래)와 leg 검색(_leg)이 같은 flag 를
+    # 공유하게 한다 — 두 지점이 독립 판단하면 전제(leg 엔 항상 canonical)가 미래 리팩터에서 깨질 때
+    # 표시-실제가 어긋날 수 있다(리뷰 반영). canonical category(= category_legs 존재) + config on 이면
+    # keyword(상품명 LIKE, retrieval AND-필터)를 드롭해 동의어("청바지" vs 상품명 "데님 팬츠")가
+    # retrieval 후보를 원천 배제하지 못하게 한다.
+    # [#51 리뷰] 단, keyword 드롭은 **embedding_rerank 백엔드에서만** 안전하다 — 그 경우에만 category
+    # 로 확보한 후보를 semanticQuery 임베딩이 재정렬해 keyword 부재를 메운다. spring(재정렬 없음)은
+    # keyword 가 유일한 텍스트 신호이고, vector(VectorSearchBackend)는 filters.keyword 를 쿼리 임베딩
+    # 입력으로 써서(search_service.py:164) 드롭 시 빈 문자열을 임베딩한다 → 두 경우 모두 드롭하면
+    # 품질이 급락한다. 그래서 backend 가 embedding_rerank 가 아니면 플래그와 무관하게 keyword 를 유지한다.
+    drop_keyword = (
+        settings.search_drop_keyword_with_category
+        and settings.search_backend == "embedding_rerank"
+        and bool(decision.category_legs)
     )
+
+    # conditions 칩 (병합 필터에서 결정론적 파생) — fan-out 이면 canonical 전체를 표시한다(§3.1)
+    # keyword 를 드롭하면 조건 칩에서도 keyword 를 빼 "적용되지 않는 필터를 제거 가능 조건으로 광고"
+    # 하는 표시-실제 불일치를 막는다. keyword 값은 decision.filters 에 그대로 남겨 멀티턴 기억
+    # (PRIOR_FILTERS)으로만 쓰고, 칩 파생용 사본에서만 제거한다(칩 제거 왕복 X 는 별개 관심사).
+    chip_filters = decision.filters
+    if drop_keyword:
+        chip_filters = decision.filters.model_copy(update={"keyword": None})
+    chips = build_condition_chips(chip_filters, categories=[c for c, _ in decision.category_legs])
     yield sse("conditions", ConditionsData(chips=chips).model_dump(by_alias=True))
 
     # dedup 소스(I-19)와 검색(§4.6)을 **병렬 실행** — §4.7 지연 가드(순차 시 최악 6s, first-token 예산 잠식).
@@ -132,7 +152,8 @@ async def stream_recommendation(
                 return None
 
         # fan-out — canonical 카테고리마다 leg 를 병렬 검색(§6). leg 별 filters 는 category·
-        # keyword(그 카테고리 query, 없으면 base)·limit(leg 별 AI top-K, §4.6 size 아님) 만 교체한다.
+        # keyword([#51] 위 drop_keyword flag 로 결정 — 드롭 아니면 그 카테고리 query/base)·semantic_query·
+        # limit(leg 별 AI top-K, §4.6 size 아님) 만 교체한다.
         # 단일 카테고리(leg 1개)는 후보 폭을 좁히지 않게 merge_cap(=단일 rerank 입력 예산)을 쓰고,
         # 멀티 fan-out 일 때만 leg 당 per_cat_limit 으로 제한한다(합쳐서 merge_cap 로 재절단).
         leg_limit = (
@@ -155,10 +176,15 @@ async def stream_recommendation(
                     if len(legs) > 1
                     else decision.filters.semantic_query
                 )
+                # [#51] keyword 는 위에서 계산한 drop_keyword flag 를 공유한다 — 칩 파생과 동일 판단이라
+                # 표시-실제가 어긋나지 않는다. 드롭 시 leg 검색어는 leg_semantic 으로 rerank 를 담당하고
+                # category 가 후보를 확보하므로 keyword 중복 투입은 불필요(config off 면 leg query→keyword
+                # 로 복원, 롤백 안전성). _leg 는 legs 비어있지 않을 때만 호출돼 canonical 은 항상 truthy.
+                leg_keyword = None if drop_keyword else (query or decision.filters.keyword)
                 leg_filters = decision.filters.model_copy(
                     update={
                         "category": canonical,
-                        "keyword": query or decision.filters.keyword,
+                        "keyword": leg_keyword,
                         "semantic_query": leg_semantic,
                         "limit": leg_limit,
                     }
