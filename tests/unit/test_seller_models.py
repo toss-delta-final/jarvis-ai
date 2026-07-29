@@ -38,37 +38,37 @@ def _record_factory(
 
 
 def test_role_tier_matches_provider_neutral_spec() -> None:
+    # 2026-07-29 품질 우선 전환 — 판매자 전 역할 smart(fast 역할 없음).
     assert ROLE_TIER == {
-        "supervisor": "fast",
-        "planner": "fast",
-        "worker": "fast",
-        "judge": "fast",
-        "product": "fast",
+        "supervisor": "smart",
+        "planner": "smart",
+        "worker": "smart",
+        "judge": "smart",
+        "product": "smart",
         "report": "smart",
         "recommend": "smart",
     }
 
 
-def test_openai_fast_roles_use_reasoning_without_temperature(
+def test_openai_all_seller_roles_share_smart_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = Settings(_env_file=None, openai_api_key="openai-key")
     calls, _ = _record_factory(monkeypatch, lambda: settings)
 
-    instances = [
-        init_seller_model(role) for role in ("supervisor", "planner", "worker", "judge", "product")
-    ]
+    instances = [init_seller_model(role) for role in ROLE_TIER]
 
+    # 전 역할이 같은 tier → 같은 실효 설정 → lru_cache 로 인스턴스 1개만 생성된다.
     assert all(model is instances[0] for model in instances)
     assert calls == [
         {
             "args": (),
-            "model": settings.openai_fast_model_id,
+            "model": settings.openai_smart_model_id,
             "model_provider": "openai",
             "api_key": "openai-key",
             "timeout": settings.llm_timeout_s,
             "max_retries": settings.llm_max_retries,
-            "reasoning_effort": settings.openai_fast_reasoning_effort,
+            "reasoning_effort": settings.openai_smart_reasoning_effort,
         }
     ]
 
@@ -86,7 +86,7 @@ def test_openai_smart_roles_use_smart_reasoning_without_temperature(
     assert "temperature" not in calls[0]
 
 
-def test_anthropic_tiers_keep_seller_temperatures(
+def test_anthropic_seller_roles_keep_sonnet_temperature(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = Settings(
@@ -101,16 +101,9 @@ def test_anthropic_tiers_keep_seller_temperatures(
     init_seller_model("worker")
     init_seller_model("report")
 
+    # 전 역할 smart → sonnet + seller_sonnet_temperature 만 쓰인다.
+    # seller_haiku_temperature 는 판매자 경로에서 더 이상 참조되지 않는다.
     assert calls == [
-        {
-            "args": (),
-            "model": settings.haiku_model_id,
-            "model_provider": "anthropic",
-            "api_key": "anthropic-key",
-            "timeout": settings.llm_timeout_s,
-            "max_retries": settings.llm_max_retries,
-            "temperature": 0.1,
-        },
         {
             "args": (),
             "model": settings.sonnet_model_id,
