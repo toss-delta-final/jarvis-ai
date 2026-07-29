@@ -68,12 +68,13 @@ def test_openai_all_seller_roles_share_smart_model(
             "api_key": "openai-key",
             "timeout": settings.llm_timeout_s,
             "max_retries": settings.llm_max_retries,
-            "reasoning_effort": settings.openai_smart_reasoning_effort,
+            # 판매자 레인은 with_tools=True — luna 는 tools 와 effort 를 함께 못 받는다(#178).
+            "reasoning_effort": settings.openai_tool_reasoning_effort_override,
         }
     ]
 
 
-def test_openai_smart_roles_use_smart_reasoning_without_temperature(
+def test_openai_seller_roles_downgrade_reasoning_without_temperature(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = Settings(_env_file=None, openai_api_key="openai-key")
@@ -82,8 +83,24 @@ def test_openai_smart_roles_use_smart_reasoning_without_temperature(
     assert init_seller_model("report") is init_seller_model("recommend")
 
     assert calls[0]["model"] == settings.openai_smart_model_id
-    assert calls[0]["reasoning_effort"] == settings.openai_smart_reasoning_effort
+    assert calls[0]["reasoning_effort"] == settings.openai_tool_reasoning_effort_override
     assert "temperature" not in calls[0]
+
+
+def test_openai_seller_roles_keep_effort_on_compatible_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """조합 지원 모델로 갈아타면 강등 없이 설정한 effort 가 그대로 실린다(#178)."""
+    settings = Settings(
+        _env_file=None,
+        openai_api_key="openai-key",
+        openai_smart_model_id="gpt-5-nano",
+    )
+    calls, _ = _record_factory(monkeypatch, lambda: settings)
+
+    init_seller_model("supervisor")
+
+    assert calls[0]["reasoning_effort"] == settings.openai_smart_reasoning_effort
 
 
 def test_anthropic_seller_roles_keep_sonnet_temperature(

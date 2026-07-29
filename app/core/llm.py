@@ -9,6 +9,10 @@ OpenAI: fast=gpt-5-nano/smart=gpt-5.6-luna). get_llm 이 settings.llm_provider �
 지연 import 하여 테스트가 SDK 없이도 돈다. 타임아웃·재시도는 config(llm_timeout_s /
 llm_max_retries). OpenAI 는 complete(JSON 태스크)에서만 response_format=json 을 강제하고
 stream(평문 채팅)에서는 제외한다.
+
+OpenAI 는 모델별로 function tools + reasoning_effort 조합 지원이 갈린다 — 조합 미지원
+모델(config 목록)에서는 tool 을 싣는 호출(resolve_provider_model(with_tools=True))의
+effort 를 override 값으로 강등한다(이슈 #178).
 """
 
 from __future__ import annotations
@@ -54,8 +58,30 @@ def resolve_model_id(settings: Settings, tier: ModelTier) -> str:
     return {"fast": settings.haiku_model_id, "smart": settings.sonnet_model_id}[tier]
 
 
-def resolve_provider_model(settings: Settings, tier: ModelTier) -> ResolvedModel:
-    """provider/tier를 모델 ID·API key·reasoning effort로 해석한다."""
+def supports_tool_reasoning(settings: Settings, model_id: str) -> bool:
+    """model_id 가 function tools + reasoning_effort 동시 사용을 지원하는지 (이슈 #178).
+
+    config 의 미지원 목록과 **접두사** 매칭한다 — 날짜 스냅샷 ID(예:
+    gpt-5.6-luna-2026-07-01)도 같은 제약을 받는다고 본다. 빈 항목은 전체 매칭을
+    유발하므로 무시한다.
+    """
+    return not any(
+        entry and model_id.startswith(entry)
+        for entry in settings.openai_tool_reasoning_incompatible_models
+    )
+
+
+def resolve_provider_model(
+    settings: Settings, tier: ModelTier, *, with_tools: bool = False
+) -> ResolvedModel:
+    """provider/tier를 모델 ID·API key·reasoning effort로 해석한다.
+
+    with_tools 는 호출부가 **function tools 를 싣는다**는 선언이다 — 판매자 그래프의
+    create_agent 는 tools 가 비어도 ToolStrategy 구조화 출력이 function tool 로 나가므로
+    전부 해당한다. 조합 미지원 모델에서는 effort 를 config override 값으로 강등해
+    400(invalid_request_error)을 막는다(이슈 #178). 구매자 레인(OpenAILLM.complete/
+    stream)은 tool 을 싣지 않아 기본값 False 로 영향이 없다.
+    """
     model_id = resolve_model_id(settings, tier)
 
     provider = settings.llm_provider
@@ -66,12 +92,15 @@ def resolve_provider_model(settings: Settings, tier: ModelTier) -> ResolvedModel
             "fast": settings.openai_fast_reasoning_effort,
             "smart": settings.openai_smart_reasoning_effort,
         }
+        effort = reasoning[tier]
+        if with_tools and not supports_tool_reasoning(settings, model_id):
+            effort = settings.openai_tool_reasoning_effort_override
         return ResolvedModel(
             provider=provider,
             tier=tier,
             model_id=model_id,
             api_key=settings.openai_api_key,
-            reasoning_effort=reasoning[tier],
+            reasoning_effort=effort,
         )
 
     if not settings.anthropic_api_key:
