@@ -25,6 +25,7 @@ thread_id 네임스페이스: ``seller-chat:{seller_id}:{thread_id}`` — 신원
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Sequence
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -166,6 +167,22 @@ async def record_turn(
 
 # ── supervisor/planner 입력 주입 (프롬프트 불변 — 입력 메시지 조립만) ──────────────
 
+# 주입 방어(PR #182 리뷰) — 사용자가 이전 턴 메시지에 라벨 문자열을 실어 다음 턴의
+# supervisor/planner 입력 구조([최근 대화] vs [이번 질문] 경계)를 위조하는 것을 막는다.
+_INJECT_LABEL_RE = re.compile(r"\[(최근 대화|최근 분석 이력|이번 질문)\]")
+
+
+def _sanitize_for_render(text: str) -> str:
+    """render 주입 정제 — 라벨 위조 무력화(대괄호 제거) + 개행 평탄화.
+
+    정제 위치가 기록(record_turn)이 아니라 **읽기(render)**인 이유: general 레인은
+    record_turn 을 거치지 않고 agent invoke 가 원문을 그대로 누적하므로, 쓰기 측
+    정제는 전 경로를 커버하지 못한다. 개행 평탄화는 라벨 없이 "상담원: …" 줄을
+    끼워 넣는 화자 위조까지 차단한다(블록이 줄 단위 `화자: 텍스트` 형식이므로).
+    """
+    flattened = " ".join(text.split())
+    return _INJECT_LABEL_RE.sub(r"\1", flattened)
+
 
 def render_recent_turns(turns: Sequence[Turn]) -> str:
     """최근 대화 블록 — 참고 맥락임을 라벨로 명시한다(오라우팅 방지, [최근 분석 이력] 선례)."""
@@ -174,7 +191,7 @@ def render_recent_turns(turns: Sequence[Turn]) -> str:
     lines = ["[최근 대화]"]
     for role, text in turns:
         speaker = "사용자" if role == "user" else "상담원"
-        lines.append(f"{speaker}: {text}")
+        lines.append(f"{speaker}: {_sanitize_for_render(text)}")
     lines.append("([최근 대화]는 참고 맥락일 뿐이다 — 분류·계획 대상은 [이번 질문]이다)")
     return "\n".join(lines)
 

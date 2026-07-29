@@ -34,6 +34,19 @@ _checkpointer: BaseCheckpointSaver | None = None
 _checkpointer_ctx: object | None = None  # AsyncPostgresSaver cm — 앱 수명 동안 GC 방지
 _fallback_warned = False
 
+# 콜드스타트 초기화 직렬화 락(PR #182 리뷰) — 모듈 로드 시점 생성 금지: 테스트가
+# asyncio.run 반복으로 루프를 바꾸면 Lock 의 루프 바인딩(3.12)이 깨진다. 지연 생성하고
+# set_checkpointer 에서 함께 리셋한다.
+_init_lock: asyncio.Lock | None = None
+
+
+def _get_init_lock() -> asyncio.Lock:
+    global _init_lock
+    if _init_lock is None:
+        _init_lock = asyncio.Lock()
+    return _init_lock
+
+
 # 소비자(hitl 그래프, thread recorder 그래프)가 checkpointer 로 컴파일한 그래프 캐시를
 # 갖는다 — checkpointer 교체 시 함께 무효화해야 stale 그래프가 옛 저장소를 잡고 있지
 # 않는다. 소비자가 모듈 import 시점에 자기 초기화 함수를 등록한다.
@@ -51,18 +64,26 @@ def set_checkpointer(checkpointer: BaseCheckpointSaver | None) -> None:
     등록된 reset hook 을 모두 호출해 소비자의 컴파일된 그래프 캐시도 무효화한다
     (기존 hitl.set_checkpointer 가 _graph·_confirm_locks 를 함께 초기화하던 계약 유지).
     """
-    global _checkpointer, _checkpointer_ctx
+    global _checkpointer, _checkpointer_ctx, _init_lock
     _checkpointer = checkpointer
     _checkpointer_ctx = None
+    _init_lock = None  # 루프 교체(테스트 asyncio.run 반복) 대비 락도 재생성
     for hook in _reset_hooks:
         hook()
 
 
 async def get_checkpointer() -> BaseCheckpointSaver:
-    """공용 checkpointer — 미주입 시 지연 초기화(AsyncPostgresSaver, dev 폴백)."""
+    """공용 checkpointer — 미주입 시 지연 초기화(AsyncPostgresSaver, dev 폴백).
+
+    초기화는 락으로 직렬화한다(PR #182 리뷰) — 콜드스타트에 동시 요청이 몰리면
+    _init_checkpointer 가 병렬 실행되어 커넥션 누수(_checkpointer_ctx 덮어쓰기)와
+    인스턴스 분열이 생긴다. 바깥 검사(비-None 정상 경로)는 락을 타지 않는다.
+    """
     global _checkpointer
     if _checkpointer is None:
-        _checkpointer = await _init_checkpointer()
+        async with _get_init_lock():
+            if _checkpointer is None:  # 락 대기 중 다른 코루틴이 끝냈을 수 있다
+                _checkpointer = await _init_checkpointer()
     return _checkpointer
 
 
