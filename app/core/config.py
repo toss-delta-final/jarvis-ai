@@ -162,6 +162,14 @@ class Settings(BaseSettings):
     )
     llm_call_limit: int = 2
     relaxation_max_rounds: int = 3
+    # rating·reviewCount 등급화 경계(#171 PR#172) — 비표시 정밀값 유출 방지용으로 rerank LLM 에
+    # 정확한 숫자 대신 등급만 전달할 때 쓰는 임계. 내림차순(높은 등급부터). 데모 카탈로그 실측 후 조정.
+    rating_tier_excellent: float = 4.5  # ≥ → 매우높음
+    rating_tier_good: float = 4.0  # ≥ → 높음
+    rating_tier_fair: float = 3.0  # ≥ → 보통 (그 미만 낮음)
+    review_tier_many: int = 100  # ≥ → 매우많음
+    review_tier_some: int = 20  # ≥ → 많음
+    review_tier_few: int = 5  # ≥ → 보통 (그 미만 적음)
 
     # ── 카테고리 하이브리드 매핑 (이슈 #59, DESIGN-CATEGORY-HYBRID-59) ──
     # 방식 A: decompose 추측 → 임베딩 보정(exact/최근접). canonical-or-null·멀티 fan-out.

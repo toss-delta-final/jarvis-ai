@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 
 from app.agents.buyer.recommendation.state import RerankResult, extract_json
+from app.core.config import get_settings
 from app.core.llm import LLMClient, LLMError
 from app.schemas.spring import SpringProduct
 
@@ -35,12 +36,13 @@ def _rating_tier(product: SpringProduct) -> str:
     """
     if product.rating is None or product.review_count == 0:
         return "평가없음"
+    s = get_settings()
     r = product.rating
-    if r >= 4.5:
+    if r >= s.rating_tier_excellent:
         return "매우높음"
-    if r >= 4.0:
+    if r >= s.rating_tier_good:
         return "높음"
-    if r >= 3.0:
+    if r >= s.rating_tier_fair:
         return "보통"
     return "낮음"
 
@@ -56,11 +58,12 @@ def _review_tier(product: SpringProduct) -> str:
         return "정보없음"
     if rc == 0:
         return "없음"
-    if rc >= 100:
+    s = get_settings()
+    if rc >= s.review_tier_many:
         return "매우많음"
-    if rc >= 20:
+    if rc >= s.review_tier_some:
         return "많음"
-    if rc >= 5:
+    if rc >= s.review_tier_few:
         return "보통"
     return "적음"
 
