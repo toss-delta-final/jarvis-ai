@@ -142,9 +142,10 @@ class Settings(BaseSettings):
     seller_tool_call_limit: int = 8  # ToolCallLimit 전역 한도(선택)
     seller_worker_timeout_s: float = 60.0  # 분석 워커 1종 실행 상한(3-3 팬아웃, §7 90s 목표 내)
 
-    # ── 판매자 supervisor 라우팅 (4-1a, REALIGN §4 — 2026-07-19 확정) ──
-    # confidence 미달 = analysis 보수 라우팅(SPEC 장치 ⑤). 장애 = general 폴백(사용자 결정).
-    seller_route_confidence_min: float = 0.6  # 이 값 미만이면 analysis 로 보수 재지정
+    # ── 판매자 supervisor 라우팅 (4-1a, REALIGN §4 → #180 개정) ──
+    # confidence 미달 = general 재지정(#180 저신뢰 폴백 역전 — 구 'analysis 보수
+    # 라우팅' 폐기). 장애 = general 폴백 — "불확실하면 general" 단일 원칙.
+    seller_route_confidence_min: float = 0.6  # 이 값 미만이면 general 로 재지정
     seller_route_timeout_s: float = 10.0  # 라우팅 LLM 상한 — first-token 10s 목표 내(§2.9)
 
     # ── 판매자 Anthropic temperature (SPEC-SELLER-001 §8) ──
