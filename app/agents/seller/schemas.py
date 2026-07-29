@@ -22,7 +22,8 @@ class RouteDecision(BaseModel):
     """supervisor 의 3분기 라우팅 결과 (SPEC §2 — smart tier 구조화 출력 라우팅).
 
     category 는 Literal 로 세 값만 허용 — LLM 이 신규 카테고리를 지어낼 수 없다(장치 ⑤).
-    confidence 는 "애매하면 analysis 보수적 라우팅" 규칙의 코드 분기 재료다.
+    confidence 는 "애매하면 general 재지정"(#180 저신뢰 폴백 역전) 규칙의 코드 분기
+    재료다 — orchestrator.route_question 이 seller_route_confidence_min 과 비교한다.
     """
 
     category: Literal["analysis", "product", "general"] = Field(description="질문 카테고리")
