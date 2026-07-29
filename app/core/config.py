@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     # 최저 지원값인 minimal로 두어 숨은 추론이 출력 예산을 잠식하지 않게 한다.
     openai_fast_reasoning_effort: str = "minimal"
     openai_smart_reasoning_effort: str = "medium"  # smart: 근거문 품질용
+    # gpt-5.6-luna 는 /v1/chat/completions 에서 function tools + reasoning_effort 조합을
+    # 400(invalid_request_error)으로 거부한다(이슈 #178). tool 을 싣는 호출에서만 effort 를
+    # override 값으로 강등한다 — 에러 메시지가 지시하는 경로. 조합을 지원하는 모델로
+    # 바꾸면 목록에서 빼는 것으로 원복된다. 매칭은 접두사 — 날짜 스냅샷 ID도 함께 걸린다.
+    openai_tool_reasoning_incompatible_models: list[str] = ["gpt-5.6-luna"]
+    openai_tool_reasoning_effort_override: str = "none"
 
     # ── Google 임베딩 API (MVP, §4.8 배치 + 임베딩 검색) ──
     # [2026-07-20 결정 6 개정, v0.15.14] 셀프호스트 torch → Google gemini-embedding-001 API.

@@ -161,6 +161,72 @@ def test_settings_rejects_unknown_provider() -> None:
         _settings(llm_provider="other")
 
 
+# ─────────── tool + reasoning_effort capability 게이팅 (이슈 #178) ───────────
+
+
+def test_tool_lane_downgrades_effort_on_incompatible_model() -> None:
+    """gpt-5.6-luna 는 tools + reasoning_effort 를 400 으로 거부 — override 로 강등한다."""
+    settings = _settings(openai_api_key="k", openai_smart_model_id="gpt-5.6-luna")
+
+    smart = llm_mod.resolve_provider_model(settings, "smart", with_tools=True)
+
+    assert smart.reasoning_effort == settings.openai_tool_reasoning_effort_override
+    assert smart.reasoning_effort == "none"
+
+
+def test_non_tool_lane_keeps_effort_on_incompatible_model() -> None:
+    """구매자 레인(OpenAILLM.complete/stream)은 tool 을 싣지 않아 강등 대상이 아니다."""
+    settings = _settings(openai_api_key="k", openai_smart_model_id="gpt-5.6-luna")
+
+    smart = llm_mod.resolve_provider_model(settings, "smart")
+
+    assert smart.reasoning_effort == settings.openai_smart_reasoning_effort
+
+
+def test_tool_lane_keeps_effort_on_compatible_model() -> None:
+    """gpt-5-nano 는 tools + minimal 조합이 통과한다(aa0a2b6 이전 판매자 레인 실측)."""
+    settings = _settings(openai_api_key="k")
+
+    fast = llm_mod.resolve_provider_model(settings, "fast", with_tools=True)
+
+    assert fast.model_id == "gpt-5-nano"
+    assert fast.reasoning_effort == settings.openai_fast_reasoning_effort
+
+
+def test_incompatible_match_is_prefix_based() -> None:
+    """날짜 스냅샷 ID 도 같은 제약을 받는다 — 접두사 매칭."""
+    settings = _settings(openai_api_key="k", openai_smart_model_id="gpt-5.6-luna-2026-07-01")
+
+    smart = llm_mod.resolve_provider_model(settings, "smart", with_tools=True)
+
+    assert smart.reasoning_effort == "none"
+
+
+def test_empty_incompatible_entry_does_not_match_everything() -> None:
+    """빈 문자열 항목이 전체 모델을 강등시키지 않는다."""
+    settings = _settings(openai_api_key="k", openai_tool_reasoning_incompatible_models=[""])
+
+    assert llm_mod.supports_tool_reasoning(settings, "gpt-5.6-luna")
+
+
+def test_gating_disabled_by_empty_model_list() -> None:
+    """조합을 지원하는 모델로 갈아타면 목록을 비우는 것으로 원복된다."""
+    settings = _settings(openai_api_key="k", openai_tool_reasoning_incompatible_models=[])
+
+    smart = llm_mod.resolve_provider_model(settings, "smart", with_tools=True)
+
+    assert smart.reasoning_effort == settings.openai_smart_reasoning_effort
+
+
+def test_anthropic_tool_lane_has_no_reasoning_effort() -> None:
+    """anthropic 은 reasoning_effort 자체가 없어 with_tools 와 무관하다."""
+    settings = _settings(llm_provider="anthropic", anthropic_api_key="k")
+
+    smart = llm_mod.resolve_provider_model(settings, "smart", with_tools=True)
+
+    assert smart.reasoning_effort is None
+
+
 # ─────────── get_llm 분기 ───────────
 
 

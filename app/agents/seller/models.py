@@ -11,6 +11,12 @@ temperature를 적용한다.
 
 ⚠️ 전 역할 smart 는 §7 의 90s 목표·seller_route_timeout_s(10s) 예산을 압박한다 —
 지연이 문제가 되면 supervisor·judge 부터 fast 로 되돌린다.
+
+판매자 레인은 **전 역할이 function tools 를 싣는다**고 보고 resolver 를
+with_tools=True 로 부른다 — create_agent 는 tools 가 비어도 ToolStrategy 구조화
+출력이 function tool 로 나가고, 지금 tool 이 없는 report 도 나중에 도구가 붙으면
+조용히 깨지기 때문이다(이슈 #178). 조합 미지원 모델에서는 resolver 가
+reasoning_effort 를 강등한다.
 """
 
 from __future__ import annotations
@@ -74,7 +80,7 @@ def init_seller_model(role: SellerRole) -> BaseChatModel:
     """
     settings = get_settings()
     tier = ROLE_TIER[role]
-    resolved = resolve_provider_model(settings, tier)
+    resolved = resolve_provider_model(settings, tier, with_tools=True)
     temperature = None
     if resolved.provider == "anthropic":
         temperature = (
