@@ -10,6 +10,8 @@
 2. **checkpointer = AsyncPostgresSaver(pg-profile)**, dev 폴백 허용: 연결 실패 시
    InMemorySaver + 경고 1회(service_token dev 스킵 선례). 운영(auth_mode=jwks)은
    폴백 금지 — 프로세스 재시작 시 draft 증발은 운영에서 허용 불가.
+   [이관] 싱글턴은 공용 모듈 checkpoint.py 소관 — 채팅 대화 스레드(thread.py,
+   `seller-chat:` 접두)와 같은 저장소를 나눠 쓴다. set_checkpointer 는 재수출.
 3. **stale 검증(S-5 병존, REALIGN F7) = stock 제외 비교**: confirm 시점 I-9 재조회로
    changes[].before 를 재검증하되 stock_quantity 는 주문 재고 차감(F6)으로 자연
    변동하므로 제외한다. stock 변동은 실행 결과 안내에 현재값 표기로 보완.
@@ -32,15 +34,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal, TypedDict
 
-from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field
 
+from app.agents.seller import checkpoint as seller_checkpoint
 from app.agents.seller.schemas import DraftChange, DraftProposal
 from app.core.config import get_settings
-from app.core.pg_resilience import hardened_pg_conninfo
 from app.core.text import _strip_unsafe, _strip_unsafe_multiline
 from app.schemas.spring import ProductCreate, ProductUpdate, SellerProductRow
 from app.services.spring_client import get_spring_client
@@ -333,15 +333,25 @@ async def _hitl_node(state: HitlState) -> HitlState:
     return {"outcome": outcome, "result": text}
 
 
-# checkpointer 싱글턴 — set_checkpointer(테스트 주입) / 미주입 시 지연 초기화.
-_checkpointer: BaseCheckpointSaver | None = None
-_checkpointer_ctx: object | None = None  # AsyncPostgresSaver cm — 앱 수명 동안 GC 방지
+# checkpointer 싱글턴은 공용 모듈(checkpoint.py)로 이관 — 채팅 스레드(thread.py)와
+# 공유한다. set_checkpointer 는 기존 소비자(conftest 등) 호환을 위해 재수출한다.
+# 교체 시 이 모듈의 컴파일된 그래프·confirm 락 캐시는 reset hook 으로 함께 무효화된다.
+set_checkpointer = seller_checkpoint.set_checkpointer
+
 _graph = None
-_fallback_warned = False
 
 # confirm 동시성 직렬화용 draftId→Lock 레지스트리(프로세스 내). draft 는 1회성이라
 # 항목 수는 프로세스 수명 동안의 draft 수로 유계 — 명시 정리는 생략한다.
 _confirm_locks: dict[str, asyncio.Lock] = {}
+
+
+def _reset_cache() -> None:
+    global _graph
+    _graph = None
+    _confirm_locks.clear()
+
+
+seller_checkpoint.register_reset_hook(_reset_cache)
 
 
 def _confirm_lock(draft_id: str) -> asyncio.Lock:
@@ -354,60 +364,16 @@ def _confirm_lock(draft_id: str) -> asyncio.Lock:
     return lock
 
 
-def set_checkpointer(checkpointer: BaseCheckpointSaver | None) -> None:
-    """checkpointer 교체(테스트용) — None 이면 다음 사용 시 재초기화한다."""
-    global _checkpointer, _checkpointer_ctx, _graph
-    _checkpointer = checkpointer
-    _checkpointer_ctx = None
-    _graph = None
-    _confirm_locks.clear()
-
-
-async def _init_checkpointer() -> BaseCheckpointSaver:
-    """AsyncPostgresSaver(pg-profile) 초기화 — 실패 시 dev 한정 InMemorySaver 폴백.
-
-    운영(auth_mode=jwks)은 폴백 금지 — 재시작 시 draft 증발은 허용 불가(모듈
-    docstring 2). setup() 은 checkpoint 테이블 생성 멱등 호출이다.
-    """
-    global _checkpointer_ctx, _fallback_warned
-    settings = get_settings()
-    try:
-        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-
-        # 현재 langgraph-checkpoint-postgres의 from_conn_string은 pool_config를 받지 않고
-        # 단일 AsyncConnection을 직접 연다. 따라서 BaseStore pool 상한 설정 대상이 아니며,
-        # 연결/서버/TCP 제한은 hardened conninfo로 적용한다.
-        ctx = AsyncPostgresSaver.from_conn_string(hardened_pg_conninfo(settings.profile_db_url))
-        saver = await asyncio.wait_for(
-            ctx.__aenter__(), timeout=settings.seller_checkpoint_connect_timeout_s
-        )
-        await saver.setup()
-        _checkpointer_ctx = ctx
-        return saver
-    except Exception as exc:
-        if settings.auth_mode == "jwks":
-            raise  # 운영 — 폴백 금지, 기동/요청 실패로 드러낸다
-        if not _fallback_warned:
-            logger.warning(
-                "pg-profile checkpointer 연결 실패(%s) — InMemorySaver 폴백 "
-                "(dev 전용: 프로세스 재시작 시 draft 증발)",
-                exc,
-            )
-            _fallback_warned = True
-        return InMemorySaver()
-
-
 async def _get_graph():
-    """HITL 그래프 싱글턴 — checkpointer 준비 후 1회 컴파일."""
-    global _checkpointer, _graph
+    """HITL 그래프 싱글턴 — 공용 checkpointer(checkpoint.py) 준비 후 1회 컴파일."""
+    global _graph
     if _graph is None:
-        if _checkpointer is None:
-            _checkpointer = await _init_checkpointer()
+        checkpointer = await seller_checkpoint.get_checkpointer()
         builder = StateGraph(HitlState)
         builder.add_node("hitl", _hitl_node)
         builder.add_edge(START, "hitl")
         builder.add_edge("hitl", END)
-        _graph = builder.compile(checkpointer=_checkpointer)
+        _graph = builder.compile(checkpointer=checkpointer)
     return _graph
 
 

@@ -142,6 +142,14 @@ class Settings(BaseSettings):
     seller_tool_call_limit: int = 8  # ToolCallLimit 전역 한도(선택)
     seller_worker_timeout_s: float = 60.0  # 분석 워커 1종 실행 상한(3-3 팬아웃, §7 90s 목표 내)
 
+    # ── 판매자 대화 스레드 (thread.py — checkpointer 기반 멀티턴 누적) ──
+    # supervisor/planner 입력 주입 상한: 최근 턴(user+assistant 쌍) 수와 메시지당 절단.
+    seller_chat_context_turns: int = 6
+    seller_chat_context_max_chars: int = 300
+    # 비-general 레인 record_turn 절단 — 보고서 전문이 아니라 후속 발화 이해용 맥락
+    # (seller_history_report_max_chars 500 과 정합).
+    seller_chat_record_max_chars: int = 500
+
     # ── 판매자 supervisor 라우팅 (4-1a, REALIGN §4 → #180 개정) ──
     # confidence 미달 = general 재지정(#180 저신뢰 폴백 역전 — 구 'analysis 보수
     # 라우팅' 폐기). 장애 = general 폴백 — "불확실하면 general" 단일 원칙.

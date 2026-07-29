@@ -152,3 +152,44 @@ def test_malformed_structured_response_falls_back(monkeypatch: pytest.MonkeyPatc
 
 
 # confirm 선판정 테스트는 test_seller_chat_request.py(SellerChatRequest 스키마)로 이관됐다.
+
+
+# ── 대화 스레드 맥락 주입 — 프롬프트 불변, 입력 메시지 조립만 ─────────────────────
+
+
+class _CapturingSupervisor(_StubSupervisor):
+    """입력 메시지를 기록하는 스텁 — 맥락 주입 형식 검증용."""
+
+    def __init__(self, decision: RouteDecision) -> None:
+        super().__init__(decision=decision)
+        self.received: list[str] = []
+
+    async def ainvoke(self, agent_input: dict, context: object = None) -> dict:
+        self.received.append(agent_input["messages"][0].content)
+        return await super().ainvoke(agent_input, context=context)
+
+
+def test_route_without_turns_sends_raw_question(monkeypatch: pytest.MonkeyPatch) -> None:
+    """맥락이 없으면 질문 원문 그대로 — 기존 supervisor 입력 계약 불변."""
+    decision = RouteDecision(category="general", reason="r", confidence=0.9)
+    stub = _CapturingSupervisor(decision)
+    _patch(monkeypatch, stub)
+
+    asyncio.run(orchestrator.route_question("어제 매출 알려줘", _CTX))
+
+    assert stub.received == ["어제 매출 알려줘"]
+
+
+def test_route_injects_recent_turns_into_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    """최근 대화가 있으면 [최근 대화] 블록 + [이번 질문] 라벨로 입력을 조립한다."""
+    decision = RouteDecision(category="analysis", reason="r", confidence=0.9)
+    stub = _CapturingSupervisor(decision)
+    _patch(monkeypatch, stub)
+    turns = [("user", "어제 매출 알려줘"), ("assistant", "어제 매출은 120만원입니다.")]
+
+    asyncio.run(orchestrator.route_question("그럼 지난주는?", _CTX, recent_turns=turns))
+
+    sent = stub.received[0]
+    assert sent.startswith("[최근 대화]")
+    assert "사용자: 어제 매출 알려줘" in sent
+    assert sent.endswith("[이번 질문] 그럼 지난주는?")
