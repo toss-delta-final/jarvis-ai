@@ -85,18 +85,24 @@ WORKER_BUILDERS: dict[AnalysisType, Callable[[], CompiledStateGraph]] = {
 
 # 폴백 사유 문구 — 회귀 테스트·로그가 참조하는 계약값(코드 단일 출처).
 ROUTE_FALLBACK_REASON = "라우팅 장애 — general 폴백(코드 지정)"
-ROUTE_CONSERVATIVE_REASON = "confidence 미달 — analysis 보수 재지정(코드 지정)"
+# [#180, 2026-07-29] 저신뢰 폴백 역전 — 구 ROUTE_CONSERVATIVE_REASON(analysis 보수
+# 재지정, 2026-07-19 결정) 폐기. 오분류 비용 비대칭이 전제와 반대였다: 단순 조회가
+# analysis 로 가면 5단 파이프라인(회복 불가·최고 비용), 분석 질문이 general 로 가면
+# general 프롬프트의 "분석을 요청해 주세요" 안내로 한 턴에 회복된다.
+ROUTE_LOW_CONFIDENCE_REASON = "confidence 미달 — general 재지정(코드 지정)"
 
 
 async def route_question(question: str, context: SellerContext) -> RouteDecision:
-    """supervisor 3분기 라우팅 + 코드 후처리 (4-1a, REALIGN §4 확정).
+    """supervisor 3분기 라우팅 + 코드 후처리 (4-1a, REALIGN §4 → #180 개정).
 
     코드가 최종 판정한다(LLM 은 제안만):
       - supervisor 장애(타임아웃·예외·비정형 출력) → **general 폴백** + warning
         로그(2026-07-19 사용자 결정 — MVP '작동 우선', 최소한의 답변 보장).
-      - confidence < settings.seller_route_confidence_min → **analysis 보수
-        재지정**(SPEC 장치 ⑤ — 분석 질문을 잡담으로 흘리는 오류가 더 비싸다).
-        원분류가 analysis 면 재지정 불필요.
+      - confidence < settings.seller_route_confidence_min → **general 재지정**
+        (#180, 2026-07-29 — 구 'analysis 보수 재지정'(SPEC 장치 ⑤)을 역전.
+        불확실하면 가장 가벼운 레인에서 답하고, 분석이 필요하면 general 의
+        분석 안내로 회복한다). 원분류가 general 이면 재지정 불필요.
+        장애 폴백과 방향이 일치한다 — "불확실하면 general" 단일 원칙.
     scope 선차단·confirm 코드 선판정은 호출부(SSE 배선) 소관 — 이 함수는
     라우팅만 담당한다(관심사 분리).
     """
@@ -116,18 +122,18 @@ async def route_question(question: str, context: SellerContext) -> RouteDecision
         logger.warning("supervisor 라우팅 장애 — general 폴백", exc_info=True)
         return RouteDecision(category="general", reason=ROUTE_FALLBACK_REASON, confidence=0.0)
     if (
-        decision.category != "analysis"
+        decision.category != "general"
         and decision.confidence < settings.seller_route_confidence_min
     ):
         logger.info(
-            "라우팅 보수 재지정: %s(%.2f) → analysis (%s)",
+            "라우팅 저신뢰 재지정: %s(%.2f) → general (%s)",
             decision.category,
             decision.confidence,
             decision.reason,
         )
         return RouteDecision(
-            category="analysis",
-            reason=f"{ROUTE_CONSERVATIVE_REASON} — 원분류 {decision.category}: {decision.reason}",
+            category="general",
+            reason=f"{ROUTE_LOW_CONFIDENCE_REASON} — 원분류 {decision.category}: {decision.reason}",
             confidence=decision.confidence,
         )
     return decision

@@ -203,8 +203,8 @@ def build_supervisor() -> CompiledStateGraph:
     """3분기 라우터 (smart tier · 도구 없음 · ToolStrategy(RouteDecision)).
 
     출력 계약: RouteDecision(category/reason/confidence). 후처리는 전부 코드
-    (orchestrator.route_question) 소관 — confidence 미달 = analysis 보수 재지정,
-    장애 = general 폴백(REALIGN §4, 2026-07-19 사용자 결정). scope 선차단·confirm
+    (orchestrator.route_question) 소관 — confidence 미달 = general 재지정(#180
+    저신뢰 폴백 역전), 장애 = general 폴백(REALIGN §4). scope 선차단·confirm
     코드 선판정은 SSE 배선(4-1b) 입구에서 이 라우터보다 먼저 실행된다.
     """
     return create_agent(
