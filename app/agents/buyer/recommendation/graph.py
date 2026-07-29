@@ -114,7 +114,16 @@ async def stream_recommendation(
     # 표시-실제가 어긋날 수 있다(리뷰 반영). canonical category(= category_legs 존재) + config on 이면
     # keyword(상품명 LIKE, retrieval AND-필터)를 드롭해 동의어("청바지" vs 상품명 "데님 팬츠")가
     # retrieval 후보를 원천 배제하지 못하게 한다.
-    drop_keyword = settings.search_drop_keyword_with_category and bool(decision.category_legs)
+    # [#51 리뷰] 단, keyword 드롭은 **embedding_rerank 백엔드에서만** 안전하다 — 그 경우에만 category
+    # 로 확보한 후보를 semanticQuery 임베딩이 재정렬해 keyword 부재를 메운다. spring(재정렬 없음)은
+    # keyword 가 유일한 텍스트 신호이고, vector(VectorSearchBackend)는 filters.keyword 를 쿼리 임베딩
+    # 입력으로 써서(search_service.py:164) 드롭 시 빈 문자열을 임베딩한다 → 두 경우 모두 드롭하면
+    # 품질이 급락한다. 그래서 backend 가 embedding_rerank 가 아니면 플래그와 무관하게 keyword 를 유지한다.
+    drop_keyword = (
+        settings.search_drop_keyword_with_category
+        and settings.search_backend == "embedding_rerank"
+        and bool(decision.category_legs)
+    )
 
     # conditions 칩 (병합 필터에서 결정론적 파생) — fan-out 이면 canonical 전체를 표시한다(§3.1)
     # keyword 를 드롭하면 조건 칩에서도 keyword 를 빼 "적용되지 않는 필터를 제거 가능 조건으로 광고"
@@ -143,7 +152,7 @@ async def stream_recommendation(
                 return None
 
         # fan-out — canonical 카테고리마다 leg 를 병렬 검색(§6). leg 별 filters 는 category·
-        # keyword([#51] canonical 있으면 드롭, config off 시에만 그 카테고리 query/base)·semantic_query·
+        # keyword([#51] 위 drop_keyword flag 로 결정 — 드롭 아니면 그 카테고리 query/base)·semantic_query·
         # limit(leg 별 AI top-K, §4.6 size 아님) 만 교체한다.
         # 단일 카테고리(leg 1개)는 후보 폭을 좁히지 않게 merge_cap(=단일 rerank 입력 예산)을 쓰고,
         # 멀티 fan-out 일 때만 leg 당 per_cat_limit 으로 제한한다(합쳐서 merge_cap 로 재절단).

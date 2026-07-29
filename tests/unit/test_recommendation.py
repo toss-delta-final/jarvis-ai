@@ -2141,6 +2141,22 @@ async def test_conditions_keep_keyword_chip_when_config_disabled(monkeypatch) ->
     assert "keyword" in fields  # 적용되는 keyword 는 칩으로 노출
 
 
+async def test_leg_keeps_keyword_when_backend_not_embedding_rerank(monkeypatch) -> None:
+    """[#51 리뷰] keyword 드롭은 embedding_rerank 백엔드에서만 안전 — spring/vector 면 플래그가
+    True 여도 유지한다.
+
+    spring 은 재정렬이 없어 keyword 가 유일한 텍스트 신호이고, vector 는 filters.keyword 를 쿼리
+    임베딩 입력으로 쓴다(드롭 시 빈 문자열 임베딩). 둘 다 드롭하면 품질이 급락하므로 유지해야 한다.
+    """
+    monkeypatch.setattr(get_settings(), "search_drop_keyword_with_category", True)
+    monkeypatch.setattr(get_settings(), "search_backend", "spring")
+    search, seen = _filter_recording_search(DEFAULT_PRODUCTS)
+    await _collect(
+        run_buyer_turn(_req(), _member(), llm=FakeLLM(), search=search, push_fn=_RecordingPush())
+    )
+    assert seen[0].keyword == "무선 이어폰"  # embedding_rerank 아님 → keyword 유지
+
+
 async def test_synonym_product_survives_keyword_drop() -> None:
     """[#51 A] 발화("청바지")와 상품명("데님 팬츠")이 달라도 keyword 드롭 덕에 후보로 살아남는다.
 
