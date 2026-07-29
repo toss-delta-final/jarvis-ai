@@ -110,9 +110,14 @@ async def stream_recommendation(
 ) -> AsyncIterator[str]:
     """추천 서브그래프 스트림. 프레임(SSE str)을 순서대로 산출한다."""
     # conditions 칩 (병합 필터에서 결정론적 파생) — fan-out 이면 canonical 전체를 표시한다(§3.1)
-    chips = build_condition_chips(
-        decision.filters, categories=[c for c, _ in decision.category_legs]
-    )
+    # [#51] keyword 를 retrieval 에서 드롭할 때(canonical category 존재 + config on)는 조건 칩에서도
+    # keyword 를 빼 "적용되지 않는 필터를 제거 가능 조건으로 광고"하는 표시-실제 불일치를 막는다.
+    # keyword 값은 decision.filters 에 그대로 남겨 멀티턴 기억(PRIOR_FILTERS)으로만 쓰고, 칩 파생용
+    # 사본에서만 제거한다. (칩 제거 왕복 X 는 별개 관심사 — 여기선 표시 정합만 다룬다.)
+    chip_filters = decision.filters
+    if settings.search_drop_keyword_with_category and decision.category_legs:
+        chip_filters = decision.filters.model_copy(update={"keyword": None})
+    chips = build_condition_chips(chip_filters, categories=[c for c, _ in decision.category_legs])
     yield sse("conditions", ConditionsData(chips=chips).model_dump(by_alias=True))
 
     # dedup 소스(I-19)와 검색(§4.6)을 **병렬 실행** — §4.7 지연 가드(순차 시 최악 6s, first-token 예산 잠식).
@@ -132,7 +137,8 @@ async def stream_recommendation(
                 return None
 
         # fan-out — canonical 카테고리마다 leg 를 병렬 검색(§6). leg 별 filters 는 category·
-        # keyword(그 카테고리 query, 없으면 base)·limit(leg 별 AI top-K, §4.6 size 아님) 만 교체한다.
+        # keyword([#51] canonical 있으면 드롭, config off 시에만 그 카테고리 query/base)·semantic_query·
+        # limit(leg 별 AI top-K, §4.6 size 아님) 만 교체한다.
         # 단일 카테고리(leg 1개)는 후보 폭을 좁히지 않게 merge_cap(=단일 rerank 입력 예산)을 쓰고,
         # 멀티 fan-out 일 때만 leg 당 per_cat_limit 으로 제한한다(합쳐서 merge_cap 로 재절단).
         leg_limit = (
@@ -155,10 +161,20 @@ async def stream_recommendation(
                     if len(legs) > 1
                     else decision.filters.semantic_query
                 )
+                # [#51] canonical category 가 있으면 keyword(상품명 LIKE)를 드롭한다 — 상품명 글자
+                # 부분일치 AND-필터라 동의어("청바지" vs 상품명 "데님 팬츠")를 retrieval 에서 원천
+                # 배제한다. leg 검색어는 leg_semantic 으로 rerank 를 담당하고 category 가 후보를 확보
+                # 하므로 keyword 중복 투입은 불필요. leg 는 항상 canonical 이라 여기선 사실상 상시 드롭
+                # (config off 면 기존 동작 leg query→keyword 복원, 롤백 안전성).
+                leg_keyword = (
+                    None
+                    if settings.search_drop_keyword_with_category and canonical
+                    else (query or decision.filters.keyword)
+                )
                 leg_filters = decision.filters.model_copy(
                     update={
                         "category": canonical,
-                        "keyword": query or decision.filters.keyword,
+                        "keyword": leg_keyword,
                         "semantic_query": leg_semantic,
                         "limit": leg_limit,
                     }

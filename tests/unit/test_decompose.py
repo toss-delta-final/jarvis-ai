@@ -384,3 +384,12 @@ async def test_fanout_max_zero_truncates_to_empty() -> None:
     many = [{"category": f"c{i} > m{i}", "query": f"q{i}"} for i in range(3)]
     d = await _run(_raw(categoryQueries=many), category_fanout_max=0)
     assert d.category_queries == []
+
+
+async def test_system_prompt_includes_synonym_guidance() -> None:
+    """[#51 B] semanticQuery 규칙에 동의어·상위어 지침이 있어야 한다 — 임베딩 rerank 가
+    표현 차이(청바지=데님)를 잡도록 semanticQuery 를 의미 중심으로 풍부하게 쓰게 유도(프롬프트 회귀 가드).
+    """
+    from app.agents.buyer.recommendation.decompose import _SYSTEM
+
+    assert "동의어" in _SYSTEM
