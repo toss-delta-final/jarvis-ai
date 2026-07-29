@@ -26,44 +26,43 @@ _SYSTEM = """당신은 커머스 추천 재랭킹기입니다. 후보 상품과 
 - 가장 적합한 순으로 정렬하고 상위만 남기세요."""
 
 
-def _rating_tier(product: SpringProduct) -> str:
+def _rating_tier(product: SpringProduct, settings) -> str:
     """rerank LLM 에 넘길 평점 등급(정확한 숫자 대신) — 비표시 수치 유출 원천 차단(#171 PR#172).
 
     정확한 rating(4.8)을 주면 LLM 이 근거문에 "4.8 평점"처럼 흘려 CH-5 표시값과 어긋날 수 있어,
     LLM 에는 등급만 준다. 정확한 rating 은 SpringProduct.rating 에 남아 코드 필터(rating_min)·예산이
     계속 정확히 쓴다(질의 "평점 4.5 이상"은 search_catalog 사후필터 소관, 티어화 무영향). review_count
-    ==0(리뷰 없음)·rating None 은 데이터 부재로 '평가없음'(#171 rating=0 판별 유지).
+    ==0(리뷰 없음)·rating None 은 데이터 부재로 '평가없음'(#171 rating=0 판별 유지). 경계는 config
+    주입(settings) — 호출부가 get_settings()를 1회 조회해 전달한다(핫패스 루프 내 반복 조회 회피).
     """
     if product.rating is None or product.review_count == 0:
         return "평가없음"
-    s = get_settings()
     r = product.rating
-    if r >= s.rating_tier_excellent:
+    if r >= settings.rating_tier_excellent:
         return "매우높음"
-    if r >= s.rating_tier_good:
+    if r >= settings.rating_tier_good:
         return "높음"
-    if r >= s.rating_tier_fair:
+    if r >= settings.rating_tier_fair:
         return "보통"
     return "낮음"
 
 
-def _review_tier(product: SpringProduct) -> str:
+def _review_tier(product: SpringProduct, settings) -> str:
     """rerank LLM 에 넘길 리뷰량 등급(정확한 개수 대신) — 유출 원천 차단(#171 PR#172).
 
     정확한 reviewCount(128)를 주면 LLM 이 "리뷰 128개"처럼 흘릴 수 있어 등급만 준다. None(미전송)은
-    '정보없음', 0 은 '없음'(신상). 정확한 개수는 원본에 남아 계산용으로 쓴다.
+    '정보없음', 0 은 '없음'(신상). 정확한 개수는 원본에 남아 계산용으로 쓴다. 경계는 config 주입.
     """
     rc = product.review_count
     if rc is None:
         return "정보없음"
     if rc == 0:
         return "없음"
-    s = get_settings()
-    if rc >= s.review_tier_many:
+    if rc >= settings.review_tier_many:
         return "매우많음"
-    if rc >= s.review_tier_some:
+    if rc >= settings.review_tier_some:
         return "많음"
-    if rc >= s.review_tier_few:
+    if rc >= settings.review_tier_few:
         return "보통"
     return "적음"
 
@@ -78,6 +77,7 @@ async def rerank(
     expose_max: int,
 ) -> RerankResult:
     """Sonnet 1회 호출로 재랭킹 결과를 산출한다(후보 외 id 는 코드로 제거)."""
+    settings = get_settings()  # 티어 경계 조회 — 후보 루프 밖에서 1회(캐시 싱글턴, 관례 정합)
     cand = [
         {
             "productId": c.product_id,
@@ -87,8 +87,8 @@ async def rerank(
             # rating·reviewCount 는 정확한 숫자 대신 등급으로 — LLM 이 "4.8 평점"·"리뷰 128개"처럼
             # 흘려 CH-5 표시값과 어긋나는 걸 원천 차단한다(#171 PR#172). 정확한 값은 원본에 남아
             # 코드 필터·예산이 계속 쓴다. review_count==0 → 평가없음(#171 rating=0 판별 유지).
-            "ratingLevel": _rating_tier(c),
-            "reviewLevel": _review_tier(c),
+            "ratingLevel": _rating_tier(c, settings),
+            "reviewLevel": _review_tier(c, settings),
             "category": c.category,
         }
         for c in candidates

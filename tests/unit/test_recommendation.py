@@ -326,16 +326,19 @@ def test_rerank_prompt_lists_all_tier_return_values() -> None:
     반환값 집합과 프롬프트 enum 을 일치시켜 드리프트를 막는다(rating 은 이미 일치).
     """
     from app.agents.buyer.recommendation.rerank import _SYSTEM, _rating_tier, _review_tier
+    from app.core.config import get_settings
     from app.schemas.spring import SpringProduct
+
+    s = get_settings()
 
     def _p(**kw) -> SpringProduct:
         return SpringProduct(product_id=1, name="x", **kw)
 
     rating_vals = {
-        _rating_tier(_p(rating=r, review_count=rc))
+        _rating_tier(_p(rating=r, review_count=rc), s)
         for r, rc in [(None, 5), (0.0, 0), (0.0, 5), (3.5, 5), (4.2, 5), (4.8, 5)]
     }
-    review_vals = {_review_tier(_p(review_count=rc)) for rc in [None, 0, 3, 10, 50, 200]}
+    review_vals = {_review_tier(_p(review_count=rc), s) for rc in [None, 0, 3, 10, 50, 200]}
     for v in rating_vals | review_vals:
         assert v in _SYSTEM, f"티어값 {v!r} 이 프롬프트 enum 에 없음"
 
