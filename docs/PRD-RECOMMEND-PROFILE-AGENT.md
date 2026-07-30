@@ -287,7 +287,7 @@ Notion "📡 API 명세서" DB(팀 결정 원장, 2026-07-16 확인)를 기준�
 | `POST /events/session-end`(I-20, 서비스 토큰) | 명시적 세션 종료 통지(Spring→AI) | **확정(이슈 #62/#79, Spring PR #24)**. 알려진 reason=`logout`/`newConversation`; `{sessionId,userId(number BIGINT),reason?}` + `X-Internal-Token`; UUID를 포함한 불투명 `sessionId` 수용. 신규/중복 모두 202(`accepted`/`duplicate`). 비활동 종료는 AI 내부에서 처리 |
 | `POST /internal/cart/items`(I-2, 서비스 토큰) | 장바구니 담기(단건, 묶음은 반복 호출) | 경로·메서드·인증 확정(BE 문서 채택). **[v0.15.5 확정]** 담기(I-2) 시점 재고 검증은 없음 — 재고 차감·품절 판정은 주문(O-1) 시점에만 발생. 실패 사유는 `PRODUCT_NOT_FOUND`/`CART_ERROR` 2종으로 확정(`SPEC-CART-001` OPEN-CART-1 해소) |
 | `GET /internal/cart`(I-18, 서비스 토큰) | 장바구니 조회(질의 응답 + 담기 전 보유 확인) | 경로·메서드·인증 확정. **`productName`/`optionName` 필수 포함 확정**(BE 문서, 2026-07-18) |
-| `POST /internal/recommendations`(I-21, 서비스 토큰) | 추천 목록 콜백(AI→Spring, "경로 B" push) | 경로·메서드·인증 레인 확정. **[2026-07-18] 스키마 확정 책임이 LLM팀(우리)에 있다고 BE가 명시** — 확정할 것: ① `listId` 형식·유효시간(SSE로 FE 전달되는 키) ② 추천 이유(`reason`)는 SSE가 아니라 I-21 콜백(`reasons[{productId, reason}]`)에 실어 Spring이 Redis 저장 → CH-5 카드에 echo(SSE는 채팅용 자연어 설명만 담당) — 확정 |
+| `POST /internal/recommendations`(I-21, 서비스 토큰) | 추천 목록 콜백(AI→Spring, "경로 B" push) | 경로·메서드·인증 레인 확정. **[v0.16.1] `listId` 형식은 UUID급 무작위(≥128bit)로 확정**, 순번·타임스탬프 등 추측 가능한 형식 금지. 잔여: `listId` 유효시간. 추천 이유(`reason`)는 SSE가 아니라 I-21 콜백(`reasons[{productId, reason}]`)에 실어 Spring이 Redis 저장 → CH-5 카드에 echo(SSE는 채팅용 자연어 설명만 담당) — 확정 |
 | `GET /api/chat/lists/{listId}`(CH-5, 인증 불필요) | 추천 목록 조회(FE↔Spring, "경로 B" GET) | 경로·메서드·인증 레인 확정. **[2026-07-18] 응답 스키마는 FE와 Spring이 정함 — LLM팀 사안 아니라고 BE가 명시**(우리 리스크 아님) |
 
 **참고**: catalog DB(pgvector) 조회 자체는 Spring API가 아니다 — AI가 자기 소유 DB를 직접 읽는 **내부 쿼리**다(§5 데이터모델 vs API 논의 참조). §4.6/§4.7/§4.9/I-2/I-20만 실제 "API"(시스템 경계를 넘는 호출)이고, catalog DB 2차 압축은 그 경계 안쪽에서 일어난다. catalog DB를 채우는 pull 배치(I-17)는 별도 담당.
@@ -409,7 +409,7 @@ MVP는 모두 config 기본값으로 동작 — 아래는 그 기본값의 정�
 
 ### (D) 외부 의존 리스크
 
-- `/api/chat/lists/{listId}`(CH-5, 인증 불필요)로 경로·메서드·인증 레인은 확정. **I-21 스키마는 "우리(LLM팀)가 확정할 책임"이라고 BE가 명시** — 즉 Spring을 기다리는 게 아니라 우리가 제안해서 확정해야 하는 액션 아이템이다(`listId` 형식·유효시간). `reason`은 I-21 콜백에 포함해 CH-5로 echo하는 방식으로 확정됐다. 반대로 **CH-5 응답 스키마는 FE·Spring 소관으로 명시**돼 우리 리스크에서 빠진다.
+- `/api/chat/lists/{listId}`(CH-5, 인증 불필요)로 경로·메서드·인증 레인은 확정. **I-21 `listId` 형식은 v0.16.1에서 UUID급 무작위(≥128bit)로 확정**했고, 남은 액션 아이템은 유효시간이다. `reason`은 I-21 콜백에 포함해 CH-5로 echo하는 방식으로 확정됐다. 반대로 **CH-5 응답 스키마는 FE·Spring 소관으로 명시**돼 우리 리스크에서 빠진다.
 - `GET /internal/members/{id}/orders`(I-19) 응답 본문이 BE 기준(상태이름 통일·배송비 항상 0원·숫자 id)으로 재작성됐다 — dedup(REQ-REC-100~103)·프로필 구매 소스가 이 응답을 쓰므로 "이대로 가도 되는지" 우리 쪽 확인이 필요하다(BE가 명시적으로 요청).
 - 검색 품질이 Spring DB의 텍스트 검색 능력에 사실상 전적으로 의존한다(AI 벡터 인덱스가 질의 흐름에 아직 안 붙어 있어서) — (A)의 결합 방식 미정과 직결되는 품질 리스크.
 
