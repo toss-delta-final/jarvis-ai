@@ -121,6 +121,28 @@ def test_chat_with_valid_member_ticket_streams(jwks_app, rsa_key, buyer_fakes) -
     assert resp.headers["content-type"].startswith("text/event-stream")
 
 
+def test_adoption_failure_before_first_frame_maps_to_state_unavailable(
+    jwks_app,
+    rsa_key,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """accepted commit 뒤 adoption 실패는 SSE 200이 아니라 중앙 503 봉투로 응답한다."""
+    from app.agents.buyer import graph as buyer_graph
+    from app.core.session_context import SessionStateUnavailable
+
+    async def fail_adoption(*_args, **_kwargs):
+        raise SessionStateUnavailable
+
+    monkeypatch.setattr(buyer_graph, "ensure_thread_adopted", fail_adoption)
+    token = sign_ticket(rsa_key, KID, ticket_claims(sub="42", sessionId="s-auth-1"))
+
+    resp = client.post("/chat", json=_chat_body(), headers=_bearer(token))
+
+    assert resp.status_code == 503
+    assert resp.headers["content-type"].startswith("application/json")
+    assert resp.json()["error"]["code"] == "STATE_UNAVAILABLE"
+
+
 def test_buyer_session_claim_must_match_body(jwks_app, rsa_key) -> None:
     """구매자 티켓의 서명된 sessionId와 body sessionId가 다르면 403이다."""
     token = sign_ticket(rsa_key, KID, ticket_claims(sub="42", sessionId="S1"))

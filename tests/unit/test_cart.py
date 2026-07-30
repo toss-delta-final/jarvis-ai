@@ -14,10 +14,14 @@ import pytest
 
 from app.agents.buyer.cart.graph import stream_cart_add, stream_cart_view
 from app.agents.buyer.cart.state import CartStateStore, PendingAdd
-from app.agents.buyer.graph import run_buyer_turn
+from app.agents.buyer.graph import run_buyer_turn as _production_run_buyer_turn
 from app.agents.buyer.recommendation.state import CartIntent
+from app.agents.buyer.session_state import context_thread_key
+from app.api.deps import buyer_owner_id
+from app.core import session_context
 from app.core.auth import Identity
 from app.core.config import get_settings
+from app.core.session_context import BuyerSessionInput
 from app.schemas.spring import (
     AddToCartResult,
     CartOption,
@@ -46,6 +50,38 @@ def _guest() -> Identity:
 
 def _anon() -> Identity:
     return Identity(user_id=None, is_guest=True, seller_id=None, subject=None)
+
+
+async def _committed_observer(request, identity):  # noqa: ANN001
+    context = await session_context._default_repository.touch(
+        BuyerSessionInput(
+            request.session_id,
+            request.thread_id,
+            "guest" if identity.is_guest else "member",
+            buyer_owner_id(identity, get_settings()),
+        )
+    )
+    return SimpleNamespace(
+        context_id=context.context_id,
+        request_id="unit-request",
+        record_model_call=lambda *_: None,
+    )
+
+
+async def run_buyer_turn(request, identity, **kwargs):  # noqa: ANN001
+    observer = await _committed_observer(request, identity)
+    async for frame in _production_run_buyer_turn(
+        request,
+        identity,
+        observer=observer,
+        **kwargs,
+    ):
+        yield frame
+
+
+async def _thread_key(request, identity) -> str:  # noqa: ANN001
+    observer = await _committed_observer(request, identity)
+    return context_thread_key(observer.context_id, request.thread_id)
 
 
 async def _collect(gen) -> list[dict]:
@@ -577,12 +613,12 @@ async def test_route_cart_add(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sc, "get_cart", fake_get)
     # 직전 추천이 있어야 담기 가능(경로 B) — last_reco 시드.
     from app.agents.buyer.cart.state import get_cart_store
-    from app.core.conversation import conversation_key
 
     seed_store = await get_cart_store()
-    await seed_store.set_last_reco(conversation_key("123", "t1"), [(101, "이어폰")])
+    request = _req()
+    await seed_store.set_last_reco(await _thread_key(request, _member()), [(101, "이어폰")])
     llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 101, "quantity": 1}})
-    events = await _collect(run_buyer_turn(_req(), _member(), llm=llm))
+    events = await _collect(run_buyer_turn(request, _member(), llm=llm))
     action = next(e for e in events if e["type"] == "action")["data"]
     assert action["type"] == "CART_ADDED" and action["cartItemId"] == 42
 
@@ -606,7 +642,6 @@ async def test_route_cart_view(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_last_reco_stored_after_recommendation() -> None:
     """추천 턴이 후보를 last_reco 로 저장해 이후 담기의 productId 해소 소스가 된다."""
     from app.agents.buyer.cart.state import get_cart_store
-    from app.core.conversation import conversation_key
     from tests._fakes import DEFAULT_PRODUCTS, FakeLLM
 
     async def search(filters, exclude_product_ids=None):
@@ -625,7 +660,9 @@ async def test_last_reco_stored_after_recommendation() -> None:
         )
     )
     cart_store = await get_cart_store()
-    reco = await cart_store.get_last_reco(conversation_key("123", "t9"))
+    reco = await cart_store.get_last_reco(
+        await _thread_key(_req(message="무선 이어폰 추천", thread_id="t9"), _member())
+    )
     assert [pid for pid, _ in reco] == [101, 102, 103]
 
 
@@ -906,7 +943,6 @@ async def test_cart_add_invalid_quantity_maps_cart_error() -> None:
 async def test_last_reco_stored_in_ranked_display_order() -> None:
     """last_reco 는 검색순서가 아니라 노출(rerank) 순서로 저장된다(Codex P1, Fix3)."""
     from app.agents.buyer.cart.state import get_cart_store
-    from app.core.conversation import conversation_key
     from tests._fakes import DEFAULT_PRODUCTS, FakeLLM
 
     async def search(filters, exclude_product_ids=None):
@@ -928,7 +964,7 @@ async def test_last_reco_stored_in_ranked_display_order() -> None:
         )
     )
     cart_store = await get_cart_store()
-    reco = await cart_store.get_last_reco(conversation_key("123", "tR"))
+    reco = await cart_store.get_last_reco(await _thread_key(_req(thread_id="tR"), _member()))
     # 노출 순서: rerank [103,101] + expose_min 보충 102 → [103,101,102] (검색순서 아님)
     assert [pid for pid, _ in reco][:2] == [103, 101]
 
@@ -939,7 +975,6 @@ async def test_last_reco_stored_in_ranked_display_order() -> None:
 async def test_last_reco_not_stored_when_push_fails() -> None:
     """push 실패로 카드가 노출되지 않으면 last_reco 를 저장하지 않는다(R1 — 경로 B 불변식)."""
     from app.agents.buyer.cart.state import get_cart_store
-    from app.core.conversation import conversation_key
     from tests._fakes import DEFAULT_PRODUCTS, FakeLLM
 
     async def search(filters, exclude_product_ids=None):
@@ -960,7 +995,7 @@ async def test_last_reco_not_stored_when_push_fails() -> None:
         )
     )
     cart_store = await get_cart_store()
-    reco = await cart_store.get_last_reco(conversation_key("123", "tNo"))
+    reco = await cart_store.get_last_reco(await _thread_key(_req(thread_id="tNo"), _member()))
     assert reco == []  # 저장 안 됨 → 다음 턴 "그거 담아줘"가 미노출 상품을 담지 못함
 
 
@@ -1132,10 +1167,9 @@ async def test_cart_add_non_numeric_member_maps_cart_error() -> None:
 async def test_general_intent_clears_pending(monkeypatch: pytest.MonkeyPatch) -> None:
     """되물음 중 취소(general 전환)하면 stale pending 이 정리된다(라운드4)."""
     from app.agents.buyer.cart.state import PendingAdd, get_cart_store
-    from app.core.conversation import conversation_key
     from tests._fakes import FakeLLM
 
-    key = conversation_key("123", "t1")
+    key = await _thread_key(_req(), _member())
     cart_store = await get_cart_store()
     await cart_store.set_pending(
         key, PendingAdd(product_id=1, quantity=1, options=[CartOption(option_id=3, name="블루")])

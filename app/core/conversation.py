@@ -19,12 +19,12 @@ from enum import Enum
 from typing import Protocol
 
 from app.agents.profile import session_activity
+from app.core import session_context
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.pg_resilience import hardened_pg_conninfo, run_with_query_timeout
 from app.core.session_context import (
     BuyerSessionInput,
-    SessionContextRepository,
     resolve_touch_register_on_connection,
 )
 
@@ -98,7 +98,6 @@ class ConversationStore:
         self._by_conversation: dict[str, list[str]] = {}
         self._order: deque[str] = deque()
         self._seq = itertools.count(1)
-        self._session_contexts = SessionContextRepository()
 
     async def save_user_message(
         self,
@@ -116,7 +115,7 @@ class ConversationStore:
         """사용자 메시지 수신 즉시 저장(§6.3 a). turn_id 를 반환한다(assistant 마감에 사용)."""
         context_id = None
         if buyer_session is not None:
-            context = await self._session_contexts.touch(buyer_session)
+            context = await session_context._default_repository.touch(buyer_session)
             context_id = context.context_id
         elif session_id is not None:
             member_id = _profile_member_id(user_id, role)
@@ -552,5 +551,6 @@ def reset_store() -> None:
     (app/core/pg_store.py 와 동일 문제, 실제 재현·수정 이력은 docs/lessons.md).
     """
     global _init_lock
+    session_context.reset()
     set_store(ConversationStore())
     _init_lock = asyncio.Lock()

@@ -112,11 +112,8 @@ async def _begin_adoption(
 ) -> bool:
     repo = session_context._default_repository
     if repo._pool is None:
-        try:
-            row = repo._context_by_id(context.context_id)
-        except Exception:
-            row = None
-        if row is not None and (
+        row = repo._context_by_id(context.context_id)
+        if (
             row.session_id != context.session_id
             or row.owner_type != context.owner_type
             or row.owner_id != context.owner_id
@@ -204,15 +201,7 @@ async def _resolve_context_and_legacy_owner(
 ) -> tuple[SessionContext, str]:
     repo = session_context._default_repository
     if repo._pool is None:
-        try:
-            row = repo._context_by_id(context_id)
-        except Exception:
-            # ConversationStore의 인메모리 lifecycle authority는 테스트 격리를 위해
-            # 모듈 기본 repository와 분리된다. PostgreSQL 운영 경로에는 이 fallback이 없다.
-            return (
-                SessionContext(context_id, "", "member", current_owner_id, 0, "active"),
-                current_owner_id,
-            )
+        row = repo._context_by_id(context_id)
         if thread_id not in row.threads or row.owner_id != current_owner_id:
             raise RuntimeError("session context owner or thread mismatch")
         history = repo._owner_claims.get(row.session_id)

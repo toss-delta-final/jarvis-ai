@@ -6,8 +6,8 @@
         - order_status: 검증 JWT 회원 신원으로 I-4 조회 후 결정적 token→done
         - general  : fallback 서브그래프(일반 대화)
 
-멀티턴: 스레드별 누적 필터를 ThreadFilterStore(LangGraph BaseStore, pg-profile)에 신원 스코프
-키로 보관한다 — app/agents/seller/history.py 와 동일한 BaseStore 이관 패턴(이슈 #33, §6.3).
+멀티턴: 스레드별 누적 필터를 ThreadFilterStore(LangGraph BaseStore, pg-profile)에
+``context_id:thread_id`` 키로 보관한다.
 장바구니 서브그래프(결정 7, I-2/I-18)는 이슈 #3 소관 — 본 슬라이스 미포함.
 """
 
@@ -112,21 +112,15 @@ async def run_buyer_turn(
     resolved_request_id = cast(
         str, request_id or getattr(observer, "request_id", None) or new_request_id()
     )
-    if observer is not None and hasattr(observer, "context_id"):
-        context_id = getattr(observer, "context_id", None)
-        if not context_id:
-            raise SessionStateUnavailable
-        await ensure_thread_adopted(
-            context_id,
-            request.thread_id,
-            buyer_owner_id(identity, settings),
-        )
-        thread_key = context_thread_key(context_id, request.thread_id)
-    else:
-        # 직접 그래프를 구동하는 기존 단위 테스트 호환 경로다. 실제 buyer 스트림은
-        # accepted-turn commit이 채운 observer를 항상 전달하므로 이 분기를 사용하지 않는다.
-        subject = identity.user_id or identity.subject
-        thread_key = context_thread_key(str(subject), request.thread_id)
+    context_id = getattr(observer, "context_id", None)
+    if not isinstance(context_id, str) or not context_id:
+        raise SessionStateUnavailable
+    await ensure_thread_adopted(
+        context_id,
+        request.thread_id,
+        buyer_owner_id(identity, settings),
+    )
+    thread_key = context_thread_key(context_id, request.thread_id)
     llm = llm or get_llm()
     if llm is None:
         yield sse(

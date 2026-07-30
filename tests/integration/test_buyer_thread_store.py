@@ -22,7 +22,12 @@ from app.agents.buyer.cart import state as cart_state
 from app.agents.buyer.cart.state import CartStateStore, PendingAdd
 from app.agents.buyer.graph import ThreadFilterStore
 from app.agents.buyer.recommendation.state import RevertStore
-from app.agents.buyer.session_state import adopt_legacy_thread, clear_context, context_thread_key
+from app.agents.buyer.session_state import (
+    adopt_legacy_thread,
+    clear_context,
+    context_thread_key,
+    ensure_thread_adopted,
+)
 from app.core import pg_store as pg_store_module
 from app.core import session_context
 from app.core.config import get_settings
@@ -35,6 +40,30 @@ pytestmark = pytest.mark.integration
 
 def _key() -> str:
     return f"it:{uuid.uuid4().hex}"
+
+
+class _ConnectionAdapter:
+    def __init__(self, conn) -> None:  # noqa: ANN001
+        self._conn = conn
+
+    @asynccontextmanager
+    async def connection(self):
+        yield self._conn
+
+
+class _FailLegacyDeleteStore:
+    def __init__(self, store) -> None:  # noqa: ANN001
+        self._store = store
+        self.failed = False
+
+    def __getattr__(self, name: str):
+        return getattr(self._store, name)
+
+    async def adelete(self, namespace, key) -> None:  # noqa: ANN001
+        if not self.failed and namespace[0] == "buyer_thread_filters":
+            self.failed = True
+            raise RuntimeError("legacy delete boundary unavailable")
+        await self._store.adelete(namespace, key)
 
 
 @pytest.fixture
@@ -153,12 +182,7 @@ async def test_verified_adoption_marks_complete_after_legacy_keys_are_deleted(pg
     await RevertStore(pg_store).add(target_key, ["B"])
     pg_store_module.set_store(pg_store)
 
-    class _ConnectionAdapter:
-        @asynccontextmanager
-        async def connection(self):
-            yield conn
-
-    session_context.set_pool(_ConnectionAdapter())
+    session_context.set_pool(_ConnectionAdapter(conn))
     context = SessionContext(context_id, session_id, "guest", legacy_owner, 0, "active")
     try:
         result = await adopt_legacy_thread(context, thread_id, legacy_owner)
@@ -176,6 +200,120 @@ async def test_verified_adoption_marks_complete_after_legacy_keys_are_deleted(pg
         assert await RevertStore(pg_store).get(target_key) == {"A", "B"}
         assert await pg_store.aget(("buyer_thread_filters", legacy_key), "filters") is None
         assert await pg_store.aget(("buyer_revert", legacy_key), "categories") is None
+    finally:
+        await conn.execute("DELETE FROM chat_session_contexts WHERE context_id=%s", (context_id,))
+        session_context.reset()
+
+
+async def test_pg_adoption_failure_stays_copying_and_retries_with_new_objects(pg_store) -> None:
+    context_id = str(uuid.uuid4())
+    session_id = f"it-retry-{uuid.uuid4().hex}"
+    thread_id = "thread"
+    legacy_owner = f"guest-{uuid.uuid4().hex}"
+    legacy_key = f"{legacy_owner}:{thread_id}"
+    target_key = context_thread_key(context_id, thread_id)
+    conn = pg_store.conn.connection
+    await conn.execute(
+        "INSERT INTO chat_session_contexts "
+        "(context_id, session_id, owner_type, owner_id, state) "
+        "VALUES (%s, %s, 'guest', %s, 'active')",
+        (context_id, session_id, legacy_owner),
+    )
+    await conn.execute(
+        "INSERT INTO chat_session_threads (context_id, thread_id) VALUES (%s, %s)",
+        (context_id, thread_id),
+    )
+    await pg_store.aput(
+        ("buyer_thread_filters", legacy_key),
+        "filters",
+        {"category": "legacy"},
+    )
+    context = SessionContext(context_id, session_id, "guest", legacy_owner, 0, "active")
+    fault_store = _FailLegacyDeleteStore(pg_store)
+    pg_store_module.set_store(fault_store)
+    session_context.set_pool(_ConnectionAdapter(conn))
+    try:
+        with pytest.raises(session_context.SessionStateUnavailable):
+            await adopt_legacy_thread(context, thread_id, legacy_owner)
+
+        status = await (
+            await conn.execute(
+                "SELECT adoption_status FROM chat_session_threads "
+                "WHERE context_id=%s AND thread_id=%s",
+                (context_id, thread_id),
+            )
+        ).fetchone()
+        assert status["adoption_status"] == "copying"
+        assert await pg_store.aget(("buyer_thread_filters", legacy_key), "filters") is not None
+        assert (await ThreadFilterStore(pg_store).get(target_key)).category == "legacy"
+
+        async with AsyncPostgresStore.from_conn_string(
+            get_settings().profile_db_url
+        ) as retry_store:
+            await retry_store.setup()
+            retry_conn = retry_store.conn.connection
+            pg_store_module.set_store(retry_store)
+            session_context.set_pool(_ConnectionAdapter(retry_conn))
+
+            result = await adopt_legacy_thread(context, thread_id, legacy_owner)
+
+            retry_status = await (
+                await retry_conn.execute(
+                    "SELECT adoption_status FROM chat_session_threads "
+                    "WHERE context_id=%s AND thread_id=%s",
+                    (context_id, thread_id),
+                )
+            ).fetchone()
+            assert result.adopted
+            assert retry_status["adoption_status"] == "complete"
+            assert await retry_store.aget(("buyer_thread_filters", legacy_key), "filters") is None
+    finally:
+        await conn.execute("DELETE FROM chat_session_contexts WHERE context_id=%s", (context_id,))
+        session_context.reset()
+
+
+async def test_pg_member_adoption_reads_guest_owner_claim_history(pg_store) -> None:
+    context_id = str(uuid.uuid4())
+    claim_id = str(uuid.uuid4())
+    session_id = f"it-member-{uuid.uuid4().hex}"
+    thread_id = "thread"
+    guest_owner = f"guest-{uuid.uuid4().hex}"
+    member_owner = "42"
+    legacy_key = f"{guest_owner}:{thread_id}"
+    target_key = context_thread_key(context_id, thread_id)
+    conn = pg_store.conn.connection
+    await conn.execute(
+        "INSERT INTO chat_session_contexts "
+        "(context_id, session_id, owner_type, owner_id, generation, state) "
+        "VALUES (%s, %s, 'member', %s, 1, 'active')",
+        (context_id, session_id, member_owner),
+    )
+    await conn.execute(
+        "INSERT INTO chat_session_threads (context_id, thread_id) VALUES (%s, %s)",
+        (context_id, thread_id),
+    )
+    await conn.execute(
+        """
+        INSERT INTO chat_session_owner_claims
+            (claim_id, context_id, session_id, from_owner_type, from_owner_id,
+             to_owner_type, to_owner_id)
+        VALUES (%s, %s, %s, 'guest', %s, 'member', %s)
+        """,
+        (claim_id, context_id, session_id, guest_owner, member_owner),
+    )
+    await pg_store.aput(
+        ("buyer_thread_filters", legacy_key),
+        "filters",
+        {"category": "guest-state"},
+    )
+    pg_store_module.set_store(pg_store)
+    session_context.set_pool(_ConnectionAdapter(conn))
+    try:
+        result = await ensure_thread_adopted(context_id, thread_id, member_owner)
+
+        assert result.adopted
+        assert (await ThreadFilterStore(pg_store).get(target_key)).category == "guest-state"
+        assert await pg_store.aget(("buyer_thread_filters", legacy_key), "filters") is None
     finally:
         await conn.execute("DELETE FROM chat_session_contexts WHERE context_id=%s", (context_id,))
         session_context.reset()

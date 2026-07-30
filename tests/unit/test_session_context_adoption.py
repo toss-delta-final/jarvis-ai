@@ -17,6 +17,7 @@ from app.agents.buyer.session_state import (
 )
 from app.core import pg_store, session_context
 from app.core.auth import Identity
+from app.core.conversation import ConversationStore
 from app.core.session_context import (
     BuyerSessionInput,
     SessionContextRepository,
@@ -162,6 +163,36 @@ async def test_member_adoption_uses_pre_claim_guest_owner_history() -> None:
     assert adopted is not None and adopted.category == "guest-state"
 
 
+async def test_conversation_commit_and_adoption_share_canonical_memory_repository() -> None:
+    store = ConversationStore()
+    session_context.reset()
+    buyer_session = BuyerSessionInput("canonical-session", "canonical-thread", "member", "42")
+
+    committed = await store.save_user_message(
+        "canonical-session",
+        "42",
+        "member",
+        "추천",
+        thread_id="canonical-thread",
+        buyer_session=buyer_session,
+    )
+
+    canonical = await session_context._default_repository.get_context("canonical-session")
+    assert canonical is not None
+    assert committed.context_id == canonical.context_id
+    result = await ensure_thread_adopted(canonical.context_id, "canonical-thread", "42")
+    assert result.adopted
+
+
+async def test_unknown_memory_context_fails_closed_without_fabrication() -> None:
+    session_context.reset()
+
+    with pytest.raises(SessionStateUnavailable):
+        await ensure_thread_adopted("unknown-context", "thread", "42")
+
+    assert await session_context._default_repository.get_context("missing-session") is None
+
+
 async def test_graph_adopts_after_commit_context_before_first_state_read(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -222,3 +253,31 @@ async def test_graph_rejects_observer_without_committed_context_before_state_rea
 
     with pytest.raises(SessionStateUnavailable):
         await anext(stream)
+
+
+@pytest.mark.parametrize("observer", [None, SimpleNamespace(request_id="request-a")])
+async def test_graph_requires_observer_context_before_llm_or_state_access(
+    monkeypatch: pytest.MonkeyPatch,
+    observer,
+) -> None:
+    accessed: list[str] = []
+
+    def unexpected_llm():
+        accessed.append("llm")
+        raise AssertionError
+
+    async def unexpected_store():
+        accessed.append("state")
+        raise AssertionError
+
+    monkeypatch.setattr("app.agents.buyer.graph.get_llm", unexpected_llm)
+    monkeypatch.setattr("app.agents.buyer.graph.get_thread_store", unexpected_store)
+    stream = run_buyer_turn(
+        SimpleNamespace(session_id="session-a", thread_id="thread-a", message="추천"),
+        _member(),
+        observer=observer,
+    )
+
+    with pytest.raises(SessionStateUnavailable):
+        await anext(stream)
+    assert accessed == []
