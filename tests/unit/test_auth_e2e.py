@@ -140,6 +140,47 @@ def test_jwks_buyer_ticket_requires_exact_sub_type(
     assert resp.json()["error"]["code"] == "TOKEN_INVALID"
 
 
+@pytest.mark.parametrize("malformed_sub_type", [[], {}, ["member"], 1, True, None])
+def test_jwks_chat_rejects_non_string_sub_type_with_401_envelope(
+    jwks_app,
+    rsa_key,
+    malformed_sub_type: object,
+) -> None:
+    """JSON composite/number/bool discriminator는 TypeError/500 없이 TOKEN_INVALID다."""
+    token = sign_ticket(
+        rsa_key,
+        KID,
+        ticket_claims(
+            sub="42",
+            sub_type=malformed_sub_type,
+            sessionId="s-auth-1",
+        ),
+    )
+
+    resp = client.post("/chat", json=_chat_body(), headers=_bearer(token))
+
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "TOKEN_INVALID"
+
+
+@pytest.mark.parametrize("malformed_role", [[], {}, ["seller"], 1, True, None])
+def test_jwks_chat_rejects_non_string_role_with_401_envelope(
+    jwks_app,
+    rsa_key,
+    malformed_role: object,
+) -> None:
+    """seller role도 non-string JSON 값이면 예외 누출 없이 fail-closed 한다."""
+    claims = ticket_claims(sub="9", sessionId="s-auth-1")
+    claims.pop("sub_type")
+    claims["role"] = malformed_role
+    token = sign_ticket(rsa_key, KID, claims)
+
+    resp = client.post("/chat", json=_chat_body(), headers=_bearer(token))
+
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "TOKEN_INVALID"
+
+
 def test_dev_buyer_keeps_legacy_role_compatibility(monkeypatch, rsa_key, buyer_fakes) -> None:
     """dev 레인은 기존 GUEST/USER role 토큰 호환을 유지한다."""
     monkeypatch.setattr(deps, "get_settings", lambda: Settings(_env_file=None, auth_mode="dev"))

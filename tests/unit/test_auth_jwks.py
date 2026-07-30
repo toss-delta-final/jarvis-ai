@@ -93,6 +93,14 @@ def test_unknown_sub_type_rejected(rsa_key, jwks_calls) -> None:
         _decode(token)
 
 
+@pytest.mark.parametrize("sub_type", [[], {}])
+def test_non_string_sub_type_is_rejected_as_auth_error(rsa_key, jwks_calls, sub_type) -> None:
+    """JSON 배열·객체 discriminator도 500이 아니라 인증 오류로 fail-closed 한다."""
+    token = sign_ticket(rsa_key, KID, ticket_claims(sub_type=sub_type))
+    with pytest.raises(AuthError):
+        _decode(token)
+
+
 def test_jwks_legacy_role_user_is_rejected(rsa_key, jwks_calls) -> None:
     """JWKS에서 sub_type 없는 구 role=USER 토큰은 fail-closed 한다."""
     claims = ticket_claims(sub="7")

@@ -113,9 +113,11 @@ def _claims_to_identity(claims: dict, *, require_identity_claim: bool = False) -
         sub_type_present = CLAIM_SUB_TYPE in claims
         if role_present == sub_type_present:
             raise AuthError("exactly one identity discriminator is required")
-        if role_present and raw_role != ROLE_SELLER:
+        if role_present and (not isinstance(raw_role, str) or raw_role != ROLE_SELLER):
             raise AuthError("invalid seller role claim")
-        if sub_type_present and sub_type not in {SUB_TYPE_MEMBER, SUB_TYPE_GUEST}:
+        if sub_type_present and (
+            not isinstance(sub_type, str) or sub_type not in (SUB_TYPE_MEMBER, SUB_TYPE_GUEST)
+        ):
             raise AuthError("invalid buyer sub_type claim")
     if (require_identity_claim and raw_role == ROLE_SELLER) or (
         not require_identity_claim and role == ROLE_SELLER.upper()
