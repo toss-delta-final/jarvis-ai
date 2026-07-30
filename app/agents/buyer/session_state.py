@@ -1,0 +1,359 @@
+"""Buyer transient state adoption and context-scoped cleanup."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Sequence
+from dataclasses import dataclass
+from weakref import WeakValueDictionary
+
+from app.agents.buyer.cart import state as cart_state
+from app.core import pg_store, session_context
+from app.core.pg_resilience import run_with_query_timeout
+from app.core.session_context import SessionContext, SessionStateUnavailable
+
+_LEGACY_FILTER_ROOT = "buyer_thread_filters"
+_LEGACY_CART_ROOT = "buyer_cart"
+_LEGACY_REVERT_ROOT = "buyer_revert"
+_FILTER_ROOT = "buyer_thread_filters_v2"
+_CART_ROOT = "buyer_cart_v2"
+_REVERT_ROOT = "buyer_revert_v2"
+_FILTERS_KEY = "filters"
+_PENDING_KEY = "pending"
+_LAST_RECO_KEY = "last_reco"
+_CATEGORIES_KEY = "categories"
+
+_adoption_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+
+
+@dataclass(frozen=True)
+class CleanupCounts:
+    filters: int = 0
+    pending: int = 0
+    last_recommendation: int = 0
+    local_names: int = 0
+    revert: int = 0
+
+    def __add__(self, other: "CleanupCounts") -> "CleanupCounts":
+        return CleanupCounts(
+            self.filters + other.filters,
+            self.pending + other.pending,
+            self.last_recommendation + other.last_recommendation,
+            self.local_names + other.local_names,
+            self.revert + other.revert,
+        )
+
+
+@dataclass(frozen=True)
+class AdoptionResult:
+    adopted: bool
+    copied: int = 0
+    deleted: int = 0
+
+
+def context_thread_key(context_id: str, thread_id: str) -> str:
+    return f"{context_id}:{thread_id}"
+
+
+def _lock_for(key: str) -> asyncio.Lock:
+    lock = _adoption_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _adoption_locks[key] = lock
+    return lock
+
+
+def _column(row, index: int, name: str):  # noqa: ANN001
+    return row[name] if isinstance(row, dict) else row[index]
+
+
+async def _item(store, root: str, key: str, name: str):  # noqa: ANN001
+    return await run_with_query_timeout(store.aget((root, key), name))
+
+
+async def _delete(store, root: str, key: str, name: str) -> int:  # noqa: ANN001
+    present = await _item(store, root, key, name)
+    if present is None:
+        return 0
+    await run_with_query_timeout(store.adelete((root, key), name))
+    return 1
+
+
+async def clear_thread(context_id: str, thread_id: str) -> CleanupCounts:
+    store = await pg_store.get_store()
+    key = context_thread_key(context_id, thread_id)
+    filters = await _delete(store, _FILTER_ROOT, key, _FILTERS_KEY)
+    pending = await _delete(store, _CART_ROOT, key, _PENDING_KEY)
+    last_recommendation = await _delete(store, _CART_ROOT, key, _LAST_RECO_KEY)
+    revert = await _delete(store, _REVERT_ROOT, key, _CATEGORIES_KEY)
+    local_names = int(cart_state._last_reco_names.pop(key) is not None)
+    return CleanupCounts(filters, pending, last_recommendation, local_names, revert)
+
+
+async def clear_context(context_id: str, thread_ids: Sequence[str]) -> CleanupCounts:
+    total = CleanupCounts()
+    for thread_id in thread_ids:
+        total += await clear_thread(context_id, thread_id)
+    return total
+
+
+def _memory_adoptions(repo) -> dict[tuple[str, str], tuple[str, str]]:  # noqa: ANN001
+    states = getattr(repo, "_thread_adoptions", None)
+    if states is None:
+        states = {}
+        setattr(repo, "_thread_adoptions", states)
+    return states
+
+
+async def _begin_adoption(
+    context: SessionContext,
+    thread_id: str,
+    legacy_owner_id: str,
+) -> bool:
+    repo = session_context._default_repository
+    if repo._pool is None:
+        try:
+            row = repo._context_by_id(context.context_id)
+        except Exception:
+            row = None
+        if row is not None and (
+            row.session_id != context.session_id
+            or row.owner_type != context.owner_type
+            or row.owner_id != context.owner_id
+            or row.generation != context.generation
+            or thread_id not in row.threads
+        ):
+            raise RuntimeError("session thread is not registered")
+        states = _memory_adoptions(repo)
+        current = states.get((context.context_id, thread_id))
+        if current is not None and current[0] == "complete":
+            return False
+        states[(context.context_id, thread_id)] = ("copying", legacy_owner_id)
+        return True
+    async with repo._pool.connection() as conn:
+        row = await (
+            await conn.execute(
+                """
+                UPDATE chat_session_threads t
+                SET adoption_status = CASE
+                        WHEN t.adoption_status='complete' THEN 'complete'
+                        ELSE 'copying'
+                    END,
+                    legacy_owner_type = CASE
+                        WHEN t.adoption_status='complete' THEN t.legacy_owner_type
+                        WHEN %s = c.owner_id THEN c.owner_type
+                        ELSE 'guest'
+                    END,
+                    legacy_owner_id = CASE
+                        WHEN t.adoption_status='complete' THEN t.legacy_owner_id
+                        ELSE %s
+                    END
+                FROM chat_session_contexts c
+                WHERE t.context_id=c.context_id AND t.context_id=%s AND t.thread_id=%s
+                  AND c.session_id=%s AND c.owner_type=%s AND c.owner_id=%s
+                  AND c.generation=%s
+                RETURNING t.adoption_status
+                """,
+                (
+                    legacy_owner_id,
+                    legacy_owner_id,
+                    context.context_id,
+                    thread_id,
+                    context.session_id,
+                    context.owner_type,
+                    context.owner_id,
+                    context.generation,
+                ),
+            )
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("session thread is not registered")
+        status = _column(row, 0, "adoption_status")
+        return status != "complete"
+
+
+async def _complete_adoption(context_id: str, thread_id: str) -> None:
+    repo = session_context._default_repository
+    if repo._pool is None:
+        states = _memory_adoptions(repo)
+        status = states.get((context_id, thread_id))
+        if status is None:
+            raise RuntimeError("adoption was not started")
+        states[(context_id, thread_id)] = ("complete", status[1])
+        return
+    async with repo._pool.connection() as conn:
+        row = await (
+            await conn.execute(
+                """
+                UPDATE chat_session_threads
+                SET adoption_status='complete'
+                WHERE context_id=%s AND thread_id=%s AND adoption_status='copying'
+                RETURNING context_id
+                """,
+                (context_id, thread_id),
+            )
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("adoption was not started")
+
+
+async def _resolve_context_and_legacy_owner(
+    context_id: str,
+    thread_id: str,
+    current_owner_id: str,
+) -> tuple[SessionContext, str]:
+    repo = session_context._default_repository
+    if repo._pool is None:
+        try:
+            row = repo._context_by_id(context_id)
+        except Exception:
+            # ConversationStore의 인메모리 lifecycle authority는 테스트 격리를 위해
+            # 모듈 기본 repository와 분리된다. PostgreSQL 운영 경로에는 이 fallback이 없다.
+            return (
+                SessionContext(context_id, "", "member", current_owner_id, 0, "active"),
+                current_owner_id,
+            )
+        if thread_id not in row.threads or row.owner_id != current_owner_id:
+            raise RuntimeError("session context owner or thread mismatch")
+        history = repo._owner_claims.get(row.session_id)
+        legacy_owner = (
+            history[0]
+            if row.owner_type == "member" and history is not None and history[1] == current_owner_id
+            else current_owner_id
+        )
+        return (
+            SessionContext(
+                row.context_id,
+                row.session_id,
+                row.owner_type,
+                row.owner_id,
+                row.generation,
+                row.state,
+            ),
+            legacy_owner,
+        )
+    async with repo._pool.connection() as conn:
+        row = await (
+            await conn.execute(
+                """
+                SELECT c.context_id, c.session_id, c.owner_type, c.owner_id,
+                       c.generation, c.state, h.from_owner_id, h.to_owner_id
+                FROM chat_session_contexts c
+                JOIN chat_session_threads t USING (context_id)
+                LEFT JOIN chat_session_owner_claims h USING (context_id, session_id)
+                WHERE c.context_id=%s AND t.thread_id=%s AND c.owner_id=%s
+                """,
+                (context_id, thread_id, current_owner_id),
+            )
+        ).fetchone()
+    if row is None:
+        raise RuntimeError("session context owner or thread mismatch")
+    context = SessionContext(
+        str(_column(row, 0, "context_id")),
+        _column(row, 1, "session_id"),
+        _column(row, 2, "owner_type"),
+        _column(row, 3, "owner_id"),
+        int(_column(row, 4, "generation")),
+        _column(row, 5, "state"),
+    )
+    from_owner_id = _column(row, 6, "from_owner_id")
+    to_owner_id = _column(row, 7, "to_owner_id")
+    legacy_owner = (
+        str(from_owner_id)
+        if context.owner_type == "member"
+        and from_owner_id is not None
+        and to_owner_id == current_owner_id
+        else current_owner_id
+    )
+    return context, legacy_owner
+
+
+async def adopt_legacy_thread(
+    context: SessionContext,
+    thread_id: str,
+    legacy_owner_id: str,
+) -> AdoptionResult:
+    adoption_key = context_thread_key(context.context_id, thread_id)
+    legacy_key = f"{legacy_owner_id}:{thread_id}"
+    async with _lock_for(adoption_key):
+        try:
+            if not await _begin_adoption(context, thread_id, legacy_owner_id):
+                return AdoptionResult(False)
+            store = await pg_store.get_store()
+            scalar_specs = (
+                (_LEGACY_FILTER_ROOT, _FILTER_ROOT, _FILTERS_KEY),
+                (_LEGACY_CART_ROOT, _CART_ROOT, _PENDING_KEY),
+                (_LEGACY_CART_ROOT, _CART_ROOT, _LAST_RECO_KEY),
+            )
+            intended: list[tuple[str, str, object | None]] = []
+            copied = 0
+            copy_legacy_names = False
+            for legacy_root, target_root, name in scalar_specs:
+                target = await _item(store, target_root, adoption_key, name)
+                legacy = await _item(store, legacy_root, legacy_key, name)
+                value = (
+                    target.value
+                    if target is not None
+                    else (legacy.value if legacy is not None else None)
+                )
+                if target is None and legacy is not None:
+                    await run_with_query_timeout(
+                        store.aput((target_root, adoption_key), name, legacy.value)
+                    )
+                    copied += 1
+                    copy_legacy_names = name == _LAST_RECO_KEY
+                intended.append((target_root, name, value))
+            target_revert = await _item(store, _REVERT_ROOT, adoption_key, _CATEGORIES_KEY)
+            legacy_revert = await _item(store, _LEGACY_REVERT_ROOT, legacy_key, _CATEGORIES_KEY)
+            categories = sorted(
+                set(target_revert.value[_CATEGORIES_KEY] if target_revert else ())
+                | set(legacy_revert.value[_CATEGORIES_KEY] if legacy_revert else ())
+            )
+            revert_value = {_CATEGORIES_KEY: categories} if categories else None
+            if revert_value is not None and (
+                target_revert is None or target_revert.value != revert_value
+            ):
+                await run_with_query_timeout(
+                    store.aput(
+                        (_REVERT_ROOT, adoption_key),
+                        _CATEGORIES_KEY,
+                        revert_value,
+                    )
+                )
+                copied += 1
+            intended.append((_REVERT_ROOT, _CATEGORIES_KEY, revert_value))
+            if copy_legacy_names:
+                names = cart_state._last_reco_names.get(legacy_key)
+                if names is not None:
+                    cart_state._last_reco_names[adoption_key] = dict(names)
+            for target_root, name, expected in intended:
+                actual = await _item(store, target_root, adoption_key, name)
+                if (actual.value if actual is not None else None) != expected:
+                    raise RuntimeError(f"adoption verification failed for {target_root}/{name}")
+            deleted = 0
+            for legacy_root, _, name in scalar_specs:
+                deleted += await _delete(store, legacy_root, legacy_key, name)
+            deleted += await _delete(store, _LEGACY_REVERT_ROOT, legacy_key, _CATEGORIES_KEY)
+            cart_state._last_reco_names.pop(legacy_key)
+            await _complete_adoption(context.context_id, thread_id)
+            return AdoptionResult(True, copied, deleted)
+        except SessionStateUnavailable:
+            raise
+        except Exception as exc:
+            raise SessionStateUnavailable from exc
+
+
+async def ensure_thread_adopted(
+    context_id: str,
+    thread_id: str,
+    current_owner_id: str,
+) -> AdoptionResult:
+    try:
+        context, legacy_owner = await _resolve_context_and_legacy_owner(
+            context_id, thread_id, current_owner_id
+        )
+        return await adopt_legacy_thread(context, thread_id, legacy_owner)
+    except SessionStateUnavailable:
+        raise
+    except Exception as exc:
+        raise SessionStateUnavailable from exc

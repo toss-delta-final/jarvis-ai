@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from contextlib import asynccontextmanager
 
 import pytest
 from langgraph.store.postgres.aio import AsyncPostgresStore
@@ -21,9 +22,12 @@ from app.agents.buyer.cart import state as cart_state
 from app.agents.buyer.cart.state import CartStateStore, PendingAdd
 from app.agents.buyer.graph import ThreadFilterStore
 from app.agents.buyer.recommendation.state import RevertStore
+from app.agents.buyer.session_state import adopt_legacy_thread, clear_context, context_thread_key
 from app.core import pg_store as pg_store_module
+from app.core import session_context
 from app.core.config import get_settings
 from app.core.pg_resilience import hardened_pg_conninfo, state_store_pool_config
+from app.core.session_context import SessionContext
 from app.schemas.spring import CartOption, ProductSearchFilters
 
 pytestmark = pytest.mark.integration
@@ -88,6 +92,93 @@ async def test_revert_store_accumulates_categories(pg_store) -> None:
     await wrapper.add(key, ["조미료"])
     await wrapper.add(key, ["세제"])
     assert await wrapper.get(key) == {"조미료", "세제"}
+
+
+async def test_context_cleanup_removes_only_selected_v2_thread(pg_store) -> None:
+    context_id = uuid.uuid4().hex
+    target = context_thread_key(context_id, "target")
+    other = context_thread_key(context_id, "other")
+    filters = ThreadFilterStore(pg_store)
+    cart = CartStateStore(pg_store)
+    revert = RevertStore(pg_store)
+    await filters.put(target, ProductSearchFilters(category="삭제"))
+    await filters.put(other, ProductSearchFilters(category="보존"))
+    await cart.set_last_reco(target, [(1, "삭제")])
+    await cart.set_last_reco(other, [(2, "보존")])
+    await cart.set_pending(target, PendingAdd(product_id=1, quantity=1))
+    await revert.add(target, ["A"])
+    await revert.add(other, ["B"])
+    pg_store_module.set_store(pg_store)
+
+    counts = await clear_context(context_id, ["target"])
+
+    assert counts.filters == counts.pending == counts.last_recommendation == 1
+    assert counts.local_names == counts.revert == 1
+    assert await filters.get(target) is None
+    assert (await filters.get(other)).category == "보존"
+    assert await cart.get_last_reco(other) == [(2, "보존")]
+    assert await revert.get(other) == {"B"}
+
+
+async def test_verified_adoption_marks_complete_after_legacy_keys_are_deleted(pg_store) -> None:
+    context_id = str(uuid.uuid4())
+    session_id = f"it-session-{uuid.uuid4().hex}"
+    thread_id = "thread"
+    legacy_owner = f"guest-{uuid.uuid4().hex}"
+    legacy_key = f"{legacy_owner}:{thread_id}"
+    target_key = context_thread_key(context_id, thread_id)
+    conn = pg_store.conn.connection
+    await conn.execute(
+        """
+        INSERT INTO chat_session_contexts
+            (context_id, session_id, owner_type, owner_id, state)
+        VALUES (%s, %s, 'guest', %s, 'active')
+        """,
+        (context_id, session_id, legacy_owner),
+    )
+    await conn.execute(
+        "INSERT INTO chat_session_threads (context_id, thread_id) VALUES (%s, %s)",
+        (context_id, thread_id),
+    )
+    await pg_store.aput(
+        ("buyer_thread_filters", legacy_key),
+        "filters",
+        {"category": "legacy"},
+    )
+    await pg_store.aput(
+        ("buyer_revert", legacy_key),
+        "categories",
+        {"categories": ["A"]},
+    )
+    await RevertStore(pg_store).add(target_key, ["B"])
+    pg_store_module.set_store(pg_store)
+
+    class _ConnectionAdapter:
+        @asynccontextmanager
+        async def connection(self):
+            yield conn
+
+    session_context.set_pool(_ConnectionAdapter())
+    context = SessionContext(context_id, session_id, "guest", legacy_owner, 0, "active")
+    try:
+        result = await adopt_legacy_thread(context, thread_id, legacy_owner)
+
+        status = await (
+            await conn.execute(
+                "SELECT adoption_status FROM chat_session_threads "
+                "WHERE context_id=%s AND thread_id=%s",
+                (context_id, thread_id),
+            )
+        ).fetchone()
+        assert result.adopted
+        assert status["adoption_status"] == "complete"
+        assert (await ThreadFilterStore(pg_store).get(target_key)).category == "legacy"
+        assert await RevertStore(pg_store).get(target_key) == {"A", "B"}
+        assert await pg_store.aget(("buyer_thread_filters", legacy_key), "filters") is None
+        assert await pg_store.aget(("buyer_revert", legacy_key), "categories") is None
+    finally:
+        await conn.execute("DELETE FROM chat_session_contexts WHERE context_id=%s", (context_id,))
+        session_context.reset()
 
 
 async def test_revert_store_add_concurrent_calls_no_lost_update(pg_store) -> None:

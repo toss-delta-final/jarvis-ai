@@ -178,5 +178,8 @@ class BoundedLRUCache(Generic[_K, _V]):
         self._data[key] = value
         return value
 
+    def pop(self, key: _K) -> _V | None:
+        return self._data.pop(key, None)
+
     def clear(self) -> None:
         self._data.clear()

@@ -1145,6 +1145,18 @@ async def test_general_intent_clears_pending(monkeypatch: pytest.MonkeyPatch) ->
     assert await cart_store.get_pending(key) is None  # 정리됨
 
 
+def test_local_recommendation_cache_pop_removes_only_requested_key() -> None:
+    from app.core.pg_resilience import BoundedLRUCache
+
+    cache = BoundedLRUCache[str, str](max_entries=2)
+    cache["context-a:thread"] = "a"
+    cache["context-b:thread"] = "b"
+
+    assert cache.pop("context-a:thread") == "a"
+    assert cache.pop("missing") is None
+    assert cache.get("context-b:thread") == "b"
+
+
 # ─────────── #18 리뷰 수정 회귀 ───────────
 
 

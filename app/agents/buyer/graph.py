@@ -36,12 +36,15 @@ from app.agents.profile.gate import is_remember_command
 from app.agents.profile.reader import read_profile_summary
 from app.agents.profile.store import get_profile_store
 from app.core import pg_store
+from app.api.deps import buyer_owner_id
 from app.core.config import get_settings
 from app.core.conversation import conversation_key
 from app.core.errors import new_request_id
 from app.core.llm import LLMError, get_llm, resolve_model_id
 from app.core.pg_resilience import run_with_query_timeout
+from app.core.session_context import SessionStateUnavailable
 from app.core.text import _strip_unsafe
+from app.agents.buyer.session_state import context_thread_key, ensure_thread_adopted
 from app.agents.buyer.recommendation.state import CartIntent, CategoryQuery
 from app.schemas.chat import DoneData, ErrorData
 from app.schemas.spring import ProductSearchFilters
@@ -49,7 +52,7 @@ from app.services import search_service, spring_client
 
 logger = logging.getLogger(__name__)
 
-_NAMESPACE_ROOT = "buyer_thread_filters"
+_NAMESPACE_ROOT = "buyer_thread_filters_v2"
 _FILTERS_KEY = "filters"
 
 
@@ -109,6 +112,21 @@ async def run_buyer_turn(
     resolved_request_id = cast(
         str, request_id or getattr(observer, "request_id", None) or new_request_id()
     )
+    if observer is not None and hasattr(observer, "context_id"):
+        context_id = getattr(observer, "context_id", None)
+        if not context_id:
+            raise SessionStateUnavailable
+        await ensure_thread_adopted(
+            context_id,
+            request.thread_id,
+            buyer_owner_id(identity, settings),
+        )
+        thread_key = context_thread_key(context_id, request.thread_id)
+    else:
+        # 직접 그래프를 구동하는 기존 단위 테스트 호환 경로다. 실제 buyer 스트림은
+        # accepted-turn commit이 채운 observer를 항상 전달하므로 이 분기를 사용하지 않는다.
+        subject = identity.user_id or identity.subject
+        thread_key = context_thread_key(str(subject), request.thread_id)
     llm = llm or get_llm()
     if llm is None:
         yield sse(
@@ -124,9 +142,7 @@ async def run_buyer_turn(
     search = search or search_service.search_catalog
     push_fn = push_fn or spring_client.push_recommendations
 
-    # 멀티턴 누적 필터 로드 (신원 스코프 키)
-    subject = identity.user_id or identity.subject
-    thread_key = conversation_key(subject, request.thread_id)
+    # 멀티턴 누적 필터 로드 (세션 context 스코프 키)
     thread_store = await get_thread_store()
     prior = await thread_store.get(thread_key)
 
