@@ -19,8 +19,8 @@ canonical 카테고리만** 나가게 한다.
 데이터·검색 부품은 이미 구현·검증됨(커밋 `4c64d9b`, `157569a`):
 - `categories` 테이블(pg-catalog, 2056 leaf + 임베딩) — 시드 완료.
 - `category_search.search_categories_pg` — pgvector `<=>` + HNSW top-k/최근접.
-- `category_select.select_category` — 방식 B용 LLM 택일. **방식 A 채택으로 메인 경로 미사용**
-  (삭제하지 않고 예비 유지).
+- `category_select.select_category` — 방식 B용 LLM 택일. 방식 A 채택으로 메인 경로 미사용이었으나
+  **[2026-07-30 #115] 마진 얇을 때만 조건부 배선**(§4.4) — 예비로 남겨둔 것이 값을 했다.
 
 본 문서는 이 부품들을 **buyer 추천 흐름(`decompose` + graph)에 배선**하는 설계다.
 
@@ -113,8 +113,8 @@ category-agnostic 질의**("5만원 이하 아무거나")는 카테고리를 강
   따라서 임계는 config 튜너블로 두고(§10) 거리·마진을 로그로 상시 관측한다(§11).
 - **마진컷(1·2위 거리차)은 드롭 조건으로 도입하지 않는다**: `양말`은 1위 `패션잡화 > 양말`(0.1435)
   2위 `브랜드 잡화/소품 > 양말`(0.1523)로 마진 0.0088 이지만 **둘 다 정답**이다. 얇은 마진은
-  "틀렸다"가 아니라 "애매하다"의 신호라 드롭 조건으로 쓰면 정답을 버린다. 관측만 하고(§11),
-  후속 top-k 택일의 **트리거**로만 재사용한다.
+  "틀렸다"가 아니라 "애매하다"의 신호라 드롭 조건으로 쓰면 정답을 버린다. 대신 **top-k 택일의
+  트리거**로 쓴다(§4.4).
 - **거리컷은 §6 구체 상품 전개와 짝**이다 — 구체 상품 앵커는 전부 0.22 미만이므로, 거리컷은 사실상
   "전개가 제대로 됐는지" 판정하는 게이트로 동작한다. 순서 의존: 앵커가 발화·구체 상품이 되기 전에
   거리컷만 켜면 수식어가 붙은 정답(`갓성비 무선이어폰` 0.2566, 정답)까지 드롭된다.
@@ -205,6 +205,39 @@ query 는 발화에 묶여 안정적이라, query 우선이면 raw 흔들림이 
 `asyncio.gather` 병렬이다(§6). raw 조회를 유지하는 이유는 query 히트 0건·조회 실패 시의 폴백이며,
 `category_top_k` 조회 1회 비용으로 canonical 을 하나라도 살릴 값이 있다. LLM 호출은 종전대로
 0회 — `llm_call_limit=2` 유지(§12).
+
+### 4.4 마진 트리거 top-k 택일 ([2026-07-30 #115] 방식 B 예비 조건부 배선)
+
+거리컷(§4)이 못 막는 잔여 구멍이 있다. **추상 라벨이 leg query 로 들어오면 거리는 가까운데(컷 통과)
+뜻이 틀린다** — 실측: `'선물용품'` → `취미 > 수집용품` **거리 0.2074(<0.22 통과) / 마진 0.0095**.
+거리로는 잡을 수 없고, 마진으로는 잡히지만 마진 드롭은 `양말`류 정답을 오탐한다(§4.0).
+
+따라서 **마진이 얇을 때만** `category_select.select_category`(§8 방식 B 예비 구현, 종전 미배선)를
+호출해 top-k 후보 중에서 고르게 한다. 드롭이 아니라 **택일**이므로 `양말` 오탐이 무해해진다 —
+1·2위가 둘 다 정답인 경우 LLM 이 어느 쪽을 골라도 맞다.
+
+- **트리거**: 채택 거리가 거리컷을 통과하고 **마진 ≤ `category_select_margin_max`**(§10) 일 때만.
+  마진이 None(히트 1건)이면 비교 대상이 없으므로 호출하지 않는다.
+- **입력**: 후보는 그 leg 를 이긴 앵커의 top-k 전체. 질의 문자열은 `"{발화} / 찾는 상품: {앵커}"` —
+  발화만 주면 멀티 leg 에서 leg 정체성이 사라지고(모든 leg 가 같은 질문을 받는다), 앵커만 주면
+  `'선물용품'` 처럼 정보가 없는 라벨일 때 판단 근거가 없다. 둘 다 준다.
+- **결과**: 후보 중 하나를 고르면 그 canonical 채택(거리는 후보 목록에서 되찾아 로그에 남긴다).
+  **택일 결과에도 거리컷(§4)을 다시 적용한다** — top-k 안에서 골랐어도 top-1 보다 먼 후보일 수 있고
+  (실측: `'선물용품'` top-1 `취미 > 수집용품` 0.2074 통과 → LLM 이 `도서/음반 > 독서용품` 0.2292 선택),
+  그건 "가까운 칸이 없다"는 뜻이라 억지 채택보다 드롭이 맞다. 즉 컷은 택일 **전(트리거 조건)·후
+  (최종 채택)** 두 번 걸린다.
+- **로그**: 교체가 없어도(top-1 확정) `category_selected`(`changed=false`)를 남긴다 — "택일이 돌아
+  확정했다"와 "트리거가 안 됐다"를 사후에 구분하지 못하면 트리거 임계를 재튜닝할 근거가 없다.
+  실측 `'양말'`(마진 0.0088)에서 LLM 이 top-1 을 골라 로그가 비었던 것이 이 구멍이었다.
+  **`null`(맞는 후보 없음)이면 그 leg 를 드롭**한다 — `'선물용품'` 의 후보(`취미 > 수집용품`·
+  `종교용품`·`독서용품`·`파티용품`·`마스크 용품`)에 "부모님 환갑 선물"에 맞는 칸이 없으므로 이 경로가
+  정답이다. membership 가드가 이미 있어 후보 밖 환각은 None 으로 떨어진다(§8).
+- **실패 degrade**: LLM 오류·타임아웃·파싱 실패는 `select_category` 가 None 을 돌려주는데, 이때
+  **드롭이 아니라 임베딩 top-1 을 유지**한다. 인프라 실패로 카테고리를 잃으면 종전보다 후퇴이기
+  때문이다("맞는 후보 없음"과 "판정 실패"를 구분해야 하므로 호출 성공 여부를 별도로 본다).
+- **LLM 예산**: 애매한 leg 수만큼 조건부로 늘어난다(최대 `category_fanout_max`). 동시 실행하되
+  상한을 `category_select_max_calls`(§10)로 둔다 — 상한 초과 leg 는 임베딩 top-1 을 그대로 쓴다.
+  §12 예산 항목을 이에 맞춰 개정한다.
 
 ## 5. 실패 degrade — leg 단위 격리 (canonical-or-null, PR #73 #20·리뷰)
 
@@ -319,7 +352,7 @@ decompose 프롬프트("PRIOR_FILTERS 병합")로도 유도하지만(#10a), Haik
 | `category_search.exact_lookup` (신규) | 완료 | ② exact match(`WHERE category = ANY(...)`) |
 | `category_search.rank_categories` | 완료 | 오프라인 랭킹(유닛) |
 | `category_seed.*` | 완료 | 사전 시드(빌드) |
-| `category_select.select_category` | 완료·**미사용 예비** | 방식 B용. 삭제 않고 예비 유지. |
+| `category_select.select_category` | 완료·**조건부 배선(#115)** | 마진 ≤ `category_select_margin_max` 인 leg 만 top-k 택일(§4.4). null 이면 leg 드롭, LLM 실패 시 임베딩 top-1 유지. |
 | **`category_mapping.map_categories`** (신규) | 완료 · **#115 개정 대상** | ② 추측→보정 오케스트레이션(embed·search·exact 주입형). **raw·query 병행 앵커(§4.3) + 거리컷(§4)** — 종전 never-null·raw 우선은 폐기. **(canonical, query) leg 반환** — leg keyword 보존(§6). |
 | **`decompose` 수정** | 완료 | `categoryQueries` 산출(§9), `filters.category` 제거. |
 | **buyer `graph` 수정** | 완료 | recommend 분기에서 `map_categories` 호출 → `decision.category_legs`, 대표 canonical → `filters.category`. |
@@ -359,6 +392,8 @@ decompose 프롬프트("PRIOR_FILTERS 병합")로도 유도하지만(#10a), Haik
 | `category_fanout_merge_cap` | 30 | 병합 후 rerank 입력 상한 |
 | `category_search_pool_max_size` | 10 | pg-catalog 검색 풀 max_size(fan-out 동시성 ≥ fanout, PR #73 리뷰) |
 | `category_distance_max` | **0.22** | **[#115]** 채택 상한 — 최근접 코사인 거리가 이를 넘으면 그 leg 드롭(§4) |
+| `category_select_margin_max` | **0.02** | **[#115]** 마진(2위−1위)이 이 값 이하면 top-k LLM 택일(§4.4) |
+| `category_select_max_calls` | **2** | **[#115]** 턴당 택일 LLM 호출 상한 — 초과 leg 는 임베딩 top-1 유지(§4.4) |
 
 **절단 튜너블 불변식(PR #73 리뷰):** `category_fanout_max`·`category_fanout_per_cat_limit`·
 `category_fanout_merge_cap` 은 모두 slice 절단(`out[:cap]`·AI top-K)에 쓰이므로 `Field(ge=0)` 로
@@ -392,8 +427,12 @@ decompose 프롬프트("PRIOR_FILTERS 병합")로도 유도하지만(#10a), Haik
 - 거리컷 드롭은 **별 이벤트 `category_distance_rejected`**(raw·query·distance·top1 후보)로 남긴다 —
   기존 `category_unmapped`(히트 0건, 시드 결측 신호)와 섞으면 품질 메트릭이 오염된다(§5 격리 규약과
   동일 취지).
-- **마진은 드롭 조건이 아니라 관측값**이다(§4.0). 축적된 분포로 (a) `category_distance_max` 재튜닝,
-  (b) 후속 top-k 택일(§8 예비 `select_category`)의 트리거 임계를 정한다.
+- **마진은 드롭 조건이 아니라 택일 트리거**다(§4.0·§4.4). 축적된 분포로 `category_distance_max`·
+  `category_select_margin_max` 를 재튜닝한다.
+- **택일(§4.4) 로그**: `category_selected`(택일로 canonical 이 바뀜 — before/after·거리·마진) /
+  `category_select_null`(후보 중 맞는 것 없음 → leg 드롭) / `category_select_unavailable`(LLM 미구성·
+  호출 상한 초과 등으로 택일을 못 해 임베딩 top-1 유지). "맞는 후보 없음"(드롭)과 "판정 실패"
+  (top-1 유지)는 후속 조치가 반대라 반드시 분리한다.
 
 ## 12. 계약·비범위
 
@@ -401,9 +440,13 @@ decompose 프롬프트("PRIOR_FILTERS 병합")로도 유도하지만(#10a), Haik
   products.ready={sessionId,listId}, groups 없음). api-spec 개정 불필요.
   **[#115 확인]** 거리컷 드롭도 `categoryName` 을 생략(null)하는 것뿐이라 계약 안에 있다 —
   api-spec 의 `categoryName` 은 `string | null` · 필수 아님(§4.6 I-1). **api-spec 개정 불필요**.
-- **LLM 예산**: decompose 1 + rerank 1 = 2회. 매핑은 LLM 0회 → `llm_call_limit=2` 유지.
-  **[#115]** §4.3 앵커 병행·§4 거리컷·§6.0 구체 상품 전개 모두 LLM 호출을 늘리지 않는다(전개는
-  기존 decompose 1회 안에서 프롬프트로 처리). 후속 top-k 택일(§8 예비)만 예산에 영향이 있어 별건.
+- **LLM 예산**: 기본 decompose 1 + rerank 1 = 2회. §4.3 앵커 병행·§4 거리컷·§6.0 구체 상품 전개는
+  LLM 호출을 늘리지 않는다(전개는 기존 decompose 1회 안에서 프롬프트로 처리).
+  **[#115 개정]** §4.4 마진 트리거 택일만 **조건부로** 추가된다 — 애매한 leg(마진 ≤ 임계)당 fast tier
+  1회, 상한 `category_select_max_calls`. 즉 예산은 `2 + min(애매한 leg 수, category_select_max_calls)`
+  이며 `llm_call_limit=2` 는 **애매한 leg 이 없는 정상 경로의 값**으로 재해석한다(코드 강제 아님 —
+  관측·문서용 값). 상한을 두는 이유는 fan-out 5 leg 이 모두 애매할 때 턴당 LLM 이 7회로 뛰는 것을
+  막기 위함이다.
 - **비범위**: Case 3 기능(ShoppingItem·priority·예산·groups), `categoryId` 전환, 사전 자동
   재동기화(Spring↔사전 drift), alias/active 사전.
 
@@ -416,7 +459,9 @@ decompose 프롬프트("PRIOR_FILTERS 병합")로도 유도하지만(#10a), Haik
   (b) **앵커 병행(§4.3)** — raw·query 가 각각 다른 canonical 을 내는 fake 에서 **더 가까운 쪽**이
   채택되는지(raw 가 이기는 경우·query 가 이기는 경우 양방향), exact 는 거리 비교 없이 최우선인지.
   (c) 로그 payload 에 `distance`·`margin`·`anchor_kind` 가 실리는지. fake search 가 거리를 함께
-  반환하도록 시그니처 변경 반영.
+  반환하도록 시그니처 변경 반영. (d) **택일(§4.4)** — 마진 얇으면 호출·두꺼우면 미호출, 후보 선택 시
+  canonical 교체, null 이면 leg 드롭, LLM 미구성/상한 초과/예외면 top-1 유지, 호출 상한 준수.
+  select_category 는 주입형 fake 로 대체(LLM 없이 검증).
 - **유닛**(`test_decompose.py`): `categoryQueries` 파싱(단일/멀티/누락/null/절단).
 - **유닛**(`test_recommendation.py` 확장): fan-out 병렬·병합·dedup·merge_cap, 일부 leg 실패,
   전량 실패→SEARCH_FAILED, 단일=기존 경로.

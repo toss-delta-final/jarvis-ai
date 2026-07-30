@@ -16,8 +16,9 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 
+from app.agents.buyer.recommendation.category_select import select_category as _select_category
 from app.agents.buyer.recommendation.state import CategoryQuery
 from app.pipelines.category_search import exact_lookup as _exact_lookup
 from app.pipelines.category_search import search_categories_pg as _search_top_k
@@ -28,6 +29,7 @@ logger = logging.getLogger(__name__)
 EmbedFn = Callable[[list[str]], list[list[float]]]
 SearchFn = Callable[..., list[tuple[str, float]]]  # (category, distance) 오름차순 (#115)
 ExactFn = Callable[[Sequence[str], str], set[str]]
+SelectFn = Callable[..., Awaitable[str | None]]  # top-k 택일(§4.4 #115) — 후보 밖이면 None
 
 # 채택 후보 = (canonical, 채택 거리, 마진) — 마진은 히트 1건이면 None(§11 #115)
 _Picked = tuple[str, float, float | None]
@@ -70,6 +72,9 @@ async def map_categories(
     embed: EmbedFn | None = None,
     search_top_k: SearchFn = _search_top_k,
     exact_lookup: ExactFn = _exact_lookup,
+    llm=None,
+    tier: str = "fast",
+    select_category: SelectFn = _select_category,
 ) -> list[tuple[str, str | None]]:
     """decompose 추측들을 canonical (category, query) leg 리스트로 보정한다.
 
@@ -121,6 +126,8 @@ async def map_categories(
         if (raws[i] and raws[i] not in exact) or (not raws[i] and qtexts[i])
     ]
     nearest: dict[int, _Winner] = {}
+    candidates_by_leg: dict[int, list[tuple[str, float]]] = {}  # 택일 후보(§4.4)
+    anchor_by_leg: dict[int, str] = {}  # 이긴 앵커 텍스트(택일 질의 조립용, §4.4)
     failed_idx: set[int] = set()  # 조회가 예외로 실패한 leg — category_unmapped(품질) 오염 방지
     try:
         # 앵커: leg 마다 raw(LLM 추측)·query(발화 유래) **둘 다** 조회하되 **query 우선** 채택하고,
@@ -161,11 +168,15 @@ async def map_categories(
             picked = _top1_with_margin(hits)
             if picked is None:
                 continue  # 히트 0건 — 이 앵커는 후보 없음(leg 판정은 아래 unmapped 로)
-            by_leg.setdefault(leg_i, {})[kind] = picked
+            by_leg.setdefault(leg_i, {})[kind] = (picked, list(hits), _text)
         # query 우선 — 거리 비교가 아니다(§4.3.1). raw 는 query 가 후보를 못 낸 leg 의 폴백.
         for leg_i, by_kind in by_leg.items():
             kind = "query" if "query" in by_kind else "raw"
-            nearest[leg_i] = (*by_kind[kind], kind)
+            picked, hit_list, anchor_text = by_kind[kind]
+            nearest[leg_i] = (*picked, kind)
+            # 택일(§4.4)에 넘길 후보·앵커 — 이긴 앵커의 top-k 전체를 그대로 쓴다.
+            candidates_by_leg[leg_i] = hit_list
+            anchor_by_leg[leg_i] = anchor_text
         # 실패 격리 단위가 leg→앵커로 내려갔다: 앵커 하나가 죽어도 다른 앵커가 canonical 을 냈으면
         # 그 leg 는 드롭하지 않는다(부분 성공 보존, §5). 전부 실패한 leg 만 failed 로 표시한다.
         failed_idx.update(i for i in errored if i not in nearest)
@@ -175,6 +186,88 @@ async def map_categories(
         # need_idx(임베딩 필요) leg 는 전부 실패로 표시 → canonical 없이 드롭된다(PR #73 리뷰).
         logger.warning("category_embed_failed", extra={"reason": str(exc)})
         failed_idx.update(need_idx)
+
+    # ── §4.4 마진 트리거 top-k 택일 (#115) ────────────────────────────────────────────
+    # 거리컷이 못 막는 구멍: 추상 라벨은 거리는 가까운데(0.2074 < 컷) 뜻이 틀리다. 마진으로는
+    # 잡히지만 마진 드롭은 '양말'(1·2위 둘 다 정답)을 오탐하므로 드롭이 아니라 **택일**한다.
+    select_dropped: set[int] = set()  # 택일이 "맞는 후보 없음"을 낸 leg → canonical 없이 드롭
+    ambiguous = [
+        i
+        for i in sorted(nearest)
+        if nearest[i][1] <= distance_max  # 거리컷 통과분만(멀면 이미 버릴 leg)
+        and nearest[i][2] is not None  # 마진 None(히트 1건) = 비교 대상 없음 → 트리거 아님
+        and nearest[i][2] <= settings.category_select_margin_max
+    ]
+    # 턴당 상한 — fan-out 전 leg 이 애매하면 LLM 이 폭증한다. 초과분은 임베딩 top-1 유지(종전 동작).
+    max_calls = settings.category_select_max_calls
+    for i in ambiguous[max_calls:]:
+        logger.info(
+            "category_select_unavailable",
+            extra={"reason": "max_calls", "canonical": nearest[i][0], "margin": nearest[i][2]},
+        )
+    targets = ambiguous[:max_calls] if llm is not None else []
+    if llm is None and ambiguous:  # LLM 미구성 — 매핑을 LLM 에 종속시키지 않는다(top-1 유지)
+        for i in ambiguous:
+            logger.info(
+                "category_select_unavailable",
+                extra={"reason": "llm_unavailable", "canonical": nearest[i][0]},
+            )
+    if targets:
+        picks = await asyncio.gather(
+            *(
+                select_category(
+                    llm,
+                    # 발화 + 앵커를 둘 다 싣는다 — 발화만 주면 멀티 leg 이 같은 질문을 받아 leg
+                    # 정체성이 사라지고, 앵커만 주면 '선물용품' 같은 라벨은 판단 근거가 없다(§4.4).
+                    query=f"{utterance} / 찾는 상품: {anchor_by_leg[i]}",
+                    candidates=[c for c, _ in candidates_by_leg[i]],
+                    tier=tier,
+                )
+                for i in targets
+            ),
+            return_exceptions=True,
+        )
+        for i, pick in zip(targets, picks, strict=True):
+            top1, _dist, margin, kind = nearest[i]
+            if isinstance(pick, Exception):
+                # 판정 실패는 "맞는 후보 없음"과 다르다 — 인프라 실패로 카테고리를 잃으면 후퇴이므로
+                # 임베딩 top-1 을 유지한다(§4.4 실패 degrade).
+                logger.info(
+                    "category_select_unavailable",
+                    extra={"reason": str(pick), "canonical": top1, "margin": margin},
+                )
+                continue
+            if pick is None:
+                logger.info(
+                    "category_select_null",
+                    extra={"raw": raws[i], "query": qtexts[i], "top1": top1, "margin": margin},
+                )
+                select_dropped.add(i)
+                continue
+            chosen = {c: d for c, d in candidates_by_leg[i]}.get(pick)
+            if chosen is None:
+                # 후보 밖 값(주입 fake·환각) — select_category 의 membership 가드가 이미 막지만
+                # 주입형 seam 이라 방어한다. 미검증 값을 canonical 로 내보내지 않고 top-1 유지.
+                logger.warning(
+                    "category_select_unavailable", extra={"reason": "off_candidate", "pick": pick}
+                )
+                continue
+            # 교체가 없어도(top-1 확정) 남긴다 — "택일이 돌아 확정했다"와 "트리거가 안 됐다"를
+            # 사후에 구분할 수 없으면 트리거 임계를 재튜닝할 근거가 사라진다(§11).
+            logger.info(
+                "category_selected",
+                extra={
+                    "top1": top1,
+                    "canonical": pick,
+                    "changed": pick != top1,
+                    "distance": chosen,
+                    "margin": margin,
+                    "anchor_kind": kind,
+                },
+            )
+            # 택일 결과에도 거리컷을 다시 적용한다(아래 result 루프) — top-k 안에서 골랐어도 top-1
+            # 보다 먼 후보일 수 있고("선물용품" → 독서용품 0.2292), 그건 "가까운 칸이 없다"는 뜻이다.
+            nearest[i] = (pick, chosen, margin, kind)
 
     result: list[tuple[str, str | None]] = []
     for i, r in enumerate(raws):
@@ -203,6 +296,8 @@ async def map_categories(
                 },
             )
             continue
+        if i in select_dropped:
+            continue  # §4.4 택일이 "맞는 후보 없음" → 이미 category_select_null 로 관측됨
         if picked:
             canonical, distance, margin, anchor_kind = picked
             # 이벤트는 종전 정의(raw 유무)를 유지해 메트릭 연속성을 지키고, 실제로 canonical 을 낸

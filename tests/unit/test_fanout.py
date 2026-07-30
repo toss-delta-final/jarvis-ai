@@ -89,7 +89,7 @@ class _RecordingPush:
 
 
 def _two_leg_mapper():
-    async def _map(*, category_queries, utterance, settings):
+    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast"):
         return [("여행/캠핑 > 여행용품", "파우치"), ("가전 > 어댑터", "어댑터")]
 
     return _map
@@ -186,7 +186,7 @@ async def test_fanout_single_category_preserves_candidate_width() -> None:
         calls.append(filters)
         return _res(101, 102)
 
-    async def _one_leg(*, category_queries, utterance, settings):
+    async def _one_leg(*, category_queries, utterance, settings, llm=None, tier="fast"):
         return [("가전 > 이어폰/헤드폰", "무선 이어폰")]
 
     await _collect(
@@ -325,7 +325,7 @@ async def test_multiturn_prior_category_fed_to_decompose_prompt() -> None:
     async def _search(filters, exclude_product_ids=None):
         return _res(101)
 
-    async def _map_leg(*, category_queries, utterance, settings):
+    async def _map_leg(*, category_queries, utterance, settings, llm=None, tier="fast"):
         return [("여행 > 여행용품", "파우치")]
 
     llm = FakeLLM()
@@ -359,7 +359,7 @@ async def test_multiturn_prior_category_fed_to_decompose_prompt() -> None:
 async def test_mapper_failure_is_logged(caplog) -> None:
     """mapper() 예외 시 최후 방어 경로가 관측 로그를 남긴다(PR #73 #11 — 무로그 삼킴 방지)."""
 
-    async def _boom(*, category_queries, utterance, settings):
+    async def _boom(*, category_queries, utterance, settings, llm=None, tier="fast"):
         raise RuntimeError("boom")
 
     async def _search(filters, exclude_product_ids=None):
@@ -389,7 +389,7 @@ async def test_mapper_failure_degrades_to_null_not_raw() -> None:
         calls.append(filters.category)
         return _res(101)
 
-    async def _boom(*, category_queries, utterance, settings):
+    async def _boom(*, category_queries, utterance, settings, llm=None, tier="fast"):
         raise RuntimeError("mapper bug")
 
     d = {
@@ -419,7 +419,7 @@ def _garbage_mapper():
     매퍼는 신호 없는 턴엔 빈 legs 를 내지만(#22), 여기선 prior 승계를 또렷이 검증하려 garbage 를 쓴다.
     """
 
-    async def _map(*, category_queries, utterance, settings):
+    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast"):
         legs = [(q.raw_category, q.query) for q in category_queries if q.raw_category]
         return legs or [("매퍼우회검증_garbage카테고리", None)]
 
@@ -490,7 +490,7 @@ async def test_multiturn_new_situational_query_not_hijacked_by_prior() -> None:
         calls.append(filters.category)
         return _res(101)
 
-    async def _map(*, category_queries, utterance, settings):
+    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast"):
         # raw 있으면 그대로, null-raw+query 는 그 query 로 canonical 매핑(테스트용 lookup)
         qmap = {"여행 파우치": "여행 > 여행용품"}
         legs = []
@@ -552,7 +552,7 @@ async def test_empty_legs_clears_unvalidated_filters_category() -> None:
         calls.append(filters.category)
         return _res(101)
 
-    async def _map_empty(*, category_queries, utterance, settings):
+    async def _map_empty(*, category_queries, utterance, settings, llm=None, tier="fast"):
         return []  # 매핑 전량 실패(미시드·하드실패)
 
     # decompose 가 구식 습관으로 filters.category 를 echo

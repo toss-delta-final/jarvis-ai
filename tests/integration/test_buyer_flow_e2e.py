@@ -182,7 +182,7 @@ def test_mapped_category_overrides_decompose_into_search(client, spring, llm, mo
         "filters": {"category": "여행용품", "priceMax": 30000},
     }
 
-    async def _fake_map(*, category_queries, utterance, settings):
+    async def _fake_map(*, category_queries, utterance, settings, llm=None, tier="fast"):
         # 추측을 canonical 로 보정했다고 가정(never-null) — (canonical, query) leg 반환, 배선만 검증
         return [("캠핑용품", "캠핑 파우치")]
 

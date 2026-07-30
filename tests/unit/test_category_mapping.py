@@ -17,13 +17,20 @@ from app.agents.buyer.recommendation.state import CategoryQuery
 
 
 def _settings(
-    *, top_k: int = 5, fanout_max: int = 5, distance_max: float = 0.22
+    *,
+    top_k: int = 5,
+    fanout_max: int = 5,
+    distance_max: float = 0.22,
+    select_margin_max: float = 0.02,
+    select_max_calls: int = 2,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         catalog_db_url="postgresql://x",
         category_top_k=top_k,
         category_fanout_max=fanout_max,
         category_distance_max=distance_max,
+        category_select_margin_max=select_margin_max,
+        category_select_max_calls=select_max_calls,
         embedding_task_query="RETRIEVAL_QUERY",
     )
 
@@ -70,7 +77,10 @@ class _FakeMapper:
     def exact_lookup(self, values, dsn: str) -> set[str]:
         return {v for v in values if v in self._exact}
 
-    async def run(self, queries, utterance="발화", settings=None):
+    async def run(self, queries, utterance="발화", settings=None, *, select=None, llm=None):
+        kwargs = {}
+        if select is not None:  # §4.4 택일 주입(미지정이면 프로덕션 기본값 — llm=None 이면 미호출)
+            kwargs["select_category"] = select
         return await map_categories(
             category_queries=queries,
             utterance=utterance,
@@ -78,6 +88,8 @@ class _FakeMapper:
             embed=self.embed,
             search_top_k=self.search,
             exact_lookup=self.exact_lookup,
+            llm=llm,
+            **kwargs,
         )
 
 
@@ -363,6 +375,166 @@ async def test_partial_distance_cut_keeps_close_legs() -> None:
     )
     out = await m.run([CategoryQuery(None, "홍삼"), CategoryQuery(None, "선물 세트")])
     assert out == [("건강식품 > 홍삼", "홍삼")]
+
+
+class _FakeSelector:
+    """select_category 주입형 fake — 호출 인자를 기록하고 정해진 답(또는 예외)을 돌려준다."""
+
+    def __init__(self, *, answer: str | None = None, raises: bool = False):
+        self._answer = answer
+        self._raises = raises
+        self.calls: list[tuple[str, tuple[str, ...]]] = []  # (query, candidates)
+
+    async def __call__(self, llm, *, query, candidates, tier):
+        self.calls.append((query, tuple(candidates)))
+        if self._raises:
+            raise RuntimeError("llm down")
+        return self._answer
+
+
+_AMBIGUOUS = {  # '선물용품' 실측: 거리 0.2074(컷 통과) · 마진 0.0095(얇음) → 택일 트리거
+    "선물용품": [
+        ("취미 > 수집용품", 0.2074),
+        ("취미 > 종교용품", 0.2169),
+        ("도서/음반 > 독서용품", 0.2292),
+    ]
+}
+
+
+async def test_thin_margin_triggers_topk_select_and_replaces_canonical(caplog) -> None:
+    """마진이 얇으면 top-k 택일을 호출해 canonical 을 교체한다(§4.4 #115).
+
+    거리컷이 못 막는 잔여 구멍 — 추상 라벨은 거리는 가까운데(0.2074 < 0.22 통과) 뜻이 틀린다.
+    마진(0.0095)으로는 잡히지만 마진 드롭은 `양말`류 정답을 오탐하므로(§4.0), 드롭이 아니라
+    **택일**한다. 1·2위가 둘 다 정답인 경우엔 LLM 이 뭘 골라도 맞으니 오탐이 무해해진다.
+    """
+    sel = _FakeSelector(answer="취미 > 종교용품")
+    m = _FakeMapper(exact=set(), nearest={}, hits=_AMBIGUOUS)
+    with caplog.at_level("INFO"):
+        out = await m.run([CategoryQuery(None, "선물용품")], select=sel, llm=object())
+    assert out == [("취미 > 종교용품", "선물용품")]  # 임베딩 top-1(수집용품)이 택일로 교체됨
+    assert len(sel.calls) == 1
+    query, candidates = sel.calls[0]
+    # 후보는 그 앵커의 top-k 전체 / 질의에는 발화와 앵커를 모두 싣는다(멀티 leg 정체성 + 라벨 보강)
+    assert candidates == ("취미 > 수집용품", "취미 > 종교용품", "도서/음반 > 독서용품")
+    assert "선물용품" in query
+    rec = _record(caplog, "category_selected")
+    assert rec.canonical == "취미 > 종교용품"
+    assert rec.top1 == "취미 > 수집용품"
+
+
+async def test_thick_margin_does_not_call_select() -> None:
+    """마진이 두꺼우면 택일을 호출하지 않는다 — 조건부 LLM 예산(§4.4·§12)."""
+    sel = _FakeSelector(answer="아무거나")
+    m = _FakeMapper(
+        exact=set(),
+        nearest={},
+        hits={
+            "층간소음 방지 용품": [
+                ("생활잡화 > 층간소음방지용품", 0.0850),
+                ("자동차기기 > 방음/방진/마감재", 0.2411),
+            ]
+        },
+    )
+    out = await m.run([CategoryQuery(None, "층간소음 방지 용품")], select=sel, llm=object())
+    assert out == [("생활잡화 > 층간소음방지용품", "층간소음 방지 용품")]
+    assert sel.calls == []  # 마진 0.1561 → 트리거 안 됨
+
+
+async def test_select_confirming_top1_is_still_logged(caplog) -> None:
+    """택일이 top-1 을 그대로 확정해도 로그를 남긴다 — "확정"과 "미호출"을 구분해야 한다(§11).
+
+    실측 '양말'(마진 0.0088)에서 LLM 이 top-1 을 골랐는데 로그가 없어, 택일이 돈 것인지 트리거가
+    안 된 것인지 사후에 구분할 수 없었다. 트리거 임계 재튜닝이 이 구분에 의존한다.
+    """
+    sel = _FakeSelector(answer="패션잡화 > 양말")  # top-1 을 그대로 확정
+    m = _FakeMapper(
+        exact=set(),
+        nearest={},
+        hits={"양말": [("패션잡화 > 양말", 0.1435), ("브랜드 잡화/소품 > 양말", 0.1523)]},
+    )
+    with caplog.at_level("INFO"):
+        out = await m.run([CategoryQuery(None, "양말")], select=sel, llm=object())
+    assert out == [("패션잡화 > 양말", "양말")]  # 1·2위 둘 다 정답이라 어느 쪽이든 무해
+    rec = _record(caplog, "category_selected")
+    assert rec.changed is False  # 교체 없음 — 그래도 택일이 돌았다는 사실은 남는다
+
+
+async def test_selected_candidate_still_faces_distance_cut(caplog) -> None:
+    """택일이 고른 후보도 거리컷을 다시 통과해야 한다(§4·§4.4 결합).
+
+    실측 '선물용품'(top-1 0.2074 통과, 마진 0.0095)에서 LLM 이 `도서/음반 > 독서용품`(0.2292)을
+    골랐다 — top-k 안에서 고르더라도 top-1 보다 먼 후보일 수 있다. 그 경우 "가까운 칸이 없다"는
+    뜻이므로 억지로 채택하지 않고 드롭한다(거리컷을 택일 **이후** 값에 적용).
+    """
+    sel = _FakeSelector(answer="도서/음반 > 독서용품")
+    m = _FakeMapper(exact=set(), nearest={}, hits=_AMBIGUOUS)
+    with caplog.at_level("INFO"):
+        out = await m.run([CategoryQuery(None, "선물용품")], select=sel, llm=object())
+    assert out == []  # 0.2292 > 0.22 → 드롭
+    rec = _record(caplog, "category_distance_rejected")
+    assert rec.canonical == "도서/음반 > 독서용품"  # 택일 결과에 컷이 적용됐음이 로그로 보인다
+    assert rec.distance == 0.2292
+
+
+async def test_select_null_drops_leg(caplog) -> None:
+    """택일이 null(맞는 후보 없음)이면 그 leg 를 드롭한다(§4.4).
+
+    '선물용품' 의 후보에는 "부모님 환갑 선물"에 맞는 칸이 없다 — 억지로 `취미 > 수집용품` 을
+    보내는 것보다 카테고리를 빼고 semanticQuery 로 찾는 편이 낫다.
+    """
+    sel = _FakeSelector(answer=None)
+    m = _FakeMapper(exact=set(), nearest={}, hits=_AMBIGUOUS)
+    with caplog.at_level("INFO"):
+        out = await m.run([CategoryQuery(None, "선물용품")], select=sel, llm=object())
+    assert out == []
+    assert "category_select_null" in [r.msg for r in caplog.records]
+
+
+async def test_select_failure_keeps_embedding_top1(caplog) -> None:
+    """택일 LLM 이 예외로 죽으면 드롭하지 않고 임베딩 top-1 을 유지한다(§4.4 실패 degrade).
+
+    "맞는 후보 없음"(드롭)과 "판정 실패"(유지)는 후속 조치가 반대다 — 인프라 실패로 카테고리를
+    잃으면 종전보다 후퇴이므로, 예외는 top-1 유지로 흡수하고 별 이벤트로 관측한다.
+    """
+    sel = _FakeSelector(raises=True)
+    m = _FakeMapper(exact=set(), nearest={}, hits=_AMBIGUOUS)
+    with caplog.at_level("INFO"):
+        out = await m.run([CategoryQuery(None, "선물용품")], select=sel, llm=object())
+    assert out == [("취미 > 수집용품", "선물용품")]  # 임베딩 top-1 유지
+    assert "category_select_unavailable" in [r.msg for r in caplog.records]
+
+
+async def test_select_skipped_when_llm_not_configured() -> None:
+    """llm 미주입(미구성)이면 택일을 건너뛰고 임베딩 top-1 을 쓴다 — 매핑이 LLM 에 종속되지 않는다."""
+    sel = _FakeSelector(answer="취미 > 종교용품")
+    m = _FakeMapper(exact=set(), nearest={}, hits=_AMBIGUOUS)
+    out = await m.run([CategoryQuery(None, "선물용품")], select=sel, llm=None)
+    assert out == [("취미 > 수집용품", "선물용품")]
+    assert sel.calls == []
+
+
+async def test_select_calls_are_capped_per_turn(caplog) -> None:
+    """택일 호출은 category_select_max_calls 로 제한하고, 초과 leg 는 임베딩 top-1 을 유지한다.
+
+    fan-out 5 leg 이 모두 애매하면 턴당 LLM 이 7회로 뛴다 — 상한으로 막고 초과분은 종전 동작
+    (top-1)으로 흡수한다(§4.4 LLM 예산).
+    """
+    sel = _FakeSelector(answer=None)  # 호출되면 드롭 → 상한 준수 여부가 결과로 드러난다
+    ambiguous = {
+        f"라벨{i}": [(f"카테고리 > A{i}", 0.20), (f"카테고리 > B{i}", 0.2050)] for i in range(3)
+    }
+    m = _FakeMapper(exact=set(), nearest={}, hits=ambiguous)
+    with caplog.at_level("INFO"):
+        out = await m.run(
+            [CategoryQuery(None, f"라벨{i}") for i in range(3)],
+            settings=_settings(select_max_calls=2),
+            select=sel,
+            llm=object(),
+        )
+    assert len(sel.calls) == 2  # 3개 애매하지만 2회만 호출
+    assert out == [("카테고리 > A2", "라벨2")]  # 상한 초과 leg 만 top-1 로 살아남음
+    assert "category_select_unavailable" in [r.msg for r in caplog.records]
 
 
 async def test_exact_raw_wins_without_distance_comparison() -> None:
