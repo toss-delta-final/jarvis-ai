@@ -84,6 +84,8 @@ def detect_sales_anomalies(
     Spring 이 준 point.is_anomaly/point.deviation_pct 는 무시하고 point.sales 원시값만으로
     재계산한다(§0.1 D) — 로직을 정렬해 두 판정이 자연 일치하게 한다.
     """
+    # 호출부 프로그래밍 오류 방어(2중 안전망) — Settings 주입 경로는 기동 시점에 이미
+    # 검증된다(config.py model_validator, #194 PR 리뷰: 매 요청 반복 raise 대신 fail-fast).
     if min_window <= 0 or window < min_window:
         raise ValueError(f"window({window})/min_window({min_window}) 설정이 유효하지 않다")
     values = [point.sales for point in series]

@@ -364,6 +364,15 @@ class Settings(BaseSettings):
                 "RATING_TIER 경계는 excellent >= good >= fair 여야 합니다"
                 f" ({self.rating_tier_excellent}/{self.rating_tier_good}/{self.rating_tier_fair})"
             )
+        # 이상 감지 window 정합(#194 PR 리뷰) — env 오설정(min_window ≤ 0 또는
+        # min_window > window)이면 calc.detect_sales_anomalies 가 daily 매출 조회
+        # 매 요청마다 ValueError 로 죽는다. 설정값은 요청마다 변하지 않으므로
+        # 런타임 반복 실패 대신 기동 시점에 fail-fast 한다.
+        if self.seller_ma_min_window < 1 or self.seller_ma_window < self.seller_ma_min_window:
+            raise ValueError(
+                "SELLER_MA_MIN_WINDOW 는 1 이상, SELLER_MA_WINDOW 이하여야 합니다"
+                f" (min_window={self.seller_ma_min_window}, window={self.seller_ma_window})"
+            )
         if not (self.review_tier_many >= self.review_tier_some >= self.review_tier_few):
             raise ValueError(
                 "REVIEW_TIER 경계는 many >= some >= few 여야 합니다"
