@@ -142,9 +142,25 @@ Spring 명시 종료가 유실되어도 idle sweep이 transient 정리를 담당
 
 ## 7. rollout과 legacy 충돌
 
-시작 순서는 schema → bounded/resumable backfill → scheduler다. backfill은 DB cursor/pass와
-transaction으로 재시작 가능하며 시작 시 batch 상한을 넘으면 fail-closed한다. 유예 기한은 DB
-시각 기준으로 설정하고 기존 값을 줄이지 않으며 최소 24시간이다.
+시작 순서는 schema → bounded/resumable backfill → scheduler다. lifecycle scheduler lane만
+backfill/GC 권한을 가진다. 여기서 lane은 scheduler 시작 전 FastAPI lifecycle의 선행 backfill과,
+이후 단일 scheduler job의 재개 backfill/GC를 함께 뜻한다. `_v2` store, profile, seller,
+그 밖의 nonlegacy store write는 migration을 reopen하는 trigger 대상도 GC 대상도 아니다.
+backfill은 DB cursor/pass와 transaction으로 재시작 가능하며 시작 시 batch 상한을 넘으면
+fail-closed한다.
+
+`grace_deadline`은 PostgreSQL `now()`로 기록한 최초 `rollout_started_at`을 기준으로,
+**기존 deadline**, **rollout 시작 + configured grace**, **rollout 시작 + 24시간**의 단조
+최댓값이다. 설정을 낮추거나 프로세스를 재시작해도 절대 앞당기지 않는다. destructive GC는
+**backfill 완료**, **grace 경과**, **durable quiet 경과**가 모두 확인된 뒤에만 실행한다.
+quiet window는 최소 90초이고 동시에 `stream_total_timeout_s` 이상이며, writer 관측 시각과
+deadline 판정 모두 PostgreSQL clock을 사용한다.
+
+exact legacy `profile_session_activity`의 INSERT/UPDATE와 legacy store root
+`buyer_thread_filters`/`buyer_cart`/`buyer_revert`의 INSERT/UPDATE는
+`gc_completed_at=NULL`로 migration을 reopen하고 quiet deadline을 해당 PostgreSQL write
+시각 + configured quiet까지 단조 연장한다. 이 late write는 다음 lifecycle pass에서 backfill과
+destructive GC를 다시 수행하게 한다.
 
 legacy `profile_session_activity`에서 한 `sessionId`에 복수 owner가 보이거나 서명된 runtime
 소유권과 다르면 임의 선택하지 않는다. 후보를 `chat_session_migration_conflicts`에

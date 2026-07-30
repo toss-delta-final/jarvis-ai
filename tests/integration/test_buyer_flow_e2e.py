@@ -607,7 +607,17 @@ async def test_guest_session_d6_expires_all_threads_then_claim_keeps_context(
         assert continued.status_code == 200
         assert (await repo.get_context("S1")).context_id == original.context_id
 
+    threads_before_rejected_guest = await repo.get_threads(original.context_id)
+    context_before_rejected_guest = await repo.get_context("S1")
+    guest_turn_count_before_rejected_guest = len(
+        await conversation_store.turns_for(guest_conversation_key)
+    )
     old_guest = _chat(client, "옛 게스트 재접속", session="S1", thread="T4", headers=guest_headers)
     assert old_guest.status_code == 403
     assert old_guest.json()["error"]["code"] == "SESSION_FORBIDDEN"
-    assert await repo.get_threads(original.context_id) == ["T1", "T2", "T3"]
+    assert await repo.get_threads(original.context_id) == threads_before_rejected_guest
+    assert await repo.get_context("S1") == context_before_rejected_guest
+    assert (
+        len(await conversation_store.turns_for(guest_conversation_key))
+        == guest_turn_count_before_rejected_guest
+    )

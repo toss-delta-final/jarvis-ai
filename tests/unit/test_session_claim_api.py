@@ -599,8 +599,12 @@ async def test_claim_rejects_invalid_body(
     "case",
     [
         "bool-user",
+        "string-user",
+        "float-user",
         "zero-user",
         "overflow-user",
+        "numeric-session",
+        "numeric-guest",
         "empty-session",
         "empty-guest",
         "long-session",
@@ -621,8 +625,12 @@ async def test_claim_rejects_values_outside_strict_public_contract(
     }
     invalid = {
         "bool-user": ("userId", True),
+        "string-user": ("userId", "7"),
+        "float-user": ("userId", 7.0),
         "zero-user": ("userId", 0),
         "overflow-user": ("userId", 2**63),
+        "numeric-session": ("sessionId", 1),
+        "numeric-guest": ("guestId", 1),
         "empty-session": ("sessionId", ""),
         "empty-guest": ("guestId", ""),
         "long-session": ("sessionId", "s" * (get_settings().chat_key_max_chars + 1)),
@@ -635,6 +643,36 @@ async def test_claim_rejects_values_outside_strict_public_contract(
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "BAD_REQUEST"
+
+
+async def test_claim_accepts_bigint_max_with_configured_contract_boundaries(
+    client: httpx.AsyncClient,
+    repo: SessionContextRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "auth_mode", "jwks")
+    monkeypatch.setattr(settings, "internal_api_token", "service-secret")
+    session_id = "s" * settings.chat_key_max_chars
+    guest_id = "g" * settings.chat_key_max_chars
+
+    response = await client.post(
+        "/events/session-claim",
+        json={
+            "sessionId": session_id,
+            "guestId": guest_id,
+            "userId": 2**63 - 1,
+        },
+        headers={"X-Internal-Token": settings.internal_api_token},
+    )
+
+    assert response.status_code == 202
+    assert response.json() == {"status": "accepted"}
+    claimed = await repo.get_context(session_id)
+    assert claimed is not None
+    assert claimed.owner_id == str(2**63 - 1)
 
 
 async def test_claim_log_fingerprints_external_identifiers(

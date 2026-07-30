@@ -145,6 +145,15 @@ async def test_guest_claim_preserves_transcripts_but_promotes_only_member_facts(
     repo = SessionContextRepository()
     monkeypatch.setattr(session_context, "_default_repository", repo)
     monkeypatch.setattr(profile_finalizer, "get_llm", lambda: llm)
+    original_complete = llm.complete
+    delta_inputs: list[str] = []
+
+    async def capture_delta_input(**kwargs):
+        if llm._classify(kwargs["system"], kwargs["tier"]) == "delta":
+            delta_inputs.append(kwargs["user"])
+        return await original_complete(**kwargs)
+
+    monkeypatch.setattr(llm, "complete", capture_delta_input)
     guest_headers = _buyer_session_header("G1", "guest", "S1")
     member_headers = _buyer_session_header("1", "member", "S1")
     guest_messages = {
@@ -218,6 +227,10 @@ async def test_guest_claim_preserves_transcripts_but_promotes_only_member_facts(
     ended = _session_end(client, session="S1", user_id=1)
     assert ended.status_code == 202
     assert ended.json() == {"status": "accepted"}
+
+    assert len(delta_inputs) == 1
+    assert delta_inputs[0].splitlines() == list(member_messages.values())
+    assert "GUEST_ONLY_SECRET" not in delta_inputs[0]
 
     facts = await profile_store.get_facts("1")
     assert facts == ["회원 전환 후 세 탭에서 여행용품을 탐색한다"]
