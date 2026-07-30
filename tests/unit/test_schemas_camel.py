@@ -5,7 +5,10 @@
 
 from __future__ import annotations
 
-from app.schemas.chat import ChatRequest, DoneData, ProductsReadyData
+import pytest
+from pydantic import ValidationError
+
+from app.schemas.chat import ChatRequest, DoneData, ErrorData, ProductsReadyData
 from app.schemas.spring import (
     ProductCreate,
     ProductSearchFilters,
@@ -16,9 +19,37 @@ from app.schemas.spring import (
 
 
 def test_products_ready_serializes_camel() -> None:
-    """products.ready 는 sessionId/listId 로 직렬화된다 (snake 속성 → camel 별칭)."""
-    d = ProductsReadyData(session_id="s-1", list_id="l-1").model_dump(by_alias=True)
-    assert d == {"sessionId": "s-1", "listId": "l-1"}
+    """products.ready 는 목록이 하나여도 listIds 배열로 직렬화된다."""
+    d = ProductsReadyData(session_id="s-1", list_ids=["l-1"]).model_dump(by_alias=True)
+    assert d == {"sessionId": "s-1", "listIds": ["l-1"]}
+
+
+def test_products_ready_preserves_list_order_and_caps_at_ten() -> None:
+    """listIds 순서는 I-21 목록 순서를 보존하고 계약 상한 10개를 넘지 못한다."""
+    list_ids = [f"list-{index}" for index in range(10)]
+
+    data = ProductsReadyData(session_id="s-1", list_ids=list_ids).model_dump(by_alias=True)
+
+    assert data["listIds"] == list_ids
+    with pytest.raises(ValidationError):
+        ProductsReadyData(session_id="s-1", list_ids=[*list_ids, "list-10"])
+
+
+def test_error_serializes_request_id_and_retryable() -> None:
+    """in-stream error는 로그 상관키와 재시도 가능 여부를 camelCase로 노출한다."""
+    data = ErrorData(
+        code="LLM_TIMEOUT",
+        message="응답이 지연됐어요.",
+        request_id="req-123",
+        retryable=True,
+    ).model_dump(by_alias=True)
+
+    assert data == {
+        "code": "LLM_TIMEOUT",
+        "message": "응답이 지연됐어요.",
+        "requestId": "req-123",
+        "retryable": True,
+    }
 
 
 def test_done_serializes_camel() -> None:

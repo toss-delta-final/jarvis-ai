@@ -5,8 +5,9 @@
     done / error (구 text.delta / products / (done) 세트 폐기). suggestions=완화/되돌리기 칩(결정 14-D/14-F, §3.1).
   - 모든 페이로드 필드는 camelCase (Pydantic alias). Python 속성은 snake_case 유지,
     직렬화 시 by_alias=True 로 camelCase 출력, 입력은 populate_by_name 으로 양쪽 허용.
-  - [HARD] SSE 는 상품 카드를 싣지 않는다 (경로 B). products.ready 는 {sessionId, listId}
-    상관관계 키만 나른다. 상품 카드/표시 필드는 Spring push(§4.2)+GET(§4.3)으로 이동.
+  - [HARD] SSE 는 상품 카드를 싣지 않는다 (경로 B). products.ready 는
+    {sessionId, listIds} 상관관계 키만 나른다. 상품 카드/표시 필드는
+    Spring push(§4.2)+GET(§4.3)으로 이동.
 
 [보안] ChatRequest 에는 userId 가 없다 — 신원은 토큰 클레임(sub/role)에서만 도출한다 (§3.1).
 """
@@ -142,11 +143,12 @@ class ActionData(CamelModel):
 class ProductsReadyData(CamelModel):
     """`products.ready` 이벤트 — 목록 push 성공 상관관계 키 (정확히 1회, 카드 없음).
 
-    [HARD] 상품 카드는 싣지 않는다. FE 는 이 키로 Spring 목록 GET(§4.3)을 호출한다.
+    [HARD] 상품 카드는 싣지 않는다. FE 는 최대 10개의 목록 키로 Spring 목록
+    GET(§4.3)을 호출한다. 단일 목록도 배열로 직렬화한다.
     """
 
     session_id: str
-    list_id: str
+    list_ids: list[str] = Field(..., min_length=1, max_length=10)
 
 
 class DoneData(CamelModel):
@@ -164,3 +166,5 @@ class ErrorData(CamelModel):
 
     code: Literal["LLM_TIMEOUT", "LLM_UNAVAILABLE", "SEARCH_FAILED", "INTERNAL"]
     message: str
+    request_id: str = Field(..., min_length=1)
+    retryable: bool
