@@ -18,11 +18,14 @@ Python 속성은 snake_case, 직렬화는 by_alias=True 로 camelCase, 입력은
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
+
+_log = logging.getLogger(__name__)
 
 
 class CamelModel(BaseModel):
@@ -380,6 +383,10 @@ class SalesResult(SellerAggregateModel):
 # ── I-7 구매전환 퍼널 (§4.4) ──
 
 
+# I-7 stages[].stage → 평면 필드 매핑. 키는 snake_case — BE 실측 확정(#194 리뷰 검증):
+# SellerAnalyticsService.funnel 이 "product_view"/"add_to_cart"/"checkout_start"/
+# "purchase_complete" 리터럴로 Stage 를 만든다(I-13 counts 의 camelCase 와 다른 어휘 —
+# 혼동 주의). 어휘가 어긋나면 아래 validator 가 해당 단계를 미집계로 편입해 표면화한다.
 _FUNNEL_STAGE_FIELD = {
     "product_view": "view",
     "add_to_cart": "cart",
@@ -395,25 +402,58 @@ class FunnelResult(SellerAggregateModel):
     {stages:[{stage,count,source,computable}], conversionRates:{...}} 형태다. 종전
     스키마는 기본값 0 + extra="allow" 탓에 검증이 조용히 통과해 전 단계 0 인
     퍼널(무데이터)로 오분석될 수 있었다 — before validator 로 stages 를 평면 4필드로
-    변환한다(count null = 0, checkout v1 미계산 구간). 평면 입력(테스트 스텁·구계약)도
-    그대로 허용한다."""
+    변환한다. 평면 입력(테스트 스텁·구계약)도 그대로 허용한다.
+
+    [PR#184 리뷰 반영] count=null·computable=false 단계(checkout v1 미계산 구간)는
+    "집계 안 됨"이지 "실제 0건"이 아니다 — 0 으로만 수렴시키면 calc.conversion_rates 가
+    미계산 구간을 진짜 0% 전환으로 보고할 위험이 있다. 해당 단계명을
+    uncomputable_stages 에 기록해 하류(calc·tools)가 전환율 계산에서 제외하고
+    "미집계"로 표시하게 한다."""
 
     view: int = 0
     cart: int = 0
     checkout: int = 0
     purchase: int = 0
+    # stages[] 변환 시 집계 불가로 판정된 평면 필드명("checkout" 등) — 평면 입력은 빈 목록.
+    uncomputable_stages: list[str] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
     def _flatten_stages(cls, data: object) -> object:
         if isinstance(data, dict) and isinstance(data.get("stages"), list):
             data = dict(data)
+            # [#194 리뷰 반영] 매핑으로 채워지지 않은 평면 필드를 추적한다 — stage 어휘가
+            # 코드 가정과 어긋나면(오탈자·casing 변경·단계 누락) 종전에는 조용히 건너뛰어
+            # 기본값 0(= "실제 0건")으로 새던 것을, "미집계"로 편입해 표면화한다
+            # (I-14/I-15 에서 고친 것과 동일한 은폐 패턴 차단).
+            # [#194 리뷰 2] 미집계 판정은 entry 별 즉시 append 가 아니라 필드별 최종
+            # 항목 기준으로 내린다 — 동일 stage 가 중복으로 오면(BE 이상 응답) 값은
+            # 마지막 항목으로 덮이는데 판정만 앞 항목 것이 남아, 값은 정상 수치인데
+            # "미집계"로 표시되는 불일치가 생기던 문제.
+            uncomputable_by_field: dict[str, bool] = {}
+            unknown_stages: list[object] = []
             for entry in data["stages"]:
                 if not isinstance(entry, dict):
                     continue
                 field = _FUNNEL_STAGE_FIELD.get(entry.get("stage"))
-                if field is not None:
-                    data[field] = entry.get("count") or 0
+                if field is None:
+                    unknown_stages.append(entry.get("stage"))
+                    continue
+                count = entry.get("count")
+                # count null(집계값 없음) 또는 computable=false(v1 미계산 구간) = 미집계.
+                uncomputable_by_field[field] = count is None or entry.get("computable") is False
+                data[field] = count if count is not None else 0
+            unfilled = set(_FUNNEL_STAGE_FIELD.values()) - uncomputable_by_field.keys()
+            if unknown_stages or unfilled:
+                _log.warning(
+                    "I-7 funnel stages 계약 어긋남 — 미인식 stage=%s, 미수신 단계=%s "
+                    "(해당 단계는 미집계 처리)",
+                    unknown_stages,
+                    sorted(unfilled),
+                )
+            uncomputable = [f for f, unc in uncomputable_by_field.items() if unc]
+            uncomputable.extend(sorted(unfilled))
+            data.setdefault("uncomputableStages", uncomputable)
         return data
 
 
@@ -458,23 +498,58 @@ class BehaviorEventsResult(SellerAggregateModel):
 
 
 class OrderEventsResult(SellerAggregateModel):
-    """I-14 GET /internal/seller/{brandId}/order-events 응답 — 필드 최소집합(🔴 확정 대기).
+    """I-14 GET /internal/seller/{brandId}/order-events 응답 (#194 — BE 실측 정렬).
+
+    [수정 2026-07-30] 구 events/stats 필드 폐기 — Spring(SellerOrderEventsResponse)은
+    rows/total/byStatus/cancelReasonsTop 을 내려보낸다(NON_NULL, shape 상호 배제).
+    종전 스키마는 extra="allow" 탓에 검증이 조용히 통과해 events 가 항상 빈 목록
+    (= "주문 상태 전이 0건")으로 새던 버그의 원인이었다.
+
+    shape 3형이 한 모델에 겹친다 — 채워지는 필드:
+      - 목록(기본)        : rows(Row: orderId/fromStatus/toStatus/actorType/reason/
+                            buyerMemberId/createdAt) + total
+      - stats=true        : byStatus + cancelReasonsTop (rows 없음)
+      - groupBy=memberId  : rows(MemberRow: buyerMemberId/orderCount/cancelCount/
+                            cancelRatio/maxOrdersPerHour/isSuspicious) + total
+    rows 는 groupBy 에 따라 이형(異形)이라 dict 유지 — kv 요약(_summarize_events)이
+    양쪽 모두 소화한다. rows 는 limit(기본 100) 절단본, 전수는 total.
 
     구매자 fetch_product_changes(I-8·§4.8)와 무관한 별개 계약(혼동 금지, §4.4 주)."""
 
-    events: list[dict] = Field(default_factory=list)
-    stats: dict | None = None
+    rows: list[dict] = Field(default_factory=list)
+    total: int | None = None
+    by_status: dict[str, int] | None = None
+    cancel_reasons_top: list[dict] = Field(default_factory=list)
 
 
 # ── I-15 상품 변경 이력(판매자 감사 로그) (§4.4) ──
 
 
+class ProductChangeLogRow(CamelModel):
+    """I-15 rows[] 항목 (#194 — Spring SellerProductChangesResponse.Row 실측 정렬).
+
+    oldValue/newValue 는 BE 가 Java String 으로 내려보낸다(PRICE/STOCK 숫자도 문자열) —
+    품절 신호 = STOCK 변경의 newValue "0" (SOLD_OUT 상태 미도입, 07/17 D32)."""
+
+    product_id: int
+    product_name: str | None = None
+    change_type: str  # PRICE | STOCK | STATUS
+    old_value: str | None = None
+    new_value: str | None = None
+    created_at: str | None = None
+
+
 class ProductChangeLogResult(SellerAggregateModel):
     """I-15 GET /internal/seller/{brandId}/product-changes 응답 — 판매자 감사 로그.
 
+    [수정 2026-07-30, #194] 구 logs 필드 폐기 — Spring 은 rows/total 을 내려보낸다.
+    종전 스키마는 extra="allow" 탓에 logs 가 항상 빈 목록으로 새던 버그의 원인이었다.
+    rows 는 limit(기본 100) 절단본, 전수는 total.
+
     [혼동 금지] 구매자 ProductChangesPage(I-8 AI 생성물 배치, §4.8)와 다른 계약이다."""
 
-    logs: list[dict] = Field(default_factory=list)
+    rows: list[ProductChangeLogRow] = Field(default_factory=list)
+    total: int | None = None
 
 
 # ── I-16 이탈 코호트 (§4.4) ──

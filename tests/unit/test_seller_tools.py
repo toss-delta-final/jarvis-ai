@@ -28,6 +28,7 @@ from app.schemas.spring import (
     FunnelResult,
     OrderEventsResult,
     ProductChangeLogResult,
+    ProductChangeLogRow,
     ProductCreateResult,
     ProductDeleteResult,
     ProductUpdateResult,
@@ -48,7 +49,7 @@ class FakeSpringClient:
         self.recorded_stats: bool | None = None
         self.recorded_event_args: tuple | None = None
         self.behavior_result = BehaviorEventsResult()  # I-13 기본 빈 응답(3형 공통)
-        self.order_events_result = OrderEventsResult(events=[])  # I-14 기본 빈 응답
+        self.order_events_result = OrderEventsResult()  # I-14 기본 빈 응답(rows/total, #194)
         self._fail = fail or set()
 
     def _maybe_fail(self, method: str) -> None:
@@ -94,7 +95,7 @@ class FakeSpringClient:
     async def get_product_changes(self, brand_id, from_, to, change_type=None, product_id=None):
         self.recorded_brand_id = brand_id
         self._maybe_fail("get_product_changes")
-        return ProductChangeLogResult(logs=[])
+        return ProductChangeLogResult()  # I-15 기본 빈 응답(rows/total, #194)
 
     async def get_churn(self, brand_id, inactive_days):
         self.recorded_brand_id = brand_id
@@ -293,6 +294,28 @@ async def test_sales_tool_skips_anomaly_detection_for_non_daily_granularity() ->
     assert "이상 감지" not in weekly_result
 
 
+async def test_sales_tool_degrades_when_anomaly_config_invalid(monkeypatch) -> None:
+    """[#194 리뷰 3] detect_sales_anomalies 의 ValueError 가 도구 밖으로 전파되지 않는다
+    (§3.4 degrade 규약) — 기동 시점 검증(config)이 우회·회귀로 뚫려도 매출 요약은
+    살리고 이상 감지만 생략한다."""
+    from app.agents.seller import calc as calc_module
+
+    def _boom(*_args, **_kwargs):
+        raise ValueError("window(2)/min_window(3) 설정이 유효하지 않다")
+
+    monkeypatch.setattr(calc_module, "detect_sales_anomalies", _boom)
+
+    result = await _call_runtime_tool(
+        get_sales_timeseries,
+        {"from_date": "2026-07-01", "to_date": "2026-07-14", "granularity": "daily"},
+        FakeSpringClient(),
+    )
+
+    assert "총매출" in result  # 매출 요약은 유지된다
+    assert "이상 감지 판정 불가" in result
+    assert not result.startswith("Error:")  # 전체 실패로 격하하지 않는다
+
+
 async def test_get_order_events_tool_passes_stats_through() -> None:
     """도구의 stats 인자가 client.get_order_events 호출로 그대로 전달된다(opus 리뷰 m6)."""
     fake = FakeSpringClient()
@@ -333,10 +356,10 @@ async def test_sales_tool_includes_point_detail_and_caps_output() -> None:
 
 
 async def test_order_events_tool_summarizes_kv_with_cap() -> None:
-    """I-13/I-14 kv 요약(중간 상세도) — 미확정 필드를 key=value 로 상위 N건 노출."""
+    """[#194] I-14 rows(BE 실측)를 kv 로 상위 N건 노출 — Row/MemberRow 이형 대응."""
 
     class EventfulClient(FakeSpringClient):
-        """상한(기본 5)을 넘는 7건 이벤트를 반환하는 이중."""
+        """상한(기본 5)을 넘는 7건 rows 를 반환하는 이중."""
 
         async def get_order_events(
             self, brand_id, from_, to, to_status=None, actor_type=None, group_by=None, stats=None
@@ -344,8 +367,8 @@ async def test_order_events_tool_summarizes_kv_with_cap() -> None:
             self.recorded_brand_id = brand_id
             self.recorded_stats = stats
             return OrderEventsResult(
-                events=[{"toStatus": "CANCELLED", "count": i} for i in range(7)],
-                stats={"CANCELLED": 7},
+                rows=[{"orderId": 5000 + i, "toStatus": "CANCELLED"} for i in range(7)],
+                total=7,
             )
 
     result = await _call_runtime_tool(
@@ -354,7 +377,51 @@ async def test_order_events_tool_summarizes_kv_with_cap() -> None:
 
     assert "toStatus=CANCELLED" in result  # kv 노출
     assert "외 2건" in result  # 7 - 상한 5 = 2
-    assert "CANCELLED=7" in result  # stats dict 노출
+
+
+async def test_order_events_tool_notes_total_when_rows_truncated() -> None:
+    """[#194] rows 는 limit 절단본 — total 이 더 크면 전수를 고지해 표본=전수 오해석을 막는다."""
+
+    class TruncatedClient(FakeSpringClient):
+        async def get_order_events(
+            self, brand_id, from_, to, to_status=None, actor_type=None, group_by=None, stats=None
+        ):
+            self.recorded_brand_id = brand_id
+            return OrderEventsResult(
+                rows=[{"orderId": i, "toStatus": "PAID"} for i in range(3)], total=250
+            )
+
+    result = await _call_runtime_tool(
+        get_order_events, {"from_date": "2026-07-01", "to_date": "2026-07-14"}, TruncatedClient()
+    )
+
+    assert "전체 250건 중 3건 표시" in result
+
+
+async def test_order_events_tool_stats_mode_summarizes_by_status_and_reasons() -> None:
+    """[#194] stats=true 응답(byStatus + cancelReasonsTop)을 집계 노트로 노출한다 —
+    구 코드는 Spring 에 없는 stats 필드를 읽어 집계 질의가 항상 0건이었다."""
+
+    class StatsClient(FakeSpringClient):
+        async def get_order_events(
+            self, brand_id, from_, to, to_status=None, actor_type=None, group_by=None, stats=None
+        ):
+            self.recorded_brand_id = brand_id
+            self.recorded_stats = stats
+            return OrderEventsResult(
+                by_status={"PAID": 120, "CANCELLED": 7},
+                cancel_reasons_top=[{"reason": "단순변심", "count": 4}],
+            )
+
+    result = await _call_runtime_tool(
+        get_order_events,
+        {"from_date": "2026-07-01", "to_date": "2026-07-14", "stats": True},
+        StatsClient(),
+    )
+
+    assert "PAID=120" in result and "CANCELLED=7" in result
+    assert "단순변심(4건)" in result
+    assert "주문 상태 전이 0건" not in result
 
 
 async def test_list_products_uses_default_limit_from_settings() -> None:
@@ -489,7 +556,7 @@ async def test_order_events_output_includes_log_rules_note() -> None:
     """전이가 있으면 기록 규칙 주의(완료만 기록·주문 단위 1행)가 함께 나간다."""
     fake = FakeSpringClient()
     fake.order_events_result = OrderEventsResult(
-        events=[{"orderId": 5001, "toStatus": "CANCELLED", "actorType": "USER"}]
+        rows=[{"orderId": 5001, "toStatus": "CANCELLED", "actorType": "USER"}], total=1
     )
 
     result = await _call_runtime_tool(
@@ -512,6 +579,55 @@ async def test_product_change_logs_output_includes_log_rules_note() -> None:
 
     assert "주문에 의한 재고 차감은 미기록" in result
     assert "new_value 0" in result
+
+
+async def test_product_change_logs_lists_details_with_cap() -> None:
+    """[#194] I-15 rows(BE 실측)를 변경 상세(무엇이 언제 어떻게)로 나열한다 — 건수만 주던
+    구 출력으로는 워커가 '이상 직전 가격/재고/상태 변경'을 짚을 수 없었다."""
+    from app.agents.seller.tools import get_product_change_logs
+
+    class ChangefulClient(FakeSpringClient):
+        async def get_product_changes(self, brand_id, from_, to, change_type=None, product_id=None):
+            self.recorded_brand_id = brand_id
+            rows = [
+                ProductChangeLogRow(
+                    product_id=101,
+                    product_name="린넨 셔츠",
+                    change_type="PRICE",
+                    old_value="29000",
+                    new_value="19000",
+                    created_at="2026-07-10T09:00:00+09:00",
+                )
+            ] + [
+                ProductChangeLogRow(
+                    product_id=200 + i, change_type="STOCK", old_value="10", new_value="0"
+                )
+                for i in range(6)
+            ]
+            return ProductChangeLogResult(rows=rows, total=8)  # rows 7건, 전수 8건(절단)
+
+    result = await _call_runtime_tool(
+        get_product_change_logs,
+        {"from_date": "2026-07-01", "to_date": "2026-07-14"},
+        ChangefulClient(),
+    )
+
+    assert "상품 변경 이력 8건" in result  # 전수는 total 기준
+    assert "[101] 린넨 셔츠 PRICE 29000→19000" in result  # 변경 상세 노출
+    assert "외 3건" in result  # 8 - 상한 5 = 3
+
+
+async def test_product_change_logs_empty_says_zero() -> None:
+    """[#194] rows 가 비면 0건 안내 + 기록 규칙 주의는 유지된다."""
+    from app.agents.seller.tools import get_product_change_logs
+
+    result = await _call_runtime_tool(
+        get_product_change_logs,
+        {"from_date": "2026-07-01", "to_date": "2026-07-14"},
+        FakeSpringClient(),
+    )
+
+    assert "상품 변경 이력 0건" in result
 
 
 def test_worker_prompts_contain_log_interpretation_rules() -> None:
