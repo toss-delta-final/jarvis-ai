@@ -6,13 +6,16 @@ parentage without sharing a mutable global span stack.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import asyncio
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+import hashlib
 import logging
-from typing import Literal, Protocol
+import re
+from typing import Any, Literal, Protocol
 from uuid import UUID, uuid4
 
 RunType = Literal["chain", "llm", "tool", "retriever"]
@@ -20,6 +23,85 @@ TraceStatus = Literal["COMPLETED", "FAILED", "CANCELLED"]
 SafeScalar = str | int | float | bool | None
 
 logger = logging.getLogger(__name__)
+
+SAFE_METADATA_KEYS = frozenset(
+    {
+        "requestId",
+        "conversationId",
+        "threadId",
+        "lane",
+        "environment",
+        "model",
+        "promptTokens",
+        "completionTokens",
+        "httpMethod",
+        "upstream",
+        "statusClass",
+        "degraded",
+        "degradeReason",
+        "errorType",
+        "terminalReason",
+        "server_first_event_ms",
+        "server_first_text_token_ms",
+        "provider_ttft_ms",
+    }
+)
+
+_UNSAFE_KEY_PARTS = (
+    "authorization",
+    "cookie",
+    "apikey",
+    "prompt",
+    "body",
+    "input",
+    "output",
+    "tool",
+    "customer",
+)
+_CANARY_PATTERNS = (
+    re.compile(r"\bbearer\s+\S+", re.IGNORECASE),
+    re.compile(r"\b(?:sk|lsv2)_[A-Za-z0-9_-]{12,}\b", re.IGNORECASE),
+    re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE),
+    re.compile(r"(?<!\d)01[016789][ -]?\d{3,4}[ -]?\d{4}(?!\d)"),
+    re.compile(r"(?<!\d)\d{6}[ -]?[1-4]\d{6}(?!\d)"),
+)
+
+
+class UnsafeTelemetryError(ValueError):
+    """Raised when a trace payload may contain raw or sensitive data."""
+
+
+def validate_export_payload(payload: object) -> None:
+    """Fail closed when an export payload contains unsafe keys or canary values."""
+
+    _validate_value(payload)
+
+
+def _validate_value(value: object, *, metadata: bool = False) -> None:
+    if isinstance(value, Mapping):
+        for raw_key, nested in value.items():
+            key = str(raw_key)
+            normalized_key = re.sub(r"[^a-z0-9]", "", key.lower())
+            if metadata and key not in SAFE_METADATA_KEYS:
+                raise UnsafeTelemetryError("metadata key is not allowlisted")
+            is_safe_metadata_key = metadata and key in SAFE_METADATA_KEYS
+            if not is_safe_metadata_key and any(
+                part in normalized_key for part in _UNSAFE_KEY_PARTS
+            ):
+                if not isinstance(nested, Mapping) or nested:
+                    raise UnsafeTelemetryError("raw-data field is not empty")
+            _validate_value(nested, metadata=key == "metadata")
+        return
+    if isinstance(value, (list, tuple)):
+        for nested in value:
+            _validate_value(nested, metadata=metadata)
+        return
+    if isinstance(value, BaseException):
+        _validate_value(value.args)
+        _validate_value(vars(value))
+        return
+    if isinstance(value, str) and any(pattern.search(value) for pattern in _CANARY_PATTERNS):
+        raise UnsafeTelemetryError("sensitive value canary detected")
 
 
 @dataclass
@@ -70,9 +152,11 @@ class RequestTrace:
         thread_id: str,
         lane: str,
         environment: str,
+        payload_validator: Callable[[object], None],
     ) -> None:
         trace_id = uuid4()
         self._exporter = exporter
+        self._payload_validator = payload_validator
         self._root_id = trace_id
         self._nodes = [
             TraceNode(
@@ -150,8 +234,19 @@ class RequestTrace:
                 if status != "COMPLETED" and node.error_type is None:
                     node.error_type = error_type
 
+        nodes = tuple(self._nodes)
         try:
-            await self._exporter.export(tuple(self._nodes))
+            self._payload_validator(_build_export_payloads(nodes, project_name=None))
+        except UnsafeTelemetryError:
+            logger.warning(
+                "trace dropped requestId=%s root=%s code=TELEMETRY_REDACTION_FAILED",
+                root.metadata["requestId"],
+                root.name,
+            )
+            return
+
+        try:
+            await self._exporter.export(nodes)
         except Exception:
             logger.warning("trace export failed code=TELEMETRY_EXPORT_FAILED")
 
@@ -193,10 +288,12 @@ class TraceFactory:
         exporter: TraceExporter,
         enabled: bool,
         sampling_rate: float,
+        payload_validator: Callable[[object], None] = validate_export_payload,
     ) -> None:
         self._exporter = exporter
         self._enabled = enabled
         self._sampling_rate = sampling_rate
+        self._payload_validator = payload_validator
 
     def start_request(
         self,
@@ -208,7 +305,7 @@ class TraceFactory:
         lane: str,
         environment: str,
     ) -> RequestTrace:
-        if not self._enabled or self._sampling_rate <= 0.0:
+        if not self._enabled or not _is_sampled(request_id, self._sampling_rate):
             return _NOOP_REQUEST_TRACE
         return RequestTrace(
             exporter=self._exporter,
@@ -218,7 +315,109 @@ class TraceFactory:
             thread_id=thread_id,
             lane=lane,
             environment=environment,
+            payload_validator=self._payload_validator,
         )
+
+
+class LangSmithTraceExporter:
+    """Explicit, bounded LangSmith batch exporter with no global auto-tracing."""
+
+    def __init__(self, client: Any, project_name: str, timeout_s: float) -> None:
+        self._client = client
+        self._project_name = project_name
+        self._timeout_s = timeout_s
+
+    async def export(self, nodes: tuple[TraceNode, ...]) -> None:
+        payloads = _build_export_payloads(nodes, project_name=self._project_name)
+        validate_export_payload(payloads)
+        try:
+            async with asyncio.timeout(self._timeout_s):
+                await asyncio.to_thread(self._client.batch_ingest_runs, create=payloads)
+        except TimeoutError:
+            logger.warning("trace export timed out code=TELEMETRY_EXPORT_TIMEOUT")
+        except Exception:
+            logger.warning("trace export failed code=TELEMETRY_EXPORT_FAILED")
+
+
+def _build_export_payloads(
+    nodes: tuple[TraceNode, ...], *, project_name: str | None
+) -> list[dict[str, object]]:
+    payloads: list[dict[str, object]] = []
+    for node in nodes:
+        payload: dict[str, object] = {
+            "id": node.id,
+            "trace_id": node.trace_id,
+            "parent_run_id": node.parent_id,
+            "name": node.name,
+            "run_type": node.run_type,
+            "start_time": node.started_at,
+            "end_time": node.ended_at,
+            "inputs": {},
+            "outputs": {},
+            "extra": {"metadata": dict(node.metadata)},
+        }
+        if project_name is not None:
+            payload["session_name"] = project_name
+        payloads.append(payload)
+    return payloads
+
+
+def _is_sampled(request_id: str, sampling_rate: float) -> bool:
+    if sampling_rate <= 0.0:
+        return False
+    if sampling_rate >= 1.0:
+        return True
+    digest = hashlib.sha256(request_id.encode("utf-8")).digest()
+    bucket = int.from_bytes(digest, "big") / (1 << 256)
+    return bucket < sampling_rate
+
+
+_trace_factory: TraceFactory | None = None
+
+
+def set_trace_factory(factory: TraceFactory | None) -> None:
+    """Override or reset the process-wide trace factory."""
+
+    global _trace_factory
+    _trace_factory = factory
+
+
+def get_trace_factory() -> TraceFactory:
+    """Build the configured explicit exporter lazily and cache it."""
+
+    global _trace_factory
+    if _trace_factory is not None:
+        return _trace_factory
+
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    if not settings.langsmith_tracing:
+        _trace_factory = TraceFactory(
+            exporter=NoopTraceExporter(),
+            enabled=False,
+            sampling_rate=settings.langsmith_tracing_sampling_rate,
+        )
+        return _trace_factory
+
+    from langsmith import Client
+
+    api_key = (
+        settings.langsmith_api_key.get_secret_value()
+        if settings.langsmith_api_key is not None
+        else None
+    )
+    client = Client(api_key=api_key, auto_batch_tracing=False)
+    _trace_factory = TraceFactory(
+        exporter=LangSmithTraceExporter(
+            client,
+            settings.langsmith_project,
+            settings.langsmith_export_timeout_s,
+        ),
+        enabled=True,
+        sampling_rate=settings.langsmith_tracing_sampling_rate,
+    )
+    return _trace_factory
 
 
 def current_request_trace() -> RequestTrace | None:

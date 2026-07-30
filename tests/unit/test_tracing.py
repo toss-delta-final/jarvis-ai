@@ -1,12 +1,19 @@
 import asyncio
 
+import pytest
+
 from app.core.tracing import (
     FakeTraceExporter,
+    LangSmithTraceExporter,
     NoopRequestTrace,
     TraceFactory,
+    UnsafeTelemetryError,
     bind_request_trace,
     current_request_trace,
+    get_trace_factory,
+    set_trace_factory,
     trace_span,
+    validate_export_payload,
 )
 
 
@@ -157,3 +164,136 @@ async def test_exporter_failure_is_isolated_and_finish_remains_idempotent(caplog
     assert exporter.calls == 1
     assert "TELEMETRY_EXPORT_FAILED" in caplog.text
     assert "customer@example.com" not in caplog.text
+
+
+async def test_sensitive_nested_payload_drops_entire_trace(caplog) -> None:
+    payload = {
+        "inputs": {"nested": [{"authorization": "Bearer abcdefghijklmnop"}]},
+        "outputs": {"email": "person@example.com"},
+        "exception": {"message": "sk-abcdefghijklmnop1234"},
+        "headers": {"cookie": "sid=secret"},
+    }
+    with pytest.raises(UnsafeTelemetryError):
+        validate_export_payload(payload)
+
+    exporter = FakeTraceExporter()
+    factory = TraceFactory(
+        exporter=exporter,
+        enabled=True,
+        sampling_rate=1.0,
+        payload_validator=lambda _payload: (_ for _ in ()).throw(UnsafeTelemetryError("canary")),
+    )
+    trace = factory.start_request(
+        name="buyer_chat_turn",
+        request_id="req-secret",
+        conversation_id="session-secret",
+        thread_id="thread-secret",
+        lane="buyer",
+        environment="test",
+    )
+    await trace.finish(status="FAILED", error_type="INTERNAL", terminal_reason="error")
+
+    assert exporter.exported == []
+    assert "TELEMETRY_REDACTION_FAILED" in caplog.text
+    assert "req-secret" in caplog.text
+    assert "buyer_chat_turn" in caplog.text
+    assert "canary" not in caplog.text
+
+
+def test_sampling_zero_always_returns_noop() -> None:
+    factory = TraceFactory(exporter=FakeTraceExporter(), enabled=True, sampling_rate=0.0)
+
+    assert isinstance(_start_trace(factory), NoopRequestTrace)
+
+
+def test_sampling_one_always_traces() -> None:
+    factory = TraceFactory(exporter=FakeTraceExporter(), enabled=True, sampling_rate=1.0)
+
+    assert not isinstance(_start_trace(factory), NoopRequestTrace)
+
+
+def test_sampling_is_deterministic_for_same_request_id() -> None:
+    decisions = []
+    for _ in range(10):
+        factory = TraceFactory(exporter=FakeTraceExporter(), enabled=True, sampling_rate=0.5)
+        decisions.append(isinstance(_start_trace(factory), NoopRequestTrace))
+
+    assert len(set(decisions)) == 1
+
+
+async def test_metadata_keys_outside_allowlist_are_rejected(caplog) -> None:
+    exporter = FakeTraceExporter()
+    trace = _start_trace(TraceFactory(exporter=exporter, enabled=True, sampling_rate=1.0))
+
+    with bind_request_trace(trace):
+        with trace_span("buyer.routing", "chain", {"unexpectedMetadata": "safe-looking"}):
+            pass
+    await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+
+    assert exporter.exported == []
+    assert "TELEMETRY_REDACTION_FAILED" in caplog.text
+
+
+async def test_safe_token_count_metadata_is_exported() -> None:
+    exporter = FakeTraceExporter()
+    trace = _start_trace(TraceFactory(exporter=exporter, enabled=True, sampling_rate=1.0))
+
+    with bind_request_trace(trace):
+        with trace_span("llm.decompose", "llm", {"promptTokens": 12}):
+            pass
+    await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+
+    assert exporter.exported[0][1].metadata["promptTokens"] == 12
+
+
+async def test_langsmith_batch_export_uses_safe_explicit_run_payloads() -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.create = None
+
+        def batch_ingest_runs(self, *, create=None, update=None) -> None:
+            assert update is None
+            self.create = create
+
+    client = FakeClient()
+    exporter = LangSmithTraceExporter(client, "jarvis-ai-test", 0.5)
+    trace = _start_trace(TraceFactory(exporter=exporter, enabled=True, sampling_rate=1.0))
+    with bind_request_trace(trace):
+        with trace_span("buyer.routing", "chain"):
+            pass
+    await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+
+    assert client.create is not None
+    assert len(client.create) == 2
+    roots = [payload for payload in client.create if payload["parent_run_id"] is None]
+    assert len(roots) == 1
+    by_name = {payload["name"]: payload for payload in client.create}
+    assert by_name["buyer.routing"]["parent_run_id"] == by_name["buyer_chat_turn"]["id"]
+    assert all(payload["inputs"] == {} for payload in client.create)
+    assert all(payload["outputs"] == {} for payload in client.create)
+    assert all(payload["session_name"] == "jarvis-ai-test" for payload in client.create)
+    assert "person@example.com" not in repr(client.create)
+
+
+def test_tracing_false_never_constructs_langsmith_client(monkeypatch) -> None:
+    from app.core.config import get_settings
+
+    constructed = False
+
+    def fail_if_constructed(*args, **kwargs):
+        del args, kwargs
+        nonlocal constructed
+        constructed = True
+        raise AssertionError("LangSmith client must not be constructed")
+
+    monkeypatch.setenv("LANGSMITH_TRACING", "false")
+    monkeypatch.setattr("langsmith.Client", fail_if_constructed)
+    get_settings.cache_clear()
+    set_trace_factory(None)
+    try:
+        factory = get_trace_factory()
+        assert isinstance(_start_trace(factory), NoopRequestTrace)
+        assert constructed is False
+    finally:
+        set_trace_factory(None)
+        get_settings.cache_clear()
