@@ -11,14 +11,27 @@ SessionClaimEvent는 이 모듈이 소유한다.
 
 from __future__ import annotations
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from app.schemas.chat import CamelModel
+
+_BIGINT_MAX = 2**63 - 1
 
 
 class SessionClaimEvent(CamelModel):
     """Spring login completion event that transfers one guest session to a member."""
 
-    session_id: str
-    guest_id: str
-    user_id: int = Field(gt=0)
+    session_id: str = Field(strict=True, min_length=1)
+    guest_id: str = Field(strict=True, min_length=1)
+    user_id: int = Field(strict=True, gt=0, le=_BIGINT_MAX)
+
+    @field_validator("session_id", "guest_id")
+    @classmethod
+    def _limit_key_length(cls, value: str) -> str:
+        """공개 claim 식별자는 chat key와 같은 설정 상한을 사용한다."""
+        from app.core.config import get_settings
+
+        cap = get_settings().chat_key_max_chars
+        if len(value) > cap:
+            raise ValueError(f"identifier exceeds {cap} characters")
+        return value

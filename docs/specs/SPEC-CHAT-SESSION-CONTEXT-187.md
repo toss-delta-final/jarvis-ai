@@ -184,12 +184,15 @@ legacy root GC와 lazy adoption은 같은 PostgreSQL advisory migration fence를
 
 | 수용 기준 | 자동화 |
 |---|---|
-| G1의 S1 아래 T1-T3 생성 | `test_guest_session_d6_expires_all_threads_then_claim_keeps_context` |
+| G1의 S1 아래 T1-T3 생성 | `test_guest_session_d6_expires_all_threads_then_claim_keeps_context` — dev-mode 서명검증 생략 하니스에서 lifecycle 동작 검증 |
 | T1 touch가 shared D6를 갱신 | 같은 테스트의 599초 생존/601초 만료 검증 |
 | 만료 시 filter/cart/revert/thread 일괄 삭제 | 같은 테스트의 실제 store 조회 |
 | 재구축·claim·세 탭 연속성, stable context | buyer/profile E2E 두 테스트 |
 | old G1 403 및 branch/turn 미생성 | buyer/profile E2E 두 테스트 |
 | transcript 보존, guest fact 격리 | `test_guest_claim_preserves_transcripts_but_promotes_only_member_facts` |
+| production RS256 ticket의 signed `sessionId` 필수/일치 | `test_buyer_session_claim_must_match_body`, `test_buyer_session_claim_is_required_in_jwks_mode` |
+| production inbound service token fail-closed | `test_claim_requires_service_token_in_jwks_mode`, `test_service_token_mismatch_401`, `test_service_token_missing_401` |
+| claim body strict BIGINT/key 검증 | `test_claim_rejects_values_outside_strict_public_contract` |
 
 ## 11. 외부 릴리스 gate — 이 저장소에서 미실행
 

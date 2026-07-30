@@ -198,6 +198,13 @@ async def test_guest_claim_preserves_transcripts_but_promotes_only_member_facts(
     assert await repo.get_threads(before_claim.context_id) == ["T1", "T2", "T3"]
     assert len(await conversation_store.turns_for(guest_key)) == len(guest_turns)
 
+    profile_store = await get_profile_store()
+    member_buffer = await profile_store.get_session_ctx(member_key)
+    guest_buffer = await profile_store.get_session_ctx(guest_key)
+    assert member_buffer == list(member_messages.values())
+    assert guest_buffer == []
+    assert not any("GUEST_ONLY_SECRET" in item for item in member_buffer)
+
     llm._delta = {
         "deltas": [
             {
@@ -212,7 +219,7 @@ async def test_guest_claim_preserves_transcripts_but_promotes_only_member_facts(
     assert ended.status_code == 202
     assert ended.json() == {"status": "accepted"}
 
-    facts = await (await get_profile_store()).get_facts("1")
+    facts = await profile_store.get_facts("1")
     assert facts == ["회원 전환 후 세 탭에서 여행용품을 탐색한다"]
     assert not any("GUEST_ONLY_SECRET" in fact for fact in facts)
     assert [turn.user_text for turn in await conversation_store.turns_for(guest_key)] == list(

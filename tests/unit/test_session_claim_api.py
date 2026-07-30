@@ -595,6 +595,48 @@ async def test_claim_rejects_invalid_body(
     assert response.json()["error"]["code"] == "BAD_REQUEST"
 
 
+@pytest.mark.parametrize(
+    "case",
+    [
+        "bool-user",
+        "zero-user",
+        "overflow-user",
+        "empty-session",
+        "empty-guest",
+        "long-session",
+        "long-guest",
+    ],
+)
+async def test_claim_rejects_values_outside_strict_public_contract(
+    client: httpx.AsyncClient,
+    repo: SessionContextRepository,
+    case: str,
+) -> None:
+    from app.core.config import get_settings
+
+    body: dict[str, object] = {
+        "sessionId": "session-1",
+        "guestId": "guest-1",
+        "userId": 7,
+    }
+    invalid = {
+        "bool-user": ("userId", True),
+        "zero-user": ("userId", 0),
+        "overflow-user": ("userId", 2**63),
+        "empty-session": ("sessionId", ""),
+        "empty-guest": ("guestId", ""),
+        "long-session": ("sessionId", "s" * (get_settings().chat_key_max_chars + 1)),
+        "long-guest": ("guestId", "g" * (get_settings().chat_key_max_chars + 1)),
+    }
+    field, value = invalid[case]
+    body[field] = value
+
+    response = await client.post("/events/session-claim", json=body)
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "BAD_REQUEST"
+
+
 async def test_claim_log_fingerprints_external_identifiers(
     client: httpx.AsyncClient,
     repo: SessionContextRepository,

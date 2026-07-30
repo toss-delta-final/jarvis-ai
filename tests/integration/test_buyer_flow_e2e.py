@@ -499,8 +499,10 @@ async def test_guest_session_d6_expires_all_threads_then_claim_keeps_context(
     from app.agents.buyer.recommendation.state import get_revert_store
     from app.agents.buyer.session_state import context_thread_key
     from app.core import session_context
+    from app.core.conversation import conversation_key, get_conversation_store
     from app.core.session_context import SessionContextRepository
     from app.core.session_lifecycle import SessionLifecycleCoordinator
+    from app.schemas.spring import ProductSearchFilters
 
     now = [0.0]
     repo = SessionContextRepository(clock=lambda: now[0])
@@ -524,6 +526,26 @@ async def test_guest_session_d6_expires_all_threads_then_claim_keeps_context(
     assert all([await filter_store.get(key) is not None for key in keys])
     assert all([await cart_store.get_last_reco(key) for key in keys])
     assert await revert_store.get(keys[1]) == {"여행용품"}
+    conversation_store = await get_conversation_store()
+    guest_conversation_key = conversation_key("G1", "S1")
+    pre_d6_turns = await conversation_store.turns_for(guest_conversation_key)
+    pre_d6_transcript = [
+        (turn.turn_id, turn.user_text, turn.assistant_text, turn.status) for turn in pre_d6_turns
+    ]
+    assert len(pre_d6_transcript) == 3
+    assert all(
+        user_text and assistant_text for _, user_text, assistant_text, _ in pre_d6_transcript
+    )
+
+    async def assert_pre_d6_transcript_preserved() -> None:
+        for turn_id, user_text, assistant_text, status in pre_d6_transcript:
+            current = await conversation_store.get_turn(turn_id)
+            assert current is not None
+            assert (current.user_text, current.assistant_text, current.status) == (
+                user_text,
+                assistant_text,
+                status,
+            )
 
     now[0] = 500.0
     touched = _chat(client, "T1만 다시 사용", session="S1", thread="T1", headers=guest_headers)
@@ -542,6 +564,7 @@ async def test_guest_session_d6_expires_all_threads_then_claim_keeps_context(
     assert all([await filter_store.get(key) is None for key in keys])
     assert all([await cart_store.get_last_reco(key) == [] for key in keys])
     assert await revert_store.get(keys[1]) == set()
+    await assert_pre_d6_transcript_preserved()
 
     now[0] = 1_102.0
     for thread_id in ("T1", "T2", "T3"):
@@ -550,6 +573,17 @@ async def test_guest_session_d6_expires_all_threads_then_claim_keeps_context(
     rebuilt_context = await repo.get_context("S1")
     assert rebuilt_context is not None
     assert rebuilt_context.context_id == original.context_id
+    await assert_pre_d6_transcript_preserved()
+
+    filter_sentinel = ProductSearchFilters(
+        category="CLAIM_FILTER_SENTINEL",
+        keyword="CLAIM_KEYWORD_SENTINEL",
+    )
+    cart_sentinel = [(9_876_543_210, "CLAIM_CART_SENTINEL")]
+    revert_sentinel = {"CLAIM_REVERT_SENTINEL"}
+    await filter_store.put(keys[0], filter_sentinel)
+    await cart_store.set_last_reco(keys[1], cart_sentinel)
+    await revert_store.add(keys[2], revert_sentinel)
 
     claim = client.post(
         "/events/session-claim",
@@ -563,6 +597,10 @@ async def test_guest_session_d6_expires_all_threads_then_claim_keeps_context(
     assert claimed_context.context_id == original.context_id
     assert claimed_context.owner_type == "member"
     assert claimed_context.owner_id == "1"
+    assert await filter_store.get(keys[0]) == filter_sentinel
+    assert await cart_store.get_last_reco(keys[1]) == cart_sentinel
+    assert await revert_store.get(keys[2]) == revert_sentinel
+    await assert_pre_d6_transcript_preserved()
 
     for thread_id in ("T1", "T2", "T3"):
         continued = _chat(client, session="S1", thread=thread_id, headers=member_headers)

@@ -835,9 +835,9 @@ Spring은 로그인 완료 후 guest 접속 전체를 회원에게 넘기기 위
 
 | 필드 | 타입 | 필수 | 설명 |
 |---|---|---|---|
-| `sessionId` | string | 예 | BE가 로그인 전후 이어 쓸 접속 id |
-| `guestId` | string | 예 | 로그인 직전 서명 티켓의 guest `sub`와 같은 소유자 |
-| `userId` | number(BIGINT) | 예 | 로그인 완료 회원 id, 양의 정수 |
+| `sessionId` | string | 예 | BE가 로그인 전후 이어 쓸 접속 id. 빈 문자열 금지, 최대 `chat_key_max_chars` |
+| `guestId` | string | 예 | 로그인 직전 서명 티켓의 guest `sub`와 같은 소유자. 빈 문자열 금지, 최대 `chat_key_max_chars` |
+| `userId` | number(BIGINT) | 예 | 로그인 완료 회원 id. **strict 양의 정수 `1..2^63-1`**이며 string/float/bool coercion 금지 |
 
 **응답**
 
@@ -854,7 +854,7 @@ transcript도 보존하지만 member profile buffer로 복사하지 않는다. �
 | HTTP | `code` | 조건 |
 |---|---|---|
 | `401` | `INTERNAL_TOKEN_INVALID` | 운영에서 서비스 토큰 누락/불일치 |
-| `400` | `BAD_REQUEST` | 필수 필드/타입 오류, `userId <= 0` |
+| `400` | `BAD_REQUEST` | 필수 필드/strict 타입 오류, 빈/초과 길이 id, `userId`가 `1..2^63-1` 밖이거나 bool |
 | `409` | `SESSION_ACTIVE` | guest scope 활성 stream 존재 |
 | `409` | `SESSION_FINALIZING` | idle finalization 진행 중 |
 | `409` | `SESSION_CLAIM_CONFLICT` | 다른 claim 이력, terminal, owner 불일치 |
