@@ -265,9 +265,20 @@ async def expand_needs(utterance, *, llm, settings, expand: ExpandFn = _llm_expa
 빈도)을 데이터로 정한다. 하류 관측(`category_distance_rejected` 등, DESIGN-59 §11)과 조합하면
 "전개 성공 → 카테고리 채택" 전환율을 볼 수 있다.
 
-## 11. 명세 개정 요구 (구현보다 선행)
+## 11. 명세 개정 — 완료 (v0.10.0, 2026-07-30)
 
-정본 `SPEC-RECOMMEND-001` 이 **별도 호출을 금지**하고 있어 개정이 선행돼야 한다.
+`SPEC-RECOMMEND-001` 이 **별도 호출을 금지**하고 있어 개정을 선행했다. **개정 완료** — `EX-7`·
+`AC-REC-37`·§비기능 호출 상한 + HISTORY `v0.10.0`, 버전 헤더 `0.9.0 → 0.10.0`, `docs/specs/README.md`
+버전 열 정합.
+
+> ⚠️ **정본 반영 필요** — `docs/specs/SPEC-RECOMMEND-001.md` 는 **동기화 사본**이고 정본은 기획 저장소
+> `.moai/specs/SPEC-RECOMMEND-001/spec.md` 다(`docs/specs/README.md` 첫 줄). 같은 개정을 정본에도
+> 반영해야 다음 동기화 때 유실되지 않는다 — 최근에도 사본 drift 정정 이력이 있다(#191). 아래 개정
+> 내용을 그대로 옮기면 된다.
+
+**개정 논리**: 결정 14 가 금지한 것은 **분류(classification)** 호출이고, `shopping_list` 분해는
+**생성(generation)** 작업이라 취지와 충돌하지 않는다. 다만 `AC-REC-37` 이 호출 수를 "1회"로 못
+박고 있어 명시적으로 완화했다.
 
 **개정 대상**
 
