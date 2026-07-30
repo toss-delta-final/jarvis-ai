@@ -233,7 +233,10 @@ class Settings(BaseSettings):
     # 전개 호출 tier. `fast` 로 시작한다 — §2 의 실패는 "fast 라서"가 아니라 "한 호출에 6가지 작업이
     # 얹혀서"였으므로, **단일 작업 전용 호출**의 fast 성능은 별개 측정 대상이다(설계 OPEN-2).
     # 실측 미달 시 "smart" 로 승격한다.
-    needs_expansion_tier: str = "fast"
+    # Literal 로 좁힌다 — 이 값은 `resolve_model_id` 에 들어가고 그것은 미지 tier 에 LLMError 를
+    # 던진다. 전개는 그 호출을 관측 기록(§6.3)보다 **뒤에** 하므로(needs_expansion.py) 오타 하나가
+    # 퇴화가 아니라 턴 예외가 된다. 잘못된 설정은 부팅 시 pydantic 이 막는 게 맞다.
+    needs_expansion_tier: Literal["fast", "smart"] = "fast"
     # 이 개수 미만이면 전개 실패로 본다 — 1개면 발화 복사로 되돌아가므로 최소 2개.
     needs_expansion_min_items: int = Field(default=2, ge=1)
     needs_expansion_purpose_markers: list[str] = [

@@ -246,7 +246,23 @@ def _settings(*, fanout_max: int = 5, min_items: int = 2) -> SimpleNamespace:
         category_fanout_max=fanout_max,
         needs_expansion_min_items=min_items,
         needs_expansion_tier="fast",
+        # resolve_model_id 용 — 관측 기록(§10)이 tier 를 모델 ID 로 바꿀 때 읽는다.
+        llm_provider="openai",
+        openai_fast_model_id="gpt-5-nano",
+        openai_smart_model_id="gpt-5.6-luna",
     )
+
+
+class _FakeObserver:
+    """record_model_call 만 갖는 최소 관측자 — 기록된 모델 ID 를 모아둔다."""
+
+    def __init__(self) -> None:
+        self.models: list[str] = []
+
+    def record_model_call(
+        self, model: str, prompt_tokens: int = 0, completion_tokens: int = 0
+    ) -> None:
+        self.models.append(model)
 
 
 def _items(*names: str) -> str:
@@ -321,3 +337,57 @@ async def test_expand_is_injectable_without_llm() -> None:
 
     out = await expand_needs("발화", llm=None, settings=_settings(), expand=_fake_expand)
     assert out == ["디퓨저", "식기 세트"]
+
+
+# ── 관측 기록 (§10, api-spec §6.3) ───────────────────────────────────────────
+
+
+async def test_expand_records_model_call() -> None:
+    """전개 LLM 호출은 `chat_request` 로그에 잡혀야 한다 (PR #203 리뷰).
+
+    `observability.py` 가 `model_calls` 를 `model`/`promptTokens`/`completionTokens` 로 합산하고,
+    api-spec §6.3 은 이를 "LLM 호출별 합산"으로 규정한다. 전개는 **조건부 +1 호출**이라고 정본
+    `SPEC-RECOMMEND-001` AC-REC-37·§비기능(`2 + 1`)에 명시했으므로, 기록이 빠지면 그 주장을
+    운영 로그로 검증할 수 없다(설계 OPEN-2 의 tier 실측도 같은 로그에 의존).
+    """
+    observer = _FakeObserver()
+    llm = _FakeLLM(raw=_items("디퓨저", "식기 세트"))
+    out = await expand_needs("집들이 선물", llm=llm, settings=_settings(), observer=observer)
+    assert out == ["디퓨저", "식기 세트"]
+    assert observer.models == ["gpt-5-nano"]  # needs_expansion_tier="fast"
+
+
+async def test_expand_records_model_call_even_when_llm_fails() -> None:
+    """호출이 실패해도 기록한다 — 실패한 호출도 비용이 발생하고, `decompose`(graph.py:154)·
+    rerank(recommendation/graph.py:311)도 **호출 전** 기록이라 같은 규약을 따른다."""
+    observer = _FakeObserver()
+    llm = _FakeLLM(error=True)
+    assert await expand_needs("집들이 선물", llm=llm, settings=_settings(), observer=observer) == []
+    assert observer.models == ["gpt-5-nano"]
+
+
+async def test_expand_records_nothing_when_llm_missing() -> None:
+    """llm 미구성이면 호출 자체가 없으므로 기록도 없다 — 없는 비용을 로그에 만들지 않는다."""
+    observer = _FakeObserver()
+    assert (
+        await expand_needs("집들이 선물", llm=None, settings=_settings(), observer=observer) == []
+    )
+    assert observer.models == []
+
+
+async def test_injected_non_llm_expander_records_nothing() -> None:
+    """주입형 전개기(B 카탈로그·C 캐시)는 LLM 을 쓰지 않으므로 모델 호출을 기록하지 않는다.
+
+    기록을 호출부(`graph.py`)에 두면 **전개기 종류와 무관하게** 기록돼 유령 모델 호출이 남는다
+    (LLM 을 쓰는 `_llm_expand` 안에 둬야 하는 이유 — `llm is None` 가드와 동일한 원칙, §3.2).
+    """
+    observer = _FakeObserver()
+
+    async def _fake_expand(utterance, **_):
+        return ["디퓨저", "식기 세트"]
+
+    out = await expand_needs(
+        "집들이 선물", llm=None, settings=_settings(), expand=_fake_expand, observer=observer
+    )
+    assert out == ["디퓨저", "식기 세트"]
+    assert observer.models == []

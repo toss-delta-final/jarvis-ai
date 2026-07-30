@@ -326,9 +326,17 @@ D2·D3 의 **텍스트 판정은 `query` 만** 대상으로 한다 — raw 만 �
 - `needs_expanded` — `items`(전개된 상품명), 개수, 소요 ms
 - `needs_expansion_failed` — `reason`, 원 leg 유지했음
 - `needs_expansion_skipped` — `reason`(`disabled`/`llm_unavailable`)
-- **`case`(§4.1)** — 매 recommend 턴의 `decompose` 산출 `case` 를 남긴다. 코드 분기에는 쓰지 않지만
-  (감지는 D1~D3), 신뢰 가능해진 값이므로 하류 Case 3 기능(#168 `groups`·#163 `budget`)이 참조할
-  근거를 축적한다. `case==3` 인데 전개 실패한 턴의 빈도가 이 이슈의 핵심 지표다.
+- **`case`(§4.1·§4.2)** — 매 recommend 턴의 `decompose` 산출 `case` 를 남긴다. **트리거로는 쓰지
+  않지만**(감지는 D1~D3) **게이트로는 쓴다**(`case != 3` 이면 전개 안 함) — 로그가 게이트 판정의
+  유일한 사후 검증 수단이다. 하류 Case 3 기능(#168 `groups`·#163 `budget`)이 참조할 근거도 된다.
+  `case==3` 인데 전개 실패한 턴의 빈도가 이 이슈의 핵심 지표다.
+- **모델 호출 기록**(PR #203 리뷰) — 전개 LLM 호출은 `observer.record_model_call(resolve_model_id(
+  settings, needs_expansion_tier))` 로 `chat_request`(api-spec §6.3)의 `model`·토큰 합산에 싣는다.
+  정본 `SPEC-RECOMMEND-001` AC-REC-37·§비기능이 **`2 + 1` 호출**이라고 명시하므로, 빠지면 그 주장을
+  운영 로그로 검증할 수 없고 OPEN-2(tier 실측)의 근거도 사라진다. 기록 위치는 호출부가 아니라
+  **`_llm_expand` 안** — `expand` 는 주입형 seam 이라(§3.2) 호출부에 두면 LLM 을 쓰지 않는 방식 B·C
+  전개기에도 유령 모델 호출이 남는다(`llm is None` 가드와 동일한 원칙). `decompose`·rerank 와 같이
+  **호출 전** 기록한다(실패한 호출도 비용이 발생한다).
 
 `reason` 분포로 (a) D3 marker 튜닝, (b) `tier` 승격 판단, (c) C 캐시 도입 시점(같은 목적 표현 반복
 빈도)을 데이터로 정한다. 하류 관측(`category_distance_rejected` 등, DESIGN-59 §11)과 조합하면

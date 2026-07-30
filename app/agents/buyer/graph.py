@@ -242,7 +242,11 @@ async def run_buyer_turn(
                     extra={"reason": reason, "legs": len(decision.category_queries)},
                 )
                 expander = expand_needs or _expand_needs
-                items = await expander(request.message, llm=llm, settings=settings)
+                # observer 는 전개기까지 내려보낸다 — 모델 호출을 하는 쪽이 기록해야(§6.3) LLM 을
+                # 쓰지 않는 전개기(방식 B·C)에 유령 호출이 남지 않는다.
+                items = await expander(
+                    request.message, llm=llm, settings=settings, observer=observer
+                )
                 # 실패(빈 리스트)면 원본 legs 를 그대로 둔다 — 전개는 개선 시도이며 실패가 기존
                 # 경로를 악화시키지 않는다(설계 §7 후퇴 없음).
                 if items:

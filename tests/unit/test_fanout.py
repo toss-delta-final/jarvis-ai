@@ -774,3 +774,48 @@ async def test_raw_only_leg_is_not_replaced_by_expansion() -> None:
         expand=expand,
     )
     assert seen == []  # 전개 미호출 — raw 가 신호로 인정됨
+
+
+class _ProbeObserver:
+    """그래프가 observer 에 실제로 쓰는 두 면만 갖는 스텁 — request_id 조회 + 모델 호출 기록."""
+
+    request_id = "req-probe"
+
+    def __init__(self) -> None:
+        self.models: list[str] = []
+
+    def record_model_call(
+        self, model: str, prompt_tokens: int = 0, completion_tokens: int = 0
+    ) -> None:
+        self.models.append(model)
+
+
+async def test_expander_receives_observer_for_model_call_logging() -> None:
+    """[PR #203 리뷰] 그래프는 `observer` 를 전개기까지 내려보낸다 — §6.3 모델 호출 기록의 전제.
+
+    전개는 **조건부 +1 LLM 호출**이고(정본 SPEC-RECOMMEND-001 AC-REC-37·§비기능 `2 + 1`),
+    `chat_request` 로그의 `model`/토큰 합산이 그 호출을 담아야 비용·사용량 집계가 맞는다. 기록은
+    LLM 을 실제로 쓰는 `_llm_expand` 가 하므로(방식 B·C 전개기에 유령 호출을 남기지 않기 위해),
+    그래프의 책임은 **observer 를 seam 으로 전달**하는 것이다. 이 배선이 끊기면 기록이 조용히 사라진다.
+    """
+    got: list = []
+
+    async def _expand(utterance, *, observer=None, **_):
+        got.append(observer)
+        return ["디퓨저", "식기 세트"]
+
+    observer = _ProbeObserver()
+    calls = await _run_recommend(
+        "집들이 선물로 뭐 사갈까",
+        {
+            "intent": "recommend",
+            "reply": "",
+            "case": 3,
+            "filters": {},
+            "categoryQueries": [{"category": None, "query": "집들이 선물"}],
+        },
+        expand=_expand,
+        observer=observer,
+    )
+    assert calls == ["디퓨저", "식기 세트"]  # 전개가 실제로 발동한 턴
+    assert got == [observer]  # 같은 observer 가 seam 까지 도달했다

@@ -25,7 +25,7 @@ import logging
 from collections.abc import Awaitable, Callable, Sequence
 
 from app.agents.buyer.recommendation.state import CategoryQuery, extract_json
-from app.core.llm import LLMError
+from app.core.llm import LLMError, resolve_model_id
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +116,7 @@ def detect_expansion_need(
     return None
 
 
-async def _llm_expand(utterance: str, *, llm, settings) -> list[str]:
+async def _llm_expand(utterance: str, *, llm, settings, observer=None) -> list[str]:
     """전용 LLM 호출 1회로 구체 상품명 목록을 만든다 (방식 A, §5).
 
     `decompose` 와 분리한 이유(§2): 한 호출에 intent·filters·cart·attributes 가 함께 얹히면
@@ -127,11 +127,19 @@ async def _llm_expand(utterance: str, *, llm, settings) -> list[str]:
     원본을 그대로 쓰게 해 **기존 경로를 악화시키지 않는다**(§7 후퇴 없음).
 
     `llm` 미구성 가드가 `expand_needs` 가 아니라 **여기** 있는 이유: 방식 B(카탈로그 기반)·C(캐시)
-    전개기는 LLM 을 쓰지 않으므로, 상위에서 막으면 주입형 seam(§3.2)이 무력해진다.
+    전개기는 LLM 을 쓰지 않으므로, 상위에서 막으면 주입형 seam(§3.2)이 무력해진다. **관측 기록도
+    같은 이유로 여기 있다**(PR #203 리뷰) — 호출부에 두면 전개기 종류와 무관하게 기록돼 LLM 을 쓰지
+    않는 전개기에도 유령 모델 호출이 남는다.
     """
     if llm is None:
         logger.info("needs_expansion_skipped", extra={"reason": "llm_unavailable"})
         return []
+    # api-spec §6.3 — chat_request 로그의 model·토큰 합산에 이 조건부 호출을 싣는다. 정본
+    # SPEC-RECOMMEND-001 AC-REC-37·§비기능이 "2 + 1 호출"이라고 명시하므로, 빠지면 그 주장을
+    # 운영 로그로 검증할 수 없다. `decompose`(graph.py)·rerank 와 같이 **호출 전** 기록한다 —
+    # 실패한 호출도 비용이 발생한다.
+    if observer is not None:
+        observer.record_model_call(resolve_model_id(settings, settings.needs_expansion_tier))
     try:
         raw = await llm.complete(
             system=_SYSTEM,
@@ -157,6 +165,7 @@ async def expand_needs(
     llm,
     settings,
     expand: ExpandFn = _llm_expand,
+    observer=None,
 ) -> list[str]:
     """목적·상황형 발화를 구체 상품명 목록으로 전개한다. 실패하면 **빈 리스트**(§7).
 
@@ -164,11 +173,14 @@ async def expand_needs(
     C(캐시)로 갈아끼우는 것이 **주입 한 줄**이 되게 한다. 저장소 공통 패턴(embed·search_top_k·
     exact_lookup·select_category)과 동일하다.
 
+    `observer` 는 전개기에 그대로 넘긴다 — **모델 호출을 실제로 하는 쪽이 기록**하므로(§10,
+    api-spec §6.3), LLM 을 쓰지 않는 전개기는 받고도 무시하면 된다.
+
     상한은 `category_fanout_max` 를 **재사용**한다 — 매핑·검색이 이미 그 값으로 절단하므로 별도
     튜너블을 두면 두 상한이 어긋난다(§6). `needs_expansion_min_items` 미만이면 전개 실패로 본다
     (1개면 발화 복사로 되돌아간다).
     """
-    items = await expand(utterance, llm=llm, settings=settings)
+    items = await expand(utterance, llm=llm, settings=settings, observer=observer)
     items = items[: settings.category_fanout_max]
     if len(items) < settings.needs_expansion_min_items:
         logger.info(
