@@ -218,7 +218,11 @@ class Settings(BaseSettings):
     # pg-catalog 검색 풀 max_size — fan-out 은 한 턴에 최대 category_fanout_max leg 를 gather 로
     # 동시 조회하므로, psycopg_pool 기본값(4)이면 그 이상 leg 가 커넥션을 기다린다. fanout 이상 +
     # 동시 요청 헤드룸으로 명시(암묵 하드코딩 제거, PR #73 리뷰).
-    category_search_pool_max_size: int = 10
+    # [#115] 앵커가 leg 당 raw·query **2개**가 되면서(§4.3) 한 턴의 동시 조회가 `2 × fanout_max`
+    # 로 늘었다 — 종전 10 은 한 턴이 풀 전체를 소진해 동시 요청 헤드룸이 0 이었다(PR #188 리뷰).
+    # 20 = 2 × fanout_max(한 턴) × 동시 턴 2. 하한은 아래 _require_pool_covers_anchor_concurrency
+    # 가 기동 시 강제한다.
+    category_search_pool_max_size: int = 20
     # [#115] 최근접 채택 상한 — 채택 거리가 이 값을 **초과**하면 그 leg 를 canonical 없이 드롭한다
     # (§4 거리 조건부 채택. 종전 never-null "멀어도 억지로 채택"은 폐기). 거리 0.22 초과는 "맞는 칸이
     # taxonomy 에 없다"의 신호다 — "부모님 환갑 선물"이 출산/돌기념품(0.2971)으로 붕괴하는 식.
@@ -360,6 +364,28 @@ class Settings(BaseSettings):
     def _normalize_llm_provider(cls, value: object) -> object:
         """기존 환경변수 호환을 위해 provider 값의 ASCII 대소문자를 정규화한다."""
         return value.lower() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def _require_pool_covers_anchor_concurrency(self) -> "Settings":
+        """검색 풀이 한 턴의 동시 조회(`2 × category_fanout_max`)를 못 덮으면 기동 실패 (PR #188 리뷰).
+
+        매핑은 leg 마다 raw·query **두 앵커**를 gather 로 동시 조회한다(§4.3 #115). 두 값은 함께
+        움직여야 하는 쌍인데 테스트로만 묶으면 기본값 조합에서만 걸린다 — `category_fanout_max` 를
+        올리는 쪽(#168 은 leg 10 계획)이 풀을 잊으면 한 턴이 풀을 소진해 **다른 사용자의 조회가
+        대기**한다(증상은 PoolTimeout 이라 원인이 드러나지 않는다). 기동 시점에 막는다.
+
+        `2 ×` 상한의 전제: leg 수는 **호출부**가 `category_fanout_max` 로 절단한다
+        (`decompose._parse_category_queries`·`expand_needs`) — `map_categories` 자신은 출력만
+        절단하므로, 절단 없이 leg 을 넘기는 호출부가 생기면 이 상한도 함께 재검토해야 한다.
+        """
+        need = 2 * self.category_fanout_max
+        if self.category_search_pool_max_size < need:
+            raise ValueError(
+                "CATEGORY_SEARCH_POOL_MAX_SIZE must be >= 2 * CATEGORY_FANOUT_MAX "
+                f"(need {need}, got {self.category_search_pool_max_size}): "
+                "mapping probes two anchors (raw, query) per leg concurrently"
+            )
+        return self
 
     @model_validator(mode="after")
     def _require_pepper_in_prod(self) -> "Settings":

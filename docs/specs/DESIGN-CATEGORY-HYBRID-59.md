@@ -289,6 +289,13 @@ query 는 발화에 묶여 안정적이라, query 우선이면 raw 흔들림이 
 - **LLM 예산**: 애매한 leg 수만큼 조건부로 늘어난다(최대 `category_fanout_max`). 동시 실행하되
   상한을 `category_select_max_calls`(§10)로 둔다 — 상한 초과 leg 는 임베딩 top-1 을 그대로 쓴다.
   §12 예산 항목을 이에 맞춰 개정한다.
+- **예산 배분 순서 = 마진 오름차순**(PR #188 리뷰). 애매한 leg 이 상한보다 많을 때 leg 인덱스로
+  자르면, 애매함의 **판정** 기준(마진)과 **배분** 기준(인덱스)이 코드 안에서 어긋난다 — 마진 0.002
+  (1·2위가 거의 붙음)가 검증 없이 top-1 로 남고 컷 턱걸이 0.019 가 예산을 먹는 역전이 생긴다.
+  트레이드오프: `legs[0]` 은 대표 카테고리(칩·멀티턴 승계, §7)라 "눈에 띄는 것 먼저"라는 명분도
+  있으나, 애매함이 큰 leg 을 방치하면 틀린 카테고리로 검색이 좁혀지는 손해가 대표 여부와 무관하게
+  발생한다. 대표 leg 이 정말 애매하면 마진도 작아 우선순위를 자연히 얻는다. 잘린 leg 은
+  `category_select_unavailable{reason:"max_calls", margin}` 로 남겨 배분을 사후 검증한다(§11).
 
 ## 5. 실패 degrade — leg 단위 격리 (canonical-or-null, PR #73 #20·리뷰)
 
@@ -441,7 +448,7 @@ decompose 프롬프트("PRIOR_FILTERS 병합")로도 유도하지만(#10a), Haik
 | `category_fanout_max` | 5 | 턴당 최대 카테고리 수(프롬프트 상한 + 코드 절단) |
 | `category_fanout_per_cat_limit` | 10 | leg 별 AI top-K(leg `limit`, size 제거 2026-07-23 §4.6) |
 | `category_fanout_merge_cap` | 30 | 병합 후 rerank 입력 상한 |
-| `category_search_pool_max_size` | 10 | pg-catalog 검색 풀 max_size(fan-out 동시성 ≥ fanout, PR #73 리뷰) |
+| `category_search_pool_max_size` | 20 | pg-catalog 검색 풀 max_size. **하한 `2 × category_fanout_max` 를 기동 시 강제**(PR #188 리뷰) — 매핑이 leg 당 raw·query 두 앵커를 동시 조회하므로(§4.3) 종전 10 은 한 턴이 풀을 소진해 헤드룸이 0 이었다. 20 = 2 × fanout(한 턴) × 동시 턴 2 |
 | `category_distance_max` | **0.22** | **[#115]** 채택 상한 — 최근접 코사인 거리가 이를 넘으면 그 leg 드롭(§4) |
 | `category_select_margin_max` | **0.02** | **[#115]** 마진(2위−1위)이 이 값 이하면 top-k LLM 택일(§4.4) |
 | `category_select_max_calls` | **2** | **[#115]** 턴당 택일 LLM 호출 상한 — 초과 leg 는 임베딩 top-1 유지(§4.4) |

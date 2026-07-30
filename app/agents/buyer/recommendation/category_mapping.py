@@ -215,7 +215,14 @@ async def map_categories(
             )
     else:
         # 턴당 상한 — fan-out 전 leg 이 애매하면 LLM 이 폭증한다. 초과분은 top-1 유지(종전 동작).
+        # 예산은 **마진이 작은(가장 애매한) leg 부터** 쓴다(PR #188 리뷰) — 애매함의 판정 기준이
+        # 마진인데 배분을 leg 인덱스로 하면 코드 안에서 기준이 어긋나, 마진 0.002 가 검증 없이
+        # top-1 로 남고 컷 턱걸이 0.019 가 예산을 먹는 역전이 생긴다. `legs[0]` 이 대표 카테고리
+        # (칩·멀티턴 승계)라 "눈에 띄는 것 먼저"라는 명분도 있으나, 애매함이 큰 leg 을 방치하면
+        # 틀린 카테고리로 검색이 좁혀지는 손해가 대표 여부와 무관하게 발생한다. 대표 leg 이 정말
+        # 애매하면 마진도 작아 우선순위를 자연히 얻는다. 동률은 leg 인덱스 순(정렬 안정성).
         max_calls = settings.category_select_max_calls
+        ambiguous.sort(key=lambda i: nearest[i][2])
         for i in ambiguous[max_calls:]:
             logger.info(
                 "category_select_unavailable",

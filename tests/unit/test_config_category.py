@@ -21,13 +21,31 @@ def test_category_mapping_settings_defaults() -> None:
 
 
 def test_pool_max_size_covers_fanout_concurrency() -> None:
-    """검색 풀 max_size 는 fan-out 동시 조회(최대 category_fanout_max leg)를 커버해야 한다(PR #73 리뷰).
+    """검색 풀 max_size 는 한 턴의 동시 조회 **× 앵커 수**를 커버해야 한다(PR #73·#188 리뷰).
 
     psycopg_pool 기본 max_size(4) < fanout(5) 이면 5번째 leg 가 커넥션을 기다려 gather 병렬화가
-    부분 무력화된다 — 암묵 하드코딩(psycopg 기본값)을 config 로 빼고 fanout 이상으로 명시한다.
+    부분 무력화된다 — 암묵 하드코딩(psycopg 기본값)을 config 로 뺐다(PR #73).
+
+    [#115] 앵커가 leg 당 raw·query **2개**가 되면서(§4.3) 한 턴의 동시 조회가 `2 × fanout_max`
+    로 늘었다. 종전 기준(`>= fanout_max`)은 10 >= 5 로 통과하지만 **한 턴이 풀 전체를 소진**해
+    동시 요청 헤드룸이 사라진다 — 기준을 실제 필요량으로 올린다(PR #188 리뷰).
     """
     settings = Settings(_env_file=None)
-    assert settings.category_search_pool_max_size >= settings.category_fanout_max
+    assert settings.category_search_pool_max_size >= 2 * settings.category_fanout_max
+
+
+def test_pool_max_size_below_anchor_concurrency_rejected() -> None:
+    """풀이 `2 × fanout_max` 미만이면 **기동 시** 거부한다 (PR #188 리뷰).
+
+    테스트만으로 막으면 `category_fanout_max` 를 올리는 쪽(#168 은 leg 10 을 계획)이 풀을 잊어도
+    기본값 조합에서만 걸린다. 두 값은 함께 움직여야 하는 쌍이므로 config 불변식으로 고정해,
+    fanout 을 올리는 순간 부팅이 막혀 이 결정을 반드시 다시 마주하게 한다.
+    """
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, category_fanout_max=10, category_search_pool_max_size=10)
+    # 함께 올리면 통과한다 — 금지가 아니라 "짝을 맞춰라"는 제약임을 고정
+    ok = Settings(_env_file=None, category_fanout_max=10, category_search_pool_max_size=24)
+    assert ok.category_fanout_max == 10
 
 
 def test_negative_fanout_max_rejected() -> None:

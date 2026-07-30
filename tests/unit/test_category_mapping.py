@@ -789,3 +789,37 @@ async def test_search_lookups_run_in_parallel() -> None:
     # 성공 경로였음을 함께 확인 — fake 반환형이 계약과 어긋나면 매핑이 조용히 하드실패 경로로
     # 빠져(빈 legs) peak 만 보는 이 테스트가 통과해버린다(실제로 그런 상태를 한 번 지나왔다).
     assert out == [("가전 > X", None)]  # 3 leg 이 같은 canonical → dedup, query 는 전부 None
+
+
+async def test_select_budget_goes_to_smallest_margins_first(caplog) -> None:
+    """[PR #188 리뷰] 택일 예산은 leg 번호가 아니라 **마진이 작은(가장 애매한) leg** 부터 쓴다.
+
+    코드는 이미 마진으로 "애매하다"를 **판정**하는데, 예산을 **배분**할 때 마진을 무시하고 leg
+    인덱스 순으로 잘라내면 기준이 코드 안에서 어긋난다 — 마진 0.002(1·2위가 거의 붙음)가 검증 없이
+    top-1 로 남고, 컷 턱걸이 0.019 가 예산을 먹는 역전이 생긴다.
+
+    트레이드오프 기록: `legs[0]` 은 **대표 카테고리**(칩 표시·멀티턴 승계, `state.py`)라 "가장 눈에
+    띄는 leg 을 먼저 확인한다"는 인덱스 순의 명분도 있다. 그럼에도 마진 순을 택한 이유는 §4.4 의
+    전제가 "마진 = 애매함의 세기"이고, 애매함이 큰 leg 을 방치하면 **틀린 카테고리로 검색이 좁혀지는
+    손해**가 대표 여부와 무관하게 발생하기 때문이다. 대표 leg 이 정말 애매하면 마진도 작아 우선순위를
+    자연히 얻는다.
+    """
+    sel = _FakeSelector(answer=None)
+    hits = {  # margin: leg0=0.019(가장 덜 애매) / leg1=0.002(가장 애매) / leg2=0.010
+        "라벨0": [("카테고리 > A0", 0.200), ("카테고리 > B0", 0.219)],
+        "라벨1": [("카테고리 > A1", 0.200), ("카테고리 > B1", 0.202)],
+        "라벨2": [("카테고리 > A2", 0.200), ("카테고리 > B2", 0.210)],
+    }
+    m = _FakeMapper(exact=set(), nearest={}, hits=hits)
+    with caplog.at_level("INFO"):
+        await m.run(
+            [CategoryQuery(None, f"라벨{i}") for i in range(3)],
+            settings=_settings(select_max_calls=2),
+            select=sel,
+            llm=object(),
+        )
+    asked = {q.split("찾는 상품: ")[-1] for q, _ in sel.calls}
+    assert asked == {"라벨1", "라벨2"}  # 마진 0.002·0.010 — 0.019 는 예산 밖
+    # 잘린 leg 은 사유와 마진을 남긴다 — 예산 배분을 사후 검증할 수 있어야 한다(§11)
+    skipped = [r for r in caplog.records if getattr(r, "reason", None) == "max_calls"]
+    assert [round(r.margin, 4) for r in skipped] == [0.019]
