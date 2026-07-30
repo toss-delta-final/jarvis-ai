@@ -350,6 +350,34 @@ def test_5xx_hides_internal_detail() -> None:
     assert "secret" not in env["message"]
 
 
+@pytest.mark.parametrize(
+    ("error_type", "status_code", "code"),
+    [
+        ("SessionForbidden", 403, "SESSION_FORBIDDEN"),
+        ("SessionFinalizing", 409, "SESSION_FINALIZING"),
+        ("SessionActive", 409, "SESSION_ACTIVE"),
+        ("SessionClaimConflict", 409, "SESSION_CLAIM_CONFLICT"),
+        ("SessionStateUnavailable", 503, "STATE_UNAVAILABLE"),
+    ],
+)
+def test_session_domain_errors_have_safe_wire_mapping(
+    error_type: str, status_code: int, code: str
+) -> None:
+    from app.core import session_context
+    from app.main import create_app
+
+    app2 = create_app()
+
+    async def _raise() -> None:
+        raise getattr(session_context, error_type)()
+
+    app2.add_api_route(f"/_session-error/{code}", _raise, methods=["GET"])
+    response = TestClient(app2, raise_server_exceptions=False).get(f"/_session-error/{code}")
+    assert response.status_code == status_code
+    assert response.json()["error"]["code"] == code
+    assert "requestId" in response.json()["error"]
+
+
 def test_registry_key_binds_identity() -> None:
     """레지스트리 키가 인증 신원에 묶여 사용자 간 슬롯 침범을 막는다(§2.9 a)."""
     from app.core.auth import Identity

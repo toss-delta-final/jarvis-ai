@@ -10,6 +10,8 @@ CREATE TABLE IF NOT EXISTS conversation_turns (
     sequence_id     bigserial NOT NULL,
     conversation_id text NOT NULL,
     thread_id       text,
+    context_id      uuid,
+    session_id      text,
     user_id         text,
     role            text NOT NULL,
     user_text       text NOT NULL,

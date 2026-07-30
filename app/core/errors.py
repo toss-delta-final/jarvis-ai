@@ -16,6 +16,14 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.logging import get_logger
+from app.core.session_context import (
+    SessionActive,
+    SessionClaimConflict,
+    SessionContextError,
+    SessionFinalizing,
+    SessionForbidden,
+    SessionStateUnavailable,
+)
 
 logger = get_logger(__name__)
 
@@ -39,6 +47,14 @@ _DEFAULT_MESSAGE: dict[int, str] = {
     429: "요청이 너무 많습니다",
     500: "서버 내부 오류",
     504: "상류(LLM/Spring) 응답 지연",
+}
+
+_SESSION_ERROR_MAP: dict[type[SessionContextError], tuple[int, str, str]] = {
+    SessionForbidden: (403, "SESSION_FORBIDDEN", "session access denied"),
+    SessionFinalizing: (409, "SESSION_FINALIZING", "session cleanup is in progress"),
+    SessionActive: (409, "SESSION_ACTIVE", "session is active"),
+    SessionClaimConflict: (409, "SESSION_CLAIM_CONFLICT", "session claim conflicts"),
+    SessionStateUnavailable: (503, "STATE_UNAVAILABLE", "session state is unavailable"),
 }
 
 
@@ -112,6 +128,19 @@ async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSON
     )
 
 
+async def _session_context_exception_handler(
+    request: Request, exc: SessionContextError
+) -> JSONResponse:
+    """Expected lifecycle rejections use stable public codes without leaking state."""
+    status_code, code, message = _SESSION_ERROR_MAP[type(exc)]
+    rid = get_request_id(request)
+    return JSONResponse(
+        status_code=status_code,
+        content=error_envelope(code, message, rid),
+        headers={REQUEST_ID_HEADER: rid},
+    )
+
+
 async def request_context_middleware(request: Request, call_next: Any) -> Any:
     """요청마다 requestId 를 부여하고 응답 헤더로 노출한다 (로그 상관관계)."""
     rid = new_request_id()
@@ -125,5 +154,6 @@ def install_error_handling(app: FastAPI) -> None:
     """예외 핸들러 + requestId 미들웨어를 앱에 등록한다."""
     app.add_exception_handler(StarletteHTTPException, _http_exception_handler)
     app.add_exception_handler(RequestValidationError, _validation_exception_handler)
+    app.add_exception_handler(SessionContextError, _session_context_exception_handler)
     app.add_exception_handler(Exception, _unhandled_exception_handler)
     app.middleware("http")(request_context_middleware)
