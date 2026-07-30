@@ -16,8 +16,12 @@
 > - **#163** — 총액 예산(Case 3) 산출 + `budget` SSE emit. `app/` 에 `budget`·`knapsack`·
 >   `verifiedSum`·`price_scope` **0건**(구매자 SSE 7종 중 이것만 미구현). #60 은 이 baseline 을
 >   전제한 확장 이슈라 #163 이 선행 의존이다.
-> - **#164** — 주문상태 문의(I-4). 명세는 v0.15.2 에서 "CH-2 에 흡수" 확정, Spring 은 구현 완료·
->   대기 중인데 **AI intent 가 4종뿐**(`recommend`/`cart_add`/`cart_view`/`general`)이라 분기가 없다.
+> - ~~**#164** — 주문상태 문의(I-4)~~ **구현 완료**. 구매자 intent를
+>   `recommend`/`cart_add`/`cart_view`/`order_status`/`general` 5종으로 확장하고,
+>   I-4 client·엄격 schema·결정적 formatter/stream handler·구매자 graph early return을 배선했다
+>   (`agents/buyer/recommendation/decompose.py`, `schemas/spring.py`,
+>   `services/spring_client.py`, `agents/buyer/order_status.py`, `agents/buyer/graph.py`;
+>   api-spec §4.10).
 >
 > 또한 **#91 은 구현 없이 COMPLETED 로 닫혀 있어 재오픈**했다 — `search_analysis_guide` 는 여전히
 > `NotImplementedError` 스텁이며 이 저장소에 남은 유일한 스텁이다.
@@ -30,7 +34,7 @@ MVP 골격(인프라·구매자·판매자·프로필·배치)은 배선 완료�
 다음으로 둔다.
 
 1. **구매자 추천 품질** — ~~#100(I-1 계약 정합)~~ **완료(PR #127)** → #101(pgvector 2차 압축 복구). 데모 핵심.
-2. **계약에만 있고 구현 없는 것** — #164(주문상태 I-4, 명세는 "흡수" 확정) · #163(`budget` SSE)
+2. **계약에만 있고 구현 없는 것** — #163(`budget` SSE)
 3. **구매자 버그** — #119(취향 과반영) · #115(카테고리 추측 정확도) · #120(재추천 차단)
 4. **판매자 확장** — #91(분석 기준서 RAG, 재오픈) · #122(시맨틱 캐시)
 5. **Spring 협의 잔여** — 아래 표. 대부분 해소, 남은 것은 운영 정책 성격.
@@ -49,7 +53,8 @@ MVP 골격(인프라·구매자·판매자·프로필·배치)은 배선 완료�
 
 ## 1. 구매자 추천 그래프
 
-- [x] 그래프 스캐폴드(intent router 분기) — `agents/buyer/graph.py` 4-way 라우팅
+- [x] 그래프 스캐폴드(intent router 분기) — `agents/buyer/graph.py` **5-way 라우팅** (`recommend` / `cart_add` / `cart_view` / `order_status` / `general`)
+- [x] **#164 주문 상태 문의(I-4)** — `recommendation/decompose.py` `order_status` 분류 → `spring_client.py:get_order_status` (`recent=3`) → `order_status.py` 엄격 검증·결정적 요약 → `graph.py` early return; 계약 api-spec §4.10, 회귀 `tests/unit/test_order_status.py`·`tests/integration/test_buyer_flow_e2e.py`
 - [x] `search_products` Spring 연결 (§4.6) — I-1 배선. **잔여 계약 정합은 #100**
 - [x] decompose 노드 (구조화 필터 + 키워드) — `recommendation/decompose.py`
 - [x] rerank 노드 (프로필 반영 + 근거 생성) — `recommendation/rerank.py`

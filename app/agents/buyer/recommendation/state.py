@@ -69,7 +69,7 @@ class CategoryQuery:
 class RouteDecision:
     """decompose(Haiku) 1회 산출 — intent 라우팅 + 병합 필터/의미쿼리/case + 폴백 답변 + 장바구니 의도."""
 
-    intent: Literal["recommend", "cart_add", "cart_view", "general"]
+    intent: Literal["recommend", "cart_add", "cart_view", "order_status", "general"]
     filters: ProductSearchFilters
     # [#101] 의미쿼리는 검색 입력이라 filters.semantic_query 로 이관(decompose 가 세팅). 하류가
     # 그 필드를 읽으므로 RouteDecision 에는 더 두지 않는다.
