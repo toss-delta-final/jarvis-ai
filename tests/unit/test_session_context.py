@@ -10,6 +10,7 @@ from app.core.session_context import (
     SessionContextRepository,
     SessionFinalizing,
     SessionForbidden,
+    _MemoryContext,
     reset,
 )
 
@@ -46,6 +47,37 @@ async def test_touch_rejects_other_owner(repo) -> None:
     await repo.touch(BuyerSessionInput("S1", "T1", "guest", "G1"))
     with pytest.raises(SessionForbidden):
         await repo.touch(BuyerSessionInput("S1", "T1", "member", "7"))
+
+
+async def test_signed_touch_replaces_legacy_guess_but_runtime_owner_remains_authoritative(
+    repo, clock
+) -> None:
+    repo._contexts["S1"] = _MemoryContext(
+        "legacy-context", "S1", "member", "7", 0, "active", clock(), "legacy_backfill"
+    )
+
+    signed = await repo.touch(BuyerSessionInput("S1", "T1", "member", "8"))
+
+    assert signed.owner_id == "8"
+    assert signed.context_id != "legacy-context"
+    assert repo._migration_conflicts[("S1", "7")][0] == "quarantined"
+    with pytest.raises(SessionForbidden):
+        await repo.touch(BuyerSessionInput("S1", "T2", "member", "7"))
+
+
+async def test_signed_claim_replaces_legacy_guess_and_quarantines_old_owner(repo, clock) -> None:
+    repo._contexts["S1"] = _MemoryContext(
+        "legacy-context", "S1", "member", "7", 0, "active", clock(), "legacy_backfill"
+    )
+
+    outcome = await repo.claim_owner("S1", "signed-guest", 8)
+
+    assert outcome.claimed is True
+    assert outcome.context.owner_id == "8"
+    assert outcome.context.context_id != "legacy-context"
+    assert repo._migration_conflicts[("S1", "7")][0] == "quarantined"
+    with pytest.raises(SessionForbidden):
+        await repo.touch(BuyerSessionInput("S1", "T2", "member", "7"))
 
 
 async def test_touch_registers_threads_and_reactivates_idle(repo, clock) -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from weakref import WeakValueDictionary
 
@@ -24,6 +25,8 @@ _LAST_RECO_KEY = "last_reco"
 _CATEGORIES_KEY = "categories"
 
 _adoption_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+_legacy_root_memory_fence = asyncio.Lock()
+_LEGACY_ROOT_FENCE_KEY = "migration:buyer-legacy-roots"
 
 
 @dataclass(frozen=True)
@@ -124,43 +127,53 @@ async def _delete_legacy_root_page(
     root: str,
     counter_column: str,
     limit: int,  # noqa: ANN001
+    *,
+    fence_conn=None,  # noqa: ANN001
 ) -> tuple[int, bool, list[str]]:
     """Atomically delete/count a PostgreSQL page; retain a bounded generic fallback."""
     if getattr(store, "conn", None) is not None:
-        async with repo._pool.connection() as conn:
-            async with conn.transaction():
-                deleted = await (
-                    await conn.execute(
-                        """
-                        WITH page AS (
-                            SELECT prefix, key
-                            FROM store
-                            WHERE prefix LIKE %s
-                            ORDER BY prefix, key
-                            LIMIT %s
-                            FOR UPDATE SKIP LOCKED
-                        )
-                        DELETE FROM store s
-                        USING page
-                        WHERE s.prefix=page.prefix AND s.key=page.key
-                        RETURNING s.prefix
-                        """,
-                        (_legacy_prefix_pattern(root), limit),
+
+        async def delete_page(conn):  # noqa: ANN001
+            deleted = await (
+                await conn.execute(
+                    """
+                    WITH page AS (
+                        SELECT prefix, key
+                        FROM store
+                        WHERE prefix LIKE %s
+                        ORDER BY prefix, key
+                        LIMIT %s
+                        FOR UPDATE SKIP LOCKED
                     )
-                ).fetchall()
-                if deleted:
-                    await conn.execute(
-                        f"UPDATE chat_session_migrations "
-                        f"SET {counter_column}={counter_column}+%s, updated_at=now() "
-                        "WHERE migration_name=%s",
-                        (len(deleted), "issue-187-session-context"),
-                    )
-                remaining = await (
-                    await conn.execute(
-                        "SELECT 1 FROM store WHERE prefix LIKE %s LIMIT 1",
-                        (_legacy_prefix_pattern(root),),
-                    )
-                ).fetchone()
+                    DELETE FROM store s
+                    USING page
+                    WHERE s.prefix=page.prefix AND s.key=page.key
+                    RETURNING s.prefix
+                    """,
+                    (_legacy_prefix_pattern(root), limit),
+                )
+            ).fetchall()
+            if deleted:
+                await conn.execute(
+                    f"UPDATE chat_session_migrations "
+                    f"SET {counter_column}={counter_column}+%s, updated_at=now() "
+                    "WHERE migration_name=%s",
+                    (len(deleted), "issue-187-session-context"),
+                )
+            remaining = await (
+                await conn.execute(
+                    "SELECT 1 FROM store WHERE prefix LIKE %s LIMIT 1",
+                    (_legacy_prefix_pattern(root),),
+                )
+            ).fetchone()
+            return deleted, remaining
+
+        if fence_conn is None:
+            async with repo._pool.connection() as conn:
+                async with conn.transaction():
+                    deleted, remaining = await delete_page(conn)
+        else:
+            deleted, remaining = await delete_page(fence_conn)
         keys = [str(row[0])[len(root) + 1 :] for row in deleted]
         return len(deleted), remaining is None, keys
 
@@ -173,6 +186,43 @@ async def _delete_legacy_root_page(
         await run_with_query_timeout(store.adelete(namespace, key))
     fresh = await _legacy_root_page(store, root, 1)
     return len(page), not fresh, keys
+
+
+@asynccontextmanager
+async def _legacy_root_fence(repo, *, transaction_scoped: bool = True):  # noqa: ANN001
+    """Serialize adoption and root GC.
+
+    Lock order is per-thread process lock -> global legacy-root fence. GC takes only
+    the global fence; session-owner advisory locks are acquired only after this fence
+    is released.
+    """
+    if repo._pool is None:
+        async with _legacy_root_memory_fence:
+            yield None
+        return
+    async with repo._pool.connection() as conn:
+        if transaction_scoped:
+            async with conn.transaction():
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (_LEGACY_ROOT_FENCE_KEY,),
+                )
+                yield conn
+            return
+        await conn.execute(
+            "SELECT pg_advisory_lock(hashtextextended(%s, 0))",
+            (_LEGACY_ROOT_FENCE_KEY,),
+        )
+        await conn.commit()
+        try:
+            yield conn
+        finally:
+            await conn.rollback()
+            await conn.execute(
+                "SELECT pg_advisory_unlock(hashtextextended(%s, 0))",
+                (_LEGACY_ROOT_FENCE_KEY,),
+            )
+            await conn.commit()
 
 
 async def clear_thread(context_id: str, thread_id: str) -> CleanupCounts:
@@ -205,6 +255,7 @@ async def _begin_adoption(
     context: SessionContext,
     thread_id: str,
     legacy_owner_id: str,
+    conn=None,  # noqa: ANN001
 ) -> bool:
     repo = session_context._default_repository
     if repo._pool is None:
@@ -223,9 +274,10 @@ async def _begin_adoption(
             return False
         states[(context.context_id, thread_id)] = ("copying", legacy_owner_id)
         return True
-    async with repo._pool.connection() as conn:
+
+    async def begin(connection):  # noqa: ANN001
         row = await (
-            await conn.execute(
+            await connection.execute(
                 """
                 UPDATE chat_session_threads t
                 SET adoption_status = CASE
@@ -264,8 +316,13 @@ async def _begin_adoption(
         status = _column(row, 0, "adoption_status")
         return status != "complete"
 
+    if conn is not None:
+        return await begin(conn)
+    async with repo._pool.connection() as connection:
+        return await begin(connection)
 
-async def _complete_adoption(context_id: str, thread_id: str) -> None:
+
+async def _complete_adoption(context_id: str, thread_id: str, conn=None) -> None:  # noqa: ANN001
     repo = session_context._default_repository
     if repo._pool is None:
         states = _memory_adoptions(repo)
@@ -274,9 +331,10 @@ async def _complete_adoption(context_id: str, thread_id: str) -> None:
             raise RuntimeError("adoption was not started")
         states[(context_id, thread_id)] = ("complete", status[1])
         return
-    async with repo._pool.connection() as conn:
+
+    async def complete(connection):  # noqa: ANN001
         row = await (
-            await conn.execute(
+            await connection.execute(
                 """
                 UPDATE chat_session_threads
                 SET adoption_status='complete'
@@ -288,6 +346,12 @@ async def _complete_adoption(context_id: str, thread_id: str) -> None:
         ).fetchone()
         if row is None:
             raise RuntimeError("adoption was not started")
+
+    if conn is not None:
+        await complete(conn)
+        return
+    async with repo._pool.connection() as connection:
+        await complete(connection)
 
 
 async def _resolve_context_and_legacy_owner(
@@ -362,66 +426,73 @@ async def adopt_legacy_thread(
     legacy_key = f"{legacy_owner_id}:{thread_id}"
     async with _lock_for(adoption_key):
         try:
-            if not await _begin_adoption(context, thread_id, legacy_owner_id):
-                return AdoptionResult(False)
-            store = await pg_store.get_store()
-            scalar_specs = (
-                (_LEGACY_FILTER_ROOT, _FILTER_ROOT, _FILTERS_KEY),
-                (_LEGACY_CART_ROOT, _CART_ROOT, _PENDING_KEY),
-                (_LEGACY_CART_ROOT, _CART_ROOT, _LAST_RECO_KEY),
-            )
-            intended: list[tuple[str, str, object | None]] = []
-            copied = 0
-            copy_legacy_names = False
-            for legacy_root, target_root, name in scalar_specs:
-                target = await _item(store, target_root, adoption_key, name)
-                legacy = await _item(store, legacy_root, legacy_key, name)
-                value = (
-                    target.value
-                    if target is not None
-                    else (legacy.value if legacy is not None else None)
+            async with _legacy_root_fence(
+                session_context._default_repository, transaction_scoped=False
+            ) as fence_conn:
+                if not await _begin_adoption(context, thread_id, legacy_owner_id, fence_conn):
+                    return AdoptionResult(False)
+                if fence_conn is not None:
+                    await fence_conn.commit()
+                store = await pg_store.get_store()
+                scalar_specs = (
+                    (_LEGACY_FILTER_ROOT, _FILTER_ROOT, _FILTERS_KEY),
+                    (_LEGACY_CART_ROOT, _CART_ROOT, _PENDING_KEY),
+                    (_LEGACY_CART_ROOT, _CART_ROOT, _LAST_RECO_KEY),
                 )
-                if target is None and legacy is not None:
+                intended: list[tuple[str, str, object | None]] = []
+                copied = 0
+                copy_legacy_names = False
+                for legacy_root, target_root, name in scalar_specs:
+                    target = await _item(store, target_root, adoption_key, name)
+                    legacy = await _item(store, legacy_root, legacy_key, name)
+                    value = (
+                        target.value
+                        if target is not None
+                        else (legacy.value if legacy is not None else None)
+                    )
+                    if target is None and legacy is not None:
+                        await run_with_query_timeout(
+                            store.aput((target_root, adoption_key), name, legacy.value)
+                        )
+                        copied += 1
+                        copy_legacy_names = name == _LAST_RECO_KEY
+                    intended.append((target_root, name, value))
+                target_revert = await _item(store, _REVERT_ROOT, adoption_key, _CATEGORIES_KEY)
+                legacy_revert = await _item(store, _LEGACY_REVERT_ROOT, legacy_key, _CATEGORIES_KEY)
+                categories = sorted(
+                    set(target_revert.value[_CATEGORIES_KEY] if target_revert else ())
+                    | set(legacy_revert.value[_CATEGORIES_KEY] if legacy_revert else ())
+                )
+                revert_value = {_CATEGORIES_KEY: categories} if categories else None
+                if revert_value is not None and (
+                    target_revert is None or target_revert.value != revert_value
+                ):
                     await run_with_query_timeout(
-                        store.aput((target_root, adoption_key), name, legacy.value)
+                        store.aput(
+                            (_REVERT_ROOT, adoption_key),
+                            _CATEGORIES_KEY,
+                            revert_value,
+                        )
                     )
                     copied += 1
-                    copy_legacy_names = name == _LAST_RECO_KEY
-                intended.append((target_root, name, value))
-            target_revert = await _item(store, _REVERT_ROOT, adoption_key, _CATEGORIES_KEY)
-            legacy_revert = await _item(store, _LEGACY_REVERT_ROOT, legacy_key, _CATEGORIES_KEY)
-            categories = sorted(
-                set(target_revert.value[_CATEGORIES_KEY] if target_revert else ())
-                | set(legacy_revert.value[_CATEGORIES_KEY] if legacy_revert else ())
-            )
-            revert_value = {_CATEGORIES_KEY: categories} if categories else None
-            if revert_value is not None and (
-                target_revert is None or target_revert.value != revert_value
-            ):
-                await run_with_query_timeout(
-                    store.aput(
-                        (_REVERT_ROOT, adoption_key),
-                        _CATEGORIES_KEY,
-                        revert_value,
-                    )
-                )
-                copied += 1
-            intended.append((_REVERT_ROOT, _CATEGORIES_KEY, revert_value))
-            if copy_legacy_names:
-                names = cart_state._last_reco_names.get(legacy_key)
-                if names is not None:
-                    cart_state._last_reco_names[adoption_key] = dict(names)
-            for target_root, name, expected in intended:
-                actual = await _item(store, target_root, adoption_key, name)
-                if (actual.value if actual is not None else None) != expected:
-                    raise RuntimeError(f"adoption verification failed for {target_root}/{name}")
-            deleted = 0
-            for legacy_root, _, name in scalar_specs:
-                deleted += await _delete(store, legacy_root, legacy_key, name)
-            deleted += await _delete(store, _LEGACY_REVERT_ROOT, legacy_key, _CATEGORIES_KEY)
-            cart_state._last_reco_names.pop(legacy_key)
-            await _complete_adoption(context.context_id, thread_id)
-            return AdoptionResult(True, copied, deleted)
+                intended.append((_REVERT_ROOT, _CATEGORIES_KEY, revert_value))
+                if copy_legacy_names:
+                    names = cart_state._last_reco_names.get(legacy_key)
+                    if names is not None:
+                        cart_state._last_reco_names[adoption_key] = dict(names)
+                for target_root, name, expected in intended:
+                    actual = await _item(store, target_root, adoption_key, name)
+                    if (actual.value if actual is not None else None) != expected:
+                        raise RuntimeError(f"adoption verification failed for {target_root}/{name}")
+                deleted = 0
+                for legacy_root, _, name in scalar_specs:
+                    deleted += await _delete(store, legacy_root, legacy_key, name)
+                deleted += await _delete(store, _LEGACY_REVERT_ROOT, legacy_key, _CATEGORIES_KEY)
+                cart_state._last_reco_names.pop(legacy_key)
+                await _complete_adoption(context.context_id, thread_id, fence_conn)
+                if fence_conn is not None:
+                    await fence_conn.commit()
+                return AdoptionResult(True, copied, deleted)
         except SessionStateUnavailable:
             raise
         except Exception as exc:
@@ -467,6 +538,11 @@ async def run_legacy_gc_batch() -> int:
         return 0
     if migration[0] is not None:
         return 0
+    if await repo.reconcile_legacy_before_gc():
+        # This invocation observed a writer that committed after the completed
+        # backfill pass. Reconciliation runs now, but destructive GC waits for
+        # the next invocation to establish a fresh barrier.
+        return 0
 
     store = await pg_store.get_store()
     roots = (
@@ -476,22 +552,23 @@ async def run_legacy_gc_batch() -> int:
     )
     deleted_total = 0
     all_empty = True
-    for root, column in roots:
-        deleted, empty, deleted_keys = await _delete_legacy_root_page(
-            repo,
-            store,
-            root,
-            column,
-            settings.session_lifecycle_gc_batch_size,
-        )
-        deleted_total += deleted
-        all_empty = all_empty and empty
-        if root == _LEGACY_CART_ROOT:
-            for key in deleted_keys:
-                cart_state._last_reco_names.pop(key)
-        if deleted and getattr(store, "conn", None) is None:
-            async with repo._pool.connection() as conn:
-                await conn.execute(
+    async with _legacy_root_fence(repo) as fence_conn:
+        for root, column in roots:
+            deleted, empty, deleted_keys = await _delete_legacy_root_page(
+                repo,
+                store,
+                root,
+                column,
+                settings.session_lifecycle_gc_batch_size,
+                fence_conn=fence_conn,
+            )
+            deleted_total += deleted
+            all_empty = all_empty and empty
+            if root == _LEGACY_CART_ROOT:
+                for key in deleted_keys:
+                    cart_state._last_reco_names.pop(key)
+            if deleted and getattr(store, "conn", None) is None:
+                await fence_conn.execute(
                     f"UPDATE chat_session_migrations SET {column}={column}+%s, "
                     "updated_at=now() WHERE migration_name=%s",
                     (deleted, migration_name),
@@ -525,12 +602,17 @@ async def run_legacy_gc_batch() -> int:
                 continue
             context = await (
                 await uow.conn.execute(
-                    "SELECT context_id, owner_type, owner_id "
+                    "SELECT context_id, owner_type, owner_id, authority_source "
                     "FROM chat_session_contexts WHERE session_id=%s FOR UPDATE",
                     (session_id,),
                 )
             ).fetchone()
-            if context is not None and context[1] == "member" and str(context[2]) == str(owner_id):
+            if (
+                context is not None
+                and context[1] == "member"
+                and str(context[2]) == str(owner_id)
+                and context[3] == "runtime"
+            ):
                 await uow.conn.execute(
                     """
                     UPDATE chat_session_migration_conflicts

@@ -285,6 +285,7 @@ class Settings(BaseSettings):
     profile_idle_claim_ttl_s: float = 900.0
     session_lifecycle_legacy_grace_s: float = 86400.0
     session_lifecycle_gc_batch_size: int = 100
+    session_lifecycle_backfill_max_batches: int = 1000
 
     profile_summary_max_chars: int = 1000  # §5.1 요약 상한(생성 측 압축 재작성)
     # AsyncPostgresStore(pg-profile) 초기 연결 대기 상한(이슈 #33) — 초과 시 dev 는 InMemory 폴백.
@@ -380,6 +381,8 @@ class Settings(BaseSettings):
             raise ValueError("SESSION_LIFECYCLE_LEGACY_GRACE_S must be at least 86400")
         if self.session_lifecycle_gc_batch_size <= 0:
             raise ValueError("SESSION_LIFECYCLE_GC_BATCH_SIZE must be positive")
+        if self.session_lifecycle_backfill_max_batches <= 0:
+            raise ValueError("SESSION_LIFECYCLE_BACKFILL_MAX_BATCHES must be positive")
         idle_batch_waves = (
             self.profile_idle_sweep_batch_size + self.profile_idle_max_concurrency - 1
         ) // self.profile_idle_max_concurrency

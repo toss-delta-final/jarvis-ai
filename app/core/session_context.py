@@ -190,13 +190,19 @@ class SessionContextRepository:
                 await conn.execute(sql)
 
     async def backfill_legacy_activity(self) -> None:
-        """Resume a durable keyset pass and reconcile late lower-key legacy rows."""
+        """Resume a durable bounded composite-key pass over legacy activity."""
         if self._pool is None:
             return
         settings = get_settings()
         migration_name = "issue-187-session-context"
         migrated = conflicts = 0
+        batches = 0
         while True:
+            if batches >= settings.session_lifecycle_backfill_max_batches:
+                raise SessionStateUnavailable(
+                    "session lifecycle backfill startup batch limit exceeded"
+                )
+            batches += 1
             async with self._pool.connection() as conn:
                 async with conn.transaction():
                     await conn.execute(
@@ -211,26 +217,45 @@ class SessionContextRepository:
                         """
                         INSERT INTO chat_session_migrations
                             (migration_name, rollout_started_at, grace_deadline,
-                             profile_backfill_cursor, profile_backfill_pass)
-                        VALUES (%s, now(), now() + interval '24 hours', '', 1)
-                        ON CONFLICT (migration_name) DO NOTHING
+                             profile_backfill_cursor, profile_backfill_owner_cursor,
+                             profile_backfill_pass)
+                        VALUES (
+                            %s, now(), now() + make_interval(secs => %s), '', -1, 1
+                        )
+                        ON CONFLICT (migration_name) DO UPDATE
+                        SET grace_deadline=GREATEST(
+                                chat_session_migrations.grace_deadline,
+                                chat_session_migrations.rollout_started_at
+                                    + make_interval(secs => %s),
+                                chat_session_migrations.rollout_started_at
+                                    + interval '24 hours'
+                            ),
+                            updated_at=now()
                         """,
-                        (migration_name,),
+                        (
+                            migration_name,
+                            settings.session_lifecycle_legacy_grace_s,
+                            settings.session_lifecycle_legacy_grace_s,
+                        ),
                     )
                     migration = await (
                         await conn.execute(
-                            "SELECT profile_backfill_cursor, profile_backfill_completed_at "
+                            "SELECT profile_backfill_cursor, profile_backfill_owner_cursor, "
+                            "profile_backfill_completed_at "
                             "FROM chat_session_migrations WHERE migration_name=%s FOR UPDATE",
                             (migration_name,),
                         )
                     ).fetchone()
                     assert migration is not None
-                    cursor = migration[0]
-                    if cursor is None and migration[1] is not None:
+                    cursor, owner_cursor, completed_at = migration
+                    if cursor is None and completed_at is not None:
+                        if await _find_actionable_legacy_activity(conn) is None:
+                            break
                         await conn.execute(
                             """
                             UPDATE chat_session_migrations
                             SET profile_backfill_cursor='',
+                                profile_backfill_owner_cursor=-1,
                                 profile_backfill_completed_at=NULL,
                                 gc_completed_at=NULL,
                                 profile_backfill_pass=profile_backfill_pass+1,
@@ -239,47 +264,36 @@ class SessionContextRepository:
                             """,
                             (migration_name,),
                         )
-                        cursor = ""
+                        cursor, owner_cursor = "", -1
                     rows = await (
                         await conn.execute(
                             """
-                            WITH sessions AS (
-                                SELECT session_id
-                                FROM profile_session_activity
-                                WHERE session_id > %s
-                                GROUP BY session_id
-                                ORDER BY session_id
-                                LIMIT %s
-                            )
                             SELECT a.user_id, a.session_id, a.last_activity_at, a.status,
                                    e.status='completed' AS fixed_event_completed
-                            FROM sessions s
-                            JOIN profile_session_activity a USING (session_id)
+                            FROM profile_session_activity a
                             LEFT JOIN processed_events e
                               ON e.event_id='session-end:' || a.user_id::text || ':' || a.session_id
+                            WHERE a.session_id > %s
+                               OR (a.session_id = %s AND a.user_id > %s)
                             ORDER BY a.session_id, a.user_id
+                            LIMIT %s
                             """,
-                            (cursor or "", settings.session_lifecycle_gc_batch_size),
+                            (
+                                cursor or "",
+                                cursor or "",
+                                owner_cursor if owner_cursor is not None else -1,
+                                settings.session_lifecycle_gc_batch_size,
+                            ),
                         )
                     ).fetchall()
                     if not rows:
-                        actionable = await (
+                        if await _find_actionable_legacy_activity(conn) is not None:
                             await conn.execute(
-                                """
-                                SELECT min(a.session_id)
-                                FROM profile_session_activity a
-                                LEFT JOIN chat_session_contexts c USING (session_id)
-                                LEFT JOIN chat_session_migration_conflicts q
-                                  ON q.session_id=a.session_id AND q.owner_id=a.user_id::text
-                                WHERE q.conflict_id IS NULL
-                                  AND (c.context_id IS NULL OR c.owner_id<>a.user_id::text)
-                                """
-                            )
-                        ).fetchone()
-                        if actionable is not None and actionable[0] is not None:
-                            await conn.execute(
-                                "UPDATE chat_session_migrations "
-                                "SET profile_backfill_cursor='', updated_at=now() "
+                                "UPDATE chat_session_migrations SET "
+                                "profile_backfill_cursor='', "
+                                "profile_backfill_owner_cursor=-1, "
+                                "profile_backfill_pass=profile_backfill_pass+1, "
+                                "updated_at=now() "
                                 "WHERE migration_name=%s",
                                 (migration_name,),
                             )
@@ -288,6 +302,7 @@ class SessionContextRepository:
                             """
                             UPDATE chat_session_migrations
                             SET profile_backfill_cursor=NULL,
+                                profile_backfill_owner_cursor=NULL,
                                 profile_backfill_completed_at=now(),
                                 thread_hint_completed_at=COALESCE(thread_hint_completed_at, now()),
                                 updated_at=now()
@@ -412,14 +427,55 @@ class SessionContextRepository:
                             conflicts += int(inserted is not None)
                     await conn.execute(
                         "UPDATE chat_session_migrations SET profile_backfill_cursor=%s, "
-                        "updated_at=now() WHERE migration_name=%s",
-                        (rows[-1][1], migration_name),
+                        "profile_backfill_owner_cursor=%s, updated_at=now() "
+                        "WHERE migration_name=%s",
+                        (rows[-1][1], rows[-1][0], migration_name),
                     )
         logger.info(
             "session lifecycle legacy backfill completed migrated_count=%d conflict_count=%d",
             migrated,
             conflicts,
         )
+
+    async def reconcile_legacy_before_gc(self) -> bool:
+        """Reconcile activity committed after the final backfill statement barrier."""
+        if self._pool is None:
+            return False
+        migration_name = "issue-187-session-context"
+        reopened = False
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    ("migration:issue-187-session-context",),
+                )
+                migration = await (
+                    await conn.execute(
+                        "SELECT profile_backfill_completed_at "
+                        "FROM chat_session_migrations WHERE migration_name=%s FOR UPDATE",
+                        (migration_name,),
+                    )
+                ).fetchone()
+                if migration is None or migration[0] is None:
+                    return False
+                if await _find_actionable_legacy_activity(conn) is not None:
+                    await conn.execute(
+                        """
+                        UPDATE chat_session_migrations
+                        SET profile_backfill_cursor='',
+                            profile_backfill_owner_cursor=-1,
+                            profile_backfill_completed_at=NULL,
+                            gc_completed_at=NULL,
+                            profile_backfill_pass=profile_backfill_pass+1,
+                            updated_at=now()
+                        WHERE migration_name=%s
+                        """,
+                        (migration_name,),
+                    )
+                    reopened = True
+        if reopened:
+            await self.backfill_legacy_activity()
+        return reopened
 
     async def touch(self, input: BuyerSessionInput) -> SessionContext:
         if self._pool is not None:
@@ -442,7 +498,23 @@ class SessionContextRepository:
                 )
                 self._contexts[input.session_id] = row
             else:
-                self._assert_owner(row, input.owner_type, input.owner_id)
+                if row.owner_type != input.owner_type or row.owner_id != input.owner_id:
+                    if row.authority_source != "legacy_backfill":
+                        raise SessionForbidden
+                    self._migration_conflicts[(row.session_id, row.owner_id)] = (
+                        "quarantined",
+                        None,
+                    )
+                    row = _MemoryContext(
+                        context_id=str(uuid.uuid4()),
+                        session_id=input.session_id,
+                        owner_type=input.owner_type,
+                        owner_id=input.owner_id,
+                        generation=0,
+                        state="active",
+                        last_activity_at=now,
+                    )
+                    self._contexts[input.session_id] = row
                 if row.state == "idle_finalizing":
                     raise SessionFinalizing
                 if row.state == "terminal":
@@ -470,7 +542,8 @@ class SessionContextRepository:
         await _advisory_lock(conn, input.session_id)
         row = await (
             await conn.execute(
-                "SELECT context_id, session_id, owner_type, owner_id, generation, state "
+                "SELECT context_id, session_id, owner_type, owner_id, generation, state, "
+                "authority_source, last_activity_at "
                 "FROM chat_session_contexts WHERE session_id=%s FOR UPDATE",
                 (input.session_id,),
             )
@@ -488,7 +561,8 @@ class SessionContextRepository:
             )
             row = await (
                 await conn.execute(
-                    "SELECT context_id, session_id, owner_type, owner_id, generation, state "
+                    "SELECT context_id, session_id, owner_type, owner_id, generation, state, "
+                    "authority_source, last_activity_at "
                     "FROM chat_session_contexts WHERE session_id=%s FOR UPDATE",
                     (input.session_id,),
                 )
@@ -496,7 +570,44 @@ class SessionContextRepository:
         assert row is not None
         context = _row_to_context(row)
         if context.owner_type != input.owner_type or context.owner_id != input.owner_id:
-            raise SessionForbidden
+            if row[6] != "legacy_backfill":
+                raise SessionForbidden
+            await conn.execute(
+                """
+                INSERT INTO chat_session_migration_conflicts
+                    (session_id, owner_id, legacy_status, legacy_last_activity_at)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (session_id, owner_id) DO NOTHING
+                """,
+                (
+                    input.session_id,
+                    context.owner_id,
+                    "active" if context.state == "active" else "completed",
+                    row[7],
+                ),
+            )
+            await conn.execute(
+                "DELETE FROM chat_session_contexts WHERE context_id=%s",
+                (context.context_id,),
+            )
+            row = await (
+                await conn.execute(
+                    """
+                    INSERT INTO chat_session_contexts
+                        (context_id, session_id, owner_type, owner_id,
+                         authority_source, state)
+                    VALUES (%s, %s, %s, %s, 'runtime', 'active')
+                    RETURNING context_id, session_id, owner_type, owner_id, generation, state
+                    """,
+                    (
+                        str(uuid.uuid4()),
+                        input.session_id,
+                        input.owner_type,
+                        input.owner_id,
+                    ),
+                )
+            ).fetchone()
+            context = _row_to_context(row)
         if context.state == "idle_finalizing":
             raise SessionFinalizing
         if context.state == "terminal":
@@ -556,6 +667,26 @@ class SessionContextRepository:
             target = str(user_id)
             history = self._owner_claims.get(session_id)
             row = self._contexts.get(session_id)
+            legacy_claim = row is not None and row.authority_source == "legacy_backfill"
+            if legacy_claim:
+                if row.owner_type != "member" or row.owner_id != target:
+                    self._migration_conflicts[(session_id, row.owner_id)] = (
+                        "quarantined",
+                        None,
+                    )
+                    row = _MemoryContext(
+                        str(uuid.uuid4()),
+                        session_id,
+                        "member",
+                        target,
+                        0,
+                        "active",
+                        self._clock(),
+                    )
+                    self._contexts[session_id] = row
+                else:
+                    row.authority_source = "runtime"
+                    row.state = "active"
             if history == (guest_id, target) and row is not None:
                 context = _memory_context(row)
                 await self._resolve_authoritative_conflict(None, context)
@@ -570,12 +701,16 @@ class SessionContextRepository:
                 )
                 self._contexts[session_id] = row
             else:
-                if row.owner_type != "guest" or row.owner_id != guest_id:
+                if legacy_claim and row.owner_type == "member" and row.owner_id == target:
+                    row.authority_source = "runtime"
+                    row.state = "active"
+                elif row.owner_type != "guest" or row.owner_id != guest_id:
                     raise SessionClaimConflict
-                row.owner_type = "member"
-                row.owner_id = target
-                row.generation += 1
-                row.state = "active"
+                else:
+                    row.owner_type = "member"
+                    row.owner_id = target
+                    row.generation += 1
+                    row.state = "active"
             self._owner_claims[session_id] = (guest_id, target)
             context = _memory_context(row)
             await self._resolve_authoritative_conflict(None, context)
@@ -598,11 +733,58 @@ class SessionContextRepository:
         ).fetchone()
         row = await (
             await conn.execute(
-                "SELECT context_id, session_id, owner_type, owner_id, generation, state "
+                "SELECT context_id, session_id, owner_type, owner_id, generation, state, "
+                "authority_source, last_activity_at "
                 "FROM chat_session_contexts WHERE session_id=%s FOR UPDATE",
                 (session_id,),
             )
         ).fetchone()
+        legacy_claim = row is not None and row[6] == "legacy_backfill"
+        if legacy_claim:
+            if row[2] != "member" or row[3] != target:
+                await conn.execute(
+                    """
+                    INSERT INTO chat_session_migration_conflicts
+                        (session_id, owner_id, legacy_status, legacy_last_activity_at)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (session_id, owner_id) DO NOTHING
+                    """,
+                    (
+                        session_id,
+                        str(row[3]),
+                        "active" if row[5] == "active" else "completed",
+                        row[7],
+                    ),
+                )
+                await conn.execute(
+                    "DELETE FROM chat_session_contexts WHERE context_id=%s", (row[0],)
+                )
+                row = await (
+                    await conn.execute(
+                        """
+                        INSERT INTO chat_session_contexts
+                            (context_id, session_id, owner_type, owner_id,
+                             authority_source, state)
+                        VALUES (%s, %s, 'member', %s, 'runtime', 'active')
+                        RETURNING context_id, session_id, owner_type, owner_id,
+                                  generation, state
+                        """,
+                        (str(uuid.uuid4()), session_id, target),
+                    )
+                ).fetchone()
+            else:
+                row = await (
+                    await conn.execute(
+                        """
+                        UPDATE chat_session_contexts
+                        SET authority_source='runtime', state='active', updated_at=now()
+                        WHERE context_id=%s
+                        RETURNING context_id, session_id, owner_type, owner_id,
+                                  generation, state
+                        """,
+                        (row[0],),
+                    )
+                ).fetchone()
         if history == (guest_id, target) and row is not None:
             context = _row_to_context(row)
             await self._resolve_authoritative_conflict(conn, context)
@@ -626,20 +808,24 @@ class SessionContextRepository:
                 )
             ).fetchone()
         else:
-            if row[2] != "guest" or row[3] != guest_id:
+            if legacy_claim and row[2] == "member" and row[3] == target:
+                pass
+            elif row[2] != "guest" or row[3] != guest_id:
                 raise SessionClaimConflict
-            row = await (
-                await conn.execute(
-                    """
-                    UPDATE chat_session_contexts
-                    SET owner_type='member', owner_id=%s, generation=generation+1,
-                        authority_source='runtime', state='active', updated_at=now()
-                    WHERE context_id=%s
-                    RETURNING context_id, session_id, owner_type, owner_id, generation, state
-                    """,
-                    (target, row[0]),
-                )
-            ).fetchone()
+            else:
+                row = await (
+                    await conn.execute(
+                        """
+                        UPDATE chat_session_contexts
+                        SET owner_type='member', owner_id=%s, generation=generation+1,
+                            authority_source='runtime', state='active', updated_at=now()
+                        WHERE context_id=%s
+                        RETURNING context_id, session_id, owner_type, owner_id,
+                                  generation, state
+                        """,
+                        (target, row[0]),
+                    )
+                ).fetchone()
         await conn.execute(
             """
             INSERT INTO chat_session_owner_claims
@@ -1979,6 +2165,24 @@ async def _advisory_lock(conn, session_id: str) -> None:  # noqa: ANN001
         "SELECT pg_advisory_xact_lock(hashtextextended('chat-session:' || %s, 0))",
         (session_id,),
     )
+
+
+async def _find_actionable_legacy_activity(conn):  # noqa: ANN001
+    return await (
+        await conn.execute(
+            """
+            SELECT a.session_id, a.user_id
+            FROM profile_session_activity a
+            LEFT JOIN chat_session_contexts c USING (session_id)
+            LEFT JOIN chat_session_migration_conflicts q
+              ON q.session_id=a.session_id AND q.owner_id=a.user_id::text
+            WHERE q.conflict_id IS NULL
+              AND (c.context_id IS NULL OR c.owner_id<>a.user_id::text)
+            ORDER BY a.session_id, a.user_id
+            LIMIT 1
+            """
+        )
+    ).fetchone()
 
 
 async def _postgres_now(conn) -> datetime:  # noqa: ANN001

@@ -17,7 +17,9 @@ from contextlib import asynccontextmanager
 
 import pytest
 from langgraph.store.postgres.aio import AsyncPostgresStore
+from psycopg_pool import AsyncConnectionPool
 
+from app.agents.buyer import session_state as session_state_module
 from app.agents.buyer.cart import state as cart_state
 from app.agents.buyer.cart.state import CartStateStore, PendingAdd
 from app.agents.buyer.graph import ThreadFilterStore
@@ -27,6 +29,7 @@ from app.agents.buyer.session_state import (
     clear_context,
     context_thread_key,
     ensure_thread_adopted,
+    run_legacy_gc_batch,
 )
 from app.core import pg_store as pg_store_module
 from app.core import session_context
@@ -316,6 +319,207 @@ async def test_pg_member_adoption_reads_guest_owner_claim_history(pg_store) -> N
         assert await pg_store.aget(("buyer_thread_filters", legacy_key), "filters") is None
     finally:
         await conn.execute("DELETE FROM chat_session_contexts WHERE context_id=%s", (context_id,))
+        session_context.reset()
+
+
+async def test_pg_adoption_fence_blocks_root_gc_after_legacy_read(pg_store, monkeypatch) -> None:
+    context_id = str(uuid.uuid4())
+    session_id = f"it-fence-adopt-{uuid.uuid4().hex}"
+    thread_id = "thread"
+    legacy_owner = f"guest-{uuid.uuid4().hex}"
+    legacy_key = f"{legacy_owner}:{thread_id}"
+    target_key = context_thread_key(context_id, thread_id)
+    conn = pg_store.conn.connection
+    await conn.execute(
+        "INSERT INTO chat_session_contexts "
+        "(context_id, session_id, owner_type, owner_id, state) "
+        "VALUES (%s, %s, 'guest', %s, 'active')",
+        (context_id, session_id, legacy_owner),
+    )
+    await conn.execute(
+        "INSERT INTO chat_session_threads (context_id, thread_id) VALUES (%s, %s)",
+        (context_id, thread_id),
+    )
+    await conn.execute(
+        """
+        INSERT INTO chat_session_migrations
+            (migration_name, rollout_started_at, grace_deadline,
+             profile_backfill_completed_at)
+        VALUES ('issue-187-session-context', now()-interval '2 days',
+                now()-interval '1 day', now()-interval '1 day')
+        ON CONFLICT (migration_name) DO UPDATE
+        SET grace_deadline=EXCLUDED.grace_deadline,
+            profile_backfill_completed_at=EXCLUDED.profile_backfill_completed_at,
+            gc_completed_at=NULL,
+            filters_deleted=0, cart_deleted=0, revert_deleted=0
+        """
+    )
+    await pg_store.aput(("buyer_thread_filters", legacy_key), "filters", {"category": "legacy"})
+    await pg_store.aput(
+        ("buyer_cart", legacy_key),
+        "pending",
+        {"product_id": 1, "quantity": 1, "options": [], "attempts": 0},
+    )
+    await pg_store.aput(("buyer_cart", legacy_key), "last_reco", {"product_ids": [1]})
+    await pg_store.aput(
+        ("buyer_revert", legacy_key),
+        "categories",
+        {"categories": ["legacy", "shared"]},
+    )
+    await RevertStore(pg_store).add(target_key, ["v2", "shared"])
+    read_legacy = asyncio.Event()
+    resume_adoption = asyncio.Event()
+    original_item = session_state_module._item
+
+    async def paused_item(store, root, key, name):  # noqa: ANN001
+        item = await original_item(store, root, key, name)
+        if root == "buyer_thread_filters" and key == legacy_key and name == "filters":
+            read_legacy.set()
+            await resume_adoption.wait()
+        return item
+
+    monkeypatch.setattr(session_state_module, "_item", paused_item)
+    pool = AsyncConnectionPool(get_settings().profile_db_url, open=False, min_size=1, max_size=4)
+    await pool.open(wait=True)
+    pg_store_module.set_store(pg_store)
+    session_context.set_pool(pool)
+    context = SessionContext(context_id, session_id, "guest", legacy_owner, 0, "active")
+    try:
+        adoption = asyncio.create_task(adopt_legacy_thread(context, thread_id, legacy_owner))
+        await asyncio.wait_for(read_legacy.wait(), timeout=2)
+        gc = asyncio.create_task(run_legacy_gc_batch())
+        await asyncio.sleep(0.1)
+        assert not gc.done()
+
+        resume_adoption.set()
+        result = await asyncio.wait_for(adoption, timeout=2)
+        await asyncio.wait_for(gc, timeout=2)
+
+        status = await (
+            await conn.execute(
+                "SELECT adoption_status FROM chat_session_threads "
+                "WHERE context_id=%s AND thread_id=%s",
+                (context_id, thread_id),
+            )
+        ).fetchone()
+        assert result.adopted and status["adoption_status"] == "complete"
+        assert (await ThreadFilterStore(pg_store).get(target_key)).category == "legacy"
+        pending = await CartStateStore(pg_store).get_pending(target_key)
+        assert pending is not None and pending.product_id == 1
+        assert await CartStateStore(pg_store).get_last_reco(target_key) == [(1, "")]
+        assert await RevertStore(pg_store).get(target_key) == {"legacy", "shared", "v2"}
+        for root, name in (
+            ("buyer_thread_filters", "filters"),
+            ("buyer_cart", "pending"),
+            ("buyer_cart", "last_reco"),
+            ("buyer_revert", "categories"),
+        ):
+            assert await pg_store.aget((root, legacy_key), name) is None
+    finally:
+        resume_adoption.set()
+        for task_name in ("adoption", "gc"):
+            task = locals().get(task_name)
+            if task is not None and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        await conn.execute("DELETE FROM chat_session_contexts WHERE context_id=%s", (context_id,))
+        await pool.close()
+        session_context.reset()
+
+
+async def test_pg_root_gc_fence_blocks_adoption_until_all_roots_are_deleted(
+    pg_store, monkeypatch
+) -> None:
+    context_id = str(uuid.uuid4())
+    session_id = f"it-fence-gc-{uuid.uuid4().hex}"
+    thread_id = "thread"
+    legacy_owner = f"guest-{uuid.uuid4().hex}"
+    legacy_key = f"{legacy_owner}:{thread_id}"
+    target_key = context_thread_key(context_id, thread_id)
+    conn = pg_store.conn.connection
+    await conn.execute(
+        "INSERT INTO chat_session_contexts "
+        "(context_id, session_id, owner_type, owner_id, state) "
+        "VALUES (%s, %s, 'guest', %s, 'active')",
+        (context_id, session_id, legacy_owner),
+    )
+    await conn.execute(
+        "INSERT INTO chat_session_threads (context_id, thread_id) VALUES (%s, %s)",
+        (context_id, thread_id),
+    )
+    await conn.execute(
+        """
+        INSERT INTO chat_session_migrations
+            (migration_name, rollout_started_at, grace_deadline,
+             profile_backfill_completed_at)
+        VALUES ('issue-187-session-context', now()-interval '2 days',
+                now()-interval '1 day', now()-interval '1 day')
+        ON CONFLICT (migration_name) DO UPDATE
+        SET grace_deadline=EXCLUDED.grace_deadline,
+            profile_backfill_completed_at=EXCLUDED.profile_backfill_completed_at,
+            gc_completed_at=NULL,
+            filters_deleted=0, cart_deleted=0, revert_deleted=0
+        """
+    )
+    await pg_store.aput(("buyer_thread_filters", legacy_key), "filters", {"category": "legacy"})
+    await pg_store.aput(
+        ("buyer_cart", legacy_key),
+        "pending",
+        {"product_id": 1, "quantity": 1, "options": [], "attempts": 0},
+    )
+    await pg_store.aput(("buyer_revert", legacy_key), "categories", {"categories": ["legacy"]})
+    gc_holds_fence = asyncio.Event()
+    resume_gc = asyncio.Event()
+    original_delete_page = session_state_module._delete_legacy_root_page
+
+    async def paused_delete_page(*args, **kwargs):
+        gc_holds_fence.set()
+        await resume_gc.wait()
+        return await original_delete_page(*args, **kwargs)
+
+    monkeypatch.setattr(session_state_module, "_delete_legacy_root_page", paused_delete_page)
+    pool = AsyncConnectionPool(get_settings().profile_db_url, open=False, min_size=1, max_size=4)
+    await pool.open(wait=True)
+    pg_store_module.set_store(pg_store)
+    session_context.set_pool(pool)
+    context = SessionContext(context_id, session_id, "guest", legacy_owner, 0, "active")
+    try:
+        gc = asyncio.create_task(run_legacy_gc_batch())
+        await asyncio.wait_for(gc_holds_fence.wait(), timeout=2)
+        adoption = asyncio.create_task(adopt_legacy_thread(context, thread_id, legacy_owner))
+        await asyncio.sleep(0.1)
+        assert not adoption.done()
+
+        resume_gc.set()
+        await asyncio.wait_for(gc, timeout=2)
+        result = await asyncio.wait_for(adoption, timeout=2)
+        status = await (
+            await conn.execute(
+                "SELECT adoption_status FROM chat_session_threads "
+                "WHERE context_id=%s AND thread_id=%s",
+                (context_id, thread_id),
+            )
+        ).fetchone()
+        assert result.adopted and result.copied == 0
+        assert status["adoption_status"] == "complete"
+        assert await ThreadFilterStore(pg_store).get(target_key) is None
+        assert await CartStateStore(pg_store).get_pending(target_key) is None
+        assert await RevertStore(pg_store).get(target_key) == set()
+        for root, name in (
+            ("buyer_thread_filters", "filters"),
+            ("buyer_cart", "pending"),
+            ("buyer_revert", "categories"),
+        ):
+            assert await pg_store.aget((root, legacy_key), name) is None
+    finally:
+        resume_gc.set()
+        for task_name in ("adoption", "gc"):
+            task = locals().get(task_name)
+            if task is not None and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        await conn.execute("DELETE FROM chat_session_contexts WHERE context_id=%s", (context_id,))
+        await pool.close()
         session_context.reset()
 
 

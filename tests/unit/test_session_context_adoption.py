@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
 from langgraph.store.memory import InMemoryStore
 
+from app.agents.buyer import session_state as session_state_module
 from app.agents.buyer.cart import state as cart_state
 from app.agents.buyer.cart.state import CartStateStore, PendingAdd
 from app.agents.buyer.graph import ThreadFilterStore, run_buyer_turn
@@ -141,6 +143,75 @@ async def test_adoption_failure_is_closed_and_retry_resumes_incomplete_state() -
     assert result.adopted
     assert await RevertStore(store).get(context_thread_key(context.context_id, "thread-a")) == {"A"}
     assert await store.aget(("buyer_revert", legacy_key), "categories") is None
+
+
+async def test_memory_adoptions_for_different_threads_share_legacy_root_fence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = SessionContextRepository()
+    first = await repo.touch(BuyerSessionInput("session-a", "thread-a", "guest", "guest-a"))
+    second = await repo.touch(BuyerSessionInput("session-b", "thread-b", "guest", "guest-b"))
+    session_context._default_repository = repo
+    store = InMemoryStore()
+    pg_store.set_store(store)
+    await store.aput(("buyer_thread_filters", "guest-a:thread-a"), "filters", {"category": "A"})
+    await store.aput(("buyer_thread_filters", "guest-b:thread-b"), "filters", {"category": "B"})
+    first_read = asyncio.Event()
+    resume = asyncio.Event()
+    original_item = session_state_module._item
+
+    async def paused_item(store_arg, root, key, name):  # noqa: ANN001
+        item = await original_item(store_arg, root, key, name)
+        if root == "buyer_thread_filters" and key == "guest-a:thread-a":
+            first_read.set()
+            await resume.wait()
+        return item
+
+    monkeypatch.setattr(session_state_module, "_item", paused_item)
+    first_task = asyncio.create_task(adopt_legacy_thread(first, "thread-a", "guest-a"))
+    await asyncio.wait_for(first_read.wait(), timeout=1)
+    second_task = asyncio.create_task(adopt_legacy_thread(second, "thread-b", "guest-b"))
+    await asyncio.sleep(0)
+    assert not second_task.done()
+    resume.set()
+    first_result, second_result = await asyncio.gather(first_task, second_task)
+    assert first_result.adopted and second_result.adopted
+
+
+async def test_cancelled_memory_adoption_releases_legacy_root_fence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = SessionContextRepository()
+    context = await _guest_context(repo)
+    session_context._default_repository = repo
+    store = InMemoryStore()
+    pg_store.set_store(store)
+    await store.aput(
+        ("buyer_thread_filters", "guest-a:thread-a"),
+        "filters",
+        {"category": "legacy"},
+    )
+    entered = asyncio.Event()
+    block = asyncio.Event()
+    original_item = session_state_module._item
+
+    async def blocked_item(store_arg, root, key, name):  # noqa: ANN001
+        item = await original_item(store_arg, root, key, name)
+        if root == "buyer_thread_filters" and key == "guest-a:thread-a":
+            entered.set()
+            await block.wait()
+        return item
+
+    monkeypatch.setattr(session_state_module, "_item", blocked_item)
+    task = asyncio.create_task(adopt_legacy_thread(context, "thread-a", "guest-a"))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    monkeypatch.setattr(session_state_module, "_item", original_item)
+    result = await asyncio.wait_for(adopt_legacy_thread(context, "thread-a", "guest-a"), timeout=1)
+    assert result.adopted
 
 
 async def test_member_adoption_uses_pre_claim_guest_owner_history() -> None:

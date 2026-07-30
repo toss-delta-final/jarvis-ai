@@ -233,3 +233,8 @@ async def test_lifespan_does_not_start_scheduler_when_initialization_fails(monke
 def test_legacy_grace_cannot_be_shorter_than_24_hours():
     with pytest.raises(ValueError, match="at least 86400"):
         Settings(_env_file=None, session_lifecycle_legacy_grace_s=86399)
+
+
+def test_session_backfill_startup_batch_limit_must_be_positive():
+    with pytest.raises(ValueError, match="BACKFILL_MAX_BATCHES must be positive"):
+        Settings(_env_file=None, session_lifecycle_backfill_max_batches=0)

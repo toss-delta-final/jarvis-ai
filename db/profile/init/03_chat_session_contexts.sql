@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS chat_session_migrations (
     revert_deleted bigint NOT NULL DEFAULT 0,
     gc_completed_at timestamptz,
     profile_backfill_cursor text,
+    profile_backfill_owner_cursor bigint,
     profile_backfill_pass bigint NOT NULL DEFAULT 0,
     updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -109,6 +110,7 @@ CREATE INDEX IF NOT EXISTS idx_chat_session_migration_conflicts_status
 
 ALTER TABLE chat_session_contexts ADD COLUMN IF NOT EXISTS authority_source text;
 ALTER TABLE chat_session_migrations ADD COLUMN IF NOT EXISTS profile_backfill_cursor text;
+ALTER TABLE chat_session_migrations ADD COLUMN IF NOT EXISTS profile_backfill_owner_cursor bigint;
 ALTER TABLE chat_session_migrations
     ADD COLUMN IF NOT EXISTS profile_backfill_pass bigint NOT NULL DEFAULT 0;
 UPDATE chat_session_contexts c

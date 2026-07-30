@@ -76,6 +76,7 @@ class IdleSweepResult:
 class _ClaimSnapshot:
     context: SessionContext | None
     history: tuple[str, str] | None
+    authority_source: Literal["runtime", "legacy_backfill"] | None = None
 
 
 class SessionLifecycleCoordinator:
@@ -118,13 +119,19 @@ class SessionLifecycleCoordinator:
                     outcome_name = "duplicate"
                 else:
                     if context is not None and context.state == "idle_finalizing":
-                        outcome_name = "finalizing"
-                        raise SessionFinalizing
+                        if snapshot.authority_source != "legacy_backfill":
+                            outcome_name = "finalizing"
+                            raise SessionFinalizing
                     if (
                         snapshot.history is not None
-                        or (context is not None and context.state == "terminal")
                         or (
                             context is not None
+                            and context.state == "terminal"
+                            and snapshot.authority_source != "legacy_backfill"
+                        )
+                        or (
+                            context is not None
+                            and snapshot.authority_source != "legacy_backfill"
                             and (
                                 context.owner_type != "guest" or context.owner_id != event.guest_id
                             )
@@ -139,7 +146,7 @@ class SessionLifecycleCoordinator:
                     if fence is None:
                         raise SessionActive
                     outcome = await _transition_claim(repository, uow.conn, event)
-                    snapshot = _ClaimSnapshot(outcome.context, snapshot.history)
+                    snapshot = _ClaimSnapshot(outcome.context, snapshot.history, "runtime")
                     outcome_name = "accepted"
             return outcome
         except SessionActive:
@@ -492,7 +499,11 @@ async def _read_claim_snapshot(
     if conn is None:
         row = repository._contexts.get(session_id)
         context = session_context._memory_context(row) if row is not None else None
-        return _ClaimSnapshot(context, repository._owner_claims.get(session_id))
+        return _ClaimSnapshot(
+            context,
+            repository._owner_claims.get(session_id),
+            row.authority_source if row is not None else None,
+        )
 
     history = await (
         await conn.execute(
@@ -502,7 +513,8 @@ async def _read_claim_snapshot(
     ).fetchone()
     row = await (
         await conn.execute(
-            "SELECT context_id, session_id, owner_type, owner_id, generation, state "
+            "SELECT context_id, session_id, owner_type, owner_id, generation, state, "
+            "authority_source "
             "FROM chat_session_contexts WHERE session_id=%s FOR UPDATE",
             (session_id,),
         )
@@ -510,7 +522,7 @@ async def _read_claim_snapshot(
     if row is None:
         return _ClaimSnapshot(None, history)
     context = session_context._row_to_context(row)
-    return _ClaimSnapshot(context, history)
+    return _ClaimSnapshot(context, history, row[6])
 
 
 async def _transition_claim(
@@ -534,7 +546,26 @@ def _claim_memory_under_lock(
 ) -> ClaimOutcome:
     target = str(event.user_id)
     row = repository._contexts.get(event.session_id)
-    if row is None:
+    if row is not None and row.authority_source == "legacy_backfill":
+        if row.owner_type != "member" or row.owner_id != target:
+            repository._migration_conflicts[(event.session_id, row.owner_id)] = (
+                "quarantined",
+                None,
+            )
+            row = session_context._MemoryContext(
+                context_id=str(uuid.uuid4()),
+                session_id=event.session_id,
+                owner_type="member",
+                owner_id=target,
+                generation=0,
+                state="active",
+                last_activity_at=repository._clock(),
+            )
+            repository._contexts[event.session_id] = row
+        else:
+            row.authority_source = "runtime"
+            row.state = "active"
+    elif row is None:
         row = session_context._MemoryContext(
             context_id=str(uuid.uuid4()),
             session_id=event.session_id,
@@ -550,7 +581,12 @@ def _claim_memory_under_lock(
         row.owner_id = target
         row.generation += 1
         row.state = "active"
+        row.authority_source = "runtime"
     repository._owner_claims[event.session_id] = (event.guest_id, target)
+    conflict_key = (event.session_id, target)
+    conflict = repository._migration_conflicts.get(conflict_key)
+    if conflict is not None and conflict[0] == "quarantined":
+        repository._migration_conflicts[conflict_key] = ("resolved", row.context_id)
     return ClaimOutcome(session_context._memory_context(row), True)
 
 
