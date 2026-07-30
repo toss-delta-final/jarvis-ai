@@ -381,7 +381,7 @@ async def test_conditions_frame_does_not_end_text_ttft() -> None:
             "error",
             ('data: {"type":"error","data":{"code":"LLM_UNAVAILABLE"}}\n\n',),
             TurnStatus.FAILED,
-            "error",
+            "error_frame",
         ),
     ),
 )
@@ -437,7 +437,7 @@ async def test_tokenless_timeout_records_reason_without_text_ttft(
     root = exporter.exported[0][0]
     assert obs.server_first_text_token_ms is None
     assert root.metadata["server_first_text_token_ms"] is None
-    assert root.metadata["terminalReason"] == "timeout"
+    assert root.metadata["terminalReason"] == "first_event_timeout"
 
 
 async def test_tokenless_cancellation_records_reason_without_text_ttft(
@@ -463,7 +463,7 @@ async def test_tokenless_cancellation_records_reason_without_text_ttft(
     root = exporter.exported[0][0]
     assert obs.server_first_text_token_ms is None
     assert root.metadata["server_first_text_token_ms"] is None
-    assert root.metadata["terminalReason"] == "cancelled"
+    assert root.metadata["terminalReason"] == "client_disconnect"
 
 
 async def test_terminal_done_stops_before_later_token_and_keeps_text_ttft_empty() -> None:
@@ -519,7 +519,7 @@ async def test_terminal_error_commits_failure_before_consumer_closes_iterator() 
     root = exporter.exported[0][0]
     assert root.error_type == "LLM_UNAVAILABLE"
     assert root.metadata["errorType"] == "LLM_UNAVAILABLE"
-    assert root.metadata["terminalReason"] == "error"
+    assert root.metadata["terminalReason"] == "error_frame"
     assert not get_registry().is_active("member:terminal-error-close")
 
 
@@ -748,3 +748,121 @@ def test_identifier_length_limit_rejected() -> None:
     """상한 초과 sessionId/threadId 는 400(불투명 키 남용 방어)."""
     r = client.post("/chat", json={"sessionId": "s" * 10000, "threadId": "t", "message": "m"})
     assert r.status_code == 400
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected_status", "expected_error", "expected_reason"),
+    (
+        ("normal_done", TurnStatus.COMPLETED, None, "done"),
+        ("first_event_timeout", TurnStatus.FAILED, "UPSTREAM_TIMEOUT", "first_event_timeout"),
+        ("graph_error_frame", TurnStatus.FAILED, "GRAPH_FAILED", "error_frame"),
+        ("disconnect", TurnStatus.CANCELLED, None, "client_disconnect"),
+        ("total_cap", TurnStatus.COMPLETED, None, "total_timeout_stop"),
+        ("tool_exception", TurnStatus.FAILED, "INTERNAL", "tool_error"),
+    ),
+)
+async def test_open_stream_exports_one_root_for_each_terminal_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+    scenario: str,
+    expected_status: TurnStatus,
+    expected_error: str | None,
+    expected_reason: str,
+) -> None:
+    from app.core.tracing import trace_span
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "stream_disconnect_poll_s", 0.005)
+    if scenario == "first_event_timeout":
+        monkeypatch.setattr(settings, "stream_first_token_timeout_s", 0.01)
+    if scenario == "total_cap":
+        monkeypatch.setattr(settings, "stream_total_timeout_s", 0.02)
+
+    exporter = FakeTraceExporter()
+    obs = await _obs(f"matrix-{scenario}", trace=_trace(exporter))
+
+    async def stream():
+        with trace_span(f"{scenario}_first_pull", "chain"):
+            pass
+        if scenario == "first_event_timeout":
+            await asyncio.sleep(1)
+            yield "data: never\n\n"
+            return
+        if scenario == "normal_done":
+            yield 'data: {"type":"done","data":{"finishReason":"stop"}}\n\n'
+            return
+        if scenario == "graph_error_frame":
+            yield 'data: {"type":"error","data":{"code":"GRAPH_FAILED"}}\n\n'
+            return
+
+        yield 'data: {"type":"meta","data":{"lane":"test"}}\n\n'
+        with trace_span(f"{scenario}_second_pull", "tool"):
+            if scenario == "tool_exception":
+                raise RuntimeError("tool failed")
+        await asyncio.sleep(1)
+        yield "data: never\n\n"
+
+    request = _FakeRequest(disconnected=scenario == "disconnect")
+    if scenario == "first_event_timeout":
+        with pytest.raises(HTTPException) as exc_info:
+            await open_stream(request, f"member:matrix-{scenario}", stream, observer=obs)
+        assert exc_info.value.status_code == 504
+    else:
+        response = await open_stream(request, f"member:matrix-{scenario}", stream, observer=obs)
+        _ = [chunk async for chunk in response.body_iterator]
+
+    assert len(exporter.exported) == 1
+    nodes = exporter.exported[0]
+    roots = [node for node in nodes if node.parent_id is None]
+    assert len(roots) == 1
+    root = roots[0]
+    assert root.error_type == expected_error
+    assert root.metadata["terminalReason"] == expected_reason
+    expected_node_count = (
+        2
+        if scenario
+        in {
+            "normal_done",
+            "first_event_timeout",
+            "graph_error_frame",
+        }
+        else 3
+    )
+    assert len(nodes) == expected_node_count
+    node_ids = {node.id for node in nodes}
+    assert all(node.parent_id in node_ids for node in nodes if node.parent_id is not None)
+    turn = await obs.store.get_turn(obs.turn_id)
+    assert turn is not None and turn.status == expected_status
+
+
+async def test_request_observation_isolates_trace_finalization_failure() -> None:
+    exporter = FakeTraceExporter()
+
+    def fail_validation(_payload: object) -> None:
+        raise RuntimeError("telemetry validator unavailable")
+
+    trace = TraceFactory(
+        exporter=exporter,
+        enabled=True,
+        sampling_rate=1.0,
+        payload_validator=fail_validation,
+    ).start_request(
+        name="buyer_chat_turn",
+        request_id="req-1",
+        conversation_id="telemetry-safe",
+        thread_id="thread-1",
+        lane="buyer",
+        environment="test",
+    )
+    obs = await _obs("telemetry-safe", trace=trace)
+    await obs.commit_user_message()
+
+    await obs.finish(
+        asyncio.get_running_loop().time(),
+        TurnStatus.COMPLETED,
+        None,
+        "done",
+    )
+
+    turn = await obs.store.get_turn(obs.turn_id)
+    assert turn is not None and turn.status == TurnStatus.COMPLETED
+    assert exporter.exported == []

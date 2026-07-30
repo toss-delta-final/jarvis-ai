@@ -24,6 +24,27 @@ from app.core.tracing import RequestTrace
 logger = get_logger("observability")
 
 
+async def finish_trace_safely(
+    trace: RequestTrace,
+    *,
+    status: TurnStatus,
+    error_type: str | None,
+    terminal_reason: str,
+) -> None:
+    """Finish telemetry without allowing it to replace the request/stream outcome."""
+    try:
+        await trace.finish(
+            status=status.value,
+            error_type=error_type,
+            terminal_reason=terminal_reason,
+        )
+    except Exception:
+        logger.exception(
+            "trace.finish 실패 terminal_reason=%s code=TELEMETRY_FINISH_FAILED",
+            terminal_reason,
+        )
+
+
 def message_fingerprint(text: str) -> tuple[int, str]:
     """PII 안전 지문 — (길이, HMAC-SHA256 앞 16자). 원문은 반환하지 않는다.
 
@@ -175,8 +196,9 @@ class RequestObservation:
                 first_event_ms=self.server_first_event_ms,
                 first_text_token_ms=self.server_first_text_token_ms,
             )
-            await self.trace.finish(
-                status=status.value,
+            await finish_trace_safely(
+                self.trace,
+                status=status,
                 error_type=error_type,
                 terminal_reason=terminal_reason,
             )

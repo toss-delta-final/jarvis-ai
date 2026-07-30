@@ -25,6 +25,7 @@ from app.core.conversation import TurnStatus
 from app.core.errors import new_request_id
 from app.core.logging import get_logger
 from app.core.observability import RequestObservation
+from app.core.tracing import RequestTrace, bind_request_trace
 from app.schemas.chat import DoneData, ErrorData
 
 logger = get_logger(__name__)
@@ -145,7 +146,7 @@ def _terminal_event_of(frame: str) -> tuple[str | None, str | None]:
         return None, None
     data = payload.get("data") or {}
     code = data.get("code") if isinstance(data, dict) else None
-    return "error", code if isinstance(code, str) else "INTERNAL"
+    return "error_frame", code if isinstance(code, str) else "INTERNAL"
 
 
 async def open_stream(
@@ -165,6 +166,13 @@ async def open_stream(
     registry = get_registry()
     loop = asyncio.get_event_loop()
     stream_request_id = observer.request_id if observer is not None else new_request_id()
+    trace = observer.trace if observer is not None else None
+
+    async def _next_frame(agen: AsyncIterator[str], request_trace: RequestTrace | None) -> str:
+        if request_trace is None:
+            return await agen.__anext__()
+        with bind_request_trace(request_trace):
+            return await agen.__anext__()
 
     if not registry.acquire(stream_key):
         if observer is not None:
@@ -197,13 +205,23 @@ async def open_stream(
             # 후속 리뷰) — 명시적으로 잡아 슬롯을 풀고 CANCELLED 로 마감 후 취소를 재전파한다.
             registry.release(stream_key)
             await _safe_finish(
-                observer, stream_key, loop.time(), TurnStatus.CANCELLED, None, "cancelled"
+                observer,
+                stream_key,
+                loop.time(),
+                TurnStatus.CANCELLED,
+                None,
+                "client_disconnect",
             )
             raise
         except Exception:
             registry.release(stream_key)
             await _safe_finish(
-                observer, stream_key, loop.time(), TurnStatus.FAILED, "INTERNAL", "error"
+                observer,
+                stream_key,
+                loop.time(),
+                TurnStatus.FAILED,
+                "INTERNAL",
+                "store_unavailable",
             )
             raise
 
@@ -215,7 +233,7 @@ async def open_stream(
         registry.release(stream_key)
         if observer is not None:
             await _safe_finish(
-                observer, stream_key, loop.time(), TurnStatus.FAILED, "INTERNAL", "error"
+                observer, stream_key, loop.time(), TurnStatus.FAILED, "INTERNAL", "tool_error"
             )
         raise
 
@@ -233,7 +251,7 @@ async def open_stream(
     # wait_for 로 __anext__ 를 취소하면 제너레이터가 손상되므로 task 폴링을 쓴다(_wrapped 동일).
     # 스트림 반환 전 실패는 _wrapped finally 가 안 도므로 여기서 해제하고, 정상/빈 스트림만
     # _wrapped finally 한 곳에서 해제한다(이중 해제 레이스 방지).
-    ft_task = asyncio.ensure_future(agen.__anext__())
+    ft_task = asyncio.ensure_future(_next_frame(agen, trace))
 
     async def _abort_prestream() -> None:
         registry.release(stream_key)
@@ -254,7 +272,7 @@ async def open_stream(
                     loop.time(),
                     TurnStatus.FAILED,
                     "UPSTREAM_TIMEOUT",
-                    "timeout",
+                    "first_event_timeout",
                 )
             raise HTTPException(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
@@ -275,7 +293,7 @@ async def open_stream(
                         loop.time(),
                         TurnStatus.CANCELLED,
                         None,
-                        "cancelled",
+                        "client_disconnect",
                     )
                 raise
             except Exception:
@@ -288,7 +306,7 @@ async def open_stream(
                         loop.time(),
                         TurnStatus.FAILED,
                         "INTERNAL",
-                        "error",
+                        "tool_error",
                     )
                 raise
             break
@@ -303,7 +321,7 @@ async def open_stream(
                     loop.time(),
                     TurnStatus.CANCELLED,
                     None,
-                    "cancelled",
+                    "client_disconnect",
                 )
             return StreamingResponse(
                 _empty_stream(),
@@ -336,13 +354,13 @@ async def open_stream(
                 if first_terminal is not None:
                     # done/error 는 모두 종결 이벤트 — 이후 프레임을 당기지 않는다.
                     return
-            next_task = asyncio.ensure_future(agen.__anext__())
+            next_task = asyncio.ensure_future(_next_frame(agen, trace))
             while True:
                 remaining = deadline - loop.time()
                 if remaining <= 0:
                     # (c) 전체 상한 초과 — done(stop)으로 정상 절단(COMPLETED, FAILED 아님).
                     logger.info("stream total cap reached stream_key=%s", stream_key)
-                    terminal_reason = "timeout"
+                    terminal_reason = "total_timeout_stop"
                     done_frame = _done_stop_frame()
                     if observer is not None:
                         observer.record_frame(done_frame, loop.time())
@@ -356,7 +374,7 @@ async def open_stream(
                             "stream cancelled by client disconnect stream_key=%s", stream_key
                         )
                         stream_status = TurnStatus.CANCELLED
-                        terminal_reason = "cancelled"
+                        terminal_reason = "client_disconnect"
                         break
                     continue  # 같은 task 를 계속 기다린다(제너레이터 보존)
                 try:
@@ -370,7 +388,7 @@ async def open_stream(
                     logger.exception("in-stream error stream_key=%s", stream_key)
                     stream_status = TurnStatus.FAILED
                     error_type = "INTERNAL"
-                    terminal_reason = "error"
+                    terminal_reason = "tool_error"
                     error_frame = _error_frame(
                         "INTERNAL",
                         "처리 중 오류가 발생했습니다",
@@ -393,11 +411,11 @@ async def open_stream(
                 if item_terminal is not None:
                     # 그래프 terminal 프레임 뒤 token/done 을 당겨 응답·저장소를 오염시키지 않는다.
                     break
-                next_task = asyncio.ensure_future(agen.__anext__())
+                next_task = asyncio.ensure_future(_next_frame(agen, trace))
         except asyncio.CancelledError:
             # Starlette 가 클라이언트 disconnect 로 응답 task 를 취소한 경우 — CANCELLED 로 마감.
             stream_status = TurnStatus.CANCELLED
-            terminal_reason = "cancelled"
+            terminal_reason = "client_disconnect"
             raise
         finally:
             # (b) 취소·상한·정상 종료 공통 정리: 대기 중 task 취소 → 내부 제너레이터 close

@@ -52,11 +52,12 @@ from app.agents.seller.workers import build_general_agent, build_product_agent
 from app.api.deps import require_seller
 from app.core.auth import Identity
 from app.core.config import get_settings
-from app.core.conversation import get_conversation_store
+from app.core.conversation import TurnStatus, get_conversation_store
 from app.core.errors import get_request_id, new_request_id
 from app.core.llm import LLMNotConfigured
-from app.core.observability import emit_rejection, start_observation
+from app.core.observability import emit_rejection, finish_trace_safely, start_observation
 from app.core.stream import open_stream, registry_key
+from app.core.tracing import get_trace_factory
 from app.core.text import _strip_unsafe, _strip_unsafe_multiline
 from app.schemas.chat import ErrorData, TokenData
 from app.schemas.seller import SellerChatRequest
@@ -709,9 +710,31 @@ async def seller_chat(
     대화 저장·구조화 로그(obs #8)는 start_observation 이 담당한다(chat 과 동일 패턴).
     """
     request_id = get_request_id(http_request)
+    trace = get_trace_factory().start_request(
+        name="seller_chat_turn",
+        request_id=request_id,
+        conversation_id=request.session_id,
+        thread_id=request.thread_id,
+        lane="seller",
+        environment=get_settings().app_environment,
+    )
     try:
         store = await get_conversation_store()
+    except asyncio.CancelledError:
+        await finish_trace_safely(
+            trace,
+            status=TurnStatus.CANCELLED,
+            error_type=None,
+            terminal_reason="client_disconnect",
+        )
+        raise
     except Exception:
+        await finish_trace_safely(
+            trace,
+            status=TurnStatus.FAILED,
+            error_type="INTERNAL",
+            terminal_reason="store_unavailable",
+        )
         # chat.py 와 동일 — pg-profile 지연 연결 실패(운영 jwks raise)가 open_stream 안전망 밖이라
         # §6.3 b chat_request 로그(errorType 집계)를 통째로 놓친다. rejection 로그를 남기고 전파한다
         # (PR #48 후속 리뷰).
@@ -730,6 +753,7 @@ async def seller_chat(
         message=request.message,
         store=store,
         now=asyncio.get_running_loop().time(),
+        trace=trace,
     )
     return await open_stream(
         http_request,
