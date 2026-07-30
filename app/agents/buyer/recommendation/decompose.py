@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from pydantic import ValidationError
 
 from app.agents.buyer.recommendation.state import (
@@ -17,6 +19,8 @@ from app.agents.buyer.recommendation.state import (
 )
 from app.core.llm import LLMClient, LLMError
 from app.schemas.spring import ProductSearchFilters
+
+logger = logging.getLogger(__name__)
 
 _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
 사용자 발화를 분석해 intent 를 정하고, 추천이면 구조화 필터/의미쿼리를, 장바구니면 상품/옵션/수량을 산출합니다.
@@ -182,6 +186,20 @@ async def decompose(
         filters.attr_conditions = merged or None
     except (ValidationError, ValueError, TypeError) as exc:
         raise LLMError("decompose 필터/케이스/장바구니 파싱 실패") from exc
+    # [#198 §10] 관측 — recommend 턴의 case·leg 요약. **"case==3(전개 필요를 인지)인데 legs<=1
+    # (전개 실패)"인 턴의 빈도가 #198 의 핵심 지표**다. 이 로그가 없어 지금까지 진단 스크립트로만
+    # 측정할 수 있었다. leg_queries 는 D3 marker 튜닝(#198 OPEN-1)의 입력이기도 하다.
+    # cart/general 턴은 case 가 의미 없어 제외한다 — 지표는 한 가지를 뜻해야 한다(category_unmapped
+    # 를 인프라 실패와 섞지 않는 것과 같은 취지).
+    if intent == "recommend":
+        logger.info(
+            "decompose_case",
+            extra={
+                "case": case,
+                "legs": len(category_queries),
+                "leg_queries": [q.query for q in category_queries],
+            },
+        )
     return RouteDecision(
         intent=intent,
         filters=filters,
