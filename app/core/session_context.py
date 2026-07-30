@@ -1053,6 +1053,61 @@ class SessionContextRepository:
                 )
         return sorted(candidates, key=lambda item: item.finalization_id)[:batch_size]
 
+    async def is_profile_phase_recoverable(self, finalization_id: str) -> bool:
+        """단일 finalization의 profile claim 가능 여부를 authoritative clock으로 판정한다."""
+        if self._pool is not None:
+            async with self._pool.connection() as conn:
+                row = await (
+                    await conn.execute(
+                        """
+                        SELECT EXISTS (
+                            SELECT 1
+                            FROM chat_session_finalizations f
+                            JOIN chat_session_contexts c USING (context_id)
+                            WHERE f.finalization_id=%s
+                              AND c.owner_type='member'
+                              AND f.transient_status='completed'
+                              AND (
+                                  f.profile_status IN ('pending','retryable')
+                                  OR (
+                                      f.profile_status='processing'
+                                      AND (
+                                          f.lease_expires_at IS NULL
+                                          OR f.lease_expires_at <= now()
+                                      )
+                                  )
+                              )
+                              AND f.status <> 'superseded'
+                              AND f.watermark_status='captured'
+                              AND f.profile_watermark IS NOT NULL
+                        )
+                        """,
+                        (finalization_id,),
+                    )
+                ).fetchone()
+            return bool(row and row[0])
+        finalization = self._finalizations.get(finalization_id)
+        if finalization is None:
+            return False
+        context = self._context_by_id(finalization.context_id)
+        return bool(
+            context.owner_type == "member"
+            and finalization.transient_status == "completed"
+            and (
+                finalization.profile_status in ("pending", "retryable")
+                or (
+                    finalization.profile_status == "processing"
+                    and (
+                        finalization.lease_expires_at is None
+                        or finalization.lease_expires_at <= self._clock()
+                    )
+                )
+            )
+            and finalization.status != "superseded"
+            and finalization.watermark_status == "captured"
+            and finalization.profile_watermark is not None
+        )
+
     async def claim_profile_phase(
         self, finalization_id: str, lease_s: float
     ) -> FinalizationClaim | None:

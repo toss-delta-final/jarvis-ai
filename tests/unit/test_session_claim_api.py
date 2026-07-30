@@ -138,6 +138,7 @@ async def test_stream_scope_idle_wait_is_event_driven() -> None:
 
     registry.release("7:thread")
     await asyncio.wait_for(waiter, timeout=0.1)
+    assert registry._scope_idle == {}
 
 
 async def test_stream_scope_idle_events_are_lazy_and_follow_reacquire_race() -> None:
@@ -155,11 +156,60 @@ async def test_stream_scope_idle_events_are_lazy_and_follow_reacquire_race() -> 
 
     registry.release("first")
     assert registry.acquire("second", owner_id="7", session_id="same")
+    assert not registry._scope_idle[("7", "same")].event.is_set()
     await asyncio.sleep(0)
     assert not waiter.done()
     registry.release("second")
     await asyncio.wait_for(waiter, timeout=0.1)
     assert registry._scope_idle == {}
+
+
+async def test_stream_scope_idle_wakes_all_same_scope_waiters_and_cleans_state() -> None:
+    registry = ActiveStreamRegistry()
+    assert registry.acquire("stream", owner_id="7", session_id="shared")
+    waiters = [asyncio.create_task(registry.wait_for_scope_idle("7", "shared")) for _ in range(5)]
+    await asyncio.sleep(0)
+    assert registry._scope_idle[("7", "shared")].count == 5
+
+    registry.release("stream")
+    await asyncio.wait_for(asyncio.gather(*waiters), timeout=0.1)
+
+    assert registry._scope_idle == {}
+
+
+async def test_stream_scope_idle_cancelled_last_waiter_does_not_leak_state() -> None:
+    registry = ActiveStreamRegistry()
+    assert registry.acquire("first", owner_id="7", session_id="cancelled")
+    cancelled = asyncio.create_task(registry.wait_for_scope_idle("7", "cancelled"))
+    await asyncio.sleep(0)
+
+    cancelled.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled
+    assert registry._scope_idle == {}
+
+    replacement = asyncio.create_task(registry.wait_for_scope_idle("7", "cancelled"))
+    await asyncio.sleep(0)
+    assert len(registry._scope_idle) == 1
+    registry.release("first")
+    await asyncio.wait_for(replacement, timeout=0.1)
+    assert registry._scope_idle == {}
+
+
+def test_stream_scope_idle_registry_can_be_reused_across_event_loops() -> None:
+    registry = ActiveStreamRegistry()
+
+    async def run_once(index: int) -> None:
+        stream_key = f"stream-{index}"
+        assert registry.acquire(stream_key, owner_id="7", session_id="cross-loop")
+        waiter = asyncio.create_task(registry.wait_for_scope_idle("7", "cross-loop"))
+        await asyncio.sleep(0)
+        registry.release(stream_key)
+        await waiter
+        assert registry._scope_idle == {}
+
+    asyncio.run(run_once(1))
+    asyncio.run(run_once(2))
 
 
 async def test_terminal_gate_precedes_stream_wait_and_watermark_capture(

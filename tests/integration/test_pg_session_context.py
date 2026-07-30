@@ -895,6 +895,14 @@ async def test_profile_list_then_competing_claim_has_single_cas_winner(pg_repo) 
             )
         ).fetchone()
     assert row == ("processing", winners[0].claim_token, True, idle.generation)
+    assert await repo.is_profile_phase_recoverable(idle.finalization_id) is False
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_finalizations SET lease_expires_at=now()-interval '1 second' "
+            "WHERE finalization_id=%s",
+            (idle.finalization_id,),
+        )
+    assert await repo.is_profile_phase_recoverable(idle.finalization_id) is True
 
 
 async def test_advisory_lock_is_held_until_transaction_exit(pg_repo) -> None:

@@ -67,6 +67,10 @@ class ActiveStreamRegistry:
         if scope is not None and scope in self._fences:
             return False
         self._active[stream_key] = scope
+        if scope is not None:
+            waiters = self._scope_idle.get(scope)
+            if waiters is not None:
+                waiters.event.clear()
         return True
 
     def release(self, stream_key: str) -> None:

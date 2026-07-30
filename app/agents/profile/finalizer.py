@@ -47,6 +47,10 @@ class _ActiveProfileTask:
     task: asyncio.Task[ProfilePhaseResult]
 
 
+class _ProfileClaimLost(Exception):
+    """DB CAS를 얻지 못했음을 public profile 결과와 구분하는 내부 제어 신호."""
+
+
 class ActiveProfileTaskRegistry:
     """한 프로세스에서 context별 profile LLM 작업을 하나로 직렬화한다."""
 
@@ -232,7 +236,7 @@ async def _process_profile_candidate(
                 settings.profile_idle_claim_ttl_s,
             )
             if claim is None:
-                return ProfilePhaseResult(ProfilePhaseStatus.DUPLICATE)
+                raise _ProfileClaimLost
             try:
                 result = await process_profile_checkpoint(
                     int(candidate.owner_id),
@@ -270,12 +274,27 @@ async def _process_profile_candidate(
                 pass
             return result
 
-        joined = await _active_profile_tasks.join_or_start(
-            candidate.context_id,
-            candidate.finalization_id,
-            event_id,
-            _claim_and_process,
-        )
+        try:
+            joined = await _active_profile_tasks.join_or_start(
+                candidate.context_id,
+                candidate.finalization_id,
+                event_id,
+                _claim_and_process,
+            )
+        except _ProfileClaimLost:
+            try:
+                refreshed = await repository.get_finalization(candidate.finalization_id)
+            except SessionClaimConflict:
+                return None
+            if refreshed.status == "superseded" or refreshed.profile_status not in (
+                "pending",
+                "retryable",
+                "processing",
+            ):
+                return None
+            if await repository.is_profile_phase_recoverable(candidate.finalization_id):
+                continue
+            return None
         if joined.finalization_id == candidate.finalization_id and joined.event_id == event_id:
             return joined.result
 

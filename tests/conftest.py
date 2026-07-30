@@ -44,6 +44,7 @@ def _reset_infra_state():
     reset_catalog_store()
     get_registry()._active.clear()
     get_registry()._fences.clear()
+    get_registry()._scope_idle.clear()
     yield
     reset_limiter()
     reset_store()
@@ -54,6 +55,7 @@ def _reset_infra_state():
     reset_catalog_store()
     get_registry()._active.clear()
     get_registry()._fences.clear()
+    get_registry()._scope_idle.clear()
 
 
 @pytest.fixture(autouse=True)

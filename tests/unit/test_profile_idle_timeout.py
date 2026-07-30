@@ -490,6 +490,84 @@ async def test_listed_idle_candidate_superseded_before_cas_runs_terminal_only(
     )
 
 
+async def test_idle_candidate_superseded_at_profile_cas_is_skipped_without_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _Clock()
+    repo = SessionContextRepository(clock=clock)
+    monkeypatch.setattr(session_context, "_default_repository", repo)
+    coordinator = SessionLifecycleCoordinator(repo, ActiveStreamRegistry())
+    context = await repo.touch(BuyerSessionInput("cas-superseded", "t1", "member", "705"))
+    store = await get_profile_store()
+    await store.append_session_ctx(conversation_key("705", "cas-superseded"), "이전 취향")
+    _, idle_generation = await _complete_idle_transient(repo, coordinator, clock)
+    entered_cas = asyncio.Event()
+    continue_cas = asyncio.Event()
+    original_claim = repo.claim_profile_phase
+    llm_calls = 0
+
+    class _CountingLLM(_LLM):
+        async def complete(self, **kwargs):
+            nonlocal llm_calls
+            llm_calls += 1
+            return await super().complete(**kwargs)
+
+    async def _paused_claim(finalization_id: str, lease_s: float):
+        entered_cas.set()
+        await continue_cas.wait()
+        return await original_claim(finalization_id, lease_s)
+
+    monkeypatch.setattr(finalizer, "get_llm", lambda: _CountingLLM())
+    monkeypatch.setattr(repo, "claim_profile_phase", _paused_claim)
+    recovery = asyncio.create_task(finalizer.process_recoverable_profile_phases(1))
+    await entered_cas.wait()
+    terminal = await repo.begin_terminal(705, "cas-superseded")
+    continue_cas.set()
+
+    assert await recovery == []
+    assert llm_calls == 0
+    assert (
+        await processed_events.get_status(
+            f"chat-profile:{context.context_id}:{idle_generation}:idle"
+        )
+        is None
+    )
+    assert terminal.finalization.supersedes_finalization_id is not None
+
+
+async def test_profile_cas_lost_to_live_claim_skips_then_recovers_after_expiry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _Clock()
+    repo = SessionContextRepository(clock=clock)
+    coordinator = SessionLifecycleCoordinator(repo, ActiveStreamRegistry())
+    await repo.touch(BuyerSessionInput("cas-live", "t1", "member", "706"))
+    store = await get_profile_store()
+    await store.append_session_ctx(conversation_key("706", "cas-live"), "회복할 취향")
+    await _complete_idle_transient(repo, coordinator, clock)
+    [candidate] = await repo.list_recoverable_profile_phases(1)
+    live_claim = await repo.claim_profile_phase(candidate.finalization_id, 30)
+    assert live_claim is not None
+    llm_calls = 0
+
+    class _CountingLLM(_LLM):
+        async def complete(self, **kwargs):
+            nonlocal llm_calls
+            llm_calls += 1
+            return await super().complete(**kwargs)
+
+    monkeypatch.setattr(finalizer, "get_llm", lambda: _CountingLLM())
+
+    assert await finalizer._process_profile_candidate(candidate, repo, get_settings()) is None
+    assert llm_calls == 0
+
+    clock.advance(31)
+    result = await finalizer._process_profile_candidate(candidate, repo, get_settings())
+    assert result is not None and result.status is finalizer.ProfilePhaseStatus.COMPLETED
+    assert llm_calls > 0
+    assert (await repo.get_finalization(candidate.finalization_id)).profile_status == "completed"
+
+
 async def test_finalizer_invalid_identity_degrades_to_retryable() -> None:
     result = await finalizer.finalize_profile_session("not-a-member-id", "session")
 
