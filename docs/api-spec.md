@@ -195,7 +195,7 @@ X-Internal-Token: {SERVICE_TOKEN}
 
 ### 2.6 식별자 규약 (Identifiers) — 확정, 양팀 통보 필요
 
-**[HARD, 개정 v0.15.3] `productId` = 숫자(BIGINT), DB 스키마 기준** — **[사용자 확정 2026-07-18]** 상품/옵션/장바구니/주문 원본 id는 전부 **`BIGINT` 숫자**다(product/product_option/cart_item/order 테이블). AI 계약(§4 internal + SSE `draft`)은 **숫자 id를 그대로** 쓴다. 구 "경계별 문자열 정규화·전 구간 문자열" 규칙은 **폐기** — 그냥 스키마 타입을 따른다. **게스트 id(`guestId`)만 UUID 문자열**(guest.id CHAR(36)). 구매자 SSE는 상품 카드/productId를 싣지 않으므로(경로 B, `products.ready`=listId만) 경계 변환 이슈 자체가 없다.
+**[HARD, 개정 v0.15.3] `productId` = 숫자(BIGINT), DB 스키마 기준** — **[사용자 확정 2026-07-18]** 상품/옵션/장바구니/주문 원본 id는 전부 **`BIGINT` 숫자**다(product/product_option/cart_item/order 테이블). AI 계약(§4 internal + SSE `draft`)은 **숫자 id를 그대로** 쓴다. 구 "경계별 문자열 정규화·전 구간 문자열" 규칙은 **폐기** — 그냥 스키마 타입을 따른다. **게스트 id(`guestId`)만 UUID 문자열**(guest.id CHAR(36)). 구매자 SSE는 상품 카드/productId를 싣지 않으므로(경로 B, `products.ready`=`listIds`만) 경계 변환 이슈 자체가 없다.
 
 > **[✅ 정렬 완료 v0.15.3]** 코드(`schemas/spring.py`·`chat.py`)의 상품/옵션/장바구니/주문 id를 `int`(BIGINT)로, `guest_id`를 `str`(UUID)로 반영. CLAUDE.md "전 구간 string" 규칙도 개정. BE I-17 예시가 문자열 productId를 보였으나 **BE가 2026-07-18 숫자 BIGINT로 정정**(§4.8) — 표기 불일치 해소.
 
@@ -442,15 +442,23 @@ SSE로 스트리밍한다. 표준 `EventSource`는 GET 전용이므로 FE는 **f
 **(4) `products.ready`** — AI가 추천 목록을 Spring에 push한 뒤 emit (정확히 1회, 성공 시).
 
 ```json
-{ "type": "products.ready", "data": { "sessionId": "sess-771", "listId": "list-4471" } }
+{ "type": "products.ready", "data": { "sessionId": "550e8400-e29b-41d4-a716-446655440000", "listIds": ["3f9a2c1e7b8d4e5fa0c6d1e97b3f8a24"] } }
+```
+
+여러 묶음(세트형·니즈별) — I-21이 `lists`를 2개 보냈으면:
+
+```json
+{ "type": "products.ready", "data": { "sessionId": "550e8400-…", "listIds": ["9f2c1a7e4b8d43f5a0c6e1d97b3f8a24", "4b8d43f5a0c6e1d97b3f8a249f2c1a7e"] } }
 ```
 
 | 필드 | 타입 | 설명 |
 |---|---|---|
 | `sessionId` | string | 상관관계 키(요청과 동일) |
-| `listId` | string | FastAPI 생성 목록 식별자(§4.2 I-21) — reason 포함 카드는 CH-5로 조회(§4.3) |
+| `listIds` | string[] | FastAPI 생성 목록 식별자 배열(§4.2 I-21의 `lists` 순서) — reason 포함 카드는 CH-5로 조회(§4.3) |
 
-- **상관관계 키 형태는 제안(초안)** 🔴 — 정확한 키는 Spring 목록 push/GET 계약(§4.2/§4.3) 확정과 함께 정한다.
+- **[v0.15.25] `listIds`는 항상 배열이다.** 목록이 1개여도 길이 1 배열로 보낸다 — 단일/복수로 형식이 갈리면 FE에 분기가 생긴다. **이벤트 자체는 여전히 정확히 1회**이며, 목록이 여러 개여도 한 번에 실어 보낸다. 개수 상한은 10(§4.2 `lists` 상한과 동일).
+- FE는 **각 `listId`로 CH-5를 개별 호출**한다. `listType`·`label`·`totalBudget`은 싣지 않는다 — CH-5 응답에 있다.
+- **[v0.15.25 정정] 구 단일 `listId` 필드는 폐기한다.** I-21이 `lists`를 1~10개 보내므로(§4.2) 단일 필드로는 세트형·니즈별 추천을 나를 수 없었다. 예시의 `"list-4471"`도 §4.2가 금지한 추측 가능 형식(순번)이라 ≥128bit 무작위로 교정했다. **구현도 단일**이라(`ProductsReadyData.list_id: str`) 코드 변경이 따라야 한다.
 - FE는 `products.ready` 수신 시 §4.3 목록 GET으로 Spring이 표시 필드를 채운 목록을 조회해 우측 상품 패널을 렌더한다(§6.1).
 - **push 실패 시**: `products.ready`는 emit되지 **않는다.** 챗 텍스트는 정상 완료되고 지연 안내가 포함되며, 스트림은 `error`가 아니라 **`done`** 으로 종료한다(§3.3).
 
@@ -1191,7 +1199,7 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 
 | 버전 | 날짜 | 변경 |
 |---|---|---|
-| v0.15.25 | 2026-07-28 | **[사본 동기화] §3.1 요청 계약 확장 + in-stream `error` 추적 필드 — 정본(Notion "📡 API 명세서" CH-2) 2026-07-28 개정 반영.** (1) **`conditionActions` 신설**(이슈 #84) — 조건 칩 제거를 `[{op:"remove", field}]` 구조화 배열로 받는다. 구 규약 문자열(`"[조건 제거] priceMax"`) 왕복 방식은 **폐기** — FE는 그 방식으로 구현돼 있으나 AI에 수신부가 없어 현재 칩 제거가 무동작이다. `conditionActions`가 있으면 `message` 빈 문자열 허용, 둘 다 비면 `400`. 구매자 전용(`BuyerChatRequest`). (2) **`conditions` 칩 `field` 허용값 6종 확정** — `category`/`priceMax`/`priceMin`/`brand`/`ratingMin`/`keyword`. 종전에는 예시 둘만 있어 허용 집합이 계약에 없었는데, `conditionActions.field` 검증의 전제라 등재했다(코드 `build_condition_chips` 실측과 일치). (3) **`screen` 신설**(이슈 #118) — `{pageType, filters?, products?, columns?}`. `pageType`은 **라우트가 아니라 우측 패널 내용**을 가리킨다(채팅이 전용 페이지에만 있어 라우트를 실으면 정보가 0). `products`는 **서버가 모르는 목록만**(P-4 인기상품·판매자 자사 상품) — 추천 카드는 `listId`로 서버가 알고, 되돌려주면 위조 경로가 된다. `columns`는 반응형 그리드 열 수로 "3번째 줄 2번째" 좌표 지시 해소에 쓴다(`rows`·항목별 좌표는 파생값이라 제외). `pageType`은 **E-1 `page_view`와 같은 enum을 공유**한다 — 화면 어휘를 새로 만들지 않기 위해서다. 라우트 `path`는 쿼리스트링 PII 위험으로, 한글 `label`은 AI config 매핑으로 대체해 **계약에서 뺐다**. 07-17 FE 제안(`ChatScreenContext`)과 #118의 "노출 상품 목록" 요구를 **한 필드로 통합**했다(같은 사실의 두 측면). `products`는 담기 허용 목록을 넓히는 입력이며 **두 목록 밖 id 차단 가드는 유지**한다. **구매자·판매자 공용 필드**라 §3.2에도 등재 — 판매자 대시보드는 `meta.lane`·`done.panel`로 AI→FE 화면 조작만 있고 반대 방향이 비어 있었다. (4) **in-stream `error`에 `requestId`·`retryable` 추가** — 스트림 전 실패(§2.5 봉투)에는 `requestId`가 있는데 스트림 내부 실패에는 없어 추적이 끊겼다. `retryable`은 `code`로 복원 불가(같은 `LLM_UNAVAILABLE`이 미구성/일시불가에 겸용)라 emit 지점이 정한다. §3.2 판매자 스트림도 동일(`ErrorData` 공용). |
+| v0.15.25 | 2026-07-28 | **[사본 동기화] §3.1 요청 계약 확장 + in-stream `error` 추적 필드 — 정본(Notion "📡 API 명세서" CH-2) 2026-07-28 개정 반영.** (1) **`conditionActions` 신설**(이슈 #84) — 조건 칩 제거를 `[{op:"remove", field}]` 구조화 배열로 받는다. 구 규약 문자열(`"[조건 제거] priceMax"`) 왕복 방식은 **폐기** — FE는 그 방식으로 구현돼 있으나 AI에 수신부가 없어 현재 칩 제거가 무동작이다. `conditionActions`가 있으면 `message` 빈 문자열 허용, 둘 다 비면 `400`. 구매자 전용(`BuyerChatRequest`). (2) **`conditions` 칩 `field` 허용값 6종 확정** — `category`/`priceMax`/`priceMin`/`brand`/`ratingMin`/`keyword`. 종전에는 예시 둘만 있어 허용 집합이 계약에 없었는데, `conditionActions.field` 검증의 전제라 등재했다(코드 `build_condition_chips` 실측과 일치). (3) **`screen` 신설**(이슈 #118) — `{pageType, filters?, products?, columns?}`. `pageType`은 **라우트가 아니라 우측 패널 내용**을 가리킨다(채팅이 전용 페이지에만 있어 라우트를 실으면 정보가 0). `products`는 **서버가 모르는 목록만**(P-4 인기상품·판매자 자사 상품) — 추천 카드는 `listId`로 서버가 알고, 되돌려주면 위조 경로가 된다. `columns`는 반응형 그리드 열 수로 "3번째 줄 2번째" 좌표 지시 해소에 쓴다(`rows`·항목별 좌표는 파생값이라 제외). `pageType`은 **E-1 `page_view`와 같은 enum을 공유**한다 — 화면 어휘를 새로 만들지 않기 위해서다. 라우트 `path`는 쿼리스트링 PII 위험으로, 한글 `label`은 AI config 매핑으로 대체해 **계약에서 뺐다**. 07-17 FE 제안(`ChatScreenContext`)과 #118의 "노출 상품 목록" 요구를 **한 필드로 통합**했다(같은 사실의 두 측면). `products`는 담기 허용 목록을 넓히는 입력이며 **두 목록 밖 id 차단 가드는 유지**한다. **구매자·판매자 공용 필드**라 §3.2에도 등재 — 판매자 대시보드는 `meta.lane`·`done.panel`로 AI→FE 화면 조작만 있고 반대 방향이 비어 있었다. (4) **`products.ready`의 `listId`(단일) → `listIds`(배열, 항상)** — I-21이 `lists`를 1~10개 보내므로(§4.2) 단일 필드로는 세트형·니즈별 추천을 나를 수 없었다. 정본 I-21·CH-5는 이미 복수 전제인데 CH-2와 본 사본만 단일로 남아 있던 **3자 불일치**다. 목록이 1개여도 길이 1 배열로 보내 FE 분기를 없애고, 이벤트는 여전히 정확히 1회다. 예시의 `"list-4471"`도 §4.2가 금지한 추측 가능 형식이라 교정했다. **구현(`ProductsReadyData.list_id: str`)도 단일이라 코드 변경이 따라야 한다.** (5) **in-stream `error`에 `requestId`·`retryable` 추가** — 스트림 전 실패(§2.5 봉투)에는 `requestId`가 있는데 스트림 내부 실패에는 없어 추적이 끊겼다. `retryable`은 `code`로 복원 불가(같은 `LLM_UNAVAILABLE`이 미구성/일시불가에 겸용)라 emit 지점이 정한다. §3.2 판매자 스트림도 동일(`ErrorData` 공용). |
 | v0.15.24 | 2026-07-27 | **[사본 동기화] S-5 폐기 반영 — 정본(기획 저장소 Notion "📡 API 명세서" DB) 2026-07-21 결정이 본 사본에 미반영이었다.** S-5 `PATCH /api/seller/products/{id}`(판매자 화면 직접 수정, 07/17 신설)는 **미채택**이며 **상품 수정은 챗봇 HITL(I-11)이 유일 경로**다. §3.2 draft 절의 "챗봇 수정(I-11)과 병존" 서술을 폐기 표기로 교체. Spring 코드 실측에서도 `/api/seller/**`에 PATCH 엔드포인트가 없어 정본·코드 모두와 일치시켰다. 계약 변경이 아니라 **사본 drift 정정**이다. |
 | v0.15.23 | 2026-07-27 | **[#100 P0/P1/P2] I-1 §4.6 실측 정합.** 표시 전용 필드(`imageUrl`·`originalPrice`·`reviewCount`·`options`)를 응답표에서 제거하고 CH-5(§4.3) 하이드레이션 이관 명시(AI 추천 경로 미사용), `price`·`rating`을 "AI 계산용(비표시 — 예산검증 `verifiedSum`·평점 사후필터·rerank 신호, 질의 시점 필요)"으로 명기해 display 오분류 재발 차단, envelope 예시를 실측 `{success, data:[...]}`(bare array)로 정정, 요청 `brandName` 단일→다중(반복 파라미터 → `WHERE brand IN`, 방법 D), `totalCount` 필드 불필요 결정 반영. |
 | v0.15.22 | 2026-07-26 | **[#100 P1] I-1 `color` 요청 파라미터 연결.** decompose가 색상 조건("빨간"·"검정")을 `filters.color`로 추출·전송하고, BE I-1이 `attributes` LIKE로 필터. 요청 모델·쿼리 변환에 `color`가 없어 Spring 색상 검색을 못 쓰던 것을 해소. |
