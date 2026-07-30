@@ -7,6 +7,7 @@ import json
 import types
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -23,8 +24,20 @@ from app.core.tracing import (
 )
 from app.main import app
 from app.schemas.chat import ChatRequest
-from app.schemas.spring import AddToCartResult, ProductSearchResult
-from app.services.spring_client import SpringUnavailableError
+from app.schemas.spring import (
+    AddToCartRequest,
+    AddToCartResult,
+    ProductSearchFilters,
+    ProductSearchResult,
+    RecommendationPush,
+)
+from app.services.spring_client import (
+    CartError,
+    OrderStatusUnavailableError,
+    SpringUnavailableError,
+    get_order_status as _real_get_order_status,
+    get_recent_purchases as _real_get_recent_purchases,
+)
 from tests._fakes import DEFAULT_PRODUCTS, FakeLLM
 
 client = TestClient(app)
@@ -155,6 +168,181 @@ async def test_recommendation_exports_bounded_buyer_tree() -> None:
     assert "무선이어폰" not in serialized_names
     assert "101" not in serialized_names
     assert "https://" not in serialized_names
+
+
+async def test_buyer_spring_success_exports_only_bounded_transport_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import spring_client
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/internal/products/search"
+        assert request.url.params["keyword"] == "private-product-901"
+        assert request.headers["X-Internal-Token"] == "private-token-901"
+        return httpx.Response(
+            200,
+            json={"success": True, "data": [], "privateResponse": "private-body-901"},
+        )
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(
+        spring_client,
+        "_client",
+        lambda: httpx.AsyncClient(
+            base_url="https://spring.private.test",
+            headers={"X-Internal-Token": "private-token-901"},
+            transport=transport,
+        ),
+    )
+
+    async def driver() -> None:
+        result = await spring_client.search_products(
+            ProductSearchFilters(keyword="private-product-901")
+        )
+        assert result.products == []
+
+    exported = await _run_with_trace(driver)
+    node = next(node for node in exported if node.name == "spring.search_products")
+
+    assert node.metadata == {
+        "httpMethod": "GET",
+        "upstream": "spring",
+        "statusClass": "2xx",
+    }
+    serialized = repr(exported)
+    for secret in (
+        "spring.private.test",
+        "/internal/products/search",
+        "private-product-901",
+        "private-token-901",
+        "private-body-901",
+    ):
+        assert secret not in serialized
+
+
+@pytest.mark.parametrize(("status_code", "status_class"), [(404, "4xx"), (503, "5xx")])
+async def test_buyer_spring_http_failure_preserves_mapping_and_records_only_status_class(
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: int,
+    status_class: str,
+) -> None:
+    from app.services import spring_client
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code,
+            json={"error": {"message": "private-error-905", "productId": 905}},
+        )
+
+    monkeypatch.setattr(
+        spring_client,
+        "_client",
+        lambda: httpx.AsyncClient(
+            base_url="https://spring.private.test",
+            headers={"X-Internal-Token": "private-token-905"},
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+
+    async def driver() -> None:
+        with pytest.raises(SpringUnavailableError):
+            await spring_client.search_products(ProductSearchFilters(keyword="private-query-905"))
+
+    exported = await _run_with_trace(driver)
+    node = next(node for node in exported if node.name == "spring.search_products")
+
+    assert node.metadata == {
+        "httpMethod": "GET",
+        "upstream": "spring",
+        "statusClass": status_class,
+    }
+    serialized = repr(exported)
+    for secret in ("private-error-905", "905", "private-query-905", "private-token-905"):
+        assert secret not in serialized
+
+
+async def test_all_buyer_spring_operations_trace_timeout_without_changing_error_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import spring_client
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("private timeout detail", request=request)
+
+    monkeypatch.setattr(
+        spring_client,
+        "_client",
+        lambda: httpx.AsyncClient(
+            base_url="https://spring.private.test",
+            headers={"X-Internal-Token": "private-token-902"},
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    cases = (
+        (
+            "spring.search_products",
+            lambda: spring_client.search_products(ProductSearchFilters(keyword="private-1")),
+            SpringUnavailableError,
+        ),
+        (
+            "spring.get_recent_purchases",
+            lambda: _real_get_recent_purchases(9002),
+            SpringUnavailableError,
+        ),
+        (
+            "spring.get_order_status",
+            lambda: _real_get_order_status(9002),
+            OrderStatusUnavailableError,
+        ),
+        (
+            "spring.add_to_cart",
+            lambda: spring_client.add_to_cart(
+                AddToCartRequest(user_id=9002, product_id=9003, quantity=1)
+            ),
+            CartError,
+        ),
+        (
+            "spring.get_cart",
+            lambda: spring_client.get_cart(user_id=9002),
+            SpringUnavailableError,
+        ),
+        (
+            "spring.push_recommendations",
+            lambda: spring_client.push_recommendations(
+                RecommendationPush(
+                    session_id="private-session",
+                    list_id="private-list",
+                    product_ids=[9003],
+                )
+            ),
+            SpringUnavailableError,
+        ),
+        (
+            "spring.fetch_product_changes",
+            lambda: spring_client.fetch_product_changes("private-cursor"),
+            SpringUnavailableError,
+        ),
+    )
+
+    async def driver() -> None:
+        for name, invoke, expected_error in cases:
+            try:
+                await invoke()
+            except expected_error:
+                pass
+            else:
+                pytest.fail(f"{name} did not preserve {expected_error.__name__} mapping")
+
+    exported = await _run_with_trace(driver)
+    by_name = {node.name: node for node in exported}
+
+    assert set(by_name) >= {name for name, _invoke, _error in cases}
+    for name, _invoke, _error in cases:
+        assert by_name[name].metadata["upstream"] == "spring"
+        assert by_name[name].metadata["statusClass"] == "timeout"
+    serialized = repr(exported)
+    for secret in ("9002", "9003", "private-session", "private-list", "private-cursor"):
+        assert secret not in serialized
 
 
 async def test_needs_expansion_is_owned_by_recommendation_graph() -> None:

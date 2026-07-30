@@ -828,3 +828,167 @@ def test_seller_telemetry_start_failure_preserves_route(
     assert caplog.messages.count("trace start failed code=TELEMETRY_START_FAILED") == 1
     assert "telemetry factory failed" not in caplog.text
     assert "telemetry start failed" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("status_code", "status_class"), [(200, "2xx"), (404, "4xx"), (503, "5xx")]
+)
+async def test_seller_spring_status_exports_only_bounded_transport_metadata(
+    fake_trace_factory: CapturingTraceFactory,
+    status_code: int,
+    status_class: str,
+) -> None:
+    import httpx
+
+    from app.services.spring_client import SpringClient, SpringUnavailableError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/internal/seller/private-brand-903/sales"
+        assert request.url.params["from"] == "private-from-903"
+        assert request.headers["X-Internal-Token"] == "private-token-903"
+        return httpx.Response(
+            status_code,
+            json=(
+                {"series": [], "privateResponse": "private-body-903"}
+                if status_code == 200
+                else {"error": {"message": "private-error-903"}}
+            ),
+        )
+
+    client = SpringClient(
+        "https://spring.private.test",
+        "private-token-903",
+        transport=httpx.MockTransport(handler),
+    )
+    trace = _start_seller_trace(fake_trace_factory)
+    with bind_request_trace(trace):
+        if status_code == 200:
+            result = await client.get_sales(
+                "private-brand-903", "private-from-903", "private-to-903"
+            )
+            assert result.series == []
+        else:
+            with pytest.raises(SpringUnavailableError):
+                await client.get_sales("private-brand-903", "private-from-903", "private-to-903")
+    await _finish(trace)
+
+    node = next(
+        node for node in fake_trace_factory.exporter.exported[-1] if node.name == "spring.get_sales"
+    )
+    assert node.metadata == {
+        "httpMethod": "GET",
+        "upstream": "spring",
+        "statusClass": status_class,
+    }
+    serialized = repr(fake_trace_factory.exporter.exported[-1])
+    for secret in (
+        "spring.private.test",
+        "/internal/seller/private-brand-903/sales",
+        "private-brand-903",
+        "private-from-903",
+        "private-to-903",
+        "private-token-903",
+        "private-body-903",
+        "private-error-903",
+    ):
+        assert secret not in serialized
+
+
+async def test_all_seller_spring_operations_trace_timeout_without_changing_mapping(
+    fake_trace_factory: CapturingTraceFactory,
+) -> None:
+    import httpx
+
+    from app.schemas.spring import ProductCreate, ProductUpdate
+    from app.services.spring_client import SpringClient, SpringUnavailableError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("private timeout detail", request=request)
+
+    client = SpringClient(
+        "https://spring.private.test",
+        "private-token-904",
+        transport=httpx.MockTransport(handler),
+    )
+    cases = (
+        (
+            "spring.get_sales",
+            "GET",
+            lambda: client.get_sales(904, "private-from", "private-to"),
+        ),
+        (
+            "spring.get_funnel",
+            "GET",
+            lambda: client.get_funnel(904, "private-from", "private-to"),
+        ),
+        (
+            "spring.get_events",
+            "GET",
+            lambda: client.get_events(904, "private-from", "private-to", product_id=905),
+        ),
+        (
+            "spring.get_order_events",
+            "GET",
+            lambda: client.get_order_events(904, "private-from", "private-to"),
+        ),
+        (
+            "spring.get_product_changes",
+            "GET",
+            lambda: client.get_product_changes(904, "private-from", "private-to", product_id=905),
+        ),
+        ("spring.get_churn", "GET", lambda: client.get_churn(904, 30)),
+        (
+            "spring.get_account_events",
+            "GET",
+            lambda: client.get_account_events(event_type="private-event"),
+        ),
+        ("spring.list_products", "GET", lambda: client.list_products(904, q="private-query")),
+        (
+            "spring.create_product",
+            "POST",
+            lambda: client.create_product(
+                904,
+                ProductCreate(
+                    name="private-product",
+                    price=1000,
+                    description="private-description",
+                ),
+            ),
+        ),
+        (
+            "spring.update_product",
+            "PATCH",
+            lambda: client.update_product(904, 905, ProductUpdate(name="private-update")),
+        ),
+        ("spring.delete_product", "DELETE", lambda: client.delete_product(904, 905)),
+    )
+
+    trace = _start_seller_trace(fake_trace_factory)
+    with bind_request_trace(trace):
+        for _name, _method, invoke in cases:
+            with pytest.raises(SpringUnavailableError):
+                await invoke()
+    await _finish(trace)
+
+    by_name = {node.name: node for node in fake_trace_factory.exporter.exported[-1]}
+    assert set(by_name) >= {name for name, _method, _invoke in cases}
+    for name, method, _invoke in cases:
+        assert by_name[name].metadata == {
+            "httpMethod": method,
+            "upstream": "spring",
+            "statusClass": "timeout",
+        }
+    serialized = repr(fake_trace_factory.exporter.exported[-1])
+    for secret in (
+        "904",
+        "905",
+        "private-from",
+        "private-to",
+        "private-event",
+        "private-query",
+        "private-product",
+        "private-description",
+        "private-update",
+        "private-token-904",
+    ):
+        assert secret not in serialized
