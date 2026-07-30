@@ -3,18 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import types
 from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.agents.buyer.cart.graph import stream_cart_add
-from app.agents.buyer.cart.state import CartStateStore
+from app.agents.buyer.cart.state import get_cart_store
 from app.agents.buyer.graph import run_buyer_turn
-from app.agents.buyer.recommendation.state import CartIntent
 from app.core.auth import Identity
-from app.core.config import get_settings
+from app.core.conversation import conversation_key
 from app.core.tracing import (
     FakeTraceExporter,
     TraceFactory,
@@ -55,9 +54,8 @@ def _member() -> Identity:
     return Identity(user_id="123", is_guest=False, seller_id=None, subject="123")
 
 
-async def _collect(stream) -> None:
-    async for _ in stream:
-        pass
+async def _collect(stream) -> list[str]:
+    return [frame async for frame in stream]
 
 
 async def _run_with_trace(driver) -> tuple:
@@ -157,6 +155,33 @@ async def test_recommendation_exports_bounded_buyer_tree() -> None:
     assert "무선이어폰" not in serialized_names
     assert "101" not in serialized_names
     assert "https://" not in serialized_names
+
+
+async def test_needs_expansion_is_owned_by_recommendation_graph() -> None:
+    decompose = {
+        "intent": "recommend",
+        "reply": "",
+        "case": 3,
+        "semanticQuery": "집들이 선물",
+        "categoryQueries": [{"category": None, "query": "집들이 선물"}],
+        "filters": {},
+    }
+
+    async def driver() -> None:
+        await _collect(
+            run_buyer_turn(
+                _request("집들이 선물"),
+                _member(),
+                llm=FakeLLM(decompose=decompose),
+                search=_search_with_span,
+                push_fn=_push_with_span,
+            )
+        )
+
+    exported = await _run_with_trace(driver)
+    by_name = {node.name: node for node in exported}
+
+    assert by_name["llm.needs_expansion"].parent_id == by_name["buyer.graph.recommendation"].id
 
 
 @pytest.mark.parametrize(
@@ -265,7 +290,9 @@ async def test_dedup_failure_marks_bounded_degrade(monkeypatch: pytest.MonkeyPat
     await _assert_degrade(driver, "dedup_skipped")
 
 
-async def test_cart_merge_failure_marks_bounded_degrade() -> None:
+async def test_cart_merge_failure_marks_routed_cart_without_changing_frames(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     async def get_cart(*, user_id=None, guest_id=None):
         del user_id, guest_id
         raise SpringUnavailableError("customer@example.com cart exploded")
@@ -274,20 +301,49 @@ async def test_cart_merge_failure_marks_bounded_degrade() -> None:
         del request
         return AddToCartResult(success=True, cart_item_id=1)
 
+    monkeypatch.setattr("app.services.spring_client.get_cart", get_cart)
+    monkeypatch.setattr("app.services.spring_client.add_to_cart", add_cart)
+    cart_store = await get_cart_store()
+    await cart_store.set_last_reco(
+        conversation_key("123", "thread-trace"),
+        [(101, "상품")],
+    )
+    decompose = {
+        "intent": "cart_add",
+        "reply": "",
+        "case": 2,
+        "semanticQuery": "",
+        "categoryQueries": [],
+        "filters": {},
+        "cart": {"productId": 101, "quantity": 1},
+    }
+    frames: list[str] = []
+
     async def driver() -> None:
-        await _collect(
-            stream_cart_add(
-                identity=_member(),
-                cart=CartIntent(product_id=101),
-                cart_store=CartStateStore(),
-                thread_key="member:thread",
-                settings=get_settings(),
-                add_fn=add_cart,
-                get_cart_fn=get_cart,
+        frames.extend(
+            await _collect(
+                run_buyer_turn(
+                    _request(),
+                    _member(),
+                    llm=FakeLLM(decompose=decompose),
+                )
             )
         )
 
-    await _assert_degrade(driver, "cart_merge_skipped")
+    exported = await _assert_degrade(driver, "cart_merge_skipped")
+    by_name = {node.name: node for node in exported}
+    root = by_name["buyer_chat_turn"]
+    assert by_name["buyer.routing"].parent_id == root.id
+    assert by_name["llm.decompose"].parent_id == by_name["buyer.routing"].id
+    assert by_name["buyer.graph.cart"].parent_id == root.id
+    events = [json.loads(frame.removeprefix("data:").strip()) for frame in frames]
+    assert [event["type"] for event in events] == ["action", "done"]
+    assert events[0]["data"] == {
+        "type": "CART_ADDED",
+        "message": "장바구니에 담았어요.",
+        "cartItemId": 1,
+        "reason": None,
+    }
 
 
 async def test_partial_fanout_marks_bounded_degrade() -> None:
@@ -324,13 +380,54 @@ async def test_partial_fanout_marks_bounded_degrade() -> None:
     await _assert_degrade(driver, "fanout_partial")
 
 
-async def _assert_degrade(driver, reason: str) -> None:
+async def test_combined_fanout_and_dedup_failure_uses_stable_precedence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def purchases(user_id, status=None):
+        del user_id, status
+        await asyncio.sleep(0)
+        raise SpringUnavailableError("customer@example.com dedup exploded")
+
+    async def mapper(*, category_queries, utterance, settings):
+        del category_queries, utterance, settings
+        return [("카테고리-A", "A"), ("카테고리-B", "B")]
+
+    async def search(filters, exclude_product_ids=None):
+        del exclude_product_ids
+        if filters.category == "카테고리-B":
+            raise SpringUnavailableError("customer@example.com fanout exploded")
+        return ProductSearchResult(products=[DEFAULT_PRODUCTS[0]], total_count=1)
+
+    monkeypatch.setattr("app.services.spring_client.get_recent_purchases", purchases)
+
+    async def driver() -> None:
+        await _collect(
+            run_buyer_turn(
+                _request(),
+                _member(),
+                llm=FakeLLM(
+                    rerank={
+                        "ranked": [{"productId": 101, "rationale": "적합"}],
+                        "overallComment": "추천",
+                    }
+                ),
+                search=search,
+                push_fn=_push_with_span,
+                map_categories=mapper,
+            )
+        )
+
+    await _assert_degrade(driver, "fanout_partial")
+
+
+async def _assert_degrade(driver, reason: str) -> tuple:
     exported = await _run_with_trace(driver)
     root = next(node for node in exported if node.parent_id is None)
     assert reason in BUYER_DEGRADE_REASONS
     assert root.metadata["degraded"] is True
     assert root.metadata["degradeReason"] == reason
     assert "customer@example.com" not in repr(root.metadata)
+    return exported
 
 
 def test_buyer_store_acquisition_failure_finishes_root(

@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from app.core.tracing import (
+    BUYER_DEGRADE_REASON_PRECEDENCE,
     FakeTraceExporter,
     LangSmithTraceExporter,
     NoopRequestTrace,
@@ -122,6 +123,37 @@ async def test_trace_records_bounded_root_observability_metadata() -> None:
         "terminalReason": "error",
     }
     assert root.error_type == "UPSTREAM"
+
+
+@pytest.mark.parametrize(
+    "reasons",
+    [
+        BUYER_DEGRADE_REASON_PRECEDENCE,
+        tuple(reversed(BUYER_DEGRADE_REASON_PRECEDENCE)),
+    ],
+)
+async def test_buyer_degrade_precedence_is_order_independent(reasons: tuple[str, ...]) -> None:
+    exporter = FakeTraceExporter()
+    trace = _start_trace(TraceFactory(exporter=exporter, enabled=True, sampling_rate=1.0))
+
+    for reason in reasons:
+        trace.mark_degraded(reason)
+    await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+
+    root = exporter.exported[0][0]
+    assert root.metadata["degraded"] is True
+    assert root.metadata["degradeReason"] == "search_failed"
+
+
+def test_buyer_degrade_precedence_documents_all_six_bounded_reasons() -> None:
+    assert BUYER_DEGRADE_REASON_PRECEDENCE == (
+        "search_failed",
+        "push_skipped",
+        "rerank_fallback",
+        "fanout_partial",
+        "dedup_skipped",
+        "cart_merge_skipped",
+    )
 
 
 async def test_span_marks_safe_error_type_and_restores_parentage() -> None:

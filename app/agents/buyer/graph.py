@@ -88,6 +88,110 @@ def _is_timeout(exc: Exception) -> bool:
     return "timeout" in str(exc).lower()
 
 
+async def _prepare_recommendation(
+    *,
+    request,
+    decision,
+    prior,
+    llm,
+    settings,
+    map_categories,
+    expand_needs,
+    observer,
+    thread_store: ThreadFilterStore,
+    thread_key: str,
+) -> frozenset[str]:
+    """Prepare mapped recommendation state inside the recommendation graph span."""
+    # recommend — 카테고리 하이브리드 매핑(이슈 #59, 방식 A): decompose 추측을 canonical 로
+    # 보정(canonical-or-null). 매핑이 죽거나 신호가 없으면 category 없이(전체) 검색으로 degrade.
+    if (
+        prior is not None
+        and prior.category
+        and not any(q.raw_category or q.query for q in decision.category_queries)
+    ):
+        # 리파인 턴(예: "더 저렴한 걸로") — 이번 턴에 카테고리 신호가 전혀 없음(빈 리스트, 또는
+        # raw·query 가 모두 없는 leg 만). prior 는 이미 canonical(§7)이라 재매핑(pg 왕복) 없이 그대로
+        # 승계한다. 매핑에 태우면 신호가 없어 빈 legs 가 나오고(#22), 아래 else 의 category=None 으로
+        # 직전 카테고리가 지워진다 — 리파인인데 필터가 풀려버린다(PR #73 #12).
+        # 단, raw 는 null 이라도 유의미한 query 가 있으면(신규 상황형 질의) 검색 의도가 있는 것이라
+        # 아래 매핑을 태워야 한다 — prior 로 하이재킹하면 fan-out 이 죽고 #59 문제가 재발(PR #73 #19).
+        decision.category_legs = [(prior.category, None)]
+    else:
+        # [#198] 목적·상황형 발화의 상품 전개 — **승계 가드 안쪽(else)에 둔다**. D1(`no_legs`)은
+        # 리파인 턴("더 저렴한 걸로")의 "신호 없음"과 조건이 겹치므로, 전개를 위 if 보다 앞에 놓으면
+        # 리파인 턴이 엉뚱한 상품 목록으로 바뀌어 직전 맥락이 날아간다(PR #73 #12/#19 승계 규약이
+        # 반대 방향으로 깨진다). 여기서는 이미 "승계 대상 아님"이 확정돼 있다.
+        if settings.needs_expansion_enabled:
+            reason = detect_expansion_need(
+                request.message,
+                decision.category_queries,
+                markers=settings.needs_expansion_purpose_markers,
+                # case 는 D1 게이트로만 쓴다(§4.2) — case 2("5만원 이하 아무거나")도 legs 가 비므로
+                # leg 유무만으로는 case 3 과 구분되지 않는데, 처방은 정반대다(#22·#162 무필터 보존).
+                case=decision.case,
+            )
+            if reason:
+                logger.info(
+                    "needs_expansion_triggered",
+                    extra={"reason": reason, "legs": len(decision.category_queries)},
+                )
+                expander = expand_needs or _expand_needs
+                # observer 는 전개기까지 내려보낸다 — 모델 호출을 하는 쪽이 기록해야(§6.3) LLM 을
+                # 쓰지 않는 전개기(방식 B·C)에 유령 호출이 남지 않는다.
+                items = await expander(
+                    request.message, llm=llm, settings=settings, observer=observer
+                )
+                # 실패(빈 리스트)면 원본 legs 를 그대로 둔다 — 전개는 개선 시도이며 실패가 기존
+                # 경로를 악화시키지 않는다(설계 §7 후퇴 없음).
+                if items:
+                    # raw 는 싣지 않는다 — 매핑이 query 우선이라(#115 §4.3.1) raw 는 폴백일 뿐이고,
+                    # 창작 라벨은 표기 불일치·가짜 근접으로 해가 더 크다.
+                    decision.category_queries = [CategoryQuery(None, name) for name in items]
+        mapper = map_categories or _map_categories
+        try:
+            decision.category_legs = await mapper(
+                category_queries=decision.category_queries,
+                utterance=request.message,
+                settings=settings,
+            )
+        except Exception as exc:  # noqa: BLE001 - 매핑 호출 자체의 예외(시그니처 불일치·버그 등)
+            # embed/DB 실패는 map_categories 내부에서 leg 단위 격리(exact 보존·§5·#20)로 처리된다.
+            # 여기까지 오는 건 map_categories 호출 자체의 버그라 raw(DB 미검증)를 신뢰할 근거가 없다 —
+            # canonical-or-null 불변식대로 빈 legs 로 degrade(→ filters.category=None). 미검증 원문이
+            # Spring·조건 칩·멀티턴 승계로 새지 않게(PR #73 리뷰). 관측 로그는 남긴다.
+            logger.warning("category_map_failed", extra={"reason": str(exc)})
+            decision.category_legs = []
+    if decision.category_legs:
+        # 대표 canonical — 단일 filters.category 필드·조건 칩·멀티턴 승계 호환(§7).
+        decision.filters.category = decision.category_legs[0][0]
+    else:
+        # 매핑 결과 없음 → LLM 이 echo 했을 수 있는 미검증 filters.category 를 비운다. category 는
+        # 이제 전적으로 category_legs(canonical) 경유로만 흐른다 — 미시드·매핑 실패 시에도 보정 안 된
+        # 원문이 Spring 검색·조건 칩으로 새지 않게(PR #73 리뷰 #13/#15).
+        decision.filters.category = None
+
+    # 멀티턴 병합 필터는 추천 intent 에서만 저장(담기/조회가 덮어쓰지 않게).
+    await thread_store.put(thread_key, decision.filters)
+    # 소모품 억제 되돌리기(결정 14-F) — 이번 턴 revert + 스레드 누적을 합쳐 억제 제외.
+    # LLM 이 뽑은 임의 문자열을 무한 누적하지 않게 소모품 화이트리스트(억제 대상)와 대조해 통과분만 저장.
+    revert_store = await get_revert_store()
+    # SSE에는 정제된 category를 싣지만 내부 억제 키는 Spring 원본과 같아야 한다.
+    # 정제값→원본 화이트리스트로 되매핑해 "보여준 revert 값"의 round-trip을 보존한다.
+    consumable_by_exposed = {
+        _strip_unsafe(category): category for category in settings.consumable_categories
+    }
+    await revert_store.add(
+        thread_key,
+        [
+            consumable_by_exposed[exposed]
+            for category in decision.revert_categories
+            if (exposed := _strip_unsafe(category)) in consumable_by_exposed
+        ],
+    )
+    reverted = await revert_store.get(thread_key)
+    return frozenset(reverted)
+
+
 async def run_buyer_turn(
     request,
     identity,
@@ -239,94 +343,19 @@ async def run_buyer_turn(
                 yield frame
         return
 
-    # recommend — 카테고리 하이브리드 매핑(이슈 #59, 방식 A): decompose 추측을 canonical 로
-    # 보정(canonical-or-null). 매핑이 죽거나 신호가 없으면 category 없이(전체) 검색으로 degrade.
-    if (
-        prior is not None
-        and prior.category
-        and not any(q.raw_category or q.query for q in decision.category_queries)
-    ):
-        # 리파인 턴(예: "더 저렴한 걸로") — 이번 턴에 카테고리 신호가 전혀 없음(빈 리스트, 또는
-        # raw·query 가 모두 없는 leg 만). prior 는 이미 canonical(§7)이라 재매핑(pg 왕복) 없이 그대로
-        # 승계한다. 매핑에 태우면 신호가 없어 빈 legs 가 나오고(#22), 아래 else 의 category=None 으로
-        # 직전 카테고리가 지워진다 — 리파인인데 필터가 풀려버린다(PR #73 #12).
-        # 단, raw 는 null 이라도 유의미한 query 가 있으면(신규 상황형 질의) 검색 의도가 있는 것이라
-        # 아래 매핑을 태워야 한다 — prior 로 하이재킹하면 fan-out 이 죽고 #59 문제가 재발(PR #73 #19).
-        decision.category_legs = [(prior.category, None)]
-    else:
-        # [#198] 목적·상황형 발화의 상품 전개 — **승계 가드 안쪽(else)에 둔다**. D1(`no_legs`)은
-        # 리파인 턴("더 저렴한 걸로")의 "신호 없음"과 조건이 겹치므로, 전개를 위 if 보다 앞에 놓으면
-        # 리파인 턴이 엉뚱한 상품 목록으로 바뀌어 직전 맥락이 날아간다(PR #73 #12/#19 승계 규약이
-        # 반대 방향으로 깨진다). 여기서는 이미 "승계 대상 아님"이 확정돼 있다.
-        if settings.needs_expansion_enabled:
-            reason = detect_expansion_need(
-                request.message,
-                decision.category_queries,
-                markers=settings.needs_expansion_purpose_markers,
-                # case 는 D1 게이트로만 쓴다(§4.2) — case 2("5만원 이하 아무거나")도 legs 가 비므로
-                # leg 유무만으로는 case 3 과 구분되지 않는데, 처방은 정반대다(#22·#162 무필터 보존).
-                case=decision.case,
-            )
-            if reason:
-                logger.info(
-                    "needs_expansion_triggered",
-                    extra={"reason": reason, "legs": len(decision.category_queries)},
-                )
-                expander = expand_needs or _expand_needs
-                # observer 는 전개기까지 내려보낸다 — 모델 호출을 하는 쪽이 기록해야(§6.3) LLM 을
-                # 쓰지 않는 전개기(방식 B·C)에 유령 호출이 남지 않는다.
-                items = await expander(
-                    request.message, llm=llm, settings=settings, observer=observer
-                )
-                # 실패(빈 리스트)면 원본 legs 를 그대로 둔다 — 전개는 개선 시도이며 실패가 기존
-                # 경로를 악화시키지 않는다(설계 §7 후퇴 없음).
-                if items:
-                    # raw 는 싣지 않는다 — 매핑이 query 우선이라(#115 §4.3.1) raw 는 폴백일 뿐이고,
-                    # 창작 라벨은 표기 불일치·가짜 근접으로 해가 더 크다.
-                    decision.category_queries = [CategoryQuery(None, name) for name in items]
-        mapper = map_categories or _map_categories
-        try:
-            decision.category_legs = await mapper(
-                category_queries=decision.category_queries,
-                utterance=request.message,
-                settings=settings,
-            )
-        except Exception as exc:  # noqa: BLE001 - 매핑 호출 자체의 예외(시그니처 불일치·버그 등)
-            # embed/DB 실패는 map_categories 내부에서 leg 단위 격리(exact 보존·§5·#20)로 처리된다.
-            # 여기까지 오는 건 map_categories 호출 자체의 버그라 raw(DB 미검증)를 신뢰할 근거가 없다 —
-            # canonical-or-null 불변식대로 빈 legs 로 degrade(→ filters.category=None). 미검증 원문이
-            # Spring·조건 칩·멀티턴 승계로 새지 않게(PR #73 리뷰). 관측 로그는 남긴다.
-            logger.warning("category_map_failed", extra={"reason": str(exc)})
-            decision.category_legs = []
-    if decision.category_legs:
-        # 대표 canonical — 단일 filters.category 필드·조건 칩·멀티턴 승계 호환(§7).
-        decision.filters.category = decision.category_legs[0][0]
-    else:
-        # 매핑 결과 없음 → LLM 이 echo 했을 수 있는 미검증 filters.category 를 비운다. category 는
-        # 이제 전적으로 category_legs(canonical) 경유로만 흐른다 — 미시드·매핑 실패 시에도 보정 안 된
-        # 원문이 Spring 검색·조건 칩으로 새지 않게(PR #73 리뷰 #13/#15).
-        decision.filters.category = None
-
-    # 멀티턴 병합 필터는 추천 intent 에서만 저장(담기/조회가 덮어쓰지 않게).
-    await thread_store.put(thread_key, decision.filters)
-    # 소모품 억제 되돌리기(결정 14-F) — 이번 턴 revert + 스레드 누적을 합쳐 억제 제외.
-    # LLM 이 뽑은 임의 문자열을 무한 누적하지 않게 소모품 화이트리스트(억제 대상)와 대조해 통과분만 저장.
-    revert_store = await get_revert_store()
-    # SSE에는 정제된 category를 싣지만 내부 억제 키는 Spring 원본과 같아야 한다.
-    # 정제값→원본 화이트리스트로 되매핑해 "보여준 revert 값"의 round-trip을 보존한다.
-    consumable_by_exposed = {
-        _strip_unsafe(category): category for category in settings.consumable_categories
-    }
-    await revert_store.add(
-        thread_key,
-        [
-            consumable_by_exposed[exposed]
-            for category in decision.revert_categories
-            if (exposed := _strip_unsafe(category)) in consumable_by_exposed
-        ],
-    )
-    reverted = await revert_store.get(thread_key)
     with trace_span("buyer.graph.recommendation", "chain"):
+        reverted = await _prepare_recommendation(
+            request=request,
+            decision=decision,
+            prior=prior,
+            llm=llm,
+            settings=settings,
+            map_categories=map_categories,
+            expand_needs=expand_needs,
+            observer=observer,
+            thread_store=thread_store,
+            thread_key=thread_key,
+        )
         async for frame in stream_recommendation(
             request=request,
             decision=decision,
@@ -336,7 +365,7 @@ async def run_buyer_turn(
             identity=identity,
             profile=profile,
             settings=settings,
-            reverted_categories=frozenset(reverted),
+            reverted_categories=reverted,
             cart_store=cart_store,
             thread_key=thread_key,
             observer=observer,

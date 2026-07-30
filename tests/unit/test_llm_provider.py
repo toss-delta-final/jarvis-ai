@@ -390,6 +390,67 @@ async def test_provider_complete_records_usage_without_provider_ttft(
     assert contexts == [False]
 
 
+@pytest.mark.parametrize("provider", ["anthropic", "openai"])
+async def test_request_provider_ttft_is_first_write_wins_across_streams_and_complete(
+    monkeypatch: pytest.MonkeyPatch, provider: str
+) -> None:
+    calls = 0
+
+    class Chat:
+        async def astream(self, messages):
+            del messages
+            yield SimpleNamespace(content="")
+            yield SimpleNamespace(content="")
+            yield SimpleNamespace(content=f"stream-{calls}")
+
+        async def ainvoke(self, messages):
+            del messages
+            return SimpleNamespace(
+                content='{"ok": true}',
+                usage_metadata={"input_tokens": 1, "output_tokens": 1},
+            )
+
+    llm = _provider(provider)
+
+    def chat(*args, **kwargs):
+        del args, kwargs
+        nonlocal calls
+        calls += 1
+        return Chat()
+
+    monkeypatch.setattr(llm, "_chat", chat)
+    times = iter([10.0, 10.010, 20.0, 20.250])
+    monkeypatch.setattr(llm_mod, "perf_counter", lambda: next(times))
+    trace, exporter = _trace()
+
+    with bind_request_trace(trace):
+        with trace_span("llm.fallback", "llm", {"model": "fast-model"}):
+            first = [
+                chunk
+                async for chunk in llm.stream(
+                    system="private system", user="private user", tier="fast"
+                )
+            ]
+        with trace_span("llm.fallback", "llm", {"model": "fast-model"}):
+            second = [
+                chunk
+                async for chunk in llm.stream(
+                    system="private system", user="private user", tier="fast"
+                )
+            ]
+        with trace_span("llm.decompose", "llm", {"model": "fast-model"}):
+            completed = await llm.complete(
+                system="private system", user="private user", tier="fast"
+            )
+    await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+
+    assert first == ["stream-1"]
+    assert second == ["stream-2"]
+    assert completed == '{"ok": true}'
+    root = next(node for node in exporter.exported[0] if node.parent_id is None)
+    assert root.metadata["provider_ttft_ms"] == 10
+
+
 def test_openai_json_output_toggles_response_format() -> None:
     """complete(json_output=False) 는 response_format 을 붙이지 않는다 — 마크다운 태스크(consolidate)용."""
     llm = _openai()

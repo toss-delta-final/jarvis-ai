@@ -24,6 +24,21 @@ SafeScalar = str | int | float | bool | None
 
 logger = logging.getLogger(__name__)
 
+# Singular buyer degradeReason precedence, highest severity first. This keeps the exported
+# field bounded and order-independent when concurrent recommendation work marks more than one
+# existing degrade path; no list or raw failure detail is retained.
+BUYER_DEGRADE_REASON_PRECEDENCE = (
+    "search_failed",
+    "push_skipped",
+    "rerank_fallback",
+    "fanout_partial",
+    "dedup_skipped",
+    "cart_merge_skipped",
+)
+_BUYER_DEGRADE_REASON_RANK = {
+    reason: rank for rank, reason in enumerate(BUYER_DEGRADE_REASON_PRECEDENCE)
+}
+
 SAFE_METADATA_KEYS = frozenset(
     {
         "requestId",
@@ -205,7 +220,7 @@ class RequestTrace:
 
     def record_provider_ttft(self, milliseconds: int) -> None:
         if not self._finished:
-            self._nodes[0].metadata["provider_ttft_ms"] = milliseconds
+            self._nodes[0].metadata.setdefault("provider_ttft_ms", milliseconds)
 
     def record_llm_usage(
         self,
@@ -245,7 +260,18 @@ class RequestTrace:
 
     def mark_degraded(self, reason: str) -> None:
         if not self._finished:
-            self._nodes[0].metadata.update(degraded=True, degradeReason=reason)
+            root = self._nodes[0]
+            current = root.metadata.get("degradeReason")
+            if (
+                isinstance(current, str)
+                and current in _BUYER_DEGRADE_REASON_RANK
+                and reason in _BUYER_DEGRADE_REASON_RANK
+            ):
+                reason = min(
+                    (current, reason),
+                    key=_BUYER_DEGRADE_REASON_RANK.__getitem__,
+                )
+            root.metadata.update(degraded=True, degradeReason=reason)
 
     async def finish(
         self,
