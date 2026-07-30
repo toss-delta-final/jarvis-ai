@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
 
@@ -21,6 +23,8 @@ from app.agents.seller.context import SellerContext
 from app.core.config import get_settings
 from app.schemas.spring import BehaviorEventsResult, ProductCreate, ProductUpdate
 from app.services.spring_client import SpringUnavailableError, get_spring_client
+
+_log = logging.getLogger(__name__)
 
 
 def _reference_note(from_date: str, to_date: str) -> str:
@@ -83,26 +87,34 @@ async def get_sales_timeseries(
     if granularity == "daily":
         # Spring 의 isAnomaly/deviationPct 는 참고치일 뿐 — 원시 sales 로 재판정한다(§0.1 D).
         # [#194] 적응형 window(직전 최소 min_window·최대 window 일) — Spring withAnomaly 정렬.
-        anomalies = calc.detect_sales_anomalies(
-            result.series,
-            window=settings.seller_ma_window,
-            min_window=settings.seller_ma_min_window,
-            threshold_pct=settings.seller_anomaly_deviation_pct,
-        )
-        # deviation None + 이상 = 무매출 기준선(0원) 구간 직후 매출 발생(#194, 편차 정의 불가).
-        flagged = [
-            f"{date} ({deviation:+.1f}%)"
-            if deviation is not None
-            else f"{date} (무매출 기준선 → 매출 발생)"
-            for date, deviation, is_anom in anomalies
-            if is_anom
-        ]
-        anomaly_note = (
-            f" 이상 감지 {len(flagged)}건(직전 최대 {settings.seller_ma_window}일"
-            f"·최소 {settings.seller_ma_min_window}일 평균 대비): " + ", ".join(flagged) + "."
-            if flagged
-            else " 이상 감지 없음."
-        )
+        try:
+            anomalies = calc.detect_sales_anomalies(
+                result.series,
+                window=settings.seller_ma_window,
+                min_window=settings.seller_ma_min_window,
+                threshold_pct=settings.seller_anomaly_deviation_pct,
+            )
+        except ValueError as exc:
+            # [#194 리뷰 3] §3.4 degrade 규약 준수 — window 설정 검증은 기동 시점
+            # (config.py model_validator)이 1차 방어지만, 그 안전망이 우회·회귀로 뚫려도
+            # 이 도구만 unhandled 예외로 죽지 않는다. 매출 요약은 살리고 판정만 생략.
+            _log.warning("이상 감지 판정 불가 — window 설정 오류: %s", exc)
+            anomaly_note = " 이상 감지 판정 불가(window 설정 오류)."
+        else:
+            # deviation None + 이상 = 무매출 기준선(0원) 구간 직후 매출 발생(#194, 편차 정의 불가).
+            flagged = [
+                f"{date} ({deviation:+.1f}%)"
+                if deviation is not None
+                else f"{date} (무매출 기준선 → 매출 발생)"
+                for date, deviation, is_anom in anomalies
+                if is_anom
+            ]
+            anomaly_note = (
+                f" 이상 감지 {len(flagged)}건(직전 최대 {settings.seller_ma_window}일"
+                f"·최소 {settings.seller_ma_min_window}일 평균 대비): " + ", ".join(flagged) + "."
+                if flagged
+                else " 이상 감지 없음."
+            )
     else:
         anomaly_note = ""
     return (

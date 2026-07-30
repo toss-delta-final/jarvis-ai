@@ -294,6 +294,28 @@ async def test_sales_tool_skips_anomaly_detection_for_non_daily_granularity() ->
     assert "이상 감지" not in weekly_result
 
 
+async def test_sales_tool_degrades_when_anomaly_config_invalid(monkeypatch) -> None:
+    """[#194 리뷰 3] detect_sales_anomalies 의 ValueError 가 도구 밖으로 전파되지 않는다
+    (§3.4 degrade 규약) — 기동 시점 검증(config)이 우회·회귀로 뚫려도 매출 요약은
+    살리고 이상 감지만 생략한다."""
+    from app.agents.seller import calc as calc_module
+
+    def _boom(*_args, **_kwargs):
+        raise ValueError("window(2)/min_window(3) 설정이 유효하지 않다")
+
+    monkeypatch.setattr(calc_module, "detect_sales_anomalies", _boom)
+
+    result = await _call_runtime_tool(
+        get_sales_timeseries,
+        {"from_date": "2026-07-01", "to_date": "2026-07-14", "granularity": "daily"},
+        FakeSpringClient(),
+    )
+
+    assert "총매출" in result  # 매출 요약은 유지된다
+    assert "이상 감지 판정 불가" in result
+    assert not result.startswith("Error:")  # 전체 실패로 격하하지 않는다
+
+
 async def test_get_order_events_tool_passes_stats_through() -> None:
     """도구의 stats 인자가 client.get_order_events 호출로 그대로 전달된다(opus 리뷰 m6)."""
     fake = FakeSpringClient()

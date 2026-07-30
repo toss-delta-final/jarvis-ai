@@ -284,6 +284,36 @@ async def test_get_funnel_unknown_stage_vocabulary_surfaces_as_uncomputable() ->
     assert rates["cart_to_checkout"] is None
 
 
+async def test_get_funnel_duplicate_stage_last_entry_wins() -> None:
+    """[#194 리뷰 2] 동일 stage 중복(BE 이상 응답) 시 값·미집계 판정 모두 마지막 항목
+    기준 — 값은 덮이는데 앞 항목의 미집계 판정만 남아 '값은 정상인데 미집계 표시'가
+    되는 불일치 방지."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "stages": [
+                    {"stage": "product_view", "count": 1000},
+                    {"stage": "add_to_cart", "count": 100},
+                    # checkout 중복: 앞 항목은 미집계(count null) → 뒤 유효 항목이 승리해야 함.
+                    {"stage": "checkout_start", "count": None, "computable": False},
+                    {"stage": "checkout_start", "count": 50, "computable": True},
+                    # purchase 중복(역순): 유효 → 미집계. 마지막 기준이므로 미집계로 남아야 함.
+                    {"stage": "purchase_complete", "count": 40},
+                    {"stage": "purchase_complete", "count": None},
+                ]
+            },
+        )
+
+    client = _client(handler)
+    result = await client.get_funnel("brand-1", "2026-07-01", "2026-07-14")
+
+    assert result.checkout == 50
+    assert "checkout" not in result.uncomputable_stages  # 유효값으로 확정 — 미집계 아님
+    assert "purchase" in result.uncomputable_stages  # 마지막 항목이 미집계
+
+
 async def test_get_order_events_passes_stats_param() -> None:
     """stats 플래그가 쿼리 파라미터로 전달된다(opus 리뷰 m6, api-spec §4.4 stats)."""
     captured: dict = {}

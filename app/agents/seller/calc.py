@@ -81,6 +81,12 @@ def detect_sales_anomalies(
          노이즈 방지(Spring `sales > 0 &&` 가드와 동일).
     판정 불가 구간(직전 min_window 미만)의 deviation 도 None 이다(구 0.0 → 의미 구분).
 
+    [전제, #194 리뷰 3] sales 는 비음수다 — 원천이 Spring I-6 집계(PAID 주문 아이템 매출
+    합, 환불은 상태 전이로 관리)라 음수 매출·음수 기준선은 발생하지 않는다. 따라서
+    `baseline > 0` 의 else 분기는 곧 "무매출(0) 기준선"이며 Spring 과 동일하게 음수
+    기준선을 별도 구분하지 않는다. 이 전제가 깨지면(예: 환불을 음수 매출로 적재하도록
+    BE 변경) else 분기 의미와 호출부의 "무매출 기준선" 문구를 함께 재검토해야 한다.
+
     Spring 이 준 point.is_anomaly/point.deviation_pct 는 무시하고 point.sales 원시값만으로
     재계산한다(§0.1 D) — 로직을 정렬해 두 판정이 자연 일치하게 한다.
     """

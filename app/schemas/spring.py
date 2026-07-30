@@ -422,12 +422,15 @@ class FunnelResult(SellerAggregateModel):
     def _flatten_stages(cls, data: object) -> object:
         if isinstance(data, dict) and isinstance(data.get("stages"), list):
             data = dict(data)
-            uncomputable: list[str] = []
             # [#194 리뷰 반영] 매핑으로 채워지지 않은 평면 필드를 추적한다 — stage 어휘가
             # 코드 가정과 어긋나면(오탈자·casing 변경·단계 누락) 종전에는 조용히 건너뛰어
             # 기본값 0(= "실제 0건")으로 새던 것을, "미집계"로 편입해 표면화한다
             # (I-14/I-15 에서 고친 것과 동일한 은폐 패턴 차단).
-            unfilled = set(_FUNNEL_STAGE_FIELD.values())
+            # [#194 리뷰 2] 미집계 판정은 entry 별 즉시 append 가 아니라 필드별 최종
+            # 항목 기준으로 내린다 — 동일 stage 가 중복으로 오면(BE 이상 응답) 값은
+            # 마지막 항목으로 덮이는데 판정만 앞 항목 것이 남아, 값은 정상 수치인데
+            # "미집계"로 표시되는 불일치가 생기던 문제.
+            uncomputable_by_field: dict[str, bool] = {}
             unknown_stages: list[object] = []
             for entry in data["stages"]:
                 if not isinstance(entry, dict):
@@ -436,12 +439,11 @@ class FunnelResult(SellerAggregateModel):
                 if field is None:
                     unknown_stages.append(entry.get("stage"))
                     continue
-                unfilled.discard(field)
                 count = entry.get("count")
                 # count null(집계값 없음) 또는 computable=false(v1 미계산 구간) = 미집계.
-                if count is None or entry.get("computable") is False:
-                    uncomputable.append(field)
+                uncomputable_by_field[field] = count is None or entry.get("computable") is False
                 data[field] = count if count is not None else 0
+            unfilled = set(_FUNNEL_STAGE_FIELD.values()) - uncomputable_by_field.keys()
             if unknown_stages or unfilled:
                 _log.warning(
                     "I-7 funnel stages 계약 어긋남 — 미인식 stage=%s, 미수신 단계=%s "
@@ -449,6 +451,7 @@ class FunnelResult(SellerAggregateModel):
                     unknown_stages,
                     sorted(unfilled),
                 )
+            uncomputable = [f for f, unc in uncomputable_by_field.items() if unc]
             uncomputable.extend(sorted(unfilled))
             data.setdefault("uncomputableStages", uncomputable)
         return data
