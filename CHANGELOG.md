@@ -85,6 +85,8 @@
 
 ### Fixed
 
+- **#164 — 구매자 주문 상태 문의(I-4) end-to-end 배선** — 5-way buyer intent에 `order_status`를 추가하고, 검증 JWT member `sub`만으로 I-4 `GET /internal/members/{userId}/orders/status?recent=3`를 호출한다. 응답 envelope·aware timestamp·Spring 상태 어휘/canonical pair를 엄격히 검증한 뒤 최대 3개 주문·주문당 3개 상품을 LLM 없이 결정적으로 요약한다. guest/seller/invalid identity와 upstream/malformed 장애는 `error` 없이 안내 `token`+`done(stop)`으로 종료하고, PII 없는 correlation log 1건만 남긴다. 주문 응답은 일반 대화 이력 외 profile/filter/cart/cache에 복제하지 않는다. (api-spec §4.10, v0.16.3)
+
 - **#178 — 판매자 채팅 전 레인 400 (`gpt-5.6-luna` + function tools + `reasoning_effort`)** — OpenAI가 `gpt-5.6-luna`에 대해 `/v1/chat/completions`에서 function tools와 `reasoning_effort` 동시 사용을 400(`invalid_request_error`)으로 거부해, supervisor 라우팅이 죽고 general 폴백까지 같은 오류로 끝나 판매자 채팅이 첫 요청부터 전량 실패했다(`streamStatus: FAILED`, 토큰 0개). `create_agent`는 `tools`가 비어도 `ToolStrategy` 구조화 출력이 function tool로 나가므로 `build_report_agent`를 뺀 7개 빌더가 전부 해당한다. 원인은 `resolve_provider_model`이 **모델의 조합 지원 여부와 무관하게** tier별 effort를 항상 실어 보낸 것 — 모델 기준 capability 게이팅(`openai_tool_reasoning_incompatible_models`, 접두사 매칭으로 날짜 스냅샷 ID도 포함)을 추가하고, tool을 싣는 호출(`resolve_provider_model(with_tools=True)`)에서만 effort를 `openai_tool_reasoning_effort_override`(기본 `none` — OpenAI 오류 메시지가 지시하는 값)로 강등한다. 판매자 레인은 **전 역할 일괄** 적용 — 지금 tool이 없는 `report`도 나중에 도구가 붙으면 조용히 깨지기 때문이다. 구매자 레인(`OpenAILLM.complete`/`stream`)은 tool을 싣지 않아 `medium`을 그대로 유지한다. #177(판매자 전 역할 `smart` 상향)이 이 지뢰를 supervisor까지 끌어올려 즉시 노출시켰지만, `recommend`는 그 이전부터 같은 조건이었다(분석 파이프라인 끝단이라 도달이 드물어 늦게 드러났다). 조합을 지원하는 모델로 갈아타면 config 목록에서 빼는 것으로 원복된다. 와이어 계약 변경 없음 — 내부 구현 한정.
 
 ### Security

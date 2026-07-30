@@ -2224,3 +2224,150 @@ async def test_synonym_product_survives_keyword_drop() -> None:
     )
     assert "products.ready" in _types(events)  # 동의어 상품이 살아 노출된다
     assert push.pushes and 201 in push.pushes[0].product_ids
+
+
+# ─────────── #164 I-4 주문 상태 early route ───────────
+
+
+def _order_member() -> Identity:
+    return Identity(user_id="42", is_guest=False, seller_id=None, subject="42")
+
+
+async def test_order_status_branch_is_early_and_passes_request_id() -> None:
+    calls: list[int] = []
+
+    async def fetch(user_id: int):
+        calls.append(user_id)
+        return SimpleNamespace(orders=[])
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("order_status must bypass recommendation dependencies")
+
+    llm = FakeLLM(decompose={"intent": "order_status", "filters": {}})
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="배송 상태 알려줘"),
+            _order_member(),
+            llm=llm,
+            search=forbidden,
+            push_fn=forbidden,
+            map_categories=forbidden,
+            order_status_fn=fetch,
+            request_id="req-i4-unit",
+        )
+    )
+
+    assert calls == [42]
+    assert _types(events) == ["token", "done"]
+    assert events[-1]["data"]["finishReason"] == "stop"
+    assert [tier for tier, _ in llm.calls] == ["fast"]
+
+
+async def test_order_status_default_dependency_is_resolved_at_call_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.services.spring_client as sc
+
+    calls: list[int] = []
+
+    async def late_fetch(user_id: int):
+        calls.append(user_id)
+        return SimpleNamespace(orders=[])
+
+    monkeypatch.setattr(sc, "get_order_status", late_fetch, raising=False)
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="내 주문 어디까지 왔어?"),
+            _order_member(),
+            llm=FakeLLM(decompose={"intent": "order_status", "filters": {}}),
+            request_id="req-late-bound",
+        )
+    )
+    assert calls == [42]
+    assert _types(events) == ["token", "done"]
+
+
+async def test_non_callable_order_status_dependency_only_errors_on_selected_route() -> None:
+    with pytest.raises(TypeError, match="order_status_fn"):
+        await _collect(
+            run_buyer_turn(
+                _req(),
+                _order_member(),
+                llm=FakeLLM(decompose={"intent": "order_status", "filters": {}}),
+                order_status_fn=object(),
+            )
+        )
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="인사"),
+            _order_member(),
+            llm=FakeLLM(decompose={"intent": "general", "reply": "안녕하세요", "filters": {}}),
+            order_status_fn=object(),
+        )
+    )
+    assert _types(events) == ["token", "done"]
+
+
+async def test_order_status_clears_pending_without_copying_response_into_buyer_state() -> None:
+    from app.agents.buyer.cart.state import PendingAdd, get_cart_store
+    from app.schemas.spring import OrderStatusSummary, ProductSearchFilters
+
+    identity = _order_member()
+    request = _req(message="배송 상태 알려줘", thread_id="i4-state")
+    key = conversation_key("42", request.thread_id)
+    cart_store = await get_cart_store()
+    await cart_store.set_pending(key, PendingAdd(product_id=101, quantity=1))
+    await cart_store.set_last_reco(key, [(777, "기존 추천 상품")])
+    thread_store = await get_thread_store()
+    original = ProductSearchFilters(category="기존 카테고리", semantic_query="기존 검색")
+    await thread_store.put(key, original)
+
+    async def fetch(user_id: int):
+        return OrderStatusSummary.model_validate(
+            {
+                "orders": [
+                    {
+                        "orderId": 87654321,
+                        "orderedAt": "2026-07-30T09:00:00+09:00",
+                        "representativeStatus": "배송중",
+                        "items": [
+                            {
+                                "productName": "I4 전용 응답 상품",
+                                "status": "SHIPPING",
+                                "statusText": "배송중",
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+
+    events = await _collect(
+        run_buyer_turn(
+            request,
+            identity,
+            llm=FakeLLM(decompose={"intent": "order_status", "filters": {}}),
+            order_status_fn=fetch,
+        )
+    )
+
+    assistant_text = next(event["data"]["text"] for event in events if event["type"] == "token")
+    assert "87654321" in assistant_text
+    assert "I4 전용 응답 상품" in assistant_text
+    assert "배송중" in assistant_text
+
+    # The route may clear stale pending-cart state, but it must not copy I-4 facts into
+    # recommendation filters or the cart's existing recommendation context.
+    assert await cart_store.get_pending(key) is None
+    assert await thread_store.get(key) == original
+    assert await cart_store.get_last_reco(key) == [(777, "기존 추천 상품")]
+    persisted_state = repr(
+        (
+            (await thread_store.get(key)).model_dump(),
+            await cart_store.get_last_reco(key),
+            await cart_store.get_pending(key),
+        )
+    )
+    for response_only_value in ("87654321", "I4 전용 응답 상품", "배송중"):
+        assert response_only_value not in persisted_state

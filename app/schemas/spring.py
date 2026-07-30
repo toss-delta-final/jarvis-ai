@@ -20,9 +20,19 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Literal
+from types import MappingProxyType
+from typing import Annotated, Literal, Mapping
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 from pydantic.alias_generators import to_camel
 
 _log = logging.getLogger(__name__)
@@ -207,7 +217,109 @@ class RecentPurchases(CamelModel):
         }
 
 
-# ── 3. 장바구니 담기 (I-2, §4.1) — BE 문서 채택, 단건 ──
+# ── 3. 주문 상태 요약 (I-4, §4.10) ──
+
+
+OrderItemStatus = Literal[
+    "PENDING",
+    "ORDERED",
+    "SHIPPING",
+    "DELIVERED",
+    "CONFIRMED",
+    "CANCEL_REQUESTED",
+    "CANCELLED",
+    "RETURN_REQUESTED",
+    "RETURNED",
+]
+OrderItemStatusText = Literal[
+    "결제 대기",
+    "주문 완료",
+    "배송중",
+    "배송 완료",
+    "구매 확정",
+    "취소 접수",
+    "취소 완료",
+    "반품 접수",
+    "반품 완료",
+]
+OrderRepresentativeStatus = Literal[
+    "결제 대기",
+    "결제 실패",
+    "주문 완료",
+    "배송중",
+    "배송 완료",
+    "구매 확정",
+    "취소/반품 진행중",
+    "처리 완료",
+]
+ORDER_STATUS_RECENT = 3
+
+ORDER_ITEM_STATUS_TEXT: Mapping[OrderItemStatus, OrderItemStatusText] = MappingProxyType(
+    {
+        "PENDING": "결제 대기",
+        "ORDERED": "주문 완료",
+        "SHIPPING": "배송중",
+        "DELIVERED": "배송 완료",
+        "CONFIRMED": "구매 확정",
+        "CANCEL_REQUESTED": "취소 접수",
+        "CANCELLED": "취소 완료",
+        "RETURN_REQUESTED": "반품 접수",
+        "RETURNED": "반품 완료",
+    }
+)
+
+
+class OrderStatusItem(CamelModel):
+    """I-4 주문 상품. status/statusText는 Spring의 canonical pair만 허용한다."""
+
+    product_name: Annotated[StrictStr, Field(max_length=200)]
+    status: OrderItemStatus
+    status_text: OrderItemStatusText
+
+    @model_validator(mode="after")
+    def validate_status_text_pair(self) -> "OrderStatusItem":
+        if self.status_text != ORDER_ITEM_STATUS_TEXT[self.status]:
+            raise ValueError("statusText does not match status")
+        return self
+
+
+class OrderStatusOrder(CamelModel):
+    """I-4 주문 1건. 주문 번호와 시각은 coercion 없이 계약 범위를 지킨다."""
+
+    order_id: Annotated[StrictInt, Field(ge=1, le=9_223_372_036_854_775_807)]
+    ordered_at: AwareDatetime
+    representative_status: OrderRepresentativeStatus
+    items: list[OrderStatusItem]
+
+    @field_validator("ordered_at", mode="before")
+    @classmethod
+    def ordered_at_must_be_datetime_or_iso_string(cls, value: object) -> object:
+        if not isinstance(value, (str, datetime)):
+            raise ValueError("orderedAt must be an ISO-8601 datetime")
+        return value
+
+    @field_validator("items", mode="before")
+    @classmethod
+    def items_must_be_list(cls, value: object) -> object:
+        if not isinstance(value, list):
+            raise ValueError("items must be a list")
+        return value
+
+
+class OrderStatusSummary(CamelModel):
+    """I-4 data envelope. orders is required and bounded by the fixed recent=3 request."""
+
+    orders: list[OrderStatusOrder] = Field(max_length=ORDER_STATUS_RECENT)
+
+    @field_validator("orders", mode="before")
+    @classmethod
+    def orders_must_be_list(cls, value: object) -> object:
+        if not isinstance(value, list):
+            raise ValueError("orders must be a list")
+        return value
+
+
+# ── 4. 장바구니 담기 (I-2, §4.1) — BE 문서 채택, 단건 ──
 
 
 class AddToCartRequest(CamelModel):

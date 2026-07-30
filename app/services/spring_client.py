@@ -3,6 +3,7 @@
 AI → Spring 질의 시점 역방향 + 배치 (구매자, 모듈 레벨 함수):
   - search_products        : 후보 확보 (I-1, GET /internal/products/search, §4.6, C-15) — [배선 완료]
   - get_recent_purchases   : 구매 이력 조회 (I-19, GET /internal/members/{id}/orders, §4.7, C-6) — dedup·프로필 소스
+  - get_order_status       : 주문 상태 요약 (I-4, GET /internal/members/{id}/orders/status, §4.10)
   - add_to_cart            : 장바구니 담기 (I-2, POST /internal/cart/items, 단건, §4.1)
   - get_cart               : 장바구니 조회 (I-18, GET /internal/cart, §4.9, C-16)
   - push_recommendations   : 최종 랭크 id push (I-21, POST /internal/recommendations, 경로 B, §4.2) — [배선 완료]
@@ -30,7 +31,7 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import TypeVar
+from typing import Literal, TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -46,6 +47,8 @@ from app.schemas.spring import (
     ChurnResult,
     FunnelResult,
     OrderEventsResult,
+    ORDER_STATUS_RECENT,
+    OrderStatusSummary,
     ProductChangeLogResult,
     ProductChangesPage,
     ProductCreate,
@@ -70,6 +73,16 @@ _log = logging.getLogger(__name__)
 
 class SpringUnavailableError(Exception):
     """Spring 서버 도달 불가/오류 응답. 상위에서 SEARCH_FAILED 등으로 매핑한다."""
+
+
+class OrderStatusUnavailableError(SpringUnavailableError):
+    """I-4 안전한 실패 분류. 원 예외·경로·응답 데이터는 보존하지 않는다."""
+
+    def __init__(self, category: Literal["upstream_unavailable", "malformed_response"]) -> None:
+        if category not in {"upstream_unavailable", "malformed_response"}:
+            raise ValueError("invalid order status error category")
+        self.category = category
+        super().__init__(f"order status unavailable: {category}")
 
 
 class InvalidCursorError(SpringUnavailableError):
@@ -375,6 +388,39 @@ async def get_recent_purchases(user_id: int, status: str | None = None) -> Recen
         return RecentPurchases.model_validate({"orders": orders or []})
     except (httpx.HTTPError, ValueError, ValidationError) as exc:
         raise SpringUnavailableError(f"get_recent_purchases 실패: {exc}") from exc
+
+
+async def get_order_status(user_id: int) -> OrderStatusSummary:
+    """회원의 최근 I-4 주문 상태를 strict envelope/schema로 검증한다."""
+    try:
+        async with _client() as client:
+            response = await client.get(
+                f"/internal/members/{user_id}/orders/status",
+                params={"recent": ORDER_STATUS_RECENT},
+            )
+            response.raise_for_status()
+    except httpx.HTTPError:
+        raise OrderStatusUnavailableError("upstream_unavailable") from None
+
+    try:
+        body = response.json()
+    except ValueError:
+        raise OrderStatusUnavailableError("malformed_response") from None
+
+    if (
+        type(body) is not dict
+        or body.get("success") is not True
+        or "data" not in body
+        or type(body["data"]) is not dict
+        or "orders" not in body["data"]
+        or type(body["data"]["orders"]) is not list
+    ):
+        raise OrderStatusUnavailableError("malformed_response") from None
+
+    try:
+        return OrderStatusSummary.model_validate({"orders": body["data"]["orders"]})
+    except ValidationError:
+        raise OrderStatusUnavailableError("malformed_response") from None
 
 
 async def add_to_cart(request: AddToCartRequest) -> AddToCartResult:
