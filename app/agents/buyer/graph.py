@@ -24,6 +24,8 @@ from app.agents.buyer.cart.state import get_cart_store
 from app.agents.buyer.fallback import stream_fallback
 from app.agents.buyer.recommendation.category_mapping import map_categories as _map_categories
 from app.agents.buyer.recommendation.decompose import decompose
+from app.agents.buyer.recommendation.needs_expansion import detect_expansion_need
+from app.agents.buyer.recommendation.needs_expansion import expand_needs as _expand_needs
 from app.agents.buyer.recommendation.state import get_revert_store
 from app.agents.buyer.recommendation.graph import stream_recommendation
 from app.agents.profile.builder import record_remember
@@ -37,7 +39,7 @@ from app.core.errors import new_request_id
 from app.core.llm import LLMError, get_llm, resolve_model_id
 from app.core.pg_resilience import run_with_query_timeout
 from app.core.text import _strip_unsafe
-from app.agents.buyer.recommendation.state import CartIntent
+from app.agents.buyer.recommendation.state import CartIntent, CategoryQuery
 from app.schemas.chat import DoneData, ErrorData
 from app.schemas.spring import ProductSearchFilters
 from app.services import search_service, spring_client
@@ -90,6 +92,7 @@ async def run_buyer_turn(
     search=None,
     push_fn=None,
     map_categories=None,
+    expand_needs=None,
     observer=None,
     request_id: str | None = None,
 ) -> AsyncIterator[str]:
@@ -220,6 +223,29 @@ async def run_buyer_turn(
         # 아래 매핑을 태워야 한다 — prior 로 하이재킹하면 fan-out 이 죽고 #59 문제가 재발(PR #73 #19).
         decision.category_legs = [(prior.category, None)]
     else:
+        # [#198] 목적·상황형 발화의 상품 전개 — **승계 가드 안쪽(else)에 둔다**. D1(`no_legs`)은
+        # 리파인 턴("더 저렴한 걸로")의 "신호 없음"과 조건이 겹치므로, 전개를 위 if 보다 앞에 놓으면
+        # 리파인 턴이 엉뚱한 상품 목록으로 바뀌어 직전 맥락이 날아간다(PR #73 #12/#19 승계 규약이
+        # 반대 방향으로 깨진다). 여기서는 이미 "승계 대상 아님"이 확정돼 있다.
+        if settings.needs_expansion_enabled:
+            reason = detect_expansion_need(
+                request.message,
+                decision.category_queries,
+                markers=settings.needs_expansion_purpose_markers,
+            )
+            if reason:
+                logger.info(
+                    "needs_expansion_triggered",
+                    extra={"reason": reason, "legs": len(decision.category_queries)},
+                )
+                expander = expand_needs or _expand_needs
+                items = await expander(request.message, llm=llm, settings=settings)
+                # 실패(빈 리스트)면 원본 legs 를 그대로 둔다 — 전개는 개선 시도이며 실패가 기존
+                # 경로를 악화시키지 않는다(설계 §7 후퇴 없음).
+                if items:
+                    # raw 는 싣지 않는다 — 매핑이 query 우선이라(#115 §4.3.1) raw 는 폴백일 뿐이고,
+                    # 창작 라벨은 표기 불일치·가짜 근접으로 해가 더 크다.
+                    decision.category_queries = [CategoryQuery(None, name) for name in items]
         mapper = map_categories or _map_categories
         try:
             decision.category_legs = await mapper(

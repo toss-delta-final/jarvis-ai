@@ -584,3 +584,149 @@ def test_condition_chips_empty_categories_no_fallback() -> None:
     # 미지정(None)은 기존대로 filters.category 파생 유지
     chips2 = build_condition_chips(ProductSearchFilters(category="가전 > TV"))
     assert any(c.field == "category" and c.value == "가전 > TV" for c in chips2)
+
+
+# ── #198 목적·상황형 발화의 상품 전개 배선 (DESIGN-NEEDS-EXPANSION-198 §4·§6·§7) ──
+
+
+def _expansion_probe():
+    """전개 호출 여부를 기록하는 주입형 전개기 — 호출되면 고정 상품 목록을 낸다."""
+    seen: list[str] = []
+
+    async def _expand(utterance, **_):
+        seen.append(utterance)
+        return ["디퓨저", "식기 세트", "핸드워시 세트"]
+
+    return seen, _expand
+
+
+async def _run_recommend(message: str, decompose: dict, *, expand=None, **kw) -> list:
+    """단일 턴을 돌리고 각 검색 leg 의 category 를 반환한다."""
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters.category)
+        return _res(101)
+
+    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast"):
+        # leg query 를 그대로 canonical 처럼 흘려 전개 결과가 검색까지 도달하는지 본다.
+        return [(q.query, q.query) for q in category_queries if q.query]
+
+    await _collect(
+        run_buyer_turn(
+            _req(message=message),
+            _member(),
+            llm=FakeLLM(decompose=decompose),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_map,
+            expand_needs=expand,
+            **kw,
+        )
+    )
+    return calls
+
+
+async def test_purpose_utterance_is_expanded_into_products() -> None:
+    """[#198] 목적형 발화가 전개되어 **구체 상품**이 검색 leg 이 된다 — 이 이슈의 목표.
+
+    종전: `['집들이 선물']` 이 그대로 leg 이 되어 매핑 불가(거리컷 드롭) → 카테고리 없이 검색.
+    """
+    seen, expand = _expansion_probe()
+    calls = await _run_recommend(
+        "집들이 선물로 뭐 사갈까",
+        {
+            "intent": "recommend",
+            "reply": "",
+            "case": 3,
+            "filters": {},
+            "categoryQueries": [{"category": None, "query": "집들이 선물"}],
+        },
+        expand=expand,
+    )
+    assert seen == ["집들이 선물로 뭐 사갈까"]  # 발화가 전개기로 전달됨
+    assert calls == ["디퓨저", "식기 세트", "핸드워시 세트"]  # 전개 결과가 fan-out 검색까지 도달
+
+
+async def test_normal_product_utterance_is_not_expanded() -> None:
+    """단일 상품 질의는 전개하지 않는다 — 불필요한 LLM 호출·엉뚱한 확장 방지(§4 정밀도 우선)."""
+    seen, expand = _expansion_probe()
+    calls = await _run_recommend(
+        "청바지",
+        {
+            "intent": "recommend",
+            "reply": "",
+            "case": 1,
+            "filters": {},
+            "categoryQueries": [{"category": None, "query": "청바지"}],
+        },
+        expand=expand,
+    )
+    assert seen == []  # 전개 미호출
+    assert calls == ["청바지"]
+
+
+async def test_refine_turn_carries_prior_and_is_never_expanded() -> None:
+    """[회귀 방지] 리파인 턴("더 저렴한 걸로")은 **전개하지 않고** 직전 카테고리를 승계한다.
+
+    D1(`no_legs`) 조건과 멀티턴 승계 조건이 겹친다 — 둘 다 "이번 턴 카테고리 신호 없음"이다.
+    전개를 승계 가드보다 먼저 놓으면 리파인 턴이 엉뚱한 상품 목록으로 바뀌어 직전 맥락이 날아간다
+    (PR #73 #12/#19 가 세운 승계 규약이 반대 방향으로 깨진다). 전개는 **승계 대상이 아닐 때만**.
+    """
+    seen: list[str] = []
+
+    async def _expand(utterance, **_):
+        seen.append(utterance)
+        return ["엉뚱한상품A", "엉뚱한상품B"]
+
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters.category)
+        return _res(101)
+
+    d1 = {
+        "intent": "recommend",
+        "reply": "",
+        "case": 2,
+        "filters": {},
+        "categoryQueries": [{"category": "여행 > 여행용품", "query": "파우치"}],
+    }
+    d2 = {"intent": "recommend", "reply": "", "case": 2, "filters": {}}  # 신호 없음
+    for msg, d in (("여행 파우치", d1), ("더 저렴한 걸로", d2)):
+        await _collect(
+            run_buyer_turn(
+                _req(thread_id="tx", message=msg),
+                _member(),
+                llm=FakeLLM(decompose=d),
+                search=_search,
+                push_fn=_RecordingPush(),
+                map_categories=_garbage_mapper(),
+                expand_needs=_expand,
+            )
+        )
+    assert seen == []  # 리파인 턴에 전개 호출이 없어야 한다
+    assert calls[-1] == "여행 > 여행용품"  # 직전 카테고리 승계 유지
+
+
+async def test_expansion_failure_keeps_original_legs() -> None:
+    """전개가 실패하면(빈 리스트) `decompose` 원본 legs 를 그대로 쓴다 — 후퇴 없음(§7).
+
+    전개는 **개선 시도**이며, 실패가 기존 경로를 악화시켜서는 안 된다. 최악이 "지금과 동일".
+    """
+
+    async def _expand_fail(utterance, **_):
+        return []
+
+    calls = await _run_recommend(
+        "집들이 선물로 뭐 사갈까",
+        {
+            "intent": "recommend",
+            "reply": "",
+            "case": 3,
+            "filters": {},
+            "categoryQueries": [{"category": None, "query": "집들이 선물"}],
+        },
+        expand=_expand_fail,
+    )
+    assert calls == ["집들이 선물"]  # 원본 leg 유지(종전 동작)
