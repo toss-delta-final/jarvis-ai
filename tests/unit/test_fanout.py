@@ -730,3 +730,47 @@ async def test_expansion_failure_keeps_original_legs() -> None:
         expand=_expand_fail,
     )
     assert calls == ["집들이 선물"]  # 원본 leg 유지(종전 동작)
+
+
+async def test_category_agnostic_case2_is_never_expanded() -> None:
+    """[PR #203 리뷰] case 2(구조화 조건만) 발화는 전개하지 않는다 — 무필터 계약 보존(#22·#162).
+
+    `"5만원 이하 아무거나"` 도 `categoryQueries` 가 비어 D1 조건에 걸린다. 전개 LLM 은 "최소 2개"를
+    강제하므로 목적이 없는 입력에도 상품명을 지어내고, 그것이 legs 를 교체하면 `filters.category` 가
+    채워져 "카테고리 무관·가격만 필터"라는 사용자 의도가 파괴된다. #162 가 개선할 경로이기도 하다.
+    """
+    seen, expand = _expansion_probe()
+    calls = await _run_recommend(
+        "5만원 이하 아무거나",
+        {
+            "intent": "recommend",
+            "reply": "",
+            "case": 2,  # 구조화 조건만 — 좁히면 안 되는 질의
+            "filters": {"priceMax": 50000},
+            "categoryQueries": [],
+        },
+        expand=expand,
+    )
+    assert seen == []  # 전개 미호출
+    assert calls == [None]  # 카테고리 없이(무필터) 검색
+
+
+async def test_raw_only_leg_is_not_replaced_by_expansion() -> None:
+    """[PR #203 리뷰] `category` 만 있고 `query=null` 인 leg 은 신호이므로 전개로 교체되지 않는다.
+
+    저장소 규약은 `raw_category or query` 다. query 만 보면 D1 이 오탐해 정상 분류된 카테고리를
+    지어낸 상품 목록으로 통째로 교체한다.
+    """
+    seen, expand = _expansion_probe()
+    await _run_recommend(
+        "무선 이어폰 추천해줘",
+        {
+            "intent": "recommend",
+            "reply": "",
+            "case": 1,
+            "filters": {},
+            "categoryQueries": [{"category": "음향가전", "query": None}],
+        },
+        expand=expand,
+    )
+    assert seen == []  # 전개 미호출 — raw 가 신호로 인정됨

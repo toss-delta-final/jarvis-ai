@@ -8,9 +8,15 @@
 39회에서 1~2/3 확률로만 성립했고(규칙 강화·예시 확대 모두 실패), 근본 원인은 `fast` tier 한 호출에
 intent·filters·cart·attributes 가 함께 얹혀 "무엇을 살지 떠올리기"라는 생성·추론 여력이 없는 것이다.
 
-`case` 를 감지 신호로 쓰지 않는 이유(§4.1): `case` 는 전개와 **같은 LLM 호출의 산출물**이라 전개가
-실패한 회차의 값을 신뢰할 근거가 없다(실측 `"부모님 환갑 선물"`: `case=[3,3,3]` 인데 `legs=[1,1,1]`).
-LLM 산출물로 같은 LLM 산출물의 실패를 감지하는 것은 성립하지 않는다 — 결과를 직접 검사한다.
+`case` 의 역할은 **트리거가 아니라 게이트**다 — 요구되는 신뢰도가 다르다.
+
+- **트리거로는 쓰지 않는다**(§4.1): `case` 는 전개와 **같은 LLM 호출의 산출물**이라 전개가 실패한
+  회차의 값을 신뢰할 근거가 없다(실측 `"부모님 환갑 선물"`: `case=[3,3,3]` 인데 `legs=[1,1,1]`).
+  "전개가 **안 됐다**"는 사실은 결과를 직접 검사해야 알 수 있다(D1~D3).
+- **게이트로는 쓴다**(§4.2): `case != 3` 이면 어떤 규칙도 발동하지 않는다. case 2
+  (`"5만원 이하 아무거나"`·`"평점 높은 거 보여줘"`)는 **의도적으로 카테고리 무관**이라 좁히면 안 되는데
+  (#22 가 테스트로 고정·#162 가 개선할 경로), leg 유무로도 marker 로도 case 3 과 구분되지 않는다.
+  게이트는 case 1/2 를 **배제**하는 데만 쓰이고 그 판정은 실측이 뒷받침한다(목적형 15/15 `case=3`).
 """
 
 from __future__ import annotations
@@ -46,42 +52,66 @@ def detect_expansion_need(
     legs: Sequence[CategoryQuery],
     *,
     markers: Sequence[str],
+    case: int,
 ) -> str | None:
     """전개가 필요하면 사유 문자열, 아니면 None (§4 D1~D3 — 결정적 판정).
 
     사유는 관측 로그(`needs_expansion_triggered.reason`)로 그대로 나가며, 분포를 보고 marker 목록을
     조정한다(설계 OPEN-1).
 
-    - **D1 `no_legs`** — 신호(query) 있는 leg 이 하나도 없다.
+    **`case != 3` 이면 어떤 규칙도 발동하지 않는다**(§4.2 게이트 — case 2 무필터 의도 보호).
+
+    - **D1 `no_legs`** — 신호 있는 leg 이 하나도 없다.
     - **D2 `utterance_copy`** — leg 이 1개이고 그 query 가 발화와 서로 포함 관계이며 **목적 marker 로
       끝난다**(전개가 아니라 복사). marker 조건이 필요한 이유: `"청바지"` → `['청바지']` 도 복사지만
       **발화 자체가 상품명이라 올바른 leg** 이다. 문제는 복사 자체가 아니라 **목적 표현을 복사한 것**.
     - **D3 `purpose_marker`** — **모든** 신호 leg 의 query 가 목적 marker 로 **끝난다**.
 
+    "신호 있는 leg" 은 저장소 규약대로 **`raw_category or query`** 로 본다(PR #203 리뷰) —
+    `decompose._parse_category_queries`·graph 멀티턴 승계 판정과 동일. `category` 만 채우고
+    `query=null` 인 leg 은 **이미 올바른 카테고리 신호**이므로 D1 로 오탐해 교체하면 유실된다.
+
     설계 원칙 — **재현율보다 정밀도**: 오탐하면 `"청바지"` 같은 정상 질의에 불필요한 LLM 호출과
     엉뚱한 확장이 붙는다. 미검출은 종전 동작(그대로 통과)이라 손해가 없다.
     """
-    signals = [q.query.strip() for q in legs if q.query and q.query.strip()]
+    # §4.2 게이트 — case 3(목적·상황형)이 아니면 어떤 규칙도 발동하지 않는다.
+    # case 2("5만원 이하 아무거나"·"평점 높은 거 보여줘")는 **의도적으로 카테고리 무관**이라 좁히면
+    # 안 되는데(#22 가 테스트로 고정·#162 가 개선할 경로), leg 유무(D1)로도 marker(D2·D3)로도
+    # case 3 과 구분되지 않는다 — `['평점 높은 거']` 는 marker `'거'` 로 끝나 D3 에 걸린다.
+    # 실패 방향이 비대칭이라 게이트를 전 규칙에 건다: 과하게 막으면 목적 표현 leg 이 남아 하류
+    # 거리컷이 드롭해 무필터로 흡수되지만(안전), 새면 지어낸 카테고리로 검색이 좁혀진다(유해).
+    if case != 3:
+        return None
+
+    signals = [
+        q
+        for q in legs
+        if (q.raw_category and q.raw_category.strip()) or (q.query and q.query.strip())
+    ]
     if not signals:
         return "no_legs"
 
     def _is_purpose(text: str) -> bool:
         return any(text.endswith(m) for m in markers)
 
+    # D2·D3 의 텍스트 판정은 query 만 대상이다 — raw 만 있는 leg 은 검색 키워드가 없어 "목적 표현
+    # 복사" 판정 대상이 아니고, 그 leg 이 섞이면 아래 D3 의 `all()` 을 깨서 전개를 막는다(의도).
+    queries = [q.query.strip() for q in signals if q.query and q.query.strip()]
     utt = utterance.strip()
     # D2 는 leg 이 1개일 때만 본다 — 여럿이면 이미 전개가 일어난 것이므로 나머지를 버리지 않는다.
     # marker 조건이 함께 필요하다: `"청바지"` → `['청바지']` 도 복사지만 발화가 곧 상품명이라 올바른
     # leg 이다(테스트가 잡아낸 오탐). 복사 자체가 아니라 **목적 표현을 복사한 것**이 문제다.
-    if len(signals) == 1 and utt and _is_purpose(signals[0]):
-        if signals[0] in utt or utt in signals[0]:
+    if len(signals) == 1 and len(queries) == 1 and utt and _is_purpose(queries[0]):
+        if queries[0] in utt or utt in queries[0]:
             return "utterance_copy"
 
     # D3 는 `endswith` 로 판정한다. `in` 으로 보면 `'한우 선물세트'`·`'과일 선물세트'` 같은 **정당한
     # 상품명**이 marker `'선물'` 에 걸려 전부 오탐된다 — `'집들이 선물'.endswith('선물')` 은 True,
     # `'한우 선물세트'.endswith('선물')` 은 False 라 목적 표현만 잡힌다.
-    # **모든** leg 이 목적 표현일 때만 트리거한다 — 전개는 legs 를 교체하므로(§6), 좋은 leg 이 섞여
-    # 있을 때 트리거하면 그것까지 날아간다. 남은 목적 표현 leg 은 하류의 거리컷·택일이 흡수한다.
-    if all(_is_purpose(s) for s in signals):
+    # **모든** 신호 leg 이 목적 표현일 때만 트리거한다 — 전개는 legs 를 교체하므로(§6), 좋은 leg 이
+    # 섞여 있을 때 트리거하면 그것까지 날아간다(raw 만 있는 leg 도 여기서 걸러 전개를 막는다).
+    # 남은 목적 표현 leg 은 하류의 거리컷·택일이 흡수한다.
+    if len(queries) == len(signals) and all(_is_purpose(q) for q in queries):
         return "purpose_marker"
     return None
 

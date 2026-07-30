@@ -232,6 +232,9 @@ async def run_buyer_turn(
                 request.message,
                 decision.category_queries,
                 markers=settings.needs_expansion_purpose_markers,
+                # case 는 D1 게이트로만 쓴다(§4.2) — case 2("5만원 이하 아무거나")도 legs 가 비므로
+                # leg 유무만으로는 case 3 과 구분되지 않는데, 처방은 정반대다(#22·#162 무필터 보존).
+                case=decision.case,
             )
             if reason:
                 logger.info(

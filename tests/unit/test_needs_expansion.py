@@ -2,7 +2,11 @@
 
 `decompose` 가 목적형 발화를 구체 상품으로 전개하지 못한 것을 **코드가 결정적으로 판정**한다.
 LLM 에게 "전개했니?"를 묻지 않는다 — `case` 는 같은 호출의 산출물이라 전개 실패 회차의 값을
-신뢰할 수 없음이 실측으로 확인됐다(§4.1).
+신뢰할 수 없음이 실측으로 확인됐다(§4.1, 트리거로 부적합).
+
+단 `case` 는 **게이트**로 쓴다(§4.2, PR #203 리뷰) — `case != 3` 이면 어떤 규칙도 발동하지 않는다.
+case 2 는 의도적으로 카테고리 무관이라 좁히면 안 되는데(#22·#162) leg 유무로도 marker 로도 case 3 과
+구분되지 않기 때문이다. 배제에만 쓰이므로 트리거보다 낮은 신뢰도로 충분하다.
 
 감지는 **재현율보다 정밀도** 우선 — 오탐하면 "청바지" 같은 정상 질의에 불필요한 LLM 호출과
 엉뚱한 확장이 붙는다.
@@ -25,9 +29,85 @@ from app.core.llm import LLMError
 MARKERS = ["선물", "답례품", "준비물", "용품", "아이템", "키트", "물품", "추천", "것", "거"]
 
 
-def _detect(utterance: str, queries: list[str | None]) -> str | None:
+def _detect(utterance: str, queries: list[str | None], *, case: int = 3) -> str | None:
+    """기본 case=3 — 대부분의 테스트는 목적형 발화를 다루므로 그 전제를 기본값으로 둔다."""
     legs = [CategoryQuery(None, q) for q in queries]
-    return detect_expansion_need(utterance, legs, markers=MARKERS)
+    return detect_expansion_need(utterance, legs, markers=MARKERS, case=case)
+
+
+def _detect_legs(utterance: str, legs: list[CategoryQuery], *, case: int = 3) -> str | None:
+    return detect_expansion_need(utterance, legs, markers=MARKERS, case=case)
+
+
+# ── D1 게이트: case 2(구조화 조건만) 보호 (PR #203 리뷰) ──────────────────────
+
+
+def test_case_two_leg_with_marker_suffix_is_still_gated() -> None:
+    """[자체 점검] case 2 발화의 leg 이 marker 로 끝나도 전개하지 않는다 — 게이트는 D3 에도 걸린다.
+
+    D1 만 게이트하면 이 경로로 새어나간다: `"평점 높은 거 보여줘"` → `['평점 높은 거']` 는 marker
+    `'거'` 로 끝나 D3 가 발동한다. `"인기 많은 거 추천해줘"` 도 같다. 무필터 의도인데 지어낸
+    카테고리로 좁혀지므로, 게이트를 **전 규칙**에 건다.
+
+    실패 방향이 비대칭이라는 것이 근거다 — 과하게 막으면 목적 표현 leg 이 남아 하류 거리컷이
+    드롭해 무필터로 흡수되지만(안전), 새면 검색이 엉뚱하게 좁혀진다(유해).
+    """
+    assert _detect("평점 높은 거 보여줘", ["평점 높은 거"], case=2) is None
+    assert _detect("인기 많은 거 추천해줘", ["인기 많은 거"], case=2) is None
+    # 같은 규칙이라도 case 3 이면 전개 대상이다(게이트만의 차이임을 고정)
+    assert _detect("발이 시려워", ["방한 아이템"], case=3) == "purpose_marker"
+    assert _detect("발이 시려워", ["방한 아이템"], case=2) is None
+
+
+def test_d1_requires_case_three() -> None:
+    """[PR #203 리뷰] D1 은 `case == 3` 일 때만 발동한다 — case 2 를 전개에서 보호한다.
+
+    `"5만원 이하 아무거나"`(case 2, 구조화 조건만)와 `"부모님 환갑 선물"`(case 3, 전개 실패)은
+    **둘 다 `categoryQueries` 가 빈다**. leg 유무만 보면 구분되지 않는데, 처방은 정반대다 —
+    case 2 는 좁히면 안 되고(무필터 전체 검색, #22·#162) case 3 은 좁혀야 한다.
+
+    `case` 를 **트리거**로 쓰는 것은 §4.1 에서 기각했지만(선언≠사실·오탐), **게이트**로 쓰는 것은
+    실측이 뒷받침한다 — `"5만원 이하 아무거나"` 는 3/3 안정적으로 `case=2` 였다.
+    """
+    assert _detect("부모님 환갑 선물", [], case=3) == "no_legs"
+    assert _detect("5만원 이하 아무거나", [], case=2) is None
+    assert _detect("청바지", [], case=1) is None
+
+
+def test_category_agnostic_query_never_expanded() -> None:
+    """조건만 있는 무필터 조회는 전개하지 않는다 — 전개 LLM 이 카테고리를 지어내면 계약이 깨진다.
+
+    전개 프롬프트는 "최소 2개를 채우세요"로 **항상 ≥2개를 만들도록** 강제하므로, 목적이 없는
+    입력에도 그럴듯한 상품명을 지어낸다. 그것이 legs 를 교체하면 `filters.category` 가 채워져
+    "카테고리 무관, 가격만 필터"라는 사용자 의도가 파괴된다(#22 가 테스트로 고정한 계약).
+    이 경로는 #162(조건 없는 발화를 인기상품·프로필 후보로)가 개선할 자리이므로 보존해야 한다.
+    """
+    for utt in ("5만원 이하 아무거나", "인기 많은 거 추천해줘", "평점 높은 거 보여줘"):
+        assert _detect(utt, [], case=2) is None, utt
+
+
+# ── 신호 판정: raw_category 포함 (PR #203 리뷰) ───────────────────────────────
+
+
+def test_raw_only_leg_counts_as_signal() -> None:
+    """[PR #203 리뷰] `raw_category` 만 있는 leg 도 **신호**다 — 저장소 규약은 `raw_category or query`.
+
+    `decompose._parse_category_queries`(`q.raw_category or q.query`)·graph 멀티턴 승계 판정
+    (`not any(q.raw_category or q.query ...)`) 모두 두 필드를 함께 본다. 스키마상 `category` 만
+    채우고 `query=null` 인 leg 이 나올 수 있는데, 그건 **이미 올바른 카테고리 신호**다. query 만
+    보면 D1 이 오탐해 그 leg 을 지어낸 상품 목록으로 통째로 교체해버린다.
+    """
+    assert _detect_legs("무선 이어폰 추천해줘", [CategoryQuery("음향가전", None)]) is None
+
+
+def test_d3_not_triggered_when_a_leg_has_only_raw() -> None:
+    """query 없는 leg 이 섞이면 D3(모든 leg 이 목적 표현)는 성립하지 않는다.
+
+    raw 만 있는 leg 은 목적 표현 판정 대상이 아니므로 `all()` 을 깨야 한다 — 그 leg 은 정상적으로
+    분류된 카테고리이고, 전개로 교체하면 유실된다.
+    """
+    legs = [CategoryQuery(None, "선물용품"), CategoryQuery("음향가전", None)]
+    assert _detect_legs("부모님 환갑 선물", legs) is None
 
 
 # ── D1 신호 없음 ────────────────────────────────────────────────────────────
