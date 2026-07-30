@@ -59,7 +59,8 @@ _FILTERS_KEY = "filters"
 class ThreadFilterStore:
     """스레드별 누적 필터(멀티턴) — LangGraph BaseStore(pg-profile) 백엔드.
 
-    키는 신원 스코프(conversation_key: owner:thread_id) — 타인 스레드 필터 열람 금지(IDOR 방지, §2.6).
+    키는 lifecycle authority가 승인한 ``context_id:thread_id`` 스코프다. 같은 사용자라도
+    다른 세션 context나 다른 thread의 필터를 읽지 못하게 격리한다(IDOR 방지, §2.6).
     """
 
     def __init__(self, store: BaseStore | None = None) -> None:
