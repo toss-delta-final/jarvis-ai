@@ -251,24 +251,52 @@ def emit_rejection(request_id: str, error_type: str, **fields: object) -> None:
     # 추가해야 하며, 식별자처럼 보이는 미지 키는 기본적으로 폐기한다.
     safe_fields = {
         key: fields[key]
-        for key in ("path", "role", "status", "retryable", "action")
+        for key in (
+            "path",
+            "role",
+            "status",
+            "retryable",
+            "action",
+            "ownerFp",
+            "scopeFp",
+            "scopeType",
+            "ipFp",
+        )
         if key in fields
     }
+
+    def _safe_fingerprint_field(key: str) -> str | None:
+        value = safe_fields.pop(key, None)
+        if not isinstance(value, str) or len(value) != 16:
+            return None
+        return value if all(char in "0123456789abcdef" for char in value) else None
+
+    provided_owner_fp = _safe_fingerprint_field("ownerFp")
+    provided_scope_fp = _safe_fingerprint_field("scopeFp")
+    provided_ip_fp = _safe_fingerprint_field("ipFp")
+    provided_scope_type = safe_fields.pop("scopeType", None)
+    if provided_scope_type not in {"sub", "ip", "other"}:
+        provided_scope_type = None
+
     record = {
         "event": "chat_request",
         "requestId": request_id,
         "errorType": error_type,
         "streamStatus": None,
-        "ownerFp": identifier_fingerprint(str(raw_owner if raw_owner is not None else scope_owner))
-        if raw_owner is not None or scope_owner is not None
-        else None,
+        "ownerFp": (
+            identifier_fingerprint(str(raw_owner if raw_owner is not None else scope_owner))
+            if raw_owner is not None or scope_owner is not None
+            else provided_owner_fp
+        ),
         "sessionFp": identifier_fingerprint(str(raw_session)) if raw_session is not None else None,
         "threadFp": identifier_fingerprint(str(raw_thread)) if raw_thread is not None else None,
         "contextFp": identifier_fingerprint(str(raw_context)) if raw_context is not None else None,
         "streamFp": identifier_fingerprint(str(raw_stream)) if raw_stream is not None else None,
-        "scopeFp": identifier_fingerprint(str(raw_scope)) if raw_scope is not None else None,
-        "scopeType": scope_type,
-        "ipFp": identifier_fingerprint(str(raw_ip)) if raw_ip is not None else None,
+        "scopeFp": (
+            identifier_fingerprint(str(raw_scope)) if raw_scope is not None else provided_scope_fp
+        ),
+        "scopeType": scope_type if scope_type is not None else provided_scope_type,
+        "ipFp": (identifier_fingerprint(str(raw_ip)) if raw_ip is not None else provided_ip_fp),
         **safe_fields,
     }
     logger.info(json.dumps(record, ensure_ascii=False))

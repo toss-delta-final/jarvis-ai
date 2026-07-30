@@ -129,7 +129,7 @@ Authorization: Bearer {STREAM_TICKET}   ← Spring이 스트림 단위로 발급
   - `scope` — **`"chat:stream"` [확정 v0.15.20]** (BE `StreamTicketProvider.SCOPE_CHAT_STREAM` 실측). **AI는 `scope`를 검증**한다.
   - `exp` — 발급 후 **60초 [확정 v0.15.20]** (BE `app.stream-ticket.ttl-seconds: 60`. 구 "30~60초" 범위의 상단값). 완전 1회용은 아니며 짧은 TTL로 근사 — Redis는 Spring 전용 결정 유지, stateless 검증. CH-1/CH-1b 응답이 `ticketTtlSeconds`로 실값을 함께 반환한다.
   - **구매자(`/chat`)**: 위 공통 클레임에 서명된 **`sessionId`**를 추가한다. AI는 이 값을 요청 body의 `sessionId`와 대조하고, 누락·불일치하면 `403 SESSION_FORBIDDEN`으로 거부한다. **`threadId`는 body-only**다 — 한 접속 티켓으로 여러 탭/방을 동시에 열 수 있어야 하므로 티켓에 바인딩하지 않는다.
-  - **판매자(`/seller/chat`)**: **`role == "seller"`(소문자) + `brandId`(숫자) — [확정 v0.15.20]** (BE `StreamTicketProvider.buildTicket` 실측). 집계·CRUD 역호출(§4.4·§4.5)의 `{brandId}` path에 이 값을 쓴다. AI는 `brandId`를 **요청 본문에서 받지 않고 검증된 티켓 클레임에서만** 얻는다(userId와 동일 원칙 — IDOR 방지, 판매자가 남의 brandId로 조회 불가, §2.6). **판매자 티켓에는 구매자용 `sessionId` claim을 요구하지 않는다.** `role` 클레임은 판매자 티켓에만 실리고 구매자·게스트 티켓에는 `role`이 없고 `sub_type`만 있다. AI는 신원을 **오직 토큰 클레임에서만** 추출한다(요청 본문 금지, §2.5·§3.1·§3.2).
+  - **판매자(`/seller/chat`)**: **`role == "seller"`(소문자) + `brandId`(숫자) — [확정 v0.15.20]** (BE `StreamTicketProvider.buildTicket` 실측). 집계·CRUD 역호출(§4.4·§4.5)의 `{brandId}` path에 이 값을 쓴다. AI는 `brandId`를 **요청 본문에서 받지 않고 검증된 티켓 클레임에서만** 얻는다(userId와 동일 원칙 — IDOR 방지, 판매자가 남의 brandId로 조회 불가, §2.6). **판매자 티켓에는 구매자용 `sessionId` claim을 요구하지 않는다.** `role` 클레임은 판매자 티켓에만 실리고 구매자·게스트 티켓에는 `role`이 없고 `sub_type`만 있다. 두 discriminator가 함께 있거나 역할별 필수 discriminator가 없으면 `401 TOKEN_INVALID`로 fail-closed 한다. 올바른 판매자 티켓도 구매자 `/chat`에서는 buyer state를 만들기 전에 `403 FORBIDDEN`으로 거부한다. AI는 신원을 **오직 토큰 클레임에서만** 추출한다(요청 본문 금지, §2.5·§3.1·§3.2).
   - 검증 항목: **signature / exp / iss / aud / scope**.
 - **[확정] 401 통일 규약**: 토큰이 **없음/무효/만료**이면 AI 서버는 항상 **`401`** 을 반환한다.
   - `code == "TOKEN_EXPIRED"` — `exp` 경과.
@@ -1501,6 +1501,7 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 | `sessionFp` | `sessionId`(접속)의 peppered HMAC 지문 |
 | `threadFp` | `threadId`(방)의 peppered HMAC 지문 |
 | `streamFp` | 내부 `owner:thread` stream key의 peppered HMAC 지문(수명주기 로그) |
+| `scopeFp` / `scopeType` / `ipFp` | 429 스코프와 IP의 peppered HMAC 지문 및 비민감 유형(`sub`/`ip`). raw scope/IP 금지 |
 | `latencyFirstToken` / `latencyTotal` | SSE 2분할 — 체감 응답성 vs 전체 시간(§2.9 c 기준 대비) |
 | `model` | 호출 모델 id(Haiku/Sonnet, 노드별 다중 기록) |
 | `promptTokens` / `completionTokens` | LLM 호출별 합산 |
@@ -1509,7 +1510,8 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 
 - **PII/식별자 정책**: 사용자 message 원문과 raw owner/session/thread/stream 식별자는
   **로그에 남기지 않는다**. message는 길이·peppered HMAC, 식별자는 위 `*Fp`만 기록한다.
-  원문은 (a) 대화 저장소에만 존재한다.
+  rejection 로그의 추가 필드는 명시 allowlist만 허용하며 Authorization/token/exception과
+  사용자 입력 원문은 폐기한다. 원문은 (a) 대화 저장소에만 존재한다.
 - 레이트 리밋(§2.8)·409(§2.9 a) 발동도 `errorType`으로 집계해 상한값 튜닝 근거로 쓴다.
 
 ---

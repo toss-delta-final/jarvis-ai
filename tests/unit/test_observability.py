@@ -57,8 +57,11 @@ async def _obs(conversation_id: str, message: str = "질문"):
     )
 
 
-def _bearer(sub: str) -> dict:
-    token = jwt.encode({"sub": sub}, "test-secret-key-0123456789abcdef", algorithm="HS256")
+def _bearer(sub: str, sub_type: str | None = None) -> dict:
+    claims = {"sub": sub}
+    if sub_type is not None:
+        claims["sub_type"] = sub_type
+    token = jwt.encode(claims, "test-secret-key-0123456789abcdef", algorithm="HS256")
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -703,9 +706,17 @@ async def test_seller_style_observation_logs_null_context(
     assert record["contextFp"] is None
 
 
-def test_rate_limit_emits_structured_observation(caplog: pytest.LogCaptureFixture) -> None:
-    """429 발동도 errorType=RATE_LIMITED 구조화 로그로 관측된다(§6.3 b)."""
-    headers = _bearer("rl-obs")
+@pytest.mark.parametrize(
+    ("raw_subject", "sub_type"),
+    [("member-rate-limit-canary", "member"), ("guest-rate-limit-canary", "guest")],
+)
+def test_subject_rate_limit_logs_only_fingerprints(
+    caplog: pytest.LogCaptureFixture,
+    raw_subject: str,
+    sub_type: str,
+) -> None:
+    """실 429 member/guest sub 경로는 raw subject/IP 대신 fingerprint만 기록한다."""
+    headers = _bearer(raw_subject, sub_type)
     with caplog.at_level(logging.INFO, logger="observability"):
         for i in range(11):
             client.post(
@@ -721,12 +732,52 @@ def test_rate_limit_emits_structured_observation(caplog: pytest.LogCaptureFixtur
     assert record["streamStatus"] is None
     assert record["scopeFp"]
     assert record["scopeType"] == "sub"
-    assert record["ownerFp"]
-    assert record["ipFp"]
-    assert "rl-obs" not in serialized
-    assert "sub:rl-obs" not in serialized
+    assert record["scopeFp"] == identifier_fingerprint(f"sub:{raw_subject}")
+    assert record["ownerFp"] == identifier_fingerprint(raw_subject)
+    assert record["ipFp"] == identifier_fingerprint("testclient")
+    assert raw_subject not in serialized
+    assert f"sub:{raw_subject}" not in serialized
     assert "testclient" not in serialized
     assert '"scope"' not in serialized
+    assert raw_subject not in caplog.text
+    assert "testclient" not in caplog.text
+
+
+def test_ip_fallback_rate_limit_logs_only_fingerprint(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """무토큰 IP fallback의 실 429도 raw IP를 남기지 않는다."""
+    import app.core.ratelimit as ratelimit
+
+    settings = get_settings().model_copy(
+        update={"rate_limit_per_min": 1, "rate_limit_per_hour": 1, "rate_limit_host_multiplier": 1}
+    )
+    monkeypatch.setattr(ratelimit, "get_settings", lambda: settings)
+    with caplog.at_level(logging.INFO, logger="observability"):
+        client.post("/chat", json={"sessionId": "ip-1", "threadId": "t", "message": "m"})
+        response = client.post(
+            "/chat",
+            json={
+                "sessionId": "ip-secret-session",
+                "threadId": "secret-thread",
+                "message": "secret",
+            },
+        )
+
+    assert response.status_code == 429
+    record = next(
+        json.loads(item.getMessage())
+        for item in caplog.records
+        if item.name == "observability" and '"errorType": "RATE_LIMITED"' in item.getMessage()
+    )
+    serialized = json.dumps(record, ensure_ascii=False)
+    assert record["scopeType"] == "ip"
+    assert record["scopeFp"] == identifier_fingerprint("ip:testclient")
+    assert record["ipFp"] == identifier_fingerprint("testclient")
+    for raw in ("testclient", "ip:testclient", "ip-secret-session", "secret-thread", "secret"):
+        assert raw not in serialized
+        assert raw not in caplog.text
 
 
 def test_rejection_sanitizer_absorbs_guest_and_drops_unknown_identifier_keys(
@@ -741,6 +792,7 @@ def test_rejection_sanitizer_absorbs_guest_and_drops_unknown_identifier_keys(
             ip="203.0.113.10",
             path="/chat",
             arbitraryIdentifier="must-not-leak",
+            ownerFp="raw-owner-disguised-as-fingerprint",
         )
 
     record = json.loads(caplog.records[-1].getMessage())
@@ -750,7 +802,13 @@ def test_rejection_sanitizer_absorbs_guest_and_drops_unknown_identifier_keys(
     assert record["scopeType"] == "sub"
     assert record["ipFp"] == identifier_fingerprint("203.0.113.10")
     assert record["path"] == "/chat"
-    for raw in ("guest-raw", "sub:guest-raw", "203.0.113.10", "must-not-leak"):
+    for raw in (
+        "guest-raw",
+        "sub:guest-raw",
+        "203.0.113.10",
+        "must-not-leak",
+        "raw-owner-disguised-as-fingerprint",
+    ):
         assert raw not in serialized
     for key in ("guestId", "scope", "ip", "arbitraryIdentifier"):
         assert key not in record

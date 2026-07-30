@@ -86,6 +86,11 @@ def require_buyer_session(
     settings: Settings,
 ) -> None:
     """구매자 body sessionId를 서명된 스트림 티켓의 접속에 바인딩한다."""
+    if identity.seller_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "FORBIDDEN", "message": "buyer scope required"},
+        )
     if settings.auth_mode == "dev" and identity.session_id is None:
         return
     if not identity.session_id or identity.session_id != session_id:

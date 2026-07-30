@@ -346,6 +346,38 @@ class SessionContextRepository:
                             """,
                             (migration_name,),
                         )
+                        completed_migration = await (
+                            await conn.execute(
+                                "SELECT profile_backfill_cursor, "
+                                "profile_backfill_owner_cursor, "
+                                "profile_backfill_completed_at, profile_backfill_pass, "
+                                "grace_deadline "
+                                "FROM chat_session_migrations WHERE migration_name=%s FOR UPDATE",
+                                (migration_name,),
+                            )
+                        ).fetchone()
+                        assert completed_migration is not None
+                        (
+                            completed_cursor,
+                            _completed_owner_cursor,
+                            completed_at,
+                            completed_pass,
+                            completed_grace_deadline,
+                        ) = completed_migration
+                        completed_cursor_fp = (
+                            safe_fingerprint(str(completed_cursor))
+                            if completed_cursor not in (None, "")
+                            else None
+                        )
+                        logger.info(
+                            "session lifecycle backfill batch=%d pass=%d cursorFp=%s "
+                            "completed=%s graceDeadlineSet=%s",
+                            batches,
+                            completed_pass,
+                            completed_cursor_fp,
+                            completed_at is not None,
+                            completed_grace_deadline is not None,
+                        )
                         break
                     by_session: dict[str, list] = {}
                     for row in rows:

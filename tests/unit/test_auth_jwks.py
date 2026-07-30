@@ -26,6 +26,7 @@ from tests.unit._jwks import (
     install_jwks_fetch,
     jwks_of,
     make_rsa_key,
+    seller_ticket_claims,
     sign_ticket,
     ticket_claims,
 )
@@ -112,9 +113,7 @@ def test_jwks_legacy_role_guest_is_rejected(rsa_key, jwks_calls) -> None:
 
 def test_seller_role_with_brand_id(rsa_key, jwks_calls) -> None:
     """확정 role="seller" + brandId → 판매자 스코프와 brand_id를 보존한다."""
-    claims = ticket_claims(sub="9")
-    claims["role"] = auth.ROLE_SELLER
-    claims["brandId"] = "77"
+    claims = seller_ticket_claims(sub="9", brandId="77")
     identity = _decode(sign_ticket(rsa_key, KID, claims))
     assert identity.seller_id == "9"
     assert identity.brand_id == "77"
@@ -123,12 +122,34 @@ def test_seller_role_with_brand_id(rsa_key, jwks_calls) -> None:
 
 def test_exact_lowercase_seller_role_accepted(rsa_key, jwks_calls) -> None:
     """확정값 role="seller" 소문자 정확 일치만 판매자 스코프를 연다."""
-    claims = ticket_claims(sub="9")
-    claims["role"] = "seller"
-    claims["brandId"] = "77"
+    claims = seller_ticket_claims(sub="9", brandId="77")
     identity = _decode(sign_ticket(rsa_key, KID, claims))
     assert identity.seller_id == "9"
     assert identity.brand_id == "77"
+
+
+@pytest.mark.parametrize("sub_type", ["member", "guest", "admin"])
+def test_seller_role_rejects_any_buyer_sub_type(rsa_key, jwks_calls, sub_type: str) -> None:
+    """판매자 discriminator와 buyer discriminator가 함께 있으면 값과 무관하게 거부한다."""
+    claims = ticket_claims(sub="9", sub_type=sub_type)
+    claims.update({"role": auth.ROLE_SELLER, "brandId": "77"})
+
+    with pytest.raises(AuthError):
+        _decode(sign_ticket(rsa_key, KID, claims))
+
+
+@pytest.mark.parametrize("sub_type", ["member", "guest"])
+def test_buyer_sub_type_rejects_any_role_claim(
+    rsa_key,
+    jwks_calls,
+    sub_type: str,
+) -> None:
+    """buyer 티켓은 role 클레임 자체가 없어야 한다."""
+    claims = ticket_claims(sub_type=sub_type)
+    claims["role"] = auth.ROLE_USER
+
+    with pytest.raises(AuthError):
+        _decode(sign_ticket(rsa_key, KID, claims))
 
 
 def test_token_without_identity_claims_rejected(rsa_key, jwks_calls) -> None:

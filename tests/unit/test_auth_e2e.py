@@ -30,6 +30,7 @@ from tests.unit._jwks import (
     install_jwks_fetch,
     jwks_of,
     make_rsa_key,
+    seller_ticket_claims,
     sign_ticket,
     ticket_claims,
 )
@@ -229,9 +230,9 @@ def test_seller_chat_with_member_ticket_returns_403(jwks_app, rsa_key) -> None:
 
 
 def test_seller_chat_without_brand_id_returns_403(jwks_app, rsa_key) -> None:
-    """role=SELLER 인데 brandId 클레임 누락 → 403 (본문 우회 금지, §2.3/§2.6)."""
-    claims = ticket_claims(sub="9")
-    claims["role"] = auth.ROLE_SELLER
+    """올바른 seller shape인데 brandId 누락 → 403 (본문 우회 금지, §2.3/§2.6)."""
+    claims = seller_ticket_claims(sub="9")
+    claims.pop("brandId")
     token = sign_ticket(rsa_key, KID, claims)
     resp = client.post("/seller/chat", json=_chat_body(), headers=_bearer(token))
     assert resp.status_code == 403
@@ -240,8 +241,7 @@ def test_seller_chat_without_brand_id_returns_403(jwks_app, rsa_key) -> None:
 
 def test_seller_ticket_without_buyer_session_claim_streams(jwks_app, rsa_key) -> None:
     """판매자 티켓에는 구매자 sessionId claim을 추가로 요구하지 않는다."""
-    claims = ticket_claims(sub="9")
-    claims.update({"role": auth.ROLE_SELLER, "brandId": 3})
+    claims = seller_ticket_claims(sub="9", brandId=3)
     token = sign_ticket(rsa_key, KID, claims)
 
     resp = client.post("/seller/chat", json=_chat_body(), headers=_bearer(token))
@@ -250,11 +250,30 @@ def test_seller_ticket_without_buyer_session_claim_streams(jwks_app, rsa_key) ->
     assert resp.headers["content-type"].startswith("text/event-stream")
 
 
+def test_seller_ticket_is_rejected_from_buyer_chat_before_state_access(
+    jwks_app,
+    rsa_key,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """서명 sessionId가 있어도 seller는 buyer 저장소/수명주기에 닿기 전에 403이다."""
+    from app.api import chat as chat_api
+
+    async def fail_if_state_accessed():
+        raise AssertionError("seller must not access buyer conversation state")
+
+    monkeypatch.setattr(chat_api, "get_conversation_store", fail_if_state_accessed)
+    claims = seller_ticket_claims(sub="9", sessionId="s-auth-1", brandId=3)
+    token = sign_ticket(rsa_key, KID, claims)
+
+    resp = client.post("/chat", json=_chat_body(), headers=_bearer(token))
+
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "FORBIDDEN"
+
+
 def test_jwks_uppercase_seller_role_is_not_accepted(jwks_app, rsa_key) -> None:
     """BE 확정값과 다른 대문자 SELLER는 판매자 경로를 열지 않는다."""
-    claims = ticket_claims(sub="9")
-    claims.pop("sub_type")
-    claims.update({"role": "SELLER", "brandId": 3})
+    claims = seller_ticket_claims(sub="9", role="SELLER", brandId=3)
     token = sign_ticket(rsa_key, KID, claims)
 
     resp = client.post("/seller/chat", json=_chat_body(), headers=_bearer(token))

@@ -549,6 +549,43 @@ async def test_noop_backfill_preserves_completed_gc_marker(pg_repo) -> None:
     assert after == before
 
 
+async def test_backfill_emits_durable_completed_progress_on_completion_and_restart(
+    pg_repo,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """첫 완료와 no-op 재시작은 invocation별 completed event를 내되 raw cursor는 숨긴다."""
+    repo, pool, _ = pg_repo
+    async with pool.connection() as conn:
+        await conn.execute(
+            "DELETE FROM chat_session_migrations WHERE migration_name='issue-187-session-context'"
+        )
+
+    with caplog.at_level("INFO", logger="app.core.session_context"):
+        await repo.backfill_legacy_activity()
+    first_events = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "app.core.session_context"
+        and "session lifecycle backfill batch=" in record.getMessage()
+    ]
+    assert first_events[-1].find("completed=True") >= 0
+    assert "cursorFp=" in first_events[-1]
+    assert "profile_backfill_cursor" not in first_events[-1]
+
+    caplog.clear()
+    restarted = SessionContextRepository(pool=pool)
+    with caplog.at_level("INFO", logger="app.core.session_context"):
+        await restarted.backfill_legacy_activity()
+    restart_events = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "app.core.session_context"
+        and "session lifecycle backfill batch=" in record.getMessage()
+    ]
+    assert len(restart_events) == 1, "no-op restart는 invocation당 완료 progress 1건을 허용한다"
+    assert "completed=True" in restart_events[0]
+
+
 async def test_signed_touch_resolves_owner_and_gc_preserves_authoritative_buffer(
     pg_repo, monkeypatch
 ) -> None:

@@ -177,15 +177,16 @@ def test_order_status_uses_jwt_subject_not_message_number(client, spring, llm):
 
 
 def test_order_status_seller_is_blocked_before_spring(client, spring, llm):
-    events = _order_status_events(
+    response = _chat(
         client,
-        llm,
+        "내 주문 어디까지 왔어?",
         headers={"Authorization": f"Bearer {seller_token()}"},
     )
 
-    _assert_order_status_terminal_contract(events)
-    assert "구매자" in _token_text(events) or "재인증" in _token_text(events)
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "FORBIDDEN"
     assert spring.requests_to("/internal/members/") == []
+    assert llm.calls == []
 
 
 @pytest.mark.parametrize("invalid_subject", ["0", "-1", "abc", " 42", "９"])
