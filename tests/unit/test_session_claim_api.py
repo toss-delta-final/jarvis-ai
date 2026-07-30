@@ -140,6 +140,28 @@ async def test_stream_scope_idle_wait_is_event_driven() -> None:
     await asyncio.wait_for(waiter, timeout=0.1)
 
 
+async def test_stream_scope_idle_events_are_lazy_and_follow_reacquire_race() -> None:
+    registry = ActiveStreamRegistry()
+    for index in range(100):
+        scope = f"session-{index}"
+        assert registry.acquire(f"stream-{index}", owner_id="7", session_id=scope)
+        registry.release(f"stream-{index}")
+    assert registry._scope_idle == {}
+
+    assert registry.acquire("first", owner_id="7", session_id="same")
+    waiter = asyncio.create_task(registry.wait_for_scope_idle("7", "same"))
+    await asyncio.sleep(0)
+    assert len(registry._scope_idle) == 1
+
+    registry.release("first")
+    assert registry.acquire("second", owner_id="7", session_id="same")
+    await asyncio.sleep(0)
+    assert not waiter.done()
+    registry.release("second")
+    await asyncio.wait_for(waiter, timeout=0.1)
+    assert registry._scope_idle == {}
+
+
 async def test_terminal_gate_precedes_stream_wait_and_watermark_capture(
     repo: SessionContextRepository,
 ) -> None:

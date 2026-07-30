@@ -36,6 +36,12 @@ _SSE_HEADERS = {
 }
 
 
+@dataclass
+class _ScopeIdleWaiters:
+    event: asyncio.Event
+    count: int = 0
+
+
 class ActiveStreamRegistry:
     """인메모리 활성 스트림 레지스트리 (§2.9 a). acquire/release 는 await 를 끼지 않아
     이벤트 루프 상에서 원자적이다 (check-then-add 사이 선점 없음)."""
@@ -43,16 +49,7 @@ class ActiveStreamRegistry:
     def __init__(self) -> None:
         self._active: dict[str, tuple[str, str] | None] = {}
         self._fences: dict[tuple[str, str], StreamScopeFence] = {}
-        self._scope_idle: dict[tuple[str, str], asyncio.Event] = {}
-
-    def _scope_idle_event(self, scope: tuple[str, str]) -> asyncio.Event:
-        event = self._scope_idle.get(scope)
-        if event is None:
-            event = asyncio.Event()
-            if scope not in self._active.values():
-                event.set()
-            self._scope_idle[scope] = event
-        return event
+        self._scope_idle: dict[tuple[str, str], _ScopeIdleWaiters] = {}
 
     def acquire(
         self,
@@ -70,15 +67,15 @@ class ActiveStreamRegistry:
         if scope is not None and scope in self._fences:
             return False
         self._active[stream_key] = scope
-        if scope is not None:
-            self._scope_idle_event(scope).clear()
         return True
 
     def release(self, stream_key: str) -> None:
         """활성 해제 (중복 해제 무해)."""
         scope = self._active.pop(stream_key, None)
         if scope is not None and scope not in self._active.values():
-            self._scope_idle_event(scope).set()
+            waiters = self._scope_idle.get(scope)
+            if waiters is not None:
+                waiters.event.set()
 
     def is_active(self, stream_key: str) -> bool:
         return stream_key in self._active
@@ -106,7 +103,17 @@ class ActiveStreamRegistry:
         """해당 buyer session scope의 기존 stream이 모두 종료될 때까지 event 기반 대기한다."""
         scope = (owner_id, session_id)
         while scope in self._active.values():
-            await self._scope_idle_event(scope).wait()
+            waiters = self._scope_idle.get(scope)
+            if waiters is None or waiters.event.is_set():
+                waiters = _ScopeIdleWaiters(asyncio.Event())
+                self._scope_idle[scope] = waiters
+            waiters.count += 1
+            try:
+                await waiters.event.wait()
+            finally:
+                waiters.count -= 1
+                if waiters.count == 0 and self._scope_idle.get(scope) is waiters:
+                    del self._scope_idle[scope]
 
 
 @dataclass(frozen=True)

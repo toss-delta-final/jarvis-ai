@@ -166,6 +166,24 @@ async def test_terminal_supersedes_idle_and_transient_profile_phases(repo, clock
     assert claimed is not None
 
 
+async def test_tokenless_profile_record_cannot_change_claimed_processing_row(repo) -> None:
+    await repo.touch(BuyerSessionInput("claimed-profile", "T1", "member", "7"))
+    terminal = await repo.begin_terminal(7, "claimed-profile")
+    assert terminal.claim is not None
+    async with repo.lock_session("claimed-profile") as uow:
+        await uow.capture_profile_watermark(terminal.claim, 7)
+    await repo.complete_transient_phase(terminal.claim)
+    claimed = await repo.claim_profile_phase(terminal.claim.finalization_id, 30)
+    assert claimed is not None
+
+    with pytest.raises(SessionClaimConflict):
+        await repo.record_profile_phase(terminal.claim.finalization_id, "completed")
+
+    journal = await repo.get_finalization(terminal.claim.finalization_id)
+    assert journal.profile_status == "processing"
+    assert journal.claim_token == claimed.claim_token
+
+
 async def test_locked_unit_of_work_keeps_idle_phase_transitions_together(repo, clock) -> None:
     await repo.touch(BuyerSessionInput("S1", "T1", "guest", "G1"))
     clock.advance(601)

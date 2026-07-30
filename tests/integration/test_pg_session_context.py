@@ -461,6 +461,86 @@ async def test_pg_expired_processing_profile_rotates_token(pg_repo) -> None:
     )
 
 
+async def test_pg_terminal_expired_profile_lease_recovers_with_new_token(
+    pg_repo,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, pool, prefix = pg_repo
+    session_id = prefix + "-terminal-expired-profile"
+    await repo.touch(BuyerSessionInput(session_id, "T1", "member", "7"))
+    profile_store = await get_profile_store()
+    await profile_store.append_session_ctx(conversation_key("7", session_id), "PG terminal 취향")
+
+    async def clear_context(context_id: str, thread_ids: list[str]):
+        from app.agents.buyer.session_state import CleanupCounts
+
+        return CleanupCounts()
+
+    monkeypatch.setattr(session_lifecycle_module.session_state, "clear_context", clear_context)
+    coordinator = SessionLifecycleCoordinator(repo, ActiveStreamRegistry())
+    terminal = await repo.begin_terminal(7, session_id)
+    assert terminal.claim is not None
+    transient = await coordinator.process_terminal_transient(terminal.claim)
+    assert transient.status == "completed"
+    old_claim = await repo.claim_profile_phase(terminal.finalization.finalization_id, 30)
+    assert old_claim is not None
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_finalizations SET lease_expires_at=now()-interval '1 second' "
+            "WHERE finalization_id=%s",
+            (terminal.finalization.finalization_id,),
+        )
+
+    candidates = await repo.list_recoverable_profile_phases(100)
+    assert terminal.finalization.finalization_id in {
+        candidate.finalization_id for candidate in candidates
+    }
+    entered = asyncio.Event()
+    proceed = asyncio.Event()
+
+    class _BlockingLLM(_ProfileLLM):
+        async def complete(self, **kwargs):
+            if "델타 추출기" in kwargs["system"]:
+                entered.set()
+                await proceed.wait()
+            return await super().complete(**kwargs)
+
+    issued_tokens: list[str] = []
+    original_claim = repo.claim_profile_phase
+
+    async def observed_claim(finalization_id: str, lease_s: float):
+        claimed = await original_claim(finalization_id, lease_s)
+        if claimed is not None:
+            issued_tokens.append(claimed.claim_token)
+        return claimed
+
+    monkeypatch.setattr(repo, "claim_profile_phase", observed_claim)
+    monkeypatch.setattr(profile_finalizer, "get_llm", lambda: _BlockingLLM())
+    recovery = asyncio.create_task(profile_finalizer._process_recoverable_profile_phases(repo, 1))
+    await entered.wait()
+
+    assert issued_tokens and issued_tokens[-1] != old_claim.claim_token
+    with pytest.raises(SessionClaimConflict):
+        await repo.record_claimed_profile_phase(
+            terminal.finalization.finalization_id,
+            old_claim.claim_token,
+            "completed",
+        )
+    with pytest.raises(SessionClaimConflict):
+        await repo.record_profile_phase(terminal.finalization.finalization_id, "completed")
+
+    proceed.set()
+    [result] = await recovery
+    assert result.status is profile_finalizer.ProfilePhaseStatus.COMPLETED
+    journal = await repo.get_finalization(terminal.finalization.finalization_id)
+    context = await repo.get_context(session_id)
+    assert journal.reason == "terminal"
+    assert journal.transient_status == "completed"
+    assert journal.profile_status == "completed"
+    assert journal.claim_token is None
+    assert context is not None and context.state == "terminal"
+
+
 async def test_pg_expired_live_profile_task_is_joined_without_parallel_llm(
     pg_repo,
     monkeypatch: pytest.MonkeyPatch,

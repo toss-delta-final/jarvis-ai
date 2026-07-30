@@ -894,6 +894,11 @@ class SessionContextRepository:
             finalization.lease_expires_at = None
 
     async def record_profile_phase(self, finalization_id: str, status: ProfilePhaseStatus) -> None:
+        """Setup/migration용 tokenless 기록.
+
+        이미 claim된 processing row는 이 호환 API로 변경할 수 없다. production processor는
+        claim identity를 검증하는 ``record_claimed_profile_phase``만 사용한다.
+        """
         if status not in ("pending", "processing", "completed", "skipped", "retryable"):
             raise ValueError("invalid profile phase status")
         if self._pool is not None:
@@ -912,7 +917,9 @@ class SessionContextRepository:
                             completed_at=CASE WHEN %s IN ('completed','skipped') THEN now()
                                               ELSE completed_at END,
                             updated_at=now()
-                        WHERE finalization_id=%s AND status <> 'superseded'
+                        WHERE finalization_id=%s
+                          AND status <> 'superseded'
+                          AND profile_status <> 'processing'
                         RETURNING finalization_id
                         """,
                         (status, status, status, status, status, finalization_id),
@@ -922,7 +929,11 @@ class SessionContextRepository:
                 raise SessionClaimConflict
             return
         finalization = self._finalizations.get(finalization_id)
-        if finalization is None or finalization.status == "superseded":
+        if (
+            finalization is None
+            or finalization.status == "superseded"
+            or finalization.profile_status == "processing"
+        ):
             raise SessionClaimConflict
         finalization.profile_status = status
         if status in ("completed", "skipped"):
