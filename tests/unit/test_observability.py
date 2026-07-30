@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from app.core.auth import Identity
 from app.core.conversation import (
+    CommittedTurn,
     PgConversationStore,
     TurnStatus,
     conversation_key,
@@ -21,6 +22,7 @@ from app.core.conversation import (
 )
 from app.core.config import get_settings
 from app.core.observability import message_fingerprint, start_observation
+from app.core.session_context import BuyerSessionInput, SessionFinalizing, SessionForbidden
 from app.core.stream import get_registry
 from app.core.stream import open_stream
 from app.main import app
@@ -453,6 +455,95 @@ async def test_commit_user_message_failure_releases_slot() -> None:
     with pytest.raises(RuntimeError):
         await open_stream(_FakeRequest(), "member:slotfail", unreachable, observer=obs)
     assert not get_registry().is_active("member:slotfail")
+
+
+@pytest.mark.parametrize("error", [SessionForbidden(), SessionFinalizing(), RuntimeError("boom")])
+async def test_commit_user_message_any_failure_releases_slot(error: Exception) -> None:
+    obs = await _obs("slot-domain-fail")
+
+    class _FailingStore:
+        async def save_user_message(self, *args, **kwargs):
+            raise error
+
+        async def finalize_assistant(self, *args, **kwargs):
+            return None
+
+        async def get_turn(self, *args, **kwargs):
+            return None
+
+        async def turns_for(self, *args, **kwargs):
+            return []
+
+    obs.store = _FailingStore()
+
+    async def unreachable():
+        yield "data: never\n\n"
+
+    with pytest.raises(type(error)):
+        await open_stream(
+            _FakeRequest(),
+            "member:slot-domain-fail",
+            unreachable,
+            observer=obs,
+        )
+    assert not get_registry().is_active("member:slot-domain-fail")
+
+
+async def test_observation_stores_committed_buyer_context() -> None:
+    store = await get_conversation_store()
+    observation = start_observation(
+        request_id="buyer-context",
+        identity=Identity(
+            user_id="7",
+            is_guest=False,
+            seller_id=None,
+            subject="7",
+            session_id="buyer-session",
+        ),
+        conversation_id="buyer-session",
+        thread_id="buyer-thread",
+        message="질문",
+        store=store,
+        now=0.0,
+        buyer_session=BuyerSessionInput(
+            session_id="buyer-session",
+            thread_id="buyer-thread",
+            owner_type="member",
+            owner_id="7",
+        ),
+    )
+
+    await observation.commit_user_message()
+
+    assert observation.turn_id is not None
+    assert observation.context_id is not None
+
+
+async def test_seller_style_observation_has_no_context() -> None:
+    store = await get_conversation_store()
+    observation = start_observation(
+        request_id="seller-context",
+        identity=Identity(
+            user_id="7",
+            is_guest=False,
+            seller_id="7",
+            brand_id="3",
+            subject="7",
+        ),
+        conversation_id="seller-session",
+        thread_id="seller-thread",
+        message="질문",
+        store=store,
+        now=0.0,
+    )
+
+    await observation.commit_user_message()
+
+    assert isinstance(
+        CommittedTurn(observation.turn_id or "", observation.context_id),
+        CommittedTurn,
+    )
+    assert observation.context_id is None
 
 
 def test_rate_limit_emits_structured_observation(caplog: pytest.LogCaptureFixture) -> None:

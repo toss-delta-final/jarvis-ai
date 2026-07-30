@@ -47,11 +47,12 @@ async def test_seller_endpoint_scopes_stream_lock_by_thread_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """판매자 엔드포인트도 sessionId가 아니라 threadId를 스트림 락 키로 사용한다."""
-    captured: dict[str, str] = {}
+    captured: dict[str, object] = {}
     marker = object()
 
     async def _capture_open_stream(_request, stream_key, _factory, *, observer=None):
         captured["stream_key"] = stream_key
+        captured["observer"] = observer
         return marker
 
     monkeypatch.setattr(seller_api, "open_stream", _capture_open_stream)
@@ -75,6 +76,7 @@ async def test_seller_endpoint_scopes_stream_lock_by_thread_id(
     assert response is marker
     assert identity.session_id is None, "판매자 티켓에는 구매자 sessionId claim을 요구하지 않는다"
     assert captured["stream_key"] == "7:seller-room"
+    assert captured["observer"].buyer_session is None
 
 
 class _StubStreamAgent:

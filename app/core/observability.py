@@ -19,6 +19,7 @@ from app.core.auth import Identity
 from app.core.config import get_settings
 from app.core.conversation import ConversationStoreProtocol, TurnStatus, conversation_key
 from app.core.logging import get_logger
+from app.core.session_context import BuyerSessionInput
 
 logger = get_logger("observability")
 
@@ -68,8 +69,9 @@ class RequestObservation:
     started: float
     pending_message: str
     pending_key: str
-    pending_session_id: str
+    buyer_session: BuyerSessionInput | None = None
     turn_id: str | None = None
+    context_id: str | None = None
     first_token_at: float | None = None
     assistant_parts: list[str] = field(default_factory=list)
     model_calls: list[ModelCall] = field(default_factory=list)
@@ -81,14 +83,16 @@ class RequestObservation:
         409로 거절된 중복/더블클릭 요청은 이 호출에 도달하지 않으므로 유령 턴(응답 없는
         FAILED 턴)이 다음 컨텍스트를 오염시키지 않는다."""
         if self.turn_id is None:
-            self.turn_id = await self.store.save_user_message(
+            committed = await self.store.save_user_message(
                 self.pending_key,
                 self.user_id,
                 self.role,
                 self.pending_message,
-                session_id=self.pending_session_id,
                 thread_id=self.thread_id,
+                buyer_session=self.buyer_session,
             )
+            self.turn_id = committed.turn_id
+            self.context_id = committed.context_id
 
     def record_model_call(
         self, model: str, prompt_tokens: int = 0, completion_tokens: int = 0
@@ -141,6 +145,7 @@ class RequestObservation:
             "userId": self.user_id,
             "role": self.role,
             "conversationId": self.conversation_id,
+            "contextId": self.context_id,
             "threadId": self.thread_id,
             "latencyFirstToken": latency_first_ms,
             "latencyTotal": latency_total_ms,
@@ -181,6 +186,7 @@ def start_observation(
     message: str,
     store: ConversationStoreProtocol,
     now: float,
+    buyer_session: BuyerSessionInput | None = None,
 ) -> RequestObservation:
     """사용자 메시지를 저장(§6.3 a)하고 관측 컨텍스트를 만든다. 원문은 저장소에만, 로그엔 지문만."""
     length, digest = message_fingerprint(message)
@@ -200,7 +206,7 @@ def start_observation(
         started=now,
         pending_message=message,
         pending_key=conversation_key(subject, conversation_id),
-        pending_session_id=conversation_id,
+        buyer_session=buyer_session,
     )
 
 

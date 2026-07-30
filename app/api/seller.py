@@ -730,6 +730,7 @@ async def seller_chat(
         message=request.message,
         store=store,
         now=asyncio.get_running_loop().time(),
+        buyer_session=None,
     )
     return await open_stream(
         http_request,

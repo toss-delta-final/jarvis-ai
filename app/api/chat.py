@@ -22,6 +22,7 @@ from app.core.auth import Identity
 from app.core.conversation import get_conversation_store
 from app.core.errors import get_request_id
 from app.core.observability import emit_rejection, start_observation
+from app.core.session_context import BuyerSessionInput
 from app.core.stream import open_stream, registry_key
 from app.schemas.chat import ChatRequest
 
@@ -37,6 +38,12 @@ async def chat(
     """구매자 챗봇 SSE 스트리밍 (api-spec §3.1)."""
     settings = auth_deps.get_settings()
     auth_deps.require_buyer_session(identity, request.session_id, settings)
+    buyer_session = BuyerSessionInput(
+        session_id=request.session_id,
+        thread_id=request.thread_id,
+        owner_type="guest" if identity.is_guest else "member",
+        owner_id=auth_deps.buyer_owner_id(identity, settings),
+    )
     request_id = get_request_id(http_request)
     try:
         store = await get_conversation_store()
@@ -60,6 +67,7 @@ async def chat(
         message=request.message,
         store=store,
         now=asyncio.get_running_loop().time(),
+        buyer_session=buyer_session,
     )
     return await open_stream(
         http_request,
