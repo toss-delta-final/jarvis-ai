@@ -220,44 +220,64 @@ async def test_query_anchor_wins_when_closer_than_raw(caplog) -> None:
     assert rec.distance == 0.085
 
 
-async def test_raw_anchor_wins_when_closer_than_query() -> None:
-    """raw 가 더 가까우면 raw 쪽 canonical 을 채택한다(§4.3 — query 우선이 아니라 '가까운 쪽').
+async def test_query_anchor_wins_even_when_raw_is_closer(caplog) -> None:
+    """raw 가 **거리상 더 가까워도** query 히트가 있으면 query 를 채택한다(§4.3.1 #115 재개정).
 
-    raw 를 무조건 버리는 것도 정답이 아니다. LLM 이 정확한 라벨을 낸 경우("전자제품>오디오>이어폰"
-    → 음향가전 > 이어폰 0.1329)는 발화의 수식어 낀 query 보다 더 가까울 수 있다.
+    1차 개정("가까운 쪽 승리")은 역효과였다 — 라이브 실측에서 anchor=raw 로 채택된 12건 중 11건이
+    오분류였다. 원인은 **추상 라벨의 가짜 근접**이다: '주방용품' 이 `주방용품 > 칼` 에 0.1387 로 붙는
+    것은 의미 근접이 아니라 카테고리명과의 문자열 겹침 때문이고, 정작 의미가 맞는 '냄비 세트'
+    (0.1941)보다 "가깝게" 나온다. 거리가 의미를 반영하지 않는 구간이라 raw·query 를 거리로 비교하는
+    것 자체가 성립하지 않으므로, 신뢰도 높은 쪽(발화 유래 query)을 규칙으로 고정한다.
     """
     m = _FakeMapper(
         exact=set(),
         nearest={},
         hits={
-            "전자제품>오디오>이어폰": [
-                ("음향가전 > 이어폰", 0.1329),
-                ("음향가전 > 헤드폰", 0.2095),
+            "주방용품": [  # 더 가깝지만 오분류(문자열 겹침)
+                ("주방용품 > 칼", 0.1387),
+                ("주방용품 > 보관용기", 0.1415),
             ],
-            "갓성비 무선이어폰": [
-                ("음향가전 > 블루투스 이어폰", 0.2566),
-                ("음향가전 > 이어폰", 0.2569),
+            "냄비 세트": [
+                ("주방용품 > 냄비", 0.1941),
+                ("주방용품 > 솥/찜기/뚝배기", 0.2338),
             ],
-        },
-    )
-    out = await m.run([CategoryQuery("전자제품>오디오>이어폰", "갓성비 무선이어폰")])
-    assert out == [("음향가전 > 이어폰", "갓성비 무선이어폰")]
-
-
-async def test_tie_prefers_query_anchor(caplog) -> None:
-    """거리가 동일하면 발화 유래 query 를 택한다 — LLM 창작 라벨보다 발화가 신뢰도 높다(§4.3)."""
-    m = _FakeMapper(
-        exact=set(),
-        nearest={},
-        hits={
-            "선물용품": [("취미 > 수집용품", 0.2074)],
-            "홍삼": [("건강식품 > 홍삼", 0.2074)],  # 같은 거리
         },
     )
     with caplog.at_level("INFO"):
-        out = await m.run([CategoryQuery("선물용품", "홍삼")])
-    assert out == [("건강식품 > 홍삼", "홍삼")]
-    assert _record(caplog, "category_repaired").anchor_kind == "query"
+        out = await m.run([CategoryQuery("주방용품", "냄비 세트")])
+    assert out == [("주방용품 > 냄비", "냄비 세트")]
+    rec = _record(caplog, "category_repaired")
+    assert rec.anchor_kind == "query"
+    assert rec.distance == 0.1941  # 더 먼 쪽이지만 의미가 맞는 앵커
+
+
+async def test_raw_anchor_used_only_when_query_has_no_hit() -> None:
+    """query 앵커가 히트 0건이면 raw 최근접으로 폴백한다(§4.3 — raw 는 폴백이지 무용지물이 아니다).
+
+    query 가 사전에 없는 신조어·오타여서 히트가 없을 수 있다. 그때 raw 까지 버리면 canonical 을
+    아예 못 내 무필터로 새므로, raw 조회를 유지해 하나라도 살린다.
+    """
+    m = _FakeMapper(
+        exact=set(),
+        nearest={},
+        hits={"음향가전": [("음향가전 > 오디오", 0.0640)]},  # query '헤드셋추천템' 은 히트 0건
+    )
+    out = await m.run([CategoryQuery("음향가전", "헤드셋추천템")])
+    assert out == [("음향가전 > 오디오", "헤드셋추천템")]
+
+
+async def test_query_anchor_failure_falls_back_to_raw(caplog) -> None:
+    """query 앵커 조회가 예외로 실패하면 raw 최근접으로 폴백한다(앵커 단위 격리의 반대 방향, §5)."""
+    m = _FakeMapper(
+        exact=set(),
+        nearest={},
+        hits={"음향가전": [("음향가전 > 오디오", 0.0640)]},
+        search_raises_for={"무선 이어폰"},  # query 앵커 조회만 예외
+    )
+    with caplog.at_level("WARNING"):
+        out = await m.run([CategoryQuery("음향가전", "무선 이어폰")])
+    assert out == [("음향가전 > 오디오", "무선 이어폰")]  # raw 앵커로 생존
+    assert "category_leg_search_failed" in [r.msg for r in caplog.records]
 
 
 async def test_exact_raw_wins_without_distance_comparison() -> None:

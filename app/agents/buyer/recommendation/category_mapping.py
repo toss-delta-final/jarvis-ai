@@ -1,7 +1,7 @@
 """카테고리 매핑 오케스트레이션 (이슈 #59, 방식 A — LLM 추측 → 임베딩 보정).
 
 decompose 가 추측한 카테고리(raw)들을 실제 DB 카테고리(canonical)로 보정한다. LLM 재호출
-없이 exact match → 임베딩 최근접(raw·query 둘 다 조회해 더 가까운 쪽, §4.3 #115)으로 처리한다.
+없이 exact match → 임베딩 최근접(raw·query 둘 다 조회해 **query 우선**, §4.3 #115)으로 처리한다.
 카테고리 신호가 있는 leg 는 성공 시 canonical 을 내고, 신호 없는 leg(raw·query 모두 없음)는
 카테고리를 강제하지 않는다 → **canonical-or-null**(Spring 엔 canonical 또는 null 만, 미검증 raw 는
 안 나간다, #22·#20).
@@ -76,9 +76,10 @@ async def map_categories(
     각 leg 의 query 는 그 카테고리 전용 검색 키워드(fan-out leg keyword, §6·§9) — 매핑 전
     추측(raw)이 어디로 보정되든 원 추측의 query 를 그대로 이어 붙인다.
     per-leg 규칙(우선순위): (1) raw 가 exact match → raw (DB 검증값이라 거리 비교 대상 아님).
-    (2) 그 외 신호가 있으면 **raw·query 를 각각 임베딩·조회해 더 가까운 쪽의 최근접을 채택**한다
-    (§4.3 #115 — 동거리는 발화 유래 query 우선. 종전엔 raw 가 있으면 query 를 버렸고 그게 정답을
-    잃는 경로였다). (3) raw·query 모두 없음(빈 리스트 포함) → 신호 없음으로 보고 leg 를 만들지
+    (2) 그 외 신호가 있으면 **raw·query 를 각각 임베딩·조회해 query 쪽 최근접을 우선 채택**하고,
+    raw 최근접은 query 히트 0건·조회 실패 시 폴백으로만 쓴다(§4.3·§4.3.1 #115 — 종전엔 raw 가
+    있으면 query 를 버렸고, 거리 비교도 추상 라벨의 문자열 겹침 때문에 성립하지 않는다).
+    (3) raw·query 모두 없음(빈 리스트 포함) → 신호 없음으로 보고 leg 를 만들지
     않는다 → 무필터 검색(카테고리 강제 금지, PR #73 #22). (4) 실패는 **앵커 단위로 격리** —
     exact 매치는 임베딩 경로 실패와 무관하게 보존하고, 한 leg 의 앵커 하나가 실패해도 다른 앵커가
     canonical 을 냈으면 그 leg 를 살린다. 앵커 전부 실패·embed 전면 실패는 그 leg 만 드롭한다
@@ -118,11 +119,13 @@ async def map_categories(
     nearest: dict[int, _Winner] = {}
     failed_idx: set[int] = set()  # 조회가 예외로 실패한 leg — category_unmapped(품질) 오염 방지
     try:
-        # 앵커: leg 마다 raw(LLM 추측)·query(발화 유래) **둘 다** 조회하고 더 가까운 쪽을 채택한다
-        # (§4.3 #115). 종전 `raws[i] or qtexts[i]` 는 raw 가 있으면 query 를 조회조차 하지 않았는데,
-        # 실측에서 그게 정답을 능동적으로 버리는 경로였다 — "층간소음 방지 용품"(query) 0.0850·
-        # 마진 0.1561(압도적 정답) vs '가전/생활용폼'(LLM 창작 raw, 오타) 0.2399·마진 0.0021 채택.
-        # query 를 먼저 넣어 동거리 tie 에서 발화가 이긴다(창작 라벨보다 발화가 신뢰도 높음).
+        # 앵커: leg 마다 raw(LLM 추측)·query(발화 유래) **둘 다** 조회하되 **query 우선** 채택하고,
+        # raw 최근접은 query 히트 0건·조회 실패 시의 폴백으로만 쓴다(§4.3·§4.3.1 #115). 종전
+        # `raws[i] or qtexts[i]` 는 raw 가 있으면 query 를 조회조차 하지 않았고, 그게 정답을 능동적으로
+        # 버리는 경로였다 — "층간소음 방지 용품"(query) 0.0850 vs '가전/생활용폼'(창작 raw, 오타)
+        # 0.2399 채택. 거리 비교("가까운 쪽")로 고르지 않는 이유는 **추상 라벨의 가짜 근접** 때문이다:
+        # '주방용품'→`주방용품 > 칼` 0.1387 은 의미가 아니라 카테고리명과의 문자열 겹침이고, 의미가
+        # 맞는 '냄비 세트'(0.1941)보다 가깝게 나온다. 라이브 실측에서 raw 채택 12건 중 11건이 오분류.
         # null-raw leg 이 여럿이어도 각자 query 로 임베딩해 fan-out 폭을 지킨다(PR #73 #17).
         anchors: list[tuple[int, str, str]] = []  # (leg 인덱스, 앵커 종류, 텍스트)
         for i in need_idx:
@@ -141,6 +144,7 @@ async def map_categories(
             return_exceptions=True,
         )
         errored: set[int] = set()  # 앵커 하나 이상이 예외로 실패한 leg
+        by_leg: dict[int, dict[str, _Picked]] = {}  # leg → {앵커 종류: 후보}
         for j, hits in enumerate(hit_lists):
             leg_i, kind, _text = anchors[j]
             if isinstance(hits, Exception):
@@ -153,9 +157,11 @@ async def map_categories(
             picked = _top1_with_margin(hits)
             if picked is None:
                 continue  # 히트 0건 — 이 앵커는 후보 없음(leg 판정은 아래 unmapped 로)
-            best = nearest.get(leg_i)
-            if best is None or picked[1] < best[1]:  # 더 가까운 쪽 승리(동거리는 먼저 넣은 query)
-                nearest[leg_i] = (*picked, kind)
+            by_leg.setdefault(leg_i, {})[kind] = picked
+        # query 우선 — 거리 비교가 아니다(§4.3.1). raw 는 query 가 후보를 못 낸 leg 의 폴백.
+        for leg_i, by_kind in by_leg.items():
+            kind = "query" if "query" in by_kind else "raw"
+            nearest[leg_i] = (*by_kind[kind], kind)
         # 실패 격리 단위가 leg→앵커로 내려갔다: 앵커 하나가 죽어도 다른 앵커가 canonical 을 냈으면
         # 그 leg 는 드롭하지 않는다(부분 성공 보존, §5). 전부 실패한 leg 만 failed 로 표시한다.
         failed_idx.update(i for i in errored if i not in nearest)
