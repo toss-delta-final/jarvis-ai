@@ -7,13 +7,17 @@ import pytest
 from psycopg.conninfo import make_conninfo
 from psycopg_pool import AsyncConnectionPool
 
+from app.core import session_context as session_context_module
+from app.core import session_lifecycle as session_lifecycle_module
 from app.core.config import get_settings
 from app.core.session_context import (
     BuyerSessionInput,
     SessionClaimConflict,
     SessionContextRepository,
+    SessionFinalizing,
 )
-from app.core import session_context as session_context_module
+from app.core.session_lifecycle import SessionLifecycleCoordinator
+from app.core.stream import ActiveStreamRegistry
 
 pytestmark = pytest.mark.integration
 
@@ -496,3 +500,130 @@ async def test_advisory_lock_is_held_until_transaction_exit(pg_repo) -> None:
         ).fetchall()
     assert context_row == (touched.generation, "active")
     assert thread_rows == [("T1",), ("T2",)]
+
+
+async def test_cleanup_crash_keeps_gate_and_public_sweep_recovers(pg_repo, monkeypatch) -> None:
+    repo, pool, prefix = pg_repo
+    session_id = prefix + "-cleanup-crash"
+    context = await repo.touch(BuyerSessionInput(session_id, "T1", "guest", "G1"))
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_contexts SET last_activity_at=now()-interval '1 hour' "
+            "WHERE context_id=%s",
+            (context.context_id,),
+        )
+    [claim] = await repo.claim_expired_contexts(10, 30, 10)
+    calls = 0
+
+    async def crashing_clear(context_id: str, thread_ids: list[str]):
+        nonlocal calls
+        from app.agents.buyer.session_state import CleanupCounts
+
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("process crash after namespace delete")
+        return CleanupCounts(filters=1)
+
+    monkeypatch.setattr(
+        session_lifecycle_module.session_state,
+        "clear_context",
+        crashing_clear,
+    )
+    first = SessionLifecycleCoordinator(repo, ActiveStreamRegistry())
+    failed = await first.process_idle_transient(claim)
+    assert failed.status == "retryable"
+
+    restarted_repo = SessionContextRepository(pool=pool)
+    with pytest.raises(SessionFinalizing):
+        await restarted_repo.touch(BuyerSessionInput(session_id, "T2", "guest", "G1"))
+    with pytest.raises(SessionFinalizing):
+        await restarted_repo.claim_owner(session_id, "G1", 7)
+
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_finalizations SET lease_expires_at=now()-interval '1 second' "
+            "WHERE finalization_id=%s",
+            (claim.finalization_id,),
+        )
+    monkeypatch.setattr(session_context_module, "_default_repository", restarted_repo)
+
+    result = await session_lifecycle_module.run_session_context_sweep()
+
+    assert result.recovered == 1
+    assert result.completed == 1
+    assert calls == 2
+    recovered = await restarted_repo.get_context(session_id)
+    assert recovered is not None and recovered.state == "idle_expired"
+    assert await restarted_repo.get_threads(context.context_id) == []
+
+
+async def test_terminal_recovery_ignores_superseded_idle_batch_row(pg_repo, monkeypatch) -> None:
+    repo, pool, prefix = pg_repo
+    session_id = prefix + "-terminal-recovery"
+    context = await repo.touch(BuyerSessionInput(session_id, "T1", "member", "7"))
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_contexts SET last_activity_at=now()-interval '1 hour' "
+            "WHERE context_id=%s",
+            (context.context_id,),
+        )
+    [idle] = await repo.claim_expired_contexts(10, 30, 10)
+    terminal = await repo.begin_terminal(7, session_id)
+    assert terminal.claim is not None
+
+    class EmptyProfile:
+        def __init__(self) -> None:
+            self.snapshot_calls = 0
+
+        async def get_session_ctx_snapshot(self, key: str) -> tuple[list[str], int]:
+            self.snapshot_calls += 1
+            return [], 0
+
+    profile = EmptyProfile()
+    calls = 0
+
+    async def crashing_clear(context_id: str, thread_ids: list[str]):
+        nonlocal calls
+        from app.agents.buyer.session_state import CleanupCounts
+
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("terminal process crash")
+        return CleanupCounts()
+
+    monkeypatch.setattr(
+        session_lifecycle_module.session_state,
+        "clear_context",
+        crashing_clear,
+    )
+    first = SessionLifecycleCoordinator(
+        repo,
+        ActiveStreamRegistry(),
+        profile_store_factory=lambda: profile,
+    )
+    failed = await first.process_terminal_transient(terminal.claim)
+    assert failed.status == "retryable"
+    assert (await repo.get_context(session_id)).state == "terminal"
+
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_finalizations SET lease_expires_at=now()-interval '1 second' "
+            "WHERE finalization_id=%s",
+            (terminal.claim.finalization_id,),
+        )
+    restarted_repo = SessionContextRepository(pool=pool)
+    monkeypatch.setattr(session_context_module, "_default_repository", restarted_repo)
+
+    async def empty_profile_factory():
+        return profile
+
+    monkeypatch.setattr(session_lifecycle_module, "get_profile_store", empty_profile_factory)
+    result = await session_lifecycle_module.run_session_context_sweep()
+
+    assert result.recovered == 1
+    assert result.completed == 1
+    assert (await restarted_repo.get_finalization(idle.finalization_id)).status == "superseded"
+    terminal_row = await restarted_repo.get_finalization(terminal.claim.finalization_id)
+    assert terminal_row.transient_status == "completed"
+    assert (await restarted_repo.get_context(session_id)).state == "terminal"
+    assert profile.snapshot_calls == 1
