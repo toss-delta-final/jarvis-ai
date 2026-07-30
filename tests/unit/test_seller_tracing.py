@@ -11,6 +11,7 @@ import jwt
 import pytest
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessageChunk
+from langchain_core.runnables import RunnableLambda
 
 from app.agents.seller.context import SellerContext
 from app.core.auth import Identity
@@ -142,6 +143,105 @@ def test_seller_request_exports_one_correlated_root(
     assert by_name["seller.routing"].parent_id == roots[0].id
     assert by_name["seller.graph.general"].parent_id == roots[0].id
     assert by_name["llm.seller.general"].parent_id == by_name["seller.graph.general"].id
+
+
+def test_seller_request_disables_implicit_langchain_tracing_in_child_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from langsmith import Client
+    from langchain_core.tracers import context as tracer_context
+    from langchain_core.tracers import langchain as tracer_module
+
+    from app.agents.seller.schemas import RouteDecision
+    from app.api import seller as seller_api
+    from tests.unit.test_tracing import (
+        PRIVACY_CANARIES,
+        _assert_canaries_absent,
+        _serialized_operation_content,
+    )
+
+    original_tracer = tracer_module.LangChainTracer
+    default_tracers: list[object] = []
+    alternate_operations: list[object] = []
+    serialized_operations: list[object] = []
+
+    class CapturingDefaultTracer(original_tracer):
+        def __init__(self, *args, **kwargs) -> None:
+            kwargs["client"] = types.SimpleNamespace()
+            super().__init__(*args, **kwargs)
+            default_tracers.append(self)
+
+        def _persist_run_single(self, run) -> None:
+            alternate_operations.append(run)
+
+        @staticmethod
+        def _update_run_single(run) -> None:
+            alternate_operations.append(run)
+
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.setattr(tracer_context, "LangChainTracer", CapturingDefaultTracer)
+    monkeypatch.setattr(tracer_module, "LangChainTracer", CapturingDefaultTracer)
+
+    def capture_after_sdk_serialization(self, operations, **kwargs) -> None:
+        del self, kwargs
+        serialized_operations.extend(operations)
+
+    monkeypatch.setattr(Client, "_batch_ingest_run_ops", capture_after_sdk_serialization)
+
+    async def route(*_args, **_kwargs):
+        return RouteDecision(category="general", reason="bounded", confidence=1)
+
+    canary = PRIVACY_CANARIES["seller_message"]
+
+    async def child_runnable(value):
+        return AIMessageChunk(content=f"safe response for {value['messages'][0].content}")
+
+    async def parent_runnable(value):
+        return await asyncio.create_task(RunnableLambda(child_runnable).ainvoke(value))
+
+    class Agent:
+        async def astream(self, value, **_kwargs):
+            yield await RunnableLambda(parent_runnable).ainvoke(value)
+
+    monkeypatch.setattr(seller_api, "route_question", route)
+    monkeypatch.setattr(seller_api, "build_general_agent", lambda today, checkpointer=None: Agent())
+    manual_client = Client(
+        api_key="lsv2_pt_abcdefghijklmnop1234",
+        auto_batch_tracing=False,
+        omit_traced_runtime_info=True,
+        tracing_sampling_rate=1.0,
+    )
+    trace = TraceFactory(
+        exporter=LangSmithTraceExporter(manual_client, "test", 1.0),
+        enabled=True,
+        sampling_rate=1.0,
+    )
+    set_trace_factory(trace)
+    try:
+        response = client.post(
+            "/seller/chat",
+            json={"sessionId": "implicit-tracing", "threadId": "child-task", "message": canary},
+            headers=_seller_headers(),
+        )
+    finally:
+        set_trace_factory(None)
+
+    assert response.status_code == 200
+    assert default_tracers == []
+    assert alternate_operations == []
+    assert serialized_operations
+    roots = [
+        operation.deserialize_run_info()
+        for operation in serialized_operations
+        if operation.deserialize_run_info()["parent_run_id"] is None
+    ]
+    assert [payload["name"] for payload in roots] == ["seller_chat_turn"]
+    _assert_canaries_absent(
+        [
+            [_serialized_operation_content(operation) for operation in serialized_operations],
+            alternate_operations,
+        ]
+    )
 
 
 def test_seller_sse_is_identical_with_tracing_disabled(

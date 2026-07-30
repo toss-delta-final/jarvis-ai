@@ -523,6 +523,87 @@ async def test_terminal_error_commits_failure_before_consumer_closes_iterator() 
     assert not get_registry().is_active("member:terminal-error-close")
 
 
+async def test_closing_body_before_first_pull_cleans_prefetched_stream() -> None:
+    exporter = FakeTraceExporter()
+    obs = await _obs("close-before-first-pull", trace=_trace(exporter))
+    closed = asyncio.Event()
+
+    async def prefetched_then_idle():
+        try:
+            yield 'data: {"type":"meta","data":{"lane":"test"}}\n\n'
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+
+    key = "member:close-before-first-pull"
+    response = await open_stream(_FakeRequest(), key, prefetched_then_idle, observer=obs)
+    await response.body_iterator.aclose()
+    await asyncio.sleep(0)
+
+    assert closed.is_set()
+    assert not get_registry().is_active(key)
+    assert not [
+        task
+        for task in asyncio.all_tasks()
+        if not task.done() and task.get_coro().__qualname__ == "_IteratorPump._run"
+    ]
+    assert len(exporter.exported) == 1
+    (root, *_) = exporter.exported[0]
+    assert root.metadata["terminalReason"] == "client_disconnect"
+    turn = await obs.store.get_turn(obs.turn_id)
+    assert turn is not None and turn.status == TurnStatus.CANCELLED
+
+
+async def test_asgi_cancellation_after_headers_before_first_pull_cleans_stream() -> None:
+    exporter = FakeTraceExporter()
+    obs = await _obs("cancel-header-handoff", trace=_trace(exporter))
+    closed = asyncio.Event()
+    headers_sent = asyncio.Event()
+
+    async def prefetched_then_idle():
+        try:
+            yield 'data: {"type":"meta","data":{"lane":"test"}}\n\n'
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+
+    async def receive():
+        await asyncio.Event().wait()
+
+    async def send(message):
+        if message["type"] == "http.response.start":
+            headers_sent.set()
+            await asyncio.Event().wait()
+
+    key = "member:cancel-header-handoff"
+    response = await open_stream(_FakeRequest(), key, prefetched_then_idle, observer=obs)
+    response_task = asyncio.create_task(
+        response(
+            {"type": "http", "asgi": {"spec_version": "2.4"}},
+            receive,
+            send,
+        )
+    )
+    await headers_sent.wait()
+    response_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await response_task
+    await asyncio.sleep(0)
+
+    assert closed.is_set()
+    assert not get_registry().is_active(key)
+    assert not [
+        task
+        for task in asyncio.all_tasks()
+        if not task.done() and task.get_coro().__qualname__ == "_IteratorPump._run"
+    ]
+    assert len(exporter.exported) == 1
+    (root, *_) = exporter.exported[0]
+    assert root.metadata["terminalReason"] == "client_disconnect"
+    turn = await obs.store.get_turn(obs.turn_id)
+    assert turn is not None and turn.status == TurnStatus.CANCELLED
+
+
 def test_structured_log_has_fields_and_hides_raw_message(
     caplog: pytest.LogCaptureFixture, buyer_fakes
 ) -> None:

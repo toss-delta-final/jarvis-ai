@@ -20,6 +20,7 @@ from typing import Any
 
 from fastapi import HTTPException, Request, status
 from fastapi.responses import StreamingResponse
+from langsmith.run_helpers import tracing_context
 
 from app.core.auth import Identity
 from app.core.config import get_settings
@@ -191,38 +192,43 @@ class _IteratorPump:
         current_reply: asyncio.Future[object] | None = None
         context: Any = bind_request_trace(self._trace) if self._trace is not None else nullcontext()
         try:
-            with context:
-                while True:
-                    current_reply = await self._demands.get()
-                    try:
-                        item = await self._iterator.__anext__()
-                    except StopAsyncIteration:
-                        self._stopped = True
-                        current_reply.set_result(_PUMP_EOF)
-                        current_reply = None
-                        break
-                    except asyncio.CancelledError as exc:
-                        # A generator-raised cancellation is a stream outcome. A task
-                        # cancellation has a positive cancelling() count and must tear
-                        # down the producer immediately.
-                        if asyncio.current_task() and asyncio.current_task().cancelling():
-                            raise
-                        self._stopped = True
-                        current_reply.set_exception(exc)
-                        current_reply = None
-                        break
-                    except BaseException as exc:
-                        self._stopped = True
-                        current_reply.set_exception(exc)
-                        current_reply = None
-                        break
+            # LANGSMITH_TRACING is the application feature flag as well as an SDK
+            # auto-tracing flag. Disable the latter at the persistent producer task
+            # boundary so every seller LangGraph/LLM/tool child task inherits the
+            # suppression while our independent RequestTrace context stays active.
+            with tracing_context(enabled=False):
+                with context:
+                    while True:
+                        current_reply = await self._demands.get()
+                        try:
+                            item = await self._iterator.__anext__()
+                        except StopAsyncIteration:
+                            self._stopped = True
+                            current_reply.set_result(_PUMP_EOF)
+                            current_reply = None
+                            break
+                        except asyncio.CancelledError as exc:
+                            # A generator-raised cancellation is a stream outcome. A task
+                            # cancellation has a positive cancelling() count and must tear
+                            # down the producer immediately.
+                            if asyncio.current_task() and asyncio.current_task().cancelling():
+                                raise
+                            self._stopped = True
+                            current_reply.set_exception(exc)
+                            current_reply = None
+                            break
+                        except BaseException as exc:
+                            self._stopped = True
+                            current_reply.set_exception(exc)
+                            current_reply = None
+                            break
 
-                    current_reply.set_result(item)
-                    current_reply = None
-                    if _terminal_event_of(item)[0] is not None:
-                        self._stopped = True
-                        await self._terminal_ack.wait()
-                        break
+                        current_reply.set_result(item)
+                        current_reply = None
+                        if _terminal_event_of(item)[0] is not None:
+                            self._stopped = True
+                            await self._terminal_ack.wait()
+                            break
         finally:
             self._stopped = True
             if current_reply is not None and not current_reply.done():
@@ -233,6 +239,110 @@ class _IteratorPump:
                 raise
             except Exception:
                 logger.warning("stream iterator close failed code=STREAM_CLOSE_FAILED")
+
+
+class _ResponseLifecycle:
+    """Idempotent owner armed before a StreamingResponse leaves open_stream()."""
+
+    def __init__(
+        self,
+        *,
+        pump: _IteratorPump,
+        registry: ActiveStreamRegistry,
+        stream_key: str,
+        observer: RequestObservation | None,
+        loop: asyncio.AbstractEventLoop,
+        prefetched_terminal: bool,
+    ) -> None:
+        self._pump = pump
+        self._registry = registry
+        self._stream_key = stream_key
+        self._observer = observer
+        self._loop = loop
+        self._prefetched_terminal = prefetched_terminal
+        self._lock = asyncio.Lock()
+        self._finished = False
+
+    async def finish(
+        self,
+        *,
+        stream_status: TurnStatus,
+        error_type: str | None,
+        terminal_reason: str,
+        natural_stop: bool,
+        pending_reply: asyncio.Future[object] | None = None,
+    ) -> None:
+        async with self._lock:
+            if self._finished:
+                return
+            try:
+                if pending_reply is not None and not pending_reply.done():
+                    pending_reply.cancel()
+                if natural_stop or self._prefetched_terminal:
+                    self._pump.acknowledge_terminal()
+                if natural_stop or self._prefetched_terminal or self._pump.done():
+                    await self._pump.wait_closed()
+                else:
+                    await self._pump.cancel_and_wait()
+            finally:
+                self._registry.release(self._stream_key)
+                if self._observer is not None:
+                    await _safe_finish(
+                        self._observer,
+                        self._stream_key,
+                        self._loop.time(),
+                        stream_status,
+                        error_type,
+                        terminal_reason,
+                    )
+                self._finished = True
+
+    async def cancel_before_first_pull(self) -> None:
+        await self.finish(
+            stream_status=TurnStatus.CANCELLED,
+            error_type=None,
+            terminal_reason="client_disconnect",
+            natural_stop=False,
+        )
+
+
+class _ArmedBodyIterator:
+    """Async iterator whose close hook works even before its first __anext__."""
+
+    def __init__(self, iterator: AsyncIterator[str], lifecycle: _ResponseLifecycle) -> None:
+        self._iterator = iterator
+        self._lifecycle = lifecycle
+        self.started = False
+
+    def __aiter__(self) -> _ArmedBodyIterator:
+        return self
+
+    async def __anext__(self) -> str:
+        self.started = True
+        return await self._iterator.__anext__()
+
+    async def aclose(self) -> None:
+        if self.started:
+            await self._iterator.aclose()  # type: ignore[attr-defined]
+        else:
+            await self._lifecycle.cancel_before_first_pull()
+
+    async def cancel_before_first_pull(self) -> None:
+        if not self.started:
+            await self._lifecycle.cancel_before_first_pull()
+
+
+class _LifecycleStreamingResponse(StreamingResponse):
+    """StreamingResponse that owns cancellation in the header/body handoff."""
+
+    body_iterator: _ArmedBodyIterator
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        except BaseException:
+            await self.body_iterator.cancel_before_first_pull()
+            raise
 
 
 async def open_stream(
@@ -422,6 +532,18 @@ async def open_stream(
     if observer is not None and first is not None:
         observer.record_frame(first, loop.time())
 
+    first_terminal = first is None or (
+        first is not None and _terminal_event_of(first)[0] is not None
+    )
+    lifecycle = _ResponseLifecycle(
+        pump=pump,
+        registry=registry,
+        stream_key=stream_key,
+        observer=observer,
+        loop=loop,
+        prefetched_terminal=first_terminal,
+    )
+
     async def _wrapped() -> AsyncIterator[str]:
         # 다음 이벤트는 persistent producer에 하나씩 demand한다. outward yield 동안에는
         # outstanding demand가 없으므로 terminal 뒤 over-pull이나 eager prefetch가 없다.
@@ -520,31 +642,17 @@ async def open_stream(
         finally:
             # (b) 취소·상한·정상 종료 공통 정리: persistent producer가 내부 제너레이터를
             #     같은 task/context에서 close → 레지스트리 해제 → 대화 저장·로그 마감.
-            try:
-                if next_reply is not None and not next_reply.done():
-                    next_reply.cancel()
-                if natural_stop:
-                    pump.acknowledge_terminal()
-                if natural_stop or pump.done():
-                    await pump.wait_closed()
-                else:
-                    await pump.cancel_and_wait()
-            finally:
-                registry.release(stream_key)
-                if observer is not None:
-                    # 이 시점엔 이미 SSE 헤더/프레임이 클라이언트로 전송된 뒤다 —
-                    # cleanup/관측 실패가 stream outcome 을 바꾸지 않게 방어한다.
-                    await _safe_finish(
-                        observer,
-                        stream_key,
-                        loop.time(),
-                        stream_status,
-                        error_type,
-                        terminal_reason,
-                    )
+            await lifecycle.finish(
+                stream_status=stream_status,
+                error_type=error_type,
+                terminal_reason=terminal_reason,
+                natural_stop=natural_stop,
+                pending_reply=next_reply,
+            )
 
-    return StreamingResponse(
-        _wrapped(),
+    body = _ArmedBodyIterator(_wrapped(), lifecycle)
+    return _LifecycleStreamingResponse(
+        body,
         media_type="text/event-stream; charset=utf-8",
         headers=_SSE_HEADERS,
     )
