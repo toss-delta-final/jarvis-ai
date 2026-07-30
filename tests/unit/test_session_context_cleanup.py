@@ -828,6 +828,132 @@ async def test_sweep_spends_recovery_capacity_before_new_idle(monkeypatch, clock
     assert (await repo.get_context(untouched_session)).state == "active"
 
 
+async def test_sweep_applies_configured_bounded_concurrency_recovery_first(
+    monkeypatch,
+) -> None:
+    from app.core.config import get_settings
+    from app.core.session_lifecycle import FinalizationOutcome
+
+    def claim(name: str) -> FinalizationClaim:
+        return FinalizationClaim(
+            name,
+            "C-" + name,
+            "S-" + name,
+            "guest",
+            "G-" + name,
+            0,
+            "idle",
+            "token-" + name,
+            1_000.0,
+        )
+
+    recovery = [claim(f"r{i}") for i in range(3)]
+    fresh = [claim(f"f{i}") for i in range(3)]
+
+    class Repo:
+        def __init__(self) -> None:
+            self.recovery_sent = False
+            self.fresh_sent = False
+
+        async def claim_recoverable_finalizations(self, lease_s: float, batch_size: int):
+            if self.recovery_sent:
+                return []
+            self.recovery_sent = True
+            return recovery[:batch_size]
+
+        async def claim_expired_contexts(
+            self, idle_timeout_s: float, lease_s: float, batch_size: int
+        ):
+            if self.fresh_sent:
+                return []
+            self.fresh_sent = True
+            return fresh[:batch_size]
+
+        async def list_recoverable_profile_phases(self, batch_size: int):
+            return []
+
+    settings = get_settings().model_copy(update={"profile_idle_max_concurrency": 2})
+    monkeypatch.setattr("app.core.session_lifecycle.get_settings", lambda: settings)
+    coordinator = SessionLifecycleCoordinator(Repo(), ActiveStreamRegistry())
+    active = 0
+    peak = 0
+    started: list[str] = []
+    release = asyncio.Event()
+
+    async def process(candidate: FinalizationClaim):
+        nonlocal active, peak
+        started.append(candidate.finalization_id)
+        active += 1
+        peak = max(peak, active)
+        if active == 2:
+            release.set()
+        await release.wait()
+        await asyncio.sleep(0)
+        active -= 1
+        return FinalizationOutcome("completed")
+
+    monkeypatch.setattr(coordinator, "process_transient_claim", process)
+    result = await coordinator.run_session_context_sweep(
+        idle_timeout_s=600,
+        lease_s=30,
+        batch_size=4,
+    )
+
+    assert peak == 2
+    assert started[:3] == ["r0", "r1", "r2"]
+    assert started[3:] == ["f0"]
+    assert result.recovered == 3
+    assert result.claimed == 4
+    assert result.completed == 4
+
+
+async def test_sweep_isolates_one_claim_exception_without_cancelling_wave(monkeypatch) -> None:
+    from app.core.session_lifecycle import FinalizationOutcome
+
+    claims = [
+        FinalizationClaim(
+            name,
+            "C-" + name,
+            "S-" + name,
+            "guest",
+            "G-" + name,
+            0,
+            "idle",
+            "token-" + name,
+            1_000.0,
+        )
+        for name in ("bad", "good")
+    ]
+
+    class Repo:
+        sent = False
+
+        async def claim_recoverable_finalizations(self, lease_s: float, batch_size: int):
+            if self.sent:
+                return []
+            self.sent = True
+            return claims
+
+        async def claim_expired_contexts(self, *args):
+            return []
+
+        async def list_recoverable_profile_phases(self, batch_size: int):
+            return []
+
+    coordinator = SessionLifecycleCoordinator(Repo(), ActiveStreamRegistry())
+
+    async def process(candidate: FinalizationClaim):
+        if candidate.finalization_id == "bad":
+            raise RuntimeError("one claim failed")
+        return FinalizationOutcome("completed")
+
+    monkeypatch.setattr(coordinator, "process_transient_claim", process)
+    result = await coordinator.run_session_context_sweep(batch_size=2)
+    assert result.completed == 1
+    assert result.retryable == 1
+    assert result.claimed == 2
+
+
 async def test_invalid_recovery_row_does_not_consume_batch_capacity(monkeypatch) -> None:
     from app.core.session_context import FinalizationClaim
     from app.core.session_lifecycle import FinalizationOutcome

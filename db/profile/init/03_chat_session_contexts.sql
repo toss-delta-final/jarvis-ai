@@ -3,6 +3,8 @@ CREATE TABLE IF NOT EXISTS chat_session_contexts (
     session_id text NOT NULL UNIQUE,
     owner_type text NOT NULL CHECK (owner_type IN ('guest', 'member')),
     owner_id text NOT NULL,
+    authority_source text NOT NULL DEFAULT 'runtime'
+        CHECK (authority_source IN ('runtime', 'legacy_backfill')),
     generation bigint NOT NULL DEFAULT 0,
     state text NOT NULL CHECK (
         state IN ('active', 'idle_finalizing', 'idle_expired', 'terminal')
@@ -76,6 +78,8 @@ CREATE TABLE IF NOT EXISTS chat_session_migrations (
     cart_deleted bigint NOT NULL DEFAULT 0,
     revert_deleted bigint NOT NULL DEFAULT 0,
     gc_completed_at timestamptz,
+    profile_backfill_cursor text,
+    profile_backfill_pass bigint NOT NULL DEFAULT 0,
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -102,6 +106,61 @@ CREATE INDEX IF NOT EXISTS idx_chat_session_finalizations_lease
     WHERE status = 'processing';
 CREATE INDEX IF NOT EXISTS idx_chat_session_migration_conflicts_status
     ON chat_session_migration_conflicts (resolution_status, created_at);
+
+ALTER TABLE chat_session_contexts ADD COLUMN IF NOT EXISTS authority_source text;
+ALTER TABLE chat_session_migrations ADD COLUMN IF NOT EXISTS profile_backfill_cursor text;
+ALTER TABLE chat_session_migrations
+    ADD COLUMN IF NOT EXISTS profile_backfill_pass bigint NOT NULL DEFAULT 0;
+UPDATE chat_session_contexts c
+SET authority_source='runtime'
+WHERE authority_source IS NULL
+  AND (
+      EXISTS (SELECT 1 FROM chat_session_threads t WHERE t.context_id=c.context_id)
+      OR EXISTS (
+          SELECT 1 FROM chat_session_owner_claims h WHERE h.context_id=c.context_id
+      )
+  );
+UPDATE chat_session_contexts
+SET authority_source='legacy_backfill'
+WHERE authority_source IS NULL;
+ALTER TABLE chat_session_contexts
+    ALTER COLUMN authority_source SET DEFAULT 'runtime';
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema=current_schema()
+          AND table_name='chat_session_contexts'
+          AND column_name='authority_source'
+          AND is_nullable='YES'
+    ) THEN
+        ALTER TABLE chat_session_contexts
+            ALTER COLUMN authority_source SET NOT NULL;
+    END IF;
+END
+$$;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname='chat_session_contexts_authority_source_check'
+          AND conrelid='chat_session_contexts'::regclass
+    ) THEN
+        ALTER TABLE chat_session_contexts
+            ADD CONSTRAINT chat_session_contexts_authority_source_check
+            CHECK (authority_source IN ('runtime', 'legacy_backfill'));
+    END IF;
+END
+$$;
+
+DO $$
+BEGIN
+    IF to_regclass('profile_session_activity') IS NOT NULL THEN
+        CREATE INDEX IF NOT EXISTS idx_profile_session_activity_session_owner
+            ON profile_session_activity (session_id, user_id);
+    END IF;
+END
+$$;
 
 ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS context_id uuid;
 ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS session_id text;

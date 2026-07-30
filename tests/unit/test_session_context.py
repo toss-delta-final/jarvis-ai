@@ -396,3 +396,79 @@ async def test_initialize_timeout_uses_dev_fallback_with_warning(monkeypatch, ca
         await session_context.initialize()
     assert "session lifecycle" in caplog.text
     reset()
+
+
+async def test_initialize_session_lifecycle_does_not_mask_reachable_db_in_dev(
+    monkeypatch,
+) -> None:
+    from app.core import session_context
+
+    calls: list[str] = []
+
+    async def initialize() -> None:
+        calls.append("initialize")
+
+    reset()
+    monkeypatch.setattr(session_context, "initialize", initialize)
+    await session_context.initialize_session_lifecycle()
+    assert calls == ["initialize"]
+    reset()
+
+
+async def test_owned_pool_is_closed_and_reset_when_schema_initialization_fails(
+    monkeypatch,
+) -> None:
+    import psycopg_pool
+    from app.core import session_context
+
+    pools = []
+
+    class Pool:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.closed = False
+            pools.append(self)
+
+        async def open(self, **_kwargs) -> None:
+            return None
+
+        async def close(self) -> None:
+            self.closed = True
+
+    async def fail_initialize(self) -> None:
+        raise RuntimeError("schema failed")
+
+    reset()
+    monkeypatch.setattr(psycopg_pool, "AsyncConnectionPool", Pool)
+    monkeypatch.setattr(SessionContextRepository, "initialize", fail_initialize)
+    with pytest.raises(RuntimeError, match="schema failed"):
+        await session_context.initialize()
+
+    assert pools[0].closed is True
+    assert session_context._owned_pool is None
+    assert session_context._default_repository._pool is None
+    reset()
+
+
+async def test_close_session_lifecycle_closes_only_owned_pool(monkeypatch) -> None:
+    from app.core import session_context
+
+    class Pool:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        async def close(self) -> None:
+            self.close_calls += 1
+
+    owned = Pool()
+    injected = Pool()
+    session_context._owned_pool = owned
+    session_context._default_repository = SessionContextRepository(pool=owned)
+    await session_context.close_session_lifecycle()
+    await session_context.close_session_lifecycle()
+    assert owned.close_calls == 1
+    assert session_context._default_repository._pool is None
+
+    session_context.set_pool(injected)
+    await session_context.close_session_lifecycle()
+    assert injected.close_calls == 0
+    reset()

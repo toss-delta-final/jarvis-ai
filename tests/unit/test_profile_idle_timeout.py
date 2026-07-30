@@ -12,7 +12,11 @@ from app.agents.profile.store import get_profile_store
 from app.core import session_context
 from app.core.config import get_settings
 from app.core.conversation import conversation_key
-from app.core.session_context import BuyerSessionInput, SessionContextRepository
+from app.core.session_context import (
+    BuyerSessionInput,
+    ProfileRecoveryCandidate,
+    SessionContextRepository,
+)
 from app.core.session_lifecycle import SessionLifecycleCoordinator
 from app.core.stream import ActiveStreamRegistry
 
@@ -48,6 +52,40 @@ class _Clock:
 
     def advance(self, seconds: float) -> None:
         self.now += seconds
+
+
+async def test_profile_recovery_respects_configured_concurrency(monkeypatch) -> None:
+    candidates = [
+        ProfileRecoveryCandidate(f"f{i}", f"c{i}", f"s{i}", str(i), 0, 0) for i in range(4)
+    ]
+
+    class Repo:
+        async def list_recoverable_profile_phases(self, batch_size: int):
+            return candidates[:batch_size]
+
+    settings = get_settings().model_copy(update={"profile_idle_max_concurrency": 2})
+    monkeypatch.setattr(finalizer, "get_settings", lambda: settings)
+    active = 0
+    peak = 0
+    two_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def process(candidate, repository, current_settings):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        if active == 2:
+            two_started.set()
+        await release.wait()
+        active -= 1
+        return None
+
+    monkeypatch.setattr(finalizer, "_process_profile_candidate", process)
+    task = asyncio.create_task(finalizer._process_recoverable_profile_phases(Repo(), 4))
+    await asyncio.wait_for(two_started.wait(), timeout=0.1)
+    release.set()
+    await task
+    assert peak == 2
 
 
 async def _complete_idle_transient(
@@ -272,8 +310,7 @@ async def test_profile_record_failure_is_recovered_after_processing_lease(
         return await original_record(*args, **kwargs)
 
     monkeypatch.setattr(repo, "record_claimed_profile_phase", _fail_once)
-    with pytest.raises(RuntimeError, match="record unavailable"):
-        await finalizer.process_recoverable_profile_phases(1)
+    assert await finalizer.process_recoverable_profile_phases(1) == []
     [processing] = repo._finalizations.values()
     assert processing.profile_status == "processing"
 

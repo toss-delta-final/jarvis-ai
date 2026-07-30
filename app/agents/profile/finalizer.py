@@ -195,14 +195,24 @@ async def _process_recoverable_profile_phases(
     """주입된 lifecycle repository에서 public recovery와 같은 순서를 실행한다."""
     settings = get_settings()
     candidates = await repository.list_recoverable_profile_phases(batch_size)
-    results: list[ProfilePhaseResult] = []
+    semaphore = asyncio.Semaphore(settings.profile_idle_max_concurrency)
 
-    for candidate in candidates:
-        result = await _process_profile_candidate(candidate, repository, settings)
-        if result is not None:
-            results.append(result)
+    async def process(candidate: ProfileRecoveryCandidate) -> ProfilePhaseResult | None:
+        async with semaphore:
+            try:
+                return await _process_profile_candidate(candidate, repository, settings)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning(
+                    "profile recovery candidate 실패 finalization_id=%s",
+                    candidate.finalization_id,
+                    exc_info=True,
+                )
+                return None
 
-    return results
+    results = await asyncio.gather(*(process(candidate) for candidate in candidates))
+    return [result for result in results if result is not None]
 
 
 async def _process_profile_candidate(

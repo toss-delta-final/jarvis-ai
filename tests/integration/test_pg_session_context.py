@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from contextlib import asynccontextmanager
 
 import pytest
 from langgraph.store.postgres.aio import AsyncPostgresStore
@@ -237,7 +238,8 @@ async def test_legacy_backfill_maps_states_and_quarantines_ambiguous_owners(pg_r
                 ),
             )
     try:
-        await repo.backfill_legacy_activity()
+        restarted_repo = SessionContextRepository(pool=pool)
+        await restarted_repo.backfill_legacy_activity()
         await repo.backfill_legacy_activity()
         async with pool.connection() as conn:
             contexts = await (
@@ -301,6 +303,179 @@ async def test_legacy_backfill_maps_states_and_quarantines_ambiguous_owners(pg_r
             )
 
 
+async def test_backfill_provenance_quarantines_late_owner_including_original(pg_repo) -> None:
+    repo, pool, prefix = pg_repo
+    session_id = prefix + "-late-owner"
+    async with pool.connection() as conn:
+        await conn.execute(
+            "DELETE FROM chat_session_migrations WHERE migration_name='issue-187-session-context'"
+        )
+        await conn.execute(
+            "INSERT INTO profile_session_activity "
+            "(user_id, session_id, status) VALUES (8101, %s, 'active')",
+            (session_id,),
+        )
+    try:
+        await repo.backfill_legacy_activity()
+        async with pool.connection() as conn:
+            first = await (
+                await conn.execute(
+                    "SELECT owner_id, authority_source FROM chat_session_contexts "
+                    "WHERE session_id=%s",
+                    (session_id,),
+                )
+            ).fetchone()
+            await conn.execute(
+                "INSERT INTO profile_session_activity "
+                "(user_id, session_id, status) VALUES (8102, %s, 'active')",
+                (session_id,),
+            )
+        assert first == ("8101", "legacy_backfill")
+
+        await repo.backfill_legacy_activity()
+
+        async with pool.connection() as conn:
+            context = await (
+                await conn.execute(
+                    "SELECT 1 FROM chat_session_contexts WHERE session_id=%s",
+                    (session_id,),
+                )
+            ).fetchone()
+            owners = await (
+                await conn.execute(
+                    "SELECT owner_id FROM chat_session_migration_conflicts "
+                    "WHERE session_id=%s ORDER BY owner_id",
+                    (session_id,),
+                )
+            ).fetchall()
+        assert context is None
+        assert owners == [("8101",), ("8102",)]
+    finally:
+        async with pool.connection() as conn:
+            await conn.execute(
+                "DELETE FROM profile_session_activity WHERE session_id=%s", (session_id,)
+            )
+            await conn.execute(
+                "DELETE FROM chat_session_migration_conflicts WHERE session_id=%s",
+                (session_id,),
+            )
+
+
+async def test_signed_touch_resolves_owner_and_gc_preserves_authoritative_buffer(
+    pg_repo, monkeypatch
+) -> None:
+    repo, pool, prefix = pg_repo
+    session_id = prefix + "-signed-release"
+    key_a, key_b = f"8201:{session_id}", f"8202:{session_id}"
+    monkeypatch.setattr(session_context_module, "_default_repository", repo)
+    async with pool.connection() as conn:
+        await conn.execute(
+            "DELETE FROM chat_session_migrations WHERE migration_name='issue-187-session-context'"
+        )
+        async with conn.cursor() as cursor:
+            await cursor.executemany(
+                "INSERT INTO profile_session_activity "
+                "(user_id, session_id, status) VALUES (%s, %s, 'active')",
+                ((8201, session_id), (8202, session_id)),
+            )
+    await repo.backfill_legacy_activity()
+    context = await repo.touch(BuyerSessionInput(session_id, "T1", "member", "8201"))
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_migrations SET grace_deadline=now()-interval '1 second', "
+            "gc_completed_at=NULL WHERE migration_name='issue-187-session-context'"
+        )
+    async with AsyncPostgresStore.from_conn_string(get_settings().profile_db_url) as store:
+        await store.setup()
+        pg_store_module.set_store(store)
+        try:
+            await store.aput(("session_ctx", key_a), "buffer", {"owner": "A"})
+            await store.aput(("session_ctx", key_b), "buffer", {"owner": "B"})
+            for _ in range(10):
+                await buyer_session_state.run_legacy_gc_batch()
+            assert await store.aget(("session_ctx", key_a), "buffer") is not None
+            assert await store.aget(("session_ctx", key_b), "buffer") is None
+        finally:
+            await store.adelete(("session_ctx", key_a), "buffer")
+            await store.adelete(("session_ctx", key_b), "buffer")
+            pg_store_module.reset_store()
+    async with pool.connection() as conn:
+        rows = await (
+            await conn.execute(
+                "SELECT owner_id, resolution_status, resolved_context_id "
+                "FROM chat_session_migration_conflicts WHERE session_id=%s ORDER BY owner_id",
+                (session_id,),
+            )
+        ).fetchall()
+        await conn.execute(
+            "DELETE FROM chat_session_migration_conflicts WHERE session_id=%s", (session_id,)
+        )
+    assert rows == [
+        ("8201", "resolved", uuid.UUID(context.context_id)),
+        ("8202", "discarded", None),
+    ]
+
+
+async def test_backfill_cursor_reconciles_late_lower_key_and_index_exists(pg_repo) -> None:
+    repo, pool, prefix = pg_repo
+    low, high = prefix + "-a-low", prefix + "-z-high"
+    async with pool.connection() as conn:
+        await conn.execute(
+            "DELETE FROM chat_session_migrations WHERE migration_name='issue-187-session-context'"
+        )
+        await conn.execute(
+            "INSERT INTO profile_session_activity "
+            "(user_id, session_id, status) VALUES (8302, %s, 'active')",
+            (high,),
+        )
+    try:
+        await repo.backfill_legacy_activity()
+        async with pool.connection() as conn:
+            await conn.execute(
+                "INSERT INTO profile_session_activity "
+                "(user_id, session_id, status) VALUES (8301, %s, 'active')",
+                (low,),
+            )
+            await conn.execute(
+                "UPDATE chat_session_migrations "
+                "SET profile_backfill_cursor=%s, profile_backfill_completed_at=NULL "
+                "WHERE migration_name='issue-187-session-context'",
+                (high,),
+            )
+        restarted_repo = SessionContextRepository(pool=pool)
+        await restarted_repo.backfill_legacy_activity()
+        async with pool.connection() as conn:
+            contexts = await (
+                await conn.execute(
+                    "SELECT session_id FROM chat_session_contexts "
+                    "WHERE session_id = ANY(%s) ORDER BY session_id",
+                    ([low, high],),
+                )
+            ).fetchall()
+            migration = await (
+                await conn.execute(
+                    "SELECT profile_backfill_cursor, profile_backfill_pass "
+                    "FROM chat_session_migrations "
+                    "WHERE migration_name='issue-187-session-context'"
+                )
+            ).fetchone()
+            index = await (
+                await conn.execute(
+                    "SELECT 1 FROM pg_indexes "
+                    "WHERE indexname='idx_profile_session_activity_session_owner'"
+                )
+            ).fetchone()
+        assert contexts == [(low,), (high,)]
+        assert migration[0] is None and migration[1] >= 1
+        assert index == (1,)
+    finally:
+        async with pool.connection() as conn:
+            await conn.execute(
+                "DELETE FROM profile_session_activity WHERE session_id = ANY(%s)",
+                ([low, high],),
+            )
+
+
 async def test_legacy_gc_restarts_from_first_page_and_preserves_v2(pg_repo, monkeypatch) -> None:
     repo, pool, prefix = pg_repo
     owner_id = str(uuid.uuid4().int % 1_000_000_000 + 1_000_000_000)
@@ -347,6 +522,12 @@ async def test_legacy_gc_restarts_from_first_page_and_preserves_v2(pg_repo, monk
             VALUES (%s, %s, 'active', now()-interval '2 days')
             """,
             (session_id, owner_id),
+        )
+    await repo.backfill_legacy_activity()
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_migrations SET grace_deadline=now()-interval '1 day', "
+            "gc_completed_at=NULL WHERE migration_name='issue-187-session-context'"
         )
     async with AsyncPostgresStore.from_conn_string(get_settings().profile_db_url) as store:
         await store.setup()
@@ -428,6 +609,198 @@ async def test_legacy_gc_restarts_from_first_page_and_preserves_v2(pg_repo, monk
             "DELETE FROM chat_session_migration_conflicts WHERE session_id=%s",
             (session_id,),
         )
+
+
+async def test_signed_touch_resolves_quarantine_before_gc_discards_other_owner(
+    pg_repo, monkeypatch
+) -> None:
+    repo, pool, prefix = pg_repo
+    session_id = prefix + "-late-owner"
+    owner = str(uuid.uuid4().int % 1_000_000_000 + 1_000_000_000)
+    other = str(int(owner) + 1)
+    settings = get_settings().model_copy(update={"session_lifecycle_gc_batch_size": 10})
+    monkeypatch.setattr(session_context_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(session_context_module, "_default_repository", repo)
+    async with pool.connection() as conn:
+        await conn.execute(
+            """
+            INSERT INTO chat_session_migrations
+                (migration_name, rollout_started_at, grace_deadline,
+                 profile_backfill_completed_at)
+            VALUES ('issue-187-session-context', now()-interval '2 days',
+                    now()-interval '1 day', now()-interval '1 day')
+            ON CONFLICT (migration_name) DO UPDATE
+            SET grace_deadline=EXCLUDED.grace_deadline,
+                profile_backfill_completed_at=EXCLUDED.profile_backfill_completed_at,
+                gc_completed_at=NULL
+            """
+        )
+        async with conn.cursor() as cursor:
+            await cursor.executemany(
+                """
+                INSERT INTO chat_session_migration_conflicts
+                    (session_id, owner_id, legacy_status, legacy_last_activity_at)
+                VALUES (%s, %s, 'active', now()-interval '2 days')
+                """,
+                ((session_id, owner), (session_id, other)),
+            )
+    async with AsyncPostgresStore.from_conn_string(get_settings().profile_db_url) as store:
+        await store.setup()
+        pg_store_module.set_store(store)
+        owner_key = f"{owner}:{session_id}"
+        other_key = f"{other}:{session_id}"
+        try:
+            await store.aput(("session_ctx", owner_key), "buffer", {"items": [[1, "keep"]]})
+            await store.aput(("session_ctx", other_key), "buffer", {"items": [[1, "drop"]]})
+
+            context = await repo.touch(
+                BuyerSessionInput(session_id, "signed-thread", "member", owner)
+            )
+            await buyer_session_state.run_legacy_gc_batch()
+
+            async with pool.connection() as conn:
+                conflicts = await (
+                    await conn.execute(
+                        "SELECT owner_id, resolution_status, resolved_context_id "
+                        "FROM chat_session_migration_conflicts WHERE session_id=%s "
+                        "ORDER BY owner_id",
+                        (session_id,),
+                    )
+                ).fetchall()
+            assert conflicts == [
+                (owner, "resolved", uuid.UUID(context.context_id)),
+                (other, "discarded", None),
+            ]
+            assert await store.aget(("session_ctx", owner_key), "buffer") is not None
+            assert await store.aget(("session_ctx", other_key), "buffer") is None
+            assert (await repo.get_context(session_id)).owner_id == owner
+        finally:
+            await store.adelete(("session_ctx", owner_key), "buffer")
+            await store.adelete(("session_ctx", other_key), "buffer")
+            pg_store_module.reset_store()
+    async with pool.connection() as conn:
+        await conn.execute(
+            "DELETE FROM chat_session_migration_conflicts WHERE session_id=%s",
+            (session_id,),
+        )
+
+
+async def test_gc_rechecks_quarantine_after_late_authoritative_touch(pg_repo, monkeypatch) -> None:
+    repo, pool, prefix = pg_repo
+    session_id = prefix + "-gc-touch-race"
+    owner = str(uuid.uuid4().int % 1_000_000_000 + 1_000_000_000)
+    settings = get_settings().model_copy(update={"session_lifecycle_gc_batch_size": 10})
+    monkeypatch.setattr(session_context_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(session_context_module, "_default_repository", repo)
+    async with pool.connection() as conn:
+        await conn.execute(
+            """
+            INSERT INTO chat_session_migrations
+                (migration_name, rollout_started_at, grace_deadline,
+                 profile_backfill_completed_at)
+            VALUES ('issue-187-session-context', now()-interval '2 days',
+                    now()-interval '1 day', now()-interval '1 day')
+            ON CONFLICT (migration_name) DO UPDATE
+            SET grace_deadline=EXCLUDED.grace_deadline,
+                profile_backfill_completed_at=EXCLUDED.profile_backfill_completed_at,
+                gc_completed_at=NULL
+            """
+        )
+        await conn.execute(
+            """
+            INSERT INTO chat_session_migration_conflicts
+                (session_id, owner_id, legacy_status, legacy_last_activity_at)
+            VALUES (%s, %s, 'active', now()-interval '2 days')
+            """,
+            (session_id, owner),
+        )
+
+    selected = asyncio.Event()
+    resume_gc = asyncio.Event()
+    original_lock_session = repo.lock_session
+
+    @asynccontextmanager
+    async def paused_lock_session(locked_session_id: str):
+        selected.set()
+        await resume_gc.wait()
+        async with original_lock_session(locked_session_id) as uow:
+            yield uow
+
+    monkeypatch.setattr(repo, "lock_session", paused_lock_session)
+    async with AsyncPostgresStore.from_conn_string(get_settings().profile_db_url) as store:
+        await store.setup()
+        pg_store_module.set_store(store)
+        key = f"{owner}:{session_id}"
+        try:
+            await store.aput(("session_ctx", key), "buffer", {"items": [[1, "keep"]]})
+            gc_task = asyncio.create_task(buyer_session_state.run_legacy_gc_batch())
+            await asyncio.wait_for(selected.wait(), timeout=2)
+
+            context = await repo.touch(
+                BuyerSessionInput(session_id, "signed-thread", "member", owner)
+            )
+            resume_gc.set()
+            await asyncio.wait_for(gc_task, timeout=2)
+
+            async with pool.connection() as conn:
+                conflict = await (
+                    await conn.execute(
+                        "SELECT resolution_status, resolved_context_id "
+                        "FROM chat_session_migration_conflicts "
+                        "WHERE session_id=%s AND owner_id=%s",
+                        (session_id, owner),
+                    )
+                ).fetchone()
+            assert conflict == ("resolved", uuid.UUID(context.context_id))
+            assert await store.aget(("session_ctx", key), "buffer") is not None
+        finally:
+            resume_gc.set()
+            if "gc_task" in locals() and not gc_task.done():
+                gc_task.cancel()
+                await asyncio.gather(gc_task, return_exceptions=True)
+            await store.adelete(("session_ctx", key), "buffer")
+            pg_store_module.reset_store()
+    async with pool.connection() as conn:
+        await conn.execute(
+            "DELETE FROM chat_session_migration_conflicts WHERE session_id=%s",
+            (session_id,),
+        )
+
+
+async def test_member_claim_resolves_matching_quarantined_owner(pg_repo) -> None:
+    repo, pool, prefix = pg_repo
+    session_id = prefix + "-claim-release"
+    member_id = uuid.uuid4().int % 1_000_000_000 + 1_000_000_000
+    guest_id = "guest-before-claim"
+    await repo.touch(BuyerSessionInput(session_id, "guest-thread", "guest", guest_id))
+    async with pool.connection() as conn:
+        await conn.execute(
+            """
+            INSERT INTO chat_session_migration_conflicts
+                (session_id, owner_id, legacy_status, legacy_last_activity_at)
+            VALUES (%s, %s, 'active', now()-interval '2 days')
+            """,
+            (session_id, str(member_id)),
+        )
+    try:
+        outcome = await repo.claim_owner(session_id, guest_id, member_id)
+        async with pool.connection() as conn:
+            conflict = await (
+                await conn.execute(
+                    "SELECT resolution_status, resolved_context_id "
+                    "FROM chat_session_migration_conflicts "
+                    "WHERE session_id=%s AND owner_id=%s",
+                    (session_id, str(member_id)),
+                )
+            ).fetchone()
+        assert outcome.claimed is True
+        assert conflict == ("resolved", uuid.UUID(outcome.context.context_id))
+    finally:
+        async with pool.connection() as conn:
+            await conn.execute(
+                "DELETE FROM chat_session_migration_conflicts WHERE session_id=%s",
+                (session_id,),
+            )
 
 
 async def test_brand_new_database_init_order_creates_lifecycle_schema() -> None:
@@ -513,7 +886,11 @@ async def test_touch_preserves_completed_idle_profile_candidate(pg_repo) -> None
             "WHERE context_id=%s",
             (context.context_id,),
         )
-    [claim] = await repo.claim_expired_contexts(10, 30, 10)
+    claim = next(
+        item
+        for item in await repo.claim_expired_contexts(10, 30, 10)
+        if item.session_id == session_id
+    )
     async with repo.lock_session(session_id) as uow:
         await uow.prepare_idle_finalizing(claim)
         pending = await (
@@ -1194,7 +1571,11 @@ async def test_cleanup_crash_keeps_gate_and_public_sweep_recovers(pg_repo, monke
             "WHERE context_id=%s",
             (context.context_id,),
         )
-    [claim] = await repo.claim_expired_contexts(10, 30, 10)
+    claim = next(
+        item
+        for item in await repo.claim_expired_contexts(10, 30, 1000)
+        if item.session_id == session_id
+    )
     calls = 0
 
     async def crashing_clear(context_id: str, thread_ids: list[str]):

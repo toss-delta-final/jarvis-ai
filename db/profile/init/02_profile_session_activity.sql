@@ -19,3 +19,5 @@ CREATE TABLE IF NOT EXISTS profile_session_activity (
 
 CREATE INDEX IF NOT EXISTS idx_profile_session_activity_due
     ON profile_session_activity (status, last_activity_at, user_id, session_id);
+CREATE INDEX IF NOT EXISTS idx_profile_session_activity_session_owner
+    ON profile_session_activity (session_id, user_id);

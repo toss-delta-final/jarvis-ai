@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from weakref import WeakValueDictionary
 
 from app.agents.buyer.cart import state as cart_state
@@ -456,16 +455,17 @@ async def run_legacy_gc_batch() -> int:
         migration = await (
             await conn.execute(
                 """
-                SELECT grace_deadline, gc_completed_at, profile_backfill_completed_at
+                SELECT gc_completed_at, profile_backfill_completed_at,
+                       grace_deadline <= now() AS grace_elapsed
                 FROM chat_session_migrations
                 WHERE migration_name=%s
                 """,
                 (migration_name,),
             )
         ).fetchone()
-    if migration is None or migration[2] is None or migration[0] > datetime.now(UTC):
+    if migration is None or migration[1] is None or not migration[2]:
         return 0
-    if migration[1] is not None:
+    if migration[0] is not None:
         return 0
 
     store = await pg_store.get_store()
@@ -513,34 +513,69 @@ async def run_legacy_gc_batch() -> int:
             )
         ).fetchall()
     for conflict_id, session_id, owner_id in conflicts:
-        key = f"{owner_id}:{session_id}"
-        await _delete(store, "session_ctx", key, "buffer")
-        async with repo._pool.connection() as conn:
-            async with conn.transaction():
-                await conn.execute(
-                    "DELETE FROM profile_session_activity WHERE user_id=%s AND session_id=%s",
-                    (int(owner_id), session_id),
+        async with repo.lock_session(session_id) as uow:
+            conflict = await (
+                await uow.conn.execute(
+                    "SELECT resolution_status FROM chat_session_migration_conflicts "
+                    "WHERE conflict_id=%s FOR UPDATE",
+                    (conflict_id,),
                 )
-                await conn.execute(
+            ).fetchone()
+            if conflict is None or conflict[0] != "quarantined":
+                continue
+            context = await (
+                await uow.conn.execute(
+                    "SELECT context_id, owner_type, owner_id "
+                    "FROM chat_session_contexts WHERE session_id=%s FOR UPDATE",
+                    (session_id,),
+                )
+            ).fetchone()
+            if context is not None and context[1] == "member" and str(context[2]) == str(owner_id):
+                await uow.conn.execute(
                     """
                     UPDATE chat_session_migration_conflicts
-                    SET resolution_status='discarded',
-                        profile_buffer_discarded_at=COALESCE(
-                            profile_buffer_discarded_at, now()
-                        ),
+                    SET resolution_status='resolved', resolved_context_id=%s,
                         updated_at=now()
                     WHERE conflict_id=%s AND resolution_status='quarantined'
                     """,
-                    (conflict_id,),
+                    (context[0], conflict_id),
                 )
-        deleted_total += 1
+                continue
+            key = f"{owner_id}:{session_id}"
+            await _delete(store, "session_ctx", key, "buffer")
+            await uow.conn.execute(
+                "DELETE FROM profile_session_activity WHERE user_id=%s AND session_id=%s",
+                (int(owner_id), session_id),
+            )
+            await uow.conn.execute(
+                """
+                UPDATE chat_session_migration_conflicts
+                SET resolution_status='discarded',
+                    profile_buffer_discarded_at=COALESCE(
+                        profile_buffer_discarded_at, now()
+                    ),
+                    updated_at=now()
+                WHERE conflict_id=%s AND resolution_status='quarantined'
+                """,
+                (conflict_id,),
+            )
+            deleted_total += 1
     async with repo._pool.connection() as conn:
         deleted_activity = await (
             await conn.execute(
                 """
                 WITH page AS (
-                    SELECT ctid
-                    FROM profile_session_activity
+                    SELECT a.ctid
+                    FROM profile_session_activity a
+                    WHERE EXISTS (
+                        SELECT 1 FROM chat_session_contexts c
+                        WHERE c.session_id=a.session_id
+                    )
+                       OR EXISTS (
+                        SELECT 1 FROM chat_session_migration_conflicts q
+                        WHERE q.session_id=a.session_id
+                          AND q.owner_id=a.user_id::text
+                    )
                     ORDER BY user_id, session_id
                     LIMIT %s
                 )
@@ -573,3 +608,22 @@ async def run_legacy_gc_batch() -> int:
                 (migration_name,),
             )
     return deleted_total
+
+
+async def get_legacy_gc_counters() -> tuple[int, int, int]:
+    """Return durable legacy-root deletion counters without exposing raw identifiers."""
+    repo = session_context._default_repository
+    if repo._pool is None:
+        return (0, 0, 0)
+    async with repo._pool.connection() as conn:
+        row = await (
+            await conn.execute(
+                """
+                SELECT filters_deleted, cart_deleted, revert_deleted
+                FROM chat_session_migrations
+                WHERE migration_name=%s
+                """,
+                ("issue-187-session-context",),
+            )
+        ).fetchone()
+    return tuple(int(value) for value in row) if row is not None else (0, 0, 0)

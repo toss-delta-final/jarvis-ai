@@ -114,6 +114,7 @@ class SessionLifecycleCoordinator:
                     and context.owner_id == target
                 ):
                     outcome = ClaimOutcome(context, False)
+                    await repository._resolve_authoritative_conflict(uow.conn, context)
                     outcome_name = "duplicate"
                 else:
                     if context is not None and context.state == "idle_finalizing":
@@ -399,6 +400,23 @@ class SessionLifecycleCoordinator:
         examined_limit = max_examined if max_examined is not None else capacity * 4
         if examined_limit <= 0:
             raise ValueError("max_examined must be positive")
+        semaphore = asyncio.Semaphore(settings.profile_idle_max_concurrency)
+
+        async def process_claim(
+            claim: FinalizationClaim,
+        ) -> FinalizationOutcome:
+            async with semaphore:
+                try:
+                    return await self.process_transient_claim(claim)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.warning(
+                        "session lifecycle claim 처리 실패 finalization_id=%s",
+                        claim.finalization_id,
+                        exc_info=True,
+                    )
+                    return FinalizationOutcome("retryable")
 
         outcomes: list[tuple[FinalizationClaim, FinalizationOutcome]] = []
         recovered_ids: set[str] = set()
@@ -416,17 +434,14 @@ class SessionLifecycleCoordinator:
             if not recovery:
                 break
             attempted_recovery_ids.update(claim.finalization_id for claim in recovery)
-            for claim in recovery:
-                if examined == examined_limit:
-                    break
-                examined += 1
-                outcome = await self.process_transient_claim(claim)
+            recovery = recovery[: min(capacity - productive, examined_limit - examined)]
+            examined += len(recovery)
+            wave = await asyncio.gather(*(process_claim(claim) for claim in recovery))
+            for claim, outcome in zip(recovery, wave, strict=True):
                 outcomes.append((claim, outcome))
                 if outcome.skip_reason not in ("superseded", "invalid"):
                     recovered_ids.add(claim.finalization_id)
                     productive += 1
-                    if productive == capacity:
-                        break
 
         attempted_fresh_ids: set[str] = set()
         while productive < capacity and examined < examined_limit:
@@ -439,16 +454,13 @@ class SessionLifecycleCoordinator:
             if not fresh:
                 break
             attempted_fresh_ids.update(claim.finalization_id for claim in fresh)
-            for claim in fresh:
-                if examined == examined_limit:
-                    break
-                examined += 1
-                outcome = await self.process_transient_claim(claim)
+            fresh = fresh[: min(capacity - productive, examined_limit - examined)]
+            examined += len(fresh)
+            wave = await asyncio.gather(*(process_claim(claim) for claim in fresh))
+            for claim, outcome in zip(fresh, wave, strict=True):
                 outcomes.append((claim, outcome))
                 if outcome.skip_reason not in ("superseded", "invalid"):
                     productive += 1
-                    if productive == capacity:
-                        break
 
         completed = sum(outcome.status == "completed" for _, outcome in outcomes)
         retryable = sum(outcome.status == "retryable" for _, outcome in outcomes)

@@ -106,7 +106,12 @@ def client(dev_settings: Settings, monkeypatch: pytest.MonkeyPatch) -> TestClien
     tests/unit/test_scheduler.py·test_main_lifespan.py 소관(PR #42 리뷰).
     """
     import app.main as main_mod
+    from app.core import session_context
 
+    async def initialize_test_lifecycle() -> None:
+        session_context.reset()
+
+    monkeypatch.setattr(main_mod, "initialize_session_lifecycle", initialize_test_lifecycle)
     monkeypatch.setattr(main_mod, "start_scheduler", lambda: None)
     monkeypatch.setattr(main_mod, "stop_scheduler", lambda: None)
     with TestClient(app) as test_client:

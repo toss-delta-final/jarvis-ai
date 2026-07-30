@@ -376,8 +376,8 @@ class Settings(BaseSettings):
             raise ValueError("PROFILE_IDLE_SWEEP_BATCH_SIZE must be positive")
         if self.profile_idle_max_concurrency <= 0:
             raise ValueError("PROFILE_IDLE_MAX_CONCURRENCY must be positive")
-        if self.session_lifecycle_legacy_grace_s <= 0:
-            raise ValueError("SESSION_LIFECYCLE_LEGACY_GRACE_S must be positive")
+        if self.session_lifecycle_legacy_grace_s < 86400:
+            raise ValueError("SESSION_LIFECYCLE_LEGACY_GRACE_S must be at least 86400")
         if self.session_lifecycle_gc_batch_size <= 0:
             raise ValueError("SESSION_LIFECYCLE_GC_BATCH_SIZE must be positive")
         idle_batch_waves = (

@@ -1,10 +1,10 @@
-"""I-17 증분 pull + 프로필 inactivity 스케줄러 (이슈 #31/#79).
+"""I-17 증분 pull + session lifecycle migration/sweep 스케줄러.
 
-APScheduler AsyncIOScheduler는 FastAPI lifespan의 event loop에 결합한다. async 프로필 idle
-job은 loop-bound pg-profile pool과 활성 스트림 registry를 같은 loop에서 안전하게 사용한다.
+APScheduler AsyncIOScheduler는 FastAPI lifespan의 event loop에 결합한다. lifecycle sweep은
+loop-bound pg-profile authority와 legacy GC를 같은 loop에서 안전하게 사용한다.
 동기 I-17 job은 기본 executor에서 실행되고 내부 ``asyncio.run()``으로 독립 배치를 완결한다.
 
-전체 구축(backfill)은 여기서 다루지 않는다 — 사람이 CLI로 명시 트리거한다(run_batch.py, 이슈 #31).
+Session backfill은 lifespan 초기화가 scheduler 시작 전에 완료한다.
 
 [MVP 단일 인스턴스 전제, PR #42 리뷰] AsyncIOScheduler는 프로세스 로컬 스케줄러라 분산
 락·리더 선출이 없다 — 다중 인스턴스(uvicorn --workers, k8s replica 등)로 배포하면 인스턴스마다
@@ -22,7 +22,7 @@ import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
-from app.agents.buyer.session_state import run_legacy_gc_batch
+from app.agents.buyer.session_state import get_legacy_gc_counters, run_legacy_gc_batch
 from app.core.config import get_settings
 from app.core.session_lifecycle import (
     run_session_context_sweep as run_configured_session_context_sweep,
@@ -60,8 +60,23 @@ def _run_incremental_batch() -> None:
 async def run_session_context_sweep() -> None:
     """Run the sole lifecycle authority sweep plus one restart-safe legacy GC batch."""
     try:
-        await run_configured_session_context_sweep()
-        await run_legacy_gc_batch()
+        result = await run_configured_session_context_sweep()
+        gc_deleted = await run_legacy_gc_batch()
+        filters_deleted, cart_deleted, revert_deleted = await get_legacy_gc_counters()
+        _log.info(
+            "session context sweep 완료 examined=%d completed=%d retryable=%d "
+            "skipped=%d recovered=%d gc_deleted=%d filters_deleted=%d "
+            "cart_deleted=%d revert_deleted=%d",
+            result.examined,
+            result.completed,
+            result.retryable,
+            result.skipped,
+            result.recovered,
+            gc_deleted,
+            filters_deleted,
+            cart_deleted,
+            revert_deleted,
+        )
     except asyncio.CancelledError:
         raise
     except Exception:  # noqa: BLE001 - job 실패 격리, activity lease가 다음 sweep 복구
@@ -71,7 +86,7 @@ async def run_session_context_sweep() -> None:
 def start_scheduler() -> AsyncIOScheduler:
     """스케줄러를 시작하고 인스턴스를 반환한다 (멱등 — 이미 떠 있으면 그대로 반환).
 
-    프로필 idle job은 provider 키와 무관하게 항상 등록한다. GOOGLE_API_KEY가 없으면 I-17
+    lifecycle sweep은 provider 키와 무관하게 항상 등록한다. GOOGLE_API_KEY가 없으면 I-17
     job만 생략한다. 호출은 FastAPI lifespan 등 실행 중인 event loop 안에서 해야 한다.
     """
     global _scheduler
@@ -98,7 +113,8 @@ def start_scheduler() -> AsyncIOScheduler:
         )
     else:
         _log.warning(
-            "GOOGLE_API_KEY 미설정 — I-17 job만 비활성화합니다 (profile idle job은 계속 실행됩니다)"
+            "GOOGLE_API_KEY 미설정 — I-17 job만 비활성화합니다 "
+            "(session lifecycle sweep은 계속 실행됩니다)"
         )
     scheduler.start()
     _scheduler = scheduler

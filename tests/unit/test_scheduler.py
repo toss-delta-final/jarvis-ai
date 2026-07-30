@@ -134,6 +134,40 @@ async def test_run_session_context_sweep_uses_current_event_loop(monkeypatch):
     assert calls == ["lifecycle", "gc"]
 
 
+async def test_session_context_sweep_logs_lifecycle_and_gc_progress(monkeypatch, caplog):
+    from app.core.session_lifecycle import IdleSweepResult
+
+    async def lifecycle():
+        return IdleSweepResult(
+            examined=7,
+            completed=3,
+            retryable=1,
+            skipped=2,
+            recovered=4,
+        )
+
+    async def gc():
+        return 5
+
+    async def counters():
+        return (11, 12, 13)
+
+    monkeypatch.setattr(sched_mod, "run_configured_session_context_sweep", lifecycle)
+    monkeypatch.setattr(sched_mod, "run_legacy_gc_batch", gc)
+    monkeypatch.setattr(sched_mod, "get_legacy_gc_counters", counters, raising=False)
+    with caplog.at_level("INFO"):
+        await sched_mod.run_session_context_sweep()
+    assert "examined=7" in caplog.text
+    assert "completed=3" in caplog.text
+    assert "retryable=1" in caplog.text
+    assert "skipped=2" in caplog.text
+    assert "recovered=4" in caplog.text
+    assert "gc_deleted=5" in caplog.text
+    assert "filters_deleted=11" in caplog.text
+    assert "cart_deleted=12" in caplog.text
+    assert "revert_deleted=13" in caplog.text
+
+
 async def test_run_session_context_sweep_swallows_exceptions(monkeypatch):
     async def fake_run_session_context_sweep():
         raise RuntimeError("boom")
@@ -154,15 +188,19 @@ async def test_lifespan_orders_initialization_scheduler_and_shutdown(monkeypatch
     async def close():
         calls.append("close")
 
+    async def close_lifecycle():
+        calls.append("close-lifecycle")
+
     monkeypatch.setattr(main_mod, "initialize_session_lifecycle", initialize)
     monkeypatch.setattr(main_mod, "start_scheduler", lambda: calls.append("start"))
     monkeypatch.setattr(main_mod, "stop_scheduler", lambda: calls.append("stop"))
     monkeypatch.setattr(main_mod, "close_advisory_pool", close)
+    monkeypatch.setattr(main_mod, "close_session_lifecycle", close_lifecycle)
 
     async with main_mod._lifespan(main_mod.app):
         assert calls == ["initialize", "start"]
 
-    assert calls == ["initialize", "start", "stop", "close"]
+    assert calls == ["initialize", "start", "stop", "close-lifecycle", "close"]
 
 
 async def test_lifespan_does_not_start_scheduler_when_initialization_fails(monkeypatch):
@@ -173,10 +211,25 @@ async def test_lifespan_does_not_start_scheduler_when_initialization_fails(monke
         raise RuntimeError("migration failed")
 
     monkeypatch.setattr(main_mod, "initialize_session_lifecycle", initialize)
+
+    async def close_lifecycle():
+        calls.append("close_lifecycle")
+
+    async def close_advisory():
+        calls.append("close_advisory")
+
     monkeypatch.setattr(main_mod, "start_scheduler", lambda: calls.append("start"))
+    monkeypatch.setattr(main_mod, "stop_scheduler", lambda: calls.append("stop"))
+    monkeypatch.setattr(main_mod, "close_session_lifecycle", close_lifecycle, raising=False)
+    monkeypatch.setattr(main_mod, "close_advisory_pool", close_advisory)
 
     with pytest.raises(RuntimeError, match="migration failed"):
         async with main_mod._lifespan(main_mod.app):
             pass
 
-    assert calls == ["initialize"]
+    assert calls == ["initialize", "close_lifecycle", "close_advisory"]
+
+
+def test_legacy_grace_cannot_be_shorter_than_24_hours():
+    with pytest.raises(ValueError, match="at least 86400"):
+        Settings(_env_file=None, session_lifecycle_legacy_grace_s=86399)
