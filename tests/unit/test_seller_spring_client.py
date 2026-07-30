@@ -223,12 +223,93 @@ async def test_get_order_events_passes_stats_param() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["url"] = str(request.url)
-        return httpx.Response(200, json={"events": []})
+        return httpx.Response(200, json={"byStatus": {"PAID": 1}, "cancelReasonsTop": []})
 
     client = _client(handler)
     await client.get_order_events("brand-1", "2026-07-01", "2026-07-14", stats=True)
 
     assert "stats=true" in captured["url"]
+
+
+async def test_get_order_events_parses_rows_total_and_stats_shape() -> None:
+    """[#194] I-14 BE 실측 응답(rows/total·byStatus/cancelReasonsTop)을 필드 유실 없이
+    파싱한다 — 구 스키마(events/stats)는 extra="allow" 탓에 rows 가 통째로 버려져
+    도구가 항상 '주문 상태 전이 0건'을 반환했다(회귀 방지)."""
+
+    def list_handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "brandId": 42,
+                "rows": [
+                    {
+                        "orderId": 5001,
+                        "fromStatus": "PAID",
+                        "toStatus": "CANCELLED",
+                        "actorType": "USER",
+                        "reason": "단순변심",
+                        "buyerMemberId": 7,
+                        "createdAt": "2026-07-10T09:00:00+09:00",
+                    }
+                ],
+                "total": 130,
+            },
+        )
+
+    client = _client(list_handler)
+    result = await client.get_order_events("brand-1", "2026-07-01", "2026-07-14")
+    assert len(result.rows) == 1
+    assert result.rows[0]["toStatus"] == "CANCELLED"
+    assert result.total == 130
+    assert result.by_status is None  # 목록 모드에선 byStatus 부재(NON_NULL)
+
+    def stats_handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "byStatus": {"PAID": 120, "CANCELLED": 7},
+                "cancelReasonsTop": [{"reason": "단순변심", "count": 4}],
+            },
+        )
+
+    client = _client(stats_handler)
+    result = await client.get_order_events("brand-1", "2026-07-01", "2026-07-14", stats=True)
+    assert result.by_status == {"PAID": 120, "CANCELLED": 7}
+    assert result.cancel_reasons_top == [{"reason": "단순변심", "count": 4}]
+    assert result.rows == []  # stats 모드에선 rows 부재
+
+
+async def test_get_product_changes_parses_rows_and_total() -> None:
+    """[#194] I-15 BE 실측 응답(rows/total)을 타입 모델로 파싱한다 — 구 스키마(logs)는
+    rows 를 통째로 버려 항상 0건이었다. oldValue/newValue 는 문자열(숫자도 문자열)."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "brandId": 42,
+                "rows": [
+                    {
+                        "productId": 101,
+                        "productName": "린넨 셔츠",
+                        "changeType": "STOCK",
+                        "oldValue": "10",
+                        "newValue": "0",
+                        "createdAt": "2026-07-10T09:00:00+09:00",
+                    }
+                ],
+                "total": 8,
+            },
+        )
+
+    client = _client(handler)
+    result = await client.get_product_changes("brand-1", "2026-07-01", "2026-07-14")
+
+    assert result.total == 8
+    row = result.rows[0]
+    assert row.product_id == 101
+    assert row.change_type == "STOCK"
+    assert row.new_value == "0"  # 품절 신호 = STOCK newValue "0" (문자열)
 
 
 # ── I-13 행동 이벤트 (REALIGN ②-3 — 07/17 확정 명세) ──

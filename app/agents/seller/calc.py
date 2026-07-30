@@ -65,29 +65,43 @@ def is_anomaly(deviation: float, *, threshold_pct: float) -> bool:
 
 
 def detect_sales_anomalies(
-    series: list[SalesSeriesPoint], *, window: int, threshold_pct: float
-) -> list[tuple[str, float, bool]]:
-    """일별 매출을 "직전 window 일 이동평균" 대비 편차·이상판정한다.
+    series: list[SalesSeriesPoint], *, window: int, min_window: int, threshold_pct: float
+) -> list[tuple[str, float | None, bool]]:
+    """일별 매출을 "직전 최대 window 일(최소 min_window 일) 평균" 대비 편차·이상판정한다.
 
     (date, deviationPct, isAnomaly) 목록 반환. 당일 값은 자신의 기준(baseline) 계산에
     포함하지 않는다 — 급증/급락일이 스스로를 평균에 섞어 편차를 희석하는 것을 방지한다.
-    moving_average(values, window)[i-1] 이 곧 "i일 직전 window 일 평균"이라는 성질을 이용한다.
+
+    [수정 2026-07-30, #194] Spring(SellerSalesService.withAnomaly) 실측 정렬 — 종전
+    고정 window(직전 7점 필수) 방식은 Spring(직전 3점부터 판정)과 어긋나 최근 기간
+    질의에서 이상을 놓쳤다. 규칙 3개를 동일하게 맞춘다:
+      1) 직전 포인트가 min_window(3) 개 이상이면 판정 — baseline 은 직전 최대 window(7) 개 평균.
+      2) baseline 0 + 매출 발생 = 이상(deviation 은 None — Spring deviationPct=null).
+      3) 매출 0 원인 포인트는 이상 아님 — 저볼륨에서 무판매일이 전부 -100% 판정되는
+         노이즈 방지(Spring `sales > 0 &&` 가드와 동일).
+    판정 불가 구간(직전 min_window 미만)의 deviation 도 None 이다(구 0.0 → 의미 구분).
 
     Spring 이 준 point.is_anomaly/point.deviation_pct 는 무시하고 point.sales 원시값만으로
-    재계산한다(§0.1 D) — 경계표가 확정되기 전까지 AI 판정을 신뢰 원천으로 둔다.
+    재계산한다(§0.1 D) — 로직을 정렬해 두 판정이 자연 일치하게 한다.
     """
+    if min_window <= 0 or window < min_window:
+        raise ValueError(f"window({window})/min_window({min_window}) 설정이 유효하지 않다")
     values = [point.sales for point in series]
-    trailing_averages = moving_average(values, window)
 
-    results: list[tuple[str, float, bool]] = []
+    results: list[tuple[str, float | None, bool]] = []
     for i, point in enumerate(series):
-        # i-1 위치의 이동평균 = i 이전 window 일 평균(당일 미포함). 초반 경계는 baseline 없음.
-        baseline = trailing_averages[i - 1] if i > 0 else None
-        if baseline is None:
-            results.append((point.date, 0.0, False))
+        history = values[:i]  # 당일 미포함 직전 전체 이력
+        if len(history) < min_window:
+            results.append((point.date, None, False))
             continue
-        deviation = deviation_pct(point.sales, baseline)
-        results.append((point.date, deviation, is_anomaly(deviation, threshold_pct=threshold_pct)))
+        baseline = statistics.fmean(history[-window:])
+        if baseline > 0:
+            deviation = deviation_pct(point.sales, baseline)
+            flagged = point.sales > 0 and is_anomaly(deviation, threshold_pct=threshold_pct)
+            results.append((point.date, deviation, flagged))
+        else:
+            # 무매출 구간 직후 매출 발생 — 기준선 0 이라 편차 정의 불가(None), 발생 자체가 이상.
+            results.append((point.date, None, point.sales > 0))
     return results
 
 
@@ -98,12 +112,24 @@ def _safe_ratio_pct(numerator: int, denominator: int) -> float:
     return numerator / denominator * 100
 
 
-def conversion_rates(funnel: FunnelResult) -> dict[str, float]:
-    """구매전환 퍼널 단계별 전환율(%) — view→cart→checkout→purchase."""
+def conversion_rates(funnel: FunnelResult) -> dict[str, float | None]:
+    """구매전환 퍼널 단계별 전환율(%) — view→cart→checkout→purchase.
+
+    [PR#184 리뷰 반영] 미집계 단계(funnel.uncomputable_stages — I-7 stages[] 의
+    count=null·computable=false, 예: checkout v1 미계산 구간)가 분자/분모로 걸리는
+    전환율은 None 을 반환한다 — 0%(전환 전무)와 "집계 안 됨"을 구분하기 위함이다.
+    """
+    uncomputable = set(funnel.uncomputable_stages)
+
+    def _rate(num_field: str, den_field: str, numerator: int, denominator: int) -> float | None:
+        if num_field in uncomputable or den_field in uncomputable:
+            return None
+        return _safe_ratio_pct(numerator, denominator)
+
     return {
-        "view_to_cart": _safe_ratio_pct(funnel.cart, funnel.view),
-        "cart_to_checkout": _safe_ratio_pct(funnel.checkout, funnel.cart),
-        "checkout_to_purchase": _safe_ratio_pct(funnel.purchase, funnel.checkout),
+        "view_to_cart": _rate("cart", "view", funnel.cart, funnel.view),
+        "cart_to_checkout": _rate("checkout", "cart", funnel.checkout, funnel.cart),
+        "checkout_to_purchase": _rate("purchase", "checkout", funnel.purchase, funnel.checkout),
     }
 
 
@@ -113,16 +139,18 @@ def compare_conversion(
     """단계별 전환율이 baseline 대비 drop_pct 이상 하락했는지 판정한다.
 
     baseline 전환율이 0 이면 비교 기준이 없어 하락 판정을 내리지 않는다(False).
+    어느 한쪽이 미집계(None, PR#184 리뷰 반영)여도 판정 불가 = False 다.
     """
     current_rates = conversion_rates(current)
     baseline_rates = conversion_rates(baseline)
 
     result: dict[str, bool] = {}
     for stage, base_rate in baseline_rates.items():
-        if base_rate == 0:
+        current_rate = current_rates[stage]
+        if base_rate is None or current_rate is None or base_rate == 0:
             result[stage] = False
             continue
-        deviation = deviation_pct(current_rates[stage], base_rate)
+        deviation = deviation_pct(current_rate, base_rate)
         result[stage] = deviation <= -drop_pct
     return result
 

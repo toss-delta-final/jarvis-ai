@@ -14,6 +14,7 @@ def test_seller_settings_defaults() -> None:
     # [통일 2026-07-20] 서비스 토큰은 팀 규약 internal_api_token 단일 키(기본 미설정).
     assert settings.internal_api_token == ""
     assert settings.seller_ma_window == 7
+    assert settings.seller_ma_min_window == 3  # Spring MIN_WINDOW 정렬(#194)
     assert settings.seller_anomaly_deviation_pct == 30.0
     assert settings.seller_conversion_drop_pct == 20.0
     assert settings.seller_churn_inactive_days == 30

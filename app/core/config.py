@@ -113,7 +113,9 @@ class Settings(BaseSettings):
     # spring_timeout_s 도 팀 정의(아래 공통 블록)를 재사용한다 — 중복 정의 금지.
 
     # ── 판매자 분석 임계값 (app/agents/seller/calc.py 주입, 하드코딩 금지) ──
-    seller_ma_window: int = 7  # 매출 이동평균 window(일)
+    seller_ma_window: int = 7  # 매출 이동평균 window(일) — Spring MOVING_WINDOW 정렬
+    # 이상판정 최소 표본 수(직전 포인트 수) — Spring(SellerSalesService) MIN_WINDOW 정렬(#194).
+    seller_ma_min_window: int = 3
     seller_anomaly_deviation_pct: float = 30.0  # 매출 이상판정 편차 임계(%)
     seller_conversion_drop_pct: float = 20.0  # 전환율 하락 이상 임계(%)
     seller_churn_inactive_days: int = 30  # 이탈 코호트 무활동 일수(I-16 inactiveDays 기본)
