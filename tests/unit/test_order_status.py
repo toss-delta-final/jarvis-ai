@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from datetime import timedelta
@@ -22,6 +23,7 @@ from app.agents.buyer.order_status import (
 from app.core.auth import Identity
 from app.schemas.spring import (
     ORDER_ITEM_STATUS_TEXT,
+    ORDER_STATUS_RECENT,
     OrderStatusItem,
     OrderStatusOrder,
     OrderStatusSummary,
@@ -615,3 +617,31 @@ def test_lane_c_documents_exact_seventeen_call_contract_and_i4_section() -> None
         "I-17",
     }
     assert "### 4.10 주문 상태 요약 API (I-4)" in text
+
+
+def test_recent_order_limit_has_one_contract_source() -> None:
+    """Schema, client, and route must not carry independent copies of recent=3."""
+    root = Path(__file__).parents[2]
+    files = {
+        path: ast.parse((root / path).read_text())
+        for path in (
+            "app/schemas/spring.py",
+            "app/services/spring_client.py",
+            "app/agents/buyer/order_status.py",
+        )
+    }
+    assignments = [
+        path
+        for path, tree in files.items()
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "ORDER_STATUS_RECENT"
+            for target in node.targets
+        )
+    ]
+    assert assignments == ["app/schemas/spring.py"]
+    assert any(
+        getattr(metadata, "max_length", None) == ORDER_STATUS_RECENT
+        for metadata in OrderStatusSummary.model_fields["orders"].metadata
+    )

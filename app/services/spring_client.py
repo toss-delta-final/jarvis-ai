@@ -47,6 +47,7 @@ from app.schemas.spring import (
     ChurnResult,
     FunnelResult,
     OrderEventsResult,
+    ORDER_STATUS_RECENT,
     OrderStatusSummary,
     ProductChangeLogResult,
     ProductChangesPage,
@@ -387,9 +388,6 @@ async def get_recent_purchases(user_id: int, status: str | None = None) -> Recen
         return RecentPurchases.model_validate({"orders": orders or []})
     except (httpx.HTTPError, ValueError, ValidationError) as exc:
         raise SpringUnavailableError(f"get_recent_purchases 실패: {exc}") from exc
-
-
-ORDER_STATUS_RECENT = 3
 
 
 async def get_order_status(user_id: int, recent: int = ORDER_STATUS_RECENT) -> OrderStatusSummary:

@@ -252,6 +252,7 @@ OrderRepresentativeStatus = Literal[
     "취소/반품 진행중",
     "처리 완료",
 ]
+ORDER_STATUS_RECENT = 3
 
 ORDER_ITEM_STATUS_TEXT: Mapping[OrderItemStatus, OrderItemStatusText] = MappingProxyType(
     {
@@ -308,7 +309,7 @@ class OrderStatusOrder(CamelModel):
 class OrderStatusSummary(CamelModel):
     """I-4 data envelope. orders is required and bounded by the fixed recent=3 request."""
 
-    orders: list[OrderStatusOrder] = Field(max_length=3)
+    orders: list[OrderStatusOrder] = Field(max_length=ORDER_STATUS_RECENT)
 
     @field_validator("orders", mode="before")
     @classmethod

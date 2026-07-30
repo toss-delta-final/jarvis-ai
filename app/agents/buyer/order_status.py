@@ -12,9 +12,9 @@ from app.agents.buyer._frames import sse
 from app.core.logging import get_logger
 from app.core.text import _strip_unsafe
 from app.schemas.chat import DoneData, TokenData
+from app.schemas.spring import ORDER_STATUS_RECENT
 from app.services.spring_client import OrderStatusUnavailableError
 
-ORDER_STATUS_RECENT = 3
 ORDER_STATUS_ITEM_DISPLAY_LIMIT = 3
 _MAX_MEMBER_ID = 2**63 - 1
 _MAX_MEMBER_ID_TEXT = str(_MAX_MEMBER_ID)
