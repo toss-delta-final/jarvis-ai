@@ -390,13 +390,13 @@ async def get_recent_purchases(user_id: int, status: str | None = None) -> Recen
         raise SpringUnavailableError(f"get_recent_purchases 실패: {exc}") from exc
 
 
-async def get_order_status(user_id: int, recent: int = ORDER_STATUS_RECENT) -> OrderStatusSummary:
+async def get_order_status(user_id: int) -> OrderStatusSummary:
     """회원의 최근 I-4 주문 상태를 strict envelope/schema로 검증한다."""
     try:
         async with _client() as client:
             response = await client.get(
                 f"/internal/members/{user_id}/orders/status",
-                params={"recent": recent},
+                params={"recent": ORDER_STATUS_RECENT},
             )
             response.raise_for_status()
     except httpx.HTTPError:

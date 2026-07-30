@@ -455,8 +455,8 @@ async def test_stream_success_logs_before_token_and_emits_only_token_done(
 ) -> None:
     ordering: list[str] = []
 
-    async def fetch_order_status(user_id: int, recent: int = 3) -> OrderStatusSummary:
-        assert (user_id, recent) == (42, 3)
+    async def fetch_order_status(user_id: int) -> OrderStatusSummary:
+        assert user_id == 42
         return _summary(_order())
 
     caplog.set_level("INFO", logger="app.agents.buyer.order_status")
@@ -503,7 +503,7 @@ async def test_stream_identity_blocks_without_fetch_and_logs_safe_fixed_record(
 ) -> None:
     calls = 0
 
-    async def fetch_order_status(user_id: int, recent: int = 3) -> OrderStatusSummary:
+    async def fetch_order_status(user_id: int) -> OrderStatusSummary:
         nonlocal calls
         calls += 1
         raise AssertionError("blocked identities must not fetch")
@@ -530,7 +530,7 @@ async def test_stream_identity_blocks_without_fetch_and_logs_safe_fixed_record(
 async def test_stream_degrades_upstream_failures_without_pii_or_error_event(
     category: OrderStatusErrorCategory, caplog: pytest.LogCaptureFixture
 ) -> None:
-    async def fetch_order_status(user_id: int, recent: int = 3) -> OrderStatusSummary:
+    async def fetch_order_status(user_id: int) -> OrderStatusSummary:
         raise OrderStatusUnavailableError(category)
 
     caplog.set_level("INFO", logger="app.agents.buyer.order_status")
@@ -565,7 +565,7 @@ async def test_stream_degrades_upstream_failures_without_pii_or_error_event(
 
 
 async def test_stream_empty_is_not_failure(caplog: pytest.LogCaptureFixture) -> None:
-    async def fetch_order_status(user_id: int, recent: int = 3) -> OrderStatusSummary:
+    async def fetch_order_status(user_id: int) -> OrderStatusSummary:
         return OrderStatusSummary(orders=[])
 
     caplog.set_level("INFO", logger="app.agents.buyer.order_status")
@@ -641,6 +641,22 @@ def test_recent_order_limit_has_one_contract_source() -> None:
         )
     ]
     assert assignments == ["app/schemas/spring.py"]
+    client_function = next(
+        node
+        for node in files["app/services/spring_client.py"].body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "get_order_status"
+    )
+    assert [argument.arg for argument in client_function.args.args] == ["user_id"]
+    route_calls = [
+        node
+        for node in ast.walk(files["app/agents/buyer/order_status.py"])
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "fetch_order_status"
+    ]
+    assert len(route_calls) == 1
+    assert len(route_calls[0].args) == 1
+    assert route_calls[0].keywords == []
     assert any(
         getattr(metadata, "max_length", None) == ORDER_STATUS_RECENT
         for metadata in OrderStatusSummary.model_fields["orders"].metadata

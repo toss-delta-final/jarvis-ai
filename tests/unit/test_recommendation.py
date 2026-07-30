@@ -2234,10 +2234,10 @@ def _order_member() -> Identity:
 
 
 async def test_order_status_branch_is_early_and_passes_request_id() -> None:
-    calls: list[tuple[int, int]] = []
+    calls: list[int] = []
 
-    async def fetch(user_id: int, recent: int = 3):
-        calls.append((user_id, recent))
+    async def fetch(user_id: int):
+        calls.append(user_id)
         return SimpleNamespace(orders=[])
 
     async def forbidden(*args, **kwargs):
@@ -2257,7 +2257,7 @@ async def test_order_status_branch_is_early_and_passes_request_id() -> None:
         )
     )
 
-    assert calls == [(42, 3)]
+    assert calls == [42]
     assert _types(events) == ["token", "done"]
     assert events[-1]["data"]["finishReason"] == "stop"
     assert [tier for tier, _ in llm.calls] == ["fast"]
@@ -2268,10 +2268,10 @@ async def test_order_status_default_dependency_is_resolved_at_call_time(
 ) -> None:
     import app.services.spring_client as sc
 
-    calls: list[tuple[int, int]] = []
+    calls: list[int] = []
 
-    async def late_fetch(user_id: int, recent: int = 3):
-        calls.append((user_id, recent))
+    async def late_fetch(user_id: int):
+        calls.append(user_id)
         return SimpleNamespace(orders=[])
 
     monkeypatch.setattr(sc, "get_order_status", late_fetch, raising=False)
@@ -2283,7 +2283,7 @@ async def test_order_status_default_dependency_is_resolved_at_call_time(
             request_id="req-late-bound",
         )
     )
-    assert calls == [(42, 3)]
+    assert calls == [42]
     assert _types(events) == ["token", "done"]
 
 
@@ -2323,7 +2323,7 @@ async def test_order_status_clears_pending_without_copying_response_into_buyer_s
     original = ProductSearchFilters(category="기존 카테고리", semantic_query="기존 검색")
     await thread_store.put(key, original)
 
-    async def fetch(user_id: int, recent: int = 3):
+    async def fetch(user_id: int):
         return OrderStatusSummary.model_validate(
             {
                 "orders": [

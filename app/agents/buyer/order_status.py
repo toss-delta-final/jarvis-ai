@@ -130,7 +130,7 @@ async def stream_order_status(
         order_count = 0
     else:
         try:
-            summary = await fetch_order_status(user_id, recent=ORDER_STATUS_RECENT)
+            summary = await fetch_order_status(user_id)
         except OrderStatusUnavailableError as exc:
             message = _UPSTREAM_MESSAGE
             outcome = "upstream_degraded"
