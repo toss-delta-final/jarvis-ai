@@ -32,6 +32,7 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from datetime import date
+from time import perf_counter
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Request
@@ -45,6 +46,7 @@ from app.agents.seller.context import SellerContext
 from app.agents.seller.history import apply_recommendation
 from app.agents.seller.hitl import DraftRecord, confirm_draft, start_draft, validate_draft
 from app.agents.seller.middleware import StreamingOutputGuard, check_scope, mask_output
+from app.agents.seller.models import SellerRole, seller_trace_model_metadata
 from app.agents.seller.orchestrator import route_question, run_analysis_pipeline
 from app.agents.seller.pipeline import parse_apply_message
 from app.agents.seller.schemas import DraftProposal
@@ -52,11 +54,12 @@ from app.agents.seller.workers import build_general_agent, build_product_agent
 from app.api.deps import require_seller
 from app.core.auth import Identity
 from app.core.config import get_settings
-from app.core.conversation import get_conversation_store
+from app.core.conversation import TurnStatus, get_conversation_store
 from app.core.errors import get_request_id, new_request_id
 from app.core.llm import LLMNotConfigured
-from app.core.observability import emit_rejection, start_observation
+from app.core.observability import emit_rejection, finish_trace_safely, start_observation
 from app.core.stream import open_stream, registry_key
+from app.core.tracing import current_request_trace, start_request_trace_safely, trace_span
 from app.core.text import _strip_unsafe, _strip_unsafe_multiline
 from app.schemas.chat import ErrorData, TokenData
 from app.schemas.seller import SellerChatRequest
@@ -99,6 +102,20 @@ def _token(text: str) -> str:
 def _resolve_request_id(request_id: str | None) -> str:
     """직접 호출되는 하위 스트림에도 비어 있지 않은 상관관계 ID를 보장한다."""
     return request_id or new_request_id()
+
+
+def _set_trace_lane(lane: Lane) -> None:
+    if trace := current_request_trace():
+        trace.set_lane(lane)
+
+
+def _mark_seller_degraded(reason: str) -> None:
+    if trace := current_request_trace():
+        trace.mark_degraded(reason)
+
+
+def _llm_metadata(role: SellerRole) -> dict[str, str] | None:
+    return seller_trace_model_metadata(role)
 
 
 def _error(
@@ -225,6 +242,7 @@ async def _general_stream(
       checkpointer 에 있어 스레드는 이어진다.
     """
     request_id = _resolve_request_id(request_id)
+    _set_trace_lane("general")
     # general 은 항상 대화(우측 패널 유지) — 첫 프레임에 레인을 알린다.
     yield _meta("general")
     refusal = check_scope(request.message)
@@ -233,26 +251,49 @@ async def _general_stream(
         yield _done("keep")
         return
 
+    queue: asyncio.Queue[object] = asyncio.Queue()
+
+    async def produce() -> None:
+        """Run all token-backed trace contexts in one persistent task."""
+        with trace_span("seller.graph.general", "chain"):
+            # 빌드도 producer 안 — 실패 시 기존 error 이벤트 봉투로 종료한다.
+            agent = build_general_agent(
+                today=date.today().isoformat(), checkpointer=await get_checkpointer()
+            )
+            output_guard = StreamingOutputGuard()
+            started = perf_counter()
+            first_text = True
+            with trace_span("llm.seller.general", "llm", _llm_metadata("worker")):
+                async for item in agent.astream(
+                    {"messages": [HumanMessage(content=request.message)]},
+                    config=seller_thread.chat_config(context, request.thread_id),
+                    context=context,
+                    stream_mode="messages",
+                ):
+                    message_chunk = item[0] if isinstance(item, tuple) else item
+                    if not isinstance(message_chunk, AIMessageChunk):
+                        continue
+                    text = _chunk_text(message_chunk.content)
+                    if text and first_text:
+                        first_text = False
+                        if trace := current_request_trace():
+                            trace.record_provider_ttft(
+                                int(round((perf_counter() - started) * 1000))
+                            )
+                    for visible in output_guard.feed(text):
+                        await queue.put(_visible_token(visible))
+            for visible in output_guard.flush():
+                await queue.put(_visible_token(visible))
+
+    producer_task = asyncio.create_task(produce())
+    producer_task.add_done_callback(lambda _task: queue.put_nowait(_PIPELINE_DONE))
     try:
-        # 빌드도 try 안 — 실패 시 error 이벤트 봉투로 종료(마감 리뷰 M2 반영).
-        agent = build_general_agent(
-            today=date.today().isoformat(), checkpointer=await get_checkpointer()
-        )
-        output_guard = StreamingOutputGuard()
-        async for item in agent.astream(
-            {"messages": [HumanMessage(content=request.message)]},
-            config=seller_thread.chat_config(context, request.thread_id),
-            context=context,
-            stream_mode="messages",
-        ):
-            message_chunk = item[0] if isinstance(item, tuple) else item
-            if not isinstance(message_chunk, AIMessageChunk):
-                continue
-            text = _chunk_text(message_chunk.content)
-            for visible in output_guard.feed(text):
-                yield _visible_token(visible)
-        for visible in output_guard.flush():
-            yield _visible_token(visible)
+        while True:
+            item = await queue.get()
+            if item is _PIPELINE_DONE:
+                break
+            yield str(item)
+        await producer_task
         yield _done("keep")
     except LLMNotConfigured:
         yield _llm_unavailable(
@@ -275,6 +316,10 @@ async def _general_stream(
             request_id=request_id,
             retryable=True,
         )
+    finally:
+        if not producer_task.done():
+            producer_task.cancel()
+        await asyncio.gather(producer_task, return_exceptions=True)
 
 
 async def _analysis_stream(
@@ -296,63 +341,71 @@ async def _analysis_stream(
     - 진행 문구는 파이프라인 내부 상수라 마스킹 불필요, 최종 text 는 mask_output 적용.
     """
     request_id = _resolve_request_id(request_id)
+    _set_trace_lane("analysis")
     yield _meta("analysis")
     queue: asyncio.Queue[object] = asyncio.Queue()
 
     async def emit(text: str) -> None:
         await queue.put(text)
 
-    pipeline_task = asyncio.create_task(
-        run_analysis_pipeline(
-            request.message,
-            context,
-            today=date.today(),
-            emit=emit,
-            recent_turns=recent_turns,
-        )
-    )
+    async def run_pipeline():
+        """Keep the analysis trace token and all descendants in one task context."""
+        with trace_span("seller.graph.analysis", "chain"):
+            return await run_analysis_pipeline(
+                request.message,
+                context,
+                today=date.today(),
+                emit=emit,
+                recent_turns=recent_turns,
+            )
+
+    pipeline_task = asyncio.create_task(run_pipeline())
     # 정상/예외 공통으로 sentinel 을 넣어 진행 루프를 반드시 끝낸다.
-    pipeline_task.add_done_callback(lambda _t: queue.put_nowait(_PIPELINE_DONE))
-
-    while True:
-        item = await queue.get()
-        if item is _PIPELINE_DONE:
-            break
-        yield _progress(str(item))
-
+    pipeline_task.add_done_callback(lambda _task: queue.put_nowait(_PIPELINE_DONE))
     try:
-        result = await pipeline_task
-    except LLMNotConfigured:
-        yield _llm_unavailable(
-            lane="analysis",
-            thread_id=request.thread_id,
-            request_id=request_id,
-        )
-        return
-    except (TimeoutError, asyncio.TimeoutError):
-        yield _token(_ANALYSIS_APOLOGY_TOKEN)
-        yield _error(
-            "LLM_TIMEOUT",
-            "분석 응답이 지연되어 중단됐습니다.",
-            request_id=request_id,
-            retryable=True,
-        )
-        return
-    except Exception:
-        logger.exception("분석 파이프라인 실패 (thread=%s)", request.thread_id)
-        yield _token(_ANALYSIS_APOLOGY_TOKEN)
-        yield _error(
-            "INTERNAL",
-            "일시적인 오류가 발생했습니다.",
-            request_id=request_id,
-            retryable=True,
-        )
-        return
-    # 대화 스레드 기록(best-effort) — 되묻기 포함 최종 문안이 후속 발화의 맥락이 된다.
-    await seller_thread.record_turn(context, request.thread_id, request.message, result.text)
-    yield _token(result.text)
-    # 보고서만 우측 패널 교체, 되묻기·사과·거절은 대화로 유지.
-    yield _done("replace" if result.kind == "report" else "keep")
+        while True:
+            item = await queue.get()
+            if item is _PIPELINE_DONE:
+                break
+            yield _progress(str(item))
+
+        try:
+            result = await pipeline_task
+        except LLMNotConfigured:
+            yield _llm_unavailable(
+                lane="analysis",
+                thread_id=request.thread_id,
+                request_id=request_id,
+            )
+            return
+        except (TimeoutError, asyncio.TimeoutError):
+            yield _token(_ANALYSIS_APOLOGY_TOKEN)
+            yield _error(
+                "LLM_TIMEOUT",
+                "분석 응답이 지연되어 중단됐습니다.",
+                request_id=request_id,
+                retryable=True,
+            )
+            return
+        except Exception:
+            logger.exception("분석 파이프라인 실패 (thread=%s)", request.thread_id)
+            yield _token(_ANALYSIS_APOLOGY_TOKEN)
+            yield _error(
+                "INTERNAL",
+                "일시적인 오류가 발생했습니다.",
+                request_id=request_id,
+                retryable=True,
+            )
+            return
+        # 대화 스레드 기록(best-effort) — 되묻기 포함 최종 문안이 후속 발화의 맥락이 된다.
+        await seller_thread.record_turn(context, request.thread_id, request.message, result.text)
+        yield _token(result.text)
+        # 보고서만 우측 패널 교체, 되묻기·사과·거절은 대화로 유지.
+        yield _done("replace" if result.kind == "report" else "keep")
+    finally:
+        if not pipeline_task.done():
+            pipeline_task.cancel()
+        await asyncio.gather(pipeline_task, return_exceptions=True)
 
 
 async def _product_stream(
@@ -372,14 +425,20 @@ async def _product_stream(
     최종 문안(되묻기·초안 요약)은 대화 스레드에 기록(best-effort) — 후속 발화 맥락.
     """
     request_id = _resolve_request_id(request_id)
+    _set_trace_lane("product")
     yield _meta("product")
     settings = get_settings()
     try:
-        agent = build_product_agent()
-        result = await asyncio.wait_for(
-            agent.ainvoke({"messages": [HumanMessage(content=request.message)]}, context=context),
-            timeout=settings.seller_worker_timeout_s,
-        )
+        with trace_span("seller.graph.product", "chain"):
+            agent = build_product_agent()
+            with trace_span("llm.seller.product", "llm", _llm_metadata("product")):
+                result = await asyncio.wait_for(
+                    agent.ainvoke(
+                        {"messages": [HumanMessage(content=request.message)]},
+                        context=context,
+                    ),
+                    timeout=settings.seller_worker_timeout_s,
+                )
         proposal = result.get("structured_response")
         if not isinstance(proposal, DraftProposal):
             raise TypeError("product_agent 가 DraftProposal 을 반환하지 않았다")
@@ -504,9 +563,11 @@ async def _apply_stream(
     패널: draft 성립 시 diff 카드(replace), 불성립은 대화(keep) — product 레인과 동일.
     """
     request_id = _resolve_request_id(request_id)
+    _set_trace_lane("apply")
     yield _meta("apply")
     try:
-        record, problem = await apply_recommendation(n, context)
+        with trace_span("seller.graph.apply", "chain"):
+            record, problem = await apply_recommendation(n, context)
     except SpringUnavailableError:
         yield _token(
             "죄송합니다. 상품 정보를 확인하지 못해 추천을 적용할 수 없었습니다. "
@@ -572,12 +633,15 @@ async def _confirm_stream(
     """
     request_id = _resolve_request_id(request_id)
     draft_id = request.draft_id or ""
+    _set_trace_lane("confirm")
     yield _meta("confirm")
     try:
-        outcome = await confirm_draft(
-            draft_id, seller_id=context.seller_id, brand_id=context.brand_id
-        )
+        with trace_span("seller.graph.confirm", "chain"):
+            outcome = await confirm_draft(
+                draft_id, seller_id=context.seller_id, brand_id=context.brand_id
+            )
     except SpringUnavailableError:
+        _mark_seller_degraded("spring_write_failed")
         yield _token(_CONFIRM_SPRING_DOWN_TOKEN)
         yield _error(
             "INTERNAL",
@@ -650,6 +714,7 @@ async def _seller_stream(
     # 거절 턴은 스레드에 기록하지 않는다 — 도메인 밖 장문이 맥락을 오염시키지 않게.
     refusal = check_scope(request.message)
     if refusal:
+        _set_trace_lane("refused")
         yield _meta("refused")
         yield _token(refusal)
         yield _done("keep")
@@ -660,8 +725,10 @@ async def _seller_stream(
     # analysis planner 입력에 주입되고, general 은 스레드 자체를 물고 있어 불필요.
     recent_turns = await seller_thread.load_recent_turns(context, request.thread_id)
     try:
-        decision = await route_question(request.message, context, recent_turns=recent_turns)
+        with trace_span("seller.routing", "chain"):
+            decision = await route_question(request.message, context, recent_turns=recent_turns)
     except LLMNotConfigured:
+        _set_trace_lane("general")
         yield _meta("general")
         yield _llm_unavailable(
             lane="routing",
@@ -709,9 +776,31 @@ async def seller_chat(
     대화 저장·구조화 로그(obs #8)는 start_observation 이 담당한다(chat 과 동일 패턴).
     """
     request_id = get_request_id(http_request)
+    trace = start_request_trace_safely(
+        name="seller_chat_turn",
+        request_id=request_id,
+        conversation_id=request.session_id,
+        thread_id=request.thread_id,
+        lane="seller",
+        environment=get_settings().app_environment,
+    )
     try:
         store = await get_conversation_store()
+    except asyncio.CancelledError:
+        await finish_trace_safely(
+            trace,
+            status=TurnStatus.CANCELLED,
+            error_type=None,
+            terminal_reason="client_disconnect",
+        )
+        raise
     except Exception:
+        await finish_trace_safely(
+            trace,
+            status=TurnStatus.FAILED,
+            error_type="INTERNAL",
+            terminal_reason="store_unavailable",
+        )
         # chat.py 와 동일 — pg-profile 지연 연결 실패(운영 jwks raise)가 open_stream 안전망 밖이라
         # §6.3 b chat_request 로그(errorType 집계)를 통째로 놓친다. rejection 로그를 남기고 전파한다
         # (PR #48 후속 리뷰).
@@ -730,6 +819,7 @@ async def seller_chat(
         message=request.message,
         store=store,
         now=asyncio.get_running_loop().time(),
+        trace=trace,
     )
     return await open_stream(
         http_request,

@@ -42,6 +42,7 @@ from app.core.errors import new_request_id
 from app.core.llm import LLMError, get_llm, resolve_model_id
 from app.core.pg_resilience import run_with_query_timeout
 from app.core.text import _strip_unsafe
+from app.core.tracing import trace_span
 from app.agents.buyer.recommendation.state import CartIntent, CategoryQuery
 from app.schemas.chat import DoneData, ErrorData
 from app.schemas.spring import ProductSearchFilters
@@ -87,149 +88,20 @@ def _is_timeout(exc: Exception) -> bool:
     return "timeout" in str(exc).lower()
 
 
-async def run_buyer_turn(
-    request,
-    identity,
+async def _prepare_recommendation(
     *,
-    llm=None,
-    search=None,
-    push_fn=None,
-    map_categories=None,
-    order_status_fn=None,
-    expand_needs=None,
-    observer=None,
-    request_id: str | None = None,
-) -> AsyncIterator[str]:
-    """구매자 1턴을 SSE 프레임으로 스트리밍한다(open_stream 이 감싸는 inner).
-
-    llm/search/push_fn/map_categories 미지정 시 라이브 기본값 — 테스트는 fake 를 주입한다.
-    LLM 미구성(개발·CI)이면 네트워크 호출 없이 곧바로 LLM_UNAVAILABLE error 를 낸다.
-    """
-    settings = get_settings()
-    resolved_request_id = cast(
-        str, request_id or getattr(observer, "request_id", None) or new_request_id()
-    )
-    llm = llm or get_llm()
-    if llm is None:
-        yield sse(
-            "error",
-            ErrorData(
-                code="LLM_UNAVAILABLE",
-                message="LLM 이 구성되지 않았어요.",
-                request_id=resolved_request_id,
-                retryable=False,
-            ).model_dump(by_alias=True),
-        )
-        return
-    search = search or search_service.search_catalog
-    push_fn = push_fn or spring_client.push_recommendations
-
-    # 멀티턴 누적 필터 로드 (신원 스코프 키)
-    subject = identity.user_id or identity.subject
-    thread_key = conversation_key(subject, request.thread_id)
-    thread_store = await get_thread_store()
-    prior = await thread_store.get(thread_key)
-
-    # 프로필 주입 (회원만, read-only) — 게스트/신규는 None(개인화 스킵, 결정 8)
-    profile = None
-    if not identity.is_guest and identity.user_id and not identity.seller_id:
-        summary = await read_profile_summary(identity.user_id)
-        profile = summary.get("markdown") if summary else None
-        # transient 세션 버퍼에 발화 누적(승격 전 격리, SPEC-PROFILE-001) — 세션 종료 델타 소스.
-        # "기억해"류 명시 명령은 게이트 없이 즉시 승격(hot-path, REQ-PROF).
-        pstore = await get_profile_store()
-        await pstore.append_session_ctx(
-            conversation_key(identity.user_id, request.session_id),
-            request.message,
-            cap=settings.profile_session_buffer_cap,
-        )
-        if is_remember_command(request.message):
-            await record_remember(identity.user_id, request.message)
-
-    # 장바구니 문맥 — 직전 추천(담기 productId 해소)·옵션 되물음 대기 상태.
-    cart_store = await get_cart_store()
-    pending = await cart_store.get_pending(thread_key)
-    pending_dict = None
-    if pending is not None:
-        pending_dict = {
-            "productId": pending.product_id,
-            "options": [{"optionId": o.option_id, "name": o.name} for o in pending.options],
-        }
-
-    # decompose — fast tier 1회 (intent 5-way 라우팅 + 필터 + 장바구니 의도)
-    if observer is not None:
-        observer.record_model_call(resolve_model_id(settings, "fast"))
-    last_reco = await cart_store.get_last_reco(thread_key)
-    try:
-        decision = await decompose(
-            llm,
-            query=request.message,
-            prior_filters=prior,
-            profile_summary=profile,
-            tier="fast",
-            last_recommendations=last_reco,
-            pending_cart=pending_dict,
-            category_fanout_max=settings.category_fanout_max,
-        )
-    except LLMError as exc:
-        code = "LLM_TIMEOUT" if _is_timeout(exc) else "LLM_UNAVAILABLE"
-        yield sse(
-            "error",
-            ErrorData(
-                code=code,
-                message="질의를 이해하지 못했어요.",
-                request_id=resolved_request_id,
-                retryable=True,
-            ).model_dump(by_alias=True),
-        )
-        return
-
-    # 되물음 대기 중 사용자가 담기 아닌 의도로 전환(취소·조회·추천)하면 stale pending 을 정리한다
-    # (프롬프트가 약속한 "옛 상품에 갇히지 않게"와 실제 동작 일치).
-    if decision.intent != "cart_add" and pending is not None:
-        await cart_store.clear_pending(thread_key)
-
-    if decision.intent == "order_status":
-        fetch_order_status = (
-            order_status_fn
-            if order_status_fn is not None
-            else getattr(spring_client, "get_order_status", None)
-        )
-        if not callable(fetch_order_status):
-            raise TypeError("order_status_fn must be callable")
-        async for frame in stream_order_status(
-            identity=identity,
-            fetch_order_status=fetch_order_status,
-            request_id=resolved_request_id,
-        ):
-            yield frame
-        return
-
-    if decision.intent == "general":
-        async for frame in stream_fallback(decision, observer=observer):
-            yield frame
-        yield sse("done", DoneData(finish_reason="stop").model_dump(by_alias=True))
-        return
-
-    if decision.intent == "cart_view":
-        async for frame in stream_cart_view(identity=identity, observer=observer):
-            yield frame
-        return
-
-    if decision.intent == "cart_add":
-        allowed = {pid for pid, _ in last_reco}
-        async for frame in stream_cart_add(
-            identity=identity,
-            cart=decision.cart or CartIntent(),
-            cart_store=cart_store,
-            thread_key=thread_key,
-            settings=settings,
-            allowed_product_ids=allowed,
-            observer=observer,
-        ):
-            yield frame
-        return
-
+    request,
+    decision,
+    prior,
+    llm,
+    settings,
+    map_categories,
+    expand_needs,
+    observer,
+    thread_store: ThreadFilterStore,
+    thread_key: str,
+) -> frozenset[str]:
+    """Prepare mapped recommendation state inside the recommendation graph span."""
     # recommend — 카테고리 하이브리드 매핑(이슈 #59, 방식 A): decompose 추측을 canonical 로
     # 보정(canonical-or-null). 매핑이 죽거나 신호가 없으면 category 없이(전체) 검색으로 degrade.
     if (
@@ -322,19 +194,186 @@ async def run_buyer_turn(
         ],
     )
     reverted = await revert_store.get(thread_key)
-    async for frame in stream_recommendation(
-        request=request,
-        decision=decision,
-        llm=llm,
-        search=search,
-        push_fn=push_fn,
-        identity=identity,
-        profile=profile,
-        settings=settings,
-        reverted_categories=frozenset(reverted),
-        cart_store=cart_store,
-        thread_key=thread_key,
-        observer=observer,
-        request_id=resolved_request_id,
-    ):
-        yield frame
+    return frozenset(reverted)
+
+
+async def run_buyer_turn(
+    request,
+    identity,
+    *,
+    llm=None,
+    search=None,
+    push_fn=None,
+    map_categories=None,
+    order_status_fn=None,
+    expand_needs=None,
+    observer=None,
+    request_id: str | None = None,
+) -> AsyncIterator[str]:
+    """구매자 1턴을 SSE 프레임으로 스트리밍한다(open_stream 이 감싸는 inner).
+
+    llm/search/push_fn/map_categories 미지정 시 라이브 기본값 — 테스트는 fake 를 주입한다.
+    LLM 미구성(개발·CI)이면 네트워크 호출 없이 곧바로 LLM_UNAVAILABLE error 를 낸다.
+    """
+    settings = get_settings()
+    resolved_request_id = cast(
+        str, request_id or getattr(observer, "request_id", None) or new_request_id()
+    )
+    llm = llm or get_llm()
+    if llm is None:
+        yield sse(
+            "error",
+            ErrorData(
+                code="LLM_UNAVAILABLE",
+                message="LLM 이 구성되지 않았어요.",
+                request_id=resolved_request_id,
+                retryable=False,
+            ).model_dump(by_alias=True),
+        )
+        return
+    search = search or search_service.search_catalog
+    push_fn = push_fn or spring_client.push_recommendations
+
+    # 멀티턴 누적 필터 로드 (신원 스코프 키)
+    subject = identity.user_id or identity.subject
+    thread_key = conversation_key(subject, request.thread_id)
+    thread_store = await get_thread_store()
+    prior = await thread_store.get(thread_key)
+
+    # 프로필 주입 (회원만, read-only) — 게스트/신규는 None(개인화 스킵, 결정 8)
+    profile = None
+    if not identity.is_guest and identity.user_id and not identity.seller_id:
+        summary = await read_profile_summary(identity.user_id)
+        profile = summary.get("markdown") if summary else None
+        # transient 세션 버퍼에 발화 누적(승격 전 격리, SPEC-PROFILE-001) — 세션 종료 델타 소스.
+        # "기억해"류 명시 명령은 게이트 없이 즉시 승격(hot-path, REQ-PROF).
+        pstore = await get_profile_store()
+        await pstore.append_session_ctx(
+            conversation_key(identity.user_id, request.session_id),
+            request.message,
+            cap=settings.profile_session_buffer_cap,
+        )
+        if is_remember_command(request.message):
+            await record_remember(identity.user_id, request.message)
+
+    # 장바구니 문맥 — 직전 추천(담기 productId 해소)·옵션 되물음 대기 상태.
+    cart_store = await get_cart_store()
+    pending = await cart_store.get_pending(thread_key)
+    pending_dict = None
+    if pending is not None:
+        pending_dict = {
+            "productId": pending.product_id,
+            "options": [{"optionId": o.option_id, "name": o.name} for o in pending.options],
+        }
+
+    # decompose — fast tier 1회 (intent 5-way 라우팅 + 필터 + 장바구니 의도)
+    if observer is not None:
+        observer.record_model_call(resolve_model_id(settings, "fast"))
+    last_reco = await cart_store.get_last_reco(thread_key)
+    try:
+        with trace_span("buyer.routing", "chain"):
+            with trace_span(
+                "llm.decompose",
+                "llm",
+                {"model": resolve_model_id(settings, "fast")},
+            ):
+                decision = await decompose(
+                    llm,
+                    query=request.message,
+                    prior_filters=prior,
+                    profile_summary=profile,
+                    tier="fast",
+                    last_recommendations=last_reco,
+                    pending_cart=pending_dict,
+                    category_fanout_max=settings.category_fanout_max,
+                )
+    except LLMError as exc:
+        code = "LLM_TIMEOUT" if _is_timeout(exc) else "LLM_UNAVAILABLE"
+        yield sse(
+            "error",
+            ErrorData(
+                code=code,
+                message="질의를 이해하지 못했어요.",
+                request_id=resolved_request_id,
+                retryable=True,
+            ).model_dump(by_alias=True),
+        )
+        return
+
+    # 되물음 대기 중 사용자가 담기 아닌 의도로 전환(취소·조회·추천)하면 stale pending 을 정리한다
+    # (프롬프트가 약속한 "옛 상품에 갇히지 않게"와 실제 동작 일치).
+    if decision.intent != "cart_add" and pending is not None:
+        await cart_store.clear_pending(thread_key)
+
+    if decision.intent == "order_status":
+        fetch_order_status = (
+            order_status_fn
+            if order_status_fn is not None
+            else getattr(spring_client, "get_order_status", None)
+        )
+        if not callable(fetch_order_status):
+            raise TypeError("order_status_fn must be callable")
+        async for frame in stream_order_status(
+            identity=identity,
+            fetch_order_status=fetch_order_status,
+            request_id=resolved_request_id,
+        ):
+            yield frame
+        return
+
+    if decision.intent == "general":
+        async for frame in stream_fallback(decision, observer=observer):
+            yield frame
+        yield sse("done", DoneData(finish_reason="stop").model_dump(by_alias=True))
+        return
+
+    if decision.intent == "cart_view":
+        with trace_span("buyer.graph.cart", "chain"):
+            async for frame in stream_cart_view(identity=identity, observer=observer):
+                yield frame
+        return
+
+    if decision.intent == "cart_add":
+        allowed = {pid for pid, _ in last_reco}
+        with trace_span("buyer.graph.cart", "chain"):
+            async for frame in stream_cart_add(
+                identity=identity,
+                cart=decision.cart or CartIntent(),
+                cart_store=cart_store,
+                thread_key=thread_key,
+                settings=settings,
+                allowed_product_ids=allowed,
+                observer=observer,
+            ):
+                yield frame
+        return
+
+    with trace_span("buyer.graph.recommendation", "chain"):
+        reverted = await _prepare_recommendation(
+            request=request,
+            decision=decision,
+            prior=prior,
+            llm=llm,
+            settings=settings,
+            map_categories=map_categories,
+            expand_needs=expand_needs,
+            observer=observer,
+            thread_store=thread_store,
+            thread_key=thread_key,
+        )
+        async for frame in stream_recommendation(
+            request=request,
+            decision=decision,
+            llm=llm,
+            search=search,
+            push_fn=push_fn,
+            identity=identity,
+            profile=profile,
+            settings=settings,
+            reverted_categories=reverted,
+            cart_store=cart_store,
+            thread_key=thread_key,
+            observer=observer,
+            request_id=resolved_request_id,
+        ):
+            yield frame

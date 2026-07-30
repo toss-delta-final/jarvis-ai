@@ -19,6 +19,7 @@ from app.agents.buyer.recommendation.rerank import rerank
 from app.agents.buyer.recommendation.state import RouteDecision, build_condition_chips
 from app.core.llm import LLMClient, LLMError, resolve_model_id
 from app.core.text import _strip_unsafe
+from app.core.tracing import current_request_trace, trace_span
 from app.services import spring_client
 from app.schemas.chat import (
     ConditionsData,
@@ -204,6 +205,9 @@ async def stream_recommendation(
         survived = [r for r in leg_results if r is not None]
         if not survived:  # 전량 leg 실패 → SEARCH_FAILED(§6)
             return None
+        if len(survived) < len(leg_results):
+            if trace := current_request_trace():
+                trace.mark_degraded("fanout_partial")
         return _merge_fanout_results(survived, settings.category_fanout_merge_cap)
 
     async def _fetch_purchases():
@@ -219,14 +223,20 @@ async def stream_recommendation(
         try:
             return await fn(uid)
         except SpringUnavailableError:
+            if trace := current_request_trace():
+                trace.mark_degraded("dedup_skipped")
             return None
         except Exception as exc:  # noqa: BLE001 - I-19 실패는 degrade(dedup 없이 진행, SSE 유지)
             # 최근구매 조회가 예상외 예외를 던져도 추천 스트림을 죽이지 않는다 — None → dedup 스킵(§4.7).
             logger.warning("purchases_fetch_failed", extra={"reason": str(exc)})
+            if trace := current_request_trace():
+                trace.mark_degraded("dedup_skipped")
             return None
 
     search_result, purchases = await asyncio.gather(_run_search(), _fetch_purchases())
     if search_result is None:  # 검색 실패 → SEARCH_FAILED(종료)
+        if trace := current_request_trace():
+            trace.mark_degraded("search_failed")
         yield sse(
             "error",
             ErrorData(
@@ -311,19 +321,26 @@ async def stream_recommendation(
         observer.record_model_call(resolve_model_id(settings, "smart"))
     rerank_degraded = False
     try:
-        rr = await rerank(
-            llm,
-            query=request.message,
-            candidates=candidates,
-            profile_summary=profile,
-            tier="smart",
-            expose_max=settings.expose_max,
-        )
+        with trace_span(
+            "llm.rerank",
+            "llm",
+            {"model": resolve_model_id(settings, "smart")},
+        ):
+            rr = await rerank(
+                llm,
+                query=request.message,
+                candidates=candidates,
+                profile_summary=profile,
+                tier="smart",
+                expose_max=settings.expose_max,
+            )
         ranked_ids = [pid for pid, _ in rr.ranked]
         reason_by_id = dict(rr.ranked)  # 상품별 근거(§4.2) — (productId, rationale) 튜플 → 맵
         comment = _strip_unsafe(rr.overall_comment)
     except LLMError:
         rerank_degraded = True
+        if trace := current_request_trace():
+            trace.mark_degraded("rerank_fallback")
         ranked_ids = [p.product_id for p in candidates[: settings.expose_max]]
         reason_by_id = {}  # degrade 경로엔 rerank 근거 없음 — reasons 는 빈 배열(계약상 선택)
         comment = "요청하신 조건으로 찾은 상품들이에요."
@@ -397,6 +414,8 @@ async def stream_recommendation(
     else:
         # push 실패 → products.ready 없음. rerank 코멘트가 "찾았다"고 했으니 목록 지연을 고지하고
         # 정상 종료한다(경로 B 실패 계약 — error 아님, done 유지).
+        if trace := current_request_trace():
+            trace.mark_degraded("push_skipped")
         yield sse(
             "token",
             TokenData(
