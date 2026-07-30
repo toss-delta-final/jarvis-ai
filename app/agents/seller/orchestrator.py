@@ -30,7 +30,7 @@ from app.agents.seller import history
 from app.agents.seller import thread as seller_thread
 from app.agents.seller.context import SellerContext
 from app.agents.seller.middleware import check_scope
-from app.agents.seller.models import ROLE_TIER, SellerRole
+from app.agents.seller.models import SellerRole, seller_trace_model_metadata
 from app.agents.seller.pipeline import (
     ALL_WORKERS_FAILED_TOKEN,
     PROGRESS_TOKENS,
@@ -66,7 +66,7 @@ from app.agents.seller.workers import (
     build_supervisor,
 )
 from app.core.config import get_settings
-from app.core.llm import LLMNotConfigured, resolve_provider_model
+from app.core.llm import LLMNotConfigured
 from app.core.tracing import current_request_trace, trace_span
 
 logger = logging.getLogger(__name__)
@@ -85,12 +85,7 @@ WORKER_BUILDERS: dict[AnalysisType, Callable[[], CompiledStateGraph]] = {
 
 
 def _llm_metadata(role: SellerRole) -> dict[str, str] | None:
-    """Resolve only the bounded configured model id; fake/incomplete test settings stay usable."""
-    try:
-        resolved = resolve_provider_model(get_settings(), ROLE_TIER[role], with_tools=True)
-    except Exception:
-        return None
-    return {"model": resolved.model_id}
+    return seller_trace_model_metadata(role)
 
 
 def _mark_degraded(reason: str) -> None:

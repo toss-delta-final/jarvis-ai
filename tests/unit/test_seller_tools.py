@@ -37,7 +37,12 @@ from app.schemas.spring import (
     SellerProductList,
 )
 from app.services.spring_client import SpringUnavailableError
-from app.core.tracing import FakeTraceExporter, TraceFactory, bind_request_trace
+from app.core.tracing import (
+    FakeTraceExporter,
+    LangSmithTraceExporter,
+    TraceFactory,
+    bind_request_trace,
+)
 
 FORBIDDEN_IDENTITY_KEYS = {"sellerId", "brandId", "seller_id", "brand_id"}
 
@@ -226,6 +231,61 @@ async def test_caught_tool_error_exports_only_safe_error_code() -> None:
     assert "2026-07-01" not in payload
     assert "2026-07-14" not in payload
     assert "Spring 콜백 타임아웃" not in payload
+
+
+async def test_caught_tool_error_survives_pinned_sdk_serialization_without_payload(
+    monkeypatch,
+) -> None:
+    """Removing child error serialization must lose TOOL_ERROR and fail this regression."""
+    from langsmith import Client
+
+    serialized_operations = []
+
+    def capture_after_sdk_serialization(self, operations, **kwargs) -> None:
+        del self, kwargs
+        serialized_operations.extend(operations)
+
+    monkeypatch.setattr(Client, "_batch_ingest_run_ops", capture_after_sdk_serialization)
+    client = Client(
+        api_key="lsv2_pt_abcdefghijklmnop1234",
+        auto_batch_tracing=False,
+        omit_traced_runtime_info=True,
+    )
+    exporter = LangSmithTraceExporter(client, "jarvis-ai-test", 0.5)
+    trace = TraceFactory(exporter=exporter, enabled=True, sampling_rate=1).start_request(
+        name="seller_chat_turn",
+        request_id="req-safe",
+        conversation_id="conversation-safe",
+        thread_id="thread-safe",
+        lane="analysis",
+        environment="test",
+    )
+    fake = FakeSpringClient(fail={"get_sales"})
+
+    with bind_request_trace(trace):
+        result = await _call_runtime_tool(
+            get_sales_timeseries,
+            {"from_date": "2026-07-01", "to_date": "2026-07-14"},
+            fake,
+            brand_id=987654321,
+        )
+    await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+
+    assert result.startswith("Error:")
+    run_info = [operation.deserialize_run_info() for operation in serialized_operations]
+    tool_run = next(run for run in run_info if run["name"] == "tool.get_sales_timeseries")
+    assert tool_run["extra"]["metadata"]["errorType"] == "TOOL_ERROR"
+    assert all(operation.inputs == b"{}" for operation in serialized_operations)
+    assert all(operation.outputs == b"{}" for operation in serialized_operations)
+    serialized = repr(run_info)
+    for private_value in (
+        "2026-07-01",
+        "2026-07-14",
+        "987654321",
+        "Spring 콜백 타임아웃",
+        "Error: 매출 데이터를 불러오지 못했습니다",
+    ):
+        assert private_value not in serialized
 
 
 async def test_tool_returns_error_string_on_timeout() -> None:

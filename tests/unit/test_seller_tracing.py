@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import types
 from time import perf_counter
 
@@ -50,6 +51,14 @@ def _seller_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _response_events(response) -> list[dict]:
+    return [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+
+
 def _start_seller_trace(factory: CapturingTraceFactory):
     return factory.start_request(
         name="seller_chat_turn",
@@ -88,6 +97,11 @@ def test_seller_request_exports_one_correlated_root(
     )
 
     assert response.status_code == 200
+    events = _response_events(response)
+    assert [event["type"] for event in events] == ["meta", "token", "done"]
+    assert not any(
+        event["type"] == "error" and event["data"]["code"] == "INTERNAL" for event in events
+    )
     assert len(fake_trace_factory.exporter.exported) == 1
     roots = [node for node in fake_trace_factory.exporter.exported[0] if node.parent_id is None]
     assert len(roots) == 1
@@ -98,6 +112,173 @@ def test_seller_request_exports_one_correlated_root(
     assert by_name["seller.routing"].parent_id == roots[0].id
     assert by_name["seller.graph.general"].parent_id == roots[0].id
     assert by_name["llm.seller.general"].parent_id == by_name["seller.graph.general"].id
+
+
+def test_analysis_request_through_open_stream_finishes_done_with_intact_tree(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_trace_factory: CapturingTraceFactory,
+) -> None:
+    from app.agents.seller.orchestrator import PipelineResult
+    from app.agents.seller.schemas import RouteDecision
+    from app.api import seller as seller_api
+    from app.core.tracing import trace_span
+
+    async def route(*_args, **_kwargs):
+        return RouteDecision(category="analysis", reason="bounded", confidence=1)
+
+    async def pipeline(*_args, emit, **_kwargs):
+        with trace_span("llm.seller.planner", "llm"):
+            await emit("분석 중…")
+        return PipelineResult(kind="report", text="bounded report")
+
+    monkeypatch.setattr(seller_api, "route_question", route)
+    monkeypatch.setattr(seller_api, "run_analysis_pipeline", pipeline)
+    response = client.post(
+        "/seller/chat",
+        json={
+            "sessionId": "analysis-open-stream",
+            "threadId": "analysis-open-stream",
+            "message": "지난달 매출 분석",
+        },
+        headers=_seller_headers(),
+    )
+
+    assert response.status_code == 200
+    events = _response_events(response)
+    assert [event["type"] for event in events] == ["meta", "progress", "token", "done"]
+    assert not any(
+        event["type"] == "error" and event["data"]["code"] == "INTERNAL" for event in events
+    )
+    nodes = fake_trace_factory.exporter.exported[0]
+    by_name = {node.name: node for node in nodes}
+    root = by_name["seller_chat_turn"]
+    analysis = by_name["seller.graph.analysis"]
+    assert analysis.parent_id == root.id
+    assert by_name["llm.seller.planner"].parent_id == analysis.id
+    assert root.metadata["terminalReason"] == "done"
+
+
+class _DisconnectRequest:
+    state = types.SimpleNamespace()
+
+    async def is_disconnected(self) -> bool:
+        return True
+
+
+async def test_general_disconnect_cancels_and_awaits_provider_producer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.api import seller as seller_api
+    from app.agents.seller.schemas import RouteDecision
+    from app.core.config import get_settings
+    from app.core.stream import open_stream
+
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    finished = asyncio.Event()
+
+    class Agent:
+        async def astream(self, *_args, **_kwargs):
+            try:
+                started.set()
+                await asyncio.Event().wait()
+                yield AIMessageChunk(content="unreachable")
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+            finally:
+                finished.set()
+
+    async def route(*_args, **_kwargs):
+        return RouteDecision(category="general", reason="bounded", confidence=1)
+
+    monkeypatch.setattr(seller_api, "build_general_agent", lambda today, checkpointer=None: Agent())
+    monkeypatch.setattr(seller_api, "route_question", route)
+    monkeypatch.setattr(get_settings(), "stream_disconnect_poll_s", 0.005)
+    request = SellerChatRequest(
+        session_id="general-disconnect",
+        thread_id="general-disconnect",
+        message="question",
+    )
+    response = await open_stream(
+        _DisconnectRequest(),
+        "seller:general-disconnect",
+        lambda: seller_api._seller_stream(
+            request,
+            Identity(
+                user_id="7",
+                is_guest=False,
+                seller_id="7",
+                brand_id="3",
+                subject="7",
+            ),
+        ),
+    )
+
+    frames = [frame async for frame in response.body_iterator]
+
+    assert len(frames) == 1
+    assert json.loads(frames[0].removeprefix("data: "))["type"] == "meta"
+    assert started.is_set()
+    assert cancelled.is_set()
+    assert finished.is_set()
+
+
+async def test_analysis_disconnect_cancels_and_awaits_pipeline_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.api import seller as seller_api
+    from app.agents.seller.schemas import RouteDecision
+    from app.core.config import get_settings
+    from app.core.stream import open_stream
+
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    finished = asyncio.Event()
+
+    async def pipeline(*_args, **_kwargs):
+        try:
+            started.set()
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        finally:
+            finished.set()
+
+    async def route(*_args, **_kwargs):
+        return RouteDecision(category="analysis", reason="bounded", confidence=1)
+
+    monkeypatch.setattr(seller_api, "run_analysis_pipeline", pipeline)
+    monkeypatch.setattr(seller_api, "route_question", route)
+    monkeypatch.setattr(get_settings(), "stream_disconnect_poll_s", 0.005)
+    request = SellerChatRequest(
+        session_id="analysis-disconnect",
+        thread_id="analysis-disconnect",
+        message="question",
+    )
+    response = await open_stream(
+        _DisconnectRequest(),
+        "seller:analysis-disconnect",
+        lambda: seller_api._seller_stream(
+            request,
+            Identity(
+                user_id="7",
+                is_guest=False,
+                seller_id="7",
+                brand_id="3",
+                subject="7",
+            ),
+        ),
+    )
+
+    frames = [frame async for frame in response.body_iterator]
+
+    assert len(frames) == 1
+    assert json.loads(frames[0].removeprefix("data: "))["type"] == "meta"
+    assert started.is_set()
+    assert cancelled.is_set()
+    assert finished.is_set()
 
 
 async def test_parallel_workers_are_sibling_spans_with_llm_children(
@@ -220,8 +401,8 @@ async def test_analysis_request_exports_complete_bounded_tree(
     monkeypatch.setattr(orchestrator.history, "save_history", save_history)
     monkeypatch.setattr(
         orchestrator,
-        "resolve_provider_model",
-        lambda *_args, **_kwargs: types.SimpleNamespace(model_id="bounded-model"),
+        "seller_trace_model_metadata",
+        lambda *_args, **_kwargs: {"model": "bounded-model"},
     )
     monkeypatch.setattr(
         orchestrator,
@@ -322,8 +503,8 @@ async def test_general_provider_ttft_uses_first_non_empty_chunk(
     monkeypatch.setattr(seller_api, "build_general_agent", lambda today, checkpointer=None: Agent())
     monkeypatch.setattr(
         seller_api,
-        "resolve_provider_model",
-        lambda *_args, **_kwargs: types.SimpleNamespace(model_id="bounded-model"),
+        "seller_trace_model_metadata",
+        lambda *_args, **_kwargs: {"model": "bounded-model"},
     )
     trace = _start_seller_trace(fake_trace_factory)
     request = SellerChatRequest(session_id="s", thread_id="t", message="question")
@@ -344,6 +525,66 @@ async def test_general_provider_ttft_uses_first_non_empty_chunk(
     assert llm.metadata == {"model": "bounded-model"}
     assert root.metadata["provider_ttft_ms"] >= 5
     assert root.metadata["provider_ttft_ms"] <= int((perf_counter() - started) * 1000)
+
+
+def test_seller_telemetry_model_metadata_uses_configured_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bypassing the configured resolver must omit the expected model and fail this test."""
+    from app.agents.seller import models
+    from app.core.config import Settings
+
+    settings = Settings(
+        _env_file=None,
+        llm_provider="openai",
+        openai_api_key="test-key",
+        openai_smart_model_id="configured-seller-model",
+    )
+    monkeypatch.setattr(models, "get_settings", lambda: settings)
+
+    assert models.seller_trace_model_metadata("planner") == {"model": "configured-seller-model"}
+
+
+async def test_seller_telemetry_model_resolution_failure_isolated_with_safe_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_trace_factory: CapturingTraceFactory,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Removing the explicit telemetry boundary must fail the request or leak diagnostics."""
+    from app.agents.seller import models
+    from app.api import seller as seller_api
+
+    class Agent:
+        async def astream(self, *_args, **_kwargs):
+            yield AIMessageChunk(content="still available")
+
+    def fail_resolution(*_args, **_kwargs):
+        raise RuntimeError("private resolver failure customer@example.com")
+
+    monkeypatch.setattr(models, "resolve_provider_model", fail_resolution)
+    monkeypatch.setattr(seller_api, "build_general_agent", lambda **_kwargs: Agent())
+    trace = _start_seller_trace(fake_trace_factory)
+    request = SellerChatRequest(session_id="s", thread_id="t", message="question")
+
+    with bind_request_trace(trace):
+        frames = [
+            line
+            async for line in seller_api._general_stream(
+                request, SellerContext(seller_id=7, brand_id=3)
+            )
+        ]
+    await _finish(trace)
+
+    assert any("still available" in frame for frame in frames)
+    llm = next(
+        node
+        for node in fake_trace_factory.exporter.exported[0]
+        if node.name == "llm.seller.general"
+    )
+    assert llm.metadata == {}
+    assert "SELLER_TELEMETRY_MODEL_RESOLUTION_FAILED" in caplog.text
+    assert "private resolver failure" not in caplog.text
+    assert "customer@example.com" not in caplog.text
 
 
 async def test_existing_seller_degrade_outcomes_use_four_bounded_reasons(

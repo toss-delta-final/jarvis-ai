@@ -457,6 +457,9 @@ def _build_export_payloads(
         else:
             dotted_order = f"{dotted_orders[node.parent_id]}.{segment}"
         dotted_orders[node.id] = dotted_order
+        metadata = dict(node.metadata)
+        if node.error_type is not None:
+            metadata["errorType"] = node.error_type
         payload: dict[str, object] = {
             "id": node.id,
             "trace_id": node.trace_id,
@@ -468,7 +471,7 @@ def _build_export_payloads(
             "end_time": node.ended_at,
             "inputs": {},
             "outputs": {},
-            "extra": {"metadata": dict(node.metadata)},
+            "extra": {"metadata": metadata},
         }
         if project_name is not None:
             payload["session_name"] = project_name

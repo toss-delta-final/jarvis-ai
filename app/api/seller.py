@@ -46,7 +46,7 @@ from app.agents.seller.context import SellerContext
 from app.agents.seller.history import apply_recommendation
 from app.agents.seller.hitl import DraftRecord, confirm_draft, start_draft, validate_draft
 from app.agents.seller.middleware import StreamingOutputGuard, check_scope, mask_output
-from app.agents.seller.models import ROLE_TIER, SellerRole
+from app.agents.seller.models import SellerRole, seller_trace_model_metadata
 from app.agents.seller.orchestrator import route_question, run_analysis_pipeline
 from app.agents.seller.pipeline import parse_apply_message
 from app.agents.seller.schemas import DraftProposal
@@ -56,7 +56,7 @@ from app.core.auth import Identity
 from app.core.config import get_settings
 from app.core.conversation import TurnStatus, get_conversation_store
 from app.core.errors import get_request_id, new_request_id
-from app.core.llm import LLMNotConfigured, resolve_provider_model
+from app.core.llm import LLMNotConfigured
 from app.core.observability import emit_rejection, finish_trace_safely, start_observation
 from app.core.stream import open_stream, registry_key
 from app.core.tracing import current_request_trace, start_request_trace_safely, trace_span
@@ -115,11 +115,7 @@ def _mark_seller_degraded(reason: str) -> None:
 
 
 def _llm_metadata(role: SellerRole) -> dict[str, str] | None:
-    try:
-        resolved = resolve_provider_model(get_settings(), ROLE_TIER[role], with_tools=True)
-    except Exception:
-        return None
-    return {"model": resolved.model_id}
+    return seller_trace_model_metadata(role)
 
 
 def _error(
@@ -255,9 +251,12 @@ async def _general_stream(
         yield _done("keep")
         return
 
-    try:
+    queue: asyncio.Queue[object] = asyncio.Queue()
+
+    async def produce() -> None:
+        """Run all token-backed trace contexts in one persistent task."""
         with trace_span("seller.graph.general", "chain"):
-            # 빌드도 try 안 — 실패 시 error 이벤트 봉투로 종료(마감 리뷰 M2 반영).
+            # 빌드도 producer 안 — 실패 시 기존 error 이벤트 봉투로 종료한다.
             agent = build_general_agent(
                 today=date.today().isoformat(), checkpointer=await get_checkpointer()
             )
@@ -282,9 +281,19 @@ async def _general_stream(
                                 int(round((perf_counter() - started) * 1000))
                             )
                     for visible in output_guard.feed(text):
-                        yield _visible_token(visible)
-        for visible in output_guard.flush():
-            yield _visible_token(visible)
+                        await queue.put(_visible_token(visible))
+            for visible in output_guard.flush():
+                await queue.put(_visible_token(visible))
+
+    producer_task = asyncio.create_task(produce())
+    producer_task.add_done_callback(lambda _task: queue.put_nowait(_PIPELINE_DONE))
+    try:
+        while True:
+            item = await queue.get()
+            if item is _PIPELINE_DONE:
+                break
+            yield str(item)
+        await producer_task
         yield _done("keep")
     except LLMNotConfigured:
         yield _llm_unavailable(
@@ -307,6 +316,10 @@ async def _general_stream(
             request_id=request_id,
             retryable=True,
         )
+    finally:
+        if not producer_task.done():
+            producer_task.cancel()
+        await asyncio.gather(producer_task, return_exceptions=True)
 
 
 async def _analysis_stream(
@@ -335,19 +348,21 @@ async def _analysis_stream(
     async def emit(text: str) -> None:
         await queue.put(text)
 
-    with trace_span("seller.graph.analysis", "chain"):
-        pipeline_task = asyncio.create_task(
-            run_analysis_pipeline(
+    async def run_pipeline():
+        """Keep the analysis trace token and all descendants in one task context."""
+        with trace_span("seller.graph.analysis", "chain"):
+            return await run_analysis_pipeline(
                 request.message,
                 context,
                 today=date.today(),
                 emit=emit,
                 recent_turns=recent_turns,
             )
-        )
-        # 정상/예외 공통으로 sentinel 을 넣어 진행 루프를 반드시 끝낸다.
-        pipeline_task.add_done_callback(lambda _t: queue.put_nowait(_PIPELINE_DONE))
 
+    pipeline_task = asyncio.create_task(run_pipeline())
+    # 정상/예외 공통으로 sentinel 을 넣어 진행 루프를 반드시 끝낸다.
+    pipeline_task.add_done_callback(lambda _task: queue.put_nowait(_PIPELINE_DONE))
+    try:
         while True:
             item = await queue.get()
             if item is _PIPELINE_DONE:
@@ -382,11 +397,15 @@ async def _analysis_stream(
                 retryable=True,
             )
             return
-    # 대화 스레드 기록(best-effort) — 되묻기 포함 최종 문안이 후속 발화의 맥락이 된다.
-    await seller_thread.record_turn(context, request.thread_id, request.message, result.text)
-    yield _token(result.text)
-    # 보고서만 우측 패널 교체, 되묻기·사과·거절은 대화로 유지.
-    yield _done("replace" if result.kind == "report" else "keep")
+        # 대화 스레드 기록(best-effort) — 되묻기 포함 최종 문안이 후속 발화의 맥락이 된다.
+        await seller_thread.record_turn(context, request.thread_id, request.message, result.text)
+        yield _token(result.text)
+        # 보고서만 우측 패널 교체, 되묻기·사과·거절은 대화로 유지.
+        yield _done("replace" if result.kind == "report" else "keep")
+    finally:
+        if not pipeline_task.done():
+            pipeline_task.cancel()
+        await asyncio.gather(pipeline_task, return_exceptions=True)
 
 
 async def _product_stream(
