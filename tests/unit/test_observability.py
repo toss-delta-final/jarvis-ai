@@ -604,6 +604,65 @@ async def test_asgi_cancellation_after_headers_before_first_pull_cleans_stream()
     assert turn is not None and turn.status == TurnStatus.CANCELLED
 
 
+@pytest.mark.parametrize("blocked_body_number", [1, 2])
+async def test_asgi_cancellation_during_body_send_cleans_started_stream(
+    blocked_body_number: int,
+) -> None:
+    exporter = FakeTraceExporter()
+    obs = await _obs("cancel-first-body-send", trace=_trace(exporter))
+    closed = asyncio.Event()
+    body_send_started = asyncio.Event()
+
+    async def prefetched_then_idle():
+        try:
+            yield 'data: {"type":"meta","data":{"lane":"test"}}\n\n'
+            yield 'data: {"type":"token","data":{"text":"hello"}}\n\n'
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+
+    async def receive():
+        await asyncio.Event().wait()
+
+    body_number = 0
+
+    async def send(message):
+        nonlocal body_number
+        if message["type"] == "http.response.body" and message.get("more_body"):
+            body_number += 1
+            if body_number == blocked_body_number:
+                body_send_started.set()
+                await asyncio.Event().wait()
+
+    key = f"member:cancel-body-send:{blocked_body_number}"
+    response = await open_stream(_FakeRequest(), key, prefetched_then_idle, observer=obs)
+    response_task = asyncio.create_task(
+        response(
+            {"type": "http", "asgi": {"spec_version": "2.4"}},
+            receive,
+            send,
+        )
+    )
+    await body_send_started.wait()
+    response_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await response_task
+    await asyncio.sleep(0)
+
+    assert closed.is_set()
+    assert not get_registry().is_active(key)
+    assert not [
+        task
+        for task in asyncio.all_tasks()
+        if not task.done() and task.get_coro().__qualname__ == "_IteratorPump._run"
+    ]
+    assert len(exporter.exported) == 1
+    (root, *_) = exporter.exported[0]
+    assert root.metadata["terminalReason"] == "client_disconnect"
+    turn = await obs.store.get_turn(obs.turn_id)
+    assert turn is not None and turn.status == TurnStatus.CANCELLED
+
+
 def test_structured_log_has_fields_and_hides_raw_message(
     caplog: pytest.LogCaptureFixture, buyer_fakes
 ) -> None:

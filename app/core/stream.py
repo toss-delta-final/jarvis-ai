@@ -297,7 +297,7 @@ class _ResponseLifecycle:
                     )
                 self._finished = True
 
-    async def cancel_before_first_pull(self) -> None:
+    async def cancel(self) -> None:
         await self.finish(
             stream_status=TurnStatus.CANCELLED,
             error_type=None,
@@ -325,11 +325,12 @@ class _ArmedBodyIterator:
         if self.started:
             await self._iterator.aclose()  # type: ignore[attr-defined]
         else:
-            await self._lifecycle.cancel_before_first_pull()
+            await self._lifecycle.cancel()
 
-    async def cancel_before_first_pull(self) -> None:
-        if not self.started:
-            await self._lifecycle.cancel_before_first_pull()
+    async def abort(self) -> None:
+        await self._lifecycle.cancel()
+        if self.started:
+            await self._iterator.aclose()  # type: ignore[attr-defined]
 
 
 class _LifecycleStreamingResponse(StreamingResponse):
@@ -341,7 +342,7 @@ class _LifecycleStreamingResponse(StreamingResponse):
         try:
             await super().__call__(scope, receive, send)
         except BaseException:
-            await self.body_iterator.cancel_before_first_pull()
+            await self.body_iterator.abort()
             raise
 
 
