@@ -187,6 +187,28 @@ X-Internal-Token: {SERVICE_TOKEN}
 - `404`/`503`/`500` 등 그 외 상태는 필요 시 동일 봉투로 확장한다(제안). 정확한 코드 목록은 Spring 협의로 조정될 수 있다. 🔴
 - 이 표가 **스트림 전 오류 코드의 통합 목록**이다(v0.7.0 — 4번 항목). 스트림 **내부** 오류는 §3.1 in-stream `error` 4종(+타임아웃, §2.9)으로 별도.
 
+#### 공통 헤더 규약 — `X-Request-Id` · `traceparent` **[v0.15.26]**
+
+정본은 Notion「🗂️ 프로젝트 자료실」의 **「공통 헤더 규약 — X-Request-Id · traceparent (전 API 공통)」** 페이지다. API 명세서 DB는 엔드포인트 행 단위라 전 API 공통 규약을 놓을 자리가 없어 DB 바깥에 두었다. 아래는 **AI 서버 소관 요약**이다.
+
+| 항목 | 규칙 | AI 현재 |
+|---|---|---|
+| `X-Request-Id` 생성 | 최초 진입 서비스가 만든다 | — |
+| 형식 | `[A-Za-z0-9_-]{16,64}` | — |
+| **inbound 수용** | 형식에 맞으면 **유지**, 아니면 버리고 새로 만든다(400 아님 — 추적 편의가 요청을 막으면 안 된다) | 🔴 **미구현** — `app/core/errors.py` `request_context_middleware`가 `new_request_id()`를 **조건 없이** 호출한다 |
+| **outbound 전파** | Spring 역호출에 그대로 실어 보낸다 | 🔴 **미구현** — `app/services/spring_client.py`가 `X-Internal-Token` **하나만** 붙인다 |
+| 응답 echo | 응답 헤더로 되돌린다 | ✅ 구현됨(미들웨어 + 오류 핸들러 전부) |
+| in-stream `error` | `requestId` 포함 | ✅ 계약 반영(§3.1·§3.2) · 구현 대기 |
+| `traceparent`/`tracestate` | W3C Trace Context, tracing 켜졌을 때 전파. **MVP 범위 밖** | 🔴 코드베이스에 없음 |
+
+> **왜 형식 검증을 하나** — 들어온 값을 무조건 믿으면 **로그 주입**이 된다(개행·제어문자로 로그 한 줄을 쪼개거나 수백 KB로 부풀리기). 화이트리스트 형식에 맞을 때만 유지한다.
+>
+> **`X-Request-Id`는 인증·인가에 쓰지 않는다** — 클라이언트가 정하는 값이라 신뢰 근거가 될 수 없다. 신원은 종전대로 JWT `sub`(§2.3)·`X-Internal-Token`이다.
+>
+> **`traceparent`와 역할이 겹치지 않는다** — `X-Request-Id`는 사람이 로그를 grep 하는 키, `traceparent`는 APM 도구가 스팬 트리를 그리는 키다. 하나로 합치지 않는다.
+>
+> **지금 상태의 대가**: FE → Spring → FastAPI 로그를 같은 키로 이을 수 없어, 오류 하나를 추적하려면 세 시스템 로그를 시간으로 눈대중해야 한다(#141·#134·#151).
+
 #### 401 토큰 만료 재발급 흐름
 
 - 사용자 JWT가 없음/무효/만료이면 AI 서버는 `401`(TOKEN_EXPIRED 또는 TOKEN_INVALID)을 반환한다(레인 a).
@@ -1212,7 +1234,7 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 
 | 버전 | 날짜 | 변경 |
 |---|---|---|
-| v0.15.26 | 2026-07-30 | **[사본 drift 정정] 정본 대조로 틀린 서술 3건 교체.** (1) **담기 이벤트 적재 주체** — §4.1 I-2의 *"`CART_ADD(via: chat)` 이벤트는 BE가 적재(AI 무관)"* 와 §5.1 Q9의 같은 답변을 **폐기**했다. E-1 정본에서 `add_to_cart`는 **FE가 쏘는 12종 중 하나**이고, 서버가 직접 적재하는 이벤트는 `recommendation_generated` 하나뿐이다(E-1 HTTP로 들어오면 드롭). 챗봇 경로도 FE가 SSE `action`(`CART_ADDED`) 수신 시점에 쏜다. (2) **`budget` 이벤트 제외** — 정본(Notion CH-2)이 *"현재 코드에 미구현 → 명세에서 제외(필요 시 post-MVP)"* 로 정리했는데 사본은 §3.1에 스키마를 그대로 두고 이벤트 순서 계약에도 넣어두고 있었다. 스키마는 post-MVP 참고용으로 남기고 순서 계약에서 뺐다(이슈 #163). (3) **`search.query` PII 기준** — 정본 E-1이 *"개인정보를 properties에 넣지 않는다"* 와 *"`search` 필수 = `query`"* 를 동시에 말해 **자기모순**이었고, FE가 그 금지 조항을 근거로 `queryLength`만 보내 `searchTopics` 워커가 돌 수 없었다. 금지 대상은 **FE가 굳이 끌어다 넣는 이름·주소·연락처·이메일**이며 사용자가 직접 입력해 이미 서버로 보낸 검색어는 원문을 싣고 **보존기간으로 관리**한다 — 정본 E-1에 「개인정보 기준」 절로 명확화했다. |
+| v0.15.26 | 2026-07-30 | **[사본 drift 정정] 정본 대조로 틀린 서술 3건 교체.** (1) **담기 이벤트 적재 주체** — §4.1 I-2의 *"`CART_ADD(via: chat)` 이벤트는 BE가 적재(AI 무관)"* 와 §5.1 Q9의 같은 답변을 **폐기**했다. E-1 정본에서 `add_to_cart`는 **FE가 쏘는 12종 중 하나**이고, 서버가 직접 적재하는 이벤트는 `recommendation_generated` 하나뿐이다(E-1 HTTP로 들어오면 드롭). 챗봇 경로도 FE가 SSE `action`(`CART_ADDED`) 수신 시점에 쏜다. (2) **`budget` 이벤트 제외** — 정본(Notion CH-2)이 *"현재 코드에 미구현 → 명세에서 제외(필요 시 post-MVP)"* 로 정리했는데 사본은 §3.1에 스키마를 그대로 두고 이벤트 순서 계약에도 넣어두고 있었다. 스키마는 post-MVP 참고용으로 남기고 순서 계약에서 뺐다(이슈 #163). (3) **공통 헤더 규약 §2.5 신설** — `X-Request-Id`·`traceparent` 는 전 API 공통이라 엔드포인트 행 단위인 정본 DB에 놓을 자리가 없었다. Notion「프로젝트 자료실」에 **공통 규약 페이지를 신설**하고 본 사본 §2.5에 AI 소관 요약을 넣었다(#141·#134·#151). 실측: inbound `X-Request-Id` **수용 미구현**(`request_context_middleware`가 `new_request_id()`를 조건 없이 호출) · Spring 역호출 **전파 미구현**(`X-Internal-Token` 하나만) · 응답 echo 는 구현됨 · `traceparent` 는 코드베이스에 없음. (4) **`search.query` PII 기준** — 정본 E-1이 *"개인정보를 properties에 넣지 않는다"* 와 *"`search` 필수 = `query`"* 를 동시에 말해 **자기모순**이었고, FE가 그 금지 조항을 근거로 `queryLength`만 보내 `searchTopics` 워커가 돌 수 없었다. 금지 대상은 **FE가 굳이 끌어다 넣는 이름·주소·연락처·이메일**이며 사용자가 직접 입력해 이미 서버로 보낸 검색어는 원문을 싣고 **보존기간으로 관리**한다 — 정본 E-1에 「개인정보 기준」 절로 명확화했다. |
 | v0.15.25 | 2026-07-28 | **[사본 동기화] §3.1 요청 계약 확장 + in-stream `error` 추적 필드 — 정본(Notion "📡 API 명세서" CH-2) 2026-07-28 개정 반영.** (1) **`conditionActions` 신설**(이슈 #84) — 조건 칩 제거를 `[{op:"remove", field}]` 구조화 배열로 받는다. 구 규약 문자열(`"[조건 제거] priceMax"`) 왕복 방식은 **폐기** — FE는 그 방식으로 구현돼 있으나 AI에 수신부가 없어 현재 칩 제거가 무동작이다. `conditionActions`가 있으면 `message` 빈 문자열 허용, 둘 다 비면 `400`. 구매자 전용(`BuyerChatRequest`). (2) **`conditions` 칩 `field` 허용값 6종 확정** — `category`/`priceMax`/`priceMin`/`brand`/`ratingMin`/`keyword`. 종전에는 예시 둘만 있어 허용 집합이 계약에 없었는데, `conditionActions.field` 검증의 전제라 등재했다(코드 `build_condition_chips` 실측과 일치). (3) **`screen` 신설**(이슈 #118) — `{pageType, filters?, products?, columns?}`. `pageType`은 **라우트가 아니라 우측 패널 내용**을 가리킨다(채팅이 전용 페이지에만 있어 라우트를 실으면 정보가 0). `products`는 **서버가 모르는 목록만**(P-4 인기상품·판매자 자사 상품) — 추천 카드는 `listId`로 서버가 알고, 되돌려주면 위조 경로가 된다. `columns`는 반응형 그리드 열 수로 "3번째 줄 2번째" 좌표 지시 해소에 쓴다(`rows`·항목별 좌표는 파생값이라 제외). `pageType`은 **E-1 `page_view`와 같은 enum을 공유**한다 — 화면 어휘를 새로 만들지 않기 위해서다. 라우트 `path`는 쿼리스트링 PII 위험으로, 한글 `label`은 AI config 매핑으로 대체해 **계약에서 뺐다**. 07-17 FE 제안(`ChatScreenContext`)과 #118의 "노출 상품 목록" 요구를 **한 필드로 통합**했다(같은 사실의 두 측면). `products`는 담기 허용 목록을 넓히는 입력이며 **두 목록 밖 id 차단 가드는 유지**한다. **구매자·판매자 공용 필드**라 §3.2에도 등재 — 판매자 대시보드는 `meta.lane`·`done.panel`로 AI→FE 화면 조작만 있고 반대 방향이 비어 있었다. (4) **`products.ready`의 `listId`(단일) → `listIds`(배열, 항상)** — I-21이 `lists`를 1~10개 보내므로(§4.2) 단일 필드로는 세트형·니즈별 추천을 나를 수 없었다. 정본 I-21·CH-5는 이미 복수 전제인데 CH-2와 본 사본만 단일로 남아 있던 **3자 불일치**다. 목록이 1개여도 길이 1 배열로 보내 FE 분기를 없애고, 이벤트는 여전히 정확히 1회다. 예시의 `"list-4471"`도 §4.2가 금지한 추측 가능 형식이라 교정했다. **구현(`ProductsReadyData.list_id: str`)도 단일이라 코드 변경이 따라야 한다.** (5) **in-stream `error`에 `requestId`·`retryable` 추가** — 스트림 전 실패(§2.5 봉투)에는 `requestId`가 있는데 스트림 내부 실패에는 없어 추적이 끊겼다. `retryable`은 `code`로 복원 불가(같은 `LLM_UNAVAILABLE`이 미구성/일시불가에 겸용)라 emit 지점이 정한다. §3.2 판매자 스트림도 동일(`ErrorData` 공용). |
 | v0.15.24 | 2026-07-27 | **[사본 동기화] S-5 폐기 반영 — 정본(기획 저장소 Notion "📡 API 명세서" DB) 2026-07-21 결정이 본 사본에 미반영이었다.** S-5 `PATCH /api/seller/products/{id}`(판매자 화면 직접 수정, 07/17 신설)는 **미채택**이며 **상품 수정은 챗봇 HITL(I-11)이 유일 경로**다. §3.2 draft 절의 "챗봇 수정(I-11)과 병존" 서술을 폐기 표기로 교체. Spring 코드 실측에서도 `/api/seller/**`에 PATCH 엔드포인트가 없어 정본·코드 모두와 일치시켰다. 계약 변경이 아니라 **사본 drift 정정**이다. |
 | v0.15.23 | 2026-07-27 | **[#100 P0/P1/P2] I-1 §4.6 실측 정합.** 표시 전용 필드(`imageUrl`·`originalPrice`·`reviewCount`·`options`)를 응답표에서 제거하고 CH-5(§4.3) 하이드레이션 이관 명시(AI 추천 경로 미사용), `price`·`rating`을 "AI 계산용(비표시 — 예산검증 `verifiedSum`·평점 사후필터·rerank 신호, 질의 시점 필요)"으로 명기해 display 오분류 재발 차단, envelope 예시를 실측 `{success, data:[...]}`(bare array)로 정정, 요청 `brandName` 단일→다중(반복 파라미터 → `WHERE brand IN`, 방법 D), `totalCount` 필드 불필요 결정 반영. |

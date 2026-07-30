@@ -19,6 +19,7 @@
   - **in-stream `error`에 `requestId`·`retryable`** — 스트림 전 실패(§2.5 봉투)에만 있던 추적 id를 스트림 내부 실패에도 싣는다. `retryable`은 `code`로 복원 불가(같은 `LLM_UNAVAILABLE`이 "미구성"·"일시 불가"에 겸용)라 emit 지점이 정한다. §3.2 판매자도 동일(`ErrorData` 공용).
   - **`products.ready`를 `listIds` 배열로** — I-21이 `lists`를 1~10개 보내는데 사본·CH-2만 단일 `listId`로 남아 세트형·니즈별 추천을 나를 수 없었다. 목록이 1개여도 길이 1 배열로 보내 FE 분기를 없앤다.
 - **정본 대조로 사본 drift 3건 정정** (api-spec v0.15.26). (1) **담기 이벤트 적재 주체** — §4.1 I-2와 §5.1 Q9의 *"`CART_ADD(via: chat)`는 BE가 적재"* 를 폐기했다. E-1 정본에서 `add_to_cart`는 **FE가 쏘는 12종 중 하나**이고 서버 직접 적재는 `recommendation_generated` 하나뿐이다. (2) **`budget` 이벤트 제외** — 정본이 "미구현 → 명세에서 제외"로 정리했는데 사본은 스키마와 이벤트 순서 계약에 그대로 두고 있었다(#163). (3) **`search.query` PII 기준** — 정본 E-1이 "개인정보 금지"와 "`search` 필수 = `query`"를 동시에 말해 자기모순이었고, FE가 그 금지 조항을 근거로 `queryLength`만 보내 `searchTopics` 워커가 돌 수 없었다. 금지 대상은 FE가 굳이 끌어다 넣는 이름·주소·연락처·이메일이며, 사용자가 직접 입력해 이미 서버로 보낸 검색어는 원문을 싣고 **보존기간으로 관리**한다.
+- **공통 헤더 규약 페이지 신설** (api-spec §2.5). `X-Request-Id`·`traceparent`는 전 API 공통이라 엔드포인트 행 단위인 정본 DB에 놓을 자리가 없었다 — Notion「프로젝트 자료실」에 규약 페이지를 만들고 사본 §2.5에 AI 소관 요약을 넣었다(#141·#134·#151). 실측으로 드러난 것: inbound `X-Request-Id` **수용 미구현**(`request_context_middleware`가 `new_request_id()`를 조건 없이 호출) · Spring 역호출 **전파 미구현**(`X-Internal-Token` 하나만) · 응답 echo는 구현됨 · `traceparent`는 코드베이스에 없음. 그래서 지금은 FE→Spring→FastAPI 로그를 같은 키로 이을 수 없다.
 - **`docs/lessons.md` 2건** — 열거형 어휘의 개수를 머릿셈으로 적어 표(14개)와 본문("13종")이 어긋난 채 5곳에 퍼진 건 · `git fetch` 실패를 `2>/dev/null`로 삼켜 18커밋 뒤처진 트리로 오진한 건(같은 규칙을 적어두고 반복 — 규칙에 "검증"이 빠지면 안 지켜진다).
 
 ### Added
