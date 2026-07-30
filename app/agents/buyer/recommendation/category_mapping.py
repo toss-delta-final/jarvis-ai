@@ -198,20 +198,30 @@ async def map_categories(
         and nearest[i][2] is not None  # 마진 None(히트 1건) = 비교 대상 없음 → 트리거 아님
         and nearest[i][2] <= settings.category_select_margin_max
     ]
-    # 턴당 상한 — fan-out 전 leg 이 애매하면 LLM 이 폭증한다. 초과분은 임베딩 top-1 유지(종전 동작).
-    max_calls = settings.category_select_max_calls
-    for i in ambiguous[max_calls:]:
-        logger.info(
-            "category_select_unavailable",
-            extra={"reason": "max_calls", "canonical": nearest[i][0], "margin": nearest[i][2]},
-        )
-    targets = ambiguous[:max_calls] if llm is not None else []
-    if llm is None and ambiguous:  # LLM 미구성 — 매핑을 LLM 에 종속시키지 않는다(top-1 유지)
+    # 사유는 leg 당 하나여야 한다(PR #188 리뷰) — llm 미구성을 먼저 처리하지 않으면 상한 초과분이
+    # "max_calls"(사실 아님) + "llm_unavailable" 로 이중 기록돼 관측 목적을 스스로 훼손한다.
+    targets: list[int] = []
+    if llm is None:  # LLM 미구성 — 매핑을 LLM 에 종속시키지 않는다(전 leg top-1 유지)
         for i in ambiguous:
+            # margin 을 함께 남긴다 — 이 이벤트의 용도가 마진 분포 기반 임계 재튜닝(§11)이라
+            # 사유별로 payload 가 다르면 그 사유의 표본이 분석에서 빠진다.
             logger.info(
                 "category_select_unavailable",
-                extra={"reason": "llm_unavailable", "canonical": nearest[i][0]},
+                extra={
+                    "reason": "llm_unavailable",
+                    "canonical": nearest[i][0],
+                    "margin": nearest[i][2],
+                },
             )
+    else:
+        # 턴당 상한 — fan-out 전 leg 이 애매하면 LLM 이 폭증한다. 초과분은 top-1 유지(종전 동작).
+        max_calls = settings.category_select_max_calls
+        for i in ambiguous[max_calls:]:
+            logger.info(
+                "category_select_unavailable",
+                extra={"reason": "max_calls", "canonical": nearest[i][0], "margin": nearest[i][2]},
+            )
+        targets = ambiguous[:max_calls]
     if targets:
         picks = await asyncio.gather(
             *(

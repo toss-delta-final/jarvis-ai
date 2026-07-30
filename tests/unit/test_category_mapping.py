@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 from app.agents.buyer.recommendation.category_mapping import map_categories
 from app.agents.buyer.recommendation.state import CategoryQuery
+from app.core.llm import LLMError
 
 
 def _settings(
@@ -512,6 +513,52 @@ async def test_select_skipped_when_llm_not_configured() -> None:
     out = await m.run([CategoryQuery(None, "선물용품")], select=sel, llm=None)
     assert out == [("취미 > 수집용품", "선물용품")]
     assert sel.calls == []
+
+
+async def test_llm_unavailable_never_logs_max_calls_reason(caplog) -> None:
+    """llm 미구성 + 애매한 leg 이 상한보다 많을 때, 초과분에 "max_calls" 사유를 붙이지 않는다.
+
+    [PR #188 리뷰] 상한 초과 로깅이 llm 상태와 무관하게 먼저 돌면, 같은 leg 이 "max_calls"(사실
+    아님)와 "llm_unavailable"(진짜 사유)로 **두 번** 기록된다. 이 PR 의 취지가 category_select_*
+    이벤트로 임계를 재튜닝하는 관측이라, 거짓 사유가 섞이면 목적을 스스로 훼손한다.
+    """
+    ambiguous = {
+        f"라벨{i}": [(f"카테고리 > A{i}", 0.20), (f"카테고리 > B{i}", 0.2050)] for i in range(3)
+    }
+    m = _FakeMapper(exact=set(), nearest={}, hits=ambiguous)
+    with caplog.at_level("INFO"):
+        out = await m.run(
+            [CategoryQuery(None, f"라벨{i}") for i in range(3)],
+            settings=_settings(select_max_calls=2),
+            llm=None,  # 미구성 — 상한과 무관하게 전부 llm_unavailable 이어야 한다
+        )
+    assert len(out) == 3  # 전 leg 이 임베딩 top-1 로 살아남는다
+    reasons = [r.reason for r in caplog.records if r.msg == "category_select_unavailable"]
+    assert reasons == ["llm_unavailable"] * 3  # 3건, 사유 단일 — 중복·모순 없음
+    assert "max_calls" not in reasons
+
+
+async def test_real_select_category_llm_failure_keeps_top1(caplog) -> None:
+    """[PR #188] **실제 select_category** 와 조합했을 때도 LLM 실패가 top-1 을 유지하는가 (seam 테스트).
+
+    이 이음새가 결함이 났던 자리다 — 호출부는 "예외=판정 실패(top-1 유지) / None=맞는 후보 없음
+    (드롭)"을 가정했는데, `select_category` 는 `LLMError` 를 삼켜 None 을 돌려주고 있었다. 즉 LLM
+    타임아웃이 "맞는 카테고리 없음"으로 오해돼 **카테고리를 삭제**했다. 양쪽 모듈을 각각 fake 로
+    덮은 테스트는 이 불일치를 통과시킨다(호출부 테스트의 fake 는 예외를 던지고, select_category
+    테스트는 호출부를 안 본다) — 그래서 여기서는 **주입 없이 실제 함수**를 쓴다.
+    """
+
+    class _RaisingLLM:
+        async def complete(self, **kwargs):
+            raise LLMError("llm timeout")
+
+    m = _FakeMapper(exact=set(), nearest={}, hits=_AMBIGUOUS)
+    with caplog.at_level("INFO"):
+        # select 주입 없음 → 프로덕션 기본값(실제 select_category)이 쓰인다
+        out = await m.run([CategoryQuery(None, "선물용품")], llm=_RaisingLLM())
+    assert out == [("취미 > 수집용품", "선물용품")]  # 드롭이 아니라 임베딩 top-1 유지
+    rec = _record(caplog, "category_select_unavailable")
+    assert "llm timeout" in rec.reason  # 사유가 관측된다(llm_unavailable·max_calls 아님)
 
 
 async def test_select_calls_are_capped_per_turn(caplog) -> None:

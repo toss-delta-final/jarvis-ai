@@ -2,12 +2,17 @@
 
 top-k 후보를 LLM 에 주고 최종 1개를 고른다. 핵심 가드:
 - 후보에 없는 값(환각)을 LLM 이 내도 그대로 쓰지 않는다(membership → null).
-- 후보가 없거나 LLM 이 실패하면 non-blocking 으로 null(categoryName 생략).
+- null 은 **"맞는 후보 없음"이라는 판정 결과**다(후보 0건·LLM 이 null·환각 포함) — 호출부(§4.4)는
+  그 leg 를 드롭한다.
+- **LLM 실패(LLMError)는 null 로 뭉개지 않고 전파**한다(#115) — "판정 실패"는 후속 조치가 반대
+  (임베딩 top-1 유지)라서 구분해야 한다. non-blocking 보장은 호출부가 담당한다.
 """
 
 from __future__ import annotations
 
 import json
+
+import pytest
 
 from app.agents.buyer.recommendation.category_select import select_category
 from app.core.llm import LLMError
@@ -62,7 +67,15 @@ async def test_empty_candidates_skip_llm() -> None:
     assert llm.called is False
 
 
-async def test_llm_failure_degrades_to_none() -> None:
-    """LLM 오류·JSON 파싱 실패는 non-blocking — 스트림을 끊지 않고 None(categoryName 생략)."""
+async def test_llm_failure_propagates_so_caller_can_distinguish() -> None:
+    """[#115 §4.4] LLM 오류는 삼키지 않고 전파한다 — 호출부가 None 과 구분해야 하기 때문이다.
+
+    None 은 "후보 중 맞는 것이 없음" = 그 leg 를 드롭하라는 **판정 결과**이고, 예외는 "판정을 못
+    했음"이다. 둘의 후속 조치가 반대다(드롭 vs 임베딩 top-1 유지). 종전처럼 LLMError 를 None 으로
+    뭉개면 LLM 타임아웃이 "맞는 카테고리 없음"으로 오해돼 **인프라 실패가 카테고리를 삭제**한다 —
+    거리컷 도입 이전보다 후퇴다. non-blocking 보장은 호출부(map_categories)가 gather
+    return_exceptions + top-1 유지로 담당한다.
+    """
     llm = _FakeLLM(error=True)
-    assert await select_category(llm, query="cpu", candidates=_CANDS, tier="fast") is None
+    with pytest.raises(LLMError):
+        await select_category(llm, query="cpu", candidates=_CANDS, tier="fast")
