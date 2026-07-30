@@ -125,7 +125,10 @@ async def test_unmapped_anchor_is_logged(caplog) -> None:
 
 
 async def test_offlist_uses_nearest() -> None:
-    """raw 가 exact 아님 → embed(raw) → 최근접 채택(거리 무관 항상), query 보존."""
+    """raw 가 exact 아님 → 임베딩 최근접 채택(거리 무관 항상), query 보존.
+
+    (query 앵커에 히트가 없는 경우라 §4.3 병행 조회에서도 raw 쪽이 그대로 채택된다.)
+    """
     m = _FakeMapper(exact=set(), nearest={"무선 이어폰": "가전 > 이어폰/헤드폰"})
     out = await m.run([CategoryQuery("무선 이어폰", "이어폰")])
     assert out == [("가전 > 이어폰/헤드폰", "이어폰")]
@@ -189,6 +192,105 @@ async def test_single_hit_margin_is_none(caplog) -> None:
     with caplog.at_level("INFO"):
         await m.run([CategoryQuery("양말", "양말")])
     assert _record(caplog, "category_repaired").margin is None
+
+
+async def test_query_anchor_wins_when_closer_than_raw(caplog) -> None:
+    """raw·query 둘 다 조회해 **더 가까운 쪽**을 채택한다 (§4.3 #115 — 종전엔 raw 가 query 를 덮었다).
+
+    #115 의 핵심 손실 경로 재현: LLM 이 창작한 raw 라벨('가전/생활용폼' — 오타까지 포함)은 실측
+    0.2399/마진 0.0021 로 사실상 동전 던지기인데, 발화 유래 query 는 0.0850/마진 0.1561 로 압도적
+    정답이었다. 종전 규칙(`raws[i] or qtexts[i]`)은 그 정답을 조회조차 하지 않고 버렸다.
+    """
+    m = _FakeMapper(
+        exact=set(),
+        nearest={},
+        hits={
+            "가전/생활용폼": [("전기/산업자재 > 전기생활용품", 0.2399), ("생활가전 > LG", 0.2420)],
+            "층간소음 방지 용품": [
+                ("생활잡화 > 층간소음방지용품", 0.0850),
+                ("자동차기기 > 방음/방진/마감재", 0.2411),
+            ],
+        },
+    )
+    with caplog.at_level("INFO"):
+        out = await m.run([CategoryQuery("가전/생활용폼", "층간소음 방지 용품")])
+    assert out == [("생활잡화 > 층간소음방지용품", "층간소음 방지 용품")]
+    rec = _record(caplog, "category_repaired")  # raw 가 있었으므로 이벤트는 repaired 유지
+    assert rec.anchor_kind == "query"  # 다만 canonical 을 낸 앵커는 query
+    assert rec.distance == 0.085
+
+
+async def test_raw_anchor_wins_when_closer_than_query() -> None:
+    """raw 가 더 가까우면 raw 쪽 canonical 을 채택한다(§4.3 — query 우선이 아니라 '가까운 쪽').
+
+    raw 를 무조건 버리는 것도 정답이 아니다. LLM 이 정확한 라벨을 낸 경우("전자제품>오디오>이어폰"
+    → 음향가전 > 이어폰 0.1329)는 발화의 수식어 낀 query 보다 더 가까울 수 있다.
+    """
+    m = _FakeMapper(
+        exact=set(),
+        nearest={},
+        hits={
+            "전자제품>오디오>이어폰": [
+                ("음향가전 > 이어폰", 0.1329),
+                ("음향가전 > 헤드폰", 0.2095),
+            ],
+            "갓성비 무선이어폰": [
+                ("음향가전 > 블루투스 이어폰", 0.2566),
+                ("음향가전 > 이어폰", 0.2569),
+            ],
+        },
+    )
+    out = await m.run([CategoryQuery("전자제품>오디오>이어폰", "갓성비 무선이어폰")])
+    assert out == [("음향가전 > 이어폰", "갓성비 무선이어폰")]
+
+
+async def test_tie_prefers_query_anchor(caplog) -> None:
+    """거리가 동일하면 발화 유래 query 를 택한다 — LLM 창작 라벨보다 발화가 신뢰도 높다(§4.3)."""
+    m = _FakeMapper(
+        exact=set(),
+        nearest={},
+        hits={
+            "선물용품": [("취미 > 수집용품", 0.2074)],
+            "홍삼": [("건강식품 > 홍삼", 0.2074)],  # 같은 거리
+        },
+    )
+    with caplog.at_level("INFO"):
+        out = await m.run([CategoryQuery("선물용품", "홍삼")])
+    assert out == [("건강식품 > 홍삼", "홍삼")]
+    assert _record(caplog, "category_repaired").anchor_kind == "query"
+
+
+async def test_exact_raw_wins_without_distance_comparison() -> None:
+    """raw 가 exact match 면 query 앵커와 거리 비교조차 하지 않는다(§4.3 — exact 는 DB 검증값).
+
+    exact 는 사전에 실재하는 canonical 이라 거리 개념이 없다(0 이 아니라 비교 대상 아님).
+    query 쪽에 더 가까운 히트가 있어도 exact 를 밀어내지 못한다.
+    """
+    m = _FakeMapper(
+        exact={"PC부품 > CPU"},
+        nearest={},
+        hits={"라이젠": [("PC부품 > 기타 PC부품", 0.0001)]},  # 거리상 훨씬 가깝지만 무의미
+    )
+    out = await m.run([CategoryQuery("PC부품 > CPU", "라이젠")])
+    assert out == [("PC부품 > CPU", "라이젠")]
+
+
+async def test_one_anchor_failure_keeps_the_other(caplog) -> None:
+    """한 leg 의 앵커 둘 중 하나만 조회 실패하면 성공한 앵커로 살린다(부분 성공 보존, §5 격리 규약).
+
+    앵커가 2개로 늘었으니 실패 격리 단위도 leg→앵커로 내려간다. raw 조회가 죽어도 query 조회가
+    canonical 을 냈다면 그 leg 를 드롭할 이유가 없다 — 드롭하면 종전보다 오히려 후퇴한다.
+    """
+    m = _FakeMapper(
+        exact=set(),
+        nearest={},
+        hits={"층간소음 방지 용품": [("생활잡화 > 층간소음방지용품", 0.0850)]},
+        search_raises_for={"가전/생활용폼"},  # raw 앵커 조회만 예외
+    )
+    with caplog.at_level("WARNING"):
+        out = await m.run([CategoryQuery("가전/생활용폼", "층간소음 방지 용품")])
+    assert out == [("생활잡화 > 층간소음방지용품", "층간소음 방지 용품")]  # query 앵커로 생존
+    assert "category_leg_search_failed" in [r.msg for r in caplog.records]  # 실패는 관측
 
 
 async def test_null_raw_uses_leg_query_as_anchor() -> None:
@@ -330,14 +432,16 @@ async def test_search_lookups_run_in_parallel() -> None:
     lock = threading.Lock()
     state = {"cur": 0, "peak": 0}
 
-    def _slow_search(vec: list[float], dsn: str, *, k: int) -> list[str]:
+    def _slow_search(vec: list[float], dsn: str, *, k: int) -> list[tuple[str, float]]:
         with lock:
             state["cur"] += 1
             state["peak"] = max(state["peak"], state["cur"])
         time.sleep(0.05)  # 겹칠 시간 확보(병렬이면 동시 진입)
         with lock:
             state["cur"] -= 1
-        return ["가전 > X"]
+        return [
+            ("가전 > X", 0.1)
+        ]  # (category, distance) 계약 — str 만 주면 매핑이 실패 경로로 샌다
 
     def _embed(texts: list[str]) -> list[list[float]]:
         return [[float(i)] for i in range(len(texts))]
@@ -345,7 +449,7 @@ async def test_search_lookups_run_in_parallel() -> None:
     def _exact(values, dsn: str) -> set[str]:
         return set()
 
-    await map_categories(
+    out = await map_categories(
         category_queries=[
             CategoryQuery("a", None),
             CategoryQuery("b", None),
@@ -358,3 +462,6 @@ async def test_search_lookups_run_in_parallel() -> None:
         exact_lookup=_exact,
     )
     assert state["peak"] >= 2  # 병렬이면 동시 진입 ≥2, 순차면 1
+    # 성공 경로였음을 함께 확인 — fake 반환형이 계약과 어긋나면 매핑이 조용히 하드실패 경로로
+    # 빠져(빈 legs) peak 만 보는 이 테스트가 통과해버린다(실제로 그런 상태를 한 번 지나왔다).
+    assert out == [("가전 > X", None)]  # 3 leg 이 같은 canonical → dedup, query 는 전부 None

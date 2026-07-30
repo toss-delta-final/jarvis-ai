@@ -1,9 +1,10 @@
 """카테고리 매핑 오케스트레이션 (이슈 #59, 방식 A — LLM 추측 → 임베딩 보정).
 
 decompose 가 추측한 카테고리(raw)들을 실제 DB 카테고리(canonical)로 보정한다. LLM 재호출
-없이 exact match → 임베딩 최근접(raw, 없으면 그 leg 의 query) 순으로 처리한다. 카테고리 신호가
-있는 leg 는 성공 시 canonical 을 내고, 신호 없는 leg(raw·query 모두 없음)는 카테고리를 강제하지
-않는다 → **canonical-or-null**(Spring 엔 canonical 또는 null 만, 미검증 raw 는 안 나간다, #22·#20).
+없이 exact match → 임베딩 최근접(raw·query 둘 다 조회해 더 가까운 쪽, §4.3 #115)으로 처리한다.
+카테고리 신호가 있는 leg 는 성공 시 canonical 을 내고, 신호 없는 leg(raw·query 모두 없음)는
+카테고리를 강제하지 않는다 → **canonical-or-null**(Spring 엔 canonical 또는 null 만, 미검증 raw 는
+안 나간다, #22·#20).
 embed·search·exact 는 주입형 seam 이라 유닛테스트가 pg·API 없이 돈다.
 
 블로킹 호출(embed_texts·pgvector 조회·exact SELECT)은 asyncio.to_thread 로 감싸 이벤트 루프를
@@ -30,6 +31,8 @@ ExactFn = Callable[[Sequence[str], str], set[str]]
 
 # 채택 후보 = (canonical, 채택 거리, 마진) — 마진은 히트 1건이면 None(§11 #115)
 _Picked = tuple[str, float, float | None]
+# leg 최종 승자 = 후보 + 이긴 앵커 종류("raw"|"query", §4.3 #115)
+_Winner = tuple[str, float, float | None, str]
 
 
 def _top1_with_margin(hits: list[tuple[str, float]]) -> _Picked | None:
@@ -72,11 +75,13 @@ async def map_categories(
 
     각 leg 의 query 는 그 카테고리 전용 검색 키워드(fan-out leg keyword, §6·§9) — 매핑 전
     추측(raw)이 어디로 보정되든 원 추측의 query 를 그대로 이어 붙인다.
-    per-leg 규칙(우선순위): (1) raw 가 exact match → raw. (2) raw 있으나 exact 아님 →
-    embed(raw) 최근접. (3) raw==null 이나 query 있음 → embed(query) 최근접. (4) raw·query 모두
-    없음(빈 리스트 포함) → 신호 없음으로 보고 leg 를 만들지 않는다 → 무필터 검색(카테고리 강제
-    금지, PR #73 #22). (5) 실패는 leg 단위로 격리 — exact 매치는 DB 검증값이라 임베딩 경로 실패와
-    무관하게 보존하고, 임베딩 경로 실패(embed 전면·leg별 search)는 그 leg 만 unmapped 드롭한다
+    per-leg 규칙(우선순위): (1) raw 가 exact match → raw (DB 검증값이라 거리 비교 대상 아님).
+    (2) 그 외 신호가 있으면 **raw·query 를 각각 임베딩·조회해 더 가까운 쪽의 최근접을 채택**한다
+    (§4.3 #115 — 동거리는 발화 유래 query 우선. 종전엔 raw 가 있으면 query 를 버렸고 그게 정답을
+    잃는 경로였다). (3) raw·query 모두 없음(빈 리스트 포함) → 신호 없음으로 보고 leg 를 만들지
+    않는다 → 무필터 검색(카테고리 강제 금지, PR #73 #22). (4) 실패는 **앵커 단위로 격리** —
+    exact 매치는 임베딩 경로 실패와 무관하게 보존하고, 한 leg 의 앵커 하나가 실패해도 다른 앵커가
+    canonical 을 냈으면 그 leg 를 살린다. 앵커 전부 실패·embed 전면 실패는 그 leg 만 드롭한다
     (canonical-or-null, #20·PR #73 리뷰). 모든 leg 가 드롭되면 빈 리스트를 낸다 — Spring 엔 canonical
     또는 null(생략)만 나간다.
 
@@ -110,30 +115,50 @@ async def map_categories(
         for i in range(len(raws))
         if (raws[i] and raws[i] not in exact) or (not raws[i] and qtexts[i])
     ]
-    nearest: dict[int, _Picked | None] = {}
+    nearest: dict[int, _Winner] = {}
     failed_idx: set[int] = set()  # 조회가 예외로 실패한 leg — category_unmapped(품질) 오염 방지
     try:
-        # 앵커: raw(추측 카테고리) → 그 leg 의 query(고유 키워드). null-raw leg 이 여럿이어도 각자
-        # query 로 임베딩해 fan-out 폭을 지킨다(PR #73 #17).
-        anchors = [raws[i] or qtexts[i] for i in need_idx]
-        vecs = await asyncio.to_thread(embed, anchors) if anchors else []
+        # 앵커: leg 마다 raw(LLM 추측)·query(발화 유래) **둘 다** 조회하고 더 가까운 쪽을 채택한다
+        # (§4.3 #115). 종전 `raws[i] or qtexts[i]` 는 raw 가 있으면 query 를 조회조차 하지 않았는데,
+        # 실측에서 그게 정답을 능동적으로 버리는 경로였다 — "층간소음 방지 용품"(query) 0.0850·
+        # 마진 0.1561(압도적 정답) vs '가전/생활용폼'(LLM 창작 raw, 오타) 0.2399·마진 0.0021 채택.
+        # query 를 먼저 넣어 동거리 tie 에서 발화가 이긴다(창작 라벨보다 발화가 신뢰도 높음).
+        # null-raw leg 이 여럿이어도 각자 query 로 임베딩해 fan-out 폭을 지킨다(PR #73 #17).
+        anchors: list[tuple[int, str, str]] = []  # (leg 인덱스, 앵커 종류, 텍스트)
+        for i in need_idx:
+            if qtexts[i]:
+                anchors.append((i, "query", qtexts[i]))
+            if raws[i]:
+                anchors.append((i, "raw", raws[i]))
+        vecs = await asyncio.to_thread(embed, [text for _, _, text in anchors]) if anchors else []
         # 앵커별 최근접 조회를 병렬 실행 — 카테고리 여러 개(상황형 질의)일수록 직렬 지연이
-        # leg 수만큼 쌓이므로 gather 로 동시 실행한다(순서 보존 → need_idx 매핑 유지, §6).
-        # return_exceptions=True — leg 하나의 순간 실패(pg 경합·타임아웃)가 gather 전체를 던져
-        # 정상 leg 까지 무필터로 날리지 않게 격리한다(그 leg 만 unmapped 로 드롭). recommendation/
-        # graph 의 leg 별 SpringUnavailable 격리(§6)와 일관 — 부분 성공 보존(PR #73 리뷰).
+        # 앵커 수만큼 쌓이므로 gather 로 동시 실행한다(순서 보존 → anchors 매핑 유지, §6).
+        # return_exceptions=True — 앵커 하나의 순간 실패(pg 경합·타임아웃)가 gather 전체를 던져
+        # 정상 leg 까지 무필터로 날리지 않게 격리한다. recommendation/graph 의 leg 별
+        # SpringUnavailable 격리(§6)와 일관 — 부분 성공 보존(PR #73 리뷰).
         hit_lists = await asyncio.gather(
-            *(asyncio.to_thread(search_top_k, vecs[j], dsn, k=k) for j in range(len(need_idx))),
+            *(asyncio.to_thread(search_top_k, vecs[j], dsn, k=k) for j in range(len(anchors))),
             return_exceptions=True,
         )
+        errored: set[int] = set()  # 앵커 하나 이상이 예외로 실패한 leg
         for j, hits in enumerate(hit_lists):
+            leg_i, kind, _text = anchors[j]
             if isinstance(hits, Exception):
-                # 이 앵커 조회만 실패 — 사유를 남기고 그 leg 만 canonical 없이 드롭(무필터 아님).
-                logger.warning("category_leg_search_failed", extra={"reason": str(hits)})
-                failed_idx.add(need_idx[j])
-                nearest[need_idx[j]] = None
-            else:
-                nearest[need_idx[j]] = _top1_with_margin(hits)
+                # 이 앵커 조회만 실패 — 사유를 남긴다. 같은 leg 의 다른 앵커가 성공하면 살린다(아래).
+                logger.warning(
+                    "category_leg_search_failed", extra={"reason": str(hits), "anchor_kind": kind}
+                )
+                errored.add(leg_i)
+                continue
+            picked = _top1_with_margin(hits)
+            if picked is None:
+                continue  # 히트 0건 — 이 앵커는 후보 없음(leg 판정은 아래 unmapped 로)
+            best = nearest.get(leg_i)
+            if best is None or picked[1] < best[1]:  # 더 가까운 쪽 승리(동거리는 먼저 넣은 query)
+                nearest[leg_i] = (*picked, kind)
+        # 실패 격리 단위가 leg→앵커로 내려갔다: 앵커 하나가 죽어도 다른 앵커가 canonical 을 냈으면
+        # 그 leg 는 드롭하지 않는다(부분 성공 보존, §5). 전부 실패한 leg 만 failed 로 표시한다.
+        failed_idx.update(i for i in errored if i not in nearest)
     except Exception as exc:  # noqa: BLE001 - embed 전면 실패 등: 임베딩 경로 leg 만 드롭
         # 임베딩 경로(embed 배치·전면 조회)가 통째로 죽어도, 이미 DB 검증된 exact 매치는 아래
         # result 에서 보존한다(canonical-or-null 은 exact·search 히트 둘 다 canonical 이라 성립).
@@ -151,11 +176,12 @@ async def map_categories(
             continue  # 신호 없는 leg(raw·query 모두 없음) → 카테고리 강제 없이 스킵(#22)
         picked = nearest.get(i)
         if picked:
-            canonical, distance, margin = picked
+            canonical, distance, margin, anchor_kind = picked
+            # 이벤트는 종전 정의(raw 유무)를 유지해 메트릭 연속성을 지키고, 실제로 canonical 을 낸
+            # 앵커는 anchor_kind 로 구분한다(§11 #115) — raw 가 있어도 query 앵커가 이길 수 있으므로
+            # (§4.3) `category_repaired` + anchor_kind=query 조합이 정상이다. 거리컷 임계 재튜닝과
+            # 후속 top-k 택일 트리거가 distance·margin 분포에 의존한다.
             event = "category_repaired" if r else "category_fallback_top1"
-            # distance·margin·anchor_kind 를 함께 남긴다(§11 #115) — 거리컷 임계 재튜닝과 후속
-            # top-k 택일 트리거가 이 분포에 의존하고, anchor_kind 는 raw(LLM 창작 라벨)와
-            # query(발화 유래) 중 어느 앵커가 canonical 을 냈는지 분리해 보기 위한 것이다.
             logger.info(
                 event,
                 extra={
@@ -163,7 +189,7 @@ async def map_categories(
                     "canonical": canonical,
                     "distance": distance,
                     "margin": margin,
-                    "anchor_kind": "raw" if r else "query",
+                    "anchor_kind": anchor_kind,
                 },
             )
             result.append((canonical, qtexts[i]))
