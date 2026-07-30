@@ -152,6 +152,37 @@ def test_buyer_sub_type_rejects_any_role_claim(
         _decode(sign_ticket(rsa_key, KID, claims))
 
 
+@pytest.mark.parametrize(
+    ("role_present", "role", "sub_type_present", "sub_type"),
+    [
+        (True, None, True, "member"),
+        (True, "seller", True, None),
+        (True, None, True, None),
+        (True, None, False, None),
+        (False, None, True, None),
+    ],
+)
+def test_jwks_discriminator_null_presence_is_rejected(
+    rsa_key,
+    jwks_calls,
+    role_present: bool,
+    role: str | None,
+    sub_type_present: bool,
+    sub_type: str | None,
+) -> None:
+    """운영 discriminator는 값뿐 아니라 key presence도 정확히 한 쪽이어야 한다."""
+    claims = ticket_claims()
+    claims.pop("role", None)
+    claims.pop("sub_type", None)
+    if role_present:
+        claims["role"] = role
+    if sub_type_present:
+        claims["sub_type"] = sub_type
+
+    with pytest.raises(AuthError):
+        _decode(sign_ticket(rsa_key, KID, claims))
+
+
 def test_token_without_identity_claims_rejected(rsa_key, jwks_calls) -> None:
     """sub_type·role 둘 다 없는 서명 유효 토큰 → 거부 (jwks 레인 fail-closed, 리뷰 반영).
 

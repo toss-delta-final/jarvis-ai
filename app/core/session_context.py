@@ -11,11 +11,11 @@ import asyncio
 import logging
 import time
 import uuid
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import AsyncContextManager, Literal
+from typing import AsyncContextManager, AsyncIterator, Literal
 
 from app.core.config import get_settings
 from app.core.logging import safe_fingerprint
@@ -154,6 +154,33 @@ class _MemoryFinalization:
     superseded_at: float | None = None
 
 
+@dataclass(frozen=True)
+class _BackfillProgress:
+    batch: int
+    backfill_pass: int
+    cursor_fp: str | None
+    completed: bool
+    grace_deadline_set: bool
+
+
+@asynccontextmanager
+async def _backfill_transaction(conn) -> AsyncIterator[list[_BackfillProgress]]:  # noqa: ANN001
+    """commit이 성공한 뒤에만 해당 트랜잭션에서 관찰한 진행 상태를 기록한다."""
+    progress: list[_BackfillProgress] = []
+    async with conn.transaction():
+        yield progress
+    for event in progress:
+        logger.info(
+            "session lifecycle backfill batch=%d pass=%d cursorFp=%s "
+            "completed=%s graceDeadlineSet=%s",
+            event.batch,
+            event.backfill_pass,
+            event.cursor_fp,
+            event.completed,
+            event.grace_deadline_set,
+        )
+
+
 class SessionContextRepository:
     """Lifecycle repository backed by a psycopg async pool or an in-memory fallback."""
 
@@ -212,7 +239,7 @@ class SessionContextRepository:
                 )
             batches += 1
             async with self._pool.connection() as conn:
-                async with conn.transaction():
+                async with _backfill_transaction(conn) as progress:
                     await conn.execute(
                         "SELECT set_config('statement_timeout', %s, true)",
                         (str(max(1, int(settings.state_store_migration_timeout_s * 1000))),),
@@ -275,17 +302,17 @@ class SessionContextRepository:
                     assert migration is not None
                     cursor, owner_cursor, completed_at, backfill_pass, grace_deadline = migration
                     cursor_fp = safe_fingerprint(str(cursor)) if cursor not in (None, "") else None
-                    logger.info(
-                        "session lifecycle backfill batch=%d pass=%d cursorFp=%s "
-                        "completed=%s graceDeadlineSet=%s",
-                        batches,
-                        backfill_pass,
-                        cursor_fp,
-                        completed_at is not None,
-                        grace_deadline is not None,
-                    )
                     if cursor is None and completed_at is not None:
                         if await _find_actionable_legacy_activity(conn) is None:
+                            progress.append(
+                                _BackfillProgress(
+                                    batches,
+                                    backfill_pass,
+                                    cursor_fp,
+                                    True,
+                                    grace_deadline is not None,
+                                )
+                            )
                             break
                         await conn.execute(
                             """
@@ -324,6 +351,15 @@ class SessionContextRepository:
                     ).fetchall()
                     if not rows:
                         if await _find_actionable_legacy_activity(conn) is not None:
+                            progress.append(
+                                _BackfillProgress(
+                                    batches,
+                                    backfill_pass,
+                                    cursor_fp,
+                                    completed_at is not None,
+                                    grace_deadline is not None,
+                                )
+                            )
                             await conn.execute(
                                 "UPDATE chat_session_migrations SET "
                                 "profile_backfill_cursor='', "
@@ -369,16 +405,25 @@ class SessionContextRepository:
                             if completed_cursor not in (None, "")
                             else None
                         )
-                        logger.info(
-                            "session lifecycle backfill batch=%d pass=%d cursorFp=%s "
-                            "completed=%s graceDeadlineSet=%s",
-                            batches,
-                            completed_pass,
-                            completed_cursor_fp,
-                            completed_at is not None,
-                            completed_grace_deadline is not None,
+                        progress.append(
+                            _BackfillProgress(
+                                batches,
+                                completed_pass,
+                                completed_cursor_fp,
+                                completed_at is not None,
+                                completed_grace_deadline is not None,
+                            )
                         )
                         break
+                    progress.append(
+                        _BackfillProgress(
+                            batches,
+                            backfill_pass,
+                            cursor_fp,
+                            completed_at is not None,
+                            grace_deadline is not None,
+                        )
+                    )
                     by_session: dict[str, list] = {}
                     for row in rows:
                         by_session.setdefault(row[1], []).append(row)

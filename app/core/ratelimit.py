@@ -23,7 +23,7 @@ from starlette.concurrency import run_in_threadpool
 from app.core.auth import AuthError, decode_token
 from app.core.config import get_settings
 from app.core.errors import REQUEST_ID_HEADER, error_envelope, get_request_id
-from app.core.observability import emit_rejection, identifier_fingerprint
+from app.core.observability import emit_rejection
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -166,14 +166,11 @@ async def rate_limit_middleware(request: Request, call_next):
         if over:
             rid = get_request_id(request)
             scope = sub_key or ip_key
-            scope_type, _, scope_value = scope.partition(":")
             emit_rejection(
                 rid,
                 "RATE_LIMITED",
-                scopeFp=identifier_fingerprint(scope),
-                scopeType=scope_type,
-                ownerFp=(identifier_fingerprint(scope_value) if scope_type == "sub" else None),
-                ipFp=identifier_fingerprint(_host(request)),
+                scope=scope,
+                ip=_host(request),
                 path=request.url.path,
             )
             return JSONResponse(

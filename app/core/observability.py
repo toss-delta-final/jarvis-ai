@@ -41,6 +41,17 @@ def identifier_fingerprint(value: str | None) -> str | None:
     return safe_fingerprint(value)
 
 
+class _LogFingerprint(str):
+    """`fingerprint_log_value`만 생성하는 rejection 로그 전용 branded string."""
+
+
+def fingerprint_log_value(value: str) -> str:
+    """raw 값을 peppered HMAC branded string으로 바꿔 rejection 필드 provenance를 보장한다."""
+    fingerprint = identifier_fingerprint(value)
+    assert fingerprint is not None
+    return _LogFingerprint(fingerprint)
+
+
 def role_of(identity: Identity) -> str:
     """로그/저장용 역할 문자열."""
     if identity.seller_id:
@@ -249,33 +260,34 @@ def emit_rejection(request_id: str, error_type: str, **fields: object) -> None:
 
     # 임의 **fields를 그대로 병합하지 않는다. 새 필드는 비민감 allowlist에 명시적으로
     # 추가해야 하며, 식별자처럼 보이는 미지 키는 기본적으로 폐기한다.
-    safe_fields = {
-        key: fields[key]
-        for key in (
-            "path",
-            "role",
-            "status",
-            "retryable",
-            "action",
-            "ownerFp",
-            "scopeFp",
-            "scopeType",
-            "ipFp",
-        )
-        if key in fields
+    safe_text_values = {
+        "path": {"/chat", "/seller/chat"},
+        "role": {"member", "guest", "seller"},
+        "status": {"COMPLETED", "FAILED", "CANCELLED"},
+        "action": {"confirm"},
     }
+    safe_fields = {
+        key: value
+        for key, allowed in safe_text_values.items()
+        if isinstance((value := fields.get(key)), str) and value in allowed
+    }
+    retryable = fields.get("retryable")
+    if isinstance(retryable, bool):
+        safe_fields["retryable"] = retryable
 
-    def _safe_fingerprint_field(key: str) -> str | None:
-        value = safe_fields.pop(key, None)
-        if not isinstance(value, str) or len(value) != 16:
-            return None
-        return value if all(char in "0123456789abcdef" for char in value) else None
+    def _branded_fingerprint(key: str) -> str | None:
+        value = fields.get(key)
+        return str(value) if isinstance(value, _LogFingerprint) else None
 
-    provided_owner_fp = _safe_fingerprint_field("ownerFp")
-    provided_scope_fp = _safe_fingerprint_field("scopeFp")
-    provided_ip_fp = _safe_fingerprint_field("ipFp")
-    provided_scope_type = safe_fields.pop("scopeType", None)
-    if provided_scope_type not in {"sub", "ip", "other"}:
+    provided_owner_fp = _branded_fingerprint("ownerFp")
+    provided_scope_fp = _branded_fingerprint("scopeFp")
+    provided_ip_fp = _branded_fingerprint("ipFp")
+    provided_scope_type = fields.get("scopeType")
+    if not isinstance(provided_scope_type, str) or provided_scope_type not in {
+        "sub",
+        "ip",
+        "other",
+    }:
         provided_scope_type = None
 
     record = {

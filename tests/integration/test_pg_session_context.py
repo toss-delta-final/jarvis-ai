@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 import pytest
 from langgraph.store.postgres.aio import AsyncPostgresStore
 from psycopg.conninfo import make_conninfo
-from psycopg.errors import CheckViolation
+from psycopg.errors import CheckViolation, ForeignKeyViolation
 from psycopg_pool import AsyncConnectionPool
 
 from app.agents.buyer.cart import state as cart_state
@@ -102,6 +102,57 @@ class _FaultPool:
             wrapped = _FaultAfterExecuteConnection(conn, self._predicate)
             self.connections.append(wrapped)
             yield wrapped
+
+
+class _CommitFaultTransaction:
+    def __init__(self, conn, transaction) -> None:  # noqa: ANN001
+        self._conn = conn
+        self._transaction = transaction
+
+    async def __aenter__(self):
+        return await self._transaction.__aenter__()
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        if exc_type is not None:
+            return await self._transaction.__aexit__(exc_type, exc, traceback)
+        await self._conn.execute(
+            """
+            CREATE TEMP TABLE commit_fault_parent (
+                id integer PRIMARY KEY
+            ) ON COMMIT DROP
+            """
+        )
+        await self._conn.execute(
+            """
+            CREATE TEMP TABLE commit_fault_child (
+                parent_id integer REFERENCES commit_fault_parent(id)
+                    DEFERRABLE INITIALLY DEFERRED
+            ) ON COMMIT DROP
+            """
+        )
+        await self._conn.execute("INSERT INTO commit_fault_child VALUES (1)")
+        return await self._transaction.__aexit__(exc_type, exc, traceback)
+
+
+class _CommitFaultConnection:
+    def __init__(self, conn) -> None:  # noqa: ANN001
+        self._conn = conn
+
+    def __getattr__(self, name: str):
+        return getattr(self._conn, name)
+
+    def transaction(self):
+        return _CommitFaultTransaction(self._conn, self._conn.transaction())
+
+
+class _CommitFaultPool:
+    def __init__(self, pool) -> None:  # noqa: ANN001
+        self._pool = pool
+
+    @asynccontextmanager
+    async def connection(self):
+        async with self._pool.connection() as conn:
+            yield _CommitFaultConnection(conn)
 
 
 async def _seed_v2_state(store, key: str, label: str) -> None:  # noqa: ANN001
@@ -584,6 +635,33 @@ async def test_backfill_emits_durable_completed_progress_on_completion_and_resta
     ]
     assert len(restart_events) == 1, "no-op restart는 invocation당 완료 progress 1건을 허용한다"
     assert "completed=True" in restart_events[0]
+
+
+async def test_backfill_commit_failure_rolls_back_without_completed_progress(
+    pg_repo,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """완료 snapshot은 commit 성공 전 로그에 노출하지 않고 commit 실패 시 rollback한다."""
+    _, pool, _ = pg_repo
+    async with pool.connection() as conn:
+        await conn.execute(
+            "DELETE FROM chat_session_migrations WHERE migration_name='issue-187-session-context'"
+        )
+    fault_repo = SessionContextRepository(pool=_CommitFaultPool(pool))
+
+    with caplog.at_level("INFO", logger="app.core.session_context"):
+        with pytest.raises(ForeignKeyViolation):
+            await fault_repo.backfill_legacy_activity()
+
+    assert "completed=True" not in caplog.text
+    async with pool.connection() as conn:
+        migration = await (
+            await conn.execute(
+                "SELECT profile_backfill_completed_at "
+                "FROM chat_session_migrations WHERE migration_name='issue-187-session-context'"
+            )
+        ).fetchone()
+    assert migration is None
 
 
 async def test_signed_touch_resolves_owner_and_gc_preserves_authoritative_buffer(

@@ -13,6 +13,7 @@ import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core import observability
 from app.core.auth import Identity
 from app.core.conversation import (
     CommittedTurn,
@@ -793,6 +794,9 @@ def test_rejection_sanitizer_absorbs_guest_and_drops_unknown_identifier_keys(
             path="/chat",
             arbitraryIdentifier="must-not-leak",
             ownerFp="raw-owner-disguised-as-fingerprint",
+            token="raw-token",
+            message="raw-message",
+            Authorization="Bearer raw-token",
         )
 
     record = json.loads(caplog.records[-1].getMessage())
@@ -808,10 +812,117 @@ def test_rejection_sanitizer_absorbs_guest_and_drops_unknown_identifier_keys(
         "203.0.113.10",
         "must-not-leak",
         "raw-owner-disguised-as-fingerprint",
+        "raw-token",
+        "raw-message",
     ):
         assert raw not in serialized
+        assert raw not in caplog.text
     for key in ("guestId", "scope", "ip", "arbitraryIdentifier"):
         assert key not in record
+
+
+def test_rejection_accepts_only_branded_fingerprints_and_validated_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    branded_owner = observability.fingerprint_log_value("member-42")
+    branded_scope = observability.fingerprint_log_value("sub:member-42")
+    branded_ip = observability.fingerprint_log_value("203.0.113.10")
+    with caplog.at_level(logging.INFO, logger="observability"):
+        emit_rejection(
+            "req-branded",
+            "RATE_LIMITED",
+            ownerFp=branded_owner,
+            scopeFp=branded_scope,
+            ipFp=branded_ip,
+            scopeType="sub",
+            path="/chat",
+            role="member",
+            status="FAILED",
+            action="confirm",
+        )
+
+    record = json.loads(caplog.records[-1].getMessage())
+    assert record["ownerFp"] == str(branded_owner)
+    assert record["scopeFp"] == str(branded_scope)
+    assert record["ipFp"] == str(branded_ip)
+    assert record["scopeType"] == "sub"
+    assert record["path"] == "/chat"
+    assert record["role"] == "member"
+    assert record["status"] == "FAILED"
+    assert record["action"] == "confirm"
+    assert json.loads(json.dumps(record)) == record
+
+
+def test_rejection_drops_plain_hex_fingerprints_and_untrusted_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    raw_values = (
+        "deadbeefdeadbeef",
+        "0123456789abcdef",
+        "/chat?token=raw-token",
+        "seller raw-subject",
+        "FAILED raw-exception",
+        "confirm raw-message",
+        "raw-token",
+        "raw-message",
+    )
+    with caplog.at_level(logging.INFO, logger="observability"):
+        emit_rejection(
+            "req-untrusted",
+            "RATE_LIMITED",
+            ownerFp=raw_values[0],
+            scopeFp=raw_values[1],
+            ipFp=raw_values[0],
+            scopeType="sub:raw-subject",
+            path=raw_values[2],
+            role=raw_values[3],
+            status=raw_values[4],
+            action=raw_values[5],
+            token=raw_values[6],
+            message=raw_values[7],
+            Authorization="Bearer raw-token",
+        )
+
+    record = json.loads(caplog.records[-1].getMessage())
+    serialized = json.dumps(record, ensure_ascii=False)
+    assert record["ownerFp"] is None
+    assert record["scopeFp"] is None
+    assert record["ipFp"] is None
+    assert record["scopeType"] is None
+    assert "path" not in record
+    assert "role" not in record
+    assert "status" not in record
+    assert "action" not in record
+    for raw in raw_values:
+        assert raw not in serialized
+        assert raw not in caplog.text
+
+
+def test_rejection_fingerprints_raw_sixteen_digit_identifiers_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    raw = "1234567890123456"
+    raw_scope = f"sub:{raw}"
+    with caplog.at_level(logging.INFO, logger="observability"):
+        emit_rejection(
+            "req-raw-sixteen",
+            "RATE_LIMITED",
+            ownerId=raw,
+            scope=raw_scope,
+            ip=raw,
+            ownerFp=raw,
+            scopeFp=raw,
+            ipFp=raw,
+        )
+
+    record = json.loads(caplog.records[-1].getMessage())
+    serialized = json.dumps(record, ensure_ascii=False)
+    assert record["ownerFp"] == identifier_fingerprint(raw)
+    assert record["scopeFp"] == identifier_fingerprint(raw_scope)
+    assert record["ipFp"] == identifier_fingerprint(raw)
+    assert raw not in serialized
+    assert raw_scope not in serialized
+    assert raw not in caplog.text
 
 
 async def test_error_frame_terminates_stream() -> None:
