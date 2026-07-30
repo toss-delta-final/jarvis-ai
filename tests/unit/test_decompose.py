@@ -287,6 +287,54 @@ async def test_attr_conditions_removal_all_yields_none() -> None:
     assert d.filters.attr_conditions is None
 
 
+async def test_decompose_logs_case_and_leg_summary(caplog) -> None:
+    """[#198 §10] recommend 턴마다 `case`·leg 수·leg query 를 구조화 로그로 남긴다.
+
+    **"case==3(전개 필요를 인지) 인데 legs<=1(전개 실패)" 인 턴의 빈도가 #198 의 핵심 지표**인데,
+    로그가 없어 지금까지 진단 스크립트를 돌려야만 측정할 수 있었다. 운영에서 자동으로 쌓여야
+    (a) 이 이슈의 우선순위를 데이터로 정하고 (b) D3 marker 튜닝(§OPEN-1)에 leg query 분포를 쓸 수 있다.
+    """
+    with caplog.at_level("INFO"):
+        await _run(_raw(case=3, categoryQueries=[{"category": None, "query": "집들이 선물"}]))
+    recs = [r for r in caplog.records if r.msg == "decompose_case"]
+    assert recs, f"decompose_case 로그 없음 — 방출된 msg: {[r.msg for r in caplog.records]}"
+    assert recs[0].case == 3
+    assert recs[0].legs == 1
+    assert recs[0].leg_queries == ["집들이 선물"]
+
+
+async def test_decompose_case_log_only_for_recommend(caplog) -> None:
+    """cart/general 턴은 `case` 가 의미 없으므로 남기지 않는다 — 지표 오염 방지.
+
+    (category_unmapped 를 인프라 실패와 섞지 않는 것과 같은 취지 — 지표는 한 가지를 뜻해야 한다.)
+    """
+    with caplog.at_level("INFO"):
+        await _run(_raw(intent="general", reply="안녕하세요"))
+    assert not [r for r in caplog.records if r.msg == "decompose_case"]
+
+
+async def test_case_prompt_defines_the_three_types() -> None:
+    """[#198] 프롬프트가 `case` 1/2/3 의 뜻을 정의한다 — 정의가 없으면 값이 노이즈다.
+
+    종전 프롬프트는 JSON 스키마에 `"case": 1 | 2 | 3` 만 있고 **1/2/3 이 무슨 뜻인지 어디에도
+    설명이 없었다**(규칙 절 0줄). 그래서 LLM 이 뜻을 모른 채 숫자를 채웠고, 실측에서 8발화 중 6종
+    오판·7종이 회차마다 흔들렸다(`"집들이 선물"` 은 3/3 Case 1 로 오분류 — Case 3 인데).
+    정의를 넣은 뒤 **Case 3 판정 5발화 × 3회 = 15/15 정확·전부 일관**.
+
+    부수적으로 **전개율까지 개선**됐다 — `"집들이 선물"` 의 `categoryQueries` 가 `legs 0/3`(발화
+    복사)에서 `3/3`(구체 상품 3개)으로 뒤집혔다. "선물·준비물·필요한 것은 물건 이름이 아니다"라는
+    문장이 `categoryQueries` 산출에도 작용했기 때문이다(#198 §4.1). 이 정의가 사라지면 case 신뢰성과
+    전개율이 함께 퇴행하므로 회귀를 테스트로 막는다.
+    """
+    from app.agents.buyer.recommendation.decompose import _SYSTEM
+
+    rule = _SYSTEM.split("- case:", 1)[1].split("- attrConditions", 1)[0]
+    assert "상품명" in rule  # 1 의 정의
+    assert "구조화" in rule  # 2 의 정의
+    assert "상황" in rule and "목적" in rule  # 3 의 정의
+    assert "물건 이름이 아니" in rule  # 선물·준비물 → 3 (전개율 개선의 핵심 문장)
+
+
 async def test_attr_conditions_prompt_teaches_merge_and_removal() -> None:
     """[PR②] 프롬프트가 merge 기본(이전 유지)과 명시 제거(attrRemovals)를 지시한다."""
     from app.agents.buyer.recommendation.decompose import _SYSTEM

@@ -50,3 +50,24 @@ def test_negative_slice_tunables_rejected() -> None:
         Settings(_env_file=None, category_fanout_merge_cap=-1)
     with pytest.raises(ValidationError):
         Settings(_env_file=None, category_fanout_per_cat_limit=-1)
+
+
+def test_needs_expansion_settings_defaults() -> None:
+    """[#198] 상품 전개 튜너블 기본값 — 하드코딩 금지, config 주입(설계 §9)."""
+    settings = Settings(_env_file=None)
+    assert settings.needs_expansion_enabled is True
+    assert settings.needs_expansion_tier == "fast"
+    assert settings.needs_expansion_min_items == 2
+    assert "선물" in settings.needs_expansion_purpose_markers
+
+
+def test_needs_expansion_tier_rejects_unknown_value() -> None:
+    """[PR #203 리뷰] tier 오타는 **부팅 시** 막는다 — 턴 예외로 번지지 않게.
+
+    이 값은 `resolve_model_id` 에 들어가고 그것은 미지 tier 에 `LLMError` 를 던진다. 전개는 관측
+    기록(api-spec §6.3)을 LLM 호출 `try` 보다 **먼저** 하므로, 오타 하나가 "전개 실패 → 원본 leg
+    유지"(설계 §7 후퇴 없음)가 아니라 recommend 턴 전체의 예외가 된다. `LLMProvider`·`SearchBackend`
+    와 같이 Literal 로 좁혀 pydantic 이 걸러낸다.
+    """
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, needs_expansion_tier="fasttt")

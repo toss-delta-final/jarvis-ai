@@ -13,6 +13,17 @@
 
 ---
 
+## [2026-07-30] 죽어 있던 필드·함수를 배선하면 그 "미사용/폐기" 선언을 같은 커밋에서 지운다 — 하루에 3번 나왔다
+
+- 증상: 실제로 쓰이기 시작한 코드에 "안 쓴다"는 선언이 남아 세 번 지적됐다. (1) `category_select.select_category` docstring 이 `"방식 B용 미사용 예비"` 인데 #115 가 마진 택일 경로에 배선했다. (2) `needs_expansion` 모듈 docstring 이 `"case 를 쓰지 않는다"` 인데 같은 파일이 `case != 3` 게이트로 쓴다. (3) `RouteDecision.case` 필드 주석이 `"[폐기, 이슈 #59] 미사용"` 인데 #198 게이트의 유일한 입력이다(PR #203 리뷰).
+- 원인: 배선하는 커밋이 **호출부만 보고 정의부의 자기 서술을 갱신하지 않았다.** "미사용"은 단순 낡은 주석이 아니라 **삭제 허가증**으로 읽힌다 — #124 에서 실제로 미사용 코드를 정리한 전례가 있어, `case` 를 죽은 필드로 보고 지우면 case 2("5만원 이하 아무거나")의 무필터 의도 보호가 조용히 깨진다(테스트도 게이트 우회를 잡지 못한다).
+- 규칙:
+  1. 스텁·예비·폐기로 표시된 것을 배선하면 **같은 커밋에서 그 표시를 지우고 새 역할·근거 문서 §를 적는다.** 커밋 전에 새로 참조한 심볼을 `grep -n "미사용\|폐기\|예비\|NotImplementedError"` 로 훑는다.
+  2. 존재 이유가 주석뿐인 필드는 **"제거하면 무엇이 깨지는지"를 주석에 쓴다** — 다음 정리 작업자가 판단할 근거가 된다.
+- 관련: #115/#188, #198/#203, `recommendation/state.py:76`, `recommendation/category_select.py`, `recommendation/needs_expansion.py`, DESIGN-NEEDS-EXPANSION-198 §4.2
+
+---
+
 ## [2026-07-30] 응답 스키마를 추정으로 두려면 `extra="allow"` 가 불일치를 은폐함을 전제하라 — 미확정 계약은 "빈 결과"를 의심한다
 
 - 증상: `sales_anomaly` 워커의 I-14(`get_order_events`)·I-15(`get_product_change_logs`) 도구가 **항상 0건**을 반환했다(#194). Spring 은 `rows`/`total`(+ stats 모드 `byStatus`/`cancelReasonsTop`)을 내려보내는데 AI 스키마는 추정 필드(`events`/`stats`, `logs`)를 기다렸고, `SellerAggregateModel` 의 `extra="allow"` 가 실측 필드를 여분 필드로 조용히 흡수해 **ValidationError 도 로그도 없이** 기본값 빈 목록이 됐다. 이상 감지 로직도 Spring(`withAnomaly`: 직전 최소 3점 판정·기준선 0+매출=이상·매출 0원=이상 아님)과 3개 규칙이 어긋나 있었다.
