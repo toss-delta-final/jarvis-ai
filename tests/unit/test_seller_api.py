@@ -251,6 +251,8 @@ def test_stream_model_not_configured_maps_to_llm_unavailable(
 
     assert [event["type"] for event in events] == ["meta", "error"]
     assert events[-1]["data"]["code"] == "LLM_UNAVAILABLE"
+    assert events[-1]["data"]["requestId"]
+    assert events[-1]["data"]["retryable"] is False
     assert "provider=openai lane=general thread=t-1" in caplog.text
     assert "openai key missing" not in caplog.text
 
@@ -266,16 +268,21 @@ def test_stream_error_event_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     assert events[1]["type"] == "token"
     assert events[-1]["type"] == "error"
     assert events[-1]["data"]["code"] == "INTERNAL"
+    assert events[-1]["data"]["requestId"]
+    assert events[-1]["data"]["retryable"] is True
 
 
 # ── 4-1b: _seller_stream 3분기 디스패치 ──────────────────────────────────────
 
 
-def _collect_seller(request: SellerChatRequest) -> list[dict]:
+def _collect_seller(
+    request: SellerChatRequest,
+    identity: Identity = _IDENTITY,
+) -> list[dict]:
     """_seller_stream(통합 입구)을 전부 소비해 SSE 페이로드 목록으로 파싱한다."""
 
     async def run() -> list[str]:
-        return [line async for line in seller_api._seller_stream(request, _IDENTITY)]
+        return [line async for line in seller_api._seller_stream(request, identity)]
 
     lines = asyncio.run(run())
     payloads = []
@@ -283,6 +290,22 @@ def _collect_seller(request: SellerChatRequest) -> list[dict]:
         assert line.startswith("data: ") and line.endswith("\n\n")
         payloads.append(json.loads(line[len("data: ") :]))
     return payloads
+
+
+def test_non_numeric_seller_identity_error_is_not_retryable() -> None:
+    """토큰 발급 결함인 비숫자 판매자 클레임은 같은 요청 재시도로 복구되지 않는다."""
+    malformed_identity = Identity(
+        user_id=None,
+        is_guest=False,
+        seller_id="not-a-number",
+        brand_id="3",
+    )
+
+    events = _collect_seller(_request("매출 알려줘"), malformed_identity)
+
+    assert [event["type"] for event in events] == ["error"]
+    assert events[0]["data"]["code"] == "INTERNAL"
+    assert events[0]["data"]["retryable"] is False
 
 
 def _route_stub(category: str, confidence: float = 0.9):
@@ -806,6 +829,8 @@ def test_route_model_not_configured_emits_llm_unavailable(
     assert [event["type"] for event in events] == ["meta", "error"]
     assert events[0]["data"]["lane"] == "general"
     assert events[1]["data"]["code"] == "LLM_UNAVAILABLE"
+    assert events[1]["data"]["requestId"]
+    assert events[1]["data"]["retryable"] is False
     assert "provider=openai lane=routing thread=t-1" in caplog.text
     assert "openai key missing" not in caplog.text
 

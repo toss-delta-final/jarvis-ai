@@ -19,7 +19,7 @@
   - **§6.3 저장·로그 축 정합** — checkpointer thread 키를 `sessionId`→**`threadId`** 로 정정하고 `conversation_turns`를 **session-primary + `thread_id` 병기**로 명시(세션 종료 스캔은 세션 축, 방별 조회·정리는 방 축이라 어느 한쪽만으론 불가 — 컬럼은 아직 없다). 구조화 로그에 **`threadId` 신설** — 멀티탭이면 한 `conversationId` 아래 여러 방 로그가 섞여 방을 못 가리면 동시 스트림을 분리해 읽을 수 없다.
   - **🔴 BE 확인 대기** — `SETNX` 멱등 키 스코프(`sub` vs `sub_type`+`sub`)와 멱등 반환 시 세션 TTL sliding 갱신 여부. 정본 §5 D5는 "이 사용자"로만 적었다.
   - 이미 정합해 손대지 않은 것: `conversation_turns.conversation_id = sessionId`(D2 session-primary) · thread 축 스토어가 `thread_id` 키 · 프로필 세션버퍼가 `session_id` 키 · 주기 flush가 `AsyncIOScheduler`+lifespan(D4) · 스트림 티켓에 session/thread 클레임 없음 · 탭 닫기 종료 신호 없음.
-- **CH-2 계약 확장 — 요청 2필드 신설 + SSE 2필드 추가** (api-spec §3.1·§3.2, v0.15.26). 정본(Notion「📡 API 명세서」CH-2·S-4) 2026-07-28~30 개정을 사본에 반영했다. **계약 문서만이고 구현은 0** — #84·#118에서 진행한다.
+- **CH-2 계약 확장 — 요청 2필드 신설 + SSE 2필드 추가** (api-spec §3.1·§3.2, v0.15.26). 정본(Notion「📡 API 명세서」CH-2·S-4) 2026-07-28~30 개정을 사본에 반영했다. 요청 필드 `conditionActions`·`screen` 구현은 #84·#118에서 진행하고, 응답 계약 `listIds`·`requestId`·`retryable`은 #189에서 구현했다.
   - **`conditionActions`** (구매자 전용) — 조건 칩 제거를 `[{op:"remove", field}]` 구조화 배열로 받는다. 구 규약 문자열(`"[조건 제거] priceMax"`) 왕복은 **폐기**(#84). FE는 구 방식으로 구현돼 있으나 AI에 수신부가 없어 **현재 칩 제거가 무동작**이다.
   - **`screen`** (구매자·판매자 공용) — `{pageType, filters?, products?, columns?}`. `pageType`은 라우트가 아니라 **우측 패널 내용**을 가리킨다(채팅이 전용 페이지에만 있어 라우트를 실으면 정보가 0). `products`는 **서버가 모르는 목록만** 싣는다(P-4 인기상품·판매자 자사 상품) — 추천 카드는 `listId`로 서버가 알고, 되돌려주면 위조 경로가 된다. `columns`는 반응형 그리드 열 수로 "3번째 줄 2번째" 좌표 지시를 푼다(`rows`·항목별 좌표는 파생값이라 제외). 07-17 FE 제안(`ChatScreenContext`)과 #118의 "노출 상품 목록" 요구를 한 필드로 통합했고, 담기 가드의 "두 목록 밖 id 차단"은 유지한다.
   - **`conditions` 칩 `field` 6종 확정** — `category`·`priceMax`·`priceMin`·`brand`·`ratingMin`·`keyword`. `conditionActions.field` 검증의 전제인데 종전엔 예시 둘뿐이라 허용 집합이 계약에 없었다(코드 `build_condition_chips` 실측과 일치).
@@ -54,6 +54,8 @@
   SPEC-PROFILE-001 v0.4.0)
 
 ### Changed
+
+- **#189 — CH-2/S-4 SSE 응답 계약 정합화** — `products.ready`의 단일 `listId`를 항상 배열인 `listIds`(1~10개, 순서 보존)로 바꾸고, 현재 단일 I-21 push 결과도 길이 1 배열로 반환한다. 구매자·판매자·공통 스트림의 모든 `error`에 HTTP 응답·구조화 로그와 같은 `requestId`와 emit 지점이 판정한 `retryable`을 추가했다. provider 미구성은 재시도 불가, timeout·검색·일시적 내부 장애는 재시도 가능으로 분류한다. (api-spec §3.1·§3.2, v0.15.26)
 
 - **#180 — 판매자 라우터 분류 기준 강화(저신뢰 폴백 역전 + 의도 기준 분류)** — 단순 조회("최근 7일 매출")가 5단 분석 파이프라인으로 빨려 들어가던 문제를 해소. ① `route_question`의 confidence 미달 후처리를 `analysis 강제 → general 재지정`으로 역전(`ROUTE_CONSERVATIVE_REASON` 폐기, `ROUTE_LOW_CONFIDENCE_REASON` 신설) — 오분류 비용 비대칭이 전제와 반대였다(조회→analysis 는 회복 불가·최고 비용, 분석 질문→general 은 안내로 한 턴 회복). 장애 폴백과 방향 일치("불확실하면 general" 단일 원칙). ② `SUPERVISOR_PROMPT`를 주제 기준 → 의도 기준으로 재정의(조회=general/해석=analysis/변경=product) + 경계 예시쌍 11종 + confidence 산정 가이드. 3분기 계약은 유지(분기 확장 없음, api-spec 무관 — 내부 구현 한정).
 

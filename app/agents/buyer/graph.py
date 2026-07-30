@@ -33,6 +33,7 @@ from app.agents.profile.store import get_profile_store
 from app.core import pg_store
 from app.core.config import get_settings
 from app.core.conversation import conversation_key
+from app.core.errors import new_request_id
 from app.core.llm import LLMError, get_llm, resolve_model_id
 from app.core.pg_resilience import run_with_query_timeout
 from app.core.text import _strip_unsafe
@@ -90,6 +91,7 @@ async def run_buyer_turn(
     push_fn=None,
     map_categories=None,
     observer=None,
+    request_id: str | None = None,
 ) -> AsyncIterator[str]:
     """구매자 1턴을 SSE 프레임으로 스트리밍한다(open_stream 이 감싸는 inner).
 
@@ -97,13 +99,17 @@ async def run_buyer_turn(
     LLM 미구성(개발·CI)이면 네트워크 호출 없이 곧바로 LLM_UNAVAILABLE error 를 낸다.
     """
     settings = get_settings()
+    request_id = request_id or getattr(observer, "request_id", None) or new_request_id()
     llm = llm or get_llm()
     if llm is None:
         yield sse(
             "error",
-            ErrorData(code="LLM_UNAVAILABLE", message="LLM 이 구성되지 않았어요.").model_dump(
-                by_alias=True
-            ),
+            ErrorData(
+                code="LLM_UNAVAILABLE",
+                message="LLM 이 구성되지 않았어요.",
+                request_id=request_id,
+                retryable=False,
+            ).model_dump(by_alias=True),
         )
         return
     search = search or search_service.search_catalog
@@ -160,7 +166,12 @@ async def run_buyer_turn(
         code = "LLM_TIMEOUT" if _is_timeout(exc) else "LLM_UNAVAILABLE"
         yield sse(
             "error",
-            ErrorData(code=code, message="질의를 이해하지 못했어요.").model_dump(by_alias=True),
+            ErrorData(
+                code=code,
+                message="질의를 이해하지 못했어요.",
+                request_id=request_id,
+                retryable=True,
+            ).model_dump(by_alias=True),
         )
         return
 
@@ -264,5 +275,6 @@ async def run_buyer_turn(
         cart_store=cart_store,
         thread_key=thread_key,
         observer=observer,
+        request_id=request_id,
     ):
         yield frame

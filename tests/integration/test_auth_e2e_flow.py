@@ -79,7 +79,8 @@ def test_buyer_flow_completes_under_real_jwt(client, spring, llm, jwks_auth, rsa
     events = parse_sse(resp.text)
     assert event_types(events)[-1] == "done"
     ready = first_of(events, "products.ready")
-    assert ready is not None and set(ready) == {"sessionId", "listId"}
+    assert ready is not None and set(ready) == {"sessionId", "listIds"}
+    assert len(ready["listIds"]) == 1
 
 
 def test_identity_comes_from_verified_token_not_body(

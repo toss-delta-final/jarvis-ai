@@ -267,7 +267,7 @@ repo-local 정본 api-spec.md v0.15.19를 상위 외부 계약으로 참조한�
 
 ### 7.1 FE 대면 (AI 서버 소유)
 
-**`POST /ai/chat`** — SSE, 요청 `{sessionId, threadId, message}`. 이벤트: `token`(근거 토큰, 0회+) → `conditions`(0~1회, 필터 칩) → `action`(장바구니 결과, 0회+) → `suggestions`/`budget`(해당 시) → `products.ready`(성공 시 정확히 1회, `{sessionId, listId}`) → `done`(`finishReason: stop|zero_result`) / `error`(`LLM_TIMEOUT`|`LLM_UNAVAILABLE`|`SEARCH_FAILED`|`INTERNAL`). 상품 카드는 SSE에 실리지 않는다(경로 B). — api-spec §3.1, §3.3
+**`POST /ai/chat`** — SSE, 요청 `{sessionId, threadId, message}`. 이벤트: `token`(근거 토큰, 0회+) → `conditions`(0~1회, 필터 칩) → `action`(장바구니 결과, 0회+) → `suggestions`/`budget`(해당 시) → `products.ready`(성공 시 정확히 1회, `{sessionId, listIds}`) → `done`(`finishReason: stop|zero_result`) / `error`(`{code,message,requestId,retryable}`)이다. `code`는 `LLM_TIMEOUT`|`LLM_UNAVAILABLE`|`SEARCH_FAILED`|`INTERNAL` 중 하나다. 상품 카드는 SSE에 실리지 않는다(경로 B). — api-spec §3.1, §3.3
 
 **`action`** 이벤트(장바구니 전용): `{ type: "CART_ADDED", cartItemId }` 또는 `{ type: "CART_ADD_FAILED", reason }`(`reason` ∈ `PRODUCT_NOT_FOUND`/`CART_ERROR`, `OUT_OF_STOCK`은 v0.15.5로 폐기). 옵션 되물음은 `action` 실패가 아니라 `token` 텍스트 재질문으로 처리되고, 장바구니 조회 응답도 별도 이벤트 없이 `token`으로 온다 — api-spec §3.1 (3)
 
