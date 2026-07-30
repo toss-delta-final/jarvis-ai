@@ -296,6 +296,23 @@ async def test_attr_conditions_prompt_teaches_merge_and_removal() -> None:
     assert "유지" in attr_rule and "attrRemovals" in attr_rule
 
 
+async def test_category_queries_prompt_teaches_concrete_product_expansion() -> None:
+    """[#115 §6.0] 프롬프트가 목적·상황형 질의를 **구체 상품** 단위로 전개하도록 지시한다.
+
+    실측: LLM 이 '선물용품'·'생활용품' 같은 매장 코너 이름으로 뭉개면 임베딩 앵커에 정보가 없어
+    엉뚱한 leaf 로 꽂혔다('선물용품' → 취미 > 수집용품 0.2074 / '생활용품' → 고양이용품 >
+    생활용품 0.1689). 반대로 구체 상품명 앵커는 16/16 정답(거리 0.046~0.217)이었다. 이 지시가
+    프롬프트에서 사라지면 #115 가 그대로 재발하므로 회귀를 테스트로 막는다.
+    """
+    from app.agents.buyer.recommendation.decompose import _SYSTEM
+
+    rule = _SYSTEM.split("- categoryQueries", 1)[1].split("- cart_add", 1)[0]
+    assert "구체" in rule  # 구체적 상품 단위로 전개
+    assert "코너" in rule  # 매장 코너 이름으로 뭉개지 말라는 금지 지시
+    assert "홍삼" in rule  # 선물형 전개 예시(추상 라벨이 아닌 실제 상품)
+    assert "지어내지" in rule  # 없는 카테고리명 창작 금지(표기 불일치로 exact 히트 0)
+
+
 async def test_attr_conditions_type_and_blank_guards() -> None:
     """[PR② — PR① 교훈] 비-dict·비문자열 값·공백 키/값은 걸러 매칭 오염·크래시를 막는다."""
     # 비 dict → None (리스트·문자열)
