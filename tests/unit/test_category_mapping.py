@@ -35,11 +35,17 @@ class _FakeMapper:
         nearest: dict[str, str],
         embed_raises: bool = False,
         search_raises_for: set[str] | None = None,
+        hits: dict[str, list[tuple[str, float]]] | None = None,
+        default_distance: float = 0.1,
     ):
         self._exact = exact
         self._nearest = nearest
         self._embed_raises = embed_raises
         self._search_raises_for = search_raises_for or set()  # 이 앵커 텍스트의 search 만 예외
+        # 거리·마진(§11 #115)을 검증하는 테스트는 hits 로 top-k 전체를 직접 준다. 미지정 앵커는
+        # nearest + default_distance 로 top-1 만 만든다(기존 테스트는 거리에 관심 없음).
+        self._hits = hits or {}
+        self._default_distance = default_distance
         self._embedded: list[str] = []
 
     def embed(self, texts: list[str]) -> list[list[float]]:
@@ -48,12 +54,15 @@ class _FakeMapper:
         self._embedded = list(texts)
         return [[float(i)] for i in range(len(texts))]  # vec[0] = 배치 인덱스
 
-    def search(self, vec: list[float], dsn: str, *, k: int) -> list[str]:
+    def search(self, vec: list[float], dsn: str, *, k: int) -> list[tuple[str, float]]:
+        """프로덕션 search_categories_pg 와 동일 계약 — (category, distance) 를 거리 오름차순으로."""
         text = self._embedded[int(vec[0])]
         if text in self._search_raises_for:
             raise RuntimeError(f"search down for {text}")
+        if text in self._hits:
+            return self._hits[text][:k]
         hit = self._nearest.get(text)
-        return [hit] if hit else []
+        return [(hit, self._default_distance)] if hit else []
 
     def exact_lookup(self, values, dsn: str) -> set[str]:
         return {v for v in values if v in self._exact}
@@ -120,6 +129,66 @@ async def test_offlist_uses_nearest() -> None:
     m = _FakeMapper(exact=set(), nearest={"무선 이어폰": "가전 > 이어폰/헤드폰"})
     out = await m.run([CategoryQuery("무선 이어폰", "이어폰")])
     assert out == [("가전 > 이어폰/헤드폰", "이어폰")]
+
+
+def _record(caplog, msg: str):
+    """caplog 에서 구조화 로그 한 건을 집어온다(없으면 테스트 실패 메시지에 실제 msg 목록 노출)."""
+    hits = [r for r in caplog.records if r.msg == msg]
+    assert hits, f"{msg} 로그 없음 — 방출된 msg: {[r.msg for r in caplog.records]}"
+    return hits[0]
+
+
+async def test_repaired_log_carries_distance_margin_anchor_kind(caplog) -> None:
+    """raw 최근접 보정 로그에 채택 거리·마진·앵커 종류를 싣는다(§11 #115 관측 구멍 보강).
+
+    search_categories_pg 가 `embedding <=> q` 로 정렬해놓고 거리를 버려서, "얼마나 가까운
+    매칭이었나"가 로그 어디에도 안 남았다 — 이것이 #115 진단을 막은 관측 구멍이다. 거리컷
+    임계 재튜닝과 후속 top-k 택일 트리거가 모두 이 분포에 의존하므로 로그에 노출한다.
+    """
+    m = _FakeMapper(
+        exact=set(),
+        nearest={},
+        hits={
+            "전자제품/음향": [
+                ("자동차기기 > 카오디오음향기기", 0.1767),
+                ("음향가전 > 기타 음향기기", 0.1873),
+            ]
+        },
+    )
+    with caplog.at_level("INFO"):
+        out = await m.run([CategoryQuery("전자제품/음향", "무선이어폰")])
+    assert out == [("자동차기기 > 카오디오음향기기", "무선이어폰")]  # 동작은 종전과 동일(컷 없음)
+    rec = _record(caplog, "category_repaired")
+    assert rec.distance == 0.1767
+    assert rec.margin == 0.0106  # 2위-1위, 소수 4자리로 반올림
+    assert rec.anchor_kind == "raw"
+
+
+async def test_fallback_log_carries_anchor_kind_query(caplog) -> None:
+    """raw 없이 leg query 로 매핑한 경로는 anchor_kind=query 로 구분한다(§4.3 앵커 종류 관측).
+
+    raw(LLM 창작 라벨)와 query(발화 유래) 중 어느 앵커가 canonical 을 냈는지가 #115 의 핵심
+    구분이다 — 이 라벨 없이는 로그에서 두 경로의 정확도를 분리해 볼 수 없다.
+    """
+    m = _FakeMapper(
+        exact=set(),
+        nearest={},
+        hits={"층간소음 방지 용품": [("생활잡화 > 층간소음방지용품", 0.0850)]},
+    )
+    with caplog.at_level("INFO"):
+        out = await m.run([CategoryQuery(None, "층간소음 방지 용품")])
+    assert out == [("생활잡화 > 층간소음방지용품", "층간소음 방지 용품")]
+    rec = _record(caplog, "category_fallback_top1")
+    assert rec.anchor_kind == "query"
+    assert rec.distance == 0.085
+
+
+async def test_single_hit_margin_is_none(caplog) -> None:
+    """히트가 1건이면 마진은 계산 불가 → None(0.0 으로 두면 "동점"으로 오독된다)."""
+    m = _FakeMapper(exact=set(), nearest={}, hits={"양말": [("패션잡화 > 양말", 0.1435)]})
+    with caplog.at_level("INFO"):
+        await m.run([CategoryQuery("양말", "양말")])
+    assert _record(caplog, "category_repaired").margin is None
 
 
 async def test_null_raw_uses_leg_query_as_anchor() -> None:

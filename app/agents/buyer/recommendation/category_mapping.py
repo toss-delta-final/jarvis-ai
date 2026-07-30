@@ -25,8 +25,25 @@ from app.pipelines.embedding import embed_texts as _embed_texts
 logger = logging.getLogger(__name__)
 
 EmbedFn = Callable[[list[str]], list[list[float]]]
-SearchFn = Callable[..., list[str]]
+SearchFn = Callable[..., list[tuple[str, float]]]  # (category, distance) 오름차순 (#115)
 ExactFn = Callable[[Sequence[str], str], set[str]]
+
+# 채택 후보 = (canonical, 채택 거리, 마진) — 마진은 히트 1건이면 None(§11 #115)
+_Picked = tuple[str, float, float | None]
+
+
+def _top1_with_margin(hits: list[tuple[str, float]]) -> _Picked | None:
+    """거리 오름차순 top-k 에서 `(canonical, distance, margin)` 을 뽑는다 (히트 0건이면 None).
+
+    마진(2위−1위 거리차)은 "1등이 2등을 얼마나 확실히 이겼나" = 판정 확신도다. 히트가 1건이면
+    계산 불가라 **0.0 이 아니라 None** — 0.0 은 "동점"(가장 애매한 상태)으로 오독된다.
+    소수 4자리로 반올림해 로그 가독성을 맞춘다(임계 비교는 원값 기준이 아니라 이 값 기준).
+    """
+    if not hits:
+        return None
+    canonical, distance = hits[0]
+    margin = round(hits[1][1] - distance, 4) if len(hits) > 1 else None
+    return canonical, round(distance, 4), margin
 
 
 def _dedup_truncate(
@@ -93,7 +110,7 @@ async def map_categories(
         for i in range(len(raws))
         if (raws[i] and raws[i] not in exact) or (not raws[i] and qtexts[i])
     ]
-    nearest: dict[int, str | None] = {}
+    nearest: dict[int, _Picked | None] = {}
     failed_idx: set[int] = set()  # 조회가 예외로 실패한 leg — category_unmapped(품질) 오염 방지
     try:
         # 앵커: raw(추측 카테고리) → 그 leg 의 query(고유 키워드). null-raw leg 이 여럿이어도 각자
@@ -116,7 +133,7 @@ async def map_categories(
                 failed_idx.add(need_idx[j])
                 nearest[need_idx[j]] = None
             else:
-                nearest[need_idx[j]] = hits[0] if hits else None
+                nearest[need_idx[j]] = _top1_with_margin(hits)
     except Exception as exc:  # noqa: BLE001 - embed 전면 실패 등: 임베딩 경로 leg 만 드롭
         # 임베딩 경로(embed 배치·전면 조회)가 통째로 죽어도, 이미 DB 검증된 exact 매치는 아래
         # result 에서 보존한다(canonical-or-null 은 exact·search 히트 둘 다 canonical 이라 성립).
@@ -132,10 +149,23 @@ async def map_categories(
             continue
         if i not in need_idx:
             continue  # 신호 없는 leg(raw·query 모두 없음) → 카테고리 강제 없이 스킵(#22)
-        canonical = nearest.get(i)
-        if canonical:
+        picked = nearest.get(i)
+        if picked:
+            canonical, distance, margin = picked
             event = "category_repaired" if r else "category_fallback_top1"
-            logger.info(event, extra={"raw": r, "canonical": canonical})
+            # distance·margin·anchor_kind 를 함께 남긴다(§11 #115) — 거리컷 임계 재튜닝과 후속
+            # top-k 택일 트리거가 이 분포에 의존하고, anchor_kind 는 raw(LLM 창작 라벨)와
+            # query(발화 유래) 중 어느 앵커가 canonical 을 냈는지 분리해 보기 위한 것이다.
+            logger.info(
+                event,
+                extra={
+                    "raw": r,
+                    "canonical": canonical,
+                    "distance": distance,
+                    "margin": margin,
+                    "anchor_kind": "raw" if r else "query",
+                },
+            )
             result.append((canonical, qtexts[i]))
         elif i in failed_idx:
             continue  # 조회 예외로 실패 — 이미 실패 로그로 관측됨. 품질 메트릭 오염 방지로 드롭만.
