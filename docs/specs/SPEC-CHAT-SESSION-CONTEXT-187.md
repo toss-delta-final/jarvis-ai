@@ -144,10 +144,14 @@ Spring 명시 종료가 유실되어도 idle sweep이 transient 정리를 담당
 
 시작 순서는 schema → bounded/resumable backfill → scheduler다. lifecycle scheduler lane만
 backfill/GC 권한을 가진다. 여기서 lane은 scheduler 시작 전 FastAPI lifecycle의 선행 backfill과,
-이후 단일 scheduler job의 재개 backfill/GC를 함께 뜻한다. `_v2` store, profile, seller,
-그 밖의 nonlegacy store write는 migration을 reopen하는 trigger 대상도 GC 대상도 아니다.
-backfill은 DB cursor/pass와 transaction으로 재시작 가능하며 시작 시 batch 상한을 넘으면
-fail-closed한다.
+이후 단일 scheduler job의 재개 backfill/GC를 함께 뜻한다. `_v2`, seller 등 ordinary/current
+authoritative nonlegacy store write와 authoritative ProfileStore write/buffer는 legacy-root
+trigger/GC 대상이 아니며 보존한다. profile의 유일한 예외는 quarantined non-authoritative
+legacy owner의 `session_ctx.{ownerId:sessionId}/buffer`다. grace와 quiet가 모두 지난 뒤에도
+session lock 안에서 authority를 다시 확인해 여전히 non-authoritative일 때만 이 buffer를
+삭제하고 conflict를 `discarded`로 기록한다. authoritative profile buffer는 절대 이 예외에
+포함하지 않는다. backfill은 DB cursor/pass와 transaction으로 재시작 가능하며 시작 시 batch
+상한을 넘으면 fail-closed한다.
 
 `grace_deadline`은 PostgreSQL `now()`로 기록한 최초 `rollout_started_at`을 기준으로,
 **기존 deadline**, **rollout 시작 + configured grace**, **rollout 시작 + 24시간**의 단조
