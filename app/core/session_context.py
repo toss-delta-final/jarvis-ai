@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import AsyncContextManager, Literal
 
 from app.core.config import get_settings
+from app.core.logging import safe_fingerprint
 
 logger = logging.getLogger(__name__)
 
@@ -265,13 +266,24 @@ class SessionContextRepository:
                     migration = await (
                         await conn.execute(
                             "SELECT profile_backfill_cursor, profile_backfill_owner_cursor, "
-                            "profile_backfill_completed_at "
+                            "profile_backfill_completed_at, profile_backfill_pass, "
+                            "grace_deadline "
                             "FROM chat_session_migrations WHERE migration_name=%s FOR UPDATE",
                             (migration_name,),
                         )
                     ).fetchone()
                     assert migration is not None
-                    cursor, owner_cursor, completed_at = migration
+                    cursor, owner_cursor, completed_at, backfill_pass, grace_deadline = migration
+                    cursor_fp = safe_fingerprint(str(cursor)) if cursor not in (None, "") else None
+                    logger.info(
+                        "session lifecycle backfill batch=%d pass=%d cursorFp=%s "
+                        "completed=%s graceDeadlineSet=%s",
+                        batches,
+                        backfill_pass,
+                        cursor_fp,
+                        completed_at is not None,
+                        grace_deadline is not None,
+                    )
                     if cursor is None and completed_at is not None:
                         if await _find_actionable_legacy_activity(conn) is None:
                             break

@@ -22,7 +22,8 @@ from app.core.auth import Identity
 from app.core.conversation import get_conversation_store
 from app.core.errors import get_request_id
 from app.core.observability import emit_rejection, start_observation
-from app.core.session_context import BuyerSessionInput
+from app.core.pg_resilience import is_state_store_unavailable
+from app.core.session_context import BuyerSessionInput, SessionStateUnavailable
 from app.core.stream import open_stream, registry_key
 from app.schemas.chat import ChatRequest
 
@@ -47,7 +48,7 @@ async def chat(
     request_id = get_request_id(http_request)
     try:
         store = await get_conversation_store()
-    except Exception:
+    except Exception as exc:
         # get_conversation_store()(pg-profile 지연 연결)는 운영(jwks)에서 폴백 없이 raise 한다.
         # 이 호출은 start_observation 인자라 open_stream 안전망 밖 — 예외가 나면 observation 이
         # 없어 §6.3 b chat_request 로그(errorType 집계)가 통째로 빠진다. pg-profile 장애야말로
@@ -58,6 +59,8 @@ async def chat(
             conversationId=request.session_id,
             threadId=request.thread_id,
         )
+        if is_state_store_unavailable(exc):
+            raise SessionStateUnavailable from exc
         raise
     observation = start_observation(
         request_id=request_id,

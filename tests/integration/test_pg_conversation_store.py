@@ -14,6 +14,8 @@ from __future__ import annotations
 import asyncio
 import uuid
 
+import httpx
+import psycopg
 import pytest
 from psycopg_pool import AsyncConnectionPool
 
@@ -21,6 +23,7 @@ from app.core import conversation as conversation_module
 from app.core.conversation import CommittedTurn, PgConversationStore, TurnStatus
 from app.core.config import get_settings
 from app.core.session_context import BuyerSessionInput, SessionContextRepository
+from app.main import app
 
 pytestmark = pytest.mark.integration
 
@@ -237,6 +240,57 @@ async def test_buyer_context_thread_and_turn_commit_together(pool) -> None:
     assert turn_linkage is not None
     assert (str(turn_linkage[0]), turn_linkage[1]) == (committed.context_id, session_id)
     assert await store.get_turn(committed.turn_id) is not None
+
+
+async def test_buyer_chat_operational_failure_returns_503_and_rolls_back_atomic_turn(
+    pool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """실 PG transaction 중 연결계열 실패는 공개 503이며 context/thread/turn을 남기지 않는다."""
+    store = PgConversationStore(pool)
+    suffix = uuid.uuid4().hex
+    session_id = f"buyer-fail-{suffix}"
+    thread_id = f"thread-fail-{suffix}"
+
+    async def fail_insert(*_args, **_kwargs):
+        raise psycopg.OperationalError("controlled connection loss")
+
+    monkeypatch.setattr(store, "_insert_turn_on_connection", fail_insert)
+
+    async def get_store():
+        return store
+
+    monkeypatch.setattr("app.api.chat.get_conversation_store", get_store)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as client:
+        response = await client.post(
+            "/chat",
+            json={"sessionId": session_id, "threadId": thread_id, "message": "질문"},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "STATE_UNAVAILABLE"
+    async with pool.connection() as conn:
+        context_count = (
+            await (
+                await conn.execute(
+                    "SELECT count(*) FROM chat_session_contexts WHERE session_id=%s",
+                    (session_id,),
+                )
+            ).fetchone()
+        )[0]
+        turn_count = (
+            await (
+                await conn.execute(
+                    "SELECT count(*) FROM conversation_turns WHERE session_id=%s",
+                    (session_id,),
+                )
+            ).fetchone()
+        )[0]
+    assert context_count == 0
+    assert turn_count == 0
 
 
 async def test_seller_turn_has_no_buyer_context(pool) -> None:

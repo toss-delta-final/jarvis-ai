@@ -121,7 +121,9 @@ Authorization: Bearer {STREAM_TICKET}   ← Spring이 스트림 단위로 발급
 - **[확정] 서명·검증 = RS256 + JWKS** — Spring이 **JWKS 엔드포인트**(`GET /.well-known/jwks.json`)를 노출하고, AI 서버가 JWKS 공개키를 **fetch·캐시하여 로컬 검증**한다(RS256, `kid`로 키 선택). **`kid` miss 시에만 refetch**하며, 요청마다 Spring에 왕복하지 않는다(FastAPI 기동 시 Spring이 잠깐 죽어 있어도 캐시로 동작).
 - **[확정] 스트림 티켓 필수 클레임**:
   - `sub` — 사용자/판매자/게스트 식별자(숫자 id를 문자열로, §2.5·§2.6).
-  - `sub_type` — `member` | `guest`. (구 `role`을 대체/보완 — 회원/게스트 구분. **판매자 role·`brandId` 표현 방식은 🔴 확인**, 아래 참고.)
+  - `sub_type` — `member` | `guest`. 구매자 티켓의 **유일한 신원 유형 정본**이며,
+    JWKS 모드에서 누락·그 외 값·legacy `role=GUEST|USER`·미지 role 대체는 모두
+    `401 TOKEN_INVALID`로 fail-closed 한다. dev 모드만 로컬 호환을 유지한다.
   - `iss` — 발급자 **`"jarvis-spring-auth"` [확정 v0.15.20]** (BE `StreamTicketProvider.ISSUER` 실측).
   - `aud` — 대상 **`"jarvis-fastapi-ai"` [확정 v0.15.20]** (BE `StreamTicketProvider.AUDIENCE` 실측). **AI는 `aud`를 검증**한다(토큰 혼용 방지 — 로그인 AT는 이 aud가 없어 SSE에 못 씀).
   - `scope` — **`"chat:stream"` [확정 v0.15.20]** (BE `StreamTicketProvider.SCOPE_CHAT_STREAM` 실측). **AI는 `scope`를 검증**한다.
@@ -1495,16 +1497,19 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 | 필드 | 비고 |
 |---|---|
 | `requestId` | §2.5 오류 봉투와 동일 키 — 전 구간 상관관계 |
-| `userId`(또는 guestId) / `role` | JWT `sub` 유래 |
-| `conversationId` | = `sessionId`(접속) — 세션 축 상관관계 |
-| `threadId` | **[v0.16.0 신설]** = `threadId`(방) — **`conversationId`와 병기**. 멀티탭이면 한 `conversationId` 아래 여러 `threadId` 로그가 섞이므로, 방을 못 가리면 한 접속의 동시 스트림을 분리해 읽을 수 없다 |
+| `ownerFp` / `role` | JWT `sub`의 peppered HMAC 지문과 역할. raw `userId`/`guestId` 금지 |
+| `sessionFp` | `sessionId`(접속)의 peppered HMAC 지문 |
+| `threadFp` | `threadId`(방)의 peppered HMAC 지문 |
+| `streamFp` | 내부 `owner:thread` stream key의 peppered HMAC 지문(수명주기 로그) |
 | `latencyFirstToken` / `latencyTotal` | SSE 2분할 — 체감 응답성 vs 전체 시간(§2.9 c 기준 대비) |
 | `model` | 호출 모델 id(Haiku/Sonnet, 노드별 다중 기록) |
 | `promptTokens` / `completionTokens` | LLM 호출별 합산 |
 | `errorType` | in-stream `error` 코드·`FAILED` 사유·타임아웃 구간 |
 | `streamStatus` | `COMPLETED` / `FAILED` / `CANCELLED` (a와 동일 enum) |
 
-- **PII 정책**: 사용자 message **원문은 로그에 남기지 않는다**(길이·해시만) — 원문은 (a) 대화 저장소에만 존재.
+- **PII/식별자 정책**: 사용자 message 원문과 raw owner/session/thread/stream 식별자는
+  **로그에 남기지 않는다**. message는 길이·peppered HMAC, 식별자는 위 `*Fp`만 기록한다.
+  원문은 (a) 대화 저장소에만 존재한다.
 - 레이트 리밋(§2.8)·409(§2.9 a) 발동도 `errorType`으로 집계해 상한값 튜닝 근거로 쓴다.
 
 ---

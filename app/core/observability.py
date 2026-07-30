@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from app.core.auth import Identity
 from app.core.config import get_settings
 from app.core.conversation import ConversationStoreProtocol, TurnStatus, conversation_key
-from app.core.logging import get_logger
+from app.core.logging import get_logger, safe_fingerprint
 from app.core.session_context import BuyerSessionInput
 
 logger = get_logger("observability")
@@ -34,6 +34,11 @@ def message_fingerprint(text: str) -> tuple[int, str]:
     pepper = get_settings().pii_hash_pepper.encode("utf-8")
     digest = hmac.new(pepper, text.encode("utf-8"), hashlib.sha256).hexdigest()[:16]
     return len(text), digest
+
+
+def identifier_fingerprint(value: str | None) -> str | None:
+    """로그 상관관계용 비가역 식별자 지문."""
+    return safe_fingerprint(value)
 
 
 def role_of(identity: Identity) -> str:
@@ -142,11 +147,11 @@ class RequestObservation:
         record = {
             "event": "chat_request",
             "requestId": self.request_id,
-            "userId": self.user_id,
+            "ownerFp": identifier_fingerprint(self.user_id),
             "role": self.role,
-            "conversationId": self.conversation_id,
-            "contextId": self.context_id,
-            "threadId": self.thread_id,
+            "sessionFp": identifier_fingerprint(self.conversation_id),
+            "contextFp": identifier_fingerprint(self.context_id),
+            "threadFp": identifier_fingerprint(self.thread_id),
             "latencyFirstToken": latency_first_ms,
             "latencyTotal": latency_total_ms,
             "model": [m.model for m in self.model_calls] or None,
@@ -215,11 +220,17 @@ def emit_rejection(request_id: str, error_type: str, **fields: object) -> None:
 
     레이트 리밋(§2.8)·409(§2.9 a) 발동을 상한 튜닝 근거로 관측 가능하게 남긴다.
     """
+    raw_owner = fields.pop("userId", fields.pop("ownerId", None))
+    raw_session = fields.pop("conversationId", fields.pop("sessionId", None))
+    raw_thread = fields.pop("threadId", None)
     record = {
         "event": "chat_request",
         "requestId": request_id,
         "errorType": error_type,
         "streamStatus": None,
+        "ownerFp": identifier_fingerprint(str(raw_owner)) if raw_owner is not None else None,
+        "sessionFp": identifier_fingerprint(str(raw_session)) if raw_session is not None else None,
+        "threadFp": identifier_fingerprint(str(raw_thread)) if raw_thread is not None else None,
         **fields,
     }
     logger.info(json.dumps(record, ensure_ascii=False))

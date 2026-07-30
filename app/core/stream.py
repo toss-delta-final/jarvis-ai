@@ -25,7 +25,7 @@ from app.core.config import get_settings
 from app.core.conversation import TurnStatus
 from app.core.errors import new_request_id
 from app.core.logging import get_logger
-from app.core.observability import RequestObservation
+from app.core.observability import RequestObservation, identifier_fingerprint
 from app.schemas.chat import DoneData, ErrorData
 
 logger = get_logger(__name__)
@@ -193,7 +193,7 @@ async def _safe_finish(
     try:
         await observer.finish(loop_time, *args)
     except Exception:
-        logger.exception("observer.finish 실패 stream_key=%s", stream_key)
+        logger.exception("observer.finish 실패 streamFp=%s", identifier_fingerprint(stream_key))
 
 
 def _error_code_of(frame: str) -> str | None:
@@ -337,7 +337,10 @@ async def open_stream(
             break
         if await request.is_disconnected():
             # (b) 첫 이벤트 전 연결 종료 — 정리 후 즉시 종료(소비될 응답 없음).
-            logger.info("stream cancelled before first token stream_key=%s", stream_key)
+            logger.info(
+                "stream cancelled before first token streamFp=%s",
+                identifier_fingerprint(stream_key),
+            )
             await _abort_prestream()
             if observer is not None:
                 await _safe_finish(observer, stream_key, loop.time(), TurnStatus.CANCELLED)
@@ -372,7 +375,10 @@ async def open_stream(
                 remaining = deadline - loop.time()
                 if remaining <= 0:
                     # (c) 전체 상한 초과 — done(stop)으로 정상 절단(COMPLETED, FAILED 아님).
-                    logger.info("stream total cap reached stream_key=%s", stream_key)
+                    logger.info(
+                        "stream total cap reached streamFp=%s",
+                        identifier_fingerprint(stream_key),
+                    )
                     yield _done_stop_frame()
                     break
                 completed, _ = await asyncio.wait({next_task}, timeout=min(remaining, poll))
@@ -380,7 +386,8 @@ async def open_stream(
                     # 아직 이벤트 없음(제너레이터 유휴) — (b) 연결 종료 조기 감지.
                     if await request.is_disconnected():
                         logger.info(
-                            "stream cancelled by client disconnect stream_key=%s", stream_key
+                            "stream cancelled by client disconnect streamFp=%s",
+                            identifier_fingerprint(stream_key),
                         )
                         stream_status = TurnStatus.CANCELLED
                         break
@@ -393,7 +400,9 @@ async def open_stream(
                     # (c) 첫 이벤트 후(=200 전송 후) 상류 오류 — 계약상 in-stream error 로
                     #     마무리해야 한다(연결만 끊기지 않게, §2.9 c/§3.1). 기본 INTERNAL.
                     #     실제 그래프는 필요 시 자체 error(LLM_UNAVAILABLE 등)를 먼저 emit 가능.
-                    logger.exception("in-stream error stream_key=%s", stream_key)
+                    logger.exception(
+                        "in-stream error streamFp=%s", identifier_fingerprint(stream_key)
+                    )
                     stream_status = TurnStatus.FAILED
                     error_type = "INTERNAL"
                     yield _error_frame(

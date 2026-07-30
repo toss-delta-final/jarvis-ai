@@ -45,7 +45,7 @@ SUB_TYPE_GUEST = "guest"
 # role 값 매핑 — TODO(C-1): 게스트/판매자 role 최종값을 Spring 회원 스키마 확정 시 반영.
 ROLE_USER = "USER"
 ROLE_GUEST = "GUEST"  # TODO: 최종 게스트 role 값 확정 대기
-ROLE_SELLER = "SELLER"  # TODO: 최종 판매자 role 값 확정 대기
+ROLE_SELLER = "seller"
 
 
 @dataclass(frozen=True)
@@ -82,13 +82,7 @@ class TokenExpiredError(AuthError):
 
 
 def _norm_role(role: object) -> str | None:
-    """role 클레임 정규화(대문자 비교용).
-
-    api-spec §2.3 표기는 `role == "seller"`(소문자)인데 구 코드 상수는 대문자였고,
-    실값 대소문자 형식은 🔴 C-1 잔여다. 값을 지어내지 않는 선에서 **대소문자 무관
-    비교**로 두 표기를 모두 수용한다 (PR #39 리뷰 반영 — 소문자 발급 시 판매자
-    전면 403 방지). C-1 확정 시 상수/비교를 실값으로 고정한다.
-    """
+    """dev 레거시 호환에만 쓰는 role 대문자 정규화."""
     if not isinstance(role, str):
         return None
     normalized = role.strip().upper()
@@ -101,10 +95,9 @@ def _claims_to_identity(claims: dict, *, require_identity_claim: bool = False) -
     """검증된 클레임 dict → Identity 매핑.
 
     우선순위 (§2.3 v0.10.0):
-      1. role == seller(대소문자 무관) → 판매자 (seller_id = sub, brand_id = brandId 클레임).
-                                         판매자 티켓의 정확한 클레임 형식은 🔴 C-1 잔여.
+      1. JWKS role == "seller" 정확 일치 → 판매자 (seller_id=sub, brand_id=brandId).
       2. sub_type == member|guest      → 티켓 정본 클레임. 그 외 값은 fail-closed 거부.
-      3. 구 role 폴백 (GUEST/USER 등)  → C-1 값 집합 확정 전 호환 유지(미지 role 은 회원 관용).
+      3. dev의 구 role 폴백(GUEST/USER 등) → 로컬 호환 유지.
 
     require_identity_claim=True(jwks 실배선 레인)면 sub_type·role 이 **둘 다 없는**
     서명 유효 토큰을 거부한다 — §2.3 은 sub_type 을 티켓 필수 클레임으로 확정했고,
@@ -112,11 +105,14 @@ def _claims_to_identity(claims: dict, *, require_identity_claim: bool = False) -
     방어 원칙이 어긋난다 (PR #39 리뷰 반영). dev 모드는 로컬 편의 레인이라 관용 유지.
     """
     subject = claims.get(CLAIM_SUBJECT)
-    role = _norm_role(claims.get(CLAIM_ROLE))
+    raw_role = claims.get(CLAIM_ROLE)
+    role = _norm_role(raw_role)
     sub_type = claims.get(CLAIM_SUB_TYPE)
     session_id = claims.get(CLAIM_SESSION_ID)
 
-    if role == ROLE_SELLER:
+    if (require_identity_claim and raw_role == ROLE_SELLER) or (
+        not require_identity_claim and role == ROLE_SELLER.upper()
+    ):
         # 판매자는 sub 를 판매자 식별자로도 사용한다 (스코프 근거는 role 클레임).
         return Identity(
             user_id=subject,
@@ -145,6 +141,10 @@ def _claims_to_identity(claims: dict, *, require_identity_claim: bool = False) -
             )
         # 미지 sub_type — 정본 값 집합(member|guest) 밖은 신원 판정 불가로 거부.
         raise AuthError(f"unknown sub_type: {sub_type}")
+    if require_identity_claim:
+        # 운영 티켓은 구매자 신원 유형을 오직 정본 sub_type으로 판정한다. role은
+        # 판매자 전용 discriminator이며 legacy/미지 role을 buyer로 관용하지 않는다.
+        raise AuthError("missing exact buyer sub_type claim")
     if role == ROLE_GUEST:
         return Identity(
             user_id=None,
@@ -153,9 +153,6 @@ def _claims_to_identity(claims: dict, *, require_identity_claim: bool = False) -
             subject=subject,
             session_id=session_id,
         )
-    if role is None and require_identity_claim:
-        # 신원 유형 클레임(sub_type·role) 전무 — 실배선 레인은 회원 기본 승인 금지.
-        raise AuthError("missing sub_type/role claim")
     # 구 role 폴백: 값 집합이 C-1 미확정이라 미지 role(USER 등)은 회원으로 관용 —
     # sub 는 서명 검증을 통과했고, 회원 role 실값이 달라도 전면 401 이 되지 않게 한다.
     return Identity(

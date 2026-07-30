@@ -139,11 +139,15 @@ async def test_session_context_sweep_logs_lifecycle_and_gc_progress(monkeypatch,
 
     async def lifecycle():
         return IdleSweepResult(
+            claimed=6,
             examined=7,
             completed=3,
             retryable=1,
             skipped=2,
+            superseded_skipped=8,
+            invalid_recovery=9,
             recovered=4,
+            examined_limit_reached=True,
         )
 
     async def gc():
@@ -158,10 +162,14 @@ async def test_session_context_sweep_logs_lifecycle_and_gc_progress(monkeypatch,
     with caplog.at_level("INFO"):
         await sched_mod.run_session_context_sweep()
     assert "examined=7" in caplog.text
+    assert "claimed=6" in caplog.text
     assert "completed=3" in caplog.text
     assert "retryable=1" in caplog.text
     assert "skipped=2" in caplog.text
     assert "recovered=4" in caplog.text
+    assert "superseded_skipped=8" in caplog.text
+    assert "invalid_recovery=9" in caplog.text
+    assert "examined_limit_reached=True" in caplog.text
     assert "gc_deleted=5" in caplog.text
     assert "filters_deleted=11" in caplog.text
     assert "cart_deleted=12" in caplog.text

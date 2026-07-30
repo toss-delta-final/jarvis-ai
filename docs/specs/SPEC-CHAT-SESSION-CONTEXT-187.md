@@ -189,11 +189,14 @@ legacy root GC와 lazy adoption은 같은 PostgreSQL advisory migration fence를
 
 원문 owner/session/guest 값은 로그에 남기지 않고 fingerprint를 쓴다.
 
-- claim: `session_fp`, `guest_fp`, `context_id`, `generation`,
+- claim: `sessionFp`, `ownerFp`, `contextFp`, `generation`,
   `outcome=accepted|duplicate|active|finalizing|claim_conflict|error`
-- sweep: claimed/completed/retryable/skipped/superseded/invalid recovery,
-  examined limit 도달 여부와 예외
-- rollout: pass/cursor 진행, migrated/conflict 수, filter/cart/revert GC counter, grace deadline
+- sweep: `claimed`, `completed`, `retryable`, `skipped`, `superseded_skipped`,
+  `invalid_recovery`, `examined_limit_reached`와 예외
+- rollout: batch/pass와 `cursorFp`, migrated/conflict 수, filter/cart/revert GC counter,
+  grace deadline 설정 여부
+- buyer chat/stream: raw `userId`/`guestId`/`sessionId`/`conversationId`/`threadId`와
+  `owner:thread` key 대신 `ownerFp`/`sessionFp`/`threadFp`/`streamFp`를 쓴다.
 - API: `SESSION_FORBIDDEN`, `SESSION_ACTIVE`, `SESSION_FINALIZING`,
   `SESSION_CLAIM_CONFLICT`, `STATE_UNAVAILABLE`, requestId
 

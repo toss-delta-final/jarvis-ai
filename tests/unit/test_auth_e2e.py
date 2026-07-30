@@ -121,6 +121,37 @@ def test_chat_with_valid_member_ticket_streams(jwks_app, rsa_key, buyer_fakes) -
     assert resp.headers["content-type"].startswith("text/event-stream")
 
 
+@pytest.mark.parametrize("legacy_role", [auth.ROLE_GUEST, auth.ROLE_USER, "UNKNOWN"])
+def test_jwks_buyer_ticket_requires_exact_sub_type(
+    jwks_app,
+    rsa_key,
+    legacy_role: str,
+) -> None:
+    """실배선 buyer는 legacy/미지 role로 sub_type 정본을 우회할 수 없다."""
+    claims = ticket_claims(sub="42", sessionId="s-auth-1")
+    claims.pop("sub_type")
+    claims["role"] = legacy_role
+    token = sign_ticket(rsa_key, KID, claims)
+
+    resp = client.post("/chat", json=_chat_body(), headers=_bearer(token))
+
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "TOKEN_INVALID"
+
+
+def test_dev_buyer_keeps_legacy_role_compatibility(monkeypatch, rsa_key, buyer_fakes) -> None:
+    """dev 레인은 기존 GUEST/USER role 토큰 호환을 유지한다."""
+    monkeypatch.setattr(deps, "get_settings", lambda: Settings(_env_file=None, auth_mode="dev"))
+    claims = ticket_claims(sub="legacy-user", sessionId="s-auth-1")
+    claims.pop("sub_type")
+    claims["role"] = auth.ROLE_USER
+    token = sign_ticket(rsa_key, KID, claims)
+
+    resp = client.post("/chat", json=_chat_body(), headers=_bearer(token))
+
+    assert resp.status_code == 200
+
+
 def test_adoption_failure_before_first_frame_maps_to_state_unavailable(
     jwks_app,
     rsa_key,
@@ -217,6 +248,19 @@ def test_seller_ticket_without_buyer_session_claim_streams(jwks_app, rsa_key) ->
 
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
+
+
+def test_jwks_uppercase_seller_role_is_not_accepted(jwks_app, rsa_key) -> None:
+    """BE 확정값과 다른 대문자 SELLER는 판매자 경로를 열지 않는다."""
+    claims = ticket_claims(sub="9")
+    claims.pop("sub_type")
+    claims.update({"role": "SELLER", "brandId": 3})
+    token = sign_ticket(rsa_key, KID, claims)
+
+    resp = client.post("/seller/chat", json=_chat_body(), headers=_bearer(token))
+
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "TOKEN_INVALID"
 
 
 # ── §2.3(b) 인바운드 서비스 토큰 (Spring→AI) — fail-closed ──

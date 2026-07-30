@@ -8,6 +8,7 @@ import logging
 import types
 
 import jwt
+import psycopg
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,7 +22,7 @@ from app.core.conversation import (
     get_conversation_store,
 )
 from app.core.config import get_settings
-from app.core.observability import message_fingerprint, start_observation
+from app.core.observability import identifier_fingerprint, message_fingerprint, start_observation
 from app.core.session_context import BuyerSessionInput, SessionFinalizing, SessionForbidden
 from app.core.stream import get_registry
 from app.core.stream import open_stream
@@ -150,6 +151,56 @@ async def test_stream_completes_when_finalize_assistant_fails(
     assert has_chat_request, "finalize 실패 시 §6.3 b 구조화 로그가 유실됨"
 
 
+async def test_buyer_logs_use_fingerprints_without_raw_identifiers(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """구매자 구조화/stream 로그에는 raw 신원·세션·thread·stream key가 남지 않는다."""
+    owner = "member-raw-owner"
+    session = "session-raw-secret"
+    thread = "thread-raw-secret"
+    identity = Identity(user_id=owner, is_guest=False, seller_id=None, subject=owner)
+    obs = start_observation(
+        request_id="req-safe",
+        identity=identity,
+        conversation_id=session,
+        thread_id=thread,
+        message="질문",
+        store=await get_conversation_store(),
+        now=asyncio.get_running_loop().time(),
+        buyer_session=BuyerSessionInput(session, thread, "member", owner),
+    )
+
+    async def done():
+        yield 'data: {"type":"done","data":{"finishReason":"stop"}}\n\n'
+
+    with caplog.at_level(logging.INFO):
+        response = await open_stream(
+            _FakeRequest(disconnected=True),
+            f"{owner}:{thread}",
+            done,
+            observer=obs,
+        )
+        _ = [chunk async for chunk in response.body_iterator]
+
+    text = caplog.text
+    assert owner not in text
+    assert session not in text
+    assert thread not in text
+    assert f"{owner}:{thread}" not in text
+    records = [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if record.name == "observability" and record.getMessage().startswith("{")
+    ]
+    [chat_record] = [record for record in records if record.get("event") == "chat_request"]
+    assert chat_record["ownerFp"]
+    assert chat_record["sessionFp"]
+    assert chat_record["threadFp"]
+    assert "userId" not in chat_record
+    assert "conversationId" not in chat_record
+    assert "threadId" not in chat_record
+
+
 async def test_slot_released_when_commit_user_message_cancelled() -> None:
     """commit_user_message(pg-profile write) 중 disconnect 로 취소돼도 슬롯이 해제된다.
 
@@ -202,6 +253,67 @@ async def test_pg_conversation_store_query_timeout(
         await store.get_turn("t")
     with pytest.raises(TimeoutError):
         await store.turns_for("c")
+
+
+@pytest.mark.parametrize("failure", [TimeoutError("pool"), psycopg.OperationalError("down")])
+async def test_buyer_chat_pg_operational_failure_maps_to_state_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+) -> None:
+    """buyer atomic turn 경계의 연결/timeout 장애는 중앙 503 봉투로 변환한다."""
+
+    class _FailConnection:
+        async def __aenter__(self):
+            raise failure
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class _FailPool:
+        def connection(self):
+            return _FailConnection()
+
+    store = PgConversationStore(_FailPool())
+
+    async def get_store():
+        return store
+
+    monkeypatch.setattr("app.api.chat.get_conversation_store", get_store)
+    response = client.post(
+        "/chat",
+        json={"sessionId": "db-fail-session", "threadId": "db-fail-thread", "message": "질문"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "STATE_UNAVAILABLE"
+
+
+async def test_buyer_chat_programming_error_is_not_masked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SQL programming 결함은 STATE_UNAVAILABLE로 위장하지 않는다."""
+
+    class _FailConnection:
+        async def __aenter__(self):
+            raise psycopg.ProgrammingError("bad sql")
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class _FailPool:
+        def connection(self):
+            return _FailConnection()
+
+    store = PgConversationStore(_FailPool())
+    with pytest.raises(psycopg.ProgrammingError):
+        await store.save_user_message(
+            "db-code-session",
+            "owner",
+            "member",
+            "질문",
+            thread_id="db-code-thread",
+            buyer_session=BuyerSessionInput("db-code-session", "db-code-thread", "member", "owner"),
+        )
 
 
 async def test_pg_conversation_finalize_missing_turn_warns(
@@ -329,7 +441,26 @@ def test_chat_emits_rejection_log_when_conversation_store_fails(
     ]
     assert hits, "pg-profile 장애 시 chat_request errorType 로그 누락"
     assert hits[0]["streamStatus"] is None
-    assert hits[0].get("conversationId") == "cfail"
+    assert hits[0].get("sessionFp") == identifier_fingerprint("cfail")
+    assert "conversationId" not in hits[0]
+
+
+@pytest.mark.parametrize("failure", [TimeoutError("pool"), psycopg.OperationalError("down")])
+def test_chat_store_initialization_failure_maps_to_state_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+) -> None:
+    async def fail_store():
+        raise failure
+
+    monkeypatch.setattr("app.api.chat.get_conversation_store", fail_store)
+    response = client.post(
+        "/chat",
+        json={"sessionId": "init-fail", "threadId": "thread", "message": "질문"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "STATE_UNAVAILABLE"
 
 
 # ─────────── §6.3 (b) 구조화 로그 + PII ───────────
@@ -348,8 +479,9 @@ def test_structured_log_has_fields_and_hides_raw_message(
     record = json.loads(logs[-1])
     for key in (
         "requestId",
-        "conversationId",
-        "threadId",
+        "ownerFp",
+        "sessionFp",
+        "threadFp",
         "latencyTotal",
         "streamStatus",
         "messageLength",
@@ -360,8 +492,8 @@ def test_structured_log_has_fields_and_hides_raw_message(
     ):
         assert key in record, f"필드 누락: {key}"
     assert record["streamStatus"] == "COMPLETED"
-    assert record["conversationId"] == "c2"
-    assert record["threadId"] == "t"
+    assert record["sessionFp"] == identifier_fingerprint("c2")
+    assert record["threadFp"] == identifier_fingerprint("t")
     assert record["messageLength"] == len(msg)
     # [PII] 원문은 로그 어디에도 없고, 해시만 있다.
     assert msg not in logs[-1]
@@ -526,7 +658,7 @@ async def test_observation_stores_and_logs_committed_buyer_context(
         for item in caplog.records
         if item.name == "observability" and item.getMessage().startswith("{")
     )
-    assert record["contextId"] == observation.context_id
+    assert record["contextFp"] == identifier_fingerprint(observation.context_id)
 
 
 async def test_seller_style_observation_logs_null_context(
@@ -563,7 +695,7 @@ async def test_seller_style_observation_logs_null_context(
         for item in caplog.records
         if item.name == "observability" and item.getMessage().startswith("{")
     )
-    assert record["contextId"] is None
+    assert record["contextFp"] is None
 
 
 def test_rate_limit_emits_structured_observation(caplog: pytest.LogCaptureFixture) -> None:

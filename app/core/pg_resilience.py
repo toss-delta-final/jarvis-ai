@@ -15,8 +15,9 @@ from contextlib import asynccontextmanager
 from typing import Generic, TypeVar
 
 from langgraph.store.base import BaseStore
+from psycopg import OperationalError
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
-from psycopg_pool import AsyncConnectionPool
+from psycopg_pool import AsyncConnectionPool, PoolTimeout
 
 from app.core.config import get_settings
 
@@ -57,6 +58,11 @@ async def run_with_query_timeout(awaitable: Awaitable[_T]) -> _T:
         awaitable,
         timeout=get_settings().state_store_query_timeout_s,
     )
+
+
+def is_state_store_unavailable(exc: BaseException) -> bool:
+    """공개 session wire에서 503으로 변환 가능한 실제 I/O 장애만 판정한다."""
+    return isinstance(exc, (TimeoutError, PoolTimeout, OperationalError))
 
 
 def state_store_pool_config() -> dict[str, int | float]:

@@ -21,9 +21,14 @@ from typing import Protocol
 from app.core import session_context
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.core.pg_resilience import hardened_pg_conninfo, run_with_query_timeout
+from app.core.pg_resilience import (
+    hardened_pg_conninfo,
+    is_state_store_unavailable,
+    run_with_query_timeout,
+)
 from app.core.session_context import (
     BuyerSessionInput,
+    SessionStateUnavailable,
     resolve_touch_register_on_connection,
 )
 
@@ -303,7 +308,12 @@ class PgConversationStore:
                     )
                     return context.context_id
 
-        context_id = await run_with_query_timeout(_run())
+        try:
+            context_id = await run_with_query_timeout(_run())
+        except Exception as exc:
+            if is_state_store_unavailable(exc):
+                raise SessionStateUnavailable from exc
+            raise
         return CommittedTurn(turn_id, context_id)
 
     async def _insert_turn_on_connection(

@@ -236,7 +236,10 @@ async def test_schema_initialize_is_idempotent_and_upgrades_old_turn_table(pg_re
     assert constraint == (1,)
 
 
-async def test_legacy_backfill_maps_states_and_quarantines_ambiguous_owners(pg_repo) -> None:
+async def test_legacy_backfill_maps_states_and_quarantines_ambiguous_owners(
+    pg_repo,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     repo, pool, prefix = pg_repo
     active = prefix + "-active"
     idle = prefix + "-idle"
@@ -282,8 +285,14 @@ async def test_legacy_backfill_maps_states_and_quarantines_ambiguous_owners(pg_r
             )
     try:
         restarted_repo = SessionContextRepository(pool=pool)
-        await restarted_repo.backfill_legacy_activity()
-        await repo.backfill_legacy_activity()
+        with caplog.at_level("INFO", logger="app.core.session_context"):
+            await restarted_repo.backfill_legacy_activity()
+            await repo.backfill_legacy_activity()
+        assert "batch=" in caplog.text
+        assert "pass=" in caplog.text
+        assert "cursorFp=" in caplog.text
+        assert "graceDeadlineSet=True" in caplog.text
+        assert active not in caplog.text
         async with pool.connection() as conn:
             contexts = await (
                 await conn.execute(

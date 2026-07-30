@@ -91,24 +91,22 @@ def test_unknown_sub_type_rejected(rsa_key, jwks_calls) -> None:
         _decode(token)
 
 
-def test_legacy_role_user_fallback(rsa_key, jwks_calls) -> None:
-    """sub_type 없는 구 role=USER 토큰 → 회원 폴백 매핑 유지 (C-1 형식 확정 전 호환)."""
+def test_jwks_legacy_role_user_is_rejected(rsa_key, jwks_calls) -> None:
+    """JWKS에서 sub_type 없는 구 role=USER 토큰은 fail-closed 한다."""
     claims = ticket_claims(sub="7")
     del claims["sub_type"]
     claims["role"] = auth.ROLE_USER
-    identity = _decode(sign_ticket(rsa_key, KID, claims))
-    assert identity.user_id == "7"
-    assert identity.is_guest is False
+    with pytest.raises(AuthError):
+        _decode(sign_ticket(rsa_key, KID, claims))
 
 
-def test_legacy_role_guest_fallback(rsa_key, jwks_calls) -> None:
-    """sub_type 없는 구 role=GUEST 토큰 → 게스트 폴백 매핑 유지."""
+def test_jwks_legacy_role_guest_is_rejected(rsa_key, jwks_calls) -> None:
+    """JWKS에서 sub_type 없는 구 role=GUEST 토큰은 fail-closed 한다."""
     claims = ticket_claims()
     del claims["sub_type"]
     claims["role"] = auth.ROLE_GUEST
-    identity = _decode(sign_ticket(rsa_key, KID, claims))
-    assert identity.user_id is None
-    assert identity.is_guest is True
+    with pytest.raises(AuthError):
+        _decode(sign_ticket(rsa_key, KID, claims))
 
 
 def test_seller_role_with_brand_id(rsa_key, jwks_calls) -> None:
@@ -163,15 +161,13 @@ def test_empty_role_without_sub_type_rejected(rsa_key, jwks_calls, empty_role) -
         _decode(token)
 
 
-def test_unrecognized_role_falls_back_to_member(rsa_key, jwks_calls) -> None:
-    """미지 role 값(예: MEMBER)은 회원 관용 폴백 — C-1 값 집합 미확정 상태에서
-    회원 role 실값이 예상과 달라도 전면 401 이 되지 않게 한다 (의도된 관용, 리뷰 반영)."""
+def test_jwks_unrecognized_role_is_rejected(rsa_key, jwks_calls) -> None:
+    """미지 role은 buyer sub_type 정본을 대신할 수 없다."""
     claims = ticket_claims(sub="42")
     del claims["sub_type"]
     claims["role"] = "MEMBER"
-    identity = _decode(sign_ticket(rsa_key, KID, claims))
-    assert identity.user_id == "42"
-    assert identity.is_guest is False
+    with pytest.raises(AuthError):
+        _decode(sign_ticket(rsa_key, KID, claims))
 
 
 # ── 검증 항목: signature / exp / iss / aud / scope (§2.3 확정) ──

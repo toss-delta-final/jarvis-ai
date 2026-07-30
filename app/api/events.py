@@ -14,6 +14,8 @@ from fastapi import APIRouter, Depends
 from app.api.deps import verify_service_token
 from app.core import session_lifecycle
 from app.core.llm import get_llm  # noqa: F401 - integration injection compatibility
+from app.core.pg_resilience import is_state_store_unavailable
+from app.core.session_context import SessionStateUnavailable
 from app.schemas.events import SessionClaimEvent
 from app.schemas.profile import SessionEndEvent
 
@@ -27,7 +29,12 @@ async def session_claim(
     _token: None = Depends(verify_service_token),
 ) -> dict[str, str]:
     """Transfer a whole guest session to the authenticated member selected by Spring."""
-    outcome = await session_lifecycle.claim_owner(event)
+    try:
+        outcome = await session_lifecycle.claim_owner(event)
+    except Exception as exc:
+        if is_state_store_unavailable(exc):
+            raise SessionStateUnavailable from exc
+        raise
     return {"status": "accepted" if outcome.claimed else "duplicate"}
 
 

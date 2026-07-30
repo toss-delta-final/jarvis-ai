@@ -134,7 +134,7 @@ def member_token(user_id: str = "42") -> str:
 def seller_token(user_id: str = "77") -> str:
     """dev mode seller token for buyer-route authorization regression coverage."""
     return jwt.encode(
-        {"sub": user_id, "role": "SELLER", "brandId": "701"},
+        {"sub": user_id, "role": "seller", "brandId": "701"},
         "dev-only-not-a-secret-0123456789",
         algorithm="HS256",
     )

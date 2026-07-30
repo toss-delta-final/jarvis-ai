@@ -64,14 +64,19 @@ async def run_session_context_sweep() -> None:
         gc_deleted = await run_legacy_gc_batch()
         filters_deleted, cart_deleted, revert_deleted = await get_legacy_gc_counters()
         _log.info(
-            "session context sweep 완료 examined=%d completed=%d retryable=%d "
-            "skipped=%d recovered=%d gc_deleted=%d filters_deleted=%d "
+            "session context sweep 완료 claimed=%d examined=%d completed=%d retryable=%d "
+            "skipped=%d superseded_skipped=%d invalid_recovery=%d recovered=%d "
+            "examined_limit_reached=%s gc_deleted=%d filters_deleted=%d "
             "cart_deleted=%d revert_deleted=%d",
+            result.claimed,
             result.examined,
             result.completed,
             result.retryable,
             result.skipped,
+            result.superseded_skipped,
+            result.invalid_recovery,
             result.recovered,
+            result.examined_limit_reached,
             gc_deleted,
             filters_deleted,
             cart_deleted,

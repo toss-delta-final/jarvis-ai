@@ -294,7 +294,7 @@ class SessionLifecycleCoordinator:
                 await self._abandon_idle_prephase(claim)
             session_fp = message_fingerprint(claim.session_id)[1]
             logger.warning(
-                "session transient Phase A 실패 session_fp=%s finalization_id=%s",
+                "session transient Phase A 실패 sessionFp=%s finalization_id=%s",
                 session_fp,
                 claim.finalization_id,
                 exc_info=True,
@@ -323,7 +323,7 @@ class SessionLifecycleCoordinator:
         except Exception:
             abandoned = False
             logger.warning(
-                "idle prephase abandon 실패 session_fp=%s finalization_id=%s",
+                "idle prephase abandon 실패 sessionFp=%s finalization_id=%s",
                 message_fingerprint(claim.session_id)[1],
                 claim.finalization_id,
                 exc_info=True,
@@ -331,7 +331,7 @@ class SessionLifecycleCoordinator:
         else:
             if not abandoned:
                 logger.warning(
-                    "idle prephase abandon 거부 session_fp=%s finalization_id=%s",
+                    "idle prephase abandon 거부 sessionFp=%s finalization_id=%s",
                     message_fingerprint(claim.session_id)[1],
                     claim.finalization_id,
                 )
@@ -381,7 +381,7 @@ class SessionLifecycleCoordinator:
             # finalization pending and the context gated is the crash-recovery journal.
             session_fp = message_fingerprint(claim.session_id)[1]
             logger.warning(
-                "session transient Phase B 실패 session_fp=%s finalization_id=%s",
+                "session transient Phase B 실패 sessionFp=%s finalization_id=%s",
                 session_fp,
                 claim.finalization_id,
                 exc_info=True,
@@ -688,12 +688,13 @@ def _log_claim(
     outcome: str,
 ) -> None:
     session_fp = message_fingerprint(event.session_id)[1]
-    guest_fp = message_fingerprint(event.guest_id)[1]
+    owner_fp = message_fingerprint(event.guest_id)[1]
+    context_fp = message_fingerprint(context.context_id)[1] if context is not None else None
     logger.info(
-        "session owner claim session_fp=%s guest_fp=%s context_id=%s generation=%s outcome=%s",
+        "session owner claim sessionFp=%s ownerFp=%s contextFp=%s generation=%s outcome=%s",
         session_fp,
-        guest_fp,
-        context.context_id if context is not None else None,
+        owner_fp,
+        context_fp,
         context.generation if context is not None else None,
         outcome,
     )

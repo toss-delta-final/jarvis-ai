@@ -4,6 +4,7 @@ import asyncio
 import logging
 
 import httpx
+import psycopg
 import pytest
 from fastapi import HTTPException
 
@@ -96,6 +97,36 @@ async def test_claim_accepts_guest_context_and_preserves_threads(
     assert claimed.generation == original.generation + 1
     assert await repo.get_threads(claimed.context_id) == ["thread-1", "thread-2"]
     assert repo._owner_claims == {"session-1": ("guest-1", "7")}
+
+
+@pytest.mark.parametrize("failure", [TimeoutError("pool"), psycopg.OperationalError("down")])
+async def test_claim_pg_operational_failure_maps_to_state_unavailable(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+) -> None:
+    """claim 저장소의 연결/timeout 장애는 공개 wire에서 503으로 고정한다."""
+
+    async def fail(_event):
+        raise failure
+
+    monkeypatch.setattr(lifecycle, "claim_owner", fail)
+    response = await _post_claim(client, session_id="claim-fail")
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "STATE_UNAVAILABLE"
+
+
+async def test_claim_programming_error_is_not_masked(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail(_event):
+        raise psycopg.ProgrammingError("bad sql")
+
+    monkeypatch.setattr(lifecycle, "claim_owner", fail)
+    with pytest.raises(psycopg.ProgrammingError):
+        await _post_claim(client, session_id="claim-code")
 
 
 async def test_session_end_keeps_terminal_durable_when_profile_is_retryable(
@@ -687,13 +718,14 @@ async def test_claim_log_fingerprints_external_identifiers(
     session_id = "raw-session-secret"
     guest_id = "raw-guest-secret"
     session_fp = message_fingerprint(session_id)[1]
-    guest_fp = message_fingerprint(guest_id)[1]
+    owner_fp = message_fingerprint(guest_id)[1]
 
     with caplog.at_level(logging.INFO, logger="app.core.session_lifecycle"):
         response = await _post_claim(client, session_id=session_id, guest_id=guest_id)
 
     assert response.status_code == 202
     log_text = caplog.text
-    assert session_fp in log_text and guest_fp in log_text
+    assert session_fp in log_text and owner_fp in log_text
     assert session_id not in log_text and guest_id not in log_text
+    assert "sessionFp=" in log_text and "ownerFp=" in log_text
     assert "generation=0" in log_text and "outcome=accepted" in log_text

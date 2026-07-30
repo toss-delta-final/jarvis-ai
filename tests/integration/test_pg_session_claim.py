@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import uuid
 
+import httpx
+import psycopg
 import pytest
 from psycopg_pool import AsyncConnectionPool
 
@@ -13,6 +15,8 @@ from app.core.session_context import (
     SessionContextRepository,
 )
 from app.core.session_lifecycle import SessionLifecycleCoordinator
+from app.core import session_context as session_context_module
+from app.main import app
 from app.core.stream import ActiveStreamRegistry
 from app.schemas.events import SessionClaimEvent
 
@@ -246,4 +250,36 @@ async def test_pg_coordinator_releases_fence_on_db_failure_and_cancellation(
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+    assert not registry.is_fenced("G1", session_id)
+
+
+async def test_pg_claim_operational_failure_returns_503_and_rolls_back(
+    pg_claim,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """실 PG claim transaction 장애는 공개 503이며 owner/history mutation을 rollback한다."""
+    repository, pool, registry, prefix = pg_claim
+    session_id = prefix + "-wire-failure"
+    await repository.touch(BuyerSessionInput(session_id, "T1", "guest", "G1"))
+    original = repository._claim_owner_on_connection
+
+    async def mutate_then_fail(conn, claim_session_id, guest_id, user_id):  # noqa: ANN001
+        await original(conn, claim_session_id, guest_id, user_id)
+        raise psycopg.OperationalError("controlled connection loss")
+
+    monkeypatch.setattr(repository, "_claim_owner_on_connection", mutate_then_fail)
+    monkeypatch.setattr(session_context_module, "_default_repository", repository)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as client:
+        response = await client.post(
+            "/events/session-claim",
+            json={"sessionId": session_id, "guestId": "G1", "userId": 7},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "STATE_UNAVAILABLE"
+    assert await _rows(pool, session_id) == (("guest", "G1", 0), [])
     assert not registry.is_fenced("G1", session_id)
