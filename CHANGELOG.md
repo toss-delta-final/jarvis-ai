@@ -10,13 +10,13 @@
 ## [Unreleased]
 
 ### Docs
-- **`sessionId`(접속) · `threadId`(방) 축 분리 — MVP의 `sessionId == threadId` 전제 폐기** (api-spec §2.6·§2.9·§3.1·§3.2·§3.5·§6.3, v0.16.0). 정본 SPEC-CHAT-SESSION(Option B)을 사본에 반영했다. 한 접속 아래 여러 방이 **동시에** 존재하는 멀티탭 대화가 목적이다. **계약 문서만이고 AI 구현은 별건.**
+- **`sessionId`(접속) · `threadId`(방) 축 분리 — MVP의 `sessionId == threadId` 전제 폐기** (api-spec §2.6·§2.9·§3.1·§3.2·§3.5·§6.3, v0.16.0). 정본 SPEC-CHAT-SESSION(Option B)을 사본에 반영했다. 한 접속 아래 여러 방이 **동시에** 존재하는 멀티탭 대화가 목적이며, AI 구현은 #186에서 정합했다.
   - **§2.6 식별자 모델 신설** — 축별 발급 주체·수명·담당 상태를 표로 확정. `sessionId`=Spring CH-1 발급(Redis TTL 10분 sliding)·프로필 세션버퍼·I-20·`conversation_turns.conversation_id`(primary) / `threadId`=**FE 생성**(서버 왕복 없음)·필터 누적·장바구니 pending·되돌리기·동시 스트림 락·`conversation_turns.thread_id`. 구 정의 *"만료 의미 없는 불투명 스레드 키"* 를 폐기 — "스레드 키"는 이제 `threadId`의 것이고, AI가 만료를 판정하지 않는 이유는 만료가 **없어서**가 아니라 **판정 주체가 Spring이라서**다.
-  - **동시 스트림 락을 세션→방 단위로** (§2.9 a·§2.5 오류표) — `409 STREAM_IN_PROGRESS`의 판정 키가 `threadId`가 된다. **현재 코드는 세션 단위**(`app/api/chat.py`·`app/api/seller.py`의 `registry_key(identity, request.session_id)`)라 탭이 세션을 공유하는 순간 탭 B가 탭 A의 스트리밍 때문에 409를 맞는다 — 축 분리의 목적이 정면으로 무효화되므로 코드 정정이 필요하다.
+  - **동시 스트림 락을 세션→방 단위로** (§2.9 a·§2.5 오류표) — `409 STREAM_IN_PROGRESS`의 판정 키를 `threadId`로 변경했다. 같은 `sessionId`의 다른 방은 동시에 스트리밍할 수 있고 동일 방의 중복 스트림만 409로 거절한다.
   - **I-20 사유를 `logout` 1종으로** (§3.5·C-8) — 새 대화가 CH-1을 부르지 않고 `threadId`만 갱신하게 되어 `newConversation`이 발화되지 않는다. Spring이 I-20을 쏘는 경우는 로그아웃뿐이고 나머지는 Redis TTL 만료 + AI 내부 비활동 sweep이 담당한다.
   - **[D5] CH-1 멱등 등재 + 구 "CH-1 재호출 = 새 세션(맥락 단절)" 경고 폐기** (§1.2 레인 d) — Spring이 Redis `SETNX`로 기존 세션을 그대로 반환하므로 CH-1을 몇 번 불러도 세션은 하나다. **정확성은 `SETNX`가 책임지고 FE Web Locks(D1)는 최적화**다(한 브라우저 안에서만 통해 폰·PC 동시 접속을 못 막는다). 축출을 없앤 뒤엔 밀린 세션이 CH-1b로 TTL을 연장하며 유령으로 남아 I-20이 안 나가는데 이를 `SETNX`가 막는다. **예외 = 게스트 첫 방문 멀티탭**(쿠키 부재 → 게스트 2명 → 밀린 탭이 CH-1b `403`)은 신원이 갈라지는 것이라 `SETNX`로 못 막아 Web Locks가 방어한다.
   - **[D6] 맥락 TTL을 방→접속 단위로** (§2.6) — 어느 방에서든 활동이 있으면 그 `sessionId`의 **모든 방** TTL을 함께 연장하고 세션 종료 시 일괄 정리한다. 방마다 생사가 갈리면 탭을 옮겼을 때 한쪽 맥락만 사라져 사용자가 이해할 수 없다. 실제 코드는 thread 축 스토어(필터·cart·revert)에 **TTL이 아예 없어** 정정이 아니라 신규 구현이고, `session → thread[]` 역인덱스가 없어 "그 세션의 모든 방"을 지목할 수단부터 만들어야 한다.
-  - **§6.3 저장·로그 축 정합** — checkpointer thread 키를 `sessionId`→**`threadId`** 로 정정하고 `conversation_turns`를 **session-primary + `thread_id` 병기**로 명시(세션 종료 스캔은 세션 축, 방별 조회·정리는 방 축이라 어느 한쪽만으론 불가 — 컬럼은 아직 없다). 구조화 로그에 **`threadId` 신설** — 멀티탭이면 한 `conversationId` 아래 여러 방 로그가 섞여 방을 못 가리면 동시 스트림을 분리해 읽을 수 없다.
+  - **§6.3 저장·로그 축 정합** — checkpointer thread 키를 `sessionId`→**`threadId`** 로 정정하고 `conversation_turns`에 nullable `thread_id`와 조회 인덱스를 추가했다. 기존 볼륨은 런타임 멱등 migration으로 보강하고 신규 턴부터 방 식별자를 저장한다. 구조화 로그에도 **`threadId`** 를 남겨 한 `conversationId` 아래 여러 방을 구분한다.
   - **🔴 BE 확인 대기** — `SETNX` 멱등 키 스코프(`sub` vs `sub_type`+`sub`)와 멱등 반환 시 세션 TTL sliding 갱신 여부. 정본 §5 D5는 "이 사용자"로만 적었다.
   - 이미 정합해 손대지 않은 것: `conversation_turns.conversation_id = sessionId`(D2 session-primary) · thread 축 스토어가 `thread_id` 키 · 프로필 세션버퍼가 `session_id` 키 · 주기 flush가 `AsyncIOScheduler`+lifespan(D4) · 스트림 티켓에 session/thread 클레임 없음 · 탭 닫기 종료 신호 없음.
 - **CH-2 계약 확장 — 요청 2필드 신설 + SSE 2필드 추가** (api-spec §3.1·§3.2, v0.15.26). 정본(Notion「📡 API 명세서」CH-2·S-4) 2026-07-28~30 개정을 사본에 반영했다. 요청 필드 `conditionActions`·`screen` 구현은 #84·#118에서 진행하고, 응답 계약 `listIds`·`requestId`·`retryable`은 #189에서 구현했다.
@@ -54,6 +54,8 @@
   SPEC-PROFILE-001 v0.4.0)
 
 ### Changed
+
+- **#186 — 접속(`sessionId`)·방(`threadId`) 축 분리 구현** — 구매자·판매자 스트림 레지스트리 키를 인증 신원+`threadId`로 전환해 같은 접속의 다른 방을 병렬 허용하고 동일 방만 `409 STREAM_IN_PROGRESS`로 차단한다. `conversation_turns`는 session-primary를 유지하면서 nullable `thread_id`를 fresh schema·기존 볼륨 migration·쓰기/조회 모델에 병기하고, 구조화 로그와 저장 실패 로그에 `threadId`를 추가했다. #189의 `requestId`/`listIds` SSE 계약과 함께 동작하도록 충돌을 통합했다. (api-spec §2.5·§2.9·§6.3, v0.16.0)
 
 - **#189 — CH-2/S-4 SSE 응답 계약 정합화** — `products.ready`의 단일 `listId`를 항상 배열인 `listIds`(1~10개, 순서 보존)로 바꾸고, 현재 단일 I-21 push 결과도 길이 1 배열로 반환한다. 구매자·판매자·공통 스트림의 모든 `error`에 HTTP 응답·구조화 로그와 같은 `requestId`와 emit 지점이 판정한 `retryable`을 추가했다. provider 미구성은 재시도 불가, timeout·검색·일시적 내부 장애는 재시도 가능으로 분류한다. (api-spec §3.1·§3.2, v0.15.26)
 

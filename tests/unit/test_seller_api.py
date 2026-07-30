@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import types
 
 import pytest
 from langchain_core.messages import AIMessageChunk
@@ -40,6 +41,39 @@ def _confirm_request(draft_id: str) -> SellerChatRequest:
     return SellerChatRequest(
         session_id="s-1", thread_id="t-1", message="", action="confirm", draft_id=draft_id
     )
+
+
+async def test_seller_endpoint_scopes_stream_lock_by_thread_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """판매자 엔드포인트도 sessionId가 아니라 threadId를 스트림 락 키로 사용한다."""
+    captured: dict[str, str] = {}
+    marker = object()
+
+    async def _capture_open_stream(_request, stream_key, _factory, *, observer=None):
+        captured["stream_key"] = stream_key
+        return marker
+
+    monkeypatch.setattr(seller_api, "open_stream", _capture_open_stream)
+    identity = Identity(
+        user_id="7",
+        is_guest=False,
+        seller_id="7",
+        brand_id="3",
+        subject="7",
+    )
+    http_request = types.SimpleNamespace(state=types.SimpleNamespace(request_id="req-seller"))
+
+    response = await seller_api.seller_chat(
+        SellerChatRequest(
+            session_id="shared-session", thread_id="seller-room", message="매출 알려줘"
+        ),
+        http_request,
+        identity,
+    )
+
+    assert response is marker
+    assert captured["stream_key"] == "7:seller-room"
 
 
 class _StubStreamAgent:

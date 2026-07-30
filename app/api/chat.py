@@ -43,19 +43,25 @@ async def chat(
         # 이 호출은 start_observation 인자라 open_stream 안전망 밖 — 예외가 나면 observation 이
         # 없어 §6.3 b chat_request 로그(errorType 집계)가 통째로 빠진다. pg-profile 장애야말로
         # 관측이 필요하므로 rejection 로그를 남기고 그대로 전파한다(§2.5 봉투, PR #48 후속 리뷰).
-        emit_rejection(request_id, "INTERNAL", conversationId=request.session_id)
+        emit_rejection(
+            request_id,
+            "INTERNAL",
+            conversationId=request.session_id,
+            threadId=request.thread_id,
+        )
         raise
     observation = start_observation(
         request_id=request_id,
         identity=identity,
         conversation_id=request.session_id,
+        thread_id=request.thread_id,
         message=request.message,
         store=store,
         now=asyncio.get_running_loop().time(),
     )
     return await open_stream(
         http_request,
-        registry_key(identity, request.session_id),
+        registry_key(identity, request.thread_id),
         lambda: run_buyer_turn(
             request,
             identity,
