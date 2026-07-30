@@ -125,8 +125,8 @@ async def _safe_finish(
         logger.exception("observer.finish 실패 stream_key=%s", stream_key)
 
 
-def _error_code_of(frame: str) -> str | None:
-    """SSE 프레임이 in-stream error 이벤트면 code 를 반환(그 외 None). 그래프 자체 error emit 감지용."""
+def _terminal_event_of(frame: str) -> tuple[str | None, str | None]:
+    """SSE 종결 이벤트의 terminal reason 과 error code 를 반환한다."""
     import json
 
     try:
@@ -135,12 +135,17 @@ def _error_code_of(frame: str) -> str | None:
             line = line[len("data:") :].strip()
         payload = json.loads(line)
     except (ValueError, TypeError):
-        return None
-    if not isinstance(payload, dict) or payload.get("type") != "error":
-        return None
+        return None, None
+    if not isinstance(payload, dict):
+        return None, None
+    event_type = payload.get("type")
+    if event_type == "done":
+        return "done", None
+    if event_type != "error":
+        return None, None
     data = payload.get("data") or {}
     code = data.get("code") if isinstance(data, dict) else None
-    return code if isinstance(code, str) else "INTERNAL"
+    return "error", code if isinstance(code, str) else "INTERNAL"
 
 
 async def open_stream(
@@ -164,7 +169,12 @@ async def open_stream(
     if not registry.acquire(stream_key):
         if observer is not None:
             await _safe_finish(
-                observer, stream_key, loop.time(), TurnStatus.FAILED, "STREAM_IN_PROGRESS"
+                observer,
+                stream_key,
+                loop.time(),
+                TurnStatus.FAILED,
+                "STREAM_IN_PROGRESS",
+                "stream_in_progress",
             )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -186,11 +196,15 @@ async def open_stream(
             # except Exception 으로는 안 잡혀 release 가 스킵됐었다(슬롯 영구 누수, PR #48
             # 후속 리뷰) — 명시적으로 잡아 슬롯을 풀고 CANCELLED 로 마감 후 취소를 재전파한다.
             registry.release(stream_key)
-            await _safe_finish(observer, stream_key, loop.time(), TurnStatus.CANCELLED)
+            await _safe_finish(
+                observer, stream_key, loop.time(), TurnStatus.CANCELLED, None, "cancelled"
+            )
             raise
         except Exception:
             registry.release(stream_key)
-            await _safe_finish(observer, stream_key, loop.time(), TurnStatus.FAILED, "INTERNAL")
+            await _safe_finish(
+                observer, stream_key, loop.time(), TurnStatus.FAILED, "INTERNAL", "error"
+            )
             raise
 
     start = loop.time()
@@ -200,7 +214,9 @@ async def open_stream(
         # 그래프 진입 검증 등 inner_factory 동기 예외 — 슬롯·턴 누수 방지.
         registry.release(stream_key)
         if observer is not None:
-            await _safe_finish(observer, stream_key, loop.time(), TurnStatus.FAILED, "INTERNAL")
+            await _safe_finish(
+                observer, stream_key, loop.time(), TurnStatus.FAILED, "INTERNAL", "error"
+            )
         raise
 
     poll = settings.stream_disconnect_poll_s
@@ -233,7 +249,12 @@ async def open_stream(
             await _abort_prestream()
             if observer is not None:
                 await _safe_finish(
-                    observer, stream_key, loop.time(), TurnStatus.FAILED, "UPSTREAM_TIMEOUT"
+                    observer,
+                    stream_key,
+                    loop.time(),
+                    TurnStatus.FAILED,
+                    "UPSTREAM_TIMEOUT",
+                    "timeout",
                 )
             raise HTTPException(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
@@ -248,14 +269,26 @@ async def open_stream(
             except asyncio.CancelledError:
                 await _abort_prestream()
                 if observer is not None:
-                    await _safe_finish(observer, stream_key, loop.time(), TurnStatus.CANCELLED)
+                    await _safe_finish(
+                        observer,
+                        stream_key,
+                        loop.time(),
+                        TurnStatus.CANCELLED,
+                        None,
+                        "cancelled",
+                    )
                 raise
             except Exception:
                 # 첫 프레임 전 상류 오류(LLM/Spring 등) — 누수 방지 후 전파.
                 await _abort_prestream()
                 if observer is not None:
                     await _safe_finish(
-                        observer, stream_key, loop.time(), TurnStatus.FAILED, "INTERNAL"
+                        observer,
+                        stream_key,
+                        loop.time(),
+                        TurnStatus.FAILED,
+                        "INTERNAL",
+                        "error",
                     )
                 raise
             break
@@ -264,17 +297,23 @@ async def open_stream(
             logger.info("stream cancelled before first token stream_key=%s", stream_key)
             await _abort_prestream()
             if observer is not None:
-                await _safe_finish(observer, stream_key, loop.time(), TurnStatus.CANCELLED)
+                await _safe_finish(
+                    observer,
+                    stream_key,
+                    loop.time(),
+                    TurnStatus.CANCELLED,
+                    None,
+                    "cancelled",
+                )
             return StreamingResponse(
                 _empty_stream(),
                 media_type="text/event-stream; charset=utf-8",
                 headers=_SSE_HEADERS,
             )
 
-    # 첫 이벤트 확보 — first-token 지연 기록 + 부분 텍스트 누적 시작(§6.3).
+    # 첫 이벤트 확보 — SSE readiness와 user-visible text 지연을 분리 기록(§6.3).
     if observer is not None and first is not None:
-        observer.on_first_token(loop.time())
-        observer.record_frame(first)
+        observer.record_frame(first, loop.time())
 
     async def _wrapped() -> AsyncIterator[str]:
         # 다음 이벤트 대기는 지속 task 로 폴링한다 — wait_for 로 __anext__ 를 취소하면
@@ -282,9 +321,12 @@ async def open_stream(
         next_task: asyncio.Task | None = None
         stream_status = TurnStatus.COMPLETED
         error_type: str | None = None
+        terminal_reason = "eof"
         try:
             if first is not None:
-                first_err = _error_code_of(first)
+                first_terminal, first_err = _terminal_event_of(first)
+                if first_terminal is not None:
+                    terminal_reason = first_terminal
                 yield first  # first 는 위에서 record_frame 됨(중복 누적 방지)
                 if first_err is not None:
                     # in-stream error 는 종결 이벤트(§3.1) — 이후 이벤트 당기지 않는다.
@@ -297,7 +339,11 @@ async def open_stream(
                 if remaining <= 0:
                     # (c) 전체 상한 초과 — done(stop)으로 정상 절단(COMPLETED, FAILED 아님).
                     logger.info("stream total cap reached stream_key=%s", stream_key)
-                    yield _done_stop_frame()
+                    terminal_reason = "timeout"
+                    done_frame = _done_stop_frame()
+                    if observer is not None:
+                        observer.record_frame(done_frame, loop.time())
+                    yield done_frame
                     break
                 completed, _ = await asyncio.wait({next_task}, timeout=min(remaining, poll))
                 if next_task not in completed:
@@ -307,6 +353,7 @@ async def open_stream(
                             "stream cancelled by client disconnect stream_key=%s", stream_key
                         )
                         stream_status = TurnStatus.CANCELLED
+                        terminal_reason = "cancelled"
                         break
                     continue  # 같은 task 를 계속 기다린다(제너레이터 보존)
                 try:
@@ -320,16 +367,22 @@ async def open_stream(
                     logger.exception("in-stream error stream_key=%s", stream_key)
                     stream_status = TurnStatus.FAILED
                     error_type = "INTERNAL"
-                    yield _error_frame(
+                    terminal_reason = "error"
+                    error_frame = _error_frame(
                         "INTERNAL",
                         "처리 중 오류가 발생했습니다",
                         request_id=stream_request_id,
                         retryable=True,
                     )
+                    if observer is not None:
+                        observer.record_frame(error_frame, loop.time())
+                    yield error_frame
                     break
                 if observer is not None:
-                    observer.record_frame(item)  # 부분 텍스트 누적(§6.3 a)
-                item_err = _error_code_of(item)
+                    observer.record_frame(item, loop.time())  # 부분 텍스트 누적(§6.3 a)
+                item_terminal, item_err = _terminal_event_of(item)
+                if item_terminal is not None:
+                    terminal_reason = item_terminal
                 yield item
                 if item_err is not None:
                     # 그래프가 자체 in-stream error(LLM_UNAVAILABLE 등)를 emit — 실패로 마감하고
@@ -341,6 +394,7 @@ async def open_stream(
         except asyncio.CancelledError:
             # Starlette 가 클라이언트 disconnect 로 응답 task 를 취소한 경우 — CANCELLED 로 마감.
             stream_status = TurnStatus.CANCELLED
+            terminal_reason = "cancelled"
             raise
         finally:
             # (b) 취소·상한·정상 종료 공통 정리: 대기 중 task 취소 → 내부 제너레이터 close
@@ -356,7 +410,14 @@ async def open_stream(
                 # 위반), CancelledError 로 취소 전파 중이던 경우 그 취소가 이 새 예외로
                 # 대체돼 정상 client disconnect 가 엉뚱한 오류로 둔갑한다(PR #48 후속 리뷰).
                 # 관측 실패가 스트림 종료 자체를 막지 않도록 로그만 남기고 삼킨다.
-                await _safe_finish(observer, stream_key, loop.time(), stream_status, error_type)
+                await _safe_finish(
+                    observer,
+                    stream_key,
+                    loop.time(),
+                    stream_status,
+                    error_type,
+                    terminal_reason,
+                )
 
     return StreamingResponse(
         _wrapped(),

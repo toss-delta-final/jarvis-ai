@@ -207,6 +207,18 @@ class RequestTrace:
         if not self._finished:
             self._nodes[0].metadata["provider_ttft_ms"] = milliseconds
 
+    def record_server_timings(
+        self,
+        *,
+        first_event_ms: int | None,
+        first_text_token_ms: int | None,
+    ) -> None:
+        if not self._finished:
+            self._nodes[0].metadata.update(
+                server_first_event_ms=first_event_ms,
+                server_first_text_token_ms=first_text_token_ms,
+            )
+
     def mark_degraded(self, reason: str) -> None:
         if not self._finished:
             self._nodes[0].metadata.update(degraded=True, degradeReason=reason)
@@ -260,6 +272,14 @@ class NoopRequestTrace(RequestTrace):
 
     def record_provider_ttft(self, milliseconds: int) -> None:
         del milliseconds
+
+    def record_server_timings(
+        self,
+        *,
+        first_event_ms: int | None,
+        first_text_token_ms: int | None,
+    ) -> None:
+        del first_event_ms, first_text_token_ms
 
     def mark_degraded(self, reason: str) -> None:
         del reason

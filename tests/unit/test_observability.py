@@ -10,6 +10,7 @@ import types
 import jwt
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.core.auth import Identity
@@ -23,6 +24,7 @@ from app.core.config import get_settings
 from app.core.observability import message_fingerprint, start_observation
 from app.core.stream import get_registry
 from app.core.stream import open_stream
+from app.core.tracing import FakeTraceExporter, RequestTrace, TraceFactory
 from app.main import app
 
 client = TestClient(app)
@@ -37,7 +39,12 @@ class _FakeRequest:
         return self._disc
 
 
-async def _obs(conversation_id: str, message: str = "질문"):
+async def _obs(
+    conversation_id: str,
+    message: str = "질문",
+    *,
+    trace: RequestTrace | None = None,
+):
     identity = Identity(user_id="u1", is_guest=False, seller_id=None, subject="u1")
     return start_observation(
         request_id="req-1",
@@ -46,6 +53,18 @@ async def _obs(conversation_id: str, message: str = "질문"):
         message=message,
         store=await get_conversation_store(),
         now=asyncio.get_event_loop().time(),
+        trace=trace,
+    )
+
+
+def _trace(exporter: FakeTraceExporter) -> RequestTrace:
+    return TraceFactory(exporter=exporter, enabled=True, sampling_rate=1.0).start_request(
+        name="buyer_chat_turn",
+        request_id="req-1",
+        conversation_id="session-1",
+        thread_id="thread-1",
+        lane="buyer",
+        environment="test",
     )
 
 
@@ -331,6 +350,120 @@ def test_chat_emits_rejection_log_when_conversation_store_fails(
 
 
 # ─────────── §6.3 (b) 구조화 로그 + PII ───────────
+
+
+async def test_conditions_frame_does_not_end_text_ttft() -> None:
+    obs = await _obs("timing")
+    obs.started = 10.0
+    obs.record_frame(
+        'data: {"type":"conditions","data":{"chips":[]}}\n\n',
+        now=10.100,
+    )
+    obs.record_frame(
+        'data: {"type":"token","data":{"text":"첫 토큰"}}\n\n',
+        now=10.350,
+    )
+
+    assert obs.server_first_event_ms == 100
+    assert obs.server_first_text_token_ms == 350
+
+
+@pytest.mark.parametrize(
+    ("case", "frames", "expected_status", "expected_reason"),
+    (
+        (
+            "done",
+            ('data: {"type":"done","data":{"finishReason":"stop"}}\n\n',),
+            TurnStatus.COMPLETED,
+            "done",
+        ),
+        (
+            "error",
+            ('data: {"type":"error","data":{"code":"LLM_UNAVAILABLE"}}\n\n',),
+            TurnStatus.FAILED,
+            "error",
+        ),
+    ),
+)
+async def test_tokenless_terminal_frame_records_reason_without_text_ttft(
+    case: str,
+    frames: tuple[str, ...],
+    expected_status: TurnStatus,
+    expected_reason: str,
+) -> None:
+    exporter = FakeTraceExporter()
+    obs = await _obs(f"tokenless-{case}", trace=_trace(exporter))
+
+    async def terminal_only():
+        for frame in frames:
+            yield frame
+
+    response = await open_stream(
+        _FakeRequest(),
+        f"member:tokenless-{case}",
+        terminal_only,
+        observer=obs,
+    )
+    _ = [chunk async for chunk in response.body_iterator]
+
+    root = exporter.exported[0][0]
+    assert obs.server_first_text_token_ms is None
+    assert root.metadata["server_first_text_token_ms"] is None
+    assert root.metadata["terminalReason"] == expected_reason
+    turn = await obs.store.get_turn(obs.turn_id)
+    assert turn is not None and turn.status == expected_status
+
+
+async def test_tokenless_timeout_records_reason_without_text_ttft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(get_settings(), "stream_first_token_timeout_s", 0.01)
+    exporter = FakeTraceExporter()
+    obs = await _obs("tokenless-timeout", trace=_trace(exporter))
+
+    async def no_first_event():
+        await asyncio.sleep(1)
+        yield "data: never\n\n"
+
+    with pytest.raises(HTTPException) as exc_info:
+        await open_stream(
+            _FakeRequest(),
+            "member:tokenless-timeout",
+            no_first_event,
+            observer=obs,
+        )
+    assert exc_info.value.status_code == 504
+
+    root = exporter.exported[0][0]
+    assert obs.server_first_text_token_ms is None
+    assert root.metadata["server_first_text_token_ms"] is None
+    assert root.metadata["terminalReason"] == "timeout"
+
+
+async def test_tokenless_cancellation_records_reason_without_text_ttft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(get_settings(), "stream_disconnect_poll_s", 0.01)
+    exporter = FakeTraceExporter()
+    obs = await _obs("tokenless-cancel", trace=_trace(exporter))
+
+    async def conditions_then_idle():
+        yield 'data: {"type":"conditions","data":{"chips":[]}}\n\n'
+        await asyncio.sleep(1)
+        yield "data: never\n\n"
+
+    response = await open_stream(
+        _FakeRequest(disconnected=True),
+        "member:tokenless-cancel",
+        conditions_then_idle,
+        observer=obs,
+    )
+    _ = [chunk async for chunk in response.body_iterator]
+
+    root = exporter.exported[0][0]
+    assert obs.server_first_text_token_ms is None
+    assert root.metadata["server_first_text_token_ms"] is None
+    assert root.metadata["terminalReason"] == "cancelled"
 
 
 def test_structured_log_has_fields_and_hides_raw_message(
