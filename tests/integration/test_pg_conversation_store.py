@@ -43,10 +43,18 @@ async def pool():
 async def test_save_and_get_turn_roundtrip(pool) -> None:
     store = PgConversationStore(pool)
     conversation_id = _conversation_id()
-    turn_id = await store.save_user_message(conversation_id, "u1", "member", "안녕하세요")
+    thread_id = f"room-{uuid.uuid4().hex}"
+    turn_id = await store.save_user_message(
+        conversation_id,
+        "u1",
+        "member",
+        "안녕하세요",
+        thread_id=thread_id,
+    )
     turn = await store.get_turn(turn_id)
     assert turn is not None
     assert turn.conversation_id == conversation_id
+    assert turn.thread_id == thread_id
     assert turn.user_id == "u1"
     assert turn.role == "member"
     assert turn.user_text == "안녕하세요"

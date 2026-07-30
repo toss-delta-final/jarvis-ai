@@ -60,13 +60,14 @@ def _bearer(sub: str) -> dict:
 async def test_chat_records_completed_turn(buyer_fakes) -> None:
     """정상 스트림 완료 후 턴이 COMPLETED + user 원문 + assistant 부분 누적으로 저장된다."""
     msg = "여행용 방수 케이스 추천해줘"
-    r = client.post("/chat", json={"sessionId": "c1", "threadId": "t", "message": msg})
+    r = client.post("/chat", json={"sessionId": "c1", "threadId": "room-c1", "message": msg})
     assert r.status_code == 200
     _ = r.text  # 스트림 소비 → finalize
     store = await get_conversation_store()
     turns = await store.turns_for(conversation_key(None, "c1"))
     assert len(turns) == 1
     assert turns[0].user_text == msg
+    assert getattr(turns[0], "thread_id", None) == "room-c1"
     assert turns[0].status == TurnStatus.COMPLETED
     assert turns[0].assistant_text  # assistant 부분 텍스트 누적 저장
 
@@ -143,9 +144,8 @@ async def test_stream_completes_when_finalize_assistant_fails(
         for r in caplog.records
         if r.name == "observability" and r.getMessage().startswith("{")
     ]
-    assert any(rec.get("event") == "chat_request" for rec in records), (
-        "finalize 실패 시 §6.3 b 구조화 로그가 유실됨"
-    )
+    has_chat_request = any(rec.get("event") == "chat_request" for rec in records)
+    assert has_chat_request, "finalize 실패 시 §6.3 b 구조화 로그가 유실됨"
 
 
 async def test_slot_released_when_commit_user_message_cancelled() -> None:
@@ -347,6 +347,7 @@ def test_structured_log_has_fields_and_hides_raw_message(
     for key in (
         "requestId",
         "conversationId",
+        "threadId",
         "latencyTotal",
         "streamStatus",
         "messageLength",
@@ -358,6 +359,7 @@ def test_structured_log_has_fields_and_hides_raw_message(
         assert key in record, f"필드 누락: {key}"
     assert record["streamStatus"] == "COMPLETED"
     assert record["conversationId"] == "c2"
+    assert record["threadId"] == "t"
     assert record["messageLength"] == len(msg)
     # [PII] 원문은 로그 어디에도 없고, 해시만 있다.
     assert msg not in logs[-1]
@@ -543,12 +545,12 @@ async def test_409_does_not_store_ghost_turn() -> None:
 
     store = await get_conversation_store()
     # dev 게스트 → registry_key/conversation_key owner="anon"
-    get_registry().acquire("anon:dup")  # 슬롯 선점 → 다음 요청은 409
+    get_registry().acquire("anon:t")  # 동일 threadId 슬롯 선점 → 다음 요청은 409
     try:
         r = client.post("/chat", json={"sessionId": "dup", "threadId": "t", "message": "중복요청"})
         assert r.status_code == 409
     finally:
-        get_registry().release("anon:dup")
+        get_registry().release("anon:t")
     assert await store.turns_for(conversation_key(None, "dup")) == []  # 유령 턴 없음
 
 

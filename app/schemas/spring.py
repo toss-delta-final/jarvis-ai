@@ -21,7 +21,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 
 
@@ -357,13 +357,18 @@ class SellerAggregateModel(CamelModel):
 
 class SalesSeriesPoint(SellerAggregateModel):
     """매출 시계열 1건. isAnomaly/deviationPct 는 Spring 참고치 — calc.py 는 무시하고 원시
-    sales 로 재판정한다(§0.1 D, C-13)."""
+    sales 로 재판정한다(§0.1 D, C-13).
+
+    [수정 2026-07-30] deviationPct 는 nullable — Spring(SellerSalesService)이 이동평균
+    구간 미달(MIN_WINDOW 미만)·기준선 0 인 포인트에 null 을 내려보낸다. float 고정이면
+    기간 첫 포인트들에서 ValidationError → SpringUnavailableError → 도구 degrade 로
+    매출 조회 전체가 "응답 형식 오류"로 실패했다."""
 
     date: str
     sales: int
     order_count: int
     is_anomaly: bool = False
-    deviation_pct: float = 0.0
+    deviation_pct: float | None = None
 
 
 class SalesResult(SellerAggregateModel):
@@ -375,13 +380,41 @@ class SalesResult(SellerAggregateModel):
 # ── I-7 구매전환 퍼널 (§4.4) ──
 
 
+_FUNNEL_STAGE_FIELD = {
+    "product_view": "view",
+    "add_to_cart": "cart",
+    "checkout_start": "checkout",
+    "purchase_complete": "purchase",
+}
+
+
 class FunnelResult(SellerAggregateModel):
-    """I-7 GET /internal/seller/{brandId}/funnel 응답 — view→cart→checkout→purchase 4단."""
+    """I-7 GET /internal/seller/{brandId}/funnel 응답 — view→cart→checkout→purchase 4단.
+
+    [수정 2026-07-30] 실제 Spring 응답(SellerFunnelResponse)은 평면 4필드가 아니라
+    {stages:[{stage,count,source,computable}], conversionRates:{...}} 형태다. 종전
+    스키마는 기본값 0 + extra="allow" 탓에 검증이 조용히 통과해 전 단계 0 인
+    퍼널(무데이터)로 오분석될 수 있었다 — before validator 로 stages 를 평면 4필드로
+    변환한다(count null = 0, checkout v1 미계산 구간). 평면 입력(테스트 스텁·구계약)도
+    그대로 허용한다."""
 
     view: int = 0
     cart: int = 0
     checkout: int = 0
     purchase: int = 0
+
+    @model_validator(mode="before")
+    @classmethod
+    def _flatten_stages(cls, data: object) -> object:
+        if isinstance(data, dict) and isinstance(data.get("stages"), list):
+            data = dict(data)
+            for entry in data["stages"]:
+                if not isinstance(entry, dict):
+                    continue
+                field = _FUNNEL_STAGE_FIELD.get(entry.get("stage"))
+                if field is not None:
+                    data[field] = entry.get("count") or 0
+        return data
 
 
 # ── I-13 행동 이벤트 집계 (§4.4 — 07/17 BE 확정 명세 반영, REALIGN F4/②-3) ──

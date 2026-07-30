@@ -6,8 +6,8 @@
 
 | 항목 | 값 |
 |---|---|
-| 문서 버전 | v0.16.0 |
-| 작성일 | 2026-07-14 (v0.16.0 개정 2026-07-30 — **`sessionId`(접속)·`threadId`(방) 축 분리**: 동시 스트림 락을 방 단위로, I-20 사유 `logout` 1종, CH-1 멱등(D5), 맥락 TTL 접속 단위(D6)) (v0.15.27 개정 2026-07-30 — 사본 drift 정정: 담기 이벤트 적재 주체(BE→FE)·`budget` 이벤트 제외·`search.query` PII 기준) (v0.15.26 개정 2026-07-28 — 사본 동기화: §3.1 `conditionActions`(칩 제거, #84)·`screen`(화면 맥락, #118) 신설, `conditions` 칩 `field` 6종 확정, in-stream `error`에 `requestId`·`retryable` 추가) (v0.15.25 개정 2026-07-28 — #171: I-1 응답에 reviewCount 추가(AI 계산용·비표시), rating=0 의미 판별(리뷰 부재 vs 저평점). #100 "reviewCount 표시전용·미반환" 부분 개정. / v0.15.24 개정 2026-07-27 — 사본 동기화: S-5 폐기 반영, 상품 수정은 챗봇 HITL(I-11) 유일 경로) |
+| 문서 버전 | v0.16.1 |
+| 작성일 | 2026-07-14 (v0.16.1 개정 2026-07-30 — **I-21 `listId`를 UUID급 무작위(≥128bit)로 확정**, 순번·타임스탬프 등 추측 가능한 형식 금지) (v0.16.0 개정 2026-07-30 — **`sessionId`(접속)·`threadId`(방) 축 분리**: 동시 스트림 락을 방 단위로, I-20 사유 `logout` 1종, CH-1 멱등(D5), 맥락 TTL 접속 단위(D6)) (v0.15.27 개정 2026-07-30 — 사본 drift 정정: 담기 이벤트 적재 주체(BE→FE)·`budget` 이벤트 제외·`search.query` PII 기준) (v0.15.26 개정 2026-07-28 — 사본 동기화: §3.1 `conditionActions`(칩 제거, #84)·`screen`(화면 맥락, #118) 신설, `conditions` 칩 `field` 6종 확정, in-stream `error`에 `requestId`·`retryable` 추가) (v0.15.25 개정 2026-07-28 — #171: I-1 응답에 reviewCount 추가(AI 계산용·비표시), rating=0 의미 판별(리뷰 부재 vs 저평점). #100 "reviewCount 표시전용·미반환" 부분 개정. / v0.15.24 개정 2026-07-27 — 사본 동기화: S-5 폐기 반영, 상품 수정은 챗봇 HITL(I-11) 유일 경로) |
 | 상태 | draft |
 | 대상 독자 | Spring 백엔드 팀, React 프론트엔드(FE) 팀 |
 | 소유 | AI 에이전트 서버 팀 |
@@ -681,7 +681,7 @@ FE/BE 문서에 없으나 MVP에 필요한 아래 3종은 **모두 구매자 SSE
 - **`draftId`는 선택적 권장** — 제안이 항상 하나·즉시 승인이면 checkpointer만으로도 동작하나, 다중 draft·멱등 대비로 부여를 권장.
 - **confirm 전송 형식 = [확정 v0.14.1, 2026-07-22]** 요청 본문 **최상위 `action`/`draftId` 필드**(위 요청 (b)). 구 "message 문자열에 JSON 을 실어 파싱" 방식은 폐기 — FE 가 message 를 이스케이프하지 않는다. AI 코드 정합 완료(`app/schemas/seller.py::SellerChatRequest`, `app/api/seller.py`). HITL 승인은 별도 이벤트명 없이 스트림2가 `token`(결과)+`done` 으로 응답한다.
 - **confirm 결과는 전부 HTTP 200 [확정 v0.14.1]** — 실행/만료/미존재/소유불일치/중복(멱등)/stale 모두 SSE `token`(안내)+`done` 으로 온다(HTTP 오류 아님). 실제 쓰기만 `done{panel:"refresh"}`, 나머지는 `done{panel:"keep"}`. 소유 불일치는 미존재와 동일 문구(존재 비노출). Spring 장애만 `token`+`error{INTERNAL}`(초안 유지, 재confirm 가능). 구 "409 `DRAFT_EXPIRED`/`DRAFT_NOT_FOUND`" 표기는 폐기.
-- **스트림 시작 전 거부(HTTP 오류 봉투 §2.5)**: `400 BAD_REQUEST`(필드 누락·`action=="confirm"`인데 `draftId` 없음, `RequestValidationError`→400)·`401 TOKEN_EXPIRED`/`TOKEN_INVALID`·`403 FORBIDDEN`(role≠seller·brandId 없음)·`409 STREAM_IN_PROGRESS`(동일 sessionId 동시 스트림)·`429 RATE_LIMITED`(config 상한·`/seller/chat` 적용)·`504 UPSTREAM_TIMEOUT`.
+- **스트림 시작 전 거부(HTTP 오류 봉투 §2.5)**: `400 BAD_REQUEST`(필드 누락·`action=="confirm"`인데 `draftId` 없음, `RequestValidationError`→400)·`401 TOKEN_EXPIRED`/`TOKEN_INVALID`·`403 FORBIDDEN`(role≠seller·brandId 없음)·`409 STREAM_IN_PROGRESS`(동일 threadId 동시 스트림)·`429 RATE_LIMITED`(config 상한·`/seller/chat` 적용)·`504 UPSTREAM_TIMEOUT`.
 
 **`draft`** — 상세 수정 개정안 (정확히 1회)
 
@@ -886,7 +886,7 @@ X-Internal-Token: {서비스 토큰}   ← internal 그룹, 3s
 ```json
 {
   "sessionId": "550e8400-e29b-41d4-a716-446655440000",
-  "listId": "list-4471",
+  "listId": "9f2c1a7e4b8d43f5a0c6e1d97b3f8a24",
   "productIds": [101, 205, 552, 88, 13],
   "reasons": [
     { "productId": 101, "reason": "방수 등급이 높아 우천 시에도 안전합니다." },
@@ -898,16 +898,16 @@ X-Internal-Token: {서비스 토큰}   ← internal 그룹, 3s
 | 필드 | 타입 | 설명 |
 |---|---|---|
 | `sessionId` | string(UUID) | 상관관계 키(`products.ready`와 상관) |
-| `listId` | string | **FastAPI가 생성**해 넘기는 목록 식별자 — Spring이 Redis에 이 키로 TTL 저장, FE가 CH-5로 조회 |
+| `listId` | string | **[HARD] FastAPI가 생성하는 UUID급 무작위 식별자(≥128bit)** — 순번·타임스탬프 등 추측 가능한 형식 금지. 현재 구현은 `uuid4().hex` 32자리 lowercase hex. Spring이 Redis에 이 키로 TTL 저장하고 FE가 CH-5로 조회 |
 | `productIds` | number[] | 최종 랭크 상품 id(Top5). **순서 유지 = 렌더 순서**(리랭킹 순서). 숫자 id(§2.6 internal) |
 | `reasons` | array | **[확정 v0.15.15, BE 구현 2026-07-18] 상품별 추천 근거** `{productId(숫자), reason}` — productId로 키잉(순서 권위는 `productIds`, 부분집합/순서무관). Spring이 Redis 저장 → **CH-5 카드에 `reason` echo**(§4.3). 선택 필드 — 근거 없는 상품은 생략(🟢). **`reason` 생성 목표 = 한글 ≤40자 1문장**(rerank 프롬프트). AI가 push 전 개행 제거·안전 상한(config `reason_max_len`) 방어 정제하고, **표시 오버플로(줄임/더보기)는 FE 소관**(경로 B, 표시 권위=FE) |
 
 - **[변경 07/17] payload = id 배열만** — 구 §4.2 `groups[{title,category,items[{productId,rank,reason}]}]` 구조는 **폐기**. 묶음 제목·순위·근거는 콜백에 싣지 않는다.
-- **`listId`는 FastAPI 생성** — 구 "Spring이 listId 발급" 가정 폐기. **TTL = 10분(config, 세션 TTL 이하) 제안** — FE가 products.ready 직후 CH-5 조회하므로 짧아도 됨, 🔴 확정.
+- **`listId`는 FastAPI가 UUID급 무작위(≥128bit)로 생성한다.** 구 "Spring이 listId 발급" 가정과 `list-4471` 같은 순번형 예시는 폐기한다. CH-5가 인증 불필요 공개 조회라 `listId`가 사실상 bearer 키이므로 **순번·타임스탬프 등 추측 가능한 형식은 금지**한다. 여기서 `≥128bit`는 **식별자 표현 폭** 기준이며, 현재 UUIDv4 구현은 128bit UUID 중 version·variant 고정 비트를 제외한 122bit를 무작위로 생성한다. **TTL = 10분(config, 세션 TTL 이하) 제안** — FE가 products.ready 직후 CH-5 조회하므로 짧아도 됨, 🔴 미확정.
 - **[확정 v0.15.15] `reason`은 이 콜백에 포함**(🟢, BE 구현 2026-07-18) — `reasons[{productId, reason}]`를 Spring이 Redis 저장 → **CH-5 카드에 echo**(§4.3)해 FE에 전달. 구 BE 07/17 제안(reason=SSE·콜백 불포함)은 폐기 — SSE(`products.ready`)는 상관키만 유지, 경로 B 일관·FE join 불필요. AI→Spring 전송분은 jarvis-ai 이슈 #61에서 구현.
 - **규약**: FastAPI는 이 콜백이 **성공한 뒤에만** SSE `products.ready`({sessionId, listIds:[listId]})를 발행한다 — 콜백 실패 시 미발행(FE가 빈 목록 조회 방지, §3.3).
 - **인증**: `X-Internal-Token` 서비스 토큰.
-- 🔴 협의(C-9): `listId` 형식·TTL·재조회 정책. (`reason` 전달 방식은 v0.15.15에서 콜백 포함으로 확정 🟢.)
+- 🔴 협의(C-9): `listId` TTL·재조회 정책. (`listId` 형식은 v0.16.1에서 UUID급 무작위 ≥128bit로, `reason` 전달 방식은 v0.15.15에서 콜백 포함으로 확정 🟢.)
 
 ### 4.3 추천 목록/카드 조회 (CH-5 `GET /api/chat/lists/{listId}`, FE ↔ Spring 전제 계약) — [BE DB 등재 v0.15.0, 스키마 OPEN]
 
@@ -1189,7 +1189,7 @@ Spring/FE 팀과 확정이 필요한 항목을 통합한다. 각 항목은 본 �
 | C-6 | **[정정 v0.15.5] 구매 이력 = I-19** | `GET /internal/members/{id}/orders`(§4.7). camelCase·숫자 id(DDL)·`shippingFee` 0. **`status` = 6종**(`PAID/PREPARING/SHIPPING/DELIVERED/CANCELED/RETURNED`, Notion I-19). **`categoryName` 포함**(BE 확정 2026-07-19 — 카테고리 억제·productId dedup 모두 가능) | I-19 / Notion·DDL | 🟢 확정(status·타입·**categoryName BE 확정 2026-07-19**). 🔴 잔여 — Notion 페이지 stale BE 통보 |
 | C-7 | **판매자 판매 데이터 소스** | **[해소]** 원천 = **Spring 집계 API(I-6) 질의 시점 콜백**(§3.2·§4.4). 구 기본안(주문 미러 sellerId·금액 확장) 폐기 | 결정 20 개정/Batch 1 | ✅ **해소** — 계약 세부는 C-13으로 이관 |
 | C-8 | **[해소 v0.15.19] 세션 종료 통지 = I-20** | `POST /events/session-end` `{sessionId,userId(number BIGINT),reason?}` + `X-Internal-Token`. UUID 포함 불투명 sessionId, reason 최대 64자, 파생 멱등키, 202 `accepted`/`duplicate`(§3.5) | 이슈 #62/#79 / Spring PR #24 | 🟢 계약 확정 — **[v0.16.0]** Spring 알려진 reason=`logout` **1종**(`newConversation` 제거 — 새 대화는 threadId만 갱신, §2.6), AI 내부 10분 비활동 종료, enum 미강제 |
-| C-9 | **[BE 신설 07/17] 추천 push = I-21** | `POST /internal/recommendations` `{sessionId, listId, productIds[Top5 숫자], reasons[{productId,reason}]}`(§4.2). **listId=FastAPI 생성**, **reason=콜백 포함(v0.15.15 확정, BE 구현 07-18)**, 콜백 성공 후 products.ready. 구 groups 구조 폐기 | I-21 / BE DB | 🟢 reason 콜백 포함 확정. 🔴 잔여: listId TTL·형식 |
+| C-9 | **[BE 신설 07/17] 추천 push = I-21** | `POST /internal/recommendations` `{sessionId, listId, productIds[Top5 숫자], reasons[{productId,reason}]}`(§4.2). **listId=FastAPI 생성(UUID급 무작위 ≥128bit)**, **reason=콜백 포함(v0.15.15 확정, BE 구현 07-18)**, 콜백 성공 후 products.ready. 구 groups 구조·추측 가능한 listId 폐기 | I-21 / BE DB | 🟢 reason·listId 형식 확정. 🔴 잔여: listId TTL |
 | C-10 | **식별자 = 토큰 클레임** | **확정(숫자 사용자 id)**: 사용자/게스트/판매자 = 숫자 id, JWT `sub`에 문자열화. `role` enum 구분(§2.6). **양팀 통보 필요** | 결정 8/19 / 2026-07-14 세션 확정 | 🔴 미확정 — 클레임 키·id 타입 세부 |
 | C-11 | **[v0.7.0 축소] CORS 허용 오리진** | 레이트 리밋은 **확정**(FastAPI 미들웨어 + in-memory, 분당 10/시간당 100 config, §2.8) — 협의 잔여는 **FE 허용 오리진 목록**뿐 | 결정 19 / v0.7.0 확정 | 🔴 잔여 — 허용 오리진(FE 통보) |
 | C-12 | **[BE 신설 07/17] 카드 조회 = CH-5** | `GET /api/chat/lists/{listId}`(§4.3, 구 P-7 대체) — Spring이 표시 필드 enrich·서빙, FE↔Spring. AI 미관여 | CH-5 / BE DB | 🔴 카드 응답 스키마(FE↔Spring 소유, LLM 사안 아님) |
@@ -1209,7 +1209,7 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 | Q | 질문 | 우리 답(제안) | 상태 |
 |---|---|---|---|
 | Q1 | 세션 종료 sessionId **UUID 수용**? | ✅ **수용 완료** — AI는 정규식 없이 config 길이 상한만 적용해 UUID 포함 불투명 문자열을 받음(v0.15.17) | 확정 |
-| Q2 | **I-21** 스키마·`listId` TTL·`reason` 전달 | ✅ 스키마 수용. listId=우리 생성·TTL 10분(config). **reason을 I-21 콜백에 포함→CH-5로 전달**(§4.2·§4.3, BE의 SSE안 대신) — **BE 구현 확정 2026-07-18 🟢**(v0.15.15) | 확정 |
+| Q2 | **I-21** 스키마·`listId` TTL·`reason` 전달 | ✅ 스키마 수용. listId=우리 생성(**UUID급 무작위 ≥128bit**)·TTL 10분(config). **reason을 I-21 콜백에 포함→CH-5로 전달**(§4.2·§4.3, BE의 SSE안 대신) — **BE 구현 확정 2026-07-18 🟢**(v0.15.15) | 형식·reason 확정, TTL 제안 |
 | Q3 | **[적용]** = `{action:"confirm", draftId}` 확정? | ✅ **예** — §3.2 HITL 설계와 동일 | 즉답 |
 | Q4 | **I-17** 커서·`attributes`·리뷰 텍스트 | 🟡 BE 골격 확정(2026-07-18): 인증·envelope·숫자 id·오류코드. 잔여 3건 저영향(커서 opaque·attributes 자유 dict·리뷰 MVP 제외, §4.8). 🔴 선결: I-17 배치 MVP/post-MVP 스코프 | BE 확정 |
 | Q5 | **I-13** 본문 재작성(I-5 내용 복붙이던 것) | ✅ **LLM팀이 직접 재작성해 Notion 반영**(§4.4 I-13, v0.15.1) — BE 검토만 | 해소 |
@@ -1256,6 +1256,7 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 
 | 버전 | 날짜 | 변경 |
 |---|---|---|
+| v0.16.1 | 2026-07-30 | **[#167] I-21 `listId` 보안 규약 복원.** CH-5가 인증 불필요 공개 조회라 `listId`가 사실상 bearer 키인 점을 명시하고, FastAPI가 **UUID급 무작위(≥128bit)** 로 생성하며 순번·타임스탬프 등 추측 가능한 형식을 금지하도록 §4.2를 확정했다. 실제 I-21 예시의 `list-4471`을 32자리 무작위 hex로 교체하고 C-9·Q2의 형식 미확정 표기를 해소했다. 현재 `uuid4().hex` 구현을 형식·고유성·I-21/SSE 동일성 회귀 테스트로 고정했다. |
 | v0.16.0 | 2026-07-30 | **[정본 SPEC-CHAT-SESSION 반영] `sessionId`(접속) · `threadId`(방) 축 분리 — MVP의 `sessionId == threadId` 전제 폐기.** 한 접속 아래 여러 방이 **동시에** 존재하는 멀티탭 대화를 지원하기 위해 두 식별자의 역할을 갈랐다. (1) **§2.6 식별자 모델 신설** — 축별 발급 주체·수명·담당 상태를 표로 확정. `sessionId`=Spring CH-1 발급(Redis TTL 10분 sliding)·프로필 세션버퍼·I-20·`conversation_turns.conversation_id`(primary), `threadId`=**FE 생성**(서버 왕복 없음)·필터 누적·장바구니 pending·되돌리기·동시 스트림 락·`conversation_turns.thread_id`. 구 정의 *"만료 의미 없는 불투명 스레드 키"* 를 **폐기** — "스레드 키"는 이제 `threadId`의 것이고, AI가 만료를 판정하지 않는 이유는 만료가 **없어서**가 아니라 **판정 주체가 Spring이라서**다. (2) **§2.9 a 동시 스트림 락을 세션→방 단위로 개정** — `409 STREAM_IN_PROGRESS`의 판정 키가 `sessionId`에서 **`threadId`** 로 바뀐다. 세션 단위로 잠그면 탭 B가 탭 A의 스트리밍 때문에 409를 맞아 **축 분리의 목적이 정면으로 무효화**된다. §2.5 오류표도 동기화. (3) **§3.5 I-20 사유를 `logout` 1종으로 축소** — 새 대화가 CH-1을 부르지 않고 `threadId`만 갱신하게 되어 `newConversation`이 발화되지 않는다. Spring이 I-20을 쏘는 경우는 로그아웃뿐이고 나머지는 Redis TTL 만료 + AI 내부 비활동 sweep이 담당한다(C-8 행 동기화). (4) **[D5] CH-1 멱등 등재 + 구 "CH-1 재호출 = 새 세션(맥락 단절)" 경고 폐기**(§1.2 레인 d) — Spring이 Redis `SETNX`로 기존 세션을 그대로 반환하므로 CH-1을 몇 번 불러도 세션은 하나다. **정확성은 `SETNX`가 책임지고 FE Web Locks(D1)는 최적화**다(한 브라우저 안에서만 통해 폰·PC 동시 접속을 막지 못한다). 축출을 없앤 뒤에는 밀린 세션이 CH-1b로 TTL을 연장하며 유령으로 남아 I-20이 안 나가는 문제가 생기는데 이를 `SETNX`가 막는다. **예외 = 게스트 첫 방문 멀티탭**(쿠키 부재 → 게스트 2명 생성 → 밀린 탭이 CH-1b `403`)은 신원이 갈라지는 것이라 `SETNX`로 막을 수 없어 Web Locks가 방어한다. (5) **[D6] 맥락 TTL을 방→접속 단위로** — 어느 방에서든 활동이 있으면 그 `sessionId`의 **모든 방** TTL을 함께 연장하고 세션 종료 시 일괄 정리한다. 방마다 생사가 갈리면 탭을 옮겼을 때 한쪽 맥락만 사라져 사용자가 이해할 수 없다. (6) **§6.3 저장·로그 축 정합** — checkpointer thread 키를 `sessionId`→**`threadId`** 로 정정하고, `conversation_turns`를 **session-primary + `thread_id` 병기**로 명시(세션 종료 스캔은 세션 축, 방별 조회·정리는 방 축이라 어느 한쪽만으로는 불가). 구조화 로그에 **`threadId` 필드 신설** — 멀티탭이면 한 `conversationId` 아래 여러 방 로그가 섞여 방을 못 가리면 동시 스트림을 분리해 읽을 수 없다. **🔴 잔여**: `SETNX` 멱등 키 스코프(`sub` vs `sub_type`+`sub`)와 멱등 반환 시 세션 TTL sliding 갱신 여부 — BE 확인 대기. |
 | v0.15.27 | 2026-07-30 | **[사본 drift 정정] 정본 대조로 틀린 서술 3건 교체.** (1) **담기 이벤트 적재 주체** — §4.1 I-2의 *"`CART_ADD(via: chat)` 이벤트는 BE가 적재(AI 무관)"* 와 §5.1 Q9의 같은 답변을 **폐기**했다. E-1 정본에서 `add_to_cart`는 **FE가 쏘는 12종 중 하나**이고, 서버가 직접 적재하는 이벤트는 `recommendation_generated` 하나뿐이다(E-1 HTTP로 들어오면 드롭). 챗봇 경로도 FE가 SSE `action`(`CART_ADDED`) 수신 시점에 쏜다. (2) **`budget` 이벤트 제외** — 정본(Notion CH-2)이 *"현재 코드에 미구현 → 명세에서 제외(필요 시 post-MVP)"* 로 정리했는데 사본은 §3.1에 스키마를 그대로 두고 이벤트 순서 계약에도 넣어두고 있었다. 스키마는 post-MVP 참고용으로 남기고 순서 계약에서 뺐다(이슈 #163). (3) **공통 헤더 규약 §2.5 신설** — `X-Request-Id`·`traceparent` 는 전 API 공통이라 엔드포인트 행 단위인 정본 DB에 놓을 자리가 없었다. Notion「프로젝트 자료실」에 **공통 규약 페이지를 신설**하고 본 사본 §2.5에 AI 소관 요약을 넣었다(#141·#134·#151). 실측: inbound `X-Request-Id` **수용 미구현**(`request_context_middleware`가 `new_request_id()`를 조건 없이 호출) · Spring 역호출 **전파 미구현**(`X-Internal-Token` 하나만) · 응답 echo 는 구현됨 · `traceparent` 는 코드베이스에 없음. (4) **`search.query` PII 기준** — 정본 E-1이 *"개인정보를 properties에 넣지 않는다"* 와 *"`search` 필수 = `query`"* 를 동시에 말해 **자기모순**이었고, FE가 그 금지 조항을 근거로 `queryLength`만 보내 `searchTopics` 워커가 돌 수 없었다. 금지 대상은 **FE가 굳이 끌어다 넣는 이름·주소·연락처·이메일**이며 사용자가 직접 입력해 이미 서버로 보낸 검색어는 원문을 싣고 **보존기간으로 관리**한다 — 정본 E-1에 「개인정보 기준」 절로 명확화했다. |
 | v0.15.26 | 2026-07-28 | **[사본 동기화] §3.1 요청 계약 확장 + in-stream `error` 추적 필드 — 정본(Notion "📡 API 명세서" CH-2) 2026-07-28 개정 반영.** (1) **`conditionActions` 신설**(이슈 #84) — 조건 칩 제거를 `[{op:"remove", field}]` 구조화 배열로 받는다. 구 규약 문자열(`"[조건 제거] priceMax"`) 왕복 방식은 **폐기** — FE는 그 방식으로 구현돼 있으나 AI에 수신부가 없어 현재 칩 제거가 무동작이다. `conditionActions`가 있으면 `message` 빈 문자열 허용, 둘 다 비면 `400`. 구매자 전용(`BuyerChatRequest`). (2) **`conditions` 칩 `field` 허용값 6종 확정** — `category`/`priceMax`/`priceMin`/`brand`/`ratingMin`/`keyword`. 종전에는 예시 둘만 있어 허용 집합이 계약에 없었는데, `conditionActions.field` 검증의 전제라 등재했다(코드 `build_condition_chips` 실측과 일치). (3) **`screen` 신설**(이슈 #118) — `{pageType, filters?, products?, columns?}`. `pageType`은 **라우트가 아니라 우측 패널 내용**을 가리킨다(채팅이 전용 페이지에만 있어 라우트를 실으면 정보가 0). `products`는 **서버가 모르는 목록만**(P-4 인기상품·판매자 자사 상품) — 추천 카드는 `listId`로 서버가 알고, 되돌려주면 위조 경로가 된다. `columns`는 반응형 그리드 열 수로 "3번째 줄 2번째" 좌표 지시 해소에 쓴다(`rows`·항목별 좌표는 파생값이라 제외). `pageType`은 **E-1 `page_view`와 같은 enum을 공유**한다 — 화면 어휘를 새로 만들지 않기 위해서다. 라우트 `path`는 쿼리스트링 PII 위험으로, 한글 `label`은 AI config 매핑으로 대체해 **계약에서 뺐다**. 07-17 FE 제안(`ChatScreenContext`)과 #118의 "노출 상품 목록" 요구를 **한 필드로 통합**했다(같은 사실의 두 측면). `products`는 담기 허용 목록을 넓히는 입력이며 **두 목록 밖 id 차단 가드는 유지**한다. **구매자·판매자 공용 필드**라 §3.2에도 등재 — 판매자 대시보드는 `meta.lane`·`done.panel`로 AI→FE 화면 조작만 있고 반대 방향이 비어 있었다. (4) **`products.ready`의 `listId`(단일) → `listIds`(배열, 항상)** — I-21이 `lists`를 1~10개 보내므로(§4.2) 단일 필드로는 세트형·니즈별 추천을 나를 수 없었다. 정본 I-21·CH-5는 이미 복수 전제인데 CH-2와 본 사본만 단일로 남아 있던 **3자 불일치**다. 목록이 1개여도 길이 1 배열로 보내 FE 분기를 없애고, 이벤트는 여전히 정확히 1회다. 예시의 `"list-4471"`도 §4.2가 금지한 추측 가능 형식이라 교정했다. **구현(`ProductsReadyData.list_id: str`)도 단일이라 코드 변경이 따라야 한다.** (5) **in-stream `error`에 `requestId`·`retryable` 추가** — 스트림 전 실패(§2.5 봉투)에는 `requestId`가 있는데 스트림 내부 실패에는 없어 추적이 끊겼다. `retryable`은 `code`로 복원 불가(같은 `LLM_UNAVAILABLE`이 미구성/일시불가에 겸용)라 emit 지점이 정한다. §3.2 판매자 스트림도 동일(`ErrorData` 공용). |

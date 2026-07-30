@@ -14,7 +14,7 @@ MVP 목표: **데모 시나리오 최소셋 동작** — 단일 검색+필터 �
 | 계약 | §2.3 인증 · §2.5 오류 봉투 · §2.8 레이트 리밋 · §2.9 스트림 수명주기 |
 
 - **인증**: JWKS 공개키로 `kid` 매칭 → RS256 서명·`exp`·`iss`·`aud` 검증. 신원은 `sub`+`role`(member/guest/seller). `AUTH_MODE=dev`는 서명 검증 생략(로컬 전용). ✅ 검증됨
-- **SSE 수명주기(§2.9)**: 세션당 활성 스트림 1개(초과 시 `409 STREAM_IN_PROGRESS`, in-memory 레지스트리) / 취소 = `request.is_disconnected()` 감지 → LLM 스트림 close + task cancel / 타임아웃 first-token 10s·상한 90s. 📋
+- **SSE 수명주기(§2.9)**: 방(`threadId`)당 활성 스트림 1개(초과 시 `409 STREAM_IN_PROGRESS`, in-memory 레지스트리) / 취소 = `request.is_disconnected()` 감지 → LLM 스트림 close + task cancel / 타임아웃 first-token 10s·상한 90s. 📋
 - **레이트 리밋(§2.8)**: FastAPI 미들웨어 + in-memory, 토큰 `sub` 스코프, 분당 10·시간당 100(config). 목적 = 남용 차단. 📋
 - 주의: 동시 스트림·레이트 리밋 상태는 단일 인스턴스 in-memory 전제 — 다중 인스턴스 확장 시 Redis 이관.
 

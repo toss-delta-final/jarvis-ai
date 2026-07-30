@@ -161,7 +161,7 @@ SSE 1스트림 = 응답 1회이므로 승인 대기를 한 연결에 물지 않�
 - **degrade 규칙 요약**: 워커 일부 실패 → 부분 보고서 / verifier 3회 미달 → 마지막 보고서 채택 + 로그 / 집계 전부 실패 → 사과 token + done / 쓰기 실패 → token 안내 + done. LLM·Spring 실패가 스트림을 `error`로 끝내는 경우는 스트림 자체가 진행 불능일 때만.
 - **provider 미구성은 degrade 대상이 아니다**: `LLMNotConfigured`는 전역 배포 설정 오류이므로 supervisor·planner·worker·report·recommend 어느 단계에서도 일반 워커 실패나 부분 보고서로 흡수하지 않고 API 경계까지 전파해 `LLM_UNAVAILABLE`로 끝낸다.
 - **provider 미구성은 서버 오류 로그를 남긴다**: API 경계는 활성 provider·lane·threadId만 기록하고 API key나 예외 메시지의 비밀값은 기록하지 않는다. 동일 요청은 실제로 예외를 매핑한 단일 경계에서 한 번만 기록한다.
-- 세션당 활성 스트림 1개(409)·취소 감지·대화 저장 상태는 §2.9 공통 구현을 따른다(구매자와 공유).
+- 방(`threadId`)당 활성 스트림 1개(409)·취소 감지·대화 저장 상태는 §2.9 공통 구현을 따른다(구매자와 공유).
 
 ## 8. 모델 배정 (provider-neutral 2-tier)
 
