@@ -55,16 +55,61 @@ def test_detect_sales_anomalies_ignores_spring_flags() -> None:
             date="2026-07-04", sales=400, order_count=40, is_anomaly=False, deviation_pct=0.0
         ),
     ]
-    results = calc.detect_sales_anomalies(series, window=3, threshold_pct=30.0)
+    results = calc.detect_sales_anomalies(series, window=3, min_window=3, threshold_pct=30.0)
     dates = [r[0] for r in results]
     assert dates == ["2026-07-01", "2026-07-02", "2026-07-03", "2026-07-04"]
-    # 경계 구간(직전 window 일 데이터 부족)은 판정 보류.
-    assert results[0][2] is False
-    assert results[1][2] is False
-    assert results[2][2] is False
+    # 경계 구간(직전 min_window 미만)은 판정 보류 — deviation 도 None(#194, 구 0.0 과 구분).
+    assert results[0] == ("2026-07-01", None, False)
+    assert results[1] == ("2026-07-02", None, False)
+    assert results[2] == ("2026-07-03", None, False)
     # 4번째: 직전 3일(100,100,100) 평균=100 대비 actual=400 → deviation=300% → 이상.
     assert results[3][1] == 300.0
     assert results[3][2] is True
+
+
+def _point(day: int, sales: int) -> SalesSeriesPoint:
+    """detect_sales_anomalies 테스트용 시계열 포인트 헬퍼(#194)."""
+    return SalesSeriesPoint(date=f"2026-07-{day:02d}", sales=sales, order_count=1)
+
+
+def test_detect_sales_anomalies_adaptive_min_window() -> None:
+    """[#194] 직전 3점부터 판정한다(Spring MIN_WINDOW=3 정렬) — 구 로직(직전 7점 필수)은
+    최근 기간 질의에서 window 미달로 이상을 통째로 놓쳤다(회귀 방지)."""
+    series = [_point(1, 100), _point(2, 100), _point(3, 100), _point(4, 200)]
+    results = calc.detect_sales_anomalies(series, window=7, min_window=3, threshold_pct=30.0)
+    # 4번째: 직전 이력 3점(window 7 미달)이어도 평균 100 대비 +100% → 이상.
+    assert results[3][1] == 100.0
+    assert results[3][2] is True
+
+
+def test_detect_sales_anomalies_zero_baseline_sales_is_anomaly() -> None:
+    """[#194] 무매출 구간 직후 매출 발생 = 이상(Spring 정렬) — 기준선 0 이라 편차는
+    정의 불가(None)지만 발생 자체가 이상이다. 구 로직은 deviation 0.0 → 정상으로 놓쳤다."""
+    series = [_point(1, 0), _point(2, 0), _point(3, 0), _point(4, 50000)]
+    results = calc.detect_sales_anomalies(series, window=7, min_window=3, threshold_pct=30.0)
+    assert results[3] == ("2026-07-04", None, True)
+    # 기준선 0 + 매출도 0 이면 정상.
+    all_zero = [_point(d, 0) for d in range(1, 5)]
+    calm = calc.detect_sales_anomalies(all_zero, window=7, min_window=3, threshold_pct=30.0)
+    assert calm[3] == ("2026-07-04", None, False)
+
+
+def test_detect_sales_anomalies_zero_sales_never_anomaly() -> None:
+    """[#194] 매출 0원 포인트는 편차 -100% 여도 이상 아님(Spring `sales > 0` 가드 정렬) —
+    저볼륨 브랜드의 무판매일이 전부 이상으로 판정되는 노이즈 방지."""
+    series = [_point(1, 100), _point(2, 100), _point(3, 100), _point(4, 0)]
+    results = calc.detect_sales_anomalies(series, window=7, min_window=3, threshold_pct=30.0)
+    assert results[3][1] == -100.0  # 편차는 계산되지만
+    assert results[3][2] is False  # 이상은 아니다
+
+
+def test_detect_sales_anomalies_rejects_invalid_window_config() -> None:
+    """[#194] min_window ≤ 0 이거나 window < min_window 면 설정 오류로 ValueError."""
+    series = [_point(1, 100)]
+    with pytest.raises(ValueError):
+        calc.detect_sales_anomalies(series, window=7, min_window=0, threshold_pct=30.0)
+    with pytest.raises(ValueError):
+        calc.detect_sales_anomalies(series, window=2, min_window=3, threshold_pct=30.0)
 
 
 def test_conversion_rates_and_drop() -> None:
@@ -180,8 +225,8 @@ def test_calc_uses_injected_thresholds() -> None:
         SalesSeriesPoint(date="2026-07-02", sales=100, order_count=10),
         SalesSeriesPoint(date="2026-07-03", sales=115, order_count=11),
     ]
-    strict = calc.detect_sales_anomalies(series, window=2, threshold_pct=10.0)
-    lenient = calc.detect_sales_anomalies(series, window=2, threshold_pct=50.0)
+    strict = calc.detect_sales_anomalies(series, window=2, min_window=2, threshold_pct=10.0)
+    lenient = calc.detect_sales_anomalies(series, window=2, min_window=2, threshold_pct=50.0)
     # 동일 데이터, 다른 threshold_pct → 이상 판정이 달라져야 한다.
     assert strict[2][2] is True
     assert lenient[2][2] is False

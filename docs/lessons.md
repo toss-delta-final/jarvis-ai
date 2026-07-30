@@ -13,6 +13,18 @@
 
 ---
 
+## [2026-07-30] 응답 스키마를 추정으로 두려면 `extra="allow"` 가 불일치를 은폐함을 전제하라 — 미확정 계약은 "빈 결과"를 의심한다
+
+- 증상: `sales_anomaly` 워커의 I-14(`get_order_events`)·I-15(`get_product_change_logs`) 도구가 **항상 0건**을 반환했다(#194). Spring 은 `rows`/`total`(+ stats 모드 `byStatus`/`cancelReasonsTop`)을 내려보내는데 AI 스키마는 추정 필드(`events`/`stats`, `logs`)를 기다렸고, `SellerAggregateModel` 의 `extra="allow"` 가 실측 필드를 여분 필드로 조용히 흡수해 **ValidationError 도 로그도 없이** 기본값 빈 목록이 됐다. 이상 감지 로직도 Spring(`withAnomaly`: 직전 최소 3점 판정·기준선 0+매출=이상·매출 0원=이상 아님)과 3개 규칙이 어긋나 있었다.
+- 원인: 🔴 미확정 계약을 "파싱 실패로 도구가 죽지 않게" `extra="allow"` + 추정 필드명으로 선구현했는데, 그 방어 장치가 **계약 불일치의 탐지까지 막는다**는 것을 전제하지 않았다. 빈 결과는 "데이터 없음"과 구분되지 않아 E2E 검증 전까지 드러나지 않았다(I-7 FunnelResult 전 단계 0 건과 동일 패턴 — 같은 날 두 번째 발견).
+- 규칙:
+  1. `extra="allow"` 응답 모델을 둔 계약은 **BE 코드/실응답으로 필드명을 대조하기 전까지 "동작 미검증"으로 취급**한다 — 도구가 빈 결과를 주면 "데이터 없음"보다 "계약 불일치"를 먼저 의심한다.
+  2. 미확정 계약이 확정되면(BE 실측 확인 포함) **스키마를 실측 필드로 고정하고 api-spec 에 응답 스키마를 등재**한다 — 추정 필드명을 명세 없이 오래 두지 않는다.
+  3. AI 가 BE 로직을 재구현(재판정 등)할 때는 **BE 원본 코드의 경계 규칙**(최소 표본·0 나눗셈 가드·제외 조건)을 항목별로 대조한다 — 산식 하나가 아니라 가드 조건이 어긋나 판정이 뒤집힌다.
+- 관련: #194, `app/schemas/spring.py`(OrderEventsResult·ProductChangeLogResult), `app/agents/seller/{tools,calc}.py`, jarvis-back `SellerOrderEventsResponse`·`SellerProductChangesResponse`·`SellerSalesService.withAnomaly`, api-spec §4.4 v0.16.1
+
+---
+
 ## [2026-07-30] Notion 수정에 한글을 `\uXXXX` 이스케이프로 넣지 않는다 — 글자가 조용히 바뀐다
 
 - 증상: Notion `update_content` 로 한글을 쓸 때마다 엉뚱한 글자가 섞였다. `불투명`→`불통명`, `막지`→`마지`, `주체`→`주잴`, `아래`→`아랰`, `혹시`→`혹신`, `우측`→`우상`, `워크스페이스`→`워킬스페이스`, `가리킨다`→`가리트다`, `뺀다`→`뻐다`. 게다가 이스케이프가 틀린 `old_str` 은 **매칭 자체가 실패**해 "적용됐다고 착각한 미적용 편집"이 CH-2 에 4건, I-20 에 1건 남았다.

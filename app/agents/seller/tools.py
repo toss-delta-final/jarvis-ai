@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
 
@@ -22,6 +24,8 @@ from app.core.config import get_settings
 from app.schemas.spring import BehaviorEventsResult, ProductCreate, ProductUpdate
 from app.services.spring_client import SpringUnavailableError, get_spring_client
 
+_log = logging.getLogger(__name__)
+
 
 def _reference_note(from_date: str, to_date: str) -> str:
     """모든 조회 도구 응답에 기준 시점을 고지한다(답변 신뢰성)."""
@@ -29,11 +33,11 @@ def _reference_note(from_date: str, to_date: str) -> str:
 
 
 def _summarize_events(events: list[dict]) -> str:
-    """I-13/I-14 이벤트를 kv 나열로 요약한다(중간 상세도 — 계약 🔴 미확정 대응).
+    """I-14 rows 를 kv 나열로 요약한다(중간 상세도).
 
-    응답 필드가 확정되지 않아(extra="allow" dict) 어떤 키가 와도 상위
-    seller_summary_max_events 건까지 "key=value" 형태로 그대로 노출한다 —
-    워커가 최소한의 재료를 갖되, 확정 후(C-13) 필드 선별 요약으로 교체한다.
+    [#194] rows 는 groupBy 에 따라 Row/MemberRow 이형(異形) dict 라 키를 고정하지 않고
+    상위 seller_summary_max_events 건까지 "key=value" 형태로 그대로 노출한다 —
+    워커가 어느 shape 든 최소한의 재료를 갖는다.
     """
     settings = get_settings()
     shown = events[: settings.seller_summary_max_events]
@@ -82,21 +86,35 @@ async def get_sales_timeseries(
     # 이동평균 window(seller_ma_window, §5)는 "일" 단위 전제 — daily 일 때만 이상 감지.
     if granularity == "daily":
         # Spring 의 isAnomaly/deviationPct 는 참고치일 뿐 — 원시 sales 로 재판정한다(§0.1 D).
-        anomalies = calc.detect_sales_anomalies(
-            result.series,
-            window=settings.seller_ma_window,
-            threshold_pct=settings.seller_anomaly_deviation_pct,
-        )
-        flagged = [
-            f"{date} ({deviation:+.1f}%)" for date, deviation, is_anom in anomalies if is_anom
-        ]
-        anomaly_note = (
-            f" 이상 감지 {len(flagged)}건(직전 {settings.seller_ma_window}일 평균 대비): "
-            + ", ".join(flagged)
-            + "."
-            if flagged
-            else " 이상 감지 없음."
-        )
+        # [#194] 적응형 window(직전 최소 min_window·최대 window 일) — Spring withAnomaly 정렬.
+        try:
+            anomalies = calc.detect_sales_anomalies(
+                result.series,
+                window=settings.seller_ma_window,
+                min_window=settings.seller_ma_min_window,
+                threshold_pct=settings.seller_anomaly_deviation_pct,
+            )
+        except ValueError as exc:
+            # [#194 리뷰 3] §3.4 degrade 규약 준수 — window 설정 검증은 기동 시점
+            # (config.py model_validator)이 1차 방어지만, 그 안전망이 우회·회귀로 뚫려도
+            # 이 도구만 unhandled 예외로 죽지 않는다. 매출 요약은 살리고 판정만 생략.
+            _log.warning("이상 감지 판정 불가 — window 설정 오류: %s", exc)
+            anomaly_note = " 이상 감지 판정 불가(window 설정 오류)."
+        else:
+            # deviation None + 이상 = 무매출 기준선(0원) 구간 직후 매출 발생(#194, 편차 정의 불가).
+            flagged = [
+                f"{date} ({deviation:+.1f}%)"
+                if deviation is not None
+                else f"{date} (무매출 기준선 → 매출 발생)"
+                for date, deviation, is_anom in anomalies
+                if is_anom
+            ]
+            anomaly_note = (
+                f" 이상 감지 {len(flagged)}건(직전 최대 {settings.seller_ma_window}일"
+                f"·최소 {settings.seller_ma_min_window}일 평균 대비): " + ", ".join(flagged) + "."
+                if flagged
+                else " 이상 감지 없음."
+            )
     else:
         anomaly_note = ""
     return (
@@ -122,11 +140,29 @@ async def get_funnel(runtime: ToolRuntime[SellerContext], from_date: str, to_dat
     except SpringUnavailableError as exc:
         return f"Error: 퍼널 데이터를 불러오지 못했습니다({exc})."
     rates = calc.conversion_rates(result)
+    # [PR#184 리뷰 반영] 미집계 단계(I-7 count=null·computable=false)는 "실제 0건"이
+    # 아니다 — 카운트·전환율 모두 "미집계"로 표기해 LLM 이 0% 전환으로 오해석하지
+    # 않게 한다(0 으로 내보내면 워커가 "전환 전무"로 보고할 위험).
+    uncomputable = set(result.uncomputable_stages)
+
+    def _count(field: str, value: int) -> str:
+        return "미집계" if field in uncomputable else str(value)
+
+    def _rate(value: float | None) -> str:
+        return "미집계" if value is None else f"{value:.1f}%"
+
+    uncomputable_note = (
+        " ※ '미집계' 단계는 해당 구간 집계가 불가한 것(0건 아님) — 관련 전환율은 판단 제외."
+        if uncomputable
+        else ""
+    )
     return (
-        f"조회 {result.view}→장바구니 {result.cart}→결제 {result.checkout}"
-        f"→구매 {result.purchase}, 전환율 view→cart {rates['view_to_cart']:.1f}% · "
-        f"cart→checkout {rates['cart_to_checkout']:.1f}% · "
-        f"checkout→purchase {rates['checkout_to_purchase']:.1f}%. "
+        f"조회 {_count('view', result.view)}→장바구니 {_count('cart', result.cart)}"
+        f"→결제 {_count('checkout', result.checkout)}"
+        f"→구매 {_count('purchase', result.purchase)}, "
+        f"전환율 view→cart {_rate(rates['view_to_cart'])} · "
+        f"cart→checkout {_rate(rates['cart_to_checkout'])} · "
+        f"checkout→purchase {_rate(rates['checkout_to_purchase'])}.{uncomputable_note} "
         f"{_reference_note(from_date, to_date)}"
     )
 
@@ -245,16 +281,32 @@ async def get_order_events(
         )
     except SpringUnavailableError as exc:
         return f"Error: 주문 이벤트 데이터를 불러오지 못했습니다({exc})."
-    # stats 모드 응답(stats dict)이 있으면 함께 노출 — 집계 질의의 주 재료.
-    stats_note = (
-        " 집계: " + ", ".join(f"{k}={v}" for k, v in result.stats.items()) if result.stats else ""
-    )
-    if not result.events and not stats_note:
+    # [#194] BE 실측 응답(rows/total/byStatus/cancelReasonsTop) 기준으로 요약한다 —
+    # 구 events/stats 필드는 Spring 에 없어 항상 0건으로 새던 버그의 원인.
+    # stats=true 모드: byStatus + cancelReasonsTop 이 집계 질의의 주 재료.
+    stats_note = ""
+    if result.by_status is not None:
+        stats_note = " 상태별 집계: " + ", ".join(f"{k}={v}" for k, v in result.by_status.items())
+        if result.cancel_reasons_top:
+            reasons = ", ".join(
+                f"{r.get('reason', '?')}({r.get('count', '?')}건)"
+                for r in result.cancel_reasons_top
+            )
+            stats_note += f". 취소 사유 상위: {reasons}"
+        stats_note += "."
+    if not result.rows and not stats_note:
         return f"주문 상태 전이 0건. {_reference_note(from_date, to_date)}"
-    return (
-        f"주문 상태 전이 {len(result.events)}건: {_summarize_events(result.events)}."
-        f"{stats_note} {_ORDER_LOG_RULES_NOTE} {_reference_note(from_date, to_date)}"
+    # rows 는 limit 절단본 — total 이 더 크면 전수를 고지해 표본=전수 오해석을 막는다.
+    total = result.total if result.total is not None else len(result.rows)
+    total_note = (
+        f" (전체 {total}건 중 {len(result.rows)}건 표시)" if total > len(result.rows) else ""
     )
+    rows_note = (
+        f"주문 상태 전이 {len(result.rows)}건{total_note}: {_summarize_events(result.rows)}."
+        if result.rows
+        else "주문 상태 전이 목록 없음(집계 모드)."
+    )
+    return f"{rows_note}{stats_note} {_ORDER_LOG_RULES_NOTE} {_reference_note(from_date, to_date)}"
 
 
 @tool
@@ -279,14 +331,34 @@ async def get_product_change_logs(
         product_id: 특정 상품으로 좁힐 때(선택, 숫자).
     """
     brand_id = runtime.context.brand_id
+    settings = get_settings()
     try:
         result = await get_spring_client().get_product_changes(
             brand_id, from_date, to_date, change_type, product_id
         )
     except SpringUnavailableError as exc:
         return f"Error: 상품 변경 이력을 불러오지 못했습니다({exc})."
+    # [#194] BE 실측 응답(rows/total) 기준 — 구 logs 필드는 Spring 에 없어 항상 0건으로
+    # 새던 버그의 원인. 건수만 주던 출력도 상세 나열로 바꾼다 — 워커가 "이상 직전
+    # 가격/재고/상태 변경"을 직접 짚을 수 있어야 한다(sales_anomaly 분석 재료).
+    if not result.rows:
+        return (
+            f"상품 변경 이력 0건(가격/재고/상태). "
+            f"{_PRODUCT_LOG_RULES_NOTE} {_reference_note(from_date, to_date)}"
+        )
+    shown = result.rows[: settings.seller_summary_max_events]
+    lines = [
+        f"[{row.product_id}] {row.product_name or '이름없음'} {row.change_type} "
+        f"{row.old_value if row.old_value is not None else '?'}"
+        f"→{row.new_value if row.new_value is not None else '?'}"
+        f" ({row.created_at or '시각불명'})"
+        for row in shown
+    ]
+    total = result.total if result.total is not None else len(result.rows)
+    omitted = total - len(shown)
+    omitted_note = f" 외 {omitted}건" if omitted > 0 else ""
     return (
-        f"상품 변경 이력 {len(result.logs)}건(가격/재고/상태). "
+        f"상품 변경 이력 {total}건(가격/재고/상태): " + "; ".join(lines) + omitted_note + ". "
         f"{_PRODUCT_LOG_RULES_NOTE} {_reference_note(from_date, to_date)}"
     )
 
