@@ -81,6 +81,12 @@ CREATE TABLE IF NOT EXISTS chat_session_migrations (
     profile_backfill_cursor text,
     profile_backfill_owner_cursor bigint,
     profile_backfill_pass bigint NOT NULL DEFAULT 0,
+    conflict_gc_cursor bigint NOT NULL DEFAULT 0,
+    legacy_writer_seen_at timestamptz,
+    legacy_quiet_until timestamptz,
+    legacy_quiet_window_s double precision NOT NULL DEFAULT 90,
+    CONSTRAINT chat_session_migrations_legacy_quiet_window_check
+        CHECK (legacy_quiet_window_s >= 90),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -113,6 +119,25 @@ ALTER TABLE chat_session_migrations ADD COLUMN IF NOT EXISTS profile_backfill_cu
 ALTER TABLE chat_session_migrations ADD COLUMN IF NOT EXISTS profile_backfill_owner_cursor bigint;
 ALTER TABLE chat_session_migrations
     ADD COLUMN IF NOT EXISTS profile_backfill_pass bigint NOT NULL DEFAULT 0;
+ALTER TABLE chat_session_migrations
+    ADD COLUMN IF NOT EXISTS conflict_gc_cursor bigint NOT NULL DEFAULT 0;
+ALTER TABLE chat_session_migrations ADD COLUMN IF NOT EXISTS legacy_writer_seen_at timestamptz;
+ALTER TABLE chat_session_migrations ADD COLUMN IF NOT EXISTS legacy_quiet_until timestamptz;
+ALTER TABLE chat_session_migrations
+    ADD COLUMN IF NOT EXISTS legacy_quiet_window_s double precision NOT NULL DEFAULT 90;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname='chat_session_migrations_legacy_quiet_window_check'
+          AND conrelid='chat_session_migrations'::regclass
+    ) THEN
+        ALTER TABLE chat_session_migrations
+            ADD CONSTRAINT chat_session_migrations_legacy_quiet_window_check
+            CHECK (legacy_quiet_window_s >= 90);
+    END IF;
+END
+$$;
 UPDATE chat_session_contexts c
 SET authority_source='runtime'
 WHERE authority_source IS NULL
@@ -170,9 +195,14 @@ LANGUAGE plpgsql
 AS $$
 BEGIN
     UPDATE chat_session_migrations
-    SET gc_completed_at=NULL, updated_at=now()
-    WHERE migration_name='issue-187-session-context'
-      AND gc_completed_at IS NOT NULL;
+    SET legacy_writer_seen_at=now(),
+        legacy_quiet_until=GREATEST(
+            COALESCE(legacy_quiet_until, '-infinity'::timestamptz),
+            now() + make_interval(secs => legacy_quiet_window_s)
+        ),
+        gc_completed_at=NULL,
+        updated_at=now()
+    WHERE migration_name='issue-187-session-context';
     RETURN NULL;
 END
 $$;
@@ -193,6 +223,30 @@ BEGIN
     END IF;
 END
 $$;
+
+CREATE OR REPLACE FUNCTION install_session_context_legacy_store_trigger()
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF to_regclass('store') IS NOT NULL THEN
+        DROP TRIGGER IF EXISTS trg_reopen_session_context_gc_after_legacy_store ON store;
+        CREATE TRIGGER trg_reopen_session_context_gc_after_legacy_store
+        AFTER INSERT OR UPDATE ON store
+        FOR EACH ROW
+        WHEN (
+            split_part(NEW.prefix, '.', 1) IN (
+                'buyer_thread_filters',
+                'buyer_cart',
+                'buyer_revert'
+            )
+        )
+        EXECUTE FUNCTION reopen_session_context_gc_after_legacy_activity();
+    END IF;
+END
+$$;
+
+SELECT install_session_context_legacy_store_trigger();
 
 ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS context_id uuid;
 ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS session_id text;

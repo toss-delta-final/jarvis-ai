@@ -367,6 +367,11 @@ async def test_pg_adoption_fence_blocks_root_gc_after_legacy_read(pg_store, monk
         {"categories": ["legacy", "shared"]},
     )
     await RevertStore(pg_store).add(target_key, ["v2", "shared"])
+    await conn.execute(
+        "UPDATE chat_session_migrations "
+        "SET legacy_quiet_until=now()-interval '1 second' "
+        "WHERE migration_name='issue-187-session-context'"
+    )
     read_legacy = asyncio.Event()
     resume_adoption = asyncio.Event()
     original_item = session_state_module._item
@@ -468,6 +473,11 @@ async def test_pg_root_gc_fence_blocks_adoption_until_all_roots_are_deleted(
         {"product_id": 1, "quantity": 1, "options": [], "attempts": 0},
     )
     await pg_store.aput(("buyer_revert", legacy_key), "categories", {"categories": ["legacy"]})
+    await conn.execute(
+        "UPDATE chat_session_migrations "
+        "SET legacy_quiet_until=now()-interval '1 second' "
+        "WHERE migration_name='issue-187-session-context'"
+    )
     gc_holds_fence = asyncio.Event()
     resume_gc = asyncio.Event()
     original_delete_page = session_state_module._delete_legacy_root_page

@@ -284,6 +284,7 @@ class Settings(BaseSettings):
     # batch=10/concurrency=2에서 2단 LLM 처리가 여러 wave로 이어져도 claim이 만료되지 않게 둔다.
     profile_idle_claim_ttl_s: float = 900.0
     session_lifecycle_legacy_grace_s: float = 86400.0
+    session_lifecycle_legacy_quiet_s: float = 90.0
     session_lifecycle_gc_batch_size: int = 100
     session_lifecycle_backfill_max_batches: int = 1000
 
@@ -379,6 +380,11 @@ class Settings(BaseSettings):
             raise ValueError("PROFILE_IDLE_MAX_CONCURRENCY must be positive")
         if self.session_lifecycle_legacy_grace_s < 86400:
             raise ValueError("SESSION_LIFECYCLE_LEGACY_GRACE_S must be at least 86400")
+        if self.session_lifecycle_legacy_quiet_s < max(90, self.stream_total_timeout_s):
+            raise ValueError(
+                "SESSION_LIFECYCLE_LEGACY_QUIET_S must cover STREAM_TOTAL_TIMEOUT_S "
+                "and be at least 90"
+            )
         if self.session_lifecycle_gc_batch_size <= 0:
             raise ValueError("SESSION_LIFECYCLE_GC_BATCH_SIZE must be positive")
         if self.session_lifecycle_backfill_max_batches <= 0:

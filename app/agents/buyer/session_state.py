@@ -192,9 +192,9 @@ async def _delete_legacy_root_page(
 async def _legacy_root_fence(repo, *, transaction_scoped: bool = True):  # noqa: ANN001
     """Serialize adoption and root GC.
 
-    Lock order is per-thread process lock -> global legacy-root fence. GC takes only
-    the global fence; session-owner advisory locks are acquired only after this fence
-    is released.
+    Adoption takes per-thread process lock -> global legacy-root fence. GC takes
+    root fence -> migration advisory -> activity SHARE lock -> non-blocking session
+    advisory locks; exact-prefix store triggers provide root-writer evidence.
     """
     if repo._pool is None:
         async with _legacy_root_memory_fence:
@@ -550,16 +550,26 @@ async def ensure_thread_adopted(
 async def run_legacy_gc_batch() -> int:
     """Delete one bounded legacy page behind one database-enforced writer barrier.
 
-    Lock order is legacy-root fence -> migration advisory lock -> legacy table SHARE
-    locks -> non-blocking session advisory locks. Backfill takes migration -> session;
-    runtime touch/claim takes session only. GC never waits for a session lock while it
-    blocks activity writers, which avoids a session/activity lock cycle.
+    Lock order is legacy-root fence -> migration advisory lock -> activity SHARE lock
+    -> non-blocking session advisory locks. Backfill takes migration -> session;
+    runtime touch/claim takes session only. Root-specific store triggers reopen the
+    marker, so unrelated store DML never needs a table-wide lock.
     """
     repo = session_context._default_repository
     if repo._pool is None:
         return 0
     settings = session_context.get_settings()
     migration_name = "issue-187-session-context"
+    async with repo._pool.connection() as conn:
+        completed = await (
+            await conn.execute(
+                "SELECT gc_completed_at FROM chat_session_migrations WHERE migration_name=%s",
+                (migration_name,),
+            )
+        ).fetchone()
+    if completed is not None and completed[0] is not None:
+        return 0
+
     store = await pg_store.get_store()
     roots = (
         (_LEGACY_FILTER_ROOT, "filters_deleted"),
@@ -575,16 +585,16 @@ async def run_legacy_gc_batch() -> int:
             "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
             ("migration:issue-187-session-context",),
         )
-        if getattr(store, "conn", None) is not None:
-            await fence_conn.execute("LOCK TABLE profile_session_activity, store IN SHARE MODE")
-        else:
-            await fence_conn.execute("LOCK TABLE profile_session_activity IN SHARE MODE")
+        await fence_conn.execute("LOCK TABLE profile_session_activity IN SHARE MODE")
 
         migration = await (
             await fence_conn.execute(
                 """
                 SELECT gc_completed_at, profile_backfill_completed_at,
-                       grace_deadline <= now() AS grace_elapsed
+                       grace_deadline <= now() AS grace_elapsed,
+                       legacy_quiet_until IS NULL
+                           OR legacy_quiet_until <= now() AS quiet_elapsed,
+                       conflict_gc_cursor
                 FROM chat_session_migrations
                 WHERE migration_name=%s
                 FOR UPDATE
@@ -592,7 +602,7 @@ async def run_legacy_gc_batch() -> int:
                 (migration_name,),
             )
         ).fetchone()
-        if migration is None or migration[1] is None or not migration[2]:
+        if migration is None or migration[1] is None or not migration[2] or not migration[3]:
             return 0
         if migration[0] is not None:
             return 0
@@ -634,19 +644,33 @@ async def run_legacy_gc_batch() -> int:
                         (deleted, migration_name),
                     )
 
-            conflicts = await (
-                await fence_conn.execute(
-                    """
-                    SELECT conflict_id, session_id, owner_id
-                    FROM chat_session_migration_conflicts
-                    WHERE resolution_status='quarantined'
-                    ORDER BY conflict_id
-                    LIMIT %s
-                    """,
-                    (settings.session_lifecycle_gc_batch_size,),
-                )
-            ).fetchall()
+            conflict_cursor = int(migration[4])
+            max_examined = max(
+                settings.session_lifecycle_gc_batch_size + 1,
+                settings.session_lifecycle_gc_batch_size * 10,
+            )
+
+            async def conflict_page(after_id: int) -> list:  # noqa: ANN001
+                return await (
+                    await fence_conn.execute(
+                        """
+                        SELECT conflict_id, session_id, owner_id
+                        FROM chat_session_migration_conflicts
+                        WHERE resolution_status='quarantined' AND conflict_id > %s
+                        ORDER BY conflict_id
+                        LIMIT %s
+                        """,
+                        (after_id, max_examined),
+                    )
+                ).fetchall()
+
+            conflicts = await conflict_page(conflict_cursor)
+            if not conflicts and conflict_cursor:
+                conflict_cursor = 0
+                conflicts = await conflict_page(conflict_cursor)
+            processed_conflicts = 0
             for conflict_id, session_id, owner_id in conflicts:
+                conflict_cursor = int(conflict_id)
                 if not await _try_session_lock_for_gc(fence_conn, session_id):
                     continue
                 context = await (
@@ -680,6 +704,9 @@ async def run_legacy_gc_batch() -> int:
                         """,
                         (context[0], conflict_id),
                     )
+                    processed_conflicts += 1
+                    if processed_conflicts >= settings.session_lifecycle_gc_batch_size:
+                        break
                     continue
                 key = f"{owner_id}:{session_id}"
                 if getattr(store, "conn", None) is not None:
@@ -706,6 +733,15 @@ async def run_legacy_gc_batch() -> int:
                     (conflict_id,),
                 )
                 deleted_total += 1
+                processed_conflicts += 1
+                if processed_conflicts >= settings.session_lifecycle_gc_batch_size:
+                    break
+            await fence_conn.execute(
+                "UPDATE chat_session_migrations "
+                "SET conflict_gc_cursor=%s, updated_at=now() "
+                "WHERE migration_name=%s",
+                (conflict_cursor, migration_name),
+            )
 
             deleted_activity = await (
                 await fence_conn.execute(

@@ -238,3 +238,12 @@ def test_legacy_grace_cannot_be_shorter_than_24_hours():
 def test_session_backfill_startup_batch_limit_must_be_positive():
     with pytest.raises(ValueError, match="BACKFILL_MAX_BATCHES must be positive"):
         Settings(_env_file=None, session_lifecycle_backfill_max_batches=0)
+
+
+def test_legacy_writer_quiet_window_covers_stream_lifetime():
+    with pytest.raises(ValueError, match="LEGACY_QUIET_S"):
+        Settings(
+            _env_file=None,
+            stream_total_timeout_s=91,
+            session_lifecycle_legacy_quiet_s=90,
+        )

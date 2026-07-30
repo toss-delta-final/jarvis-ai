@@ -189,6 +189,13 @@ class SessionContextRepository:
                 )
                 await conn.execute(sql)
 
+    async def ensure_legacy_store_trigger(self) -> None:
+        """Install the exact-prefix legacy store trigger after lazy store DDL."""
+        if self._pool is None:
+            return
+        async with self._pool.connection() as conn:
+            await conn.execute("SELECT install_session_context_legacy_store_trigger()")
+
     async def backfill_legacy_activity(self) -> None:
         """Resume a durable bounded composite-key pass over legacy activity."""
         if self._pool is None:
@@ -218,9 +225,9 @@ class SessionContextRepository:
                         INSERT INTO chat_session_migrations
                             (migration_name, rollout_started_at, grace_deadline,
                              profile_backfill_cursor, profile_backfill_owner_cursor,
-                             profile_backfill_pass)
+                             profile_backfill_pass, legacy_quiet_window_s)
                         VALUES (
-                            %s, now(), now() + make_interval(secs => %s), '', -1, 1
+                            %s, now(), now() + make_interval(secs => %s), '', -1, 1, %s
                         )
                         ON CONFLICT (migration_name) DO UPDATE
                         SET grace_deadline=GREATEST(
@@ -230,12 +237,29 @@ class SessionContextRepository:
                                 chat_session_migrations.rollout_started_at
                                     + interval '24 hours'
                             ),
+                            legacy_quiet_window_s=GREATEST(
+                                chat_session_migrations.legacy_quiet_window_s,
+                                %s,
+                                90
+                            ),
+                            legacy_quiet_until=CASE
+                                WHEN chat_session_migrations.legacy_writer_seen_at IS NULL
+                                THEN chat_session_migrations.legacy_quiet_until
+                                ELSE GREATEST(
+                                    chat_session_migrations.legacy_quiet_until,
+                                    chat_session_migrations.legacy_writer_seen_at
+                                        + make_interval(secs => %s)
+                                )
+                            END,
                             updated_at=now()
                         """,
                         (
                             migration_name,
                             settings.session_lifecycle_legacy_grace_s,
+                            settings.session_lifecycle_legacy_quiet_s,
                             settings.session_lifecycle_legacy_grace_s,
+                            settings.session_lifecycle_legacy_quiet_s,
+                            settings.session_lifecycle_legacy_quiet_s,
                         ),
                     )
                     migration = await (
@@ -2350,6 +2374,10 @@ async def initialize() -> None:
 async def initialize_session_lifecycle() -> None:
     """Finish schema and restart-safe authority backfill before workers may start."""
     await initialize()
+
+
+async def ensure_legacy_store_trigger() -> None:
+    await _default_repository.ensure_legacy_store_trigger()
 
 
 async def close_session_lifecycle() -> None:
