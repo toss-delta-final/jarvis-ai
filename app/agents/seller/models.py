@@ -21,6 +21,7 @@ reasoning_effort 를 강등한다.
 
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 from typing import Any, Literal
 
@@ -29,6 +30,8 @@ from langchain_core.language_models.chat_models import BaseChatModel
 
 from app.core.config import LLMProvider, get_settings
 from app.core.llm import ModelTier, resolve_provider_model
+
+logger = logging.getLogger(__name__)
 
 SellerRole = Literal["supervisor", "planner", "worker", "judge", "product", "report", "recommend"]
 
@@ -42,6 +45,18 @@ ROLE_TIER: dict[SellerRole, ModelTier] = {
     "report": "smart",
     "recommend": "smart",
 }
+
+
+def seller_trace_model_metadata(role: SellerRole) -> dict[str, str] | None:
+    """Resolve the configured bounded model ID without affecting the seller request."""
+    try:
+        resolved = resolve_provider_model(get_settings(), ROLE_TIER[role], with_tools=True)
+    except Exception:
+        logger.warning(
+            "seller telemetry model resolution failed code=SELLER_TELEMETRY_MODEL_RESOLUTION_FAILED"
+        )
+        return None
+    return {"model": resolved.model_id}
 
 
 @lru_cache(maxsize=None)

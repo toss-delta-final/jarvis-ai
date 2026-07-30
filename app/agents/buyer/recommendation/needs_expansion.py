@@ -26,6 +26,7 @@ from collections.abc import Awaitable, Callable, Sequence
 
 from app.agents.buyer.recommendation.state import CategoryQuery, extract_json
 from app.core.llm import LLMError, resolve_model_id
+from app.core.tracing import trace_span
 
 logger = logging.getLogger(__name__)
 
@@ -141,12 +142,17 @@ async def _llm_expand(utterance: str, *, llm, settings, observer=None) -> list[s
     if observer is not None:
         observer.record_model_call(resolve_model_id(settings, settings.needs_expansion_tier))
     try:
-        raw = await llm.complete(
-            system=_SYSTEM,
-            user=f"USER_MESSAGE: {utterance}",
-            tier=settings.needs_expansion_tier,
-            max_tokens=200,
-        )
+        with trace_span(
+            "llm.needs_expansion",
+            "llm",
+            {"model": resolve_model_id(settings, settings.needs_expansion_tier)},
+        ):
+            raw = await llm.complete(
+                system=_SYSTEM,
+                user=f"USER_MESSAGE: {utterance}",
+                tier=settings.needs_expansion_tier,
+                max_tokens=200,
+            )
         items = extract_json(raw).get("items")
     except LLMError as exc:
         logger.info("needs_expansion_failed", extra={"reason": str(exc)})
