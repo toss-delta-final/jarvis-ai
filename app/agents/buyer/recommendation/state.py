@@ -73,7 +73,11 @@ class RouteDecision:
     filters: ProductSearchFilters
     # [#101] 의미쿼리는 검색 입력이라 filters.semantic_query 로 이관(decompose 가 세팅). 하류가
     # 그 필드를 읽으므로 RouteDecision 에는 더 두지 않는다.
-    case: int = 2  # [폐기, 이슈 #59] 미사용 — 단일/멀티는 len(category_queries)로 판정, 파싱만 유지
+    # [이슈 #198] 전개 게이트로 사용 — `case != 3` 이면 상품 전개를 발동하지 않는다
+    # (`needs_expansion.detect_expansion_need`, DESIGN-NEEDS-EXPANSION-198 §4.2). case 2
+    # ("5만원 이하 아무거나")의 무필터 의도를 보호하는 유일한 신호이므로 제거하면 안 된다.
+    # 단일/멀티 판정에는 여전히 쓰지 않는다(len(category_queries) 기준, #59).
+    case: int = 2
     reply: str = ""  # intent == general 일 때만 사용자에게 줄 답변
     cart: CartIntent | None = None  # intent == cart_add/cart_view 일 때
     revert_categories: list[str] = field(default_factory=list)  # 소모품 억제 되돌리기(결정 14-F)
