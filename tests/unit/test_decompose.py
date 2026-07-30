@@ -313,6 +313,21 @@ async def test_category_queries_prompt_teaches_concrete_product_expansion() -> N
     assert "지어내지" in rule  # 없는 카테고리명 창작 금지(표기 불일치로 exact 히트 0)
 
 
+async def test_category_query_prompt_forbids_modifiers_and_utterance_copy() -> None:
+    """[#115 §6.0] query 는 수식어·상황 설명을 뺀 **순수 상품명**이어야 한다(거리 밀림 방지).
+
+    실측: query 에 수식어가 붙거나 발화를 그대로 복사하면 정답이어도 거리가 밀려 올라가
+    거리컷(§4, 0.22)에 걸린다 — '무선 이어폰' 0.1955(통과) vs '가성비 무선 이어폰' 0.2556(드롭),
+    '발 시려울 때 신을 수 있는 신발' 0.2478(드롭). 가격·평가 조건은 filters 로, 발화 전체 의미는
+    semanticQuery 로 가므로 leg query 에서 수식어를 빼도 정보가 유실되지 않는다.
+    """
+    from app.agents.buyer.recommendation.decompose import _SYSTEM
+
+    rule = _SYSTEM.split("- categoryQueries", 1)[1].split("- cart_add", 1)[0]
+    assert "수식어" in rule  # 갓성비·저렴한 등은 query 에서 제외
+    assert "복사" in rule  # 발화를 그대로 복사 금지(상품명으로 번역)
+
+
 async def test_attr_conditions_type_and_blank_guards() -> None:
     """[PR② — PR① 교훈] 비-dict·비문자열 값·공백 키/값은 걸러 매칭 오염·크래시를 막는다."""
     # 비 dict → None (리스트·문자열)
