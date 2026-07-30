@@ -371,6 +371,30 @@ async def test_new_guest_thread_slot_before_db_touch_blocks_claim(
     assert not registry.is_active("guest-1:new-thread")
 
 
+async def test_claim_coordinator_replaces_legacy_guess_and_quarantines_it(
+    repo: SessionContextRepository,
+) -> None:
+    repo._contexts["session-1"] = session_context._MemoryContext(
+        "legacy-context",
+        "session-1",
+        "member",
+        "6",
+        0,
+        "active",
+        repo._clock(),
+        "legacy_backfill",
+    )
+    repo._migration_conflicts[("session-1", "6")] = ("resolved", "legacy-context")
+
+    outcome = await lifecycle.SessionLifecycleCoordinator(repo, get_registry()).claim_owner(
+        SessionClaimEvent(session_id="session-1", guest_id="signed-guest", user_id=7)
+    )
+
+    assert outcome.context.owner_id == "7"
+    assert outcome.context.context_id != "legacy-context"
+    assert repo._migration_conflicts[("session-1", "6")][0] == "quarantined"
+
+
 async def test_claim_fence_blocks_new_guest_slot_until_transition_finishes(
     repo: SessionContextRepository,
     monkeypatch: pytest.MonkeyPatch,

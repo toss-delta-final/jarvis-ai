@@ -399,6 +399,7 @@ async def test_signed_touch_replaces_legacy_guess_and_runtime_owner_then_wins(pg
     session_id = prefix + "-touch-takeover"
     old_owner = str(uuid.uuid4().int % 1_000_000_000 + 1_000_000_000)
     new_owner = str(int(old_owner) + 1)
+    legacy_context_id = str(uuid.uuid4())
     async with pool.connection() as conn:
         await conn.execute(
             """
@@ -407,7 +408,17 @@ async def test_signed_touch_replaces_legacy_guess_and_runtime_owner_then_wins(pg
                  authority_source, state)
             VALUES (%s, %s, 'member', %s, 'legacy_backfill', 'active')
             """,
-            (str(uuid.uuid4()), session_id, old_owner),
+            (legacy_context_id, session_id, old_owner),
+        )
+        await conn.execute(
+            """
+            INSERT INTO chat_session_migration_conflicts
+                (session_id, owner_id, legacy_status, legacy_last_activity_at,
+                 resolution_status, resolved_context_id)
+            VALUES (%s, %s, 'completed', now()-interval '1 day',
+                    'resolved', %s)
+            """,
+            (session_id, old_owner, legacy_context_id),
         )
     try:
         context = await repo.touch(

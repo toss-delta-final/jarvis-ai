@@ -141,6 +141,61 @@ async def test_pg_coordinator_no_row_race_creates_one_context_and_history(pg_cla
     assert not registry.is_fenced("G1", session_id)
 
 
+async def test_pg_coordinator_signed_claim_replaces_legacy_guess(pg_claim) -> None:
+    repository, pool, registry, prefix = pg_claim
+    session_id = prefix + "-legacy-takeover"
+    legacy_context_id = str(uuid.uuid4())
+    async with pool.connection() as conn:
+        await conn.execute(
+            """
+            INSERT INTO chat_session_contexts
+                (context_id, session_id, owner_type, owner_id,
+                 authority_source, state)
+            VALUES (%s, %s, 'member', '6', 'legacy_backfill', 'active')
+            """,
+            (legacy_context_id, session_id),
+        )
+        await conn.execute(
+            """
+            INSERT INTO chat_session_migration_conflicts
+                (session_id, owner_id, legacy_status, legacy_last_activity_at,
+                 resolution_status, resolved_context_id)
+            VALUES (%s, '6', 'completed', now()-interval '1 day',
+                    'resolved', %s)
+            """,
+            (session_id, legacy_context_id),
+        )
+    try:
+        outcome = await SessionLifecycleCoordinator(repository, registry).claim_owner(
+            SessionClaimEvent(session_id=session_id, guest_id="signed-guest", user_id=7)
+        )
+
+        async with pool.connection() as conn:
+            authority = await (
+                await conn.execute(
+                    "SELECT owner_id, authority_source FROM chat_session_contexts "
+                    "WHERE session_id=%s",
+                    (session_id,),
+                )
+            ).fetchone()
+            conflict = await (
+                await conn.execute(
+                    "SELECT resolution_status FROM chat_session_migration_conflicts "
+                    "WHERE session_id=%s AND owner_id='6'",
+                    (session_id,),
+                )
+            ).fetchone()
+        assert outcome.claimed is True
+        assert authority == ("7", "runtime")
+        assert conflict == ("quarantined",)
+    finally:
+        async with pool.connection() as conn:
+            await conn.execute(
+                "DELETE FROM chat_session_migration_conflicts WHERE session_id=%s",
+                (session_id,),
+            )
+
+
 async def test_pg_coordinator_rejects_active_unregistered_thread_scope(pg_claim) -> None:
     repository, pool, registry, prefix = pg_claim
     session_id = prefix + "-active"

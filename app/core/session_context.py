@@ -577,7 +577,12 @@ class SessionContextRepository:
                 INSERT INTO chat_session_migration_conflicts
                     (session_id, owner_id, legacy_status, legacy_last_activity_at)
                 VALUES (%s, %s, %s, %s)
-                ON CONFLICT (session_id, owner_id) DO NOTHING
+                ON CONFLICT (session_id, owner_id) DO UPDATE
+                SET legacy_status=EXCLUDED.legacy_status,
+                    legacy_last_activity_at=EXCLUDED.legacy_last_activity_at,
+                    resolution_status='quarantined',
+                    resolved_context_id=NULL,
+                    updated_at=now()
                 """,
                 (
                     input.session_id,
@@ -747,7 +752,12 @@ class SessionContextRepository:
                     INSERT INTO chat_session_migration_conflicts
                         (session_id, owner_id, legacy_status, legacy_last_activity_at)
                     VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (session_id, owner_id) DO NOTHING
+                    ON CONFLICT (session_id, owner_id) DO UPDATE
+                    SET legacy_status=EXCLUDED.legacy_status,
+                        legacy_last_activity_at=EXCLUDED.legacy_last_activity_at,
+                        resolution_status='quarantined',
+                        resolved_context_id=NULL,
+                        updated_at=now()
                     """,
                     (
                         session_id,
