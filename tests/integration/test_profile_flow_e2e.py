@@ -6,24 +6,42 @@ api-spec §3.4(프로필 조회)·§3.5(I-20 세션 종료 통지, 멱등) + SPE
 
 from __future__ import annotations
 
+import jwt
+
 from tests.integration.conftest import auth_header, parse_sse
 
 USER_ID = "42"
 
 
-def _chat(client, message: str, *, session: str = "sess-prof", thread: str = "th-prof"):
+def _chat(
+    client,
+    message: str,
+    *,
+    session: str = "sess-prof",
+    thread: str = "th-prof",
+    headers=None,
+):
     return client.post(
         "/chat",
         json={"sessionId": session, "threadId": thread, "message": message},
-        headers=auth_header(USER_ID),
+        headers=auth_header(USER_ID) if headers is None else headers,
     )
 
 
-def _session_end(client, *, session: str = "sess-prof"):
+def _session_end(client, *, session: str = "sess-prof", user_id: int = int(USER_ID)):
     return client.post(
         "/events/session-end",
-        json={"userId": int(USER_ID), "sessionId": session},
+        json={"userId": user_id, "sessionId": session},
     )
+
+
+def _buyer_session_header(subject: str, sub_type: str, session_id: str) -> dict[str, str]:
+    token = jwt.encode(
+        {"sub": subject, "sub_type": sub_type, "sessionId": session_id},
+        "dev-only-not-a-secret-0123456789",
+        algorithm="HS256",
+    )
+    return {"Authorization": f"Bearer {token}"}
 
 
 def test_profile_empty_before_any_session(client, spring, llm) -> None:
@@ -112,3 +130,94 @@ def test_session_end_degrades_without_llm(client, spring, monkeypatch) -> None:
     monkeypatch.setattr(profile_finalizer, "get_llm", lambda: None)
     resp = _session_end(client)
     assert resp.status_code == 202
+
+
+async def test_guest_claim_preserves_transcripts_but_promotes_only_member_facts(
+    client, spring, llm, monkeypatch
+) -> None:
+    """세 탭 claim 뒤 기록은 보존하되 guest 발화는 회원 장기 fact 입력에서 격리한다."""
+    import app.agents.profile.finalizer as profile_finalizer
+    from app.agents.profile.store import get_profile_store
+    from app.core import session_context
+    from app.core.conversation import conversation_key, get_conversation_store
+    from app.core.session_context import SessionContextRepository
+
+    repo = SessionContextRepository()
+    monkeypatch.setattr(session_context, "_default_repository", repo)
+    monkeypatch.setattr(profile_finalizer, "get_llm", lambda: llm)
+    guest_headers = _buyer_session_header("G1", "guest", "S1")
+    member_headers = _buyer_session_header("1", "member", "S1")
+    guest_messages = {
+        "T1": "GUEST_ONLY_SECRET_1 파우치 추천",
+        "T2": "GUEST_ONLY_SECRET_2 파우치 추천",
+        "T3": "GUEST_ONLY_SECRET_3 파우치 추천",
+    }
+
+    for thread_id, message in guest_messages.items():
+        response = _chat(client, message, session="S1", thread=thread_id, headers=guest_headers)
+        assert response.status_code == 200
+    before_claim = await repo.get_context("S1")
+    assert before_claim is not None
+
+    claim = client.post(
+        "/events/session-claim",
+        json={"sessionId": "S1", "guestId": "G1", "userId": 1},
+        headers={"X-Internal-Token": "e2e-internal-token"},
+    )
+    assert claim.status_code == 202
+    assert claim.json() == {"status": "accepted"}
+
+    member_messages = {
+        "T1": "회원 전환 후 첫 번째 탭 계속",
+        "T2": "회원 전환 후 두 번째 탭 계속",
+        "T3": "회원 전환 후 세 번째 탭 계속",
+    }
+    for thread_id, message in member_messages.items():
+        response = _chat(client, message, session="S1", thread=thread_id, headers=member_headers)
+        assert response.status_code == 200
+        current = await repo.get_context("S1")
+        assert current is not None and current.context_id == before_claim.context_id
+
+    conversation_store = await get_conversation_store()
+    guest_key = conversation_key("G1", "S1")
+    member_key = conversation_key("1", "S1")
+    guest_turns = await conversation_store.turns_for(guest_key)
+    member_turns = await conversation_store.turns_for(member_key)
+    assert [turn.user_text for turn in guest_turns] == list(guest_messages.values())
+    assert [turn.user_text for turn in member_turns] == list(member_messages.values())
+
+    old_guest = _chat(
+        client,
+        "GUEST_ONLY_SECRET_BRANCH",
+        session="S1",
+        thread="T4",
+        headers=guest_headers,
+    )
+    assert old_guest.status_code == 403
+    assert old_guest.json()["error"]["code"] == "SESSION_FORBIDDEN"
+    assert await repo.get_threads(before_claim.context_id) == ["T1", "T2", "T3"]
+    assert len(await conversation_store.turns_for(guest_key)) == len(guest_turns)
+
+    llm._delta = {
+        "deltas": [
+            {
+                "fact": "회원 전환 후 세 탭에서 여행용품을 탐색한다",
+                "salience": 0.9,
+                "explicit": True,
+                "repetitionEma": 0.8,
+            }
+        ]
+    }
+    ended = _session_end(client, session="S1", user_id=1)
+    assert ended.status_code == 202
+    assert ended.json() == {"status": "accepted"}
+
+    facts = await (await get_profile_store()).get_facts("1")
+    assert facts == ["회원 전환 후 세 탭에서 여행용품을 탐색한다"]
+    assert not any("GUEST_ONLY_SECRET" in fact for fact in facts)
+    assert [turn.user_text for turn in await conversation_store.turns_for(guest_key)] == list(
+        guest_messages.values()
+    )
+    assert [turn.user_text for turn in await conversation_store.turns_for(member_key)] == list(
+        member_messages.values()
+    )

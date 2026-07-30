@@ -6,6 +6,7 @@ AI↔Spring(stub)을 붙여 api-spec §3.1(SSE)·§3.3(경로 B)·§4.6(I-1)·§
 
 from __future__ import annotations
 
+import jwt
 import pytest
 
 from tests.integration.conftest import (
@@ -17,6 +18,15 @@ from tests.integration.conftest import (
 )
 
 BUYER_MESSAGE = "유럽 여행 가는데 기내 반입 되는 파우치 추천해줘"
+
+
+def _buyer_session_header(subject: str, sub_type: str, session_id: str) -> dict[str, str]:
+    token = jwt.encode(
+        {"sub": subject, "sub_type": sub_type, "sessionId": session_id},
+        "dev-only-not-a-secret-0123456789",
+        algorithm="HS256",
+    )
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _chat(
@@ -478,3 +488,88 @@ def test_cart_view_flow_reads_spring(client, spring, llm) -> None:
 
     text = "".join(e["data"].get("text", "") for e in events if e["type"] == "token")
     assert "여행용 방수 파우치 L" in text
+
+
+async def test_guest_session_d6_expires_all_threads_then_claim_keeps_context(
+    client, spring, llm, monkeypatch
+) -> None:
+    """D6는 탭이 아니라 세션 전체에 적용되고, 재구축 후 claim은 context를 복사하지 않는다."""
+    from app.agents.buyer.cart.state import get_cart_store
+    from app.agents.buyer.graph import get_thread_store
+    from app.agents.buyer.recommendation.state import get_revert_store
+    from app.agents.buyer.session_state import context_thread_key
+    from app.core import session_context
+    from app.core.session_context import SessionContextRepository
+    from app.core.session_lifecycle import SessionLifecycleCoordinator
+
+    now = [0.0]
+    repo = SessionContextRepository(clock=lambda: now[0])
+    monkeypatch.setattr(session_context, "_default_repository", repo)
+    guest_headers = _buyer_session_header("G1", "guest", "S1")
+    member_headers = _buyer_session_header("1", "member", "S1")
+
+    for thread_id in ("T1", "T2", "T3"):
+        response = _chat(client, session="S1", thread=thread_id, headers=guest_headers)
+        assert response.status_code == 200
+        assert parse_sse(response.text)[-1]["type"] == "done"
+
+    original = await repo.get_context("S1")
+    assert original is not None
+    assert await repo.get_threads(original.context_id) == ["T1", "T2", "T3"]
+    keys = [context_thread_key(original.context_id, thread_id) for thread_id in ("T1", "T2", "T3")]
+    filter_store = await get_thread_store()
+    cart_store = await get_cart_store()
+    revert_store = await get_revert_store()
+    await revert_store.add(keys[1], {"여행용품"})
+    assert all([await filter_store.get(key) is not None for key in keys])
+    assert all([await cart_store.get_last_reco(key) for key in keys])
+    assert await revert_store.get(keys[1]) == {"여행용품"}
+
+    now[0] = 500.0
+    touched = _chat(client, "T1만 다시 사용", session="S1", thread="T1", headers=guest_headers)
+    assert touched.status_code == 200
+    now[0] = 1_099.0
+    assert await repo.claim_expired_contexts(600, 30, 1) == []
+
+    now[0] = 1_101.0
+    [idle_claim] = await repo.claim_expired_contexts(600, 30, 1)
+    outcome = await SessionLifecycleCoordinator(repo).process_idle_transient(idle_claim)
+    assert outcome.status == "completed"
+    expired = await repo.get_context("S1")
+    assert expired is not None and expired.state == "idle_expired"
+    assert expired.context_id == original.context_id
+    assert await repo.get_threads(original.context_id) == []
+    assert all([await filter_store.get(key) is None for key in keys])
+    assert all([await cart_store.get_last_reco(key) == [] for key in keys])
+    assert await revert_store.get(keys[1]) == set()
+
+    now[0] = 1_102.0
+    for thread_id in ("T1", "T2", "T3"):
+        rebuilt = _chat(client, session="S1", thread=thread_id, headers=guest_headers)
+        assert rebuilt.status_code == 200
+    rebuilt_context = await repo.get_context("S1")
+    assert rebuilt_context is not None
+    assert rebuilt_context.context_id == original.context_id
+
+    claim = client.post(
+        "/events/session-claim",
+        json={"sessionId": "S1", "guestId": "G1", "userId": 1},
+        headers={"X-Internal-Token": "e2e-internal-token"},
+    )
+    assert claim.status_code == 202
+    assert claim.json() == {"status": "accepted"}
+    claimed_context = await repo.get_context("S1")
+    assert claimed_context is not None
+    assert claimed_context.context_id == original.context_id
+    assert claimed_context.owner_type == "member"
+    assert claimed_context.owner_id == "1"
+
+    for thread_id in ("T1", "T2", "T3"):
+        continued = _chat(client, session="S1", thread=thread_id, headers=member_headers)
+        assert continued.status_code == 200
+        assert (await repo.get_context("S1")).context_id == original.context_id
+
+    old_guest = _chat(client, "옛 게스트 재접속", session="S1", thread="T4", headers=guest_headers)
+    assert old_guest.status_code == 403
+    assert old_guest.json()["error"]["code"] == "SESSION_FORBIDDEN"
+    assert await repo.get_threads(original.context_id) == ["T1", "T2", "T3"]

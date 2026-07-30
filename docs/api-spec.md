@@ -6,8 +6,8 @@
 
 | 항목 | 값 |
 |---|---|
-| 문서 버전 | v0.16.3 |
-| 작성일 | 2026-07-14 (v0.16.3 개정 2026-07-30 — **[#164] I-4 주문 상태 요약 계약·구매자 `order_status` 라우트 구현 정합**, §4.10 신설) (v0.16.2 개정 2026-07-30 — **[#194] I-14/I-15 응답 스키마 BE 실측 확정 + I-6 이상 감지 규칙 명문화**) (v0.16.1 개정 2026-07-30 — **I-21 `listId`를 UUID급 무작위(≥128bit)로 확정**, 순번·타임스탬프 등 추측 가능한 형식 금지) (v0.16.0 개정 2026-07-30 — **`sessionId`(접속)·`threadId`(방) 축 분리**: 동시 스트림 락을 방 단위로, I-20 사유 `logout` 1종, CH-1 멱등(D5), 맥락 TTL 접속 단위(D6)) (v0.15.27 개정 2026-07-30 — 사본 drift 정정: 담기 이벤트 적재 주체(BE→FE)·`budget` 이벤트 제외·`search.query` PII 기준) (v0.15.26 개정 2026-07-28 — 사본 동기화: §3.1 `conditionActions`(칩 제거, #84)·`screen`(화면 맥락, #118) 신설, `conditions` 칩 `field` 6종 확정, in-stream `error`에 `requestId`·`retryable` 추가) (v0.15.25 개정 2026-07-28 — #171: I-1 응답에 reviewCount 추가(AI 계산용·비표시), rating=0 의미 판별(리뷰 부재 vs 저평점). #100 "reviewCount 표시전용·미반환" 부분 개정. / v0.15.24 개정 2026-07-27 — 사본 동기화: S-5 폐기 반영, 상품 수정은 챗봇 HITL(I-11) 유일 경로) |
+| 문서 버전 | v0.17.0 |
+| 작성일 | 2026-07-14 (v0.17.0 개정 2026-07-31 — **[#187] signed `sessionId` 기반 stable `context_id`, guest→member claim, D6/I-20 lifecycle 계약 반영**) (v0.16.3 개정 2026-07-30 — **[#164] I-4 주문 상태 요약 계약·구매자 `order_status` 라우트 구현 정합**, §4.10 신설) (v0.16.2 개정 2026-07-30 — **[#194] I-14/I-15 응답 스키마 BE 실측 확정 + I-6 이상 감지 규칙 명문화**) (v0.16.1 개정 2026-07-30 — **I-21 `listId`를 UUID급 무작위(≥128bit)로 확정**, 순번·타임스탬프 등 추측 가능한 형식 금지) (v0.16.0 개정 2026-07-30 — **`sessionId`(접속)·`threadId`(방) 축 분리**: 동시 스트림 락을 방 단위로, I-20 사유 `logout` 1종, CH-1 멱등(D5), 맥락 TTL 접속 단위(D6)) (v0.15.27 개정 2026-07-30 — 사본 drift 정정: 담기 이벤트 적재 주체(BE→FE)·`budget` 이벤트 제외·`search.query` PII 기준) (v0.15.26 개정 2026-07-28 — 사본 동기화: §3.1 `conditionActions`(칩 제거, #84)·`screen`(화면 맥락, #118) 신설, `conditions` 칩 `field` 6종 확정, in-stream `error`에 `requestId`·`retryable` 추가) (v0.15.25 개정 2026-07-28 — #171: I-1 응답에 reviewCount 추가(AI 계산용·비표시), rating=0 의미 판별(리뷰 부재 vs 저평점). #100 "reviewCount 표시전용·미반환" 부분 개정. / v0.15.24 개정 2026-07-27 — 사본 동기화: S-5 폐기 반영, 상품 수정은 챗봇 HITL(I-11) 유일 경로) |
 | 상태 | draft |
 | 대상 독자 | Spring 백엔드 팀, React 프론트엔드(FE) 팀 |
 | 소유 | AI 에이전트 서버 팀 |
@@ -16,7 +16,7 @@
 >
 > **[v0.5.0 개정 — 2026-07-15 사용자 최종 확정]** 본 개정은 v0.4.0 Batch 2(카탈로그 미러 + 배치 동기화)를 **되돌려**, **후보 검색 = 질의 시점 Spring 위임(`POST /products/search`)** 을 **프로젝트 전 범위의 유일·영구 후보 확보 경로**로 확정한다. **[v0.5.1 정정 — 용어 확정]** 채택하지 않는 것은 **상품 원본 컬럼의 AI측 사본**(가격·재고·상품명 등 필터 컬럼 복제)이다. **AI 생성물 — extras(추론 태그)·search_doc·임베딩 벡터 — 은 AI Postgres에 저장·유지**하며(결정 3 Layer 2/3·결정 6 존속), 상품 변경 반영은 **AI가 요청하는 pull 배치**(§4.8)로 갱신한다. 이는 v0.4.0의 provenance 노트가 폐기했던 검색 위임 노선을 **최종 채택**하는 것이며, 이미 boot-verified 구현 스캐폴드(`~/projet/hk-final`, jarvis-ai, FastAPI+LangGraph)가 이 노선 위에 존재하고 사용자가 이를 구현 기준으로 비준했다.
 > - **핵심 변경**: 후보 확보가 "AI 자기 검색 인덱스(미러)"에서 "질의 시점 Spring `POST /products/search` 위임"(신규 §4.6)으로 **영구 전환**된다. 상품 원본 컬럼의 사본(미러)은 두지 않는다. **[v0.5.1 정정]** AI 생성물(extras·search_doc·임베딩)은 유지하며 bulk export pull 배치(§4.8, C-4 부활)로 갱신한다. 질의 시점 후보 흐름에서 AI 임베딩과 Spring 검색의 결합 방식은 **OPEN**(§4.8 말미 — 두 방식 병행 검토).
-> - **[이벤트 최종 — 2026-07-15 사용자 확정]** `POST /events/session-end`(세션 종료 통지)만 **MVP에 유지**된다. **주문 알림(구 `POST /events/order`)·주문 미러는 채택하지 않는다** — 검색이 질의 시점 위임으로 확정되면서 구매 이력도 **추천 직전 질의 시점 조회(`GET /internal/members/{id}/orders`, §4.7)** 로 확보한다(결정 14-F 동작 요구는 불변, 데이터 획득 방식만 교체). **병행 PRD 초안 라인은 모든 이벤트를 고도화로 옮겼으나, 본 계약은 session-end 유지 한 지점에서 PRD와 갈라진다** — PRD의 events-scope를 **바로잡아야 하며**(§8 항목 6), 본 문서는 PRD를 조용히 따르지 않는다.
+> - **[이벤트 최종 — #187 개정]** `POST /events/session-end`(세션 종료)와 `POST /events/session-claim`(로그인 승격)을 **MVP에 유지**한다. **주문 알림(구 `POST /events/order`)·주문 미러는 채택하지 않는다** — 검색이 질의 시점 위임으로 확정되면서 구매 이력도 **추천 직전 질의 시점 조회(`GET /internal/members/{id}/orders`, §4.7)** 로 확보한다(결정 14-F 동작 요구는 불변, 데이터 획득 방식만 교체). **병행 PRD 초안 라인은 모든 이벤트를 고도화로 옮겼으나, 본 계약은 session-end 유지 한 지점에서 PRD와 갈라진다** — PRD의 events-scope를 **바로잡아야 하며**(§8 항목 6), 본 문서는 PRD를 조용히 따르지 않는다.
 > - **Batch 1(판매자 확장)은 v0.4.0 그대로 유지**: `POST /seller/chat` = 통계 Q&A(원천 = Spring 집계 I-6 질의 시점 콜백, C-7 해소) + 상세 수정 draft 흐름(I-7 읽기 → LLM 개정안 → SSE `draft` → FE diff 카드 → FE가 Spring `S-3` PATCH로 반영, FE↔Spring 전제).
 > - **[v0.6.0 개정 — 2026-07-15 사용자 확정, BE "챗봇 장바구니 담기(I-2)" 문서 채택]** 장바구니 계약을 BE 팀 I-2 문서 기준으로 재작성한다(§4.1) — **게스트 담기 허용**(02 D30, 결정 8 개정 필요 §8 항목 7), **`POST /internal/cart/items` + `X-Internal-Token` 서비스 토큰 + 본문 신원(userId/guestId, AI-검증 JWT `sub` 유래)**, **`optionId` 필수 옵션 되물음 멀티턴**(400 `CART_OPTION_REQUIRED` + options 목록 → LLM 재질문), 동일 상품·옵션 기존 존재 시 **Spring이 quantity 합산**. **장바구니 조회(§4.9, C-16 신설)** 추가 — "장바구니에 뭐 있어?" 질의 응답 + 담기 시 기존 보유 안내.
 > - **[v0.7.0 개정 — 2026-07-15 사용자 확정, 스트림 운영 규약]** SSE 스트림 수명주기 규약 신설(§2.9) — **동시 스트림 제한(세션당 1개, `409 STREAM_IN_PROGRESS`)**, **취소 = 클라이언트 연결 종료**(FE `AbortController` → AI가 disconnect 감지 시 LLM 스트림 즉시 중단), **타임아웃 기준표**(first-token 10s / 스트림 상한 90s / AI→Spring 3s / LLM 30s+1재시도), **레이트 리밋 값·소유 확정**(FastAPI 미들웨어 + in-memory, 분당·시간당 상한 config). 대화 저장(COMPLETED/FAILED/CANCELLED)·로그/모니터링 필드는 운영 요구로 부록 §6.3에 등재.
@@ -40,17 +40,17 @@
 
 ### 1.2 호출 방향 원칙 (Call Direction)
 
-FE가 사용자 대면 API에 대해 **AI 서버를 직접 호출**하고(결정 19), AI 서버는 후보 검색·구매 이력·주문 상태·장바구니·추천 목록·판매자 집계/이력·판매자 상품 CRUD를 위해 Spring을 역호출하며, AI 생성물 갱신은 Spring 변경분을 pull한다. Spring → AI 이벤트 레인은 **`/events/session-end` 1종만** 유지된다(§3.5) — 주문 알림은 채택하지 않는다(§3.6·§4.7). 상품 원본 컬럼의 AI측 사본은 두지 않으며 후보 확보는 **질의 시점 I-1 `GET /internal/products/search`**(§4.6), AI 생성물 갱신은 I-17 pull 배치(§4.8)로 분리한다.
+FE가 사용자 대면 API에 대해 **AI 서버를 직접 호출**하고(결정 19), AI 서버는 후보 검색·구매 이력·주문 상태·장바구니·추천 목록·판매자 집계/이력·판매자 상품 CRUD를 위해 Spring을 역호출하며, AI 생성물 갱신은 Spring 변경분을 pull한다. Spring → AI 이벤트 레인은 **`/events/session-end`와 로그인 승격용 `/events/session-claim`**을 유지한다(§3.5) — 주문 알림은 채택하지 않는다(§3.6·§4.7). 상품 원본 컬럼의 AI측 사본은 두지 않으며 후보 확보는 **질의 시점 I-1 `GET /internal/products/search`**(§4.6), AI 생성물 갱신은 I-17 pull 배치(§4.8)로 분리한다.
 
 | 레인 | 방향 | 호출 | 인증 | 근거 |
 |---|---|---|---|---|
 | (a) 사용자 대면 | **FE → AI (직접)** | `POST /chat`, `POST /seller/chat`, `GET /profile/me` | 사용자 JWT (§2.3 a) | 결정 19 |
-| (b) 이벤트 | **Spring → AI** | `POST /events/session-end` | 서비스 간 토큰 (§2.3 b) | 결정 12/16/21 |
+| (b) 이벤트 | **Spring → AI** | `POST /events/session-end`, `POST /events/session-claim` | 서비스 간 토큰 (§2.3 b) | 결정 12/16/21, #187 |
 | (c) 역방향 | **AI → Spring** | **17건** `{I-1,I-19,I-4,I-2,I-18,I-21,I-6,I-7,I-13,I-14,I-15,I-16,I-9,I-10,I-11,I-12,I-17}` — 후보 검색(§4.6), 구매 이력(§4.7), 주문 상태 요약(§4.10), 장바구니 담기/조회(§4.1/§4.9), 추천 목록 push(§4.2), 판매자 집계·이력(§4.4), 판매자 상품 CRUD(§4.5), AI 생성물 변경분 pull(§4.8) | **전부 서비스 토큰(internal, `X-Internal-Token`)**. 사용자/판매자 스코프 신원은 AI가 검증 JWT 클레임에서만 도출 | 결정 7 / 경로 B / BE DB 정합 |
 | (d) 전제 계약 | **FE → Spring** | 세션+스트림 티켓 발급(CH-1)·티켓 재발급(CH-1b)·판매자 세션(CH-6), 추천 목록 GET(§4.3), (판매자 FE 직접 상품편집 — AI 표면 밖) | Spring 소관 | 결정 19 / 경로 B / v0.15.20 |
 
 - 레인 (a): 사용자(회원·게스트·판매자)의 요청. 신원은 **토큰 클레임**에서 추출한다(§2.3, §2.6). AI는 사용자 요청 본문의 식별자를 신뢰하지 않는다.
-- 레인 (b): Spring → AI 이벤트는 **세션 종료 통지(`/events/session-end`, 프로필 조기 트리거) 1건**이다. 주문 알림은 채택하지 않는다 — 구매 이력은 질의 시점 조회(§4.7)로 확보하며, 카탈로그 변경 이벤트도 존재하지 않는다(사본 없음).
+- 레인 (b): Spring → AI 이벤트는 **세션 종료 통지(`/events/session-end`)와 로그인 소유권 승격(`/events/session-claim`)**이다. 주문 알림은 채택하지 않는다 — 구매 이력은 질의 시점 조회(§4.7)로 확보하며, 카탈로그 변경 이벤트도 존재하지 않는다(사본 없음).
 - 레인 (c): AI → Spring 역방향은 **정확히 17건**이다 — `{I-1,I-19,I-4,I-2,I-18,I-21,I-6,I-7,I-13,I-14,I-15,I-16,I-9,I-10,I-11,I-12,I-17}`. 이름과 순서는 **후보 검색**, **구매 이력 조회**, **주문 상태 요약(I-4, §4.10)**, **장바구니 담기**, **장바구니 조회**, **추천 목록 push**, **매출 시계열**, **구매전환 퍼널**, **행동 이벤트 집계**, **주문 상태 전이/조회**, **상품 변경 이력**, **이탈 코호트**, **자사 상품 목록 조회**, **상품 등록**, **상품 수정**, **상품 삭제**, **AI 생성물 변경분 pull**이다. I-1/I-19/I-4/I-2/I-18/I-21과 판매자 API는 요청 시점 호출이고, I-17은 배치 pull이다.
 - 레인 (d): FE ↔ Spring 전제 계약(Spring 소유). **[v0.15.20] BE 구현 실측으로 경로·응답 확정.** (1) **세션+스트림 티켓 발급(CH-1, `POST /api/chat/sessions`)** — 응답 `{sessionId, ttlSeconds, streamTicket, ticketTtlSeconds, llmSseUrl}`. 세션 TTL 10분 sliding, 티켓 TTL 60s(RS256). `llmSseUrl`은 FE가 AI 서버에 직결할 SSE 주소로, Spring이 내려준다. (2) **스트림 티켓 재발급(CH-1b, `POST /api/chat/tickets`)** — 요청 `{sessionId}`, 응답은 CH-1과 동일 DTO. 세션 유지한 채 새 티켓만 발급(2번째 메시지·`401` 시)하며 세션 TTL도 함께 갱신한다. **CH-1 재호출은 새 세션(맥락 단절)이라 티켓 재발급에 쓸 수 없다.** (3) **판매자 세션 발급(CH-6, `POST /api/chat/seller/sessions`)** — 판매자 챗 입구. `brandId`는 **BE가 JWT 검증 후 DB에서 도출해** 티켓 클레임에 박는다(클라이언트·LLM 주장 무시). (4) 추천 목록 GET(§4.3). (5) 판매자가 FE에서 직접 상품을 편집하는 경로(AI 표면 밖). ※ 구 "draft 적용 = FE가 S-3 PATCH"는 **폐기** — 채팅 경로 쓰기는 AI 직접(§3.2), `S-3`은 자사 상품 목록 조회(=I-9)다.
 
@@ -68,7 +68,7 @@ MVP(개발 가동 목표 2026-07-19)에 포함되는 API 표면:
 - **장바구니 서브그래프** — `POST /chat` 내부 흐름. 실제 담기는 AI → Spring 장바구니 API 호출(I-2, §4.1, 단건 — 묶음은 반복 호출). **게스트도 담기 가능**(v0.6.0). 옵션 필수 상품은 `CART_OPTION_REQUIRED` 응답의 options 목록으로 **되물음 멀티턴**을 수행하고, 담기 전/질의 시 장바구니 **조회**(§4.9)로 기존 보유·수량 합산을 안내한다. 결과는 SSE `action` 이벤트로 반영.
 - **프로필 조회** — `GET /profile/me`(마이페이지, 토큰 소유자 본인). 소유: `SPEC-PROFILE-001`.
 - **판매자 agent** — `POST /seller/chat`. (a) **매출/판매 통계 Q&A**(원천 = Spring 집계 I-6 콜백, C-7 해소) **+ (b) 상세 수정 draft 흐름**(I-7 읽기 → `draft` 이벤트 → FE 반영). 리뷰 인사이트는 **비범위(MVP 제외)**.
-- **이벤트 채널** — `POST /events/session-end`(세션 종료 통지)만 MVP 유지. 주문 알림은 채택하지 않음 — 구매 이력은 **질의 시점 조회(`GET /internal/members/{id}/orders`, §4.7)** 로 대체(사용자 명시 결정 — 병행 PRD 라인과는 session-end 유지 지점에서 갈라짐, §8 항목 6).
+- **이벤트 채널** — `POST /events/session-end`(세션 종료)와 `POST /events/session-claim`(guest→member 승격)을 유지. 주문 알림은 채택하지 않음 — 구매 이력은 **질의 시점 조회(`GET /internal/members/{id}/orders`, §4.7)** 로 대체(사용자 명시 결정 — 병행 PRD 라인과는 session-end 유지 지점에서 갈라짐, §8 항목 6).
 
 > **판매자 agent 범위(Batch 1)**: 판매자 agent는 원래 고도화(~7/31) 범위였으나 2026-07-14 세션에서 최소 범위(통계 Q&A)로 MVP에 편입되었고(product.md 결정 20), 2026-07-15 세션에서 **상세 수정 draft 흐름까지 MVP로 확대**되었다(§8 결정 20 개정 항목). 리뷰 인사이트(측면별 감성)는 계속 고도화.
 >
@@ -138,7 +138,7 @@ Authorization: Bearer {STREAM_TICKET}   ← Spring이 스트림 단위로 발급
 
 #### (b) 이벤트 채널 — 서비스 간 토큰 (레인 b)
 
-`POST /events/session-end`(Spring → AI, §3.5)에 적용한다. (v0.5.0에서 주문 알림·카탈로그 배치는 채택하지 않으므로 해당 인증 항목은 없다.)
+`POST /events/session-end`와 `POST /events/session-claim`(Spring → AI, §3.5)에 적용한다. (v0.5.0에서 주문 알림·카탈로그 배치는 채택하지 않으므로 해당 인증 항목은 없다.)
 
 ```
 X-Internal-Token: {SERVICE_TOKEN}
@@ -184,7 +184,11 @@ X-Internal-Token: {SERVICE_TOKEN}
 |---|---|---|
 | `400` | `BAD_REQUEST` | 요청 본문/파라미터 오류 |
 | `401` | `TOKEN_EXPIRED` / `TOKEN_INVALID` | 인증 실패(§2.3 a) |
-| `403` | `SESSION_FORBIDDEN` | 구매자 티켓의 서명된 `sessionId`가 없거나 요청 body와 불일치 |
+| `403` | `SESSION_FORBIDDEN` | 구매자 티켓의 서명된 `sessionId` 누락/불일치, 또는 claim 뒤 옛 owner 접근 |
+| `409` | `SESSION_ACTIVE` | owner claim 대상 guest session에 활성 스트림이 있음 |
+| `409` | `SESSION_FINALIZING` | D6/I-20 정리 중이라 touch/claim을 받을 수 없음 |
+| `409` | `SESSION_CLAIM_CONFLICT` | 이미 다른 소유권 이력이 있거나 terminal/owner가 충돌 |
+| `503` | `STATE_UNAVAILABLE` | lifecycle 정본 저장소를 사용할 수 없어 fail-closed |
 | `403` | `FORBIDDEN` | 권한 없음(예: 판매자 스코프 없이 `/seller/chat`) |
 | `409` | `STREAM_IN_PROGRESS` | **[v0.7.0 · 개정 v0.16.0]** 동일 **`threadId`** 에 활성 스트림 존재(§2.9 a) — FE는 진행 중 스트림 종료 후 재시도. 같은 `sessionId`의 **다른 방은 막지 않는다** |
 | `429` | `RATE_LIMITED` | 레이트 리밋 초과(§2.8) |
@@ -244,6 +248,7 @@ X-Internal-Token: {SERVICE_TOKEN}
 - **새 대화는 CH-1을 부르지 않는다** — FE가 `threadId`만 새로 생성하고 세션은 유지된다. 따라서 "새 대화"는 세션 종료 사유가 아니다(§3.5).
 - **맥락 TTL은 방이 아니라 접속 단위** — 어느 방에서든 활동이 있으면 그 `sessionId`에 속한 **모든 방**의 맥락 TTL을 함께 연장하고, 세션이 끝나면 그 아래 방을 **한꺼번에** 정리한다. 방마다 생사가 갈리면 탭을 옮겼을 때 한쪽 맥락만 사라져 사용자가 이해할 수 없다.
 - **구매자 스트림 티켓은 `sessionId`를 담고 `threadId`는 담지 않는다.** AI는 서명된 `sessionId`를 body와 대조해 다른 접속의 세션 상태 접근을 막는다. `threadId`는 body-only라 **티켓 1장이 한 접속의 여러 방 스트림을 동시에 커버**한다. 세션 수명·만료의 정본은 계속 Spring Redis에 있다.
+- **AI 내부 문맥 정본은 전역 고유 `context_id`다(#187).** 최초 정상 touch에서 한 번 생성하며 guest→member claim, D6 만료 후 같은 owner의 재활성화, 여러 `threadId`의 후속 발화에서도 유지한다. 구조화 상태는 `context_id:threadId`로 키잉하고 claim 때 복사하지 않는다. 상세 상태 기계·rollout은 `docs/specs/SPEC-CHAT-SESSION-CONTEXT-187.md`.
 - 최대 길이는 둘 다 config `chat_key_max_chars`(§3.1) — 초과 시 `400`.
 
 > **`sessionId`는 "불투명 스레드 키"가 아니다.** v0.15.x까지 이 문서는 `sessionId`를 *"만료 의미 없는 불투명 스레드 키"* 로 정의했다. 축이 갈린 뒤 "스레드 키"는 `threadId`의 것이므로 그 표현을 전면 폐기한다. `sessionId`는 여전히 AI에게 **불투명**하지만(형식 검증 없음, UUID 수용), **접속 식별자**다.
@@ -787,7 +792,7 @@ GET /profile/me
 
 Spring이 세션 종료를 감지해 프로필 파이프라인 **조기 트리거**로 전달한다(결정 12/16). **[개정 v0.16.0]** I-20에서 Spring이 보내는 알려진 `reason`은 **`logout` 1종**이다 — 축 분리 후 "새 대화"는 FE가 `threadId`만 새로 만들어 세션을 유지하므로(§2.6) `newConversation`은 더 이상 발화되지 않는다. `reason`은 wire enum을 강제하지 않지만 최대 64자로 제한한다. **`tabClose` 신호는 사용하지 않으며**, 비활동 종료(`inactivityTimeout`)는 HTTP 통지나 자기 호출 없이 AI 내부 스케줄러가 판정한다. HTTP 계약은 본 문서 소유(결정 21), 수신·내부 timeout 동작은 `SPEC-PROFILE-001`.
 
-> **[경로/방향 정합 v0.15.17]** I-20은 **AI 서버가 호스팅하는 inbound 엔드포인트**(Spring→AI)다. `app/api/events.py`가 회원의 세션 단위 프로필 버퍼를 조기 처리하며, checkpointer/thread 삭제 부수효과는 없다. AI가 Spring을 호출하는 역방향(§4)이 아니다.
+> **[경로/방향 정합 v0.17.0]** I-20은 **AI 서버가 호스팅하는 inbound 엔드포인트**(Spring→AI)다. `app/api/events.py`가 먼저 회원 lifecycle을 `terminal`로 닫고, 등록된 모든 thread의 filter/cart/revert transient를 일괄 정리한 뒤 고정된 watermark까지 프로필 phase를 처리한다. transcript는 삭제하지 않는다. AI가 Spring을 호출하는 역방향(§4)이 아니다.
 
 #### 요청 (Request) — **[v0.15.17 확정, 이슈 #62]** BE 실측 페이로드 정렬
 
@@ -808,17 +813,63 @@ Spring이 세션 종료를 감지해 프로필 파이프라인 **조기 트리�
 > **[v0.15.17 변경 — 이슈 #62]** 구 초안의 `eventId`·`endedAt`를 **제거**하고 `userId`를 **string → number(BIGINT 정수)**로 정정했다(BE 실측 payload 정합). 멱등 키는 별도 필드 대신 **`(userId, sessionId)` 고정 파생키**(§2.7)로 전환한다. 종전 스키마와 불일치해 `POST /events/session-end`가 상시 `400`을 반환하던 문제를 해소한다.
 
 - **Spring 명시적 종료 [개정 v0.16.0]**: **`LOGOUT` 하나만** I-20을 발화한다. 이 경로는 세션을 삭제하므로 한 `sessionId`에는 하나의 논리적 종료만 존재한다. 구 `NEW_CONVERSATION`은 **제거** — 새 대화가 `threadId`만 갱신하게 되어(§2.6) CH-1도 I-20도 호출되지 않는다. 결과적으로 **Spring이 I-20을 쏘는 경우는 로그아웃뿐**이고, 나머지(세션 TTL 만료)는 Redis 만료 + AI 내부 비활동 sweep이 담당한다.
-- **AI 내부 비활동 종료(이슈 #79)**: 회원 대화 저장 성공 시 `(userId, sessionId)`의 `lastActivityAt`을 DB 서버 시각으로 갱신하고 이전 종료 claim을 같은 transaction에서 삭제한다. 단일 인스턴스 MVP 스케줄러가 기본 60초마다, 기본 10분 이상 비활성인 `ACTIVE` 행을 인덱스 기반·bounded batch로 선점하고 활성 스트림이 없음을 재확인한 뒤 I-20과 **같은 finalizer·고정키 claim**으로 버퍼를 처리한다. idle 성공은 Spring의 영구 종료와 달리 claim을 해제하는 checkpoint이며, 새 회원 발화는 `COMPLETED` activity도 `ACTIVE`로 재개한다. terminal finalizer도 시작 때 관찰한 activity generation이 처리 중 바뀌면 영구 완료하지 않고 재시도 상태로 끝낸다. scheduler는 실제 스트림 registry 슬롯을 점유하지 않아 처리 중 복귀한 정상 채팅을 `409`로 막지 않는다. 실패 시 claim lease 만료 또는 명시적 해제로 재시도한다. AI가 자기 `/events/session-end`를 HTTP 호출하지 않는다.
-- **탭 닫기**: 별도 종료 신호를 두지 않는다. 사용자가 10분 안에 돌아와 발화하면 `lastActivityAt`이 갱신된다. timeout 처리 중이나 처리 후 같은 `sessionId`로 복귀하더라도 새 발화가 activity를 재개하고 남은 버퍼는 다음 checkpoint에서 처리된다.
-- **best-effort**: Spring 통지가 유실돼도 마지막 저장 회원 발화가 10분 비활성에 도달하면 AI 내부 sweep이 저장된 세션 버퍼를 회수한다(SPEC-PROFILE-001 REQ-PROF-050/056~059).
-- **멱등·직렬화**: 토큰·요청 스키마 검증 뒤, 버퍼 조회보다 먼저 **`session-end:{userId}:{sessionId}` 고정키**를 원자 claim한다(§2.7). Spring I-20은 버퍼 no-op 또는 델타+consolidation 정상 완료 뒤 `COMPLETED`로 영구 확정한다. 단, 처리 중 새 회원 발화가 저장되어 claim/activity generation이 무효화되면 terminal 완료를 중단한다. AI idle checkpoint는 같은 claim으로 동시 실행을 막되 성공 뒤에도 claim을 삭제하여 같은 sessionId의 다음 활동을 다시 처리한다. 활성 claim/완료 I-20 재수신은 `duplicate`; 실패·취소는 버퍼를 보존하고 claim을 해제한다. 프로세스 crash나 해제 DB 실패로 남은 claim은 유한 lease 만료 뒤 재선점할 수 있다.
+- **AI 내부 비활동 종료(D6, #187)**: guest/member 구매자 turn과 lifecycle touch를 같은 transaction에서 commit하고 `chat_session_contexts.last_activity_at`을 DB 시각으로 갱신한다. 단일 인스턴스 scheduler가 기본 60초마다 기본 10분 이상 비활성인 `active` context를 bounded batch로 선점한다. 어느 `threadId`의 touch든 접속 전체 deadline을 연장하고, 만료되면 등록된 모든 thread의 filter/cart/revert와 thread registry를 같은 context phase로 정리한다. transcript는 보존한다. AI가 자기 `/events/session-end`를 HTTP 호출하지 않는다.
+- **탭 닫기**: 별도 종료 신호를 두지 않는다. 사용자가 threshold 전에 어느 탭에서든 돌아오면 세 탭이 함께 살아남는다. `idle_expired` 뒤 정당한 같은 owner가 돌아오면 generation을 올리고 **같은 `context_id`**를 재활성화한다. `idle_finalizing` 중 touch는 `409 SESSION_FINALIZING`이다.
+- **best-effort**: Spring I-20이 유실돼도 D6 sweep이 guest/member transient를 회수하고 회원 profile watermark를 후속 phase에서 처리한다.
+- **멱등·직렬화**: I-20은 session advisory lock에서 `terminal` gate와 generation을 먼저 commit한 뒤 활성 member stream 종료를 기다린다. `chat_session_finalizations`의 유한 lease/claim token, watermark, transient/profile phase가 crash·retry를 재개한다. 동일 I-20은 `duplicate`; 실패한 profile phase는 `retryable`이며 transcript와 미처리 buffer를 보존한다.
 - 응답: `202 Accepted`(신규 `{"status":"accepted"}` / 중복 `{"status":"duplicate"}`). `userId`·`sessionId` 누락·타입 오류 또는 `reason` 64자 초과는 `400`(§2.5 봉투).
+
+
+#### 3.5.1 `POST {AI_SERVER}/events/session-claim` — guest → member 소유권 승격 (#187)
+
+Spring은 로그인 완료 후 guest 접속 전체를 회원에게 넘기기 위해 이 inbound를 호출한다.
+`X-Internal-Token`이 필수이며 사용자 JWT나 body의 임의 신원을 대신 신뢰하지 않는다.
+
+```json
+{
+  "sessionId": "550e8400-e29b-41d4-a716-446655440000",
+  "guestId": "guest-uuid-or-id",
+  "userId": 123
+}
+```
+
+| 필드 | 타입 | 필수 | 설명 |
+|---|---|---|---|
+| `sessionId` | string | 예 | BE가 로그인 전후 이어 쓸 접속 id |
+| `guestId` | string | 예 | 로그인 직전 서명 티켓의 guest `sub`와 같은 소유자 |
+| `userId` | number(BIGINT) | 예 | 로그인 완료 회원 id, 양의 정수 |
+
+**응답**
+
+- 최초 원자 전이: `202 {"status":"accepted"}`
+- 동일 `(sessionId, guestId, userId)` 재전송: `202 {"status":"duplicate"}`
+
+전이는 `chat_session_contexts`의 owner와 generation만 갱신한다. `context_id`, 등록된
+`threadId`, filter/cart/revert 상태는 유지하며 로그인 시점 복사는 하지 않는다. 기존 guest
+transcript도 보존하지만 member profile buffer로 복사하지 않는다. 전이 중에는 해당
+`(guestId, sessionId)` active-stream scope에 fence를 걸며 활성 stream이 있으면 받지 않는다.
+
+**오류**
+
+| HTTP | `code` | 조건 |
+|---|---|---|
+| `401` | `INTERNAL_TOKEN_INVALID` | 운영에서 서비스 토큰 누락/불일치 |
+| `400` | `BAD_REQUEST` | 필수 필드/타입 오류, `userId <= 0` |
+| `409` | `SESSION_ACTIVE` | guest scope 활성 stream 존재 |
+| `409` | `SESSION_FINALIZING` | idle finalization 진행 중 |
+| `409` | `SESSION_CLAIM_CONFLICT` | 다른 claim 이력, terminal, owner 불일치 |
+| `503` | `STATE_UNAVAILABLE` | lifecycle PostgreSQL 정본 사용 불가 |
+
+claim commit 뒤 옛 guest 티켓의 `/chat`은 `403 SESSION_FORBIDDEN`이고, 새 turn/thread를
+만들지 않는다. member 티켓은 같은 signed `sessionId`와 기존 `context_id`로 모든 탭을 계속한다.
+
+**배포 순서(필수)**: BE #63이 signed `sessionId`와 `ticketTtlSeconds=60` 증거를 먼저 남긴다 → 마지막 구 계약 티켓 뒤 90초(60초 TTL + 30초 여유) drain → AI enforcement/schema/backfill/scheduler 배포 → FE #52 실제 3-tab 로그인/refresh → missing-session·claim-conflict·cleanup-retry 지표 확인. 이 저장소는 BE/FE/운영 gate를 실행할 수 없으며 완료했다고 주장하지 않는다.
 
 ### 3.6 (삭제) 주문 이벤트 — 채택하지 않음 [v0.5.0]
 
 **[v0.5.0 삭제]** 구 `POST /events/order`(주문 이벤트 미러)는 **채택하지 않는다**(2026-07-15 사용자 확정). 검색이 질의 시점 Spring 위임(§4.6)으로 확정되면서 구매 이력도 **추천 직전 질의 시점 조회(`GET /internal/members/{id}/orders`, §4.7)** 로 확보한다 — 알림 수신도, 미러 테이블도 없다. 결정 14-F의 동작 요구(exact `productId` 제외·소모품 카테고리 억제·되돌리기 칩)는 **불변**이며 데이터 획득 방식만 교체된다. 프로필 파이프라인의 구매 소스도 sleep-time 배치가 동일 API(§4.7)를 조회한다(SPEC-PROFILE-001 개정 필요, §7.2).
 
-> **[v0.5.0] 카탈로그 동기화 채널 없음**: AI 카탈로그 사본(미러)을 채택하지 않으므로 카탈로그 변경 이벤트 채널도, 배치 폴링도 **존재하지 않는다**(2026-07-15 확정, §4.6 말미). Spring → AI 이벤트는 §3.5(`/events/session-end`) 하나만 남는다.
+> **[v0.5.0] 카탈로그 동기화 채널 없음**: AI 카탈로그 사본(미러)을 채택하지 않으므로 카탈로그 변경 이벤트 채널도, 배치 폴링도 **존재하지 않는다**(2026-07-15 확정, §4.6 말미). Spring → AI 이벤트는 §3.5의 `/events/session-end`와 `/events/session-claim`만 남는다.
 
 ---
 
@@ -1511,7 +1562,7 @@ BudgetSummary `verifiedSum`은 §4.6 검색 응답 가격 기준 결정론 합�
 
 ### 항목 6 (정정 — 병행 PRD) — events scope
 
-병행 PRD 초안(docs/PRD.md v1.1.0)은 이벤트 채널 전부를 고도화로 옮겼으나, 확정안은 **`/events/session-end` 1종을 MVP에 유지**한다(주문 알림은 미채택으로 정리됨). PRD의 events-scope와 일정표(7/15 행의 "하이브리드 통합" 표현 포함)를 본 문서 v0.5.0 기준으로 정정해야 한다.
+병행 PRD 초안(docs/PRD.md v1.1.0)은 이벤트 채널 전부를 고도화로 옮겼으나, 확정안은 **`/events/session-end`와 `/events/session-claim`을 MVP에 유지**한다(주문 알림은 미채택으로 정리됨). PRD의 events-scope와 일정표(7/15 행의 "하이브리드 통합" 표현 포함)를 본 문서 v0.5.0 기준으로 정정해야 한다.
 
 ### 항목 7 (개정 — 결정 8) — 게스트 장바구니 담기 허용 [v0.6.0]
 
