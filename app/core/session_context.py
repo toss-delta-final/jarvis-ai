@@ -562,11 +562,15 @@ class SessionContextRepository:
                     _memory_claim(row, current),
                     False,
                 )
-            superseded = self._live_idle(row)
-            if superseded is not None:
-                superseded.status = "superseded"
-                superseded.claim_token = None
-                superseded.lease_expires_at = None
+            for superseded in self._finalizations.values():
+                if (
+                    superseded.context_id == row.context_id
+                    and superseded.reason == "idle"
+                    and superseded.status != "superseded"
+                ):
+                    superseded.status = "superseded"
+                    superseded.claim_token = None
+                    superseded.lease_expires_at = None
             row.generation += 1
             row.state = "terminal"
             finalization = _MemoryFinalization(
@@ -1130,8 +1134,8 @@ class SessionContextUnitOfWork(AbstractAsyncContextManager["SessionContextUnitOf
 
     async def capture_profile_watermark(self, claim: FinalizationClaim, watermark: int) -> None:
         self._bind_claim(claim)
-        if watermark <= 0:
-            raise ValueError("profile watermark must be positive")
+        if watermark < 0:
+            raise ValueError("profile watermark must be non-negative")
         if self.conn is None:
             context = self.repository._validate_memory_claim(claim, for_idle=False)
             if context.owner_type != "member":

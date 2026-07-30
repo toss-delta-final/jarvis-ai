@@ -177,7 +177,7 @@ async def test_touch_keeps_completed_idle_profile_recoverable(repo, clock) -> No
     assert candidate.profile_watermark == 9
 
 
-async def test_member_watermark_stays_pending_until_positive_snapshot(repo, clock) -> None:
+async def test_member_watermark_accepts_explicit_empty_snapshot(repo, clock) -> None:
     await repo.touch(BuyerSessionInput("S1", "T1", "member", "7"))
     clock.advance(601)
     [claim] = await repo.claim_expired_contexts(600, 30, 1)
@@ -187,11 +187,35 @@ async def test_member_watermark_stays_pending_until_positive_snapshot(repo, cloc
         assert pending.watermark_status == "pending"
         assert pending.profile_watermark is None
         with pytest.raises(ValueError):
-            await uow.capture_profile_watermark(claim, 0)
-        await uow.capture_profile_watermark(claim, 12)
+            await uow.capture_profile_watermark(claim, -1)
+        await uow.capture_profile_watermark(claim, 0)
     captured = await repo.get_finalization(claim.finalization_id)
     assert captured.watermark_status == "captured"
-    assert captured.profile_watermark == 12
+    assert captured.profile_watermark == 0
+
+
+async def test_terminal_supersedes_completed_idle_from_previous_generation(repo, clock) -> None:
+    await repo.touch(BuyerSessionInput("S1", "T1", "member", "7"))
+    clock.advance(601)
+    [idle] = await repo.claim_expired_contexts(600, 30, 1)
+    async with repo.lock_session("S1") as uow:
+        await uow.prepare_idle_finalizing(idle)
+        await uow.capture_profile_watermark(idle, 0)
+        await uow.complete_idle_delete(idle)
+    await repo.record_profile_phase(idle.finalization_id, "retryable")
+    await repo.touch(BuyerSessionInput("S1", "T2", "member", "7"))
+    assert [item.finalization_id for item in await repo.list_recoverable_profile_phases(10)] == [
+        idle.finalization_id
+    ]
+
+    terminal = await repo.begin_terminal(7, "S1")
+
+    assert terminal.claim is not None
+    superseded = await repo.get_finalization(idle.finalization_id)
+    assert superseded.status == "superseded"
+    assert superseded.claim_token is None
+    assert superseded.lease_expires_at is None
+    assert await repo.list_recoverable_profile_phases(10) == []
 
 
 async def test_terminal_duplicate_does_not_reissue_live_or_completed_work(repo, clock) -> None:

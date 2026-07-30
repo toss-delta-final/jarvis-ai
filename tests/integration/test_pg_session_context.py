@@ -13,6 +13,7 @@ from app.core.session_context import (
     SessionClaimConflict,
     SessionContextRepository,
 )
+from app.core import session_context as session_context_module
 
 pytestmark = pytest.mark.integration
 
@@ -182,7 +183,7 @@ async def test_touch_preserves_completed_idle_profile_candidate(pg_repo) -> None
             )
         ).fetchone()
         assert pending == ("pending", None)
-        await uow.capture_profile_watermark(claim, 21)
+        await uow.capture_profile_watermark(claim, 0)
         await uow.complete_idle_delete(claim)
     await repo.record_profile_phase(claim.finalization_id, "retryable")
 
@@ -191,7 +192,48 @@ async def test_touch_preserves_completed_idle_profile_candidate(pg_repo) -> None
 
     assert touched.generation == claim.generation + 1
     candidate = next(item for item in candidates if item.finalization_id == claim.finalization_id)
-    assert candidate.profile_watermark == 21
+    assert candidate.profile_watermark == 0
+
+
+async def test_terminal_supersedes_previous_generation_completed_idle(pg_repo) -> None:
+    repo, pool, prefix = pg_repo
+    session_id = prefix + "-terminal-supersede"
+    context = await repo.touch(BuyerSessionInput(session_id, "T1", "member", "7"))
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_contexts SET last_activity_at=now()-interval '1 hour' "
+            "WHERE context_id=%s",
+            (context.context_id,),
+        )
+    [idle] = await repo.claim_expired_contexts(10, 30, 10)
+    async with repo.lock_session(session_id) as uow:
+        await uow.prepare_idle_finalizing(idle)
+        await uow.capture_profile_watermark(idle, 0)
+        await uow.complete_idle_delete(idle)
+    await repo.record_profile_phase(idle.finalization_id, "retryable")
+    touched = await repo.touch(BuyerSessionInput(session_id, "T2", "member", "7"))
+    assert touched.generation == idle.generation + 1
+    assert any(
+        item.finalization_id == idle.finalization_id
+        for item in await repo.list_recoverable_profile_phases(100)
+    )
+
+    terminal = await repo.begin_terminal(7, session_id)
+
+    assert terminal.claim is not None
+    async with pool.connection() as conn:
+        row = await (
+            await conn.execute(
+                "SELECT status, claim_token, lease_expires_at FROM chat_session_finalizations "
+                "WHERE finalization_id=%s",
+                (idle.finalization_id,),
+            )
+        ).fetchone()
+    assert row == ("superseded", None, None)
+    assert all(
+        item.finalization_id != idle.finalization_id
+        for item in await repo.list_recoverable_profile_phases(100)
+    )
 
 
 async def test_terminal_duplicate_and_expired_reissue_are_atomic(pg_repo) -> None:
@@ -242,3 +284,215 @@ async def test_pg_unit_of_work_rejects_other_session_claim(pg_repo) -> None:
     async with repo.lock_session(prefix + "b") as uow:
         with pytest.raises(SessionClaimConflict):
             await uow.prepare_idle_finalizing(claim_a)
+
+
+async def test_touch_serializes_after_idle_claim_and_rejects_stale_claim(
+    pg_repo, monkeypatch
+) -> None:
+    repo, pool, prefix = pg_repo
+    session_id = prefix + "-touch-race"
+    context = await repo.touch(BuyerSessionInput(session_id, "T1", "guest", "G1"))
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_contexts SET last_activity_at=now()-interval '1 hour' "
+            "WHERE context_id=%s",
+            (context.context_id,),
+        )
+    lock_acquired = asyncio.Event()
+    release_touch = asyncio.Event()
+    original_lock = session_context_module._advisory_lock
+
+    async def blocking_lock(conn, locked_session_id):
+        await original_lock(conn, locked_session_id)
+        if locked_session_id == session_id:
+            lock_acquired.set()
+            await release_touch.wait()
+
+    monkeypatch.setattr(session_context_module, "_advisory_lock", blocking_lock)
+    touch_task = asyncio.create_task(repo.touch(BuyerSessionInput(session_id, "T2", "guest", "G1")))
+    await lock_acquired.wait()
+    [claim] = await repo.claim_expired_contexts(10, 30, 10)
+    release_touch.set()
+    touched = await touch_task
+
+    assert touched.generation == claim.generation + 1
+    with pytest.raises(SessionClaimConflict):
+        await repo.validate_for_delete(claim)
+    async with pool.connection() as conn:
+        context_row = await (
+            await conn.execute(
+                "SELECT generation, state FROM chat_session_contexts WHERE context_id=%s",
+                (context.context_id,),
+            )
+        ).fetchone()
+        finalization_row = await (
+            await conn.execute(
+                "SELECT status, claim_token, lease_expires_at "
+                "FROM chat_session_finalizations WHERE finalization_id=%s",
+                (claim.finalization_id,),
+            )
+        ).fetchone()
+    assert context_row == (claim.generation + 1, "active")
+    assert finalization_row == ("superseded", None, None)
+
+
+async def test_competing_owner_claims_have_one_winner_and_one_history(pg_repo) -> None:
+    repo, pool, prefix = pg_repo
+    session_id = prefix + "-owner-race"
+    await repo.touch(BuyerSessionInput(session_id, "T1", "guest", "G1"))
+    start = asyncio.Event()
+
+    async def compete(user_id: int):
+        await start.wait()
+        try:
+            return await repo.claim_owner(session_id, "G1", user_id)
+        except SessionClaimConflict as exc:
+            return exc
+
+    tasks = [asyncio.create_task(compete(user_id)) for user_id in (7, 8)]
+    start.set()
+    outcomes = await asyncio.gather(*tasks)
+    winners = [outcome for outcome in outcomes if not isinstance(outcome, Exception)]
+    losers = [outcome for outcome in outcomes if isinstance(outcome, SessionClaimConflict)]
+    assert len(winners) == len(losers) == 1
+    async with pool.connection() as conn:
+        context_row = await (
+            await conn.execute(
+                "SELECT owner_type, owner_id, generation FROM chat_session_contexts "
+                "WHERE session_id=%s",
+                (session_id,),
+            )
+        ).fetchone()
+        histories = await (
+            await conn.execute(
+                "SELECT from_owner_id, to_owner_id FROM chat_session_owner_claims "
+                "WHERE session_id=%s",
+                (session_id,),
+            )
+        ).fetchall()
+    assert context_row == ("member", winners[0].context.owner_id, 1)
+    assert histories == [("G1", winners[0].context.owner_id)]
+
+
+async def test_recoverable_finalization_competition_has_single_token_winner(pg_repo) -> None:
+    repo, pool, prefix = pg_repo
+    session_id = prefix + "-recover-race"
+    context = await repo.touch(BuyerSessionInput(session_id, "T1", "guest", "G1"))
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_contexts SET last_activity_at=now()-interval '1 hour' "
+            "WHERE context_id=%s",
+            (context.context_id,),
+        )
+    [first] = await repo.claim_expired_contexts(10, 30, 10)
+    await repo.mark_idle_finalizing(first)
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_finalizations SET lease_expires_at=now()-interval '1 second' "
+            "WHERE finalization_id=%s",
+            (first.finalization_id,),
+        )
+    start = asyncio.Event()
+
+    async def recover():
+        await start.wait()
+        return await repo.claim_recoverable_finalizations(30, 1)
+
+    tasks = [asyncio.create_task(recover()) for _ in range(2)]
+    start.set()
+    results = await asyncio.gather(*tasks)
+    claims = [claim for result in results for claim in result]
+    assert len(claims) == 1
+    recovered = claims[0]
+    assert recovered.claim_token != first.claim_token
+    async with pool.connection() as conn:
+        row = await (
+            await conn.execute(
+                "SELECT status, claim_token, lease_expires_at > now(), generation "
+                "FROM chat_session_finalizations WHERE finalization_id=%s",
+                (first.finalization_id,),
+            )
+        ).fetchone()
+    assert row == ("processing", recovered.claim_token, True, first.generation)
+
+
+async def test_profile_list_then_competing_claim_has_single_cas_winner(pg_repo) -> None:
+    repo, pool, prefix = pg_repo
+    session_id = prefix + "-profile-cas"
+    context = await repo.touch(BuyerSessionInput(session_id, "T1", "member", "7"))
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_contexts SET last_activity_at=now()-interval '1 hour' "
+            "WHERE context_id=%s",
+            (context.context_id,),
+        )
+    [idle] = await repo.claim_expired_contexts(10, 30, 10)
+    async with repo.lock_session(session_id) as uow:
+        await uow.prepare_idle_finalizing(idle)
+        await uow.capture_profile_watermark(idle, 0)
+        await uow.complete_idle_delete(idle)
+    [candidate] = [
+        item
+        for item in await repo.list_recoverable_profile_phases(100)
+        if item.finalization_id == idle.finalization_id
+    ]
+    start = asyncio.Event()
+
+    async def claim_profile():
+        await start.wait()
+        return await repo.claim_profile_phase(candidate.finalization_id, 30)
+
+    tasks = [asyncio.create_task(claim_profile()) for _ in range(2)]
+    start.set()
+    outcomes = await asyncio.gather(*tasks)
+    winners = [outcome for outcome in outcomes if outcome is not None]
+    assert len(winners) == 1
+    async with pool.connection() as conn:
+        row = await (
+            await conn.execute(
+                "SELECT profile_status, claim_token, lease_expires_at > now(), generation "
+                "FROM chat_session_finalizations WHERE finalization_id=%s",
+                (idle.finalization_id,),
+            )
+        ).fetchone()
+    assert row == ("processing", winners[0].claim_token, True, idle.generation)
+
+
+async def test_advisory_lock_is_held_until_transaction_exit(pg_repo) -> None:
+    repo, pool, prefix = pg_repo
+    session_id = prefix + "-lock-duration"
+    await repo.touch(BuyerSessionInput(session_id, "T1", "guest", "G1"))
+    async with pool.connection() as holder:
+        async with holder.transaction():
+            await session_context_module._advisory_lock(holder, session_id)
+            mutation = asyncio.create_task(
+                repo.touch(BuyerSessionInput(session_id, "T2", "guest", "G1"))
+            )
+            await asyncio.sleep(0.05)
+            assert mutation.done() is False
+            async with pool.connection() as observer:
+                [locked] = await (
+                    await observer.execute(
+                        "SELECT pg_try_advisory_xact_lock("
+                        "hashtextextended('chat-session:' || %s, 0))",
+                        (session_id,),
+                    )
+                ).fetchone()
+            assert locked is False
+        touched = await asyncio.wait_for(mutation, timeout=1)
+    assert touched.state == "active"
+    async with pool.connection() as conn:
+        context_row = await (
+            await conn.execute(
+                "SELECT generation, state FROM chat_session_contexts WHERE context_id=%s",
+                (touched.context_id,),
+            )
+        ).fetchone()
+        thread_rows = await (
+            await conn.execute(
+                "SELECT thread_id FROM chat_session_threads WHERE context_id=%s ORDER BY thread_id",
+                (touched.context_id,),
+            )
+        ).fetchall()
+    assert context_row == (touched.generation, "active")
+    assert thread_rows == [("T1",), ("T2",)]
