@@ -13,8 +13,11 @@ from fastapi.testclient import TestClient
 
 from app.core.config import Settings
 from app.main import app
-from app.services.spring_client import get_recent_purchases as _real_get_recent_purchases
+import app.services.spring_client as _spring_client
 from tests.integration._stubs import ScriptedLLM, SpringStub
+
+_real_get_recent_purchases = _spring_client.get_recent_purchases
+_real_get_order_status = _spring_client.get_order_status
 
 # 하니스 표준 서비스 토큰 — Spring stub 이 검증하는 값과 동일(§2.3 레인 c).
 E2E_INTERNAL_TOKEN = "e2e-internal-token"
@@ -66,6 +69,7 @@ def spring(monkeypatch: pytest.MonkeyPatch) -> SpringStub:
     # 건드리지 않게 I-19 를 빈 응답으로 막는다. E2E 는 stub 이 HTTP 경계를 이미 대신하므로
     # 실함수로 되돌려 I-19 역호출까지 전 구간을 검증한다(모듈 임포트 시점에 잡아둔 원본).
     monkeypatch.setattr(sc, "get_recent_purchases", _real_get_recent_purchases)
+    monkeypatch.setattr(sc, "get_order_status", _real_get_order_status)
     return stub
 
 
@@ -117,6 +121,15 @@ def member_token(user_id: str = "42") -> str:
     # 32B 이상 더미 키 — dev 모드는 서명을 보지 않지만 짧은 HMAC 키 경고를 피한다.
     return jwt.encode(
         {"sub": user_id, "sub_type": "member"},
+        "dev-only-not-a-secret-0123456789",
+        algorithm="HS256",
+    )
+
+
+def seller_token(user_id: str = "77") -> str:
+    """dev mode seller token for buyer-route authorization regression coverage."""
+    return jwt.encode(
+        {"sub": user_id, "role": "SELLER", "brandId": "701"},
         "dev-only-not-a-secret-0123456789",
         algorithm="HS256",
     )

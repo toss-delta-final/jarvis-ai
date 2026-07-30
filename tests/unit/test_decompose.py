@@ -393,3 +393,28 @@ async def test_system_prompt_includes_synonym_guidance() -> None:
     from app.agents.buyer.recommendation.decompose import _SYSTEM
 
     assert "동의어" in _SYSTEM
+
+
+async def test_order_status_intent_is_preserved() -> None:
+    decision = await _run(_raw(intent="order_status"))
+    assert decision.intent == "order_status"
+
+
+def test_order_status_prompt_has_five_way_positive_and_negative_rules() -> None:
+    from app.agents.buyer.recommendation.decompose import _SYSTEM
+
+    assert '"order_status"' in _SYSTEM
+    for phrase in ("내 주문 어디까지 왔어", "배송 상태 알려줘", "최근 주문 진행 상황"):
+        assert phrase in _SYSTEM
+    for phrase in (
+        "배송 빠른 상품 추천해줘",
+        "이 상품 주문하고 싶어",
+        "주문 취소 방법",
+        "예전에 뭘 샀지",
+    ):
+        assert phrase in _SYSTEM
+
+
+async def test_unknown_intent_still_falls_back_to_recommend() -> None:
+    decision = await _run(_raw(intent="unknown"))
+    assert decision.intent == "recommend"

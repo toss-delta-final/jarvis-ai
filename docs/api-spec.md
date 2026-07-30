@@ -6,8 +6,8 @@
 
 | 항목 | 값 |
 |---|---|
-| 문서 버전 | v0.16.1 |
-| 작성일 | 2026-07-14 (v0.16.1 개정 2026-07-30 — **I-21 `listId`를 UUID급 무작위(≥128bit)로 확정**, 순번·타임스탬프 등 추측 가능한 형식 금지) (v0.16.0 개정 2026-07-30 — **`sessionId`(접속)·`threadId`(방) 축 분리**: 동시 스트림 락을 방 단위로, I-20 사유 `logout` 1종, CH-1 멱등(D5), 맥락 TTL 접속 단위(D6)) (v0.15.27 개정 2026-07-30 — 사본 drift 정정: 담기 이벤트 적재 주체(BE→FE)·`budget` 이벤트 제외·`search.query` PII 기준) (v0.15.26 개정 2026-07-28 — 사본 동기화: §3.1 `conditionActions`(칩 제거, #84)·`screen`(화면 맥락, #118) 신설, `conditions` 칩 `field` 6종 확정, in-stream `error`에 `requestId`·`retryable` 추가) (v0.15.25 개정 2026-07-28 — #171: I-1 응답에 reviewCount 추가(AI 계산용·비표시), rating=0 의미 판별(리뷰 부재 vs 저평점). #100 "reviewCount 표시전용·미반환" 부분 개정. / v0.15.24 개정 2026-07-27 — 사본 동기화: S-5 폐기 반영, 상품 수정은 챗봇 HITL(I-11) 유일 경로) |
+| 문서 버전 | v0.16.2 |
+| 작성일 | 2026-07-14 (v0.16.2 개정 2026-07-30 — **[#164] I-4 주문 상태 요약 계약·구매자 `order_status` 라우트 구현 정합**, §4.10 신설) (v0.16.1 개정 2026-07-30 — **I-21 `listId`를 UUID급 무작위(≥128bit)로 확정**, 순번·타임스탬프 등 추측 가능한 형식 금지) (v0.16.0 개정 2026-07-30 — **`sessionId`(접속)·`threadId`(방) 축 분리**: 동시 스트림 락을 방 단위로, I-20 사유 `logout` 1종, CH-1 멱등(D5), 맥락 TTL 접속 단위(D6)) (v0.15.27 개정 2026-07-30 — 사본 drift 정정: 담기 이벤트 적재 주체(BE→FE)·`budget` 이벤트 제외·`search.query` PII 기준) (v0.15.26 개정 2026-07-28 — 사본 동기화: §3.1 `conditionActions`(칩 제거, #84)·`screen`(화면 맥락, #118) 신설, `conditions` 칩 `field` 6종 확정, in-stream `error`에 `requestId`·`retryable` 추가) (v0.15.25 개정 2026-07-28 — #171: I-1 응답에 reviewCount 추가(AI 계산용·비표시), rating=0 의미 판별(리뷰 부재 vs 저평점). #100 "reviewCount 표시전용·미반환" 부분 개정. / v0.15.24 개정 2026-07-27 — 사본 동기화: S-5 폐기 반영, 상품 수정은 챗봇 HITL(I-11) 유일 경로) |
 | 상태 | draft |
 | 대상 독자 | Spring 백엔드 팀, React 프론트엔드(FE) 팀 |
 | 소유 | AI 에이전트 서버 팀 |
@@ -40,18 +40,18 @@
 
 ### 1.2 호출 방향 원칙 (Call Direction)
 
-FE가 사용자 대면 API에 대해 **AI 서버를 직접 호출**하고(결정 19), AI 서버는 **후보 검색(질의 시점 Spring 위임)·구매 이력 조회·장바구니·최종 목록 push·판매자 집계 조회(I-6)·상세 읽기(I-7)** 를 위해 Spring을 역호출한다. Spring → AI 이벤트 레인은 **`/events/session-end` 1종만** 유지된다(§3.5) — 주문 알림은 채택하지 않는다(§3.6·§4.7). **v0.5.0에서 AI 카탈로그 사본(미러)·bulk export 배치 레인은 채택하지 않기로 확정**되어 표면에서 제거된다 — 후보 확보는 미러 조회가 아니라 **질의 시점 `POST /products/search`**(§4.6)이며, 이는 프로젝트 전 범위의 유일 후보 경로다.
+FE가 사용자 대면 API에 대해 **AI 서버를 직접 호출**하고(결정 19), AI 서버는 후보 검색·구매 이력·주문 상태·장바구니·추천 목록·판매자 집계/이력·판매자 상품 CRUD를 위해 Spring을 역호출하며, AI 생성물 갱신은 Spring 변경분을 pull한다. Spring → AI 이벤트 레인은 **`/events/session-end` 1종만** 유지된다(§3.5) — 주문 알림은 채택하지 않는다(§3.6·§4.7). 상품 원본 컬럼의 AI측 사본은 두지 않으며 후보 확보는 **질의 시점 I-1 `GET /internal/products/search`**(§4.6), AI 생성물 갱신은 I-17 pull 배치(§4.8)로 분리한다.
 
 | 레인 | 방향 | 호출 | 인증 | 근거 |
 |---|---|---|---|---|
 | (a) 사용자 대면 | **FE → AI (직접)** | `POST /chat`, `POST /seller/chat`, `GET /profile/me` | 사용자 JWT (§2.3 a) | 결정 19 |
 | (b) 이벤트 | **Spring → AI** | `POST /events/session-end` | 서비스 간 토큰 (§2.3 b) | 결정 12/16/21 |
-| (c) 역방향(질의 시점) | **AI → Spring** | 후보 검색(I-1, §4.6), 구매 이력 조회(I-19, §4.7), **주문상태 요약(I-4 — CH-2 흡수, v0.15.2)**, 장바구니 담기(I-2, §4.1)·조회(I-18, §4.9), 추천 목록 push(I-21, §4.2), 판매자 집계(I-6/7/13/14/15/16, §4.4), 상품 CRUD(I-9/10/11/12, §4.5), 생성물 배치(I-17, §4.8·고도화) | **전부 서비스 토큰(internal, `X-Internal-Token`) + 본문/쿼리 신원**(AI가 JWT `sub`에서 도출) — BE 실측 정합(v0.13.0) | 결정 7 / 경로 B / BE DB 정합 |
+| (c) 역방향 | **AI → Spring** | **17건** `{I-1,I-19,I-4,I-2,I-18,I-21,I-6,I-7,I-13,I-14,I-15,I-16,I-9,I-10,I-11,I-12,I-17}` — 후보 검색(§4.6), 구매 이력(§4.7), 주문 상태 요약(§4.10), 장바구니 담기/조회(§4.1/§4.9), 추천 목록 push(§4.2), 판매자 집계·이력(§4.4), 판매자 상품 CRUD(§4.5), AI 생성물 변경분 pull(§4.8) | **전부 서비스 토큰(internal, `X-Internal-Token`)**. 사용자/판매자 스코프 신원은 AI가 검증 JWT 클레임에서만 도출 | 결정 7 / 경로 B / BE DB 정합 |
 | (d) 전제 계약 | **FE → Spring** | 세션+스트림 티켓 발급(CH-1)·티켓 재발급(CH-1b)·판매자 세션(CH-6), 추천 목록 GET(§4.3), (판매자 FE 직접 상품편집 — AI 표면 밖) | Spring 소관 | 결정 19 / 경로 B / v0.15.20 |
 
 - 레인 (a): 사용자(회원·게스트·판매자)의 요청. 신원은 **토큰 클레임**에서 추출한다(§2.3, §2.6). AI는 사용자 요청 본문의 식별자를 신뢰하지 않는다.
 - 레인 (b): Spring → AI 이벤트는 **세션 종료 통지(`/events/session-end`, 프로필 조기 트리거) 1건**이다. 주문 알림은 채택하지 않는다 — 구매 이력은 질의 시점 조회(§4.7)로 확보하며, 카탈로그 변경 이벤트도 존재하지 않는다(사본 없음).
-- 레인 (c): AI → Spring 질의 시점 역방향이 **7건**이다 — (1) **후보 검색(`POST /products/search`, §4.6, v0.5.0 신규)** — 추천 후보를 질의 시점에 Spring에 위임(가장 중요한 신규 계약, 검색 품질이 추천 품질을 좌우), (2) **구매 이력 조회(`GET /internal/members/{id}/orders`, §4.7, v0.5.0 신규)** — dedup(exact 제외·소모품 억제·되돌리기 칩)과 프로필 구매 소스의 입력, (3) 장바구니 담기(I-2, §4.1, `X-Internal-Token` 서비스 토큰 — v0.6.0에서 BE 문서 기준으로 전환), (4) **장바구니 조회(§4.9, v0.6.0 신규)** — 장바구니 질의 응답·기존 보유 안내, (5) 추천 목록 push(§4.2, 경로 B), (6) 판매자 집계 조회(I-6, §4.4) — 판매자 통계 답변 원천, (7) 상세 읽기(I-7, §4.5) — draft 흐름의 현재 상세 조회.
+- 레인 (c): AI → Spring 역방향은 **정확히 17건**이다 — `{I-1,I-19,I-4,I-2,I-18,I-21,I-6,I-7,I-13,I-14,I-15,I-16,I-9,I-10,I-11,I-12,I-17}`. 이름과 순서는 **후보 검색**, **구매 이력 조회**, **주문 상태 요약(I-4, §4.10)**, **장바구니 담기**, **장바구니 조회**, **추천 목록 push**, **매출 시계열**, **구매전환 퍼널**, **행동 이벤트 집계**, **주문 상태 전이/조회**, **상품 변경 이력**, **이탈 코호트**, **자사 상품 목록 조회**, **상품 등록**, **상품 수정**, **상품 삭제**, **AI 생성물 변경분 pull**이다. I-1/I-19/I-4/I-2/I-18/I-21과 판매자 API는 요청 시점 호출이고, I-17은 배치 pull이다.
 - 레인 (d): FE ↔ Spring 전제 계약(Spring 소유). **[v0.15.20] BE 구현 실측으로 경로·응답 확정.** (1) **세션+스트림 티켓 발급(CH-1, `POST /api/chat/sessions`)** — 응답 `{sessionId, ttlSeconds, streamTicket, ticketTtlSeconds, llmSseUrl}`. 세션 TTL 10분 sliding, 티켓 TTL 60s(RS256). `llmSseUrl`은 FE가 AI 서버에 직결할 SSE 주소로, Spring이 내려준다. (2) **스트림 티켓 재발급(CH-1b, `POST /api/chat/tickets`)** — 요청 `{sessionId}`, 응답은 CH-1과 동일 DTO. 세션 유지한 채 새 티켓만 발급(2번째 메시지·`401` 시)하며 세션 TTL도 함께 갱신한다. **CH-1 재호출은 새 세션(맥락 단절)이라 티켓 재발급에 쓸 수 없다.** (3) **판매자 세션 발급(CH-6, `POST /api/chat/seller/sessions`)** — 판매자 챗 입구. `brandId`는 **BE가 JWT 검증 후 DB에서 도출해** 티켓 클레임에 박는다(클라이언트·LLM 주장 무시). (4) 추천 목록 GET(§4.3). (5) 판매자가 FE에서 직접 상품을 편집하는 경로(AI 표면 밖). ※ 구 "draft 적용 = FE가 S-3 PATCH"는 **폐기** — 채팅 경로 쓰기는 AI 직접(§3.2), `S-3`은 자사 상품 목록 조회(=I-9)다.
 
 > **[HARD] 후보 확보 = 질의 시점 Spring 검색(v0.5.0, 유일·영구)**: 구매자 추천 후보는 **질의 시점에 Spring `POST /products/search`(§4.6)를 위임 호출**하여 확보한다. 상품 원본 컬럼의 AI측 사본은 두지 않는다. **[v0.5.1]** AI 생성물(extras·search_doc·임베딩)은 AI Postgres에 저장하며(§4.8), 질의 시점에 AI 임베딩과 Spring 검색을 어떻게 결합할지는 OPEN(§4.8 말미)이다. rerank(profile_summary 반영)는 여전히 AI 경계에서 수행한다.
@@ -301,7 +301,7 @@ FE가 AI 서버(FastAPI)를 **다른 오리진에서 직접 호출**하므로 �
 
 ### 3.1 `POST /ai/chat` — 구매자 챗봇 (SSE 스트리밍, FE 직접)
 
-구매자의 자연어 질의를 받아 상품 추천/장바구니/상품 질문/**주문상태 문의** 등을 SSE로 스트리밍 응답한다. **[v0.15.2] 주문상태 Q&A(I-4)를 CH-2에 흡수** — 별도 CS 챗봇 없음. 관리자 CS 문의(CH-3·I-5·AD-1/2·M-9)는 **post-MVP**. 소유: `SPEC-RECOMMEND-001`(추천 서브그래프), 상위 구매자 그래프 SPEC(라우팅).
+구매자의 자연어 질의를 받아 상품 추천/장바구니/상품 질문/**주문상태 문의** 등을 SSE로 스트리밍 응답한다. **[v0.16.2, #164 구현] 주문상태 Q&A(I-4)를 `order_status` intent로 CH-2에 흡수**했으며 세부 계약은 §4.10을 따른다 — 별도 CS 챗봇 없음. 관리자 CS 문의(CH-3·I-5·AD-1/2·M-9)는 **post-MVP**. 소유: `SPEC-RECOMMEND-001`(추천 서브그래프), 상위 구매자 그래프 SPEC(라우팅).
 
 > **[경로 정합 v0.15.0]** FE-대면 경로는 **`{AI_SERVER}/chat`**(BE DB 07/17 실측 — 구 `/ai/chat` 표기 정정, `{AI_SERVER}` 접두어로 AI 서버 직접 호출임을 명시, 인증=스트림 티켓 필요). 본 문서 다른 위치의 `POST /chat`·`POST /ai/chat` 표기는 이 경로로 읽는다. (판매자는 `{AI_SERVER}/seller/chat`.)
 
@@ -822,7 +822,11 @@ Spring이 세션 종료를 감지해 프로필 파이프라인 **조기 트리�
 
 ## 4. AI 서버 ↔ Spring 역방향/전제 계약
 
-AI → Spring 질의 시점 역방향이 **7건**이다 — **후보 검색(`POST /products/search`, §4.6)**, **구매 이력 조회(`GET /internal/members/{id}/orders`, §4.7)**, 장바구니 담기(I-2, §4.1)·**조회(§4.9, v0.6.0 신설)**, 최종 목록 push(§4.2), 판매자 집계 조회(I-6, §4.4), 상세 읽기(I-7, §4.5). 여기에 FE ↔ Spring 전제 계약(목록 GET §4.3)이 더해진다. **v0.5.0에서 카탈로그 bulk export 배치 계약은 채택하지 않으므로 존재하지 않는다**(§4.6 말미). 아래는 **제안 계약(초안)** 이며, 실제 엔드포인트·인증·오류 코드는 🔴 Spring 팀 협의로 확정한다.
+AI → Spring 역방향은 **정확히 17건**이다:
+`{I-1,I-19,I-4,I-2,I-18,I-21,I-6,I-7,I-13,I-14,I-15,I-16,I-9,I-10,I-11,I-12,I-17}`.
+각 이름과 계약 위치는 §1.2 레인 (c)를 따르며, FE ↔ Spring 전제 계약(목록 GET §4.3)은
+이 집합에 포함하지 않는다. 모든 internal 호출은 `X-Internal-Token`을 사용하고, 사용자·판매자
+스코프 신원은 AI가 검증 JWT 클레임에서만 도출한다.
 
 ### 4.1 장바구니 담기 API (I-2, 결정 7) — BE 문서 채택 [v0.6.0]
 
@@ -1171,6 +1175,114 @@ X-Internal-Token: {서비스 토큰}   ← I-2와 동일 인증 레인
 
 > **[해소 C-16 — BE I-18 확정 2026-07-18]**: 경로 `GET /internal/cart`·쿼리(userId/guestId)·`X-Internal-Token` 인증·응답 필드(`productName`/`optionName` **필수 포함**)·`CART_QUERY_INVALID`(400) 모두 BE "챗봇 장바구니 조회" 문서로 확정. 페이징은 MVP 전량 반환.
 
+### 4.10 주문 상태 요약 API (I-4)
+
+구매자 챗의 `order_status` intent가 최근 주문 진행 상태를 조회하는 query-time 계약이다. I-19
+구매 이력(§4.7)은 추천 dedup/프로필 구매 소스이고, I-4는 사용자에게 표시할 상태 요약이므로
+endpoint·모델·실패 의미를 공유하지 않는다. 주문 사실은 두 번째 LLM 호출 없이 결정적으로
+plain text로 렌더링한다.
+
+#### AI → Spring 요청
+
+```http
+GET {SPRING_BASE_URL}/internal/members/{userId}/orders/status?recent=3
+X-Internal-Token: {서비스 토큰}
+```
+
+- `recent`는 런타임 설정이 아닌 고정 계약값 `3`이다.
+- 공통 Spring client의 **3초 timeout**과 `X-Internal-Token` 주입 경로를 사용한다.
+- `{userId}`는 검증된 회원 스트림 티켓의 JWT `sub`에서 도출한 양의 Java `Long`
+  (`1..9_223_372_036_854_775_807`)만 허용한다. 메시지·request body·LLM 출력의 숫자,
+  `identity.subject` fallback은 사용하지 않는다.
+- guest·seller·missing/invalid member identity는 Spring을 호출하지 않고 로그인/재인증 안내로
+  정상 스트림 종료한다. 이 선차단은 I-4 path를 이용한 IDOR와 회원 존재 여부 탐색을 막는다.
+
+#### AI가 받는 성공 응답
+
+```json
+{
+  "success": true,
+  "data": {
+    "orders": [
+      {
+        "orderId": 1023,
+        "orderedAt": "2026-07-30T09:15:00+09:00",
+        "representativeStatus": "배송중",
+        "items": [
+          {
+            "productName": "무선 키보드",
+            "status": "SHIPPING",
+            "statusText": "배송중"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+정상 envelope는 top-level object, **literal boolean `success is true`**, 존재하는 object `data`,
+존재하는 array `data.orders`를 모두 만족해야 한다. `success` 누락/`false`/`null`/`1`/`"true"`,
+`data` 또는 `orders` 누락·`null`·타입 불일치는 malformed response다. `orders or []`처럼
+계약 위반을 빈 결과로 축소하지 않는다.
+
+| 필드 | 엄격 계약 |
+|---|---|
+| `orders` | 필수 array, 요청 `recent=3`에 맞춰 **0~3건**. 4건 이상은 전체 malformed |
+| `orders[].orderId` | coercion 없는 정수 BIGINT `1..9_223_372_036_854_775_807`; bool/string/float/null/0/음수/overflow 금지 |
+| `orders[].orderedAt` | **timezone-aware datetime 필수**. naive/invalid 값이 한 건이라도 있으면 전체 malformed이며 부분 표시하지 않음 |
+| `orders[].representativeStatus` | `결제 대기` / `결제 실패` / `주문 완료` / `배송중` / `배송 완료` / `구매 확정` / `취소/반품 진행중` / `처리 완료` 중 정확히 하나 |
+| `orders[].items` | 필수 array. 수신 항목 전부를 검증하고, 표시 단계에서만 처음 3개로 제한 |
+| `items[].productName` | strict string, 최대 200자. 유효 길이를 자르지 않으며 출력 전에 control/CR/LF/bidi/zero-width를 공백 정제 |
+| `items[].status` | `PENDING` / `ORDERED` / `SHIPPING` / `DELIVERED` / `CONFIRMED` / `CANCEL_REQUESTED` / `CANCELLED` / `RETURN_REQUESTED` / `RETURNED` 중 정확히 하나 |
+| `items[].statusText` | `결제 대기` / `주문 완료` / `배송중` / `배송 완료` / `구매 확정` / `취소 접수` / `취소 완료` / `반품 접수` / `반품 완료` 중 정확히 하나 |
+
+`status`와 `statusText`는 각각 허용 어휘에 속하는 것만으로 부족하며 아래 canonical pair가
+**정확히 일치**해야 한다. 서로 다른 pair의 유효 값을 섞거나 status/statusText에 제어문자가
+있으면 전체 payload를 거부한다.
+
+| `status` | `statusText` |
+|---|---|
+| `PENDING` | `결제 대기` |
+| `ORDERED` | `주문 완료` |
+| `SHIPPING` | `배송중` |
+| `DELIVERED` | `배송 완료` |
+| `CONFIRMED` | `구매 확정` |
+| `CANCEL_REQUESTED` | `취소 접수` |
+| `CANCELLED` | `취소 완료` |
+| `RETURN_REQUESTED` | `반품 접수` |
+| `RETURNED` | `반품 완료` |
+
+#### 결정적 출력과 실패 의미
+
+- Spring의 newest-first 주문 순서를 보존하고, aware `orderedAt`을 Asia/Seoul 기준 `M월 D일`로
+  표시한다. 최대 **3개 주문 × 주문당 3개 상품**만 표시한다.
+- 상품은 `productName — statusText` 형식이다. 한 주문에 상품이 4개 이상이면 앞의 3개 뒤에
+  정확한 잔여 개수 `외 N개`를 붙인다. 수신한 나머지 항목도 모두 schema 검증한다.
+- 정확한 `data.orders: []`만 정상 empty다. 이때 고정 문구 **`최근 주문 내역이 없어요.`** 를
+  보낸다.
+- guest/seller/invalid identity, HTTP 404/5xx, network/timeout, invalid JSON/envelope/schema,
+  naive timestamp는 모두 사용자별 고정 안내 `token` **1개** 뒤 `done`
+  `{"finishReason":"stop"}` **1개**로 끝난다. recoverable dependency degradation에는 SSE
+  `error`를 emit하지 않으며, 404와 5xx 문구를 같게 해 회원 존재 여부 oracle을 만들지 않는다.
+
+#### 관측·저장 경계
+
+- 모든 분기는 첫 SSE frame 전에 privacy-safe JSON 로그를 정확히 1건 남긴다. 고정 key set은
+  `event,requestId,outcome,errorCategory,orderCount,elapsedMs`다.
+- `event=order_status_route`; `outcome`은
+  `success|empty|identity_blocked|upstream_degraded`; `errorCategory`는
+  `none|guest|seller|missing_user_id|invalid_user_id|upstream_unavailable|malformed_response`만
+  허용한다. `requestId`는 바깥 `chat_request` 로그와 같은 correlation ID이고 count/time은
+  숫자다.
+- 로그에는 member/order/product ID, 상품명, 상태 문구, raw utterance/response, exception 문자열,
+  URL/path, internal token을 기록하지 않는다.
+- 방출한 assistant `token`은 일반 구매자 대화와 동일하게 §6.3의 대화 보존·삭제 정책을 적용받아
+  주문번호·상품명·날짜·상태가 대화 이력에 저장될 수 있다. 반면 I-4 response-derived
+  order/date/product/status 필드를 profile memory, recommendation filter, cart/pending state,
+  별도 application cache에 추출·복제하지 않는다. 기존 사용자 입력 기반 profile/session 처리와
+  non-cart 전환 시 stale pending-cart 정리는 그대로 유지한다.
+
 ---
 
 ## 5. 협의 필요 항목 요약표 (🔴 Consolidated Open Items)
@@ -1213,7 +1325,7 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 | Q3 | **[적용]** = `{action:"confirm", draftId}` 확정? | ✅ **예** — §3.2 HITL 설계와 동일 | 즉답 |
 | Q4 | **I-17** 커서·`attributes`·리뷰 텍스트 | 🟡 BE 골격 확정(2026-07-18): 인증·envelope·숫자 id·오류코드. 잔여 3건 저영향(커서 opaque·attributes 자유 dict·리뷰 MVP 제외, §4.8). 🔴 선결: I-17 배치 MVP/post-MVP 스코프 | BE 확정 |
 | Q5 | **I-13** 본문 재작성(I-5 내용 복붙이던 것) | ✅ **LLM팀이 직접 재작성해 Notion 반영**(§4.4 I-13, v0.15.1) — BE 검토만 | 해소 |
-| Q6 | **CH-3**(CS 챗) 라우팅 | ✅ **관리자 CS 문의(CH-3·I-5·AD-1/2·M-9) 전부 post-MVP**. **주문상태 Q&A(I-4)는 구매자 챗(CH-2)에 흡수** — 별도 CS챗 없음 | 해소 |
+| Q6 | **CH-3**(CS 챗) 라우팅 | ✅ **관리자 CS 문의(CH-3·I-5·AD-1/2·M-9) 전부 post-MVP**. **주문상태 Q&A(I-4)는 구매자 챗(CH-2)의 `order_status`로 구현**(§4.10) — 별도 CS챗 없음 | 해소 |
 | Q7 | 게스트 담기 실패 **3종·차단 없음** 최종? | ✅ GUEST_NOT_ALLOWED 폐기(§3.1·§4.1). **[갱신 v0.15.16] 실패 3종**(PRODUCT_NOT_FOUND/STOCK_INSUFFICIENT/CART_ERROR) — 담기 재고검증 부활(`CART_STOCK_INSUFFICIENT`, 2026-07-22), `OUT_OF_STOCK` 폐기 유지 | 갱신 |
 | Q8 | 판매자 챗 주소 `{AI_SERVER}/seller/chat`(별도) vs `/chat` 채널 | `{AI_SERVER}/seller/chat`(S-4, 별도 주소) 최종 — 채널 구분 아님(§3.2) | 즉답 |
 | Q9 | 챗봇 담기 `add_to_cart` 이벤트 누가 쏘나 | **[정정 v0.15.26] FE가 쏜다** — E-1 정본에서 `add_to_cart`는 FE 12종 중 하나이고, 서버 직접 적재는 `recommendation_generated` 하나뿐이다. 구 답변("BE가 `CART_ADD(via:chat)` 적재")은 폐기 | 갱신 |
@@ -1256,6 +1368,7 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 
 | 버전 | 날짜 | 변경 |
 |---|---|---|
+| v0.16.2 | 2026-07-30 | **[#164] I-4 주문 상태 문의 구현 계약 정합.** 구매자 라우팅을 `recommend`/`cart_add`/`cart_view`/`order_status`/`general` 5-way로 확장하고 §4.10을 신설했다. JWT-derived member identity, `GET /internal/members/{userId}/orders/status?recent=3`, internal token/3초 timeout, literal-success envelope, aware timestamp와 Spring 어휘/canonical pair의 전체 payload 검증, 최대 3개 주문·주문당 3개 상품 및 `외 N개`, empty와 dependency degradation 구분, `token`→`done(stop)` 정상 종료, privacy-safe correlated route log, 일반 대화 보존과 response-derived state non-copy 경계를 확정했다. §1.2·§4의 reverse-call 현황도 정확한 17건 `{I-1,I-19,I-4,I-2,I-18,I-21,I-6,I-7,I-13,I-14,I-15,I-16,I-9,I-10,I-11,I-12,I-17}`로 정정했다. |
 | v0.16.1 | 2026-07-30 | **[#167] I-21 `listId` 보안 규약 복원.** CH-5가 인증 불필요 공개 조회라 `listId`가 사실상 bearer 키인 점을 명시하고, FastAPI가 **UUID급 무작위(≥128bit)** 로 생성하며 순번·타임스탬프 등 추측 가능한 형식을 금지하도록 §4.2를 확정했다. 실제 I-21 예시의 `list-4471`을 32자리 무작위 hex로 교체하고 C-9·Q2의 형식 미확정 표기를 해소했다. 현재 `uuid4().hex` 구현을 형식·고유성·I-21/SSE 동일성 회귀 테스트로 고정했다. |
 | v0.16.0 | 2026-07-30 | **[정본 SPEC-CHAT-SESSION 반영] `sessionId`(접속) · `threadId`(방) 축 분리 — MVP의 `sessionId == threadId` 전제 폐기.** 한 접속 아래 여러 방이 **동시에** 존재하는 멀티탭 대화를 지원하기 위해 두 식별자의 역할을 갈랐다. (1) **§2.6 식별자 모델 신설** — 축별 발급 주체·수명·담당 상태를 표로 확정. `sessionId`=Spring CH-1 발급(Redis TTL 10분 sliding)·프로필 세션버퍼·I-20·`conversation_turns.conversation_id`(primary), `threadId`=**FE 생성**(서버 왕복 없음)·필터 누적·장바구니 pending·되돌리기·동시 스트림 락·`conversation_turns.thread_id`. 구 정의 *"만료 의미 없는 불투명 스레드 키"* 를 **폐기** — "스레드 키"는 이제 `threadId`의 것이고, AI가 만료를 판정하지 않는 이유는 만료가 **없어서**가 아니라 **판정 주체가 Spring이라서**다. (2) **§2.9 a 동시 스트림 락을 세션→방 단위로 개정** — `409 STREAM_IN_PROGRESS`의 판정 키가 `sessionId`에서 **`threadId`** 로 바뀐다. 세션 단위로 잠그면 탭 B가 탭 A의 스트리밍 때문에 409를 맞아 **축 분리의 목적이 정면으로 무효화**된다. §2.5 오류표도 동기화. (3) **§3.5 I-20 사유를 `logout` 1종으로 축소** — 새 대화가 CH-1을 부르지 않고 `threadId`만 갱신하게 되어 `newConversation`이 발화되지 않는다. Spring이 I-20을 쏘는 경우는 로그아웃뿐이고 나머지는 Redis TTL 만료 + AI 내부 비활동 sweep이 담당한다(C-8 행 동기화). (4) **[D5] CH-1 멱등 등재 + 구 "CH-1 재호출 = 새 세션(맥락 단절)" 경고 폐기**(§1.2 레인 d) — Spring이 Redis `SETNX`로 기존 세션을 그대로 반환하므로 CH-1을 몇 번 불러도 세션은 하나다. **정확성은 `SETNX`가 책임지고 FE Web Locks(D1)는 최적화**다(한 브라우저 안에서만 통해 폰·PC 동시 접속을 막지 못한다). 축출을 없앤 뒤에는 밀린 세션이 CH-1b로 TTL을 연장하며 유령으로 남아 I-20이 안 나가는 문제가 생기는데 이를 `SETNX`가 막는다. **예외 = 게스트 첫 방문 멀티탭**(쿠키 부재 → 게스트 2명 생성 → 밀린 탭이 CH-1b `403`)은 신원이 갈라지는 것이라 `SETNX`로 막을 수 없어 Web Locks가 방어한다. (5) **[D6] 맥락 TTL을 방→접속 단위로** — 어느 방에서든 활동이 있으면 그 `sessionId`의 **모든 방** TTL을 함께 연장하고 세션 종료 시 일괄 정리한다. 방마다 생사가 갈리면 탭을 옮겼을 때 한쪽 맥락만 사라져 사용자가 이해할 수 없다. (6) **§6.3 저장·로그 축 정합** — checkpointer thread 키를 `sessionId`→**`threadId`** 로 정정하고, `conversation_turns`를 **session-primary + `thread_id` 병기**로 명시(세션 종료 스캔은 세션 축, 방별 조회·정리는 방 축이라 어느 한쪽만으로는 불가). 구조화 로그에 **`threadId` 필드 신설** — 멀티탭이면 한 `conversationId` 아래 여러 방 로그가 섞여 방을 못 가리면 동시 스트림을 분리해 읽을 수 없다. **🔴 잔여**: `SETNX` 멱등 키 스코프(`sub` vs `sub_type`+`sub`)와 멱등 반환 시 세션 TTL sliding 갱신 여부 — BE 확인 대기. |
 | v0.15.27 | 2026-07-30 | **[사본 drift 정정] 정본 대조로 틀린 서술 3건 교체.** (1) **담기 이벤트 적재 주체** — §4.1 I-2의 *"`CART_ADD(via: chat)` 이벤트는 BE가 적재(AI 무관)"* 와 §5.1 Q9의 같은 답변을 **폐기**했다. E-1 정본에서 `add_to_cart`는 **FE가 쏘는 12종 중 하나**이고, 서버가 직접 적재하는 이벤트는 `recommendation_generated` 하나뿐이다(E-1 HTTP로 들어오면 드롭). 챗봇 경로도 FE가 SSE `action`(`CART_ADDED`) 수신 시점에 쏜다. (2) **`budget` 이벤트 제외** — 정본(Notion CH-2)이 *"현재 코드에 미구현 → 명세에서 제외(필요 시 post-MVP)"* 로 정리했는데 사본은 §3.1에 스키마를 그대로 두고 이벤트 순서 계약에도 넣어두고 있었다. 스키마는 post-MVP 참고용으로 남기고 순서 계약에서 뺐다(이슈 #163). (3) **공통 헤더 규약 §2.5 신설** — `X-Request-Id`·`traceparent` 는 전 API 공통이라 엔드포인트 행 단위인 정본 DB에 놓을 자리가 없었다. Notion「프로젝트 자료실」에 **공통 규약 페이지를 신설**하고 본 사본 §2.5에 AI 소관 요약을 넣었다(#141·#134·#151). 실측: inbound `X-Request-Id` **수용 미구현**(`request_context_middleware`가 `new_request_id()`를 조건 없이 호출) · Spring 역호출 **전파 미구현**(`X-Internal-Token` 하나만) · 응답 echo 는 구현됨 · `traceparent` 는 코드베이스에 없음. (4) **`search.query` PII 기준** — 정본 E-1이 *"개인정보를 properties에 넣지 않는다"* 와 *"`search` 필수 = `query`"* 를 동시에 말해 **자기모순**이었고, FE가 그 금지 조항을 근거로 `queryLength`만 보내 `searchTopics` 워커가 돌 수 없었다. 금지 대상은 **FE가 굳이 끌어다 넣는 이름·주소·연락처·이메일**이며 사용자가 직접 입력해 이미 서버로 보낸 검색어는 원문을 싣고 **보존기간으로 관리**한다 — 정본 E-1에 「개인정보 기준」 절로 명확화했다. |

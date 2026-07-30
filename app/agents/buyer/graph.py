@@ -3,6 +3,7 @@
 흐름 (product.md 결정 12-A / structure.md §3):
     entry → 프로필 조회(reader, 동기) → decompose(Haiku 1회, intent 라우팅) →
         - recommend: 추천 서브그래프(decompose→search(Spring 위임)→rerank→push, 경로 B)
+        - order_status: 검증 JWT 회원 신원으로 I-4 조회 후 결정적 token→done
         - general  : fallback 서브그래프(일반 대화)
 
 멀티턴: 스레드별 누적 필터를 ThreadFilterStore(LangGraph BaseStore, pg-profile)에 신원 스코프
@@ -14,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
+from typing import cast
 
 from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
@@ -22,6 +24,7 @@ from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.graph import stream_cart_add, stream_cart_view
 from app.agents.buyer.cart.state import get_cart_store
 from app.agents.buyer.fallback import stream_fallback
+from app.agents.buyer.order_status import stream_order_status
 from app.agents.buyer.recommendation.category_mapping import map_categories as _map_categories
 from app.agents.buyer.recommendation.decompose import decompose
 from app.agents.buyer.recommendation.state import get_revert_store
@@ -90,6 +93,7 @@ async def run_buyer_turn(
     search=None,
     push_fn=None,
     map_categories=None,
+    order_status_fn=None,
     observer=None,
     request_id: str | None = None,
 ) -> AsyncIterator[str]:
@@ -99,7 +103,9 @@ async def run_buyer_turn(
     LLM 미구성(개발·CI)이면 네트워크 호출 없이 곧바로 LLM_UNAVAILABLE error 를 낸다.
     """
     settings = get_settings()
-    request_id = request_id or getattr(observer, "request_id", None) or new_request_id()
+    resolved_request_id = cast(
+        str, request_id or getattr(observer, "request_id", None) or new_request_id()
+    )
     llm = llm or get_llm()
     if llm is None:
         yield sse(
@@ -107,7 +113,7 @@ async def run_buyer_turn(
             ErrorData(
                 code="LLM_UNAVAILABLE",
                 message="LLM 이 구성되지 않았어요.",
-                request_id=request_id,
+                request_id=resolved_request_id,
                 retryable=False,
             ).model_dump(by_alias=True),
         )
@@ -147,7 +153,7 @@ async def run_buyer_turn(
             "options": [{"optionId": o.option_id, "name": o.name} for o in pending.options],
         }
 
-    # decompose — fast tier 1회 (intent 4-way 라우팅 + 필터 + 장바구니 의도)
+    # decompose — fast tier 1회 (intent 5-way 라우팅 + 필터 + 장바구니 의도)
     if observer is not None:
         observer.record_model_call(resolve_model_id(settings, "fast"))
     last_reco = await cart_store.get_last_reco(thread_key)
@@ -169,7 +175,7 @@ async def run_buyer_turn(
             ErrorData(
                 code=code,
                 message="질의를 이해하지 못했어요.",
-                request_id=request_id,
+                request_id=resolved_request_id,
                 retryable=True,
             ).model_dump(by_alias=True),
         )
@@ -179,6 +185,22 @@ async def run_buyer_turn(
     # (프롬프트가 약속한 "옛 상품에 갇히지 않게"와 실제 동작 일치).
     if decision.intent != "cart_add" and pending is not None:
         await cart_store.clear_pending(thread_key)
+
+    if decision.intent == "order_status":
+        fetch_order_status = (
+            order_status_fn
+            if order_status_fn is not None
+            else getattr(spring_client, "get_order_status", None)
+        )
+        if not callable(fetch_order_status):
+            raise TypeError("order_status_fn must be callable")
+        async for frame in stream_order_status(
+            identity=identity,
+            fetch_order_status=fetch_order_status,
+            request_id=resolved_request_id,
+        ):
+            yield frame
+        return
 
     if decision.intent == "general":
         async for frame in stream_fallback(decision, observer=observer):
@@ -271,10 +293,10 @@ async def run_buyer_turn(
         identity=identity,
         profile=profile,
         settings=settings,
-        reverted_categories=reverted,
+        reverted_categories=frozenset(reverted),
         cart_store=cart_store,
         thread_key=thread_key,
         observer=observer,
-        request_id=request_id,
+        request_id=resolved_request_id,
     ):
         yield frame

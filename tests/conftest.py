@@ -24,6 +24,7 @@ from app.core.pg_resilience import close_advisory_pool, reset_advisory_pool
 from app.core.ratelimit import reset_limiter
 from app.core.stream import get_registry
 from app.pipelines.artifact_store import reset_catalog_store
+from app.services import spring_client as _spring_client
 
 
 @pytest.fixture(autouse=True)
@@ -121,3 +122,17 @@ def _no_live_recent_purchases(monkeypatch):
         return RecentPurchases()
 
     monkeypatch.setattr("app.services.spring_client.get_recent_purchases", _empty)
+
+
+@pytest.fixture(autouse=True)
+def _no_live_order_status(monkeypatch, request):
+    """Non-client tests must inject I-4 explicitly rather than contact live Spring."""
+    # This module's client-contract tests install MockTransport at the HTTP boundary and
+    # therefore need the captured real function. Integration fixtures restore it likewise.
+    if request.node.path.name == "test_order_status.py":
+        return
+
+    async def _blocked(*args, **kwargs):
+        raise AssertionError("live get_order_status is disabled in tests")
+
+    monkeypatch.setattr(_spring_client, "get_order_status", _blocked)

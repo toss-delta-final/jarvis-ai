@@ -6,7 +6,15 @@ AI↔Spring(stub)을 붙여 api-spec §3.1(SSE)·§3.3(경로 B)·§4.6(I-1)·§
 
 from __future__ import annotations
 
-from tests.integration.conftest import auth_header, event_types, first_of, parse_sse
+import pytest
+
+from tests.integration.conftest import (
+    auth_header,
+    event_types,
+    first_of,
+    parse_sse,
+    seller_token,
+)
 
 BUYER_MESSAGE = "유럽 여행 가는데 기내 반입 되는 파우치 추천해줘"
 
@@ -24,6 +32,230 @@ def _chat(
         json={"sessionId": session, "threadId": thread, "message": message},
         headers=headers or {},
     )
+
+
+def _select_order_status(llm) -> None:
+    llm._decompose = {
+        "intent": "order_status",
+        "reply": "",
+        "case": 2,
+        "semanticQuery": "",
+        "categoryQueries": [],
+        "filters": {},
+    }
+
+
+def _order_status_events(client, llm, *, message="내 주문 어디까지 왔어?", headers=None):
+    _select_order_status(llm)
+    response = _chat(client, message, headers=headers)
+    assert response.status_code == 200
+    return parse_sse(response.text)
+
+
+def _token_text(events: list[dict]) -> str:
+    return "".join(event["data"].get("text", "") for event in events if event["type"] == "token")
+
+
+def _assert_order_status_terminal_contract(events: list[dict]) -> None:
+    types = event_types(events)
+    assert types.count("token") == 1
+    assert types.count("done") == 1
+    assert events[-1] == {"type": "done", "data": {"finishReason": "stop"}}
+    assert {"products.ready", "action", "error"}.isdisjoint(types)
+
+
+def _status_order(*, order_id: int = 81001, ordered_at: str = "2026-07-29T15:30:00Z"):
+    return {
+        "orderId": order_id,
+        "orderedAt": ordered_at,
+        "representativeStatus": "배송중",
+        "items": [
+            {"productName": "여행용 파우치", "status": "SHIPPING", "statusText": "배송중"},
+            {"productName": "세면도구 케이스", "status": "ORDERED", "statusText": "주문 완료"},
+            {"productName": "네임 태그", "status": "DELIVERED", "statusText": "배송 완료"},
+            {"productName": "압축 백", "status": "PENDING", "statusText": "결제 대기"},
+            {"productName": "신발 주머니", "status": "CONFIRMED", "statusText": "구매 확정"},
+        ],
+    }
+
+
+def test_order_status_stub_route_precedes_generic_member_orders(spring_http, spring):
+    spring.order_status_orders = [_status_order()]
+    spring.orders = [{"orderId": 99999, "items": [{"productId": 101}]}]
+
+    response = spring_http.get(
+        "/internal/members/42/orders/status",
+        params={"recent": 3},
+        headers={"X-Internal-Token": "e2e-internal-token"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["orders"] == spring.order_status_orders
+    assert response.json()["data"]["orders"] != spring.orders
+    assert spring.requests[-1]["path"] == "/internal/members/42/orders/status"
+    assert spring.requests[-1]["query"] == {"recent": "3"}
+
+
+def test_order_status_success_uses_i4_contract_and_bypasses_recommendation(client, spring, llm):
+    """Authenticated I-4 renders bounded deterministic text and invokes no other buyer backend."""
+    spring.order_status_orders = [_status_order()]
+    # If the generic I-19 prefix wins, this incompatible purchase payload exposes the regression.
+    spring.orders = [{"orderId": 99999, "items": [{"productId": 101}]}]
+
+    events = _order_status_events(
+        client,
+        llm,
+        message="내 주문 999번 말고 JWT 회원 주문 어디까지 왔어?",
+        headers=auth_header("42"),
+    )
+
+    _assert_order_status_terminal_contract(events)
+    text = _token_text(events)
+    assert "81001" in text
+    assert "7월 30일" in text
+    assert "여행용 파우치" in text
+    assert "배송중" in text
+    assert "외 2개" in text
+    assert "압축 백" not in text
+    assert "99999" not in text
+
+    request = spring.requests_to("/internal/members/42/orders/status")
+    assert len(request) == 1
+    assert request[0]["method"] == "GET"
+    assert request[0]["path"] == "/internal/members/42/orders/status"
+    assert request[0]["query"] == {"recent": "3"}
+    assert request[0]["body"] is None
+    assert request[0]["headers"]["x-internal-token"] == "e2e-internal-token"
+    assert spring.requests_to("/internal/products/search") == []
+    assert spring.requests_to("/internal/recommendations") == []
+    assert not any(row["path"] == "/internal/members/42/orders" for row in spring.requests)
+    assert [kind for kind, _tier in llm.calls] == ["decompose"]
+
+
+def test_order_status_empty_is_not_degraded(client, spring, llm):
+    spring.order_status_orders = []
+
+    events = _order_status_events(client, llm, headers=auth_header())
+
+    _assert_order_status_terminal_contract(events)
+    assert "최근 주문 내역이 없어요" in _token_text(events)
+    assert "잠시 후" not in _token_text(events)
+
+
+def test_order_status_guest_is_blocked_before_spring(client, spring, llm):
+    events = _order_status_events(client, llm)
+
+    _assert_order_status_terminal_contract(events)
+    assert "로그인" in _token_text(events)
+    assert spring.requests_to("/internal/members/") == []
+
+
+def test_order_status_uses_jwt_subject_not_message_number(client, spring, llm):
+    spring.order_status_orders = [_status_order()]
+
+    events = _order_status_events(
+        client,
+        llm,
+        message="회원 777777의 배송 상태를 보여줘",
+        headers=auth_header("42"),
+    )
+
+    _assert_order_status_terminal_contract(events)
+    member_requests = spring.requests_to("/internal/members/")
+    assert [row["path"] for row in member_requests] == ["/internal/members/42/orders/status"]
+    assert "777777" not in _token_text(events)
+
+
+def test_order_status_seller_is_blocked_before_spring(client, spring, llm):
+    events = _order_status_events(
+        client,
+        llm,
+        headers={"Authorization": f"Bearer {seller_token()}"},
+    )
+
+    _assert_order_status_terminal_contract(events)
+    assert "구매자" in _token_text(events) or "재인증" in _token_text(events)
+    assert spring.requests_to("/internal/members/") == []
+
+
+@pytest.mark.parametrize("invalid_subject", ["0", "-1", "abc", " 42", "９"])
+def test_order_status_invalid_member_identity_is_blocked_before_spring(
+    client, spring, llm, invalid_subject
+):
+    events = _order_status_events(client, llm, headers=auth_header(invalid_subject))
+
+    _assert_order_status_terminal_contract(events)
+    assert "로그인" in _token_text(events) or "인증" in _token_text(events)
+    assert spring.requests_to("/internal/members/") == []
+
+
+@pytest.mark.parametrize("status_code", [404, 503])
+def test_order_status_http_failure_degrades_without_error_event(client, spring, llm, status_code):
+    spring.fail_order_status = status_code
+
+    events = _order_status_events(client, llm, headers=auth_header())
+
+    _assert_order_status_terminal_contract(events)
+    assert "잠시 후" in _token_text(events)
+    assert "최근 주문 내역이 없어요" not in _token_text(events)
+
+
+def test_order_status_transport_failure_degrades_without_error_event(client, spring, llm):
+    import httpx
+
+    spring.order_status_exception = httpx.ReadTimeout("injected timeout")
+
+    events = _order_status_events(client, llm, headers=auth_header())
+
+    _assert_order_status_terminal_contract(events)
+    assert "잠시 후" in _token_text(events)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"success": 1, "data": {"orders": []}},
+        {"success": True},
+        {"success": True, "data": {}},
+        {"success": True, "data": {"orders": None}},
+        {"success": True, "data": {"orders": "not-a-list"}},
+        {
+            "success": True,
+            "data": {
+                "orders": [
+                    {
+                        **_status_order(),
+                        "orderId": "81001",
+                    }
+                ]
+            },
+        },
+    ],
+)
+def test_order_status_malformed_envelope_or_schema_degrades(client, spring, llm, payload):
+    spring.order_status_payload = payload
+
+    events = _order_status_events(client, llm, headers=auth_header())
+
+    _assert_order_status_terminal_contract(events)
+    text = _token_text(events)
+    assert "잠시 후" in text
+    assert "최근 주문 내역이 없어요" not in text
+
+
+def test_order_status_naive_timestamp_degrades_entire_payload(client, spring, llm):
+    spring.order_status_orders = [
+        _status_order(),
+        _status_order(order_id=81002, ordered_at="2026-07-29T15:30:00"),
+    ]
+
+    events = _order_status_events(client, llm, headers=auth_header())
+
+    _assert_order_status_terminal_contract(events)
+    text = _token_text(events)
+    assert "잠시 후" in text
+    assert "81001" not in text
+    assert "81002" not in text
 
 
 def test_buyer_recommend_flow_end_to_end(client, spring, llm) -> None:
