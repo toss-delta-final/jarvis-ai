@@ -79,8 +79,11 @@ async def map_categories(
     (2) 그 외 신호가 있으면 **raw·query 를 각각 임베딩·조회해 query 쪽 최근접을 우선 채택**하고,
     raw 최근접은 query 히트 0건·조회 실패 시 폴백으로만 쓴다(§4.3·§4.3.1 #115 — 종전엔 raw 가
     있으면 query 를 버렸고, 거리 비교도 추상 라벨의 문자열 겹침 때문에 성립하지 않는다).
-    (3) raw·query 모두 없음(빈 리스트 포함) → 신호 없음으로 보고 leg 를 만들지
-    않는다 → 무필터 검색(카테고리 강제 금지, PR #73 #22). (4) 실패는 **앵커 단위로 격리** —
+    (3) 채택 거리가 `category_distance_max` 를 **초과하면 그 leg 를 드롭**한다 — 최근접이 멀다는 건
+    "맞는 칸이 taxonomy 에 없다"는 신호이고, 틀린 카테고리로 좁히면 정답 상품이 후보에서 제외되기
+    때문이다(§4 #115, 종전 never-null 폐기). exact 매치는 거리 개념이 없어 컷 대상이 아니다.
+    (4) raw·query 모두 없음(빈 리스트 포함) → 신호 없음으로 보고 leg 를 만들지
+    않는다 → 무필터 검색(카테고리 강제 금지, PR #73 #22). (5) 실패는 **앵커 단위로 격리** —
     exact 매치는 임베딩 경로 실패와 무관하게 보존하고, 한 leg 의 앵커 하나가 실패해도 다른 앵커가
     canonical 을 냈으면 그 leg 를 살린다. 앵커 전부 실패·embed 전면 실패는 그 leg 만 드롭한다
     (canonical-or-null, #20·PR #73 리뷰). 모든 leg 가 드롭되면 빈 리스트를 낸다 — Spring 엔 canonical
@@ -91,6 +94,7 @@ async def map_categories(
     dsn = settings.catalog_db_url
     k = settings.category_top_k
     fanout_max = settings.category_fanout_max
+    distance_max = settings.category_distance_max  # 초과 시 leg 드롭(§4 #115)
     # 미주입 기본값은 질의(query) 임베딩 — 앵커(raw 추측·leg query)는 질의 쪽이므로 비대칭 검색
     # 관례에 맞춰 RETRIEVAL_QUERY 로 바인딩한다(문서 쪽 category_seed=document, 이슈 #65·PR #73 리뷰).
     embed = embed or functools.partial(_embed_texts, task_type=settings.embedding_task_query)
@@ -181,6 +185,24 @@ async def map_categories(
         if i not in need_idx:
             continue  # 신호 없는 leg(raw·query 모두 없음) → 카테고리 강제 없이 스킵(#22)
         picked = nearest.get(i)
+        if picked and picked[1] > distance_max:
+            # 거리컷(§4 #115) — 최근접이 너무 멀다 = "맞는 칸이 taxonomy 에 없다". 틀린 카테고리로
+            # 좁히면 정답 상품이 후보에서 아예 제외되므로 canonical 없이 드롭하고 semanticQuery 로
+            # 넓게 찾게 둔다. 전용 이벤트로 남긴다 — category_unmapped(히트 0건=시드 결측 품질 신호)
+            # 와 섞으면 정책적 드롭이 품질 메트릭을 오염시킨다(§5 격리 규약과 동일 취지).
+            logger.info(
+                "category_distance_rejected",
+                extra={
+                    "raw": r,
+                    "query": qtexts[i],
+                    "canonical": picked[0],
+                    "distance": picked[1],
+                    "margin": picked[2],
+                    "anchor_kind": picked[3],
+                    "threshold": distance_max,
+                },
+            )
+            continue
         if picked:
             canonical, distance, margin, anchor_kind = picked
             # 이벤트는 종전 정의(raw 유무)를 유지해 메트릭 연속성을 지키고, 실제로 canonical 을 낸

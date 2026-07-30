@@ -16,11 +16,14 @@ from app.agents.buyer.recommendation.category_mapping import map_categories
 from app.agents.buyer.recommendation.state import CategoryQuery
 
 
-def _settings(*, top_k: int = 5, fanout_max: int = 5) -> SimpleNamespace:
+def _settings(
+    *, top_k: int = 5, fanout_max: int = 5, distance_max: float = 0.22
+) -> SimpleNamespace:
     return SimpleNamespace(
         catalog_db_url="postgresql://x",
         category_top_k=top_k,
         category_fanout_max=fanout_max,
+        category_distance_max=distance_max,
         embedding_task_query="RETRIEVAL_QUERY",
     )
 
@@ -278,6 +281,88 @@ async def test_query_anchor_failure_falls_back_to_raw(caplog) -> None:
         out = await m.run([CategoryQuery("음향가전", "무선 이어폰")])
     assert out == [("음향가전 > 오디오", "무선 이어폰")]  # raw 앵커로 생존
     assert "category_leg_search_failed" in [r.msg for r in caplog.records]
+
+
+async def test_distance_over_cut_drops_leg(caplog) -> None:
+    """채택 거리가 category_distance_max 를 넘으면 그 leg 를 canonical 없이 드롭한다(§4 #115).
+
+    거리 0.22 초과는 "맞는 칸이 taxonomy 에 없다"의 신호다. 실측에서 "부모님 환갑 선물"·
+    "조카 입학 선물"·"집들이 선물"이 모두 `출산/돌기념품`(0.297~0.302)으로 붕괴했는데, 2056 leaf
+    에 해당 칸이 없어 "가장 덜 틀린" 값을 억지로 집은 것이다. 틀린 카테고리로 좁히면 정답 상품이
+    후보에서 아예 제외되므로, 카테고리를 빼고 semanticQuery 로 넓게 찾는 편이 낫다(종전 never-null
+    "멀어도 억지로 채택" 폐기).
+    """
+    m = _FakeMapper(
+        exact=set(),
+        nearest={},
+        hits={
+            "부모님 환갑 선물": [
+                ("출산/돌기념품 > 출산선물/기념품", 0.2971),
+                ("출산/돌기념품 > 출산준비패키지", 0.3220),
+            ]
+        },
+    )
+    with caplog.at_level("INFO"):
+        out = await m.run([CategoryQuery(None, "부모님 환갑 선물")])
+    assert out == []  # 카테고리 없이 무필터 + semanticQuery
+    rec = _record(caplog, "category_distance_rejected")
+    assert rec.distance == 0.2971
+    assert rec.canonical == "출산/돌기념품 > 출산선물/기념품"  # 무엇이 거부됐는지 관측 가능
+    assert rec.threshold == 0.22
+
+
+async def test_distance_at_cut_boundary_is_accepted() -> None:
+    """경계값(거리 == 임계)은 채택한다 — 임계는 "초과"에서만 드롭(부등호 방향 회귀 방지).
+
+    실측 경계 여유가 0.005 밖에 없어(정답 최대 0.2168 vs 오분류 최소 0.2221) 부등호 하나가
+    정답·오분류 판정을 뒤집는다.
+    """
+    m = _FakeMapper(exact=set(), nearest={}, hits={"양말": [("패션잡화 > 양말", 0.22)]})
+    out = await m.run([CategoryQuery(None, "양말")])
+    assert out == [("패션잡화 > 양말", "양말")]
+
+
+async def test_distance_rejected_is_not_logged_as_unmapped(caplog) -> None:
+    """거리컷 드롭은 category_distance_rejected 로만 남기고 category_unmapped 로 이중 기록하지 않는다.
+
+    category_unmapped 는 "신호 있으나 히트 0건"(시드 결측·top-k 미스 품질 신호, §11)이라 정책적
+    드롭(거리컷)이 이 메트릭을 오염시키면 안 된다 — 실패 격리 로그 규약(§5)과 동일 취지.
+    """
+    m = _FakeMapper(exact=set(), nearest={}, hits={"환갑 선물": [("취미 > 수집용품", 0.31)]})
+    with caplog.at_level("INFO"):
+        await m.run([CategoryQuery(None, "환갑 선물")])
+    msgs = [r.msg for r in caplog.records]
+    assert "category_distance_rejected" in msgs
+    assert "category_unmapped" not in msgs
+    assert "category_fallback_top1" not in msgs  # 채택 로그도 남기지 않는다(채택이 아니므로)
+
+
+async def test_exact_match_is_not_distance_cut() -> None:
+    """exact 매치는 거리컷 대상이 아니다 — DB 검증값이라 거리 개념이 없다(§4.3).
+
+    exact leg 가 컷에 걸려 사라지면 사전에 실재하는 canonical 을 버리는 것이라 후퇴다.
+    """
+    m = _FakeMapper(exact={"PC부품 > CPU"}, nearest={}, hits={"cpu": [("PC부품 > 쿨러", 0.9)]})
+    out = await m.run([CategoryQuery("PC부품 > CPU", "cpu")])
+    assert out == [("PC부품 > CPU", "cpu")]
+
+
+async def test_partial_distance_cut_keeps_close_legs() -> None:
+    """멀티 leg 에서 먼 leg 만 드롭하고 가까운 leg 는 유지한다(전개 실패 회차 격리, §6.0).
+
+    "부모님 환갑 선물" 전개가 일부만 성공한 회차를 모사한다 — 홍삼(0.1398)은 살리고 코너 이름
+    잔여물(0.31)만 버려야, 전개된 상품 검색이 회차마다 통째로 무필터로 새지 않는다.
+    """
+    m = _FakeMapper(
+        exact=set(),
+        nearest={},
+        hits={
+            "홍삼": [("건강식품 > 홍삼", 0.1398)],
+            "선물 세트": [("취미 > 수집용품", 0.31)],
+        },
+    )
+    out = await m.run([CategoryQuery(None, "홍삼"), CategoryQuery(None, "선물 세트")])
+    assert out == [("건강식품 > 홍삼", "홍삼")]
 
 
 async def test_exact_raw_wins_without_distance_comparison() -> None:
