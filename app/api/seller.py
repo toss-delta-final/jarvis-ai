@@ -22,7 +22,7 @@ MVP 범위(api-spec v0.14.0 §3.2, 결정 20 개정): 통계 Q&A + 상세 수정
 product → draft 검증(validate_draft)·checkpoint 저장(start_draft)·draft emit /
 general → 기존 astream 스트림.
 스트림 수명주기(409·취소·타임아웃 §2.9 공통)는 팀 공통 래퍼 open_stream 소관 —
-chat.py 와 동일하게 registry_key(identity, sessionId) 로 세션당 1스트림을 강제한다.
+chat.py 와 동일하게 registry_key(identity, threadId) 로 방당 1스트림을 강제한다.
 """
 
 from __future__ import annotations
@@ -705,7 +705,7 @@ async def seller_chat(
     확보한다(스코프 없으면 403). 4-1b 부터 supervisor 3분기 디스패치가 배선됐다.
 
     [합류 2026-07-20 rebase] 스트림 수명주기(§2.9)는 팀 공통 래퍼 open_stream 소관 —
-    (a) sessionId 당 동시 1스트림(409) (b) 연결 종료 취소 (c) first-token/전체 타임아웃.
+    (a) threadId 당 동시 1스트림(409) (b) 연결 종료 취소 (c) first-token/전체 타임아웃.
     대화 저장·구조화 로그(obs #8)는 start_observation 이 담당한다(chat 과 동일 패턴).
     """
     request_id = get_request_id(http_request)
@@ -715,19 +715,25 @@ async def seller_chat(
         # chat.py 와 동일 — pg-profile 지연 연결 실패(운영 jwks raise)가 open_stream 안전망 밖이라
         # §6.3 b chat_request 로그(errorType 집계)를 통째로 놓친다. rejection 로그를 남기고 전파한다
         # (PR #48 후속 리뷰).
-        emit_rejection(request_id, "INTERNAL", conversationId=request.session_id)
+        emit_rejection(
+            request_id,
+            "INTERNAL",
+            conversationId=request.session_id,
+            threadId=request.thread_id,
+        )
         raise
     observation = start_observation(
         request_id=request_id,
         identity=identity,
         conversation_id=request.session_id,
+        thread_id=request.thread_id,
         message=request.message,
         store=store,
         now=asyncio.get_running_loop().time(),
     )
     return await open_stream(
         http_request,
-        registry_key(identity, request.session_id),
+        registry_key(identity, request.thread_id),
         lambda: _seller_stream(request, identity, request_id=request_id),
         observer=observation,
     )

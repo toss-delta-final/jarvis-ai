@@ -18,10 +18,19 @@ from app.main import app
 client = TestClient(app)
 
 
-def _chat(session_id: str, headers: dict | None = None):
+def _chat(
+    session_id: str,
+    headers: dict | None = None,
+    *,
+    thread_id: str | None = None,
+):
     return client.post(
         "/chat",
-        json={"sessionId": session_id, "threadId": "t", "message": "m"},
+        json={
+            "sessionId": session_id,
+            "threadId": thread_id or f"thread-{session_id}",
+            "message": "m",
+        },
         headers=headers or {},
     )
 
@@ -46,30 +55,42 @@ class _FakeRequest:
 # ─────────── §2.9 (a) 동시 스트림 제한 ───────────
 
 
-def test_concurrent_same_session_returns_409() -> None:
-    """동일 sessionId 활성 스트림 존재 시 새 요청은 409 STREAM_IN_PROGRESS."""
-    # dev 무토큰 게스트 → subject None → registry_key owner="anon" → "anon:busy-sess"
-    get_registry().acquire("anon:busy-sess")
+def test_concurrent_same_thread_returns_409() -> None:
+    """sessionId가 달라도 동일 threadId 활성 스트림에는 409를 반환한다."""
+    # dev 무토큰 게스트 → subject None → registry_key owner="anon" → "anon:busy-thread"
+    get_registry().acquire("anon:busy-thread")
     try:
-        r = _chat("busy-sess")
+        r = _chat("new-session", thread_id="busy-thread")
         assert r.status_code == 409
         env = r.json()["error"]
         assert env["code"] == "STREAM_IN_PROGRESS"
         assert env["requestId"]
     finally:
-        get_registry().release("anon:busy-sess")
+        get_registry().release("anon:busy-thread")
+
+
+def test_same_session_different_threads_are_not_blocked() -> None:
+    """같은 sessionId라도 다른 threadId의 활성 스트림은 서로 막지 않는다."""
+    registry = get_registry()
+    assert registry.acquire("anon:thread-a")
+    try:
+        r = _chat("shared-session", thread_id="thread-b")
+        assert r.status_code == 200
+        _ = r.text
+    finally:
+        registry.release("anon:thread-a")
 
 
 def test_registry_released_after_stream() -> None:
-    """정상 스트림 종료 후 레지스트리에서 세션이 해제된다(다음 요청 가능)."""
-    r = _chat("done-sess")
+    """정상 스트림 종료 후 레지스트리에서 방이 해제된다(다음 요청 가능)."""
+    r = _chat("done-sess", thread_id="done-thread")
     assert r.status_code == 200
     _ = r.text  # 스트림 소비 → 제너레이터 완료 → finally 해제
-    assert not get_registry().is_active("anon:done-sess")
+    assert not get_registry().is_active("anon:done-thread")
 
 
-def test_different_sessions_not_blocked() -> None:
-    """서로 다른 세션은 서로를 막지 않는다."""
+def test_different_sessions_and_threads_not_blocked() -> None:
+    """서로 다른 세션·방은 서로를 막지 않는다."""
     r1 = _chat("sess-a")
     _ = r1.text
     r2 = _chat("sess-b")
