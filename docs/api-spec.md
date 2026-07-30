@@ -6,8 +6,8 @@
 
 | 항목 | 값 |
 |---|---|
-| 문서 버전 | v0.15.26 |
-| 작성일 | 2026-07-14 (v0.15.26 개정 2026-07-30 — 사본 drift 정정: 담기 이벤트 적재 주체(BE→FE)·`budget` 이벤트 제외·`search.query` PII 기준) (v0.15.25 개정 2026-07-28 — 사본 동기화: §3.1 `conditionActions`(칩 제거, #84)·`screen`(화면 맥락, #118) 신설, `conditions` 칩 `field` 6종 확정, in-stream `error`에 `requestId`·`retryable` 추가) |
+| 문서 버전 | v0.16.0 |
+| 작성일 | 2026-07-14 (v0.16.0 개정 2026-07-30 — **`sessionId`(접속)·`threadId`(방) 축 분리**: 동시 스트림 락을 방 단위로, I-20 사유 `logout` 1종, CH-1 멱등(D5), 맥락 TTL 접속 단위(D6)) (v0.15.26 개정 2026-07-30 — 사본 drift 정정: 담기 이벤트 적재 주체(BE→FE)·`budget` 이벤트 제외·`search.query` PII 기준) (v0.15.25 개정 2026-07-28 — 사본 동기화: §3.1 `conditionActions`(칩 제거, #84)·`screen`(화면 맥락, #118) 신설, `conditions` 칩 `field` 6종 확정, in-stream `error`에 `requestId`·`retryable` 추가) |
 | 상태 | draft |
 | 대상 독자 | Spring 백엔드 팀, React 프론트엔드(FE) 팀 |
 | 소유 | AI 에이전트 서버 팀 |
@@ -112,7 +112,11 @@ Authorization: Bearer {STREAM_TICKET}   ← Spring이 스트림 단위로 발급
 
 - **[개정 v0.10.0] SSE에 쓰는 토큰 = 스트림 단명 티켓** — 로그인 AT(전권 토큰)를 SSE에 직접 싣지 않는다. Spring이 **채팅 진입 시 신원을 확인하고 스트림 단위로 단명 JWT(RS256, TTL 30~60초)를 발급**하며, FE는 이 티켓으로 AI 서버에 SSE 연결한다. ("JWKS 검토 후 제안" 최종안 채택.)
   - **발급 흐름**: `FE → Spring`(회원=AT / 게스트=`guest_id` 쿠키) → `Spring`(신원 확인 후 스트림 티켓 발급, RS256) → `FE → AI`(티켓으로 SSE) → `AI`(JWKS 검증 후 스트리밍). **첫 티켓**은 **CH-1**(세션 발급, `POST /api/chat/sessions`) 응답에 얹어 추가 왕복이 없다(응답에 `sessionId` + `streamTicket`).
-  - **[확정 v0.15.20] 티켓 재발급 경로 = CH-1b `POST /api/chat/tickets`** — 스트림 티켓 TTL(60초)이 세션 TTL(10분 sliding)보다 **훨씬 짧아**, CH-1 1회로는 첫 스트림만 커버된다. 2번째 메시지부터는 **세션을 유지한 채 티켓만 재발급**한다(CH-1 재호출은 새 세션이라 맥락이 끊겨 쓸 수 없다). BE 구현 실측: 요청 `{sessionId}`, 응답은 CH-1과 동일 DTO. **호출자 신원이 세션 소유자와 다르면 거부**하며(BE가 세션에 보관한 `sub_type`+`sub` 대조), 재발급과 함께 세션 TTL도 sliding 갱신한다. 판매자 세션은 보관된 `brandId`를 복원해 SELLER 스코프 티켓으로 재발급한다. Spring 소유 전제 계약(§1.2 레인 d).
+  - **[확정 v0.15.20] 티켓 재발급 경로 = CH-1b `POST /api/chat/tickets`** — 스트림 티켓 TTL(60초)이 세션 TTL(10분 sliding)보다 **훨씬 짧아**, CH-1 1회로는 첫 스트림만 커버된다. 2번째 메시지부터는 **세션을 유지한 채 티켓만 재발급**한다. BE 구현 실측: 요청 `{sessionId}`, 응답은 CH-1과 동일 DTO.
+  - **[개정 v0.16.0 — D5] CH-1은 멱등이다. 구 "CH-1 재호출 = 새 세션(맥락 단절)" 경고를 폐기한다.** Spring이 세션 생성 시 Redis `SETNX`로 **"이 사용자의 세션이 이미 있으면 그것을 그대로 반환"** 하므로, CH-1을 몇 번 부르든 한 사용자에게는 세션이 하나다. 이 멱등이 **정확성의 책임자**다 — FE의 Web Locks(D1)는 한 브라우저 안에서만 통하므로 폰과 PC 동시 접속은 막지 못하고, 축출을 없앤 뒤에는 기록에서 밀린 세션이 CH-1b로 TTL을 계속 연장하며 **유령 세션으로 남아 I-20도 나가지 않는다**. Web Locks는 쓸데없는 CH-1 중복 호출을 줄이는 **최적화**이며 유지 여부는 FE 판단이다.
+    - 다만 **CH-1b가 여전히 정규 경로**다 — 티켓만 갱신하는 편이 싸고, 세션 소유자 검증이 붙는다. CH-1 재호출은 이제 "틀린 것"이 아니라 "불필요한 것"이다.
+    - **예외 — 게스트 첫 방문 멀티탭**: 쿠키가 아직 없는 상태에서 탭을 여러 개 동시에 열면 Spring이 게스트를 **두 명** 만든다. 쿠키는 하나만 남으므로 밀린 탭은 자기 세션의 주인과 쿠키가 달라져 **CH-1b에서 `403`** 을 맞는다(CH-1을 다시 부르면 복구). **신원 자체가 갈라지는 것이라 `SETNX`로 막을 수 없다** — Web Locks가 실질적으로 방어하는 유일한 케이스다.
+    - 🔴 **BE 확인 필요**: `SETNX` 멱등 키의 스코프(회원 `sub` 단위인지 `sub_type`+`sub` 단위인지)와, 멱등 반환 시 세션 TTL을 sliding 갱신하는지 여부. 정본 SPEC-CHAT-SESSION §5 D5는 스코프를 "이 사용자"로만 적었다. **호출자 신원이 세션 소유자와 다르면 거부**하며(BE가 세션에 보관한 `sub_type`+`sub` 대조), 재발급과 함께 세션 TTL도 sliding 갱신한다. 판매자 세션은 보관된 `brandId`를 복원해 SELLER 스코프 티켓으로 재발급한다. Spring 소유 전제 계약(§1.2 레인 d).
   - **채택 이유**: (1) **게스트 커버** — 게스트는 로그인 AT가 없으므로 Spring이 `guest_id` 쿠키를 확인해 동일 경로로 티켓 발급(`sub_type: guest`). (2) **전권 AT 비노출** — SSE 쿼리스트링/헤더에는 30~60초짜리 읽기 전용 티켓만 나가 유출 시 피해가 "스트림 1회 연결"로 한정. (3) **aud 규율** — 로그인 AT는 Spring 전용, FastAPI용 `aud`는 티켓에만. (4) **발급 = 인증 관문** — 모든 SSE 연결이 스트림마다 Spring 신원 검증을 1회 통과.
 - **[확정] 서명·검증 = RS256 + JWKS** — Spring이 **JWKS 엔드포인트**(`GET /.well-known/jwks.json`)를 노출하고, AI 서버가 JWKS 공개키를 **fetch·캐시하여 로컬 검증**한다(RS256, `kid`로 키 선택). **`kid` miss 시에만 refetch**하며, 요청마다 Spring에 왕복하지 않는다(FastAPI 기동 시 Spring이 잠깐 죽어 있어도 캐시로 동작).
 - **[확정] 스트림 티켓 필수 클레임**:
@@ -180,7 +184,7 @@ X-Internal-Token: {SERVICE_TOKEN}
 | `400` | `BAD_REQUEST` | 요청 본문/파라미터 오류 |
 | `401` | `TOKEN_EXPIRED` / `TOKEN_INVALID` | 인증 실패(§2.3 a) |
 | `403` | `FORBIDDEN` | 권한 없음(예: 판매자 스코프 없이 `/seller/chat`) |
-| `409` | `STREAM_IN_PROGRESS` | **[v0.7.0]** 동일 `sessionId`에 활성 스트림 존재(§2.9) — FE는 진행 중 스트림 종료 후 재시도 |
+| `409` | `STREAM_IN_PROGRESS` | **[v0.7.0 · 개정 v0.16.0]** 동일 **`threadId`** 에 활성 스트림 존재(§2.9 a) — FE는 진행 중 스트림 종료 후 재시도. 같은 `sessionId`의 **다른 방은 막지 않는다** |
 | `429` | `RATE_LIMITED` | 레이트 리밋 초과(§2.8) |
 | `504` | `UPSTREAM_TIMEOUT` | **[v0.7.0]** 스트림 시작 전 상류(LLM/Spring) 타임아웃(§2.9 기준표) |
 
@@ -225,7 +229,22 @@ X-Internal-Token: {SERVICE_TOKEN}
 
 **`sellerId` = JWT `sub`(role=seller)에서 도출 · `brandId` = JWT `brandId` 클레임에서 도출** — AI는 판매자 역호출(§4.4·§4.5)에 필요한 `sellerId`·`brandId`를 **모두 검증된 판매자 JWT 클레임에서만** 얻는다. **`brandId`를 요청 본문·사용자 발화에서 받지 않는다**(IDOR 방지 — 판매자가 남의 `brandId`로 조회 불가). RS256 서명이라 클레임 위조 불가. **[개정 v0.8.0]** 구 "AI는 brandId를 알지 못한다(Spring 내부 해소)"에서 "JWT 클레임에서만 획득"으로 완화 — BE 집계 API가 `{brandId}` path를 요구함에 따름. `brandId` 클레임 발급은 Spring 계약(🔴 C-1).
 
-**`sessionId` = Spring 발급(CH-1 `POST /api/chat/sessions`)** — AI는 요청 인증 경계에서 이를 **만료 의미 없는 불투명 스레드 키**로 취급한다(AI가 Spring 세션 TTL을 검증하거나 `CHAT_SESSION_EXPIRED`를 판정하지 않음, §2.3 a). 다만 프로필 파이프라인은 자체 DB에 기록한 마지막 회원 발화 시각을 기준으로 **프로필 버퍼의 10분 비활동 종료**를 독립적으로 판정한다(§3.5). CH-1은 `sessionId`(BE Redis, TTL 10분 sliding) 외에 **첫 스트림 티켓**(§2.3 a)도 함께 반환하며, 이후 티켓 재발급은 CH-1b(§1.2 레인 d)가 담당한다.
+#### `sessionId`(접속) vs `threadId`(방) **[개정 v0.16.0 — SPEC-CHAT-SESSION Option B]**
+
+한 사용자의 한 **접속**(`sessionId`) 아래 여러 **방**(`threadId`)이 **동시에** 존재한다(멀티탭 동시 대화). MVP의 `sessionId == threadId` 전제는 폐기한다. 두 축은 담당하는 상태가 다르며, **어느 축으로 키잉하는지가 곧 계약**이다.
+
+| 축 | 발급 | 수명 | 담당 상태 |
+|---|---|---|---|
+| `sessionId` | **Spring** CH-1(`POST /api/chat/sessions`) | BE Redis TTL 10분 sliding | 프로필 세션버퍼 · 세션 종료 통지(I-20, §3.5) · `conversation_turns.conversation_id`(primary) |
+| `threadId` | **FE**(탭·방별, 서버 왕복 없음) | 소속 세션과 함께 만료(아래) | 멀티턴 필터 누적 · 장바구니 pending · 되돌리기 · **동시 스트림 락**(§2.9 a) · `conversation_turns.thread_id` |
+
+- **AI는 `sessionId`의 만료를 판정하지 않는다** — 세션 TTL은 Spring Redis 소유이고 AI가 검증하는 것은 스트림 티켓(§2.3 a)뿐이다. 따라서 AI가 `CHAT_SESSION_EXPIRED`를 반환하는 경우는 없다(§2.5). 만료 의미가 **없어서**가 아니라 **판정 주체가 Spring이라서**다. 다만 프로필 파이프라인은 자체 DB에 기록한 마지막 회원 발화 시각을 기준으로 **프로필 버퍼의 10분 비활동 종료**를 독립적으로 판정한다(§3.5).
+- **새 대화는 CH-1을 부르지 않는다** — FE가 `threadId`만 새로 생성하고 세션은 유지된다. 따라서 "새 대화"는 세션 종료 사유가 아니다(§3.5).
+- **맥락 TTL은 방이 아니라 접속 단위** — 어느 방에서든 활동이 있으면 그 `sessionId`에 속한 **모든 방**의 맥락 TTL을 함께 연장하고, 세션이 끝나면 그 아래 방을 **한꺼번에** 정리한다. 방마다 생사가 갈리면 탭을 옮겼을 때 한쪽 맥락만 사라져 사용자가 이해할 수 없다.
+- **스트림 티켓은 `sessionId`·`threadId`를 담지 않는다**(신원 `sub`·`sub_type`·`scope`만) — 그래서 **티켓 1장이 한 접속의 여러 방 스트림을 동시에 커버**한다. 세션 정본은 티켓이 아니라 Spring Redis에 있다.
+- 최대 길이는 둘 다 config `chat_key_max_chars`(§3.1) — 초과 시 `400`.
+
+> **`sessionId`는 "불투명 스레드 키"가 아니다.** v0.15.x까지 이 문서는 `sessionId`를 *"만료 의미 없는 불투명 스레드 키"* 로 정의했다. 축이 갈린 뒤 "스레드 키"는 `threadId`의 것이므로 그 표현을 전면 폐기한다. `sessionId`는 여전히 AI에게 **불투명**하지만(형식 검증 없음, UUID 수용), **접속 식별자**다.
 
 > 사용자/판매자 식별자 타입(숫자)·클레임 키는 Spring 회원 스키마 소유다 — 세부는 🔴 협의(§5 C-10).
 
@@ -250,10 +269,11 @@ FE가 AI 서버(FastAPI)를 **다른 오리진에서 직접 호출**하므로 �
 
 `POST /chat`·`POST /seller/chat` 공통 규약이다.
 
-#### (a) 동시 스트림 제한 — 세션당 1개
+#### (a) 동시 스트림 제한 — **방(`threadId`)당 1개** **[개정 v0.16.0]**
 
-- 동일 `sessionId`에 활성 스트림이 있는 상태에서 새 요청이 오면 **`409 STREAM_IN_PROGRESS`**(§2.5 봉투)로 거절한다(기존 스트림은 유지 — last-wins 아님, 2026-07-15 확정).
-- **FE 1차 방어**: 스트리밍 중 입력창 비활성화. 409는 서버 측 백스톱(탭 중복·재전송 대비).
+- 동일 `threadId`에 활성 스트림이 있는 상태에서 새 요청이 오면 **`409 STREAM_IN_PROGRESS`**(§2.5 봉투)로 거절한다(기존 스트림은 유지 — last-wins 아님, 2026-07-15 확정).
+- **같은 `sessionId`의 다른 방은 서로 막지 않는다** — 락 키가 `threadId`라 탭 A가 스트리밍 중이어도 탭 B는 정상 스트리밍된다. 멀티탭 동시 대화가 이 축 분리의 목적이므로, **세션 단위로 잠그면 그 목적이 정면으로 무효화된다**(§2.6).
+- **FE 1차 방어**: 스트리밍 중 **해당 방의** 입력창 비활성화. 409는 서버 측 백스톱(같은 방 재전송·중복 제출 대비).
 - 구현: 인프로세스 활성 스트림 레지스트리(**MVP 단일 인스턴스 전제** — 결정 8의 무상태 원칙과의 긴장은 "요청 간 사용자 상태 없음" 의미로 한정 해석하고, 다중 인스턴스 확장 시 Redis로 이관).
 
 #### (b) 요청 취소 — 취소 신호 = 연결 종료 (별도 취소 엔드포인트 없음)
@@ -303,8 +323,8 @@ FE가 AI 서버(FastAPI)를 **다른 오리진에서 직접 호출**하므로 �
 
 | 필드 | 타입 | 필수 | 설명 |
 |---|---|---|---|
-| `sessionId` | string | 예 | Spring 발급 세션 식별자(불투명 스레드 키, 만료 없음, §2.6). 세션 종료 통지(§3.5)와 상관관계. **[v0.15.7] 최대 길이 = config `chat_key_max_chars`(기본 200자)** — 초과 시 `400`(불투명 키 남용 방어) |
-| `threadId` | string | 예 | 대화 스레드 식별자. 멀티턴 필터 누적·프로필 델타 워터마크 대상. **[v0.15.7] 길이 상한 동일**(`chat_key_max_chars`) |
+| `sessionId` | string | 예 | **Spring 발급 접속 식별자**(§2.6). **프로필 세션버퍼·세션 종료 통지(§3.5)의 키** — 여러 방의 발화가 이 하나의 버퍼로 모인다. **[v0.15.7] 최대 길이 = config `chat_key_max_chars`(기본 200자)** — 초과 시 `400`(불투명 키 남용 방어) |
+| `threadId` | string | 예 | **FE 생성 방 식별자**(§2.6). **멀티턴 필터 누적·장바구니 pending·되돌리기·동시 스트림 락(§2.9 a)의 키.** **[v0.15.7] 길이 상한 동일**(`chat_key_max_chars`) |
 | `message` | string | 예 | 현재 턴 사용자 원문 질의. **[v0.15.6] 최대 길이 = config `chat_message_max_chars`(기본 4000자)** — 초과 시 `400 BAD_REQUEST`(§2.5). PII·메모리 방어(`/seller/chat` 동일). **[v0.15.25] `conditionActions`가 1건 이상이면 빈 문자열을 허용**한다 — 둘 다 비면 `400`. |
 | `conditionActions` | array | 아니오 | **[v0.15.25 신설]** FE 조건 칩 제거 액션. 미지정 기본값은 빈 배열. **구매자 전용** — 아래 상세. |
 | `screen` | object | 아니오 | **[v0.15.25 신설]** 사용자가 지금 보고 있는 화면. 지시어("이거") 해석·담기 대상 확정에 쓴다 — 아래 상세. |
@@ -618,8 +638,8 @@ FE/BE 문서에 없으나 MVP에 필요한 아래 3종은 **모두 구매자 SSE
 
 | 필드 | 타입 | 필수 | 설명 |
 |---|---|---|---|
-| `sessionId` | string | 예 | 세션 식별자(불투명 스레드 키) |
-| `threadId` | string | 예 | 대화 스레드 식별자 |
+| `sessionId` | string | 예 | **접속 식별자**(Spring CH-6 발급, §2.6). 프로필 세션버퍼·세션 종료 통지의 키 |
+| `threadId` | string | 예 | **방 식별자**(FE 생성, §2.6). 멀티턴 맥락·draft·**동시 스트림 락**(§2.9 a)의 키 — 판매자도 워크스페이스 탭을 여러 개 열 수 있어 축 분리가 동일하게 적용된다 |
 | `message` | string | 예¹ | 통계 질문("이번 주 매출 어때?") 또는 상세 수정 요청("이 상품 설명 더 매력적으로 바꿔줘") |
 | `action` | `"confirm"` | 아니오 | **[확정 v0.14.1]** HITL 승인 신호. draft에 대한 `[적용]`. 지정 시 `draftId` 필수 |
 | `draftId` | string | 조건부 | `action == "confirm"` 일 때 실행할 draft 식별자(스트림1 `draft.draftId`). 누락 시 `400 BAD_REQUEST` |
@@ -763,7 +783,7 @@ GET /profile/me
 
 ### 3.5 `POST {AI_SERVER}/events/session-end` (I-20) — 세션 종료 통지 (Spring → AI, best-effort, 멱등, 본 문서 소유)
 
-Spring이 세션 종료를 감지해 프로필 파이프라인 **조기 트리거**로 전달한다(결정 12/16). I-20에서 Spring이 보내는 알려진 `reason`은 **`logout`·`newConversation` 2종**이다. `reason`은 wire enum을 강제하지 않지만 최대 64자로 제한한다. **`tabClose` 신호는 사용하지 않으며**, 비활동 종료(`inactivityTimeout`)는 HTTP 통지나 자기 호출 없이 AI 내부 스케줄러가 판정한다. HTTP 계약은 본 문서 소유(결정 21), 수신·내부 timeout 동작은 `SPEC-PROFILE-001`.
+Spring이 세션 종료를 감지해 프로필 파이프라인 **조기 트리거**로 전달한다(결정 12/16). **[개정 v0.16.0]** I-20에서 Spring이 보내는 알려진 `reason`은 **`logout` 1종**이다 — 축 분리 후 "새 대화"는 FE가 `threadId`만 새로 만들어 세션을 유지하므로(§2.6) `newConversation`은 더 이상 발화되지 않는다. `reason`은 wire enum을 강제하지 않지만 최대 64자로 제한한다. **`tabClose` 신호는 사용하지 않으며**, 비활동 종료(`inactivityTimeout`)는 HTTP 통지나 자기 호출 없이 AI 내부 스케줄러가 판정한다. HTTP 계약은 본 문서 소유(결정 21), 수신·내부 timeout 동작은 `SPEC-PROFILE-001`.
 
 > **[경로/방향 정합 v0.15.17]** I-20은 **AI 서버가 호스팅하는 inbound 엔드포인트**(Spring→AI)다. `app/api/events.py`가 회원의 세션 단위 프로필 버퍼를 조기 처리하며, checkpointer/thread 삭제 부수효과는 없다. AI가 Spring을 호출하는 역방향(§4)이 아니다.
 
@@ -780,12 +800,12 @@ Spring이 세션 종료를 감지해 프로필 파이프라인 **조기 트리�
 | 필드 | 타입 | 필수 | 설명 |
 |---|---|---|---|
 | `userId` | number(BIGINT) | 예 | 세션 소유 회원 식별자. 양의 정수만 허용하며 string/float/bool coercion은 거부(JWT `sub`와 동종 숫자 id, 프로필 스코프) |
-| `sessionId` | string | 예 | 종료된 세션 식별자(UUID 포함 불투명 스레드 키). 최대 길이 = config `chat_key_max_chars`(§2.6) |
-| `reason` | string | 아니오 | Spring이 관측한 종료 사유(알려진 값 `logout`/`newConversation`) — **enum 미강제·최대 64자** |
+| `sessionId` | string | 예 | 종료된 **접속** 식별자(UUID 포함 불투명 문자열, §2.6). **방(`threadId`) 단위 종료 통지는 없다** — 종료는 접속 단위다. 최대 길이 = config `chat_key_max_chars`(§2.6) |
+| `reason` | string | 아니오 | Spring이 관측한 종료 사유(**[v0.16.0]** 알려진 값 `logout` 1종) — **enum 미강제·최대 64자**. 구 `newConversation` 은 발화되지 않는다(§2.6) |
 
 > **[v0.15.17 변경 — 이슈 #62]** 구 초안의 `eventId`·`endedAt`를 **제거**하고 `userId`를 **string → number(BIGINT 정수)**로 정정했다(BE 실측 payload 정합). 멱등 키는 별도 필드 대신 **`(userId, sessionId)` 고정 파생키**(§2.7)로 전환한다. 종전 스키마와 불일치해 `POST /events/session-end`가 상시 `400`을 반환하던 문제를 해소한다.
 
-- **Spring 명시적 종료**: `NEW_CONVERSATION`·`LOGOUT`만 I-20을 발화한다. 두 경로는 세션을 삭제하므로 한 `sessionId`에는 하나의 논리적 종료만 존재한다.
+- **Spring 명시적 종료 [개정 v0.16.0]**: **`LOGOUT` 하나만** I-20을 발화한다. 이 경로는 세션을 삭제하므로 한 `sessionId`에는 하나의 논리적 종료만 존재한다. 구 `NEW_CONVERSATION`은 **제거** — 새 대화가 `threadId`만 갱신하게 되어(§2.6) CH-1도 I-20도 호출되지 않는다. 결과적으로 **Spring이 I-20을 쏘는 경우는 로그아웃뿐**이고, 나머지(세션 TTL 만료)는 Redis 만료 + AI 내부 비활동 sweep이 담당한다.
 - **AI 내부 비활동 종료(이슈 #79)**: 회원 대화 저장 성공 시 `(userId, sessionId)`의 `lastActivityAt`을 DB 서버 시각으로 갱신하고 이전 종료 claim을 같은 transaction에서 삭제한다. 단일 인스턴스 MVP 스케줄러가 기본 60초마다, 기본 10분 이상 비활성인 `ACTIVE` 행을 인덱스 기반·bounded batch로 선점하고 활성 스트림이 없음을 재확인한 뒤 I-20과 **같은 finalizer·고정키 claim**으로 버퍼를 처리한다. idle 성공은 Spring의 영구 종료와 달리 claim을 해제하는 checkpoint이며, 새 회원 발화는 `COMPLETED` activity도 `ACTIVE`로 재개한다. terminal finalizer도 시작 때 관찰한 activity generation이 처리 중 바뀌면 영구 완료하지 않고 재시도 상태로 끝낸다. scheduler는 실제 스트림 registry 슬롯을 점유하지 않아 처리 중 복귀한 정상 채팅을 `409`로 막지 않는다. 실패 시 claim lease 만료 또는 명시적 해제로 재시도한다. AI가 자기 `/events/session-end`를 HTTP 호출하지 않는다.
 - **탭 닫기**: 별도 종료 신호를 두지 않는다. 사용자가 10분 안에 돌아와 발화하면 `lastActivityAt`이 갱신된다. timeout 처리 중이나 처리 후 같은 `sessionId`로 복귀하더라도 새 발화가 activity를 재개하고 남은 버퍼는 다음 checkpoint에서 처리된다.
 - **best-effort**: Spring 통지가 유실돼도 마지막 저장 회원 발화가 10분 비활성에 도달하면 AI 내부 sweep이 저장된 세션 버퍼를 회수한다(SPEC-PROFILE-001 REQ-PROF-050/056~059).
@@ -1166,7 +1186,7 @@ Spring/FE 팀과 확정이 필요한 항목을 통합한다. 각 항목은 본 �
 | C-5 | **[해소 v0.15.5] `productId` 타입 & `attributes`** | 원본 id = 숫자(BIGINT). **[해소] `attributes` 구조 확정** — DDL `product.attributes` JSON, **축 = `category.attribute_schema`(키 배열), 값 자유텍스트**(D7·D11). 2차 압축 속성 매칭 대상 | 결정 9-B / DDL D7·D11 | ✅ **해소**(타입·attributes 구조 모두 확정) |
 | C-6 | **[정정 v0.15.5] 구매 이력 = I-19** | `GET /internal/members/{id}/orders`(§4.7). camelCase·숫자 id(DDL)·`shippingFee` 0. **`status` = 6종**(`PAID/PREPARING/SHIPPING/DELIVERED/CANCELED/RETURNED`, Notion I-19). **`categoryName` 포함**(BE 확정 2026-07-19 — 카테고리 억제·productId dedup 모두 가능) | I-19 / Notion·DDL | 🟢 확정(status·타입·**categoryName BE 확정 2026-07-19**). 🔴 잔여 — Notion 페이지 stale BE 통보 |
 | C-7 | **판매자 판매 데이터 소스** | **[해소]** 원천 = **Spring 집계 API(I-6) 질의 시점 콜백**(§3.2·§4.4). 구 기본안(주문 미러 sellerId·금액 확장) 폐기 | 결정 20 개정/Batch 1 | ✅ **해소** — 계약 세부는 C-13으로 이관 |
-| C-8 | **[해소 v0.15.19] 세션 종료 통지 = I-20** | `POST /events/session-end` `{sessionId,userId(number BIGINT),reason?}` + `X-Internal-Token`. UUID 포함 불투명 sessionId, reason 최대 64자, 파생 멱등키, 202 `accepted`/`duplicate`(§3.5) | 이슈 #62/#79 / Spring PR #24 | 🟢 계약 확정 — Spring 알려진 reason=`logout`/`newConversation`, AI 내부 10분 비활동 종료, enum 미강제 |
+| C-8 | **[해소 v0.15.19] 세션 종료 통지 = I-20** | `POST /events/session-end` `{sessionId,userId(number BIGINT),reason?}` + `X-Internal-Token`. UUID 포함 불투명 sessionId, reason 최대 64자, 파생 멱등키, 202 `accepted`/`duplicate`(§3.5) | 이슈 #62/#79 / Spring PR #24 | 🟢 계약 확정 — **[v0.16.0]** Spring 알려진 reason=`logout` **1종**(`newConversation` 제거 — 새 대화는 threadId만 갱신, §2.6), AI 내부 10분 비활동 종료, enum 미강제 |
 | C-9 | **[BE 신설 07/17] 추천 push = I-21** | `POST /internal/recommendations` `{sessionId, listId, productIds[Top5 숫자], reasons[{productId,reason}]}`(§4.2). **listId=FastAPI 생성**, **reason=콜백 포함(v0.15.15 확정, BE 구현 07-18)**, 콜백 성공 후 products.ready. 구 groups 구조 폐기 | I-21 / BE DB | 🟢 reason 콜백 포함 확정. 🔴 잔여: listId TTL·형식 |
 | C-10 | **식별자 = 토큰 클레임** | **확정(숫자 사용자 id)**: 사용자/게스트/판매자 = 숫자 id, JWT `sub`에 문자열화. `role` enum 구분(§2.6). **양팀 통보 필요** | 결정 8/19 / 2026-07-14 세션 확정 | 🔴 미확정 — 클레임 키·id 타입 세부 |
 | C-11 | **[v0.7.0 축소] CORS 허용 오리진** | 레이트 리밋은 **확정**(FastAPI 미들웨어 + in-memory, 분당 10/시간당 100 config, §2.8) — 협의 잔여는 **FE 허용 오리진 목록**뿐 | 결정 19 / v0.7.0 확정 | 🔴 잔여 — 허용 오리진(FE 통보) |
@@ -1234,6 +1254,7 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 
 | 버전 | 날짜 | 변경 |
 |---|---|---|
+| v0.16.0 | 2026-07-30 | **[정본 SPEC-CHAT-SESSION 반영] `sessionId`(접속) · `threadId`(방) 축 분리 — MVP의 `sessionId == threadId` 전제 폐기.** 한 접속 아래 여러 방이 **동시에** 존재하는 멀티탭 대화를 지원하기 위해 두 식별자의 역할을 갈랐다. (1) **§2.6 식별자 모델 신설** — 축별 발급 주체·수명·담당 상태를 표로 확정. `sessionId`=Spring CH-1 발급(Redis TTL 10분 sliding)·프로필 세션버퍼·I-20·`conversation_turns.conversation_id`(primary), `threadId`=**FE 생성**(서버 왕복 없음)·필터 누적·장바구니 pending·되돌리기·동시 스트림 락·`conversation_turns.thread_id`. 구 정의 *"만료 의미 없는 불투명 스레드 키"* 를 **폐기** — "스레드 키"는 이제 `threadId`의 것이고, AI가 만료를 판정하지 않는 이유는 만료가 **없어서**가 아니라 **판정 주체가 Spring이라서**다. (2) **§2.9 a 동시 스트림 락을 세션→방 단위로 개정** — `409 STREAM_IN_PROGRESS`의 판정 키가 `sessionId`에서 **`threadId`** 로 바뀐다. 세션 단위로 잠그면 탭 B가 탭 A의 스트리밍 때문에 409를 맞아 **축 분리의 목적이 정면으로 무효화**된다. §2.5 오류표도 동기화. (3) **§3.5 I-20 사유를 `logout` 1종으로 축소** — 새 대화가 CH-1을 부르지 않고 `threadId`만 갱신하게 되어 `newConversation`이 발화되지 않는다. Spring이 I-20을 쏘는 경우는 로그아웃뿐이고 나머지는 Redis TTL 만료 + AI 내부 비활동 sweep이 담당한다(C-8 행 동기화). (4) **[D5] CH-1 멱등 등재 + 구 "CH-1 재호출 = 새 세션(맥락 단절)" 경고 폐기**(§1.2 레인 d) — Spring이 Redis `SETNX`로 기존 세션을 그대로 반환하므로 CH-1을 몇 번 불러도 세션은 하나다. **정확성은 `SETNX`가 책임지고 FE Web Locks(D1)는 최적화**다(한 브라우저 안에서만 통해 폰·PC 동시 접속을 막지 못한다). 축출을 없앤 뒤에는 밀린 세션이 CH-1b로 TTL을 연장하며 유령으로 남아 I-20이 안 나가는 문제가 생기는데 이를 `SETNX`가 막는다. **예외 = 게스트 첫 방문 멀티탭**(쿠키 부재 → 게스트 2명 생성 → 밀린 탭이 CH-1b `403`)은 신원이 갈라지는 것이라 `SETNX`로 막을 수 없어 Web Locks가 방어한다. (5) **[D6] 맥락 TTL을 방→접속 단위로** — 어느 방에서든 활동이 있으면 그 `sessionId`의 **모든 방** TTL을 함께 연장하고 세션 종료 시 일괄 정리한다. 방마다 생사가 갈리면 탭을 옮겼을 때 한쪽 맥락만 사라져 사용자가 이해할 수 없다. (6) **§6.3 저장·로그 축 정합** — checkpointer thread 키를 `sessionId`→**`threadId`** 로 정정하고, `conversation_turns`를 **session-primary + `thread_id` 병기**로 명시(세션 종료 스캔은 세션 축, 방별 조회·정리는 방 축이라 어느 한쪽만으로는 불가). 구조화 로그에 **`threadId` 필드 신설** — 멀티탭이면 한 `conversationId` 아래 여러 방 로그가 섞여 방을 못 가리면 동시 스트림을 분리해 읽을 수 없다. **🔴 잔여**: `SETNX` 멱등 키 스코프(`sub` vs `sub_type`+`sub`)와 멱등 반환 시 세션 TTL sliding 갱신 여부 — BE 확인 대기. |
 | v0.15.26 | 2026-07-30 | **[사본 drift 정정] 정본 대조로 틀린 서술 3건 교체.** (1) **담기 이벤트 적재 주체** — §4.1 I-2의 *"`CART_ADD(via: chat)` 이벤트는 BE가 적재(AI 무관)"* 와 §5.1 Q9의 같은 답변을 **폐기**했다. E-1 정본에서 `add_to_cart`는 **FE가 쏘는 12종 중 하나**이고, 서버가 직접 적재하는 이벤트는 `recommendation_generated` 하나뿐이다(E-1 HTTP로 들어오면 드롭). 챗봇 경로도 FE가 SSE `action`(`CART_ADDED`) 수신 시점에 쏜다. (2) **`budget` 이벤트 제외** — 정본(Notion CH-2)이 *"현재 코드에 미구현 → 명세에서 제외(필요 시 post-MVP)"* 로 정리했는데 사본은 §3.1에 스키마를 그대로 두고 이벤트 순서 계약에도 넣어두고 있었다. 스키마는 post-MVP 참고용으로 남기고 순서 계약에서 뺐다(이슈 #163). (3) **공통 헤더 규약 §2.5 신설** — `X-Request-Id`·`traceparent` 는 전 API 공통이라 엔드포인트 행 단위인 정본 DB에 놓을 자리가 없었다. Notion「프로젝트 자료실」에 **공통 규약 페이지를 신설**하고 본 사본 §2.5에 AI 소관 요약을 넣었다(#141·#134·#151). 실측: inbound `X-Request-Id` **수용 미구현**(`request_context_middleware`가 `new_request_id()`를 조건 없이 호출) · Spring 역호출 **전파 미구현**(`X-Internal-Token` 하나만) · 응답 echo 는 구현됨 · `traceparent` 는 코드베이스에 없음. (4) **`search.query` PII 기준** — 정본 E-1이 *"개인정보를 properties에 넣지 않는다"* 와 *"`search` 필수 = `query`"* 를 동시에 말해 **자기모순**이었고, FE가 그 금지 조항을 근거로 `queryLength`만 보내 `searchTopics` 워커가 돌 수 없었다. 금지 대상은 **FE가 굳이 끌어다 넣는 이름·주소·연락처·이메일**이며 사용자가 직접 입력해 이미 서버로 보낸 검색어는 원문을 싣고 **보존기간으로 관리**한다 — 정본 E-1에 「개인정보 기준」 절로 명확화했다. |
 | v0.15.25 | 2026-07-28 | **[사본 동기화] §3.1 요청 계약 확장 + in-stream `error` 추적 필드 — 정본(Notion "📡 API 명세서" CH-2) 2026-07-28 개정 반영.** (1) **`conditionActions` 신설**(이슈 #84) — 조건 칩 제거를 `[{op:"remove", field}]` 구조화 배열로 받는다. 구 규약 문자열(`"[조건 제거] priceMax"`) 왕복 방식은 **폐기** — FE는 그 방식으로 구현돼 있으나 AI에 수신부가 없어 현재 칩 제거가 무동작이다. `conditionActions`가 있으면 `message` 빈 문자열 허용, 둘 다 비면 `400`. 구매자 전용(`BuyerChatRequest`). (2) **`conditions` 칩 `field` 허용값 6종 확정** — `category`/`priceMax`/`priceMin`/`brand`/`ratingMin`/`keyword`. 종전에는 예시 둘만 있어 허용 집합이 계약에 없었는데, `conditionActions.field` 검증의 전제라 등재했다(코드 `build_condition_chips` 실측과 일치). (3) **`screen` 신설**(이슈 #118) — `{pageType, filters?, products?, columns?}`. `pageType`은 **라우트가 아니라 우측 패널 내용**을 가리킨다(채팅이 전용 페이지에만 있어 라우트를 실으면 정보가 0). `products`는 **서버가 모르는 목록만**(P-4 인기상품·판매자 자사 상품) — 추천 카드는 `listId`로 서버가 알고, 되돌려주면 위조 경로가 된다. `columns`는 반응형 그리드 열 수로 "3번째 줄 2번째" 좌표 지시 해소에 쓴다(`rows`·항목별 좌표는 파생값이라 제외). `pageType`은 **E-1 `page_view`와 같은 enum을 공유**한다 — 화면 어휘를 새로 만들지 않기 위해서다. 라우트 `path`는 쿼리스트링 PII 위험으로, 한글 `label`은 AI config 매핑으로 대체해 **계약에서 뺐다**. 07-17 FE 제안(`ChatScreenContext`)과 #118의 "노출 상품 목록" 요구를 **한 필드로 통합**했다(같은 사실의 두 측면). `products`는 담기 허용 목록을 넓히는 입력이며 **두 목록 밖 id 차단 가드는 유지**한다. **구매자·판매자 공용 필드**라 §3.2에도 등재 — 판매자 대시보드는 `meta.lane`·`done.panel`로 AI→FE 화면 조작만 있고 반대 방향이 비어 있었다. (4) **`products.ready`의 `listId`(단일) → `listIds`(배열, 항상)** — I-21이 `lists`를 1~10개 보내므로(§4.2) 단일 필드로는 세트형·니즈별 추천을 나를 수 없었다. 정본 I-21·CH-5는 이미 복수 전제인데 CH-2와 본 사본만 단일로 남아 있던 **3자 불일치**다. 목록이 1개여도 길이 1 배열로 보내 FE 분기를 없애고, 이벤트는 여전히 정확히 1회다. 예시의 `"list-4471"`도 §4.2가 금지한 추측 가능 형식이라 교정했다. **구현(`ProductsReadyData.list_id: str`)도 단일이라 코드 변경이 따라야 한다.** (5) **in-stream `error`에 `requestId`·`retryable` 추가** — 스트림 전 실패(§2.5 봉투)에는 `requestId`가 있는데 스트림 내부 실패에는 없어 추적이 끊겼다. `retryable`은 `code`로 복원 불가(같은 `LLM_UNAVAILABLE`이 미구성/일시불가에 겸용)라 emit 지점이 정한다. §3.2 판매자 스트림도 동일(`ErrorData` 공용). |
 | v0.15.24 | 2026-07-27 | **[사본 동기화] S-5 폐기 반영 — 정본(기획 저장소 Notion "📡 API 명세서" DB) 2026-07-21 결정이 본 사본에 미반영이었다.** S-5 `PATCH /api/seller/products/{id}`(판매자 화면 직접 수정, 07/17 신설)는 **미채택**이며 **상품 수정은 챗봇 HITL(I-11)이 유일 경로**다. §3.2 draft 절의 "챗봇 수정(I-11)과 병존" 서술을 폐기 표기로 교체. Spring 코드 실측에서도 `/api/seller/**`에 PATCH 엔드포인트가 없어 정본·코드 모두와 일치시켰다. 계약 변경이 아니라 **사본 drift 정정**이다. |
@@ -1283,7 +1304,9 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 
 #### (a) 대화 저장 규약
 
-저장소 = LangGraph checkpointer(AI Postgres, `sessionId` = thread 키 — 프로필 파이프라인의 세션 종료 스캔 원천).
+저장소 = LangGraph checkpointer(AI Postgres, **`threadId` = checkpointer thread 키** — **[개정 v0.16.0]** 축 분리 전에는 `sessionId`가 thread 키였다).
+
+**[v0.16.0] `conversation_turns`는 session-primary + thread 병기** — 턴 행은 `conversation_id = sessionId`(primary)로 적재하고 `thread_id = threadId`를 **함께** 남긴다. 프로필 파이프라인의 세션 종료 스캔은 `conversation_id` 축이라야 한 접속의 여러 방 발화를 한 버퍼로 모을 수 있고(§2.6), 방별 조회·정리는 `thread_id` 축이 필요하다. 어느 한쪽만으로는 두 요구를 동시에 만족할 수 없다.
 
 | 시점 | 저장 대상 | 상태 |
 |---|---|---|
@@ -1301,7 +1324,8 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 |---|---|
 | `requestId` | §2.5 오류 봉투와 동일 키 — 전 구간 상관관계 |
 | `userId`(또는 guestId) / `role` | JWT `sub` 유래 |
-| `conversationId` | = `sessionId` |
+| `conversationId` | = `sessionId`(접속) — 세션 축 상관관계 |
+| `threadId` | **[v0.16.0 신설]** = `threadId`(방) — **`conversationId`와 병기**. 멀티탭이면 한 `conversationId` 아래 여러 `threadId` 로그가 섞이므로, 방을 못 가리면 한 접속의 동시 스트림을 분리해 읽을 수 없다 |
 | `latencyFirstToken` / `latencyTotal` | SSE 2분할 — 체감 응답성 vs 전체 시간(§2.9 c 기준 대비) |
 | `model` | 호출 모델 id(Haiku/Sonnet, 노드별 다중 기록) |
 | `promptTokens` / `completionTokens` | LLM 호출별 합산 |
