@@ -76,6 +76,85 @@ async def test_get_sales_parses_camel_response() -> None:
     assert point.deviation_pct == 1.2
 
 
+async def test_get_sales_accepts_null_deviation_pct() -> None:
+    """[회귀 2026-07-30] 실 Spring(SellerSalesService)은 이동평균 구간 미달 포인트에
+    deviationPct=null 을 내려보낸다 — float 고정 스키마가 ValidationError 를 내며
+    매출 조회 전체가 '응답 형식 오류' degrade 로 실패하던 버그."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "brandId": 93,
+                    "granularity": "daily",
+                    "series": [
+                        {
+                            "date": "2026-06-01",
+                            "sales": 120000,
+                            "orderCount": 4,
+                            "salesCount": 5,
+                            "isAnomaly": False,
+                            "deviationPct": None,
+                        },
+                        {
+                            "date": "2026-06-08",
+                            "sales": 30000,
+                            "orderCount": 1,
+                            "salesCount": 1,
+                            "isAnomaly": True,
+                            "deviationPct": -71.4,
+                        },
+                    ],
+                    "config": {"windowDays": 7, "deviationPct": 30.0},
+                },
+            },
+        )
+
+    client = _client(handler)
+    result = await client.get_sales("93", "2026-06-01", "2026-06-30")
+
+    assert [p.deviation_pct for p in result.series] == [None, -71.4]
+    assert result.series[0].sales == 120000
+
+
+async def test_get_funnel_flattens_stages_response() -> None:
+    """[회귀 2026-07-30] 실 Spring(SellerFunnelResponse)은 stages[] 형태 — 종전 평면
+    스키마는 기본값 0 으로 조용히 통과해 전 단계 0 퍼널로 오분석되던 문제.
+    checkout v1 미계산 구간(count=null)은 0 으로 수렴한다."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "brandId": 93,
+                    "from": "2026-06-01",
+                    "to": "2026-06-30",
+                    "stages": [
+                        {"stage": "product_view", "count": 5000, "source": "events"},
+                        {"stage": "add_to_cart", "count": 800, "source": "events"},
+                        {
+                            "stage": "checkout_start",
+                            "count": None,
+                            "source": "events",
+                            "computable": False,
+                        },
+                        {"stage": "purchase_complete", "count": 120, "source": "orders"},
+                    ],
+                    "conversionRates": {"viewToCart": 0.16, "overall": 0.024},
+                },
+            },
+        )
+
+    client = _client(handler)
+    result = await client.get_funnel("93", "2026-06-01", "2026-06-30")
+
+    assert (result.view, result.cart, result.checkout, result.purchase) == (5000, 800, 0, 120)
+
+
 async def test_account_events_has_no_brand_in_path() -> None:
     """I-8은 /internal/account-events (brandId 없음)."""
     captured: dict = {}

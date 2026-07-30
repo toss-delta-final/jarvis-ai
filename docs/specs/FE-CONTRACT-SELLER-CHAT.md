@@ -214,7 +214,7 @@ done   { "finishReason": "stop", "panel": "keep" }
 
 #### 스트림 시작 전 거부(요청 자체가 틀림 — SSE 아님, HTTP 오류 봉투)
 
-`meta` 조차 못 받는다. HTTP 상태 + JSON 봉투로 온다(§4.1): `400`(필드 누락·`action=="confirm"`인데 `draftId` 없음)·`401`(토큰)·`403`(seller 아님)·`409`(동일 sessionId 동시 스트림).
+`meta` 조차 못 받는다. HTTP 상태 + JSON 봉투로 온다(§4.1): `400`(필드 누락·`action=="confirm"`인데 `draftId` 없음)·`401`(토큰)·`403`(seller 아님)·`409`(동일 threadId 동시 스트림).
 
 ---
 
@@ -445,7 +445,7 @@ name  price  originalPrice  description  category  imageUrl  status  stockQuanti
 | 401 | `TOKEN_EXPIRED` | 토큰(스트림 티켓) 만료 → 재발급 후 재시도 | `deps.get_identity` |
 | 401 | `TOKEN_INVALID` | 서명·형식·scope 불일치, 토큰 없음 | `deps.get_identity` |
 | 403 | `FORBIDDEN` | `seller_id` 클레임 없음(`"seller scope required"`) 또는 `brandId` 클레임 없음 | `deps.require_seller` |
-| 409 | `STREAM_IN_PROGRESS` | 같은 `sessionId` 로 이미 활성 스트림 존재(동시 요청) | `core.stream.open_stream` |
+| 409 | `STREAM_IN_PROGRESS` | 같은 `threadId` 로 이미 활성 스트림 존재(동시 요청) | `core.stream.open_stream` |
 | 429 | `RATE_LIMITED` | 요청 과다 — 기본 **10회/분·100회/시**(config `rate_limit_per_min`/`_per_hour`), sub 스코프 + IP 백스톱 | `core.ratelimit.rate_limit_middleware` |
 | 504 | `UPSTREAM_TIMEOUT` | first-token/전체 타임아웃(§2.9) — 상류(LLM) 응답 지연 | `core.stream.open_stream` |
 

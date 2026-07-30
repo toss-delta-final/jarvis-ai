@@ -41,6 +41,7 @@ class Turn:
 
     turn_id: str
     conversation_id: str
+    thread_id: str | None
     user_id: str | None
     role: str
     user_text: str
@@ -59,6 +60,7 @@ class ConversationStoreProtocol(Protocol):
         text: str,
         *,
         session_id: str | None = None,
+        thread_id: str | None = None,
     ) -> str: ...
 
     async def finalize_assistant(
@@ -92,12 +94,14 @@ class ConversationStore:
         text: str,
         *,
         session_id: str | None = None,
+        thread_id: str | None = None,
     ) -> str:
         """사용자 메시지 수신 즉시 저장(§6.3 a). turn_id 를 반환한다(assistant 마감에 사용)."""
         turn_id = f"turn-{next(self._seq)}"
         self._turns[turn_id] = Turn(
             turn_id=turn_id,
             conversation_id=conversation_id,
+            thread_id=thread_id,
             user_id=user_id,
             role=role,
             user_text=text,
@@ -219,6 +223,15 @@ class PgConversationStore:
                         "CREATE INDEX IF NOT EXISTS idx_conversation_turns_sequence "
                         "ON conversation_turns (conversation_id, sequence_id)"
                     )
+                    # 기존 볼륨에는 thread_id가 없으므로 런타임 멱등 migration으로 보강한다.
+                    # 기존 턴은 방 정보를 복원할 수 없어 NULL을 유지하고, 신규 턴부터 기록한다.
+                    await conn.execute(
+                        "ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS thread_id text"
+                    )
+                    await conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_conversation_turns_thread "
+                        "ON conversation_turns (conversation_id, thread_id)"
+                    )
                     # session_activity 자체 migration pool과 같은 lock을 사용해야 두 connection이
                     # profile_session_activity CREATE TABLE/INDEX를 동시에 시작하지 않는다.
                     await conn.execute(
@@ -233,7 +246,7 @@ class PgConversationStore:
         """쓰기 쿼리(연결 획득+실행)를 실행 상한으로 감싼다.
 
         pg 가 응답 없이 멈추면 이 await 가 영영 안 끝나 commit_user_message() 가 반환하지
-        못하고 해당 session_id 의 동시 스트림 슬롯이 영구히 잠긴다(§2.9 a, PR #48 후속 리뷰).
+        못하고 해당 threadId의 동시 스트림 슬롯이 영구히 잠긴다(§2.9 a, PR #48 후속 리뷰).
         """
 
         async def _run() -> int:
@@ -251,6 +264,7 @@ class PgConversationStore:
         text: str,
         *,
         session_id: str | None = None,
+        thread_id: str | None = None,
     ) -> str:
         turn_id = uuid.uuid4().hex
         member_id = _profile_member_id(user_id, role)
@@ -258,9 +272,9 @@ class PgConversationStore:
         if member_id is None or session_id is None:
             await self._execute(
                 "INSERT INTO conversation_turns "
-                "(turn_id, conversation_id, user_id, role, user_text) "
-                "VALUES (%s, %s, %s, %s, %s)",
-                (turn_id, conversation_id, user_id, role, text),
+                "(turn_id, conversation_id, thread_id, user_id, role, user_text) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (turn_id, conversation_id, thread_id, user_id, role, text),
             )
             return turn_id
 
@@ -269,9 +283,9 @@ class PgConversationStore:
                 async with conn.transaction():
                     await conn.execute(
                         "INSERT INTO conversation_turns "
-                        "(turn_id, conversation_id, user_id, role, user_text) "
-                        "VALUES (%s, %s, %s, %s, %s)",
-                        (turn_id, conversation_id, user_id, role, text),
+                        "(turn_id, conversation_id, thread_id, user_id, role, user_text) "
+                        "VALUES (%s, %s, %s, %s, %s, %s)",
+                        (turn_id, conversation_id, thread_id, user_id, role, text),
                     )
                     await session_activity.touch_on_connection(conn, member_id, session_id)
 
@@ -296,7 +310,8 @@ class PgConversationStore:
             async with self._pool.connection() as conn:
                 row = await (
                     await conn.execute(
-                        "SELECT turn_id, conversation_id, user_id, role, user_text, assistant_text, status "
+                        "SELECT turn_id, conversation_id, thread_id, user_id, role, user_text, "
+                        "assistant_text, status "
                         "FROM conversation_turns WHERE turn_id = %s",
                         (turn_id,),
                     )
@@ -310,7 +325,8 @@ class PgConversationStore:
             async with self._pool.connection() as conn:
                 rows = await (
                     await conn.execute(
-                        "SELECT turn_id, conversation_id, user_id, role, user_text, assistant_text, status "
+                        "SELECT turn_id, conversation_id, thread_id, user_id, role, user_text, "
+                        "assistant_text, status "
                         "FROM conversation_turns WHERE conversation_id = %s "
                         "ORDER BY sequence_id",
                         (conversation_id,),
@@ -322,10 +338,11 @@ class PgConversationStore:
 
 
 def _row_to_turn(row: tuple) -> Turn:
-    turn_id, conversation_id, user_id, role, user_text, assistant_text, status = row
+    turn_id, conversation_id, thread_id, user_id, role, user_text, assistant_text, status = row
     return Turn(
         turn_id=turn_id,
         conversation_id=conversation_id,
+        thread_id=thread_id,
         user_id=user_id,
         role=role,
         user_text=user_text,

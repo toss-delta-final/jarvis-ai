@@ -59,6 +59,7 @@ class RequestObservation:
 
     request_id: str
     conversation_id: str
+    thread_id: str | None
     user_id: str | None
     role: str
     store: ConversationStoreProtocol
@@ -86,6 +87,7 @@ class RequestObservation:
                 self.role,
                 self.pending_message,
                 session_id=self.pending_session_id,
+                thread_id=self.thread_id,
             )
 
     def record_model_call(
@@ -139,6 +141,7 @@ class RequestObservation:
             "userId": self.user_id,
             "role": self.role,
             "conversationId": self.conversation_id,
+            "threadId": self.thread_id,
             "latencyFirstToken": latency_first_ms,
             "latencyTotal": latency_total_ms,
             "model": [m.model for m in self.model_calls] or None,
@@ -174,6 +177,7 @@ def start_observation(
     request_id: str,
     identity: Identity,
     conversation_id: str,
+    thread_id: str | None = None,
     message: str,
     store: ConversationStoreProtocol,
     now: float,
@@ -187,6 +191,7 @@ def start_observation(
     return RequestObservation(
         request_id=request_id,
         conversation_id=conversation_id,
+        thread_id=thread_id,
         user_id=subject,
         role=role,
         store=store,

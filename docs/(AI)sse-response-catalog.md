@@ -31,12 +31,12 @@ token / draft / done / error
 | `conditions` | `{chips: [{field,label,value}]}` | 구매자 추천 검색 직전 |
 | `suggestions` | `{chips: [{label,revert?,relaxation?,estCount}]}` | 현재는 최근 구매 소모품 category 되돌리기 |
 | `action` | `{type,message,cartItemId?,reason?}` | 구매자 장바구니 담기 성공/실패 |
-| `products.ready` | `{sessionId,listId}` | Spring 추천 목록 push 성공 뒤 |
+| `products.ready` | `{sessionId,listIds}` | Spring 추천 목록 push 성공 뒤(1~10개, 단일도 배열) |
 | `draft` | `{draftId,op,productId,changes,summary}` | 판매자 상품 변경 초안 저장 성공 |
 | `done` | `{finishReason: stop|zero_result}` | 정상/degrade 종료 |
-| `error` | `{code,message}` | stream 내부 치명 오류 종료 |
+| `error` | `{code,message,requestId,retryable}` | stream 내부 치명 오류 종료 |
 
-`error.code`는 `LLM_TIMEOUT | LLM_UNAVAILABLE | SEARCH_FAILED | INTERNAL`이다. `action.reason`의 현재 runtime 값은 `PRODUCT_NOT_FOUND | CART_ERROR`다.
+`error.code`는 `LLM_TIMEOUT | LLM_UNAVAILABLE | SEARCH_FAILED | INTERNAL`이다. `requestId`는 같은 HTTP 요청·구조화 로그의 상관키이며, `retryable`은 emit 지점이 판단한다. `action.reason`의 현재 runtime 값은 `PRODUCT_NOT_FOUND | CART_ERROR`다.
 
 ## 3. 구매자 sequence
 

@@ -14,7 +14,7 @@ MVP 목표: **데모 시나리오 최소셋 동작** — 단일 검색+필터 �
 | 계약 | §2.3 인증 · §2.5 오류 봉투 · §2.8 레이트 리밋 · §2.9 스트림 수명주기 |
 
 - **인증**: JWKS 공개키로 `kid` 매칭 → RS256 서명·`exp`·`iss`·`aud` 검증. 신원은 `sub`+`role`(member/guest/seller). `AUTH_MODE=dev`는 서명 검증 생략(로컬 전용). ✅ 검증됨
-- **SSE 수명주기(§2.9)**: 세션당 활성 스트림 1개(초과 시 `409 STREAM_IN_PROGRESS`, in-memory 레지스트리) / 취소 = `request.is_disconnected()` 감지 → LLM 스트림 close + task cancel / 타임아웃 first-token 10s·상한 90s. 📋
+- **SSE 수명주기(§2.9)**: 방(`threadId`)당 활성 스트림 1개(초과 시 `409 STREAM_IN_PROGRESS`, in-memory 레지스트리) / 취소 = `request.is_disconnected()` 감지 → LLM 스트림 close + task cancel / 타임아웃 first-token 10s·상한 90s. 📋
 - **레이트 리밋(§2.8)**: FastAPI 미들웨어 + in-memory, 토큰 `sub` 스코프, 분당 10·시간당 100(config). 목적 = 남용 차단. 📋
 - 주의: 동시 스트림·레이트 리밋 상태는 단일 인스턴스 in-memory 전제 — 다중 인스턴스 확장 시 Redis 이관.
 
@@ -27,7 +27,7 @@ MVP 목표: **데모 시나리오 최소셋 동작** — 단일 검색+필터 �
 | 관련 파일 | `app/agents/buyer/{graph,recommendation}`, `app/services/{search_service,spring_client}` |
 | 계약 | §3.1 SSE · §4.6 검색 위임 · §4.7 이력 · §4.2 목록 push · §4.3 목록 GET |
 
-- **파이프라인**: 이력 조회(dedup) ∥ decompose(Haiku, 구조화 필터+키워드) → search(Spring 위임, §4.6) → rerank(Sonnet, 프로필 반영) → push(§4.2) → SSE `products.ready{sessionId,listId}`.
+- **파이프라인**: 이력 조회(dedup) ∥ decompose(Haiku, 구조화 필터+키워드) → search(Spring 위임, §4.6) → rerank(Sonnet, 프로필 반영) → push(§4.2) → SSE `products.ready{sessionId,listIds}`.
 - **조건 칩**: 추출 필터를 `conditions` 이벤트로 노출, 제거는 다음 턴 `message`에 규약 문자열(`"[조건 제거] priceMax"`)로 재분해 트리거. 규약 문자열 포맷은 LLM 팀 소유(우리가 확정해 FE 통보).
 - **degrade**: search 실패 → `SEARCH_FAILED` error(후보 날조 금지) / rerank 실패 → 검색 상위 5~8개, 하드 제약 유지, `done` 종료 / push 실패 → 챗 텍스트 완료 + `products.ready` 생략.
 - 주의: 가격 상한 등 정확 제약은 항상 검색 필터로. 후보 흐름(방식1/2)은 OPEN → `SearchBackend`로 교체 가능하게 유지.
