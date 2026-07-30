@@ -12,6 +12,7 @@ from app.agents.profile.finalizer import FinalizationStatus, finalize_profile_se
 from app.agents.profile.session_activity import ActivityClaim
 from app.core.config import get_settings
 from app.core.conversation import conversation_key
+from app.core.session_lifecycle import SessionLifecycleCoordinator
 from app.core.stream import get_registry
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,30 @@ async def run_idle_sweep() -> IdleSweepResult:
     """만료 후보를 bounded claim하고 제한된 concurrency로 공통 finalizer에 전달한다."""
     settings = get_settings()
     started = time.monotonic()
+    lifecycle = await SessionLifecycleCoordinator().run_session_context_sweep(
+        idle_timeout_s=settings.profile_session_idle_timeout_s,
+        lease_s=settings.profile_idle_claim_ttl_s,
+        batch_size=settings.profile_idle_sweep_batch_size,
+    )
+    if lifecycle.examined:
+        result = IdleSweepResult(
+            claimed=lifecycle.claimed,
+            accepted=lifecycle.completed,
+            retryable=lifecycle.retryable,
+            skipped=lifecycle.skipped,
+        )
+        logger.info(
+            "profile lifecycle sweep 완료: claimed=%d accepted=%d retryable=%d "
+            "skipped=%d duration_ms=%d",
+            result.claimed,
+            result.accepted,
+            result.retryable,
+            result.skipped,
+            int((time.monotonic() - started) * 1000),
+        )
+        return result
+
+    # 롤링 배포 중 legacy activity row만 남은 경우의 backfill 호환 경계.
     claims = await session_activity.claim_expired_sessions(
         idle_timeout_s=settings.profile_session_idle_timeout_s,
         lease_s=settings.profile_idle_claim_ttl_s,

@@ -10,10 +10,13 @@ import pytest
 from app.agents.profile import finalizer, idle_timeout, processed_events, session_activity
 from app.agents.profile.store import get_profile_store
 from app.agents.profile.session_activity import ActivityClaim
+from app.core import session_context
 from app.core.config import get_settings
 from app.core.conversation import conversation_key
 from app.core.llm import LLMError
-from app.core.stream import get_registry
+from app.core.session_context import BuyerSessionInput, SessionContextRepository
+from app.core.session_lifecycle import SessionLifecycleCoordinator
+from app.core.stream import ActiveStreamRegistry, get_registry
 
 
 class _LLM:
@@ -36,6 +39,247 @@ class _LLM:
 
     async def stream(self, **kwargs):
         yield "x"
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 1_000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+async def _complete_idle_transient(
+    repo: SessionContextRepository,
+    coordinator: SessionLifecycleCoordinator,
+    clock: _Clock,
+) -> tuple[str, int]:
+    clock.advance(601)
+    [claim] = await repo.claim_expired_contexts(600, 0.01, 1)
+    outcome = await coordinator.process_idle_transient(claim)
+    assert outcome.status == "completed"
+    return claim.context_id, claim.generation
+
+
+async def test_profile_lease_expiry_never_preempts_live_local_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _Clock()
+    repo = SessionContextRepository(clock=clock)
+    monkeypatch.setattr(session_context, "_default_repository", repo)
+    coordinator = SessionLifecycleCoordinator(repo, ActiveStreamRegistry())
+    context = await repo.touch(BuyerSessionInput("long-llm", "t1", "member", "701"))
+    store = await get_profile_store()
+    await store.append_session_ctx(conversation_key("701", "long-llm"), "첫 취향")
+    await _complete_idle_transient(repo, coordinator, clock)
+    entered = asyncio.Event()
+    proceed = asyncio.Event()
+    active = 0
+    peak = 0
+
+    class _BlockingLLM(_LLM):
+        async def complete(self, **kwargs):
+            nonlocal active, peak
+            if "델타 추출기" in kwargs["system"]:
+                active += 1
+                peak = max(peak, active)
+                entered.set()
+                await proceed.wait()
+                active -= 1
+            return await super().complete(**kwargs)
+
+    monkeypatch.setattr(finalizer, "get_llm", lambda: _BlockingLLM())
+    first = asyncio.create_task(finalizer.process_recoverable_profile_phases(1))
+    await entered.wait()
+    clock.advance(60)
+    second = asyncio.create_task(finalizer.process_recoverable_profile_phases(1))
+    await asyncio.sleep(0)
+
+    assert not first.done()
+    assert await second == []
+    assert peak == 1
+    proceed.set()
+    [result] = await first
+    assert result.status is finalizer.ProfilePhaseStatus.COMPLETED
+    journal = next(iter(repo._finalizations.values()))
+    assert journal.transient_status == "completed"
+    assert journal.profile_status == "completed"
+    assert (
+        await processed_events.get_status(
+            f"chat-profile:{context.context_id}:{journal.generation}:idle"
+        )
+        == "completed"
+    )
+
+
+async def test_new_idle_generation_revalidates_after_joining_previous_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _Clock()
+    repo = SessionContextRepository(clock=clock)
+    monkeypatch.setattr(session_context, "_default_repository", repo)
+    coordinator = SessionLifecycleCoordinator(repo, ActiveStreamRegistry())
+    context = await repo.touch(BuyerSessionInput("generation-race", "t1", "member", "702"))
+    store = await get_profile_store()
+    key = conversation_key("702", "generation-race")
+    await store.append_session_ctx(key, "첫 세대 취향")
+    _, first_generation = await _complete_idle_transient(repo, coordinator, clock)
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+    delta_calls = 0
+
+    class _TwoGenerationLLM(_LLM):
+        async def complete(self, **kwargs):
+            nonlocal delta_calls
+            if "델타 추출기" in kwargs["system"]:
+                delta_calls += 1
+                if delta_calls == 1:
+                    first_entered.set()
+                    await release_first.wait()
+            return await super().complete(**kwargs)
+
+    llm = _TwoGenerationLLM()
+    monkeypatch.setattr(finalizer, "get_llm", lambda: llm)
+    first = asyncio.create_task(finalizer.process_recoverable_profile_phases(1))
+    await first_entered.wait()
+
+    clock.advance(1)
+    resumed = await repo.touch(BuyerSessionInput("generation-race", "t2", "member", "702"))
+    await store.append_session_ctx(key, "두 번째 세대 취향")
+    _, second_generation = await _complete_idle_transient(repo, coordinator, clock)
+    assert second_generation == resumed.generation
+    second = asyncio.create_task(finalizer.process_recoverable_profile_phases(2))
+    await asyncio.sleep(0)
+
+    release_first.set()
+    await asyncio.gather(first, second)
+
+    assert delta_calls == 2
+    assert (
+        await processed_events.get_status(
+            f"chat-profile:{context.context_id}:{first_generation}:idle"
+        )
+        == "completed"
+    )
+    assert (
+        await processed_events.get_status(
+            f"chat-profile:{context.context_id}:{second_generation}:idle"
+        )
+        == "completed"
+    )
+    journals = sorted(repo._finalizations.values(), key=lambda row: row.generation)
+    assert [row.profile_status for row in journals] == ["completed", "completed"]
+
+
+async def test_terminal_joins_live_idle_profile_task_without_parallel_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _Clock()
+    repo = SessionContextRepository(clock=clock)
+    monkeypatch.setattr(session_context, "_default_repository", repo)
+    coordinator = SessionLifecycleCoordinator(repo, ActiveStreamRegistry())
+    context = await repo.touch(BuyerSessionInput("terminal-join", "t1", "member", "703"))
+    store = await get_profile_store()
+    await store.append_session_ctx(conversation_key("703", "terminal-join"), "종료 전 취향")
+    _, idle_generation = await _complete_idle_transient(repo, coordinator, clock)
+    entered = asyncio.Event()
+    proceed = asyncio.Event()
+    active = 0
+    peak = 0
+
+    class _BlockingLLM(_LLM):
+        async def complete(self, **kwargs):
+            nonlocal active, peak
+            if "델타 추출기" in kwargs["system"]:
+                active += 1
+                peak = max(peak, active)
+                entered.set()
+                await proceed.wait()
+                active -= 1
+            return await super().complete(**kwargs)
+
+    monkeypatch.setattr(finalizer, "get_llm", lambda: _BlockingLLM())
+    idle_task = asyncio.create_task(finalizer.process_recoverable_profile_phases(1))
+    await entered.wait()
+    terminal_task = asyncio.create_task(coordinator.begin_terminal(703, "terminal-join"))
+    await asyncio.sleep(0)
+
+    terminal_context = await repo.get_context("terminal-join")
+    assert terminal_context is not None and terminal_context.state == "terminal"
+    assert peak == 1
+    proceed.set()
+    terminal = await terminal_task
+    await idle_task
+
+    assert peak == 1
+    assert terminal.context.state == "terminal"
+    terminal_journal = await repo.get_finalization(terminal.finalization.finalization_id)
+    assert terminal_journal.transient_status == "completed"
+    assert terminal_journal.profile_status == "completed"
+    assert (
+        await processed_events.get_status(
+            f"chat-profile:{context.context_id}:{idle_generation}:idle"
+        )
+        == "completed"
+    )
+    assert (
+        await processed_events.get_status(
+            f"chat-profile:{context.context_id}:{terminal.context.generation}:terminal"
+        )
+        == "completed"
+    )
+
+
+async def test_listed_idle_candidate_superseded_before_cas_runs_terminal_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _Clock()
+    repo = SessionContextRepository(clock=clock)
+    monkeypatch.setattr(session_context, "_default_repository", repo)
+    coordinator = SessionLifecycleCoordinator(repo, ActiveStreamRegistry())
+    context = await repo.touch(BuyerSessionInput("stale-cas", "t1", "member", "704"))
+    store = await get_profile_store()
+    await store.append_session_ctx(conversation_key("704", "stale-cas"), "종료 취향")
+    _, idle_generation = await _complete_idle_transient(repo, coordinator, clock)
+    listed = asyncio.Event()
+    continue_list = asyncio.Event()
+    original_list = repo.list_recoverable_profile_phases
+
+    async def _paused_list(batch_size: int):
+        candidates = await original_list(batch_size)
+        listed.set()
+        await continue_list.wait()
+        return candidates
+
+    monkeypatch.setattr(repo, "list_recoverable_profile_phases", _paused_list)
+    stale = asyncio.create_task(finalizer.process_recoverable_profile_phases(1))
+    await listed.wait()
+    terminal = await repo.begin_terminal(704, "stale-cas")
+    continue_list.set()
+
+    assert await stale == []
+    monkeypatch.setattr(repo, "list_recoverable_profile_phases", original_list)
+    assert terminal.claim is not None
+    transient = await coordinator.process_terminal_transient(terminal.claim)
+    assert transient.status == "completed"
+    monkeypatch.setattr(finalizer, "get_llm", lambda: _LLM())
+    await finalizer.process_recoverable_profile_phases(1)
+
+    assert (
+        await processed_events.get_status(
+            f"chat-profile:{context.context_id}:{idle_generation}:idle"
+        )
+        is None
+    )
+    assert (
+        await processed_events.get_status(
+            f"chat-profile:{context.context_id}:{terminal.context.generation}:terminal"
+        )
+        == "completed"
+    )
 
 
 async def test_finalizer_invalid_identity_degrades_to_retryable() -> None:

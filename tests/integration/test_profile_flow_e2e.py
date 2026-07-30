@@ -35,8 +35,11 @@ def test_profile_empty_before_any_session(client, spring, llm) -> None:
     assert body["markdown"] is None
 
 
-def test_session_end_builds_profile_visible_on_profile_me(client, spring, llm) -> None:
+def test_session_end_builds_profile_visible_on_profile_me(client, spring, llm, monkeypatch) -> None:
     """세션 종료 → 델타 추출·게이트 승격 → consolidation → GET /profile/me 에 마크다운 노출."""
+    import app.agents.profile.finalizer as profile_finalizer
+
+    monkeypatch.setattr(profile_finalizer, "get_llm", lambda: llm)
     _chat(client, "3만원 이하 여행용 파우치 추천해줘")
 
     resp = _session_end(client)
@@ -52,8 +55,11 @@ def test_session_end_builds_profile_visible_on_profile_me(client, spring, llm) -
     assert llm.calls_of("consolidate") == 1
 
 
-def test_session_end_is_idempotent(client, spring, llm) -> None:
+def test_session_end_is_idempotent(client, spring, llm, monkeypatch) -> None:
     """같은 세션 종료 재통지는 202 duplicate 이며 프로필을 중복 처리하지 않는다."""
+    import app.agents.profile.finalizer as profile_finalizer
+
+    monkeypatch.setattr(profile_finalizer, "get_llm", lambda: llm)
     _chat(client, "3만원 이하 여행용 파우치 추천해줘")
 
     first = _session_end(client)
@@ -64,8 +70,11 @@ def test_session_end_is_idempotent(client, spring, llm) -> None:
     assert llm.calls_of("delta") == 1, "중복 통지가 LLM 을 재호출하면 안 된다"
 
 
-async def test_profile_is_injected_into_next_session(client, spring, llm) -> None:
+async def test_profile_is_injected_into_next_session(client, spring, llm, monkeypatch) -> None:
     """승격된 프로필이 다음 턴 rerank 컨텍스트로 주입된다 (개인화 루프 종단)."""
+    import app.agents.profile.finalizer as profile_finalizer
+
+    monkeypatch.setattr(profile_finalizer, "get_llm", lambda: llm)
     _chat(client, "3만원 이하 여행용 파우치 추천해줘")
     _session_end(client)
     llm.calls.clear()
@@ -98,8 +107,8 @@ def test_guest_has_no_profile(client, spring, llm) -> None:
 
 def test_session_end_degrades_without_llm(client, spring, monkeypatch) -> None:
     """LLM 미구성이어도 세션 종료는 202 로 받는다 — best-effort degrade(§3.5, 500 금지)."""
-    import app.api.events as events_api
+    import app.agents.profile.finalizer as profile_finalizer
 
-    monkeypatch.setattr(events_api, "get_llm", lambda: None)
+    monkeypatch.setattr(profile_finalizer, "get_llm", lambda: None)
     resp = _session_end(client)
     assert resp.status_code == 202

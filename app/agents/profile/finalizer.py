@@ -15,8 +15,72 @@ from app.agents.profile.store import ProfileStore, get_profile_store
 from app.core.config import Settings, get_settings
 from app.core.conversation import conversation_key
 from app.core.llm import LLMClient, get_llm
+from app.core.session_context import ProfileRecoveryCandidate, SessionContextRepository
 
 logger = logging.getLogger(__name__)
+
+
+class ProfilePhaseStatus(StrEnum):
+    COMPLETED = "completed"
+    NO_WORK = "no_work"
+    DUPLICATE = "duplicate"
+    RETRYABLE = "retryable"
+
+
+@dataclass(frozen=True)
+class ProfilePhaseResult:
+    status: ProfilePhaseStatus
+
+
+@dataclass(frozen=True)
+class ProfileJoinResult:
+    finalization_id: str
+    event_id: str
+    result: ProfilePhaseResult
+    joined: bool
+
+
+@dataclass(frozen=True)
+class _ActiveProfileTask:
+    finalization_id: str
+    event_id: str
+    task: asyncio.Task[ProfilePhaseResult]
+
+
+class ActiveProfileTaskRegistry:
+    """한 프로세스에서 context별 profile LLM 작업을 하나로 직렬화한다."""
+
+    def __init__(self) -> None:
+        self._active: dict[str, _ActiveProfileTask] = {}
+
+    async def join_or_start(
+        self,
+        context_id: str,
+        finalization_id: str,
+        event_id: str,
+        factory: Callable[[], Awaitable[ProfilePhaseResult]],
+    ) -> ProfileJoinResult:
+        active = self._active.get(context_id)
+        joined = active is not None
+        if active is None:
+            task = asyncio.create_task(factory())
+            active = _ActiveProfileTask(finalization_id, event_id, task)
+            # create_task() 뒤 첫 await 전에 task와 journal identity를 함께 게시한다.
+            self._active[context_id] = active
+        try:
+            result = await active.task
+            return ProfileJoinResult(
+                active.finalization_id,
+                active.event_id,
+                result,
+                joined,
+            )
+        finally:
+            if self._active.get(context_id) is active and active.task.done():
+                del self._active[context_id]
+
+
+_active_profile_tasks = ActiveProfileTaskRegistry()
 
 
 class FinalizationStatus(StrEnum):
@@ -28,6 +92,172 @@ class FinalizationStatus(StrEnum):
 @dataclass(frozen=True)
 class FinalizationResult:
     status: FinalizationStatus
+
+
+async def process_profile_checkpoint(
+    user_id: int,
+    session_id: str,
+    *,
+    event_id: str,
+    profile_watermark: int,
+    settings: Settings,
+) -> ProfilePhaseResult:
+    """고정된 lifecycle watermark 하나를 generation-scoped event로 처리한다."""
+    token: str | None = None
+    completed = False
+    try:
+        token = await processed_events.claim_event(
+            event_id,
+            lease_s=settings.session_end_claim_ttl_s,
+        )
+        if token is None:
+            status = await processed_events.get_status(event_id)
+            return ProfilePhaseResult(
+                ProfilePhaseStatus.DUPLICATE
+                if status == "completed"
+                else ProfilePhaseStatus.RETRYABLE
+            )
+
+        store = await get_profile_store()
+        key = conversation_key(str(user_id), session_id)
+        bounded = await store.get_session_ctx_upto(key, profile_watermark)
+        if not bounded:
+            completed = await processed_events.complete_claim(event_id, token)
+            if not completed:
+                return ProfilePhaseResult(ProfilePhaseStatus.RETRYABLE)
+            return ProfilePhaseResult(ProfilePhaseStatus.NO_WORK)
+
+        llm = get_llm()
+        delta = await generate_session_delta(
+            str(user_id),
+            key,
+            profile_watermark=profile_watermark,
+            llm=llm,
+            settings=settings,
+        )
+        if delta is None:
+            # 최초 bounded read 뒤 cap trimming이 watermark 이하를 모두 밀어낸 경우도
+            # 성공 NO_WORK다. watermark 밖 항목만 남은 상태를 LLM 장애로 오분류하지 않는다.
+            if not await store.get_session_ctx_upto(key, profile_watermark):
+                completed = await processed_events.complete_claim(event_id, token)
+                if not completed:
+                    return ProfilePhaseResult(ProfilePhaseStatus.RETRYABLE)
+                return ProfilePhaseResult(ProfilePhaseStatus.NO_WORK)
+            return ProfilePhaseResult(ProfilePhaseStatus.RETRYABLE)
+        consolidation = await consolidate(str(user_id), llm=llm, settings=settings)
+        if consolidation is ConsolidationResult.FAILED:
+            return ProfilePhaseResult(ProfilePhaseStatus.RETRYABLE)
+        await store.clear_session_ctx_upto(key, profile_watermark)
+        completed = await processed_events.complete_claim(event_id, token)
+        if not completed:
+            return ProfilePhaseResult(ProfilePhaseStatus.RETRYABLE)
+        return ProfilePhaseResult(ProfilePhaseStatus.COMPLETED)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning("profile checkpoint 처리 실패 — 재시도 필요", exc_info=True)
+        return ProfilePhaseResult(ProfilePhaseStatus.RETRYABLE)
+    finally:
+        if token is not None and not completed:
+            await release_processed_claim_best_effort(event_id, token)
+
+
+async def process_recoverable_profile_phases(
+    batch_size: int,
+) -> list[ProfilePhaseResult]:
+    """완료된 transient journal의 profile phase를 context별 단일 task로 복구한다."""
+    from app.core import session_context
+
+    return await _process_recoverable_profile_phases(
+        session_context._default_repository,
+        batch_size,
+    )
+
+
+async def _process_recoverable_profile_phases(
+    repository: SessionContextRepository,
+    batch_size: int,
+) -> list[ProfilePhaseResult]:
+    """주입된 lifecycle repository에서 public recovery와 같은 순서를 실행한다."""
+    settings = get_settings()
+    candidates = await repository.list_recoverable_profile_phases(batch_size)
+    results: list[ProfilePhaseResult] = []
+
+    for candidate in candidates:
+        result = await _process_profile_candidate(candidate, repository, settings)
+        if result is not None:
+            results.append(result)
+
+    return results
+
+
+async def _process_profile_candidate(
+    candidate: ProfileRecoveryCandidate,
+    repository: SessionContextRepository,
+    settings: Settings,
+) -> ProfilePhaseResult | None:
+    """후보 하나를 local slot→DB CAS 순서로 처리하고 다른 identity join 뒤 재검증한다."""
+    from app.core.session_context import SessionClaimConflict
+
+    while True:
+        try:
+            journal = await repository.get_finalization(candidate.finalization_id)
+        except SessionClaimConflict:
+            return None
+        if journal.status == "superseded" or journal.profile_status not in ("pending", "retryable"):
+            return None
+        event_id = processed_events.profile_phase_event_id(
+            candidate.context_id,
+            candidate.generation,
+            journal.reason,
+        )
+
+        async def _claim_and_process() -> ProfilePhaseResult:
+            claim = await repository.claim_profile_phase(
+                candidate.finalization_id,
+                settings.profile_idle_claim_ttl_s,
+            )
+            if claim is None:
+                return ProfilePhaseResult(ProfilePhaseStatus.DUPLICATE)
+            result = await process_profile_checkpoint(
+                int(candidate.owner_id),
+                candidate.session_id,
+                event_id=event_id,
+                profile_watermark=candidate.profile_watermark,
+                settings=settings,
+            )
+            phase_status = (
+                "retryable" if result.status is ProfilePhaseStatus.RETRYABLE else "completed"
+            )
+            try:
+                await repository.record_profile_phase(
+                    candidate.finalization_id,
+                    phase_status,
+                )
+            except SessionClaimConflict:
+                # I-20이 idle journal을 supersede한 경우 terminal journal만 계속한다.
+                pass
+            return result
+
+        joined = await _active_profile_tasks.join_or_start(
+            candidate.context_id,
+            candidate.finalization_id,
+            event_id,
+            _claim_and_process,
+        )
+        if joined.finalization_id == candidate.finalization_id and joined.event_id == event_id:
+            return joined.result
+
+        # 다른 세대 task를 join한 결과를 이 candidate에 기록하지 않는다.
+        try:
+            refreshed = await repository.get_finalization(candidate.finalization_id)
+        except SessionClaimConflict:
+            return None
+        if refreshed.status == "superseded" or refreshed.profile_status not in (
+            "pending",
+            "retryable",
+        ):
+            return None
 
 
 async def release_processed_claim_best_effort(
@@ -160,12 +390,13 @@ async def finalize_profile_session(
 
         factory = store_factory or get_profile_store
         store = await factory()
-        buffer, _ = await store.get_session_ctx_snapshot(key)
+        buffer, profile_watermark = await store.get_session_ctx_snapshot(key)
         if buffer:
             resolved_llm = (llm_factory or get_llm)()
             result = await generate_session_delta(
                 user_key,
                 key,
+                profile_watermark=profile_watermark,
                 llm=resolved_llm,
                 settings=resolved_settings,
             )

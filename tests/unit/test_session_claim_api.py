@@ -98,6 +98,37 @@ async def test_claim_accepts_guest_context_and_preserves_threads(
     assert repo._owner_claims == {"session-1": ("guest-1", "7")}
 
 
+async def test_session_end_keeps_terminal_durable_when_profile_is_retryable(
+    client: httpx.AsyncClient,
+    repo: SessionContextRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.agents.profile.finalizer as profile_finalizer
+    from app.agents.profile.store import get_profile_store
+    from app.core.conversation import conversation_key
+
+    await repo.touch(BuyerSessionInput("terminal-profile", "thread-1", "member", "7"))
+    store = await get_profile_store()
+    await store.append_session_ctx(
+        conversation_key("7", "terminal-profile"),
+        "재시도할 프로필 신호",
+    )
+    monkeypatch.setattr(profile_finalizer, "get_llm", lambda: None)
+
+    response = await client.post(
+        "/events/session-end",
+        json={"userId": 7, "sessionId": "terminal-profile"},
+    )
+
+    assert response.status_code == 202
+    assert response.json() == {"status": "accepted"}
+    context = await repo.get_context("terminal-profile")
+    assert context is not None and context.state == "terminal"
+    [journal] = repo._finalizations.values()
+    assert journal.transient_status == "completed"
+    assert journal.profile_status == "retryable"
+
+
 async def test_exact_duplicate_never_mutates_context_generation_or_history(
     client: httpx.AsyncClient,
     repo: SessionContextRepository,

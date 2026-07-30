@@ -13,18 +13,26 @@ from typing import Literal, Protocol
 from app.agents.buyer import session_state
 from app.agents.buyer.session_state import CleanupCounts
 from app.agents.profile.store import ProfileStore, get_profile_store
+from app.agents.profile.finalizer import (
+    _process_profile_candidate,
+    _process_recoverable_profile_phases,
+)
 from app.core.config import get_settings
 from app.core.conversation import conversation_key
 from app.core import session_context
 from app.core.observability import message_fingerprint
 from app.core.session_context import (
+    BuyerSessionInput,
     ClaimOutcome,
     FinalizationClaim,
+    ProfileRecoveryCandidate,
     SessionActive,
     SessionClaimConflict,
     SessionContext,
     SessionContextRepository,
     SessionFinalizing,
+    SessionForbidden,
+    TerminalOutcome,
 )
 from app.core.stream import ActiveStreamRegistry, StreamScopeFence, get_registry
 from app.schemas.events import SessionClaimEvent
@@ -149,6 +157,65 @@ class SessionLifecycleCoordinator:
         if claim.reason == "idle":
             return await self.process_idle_transient(claim)
         return await self.process_terminal_transient(claim)
+
+    async def begin_terminal(self, user_id: int, session_id: str) -> TerminalOutcome:
+        """I-20 gate를 먼저 세운 뒤 기존 stream, transient, profile 순서로 마감한다."""
+        repository = self._repository or session_context._default_repository
+        registry = self._registry or get_registry()
+        try:
+            outcome = await repository.begin_terminal(user_id, session_id)
+        except SessionForbidden:
+            # Task 8의 legacy backfill 전 롤링 배포에서도 I-20은 새 lifecycle authority로만
+            # 처리한다. 기존 row가 전혀 없는 경우에만 member context를 만들어 즉시 terminal로
+            # 전환하며, 다른 owner의 row는 절대 덮어쓰지 않는다.
+            if await repository.get_context(session_id) is not None:
+                raise
+            await repository.touch(
+                BuyerSessionInput(
+                    session_id,
+                    f"session-end:{session_id}",
+                    "member",
+                    str(user_id),
+                )
+            )
+            outcome = await repository.begin_terminal(user_id, session_id)
+
+        # terminal state가 새 touch/claim을 이미 막은 상태에서 기존 stream만 자연 종료시킨다.
+        scope = (str(user_id), session_id)
+        while scope in registry._active.values():
+            await asyncio.sleep(0.01)
+
+        claim = outcome.claim
+        if claim is not None:
+            transient = await self.process_terminal_transient(claim)
+            if transient.status == "skipped" and transient.skip_reason == "invalid":
+                refreshed = await repository.begin_terminal(user_id, session_id)
+                claim = refreshed.claim
+                if claim is not None:
+                    transient = await self.process_terminal_transient(claim)
+            if transient.status != "completed":
+                return outcome
+
+        journal = await repository.get_finalization(outcome.finalization.finalization_id)
+        if (
+            journal.transient_status == "completed"
+            and journal.watermark_status == "captured"
+            and journal.profile_watermark is not None
+            and journal.profile_status in ("pending", "retryable")
+        ):
+            await _process_profile_candidate(
+                ProfileRecoveryCandidate(
+                    journal.finalization_id,
+                    outcome.context.context_id,
+                    outcome.context.session_id,
+                    outcome.context.owner_id,
+                    journal.generation,
+                    journal.profile_watermark,
+                ),
+                repository,
+                get_settings(),
+            )
+        return outcome
 
     async def process_idle_transient(
         self,
@@ -390,6 +457,8 @@ class SessionLifecycleCoordinator:
             claim.finalization_id in attempted_recovery_ids and outcome.skip_reason == "invalid"
             for claim, outcome in outcomes
         )
+        if hasattr(repository, "list_recoverable_profile_phases"):
+            await _process_recoverable_profile_phases(repository, capacity)
         return IdleSweepResult(
             claimed=productive,
             recovered=len(recovered_ids),
@@ -600,6 +669,11 @@ async def process_idle_transient(claim: FinalizationClaim) -> FinalizationOutcom
 async def process_terminal_transient(claim: FinalizationClaim) -> FinalizationOutcome:
     """Process terminal transient state while preserving the terminal context gate."""
     return await SessionLifecycleCoordinator().process_terminal_transient(claim)
+
+
+async def begin_terminal(user_id: int, session_id: str) -> TerminalOutcome:
+    """Run terminal lifecycle through the default coordinator."""
+    return await SessionLifecycleCoordinator().begin_terminal(user_id, session_id)
 
 
 async def run_session_context_sweep() -> IdleSweepResult:
