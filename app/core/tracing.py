@@ -603,7 +603,7 @@ def trace_span(
         yield None
         return
 
-    _active_span_stack.set((*stack, node.id))
+    token = _active_span_stack.set((*stack, node.id))
     try:
         yield node
     except BaseException as exc:
@@ -611,12 +611,7 @@ def trace_span(
         raise
     finally:
         node.ended_at = _utc_now()
-        # Async-generator spans may yield a frame that open_stream consumes from a
-        # different task on the next __anext__ call. ContextVar tokens are bound to
-        # the context that created them and cannot be reset from that resumed task.
-        # Restoring the captured parent value is context-safe and preserves the same
-        # ancestry semantics for ordinary synchronous/async span scopes.
-        _active_span_stack.set(stack)
+        _active_span_stack.reset(token)
 
 
 def _utc_now() -> datetime:

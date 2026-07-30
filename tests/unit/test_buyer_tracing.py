@@ -212,6 +212,155 @@ def test_buyer_sse_is_identical_with_tracing_disabled(
     assert disabled_exporter.exported == []
 
 
+def test_buyer_endpoint_canaries_reach_production_seams_but_not_trace_payloads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from langsmith import Client
+
+    from app.core.llm import LLMError
+    from app.schemas.spring import SpringProduct
+    from app.services import search_service
+    from tests.unit.test_tracing import PRIVACY_CANARIES, _assert_canaries_absent
+
+    tool_calls: list[object] = []
+    pushes: list[object] = []
+    provider_inputs: list[str] = []
+
+    class CanaryBackend:
+        async def search(self, filters):
+            tool_calls.append(filters)
+            return ProductSearchResult(
+                products=[
+                    SpringProduct(
+                        product_id=product_id,
+                        name=f"{PRIVACY_CANARIES['tool_result']}-{product_id}",
+                        summary=PRIVACY_CANARIES["customer_address"],
+                        attributes={
+                            "customer": {
+                                "name": PRIVACY_CANARIES["customer_name"],
+                                "email": PRIVACY_CANARIES["customer_email"],
+                                "phone": PRIVACY_CANARIES["customer_phone"],
+                            }
+                        },
+                        price=1000,
+                    )
+                    for product_id in (14101, 14102, 14103)
+                ],
+                total_count=3,
+            )
+
+    async def capture_push(push) -> bool:
+        pushes.append(push)
+        return True
+
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "reply": "",
+            "case": 2,
+            "semanticQuery": PRIVACY_CANARIES["tool_argument"],
+            "categoryQueries": [],
+            "filters": {"keyword": PRIVACY_CANARIES["tool_argument"]},
+        },
+        rerank={
+            "ranked": [
+                {
+                    "productId": product_id,
+                    "rationale": PRIVACY_CANARIES["nested_metadata"],
+                }
+                for product_id in (14101, 14102, 14103)
+            ],
+            "overallComment": "bounded",
+        },
+    )
+    original_complete = llm.complete
+
+    async def complete(**kwargs):
+        provider_inputs.append(kwargs["user"])
+        if PRIVACY_CANARIES["provider_exception"] in kwargs["user"]:
+            raise LLMError(PRIVACY_CANARIES["provider_exception"])
+        return await original_complete(**kwargs)
+
+    monkeypatch.setattr(llm, "complete", complete)
+    monkeypatch.setattr("app.agents.buyer.graph.get_llm", lambda: llm)
+    monkeypatch.setattr(search_service, "default_backend", CanaryBackend())
+    monkeypatch.setattr("app.services.spring_client.push_recommendations", capture_push)
+    monkeypatch.setattr("app.core.errors.new_request_id", lambda: "req-buyer-canary-141")
+
+    fake_exporter = FakeTraceExporter()
+    set_trace_factory(TraceFactory(exporter=fake_exporter, enabled=True, sampling_rate=1.0))
+    headers = {
+        "X-Authorization-Canary": PRIVACY_CANARIES["authorization"],
+        "X-Cookie-Canary": PRIVACY_CANARIES["cookie"],
+    }
+    message = " ".join(
+        (
+            PRIVACY_CANARIES["buyer_message"],
+            PRIVACY_CANARIES["customer_name"],
+            PRIVACY_CANARIES["customer_email"],
+            PRIVACY_CANARIES["customer_phone"],
+        )
+    )
+    response = client.post(
+        "/chat",
+        json={"sessionId": "buyer-canary-141", "threadId": "buyer-canary-141", "message": message},
+        headers=headers,
+    )
+    exception_response = client.post(
+        "/chat",
+        json={
+            "sessionId": "buyer-exception-141",
+            "threadId": "buyer-exception-141",
+            "message": PRIVACY_CANARIES["provider_exception"],
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == exception_response.status_code == 200
+    assert any(message in user for user in provider_inputs)
+    assert tool_calls[0].keyword == PRIVACY_CANARIES["tool_argument"]
+    assert PRIVACY_CANARIES["nested_metadata"] in repr(pushes[0])
+    assert response.request.headers["X-Authorization-Canary"] == PRIVACY_CANARIES["authorization"]
+    assert response.request.headers["X-Cookie-Canary"] == PRIVACY_CANARIES["cookie"]
+    assert any(PRIVACY_CANARIES["provider_exception"] in user for user in provider_inputs)
+    _assert_canaries_absent(fake_exporter.exported)
+
+    serialized_operations = []
+
+    def capture_after_sdk_serialization(self, operations, **kwargs) -> None:
+        del self, kwargs
+        serialized_operations.extend(operations)
+
+    monkeypatch.setattr(Client, "_batch_ingest_run_ops", capture_after_sdk_serialization)
+    langsmith_client = Client(
+        api_key="lsv2_pt_abcdefghijklmnop1234",
+        auto_batch_tracing=False,
+        omit_traced_runtime_info=True,
+        tracing_sampling_rate=1.0,
+    )
+    set_trace_factory(
+        TraceFactory(
+            exporter=LangSmithTraceExporter(langsmith_client, "jarvis-ai-test", 1.0),
+            enabled=True,
+            sampling_rate=1.0,
+        )
+    )
+    second = client.post(
+        "/chat",
+        json={
+            "sessionId": "buyer-sdk-canary-141",
+            "threadId": "buyer-sdk-canary-141",
+            "message": message,
+        },
+        headers=headers,
+    )
+    assert second.status_code == 200
+    assert serialized_operations
+    _assert_canaries_absent(
+        [operation.deserialize_run_info() for operation in serialized_operations]
+    )
+
+
 async def test_recommendation_exports_bounded_buyer_tree() -> None:
     async def driver() -> None:
         await _collect(

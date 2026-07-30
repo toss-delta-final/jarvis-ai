@@ -1043,3 +1043,112 @@ async def test_cancellation_during_terminal_close_propagates_after_finalization(
     assert root.metadata["terminalReason"] == "done"
     turn = await obs.store.get_turn(obs.turn_id)
     assert turn is not None and turn.status == TurnStatus.COMPLETED
+
+
+async def test_trace_spans_across_yields_keep_parentage_without_clobbering_host_stack() -> None:
+    from app.core.tracing import bind_request_trace, trace_span
+
+    streamed_exporter = FakeTraceExporter()
+    streamed_trace = _trace(streamed_exporter)
+    obs = await _obs("cross-yield-parentage", trace=streamed_trace)
+    host_exporter = FakeTraceExporter()
+    host_trace = _trace(host_exporter)
+
+    async def stream():
+        with trace_span("stream.outer", "chain"):
+            yield 'data: {"type":"meta","data":{"lane":"test"}}\n\n'
+            with trace_span("stream.inner", "tool"):
+                yield 'data: {"type":"done","data":{"finishReason":"stop"}}\n\n'
+
+    with bind_request_trace(host_trace):
+        with trace_span("host", "chain"):
+            response = await open_stream(
+                _FakeRequest(),
+                "member:cross-yield-parentage",
+                stream,
+                observer=obs,
+            )
+            assert len([chunk async for chunk in response.body_iterator]) == 2
+            with trace_span("after_close", "chain"):
+                pass
+    await host_trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+
+    streamed = {node.name: node for node in streamed_exporter.exported[0]}
+    assert streamed["stream.outer"].parent_id == streamed["buyer_chat_turn"].id
+    assert streamed["stream.inner"].parent_id == streamed["stream.outer"].id
+    host = {node.name: node for node in host_exporter.exported[0]}
+    assert host["after_close"].parent_id == host["host"].id
+
+
+async def test_open_stream_uses_one_task_for_every_pull_and_close() -> None:
+    tasks: list[asyncio.Task | None] = []
+
+    class RecordingIterator:
+        def __init__(self) -> None:
+            self.pulls = 0
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self) -> str:
+            tasks.append(asyncio.current_task())
+            self.pulls += 1
+            if self.pulls == 1:
+                return 'data: {"type":"meta","data":{"lane":"test"}}\n\n'
+            return 'data: {"type":"done","data":{"finishReason":"stop"}}\n\n'
+
+        async def aclose(self) -> None:
+            tasks.append(asyncio.current_task())
+
+    response = await open_stream(
+        _FakeRequest(),
+        "member:single-producer-task",
+        RecordingIterator,
+    )
+    assert len([chunk async for chunk in response.body_iterator]) == 2
+    assert len(tasks) == 3
+    assert len(set(tasks)) == 1
+    assert not get_registry().is_active("member:single-producer-task")
+
+
+async def test_total_timeout_cancels_and_awaits_same_task_pump_without_leaks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(get_settings(), "stream_total_timeout_s", 0.02)
+    monkeypatch.setattr(get_settings(), "stream_disconnect_poll_s", 0.005)
+    exporter = FakeTraceExporter()
+    obs = await _obs("forced-stop-pump", trace=_trace(exporter))
+    tasks: list[asyncio.Task | None] = []
+    closed = asyncio.Event()
+
+    class BlockingIterator:
+        def __init__(self) -> None:
+            self.pulls = 0
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self) -> str:
+            tasks.append(asyncio.current_task())
+            self.pulls += 1
+            if self.pulls == 1:
+                return 'data: {"type":"meta","data":{"lane":"test"}}\n\n'
+            await asyncio.Event().wait()
+            raise StopAsyncIteration
+
+        async def aclose(self) -> None:
+            tasks.append(asyncio.current_task())
+            closed.set()
+
+    key = "member:forced-stop-pump"
+    response = await open_stream(_FakeRequest(), key, BlockingIterator, observer=obs)
+    chunks = [chunk async for chunk in response.body_iterator]
+
+    assert len(chunks) == 2
+    assert '"type": "done"' in chunks[-1]
+    assert closed.is_set()
+    assert len(set(tasks)) == 1
+    assert tasks[0] is not None and tasks[0].done()
+    assert not get_registry().is_active(key)
+    assert len(exporter.exported) == 1
+    assert exporter.exported[0][0].metadata["terminalReason"] == "total_timeout_stop"

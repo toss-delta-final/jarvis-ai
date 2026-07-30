@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Callable
+from contextlib import nullcontext
+from typing import Any
 
 from fastapi import HTTPException, Request, status
 from fastapi.responses import StreamingResponse
@@ -149,6 +151,90 @@ def _terminal_event_of(frame: str) -> tuple[str | None, str | None]:
     return "error_frame", code if isinstance(code, str) else "INTERNAL"
 
 
+_PUMP_EOF = object()
+
+
+class _IteratorPump:
+    """One-task, demand-driven owner for an async iterator and its trace context."""
+
+    def __init__(self, iterator: AsyncIterator[str], trace: RequestTrace | None) -> None:
+        self._iterator = iterator
+        self._trace = trace
+        self._demands: asyncio.Queue[asyncio.Future[object]] = asyncio.Queue(maxsize=1)
+        self._terminal_ack = asyncio.Event()
+        self._task = asyncio.create_task(self._run())
+        self._stopped = False
+
+    def request(self) -> asyncio.Future[object]:
+        """Submit exactly one pull without allowing eager prefetch."""
+        if self._stopped:
+            raise RuntimeError("stream iterator pump is stopped")
+        reply: asyncio.Future[object] = asyncio.get_running_loop().create_future()
+        self._demands.put_nowait(reply)
+        return reply
+
+    async def cancel_and_wait(self) -> None:
+        if not self._task.done():
+            self._task.cancel()
+        await asyncio.gather(self._task, return_exceptions=True)
+
+    async def wait_closed(self) -> None:
+        await self._task
+
+    def acknowledge_terminal(self) -> None:
+        self._terminal_ack.set()
+
+    def done(self) -> bool:
+        return self._task.done()
+
+    async def _run(self) -> None:
+        current_reply: asyncio.Future[object] | None = None
+        context: Any = bind_request_trace(self._trace) if self._trace is not None else nullcontext()
+        try:
+            with context:
+                while True:
+                    current_reply = await self._demands.get()
+                    try:
+                        item = await self._iterator.__anext__()
+                    except StopAsyncIteration:
+                        self._stopped = True
+                        current_reply.set_result(_PUMP_EOF)
+                        current_reply = None
+                        break
+                    except asyncio.CancelledError as exc:
+                        # A generator-raised cancellation is a stream outcome. A task
+                        # cancellation has a positive cancelling() count and must tear
+                        # down the producer immediately.
+                        if asyncio.current_task() and asyncio.current_task().cancelling():
+                            raise
+                        self._stopped = True
+                        current_reply.set_exception(exc)
+                        current_reply = None
+                        break
+                    except BaseException as exc:
+                        self._stopped = True
+                        current_reply.set_exception(exc)
+                        current_reply = None
+                        break
+
+                    current_reply.set_result(item)
+                    current_reply = None
+                    if _terminal_event_of(item)[0] is not None:
+                        self._stopped = True
+                        await self._terminal_ack.wait()
+                        break
+        finally:
+            self._stopped = True
+            if current_reply is not None and not current_reply.done():
+                current_reply.cancel()
+            try:
+                await self._iterator.aclose()  # type: ignore[attr-defined]
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("stream iterator close failed code=STREAM_CLOSE_FAILED")
+
+
 async def open_stream(
     request: Request,
     stream_key: str,
@@ -167,19 +253,6 @@ async def open_stream(
     loop = asyncio.get_event_loop()
     stream_request_id = observer.request_id if observer is not None else new_request_id()
     trace = observer.trace if observer is not None else None
-
-    async def _next_frame(agen: AsyncIterator[str], request_trace: RequestTrace | None) -> str:
-        if request_trace is None:
-            return await agen.__anext__()
-        with bind_request_trace(request_trace):
-            return await agen.__anext__()
-
-    async def _safe_close(agen: AsyncIterator[str]) -> None:
-        """Close an inner iterator without exposing or propagating close diagnostics."""
-        try:
-            await agen.aclose()  # type: ignore[attr-defined]
-        except Exception:
-            logger.warning("stream iterator close failed code=STREAM_CLOSE_FAILED")
 
     if not registry.acquire(stream_key):
         if observer is not None:
@@ -243,6 +316,7 @@ async def open_stream(
                 observer, stream_key, loop.time(), TurnStatus.FAILED, "INTERNAL", "tool_error"
             )
         raise
+    pump = _IteratorPump(agen, trace)
 
     poll = settings.stream_disconnect_poll_s
     deadline = start + settings.stream_total_timeout_s
@@ -255,21 +329,18 @@ async def open_stream(
     # (c) first-token 상한 — 첫 이벤트 도착 전이므로 아직 200 헤더 전. 초과 시 504(§2.5).
     # (b) 이 대기 구간에서도 disconnect 를 폴링한다 — 첫 이벤트 전에 클라이언트가 떠나면
     #     상류 LLM 비용·레지스트리 슬롯을 first-token 상한(기본 10s)까지 붙들지 않는다.
-    # wait_for 로 __anext__ 를 취소하면 제너레이터가 손상되므로 task 폴링을 쓴다(_wrapped 동일).
+    # wait_for 로 reply를 취소하지 않고 persistent producer의 단일 demand를 폴링한다.
     # 스트림 반환 전 실패는 _wrapped finally 가 안 도므로 여기서 해제하고, 정상/빈 스트림만
     # _wrapped finally 한 곳에서 해제한다(이중 해제 레이스 방지).
-    ft_task = asyncio.ensure_future(_next_frame(agen, trace))
+    first_reply = pump.request()
 
     async def _abort_prestream() -> None:
         try:
-            if not ft_task.done():
-                ft_task.cancel()
-            await asyncio.gather(ft_task, return_exceptions=True)
+            if not first_reply.done():
+                first_reply.cancel()
+            await pump.cancel_and_wait()
         finally:
-            try:
-                await _safe_close(agen)
-            finally:
-                registry.release(stream_key)
+            registry.release(stream_key)
 
     first: str | None = None
     try:
@@ -290,11 +361,15 @@ async def open_stream(
                     status_code=status.HTTP_504_GATEWAY_TIMEOUT,
                     detail={"code": "UPSTREAM_TIMEOUT", "message": "상류(LLM) 응답 지연"},
                 )
-            completed, _ = await asyncio.wait({ft_task}, timeout=min(remaining, poll))
-            if ft_task in completed:
+            completed, _ = await asyncio.wait({first_reply}, timeout=min(remaining, poll))
+            if first_reply in completed:
                 try:
-                    first = ft_task.result()
-                except StopAsyncIteration:
+                    result = first_reply.result()
+                    if result is _PUMP_EOF:
+                        first = None
+                    else:
+                        first = result  # type: ignore[assignment]
+                except StopAsyncIteration:  # pragma: no cover - pump converts EOF to sentinel
                     first = None  # 빈 스트림 — 해제는 _wrapped finally 에서.
                 except asyncio.CancelledError:
                     raise
@@ -348,17 +423,22 @@ async def open_stream(
         observer.record_frame(first, loop.time())
 
     async def _wrapped() -> AsyncIterator[str]:
-        # 다음 이벤트 대기는 지속 task 로 폴링한다 — wait_for 로 __anext__ 를 취소하면
-        # 제너레이터가 망가지므로(다음 호출이 StopAsyncIteration) asyncio.wait 로 완료만 관찰한다.
-        next_task: asyncio.Task | None = None
+        # 다음 이벤트는 persistent producer에 하나씩 demand한다. outward yield 동안에는
+        # outstanding demand가 없으므로 terminal 뒤 over-pull이나 eager prefetch가 없다.
+        next_reply: asyncio.Future[object] | None = None
         stream_status = TurnStatus.COMPLETED
         error_type: str | None = None
         terminal_reason = "eof"
+        natural_stop = False
         try:
+            if first is None:
+                natural_stop = True
+                return
             if first is not None:
                 first_terminal, first_err = _terminal_event_of(first)
                 if first_terminal is not None:
                     terminal_reason = first_terminal
+                    natural_stop = True
                 if first_err is not None:
                     # terminal error 상태는 프레임을 넘기기 전에 확정한다. 소비자가 이 프레임
                     # 직후 iterator 를 닫아도 finally 가 FAILED/error_type 으로 마감해야 한다.
@@ -368,7 +448,7 @@ async def open_stream(
                 if first_terminal is not None:
                     # done/error 는 모두 종결 이벤트 — 이후 프레임을 당기지 않는다.
                     return
-            next_task = asyncio.ensure_future(_next_frame(agen, trace))
+            next_reply = pump.request()
             while True:
                 remaining = deadline - loop.time()
                 if remaining <= 0:
@@ -380,8 +460,8 @@ async def open_stream(
                         observer.record_frame(done_frame, loop.time())
                     yield done_frame
                     break
-                completed, _ = await asyncio.wait({next_task}, timeout=min(remaining, poll))
-                if next_task not in completed:
+                completed, _ = await asyncio.wait({next_reply}, timeout=min(remaining, poll))
+                if next_reply not in completed:
                     # 아직 이벤트 없음(제너레이터 유휴) — (b) 연결 종료 조기 감지.
                     if await request.is_disconnected():
                         logger.info(
@@ -392,8 +472,12 @@ async def open_stream(
                         break
                     continue  # 같은 task 를 계속 기다린다(제너레이터 보존)
                 try:
-                    item = next_task.result()
-                except StopAsyncIteration:
+                    result = next_reply.result()
+                    if result is _PUMP_EOF:
+                        natural_stop = True
+                        break
+                    item = result  # type: ignore[assignment]
+                except StopAsyncIteration:  # pragma: no cover - pump converts EOF to sentinel
                     break
                 except Exception:
                     # (c) 첫 이벤트 후(=200 전송 후) 상류 오류 — 계약상 in-stream error 로
@@ -403,6 +487,7 @@ async def open_stream(
                     stream_status = TurnStatus.FAILED
                     error_type = "INTERNAL"
                     terminal_reason = "tool_error"
+                    natural_stop = True
                     error_frame = _error_frame(
                         "INTERNAL",
                         "처리 중 오류가 발생했습니다",
@@ -418,6 +503,7 @@ async def open_stream(
                 item_terminal, item_err = _terminal_event_of(item)
                 if item_terminal is not None:
                     terminal_reason = item_terminal
+                    natural_stop = True
                 if item_err is not None:
                     stream_status = TurnStatus.FAILED
                     error_type = item_err
@@ -425,35 +511,37 @@ async def open_stream(
                 if item_terminal is not None:
                     # 그래프 terminal 프레임 뒤 token/done 을 당겨 응답·저장소를 오염시키지 않는다.
                     break
-                next_task = asyncio.ensure_future(_next_frame(agen, trace))
+                next_reply = pump.request()
         except asyncio.CancelledError:
             # Starlette 가 클라이언트 disconnect 로 응답 task 를 취소한 경우 — CANCELLED 로 마감.
             stream_status = TurnStatus.CANCELLED
             terminal_reason = "client_disconnect"
             raise
         finally:
-            # (b) 취소·상한·정상 종료 공통 정리: 대기 중 task 취소 → 내부 제너레이터 close
-            #     (LLM 스트림/그래프 task 로 취소 전파) → 레지스트리 해제 → 대화 저장·로그 마감.
+            # (b) 취소·상한·정상 종료 공통 정리: persistent producer가 내부 제너레이터를
+            #     같은 task/context에서 close → 레지스트리 해제 → 대화 저장·로그 마감.
             try:
-                if next_task is not None and not next_task.done():
-                    next_task.cancel()
-                    await asyncio.gather(next_task, return_exceptions=True)
+                if next_reply is not None and not next_reply.done():
+                    next_reply.cancel()
+                if natural_stop:
+                    pump.acknowledge_terminal()
+                if natural_stop or pump.done():
+                    await pump.wait_closed()
+                else:
+                    await pump.cancel_and_wait()
             finally:
-                try:
-                    await _safe_close(agen)
-                finally:
-                    registry.release(stream_key)
-                    if observer is not None:
-                        # 이 시점엔 이미 SSE 헤더/프레임이 클라이언트로 전송된 뒤다 —
-                        # cleanup/관측 실패가 stream outcome 을 바꾸지 않게 방어한다.
-                        await _safe_finish(
-                            observer,
-                            stream_key,
-                            loop.time(),
-                            stream_status,
-                            error_type,
-                            terminal_reason,
-                        )
+                registry.release(stream_key)
+                if observer is not None:
+                    # 이 시점엔 이미 SSE 헤더/프레임이 클라이언트로 전송된 뒤다 —
+                    # cleanup/관측 실패가 stream outcome 을 바꾸지 않게 방어한다.
+                    await _safe_finish(
+                        observer,
+                        stream_key,
+                        loop.time(),
+                        stream_status,
+                        error_type,
+                        terminal_reason,
+                    )
 
     return StreamingResponse(
         _wrapped(),

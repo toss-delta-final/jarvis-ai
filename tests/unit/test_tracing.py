@@ -277,80 +277,54 @@ async def test_sensitive_nested_payload_drops_entire_trace(caplog) -> None:
     assert "canary" not in caplog.text
 
 
-@pytest.mark.parametrize(
-    ("lane", "root_name"), [("buyer", "buyer_chat_turn"), ("seller", "seller_chat_turn")]
-)
-async def test_recursive_privacy_canaries_are_absent_from_fake_and_langsmith_payloads(
-    lane: str,
-    root_name: str,
+async def test_default_validator_drops_built_trace_with_unsafe_allowlisted_value(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    source_payload = {
-        "message": PRIVACY_CANARIES[f"{lane}_message"],
-        "tool": {
-            "arguments": [{"query": PRIVACY_CANARIES["tool_argument"]}],
-            "result": {
-                "items": [{"description": PRIVACY_CANARIES["tool_result"]}],
-                "customer": {
-                    "name": PRIVACY_CANARIES["customer_name"],
-                    "email": PRIVACY_CANARIES["customer_email"],
-                    "phone": PRIVACY_CANARIES["customer_phone"],
-                    "address": PRIVACY_CANARIES["customer_address"],
-                },
-            },
-        },
-        "headers": {
-            "Authorization": PRIVACY_CANARIES["authorization"],
-            "X-Session-Cookie": PRIVACY_CANARIES["cookie"],
-        },
-        "metadata": {"nested": [{"value": PRIVACY_CANARIES["nested_metadata"]}]},
-    }
+    from langsmith import Client
 
-    async def exercise(factory: TraceFactory) -> None:
-        trace = factory.start_request(
-            name=root_name,
-            request_id=f"req-{lane}-canary",
-            conversation_id=f"conversation-{lane}-canary",
-            thread_id=f"thread-{lane}-canary",
-            lane=lane,
-            environment="test",
-        )
-        with bind_request_trace(trace):
-            with trace_span(f"{lane}.routing", "chain"):
-                assert source_payload["message"] == PRIVACY_CANARIES[f"{lane}_message"]
-            with trace_span("spring.lookup", "tool", {"httpMethod": "POST", "upstream": "spring"}):
-                assert source_payload["tool"]["arguments"][0]["query"]
-                assert source_payload["tool"]["result"]["customer"]["email"]
-                assert source_payload["headers"]["Authorization"]
-                assert source_payload["metadata"]["nested"][0]["value"]
-            try:
-                with trace_span("llm.provider", "llm"):
-                    raise RuntimeError(PRIVACY_CANARIES["provider_exception"])
-            except RuntimeError:
-                pass
-        await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
-
+    unsafe = "attached-canary-141@example.com"
     fake_exporter = FakeTraceExporter()
-    await exercise(TraceFactory(exporter=fake_exporter, enabled=True, sampling_rate=1.0))
-    assert len(fake_exporter.exported) == 1
-    _assert_canaries_absent(fake_exporter.exported)
+    fake_trace = _start_trace(TraceFactory(exporter=fake_exporter, enabled=True, sampling_rate=1.0))
+    with bind_request_trace(fake_trace):
+        with trace_span("llm.decompose", "llm", {"model": unsafe}):
+            pass
+    await fake_trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
 
-    class CapturingClient:
-        def __init__(self) -> None:
-            self.payloads: list[dict[str, object]] = []
+    serialized_operations = []
 
-        def batch_ingest_runs(self, *, create) -> None:
-            self.payloads.extend(create)
+    def capture_after_sdk_serialization(self, operations, **kwargs) -> None:
+        del self, kwargs
+        serialized_operations.extend(operations)
 
-    client = CapturingClient()
-    await exercise(
+    monkeypatch.setattr(Client, "_batch_ingest_run_ops", capture_after_sdk_serialization)
+    client = Client(
+        api_key="lsv2_pt_abcdefghijklmnop1234",
+        auto_batch_tracing=False,
+        omit_traced_runtime_info=True,
+        tracing_sampling_rate=1.0,
+    )
+    langsmith_trace = _start_trace(
         TraceFactory(
             exporter=LangSmithTraceExporter(client, "jarvis-ai-test", 1.0),
             enabled=True,
             sampling_rate=1.0,
         )
     )
-    assert client.payloads
-    _assert_canaries_absent(client.payloads)
+    with bind_request_trace(langsmith_trace):
+        with trace_span("llm.decompose", "llm", {"model": unsafe}):
+            pass
+    await langsmith_trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+
+    assert fake_exporter.exported == []
+    assert serialized_operations == []
+    assert (
+        caplog.messages.count(
+            "trace dropped requestId=req-1 root=buyer_chat_turn code=TELEMETRY_REDACTION_FAILED"
+        )
+        == 2
+    )
+    assert unsafe not in caplog.text
 
 
 def test_sampling_zero_always_returns_noop() -> None:

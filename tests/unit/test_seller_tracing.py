@@ -188,6 +188,126 @@ def test_seller_sse_is_identical_with_tracing_disabled(
     assert disabled_exporter.exported == []
 
 
+def test_seller_endpoint_canaries_reach_provider_seams_but_not_trace_payloads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from langsmith import Client
+
+    from app.agents.seller.schemas import RouteDecision
+    from app.api import seller as seller_api
+    from tests.unit.test_tracing import PRIVACY_CANARIES, _assert_canaries_absent
+
+    provider_inputs: list[object] = []
+    provider_results: list[str] = []
+    provider_exceptions: list[str] = []
+
+    async def route(*_args, **_kwargs):
+        return RouteDecision(category="general", reason="bounded", confidence=1)
+
+    class Agent:
+        async def astream(self, *args, **kwargs):
+            provider_inputs.append((args, kwargs))
+            serialized = repr((args, kwargs))
+            if PRIVACY_CANARIES["provider_exception"] in serialized:
+                provider_exceptions.append(PRIVACY_CANARIES["provider_exception"])
+                raise RuntimeError(PRIVACY_CANARIES["provider_exception"])
+            result = " ".join(
+                PRIVACY_CANARIES[key]
+                for key in (
+                    "tool_argument",
+                    "tool_result",
+                    "customer_name",
+                    "customer_email",
+                    "customer_phone",
+                    "customer_address",
+                    "nested_metadata",
+                )
+            )
+            provider_results.append(result)
+            yield AIMessageChunk(content=result)
+
+    monkeypatch.setattr(seller_api, "route_question", route)
+    monkeypatch.setattr(seller_api, "build_general_agent", lambda today, checkpointer=None: Agent())
+    monkeypatch.setattr("app.core.errors.new_request_id", lambda: "req-seller-canary-141")
+    headers = {
+        **_seller_headers(),
+        "X-Authorization-Canary": PRIVACY_CANARIES["authorization"],
+        "X-Cookie-Canary": PRIVACY_CANARIES["cookie"],
+    }
+    message = " ".join(
+        (
+            PRIVACY_CANARIES["seller_message"],
+            PRIVACY_CANARIES["customer_name"],
+            PRIVACY_CANARIES["customer_email"],
+            PRIVACY_CANARIES["customer_phone"],
+        )
+    )
+
+    fake_exporter = FakeTraceExporter()
+    set_trace_factory(TraceFactory(exporter=fake_exporter, enabled=True, sampling_rate=1.0))
+    response = client.post(
+        "/seller/chat",
+        json={
+            "sessionId": "seller-canary-141",
+            "threadId": "seller-canary-141",
+            "message": message,
+        },
+        headers=headers,
+    )
+    exception_response = client.post(
+        "/seller/chat",
+        json={
+            "sessionId": "seller-exception-141",
+            "threadId": "seller-exception-141",
+            "message": PRIVACY_CANARIES["provider_exception"],
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == exception_response.status_code == 200
+    assert any(message in repr(value) for value in provider_inputs)
+    assert PRIVACY_CANARIES["tool_result"] in provider_results[0]
+    assert provider_exceptions == [PRIVACY_CANARIES["provider_exception"]]
+    assert response.request.headers["X-Authorization-Canary"] == PRIVACY_CANARIES["authorization"]
+    assert response.request.headers["X-Cookie-Canary"] == PRIVACY_CANARIES["cookie"]
+    _assert_canaries_absent(fake_exporter.exported)
+
+    serialized_operations = []
+
+    def capture_after_sdk_serialization(self, operations, **kwargs) -> None:
+        del self, kwargs
+        serialized_operations.extend(operations)
+
+    monkeypatch.setattr(Client, "_batch_ingest_run_ops", capture_after_sdk_serialization)
+    langsmith_client = Client(
+        api_key="lsv2_pt_abcdefghijklmnop1234",
+        auto_batch_tracing=False,
+        omit_traced_runtime_info=True,
+        tracing_sampling_rate=1.0,
+    )
+    set_trace_factory(
+        TraceFactory(
+            exporter=LangSmithTraceExporter(langsmith_client, "jarvis-ai-test", 1.0),
+            enabled=True,
+            sampling_rate=1.0,
+        )
+    )
+    second = client.post(
+        "/seller/chat",
+        json={
+            "sessionId": "seller-sdk-canary-141",
+            "threadId": "seller-sdk-canary-141",
+            "message": message,
+        },
+        headers=headers,
+    )
+    assert second.status_code == 200
+    assert serialized_operations
+    _assert_canaries_absent(
+        [operation.deserialize_run_info() for operation in serialized_operations]
+    )
+
+
 def test_analysis_request_through_open_stream_finishes_done_with_intact_tree(
     monkeypatch: pytest.MonkeyPatch,
     fake_trace_factory: CapturingTraceFactory,

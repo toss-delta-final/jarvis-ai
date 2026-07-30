@@ -171,12 +171,23 @@ metadata만 내보낸다. redaction 검증이 실패하면 trace 전체를 버�
 
 ### 8.4 timeout·shutdown
 
-- `LANGSMITH_EXPORT_TIMEOUT_S`(기본 `0.5`, 허용 `>0`~`5.0`)는 개별 명시적 batch export의
-  상한이다. timeout/failure는 bounded code만 로그하고 SSE 응답, 취소, 전체 요청 timeout을
-  연장하거나 뒤집지 않는다. staging 증거에는 실제 값을 기록한다.
-- 현재 Jarvis exporter는 request 종료 시 bounded batch를 기다리며 별도 background flush
-  queue를 운영하지 않는다. 향후 standalone LangSmith client/background tracing을 추가하면
-  process shutdown에서 SDK `flush()`(또는 공식 LangChain equivalent)를 bounded하게
+- `LANGSMITH_EXPORT_TIMEOUT_S`(기본 `0.5`, 허용 `>0`~`5.0`)는
+  `asyncio.timeout()`이 **요청 coroutine의 대기 시간만** 제한하는 값이다. exporter가
+  `asyncio.to_thread()`로 시작한 worker thread와 그 안의 client/network send는 이 timeout으로
+  취소되지 않는다. `TELEMETRY_EXPORT_TIMEOUT` 뒤에도 전송이 완료될 수 있으므로 이를 hard
+  batch-send/network timeout 또는 “미전송 보장”으로 표현하지 않는다.
+- hard connect/read/write/send 상한이 필요하면 LangSmith client/HTTP transport가 실제로
+  제공·적용하는 별도 timeout을 구성하고 staging에서 검증해야 한다. 애플리케이션 wait timeout과
+  client/network timeout의 값을 각각 배포 증거에 기록한다.
+- 현재 Jarvis에는 timeout 뒤 계속 실행 중인 `to_thread` export를 추적하거나 drain하는
+  application queue/handle이 없다. 정상 shutdown/restart 전에는 in-flight export가 있을 수
+  있음을 가정하고 worker/client drain 동작을 관찰한다. 사고 kill switch는 새 export 생성을
+  막을 뿐 이미 시작한 worker를 회수하지 못하므로, late send를 막아야 하면 노출 key 즉시
+  revoke/delete, egress 차단 또는 해당 process 종료를 함께 수행하고 이후 새 trace가 없는지
+  확인한다.
+- 향후 명시적 in-flight registry/background queue를 추가하면 shutdown에서 새 demand를 막고,
+  정해진 drain deadline까지 worker를 추적한 뒤 미완료 건을 기록한다. standalone LangSmith
+  client/background tracing도 SDK `flush()`(또는 공식 LangChain equivalent)를 bounded하게
   호출하되 사용자 요청 timeout/cancellation보다 우선시하지 않는다.
 
 ### 8.5 staging canary 및 삭제 증거
