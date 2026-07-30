@@ -35,8 +35,18 @@ BUYER_DEGRADE_REASON_PRECEDENCE = (
     "dedup_skipped",
     "cart_merge_skipped",
 )
+SELLER_DEGRADE_REASON_PRECEDENCE = (
+    "spring_write_failed",
+    "all_workers_failed",
+    "partial_report",
+    "worker_degrade",
+)
+SELLER_DEGRADE_REASONS = frozenset(SELLER_DEGRADE_REASON_PRECEDENCE)
 _BUYER_DEGRADE_REASON_RANK = {
     reason: rank for rank, reason in enumerate(BUYER_DEGRADE_REASON_PRECEDENCE)
+}
+_SELLER_DEGRADE_REASON_RANK = {
+    reason: rank for rank, reason in enumerate(SELLER_DEGRADE_REASON_PRECEDENCE)
 }
 
 SAFE_METADATA_KEYS = frozenset(
@@ -222,6 +232,11 @@ class RequestTrace:
         if not self._finished:
             self._nodes[0].metadata.setdefault("provider_ttft_ms", milliseconds)
 
+    def set_lane(self, lane: str) -> None:
+        """Replace the request's provisional lane after bounded routing completes."""
+        if not self._finished:
+            self._nodes[0].metadata["lane"] = lane
+
     def record_llm_usage(
         self,
         *,
@@ -270,6 +285,15 @@ class RequestTrace:
                 reason = min(
                     (current, reason),
                     key=_BUYER_DEGRADE_REASON_RANK.__getitem__,
+                )
+            elif (
+                isinstance(current, str)
+                and current in _SELLER_DEGRADE_REASON_RANK
+                and reason in _SELLER_DEGRADE_REASON_RANK
+            ):
+                reason = min(
+                    (current, reason),
+                    key=_SELLER_DEGRADE_REASON_RANK.__getitem__,
                 )
             root.metadata.update(degraded=True, degradeReason=reason)
 
@@ -322,6 +346,9 @@ class NoopRequestTrace(RequestTrace):
 
     def record_provider_ttft(self, milliseconds: int) -> None:
         del milliseconds
+
+    def set_lane(self, lane: str) -> None:
+        del lane
 
     def record_llm_usage(
         self,

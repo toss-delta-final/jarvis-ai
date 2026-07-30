@@ -37,6 +37,7 @@ from app.schemas.spring import (
     SellerProductList,
 )
 from app.services.spring_client import SpringUnavailableError
+from app.core.tracing import FakeTraceExporter, TraceFactory, bind_request_trace
 
 FORBIDDEN_IDENTITY_KEYS = {"sellerId", "brandId", "seller_id", "brand_id"}
 
@@ -194,6 +195,37 @@ async def test_tool_returns_error_string_on_spring_failure() -> None:
     )
 
     assert result.startswith("Error:")
+
+
+async def test_caught_tool_error_exports_only_safe_error_code() -> None:
+    fake = FakeSpringClient(fail={"get_sales"})
+    exporter = FakeTraceExporter()
+    trace = TraceFactory(exporter=exporter, enabled=True, sampling_rate=1).start_request(
+        name="seller_chat_turn",
+        request_id="req-safe",
+        conversation_id="conversation-safe",
+        thread_id="thread-safe",
+        lane="analysis",
+        environment="test",
+    )
+
+    with bind_request_trace(trace):
+        result = await _call_runtime_tool(
+            get_sales_timeseries,
+            {"from_date": "2026-07-01", "to_date": "2026-07-14"},
+            fake,
+        )
+    await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+
+    assert result.startswith("Error:")
+    tool_span = next(
+        node for node in exporter.exported[0] if node.name == "tool.get_sales_timeseries"
+    )
+    assert tool_span.error_type == "TOOL_ERROR"
+    payload = repr(tool_span)
+    assert "2026-07-01" not in payload
+    assert "2026-07-14" not in payload
+    assert "Spring 콜백 타임아웃" not in payload
 
 
 async def test_tool_returns_error_string_on_timeout() -> None:
