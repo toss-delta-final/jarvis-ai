@@ -115,8 +115,13 @@ async def expand_needs(utterance, *, llm, settings, expand: ExpandFn = _llm_expa
 `decompose` 산출 `category_queries` 를 보고 판정한다. **LLM 에게 "전개했니?"를 묻지 않는다.**
 
 - **D1 신호 없음** — `category_queries` 가 비었다 → 전개
-- **D2 발화 복사** — leg 이 1개이고 그 `query` 가 발화의 부분문자열이거나 그 역 → 전개
-  (실측 `['집들이 선물']`·`['돌잔치 답례품']` 이 여기)
+- **D2 발화 복사** — leg 이 1개이고 그 `query` 가 발화와 서로 포함 관계이며 **목적 marker 로 끝남**
+  → 전개 (실측 `['집들이 선물']`·`['돌잔치 답례품']` 이 여기)
+  - **marker 조건이 함께 필요하다** — 구현 중 테스트가 오탐을 잡았다: `"청바지"` → `['청바지']` 도
+    완전한 복사지만 **발화 자체가 상품명이라 올바른 leg** 이다. 복사 자체가 아니라 **목적 표현을
+    복사한 것**이 문제이며, 이 구분이 없으면 가장 흔한 정상 질의가 전부 전개 대상이 된다.
+  - D2·D3 가 동시에 참이면 **D2 로 라벨**한다 — 동작은 같지만 프롬프트 튜닝 시 "발화를 베꼈다"와
+    "목적 표현을 만들어냈다"는 다른 처방으로 이어지므로 더 구체적인 쪽을 남긴다.
 - **D3 목적 표현으로 끝남** — 어떤 leg 의 `query` 가 목적 marker(§9 `needs_expansion_purpose_markers`)
   **로 끝나면** 전개 (실측 `['환갑 선물 아이템']`·`['자취 시작 키트']`·`['캠핑 용품']` 이 여기)
   - `endswith` 로 판정하는 이유: `'집들이 선물'.endswith('선물')` 은 True 지만
@@ -247,7 +252,7 @@ async def expand_needs(utterance, *, llm, settings, expand: ExpandFn = _llm_expa
 | `needs_expansion_tier` | `"fast"` | 전개 호출 tier. 실측 미달 시 `"smart"` 승격 |
 | `needs_expansion_min_items` | `2` | 이 개수 미만이면 전개 실패로 간주(§7) |
 | `needs_expansion_timeout_s` | `3.0` | 전개 호출 상한(`spring_timeout_s` 와 같은 급) |
-| `needs_expansion_purpose_markers` | `["선물","준비물","용품","아이템","키트","물품","것","거"]` | D3 감지 marker(§4) |
+| `needs_expansion_purpose_markers` | `["선물","답례품","준비물","용품","아이템","키트","물품","추천","것","거"]` | D2·D3 감지 marker(§4) |
 
 전개 **개수 상한은 `category_fanout_max` 재사용**(§6) — 새 키를 만들지 않는다.
 
