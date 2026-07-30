@@ -227,6 +227,13 @@ class Settings(BaseSettings):
     # `endswith` 인 이유: '한우 선물세트'·'과일 선물세트' 같은 정당한 상품명이 marker '선물' 에 걸려
     # 오탐된다('집들이 선물'.endswith('선물')=True / '한우 선물세트'.endswith('선물')=False).
     # 실측 기반 초기값이며 관측 로그(needs_expansion_triggered.reason) 분포로 조정한다(설계 OPEN-1).
+    needs_expansion_enabled: bool = True  # 전개 단계 on/off(롤백 스위치)
+    # 전개 호출 tier. `fast` 로 시작한다 — §2 의 실패는 "fast 라서"가 아니라 "한 호출에 6가지 작업이
+    # 얹혀서"였으므로, **단일 작업 전용 호출**의 fast 성능은 별개 측정 대상이다(설계 OPEN-2).
+    # 실측 미달 시 "smart" 로 승격한다.
+    needs_expansion_tier: str = "fast"
+    # 이 개수 미만이면 전개 실패로 본다 — 1개면 발화 복사로 되돌아가므로 최소 2개.
+    needs_expansion_min_items: int = Field(default=2, ge=1)
     needs_expansion_purpose_markers: list[str] = [
         "선물",
         "답례품",

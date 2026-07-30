@@ -15,9 +15,28 @@ LLM 산출물로 같은 LLM 산출물의 실패를 감지하는 것은 성립하
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import logging
+from collections.abc import Awaitable, Callable, Sequence
 
-from app.agents.buyer.recommendation.state import CategoryQuery
+from app.agents.buyer.recommendation.state import CategoryQuery, extract_json
+from app.core.llm import LLMError
+
+logger = logging.getLogger(__name__)
+
+ExpandFn = Callable[..., Awaitable[list[str]]]
+
+_SYSTEM = """당신은 커머스 어시스턴트의 쇼핑 목록 작성기입니다.
+사용자가 **무엇을 살지 말하지 않고 목적·상황만** 말했습니다. 그 목적에 맞게 **실제로 살 만한 구체
+상품**을 떠올려 나열하세요.
+반드시 아래 JSON 만 출력하세요(설명·코드펜스 금지):
+{"items": ["<상품명>", "<상품명>", ...]}
+규칙:
+- 각 항목은 **가게에서 그 이름으로 집어올 수 있는 물건**이어야 합니다.
+  좋음: "디퓨저", "식기 세트", "홍삼", "전자레인지", "방한 부츠"
+  나쁨: "집들이 선물", "준비물", "생활용품", "선물세트 아이템" (목적·매장 코너 이름이라 물건이 아님)
+- 사용자의 표현을 그대로 되풀이하지 마세요. **무엇을 살지**로 바꿔 쓰세요.
+- 가격·평가 수식어("가성비", "저렴한")와 상황 설명("~할 때 쓰는")은 빼고 **상품명만** 쓰세요.
+- 서로 다른 종류로 2~5개. 하나뿐이면 다시 생각해 최소 2개를 채우세요."""
 
 
 def detect_expansion_need(
@@ -63,3 +82,67 @@ def detect_expansion_need(
     if all(_is_purpose(s) for s in signals):
         return "purpose_marker"
     return None
+
+
+async def _llm_expand(utterance: str, *, llm, settings) -> list[str]:
+    """전용 LLM 호출 1회로 구체 상품명 목록을 만든다 (방식 A, §5).
+
+    `decompose` 와 분리한 이유(§2): 한 호출에 intent·filters·cart·attributes 가 함께 얹히면
+    "무엇을 살지 떠올리기"라는 생성·추론 여력이 없어 전개 성공률이 1~2/3 에 그쳤다. 단일 작업으로
+    떼면 프롬프트가 짧아지고(system ~500자) 판정도 명확해진다.
+
+    실패(LLM 오류·타임아웃·JSON 파싱·형식 불일치)는 **빈 리스트**로 흡수한다 — 호출부가 `decompose`
+    원본을 그대로 쓰게 해 **기존 경로를 악화시키지 않는다**(§7 후퇴 없음).
+
+    `llm` 미구성 가드가 `expand_needs` 가 아니라 **여기** 있는 이유: 방식 B(카탈로그 기반)·C(캐시)
+    전개기는 LLM 을 쓰지 않으므로, 상위에서 막으면 주입형 seam(§3.2)이 무력해진다.
+    """
+    if llm is None:
+        logger.info("needs_expansion_skipped", extra={"reason": "llm_unavailable"})
+        return []
+    try:
+        raw = await llm.complete(
+            system=_SYSTEM,
+            user=f"USER_MESSAGE: {utterance}",
+            tier=settings.needs_expansion_tier,
+            max_tokens=200,
+        )
+        items = extract_json(raw).get("items")
+    except LLMError as exc:
+        logger.info("needs_expansion_failed", extra={"reason": str(exc)})
+        return []
+    if not isinstance(items, list):
+        logger.info("needs_expansion_failed", extra={"reason": "items_not_list"})
+        return []
+    # 공백-only·비문자열은 거른다 — 미검증 LLM 값이 leg query 로 새면 임베딩 앵커가 오염된다
+    # (decompose `_parse_category_queries` 의 blank=falsy 규약과 동일).
+    return [x.strip() for x in items if isinstance(x, str) and x.strip()]
+
+
+async def expand_needs(
+    utterance: str,
+    *,
+    llm,
+    settings,
+    expand: ExpandFn = _llm_expand,
+) -> list[str]:
+    """목적·상황형 발화를 구체 상품명 목록으로 전개한다. 실패하면 **빈 리스트**(§7).
+
+    `expand` 는 주입형 seam(§3.2) — 기본값은 방식 A(LLM 전개)이고, 나중에 B(카탈로그 기반)나
+    C(캐시)로 갈아끼우는 것이 **주입 한 줄**이 되게 한다. 저장소 공통 패턴(embed·search_top_k·
+    exact_lookup·select_category)과 동일하다.
+
+    상한은 `category_fanout_max` 를 **재사용**한다 — 매핑·검색이 이미 그 값으로 절단하므로 별도
+    튜너블을 두면 두 상한이 어긋난다(§6). `needs_expansion_min_items` 미만이면 전개 실패로 본다
+    (1개면 발화 복사로 되돌아간다).
+    """
+    items = await expand(utterance, llm=llm, settings=settings)
+    items = items[: settings.category_fanout_max]
+    if len(items) < settings.needs_expansion_min_items:
+        logger.info(
+            "needs_expansion_failed",
+            extra={"reason": "below_min_items", "items": items},
+        )
+        return []
+    logger.info("needs_expanded", extra={"items": items, "count": len(items)})
+    return items

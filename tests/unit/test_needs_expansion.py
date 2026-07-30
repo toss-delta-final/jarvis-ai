@@ -10,8 +10,15 @@ LLM 에게 "전개했니?"를 묻지 않는다 — `case` 는 같은 호출의 �
 
 from __future__ import annotations
 
-from app.agents.buyer.recommendation.needs_expansion import detect_expansion_need
+import json
+from types import SimpleNamespace
+
+from app.agents.buyer.recommendation.needs_expansion import (
+    detect_expansion_need,
+    expand_needs,
+)
 from app.agents.buyer.recommendation.state import CategoryQuery
+from app.core.llm import LLMError
 
 # config 기본값과 동일(§9) — 테스트가 config 변경에 끌려다니지 않게 명시적으로 준다.
 # '답례품'·'추천' 은 실측에서 나온 목적 표현이다(`['돌잔치 답례품']`, `['집들이 선물 추천']`).
@@ -134,3 +141,103 @@ def test_blank_and_null_queries_are_ignored_as_signal() -> None:
     """
     assert _detect("발화", [None]) == "no_legs"  # 신호 있는 leg 이 0개 → D1
     assert _detect("발화", [None, "디퓨저"]) is None
+
+
+# ── 전개 호출 (§5·§7) ────────────────────────────────────────────────────────
+
+
+class _FakeLLM:
+    """지정 raw 문자열을 돌려주거나 error=True 면 LLMError 를 던지는 최소 LLM."""
+
+    def __init__(self, *, raw: str = "", error: bool = False) -> None:
+        self._raw = raw
+        self._error = error
+        self.calls: list[tuple[str, str]] = []  # (system, user)
+
+    async def complete(self, *, system: str, user: str, tier: str, max_tokens: int = 1024) -> str:
+        self.calls.append((system, user))
+        if self._error:
+            raise LLMError("llm down")
+        return self._raw
+
+
+def _settings(*, fanout_max: int = 5, min_items: int = 2) -> SimpleNamespace:
+    return SimpleNamespace(
+        category_fanout_max=fanout_max,
+        needs_expansion_min_items=min_items,
+        needs_expansion_tier="fast",
+    )
+
+
+def _items(*names: str) -> str:
+    return json.dumps({"items": list(names)}, ensure_ascii=False)
+
+
+async def test_expand_returns_concrete_product_names() -> None:
+    """전개는 구체 상품명 목록을 돌려준다 — 이것이 leg query 가 되어 매핑(#115)에 태워진다."""
+    llm = _FakeLLM(raw=_items("디퓨저", "식기 세트", "핸드워시 세트"))
+    out = await expand_needs("집들이 선물로 뭐 사갈까", llm=llm, settings=_settings())
+    assert out == ["디퓨저", "식기 세트", "핸드워시 세트"]
+    assert len(llm.calls) == 1
+    assert "집들이 선물로 뭐 사갈까" in llm.calls[0][1]  # 발화가 user 프롬프트에 실린다
+
+
+async def test_expand_truncates_to_fanout_max() -> None:
+    """개수 상한은 `category_fanout_max` 를 재사용한다(§6) — 새 튜너블을 만들지 않는다.
+
+    매핑·검색 단계가 이미 그 상한으로 절단하므로 별도 값을 두면 두 상한이 어긋난다.
+    """
+    llm = _FakeLLM(raw=_items("a", "b", "c", "d", "e", "f", "g"))
+    out = await expand_needs("발화", llm=llm, settings=_settings(fanout_max=3))
+    assert out == ["a", "b", "c"]
+
+
+async def test_expand_rejects_when_below_min_items() -> None:
+    """결과가 `min_items` 미만이면 전개 실패로 본다 — 1개면 발화 복사로 되돌아간다(§7)."""
+    llm = _FakeLLM(raw=_items("디퓨저"))
+    assert await expand_needs("발화", llm=llm, settings=_settings(min_items=2)) == []
+
+
+async def test_expand_filters_blank_and_non_string_items() -> None:
+    """공백·비문자열 항목은 거른다 — 미검증 LLM 값이 leg query 로 새면 앵커가 오염된다.
+
+    (decompose `_parse_category_queries` 의 blank=falsy 규약과 동일.)
+    """
+    llm = _FakeLLM(raw=json.dumps({"items": ["디퓨저", "   ", 123, None, "식기 세트"]}))
+    assert await expand_needs("발화", llm=llm, settings=_settings()) == ["디퓨저", "식기 세트"]
+
+
+async def test_expand_returns_empty_on_llm_error() -> None:
+    """LLM 오류·타임아웃은 빈 리스트 — 호출부가 `decompose` 원본을 그대로 쓴다(§7 후퇴 없음).
+
+    전개는 **개선 시도**이며, 실패가 기존 경로를 악화시켜서는 안 된다. 최악의 경우가 "지금과 동일".
+    """
+    llm = _FakeLLM(error=True)
+    assert await expand_needs("발화", llm=llm, settings=_settings()) == []
+
+
+async def test_expand_returns_empty_on_malformed_json() -> None:
+    """JSON 파싱 실패·형식 불일치도 빈 리스트(후퇴 없음)."""
+    for raw in ("설명만 있고 JSON 이 없음", json.dumps({"items": "문자열"}), json.dumps({})):
+        llm = _FakeLLM(raw=raw)
+        assert await expand_needs("발화", llm=llm, settings=_settings()) == [], raw
+
+
+async def test_expand_skipped_when_llm_missing() -> None:
+    """llm 미구성이면 호출하지 않고 빈 리스트 — 매핑을 LLM 에 종속시키지 않는다."""
+    assert await expand_needs("발화", llm=None, settings=_settings()) == []
+
+
+async def test_expand_is_injectable_without_llm() -> None:
+    """전개는 주입형 seam(§3.2) — A(LLM)→B(카탈로그)→C(캐시) 교체가 주입 한 줄이어야 한다.
+
+    **`llm=None` 이어도 주입 전개기는 동작해야 한다** — B(카탈로그 임베딩)·C(캐시)는 LLM 을 쓰지
+    않는다. `llm` 미구성 가드를 `expand_needs` 에 두면 그 교체가 막혀 seam 이 무력해지므로,
+    가드는 `_llm_expand`(LLM 을 실제로 쓰는 쪽) 안에 있어야 한다.
+    """
+
+    async def _fake_expand(utterance, **_):
+        return ["디퓨저", "식기 세트"]
+
+    out = await expand_needs("발화", llm=None, settings=_settings(), expand=_fake_expand)
+    assert out == ["디퓨저", "식기 세트"]
