@@ -56,6 +56,31 @@
 - 관련: `docs/specs/DESIGN-CATEGORY-HYBRID-59.md` §4.3.1,
   `app/agents/buyer/recommendation/category_mapping.py`, #115 커밋 6c415f2 → c6f4f8f(재개정)
 
+## [2026-07-29] provider 튜너블은 "그 모델이 그 조합을 받아주는지"까지 확인하고 주입한다
+- 증상: 판매자 채팅(`POST /seller/chat`)이 첫 요청부터 전량 400 으로 죽었다. supervisor 라우팅이
+  터져 general 폴백으로 내려갔는데 general 스트림도 같은 400 이라 토큰이 한 개도 안 나갔다.
+  `Function tools with reasoning_effort are not supported for gpt-5.6-luna in /v1/chat/completions.`
+- 원인: `resolve_provider_model` 이 provider 가 openai 이기만 하면 tier 별 `reasoning_effort` 를
+  **모델이 그 조합을 지원하는지 보지 않고** 항상 실어 보냈다. `gpt-5-nano`(fast)는 tools + `minimal`
+  조합을 받아주지만 `gpt-5.6-luna`(smart)는 거부한다. #177 이 판매자 전 역할을 `smart` 로 올리면서
+  supervisor 까지 luna 로 옮겨가 즉시 전면 장애가 됐다. 더 나쁜 신호는 **`recommend` 가 그 이전부터
+  같은 조건이었다**는 것 — 분석 파이프라인 끝단이라 아무도 거기까지 도달하지 않아 계속 숨어 있었다.
+- 규칙:
+  - **모델 ID 를 바꾸거나 역할의 tier 를 옮길 때, 그 경로가 function tools 를 싣는지 먼저 확인하고
+    tool 을 싣는 조합으로 스모크 1회를 돌린다.** 모델 교체는 "문자열 하나 바꾸기"가 아니라 capability
+    교체다.
+  - **`create_agent(tools=[])` 는 "tool 을 안 쓴다"는 뜻이 아니다** — `response_format=ToolStrategy(...)`
+    가 구조화 출력을 function tool 로 내보낸다. tool 유무를 판단할 때 `tools=` 인자만 보지 말 것.
+  - provider 튜너블(`reasoning_effort` 등)은 **모델 기준 게이팅을 거쳐** 주입한다. 미지원 목록을 config
+    로 두고(접두사 매칭 — 날짜 스냅샷 ID 포함), 지원 모델로 갈아타면 목록에서 빼는 것으로 원복되게 한다.
+  - **폴백이 원인을 삼키지 않게 한다.** supervisor 폴백은 400 을 `confidence=0.00 general` 로 흘려보내
+    원인이 로그 최상단 WARNING 에만 남았고, 관측성 레코드에는 `model: null` 로 찍혀 어느 모델이 문제인지
+    대시보드에서 식별할 수 없었다. degrade 경로는 **무엇으로부터 degrade 했는지**를 남겨야 한다.
+  - **파이프라인 끝단에서만 도달하는 경로는 통합 스모크가 없으면 조용히 썩는다** — `recommend` 가 그랬다.
+    새 모델/새 조합을 도입하면 hot path 만이 아니라 **끝단 역할도 1개씩** 최소 1회 태워본다.
+- 관련: #178 · #177(aa0a2b6) · `app/core/llm.py` `resolve_provider_model`/`supports_tool_reasoning` ·
+  `app/agents/seller/models.py` · `app/agents/seller/workers.py` · `app/core/config.py`
+
 ## [2026-07-27] 코드를 근거로 진단하기 전에 `git fetch` 로 워킹트리 신선도부터 확인한다
 - 증상: 계약 대조 중 "구매자가 평점 조건을 주면 추천 결과가 0건이 된다"를 **P0 버그로 보고**했다.
   근거는 `search_service.py` 의 `(p.rating or 0.0) >= threshold` 와 Spring `ProductCandidateResponse`

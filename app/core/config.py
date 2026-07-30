@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     # 최저 지원값인 minimal로 두어 숨은 추론이 출력 예산을 잠식하지 않게 한다.
     openai_fast_reasoning_effort: str = "minimal"
     openai_smart_reasoning_effort: str = "medium"  # smart: 근거문 품질용
+    # gpt-5.6-luna 는 /v1/chat/completions 에서 function tools + reasoning_effort 조합을
+    # 400(invalid_request_error)으로 거부한다(이슈 #178). tool 을 싣는 호출에서만 effort 를
+    # override 값으로 강등한다 — 에러 메시지가 지시하는 경로. 조합을 지원하는 모델로
+    # 바꾸면 목록에서 빼는 것으로 원복된다. 매칭은 접두사 — 날짜 스냅샷 ID도 함께 걸린다.
+    openai_tool_reasoning_incompatible_models: list[str] = ["gpt-5.6-luna"]
+    openai_tool_reasoning_effort_override: str = "none"
 
     # ── Google 임베딩 API (MVP, §4.8 배치 + 임베딩 검색) ──
     # [2026-07-20 결정 6 개정, v0.15.14] 셀프호스트 torch → Google gemini-embedding-001 API.
@@ -136,9 +142,18 @@ class Settings(BaseSettings):
     seller_tool_call_limit: int = 8  # ToolCallLimit 전역 한도(선택)
     seller_worker_timeout_s: float = 60.0  # 분석 워커 1종 실행 상한(3-3 팬아웃, §7 90s 목표 내)
 
-    # ── 판매자 supervisor 라우팅 (4-1a, REALIGN §4 — 2026-07-19 확정) ──
-    # confidence 미달 = analysis 보수 라우팅(SPEC 장치 ⑤). 장애 = general 폴백(사용자 결정).
-    seller_route_confidence_min: float = 0.6  # 이 값 미만이면 analysis 로 보수 재지정
+    # ── 판매자 대화 스레드 (thread.py — checkpointer 기반 멀티턴 누적) ──
+    # supervisor/planner 입력 주입 상한: 최근 턴(user+assistant 쌍) 수와 메시지당 절단.
+    seller_chat_context_turns: int = 6
+    seller_chat_context_max_chars: int = 300
+    # 비-general 레인 record_turn 절단 — 보고서 전문이 아니라 후속 발화 이해용 맥락
+    # (seller_history_report_max_chars 500 과 정합).
+    seller_chat_record_max_chars: int = 500
+
+    # ── 판매자 supervisor 라우팅 (4-1a, REALIGN §4 → #180 개정) ──
+    # confidence 미달 = general 재지정(#180 저신뢰 폴백 역전 — 구 'analysis 보수
+    # 라우팅' 폐기). 장애 = general 폴백 — "불확실하면 general" 단일 원칙.
+    seller_route_confidence_min: float = 0.6  # 이 값 미만이면 general 로 재지정
     seller_route_timeout_s: float = 10.0  # 라우팅 LLM 상한 — first-token 10s 목표 내(§2.9)
 
     # ── 판매자 Anthropic temperature (SPEC-SELLER-001 §8) ──

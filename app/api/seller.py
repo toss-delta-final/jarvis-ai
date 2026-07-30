@@ -39,6 +39,8 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessageChunk, HumanMessage
 from pydantic.alias_generators import to_camel
 
+from app.agents.seller import thread as seller_thread
+from app.agents.seller.checkpoint import get_checkpointer
 from app.agents.seller.context import SellerContext
 from app.agents.seller.history import apply_recommendation
 from app.agents.seller.hitl import DraftRecord, confirm_draft, start_draft, validate_draft
@@ -188,6 +190,10 @@ async def _general_stream(request: SellerChatRequest, context: SellerContext) ->
     - 출력 검사(§10-⑥): 요청 단위 StreamingOutputGuard가 Unicode 문맥과
       청크 경계 시크릿 prefix를 보류해 확정된 안전 조각만 내보낸다.
     - 오류: 스트림 내부 실패는 error 이벤트(LLM_TIMEOUT/INTERNAL) 후 종료(§2.7).
+    - 대화 스레드: 공용 checkpointer + thread_id(chat_config)로 멀티턴 누적 —
+      체크포인트 로드→새 메시지 append→저장은 LangGraph 소관이라 invoke 가 곧
+      기록이다(record_turn 불필요 — 이중 기록 금지). 재빌드(C1)여도 상태는
+      checkpointer 에 있어 스레드는 이어진다.
     """
     # general 은 항상 대화(우측 패널 유지) — 첫 프레임에 레인을 알린다.
     yield _meta("general")
@@ -199,10 +205,13 @@ async def _general_stream(request: SellerChatRequest, context: SellerContext) ->
 
     try:
         # 빌드도 try 안 — 실패 시 error 이벤트 봉투로 종료(마감 리뷰 M2 반영).
-        agent = build_general_agent(today=date.today().isoformat())
+        agent = build_general_agent(
+            today=date.today().isoformat(), checkpointer=await get_checkpointer()
+        )
         output_guard = StreamingOutputGuard()
         async for item in agent.astream(
             {"messages": [HumanMessage(content=request.message)]},
+            config=seller_thread.chat_config(context, request.thread_id),
             context=context,
             stream_mode="messages",
         ):
@@ -235,7 +244,9 @@ async def _general_stream(request: SellerChatRequest, context: SellerContext) ->
 
 
 async def _analysis_stream(
-    request: SellerChatRequest, context: SellerContext
+    request: SellerChatRequest,
+    context: SellerContext,
+    recent_turns: list[seller_thread.Turn],
 ) -> AsyncIterator[str]:
     """분석 레인 (4-1b) — 파이프라인 emit(진행)을 progress 로, 최종 답변을 token 으로 중계.
 
@@ -255,7 +266,13 @@ async def _analysis_stream(
         await queue.put(text)
 
     pipeline_task = asyncio.create_task(
-        run_analysis_pipeline(request.message, context, today=date.today(), emit=emit)
+        run_analysis_pipeline(
+            request.message,
+            context,
+            today=date.today(),
+            emit=emit,
+            recent_turns=recent_turns,
+        )
     )
     # 정상/예외 공통으로 sentinel 을 넣어 진행 루프를 반드시 끝낸다.
     pipeline_task.add_done_callback(lambda _t: queue.put_nowait(_PIPELINE_DONE))
@@ -290,6 +307,8 @@ async def _analysis_stream(
             ),
         )
         return
+    # 대화 스레드 기록(best-effort) — 되묻기 포함 최종 문안이 후속 발화의 맥락이 된다.
+    await seller_thread.record_turn(context, request.thread_id, request.message, result.text)
     yield _token(result.text)
     # 보고서만 우측 패널 교체, 되묻기·사과·거절은 대화로 유지.
     yield _done("replace" if result.kind == "report" else "keep")
@@ -304,6 +323,7 @@ async def _product_stream(request: SellerChatRequest, context: SellerContext) ->
     되묻기 token. 실행은 스트림 2(_confirm_stream — hitl.confirm_draft) 소관.
     check_scope 는 입구 ②에서 이미 수행됨(구조화 레인 코드 경로 — 배정표 준수).
     패널: draft 성립 시 우측에 diff 카드(replace), 되묻기·검증 불성립은 대화(keep).
+    최종 문안(되묻기·초안 요약)은 대화 스레드에 기록(best-effort) — 후속 발화 맥락.
     """
     yield _meta("product")
     settings = get_settings()
@@ -338,6 +358,9 @@ async def _product_stream(request: SellerChatRequest, context: SellerContext) ->
         return
 
     if proposal.clarification:
+        await seller_thread.record_turn(
+            context, request.thread_id, request.message, proposal.clarification
+        )
         yield _token(proposal.clarification)
         yield _done("keep")
         return
@@ -347,7 +370,9 @@ async def _product_stream(request: SellerChatRequest, context: SellerContext) ->
         proposal, seller_id=context.seller_id, brand_id=context.brand_id
     )
     if record is None:
-        yield _token(problem or "초안을 만들지 못했습니다. 다시 요청해 주세요.")
+        text = problem or "초안을 만들지 못했습니다. 다시 요청해 주세요."
+        await seller_thread.record_turn(context, request.thread_id, request.message, text)
+        yield _token(text)
         yield _done("keep")
         return
 
@@ -363,8 +388,18 @@ async def _product_stream(request: SellerChatRequest, context: SellerContext) ->
         )
         return
 
+    await seller_thread.record_turn(
+        context, request.thread_id, request.message, _draft_recorded_text(record)
+    )
     yield _draft_event(record)
     yield _done("replace")  # diff 카드 = 우측 패널 교체
+
+
+def _draft_recorded_text(record: DraftRecord) -> str:
+    """draft 성립 턴의 스레드 기록 문안 — diff 전문이 아니라 후속 발화 이해용 요약."""
+    if record.summary:
+        return f"상품 변경 초안을 생성했습니다: {record.summary}"
+    return f"상품 변경 초안을 생성했습니다 (op={record.op})."
 
 
 def _draft_event(record: DraftRecord) -> str:
@@ -439,7 +474,9 @@ async def _apply_stream(
         return
 
     if record is None:
-        yield _token(problem or "추천을 적용하지 못했습니다. 다시 요청해 주세요.")
+        text = problem or "추천을 적용하지 못했습니다. 다시 요청해 주세요."
+        await seller_thread.record_turn(context, request.thread_id, request.message, text)
+        yield _token(text)
         yield _done("keep")
         return
 
@@ -455,18 +492,24 @@ async def _apply_stream(
         )
         return
 
+    await seller_thread.record_turn(
+        context, request.thread_id, request.message, _draft_recorded_text(record)
+    )
     yield _draft_event(record)
     yield _done("replace")  # diff 카드 = 우측 패널 교체
 
 
-async def _confirm_stream(draft_id: str, context: SellerContext) -> AsyncIterator[str]:
+async def _confirm_stream(request: SellerChatRequest, context: SellerContext) -> AsyncIterator[str]:
     """confirm 레인 (4-2 스트림 2) — 코드 검사 후 resume 실행, LLM 0회.
 
     hitl.confirm_draft 가 존재→소유→멱등→TTL 검사를 통과한 경우에만 그래프를
     resume 해 I-10/11/12 를 실행한다. 모든 결과(executed/stale/만료/멱등/미존재)는
     token+done — Spring 장애만 사과 token + error(INTERNAL, draft 유지·재시도 가능).
     패널: 실제 쓰기가 일어난 executed 만 우측 재조회(refresh) — 그 외(변경 없음)는 유지(keep).
+    결과 문안은 대화 스레드에 기록 — confirm 은 message 가 빈 계약(발화≠동의)이라
+    사용자 턴은 플레이스홀더("(초안 승인)")로 남긴다.
     """
+    draft_id = request.draft_id or ""
     yield _meta("confirm")
     try:
         outcome = await confirm_draft(
@@ -490,6 +533,7 @@ async def _confirm_stream(draft_id: str, context: SellerContext) -> AsyncIterato
             ),
         )
         return
+    await seller_thread.record_turn(context, request.thread_id, "(초안 승인)", outcome.text)
     yield _token(outcome.text)
     # 실제 쓰기(executed)만 대시보드·목록 재조회 유발 — 나머지는 변경 없음.
     yield _done("refresh" if outcome.status == "executed" else "keep")
@@ -518,7 +562,7 @@ async def _seller_stream(request: SellerChatRequest, identity: Identity) -> Asyn
     # ① confirm 필드 선판정 (A-2 최상위 구조화 필드, LLM 0회) → HITL 실행 레인(4-2).
     # action=="confirm" 이면 draftId 는 스키마 validator 가 보장한다(발화 ≠ 동의 [HARD]).
     if request.action == "confirm":
-        async for line in _confirm_stream(request.draft_id or "", context):
+        async for line in _confirm_stream(request, context):
             yield line
         return
 
@@ -530,6 +574,7 @@ async def _seller_stream(request: SellerChatRequest, identity: Identity) -> Asyn
         return
 
     # ② scope 선차단 (LLM 0회) — 전 레인 공통 코드 경로. 도메인 밖 = 대화(패널 유지).
+    # 거절 턴은 스레드에 기록하지 않는다 — 도메인 밖 장문이 맥락을 오염시키지 않게.
     refusal = check_scope(request.message)
     if refusal:
         yield _meta("refused")
@@ -537,9 +582,12 @@ async def _seller_stream(request: SellerChatRequest, identity: Identity) -> Asyn
         yield _done("keep")
         return
 
-    # ③ supervisor 라우팅 — 장애 시 general 폴백은 route_question 내부(4-1a).
+    # ③ 대화 스레드 최근 턴 1회 조회(실패는 [] degrade) → supervisor 라우팅 —
+    # 장애 시 general 폴백은 route_question 내부(4-1a). 맥락은 supervisor 입력과
+    # analysis planner 입력에 주입되고, general 은 스레드 자체를 물고 있어 불필요.
+    recent_turns = await seller_thread.load_recent_turns(context, request.thread_id)
     try:
-        decision = await route_question(request.message, context)
+        decision = await route_question(request.message, context, recent_turns=recent_turns)
     except LLMNotConfigured:
         yield _meta("general")
         yield _llm_unavailable(lane="routing", thread_id=request.thread_id)
@@ -553,7 +601,7 @@ async def _seller_stream(request: SellerChatRequest, identity: Identity) -> Asyn
     )
 
     if decision.category == "analysis":
-        async for line in _analysis_stream(request, context):
+        async for line in _analysis_stream(request, context, recent_turns):
             yield line
     elif decision.category == "product":
         async for line in _product_stream(request, context):

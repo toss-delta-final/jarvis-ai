@@ -1,6 +1,6 @@
 """판매자 분석 워커 팩토리 (SPEC-SELLER-001 §2 — create_agent 사용, StateGraph 수작업 금지).
 
-워커는 create_agent 로 만든다: fast tier(init_seller_model("worker")) +
+워커는 create_agent 로 만든다: smart tier(init_seller_model("worker")) +
 배정표 도구(HANDOFF §3·SPEC §4) + response_format=ToolStrategy(AnalysisFinding).
 신원은 context_schema=SellerContext 로 요청마다 주입된다(ToolRuntime, IDOR 방지) —
 어떤 도구 시그니처에도 신원 인자가 없다.
@@ -16,6 +16,7 @@ from __future__ import annotations
 from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.tools import BaseTool
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
 
 from app.agents.seller import tools as seller_tools
@@ -87,7 +88,7 @@ ABUSE_TOOLS = [
 
 
 def _build_worker(system_prompt: str, tools: list[BaseTool]) -> CompiledStateGraph:
-    """분석 워커 공통 조립 — fast tier · ToolStrategy(AnalysisFinding) · 신원 주입.
+    """분석 워커 공통 조립 — smart tier · ToolStrategy(AnalysisFinding) · 신원 주입.
 
     미들웨어(3-6, 마감 리뷰 M1 반영): PII 정제 + ToolCallLimit — planner 의 PII
     미들웨어는 planner 모델 호출에만 적용될 뿐 원문 question 은 그대로 워커에
@@ -140,21 +141,31 @@ GENERAL_TOOLS = [
 ]
 
 
-def build_general_agent(today: str) -> CompiledStateGraph:
+def build_general_agent(
+    today: str, checkpointer: BaseCheckpointSaver | None = None
+) -> CompiledStateGraph:
     """일반 질문 에이전트 (해석 금지·calculate 강제·미지원 안내 — 자유 텍스트 응답).
 
     분석 워커와 달리 response_format 을 강제하지 않는다 — 3단계에서 astream→token
     SSE 1차 배선 대상이다. planner 를 거치지 않는 레인이라 기간 환산을 프롬프트가
     담당한다(2026-07-18 확정): today("YYYY-MM-DD")를 빌드 시점에 주입한다.
 
+    checkpointer 가 주어지면 대화 스레드 누적이 활성화된다 — 호출부(app/api/seller.py)
+    가 thread.chat_config 의 thread_id 를 함께 넘겨 멀티턴 대화를 잇는다. 유일한
+    대화형 레인이라 general 만 붙인다(2026-07-29 확정) — one-shot 구조화 출력
+    에이전트(supervisor/planner 등)는 checkpointer 없이 입력 메시지 주입으로 맥락을
+    받는다. 요청마다 재빌드(C1)해도 상태는 checkpointer 에 있어 스레드는 이어진다.
+
     Args:
         today: 오늘 날짜(YYYY-MM-DD) — 호출부(요청 시점)가 결정해 넘긴다.
+        checkpointer: 공용 checkpointer(checkpoint.get_checkpointer) — 미지정 시 무상태.
     """
     return create_agent(
         model=init_seller_model("worker"),
         tools=GENERAL_TOOLS,
         system_prompt=GENERAL_PROMPT_TEMPLATE.format(today=today),
         context_schema=SellerContext,
+        checkpointer=checkpointer,
         # 유일한 자유 텍스트 대면 에이전트 — scope 가드(end 점프)를 직접 붙인다(3-6).
         middleware=[
             ScopeGuardMiddleware(),
@@ -178,7 +189,7 @@ PRODUCT_DRAFT_TOOLS = [
 
 
 def build_product_agent() -> CompiledStateGraph:
-    """상품관리 draft 생성 에이전트 (fast tier · ToolStrategy(DraftProposal)).
+    """상품관리 draft 생성 에이전트 (smart tier · ToolStrategy(DraftProposal)).
 
     출력 계약: DraftProposal — clarification 이 비어있지 않으면 draft 불성립이며
     호출부가 되묻기 token 으로 전환한다. draftId 발급·interrupt·confirm-resume 은
@@ -200,11 +211,11 @@ def build_product_agent() -> CompiledStateGraph:
 
 
 def build_supervisor() -> CompiledStateGraph:
-    """3분기 라우터 (fast tier · 도구 없음 · ToolStrategy(RouteDecision)).
+    """3분기 라우터 (smart tier · 도구 없음 · ToolStrategy(RouteDecision)).
 
     출력 계약: RouteDecision(category/reason/confidence). 후처리는 전부 코드
-    (orchestrator.route_question) 소관 — confidence 미달 = analysis 보수 재지정,
-    장애 = general 폴백(REALIGN §4, 2026-07-19 사용자 결정). scope 선차단·confirm
+    (orchestrator.route_question) 소관 — confidence 미달 = general 재지정(#180
+    저신뢰 폴백 역전), 장애 = general 폴백(REALIGN §4). scope 선차단·confirm
     코드 선판정은 SSE 배선(4-1b) 입구에서 이 라우터보다 먼저 실행된다.
     """
     return create_agent(
@@ -222,7 +233,7 @@ def build_supervisor() -> CompiledStateGraph:
 
 
 def build_analysis_planner() -> CompiledStateGraph:
-    """분석 계획 수립자 (fast tier · 도구 없음 · ToolStrategy(AnalysisPlan)).
+    """분석 계획 수립자 (smart tier · 도구 없음 · ToolStrategy(AnalysisPlan)).
 
     출력 계약: AnalysisPlan — 기간 환산은 pipeline.resolve_plan(코드) 소관이며,
     불성립(clarification·빈 워커·미지원 기간)은 전부 ValueError → 되묻기 token
@@ -264,7 +275,7 @@ def build_report_agent() -> CompiledStateGraph:
 
 
 def build_report_judge() -> CompiledStateGraph:
-    """보고서 채점 judge (fast tier · ToolStrategy(ReportScore)).
+    """보고서 채점 judge (smart tier · ToolStrategy(ReportScore)).
 
     결정론 검사(verifier.run_deterministic_checks) 이후에 호출된다 — 21/30 판정과
     재작성 루프는 3단계 코드 소관이고, judge 는 축별 점수·feedback 만 낸다.
