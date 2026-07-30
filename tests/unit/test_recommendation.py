@@ -11,10 +11,12 @@ import gc
 import json
 from datetime import datetime
 from types import SimpleNamespace
+from uuid import UUID
 
 import pytest
 
 from app.agents.buyer.graph import get_thread_store, run_buyer_turn
+from app.agents.buyer.recommendation import graph as recommendation_graph
 from app.core.auth import Identity
 from app.core.config import get_settings
 from app.core.conversation import conversation_key
@@ -101,6 +103,40 @@ async def test_happy_path_pipeline() -> None:
 
     done = next(e for e in events if e["type"] == "done")["data"]
     assert done["finishReason"] == "stop"
+
+
+async def test_list_id_uses_uuid4_hex_and_matches_products_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """I-21 listId는 추측 불가능한 UUID4 hex이며 push와 SSE가 같은 값을 사용한다."""
+    generated = [
+        UUID("9f2c1a7e-4b8d-43f5-a0c6-e1d97b3f8a24"),
+        UUID("4b8d43f5-a0c6-41d9-b3f8-a249f2c1a7e4"),
+    ]
+    generated_iter = iter(generated)
+    monkeypatch.setattr(recommendation_graph, "uuid4", lambda: next(generated_iter))
+    push = _RecordingPush()
+
+    first_events = await _collect(
+        run_buyer_turn(
+            _req(), _member(), llm=FakeLLM(), search=_make_search(DEFAULT_PRODUCTS), push_fn=push
+        )
+    )
+    second_events = await _collect(
+        run_buyer_turn(
+            _req(), _member(), llm=FakeLLM(), search=_make_search(DEFAULT_PRODUCTS), push_fn=push
+        )
+    )
+
+    pushed_ids = [item.list_id for item in push.pushes]
+    ready_ids = [
+        next(event for event in events if event["type"] == "products.ready")["data"]["listIds"][0]
+        for events in (first_events, second_events)
+    ]
+
+    expected_ids = [value.hex for value in generated]
+    assert pushed_ids == expected_ids
+    assert ready_ids == pushed_ids
 
 
 async def test_products_ready_carries_no_cards() -> None:
