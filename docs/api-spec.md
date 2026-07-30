@@ -6,8 +6,8 @@
 
 | 항목 | 값 |
 |---|---|
-| 문서 버전 | v0.15.25 |
-| 작성일 | 2026-07-14 (v0.15.25 개정 2026-07-28 — 사본 동기화: §3.1 `conditionActions`(칩 제거, #84)·`screen`(화면 맥락, #118) 신설, `conditions` 칩 `field` 6종 확정, in-stream `error`에 `requestId`·`retryable` 추가) |
+| 문서 버전 | v0.15.26 |
+| 작성일 | 2026-07-14 (v0.15.26 개정 2026-07-30 — 사본 drift 정정: 담기 이벤트 적재 주체(BE→FE)·`budget` 이벤트 제외·`search.query` PII 기준) (v0.15.25 개정 2026-07-28 — 사본 동기화: §3.1 `conditionActions`(칩 제거, #84)·`screen`(화면 맥락, #118) 신설, `conditions` 칩 `field` 6종 확정, in-stream `error`에 `requestId`·`retryable` 추가) |
 | 상태 | draft |
 | 대상 독자 | Spring 백엔드 팀, React 프론트엔드(FE) 팀 |
 | 소유 | AI 에이전트 서버 팀 |
@@ -518,7 +518,7 @@ FE/BE 문서에 없으나 MVP에 필요한 아래 3종은 **모두 구매자 SSE
 | `estCount` | int | 완화/재포함 적용 시 예상 결과 수(COUNT). `estCount == 0`인 칩은 제외 |
 
 - **`relaxationNotice`(자동 완화 투명 안내)** — 0건 자동 완화 적용 시 안내(결정 14-D). 안내 산문은 `token`으로 스트리밍하고, 기계 판독 플래그가 필요하면 `done.data.relaxationNotice: string | null`로 병기(제안(초안)).
-- **총액 예산 요약(BudgetSummary)** — Case 3 총액 예산(결정 14-A). 전용 SSE 이벤트 `budget`(제안(초안)):
+- **총액 예산 요약(BudgetSummary)** — Case 3 총액 예산(결정 14-A). 전용 SSE 이벤트 `budget`. **⚠️ [제외 v0.15.25] 정본(Notion CH-2)은 이 이벤트를 명세에서 제외했다** — *"현재 코드에 미구현 → 필요 시 post-MVP"*. 아래 스키마는 **post-MVP 참고용**으로만 남긴다. 구현 전까지 FE는 이 이벤트를 기다리지 않으며, 이벤트 순서 계약에서도 빠진다(이슈 #163):
 
 ```json
 {
@@ -539,7 +539,7 @@ FE/BE 문서에 없으나 MVP에 필요한 아래 3종은 **모두 구매자 SSE
 
 #### 이벤트 순서 계약
 
-정상 흐름(추천): `conditions`(0~1회) → `token`(0회 이상) + `suggestions`/`budget`(해당 시) → `products.ready`(성공 시 정확히 1회) → `done`(1회). 장바구니 흐름: `token`/`action` → `done`. `products.ready`는 목록 push 성공 이후에만 나타난다.
+정상 흐름(추천): `conditions`(0~1회) → `token`(0회 이상) + `suggestions`(해당 시) → `products.ready`(성공 시 정확히 1회) → `done`(1회). **[v0.15.25] `budget`은 순서 계약에서 제외**했다(정본이 명세에서 제외 — 미구현, post-MVP). 장바구니 흐름: `token`/`action` → `done`. `products.ready`는 목록 push 성공 이후에만 나타난다.
 
 #### 오류/degrade 동작 (참고)
 
@@ -794,7 +794,7 @@ X-Internal-Token: {서비스 토큰}   ← internal 그룹, 타임아웃 권장 
 - **단건 계약** — Case 3 묶음 담기는 상품별로 **반복 호출**한다(항목별 성공/실패가 자연 분리되므로 SSE `action`도 항목별 emit).
 - **게스트 담기 허용** — `role == "guest"`여도 `guestId`로 담기 성공(BE 02 D30, 2026-07-10 개정 — 기존 403 유도 폐기). **로그인 유도는 결제 시점 FE 몫.** 구 AI-side 차단(`GUEST_NOT_ALLOWED`)은 폐기 — **결정 8 개정 필요(§8 항목 7)**.
 - **합산 안내(v0.6.0)**: 담기 전 §4.9 조회로 동일 상품·옵션 기존 보유를 확인하면 "이미 담겨 있어 N개로 늘렸어요"처럼 안내할 수 있다. **합산의 권위는 Spring**(조회는 안내용 — 조회 실패 시에도 담기는 진행).
-- **부수효과**: `CART_ADD(via: chat)` 이벤트는 BE가 적재(AI 무관).
+- **부수효과 없음 — 담기 이벤트는 서버가 적재하지 않는다** **[정정 v0.15.25]**. 구 서술("`CART_ADD(via: chat)` 이벤트는 BE가 적재")은 **폐기**한다. E-1 정본에서 `add_to_cart`는 **FE가 쏘는 12종 중 하나**이며, 서버가 직접 적재하는 이벤트는 `recommendation_generated` **하나뿐**이다(그것도 E-1 HTTP로 들어오면 드롭). 챗봇 경로도 FE가 SSE `action`(`CART_ADDED`)을 받은 시점에 `add_to_cart`를 쏜다.
 
 #### 성공 응답 — 200
 
@@ -1159,7 +1159,7 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 | Q6 | **CH-3**(CS 챗) 라우팅 | ✅ **관리자 CS 문의(CH-3·I-5·AD-1/2·M-9) 전부 post-MVP**. **주문상태 Q&A(I-4)는 구매자 챗(CH-2)에 흡수** — 별도 CS챗 없음 | 해소 |
 | Q7 | 게스트 담기 실패 **3종·차단 없음** 최종? | ✅ GUEST_NOT_ALLOWED 폐기(§3.1·§4.1). **[갱신 v0.15.16] 실패 3종**(PRODUCT_NOT_FOUND/STOCK_INSUFFICIENT/CART_ERROR) — 담기 재고검증 부활(`CART_STOCK_INSUFFICIENT`, 2026-07-22), `OUT_OF_STOCK` 폐기 유지 | 갱신 |
 | Q8 | 판매자 챗 주소 `{AI_SERVER}/seller/chat`(별도) vs `/chat` 채널 | `{AI_SERVER}/seller/chat`(S-4, 별도 주소) 최종 — 채널 구분 아님(§3.2) | 즉답 |
-| Q9 | 챗봇 담기 `add_to_cart` 이벤트 누가 쏘나 | I-2 문서상 **BE가 서버측 `CART_ADD(via:chat)` 적재**(§4.1) — FE 추가 발사 불필요 | 즉답 |
+| Q9 | 챗봇 담기 `add_to_cart` 이벤트 누가 쏘나 | **[정정 v0.15.25] FE가 쏜다** — E-1 정본에서 `add_to_cart`는 FE 12종 중 하나이고, 서버 직접 적재는 `recommendation_generated` 하나뿐이다. 구 답변("BE가 `CART_ADD(via:chat)` 적재")은 폐기 | 갱신 |
 
 > **[v0.15.17 갱신]** Q1(I-20 UUID)·Q2(I-21 reason)·Q5(I-13 재작성)·Q6(관리자 문의 MVP 제외)은 **해소**. **Q4 I-17 스키마 골격은 BE 확정(2026-07-18)** — 잔여는 스키마가 아닌 🔴 선결 1건 **배치 MVP/post-MVP 스코프**(config vs 파이프라인 모순). 나머지(Q3·Q7·Q8·Q9)는 확정 회신 가능.
 
@@ -1199,6 +1199,7 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 
 | 버전 | 날짜 | 변경 |
 |---|---|---|
+| v0.15.26 | 2026-07-30 | **[사본 drift 정정] 정본 대조로 틀린 서술 3건 교체.** (1) **담기 이벤트 적재 주체** — §4.1 I-2의 *"`CART_ADD(via: chat)` 이벤트는 BE가 적재(AI 무관)"* 와 §5.1 Q9의 같은 답변을 **폐기**했다. E-1 정본에서 `add_to_cart`는 **FE가 쏘는 12종 중 하나**이고, 서버가 직접 적재하는 이벤트는 `recommendation_generated` 하나뿐이다(E-1 HTTP로 들어오면 드롭). 챗봇 경로도 FE가 SSE `action`(`CART_ADDED`) 수신 시점에 쏜다. (2) **`budget` 이벤트 제외** — 정본(Notion CH-2)이 *"현재 코드에 미구현 → 명세에서 제외(필요 시 post-MVP)"* 로 정리했는데 사본은 §3.1에 스키마를 그대로 두고 이벤트 순서 계약에도 넣어두고 있었다. 스키마는 post-MVP 참고용으로 남기고 순서 계약에서 뺐다(이슈 #163). (3) **`search.query` PII 기준** — 정본 E-1이 *"개인정보를 properties에 넣지 않는다"* 와 *"`search` 필수 = `query`"* 를 동시에 말해 **자기모순**이었고, FE가 그 금지 조항을 근거로 `queryLength`만 보내 `searchTopics` 워커가 돌 수 없었다. 금지 대상은 **FE가 굳이 끌어다 넣는 이름·주소·연락처·이메일**이며 사용자가 직접 입력해 이미 서버로 보낸 검색어는 원문을 싣고 **보존기간으로 관리**한다 — 정본 E-1에 「개인정보 기준」 절로 명확화했다. |
 | v0.15.25 | 2026-07-28 | **[사본 동기화] §3.1 요청 계약 확장 + in-stream `error` 추적 필드 — 정본(Notion "📡 API 명세서" CH-2) 2026-07-28 개정 반영.** (1) **`conditionActions` 신설**(이슈 #84) — 조건 칩 제거를 `[{op:"remove", field}]` 구조화 배열로 받는다. 구 규약 문자열(`"[조건 제거] priceMax"`) 왕복 방식은 **폐기** — FE는 그 방식으로 구현돼 있으나 AI에 수신부가 없어 현재 칩 제거가 무동작이다. `conditionActions`가 있으면 `message` 빈 문자열 허용, 둘 다 비면 `400`. 구매자 전용(`BuyerChatRequest`). (2) **`conditions` 칩 `field` 허용값 6종 확정** — `category`/`priceMax`/`priceMin`/`brand`/`ratingMin`/`keyword`. 종전에는 예시 둘만 있어 허용 집합이 계약에 없었는데, `conditionActions.field` 검증의 전제라 등재했다(코드 `build_condition_chips` 실측과 일치). (3) **`screen` 신설**(이슈 #118) — `{pageType, filters?, products?, columns?}`. `pageType`은 **라우트가 아니라 우측 패널 내용**을 가리킨다(채팅이 전용 페이지에만 있어 라우트를 실으면 정보가 0). `products`는 **서버가 모르는 목록만**(P-4 인기상품·판매자 자사 상품) — 추천 카드는 `listId`로 서버가 알고, 되돌려주면 위조 경로가 된다. `columns`는 반응형 그리드 열 수로 "3번째 줄 2번째" 좌표 지시 해소에 쓴다(`rows`·항목별 좌표는 파생값이라 제외). `pageType`은 **E-1 `page_view`와 같은 enum을 공유**한다 — 화면 어휘를 새로 만들지 않기 위해서다. 라우트 `path`는 쿼리스트링 PII 위험으로, 한글 `label`은 AI config 매핑으로 대체해 **계약에서 뺐다**. 07-17 FE 제안(`ChatScreenContext`)과 #118의 "노출 상품 목록" 요구를 **한 필드로 통합**했다(같은 사실의 두 측면). `products`는 담기 허용 목록을 넓히는 입력이며 **두 목록 밖 id 차단 가드는 유지**한다. **구매자·판매자 공용 필드**라 §3.2에도 등재 — 판매자 대시보드는 `meta.lane`·`done.panel`로 AI→FE 화면 조작만 있고 반대 방향이 비어 있었다. (4) **`products.ready`의 `listId`(단일) → `listIds`(배열, 항상)** — I-21이 `lists`를 1~10개 보내므로(§4.2) 단일 필드로는 세트형·니즈별 추천을 나를 수 없었다. 정본 I-21·CH-5는 이미 복수 전제인데 CH-2와 본 사본만 단일로 남아 있던 **3자 불일치**다. 목록이 1개여도 길이 1 배열로 보내 FE 분기를 없애고, 이벤트는 여전히 정확히 1회다. 예시의 `"list-4471"`도 §4.2가 금지한 추측 가능 형식이라 교정했다. **구현(`ProductsReadyData.list_id: str`)도 단일이라 코드 변경이 따라야 한다.** (5) **in-stream `error`에 `requestId`·`retryable` 추가** — 스트림 전 실패(§2.5 봉투)에는 `requestId`가 있는데 스트림 내부 실패에는 없어 추적이 끊겼다. `retryable`은 `code`로 복원 불가(같은 `LLM_UNAVAILABLE`이 미구성/일시불가에 겸용)라 emit 지점이 정한다. §3.2 판매자 스트림도 동일(`ErrorData` 공용). |
 | v0.15.24 | 2026-07-27 | **[사본 동기화] S-5 폐기 반영 — 정본(기획 저장소 Notion "📡 API 명세서" DB) 2026-07-21 결정이 본 사본에 미반영이었다.** S-5 `PATCH /api/seller/products/{id}`(판매자 화면 직접 수정, 07/17 신설)는 **미채택**이며 **상품 수정은 챗봇 HITL(I-11)이 유일 경로**다. §3.2 draft 절의 "챗봇 수정(I-11)과 병존" 서술을 폐기 표기로 교체. Spring 코드 실측에서도 `/api/seller/**`에 PATCH 엔드포인트가 없어 정본·코드 모두와 일치시켰다. 계약 변경이 아니라 **사본 drift 정정**이다. |
 | v0.15.23 | 2026-07-27 | **[#100 P0/P1/P2] I-1 §4.6 실측 정합.** 표시 전용 필드(`imageUrl`·`originalPrice`·`reviewCount`·`options`)를 응답표에서 제거하고 CH-5(§4.3) 하이드레이션 이관 명시(AI 추천 경로 미사용), `price`·`rating`을 "AI 계산용(비표시 — 예산검증 `verifiedSum`·평점 사후필터·rerank 신호, 질의 시점 필요)"으로 명기해 display 오분류 재발 차단, envelope 예시를 실측 `{success, data:[...]}`(bare array)로 정정, 요청 `brandName` 단일→다중(반복 파라미터 → `WHERE brand IN`, 방법 D), `totalCount` 필드 불필요 결정 반영. |
