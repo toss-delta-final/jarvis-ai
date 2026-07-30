@@ -137,3 +137,23 @@ async def test_span_marks_safe_error_type_and_restores_parentage() -> None:
     by_name = {node.name: node for node in exporter.exported[0]}
     assert by_name["buyer.streaming"].error_type == "StreamCancelled"
     assert by_name["buyer.cleanup"].parent_id == by_name["buyer_chat_turn"].id
+
+
+async def test_exporter_failure_is_isolated_and_finish_remains_idempotent(caplog) -> None:
+    class FailingExporter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def export(self, nodes) -> None:
+            self.calls += 1
+            raise RuntimeError("customer@example.com must not reach logs")
+
+    exporter = FailingExporter()
+    trace = _start_trace(TraceFactory(exporter=exporter, enabled=True, sampling_rate=1.0))
+
+    await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+    await trace.finish(status="FAILED", error_type="INTERNAL", terminal_reason="duplicate")
+
+    assert exporter.calls == 1
+    assert "TELEMETRY_EXPORT_FAILED" in caplog.text
+    assert "customer@example.com" not in caplog.text

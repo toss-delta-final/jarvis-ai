@@ -11,12 +11,15 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+import logging
 from typing import Literal, Protocol
 from uuid import UUID, uuid4
 
 RunType = Literal["chain", "llm", "tool", "retriever"]
 TraceStatus = Literal["COMPLETED", "FAILED", "CANCELLED"]
 SafeScalar = str | int | float | bool | None
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -147,7 +150,10 @@ class RequestTrace:
                 if status != "COMPLETED" and node.error_type is None:
                     node.error_type = error_type
 
-        await self._exporter.export(tuple(self._nodes))
+        try:
+            await self._exporter.export(tuple(self._nodes))
+        except Exception:
+            logger.warning("trace export failed code=TELEMETRY_EXPORT_FAILED")
 
 
 class NoopRequestTrace(RequestTrace):
