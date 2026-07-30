@@ -39,7 +39,7 @@
 
 ```mermaid
 flowchart TD
-    START((START)) --> SUP["supervisor<br/>구조화 출력 라우팅 (fast tier)"]
+    START((START)) --> SUP["supervisor<br/>구조화 출력 라우팅 (smart tier)"]
     SUP -->|analysis| PLN["analysis_planner<br/>캐시 조회 + 이력 반영 + 분석 분류"]
     SUP -->|product| PM["product_agent<br/>상품관리 (전 쓰기 HITL)"]
     SUP -->|general| GEN["general_agent<br/>일반질문 (읽기 전용)"]
@@ -157,7 +157,7 @@ SSE 1스트림 = 응답 1회이므로 승인 대기를 한 연결에 물지 않�
 - 이벤트는 **`meta` / `progress` / `token` / `draft` / `done` / `error` 6종**(§3.2). 모든 판매자 스트림은 `meta{lane}`으로 시작하고 정상은 `done`, 실패는 `error`로 끝난다. `done.finishReason="stop"` 단일. 구매자 이벤트(products.ready 등) emit 금지.
 - supervisor가 provider 미구성으로 분류 전에 실패하면 새 wire lane을 추가하지 않고 기존 라우팅 장애 폴백인 **`meta{general}`을 먼저 보낸 뒤 `error{code:"LLM_UNAVAILABLE"}`**로 끝낸다. 운영 로그의 lane은 실패 지점 식별을 위해 `routing`을 유지한다.
 - **first-token 10s**: supervisor 라우팅 직후 진행 token을 먼저 흘린다(§2).
-- **상한 90s는 목표치**(2026-07-17 확정) — 분석 스트림은 초과 가능. 타임아웃은 Settings 주입으로 두고, Send 팬아웃 병렬화·`fast` 모델 티어·검증 루프 상한(≤3)으로 단축한다. 지속 초과 시 §2.9의 판매자 스트림 예외(상한 연장)를 명세 개정으로 제안 🔴.
+- **상한 90s는 목표치**(2026-07-17 확정) — 분석 스트림은 초과 가능. 타임아웃은 Settings 주입으로 두고, Send 팬아웃 병렬화·검증 루프 상한(≤3)으로 단축한다. **모델 티어는 더 이상 단축 수단이 아니다**(2026-07-29 전 역할 smart 전환, §8) — 지연 초과가 지속되면 §2.9 판매자 스트림 예외(상한 연장)를 명세 개정으로 제안하거나 supervisor·judge를 `fast`로 부분 롤백한다 🔴.
 - **degrade 규칙 요약**: 워커 일부 실패 → 부분 보고서 / verifier 3회 미달 → 마지막 보고서 채택 + 로그 / 집계 전부 실패 → 사과 token + done / 쓰기 실패 → token 안내 + done. LLM·Spring 실패가 스트림을 `error`로 끝내는 경우는 스트림 자체가 진행 불능일 때만.
 - **provider 미구성은 degrade 대상이 아니다**: `LLMNotConfigured`는 전역 배포 설정 오류이므로 supervisor·planner·worker·report·recommend 어느 단계에서도 일반 워커 실패나 부분 보고서로 흡수하지 않고 API 경계까지 전파해 `LLM_UNAVAILABLE`로 끝낸다.
 - **provider 미구성은 서버 오류 로그를 남긴다**: API 경계는 활성 provider·lane·threadId만 기록하고 API key나 예외 메시지의 비밀값은 기록하지 않는다. 동일 요청은 실제로 예외를 매핑한 단일 경계에서 한 번만 기록한다.
@@ -167,10 +167,10 @@ SSE 1스트림 = 응답 1회이므로 승인 대기를 한 연결에 물지 않�
 
 | 역할 | tier | OpenAI(기본) | Anthropic |
 |---|---|---|---|
-| supervisor · analysis_planner · 분석 워커 5종 · report_verifier judge · product_agent | **fast** | `openai_fast_model_id`, `temperature` 미전달, `reasoning_effort=minimal` | `haiku_model_id`, `temperature=0.0` |
-| report_agent · recommend_agent | **smart** | `openai_smart_model_id`, `temperature` 미전달, `reasoning_effort=medium` | `sonnet_model_id`, `temperature=0.2` |
+| supervisor · analysis_planner · 분석 워커 5종 · report_verifier judge · product_agent · report_agent · recommend_agent | **smart** | `openai_smart_model_id`, `temperature` 미전달, `reasoning_effort=medium` | `sonnet_model_id`, `temperature=0.2` |
 
-- 근거: 라우팅·분류·정형 분석은 경량, 서술·추천 품질은 상위 티어 — 호출부는 provider 모델명이 아닌 `fast`/`smart` 의도만 선택한다.
+- 근거(2026-07-29 개정): **판매자 전 역할을 `smart` 하나로 통일한다.** supervisor 3분기 라우팅과 analysis_planner 워커 선택의 오분류는 하위 단계에서 복구되지 않으므로, 라우팅·분류·정형 분석에서도 판단 품질을 우선한다. 호출부는 provider 모델명이 아닌 `fast`/`smart` 의도만 선택한다는 원칙은 유지 — `fast` 축은 폐기가 아니라 판매자 그래프에서 미사용 상태이며, 구매자 그래프·enrichment 파이프라인은 계속 `fast`를 쓴다.
+- 되돌림: 지연·비용이 문제되면 전량 롤백이 아니라 **`supervisor`·`judge`부터 `fast`로 부분 롤백**한다(`ROLE_TIER` 해당 항목만 변경). 전 역할이 동일 티어인 동안에는 `_cached_model` lru_cache가 모델 인스턴스를 1개만 생성한다.
 - provider·모델 ID·API key·reasoning effort·Anthropic temperature는 Settings 주입이다. `LLM_PROVIDER` 기본은 `openai`이며 `anthropic`으로 전환할 수 있다. provider 값은 Settings 입력 경계에서 ASCII 대소문자를 구분하지 않고 소문자로 정규화하며(`OpenAI`→`openai`, `Anthropic`→`anthropic`), 그 밖의 값은 기동 전에 거부한다.
 - OpenAI reasoning 모델에는 `temperature` 키 자체를 전달하지 않는다. 일관성 레버는 tier별 reasoning effort와 구조화 출력·코드 판정이다. Anthropic은 기존 `temperature=0.0/0.2` 정책을 유지한다.
 - 모델 ID 변경은 일관성 관측 이벤트이므로 CHANGELOG에 기록한다(§10-①). 설정값이 alias이면 provider가 가리키는 snapshot이 바뀔 수 있으므로 “버전 고정”으로 간주하지 않는다.
@@ -200,7 +200,7 @@ SSE 1스트림 = 응답 1회이므로 승인 대기를 한 연결에 물지 않�
 
 | # | 장치 | 본 SPEC 조정 |
 |---|---|---|
-| ① | provider별 변동성 제어 | `fast` 라우터·워커·judge는 OpenAI `reasoning_effort=minimal` 또는 Anthropic `temperature=0.0`을 사용한다. 모델 ID 변경 시 기록(§8) |
+| ① | provider별 변동성 제어 | 라우터·워커·judge를 포함한 판매자 전 역할이 OpenAI `reasoning_effort=medium` 또는 Anthropic `temperature=0.2`를 사용한다(2026-07-29 전 역할 smart, §8). 변동성은 구조화 출력·코드 판정으로 억제한다. 모델 ID·티어 배정 변경 시 기록(§8) |
 | ② | 수치 계산의 코드 이전 | **3층 분담(§5)** — AI-측 고도화 계산 + Settings 임계값 |
 | ③ | 기준서 RAG 고정 주입 | pg-catalog pgvector(§9.2)·한국어 임베딩. "분석 전 기준서 검색, 코드 판정 번복 금지" 프롬프트 강제 |
 | ④ | 기간 정규화(`normalize_period`) | 유지 — "지난달"=전월 1일~말일, "최근 N일"=오늘 제외. 기준서에 동일 정의 문서화 |

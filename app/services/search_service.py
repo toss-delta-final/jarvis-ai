@@ -251,8 +251,8 @@ async def search_catalog(
 
     BE I-1 에 dedup·평점 파라미터가 없어(C-15), Spring 검색은 keyword/category/price/brand 만
     보내고 exclude_product_ids(최근 구매 dedup, §4.7 결정 14-F)·rating_min 은 여기서 사후 제외한다.
-    rating_min 사후필터는 '반증된 것만' 제거한다 — 평점이 있고 미달인 상품만 탈락, rating=None
-    신상품은 보존(#100 P0).
+    rating_min 사후필터는 '반증된 것만' 제거한다 — 리뷰가 있고 미달인 상품만 탈락, rating=None
+    신상품과 review_count==0(리뷰 없어 rating=0) 상품은 데이터 부재로 보존(#100 P0 / #171).
     정렬은 rerank(LLM) 소관이라 별도 sort 필드가 없다(#100 P2) — 여기서는 검색순서를 보존한다.
     [2026-07-23, BE 합의] size 제거로 Spring 이 전량 반환한다(api-spec §4.6).
     [#101] **여기서 top-K 절단하지 않는다** — 재정렬·사후필터(dedup 제외·평점 하한)만 하고 전량을
@@ -273,9 +273,13 @@ async def search_catalog(
 
     if filters.rating_min is not None:
         threshold = filters.rating_min
-        # '반증된 것만' 제거: 평점이 있고 미달인 상품만 탈락시키고, rating=None(리뷰 없는
-        # 신상품)은 미달이 반증된 게 아니라 데이터 부재이므로 보존해 rerank 가 판단하게 한다(#100 P0).
-        products = [p for p in products if p.rating is None or p.rating >= threshold]
+        # '반증된 것만' 제거(#100 P0 / #171): 실제 리뷰가 있는데 하한 미달인 상품만 탈락시킨다.
+        # 데이터 부재는 보존 — ① rating=None(무평점) ② review_count==0(리뷰가 아예 없어 나온
+        # rating=0 은 저평점이 반증된 게 아니라 데이터 부재)은 rerank 가 판단하도록 남긴다.
+        # review_count 가 None(BE 미전송)이면 rating 이 지배하는 구 동작으로 폴백한다.
+        products = [
+            p for p in products if p.rating is None or p.review_count == 0 or p.rating >= threshold
+        ]
 
     # 명시 속성 하드필터(PR②) — SpringProduct.attributes 관대 매칭, 축 부재는 보존(#100 P0), 0건이면
     # 축별 완화. 추측 선호(소프트)는 여기서 안 거르고 rerank(원문+attributes)에 맡긴다.

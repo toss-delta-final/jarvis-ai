@@ -69,11 +69,12 @@ class ProductSearchFilters(CamelModel):
 class SpringProduct(CamelModel):
     """Spring 검색 응답(BE I-1)의 상품 1건 (api-spec §4.6 응답표).
 
-    [#100 정합] I-1 이 실제 반환하는 필드 = productId·name·summary·attributes·categoryName·
-    brandName·price·rating. 별칭은 categoryName·brandName(to_camel 기본과 달라 명시 별칭으로
-    덮는다 — 안 그러면 rerank 가 category/brand 를 None 으로 받는다).
-    [#100 P0/P1] price·rating 은 display 가 아니라 **AI 계산용**(예산검증 verifiedSum·평점 사후
-    필터·rerank 신호) — 질의 시점(rerank 이전)에 필요해 후보와 함께 받는다(§4.6). 표시는 CH-5.
+    [#100 정합, #171] I-1 이 실제 반환하는 필드 = productId·name·summary·attributes·categoryName·
+    brandName·price·rating·reviewCount. 별칭은 categoryName·brandName(to_camel 기본과 달라 명시
+    별칭으로 덮는다 — 안 그러면 rerank 가 category/brand 를 None 으로 받는다).
+    [#100 P0/P1, #171] price·rating·reviewCount 는 display 가 아니라 **AI 계산용**(예산검증
+    verifiedSum·평점 사후필터·rerank 신호·리뷰부재 판별) — 질의 시점(rerank 이전)에 필요해 후보와
+    함께 받는다(§4.6). 표시는 CH-5.
     [#100 P0] summary·attributes 는 필드가 없으면 파싱에서 유실되므로 명시(소비는 #101).
     list_price(originalPrice)·main_image(imageUrl)·stock 은 **I-1 미반환**(표시 전용 → CH-5 §4.3,
     재고는 담기/주문 시점 §4.1) — 방어적 optional None 으로 남겨두되 추천 경로는 쓰지 않는다.
@@ -88,6 +89,9 @@ class SpringProduct(CamelModel):
     attributes: dict[str, object] | None = None
     price: int | None = None  # 판매가 — AI 계산용(예산·maxPrice·rerank, #100 P1), 표시 아님
     rating: float | None = None  # 조회 시 집계(DDL D9) — AI 계산용(평점필터·rerank, #100 P0)
+    # 조회 시 집계 리뷰수 — AI 계산용(#171). rating 과 짝지어 '리뷰 없어 0'(review_count==0,
+    # 데이터 부재)과 '리뷰 있고 저평점'을 가른다. None/미전송이면 rating 이 지배(구 동작 폴백).
+    review_count: int | None = None
     category: str | None = Field(default=None, alias="categoryName")
     brand: str | None = Field(default=None, alias="brandName")
     # ↓ I-1 미반환(표시 전용 → CH-5 §4.3 / 재고는 §4.1) — 방어적 optional, 추천 경로 미사용

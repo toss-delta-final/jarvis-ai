@@ -605,3 +605,62 @@ def test_pipeline_history_failure_does_not_break_analysis(
     )
 
     assert result.kind == "report"
+
+
+def test_pipeline_injects_recent_turns_without_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """이력이 없어도 대화 맥락이 있으면 [최근 대화] + [이번 질문] 으로 조립한다."""
+    plan = AnalysisPlan(analyses=["sales_anomaly"], period_expr="지난달", reason="r")
+    _patch_pipeline(monkeypatch, plan)
+    planner = _SeqAgent([{"structured_response": plan}])
+    monkeypatch.setattr(orchestrator, "build_analysis_planner", lambda: planner)
+    _, emit = _collect_emit()
+    turns = [("user", "어제 매출 알려줘"), ("assistant", "120만원입니다.")]
+
+    asyncio.run(
+        orchestrator.run_analysis_pipeline(
+            "그럼 지난주는?", _CTX, today=dt.date(2026, 7, 18), emit=emit, recent_turns=turns
+        )
+    )
+
+    sent = planner.received[0]
+    assert sent.startswith("[최근 대화]")
+    assert "사용자: 어제 매출 알려줘" in sent
+    assert sent.endswith("[이번 질문] 그럼 지난주는?")
+
+
+def test_pipeline_injects_recent_turns_before_history_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """대화 맥락 + 이력이 모두 있으면 [최근 대화] → [최근 분석 이력] → [이번 질문] 순."""
+    from app.agents.seller import history
+
+    asyncio.run(
+        history.save_history(
+            7,
+            question="6월 매출 분석",
+            analyses=["sales_anomaly"],
+            date_from="2026-06-01",
+            date_to="2026-06-30",
+            report="이전 보고서",
+            recommendations=RecommendationSet(),
+        )
+    )
+    plan = AnalysisPlan(analyses=["sales_anomaly"], period_expr="지난달", reason="r")
+    _patch_pipeline(monkeypatch, plan)
+    planner = _SeqAgent([{"structured_response": plan}])
+    monkeypatch.setattr(orchestrator, "build_analysis_planner", lambda: planner)
+    _, emit = _collect_emit()
+    turns = [("user", "어제 매출 알려줘"), ("assistant", "120만원입니다.")]
+
+    asyncio.run(
+        orchestrator.run_analysis_pipeline(
+            "이번엔 7월은?", _CTX, today=dt.date(2026, 7, 18), emit=emit, recent_turns=turns
+        )
+    )
+
+    sent = planner.received[0]
+    assert sent.startswith("[최근 대화]")
+    assert sent.index("[최근 대화]") < sent.index("[최근 분석 이력]")
+    assert sent.endswith("[이번 질문] 이번엔 7월은?")

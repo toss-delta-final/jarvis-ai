@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     # 최저 지원값인 minimal로 두어 숨은 추론이 출력 예산을 잠식하지 않게 한다.
     openai_fast_reasoning_effort: str = "minimal"
     openai_smart_reasoning_effort: str = "medium"  # smart: 근거문 품질용
+    # gpt-5.6-luna 는 /v1/chat/completions 에서 function tools + reasoning_effort 조합을
+    # 400(invalid_request_error)으로 거부한다(이슈 #178). tool 을 싣는 호출에서만 effort 를
+    # override 값으로 강등한다 — 에러 메시지가 지시하는 경로. 조합을 지원하는 모델로
+    # 바꾸면 목록에서 빼는 것으로 원복된다. 매칭은 접두사 — 날짜 스냅샷 ID도 함께 걸린다.
+    openai_tool_reasoning_incompatible_models: list[str] = ["gpt-5.6-luna"]
+    openai_tool_reasoning_effort_override: str = "none"
 
     # ── Google 임베딩 API (MVP, §4.8 배치 + 임베딩 검색) ──
     # [2026-07-20 결정 6 개정, v0.15.14] 셀프호스트 torch → Google gemini-embedding-001 API.
@@ -136,9 +142,18 @@ class Settings(BaseSettings):
     seller_tool_call_limit: int = 8  # ToolCallLimit 전역 한도(선택)
     seller_worker_timeout_s: float = 60.0  # 분석 워커 1종 실행 상한(3-3 팬아웃, §7 90s 목표 내)
 
-    # ── 판매자 supervisor 라우팅 (4-1a, REALIGN §4 — 2026-07-19 확정) ──
-    # confidence 미달 = analysis 보수 라우팅(SPEC 장치 ⑤). 장애 = general 폴백(사용자 결정).
-    seller_route_confidence_min: float = 0.6  # 이 값 미만이면 analysis 로 보수 재지정
+    # ── 판매자 대화 스레드 (thread.py — checkpointer 기반 멀티턴 누적) ──
+    # supervisor/planner 입력 주입 상한: 최근 턴(user+assistant 쌍) 수와 메시지당 절단.
+    seller_chat_context_turns: int = 6
+    seller_chat_context_max_chars: int = 300
+    # 비-general 레인 record_turn 절단 — 보고서 전문이 아니라 후속 발화 이해용 맥락
+    # (seller_history_report_max_chars 500 과 정합).
+    seller_chat_record_max_chars: int = 500
+
+    # ── 판매자 supervisor 라우팅 (4-1a, REALIGN §4 → #180 개정) ──
+    # confidence 미달 = general 재지정(#180 저신뢰 폴백 역전 — 구 'analysis 보수
+    # 라우팅' 폐기). 장애 = general 폴백 — "불확실하면 general" 단일 원칙.
+    seller_route_confidence_min: float = 0.6  # 이 값 미만이면 general 로 재지정
     seller_route_timeout_s: float = 10.0  # 라우팅 LLM 상한 — first-token 10s 목표 내(§2.9)
 
     # ── 판매자 Anthropic temperature (SPEC-SELLER-001 §8) ──
@@ -150,6 +165,16 @@ class Settings(BaseSettings):
     # ── 검색/추천 튜너블 (SPEC-RECOMMEND-001) ──
     # [#101] hot path 기본 검색 백엔드 = 방식2(Spring 전량 → pgvector 압축). 토글은 provider 처럼 전역.
     search_backend: SearchBackend = "embedding_rerank"
+    # [#51] canonical category 가 있는 leg 는 Spring keyword(상품명 LIKE)를 드롭한다 — 상품명 글자
+    # 부분일치 AND-필터라 동의어("청바지" vs 상품명 "데님 팬츠")를 retrieval 에서 원천 배제한다.
+    # category 가 후보를 확보하고 semanticQuery 임베딩이 rerank 를 담당하므로 keyword 중복은 불필요.
+    # False 면 기존 동작(leg query→keyword) 복원(롤백 안전성). category 가 없는 경로는 이 값과 무관하게
+    # keyword 를 fallback 으로 유지(무필터 전체 카탈로그 방지).
+    # [#51 리뷰] 이 플래그는 search_backend 와 커플링된다 — keyword 부재를 semanticQuery 재정렬이
+    # 메우는 embedding_rerank 백엔드에서만 안전하다. spring(재정렬 없음)·vector(filters.keyword 를
+    # 쿼리 임베딩 입력으로 씀)에서는 드롭이 품질을 급락시키므로, graph 가 search_backend!=embedding_rerank
+    # 이면 이 값과 무관하게 keyword 를 유지한다(가드는 소비 지점 graph.py).
+    search_drop_keyword_with_category: bool = True
     # pgvector 의미 재정렬 후 Sonnet 입력 상한(옛 "FastAPI 30" 이관처, §4.6). products[:limit] 절단이라
     # ge=0 — 음수면 slice 가 뒤에서 잘려 "<=0 이면 0개" 불변식이 깨진다(형제 category_fanout_* 규약).
     embedding_rerank_limit: int = Field(default=30, ge=0)
@@ -162,6 +187,14 @@ class Settings(BaseSettings):
     )
     llm_call_limit: int = 2
     relaxation_max_rounds: int = 3
+    # rating·reviewCount 등급화 경계(#171 PR#172) — 비표시 정밀값 유출 방지용으로 rerank LLM 에
+    # 정확한 숫자 대신 등급만 전달할 때 쓰는 임계. 내림차순(높은 등급부터). 데모 카탈로그 실측 후 조정.
+    rating_tier_excellent: float = 4.5  # ≥ → 매우높음
+    rating_tier_good: float = 4.0  # ≥ → 높음
+    rating_tier_fair: float = 3.0  # ≥ → 보통 (그 미만 낮음)
+    review_tier_many: int = 100  # ≥ → 매우많음
+    review_tier_some: int = 20  # ≥ → 많음
+    review_tier_few: int = 5  # ≥ → 보통 (그 미만 적음)
 
     # ── 카테고리 하이브리드 매핑 (이슈 #59, DESIGN-CATEGORY-HYBRID-59) ──
     # 방식 A: decompose 추측 → 임베딩 보정(exact/최근접). canonical-or-null·멀티 fan-out.
@@ -321,6 +354,19 @@ class Settings(BaseSettings):
             raise ValueError("STATE_STORE_POOL_MIN_SIZE must not exceed max size")
         if self.state_store_local_cache_max_entries <= 0:
             raise ValueError("STATE_STORE_LOCAL_CACHE_MAX_ENTRIES must be positive")
+        # 등급 티어 경계 순서 불변식(#171 PR#172) — _rating_tier/_review_tier 가 내림차순 순차
+        # 비교(if r>=excellent .. >=good .. >=fair)라, env 로 순서가 뒤집히면 중간 구간이 조용히
+        # 엉뚱한 등급으로 나간다. 기동 시점 fail-fast 로 오설정을 막는다.
+        if not (self.rating_tier_excellent >= self.rating_tier_good >= self.rating_tier_fair):
+            raise ValueError(
+                "RATING_TIER 경계는 excellent >= good >= fair 여야 합니다"
+                f" ({self.rating_tier_excellent}/{self.rating_tier_good}/{self.rating_tier_fair})"
+            )
+        if not (self.review_tier_many >= self.review_tier_some >= self.review_tier_few):
+            raise ValueError(
+                "REVIEW_TIER 경계는 many >= some >= few 여야 합니다"
+                f" ({self.review_tier_many}/{self.review_tier_some}/{self.review_tier_few})"
+            )
         # scope 는 §2.3 확정 검증 항목이지만 값이 C-1 미확정이라 fail-fast 로 막지 않는다
         # (미확정 추정값 강제 시 전면 401 장애 — PR #39 1R 리뷰). 대신 설정 누락이 조용히
         # 지나가지 않게 기동 경고를 남긴다(4R 리뷰). C-1 확정 후 JWT_SCOPE 주입 시 활성화.

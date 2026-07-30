@@ -34,3 +34,26 @@ def test_negative_embedding_rerank_limit_rejected() -> None:
     """
     with pytest.raises(ValidationError):
         Settings(_env_file=None, embedding_rerank_limit=-1)
+
+
+def test_tier_thresholds_defaults_ordered() -> None:
+    """등급 티어 경계(#171 PR#172) — 하드코딩 금지·config 주입 + 기본값이 내림차순."""
+    s = Settings(_env_file=None)
+    assert s.rating_tier_excellent >= s.rating_tier_good >= s.rating_tier_fair
+    assert s.review_tier_many >= s.review_tier_some >= s.review_tier_few
+
+
+def test_rating_tier_misordered_rejected() -> None:
+    """[#171 PR#172 리뷰] rating 티어 경계가 excellent>=good>=fair 를 어기면 기동 fail-fast.
+
+    _rating_tier 가 내림차순 순차 비교라, env 로 순서가 뒤집히면 중간 구간이 조용히 엉뚱한 등급으로
+    나간다 — 예외 없이. model_validator 로 기동 시점에 막는다.
+    """
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, rating_tier_good=2.0, rating_tier_fair=3.0)  # good < fair
+
+
+def test_review_tier_misordered_rejected() -> None:
+    """[#171 PR#172 리뷰] review 티어 경계가 many>=some>=few 를 어기면 기동 fail-fast."""
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, review_tier_some=3, review_tier_few=10)  # some < few
