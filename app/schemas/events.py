@@ -9,3 +9,15 @@ SessionEndEvent 계약은 Spring PR #24 실측과 이슈 #62에서 확정됐다.
 """
 
 from __future__ import annotations
+
+from pydantic import Field
+
+from app.schemas.chat import CamelModel
+
+
+class SessionClaimEvent(CamelModel):
+    """Spring login completion event that transfers one guest session to a member."""
+
+    session_id: str
+    guest_id: str
+    user_id: int = Field(gt=0)

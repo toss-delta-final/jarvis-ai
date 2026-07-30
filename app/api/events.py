@@ -18,6 +18,8 @@ from app.agents.profile.store import get_profile_store
 from app.api.deps import verify_service_token
 from app.core.config import get_settings
 from app.core.llm import get_llm
+from app.core import session_lifecycle
+from app.schemas.events import SessionClaimEvent
 from app.schemas.profile import SessionEndEvent
 
 router = APIRouter(tags=["events"])
@@ -27,6 +29,16 @@ logger = logging.getLogger(__name__)
 async def _release_claim_best_effort(event_id: str, token: str) -> None:
     """기존 테스트·내부 호출 호환 wrapper. 실제 lifecycle helper는 공통 finalizer 소유."""
     await profile_finalizer.release_processed_claim_best_effort(event_id, token, log=logger)
+
+
+@router.post("/events/session-claim", status_code=202, include_in_schema=False)
+async def session_claim(
+    event: SessionClaimEvent,
+    _token: None = Depends(verify_service_token),
+) -> dict[str, str]:
+    """Transfer a whole guest session to the authenticated member selected by Spring."""
+    outcome = await session_lifecycle.claim_owner(event)
+    return {"status": "accepted" if outcome.claimed else "duplicate"}
 
 
 @router.post("/events/session-end", status_code=202)
