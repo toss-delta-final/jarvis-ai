@@ -44,7 +44,7 @@ SUB_TYPE_GUEST = "guest"
 
 # dev legacy buyer role과 JWKS exact seller role.
 ROLE_USER = "USER"
-ROLE_GUEST = "GUEST"  # TODO: 최종 게스트 role 값 확정 대기
+ROLE_GUEST = "GUEST"  # dev legacy compatibility only; JWKS guest는 sub_type="guest"
 ROLE_SELLER = "seller"
 
 
@@ -108,6 +108,8 @@ def _claims_to_identity(claims: dict, *, require_identity_claim: bool = False) -
     sub_type = claims.get(CLAIM_SUB_TYPE)
     session_id = claims.get(CLAIM_SESSION_ID)
 
+    if require_identity_claim and raw_role is not None and sub_type is not None:
+        raise AuthError("conflicting role and sub_type claims")
     if (require_identity_claim and raw_role == ROLE_SELLER) or (
         not require_identity_claim and role == ROLE_SELLER.upper()
     ):
