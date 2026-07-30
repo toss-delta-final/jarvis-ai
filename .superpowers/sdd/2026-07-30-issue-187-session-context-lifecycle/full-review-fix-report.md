@@ -34,3 +34,26 @@
 
 - 실제 운영에서 PostgreSQL 프로세스를 외부에서 강제 중단하는 chaos test는 수행하지 않았다. 대신 실제 PostgreSQL transaction과 통제된 psycopg OperationalError를 사용해 rollback/wire 계약을 검증했다.
 - TestClient/httpx 조합의 기존 deprecation warning 1건은 이번 변경과 무관하다.
+
+## 2차 재리뷰 수정
+
+### RED
+
+- 실제 rate-limit rejection payload에 raw `scope="sub:rl-obs"`가 직렬화되고 `scopeFp`, `ownerFp`, `ipFp`가 없어 회귀 테스트가 실패했다.
+- 중앙 `emit_rejection()`에 `guestId`, scope, IP, 미지 identifier key를 전달하면 모두 raw `**fields`로 병합되어 fingerprint-only assertion이 실패했다.
+
+### GREEN
+
+- `emit_rejection()`이 owner/session/thread/context/stream/scope/IP 식별자 키를 중앙에서 소비하고 peppered `*Fp`로 변환한다.
+- `scope`는 `scopeFp`와 비민감 `scopeType=sub|ip|other`만 남기며 sub scope 값은 `ownerFp`로도 상관한다.
+- 비민감 rejection 필드는 명시적 allowlist(`path`, `role`, `status`, `retryable`, `action`)만 유지하고 미지 필드는 기본 폐기한다.
+- rate-limit 경계가 client IP를 sanitizer에 전달해 raw IP 없이 `ipFp` 관측성을 유지한다.
+- auth/JWKS 테스트 설명을 확정된 exact lowercase seller role, exact buyer sub_type, dev-only legacy 호환으로 정정했다.
+
+### 2차 검증
+
+- focused observability/ratelimit: **66 passed**
+- focused auth/JWKS: **54 passed**
+- 전체 pytest: **1312 passed, 136 deselected**
+- 전체 PostgreSQL integration: **134 passed, 1314 deselected**
+- Ruff check/format, `git diff --check`: 통과

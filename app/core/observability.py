@@ -220,17 +220,55 @@ def emit_rejection(request_id: str, error_type: str, **fields: object) -> None:
 
     레이트 리밋(§2.8)·409(§2.9 a) 발동을 상한 튜닝 근거로 관측 가능하게 남긴다.
     """
-    raw_owner = fields.pop("userId", fields.pop("ownerId", None))
-    raw_session = fields.pop("conversationId", fields.pop("sessionId", None))
-    raw_thread = fields.pop("threadId", None)
+
+    def _take(*keys: str) -> object | None:
+        found = None
+        for key in keys:
+            value = fields.pop(key, None)
+            if found is None and value is not None:
+                found = value
+        return found
+
+    raw_owner = _take("userId", "ownerId", "guestId", "subject", "sub")
+    raw_session = _take("conversationId", "sessionId")
+    raw_thread = _take("threadId")
+    raw_stream = _take("streamKey", "stream_key")
+    raw_context = _take("contextId")
+    raw_ip = _take("ip", "ipAddress", "clientIp")
+    raw_scope = _take("scope")
+    scope_type = None
+    scope_owner = None
+    if raw_scope is not None:
+        scope_text = str(raw_scope)
+        prefix, separator, value = scope_text.partition(":")
+        scope_type = prefix if separator and prefix in {"sub", "ip"} else "other"
+        if scope_type == "sub" and value:
+            scope_owner = value
+        elif scope_type == "ip" and value and raw_ip is None:
+            raw_ip = value
+
+    # 임의 **fields를 그대로 병합하지 않는다. 새 필드는 비민감 allowlist에 명시적으로
+    # 추가해야 하며, 식별자처럼 보이는 미지 키는 기본적으로 폐기한다.
+    safe_fields = {
+        key: fields[key]
+        for key in ("path", "role", "status", "retryable", "action")
+        if key in fields
+    }
     record = {
         "event": "chat_request",
         "requestId": request_id,
         "errorType": error_type,
         "streamStatus": None,
-        "ownerFp": identifier_fingerprint(str(raw_owner)) if raw_owner is not None else None,
+        "ownerFp": identifier_fingerprint(str(raw_owner if raw_owner is not None else scope_owner))
+        if raw_owner is not None or scope_owner is not None
+        else None,
         "sessionFp": identifier_fingerprint(str(raw_session)) if raw_session is not None else None,
         "threadFp": identifier_fingerprint(str(raw_thread)) if raw_thread is not None else None,
-        **fields,
+        "contextFp": identifier_fingerprint(str(raw_context)) if raw_context is not None else None,
+        "streamFp": identifier_fingerprint(str(raw_stream)) if raw_stream is not None else None,
+        "scopeFp": identifier_fingerprint(str(raw_scope)) if raw_scope is not None else None,
+        "scopeType": scope_type,
+        "ipFp": identifier_fingerprint(str(raw_ip)) if raw_ip is not None else None,
+        **safe_fields,
     }
     logger.info(json.dumps(record, ensure_ascii=False))

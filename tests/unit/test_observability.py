@@ -22,7 +22,12 @@ from app.core.conversation import (
     get_conversation_store,
 )
 from app.core.config import get_settings
-from app.core.observability import identifier_fingerprint, message_fingerprint, start_observation
+from app.core.observability import (
+    emit_rejection,
+    identifier_fingerprint,
+    message_fingerprint,
+    start_observation,
+)
 from app.core.session_context import BuyerSessionInput, SessionFinalizing, SessionForbidden
 from app.core.stream import get_registry
 from app.core.stream import open_stream
@@ -711,7 +716,44 @@ def test_rate_limit_emits_structured_observation(caplog: pytest.LogCaptureFixtur
     logs = [json.loads(r.getMessage()) for r in caplog.records if r.name == "observability"]
     rate_logs = [entry for entry in logs if entry.get("errorType") == "RATE_LIMITED"]
     assert rate_logs, "429 구조화 로그 없음"
-    assert rate_logs[0]["streamStatus"] is None
+    record = rate_logs[0]
+    serialized = json.dumps(record, ensure_ascii=False)
+    assert record["streamStatus"] is None
+    assert record["scopeFp"]
+    assert record["scopeType"] == "sub"
+    assert record["ownerFp"]
+    assert record["ipFp"]
+    assert "rl-obs" not in serialized
+    assert "sub:rl-obs" not in serialized
+    assert "testclient" not in serialized
+    assert '"scope"' not in serialized
+
+
+def test_rejection_sanitizer_absorbs_guest_and_drops_unknown_identifier_keys(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.INFO, logger="observability"):
+        emit_rejection(
+            "req-sanitize",
+            "RATE_LIMITED",
+            guestId="guest-raw",
+            scope="sub:guest-raw",
+            ip="203.0.113.10",
+            path="/chat",
+            arbitraryIdentifier="must-not-leak",
+        )
+
+    record = json.loads(caplog.records[-1].getMessage())
+    serialized = json.dumps(record, ensure_ascii=False)
+    assert record["ownerFp"] == identifier_fingerprint("guest-raw")
+    assert record["scopeFp"] == identifier_fingerprint("sub:guest-raw")
+    assert record["scopeType"] == "sub"
+    assert record["ipFp"] == identifier_fingerprint("203.0.113.10")
+    assert record["path"] == "/chat"
+    for raw in ("guest-raw", "sub:guest-raw", "203.0.113.10", "must-not-leak"):
+        assert raw not in serialized
+    for key in ("guestId", "scope", "ip", "arbitraryIdentifier"):
+        assert key not in record
 
 
 async def test_error_frame_terminates_stream() -> None:

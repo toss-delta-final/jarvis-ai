@@ -13,9 +13,9 @@
 스트림 티켓 클레임 (§2.3 v0.10.0):
   - sub      : 사용자 식별자 (회원/판매자=숫자 문자열, 게스트=UUID, §2.6)
   - sub_type : member | guest — 티켓 정본 클레임. 그 외 값은 fail-closed 거부.
-  - scope    : 용도 검증 (제안값 chat:stream — 값은 config 주입, C-1 확정 대기)
-  - role     : 구 클레임 폴백 + 판매자 판정(SELLER) — 판매자 티켓 형식은 🔴 C-1 잔여.
-  - brandId  : 판매자(role=SELLER) 브랜드 id — {brandId} path용, 요청 본문 불신(§2.6).
+  - scope    : 용도 검증 (확정값 chat:stream, config 주입)
+  - role     : JWKS에서는 판매자 exact lowercase "seller" 전용. buyer role 대체 금지.
+  - brandId  : 판매자(role="seller") 브랜드 id — {brandId} path용, 요청 본문 불신(§2.6).
   - sessionId: 구매자 티켓이 증명한 Spring 접속 id — /chat body와 일치해야 한다.
 
 [보안] 신원(user_id)·게스트 여부·판매자 스코프는 오직 토큰 클레임에서만 도출한다.
@@ -42,7 +42,7 @@ CLAIM_SESSION_ID = "sessionId"
 SUB_TYPE_MEMBER = "member"
 SUB_TYPE_GUEST = "guest"
 
-# role 값 매핑 — TODO(C-1): 게스트/판매자 role 최종값을 Spring 회원 스키마 확정 시 반영.
+# dev legacy buyer role과 JWKS exact seller role.
 ROLE_USER = "USER"
 ROLE_GUEST = "GUEST"  # TODO: 최종 게스트 role 값 확정 대기
 ROLE_SELLER = "seller"
@@ -52,7 +52,7 @@ ROLE_SELLER = "seller"
 class Identity:
     """토큰에서 도출한 호출자 신원. 요청 본문이 아니라 오직 토큰이 근거다.
 
-    brand_id 는 role==SELLER 토큰의 `brandId` 클레임 — 판매자 역호출(§4.4/§4.5)의
+    brand_id 는 role=="seller" 토큰의 `brandId` 클레임 — 판매자 역호출(§4.4/§4.5)의
     `{brandId}` path 에 쓴다. 요청 본문/발화에서 받지 않는다 (IDOR 방지, §2.6).
     """
 
@@ -99,10 +99,8 @@ def _claims_to_identity(claims: dict, *, require_identity_claim: bool = False) -
       2. sub_type == member|guest      → 티켓 정본 클레임. 그 외 값은 fail-closed 거부.
       3. dev의 구 role 폴백(GUEST/USER 등) → 로컬 호환 유지.
 
-    require_identity_claim=True(jwks 실배선 레인)면 sub_type·role 이 **둘 다 없는**
-    서명 유효 토큰을 거부한다 — §2.3 은 sub_type 을 티켓 필수 클레임으로 확정했고,
-    신원 유형 클레임이 전무한 토큰을 회원으로 기본 승인하면 미지 sub_type 거부와
-    방어 원칙이 어긋난다 (PR #39 리뷰 반영). dev 모드는 로컬 편의 레인이라 관용 유지.
+    require_identity_claim=True(JWKS 실배선 레인)는 exact lowercase role="seller"가
+    아니면 정확한 sub_type=member|guest를 요구한다. dev 모드만 legacy role을 관용한다.
     """
     subject = claims.get(CLAIM_SUBJECT)
     raw_role = claims.get(CLAIM_ROLE)
@@ -153,8 +151,7 @@ def _claims_to_identity(claims: dict, *, require_identity_claim: bool = False) -
             subject=subject,
             session_id=session_id,
         )
-    # 구 role 폴백: 값 집합이 C-1 미확정이라 미지 role(USER 등)은 회원으로 관용 —
-    # sub 는 서명 검증을 통과했고, 회원 role 실값이 달라도 전면 401 이 되지 않게 한다.
+    # dev 전용 legacy role 폴백: 로컬 기존 토큰은 미지 role도 회원으로 관용한다.
     return Identity(
         user_id=subject,
         is_guest=False,

@@ -4,7 +4,8 @@ RSA 키페어로 실 JWKS dict 를 구성하고 PyJWKClient 의 HTTP fetch 계�
 kid→공개키 매칭·JWK 파싱·kid miss refetch 가 실제 라이브러리 경로로 돈다(tests/unit/_jwks.py).
 
 검증 항목(§2.3 확정): signature / exp / iss / aud / scope.
-클레임 매핑: sub_type(member|guest, v0.10.0 티켓 정본) 우선 + 구 role 폴백(C-1 잔여).
+클레임 매핑: JWKS buyer exact sub_type(member|guest), seller exact lowercase role="seller".
+legacy role 폴백은 dev decode 전용이며 이 JWKS 모듈에서는 허용하지 않는다.
 """
 
 from __future__ import annotations
@@ -63,7 +64,7 @@ def _decode(token: str | None, *, scope: str | None = SCOPE):
     )
 
 
-# ── 티켓 클레임 매핑 (§2.3 v0.10.0: sub_type 정본, 구 role 폴백) ──
+# ── 티켓 클레임 매핑 (§2.3: buyer exact sub_type, seller exact lowercase role) ──
 
 
 def test_member_ticket_maps_to_member(rsa_key, jwks_calls) -> None:
@@ -110,7 +111,7 @@ def test_jwks_legacy_role_guest_is_rejected(rsa_key, jwks_calls) -> None:
 
 
 def test_seller_role_with_brand_id(rsa_key, jwks_calls) -> None:
-    """role=SELLER + brandId 클레임 → 판매자 스코프 + brand_id 보존 ({brandId} path용, §2.3)."""
+    """확정 role="seller" + brandId → 판매자 스코프와 brand_id를 보존한다."""
     claims = ticket_claims(sub="9")
     claims["role"] = auth.ROLE_SELLER
     claims["brandId"] = "77"
@@ -120,11 +121,8 @@ def test_seller_role_with_brand_id(rsa_key, jwks_calls) -> None:
     assert identity.is_guest is False
 
 
-def test_lowercase_seller_role_accepted(rsa_key, jwks_calls) -> None:
-    """§2.3 표기 그대로 role="seller"(소문자) → 판매자 스코프 (대소문자 무관 비교, 리뷰 반영).
-
-    C-1 로 role 실값 형식이 미확정이라 소문자 발급 시 전면 403 이 되지 않게 한다.
-    """
+def test_exact_lowercase_seller_role_accepted(rsa_key, jwks_calls) -> None:
+    """확정값 role="seller" 소문자 정확 일치만 판매자 스코프를 연다."""
     claims = ticket_claims(sub="9")
     claims["role"] = "seller"
     claims["brandId"] = "77"
