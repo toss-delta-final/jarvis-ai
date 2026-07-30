@@ -17,6 +17,7 @@ from app.core.auth import Identity
 from app.core.conversation import conversation_key
 from app.core.tracing import (
     FakeTraceExporter,
+    LangSmithTraceExporter,
     TraceFactory,
     bind_request_trace,
     set_trace_factory,
@@ -85,6 +86,38 @@ async def _run_with_trace(driver) -> tuple:
         await driver()
     await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
     return factory.exporter.exported[0]
+
+
+class _CapturingLangSmithClient:
+    def __init__(self) -> None:
+        self.payloads: list[dict[str, object]] = []
+
+    def batch_ingest_runs(self, *, create) -> None:
+        self.payloads.extend(create)
+
+
+async def _run_with_langsmith_payload(driver) -> list[dict[str, object]]:
+    client = _CapturingLangSmithClient()
+    trace = TraceFactory(
+        exporter=LangSmithTraceExporter(client, "test", 1.0),
+        enabled=True,
+        sampling_rate=1.0,
+    ).start_request(
+        name="buyer_chat_turn",
+        request_id="req-trace",
+        conversation_id="conversation-trace",
+        thread_id="thread-trace",
+        lane="buyer",
+        environment="test",
+    )
+    with bind_request_trace(trace):
+        await driver()
+    await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+    return client.payloads
+
+
+def _spring_payloads(payloads: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [payload for payload in payloads if str(payload["name"]).startswith("spring.")]
 
 
 def assert_expected_tree(exported, *, root: str, required: set[str]) -> None:
@@ -201,15 +234,16 @@ async def test_buyer_spring_success_exports_only_bounded_transport_metadata(
         )
         assert result.products == []
 
-    exported = await _run_with_trace(driver)
-    node = next(node for node in exported if node.name == "spring.search_products")
+    payloads = await _run_with_langsmith_payload(driver)
+    spring_payloads = _spring_payloads(payloads)
 
-    assert node.metadata == {
+    assert len(spring_payloads) == 1
+    assert spring_payloads[0]["extra"]["metadata"] == {
         "httpMethod": "GET",
         "upstream": "spring",
         "statusClass": "2xx",
     }
-    serialized = repr(exported)
+    serialized = repr(payloads)
     for secret in (
         "spring.private.test",
         "/internal/products/search",
@@ -231,7 +265,7 @@ async def test_buyer_spring_http_failure_preserves_mapping_and_records_only_stat
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             status_code,
-            json={"error": {"message": "private-error-905", "productId": 905}},
+            json={"error": {"message": "private-error-905", "productId": 91929394959697}},
         )
 
     monkeypatch.setattr(
@@ -248,16 +282,113 @@ async def test_buyer_spring_http_failure_preserves_mapping_and_records_only_stat
         with pytest.raises(SpringUnavailableError):
             await spring_client.search_products(ProductSearchFilters(keyword="private-query-905"))
 
-    exported = await _run_with_trace(driver)
-    node = next(node for node in exported if node.name == "spring.search_products")
+    payloads = await _run_with_langsmith_payload(driver)
+    spring_payloads = _spring_payloads(payloads)
 
-    assert node.metadata == {
+    assert len(spring_payloads) == 1
+    assert spring_payloads[0]["extra"]["metadata"] == {
         "httpMethod": "GET",
         "upstream": "spring",
         "statusClass": status_class,
     }
-    serialized = repr(exported)
-    for secret in ("private-error-905", "905", "private-query-905", "private-token-905"):
+    serialized = repr(payloads)
+    for secret in (
+        "private-error-905",
+        "91929394959697",
+        "private-query-905",
+        "private-token-905",
+    ):
+        assert secret not in serialized
+
+
+async def test_buyer_spring_connect_failure_exports_fixed_code_without_exception_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import spring_client
+
+    raw_error = httpx.ConnectError(
+        "private-connect-error-906",
+        request=httpx.Request("GET", "https://spring.private.test/private-path-906"),
+    )
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise raw_error
+
+    monkeypatch.setattr(
+        spring_client,
+        "_client",
+        lambda: httpx.AsyncClient(
+            base_url="https://spring.private.test",
+            headers={"X-Internal-Token": "private-token-906"},
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+
+    async def driver() -> None:
+        with pytest.raises(SpringUnavailableError) as raised:
+            await spring_client.search_products(ProductSearchFilters(keyword="private-query-906"))
+        assert raised.value.__cause__ is raw_error
+        traceback_names = []
+        traceback = raw_error.__traceback__
+        while traceback is not None:
+            traceback_names.append(traceback.tb_frame.f_code.co_name)
+            traceback = traceback.tb_next
+        assert "handler" in traceback_names
+
+    payloads = await _run_with_langsmith_payload(driver)
+    spring_payloads = _spring_payloads(payloads)
+
+    assert len(spring_payloads) == 1
+    assert spring_payloads[0]["extra"]["metadata"] == {
+        "httpMethod": "GET",
+        "upstream": "spring",
+        "statusClass": "connection_error",
+    }
+    serialized = repr(payloads)
+    for secret in (
+        "ConnectError",
+        "private-connect-error-906",
+        "private-query-906",
+        "private-token-906",
+    ):
+        assert secret not in serialized
+
+
+async def test_buyer_spring_cancellation_is_rethrown_unchanged_outside_span(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import spring_client
+
+    cancellation = asyncio.CancelledError("private-cancellation-908")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise cancellation
+
+    monkeypatch.setattr(
+        spring_client,
+        "_client",
+        lambda: httpx.AsyncClient(
+            base_url="https://spring.private.test",
+            headers={"X-Internal-Token": "private-token-908"},
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+
+    async def driver() -> None:
+        with pytest.raises(asyncio.CancelledError) as raised:
+            await spring_client.search_products(ProductSearchFilters(keyword="private-query-908"))
+        assert raised.value is cancellation
+
+    payloads = await _run_with_langsmith_payload(driver)
+    spring_payloads = _spring_payloads(payloads)
+
+    assert len(spring_payloads) == 1
+    assert spring_payloads[0]["extra"]["metadata"] == {
+        "httpMethod": "GET",
+        "upstream": "spring",
+    }
+    serialized = repr(payloads)
+    for secret in ("CancelledError", "private-cancellation-908", "private-token-908"):
         assert secret not in serialized
 
 
@@ -281,51 +412,62 @@ async def test_all_buyer_spring_operations_trace_timeout_without_changing_error_
     cases = (
         (
             "spring.search_products",
+            "GET",
             lambda: spring_client.search_products(ProductSearchFilters(keyword="private-1")),
             SpringUnavailableError,
         ),
         (
             "spring.get_recent_purchases",
-            lambda: _real_get_recent_purchases(9002),
+            "GET",
+            lambda: _real_get_recent_purchases(81828384858687),
             SpringUnavailableError,
         ),
         (
             "spring.get_order_status",
-            lambda: _real_get_order_status(9002),
+            "GET",
+            lambda: _real_get_order_status(81828384858687),
             OrderStatusUnavailableError,
         ),
         (
             "spring.add_to_cart",
+            "POST",
             lambda: spring_client.add_to_cart(
-                AddToCartRequest(user_id=9002, product_id=9003, quantity=1)
+                AddToCartRequest(
+                    user_id=81828384858687,
+                    product_id=91929394959697,
+                    quantity=1,
+                )
             ),
             CartError,
         ),
         (
             "spring.get_cart",
-            lambda: spring_client.get_cart(user_id=9002),
+            "GET",
+            lambda: spring_client.get_cart(user_id=81828384858687),
             SpringUnavailableError,
         ),
         (
             "spring.push_recommendations",
+            "POST",
             lambda: spring_client.push_recommendations(
                 RecommendationPush(
                     session_id="private-session",
                     list_id="private-list",
-                    product_ids=[9003],
+                    product_ids=[91929394959697],
                 )
             ),
             SpringUnavailableError,
         ),
         (
             "spring.fetch_product_changes",
+            "GET",
             lambda: spring_client.fetch_product_changes("private-cursor"),
             SpringUnavailableError,
         ),
     )
 
     async def driver() -> None:
-        for name, invoke, expected_error in cases:
+        for name, _method, invoke, expected_error in cases:
             try:
                 await invoke()
             except expected_error:
@@ -333,15 +475,31 @@ async def test_all_buyer_spring_operations_trace_timeout_without_changing_error_
             else:
                 pytest.fail(f"{name} did not preserve {expected_error.__name__} mapping")
 
-    exported = await _run_with_trace(driver)
-    by_name = {node.name: node for node in exported}
+    payloads = await _run_with_langsmith_payload(driver)
+    spring_payloads = _spring_payloads(payloads)
 
-    assert set(by_name) >= {name for name, _invoke, _error in cases}
-    for name, _invoke, _error in cases:
-        assert by_name[name].metadata["upstream"] == "spring"
-        assert by_name[name].metadata["statusClass"] == "timeout"
-    serialized = repr(exported)
-    for secret in ("9002", "9003", "private-session", "private-list", "private-cursor"):
+    assert len(spring_payloads) == len(cases)
+    for name, method, _invoke, _error in cases:
+        matches = [payload for payload in spring_payloads if payload["name"] == name]
+        assert len(matches) == 1
+        assert matches[0]["extra"]["metadata"] == {
+            "httpMethod": method,
+            "upstream": "spring",
+            "statusClass": "timeout",
+        }
+    serialized = repr(payloads)
+    for secret in (
+        "ReadTimeout",
+        "private timeout detail",
+        "spring.private.test",
+        "/internal/",
+        "private-token-902",
+        "81828384858687",
+        "91929394959697",
+        "private-session",
+        "private-list",
+        "private-cursor",
+    ):
         assert secret not in serialized
 
 

@@ -33,6 +33,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 import logging
 import math
+from types import TracebackType
 from typing import Literal, TypeVar
 
 import httpx
@@ -97,6 +98,7 @@ _log = logging.getLogger(__name__)
 @contextmanager
 def _spring_span(operation: _SpringOperation, method: str) -> Iterator[TraceNode | None]:
     """Trace one outbound Spring request without retaining request or response data."""
+    failure: tuple[BaseException, TracebackType | None] | None = None
     with trace_span(
         f"spring.{operation}",
         "tool",
@@ -104,14 +106,17 @@ def _spring_span(operation: _SpringOperation, method: str) -> Iterator[TraceNode
     ) as span:
         try:
             yield span
-        except httpx.TimeoutException:
+        except BaseException as exc:
             if span is not None:
-                span.metadata["statusClass"] = "timeout"
-            raise
-        except httpx.NetworkError:
-            if span is not None:
-                span.metadata["statusClass"] = "connection_error"
-            raise
+                if isinstance(exc, httpx.TimeoutException):
+                    span.metadata["statusClass"] = "timeout"
+                elif isinstance(exc, httpx.NetworkError):
+                    span.metadata["statusClass"] = "connection_error"
+            failure = (exc, exc.__traceback__)
+
+    if failure is not None:
+        exc, traceback = failure
+        raise exc.with_traceback(traceback)
 
 
 def _record_spring_status(span: TraceNode | None, response: httpx.Response) -> None:

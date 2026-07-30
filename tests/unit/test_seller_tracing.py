@@ -16,6 +16,7 @@ from app.agents.seller.context import SellerContext
 from app.core.auth import Identity
 from app.core.tracing import (
     FakeTraceExporter,
+    LangSmithTraceExporter,
     SELLER_DEGRADE_REASONS,
     TraceFactory,
     bind_request_trace,
@@ -72,6 +73,35 @@ def _start_seller_trace(factory: CapturingTraceFactory):
 
 async def _finish(trace) -> None:
     await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+
+
+class _CapturingLangSmithClient:
+    def __init__(self) -> None:
+        self.payloads: list[dict[str, object]] = []
+
+    def batch_ingest_runs(self, *, create) -> None:
+        self.payloads.extend(create)
+
+
+def _start_seller_langsmith_trace():
+    client = _CapturingLangSmithClient()
+    trace = TraceFactory(
+        exporter=LangSmithTraceExporter(client, "test", 1.0),
+        enabled=True,
+        sampling_rate=1.0,
+    ).start_request(
+        name="seller_chat_turn",
+        request_id="req-safe",
+        conversation_id="conversation-safe",
+        thread_id="thread-safe",
+        lane="seller",
+        environment="test",
+    )
+    return trace, client
+
+
+def _spring_payloads(payloads: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [payload for payload in payloads if str(payload["name"]).startswith("spring.")]
 
 
 def test_seller_request_exports_one_correlated_root(
@@ -834,7 +864,6 @@ def test_seller_telemetry_start_failure_preserves_route(
     ("status_code", "status_class"), [(200, "2xx"), (404, "4xx"), (503, "5xx")]
 )
 async def test_seller_spring_status_exports_only_bounded_transport_metadata(
-    fake_trace_factory: CapturingTraceFactory,
     status_code: int,
     status_class: str,
 ) -> None:
@@ -860,7 +889,7 @@ async def test_seller_spring_status_exports_only_bounded_transport_metadata(
         "private-token-903",
         transport=httpx.MockTransport(handler),
     )
-    trace = _start_seller_trace(fake_trace_factory)
+    trace, langsmith_client = _start_seller_langsmith_trace()
     with bind_request_trace(trace):
         if status_code == 200:
             result = await client.get_sales(
@@ -872,15 +901,14 @@ async def test_seller_spring_status_exports_only_bounded_transport_metadata(
                 await client.get_sales("private-brand-903", "private-from-903", "private-to-903")
     await _finish(trace)
 
-    node = next(
-        node for node in fake_trace_factory.exporter.exported[-1] if node.name == "spring.get_sales"
-    )
-    assert node.metadata == {
+    spring_payloads = _spring_payloads(langsmith_client.payloads)
+    assert len(spring_payloads) == 1
+    assert spring_payloads[0]["extra"]["metadata"] == {
         "httpMethod": "GET",
         "upstream": "spring",
         "statusClass": status_class,
     }
-    serialized = repr(fake_trace_factory.exporter.exported[-1])
+    serialized = repr(langsmith_client.payloads)
     for secret in (
         "spring.private.test",
         "/internal/seller/private-brand-903/sales",
@@ -894,9 +922,55 @@ async def test_seller_spring_status_exports_only_bounded_transport_metadata(
         assert secret not in serialized
 
 
-async def test_all_seller_spring_operations_trace_timeout_without_changing_mapping(
-    fake_trace_factory: CapturingTraceFactory,
-) -> None:
+async def test_seller_spring_connect_failure_exports_fixed_code_without_exception_details() -> None:
+    import httpx
+
+    from app.services.spring_client import SpringClient, SpringUnavailableError
+
+    raw_error = httpx.ConnectError(
+        "private-connect-error-907",
+        request=httpx.Request("GET", "https://spring.private.test/private-path-907"),
+    )
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise raw_error
+
+    client = SpringClient(
+        "https://spring.private.test",
+        "private-token-907",
+        transport=httpx.MockTransport(handler),
+    )
+    trace, langsmith_client = _start_seller_langsmith_trace()
+    with bind_request_trace(trace):
+        with pytest.raises(SpringUnavailableError) as raised:
+            await client.get_sales("private-brand-907", "private-from-907", "private-to-907")
+        assert raised.value.__cause__ is raw_error
+        traceback_names = []
+        traceback = raw_error.__traceback__
+        while traceback is not None:
+            traceback_names.append(traceback.tb_frame.f_code.co_name)
+            traceback = traceback.tb_next
+        assert "handler" in traceback_names
+    await _finish(trace)
+
+    spring_payloads = _spring_payloads(langsmith_client.payloads)
+    assert len(spring_payloads) == 1
+    assert spring_payloads[0]["extra"]["metadata"] == {
+        "httpMethod": "GET",
+        "upstream": "spring",
+        "statusClass": "connection_error",
+    }
+    serialized = repr(langsmith_client.payloads)
+    for secret in (
+        "ConnectError",
+        "private-connect-error-907",
+        "private-brand-907",
+        "private-token-907",
+    ):
+        assert secret not in serialized
+
+
+async def test_all_seller_spring_operations_trace_timeout_without_changing_mapping() -> None:
     import httpx
 
     from app.schemas.spring import ProductCreate, ProductUpdate
@@ -914,40 +988,54 @@ async def test_all_seller_spring_operations_trace_timeout_without_changing_mappi
         (
             "spring.get_sales",
             "GET",
-            lambda: client.get_sales(904, "private-from", "private-to"),
+            lambda: client.get_sales(71727374757677, "private-from", "private-to"),
         ),
         (
             "spring.get_funnel",
             "GET",
-            lambda: client.get_funnel(904, "private-from", "private-to"),
+            lambda: client.get_funnel(71727374757677, "private-from", "private-to"),
         ),
         (
             "spring.get_events",
             "GET",
-            lambda: client.get_events(904, "private-from", "private-to", product_id=905),
+            lambda: client.get_events(
+                71727374757677,
+                "private-from",
+                "private-to",
+                product_id=81828384858687,
+            ),
         ),
         (
             "spring.get_order_events",
             "GET",
-            lambda: client.get_order_events(904, "private-from", "private-to"),
+            lambda: client.get_order_events(71727374757677, "private-from", "private-to"),
         ),
         (
             "spring.get_product_changes",
             "GET",
-            lambda: client.get_product_changes(904, "private-from", "private-to", product_id=905),
+            lambda: client.get_product_changes(
+                71727374757677,
+                "private-from",
+                "private-to",
+                product_id=81828384858687,
+            ),
         ),
-        ("spring.get_churn", "GET", lambda: client.get_churn(904, 30)),
+        ("spring.get_churn", "GET", lambda: client.get_churn(71727374757677, 30)),
         (
             "spring.get_account_events",
             "GET",
             lambda: client.get_account_events(event_type="private-event"),
         ),
-        ("spring.list_products", "GET", lambda: client.list_products(904, q="private-query")),
+        (
+            "spring.list_products",
+            "GET",
+            lambda: client.list_products(71727374757677, q="private-query"),
+        ),
         (
             "spring.create_product",
             "POST",
             lambda: client.create_product(
-                904,
+                71727374757677,
                 ProductCreate(
                     name="private-product",
                     price=1000,
@@ -958,30 +1046,44 @@ async def test_all_seller_spring_operations_trace_timeout_without_changing_mappi
         (
             "spring.update_product",
             "PATCH",
-            lambda: client.update_product(904, 905, ProductUpdate(name="private-update")),
+            lambda: client.update_product(
+                71727374757677,
+                81828384858687,
+                ProductUpdate(name="private-update"),
+            ),
         ),
-        ("spring.delete_product", "DELETE", lambda: client.delete_product(904, 905)),
+        (
+            "spring.delete_product",
+            "DELETE",
+            lambda: client.delete_product(71727374757677, 81828384858687),
+        ),
     )
 
-    trace = _start_seller_trace(fake_trace_factory)
+    trace, langsmith_client = _start_seller_langsmith_trace()
     with bind_request_trace(trace):
         for _name, _method, invoke in cases:
             with pytest.raises(SpringUnavailableError):
                 await invoke()
     await _finish(trace)
 
-    by_name = {node.name: node for node in fake_trace_factory.exporter.exported[-1]}
-    assert set(by_name) >= {name for name, _method, _invoke in cases}
+    spring_payloads = _spring_payloads(langsmith_client.payloads)
+    assert len(spring_payloads) == len(cases)
     for name, method, _invoke in cases:
-        assert by_name[name].metadata == {
+        matches = [payload for payload in spring_payloads if payload["name"] == name]
+        assert len(matches) == 1
+        assert matches[0]["extra"]["metadata"] == {
             "httpMethod": method,
             "upstream": "spring",
             "statusClass": "timeout",
         }
-    serialized = repr(fake_trace_factory.exporter.exported[-1])
+    serialized = repr(langsmith_client.payloads)
     for secret in (
-        "904",
-        "905",
+        "ReadTimeout",
+        "private timeout detail",
+        "spring.private.test",
+        "/internal/",
+        "71727374757677",
+        "81828384858687",
         "private-from",
         "private-to",
         "private-event",
