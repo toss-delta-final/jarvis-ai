@@ -113,7 +113,9 @@ class Settings(BaseSettings):
     # spring_timeout_s 도 팀 정의(아래 공통 블록)를 재사용한다 — 중복 정의 금지.
 
     # ── 판매자 분석 임계값 (app/agents/seller/calc.py 주입, 하드코딩 금지) ──
-    seller_ma_window: int = 7  # 매출 이동평균 window(일)
+    seller_ma_window: int = 7  # 매출 이동평균 window(일) — Spring MOVING_WINDOW 정렬
+    # 이상판정 최소 표본 수(직전 포인트 수) — Spring(SellerSalesService) MIN_WINDOW 정렬(#194).
+    seller_ma_min_window: int = 3
     seller_anomaly_deviation_pct: float = 30.0  # 매출 이상판정 편차 임계(%)
     seller_conversion_drop_pct: float = 20.0  # 전환율 하락 이상 임계(%)
     seller_churn_inactive_days: int = 30  # 이탈 코호트 무활동 일수(I-16 inactiveDays 기본)
@@ -234,6 +236,38 @@ class Settings(BaseSettings):
     # 턴당 택일 LLM 호출 상한 — fan-out 5 leg 이 모두 애매하면 턴 LLM 이 2→7회로 뛴다. 초과 leg 는
     # 임베딩 top-1 을 그대로 쓴다(종전 동작). ge=0 — 0 이면 택일 기능 off.
     category_select_max_calls: int = Field(default=2, ge=0)
+
+    # ── 목적·상황형 발화의 상품 전개 (이슈 #198, DESIGN-NEEDS-EXPANSION-198) ──
+    # "집들이 선물" 처럼 무엇을 살지 사용자가 말하지 않은 발화를 구체 상품 목록으로 전개한다
+    # (정본 SPEC-RECOMMEND-001 §5.1 shopping_list 분해, EX-7 v0.10.0 개정으로 전용 호출 허용).
+    # 전개 실패는 **코드가 결정적으로 감지**한다(설계 §4 D1~D3) — LLM 자기 보고(case)는 전개와 같은
+    # 호출의 산출물이라 실패 회차의 값을 신뢰할 수 없음이 실측으로 확인됐다(§4.1).
+    # 목적 표현 marker — leg query 가 이것으로 **끝나면** 목적 표현으로 본다. `in` 이 아니라
+    # `endswith` 인 이유: '한우 선물세트'·'과일 선물세트' 같은 정당한 상품명이 marker '선물' 에 걸려
+    # 오탐된다('집들이 선물'.endswith('선물')=True / '한우 선물세트'.endswith('선물')=False).
+    # 실측 기반 초기값이며 관측 로그(needs_expansion_triggered.reason) 분포로 조정한다(설계 OPEN-1).
+    needs_expansion_enabled: bool = True  # 전개 단계 on/off(롤백 스위치)
+    # 전개 호출 tier. `fast` 로 시작한다 — §2 의 실패는 "fast 라서"가 아니라 "한 호출에 6가지 작업이
+    # 얹혀서"였으므로, **단일 작업 전용 호출**의 fast 성능은 별개 측정 대상이다(설계 OPEN-2).
+    # 실측 미달 시 "smart" 로 승격한다.
+    # Literal 로 좁힌다 — 이 값은 `resolve_model_id` 에 들어가고 그것은 미지 tier 에 LLMError 를
+    # 던진다. 전개는 그 호출을 관측 기록(§6.3)보다 **뒤에** 하므로(needs_expansion.py) 오타 하나가
+    # 퇴화가 아니라 턴 예외가 된다. 잘못된 설정은 부팅 시 pydantic 이 막는 게 맞다.
+    needs_expansion_tier: Literal["fast", "smart"] = "fast"
+    # 이 개수 미만이면 전개 실패로 본다 — 1개면 발화 복사로 되돌아가므로 최소 2개.
+    needs_expansion_min_items: int = Field(default=2, ge=1)
+    needs_expansion_purpose_markers: list[str] = [
+        "선물",
+        "답례품",
+        "준비물",
+        "용품",
+        "아이템",
+        "키트",
+        "물품",
+        "추천",
+        "것",
+        "거",
+    ]
 
     # ── 장바구니 (이슈 #3, api-spec §4.1) ──
     # CART_OPTION_INVALID 재질문 상한 — 초과 시 action CART_ERROR(§4.1). 하드코딩 금지.
@@ -378,6 +412,15 @@ class Settings(BaseSettings):
             raise ValueError(
                 "RATING_TIER 경계는 excellent >= good >= fair 여야 합니다"
                 f" ({self.rating_tier_excellent}/{self.rating_tier_good}/{self.rating_tier_fair})"
+            )
+        # 이상 감지 window 정합(#194 PR 리뷰) — env 오설정(min_window ≤ 0 또는
+        # min_window > window)이면 calc.detect_sales_anomalies 가 daily 매출 조회
+        # 매 요청마다 ValueError 로 죽는다. 설정값은 요청마다 변하지 않으므로
+        # 런타임 반복 실패 대신 기동 시점에 fail-fast 한다.
+        if self.seller_ma_min_window < 1 or self.seller_ma_window < self.seller_ma_min_window:
+            raise ValueError(
+                "SELLER_MA_MIN_WINDOW 는 1 이상, SELLER_MA_WINDOW 이하여야 합니다"
+                f" (min_window={self.seller_ma_min_window}, window={self.seller_ma_window})"
             )
         if not (self.review_tier_many >= self.review_tier_some >= self.review_tier_few):
             raise ValueError(

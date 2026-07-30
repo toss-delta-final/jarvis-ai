@@ -2,7 +2,7 @@
 
 `POST /chat`·`POST /seller/chat` 공통. 엔드포인트의 내부 이벤트 제너레이터를
 `open_stream()` 으로 감싸면:
-  (a) 동시 스트림 제한 — sessionId 당 1개, 초과 시 409 STREAM_IN_PROGRESS(§2.9 a)
+  (a) 동시 스트림 제한 — threadId 당 1개, 초과 시 409 STREAM_IN_PROGRESS(§2.9 a)
   (b) 취소 — 연결 종료 시 Starlette 가 응답 task 를 취소 → finally 로 정리(레지스트리
       해제 + 내부 제너레이터 aclose 로 LLM 스트림/그래프 task 전파). 제너레이터가 유휴일
       때는 is_disconnected() 폴링으로도 조기 감지(§2.9 b)
@@ -22,6 +22,7 @@ from fastapi.responses import StreamingResponse
 from app.core.auth import Identity
 from app.core.config import get_settings
 from app.core.conversation import TurnStatus
+from app.core.errors import new_request_id
 from app.core.logging import get_logger
 from app.core.observability import RequestObservation
 from app.schemas.chat import DoneData, ErrorData
@@ -41,19 +42,19 @@ class ActiveStreamRegistry:
     def __init__(self) -> None:
         self._active: set[str] = set()
 
-    def acquire(self, session_id: str) -> bool:
+    def acquire(self, stream_key: str) -> bool:
         """활성 등록. 이미 활성이면 False (호출자가 409 로 거절)."""
-        if session_id in self._active:
+        if stream_key in self._active:
             return False
-        self._active.add(session_id)
+        self._active.add(stream_key)
         return True
 
-    def release(self, session_id: str) -> None:
+    def release(self, stream_key: str) -> None:
         """활성 해제 (중복 해제 무해)."""
-        self._active.discard(session_id)
+        self._active.discard(stream_key)
 
-    def is_active(self, session_id: str) -> bool:
-        return session_id in self._active
+    def is_active(self, stream_key: str) -> bool:
+        return stream_key in self._active
 
 
 _registry = ActiveStreamRegistry()
@@ -64,17 +65,17 @@ def get_registry() -> ActiveStreamRegistry:
     return _registry
 
 
-def registry_key(identity: Identity, session_id: str) -> str:
+def registry_key(identity: Identity, thread_id: str) -> str:
     """동시성 레지스트리 키를 **인증된 신원**에 묶는다 (§2.9 a IDOR 방지).
 
-    키를 본문 session_id 만으로 쓰면 다른 사용자가 남의 session_id 를 body 에 실어
+    키를 본문 thread_id 만으로 쓰면 다른 사용자가 남의 thread_id 를 body 에 실어
     동시성 슬롯을 선점(피해자에 409 유발)할 수 있다. owner(판매자/회원 식별자, 게스트는
     "guest")를 접두어로 붙여 사용자 간 슬롯 침범을 막는다.
     """
     # subject(검증된 sub)는 게스트 UUID 포함 모든 역할에 보존된다(auth.Identity). 이걸로
     # 키를 묶어야 게스트끼리도 서로의 슬롯을 침범하지 못한다. 신원 없음(dev 무토큰)은 "anon".
     owner = identity.subject or "anon"
-    return f"{owner}:{session_id}"
+    return f"{owner}:{thread_id}"
 
 
 def _done_stop_frame() -> str:
@@ -85,19 +86,30 @@ def _done_stop_frame() -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
-def _error_frame(code: str, message: str) -> str:
+def _error_frame(
+    code: str,
+    message: str,
+    *,
+    request_id: str,
+    retryable: bool,
+) -> str:
     """스트림 시작 후 오류의 in-stream `error` 프레임 (api-spec §3.1, §2.9 c)."""
     import json
 
     payload = {
         "type": "error",
-        "data": ErrorData(code=code, message=message).model_dump(by_alias=True),
+        "data": ErrorData(
+            code=code,
+            message=message,
+            request_id=request_id,
+            retryable=retryable,
+        ).model_dump(by_alias=True),
     }
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
 async def _safe_finish(
-    observer: RequestObservation, session_id: str, loop_time: float, *args: object
+    observer: RequestObservation, stream_key: str, loop_time: float, *args: object
 ) -> None:
     """observer.finish() 를 방어적으로 호출한다.
 
@@ -110,7 +122,7 @@ async def _safe_finish(
     try:
         await observer.finish(loop_time, *args)
     except Exception:
-        logger.exception("observer.finish 실패 session=%s", session_id)
+        logger.exception("observer.finish 실패 stream_key=%s", stream_key)
 
 
 def _error_code_of(frame: str) -> str | None:
@@ -133,7 +145,7 @@ def _error_code_of(frame: str) -> str | None:
 
 async def open_stream(
     request: Request,
-    session_id: str,
+    stream_key: str,
     inner_factory: Callable[[], AsyncIterator[str]],
     *,
     observer: RequestObservation | None = None,
@@ -141,23 +153,24 @@ async def open_stream(
     """내부 이벤트 제너레이터를 §2.9 수명주기로 감싼 StreamingResponse 를 만든다.
 
     스트림 시작 전 실패는 예외로 던져 §2.5 봉투로 나간다:
-      - 409 STREAM_IN_PROGRESS: 동일 세션 활성 스트림 존재
+      - 409 STREAM_IN_PROGRESS: 동일 threadId 활성 스트림 존재
       - 504 UPSTREAM_TIMEOUT: first-token 상한 초과 (첫 이벤트 도착 전)
     """
     settings = get_settings()
     registry = get_registry()
     loop = asyncio.get_event_loop()
+    stream_request_id = observer.request_id if observer is not None else new_request_id()
 
-    if not registry.acquire(session_id):
+    if not registry.acquire(stream_key):
         if observer is not None:
             await _safe_finish(
-                observer, session_id, loop.time(), TurnStatus.FAILED, "STREAM_IN_PROGRESS"
+                observer, stream_key, loop.time(), TurnStatus.FAILED, "STREAM_IN_PROGRESS"
             )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={
                 "code": "STREAM_IN_PROGRESS",
-                "message": "동일 세션에 진행 중인 스트림이 있습니다",
+                "message": "동일 방에 진행 중인 스트림이 있습니다",
             },
         )
 
@@ -165,19 +178,19 @@ async def open_stream(
         try:
             # 슬롯 확보 후에만 사용자 메시지 저장(§6.3 a, 유령 턴 방지). 이제 실제 pg-profile
             # I/O 라 DB 오류·클라이언트 disconnect 로 예외를 던질 수 있다 — release 없이
-            # 전파되면 해당 session_id 가 프로세스 재시작 전까지 영구히 409 를 반환한다
+            # 전파되면 해당 threadId가 프로세스 재시작 전까지 영구히 409를 반환한다
             # (슬롯 영구 누수, PR #48 리뷰).
             await observer.commit_user_message()
         except asyncio.CancelledError:
             # disconnect 로 이 DB 쓰기 중 취소되면 CancelledError(BaseException)라 아래
             # except Exception 으로는 안 잡혀 release 가 스킵됐었다(슬롯 영구 누수, PR #48
             # 후속 리뷰) — 명시적으로 잡아 슬롯을 풀고 CANCELLED 로 마감 후 취소를 재전파한다.
-            registry.release(session_id)
-            await _safe_finish(observer, session_id, loop.time(), TurnStatus.CANCELLED)
+            registry.release(stream_key)
+            await _safe_finish(observer, stream_key, loop.time(), TurnStatus.CANCELLED)
             raise
         except Exception:
-            registry.release(session_id)
-            await _safe_finish(observer, session_id, loop.time(), TurnStatus.FAILED, "INTERNAL")
+            registry.release(stream_key)
+            await _safe_finish(observer, stream_key, loop.time(), TurnStatus.FAILED, "INTERNAL")
             raise
 
     start = loop.time()
@@ -185,9 +198,9 @@ async def open_stream(
         agen = inner_factory()
     except Exception:
         # 그래프 진입 검증 등 inner_factory 동기 예외 — 슬롯·턴 누수 방지.
-        registry.release(session_id)
+        registry.release(stream_key)
         if observer is not None:
-            await _safe_finish(observer, session_id, loop.time(), TurnStatus.FAILED, "INTERNAL")
+            await _safe_finish(observer, stream_key, loop.time(), TurnStatus.FAILED, "INTERNAL")
         raise
 
     poll = settings.stream_disconnect_poll_s
@@ -207,7 +220,7 @@ async def open_stream(
     ft_task = asyncio.ensure_future(agen.__anext__())
 
     async def _abort_prestream() -> None:
-        registry.release(session_id)
+        registry.release(stream_key)
         if not ft_task.done():
             ft_task.cancel()
         await asyncio.gather(ft_task, return_exceptions=True)
@@ -220,7 +233,7 @@ async def open_stream(
             await _abort_prestream()
             if observer is not None:
                 await _safe_finish(
-                    observer, session_id, loop.time(), TurnStatus.FAILED, "UPSTREAM_TIMEOUT"
+                    observer, stream_key, loop.time(), TurnStatus.FAILED, "UPSTREAM_TIMEOUT"
                 )
             raise HTTPException(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
@@ -235,23 +248,23 @@ async def open_stream(
             except asyncio.CancelledError:
                 await _abort_prestream()
                 if observer is not None:
-                    await _safe_finish(observer, session_id, loop.time(), TurnStatus.CANCELLED)
+                    await _safe_finish(observer, stream_key, loop.time(), TurnStatus.CANCELLED)
                 raise
             except Exception:
                 # 첫 프레임 전 상류 오류(LLM/Spring 등) — 누수 방지 후 전파.
                 await _abort_prestream()
                 if observer is not None:
                     await _safe_finish(
-                        observer, session_id, loop.time(), TurnStatus.FAILED, "INTERNAL"
+                        observer, stream_key, loop.time(), TurnStatus.FAILED, "INTERNAL"
                     )
                 raise
             break
         if await request.is_disconnected():
             # (b) 첫 이벤트 전 연결 종료 — 정리 후 즉시 종료(소비될 응답 없음).
-            logger.info("stream cancelled before first token session=%s", session_id)
+            logger.info("stream cancelled before first token stream_key=%s", stream_key)
             await _abort_prestream()
             if observer is not None:
-                await _safe_finish(observer, session_id, loop.time(), TurnStatus.CANCELLED)
+                await _safe_finish(observer, stream_key, loop.time(), TurnStatus.CANCELLED)
             return StreamingResponse(
                 _empty_stream(),
                 media_type="text/event-stream; charset=utf-8",
@@ -283,14 +296,16 @@ async def open_stream(
                 remaining = deadline - loop.time()
                 if remaining <= 0:
                     # (c) 전체 상한 초과 — done(stop)으로 정상 절단(COMPLETED, FAILED 아님).
-                    logger.info("stream total cap reached session=%s", session_id)
+                    logger.info("stream total cap reached stream_key=%s", stream_key)
                     yield _done_stop_frame()
                     break
                 completed, _ = await asyncio.wait({next_task}, timeout=min(remaining, poll))
                 if next_task not in completed:
                     # 아직 이벤트 없음(제너레이터 유휴) — (b) 연결 종료 조기 감지.
                     if await request.is_disconnected():
-                        logger.info("stream cancelled by client disconnect session=%s", session_id)
+                        logger.info(
+                            "stream cancelled by client disconnect stream_key=%s", stream_key
+                        )
                         stream_status = TurnStatus.CANCELLED
                         break
                     continue  # 같은 task 를 계속 기다린다(제너레이터 보존)
@@ -302,10 +317,15 @@ async def open_stream(
                     # (c) 첫 이벤트 후(=200 전송 후) 상류 오류 — 계약상 in-stream error 로
                     #     마무리해야 한다(연결만 끊기지 않게, §2.9 c/§3.1). 기본 INTERNAL.
                     #     실제 그래프는 필요 시 자체 error(LLM_UNAVAILABLE 등)를 먼저 emit 가능.
-                    logger.exception("in-stream error session=%s", session_id)
+                    logger.exception("in-stream error stream_key=%s", stream_key)
                     stream_status = TurnStatus.FAILED
                     error_type = "INTERNAL"
-                    yield _error_frame("INTERNAL", "처리 중 오류가 발생했습니다")
+                    yield _error_frame(
+                        "INTERNAL",
+                        "처리 중 오류가 발생했습니다",
+                        request_id=stream_request_id,
+                        retryable=True,
+                    )
                     break
                 if observer is not None:
                     observer.record_frame(item)  # 부분 텍스트 누적(§6.3 a)
@@ -329,14 +349,14 @@ async def open_stream(
                 next_task.cancel()
                 await asyncio.gather(next_task, return_exceptions=True)
             await agen.aclose()
-            registry.release(session_id)
+            registry.release(stream_key)
             if observer is not None:
                 # 이 시점엔 이미 SSE 헤더/프레임이 클라이언트로 전송된 뒤다 — finish() 가
                 # 예외를 던지면 done/error 종결 프레임 없이 스트림이 끊기거나(§2.9/§3.1
                 # 위반), CancelledError 로 취소 전파 중이던 경우 그 취소가 이 새 예외로
                 # 대체돼 정상 client disconnect 가 엉뚱한 오류로 둔갑한다(PR #48 후속 리뷰).
                 # 관측 실패가 스트림 종료 자체를 막지 않도록 로그만 남기고 삼킨다.
-                await _safe_finish(observer, session_id, loop.time(), stream_status, error_type)
+                await _safe_finish(observer, stream_key, loop.time(), stream_status, error_type)
 
     return StreamingResponse(
         _wrapped(),

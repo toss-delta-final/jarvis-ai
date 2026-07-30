@@ -9,7 +9,7 @@
   - rerank    : Sonnet — 프로필 반영 재랭킹 + 근거 생성
   - push      : 최종 랭크 id 를 Spring 에 push (I-21, spring_client.push_recommendations, 경로 B §4.2)
 
-SSE 는 상품 카드를 싣지 않는다 (경로 B) — products.ready({sessionId, listId})만 emit,
+SSE 는 상품 카드를 싣지 않는다 (경로 B) — products.ready({sessionId, listIds})만 emit,
 표시 필드는 Spring enrich(§4.3). 스트림 수명주기(취소·타임아웃)는 §2.9.
 
 [정정 v0.5.1] AI 생성물(extras·search_doc·임베딩)은 MVP 소속 — I-17 배치(§4.8)로 갱신.

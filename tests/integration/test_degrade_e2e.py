@@ -11,6 +11,9 @@ SPEC-RECOMMEND-001 §7 + api-spec §3.3 의 degrade 규약을 실 HTTP 경계로
 
 from __future__ import annotations
 
+import json
+import logging
+
 from tests.integration.conftest import auth_header, event_types, first_of, parse_sse
 
 MESSAGE = "여행용 파우치 추천해줘"
@@ -24,13 +27,27 @@ def _chat(client, message: str = MESSAGE, *, thread: str = "th-deg", headers=Non
     )
 
 
-def test_search_failure_emits_search_failed(client, spring, llm) -> None:
-    """I-1 검색 5xx → in-stream error SEARCH_FAILED 로 종료한다 (§7)."""
+def test_search_failure_emits_correlated_retryable_error(client, spring, llm, caplog) -> None:
+    """I-1 검색 실패는 응답 헤더·로그와 같은 requestId의 재시도 가능 오류로 종료한다."""
     spring.fail_search = True
 
-    events = parse_sse(_chat(client).text)
+    with caplog.at_level(logging.INFO, logger="observability"):
+        response = _chat(client)
+    events = parse_sse(response.text)
     error = first_of(events, "error")
-    assert error is not None and error["code"] == "SEARCH_FAILED"
+    records = [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if record.name == "observability" and record.getMessage().startswith("{")
+    ]
+
+    assert error == {
+        "code": "SEARCH_FAILED",
+        "message": "상품 검색에 실패했어요.",
+        "requestId": response.headers["X-Request-Id"],
+        "retryable": True,
+    }
+    assert records[-1]["requestId"] == error["requestId"]
     # 후보가 없으므로 목록 push 는 하지 않는다
     assert spring.requests_to("/internal/recommendations") == []
 
@@ -41,8 +58,11 @@ def test_llm_unavailable_emits_error(client, spring, monkeypatch) -> None:
 
     monkeypatch.setattr(buyer_graph, "get_llm", lambda: None)
 
-    error = first_of(parse_sse(_chat(client).text), "error")
+    response = _chat(client)
+    error = first_of(parse_sse(response.text), "error")
     assert error is not None and error["code"] == "LLM_UNAVAILABLE"
+    assert error["requestId"] == response.headers["X-Request-Id"]
+    assert error["retryable"] is False
     assert spring.requests_to("/internal/products/search") == []
 
 
@@ -56,8 +76,11 @@ def test_decompose_timeout_maps_to_llm_timeout(client, spring, monkeypatch) -> N
         buyer_graph, "get_llm", lambda: ScriptedLLM(decompose_error=True, timeout=True)
     )
 
-    error = first_of(parse_sse(_chat(client).text), "error")
+    response = _chat(client)
+    error = first_of(parse_sse(response.text), "error")
     assert error is not None and error["code"] == "LLM_TIMEOUT"
+    assert error["requestId"] == response.headers["X-Request-Id"]
+    assert error["retryable"] is True
 
 
 def test_rerank_failure_falls_back_to_search_order(client, spring, monkeypatch) -> None:
@@ -75,7 +98,7 @@ def test_rerank_failure_falls_back_to_search_order(client, spring, monkeypatch) 
     # 폴백이어도 경로 B 는 성립 — 검색 순서대로 push 된다
     ready = first_of(events, "products.ready")
     assert ready is not None
-    assert spring.pushed_lists[ready["listId"]], "폴백 순서로라도 목록은 push 된다"
+    assert spring.pushed_lists[ready["listIds"][0]], "폴백 순서로라도 목록은 push 된다"
 
 
 def test_push_failure_skips_products_ready_but_completes(client, spring, llm) -> None:

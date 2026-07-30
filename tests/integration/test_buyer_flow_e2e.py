@@ -42,8 +42,9 @@ def test_buyer_recommend_flow_end_to_end(client, spring, llm) -> None:
 
     # [HARD] 경로 B — SSE 는 상품 카드/productId 를 싣지 않는다(§3.3).
     ready = first_of(events, "products.ready")
-    assert set(ready) == {"sessionId", "listId"}
+    assert set(ready) == {"sessionId", "listIds"}
     assert ready["sessionId"] == "sess-e2e"
+    assert len(ready["listIds"]) == 1
 
     # AI→Spring 역호출이 실제로 나갔는가 (I-1 검색 → I-21 push)
     assert spring.requests_to("/internal/products/search")
@@ -64,12 +65,12 @@ def test_search_call_carries_internal_token_and_filters(client, spring, llm) -> 
 
 
 def test_path_b_list_id_resolves_to_cards_via_spring(client, spring, spring_http, llm) -> None:
-    """경로 B 종단 — products.ready 의 listId 로 FE 가 Spring 목록(CH-5)을 조회하면 카드가 나온다.
+    """경로 B 종단 — products.ready 의 listIds로 FE가 Spring 목록(CH-5)을 조회한다.
 
     표시 권위는 Spring — AI 는 id 순서만 push 하고 가격·이미지·리뷰수는 Spring 이 채운다(§3.3).
     """
     resp = _chat(client, headers=auth_header())
-    list_id = first_of(parse_sse(resp.text), "products.ready")["listId"]
+    list_id = first_of(parse_sse(resp.text), "products.ready")["listIds"][0]
 
     cards = spring_http.get(f"/api/chat/lists/{list_id}").json()["data"]["items"]
     assert [c["productId"] for c in cards] == spring.pushed_lists[list_id]
@@ -88,7 +89,7 @@ def test_path_b_list_id_resolves_to_cards_via_spring(client, spring, spring_http
 def test_rerank_order_is_preserved_into_push(client, spring, llm) -> None:
     """rerank 산출 순서가 push 순서(=렌더 순서)로 그대로 전달된다 (§4.2)."""
     resp = _chat(client, headers=auth_header())
-    list_id = first_of(parse_sse(resp.text), "products.ready")["listId"]
+    list_id = first_of(parse_sse(resp.text), "products.ready")["listIds"][0]
     # ScriptedLLM 기본 rerank 는 102 → 101 순
     assert spring.pushed_lists[list_id][:2] == [102, 101]
 
@@ -129,7 +130,7 @@ def test_recently_purchased_product_is_deduped(client, spring, llm) -> None:
     ]
 
     resp = _chat(client, headers=auth_header("42"))
-    list_id = first_of(parse_sse(resp.text), "products.ready")["listId"]
+    list_id = first_of(parse_sse(resp.text), "products.ready")["listIds"][0]
     assert 102 not in spring.pushed_lists[list_id], "최근 구매 상품은 제외돼야 한다"
 
 
