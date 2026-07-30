@@ -16,7 +16,7 @@ from app.core.session_context import (
     SessionContextRepository,
     SessionFinalizing,
 )
-from app.core.stream import ActiveStreamRegistry, get_registry
+from app.core.stream import ActiveStreamRegistry, StreamScopeFence, get_registry
 from app.schemas.events import SessionClaimEvent
 
 logger = logging.getLogger(__name__)
@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 class _ClaimSnapshot:
     context: SessionContext | None
     history: tuple[str, str] | None
-    threads: tuple[str, ...]
 
 
 class SessionLifecycleCoordinator:
@@ -43,8 +42,8 @@ class SessionLifecycleCoordinator:
     async def claim_owner(self, event: SessionClaimEvent) -> ClaimOutcome:
         repository = self._repository or session_context._default_repository
         registry = self._registry or get_registry()
-        snapshot = _ClaimSnapshot(None, None, ())
-        reserved: list[str] = []
+        snapshot = _ClaimSnapshot(None, None)
+        fence: StreamScopeFence | None = None
         outcome_name = "error"
         try:
             # The repository's public claim_owner() acquires this same lock.  Coordinate
@@ -80,28 +79,21 @@ class SessionLifecycleCoordinator:
                         outcome_name = "claim_conflict"
                         raise SessionClaimConflict
 
-                    # Reserve every inactive key while the lifecycle lock is held.  A
-                    # guest request cannot pass registry.acquire() between our active
-                    # check and the committed owner transition.
-                    reserved = _reserve_guest_threads(registry, event.guest_id, snapshot.threads)
-                    if uow.conn is None:
-                        outcome = _claim_memory_under_lock(repository, event)
-                    else:
-                        outcome = await repository._claim_owner_on_connection(
-                            uow.conn,
-                            event.session_id,
-                            event.guest_id,
-                            event.user_id,
-                        )
-                    snapshot = _ClaimSnapshot(outcome.context, snapshot.history, snapshot.threads)
+                    # acquire_fence() has no await: active scope check and fence install
+                    # are one event-loop atomic operation, independent of DB thread rows.
+                    fence = registry.acquire_fence(event.guest_id, event.session_id)
+                    if fence is None:
+                        raise SessionActive
+                    outcome = await _transition_claim(repository, uow.conn, event)
+                    snapshot = _ClaimSnapshot(outcome.context, snapshot.history)
                     outcome_name = "accepted"
             return outcome
         except SessionActive:
             outcome_name = "active"
             raise
         finally:
-            for stream_key in reserved:
-                registry.release(stream_key)
+            if fence is not None:
+                registry.release_fence(fence)
             _log_claim(event, snapshot.context, outcome_name)
 
 
@@ -113,8 +105,7 @@ async def _read_claim_snapshot(
     if conn is None:
         row = repository._contexts.get(session_id)
         context = session_context._memory_context(row) if row is not None else None
-        threads = tuple(sorted(row.threads)) if row is not None else ()
-        return _ClaimSnapshot(context, repository._owner_claims.get(session_id), threads)
+        return _ClaimSnapshot(context, repository._owner_claims.get(session_id))
 
     history = await (
         await conn.execute(
@@ -130,31 +121,24 @@ async def _read_claim_snapshot(
         )
     ).fetchone()
     if row is None:
-        return _ClaimSnapshot(None, history, ())
+        return _ClaimSnapshot(None, history)
     context = session_context._row_to_context(row)
-    thread_rows = await (
-        await conn.execute(
-            "SELECT thread_id FROM chat_session_threads WHERE context_id=%s ORDER BY thread_id",
-            (context.context_id,),
-        )
-    ).fetchall()
-    return _ClaimSnapshot(context, history, tuple(str(item[0]) for item in thread_rows))
+    return _ClaimSnapshot(context, history)
 
 
-def _reserve_guest_threads(
-    registry: ActiveStreamRegistry,
-    guest_id: str,
-    threads: tuple[str, ...],
-) -> list[str]:
-    reserved: list[str] = []
-    for thread_id in threads:
-        stream_key = f"{guest_id}:{thread_id}"
-        if not registry.acquire(stream_key):
-            for prior_key in reserved:
-                registry.release(prior_key)
-            raise SessionActive
-        reserved.append(stream_key)
-    return reserved
+async def _transition_claim(
+    repository: SessionContextRepository,
+    conn,  # noqa: ANN001
+    event: SessionClaimEvent,
+) -> ClaimOutcome:
+    if conn is None:
+        return _claim_memory_under_lock(repository, event)
+    return await repository._claim_owner_on_connection(
+        conn,
+        event.session_id,
+        event.guest_id,
+        event.user_id,
+    )
 
 
 def _claim_memory_under_lock(

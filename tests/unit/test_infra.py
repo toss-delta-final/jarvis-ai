@@ -12,7 +12,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.core.config import get_settings
-from app.core.stream import get_registry, open_stream
+from app.core.stream import StreamScopeFence, get_registry, open_stream
 from app.main import app
 
 client = TestClient(app)
@@ -79,6 +79,28 @@ def test_same_session_different_threads_are_not_blocked() -> None:
         _ = r.text
     finally:
         registry.release("anon:thread-a")
+
+
+def test_registry_fence_requires_issued_token_identity_and_preserves_legacy_slots() -> None:
+    registry = get_registry()
+    token = registry.acquire_fence("guest-1", "session-1")
+    assert token is not None
+    assert registry.acquire("legacy-thread")
+    assert not registry.acquire(
+        "guest-1:new-thread",
+        owner_id="guest-1",
+        session_id="session-1",
+    )
+
+    forged = StreamScopeFence(owner_id="guest-1", session_id="session-1")
+    with pytest.raises(ValueError, match="not active"):
+        registry.release_fence(forged)
+    assert registry.is_fenced("guest-1", "session-1")
+
+    registry.release_fence(token)
+    assert not registry.is_fenced("guest-1", "session-1")
+    with pytest.raises(ValueError, match="not active"):
+        registry.release_fence(token)
 
 
 def test_registry_released_after_stream() -> None:

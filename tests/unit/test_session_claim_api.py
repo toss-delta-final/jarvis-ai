@@ -1,15 +1,49 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import httpx
 import pytest
+from fastapi import HTTPException
 
 from app.core import session_context
+from app.core import session_lifecycle as lifecycle
 from app.core.observability import message_fingerprint
-from app.core.session_context import BuyerSessionInput, SessionContextRepository
-from app.core.stream import get_registry
+from app.core.session_context import (
+    BuyerSessionInput,
+    SessionActive,
+    SessionContextRepository,
+)
+from app.core.stream import get_registry, open_stream
 from app.main import app
+from app.schemas.events import SessionClaimEvent
+
+
+class _Request:
+    async def is_disconnected(self) -> bool:
+        return False
+
+
+class _BlockingObserver:
+    def __init__(self, buyer_session: BuyerSessionInput) -> None:
+        self.request_id = "claim-race"
+        self.buyer_session = buyer_session
+        self.commit_entered = asyncio.Event()
+        self.commit_proceed = asyncio.Event()
+
+    async def commit_user_message(self) -> None:
+        self.commit_entered.set()
+        await self.commit_proceed.wait()
+
+    def on_first_token(self, now: float) -> None:
+        pass
+
+    def record_frame(self, frame: str) -> None:
+        pass
+
+    async def finish(self, now: float, status, error_type=None) -> None:  # noqa: ANN001
+        pass
 
 
 @pytest.fixture
@@ -72,7 +106,11 @@ async def test_exact_duplicate_never_mutates_context_generation_or_history(
     first = await _post_claim(client)
     before = await repo.get_context("session-1")
     history_before = dict(repo._owner_claims)
-    assert get_registry().acquire("guest-1:thread-1")
+    assert get_registry().acquire(
+        "guest-1:thread-1",
+        owner_id="guest-1",
+        session_id="session-1",
+    )
 
     duplicate = await _post_claim(client)
 
@@ -80,6 +118,8 @@ async def test_exact_duplicate_never_mutates_context_generation_or_history(
     assert duplicate.json() == {"status": "duplicate"}
     assert await repo.get_context("session-1") == before
     assert repo._owner_claims == history_before
+    assert get_registry().is_active("guest-1:thread-1")
+    assert not get_registry().is_fenced("guest-1", "session-1")
 
 
 async def test_claim_rejects_active_stream_in_any_registered_thread(
@@ -88,7 +128,11 @@ async def test_claim_rejects_active_stream_in_any_registered_thread(
 ) -> None:
     original = await repo.touch(BuyerSessionInput("session-1", "thread-1", "guest", "guest-1"))
     await repo.touch(BuyerSessionInput("session-1", "thread-2", "guest", "guest-1"))
-    assert get_registry().acquire("guest-1:thread-2")
+    assert get_registry().acquire(
+        "guest-1:thread-2",
+        owner_id="guest-1",
+        session_id="session-1",
+    )
 
     response = await _post_claim(client)
 
@@ -96,8 +140,124 @@ async def test_claim_rejects_active_stream_in_any_registered_thread(
     assert response.json()["error"]["code"] == "SESSION_ACTIVE"
     assert await repo.get_context("session-1") == original
     assert repo._owner_claims == {}
-    assert not get_registry().is_active("guest-1:thread-1")
     assert get_registry().is_active("guest-1:thread-2")
+    assert not get_registry().is_fenced("guest-1", "session-1")
+
+
+async def test_new_guest_thread_slot_before_db_touch_blocks_claim(
+    repo: SessionContextRepository,
+) -> None:
+    registry = get_registry()
+    observer = _BlockingObserver(BuyerSessionInput("session-1", "new-thread", "guest", "guest-1"))
+    coordinator = lifecycle.SessionLifecycleCoordinator(repo, registry)
+
+    async def inner():
+        yield 'data: {"type":"done","data":{"finishReason":"stop"}}\n\n'
+
+    stream_task = asyncio.create_task(
+        open_stream(
+            _Request(),
+            "guest-1:new-thread",
+            inner,
+            observer=observer,
+        )
+    )
+    await observer.commit_entered.wait()
+
+    with pytest.raises(SessionActive):
+        await coordinator.claim_owner(
+            SessionClaimEvent(session_id="session-1", guest_id="guest-1", user_id=7)
+        )
+
+    assert await repo.get_context("session-1") is None
+    assert registry.is_active("guest-1:new-thread")
+    assert not registry.is_fenced("guest-1", "session-1")
+    observer.commit_proceed.set()
+    response = await stream_task
+    _ = [chunk async for chunk in response.body_iterator]
+    assert not registry.is_active("guest-1:new-thread")
+
+
+async def test_claim_fence_blocks_new_guest_slot_until_transition_finishes(
+    repo: SessionContextRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = get_registry()
+    coordinator = lifecycle.SessionLifecycleCoordinator(repo, registry)
+    entered = asyncio.Event()
+    proceed = asyncio.Event()
+    original = lifecycle._transition_claim
+
+    async def blocked_transition(repository, conn, event):  # noqa: ANN001
+        entered.set()
+        await proceed.wait()
+        return await original(repository, conn, event)
+
+    monkeypatch.setattr(lifecycle, "_transition_claim", blocked_transition)
+    task = asyncio.create_task(
+        coordinator.claim_owner(
+            SessionClaimEvent(session_id="session-1", guest_id="guest-1", user_id=7)
+        )
+    )
+    await entered.wait()
+
+    assert registry.is_fenced("guest-1", "session-1")
+    observer = _BlockingObserver(BuyerSessionInput("session-1", "new-thread", "guest", "guest-1"))
+
+    async def inner():
+        yield 'data: {"type":"done","data":{"finishReason":"stop"}}\n\n'
+
+    with pytest.raises(HTTPException) as blocked:
+        await open_stream(
+            _Request(),
+            "guest-1:new-thread",
+            inner,
+            observer=observer,
+        )
+    assert blocked.value.status_code == 409
+    assert not observer.commit_entered.is_set()
+
+    proceed.set()
+    outcome = await task
+    assert outcome.claimed is True
+    assert not registry.is_fenced("guest-1", "session-1")
+    assert registry.acquire(
+        "guest-1:new-thread",
+        owner_id="guest-1",
+        session_id="session-1",
+    )
+
+
+async def test_claim_releases_fence_after_transition_error_and_cancellation(
+    repo: SessionContextRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = get_registry()
+    coordinator = lifecycle.SessionLifecycleCoordinator(repo, registry)
+    event = SessionClaimEvent(session_id="session-1", guest_id="guest-1", user_id=7)
+
+    async def fail_transition(repository, conn, claim_event):  # noqa: ANN001
+        raise RuntimeError("db transition failed")
+
+    monkeypatch.setattr(lifecycle, "_transition_claim", fail_transition)
+    with pytest.raises(RuntimeError, match="db transition failed"):
+        await coordinator.claim_owner(event)
+    assert not registry.is_fenced("guest-1", "session-1")
+
+    entered = asyncio.Event()
+
+    async def cancelled_transition(repository, conn, claim_event):  # noqa: ANN001
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(lifecycle, "_transition_claim", cancelled_transition)
+    task = asyncio.create_task(coordinator.claim_owner(event))
+    await entered.wait()
+    assert registry.is_fenced("guest-1", "session-1")
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not registry.is_fenced("guest-1", "session-1")
 
 
 @pytest.mark.parametrize(
@@ -145,12 +305,17 @@ async def test_claim_rejects_idle_finalizing_before_active_stream_check(
 ) -> None:
     context = await repo.touch(BuyerSessionInput("session-1", "thread-1", "guest", "guest-1"))
     repo._contexts["session-1"].state = "idle_finalizing"
-    assert get_registry().acquire("guest-1:thread-1")
+    assert get_registry().acquire(
+        "guest-1:thread-1",
+        owner_id="guest-1",
+        session_id="session-1",
+    )
 
     response = await _post_claim(client)
 
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "SESSION_FINALIZING"
+    assert not get_registry().is_fenced("guest-1", "session-1")
     assert await repo.get_context("session-1") == context.__class__(
         context.context_id,
         context.session_id,

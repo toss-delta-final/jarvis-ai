@@ -31,7 +31,7 @@ async def _release_claim_best_effort(event_id: str, token: str) -> None:
     await profile_finalizer.release_processed_claim_best_effort(event_id, token, log=logger)
 
 
-@router.post("/events/session-claim", status_code=202, include_in_schema=False)
+@router.post("/events/session-claim", status_code=202)
 async def session_claim(
     event: SessionClaimEvent,
     _token: None = Depends(verify_service_token),

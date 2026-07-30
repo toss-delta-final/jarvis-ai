@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass
 
 from fastapi import HTTPException, Request, status
 from fastapi.responses import StreamingResponse
@@ -40,21 +41,60 @@ class ActiveStreamRegistry:
     이벤트 루프 상에서 원자적이다 (check-then-add 사이 선점 없음)."""
 
     def __init__(self) -> None:
-        self._active: set[str] = set()
+        self._active: dict[str, tuple[str, str] | None] = {}
+        self._fences: dict[tuple[str, str], StreamScopeFence] = {}
 
-    def acquire(self, stream_key: str) -> bool:
-        """활성 등록. 이미 활성이면 False (호출자가 409 로 거절)."""
+    def acquire(
+        self,
+        stream_key: str,
+        *,
+        owner_id: str | None = None,
+        session_id: str | None = None,
+    ) -> bool:
+        """활성 등록. buyer scope가 fenced 상태이거나 key가 활성이면 False."""
+        if (owner_id is None) != (session_id is None):
+            raise ValueError("owner_id and session_id must be provided together")
         if stream_key in self._active:
             return False
-        self._active.add(stream_key)
+        scope = (owner_id, session_id) if owner_id is not None and session_id is not None else None
+        if scope is not None and scope in self._fences:
+            return False
+        self._active[stream_key] = scope
         return True
 
     def release(self, stream_key: str) -> None:
         """활성 해제 (중복 해제 무해)."""
-        self._active.discard(stream_key)
+        self._active.pop(stream_key, None)
 
     def is_active(self, stream_key: str) -> bool:
         return stream_key in self._active
+
+    def acquire_fence(self, owner_id: str, session_id: str) -> StreamScopeFence | None:
+        """해당 buyer session scope에 active stream이 없을 때 non-blocking fence를 획득한다."""
+        scope = (owner_id, session_id)
+        if scope in self._fences or scope in self._active.values():
+            return None
+        token = StreamScopeFence(owner_id=owner_id, session_id=session_id)
+        self._fences[scope] = token
+        return token
+
+    def release_fence(self, token: StreamScopeFence) -> None:
+        """발급한 동일 token 객체만 fence를 해제할 수 있다."""
+        scope = (token.owner_id, token.session_id)
+        if self._fences.get(scope) is not token:
+            raise ValueError("stream scope fence token is not active")
+        del self._fences[scope]
+
+    def is_fenced(self, owner_id: str, session_id: str) -> bool:
+        return (owner_id, session_id) in self._fences
+
+
+@dataclass(frozen=True)
+class StreamScopeFence:
+    """Owner/session registry fence identity token."""
+
+    owner_id: str
+    session_id: str
 
 
 _registry = ActiveStreamRegistry()
@@ -161,7 +201,12 @@ async def open_stream(
     loop = asyncio.get_event_loop()
     stream_request_id = observer.request_id if observer is not None else new_request_id()
 
-    if not registry.acquire(stream_key):
+    buyer_session = getattr(observer, "buyer_session", None)
+    if not registry.acquire(
+        stream_key,
+        owner_id=buyer_session.owner_id if buyer_session is not None else None,
+        session_id=buyer_session.session_id if buyer_session is not None else None,
+    ):
         if observer is not None:
             await _safe_finish(
                 observer, stream_key, loop.time(), TurnStatus.FAILED, "STREAM_IN_PROGRESS"

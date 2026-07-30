@@ -43,6 +43,7 @@ def _reset_infra_state():
     reset_profile_store()
     reset_catalog_store()
     get_registry()._active.clear()
+    get_registry()._fences.clear()
     yield
     reset_limiter()
     reset_store()
@@ -52,6 +53,7 @@ def _reset_infra_state():
     reset_profile_store()
     reset_catalog_store()
     get_registry()._active.clear()
+    get_registry()._fences.clear()
 
 
 @pytest.fixture(autouse=True)
