@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from app.core.config import Settings
 
 
@@ -14,6 +17,7 @@ def test_seller_settings_defaults() -> None:
     # [통일 2026-07-20] 서비스 토큰은 팀 규약 internal_api_token 단일 키(기본 미설정).
     assert settings.internal_api_token == ""
     assert settings.seller_ma_window == 7
+    assert settings.seller_ma_min_window == 3  # Spring MIN_WINDOW 정렬(#194)
     assert settings.seller_anomaly_deviation_pct == 30.0
     assert settings.seller_conversion_drop_pct == 20.0
     assert settings.seller_churn_inactive_days == 30
@@ -24,6 +28,18 @@ def test_seller_settings_defaults() -> None:
     assert settings.seller_draft_ttl_minutes == 10
     assert settings.seller_history_recent_n == 5
     assert settings.seller_tool_call_limit == 8
+
+
+def test_seller_ma_window_invalid_config_fails_fast() -> None:
+    """[#194 PR 리뷰] 이상 감지 window 오설정은 기동 시점에 실패한다 — 런타임에
+    daily 매출 조회가 매 요청 ValueError 로 죽는 것 방지(설정값은 요청마다 안 변함)."""
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_ma_min_window=0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_ma_window=2, seller_ma_min_window=3)
+    # 경계(min_window == window)는 유효하다.
+    ok = Settings(_env_file=None, seller_ma_window=3, seller_ma_min_window=3)
+    assert ok.seller_ma_min_window == 3
 
 
 def test_seller_model_temperatures() -> None:
