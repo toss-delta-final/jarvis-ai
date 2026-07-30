@@ -224,10 +224,18 @@ async def test_buyer_context_thread_and_turn_commit_together(pool) -> None:
                 (committed.context_id, thread_id),
             )
         ).fetchone()
+        turn_linkage = await (
+            await conn.execute(
+                "SELECT context_id, session_id FROM conversation_turns WHERE turn_id=%s",
+                (committed.turn_id,),
+            )
+        ).fetchone()
     assert context is not None
     assert (str(context[0]), context[1]) == (committed.context_id, "active")
     assert thread is not None
     assert str(thread[0]) == committed.context_id
+    assert turn_linkage is not None
+    assert (str(turn_linkage[0]), turn_linkage[1]) == (committed.context_id, session_id)
     assert await store.get_turn(committed.turn_id) is not None
 
 
@@ -250,8 +258,15 @@ async def test_seller_turn_has_no_buyer_context(pool) -> None:
                 )
             ).fetchone()
         )[0]
+        turn_linkage = await (
+            await conn.execute(
+                "SELECT context_id, session_id FROM conversation_turns WHERE turn_id=%s",
+                (committed.turn_id,),
+            )
+        ).fetchone()
     assert committed.context_id is None
     assert count == 0
+    assert turn_linkage == (None, None)
 
 
 async def test_turn_insert_failure_rolls_back_buyer_context_and_thread(
@@ -292,5 +307,12 @@ async def test_turn_insert_failure_rolls_back_buyer_context_and_thread(
                 (thread_id,),
             )
         ).fetchone()
+        linkage = await (
+            await conn.execute(
+                "SELECT context_id, session_id FROM conversation_turns WHERE conversation_id=%s",
+                (conversation_id,),
+            )
+        ).fetchall()
     assert context is None
     assert thread is None
+    assert linkage == []

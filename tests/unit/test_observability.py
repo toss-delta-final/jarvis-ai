@@ -489,7 +489,9 @@ async def test_commit_user_message_any_failure_releases_slot(error: Exception) -
     assert not get_registry().is_active("member:slot-domain-fail")
 
 
-async def test_observation_stores_committed_buyer_context() -> None:
+async def test_observation_stores_and_logs_committed_buyer_context(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     store = await get_conversation_store()
     observation = start_observation(
         request_id="buyer-context",
@@ -514,12 +516,22 @@ async def test_observation_stores_committed_buyer_context() -> None:
     )
 
     await observation.commit_user_message()
+    with caplog.at_level(logging.INFO, logger="observability"):
+        await observation.finish(1.0, TurnStatus.COMPLETED)
 
     assert observation.turn_id is not None
     assert observation.context_id is not None
+    record = next(
+        json.loads(item.getMessage())
+        for item in caplog.records
+        if item.name == "observability" and item.getMessage().startswith("{")
+    )
+    assert record["contextId"] == observation.context_id
 
 
-async def test_seller_style_observation_has_no_context() -> None:
+async def test_seller_style_observation_logs_null_context(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     store = await get_conversation_store()
     observation = start_observation(
         request_id="seller-context",
@@ -538,12 +550,20 @@ async def test_seller_style_observation_has_no_context() -> None:
     )
 
     await observation.commit_user_message()
+    with caplog.at_level(logging.INFO, logger="observability"):
+        await observation.finish(1.0, TurnStatus.COMPLETED)
 
     assert isinstance(
         CommittedTurn(observation.turn_id or "", observation.context_id),
         CommittedTurn,
     )
     assert observation.context_id is None
+    record = next(
+        json.loads(item.getMessage())
+        for item in caplog.records
+        if item.name == "observability" and item.getMessage().startswith("{")
+    )
+    assert record["contextId"] is None
 
 
 def test_rate_limit_emits_structured_observation(caplog: pytest.LogCaptureFixture) -> None:

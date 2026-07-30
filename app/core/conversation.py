@@ -307,6 +307,8 @@ class PgConversationStore:
                         user_id,
                         role,
                         text,
+                        context.context_id,
+                        buyer_session.session_id,
                     )
                     return context.context_id
 
@@ -322,12 +324,24 @@ class PgConversationStore:
         user_id: str | None,
         role: str,
         text: str,
+        context_id: str,
+        session_id: str,
     ) -> None:
         await conn.execute(
             "INSERT INTO conversation_turns "
-            "(turn_id, conversation_id, thread_id, user_id, role, user_text) "
-            "VALUES (%s, %s, %s, %s, %s, %s)",
-            (turn_id, conversation_id, thread_id, user_id, role, text),
+            "(turn_id, conversation_id, thread_id, user_id, role, user_text, "
+            "context_id, session_id) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (
+                turn_id,
+                conversation_id,
+                thread_id,
+                user_id,
+                role,
+                text,
+                context_id,
+                session_id,
+            ),
         )
 
     async def finalize_assistant(
