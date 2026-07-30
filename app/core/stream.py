@@ -327,11 +327,14 @@ async def open_stream(
                 first_terminal, first_err = _terminal_event_of(first)
                 if first_terminal is not None:
                     terminal_reason = first_terminal
-                yield first  # first 는 위에서 record_frame 됨(중복 누적 방지)
                 if first_err is not None:
-                    # in-stream error 는 종결 이벤트(§3.1) — 이후 이벤트 당기지 않는다.
+                    # terminal error 상태는 프레임을 넘기기 전에 확정한다. 소비자가 이 프레임
+                    # 직후 iterator 를 닫아도 finally 가 FAILED/error_type 으로 마감해야 한다.
                     stream_status = TurnStatus.FAILED
                     error_type = first_err
+                yield first  # first 는 위에서 record_frame 됨(중복 누적 방지)
+                if first_terminal is not None:
+                    # done/error 는 모두 종결 이벤트 — 이후 프레임을 당기지 않는다.
                     return
             next_task = asyncio.ensure_future(agen.__anext__())
             while True:
@@ -383,12 +386,12 @@ async def open_stream(
                 item_terminal, item_err = _terminal_event_of(item)
                 if item_terminal is not None:
                     terminal_reason = item_terminal
-                yield item
                 if item_err is not None:
-                    # 그래프가 자체 in-stream error(LLM_UNAVAILABLE 등)를 emit — 실패로 마감하고
-                    # 종결한다(§3.1/§6.3). break 없으면 이후 token/done 이 저장소를 오염시킨다.
                     stream_status = TurnStatus.FAILED
                     error_type = item_err
+                yield item
+                if item_terminal is not None:
+                    # 그래프 terminal 프레임 뒤 token/done 을 당겨 응답·저장소를 오염시키지 않는다.
                     break
                 next_task = asyncio.ensure_future(agen.__anext__())
         except asyncio.CancelledError:

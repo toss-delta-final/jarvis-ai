@@ -466,6 +466,63 @@ async def test_tokenless_cancellation_records_reason_without_text_ttft(
     assert root.metadata["terminalReason"] == "cancelled"
 
 
+async def test_terminal_done_stops_before_later_token_and_keeps_text_ttft_empty() -> None:
+    exporter = FakeTraceExporter()
+    obs = await _obs("terminal-done", trace=_trace(exporter))
+
+    async def done_then_token():
+        yield 'data: {"type":"done","data":{"finishReason":"stop"}}\n\n'
+        yield 'data: {"type":"token","data":{"text":"MUST_NOT_ESCAPE"}}\n\n'
+
+    response = await open_stream(
+        _FakeRequest(),
+        "member:terminal-done",
+        done_then_token,
+        observer=obs,
+    )
+    chunks = [chunk async for chunk in response.body_iterator]
+
+    assert len(chunks) == 1
+    assert '"type":"done"' in chunks[0]
+    assert "MUST_NOT_ESCAPE" not in chunks[0]
+    assert obs.server_first_text_token_ms is None
+    turn = await obs.store.get_turn(obs.turn_id)
+    assert turn is not None
+    assert turn.assistant_text == ""
+    root = exporter.exported[0][0]
+    assert root.metadata["server_first_text_token_ms"] is None
+    assert root.metadata["terminalReason"] == "done"
+
+
+async def test_terminal_error_commits_failure_before_consumer_closes_iterator() -> None:
+    exporter = FakeTraceExporter()
+    obs = await _obs("terminal-error-close", trace=_trace(exporter))
+
+    async def error_then_token():
+        yield 'data: {"type":"error","data":{"code":"LLM_UNAVAILABLE"}}\n\n'
+        yield 'data: {"type":"token","data":{"text":"MUST_NOT_PULL"}}\n\n'
+
+    response = await open_stream(
+        _FakeRequest(),
+        "member:terminal-error-close",
+        error_then_token,
+        observer=obs,
+    )
+    iterator = response.body_iterator
+    first = await anext(iterator)
+    assert '"type":"error"' in first
+    await iterator.aclose()
+
+    turn = await obs.store.get_turn(obs.turn_id)
+    assert turn is not None and turn.status == TurnStatus.FAILED
+    assert turn.assistant_text == ""
+    root = exporter.exported[0][0]
+    assert root.error_type == "LLM_UNAVAILABLE"
+    assert root.metadata["errorType"] == "LLM_UNAVAILABLE"
+    assert root.metadata["terminalReason"] == "error"
+    assert not get_registry().is_active("member:terminal-error-close")
+
+
 def test_structured_log_has_fields_and_hides_raw_message(
     caplog: pytest.LogCaptureFixture, buyer_fakes
 ) -> None:
