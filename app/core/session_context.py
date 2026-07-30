@@ -1132,6 +1132,149 @@ class SessionContextUnitOfWork(AbstractAsyncContextManager["SessionContextUnitOf
             )
         return _row_to_context(row)
 
+    async def prepare_idle_finalizing_with_watermark(
+        self,
+        claim: FinalizationClaim,
+        watermark: int | None,
+    ) -> SessionContext:
+        """Atomically commit the idle gate and its real member snapshot watermark."""
+        self._bind_claim(claim)
+        if watermark is not None and watermark < 0:
+            raise ValueError("profile watermark must be non-negative")
+        if self.conn is None:
+            context = self.repository._validate_memory_claim(claim, for_idle=True)
+            if context.state != "active":
+                raise SessionClaimConflict
+            if (context.owner_type == "member") != (watermark is not None):
+                raise SessionClaimConflict
+            row = self.repository._contexts[self.session_id]
+            finalization = self.repository._finalizations[claim.finalization_id]
+            if finalization.watermark_status != "pending":
+                raise SessionClaimConflict
+            if context.owner_type == "member":
+                finalization.watermark_status = "captured"
+                finalization.profile_watermark = watermark
+            else:
+                finalization.watermark_status = "skipped"
+                finalization.profile_status = "skipped"
+            row.state = "idle_finalizing"
+            return _memory_context(row)
+
+        context = await self.repository._validate_claim_on_connection(
+            self.conn,
+            claim,
+            for_idle=True,
+        )
+        if context.state != "active":
+            raise SessionClaimConflict
+        if (context.owner_type == "member") != (watermark is not None):
+            raise SessionClaimConflict
+        if context.owner_type == "member":
+            finalization = await (
+                await self.conn.execute(
+                    """
+                    UPDATE chat_session_finalizations
+                    SET watermark_status='captured', profile_watermark=%s, updated_at=now()
+                    WHERE finalization_id=%s AND context_id=%s AND generation=%s
+                      AND reason='idle' AND watermark_status='pending'
+                      AND transient_status='pending' AND claim_token=%s
+                    RETURNING finalization_id
+                    """,
+                    (
+                        watermark,
+                        claim.finalization_id,
+                        claim.context_id,
+                        claim.generation,
+                        claim.claim_token,
+                    ),
+                )
+            ).fetchone()
+        else:
+            finalization = await (
+                await self.conn.execute(
+                    """
+                    UPDATE chat_session_finalizations
+                    SET watermark_status='skipped', profile_status='skipped', updated_at=now()
+                    WHERE finalization_id=%s AND context_id=%s AND generation=%s
+                      AND reason='idle' AND watermark_status='pending'
+                      AND transient_status='pending' AND claim_token=%s
+                    RETURNING finalization_id
+                    """,
+                    (
+                        claim.finalization_id,
+                        claim.context_id,
+                        claim.generation,
+                        claim.claim_token,
+                    ),
+                )
+            ).fetchone()
+        if finalization is None:
+            raise SessionClaimConflict
+        row = await (
+            await self.conn.execute(
+                """
+                UPDATE chat_session_contexts SET state='idle_finalizing', updated_at=now()
+                WHERE context_id=%s AND generation=%s AND state='active'
+                RETURNING context_id, session_id, owner_type, owner_id, generation, state
+                """,
+                (claim.context_id, claim.generation),
+            )
+        ).fetchone()
+        if row is None:
+            raise SessionClaimConflict
+        return _row_to_context(row)
+
+    async def abandon_idle_prephase(self, claim: FinalizationClaim) -> bool:
+        """Delete an exact idle journal only while no irreversible phase has begun."""
+        self._bind_claim(claim)
+        if claim.reason != "idle":
+            return False
+        if self.conn is None:
+            row = self.repository._contexts.get(self.session_id)
+            finalization = self.repository._finalizations.get(claim.finalization_id)
+            if (
+                row is None
+                or finalization is None
+                or row.context_id != claim.context_id
+                or row.generation != claim.generation
+                or row.state != "active"
+                or finalization.context_id != claim.context_id
+                or finalization.generation != claim.generation
+                or finalization.reason != "idle"
+                or finalization.status != "processing"
+                or finalization.claim_token != claim.claim_token
+                or finalization.watermark_status != "pending"
+                or finalization.profile_watermark is not None
+                or finalization.transient_status != "pending"
+            ):
+                return False
+            del self.repository._finalizations[claim.finalization_id]
+            return True
+        row = await (
+            await self.conn.execute(
+                """
+                DELETE FROM chat_session_finalizations f
+                USING chat_session_contexts c
+                WHERE f.finalization_id=%s AND f.context_id=%s
+                  AND f.generation=%s AND f.reason='idle'
+                  AND f.status='processing' AND f.claim_token=%s
+                  AND f.watermark_status='pending' AND f.profile_watermark IS NULL
+                  AND f.transient_status='pending'
+                  AND c.context_id=f.context_id AND c.session_id=%s
+                  AND c.generation=f.generation AND c.state='active'
+                RETURNING f.finalization_id
+                """,
+                (
+                    claim.finalization_id,
+                    claim.context_id,
+                    claim.generation,
+                    claim.claim_token,
+                    claim.session_id,
+                ),
+            )
+        ).fetchone()
+        return row is not None
+
     async def capture_profile_watermark(self, claim: FinalizationClaim, watermark: int) -> None:
         self._bind_claim(claim)
         if watermark < 0:
@@ -1211,32 +1354,43 @@ class SessionContextUnitOfWork(AbstractAsyncContextManager["SessionContextUnitOf
         await self.validate_idle_delete(claim)
         if self.conn is None:
             row = self.repository._contexts[self.session_id]
-            row.state = "idle_expired"
-            row.threads.clear()
             finalization = self.repository._finalizations[claim.finalization_id]
             finalization.transient_status = "completed"
             finalization.status = "completed"
             finalization.claim_token = None
             finalization.lease_expires_at = None
+            row.state = "idle_expired"
+            row.threads.clear()
             return
-        await self.conn.execute(
-            "DELETE FROM chat_session_threads WHERE context_id=%s", (claim.context_id,)
-        )
-        await self.conn.execute(
-            """
+        finalization = await (
+            await self.conn.execute(
+                """
             UPDATE chat_session_finalizations
             SET transient_status='completed', status='completed',
                 claim_token=NULL, lease_expires_at=NULL, updated_at=now()
-            WHERE finalization_id=%s
+            WHERE finalization_id=%s AND context_id=%s AND generation=%s
+              AND reason='idle' AND transient_status='pending'
+            RETURNING finalization_id
             """,
-            (claim.finalization_id,),
-        )
+                (claim.finalization_id, claim.context_id, claim.generation),
+            )
+        ).fetchone()
+        if finalization is None:
+            raise SessionClaimConflict
+        context = await (
+            await self.conn.execute(
+                """
+                UPDATE chat_session_contexts SET state='idle_expired', updated_at=now()
+                WHERE context_id=%s AND generation=%s AND state='idle_finalizing'
+                RETURNING context_id
+                """,
+                (claim.context_id, claim.generation),
+            )
+        ).fetchone()
+        if context is None:
+            raise SessionClaimConflict
         await self.conn.execute(
-            """
-            UPDATE chat_session_contexts SET state='idle_expired', updated_at=now()
-            WHERE context_id=%s AND generation=%s
-            """,
-            (claim.context_id, claim.generation),
+            "DELETE FROM chat_session_threads WHERE context_id=%s", (claim.context_id,)
         )
 
     def _bind_claim(self, claim: FinalizationClaim) -> None:

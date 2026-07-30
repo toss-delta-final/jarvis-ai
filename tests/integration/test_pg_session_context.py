@@ -4,9 +4,13 @@ import asyncio
 import uuid
 
 import pytest
+from langgraph.store.postgres.aio import AsyncPostgresStore
 from psycopg.conninfo import make_conninfo
 from psycopg_pool import AsyncConnectionPool
 
+from app.agents.buyer.cart import state as cart_state
+from app.agents.buyer.session_state import context_thread_key
+from app.core import pg_store as pg_store_module
 from app.core import session_context as session_context_module
 from app.core import session_lifecycle as session_lifecycle_module
 from app.core.config import get_settings
@@ -20,6 +24,69 @@ from app.core.session_lifecycle import SessionLifecycleCoordinator
 from app.core.stream import ActiveStreamRegistry
 
 pytestmark = pytest.mark.integration
+
+
+class _FailAfterFirstDeleteStore:
+    def __init__(self, store) -> None:  # noqa: ANN001
+        self.store = store
+        self.delete_calls = 0
+
+    def __getattr__(self, name: str):
+        return getattr(self.store, name)
+
+    async def adelete(self, namespace, key) -> None:  # noqa: ANN001
+        self.delete_calls += 1
+        if self.delete_calls == 2:
+            raise RuntimeError("fault after first namespace delete")
+        await self.store.adelete(namespace, key)
+
+
+async def _seed_v2_state(store, key: str, label: str) -> None:  # noqa: ANN001
+    await store.aput(("buyer_thread_filters_v2", key), "filters", {"category": label})
+    await store.aput(
+        ("buyer_cart_v2", key),
+        "pending",
+        {"product_id": 1, "quantity": 1, "options": [], "attempts": 0},
+    )
+    await store.aput(("buyer_cart_v2", key), "last_reco", {"product_ids": [1]})
+    await store.aput(
+        ("buyer_revert_v2", key),
+        "categories",
+        {"categories": [label]},
+    )
+    cart_state._last_reco_names[key] = {1: label}
+
+
+async def _delete_seeded_v2_state(store, key: str) -> None:  # noqa: ANN001
+    for root, name in (
+        ("buyer_thread_filters_v2", "filters"),
+        ("buyer_cart_v2", "pending"),
+        ("buyer_cart_v2", "last_reco"),
+        ("buyer_revert_v2", "categories"),
+    ):
+        await store.adelete((root, key), name)
+    cart_state._last_reco_names.pop(key)
+
+
+async def _assert_v2_deleted(store, key: str) -> None:  # noqa: ANN001
+    assert await store.aget(("buyer_thread_filters_v2", key), "filters") is None
+    assert await store.aget(("buyer_cart_v2", key), "pending") is None
+    assert await store.aget(("buyer_cart_v2", key), "last_reco") is None
+    assert await store.aget(("buyer_revert_v2", key), "categories") is None
+    assert cart_state._last_reco_names.get(key) is None
+
+
+async def _assert_v2_preserved(store, key: str) -> None:  # noqa: ANN001
+    assert await store.aget(("buyer_thread_filters_v2", key), "filters") is not None
+    assert await store.aget(("buyer_cart_v2", key), "pending") is not None
+    assert await store.aget(("buyer_cart_v2", key), "last_reco") is not None
+    assert await store.aget(("buyer_revert_v2", key), "categories") is not None
+    assert cart_state._last_reco_names.get(key) is not None
+
+
+class _EmptyProfile:
+    async def get_session_ctx_snapshot(self, key: str) -> tuple[list[str], int]:
+        return [], 0
 
 
 @pytest.fixture
@@ -627,3 +694,188 @@ async def test_terminal_recovery_ignores_superseded_idle_batch_row(pg_repo, monk
     assert terminal_row.transient_status == "completed"
     assert (await restarted_repo.get_context(session_id)).state == "terminal"
     assert profile.snapshot_calls == 1
+
+
+@pytest.mark.parametrize("failure", ["active", "snapshot", "cancel"])
+async def test_pg_idle_prephase_failure_is_abandoned_and_fresh_sweep_completes(
+    pg_repo,
+    monkeypatch,
+    failure: str,
+) -> None:
+    repo, pool, prefix = pg_repo
+    session_id = prefix + "-prephase-" + failure
+    context = await repo.touch(BuyerSessionInput(session_id, "T1", "member", "7"))
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_contexts SET last_activity_at=now()-interval '1 hour' "
+            "WHERE context_id=%s",
+            (context.context_id,),
+        )
+    [claim] = await repo.claim_expired_contexts(10, 30, 1)
+    registry = ActiveStreamRegistry()
+
+    class BrokenProfile:
+        async def get_session_ctx_snapshot(self, key: str):
+            if failure == "cancel":
+                raise asyncio.CancelledError
+            raise RuntimeError("snapshot unavailable")
+
+    if failure == "active":
+        assert registry.acquire("active", owner_id="7", session_id=session_id)
+    coordinator = SessionLifecycleCoordinator(
+        repo,
+        registry,
+        profile_store_factory=BrokenProfile,
+    )
+    if failure == "cancel":
+        with pytest.raises(asyncio.CancelledError):
+            await coordinator.process_idle_transient(claim)
+    else:
+        outcome = await coordinator.process_idle_transient(claim)
+        assert outcome.status == ("skipped" if failure == "active" else "retryable")
+    if failure == "active":
+        registry.release("active")
+
+    assert (await repo.get_context(session_id)).state == "active"
+    async with pool.connection() as conn:
+        count = await (
+            await conn.execute(
+                "SELECT count(*) FROM chat_session_finalizations WHERE finalization_id=%s",
+                (claim.finalization_id,),
+            )
+        ).fetchone()
+    assert count == (0,)
+
+    restarted = SessionContextRepository(pool=pool)
+    monkeypatch.setattr(session_context_module, "_default_repository", restarted)
+
+    async def empty_profile_factory():
+        return _EmptyProfile()
+
+    monkeypatch.setattr(session_lifecycle_module, "get_profile_store", empty_profile_factory)
+    result = await session_lifecycle_module.run_session_context_sweep()
+
+    assert result.completed == 1
+    assert (await restarted.get_context(session_id)).state == "idle_expired"
+
+
+async def test_pg_actual_partial_idle_delete_recovers_and_preserves_other_context(
+    pg_repo,
+    monkeypatch,
+) -> None:
+    repo, pool, prefix = pg_repo
+    target = await repo.touch(BuyerSessionInput(prefix + "-target", "T1", "guest", "G1"))
+    other = await repo.touch(BuyerSessionInput(prefix + "-other", "T1", "guest", "G2"))
+    target_key = context_thread_key(target.context_id, "T1")
+    other_key = context_thread_key(other.context_id, "T1")
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_contexts SET last_activity_at=now()-interval '1 hour' "
+            "WHERE context_id=%s",
+            (target.context_id,),
+        )
+    [claim] = await repo.claim_expired_contexts(10, 30, 1)
+
+    async with AsyncPostgresStore.from_conn_string(get_settings().profile_db_url) as store:
+        await store.setup()
+        await _seed_v2_state(store, target_key, "target")
+        await _seed_v2_state(store, other_key, "other")
+        fault_store = _FailAfterFirstDeleteStore(store)
+        pg_store_module.set_store(fault_store)
+        try:
+            failed = await SessionLifecycleCoordinator(
+                repo,
+                ActiveStreamRegistry(),
+            ).process_idle_transient(claim)
+            assert failed.status == "retryable"
+            assert fault_store.delete_calls == 2
+            assert await store.aget(("buyer_thread_filters_v2", target_key), "filters") is None
+            assert await store.aget(("buyer_cart_v2", target_key), "pending") is not None
+            assert (await repo.get_context(prefix + "-target")).state == "idle_finalizing"
+            assert (
+                await repo.get_finalization(claim.finalization_id)
+            ).transient_status == "pending"
+            await _assert_v2_preserved(store, other_key)
+
+            async with pool.connection() as conn:
+                await conn.execute(
+                    "UPDATE chat_session_finalizations "
+                    "SET lease_expires_at=now()-interval '1 second' "
+                    "WHERE finalization_id=%s",
+                    (claim.finalization_id,),
+                )
+            restarted = SessionContextRepository(pool=pool)
+            monkeypatch.setattr(session_context_module, "_default_repository", restarted)
+            pg_store_module.set_store(store)
+
+            result = await session_lifecycle_module.run_session_context_sweep()
+
+            assert result.completed == 1
+            await _assert_v2_deleted(store, target_key)
+            await _assert_v2_preserved(store, other_key)
+        finally:
+            await _delete_seeded_v2_state(store, target_key)
+            await _delete_seeded_v2_state(store, other_key)
+            pg_store_module.reset_store()
+
+
+async def test_pg_actual_partial_terminal_delete_recovers_and_keeps_terminal(
+    pg_repo,
+    monkeypatch,
+) -> None:
+    repo, pool, prefix = pg_repo
+    target_session = prefix + "-terminal-target"
+    target = await repo.touch(BuyerSessionInput(target_session, "T1", "member", "7"))
+    other = await repo.touch(BuyerSessionInput(prefix + "-terminal-other", "T1", "guest", "G2"))
+    terminal = await repo.begin_terminal(7, target_session)
+    assert terminal.claim is not None
+    target_key = context_thread_key(target.context_id, "T1")
+    other_key = context_thread_key(other.context_id, "T1")
+
+    async with AsyncPostgresStore.from_conn_string(get_settings().profile_db_url) as store:
+        await store.setup()
+        await _seed_v2_state(store, target_key, "target")
+        await _seed_v2_state(store, other_key, "other")
+        fault_store = _FailAfterFirstDeleteStore(store)
+        pg_store_module.set_store(fault_store)
+        try:
+            failed = await SessionLifecycleCoordinator(
+                repo,
+                ActiveStreamRegistry(),
+                profile_store_factory=_EmptyProfile,
+            ).process_terminal_transient(terminal.claim)
+            assert failed.status == "retryable"
+            assert await store.aget(("buyer_thread_filters_v2", target_key), "filters") is None
+            assert await store.aget(("buyer_cart_v2", target_key), "pending") is not None
+            assert (await repo.get_context(target_session)).state == "terminal"
+            await _assert_v2_preserved(store, other_key)
+
+            async with pool.connection() as conn:
+                await conn.execute(
+                    "UPDATE chat_session_finalizations "
+                    "SET lease_expires_at=now()-interval '1 second' "
+                    "WHERE finalization_id=%s",
+                    (terminal.claim.finalization_id,),
+                )
+            restarted = SessionContextRepository(pool=pool)
+            monkeypatch.setattr(session_context_module, "_default_repository", restarted)
+            pg_store_module.set_store(store)
+
+            async def empty_profile_factory():
+                return _EmptyProfile()
+
+            monkeypatch.setattr(
+                session_lifecycle_module,
+                "get_profile_store",
+                empty_profile_factory,
+            )
+            result = await session_lifecycle_module.run_session_context_sweep()
+
+            assert result.completed == 1
+            assert (await restarted.get_context(target_session)).state == "terminal"
+            await _assert_v2_deleted(store, target_key)
+            await _assert_v2_preserved(store, other_key)
+        finally:
+            await _delete_seeded_v2_state(store, target_key)
+            await _delete_seeded_v2_state(store, other_key)
+            pg_store_module.reset_store()

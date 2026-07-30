@@ -3,8 +3,20 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from langgraph.store.memory import InMemoryStore
 
-from app.core.session_context import BuyerSessionInput, SessionContextRepository
+from app.agents.buyer.cart import state as cart_state
+from app.agents.buyer.session_state import context_thread_key
+from app.core import pg_store
+from app.core.observability import message_fingerprint
+from app.core.session_context import (
+    BuyerSessionInput,
+    FinalizationClaim,
+    SessionClaimConflict,
+    SessionContext,
+    SessionContextRepository,
+    SessionContextUnitOfWork,
+)
 from app.core.session_lifecycle import SessionLifecycleCoordinator
 from app.core.stream import ActiveStreamRegistry
 
@@ -28,6 +40,53 @@ class ProfileStoreStub:
     async def get_session_ctx_snapshot(self, key: str) -> tuple[list[str], int]:
         self.keys.append(key)
         return (["saved"] if self.watermark else [], self.watermark)
+
+
+class FailAfterFirstDeleteStore:
+    def __init__(self, store: InMemoryStore) -> None:
+        self.store = store
+        self.delete_calls = 0
+
+    def __getattr__(self, name: str):
+        return getattr(self.store, name)
+
+    async def adelete(self, namespace, key) -> None:
+        self.delete_calls += 1
+        if self.delete_calls == 2:
+            raise RuntimeError("fault after first namespace delete")
+        await self.store.adelete(namespace, key)
+
+
+async def _seed_v2_state(store: InMemoryStore, key: str, label: str) -> None:
+    await store.aput(("buyer_thread_filters_v2", key), "filters", {"category": label})
+    await store.aput(
+        ("buyer_cart_v2", key),
+        "pending",
+        {"product_id": 1, "quantity": 1, "options": [], "attempts": 0},
+    )
+    await store.aput(("buyer_cart_v2", key), "last_reco", {"product_ids": [1]})
+    await store.aput(
+        ("buyer_revert_v2", key),
+        "categories",
+        {"categories": [label]},
+    )
+    cart_state._last_reco_names[key] = {1: label}
+
+
+async def _assert_v2_deleted(store: InMemoryStore, key: str) -> None:
+    assert await store.aget(("buyer_thread_filters_v2", key), "filters") is None
+    assert await store.aget(("buyer_cart_v2", key), "pending") is None
+    assert await store.aget(("buyer_cart_v2", key), "last_reco") is None
+    assert await store.aget(("buyer_revert_v2", key), "categories") is None
+    assert cart_state._last_reco_names.get(key) is None
+
+
+async def _assert_v2_preserved(store: InMemoryStore, key: str) -> None:
+    assert await store.aget(("buyer_thread_filters_v2", key), "filters") is not None
+    assert await store.aget(("buyer_cart_v2", key), "pending") is not None
+    assert await store.aget(("buyer_cart_v2", key), "last_reco") is not None
+    assert await store.aget(("buyer_revert_v2", key), "categories") is not None
+    assert cart_state._last_reco_names.get(key) is not None
 
 
 @pytest.fixture
@@ -106,6 +165,123 @@ async def test_active_stream_skips_phase_a_without_committing_finalizing(clock: 
     assert outcome.status == "skipped"
     assert outcome.skip_reason == "active"
     assert (await repo.get_context("S1")).state == "active"
+    with pytest.raises(SessionClaimConflict):
+        await repo.get_finalization(claim.finalization_id)
+
+    registry.release("G1:T1")
+    [replacement] = await repo.claim_expired_contexts(600, 30, 1)
+    assert replacement.finalization_id != claim.finalization_id
+
+
+async def test_snapshot_failure_abandons_idle_prephase_without_memory_mutation(
+    monkeypatch, clock: Clock
+) -> None:
+    repo = SessionContextRepository(clock=clock)
+    await repo.touch(BuyerSessionInput("S1", "T1", "member", "7"))
+    clock.advance(601)
+    [claim] = await repo.claim_expired_contexts(600, 30, 1)
+
+    class BrokenProfile:
+        async def get_session_ctx_snapshot(self, key: str):
+            raise RuntimeError("snapshot unavailable")
+
+    coordinator = SessionLifecycleCoordinator(
+        repo,
+        ActiveStreamRegistry(),
+        profile_store_factory=BrokenProfile,
+    )
+
+    failed = await coordinator.process_idle_transient(claim)
+
+    assert failed.status == "retryable"
+    assert (await repo.get_context("S1")).state == "active"
+    with pytest.raises(SessionClaimConflict):
+        await repo.get_finalization(claim.finalization_id)
+
+    async def clear_context(context_id: str, thread_ids: list[str]):
+        from app.agents.buyer.session_state import CleanupCounts
+
+        return CleanupCounts()
+
+    monkeypatch.setattr("app.core.session_lifecycle.session_state.clear_context", clear_context)
+    coordinator = SessionLifecycleCoordinator(
+        repo,
+        ActiveStreamRegistry(),
+        profile_store_factory=lambda: ProfileStoreStub(0),
+    )
+    sweep = await coordinator.run_session_context_sweep(
+        idle_timeout_s=600,
+        lease_s=30,
+        batch_size=1,
+    )
+    assert sweep.completed == 1
+    assert (await repo.get_context("S1")).state == "idle_expired"
+
+
+async def test_phase_a_cancellation_abandons_idle_claim_and_preserves_cancellation(
+    clock: Clock,
+) -> None:
+    repo = SessionContextRepository(clock=clock)
+    await repo.touch(BuyerSessionInput("cancel-session", "T1", "member", "7"))
+    clock.advance(601)
+    [claim] = await repo.claim_expired_contexts(600, 30, 1)
+
+    class CancelProfile:
+        async def get_session_ctx_snapshot(self, key: str):
+            raise asyncio.CancelledError
+
+    coordinator = SessionLifecycleCoordinator(
+        repo,
+        ActiveStreamRegistry(),
+        profile_store_factory=CancelProfile,
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await coordinator.process_idle_transient(claim)
+
+    assert (await repo.get_context("cancel-session")).state == "active"
+    with pytest.raises(SessionClaimConflict):
+        await repo.get_finalization(claim.finalization_id)
+    [replacement] = await repo.claim_expired_contexts(600, 30, 1)
+    assert replacement.finalization_id != claim.finalization_id
+
+
+async def test_terminal_snapshot_failure_keeps_journal_for_lease_recovery(
+    monkeypatch, clock: Clock
+) -> None:
+    repo = SessionContextRepository(clock=clock)
+    await repo.touch(BuyerSessionInput("S1", "T1", "member", "7"))
+    terminal = await repo.begin_terminal(7, "S1")
+    assert terminal.claim is not None
+
+    class BrokenProfile:
+        async def get_session_ctx_snapshot(self, key: str):
+            raise RuntimeError("snapshot unavailable")
+
+    failed = await SessionLifecycleCoordinator(
+        repo,
+        ActiveStreamRegistry(),
+        profile_store_factory=BrokenProfile,
+    ).process_terminal_transient(terminal.claim)
+    assert failed.status == "retryable"
+    pending = await repo.get_finalization(terminal.claim.finalization_id)
+    assert pending.transient_status == "pending"
+    assert pending.watermark_status == "pending"
+
+    async def clear_context(context_id: str, thread_ids: list[str]):
+        from app.agents.buyer.session_state import CleanupCounts
+
+        return CleanupCounts()
+
+    monkeypatch.setattr("app.core.session_lifecycle.session_state.clear_context", clear_context)
+    clock.advance(901)
+    recovered = await SessionLifecycleCoordinator(
+        repo,
+        ActiveStreamRegistry(),
+        profile_store_factory=lambda: ProfileStoreStub(0),
+    ).run_session_context_sweep(idle_timeout_s=600, lease_s=30, batch_size=1)
+    assert recovered.recovered == 1
+    assert recovered.completed == 1
+    assert (await repo.get_context("S1")).state == "terminal"
 
 
 async def test_partial_delete_is_retryable_and_lease_recovery_finishes(
@@ -144,6 +320,91 @@ async def test_partial_delete_is_retryable_and_lease_recovery_finishes(
     assert sweep.completed == 1
     assert calls == 2
     assert (await repo.get_context("S1")).state == "idle_expired"
+
+
+async def test_actual_partial_idle_delete_recovers_all_namespaces_and_preserves_other_context(
+    clock: Clock,
+) -> None:
+    repo = SessionContextRepository(clock=clock)
+    target = await repo.touch(BuyerSessionInput("target", "T1", "guest", "G1"))
+    other = await repo.touch(BuyerSessionInput("other", "T1", "guest", "G2"))
+    target_key = context_thread_key(target.context_id, "T1")
+    other_key = context_thread_key(other.context_id, "T1")
+    store = InMemoryStore()
+    await _seed_v2_state(store, target_key, "target")
+    await _seed_v2_state(store, other_key, "other")
+    fault_store = FailAfterFirstDeleteStore(store)
+    pg_store.set_store(fault_store)
+    clock.advance(601)
+    claims = await repo.claim_expired_contexts(600, 30, 10)
+    claim = next(item for item in claims if item.session_id == "target")
+
+    failed = await SessionLifecycleCoordinator(
+        repo,
+        ActiveStreamRegistry(),
+    ).process_idle_transient(claim)
+
+    assert failed.status == "retryable"
+    assert fault_store.delete_calls == 2
+    assert await store.aget(("buyer_thread_filters_v2", target_key), "filters") is None
+    assert await store.aget(("buyer_cart_v2", target_key), "pending") is not None
+    assert (await repo.get_context("target")).state == "idle_finalizing"
+    assert (await repo.get_finalization(claim.finalization_id)).transient_status == "pending"
+    await _assert_v2_preserved(store, other_key)
+
+    pg_store.set_store(store)
+    clock.advance(31)
+    result = await SessionLifecycleCoordinator(
+        repo,
+        ActiveStreamRegistry(),
+    ).run_session_context_sweep(idle_timeout_s=600, lease_s=30, batch_size=1)
+
+    assert result.completed == 1
+    await _assert_v2_deleted(store, target_key)
+    await _assert_v2_preserved(store, other_key)
+
+
+async def test_actual_partial_terminal_delete_recovers_and_keeps_terminal(
+    clock: Clock,
+) -> None:
+    repo = SessionContextRepository(clock=clock)
+    target = await repo.touch(BuyerSessionInput("target", "T1", "member", "7"))
+    other = await repo.touch(BuyerSessionInput("other", "T1", "guest", "G2"))
+    terminal = await repo.begin_terminal(7, "target")
+    assert terminal.claim is not None
+    target_key = context_thread_key(target.context_id, "T1")
+    other_key = context_thread_key(other.context_id, "T1")
+    store = InMemoryStore()
+    await _seed_v2_state(store, target_key, "target")
+    await _seed_v2_state(store, other_key, "other")
+    fault_store = FailAfterFirstDeleteStore(store)
+    pg_store.set_store(fault_store)
+    profile = ProfileStoreStub(0)
+
+    failed = await SessionLifecycleCoordinator(
+        repo,
+        ActiveStreamRegistry(),
+        profile_store_factory=lambda: profile,
+    ).process_terminal_transient(terminal.claim)
+
+    assert failed.status == "retryable"
+    assert await store.aget(("buyer_thread_filters_v2", target_key), "filters") is None
+    assert await store.aget(("buyer_cart_v2", target_key), "pending") is not None
+    assert (await repo.get_context("target")).state == "terminal"
+    await _assert_v2_preserved(store, other_key)
+
+    pg_store.set_store(store)
+    clock.advance(901)
+    result = await SessionLifecycleCoordinator(
+        repo,
+        ActiveStreamRegistry(),
+        profile_store_factory=lambda: profile,
+    ).run_session_context_sweep(idle_timeout_s=600, lease_s=30, batch_size=1)
+
+    assert result.completed == 1
+    assert (await repo.get_context("target")).state == "terminal"
+    await _assert_v2_deleted(store, target_key)
+    await _assert_v2_preserved(store, other_key)
 
 
 async def test_cancellation_during_delete_leaves_committed_recovery_journal(
@@ -278,3 +539,150 @@ async def test_invalid_recovery_row_does_not_consume_batch_capacity(monkeypatch)
     assert result.recovered == 1
     assert result.invalid_recovery == 1
     assert result.completed == 1
+
+
+async def test_sweep_bounds_examined_invalid_rows_even_when_repository_never_ends(
+    monkeypatch,
+) -> None:
+    from app.core.session_context import FinalizationClaim
+    from app.core.session_lifecycle import FinalizationOutcome
+
+    class EndlessInvalidRepo:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def claim_recoverable_finalizations(self, lease_s: float, batch_size: int):
+            self.calls += 1
+            suffix = str(self.calls)
+            return [
+                FinalizationClaim(
+                    suffix,
+                    "C" + suffix,
+                    "S" + suffix,
+                    "guest",
+                    "G" + suffix,
+                    0,
+                    "idle",
+                    "token-" + suffix,
+                    1_000.0,
+                )
+            ]
+
+        async def claim_expired_contexts(
+            self, idle_timeout_s: float, lease_s: float, batch_size: int
+        ):
+            raise AssertionError("examined bound must stop before fresh claims")
+
+    repo = EndlessInvalidRepo()
+    coordinator = SessionLifecycleCoordinator(repo, ActiveStreamRegistry())
+
+    async def invalid(claim):
+        return FinalizationOutcome("skipped", skip_reason="invalid")
+
+    monkeypatch.setattr(coordinator, "process_transient_claim", invalid)
+
+    result = await coordinator.run_session_context_sweep(
+        idle_timeout_s=600,
+        lease_s=30,
+        batch_size=1,
+        max_examined=3,
+    )
+
+    assert repo.calls == 3
+    assert result.examined == 3
+    assert result.examined_limit_reached is True
+    assert result.claimed == 0
+    assert result.invalid_recovery == 3
+
+
+async def test_phase_failure_log_uses_session_fingerprint(caplog, clock: Clock) -> None:
+    session_id = "raw-secret-session"
+    repo = SessionContextRepository(clock=clock)
+    await repo.touch(BuyerSessionInput(session_id, "T1", "member", "7"))
+    clock.advance(601)
+    [claim] = await repo.claim_expired_contexts(600, 30, 1)
+
+    class BrokenProfile:
+        async def get_session_ctx_snapshot(self, key: str):
+            raise RuntimeError("snapshot unavailable")
+
+    with caplog.at_level("WARNING"):
+        await SessionLifecycleCoordinator(
+            repo,
+            ActiveStreamRegistry(),
+            profile_store_factory=BrokenProfile,
+        ).process_idle_transient(claim)
+
+    assert session_id not in caplog.text
+    assert message_fingerprint(session_id)[1] in caplog.text
+
+
+async def test_idle_completion_records_evidence_and_state_before_thread_delete(
+    monkeypatch,
+) -> None:
+    operations: list[str] = []
+
+    class Cursor:
+        def __init__(self, row) -> None:
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+    class Connection:
+        async def execute(self, sql: str, params):
+            normalized = " ".join(sql.split())
+            operations.append(normalized)
+            return Cursor(None if "DELETE FROM chat_session_threads" in normalized else ("ok",))
+
+    uow = SessionContextUnitOfWork(SessionContextRepository(), "S1")
+    uow.conn = Connection()
+    claim = FinalizationClaim("F1", "C1", "S1", "guest", "G1", 0, "idle", "token", 1_000.0)
+
+    async def validated(candidate: FinalizationClaim) -> SessionContext:
+        return SessionContext("C1", "S1", "guest", "G1", 0, "idle_finalizing")
+
+    monkeypatch.setattr(uow, "validate_idle_delete", validated)
+
+    await uow.complete_idle_delete(claim)
+
+    assert operations[0].startswith("UPDATE chat_session_finalizations")
+    assert operations[1].startswith("UPDATE chat_session_contexts")
+    assert operations[2].startswith("DELETE FROM chat_session_threads")
+
+
+async def test_idle_completion_does_not_delete_threads_when_state_transition_loses_cas(
+    monkeypatch,
+) -> None:
+    operations: list[str] = []
+
+    class Cursor:
+        def __init__(self, row) -> None:
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+    class Connection:
+        async def execute(self, sql: str, params):
+            normalized = " ".join(sql.split())
+            operations.append(normalized)
+            if normalized.startswith("UPDATE chat_session_contexts"):
+                return Cursor(None)
+            return Cursor(("ok",))
+
+    uow = SessionContextUnitOfWork(SessionContextRepository(), "S1")
+    uow.conn = Connection()
+    claim = FinalizationClaim("F1", "C1", "S1", "guest", "G1", 0, "idle", "token", 1_000.0)
+
+    async def validated(candidate: FinalizationClaim) -> SessionContext:
+        return SessionContext("C1", "S1", "guest", "G1", 0, "idle_finalizing")
+
+    monkeypatch.setattr(uow, "validate_idle_delete", validated)
+
+    with pytest.raises(SessionClaimConflict):
+        await uow.complete_idle_delete(claim)
+
+    assert all(
+        not operation.startswith("DELETE FROM chat_session_threads") for operation in operations
+    )

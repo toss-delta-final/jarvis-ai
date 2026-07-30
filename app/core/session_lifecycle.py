@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import uuid
@@ -59,6 +60,8 @@ class IdleSweepResult:
     skipped: int = 0
     superseded_skipped: int = 0
     invalid_recovery: int = 0
+    examined: int = 0
+    examined_limit_reached: bool = False
 
 
 @dataclass(frozen=True)
@@ -180,6 +183,8 @@ class SessionLifecycleCoordinator:
         registry = self._registry or get_registry()
         fence = registry.acquire_fence(claim.owner_id, claim.session_id)
         if fence is None:
+            if idle:
+                await self._abandon_idle_prephase(claim)
             return FinalizationOutcome("skipped", skip_reason="active")
         try:
             async with repository.lock_session(claim.session_id) as uow:
@@ -190,19 +195,31 @@ class SessionLifecycleCoordinator:
                     if idle
                     else await _watermark_prepared_in_uow(repository, uow.conn, claim)
                 )
-                if idle and not already_prepared:
-                    context = await uow.prepare_idle_finalizing(claim)
                 if not idle and context.state != "terminal":
                     raise SessionClaimConflict
                 if not already_prepared:
-                    await self._capture_watermark(uow, claim, context)
+                    watermark = await self._read_profile_watermark(context)
+                    if idle:
+                        context = await uow.prepare_idle_finalizing_with_watermark(
+                            claim,
+                            watermark,
+                        )
+                    elif watermark is not None:
+                        await uow.capture_profile_watermark(claim, watermark)
             return None
+        except asyncio.CancelledError:
+            if idle:
+                await self._abandon_idle_prephase_shielded(claim)
+            raise
         except SessionClaimConflict:
             return await _classify_conflict(repository, claim)
         except Exception:
+            if idle:
+                await self._abandon_idle_prephase(claim)
+            session_fp = message_fingerprint(claim.session_id)[1]
             logger.warning(
-                "session transient Phase A 실패 session_id=%s finalization_id=%s",
-                claim.session_id,
+                "session transient Phase A 실패 session_fp=%s finalization_id=%s",
+                session_fp,
                 claim.finalization_id,
                 exc_info=True,
             )
@@ -210,11 +227,9 @@ class SessionLifecycleCoordinator:
         finally:
             registry.release_fence(fence)
 
-    async def _capture_watermark(
-        self, uow, claim: FinalizationClaim, context: SessionContext
-    ) -> None:  # noqa: ANN001
+    async def _read_profile_watermark(self, context: SessionContext) -> int | None:
         if context.owner_type == "guest":
-            return
+            return None
         factory = self._profile_store_factory or get_profile_store
         profile_store = factory()
         if inspect.isawaitable(profile_store):
@@ -222,7 +237,41 @@ class SessionLifecycleCoordinator:
         _, watermark = await profile_store.get_session_ctx_snapshot(
             conversation_key(context.owner_id, context.session_id)
         )
-        await uow.capture_profile_watermark(claim, watermark)
+        return watermark
+
+    async def _abandon_idle_prephase(self, claim: FinalizationClaim) -> bool:
+        repository = self._repository or session_context._default_repository
+        try:
+            async with repository.lock_session(claim.session_id) as uow:
+                abandoned = await uow.abandon_idle_prephase(claim)
+        except Exception:
+            abandoned = False
+            logger.warning(
+                "idle prephase abandon 실패 session_fp=%s finalization_id=%s",
+                message_fingerprint(claim.session_id)[1],
+                claim.finalization_id,
+                exc_info=True,
+            )
+        else:
+            if not abandoned:
+                logger.warning(
+                    "idle prephase abandon 거부 session_fp=%s finalization_id=%s",
+                    message_fingerprint(claim.session_id)[1],
+                    claim.finalization_id,
+                )
+        return abandoned
+
+    async def _abandon_idle_prephase_shielded(self, claim: FinalizationClaim) -> None:
+        abandon_task = asyncio.create_task(self._abandon_idle_prephase(claim))
+        try:
+            await asyncio.shield(abandon_task)
+        except asyncio.CancelledError:
+            try:
+                await abandon_task
+            except BaseException:
+                # _abandon_idle_prephase already records ordinary failures. Preserve
+                # the original caller cancellation even if cleanup itself is cancelled.
+                pass
 
     async def _delete_transient(
         self,
@@ -254,9 +303,10 @@ class SessionLifecycleCoordinator:
         except Exception:
             # Phase A is already committed before this function starts.  Keeping the
             # finalization pending and the context gated is the crash-recovery journal.
+            session_fp = message_fingerprint(claim.session_id)[1]
             logger.warning(
-                "session transient Phase B 실패 session_id=%s finalization_id=%s",
-                claim.session_id,
+                "session transient Phase B 실패 session_fp=%s finalization_id=%s",
+                session_fp,
                 claim.finalization_id,
                 exc_info=True,
             )
@@ -270,6 +320,7 @@ class SessionLifecycleCoordinator:
         idle_timeout_s: float | None = None,
         lease_s: float | None = None,
         batch_size: int | None = None,
+        max_examined: int | None = None,
     ) -> IdleSweepResult:
         """Recover committed Phase B work first, then claim only remaining idle capacity."""
         repository = self._repository or session_context._default_repository
@@ -277,15 +328,19 @@ class SessionLifecycleCoordinator:
         timeout = idle_timeout_s or settings.profile_session_idle_timeout_s
         lease = lease_s or settings.profile_idle_claim_ttl_s
         capacity = batch_size or settings.profile_idle_sweep_batch_size
+        examined_limit = max_examined if max_examined is not None else capacity * 4
+        if examined_limit <= 0:
+            raise ValueError("max_examined must be positive")
 
         outcomes: list[tuple[FinalizationClaim, FinalizationOutcome]] = []
         recovered_ids: set[str] = set()
         attempted_recovery_ids: set[str] = set()
         productive = 0
-        while productive < capacity:
+        examined = 0
+        while productive < capacity and examined < examined_limit:
             recovery = await repository.claim_recoverable_finalizations(
                 lease,
-                capacity - productive,
+                min(capacity - productive, examined_limit - examined),
             )
             recovery = [
                 claim for claim in recovery if claim.finalization_id not in attempted_recovery_ids
@@ -294,6 +349,9 @@ class SessionLifecycleCoordinator:
                 break
             attempted_recovery_ids.update(claim.finalization_id for claim in recovery)
             for claim in recovery:
+                if examined == examined_limit:
+                    break
+                examined += 1
                 outcome = await self.process_transient_claim(claim)
                 outcomes.append((claim, outcome))
                 if outcome.skip_reason not in ("superseded", "invalid"):
@@ -303,17 +361,20 @@ class SessionLifecycleCoordinator:
                         break
 
         attempted_fresh_ids: set[str] = set()
-        while productive < capacity:
+        while productive < capacity and examined < examined_limit:
             fresh = await repository.claim_expired_contexts(
                 timeout,
                 lease,
-                capacity - productive,
+                min(capacity - productive, examined_limit - examined),
             )
             fresh = [claim for claim in fresh if claim.finalization_id not in attempted_fresh_ids]
             if not fresh:
                 break
             attempted_fresh_ids.update(claim.finalization_id for claim in fresh)
             for claim in fresh:
+                if examined == examined_limit:
+                    break
+                examined += 1
                 outcome = await self.process_transient_claim(claim)
                 outcomes.append((claim, outcome))
                 if outcome.skip_reason not in ("superseded", "invalid"):
@@ -337,6 +398,8 @@ class SessionLifecycleCoordinator:
             skipped=skipped,
             superseded_skipped=superseded,
             invalid_recovery=invalid_recovery,
+            examined=examined,
+            examined_limit_reached=examined == examined_limit and productive < capacity,
         )
 
 
