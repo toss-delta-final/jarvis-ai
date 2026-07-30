@@ -22,6 +22,7 @@ from fastapi.responses import StreamingResponse
 from app.core.auth import Identity
 from app.core.config import get_settings
 from app.core.conversation import TurnStatus
+from app.core.errors import new_request_id
 from app.core.logging import get_logger
 from app.core.observability import RequestObservation
 from app.schemas.chat import DoneData, ErrorData
@@ -85,13 +86,24 @@ def _done_stop_frame() -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
-def _error_frame(code: str, message: str) -> str:
+def _error_frame(
+    code: str,
+    message: str,
+    *,
+    request_id: str,
+    retryable: bool,
+) -> str:
     """스트림 시작 후 오류의 in-stream `error` 프레임 (api-spec §3.1, §2.9 c)."""
     import json
 
     payload = {
         "type": "error",
-        "data": ErrorData(code=code, message=message).model_dump(by_alias=True),
+        "data": ErrorData(
+            code=code,
+            message=message,
+            request_id=request_id,
+            retryable=retryable,
+        ).model_dump(by_alias=True),
     }
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
@@ -147,6 +159,7 @@ async def open_stream(
     settings = get_settings()
     registry = get_registry()
     loop = asyncio.get_event_loop()
+    stream_request_id = observer.request_id if observer is not None else new_request_id()
 
     if not registry.acquire(session_id):
         if observer is not None:
@@ -305,7 +318,12 @@ async def open_stream(
                     logger.exception("in-stream error session=%s", session_id)
                     stream_status = TurnStatus.FAILED
                     error_type = "INTERNAL"
-                    yield _error_frame("INTERNAL", "처리 중 오류가 발생했습니다")
+                    yield _error_frame(
+                        "INTERNAL",
+                        "처리 중 오류가 발생했습니다",
+                        request_id=stream_request_id,
+                        retryable=True,
+                    )
                     break
                 if observer is not None:
                     observer.record_frame(item)  # 부분 텍스트 누적(§6.3 a)

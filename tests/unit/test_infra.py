@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import types
 
 import jwt
@@ -144,8 +145,14 @@ async def test_in_stream_error_emits_error_event() -> None:
     parts = [c if isinstance(c, str) else c.decode() async for c in resp.body_iterator]
     text = "".join(parts)
     assert '"token"' in text
-    assert '"error"' in text
-    assert '"INTERNAL"' in text  # 연결만 끊기지 않고 error 프레임으로 종료
+    error = next(
+        json.loads(part.removeprefix("data: "))["data"]
+        for part in parts
+        if '"type": "error"' in part
+    )
+    assert error["code"] == "INTERNAL"  # 연결만 끊기지 않고 error 프레임으로 종료
+    assert error["requestId"]
+    assert error["retryable"] is True
     assert not get_registry().is_active("instream-err")
 
 

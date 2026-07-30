@@ -53,7 +53,7 @@ from app.api.deps import require_seller
 from app.core.auth import Identity
 from app.core.config import get_settings
 from app.core.conversation import get_conversation_store
-from app.core.errors import get_request_id
+from app.core.errors import get_request_id, new_request_id
 from app.core.llm import LLMNotConfigured
 from app.core.observability import emit_rejection, start_observation
 from app.core.stream import open_stream, registry_key
@@ -96,7 +96,31 @@ def _token(text: str) -> str:
     return _visible_token(visible)
 
 
-def _llm_unavailable(*, lane: str, thread_id: str) -> str:
+def _resolve_request_id(request_id: str | None) -> str:
+    """직접 호출되는 하위 스트림에도 비어 있지 않은 상관관계 ID를 보장한다."""
+    return request_id or new_request_id()
+
+
+def _error(
+    code: str,
+    message: str,
+    *,
+    request_id: str,
+    retryable: bool,
+) -> str:
+    """판매자 스트림 오류를 공통 SSE 계약으로 직렬화한다."""
+    return _sse(
+        "error",
+        ErrorData(
+            code=code,
+            message=message,
+            request_id=request_id,
+            retryable=retryable,
+        ).model_dump(by_alias=True),
+    )
+
+
+def _llm_unavailable(*, lane: str, thread_id: str, request_id: str) -> str:
     """활성 provider 미구성을 비밀값 없는 오류 로그와 계약 이벤트로 변환한다."""
     logger.error(
         "판매자 LLM provider 미구성: provider=%s lane=%s thread=%s",
@@ -104,11 +128,11 @@ def _llm_unavailable(*, lane: str, thread_id: str) -> str:
         lane,
         thread_id,
     )
-    return _sse(
-        "error",
-        ErrorData(code="LLM_UNAVAILABLE", message="현재 AI 모델을 사용할 수 없습니다.").model_dump(
-            by_alias=True
-        ),
+    return _error(
+        "LLM_UNAVAILABLE",
+        "현재 AI 모델을 사용할 수 없습니다.",
+        request_id=request_id,
+        retryable=False,
     )
 
 
@@ -179,7 +203,12 @@ def _seller_context(identity: Identity) -> SellerContext:
     )
 
 
-async def _general_stream(request: SellerChatRequest, context: SellerContext) -> AsyncIterator[str]:
+async def _general_stream(
+    request: SellerChatRequest,
+    context: SellerContext,
+    *,
+    request_id: str | None = None,
+) -> AsyncIterator[str]:
     """general_agent astream → token/done (3-7 — SPEC §7 수명주기·degrade).
 
     - C1(REVIEW-SELLER-STAGE2): build_general_agent 는 **요청마다 재빌드** —
@@ -195,6 +224,7 @@ async def _general_stream(request: SellerChatRequest, context: SellerContext) ->
       기록이다(record_turn 불필요 — 이중 기록 금지). 재빌드(C1)여도 상태는
       checkpointer 에 있어 스레드는 이어진다.
     """
+    request_id = _resolve_request_id(request_id)
     # general 은 항상 대화(우측 패널 유지) — 첫 프레임에 레인을 알린다.
     yield _meta("general")
     refusal = check_scope(request.message)
@@ -225,21 +255,25 @@ async def _general_stream(request: SellerChatRequest, context: SellerContext) ->
             yield _visible_token(visible)
         yield _done("keep")
     except LLMNotConfigured:
-        yield _llm_unavailable(lane="general", thread_id=request.thread_id)
+        yield _llm_unavailable(
+            lane="general",
+            thread_id=request.thread_id,
+            request_id=request_id,
+        )
     except (TimeoutError, asyncio.TimeoutError):
-        yield _sse(
-            "error",
-            ErrorData(code="LLM_TIMEOUT", message="응답 생성이 지연되어 중단됐습니다.").model_dump(
-                by_alias=True
-            ),
+        yield _error(
+            "LLM_TIMEOUT",
+            "응답 생성이 지연되어 중단됐습니다.",
+            request_id=request_id,
+            retryable=True,
         )
     except Exception:
         logger.exception("판매자 general 스트림 실패 (thread=%s)", request.thread_id)
-        yield _sse(
-            "error",
-            ErrorData(code="INTERNAL", message="일시적인 오류가 발생했습니다.").model_dump(
-                by_alias=True
-            ),
+        yield _error(
+            "INTERNAL",
+            "일시적인 오류가 발생했습니다.",
+            request_id=request_id,
+            retryable=True,
         )
 
 
@@ -247,6 +281,8 @@ async def _analysis_stream(
     request: SellerChatRequest,
     context: SellerContext,
     recent_turns: list[seller_thread.Turn],
+    *,
+    request_id: str | None = None,
 ) -> AsyncIterator[str]:
     """분석 레인 (4-1b) — 파이프라인 emit(진행)을 progress 로, 최종 답변을 token 으로 중계.
 
@@ -259,6 +295,7 @@ async def _analysis_stream(
       error 로 종료(REVIEW-STAGE3 §5-2). error 종료는 패널 유지(done 없음).
     - 진행 문구는 파이프라인 내부 상수라 마스킹 불필요, 최종 text 는 mask_output 적용.
     """
+    request_id = _resolve_request_id(request_id)
     yield _meta("analysis")
     queue: asyncio.Queue[object] = asyncio.Queue()
 
@@ -286,25 +323,29 @@ async def _analysis_stream(
     try:
         result = await pipeline_task
     except LLMNotConfigured:
-        yield _llm_unavailable(lane="analysis", thread_id=request.thread_id)
+        yield _llm_unavailable(
+            lane="analysis",
+            thread_id=request.thread_id,
+            request_id=request_id,
+        )
         return
     except (TimeoutError, asyncio.TimeoutError):
         yield _token(_ANALYSIS_APOLOGY_TOKEN)
-        yield _sse(
-            "error",
-            ErrorData(code="LLM_TIMEOUT", message="분석 응답이 지연되어 중단됐습니다.").model_dump(
-                by_alias=True
-            ),
+        yield _error(
+            "LLM_TIMEOUT",
+            "분석 응답이 지연되어 중단됐습니다.",
+            request_id=request_id,
+            retryable=True,
         )
         return
     except Exception:
         logger.exception("분석 파이프라인 실패 (thread=%s)", request.thread_id)
         yield _token(_ANALYSIS_APOLOGY_TOKEN)
-        yield _sse(
-            "error",
-            ErrorData(code="INTERNAL", message="일시적인 오류가 발생했습니다.").model_dump(
-                by_alias=True
-            ),
+        yield _error(
+            "INTERNAL",
+            "일시적인 오류가 발생했습니다.",
+            request_id=request_id,
+            retryable=True,
         )
         return
     # 대화 스레드 기록(best-effort) — 되묻기 포함 최종 문안이 후속 발화의 맥락이 된다.
@@ -314,7 +355,12 @@ async def _analysis_stream(
     yield _done("replace" if result.kind == "report" else "keep")
 
 
-async def _product_stream(request: SellerChatRequest, context: SellerContext) -> AsyncIterator[str]:
+async def _product_stream(
+    request: SellerChatRequest,
+    context: SellerContext,
+    *,
+    request_id: str | None = None,
+) -> AsyncIterator[str]:
     """product 레인 (4-2 — draft 생성 + checkpoint 저장, 실행은 confirm 스트림).
 
     product_agent(2-7)로 DraftProposal 을 만들고 validate_draft(코드 선검증 —
@@ -325,6 +371,7 @@ async def _product_stream(request: SellerChatRequest, context: SellerContext) ->
     패널: draft 성립 시 우측에 diff 카드(replace), 되묻기·검증 불성립은 대화(keep).
     최종 문안(되묻기·초안 요약)은 대화 스레드에 기록(best-effort) — 후속 발화 맥락.
     """
+    request_id = _resolve_request_id(request_id)
     yield _meta("product")
     settings = get_settings()
     try:
@@ -337,23 +384,27 @@ async def _product_stream(request: SellerChatRequest, context: SellerContext) ->
         if not isinstance(proposal, DraftProposal):
             raise TypeError("product_agent 가 DraftProposal 을 반환하지 않았다")
     except LLMNotConfigured:
-        yield _llm_unavailable(lane="product", thread_id=request.thread_id)
+        yield _llm_unavailable(
+            lane="product",
+            thread_id=request.thread_id,
+            request_id=request_id,
+        )
         return
     except (TimeoutError, asyncio.TimeoutError):
-        yield _sse(
-            "error",
-            ErrorData(code="LLM_TIMEOUT", message="초안 생성이 지연되어 중단됐습니다.").model_dump(
-                by_alias=True
-            ),
+        yield _error(
+            "LLM_TIMEOUT",
+            "초안 생성이 지연되어 중단됐습니다.",
+            request_id=request_id,
+            retryable=True,
         )
         return
     except Exception:
         logger.exception("product draft 생성 실패 (thread=%s)", request.thread_id)
-        yield _sse(
-            "error",
-            ErrorData(code="INTERNAL", message="일시적인 오류가 발생했습니다.").model_dump(
-                by_alias=True
-            ),
+        yield _error(
+            "INTERNAL",
+            "일시적인 오류가 발생했습니다.",
+            request_id=request_id,
+            retryable=True,
         )
         return
 
@@ -380,11 +431,11 @@ async def _product_stream(request: SellerChatRequest, context: SellerContext) ->
         await start_draft(record)  # checkpoint 저장 + interrupt 대기(안전장치 ①)
     except Exception:
         logger.exception("draft checkpoint 저장 실패 (thread=%s)", request.thread_id)
-        yield _sse(
-            "error",
-            ErrorData(code="INTERNAL", message="일시적인 오류가 발생했습니다.").model_dump(
-                by_alias=True
-            ),
+        yield _error(
+            "INTERNAL",
+            "일시적인 오류가 발생했습니다.",
+            request_id=request_id,
+            retryable=True,
         )
         return
 
@@ -439,7 +490,11 @@ def _draft_event(record: DraftRecord) -> str:
 
 
 async def _apply_stream(
-    n: int, request: SellerChatRequest, context: SellerContext
+    n: int,
+    request: SellerChatRequest,
+    context: SellerContext,
+    *,
+    request_id: str | None = None,
 ) -> AsyncIterator[str]:
     """추천 적용 레인 (4-3 §6.3 — 입구 ①.5 코드 선판정 후 진입, LLM 0회).
 
@@ -448,6 +503,7 @@ async def _apply_stream(
     불성립(이력 없음·인덱스 불일치·적용 불가 유형·상품 미발견)은 되묻기 token.
     패널: draft 성립 시 diff 카드(replace), 불성립은 대화(keep) — product 레인과 동일.
     """
+    request_id = _resolve_request_id(request_id)
     yield _meta("apply")
     try:
         record, problem = await apply_recommendation(n, context)
@@ -456,20 +512,20 @@ async def _apply_stream(
             "죄송합니다. 상품 정보를 확인하지 못해 추천을 적용할 수 없었습니다. "
             "잠시 후 다시 시도해 주세요."
         )
-        yield _sse(
-            "error",
-            ErrorData(code="INTERNAL", message="상품 서버 통신에 실패했습니다.").model_dump(
-                by_alias=True
-            ),
+        yield _error(
+            "INTERNAL",
+            "상품 서버 통신에 실패했습니다.",
+            request_id=request_id,
+            retryable=True,
         )
         return
     except Exception:
         logger.exception("추천 적용 처리 실패 (thread=%s, n=%d)", request.thread_id, n)
-        yield _sse(
-            "error",
-            ErrorData(code="INTERNAL", message="일시적인 오류가 발생했습니다.").model_dump(
-                by_alias=True
-            ),
+        yield _error(
+            "INTERNAL",
+            "일시적인 오류가 발생했습니다.",
+            request_id=request_id,
+            retryable=True,
         )
         return
 
@@ -484,11 +540,11 @@ async def _apply_stream(
         await start_draft(record)  # 4-2 재사용 — draftId↔checkpoint 바인딩
     except Exception:
         logger.exception("추천 적용 draft 저장 실패 (thread=%s)", request.thread_id)
-        yield _sse(
-            "error",
-            ErrorData(code="INTERNAL", message="일시적인 오류가 발생했습니다.").model_dump(
-                by_alias=True
-            ),
+        yield _error(
+            "INTERNAL",
+            "일시적인 오류가 발생했습니다.",
+            request_id=request_id,
+            retryable=True,
         )
         return
 
@@ -499,7 +555,12 @@ async def _apply_stream(
     yield _done("replace")  # diff 카드 = 우측 패널 교체
 
 
-async def _confirm_stream(request: SellerChatRequest, context: SellerContext) -> AsyncIterator[str]:
+async def _confirm_stream(
+    request: SellerChatRequest,
+    context: SellerContext,
+    *,
+    request_id: str | None = None,
+) -> AsyncIterator[str]:
     """confirm 레인 (4-2 스트림 2) — 코드 검사 후 resume 실행, LLM 0회.
 
     hitl.confirm_draft 가 존재→소유→멱등→TTL 검사를 통과한 경우에만 그래프를
@@ -509,6 +570,7 @@ async def _confirm_stream(request: SellerChatRequest, context: SellerContext) ->
     결과 문안은 대화 스레드에 기록 — confirm 은 message 가 빈 계약(발화≠동의)이라
     사용자 턴은 플레이스홀더("(초안 승인)")로 남긴다.
     """
+    request_id = _resolve_request_id(request_id)
     draft_id = request.draft_id or ""
     yield _meta("confirm")
     try:
@@ -517,20 +579,20 @@ async def _confirm_stream(request: SellerChatRequest, context: SellerContext) ->
         )
     except SpringUnavailableError:
         yield _token(_CONFIRM_SPRING_DOWN_TOKEN)
-        yield _sse(
-            "error",
-            ErrorData(code="INTERNAL", message="상품 서버 통신에 실패했습니다.").model_dump(
-                by_alias=True
-            ),
+        yield _error(
+            "INTERNAL",
+            "상품 서버 통신에 실패했습니다.",
+            request_id=request_id,
+            retryable=True,
         )
         return
     except Exception:
         logger.exception("confirm 처리 실패 (draftId=%s)", draft_id)
-        yield _sse(
-            "error",
-            ErrorData(code="INTERNAL", message="일시적인 오류가 발생했습니다.").model_dump(
-                by_alias=True
-            ),
+        yield _error(
+            "INTERNAL",
+            "일시적인 오류가 발생했습니다.",
+            request_id=request_id,
+            retryable=True,
         )
         return
     await seller_thread.record_turn(context, request.thread_id, "(초안 승인)", outcome.text)
@@ -539,8 +601,14 @@ async def _confirm_stream(request: SellerChatRequest, context: SellerContext) ->
     yield _done("refresh" if outcome.status == "executed" else "keep")
 
 
-async def _seller_stream(request: SellerChatRequest, identity: Identity) -> AsyncIterator[str]:
+async def _seller_stream(
+    request: SellerChatRequest,
+    identity: Identity,
+    *,
+    request_id: str | None = None,
+) -> AsyncIterator[str]:
     """판매자 챗 통합 스트림 (4-1b) — 입구 판정 ①②③ 후 3분기 위임."""
+    request_id = _resolve_request_id(request_id)
     # ⓪ 신원 숫자 캐스팅 — 전 레인 공통(§2.6 숫자 계약). 숫자가 아닌 클레임은
     # 토큰 발급 결함이므로 fail-closed 로 봉투 종료한다(레인 진입 전 차단).
     try:
@@ -551,25 +619,30 @@ async def _seller_stream(request: SellerChatRequest, identity: Identity) -> Asyn
             identity.seller_id,
             identity.brand_id,
         )
-        yield _sse(
-            "error",
-            ErrorData(code="INTERNAL", message="일시적인 오류가 발생했습니다.").model_dump(
-                by_alias=True
-            ),
+        yield _error(
+            "INTERNAL",
+            "일시적인 오류가 발생했습니다.",
+            request_id=request_id,
+            retryable=True,
         )
         return
 
     # ① confirm 필드 선판정 (A-2 최상위 구조화 필드, LLM 0회) → HITL 실행 레인(4-2).
     # action=="confirm" 이면 draftId 는 스키마 validator 가 보장한다(발화 ≠ 동의 [HARD]).
     if request.action == "confirm":
-        async for line in _confirm_stream(request, context):
+        async for line in _confirm_stream(request, context, request_id=request_id):
             yield line
         return
 
     # ①.5 추천 적용 코드 선판정 ("N번 적용해줘" 정형 발화, LLM 0회) — 4-3 §6.3.
     apply_n = parse_apply_message(request.message)
     if apply_n is not None:
-        async for line in _apply_stream(apply_n, request, context):
+        async for line in _apply_stream(
+            apply_n,
+            request,
+            context,
+            request_id=request_id,
+        ):
             yield line
         return
 
@@ -590,7 +663,11 @@ async def _seller_stream(request: SellerChatRequest, identity: Identity) -> Asyn
         decision = await route_question(request.message, context, recent_turns=recent_turns)
     except LLMNotConfigured:
         yield _meta("general")
-        yield _llm_unavailable(lane="routing", thread_id=request.thread_id)
+        yield _llm_unavailable(
+            lane="routing",
+            thread_id=request.thread_id,
+            request_id=request_id,
+        )
         return
     logger.info(
         "판매자 라우팅: %s (confidence=%.2f, thread=%s) — %s",
@@ -601,13 +678,18 @@ async def _seller_stream(request: SellerChatRequest, identity: Identity) -> Asyn
     )
 
     if decision.category == "analysis":
-        async for line in _analysis_stream(request, context, recent_turns):
+        async for line in _analysis_stream(
+            request,
+            context,
+            recent_turns,
+            request_id=request_id,
+        ):
             yield line
     elif decision.category == "product":
-        async for line in _product_stream(request, context):
+        async for line in _product_stream(request, context, request_id=request_id):
             yield line
     else:
-        async for line in _general_stream(request, context):
+        async for line in _general_stream(request, context, request_id=request_id):
             yield line
 
 
@@ -646,6 +728,6 @@ async def seller_chat(
     return await open_stream(
         http_request,
         registry_key(identity, request.session_id),
-        lambda: _seller_stream(request, identity),
+        lambda: _seller_stream(request, identity, request_id=request_id),
         observer=observation,
     )

@@ -3,7 +3,7 @@
 decompose 산출(RouteDecision) 이후: conditions → search(Spring 위임) → rerank(Sonnet) →
 근거 token → push(I-21) → products.ready(경로 B) → done.
 degrade(§7): SEARCH_FAILED(error·종료) / rerank 실패→검색순서 폴백 / push 실패→products.ready 스킵.
-SSE 는 상품 카드를 싣지 않는다(경로 B) — products.ready 는 {sessionId, listId} 상관키만.
+SSE 는 상품 카드를 싣지 않는다(경로 B) — products.ready 는 {sessionId, listIds} 상관키만.
 """
 
 from __future__ import annotations
@@ -107,6 +107,7 @@ async def stream_recommendation(
     cart_store=None,
     thread_key: str | None = None,
     observer=None,
+    request_id: str,
 ) -> AsyncIterator[str]:
     """추천 서브그래프 스트림. 프레임(SSE str)을 순서대로 산출한다."""
     # [#51] keyword 드롭 판단은 **한 곳에서** 계산해 칩 표시(아래)와 leg 검색(_leg)이 같은 flag 를
@@ -228,9 +229,12 @@ async def stream_recommendation(
     if search_result is None:  # 검색 실패 → SEARCH_FAILED(종료)
         yield sse(
             "error",
-            ErrorData(code="SEARCH_FAILED", message="상품 검색에 실패했어요.").model_dump(
-                by_alias=True
-            ),
+            ErrorData(
+                code="SEARCH_FAILED",
+                message="상품 검색에 실패했어요.",
+                request_id=request_id,
+                retryable=True,
+            ).model_dump(by_alias=True),
         )
         return
 
@@ -379,7 +383,7 @@ async def stream_recommendation(
     if pushed:
         yield sse(
             "products.ready",
-            ProductsReadyData(session_id=request.session_id, list_id=list_id).model_dump(
+            ProductsReadyData(session_id=request.session_id, list_ids=[list_id]).model_dump(
                 by_alias=True
             ),
         )

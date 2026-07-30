@@ -1,7 +1,7 @@
 """구매자 추천 그래프 (이슈 #2) — 파이프라인·degrade·fallback·멀티턴·경로 B 회귀.
 
 run_buyer_turn 을 fake LLM/검색/push 로 직접 구동한다(라이브 Anthropic·Spring 불필요).
-SSE 는 상품 카드를 싣지 않는다(경로 B) — products.ready 는 {sessionId, listId} 만.
+SSE 는 상품 카드를 싣지 않는다(경로 B) — products.ready 는 {sessionId, listIds} 만.
 """
 
 from __future__ import annotations
@@ -115,8 +115,8 @@ async def test_products_ready_carries_no_cards() -> None:
         )
     )
     ready = next(e for e in events if e["type"] == "products.ready")["data"]
-    assert set(ready.keys()) == {"sessionId", "listId"}
-    assert ready["listId"]
+    assert set(ready.keys()) == {"sessionId", "listIds"}
+    assert len(ready["listIds"]) == 1
     for ev in events:
         for banned in ("price", "rationale", "items", "productId", "name"):
             assert banned not in ev["data"]

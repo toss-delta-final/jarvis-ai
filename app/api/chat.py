@@ -2,7 +2,7 @@
 
 buyer 그래프(SPEC-RECOMMEND-001)를 open_stream 으로 감싸 스트리밍한다. SSE 이벤트명·필드는
 api-spec §3.1(camelCase)과 일치하며, 상품 카드는 싣지 않는다(경로 B) —
-products.ready 는 {sessionId, listId} 상관키만 나른다.
+products.ready 는 {sessionId, listIds} 상관키만 나른다.
 
 스트림 수명주기(§2.9 동시 스트림 409·취소·전체/first-token 타임아웃)는 open_stream 이,
 레이트 리밋(§2.8)·오류 봉투(§2.5)는 app.main 미들웨어·핸들러가 담당한다. 대화 저장·구조화
@@ -56,6 +56,11 @@ async def chat(
     return await open_stream(
         http_request,
         registry_key(identity, request.session_id),
-        lambda: run_buyer_turn(request, identity, observer=observation),
+        lambda: run_buyer_turn(
+            request,
+            identity,
+            observer=observation,
+            request_id=request_id,
+        ),
         observer=observation,
     )

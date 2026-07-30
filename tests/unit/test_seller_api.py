@@ -251,6 +251,8 @@ def test_stream_model_not_configured_maps_to_llm_unavailable(
 
     assert [event["type"] for event in events] == ["meta", "error"]
     assert events[-1]["data"]["code"] == "LLM_UNAVAILABLE"
+    assert events[-1]["data"]["requestId"]
+    assert events[-1]["data"]["retryable"] is False
     assert "provider=openai lane=general thread=t-1" in caplog.text
     assert "openai key missing" not in caplog.text
 
@@ -266,6 +268,8 @@ def test_stream_error_event_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     assert events[1]["type"] == "token"
     assert events[-1]["type"] == "error"
     assert events[-1]["data"]["code"] == "INTERNAL"
+    assert events[-1]["data"]["requestId"]
+    assert events[-1]["data"]["retryable"] is True
 
 
 # ── 4-1b: _seller_stream 3분기 디스패치 ──────────────────────────────────────
@@ -806,6 +810,8 @@ def test_route_model_not_configured_emits_llm_unavailable(
     assert [event["type"] for event in events] == ["meta", "error"]
     assert events[0]["data"]["lane"] == "general"
     assert events[1]["data"]["code"] == "LLM_UNAVAILABLE"
+    assert events[1]["data"]["requestId"]
+    assert events[1]["data"]["retryable"] is False
     assert "provider=openai lane=routing thread=t-1" in caplog.text
     assert "openai key missing" not in caplog.text
 

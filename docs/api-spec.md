@@ -734,7 +734,7 @@ FE/BE 문서에 없으나 MVP에 필요한 아래 3종은 **모두 구매자 SSE
 [1] AI: rerank 완료 → listId 생성 → 최종 id 목록 push (AI → Spring, I-21 §4.2)
         POST {SPRING_BASE_URL}/internal/recommendations { sessionId, listId, productIds:[Top5 숫자] }
 [2] Spring: productIds를 Redis에 listId 키로 TTL 저장 + 표시 필드(price·imageUrl·reviewCount 등) enrich
-[3] AI: 콜백 성공 → SSE `products.ready`({ sessionId, listId }) emit (reason은 콜백에 포함돼 CH-5로 전달)
+[3] AI: 콜백 성공 → SSE `products.ready`({ sessionId, listIds:[listId] }) emit (reason은 콜백에 포함돼 CH-5로 전달)
 [4] FE: `products.ready` 수신 → 카드 GET (FE → Spring, CH-5 §4.3) → 우측 상품 패널 렌더
 ```
 
@@ -905,7 +905,7 @@ X-Internal-Token: {서비스 토큰}   ← internal 그룹, 3s
 - **[변경 07/17] payload = id 배열만** — 구 §4.2 `groups[{title,category,items[{productId,rank,reason}]}]` 구조는 **폐기**. 묶음 제목·순위·근거는 콜백에 싣지 않는다.
 - **`listId`는 FastAPI 생성** — 구 "Spring이 listId 발급" 가정 폐기. **TTL = 10분(config, 세션 TTL 이하) 제안** — FE가 products.ready 직후 CH-5 조회하므로 짧아도 됨, 🔴 확정.
 - **[확정 v0.15.15] `reason`은 이 콜백에 포함**(🟢, BE 구현 2026-07-18) — `reasons[{productId, reason}]`를 Spring이 Redis 저장 → **CH-5 카드에 echo**(§4.3)해 FE에 전달. 구 BE 07/17 제안(reason=SSE·콜백 불포함)은 폐기 — SSE(`products.ready`)는 상관키만 유지, 경로 B 일관·FE join 불필요. AI→Spring 전송분은 jarvis-ai 이슈 #61에서 구현.
-- **규약**: FastAPI는 이 콜백이 **성공한 뒤에만** SSE `products.ready`({sessionId, listId})를 발행한다 — 콜백 실패 시 미발행(FE가 빈 목록 조회 방지, §3.3).
+- **규약**: FastAPI는 이 콜백이 **성공한 뒤에만** SSE `products.ready`({sessionId, listIds:[listId]})를 발행한다 — 콜백 실패 시 미발행(FE가 빈 목록 조회 방지, §3.3).
 - **인증**: `X-Internal-Token` 서비스 토큰.
 - 🔴 협의(C-9): `listId` 형식·TTL·재조회 정책. (`reason` 전달 방식은 v0.15.15에서 콜백 포함으로 확정 🟢.)
 

@@ -30,7 +30,7 @@
 근거문(token 스트림):
 > 세 상품 모두 5만원 이하의 무선 이어폰입니다. 평점과 가격을 함께 고려해 101, 102, 103 순으로 추천합니다.
 
-- `products.ready` listId 발급, `done.finishReason = "stop"` 정상 종료.
+- `products.ready` listIds 발급, `done.finishReason = "stop"` 정상 종료.
 
 ## 판정
 
