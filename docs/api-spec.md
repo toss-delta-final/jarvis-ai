@@ -126,7 +126,8 @@ Authorization: Bearer {STREAM_TICKET}   ← Spring이 스트림 단위로 발급
   - `aud` — 대상 **`"jarvis-fastapi-ai"` [확정 v0.15.20]** (BE `StreamTicketProvider.AUDIENCE` 실측). **AI는 `aud`를 검증**한다(토큰 혼용 방지 — 로그인 AT는 이 aud가 없어 SSE에 못 씀).
   - `scope` — **`"chat:stream"` [확정 v0.15.20]** (BE `StreamTicketProvider.SCOPE_CHAT_STREAM` 실측). **AI는 `scope`를 검증**한다.
   - `exp` — 발급 후 **60초 [확정 v0.15.20]** (BE `app.stream-ticket.ttl-seconds: 60`. 구 "30~60초" 범위의 상단값). 완전 1회용은 아니며 짧은 TTL로 근사 — Redis는 Spring 전용 결정 유지, stateless 검증. CH-1/CH-1b 응답이 `ticketTtlSeconds`로 실값을 함께 반환한다.
-  - **판매자(`/seller/chat`)**: **`role == "seller"`(소문자) + `brandId`(숫자) — [확정 v0.15.20]** (BE `StreamTicketProvider.buildTicket` 실측). 집계·CRUD 역호출(§4.4·§4.5)의 `{brandId}` path에 이 값을 쓴다. AI는 `brandId`를 **요청 본문에서 받지 않고 검증된 티켓 클레임에서만** 얻는다(userId와 동일 원칙 — IDOR 방지, 판매자가 남의 brandId로 조회 불가, §2.6). **`role` 클레임은 판매자 티켓에만 실린다** — 구매자·게스트 티켓에는 `role`이 없고 `sub_type`만 있다. AI는 신원을 **오직 토큰 클레임에서만** 추출한다(요청 본문 금지, §2.5·§3.1·§3.2).
+  - **구매자(`/chat`)**: 위 공통 클레임에 서명된 **`sessionId`**를 추가한다. AI는 이 값을 요청 body의 `sessionId`와 대조하고, 누락·불일치하면 `403 SESSION_FORBIDDEN`으로 거부한다. **`threadId`는 body-only**다 — 한 접속 티켓으로 여러 탭/방을 동시에 열 수 있어야 하므로 티켓에 바인딩하지 않는다.
+  - **판매자(`/seller/chat`)**: **`role == "seller"`(소문자) + `brandId`(숫자) — [확정 v0.15.20]** (BE `StreamTicketProvider.buildTicket` 실측). 집계·CRUD 역호출(§4.4·§4.5)의 `{brandId}` path에 이 값을 쓴다. AI는 `brandId`를 **요청 본문에서 받지 않고 검증된 티켓 클레임에서만** 얻는다(userId와 동일 원칙 — IDOR 방지, 판매자가 남의 brandId로 조회 불가, §2.6). **판매자 티켓에는 구매자용 `sessionId` claim을 요구하지 않는다.** `role` 클레임은 판매자 티켓에만 실리고 구매자·게스트 티켓에는 `role`이 없고 `sub_type`만 있다. AI는 신원을 **오직 토큰 클레임에서만** 추출한다(요청 본문 금지, §2.5·§3.1·§3.2).
   - 검증 항목: **signature / exp / iss / aud / scope**.
 - **[확정] 401 통일 규약**: 토큰이 **없음/무효/만료**이면 AI 서버는 항상 **`401`** 을 반환한다.
   - `code == "TOKEN_EXPIRED"` — `exp` 경과.
@@ -183,6 +184,7 @@ X-Internal-Token: {SERVICE_TOKEN}
 |---|---|---|
 | `400` | `BAD_REQUEST` | 요청 본문/파라미터 오류 |
 | `401` | `TOKEN_EXPIRED` / `TOKEN_INVALID` | 인증 실패(§2.3 a) |
+| `403` | `SESSION_FORBIDDEN` | 구매자 티켓의 서명된 `sessionId`가 없거나 요청 body와 불일치 |
 | `403` | `FORBIDDEN` | 권한 없음(예: 판매자 스코프 없이 `/seller/chat`) |
 | `409` | `STREAM_IN_PROGRESS` | **[v0.7.0 · 개정 v0.16.0]** 동일 **`threadId`** 에 활성 스트림 존재(§2.9 a) — FE는 진행 중 스트림 종료 후 재시도. 같은 `sessionId`의 **다른 방은 막지 않는다** |
 | `429` | `RATE_LIMITED` | 레이트 리밋 초과(§2.8) |
@@ -241,7 +243,7 @@ X-Internal-Token: {SERVICE_TOKEN}
 - **AI는 `sessionId`의 만료를 판정하지 않는다** — 세션 TTL은 Spring Redis 소유이고 AI가 검증하는 것은 스트림 티켓(§2.3 a)뿐이다. 따라서 AI가 `CHAT_SESSION_EXPIRED`를 반환하는 경우는 없다(§2.5). 만료 의미가 **없어서**가 아니라 **판정 주체가 Spring이라서**다. 다만 프로필 파이프라인은 자체 DB에 기록한 마지막 회원 발화 시각을 기준으로 **프로필 버퍼의 10분 비활동 종료**를 독립적으로 판정한다(§3.5).
 - **새 대화는 CH-1을 부르지 않는다** — FE가 `threadId`만 새로 생성하고 세션은 유지된다. 따라서 "새 대화"는 세션 종료 사유가 아니다(§3.5).
 - **맥락 TTL은 방이 아니라 접속 단위** — 어느 방에서든 활동이 있으면 그 `sessionId`에 속한 **모든 방**의 맥락 TTL을 함께 연장하고, 세션이 끝나면 그 아래 방을 **한꺼번에** 정리한다. 방마다 생사가 갈리면 탭을 옮겼을 때 한쪽 맥락만 사라져 사용자가 이해할 수 없다.
-- **스트림 티켓은 `sessionId`·`threadId`를 담지 않는다**(신원 `sub`·`sub_type`·`scope`만) — 그래서 **티켓 1장이 한 접속의 여러 방 스트림을 동시에 커버**한다. 세션 정본은 티켓이 아니라 Spring Redis에 있다.
+- **구매자 스트림 티켓은 `sessionId`를 담고 `threadId`는 담지 않는다.** AI는 서명된 `sessionId`를 body와 대조해 다른 접속의 세션 상태 접근을 막는다. `threadId`는 body-only라 **티켓 1장이 한 접속의 여러 방 스트림을 동시에 커버**한다. 세션 수명·만료의 정본은 계속 Spring Redis에 있다.
 - 최대 길이는 둘 다 config `chat_key_max_chars`(§3.1) — 초과 시 `400`.
 
 > **`sessionId`는 "불투명 스레드 키"가 아니다.** v0.15.x까지 이 문서는 `sessionId`를 *"만료 의미 없는 불투명 스레드 키"* 로 정의했다. 축이 갈린 뒤 "스레드 키"는 `threadId`의 것이므로 그 표현을 전면 폐기한다. `sessionId`는 여전히 AI에게 **불투명**하지만(형식 검증 없음, UUID 수용), **접속 식별자**다.

@@ -16,6 +16,7 @@
   - scope    : 용도 검증 (제안값 chat:stream — 값은 config 주입, C-1 확정 대기)
   - role     : 구 클레임 폴백 + 판매자 판정(SELLER) — 판매자 티켓 형식은 🔴 C-1 잔여.
   - brandId  : 판매자(role=SELLER) 브랜드 id — {brandId} path용, 요청 본문 불신(§2.6).
+  - sessionId: 구매자 티켓이 증명한 Spring 접속 id — /chat body와 일치해야 한다.
 
 [보안] 신원(user_id)·게스트 여부·판매자 스코프는 오직 토큰 클레임에서만 도출한다.
 요청 본문의 식별자는 절대 신뢰하지 않는다 (사칭 방지, api-spec §2.3 a / §2.5 / §3.1 / §3.2).
@@ -35,6 +36,7 @@ CLAIM_SUB_TYPE = "sub_type"
 CLAIM_SCOPE = "scope"
 CLAIM_ROLE = "role"
 CLAIM_BRAND_ID = "brandId"
+CLAIM_SESSION_ID = "sessionId"
 
 # sub_type 값 (§2.3 v0.10.0 확정 — member|guest 두 값만 정본)
 SUB_TYPE_MEMBER = "member"
@@ -63,6 +65,8 @@ class Identity:
     # subject: 검증된 raw `sub` 클레임 — 게스트 UUID 포함 모든 역할에 보존한다.
     # 레이트 리밋·동시성 레지스트리의 신원 스코프 키로 일관되게 쓴다(§2.8/§2.9).
     subject: str | None = None
+    # 구매자 티켓이 증명한 Spring 접속 id. 판매자 티켓과 dev 무토큰에는 없을 수 있다.
+    session_id: str | None = None
 
 
 class AuthError(Exception):
@@ -110,6 +114,7 @@ def _claims_to_identity(claims: dict, *, require_identity_claim: bool = False) -
     subject = claims.get(CLAIM_SUBJECT)
     role = _norm_role(claims.get(CLAIM_ROLE))
     sub_type = claims.get(CLAIM_SUB_TYPE)
+    session_id = claims.get(CLAIM_SESSION_ID)
 
     if role == ROLE_SELLER:
         # 판매자는 sub 를 판매자 식별자로도 사용한다 (스코프 근거는 role 클레임).
@@ -119,22 +124,47 @@ def _claims_to_identity(claims: dict, *, require_identity_claim: bool = False) -
             seller_id=subject,
             brand_id=claims.get(CLAIM_BRAND_ID),
             subject=subject,
+            session_id=session_id,
         )
     if sub_type is not None:
         if sub_type == SUB_TYPE_GUEST:
-            return Identity(user_id=None, is_guest=True, seller_id=None, subject=subject)
+            return Identity(
+                user_id=None,
+                is_guest=True,
+                seller_id=None,
+                subject=subject,
+                session_id=session_id,
+            )
         if sub_type == SUB_TYPE_MEMBER:
-            return Identity(user_id=subject, is_guest=False, seller_id=None, subject=subject)
+            return Identity(
+                user_id=subject,
+                is_guest=False,
+                seller_id=None,
+                subject=subject,
+                session_id=session_id,
+            )
         # 미지 sub_type — 정본 값 집합(member|guest) 밖은 신원 판정 불가로 거부.
         raise AuthError(f"unknown sub_type: {sub_type}")
     if role == ROLE_GUEST:
-        return Identity(user_id=None, is_guest=True, seller_id=None, subject=subject)
+        return Identity(
+            user_id=None,
+            is_guest=True,
+            seller_id=None,
+            subject=subject,
+            session_id=session_id,
+        )
     if role is None and require_identity_claim:
         # 신원 유형 클레임(sub_type·role) 전무 — 실배선 레인은 회원 기본 승인 금지.
         raise AuthError("missing sub_type/role claim")
     # 구 role 폴백: 값 집합이 C-1 미확정이라 미지 role(USER 등)은 회원으로 관용 —
     # sub 는 서명 검증을 통과했고, 회원 role 실값이 달라도 전면 401 이 되지 않게 한다.
-    return Identity(user_id=subject, is_guest=False, seller_id=None, subject=subject)
+    return Identity(
+        user_id=subject,
+        is_guest=False,
+        seller_id=None,
+        subject=subject,
+        session_id=session_id,
+    )
 
 
 def _verify_scope(claims: dict, required: str) -> None:

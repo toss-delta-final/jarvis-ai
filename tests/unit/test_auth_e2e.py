@@ -115,8 +115,54 @@ def test_chat_with_garbage_token_returns_401(jwks_app) -> None:
 
 def test_chat_with_valid_member_ticket_streams(jwks_app, rsa_key, buyer_fakes) -> None:
     """유효 회원 티켓 → SSE 200 스트리밍 (실 JWT 검증 통과 후 그래프 구동)."""
-    token = sign_ticket(rsa_key, KID, ticket_claims(sub="42"))
+    token = sign_ticket(rsa_key, KID, ticket_claims(sub="42", sessionId="s-auth-1"))
     resp = client.post("/chat", json=_chat_body(), headers=_bearer(token))
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+
+
+def test_buyer_session_claim_must_match_body(jwks_app, rsa_key) -> None:
+    """구매자 티켓의 서명된 sessionId와 body sessionId가 다르면 403이다."""
+    token = sign_ticket(rsa_key, KID, ticket_claims(sub="42", sessionId="S1"))
+    body = {"sessionId": "S2", "threadId": "T1", "message": "hello"}
+
+    resp = client.post("/chat", json=body, headers=_bearer(token))
+
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "SESSION_FORBIDDEN"
+
+
+def test_buyer_session_claim_is_required_in_jwks_mode(jwks_app, rsa_key) -> None:
+    """운영(jwks) 구매자 티켓에 sessionId가 없으면 fail-closed 403이다."""
+    token = sign_ticket(rsa_key, KID, ticket_claims(sub="42"))
+
+    resp = client.post("/chat", json=_chat_body(), headers=_bearer(token))
+
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "SESSION_FORBIDDEN"
+
+
+def test_dev_token_session_mismatch_is_rejected(monkeypatch, rsa_key) -> None:
+    """dev 토큰도 sessionId를 주장했다면 body 불일치를 우회할 수 없다."""
+    settings = Settings(_env_file=None, auth_mode="dev")
+    monkeypatch.setattr(deps, "get_settings", lambda: settings)
+    token = sign_ticket(rsa_key, KID, ticket_claims(sub="42", sessionId="other-session"))
+
+    resp = client.post("/chat", json=_chat_body(), headers=_bearer(token))
+
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "SESSION_FORBIDDEN"
+
+
+def test_dev_no_token_streams_and_uses_dev_anon_owner(monkeypatch, buyer_fakes) -> None:
+    """로컬 무토큰 경로는 스트리밍을 허용하고 안정적인 dev-anon 소유자를 쓴다."""
+    settings = Settings(_env_file=None, auth_mode="dev")
+    monkeypatch.setattr(deps, "get_settings", lambda: settings)
+    identity = auth.decode_token(None, auth_mode="dev")
+
+    assert deps.require_buyer_session(identity, "s-auth-1", settings) is None
+    assert deps.buyer_owner_id(identity, settings) == "dev-anon"
+    resp = client.post("/chat", json=_chat_body())
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
 
@@ -137,6 +183,18 @@ def test_seller_chat_without_brand_id_returns_403(jwks_app, rsa_key) -> None:
     resp = client.post("/seller/chat", json=_chat_body(), headers=_bearer(token))
     assert resp.status_code == 403
     assert resp.json()["error"]["code"] == "FORBIDDEN"
+
+
+def test_seller_ticket_without_buyer_session_claim_streams(jwks_app, rsa_key) -> None:
+    """판매자 티켓에는 구매자 sessionId claim을 추가로 요구하지 않는다."""
+    claims = ticket_claims(sub="9")
+    claims.update({"role": auth.ROLE_SELLER, "brandId": 3})
+    token = sign_ticket(rsa_key, KID, claims)
+
+    resp = client.post("/seller/chat", json=_chat_body(), headers=_bearer(token))
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
 
 
 # ── §2.3(b) 인바운드 서비스 토큰 (Spring→AI) — fail-closed ──

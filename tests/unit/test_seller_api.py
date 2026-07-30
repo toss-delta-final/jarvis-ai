@@ -73,6 +73,7 @@ async def test_seller_endpoint_scopes_stream_lock_by_thread_id(
     )
 
     assert response is marker
+    assert identity.session_id is None, "판매자 티켓에는 구매자 sessionId claim을 요구하지 않는다"
     assert captured["stream_key"] == "7:seller-room"
 
 

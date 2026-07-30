@@ -80,6 +80,33 @@ def require_seller(authorization: str | None = Header(default=None)) -> Identity
     return identity
 
 
+def require_buyer_session(
+    identity: Identity,
+    session_id: str,
+    settings: Settings,
+) -> None:
+    """구매자 body sessionId를 서명된 스트림 티켓의 접속에 바인딩한다."""
+    if settings.auth_mode == "dev" and identity.session_id is None:
+        return
+    if not identity.session_id or identity.session_id != session_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "SESSION_FORBIDDEN", "message": "session access denied"},
+        )
+
+
+def buyer_owner_id(identity: Identity, settings: Settings) -> str:
+    """구매자 세션 상태의 소유자 키를 검증된 subject에서 도출한다."""
+    if identity.subject:
+        return identity.subject
+    if settings.auth_mode == "dev":
+        return "dev-anon"
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={"code": "SESSION_FORBIDDEN", "message": "session access denied"},
+    )
+
+
 def verify_service_token(
     x_internal_token: str | None = Header(default=None, alias="X-Internal-Token"),
 ) -> None:

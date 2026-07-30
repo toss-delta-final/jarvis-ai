@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from app.agents.buyer.graph import run_buyer_turn
-from app.api.deps import get_identity
+from app.api import deps as auth_deps
 from app.core.auth import Identity
 from app.core.conversation import get_conversation_store
 from app.core.errors import get_request_id
@@ -32,9 +32,11 @@ router = APIRouter(tags=["chat"])
 async def chat(
     request: ChatRequest,
     http_request: Request,
-    identity: Identity = Depends(get_identity),
+    identity: Identity = Depends(auth_deps.get_identity),
 ) -> StreamingResponse:
     """구매자 챗봇 SSE 스트리밍 (api-spec §3.1)."""
+    settings = auth_deps.get_settings()
+    auth_deps.require_buyer_session(identity, request.session_id, settings)
     request_id = get_request_id(http_request)
     try:
         store = await get_conversation_store()
