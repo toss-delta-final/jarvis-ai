@@ -18,6 +18,7 @@ from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.state import CartStateStore, PendingAdd
 from app.agents.buyer.recommendation.state import CartIntent
 from app.core.text import _strip_unsafe
+from app.core.tracing import current_request_trace
 from app.schemas.chat import ActionData, DoneData, TokenData
 from app.schemas.spring import AddToCartRequest, CartOption
 from app.services import spring_client
@@ -144,6 +145,8 @@ async def stream_cart_add(
             if item.product_id == product_id and (option_id is None or item.option_id == option_id):
                 existing += item.quantity
     except SpringUnavailableError:
+        if trace := current_request_trace():
+            trace.mark_degraded("cart_merge_skipped")
         pass  # 조회 실패해도 담기는 진행(§4.9)
 
     try:

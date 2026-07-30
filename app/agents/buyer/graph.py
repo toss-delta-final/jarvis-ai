@@ -42,6 +42,7 @@ from app.core.errors import new_request_id
 from app.core.llm import LLMError, get_llm, resolve_model_id
 from app.core.pg_resilience import run_with_query_timeout
 from app.core.text import _strip_unsafe
+from app.core.tracing import trace_span
 from app.agents.buyer.recommendation.state import CartIntent, CategoryQuery
 from app.schemas.chat import DoneData, ErrorData
 from app.schemas.spring import ProductSearchFilters
@@ -161,16 +162,22 @@ async def run_buyer_turn(
         observer.record_model_call(resolve_model_id(settings, "fast"))
     last_reco = await cart_store.get_last_reco(thread_key)
     try:
-        decision = await decompose(
-            llm,
-            query=request.message,
-            prior_filters=prior,
-            profile_summary=profile,
-            tier="fast",
-            last_recommendations=last_reco,
-            pending_cart=pending_dict,
-            category_fanout_max=settings.category_fanout_max,
-        )
+        with trace_span("buyer.routing", "chain"):
+            with trace_span(
+                "llm.decompose",
+                "llm",
+                {"model": resolve_model_id(settings, "fast")},
+            ):
+                decision = await decompose(
+                    llm,
+                    query=request.message,
+                    prior_filters=prior,
+                    profile_summary=profile,
+                    tier="fast",
+                    last_recommendations=last_reco,
+                    pending_cart=pending_dict,
+                    category_fanout_max=settings.category_fanout_max,
+                )
     except LLMError as exc:
         code = "LLM_TIMEOUT" if _is_timeout(exc) else "LLM_UNAVAILABLE"
         yield sse(
@@ -212,22 +219,24 @@ async def run_buyer_turn(
         return
 
     if decision.intent == "cart_view":
-        async for frame in stream_cart_view(identity=identity, observer=observer):
-            yield frame
+        with trace_span("buyer.graph.cart", "chain"):
+            async for frame in stream_cart_view(identity=identity, observer=observer):
+                yield frame
         return
 
     if decision.intent == "cart_add":
         allowed = {pid for pid, _ in last_reco}
-        async for frame in stream_cart_add(
-            identity=identity,
-            cart=decision.cart or CartIntent(),
-            cart_store=cart_store,
-            thread_key=thread_key,
-            settings=settings,
-            allowed_product_ids=allowed,
-            observer=observer,
-        ):
-            yield frame
+        with trace_span("buyer.graph.cart", "chain"):
+            async for frame in stream_cart_add(
+                identity=identity,
+                cart=decision.cart or CartIntent(),
+                cart_store=cart_store,
+                thread_key=thread_key,
+                settings=settings,
+                allowed_product_ids=allowed,
+                observer=observer,
+            ):
+                yield frame
         return
 
     # recommend — 카테고리 하이브리드 매핑(이슈 #59, 방식 A): decompose 추측을 canonical 로
@@ -317,19 +326,20 @@ async def run_buyer_turn(
         ],
     )
     reverted = await revert_store.get(thread_key)
-    async for frame in stream_recommendation(
-        request=request,
-        decision=decision,
-        llm=llm,
-        search=search,
-        push_fn=push_fn,
-        identity=identity,
-        profile=profile,
-        settings=settings,
-        reverted_categories=frozenset(reverted),
-        cart_store=cart_store,
-        thread_key=thread_key,
-        observer=observer,
-        request_id=resolved_request_id,
-    ):
-        yield frame
+    with trace_span("buyer.graph.recommendation", "chain"):
+        async for frame in stream_recommendation(
+            request=request,
+            decision=decision,
+            llm=llm,
+            search=search,
+            push_fn=push_fn,
+            identity=identity,
+            profile=profile,
+            settings=settings,
+            reverted_categories=frozenset(reverted),
+            cart_store=cart_store,
+            thread_key=thread_key,
+            observer=observer,
+            request_id=resolved_request_id,
+        ):
+            yield frame

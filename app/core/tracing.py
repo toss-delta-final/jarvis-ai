@@ -207,6 +207,30 @@ class RequestTrace:
         if not self._finished:
             self._nodes[0].metadata["provider_ttft_ms"] = milliseconds
 
+    def record_llm_usage(
+        self,
+        *,
+        model: str,
+        prompt_tokens: int | None,
+        completion_tokens: int | None,
+    ) -> None:
+        """Attach bounded provider facts to the active explicit LLM span."""
+        if self._finished:
+            return
+        stack = _active_span_stack.get()
+        if not stack:
+            return
+        node = next(
+            (candidate for candidate in reversed(self._nodes) if candidate.id == stack[-1]), None
+        )
+        if node is None or node.run_type != "llm":
+            return
+        node.metadata["model"] = model
+        if prompt_tokens is not None:
+            node.metadata["promptTokens"] = prompt_tokens
+        if completion_tokens is not None:
+            node.metadata["completionTokens"] = completion_tokens
+
     def record_server_timings(
         self,
         *,
@@ -272,6 +296,15 @@ class NoopRequestTrace(RequestTrace):
 
     def record_provider_ttft(self, milliseconds: int) -> None:
         del milliseconds
+
+    def record_llm_usage(
+        self,
+        *,
+        model: str,
+        prompt_tokens: int | None,
+        completion_tokens: int | None,
+    ) -> None:
+        del model, prompt_tokens, completion_tokens
 
     def record_server_timings(
         self,
