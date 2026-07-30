@@ -994,3 +994,52 @@ async def test_close_failure_during_prestream_abort_preserves_timeout(
     assert root.metadata["terminalReason"] == "first_event_timeout"
     assert "stream iterator close failed code=STREAM_CLOSE_FAILED" in caplog.messages
     assert "sensitive close detail" not in caplog.text
+
+
+async def test_cancellation_during_terminal_close_propagates_after_finalization() -> None:
+    exporter = FakeTraceExporter()
+    obs = await _obs("cancel-during-terminal-close", trace=_trace(exporter))
+    close_started = asyncio.Event()
+
+    class BlockingCloseIterator:
+        def __init__(self) -> None:
+            self.pulled = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self) -> str:
+            if self.pulled:
+                raise StopAsyncIteration
+            self.pulled = True
+            return 'data: {"type":"done","data":{"finishReason":"stop"}}\n\n'
+
+        async def aclose(self) -> None:
+            close_started.set()
+            await asyncio.Event().wait()
+
+    stream_key = "member:cancel-during-terminal-close"
+    response = await open_stream(
+        _FakeRequest(),
+        stream_key,
+        BlockingCloseIterator,
+        observer=obs,
+    )
+
+    async def consume() -> list[str]:
+        return [chunk async for chunk in response.body_iterator]
+
+    consumer = asyncio.create_task(consume())
+    await close_started.wait()
+    consumer.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await consumer
+
+    assert not get_registry().is_active(stream_key)
+    assert len(exporter.exported) == 1
+    (root, *_) = exporter.exported[0]
+    assert root.error_type is None
+    assert root.metadata["terminalReason"] == "done"
+    turn = await obs.store.get_turn(obs.turn_id)
+    assert turn is not None and turn.status == TurnStatus.COMPLETED

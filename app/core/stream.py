@@ -178,8 +178,6 @@ async def open_stream(
         """Close an inner iterator without exposing or propagating close diagnostics."""
         try:
             await agen.aclose()  # type: ignore[attr-defined]
-        except asyncio.CancelledError:
-            logger.warning("stream iterator close failed code=STREAM_CLOSE_FAILED")
         except Exception:
             logger.warning("stream iterator close failed code=STREAM_CLOSE_FAILED")
 
