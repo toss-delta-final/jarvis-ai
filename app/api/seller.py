@@ -623,7 +623,7 @@ async def _seller_stream(
             "INTERNAL",
             "일시적인 오류가 발생했습니다.",
             request_id=request_id,
-            retryable=True,
+            retryable=False,
         )
         return
 
