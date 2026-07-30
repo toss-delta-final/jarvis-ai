@@ -21,6 +21,7 @@ issue_number: 79
 
 ## HISTORY
 
+- **v0.5.0 (2026-07-30, api-spec v0.16.0 동기화)** — session/thread 축 분리(SPEC-CHAT-SESSION Option B)를 반영해 **Spring I-20 발화 사유를 `logout` 하나로 축소**했다. 구 `newConversation`은 제거 — 축이 갈린 뒤 "새 대화"는 FE가 `threadId`만 새로 생성하고 세션을 유지하므로 CH-1도 I-20도 호출되지 않아 **사유 자체가 발화되지 않는다**. `reason`은 enum 미강제라 수신해도 400은 아니고 관측용으로 기록만 된다. **프로필 파이프라인은 종전대로 session 축**이며(세션버퍼·`profile_session_activity`·멱등키 모두 `(userId, sessionId)`), 한 접속 아래 여러 방의 발화가 **한 세션 버퍼로 모이는** 구조가 이 축 분리의 전제와 정합한다 — 따라서 REQ/AC의 실질 로직 변경은 없고 사유 목록만 좁혔다(REQ-PROF-051, AC-PROF-28, §1.3 표, 결정 12 행).
 - **v0.4.0 (2026-07-23, 이슈 #79)** — MVP 세션 종료 트리거 소유권을 확정했다. Spring I-20은 `logout`·`newConversation`만 전달하고 탭 닫기 신호는 제거한다. AI는 수락된 회원 발화 저장 시 pg-profile의 세션 활동 시각을 DB 서버 시각으로 갱신하고, 기본 10분 timeout/60초 sweep의 단일 인스턴스 스케줄러가 인덱스 기반 bounded batch로 비활성 세션을 선점한다. 내부 timeout은 HTTP 자기 호출 없이 I-20과 같은 finalizer·고정키 claim을 사용하되, idle 성공은 영구 종료가 아닌 재개 가능한 checkpoint로 claim을 해제한다. 새 활동은 completed activity를 active로 되돌리고 이전 종료 generation을 같은 transaction에서 무효화하며, terminal finalizer는 처리 중 새 activity를 completed로 덮지 않는다. scheduler는 라이브 스트림 슬롯을 점유하지 않는다. 처리 전 활동/활성 스트림 재확인, token+lease claim, claim별 실패 격리·crash 재시도와 명시적 종료 경합 인수 기준을 추가했다.
 - **v0.3.0 (2026-07-20, 이슈 #33; v0.15.17 구현 보강)** — 저장소 이관 구현 완료 반영. (1) **임베딩 모델/차원 갱신**: 결정 6 "셀프호스트 1024차원"은 카탈로그 파이프라인이 이슈 #31 로 Google `gemini-embedding-001`(1536-dim, MRL 절단 수동 L2 정규화)로 전환되며 stale — REQ-PROF-074 자체가 "카탈로그와 모델 공유"를 요구하므로 프로필도 동일 모델/차원을 그대로 따른다(신규 계약 협의 아님, 기존 REQ 의 자연스러운 적용). §5.3 네임스페이스 주석·§1.3·§4 결정 6 행·REQ-PROF-074·§10 비용 문구 갱신(차원 1024→1536, 임베딩 비용 0 문구 삭제 — Google API 호출이라 토큰 비용 발생). (2) **checkpointer→BaseStore 로 구현 확정, OPEN-P9 해소**: session_context(구매자 스레드 상태 전반 — ThreadFilter/Cart/Revert/session_ctx)는 실제 LangGraph StateGraph 가 없는 구매자 실행 모델(단순 함수 호출 체인) 특성상 checkpointer 가 아니라 BaseStore(app/core/pg_store.py 공유 연결, 별도 인스턴스는 아니고 같은 pg-profile 물리 인스턴스 내 별도 store 객체) 로 구현됨 — write 소유는 구매자 그래프(app/agents/buyer/graph.py) 그대로. (3) **fact 저장 단위 확정**: REQ-PROF-070 "위키 파일 1개 = item 1개" 원칙을 그대로 적용해 fact 마다 개별 store item(uuid 키)으로 저장 — semantic 인덱스가 fact 단위로 실제 동작(요약/세션버퍼는 `index=False`). (4) **session-end 멱등 파생키 lifecycle**: 전용 `processed_events` 테이블에서 `session-end:{userId}:{sessionId}`의 PROCESSING(token+lease)과 COMPLETED를 분리한다. 실패·취소는 claim 해제, crash 잔재는 lease 재선점하며 성공 뒤에만 완료 마킹한다(app/agents/profile/processed_events.py, db/profile/init/00_processed_events.sql). (5) OPEN-P11 부분 해소: 서빙 형태는 FastAPI 프로세스 내 동기 SDK 호출(app.pipelines.embedding.embed_texts, google-genai)로 확정. 요구사항·스키마 구조·게이트 규칙은 무변경.
 - **v0.2.0 (2026-07-15)** — 결정 16-A(저장소 물리 구성 개정) 반영. "카탈로그와 완전 별도 Postgres 인스턴스"를 MVP 기준 **단일 Postgres 인스턴스 안의 별도 데이터베이스 2개**(catalog/profile)로 개정 — 논리 분리 규율(DB 단위 분리로 cross-DB 조인 구조적 차단 + 계정 분리[search read-only/프로필 워커 profile 한정] + cross-DB 의존 금지)로 부하 격리 목적을 대체하고, 물리 인스턴스 분리는 고도화 승격 경로(연결 문자열 교체 수준)로 유예. REQ-PROF-072/073/074 개정, AC-PROF-21 개정, DoD·불변식 문구 갱신, OPEN-P9에 물리 결합 논점 소멸 주석. 그 외 요구사항·스키마 불변. 근거: 데모 규모에 격리할 부하 없음(2026-07-15 AWS 배포 구성 논의, product.md 결정 16-A).
@@ -57,7 +58,7 @@ issue_number: 79
 | 추천 서브그래프 (SPEC-RECOMMEND-001) | `profile_summary`를 read-only 문자열로 소비(REQ-REC-005/006, OPEN-9 해소 대상) | SPEC-RECOMMEND-001 |
 | session_context / 프로필 세션 버퍼 (BaseStore) | 대화 스레드 상태와 회원 발화 버퍼의 영속 저장. 세션 중 write는 구매자 그래프 소관 | 구매자 그래프 SPEC(별도) — 본 SPEC은 finalizer에서 버퍼를 소비(§9 OPEN-P9) |
 | 주문 이벤트 미러 (결정 9 채널 확장 / 14-F) | 사용자별 경량 구매 이력 미러(user_id·product_id·category·purchased_at) — read-only 조회. 추천 dedup(14-F)과 동일 미러 공유 | 카탈로그/주문 이벤트 SPEC(별도) |
-| Spring 세션 종료 통지 (I-20) | `logout`·`newConversation` 명시적 종료의 조기 트리거(best-effort) — 유실 허용 | Spring / api-spec §3.5 |
+| Spring 세션 종료 통지 (I-20) | **`logout`** 명시적 종료의 조기 트리거(best-effort) — 유실 허용. **[v0.5.0]** 구 `newConversation` 제거 | Spring / api-spec §3.5 |
 | 임베딩 모델 (결정 6, v0.3.0 갱신) | BaseStore 내장 semantic 인덱스의 1536차원(Google `gemini-embedding-001`) 임베딩 계산(카탈로그 파이프라인과 모델 공유, 인스턴스는 별도) | `app.pipelines.embedding`(이슈 #31/#33) |
 | 리뷰 분석 그래프 (결정 10-A) | (고도화) 작성자 취향 신호 공급 — 본 SPEC은 수신 계약 자리만 예약 | 리뷰 분석 SPEC(별도, 고도화) |
 
@@ -115,7 +116,7 @@ issue_number: 79
 | 결정 8 | 비회원은 프로필 없음, AI 서버 무상태 — 게스트는 reader `None`, build 스킵 | REQ-PROF-003/041 |
 | 결정 9 | 이벤트 기반 준실시간 동기화, 일 1회 보정 배치 패턴 — 주문 미러 채널의 근간 | §1.3, REQ-PROF-054 |
 | 결정 10-A | 리뷰 분석 그래프가 (고도화) 작성자 취향 신호 공급 — 본 SPEC은 수신 계약 슬롯만 예약 | EX-P2, REQ-PROF-024 |
-| 결정 12 / 이슈 #79 | 종료 트리거 소유권 분리 — Spring=`logout`·`newConversation`, AI=프로필 버퍼 10분 비활동 flush, 탭 닫기 신호 없음 | EX-P4, REQ-PROF-051/056~059 |
+| 결정 12 / 이슈 #79 | 종료 트리거 소유권 분리 — **Spring=`logout` 하나만**(v0.5.0, 구 `newConversation` 제거), AI=프로필 버퍼 10분 비활동 flush, 탭 닫기 신호 없음 | EX-P4, REQ-PROF-051/056~059 |
 | 결정 14-F | 구매 이력 미러는 추천 dedup과 공유. 미러 이벤트 채널 계약은 카탈로그/주문 이벤트 SPEC 소유, 본 SPEC은 read-only 소비 | EX-P5, REQ-PROF-054 |
 
 ---
@@ -306,7 +307,7 @@ class ProfileViewResponse(BaseModel):
 ### 6.6 트리거 · 스케줄 (triggers & scheduling)
 
 - **REQ-PROF-050** (Ubiquitous): The 파이프라인 **shall** 델타 생성의 정합성 원천을 pg-profile에 영속 저장된 **회원 세션 버퍼**로 두며, Spring 통지 payload의 내용이나 전달 성공에 정합성을 의존하지 **않는다**.
-- **REQ-PROF-051** (Event-Driven): **When** Spring이 `logout` 또는 `newConversation` 종료를 통지하면, the 파이프라인 **shall** 이를 best-effort 조기 트리거로 사용한다. I-20은 같은 `(userId, sessionId)` 재전송에 idempotent하며 `tabClose`·`inactivityTimeout`을 Spring wire 사유로 요구하지 않는다(api-spec §3.5).
+- **REQ-PROF-051** (Event-Driven): **When** Spring이 `logout` 종료를 통지하면, the 파이프라인 **shall** 이를 best-effort 조기 트리거로 사용한다. I-20은 같은 `(userId, sessionId)` 재전송에 idempotent하며 `tabClose`·`inactivityTimeout`을 Spring wire 사유로 요구하지 않는다(api-spec §3.5). **[개정 v0.5.0 — api-spec v0.16.0]** 구 `newConversation`은 **제거** — session/thread 축 분리로 "새 대화"가 `threadId`만 갱신하고 세션을 유지하게 되어 그 사유 자체가 발화되지 않는다. `reason`은 enum 미강제라 수신 시 400은 아니며 관측용으로만 기록한다.
 - **REQ-PROF-052** (Ubiquitous): The 파이프라인 **shall** Spring I-20과 AI 내부 timeout을 하나의 session finalizer 및 고정키 `PROCESSING` claim으로 직렬화한다. Spring I-20 성공은 processed event를 영구 `COMPLETED`로 확정하지만, 처리 중 activity generation 또는 claim 소유권이 바뀌면 terminal 완료를 중단한다. AI idle 성공은 같은 claim을 해제하는 checkpoint로 끝내 동일 sessionId의 후속 활동을 다시 처리할 수 있어야 한다. 실패·취소 시 버퍼를 보존하고 activity claim을 `ACTIVE`로 되돌려 재시도를 허용한다.
 - **REQ-PROF-053** (Ubiquitous): The 파이프라인 **shall** 비활동 기준(기본 600초), sweep 주기(기본 60초), 한 번의 조회 상한, 최대 동시 finalizer 수와 claim lease를 config 주입값으로 운용한다. activity claim lease는 `ceil(batch size / max concurrency) × 2단계 LLM 최악 예산`보다 길어 모든 batch wave의 대기·처리를 포괄해야 한다.
 - **REQ-PROF-054** (Event-Driven): **When** sleep-time 배치가 실행되면, the 파이프라인 **shall** 구매 이력 미러(주문 이벤트 → AI 경량 미러)를 read-only로 스캔하여 구매 소스 델타 후보를 생성한다 — 미러의 적재 계약·이벤트 채널은 본 SPEC 소관이 아니다(EX-P5, 결정 14-F와 미러 공유).
@@ -398,7 +399,7 @@ class ProfileViewResponse(BaseModel):
 - **AC-PROF-25 (reader store 불가용 → None 폴백)**: **Given** store read가 강제 실패하도록 주입된 상태, **When** 그래프가 진입하면, **Then** `reader`는 `profile_summary == None`을 반환해 요청 경로를 막지 않고, 추천은 게스트 경로로 정상 성립한다(REQ-PROF-092).
 - **AC-PROF-26 (10분 경계와 재활동)**: **Given** timeout=600초인 회원 세션, **When** 마지막 활동이 599초 전이면 대상이 아니고 600초 이상이면 대상이며, 처리 전 새 발화가 저장되면 **Then** 활동 시각이 갱신되어 이번 timeout finalization은 실행되지 않는다(REQ-PROF-056~058).
 - **AC-PROF-27 (bounded indexed sweep)**: **Given** 대량의 세션 활동 행과 batch size=N, **When** sweep 1회가 실행되면, **Then** 최대 N개만 claim하고 `(status,last_activity_at)` 인덱스를 사용하는 후보 쿼리가 실행되며 `conversation_turns` 전체 집계는 발생하지 않는다(REQ-PROF-057).
-- **AC-PROF-28 (timeout·I-20 경합 멱등)**: **Given** 동일 `(userId,sessionId)`에 AI timeout과 Spring `logout`/`newConversation` 통지가 경합, **When** 둘이 동시에 finalizer에 진입하면, **Then** 델타·consolidation·버퍼 삭제는 논리적으로 한 번만 완료되고 한 경로는 `duplicate`로 수렴한다(REQ-PROF-052/059).
+- **AC-PROF-28 (timeout·I-20 경합 멱등)**: **Given** 동일 `(userId,sessionId)`에 AI timeout과 Spring `logout` 통지가 경합, **When** 둘이 동시에 finalizer에 진입하면, **Then** 델타·consolidation·버퍼 삭제는 논리적으로 한 번만 완료되고 한 경로는 `duplicate`로 수렴한다(REQ-PROF-052/059).
 - **AC-PROF-29 (timeout 실패 복구)**: **Given** timeout finalizer가 델타/consolidation 중 실패하거나 프로세스가 crash, **When** claim이 해제되거나 lease가 만료된 뒤 다음 sweep이 실행되면, **Then** 보존된 버퍼가 재처리되고 실패 실행은 `COMPLETED`로 남지 않는다(REQ-PROF-052/058/059).
 - **AC-PROF-30 (종료/checkpoint 후 같은 세션 재개)**: **Given** idle checkpoint 또는 Spring terminal 처리가 시작·완료된 sessionId, **When** 같은 sessionId의 새 회원 발화가 저장되거나 finalizer 처리 중 새 stream이 시작되면, **Then** 정상 채팅은 scheduler 때문에 409를 받지 않고 activity는 `ACTIVE`로 재개되며 이전 processed-event generation은 무효화된다. 처리 중 terminal finalizer는 새 activity를 `COMPLETED`로 덮지 않고, 새 버퍼는 다음 timeout/I-20에서 다시 처리된다(REQ-PROF-052/056/058/059).
 
