@@ -220,7 +220,11 @@ def test_buyer_endpoint_canaries_reach_production_seams_but_not_trace_payloads(
     from app.core.llm import LLMError
     from app.schemas.spring import SpringProduct
     from app.services import search_service
-    from tests.unit.test_tracing import PRIVACY_CANARIES, _assert_canaries_absent
+    from tests.unit.test_tracing import (
+        PRIVACY_CANARIES,
+        _assert_canaries_absent,
+        _serialized_operation_content,
+    )
 
     tool_calls: list[object] = []
     pushes: list[object] = []
@@ -354,10 +358,34 @@ def test_buyer_endpoint_canaries_reach_production_seams_but_not_trace_payloads(
         },
         headers=headers,
     )
-    assert second.status_code == 200
+    sdk_exception = client.post(
+        "/chat",
+        json={
+            "sessionId": "buyer-sdk-exception-141",
+            "threadId": "buyer-sdk-exception-141",
+            "message": PRIVACY_CANARIES["provider_exception"],
+        },
+        headers=headers,
+    )
+    sdk_exception_events = [
+        json.loads(line.removeprefix("data: "))
+        for line in sdk_exception.text.splitlines()
+        if line.startswith("data: ")
+    ]
+
+    assert second.status_code == sdk_exception.status_code == 200
+    assert [event["type"] for event in sdk_exception_events] == ["error"]
+    assert sdk_exception_events[0]["data"] | {"requestId": None} == {
+        "code": "LLM_UNAVAILABLE",
+        "message": "질의를 이해하지 못했어요.",
+        "requestId": None,
+        "retryable": True,
+    }
+    assert sdk_exception_events[0]["data"]["requestId"]
+    assert PRIVACY_CANARIES["provider_exception"] not in sdk_exception.text
     assert serialized_operations
     _assert_canaries_absent(
-        [operation.deserialize_run_info() for operation in serialized_operations]
+        [_serialized_operation_content(operation) for operation in serialized_operations]
     )
 
 

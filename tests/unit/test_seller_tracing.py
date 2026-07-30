@@ -195,7 +195,11 @@ def test_seller_endpoint_canaries_reach_provider_seams_but_not_trace_payloads(
 
     from app.agents.seller.schemas import RouteDecision
     from app.api import seller as seller_api
-    from tests.unit.test_tracing import PRIVACY_CANARIES, _assert_canaries_absent
+    from tests.unit.test_tracing import (
+        PRIVACY_CANARIES,
+        _assert_canaries_absent,
+        _serialized_operation_content,
+    )
 
     provider_inputs: list[object] = []
     provider_results: list[str] = []
@@ -301,10 +305,31 @@ def test_seller_endpoint_canaries_reach_provider_seams_but_not_trace_payloads(
         },
         headers=headers,
     )
-    assert second.status_code == 200
+    sdk_exception = client.post(
+        "/seller/chat",
+        json={
+            "sessionId": "seller-sdk-exception-141",
+            "threadId": "seller-sdk-exception-141",
+            "message": PRIVACY_CANARIES["provider_exception"],
+        },
+        headers=headers,
+    )
+    sdk_exception_events = _response_events(sdk_exception)
+
+    assert second.status_code == sdk_exception.status_code == 200
+    assert [event["type"] for event in sdk_exception_events] == ["meta", "error"]
+    assert sdk_exception_events[0] == {"type": "meta", "data": {"lane": "general"}}
+    assert sdk_exception_events[1]["data"] | {"requestId": None} == {
+        "code": "INTERNAL",
+        "message": "일시적인 오류가 발생했습니다.",
+        "requestId": None,
+        "retryable": True,
+    }
+    assert sdk_exception_events[1]["data"]["requestId"]
+    assert PRIVACY_CANARIES["provider_exception"] not in sdk_exception.text
     assert serialized_operations
     _assert_canaries_absent(
-        [operation.deserialize_run_info() for operation in serialized_operations]
+        [_serialized_operation_content(operation) for operation in serialized_operations]
     )
 
 

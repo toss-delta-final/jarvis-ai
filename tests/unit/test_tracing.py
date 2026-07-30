@@ -35,6 +35,8 @@ def _start_trace(factory: TraceFactory):
 def _recursive_strings(value: object) -> list[str]:
     if isinstance(value, str):
         return [value]
+    if isinstance(value, bytes):
+        return [value.decode("utf-8", errors="replace")]
     if isinstance(value, Mapping):
         return [
             item
@@ -72,6 +74,26 @@ def _assert_canaries_absent(payload: object) -> None:
     serialized_strings = _recursive_strings(payload)
     for canary in PRIVACY_CANARIES.values():
         assert all(canary not in value for value in serialized_strings)
+
+
+def _serialized_operation_content(operation: object) -> dict[str, object]:
+    return {
+        "run_info": operation.deserialize_run_info(),
+        "inputs": operation.inputs,
+        "outputs": operation.outputs,
+        "events": operation.events,
+        "attachments": operation.attachments,
+    }
+
+
+@pytest.mark.parametrize("field", ["inputs", "outputs"])
+def test_recursive_canary_inspection_includes_serialized_input_output_bytes(
+    field: str,
+) -> None:
+    payload = {"inputs": b"{}", "outputs": b"{}"}
+    payload[field] = b'{"message":"' + PRIVACY_CANARIES["buyer_message"].encode() + b'"}'
+    with pytest.raises(AssertionError):
+        _assert_canaries_absent(payload)
 
 
 async def test_fake_exporter_receives_one_root_with_nested_children() -> None:
