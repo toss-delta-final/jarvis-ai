@@ -26,7 +26,7 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
 사용자 발화를 분석해 intent 를 정하고, 추천이면 구조화 필터/의미쿼리를, 장바구니면 상품/옵션/수량을 산출합니다.
 반드시 아래 JSON 만 출력하세요(설명·코드펜스 금지):
 {
-  "intent": "recommend" | "cart_add" | "cart_view" | "general",
+  "intent": "recommend" | "cart_add" | "cart_view" | "order_status" | "general",
   "reply": "intent가 general일 때만 줄 짧은 한국어 답변, 아니면 빈 문자열",
   "case": 1 | 2 | 3,
   "semanticQuery": "정형 제약을 제외한 벡터 검색용 자연어",
@@ -43,7 +43,12 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
 }
 규칙:
 - intent 판별: 상품을 찾아달라는 요청이면 recommend, "담아줘/장바구니에 넣어"면 cart_add,
-  "장바구니 보여줘/뭐 있어?"면 cart_view, 그 외 잡담·무관 질문이면 general.
+  "장바구니 보여줘/뭐 있어?"면 cart_view, 회원 본인의 최근 주문·배송 진행 상태를 묻는 요청이면
+  order_status, 그 외 잡담·무관 질문이면 general.
+- order_status 긍정 예: "내 주문 어디까지 왔어?", "배송 상태 알려줘", "최근 주문 진행 상황".
+- order_status로 분류하지 않는 예: "배송 빠른 상품 추천해줘"는 recommend,
+  "이 상품 주문하고 싶어"는 기존 상품 추천/장바구니 의미, "주문 취소 방법"은 general,
+  "예전에 뭘 샀지?"는 이번 주문 상태 조회 범위가 아니므로 general.
 - recommend: 정확한 수치 제약은 filters 에 넣고 semanticQuery 로 근사하지 마세요.
   PRIOR_FILTERS 가 있으면 병합(좁히면 add, 모순되면 replace)하세요.
   색상 조건(예: "빨간", "검정")이 있으면 filters.color 에 넣으세요.
@@ -99,7 +104,7 @@ async def decompose(
     pending_cart: dict | None = None,
     category_fanout_max: int = 5,
 ) -> RouteDecision:
-    """Haiku 1회 호출로 intent(추천/담기/조회/일반)·필터·장바구니 의도를 산출한다.
+    """Haiku 1회 호출로 intent(추천/담기/장바구니조회/주문상태/일반)와 필터를 산출한다.
 
     prior_filters(추천 멀티턴)·last_recommendations(담기 productId 해소)·pending_cart(옵션 되물음)를
     프롬프트에 실어 문맥을 위임한다. LLM 오류/타임아웃/JSON·스키마 파싱 실패는 LLMError 로 전파.
@@ -134,7 +139,7 @@ async def decompose(
     intent_raw = data.get("intent")
     intent = (
         intent_raw
-        if intent_raw in ("recommend", "cart_add", "cart_view", "general")
+        if intent_raw in ("recommend", "cart_add", "cart_view", "order_status", "general")
         else "recommend"
     )
     # JSON 파싱은 됐지만 필드 값이 스키마와 안 맞을 수 있다 → extract_json 처럼 LLMError 로 통일해

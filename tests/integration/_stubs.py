@@ -11,6 +11,7 @@ AI 서버는 단독 실행이 불가하고 Spring 역호출에 의존한다(api-
 
 Spring stub 커버 범위 (api-spec §4):
   I-1  GET  /internal/products/search      (§4.6 후보 검색)
+  I-4  GET  /internal/members/{id}/orders/status (§4.10 주문 상태)
   I-2  POST /internal/cart/items           (§4.1 담기)
   I-18 GET  /internal/cart                 (§4.9 조회)
   I-19 GET  /internal/members/{id}/orders  (§4.7 구매 이력)
@@ -70,6 +71,7 @@ class SpringStub:
     """
 
     catalog: list[dict] = field(default_factory=lambda: [dict(p) for p in DEFAULT_CATALOG])
+    order_status_orders: list[dict] = field(default_factory=list)
     orders: list[dict] = field(default_factory=list)
     changes_pages: list[dict] = field(default_factory=list)
     cart_items: list[dict] = field(default_factory=list)
@@ -80,6 +82,9 @@ class SpringStub:
 
     # 실패 주입 (degrade 검증용)
     fail_search: bool = False
+    fail_order_status: int | None = None
+    order_status_exception: Exception | None = None
+    order_status_payload: Any | None = None
     fail_purchases: bool = False
     fail_push: bool = False
     fail_cart_add_code: str | None = None  # CART_OPTION_REQUIRED 등
@@ -112,6 +117,13 @@ class SpringStub:
             return self._cart_add(body)
         if request.method == "GET" and path == "/internal/cart":
             return self._cart_view()
+        # I-4 must precede the generic I-19 member route: both share the same prefix.
+        if (
+            request.method == "GET"
+            and path.startswith("/internal/members/")
+            and path.endswith("/orders/status")
+        ):
+            return self._order_status()
         if request.method == "GET" and path.startswith("/internal/members/"):
             return self._orders()
         if request.method == "POST" and path == "/internal/recommendations":
@@ -183,6 +195,22 @@ class SpringStub:
         return None
 
     # ── I-19 구매 이력 (§4.7) ──
+
+    def _order_status(self) -> httpx.Response:
+        """I-4 status summary, isolated from I-19 purchase-dedup state/failures."""
+        if self.order_status_exception is not None:
+            raise self.order_status_exception
+        if self.fail_order_status is not None:
+            return httpx.Response(
+                self.fail_order_status,
+                json={"success": False, "error": {"code": "UNAVAILABLE"}},
+            )
+        if self.order_status_payload is not None:
+            return httpx.Response(200, json=self.order_status_payload)
+        return httpx.Response(
+            200,
+            json={"success": True, "data": {"orders": self.order_status_orders}},
+        )
 
     def _orders(self) -> httpx.Response:
         if self.fail_purchases:
