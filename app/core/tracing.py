@@ -60,7 +60,7 @@ _UNSAFE_KEY_PARTS = (
 )
 _CANARY_PATTERNS = (
     re.compile(r"\bbearer\s+\S+", re.IGNORECASE),
-    re.compile(r"\b(?:sk|lsv2)_[A-Za-z0-9_-]{12,}\b", re.IGNORECASE),
+    re.compile(r"\b(?:sk-|lsv2_)[A-Za-z0-9_-]{12,}\b", re.IGNORECASE),
     re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE),
     re.compile(r"(?<!\d)01[016789][ -]?\d{3,4}[ -]?\d{4}(?!\d)"),
     re.compile(r"(?<!\d)\d{6}[ -]?[1-4]\d{6}(?!\d)"),
@@ -343,11 +343,19 @@ def _build_export_payloads(
     nodes: tuple[TraceNode, ...], *, project_name: str | None
 ) -> list[dict[str, object]]:
     payloads: list[dict[str, object]] = []
+    dotted_orders: dict[UUID, str] = {}
     for node in nodes:
+        segment = f"{node.started_at.astimezone(UTC):%Y%m%dT%H%M%S%fZ}{node.id}"
+        if node.parent_id is None:
+            dotted_order = segment
+        else:
+            dotted_order = f"{dotted_orders[node.parent_id]}.{segment}"
+        dotted_orders[node.id] = dotted_order
         payload: dict[str, object] = {
             "id": node.id,
             "trace_id": node.trace_id,
             "parent_run_id": node.parent_id,
+            "dotted_order": dotted_order,
             "name": node.name,
             "run_type": node.run_type,
             "start_time": node.started_at,
@@ -407,7 +415,12 @@ def get_trace_factory() -> TraceFactory:
         if settings.langsmith_api_key is not None
         else None
     )
-    client = Client(api_key=api_key, auto_batch_tracing=False)
+    client = Client(
+        api_key=api_key,
+        auto_batch_tracing=False,
+        omit_traced_runtime_info=True,
+        tracing_sampling_rate=1.0,
+    )
     _trace_factory = TraceFactory(
         exporter=LangSmithTraceExporter(
             client,

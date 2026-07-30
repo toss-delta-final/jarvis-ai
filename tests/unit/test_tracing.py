@@ -6,6 +6,7 @@ from app.core.tracing import (
     FakeTraceExporter,
     LangSmithTraceExporter,
     NoopRequestTrace,
+    SAFE_METADATA_KEYS,
     TraceFactory,
     UnsafeTelemetryError,
     bind_request_trace,
@@ -246,6 +247,20 @@ async def test_safe_token_count_metadata_is_exported() -> None:
     assert exporter.exported[0][1].metadata["promptTokens"] == 12
 
 
+@pytest.mark.parametrize(
+    "canary",
+    [
+        "sk-abcdefghijklmnop1234",
+        "sk-proj-abcdefghijklmnop1234",
+        "sk-ant-abcdefghijklmnop1234",
+        "lsv2_pt_abcdefghijklmnop1234",
+    ],
+)
+def test_api_key_canary_is_rejected_as_sole_allowlisted_metadata_value(canary) -> None:
+    with pytest.raises(UnsafeTelemetryError):
+        validate_export_payload({"metadata": {"model": canary}})
+
+
 async def test_langsmith_batch_export_uses_safe_explicit_run_payloads() -> None:
     class FakeClient:
         def __init__(self) -> None:
@@ -272,7 +287,59 @@ async def test_langsmith_batch_export_uses_safe_explicit_run_payloads() -> None:
     assert all(payload["inputs"] == {} for payload in client.create)
     assert all(payload["outputs"] == {} for payload in client.create)
     assert all(payload["session_name"] == "jarvis-ai-test" for payload in client.create)
+    assert by_name["buyer_chat_turn"]["dotted_order"].endswith(
+        str(by_name["buyer_chat_turn"]["id"])
+    )
+    assert by_name["buyer.routing"]["dotted_order"].startswith(
+        f"{by_name['buyer_chat_turn']['dotted_order']}."
+    )
+    assert by_name["buyer.routing"]["dotted_order"].endswith(str(by_name["buyer.routing"]["id"]))
     assert "person@example.com" not in repr(client.create)
+
+
+async def test_pinned_sdk_serializes_only_validated_safe_trace_fields(monkeypatch) -> None:
+    from langsmith import Client
+    from langsmith import env as langsmith_env
+
+    from app.core.config import get_settings
+
+    serialized_operations = []
+
+    def capture_after_sdk_serialization(self, operations, **kwargs) -> None:
+        del self, kwargs
+        serialized_operations.extend(operations)
+
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_pt_abcdefghijklmnop1234")
+    monkeypatch.setenv("LANGCHAIN_UNSAFE_METADATA", "person@example.com")
+    monkeypatch.setattr(Client, "_batch_ingest_run_ops", capture_after_sdk_serialization)
+    langsmith_env.get_langchain_env_var_metadata.cache_clear()
+    get_settings.cache_clear()
+    set_trace_factory(None)
+    try:
+        trace = _start_trace(get_trace_factory())
+        with bind_request_trace(trace):
+            with trace_span("buyer.routing", "chain"):
+                pass
+        await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+    finally:
+        set_trace_factory(None)
+        get_settings.cache_clear()
+        langsmith_env.get_langchain_env_var_metadata.cache_clear()
+
+    assert len(serialized_operations) == 2
+    run_info = [operation.deserialize_run_info() for operation in serialized_operations]
+    by_name = {run["name"]: run for run in run_info}
+    assert by_name["buyer.routing"]["parent_run_id"] == by_name["buyer_chat_turn"]["id"]
+    assert by_name["buyer.routing"]["dotted_order"].startswith(
+        f"{by_name['buyer_chat_turn']['dotted_order']}."
+    )
+    assert all(operation.inputs == b"{}" for operation in serialized_operations)
+    assert all(operation.outputs == b"{}" for operation in serialized_operations)
+    assert all(set(run["extra"]) == {"metadata"} for run in run_info)
+    assert all(set(run["extra"]["metadata"]) <= SAFE_METADATA_KEYS for run in run_info)
+    assert "LANGCHAIN_UNSAFE_METADATA" not in repr(run_info)
+    assert "person@example.com" not in repr(run_info)
 
 
 def test_tracing_false_never_constructs_langsmith_client(monkeypatch) -> None:
@@ -297,3 +364,92 @@ def test_tracing_false_never_constructs_langsmith_client(monkeypatch) -> None:
     finally:
         set_trace_factory(None)
         get_settings.cache_clear()
+
+
+def test_enabled_factory_disables_sdk_runtime_metadata(monkeypatch) -> None:
+    from app.core.config import get_settings
+
+    captured_kwargs = {}
+
+    class CapturingClient:
+        def __init__(self, **kwargs) -> None:
+            captured_kwargs.update(kwargs)
+
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_pt_abcdefghijklmnop1234")
+    monkeypatch.setattr("langsmith.Client", CapturingClient)
+    get_settings.cache_clear()
+    set_trace_factory(None)
+    try:
+        get_trace_factory()
+        assert captured_kwargs["omit_traced_runtime_info"] is True
+    finally:
+        set_trace_factory(None)
+        get_settings.cache_clear()
+
+
+def test_enabled_factory_disables_sdk_side_sampling(monkeypatch) -> None:
+    from app.core.config import get_settings
+
+    captured_kwargs = {}
+
+    class CapturingClient:
+        def __init__(self, **kwargs) -> None:
+            captured_kwargs.update(kwargs)
+
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_pt_abcdefghijklmnop1234")
+    monkeypatch.setenv("LANGSMITH_TRACING_SAMPLING_RATE", "0.5")
+    monkeypatch.setattr("langsmith.Client", CapturingClient)
+    get_settings.cache_clear()
+    set_trace_factory(None)
+    try:
+        get_trace_factory()
+        assert captured_kwargs["tracing_sampling_rate"] == 1.0
+    finally:
+        set_trace_factory(None)
+        get_settings.cache_clear()
+
+
+async def test_application_sampler_is_sole_decision_before_sdk_serialization(
+    monkeypatch,
+) -> None:
+    from langsmith import Client
+
+    from app.core.config import get_settings
+
+    serialized_operations = []
+
+    def capture_after_sdk_serialization(self, operations, **kwargs) -> None:
+        del self, kwargs
+        serialized_operations.extend(operations)
+
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_pt_abcdefghijklmnop1234")
+    monkeypatch.setenv("LANGSMITH_TRACING_SAMPLING_RATE", "0.5")
+    monkeypatch.setattr("langsmith.client.random.random", lambda: 0.99)
+    monkeypatch.setattr(Client, "_batch_ingest_run_ops", capture_after_sdk_serialization)
+    get_settings.cache_clear()
+    set_trace_factory(None)
+    try:
+        factory = get_trace_factory()
+        for _ in range(2):
+            trace = factory.start_request(
+                name="buyer_chat_turn",
+                request_id="same-request",
+                conversation_id="session-1",
+                thread_id="thread-1",
+                lane="buyer",
+                environment="test",
+            )
+            assert not isinstance(trace, NoopRequestTrace)
+            await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+    finally:
+        set_trace_factory(None)
+        get_settings.cache_clear()
+
+    assert len(serialized_operations) == 2
+    assert all(
+        operation.deserialize_run_info()["name"] == "buyer_chat_turn"
+        for operation in serialized_operations
+    )
