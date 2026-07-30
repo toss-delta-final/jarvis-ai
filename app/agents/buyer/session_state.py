@@ -217,12 +217,44 @@ async def _legacy_root_fence(repo, *, transaction_scoped: bool = True):  # noqa:
         try:
             yield conn
         finally:
-            await conn.rollback()
-            await conn.execute(
-                "SELECT pg_advisory_unlock(hashtextextended(%s, 0))",
-                (_LEGACY_ROOT_FENCE_KEY,),
-            )
-            await conn.commit()
+            cleanup = asyncio.create_task(_release_legacy_root_fence(conn))
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                try:
+                    await cleanup
+                except BaseException:
+                    await _close_fence_connection(conn)
+                raise
+            except BaseException:
+                await _close_fence_connection(conn)
+                raise
+
+
+async def _unlock_legacy_root_fence(conn) -> bool:  # noqa: ANN001
+    row = await (
+        await conn.execute(
+            "SELECT pg_advisory_unlock(hashtextextended(%s, 0))",
+            (_LEGACY_ROOT_FENCE_KEY,),
+        )
+    ).fetchone()
+    return row is not None and bool(_column(row, 0, "pg_advisory_unlock"))
+
+
+async def _release_legacy_root_fence(conn) -> None:  # noqa: ANN001
+    await conn.rollback()
+    if not await _unlock_legacy_root_fence(conn):
+        raise RuntimeError("legacy root advisory unlock was not confirmed")
+    await conn.commit()
+
+
+async def _close_fence_connection(conn) -> None:  # noqa: ANN001
+    close = asyncio.create_task(conn.close())
+    try:
+        await asyncio.shield(close)
+    except asyncio.CancelledError:
+        await close
+        raise
 
 
 async def clear_thread(context_id: str, thread_id: str) -> CleanupCounts:
@@ -516,34 +548,18 @@ async def ensure_thread_adopted(
 
 
 async def run_legacy_gc_batch() -> int:
-    """Delete one bounded first page per legacy root after the durable grace deadline."""
+    """Delete one bounded legacy page behind one database-enforced writer barrier.
+
+    Lock order is legacy-root fence -> migration advisory lock -> legacy table SHARE
+    locks -> non-blocking session advisory locks. Backfill takes migration -> session;
+    runtime touch/claim takes session only. GC never waits for a session lock while it
+    blocks activity writers, which avoids a session/activity lock cycle.
+    """
     repo = session_context._default_repository
     if repo._pool is None:
         return 0
     settings = session_context.get_settings()
     migration_name = "issue-187-session-context"
-    async with repo._pool.connection() as conn:
-        migration = await (
-            await conn.execute(
-                """
-                SELECT gc_completed_at, profile_backfill_completed_at,
-                       grace_deadline <= now() AS grace_elapsed
-                FROM chat_session_migrations
-                WHERE migration_name=%s
-                """,
-                (migration_name,),
-            )
-        ).fetchone()
-    if migration is None or migration[1] is None or not migration[2]:
-        return 0
-    if migration[0] is not None:
-        return 0
-    if await repo.reconcile_legacy_before_gc():
-        # This invocation observed a writer that committed after the completed
-        # backfill pass. Reconciliation runs now, but destructive GC waits for
-        # the next invocation to establish a fresh barrier.
-        return 0
-
     store = await pg_store.get_store()
     roots = (
         (_LEGACY_FILTER_ROOT, "filters_deleted"),
@@ -551,145 +567,212 @@ async def run_legacy_gc_batch() -> int:
         (_LEGACY_REVERT_ROOT, "revert_deleted"),
     )
     deleted_total = 0
-    all_empty = True
-    async with _legacy_root_fence(repo) as fence_conn:
-        for root, column in roots:
-            deleted, empty, deleted_keys = await _delete_legacy_root_page(
-                repo,
-                store,
-                root,
-                column,
-                settings.session_lifecycle_gc_batch_size,
-                fence_conn=fence_conn,
-            )
-            deleted_total += deleted
-            all_empty = all_empty and empty
-            if root == _LEGACY_CART_ROOT:
-                for key in deleted_keys:
-                    cart_state._last_reco_names.pop(key)
-            if deleted and getattr(store, "conn", None) is None:
-                await fence_conn.execute(
-                    f"UPDATE chat_session_migrations SET {column}={column}+%s, "
-                    "updated_at=now() WHERE migration_name=%s",
-                    (deleted, migration_name),
-                )
+    reopened = False
+    cart_keys_to_drop: list[str] = []
 
-    # Quarantined profile rows have no authoritative owner. Their raw identifiers stay
-    # in durable rows only and are never emitted in logs.
-    async with repo._pool.connection() as conn:
-        conflicts = await (
-            await conn.execute(
+    async with _legacy_root_fence(repo) as fence_conn:
+        await fence_conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+            ("migration:issue-187-session-context",),
+        )
+        if getattr(store, "conn", None) is not None:
+            await fence_conn.execute("LOCK TABLE profile_session_activity, store IN SHARE MODE")
+        else:
+            await fence_conn.execute("LOCK TABLE profile_session_activity IN SHARE MODE")
+
+        migration = await (
+            await fence_conn.execute(
                 """
-                SELECT conflict_id, session_id, owner_id
-                FROM chat_session_migration_conflicts
-                WHERE resolution_status='quarantined'
-                ORDER BY conflict_id
-                LIMIT %s
+                SELECT gc_completed_at, profile_backfill_completed_at,
+                       grace_deadline <= now() AS grace_elapsed
+                FROM chat_session_migrations
+                WHERE migration_name=%s
+                FOR UPDATE
                 """,
-                (settings.session_lifecycle_gc_batch_size,),
-            )
-        ).fetchall()
-    for conflict_id, session_id, owner_id in conflicts:
-        async with repo.lock_session(session_id) as uow:
-            conflict = await (
-                await uow.conn.execute(
-                    "SELECT resolution_status FROM chat_session_migration_conflicts "
-                    "WHERE conflict_id=%s FOR UPDATE",
-                    (conflict_id,),
-                )
-            ).fetchone()
-            if conflict is None or conflict[0] != "quarantined":
-                continue
-            context = await (
-                await uow.conn.execute(
-                    "SELECT context_id, owner_type, owner_id, authority_source "
-                    "FROM chat_session_contexts WHERE session_id=%s FOR UPDATE",
-                    (session_id,),
-                )
-            ).fetchone()
-            if (
-                context is not None
-                and context[1] == "member"
-                and str(context[2]) == str(owner_id)
-                and context[3] == "runtime"
-            ):
-                await uow.conn.execute(
-                    """
-                    UPDATE chat_session_migration_conflicts
-                    SET resolution_status='resolved', resolved_context_id=%s,
-                        updated_at=now()
-                    WHERE conflict_id=%s AND resolution_status='quarantined'
-                    """,
-                    (context[0], conflict_id),
-                )
-                continue
-            key = f"{owner_id}:{session_id}"
-            await _delete(store, "session_ctx", key, "buffer")
-            await uow.conn.execute(
-                "DELETE FROM profile_session_activity WHERE user_id=%s AND session_id=%s",
-                (int(owner_id), session_id),
-            )
-            await uow.conn.execute(
-                """
-                UPDATE chat_session_migration_conflicts
-                SET resolution_status='discarded',
-                    profile_buffer_discarded_at=COALESCE(
-                        profile_buffer_discarded_at, now()
-                    ),
-                    updated_at=now()
-                WHERE conflict_id=%s AND resolution_status='quarantined'
-                """,
-                (conflict_id,),
-            )
-            deleted_total += 1
-    async with repo._pool.connection() as conn:
-        deleted_activity = await (
-            await conn.execute(
-                """
-                WITH page AS (
-                    SELECT a.ctid
-                    FROM profile_session_activity a
-                    WHERE EXISTS (
-                        SELECT 1 FROM chat_session_contexts c
-                        WHERE c.session_id=a.session_id
-                    )
-                       OR EXISTS (
-                        SELECT 1 FROM chat_session_migration_conflicts q
-                        WHERE q.session_id=a.session_id
-                          AND q.owner_id=a.user_id::text
-                    )
-                    ORDER BY user_id, session_id
-                    LIMIT %s
-                )
-                DELETE FROM profile_session_activity a
-                USING page
-                WHERE a.ctid=page.ctid
-                RETURNING a.user_id
-                """,
-                (settings.session_lifecycle_gc_batch_size,),
-            )
-        ).fetchall()
-        deleted_total += len(deleted_activity)
-        remaining_activity = await (
-            await conn.execute("SELECT 1 FROM profile_session_activity LIMIT 1")
-        ).fetchone()
-        remaining_conflict = await (
-            await conn.execute(
-                "SELECT 1 FROM chat_session_migration_conflicts "
-                "WHERE resolution_status='quarantined' LIMIT 1"
+                (migration_name,),
             )
         ).fetchone()
-        if all_empty and remaining_conflict is None and remaining_activity is None:
-            # Fresh emptiness was observed after deletes; only now close the GC gate.
-            await conn.execute(
+        if migration is None or migration[1] is None or not migration[2]:
+            return 0
+        if migration[0] is not None:
+            return 0
+
+        if await session_context._find_actionable_legacy_activity(fence_conn) is not None:
+            await fence_conn.execute(
                 """
                 UPDATE chat_session_migrations
-                SET gc_completed_at=COALESCE(gc_completed_at, now()), updated_at=now()
+                SET profile_backfill_cursor='',
+                    profile_backfill_owner_cursor=-1,
+                    profile_backfill_completed_at=NULL,
+                    gc_completed_at=NULL,
+                    profile_backfill_pass=profile_backfill_pass+1,
+                    updated_at=now()
                 WHERE migration_name=%s
                 """,
                 (migration_name,),
             )
+            reopened = True
+        else:
+            all_empty = True
+            for root, column in roots:
+                deleted, empty, deleted_keys = await _delete_legacy_root_page(
+                    repo,
+                    store,
+                    root,
+                    column,
+                    settings.session_lifecycle_gc_batch_size,
+                    fence_conn=fence_conn,
+                )
+                deleted_total += deleted
+                all_empty = all_empty and empty
+                if root == _LEGACY_CART_ROOT:
+                    cart_keys_to_drop.extend(deleted_keys)
+                if deleted and getattr(store, "conn", None) is None:
+                    await fence_conn.execute(
+                        f"UPDATE chat_session_migrations SET {column}={column}+%s, "
+                        "updated_at=now() WHERE migration_name=%s",
+                        (deleted, migration_name),
+                    )
+
+            conflicts = await (
+                await fence_conn.execute(
+                    """
+                    SELECT conflict_id, session_id, owner_id
+                    FROM chat_session_migration_conflicts
+                    WHERE resolution_status='quarantined'
+                    ORDER BY conflict_id
+                    LIMIT %s
+                    """,
+                    (settings.session_lifecycle_gc_batch_size,),
+                )
+            ).fetchall()
+            for conflict_id, session_id, owner_id in conflicts:
+                if not await _try_session_lock_for_gc(fence_conn, session_id):
+                    continue
+                context = await (
+                    await fence_conn.execute(
+                        "SELECT context_id, owner_type, owner_id, authority_source "
+                        "FROM chat_session_contexts WHERE session_id=%s FOR UPDATE",
+                        (session_id,),
+                    )
+                ).fetchone()
+                conflict = await (
+                    await fence_conn.execute(
+                        "SELECT resolution_status FROM chat_session_migration_conflicts "
+                        "WHERE conflict_id=%s FOR UPDATE",
+                        (conflict_id,),
+                    )
+                ).fetchone()
+                if conflict is None or conflict[0] != "quarantined":
+                    continue
+                if (
+                    context is not None
+                    and context[1] == "member"
+                    and str(context[2]) == str(owner_id)
+                    and context[3] == "runtime"
+                ):
+                    await fence_conn.execute(
+                        """
+                        UPDATE chat_session_migration_conflicts
+                        SET resolution_status='resolved', resolved_context_id=%s,
+                            updated_at=now()
+                        WHERE conflict_id=%s AND resolution_status='quarantined'
+                        """,
+                        (context[0], conflict_id),
+                    )
+                    continue
+                key = f"{owner_id}:{session_id}"
+                if getattr(store, "conn", None) is not None:
+                    await fence_conn.execute(
+                        "DELETE FROM store WHERE prefix=%s AND key=%s",
+                        (f"session_ctx.{key}", "buffer"),
+                    )
+                else:
+                    await _delete(store, "session_ctx", key, "buffer")
+                await fence_conn.execute(
+                    "DELETE FROM profile_session_activity WHERE user_id=%s AND session_id=%s",
+                    (int(owner_id), session_id),
+                )
+                await fence_conn.execute(
+                    """
+                    UPDATE chat_session_migration_conflicts
+                    SET resolution_status='discarded',
+                        profile_buffer_discarded_at=COALESCE(
+                            profile_buffer_discarded_at, now()
+                        ),
+                        updated_at=now()
+                    WHERE conflict_id=%s AND resolution_status='quarantined'
+                    """,
+                    (conflict_id,),
+                )
+                deleted_total += 1
+
+            deleted_activity = await (
+                await fence_conn.execute(
+                    """
+                    WITH page AS (
+                        SELECT a.ctid
+                        FROM profile_session_activity a
+                        WHERE EXISTS (
+                            SELECT 1 FROM chat_session_contexts c
+                            WHERE c.session_id=a.session_id
+                        )
+                           OR EXISTS (
+                            SELECT 1 FROM chat_session_migration_conflicts q
+                            WHERE q.session_id=a.session_id
+                              AND q.owner_id=a.user_id::text
+                        )
+                        ORDER BY user_id, session_id
+                        LIMIT %s
+                    )
+                    DELETE FROM profile_session_activity a
+                    USING page
+                    WHERE a.ctid=page.ctid
+                    RETURNING a.user_id
+                    """,
+                    (settings.session_lifecycle_gc_batch_size,),
+                )
+            ).fetchall()
+            deleted_total += len(deleted_activity)
+            remaining_activity = await (
+                await fence_conn.execute("SELECT 1 FROM profile_session_activity LIMIT 1")
+            ).fetchone()
+            remaining_conflict = await (
+                await fence_conn.execute(
+                    "SELECT 1 FROM chat_session_migration_conflicts "
+                    "WHERE resolution_status='quarantined' LIMIT 1"
+                )
+            ).fetchone()
+            if all_empty and remaining_conflict is None and remaining_activity is None:
+                await _mark_legacy_gc_completed(fence_conn, migration_name)
+
+    if reopened:
+        await repo.backfill_legacy_activity()
+        return 0
+    for key in cart_keys_to_drop:
+        cart_state._last_reco_names.pop(key)
     return deleted_total
+
+
+async def _try_session_lock_for_gc(conn, session_id: str) -> bool:  # noqa: ANN001
+    row = await (
+        await conn.execute(
+            "SELECT pg_try_advisory_xact_lock(hashtextextended('chat-session:' || %s, 0))",
+            (session_id,),
+        )
+    ).fetchone()
+    return row is not None and bool(row[0])
+
+
+async def _mark_legacy_gc_completed(conn, migration_name: str) -> None:  # noqa: ANN001
+    await conn.execute(
+        """
+        UPDATE chat_session_migrations
+        SET gc_completed_at=COALESCE(gc_completed_at, now()), updated_at=now()
+        WHERE migration_name=%s
+        """,
+        (migration_name,),
+    )
 
 
 async def get_legacy_gc_counters() -> tuple[int, int, int]:

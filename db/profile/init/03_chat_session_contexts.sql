@@ -164,6 +164,36 @@ BEGIN
 END
 $$;
 
+CREATE OR REPLACE FUNCTION reopen_session_context_gc_after_legacy_activity()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    UPDATE chat_session_migrations
+    SET gc_completed_at=NULL, updated_at=now()
+    WHERE migration_name='issue-187-session-context'
+      AND gc_completed_at IS NOT NULL;
+    RETURN NULL;
+END
+$$;
+
+DO $$
+BEGIN
+    IF to_regclass('profile_session_activity') IS NOT NULL THEN
+        IF NOT EXISTS (
+           SELECT 1 FROM pg_trigger
+           WHERE tgname='trg_reopen_session_context_gc_after_legacy_activity'
+             AND tgrelid=to_regclass('profile_session_activity')
+        ) THEN
+            CREATE TRIGGER trg_reopen_session_context_gc_after_legacy_activity
+            AFTER INSERT OR UPDATE ON profile_session_activity
+            FOR EACH STATEMENT
+            EXECUTE FUNCTION reopen_session_context_gc_after_legacy_activity();
+        END IF;
+    END IF;
+END
+$$;
+
 ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS context_id uuid;
 ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS session_id text;
 

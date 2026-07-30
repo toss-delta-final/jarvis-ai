@@ -1283,6 +1283,251 @@ async def test_gc_statement_barrier_reconciles_late_writer_before_any_root_delet
         )
 
 
+async def test_gc_empty_reconciliation_holds_writer_barrier_through_destructive_phase(
+    pg_repo, monkeypatch
+) -> None:
+    repo, pool, prefix = pg_repo
+    session_id = prefix + "-gc-writer-barrier"
+    owner_id = uuid.uuid4().int % 1_000_000_000 + 1_000_000_000
+    root_key = prefix + "-gc-writer-root"
+    monkeypatch.setattr(session_context_module, "_default_repository", repo)
+    async with pool.connection() as conn:
+        await conn.execute(
+            "DELETE FROM chat_session_migrations WHERE migration_name='issue-187-session-context'"
+        )
+    await repo.backfill_legacy_activity()
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_migrations "
+            "SET grace_deadline=now()-interval '1 second', gc_completed_at=NULL "
+            "WHERE migration_name='issue-187-session-context'"
+        )
+
+    empty_seen = asyncio.Event()
+    resume_gc = asyncio.Event()
+    original_find = session_context_module._find_actionable_legacy_activity
+
+    async def pause_after_empty(conn):  # noqa: ANN001
+        result = await original_find(conn)
+        if result is None:
+            empty_seen.set()
+            await resume_gc.wait()
+        return result
+
+    monkeypatch.setattr(
+        session_context_module, "_find_actionable_legacy_activity", pause_after_empty
+    )
+    async with AsyncPostgresStore.from_conn_string(get_settings().profile_db_url) as store:
+        await store.setup()
+        pg_store_module.set_store(store)
+        try:
+            gc_task = asyncio.create_task(buyer_session_state.run_legacy_gc_batch())
+            await asyncio.wait_for(empty_seen.wait(), timeout=2)
+
+            async def late_writer() -> None:
+                await store.aput(("buyer_thread_filters", root_key), "filters", {"late": True})
+                async with pool.connection() as conn:
+                    await conn.execute(
+                        "INSERT INTO profile_session_activity "
+                        "(user_id, session_id, status) VALUES (%s, %s, 'active')",
+                        (owner_id, session_id),
+                    )
+
+            writer_task = asyncio.create_task(late_writer())
+            await asyncio.sleep(0.1)
+            assert not writer_task.done()
+            async with pool.connection() as reader:
+                readable = await (
+                    await reader.execute("SELECT count(*) FROM profile_session_activity")
+                ).fetchone()
+            assert readable is not None
+
+            resume_gc.set()
+            await asyncio.wait_for(gc_task, timeout=5)
+            await asyncio.wait_for(writer_task, timeout=5)
+            assert await store.aget(("buyer_thread_filters", root_key), "filters") is not None
+        finally:
+            resume_gc.set()
+            for task_name in ("gc_task", "writer_task"):
+                task = locals().get(task_name)
+                if task is not None and not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+            await store.adelete(("buyer_thread_filters", root_key), "filters")
+            pg_store_module.reset_store()
+
+    async with pool.connection() as conn:
+        activity = await (
+            await conn.execute(
+                "SELECT status FROM profile_session_activity WHERE user_id=%s AND session_id=%s",
+                (owner_id, session_id),
+            )
+        ).fetchone()
+        marker = await (
+            await conn.execute(
+                "SELECT gc_completed_at FROM chat_session_migrations "
+                "WHERE migration_name='issue-187-session-context'"
+            )
+        ).fetchone()
+        await conn.execute(
+            "DELETE FROM profile_session_activity WHERE session_id=%s", (session_id,)
+        )
+    assert activity == ("active",)
+    assert marker == (None,)
+
+
+async def test_gc_completion_marker_holds_writer_barrier_until_commit(pg_repo, monkeypatch) -> None:
+    repo, pool, prefix = pg_repo
+    session_id = prefix + "-gc-completion-barrier"
+    owner_id = uuid.uuid4().int % 1_000_000_000 + 1_000_000_000
+    root_key = prefix + "-gc-completion-root"
+    monkeypatch.setattr(session_context_module, "_default_repository", repo)
+    async with pool.connection() as conn:
+        await conn.execute(
+            "DELETE FROM chat_session_migrations WHERE migration_name='issue-187-session-context'"
+        )
+    await repo.backfill_legacy_activity()
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_migrations "
+            "SET grace_deadline=now()-interval '1 second', gc_completed_at=NULL "
+            "WHERE migration_name='issue-187-session-context'"
+        )
+
+    before_marker = asyncio.Event()
+    resume_marker = asyncio.Event()
+    original_mark = getattr(buyer_session_state, "_mark_legacy_gc_completed", None)
+
+    async def paused_mark(conn, migration_name):  # noqa: ANN001
+        before_marker.set()
+        await resume_marker.wait()
+        assert original_mark is not None
+        await original_mark(conn, migration_name)
+
+    monkeypatch.setattr(
+        buyer_session_state, "_mark_legacy_gc_completed", paused_mark, raising=False
+    )
+    async with AsyncPostgresStore.from_conn_string(get_settings().profile_db_url) as store:
+        await store.setup()
+        pg_store_module.set_store(store)
+        try:
+            gc_task = asyncio.create_task(buyer_session_state.run_legacy_gc_batch())
+            await asyncio.wait_for(before_marker.wait(), timeout=2)
+
+            async def late_writer() -> None:
+                await store.aput(("buyer_thread_filters", root_key), "filters", {"late": True})
+                async with pool.connection() as conn:
+                    await conn.execute(
+                        "INSERT INTO profile_session_activity "
+                        "(user_id, session_id, status) VALUES (%s, %s, 'active')",
+                        (owner_id, session_id),
+                    )
+
+            writer_task = asyncio.create_task(late_writer())
+            await asyncio.sleep(0.1)
+            assert not writer_task.done()
+            resume_marker.set()
+            await asyncio.wait_for(gc_task, timeout=5)
+            await asyncio.wait_for(writer_task, timeout=5)
+            assert await store.aget(("buyer_thread_filters", root_key), "filters") is not None
+        finally:
+            resume_marker.set()
+            for task_name in ("gc_task", "writer_task"):
+                task = locals().get(task_name)
+                if task is not None and not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+            await store.adelete(("buyer_thread_filters", root_key), "filters")
+            pg_store_module.reset_store()
+
+    async with pool.connection() as conn:
+        activity = await (
+            await conn.execute(
+                "SELECT status FROM profile_session_activity WHERE user_id=%s AND session_id=%s",
+                (owner_id, session_id),
+            )
+        ).fetchone()
+        marker = await (
+            await conn.execute(
+                "SELECT gc_completed_at FROM chat_session_migrations "
+                "WHERE migration_name='issue-187-session-context'"
+            )
+        ).fetchone()
+        await conn.execute(
+            "DELETE FROM profile_session_activity WHERE session_id=%s", (session_id,)
+        )
+    assert activity == ("active",)
+    assert marker == (None,)
+
+
+async def test_backfill_takes_session_lock_before_no_row_context_insert(pg_repo) -> None:
+    repo, pool, prefix = pg_repo
+    session_id = prefix + "-backfill-claim-race"
+    legacy_owner = uuid.uuid4().int % 1_000_000_000 + 1_000_000_000
+    signed_owner = legacy_owner + 1
+    async with pool.connection() as conn:
+        await conn.execute(
+            "DELETE FROM chat_session_migrations WHERE migration_name='issue-187-session-context'"
+        )
+        await conn.execute(
+            "INSERT INTO profile_session_activity "
+            "(user_id, session_id, status) VALUES (%s, %s, 'active')",
+            (legacy_owner, session_id),
+        )
+
+    try:
+        async with pool.connection() as claim_conn:
+            async with claim_conn.transaction():
+                await session_context_module._advisory_lock(claim_conn, session_id)
+                no_row = await (
+                    await claim_conn.execute(
+                        "SELECT context_id FROM chat_session_contexts WHERE session_id=%s",
+                        (session_id,),
+                    )
+                ).fetchone()
+                assert no_row is None
+
+                backfill_task = asyncio.create_task(repo.backfill_legacy_activity())
+                await asyncio.sleep(0.1)
+                assert not backfill_task.done()
+
+                outcome = await repo._claim_owner_on_connection(
+                    claim_conn, session_id, "signed-guest", signed_owner
+                )
+                assert outcome.context.owner_id == str(signed_owner)
+        await asyncio.wait_for(backfill_task, timeout=5)
+
+        async with pool.connection() as conn:
+            authority = await (
+                await conn.execute(
+                    "SELECT owner_id, authority_source FROM chat_session_contexts "
+                    "WHERE session_id=%s",
+                    (session_id,),
+                )
+            ).fetchone()
+            conflict = await (
+                await conn.execute(
+                    "SELECT resolution_status FROM chat_session_migration_conflicts "
+                    "WHERE session_id=%s AND owner_id=%s",
+                    (session_id, str(legacy_owner)),
+                )
+            ).fetchone()
+        assert authority == (str(signed_owner), "runtime")
+        assert conflict == ("quarantined",)
+    finally:
+        if "backfill_task" in locals() and not backfill_task.done():
+            backfill_task.cancel()
+            await asyncio.gather(backfill_task, return_exceptions=True)
+        async with pool.connection() as conn:
+            await conn.execute(
+                "DELETE FROM profile_session_activity WHERE session_id=%s", (session_id,)
+            )
+            await conn.execute(
+                "DELETE FROM chat_session_migration_conflicts WHERE session_id=%s",
+                (session_id,),
+            )
+
+
 async def test_signed_touch_resolves_quarantine_before_gc_discards_other_owner(
     pg_repo, monkeypatch
 ) -> None:
@@ -1389,16 +1634,14 @@ async def test_gc_rechecks_quarantine_after_late_authoritative_touch(pg_repo, mo
 
     selected = asyncio.Event()
     resume_gc = asyncio.Event()
-    original_lock_session = repo.lock_session
+    original_try_lock = buyer_session_state._try_session_lock_for_gc
 
-    @asynccontextmanager
-    async def paused_lock_session(locked_session_id: str):
+    async def paused_try_lock(conn, locked_session_id: str):  # noqa: ANN001
         selected.set()
         await resume_gc.wait()
-        async with original_lock_session(locked_session_id) as uow:
-            yield uow
+        return await original_try_lock(conn, locked_session_id)
 
-    monkeypatch.setattr(repo, "lock_session", paused_lock_session)
+    monkeypatch.setattr(buyer_session_state, "_try_session_lock_for_gc", paused_try_lock)
     async with AsyncPostgresStore.from_conn_string(get_settings().profile_db_url) as store:
         await store.setup()
         pg_store_module.set_store(store)

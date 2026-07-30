@@ -35,7 +35,7 @@ from app.core import pg_store as pg_store_module
 from app.core import session_context
 from app.core.config import get_settings
 from app.core.pg_resilience import hardened_pg_conninfo, state_store_pool_config
-from app.core.session_context import SessionContext
+from app.core.session_context import SessionContext, SessionContextRepository
 from app.schemas.spring import CartOption, ProductSearchFilters
 
 pytestmark = pytest.mark.integration
@@ -521,6 +521,140 @@ async def test_pg_root_gc_fence_blocks_adoption_until_all_roots_are_deleted(
         await conn.execute("DELETE FROM chat_session_contexts WHERE context_id=%s", (context_id,))
         await pool.close()
         session_context.reset()
+
+
+async def test_pg_session_fence_unlock_is_cancellation_safe(pg_store, monkeypatch) -> None:
+    pool = AsyncConnectionPool(get_settings().profile_db_url, open=False, min_size=1, max_size=2)
+    await pool.open(wait=True)
+    repo = SessionContextRepository(pool=pool)
+    unlock_started = asyncio.Event()
+    resume_unlock = asyncio.Event()
+    original_unlock = getattr(session_state_module, "_unlock_legacy_root_fence", None)
+
+    async def paused_unlock(conn):  # noqa: ANN001
+        unlock_started.set()
+        await resume_unlock.wait()
+        assert original_unlock is not None
+        return await original_unlock(conn)
+
+    monkeypatch.setattr(
+        session_state_module, "_unlock_legacy_root_fence", paused_unlock, raising=False
+    )
+
+    async def acquire_and_release() -> None:
+        async with session_state_module._legacy_root_fence(repo, transaction_scoped=False):
+            pass
+
+    task = asyncio.create_task(acquire_and_release())
+    try:
+        await asyncio.wait_for(unlock_started.wait(), timeout=2)
+        task.cancel()
+        resume_unlock.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=2)
+
+        async with pool.connection() as conn:
+            acquired = await (
+                await conn.execute(
+                    "SELECT pg_try_advisory_lock(hashtextextended(%s, 0))",
+                    (session_state_module._LEGACY_ROOT_FENCE_KEY,),
+                )
+            ).fetchone()
+            assert acquired == (True,)
+            released = await (
+                await conn.execute(
+                    "SELECT pg_advisory_unlock(hashtextextended(%s, 0))",
+                    (session_state_module._LEGACY_ROOT_FENCE_KEY,),
+                )
+            ).fetchone()
+            assert released == (True,)
+    finally:
+        resume_unlock.set()
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await pool.close()
+
+
+async def test_pg_session_fence_discards_connection_when_unlock_returns_false(
+    pg_store, monkeypatch
+) -> None:
+    pool = AsyncConnectionPool(get_settings().profile_db_url, open=False, min_size=1, max_size=2)
+    await pool.open(wait=True)
+    repo = SessionContextRepository(pool=pool)
+
+    async def failed_unlock(conn):  # noqa: ANN001
+        return False
+
+    monkeypatch.setattr(
+        session_state_module, "_unlock_legacy_root_fence", failed_unlock, raising=False
+    )
+    try:
+        fence_backend_pid = None
+        with pytest.raises(RuntimeError, match="legacy root advisory unlock"):
+            async with session_state_module._legacy_root_fence(
+                repo, transaction_scoped=False
+            ) as fence_conn:
+                fence_backend_pid = fence_conn.info.backend_pid
+
+        async with pool.connection() as conn:
+            assert conn.info.backend_pid != fence_backend_pid
+            acquired = await (
+                await conn.execute(
+                    "SELECT pg_try_advisory_lock(hashtextextended(%s, 0))",
+                    (session_state_module._LEGACY_ROOT_FENCE_KEY,),
+                )
+            ).fetchone()
+            assert acquired == (True,)
+            released = await (
+                await conn.execute(
+                    "SELECT pg_advisory_unlock(hashtextextended(%s, 0))",
+                    (session_state_module._LEGACY_ROOT_FENCE_KEY,),
+                )
+            ).fetchone()
+            assert released == (True,)
+    finally:
+        await pool.close()
+
+
+async def test_pg_session_fence_discards_connection_after_unlock_query_failure(
+    pg_store, monkeypatch
+) -> None:
+    pool = AsyncConnectionPool(get_settings().profile_db_url, open=False, min_size=1, max_size=2)
+    await pool.open(wait=True)
+    repo = SessionContextRepository(pool=pool)
+
+    async def failed_unlock(conn):  # noqa: ANN001
+        await conn.execute("SELECT missing_legacy_root_unlock_function()")
+        return True
+
+    monkeypatch.setattr(session_state_module, "_unlock_legacy_root_fence", failed_unlock)
+    try:
+        fence_backend_pid = None
+        with pytest.raises(Exception, match="missing_legacy_root_unlock_function"):
+            async with session_state_module._legacy_root_fence(
+                repo, transaction_scoped=False
+            ) as fence_conn:
+                fence_backend_pid = fence_conn.info.backend_pid
+
+        async with pool.connection() as conn:
+            assert conn.info.backend_pid != fence_backend_pid
+            acquired = await (
+                await conn.execute(
+                    "SELECT pg_try_advisory_lock(hashtextextended(%s, 0))",
+                    (session_state_module._LEGACY_ROOT_FENCE_KEY,),
+                )
+            ).fetchone()
+            assert acquired == (True,)
+            released = await (
+                await conn.execute(
+                    "SELECT pg_advisory_unlock(hashtextextended(%s, 0))",
+                    (session_state_module._LEGACY_ROOT_FENCE_KEY,),
+                )
+            ).fetchone()
+            assert released == (True,)
+    finally:
+        await pool.close()
 
 
 async def test_revert_store_add_concurrent_calls_no_lost_update(pg_store) -> None:

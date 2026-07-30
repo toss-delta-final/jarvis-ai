@@ -315,6 +315,10 @@ class SessionContextRepository:
                     for row in rows:
                         by_session.setdefault(row[1], []).append(row)
                     for session_id, candidates in by_session.items():
+                        # Lock order: migration advisory lock -> session advisory lock.
+                        # Runtime touch/claim takes only the session lock, so it never
+                        # waits on migration state while holding the lower-order lock.
+                        await _advisory_lock(conn, session_id)
                         existing = await (
                             await conn.execute(
                                 "SELECT context_id, owner_type, owner_id, authority_source "
@@ -436,46 +440,6 @@ class SessionContextRepository:
             migrated,
             conflicts,
         )
-
-    async def reconcile_legacy_before_gc(self) -> bool:
-        """Reconcile activity committed after the final backfill statement barrier."""
-        if self._pool is None:
-            return False
-        migration_name = "issue-187-session-context"
-        reopened = False
-        async with self._pool.connection() as conn:
-            async with conn.transaction():
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                    ("migration:issue-187-session-context",),
-                )
-                migration = await (
-                    await conn.execute(
-                        "SELECT profile_backfill_completed_at "
-                        "FROM chat_session_migrations WHERE migration_name=%s FOR UPDATE",
-                        (migration_name,),
-                    )
-                ).fetchone()
-                if migration is None or migration[0] is None:
-                    return False
-                if await _find_actionable_legacy_activity(conn) is not None:
-                    await conn.execute(
-                        """
-                        UPDATE chat_session_migrations
-                        SET profile_backfill_cursor='',
-                            profile_backfill_owner_cursor=-1,
-                            profile_backfill_completed_at=NULL,
-                            gc_completed_at=NULL,
-                            profile_backfill_pass=profile_backfill_pass+1,
-                            updated_at=now()
-                        WHERE migration_name=%s
-                        """,
-                        (migration_name,),
-                    )
-                    reopened = True
-        if reopened:
-            await self.backfill_legacy_activity()
-        return reopened
 
     async def touch(self, input: BuyerSessionInput) -> SessionContext:
         if self._pool is not None:
