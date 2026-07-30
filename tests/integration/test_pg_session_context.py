@@ -18,6 +18,7 @@ from app.core.session_context import (
     BuyerSessionInput,
     SessionClaimConflict,
     SessionContextRepository,
+    SessionContextUnitOfWork,
     SessionFinalizing,
 )
 from app.core.session_lifecycle import SessionLifecycleCoordinator
@@ -124,7 +125,11 @@ async def test_touch_invalidates_idle_claim_and_owner_claim_records_history(pg_r
             "WHERE context_id = %s",
             (before.context_id,),
         )
-    [idle] = await repo.claim_expired_contexts(10, 30, 10)
+    idle = next(
+        claim
+        for claim in await repo.claim_expired_contexts(10, 30, 100)
+        if claim.session_id == session_id
+    )
     after = await repo.touch(BuyerSessionInput(session_id, "T2", "guest", "G1"))
     assert after.generation == idle.generation + 1
     outcome = await repo.claim_owner(session_id, "G1", 7)
@@ -879,3 +884,214 @@ async def test_pg_actual_partial_terminal_delete_recovers_and_keeps_terminal(
             await _delete_seeded_v2_state(store, target_key)
             await _delete_seeded_v2_state(store, other_key)
             pg_store_module.reset_store()
+
+
+async def test_pg_failed_abandon_is_self_healed_by_public_sweep(
+    pg_repo,
+    monkeypatch,
+) -> None:
+    repo, pool, prefix = pg_repo
+    session_id = prefix + "-failed-abandon"
+    context = await repo.touch(BuyerSessionInput(session_id, "T1", "member", "7"))
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_contexts SET last_activity_at=now()-interval '1 hour' "
+            "WHERE context_id=%s",
+            (context.context_id,),
+        )
+    [orphan] = await repo.claim_expired_contexts(10, 30, 1)
+
+    class BrokenProfile:
+        async def get_session_ctx_snapshot(self, key: str):
+            raise RuntimeError("snapshot unavailable")
+
+    async def failed_abandon(self, claim):
+        raise RuntimeError("lifecycle delete unavailable")
+
+    monkeypatch.setattr(
+        SessionContextUnitOfWork,
+        "abandon_idle_prephase",
+        failed_abandon,
+    )
+    outcome = await SessionLifecycleCoordinator(
+        repo,
+        ActiveStreamRegistry(),
+        profile_store_factory=BrokenProfile,
+    ).process_idle_transient(orphan)
+    assert outcome.status == "retryable"
+    assert (await repo.get_context(session_id)).state == "active"
+    assert (await repo.get_finalization(orphan.finalization_id)).claim_token == (orphan.claim_token)
+
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_finalizations SET lease_expires_at=now()-interval '1 second' "
+            "WHERE finalization_id=%s",
+            (orphan.finalization_id,),
+        )
+    restarted = SessionContextRepository(pool=pool)
+    monkeypatch.setattr(session_context_module, "_default_repository", restarted)
+
+    async def empty_profile_factory():
+        return _EmptyProfile()
+
+    monkeypatch.setattr(session_lifecycle_module, "get_profile_store", empty_profile_factory)
+    result = await session_lifecycle_module.run_session_context_sweep()
+
+    assert result.completed == 1
+    completed = await restarted.get_finalization(orphan.finalization_id)
+    assert completed.transient_status == "completed"
+    assert (await restarted.get_context(session_id)).state == "idle_expired"
+
+
+async def test_pg_claim_only_process_loss_is_reissued_by_public_fresh_stage(
+    pg_repo,
+    monkeypatch,
+) -> None:
+    repo, pool, prefix = pg_repo
+    session_id = prefix + "-claim-only-loss"
+    context = await repo.touch(BuyerSessionInput(session_id, "T1", "guest", "G1"))
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_contexts SET last_activity_at=now()-interval '1 hour' "
+            "WHERE context_id=%s",
+            (context.context_id,),
+        )
+    [orphan] = await repo.claim_expired_contexts(10, 30, 1)
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_finalizations SET lease_expires_at=now()-interval '1 second' "
+            "WHERE finalization_id=%s",
+            (orphan.finalization_id,),
+        )
+
+    restarted = SessionContextRepository(pool=pool)
+    monkeypatch.setattr(session_context_module, "_default_repository", restarted)
+    result = await session_lifecycle_module.run_session_context_sweep()
+
+    assert result.completed == 1
+    completed = await restarted.get_finalization(orphan.finalization_id)
+    assert completed.transient_status == "completed"
+    assert (await restarted.get_context(session_id)).state == "idle_expired"
+
+
+async def test_pg_abandon_rejects_same_token_with_changed_lease(pg_repo) -> None:
+    repo, pool, prefix = pg_repo
+    session_id = prefix + "-lease-fence"
+    context = await repo.touch(BuyerSessionInput(session_id, "T1", "guest", "G1"))
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_contexts SET last_activity_at=now()-interval '1 hour' "
+            "WHERE context_id=%s",
+            (context.context_id,),
+        )
+    [stale] = await repo.claim_expired_contexts(10, 30, 1)
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_finalizations "
+            "SET lease_expires_at=lease_expires_at+interval '1 second' "
+            "WHERE finalization_id=%s",
+            (stale.finalization_id,),
+        )
+
+    async with repo.lock_session(session_id) as uow:
+        assert await uow.abandon_idle_prephase(stale) is False
+
+    remaining = await repo.get_finalization(stale.finalization_id)
+    assert remaining.claim_token == stale.claim_token
+    assert remaining.lease_expires_at != stale.lease_expires_at
+
+
+async def test_pg_concurrent_sweeps_reissue_one_orphan_to_one_fresh_winner(
+    pg_repo,
+) -> None:
+    repo, pool, prefix = pg_repo
+    session_id = prefix + "-orphan-race"
+    context = await repo.touch(BuyerSessionInput(session_id, "T1", "guest", "G1"))
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_contexts SET last_activity_at=now()-interval '1 hour' "
+            "WHERE context_id=%s",
+            (context.context_id,),
+        )
+    [orphan] = await repo.claim_expired_contexts(10, 30, 1)
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_finalizations SET lease_expires_at=now()-interval '1 second' "
+            "WHERE finalization_id=%s",
+            (orphan.finalization_id,),
+        )
+
+    first, second = await asyncio.gather(
+        repo.claim_expired_contexts(10, 30, 1),
+        repo.claim_expired_contexts(10, 30, 1),
+    )
+    winners = [claim for batch in (first, second) for claim in batch]
+
+    assert len(winners) == 1
+    winner = winners[0]
+    assert winner.finalization_id == orphan.finalization_id
+    assert winner.claim_token != orphan.claim_token
+    async with pool.connection() as conn:
+        rows = await (
+            await conn.execute(
+                "SELECT finalization_id, claim_token FROM chat_session_finalizations "
+                "WHERE context_id=%s AND generation=%s AND reason='idle'",
+                (context.context_id, context.generation),
+            )
+        ).fetchall()
+    assert [(str(row[0]), row[1]) for row in rows] == [(winner.finalization_id, winner.claim_token)]
+
+
+async def test_pg_self_healing_preserves_started_and_superseded_idle_rows(
+    pg_repo,
+) -> None:
+    repo, pool, prefix = pg_repo
+    sessions = {
+        "captured": prefix + "-captured-protected",
+        "superseded": prefix + "-superseded-protected",
+        "completed": prefix + "-completed-protected",
+    }
+    for index, session_id in enumerate(sessions.values()):
+        await repo.touch(BuyerSessionInput(session_id, "T1", "member", str(10 + index)))
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_contexts SET last_activity_at=now()-interval '1 hour' "
+            "WHERE session_id = ANY(%s)",
+            (list(sessions.values()),),
+        )
+    claims = await repo.claim_expired_contexts(10, 30, 100)
+    by_session = {claim.session_id: claim for claim in claims}
+    captured = by_session[sessions["captured"]]
+    superseded = by_session[sessions["superseded"]]
+    completed = by_session[sessions["completed"]]
+    async with repo.lock_session(captured.session_id) as uow:
+        await uow.capture_profile_watermark(captured, 0)
+    async with pool.connection() as conn:
+        await conn.execute(
+            """
+            UPDATE chat_session_finalizations
+            SET status=CASE WHEN finalization_id=%s THEN 'superseded' ELSE status END,
+                transient_status=CASE
+                    WHEN finalization_id=%s THEN 'completed'
+                    ELSE transient_status
+                END,
+                lease_expires_at=now()-interval '1 second'
+            WHERE finalization_id = ANY(%s)
+            """,
+            (
+                superseded.finalization_id,
+                completed.finalization_id,
+                [
+                    captured.finalization_id,
+                    superseded.finalization_id,
+                    completed.finalization_id,
+                ],
+            ),
+        )
+
+    replacements = await repo.claim_expired_contexts(10, 30, 100)
+
+    assert not set(sessions.values()) & {claim.session_id for claim in replacements}
+    assert (await repo.get_finalization(captured.finalization_id)).watermark_status == "captured"
+    assert (await repo.get_finalization(superseded.finalization_id)).status == "superseded"
+    assert (await repo.get_finalization(completed.finalization_id)).transient_status == "completed"

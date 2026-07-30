@@ -407,54 +407,143 @@ class SessionContextRepository:
         if self._pool is not None:
             token = uuid.uuid4().hex
             async with self._pool.connection() as conn:
-                rows = await (
-                    await conn.execute(
-                        """
-                        WITH candidates AS (
-                            SELECT context_id
-                            FROM chat_session_contexts
-                            WHERE state='active'
-                              AND last_activity_at <= now() - make_interval(secs => %s)
-                              AND NOT EXISTS (
-                                  SELECT 1 FROM chat_session_finalizations f
-                                  WHERE f.context_id=chat_session_contexts.context_id
-                                    AND f.generation=chat_session_contexts.generation
-                                    AND f.reason='idle' AND f.status <> 'superseded'
-                              )
-                            ORDER BY last_activity_at, context_id
-                            FOR UPDATE SKIP LOCKED
-                            LIMIT %s
-                        ), inserted AS (
-                            INSERT INTO chat_session_finalizations
-                                (finalization_id, context_id, generation, reason, status,
-                                 claim_token, lease_expires_at)
-                            SELECT gen_random_uuid(), c.context_id, c.generation, 'idle',
-                                   'processing', %s, now() + make_interval(secs => %s)
-                            FROM chat_session_contexts c JOIN candidates USING (context_id)
-                            RETURNING *
+                async with conn.transaction():
+                    rows = await (
+                        await conn.execute(
+                            """
+                            WITH prephase_candidates AS (
+                                SELECT f.finalization_id
+                                FROM chat_session_finalizations f
+                                JOIN chat_session_contexts c USING (context_id)
+                                WHERE c.state='active'
+                                  AND c.generation=f.generation
+                                  AND c.last_activity_at
+                                      <= now() - make_interval(secs => %s)
+                                  AND f.reason='idle'
+                                  AND f.status <> 'superseded'
+                                  AND f.transient_status='pending'
+                                  AND f.watermark_status='pending'
+                                  AND f.profile_watermark IS NULL
+                                  AND (
+                                      f.lease_expires_at IS NULL
+                                      OR f.lease_expires_at <= now()
+                                  )
+                                ORDER BY f.lease_expires_at NULLS FIRST, f.finalization_id
+                                FOR UPDATE OF f SKIP LOCKED
+                                LIMIT %s
+                            ), reclaimed AS (
+                                UPDATE chat_session_finalizations f
+                                SET status='processing', claim_token=%s,
+                                    lease_expires_at=now() + make_interval(secs => %s),
+                                    updated_at=now()
+                                FROM prephase_candidates x, chat_session_contexts c
+                                WHERE f.finalization_id=x.finalization_id
+                                  AND c.context_id=f.context_id
+                                  AND c.state='active'
+                                  AND c.generation=f.generation
+                                  AND f.reason='idle'
+                                  AND f.status <> 'superseded'
+                                  AND f.transient_status='pending'
+                                  AND f.watermark_status='pending'
+                                  AND f.profile_watermark IS NULL
+                                  AND (
+                                      f.lease_expires_at IS NULL
+                                      OR f.lease_expires_at <= now()
+                                  )
+                                RETURNING f.*
+                            ), slots AS (
+                                SELECT GREATEST(%s - count(*), 0)::bigint AS remaining
+                                FROM reclaimed
+                            ), fresh_candidates AS (
+                                SELECT c.context_id, c.generation
+                                FROM chat_session_contexts c
+                                WHERE c.state='active'
+                                  AND c.last_activity_at
+                                      <= now() - make_interval(secs => %s)
+                                  AND NOT EXISTS (
+                                      SELECT 1 FROM chat_session_finalizations f
+                                      WHERE f.context_id=c.context_id
+                                        AND f.generation=c.generation
+                                        AND f.reason='idle'
+                                  )
+                                ORDER BY c.last_activity_at, c.context_id
+                                FOR UPDATE OF c SKIP LOCKED
+                                LIMIT (SELECT remaining FROM slots)
+                            ), inserted AS (
+                                INSERT INTO chat_session_finalizations
+                                    (finalization_id, context_id, generation, reason, status,
+                                     claim_token, lease_expires_at)
+                                SELECT gen_random_uuid(), c.context_id, c.generation, 'idle',
+                                       'processing', %s,
+                                       now() + make_interval(secs => %s)
+                                FROM chat_session_contexts c
+                                JOIN fresh_candidates USING (context_id, generation)
+                                RETURNING *
+                            ), claimed AS (
+                                SELECT * FROM reclaimed
+                                UNION ALL
+                                SELECT * FROM inserted
+                            )
+                            SELECT f.finalization_id, f.context_id, c.session_id, c.owner_type,
+                                   c.owner_id, f.generation, f.reason, f.claim_token,
+                                   f.lease_expires_at
+                            FROM claimed f JOIN chat_session_contexts c USING (context_id)
+                            """,
+                            (
+                                idle_timeout_s,
+                                batch_size,
+                                token,
+                                lease_s,
+                                batch_size,
+                                idle_timeout_s,
+                                token,
+                                lease_s,
+                            ),
                         )
-                        SELECT i.finalization_id, i.context_id, c.session_id, c.owner_type,
-                               c.owner_id, i.generation, i.reason, i.claim_token,
-                               i.lease_expires_at
-                        FROM inserted i JOIN chat_session_contexts c USING (context_id)
-                        """,
-                        (idle_timeout_s, batch_size, token, lease_s),
-                    )
-                ).fetchall()
+                    ).fetchall()
             return [_row_to_claim(row) for row in rows]
         now = self._clock()
-        eligible = sorted(
+        due = sorted(
             (
                 row
                 for row in self._contexts.values()
-                if row.state == "active"
-                and row.last_activity_at <= now - idle_timeout_s
-                and self._live_idle(row) is None
+                if row.state == "active" and row.last_activity_at <= now - idle_timeout_s
             ),
             key=lambda row: (row.last_activity_at, row.context_id),
         )
         claims = []
-        for row in eligible[:batch_size]:
+        prephase = sorted(
+            (
+                (finalization, row)
+                for row in due
+                for finalization in self._finalizations.values()
+                if finalization.context_id == row.context_id
+                and finalization.generation == row.generation
+                and finalization.reason == "idle"
+                and _is_expired_idle_prephase(finalization, now)
+            ),
+            key=lambda pair: (
+                pair[0].lease_expires_at if pair[0].lease_expires_at is not None else -1,
+                pair[0].finalization_id,
+            ),
+        )
+        for finalization, row in prephase[:batch_size]:
+            finalization.status = "processing"
+            finalization.claim_token = uuid.uuid4().hex
+            finalization.lease_expires_at = now + lease_s
+            claims.append(_memory_claim(row, finalization))
+        if len(claims) == batch_size:
+            return claims
+        for row in due:
+            current = [
+                finalization
+                for finalization in self._finalizations.values()
+                if finalization.context_id == row.context_id
+                and finalization.generation == row.generation
+                and finalization.reason == "idle"
+            ]
+            if current:
+                continue
             finalization = _MemoryFinalization(
                 str(uuid.uuid4()),
                 row.context_id,
@@ -466,6 +555,8 @@ class SessionContextRepository:
             )
             self._finalizations[finalization.finalization_id] = finalization
             claims.append(_memory_claim(row, finalization))
+            if len(claims) == batch_size:
+                break
         return claims
 
     async def claim_recoverable_finalizations(
@@ -1243,6 +1334,7 @@ class SessionContextUnitOfWork(AbstractAsyncContextManager["SessionContextUnitOf
                 or finalization.reason != "idle"
                 or finalization.status != "processing"
                 or finalization.claim_token != claim.claim_token
+                or finalization.lease_expires_at != claim.lease_expires_at
                 or finalization.watermark_status != "pending"
                 or finalization.profile_watermark is not None
                 or finalization.transient_status != "pending"
@@ -1258,6 +1350,7 @@ class SessionContextUnitOfWork(AbstractAsyncContextManager["SessionContextUnitOf
                 WHERE f.finalization_id=%s AND f.context_id=%s
                   AND f.generation=%s AND f.reason='idle'
                   AND f.status='processing' AND f.claim_token=%s
+                  AND f.lease_expires_at=%s
                   AND f.watermark_status='pending' AND f.profile_watermark IS NULL
                   AND f.transient_status='pending'
                   AND c.context_id=f.context_id AND c.session_id=%s
@@ -1269,6 +1362,7 @@ class SessionContextUnitOfWork(AbstractAsyncContextManager["SessionContextUnitOf
                     claim.context_id,
                     claim.generation,
                     claim.claim_token,
+                    claim.lease_expires_at,
                     claim.session_id,
                 ),
             )
@@ -1451,6 +1545,19 @@ def _memory_claim(row: _MemoryContext, finalization: _MemoryFinalization) -> Fin
         finalization.reason,
         finalization.claim_token,
         finalization.lease_expires_at,
+    )
+
+
+def _is_expired_idle_prephase(
+    finalization: _MemoryFinalization,
+    now: float,
+) -> bool:
+    return (
+        finalization.status != "superseded"
+        and finalization.transient_status == "pending"
+        and finalization.watermark_status == "pending"
+        and finalization.profile_watermark is None
+        and (finalization.lease_expires_at is None or finalization.lease_expires_at <= now)
     )
 
 

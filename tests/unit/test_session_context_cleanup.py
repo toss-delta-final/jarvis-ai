@@ -218,6 +218,71 @@ async def test_snapshot_failure_abandons_idle_prephase_without_memory_mutation(
     assert (await repo.get_context("S1")).state == "idle_expired"
 
 
+async def test_expired_idle_prephase_is_reissued_by_fresh_claim_stage(
+    clock: Clock,
+) -> None:
+    repo = SessionContextRepository(clock=clock)
+    await repo.touch(BuyerSessionInput("S1", "T1", "guest", "G1"))
+    clock.advance(601)
+    [original] = await repo.claim_expired_contexts(600, 30, 1)
+
+    clock.advance(31)
+    [reissued] = await repo.claim_expired_contexts(600, 30, 1)
+
+    assert reissued.finalization_id == original.finalization_id
+    assert reissued.claim_token != original.claim_token
+    assert reissued.lease_expires_at != original.lease_expires_at
+    assert (await repo.get_context("S1")).state == "active"
+    with pytest.raises(SessionClaimConflict):
+        await repo.validate_for_delete(original)
+
+
+async def test_failed_fast_abandon_is_durably_recovered_by_public_fresh_stage(
+    monkeypatch,
+    clock: Clock,
+) -> None:
+    repo = SessionContextRepository(clock=clock)
+    await repo.touch(BuyerSessionInput("S1", "T1", "member", "7"))
+    clock.advance(601)
+    [claim] = await repo.claim_expired_contexts(600, 30, 1)
+
+    class BrokenProfile:
+        async def get_session_ctx_snapshot(self, key: str):
+            raise RuntimeError("snapshot unavailable")
+
+    first = SessionLifecycleCoordinator(
+        repo,
+        ActiveStreamRegistry(),
+        profile_store_factory=BrokenProfile,
+    )
+
+    async def failed_abandon(candidate: FinalizationClaim) -> bool:
+        return False
+
+    monkeypatch.setattr(first, "_abandon_idle_prephase", failed_abandon)
+    failed = await first.process_idle_transient(claim)
+    assert failed.status == "retryable"
+    assert (await repo.get_finalization(claim.finalization_id)).transient_status == "pending"
+
+    async def clear_context(context_id: str, thread_ids: list[str]):
+        from app.agents.buyer.session_state import CleanupCounts
+
+        return CleanupCounts()
+
+    monkeypatch.setattr("app.core.session_lifecycle.session_state.clear_context", clear_context)
+    clock.advance(31)
+    result = await SessionLifecycleCoordinator(
+        repo,
+        ActiveStreamRegistry(),
+        profile_store_factory=lambda: ProfileStoreStub(0),
+    ).run_session_context_sweep(idle_timeout_s=600, lease_s=30, batch_size=1)
+
+    assert result.completed == 1
+    finalization = await repo.get_finalization(claim.finalization_id)
+    assert finalization.transient_status == "completed"
+    assert (await repo.get_context("S1")).state == "idle_expired"
+
+
 async def test_phase_a_cancellation_abandons_idle_claim_and_preserves_cancellation(
     clock: Clock,
 ) -> None:
@@ -243,6 +308,132 @@ async def test_phase_a_cancellation_abandons_idle_claim_and_preserves_cancellati
         await repo.get_finalization(claim.finalization_id)
     [replacement] = await repo.claim_expired_contexts(600, 30, 1)
     assert replacement.finalization_id != claim.finalization_id
+
+
+async def test_abandon_rejects_same_token_when_lease_was_replaced(clock: Clock) -> None:
+    repo = SessionContextRepository(clock=clock)
+    await repo.touch(BuyerSessionInput("S1", "T1", "guest", "G1"))
+    clock.advance(601)
+    [stale] = await repo.claim_expired_contexts(600, 30, 1)
+    finalization = repo._finalizations[stale.finalization_id]
+    finalization.lease_expires_at = stale.lease_expires_at + 1
+
+    async with repo.lock_session("S1") as uow:
+        abandoned = await uow.abandon_idle_prephase(stale)
+
+    assert abandoned is False
+    assert await repo.get_finalization(stale.finalization_id)
+
+
+async def test_abandon_rejects_stale_token_and_committed_phase_a(clock: Clock) -> None:
+    repo = SessionContextRepository(clock=clock)
+    await repo.touch(BuyerSessionInput("S1", "T1", "guest", "G1"))
+    clock.advance(601)
+    [stale] = await repo.claim_expired_contexts(600, 30, 1)
+    clock.advance(31)
+    [replacement] = await repo.claim_expired_contexts(600, 30, 1)
+
+    async with repo.lock_session("S1") as uow:
+        assert await uow.abandon_idle_prephase(stale) is False
+        await uow.prepare_idle_finalizing_with_watermark(replacement, None)
+        assert await uow.abandon_idle_prephase(replacement) is False
+
+    assert (await repo.get_context("S1")).state == "idle_finalizing"
+
+
+async def test_failed_abandon_is_self_healed_by_next_sweep(monkeypatch, clock: Clock) -> None:
+    repo = SessionContextRepository(clock=clock)
+    await repo.touch(BuyerSessionInput("S1", "T1", "member", "7"))
+    clock.advance(601)
+    [orphan] = await repo.claim_expired_contexts(600, 30, 1)
+
+    class BrokenProfile:
+        async def get_session_ctx_snapshot(self, key: str):
+            raise RuntimeError("snapshot unavailable")
+
+    failed_coordinator = SessionLifecycleCoordinator(
+        repo,
+        ActiveStreamRegistry(),
+        profile_store_factory=BrokenProfile,
+    )
+
+    async def failed_abandon(claim: FinalizationClaim) -> bool:
+        return False
+
+    monkeypatch.setattr(failed_coordinator, "_abandon_idle_prephase", failed_abandon)
+    outcome = await failed_coordinator.process_idle_transient(orphan)
+    assert outcome.status == "retryable"
+    assert (await repo.get_context("S1")).state == "active"
+    assert (await repo.get_finalization(orphan.finalization_id)).claim_token == (orphan.claim_token)
+
+    async def clear_context(context_id: str, thread_ids: list[str]):
+        from app.agents.buyer.session_state import CleanupCounts
+
+        return CleanupCounts()
+
+    monkeypatch.setattr("app.core.session_lifecycle.session_state.clear_context", clear_context)
+    clock.advance(31)
+    recovered_coordinator = SessionLifecycleCoordinator(
+        repo,
+        ActiveStreamRegistry(),
+        profile_store_factory=lambda: ProfileStoreStub(0),
+    )
+    result = await recovered_coordinator.run_session_context_sweep(
+        idle_timeout_s=600,
+        lease_s=30,
+        batch_size=1,
+    )
+
+    assert result.completed == 1
+    with pytest.raises(SessionClaimConflict):
+        await repo.validate_for_delete(orphan)
+    finalizations = list(repo._finalizations.values())
+    assert len(finalizations) == 1
+    assert finalizations[0].claim_token is None
+    assert finalizations[0].transient_status == "completed"
+
+
+async def test_cancellation_survives_failed_abandon_and_next_sweep_self_heals(
+    monkeypatch, clock: Clock
+) -> None:
+    repo = SessionContextRepository(clock=clock)
+    await repo.touch(BuyerSessionInput("S1", "T1", "member", "7"))
+    clock.advance(601)
+    [orphan] = await repo.claim_expired_contexts(600, 30, 1)
+
+    class CancelProfile:
+        async def get_session_ctx_snapshot(self, key: str):
+            raise asyncio.CancelledError
+
+    failed_coordinator = SessionLifecycleCoordinator(
+        repo,
+        ActiveStreamRegistry(),
+        profile_store_factory=CancelProfile,
+    )
+
+    async def failed_abandon(claim: FinalizationClaim) -> bool:
+        return False
+
+    monkeypatch.setattr(failed_coordinator, "_abandon_idle_prephase", failed_abandon)
+    with pytest.raises(asyncio.CancelledError):
+        await failed_coordinator.process_idle_transient(orphan)
+    assert (await repo.get_finalization(orphan.finalization_id)).claim_token == (orphan.claim_token)
+
+    async def clear_context(context_id: str, thread_ids: list[str]):
+        from app.agents.buyer.session_state import CleanupCounts
+
+        return CleanupCounts()
+
+    monkeypatch.setattr("app.core.session_lifecycle.session_state.clear_context", clear_context)
+    clock.advance(31)
+    result = await SessionLifecycleCoordinator(
+        repo,
+        ActiveStreamRegistry(),
+        profile_store_factory=lambda: ProfileStoreStub(0),
+    ).run_session_context_sweep(idle_timeout_s=600, lease_s=30, batch_size=1)
+
+    assert result.completed == 1
+    assert (await repo.get_context("S1")).state == "idle_expired"
 
 
 async def test_terminal_snapshot_failure_keeps_journal_for_lease_recovery(

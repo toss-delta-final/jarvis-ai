@@ -94,6 +94,31 @@ async def test_idle_claims_are_bounded_and_lease_recovery_replaces_token(repo, c
     assert recovered.reason == "idle"
 
 
+async def test_expired_prephase_idle_is_reissued_but_started_rows_are_preserved(
+    repo, clock
+) -> None:
+    await repo.touch(BuyerSessionInput("orphan", "T1", "member", "7"))
+    await repo.touch(BuyerSessionInput("captured", "T1", "member", "8"))
+    clock.advance(601)
+    claims = await repo.claim_expired_contexts(600, 30, 10)
+    orphan = next(claim for claim in claims if claim.session_id == "orphan")
+    captured = next(claim for claim in claims if claim.session_id == "captured")
+    async with repo.lock_session("captured") as uow:
+        await uow.capture_profile_watermark(captured, 0)
+    clock.advance(31)
+
+    replacements = await repo.claim_expired_contexts(600, 30, 10)
+
+    [replacement] = [claim for claim in replacements if claim.session_id == "orphan"]
+    assert replacement.finalization_id == orphan.finalization_id
+    assert replacement.claim_token != orphan.claim_token
+    with pytest.raises(SessionClaimConflict):
+        await repo.validate_for_delete(orphan)
+    preserved = await repo.get_finalization(captured.finalization_id)
+    assert preserved.watermark_status == "captured"
+    assert all(claim.session_id != "captured" for claim in replacements)
+
+
 async def test_owner_claim_is_atomic_idempotent_and_rejects_wrong_source(repo) -> None:
     original = await repo.touch(BuyerSessionInput("S1", "T1", "guest", "G1"))
 
