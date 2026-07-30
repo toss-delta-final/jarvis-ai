@@ -866,3 +866,131 @@ async def test_request_observation_isolates_trace_finalization_failure() -> None
     turn = await obs.store.get_turn(obs.turn_id)
     assert turn is not None and turn.status == TurnStatus.COMPLETED
     assert exporter.exported == []
+
+
+async def test_outer_cancellation_during_first_pull_owns_prestream_cleanup() -> None:
+    exporter = FakeTraceExporter()
+    obs = await _obs("outer-cancel-first-pull", trace=_trace(exporter))
+    started = asyncio.Event()
+    closed = asyncio.Event()
+    inner_task: asyncio.Task | None = None
+
+    async def sleeping_first_pull():
+        nonlocal inner_task
+        inner_task = asyncio.current_task()
+        try:
+            started.set()
+            await asyncio.sleep(10)
+            yield "data: never\n\n"
+        finally:
+            closed.set()
+
+    stream_key = "member:outer-cancel-first-pull"
+    outer_task = asyncio.create_task(
+        open_stream(_FakeRequest(), stream_key, sleeping_first_pull, observer=obs)
+    )
+    await started.wait()
+    outer_task.cancel()
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await outer_task
+        await asyncio.sleep(0)
+        snapshot = (
+            closed.is_set(),
+            inner_task is not None and inner_task.done(),
+            not get_registry().is_active(stream_key),
+            len(exporter.exported),
+        )
+    finally:
+        if inner_task is not None and not inner_task.done():
+            inner_task.cancel()
+            await asyncio.gather(inner_task, return_exceptions=True)
+        get_registry().release(stream_key)
+
+    assert snapshot == (True, True, True, 1)
+    (root,) = exporter.exported[0]
+    assert root.error_type is None
+    assert root.metadata["terminalReason"] == "client_disconnect"
+
+
+async def test_close_failure_after_first_frame_preserves_cancel_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(get_settings(), "stream_disconnect_poll_s", 0.005)
+    exporter = FakeTraceExporter()
+    obs = await _obs("close-failure-stream", trace=_trace(exporter))
+
+    class CloseFailIterator:
+        def __init__(self) -> None:
+            self.pulls = 0
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self) -> str:
+            self.pulls += 1
+            if self.pulls == 1:
+                return 'data: {"type":"meta","data":{"lane":"test"}}\n\n'
+            await asyncio.sleep(10)
+            raise StopAsyncIteration
+
+        async def aclose(self) -> None:
+            raise RuntimeError("sensitive close detail")
+
+    stream_key = "member:close-failure-stream"
+    response = await open_stream(
+        _FakeRequest(disconnected=True),
+        stream_key,
+        CloseFailIterator,
+        observer=obs,
+    )
+    chunks = [chunk async for chunk in response.body_iterator]
+
+    assert len(chunks) == 1
+    assert not get_registry().is_active(stream_key)
+    assert len(exporter.exported) == 1
+    (root, *_) = exporter.exported[0]
+    assert root.error_type is None
+    assert root.metadata["terminalReason"] == "client_disconnect"
+    assert "stream iterator close failed code=STREAM_CLOSE_FAILED" in caplog.messages
+    assert "sensitive close detail" not in caplog.text
+
+
+async def test_close_failure_during_prestream_abort_preserves_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(get_settings(), "stream_first_token_timeout_s", 0.01)
+    monkeypatch.setattr(get_settings(), "stream_disconnect_poll_s", 0.005)
+    exporter = FakeTraceExporter()
+    obs = await _obs("close-failure-prestream", trace=_trace(exporter))
+
+    class CloseFailIterator:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self) -> str:
+            await asyncio.sleep(10)
+            raise StopAsyncIteration
+
+        async def aclose(self) -> None:
+            raise RuntimeError("sensitive close detail")
+
+    stream_key = "member:close-failure-prestream"
+    with pytest.raises(HTTPException) as exc_info:
+        await open_stream(
+            _FakeRequest(),
+            stream_key,
+            CloseFailIterator,
+            observer=obs,
+        )
+
+    assert exc_info.value.status_code == 504
+    assert not get_registry().is_active(stream_key)
+    assert len(exporter.exported) == 1
+    (root, *_) = exporter.exported[0]
+    assert root.error_type == "UPSTREAM_TIMEOUT"
+    assert root.metadata["terminalReason"] == "first_event_timeout"
+    assert "stream iterator close failed code=STREAM_CLOSE_FAILED" in caplog.messages
+    assert "sensitive close detail" not in caplog.text

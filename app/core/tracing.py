@@ -453,6 +453,30 @@ def get_trace_factory() -> TraceFactory:
     return _trace_factory
 
 
+def start_request_trace_safely(
+    *,
+    name: str,
+    request_id: str,
+    conversation_id: str,
+    thread_id: str,
+    lane: str,
+    environment: str,
+) -> RequestTrace:
+    """Start optional telemetry without allowing initialization to fail a request."""
+    try:
+        return get_trace_factory().start_request(
+            name=name,
+            request_id=request_id,
+            conversation_id=conversation_id,
+            thread_id=thread_id,
+            lane=lane,
+            environment=environment,
+        )
+    except Exception:
+        logger.warning("trace start failed code=TELEMETRY_START_FAILED")
+        return _NOOP_REQUEST_TRACE
+
+
 def current_request_trace() -> RequestTrace | None:
     return _current_request_trace.get()
 

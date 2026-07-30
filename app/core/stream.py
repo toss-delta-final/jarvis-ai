@@ -174,6 +174,15 @@ async def open_stream(
         with bind_request_trace(request_trace):
             return await agen.__anext__()
 
+    async def _safe_close(agen: AsyncIterator[str]) -> None:
+        """Close an inner iterator without exposing or propagating close diagnostics."""
+        try:
+            await agen.aclose()  # type: ignore[attr-defined]
+        except asyncio.CancelledError:
+            logger.warning("stream iterator close failed code=STREAM_CLOSE_FAILED")
+        except Exception:
+            logger.warning("stream iterator close failed code=STREAM_CLOSE_FAILED")
+
     if not registry.acquire(stream_key):
         if observer is not None:
             await _safe_finish(
@@ -254,37 +263,60 @@ async def open_stream(
     ft_task = asyncio.ensure_future(_next_frame(agen, trace))
 
     async def _abort_prestream() -> None:
-        registry.release(stream_key)
-        if not ft_task.done():
-            ft_task.cancel()
-        await asyncio.gather(ft_task, return_exceptions=True)
-        await agen.aclose()
+        try:
+            if not ft_task.done():
+                ft_task.cancel()
+            await asyncio.gather(ft_task, return_exceptions=True)
+        finally:
+            try:
+                await _safe_close(agen)
+            finally:
+                registry.release(stream_key)
 
     first: str | None = None
-    while True:
-        remaining = ft_deadline - loop.time()
-        if remaining <= 0:
-            await _abort_prestream()
-            if observer is not None:
-                await _safe_finish(
-                    observer,
-                    stream_key,
-                    loop.time(),
-                    TurnStatus.FAILED,
-                    "UPSTREAM_TIMEOUT",
-                    "first_event_timeout",
+    try:
+        while True:
+            remaining = ft_deadline - loop.time()
+            if remaining <= 0:
+                await _abort_prestream()
+                if observer is not None:
+                    await _safe_finish(
+                        observer,
+                        stream_key,
+                        loop.time(),
+                        TurnStatus.FAILED,
+                        "UPSTREAM_TIMEOUT",
+                        "first_event_timeout",
+                    )
+                raise HTTPException(
+                    status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                    detail={"code": "UPSTREAM_TIMEOUT", "message": "상류(LLM) 응답 지연"},
                 )
-            raise HTTPException(
-                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                detail={"code": "UPSTREAM_TIMEOUT", "message": "상류(LLM) 응답 지연"},
-            )
-        completed, _ = await asyncio.wait({ft_task}, timeout=min(remaining, poll))
-        if ft_task in completed:
-            try:
-                first = ft_task.result()
-            except StopAsyncIteration:
-                first = None  # 빈 스트림 — 해제는 _wrapped finally 에서.
-            except asyncio.CancelledError:
+            completed, _ = await asyncio.wait({ft_task}, timeout=min(remaining, poll))
+            if ft_task in completed:
+                try:
+                    first = ft_task.result()
+                except StopAsyncIteration:
+                    first = None  # 빈 스트림 — 해제는 _wrapped finally 에서.
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # 첫 프레임 전 상류 오류(LLM/Spring 등) — 누수 방지 후 전파.
+                    await _abort_prestream()
+                    if observer is not None:
+                        await _safe_finish(
+                            observer,
+                            stream_key,
+                            loop.time(),
+                            TurnStatus.FAILED,
+                            "INTERNAL",
+                            "tool_error",
+                        )
+                    raise
+                break
+            if await request.is_disconnected():
+                # (b) 첫 이벤트 전 연결 종료 — 정리 후 즉시 종료(소비될 응답 없음).
+                logger.info("stream cancelled before first token stream_key=%s", stream_key)
                 await _abort_prestream()
                 if observer is not None:
                     await _safe_finish(
@@ -295,39 +327,23 @@ async def open_stream(
                         None,
                         "client_disconnect",
                     )
-                raise
-            except Exception:
-                # 첫 프레임 전 상류 오류(LLM/Spring 등) — 누수 방지 후 전파.
-                await _abort_prestream()
-                if observer is not None:
-                    await _safe_finish(
-                        observer,
-                        stream_key,
-                        loop.time(),
-                        TurnStatus.FAILED,
-                        "INTERNAL",
-                        "tool_error",
-                    )
-                raise
-            break
-        if await request.is_disconnected():
-            # (b) 첫 이벤트 전 연결 종료 — 정리 후 즉시 종료(소비될 응답 없음).
-            logger.info("stream cancelled before first token stream_key=%s", stream_key)
-            await _abort_prestream()
-            if observer is not None:
-                await _safe_finish(
-                    observer,
-                    stream_key,
-                    loop.time(),
-                    TurnStatus.CANCELLED,
-                    None,
-                    "client_disconnect",
+                return StreamingResponse(
+                    _empty_stream(),
+                    media_type="text/event-stream; charset=utf-8",
+                    headers=_SSE_HEADERS,
                 )
-            return StreamingResponse(
-                _empty_stream(),
-                media_type="text/event-stream; charset=utf-8",
-                headers=_SSE_HEADERS,
+    except asyncio.CancelledError:
+        await _abort_prestream()
+        if observer is not None:
+            await _safe_finish(
+                observer,
+                stream_key,
+                loop.time(),
+                TurnStatus.CANCELLED,
+                None,
+                "client_disconnect",
             )
+        raise
 
     # 첫 이벤트 확보 — SSE readiness와 user-visible text 지연을 분리 기록(§6.3).
     if observer is not None and first is not None:
@@ -420,25 +436,26 @@ async def open_stream(
         finally:
             # (b) 취소·상한·정상 종료 공통 정리: 대기 중 task 취소 → 내부 제너레이터 close
             #     (LLM 스트림/그래프 task 로 취소 전파) → 레지스트리 해제 → 대화 저장·로그 마감.
-            if next_task is not None and not next_task.done():
-                next_task.cancel()
-                await asyncio.gather(next_task, return_exceptions=True)
-            await agen.aclose()
-            registry.release(stream_key)
-            if observer is not None:
-                # 이 시점엔 이미 SSE 헤더/프레임이 클라이언트로 전송된 뒤다 — finish() 가
-                # 예외를 던지면 done/error 종결 프레임 없이 스트림이 끊기거나(§2.9/§3.1
-                # 위반), CancelledError 로 취소 전파 중이던 경우 그 취소가 이 새 예외로
-                # 대체돼 정상 client disconnect 가 엉뚱한 오류로 둔갑한다(PR #48 후속 리뷰).
-                # 관측 실패가 스트림 종료 자체를 막지 않도록 로그만 남기고 삼킨다.
-                await _safe_finish(
-                    observer,
-                    stream_key,
-                    loop.time(),
-                    stream_status,
-                    error_type,
-                    terminal_reason,
-                )
+            try:
+                if next_task is not None and not next_task.done():
+                    next_task.cancel()
+                    await asyncio.gather(next_task, return_exceptions=True)
+            finally:
+                try:
+                    await _safe_close(agen)
+                finally:
+                    registry.release(stream_key)
+                    if observer is not None:
+                        # 이 시점엔 이미 SSE 헤더/프레임이 클라이언트로 전송된 뒤다 —
+                        # cleanup/관측 실패가 stream outcome 을 바꾸지 않게 방어한다.
+                        await _safe_finish(
+                            observer,
+                            stream_key,
+                            loop.time(),
+                            stream_status,
+                            error_type,
+                            terminal_reason,
+                        )
 
     return StreamingResponse(
         _wrapped(),

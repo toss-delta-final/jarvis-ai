@@ -114,3 +114,46 @@ async def test_seller_store_acquisition_cancellation_finishes_root(
     (root,) = fake_trace_factory.exporter.exported[0]
     assert root.error_type is None
     assert root.metadata["terminalReason"] == "client_disconnect"
+
+
+@pytest.mark.parametrize("failure_point", ("factory", "start_request"))
+def test_seller_telemetry_start_failure_preserves_route(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failure_point: str,
+) -> None:
+    import app.core.tracing as tracing
+
+    tracing.set_trace_factory(None)
+    if failure_point == "factory":
+        monkeypatch.setattr(
+            tracing,
+            "TraceFactory",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("telemetry factory failed")),
+        )
+    else:
+
+        class RaisingFactory:
+            def start_request(self, **kwargs):
+                raise RuntimeError("telemetry start failed")
+
+        tracing.set_trace_factory(RaisingFactory())
+
+    try:
+        response = client.post(
+            "/seller/chat",
+            json={
+                "sessionId": f"seller-{failure_point}",
+                "threadId": f"thread-{failure_point}",
+                "message": "오늘 날씨 알려줘",
+            },
+            headers=_seller_headers(),
+        )
+    finally:
+        tracing.set_trace_factory(None)
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert caplog.messages.count("trace start failed code=TELEMETRY_START_FAILED") == 1
+    assert "telemetry factory failed" not in caplog.text
+    assert "telemetry start failed" not in caplog.text

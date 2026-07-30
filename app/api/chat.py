@@ -24,7 +24,7 @@ from app.core.conversation import TurnStatus, get_conversation_store
 from app.core.errors import get_request_id
 from app.core.observability import emit_rejection, finish_trace_safely, start_observation
 from app.core.stream import open_stream, registry_key
-from app.core.tracing import get_trace_factory
+from app.core.tracing import start_request_trace_safely
 from app.schemas.chat import ChatRequest
 
 router = APIRouter(tags=["chat"])
@@ -38,7 +38,7 @@ async def chat(
 ) -> StreamingResponse:
     """구매자 챗봇 SSE 스트리밍 (api-spec §3.1)."""
     request_id = get_request_id(http_request)
-    trace = get_trace_factory().start_request(
+    trace = start_request_trace_safely(
         name="buyer_chat_turn",
         request_id=request_id,
         conversation_id=request.session_id,
