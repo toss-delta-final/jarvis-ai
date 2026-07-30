@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 
 import pytest
@@ -10,10 +11,13 @@ from psycopg_pool import AsyncConnectionPool
 
 from app.agents.buyer.cart import state as cart_state
 from app.agents.buyer.session_state import context_thread_key
+from app.agents.profile import finalizer as profile_finalizer
+from app.agents.profile.store import get_profile_store
 from app.core import pg_store as pg_store_module
 from app.core import session_context as session_context_module
 from app.core import session_lifecycle as session_lifecycle_module
 from app.core.config import get_settings
+from app.core.conversation import conversation_key
 from app.core.session_context import (
     BuyerSessionInput,
     SessionClaimConflict,
@@ -25,6 +29,28 @@ from app.core.session_lifecycle import SessionLifecycleCoordinator
 from app.core.stream import ActiveStreamRegistry
 
 pytestmark = pytest.mark.integration
+
+
+class _ProfileLLM:
+    async def complete(self, *, system, user, tier, max_tokens=1024, json_output=True):
+        if "델타 추출기" in system:
+            return json.dumps(
+                {
+                    "deltas": [
+                        {
+                            "fact": "PG 복구 취향",
+                            "salience": 0.9,
+                            "explicit": True,
+                            "repetitionEma": 0.0,
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        return "# 취향\n- PG 복구 취향"
+
+    async def stream(self, **kwargs):
+        yield "x"
 
 
 class _FailAfterFirstDeleteStore:
@@ -310,6 +336,263 @@ async def test_terminal_supersedes_previous_generation_completed_idle(pg_repo) -
         item.finalization_id != idle.finalization_id
         for item in await repo.list_recoverable_profile_phases(100)
     )
+
+
+async def test_pg_i20_supersedes_idle_between_phase_a_and_phase_b(pg_repo) -> None:
+    repo, pool, prefix = pg_repo
+    session_id = prefix + "-i20-phase-barrier"
+    context = await repo.touch(BuyerSessionInput(session_id, "T1", "member", "7"))
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_contexts SET last_activity_at=now()-interval '1 hour' "
+            "WHERE context_id=%s",
+            (context.context_id,),
+        )
+    idle = next(
+        claim
+        for claim in await repo.claim_expired_contexts(10, 30, 100)
+        if claim.session_id == session_id
+    )
+    async with repo.lock_session(session_id) as uow:
+        await uow.prepare_idle_finalizing_with_watermark(idle, 0)
+
+    terminal = await repo.begin_terminal(7, session_id)
+
+    assert terminal.context.state == "terminal"
+    assert terminal.finalization.supersedes_finalization_id == idle.finalization_id
+    assert terminal.finalization.watermark_status == "captured"
+    assert terminal.finalization.profile_watermark == 0
+    assert terminal.finalization.transient_status == "pending"
+    old = await repo.get_finalization(idle.finalization_id)
+    assert old.status == "superseded"
+    assert old.claim_token is None and old.lease_expires_at is None
+    assert old.superseded_at is not None
+    with pytest.raises(SessionClaimConflict):
+        await repo.validate_for_delete(idle)
+    assert await repo.get_threads(context.context_id) == ["T1"]
+
+
+async def test_pg_i20_gates_before_waiting_for_active_stream(pg_repo, monkeypatch) -> None:
+    repo, _, prefix = pg_repo
+    session_id = prefix + "-i20-active-stream"
+    await repo.touch(BuyerSessionInput(session_id, "T1", "member", "7"))
+    registry = ActiveStreamRegistry()
+    assert registry.acquire("stream-1", owner_id="7", session_id=session_id)
+    snapshot_started = asyncio.Event()
+
+    class _SnapshotStore:
+        async def get_session_ctx_snapshot(self, key: str):
+            snapshot_started.set()
+            return [], None
+
+    async def clear_context(context_id: str, thread_ids: list[str]):
+        from app.agents.buyer.session_state import CleanupCounts
+
+        return CleanupCounts()
+
+    monkeypatch.setattr(session_lifecycle_module.session_state, "clear_context", clear_context)
+    coordinator = SessionLifecycleCoordinator(
+        repo,
+        registry,
+        profile_store_factory=lambda: _SnapshotStore(),
+    )
+
+    task = asyncio.create_task(coordinator.begin_terminal(7, session_id))
+    for _ in range(100):
+        context = await repo.get_context(session_id)
+        if context is not None and context.state == "terminal":
+            break
+        await asyncio.sleep(0.01)
+    else:
+        raise AssertionError("terminal gate was not persisted before stream wait")
+
+    assert not snapshot_started.is_set()
+    assert not task.done()
+    registry.release("stream-1")
+    outcome = await task
+
+    assert snapshot_started.is_set()
+    journal = await repo.get_finalization(outcome.finalization.finalization_id)
+    assert journal.transient_status == "completed"
+    assert (await coordinator.begin_terminal(7, session_id)).duplicate is True
+
+
+async def test_pg_expired_processing_profile_rotates_token(pg_repo) -> None:
+    repo, pool, prefix = pg_repo
+    session_id = prefix + "-expired-profile"
+    context = await repo.touch(BuyerSessionInput(session_id, "T1", "member", "7"))
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_contexts SET last_activity_at=now()-interval '1 hour' "
+            "WHERE context_id=%s",
+            (context.context_id,),
+        )
+    idle = next(
+        claim
+        for claim in await repo.claim_expired_contexts(10, 30, 100)
+        if claim.session_id == session_id
+    )
+    async with repo.lock_session(session_id) as uow:
+        await uow.prepare_idle_finalizing_with_watermark(idle, 0)
+        await uow.complete_idle_delete(idle)
+    first = await repo.claim_profile_phase(idle.finalization_id, 30)
+    assert first is not None
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_finalizations SET lease_expires_at=now()-interval '1 second' "
+            "WHERE finalization_id=%s",
+            (idle.finalization_id,),
+        )
+
+    candidates = await repo.list_recoverable_profile_phases(100)
+    assert idle.finalization_id in {candidate.finalization_id for candidate in candidates}
+    recovered = await repo.claim_profile_phase(idle.finalization_id, 30)
+
+    assert recovered is not None
+    assert recovered.claim_token != first.claim_token
+    with pytest.raises(SessionClaimConflict):
+        await repo.record_claimed_profile_phase(
+            idle.finalization_id,
+            first.claim_token,
+            "completed",
+        )
+    assert (await repo.get_finalization(idle.finalization_id)).claim_token == (
+        recovered.claim_token
+    )
+
+
+async def test_pg_expired_live_profile_task_is_joined_without_parallel_llm(
+    pg_repo,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, pool, prefix = pg_repo
+    session_id = prefix + "-live-expired-profile"
+    context = await repo.touch(BuyerSessionInput(session_id, "T1", "member", "7"))
+    profile_store = await get_profile_store()
+    await profile_store.append_session_ctx(conversation_key("7", session_id), "PG 장기 취향")
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_contexts SET last_activity_at=now()-interval '1 hour' "
+            "WHERE context_id=%s",
+            (context.context_id,),
+        )
+    idle = next(
+        claim
+        for claim in await repo.claim_expired_contexts(10, 30, 100)
+        if claim.session_id == session_id
+    )
+
+    async def clear_context(context_id: str, thread_ids: list[str]):
+        from app.agents.buyer.session_state import CleanupCounts
+
+        return CleanupCounts()
+
+    monkeypatch.setattr(session_lifecycle_module.session_state, "clear_context", clear_context)
+    transient = await SessionLifecycleCoordinator(
+        repo,
+        ActiveStreamRegistry(),
+    ).process_idle_transient(idle)
+    assert transient.status == "completed"
+    entered = asyncio.Event()
+    proceed = asyncio.Event()
+    second_joined = asyncio.Event()
+    active = 0
+    peak = 0
+    join_calls = 0
+    original_join = profile_finalizer._active_profile_tasks.join_or_start
+
+    async def observed_join(*args, **kwargs):
+        nonlocal join_calls
+        join_calls += 1
+        if join_calls == 2:
+            second_joined.set()
+        return await original_join(*args, **kwargs)
+
+    class _BlockingLLM(_ProfileLLM):
+        async def complete(self, **kwargs):
+            nonlocal active, peak
+            if "델타 추출기" in kwargs["system"]:
+                active += 1
+                peak = max(peak, active)
+                entered.set()
+                await proceed.wait()
+                active -= 1
+            return await super().complete(**kwargs)
+
+    monkeypatch.setattr(profile_finalizer, "get_llm", lambda: _BlockingLLM())
+    monkeypatch.setattr(
+        profile_finalizer._active_profile_tasks,
+        "join_or_start",
+        observed_join,
+    )
+    first = asyncio.create_task(profile_finalizer._process_recoverable_profile_phases(repo, 1))
+    await entered.wait()
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_finalizations SET lease_expires_at=now()-interval '1 second' "
+            "WHERE finalization_id=%s",
+            (idle.finalization_id,),
+        )
+    second = asyncio.create_task(profile_finalizer._process_recoverable_profile_phases(repo, 1))
+    await second_joined.wait()
+
+    assert not second.done()
+    assert peak == 1
+    proceed.set()
+    first_result, second_result = await asyncio.gather(first, second)
+    assert peak == 1
+    assert first_result == second_result
+    assert (await repo.get_finalization(idle.finalization_id)).profile_status == "completed"
+
+
+async def test_pg_orphaned_processing_profile_public_recovery_completes(
+    pg_repo,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, pool, prefix = pg_repo
+    session_id = prefix + "-orphaned-profile"
+    context = await repo.touch(BuyerSessionInput(session_id, "T1", "member", "7"))
+    profile_store = await get_profile_store()
+    await profile_store.append_session_ctx(conversation_key("7", session_id), "PG orphan 취향")
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_contexts SET last_activity_at=now()-interval '1 hour' "
+            "WHERE context_id=%s",
+            (context.context_id,),
+        )
+    idle = next(
+        claim
+        for claim in await repo.claim_expired_contexts(10, 30, 100)
+        if claim.session_id == session_id
+    )
+
+    async def clear_context(context_id: str, thread_ids: list[str]):
+        from app.agents.buyer.session_state import CleanupCounts
+
+        return CleanupCounts()
+
+    monkeypatch.setattr(session_lifecycle_module.session_state, "clear_context", clear_context)
+    transient = await SessionLifecycleCoordinator(
+        repo,
+        ActiveStreamRegistry(),
+    ).process_idle_transient(idle)
+    assert transient.status == "completed"
+    first = await repo.claim_profile_phase(idle.finalization_id, 30)
+    assert first is not None
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_finalizations SET lease_expires_at=now()-interval '1 second' "
+            "WHERE finalization_id=%s",
+            (idle.finalization_id,),
+        )
+    monkeypatch.setattr(profile_finalizer, "get_llm", lambda: _ProfileLLM())
+
+    [result] = await profile_finalizer._process_recoverable_profile_phases(repo, 1)
+
+    assert result.status is profile_finalizer.ProfilePhaseStatus.COMPLETED
+    completed = await repo.get_finalization(idle.finalization_id)
+    assert completed.profile_status == "completed"
+    assert completed.claim_token is None
 
 
 async def test_terminal_duplicate_and_expired_reissue_are_atomic(pg_repo) -> None:

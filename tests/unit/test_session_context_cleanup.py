@@ -513,6 +513,120 @@ async def test_partial_delete_is_retryable_and_lease_recovery_finishes(
     assert (await repo.get_context("S1")).state == "idle_expired"
 
 
+async def test_i20_supersedes_idle_between_phase_a_and_phase_b(monkeypatch, clock: Clock) -> None:
+    repo = SessionContextRepository(clock=clock)
+    context = await repo.touch(BuyerSessionInput("S1", "T1", "member", "7"))
+    clock.advance(601)
+    [idle] = await repo.claim_expired_contexts(600, 30, 1)
+    async with repo.lock_session("S1") as uow:
+        await uow.prepare_idle_finalizing_with_watermark(idle, 0)
+
+    terminal = await repo.begin_terminal(7, "S1")
+
+    assert terminal.context.state == "terminal"
+    assert terminal.context.generation == idle.generation + 1
+    old = await repo.get_finalization(idle.finalization_id)
+    assert old.status == "superseded"
+    assert old.claim_token is None and old.lease_expires_at is None
+    stale = await SessionLifecycleCoordinator(
+        repo,
+        ActiveStreamRegistry(),
+    ).process_idle_transient(idle)
+    assert stale.status == "skipped"
+    assert stale.skip_reason == "superseded"
+    assert await repo.get_threads(context.context_id) == ["T1"]
+
+    async def clear_context(context_id: str, thread_ids: list[str]):
+        from app.agents.buyer.session_state import CleanupCounts
+
+        return CleanupCounts(filters=1)
+
+    monkeypatch.setattr("app.core.session_lifecycle.session_state.clear_context", clear_context)
+    assert terminal.claim is not None
+    completed = await SessionLifecycleCoordinator(
+        repo,
+        ActiveStreamRegistry(),
+        profile_store_factory=lambda: ProfileStoreStub(0),
+    ).process_terminal_transient(terminal.claim)
+    assert completed.status == "completed"
+    assert (await repo.get_context("S1")).state == "terminal"
+
+
+async def test_terminal_gate_is_durable_before_existing_stream_finishes(
+    monkeypatch, clock: Clock
+) -> None:
+    repo = SessionContextRepository(clock=clock)
+    registry = ActiveStreamRegistry()
+    await repo.touch(BuyerSessionInput("S1", "T1", "member", "7"))
+    assert registry.acquire("7:T1", owner_id="7", session_id="S1")
+
+    async def clear_context(context_id: str, thread_ids: list[str]):
+        from app.agents.buyer.session_state import CleanupCounts
+
+        return CleanupCounts()
+
+    monkeypatch.setattr("app.core.session_lifecycle.session_state.clear_context", clear_context)
+    task = asyncio.create_task(
+        SessionLifecycleCoordinator(
+            repo,
+            registry,
+            profile_store_factory=lambda: ProfileStoreStub(0),
+        ).begin_terminal(7, "S1")
+    )
+    await asyncio.sleep(0)
+
+    context = await repo.get_context("S1")
+    assert context is not None and context.state == "terminal"
+    assert not task.done()
+    registry.release("7:T1")
+    outcome = await task
+    assert outcome.context.state == "terminal"
+
+
+async def test_terminal_inherits_captured_idle_watermark_and_supersession_relation(
+    clock: Clock,
+) -> None:
+    repo = SessionContextRepository(clock=clock)
+    await repo.touch(BuyerSessionInput("inherit-pending", "T1", "member", "7"))
+    clock.advance(601)
+    [idle] = await repo.claim_expired_contexts(600, 30, 1)
+    async with repo.lock_session("inherit-pending") as uow:
+        await uow.prepare_idle_finalizing_with_watermark(idle, 17)
+
+    terminal = await repo.begin_terminal(7, "inherit-pending")
+
+    assert terminal.claim is not None
+    assert terminal.finalization.supersedes_finalization_id == idle.finalization_id
+    assert terminal.finalization.watermark_status == "captured"
+    assert terminal.finalization.profile_watermark == 17
+    assert terminal.finalization.transient_status == "pending"
+    superseded = await repo.get_finalization(idle.finalization_id)
+    assert superseded.status == "superseded"
+    assert superseded.superseded_at is not None
+
+
+async def test_terminal_inherits_completed_idle_transient_without_new_cleanup_claim(
+    clock: Clock,
+) -> None:
+    repo = SessionContextRepository(clock=clock)
+    await repo.touch(BuyerSessionInput("inherit-complete", "T1", "member", "7"))
+    clock.advance(601)
+    [idle] = await repo.claim_expired_contexts(600, 30, 1)
+    async with repo.lock_session("inherit-complete") as uow:
+        await uow.prepare_idle_finalizing_with_watermark(idle, 23)
+        await uow.complete_idle_delete(idle)
+
+    terminal = await repo.begin_terminal(7, "inherit-complete")
+
+    assert terminal.duplicate is False
+    assert terminal.claim is None
+    assert terminal.finalization.supersedes_finalization_id == idle.finalization_id
+    assert terminal.finalization.watermark_status == "captured"
+    assert terminal.finalization.profile_watermark == 23
+    assert terminal.finalization.transient_status == "completed"
+    assert terminal.finalization.profile_status == "pending"
+
+
 async def test_actual_partial_idle_delete_recovers_all_namespaces_and_preserves_other_context(
     clock: Clock,
 ) -> None:
@@ -553,6 +667,43 @@ async def test_actual_partial_idle_delete_recovers_all_namespaces_and_preserves_
     assert result.completed == 1
     await _assert_v2_deleted(store, target_key)
     await _assert_v2_preserved(store, other_key)
+
+
+async def test_i20_after_partial_idle_delete_finishes_idempotent_terminal_cleanup(
+    clock: Clock,
+) -> None:
+    repo = SessionContextRepository(clock=clock)
+    target = await repo.touch(BuyerSessionInput("target", "T1", "member", "7"))
+    target_key = context_thread_key(target.context_id, "T1")
+    store = InMemoryStore()
+    await _seed_v2_state(store, target_key, "target")
+    fault_store = FailAfterFirstDeleteStore(store)
+    pg_store.set_store(fault_store)
+    clock.advance(601)
+    [idle] = await repo.claim_expired_contexts(600, 30, 1)
+
+    failed = await SessionLifecycleCoordinator(
+        repo,
+        ActiveStreamRegistry(),
+    ).process_idle_transient(idle)
+    assert failed.status == "retryable"
+    assert (await repo.get_context("target")).state == "idle_finalizing"
+    assert await store.aget(("buyer_thread_filters_v2", target_key), "filters") is None
+    assert await store.aget(("buyer_cart_v2", target_key), "pending") is not None
+
+    terminal = await repo.begin_terminal(7, "target")
+    assert terminal.claim is not None
+    assert (await repo.get_finalization(idle.finalization_id)).status == "superseded"
+    pg_store.set_store(store)
+    completed = await SessionLifecycleCoordinator(
+        repo,
+        ActiveStreamRegistry(),
+        profile_store_factory=lambda: ProfileStoreStub(0),
+    ).process_terminal_transient(terminal.claim)
+
+    assert completed.status == "completed"
+    assert (await repo.get_context("target")).state == "terminal"
+    await _assert_v2_deleted(store, target_key)
 
 
 async def test_actual_partial_terminal_delete_recovers_and_keeps_terminal(
@@ -709,6 +860,9 @@ async def test_invalid_recovery_row_does_not_consume_batch_capacity(monkeypatch)
         ):
             return []
 
+        async def list_recoverable_profile_phases(self, batch_size: int):
+            return []
+
     repo = SweepRepo()
     coordinator = SessionLifecycleCoordinator(repo, ActiveStreamRegistry())
 
@@ -763,6 +917,9 @@ async def test_sweep_bounds_examined_invalid_rows_even_when_repository_never_end
             self, idle_timeout_s: float, lease_s: float, batch_size: int
         ):
             raise AssertionError("examined bound must stop before fresh claims")
+
+        async def list_recoverable_profile_phases(self, batch_size: int):
+            return []
 
     repo = EndlessInvalidRepo()
     coordinator = SessionLifecycleCoordinator(repo, ActiveStreamRegistry())

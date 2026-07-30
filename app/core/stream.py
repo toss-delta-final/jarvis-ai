@@ -43,6 +43,16 @@ class ActiveStreamRegistry:
     def __init__(self) -> None:
         self._active: dict[str, tuple[str, str] | None] = {}
         self._fences: dict[tuple[str, str], StreamScopeFence] = {}
+        self._scope_idle: dict[tuple[str, str], asyncio.Event] = {}
+
+    def _scope_idle_event(self, scope: tuple[str, str]) -> asyncio.Event:
+        event = self._scope_idle.get(scope)
+        if event is None:
+            event = asyncio.Event()
+            if scope not in self._active.values():
+                event.set()
+            self._scope_idle[scope] = event
+        return event
 
     def acquire(
         self,
@@ -60,11 +70,15 @@ class ActiveStreamRegistry:
         if scope is not None and scope in self._fences:
             return False
         self._active[stream_key] = scope
+        if scope is not None:
+            self._scope_idle_event(scope).clear()
         return True
 
     def release(self, stream_key: str) -> None:
         """활성 해제 (중복 해제 무해)."""
-        self._active.pop(stream_key, None)
+        scope = self._active.pop(stream_key, None)
+        if scope is not None and scope not in self._active.values():
+            self._scope_idle_event(scope).set()
 
     def is_active(self, stream_key: str) -> bool:
         return stream_key in self._active
@@ -87,6 +101,12 @@ class ActiveStreamRegistry:
 
     def is_fenced(self, owner_id: str, session_id: str) -> bool:
         return (owner_id, session_id) in self._fences
+
+    async def wait_for_scope_idle(self, owner_id: str, session_id: str) -> None:
+        """해당 buyer session scope의 기존 stream이 모두 종료될 때까지 event 기반 대기한다."""
+        scope = (owner_id, session_id)
+        while scope in self._active.values():
+            await self._scope_idle_event(scope).wait()
 
 
 @dataclass(frozen=True)

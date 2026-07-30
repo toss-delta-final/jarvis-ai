@@ -94,15 +94,17 @@ async def test_profile_lease_expiry_never_preempts_live_local_llm(
     monkeypatch.setattr(finalizer, "get_llm", lambda: _BlockingLLM())
     first = asyncio.create_task(finalizer.process_recoverable_profile_phases(1))
     await entered.wait()
-    clock.advance(60)
+    clock.advance(get_settings().profile_idle_claim_ttl_s + 1)
     second = asyncio.create_task(finalizer.process_recoverable_profile_phases(1))
     await asyncio.sleep(0)
 
     assert not first.done()
-    assert await second == []
+    assert not second.done()
     assert peak == 1
     proceed.set()
-    [result] = await first
+    first_result, second_result = await asyncio.gather(first, second)
+    [result] = first_result
+    assert second_result == [result]
     assert result.status is finalizer.ProfilePhaseStatus.COMPLETED
     journal = next(iter(repo._finalizations.values()))
     assert journal.transient_status == "completed"
@@ -113,6 +115,210 @@ async def test_profile_lease_expiry_never_preempts_live_local_llm(
         )
         == "completed"
     )
+
+
+async def test_expired_processing_profile_is_reclaimed_with_new_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _Clock()
+    repo = SessionContextRepository(clock=clock)
+    monkeypatch.setattr(session_context, "_default_repository", repo)
+    coordinator = SessionLifecycleCoordinator(repo, ActiveStreamRegistry())
+    context = await repo.touch(BuyerSessionInput("expired-profile", "t1", "member", "705"))
+    store = await get_profile_store()
+    await store.append_session_ctx(conversation_key("705", "expired-profile"), "회수할 취향")
+    await _complete_idle_transient(repo, coordinator, clock)
+    [candidate] = await repo.list_recoverable_profile_phases(1)
+    first_claim = await repo.claim_profile_phase(candidate.finalization_id, 30)
+    assert first_claim is not None
+
+    clock.advance(31)
+    [expired] = await repo.list_recoverable_profile_phases(1)
+    assert expired.finalization_id == candidate.finalization_id
+    monkeypatch.setattr(finalizer, "get_llm", lambda: _LLM())
+    [result] = await finalizer.process_recoverable_profile_phases(1)
+
+    assert result.status is finalizer.ProfilePhaseStatus.COMPLETED
+    journal = await repo.get_finalization(candidate.finalization_id)
+    assert journal.profile_status == "completed"
+    assert journal.claim_token is None
+    assert (
+        await processed_events.get_status(
+            f"chat-profile:{context.context_id}:{journal.generation}:idle"
+        )
+        == "completed"
+    )
+
+
+async def test_cancelled_profile_task_records_retryable_then_public_recovery_completes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _Clock()
+    repo = SessionContextRepository(clock=clock)
+    monkeypatch.setattr(session_context, "_default_repository", repo)
+    coordinator = SessionLifecycleCoordinator(repo, ActiveStreamRegistry())
+    context = await repo.touch(BuyerSessionInput("cancel-recovery", "t1", "member", "706"))
+    store = await get_profile_store()
+    await store.append_session_ctx(conversation_key("706", "cancel-recovery"), "취소 복구 취향")
+    await _complete_idle_transient(repo, coordinator, clock)
+    entered = asyncio.Event()
+
+    async def _cancel_target(*args, **kwargs):
+        entered.set()
+        await asyncio.Event().wait()
+
+    original_checkpoint = finalizer.process_profile_checkpoint
+    monkeypatch.setattr(finalizer, "process_profile_checkpoint", _cancel_target)
+    recovery = asyncio.create_task(finalizer.process_recoverable_profile_phases(1))
+    await entered.wait()
+    active = finalizer._active_profile_tasks._active[context.context_id]
+    active.task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await recovery
+    await asyncio.sleep(0)
+
+    journal = next(iter(repo._finalizations.values()))
+    assert journal.profile_status == "retryable"
+    assert journal.claim_token is None
+    assert finalizer._active_profile_tasks._active == {}
+
+    monkeypatch.setattr(finalizer, "process_profile_checkpoint", original_checkpoint)
+    monkeypatch.setattr(finalizer, "get_llm", lambda: _LLM())
+    [result] = await finalizer.process_recoverable_profile_phases(1)
+    assert result.status is finalizer.ProfilePhaseStatus.COMPLETED
+
+
+async def test_stale_profile_token_cannot_overwrite_reclaimed_result() -> None:
+    clock = _Clock()
+    repo = SessionContextRepository(clock=clock)
+    coordinator = SessionLifecycleCoordinator(repo, ActiveStreamRegistry())
+    await repo.touch(BuyerSessionInput("stale-token", "t1", "member", "707"))
+    store = await get_profile_store()
+    await store.append_session_ctx(conversation_key("707", "stale-token"), "token 취향")
+    await _complete_idle_transient(repo, coordinator, clock)
+    [candidate] = await repo.list_recoverable_profile_phases(1)
+    first = await repo.claim_profile_phase(candidate.finalization_id, 30)
+    assert first is not None
+    clock.advance(31)
+    second = await repo.claim_profile_phase(candidate.finalization_id, 30)
+    assert second is not None
+
+    with pytest.raises(session_context.SessionClaimConflict):
+        await repo.record_claimed_profile_phase(
+            candidate.finalization_id,
+            first.claim_token,
+            "completed",
+        )
+    journal = await repo.get_finalization(candidate.finalization_id)
+    assert journal.claim_token == second.claim_token
+    assert await repo.record_claimed_profile_phase(
+        candidate.finalization_id,
+        second.claim_token,
+        "completed",
+    )
+
+
+async def test_stale_profile_claim_token_cannot_overwrite_reclaimer() -> None:
+    clock = _Clock()
+    repo = SessionContextRepository(clock=clock)
+    coordinator = SessionLifecycleCoordinator(repo, ActiveStreamRegistry())
+    await repo.touch(BuyerSessionInput("stale-token", "t1", "member", "706"))
+    await _complete_idle_transient(repo, coordinator, clock)
+    [candidate] = await repo.list_recoverable_profile_phases(1)
+    first = await repo.claim_profile_phase(candidate.finalization_id, 30)
+    assert first is not None
+    clock.advance(31)
+    second = await repo.claim_profile_phase(candidate.finalization_id, 30)
+    assert second is not None and second.claim_token != first.claim_token
+
+    with pytest.raises(session_context.SessionClaimConflict):
+        await repo.record_claimed_profile_phase(
+            candidate.finalization_id,
+            first.claim_token,
+            "completed",
+        )
+    processing = await repo.get_finalization(candidate.finalization_id)
+    assert processing.profile_status == "processing"
+    assert processing.claim_token == second.claim_token
+
+    await repo.record_claimed_profile_phase(
+        candidate.finalization_id,
+        second.claim_token,
+        "completed",
+    )
+    completed = await repo.get_finalization(candidate.finalization_id)
+    assert completed.profile_status == "completed"
+    assert completed.claim_token is None
+
+
+async def test_profile_record_failure_is_recovered_after_processing_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _Clock()
+    repo = SessionContextRepository(clock=clock)
+    monkeypatch.setattr(session_context, "_default_repository", repo)
+    coordinator = SessionLifecycleCoordinator(repo, ActiveStreamRegistry())
+    await repo.touch(BuyerSessionInput("record-failure", "t1", "member", "707"))
+    store = await get_profile_store()
+    await store.append_session_ctx(conversation_key("707", "record-failure"), "복구할 취향")
+    await _complete_idle_transient(repo, coordinator, clock)
+    monkeypatch.setattr(finalizer, "get_llm", lambda: _LLM())
+    original_record = repo.record_claimed_profile_phase
+    attempts = 0
+
+    async def _fail_once(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("record unavailable")
+        return await original_record(*args, **kwargs)
+
+    monkeypatch.setattr(repo, "record_claimed_profile_phase", _fail_once)
+    with pytest.raises(RuntimeError, match="record unavailable"):
+        await finalizer.process_recoverable_profile_phases(1)
+    [processing] = repo._finalizations.values()
+    assert processing.profile_status == "processing"
+
+    clock.advance(get_settings().profile_idle_claim_ttl_s + 1)
+    [result] = await finalizer.process_recoverable_profile_phases(1)
+    assert result.status is finalizer.ProfilePhaseStatus.DUPLICATE
+    assert (await repo.get_finalization(processing.finalization_id)).profile_status == "completed"
+
+
+async def test_cancelled_profile_processor_marks_retryable_and_can_recover(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _Clock()
+    repo = SessionContextRepository(clock=clock)
+    monkeypatch.setattr(session_context, "_default_repository", repo)
+    coordinator = SessionLifecycleCoordinator(repo, ActiveStreamRegistry())
+    context = await repo.touch(BuyerSessionInput("cancel-profile", "t1", "member", "708"))
+    store = await get_profile_store()
+    await store.append_session_ctx(conversation_key("708", "cancel-profile"), "취소 후 복구")
+    await _complete_idle_transient(repo, coordinator, clock)
+    entered = asyncio.Event()
+
+    class _BlockingLLM(_LLM):
+        async def complete(self, **kwargs):
+            if "델타 추출기" in kwargs["system"]:
+                entered.set()
+                await asyncio.Event().wait()
+            return await super().complete(**kwargs)
+
+    monkeypatch.setattr(finalizer, "get_llm", lambda: _BlockingLLM())
+    waiter = asyncio.create_task(finalizer.process_recoverable_profile_phases(1))
+    await entered.wait()
+    active = finalizer._active_profile_tasks._active[context.context_id]
+    active.task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    await asyncio.sleep(0)
+    [retryable] = repo._finalizations.values()
+    assert retryable.profile_status == "retryable"
+
+    monkeypatch.setattr(finalizer, "get_llm", lambda: _LLM())
+    [result] = await finalizer.process_recoverable_profile_phases(1)
+    assert result.status is finalizer.ProfilePhaseStatus.COMPLETED
 
 
 async def test_new_idle_generation_revalidates_after_joining_previous_task(
@@ -262,9 +468,11 @@ async def test_listed_idle_candidate_superseded_before_cas_runs_terminal_only(
 
     assert await stale == []
     monkeypatch.setattr(repo, "list_recoverable_profile_phases", original_list)
-    assert terminal.claim is not None
-    transient = await coordinator.process_terminal_transient(terminal.claim)
-    assert transient.status == "completed"
+    if terminal.claim is not None:
+        transient = await coordinator.process_terminal_transient(terminal.claim)
+        assert transient.status == "completed"
+    else:
+        assert terminal.finalization.transient_status == "completed"
     monkeypatch.setattr(finalizer, "get_llm", lambda: _LLM())
     await finalizer.process_recoverable_profile_phases(1)
 
@@ -327,6 +535,82 @@ async def test_idle_sweep_processes_expired_buffer_without_http_self_call(
     assert await store.get_summary("71") is not None
     row = await session_activity.get_session(71, "idle")
     assert row is not None and row.status == "completed"
+
+
+async def test_profile_only_recovery_does_not_reenter_legacy_activity_sweep(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.session_context import ProfileRecoveryCandidate
+    from app.core.session_lifecycle import IdleSweepResult as LifecycleSweepResult
+
+    class _Repository:
+        async def list_recoverable_profile_phases(self, batch_size: int):
+            return [ProfileRecoveryCandidate("f", "c", "s", "7", 1, 0)]
+
+    async def _lifecycle_sweep(self, **kwargs):
+        return LifecycleSweepResult()
+
+    async def _unexpected_legacy(**kwargs):
+        raise AssertionError("profile recovery 직후 legacy activity sweep 재진입 금지")
+
+    monkeypatch.setattr(session_context, "_default_repository", _Repository())
+    monkeypatch.setattr(
+        SessionLifecycleCoordinator,
+        "run_session_context_sweep",
+        _lifecycle_sweep,
+    )
+    monkeypatch.setattr(session_activity, "claim_expired_sessions", _unexpected_legacy)
+
+    result = await idle_timeout.run_idle_sweep()
+
+    assert result == idle_timeout.IdleSweepResult()
+
+
+async def test_legacy_claim_is_skipped_when_lifecycle_context_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = SessionContextRepository()
+    monkeypatch.setattr(session_context, "_default_repository", repo)
+    await repo.touch(BuyerSessionInput("owned-by-lifecycle", "t1", "member", "709"))
+    claim = ActivityClaim(709, "owned-by-lifecycle", "legacy-token", 0.0)
+    released: list[ActivityClaim] = []
+
+    async def _release(item: ActivityClaim) -> None:
+        released.append(item)
+
+    async def _legacy(*args, **kwargs):
+        raise AssertionError("lifecycle context를 legacy finalizer가 처리하면 안 됨")
+
+    monkeypatch.setattr(idle_timeout, "_release_claim_best_effort", _release)
+    monkeypatch.setattr(idle_timeout, "finalize_profile_session", _legacy)
+
+    status = await idle_timeout._process_claim(claim, idle_timeout_s=600)
+    assert status == "skipped"
+    assert released == [claim]
+
+
+async def test_lifecycle_lookup_failure_does_not_fail_open_to_legacy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    claim = ActivityClaim(710, "lookup-failure", "legacy-token", 0.0)
+    released: list[ActivityClaim] = []
+
+    async def _lookup_failure(session_id: str):
+        raise RuntimeError("lifecycle DB unavailable")
+
+    async def _release(item: ActivityClaim) -> None:
+        released.append(item)
+
+    async def _legacy(*args, **kwargs):
+        raise AssertionError("lookup failure에서 legacy fail-open 금지")
+
+    monkeypatch.setattr(session_context._default_repository, "get_context", _lookup_failure)
+    monkeypatch.setattr(idle_timeout, "_release_claim_best_effort", _release)
+    monkeypatch.setattr(idle_timeout, "finalize_profile_session", _legacy)
+
+    status = await idle_timeout._process_claim(claim, idle_timeout_s=600)
+    assert status == finalizer.FinalizationStatus.RETRYABLE.value
+    assert released == [claim]
 
 
 async def test_idle_sweep_skips_active_stream_and_releases_activity_claim(

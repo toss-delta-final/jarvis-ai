@@ -95,6 +95,8 @@ class SessionFinalization:
     profile_watermark: int | None
     transient_status: Literal["pending", "completed"]
     profile_status: ProfilePhaseStatus
+    supersedes_finalization_id: str | None = None
+    superseded_at: datetime | float | None = None
 
 
 @dataclass(frozen=True)
@@ -146,6 +148,8 @@ class _MemoryFinalization:
     profile_watermark: int | None = None
     transient_status: Literal["pending", "completed"] = "pending"
     profile_status: ProfilePhaseStatus = "pending"
+    supersedes_finalization_id: str | None = None
+    superseded_at: float | None = None
 
 
 class SessionContextRepository:
@@ -628,8 +632,6 @@ class SessionContextRepository:
             row = self._contexts.get(session_id)
             if row is None or row.owner_type != "member" or row.owner_id != str(user_id):
                 raise SessionForbidden
-            if row.state == "idle_finalizing":
-                raise SessionFinalizing
             if row.state == "terminal":
                 current = self._current_finalization(row, "terminal")
                 if current is None:
@@ -653,6 +655,21 @@ class SessionContextRepository:
                     _memory_claim(row, current),
                     False,
                 )
+            inherited = next(
+                (
+                    item
+                    for item in sorted(
+                        self._finalizations.values(),
+                        key=lambda candidate: candidate.generation,
+                        reverse=True,
+                    )
+                    if item.context_id == row.context_id
+                    and item.generation == row.generation
+                    and item.reason == "idle"
+                    and item.status != "superseded"
+                ),
+                None,
+            )
             for superseded in self._finalizations.values():
                 if (
                     superseded.context_id == row.context_id
@@ -662,22 +679,38 @@ class SessionContextRepository:
                     superseded.status = "superseded"
                     superseded.claim_token = None
                     superseded.lease_expires_at = None
+                    superseded.superseded_at = self._clock()
             row.generation += 1
             row.state = "terminal"
+            transient_completed = (
+                inherited is not None and inherited.transient_status == "completed"
+            )
             finalization = _MemoryFinalization(
                 str(uuid.uuid4()),
                 row.context_id,
                 row.generation,
                 "terminal",
-                status="processing",
-                claim_token=uuid.uuid4().hex,
-                lease_expires_at=self._clock() + get_settings().profile_idle_claim_ttl_s,
+                status="completed" if transient_completed else "processing",
+                claim_token=None if transient_completed else uuid.uuid4().hex,
+                lease_expires_at=(
+                    None
+                    if transient_completed
+                    else self._clock() + get_settings().profile_idle_claim_ttl_s
+                ),
+                watermark_status=(
+                    inherited.watermark_status if inherited is not None else "pending"
+                ),
+                profile_watermark=(inherited.profile_watermark if inherited is not None else None),
+                transient_status="completed" if transient_completed else "pending",
+                supersedes_finalization_id=(
+                    inherited.finalization_id if inherited is not None else None
+                ),
             )
             self._finalizations[finalization.finalization_id] = finalization
             return TerminalOutcome(
                 _memory_context(row),
                 _memory_finalization(finalization),
-                _memory_claim(row, finalization),
+                None if transient_completed else _memory_claim(row, finalization),
                 False,
             )
 
@@ -697,8 +730,6 @@ class SessionContextRepository:
         if row is None or row[2] != "member" or row[3] != str(user_id):
             raise SessionForbidden
         context = _row_to_context(row)
-        if context.state == "idle_finalizing":
-            raise SessionFinalizing
         if context.state == "terminal":
             finalization = await self._get_current_finalization_on_connection(
                 conn, context.context_id, context.generation, "terminal"
@@ -724,7 +755,8 @@ class SessionContextRepository:
                       AND (lease_expires_at IS NULL OR lease_expires_at <= now())
                     RETURNING finalization_id, context_id, generation, reason, status,
                               claim_token, lease_expires_at, watermark_status,
-                              profile_watermark, transient_status, profile_status
+                              profile_watermark, transient_status, profile_status,
+                              supersedes_finalization_id, superseded_at
                     """,
                     (token, lease_s, finalization.finalization_id),
                 )
@@ -738,6 +770,19 @@ class SessionContextRepository:
                 _claim_from_finalization(context, finalization),
                 False,
             )
+        inherited_row = await (
+            await conn.execute(
+                """
+                SELECT finalization_id, watermark_status, profile_watermark, transient_status
+                FROM chat_session_finalizations
+                WHERE context_id=%s AND generation=%s AND reason='idle'
+                  AND status <> 'superseded'
+                ORDER BY updated_at DESC, finalization_id LIMIT 1
+                FOR UPDATE
+                """,
+                (context.context_id, context.generation),
+            )
+        ).fetchone()
         await conn.execute(
             """
             UPDATE chat_session_finalizations
@@ -759,29 +804,49 @@ class SessionContextRepository:
             )
         ).fetchone()
         context = _row_to_context(row)
-        token = uuid.uuid4().hex
+        transient_completed = inherited_row is not None and inherited_row[3] == "completed"
+        token = None if transient_completed else uuid.uuid4().hex
         lease_s = get_settings().profile_idle_claim_ttl_s
         finalization_id = str(uuid.uuid4())
+        watermark_status = inherited_row[1] if inherited_row is not None else "pending"
+        profile_watermark = inherited_row[2] if inherited_row is not None else None
+        supersedes_id = str(inherited_row[0]) if inherited_row is not None else None
         final_row = await (
             await conn.execute(
                 """
                 INSERT INTO chat_session_finalizations
                     (finalization_id, context_id, generation, reason, status,
-                     claim_token, lease_expires_at)
-                VALUES (%s, %s, %s, 'terminal', 'processing', %s,
-                        now() + make_interval(secs => %s))
+                     claim_token, lease_expires_at, watermark_status, profile_watermark,
+                     transient_status, supersedes_finalization_id)
+                VALUES (%s, %s, %s, 'terminal', %s, %s,
+                        CASE WHEN %s THEN NULL
+                             ELSE now() + make_interval(secs => %s) END,
+                        %s, %s, %s, %s)
                 RETURNING finalization_id, context_id, generation, reason, status,
                           claim_token, lease_expires_at, watermark_status,
-                          profile_watermark, transient_status, profile_status
+                          profile_watermark, transient_status, profile_status,
+                          supersedes_finalization_id, superseded_at
                 """,
-                (finalization_id, context.context_id, context.generation, token, lease_s),
+                (
+                    finalization_id,
+                    context.context_id,
+                    context.generation,
+                    "completed" if transient_completed else "processing",
+                    token,
+                    transient_completed,
+                    lease_s,
+                    watermark_status,
+                    profile_watermark,
+                    "completed" if transient_completed else "pending",
+                    supersedes_id,
+                ),
             )
         ).fetchone()
         finalization = _row_to_finalization(final_row)
         return TerminalOutcome(
             context,
             finalization,
-            _claim_from_finalization(context, finalization),
+            None if transient_completed else _claim_from_finalization(context, finalization),
             False,
         )
 
@@ -866,6 +931,54 @@ class SessionContextRepository:
             finalization.claim_token = None
             finalization.lease_expires_at = None
 
+    async def record_claimed_profile_phase(
+        self,
+        finalization_id: str,
+        claim_token: str,
+        status: Literal["completed", "retryable"],
+    ) -> bool:
+        """현재 profile claim token 소유자만 phase 결과를 기록한다."""
+        if status not in ("completed", "retryable"):
+            raise ValueError("invalid claimed profile phase status")
+        if self._pool is not None:
+            async with self._pool.connection() as conn:
+                row = await (
+                    await conn.execute(
+                        """
+                        UPDATE chat_session_finalizations
+                        SET profile_status=%s,
+                            status=CASE WHEN %s='completed' THEN 'completed' ELSE status END,
+                            claim_token=NULL, lease_expires_at=NULL,
+                            completed_at=CASE WHEN %s='completed' THEN now()
+                                              ELSE completed_at END,
+                            updated_at=now()
+                        WHERE finalization_id=%s
+                          AND profile_status='processing'
+                          AND claim_token=%s
+                          AND status <> 'superseded'
+                        RETURNING finalization_id
+                        """,
+                        (status, status, status, finalization_id, claim_token),
+                    )
+                ).fetchone()
+            if row is None:
+                raise SessionClaimConflict
+            return True
+        finalization = self._finalizations.get(finalization_id)
+        if (
+            finalization is None
+            or finalization.status == "superseded"
+            or finalization.profile_status != "processing"
+            or finalization.claim_token != claim_token
+        ):
+            raise SessionClaimConflict
+        finalization.profile_status = status
+        if status == "completed":
+            finalization.status = "completed"
+        finalization.claim_token = None
+        finalization.lease_expires_at = None
+        return True
+
     async def list_recoverable_profile_phases(
         self, batch_size: int
     ) -> list[ProfileRecoveryCandidate]:
@@ -881,7 +994,13 @@ class SessionContextRepository:
                         JOIN chat_session_contexts c USING (context_id)
                         WHERE c.owner_type='member'
                           AND f.transient_status='completed'
-                          AND f.profile_status IN ('pending','retryable')
+                          AND (
+                              f.profile_status IN ('pending','retryable')
+                              OR (
+                                  f.profile_status='processing'
+                                  AND (f.lease_expires_at IS NULL OR f.lease_expires_at <= now())
+                              )
+                          )
                           AND f.status <> 'superseded'
                           AND f.watermark_status='captured'
                           AND f.profile_watermark IS NOT NULL
@@ -897,7 +1016,16 @@ class SessionContextRepository:
             if (
                 context.owner_type == "member"
                 and finalization.transient_status == "completed"
-                and finalization.profile_status in ("pending", "retryable")
+                and (
+                    finalization.profile_status in ("pending", "retryable")
+                    or (
+                        finalization.profile_status == "processing"
+                        and (
+                            finalization.lease_expires_at is None
+                            or finalization.lease_expires_at <= self._clock()
+                        )
+                    )
+                )
                 and finalization.status != "superseded"
                 and finalization.watermark_status == "captured"
                 and finalization.profile_watermark is not None
@@ -932,7 +1060,13 @@ class SessionContextRepository:
                         WHERE f.finalization_id=%s AND c.context_id=f.context_id
                           AND c.owner_type='member'
                           AND f.transient_status='completed'
-                          AND f.profile_status IN ('pending','retryable')
+                          AND (
+                              f.profile_status IN ('pending','retryable')
+                              OR (
+                                  f.profile_status='processing'
+                                  AND (f.lease_expires_at IS NULL OR f.lease_expires_at <= now())
+                              )
+                          )
                           AND f.status <> 'superseded'
                           AND f.watermark_status='captured'
                           AND f.profile_watermark IS NOT NULL
@@ -951,7 +1085,16 @@ class SessionContextRepository:
         if not (
             context.owner_type == "member"
             and finalization.transient_status == "completed"
-            and finalization.profile_status in ("pending", "retryable")
+            and (
+                finalization.profile_status in ("pending", "retryable")
+                or (
+                    finalization.profile_status == "processing"
+                    and (
+                        finalization.lease_expires_at is None
+                        or finalization.lease_expires_at <= self._clock()
+                    )
+                )
+            )
             and finalization.status != "superseded"
             and finalization.watermark_status == "captured"
             and finalization.profile_watermark is not None
@@ -971,7 +1114,8 @@ class SessionContextRepository:
                         """
                         SELECT finalization_id, context_id, generation, reason, status,
                                claim_token, lease_expires_at, watermark_status,
-                               profile_watermark, transient_status, profile_status
+                               profile_watermark, transient_status, profile_status,
+                               supersedes_finalization_id, superseded_at
                         FROM chat_session_finalizations WHERE finalization_id=%s
                         """,
                         (finalization_id,),
@@ -1126,7 +1270,8 @@ class SessionContextRepository:
                 """
                 SELECT finalization_id, context_id, generation, reason, status,
                        claim_token, lease_expires_at, watermark_status,
-                       profile_watermark, transient_status, profile_status
+                       profile_watermark, transient_status, profile_status,
+                       supersedes_finalization_id, superseded_at
                 FROM chat_session_finalizations
                 WHERE context_id=%s AND generation=%s AND reason=%s
                   AND status <> 'superseded'
@@ -1591,6 +1736,8 @@ def _row_to_finalization(row) -> SessionFinalization:  # noqa: ANN001
         int(row[8]) if row[8] is not None else None,
         row[9],
         row[10],
+        str(row[11]) if len(row) > 11 and row[11] is not None else None,
+        row[12] if len(row) > 12 else None,
     )
 
 
@@ -1607,6 +1754,8 @@ def _memory_finalization(row: _MemoryFinalization) -> SessionFinalization:
         row.profile_watermark,
         row.transient_status,
         row.profile_status,
+        row.supersedes_finalization_id,
+        row.superseded_at,
     )
 
 
@@ -1729,6 +1878,18 @@ async def complete_transient_phase(claim: FinalizationClaim) -> None:
 
 async def record_profile_phase(finalization_id: str, status: ProfilePhaseStatus) -> None:
     await _default_repository.record_profile_phase(finalization_id, status)
+
+
+async def record_claimed_profile_phase(
+    finalization_id: str,
+    claim_token: str,
+    status: Literal["completed", "retryable"],
+) -> bool:
+    return await _default_repository.record_claimed_profile_phase(
+        finalization_id,
+        claim_token,
+        status,
+    )
 
 
 async def get_finalization(finalization_id: str) -> SessionFinalization:

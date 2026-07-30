@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from app.agents.profile import session_activity
 from app.agents.profile.finalizer import FinalizationStatus, finalize_profile_session
 from app.agents.profile.session_activity import ActivityClaim
+from app.core import session_context
 from app.core.config import get_settings
 from app.core.conversation import conversation_key
 from app.core.session_lifecycle import SessionLifecycleCoordinator
@@ -39,6 +40,14 @@ async def _release_claim_best_effort(claim: ActivityClaim) -> None:
 async def _process_claim(claim: ActivityClaim, *, idle_timeout_s: float) -> str:
     registry = get_registry()
     stream_key = conversation_key(str(claim.user_id), claim.session_id)
+    try:
+        lifecycle_context = await session_context._default_repository.get_context(claim.session_id)
+    except Exception:
+        await _release_claim_best_effort(claim)
+        return FinalizationStatus.RETRYABLE.value
+    if lifecycle_context is not None:
+        await _release_claim_best_effort(claim)
+        return "skipped"
     # 실제 라이브 스트림 슬롯을 scheduler가 예약하면 finalizer의 LLM 처리 동안 정상 채팅이
     # false-positive 409를 받는다. 기존 stream만 거르고, 이후 새 활동은 DB touch가 activity
     # claim을 무효화한다. idle finalizer는 fixed processed claim을 완료하지 않고 해제하므로
@@ -62,12 +71,17 @@ async def run_idle_sweep() -> IdleSweepResult:
     """만료 후보를 bounded claim하고 제한된 concurrency로 공통 finalizer에 전달한다."""
     settings = get_settings()
     started = time.monotonic()
+    profile_recovery_pending = bool(
+        await session_context._default_repository.list_recoverable_profile_phases(
+            settings.profile_idle_sweep_batch_size
+        )
+    )
     lifecycle = await SessionLifecycleCoordinator().run_session_context_sweep(
         idle_timeout_s=settings.profile_session_idle_timeout_s,
         lease_s=settings.profile_idle_claim_ttl_s,
         batch_size=settings.profile_idle_sweep_batch_size,
     )
-    if lifecycle.examined:
+    if lifecycle.examined or profile_recovery_pending:
         result = IdleSweepResult(
             claimed=lifecycle.claimed,
             accepted=lifecycle.completed,

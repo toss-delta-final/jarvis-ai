@@ -15,7 +15,7 @@ from app.core.session_context import (
     SessionActive,
     SessionContextRepository,
 )
-from app.core.stream import get_registry, open_stream
+from app.core.stream import ActiveStreamRegistry, get_registry, open_stream
 from app.main import app
 from app.schemas.events import SessionClaimEvent
 
@@ -127,6 +127,96 @@ async def test_session_end_keeps_terminal_durable_when_profile_is_retryable(
     [journal] = repo._finalizations.values()
     assert journal.transient_status == "completed"
     assert journal.profile_status == "retryable"
+
+
+async def test_stream_scope_idle_wait_is_event_driven() -> None:
+    registry = ActiveStreamRegistry()
+    assert registry.acquire("7:thread", owner_id="7", session_id="session-1")
+    waiter = asyncio.create_task(registry.wait_for_scope_idle("7", "session-1"))
+    await asyncio.sleep(0)
+    assert not waiter.done()
+
+    registry.release("7:thread")
+    await asyncio.wait_for(waiter, timeout=0.1)
+
+
+async def test_terminal_gate_precedes_stream_wait_and_watermark_capture(
+    repo: SessionContextRepository,
+) -> None:
+    registry = ActiveStreamRegistry()
+    await repo.touch(BuyerSessionInput("stream-terminal", "thread-1", "member", "7"))
+    assert registry.acquire(
+        "7:thread-1",
+        owner_id="7",
+        session_id="stream-terminal",
+    )
+    snapshot_called = asyncio.Event()
+
+    class _ProfileStore:
+        async def get_session_ctx_snapshot(self, key: str) -> tuple[list[str], int]:
+            snapshot_called.set()
+            return [], 0
+
+    coordinator = lifecycle.SessionLifecycleCoordinator(
+        repo,
+        registry,
+        profile_store_factory=_ProfileStore,
+    )
+    terminal_task = asyncio.create_task(coordinator.begin_terminal(7, "stream-terminal"))
+    await asyncio.sleep(0)
+
+    context = await repo.get_context("stream-terminal")
+    assert context is not None and context.state == "terminal"
+    assert not snapshot_called.is_set()
+    assert not terminal_task.done()
+
+    registry.release("7:thread-1")
+    outcome = await asyncio.wait_for(terminal_task, timeout=0.2)
+    assert snapshot_called.is_set()
+    assert outcome.duplicate is False
+    duplicate = await coordinator.begin_terminal(7, "stream-terminal")
+    assert duplicate.duplicate is True
+
+
+async def test_session_end_supersedes_idle_finalizing_barrier(
+    client: httpx.AsyncClient,
+    repo: SessionContextRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.agents.profile.finalizer as profile_finalizer
+
+    context = await repo.touch(BuyerSessionInput("i20-barrier", "thread-1", "member", "7"))
+    repo._contexts["i20-barrier"].last_activity_at = 0
+    [idle] = await repo.claim_expired_contexts(1, 30, 1)
+    async with repo.lock_session("i20-barrier") as uow:
+        await uow.prepare_idle_finalizing_with_watermark(idle, 0)
+
+    async def clear_context(context_id: str, thread_ids: list[str]):
+        from app.agents.buyer.session_state import CleanupCounts
+
+        return CleanupCounts(filters=1)
+
+    monkeypatch.setattr("app.core.session_lifecycle.session_state.clear_context", clear_context)
+    monkeypatch.setattr(profile_finalizer, "get_llm", lambda: None)
+    response = await client.post(
+        "/events/session-end",
+        json={"userId": 7, "sessionId": "i20-barrier"},
+    )
+
+    assert response.status_code == 202
+    assert response.json() == {"status": "accepted"}
+    terminal_context = await repo.get_context("i20-barrier")
+    assert terminal_context is not None and terminal_context.state == "terminal"
+    old = await repo.get_finalization(idle.finalization_id)
+    assert old.status == "superseded"
+    assert old.claim_token is None
+    terminal_rows = [
+        row
+        for row in repo._finalizations.values()
+        if row.context_id == context.context_id and row.reason == "terminal"
+    ]
+    assert len(terminal_rows) == 1
+    assert terminal_rows[0].transient_status == "completed"
 
 
 async def test_exact_duplicate_never_mutates_context_generation_or_history(

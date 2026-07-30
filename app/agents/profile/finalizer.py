@@ -53,6 +53,17 @@ class ActiveProfileTaskRegistry:
     def __init__(self) -> None:
         self._active: dict[str, _ActiveProfileTask] = {}
 
+    def _task_done(
+        self,
+        context_id: str,
+        active: _ActiveProfileTask,
+        task: asyncio.Task[ProfilePhaseResult],
+    ) -> None:
+        if self._active.get(context_id) is active:
+            del self._active[context_id]
+        if not task.cancelled():
+            task.exception()
+
     async def join_or_start(
         self,
         context_id: str,
@@ -67,17 +78,16 @@ class ActiveProfileTaskRegistry:
             active = _ActiveProfileTask(finalization_id, event_id, task)
             # create_task() 뒤 첫 await 전에 task와 journal identity를 함께 게시한다.
             self._active[context_id] = active
-        try:
-            result = await active.task
-            return ProfileJoinResult(
-                active.finalization_id,
-                active.event_id,
-                result,
-                joined,
+            task.add_done_callback(
+                lambda done, item=active: self._task_done(context_id, item, done)
             )
-        finally:
-            if self._active.get(context_id) is active and active.task.done():
-                del self._active[context_id]
+        result = await asyncio.shield(active.task)
+        return ProfileJoinResult(
+            active.finalization_id,
+            active.event_id,
+            result,
+            joined,
+        )
 
 
 _active_profile_tasks = ActiveProfileTaskRegistry()
@@ -204,7 +214,11 @@ async def _process_profile_candidate(
             journal = await repository.get_finalization(candidate.finalization_id)
         except SessionClaimConflict:
             return None
-        if journal.status == "superseded" or journal.profile_status not in ("pending", "retryable"):
+        if journal.status == "superseded" or journal.profile_status not in (
+            "pending",
+            "retryable",
+            "processing",
+        ):
             return None
         event_id = processed_events.profile_phase_event_id(
             candidate.context_id,
@@ -219,23 +233,40 @@ async def _process_profile_candidate(
             )
             if claim is None:
                 return ProfilePhaseResult(ProfilePhaseStatus.DUPLICATE)
-            result = await process_profile_checkpoint(
-                int(candidate.owner_id),
-                candidate.session_id,
-                event_id=event_id,
-                profile_watermark=candidate.profile_watermark,
-                settings=settings,
-            )
+            try:
+                result = await process_profile_checkpoint(
+                    int(candidate.owner_id),
+                    candidate.session_id,
+                    event_id=event_id,
+                    profile_watermark=candidate.profile_watermark,
+                    settings=settings,
+                )
+            except asyncio.CancelledError:
+                retry_record = asyncio.create_task(
+                    repository.record_claimed_profile_phase(
+                        candidate.finalization_id,
+                        claim.claim_token,
+                        "retryable",
+                    )
+                )
+                try:
+                    await asyncio.shield(retry_record)
+                except Exception:
+                    logger.warning(
+                        "취소된 profile phase retryable 기록 실패 — lease 만료 후 복구",
+                        exc_info=True,
+                    )
+                raise
             phase_status = (
                 "retryable" if result.status is ProfilePhaseStatus.RETRYABLE else "completed"
             )
             try:
-                await repository.record_profile_phase(
+                await repository.record_claimed_profile_phase(
                     candidate.finalization_id,
+                    claim.claim_token,
                     phase_status,
                 )
             except SessionClaimConflict:
-                # I-20이 idle journal을 supersede한 경우 terminal journal만 계속한다.
                 pass
             return result
 
@@ -256,6 +287,7 @@ async def _process_profile_candidate(
         if refreshed.status == "superseded" or refreshed.profile_status not in (
             "pending",
             "retryable",
+            "processing",
         ):
             return None
 

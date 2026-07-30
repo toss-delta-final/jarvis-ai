@@ -181,20 +181,21 @@ class SessionLifecycleCoordinator:
             outcome = await repository.begin_terminal(user_id, session_id)
 
         # terminal state가 새 touch/claim을 이미 막은 상태에서 기존 stream만 자연 종료시킨다.
-        scope = (str(user_id), session_id)
-        while scope in registry._active.values():
-            await asyncio.sleep(0.01)
+        await registry.wait_for_scope_idle(str(user_id), session_id)
 
         claim = outcome.claim
-        if claim is not None:
+        while claim is not None:
             transient = await self.process_terminal_transient(claim)
+            if transient.status == "skipped" and transient.skip_reason == "active":
+                await registry.wait_for_scope_idle(str(user_id), session_id)
+                claim = (await repository.begin_terminal(user_id, session_id)).claim
+                continue
             if transient.status == "skipped" and transient.skip_reason == "invalid":
-                refreshed = await repository.begin_terminal(user_id, session_id)
-                claim = refreshed.claim
-                if claim is not None:
-                    transient = await self.process_terminal_transient(claim)
+                claim = (await repository.begin_terminal(user_id, session_id)).claim
+                continue
             if transient.status != "completed":
                 return outcome
+            claim = None
 
         journal = await repository.get_finalization(outcome.finalization.finalization_id)
         if (
@@ -457,8 +458,7 @@ class SessionLifecycleCoordinator:
             claim.finalization_id in attempted_recovery_ids and outcome.skip_reason == "invalid"
             for claim, outcome in outcomes
         )
-        if hasattr(repository, "list_recoverable_profile_phases"):
-            await _process_recoverable_profile_phases(repository, capacity)
+        await _process_recoverable_profile_phases(repository, capacity)
         return IdleSweepResult(
             claimed=productive,
             recovered=len(recovered_ids),

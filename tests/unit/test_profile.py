@@ -183,6 +183,49 @@ async def test_generate_session_delta_uses_only_supplied_watermark() -> None:
     assert llm.prompt == "워터마크 안쪽"
 
 
+async def test_newer_append_cannot_drive_promoted_fact() -> None:
+    store = await get_profile_store()
+    key = conversation_key("7", "bounded-promotion")
+    await store.append_session_ctx(key, "워터마크 안쪽 일반 대화")
+    await store.append_session_ctx(key, "워터마크 바깥쪽 빨간색 선호")
+
+    class _ConditionalLLM(_ProfileLLM):
+        async def complete(self, *, system, user, tier, max_tokens=1024, json_output=True):
+            if "델타 추출기" in system:
+                deltas = (
+                    [
+                        {
+                            "fact": "빨간색 선호",
+                            "salience": 0.9,
+                            "explicit": True,
+                            "repetitionEma": 0.0,
+                        }
+                    ]
+                    if "빨간색 선호" in user
+                    else []
+                )
+                return json.dumps({"deltas": deltas}, ensure_ascii=False)
+            return await super().complete(
+                system=system,
+                user=user,
+                tier=tier,
+                max_tokens=max_tokens,
+                json_output=json_output,
+            )
+
+    promoted, watermark = await generate_session_delta(
+        "7",
+        key,
+        profile_watermark=1,
+        llm=_ConditionalLLM(),
+        settings=get_settings(),
+    )
+
+    assert watermark == 1
+    assert promoted == []
+    assert "빨간색 선호" not in await store.get_facts("7")
+
+
 async def test_active_profile_registry_joins_context_task_with_original_identity() -> None:
     registry = ActiveProfileTaskRegistry()
     entered = asyncio.Event()
@@ -210,6 +253,77 @@ async def test_active_profile_registry_joins_context_task_with_original_identity
     assert owner.event_id == joined.event_id == "e1"
     assert owner.joined is False
     assert joined.joined is True
+
+
+async def test_joiner_cancellation_does_not_cancel_shared_profile_task() -> None:
+    registry = ActiveProfileTaskRegistry()
+    entered = asyncio.Event()
+    proceed = asyncio.Event()
+
+    async def factory() -> ProfilePhaseResult:
+        entered.set()
+        await proceed.wait()
+        return ProfilePhaseResult(ProfilePhaseStatus.COMPLETED)
+
+    owner = asyncio.create_task(registry.join_or_start("ctx", "f1", "e1", factory))
+    await entered.wait()
+    joiner = asyncio.create_task(registry.join_or_start("ctx", "f1", "e1", factory))
+    await asyncio.sleep(0)
+    joiner.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await joiner
+
+    assert not owner.done()
+    proceed.set()
+    assert (await owner).result.status is ProfilePhaseStatus.COMPLETED
+    assert registry._active == {}
+
+
+async def test_owner_waiter_cancellation_keeps_background_task_and_cleans_registry() -> None:
+    registry = ActiveProfileTaskRegistry()
+    entered = asyncio.Event()
+    proceed = asyncio.Event()
+    completed = asyncio.Event()
+
+    async def factory() -> ProfilePhaseResult:
+        entered.set()
+        await proceed.wait()
+        completed.set()
+        return ProfilePhaseResult(ProfilePhaseStatus.COMPLETED)
+
+    owner = asyncio.create_task(registry.join_or_start("ctx", "f1", "e1", factory))
+    await entered.wait()
+    owner.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await owner
+
+    proceed.set()
+    await completed.wait()
+    await asyncio.sleep(0)
+    assert registry._active == {}
+
+
+async def test_shared_profile_task_cancellation_reaches_waiters_and_cleans_registry() -> None:
+    registry = ActiveProfileTaskRegistry()
+    entered = asyncio.Event()
+
+    async def factory() -> ProfilePhaseResult:
+        entered.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    owner = asyncio.create_task(registry.join_or_start("ctx", "f1", "e1", factory))
+    await entered.wait()
+    joiner = asyncio.create_task(registry.join_or_start("ctx", "f1", "e1", factory))
+    active = registry._active["ctx"]
+    active.task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await owner
+    with pytest.raises(asyncio.CancelledError):
+        await joiner
+    await asyncio.sleep(0)
+    assert registry._active == {}
 
 
 async def test_empty_bounded_checkpoint_is_success_without_llm(
