@@ -19,12 +19,14 @@ from fastapi.responses import StreamingResponse
 from app.agents.buyer.graph import run_buyer_turn
 from app.api import deps as auth_deps
 from app.core.auth import Identity
-from app.core.conversation import get_conversation_store
+from app.core.config import get_settings
+from app.core.conversation import TurnStatus, get_conversation_store
 from app.core.errors import get_request_id
-from app.core.observability import emit_rejection, start_observation
+from app.core.observability import emit_rejection, finish_trace_safely, start_observation
 from app.core.pg_resilience import is_state_store_unavailable
 from app.core.session_context import BuyerSessionInput, SessionStateUnavailable
 from app.core.stream import open_stream, registry_key
+from app.core.tracing import start_request_trace_safely
 from app.schemas.chat import ChatRequest
 
 router = APIRouter(tags=["chat"])
@@ -46,9 +48,31 @@ async def chat(
         owner_id=auth_deps.buyer_owner_id(identity, settings),
     )
     request_id = get_request_id(http_request)
+    trace = start_request_trace_safely(
+        name="buyer_chat_turn",
+        request_id=request_id,
+        conversation_id=request.session_id,
+        thread_id=request.thread_id,
+        lane="buyer",
+        environment=get_settings().app_environment,
+    )
     try:
         store = await get_conversation_store()
+    except asyncio.CancelledError:
+        await finish_trace_safely(
+            trace,
+            status=TurnStatus.CANCELLED,
+            error_type=None,
+            terminal_reason="client_disconnect",
+        )
+        raise
     except Exception as exc:
+        await finish_trace_safely(
+            trace,
+            status=TurnStatus.FAILED,
+            error_type="INTERNAL",
+            terminal_reason="store_unavailable",
+        )
         # get_conversation_store()(pg-profile 지연 연결)는 운영(jwks)에서 폴백 없이 raise 한다.
         # 이 호출은 start_observation 인자라 open_stream 안전망 밖 — 예외가 나면 observation 이
         # 없어 §6.3 b chat_request 로그(errorType 집계)가 통째로 빠진다. pg-profile 장애야말로
@@ -70,6 +94,7 @@ async def chat(
         message=request.message,
         store=store,
         now=asyncio.get_running_loop().time(),
+        trace=trace,
         buyer_session=buyer_session,
     )
     return await open_stream(

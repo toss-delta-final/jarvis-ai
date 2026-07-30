@@ -15,7 +15,7 @@ import logging
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LLMProvider = Literal["openai", "anthropic"]
@@ -33,6 +33,14 @@ class Settings(BaseSettings):
         extra="ignore",
         case_sensitive=False,
     )
+
+    # ── Runtime environment and explicit request tracing ──
+    app_environment: Literal["local", "staging", "production", "test"] = "local"
+    langsmith_tracing: bool = False
+    langsmith_api_key: SecretStr | None = None
+    langsmith_project: str = "jarvis-ai-local"
+    langsmith_tracing_sampling_rate: float = Field(default=1.0, ge=0.0, le=1.0)
+    langsmith_export_timeout_s: float = Field(default=0.5, gt=0.0, le=5.0)
 
     # ── LLM provider 토글 (이슈 #40) ──
     # "openai"(기본) | "anthropic". 호출부는 tier("fast"|"smart")로 부르고 provider 가 모델을 해석한다.

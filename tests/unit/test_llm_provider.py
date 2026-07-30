@@ -8,12 +8,15 @@ resolve/분기 로직만 확인한다.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from pydantic import ValidationError
 
 from app.core import llm as llm_mod
 from app.core.config import Settings
 from app.core.llm import AnthropicLLM, LLMError, OpenAILLM, get_llm
+from app.core.tracing import FakeTraceExporter, TraceFactory, bind_request_trace, trace_span
 
 
 def _settings(**kw) -> Settings:
@@ -278,6 +281,174 @@ def _openai(**kw) -> OpenAILLM:
     )
     base.update(kw)
     return OpenAILLM("sk-test", **base)
+
+
+def _provider(provider: str):
+    if provider == "anthropic":
+        return AnthropicLLM(
+            "key", fast_model="fast-model", smart_model="smart-model", timeout=1, max_retries=0
+        )
+    return OpenAILLM(
+        "key", fast_model="fast-model", smart_model="smart-model", timeout=1, max_retries=0
+    )
+
+
+def _trace():
+    exporter = FakeTraceExporter()
+    trace = TraceFactory(exporter=exporter, enabled=True, sampling_rate=1.0).start_request(
+        name="buyer_chat_turn",
+        request_id="req-provider",
+        conversation_id="conversation",
+        thread_id="thread",
+        lane="buyer",
+        environment="test",
+    )
+    return trace, exporter
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "openai"])
+async def test_provider_stream_records_first_nonempty_ttft_and_disables_implicit_tracing(
+    monkeypatch: pytest.MonkeyPatch, provider: str
+) -> None:
+    from langsmith.run_helpers import get_tracing_context
+
+    contexts: list[bool | str | None] = []
+
+    class Chat:
+        async def astream(self, messages):
+            del messages
+            contexts.append(get_tracing_context()["enabled"])
+            yield SimpleNamespace(content="")
+            yield SimpleNamespace(
+                content="첫 토큰",
+                usage_metadata={"input_tokens": 11, "output_tokens": 3},
+            )
+
+    llm = _provider(provider)
+    monkeypatch.setattr(llm, "_chat", lambda *args, **kwargs: Chat())
+    times = iter([10.0, 10.025])
+    monkeypatch.setattr(llm_mod, "perf_counter", lambda: next(times), raising=False)
+    trace, exporter = _trace()
+
+    with bind_request_trace(trace):
+        with trace_span("llm.fallback", "llm", {"model": "fast-model"}):
+            chunks = [
+                chunk
+                async for chunk in llm.stream(
+                    system="private system", user="private user", tier="fast"
+                )
+            ]
+    await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+
+    assert chunks == ["첫 토큰"]
+    root = next(node for node in exporter.exported[0] if node.parent_id is None)
+    span = next(node for node in exporter.exported[0] if node.name == "llm.fallback")
+    assert root.metadata["provider_ttft_ms"] == 25
+    assert span.metadata == {
+        "model": "fast-model",
+        "promptTokens": 11,
+        "completionTokens": 3,
+    }
+    assert contexts == [False]
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "openai"])
+async def test_provider_complete_records_usage_without_provider_ttft(
+    monkeypatch: pytest.MonkeyPatch, provider: str
+) -> None:
+    from langsmith.run_helpers import get_tracing_context
+
+    contexts: list[bool | str | None] = []
+
+    class Chat:
+        async def ainvoke(self, messages):
+            del messages
+            contexts.append(get_tracing_context()["enabled"])
+            return SimpleNamespace(
+                content='{"ok": true}',
+                usage_metadata={"input_tokens": 7, "output_tokens": 2},
+            )
+
+    llm = _provider(provider)
+    monkeypatch.setattr(llm, "_chat", lambda *args, **kwargs: Chat())
+    trace, exporter = _trace()
+
+    with bind_request_trace(trace):
+        with trace_span("llm.decompose", "llm", {"model": "fast-model"}):
+            result = await llm.complete(system="private system", user="private user", tier="fast")
+    await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+
+    assert result == '{"ok": true}'
+    root = next(node for node in exporter.exported[0] if node.parent_id is None)
+    span = next(node for node in exporter.exported[0] if node.name == "llm.decompose")
+    assert "provider_ttft_ms" not in root.metadata
+    assert span.metadata == {
+        "model": "fast-model",
+        "promptTokens": 7,
+        "completionTokens": 2,
+    }
+    assert contexts == [False]
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "openai"])
+async def test_request_provider_ttft_is_first_write_wins_across_streams_and_complete(
+    monkeypatch: pytest.MonkeyPatch, provider: str
+) -> None:
+    calls = 0
+
+    class Chat:
+        async def astream(self, messages):
+            del messages
+            yield SimpleNamespace(content="")
+            yield SimpleNamespace(content="")
+            yield SimpleNamespace(content=f"stream-{calls}")
+
+        async def ainvoke(self, messages):
+            del messages
+            return SimpleNamespace(
+                content='{"ok": true}',
+                usage_metadata={"input_tokens": 1, "output_tokens": 1},
+            )
+
+    llm = _provider(provider)
+
+    def chat(*args, **kwargs):
+        del args, kwargs
+        nonlocal calls
+        calls += 1
+        return Chat()
+
+    monkeypatch.setattr(llm, "_chat", chat)
+    times = iter([10.0, 10.010, 20.0, 20.250])
+    monkeypatch.setattr(llm_mod, "perf_counter", lambda: next(times))
+    trace, exporter = _trace()
+
+    with bind_request_trace(trace):
+        with trace_span("llm.fallback", "llm", {"model": "fast-model"}):
+            first = [
+                chunk
+                async for chunk in llm.stream(
+                    system="private system", user="private user", tier="fast"
+                )
+            ]
+        with trace_span("llm.fallback", "llm", {"model": "fast-model"}):
+            second = [
+                chunk
+                async for chunk in llm.stream(
+                    system="private system", user="private user", tier="fast"
+                )
+            ]
+        with trace_span("llm.decompose", "llm", {"model": "fast-model"}):
+            completed = await llm.complete(
+                system="private system", user="private user", tier="fast"
+            )
+    await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+
+    assert first == ["stream-1"]
+    assert second == ["stream-2"]
+    assert completed == '{"ok": true}'
+    root = next(node for node in exporter.exported[0] if node.parent_id is None)
+    assert root.metadata["provider_ttft_ms"] == 10
 
 
 def test_openai_json_output_toggles_response_format() -> None:

@@ -40,10 +40,12 @@ class _BlockingObserver:
     def on_first_token(self, now: float) -> None:
         pass
 
-    def record_frame(self, frame: str) -> None:
+    def record_frame(self, frame: str, now: float) -> None:
         pass
 
-    async def finish(self, now: float, status, error_type=None) -> None:  # noqa: ANN001
+    async def finish(
+        self, now: float, status, error_type=None, terminal_reason: str = "eof"
+    ) -> None:  # noqa: ANN001
         pass
 
 

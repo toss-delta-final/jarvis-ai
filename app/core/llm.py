@@ -19,9 +19,13 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from time import perf_counter
 from typing import Any, Literal, Protocol, runtime_checkable
 
+from langsmith.run_helpers import tracing_context
+
 from app.core.config import LLMProvider, Settings, get_settings
+from app.core.tracing import current_request_trace
 
 ModelTier = Literal["fast", "smart"]
 
@@ -145,6 +149,25 @@ def _as_text(content: Any) -> str:
     return str(content)
 
 
+def _record_usage(message: Any, model: str) -> None:
+    """Record only normalized model/token facts on the active explicit LLM span."""
+    usage = getattr(message, "usage_metadata", None)
+    if not isinstance(usage, dict):
+        response_metadata = getattr(message, "response_metadata", None)
+        usage = (
+            response_metadata.get("token_usage") if isinstance(response_metadata, dict) else None
+        )
+    usage = usage if isinstance(usage, dict) else {}
+    prompt_tokens = usage.get("input_tokens", usage.get("prompt_tokens"))
+    completion_tokens = usage.get("output_tokens", usage.get("completion_tokens"))
+    if trace := current_request_trace():
+        trace.record_llm_usage(
+            model=model,
+            prompt_tokens=prompt_tokens if isinstance(prompt_tokens, int) else None,
+            completion_tokens=completion_tokens if isinstance(completion_tokens, int) else None,
+        )
+
+
 class AnthropicLLM:
     """ChatAnthropic 래퍼. tier → 모델 id 매핑(fast=haiku/smart=sonnet), (model, max_tokens)별 캐시."""
 
@@ -184,14 +207,17 @@ class AnthropicLLM:
         # json_output: Anthropic 은 프롬프트 기반 JSON 이라 무시(시그니처 정합용).
         from langchain_core.messages import HumanMessage, SystemMessage
 
+        model = self._resolve(tier)
         try:
-            resp = await self._chat(self._resolve(tier), max_tokens).ainvoke(
-                [SystemMessage(content=system), HumanMessage(content=user)]
-            )
+            with tracing_context(enabled=False):
+                resp = await self._chat(model, max_tokens).ainvoke(
+                    [SystemMessage(content=system), HumanMessage(content=user)]
+                )
         except LLMError:
             raise
         except Exception as exc:  # noqa: BLE001 - SDK 예외를 LLMError 로 통일 매핑
             raise LLMError(str(exc)) from exc
+        _record_usage(resp, model)
         return _as_text(resp.content)
 
     async def stream(
@@ -199,13 +225,24 @@ class AnthropicLLM:
     ) -> AsyncIterator[str]:
         from langchain_core.messages import HumanMessage, SystemMessage
 
+        model = self._resolve(tier)
+        started = perf_counter()
+        first_text = True
         try:
-            async for chunk in self._chat(self._resolve(tier), max_tokens).astream(
-                [SystemMessage(content=system), HumanMessage(content=user)]
-            ):
-                text = _as_text(chunk.content)
-                if text:
-                    yield text
+            with tracing_context(enabled=False):
+                async for chunk in self._chat(model, max_tokens).astream(
+                    [SystemMessage(content=system), HumanMessage(content=user)]
+                ):
+                    _record_usage(chunk, model)
+                    text = _as_text(chunk.content)
+                    if text:
+                        if first_text:
+                            first_text = False
+                            if trace := current_request_trace():
+                                trace.record_provider_ttft(
+                                    int(round((perf_counter() - started) * 1000))
+                                )
+                        yield text
         except LLMError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -273,14 +310,17 @@ class OpenAILLM:
     ) -> str:
         from langchain_core.messages import HumanMessage, SystemMessage
 
+        model, _ = self._resolve(tier)
         try:
-            resp = await self._chat(tier, max_tokens, json_mode=json_output).ainvoke(
-                [SystemMessage(content=system), HumanMessage(content=user)]
-            )
+            with tracing_context(enabled=False):
+                resp = await self._chat(tier, max_tokens, json_mode=json_output).ainvoke(
+                    [SystemMessage(content=system), HumanMessage(content=user)]
+                )
         except LLMError:
             raise
         except Exception as exc:  # noqa: BLE001
             raise LLMError(str(exc)) from exc
+        _record_usage(resp, model)
         return _as_text(resp.content)
 
     async def stream(
@@ -288,13 +328,24 @@ class OpenAILLM:
     ) -> AsyncIterator[str]:
         from langchain_core.messages import HumanMessage, SystemMessage
 
+        model, _ = self._resolve(tier)
+        started = perf_counter()
+        first_text = True
         try:
-            async for chunk in self._chat(tier, max_tokens, json_mode=False).astream(
-                [SystemMessage(content=system), HumanMessage(content=user)]
-            ):
-                text = _as_text(chunk.content)
-                if text:
-                    yield text
+            with tracing_context(enabled=False):
+                async for chunk in self._chat(tier, max_tokens, json_mode=False).astream(
+                    [SystemMessage(content=system), HumanMessage(content=user)]
+                ):
+                    _record_usage(chunk, model)
+                    text = _as_text(chunk.content)
+                    if text:
+                        if first_text:
+                            first_text = False
+                            if trace := current_request_trace():
+                                trace.record_provider_ttft(
+                                    int(round((perf_counter() - started) * 1000))
+                                )
+                        yield text
         except LLMError:
             raise
         except Exception as exc:  # noqa: BLE001

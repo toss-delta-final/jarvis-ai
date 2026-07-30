@@ -11,6 +11,7 @@ import jwt
 import psycopg
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.core import observability
@@ -32,6 +33,7 @@ from app.core.observability import (
 from app.core.session_context import BuyerSessionInput, SessionFinalizing, SessionForbidden
 from app.core.stream import get_registry
 from app.core.stream import open_stream
+from app.core.tracing import FakeTraceExporter, RequestTrace, TraceFactory
 from app.main import app
 
 client = TestClient(app)
@@ -46,7 +48,12 @@ class _FakeRequest:
         return self._disc
 
 
-async def _obs(conversation_id: str, message: str = "질문"):
+async def _obs(
+    conversation_id: str,
+    message: str = "질문",
+    *,
+    trace: RequestTrace | None = None,
+):
     identity = Identity(user_id="u1", is_guest=False, seller_id=None, subject="u1")
     return start_observation(
         request_id="req-1",
@@ -55,6 +62,18 @@ async def _obs(conversation_id: str, message: str = "질문"):
         message=message,
         store=await get_conversation_store(),
         now=asyncio.get_event_loop().time(),
+        trace=trace,
+    )
+
+
+def _trace(exporter: FakeTraceExporter) -> RequestTrace:
+    return TraceFactory(exporter=exporter, enabled=True, sampling_rate=1.0).start_request(
+        name="buyer_chat_turn",
+        request_id="req-1",
+        conversation_id="session-1",
+        thread_id="thread-1",
+        lane="buyer",
+        environment="test",
     )
 
 
@@ -473,6 +492,317 @@ def test_chat_store_initialization_failure_maps_to_state_unavailable(
 
 
 # ─────────── §6.3 (b) 구조화 로그 + PII ───────────
+
+
+async def test_conditions_frame_does_not_end_text_ttft() -> None:
+    obs = await _obs("timing")
+    obs.started = 10.0
+    obs.record_frame(
+        'data: {"type":"conditions","data":{"chips":[]}}\n\n',
+        now=10.100,
+    )
+    obs.record_frame(
+        'data: {"type":"token","data":{"text":"첫 토큰"}}\n\n',
+        now=10.350,
+    )
+
+    assert obs.server_first_event_ms == 100
+    assert obs.server_first_text_token_ms == 350
+
+
+@pytest.mark.parametrize(
+    ("case", "frames", "expected_status", "expected_reason"),
+    (
+        (
+            "done",
+            ('data: {"type":"done","data":{"finishReason":"stop"}}\n\n',),
+            TurnStatus.COMPLETED,
+            "done",
+        ),
+        (
+            "error",
+            ('data: {"type":"error","data":{"code":"LLM_UNAVAILABLE"}}\n\n',),
+            TurnStatus.FAILED,
+            "error_frame",
+        ),
+    ),
+)
+async def test_tokenless_terminal_frame_records_reason_without_text_ttft(
+    case: str,
+    frames: tuple[str, ...],
+    expected_status: TurnStatus,
+    expected_reason: str,
+) -> None:
+    exporter = FakeTraceExporter()
+    obs = await _obs(f"tokenless-{case}", trace=_trace(exporter))
+
+    async def terminal_only():
+        for frame in frames:
+            yield frame
+
+    response = await open_stream(
+        _FakeRequest(),
+        f"member:tokenless-{case}",
+        terminal_only,
+        observer=obs,
+    )
+    _ = [chunk async for chunk in response.body_iterator]
+
+    root = exporter.exported[0][0]
+    assert obs.server_first_text_token_ms is None
+    assert root.metadata["server_first_text_token_ms"] is None
+    assert root.metadata["terminalReason"] == expected_reason
+    turn = await obs.store.get_turn(obs.turn_id)
+    assert turn is not None and turn.status == expected_status
+
+
+async def test_tokenless_timeout_records_reason_without_text_ttft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(get_settings(), "stream_first_token_timeout_s", 0.01)
+    exporter = FakeTraceExporter()
+    obs = await _obs("tokenless-timeout", trace=_trace(exporter))
+
+    async def no_first_event():
+        await asyncio.sleep(1)
+        yield "data: never\n\n"
+
+    with pytest.raises(HTTPException) as exc_info:
+        await open_stream(
+            _FakeRequest(),
+            "member:tokenless-timeout",
+            no_first_event,
+            observer=obs,
+        )
+    assert exc_info.value.status_code == 504
+
+    root = exporter.exported[0][0]
+    assert obs.server_first_text_token_ms is None
+    assert root.metadata["server_first_text_token_ms"] is None
+    assert root.metadata["terminalReason"] == "first_event_timeout"
+
+
+async def test_tokenless_cancellation_records_reason_without_text_ttft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(get_settings(), "stream_disconnect_poll_s", 0.01)
+    exporter = FakeTraceExporter()
+    obs = await _obs("tokenless-cancel", trace=_trace(exporter))
+
+    async def conditions_then_idle():
+        yield 'data: {"type":"conditions","data":{"chips":[]}}\n\n'
+        await asyncio.sleep(1)
+        yield "data: never\n\n"
+
+    response = await open_stream(
+        _FakeRequest(disconnected=True),
+        "member:tokenless-cancel",
+        conditions_then_idle,
+        observer=obs,
+    )
+    _ = [chunk async for chunk in response.body_iterator]
+
+    root = exporter.exported[0][0]
+    assert obs.server_first_text_token_ms is None
+    assert root.metadata["server_first_text_token_ms"] is None
+    assert root.metadata["terminalReason"] == "client_disconnect"
+
+
+async def test_terminal_done_stops_before_later_token_and_keeps_text_ttft_empty() -> None:
+    exporter = FakeTraceExporter()
+    obs = await _obs("terminal-done", trace=_trace(exporter))
+
+    async def done_then_token():
+        yield 'data: {"type":"done","data":{"finishReason":"stop"}}\n\n'
+        yield 'data: {"type":"token","data":{"text":"MUST_NOT_ESCAPE"}}\n\n'
+
+    response = await open_stream(
+        _FakeRequest(),
+        "member:terminal-done",
+        done_then_token,
+        observer=obs,
+    )
+    chunks = [chunk async for chunk in response.body_iterator]
+
+    assert len(chunks) == 1
+    assert '"type":"done"' in chunks[0]
+    assert "MUST_NOT_ESCAPE" not in chunks[0]
+    assert obs.server_first_text_token_ms is None
+    turn = await obs.store.get_turn(obs.turn_id)
+    assert turn is not None
+    assert turn.assistant_text == ""
+    root = exporter.exported[0][0]
+    assert root.metadata["server_first_text_token_ms"] is None
+    assert root.metadata["terminalReason"] == "done"
+
+
+async def test_terminal_error_commits_failure_before_consumer_closes_iterator() -> None:
+    exporter = FakeTraceExporter()
+    obs = await _obs("terminal-error-close", trace=_trace(exporter))
+
+    async def error_then_token():
+        yield 'data: {"type":"error","data":{"code":"LLM_UNAVAILABLE"}}\n\n'
+        yield 'data: {"type":"token","data":{"text":"MUST_NOT_PULL"}}\n\n'
+
+    response = await open_stream(
+        _FakeRequest(),
+        "member:terminal-error-close",
+        error_then_token,
+        observer=obs,
+    )
+    iterator = response.body_iterator
+    first = await anext(iterator)
+    assert '"type":"error"' in first
+    await iterator.aclose()
+
+    turn = await obs.store.get_turn(obs.turn_id)
+    assert turn is not None and turn.status == TurnStatus.FAILED
+    assert turn.assistant_text == ""
+    root = exporter.exported[0][0]
+    assert root.error_type == "LLM_UNAVAILABLE"
+    assert root.metadata["errorType"] == "LLM_UNAVAILABLE"
+    assert root.metadata["terminalReason"] == "error_frame"
+    assert not get_registry().is_active("member:terminal-error-close")
+
+
+async def test_closing_body_before_first_pull_cleans_prefetched_stream() -> None:
+    exporter = FakeTraceExporter()
+    obs = await _obs("close-before-first-pull", trace=_trace(exporter))
+    closed = asyncio.Event()
+
+    async def prefetched_then_idle():
+        try:
+            yield 'data: {"type":"meta","data":{"lane":"test"}}\n\n'
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+
+    key = "member:close-before-first-pull"
+    response = await open_stream(_FakeRequest(), key, prefetched_then_idle, observer=obs)
+    await response.body_iterator.aclose()
+    await asyncio.sleep(0)
+
+    assert closed.is_set()
+    assert not get_registry().is_active(key)
+    assert not [
+        task
+        for task in asyncio.all_tasks()
+        if not task.done() and task.get_coro().__qualname__ == "_IteratorPump._run"
+    ]
+    assert len(exporter.exported) == 1
+    (root, *_) = exporter.exported[0]
+    assert root.metadata["terminalReason"] == "client_disconnect"
+    turn = await obs.store.get_turn(obs.turn_id)
+    assert turn is not None and turn.status == TurnStatus.CANCELLED
+
+
+async def test_asgi_cancellation_after_headers_before_first_pull_cleans_stream() -> None:
+    exporter = FakeTraceExporter()
+    obs = await _obs("cancel-header-handoff", trace=_trace(exporter))
+    closed = asyncio.Event()
+    headers_sent = asyncio.Event()
+
+    async def prefetched_then_idle():
+        try:
+            yield 'data: {"type":"meta","data":{"lane":"test"}}\n\n'
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+
+    async def receive():
+        await asyncio.Event().wait()
+
+    async def send(message):
+        if message["type"] == "http.response.start":
+            headers_sent.set()
+            await asyncio.Event().wait()
+
+    key = "member:cancel-header-handoff"
+    response = await open_stream(_FakeRequest(), key, prefetched_then_idle, observer=obs)
+    response_task = asyncio.create_task(
+        response(
+            {"type": "http", "asgi": {"spec_version": "2.4"}},
+            receive,
+            send,
+        )
+    )
+    await headers_sent.wait()
+    response_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await response_task
+    await asyncio.sleep(0)
+
+    assert closed.is_set()
+    assert not get_registry().is_active(key)
+    assert not [
+        task
+        for task in asyncio.all_tasks()
+        if not task.done() and task.get_coro().__qualname__ == "_IteratorPump._run"
+    ]
+    assert len(exporter.exported) == 1
+    (root, *_) = exporter.exported[0]
+    assert root.metadata["terminalReason"] == "client_disconnect"
+    turn = await obs.store.get_turn(obs.turn_id)
+    assert turn is not None and turn.status == TurnStatus.CANCELLED
+
+
+@pytest.mark.parametrize("blocked_body_number", [1, 2])
+async def test_asgi_cancellation_during_body_send_cleans_started_stream(
+    blocked_body_number: int,
+) -> None:
+    exporter = FakeTraceExporter()
+    obs = await _obs("cancel-first-body-send", trace=_trace(exporter))
+    closed = asyncio.Event()
+    body_send_started = asyncio.Event()
+
+    async def prefetched_then_idle():
+        try:
+            yield 'data: {"type":"meta","data":{"lane":"test"}}\n\n'
+            yield 'data: {"type":"token","data":{"text":"hello"}}\n\n'
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+
+    async def receive():
+        await asyncio.Event().wait()
+
+    body_number = 0
+
+    async def send(message):
+        nonlocal body_number
+        if message["type"] == "http.response.body" and message.get("more_body"):
+            body_number += 1
+            if body_number == blocked_body_number:
+                body_send_started.set()
+                await asyncio.Event().wait()
+
+    key = f"member:cancel-body-send:{blocked_body_number}"
+    response = await open_stream(_FakeRequest(), key, prefetched_then_idle, observer=obs)
+    response_task = asyncio.create_task(
+        response(
+            {"type": "http", "asgi": {"spec_version": "2.4"}},
+            receive,
+            send,
+        )
+    )
+    await body_send_started.wait()
+    response_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await response_task
+    await asyncio.sleep(0)
+
+    assert closed.is_set()
+    assert not get_registry().is_active(key)
+    assert not [
+        task
+        for task in asyncio.all_tasks()
+        if not task.done() and task.get_coro().__qualname__ == "_IteratorPump._run"
+    ]
+    assert len(exporter.exported) == 1
+    (root, *_) = exporter.exported[0]
+    assert root.metadata["terminalReason"] == "client_disconnect"
+    turn = await obs.store.get_turn(obs.turn_id)
+    assert turn is not None and turn.status == TurnStatus.CANCELLED
 
 
 def test_structured_log_has_fields_and_hides_raw_message(
@@ -1012,3 +1342,407 @@ def test_identifier_length_limit_rejected() -> None:
     """상한 초과 sessionId/threadId 는 400(불투명 키 남용 방어)."""
     r = client.post("/chat", json={"sessionId": "s" * 10000, "threadId": "t", "message": "m"})
     assert r.status_code == 400
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected_status", "expected_error", "expected_reason"),
+    (
+        ("normal_done", TurnStatus.COMPLETED, None, "done"),
+        ("first_event_timeout", TurnStatus.FAILED, "UPSTREAM_TIMEOUT", "first_event_timeout"),
+        ("graph_error_frame", TurnStatus.FAILED, "GRAPH_FAILED", "error_frame"),
+        ("disconnect", TurnStatus.CANCELLED, None, "client_disconnect"),
+        ("total_cap", TurnStatus.COMPLETED, None, "total_timeout_stop"),
+        ("tool_exception", TurnStatus.FAILED, "INTERNAL", "tool_error"),
+    ),
+)
+async def test_open_stream_exports_one_root_for_each_terminal_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+    scenario: str,
+    expected_status: TurnStatus,
+    expected_error: str | None,
+    expected_reason: str,
+) -> None:
+    from app.core.tracing import trace_span
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "stream_disconnect_poll_s", 0.005)
+    if scenario == "first_event_timeout":
+        monkeypatch.setattr(settings, "stream_first_token_timeout_s", 0.01)
+    if scenario == "total_cap":
+        monkeypatch.setattr(settings, "stream_total_timeout_s", 0.02)
+
+    exporter = FakeTraceExporter()
+    obs = await _obs(f"matrix-{scenario}", trace=_trace(exporter))
+
+    async def stream():
+        with trace_span(f"{scenario}_first_pull", "chain"):
+            pass
+        if scenario == "first_event_timeout":
+            await asyncio.sleep(1)
+            yield "data: never\n\n"
+            return
+        if scenario == "normal_done":
+            yield 'data: {"type":"done","data":{"finishReason":"stop"}}\n\n'
+            return
+        if scenario == "graph_error_frame":
+            yield 'data: {"type":"error","data":{"code":"GRAPH_FAILED"}}\n\n'
+            return
+
+        yield 'data: {"type":"meta","data":{"lane":"test"}}\n\n'
+        with trace_span(f"{scenario}_second_pull", "tool"):
+            if scenario == "tool_exception":
+                raise RuntimeError("tool failed")
+        await asyncio.sleep(1)
+        yield "data: never\n\n"
+
+    request = _FakeRequest(disconnected=scenario == "disconnect")
+    if scenario == "first_event_timeout":
+        with pytest.raises(HTTPException) as exc_info:
+            await open_stream(request, f"member:matrix-{scenario}", stream, observer=obs)
+        assert exc_info.value.status_code == 504
+    else:
+        response = await open_stream(request, f"member:matrix-{scenario}", stream, observer=obs)
+        _ = [chunk async for chunk in response.body_iterator]
+
+    assert len(exporter.exported) == 1
+    nodes = exporter.exported[0]
+    roots = [node for node in nodes if node.parent_id is None]
+    assert len(roots) == 1
+    root = roots[0]
+    assert root.error_type == expected_error
+    assert root.metadata["terminalReason"] == expected_reason
+    expected_node_count = (
+        2
+        if scenario
+        in {
+            "normal_done",
+            "first_event_timeout",
+            "graph_error_frame",
+        }
+        else 3
+    )
+    assert len(nodes) == expected_node_count
+    node_ids = {node.id for node in nodes}
+    assert all(node.parent_id in node_ids for node in nodes if node.parent_id is not None)
+    turn = await obs.store.get_turn(obs.turn_id)
+    assert turn is not None and turn.status == expected_status
+
+
+async def test_request_observation_isolates_trace_finalization_failure() -> None:
+    exporter = FakeTraceExporter()
+
+    def fail_validation(_payload: object) -> None:
+        raise RuntimeError("telemetry validator unavailable")
+
+    trace = TraceFactory(
+        exporter=exporter,
+        enabled=True,
+        sampling_rate=1.0,
+        payload_validator=fail_validation,
+    ).start_request(
+        name="buyer_chat_turn",
+        request_id="req-1",
+        conversation_id="telemetry-safe",
+        thread_id="thread-1",
+        lane="buyer",
+        environment="test",
+    )
+    obs = await _obs("telemetry-safe", trace=trace)
+    await obs.commit_user_message()
+
+    await obs.finish(
+        asyncio.get_running_loop().time(),
+        TurnStatus.COMPLETED,
+        None,
+        "done",
+    )
+
+    turn = await obs.store.get_turn(obs.turn_id)
+    assert turn is not None and turn.status == TurnStatus.COMPLETED
+    assert exporter.exported == []
+
+
+async def test_outer_cancellation_during_first_pull_owns_prestream_cleanup() -> None:
+    exporter = FakeTraceExporter()
+    obs = await _obs("outer-cancel-first-pull", trace=_trace(exporter))
+    started = asyncio.Event()
+    closed = asyncio.Event()
+    inner_task: asyncio.Task | None = None
+
+    async def sleeping_first_pull():
+        nonlocal inner_task
+        inner_task = asyncio.current_task()
+        try:
+            started.set()
+            await asyncio.sleep(10)
+            yield "data: never\n\n"
+        finally:
+            closed.set()
+
+    stream_key = "member:outer-cancel-first-pull"
+    outer_task = asyncio.create_task(
+        open_stream(_FakeRequest(), stream_key, sleeping_first_pull, observer=obs)
+    )
+    await started.wait()
+    outer_task.cancel()
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await outer_task
+        await asyncio.sleep(0)
+        snapshot = (
+            closed.is_set(),
+            inner_task is not None and inner_task.done(),
+            not get_registry().is_active(stream_key),
+            len(exporter.exported),
+        )
+    finally:
+        if inner_task is not None and not inner_task.done():
+            inner_task.cancel()
+            await asyncio.gather(inner_task, return_exceptions=True)
+        get_registry().release(stream_key)
+
+    assert snapshot == (True, True, True, 1)
+    (root,) = exporter.exported[0]
+    assert root.error_type is None
+    assert root.metadata["terminalReason"] == "client_disconnect"
+
+
+async def test_close_failure_after_first_frame_preserves_cancel_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(get_settings(), "stream_disconnect_poll_s", 0.005)
+    exporter = FakeTraceExporter()
+    obs = await _obs("close-failure-stream", trace=_trace(exporter))
+
+    class CloseFailIterator:
+        def __init__(self) -> None:
+            self.pulls = 0
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self) -> str:
+            self.pulls += 1
+            if self.pulls == 1:
+                return 'data: {"type":"meta","data":{"lane":"test"}}\n\n'
+            await asyncio.sleep(10)
+            raise StopAsyncIteration
+
+        async def aclose(self) -> None:
+            raise RuntimeError("sensitive close detail")
+
+    stream_key = "member:close-failure-stream"
+    response = await open_stream(
+        _FakeRequest(disconnected=True),
+        stream_key,
+        CloseFailIterator,
+        observer=obs,
+    )
+    chunks = [chunk async for chunk in response.body_iterator]
+
+    assert len(chunks) == 1
+    assert not get_registry().is_active(stream_key)
+    assert len(exporter.exported) == 1
+    (root, *_) = exporter.exported[0]
+    assert root.error_type is None
+    assert root.metadata["terminalReason"] == "client_disconnect"
+    assert "stream iterator close failed code=STREAM_CLOSE_FAILED" in caplog.messages
+    assert "sensitive close detail" not in caplog.text
+
+
+async def test_close_failure_during_prestream_abort_preserves_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(get_settings(), "stream_first_token_timeout_s", 0.01)
+    monkeypatch.setattr(get_settings(), "stream_disconnect_poll_s", 0.005)
+    exporter = FakeTraceExporter()
+    obs = await _obs("close-failure-prestream", trace=_trace(exporter))
+
+    class CloseFailIterator:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self) -> str:
+            await asyncio.sleep(10)
+            raise StopAsyncIteration
+
+        async def aclose(self) -> None:
+            raise RuntimeError("sensitive close detail")
+
+    stream_key = "member:close-failure-prestream"
+    with pytest.raises(HTTPException) as exc_info:
+        await open_stream(
+            _FakeRequest(),
+            stream_key,
+            CloseFailIterator,
+            observer=obs,
+        )
+
+    assert exc_info.value.status_code == 504
+    assert not get_registry().is_active(stream_key)
+    assert len(exporter.exported) == 1
+    (root, *_) = exporter.exported[0]
+    assert root.error_type == "UPSTREAM_TIMEOUT"
+    assert root.metadata["terminalReason"] == "first_event_timeout"
+    assert "stream iterator close failed code=STREAM_CLOSE_FAILED" in caplog.messages
+    assert "sensitive close detail" not in caplog.text
+
+
+async def test_cancellation_during_terminal_close_propagates_after_finalization() -> None:
+    exporter = FakeTraceExporter()
+    obs = await _obs("cancel-during-terminal-close", trace=_trace(exporter))
+    close_started = asyncio.Event()
+
+    class BlockingCloseIterator:
+        def __init__(self) -> None:
+            self.pulled = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self) -> str:
+            if self.pulled:
+                raise StopAsyncIteration
+            self.pulled = True
+            return 'data: {"type":"done","data":{"finishReason":"stop"}}\n\n'
+
+        async def aclose(self) -> None:
+            close_started.set()
+            await asyncio.Event().wait()
+
+    stream_key = "member:cancel-during-terminal-close"
+    response = await open_stream(
+        _FakeRequest(),
+        stream_key,
+        BlockingCloseIterator,
+        observer=obs,
+    )
+
+    async def consume() -> list[str]:
+        return [chunk async for chunk in response.body_iterator]
+
+    consumer = asyncio.create_task(consume())
+    await close_started.wait()
+    consumer.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await consumer
+
+    assert not get_registry().is_active(stream_key)
+    assert len(exporter.exported) == 1
+    (root, *_) = exporter.exported[0]
+    assert root.error_type is None
+    assert root.metadata["terminalReason"] == "done"
+    turn = await obs.store.get_turn(obs.turn_id)
+    assert turn is not None and turn.status == TurnStatus.COMPLETED
+
+
+async def test_trace_spans_across_yields_keep_parentage_without_clobbering_host_stack() -> None:
+    from app.core.tracing import bind_request_trace, trace_span
+
+    streamed_exporter = FakeTraceExporter()
+    streamed_trace = _trace(streamed_exporter)
+    obs = await _obs("cross-yield-parentage", trace=streamed_trace)
+    host_exporter = FakeTraceExporter()
+    host_trace = _trace(host_exporter)
+
+    async def stream():
+        with trace_span("stream.outer", "chain"):
+            yield 'data: {"type":"meta","data":{"lane":"test"}}\n\n'
+            with trace_span("stream.inner", "tool"):
+                yield 'data: {"type":"done","data":{"finishReason":"stop"}}\n\n'
+
+    with bind_request_trace(host_trace):
+        with trace_span("host", "chain"):
+            response = await open_stream(
+                _FakeRequest(),
+                "member:cross-yield-parentage",
+                stream,
+                observer=obs,
+            )
+            assert len([chunk async for chunk in response.body_iterator]) == 2
+            with trace_span("after_close", "chain"):
+                pass
+    await host_trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+
+    streamed = {node.name: node for node in streamed_exporter.exported[0]}
+    assert streamed["stream.outer"].parent_id == streamed["buyer_chat_turn"].id
+    assert streamed["stream.inner"].parent_id == streamed["stream.outer"].id
+    host = {node.name: node for node in host_exporter.exported[0]}
+    assert host["after_close"].parent_id == host["host"].id
+
+
+async def test_open_stream_uses_one_task_for_every_pull_and_close() -> None:
+    tasks: list[asyncio.Task | None] = []
+
+    class RecordingIterator:
+        def __init__(self) -> None:
+            self.pulls = 0
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self) -> str:
+            tasks.append(asyncio.current_task())
+            self.pulls += 1
+            if self.pulls == 1:
+                return 'data: {"type":"meta","data":{"lane":"test"}}\n\n'
+            return 'data: {"type":"done","data":{"finishReason":"stop"}}\n\n'
+
+        async def aclose(self) -> None:
+            tasks.append(asyncio.current_task())
+
+    response = await open_stream(
+        _FakeRequest(),
+        "member:single-producer-task",
+        RecordingIterator,
+    )
+    assert len([chunk async for chunk in response.body_iterator]) == 2
+    assert len(tasks) == 3
+    assert len(set(tasks)) == 1
+    assert not get_registry().is_active("member:single-producer-task")
+
+
+async def test_total_timeout_cancels_and_awaits_same_task_pump_without_leaks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(get_settings(), "stream_total_timeout_s", 0.02)
+    monkeypatch.setattr(get_settings(), "stream_disconnect_poll_s", 0.005)
+    exporter = FakeTraceExporter()
+    obs = await _obs("forced-stop-pump", trace=_trace(exporter))
+    tasks: list[asyncio.Task | None] = []
+    closed = asyncio.Event()
+
+    class BlockingIterator:
+        def __init__(self) -> None:
+            self.pulls = 0
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self) -> str:
+            tasks.append(asyncio.current_task())
+            self.pulls += 1
+            if self.pulls == 1:
+                return 'data: {"type":"meta","data":{"lane":"test"}}\n\n'
+            await asyncio.Event().wait()
+            raise StopAsyncIteration
+
+        async def aclose(self) -> None:
+            tasks.append(asyncio.current_task())
+            closed.set()
+
+    key = "member:forced-stop-pump"
+    response = await open_stream(_FakeRequest(), key, BlockingIterator, observer=obs)
+    chunks = [chunk async for chunk in response.body_iterator]
+
+    assert len(chunks) == 2
+    assert '"type": "done"' in chunks[-1]
+    assert closed.is_set()
+    assert len(set(tasks)) == 1
+    assert tasks[0] is not None and tasks[0].done()
+    assert not get_registry().is_active(key)
+    assert len(exporter.exported) == 1
+    assert exporter.exported[0][0].metadata["terminalReason"] == "total_timeout_stop"

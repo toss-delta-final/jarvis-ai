@@ -20,8 +20,30 @@ from app.core.config import get_settings
 from app.core.conversation import ConversationStoreProtocol, TurnStatus, conversation_key
 from app.core.logging import get_logger, safe_fingerprint
 from app.core.session_context import BuyerSessionInput
+from app.core.tracing import RequestTrace
 
 logger = get_logger("observability")
+
+
+async def finish_trace_safely(
+    trace: RequestTrace,
+    *,
+    status: TurnStatus,
+    error_type: str | None,
+    terminal_reason: str,
+) -> None:
+    """추적 실패가 실제 요청/스트림 결과를 대체하지 않게 마감한다."""
+    try:
+        await trace.finish(
+            status=status.value,
+            error_type=error_type,
+            terminal_reason=terminal_reason,
+        )
+    except Exception:
+        logger.exception(
+            "trace.finish 실패 terminal_reason=%s code=TELEMETRY_FINISH_FAILED",
+            terminal_reason,
+        )
 
 
 def message_fingerprint(text: str) -> tuple[int, str]:
@@ -86,9 +108,11 @@ class RequestObservation:
     pending_message: str
     pending_key: str
     buyer_session: BuyerSessionInput | None = None
+    trace: RequestTrace | None = None
     turn_id: str | None = None
     context_id: str | None = None
-    first_token_at: float | None = None
+    first_event_at: float | None = None
+    first_text_token_at: float | None = None
     assistant_parts: list[str] = field(default_factory=list)
     model_calls: list[ModelCall] = field(default_factory=list)
     finished: bool = False
@@ -116,17 +140,35 @@ class RequestObservation:
         """노드별 LLM 호출 기록(model·tokens). 그래프가 호출한다."""
         self.model_calls.append(ModelCall(model, prompt_tokens, completion_tokens))
 
-    def on_first_token(self, now: float) -> None:
-        if self.first_token_at is None:
-            self.first_token_at = now
+    @property
+    def server_first_event_ms(self) -> int | None:
+        if self.first_event_at is None:
+            return None
+        return round((self.first_event_at - self.started) * 1000)
 
-    def record_frame(self, frame: str) -> None:
-        """token 이벤트의 텍스트만 누적(부분 텍스트 보존용). 다른 이벤트는 무시한다."""
+    @property
+    def server_first_text_token_ms(self) -> int | None:
+        if self.first_text_token_at is None:
+            return None
+        return round((self.first_text_token_at - self.started) * 1000)
+
+    def record_frame(self, frame: str, now: float) -> None:
+        """첫 SSE 이벤트와 첫 non-empty token 텍스트를 분리해 기록한다."""
+        if frame.strip() and self.first_event_at is None:
+            self.first_event_at = now
         text = _extract_token_text(frame)
         if text:
+            if self.first_text_token_at is None:
+                self.first_text_token_at = now
             self.assistant_parts.append(text)
 
-    async def finish(self, now: float, status: TurnStatus, error_type: str | None = None) -> None:
+    async def finish(
+        self,
+        now: float,
+        status: TurnStatus,
+        error_type: str | None = None,
+        terminal_reason: str = "eof",
+    ) -> None:
         """어시스턴트 응답을 상태와 함께 마감하고 요청 구조화 로그를 남긴다(멱등)."""
         if self.finished:
             return
@@ -150,11 +192,6 @@ class RequestObservation:
             stream_status = None  # 스트림 시작 전 거부(409 등) — 저장된 턴 없음
 
         latency_total_ms = round((now - self.started) * 1000)
-        latency_first_ms = (
-            round((self.first_token_at - self.started) * 1000)
-            if self.first_token_at is not None
-            else None
-        )
         record = {
             "event": "chat_request",
             "requestId": self.request_id,
@@ -163,7 +200,7 @@ class RequestObservation:
             "sessionFp": identifier_fingerprint(self.conversation_id),
             "contextFp": identifier_fingerprint(self.context_id),
             "threadFp": identifier_fingerprint(self.thread_id),
-            "latencyFirstToken": latency_first_ms,
+            "latencyFirstToken": self.server_first_text_token_ms,
             "latencyTotal": latency_total_ms,
             "model": [m.model for m in self.model_calls] or None,
             "promptTokens": sum(m.prompt_tokens for m in self.model_calls),
@@ -175,6 +212,17 @@ class RequestObservation:
             # [PII] 사용자 message 원문은 여기에 절대 포함하지 않는다(§6.3 b).
         }
         logger.info(json.dumps(record, ensure_ascii=False))
+        if self.trace is not None:
+            self.trace.record_server_timings(
+                first_event_ms=self.server_first_event_ms,
+                first_text_token_ms=self.server_first_text_token_ms,
+            )
+            await finish_trace_safely(
+                self.trace,
+                status=status,
+                error_type=error_type,
+                terminal_reason=terminal_reason,
+            )
 
 
 def _extract_token_text(frame: str) -> str | None:
@@ -203,6 +251,7 @@ def start_observation(
     store: ConversationStoreProtocol,
     now: float,
     buyer_session: BuyerSessionInput | None = None,
+    trace: RequestTrace | None = None,
 ) -> RequestObservation:
     """사용자 메시지를 저장(§6.3 a)하고 관측 컨텍스트를 만든다. 원문은 저장소에만, 로그엔 지문만."""
     length, digest = message_fingerprint(message)
@@ -223,6 +272,7 @@ def start_observation(
         pending_message=message,
         pending_key=conversation_key(subject, conversation_id),
         buyer_session=buyer_session,
+        trace=trace,
     )
 
 
