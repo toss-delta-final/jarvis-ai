@@ -217,6 +217,73 @@ async def test_invalid_response_schema_maps_to_spring_unavailable() -> None:
         await client.get_sales("brand-1", "2026-07-01", "2026-07-01")
 
 
+async def test_get_funnel_parses_spring_stages_payload() -> None:
+    """[#194 리뷰] I-7 BE 실측 페이로드(stages[] snake_case)를 평면 4필드로 정확히 변환한다.
+
+    stage 어휘는 snake_case — BE SellerAnalyticsService.funnel 실측
+    ("product_view"/"add_to_cart"/"checkout_start"/"purchase_complete", I-13 counts 의
+    camelCase 와 다름). 이 casing 을 와이어 형태로 검증하는 테스트가 없어 매핑이
+    어긋나도 전 단계 0 으로 새는 것을 잡지 못했다(회귀 방지)."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "brandId": 42,
+                "stages": [
+                    {"stage": "product_view", "count": 1000, "source": "events"},
+                    {"stage": "add_to_cart", "count": 100, "source": "events"},
+                    {
+                        "stage": "checkout_start",
+                        "count": 50,
+                        "source": "events",
+                        "computable": True,
+                    },
+                    {"stage": "purchase_complete", "count": 40, "source": "orders"},
+                ],
+                "conversionRates": {"viewToCart": 0.1},
+            },
+        )
+
+    client = _client(handler)
+    result = await client.get_funnel("brand-1", "2026-07-01", "2026-07-14")
+
+    assert (result.view, result.cart, result.checkout, result.purchase) == (1000, 100, 50, 40)
+    assert result.uncomputable_stages == []
+
+
+async def test_get_funnel_unknown_stage_vocabulary_surfaces_as_uncomputable() -> None:
+    """[#194 리뷰] 매핑에 없는 stage 어휘(casing 변경·오탈자 등)는 조용히 0 으로 새지 않고
+    해당 단계를 미집계로 편입한다 — I-14/I-15 와 동일한 '조용한 빈 값' 은폐 패턴 차단."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        # BE 가 어휘를 camelCase 로 바꿨다고 가정한 오염 페이로드.
+        return httpx.Response(
+            200,
+            json={
+                "stages": [
+                    {"stage": "productView", "count": 1000},
+                    {"stage": "addToCart", "count": 100},
+                    {"stage": "checkout_start", "count": 50},
+                    {"stage": "purchaseComplete", "count": 40},
+                ]
+            },
+        )
+
+    client = _client(handler)
+    result = await client.get_funnel("brand-1", "2026-07-01", "2026-07-14")
+
+    # 매핑된 단계(checkout)만 값이 실리고, 나머지는 0 이 아니라 "미집계"다.
+    assert result.checkout == 50
+    assert set(result.uncomputable_stages) == {"view", "cart", "purchase"}
+    # 하류 전환율도 0% 가 아니라 판정 불가(None)여야 한다.
+    from app.agents.seller import calc
+
+    rates = calc.conversion_rates(result)
+    assert rates["view_to_cart"] is None
+    assert rates["cart_to_checkout"] is None
+
+
 async def test_get_order_events_passes_stats_param() -> None:
     """stats 플래그가 쿼리 파라미터로 전달된다(opus 리뷰 m6, api-spec §4.4 stats)."""
     captured: dict = {}

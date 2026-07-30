@@ -18,11 +18,14 @@ Python 속성은 snake_case, 직렬화는 by_alias=True 로 camelCase, 입력은
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
+
+_log = logging.getLogger(__name__)
 
 
 class CamelModel(BaseModel):
@@ -380,6 +383,10 @@ class SalesResult(SellerAggregateModel):
 # ── I-7 구매전환 퍼널 (§4.4) ──
 
 
+# I-7 stages[].stage → 평면 필드 매핑. 키는 snake_case — BE 실측 확정(#194 리뷰 검증):
+# SellerAnalyticsService.funnel 이 "product_view"/"add_to_cart"/"checkout_start"/
+# "purchase_complete" 리터럴로 Stage 를 만든다(I-13 counts 의 camelCase 와 다른 어휘 —
+# 혼동 주의). 어휘가 어긋나면 아래 validator 가 해당 단계를 미집계로 편입해 표면화한다.
 _FUNNEL_STAGE_FIELD = {
     "product_view": "view",
     "add_to_cart": "cart",
@@ -416,17 +423,33 @@ class FunnelResult(SellerAggregateModel):
         if isinstance(data, dict) and isinstance(data.get("stages"), list):
             data = dict(data)
             uncomputable: list[str] = []
+            # [#194 리뷰 반영] 매핑으로 채워지지 않은 평면 필드를 추적한다 — stage 어휘가
+            # 코드 가정과 어긋나면(오탈자·casing 변경·단계 누락) 종전에는 조용히 건너뛰어
+            # 기본값 0(= "실제 0건")으로 새던 것을, "미집계"로 편입해 표면화한다
+            # (I-14/I-15 에서 고친 것과 동일한 은폐 패턴 차단).
+            unfilled = set(_FUNNEL_STAGE_FIELD.values())
+            unknown_stages: list[object] = []
             for entry in data["stages"]:
                 if not isinstance(entry, dict):
                     continue
                 field = _FUNNEL_STAGE_FIELD.get(entry.get("stage"))
                 if field is None:
+                    unknown_stages.append(entry.get("stage"))
                     continue
+                unfilled.discard(field)
                 count = entry.get("count")
                 # count null(집계값 없음) 또는 computable=false(v1 미계산 구간) = 미집계.
                 if count is None or entry.get("computable") is False:
                     uncomputable.append(field)
                 data[field] = count if count is not None else 0
+            if unknown_stages or unfilled:
+                _log.warning(
+                    "I-7 funnel stages 계약 어긋남 — 미인식 stage=%s, 미수신 단계=%s "
+                    "(해당 단계는 미집계 처리)",
+                    unknown_stages,
+                    sorted(unfilled),
+                )
+            uncomputable.extend(sorted(unfilled))
             data.setdefault("uncomputableStages", uncomputable)
         return data
 
