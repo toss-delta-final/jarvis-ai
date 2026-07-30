@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from app.core.config import Settings
+from app import main as main_mod
 from app.pipelines import scheduler as sched_mod
 from app.pipelines.artifacts_batch import BatchResult
 
@@ -22,7 +23,7 @@ def _reset_scheduler():
     sched_mod.stop_scheduler()
 
 
-async def test_start_scheduler_registers_both_jobs_with_configured_intervals(monkeypatch):
+async def test_start_scheduler_registers_lifecycle_job_with_configured_interval(monkeypatch):
     settings = Settings(
         _env_file=None,
         catalog_batch_interval_s=123.0,
@@ -34,9 +35,10 @@ async def test_start_scheduler_registers_both_jobs_with_configured_intervals(mon
     scheduler = sched_mod.start_scheduler()
 
     i17 = scheduler.get_job(sched_mod._I17_JOB_ID)
-    idle = scheduler.get_job(sched_mod._PROFILE_IDLE_JOB_ID)
+    idle = scheduler.get_job(sched_mod._SESSION_CONTEXT_JOB_ID)
     assert i17 is not None and i17.trigger.interval.total_seconds() == 123.0
     assert idle is not None and idle.trigger.interval.total_seconds() == 17.0
+    assert scheduler.get_job("profile_idle_timeout") is None
 
 
 async def test_start_scheduler_is_idempotent(monkeypatch):
@@ -69,7 +71,7 @@ async def test_missing_google_key_skips_only_i17_but_keeps_idle_job(monkeypatch)
     scheduler = sched_mod.start_scheduler()
 
     assert scheduler.get_job(sched_mod._I17_JOB_ID) is None
-    assert scheduler.get_job(sched_mod._PROFILE_IDLE_JOB_ID) is not None
+    assert scheduler.get_job(sched_mod._SESSION_CONTEXT_JOB_ID) is not None
 
 
 async def test_idle_job_prevents_overlap_and_coalesces_missed_ticks(monkeypatch):
@@ -78,7 +80,7 @@ async def test_idle_job_prevents_overlap_and_coalesces_missed_ticks(monkeypatch)
 
     scheduler = sched_mod.start_scheduler()
 
-    idle = scheduler.get_job(sched_mod._PROFILE_IDLE_JOB_ID)
+    idle = scheduler.get_job(sched_mod._SESSION_CONTEXT_JOB_ID)
     assert idle.max_instances == 1
     assert idle.coalesce is True
 
@@ -106,27 +108,75 @@ def test_run_incremental_batch_swallows_exceptions(monkeypatch):
     sched_mod._run_incremental_batch()  # 예외가 전파되지 않으면 통과(스케줄러 프로세스 보호)
 
 
-async def test_run_profile_idle_sweep_uses_current_event_loop(monkeypatch):
+async def test_run_session_context_sweep_uses_current_event_loop(monkeypatch):
     loops = []
+    calls = []
 
-    async def fake_run_idle_sweep():
+    async def fake_run_session_context_sweep():
         import asyncio
 
         loops.append(asyncio.get_running_loop())
+        calls.append("lifecycle")
 
-    monkeypatch.setattr(sched_mod, "run_idle_sweep", fake_run_idle_sweep)
+    async def gc():
+        calls.append("gc")
 
-    await sched_mod._run_profile_idle_sweep()
+    monkeypatch.setattr(
+        sched_mod, "run_configured_session_context_sweep", fake_run_session_context_sweep
+    )
+    monkeypatch.setattr(sched_mod, "run_legacy_gc_batch", gc)
+
+    await sched_mod.run_session_context_sweep()
 
     import asyncio
 
     assert loops == [asyncio.get_running_loop()]
+    assert calls == ["lifecycle", "gc"]
 
 
-async def test_run_profile_idle_sweep_swallows_exceptions(monkeypatch):
-    async def fake_run_idle_sweep():
+async def test_run_session_context_sweep_swallows_exceptions(monkeypatch):
+    async def fake_run_session_context_sweep():
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(sched_mod, "run_idle_sweep", fake_run_idle_sweep)
+    monkeypatch.setattr(
+        sched_mod, "run_configured_session_context_sweep", fake_run_session_context_sweep
+    )
 
-    await sched_mod._run_profile_idle_sweep()
+    await sched_mod.run_session_context_sweep()
+
+
+async def test_lifespan_orders_initialization_scheduler_and_shutdown(monkeypatch):
+    calls = []
+
+    async def initialize():
+        calls.append("initialize")
+
+    async def close():
+        calls.append("close")
+
+    monkeypatch.setattr(main_mod, "initialize_session_lifecycle", initialize)
+    monkeypatch.setattr(main_mod, "start_scheduler", lambda: calls.append("start"))
+    monkeypatch.setattr(main_mod, "stop_scheduler", lambda: calls.append("stop"))
+    monkeypatch.setattr(main_mod, "close_advisory_pool", close)
+
+    async with main_mod._lifespan(main_mod.app):
+        assert calls == ["initialize", "start"]
+
+    assert calls == ["initialize", "start", "stop", "close"]
+
+
+async def test_lifespan_does_not_start_scheduler_when_initialization_fails(monkeypatch):
+    calls = []
+
+    async def initialize():
+        calls.append("initialize")
+        raise RuntimeError("migration failed")
+
+    monkeypatch.setattr(main_mod, "initialize_session_lifecycle", initialize)
+    monkeypatch.setattr(main_mod, "start_scheduler", lambda: calls.append("start"))
+
+    with pytest.raises(RuntimeError, match="migration failed"):
+        async with main_mod._lifespan(main_mod.app):
+            pass
+
+    assert calls == ["initialize"]

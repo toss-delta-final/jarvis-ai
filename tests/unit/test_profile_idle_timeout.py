@@ -9,14 +9,12 @@ import pytest
 
 from app.agents.profile import finalizer, idle_timeout, processed_events, session_activity
 from app.agents.profile.store import get_profile_store
-from app.agents.profile.session_activity import ActivityClaim
 from app.core import session_context
 from app.core.config import get_settings
 from app.core.conversation import conversation_key
-from app.core.llm import LLMError
 from app.core.session_context import BuyerSessionInput, SessionContextRepository
 from app.core.session_lifecycle import SessionLifecycleCoordinator
-from app.core.stream import ActiveStreamRegistry, get_registry
+from app.core.stream import ActiveStreamRegistry
 
 
 class _LLM:
@@ -588,50 +586,17 @@ async def _expired_claim(monkeypatch: pytest.MonkeyPatch, user_id: int, session_
     return claims[0]
 
 
-async def test_idle_sweep_processes_expired_buffer_without_http_self_call(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(finalizer, "get_llm", lambda: _LLM())
-    settings = get_settings()
-    monkeypatch.setattr(settings, "profile_session_idle_timeout_s", 600.0)
-    monkeypatch.setattr(settings, "profile_idle_claim_ttl_s", 900.0)
-    monkeypatch.setattr(settings, "profile_idle_sweep_batch_size", 10)
-    monkeypatch.setattr(settings, "profile_idle_max_concurrency", 2)
-    now = 0.0
-    monkeypatch.setattr(session_activity, "_monotonic", lambda: now)
-
-    store = await get_profile_store()
-    key = conversation_key("71", "idle")
-    await store.append_session_ctx(key, "무선이어폰 추천해줘")
-    await session_activity.touch_session(71, "idle")
-    now = 600.0
-
-    result = await idle_timeout.run_idle_sweep()
-
-    assert result.claimed == 1 and result.accepted == 1
-    assert await store.get_session_ctx(key) == []
-    assert await store.get_summary("71") is not None
-    row = await session_activity.get_session(71, "idle")
-    assert row is not None and row.status == "completed"
-
-
 async def test_profile_only_recovery_does_not_reenter_legacy_activity_sweep(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.core.session_context import ProfileRecoveryCandidate
     from app.core.session_lifecycle import IdleSweepResult as LifecycleSweepResult
 
-    class _Repository:
-        async def list_recoverable_profile_phases(self, batch_size: int):
-            return [ProfileRecoveryCandidate("f", "c", "s", "7", 1, 0)]
-
     async def _lifecycle_sweep(self, **kwargs):
-        return LifecycleSweepResult()
+        return LifecycleSweepResult(claimed=1, completed=1)
 
     async def _unexpected_legacy(**kwargs):
         raise AssertionError("profile recovery 직후 legacy activity sweep 재진입 금지")
 
-    monkeypatch.setattr(session_context, "_default_repository", _Repository())
     monkeypatch.setattr(
         SessionLifecycleCoordinator,
         "run_session_context_sweep",
@@ -641,109 +606,8 @@ async def test_profile_only_recovery_does_not_reenter_legacy_activity_sweep(
 
     result = await idle_timeout.run_idle_sweep()
 
-    assert result == idle_timeout.IdleSweepResult()
-
-
-async def test_legacy_claim_is_skipped_when_lifecycle_context_exists(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    repo = SessionContextRepository()
-    monkeypatch.setattr(session_context, "_default_repository", repo)
-    await repo.touch(BuyerSessionInput("owned-by-lifecycle", "t1", "member", "709"))
-    claim = ActivityClaim(709, "owned-by-lifecycle", "legacy-token", 0.0)
-    released: list[ActivityClaim] = []
-
-    async def _release(item: ActivityClaim) -> None:
-        released.append(item)
-
-    async def _legacy(*args, **kwargs):
-        raise AssertionError("lifecycle context를 legacy finalizer가 처리하면 안 됨")
-
-    monkeypatch.setattr(idle_timeout, "_release_claim_best_effort", _release)
-    monkeypatch.setattr(idle_timeout, "finalize_profile_session", _legacy)
-
-    status = await idle_timeout._process_claim(claim, idle_timeout_s=600)
-    assert status == "skipped"
-    assert released == [claim]
-
-
-async def test_lifecycle_lookup_failure_does_not_fail_open_to_legacy(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    claim = ActivityClaim(710, "lookup-failure", "legacy-token", 0.0)
-    released: list[ActivityClaim] = []
-
-    async def _lookup_failure(session_id: str):
-        raise RuntimeError("lifecycle DB unavailable")
-
-    async def _release(item: ActivityClaim) -> None:
-        released.append(item)
-
-    async def _legacy(*args, **kwargs):
-        raise AssertionError("lookup failure에서 legacy fail-open 금지")
-
-    monkeypatch.setattr(session_context._default_repository, "get_context", _lookup_failure)
-    monkeypatch.setattr(idle_timeout, "_release_claim_best_effort", _release)
-    monkeypatch.setattr(idle_timeout, "finalize_profile_session", _legacy)
-
-    status = await idle_timeout._process_claim(claim, idle_timeout_s=600)
-    assert status == finalizer.FinalizationStatus.RETRYABLE.value
-    assert released == [claim]
-
-
-async def test_idle_sweep_skips_active_stream_and_releases_activity_claim(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    settings = get_settings()
-    monkeypatch.setattr(settings, "profile_session_idle_timeout_s", 600.0)
-    monkeypatch.setattr(settings, "profile_idle_claim_ttl_s", 900.0)
-    monkeypatch.setattr(settings, "profile_idle_sweep_batch_size", 10)
-    monkeypatch.setattr(settings, "profile_idle_max_concurrency", 2)
-    now = 0.0
-    monkeypatch.setattr(session_activity, "_monotonic", lambda: now)
-    await session_activity.touch_session(72, "active")
-    now = 600.0
-
-    key = conversation_key("72", "active")
-    assert get_registry().acquire(key)
-    try:
-        result = await idle_timeout.run_idle_sweep()
-    finally:
-        get_registry().release(key)
-
-    assert result.claimed == 1 and result.skipped == 1
-    row = await session_activity.get_session(72, "active")
-    assert row is not None and row.status == "active"
-
-
-async def test_idle_failure_preserves_buffer_and_returns_activity_to_active(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _FailingLLM(_LLM):
-        async def complete(self, **kwargs):
-            raise LLMError("temporary")
-
-    monkeypatch.setattr(finalizer, "get_llm", lambda: _FailingLLM())
-    settings = get_settings()
-    monkeypatch.setattr(settings, "profile_session_idle_timeout_s", 600.0)
-    monkeypatch.setattr(settings, "profile_idle_claim_ttl_s", 900.0)
-    monkeypatch.setattr(settings, "profile_idle_sweep_batch_size", 10)
-    monkeypatch.setattr(settings, "profile_idle_max_concurrency", 2)
-    now = 0.0
-    monkeypatch.setattr(session_activity, "_monotonic", lambda: now)
-    store = await get_profile_store()
-    key = conversation_key("73", "retry")
-    await store.append_session_ctx(key, "파란색 좋아해")
-    await session_activity.touch_session(73, "retry")
-    now = 600.0
-
-    result = await idle_timeout.run_idle_sweep()
-
-    assert result.retryable == 1
-    assert await store.get_session_ctx(key) == ["파란색 좋아해"]
-    row = await session_activity.get_session(73, "retry")
-    assert row is not None and row.status == "active"
-    assert await processed_events.get_status("session-end:73:retry") is None
+    assert result.claimed == 1
+    assert result.accepted == 1
 
 
 async def test_internal_timeout_and_explicit_end_share_one_idempotent_finalizer(
@@ -773,80 +637,6 @@ async def test_internal_timeout_and_explicit_end_share_one_idempotent_finalizer(
     assert await processed_events.get_status("session-end:74:race") == "completed"
     row = await session_activity.get_session(74, "race")
     assert row is not None and row.status == "completed"
-
-
-async def test_idle_checkpoint_allows_same_session_to_resume_and_flush_again(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _CountingLLM(_LLM):
-        delta_calls = 0
-
-        async def complete(self, **kwargs):
-            if "델타 추출기" in kwargs["system"]:
-                self.delta_calls += 1
-            return await super().complete(**kwargs)
-
-    llm = _CountingLLM()
-    monkeypatch.setattr(finalizer, "get_llm", lambda: llm)
-    settings = get_settings()
-    monkeypatch.setattr(settings, "profile_session_idle_timeout_s", 600.0)
-    monkeypatch.setattr(settings, "profile_idle_claim_ttl_s", 900.0)
-    monkeypatch.setattr(settings, "profile_idle_sweep_batch_size", 10)
-    monkeypatch.setattr(settings, "profile_idle_max_concurrency", 2)
-    now = 0.0
-    monkeypatch.setattr(session_activity, "_monotonic", lambda: now)
-    store = await get_profile_store()
-    key = conversation_key("75", "resume")
-    await store.append_session_ctx(key, "첫 번째 취향")
-    await session_activity.touch_session(75, "resume")
-
-    now = 600.0
-    first = await idle_timeout.run_idle_sweep()
-    assert first.accepted == 1
-    assert await processed_events.get_status("session-end:75:resume") is None
-
-    now = 601.0
-    assert await session_activity.touch_session(75, "resume")
-    await store.append_session_ctx(key, "복귀 후 두 번째 취향")
-    now = 1201.0
-    second = await idle_timeout.run_idle_sweep()
-
-    assert second.accepted == 1
-    assert llm.delta_calls == 2
-    assert await store.get_session_ctx(key) == []
-
-
-async def test_terminal_end_then_stale_same_session_activity_can_checkpoint_again(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    llm = _LLM()
-    monkeypatch.setattr(finalizer, "get_llm", lambda: llm)
-    settings = get_settings()
-    monkeypatch.setattr(settings, "profile_session_idle_timeout_s", 600.0)
-    monkeypatch.setattr(settings, "profile_idle_claim_ttl_s", 900.0)
-    monkeypatch.setattr(settings, "profile_idle_sweep_batch_size", 10)
-    monkeypatch.setattr(settings, "profile_idle_max_concurrency", 2)
-    now = 0.0
-    monkeypatch.setattr(session_activity, "_monotonic", lambda: now)
-    store = await get_profile_store()
-    key = conversation_key("77", "stale-after-end")
-    await store.append_session_ctx(key, "종료 전 발화")
-    await session_activity.touch_session(77, "stale-after-end")
-
-    ended = await finalizer.finalize_profile_session(77, "stale-after-end")
-    assert ended.status is finalizer.FinalizationStatus.ACCEPTED
-    assert await processed_events.get_status("session-end:77:stale-after-end") == "completed"
-
-    now = 1.0
-    assert await session_activity.touch_session(77, "stale-after-end")
-    assert await processed_events.get_status("session-end:77:stale-after-end") is None
-    await store.append_session_ctx(key, "종료 직후 stale ticket 발화")
-    now = 601.0
-
-    checkpoint = await idle_timeout.run_idle_sweep()
-
-    assert checkpoint.accepted == 1
-    assert await store.get_session_ctx(key) == []
 
 
 async def test_new_activity_during_terminal_finalizer_invalidates_terminal_completion(
@@ -883,94 +673,6 @@ async def test_new_activity_during_terminal_finalizer_invalidates_terminal_compl
     row = await session_activity.get_session(78, "terminal-race")
     assert row is not None and row.status == "active"
     assert await store.get_session_ctx(key) == ["종료 처리 중 들어온 새 발화"]
-
-
-async def test_idle_finalizer_does_not_reserve_live_stream_registry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    claim = await _expired_claim(monkeypatch, 76, "stream-race")
-    finalizer_started = asyncio.Event()
-    allow_finalizer = asyncio.Event()
-
-    async def _blocking_finalizer(*args, **kwargs):
-        finalizer_started.set()
-        await allow_finalizer.wait()
-        return finalizer.FinalizationResult(finalizer.FinalizationStatus.ACCEPTED)
-
-    monkeypatch.setattr(idle_timeout, "finalize_profile_session", _blocking_finalizer)
-    task = asyncio.create_task(idle_timeout._process_claim(claim, idle_timeout_s=600))
-    await finalizer_started.wait()
-    stream_key = conversation_key("76", "stream-race")
-
-    assert get_registry().acquire(stream_key)
-    get_registry().release(stream_key)
-    allow_finalizer.set()
-    assert await task == finalizer.FinalizationStatus.ACCEPTED.value
-
-
-async def test_idle_sweep_enforces_configured_finalizer_concurrency(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    settings = get_settings()
-    monkeypatch.setattr(settings, "profile_idle_max_concurrency", 2)
-    claims = [ActivityClaim(80 + index, f"s-{index}", f"t-{index}", 0.0) for index in range(5)]
-    monkeypatch.setattr(
-        session_activity,
-        "claim_expired_sessions",
-        lambda **kwargs: asyncio.sleep(0, result=claims),
-    )
-    active = 0
-    peak = 0
-
-    async def _tracked_process(claim, *, idle_timeout_s):
-        nonlocal active, peak
-        active += 1
-        peak = max(peak, active)
-        await asyncio.sleep(0.01)
-        active -= 1
-        return finalizer.FinalizationStatus.ACCEPTED.value
-
-    monkeypatch.setattr(idle_timeout, "_process_claim", _tracked_process)
-
-    result = await idle_timeout.run_idle_sweep()
-
-    assert result.accepted == 5
-    assert peak == 2
-
-
-async def test_idle_sweep_isolates_one_claim_failure_and_releases_it(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """한 claim의 DB/registry 예외가 같은 batch 결과·로그를 중단하면 안 된다."""
-    settings = get_settings()
-    monkeypatch.setattr(settings, "profile_idle_max_concurrency", 2)
-    failed = ActivityClaim(85, "failed", "t-failed", 0.0)
-    healthy = ActivityClaim(86, "healthy", "t-healthy", 0.0)
-    monkeypatch.setattr(
-        session_activity,
-        "claim_expired_sessions",
-        lambda **kwargs: asyncio.sleep(0, result=[failed, healthy]),
-    )
-    released: list[ActivityClaim] = []
-
-    async def _process(claim, *, idle_timeout_s):
-        if claim is failed:
-            raise TimeoutError("claim revalidation timeout")
-        await asyncio.sleep(0)
-        return finalizer.FinalizationStatus.ACCEPTED.value
-
-    async def _release(claim):
-        released.append(claim)
-
-    monkeypatch.setattr(idle_timeout, "_process_claim", _process)
-    monkeypatch.setattr(idle_timeout, "_release_claim_best_effort", _release)
-
-    result = await idle_timeout.run_idle_sweep()
-
-    assert result.claimed == 2
-    assert result.accepted == 1
-    assert result.retryable == 1
-    assert released == [failed]
 
 
 async def test_idle_activity_completion_failure_is_reported_retryable(

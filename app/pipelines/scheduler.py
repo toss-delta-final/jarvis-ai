@@ -22,13 +22,16 @@ import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
-from app.agents.profile.idle_timeout import run_idle_sweep
+from app.agents.buyer.session_state import run_legacy_gc_batch
 from app.core.config import get_settings
+from app.core.session_lifecycle import (
+    run_session_context_sweep as run_configured_session_context_sweep,
+)
 from app.pipelines.artifacts_batch import run_artifacts_batch
 
 _log = logging.getLogger(__name__)
 _I17_JOB_ID = "i17_incremental_pull"
-_PROFILE_IDLE_JOB_ID = "profile_idle_timeout"
+_SESSION_CONTEXT_JOB_ID = "session_context_sweep"
 # 하위 호환 — 기존 내부 테스트/운영 도구가 참조하던 이름.
 _JOB_ID = _I17_JOB_ID
 
@@ -54,14 +57,15 @@ def _run_incremental_batch() -> None:
         _log.exception("scheduler 증분 배치 실패 — 다음 주기 재개")
 
 
-async def _run_profile_idle_sweep() -> None:
-    """FastAPI event loop에서 inactivity sweep 1회를 실행하고 실패를 다음 tick으로 격리한다."""
+async def run_session_context_sweep() -> None:
+    """Run the sole lifecycle authority sweep plus one restart-safe legacy GC batch."""
     try:
-        await run_idle_sweep()
+        await run_configured_session_context_sweep()
+        await run_legacy_gc_batch()
     except asyncio.CancelledError:
         raise
     except Exception:  # noqa: BLE001 - job 실패 격리, activity lease가 다음 sweep 복구
-        _log.exception("profile idle sweep 실패 — 다음 주기 재개")
+        _log.exception("session context sweep 실패 — 다음 주기 재개")
 
 
 def start_scheduler() -> AsyncIOScheduler:
@@ -76,9 +80,9 @@ def start_scheduler() -> AsyncIOScheduler:
     settings = get_settings()
     scheduler = AsyncIOScheduler(event_loop=asyncio.get_running_loop())
     scheduler.add_job(
-        _run_profile_idle_sweep,
+        run_session_context_sweep,
         IntervalTrigger(seconds=settings.profile_idle_sweep_interval_s),
-        id=_PROFILE_IDLE_JOB_ID,
+        id=_SESSION_CONTEXT_JOB_ID,
         replace_existing=True,
         max_instances=1,
         coalesce=True,

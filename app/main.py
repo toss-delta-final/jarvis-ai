@@ -35,6 +35,7 @@ from app.core.config import get_settings
 from app.core.errors import install_error_handling
 from app.core.logging import configure_logging
 from app.core.pg_resilience import close_advisory_pool
+from app.core.session_context import initialize_session_lifecycle
 from app.core.ratelimit import rate_limit_middleware
 from app.pipelines.scheduler import start_scheduler, stop_scheduler
 
@@ -42,6 +43,7 @@ from app.pipelines.scheduler import start_scheduler, stop_scheduler
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """앱 기동 시 I-17·프로필 idle 스케줄러를 시작하고 종료 시 정지한다 (#31/#79)."""
+    await initialize_session_lifecycle()
     start_scheduler()
     try:
         yield

@@ -18,7 +18,6 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol
 
-from app.agents.profile import session_activity
 from app.core import session_context
 from app.core.config import get_settings
 from app.core.logging import get_logger
@@ -106,9 +105,6 @@ class ConversationStore:
         role: str,
         text: str,
         *,
-        # 정본 Protocol은 buyer_session을 사용한다. 이전 직접 호출의 session_id는
-        # lifecycle 권한으로 해석하지 않는 개발/테스트 호환 입력이다.
-        session_id: str | None = None,
         thread_id: str | None = None,
         buyer_session: BuyerSessionInput | None = None,
     ) -> CommittedTurn:
@@ -117,10 +113,6 @@ class ConversationStore:
         if buyer_session is not None:
             context = await session_context._default_repository.touch(buyer_session)
             context_id = context.context_id
-        elif session_id is not None:
-            member_id = _profile_member_id(user_id, role)
-            if member_id is not None:
-                await session_activity.touch_session(member_id, session_id)
         turn_id = f"turn-{next(self._seq)}"
         self._turns[turn_id] = Turn(
             turn_id=turn_id,
@@ -405,17 +397,6 @@ def _row_to_turn(row: tuple) -> Turn:
 
 def _turn_id(value: str | CommittedTurn) -> str:
     return value.turn_id if isinstance(value, CommittedTurn) else value
-
-
-def _profile_member_id(user_id: str | None, role: str) -> int | None:
-    """이전 인메모리 직접 호출의 회원 activity 호환 키."""
-    if role != "member" or user_id is None:
-        return None
-    try:
-        value = int(user_id)
-    except (TypeError, ValueError):
-        return None
-    return value if 0 < value < 2**63 else None
 
 
 def conversation_key(subject: str | None, session_id: str) -> str:

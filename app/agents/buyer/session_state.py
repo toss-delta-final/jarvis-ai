@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from weakref import WeakValueDictionary
 
 from app.agents.buyer.cart import state as cart_state
@@ -77,6 +78,102 @@ async def _delete(store, root: str, key: str, name: str) -> int:  # noqa: ANN001
         return 0
     await run_with_query_timeout(store.adelete((root, key), name))
     return 1
+
+
+async def _legacy_root_page(store, root: str, limit: int):  # noqa: ANN001
+    """Return an exact namespace-segment page (Postgres prefix matching is textual)."""
+    conn_or_pool = getattr(store, "conn", None)
+    if conn_or_pool is None:
+        rows = await run_with_query_timeout(store.asearch((root,), limit=limit))
+        return [row for row in rows if row.namespace and row.namespace[0] == root][:limit]
+
+    async def _query(conn):  # noqa: ANN001
+        return await (
+            await conn.execute(
+                """
+                SELECT prefix, key
+                FROM store
+                WHERE prefix LIKE %s
+                ORDER BY prefix, key
+                LIMIT %s
+                """,
+                (root.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + ".%", limit),
+            )
+        ).fetchall()
+
+    if callable(getattr(conn_or_pool, "connection", None)):
+        async with conn_or_pool.connection() as conn:
+            rows = await run_with_query_timeout(_query(conn))
+    else:
+        rows = await run_with_query_timeout(_query(conn_or_pool))
+    return [
+        (
+            tuple(_column(row, 0, "prefix").split(".")),
+            _column(row, 1, "key"),
+        )
+        for row in rows
+    ]
+
+
+def _legacy_prefix_pattern(root: str) -> str:
+    return root.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + ".%"
+
+
+async def _delete_legacy_root_page(
+    repo,
+    store,
+    root: str,
+    counter_column: str,
+    limit: int,  # noqa: ANN001
+) -> tuple[int, bool, list[str]]:
+    """Atomically delete/count a PostgreSQL page; retain a bounded generic fallback."""
+    if getattr(store, "conn", None) is not None:
+        async with repo._pool.connection() as conn:
+            async with conn.transaction():
+                deleted = await (
+                    await conn.execute(
+                        """
+                        WITH page AS (
+                            SELECT prefix, key
+                            FROM store
+                            WHERE prefix LIKE %s
+                            ORDER BY prefix, key
+                            LIMIT %s
+                            FOR UPDATE SKIP LOCKED
+                        )
+                        DELETE FROM store s
+                        USING page
+                        WHERE s.prefix=page.prefix AND s.key=page.key
+                        RETURNING s.prefix
+                        """,
+                        (_legacy_prefix_pattern(root), limit),
+                    )
+                ).fetchall()
+                if deleted:
+                    await conn.execute(
+                        f"UPDATE chat_session_migrations "
+                        f"SET {counter_column}={counter_column}+%s, updated_at=now() "
+                        "WHERE migration_name=%s",
+                        (len(deleted), "issue-187-session-context"),
+                    )
+                remaining = await (
+                    await conn.execute(
+                        "SELECT 1 FROM store WHERE prefix LIKE %s LIMIT 1",
+                        (_legacy_prefix_pattern(root),),
+                    )
+                ).fetchone()
+        keys = [str(row[0])[len(root) + 1 :] for row in deleted]
+        return len(deleted), remaining is None, keys
+
+    page = await _legacy_root_page(store, root, limit)
+    keys: list[str] = []
+    for item in page:
+        namespace, key = (item.namespace, item.key) if hasattr(item, "namespace") else item
+        if len(namespace) > 1:
+            keys.append(namespace[1])
+        await run_with_query_timeout(store.adelete(namespace, key))
+    fresh = await _legacy_root_page(store, root, 1)
+    return len(page), not fresh, keys
 
 
 async def clear_thread(context_id: str, thread_id: str) -> CleanupCounts:
@@ -346,3 +443,133 @@ async def ensure_thread_adopted(
         raise
     except Exception as exc:
         raise SessionStateUnavailable from exc
+
+
+async def run_legacy_gc_batch() -> int:
+    """Delete one bounded first page per legacy root after the durable grace deadline."""
+    repo = session_context._default_repository
+    if repo._pool is None:
+        return 0
+    settings = session_context.get_settings()
+    migration_name = "issue-187-session-context"
+    async with repo._pool.connection() as conn:
+        migration = await (
+            await conn.execute(
+                """
+                SELECT grace_deadline, gc_completed_at, profile_backfill_completed_at
+                FROM chat_session_migrations
+                WHERE migration_name=%s
+                """,
+                (migration_name,),
+            )
+        ).fetchone()
+    if migration is None or migration[2] is None or migration[0] > datetime.now(UTC):
+        return 0
+    if migration[1] is not None:
+        return 0
+
+    store = await pg_store.get_store()
+    roots = (
+        (_LEGACY_FILTER_ROOT, "filters_deleted"),
+        (_LEGACY_CART_ROOT, "cart_deleted"),
+        (_LEGACY_REVERT_ROOT, "revert_deleted"),
+    )
+    deleted_total = 0
+    all_empty = True
+    for root, column in roots:
+        deleted, empty, deleted_keys = await _delete_legacy_root_page(
+            repo,
+            store,
+            root,
+            column,
+            settings.session_lifecycle_gc_batch_size,
+        )
+        deleted_total += deleted
+        all_empty = all_empty and empty
+        if root == _LEGACY_CART_ROOT:
+            for key in deleted_keys:
+                cart_state._last_reco_names.pop(key)
+        if deleted and getattr(store, "conn", None) is None:
+            async with repo._pool.connection() as conn:
+                await conn.execute(
+                    f"UPDATE chat_session_migrations SET {column}={column}+%s, "
+                    "updated_at=now() WHERE migration_name=%s",
+                    (deleted, migration_name),
+                )
+
+    # Quarantined profile rows have no authoritative owner. Their raw identifiers stay
+    # in durable rows only and are never emitted in logs.
+    async with repo._pool.connection() as conn:
+        conflicts = await (
+            await conn.execute(
+                """
+                SELECT conflict_id, session_id, owner_id
+                FROM chat_session_migration_conflicts
+                WHERE resolution_status='quarantined'
+                ORDER BY conflict_id
+                LIMIT %s
+                """,
+                (settings.session_lifecycle_gc_batch_size,),
+            )
+        ).fetchall()
+    for conflict_id, session_id, owner_id in conflicts:
+        key = f"{owner_id}:{session_id}"
+        await _delete(store, "session_ctx", key, "buffer")
+        async with repo._pool.connection() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "DELETE FROM profile_session_activity WHERE user_id=%s AND session_id=%s",
+                    (int(owner_id), session_id),
+                )
+                await conn.execute(
+                    """
+                    UPDATE chat_session_migration_conflicts
+                    SET resolution_status='discarded',
+                        profile_buffer_discarded_at=COALESCE(
+                            profile_buffer_discarded_at, now()
+                        ),
+                        updated_at=now()
+                    WHERE conflict_id=%s AND resolution_status='quarantined'
+                    """,
+                    (conflict_id,),
+                )
+        deleted_total += 1
+    async with repo._pool.connection() as conn:
+        deleted_activity = await (
+            await conn.execute(
+                """
+                WITH page AS (
+                    SELECT ctid
+                    FROM profile_session_activity
+                    ORDER BY user_id, session_id
+                    LIMIT %s
+                )
+                DELETE FROM profile_session_activity a
+                USING page
+                WHERE a.ctid=page.ctid
+                RETURNING a.user_id
+                """,
+                (settings.session_lifecycle_gc_batch_size,),
+            )
+        ).fetchall()
+        deleted_total += len(deleted_activity)
+        remaining_activity = await (
+            await conn.execute("SELECT 1 FROM profile_session_activity LIMIT 1")
+        ).fetchone()
+        remaining_conflict = await (
+            await conn.execute(
+                "SELECT 1 FROM chat_session_migration_conflicts "
+                "WHERE resolution_status='quarantined' LIMIT 1"
+            )
+        ).fetchone()
+        if all_empty and remaining_conflict is None and remaining_activity is None:
+            # Fresh emptiness was observed after deletes; only now close the GC gate.
+            await conn.execute(
+                """
+                UPDATE chat_session_migrations
+                SET gc_completed_at=COALESCE(gc_completed_at, now()), updated_at=now()
+                WHERE migration_name=%s
+                """,
+                (migration_name,),
+            )
+    return deleted_total

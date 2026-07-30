@@ -10,6 +10,7 @@ from psycopg.conninfo import make_conninfo
 from psycopg_pool import AsyncConnectionPool
 
 from app.agents.buyer.cart import state as cart_state
+from app.agents.buyer import session_state as buyer_session_state
 from app.agents.buyer.session_state import context_thread_key
 from app.agents.profile import finalizer as profile_finalizer
 from app.agents.profile.store import get_profile_store
@@ -189,6 +190,244 @@ async def test_schema_initialize_is_idempotent_and_upgrades_old_turn_table(pg_re
         ).fetchone()
     assert {row[0] for row in columns} == {"context_id", "session_id"}
     assert constraint == (1,)
+
+
+async def test_legacy_backfill_maps_states_and_quarantines_ambiguous_owners(pg_repo) -> None:
+    repo, pool, prefix = pg_repo
+    active = prefix + "-active"
+    idle = prefix + "-idle"
+    terminal = prefix + "-terminal-backfill"
+    ambiguous = prefix + "-ambiguous"
+    ambiguous_completed = prefix + "-ambiguous-completed"
+    authoritative = prefix + "-authoritative"
+    signed_context = await repo.touch(
+        BuyerSessionInput(authoritative, "signed-thread", "member", "708")
+    )
+    async with pool.connection() as conn:
+        await conn.execute(
+            "DELETE FROM chat_session_migrations WHERE migration_name='issue-187-session-context'"
+        )
+        async with conn.cursor() as cursor:
+            await cursor.executemany(
+                """
+                INSERT INTO profile_session_activity
+                    (user_id, session_id, last_activity_at, status, claim_token,
+                     lease_expires_at)
+                VALUES (%s, %s, now()-interval '1 hour', %s, 'legacy-token',
+                        now()+interval '1 hour')
+                """,
+                (
+                    (701, active, "processing"),
+                    (702, idle, "completed"),
+                    (703, terminal, "completed"),
+                    (704, ambiguous, "active"),
+                    (705, ambiguous, "active"),
+                    (706, ambiguous_completed, "completed"),
+                    (707, ambiguous_completed, "active"),
+                    (708, authoritative, "completed"),
+                    (709, authoritative, "active"),
+                ),
+            )
+        async with conn.cursor() as cursor:
+            await cursor.executemany(
+                "INSERT INTO processed_events (event_id, status) VALUES (%s, 'completed')",
+                (
+                    (f"session-end:703:{terminal}",),
+                    (f"session-end:706:{ambiguous_completed}",),
+                ),
+            )
+    try:
+        await repo.backfill_legacy_activity()
+        await repo.backfill_legacy_activity()
+        async with pool.connection() as conn:
+            contexts = await (
+                await conn.execute(
+                    "SELECT session_id, owner_id, state FROM chat_session_contexts "
+                    "WHERE session_id = ANY(%s) ORDER BY session_id",
+                    (
+                        [
+                            active,
+                            idle,
+                            terminal,
+                            ambiguous,
+                            ambiguous_completed,
+                            authoritative,
+                        ],
+                    ),
+                )
+            ).fetchall()
+            conflicts = await (
+                await conn.execute(
+                    "SELECT owner_id, resolution_status "
+                    "FROM chat_session_migration_conflicts "
+                    "WHERE session_id = ANY(%s) ORDER BY session_id, owner_id",
+                    ([ambiguous, ambiguous_completed, authoritative],),
+                )
+            ).fetchall()
+        assert contexts == sorted(
+            [
+                (active, "701", "active"),
+                (authoritative, "708", "active"),
+                (idle, "702", "idle_expired"),
+                (terminal, "703", "terminal"),
+            ]
+        )
+        assert conflicts == [
+            ("704", "quarantined"),
+            ("705", "quarantined"),
+            ("706", "quarantined"),
+            ("707", "quarantined"),
+            ("709", "quarantined"),
+        ]
+        assert (await repo.get_context(authoritative)).context_id == signed_context.context_id
+    finally:
+        async with pool.connection() as conn:
+            await conn.execute(
+                "DELETE FROM processed_events WHERE event_id = ANY(%s)",
+                (
+                    [
+                        f"session-end:703:{terminal}",
+                        f"session-end:706:{ambiguous_completed}",
+                    ],
+                ),
+            )
+            await conn.execute(
+                "DELETE FROM profile_session_activity WHERE session_id LIKE %s",
+                (prefix + "%",),
+            )
+            await conn.execute(
+                "DELETE FROM chat_session_migration_conflicts WHERE session_id LIKE %s",
+                (prefix + "%",),
+            )
+
+
+async def test_legacy_gc_restarts_from_first_page_and_preserves_v2(pg_repo, monkeypatch) -> None:
+    repo, pool, prefix = pg_repo
+    owner_id = str(uuid.uuid4().int % 1_000_000_000 + 1_000_000_000)
+    session_id = prefix + "-gc-conflict"
+    migrated_session_id = prefix + "-gc-migrated"
+    legacy_keys = [prefix + "-legacy-a", prefix + "-legacy-b"]
+    v2_key = prefix + "-v2"
+    settings = get_settings().model_copy(update={"session_lifecycle_gc_batch_size": 1})
+    monkeypatch.setattr(session_context_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(session_context_module, "_default_repository", repo)
+    async with pool.connection() as conn:
+        await conn.execute(
+            """
+            INSERT INTO chat_session_migrations
+                (migration_name, rollout_started_at, grace_deadline,
+                 profile_backfill_completed_at)
+            VALUES ('issue-187-session-context', now()-interval '2 days',
+                    now()-interval '1 day', now()-interval '1 day')
+            ON CONFLICT (migration_name) DO UPDATE
+            SET grace_deadline=EXCLUDED.grace_deadline, gc_completed_at=NULL,
+                filters_deleted=0, cart_deleted=0, revert_deleted=0
+            """
+        )
+        await conn.execute(
+            """
+            INSERT INTO profile_session_activity
+                (user_id, session_id, last_activity_at, status)
+            VALUES (%s, %s, now()-interval '2 days', 'active')
+            """,
+            (int(owner_id), session_id),
+        )
+        await conn.execute(
+            """
+            INSERT INTO profile_session_activity
+                (user_id, session_id, last_activity_at, status)
+            VALUES (%s, %s, now()-interval '2 days', 'completed')
+            """,
+            (int(owner_id) + 1, migrated_session_id),
+        )
+        await conn.execute(
+            """
+            INSERT INTO chat_session_migration_conflicts
+                (session_id, owner_id, legacy_status, legacy_last_activity_at)
+            VALUES (%s, %s, 'active', now()-interval '2 days')
+            """,
+            (session_id, owner_id),
+        )
+    async with AsyncPostgresStore.from_conn_string(get_settings().profile_db_url) as store:
+        await store.setup()
+        pg_store_module.set_store(store)
+        try:
+            for key in legacy_keys:
+                await store.aput(("buyer_thread_filters", key), "filters", {"legacy": key})
+            await store.aput(("buyer_cart", legacy_keys[0]), "last_reco", {"product_ids": [1]})
+            cart_state._last_reco_names[legacy_keys[0]] = {1: "legacy"}
+            await store.aput(("session_ctx", f"{owner_id}:{session_id}"), "buffer", {"items": []})
+            await store.aput(("buyer_thread_filters_v2", v2_key), "filters", {"v2": True})
+
+            await buyer_session_state.run_legacy_gc_batch()
+            async with pool.connection() as conn:
+                first = await (
+                    await conn.execute(
+                        "SELECT filters_deleted, gc_completed_at "
+                        "FROM chat_session_migrations "
+                        "WHERE migration_name='issue-187-session-context'"
+                    )
+                ).fetchone()
+            assert first[0] == 1
+            assert first[1] is None
+
+            for _ in range(200):
+                await buyer_session_state.run_legacy_gc_batch()
+                async with pool.connection() as conn:
+                    done = await (
+                        await conn.execute(
+                            "SELECT gc_completed_at FROM chat_session_migrations "
+                            "WHERE migration_name='issue-187-session-context'"
+                        )
+                    ).fetchone()
+                if done[0] is not None:
+                    break
+            async with pool.connection() as conn:
+                finished = await (
+                    await conn.execute(
+                        "SELECT filters_deleted, gc_completed_at "
+                        "FROM chat_session_migrations "
+                        "WHERE migration_name='issue-187-session-context'"
+                    )
+                ).fetchone()
+                conflict = await (
+                    await conn.execute(
+                        "SELECT resolution_status, profile_buffer_discarded_at "
+                        "FROM chat_session_migration_conflicts "
+                        "WHERE session_id=%s AND owner_id=%s",
+                        (session_id, owner_id),
+                    )
+                ).fetchone()
+                activity = await (
+                    await conn.execute(
+                        "SELECT session_id FROM profile_session_activity "
+                        "WHERE session_id = ANY(%s)",
+                        ([session_id, migrated_session_id],),
+                    )
+                ).fetchall()
+            assert finished[0] >= 2
+            assert finished[1] is not None
+            assert conflict[0] == "discarded" and conflict[1] is not None
+            assert activity == []
+            assert await store.aget(("buyer_thread_filters_v2", v2_key), "filters") is not None
+            assert cart_state._last_reco_names.get(legacy_keys[0]) is None
+        finally:
+            for key in legacy_keys:
+                await store.adelete(("buyer_thread_filters", key), "filters")
+            await store.adelete(("buyer_cart", legacy_keys[0]), "last_reco")
+            cart_state._last_reco_names.pop(legacy_keys[0])
+            await store.adelete(("session_ctx", f"{owner_id}:{session_id}"), "buffer")
+            await store.adelete(("buyer_thread_filters_v2", v2_key), "filters")
+            pg_store_module.reset_store()
+    async with pool.connection() as conn:
+        await conn.execute(
+            "DELETE FROM profile_session_activity WHERE session_id = ANY(%s)",
+            ([session_id, migrated_session_id],),
+        )
+        await conn.execute(
+            "DELETE FROM chat_session_migration_conflicts WHERE session_id=%s",
+            (session_id,),
+        )
 
 
 async def test_brand_new_database_init_order_creates_lifecycle_schema() -> None:
