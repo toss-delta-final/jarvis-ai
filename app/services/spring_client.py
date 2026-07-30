@@ -98,6 +98,15 @@ _log = logging.getLogger(__name__)
 @contextmanager
 def _spring_span(operation: _SpringOperation, method: str) -> Iterator[TraceNode | None]:
     """Trace one outbound Spring request without retaining request or response data."""
+    # ⚠️ 의도된 stash-and-rethrow — `raise` 로 되돌리지 말 것(f77af25).
+    # `trace_span` 은 본문에서 예외가 전파될 때 `node.error_type = type(exc).__name__` 을 채운다.
+    # Spring 스팬은 예외 클래스명(CartStockInsufficient 등 업스트림 상태 유출)까지 막고 유계
+    # transport 메타데이터만 내보내는 게 계약이라, 예외를 여기 모았다가 `trace_span` 이 정상
+    # 종료한 뒤 밖에서 재던져 error_type 을 비워 둔다. 전역 시리얼라이저에서 errorType 을 막는
+    # 대안은 기각 — 비-Spring 스팬은 자동 예외 분류가 그대로 필요하다.
+    # 실패 표식은 statusClass 로만 남는다: timeout·connection_error(아래) + 4xx/5xx
+    # (`_record_spring_status` 가 raise_for_status 앞에서 기록). 회귀 테스트는
+    # tests/unit/test_buyer_tracing.py::test_buyer_spring_* 4종 + seller 대응.
     failure: tuple[BaseException, TracebackType | None] | None = None
     with trace_span(
         f"spring.{operation}",
