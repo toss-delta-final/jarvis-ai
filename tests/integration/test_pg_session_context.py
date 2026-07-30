@@ -8,7 +8,11 @@ from psycopg.conninfo import make_conninfo
 from psycopg_pool import AsyncConnectionPool
 
 from app.core.config import get_settings
-from app.core.session_context import BuyerSessionInput, SessionContextRepository
+from app.core.session_context import (
+    BuyerSessionInput,
+    SessionClaimConflict,
+    SessionContextRepository,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -155,3 +159,86 @@ async def test_initialize_upgrades_pre_187_conversation_turns() -> None:
         async with admin.connection() as conn:
             await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await admin.close()
+
+
+async def test_touch_preserves_completed_idle_profile_candidate(pg_repo) -> None:
+    repo, pool, prefix = pg_repo
+    session_id = prefix + "-profile"
+    context = await repo.touch(BuyerSessionInput(session_id, "T1", "member", "7"))
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_contexts SET last_activity_at=now()-interval '1 hour' "
+            "WHERE context_id=%s",
+            (context.context_id,),
+        )
+    [claim] = await repo.claim_expired_contexts(10, 30, 10)
+    async with repo.lock_session(session_id) as uow:
+        await uow.prepare_idle_finalizing(claim)
+        pending = await (
+            await uow.conn.execute(
+                "SELECT watermark_status, profile_watermark "
+                "FROM chat_session_finalizations WHERE finalization_id=%s",
+                (claim.finalization_id,),
+            )
+        ).fetchone()
+        assert pending == ("pending", None)
+        await uow.capture_profile_watermark(claim, 21)
+        await uow.complete_idle_delete(claim)
+    await repo.record_profile_phase(claim.finalization_id, "retryable")
+
+    touched = await repo.touch(BuyerSessionInput(session_id, "T2", "member", "7"))
+    candidates = await repo.list_recoverable_profile_phases(100)
+
+    assert touched.generation == claim.generation + 1
+    candidate = next(item for item in candidates if item.finalization_id == claim.finalization_id)
+    assert candidate.profile_watermark == 21
+
+
+async def test_terminal_duplicate_and_expired_reissue_are_atomic(pg_repo) -> None:
+    repo, pool, prefix = pg_repo
+    session_id = prefix + "-terminal"
+    await repo.touch(BuyerSessionInput(session_id, "T1", "member", "7"))
+    first = await repo.begin_terminal(7, session_id)
+    assert first.claim is not None
+    duplicate = await repo.begin_terminal(7, session_id)
+    assert duplicate.claim is None
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_finalizations SET lease_expires_at=now()-interval '1 second' "
+            "WHERE finalization_id=%s",
+            (first.claim.finalization_id,),
+        )
+
+    a, b = await asyncio.gather(
+        repo.begin_terminal(7, session_id), repo.begin_terminal(7, session_id)
+    )
+    reissued = [outcome.claim for outcome in (a, b) if outcome.claim is not None]
+    assert len(reissued) == 1
+    assert reissued[0].finalization_id == first.claim.finalization_id
+    assert reissued[0].claim_token != first.claim.claim_token
+    async with pool.connection() as conn:
+        row = await (
+            await conn.execute(
+                "SELECT claim_token, generation, transient_status "
+                "FROM chat_session_finalizations WHERE finalization_id=%s",
+                (first.claim.finalization_id,),
+            )
+        ).fetchone()
+    assert row == (reissued[0].claim_token, first.claim.generation, "pending")
+
+
+async def test_pg_unit_of_work_rejects_other_session_claim(pg_repo) -> None:
+    repo, pool, prefix = pg_repo
+    for suffix in ("a", "b"):
+        context = await repo.touch(BuyerSessionInput(prefix + suffix, "T1", "guest", "G" + suffix))
+        async with pool.connection() as conn:
+            await conn.execute(
+                "UPDATE chat_session_contexts SET last_activity_at=now()-interval '1 hour' "
+                "WHERE context_id=%s",
+                (context.context_id,),
+            )
+    claims = await repo.claim_expired_contexts(10, 30, 10)
+    claim_a = next(item for item in claims if item.session_id == prefix + "a")
+    async with repo.lock_session(prefix + "b") as uow:
+        with pytest.raises(SessionClaimConflict):
+            await uow.prepare_idle_finalizing(claim_a)

@@ -8,6 +8,7 @@ development does not acquire weaker lifecycle semantics.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import uuid
 from contextlib import AbstractAsyncContextManager
@@ -17,6 +18,8 @@ from pathlib import Path
 from typing import AsyncContextManager, Literal
 
 from app.core.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 OwnerType = Literal["guest", "member"]
 ContextState = Literal["active", "idle_finalizing", "idle_expired", "terminal"]
@@ -114,7 +117,8 @@ class ClaimOutcome:
 class TerminalOutcome:
     context: SessionContext
     finalization: SessionFinalization
-    claim: FinalizationClaim
+    claim: FinalizationClaim | None
+    duplicate: bool
 
 
 @dataclass
@@ -205,7 +209,7 @@ class SessionContextRepository:
                     raise SessionFinalizing
                 if row.state == "terminal":
                     raise SessionForbidden
-                invalidated = self._live_idle(row)
+                invalidated = self._pending_idle(row)
                 if row.state == "idle_expired" or invalidated is not None:
                     row.generation += 1
                 if invalidated is not None:
@@ -264,6 +268,7 @@ class SessionContextRepository:
                     superseded_at=now(), updated_at=now()
                 WHERE context_id=%s AND generation=%s AND reason='idle'
                   AND status <> 'superseded'
+                  AND transient_status='pending'
                 RETURNING finalization_id
                 """,
                 (context.context_id, context.generation),
@@ -538,10 +543,24 @@ class SessionContextRepository:
                 current = self._current_finalization(row, "terminal")
                 if current is None:
                     raise SessionClaimConflict
+                now = self._clock()
+                if current.transient_status == "completed" or (
+                    current.lease_expires_at is not None and current.lease_expires_at > now
+                ):
+                    return TerminalOutcome(
+                        _memory_context(row),
+                        _memory_finalization(current),
+                        None,
+                        True,
+                    )
+                current.status = "processing"
+                current.claim_token = uuid.uuid4().hex
+                current.lease_expires_at = now + get_settings().profile_idle_claim_ttl_s
                 return TerminalOutcome(
                     _memory_context(row),
                     _memory_finalization(current),
                     _memory_claim(row, current),
+                    False,
                 )
             superseded = self._live_idle(row)
             if superseded is not None:
@@ -558,14 +577,13 @@ class SessionContextRepository:
                 status="processing",
                 claim_token=uuid.uuid4().hex,
                 lease_expires_at=self._clock() + get_settings().profile_idle_claim_ttl_s,
-                watermark_status="captured",
-                profile_watermark=0,
             )
             self._finalizations[finalization.finalization_id] = finalization
             return TerminalOutcome(
                 _memory_context(row),
                 _memory_finalization(finalization),
                 _memory_claim(row, finalization),
+                False,
             )
 
     async def _begin_terminal_on_connection(
@@ -590,12 +608,40 @@ class SessionContextRepository:
             finalization = await self._get_current_finalization_on_connection(
                 conn, context.context_id, context.generation, "terminal"
             )
-            if finalization is None or finalization.claim_token is None:
+            if finalization is None:
                 raise SessionClaimConflict
+            now = await _postgres_now(conn)
+            if finalization.transient_status == "completed" or (
+                finalization.lease_expires_at is not None and finalization.lease_expires_at > now
+            ):
+                return TerminalOutcome(context, finalization, None, True)
+            token = uuid.uuid4().hex
+            lease_s = get_settings().profile_idle_claim_ttl_s
+            refreshed = await (
+                await conn.execute(
+                    """
+                    UPDATE chat_session_finalizations
+                    SET status='processing', claim_token=%s,
+                        lease_expires_at=now() + make_interval(secs => %s), updated_at=now()
+                    WHERE finalization_id=%s
+                      AND transient_status='pending'
+                      AND status <> 'superseded'
+                      AND (lease_expires_at IS NULL OR lease_expires_at <= now())
+                    RETURNING finalization_id, context_id, generation, reason, status,
+                              claim_token, lease_expires_at, watermark_status,
+                              profile_watermark, transient_status, profile_status
+                    """,
+                    (token, lease_s, finalization.finalization_id),
+                )
+            ).fetchone()
+            if refreshed is None:
+                return TerminalOutcome(context, finalization, None, True)
+            finalization = _row_to_finalization(refreshed)
             return TerminalOutcome(
                 context,
                 finalization,
                 _claim_from_finalization(context, finalization),
+                False,
             )
         await conn.execute(
             """
@@ -626,9 +672,9 @@ class SessionContextRepository:
                 """
                 INSERT INTO chat_session_finalizations
                     (finalization_id, context_id, generation, reason, status,
-                     claim_token, lease_expires_at, watermark_status, profile_watermark)
+                     claim_token, lease_expires_at)
                 VALUES (%s, %s, %s, 'terminal', 'processing', %s,
-                        now() + make_interval(secs => %s), 'captured', 0)
+                        now() + make_interval(secs => %s))
                 RETURNING finalization_id, context_id, generation, reason, status,
                           claim_token, lease_expires_at, watermark_status,
                           profile_watermark, transient_status, profile_status
@@ -638,7 +684,10 @@ class SessionContextRepository:
         ).fetchone()
         finalization = _row_to_finalization(final_row)
         return TerminalOutcome(
-            context, finalization, _claim_from_finalization(context, finalization)
+            context,
+            finalization,
+            _claim_from_finalization(context, finalization),
+            False,
         )
 
     async def validate_for_delete(self, claim: FinalizationClaim) -> SessionContext:
@@ -884,6 +933,12 @@ class SessionContextRepository:
     def _live_idle(self, row: _MemoryContext) -> _MemoryFinalization | None:
         return self._current_finalization(row, "idle")
 
+    def _pending_idle(self, row: _MemoryContext) -> _MemoryFinalization | None:
+        finalization = self._current_finalization(row, "idle")
+        if finalization is None or finalization.transient_status != "pending":
+            return None
+        return finalization
+
     def _current_finalization(
         self, row: _MemoryContext, reason: FinalizationReason
     ) -> _MemoryFinalization | None:
@@ -909,8 +964,12 @@ class SessionContextRepository:
         if (
             row is None
             or finalization is None
+            or claim.session_id != row.session_id
             or row.context_id != claim.context_id
             or row.generation != claim.generation
+            or finalization.context_id != claim.context_id
+            or finalization.generation != claim.generation
+            or finalization.reason != claim.reason
             or row.state not in valid_states
             or finalization.status == "superseded"
             or finalization.claim_token != claim.claim_token
@@ -938,7 +997,8 @@ class SessionContextRepository:
                 FROM chat_session_contexts c
                 JOIN chat_session_finalizations f USING (context_id)
                 WHERE f.finalization_id=%s AND c.context_id=%s AND c.session_id=%s
-                  AND c.generation=%s AND c.state = ANY(%s)
+                  AND c.generation=%s AND f.generation=%s AND f.reason=%s
+                  AND c.state = ANY(%s)
                   AND f.status <> 'superseded' AND f.claim_token=%s
                   AND f.lease_expires_at > now()
                 FOR UPDATE OF c, f
@@ -948,6 +1008,8 @@ class SessionContextRepository:
                     claim.context_id,
                     claim.session_id,
                     claim.generation,
+                    claim.generation,
+                    claim.reason,
                     list(states),
                     claim.claim_token,
                 ),
@@ -997,10 +1059,28 @@ class SessionContextUnitOfWork(AbstractAsyncContextManager["SessionContextUnitOf
             await self._memory_lock.acquire()
             return self
         self._connection_cm = self.repository._pool.connection()
-        self.conn = await self._connection_cm.__aenter__()
-        self._transaction_cm = self.conn.transaction()
-        await self._transaction_cm.__aenter__()
-        await _advisory_lock(self.conn, self.session_id)
+        transaction_entered = False
+        try:
+            self.conn = await self._connection_cm.__aenter__()
+            self._transaction_cm = self.conn.transaction()
+            await self._transaction_cm.__aenter__()
+            transaction_entered = True
+            await _advisory_lock(self.conn, self.session_id)
+        except BaseException as exc:
+            if self._transaction_cm is not None and transaction_entered:
+                try:
+                    await self._transaction_cm.__aexit__(type(exc), exc, exc.__traceback__)
+                except BaseException:
+                    logger.exception("session lifecycle transaction cleanup failed")
+            if self._connection_cm is not None and self.conn is not None:
+                try:
+                    await self._connection_cm.__aexit__(type(exc), exc, exc.__traceback__)
+                except BaseException:
+                    logger.exception("session lifecycle connection cleanup failed")
+            self.conn = None
+            self._transaction_cm = None
+            self._connection_cm = None
+            raise
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:  # noqa: ANN001
@@ -1014,15 +1094,13 @@ class SessionContextUnitOfWork(AbstractAsyncContextManager["SessionContextUnitOf
             await self._connection_cm.__aexit__(exc_type, exc, tb)
 
     async def prepare_idle_finalizing(self, claim: FinalizationClaim) -> SessionContext:
+        self._bind_claim(claim)
         if self.conn is None:
             context = self.repository._validate_memory_claim(claim, for_idle=True)
             row = self.repository._contexts[self.session_id]
             row.state = "idle_finalizing"
             finalization = self.repository._finalizations[claim.finalization_id]
-            if row.owner_type == "member":
-                finalization.watermark_status = "captured"
-                finalization.profile_watermark = 0
-            else:
+            if row.owner_type == "guest":
                 finalization.watermark_status = "skipped"
                 finalization.profile_status = "skipped"
             return _memory_context(row)
@@ -1039,16 +1117,7 @@ class SessionContextUnitOfWork(AbstractAsyncContextManager["SessionContextUnitOf
                 (claim.context_id,),
             )
         ).fetchone()
-        if context.owner_type == "member":
-            await self.conn.execute(
-                """
-                UPDATE chat_session_finalizations
-                SET watermark_status='captured', profile_watermark=0, updated_at=now()
-                WHERE finalization_id=%s
-                """,
-                (claim.finalization_id,),
-            )
-        else:
+        if context.owner_type == "guest":
             await self.conn.execute(
                 """
                 UPDATE chat_session_finalizations
@@ -1059,7 +1128,70 @@ class SessionContextUnitOfWork(AbstractAsyncContextManager["SessionContextUnitOf
             )
         return _row_to_context(row)
 
+    async def capture_profile_watermark(self, claim: FinalizationClaim, watermark: int) -> None:
+        self._bind_claim(claim)
+        if watermark <= 0:
+            raise ValueError("profile watermark must be positive")
+        if self.conn is None:
+            context = self.repository._validate_memory_claim(claim, for_idle=False)
+            if context.owner_type != "member":
+                raise SessionClaimConflict
+            finalization = self.repository._finalizations[claim.finalization_id]
+            if finalization.watermark_status == "captured":
+                if finalization.profile_watermark != watermark:
+                    raise SessionClaimConflict
+                return
+            if finalization.watermark_status != "pending":
+                raise SessionClaimConflict
+            finalization.watermark_status = "captured"
+            finalization.profile_watermark = watermark
+            return
+        context = await self.repository._validate_claim_on_connection(
+            self.conn, claim, for_idle=False
+        )
+        if context.owner_type != "member":
+            raise SessionClaimConflict
+        row = await (
+            await self.conn.execute(
+                """
+                UPDATE chat_session_finalizations
+                SET watermark_status='captured', profile_watermark=%s, updated_at=now()
+                WHERE finalization_id=%s AND context_id=%s AND generation=%s
+                  AND reason=%s AND watermark_status='pending'
+                RETURNING finalization_id
+                """,
+                (
+                    watermark,
+                    claim.finalization_id,
+                    claim.context_id,
+                    claim.generation,
+                    claim.reason,
+                ),
+            )
+        ).fetchone()
+        if row is not None:
+            return
+        existing = await (
+            await self.conn.execute(
+                """
+                SELECT profile_watermark
+                FROM chat_session_finalizations
+                WHERE finalization_id=%s AND context_id=%s AND generation=%s
+                  AND reason=%s AND watermark_status='captured'
+                """,
+                (
+                    claim.finalization_id,
+                    claim.context_id,
+                    claim.generation,
+                    claim.reason,
+                ),
+            )
+        ).fetchone()
+        if existing is None or int(existing[0]) != watermark:
+            raise SessionClaimConflict
+
     async def validate_idle_delete(self, claim: FinalizationClaim) -> SessionContext:
+        self._bind_claim(claim)
         if self.conn is None:
             context = self.repository._validate_memory_claim(claim, for_idle=True)
         else:
@@ -1071,6 +1203,7 @@ class SessionContextUnitOfWork(AbstractAsyncContextManager["SessionContextUnitOf
         return context
 
     async def complete_idle_delete(self, claim: FinalizationClaim) -> None:
+        self._bind_claim(claim)
         await self.validate_idle_delete(claim)
         if self.conn is None:
             row = self.repository._contexts[self.session_id]
@@ -1102,12 +1235,21 @@ class SessionContextUnitOfWork(AbstractAsyncContextManager["SessionContextUnitOf
             (claim.context_id, claim.generation),
         )
 
+    def _bind_claim(self, claim: FinalizationClaim) -> None:
+        if claim.session_id != self.session_id:
+            raise SessionClaimConflict
+
 
 async def _advisory_lock(conn, session_id: str) -> None:  # noqa: ANN001
     await conn.execute(
         "SELECT pg_advisory_xact_lock(hashtextextended('chat-session:' || %s, 0))",
         (session_id,),
     )
+
+
+async def _postgres_now(conn) -> datetime:  # noqa: ANN001
+    row = await (await conn.execute("SELECT now()")).fetchone()
+    return row[0]
 
 
 def _positive(*values: float) -> None:
@@ -1228,7 +1370,7 @@ def reset() -> None:
 async def initialize() -> None:
     global _default_repository, _owned_pool
     if _default_repository._pool is None:
-        from psycopg_pool import AsyncConnectionPool  # noqa: PLC0415
+        from psycopg_pool import AsyncConnectionPool, PoolTimeout  # noqa: PLC0415
 
         from app.core.pg_resilience import hardened_pg_conninfo  # noqa: PLC0415
 
@@ -1244,11 +1386,25 @@ async def initialize() -> None:
             await asyncio.wait_for(
                 pool.open(wait=True), timeout=settings.state_store_connect_timeout_s
             )
-        except Exception as exc:
-            await pool.close()
+        except (TimeoutError, PoolTimeout) as exc:
+            try:
+                await pool.close()
+            except Exception:
+                logger.exception("session lifecycle timed-out pool cleanup failed")
             if settings.auth_mode == "jwks":
                 raise SessionStateUnavailable from exc
+            logger.warning(
+                "session lifecycle profile DB timeout; fallback=memory auth_mode=%s error_type=%s",
+                settings.auth_mode,
+                type(exc).__name__,
+            )
             return
+        except BaseException:
+            try:
+                await pool.close()
+            except Exception:
+                logger.exception("session lifecycle failed pool cleanup failed")
+            raise
         _owned_pool = pool
         _default_repository = SessionContextRepository(pool=pool)
     await _default_repository.initialize()

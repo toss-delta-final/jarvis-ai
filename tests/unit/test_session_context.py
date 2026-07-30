@@ -10,6 +10,7 @@ from app.core.session_context import (
     SessionContextRepository,
     SessionFinalizing,
     SessionForbidden,
+    reset,
 )
 
 
@@ -129,6 +130,9 @@ async def test_terminal_supersedes_idle_and_transient_profile_phases(repo, clock
     assert terminal.context.generation == idle.generation + 1
     assert terminal.finalization.reason == "terminal"
     assert (await repo.get_finalization(idle.finalization_id)).status == "superseded"
+    assert terminal.claim is not None
+    async with repo.lock_session("S1") as uow:
+        await uow.capture_profile_watermark(terminal.claim, 7)
     await repo.complete_transient_phase(terminal.claim)
     await repo.record_profile_phase(terminal.claim.finalization_id, "retryable")
     [candidate] = await repo.list_recoverable_profile_phases(10)
@@ -153,3 +157,175 @@ async def test_locked_unit_of_work_keeps_idle_phase_transitions_together(repo, c
     assert final is not None
     assert final.state == "idle_expired"
     assert await repo.get_threads(final.context_id) == []
+
+
+async def test_touch_keeps_completed_idle_profile_recoverable(repo, clock) -> None:
+    await repo.touch(BuyerSessionInput("S1", "T1", "member", "7"))
+    clock.advance(601)
+    [claim] = await repo.claim_expired_contexts(600, 30, 1)
+    async with repo.lock_session("S1") as uow:
+        await uow.prepare_idle_finalizing(claim)
+        await uow.capture_profile_watermark(claim, 9)
+        await uow.complete_idle_delete(claim)
+    await repo.record_profile_phase(claim.finalization_id, "retryable")
+
+    touched = await repo.touch(BuyerSessionInput("S1", "T2", "member", "7"))
+
+    assert touched.generation == claim.generation + 1
+    [candidate] = await repo.list_recoverable_profile_phases(10)
+    assert candidate.finalization_id == claim.finalization_id
+    assert candidate.profile_watermark == 9
+
+
+async def test_member_watermark_stays_pending_until_positive_snapshot(repo, clock) -> None:
+    await repo.touch(BuyerSessionInput("S1", "T1", "member", "7"))
+    clock.advance(601)
+    [claim] = await repo.claim_expired_contexts(600, 30, 1)
+    async with repo.lock_session("S1") as uow:
+        await uow.prepare_idle_finalizing(claim)
+        pending = await repo.get_finalization(claim.finalization_id)
+        assert pending.watermark_status == "pending"
+        assert pending.profile_watermark is None
+        with pytest.raises(ValueError):
+            await uow.capture_profile_watermark(claim, 0)
+        await uow.capture_profile_watermark(claim, 12)
+    captured = await repo.get_finalization(claim.finalization_id)
+    assert captured.watermark_status == "captured"
+    assert captured.profile_watermark == 12
+
+
+async def test_terminal_duplicate_does_not_reissue_live_or_completed_work(repo, clock) -> None:
+    await repo.touch(BuyerSessionInput("S1", "T1", "member", "7"))
+    first = await repo.begin_terminal(7, "S1")
+
+    live_duplicate = await repo.begin_terminal(7, "S1")
+    assert live_duplicate.duplicate is True
+    assert live_duplicate.claim is None
+
+    assert first.claim is not None
+    await repo.complete_transient_phase(first.claim)
+    completed_duplicate = await repo.begin_terminal(7, "S1")
+    assert completed_duplicate.duplicate is True
+    assert completed_duplicate.claim is None
+
+
+async def test_terminal_duplicate_reissues_expired_pending_claim(repo, clock) -> None:
+    await repo.touch(BuyerSessionInput("S1", "T1", "member", "7"))
+    first = await repo.begin_terminal(7, "S1")
+    assert first.claim is not None
+    clock.advance(901)
+
+    recovered = await repo.begin_terminal(7, "S1")
+
+    assert recovered.duplicate is False
+    assert recovered.claim is not None
+    assert recovered.claim.finalization_id == first.claim.finalization_id
+    assert recovered.claim.claim_token != first.claim.claim_token
+
+
+async def test_unit_of_work_rejects_claim_from_another_session(repo, clock) -> None:
+    await repo.touch(BuyerSessionInput("S1", "T1", "guest", "G1"))
+    await repo.touch(BuyerSessionInput("S2", "T1", "guest", "G2"))
+    clock.advance(601)
+    claims = await repo.claim_expired_contexts(600, 30, 2)
+    claim = next(item for item in claims if item.session_id == "S1")
+
+    async with repo.lock_session("S2") as uow:
+        with pytest.raises(SessionClaimConflict):
+            await uow.prepare_idle_finalizing(claim)
+
+
+class _EntryFailurePool:
+    def __init__(self, *, fail_at: str) -> None:
+        self.fail_at = fail_at
+        self.connection_exits = 0
+        self.transaction_exits = 0
+
+    def connection(self):
+        pool = self
+
+        class ConnectionContext:
+            async def __aenter__(self):
+                return Connection()
+
+            async def __aexit__(self, exc_type, exc, tb):
+                pool.connection_exits += 1
+
+        class Connection:
+            def transaction(self):
+                class TransactionContext:
+                    async def __aenter__(self):
+                        if pool.fail_at == "transaction":
+                            raise RuntimeError("transaction enter failed")
+
+                    async def __aexit__(self, exc_type, exc, tb):
+                        pool.transaction_exits += 1
+
+                return TransactionContext()
+
+            async def execute(self, *_args, **_kwargs):
+                if pool.fail_at == "advisory":
+                    raise RuntimeError("advisory lock failed")
+
+        return ConnectionContext()
+
+
+@pytest.mark.parametrize(
+    ("fail_at", "transaction_exits"),
+    [("transaction", 0), ("advisory", 1)],
+)
+async def test_unit_of_work_entry_failure_releases_acquired_resources(
+    fail_at: str, transaction_exits: int
+) -> None:
+    pool = _EntryFailurePool(fail_at=fail_at)
+    repo = SessionContextRepository(pool=pool)
+
+    with pytest.raises(RuntimeError):
+        async with repo.lock_session("S1"):
+            pass
+
+    assert pool.transaction_exits == transaction_exits
+    assert pool.connection_exits == 1
+
+
+async def test_initialize_propagates_programming_errors(monkeypatch) -> None:
+    import psycopg_pool
+    from app.core import session_context
+
+    class BrokenPool:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def open(self, **_kwargs) -> None:
+            raise RuntimeError("bad pool configuration")
+
+        async def close(self) -> None:
+            pass
+
+    reset()
+    monkeypatch.setattr(psycopg_pool, "AsyncConnectionPool", BrokenPool)
+    with pytest.raises(RuntimeError, match="bad pool configuration"):
+        await session_context.initialize()
+    reset()
+
+
+async def test_initialize_timeout_uses_dev_fallback_with_warning(monkeypatch, caplog) -> None:
+    import psycopg_pool
+    from app.core import session_context
+
+    class TimedOutPool:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def open(self, **_kwargs) -> None:
+            raise TimeoutError("profile db timeout")
+
+        async def close(self) -> None:
+            pass
+
+    reset()
+    monkeypatch.setattr(psycopg_pool, "AsyncConnectionPool", TimedOutPool)
+    with caplog.at_level("WARNING"):
+        await session_context.initialize()
+    assert "session lifecycle" in caplog.text
+    reset()
