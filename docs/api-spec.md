@@ -272,8 +272,8 @@ FE가 AI 서버(FastAPI)를 **다른 오리진에서 직접 호출**하므로 �
   "message": "string",
   "conditionActions": [{ "op": "remove", "field": "category" }],
   "screen": {
-    "pageType": "category",
-    "filters": { "category": "이어폰" },
+    "pageType": "chat",
+    "columns": 3,
     "products": [{ "productId": 101, "name": "무선 이어폰" }]
   }
 }
@@ -302,13 +302,49 @@ FE가 AI 서버(FastAPI)를 **다른 오리진에서 직접 호출**하므로 �
 
 ##### `screen` — 현재 보고 있는 화면 (선택) **[v0.15.25]**
 
-사이드 채팅은 사용자가 페이지를 옮겨 다니는 동안 열려 있다. 그 상태의 **"이거"** 는 발화만으로 확정할 수 없다 — 무엇을 보고 있었는지는 FE만 아는 사실이다(이슈 #118, 07-17 FE 제안).
+채팅은 좌(대화)/우(패널) 분할이고, 사용자는 우측 패널을 보며 **"이거"** 라고 말한다. 그 지시어는 발화만으로 확정할 수 없다 — 무엇이 어떻게 보이고 있었는지는 FE만 아는 사실이다(이슈 #118, 07-17 FE 제안).
 
 | 필드 | 타입 | 필수 | 설명 |
 |---|---|---|---|
-| `pageType` | string | 예 | 화면 종류. **E-1 `page_view.pageType`과 같은 enum을 공유한다**(아래 어휘표) — 화면을 가리키는 이름은 하나여야 한다 |
-| `filters` | object | 아니오 | 화면에 걸린 필터. **값은 사람이 읽는 표시값**(`{"status":"신규주문","page":"1"}`) — LLM 프롬프트에 그대로 들어간다. 판매자 "이 목록 왜 비어?" 류 질문에 필요 |
-| `products` | array | 아니오 | **화면에 노출 중인 상품** `[{productId, name}]`. `name`은 "무선 이어폰 담아줘" 발화를 productId로 확정하는 데 쓴다. 최대 `screen_products_max`(config, 기본 20)건 — 초과분은 FE가 화면 순서대로 자른다 |
+| `pageType` | string | 예 | **우측 패널에 뜬 내용**의 종류. 라우트가 아니다(아래 참조). E-1 `page_view.pageType`과 **같은 enum을 공유**한다 |
+| `filters` | object | 아니오 | 패널에 걸린 필터. **값은 사람이 읽는 표시값** — LLM 프롬프트에 그대로 들어간다. 키는 `status`·`sort`·`page` |
+| `products` | array | 아니오 | **서버가 모르는 목록**만 `[{productId, name}]`(아래 참조). 최대 `screen_products_max`(config, 기본 20)건 — 초과분은 FE가 화면 순서대로 자른다 |
+| `columns` | number | `products` 있으면 | **전송 시점 그리드 열 수.** 반응형이라 창 크기에 따라 바뀌며 서버가 알 수 없다. 목록형은 `1` |
+
+> **[v0.15.25] `pageType`은 라우트가 아니라 패널 내용을 가리킨다** — 채팅은 전용 페이지(`/chat`·`/seller/chat`)에만 있고 사이드 채팅 위젯이 없다. 라우트를 실으면 항상 `chat`·`seller_chat`이라 정보가 0이다. 판매자가 `/seller/chat`에서 우측 워크스페이스의 "주문 관리" 탭을 보고 있으면 `seller_orders`를 싣는다.
+>
+> **현재 UI로 실제 오는 값은 3종**이다 — `chat`(구매자 인기상품 패널) · `seller_orders` · `seller_products`. 나머지 11종은 **E-1 `page_view` 전용**이며, `screen`에 실리는 건 사이드 채팅이 그 화면에 붙은 뒤다. **FE는 3종만 매핑하면 되고, AI는 나머지 분기를 만들지 않는다.**
+
+> **[v0.15.25] `products`는 "서버가 모르는 목록"에만 싣는다** — 판단 기준은 *화면에 보이나*가 아니라 *서버가 이미 아나*다.
+>
+> | 패널 내용 | 만든 주체 | `products` |
+> |---|---|---|
+> | 구매자 — 대화 시작 전 **P-4 인기상품** | Spring (FE 직접 조회) | ✅ **싣는다** |
+> | 구매자 — 추천 카드(CH-5) | AI (I-21 → `listId`) | ❌ 서버가 `listId`로 안다 |
+> | 판매자 — 자사 상품 목록 | Spring (I-9) | ✅ **싣는다** |
+> | 판매자 — 주문 목록 | Spring | ❌ 채팅이 주문에 하는 쓰기가 없다 |
+>
+> 추천 카드를 되돌려주면 **위조 경로**가 된다(E-1도 같은 이유로 FE가 보낸 추천 문맥을 신뢰하지 않는다). 페이로드도 작아진다.
+
+> **[v0.15.25] 지시어 해소** — `columns`가 있으면 좌표 지시가 풀린다: `index = (row-1) × columns + (col-1)`. **배열 순서가 화면 순서**(좌→우, 위→아래)임이 전제다. `rows`와 항목별 `row`/`col`은 **싣지 않는다** — `products.length`와 `columns`에서 계산된다.
+>
+> | 발화 | 필요한 것 |
+> |---|---|
+> | "이거 담아줘" | 후보가 1건일 때만 확정, 여러 건이면 **되물음** |
+> | "3번째 거 담아줘" | 배열 순서 |
+> | "3번째 줄 2번째 담아줘" | **`columns`** |
+> | "무선 이어폰 담아줘" | `name` 매칭 |
+
+> **[v0.15.25] 유효성 — `screen`은 관대하게, `conditionActions`는 엄격하게** 처리한다. `screen`은 **맥락 힌트**라 잘못돼도 사용자 플로우를 막지 않는다(E-1의 *"개별 이벤트가 이상해도 배치를 실패시키지 않는다"* 와 같은 철학). `conditionActions`는 **사용자 의도의 직접 표현**이라 조용히 무시하면 "왜 안 지워지지"가 된다.
+>
+> | 상황 | 처리 |
+> |---|---|
+> | `pageType` 누락·미지의 값 | `screen` **전체를 무시**하고 200 진행 |
+> | `products` 상한 초과 | 앞 `screen_products_max`건만 취하고 버림 |
+> | `products[].name` 누락 | 그 항목의 이름만 버림(`productId`는 allowed 에 남긴다) |
+> | `products` 있고 `columns` 누락 | 좌표 지시만 불가, 나머지 진행 |
+> | `conditionActions`의 알 수 없는 `op`/`field` | **400** |
+> | `message` 키 생략·공백만 | `""` 와 동일 취급(trim 후 판정) — `conditionActions`가 있으면 정상, 없으면 **400** |
 
 **`pageType` 어휘 (14종 — 구매자 10 · 판매자 4)** — **정본은 E-1**(Notion「📡 API 명세서」E-1 · 「이벤트 수집 확정 명세 v2」§1-2). `page_view` 이벤트와 `screen.pageType`이 **같은 값을 쓴다**.
 
@@ -329,13 +365,11 @@ FE가 AI 서버(FastAPI)를 **다른 오리진에서 직접 호출**하므로 �
 | | `seller_products` | `/seller/products` |
 | | `seller_chat` | `/seller/chat` |
 
-> **[v0.15.25] 어휘 확장** — 기존 8종은 구매자 화면만 커버해 판매자·채팅·인증 화면이 갈 곳이 없었다(`page_view`가 전 라우트에서 발화하므로 미분류 값이 생긴다). `chat`·`auth` + 판매자 4종을 추가해 **8종 → 14종**(구매자 10 · 판매자 4)으로 넓힌다. E-1 정본과 함께 개정한다.
+> **[v0.15.25] 어휘 확장** — 기존 8종은 구매자 화면만 커버해 판매자·채팅·인증 화면이 갈 곳이 없었다(`page_view`가 전 라우트에서 발화하므로 미분류 값이 생긴다). `chat`·`auth` + 판매자 4종을 추가해 **8종 → 14종**(구매자 10 · 판매자 4)으로 넓힌다. E-1 정본과 함께 개정한다. **`screen.pageType`에 실리는 건 이 14종의 부분집합**이다(현재 3종).
 
 > **[v0.15.25] `path`·`label`을 두지 않는 이유** — 화면을 가리키는 어휘를 새로 만들지 않는다. `pageType`이 E-1에 이미 있으므로 그대로 쓰고, 라우트 경로(`path`)는 **쿼리스트링에 검색어 등 PII가 실릴 수 있어** 계약에서 뺀다(필요한 조건은 `filters`로 정제해 나른다). 한글 화면명(`label`)은 **AI가 `pageType`→표시명 매핑을 config로 갖는다** — 프롬프트 문구는 튜닝 대상이지 계약이 아니고, FE가 관리하면 화면마다 표현이 흔들린다.
 
-> **채팅 전용 화면에서는 보내지 않는다** — `chat`·`seller_chat`은 화면이 곧 채팅이라 `screen`이 자기 자신을 가리킨다. **사이드 채팅에서만** 싣는다.
-
-> **[보안] `screen.products`는 담기 허용 목록을 넓히는 입력이지 프리패스가 아니다.** 담기 가드는 **(직전 추천 ∪ `screen.products`의 productId)** 를 allowed로 취급하며, **두 목록 밖의 id는 여전히 차단**한다 — LLM이 발화 속 임의 숫자를 오추출해 담는 것을 막는 기존 가드는 유지된다. 실제 담기는 I-2(§4.1)가 재고·판매상태를 다시 검증한다.
+> **[보안] `screen.products`는 담기 허용 목록을 넓히는 입력이지 프리패스가 아니다.** 담기 가드는 **(누적 추천 목록 ∪ `screen.products`의 productId)** 를 allowed로 취급하며, **두 목록 밖의 id는 여전히 차단**한다. "이거"가 모호하면 되물음한다 — LLM이 발화 속 임의 숫자를 오추출해 담는 것을 막는 기존 가드는 유지된다. 실제 담기는 I-2(§4.1)가 재고·판매상태를 다시 검증한다.
 
 > **판매자 스트림(§3.2)도 동일하다** — `screen`은 **구매자·판매자 공용 요청 필드**다(`conditionActions`가 구매자 전용인 것과 다르다). 스키마는 공용 `ChatRequest`에 두고 `BuyerChatRequest`/`SellerChatRequest`가 상속한다. 판매자 대시보드는 이미 `meta.lane`·`done.panel`로 **AI→FE 방향의 화면 조작**을 계약에 두고 있는데 그 반대 방향(FE→AI, 지금 무엇을 보고 있나)이 비어 있었다 — 서버가 `panel="refresh"`로 우측 재조회를 지시하면서 그 패널에 무엇이 떠 있는지는 모르는 상태였다.
 
@@ -546,7 +580,7 @@ FE/BE 문서에 없으나 MVP에 필요한 아래 3종은 **모두 구매자 SSE
 | `message` | string | 예¹ | 통계 질문("이번 주 매출 어때?") 또는 상세 수정 요청("이 상품 설명 더 매력적으로 바꿔줘") |
 | `action` | `"confirm"` | 아니오 | **[확정 v0.14.1]** HITL 승인 신호. draft에 대한 `[적용]`. 지정 시 `draftId` 필수 |
 | `draftId` | string | 조건부 | `action == "confirm"` 일 때 실행할 draft 식별자(스트림1 `draft.draftId`). 누락 시 `400 BAD_REQUEST` |
-| `screen` | object | 아니오 | **[v0.15.25 신설]** 현재 보고 있는 화면. **구매자와 공용 필드로 정의는 §3.1을 따른다**(`pageType`·`filters`·`products`). (a)·(b) 어느 요청에도 실을 수 있다 |
+| `screen` | object | 아니오 | **[v0.15.25 신설]** 현재 보고 있는 화면. **구매자와 공용 필드로 정의는 §3.1을 따른다**(`pageType`·`filters`·`products`·`columns`). (a)·(b) 어느 요청에도 실을 수 있다 |
 
 > **[v0.15.25] `screen`이 판매자에도 필요한 이유** — 판매자 대시보드는 좌(채팅)/우(패널) 분할이라 **화면이 이미 계약의 일부**인데, 그동안 방향이 한쪽뿐이었다. **AI→FE**는 `meta.lane`(레이아웃 준비)·`done.panel`(`replace`/`keep`/`refresh`)로 화면을 조작하는데 **FE→AI**(지금 무엇을 보고 있나)가 없었다 — 서버가 `panel="refresh"`로 우측 재조회를 지시하면서 그 패널에 무엇이 떠 있는지는 모르는 상태다. `pageType`·`filters`가 있으면 "이 목록 왜 비어?" 같은 지시어 질문에 답할 수 있고, 지시가 타당한지도 판단할 수 있다. **`conditionActions`는 구매자 전용**이라 판매자 요청에 싣지 않는다 — `conditions` 이벤트 자체가 판매자 스트림에 없다(§2.2).
 
@@ -1157,7 +1191,7 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 
 | 버전 | 날짜 | 변경 |
 |---|---|---|
-| v0.15.25 | 2026-07-28 | **[사본 동기화] §3.1 요청 계약 확장 + in-stream `error` 추적 필드 — 정본(Notion "📡 API 명세서" CH-2) 2026-07-28 개정 반영.** (1) **`conditionActions` 신설**(이슈 #84) — 조건 칩 제거를 `[{op:"remove", field}]` 구조화 배열로 받는다. 구 규약 문자열(`"[조건 제거] priceMax"`) 왕복 방식은 **폐기** — FE는 그 방식으로 구현돼 있으나 AI에 수신부가 없어 현재 칩 제거가 무동작이다. `conditionActions`가 있으면 `message` 빈 문자열 허용, 둘 다 비면 `400`. 구매자 전용(`BuyerChatRequest`). (2) **`conditions` 칩 `field` 허용값 6종 확정** — `category`/`priceMax`/`priceMin`/`brand`/`ratingMin`/`keyword`. 종전에는 예시 둘만 있어 허용 집합이 계약에 없었는데, `conditionActions.field` 검증의 전제라 등재했다(코드 `build_condition_chips` 실측과 일치). (3) **`screen` 신설**(이슈 #118) — `{pageType, filters?, products?}`. `pageType`은 **E-1 `page_view`와 같은 enum을 공유**한다 — 화면 어휘를 새로 만들지 않기 위해서다. 라우트 `path`는 쿼리스트링 PII 위험으로, 한글 `label`은 AI config 매핑으로 대체해 **계약에서 뺐다**. 07-17 FE 제안(`ChatScreenContext`)과 #118의 "노출 상품 목록" 요구를 **한 필드로 통합**했다(같은 사실의 두 측면). `products`는 담기 허용 목록을 넓히는 입력이며 **두 목록 밖 id 차단 가드는 유지**한다. **구매자·판매자 공용 필드**라 §3.2에도 등재 — 판매자 대시보드는 `meta.lane`·`done.panel`로 AI→FE 화면 조작만 있고 반대 방향이 비어 있었다. (4) **in-stream `error`에 `requestId`·`retryable` 추가** — 스트림 전 실패(§2.5 봉투)에는 `requestId`가 있는데 스트림 내부 실패에는 없어 추적이 끊겼다. `retryable`은 `code`로 복원 불가(같은 `LLM_UNAVAILABLE`이 미구성/일시불가에 겸용)라 emit 지점이 정한다. §3.2 판매자 스트림도 동일(`ErrorData` 공용). |
+| v0.15.25 | 2026-07-28 | **[사본 동기화] §3.1 요청 계약 확장 + in-stream `error` 추적 필드 — 정본(Notion "📡 API 명세서" CH-2) 2026-07-28 개정 반영.** (1) **`conditionActions` 신설**(이슈 #84) — 조건 칩 제거를 `[{op:"remove", field}]` 구조화 배열로 받는다. 구 규약 문자열(`"[조건 제거] priceMax"`) 왕복 방식은 **폐기** — FE는 그 방식으로 구현돼 있으나 AI에 수신부가 없어 현재 칩 제거가 무동작이다. `conditionActions`가 있으면 `message` 빈 문자열 허용, 둘 다 비면 `400`. 구매자 전용(`BuyerChatRequest`). (2) **`conditions` 칩 `field` 허용값 6종 확정** — `category`/`priceMax`/`priceMin`/`brand`/`ratingMin`/`keyword`. 종전에는 예시 둘만 있어 허용 집합이 계약에 없었는데, `conditionActions.field` 검증의 전제라 등재했다(코드 `build_condition_chips` 실측과 일치). (3) **`screen` 신설**(이슈 #118) — `{pageType, filters?, products?, columns?}`. `pageType`은 **라우트가 아니라 우측 패널 내용**을 가리킨다(채팅이 전용 페이지에만 있어 라우트를 실으면 정보가 0). `products`는 **서버가 모르는 목록만**(P-4 인기상품·판매자 자사 상품) — 추천 카드는 `listId`로 서버가 알고, 되돌려주면 위조 경로가 된다. `columns`는 반응형 그리드 열 수로 "3번째 줄 2번째" 좌표 지시 해소에 쓴다(`rows`·항목별 좌표는 파생값이라 제외). `pageType`은 **E-1 `page_view`와 같은 enum을 공유**한다 — 화면 어휘를 새로 만들지 않기 위해서다. 라우트 `path`는 쿼리스트링 PII 위험으로, 한글 `label`은 AI config 매핑으로 대체해 **계약에서 뺐다**. 07-17 FE 제안(`ChatScreenContext`)과 #118의 "노출 상품 목록" 요구를 **한 필드로 통합**했다(같은 사실의 두 측면). `products`는 담기 허용 목록을 넓히는 입력이며 **두 목록 밖 id 차단 가드는 유지**한다. **구매자·판매자 공용 필드**라 §3.2에도 등재 — 판매자 대시보드는 `meta.lane`·`done.panel`로 AI→FE 화면 조작만 있고 반대 방향이 비어 있었다. (4) **in-stream `error`에 `requestId`·`retryable` 추가** — 스트림 전 실패(§2.5 봉투)에는 `requestId`가 있는데 스트림 내부 실패에는 없어 추적이 끊겼다. `retryable`은 `code`로 복원 불가(같은 `LLM_UNAVAILABLE`이 미구성/일시불가에 겸용)라 emit 지점이 정한다. §3.2 판매자 스트림도 동일(`ErrorData` 공용). |
 | v0.15.24 | 2026-07-27 | **[사본 동기화] S-5 폐기 반영 — 정본(기획 저장소 Notion "📡 API 명세서" DB) 2026-07-21 결정이 본 사본에 미반영이었다.** S-5 `PATCH /api/seller/products/{id}`(판매자 화면 직접 수정, 07/17 신설)는 **미채택**이며 **상품 수정은 챗봇 HITL(I-11)이 유일 경로**다. §3.2 draft 절의 "챗봇 수정(I-11)과 병존" 서술을 폐기 표기로 교체. Spring 코드 실측에서도 `/api/seller/**`에 PATCH 엔드포인트가 없어 정본·코드 모두와 일치시켰다. 계약 변경이 아니라 **사본 drift 정정**이다. |
 | v0.15.23 | 2026-07-27 | **[#100 P0/P1/P2] I-1 §4.6 실측 정합.** 표시 전용 필드(`imageUrl`·`originalPrice`·`reviewCount`·`options`)를 응답표에서 제거하고 CH-5(§4.3) 하이드레이션 이관 명시(AI 추천 경로 미사용), `price`·`rating`을 "AI 계산용(비표시 — 예산검증 `verifiedSum`·평점 사후필터·rerank 신호, 질의 시점 필요)"으로 명기해 display 오분류 재발 차단, envelope 예시를 실측 `{success, data:[...]}`(bare array)로 정정, 요청 `brandName` 단일→다중(반복 파라미터 → `WHERE brand IN`, 방법 D), `totalCount` 필드 불필요 결정 반영. |
 | v0.15.22 | 2026-07-26 | **[#100 P1] I-1 `color` 요청 파라미터 연결.** decompose가 색상 조건("빨간"·"검정")을 `filters.color`로 추출·전송하고, BE I-1이 `attributes` LIKE로 필터. 요청 모델·쿼리 변환에 `color`가 없어 Spring 색상 검색을 못 쓰던 것을 해소. |
