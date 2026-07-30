@@ -1048,6 +1048,43 @@ async def test_seller_root_lane_uses_only_six_bounded_sse_values(
     assert fake_trace_factory.exporter.exported[-1][0].metadata["lane"] == lane
 
 
+async def test_seller_apply_lane_chain_span_is_not_attributed_to_product_lane(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_trace_factory: CapturingTraceFactory,
+) -> None:
+    """apply 레인의 chain span 이 product 레인 이름으로 집계되면 안 된다.
+
+    lane 메타데이터만 검증하면 span 이름 복붙 오류를 놓친다 — 레인별 지연을 span 이름으로
+    가르는 이상, 이름이 겹치는 순간 두 레인이 한 통계로 합쳐진다(PR #206 리뷰).
+    """
+    from app.api import seller as seller_api
+
+    async def _no_history(n: int, context: SellerContext):
+        del n, context
+        return None, "적용할 추천 이력이 없습니다."
+
+    async def _record_turn(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(seller_api, "apply_recommendation", _no_history)
+    monkeypatch.setattr(seller_api.seller_thread, "record_turn", _record_turn)
+
+    trace = _start_seller_trace(fake_trace_factory)
+    request = SellerChatRequest(session_id="s-apply", thread_id="t-apply", message="1번 적용해줘")
+    with bind_request_trace(trace):
+        assert [
+            line
+            async for line in seller_api._apply_stream(
+                1, request, SellerContext(seller_id=7, brand_id=3)
+            )
+        ]
+    await _finish(trace)
+
+    names = {node.name for node in fake_trace_factory.exporter.exported[0]}
+    assert "seller.graph.apply" in names
+    assert "seller.graph.product" not in names
+
+
 def test_seller_store_acquisition_failure_finishes_root(
     monkeypatch: pytest.MonkeyPatch,
     fake_trace_factory: CapturingTraceFactory,

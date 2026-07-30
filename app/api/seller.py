@@ -566,7 +566,7 @@ async def _apply_stream(
     _set_trace_lane("apply")
     yield _meta("apply")
     try:
-        with trace_span("seller.graph.product", "chain"):
+        with trace_span("seller.graph.apply", "chain"):
             record, problem = await apply_recommendation(n, context)
     except SpringUnavailableError:
         yield _token(
