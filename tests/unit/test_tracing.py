@@ -1,4 +1,6 @@
 import asyncio
+from dataclasses import fields, is_dataclass
+from collections.abc import Mapping
 
 import pytest
 
@@ -28,6 +30,48 @@ def _start_trace(factory: TraceFactory):
         lane="buyer",
         environment="test",
     )
+
+
+def _recursive_strings(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, Mapping):
+        return [
+            item
+            for key, nested in value.items()
+            for item in (*_recursive_strings(key), *_recursive_strings(nested))
+        ]
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [item for nested in value for item in _recursive_strings(nested)]
+    if is_dataclass(value) and not isinstance(value, type):
+        return [
+            item
+            for field in fields(value)
+            for item in _recursive_strings(getattr(value, field.name))
+        ]
+    return []
+
+
+PRIVACY_CANARIES = {
+    "buyer_message": "BUYER-MESSAGE-CANARY-141",
+    "seller_message": "SELLER-MESSAGE-CANARY-141",
+    "tool_argument": "TOOL-ARGUMENT-CANARY-141",
+    "tool_result": "TOOL-RESULT-CANARY-141",
+    "provider_exception": "PROVIDER-EXCEPTION-CANARY-141",
+    "authorization": "Bearer authorization-canary-141",
+    "cookie": "session=cookie-canary-141",
+    "customer_name": "Customer Name Canary 141",
+    "customer_email": "customer-canary-141@example.com",
+    "customer_phone": "010-1414-1414",
+    "customer_address": "Customer Address Canary 141",
+    "nested_metadata": "NESTED-METADATA-CANARY-141",
+}
+
+
+def _assert_canaries_absent(payload: object) -> None:
+    serialized_strings = _recursive_strings(payload)
+    for canary in PRIVACY_CANARIES.values():
+        assert all(canary not in value for value in serialized_strings)
 
 
 async def test_fake_exporter_receives_one_root_with_nested_children() -> None:
@@ -231,6 +275,82 @@ async def test_sensitive_nested_payload_drops_entire_trace(caplog) -> None:
     assert "req-secret" in caplog.text
     assert "buyer_chat_turn" in caplog.text
     assert "canary" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("lane", "root_name"), [("buyer", "buyer_chat_turn"), ("seller", "seller_chat_turn")]
+)
+async def test_recursive_privacy_canaries_are_absent_from_fake_and_langsmith_payloads(
+    lane: str,
+    root_name: str,
+) -> None:
+    source_payload = {
+        "message": PRIVACY_CANARIES[f"{lane}_message"],
+        "tool": {
+            "arguments": [{"query": PRIVACY_CANARIES["tool_argument"]}],
+            "result": {
+                "items": [{"description": PRIVACY_CANARIES["tool_result"]}],
+                "customer": {
+                    "name": PRIVACY_CANARIES["customer_name"],
+                    "email": PRIVACY_CANARIES["customer_email"],
+                    "phone": PRIVACY_CANARIES["customer_phone"],
+                    "address": PRIVACY_CANARIES["customer_address"],
+                },
+            },
+        },
+        "headers": {
+            "Authorization": PRIVACY_CANARIES["authorization"],
+            "X-Session-Cookie": PRIVACY_CANARIES["cookie"],
+        },
+        "metadata": {"nested": [{"value": PRIVACY_CANARIES["nested_metadata"]}]},
+    }
+
+    async def exercise(factory: TraceFactory) -> None:
+        trace = factory.start_request(
+            name=root_name,
+            request_id=f"req-{lane}-canary",
+            conversation_id=f"conversation-{lane}-canary",
+            thread_id=f"thread-{lane}-canary",
+            lane=lane,
+            environment="test",
+        )
+        with bind_request_trace(trace):
+            with trace_span(f"{lane}.routing", "chain"):
+                assert source_payload["message"] == PRIVACY_CANARIES[f"{lane}_message"]
+            with trace_span("spring.lookup", "tool", {"httpMethod": "POST", "upstream": "spring"}):
+                assert source_payload["tool"]["arguments"][0]["query"]
+                assert source_payload["tool"]["result"]["customer"]["email"]
+                assert source_payload["headers"]["Authorization"]
+                assert source_payload["metadata"]["nested"][0]["value"]
+            try:
+                with trace_span("llm.provider", "llm"):
+                    raise RuntimeError(PRIVACY_CANARIES["provider_exception"])
+            except RuntimeError:
+                pass
+        await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+
+    fake_exporter = FakeTraceExporter()
+    await exercise(TraceFactory(exporter=fake_exporter, enabled=True, sampling_rate=1.0))
+    assert len(fake_exporter.exported) == 1
+    _assert_canaries_absent(fake_exporter.exported)
+
+    class CapturingClient:
+        def __init__(self) -> None:
+            self.payloads: list[dict[str, object]] = []
+
+        def batch_ingest_runs(self, *, create) -> None:
+            self.payloads.extend(create)
+
+    client = CapturingClient()
+    await exercise(
+        TraceFactory(
+            exporter=LangSmithTraceExporter(client, "jarvis-ai-test", 1.0),
+            enabled=True,
+            sampling_rate=1.0,
+        )
+    )
+    assert client.payloads
+    _assert_canaries_absent(client.payloads)
 
 
 def test_sampling_zero_always_returns_noop() -> None:

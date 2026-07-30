@@ -166,6 +166,52 @@ def test_buyer_request_exports_one_correlated_root(
     assert roots[0].metadata["requestId"] == response.headers["x-request-id"]
 
 
+def test_buyer_sse_is_identical_with_tracing_disabled(
+    buyer_fakes: FakeLLM,
+    fake_trace_factory: CapturingTraceFactory,
+) -> None:
+    buyer_fakes._decompose = {
+        "intent": "general",
+        "reply": "tracing-independent buyer response",
+        "filters": {},
+    }
+    request = {
+        "sessionId": "tracing-off-buyer",
+        "threadId": "tracing-off-buyer",
+        "message": "buyer response equivalence",
+    }
+
+    enabled_response = client.post("/chat", json=request)
+    disabled_exporter = FakeTraceExporter()
+    set_trace_factory(TraceFactory(exporter=disabled_exporter, enabled=False, sampling_rate=1.0))
+    disabled_response = client.post("/chat", json=request)
+
+    enabled_events = [
+        json.loads(line.removeprefix("data: "))
+        for line in enabled_response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    disabled_events = [
+        json.loads(line.removeprefix("data: "))
+        for line in disabled_response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    expected = [
+        {
+            "type": "token",
+            "data": {"text": "tracing-independent buyer response"},
+        },
+        {
+            "type": "done",
+            "data": {"finishReason": "stop"},
+        },
+    ]
+    assert enabled_response.status_code == disabled_response.status_code == 200
+    assert enabled_events == disabled_events == expected
+    assert len(fake_trace_factory.exporter.exported) == 1
+    assert disabled_exporter.exported == []
+
+
 async def test_recommendation_exports_bounded_buyer_tree() -> None:
     async def driver() -> None:
         await _collect(

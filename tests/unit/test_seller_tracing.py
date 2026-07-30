@@ -144,6 +144,50 @@ def test_seller_request_exports_one_correlated_root(
     assert by_name["llm.seller.general"].parent_id == by_name["seller.graph.general"].id
 
 
+def test_seller_sse_is_identical_with_tracing_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_trace_factory: CapturingTraceFactory,
+) -> None:
+    from app.agents.seller.schemas import RouteDecision
+    from app.api import seller as seller_api
+
+    async def route(*_args, **_kwargs):
+        return RouteDecision(category="general", reason="bounded", confidence=1)
+
+    class Agent:
+        async def astream(self, *_args, **_kwargs):
+            yield AIMessageChunk(content="tracing-independent seller response")
+
+    monkeypatch.setattr(seller_api, "route_question", route)
+    monkeypatch.setattr(seller_api, "build_general_agent", lambda today, checkpointer=None: Agent())
+    request = {
+        "sessionId": "tracing-off-seller",
+        "threadId": "tracing-off-seller",
+        "message": "seller response equivalence",
+    }
+
+    enabled_response = client.post("/seller/chat", json=request, headers=_seller_headers())
+    disabled_exporter = FakeTraceExporter()
+    set_trace_factory(TraceFactory(exporter=disabled_exporter, enabled=False, sampling_rate=1.0))
+    disabled_response = client.post("/seller/chat", json=request, headers=_seller_headers())
+
+    expected = [
+        {"type": "meta", "data": {"lane": "general"}},
+        {
+            "type": "token",
+            "data": {"text": "tracing-independent seller response"},
+        },
+        {
+            "type": "done",
+            "data": {"finishReason": "stop", "panel": "keep"},
+        },
+    ]
+    assert enabled_response.status_code == disabled_response.status_code == 200
+    assert _response_events(enabled_response) == _response_events(disabled_response) == expected
+    assert len(fake_trace_factory.exporter.exported) == 1
+    assert disabled_exporter.exported == []
+
+
 def test_analysis_request_through_open_stream_finishes_done_with_intact_tree(
     monkeypatch: pytest.MonkeyPatch,
     fake_trace_factory: CapturingTraceFactory,
