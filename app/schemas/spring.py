@@ -400,7 +400,8 @@ REQUEST_ID_MAX_LEN = 36  # BE CHAR(36)
 class RecoReason(CamelModel):
     """I-21 추천 근거 항목 — Spring 이 Redis 저장 → CH-5 카드에 echo (§4.2 v0.15.15 확정, C-9).
 
-    productId 로 키잉한다(순서 권위는 RecommendationPush.product_ids). rerank 가 산출한
+    productId 로 키잉한다 — 순서 권위는 **자기가 속한 목록의** RecommendationListEntry.product_ids
+    다(v0.17.1 lists[] 전환 전에는 평평한 RecommendationPush.product_ids 였다). rerank 가 산출한
     상품별 1문장 근거를 담으며, 근거를 생성하지 못한 상품은 생략(부분집합/순서무관 허용).
     생성 목표는 한글 40자 이내 1문장(rerank 프롬프트) — reason 은 판매자 입력 영향 자유 텍스트라
     push 전 그래프에서 개행 제거·안전 상한(config reason_max_len)으로 방어 정제한다. 표시 오버플로는 FE.

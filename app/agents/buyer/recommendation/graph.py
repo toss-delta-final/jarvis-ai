@@ -417,6 +417,19 @@ async def stream_recommendation(
         if split_by_need
         else settings.expose_max
     )
+    # 니즈 경계를 rerank 에도 알린다(PR #212 리뷰) — 안 알리면 LLM 이 전역 관련도로만 정렬해
+    # 한 니즈가 상위권을 쓸고, 굶은 니즈는 아래 _split_by_need 가 검색순서로 보충한다.
+    # 그 보충분엔 rationale 이 없어 근거 없는 카드가 나가는데 rerank 는 "정상 성공"이라
+    # rerank_degraded 로 드러나지 않는다. 단일 목록 경로에는 None 을 넘겨 프롬프트를 그대로 둔다.
+    need_of = (
+        {
+            p.product_id: label
+            for p in candidates
+            if p.product_id in leg_of and (label := _need_label(need_legs[leg_of[p.product_id]]))
+        }
+        if split_by_need
+        else None
+    )
 
     # rerank — smart tier 1회. 실패/타임아웃/유효후보 0건 시 검색순서 상위 N 으로 degrade(하드 제약 유지).
     if observer is not None:
@@ -435,6 +448,8 @@ async def stream_recommendation(
                 profile_summary=profile,
                 tier="smart",
                 expose_max=expose_budget,
+                need_of=need_of,
+                per_need=settings.expose_max if split_by_need else None,
             )
         ranked_ids = [pid for pid, _ in rr.ranked]
         reason_by_id = dict(rr.ranked)  # 상품별 근거(§4.2) — (productId, rationale) 튜플 → 맵
@@ -479,6 +494,10 @@ async def stream_recommendation(
             # LLMError 로만 보여서(파싱 실패) 이 두 값 없이는 원인을 분리할 수 없다.
             "lists": len(exposed_groups),
             "expose_budget": expose_budget,
+            # 근거 없이 나가는 카드 수 — rerank 가 "정상 성공"해도 랭킹이 한 니즈로 쏠리면
+            # 굶은 니즈가 검색순서 보충으로 채워져 여기가 오른다. rerank_degraded 로는 안 보이는
+            # 품질 저하라 별도 지표가 필요하다(PR #212 리뷰).
+            "without_reason": sum(1 for pid in ranked_ids if not reason_by_id.get(pid)),
         },
     )
 

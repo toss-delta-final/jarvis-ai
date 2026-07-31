@@ -1147,16 +1147,9 @@ async def test_case3_budget_counts_only_needs_with_candidates(monkeypatch) -> No
     seen: list[int] = []
     real_rerank = recommendation_graph.rerank
 
-    async def _spy(llm, *, query, candidates, profile_summary, tier, expose_max):
-        seen.append(expose_max)
-        return await real_rerank(
-            llm,
-            query=query,
-            candidates=candidates,
-            profile_summary=profile_summary,
-            tier=tier,
-            expose_max=expose_max,
-        )
+    async def _spy(llm, **kwargs):
+        seen.append(kwargs["expose_max"])
+        return await real_rerank(llm, **kwargs)
 
     monkeypatch.setattr(recommendation_graph, "rerank", _spy)
     settings = get_settings()
@@ -1182,3 +1175,36 @@ async def test_case3_budget_counts_only_needs_with_candidates(monkeypatch) -> No
 
     # 후보가 있는 니즈는 1개 → 예산 expose_max×1 = 3. 요청 leg 수(2)로 셌다면 6이 된다.
     assert seen == [3]
+
+
+async def test_case3_rerank_prompt_carries_need_boundaries() -> None:
+    """니즈별 턴이면 rerank 입력에 니즈 경계가 실제로 실려 나간다 (PR #212 리뷰, 배선 확인)."""
+    push = _RecordingPush()
+    llm = _needs_llm([{"productId": 101, "rationale": "a"}, {"productId": 201, "rationale": "b"}])
+
+    await _run_case3(llm, push)
+
+    smart_user = next(user for tier, user in llm.calls if tier == "smart")
+    assert "NEEDS" in smart_user
+    assert '"need": "파우치"' in smart_user and '"need": "어댑터"' in smart_user
+
+
+async def test_non_case3_rerank_prompt_has_no_need_section() -> None:
+    """분할하지 않는 턴의 rerank 입력은 종전 그대로다 — 흔한 경로를 건드리지 않는다."""
+    push = _RecordingPush()
+    llm = FakeLLM()  # DEFAULT_DECOMPOSE = case 2
+
+    await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=llm,
+            search=_leg_search,
+            push_fn=push,
+            map_categories=_two_leg_mapper(),
+        )
+    )
+
+    smart_user = next(user for tier, user in llm.calls if tier == "smart")
+    assert "NEEDS" not in smart_user
+    assert '"need"' not in smart_user

@@ -75,8 +75,21 @@ async def rerank(
     profile_summary: str | None,
     tier: str,
     expose_max: int,
+    need_of: dict[int, str] | None = None,
+    per_need: int | None = None,
 ) -> RerankResult:
-    """Sonnet 1회 호출로 재랭킹 결과를 산출한다(후보 외 id 는 코드로 제거)."""
+    """Sonnet 1회 호출로 재랭킹 결과를 산출한다(후보 외 id 는 코드로 제거).
+
+    `need_of`(productId → 니즈 이름)와 `per_need` 가 오면 **니즈별 분할 턴**이다(REQ-REC-024).
+    이때만 후보에 소속 니즈를 싣고 "니즈마다 상위 N개" 지시를 덧붙인다 — 안 넘기면 LLM 은
+    후보를 전역 관련도로만 정렬해 한 니즈가 상위권을 쓸 수 있고, 굶은 니즈는 하류에서
+    검색순서로 보충된다. 그 보충분엔 rationale 이 없어 **근거 없는 카드**가 나가는데
+    rerank 는 "정상 성공"이라 rerank_degraded 로도 드러나지 않는다(PR #212 리뷰).
+
+    분기를 `_SYSTEM` 이 아니라 user 메시지에 둔 이유: 니즈가 없는 단일 목록 경로의 프롬프트를
+    **한 글자도 바꾸지 않기 위해서**다. 이 저장소엔 프롬프트에 지시를 얹었다가 기존 성공
+    케이스가 3/3 → 1/3 로 희석된 실측 전례가 있다(#198, SPEC §EX-7).
+    """
     settings = get_settings()  # 티어 경계 조회 — 후보 루프 밖에서 1회(캐시 싱글턴, 관례 정합)
     cand = [
         {
@@ -93,9 +106,26 @@ async def rerank(
         }
         for c in candidates
     ]
+    if need_of:
+        # 니즈별 분할 턴에서만 실린다 — 상품의 category(분류 경로)와 달리 "이 후보가 어느
+        # 니즈를 위해 검색됐는가"라, LLM 이 니즈 경계를 알아야 균형 있게 고를 수 있다.
+        for item in cand:
+            need = need_of.get(item["productId"])
+            if need:
+                item["need"] = need
     prof = profile_summary or "(없음)"
+    # 니즈 지시는 user 메시지에만 덧붙인다 — 단일 목록 경로의 프롬프트를 그대로 두기 위해서다.
+    needs_line = ""
+    if need_of and per_need:
+        names = list(dict.fromkeys(need_of.values()))  # 등장 순서 유지 + 중복 제거
+        needs_line = (
+            f"NEEDS: {json.dumps(names, ensure_ascii=False)}\n"
+            f"- 후보의 need 필드가 그 상품이 속한 니즈입니다. 니즈마다 상위 {per_need}개까지"
+            " 균형 있게 고르세요 — 한 니즈에 몰아주지 마세요.\n"
+        )
     user = (
         f"PROFILE_SUMMARY: {prof}\nQUERY: {query}\n"
+        f"{needs_line}"
         f"CANDIDATES: {json.dumps(cand, ensure_ascii=False)}"
     )
 

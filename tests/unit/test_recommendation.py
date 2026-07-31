@@ -2479,15 +2479,17 @@ async def test_order_status_clears_pending_without_copying_response_into_buyer_s
 # ─────────── rerank 출력 예산 (PR #212 리뷰 — 니즈별 분할이 max_tokens 를 넘기지 않게) ───────────
 
 
-class _RecordingLLM:
-    """complete 호출 인자를 그대로 기록하는 LLM — max_tokens 산정을 검증한다."""
+class _CapturingLLM:
+    """complete 호출 인자를 그대로 기록하는 LLM — max_tokens·프롬프트 구성을 검증한다."""
 
     def __init__(self, ranked: list[dict]) -> None:
         self._ranked = ranked
         self.max_tokens: list[int] = []
+        self.user: list[str] = []
 
     async def complete(self, *, system, user, tier, max_tokens=1024, json_output=True):
         self.max_tokens.append(max_tokens)
+        self.user.append(user)
         return json.dumps(
             {"ranked": self._ranked, "overallComment": "골라봤어요"}, ensure_ascii=False
         )
@@ -2511,7 +2513,7 @@ async def test_rerank_output_budget_scales_with_expose_max() -> None:
     """
     from app.agents.buyer.recommendation.rerank import rerank
 
-    llm = _RecordingLLM([{"productId": 100, "rationale": "좋아요"}])
+    llm = _CapturingLLM([{"productId": 100, "rationale": "좋아요"}])
     await rerank(
         llm, query="q", candidates=_cands(30), profile_summary=None, tier="smart", expose_max=9
     )
@@ -2523,3 +2525,47 @@ async def test_rerank_output_budget_scales_with_expose_max() -> None:
     assert large > small, "노출 개수가 늘면 출력 예산도 늘어야 한다"
     # 종전 단일 목록 경로(expose_max=9)의 실효 예산은 그대로 유지한다 — 회귀 방지.
     assert small == 1500
+
+
+async def test_rerank_without_needs_keeps_prompt_unchanged() -> None:
+    """니즈 정보가 없으면(단일 목록 경로) 프롬프트는 종전과 한 글자도 다르지 않다.
+
+    다중 니즈 대응이 트래픽 대부분인 단일 목록 경로를 건드리면 안 된다 — 이 저장소는
+    프롬프트에 지시를 얹었다가 기존 성공 케이스가 3/3→1/3 으로 희석된 실측 전례가 있다(#198).
+    """
+    from app.agents.buyer.recommendation.rerank import rerank
+
+    llm = _CapturingLLM([{"productId": 100, "rationale": "좋아요"}])
+    await rerank(
+        llm, query="q", candidates=_cands(3), profile_summary=None, tier="smart", expose_max=9
+    )
+
+    assert "NEEDS" not in llm.user[0]
+    assert '"need"' not in llm.user[0]
+
+
+async def test_rerank_carries_need_boundaries_when_split() -> None:
+    """니즈별 분할이면 후보마다 소속 니즈와 "니즈당 상위 N개" 지시를 함께 넘긴다 (PR #212 리뷰).
+
+    안 넘기면 LLM 은 후보를 전역 관련도로만 정렬한다 — 한 니즈가 상위권을 쓸면 굶은 니즈는
+    검색순서 보충으로 채워지고, 그 보충분에는 rationale 이 없어 **근거 없는 카드**가 나간다.
+    rerank 는 "정상 성공"이라 rerank_degraded 로도 드러나지 않는다.
+    """
+    from app.agents.buyer.recommendation.rerank import rerank
+
+    llm = _CapturingLLM([{"productId": 100, "rationale": "좋아요"}])
+    await rerank(
+        llm,
+        query="q",
+        candidates=_cands(3),
+        profile_summary=None,
+        tier="smart",
+        expose_max=6,
+        need_of={100: "파우치", 101: "파우치", 102: "어댑터"},
+        per_need=3,
+    )
+
+    sent = llm.user[0]
+    assert "파우치" in sent and "어댑터" in sent
+    assert '"need"' in sent, "후보마다 소속 니즈를 실어야 LLM 이 경계를 안다"
+    assert "3" in sent  # 니즈당 상위 N
