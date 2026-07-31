@@ -315,11 +315,28 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
     settings = get_settings()
     signals = request.signals
 
-    # 프로필 저장소 장애는 **degrade** 한다 — 프로필은 랭킹의 한 항(장기 취향)이자 reason 근거지만
-    # 유일한 입력이 아니라, 없으면 시그널만으로 추천을 만든다. 홈 렌더를 막지 않는 쪽이 §4.11 취지다.
+    # 예산 시계는 **프로필 조회 전**에 시작한다 — 프로필 스토어(pg-profile)는 자체 타임아웃
+    # (state_store_query_timeout_s 3s·connect 5s)이 홈 예산보다 커서, 밖에 두면 예산이 의미를
+    # 갖기 전에 §3.7 "응답 3s" 를 이미 넘길 수 있다(PR 리뷰).
+    deadline = started + settings.home_reco_budget_s
+
+    def _remaining() -> float:
+        return deadline - time.perf_counter()
+
+    # 프로필 저장소 장애·지연은 **degrade** 한다 — 프로필은 랭킹의 한 항(장기 취향)이자 reason
+    # 근거지만 유일한 입력이 아니라, 없으면 시그널만으로 추천을 만든다(§4.11 홈 렌더 비차단).
+    # 호출별 상한(store_timeout)을 함께 걸어 **프로필이 예산을 독식해 랭킹까지 굶기는 것**을
+    # 막는다 — 기본값(상한 2.0 < 예산 2.5)에서 랭킹 몫 0.5s 가 남는다. async 경로라 wait_for
+    # 취소가 실제로 듣는다(_call_store 가 필요한 건 동기 스레드 호출뿐).
     # 신원은 서비스 토큰이 인가하고 memberId 는 §3.7 계약상 본문으로 온다(레인 b).
     try:
-        profile = await read_profile_summary(str(request.member_id))
+        profile = await asyncio.wait_for(
+            read_profile_summary(str(request.member_id)),
+            timeout=min(settings.home_reco_store_timeout_s, max(_remaining(), 0.001)),
+        )
+    except TimeoutError:
+        logger.warning("home_reco_profile_timeout")
+        profile = None
     except Exception:
         # 예외 문자열은 업스트림 상태를 유출할 수 있어 클래스명도 남기지 않는다(#141 규약).
         logger.warning("home_reco_profile_unavailable")
@@ -345,11 +362,6 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
     # 예외 처분: TimeoutError=504, 그 외 Exception=503. 503 으로 뭉치면 코드 버그(TypeError 등)가
     # "일시 장애"로 둔갑하므로 **traceback 을 로컬 로그에 남긴다**(logger.exception —
     # errors.py 의 500 처리와 같은 관례). 와이어·trace 로는 코드만 나간다(§3.7 [HARD] 불변).
-    deadline = started + settings.home_reco_budget_s
-
-    def _remaining() -> float:
-        return deadline - time.perf_counter()
-
     try:
         store = get_catalog_store()
         query_vec = await _call_store(

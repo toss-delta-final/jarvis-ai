@@ -688,6 +688,41 @@ def test_total_wall_clock_is_bounded_by_budget_not_per_call_sum(
     assert elapsed < 1.0, f"예산 0.3s 인데 {elapsed:.2f}s — 잔여 예산이 반영되지 않았다"
 
 
+def test_slow_profile_read_cannot_starve_ranking(monkeypatch: pytest.MonkeyPatch) -> None:
+    """프로필 조회도 예산·호출 상한 아래다 — 느려도 랭킹을 굶기지 못하고 그 항만 빠진다.
+
+    프로필 스토어 자체 타임아웃(state_store_query_timeout_s 3s)이 홈 예산(2.5s)보다 커서,
+    예산 밖에 두면 §3.7 "응답 3s" 가 프로필 구간에서 이미 깨진다(PR 리뷰).
+    """
+    import asyncio as _asyncio
+    import time as _time
+
+    tuned = get_settings().model_copy(
+        update={"home_reco_store_timeout_s": 0.2, "home_reco_budget_s": 1.0}
+    )
+    monkeypatch.setattr(svc, "get_settings", lambda: tuned)
+
+    async def slow_profile(user_id: str | None) -> dict | None:
+        await _asyncio.sleep(5)  # 자체 타임아웃(3s)보다도 길다
+        return None
+
+    monkeypatch.setattr(svc, "read_profile_summary", slow_profile)
+    t = _time.perf_counter()
+    r = client.post(_URL, json=_body(limit=10))
+    elapsed = _time.perf_counter() - t
+    assert r.status_code == 200
+    assert r.json()["outcome"] == "PERSONALIZED", "프로필이 느려도 시그널 랭킹은 나간다"
+    assert elapsed < 1.0, f"프로필 상한 0.2s 인데 {elapsed:.2f}s"
+
+
+def test_config_db_timeout_must_exceed_app_timeout() -> None:
+    """DB statement_timeout ≤ 앱 호출 상한이면 기동 실패 — 느린 쿼리가 503/504 로 비결정적으로 갈린다."""
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError):
+        Settings(_env_file=None, catalog_store_query_timeout_s=2.0, home_reco_store_timeout_s=2.0)
+
+
 def test_reason_timeout_degrades_not_504(
     monkeypatch: pytest.MonkeyPatch, store: CatalogArtifactStore
 ) -> None:

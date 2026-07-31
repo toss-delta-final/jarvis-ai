@@ -89,9 +89,13 @@ class Settings(BaseSettings):
     catalog_vector_overfetch: int = 4  # 방식1 hydrate 후 필터·품절 제거 대비 벡터 여유조회 배수
     catalog_batch_interval_s: float = 300.0  # 주기 증분 pull 배치 스케줄러 간격(이슈 #31)
     # pg-catalog 질의 statement_timeout — get_many·top_k_by_vector 의 DB 쪽 상한(PR #213 리뷰).
-    # 호출측 asyncio.wait_for 는 to_thread 밑의 쿼리를 못 죽이므로, 이게 없으면 지연 쿼리(I-17
-    # replace_all 테이블 락 등)가 풀 커넥션을 계속 붙들어 채팅 rerank 등 다른 경로까지 말려든다.
-    catalog_store_query_timeout_s: float = Field(default=2.0, gt=0.0)
+    # 앱쪽 벽시계 포기는 스레드 밑의 쿼리를 못 죽이므로, 이게 없으면 지연 쿼리(I-17 replace_all
+    # 테이블 락 등)가 풀 커넥션을 계속 붙들어 채팅 rerank 등 다른 경로까지 말려든다.
+    # **앱쪽 호출 상한(home_reco_store_timeout_s)보다 커야 한다** — 같거나 작으면 "쿼리가
+    # 느리다"는 동일 원인이 어느 타이머가 먼저 발동하느냐에 따라 503/504 로 비결정적으로
+    # 갈린다(PR 리뷰: DB 가 먼저 끊으면 psycopg QueryCanceled → except Exception → 503).
+    # 관계는 기동 시점에 강제한다(아래 model_validator).
+    catalog_store_query_timeout_s: float = Field(default=2.5, gt=0.0)
 
     # ── PostgreSQL / pgvector ×2 ──
     # catalog: AI 생성물(extras/search_doc/임베딩, §4.8 I-17 배치 upsert) 호스트, profile: 프로필 스토어+대화 저장(§6.3).
@@ -498,6 +502,23 @@ class Settings(BaseSettings):
                 "CATEGORY_SEARCH_POOL_MAX_SIZE must be >= 2 * CATEGORY_FANOUT_MAX "
                 f"(need {need}, got {self.category_search_pool_max_size}): "
                 "mapping probes two anchors (raw, query) per leg concurrently"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_db_timeout_after_app_timeout(self) -> "Settings":
+        """카탈로그 DB 상한이 앱쪽 호출 상한보다 크지 않으면 기동 실패 (PR #213 리뷰).
+
+        앱쪽(_call_store)이 항상 먼저 포기해야 느린 쿼리가 **결정적으로 504**(AI_TIMEOUT)로
+        나간다. DB 가 먼저 끊으면 psycopg QueryCanceled(OperationalError 계열)가 except
+        Exception 에 잡혀 503(AI_ERROR)이 되고, 같은 원인이 지터에 따라 다른 코드로 기록된다
+        (§4.11 fallbackReason 구분 무력화). 포기된 쿼리는 DB 상한이 뒤늦게 잘라 커넥션을 회수한다.
+        """
+        if self.catalog_store_query_timeout_s <= self.home_reco_store_timeout_s:
+            raise ValueError(
+                "CATALOG_STORE_QUERY_TIMEOUT_S must be > HOME_RECO_STORE_TIMEOUT_S "
+                f"(got {self.catalog_store_query_timeout_s} <= {self.home_reco_store_timeout_s}): "
+                "the app-side clock must fire first so slow queries map to 504 deterministically"
             )
         return self
 
