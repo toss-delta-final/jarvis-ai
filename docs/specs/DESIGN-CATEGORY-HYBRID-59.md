@@ -539,6 +539,14 @@ decompose 프롬프트("PRIOR_FILTERS 병합")로도 유도하지만(#10a), Haik
 - 거리컷 드롭은 **별 이벤트 `category_distance_rejected`**(raw·query·distance·top1 후보)로 남긴다 —
   기존 `category_unmapped`(히트 0건, 시드 결측 신호)와 섞으면 품질 메트릭이 오염된다(§5 격리 규약과
   동일 취지).
+- **단계 실패 이벤트의 `error_type`**(PR #188 리뷰) — `category_embed_failed`·
+  `category_select_stage_failed` 는 **실제 I/O 실패가 아니다.** 앵커 조회·LLM 택일의 실패는
+  `gather(return_exceptions=True)` 로 이미 앵커/leg 단위 격리돼 `category_leg_search_failed`·
+  `category_select_unavailable` 로 남으므로, 바깥 except 에 도달하는 것은 embed 배치 실패(I/O)
+  아니면 **순수 로직 버그**다. 이벤트 이름만으로는 둘이 안 갈려 `error_type`(예외 클래스명)을 함께
+  싣는다 — `TypeError`·`AttributeError` 가 보이면 인프라가 아니라 코드 문제다.
+  try 범위를 I/O 로 좁히지 않는 이유: 로직 버그가 전파되면 `map_categories` 가 통째로 던지고
+  호출부가 `category_legs = []` 로 만들어 **exact 매치까지** 버린다(§5 격리 원칙 위반).
 - **`category_distance_override`(§4.5)** — 거리컷을 넘었지만 마진으로 채택한 leg. 이 이벤트의
   빈도·마진 분포가 `category_distance_override_margin` 완화 판단의 근거다(현재 임계는 76 앵커
   표본에서 경계 여유 0.008 로 잡은 보수값). 채택된 leg 은 종전대로 `category_repaired`·

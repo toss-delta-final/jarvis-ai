@@ -1072,3 +1072,33 @@ async def test_input_legs_are_truncated_to_fanout_max(caplog) -> None:
     rec = _record(caplog, "category_legs_truncated")
     assert rec.given == 8
     assert rec.fanout_max == 3
+
+
+async def test_stage_failure_logs_error_type_for_triage(caplog) -> None:
+    """[PR #188 리뷰] 단계 실패 로그에 예외 **타입**을 실어 인프라 장애와 코드 버그를 가른다.
+
+    두 단계 모두 실제 I/O 실패는 이미 `gather(return_exceptions=True)` 로 앵커/leg 단위 격리돼
+    각각 `category_leg_search_failed`·`category_select_unavailable` 로 남는다 — 바깥 except 에는
+    **도달하지 못한다**. 따라서 바깥 except 가 잡는 것은 embed 배치 실패(I/O) 아니면 순수 로직
+    버그인데, 이벤트 이름만으로는 둘이 구분되지 않아 triage 가 어렵다(§11).
+
+    try 범위를 I/O 로 좁히는 대안은 채택하지 않는다 — 순수 로직 버그가 그대로 전파돼
+    `map_categories` 가 통째로 던지고 호출부가 `category_legs = []` 로 만들어 **exact 매치까지**
+    사라진다(PR #188 앞선 리뷰가 고치라고 한 바로 그 문제). 보호는 유지하고 귀속만 고친다.
+    """
+    m = _FakeMapper(exact=set(), nearest={}, embed_raises=True)
+    with caplog.at_level("WARNING"):
+        await m.run([CategoryQuery(None, "청바지")])
+    assert _record(caplog, "category_embed_failed").error_type == "RuntimeError"
+
+    broken = _settings()
+    del broken.category_select_max_calls  # §4.4 단계에서 AttributeError
+    m2 = _FakeMapper(exact=set(), nearest={}, hits=_AMBIGUOUS)
+    with caplog.at_level("WARNING"):
+        await m2.run(
+            [CategoryQuery(None, "선물용품")],
+            settings=broken,
+            select=_FakeSelector(answer=None),
+            llm=object(),
+        )
+    assert _record(caplog, "category_select_stage_failed").error_type == "AttributeError"

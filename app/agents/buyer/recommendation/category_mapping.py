@@ -205,7 +205,15 @@ async def map_categories(
         # 임베딩 경로(embed 배치·전면 조회)가 통째로 죽어도, 이미 DB 검증된 exact 매치는 아래
         # result 에서 보존한다(canonical-or-null 은 exact·search 히트 둘 다 canonical 이라 성립).
         # need_idx(임베딩 필요) leg 는 전부 실패로 표시 → canonical 없이 드롭된다(PR #73 리뷰).
-        logger.warning("category_embed_failed", extra={"reason": str(exc)})
+        # error_type 을 함께 싣는다(PR #188 리뷰) — 앵커별 조회 실패는 이미
+        # gather(return_exceptions=True) → category_leg_search_failed 로 격리되므로 여기 도달하는
+        # 것은 embed 배치 실패(I/O) 아니면 **순수 로직 버그**다. 이벤트 이름만으로는 둘이 구분되지
+        # 않아 triage 가 어렵다(§11). try 를 I/O 로 좁히지 않는 이유: 로직 버그가 전파되면
+        # map_categories 가 통째로 던져 호출부가 exact 매치까지 버린다(앞선 리뷰가 고친 문제).
+        logger.warning(
+            "category_embed_failed",
+            extra={"reason": str(exc), "error_type": type(exc).__name__},
+        )
         failed_idx.update(need_idx)
 
     # ── §4.4 마진 트리거 top-k 택일 (#115) ────────────────────────────────────────────
@@ -337,7 +345,13 @@ async def map_categories(
                 # 보다 먼 후보일 수 있고("선물용품" → 독서용품 0.2292), 그건 "가까운 칸이 없다"는 뜻이다.
                 nearest[i] = (pick, chosen, margin, kind)
     except Exception as exc:  # noqa: BLE001 - 택일 단계 실패: 전 leg 이 임베딩 top-1 을 유지한다
-        logger.warning("category_select_stage_failed", extra={"reason": str(exc)})
+        # LLM 호출 실패는 gather(return_exceptions=True) → category_select_unavailable 로 이미
+        # 격리되므로 **여기 도달하는 것은 LLM 실패가 아니다** — 설정 접근·정렬·배분 등 순수 로직
+        # 오류다. 그 사실이 이벤트 이름에 드러나 있지만 타입까지 실어 triage 를 돕는다(PR #188 리뷰).
+        logger.warning(
+            "category_select_stage_failed",
+            extra={"reason": str(exc), "error_type": type(exc).__name__},
+        )
 
     result: list[tuple[str, str | None]] = []
     for i, r in enumerate(raws):
