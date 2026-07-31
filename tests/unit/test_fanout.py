@@ -1232,3 +1232,29 @@ def test_need_label_truncates_to_contract_cap() -> None:
 
     label = _need_label(("c", "가" * 80))
     assert len(label) == LIST_LABEL_MAX_LEN
+
+
+def test_need_names_fall_back_to_ordinal_for_rerank_only() -> None:
+    """라벨이 전부 정제로 비어도 rerank 에는 니즈 경계가 남는다 (PR #212 리뷰).
+
+    빈 dict 를 넘기면 rerank 가 `if need_of:` 에서 falsy 로 걸러 **단일 목록 경로와 똑같이**
+    경계 없이 정렬한다 — 그런데 하류는 여전히 목록을 쪼개므로 근거 없는 카드가 나간다.
+    rerank 에 필요한 건 사람이 읽는 이름이 아니라 **구분되는 토큰**이라 순번으로 채운다.
+    이 순번은 rerank 입력 전용이며 push `label`(사용자 노출)로는 새지 않는다.
+    """
+    from app.agents.buyer.recommendation.graph import _need_names
+
+    legs = [("​", "​"), ("​", "​")]  # 양쪽 다 정제하면 빈 문자열
+    names = _need_names(legs, leg_of={101: 0, 201: 1}, product_ids=[101, 201])
+
+    assert set(names.values()) == {"니즈 1", "니즈 2"}, "경계가 구분되기만 하면 된다"
+
+
+def test_need_names_prefer_real_labels() -> None:
+    """실제 니즈 이름이 있으면 그대로 쓴다 — 순번은 이름이 없을 때만."""
+    from app.agents.buyer.recommendation.graph import _need_names
+
+    legs = [("여행/캠핑 > 여행용품", "파우치"), ("​", "​")]
+    names = _need_names(legs, leg_of={101: 0, 201: 1}, product_ids=[101, 201])
+
+    assert names == {101: "파우치", 201: "니즈 2"}

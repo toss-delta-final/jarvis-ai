@@ -124,6 +124,30 @@ def _need_label(leg: tuple[str, str | None]) -> str | None:
     return label[:LIST_LABEL_MAX_LEN] or None
 
 
+def _need_names(
+    need_legs: list[tuple[str, str | None]],
+    *,
+    leg_of: dict[int, int],
+    product_ids: list[int],
+) -> dict[int, str]:
+    """rerank 에 넘길 `productId → 니즈 경계 이름` — 이름이 없으면 순번으로 채운다.
+
+    push `label`(사용자 노출)과 **일부러 다르다**. rerank 에 필요한 건 사람이 읽는 이름이 아니라
+    **서로 구분되는 토큰**이고, 이름이 하나도 없다고 경계 자체를 빼면(빈 dict → rerank 가 falsy 로
+    무시) 단일 목록 경로와 똑같이 전역 정렬해 버린다 — 그런데 하류는 여전히 목록을 쪼개므로
+    굶은 니즈가 rationale 없는 검색순서 보충으로 채워진다(PR #212 리뷰).
+    반대로 이 순번을 `label` 로 쓰면 "니즈 2" 같은 무의미한 이름이 사용자에게 노출되므로
+    `label` 은 종전대로 `_need_label` 이 만든 진짜 이름만 쓰고, 없으면 None 이다.
+    """
+    names: dict[int, str] = {}
+    for pid in product_ids:
+        leg = leg_of.get(pid)
+        if leg is None:
+            continue
+        names[pid] = _need_label(need_legs[leg]) or f"니즈 {leg + 1}"
+    return names
+
+
 def _split_by_need(
     ranked_ids: list[int],
     candidates: list[SpringProduct],
@@ -431,11 +455,7 @@ async def stream_recommendation(
     # 그 보충분엔 rationale 이 없어 근거 없는 카드가 나가는데 rerank 는 "정상 성공"이라
     # rerank_degraded 로 드러나지 않는다. 단일 목록 경로에는 None 을 넘겨 프롬프트를 그대로 둔다.
     need_of = (
-        {
-            p.product_id: label
-            for p in candidates
-            if p.product_id in leg_of and (label := _need_label(need_legs[leg_of[p.product_id]]))
-        }
+        _need_names(need_legs, leg_of=leg_of, product_ids=[p.product_id for p in candidates])
         if split_by_need
         else None
     )
