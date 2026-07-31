@@ -167,9 +167,16 @@ async def get_funnel(runtime: ToolRuntime[SellerContext], from_date: str, to_dat
     )
 
 
+# [#196] purchase_complete 는 FE 가 productId 없이 발사(주문 단위 이벤트)해
+# behavior_events.product_id = NULL 로 적재되고, I-13 집계(product 조인 스코프)에서
+# 통째로 탈락한다 — 상품별·합계 모두 0 으로 내려올 수 있다(실데이터 존재해도).
+# BE 근본 수정(order_item 기반 귀속, jarvis-backend#62) 배포 전까지 워커가 0 을
+# '구매 전무'로 오해석하지 않도록 노트로 통제한다. 배포 후 완화(후속 커밋).
 _BEHAVIOR_AUTHORITY_NOTE = (
-    "※ purchaseComplete 는 이벤트 기준(완료 페이지 발사) — "
-    "매출·주문수의 권위는 매출 조회(I-6)/주문 전이(I-14)다."
+    "※ purchaseComplete 는 이벤트 기준(완료 페이지 발사)인데 현 수집 경로상 "
+    "상품 미귀속으로 0 집계될 수 있다(실제 구매 있어도) — 0 을 '구매 전무'의 "
+    "근거로 쓰지 말 것. 구매 존재·규모의 권위는 매출 조회(I-6)/퍼널(I-7)/"
+    "주문 전이(I-14)다."
 )
 
 
@@ -177,7 +184,11 @@ def _summarize_behavior(result: BehaviorEventsResult) -> str:
     """I-13 응답을 groupBy 3형에 맞춰 요약한다(REALIGN ②-3 — 확정 명세 기준)."""
     settings = get_settings()
     if result.rows:  # groupBy=product (기본)
-        shown = result.rows[: settings.seller_summary_max_events]
+        # [#196] 상한은 seller_summary_max_products(I-13 전용) — I-14 용
+        # seller_summary_max_events 와 분리(브랜드 상품 수 > 상한이면 상시 잘리던 문제).
+        # rows 는 BE 가 활동량(4종 합계) 내림차순으로 내려준다(api-spec §4.4 I-13) —
+        # 잘리는 건 저활동 상품이고, 잘린 행도 아래 꼬리 합계로 남겨 정보 소실을 막는다.
+        shown = result.rows[: settings.seller_summary_max_products]
         lines = []
         for row in shown:
             c = row.counts
@@ -188,8 +199,19 @@ def _summarize_behavior(result: BehaviorEventsResult) -> str:
                 f"결제시작 {c.get('checkoutStart', 0)} 구매 {c.get('purchaseComplete', 0)} "
                 f"(조회→담기 {rate}, 방문자 {row.unique_visitors if row.unique_visitors is not None else '-'})"
             )
-        omitted = (result.total or len(result.rows)) - len(shown)
-        omitted_note = f" 외 {omitted}건" if omitted > 0 else ""
+        omitted_rows = result.rows[len(shown) :]
+        if omitted_rows:
+            tail = {
+                key: sum(r.counts.get(key, 0) for r in omitted_rows)
+                for key in ("productView", "addToCart", "checkoutStart", "purchaseComplete")
+            }
+            omitted_note = (
+                f" 외 {len(omitted_rows)}건(저활동) 합계: "
+                f"조회 {tail['productView']} 담기 {tail['addToCart']} "
+                f"결제시작 {tail['checkoutStart']} 구매 {tail['purchaseComplete']}"
+            )
+        else:
+            omitted_note = ""
         return f"상품별 {len(shown)}건: " + "; ".join(lines) + omitted_note
     if result.counts:  # groupBy=eventType
         return "유형별 합계: " + ", ".join(f"{k}={v}" for k, v in result.counts.items())

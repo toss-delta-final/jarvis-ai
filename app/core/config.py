@@ -124,7 +124,11 @@ class Settings(BaseSettings):
     seller_calc_max_result_digits: int = 100
     # 도구 반환 상세도 상한(안 1+차등, 2026-07-17 사용자 확정) — 컨텍스트 폭주 방지.
     seller_summary_max_points: int = 60  # 시계열 상세 나열 상한(포인트 수)
-    seller_summary_max_events: int = 5  # I-13/I-14 이벤트 kv 나열 상한(건)
+    seller_summary_max_events: int = 5  # I-14 이벤트 kv 나열 상한(건)
+    # [#196] I-13 상품별 rows 상세 상한 — I-14 용(위)과 분리. 구 공용 상한 5는
+    # 시드 브랜드 상품 7종보다 작아 하위 2종이 상시 잘렸다. 상한 초과분은
+    # _summarize_behavior 가 꼬리 합계로 남긴다(정보 소실 없음).
+    seller_summary_max_products: int = 10  # I-13 상품별 rows 상세 나열 상한(건)
     seller_list_default_limit: int = 20  # I-9 상품 목록 기본 limit(미지정 시)
 
     # ── 판매자 후속 단계 대비 선등록 (1단계 미소비, 하드코딩 재발 방지) ──

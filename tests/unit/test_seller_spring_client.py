@@ -492,7 +492,11 @@ async def test_get_product_changes_parses_rows_and_total() -> None:
 
 
 async def test_get_events_serializes_filters_as_query() -> None:
-    """eventType 복수 반복 쿼리·productId 숫자·groupBy 가 URL 에 실린다."""
+    """[#196] eventType 복수는 CSV 1개 파라미터로 직렬화 — 반복 쿼리 금지.
+
+    BE 계약은 String eventType + comma split(api-spec §4.4 I-13 v0.16.3) —
+    구 반복 쿼리(eventType=a&eventType=b)는 Spring 암묵 변환 의존이었다.
+    """
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -513,7 +517,8 @@ async def test_get_events_serializes_filters_as_query() -> None:
 
     url = captured["url"]
     assert "/internal/seller/brand-1/events" in url
-    assert "eventType=product_view" in url and "eventType=add_to_cart" in url
+    assert "eventType=product_view%2Cadd_to_cart" in url  # CSV(콤마 URL 인코딩) 1회
+    assert url.count("eventType=") == 1  # 반복 쿼리로 새지 않는다
     assert "productId=101" in url
     assert "groupBy=date" in url
 

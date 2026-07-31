@@ -499,6 +499,66 @@ async def test_behavior_tool_summarizes_product_rows_with_authority_note() -> No
     assert "조회 1820" in result and "담기 240" in result
     assert "13.2%" in result  # viewToCartRate 백분율 표기
     assert "권위는 매출 조회(I-6)" in result  # 이벤트≠주문 권위(명세 집계 규칙)
+    # [#196] purchaseComplete 미귀속 경고 — 0 을 '구매 전무'로 오해석 금지 문구.
+    assert "구매 전무" in result and "0 집계될 수 있다" in result
+
+
+async def test_behavior_tool_shows_all_seed_products_within_cap() -> None:
+    """[#196] 상품별 rows 상한을 I-13 전용 seller_summary_max_products(10)로 분리 —
+    시드 브랜드 7종이 구 공용 상한(5)에 잘리지 않고 전부 상세 노출된다."""
+    fake = FakeSpringClient()
+    fake.behavior_result = BehaviorEventsResult(
+        group_by="product",
+        rows=[
+            BehaviorProductRow(
+                product_id=100 + i,
+                product_name=f"상품{i}",
+                counts={"productView": 700 - i * 10},
+            )
+            for i in range(7)
+        ],
+        total=7,
+    )
+
+    result = await _call_runtime_tool(
+        get_behavior_events, {"from_date": "2026-07-01", "to_date": "2026-07-14"}, fake
+    )
+
+    assert "상품별 7건" in result
+    assert "[106] 상품6" in result  # 구 상한 5 에서 상시 잘리던 하위 상품도 노출
+    assert "외" not in result.split("※")[0]  # 상한 내 — 꼬리 합계 없음
+
+
+async def test_behavior_tool_caps_product_rows_with_tail_totals() -> None:
+    """[#196] 상한(10) 초과 rows 는 '외 N건(저활동) 합계' 로 압축 — 개수만 남기고
+    수치가 소실되던 구 '외 N건' 표기를 대체한다(잘림 = 표본 누락 → 요약)."""
+    fake = FakeSpringClient()
+    fake.behavior_result = BehaviorEventsResult(
+        group_by="product",
+        rows=[
+            BehaviorProductRow(
+                product_id=200 + i,
+                product_name=f"상품{i}",
+                counts={
+                    "productView": 120 - i * 10,
+                    "addToCart": 12 - i,
+                    "checkoutStart": 2,
+                    "purchaseComplete": 0,
+                },
+            )
+            for i in range(12)  # BE 정렬(활동량 내림차순) 그대로 12건
+        ],
+        total=12,
+    )
+
+    result = await _call_runtime_tool(
+        get_behavior_events, {"from_date": "2026-07-01", "to_date": "2026-07-14"}, fake
+    )
+
+    assert "상품별 10건" in result  # 상한 = seller_summary_max_products
+    assert "[209] 상품9" in result and "[210]" not in result  # 11번째부터 접힘
+    # 꼬리 = 11·12번째 행 합계: 조회 20+10, 담기 2+1, 결제시작 2+2, 구매 0.
+    assert "외 2건(저활동) 합계: 조회 30 담기 3 결제시작 4 구매 0" in result
 
 
 async def test_behavior_tool_summarizes_event_type_counts() -> None:
