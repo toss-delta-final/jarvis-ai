@@ -25,6 +25,15 @@ LLMProvider = Literal["openai", "anthropic"]
 # 검색 백엔드 선택(#101) — spring: Spring 위임만(방식1 이전 MVP), embedding_rerank: Spring 전량 →
 # pgvector 의미 재정렬(방식2, MVP 기본), vector: AI 벡터검색 → Spring hydrate(방식1, C-17 미착수).
 SearchBackend = Literal["spring", "embedding_rerank", "vector"]
+# 프로필 주입 소비처(#119) — off: 게스트 등가(A/B baseline), rerank_only: 기본(취향은 순서에만),
+# both: 현행 유지(decompose 하드필터 파생 허용, 롤백 경로).
+ProfileInjectionScope = Literal["off", "rerank_only", "both"]
+# rerank 의 프로필 사용 강도(#119) — tiebreak: 동점 처리 지시 부착, legacy: 지시 없음(현행).
+ProfileRerankInfluence = Literal["tiebreak", "legacy"]
+# decompose 가 산출하는 intent 집합 — 세션 버퍼 제외 intent 검증의 정의역.
+# 정본은 RouteDecision.intent Literal(app/agents/buyer/recommendation/state.py)이며, 런타임
+# import 는 순환이라 여기 복제하고 드리프트는 테스트로 고정한다(test_config_profile.py).
+ROUTE_INTENTS = frozenset({"recommend", "cart_add", "cart_view", "order_status", "general"})
 
 
 class Settings(BaseSettings):
@@ -337,6 +346,33 @@ class Settings(BaseSettings):
     # 그대로 쓰면 경계에서 최신 fact 가 잘릴 수 있다(PR #47 후속 리뷰).
     profile_facts_query_margin: int = 50
     profile_session_buffer_cap: int = 100  # 세션 transient 버퍼 발화 개수 상한(무제한 누적 방어)
+
+    # ── 프로필 개인화 강도 (이슈 #119, SPEC-PROFILE-001 §5.1 v0.6.0 · REQ-REC-005-A) ──
+    # 프로필을 **어느 소비처에** 주입할지. 기본 rerank_only 인 근거: decompose(fast tier, 한 호출에
+    # intent 라우팅+필터+장바구니 의도가 얹힌다)의 _SYSTEM 에 프로필 사용 규칙이 없어 LLM 이 취향을
+    # priceMax/brand/color 하드필터로 승격시키고, 그 필터가 thread_store 에 영속돼 다음 턴
+    # PRIOR_FILTERS 로 재주입되며 세션 내내 후보를 좁힌다(래칫). 게스트는 이 입력이 없어 손실이 0이라
+    # 개인화가 순손실이 됐다. 주입을 끊으면 회원 decompose 프롬프트가 게스트와 바이트 동일해진다.
+    # 프롬프트 규칙을 얹지 않고 **입력을 제거**하는 이유: 지시 한 줄은 공짜가 아니다(#198/EX-7 —
+    # 지시 추가로 기존 성공 케이스가 3/3 → 1/3 로 희석된 실측 전례, rerank.py 주석 참조).
+    profile_injection_scope: ProfileInjectionScope = "rerank_only"
+    # rerank 의 프로필 사용 강도. 채팅 경로에 연속 가중치(*_weight)를 두지 않는 이유: 전략 A(LLM
+    # 재랭킹)는 점수가 아니라 순위 목록(RerankResult.ranked)을 산출해 **가중합할 스칼라 자체가
+    # 없고**, "이 상품이 취향에 맞는가"의 ground truth 도 없다(평가 하니스 미구현 — #142/#143).
+    # 코사인 임계 하나(category_distance_max)를 정하는 데도 앵커 76개 실측이 필요했다(#115) —
+    # 정답셋 없이 정한 계수는 튜너블이 아니라 마술 상수다. 아래 home_reco_weight_profile(#148)이
+    # 가중치인 것과 모순이 아니다: 홈 추천은 질의 벡터가 임베딩 가중평균이라 스칼라가 실재하고
+    # 누를 발화도 없다. **점수가 있는 표면에는 가중치, 없는 표면에는 스코프 스위치**다.
+    # 채팅 경로의 연속 가중치는 전략 B(scoring) 도입 시(#145) 함께 정의한다.
+    profile_rerank_influence: ProfileRerankInfluence = "tiebreak"
+    # 세션 버퍼에 정규화 동일 발화를 중복 적재하지 않는다(REQ-PROF-026). 버퍼는 델타 추출 LLM 에
+    # "\n".join 으로 통째로 실리고 LLM 이 그 중복을 보고 repetitionEma 를 산출하므로(gate:
+    # explicit OR repeated → 승격), **버퍼 중복이 곧 반복성 점수**다 — 같은 말 3~4회로 취향이
+    # 과대 대표되는 경로를 코드로 끊는다. 세션을 넘는 반복은 세션별 델타로 여전히 누적된다.
+    profile_session_buffer_dedup: bool = True
+    # 취향 신호가 없는 intent 는 버퍼에 담지 않는다(REQ-PROF-026). 잡담(general)은 제외하지
+    # 않는다 — "나 소니 좋아해" 같은 취향 발화가 잡담 턴에 섞이기 때문이다.
+    profile_buffer_excluded_intents: list[str] = ["order_status", "cart_view"]
     # I-20 처리 중 claim lease. delta+consolidation LLM 2단계의 기본 최악시간(약 120s)보다
     # 길게 두되, 프로세스 crash 잔재가 영구 duplicate가 되지 않도록 유한하게 유지한다.
     session_end_claim_ttl_s: float = 180.0
@@ -411,6 +447,21 @@ class Settings(BaseSettings):
     def _normalize_llm_provider(cls, value: object) -> object:
         """기존 환경변수 호환을 위해 provider 값의 ASCII 대소문자를 정규화한다."""
         return value.lower() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def _require_known_buffer_excluded_intents(self) -> "Settings":
+        """세션 버퍼 제외 intent 오타를 기동 시 잡는다 (#119).
+
+        `"order-status"` 처럼 한 글자만 어긋나도 비교가 영원히 거짓이 되어 **제외가 조용히
+        무효화**되고, 버퍼는 계속 오염된다 — 로그에도 안 남는 종류의 실패라 기동을 막는다.
+        """
+        unknown = sorted(set(self.profile_buffer_excluded_intents) - ROUTE_INTENTS)
+        if unknown:
+            raise ValueError(
+                f"profile_buffer_excluded_intents has unknown intents {unknown}: "
+                f"must be a subset of {sorted(ROUTE_INTENTS)}"
+            )
+        return self
 
     @model_validator(mode="after")
     def _require_margin_bands_disjoint(self) -> "Settings":
