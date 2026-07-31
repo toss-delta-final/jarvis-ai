@@ -250,6 +250,8 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
     # Spring 이 P-4 로 대체하며 fallbackReason=AI_ERROR 로 기록한다(§3.7 실패 응답표·§4.11).
     try:
         store = get_catalog_store()
+        # [C-18] 랭킹에 쓸 인덱스의 상태 지문 — 응답에 실어 Spring 이 P-5 캐시 키로 쓴다.
+        catalog_version = store.catalog_version()
         query_vec = build_query_vector(
             cart_ids=signals.cart_product_ids,
             viewed_ids=signals.recently_viewed_product_ids,
@@ -263,7 +265,15 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
     # 1) 개인화 근거가 없으면 NO_PROFILE — 신규 회원이거나 시그널이 비었거나, 시그널 상품이 아직
     #    인덱스에 없는 경우다. 셋 다 Spring 입장에선 "P-4 인기상품으로 대체"라 구분할 필요가 없다.
     if not query_vec:
-        return _respond("NO_PROFILE", [], {}, started=started, candidates=0, settings=settings)
+        return _respond(
+            "NO_PROFILE",
+            [],
+            {},
+            started=started,
+            candidates=0,
+            settings=settings,
+            catalog_version=catalog_version,
+        )
 
     exclude = set(signals.recent_purchased_product_ids)  # 가중치가 아니라 제외 필터(§3.7)
     # 필요한 만큼만 가져온다 — overfetch 목표와 부족 판정선 중 큰 쪽. 전량을 끌어오면 예산을 넘긴다.
@@ -289,6 +299,7 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
             started=started,
             candidates=len(ranked),
             settings=settings,
+            catalog_version=catalog_version,
         )
 
     top = ranked[:want]
@@ -304,7 +315,13 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
         settings=settings,
     )
     return _respond(
-        "PERSONALIZED", top, reasons, started=started, candidates=len(ranked), settings=settings
+        "PERSONALIZED",
+        top,
+        reasons,
+        started=started,
+        candidates=len(ranked),
+        settings=settings,
+        catalog_version=catalog_version,
     )
 
 
@@ -316,6 +333,7 @@ def _respond(
     started: float,
     candidates: int,
     settings: Settings,
+    catalog_version: str,
 ) -> HomeRecommendationResponse:
     """응답 조립 + 관측 로그 1건.
 
@@ -329,7 +347,7 @@ def _respond(
             "outcome": outcome,
             "candidateCount": candidates,
             "returnedCount": len(product_ids),
-            "reasonSource": "llm" if reasons else "none",
+            "reasonSource": "extras" if reasons else "none",
             "elapsedMs": int((time.perf_counter() - started) * 1000),
         },
     )
@@ -339,6 +357,8 @@ def _respond(
         recommendation_request_id=str(uuid.uuid4()),
         # ≥128bit 무작위 — P-5 를 거쳐 공개되는 귀속 키라 추측 가능한 형식 금지(I-21 §4.2 동일 규칙).
         list_id=uuid.uuid4().hex,
+        # [C-18] 랭킹에 쓴 인덱스 상태 지문 — Spring 이 P-5 캐시 키에 쓴다.
+        catalog_version=catalog_version,
         items=[
             HomeRecommendationItem(product_id=pid, reason=reasons.get(pid)) for pid in product_ids
         ],

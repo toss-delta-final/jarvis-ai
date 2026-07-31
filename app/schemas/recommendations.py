@@ -46,9 +46,11 @@ class HomeRecommendationRequest(StrictEventModel):
     member_id: int = Field(strict=True, gt=0, le=_BIGINT_MAX)
     # 최종 노출 목표 개수. FastAPI 는 Spring 의 품절 드롭에 대비해 이보다 넉넉히 반환한다.
     limit: int = Field(strict=True, gt=0, le=1000)
-    # 후보 산출 시점 식별자(캐시 키·재현). 🔴 값 생성 주체는 미해결(C-18) — 현재는 받기만 하고
-    # 랭킹에 쓰지 않는다. AI 는 자체 카탈로그 인덱스로 순위를 매기므로 이 값에 의존하지 않는다.
-    catalog_version: str = Field(strict=True, min_length=1)
+    # [C-18] **입력으로는 폐기 예정.** 정본은 Spring 이 실어 보내게 규정했지만 Spring 은 AI 인덱스의
+    # 동기화 시점을 알 수 없어 의미 있는 값을 만들 수 없다 — 값 생성이 AI 로 넘어갔고 이제 **응답**의
+    # `catalogVersion` 이 정본이다. 전환기 동안 Spring 이 계속 보내도 깨지지 않도록 선택 필드로
+    # 완화해 받기만 하고 버린다(BE 전환 완료 후 제거). 랭킹은 이 값에 의존하지 않는다.
+    catalog_version: str | None = Field(default=None, strict=True)
     signals: HomeRecommendationSignals
 
     @field_validator("catalog_version")
@@ -79,4 +81,8 @@ class HomeRecommendationResponse(CamelModel):
     recommendation_request_id: str
     # ≥128bit 무작위(I-21 과 동일 규칙) — 순번·타임스탬프 등 추측 가능한 형식 금지.
     list_id: str
+    # [C-18 신설] 랭킹에 쓰인 AI 카탈로그 인덱스의 상태 지문. Spring 이 P-5 개인화 캐시 키에 쓴다 —
+    # 인덱스가 갱신되면 값이 바뀌어 캐시가 자동 무효화된다. **불투명 해시**이며 모델·차원 등 내부
+    # 사실을 담지 않는다(§3.7 [HARD]). 요청의 동명 필드를 대체한다.
+    catalog_version: str
     items: list[HomeRecommendationItem] = Field(default_factory=list)
