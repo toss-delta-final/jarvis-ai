@@ -1502,6 +1502,33 @@ async def test_cart_add_autoselect_keeps_merge_notice() -> None:
     assert "블랙 옵션으로" in message and "더했" in message
 
 
+async def test_cart_add_autoselect_merge_notice_ignores_other_option() -> None:
+    """자동 선택으로 담길 옵션과 다른 옵션의 보유는 합산 안내 근거가 아니다(#114 PR 리뷰).
+
+    담기 전 조회는 optionId 미상이라 그 상품의 모든 항목을 센다. 지금 후보가 1개라는 사실이
+    기존 항목도 그 옵션이라는 뜻은 아니다(단종·품절로 후보에서 빠진 옛 옵션) — Spring 은 새 줄로
+    담는데 "수량을 더했어요"라고 말하면 안내가 실제 결과와 어긋난다(REQ-CART-031).
+    """
+    store = CartStateStore()
+
+    async def add_fn(req):
+        if req.option_id is None:
+            raise CartOptionRequired([CartOption(option_id=7, name="블랙")])
+        return AddToCartResult(success=True, cart_item_id=73)
+
+    async def get_cart_fn(*, user_id=None, guest_id=None):
+        # 후보에 없는 옛 옵션(3)으로 담아둔 항목 — 자동 선택될 7 과는 다른 줄이다.
+        return CartView(items=[CartViewItem(cart_item_id=9, product_id=1, option_id=3, quantity=2)])
+
+    events = await _run_add(
+        store, CartIntent(product_id=1, quantity=1), add_fn, get_cart_fn=get_cart_fn
+    )
+
+    message = next(e for e in events if e["type"] == "action")["data"]["message"]
+    assert message == "블랙 옵션으로 담았어요."
+    assert "더했" not in message
+
+
 async def test_cart_add_multiple_options_still_reasks() -> None:
     """옵션이 2개 이상이면 자동 선택하지 않고 기존 되물음 멀티턴을 유지한다(#114 회귀)."""
     store = CartStateStore()

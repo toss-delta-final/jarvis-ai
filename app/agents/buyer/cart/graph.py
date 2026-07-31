@@ -21,7 +21,7 @@ from app.agents.buyer.recommendation.state import CartIntent
 from app.core.text import _strip_unsafe
 from app.core.tracing import current_request_trace
 from app.schemas.chat import ActionData, DoneData, TokenData
-from app.schemas.spring import AddToCartRequest, AddToCartResult, CartOption
+from app.schemas.spring import AddToCartRequest, AddToCartResult, CartOption, CartViewItem
 from app.services import spring_client
 from app.services.spring_client import (
     CartError,
@@ -62,6 +62,15 @@ def _options_text(options: list[CartOption]) -> str:
         else:
             parts.append(opt.name)
     return _strip_unsafe(" / ".join(parts)) if parts else "옵션"
+
+
+def _existing_quantity(items: list[CartViewItem], product_id: int, option_id: int | None) -> int:
+    """담기 전 보유 수량(합산 안내용) — 동일 상품·옵션 합계. optionId 미상이면 그 상품 전체를 센다."""
+    return sum(
+        item.quantity
+        for item in items
+        if item.product_id == product_id and (option_id is None or item.option_id == option_id)
+    )
 
 
 async def _add_with_single_option(
@@ -161,18 +170,17 @@ async def stream_cart_add(
         yield _done()
         return
 
-    # 담기 전 기존 보유 확인(안내용, degrade) — 동일 상품·옵션 보유 수량. optionId 미상(None)이면
-    # 그 상품의 모든 항목을 센다 — 유일 옵션 자동 선택(#114)으로 담길 옵션도 이 안에 포함된다.
-    existing = 0
+    # 담기 전 기존 보유 확인(안내용, degrade) — 동일 상품·옵션 보유 수량. 조회 결과 자체를 들고
+    # 있다가 유일 옵션 자동 선택(#114)으로 옵션이 확정되면 아래에서 그 옵션 기준으로 다시 센다.
+    existing_items: list[CartViewItem] = []
     try:
         cart_view = await get_cart_fn(user_id=user_id, guest_id=guest_id)
-        for item in cart_view.items:
-            if item.product_id == product_id and (option_id is None or item.option_id == option_id):
-                existing += item.quantity
+        existing_items = list(cart_view.items)
     except SpringUnavailableError:
         if trace := current_request_trace():
             trace.mark_degraded("cart_merge_skipped")
         pass  # 조회 실패해도 담기는 진행(§4.9)
+    existing = _existing_quantity(existing_items, product_id, option_id)
 
     try:
         req = AddToCartRequest(
@@ -291,6 +299,11 @@ async def stream_cart_add(
 
     # 성공 — 되물음 상태 정리 + 합산 안내.
     await cart_store.clear_pending(thread_key)
+    if auto_option is not None:
+        # 담길 옵션이 확정됐으니 그 옵션 기준으로 다시 센다 — 담기 전 계산은 optionId 미상이라
+        # 지금 후보에 없는 옛 옵션(단종·품절)의 보유까지 합산할 수 있고, 그러면 Spring 은 새 줄로
+        # 담았는데 "수량을 더했어요"라고 말하게 된다(PR #211 리뷰 / REQ-CART-031 합산 권위=Spring).
+        existing = _existing_quantity(existing_items, product_id, auto_option.option_id)
     if existing > 0:
         message = "이미 담겨 있던 상품이라 수량을 더했어요."
     else:
