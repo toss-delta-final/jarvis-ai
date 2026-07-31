@@ -309,7 +309,29 @@ async def map_categories(
         if i not in need_idx:
             continue  # 신호 없는 leg(raw·query 모두 없음) → 카테고리 강제 없이 스킵(#22)
         picked = nearest.get(i)
-        if picked and picked[1] > distance_max:
+        # §4.5 거리컷 마진 예외(#115) — 거리가 멀어도 1위만 확 가까우면(마진 두꺼움) "맞는 칸이
+        # 분명히 하나 있다"는 뜻이라 채택한다. 거리는 도메인 어휘 차이(식품은 상품명≠leaf명)에
+        # 오염되지만 마진은 상쇄된다. 마진 None(히트 1건)은 확신을 잴 수 없으므로 예외 대상 아님.
+        if (
+            picked
+            and picked[1] > distance_max
+            and picked[2] is not None
+            and picked[2] >= settings.category_distance_override_margin
+        ):
+            logger.info(
+                "category_distance_override",
+                extra={
+                    "raw": r,
+                    "query": qtexts[i],
+                    "canonical": picked[0],
+                    "distance": picked[1],
+                    "margin": picked[2],
+                    "anchor_kind": picked[3],
+                    "threshold": distance_max,
+                    "select_changed": i in select_changed,
+                },
+            )
+        elif picked and picked[1] > distance_max:
             # 거리컷(§4 #115) — 최근접이 너무 멀다 = "맞는 칸이 taxonomy 에 없다". 틀린 카테고리로
             # 좁히면 정답 상품이 후보에서 아예 제외되므로 canonical 없이 드롭하고 semanticQuery 로
             # 넓게 찾게 둔다. 전용 이벤트로 남긴다 — category_unmapped(히트 0건=시드 결측 품질 신호)
@@ -330,7 +352,10 @@ async def map_categories(
             )
             continue
         if i in select_dropped:
-            continue  # §4.4 택일이 "맞는 후보 없음" → 이미 category_select_null 로 관측됨
+            # §4.4 택일이 "맞는 후보 없음" → 이미 category_select_null 로 관측됨. 이 leg 은 위
+            # 거리 분기에 닿지 않는다 — 택일 트리거(ambiguous)가 **거리컷 통과분만** 대상으로
+            # 하므로 nearest[i] 의 거리는 임계 이하다(테스트로 고정).
+            continue
         if picked:
             canonical, distance, margin, anchor_kind = picked
             # 이벤트는 종전 정의(raw 유무)를 유지해 메트릭 연속성을 지키고, 실제로 canonical 을 낸

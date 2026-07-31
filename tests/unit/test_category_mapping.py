@@ -22,6 +22,7 @@ def _settings(
     top_k: int = 5,
     fanout_max: int = 5,
     distance_max: float = 0.22,
+    override_margin: float = 0.035,
     select_margin_max: float = 0.02,
     select_max_calls: int = 2,
 ) -> SimpleNamespace:
@@ -30,6 +31,7 @@ def _settings(
         category_top_k=top_k,
         category_fanout_max=fanout_max,
         category_distance_max=distance_max,
+        category_distance_override_margin=override_margin,
         category_select_margin_max=select_margin_max,
         category_select_max_calls=select_max_calls,
         embedding_task_query="RETRIEVAL_QUERY",
@@ -912,3 +914,82 @@ async def test_untouched_leg_is_not_marked_as_select_changed(caplog) -> None:
     with caplog.at_level("INFO"):
         await m.run([CategoryQuery(None, "청바지")])
     assert _record(caplog, "category_fallback_top1").select_changed is False
+
+
+# ── 거리컷 마진 예외 (§4.5 #115) ──────────────────────────────────────────────
+
+
+async def test_far_but_confident_leg_is_kept(caplog) -> None:
+    """[#115 §4.5] 거리컷을 넘어도 **마진이 두꺼우면** 채택한다 — "칸이 없다"의 신호는 거리가 아니다.
+
+    실측(76 앵커): 식품은 상품명과 leaf 이름이 달라 정답 매핑도 거리가 멀다
+    (`돼지 등뼈`→`축산 > 돼지고기` 0.2661, `미역`→`수산 > 해조류` 0.2436). 반면 taxonomy 에 칸이
+    **없는** 목적 표현·조어는 여러 후보가 고만고만하게 멀어 마진이 얇다(`부모님 환갑 선물` 0.0249,
+    `김밥용 김` 0.0013). 즉 "맞는 칸이 없다"를 직접 재는 지표는 거리가 아니라 **마진**이다.
+
+    거리는 도메인 어휘 차이(상품명≠leaf명)에 오염되지만 마진은 그 오염이 상쇄된다 —
+    `청바지`는 거리 0.1224 로 통과하면서 마진은 0.0010 뿐이고, `돼지 갈비`는 거리 0.2299 로
+    드롭되면서 마진이 0.0846 이다.
+    """
+    m = _FakeMapper(
+        exact=set(),
+        nearest={},
+        hits={"돼지 등뼈": [("축산 > 돼지고기", 0.2661), ("냉장/냉동식품 > 햄/소시지/베이컨", 0.3465)]},
+    )
+    with caplog.at_level("INFO"):
+        out = await m.run([CategoryQuery(None, "돼지 등뼈")])
+    assert out == [("축산 > 돼지고기", "돼지 등뼈")]  # 종전에는 거리컷이 드롭했다
+    rec = _record(caplog, "category_distance_override")
+    assert rec.distance == 0.2661
+    assert rec.margin == 0.0804
+
+
+async def test_far_and_ambiguous_leg_is_still_dropped(caplog) -> None:
+    """마진이 얇으면 거리컷을 그대로 적용한다 — #115 가 막은 오분류를 되살리지 않는다.
+
+    실측 차단군 최대 마진은 0.0249(`부모님 환갑 선물`→`출산/돌기념품`)이고, 회수 대상 상위 7건은
+    0.034~0.085 다. 그 사이가 비어 있어 0.035 로 가른다. 회수 못 한 정답(`참기름` 0.0105)이
+    남지만, 실패 방향이 비대칭이라 보수적으로 잡는다 — 미회수는 무필터(종전 동작, 안전)이고
+    오분류 유입은 틀린 카테고리로 검색이 좁혀져 정답 상품이 후보에서 아예 빠진다(§4).
+    """
+    m = _FakeMapper(
+        exact=set(),
+        nearest={},
+        hits={
+            "부모님 환갑 선물": [
+                ("출산/돌기념품 > 출산선물/기념품", 0.2971),
+                ("출산/돌기념품 > 출산준비패키지", 0.3220),
+            ]
+        },
+    )
+    with caplog.at_level("INFO"):
+        out = await m.run([CategoryQuery(None, "부모님 환갑 선물")])
+    assert out == []
+    assert _record(caplog, "category_distance_rejected").margin == 0.0249
+
+
+async def test_far_leg_with_single_hit_is_dropped() -> None:
+    """히트가 1건이면 마진이 None — 확신을 잴 수 없으므로 예외를 적용하지 않는다(드롭)."""
+    m = _FakeMapper(exact=set(), nearest={}, hits={"조어": [("엉뚱 > 카테고리", 0.31)]})
+    assert await m.run([CategoryQuery(None, "조어")]) == []
+
+
+async def test_select_null_leg_logs_exactly_one_drop_reason(caplog) -> None:
+    """택일이 드롭한 leg 은 거리 이벤트를 남기지 않는다 — 드롭 사유는 하나여야 한다(§11).
+
+    §4.4 트리거(`ambiguous`)가 **거리컷 통과분만** 대상으로 하므로, 택일을 거친 leg 의
+    `nearest` 거리는 임계 이하다. 따라서 택일이 null 을 내 드롭돼도 위 거리 분기(드롭·§4.5
+    마진 예외)에는 닿지 않는다 — 이 불변식이 깨지면 드롭 사유가 둘로 갈려 §11 의 사유별
+    분리(정책 드롭 ≠ 품질 신호)가 무너지므로 테스트로 고정한다.
+
+    (마진 예외 자체도 구조적으로 배타적이다: 트리거는 `margin <= 0.02`, 예외는 `margin >= 0.035`.)
+    """
+    sel = _FakeSelector(answer=None)  # "맞는 후보 없음" → leg 드롭
+    m = _FakeMapper(exact=set(), nearest={}, hits=_AMBIGUOUS)  # 마진 0.0095 → 트리거
+    with caplog.at_level("INFO"):
+        out = await m.run([CategoryQuery(None, "선물용품")], select=sel, llm=object())
+    assert out == []
+    msgs = [r.msg for r in caplog.records]
+    assert "category_select_null" in msgs  # 실제 드롭 사유는 이것 하나뿐
+    assert "category_distance_override" not in msgs
+    assert "category_distance_rejected" not in msgs
