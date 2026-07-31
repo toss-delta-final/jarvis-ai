@@ -25,7 +25,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from app.agents.buyer.recommendation.state import extract_json
-from app.core.llm import LLMClient
+from app.core.llm import LLMClient, resolve_model_id
 
 _SYSTEM = """당신은 커머스 카테고리 매퍼입니다.
 사용자 발화와 카테고리 후보 목록을 보고, 발화에 가장 잘 맞는 카테고리를 후보 중에서 정확히 하나 고르세요.
@@ -42,6 +42,8 @@ async def select_category(
     query: str,
     candidates: Sequence[str],
     tier: str,
+    settings=None,
+    observer=None,
 ) -> str | None:
     """top-k 후보 중 발화에 맞는 카테고리 1개를 LLM 택일한다.
 
@@ -50,11 +52,24 @@ async def select_category(
     **`LLMError` 는 삼키지 않고 전파한다(#115 §4.4)** — "판정을 못 했음"은 위 판정과 후속 조치가
     반대(top-1 유지)라서, None 으로 뭉개면 LLM 타임아웃이 카테고리를 삭제해버린다(거리컷 도입 이전
     보다 후퇴). non-blocking 보장은 호출부가 gather(return_exceptions=True) + top-1 유지로 담당한다.
+
+    `observer` 기록이 **호출부(map_categories)가 아니라 여기** 있는 이유(PR #188 리뷰): 택일은
+    주입형 seam(`select_category=`)이라 호출부에 두면 **구현 종류와 무관하게** 기록돼, LLM 을 쓰지
+    않는 대체 구현(규칙 기반·캐시)에도 유령 모델 호출이 남는다. `needs_expansion._llm_expand` 와
+    동일 원칙 — **모델을 실제로 부르는 쪽이 기록한다**. 후보 0건이면 호출 자체가 없어 기록도 없다.
+
+    `settings` 는 `resolve_model_id`(tier → 모델 ID)에만 쓴다. 미주입이면 기록을 건너뛴다 —
+    관측 누락이 판정 자체를 막아선 안 된다. 기록 중 예외가 나도 호출부의
+    `gather(return_exceptions=True)` 가 흡수해 임베딩 top-1 로 퇴화한다(§4.4).
     """
     if not candidates:
         return None
     numbered = "\n".join(f"- {c}" for c in candidates)
     user = f"USER_MESSAGE: {query}\nCANDIDATES:\n{numbered}"
+    # api-spec §6.3 — chat_request 의 model·토큰 합산에 이 조건부 호출을 싣는다. decompose·전개·
+    # rerank 와 같이 **호출 전** 기록한다(실패한 호출도 비용이 발생한다).
+    if observer is not None and settings is not None:
+        observer.record_model_call(resolve_model_id(settings, tier))
     # LLMError(타임아웃·미구성·JSON 파싱 실패)는 전파 — 위 docstring 참조.
     raw = await llm.complete(system=_SYSTEM, user=user, tier=tier, max_tokens=200)
     choice = extract_json(raw).get("category")

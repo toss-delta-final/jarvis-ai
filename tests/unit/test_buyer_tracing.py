@@ -955,7 +955,7 @@ async def test_cart_merge_failure_marks_routed_cart_without_changing_frames(
 async def test_partial_fanout_marks_bounded_degrade() -> None:
     # [#115] 매퍼는 llm·tier 도 받는다(§4.4 마진 택일) — 빠지면 TypeError 를 그래프의 방어
     # except 가 삼켜 legs 가 비고, fan-out 이 아예 안 일어나 degrade 도 찍히지 않는다.
-    async def mapper(*, category_queries, utterance, settings, llm=None, tier="fast"):
+    async def mapper(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
         del category_queries, utterance, settings, llm, tier
         return [("카테고리-A", "A"), ("카테고리-B", "B")]
 
@@ -998,7 +998,7 @@ async def test_combined_fanout_and_dedup_failure_uses_stable_precedence(
 
     # [#115] 매퍼는 llm·tier 도 받는다(§4.4 마진 택일) — 빠지면 TypeError 를 그래프의 방어
     # except 가 삼켜 legs 가 비고, fan-out 이 아예 안 일어나 degrade 도 찍히지 않는다.
-    async def mapper(*, category_queries, utterance, settings, llm=None, tier="fast"):
+    async def mapper(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
         del category_queries, utterance, settings, llm, tier
         return [("카테고리-A", "A"), ("카테고리-B", "B")]
 

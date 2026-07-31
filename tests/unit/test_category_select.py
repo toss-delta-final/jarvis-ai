@@ -11,6 +11,7 @@ top-k 후보를 LLM 에 주고 최종 1개를 고른다. 핵심 가드:
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -79,3 +80,80 @@ async def test_llm_failure_propagates_so_caller_can_distinguish() -> None:
     llm = _FakeLLM(error=True)
     with pytest.raises(LLMError):
         await select_category(llm, query="cpu", candidates=_CANDS, tier="fast")
+
+
+# ── 관측 기록 (api-spec §6.3 — PR #188 리뷰) ─────────────────────────────────
+
+
+class _ProbeObserver:
+    request_id = "req-probe"
+
+    def __init__(self) -> None:
+        self.models: list[str] = []
+
+    def record_model_call(
+        self, model: str, prompt_tokens: int = 0, completion_tokens: int = 0
+    ) -> None:
+        self.models.append(model)
+
+
+def _settings() -> SimpleNamespace:
+    """resolve_model_id 가 읽는 필드만 — tier 를 모델 ID 로 바꾸는 데 필요하다."""
+    return SimpleNamespace(
+        llm_provider="openai",
+        openai_fast_model_id="gpt-5-nano",
+        openai_smart_model_id="gpt-5.6-luna",
+    )
+
+
+async def test_select_records_model_call() -> None:
+    """[PR #188 리뷰] 택일 LLM 호출을 `chat_request` 모델 호출 집계에 남긴다.
+
+    decompose·전개·rerank 는 모두 기록하는데 택일만 빠져 있었다 — 애매한 leg 이 많은 턴일수록
+    실제 호출 수가 관측치보다 많아져 비용·사용량 집계(§6.3)와 요청 단위 트레이싱(#141)이
+    조용히 어긋난다.
+    """
+    observer = _ProbeObserver()
+    llm = _FakeLLM(raw=json.dumps({"category": "가전 > 이어폰/헤드폰"}))
+    out = await select_category(
+        llm,
+        query="무선 이어폰",
+        candidates=["가전 > 이어폰/헤드폰", "자동차기기 > 카오디오음향기기"],
+        tier="fast",
+        settings=_settings(),
+        observer=observer,
+    )
+    assert out == "가전 > 이어폰/헤드폰"
+    assert observer.models == ["gpt-5-nano"]
+
+
+async def test_select_records_even_when_llm_fails() -> None:
+    """실패한 호출도 비용이 발생하므로 **호출 전** 기록한다 — decompose·전개와 같은 규약."""
+    observer = _ProbeObserver()
+    with pytest.raises(LLMError):
+        await select_category(
+            _FakeLLM(error=True),
+            query="q",
+            candidates=["A", "B"],
+            tier="fast",
+            settings=_settings(),
+            observer=observer,
+        )
+    assert observer.models == ["gpt-5-nano"]
+
+
+async def test_select_records_nothing_without_candidates() -> None:
+    """후보 0건이면 LLM 을 부르지 않으므로 기록도 없다 — 없는 비용을 만들지 않는다."""
+    observer = _ProbeObserver()
+    assert (
+        await select_category(
+            _FakeLLM(),
+            query="q",
+            candidates=[],
+            tier="fast",
+            settings=_settings(),
+            observer=observer,
+        )
+        is None
+    )
+    assert observer.models == []

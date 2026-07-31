@@ -75,6 +75,7 @@ async def map_categories(
     llm=None,
     tier: str = "fast",
     select_category: SelectFn = _select_category,
+    observer=None,
 ) -> list[tuple[str, str | None]]:
     """decompose 추측들을 canonical (category, query) leg 리스트로 보정한다.
 
@@ -239,6 +240,10 @@ async def map_categories(
                     query=f"{utterance} / 찾는 상품: {anchor_by_leg[i]}",
                     candidates=[c for c, _ in candidates_by_leg[i]],
                     tier=tier,
+                    # 관측(§6.3)은 모델을 실제로 부르는 select 안에서 한다 — 여기서 기록하면
+                    # LLM 을 쓰지 않는 대체 구현에도 유령 호출이 남는다(PR #188 리뷰).
+                    settings=settings,
+                    observer=observer,
                 )
                 for i in targets
             ),

@@ -78,7 +78,9 @@ class _FakeMapper:
     def exact_lookup(self, values, dsn: str) -> set[str]:
         return {v for v in values if v in self._exact}
 
-    async def run(self, queries, utterance="발화", settings=None, *, select=None, llm=None):
+    async def run(
+        self, queries, utterance="발화", settings=None, *, select=None, llm=None, observer=None
+    ):
         kwargs = {}
         if select is not None:  # §4.4 택일 주입(미지정이면 프로덕션 기본값 — llm=None 이면 미호출)
             kwargs["select_category"] = select
@@ -90,6 +92,7 @@ class _FakeMapper:
             search_top_k=self.search,
             exact_lookup=self.exact_lookup,
             llm=llm,
+            observer=observer,
             **kwargs,
         )
 
@@ -385,8 +388,10 @@ class _FakeSelector:
         self._answer = answer
         self._raises = raises
         self.calls: list[tuple[str, tuple[str, ...]]] = []  # (query, candidates)
+        self.kwargs: dict = {}  # 마지막 호출의 부가 인자(settings·observer 전달 검증, PR #188)
 
-    async def __call__(self, llm, *, query, candidates, tier):
+    async def __call__(self, llm, *, query, candidates, tier, **kw):
+        self.kwargs = kw  # settings·observer 전달 여부 검증용(PR #188 리뷰)
         self.calls.append((query, tuple(candidates)))
         if self._raises:
             raise RuntimeError("llm down")
@@ -823,3 +828,52 @@ async def test_select_budget_goes_to_smallest_margins_first(caplog) -> None:
     # 잘린 leg 은 사유와 마진을 남긴다 — 예산 배분을 사후 검증할 수 있어야 한다(§11)
     skipped = [r for r in caplog.records if getattr(r, "reason", None) == "max_calls"]
     assert [round(r.margin, 4) for r in skipped] == [0.019]
+
+
+# ── 관측 기록 (§11, api-spec §6.3 — PR #188 리뷰) ────────────────────────────
+
+
+class _ProbeObserver:
+    """record_model_call 만 갖는 최소 관측자 — 기록된 모델 ID 를 모아둔다."""
+
+    request_id = "req-probe"
+
+    def __init__(self) -> None:
+        self.models: list[str] = []
+
+    def record_model_call(
+        self, model: str, prompt_tokens: int = 0, completion_tokens: int = 0
+    ) -> None:
+        self.models.append(model)
+
+
+async def test_select_seam_receives_observer_and_settings() -> None:
+    """[PR #188 리뷰] 택일 호출에 `observer`·`settings` 를 전달한다 — §6.3 모델 호출 기록의 전제.
+
+    기록 자체는 모델을 실제로 부르는 `select_category` 안에서 한다(주입형 seam 에 유령 호출을
+    남기지 않기 위해, `needs_expansion._llm_expand` 와 동일 원칙). 따라서 `map_categories` 의
+    책임은 **seam 까지 전달**하는 것이고, 이 배선이 끊기면 기록이 조용히 사라진다.
+    """
+    observer = _ProbeObserver()
+    settings = _settings()
+    sel = _FakeSelector(answer="취미 > 종교용품")
+    m = _FakeMapper(exact=set(), nearest={}, hits=_AMBIGUOUS)
+    out = await m.run(
+        [CategoryQuery(None, "선물용품")],
+        settings=settings,
+        select=sel,
+        llm=object(),
+        observer=observer,
+    )
+    assert len(sel.calls) == 1
+    assert out == [("취미 > 종교용품", "선물용품")]
+    assert sel.kwargs["observer"] is observer
+    assert sel.kwargs["settings"] is settings
+
+
+async def test_select_seam_not_called_when_margin_is_thick() -> None:
+    """트리거가 안 걸리면(마진 두꺼움) 택일 호출 자체가 없다 — 없는 비용을 만들지 않는다."""
+    sel = _FakeSelector(answer="여성의류 > 청바지")
+    m = _FakeMapper(exact=set(), nearest={"청바지": "여성의류 > 청바지"}, hits=None)
+    await m.run([CategoryQuery(None, "청바지")], select=sel, llm=object())
+    assert sel.calls == []

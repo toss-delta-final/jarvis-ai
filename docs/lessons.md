@@ -32,6 +32,12 @@
   - **방어 except 로 감싼 경로의 테스트는 "예외가 안 났다"가 아니라 결과(출력)까지 assert 한다.**
     부수 지표(호출 횟수·동시성 peak)만 보는 테스트는 하네스가 망가져도 통과한다.
   - degrade 로그(`*_failed`)가 유닛 테스트 실행 중에 나오면 정상이 아니다 — caplog 로 확인한다.
+- **[2026-07-31 갱신]** 같은 seam 에 `observer` 를 추가하며 같은 일을 하루에 **두 번째**로 겪었다
+  (fake 15곳). 매번 전수 수정하는 대신 규칙을 바꾼다: **매퍼·전개기처럼 인자가 늘어나는 seam 의
+  fake 는 `**_` 로 새 인자를 흡수**하고, **배선은 전용 테스트가 보증**한다
+  (`test_mapper_receives_observer_...`·`test_expander_receives_observer_...`). `llm=None`·`tier`
+  처럼 이미 있는 인자는 명시 파라미터로 남겨 바인딩 검증을 유지한다. 관용 fake 만 두고 배선
+  테스트를 안 두면 "그래프가 인자를 안 넘겨도 아무도 모르는" 반대편 구멍이 생기므로 **둘은 짝**이다.
 - 관련: `app/agents/buyer/recommendation/category_mapping.py`, `tests/conftest.py`
   (`_fake_category_mapping`), `tests/unit/test_fanout.py`, #115 커밋 9d9bf44·112d4b9
 

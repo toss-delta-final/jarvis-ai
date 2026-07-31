@@ -97,7 +97,7 @@ def _fake_category_mapping(monkeypatch):
     # llm·tier 는 [#115 §4.4] 마진 트리거 택일용으로 graph 가 넘긴다. fake 가 이를 안 받으면
     # TypeError 가 graph 의 방어 except(category_map_failed)에 먹혀 **모든 leg 이 조용히 빈
     # legs 로 degrade** 한다 — 카테고리가 사라진 원인을 추적하기 어려우므로 시그니처를 맞춰둔다.
-    async def _fake_map(*, category_queries, utterance, settings, llm=None, tier="fast"):
+    async def _fake_map(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
         return [(q.raw_category, q.query) for q in category_queries if q.raw_category]
 
     monkeypatch.setattr(bg, "_map_categories", _fake_map)
