@@ -218,6 +218,7 @@ async def run_buyer_turn(
         str, request_id or getattr(observer, "request_id", None) or new_request_id()
     )
     # lifecycle authority가 원자적 turn 저장에서 확정한 context만 buyer 상태 키로 사용한다.
+    # raw owner/session 식별자는 상태 키나 로그 상관키로 재사용하지 않는다.
     # 검증은 LLM/상태 접근보다 먼저 수행해 서명 세션 실패가 200 SSE로 완화되지 않게 한다.
     context_id = getattr(observer, "context_id", None)
     if not isinstance(context_id, str) or not context_id:

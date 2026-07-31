@@ -434,7 +434,7 @@ async def open_stream(
     registry = get_registry()
     loop = asyncio.get_event_loop()
     stream_request_id = observer.request_id if observer is not None else new_request_id()
-    trace = getattr(observer, "trace", None) if observer is not None else None
+    trace = observer.trace if observer is not None else None
 
     buyer_session = getattr(observer, "buyer_session", None)
     if not registry.acquire(

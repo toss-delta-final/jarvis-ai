@@ -203,6 +203,10 @@ class RequestTrace:
             )
         ]
         self._finished = False
+        self._finish_task: asyncio.Task[None] | None = None
+
+    def _is_closing(self) -> bool:
+        return self._finished or self._finish_task is not None
 
     @property
     def root_id(self) -> UUID:
@@ -216,7 +220,7 @@ class RequestTrace:
         metadata: dict[str, SafeScalar] | None,
         parent_id: UUID,
     ) -> TraceNode | None:
-        if self._finished:
+        if self._is_closing():
             return None
         node = TraceNode(
             id=uuid4(),
@@ -231,12 +235,12 @@ class RequestTrace:
         return node
 
     def record_provider_ttft(self, milliseconds: int) -> None:
-        if not self._finished:
+        if not self._is_closing():
             self._nodes[0].metadata.setdefault("provider_ttft_ms", milliseconds)
 
     def set_lane(self, lane: str) -> None:
         """Replace the request's provisional lane after bounded routing completes."""
-        if not self._finished:
+        if not self._is_closing():
             self._nodes[0].metadata["lane"] = lane
 
     def record_llm_usage(
@@ -247,7 +251,7 @@ class RequestTrace:
         completion_tokens: int | None,
     ) -> None:
         """Attach bounded provider facts to the active explicit LLM span."""
-        if self._finished:
+        if self._is_closing():
             return
         stack = _active_span_stack.get()
         if not stack:
@@ -269,14 +273,14 @@ class RequestTrace:
         first_event_ms: int | None,
         first_text_token_ms: int | None,
     ) -> None:
-        if not self._finished:
+        if not self._is_closing():
             self._nodes[0].metadata.update(
                 server_first_event_ms=first_event_ms,
                 server_first_text_token_ms=first_text_token_ms,
             )
 
     def mark_degraded(self, reason: str) -> None:
-        if not self._finished:
+        if not self._is_closing():
             root = self._nodes[0]
             current = root.metadata.get("degradeReason")
             if (
@@ -306,10 +310,25 @@ class RequestTrace:
         error_type: str | None,
         terminal_reason: str,
     ) -> None:
-        if self._finished:
-            return
-        self._finished = True
+        task = self._finish_task
+        if task is None:
+            task = asyncio.create_task(
+                self._complete_finish(
+                    status=status,
+                    error_type=error_type,
+                    terminal_reason=terminal_reason,
+                )
+            )
+            self._finish_task = task
+        await asyncio.shield(task)
 
+    async def _complete_finish(
+        self,
+        *,
+        status: TraceStatus,
+        error_type: str | None,
+        terminal_reason: str,
+    ) -> None:
         ended_at = _utc_now()
         root = self._nodes[0]
         root.ended_at = ended_at
@@ -331,12 +350,14 @@ class RequestTrace:
                 root.metadata["requestId"],
                 root.name,
             )
-            return
-
-        try:
-            await self._exporter.export(nodes)
         except Exception:
-            logger.warning("trace export failed code=TELEMETRY_EXPORT_FAILED")
+            logger.warning("trace validation failed code=TELEMETRY_VALIDATION_FAILED")
+        else:
+            try:
+                await self._exporter.export(nodes)
+            except Exception:
+                logger.warning("trace export failed code=TELEMETRY_EXPORT_FAILED")
+        self._finished = True
 
 
 class NoopRequestTrace(RequestTrace):

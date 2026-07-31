@@ -19,6 +19,7 @@ from app.agents.seller import hitl
 from app.api import seller as seller_api
 from app.core.auth import Identity
 from app.core.llm import LLMNotConfigured
+from app.core.logging import safe_fingerprint
 from app.schemas.seller import SellerChatRequest
 
 _IDENTITY = Identity(user_id=None, is_guest=False, seller_id="7", brand_id="3")
@@ -290,7 +291,10 @@ def test_stream_model_not_configured_maps_to_llm_unavailable(
     assert events[-1]["data"]["code"] == "LLM_UNAVAILABLE"
     assert events[-1]["data"]["requestId"]
     assert events[-1]["data"]["retryable"] is False
-    assert "provider=openai lane=general thread=t-1" in caplog.text
+    assert '"action": "general"' in caplog.text
+    assert '"errorCode": "LLM_UNAVAILABLE"' in caplog.text
+    assert safe_fingerprint("t-1") in caplog.text
+    assert "thread=t-1" not in caplog.text
     assert "openai key missing" not in caplog.text
 
 
@@ -868,7 +872,10 @@ def test_route_model_not_configured_emits_llm_unavailable(
     assert events[1]["data"]["code"] == "LLM_UNAVAILABLE"
     assert events[1]["data"]["requestId"]
     assert events[1]["data"]["retryable"] is False
-    assert "provider=openai lane=routing thread=t-1" in caplog.text
+    assert '"action": "routing"' in caplog.text
+    assert '"errorCode": "LLM_UNAVAILABLE"' in caplog.text
+    assert safe_fingerprint("t-1") in caplog.text
+    assert "thread=t-1" not in caplog.text
     assert "openai key missing" not in caplog.text
 
 

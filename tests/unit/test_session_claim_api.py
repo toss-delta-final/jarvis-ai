@@ -31,6 +31,7 @@ class _BlockingObserver:
     def __init__(self, buyer_session: BuyerSessionInput) -> None:
         self.request_id = "claim-race"
         self.buyer_session = buyer_session
+        self.trace = None
         self.commit_entered = asyncio.Event()
         self.commit_proceed = asyncio.Event()
 

@@ -1746,3 +1746,69 @@ async def test_total_timeout_cancels_and_awaits_same_task_pump_without_leaks(
     assert not get_registry().is_active(key)
     assert len(exporter.exported) == 1
     assert exporter.exported[0][0].metadata["terminalReason"] == "total_timeout_stop"
+
+
+async def test_cancelled_finish_keeps_one_cleanup_until_turn_log_and_trace_complete(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """finish 대기자가 취소돼도 공유 cleanup은 계속되고 재호출과 합쳐 정확히 1회 실행된다."""
+    exporter = FakeTraceExporter()
+    obs = await _obs("cancel-safe-finish", trace=_trace(exporter))
+    await obs.commit_user_message()
+    finalize_started = asyncio.Event()
+    finalize_proceed = asyncio.Event()
+    finalize_calls = 0
+    original_finalize = obs.store.finalize_assistant
+
+    async def blocking_finalize(turn_id, assistant_text, status):
+        nonlocal finalize_calls
+        finalize_calls += 1
+        finalize_started.set()
+        await finalize_proceed.wait()
+        await original_finalize(turn_id, assistant_text, status)
+
+    obs.store.finalize_assistant = blocking_finalize
+    stream_key = "member:cancel-safe-finish"
+
+    async def done():
+        yield 'data: {"type":"done","data":{"finishReason":"stop"}}\n\n'
+
+    with caplog.at_level(logging.INFO, logger="observability"):
+        response = await open_stream(_FakeRequest(), stream_key, done, observer=obs)
+        consumer = asyncio.create_task(anext(response.body_iterator))
+        assert '"type":"done"' in await consumer
+        closing = asyncio.create_task(anext(response.body_iterator))
+        await finalize_started.wait()
+        closing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await closing
+
+        assert not get_registry().is_active(stream_key)
+        assert obs.finished is False
+        finalize_proceed.set()
+        await asyncio.gather(
+            obs.finish(
+                asyncio.get_running_loop().time(),
+                TurnStatus.COMPLETED,
+                None,
+                "done",
+            ),
+            obs.finish(
+                asyncio.get_running_loop().time(),
+                TurnStatus.FAILED,
+                "INTERNAL",
+                "retry_must_not_replace",
+            ),
+        )
+
+    assert finalize_calls == 1
+    assert obs.finished is True
+    turn = await obs.store.get_turn(obs.turn_id)
+    assert turn is not None and turn.status == TurnStatus.COMPLETED
+    assert len(exporter.exported) == 1
+    records = [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if record.name == "observability" and record.getMessage().startswith("{")
+    ]
+    assert sum(record.get("event") == "chat_request" for record in records) == 1

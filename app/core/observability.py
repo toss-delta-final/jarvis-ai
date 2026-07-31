@@ -10,6 +10,7 @@ errorType 를 요청당 1건의 구조화 로그로 남기고, 어시스턴트 �
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -40,7 +41,7 @@ async def finish_trace_safely(
             terminal_reason=terminal_reason,
         )
     except Exception:
-        logger.exception(
+        logger.warning(
             "trace.finish 실패 terminal_reason=%s code=TELEMETRY_FINISH_FAILED",
             terminal_reason,
         )
@@ -100,6 +101,7 @@ class RequestObservation:
     conversation_id: str
     thread_id: str | None
     user_id: str | None
+    brand_id: str | None
     role: str
     store: ConversationStoreProtocol
     message_length: int
@@ -116,6 +118,7 @@ class RequestObservation:
     assistant_parts: list[str] = field(default_factory=list)
     model_calls: list[ModelCall] = field(default_factory=list)
     finished: bool = False
+    _finish_task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
 
     async def commit_user_message(self) -> None:
         """스트림 슬롯 확보(§2.9 a 409 통과) **후** 사용자 메시지를 저장한다(§6.3 a).
@@ -169,10 +172,22 @@ class RequestObservation:
         error_type: str | None = None,
         terminal_reason: str = "eof",
     ) -> None:
-        """어시스턴트 응답을 상태와 함께 마감하고 요청 구조화 로그를 남긴다(멱등)."""
-        if self.finished:
-            return
-        self.finished = True
+        """취소와 동시 호출에도 하나의 cleanup task로 턴·로그·trace를 마감한다."""
+        task = self._finish_task
+        if task is None:
+            task = asyncio.create_task(
+                self._complete_finish(now, status, error_type, terminal_reason)
+            )
+            self._finish_task = task
+        await asyncio.shield(task)
+
+    async def _complete_finish(
+        self,
+        now: float,
+        status: TurnStatus,
+        error_type: str | None,
+        terminal_reason: str,
+    ) -> None:
         if self.turn_id is not None:
             try:
                 await self.store.finalize_assistant(
@@ -184,18 +199,27 @@ class RequestObservation:
                 # 는 이제 실 pg-profile I/O 라 실패할 수 있는데, 여기서 전파하면 아래 chat_request
                 # 로그(latency·model·tokens·streamStatus 등)가 통째로 유실되고 finished=True 라
                 # 재시도 여지도 없다(PR #48 후속 리뷰). 실패는 관측 가능하게 남기고 계속 진행한다.
-                logger.exception(
-                    "finalize_assistant 실패 turn_id=%s (대화 저장 유실)", self.turn_id
+                logger.error(
+                    "finalize_assistant 실패 turnFp=%s code=CONVERSATION_FINALIZE_FAILED",
+                    identifier_fingerprint(self.turn_id),
                 )
             stream_status = status.value
         else:
             stream_status = None  # 스트림 시작 전 거부(409 등) — 저장된 턴 없음
 
         latency_total_ms = round((now - self.started) * 1000)
+        identity_fields = (
+            {
+                "sellerFp": identifier_fingerprint(self.user_id),
+                "brandFp": identifier_fingerprint(self.brand_id),
+            }
+            if self.role == "seller"
+            else {"ownerFp": identifier_fingerprint(self.user_id)}
+        )
         record = {
             "event": "chat_request",
             "requestId": self.request_id,
-            "ownerFp": identifier_fingerprint(self.user_id),
+            **identity_fields,
             "role": self.role,
             "sessionFp": identifier_fingerprint(self.conversation_id),
             "contextFp": identifier_fingerprint(self.context_id),
@@ -223,6 +247,7 @@ class RequestObservation:
                 error_type=error_type,
                 terminal_reason=terminal_reason,
             )
+        self.finished = True
 
 
 def _extract_token_text(frame: str) -> str | None:
@@ -258,12 +283,14 @@ def start_observation(
     role = role_of(identity)
     subject = identity.user_id or identity.subject
     # 메시지 저장은 open_stream 의 슬롯 확보 후 commit_user_message()에서(유령 턴 방지).
-    # 저장 키는 신원 스코프(IDOR 방지) — 로그 conversationId 는 원 sessionId 유지(상관관계).
+    # 저장 키는 대화 저장소 내부 신원 스코프이며 buyer transient 상태는 commit 결과의
+    # lifecycle context_id:thread_id만 사용한다. 외부 로그에는 식별자 지문만 남긴다.
     return RequestObservation(
         request_id=request_id,
         conversation_id=conversation_id,
         thread_id=thread_id,
         user_id=subject,
+        brand_id=identity.brand_id,
         role=role,
         store=store,
         message_length=length,
@@ -291,6 +318,8 @@ def emit_rejection(request_id: str, error_type: str, **fields: object) -> None:
         return found
 
     raw_owner = _take("userId", "ownerId", "guestId", "subject", "sub")
+    raw_seller = _take("sellerId")
+    raw_brand = _take("brandId")
     raw_session = _take("conversationId", "sessionId")
     raw_thread = _take("threadId")
     raw_stream = _take("streamKey", "stream_key")
@@ -350,6 +379,8 @@ def emit_rejection(request_id: str, error_type: str, **fields: object) -> None:
             if raw_owner is not None or scope_owner is not None
             else provided_owner_fp
         ),
+        "sellerFp": identifier_fingerprint(str(raw_seller)) if raw_seller is not None else None,
+        "brandFp": identifier_fingerprint(str(raw_brand)) if raw_brand is not None else None,
         "sessionFp": identifier_fingerprint(str(raw_session)) if raw_session is not None else None,
         "threadFp": identifier_fingerprint(str(raw_thread)) if raw_thread is not None else None,
         "contextFp": identifier_fingerprint(str(raw_context)) if raw_context is not None else None,
