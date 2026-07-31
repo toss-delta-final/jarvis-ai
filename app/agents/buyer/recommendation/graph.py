@@ -34,6 +34,7 @@ from app.schemas.chat import (
 from app.schemas.spring import (
     ProductSearchResult,
     RecoReason,
+    RecommendationListEntry,
     RecommendationPush,
     SpringProduct,
 )
@@ -378,6 +379,9 @@ async def stream_recommendation(
         yield sse("suggestions", SuggestionsData(chips=revert_chips).model_dump(by_alias=True))
 
     # push — I-21(경로 B). 성공 시에만 products.ready emit(§3.3).
+    # 추천 실행 1회의 상관키(§4.2 v0.17.1) — 노출·클릭·담기·주문을 이 추천에 귀속시키는 조인 키다.
+    # listId(사용자에게 전달된 목록)와 역할이 달라 서로 대체하지 않으므로 별도로 발급한다(이슈 #140).
+    recommendation_request_id = str(uuid4())  # 정규 UUID 36자 — BE CHAR(36)
     list_id = uuid4().hex
     # reasons — 근거가 있는 상품만(빈 rationale·expose_min 보충 상품은 제외). productId 로 키잉,
     # 순서 권위는 product_ids 라 정렬 불필요(부분집합 허용, §4.2 이슈 #61).
@@ -387,11 +391,20 @@ async def stream_recommendation(
         for pid in ranked_ids
         if (cleaned := _sanitize_reason(reason_by_id.get(pid, ""), settings.reason_max_len))
     ]
+    # 이 그래프의 산출은 "후보 중 하나를 고르는" 단일 목록이라 PICK_ONE + lists 길이 1 이다(§4.2).
+    # 목록이 1개여도 배열로 보낸다 — 단일/복수로 형식이 갈리면 FE·BE 양쪽에 분기가 생긴다.
+    # 니즈별(PICK_ONE×N)·세트 여러 안(BUY_ALL×N)과 totalBudget 은 아직 이 그래프가 내지 않는다(이슈 #60).
     push = RecommendationPush(
         session_id=request.session_id,
-        list_id=list_id,
-        product_ids=ranked_ids,
-        reasons=reasons,
+        recommendation_request_id=recommendation_request_id,
+        list_type="PICK_ONE",
+        lists=[
+            RecommendationListEntry(
+                list_id=list_id,
+                product_ids=ranked_ids,
+                reasons=reasons,
+            )
+        ],
     )
     try:
         pushed = bool(await push_fn(push))
@@ -400,9 +413,11 @@ async def stream_recommendation(
     if pushed:
         yield sse(
             "products.ready",
-            ProductsReadyData(session_id=request.session_id, list_ids=[list_id]).model_dump(
-                by_alias=True
-            ),
+            # listIds 의 순서·개수는 push 한 lists 와 같다(§4.2 규약, §3.1 v0.15.26).
+            ProductsReadyData(
+                session_id=request.session_id,
+                list_ids=[entry.list_id for entry in push.lists],
+            ).model_dump(by_alias=True),
         )
         # 직전 추천을 장바구니 담기(productId 해소, 경로 B)용으로 보관 — **push 성공 후에만**.
         # push 실패로 카드가 노출되지 않았으면 저장하지 않아 "그거 담아줘"가 미노출 상품을 담지 않는다.

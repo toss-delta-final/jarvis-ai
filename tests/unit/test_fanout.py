@@ -184,7 +184,7 @@ async def test_fanout_merges_results_from_all_legs() -> None:
             map_categories=_two_leg_mapper(),
         )
     )
-    pushed = set(push.pushes[0].product_ids)
+    pushed = set(push.pushes[0].lists[0].product_ids)
     assert 201 in pushed  # 두 번째 카테고리 leg 결과도 병합돼 노출
     assert pushed & {101, 102}  # 첫 카테고리 leg 결과도 포함
 
@@ -257,7 +257,7 @@ async def test_fanout_partial_leg_failure_uses_survivors() -> None:
         )
     )
     assert "error" not in [e["type"] for e in events]
-    assert set(push.pushes[0].product_ids) <= {101, 102}
+    assert set(push.pushes[0].lists[0].product_ids) <= {101, 102}
 
 
 async def test_fanout_leg_unexpected_exception_isolated_not_stream_crash() -> None:
@@ -285,7 +285,7 @@ async def test_fanout_leg_unexpected_exception_isolated_not_stream_crash() -> No
         )
     )
     assert "error" not in [e["type"] for e in events]  # 스트림 안 죽음
-    assert set(push.pushes[0].product_ids) <= {101, 102}  # 살아남은 leg 결과로 진행
+    assert set(push.pushes[0].lists[0].product_ids) <= {101, 102}  # 살아남은 leg 결과로 진행
 
 
 # ─────────── conditions 칩 멀티 카테고리 반영 (PR #73 리뷰 #6) ───────────

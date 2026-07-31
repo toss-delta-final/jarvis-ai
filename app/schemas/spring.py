@@ -5,7 +5,7 @@ AI → Spring 역방향 계약 (모두 camelCase on the wire, Pydantic alias):
   2. get_recent_purchases — I-19, GET /internal/members/{id}/orders (§4.7, C-6, dedup·프로필 소스)
   3. add_to_cart          — I-2, POST /internal/cart/items 단건 (§4.1, C-3)
   4. get_cart             — I-18, GET /internal/cart (§4.9, C-16)
-  5. push_recommendations — I-21, POST /internal/recommendations, productIds (경로 B, §4.2, C-9)
+  5. push_recommendations — I-21, POST /internal/recommendations, lists[] (경로 B, §4.2, C-9)
   6. fetch_product_changes — I-17, GET /internal/products/changes (§4.8, C-4, AI 생성물 배치)
   (I-6/I-9 판매자 콜백 응답 스키마는 C-13/C-14 협의 후 확정 — dict 유지)
 
@@ -400,26 +400,73 @@ class RecoReason(CamelModel):
     reason: str
 
 
-class RecommendationPush(CamelModel):
-    """I-21 POST /internal/recommendations 요청 (경로 B, api-spec §4.2, v0.15.0).
+class RecommendationListEntry(CamelModel):
+    """I-21 목록 1건 (api-spec §4.2 v0.17.1 다중 목록).
 
-    최종 랭크 상품 id(Top-N)만 전달한다 — listId 는 FastAPI 가 생성해 넘기고(Spring 이 Redis 에
-    이 키로 TTL 저장), FE 는 CH-5 GET /api/chat/lists/{listId} 로 카드를 조회한다.
+    한 번의 추천이 목록을 여러 개 낼 수 있다 — 니즈별 추천(파우치·어댑터 각각의 후보)과
+    세트 여러 안(조합 A·B·C)은 목록 하나로 표현되지 않는다. 목록이 1개여도 lists 는 길이 1 배열.
+    listId 는 FastAPI 가 생성하는 UUID 급 무작위(≥128bit) — CH-5 가 인증 불필요 공개 조회라
+    사실상 bearer 키이므로 순번·타임스탬프 등 추측 가능한 형식 금지(v0.16.1).
+    상한은 계약 하드 값이지 튜너블이 아니다 — 실제 노출 개수는 config(expose_min~expose_max).
+    """
+
+    # 허용 문자 영숫자·`-`·`_`, ≤64자 — Redis 키 오염 방지(§4.2 400 조건).
+    list_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    # 세트 성격("알뜰")·니즈 이름("파우치"). BE VARCHAR(50) — 초과 시 400.
+    label: str | None = Field(default=None, max_length=50)
+    # 순서 유지 = 렌더 순서. 목록당 1~9개(2026-07-30 확정, 구 Top5 에서 상향).
+    product_ids: list[int] = Field(min_length=1, max_length=9)
+    reasons: list[RecoReason] = Field(default_factory=list, max_length=9)  # productId로 키잉(§4.2)
+
+    @field_validator("product_ids")
+    @classmethod
+    def _no_duplicate_product(cls, value: list[int]) -> list[int]:
+        """한 목록 안 productId 중복은 400 — 같은 카드가 두 번 렌더된다(§4.2)."""
+        if len(set(value)) != len(value):
+            raise ValueError("productIds 에 중복 id 가 있다(§4.2)")
+        return value
+
+
+class RecommendationPush(CamelModel):
+    """I-21 POST /internal/recommendations 요청 (경로 B, api-spec §4.2, v0.17.1).
+
+    최종 랭크 상품 id 목록만 전달한다 — listId 는 FastAPI 가 생성해 넘기고(Spring 이 Redis 에
+    이 키로 TTL 10분 저장), FE 는 CH-5 GET /api/chat/lists/{listId} 로 카드를 조회한다.
     [변경 v0.15.0] 구 groups/items 구조 폐기. [확정 v0.15.15, BE 구현 07-18] reason 은 이 콜백에
     포함(reasons[{productId, reason}]) → Spring 이 CH-5 카드에 echo(§4.2). 선택 필드 — 근거 없는
     상품은 생략, 비면 [] 로 직렬화.
-    productId 는 internal 계약이라 숫자(BIGINT, §2.6). 순서 유지 = 렌더 순서.
-    노출 개수(Top-N)는 config(expose_min~expose_max)로 recommendation 그래프가 결정 —
-    이 스키마는 전송 컨테이너라 하드 개수 대신 방어적 상한(max_length)만 둔다.
+    [변경 v0.17.1, 이슈 #209] 최상위가 lists[] 배열 — 구 평평 3필드(listId·productIds·reasons)는
+    폐기다(BE 과도기 수용 코드 제거 조건). listType·totalBudget·label 은 표시 필드가 아니라
+    목록의 성격 메타이며 표시 권위는 그대로 Spring 에 있다(경로 B 유지).
+    productId 는 internal 계약이라 숫자(BIGINT, §2.6).
+    빈 목록은 400 이 아니라 "보내지 않는 것"이 맞다 — 후보가 없으면 콜백 자체를 생략한다.
     상위는 이 콜백이 성공한 뒤에만 SSE products.ready 를 emit 한다(§3.3).
     """
 
     session_id: str
-    list_id: str
-    product_ids: list[int] = Field(
-        default_factory=list, max_length=50
-    )  # 방어적 상한(실제 개수는 config)
-    reasons: list[RecoReason] = Field(default_factory=list, max_length=50)  # productId로 키잉(§4.2)
+    # 추천 실행 1회를 가리키는 opaque id(FastAPI 생성). 노출·클릭·담기·주문을 그 추천에
+    # 귀속시키는 조인 키로 listId 와 역할이 달라 서로 대체하지 않는다(이슈 #140). BE CHAR(36).
+    recommendation_request_id: str = Field(max_length=36)
+    # 목록 안 상품들이 대체재(PICK_ONE — 하나만 산다)인지 보완재(BUY_ALL — 전부 산다)인지.
+    # 목록 개수는 lists 길이로 알 수 있지만 이 값은 개수로 복원할 수 없어 항상 싣는다(§4.2).
+    list_type: Literal["PICK_ONE", "BUY_ALL"]
+    total_budget: int | None = None  # BUY_ALL + 예산 발화 시에만("5만원 내로" → 50000)
+    lists: list[RecommendationListEntry] = Field(min_length=1, max_length=10)
+
+    @field_validator("lists")
+    @classmethod
+    def _no_duplicate_list_id(
+        cls, value: list[RecommendationListEntry]
+    ) -> list[RecommendationListEntry]:
+        """한 콜백 안 listId 중복은 400 (§4.2).
+
+        멱등 키가 (recommendationRequestId, listId) 쌍이라 같은 listId 가 두 번 오면
+        뒤 목록이 재전송으로 오해돼 조용히 버려진다 — 저장 전에 거절한다.
+        """
+        ids = [entry.list_id for entry in value]
+        if len(set(ids)) != len(ids):
+            raise ValueError("한 콜백 안에 같은 listId 가 두 번 왔다(§4.2)")
+        return value
 
 
 # ── 6. 상품 변경분 pull (I-17, §4.8, C-4) — AI 생성물 갱신 배치 ──

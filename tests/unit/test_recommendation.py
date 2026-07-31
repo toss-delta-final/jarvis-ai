@@ -99,6 +99,12 @@ async def _failing_push(push) -> bool:
     raise SpringUnavailableError("push down")
 
 
+def _only_list(push):
+    """일반 추천은 목록 1건 — lists 길이 1 배열에서 그 항목을 꺼낸다 (§4.2 v0.17.1)."""
+    assert len(push.lists) == 1
+    return push.lists[0]
+
+
 async def _collect(gen) -> list[dict]:
     events: list[dict] = []
     async for frame in gen:
@@ -132,23 +138,72 @@ async def test_happy_path_pipeline() -> None:
 
     # push 된 productIds — rerank 순서(101,102)가 앞, expose_min 보충으로 검색순서 103 추가.
     assert len(push.pushes) == 1
-    assert push.pushes[0].product_ids[:2] == [101, 102]
-    assert set(push.pushes[0].product_ids) <= {101, 102, 103}
+    entry = _only_list(push.pushes[0])
+    assert entry.product_ids[:2] == [101, 102]
+    assert set(entry.product_ids) <= {101, 102, 103}
 
     # reasons — rerank rationale 있는 상품만(101,102). expose_min 보충 103 은 근거 없어 제외(이슈 #61).
-    reasons = {r.product_id: r.reason for r in push.pushes[0].reasons}
+    reasons = {r.product_id: r.reason for r in entry.reasons}
     assert reasons == {101: "가성비가 좋아요", 102: "음질이 우수해요"}
 
     done = next(e for e in events if e["type"] == "done")["data"]
     assert done["finishReason"] == "stop"
 
 
+async def test_push_sends_single_list_as_length_one_array() -> None:
+    """일반 추천은 목록 1개지만 lists 는 길이 1 배열이고 listType 은 항상 실린다 (§4.2 v0.17.1).
+
+    후보들이 서로 대안이라 PICK_ONE 이며, 세트(BUY_ALL)·총액 예산은 이 그래프가 내지 않는다(#60).
+    """
+    push = _RecordingPush()
+    events = await _collect(
+        run_buyer_turn(
+            _req(), _member(), llm=FakeLLM(), search=_make_search(DEFAULT_PRODUCTS), push_fn=push
+        )
+    )
+
+    sent = push.pushes[0]
+    assert len(sent.lists) == 1
+    assert sent.list_type == "PICK_ONE"
+    assert sent.total_budget is None
+    assert sent.lists[0].label is None
+    # products.ready 의 listIds 는 lists 와 순서·개수가 같다(§4.2 규약, §3.1).
+    ready = next(e for e in events if e["type"] == "products.ready")["data"]
+    assert ready["listIds"] == [entry.list_id for entry in sent.lists]
+
+
+async def test_recommendation_request_id_is_per_turn_and_distinct_from_list_id() -> None:
+    """추천 실행 상관키는 턴마다 새로 발급되며 listId 와 역할이 달라 값도 다르다 (§4.2, #140)."""
+    push = _RecordingPush()
+    for _ in range(2):
+        await _collect(
+            run_buyer_turn(
+                _req(),
+                _member(),
+                llm=FakeLLM(),
+                search=_make_search(DEFAULT_PRODUCTS),
+                push_fn=push,
+            )
+        )
+
+    request_ids = [item.recommendation_request_id for item in push.pushes]
+    assert len(set(request_ids)) == 2, "추천 실행 1회당 새 상관키여야 한다"
+    for item in push.pushes:
+        assert len(item.recommendation_request_id) <= 36  # BE CHAR(36)
+        assert item.recommendation_request_id != _only_list(item).list_id
+
+
 async def test_list_id_uses_uuid4_hex_and_matches_products_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """I-21 listId는 추측 불가능한 UUID4 hex이며 push와 SSE가 같은 값을 사용한다."""
+    """I-21 listId는 추측 불가능한 UUID4 hex이며 push와 SSE가 같은 값을 사용한다.
+
+    한 턴이 uuid4 를 2회 쓴다 — recommendationRequestId(정규 36자) → listId(hex 32자) 순.
+    """
     generated = [
+        UUID("a63be350-ec96-4f44-b3f9-c962b6673a68"),
         UUID("9f2c1a7e-4b8d-43f5-a0c6-e1d97b3f8a24"),
+        UUID("c1e97b3f-8a24-4f5a-b0c6-d1e97b3f8a24"),
         UUID("4b8d43f5-a0c6-41d9-b3f8-a249f2c1a7e4"),
     ]
     generated_iter = iter(generated)
@@ -166,15 +221,20 @@ async def test_list_id_uses_uuid4_hex_and_matches_products_ready(
         )
     )
 
-    pushed_ids = [item.list_id for item in push.pushes]
+    pushed_ids = [_only_list(item).list_id for item in push.pushes]
     ready_ids = [
         next(event for event in events if event["type"] == "products.ready")["data"]["listIds"][0]
         for events in (first_events, second_events)
     ]
 
-    expected_ids = [value.hex for value in generated]
+    expected_ids = [generated[1].hex, generated[3].hex]
     assert pushed_ids == expected_ids
     assert ready_ids == pushed_ids
+    # 상관키는 정규 UUID 문자열(36자) — listId(hex 32자)와 형식부터 구분된다.
+    assert [item.recommendation_request_id for item in push.pushes] == [
+        str(generated[0]),
+        str(generated[2]),
+    ]
 
 
 async def test_products_ready_carries_no_cards() -> None:
@@ -231,9 +291,9 @@ async def test_rerank_failure_degrades_to_search_order() -> None:
     assert "products.ready" in types
     assert types[-1] == "done"
     # 검색 순서(101,102,103) 상위 노출 — rerank 없이도 하드 제약(검색 반영) 유지.
-    assert push.pushes[0].product_ids == [101, 102, 103]
+    assert _only_list(push.pushes[0]).product_ids == [101, 102, 103]
     # degrade 경로엔 rerank rationale 이 없으므로 reasons 는 빈 배열(계약상 선택 필드, 이슈 #61).
-    assert push.pushes[0].reasons == []
+    assert _only_list(push.pushes[0]).reasons == []
 
 
 async def test_push_failure_skips_products_ready() -> None:
@@ -349,7 +409,7 @@ async def test_rerank_ids_subset_of_candidates() -> None:
             _req(), _member(), llm=llm, search=_make_search(DEFAULT_PRODUCTS), push_fn=push
         )
     )
-    ids = push.pushes[0].product_ids
+    ids = _only_list(push.pushes[0]).product_ids
     assert 999 not in ids  # 후보 외 id 제거(REQ-REC-081)
     assert ids[0] == 101  # rerank 유효 산출이 선두, 나머지는 expose_min 보충
 
@@ -479,7 +539,7 @@ async def test_reason_sanitized_and_capped_before_push() -> None:
             _req(), _member(), llm=llm, search=_make_search(DEFAULT_PRODUCTS), push_fn=push
         )
     )
-    reason_by_id = {r.product_id: r.reason for r in push.pushes[0].reasons}
+    reason_by_id = {r.product_id: r.reason for r in _only_list(push.pushes[0]).reasons}
     sent = reason_by_id[101]
     assert "\n" not in sent and "\t" not in sent  # 개행/제어문자 제거
     assert len(sent) <= settings.reason_max_len  # 안전 상한 이내
@@ -537,7 +597,9 @@ async def test_recommendation_boundaries_apply_unicode_sequence_policy() -> None
         )
     )
 
-    reason_by_id = {reason.product_id: reason.reason for reason in push.pushes[0].reasons}
+    reason_by_id = {
+        reason.product_id: reason.reason for reason in _only_list(push.pushes[0]).reasons
+    }
     assert reason_by_id[101] == "추천 ❤️ AB"
     token = next(event for event in events if event["type"] == "token")["data"]["text"]
     assert token == "총평 ❤️ XY 㐂\U000e0100"
@@ -1461,7 +1523,7 @@ async def test_expose_min_fill_from_search_order() -> None:
     await _collect(
         run_buyer_turn(_req(), _member(), llm=llm, search=_make_search(products), push_fn=push)
     )
-    ids = push.pushes[0].product_ids
+    ids = _only_list(push.pushes[0]).product_ids
     assert ids[0] == 201  # rerank 선두 유지
     assert len(ids) == 5  # expose_min 까지 검색순서로 보충
 
@@ -1548,8 +1610,8 @@ async def test_recommendation_dedups_recent_purchases(monkeypatch: pytest.Monkey
         )
     )
     assert sink["exclude"] is None  # 검색엔 exclude 미전달(병렬 — 제외는 그래프 사후필터)
-    assert 101 not in push.pushes[0].product_ids  # 최근 구매 101 제외
-    assert 102 in push.pushes[0].product_ids
+    assert 101 not in _only_list(push.pushes[0]).product_ids  # 최근 구매 101 제외
+    assert 102 in _only_list(push.pushes[0]).product_ids
 
 
 async def test_recommendation_skips_dedup_for_guest(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1568,7 +1630,7 @@ async def test_recommendation_skips_dedup_for_guest(monkeypatch: pytest.MonkeyPa
         )
     )
     assert called["n"] == 0  # 조회 스킵
-    assert 101 in push.pushes[0].product_ids  # 제외 안 됨
+    assert 101 in _only_list(push.pushes[0]).product_ids  # 제외 안 됨
 
 
 async def test_recommendation_degrades_when_purchases_fail(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1588,7 +1650,7 @@ async def test_recommendation_degrades_when_purchases_fail(monkeypatch: pytest.M
             push_fn=push,
         )
     )
-    assert 101 in push.pushes[0].product_ids  # dedup 없이 진행
+    assert 101 in _only_list(push.pushes[0]).product_ids  # dedup 없이 진행
     assert _types(events)[-1] == "done"
 
 
@@ -1604,7 +1666,7 @@ async def test_recommendation_degrades_on_non_numeric_member(
             _req(), bad, llm=FakeLLM(), search=_make_search(DEFAULT_PRODUCTS), push_fn=push
         )
     )
-    assert 101 in push.pushes[0].product_ids  # dedup 스킵
+    assert 101 in _only_list(push.pushes[0]).product_ids  # dedup 스킵
 
 
 async def test_recommendation_search_and_purchases_run_parallel(
@@ -1775,7 +1837,7 @@ async def test_recommendation_skips_dedup_for_seller(monkeypatch: pytest.MonkeyP
         )
     )
     assert called["n"] == 0  # 판매자 sub 로 I-19 조회 안 함
-    assert 101 in push.pushes[0].product_ids  # dedup 미적용
+    assert 101 in _only_list(push.pushes[0]).product_ids  # dedup 미적용
 
 
 # ─────────── 소모품 카테고리 억제 + 되돌리기 (#4, 결정 14-F) ───────────
@@ -1823,8 +1885,8 @@ async def test_recommendation_suppresses_consumable_category(
             _req(), _member_num(), llm=FakeLLM(), search=_make_search(products), push_fn=push
         )
     )
-    assert 201 not in push.pushes[0].product_ids  # 조미료 억제
-    assert 202 in push.pushes[0].product_ids
+    assert 201 not in _only_list(push.pushes[0]).product_ids  # 조미료 억제
+    assert 202 in _only_list(push.pushes[0]).product_ids
     sug = next(e for e in events if e["type"] == "suggestions")["data"]
     assert sug["chips"][0]["revert"]["category"] == "조미료"
     assert sug["chips"][0]["estCount"] == 1
@@ -1879,7 +1941,7 @@ async def test_recommendation_revert_chip_strips_seller_text(
             push_fn=push,
         )
     )
-    assert 201 in push.pushes[0].product_ids
+    assert 201 in _only_list(push.pushes[0]).product_ids
     assert "suggestions" not in _types(reverted_events)
 
 
@@ -1897,8 +1959,8 @@ async def test_recommendation_nonconsumable_not_suppressed(monkeypatch: pytest.M
             _req(), _member_num(), llm=FakeLLM(), search=_make_search(products), push_fn=push
         )
     )
-    assert 202 not in push.pushes[0].product_ids  # exact 제외(구매한 productId)
-    assert 201 in push.pushes[0].product_ids  # 조미료지만 구매 안 함 → 유지
+    assert 202 not in _only_list(push.pushes[0]).product_ids  # exact 제외(구매한 productId)
+    assert 201 in _only_list(push.pushes[0]).product_ids  # 조미료지만 구매 안 함 → 유지
     assert "suggestions" not in _types(events)  # 억제 카테고리 없음 → 칩 없음
 
 
@@ -1915,7 +1977,7 @@ async def test_recommendation_no_consumable_config_no_suppression(
             _req(), _member_num(), llm=FakeLLM(), search=_make_search(products), push_fn=push
         )
     )
-    assert 201 in push.pushes[0].product_ids
+    assert 201 in _only_list(push.pushes[0]).product_ids
     assert "suggestions" not in _types(events)
 
 
@@ -1936,7 +1998,7 @@ async def test_recommendation_revert_unsuppresses_category(monkeypatch: pytest.M
             push_fn=push1,
         )
     )
-    assert 201 not in push1.pushes[0].product_ids
+    assert 201 not in _only_list(push1.pushes[0]).product_ids
     # 턴 2: 사용자 되돌리기
     push2 = _RecordingPush()
     llm2 = FakeLLM(
@@ -1951,7 +2013,7 @@ async def test_recommendation_revert_unsuppresses_category(monkeypatch: pytest.M
             push_fn=push2,
         )
     )
-    assert 201 in push2.pushes[0].product_ids  # 조미료 복원
+    assert 201 in _only_list(push2.pushes[0]).product_ids  # 조미료 복원
     assert "suggestions" not in _types(events2)  # 더는 억제 안 함 → 칩 없음
 
 
@@ -1986,7 +2048,7 @@ async def test_recommendation_guest_no_suppression(monkeypatch: pytest.MonkeyPat
     events = await _collect(
         run_buyer_turn(_req(), _guest(), llm=FakeLLM(), search=_make_search(products), push_fn=push)
     )
-    assert 201 in push.pushes[0].product_ids
+    assert 201 in _only_list(push.pushes[0]).product_ids
     assert "suggestions" not in _types(events)
 
 
@@ -2264,7 +2326,7 @@ async def test_synonym_product_survives_keyword_drop() -> None:
         )
     )
     assert "products.ready" in _types(events)  # 동의어 상품이 살아 노출된다
-    assert push.pushes and 201 in push.pushes[0].product_ids
+    assert push.pushes and 201 in _only_list(push.pushes[0]).product_ids
 
 
 # ─────────── #164 I-4 주문 상태 early route ───────────
