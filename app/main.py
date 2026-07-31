@@ -30,7 +30,7 @@ from fastapi.middleware.cors import CORSMiddleware
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-from app.api import chat, events, profile, seller
+from app.api import chat, events, internal, profile, seller
 from app.core.config import get_settings
 from app.core.errors import install_error_handling
 from app.core.logging import configure_logging
@@ -94,6 +94,8 @@ def create_app() -> FastAPI:
     app.include_router(seller.router)
     app.include_router(profile.router)
     app.include_router(events.router)
+    # Spring → AI 위임(레인 b) — I-22 홈 추천 랭킹(§3.7, #148)
+    app.include_router(internal.router)
 
     @app.get("/health", tags=["ops"])
     async def health() -> dict:

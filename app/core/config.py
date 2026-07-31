@@ -17,6 +17,11 @@ from typing import Literal
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# I-21 계약 하드 상한(api-spec §4.2) — 노출 개수 설정이 계약을 넘지 못하게 묶는 기준.
+# 계약 값의 단일 출처는 스키마다(app/schemas/spring.py) — 여기서 숫자를 다시 적지 않는다.
+from app.schemas.recommendations import LIMIT_MAX as HOME_RECO_LIMIT_MAX
+from app.schemas.spring import LIST_MAX_PRODUCTS, MAX_LISTS
+
 LLMProvider = Literal["openai", "anthropic"]
 # 검색 백엔드 선택(#101) — spring: Spring 위임만(방식1 이전 MVP), embedding_rerank: Spring 전량 →
 # pgvector 의미 재정렬(방식2, MVP 기본), vector: AI 벡터검색 → Spring hydrate(방식1, C-17 미착수).
@@ -83,6 +88,14 @@ class Settings(BaseSettings):
     catalog_batch_page_size: int = 500  # I-17 배치 페이지 크기(§4.8, config 주입)
     catalog_vector_overfetch: int = 4  # 방식1 hydrate 후 필터·품절 제거 대비 벡터 여유조회 배수
     catalog_batch_interval_s: float = 300.0  # 주기 증분 pull 배치 스케줄러 간격(이슈 #31)
+    # pg-catalog 질의 statement_timeout — get_many·top_k_by_vector 의 DB 쪽 상한(PR #213 리뷰).
+    # 앱쪽 벽시계 포기는 스레드 밑의 쿼리를 못 죽이므로, 이게 없으면 지연 쿼리(I-17 replace_all
+    # 테이블 락 등)가 풀 커넥션을 계속 붙들어 채팅 rerank 등 다른 경로까지 말려든다.
+    # **앱쪽 호출 상한(home_reco_store_timeout_s)보다 커야 한다** — 같거나 작으면 "쿼리가
+    # 느리다"는 동일 원인이 어느 타이머가 먼저 발동하느냐에 따라 503/504 로 비결정적으로
+    # 갈린다(PR 리뷰: DB 가 먼저 끊으면 psycopg QueryCanceled → except Exception → 503).
+    # 관계는 기동 시점에 강제한다(아래 model_validator).
+    catalog_store_query_timeout_s: float = Field(default=2.5, gt=0.0)
 
     # ── PostgreSQL / pgvector ×2 ──
     # catalog: AI 생성물(extras/search_doc/임베딩, §4.8 I-17 배치 upsert) 호스트, profile: 프로필 스토어+대화 저장(§6.3).
@@ -129,7 +142,11 @@ class Settings(BaseSettings):
     seller_calc_max_result_digits: int = 100
     # 도구 반환 상세도 상한(안 1+차등, 2026-07-17 사용자 확정) — 컨텍스트 폭주 방지.
     seller_summary_max_points: int = 60  # 시계열 상세 나열 상한(포인트 수)
-    seller_summary_max_events: int = 5  # I-13/I-14 이벤트 kv 나열 상한(건)
+    seller_summary_max_events: int = 5  # I-14 이벤트 kv 나열 상한(건)
+    # [#196] I-13 상품별 rows 상세 상한 — I-14 용(위)과 분리. 구 공용 상한 5는
+    # 시드 브랜드 상품 7종보다 작아 하위 2종이 상시 잘렸다. 상한 초과분은
+    # _summarize_behavior 가 꼬리 합계로 남긴다(정보 소실 없음).
+    seller_summary_max_products: int = 10  # I-13 상품별 rows 상세 나열 상한(건)
     seller_list_default_limit: int = 20  # I-9 상품 목록 기본 limit(미지정 시)
 
     # ── 판매자 후속 단계 대비 선등록 (1단계 미소비, 하드코딩 재발 방지) ──
@@ -187,13 +204,62 @@ class Settings(BaseSettings):
     embedding_rerank_limit: int = Field(default=30, ge=0)
     search_default_limit: int = 30
     top_k: int = 30
-    expose_min: int = 5
-    expose_max: int = 8
+    # 노출 개수(REQ-REC-021, api-spec §3.3) — **목록 하나 기준**이다. 니즈별 추천처럼 목록이
+    # 여럿이면 목록마다 이 상한이 걸린다(REQ-REC-024).
+    # 상한이 LIST_MAX_PRODUCTS 로 묶여 있는 이유: 이 값을 넘기면 push 페이로드 생성
+    # (RecommendationListEntry)에서 ValidationError 가 나는데, 그 지점은 SpringUnavailableError
+    # degrade 블록 **밖**이라 §3.3 의 "목록을 준비하는 데 문제가 있었어요" 대신 일반 INTERNAL 로
+    # SSE 스트림이 끊긴다(PR #212 리뷰). 잘못된 설정은 런타임이 아니라 기동 시점에 잡는다.
+    expose_min: int = Field(default=5, ge=1, le=LIST_MAX_PRODUCTS)
+    expose_max: int = Field(default=LIST_MAX_PRODUCTS, ge=1, le=LIST_MAX_PRODUCTS)
     reason_max_len: int = (
         200  # I-21 reason 안전 상한(§4.2) — 표시 목표는 프롬프트 40자, 이건 방어캡
     )
+    # rerank 응답 출력 예산 — **노출 개수에 비례**해야 한다(PR #212 리뷰). 니즈별 분할이면
+    # 한 번의 rerank 가 목록 수만큼 항목을 내는데, 고정 예산이면 항목이 27~30개로 늘 때 응답이
+    # 중간에 잘리고 extract_json 이 파싱에 실패해 LLMError → 근거 없는 degrade 로 떨어진다.
+    # "니즈별 근거 있는 추천"이 정작 니즈가 여러 개일 때 더 자주 깨지는 셈이다.
+    # 기본값은 단일 목록 경로(expose_max=9)에서 종전 실효값 1500 과 정확히 같도록 잡았다
+    # (960 + 60×9 = 1500) — 흔한 경로의 동작을 바꾸지 않으면서 다중 니즈만 넉넉해진다.
+    rerank_max_tokens_base: int = Field(default=960, ge=0)  # overallComment·JSON 골격 몫
+    rerank_max_tokens_per_item: int = Field(default=60, ge=1)  # {productId, rationale} 1건 몫
     llm_call_limit: int = 2
     relaxation_max_rounds: int = 3
+
+    # ── 홈 추천 랭킹 (I-22, api-spec §3.7 · 이슈 #148) ──
+    # 질의 벡터 = 시그널 상품 임베딩의 가중 평균. cart 는 "담기까지 갔다"는 강한 신호라 조회보다 높게,
+    # 조회는 최신일수록 높게(recency decay 를 인덱스 거듭제곱으로 적용) — §3.7 signals 표.
+    home_reco_weight_cart: float = Field(default=1.0, ge=0.0)
+    home_reco_weight_viewed: float = Field(default=0.6, ge=0.0)
+    # [#148] 장기 취향 항 — 프로필 요약 벡터(sleep-time consolidation 이 미리 만든다).
+    # cart(지금 담은 것)보다 낮게 둔다: 오래된 취향이 현재 관심을 덮으면 홈이 안 바뀐 것처럼 보인다.
+    # 0 으로 두면 프로필 기여가 **완전히 꺼진다**(롤백 스위치) — reason 의 프로필 문자열 분기는
+    # 극성(선호/회피) 문제로 제거됐으므로(83f78a1) 프로필의 유일한 소비처가 이 벡터 항이다.
+    home_reco_weight_profile: float = Field(default=0.5, ge=0.0)
+    home_reco_viewed_decay: float = Field(default=0.85, gt=0.0, le=1.0)
+    # limit 은 최종 노출 목표치 — Spring 의 품절 드롭에 대비해 이 배수만큼 넉넉히 반환한다(§3.7).
+    home_reco_overfetch_ratio: float = Field(default=2.0, ge=1.0)
+    # overfetch 절대 상한(응답 크기 방어). **요청 `limit` 상한(`LIMIT_MAX`) 이상이어야 한다** —
+    # 아래로 내려가면 `_overfetch_size` 가 요청받은 `limit` 보다 적게 반환해 "품절 드롭 대비
+    # 넉넉히"(§3.7)가 깨진다. 기동 시점에 잡는다(`expose_max`/LIST_MAX_PRODUCTS 와 같은 방식).
+    # 기본값은 LIMIT_MAX 의 2배(= 기본 overfetch 배율) — LIMIT_MAX 와 같게 두면 `limit` 이
+    # 상한에 가까울수록 여유분이 0 으로 죽어 "넉넉히" 계약이 최댓값에서 깨진다(PR #213 리뷰).
+    home_reco_max_items: int = Field(default=HOME_RECO_LIMIT_MAX * 2, gt=HOME_RECO_LIMIT_MAX)
+    # 이 수 미만이면 랭킹이 무의미하다고 보고 INSUFFICIENT_CANDIDATES 로 답한다(200).
+    home_reco_min_candidates: int = Field(default=5, gt=0)
+    # 카탈로그 스토어 **호출 1회** 상한 — pg-catalog 지연·락이 한 단계를 무한정 붙들지 않게 한다.
+    # 초과 시 랭킹 경로는 504 UPSTREAM_TIMEOUT(계약 실패표), reason 경로는 null degrade 다.
+    home_reco_store_timeout_s: float = Field(default=2.0, gt=0.0)
+    # 요청 **전체** 예산 — 스토어 호출이 3번이라 호출별 상한만으로는 최악 2s×3=6s 로 §3.7 의
+    # "응답 3s" 를 넘는다(PR #213 리뷰). 각 호출은 min(호출 상한, 남은 예산)으로 기다리고,
+    # 예산이 바닥나면 랭킹 경로는 504·reason 경로는 skip 이다. 3s 계약에서 직렬화·네트워크
+    # 여유 0.5s 를 뺀 값이 기본이다.
+    home_reco_budget_s: float = Field(default=2.5, gt=0.0)
+    # [#148 실측 2026-07-31] reason 을 요청 경로에서 LLM 으로 만드는 방식은 **폐기**했다.
+    # gpt-5-nano 배치 1회가 항목 수에 선형으로 늘어(20개 7970ms · 12개 3852ms · 6개 2102ms)
+    # I-22 예산(연결 2s/응답 3s)을 5개에서도 넘겼다. 지금은 I-17 배치가 상품당 1회 만들어 둔
+    # `extras`(situation_tags·review_pros)에서 **고르기만** 한다(`home_recommendation.build_reasons`).
+    # 따라서 reason 관련 timeout·상한 설정이 없다 — 실패할 여지도 예산 소모도 없기 때문이다.
     # rating·reviewCount 등급화 경계(#171 PR#172) — 비표시 정밀값 유출 방지용으로 rerank LLM 에
     # 정확한 숫자 대신 등급만 전달할 때 쓰는 임계. 내림차순(높은 등급부터). 데모 카탈로그 실측 후 조정.
     rating_tier_excellent: float = 4.5  # ≥ → 매우높음
@@ -208,7 +274,10 @@ class Settings(BaseSettings):
     category_top_k: int = 5  # raw·query 앵커 최근접 조회 top-k
     # 턴당 최대 카테고리 수(프롬프트 상한 + 코드 절단). ge=0 — 음수면 out[:fanout_max] 가
     # 뒤에서 잘려 "fanout_max<=0 이면 정확히 0개" 절단 불변식이 깨진다(PR #73 리뷰).
-    category_fanout_max: int = Field(default=5, ge=0)
+    # leg(니즈) 수 상한. 계약 목록 상한(§4.2 lists ≤10)을 넘길 수 없다 — case 3 은 니즈 하나가
+    # 목록 하나라(REQ-REC-024) 넘기면 초과분이 push 직전에 **조용히 잘린다**. 사용자는 요청한
+    # 니즈가 사라진 걸 알 수 없고, rerank 예산도 잘려나갈 니즈까지 세어 부푼다(PR #212 리뷰).
+    category_fanout_max: int = Field(default=5, ge=0, le=MAX_LISTS)
     # per_cat_limit·merge_cap 도 fanout_max 와 같은 절단 규약(leg top-K·merged[:cap]). 음수면
     # merged[:cap] 이 "뒤에서 제외"로 뒤집혀 "cap<=0 이면 0개" 불변식이 깨진다(PR #73 리뷰).
     # [#101 PR#166] leg 별 filters.limit 로 실리지만, hot path 방식2(EmbeddingRerankBackend)·
@@ -223,7 +292,41 @@ class Settings(BaseSettings):
     # pg-catalog 검색 풀 max_size — fan-out 은 한 턴에 최대 category_fanout_max leg 를 gather 로
     # 동시 조회하므로, psycopg_pool 기본값(4)이면 그 이상 leg 가 커넥션을 기다린다. fanout 이상 +
     # 동시 요청 헤드룸으로 명시(암묵 하드코딩 제거, PR #73 리뷰).
-    category_search_pool_max_size: int = 10
+    # [#115] 앵커가 leg 당 raw·query **2개**가 되면서(§4.3) 한 턴의 동시 조회가 `2 × fanout_max`
+    # 로 늘었다 — 종전 10 은 한 턴이 풀 전체를 소진해 동시 요청 헤드룸이 0 이었다(PR #188 리뷰).
+    # 20 = 2 × fanout_max(한 턴) × 동시 턴 2. 하한은 아래 _require_pool_covers_anchor_concurrency
+    # 가 기동 시 강제한다.
+    category_search_pool_max_size: int = 20
+    # [#115] 최근접 채택 상한 — 채택 거리가 이 값을 **초과**하면 그 leg 를 canonical 없이 드롭한다
+    # (§4 거리 조건부 채택. 종전 never-null "멀어도 억지로 채택"은 폐기). 거리 0.22 초과는 "맞는 칸이
+    # taxonomy 에 없다"의 신호다 — "부모님 환갑 선물"이 출산/돌기념품(0.2971)으로 붕괴하는 식.
+    # ⚠️ 재튜닝 조건: 이 값은 **임베딩 모델·task_type·사전에 종속**된다(gemini-embedding-001 1536-dim
+    # L2 정규화 + 앵커 RETRIEVAL_QUERY / 시드 RETRIEVAL_DOCUMENT, categories 2056 leaf 기준 실측).
+    # 셋 중 하나라도 바뀌면 재측정 없이는 무효다. 실측 경계 여유가 0.005 뿐이므로(정답 최대 0.2168
+    # vs 오분류 최소 0.2221) §11 거리 로그로 분포를 관측하며 조정한다.
+    # 절단 튜너블(ge=0)이 아니라 비교 임계라 코사인 거리 정의역 [0,2] 로 범위 검증한다.
+    category_distance_max: float = Field(default=0.22, ge=0.0, le=2.0)
+    # [#115 §4.5] 거리컷 마진 예외 — 거리가 임계를 넘어도 마진이 이 값 **이상**이면 채택한다.
+    # 근거(76 앵커 실측): 거리는 도메인 어휘 차이에 오염된다. 식품은 상품명과 leaf 이름이 달라
+    # 정답 매핑도 멀고(`돼지 등뼈`→`축산 > 돼지고기` 0.2661, `미역`→`수산 > 해조류` 0.2436),
+    # 공산품은 상품명이 곧 leaf 이름이라 가깝다(`청바지` 0.1224). 반면 taxonomy 에 칸이 **없으면**
+    # 여러 후보가 고만고만하게 멀어 마진이 얇다 — 즉 "맞는 칸이 없다"를 직접 재는 지표는 마진이다.
+    # 실측 분리: 회수 대상 상위 7건 0.034~0.085 vs 차단 대상 최대 0.0249(`부모님 환갑 선물`).
+    # ⚠️ 경계 여유가 0.008 뿐이고 표본이 76 건이라 보수적으로 잡는다 — 미회수는 무필터(종전 동작,
+    # 안전)지만 오분류 유입은 검색을 틀린 칸으로 좁혀 정답 상품을 후보에서 배제한다(§4 비대칭).
+    # 관측(`category_distance_override`) 분포가 쌓이면 완화를 검토한다. 0 이면 예외 off 가 아니라
+    # **전부 채택**이 되므로(마진 ≥ 0), 끄려면 임계보다 큰 값(예 2.0)을 준다.
+    # ⚠️ `category_select_margin_max`(§4.4 애매 판정)보다 **커야** 한다 — 두 구간은 정반대 상태라
+    # 겹치면 안 된다(아래 _require_margin_bands_disjoint 가 기동 시 강제).
+    category_distance_override_margin: float = Field(default=0.035, ge=0.0, le=2.0)
+    # [#115] top-k LLM 택일 트리거(§4.4) — 마진(2위−1위 거리차)이 이 값 **이하**면 애매한 판정으로
+    # 보고 select_category 로 후보 중 택일한다. 거리컷이 못 잡는 구멍용: 추상 라벨('선물용품')은
+    # 거리 0.2074(컷 통과)인데 뜻이 틀리고, 마진은 0.0095 로 얇다. 마진을 드롭 조건으로 쓰면
+    # '양말'(1·2위 둘 다 정답, 마진 0.0088)을 오탐하므로 드롭이 아니라 택일 트리거로만 쓴다.
+    category_select_margin_max: float = Field(default=0.02, ge=0.0, le=2.0)
+    # 턴당 택일 LLM 호출 상한 — fan-out 5 leg 이 모두 애매하면 턴 LLM 이 2→7회로 뛴다. 초과 leg 는
+    # 임베딩 top-1 을 그대로 쓴다(종전 동작). ge=0 — 0 이면 택일 기능 off.
+    category_select_max_calls: int = Field(default=2, ge=0)
 
     # ── 목적·상황형 발화의 상품 전개 (이슈 #198, DESIGN-NEEDS-EXPANSION-198) ──
     # "집들이 선물" 처럼 무엇을 살지 사용자가 말하지 않은 발화를 구체 상품 목록으로 전개한다
@@ -354,6 +457,87 @@ class Settings(BaseSettings):
         return value.lower() if isinstance(value, str) else value
 
     @model_validator(mode="after")
+    def _require_margin_bands_disjoint(self) -> "Settings":
+        """마진 예외(§4.5)와 택일 트리거(§4.4)의 구간이 겹치면 기동 실패 (PR #188 리뷰).
+
+        두 임계는 **정반대 상태**를 가리킨다 — `margin <= category_select_margin_max` 는 "1·2위가
+        거의 붙어 애매하다"(LLM 에게 택일을 물어본다), `margin >= category_distance_override_margin`
+        은 "1위만 확 가까워 확신한다"(거리가 멀어도 채택한다). 한 leg 이 동시에 애매하면서 확신일
+        수는 없으므로 두 구간은 서로소여야 한다.
+
+        겹치면 **#115 가 폐기한 실패 모드가 되살아난다**: 얇은 마진은 "taxonomy 에 맞는 칸이 없다"는
+        신호인데(§4.5), 그 상태에서 택일이 고른 먼 후보를 채택하면 그게 곧 "억지 채택"이다
+        (`'선물용품'` 마진 0.0095 → `도서/음반 > 독서용품` 0.2292 선택 → 드롭이 정답).
+
+        기본값(0.02 < 0.035)은 서로소지만, 한쪽만 튜닝하면 조용히 겹친다 — 관계를 코드로 고정한다.
+        """
+        if self.category_distance_override_margin <= self.category_select_margin_max:
+            raise ValueError(
+                "CATEGORY_DISTANCE_OVERRIDE_MARGIN must be > CATEGORY_SELECT_MARGIN_MAX "
+                f"(got {self.category_distance_override_margin} <= "
+                f"{self.category_select_margin_max}): "
+                "'ambiguous' and 'confident' margin bands must not overlap"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_pool_covers_anchor_concurrency(self) -> "Settings":
+        """검색 풀이 한 턴의 동시 조회(`2 × category_fanout_max`)를 못 덮으면 기동 실패 (PR #188 리뷰).
+
+        매핑은 leg 마다 raw·query **두 앵커**를 gather 로 동시 조회한다(§4.3 #115). 두 값은 함께
+        움직여야 하는 쌍인데 테스트로만 묶으면 기본값 조합에서만 걸린다 — `category_fanout_max` 를
+        올리는 쪽(#168 은 leg 10 계획)이 풀을 잊으면 한 턴이 풀을 소진해 **다른 사용자의 조회가
+        대기**한다(증상은 PoolTimeout 이라 원인이 드러나지 않는다). 기동 시점에 막는다.
+
+        `2 ×` 상한의 전제(leg 수 ≤ fanout_max)는 **`map_categories` 가 입력을 방어적으로 절단해**
+        스스로 보장한다(PR #188 리뷰) — 호출부(`decompose._parse_category_queries`·`expand_needs`)의
+        절단에만 기대면 새 호출부 하나가 풀을 넘기고, 증상이 다른 요청의 PoolTimeout 이라 원인
+        추적이 어렵다. 절단이 실제로 발생하면 `category_legs_truncated` 로 관측된다.
+        """
+        need = 2 * self.category_fanout_max
+        if self.category_search_pool_max_size < need:
+            raise ValueError(
+                "CATEGORY_SEARCH_POOL_MAX_SIZE must be >= 2 * CATEGORY_FANOUT_MAX "
+                f"(need {need}, got {self.category_search_pool_max_size}): "
+                "mapping probes two anchors (raw, query) per leg concurrently"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_db_timeout_after_app_timeout(self) -> "Settings":
+        """카탈로그 DB 상한이 앱쪽 호출 상한보다 크지 않으면 기동 실패 (PR #213 리뷰).
+
+        앱쪽(_call_store)이 항상 먼저 포기해야 느린 쿼리가 **결정적으로 504**(AI_TIMEOUT)로
+        나간다. DB 가 먼저 끊으면 psycopg QueryCanceled(OperationalError 계열)가 except
+        Exception 에 잡혀 503(AI_ERROR)이 되고, 같은 원인이 지터에 따라 다른 코드로 기록된다
+        (§4.11 fallbackReason 구분 무력화). 포기된 쿼리는 DB 상한이 뒤늦게 잘라 커넥션을 회수한다.
+        """
+        if self.catalog_store_query_timeout_s <= self.home_reco_store_timeout_s:
+            raise ValueError(
+                "CATALOG_STORE_QUERY_TIMEOUT_S must be > HOME_RECO_STORE_TIMEOUT_S "
+                f"(got {self.catalog_store_query_timeout_s} <= {self.home_reco_store_timeout_s}): "
+                "the app-side clock must fire first so slow queries map to 504 deterministically"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_home_reco_min_within_max(self) -> "Settings":
+        """홈 추천(I-22) 후보 하한이 응답 상한을 넘으면 기동 실패 (PR #213 리뷰).
+
+        `rank_home` 은 `k=max(want, home_reco_min_candidates)` 로 top-k 를 조회한다 — 하한이
+        `home_reco_max_items`(overfetch 절대 상한, LIMIT_MAX 에 ge 로 묶임)를 넘으면 "응답 크기
+        방어"가 조회 단계에서 무력화된다. `expose_max`↔`LIST_MAX_PRODUCTS` 와 같은 방식으로
+        관계를 기동 시점에 고정한다 — 한쪽만 튜닝하면 조용히 어긋나는 쌍이다.
+        """
+        if self.home_reco_min_candidates > self.home_reco_max_items:
+            raise ValueError(
+                "HOME_RECO_MIN_CANDIDATES must be <= HOME_RECO_MAX_ITEMS "
+                f"(got {self.home_reco_min_candidates} > {self.home_reco_max_items}): "
+                "candidate floor must not defeat the response-size cap"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _require_pepper_in_prod(self) -> "Settings":
         """운영(jwks)에서 PII pepper 미주입이면 기동 실패 — 조용히 약한 해시로 도는 것 방지."""
         if self.auth_mode == "jwks" and not self.pii_hash_pepper:
@@ -429,6 +613,14 @@ class Settings(BaseSettings):
             raise ValueError(
                 "REVIEW_TIER 경계는 many >= some >= few 여야 합니다"
                 f" ({self.review_tier_many}/{self.review_tier_some}/{self.review_tier_few})"
+            )
+        # 노출 개수 경계(REQ-REC-021) — expose_min 은 "부족하면 검색순서로 채우는" 하한이라
+        # 상한을 넘으면 보충 루프가 곧바로 상한 절단에 되잘리는 모순이 된다. 개별 le 로는
+        # 두 값의 관계를 못 잡아 여기서 함께 본다.
+        if self.expose_min > self.expose_max:
+            raise ValueError(
+                "EXPOSE_MIN 은 EXPOSE_MAX 이하여야 합니다"
+                f" (min={self.expose_min}, max={self.expose_max})"
             )
         return self
 

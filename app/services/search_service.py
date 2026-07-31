@@ -37,10 +37,13 @@ class SearchBackend(Protocol):
         ...
 
 
-def _cosine(a: list[float], b: list[float]) -> float:
+def cosine_similarity(a: list[float], b: list[float]) -> float:
     """코사인 유사도. 빈 벡터/0벡터/차원 불일치는 -1.0(최하위=제외)로 처리한다.
 
     차원이 다르면(모델 교체·마이그레이션) zip 절단으로 잘못된 값이 나오므로 조용히 계산하지 않고 제외한다.
+
+    [#148] 홈 추천 랭킹(I-22, `services/home_recommendation.py`)도 같은 척도를 써야 채팅·홈의
+    유사도 정의가 갈라지지 않으므로 공개 이름을 둔다. `_cosine` 은 기존 호출부 호환 별칭이다.
     """
     if not a or not b or len(a) != len(b):
         return -1.0
@@ -50,6 +53,9 @@ def _cosine(a: list[float], b: list[float]) -> float:
     if na == 0.0 or nb == 0.0:
         return -1.0
     return num / (na * nb)
+
+
+_cosine = cosine_similarity  # 기존 내부 호출부 호환 별칭
 
 
 def vector_rank(query_vec: list[float], store: ArtifactStore, *, k: int) -> list[int]:
