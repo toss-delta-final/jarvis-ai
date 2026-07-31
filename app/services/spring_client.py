@@ -575,8 +575,12 @@ async def get_cart(user_id: int | None = None, guest_id: str | None = None) -> C
 async def push_recommendations(push: RecommendationPush) -> bool:
     """최종 랭크 id 를 Spring 에 push — I-21 (경로 B, api-spec §4.2 / C-9). [배선 완료]
 
-    POST {spring_base_url}/internal/recommendations 로 {sessionId, listId, productIds[숫자]} 를
-    보낸다(표시 필드 없음 — Spring enrich·CH-5 조회, §4.3). listId 는 FastAPI 가 생성.
+    POST {spring_base_url}/internal/recommendations 로 {sessionId, recommendationRequestId,
+    listType, totalBudget?, lists[{listId, label?, productIds[숫자], reasons}]} 를 보낸다
+    (표시 필드 없음 — Spring enrich·CH-5 조회, §4.3). listId 는 FastAPI 가 생성.
+    [v0.17.1, 이슈 #209] 최상위는 lists 배열이며 구 평평 3필드는 보내지 않는다.
+    미지정 선택 필드(totalBudget·label)는 exclude_none 으로 생략한다 — 계약상 "…일 때만" 싣는
+    필드라 null 을 실어 보내지 않는다. reasons 는 빈 배열로 남는다(선택이되 존재하는 필드).
     콜백 성공 시에만 상위가 SSE products.ready 를 emit 한다 — 실패 시 미emit·done 종료(§3.3).
     도달 불가/오류 응답은 SpringUnavailableError 로 전파(상위가 products.ready 스킵).
     """
@@ -585,7 +589,7 @@ async def push_recommendations(push: RecommendationPush) -> bool:
             async with _client() as client:
                 resp = await client.post(
                     "/internal/recommendations",
-                    json=push.model_dump(by_alias=True),
+                    json=push.model_dump(by_alias=True, exclude_none=True),
                 )
                 _record_spring_status(span, resp)
                 resp.raise_for_status()

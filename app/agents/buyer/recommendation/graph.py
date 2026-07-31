@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import Counter
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -34,6 +35,9 @@ from app.schemas.chat import (
 from app.schemas.spring import (
     ProductSearchResult,
     RecoReason,
+    LIST_LABEL_MAX_LEN,
+    MAX_LISTS,
+    RecommendationListEntry,
     RecommendationPush,
     SpringProduct,
 )
@@ -68,29 +72,160 @@ def _sanitize_reason(text: str, max_len: int) -> str:
     return collapsed
 
 
-def _merge_fanout_results(results: list[ProductSearchResult], cap: int) -> ProductSearchResult:
+def _merge_fanout_results(
+    results: list[tuple[int, ProductSearchResult]], cap: int
+) -> tuple[ProductSearchResult, dict[int, int]]:
     """fan-out leg 결과를 round-robin 인터리브 + productId dedup + cap 절단으로 병합한다(§6).
 
     leg 순서대로 한 상품씩 번갈아 뽑아(한 카테고리가 rerank 입력을 독점하지 않게) 최초 등장
     productId 만 남기고, cap 으로 절단해 rerank 입력 상한을 지킨다. 빈 leg 는 건너뛴다.
+
+    입력은 `(원본 leg 인덱스, 결과)` 쌍이다 — 실패한 leg 이 빠져도 남은 leg 의 인덱스가 밀리지
+    않아야 상류의 `category_legs[i]`(니즈 이름)와 계속 대응한다.
+    두 번째 반환값은 `productId → 원본 leg 인덱스` 로, **니즈별 목록 분할의 유일한 근거**다
+    (#209/REQ-REC-024). 여기서 leg 를 버리면 하류에서 복원할 방법이 없어 니즈가 한 묶음으로
+    뭉개진다. leg 는 **round-robin 최초 등장** 기준이며(leg 단위 순회가 아니라) 실제로 채택된
+    등장 위치와 같아야 상품이 엉뚱한 니즈 목록에 들어가지 않는다.
     """
-    lists = [r.products for r in results]
-    depth = max((len(pl) for pl in lists), default=0)
+    lists = [(leg, r.products) for leg, r in results]
+    depth = max((len(pl) for _, pl in lists), default=0)
     seen: set[int] = set()
     merged: list[SpringProduct] = []
+    leg_of: dict[int, int] = {}
     for i in range(depth):
-        for pl in lists:
+        for leg, pl in lists:
             if i >= len(pl):
                 continue
             product = pl[i]
             if product.product_id in seen:
                 continue
             seen.add(product.product_id)
+            leg_of[product.product_id] = leg
             merged.append(product)
     # slice 절단 — decompose 의 _parse_category_queries·_dedup_truncate 와 동일 규약
     # (cap<=0 이면 정확히 0개; append 후 체크는 첫 상품이 남아 절단 의미가 어긋난다, PR #73 리뷰).
     merged = merged[:cap]
-    return ProductSearchResult(products=merged, total_count=len(merged))
+    # 절단으로 탈락한 상품의 leg 정체성은 남기지 않는다 — 하류가 없는 상품을 니즈에 배정하지 않게.
+    kept_ids = {p.product_id for p in merged}
+    leg_of = {pid: leg for pid, leg in leg_of.items() if pid in kept_ids}
+    return ProductSearchResult(products=merged, total_count=len(merged)), leg_of
+
+
+def _need_label(leg: tuple[str, str | None]) -> str | None:
+    """니즈 목록의 표시 이름 — leg 검색어("파우치")를 쓰고 없으면 canonical 카테고리로 폴백한다.
+
+    LLM 산출 자유 텍스트라 push(신뢰경계) 직전 정제 + 계약 상한(§4.2 `label` ≤50자)으로 자른다.
+    폴백 판정은 **정제 이후**에 한다 — query 가 zero-width·제어문자로만 이뤄지면 truthy 인데도
+    정제 결과가 비어, 정제 전에 고르면 canonical 을 못 보고 라벨이 조용히 사라진다(PR #212 리뷰).
+    """
+    canonical, query = leg
+    label = _strip_unsafe((query or "").strip())
+    if not label:
+        label = _strip_unsafe((canonical or "").strip())
+    return label[:LIST_LABEL_MAX_LEN] or None
+
+
+def _need_names(
+    need_legs: list[tuple[str, str | None]],
+    *,
+    leg_of: dict[int, int],
+    product_ids: list[int],
+) -> dict[int, str]:
+    """rerank 에 넘길 `productId → 니즈 경계 이름` — 이름이 없으면 순번으로 채운다.
+
+    push `label`(사용자 노출)과 **일부러 다르다**. rerank 에 필요한 건 사람이 읽는 이름이 아니라
+    **서로 구분되는 토큰**이고, 이름이 하나도 없다고 경계 자체를 빼면(빈 dict → rerank 가 falsy 로
+    무시) 단일 목록 경로와 똑같이 전역 정렬해 버린다 — 그런데 하류는 여전히 목록을 쪼개므로
+    굶은 니즈가 rationale 없는 검색순서 보충으로 채워진다(PR #212 리뷰).
+    반대로 이 순번을 `label` 로 쓰면 "니즈 2" 같은 무의미한 이름이 사용자에게 노출되므로
+    `label` 은 종전대로 `_need_label` 이 만든 진짜 이름만 쓰고, 없으면 None 이다.
+
+    이름이 **겹치는 경우에도** 순번을 붙인다(PR #212 리뷰) — 서로 다른 두 니즈가 같은 canonical
+    로 매핑되면 같은 라벨이 나오는데, rerank 는 `dict.fromkeys(values)` 로 NEEDS 를 만들어
+    **두 leg 를 하나로 뭉갠다**. 그러면 "니즈마다 상위 N개" 지시가 둘을 구분하지 못해 쏠림이
+    그대로 재발한다. 겹치지 않으면 이름을 그대로 둬 프롬프트를 읽기 쉽게 유지한다.
+    """
+    legs_present: list[int] = []
+    for pid in product_ids:
+        leg = leg_of.get(pid)
+        if leg is not None and leg not in legs_present:
+            legs_present.append(leg)
+
+    label_by_leg = {leg: _need_label(need_legs[leg]) or "" for leg in legs_present}
+    seen = Counter(label_by_leg.values())
+    for leg, label in label_by_leg.items():
+        if not label:
+            label_by_leg[leg] = f"니즈 {leg + 1}"
+        elif seen[label] > 1:
+            label_by_leg[leg] = f"{label} (니즈 {leg + 1})"
+
+    return {pid: label_by_leg[leg] for pid in product_ids if (leg := leg_of.get(pid)) is not None}
+
+
+def _split_by_need(
+    ranked_ids: list[int],
+    candidates: list[SpringProduct],
+    *,
+    leg_of: dict[int, int],
+    leg_count: int,
+    expose_min: int,
+    expose_max: int,
+) -> list[tuple[int, list[int]]]:
+    """노출 상품을 니즈(leg)별 그룹으로 나누고 그룹마다 보정·상한을 적용한다(REQ-REC-021/024).
+
+    `(leg 인덱스, productId 목록)` 을 leg 순서대로 돌려준다. `leg_of` 가 비면 분할하지 않는
+    경로라 leg 0 그룹 하나로 접어 종전(전역 보정·절단)과 같은 결과가 된다.
+
+    보정·상한이 **목록 하나 기준**인 이유: 전역으로 자르면 상위를 독식한 니즈 하나만 채워지고
+    나머지 니즈 목록이 비어 "유럽여행 준비물"에서 어댑터가 통째로 사라진다. 반대로 보정을
+    전역으로 두면 목록마다 후보가 1~2개인 `PICK_ONE`(고를 게 없는 목록)이 나온다.
+    후보가 부족한 니즈는 있는 만큼만 담고, 하나도 없으면 **그룹 자체를 만들지 않는다** —
+    빈 목록은 400 이 아니라 "보내지 않는 것"이 맞다(§4.2).
+    """
+    # leg 를 모르는 상품은 leg 0 으로 접되 **조용히 넘기지 않는다**(PR #212 리뷰) — 어느 니즈에도
+    # 속하지 않는 상품이 남의 목록에 섞이는 것이라, 아래 reco_lists_truncated 와 같은 기준으로
+    # 진단을 남긴다. 현재 candidates 는 leg_of 의 부분집합이라 도달하지 않는 경계지만, 검색
+    # 백엔드가 leg 없는 상품을 후보에 섞으면 깨진다.
+    orphans: set[int] = set()
+
+    def leg_for(pid: int) -> int:
+        if not leg_of:
+            return 0
+        leg = leg_of.get(pid)
+        if leg is None:
+            orphans.add(pid)
+            return 0
+        return leg
+
+    ranked_by_leg: dict[int, list[int]] = {}
+    for pid in ranked_ids:
+        ranked_by_leg.setdefault(leg_for(pid), []).append(pid)
+    # 보정 재고 — 검색순서(하드 제약이 이미 반영된 안전한 순서)를 니즈별로 미리 나눠 둔다.
+    fallback_by_leg: dict[int, list[int]] = {}
+    for product in candidates:
+        fallback_by_leg.setdefault(leg_for(product.product_id), []).append(product.product_id)
+
+    groups: list[tuple[int, list[int]]] = []
+    for leg in range(leg_count) if leg_of else (0,):
+        group = list(ranked_by_leg.get(leg, ()))
+        if len(group) < expose_min:
+            have = set(group)
+            for pid in fallback_by_leg.get(leg, ()):
+                if pid in have:
+                    continue
+                group.append(pid)
+                have.add(pid)
+                if len(group) >= expose_min:
+                    break
+        group = group[:expose_max]
+        if group:  # 후보 0건 니즈는 목록을 만들지 않는다(§4.2)
+            groups.append((leg, group))
+    if orphans:
+        logger.warning(
+            "reco_products_without_leg",
+            extra={"count": len(orphans), "fallback_leg": 0},
+        )
+    return groups
 
 
 async def stream_recommendation(
@@ -139,12 +274,17 @@ async def stream_recommendation(
 
     # dedup 소스(I-19)와 검색(§4.6)을 **병렬 실행** — §4.7 지연 가드(순차 시 최악 6s, first-token 예산 잠식).
     # dedup 은 검색 응답 뒤 사후필터라 두 호출은 독립적이다. 각 호출이 자체 실패를 삼켜 gather 는 안 깨진다.
-    async def _run_search() -> ProductSearchResult | None:
+    async def _run_search() -> tuple[ProductSearchResult, dict[int, int]] | None:
+        """검색 결과와 `productId → leg 인덱스` 맵을 함께 돌려준다.
+
+        맵이 비어 있으면 leg 개념이 없는 경로(단일 filters 검색)라 하류가 목록 1건으로 간다.
+        """
         legs = decision.category_legs
         if not legs:
             # 카테고리 매핑 결과 없음(매핑 degrade·비-매핑 경로) → 단일 filters 검색(기존 경로).
             try:
-                return await search(decision.filters, exclude_product_ids=None)
+                found = await search(decision.filters, exclude_product_ids=None)
+                return (found, {}) if found is not None else None
             except SpringUnavailableError:
                 return None
             except Exception as exc:  # noqa: BLE001 - 예상외 예외도 삼켜 SEARCH_FAILED 로 degrade
@@ -202,7 +342,9 @@ async def stream_recommendation(
                 return None
 
         leg_results = await asyncio.gather(*(_leg(c, q) for c, q in legs))
-        survived = [r for r in leg_results if r is not None]
+        # 원본 leg 인덱스를 함께 들고 간다 — 실패한 leg 이 빠져 인덱스가 밀리면 하류 니즈 라벨이
+        # 한 칸씩 어긋난다(category_legs[i] 와의 대응이 깨진다).
+        survived = [(i, r) for i, r in enumerate(leg_results) if r is not None]
         if not survived:  # 전량 leg 실패 → SEARCH_FAILED(§6)
             return None
         if len(survived) < len(leg_results):
@@ -233,8 +375,8 @@ async def stream_recommendation(
                 trace.mark_degraded("dedup_skipped")
             return None
 
-    search_result, purchases = await asyncio.gather(_run_search(), _fetch_purchases())
-    if search_result is None:  # 검색 실패 → SEARCH_FAILED(종료)
+    search_bundle, purchases = await asyncio.gather(_run_search(), _fetch_purchases())
+    if search_bundle is None:  # 검색 실패 → SEARCH_FAILED(종료)
         if trace := current_request_trace():
             trace.mark_degraded("search_failed")
         yield sse(
@@ -247,6 +389,8 @@ async def stream_recommendation(
             ).model_dump(by_alias=True),
         )
         return
+
+    search_result, leg_of = search_bundle
 
     # 최근 구매(윈도우·취소반품 필터) → exact 제외 + 소모품 카테고리 억제(결정 14-F).
     exclude_ids: set[int] = set()
@@ -316,6 +460,39 @@ async def stream_recommendation(
         yield sse("done", DoneData(finish_reason="zero_result").model_dump(by_alias=True))
         return
 
+    # 니즈별 목록 분할 판정(REQ-REC-024, api-spec §4.2 PICK_ONE×N) — case 3(목적·상황형 발화)이
+    # 니즈 여럿으로 전개된 턴에서만 나눈다. "유럽여행 필요한 거"의 파우치 후보와 어댑터 후보는
+    # 서로 대안이 아니라 **다른 니즈**라 한 카드 묶음에 섞이면 사용자가 비교할 수 없다.
+    # case 3 이 아닌 멀티 leg(예: 리파인 승계)은 종전대로 목록 1건 — 전개가 일어난 턴만 분할한다.
+    # leg_of 가 비면(단일 filters 검색 경로) 나눌 근거 자체가 없다.
+    need_legs = decision.category_legs
+    split_by_need = decision.case == 3 and len(need_legs) > 1 and bool(leg_of)
+    # 분할 시 rerank 예산은 목록 수만큼 늘린다 — 전역 expose_max 로 자르면 니즈 하나가 예산을
+    # 독식해 나머지 니즈 목록이 비어버린다.
+    # 세는 단위는 **후보가 실제로 남은 니즈**다(PR #212 리뷰) — 검색 0건·최근구매 dedup 으로
+    # 비워진 니즈까지 세면 rerank 가 쓰지도 못할 항목 수를 요구하고 출력 예산만 부푼다.
+    # 후보 수를 넘겨도 의미가 없어 함께 상한한다.
+    # MAX_LISTS 로 클램프 — 계약상 그 이상은 push 되지 않으므로(아래 절단) 잘려나갈 니즈까지
+    # 예산에 세면 rerank 가 쓰지도 못할 항목을 요구한다. config 가 category_fanout_max ≤
+    # MAX_LISTS 를 이미 강제하지만, 두 경로가 나중에 갈라져도 예산은 틀리지 않게 여기서도 막는다.
+    populated_needs = min(
+        len({leg_of[p.product_id] for p in candidates if p.product_id in leg_of}), MAX_LISTS
+    )
+    expose_budget = (
+        min(settings.expose_max * populated_needs, len(candidates))
+        if split_by_need
+        else settings.expose_max
+    )
+    # 니즈 경계를 rerank 에도 알린다(PR #212 리뷰) — 안 알리면 LLM 이 전역 관련도로만 정렬해
+    # 한 니즈가 상위권을 쓸고, 굶은 니즈는 아래 _split_by_need 가 검색순서로 보충한다.
+    # 그 보충분엔 rationale 이 없어 근거 없는 카드가 나가는데 rerank 는 "정상 성공"이라
+    # rerank_degraded 로 드러나지 않는다. 단일 목록 경로에는 None 을 넘겨 프롬프트를 그대로 둔다.
+    need_of = (
+        _need_names(need_legs, leg_of=leg_of, product_ids=[p.product_id for p in candidates])
+        if split_by_need
+        else None
+    )
+
     # rerank — smart tier 1회. 실패/타임아웃/유효후보 0건 시 검색순서 상위 N 으로 degrade(하드 제약 유지).
     if observer is not None:
         observer.record_model_call(resolve_model_id(settings, "smart"))
@@ -332,7 +509,9 @@ async def stream_recommendation(
                 candidates=candidates,
                 profile_summary=profile,
                 tier="smart",
-                expose_max=settings.expose_max,
+                expose_max=expose_budget,
+                need_of=need_of,
+                per_need=settings.expose_max if split_by_need else None,
             )
         ranked_ids = [pid for pid, _ in rr.ranked]
         reason_by_id = dict(rr.ranked)  # 상품별 근거(§4.2) — (productId, rationale) 튜플 → 맵
@@ -341,21 +520,31 @@ async def stream_recommendation(
         rerank_degraded = True
         if trace := current_request_trace():
             trace.mark_degraded("rerank_fallback")
-        ranked_ids = [p.product_id for p in candidates[: settings.expose_max]]
+        ranked_ids = [p.product_id for p in candidates[:expose_budget]]
         reason_by_id = {}  # degrade 경로엔 rerank 근거 없음 — reasons 는 빈 배열(계약상 선택)
         comment = "요청하신 조건으로 찾은 상품들이에요."
 
-    # 노출 개수 보정 — rerank 가 expose_min 미만을 내면 검색순서(하드 제약 반영)로 채우고
-    # expose_max 로 상한한다(REQ-REC-021 5~8개 계약, 후보가 부족하면 있는 만큼).
-    if len(ranked_ids) < settings.expose_min:
-        have = set(ranked_ids)
-        for product in candidates:
-            if product.product_id not in have:
-                ranked_ids.append(product.product_id)
-                have.add(product.product_id)
-                if len(ranked_ids) >= settings.expose_min:
-                    break
-    ranked_ids = ranked_ids[: settings.expose_max]
+    # 노출 개수 보정 + 목록 분할 — 보정·상한은 **목록 하나 기준**이다(REQ-REC-021 5~9개, v0.11.0).
+    # 분할하지 않으면 목록이 하나뿐이라 종전과 같은 전역 보정·절단이다.
+    exposed_groups = _split_by_need(
+        ranked_ids,
+        candidates,
+        leg_of=leg_of if split_by_need else {},
+        leg_count=len(need_legs) if split_by_need else 1,
+        expose_min=settings.expose_min,
+        expose_max=settings.expose_max,
+    )
+    # 계약 상한(§4.2 lists ≤10)을 **여기서** 자른다 — 아래 ranked_ids 는 "실제로 push 되는 상품"
+    # 이어야 last_reco("그거 담아줘")와 관측 로그가 노출과 어긋나지 않는다.
+    # config 가 category_fanout_max ≤ MAX_LISTS 를 강제하므로 도달하지 않는 방어선이지만,
+    # 도달하면 니즈가 조용히 사라지는 것이라 로그를 남긴다(silent cap 금지).
+    if len(exposed_groups) > MAX_LISTS:
+        logger.warning(
+            "reco_lists_truncated",
+            extra={"groups": len(exposed_groups), "cap": MAX_LISTS},
+        )
+        exposed_groups = exposed_groups[:MAX_LISTS]
+    ranked_ids = [pid for _, group in exposed_groups for pid in group]
 
     # [#101 #8] 관측성 — 파이프라인 후보 깔때기를 한 줄 구조화 로그로 남긴다(recall 손실·자원 진단).
     # received(수신) → after_dedup(최근구매 제외 후) → compressed(embedding_rerank_limit 절단 후)
@@ -368,6 +557,15 @@ async def stream_recommendation(
             "compressed": len(candidates),
             "final": len(ranked_ids),
             "rerank_degraded": rerank_degraded,
+            # [#209 PR#212 리뷰] 니즈별 분할 관측 — rerank degrade 가 **다중 니즈에서만** 튀는지
+            # 보려면 목록 수와 요청한 출력 예산이 같은 줄에 있어야 한다. 출력 잘림은 조용히
+            # LLMError 로만 보여서(파싱 실패) 이 두 값 없이는 원인을 분리할 수 없다.
+            "lists": len(exposed_groups),
+            "expose_budget": expose_budget,
+            # 근거 없이 나가는 카드 수 — rerank 가 "정상 성공"해도 랭킹이 한 니즈로 쏠리면
+            # 굶은 니즈가 검색순서 보충으로 채워져 여기가 오른다. rerank_degraded 로는 안 보이는
+            # 품질 저하라 별도 지표가 필요하다(PR #212 리뷰).
+            "without_reason": sum(1 for pid in ranked_ids if not reason_by_id.get(pid)),
         },
     )
 
@@ -378,20 +576,36 @@ async def stream_recommendation(
         yield sse("suggestions", SuggestionsData(chips=revert_chips).model_dump(by_alias=True))
 
     # push — I-21(경로 B). 성공 시에만 products.ready emit(§3.3).
-    list_id = uuid4().hex
-    # reasons — 근거가 있는 상품만(빈 rationale·expose_min 보충 상품은 제외). productId 로 키잉,
-    # 순서 권위는 product_ids 라 정렬 불필요(부분집합 허용, §4.2 이슈 #61).
-    # push(신뢰경계) 직전 정제 — 개행 제거·안전 상한(config, 판매자 입력 영향 자유 텍스트 방어).
-    reasons = [
-        RecoReason(product_id=pid, reason=cleaned)
-        for pid in ranked_ids
-        if (cleaned := _sanitize_reason(reason_by_id.get(pid, ""), settings.reason_max_len))
-    ]
+    # 추천 실행 1회의 상관키(§4.2 v0.17.1) — 노출·클릭·담기·주문을 이 추천에 귀속시키는 조인 키다.
+    # listId(사용자에게 전달된 목록)와 역할이 달라 서로 대체하지 않으므로 별도로 발급한다(이슈 #140).
+    recommendation_request_id = str(uuid4())  # 정규 UUID 36자 — BE CHAR(36)
+
+    def _entry(leg: int, product_ids: list[int]) -> RecommendationListEntry:
+        # reasons — 근거가 있는 **그 목록의** 상품만(빈 rationale·expose_min 보충 상품은 제외).
+        # productId 로 키잉하며 순서 권위는 product_ids 라 정렬 불필요(부분집합 허용, §4.2 이슈 #61).
+        # 목록 밖 상품의 근거를 실으면 CH-5 가 매칭할 대상이 없어 그대로 버려진다.
+        # push(신뢰경계) 직전 정제 — 개행 제거·안전 상한(config, 판매자 입력 영향 자유 텍스트 방어).
+        reasons = [
+            RecoReason(product_id=pid, reason=cleaned)
+            for pid in product_ids
+            if (cleaned := _sanitize_reason(reason_by_id.get(pid, ""), settings.reason_max_len))
+        ]
+        return RecommendationListEntry(
+            list_id=uuid4().hex,  # 목록마다 새 id — 멱등 키 (requestId, listId) 가 겹치면 안 된다
+            label=_need_label(need_legs[leg]) if split_by_need else None,
+            product_ids=product_ids,
+            reasons=reasons,
+        )
+
+    # listType 은 항상 싣는다 — 목록 개수는 lists 길이로 알 수 있지만 이 값은 개수로 복원할 수
+    # 없다(§4.2). 니즈별이든 단일이든 목록 **안**의 상품들은 서로 대안이라 PICK_ONE 이다:
+    # 니즈별은 "파우치 중 하나 + 어댑터 중 하나"이지 "목록 전부를 산다"(BUY_ALL)가 아니다.
+    # 세트 여러 안(BUY_ALL×N)과 totalBudget 은 아직 이 그래프가 내지 않는다(이슈 #60·#163).
     push = RecommendationPush(
         session_id=request.session_id,
-        list_id=list_id,
-        product_ids=ranked_ids,
-        reasons=reasons,
+        recommendation_request_id=recommendation_request_id,
+        list_type="PICK_ONE",
+        lists=[_entry(leg, group) for leg, group in exposed_groups],
     )
     try:
         pushed = bool(await push_fn(push))
@@ -400,9 +614,11 @@ async def stream_recommendation(
     if pushed:
         yield sse(
             "products.ready",
-            ProductsReadyData(session_id=request.session_id, list_ids=[list_id]).model_dump(
-                by_alias=True
-            ),
+            # listIds 의 순서·개수는 push 한 lists 와 같다(§4.2 규약, §3.1 v0.15.26).
+            ProductsReadyData(
+                session_id=request.session_id,
+                list_ids=[entry.list_id for entry in push.lists],
+            ).model_dump(by_alias=True),
         )
         # 직전 추천을 장바구니 담기(productId 해소, 경로 B)용으로 보관 — **push 성공 후에만**.
         # push 실패로 카드가 노출되지 않았으면 저장하지 않아 "그거 담아줘"가 미노출 상품을 담지 않는다.

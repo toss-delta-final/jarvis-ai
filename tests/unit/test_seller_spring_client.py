@@ -494,7 +494,7 @@ async def test_get_product_changes_parses_rows_and_total() -> None:
 async def test_get_events_serializes_filters_as_query() -> None:
     """[#196] eventType 복수는 CSV 1개 파라미터로 직렬화 — 반복 쿼리 금지.
 
-    BE 계약은 String eventType + comma split(api-spec §4.4 I-13 v0.16.3) —
+    BE 계약은 String eventType + comma split(api-spec §4.4 I-13 v0.17.4) —
     구 반복 쿼리(eventType=a&eventType=b)는 Spring 암묵 변환 의존이었다.
     """
     captured: dict = {}

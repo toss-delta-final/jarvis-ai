@@ -13,6 +13,17 @@
 
 ---
 
+## [2026-07-31] 무작위 UUID 가 개인정보 카나리 정규식에 걸려 트레이스가 통째로 버려진다 — 그리고 그 flake 를 내 변경 탓으로 오인했다
+
+- 증상: #209 코드 전환 중 전체 스위트가 간헐적으로 1건 실패했다. 실패 테스트가 매번 달랐고(`test_all_buyer_spring_operations_trace_timeout...`, `test_buyer_spring_http_failure_...[503-5xx]`) 모두 `assert len(spring_payloads) == 1` → `0 == 1` 형태였다. 단독 실행은 항상 통과. 로그엔 `trace dropped code=TELEMETRY_REDACTION_FAILED` 가 찍혀 있었다.
+- 원인: `app/core/tracing.py` 의 `_CANARY_PATTERNS` 중 **휴대폰 정규식** `(?<!\d)01[016789][ -]?\d{3,4}[ -]?\d{4}(?!\d)` 이 `dotted_order`(=`타임스탬프 + str(node.id)` 를 `.` 로 이어붙인 문자열)의 **무작위 UUID 조각**에 우연히 매치한다. 실제로 잡힌 값: `...bcd8-01976217625e` → `01`+`9`+`7621`+`7625`. UUID 는 16진수라 각 자리가 숫자일 확률이 10/16 이고, 32자리 hex 하나가 이 패턴들에 걸릴 확률을 20만 회 측정하니 **0.368%** 였다. 한 트레이스에 노드가 여럿이고 한 스위트에 트레이스가 여럿이라 실행마다 몇 %씩 터진다. 카나리는 fail-closed 라 걸리면 **트레이스 전체를 버린다** — 테스트뿐 아니라 **운영에서도 정상 트레이스가 조용히 사라진다**(관측 손실).
+- 오진: 처음엔 내 변경이 원인이라고 봤다. 근거가 "베이스라인 8회 전부 통과 vs 변경분 12회 중 2회 실패"였는데, **10% 안팎의 flake 는 8회 연속 통과가 43% 확률로 그냥 일어난다.** 베이스라인을 별도 worktree 에서 더 돌리자 곧바로 같은 실패가 났다.
+- 규칙:
+  1. **flake 를 변경분 탓으로 돌리기 전에 베이스라인을 같은 횟수 이상 돌린다.** 5~10회 통과는 "이 변경이 원인"의 근거가 못 된다 — 실패율이 낮을수록 필요한 표본이 커진다.
+  2. **원인은 추론이 아니라 계측으로 특정한다.** 여기서는 `UnsafeTelemetryError` 메시지에 문제 값을 실어 `-s` 로 뽑았고, 그러자 한 줄에 답이 있었다(dotted_order 문자열). 계측은 임시로 넣고 반드시 원복한다.
+  3. **무작위 식별자를 개인정보 정규식으로 훑는 검사는 오탐을 전제로 설계한다** — 검사 대상을 사용자 유래 문자열로 한정하거나(자체 생성한 id·타임스탬프는 제외), 오탐 시 트레이스 전량 폐기 대신 해당 필드만 마스킹한다.
+- 관련: `app/core/tracing.py` `_CANARY_PATTERNS`·`_build_export_payloads`(dotted_order), `tests/unit/test_buyer_tracing.py`, #141
+
 ## [2026-07-31] repo 밖에서 `gh` 를 부르면 실패하는데 `| tail -1` 이 그 오류를 가린다
 
 - 증상: PR #211 본문 갱신을 `cd <스크래치패드> && python3 ...` 로 파일을 고친 뒤 이어서 `gh pr edit 211 --body-file ...` 로 실행하고 "갱신했다"고 보고했다. 로컬 파일은 정확히 바뀌었지만 **원격 PR 본문은 그대로**였다. 다음 턴에 `grep -c "v0.17.2"` 가 `0` 을 내서야 드러났다.
@@ -63,7 +74,7 @@
   1. 집계 API 의 0/빈 값은 "데이터 없음"으로 읽기 전에 **원천 컬럼의 귀속 경로(NULL 허용 컬럼·조인 스코프)를 먼저 확인**한다 — 특히 다:1 이벤트(주문→상품)는 단일 FK 귀속이 구조적으로 불가능하다.
   2. 도구 요약의 상한 초과분은 개수가 아니라 **합계로 남긴다** — "외 N건"은 표본 누락이고 "외 N건 합계: …"는 요약이다. 상한값 조정은 구조 수정이 아니다.
   3. 교차 검증 지침(다른 도구로 확인)은 프롬프트에 적기 전에 **그 다른 도구가 실제로 다른 원천을 쓰는지 실측**한다(I-7 purchase 단 = order_item 기반이라 유효했음).
-- 관련: #196, jarvis-backend#62, `app/agents/seller/tools.py`(`_BEHAVIOR_AUTHORITY_NOTE`·`_summarize_behavior`), `app/core/config.py`(`seller_summary_max_products`), api-spec §4.4 I-13 v0.17.3
+- 관련: #196, jarvis-backend#62, `app/agents/seller/tools.py`(`_BEHAVIOR_AUTHORITY_NOTE`·`_summarize_behavior`), `app/core/config.py`(`seller_summary_max_products`), api-spec §4.4 I-13 v0.17.4
 
 ---
 

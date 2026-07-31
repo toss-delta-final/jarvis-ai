@@ -38,26 +38,26 @@ def _ids(result: ProductSearchResult) -> list[int]:
 
 def test_merge_interleaves_round_robin() -> None:
     """leg 순서대로 한 개씩 번갈아 뽑는다 — 한 카테고리가 앞을 독점하지 않는다."""
-    merged = _merge_fanout_results([_res(1, 2, 3), _res(4, 5)], cap=30)
+    merged, _ = _merge_fanout_results([(0, _res(1, 2, 3)), (1, _res(4, 5))], cap=30)
     assert _ids(merged) == [1, 4, 2, 5, 3]
 
 
 def test_merge_dedups_by_product_id() -> None:
     """leg 간 중복 productId 는 최초 등장만 남긴다(round-robin 순서 기준)."""
-    merged = _merge_fanout_results([_res(1, 2), _res(2, 3)], cap=30)
+    merged, _ = _merge_fanout_results([(0, _res(1, 2)), (1, _res(2, 3))], cap=30)
     assert _ids(merged) == [1, 2, 3]  # legB 의 2 는 legA 2 와 중복 → 드롭
 
 
 def test_merge_truncates_to_cap() -> None:
     """병합 결과를 merge_cap 으로 절단한다(rerank 입력 상한)."""
-    merged = _merge_fanout_results([_res(1, 2, 3, 4, 5)], cap=2)
+    merged, _ = _merge_fanout_results([(0, _res(1, 2, 3, 4, 5))], cap=2)
     assert _ids(merged) == [1, 2]
     assert merged.total_count == 2
 
 
 def test_merge_skips_empty_legs() -> None:
     """빈 leg 는 인터리브에서 건너뛴다(실패·0건 leg 가 순서를 어긋내지 않음)."""
-    merged = _merge_fanout_results([_res(), _res(1), _res()], cap=30)
+    merged, _ = _merge_fanout_results([(0, _res()), (1, _res(1)), (2, _res())], cap=30)
     assert _ids(merged) == [1]
 
 
@@ -67,9 +67,40 @@ def test_merge_cap_zero_yields_empty() -> None:
     append 후 체크 방식이면 첫 상품이 항상 남아 decompose·_dedup_truncate 의 slice 절단과
     어긋난다. 세 절단 지점(_parse·merge·_dedup)을 같은 slice 규약으로 통일한다.
     """
-    merged = _merge_fanout_results([_res(1, 2, 3), _res(4, 5)], cap=0)
+    merged, leg_of = _merge_fanout_results([(0, _res(1, 2, 3)), (1, _res(4, 5))], cap=0)
     assert _ids(merged) == []
     assert merged.total_count == 0
+    assert leg_of == {}  # 절단된 상품의 leg 정체성은 남기지 않는다
+
+
+def test_merge_records_leg_of_each_survivor() -> None:
+    """살아남은 상품마다 어느 leg(니즈)에서 왔는지 기록한다 (#209, REQ-REC-024).
+
+    니즈별 목록 분할의 유일한 근거다 — 병합이 leg 를 버리면 하류에서 복원할 방법이 없다.
+    """
+    merged, leg_of = _merge_fanout_results([(0, _res(1, 2, 3)), (1, _res(4, 5))], cap=30)
+    assert _ids(merged) == [1, 4, 2, 5, 3]
+    assert leg_of == {1: 0, 2: 0, 3: 0, 4: 1, 5: 1}
+
+
+def test_merge_leg_of_uses_round_robin_first_occurrence() -> None:
+    """중복 상품의 leg 는 **round-robin 최초 등장** 기준이다 — leg 순회 순서가 아니다.
+
+    leg0 의 3번째 상품 9 와 leg1 의 1번째 상품 9 가 겹치면, 병합이 실제로 채택하는 건
+    depth 0 에서 나온 leg1 쪽이다. leg 단위로 순회하며 setdefault 하면 leg0 으로 잘못 적히고,
+    그 상품이 엉뚱한 니즈 목록에 들어간다.
+    """
+    merged, leg_of = _merge_fanout_results([(0, _res(1, 2, 9)), (1, _res(9, 8))], cap=30)
+    assert _ids(merged) == [1, 9, 2, 8]
+    assert leg_of[9] == 1
+
+
+def test_merge_leg_of_keys_are_original_leg_indexes() -> None:
+    """leg 인덱스는 **원본 legs 기준**이다 — 실패해 빠진 leg 때문에 밀리면 라벨이 어긋난다."""
+    # leg 1 이 검색 실패로 빠지고 leg 0·2 만 살아남은 상황.
+    merged, leg_of = _merge_fanout_results([(0, _res(1)), (2, _res(7))], cap=30)
+    assert _ids(merged) == [1, 7]
+    assert leg_of == {1: 0, 7: 2}
 
 
 # ─────────── fan-out 오케스트레이션 (stream_recommendation §6) ───────────
@@ -184,7 +215,7 @@ async def test_fanout_merges_results_from_all_legs() -> None:
             map_categories=_two_leg_mapper(),
         )
     )
-    pushed = set(push.pushes[0].product_ids)
+    pushed = set(push.pushes[0].lists[0].product_ids)
     assert 201 in pushed  # 두 번째 카테고리 leg 결과도 병합돼 노출
     assert pushed & {101, 102}  # 첫 카테고리 leg 결과도 포함
 
@@ -257,7 +288,7 @@ async def test_fanout_partial_leg_failure_uses_survivors() -> None:
         )
     )
     assert "error" not in [e["type"] for e in events]
-    assert set(push.pushes[0].product_ids) <= {101, 102}
+    assert set(push.pushes[0].lists[0].product_ids) <= {101, 102}
 
 
 async def test_fanout_leg_unexpected_exception_isolated_not_stream_crash() -> None:
@@ -285,7 +316,7 @@ async def test_fanout_leg_unexpected_exception_isolated_not_stream_crash() -> No
         )
     )
     assert "error" not in [e["type"] for e in events]  # 스트림 안 죽음
-    assert set(push.pushes[0].product_ids) <= {101, 102}  # 살아남은 leg 결과로 진행
+    assert set(push.pushes[0].lists[0].product_ids) <= {101, 102}  # 살아남은 leg 결과로 진행
 
 
 # ─────────── conditions 칩 멀티 카테고리 반영 (PR #73 리뷰 #6) ───────────
@@ -852,3 +883,429 @@ async def test_expander_receives_observer_for_model_call_logging() -> None:
     )
     assert calls == ["디퓨저", "식기 세트"]  # 전개가 실제로 발동한 턴
     assert got == [observer]  # 같은 observer 가 seam 까지 도달했다
+
+
+# ─────────── 니즈별 목록 분할 (#209, REQ-REC-024 / api-spec §4.2 PICK_ONE×N) ───────────
+
+
+def _case3_decompose() -> dict:
+    """목적·상황형 발화 — case 3 + 니즈 2개(파우치·어댑터)."""
+    return {
+        "intent": "recommend",
+        "reply": "",
+        "case": 3,
+        "semanticQuery": "유럽여행 준비물",
+        "categoryQueries": [
+            {"category": None, "query": "파우치"},
+            {"category": None, "query": "어댑터"},
+        ],
+        "filters": {},
+    }
+
+
+def _needs_llm(ranked: list[dict]) -> FakeLLM:
+    return FakeLLM(
+        decompose=_case3_decompose(),
+        rerank={"ranked": ranked, "overallComment": "여행 준비물이에요"},
+    )
+
+
+async def _leg_search(filters, exclude_product_ids=None):
+    """파우치 leg → 101·102·103, 어댑터 leg → 201·202·203."""
+    return _res(101, 102, 103) if "여행용품" in (filters.category or "") else _res(201, 202, 203)
+
+
+async def _run_case3(llm, push, **kwargs):
+    return await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=llm,
+            search=_leg_search,
+            push_fn=push,
+            map_categories=_two_leg_mapper(),
+            **kwargs,
+        )
+    )
+
+
+async def test_case3_pushes_one_list_per_need() -> None:
+    """case 3 + 니즈 2개 → 목록 2건, 니즈마다 자기 상품만 담고 label 은 니즈 이름이다.
+
+    종전엔 두 니즈가 한 묶음으로 병합돼 파우치 후보와 어댑터 후보가 같은 카드 목록에 섞였다.
+    """
+    push = _RecordingPush()
+    llm = _needs_llm(
+        [
+            {"productId": 101, "rationale": "수납이 좋아요"},
+            {"productId": 201, "rationale": "220V 지원이에요"},
+            {"productId": 102, "rationale": "가벼워요"},
+            {"productId": 202, "rationale": "컴팩트해요"},
+        ]
+    )
+
+    events = await _run_case3(llm, push)
+
+    sent = push.pushes[0]
+    assert sent.list_type == "PICK_ONE"  # 니즈별 = 각 목록 안에서 하나를 고른다
+    assert len(sent.lists) == 2
+    assert [entry.label for entry in sent.lists] == ["파우치", "어댑터"]
+    # 니즈 경계가 지켜진다 — 파우치 목록에 어댑터 상품이 섞이지 않는다.
+    assert all(pid < 200 for pid in sent.lists[0].product_ids)
+    assert all(pid >= 200 for pid in sent.lists[1].product_ids)
+    # rerank 순서는 목록 안에서 보존된다.
+    assert sent.lists[0].product_ids[:2] == [101, 102]
+    assert sent.lists[1].product_ids[:2] == [201, 202]
+    # listId 는 목록마다 다르다 — 멱등 키 (recommendationRequestId, listId) 충돌 금지(§4.2).
+    assert len({entry.list_id for entry in sent.lists}) == 2
+
+    ready = next(e for e in events if e["type"] == "products.ready")["data"]
+    assert ready["listIds"] == [entry.list_id for entry in sent.lists]
+
+
+async def test_case3_reasons_are_scoped_to_their_list() -> None:
+    """근거는 그 상품이 속한 목록에만 실린다 — 목록 간 reason 누수 금지(§4.2 productId 키잉)."""
+    push = _RecordingPush()
+    llm = _needs_llm(
+        [
+            {"productId": 101, "rationale": "수납이 좋아요"},
+            {"productId": 201, "rationale": "220V 지원이에요"},
+        ]
+    )
+
+    await _run_case3(llm, push)
+
+    pouch, adapter = push.pushes[0].lists
+    assert {r.product_id for r in pouch.reasons} <= set(pouch.product_ids)
+    assert {r.product_id for r in adapter.reasons} <= set(adapter.product_ids)
+    assert {r.product_id: r.reason for r in pouch.reasons}[101] == "수납이 좋아요"
+    assert {r.product_id: r.reason for r in adapter.reasons}[201] == "220V 지원이에요"
+
+
+async def test_case3_applies_expose_max_per_list_not_globally(monkeypatch) -> None:
+    """상한은 목록마다 걸린다 — 전역 절단이면 두 목록 합이 expose_max 를 못 넘는다 (REQ-REC-021/024)."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "expose_min", 1)
+    monkeypatch.setattr(settings, "expose_max", 2)
+    push = _RecordingPush()
+    # 니즈를 번갈아 낸 랭킹 — 어느 한 니즈가 상위를 독식하지 않은 정상 분포.
+    llm = _needs_llm(
+        [
+            {"productId": 101, "rationale": "a"},
+            {"productId": 201, "rationale": "d"},
+            {"productId": 102, "rationale": "b"},
+            {"productId": 202, "rationale": "e"},
+            {"productId": 103, "rationale": "c"},
+            {"productId": 203, "rationale": "f"},
+        ]
+    )
+
+    await _run_case3(llm, push)
+
+    lists = push.pushes[0].lists
+    assert [len(entry.product_ids) for entry in lists] == [2, 2]  # 전역 상한이었다면 합이 2다
+    assert lists[0].product_ids == [101, 102]
+    assert lists[1].product_ids == [201, 202]
+
+
+async def test_case3_tops_up_a_starved_need_to_expose_min(monkeypatch) -> None:
+    """랭킹이 한 니즈에 쏠려도 굶은 니즈는 자기 leg 의 검색순서로 expose_min 까지 채운다.
+
+    전역 보정이면 이미 총량이 차 있어 아무것도 채우지 않고, 그 니즈 목록은 비거나 1건이 된다 —
+    `PICK_ONE` 인데 고를 것이 없는 목록이다(REQ-REC-096 v0.11.0 개정 근거).
+    """
+    settings = get_settings()
+    monkeypatch.setattr(settings, "expose_min", 2)
+    monkeypatch.setattr(settings, "expose_max", 3)
+    push = _RecordingPush()
+    llm = _needs_llm(  # 파우치 쪽으로 완전히 쏠린 랭킹 — 어댑터는 201 하나뿐
+        [
+            {"productId": 101, "rationale": "a"},
+            {"productId": 102, "rationale": "b"},
+            {"productId": 103, "rationale": "c"},
+            {"productId": 201, "rationale": "d"},
+        ]
+    )
+
+    await _run_case3(llm, push)
+
+    pouch, adapter = push.pushes[0].lists
+    assert pouch.product_ids == [101, 102, 103]
+    # 201 은 랭킹에서, 202 는 어댑터 leg 검색순서 보충 — 다른 니즈(10x)가 섞이지 않는다.
+    assert adapter.product_ids == [201, 202]
+
+
+async def test_case3_drops_needs_with_no_surviving_candidate() -> None:
+    """후보가 하나도 안 남은 니즈는 목록을 만들지 않는다 — 빈 목록은 보내지 않는다(§4.2)."""
+
+    async def _one_empty_leg(filters, exclude_product_ids=None):
+        return _res(101, 102) if "여행용품" in (filters.category or "") else _res()
+
+    push = _RecordingPush()
+    llm = _needs_llm([{"productId": 101, "rationale": "수납이 좋아요"}])
+
+    await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=llm,
+            search=_one_empty_leg,
+            push_fn=push,
+            map_categories=_two_leg_mapper(),
+        )
+    )
+
+    lists = push.pushes[0].lists
+    assert len(lists) == 1
+    assert lists[0].label == "파우치"
+
+
+async def test_single_need_still_sends_one_list() -> None:
+    """니즈가 1개면 종전대로 목록 1건이다 — 분할은 니즈가 여럿일 때만 의미가 있다."""
+
+    def _one_leg_mapper():
+        async def _map(*, category_queries, utterance, settings):
+            return [("여행/캠핑 > 여행용품", "파우치")]
+
+        return _map
+
+    push = _RecordingPush()
+    llm = _needs_llm([{"productId": 101, "rationale": "수납이 좋아요"}])
+
+    await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=llm,
+            search=_leg_search,
+            push_fn=push,
+            map_categories=_one_leg_mapper(),
+        )
+    )
+
+    assert len(push.pushes[0].lists) == 1
+
+
+async def test_non_case3_multi_leg_stays_single_list() -> None:
+    """case 3 이 아니면 leg 이 여럿이어도 목록 1건이다 — 니즈 전개가 일어난 턴만 분할한다."""
+    push = _RecordingPush()
+    llm = FakeLLM(  # DEFAULT_DECOMPOSE = case 2
+        rerank={
+            "ranked": [
+                {"productId": 101, "rationale": "a"},
+                {"productId": 201, "rationale": "b"},
+            ],
+            "overallComment": "추천이에요",
+        }
+    )
+
+    await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=llm,
+            search=_leg_search,
+            push_fn=push,
+            map_categories=_two_leg_mapper(),
+        )
+    )
+
+    assert len(push.pushes[0].lists) == 1
+    assert push.pushes[0].lists[0].label is None
+
+
+async def test_case3_split_does_not_add_llm_calls() -> None:
+    """니즈별 분할은 LLM 호출을 늘리지 않는다 — 전역 rerank 1회 결과를 leg 로 나눌 뿐이다.
+
+    REQ-REC-024 의 `shall not` 이자 결정 14-E 의 "니즈 수만큼 무제한 fan-out 금지"(REQ-REC-023)다.
+    leg 마다 rerank 를 돌리면 니즈가 5개일 때 Sonnet 호출이 5배가 된다.
+    """
+    push = _RecordingPush()
+    llm = _needs_llm(
+        [
+            {"productId": 101, "rationale": "a"},
+            {"productId": 201, "rationale": "b"},
+        ]
+    )
+
+    await _run_case3(llm, push)
+
+    assert len(push.pushes[0].lists) == 2  # 실제로 분할된 턴에서 센다
+    tiers = [tier for tier, _ in llm.calls]
+    assert tiers.count("smart") == 1, "rerank(smart)는 니즈 수와 무관하게 1회"
+    assert tiers.count("fast") == 1, "decompose(fast)도 1회 — 전개는 이 턴에 트리거되지 않았다"
+
+
+async def test_case3_budget_counts_only_needs_with_candidates(monkeypatch) -> None:
+    """rerank 예산은 **후보가 실제로 남은 니즈** 수로 잡는다 (PR #212 리뷰).
+
+    요청한 leg 수로 잡으면 검색 0건·최근구매 dedup 으로 비워진 니즈까지 예산에 세어, rerank 가
+    쓰지도 못할 항목 수를 요구하고 출력 예산만 부풀린다.
+    """
+    from app.agents.buyer.recommendation import graph as recommendation_graph
+
+    seen: list[int] = []
+    real_rerank = recommendation_graph.rerank
+
+    async def _spy(llm, **kwargs):
+        seen.append(kwargs["expose_max"])
+        return await real_rerank(llm, **kwargs)
+
+    monkeypatch.setattr(recommendation_graph, "rerank", _spy)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "expose_max", 3)
+
+    async def _one_empty_leg(filters, exclude_product_ids=None):
+        # 어댑터 leg 은 0건 — 니즈는 2개로 요청됐지만 후보가 남은 건 파우치뿐이다.
+        # 후보를 넉넉히 둬야 len(candidates) 상한이 아니라 **니즈 수** 산정이 드러난다.
+        if "여행용품" in (filters.category or ""):
+            return _res(101, 102, 103, 104, 105, 106, 107, 108)
+        return _res()
+
+    await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=_needs_llm([{"productId": 101, "rationale": "a"}]),
+            search=_one_empty_leg,
+            push_fn=_RecordingPush(),
+            map_categories=_two_leg_mapper(),
+        )
+    )
+
+    # 후보가 있는 니즈는 1개 → 예산 expose_max×1 = 3. 요청 leg 수(2)로 셌다면 6이 된다.
+    assert seen == [3]
+
+
+async def test_case3_rerank_prompt_carries_need_boundaries() -> None:
+    """니즈별 턴이면 rerank 입력에 니즈 경계가 실제로 실려 나간다 (PR #212 리뷰, 배선 확인)."""
+    push = _RecordingPush()
+    llm = _needs_llm([{"productId": 101, "rationale": "a"}, {"productId": 201, "rationale": "b"}])
+
+    await _run_case3(llm, push)
+
+    smart_user = next(user for tier, user in llm.calls if tier == "smart")
+    assert "NEEDS" in smart_user
+    assert '"need": "파우치"' in smart_user and '"need": "어댑터"' in smart_user
+
+
+async def test_non_case3_rerank_prompt_has_no_need_section() -> None:
+    """분할하지 않는 턴의 rerank 입력은 종전 그대로다 — 흔한 경로를 건드리지 않는다."""
+    push = _RecordingPush()
+    llm = FakeLLM()  # DEFAULT_DECOMPOSE = case 2
+
+    await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=llm,
+            search=_leg_search,
+            push_fn=push,
+            map_categories=_two_leg_mapper(),
+        )
+    )
+
+    smart_user = next(user for tier, user in llm.calls if tier == "smart")
+    assert "NEEDS" not in smart_user
+    assert '"need"' not in smart_user
+
+
+def test_need_label_falls_back_to_canonical_after_sanitizing() -> None:
+    """정제 결과가 비면 canonical 로 폴백한다 (PR #212 리뷰).
+
+    query 는 decompose LLM 산출 자유 텍스트라 zero-width·제어문자만 남는 경우가 있다.
+    `query or canonical` 을 정제 **전에** 판정하면 query 가 truthy 라 canonical 을 못 보고
+    label 이 조용히 사라진다 — 니즈별 목록에서 이름 없는 목록이 나온다.
+    """
+    from app.agents.buyer.recommendation.graph import _need_label
+
+    assert _need_label(("가전 > 어댑터", "어댑터")) == "어댑터"
+    assert _need_label(("가전 > 어댑터", "​​")) == "가전 > 어댑터"  # 정제 후 폴백
+    assert _need_label(("가전 > 어댑터", None)) == "가전 > 어댑터"
+    assert _need_label(("​", "​")) is None  # 양쪽 다 비면 라벨 없음
+
+
+def test_need_label_truncates_to_contract_cap() -> None:
+    """label 은 계약 상한(§4.2 ≤50자)으로 자른다 — 초과하면 Spring 이 400 이다."""
+    from app.agents.buyer.recommendation.graph import _need_label
+    from app.schemas.spring import LIST_LABEL_MAX_LEN
+
+    label = _need_label(("c", "가" * 80))
+    assert len(label) == LIST_LABEL_MAX_LEN
+
+
+def test_need_names_fall_back_to_ordinal_for_rerank_only() -> None:
+    """라벨이 전부 정제로 비어도 rerank 에는 니즈 경계가 남는다 (PR #212 리뷰).
+
+    빈 dict 를 넘기면 rerank 가 `if need_of:` 에서 falsy 로 걸러 **단일 목록 경로와 똑같이**
+    경계 없이 정렬한다 — 그런데 하류는 여전히 목록을 쪼개므로 근거 없는 카드가 나간다.
+    rerank 에 필요한 건 사람이 읽는 이름이 아니라 **구분되는 토큰**이라 순번으로 채운다.
+    이 순번은 rerank 입력 전용이며 push `label`(사용자 노출)로는 새지 않는다.
+    """
+    from app.agents.buyer.recommendation.graph import _need_names
+
+    legs = [("​", "​"), ("​", "​")]  # 양쪽 다 정제하면 빈 문자열
+    names = _need_names(legs, leg_of={101: 0, 201: 1}, product_ids=[101, 201])
+
+    assert set(names.values()) == {"니즈 1", "니즈 2"}, "경계가 구분되기만 하면 된다"
+
+
+def test_need_names_prefer_real_labels() -> None:
+    """실제 니즈 이름이 있으면 그대로 쓴다 — 순번은 이름이 없을 때만."""
+    from app.agents.buyer.recommendation.graph import _need_names
+
+    legs = [("여행/캠핑 > 여행용품", "파우치"), ("​", "​")]
+    names = _need_names(legs, leg_of={101: 0, 201: 1}, product_ids=[101, 201])
+
+    assert names == {101: "파우치", 201: "니즈 2"}
+
+
+def test_need_names_disambiguate_colliding_labels() -> None:
+    """두 니즈가 같은 라벨을 내면 구분자를 붙인다 (PR #212 리뷰).
+
+    rerank 는 `dict.fromkeys(need_of.values())` 로 NEEDS 목록을 만들어서, 토큰이 겹치면
+    **두 leg 를 하나의 니즈로 뭉갠다** — "니즈마다 상위 N개" 지시가 둘을 구분하지 못해
+    이 PR 이 고치려던 쏠림이 그대로 재발한다. rerank 는 정상 성공이라 드러나지도 않는다.
+    """
+    from app.agents.buyer.recommendation.graph import _need_names
+
+    # 서로 다른 두 니즈가 같은 canonical 로 매핑되고 query 는 둘 다 정제 후 빈 경우.
+    legs = [("패션 > 가방", "​"), ("패션 > 가방", "​")]
+    names = _need_names(legs, leg_of={101: 0, 201: 1}, product_ids=[101, 201])
+
+    assert names[101] != names[201], "겹치면 rerank 가 두 니즈를 하나로 본다"
+    assert len(set(names.values())) == 2
+
+
+def test_need_names_keep_clean_labels_when_distinct() -> None:
+    """겹치지 않으면 이름을 그대로 둔다 — 구분자는 충돌할 때만 붙인다."""
+    from app.agents.buyer.recommendation.graph import _need_names
+
+    legs = [("여행/캠핑 > 여행용품", "파우치"), ("가전 > 어댑터", "어댑터")]
+    names = _need_names(legs, leg_of={101: 0, 201: 1}, product_ids=[101, 201])
+
+    assert names == {101: "파우치", 201: "어댑터"}
+
+
+def test_split_by_need_logs_products_without_leg(caplog) -> None:
+    """leg 를 모르는 상품이 섞이면 조용히 leg 0 에 넣지 않고 로그를 남긴다 (PR #212 리뷰).
+
+    같은 PR 의 reco_lists_truncated 와 같은 기준이다 — 도달하지 않아야 하는 경계가 도달하면
+    어느 니즈에도 속하지 않는 상품이 남의 목록에 섞이는데, 로그가 없으면 영영 안 드러난다.
+    """
+    import logging
+
+    from app.agents.buyer.recommendation.graph import _split_by_need
+
+    with caplog.at_level(logging.WARNING):
+        groups = _split_by_need(
+            [101, 999],  # 999 는 leg_of 에 없다
+            _res(101, 999).products,
+            leg_of={101: 0},
+            leg_count=2,
+            expose_min=1,
+            expose_max=5,
+        )
+
+    assert groups  # 동작은 종전대로 — 진단만 추가한다
+    assert any("leg" in r.message for r in caplog.records)
