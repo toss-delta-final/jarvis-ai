@@ -584,20 +584,24 @@ def test_store_calls_never_run_on_the_event_loop_thread(
         assert not any(flags), f"{name} 이 이벤트 루프 스레드에서 실행됐다(블로킹)"
 
 
-def test_reason_lookup_failure_is_503_not_500(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`build_reasons` 도 카탈로그 I/O 다 — 여기서 터져도 500 이 아니라 503 이어야 한다.
+def test_reason_lookup_failure_degrades_to_null_reasons(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`build_reasons` 가 터져도 **이미 확정된 개인화 순위는 버리지 않는다** — reason 만 null.
 
-    LLM 이 없다고 실패 여지가 없는 게 아니다. 내부 `store.get_many` 가 커넥션 장애로 터지면
-    "outcome 3종 모두 200" 계약이 처리되지 않은 500 으로 깨진다(리뷰 지적).
+    처리되지 않은 500 은 막아야 하지만(계약 "outcome 3종 모두 200"), 503 으로 올리면 Spring 이
+    멀쩡한 랭킹 대신 인기상품 폴백(AI_ERROR)을 쓰게 된다. `reason` 은 nullable 이고 프로필 조회도
+    같은 이유로 degrade 하므로 여기서도 degrade 가 맞다(§3.7·§4.11 "홈 렌더 비차단").
     """
 
     def _boom(**kwargs):
         raise RuntimeError("pg-catalog down mid-request")
 
     monkeypatch.setattr(svc, "build_reasons", _boom)
-    r = client.post(_URL, json=_body())
-    assert r.status_code == 503
-    assert r.json()["error"]["code"] == "UPSTREAM_UNAVAILABLE"
+    r = client.post(_URL, json=_body(limit=10))
+    assert r.status_code == 200
+    data = r.json()
+    assert data["outcome"] == "PERSONALIZED"
+    assert data["items"], "랭킹은 그대로 나가야 한다"
+    assert all(i["reason"] is None for i in data["items"])
 
 
 def test_profile_store_failure_degrades_to_200(monkeypatch: pytest.MonkeyPatch) -> None:

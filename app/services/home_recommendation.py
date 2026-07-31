@@ -332,10 +332,12 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
 
     # reason 은 미리 만들어 둔 `extras` 재료에서 **고른다** — LLM 호출 0회라 상위 N개로 제한할
     # 이유가 없다(전 카드 대상).
-    # 실패할 여지가 없는 건 **LLM 호출뿐**이다 — `build_reasons` 는 내부에서 `store.get_many` 로
-    # 카탈로그를 한 번 더 조회하므로 여전히 I/O 다(커넥션 일시 장애 등). 위 두 카탈로그 호출과
-    # 같은 방식으로 감싸지 않으면 여기서 난 예외가 처리되지 않은 500 으로 나가 "outcome 3종 모두
-    # 200" 계약(§3.7)이 깨진다 — 같은 원인이면 같은 코드(503)로 나가야 한다.
+    # `build_reasons` 는 내부에서 `store.get_many` 로 카탈로그를 한 번 더 조회하므로 여전히 I/O 이고,
+    # 실패를 그냥 두면 처리되지 않은 500 이 나가 "outcome 3종 모두 200" 계약(§3.7)이 깨진다.
+    # 다만 **503 으로 올리지는 않는다** — 이 시점엔 `top`(정상 개인화 순위)이 이미 확정돼 있어,
+    # reason 조회 순단으로 그것까지 버리면 Spring 이 멀쩡한 결과 대신 인기상품 폴백(AI_ERROR)을
+    # 쓰게 된다. `reason` 은 계약상 nullable 이고 위 프로필 조회도 같은 이유로 degrade 하므로,
+    # 여기서도 reason 만 비우고 개인화 결과는 그대로 내보내는 쪽이 "홈 렌더 비차단"(§4.11)에 맞다.
     try:
         reasons = await asyncio.to_thread(
             build_reasons,
@@ -346,9 +348,10 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
             profile_markdown=profile_markdown,
             settings=settings,
         )
-    except Exception as exc:
-        logger.warning("home_reco_catalog_unavailable")
-        raise UpstreamUnavailable from exc
+    except Exception:
+        # 예외 문자열은 업스트림 상태를 유출할 수 있어 클래스명도 남기지 않는다(#141 규약).
+        logger.warning("home_reco_reason_unavailable")
+        reasons = {}
     return _respond(
         "PERSONALIZED",
         top,
