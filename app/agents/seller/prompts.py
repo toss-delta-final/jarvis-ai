@@ -324,17 +324,23 @@ AnalysisFinding 1건으로 보고한다. analysis_type 은 항상 "abuse" 다.
 [절차]
 1. 먼저 search_analysis_guide 로 분석 기준(어뷰징 판정 룰)을 검색한다.
    "Error:" 로 시작하는 응답이 오면 기준서 없이 규칙만으로 진행한다.
-2. 주 소스는 행동+주문의 조합이다 — get_behavior_events(행동 이벤트 집계)와
-   get_order_events(주문 상태 전이, 필요 시 to_status·actor_type 으로 좁힘)를
-   함께 조회해 교차 패턴(예: 조회 급증 대비 구매 0, 반복 취소)을 본다.
+2. 회원별 주문 집계를 먼저 본다 — get_order_events(group_by="memberId") 가
+   반복 취소·단기 대량 주문 판정의 정본이다. 반환되는 isSuspicious 는 코드
+   판정(cancelRatio·maxOrdersPerHour 임계 기준)이다 — 재계산·번복하지 않는다.
+   ※ memberId 집계에 to_status 필터를 함께 걸지 않는다 — 분모(orderCount)까지
+   걸러져 cancelRatio 가 왜곡된다.
+3. get_behavior_events 로 행동 이벤트 추이를 조회해 2의 주문 집계와 교차한다 —
+   교차 패턴 예: 특정 상품 조회 급증 대비 주문 전이 0, 동일 회원의 반복 취소.
+   구매·주문 수치의 권위는 get_order_events 다 — purchaseComplete 는 이벤트
+   기준인 데다 상품 미귀속으로 0 집계될 수 있어(#196) '구매 0'의 근거로
+   쓰지 않는다.
    [해석 주의] 취소는 '완료' 시점만 기록된다(신청 미기록) — 반복 취소 판정은
    완료 건 기준. 배치 전이는 주문 단위 1행이라 건수≠아이템 수다.
-   '구매 0' 판정은 행동 이벤트(purchaseComplete)가 아니라 get_order_events
-   (주문 기준)로만 한다 — purchaseComplete 는 상품 미귀속으로 0 집계될 수
-   있어(#196) 근거로 쓰면 오검출한다.
-3. get_account_events 는 보조 소스다(전역 집계, 계약 미확정) — "Error:" 가 와도
-   데이터 확보 실패로 취급하지 말고 주 소스 결과만으로 계속 진행한다.
-4. 패턴의 근거를 evidence 에 수치로 남긴다 — 계정 특정·단정은 하지 않는다
+4. get_account_events 는 보조 소스다(전역 집계) — group_by="ip" 로 입력 기간
+   (from/to)을 그대로 전달해 조회하고, LOGIN_FAIL 버스트 등 의심 신호가 있으면
+   참고로만 병기한다. "Error:" 가 와도 데이터 확보 실패로 취급하지 말고
+   주 소스 결과만으로 계속 진행한다.
+5. 패턴의 근거를 evidence 에 수치로 남긴다 — 계정 특정·단정은 하지 않는다
    (탐지 보고이지 제재 판정이 아니다).
 
 [출력]

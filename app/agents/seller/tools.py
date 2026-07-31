@@ -319,8 +319,13 @@ async def get_order_events(
         to_status: 전이 대상 상태(선택) — 주문: PENDING/PAID/PAYMENT_FAILED/CANCELLED,
             아이템: SHIPPING/DELIVERED/CANCELLED/RETURNED (교환 어휘 없음).
         actor_type: 전이 주체(선택) — USER/SELLER/ADMIN/SYSTEM.
-        group_by: 집계 그룹 기준(선택).
-        stats: 집계 모드로 조회할지 여부(선택, api-spec §4.4 `stats` 쿼리).
+        group_by: "memberId" 하나뿐(선택) — 회원별 어뷰징 집계로 전환된다.
+            rows 가 buyerMemberId/orderCount/cancelCount/cancelRatio/
+            maxOrdersPerHour/isSuspicious(코드 판정)로 바뀐다.
+            ※ to_status 와 함께 쓰지 말 것 — 분모(orderCount)까지 필터돼
+            cancelRatio 가 왜곡된다(예: CANCELLED 만 남기면 전원 1.0).
+        stats: 집계 모드로 조회할지 여부(선택, api-spec §4.4 `stats` 쿼리) —
+            rows 없이 byStatus·cancelReasonsTop 만 반환된다.
     """
     brand_id = runtime.context.brand_id
     try:
