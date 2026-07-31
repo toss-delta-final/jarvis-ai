@@ -232,7 +232,19 @@ def build_reasons(
         elif (tag := _pick(tags, viewed_tags)) is not None:
             text = _VIEWED_FRAME.format(tag=tag)
         elif profile_markdown and (
-            tag := next((t for t in sorted(set(tags)) if t in profile_markdown), None)
+            tag := next(
+                (
+                    t
+                    for t in sorted(set(tags))
+                    # 부분 문자열 매칭이라 초단문 태그는 오탐의 주범이다 — "방"이 "주방"에,
+                    # "장"이 "화장품"에 걸린다(PR 리뷰). 한국어는 교착어라 단어 경계 매칭이
+                    # 비현실적이고 프로필은 자유 텍스트라 태그 집합 교집합도 불가능하므로,
+                    # 길이 하한으로 오탐 표면을 줄인다. 2자 이상이면 포함 관계가 대체로
+                    # 의미 연관이다("여행" ⊂ "해외여행"·"여행지").
+                    if len(t) >= settings.home_reco_profile_tag_min_chars and t in profile_markdown
+                ),
+                None,
+            )
         ):
             # 프로필 원문은 **여기서 매칭에만** 쓰고 응답·로그로는 내보내지 않는다(§3.7 [HARD]).
             text = _PROFILE_FRAME.format(tag=tag)

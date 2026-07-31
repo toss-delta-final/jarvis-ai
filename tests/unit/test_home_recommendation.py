@@ -677,6 +677,26 @@ def test_reason_falls_back_to_profile_keyword(
     assert reason == "등산에 맞춰 골랐어요"
 
 
+def test_profile_match_skips_single_char_tags(
+    store: CatalogArtifactStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """1자 태그는 프로필 부분 문자열 매칭에서 제외한다 — "방"이 "주방"에 걸리는 오탐 방지.
+
+    cart/viewed 경로는 정확한 집합 교집합이라 무관하고, 자유 텍스트 프로필을 상대하는
+    3순위 분기만 길이 하한을 건다(PR 리뷰).
+    """
+    _with_extras(store, 9001, situation_tags=["무관한태그"])
+    _with_extras(store, 1001, situation_tags=["방"], review_pros=["튼튼하다는 평"])
+
+    async def _profile(user_id: str | None) -> dict | None:
+        return {"markdown": "주방용품을 자주 산다", "generated_at": "2026-07-31T00:00:00Z"}
+
+    monkeypatch.setattr(svc, "read_profile_summary", _profile)
+    items = client.post(_URL, json=_body(limit=10)).json()["items"]
+    reason = next(i["reason"] for i in items if i["productId"] == 1001)
+    assert reason == "튼튼하다는 평", '"방에 맞춰 골랐어요" 오탐이 나오면 안 된다'
+
+
 def test_reason_falls_back_to_review_pro(store: CatalogArtifactStore) -> None:
     """아무 매칭도 없으면 상품 고유 재료(리뷰 장점)를 쓴다."""
     _with_extras(store, 9001, situation_tags=["무관"])

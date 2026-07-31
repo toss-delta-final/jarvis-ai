@@ -236,6 +236,9 @@ class Settings(BaseSettings):
     home_reco_max_items: int = Field(default=60, ge=HOME_RECO_LIMIT_MAX)
     # 이 수 미만이면 랭킹이 무의미하다고 보고 INSUFFICIENT_CANDIDATES 로 답한다(200).
     home_reco_min_candidates: int = Field(default=5, gt=0)
+    # 프로필 매칭 태그 길이 하한(build_reasons 3순위) — 부분 문자열 매칭이라 1자 태그는
+    # "방"⊂"주방" 류 오탐의 주범이다(PR #213 리뷰). 2자 이상이면 포함이 대체로 의미 연관.
+    home_reco_profile_tag_min_chars: int = Field(default=2, ge=1)
     # [#148 실측 2026-07-31] reason 을 요청 경로에서 LLM 으로 만드는 방식은 **폐기**했다.
     # gpt-5-nano 배치 1회가 항목 수에 선형으로 늘어(20개 7970ms · 12개 3852ms · 6개 2102ms)
     # I-22 예산(연결 2s/응답 3s)을 5개에서도 넘겼다. 지금은 I-17 배치가 상품당 1회 만들어 둔
