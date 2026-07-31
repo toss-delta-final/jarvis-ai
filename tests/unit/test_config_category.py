@@ -89,3 +89,34 @@ def test_needs_expansion_tier_rejects_unknown_value() -> None:
     """
     with pytest.raises(ValidationError):
         Settings(_env_file=None, needs_expansion_tier="fasttt")
+
+
+def test_override_margin_must_exceed_select_trigger() -> None:
+    """[PR #188 리뷰] 마진 예외(§4.5)와 택일 트리거(§4.4)의 구간은 겹치면 안 된다.
+
+    두 임계는 **정반대 상태**를 가리킨다 — `margin <= select_margin_max` 는 "1·2위가 거의 붙어
+    애매하다"(LLM 에게 물어본다), `margin >= override_margin` 은 "1위만 확 가까워 확신한다"
+    (거리가 멀어도 채택한다). 한 leg 이 동시에 애매하면서 확신일 수는 없다.
+
+    겹치면 **#115 가 폐기한 실패 모드가 되살아난다**: 마진이 얇다는 건 taxonomy 에 맞는 칸이
+    없다는 신호인데(§4.5), 그 상태에서 LLM 이 고른 먼 후보를 채택하면 그게 바로 "억지 채택"이다
+    (`'선물용품'` 마진 0.0095 → LLM 이 `도서/음반 > 독서용품` 0.2292 선택 → 드롭이 정답).
+
+    관계가 주석·테스트에만 있으면 한쪽 임계를 튜닝할 때 조용히 겹칠 수 있어 config 로 고정한다.
+    """
+    settings = Settings(_env_file=None)
+    assert settings.category_distance_override_margin > settings.category_select_margin_max
+
+    with pytest.raises(ValidationError):  # 겹치는 조합은 기동 시 거부
+        Settings(
+            _env_file=None,
+            category_select_margin_max=0.05,
+            category_distance_override_margin=0.035,
+        )
+    # 함께 올리면 통과한다 — 금지가 아니라 "구간을 겹치지 마라"는 제약임을 고정
+    ok = Settings(
+        _env_file=None,
+        category_select_margin_max=0.05,
+        category_distance_override_margin=0.08,
+    )
+    assert ok.category_select_margin_max == 0.05

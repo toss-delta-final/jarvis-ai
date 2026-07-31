@@ -247,6 +247,8 @@ class Settings(BaseSettings):
     # 안전)지만 오분류 유입은 검색을 틀린 칸으로 좁혀 정답 상품을 후보에서 배제한다(§4 비대칭).
     # 관측(`category_distance_override`) 분포가 쌓이면 완화를 검토한다. 0 이면 예외 off 가 아니라
     # **전부 채택**이 되므로(마진 ≥ 0), 끄려면 임계보다 큰 값(예 2.0)을 준다.
+    # ⚠️ `category_select_margin_max`(§4.4 애매 판정)보다 **커야** 한다 — 두 구간은 정반대 상태라
+    # 겹치면 안 된다(아래 _require_margin_bands_disjoint 가 기동 시 강제).
     category_distance_override_margin: float = Field(default=0.035, ge=0.0, le=2.0)
     # [#115] top-k LLM 택일 트리거(§4.4) — 마진(2위−1위 거리차)이 이 값 **이하**면 애매한 판정으로
     # 보고 select_category 로 후보 중 택일한다. 거리컷이 못 잡는 구멍용: 추상 라벨('선물용품')은
@@ -384,6 +386,30 @@ class Settings(BaseSettings):
     def _normalize_llm_provider(cls, value: object) -> object:
         """기존 환경변수 호환을 위해 provider 값의 ASCII 대소문자를 정규화한다."""
         return value.lower() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def _require_margin_bands_disjoint(self) -> "Settings":
+        """마진 예외(§4.5)와 택일 트리거(§4.4)의 구간이 겹치면 기동 실패 (PR #188 리뷰).
+
+        두 임계는 **정반대 상태**를 가리킨다 — `margin <= category_select_margin_max` 는 "1·2위가
+        거의 붙어 애매하다"(LLM 에게 택일을 물어본다), `margin >= category_distance_override_margin`
+        은 "1위만 확 가까워 확신한다"(거리가 멀어도 채택한다). 한 leg 이 동시에 애매하면서 확신일
+        수는 없으므로 두 구간은 서로소여야 한다.
+
+        겹치면 **#115 가 폐기한 실패 모드가 되살아난다**: 얇은 마진은 "taxonomy 에 맞는 칸이 없다"는
+        신호인데(§4.5), 그 상태에서 택일이 고른 먼 후보를 채택하면 그게 곧 "억지 채택"이다
+        (`'선물용품'` 마진 0.0095 → `도서/음반 > 독서용품` 0.2292 선택 → 드롭이 정답).
+
+        기본값(0.02 < 0.035)은 서로소지만, 한쪽만 튜닝하면 조용히 겹친다 — 관계를 코드로 고정한다.
+        """
+        if self.category_distance_override_margin <= self.category_select_margin_max:
+            raise ValueError(
+                "CATEGORY_DISTANCE_OVERRIDE_MARGIN must be > CATEGORY_SELECT_MARGIN_MAX "
+                f"(got {self.category_distance_override_margin} <= "
+                f"{self.category_select_margin_max}): "
+                "'ambiguous' and 'confident' margin bands must not overlap"
+            )
+        return self
 
     @model_validator(mode="after")
     def _require_pool_covers_anchor_concurrency(self) -> "Settings":
