@@ -7,6 +7,7 @@ import httpx
 import psycopg
 import pytest
 from fastapi import HTTPException
+from psycopg_pool import PoolTimeout
 
 from app.core import session_context
 from app.core import session_lifecycle as lifecycle
@@ -129,6 +130,176 @@ async def test_claim_programming_error_is_not_masked(
     monkeypatch.setattr(lifecycle, "claim_owner", fail)
     with pytest.raises(psycopg.ProgrammingError):
         await _post_claim(client, session_id="claim-code")
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [TimeoutError("pool"), PoolTimeout("pool"), psycopg.OperationalError("down")],
+)
+async def test_session_end_pg_operational_failure_maps_to_state_unavailable(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+) -> None:
+    """session-end의 실제 저장소 연결/timeout 장애만 공개 wire 503으로 변환한다."""
+
+    async def fail(*_args):
+        raise failure
+
+    monkeypatch.setattr(lifecycle.SessionLifecycleCoordinator, "begin_terminal", fail)
+    response = await client.post(
+        "/events/session-end",
+        json={"userId": 7, "sessionId": "terminal-infra-fail"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "STATE_UNAVAILABLE"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        psycopg.ProgrammingError("bad sql"),
+        psycopg.IntegrityError("broken invariant"),
+        ValueError("domain bug"),
+    ],
+)
+async def test_session_end_non_infra_failure_is_not_masked(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+) -> None:
+    """programming/integrity/domain 오류는 STATE_UNAVAILABLE로 오분류하지 않는다."""
+
+    async def fail(*_args):
+        raise failure
+
+    monkeypatch.setattr(lifecycle.SessionLifecycleCoordinator, "begin_terminal", fail)
+    with pytest.raises(type(failure)):
+        await client.post(
+            "/events/session-end",
+            json={"userId": 7, "sessionId": "terminal-code-fail"},
+        )
+
+
+@pytest.mark.parametrize(
+    ("path", "payload", "unexpected"),
+    [
+        (
+            "/events/session-claim",
+            {"sessionId": "s", "guestId": "g", "userId": 7},
+            {"unexpected": True},
+        ),
+        (
+            "/events/session-end",
+            {"sessionId": "s", "userId": 7},
+            {"unexpected": True},
+        ),
+    ],
+)
+async def test_event_payloads_reject_unknown_fields(
+    client: httpx.AsyncClient,
+    path: str,
+    payload: dict,
+    unexpected: dict,
+) -> None:
+    """event 전용 inbound 모델은 알려지지 않은 필드를 400 BAD_REQUEST로 거부한다."""
+    response = await client.post(path, json={**payload, **unexpected})
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "BAD_REQUEST"
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        (
+            "/events/session-claim",
+            {"session_id": "s", "guest_id": "g", "user_id": 7},
+        ),
+        (
+            "/events/session-end",
+            {"session_id": "s", "user_id": 7},
+        ),
+    ],
+)
+async def test_event_payloads_reject_snake_case_fields(
+    client: httpx.AsyncClient,
+    path: str,
+    payload: dict,
+) -> None:
+    """event wire는 camelCase alias만 허용하고 Python 필드명 입력은 거부한다."""
+    response = await client.post(path, json=payload)
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "BAD_REQUEST"
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        (
+            "/events/session-claim",
+            {
+                "sessionId": "canonical",
+                "session_id": "shadow",
+                "guestId": "g",
+                "userId": 7,
+            },
+        ),
+        (
+            "/events/session-end",
+            {
+                "sessionId": "canonical",
+                "session_id": "shadow",
+                "userId": 7,
+            },
+        ),
+    ],
+)
+async def test_event_payloads_reject_camel_snake_collisions(
+    client: httpx.AsyncClient,
+    path: str,
+    payload: dict,
+) -> None:
+    """camel+snake collision은 shadow 필드를 무시하지 않고 400으로 닫는다."""
+    response = await client.post(path, json=payload)
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "BAD_REQUEST"
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        (
+            "/events/session-claim",
+            {"sessionId": 1, "guestId": "g", "userId": 7},
+        ),
+        (
+            "/events/session-claim",
+            {"sessionId": "s", "guestId": 1, "userId": 7},
+        ),
+        (
+            "/events/session-end",
+            {"sessionId": 1, "userId": 7},
+        ),
+        (
+            "/events/session-end",
+            {"sessionId": "s", "userId": 7, "reason": 1},
+        ),
+    ],
+)
+async def test_event_string_fields_do_not_coerce_numbers(
+    client: httpx.AsyncClient,
+    path: str,
+    payload: dict,
+) -> None:
+    """event key/reason 문자열 필드는 숫자를 문자열로 coercion하지 않는다."""
+    response = await client.post(path, json=payload)
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "BAD_REQUEST"
 
 
 async def test_session_end_keeps_terminal_durable_when_profile_is_retryable(
@@ -392,7 +563,7 @@ async def test_new_guest_thread_slot_before_db_touch_blocks_claim(
 
     with pytest.raises(SessionActive):
         await coordinator.claim_owner(
-            SessionClaimEvent(session_id="session-1", guest_id="guest-1", user_id=7)
+            SessionClaimEvent(sessionId="session-1", guestId="guest-1", userId=7)
         )
 
     assert await repo.get_context("session-1") is None
@@ -420,7 +591,7 @@ async def test_claim_coordinator_replaces_legacy_guess_and_quarantines_it(
     repo._migration_conflicts[("session-1", "6")] = ("resolved", "legacy-context")
 
     outcome = await lifecycle.SessionLifecycleCoordinator(repo, get_registry()).claim_owner(
-        SessionClaimEvent(session_id="session-1", guest_id="signed-guest", user_id=7)
+        SessionClaimEvent(sessionId="session-1", guestId="signed-guest", userId=7)
     )
 
     assert outcome.context.owner_id == "7"
@@ -446,7 +617,7 @@ async def test_claim_fence_blocks_new_guest_slot_until_transition_finishes(
     monkeypatch.setattr(lifecycle, "_transition_claim", blocked_transition)
     task = asyncio.create_task(
         coordinator.claim_owner(
-            SessionClaimEvent(session_id="session-1", guest_id="guest-1", user_id=7)
+            SessionClaimEvent(sessionId="session-1", guestId="guest-1", userId=7)
         )
     )
     await entered.wait()
@@ -484,7 +655,7 @@ async def test_claim_releases_fence_after_transition_error_and_cancellation(
 ) -> None:
     registry = get_registry()
     coordinator = lifecycle.SessionLifecycleCoordinator(repo, registry)
-    event = SessionClaimEvent(session_id="session-1", guest_id="guest-1", user_id=7)
+    event = SessionClaimEvent(sessionId="session-1", guestId="guest-1", userId=7)
 
     async def fail_transition(repository, conn, claim_event):  # noqa: ANN001
         raise RuntimeError("db transition failed")

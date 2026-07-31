@@ -4,6 +4,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+import psycopg
 from langgraph.store.memory import InMemoryStore
 
 from app.agents.buyer import session_state as session_state_module
@@ -22,6 +23,7 @@ from app.core.auth import Identity
 from app.core.conversation import ConversationStore
 from app.core.session_context import (
     BuyerSessionInput,
+    SessionClaimConflict,
     SessionContextRepository,
     SessionStateUnavailable,
 )
@@ -122,7 +124,7 @@ class _FailOnceStore(InMemoryStore):
     async def aget(self, namespace, key, *, refresh_ttl=None):
         if self.fail_target_read and namespace[0].endswith("_v2") and key == "categories":
             self.fail_target_read = False
-            raise RuntimeError("verification unavailable")
+            raise TimeoutError("verification unavailable")
         return await super().aget(namespace, key, refresh_ttl=refresh_ttl)
 
 
@@ -255,13 +257,56 @@ async def test_conversation_commit_and_adoption_share_canonical_memory_repositor
     assert result.adopted
 
 
-async def test_unknown_memory_context_fails_closed_without_fabrication() -> None:
+async def test_unknown_memory_context_preserves_domain_conflict_without_fabrication() -> None:
     session_context.reset()
 
-    with pytest.raises(SessionStateUnavailable):
+    with pytest.raises(SessionClaimConflict):
         await ensure_thread_adopted("unknown-context", "thread", "42")
 
     assert await session_context._default_repository.get_context("missing-session") is None
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        psycopg.ProgrammingError("bad sql"),
+        psycopg.IntegrityError("broken invariant"),
+        ValueError("domain bug"),
+    ],
+)
+async def test_ensure_thread_adopted_preserves_non_infra_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+) -> None:
+    """adoption 경계는 programming/integrity/domain 오류를 503 원인으로 마스킹하지 않는다."""
+
+    async def fail(*_args):
+        raise failure
+
+    monkeypatch.setattr(session_state_module, "_resolve_context_and_legacy_owner", fail)
+
+    with pytest.raises(type(failure)):
+        await ensure_thread_adopted("context", "thread", "42")
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [TimeoutError("deadline"), psycopg.OperationalError("connection lost")],
+)
+async def test_ensure_thread_adopted_wraps_only_state_store_unavailability(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+) -> None:
+    """adoption 경계의 실제 state-store I/O 장애만 SessionStateUnavailable로 변환한다."""
+
+    async def fail(*_args):
+        raise failure
+
+    monkeypatch.setattr(session_state_module, "_resolve_context_and_legacy_owner", fail)
+
+    with pytest.raises(SessionStateUnavailable) as exc:
+        await ensure_thread_adopted("context", "thread", "42")
+    assert exc.value.__cause__ is failure
 
 
 async def test_graph_adopts_after_commit_context_before_first_state_read(

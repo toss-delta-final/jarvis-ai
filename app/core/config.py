@@ -11,7 +11,6 @@ SearchBackend로 구현해 골든셋 확정(api-spec §4.8 말미·§4.6, C-17).
 
 from __future__ import annotations
 
-import logging
 from functools import lru_cache
 from typing import Literal
 
@@ -106,11 +105,9 @@ class Settings(BaseSettings):
     jwks_url: str | None = None
     jwt_issuer: str | None = "jarvis-spring-auth"
     jwt_audience: str | None = "jarvis-fastapi-ai"
-    # 스트림 티켓 scope 검증값 (§2.3 v0.10.0 확정 검증 항목). None 이면 scope 검증 생략 —
-    # issuer/audience=None 과 같은 규칙. 실값(제안 chat:stream)이 C-1 미확정이라 기본은
-    # None 이다: 미확정 추정값을 활성 강제하면 Spring 발급 티켓과 어긋나는 순간 전면 401
-    # 장애가 된다(PR #39 리뷰 반영). 운영(jwks) 전환 시 확정값을 env JWT_SCOPE 로 주입할 것.
-    jwt_scope: str | None = None
+    # 스트림 티켓 scope 확정값. 다른 값/빈 값/None은 설정 검증에서 기동을 막고,
+    # decode 경계도 이 설정과 별개로 exact chat:stream을 항상 강제한다.
+    jwt_scope: Literal["chat:stream"] = "chat:stream"
     # JWKS tier-1 캐시 TTL(s) — 만료 전에는 kid miss 시에만 refetch(§2.3), 요청마다 왕복 금지.
     jwks_cache_ttl_s: float = 300.0
 
@@ -432,14 +429,6 @@ class Settings(BaseSettings):
             raise ValueError(
                 "REVIEW_TIER 경계는 many >= some >= few 여야 합니다"
                 f" ({self.review_tier_many}/{self.review_tier_some}/{self.review_tier_few})"
-            )
-        # scope 는 §2.3 확정 검증 항목이지만 값이 C-1 미확정이라 fail-fast 로 막지 않는다
-        # (미확정 추정값 강제 시 전면 401 장애 — PR #39 1R 리뷰). 대신 설정 누락이 조용히
-        # 지나가지 않게 기동 경고를 남긴다(4R 리뷰). C-1 확정 후 JWT_SCOPE 주입 시 활성화.
-        if self.auth_mode == "jwks" and not self.jwt_scope:
-            logging.getLogger(__name__).warning(
-                "auth_mode=jwks 인데 JWT_SCOPE 미설정 — §2.3 scope 검증이 비활성 상태로 "
-                "기동합니다 (C-1 확정 후 반드시 주입)"
             )
         return self
 

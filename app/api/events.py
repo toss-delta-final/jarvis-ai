@@ -46,9 +46,16 @@ async def session_end(event: SessionEndEvent, _token: None = Depends(verify_serv
     # sessionId 길이·userId(BIGINT) 범위 상한은 SessionEndEvent 가 강제(스토어 키 남용 방어).
     # best-effort 프로필 갱신 — LLM 미구성/버퍼 없음/오류는 no-op degrade. 어떤 오류도 202 를 막지 않는다(§3.5).
     # store/builder 는 문자열 신원 키를 쓰므로 int userId 를 문자열화(JWT sub·conversation_key 와 정합).
-    result = await session_lifecycle.SessionLifecycleCoordinator().begin_terminal(
-        event.user_id,
-        event.session_id,
-    )
+    try:
+        result = await session_lifecycle.SessionLifecycleCoordinator().begin_terminal(
+            event.user_id,
+            event.session_id,
+        )
+    except SessionStateUnavailable:
+        raise
+    except Exception as exc:
+        if is_state_store_unavailable(exc):
+            raise SessionStateUnavailable from exc
+        raise
     status = "duplicate" if result.duplicate else "accepted"
     return {"status": status}

@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import hmac
+
 from fastapi import Header, HTTPException, status
 
 from app.core.auth import AuthError, Identity, TokenExpiredError, decode_token
@@ -124,7 +126,11 @@ def verify_service_token(
     # 토큰 미설정·불일치 모두 401(프로필 오염 IDOR 방지, 리뷰 반영).
     if settings.auth_mode == "dev":
         return
-    if not settings.internal_api_token or x_internal_token != settings.internal_api_token:
+    if (
+        not settings.internal_api_token
+        or x_internal_token is None
+        or not hmac.compare_digest(x_internal_token, settings.internal_api_token)
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"code": "INTERNAL_TOKEN_INVALID", "message": "서비스 토큰 필요/불일치"},

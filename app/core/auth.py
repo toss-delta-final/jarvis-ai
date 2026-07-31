@@ -46,6 +46,8 @@ SUB_TYPE_GUEST = "guest"
 ROLE_USER = "USER"
 ROLE_GUEST = "GUEST"  # dev legacy compatibility only; JWKS guest는 sub_type="guest"
 ROLE_SELLER = "seller"
+STREAM_SCOPE = "chat:stream"
+_BIGINT_MAX = 2**63 - 1
 
 
 @dataclass(frozen=True)
@@ -59,8 +61,8 @@ class Identity:
     user_id: str | None
     is_guest: bool
     seller_id: str | None
-    # 발급자에 따라 숫자(1)·문자열("1") 클레임이 모두 관측됨 — Identity 는 검증된
-    # 클레임을 원형 보존하고, 숫자 정규화는 소비처(seller.py _seller_context)가 한다.
+    # JWKS seller는 decode 경계에서 JSON int 양의 BIGINT로 검증한다. dev legacy decode는
+    # 기존 로컬 토큰 호환을 위해 문자열을 보존할 수 있다.
     brand_id: str | int | None = None
     # subject: 검증된 raw `sub` 클레임 — 게스트 UUID 포함 모든 역할에 보존한다.
     # 레이트 리밋·동시성 레지스트리의 신원 스코프 키로 일관되게 쓴다(§2.8/§2.9).
@@ -122,12 +124,26 @@ def _claims_to_identity(claims: dict, *, require_identity_claim: bool = False) -
     if (require_identity_claim and raw_role == ROLE_SELLER) or (
         not require_identity_claim and role == ROLE_SELLER.upper()
     ):
+        if require_identity_claim:
+            brand_id = claims.get(CLAIM_BRAND_ID)
+            if (
+                not isinstance(subject, str)
+                or not subject.isascii()
+                or not subject.isdigit()
+                or len(subject) > 19
+                or not 1 <= int(subject) <= _BIGINT_MAX
+            ):
+                raise AuthError("invalid seller subject claim")
+            if type(brand_id) is not int or not 1 <= brand_id <= _BIGINT_MAX:
+                raise AuthError("invalid seller brandId claim")
+        else:
+            brand_id = claims.get(CLAIM_BRAND_ID)
         # 판매자는 sub 를 판매자 식별자로도 사용한다 (스코프 근거는 role 클레임).
         return Identity(
             user_id=subject,
             is_guest=False,
             seller_id=subject,
-            brand_id=claims.get(CLAIM_BRAND_ID),
+            brand_id=brand_id,
             subject=subject,
             session_id=session_id,
         )
@@ -173,18 +189,8 @@ def _claims_to_identity(claims: dict, *, require_identity_claim: bool = False) -
 
 
 def _verify_scope(claims: dict, required: str) -> None:
-    """scope 클레임 검증 (§2.3 확정 검증 항목 — 토큰 용도 혼용 방지).
-
-    발급측 표현 관용: 공백 구분 문자열(OAuth 관례) 또는 리스트 모두 수용한다.
-    """
-    raw = claims.get(CLAIM_SCOPE)
-    if isinstance(raw, str):
-        granted = set(raw.split())
-    elif isinstance(raw, (list, tuple)):
-        granted = {str(item) for item in raw}
-    else:
-        granted = set()
-    if required not in granted:
+    """scope 클레임은 확정된 단일 문자열과 정확히 일치해야 한다."""
+    if claims.get(CLAIM_SCOPE) != required:
         raise AuthError("missing or mismatched scope")
 
 
@@ -223,8 +229,7 @@ def decode_token(
     그 외에는 토큰이 없거나 검증 실패 시 AuthError (만료는 TokenExpiredError).
 
     jwks 모드 검증 항목(§2.3 확정): signature / exp / iss / aud / scope.
-    scope=None 이면 scope 검증을 생략한다 (issuer/audience=None 과 같은 규칙 —
-    전환기 호환, 운영값은 config jwt_scope 주입).
+    JWKS scope는 호출자 설정과 무관하게 exact ``chat:stream``을 항상 검증한다.
     """
     if auth_mode == "dev":
         if not token:
@@ -268,8 +273,7 @@ def decode_token(
             raise TokenExpiredError("token expired") from exc
         except jwt.PyJWTError as exc:
             raise AuthError("invalid token") from exc
-        if scope is not None:
-            _verify_scope(claims, scope)
+        _verify_scope(claims, STREAM_SCOPE)
         # 실배선 레인 — 신원 유형 클레임(sub_type·role) 전무 토큰은 fail-closed.
         return _claims_to_identity(claims, require_identity_claim=True)
 

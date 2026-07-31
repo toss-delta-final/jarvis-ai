@@ -121,19 +121,56 @@ def test_jwks_legacy_role_guest_is_rejected(rsa_key, jwks_calls) -> None:
 
 def test_seller_role_with_brand_id(rsa_key, jwks_calls) -> None:
     """확정 role="seller" + brandId → 판매자 스코프와 brand_id를 보존한다."""
-    claims = seller_ticket_claims(sub="9", brandId="77")
+    claims = seller_ticket_claims(sub="9", brandId=77)
     identity = _decode(sign_ticket(rsa_key, KID, claims))
     assert identity.seller_id == "9"
-    assert identity.brand_id == "77"
+    assert identity.brand_id == 77
     assert identity.is_guest is False
 
 
 def test_exact_lowercase_seller_role_accepted(rsa_key, jwks_calls) -> None:
     """확정값 role="seller" 소문자 정확 일치만 판매자 스코프를 연다."""
-    claims = seller_ticket_claims(sub="9", brandId="77")
+    claims = seller_ticket_claims(sub="9", brandId=77)
     identity = _decode(sign_ticket(rsa_key, KID, claims))
     assert identity.seller_id == "9"
-    assert identity.brand_id == "77"
+    assert identity.brand_id == 77
+
+
+@pytest.mark.parametrize(
+    "brand_id",
+    [None, "77", 77.0, True, False, [], {}, 0, -1, 2**63],
+)
+def test_seller_brand_id_must_be_positive_bigint_integer(
+    rsa_key,
+    jwks_calls,
+    brand_id: object,
+) -> None:
+    """seller brandId는 bool/coercion 없이 양의 PostgreSQL BIGINT 정수만 허용한다."""
+    token = sign_ticket(
+        rsa_key,
+        KID,
+        seller_ticket_claims(sub="9", brandId=brand_id),
+    )
+
+    with pytest.raises(AuthError):
+        _decode(token)
+
+
+@pytest.mark.parametrize("subject", ["", "0", "-1", "seller-9", str(2**63)])
+def test_seller_subject_must_be_positive_bigint_string(
+    rsa_key,
+    jwks_calls,
+    subject: str,
+) -> None:
+    """seller sub는 seller_id로 쓰이므로 양의 BIGINT 숫자 문자열이어야 한다."""
+    token = sign_ticket(
+        rsa_key,
+        KID,
+        seller_ticket_claims(sub=subject, brandId=77),
+    )
+
+    with pytest.raises(AuthError):
+        _decode(token)
 
 
 @pytest.mark.parametrize("sub_type", ["member", "guest", "admin"])
@@ -282,18 +319,24 @@ def test_scope_missing_rejected(rsa_key, jwks_calls) -> None:
         _decode(token)
 
 
-def test_scope_list_claim_accepted(rsa_key, jwks_calls) -> None:
-    """scope 가 리스트 형태여도 요구 scope 포함이면 통과 (발급측 표현 관용)."""
-    token = sign_ticket(rsa_key, KID, ticket_claims(scope=["chat:stream", "other"]))
-    assert _decode(token).user_id == "42"
+@pytest.mark.parametrize(
+    "scope",
+    ["chat:stream other", ["chat:stream"], ["chat:stream", "other"], 1, True, None, {}],
+)
+def test_scope_must_be_exact_string(rsa_key, jwks_calls, scope: object) -> None:
+    """scope는 복합/비문자 표현을 허용하지 않고 exact chat:stream 문자열만 받는다."""
+    token = sign_ticket(rsa_key, KID, ticket_claims(scope=scope))
+    with pytest.raises(AuthError):
+        _decode(token)
 
 
-def test_scope_check_skipped_when_not_required(rsa_key, jwks_calls) -> None:
-    """요구 scope 미설정(config None)이면 scope 검증 생략 — 전환기 호환."""
+def test_scope_check_cannot_be_disabled_by_none(rsa_key, jwks_calls) -> None:
+    """JWKS 호출자가 scope=None을 넘겨도 exact 운영 scope 검증은 비활성화되지 않는다."""
     claims = ticket_claims()
     del claims["scope"]
     token = sign_ticket(rsa_key, KID, claims)
-    assert _decode(token, scope=None).user_id == "42"
+    with pytest.raises(AuthError):
+        _decode(token, scope=None)
 
 
 def test_missing_sub_rejected(rsa_key, jwks_calls) -> None:

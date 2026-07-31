@@ -11,14 +11,24 @@ SessionClaimEvent는 이 모듈이 소유한다.
 
 from __future__ import annotations
 
-from pydantic import Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.schemas.chat import CamelModel
+from app.schemas.chat import to_camel
 
 _BIGINT_MAX = 2**63 - 1
 
 
-class SessionClaimEvent(CamelModel):
+class StrictEventModel(BaseModel):
+    """Spring inbound event 전용 strict camelCase wire base."""
+
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=False,
+        extra="forbid",
+    )
+
+
+class SessionClaimEvent(StrictEventModel):
     """Spring login completion event that transfers one guest session to a member."""
 
     session_id: str = Field(strict=True, min_length=1)

@@ -107,6 +107,48 @@ def test_chat_with_wrong_scope_returns_401(jwks_app, rsa_key) -> None:
     assert resp.json()["error"]["code"] == "TOKEN_INVALID"
 
 
+@pytest.mark.parametrize(
+    "scope",
+    [
+        pytest.param(None, id="null"),
+        pytest.param("", id="empty"),
+        pytest.param("chat:stream other", id="composite-string"),
+        pytest.param(["chat:stream"], id="list"),
+        pytest.param(1, id="number"),
+        pytest.param(True, id="bool"),
+        pytest.param({}, id="object"),
+    ],
+)
+def test_chat_scope_requires_exact_signed_string(
+    jwks_app,
+    rsa_key,
+    scope: object,
+) -> None:
+    """실 signed HTTP에서 exact 문자열 외 scope는 모두 401 TOKEN_INVALID다."""
+    token = sign_ticket(
+        rsa_key,
+        KID,
+        ticket_claims(scope=scope, sessionId="s-auth-1"),
+    )
+
+    resp = client.post("/chat", json=_chat_body(), headers=_bearer(token))
+
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "TOKEN_INVALID"
+
+
+def test_chat_missing_scope_returns_401(jwks_app, rsa_key) -> None:
+    """실 signed HTTP에서 scope key 누락도 TOKEN_INVALID다."""
+    claims = ticket_claims(sessionId="s-auth-1")
+    claims.pop("scope")
+    token = sign_ticket(rsa_key, KID, claims)
+
+    resp = client.post("/chat", json=_chat_body(), headers=_bearer(token))
+
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "TOKEN_INVALID"
+
+
 def test_chat_with_garbage_token_returns_401(jwks_app) -> None:
     """형식 불량 토큰 → 401 TOKEN_INVALID."""
     resp = client.post("/chat", json=_chat_body(), headers=_bearer("not-a-jwt"))
@@ -216,6 +258,26 @@ def test_adoption_failure_before_first_frame_maps_to_state_unavailable(
     assert resp.json()["error"]["code"] == "STATE_UNAVAILABLE"
 
 
+def test_adoption_programming_error_before_first_frame_is_not_masked(
+    jwks_app,
+    rsa_key,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """public chat 경로도 adoption programming 오류를 STATE_UNAVAILABLE로 오분류하지 않는다."""
+    import psycopg
+
+    from app.agents.buyer import session_state
+
+    async def fail_resolution(*_args, **_kwargs):
+        raise psycopg.ProgrammingError("bad adoption query")
+
+    monkeypatch.setattr(session_state, "_resolve_context_and_legacy_owner", fail_resolution)
+    token = sign_ticket(rsa_key, KID, ticket_claims(sub="42", sessionId="s-auth-1"))
+
+    with pytest.raises(psycopg.ProgrammingError):
+        client.post("/chat", json=_chat_body(), headers=_bearer(token))
+
+
 def test_buyer_session_claim_must_match_body(jwks_app, rsa_key) -> None:
     """구매자 티켓의 서명된 sessionId와 body sessionId가 다르면 403이다."""
     token = sign_ticket(rsa_key, KID, ticket_claims(sub="42", sessionId="S1"))
@@ -270,14 +332,14 @@ def test_seller_chat_with_member_ticket_returns_403(jwks_app, rsa_key) -> None:
     assert resp.json()["error"]["code"] == "FORBIDDEN"
 
 
-def test_seller_chat_without_brand_id_returns_403(jwks_app, rsa_key) -> None:
-    """올바른 seller shape인데 brandId 누락 → 403 (본문 우회 금지, §2.3/§2.6)."""
+def test_seller_chat_without_brand_id_returns_401(jwks_app, rsa_key) -> None:
+    """seller brandId 누락은 decode 신원 경계에서 TOKEN_INVALID로 거부한다."""
     claims = seller_ticket_claims(sub="9")
     claims.pop("brandId")
     token = sign_ticket(rsa_key, KID, claims)
     resp = client.post("/seller/chat", json=_chat_body(), headers=_bearer(token))
-    assert resp.status_code == 403
-    assert resp.json()["error"]["code"] == "FORBIDDEN"
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "TOKEN_INVALID"
 
 
 def test_seller_ticket_without_buyer_session_claim_streams(jwks_app, rsa_key) -> None:
@@ -289,6 +351,63 @@ def test_seller_ticket_without_buyer_session_claim_streams(jwks_app, rsa_key) ->
 
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
+
+
+@pytest.mark.parametrize(
+    "brand_id",
+    [None, "3", 3.0, True, False, [], {}, 0, -1, 2**63],
+)
+def test_seller_malformed_brand_id_returns_401_before_backend(
+    jwks_app,
+    rsa_key,
+    monkeypatch: pytest.MonkeyPatch,
+    brand_id: object,
+) -> None:
+    """malformed brandId는 seller coercion/backend 진입 전에 TOKEN_INVALID로 닫힌다."""
+    from app.api import seller as seller_api
+
+    async def fail_if_streamed(*_args, **_kwargs):
+        raise AssertionError("malformed seller identity must not enter seller stream")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(seller_api, "_seller_stream", fail_if_streamed)
+    token = sign_ticket(
+        rsa_key,
+        KID,
+        seller_ticket_claims(sub="9", brandId=brand_id),
+    )
+
+    resp = client.post("/seller/chat", json=_chat_body(), headers=_bearer(token))
+
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "TOKEN_INVALID"
+
+
+@pytest.mark.parametrize("subject", ["", "0", "-1", "seller-9", str(2**63)])
+def test_seller_malformed_subject_returns_401_before_backend(
+    jwks_app,
+    rsa_key,
+    monkeypatch: pytest.MonkeyPatch,
+    subject: str,
+) -> None:
+    """seller_id로 쓰는 sub가 양의 BIGINT 문자열이 아니면 backend 호출 없이 401이다."""
+    from app.api import seller as seller_api
+
+    async def fail_if_streamed(*_args, **_kwargs):
+        raise AssertionError("malformed seller identity must not enter seller stream")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(seller_api, "_seller_stream", fail_if_streamed)
+    token = sign_ticket(
+        rsa_key,
+        KID,
+        seller_ticket_claims(sub=subject, brandId=3),
+    )
+
+    resp = client.post("/seller/chat", json=_chat_body(), headers=_bearer(token))
+
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "TOKEN_INVALID"
 
 
 def test_seller_ticket_is_rejected_from_buyer_chat_before_state_access(
@@ -391,18 +510,13 @@ def test_settings_jwks_requires_google_api_key() -> None:
         _jwks_settings(google_api_key="")
 
 
-def test_settings_jwt_scope_defaults_to_none() -> None:
-    """jwt_scope 기본값은 None(검증 생략) — C-1 확정 전 미확정 추정값을 활성 강제하면
-    Spring 발급 티켓과 어긋나는 순간 전면 401 장애가 된다 (PR #39 리뷰 반영).
-    운영 전환 시 확정값을 env JWT_SCOPE 로 명시 주입한다."""
-    assert Settings(_env_file=None).jwt_scope is None
+def test_settings_jwt_scope_defaults_to_exact_stream_scope() -> None:
+    """운영 스트림 scope 확정값은 설정 누락으로 비활성화될 수 없다."""
+    assert Settings(_env_file=None).jwt_scope == "chat:stream"
 
 
-def test_settings_jwks_without_scope_warns(caplog: pytest.LogCaptureFixture) -> None:
-    """jwks 모드 + JWT_SCOPE 미설정 → 기동 경고 로그 — scope 검증이 조용히 비활성인 채
-    운영되는 것을 드러낸다 (fail-fast 는 C-1 미확정이라 불가, PR #39 4R 리뷰 반영)."""
-    import logging
-
-    with caplog.at_level(logging.WARNING, logger="app.core.config"):
-        _jwks_settings(jwt_scope=None)
-    assert any("JWT_SCOPE" in record.message for record in caplog.records)
+@pytest.mark.parametrize("scope", [None, "", "profile:read", "chat:stream other"])
+def test_settings_jwks_rejects_non_exact_scope(scope: str | None) -> None:
+    """JWKS 설정은 exact chat:stream 외 값으로 기동하지 않는다."""
+    with pytest.raises(ValueError):
+        _jwks_settings(jwt_scope=scope)

@@ -16,6 +16,7 @@ import uuid
 from contextlib import asynccontextmanager
 
 import pytest
+import psycopg
 from langgraph.store.postgres.aio import AsyncPostgresStore
 from psycopg_pool import AsyncConnectionPool
 
@@ -65,7 +66,7 @@ class _FailLegacyDeleteStore:
     async def adelete(self, namespace, key) -> None:  # noqa: ANN001
         if not self.failed and namespace[0] == "buyer_thread_filters":
             self.failed = True
-            raise RuntimeError("legacy delete boundary unavailable")
+            raise psycopg.OperationalError("legacy delete boundary unavailable")
         await self._store.adelete(namespace, key)
 
 

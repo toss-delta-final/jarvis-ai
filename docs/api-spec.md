@@ -126,10 +126,10 @@ Authorization: Bearer {STREAM_TICKET}   ← Spring이 스트림 단위로 발급
     `401 TOKEN_INVALID`로 fail-closed 한다. dev 모드만 로컬 호환을 유지한다.
   - `iss` — 발급자 **`"jarvis-spring-auth"` [확정 v0.15.20]** (BE `StreamTicketProvider.ISSUER` 실측).
   - `aud` — 대상 **`"jarvis-fastapi-ai"` [확정 v0.15.20]** (BE `StreamTicketProvider.AUDIENCE` 실측). **AI는 `aud`를 검증**한다(토큰 혼용 방지 — 로그인 AT는 이 aud가 없어 SSE에 못 씀).
-  - `scope` — **`"chat:stream"` [확정 v0.15.20]** (BE `StreamTicketProvider.SCOPE_CHAT_STREAM` 실측). **AI는 `scope`를 검증**한다.
+  - `scope` — **`"chat:stream"` [확정 v0.15.20]** (BE `StreamTicketProvider.SCOPE_CHAT_STREAM` 실측). AI는 이 **단일 문자열 exact 값**을 항상 검증한다. 누락·빈 값·다른 값·공백 구분 복합 문자열·배열·비문자 값은 모두 `401 TOKEN_INVALID`이며 설정 누락으로 검증을 끌 수 없다.
   - `exp` — 발급 후 **60초 [확정 v0.15.20]** (BE `app.stream-ticket.ttl-seconds: 60`. 구 "30~60초" 범위의 상단값). 완전 1회용은 아니며 짧은 TTL로 근사 — Redis는 Spring 전용 결정 유지, stateless 검증. CH-1/CH-1b 응답이 `ticketTtlSeconds`로 실값을 함께 반환한다.
   - **구매자(`/chat`)**: 위 공통 클레임에 서명된 **`sessionId`**를 추가한다. AI는 이 값을 요청 body의 `sessionId`와 대조하고, 누락·불일치하면 `403 SESSION_FORBIDDEN`으로 거부한다. **`threadId`는 body-only**다 — 한 접속 티켓으로 여러 탭/방을 동시에 열 수 있어야 하므로 티켓에 바인딩하지 않는다.
-  - **판매자(`/seller/chat`)**: **`role == "seller"`(소문자) + `brandId`(숫자) — [확정 v0.15.20]** (BE `StreamTicketProvider.buildTicket` 실측). 집계·CRUD 역호출(§4.4·§4.5)의 `{brandId}` path에 이 값을 쓴다. AI는 `brandId`를 **요청 본문에서 받지 않고 검증된 티켓 클레임에서만** 얻는다(userId와 동일 원칙 — IDOR 방지, 판매자가 남의 brandId로 조회 불가, §2.6). **판매자 티켓에는 구매자용 `sessionId` claim을 요구하지 않는다.** `role` 클레임은 판매자 티켓에만 실리고 구매자·게스트 티켓에는 `role`이 없고 `sub_type`만 있다. 두 discriminator가 함께 있거나 역할별 필수 discriminator가 없으면 `401 TOKEN_INVALID`로 fail-closed 한다. 올바른 판매자 티켓도 구매자 `/chat`에서는 buyer state를 만들기 전에 `403 FORBIDDEN`으로 거부한다. AI는 신원을 **오직 토큰 클레임에서만** 추출한다(요청 본문 금지, §2.5·§3.1·§3.2).
+  - **판매자(`/seller/chat`)**: **`role == "seller"`(소문자) + `brandId`(JSON 정수) — [확정 v0.15.20]** (BE `StreamTicketProvider.buildTicket` 실측). seller `sub`는 양의 BIGINT 숫자 문자열, `brandId`는 bool을 제외한 JSON 정수 `1..2^63-1`만 허용한다. null/string/float/bool/list/object/범위 밖 값은 seller route나 Spring backend에 닿기 전에 `401 TOKEN_INVALID`다. 집계·CRUD 역호출(§4.4·§4.5)의 `{brandId}` path에 이 값을 쓴다. AI는 `brandId`를 **요청 본문에서 받지 않고 검증된 티켓 클레임에서만** 얻는다(userId와 동일 원칙 — IDOR 방지, 판매자가 남의 brandId로 조회 불가, §2.6). **판매자 티켓에는 구매자용 `sessionId` claim을 요구하지 않는다.** `role` 클레임은 판매자 티켓에만 실리고 구매자·게스트 티켓에는 `role`이 없고 `sub_type`만 있다. 두 discriminator가 함께 있거나 역할별 필수 discriminator가 없으면 `401 TOKEN_INVALID`로 fail-closed 한다. 올바른 판매자 티켓도 구매자 `/chat`에서는 buyer state를 만들기 전에 `403 FORBIDDEN`으로 거부한다. AI는 신원을 **오직 토큰 클레임에서만** 추출한다(요청 본문 금지, §2.5·§3.1·§3.2).
   - 검증 항목: **signature / exp / iss / aud / scope**.
 - **[확정] 401 통일 규약**: 토큰이 **없음/무효/만료**이면 AI 서버는 항상 **`401`** 을 반환한다.
   - `code == "TOKEN_EXPIRED"` — `exp` 경과.
@@ -235,7 +235,7 @@ X-Internal-Token: {SERVICE_TOKEN}
 
 **사용자/게스트/판매자 식별자 = 숫자 id(numeric)** — Spring이 발급하며(게스트도 Spring이 숫자 id 부여), JWT `sub` 클레임에 **문자열화하여** 담는다. `role`(§2.3 a)로 회원/게스트/판매자를 구분한다.
 
-**`sellerId` = JWT `sub`(role=seller)에서 도출 · `brandId` = JWT `brandId` 클레임에서 도출** — AI는 판매자 역호출(§4.4·§4.5)에 필요한 `sellerId`·`brandId`를 **모두 검증된 판매자 JWT 클레임에서만** 얻는다. **`brandId`를 요청 본문·사용자 발화에서 받지 않는다**(IDOR 방지 — 판매자가 남의 `brandId`로 조회 불가). RS256 서명이라 클레임 위조 불가. **[개정 v0.8.0]** 구 "AI는 brandId를 알지 못한다(Spring 내부 해소)"에서 "JWT 클레임에서만 획득"으로 완화 — BE 집계 API가 `{brandId}` path를 요구함에 따름. `brandId` 클레임 발급은 Spring 계약(🔴 C-1).
+**`sellerId` = JWT `sub`(role=seller)에서 도출 · `brandId` = JWT `brandId` 클레임에서 도출** — AI는 판매자 역호출(§4.4·§4.5)에 필요한 `sellerId`·`brandId`를 **모두 검증된 판매자 JWT 클레임에서만** 얻는다. seller `sub`는 양의 BIGINT 숫자 문자열, `brandId`는 bool 제외 JSON 정수 `1..2^63-1`로 decode 경계에서 검증한다. **`brandId`를 요청 본문·사용자 발화에서 받지 않는다**(IDOR 방지 — 판매자가 남의 `brandId`로 조회 불가). RS256 서명이라 클레임 위조 불가. **[개정 v0.8.0]** 구 "AI는 brandId를 알지 못한다(Spring 내부 해소)"에서 "JWT 클레임에서만 획득"으로 완화 — BE 집계 API가 `{brandId}` path를 요구함에 따름.
 
 #### `sessionId`(접속) vs `threadId`(방) **[개정 v0.16.0 — SPEC-CHAT-SESSION Option B]**
 
@@ -690,7 +690,7 @@ FE/BE 문서에 없으나 MVP에 필요한 아래 3종은 **모두 구매자 SSE
 - **`draftId`는 선택적 권장** — 제안이 항상 하나·즉시 승인이면 checkpointer만으로도 동작하나, 다중 draft·멱등 대비로 부여를 권장.
 - **confirm 전송 형식 = [확정 v0.14.1, 2026-07-22]** 요청 본문 **최상위 `action`/`draftId` 필드**(위 요청 (b)). 구 "message 문자열에 JSON 을 실어 파싱" 방식은 폐기 — FE 가 message 를 이스케이프하지 않는다. AI 코드 정합 완료(`app/schemas/seller.py::SellerChatRequest`, `app/api/seller.py`). HITL 승인은 별도 이벤트명 없이 스트림2가 `token`(결과)+`done` 으로 응답한다.
 - **confirm 결과는 전부 HTTP 200 [확정 v0.14.1]** — 실행/만료/미존재/소유불일치/중복(멱등)/stale 모두 SSE `token`(안내)+`done` 으로 온다(HTTP 오류 아님). 실제 쓰기만 `done{panel:"refresh"}`, 나머지는 `done{panel:"keep"}`. 소유 불일치는 미존재와 동일 문구(존재 비노출). Spring 장애만 `token`+`error{INTERNAL}`(초안 유지, 재confirm 가능). 구 "409 `DRAFT_EXPIRED`/`DRAFT_NOT_FOUND`" 표기는 폐기.
-- **스트림 시작 전 거부(HTTP 오류 봉투 §2.5)**: `400 BAD_REQUEST`(필드 누락·`action=="confirm"`인데 `draftId` 없음, `RequestValidationError`→400)·`401 TOKEN_EXPIRED`/`TOKEN_INVALID`·`403 FORBIDDEN`(role≠seller·brandId 없음)·`409 STREAM_IN_PROGRESS`(동일 threadId 동시 스트림)·`429 RATE_LIMITED`(config 상한·`/seller/chat` 적용)·`504 UPSTREAM_TIMEOUT`.
+- **스트림 시작 전 거부(HTTP 오류 봉투 §2.5)**: `400 BAD_REQUEST`(필드 누락·`action=="confirm"`인데 `draftId` 없음, `RequestValidationError`→400)·`401 TOKEN_EXPIRED`/`TOKEN_INVALID`(누락/형식·seller `sub`/`brandId` 오류 포함)·`403 FORBIDDEN`(role≠seller)·`409 STREAM_IN_PROGRESS`(동일 threadId 동시 스트림)·`429 RATE_LIMITED`(config 상한·`/seller/chat` 적용)·`504 UPSTREAM_TIMEOUT`.
 
 **`draft`** — 상세 수정 개정안 (정확히 1회)
 
@@ -819,7 +819,8 @@ Spring이 세션 종료를 감지해 프로필 파이프라인 **조기 트리�
 - **탭 닫기**: 별도 종료 신호를 두지 않는다. 사용자가 threshold 전에 어느 탭에서든 돌아오면 세 탭이 함께 살아남는다. `idle_expired` 뒤 정당한 같은 owner가 돌아오면 generation을 올리고 **같은 `context_id`**를 재활성화한다. `idle_finalizing` 중 touch는 `409 SESSION_FINALIZING`이다.
 - **best-effort**: Spring I-20이 유실돼도 D6 sweep이 guest/member transient를 회수하고 회원 profile watermark를 후속 phase에서 처리한다.
 - **멱등·직렬화**: I-20은 session advisory lock에서 `terminal` gate와 generation을 먼저 commit한 뒤 활성 member stream 종료를 기다린다. `chat_session_finalizations`의 유한 lease/claim token, watermark, transient/profile phase가 crash·retry를 재개한다. 동일 I-20은 `duplicate`; 실패한 profile phase는 `retryable`이며 transcript와 미처리 buffer를 보존한다.
-- 응답: `202 Accepted`(신규 `{"status":"accepted"}` / 중복 `{"status":"duplicate"}`). `userId`·`sessionId` 누락·타입 오류 또는 `reason` 64자 초과는 `400`(§2.5 봉투).
+- event inbound는 camelCase alias만 허용한다. unknown field, snake_case field, camelCase+snake_case collision은 `400 BAD_REQUEST`다.
+- 응답: `202 Accepted`(신규 `{"status":"accepted"}` / 중복 `{"status":"duplicate"}`). `userId`·`sessionId` 누락·타입 오류 또는 `reason` 64자 초과는 `400`(§2.5 봉투). lifecycle PostgreSQL의 timeout/pool/connection 장애는 `503 STATE_UNAVAILABLE`이며 programming/integrity/domain/cancellation 오류를 503으로 마스킹하지 않는다.
 
 
 #### 3.5.1 `POST {AI_SERVER}/events/session-claim` — guest → member 소유권 승격 (#187)
@@ -861,6 +862,9 @@ transcript도 보존하지만 member profile buffer로 복사하지 않는다. �
 | `409` | `SESSION_FINALIZING` | idle finalization 진행 중 |
 | `409` | `SESSION_CLAIM_CONFLICT` | 다른 claim 이력, terminal, owner 불일치 |
 | `503` | `STATE_UNAVAILABLE` | lifecycle PostgreSQL 정본 사용 불가 |
+
+두 event 모델은 camelCase alias만 허용한다. unknown field, snake_case field,
+camelCase+snake_case collision은 `400 BAD_REQUEST`다.
 
 claim commit 뒤 옛 guest 티켓의 `/chat`은 `403 SESSION_FORBIDDEN`이고, 새 turn/thread를
 만들지 않는다. member 티켓은 같은 signed `sessionId`와 기존 `context_id`로 모든 탭을 계속한다.

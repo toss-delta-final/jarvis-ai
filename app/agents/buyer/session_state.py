@@ -10,7 +10,7 @@ from weakref import WeakValueDictionary
 
 from app.agents.buyer.cart import state as cart_state
 from app.core import pg_store, session_context
-from app.core.pg_resilience import run_with_query_timeout
+from app.core.pg_resilience import is_state_store_unavailable, run_with_query_timeout
 from app.core.session_context import SessionContext, SessionStateUnavailable
 
 _LEGACY_FILTER_ROOT = "buyer_thread_filters"
@@ -528,7 +528,9 @@ async def adopt_legacy_thread(
         except SessionStateUnavailable:
             raise
         except Exception as exc:
-            raise SessionStateUnavailable from exc
+            if is_state_store_unavailable(exc):
+                raise SessionStateUnavailable from exc
+            raise
 
 
 async def ensure_thread_adopted(
@@ -544,7 +546,9 @@ async def ensure_thread_adopted(
     except SessionStateUnavailable:
         raise
     except Exception as exc:
-        raise SessionStateUnavailable from exc
+        if is_state_store_unavailable(exc):
+            raise SessionStateUnavailable from exc
+        raise
 
 
 async def run_legacy_gc_batch() -> int:

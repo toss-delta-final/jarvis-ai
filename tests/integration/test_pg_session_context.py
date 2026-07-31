@@ -2542,6 +2542,32 @@ async def test_terminal_supersedes_previous_generation_completed_idle(pg_repo) -
     )
 
 
+async def test_pg_begin_terminal_commit_failure_rolls_back_all_terminal_mutation(pg_repo) -> None:
+    """terminal context/journal mutation 뒤 실제 PG commit 실패는 전부 rollback한다."""
+    repo, pool, prefix = pg_repo
+    session_id = prefix + "-terminal-commit-rollback"
+    before = await repo.touch(BuyerSessionInput(session_id, "T1", "member", "7"))
+    fault_repo = SessionContextRepository(pool=_CommitFaultPool(pool))
+
+    with pytest.raises(ForeignKeyViolation):
+        await fault_repo.begin_terminal(7, session_id)
+
+    after = await repo.get_context(session_id)
+    assert after == before
+    async with pool.connection() as conn:
+        terminal_rows = await (
+            await conn.execute(
+                """
+                SELECT count(*)
+                FROM chat_session_finalizations
+                WHERE context_id=%s AND reason='terminal'
+                """,
+                (before.context_id,),
+            )
+        ).fetchone()
+    assert terminal_rows == (0,)
+
+
 async def test_pg_i20_supersedes_idle_between_phase_a_and_phase_b(pg_repo) -> None:
     repo, pool, prefix = pg_repo
     session_id = prefix + "-i20-phase-barrier"

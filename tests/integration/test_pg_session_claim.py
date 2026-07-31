@@ -82,9 +82,9 @@ async def test_pg_coordinator_different_targets_have_one_winner_and_history(pg_c
         try:
             return await coordinator.claim_owner(
                 SessionClaimEvent(
-                    session_id=session_id,
-                    guest_id="G1",
-                    user_id=user_id,
+                    sessionId=session_id,
+                    guestId="G1",
+                    userId=user_id,
                 )
             )
         except SessionClaimConflict as exc:
@@ -109,7 +109,7 @@ async def test_pg_coordinator_same_target_is_accepted_then_exact_duplicate(pg_cl
     session_id = prefix + "-same"
     await repository.touch(BuyerSessionInput(session_id, "T1", "guest", "G1"))
     coordinator = SessionLifecycleCoordinator(repository, registry)
-    event = SessionClaimEvent(session_id=session_id, guest_id="G1", user_id=7)
+    event = SessionClaimEvent(sessionId=session_id, guestId="G1", userId=7)
 
     first, second = await asyncio.gather(
         coordinator.claim_owner(event),
@@ -129,7 +129,7 @@ async def test_pg_coordinator_no_row_race_creates_one_context_and_history(pg_cla
     repository, pool, registry, prefix = pg_claim
     session_id = prefix + "-no-row"
     coordinator = SessionLifecycleCoordinator(repository, registry)
-    event = SessionClaimEvent(session_id=session_id, guest_id="G1", user_id=7)
+    event = SessionClaimEvent(sessionId=session_id, guestId="G1", userId=7)
 
     first, second = await asyncio.gather(
         coordinator.claim_owner(event),
@@ -171,7 +171,7 @@ async def test_pg_coordinator_signed_claim_replaces_legacy_guess(pg_claim) -> No
         )
     try:
         outcome = await SessionLifecycleCoordinator(repository, registry).claim_owner(
-            SessionClaimEvent(session_id=session_id, guest_id="signed-guest", user_id=7)
+            SessionClaimEvent(sessionId=session_id, guestId="signed-guest", userId=7)
         )
 
         async with pool.connection() as conn:
@@ -211,7 +211,7 @@ async def test_pg_coordinator_rejects_active_unregistered_thread_scope(pg_claim)
 
     with pytest.raises(SessionActive):
         await SessionLifecycleCoordinator(repository, registry).claim_owner(
-            SessionClaimEvent(session_id=session_id, guest_id="G1", user_id=7)
+            SessionClaimEvent(sessionId=session_id, guestId="G1", userId=7)
         )
 
     assert await _rows(pool, session_id) == (None, [])
@@ -227,7 +227,7 @@ async def test_pg_coordinator_releases_fence_on_db_failure_and_cancellation(
     session_id = prefix + "-failure"
     await repository.touch(BuyerSessionInput(session_id, "T1", "guest", "G1"))
     coordinator = SessionLifecycleCoordinator(repository, registry)
-    event = SessionClaimEvent(session_id=session_id, guest_id="G1", user_id=7)
+    event = SessionClaimEvent(sessionId=session_id, guestId="G1", userId=7)
 
     async def fail(conn, claim_session_id, guest_id, user_id):  # noqa: ANN001
         raise RuntimeError("forced transition failure")
