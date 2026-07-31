@@ -19,6 +19,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # I-21 계약 하드 상한(api-spec §4.2) — 노출 개수 설정이 계약을 넘지 못하게 묶는 기준.
 # 계약 값의 단일 출처는 스키마다(app/schemas/spring.py) — 여기서 숫자를 다시 적지 않는다.
+from app.schemas.recommendations import LIMIT_MAX as HOME_RECO_LIMIT_MAX
 from app.schemas.spring import LIST_MAX_PRODUCTS, MAX_LISTS
 
 LLMProvider = Literal["openai", "anthropic"]
@@ -229,7 +230,10 @@ class Settings(BaseSettings):
     home_reco_viewed_decay: float = Field(default=0.85, gt=0.0, le=1.0)
     # limit 은 최종 노출 목표치 — Spring 의 품절 드롭에 대비해 이 배수만큼 넉넉히 반환한다(§3.7).
     home_reco_overfetch_ratio: float = Field(default=2.0, ge=1.0)
-    home_reco_max_items: int = Field(default=60, gt=0)  # overfetch 절대 상한(응답 크기 방어)
+    # overfetch 절대 상한(응답 크기 방어). **요청 `limit` 상한(`LIMIT_MAX`) 이상이어야 한다** —
+    # 아래로 내려가면 `_overfetch_size` 가 요청받은 `limit` 보다 적게 반환해 "품절 드롭 대비
+    # 넉넉히"(§3.7)가 깨진다. 기동 시점에 잡는다(`expose_max`/LIST_MAX_PRODUCTS 와 같은 방식).
+    home_reco_max_items: int = Field(default=60, ge=HOME_RECO_LIMIT_MAX)
     # 이 수 미만이면 랭킹이 무의미하다고 보고 INSUFFICIENT_CANDIDATES 로 답한다(200).
     home_reco_min_candidates: int = Field(default=5, gt=0)
     # [#148 실측 2026-07-31] reason 을 요청 경로에서 LLM 으로 만드는 방식은 **폐기**했다.

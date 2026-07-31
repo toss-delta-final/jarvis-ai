@@ -23,6 +23,15 @@ _CATALOG_VERSION_MAX_CHARS = 200  # 불투명 키 남용 방어(chat_key_max_cha
 # 배열을 보내면 매 요청 `get_many`/`exclude` 가 그만큼 커져 I-22 예산을 위협한다.
 _SIGNAL_IDS_MAX_LEN = 200
 
+# `limit`(최종 노출 목표) 상한 — **이 상수가 단일 출처**이고 config `home_reco_max_items` 가
+# 여기에 묶인다(`core/config.py`, LIST_MAX_PRODUCTS 전례와 같은 방식).
+#
+# 두 값이 갈리면 `_overfetch_size` 가 어느 쪽으로든 계약을 깬다. `limit > max_items` 를 허용하면
+# 응답 크기 상한이 뚫리고, 바깥에서 `max_items` 로 깎으면 **요청받은 `limit` 보다 적게** 반환해
+# "품절 드롭 대비 넉넉히"(§3.7)가 무너진다. 상한을 한 곳에 두고 config 가 그 이상이도록 기동
+# 시점에 강제하면 두 경우 다 발생할 수 없다.
+LIMIT_MAX = 60
+
 # 시그널 상품 id — `member_id` 와 같은 수준으로 방어한다. Python int 는 임의 정밀도라 Pydantic 은
 # 통과시키지만, BIGINT 를 넘는 값은 `get_many`/`top_k_by_vector` 의 psycopg 바인딩에서 터진다.
 ProductId = Annotated[int, Field(strict=True, gt=0, le=_BIGINT_MAX)]
@@ -60,7 +69,9 @@ class HomeRecommendationRequest(StrictEventModel):
 
     member_id: int = Field(strict=True, gt=0, le=_BIGINT_MAX)
     # 최종 노출 목표 개수. FastAPI 는 Spring 의 품절 드롭에 대비해 이보다 넉넉히 반환한다.
-    limit: int = Field(strict=True, gt=0, le=1000)
+    # 상한은 `LIMIT_MAX` — 홈 레일 한 줄에 그보다 많이 필요한 화면은 없고, 상한이 없으면
+    # overfetch 가 응답 크기·조회 비용을 함께 부풀린다.
+    limit: int = Field(strict=True, gt=0, le=LIMIT_MAX)
     # [C-18] **폐기 제안 중.** 어느 쪽도 의미 있는 값을 만들 수 없다 — Spring 은 AI 인덱스의 동기화
     # 시점을 모르고, AI 가 지문을 만들어도 **그 시점의 임베딩을 보존하지 않으므로 재현에 쓸 수 없다**
     # (`products` 는 I-17 이 제자리 upsert 한다). 재현이 필요하지도 않다 — 산출물(목록·reason)은

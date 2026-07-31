@@ -211,6 +211,35 @@ def test_profile_vector_dimension_mismatch_is_ignored(monkeypatch: pytest.Monkey
     assert baseline_ids == plain_ids
 
 
+def test_profile_weight_zero_with_no_signals_is_no_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    """가중치 0 + 시그널 없음 = 개인화 근거 0 → NO_PROFILE.
+
+    가중치 0 을 빈 `acc` 에 곱하면 길이만 있는 **0 벡터**가 생겨 `if not query_vec` 를 통과한다.
+    그대로 두면 개인화 근거가 없는데도 PERSONALIZED 로 응답하면서, 실제로는 productId 오름차순에
+    불과한 순서를 "개인화"로 내보낸다(pg 는 거리 동점, 인메모리는 코사인 -1).
+    """
+    monkeypatch.setattr(svc, "read_profile_summary", _profile_with([0.0, 1.0, 0.0]))
+    zeroed = get_settings().model_copy(update={"home_reco_weight_profile": 0.0})
+    monkeypatch.setattr(svc, "get_settings", lambda: zeroed)
+    signals = {
+        "recentlyViewedProductIds": [],
+        "cartProductIds": [],
+        "recentPurchasedProductIds": [],
+    }
+    data = client.post(_URL, json=_body(signals=signals)).json()
+    assert data["outcome"] == "NO_PROFILE"
+    assert data["items"] == []
+
+
+def test_all_zero_signal_embeddings_are_not_a_query(monkeypatch: pytest.MonkeyPatch) -> None:
+    """시그널 임베딩이 전부 0 이어도 마찬가지다 — 0 벡터는 질의가 아니다."""
+    zeros = CatalogArtifactStore()
+    for pid in (9001, *range(1001, 1011)):
+        zeros.upsert(_artifact(pid, [0.0, 0.0, 0.0]))
+    monkeypatch.setattr(svc, "get_catalog_store", lambda: zeros)
+    assert client.post(_URL, json=_body()).json()["outcome"] == "NO_PROFILE"
+
+
 def test_profile_weight_zero_removes_it_from_ranking(monkeypatch: pytest.MonkeyPatch) -> None:
     """가중치 0 = 롤백 스위치 — 프로필이 랭킹에서 빠지고 reason 근거로만 남는다."""
     monkeypatch.setattr(svc, "read_profile_summary", _profile_with([0.0, 1.0, 0.0]))
@@ -351,19 +380,39 @@ def test_catalog_version_null_is_accepted() -> None:
     assert r.json()["outcome"] == "PERSONALIZED"
 
 
-def test_request_limit_higher_than_max_items_is_capped(
-    monkeypatch: pytest.MonkeyPatch, store: CatalogArtifactStore
-) -> None:
-    """limit 값이 크더라도 응답은 home_reco_max_items 를 넘길 수 없다."""
-    for pid in range(2000, 2080):
+def test_limit_above_contract_max_is_400() -> None:
+    """`limit` 상한은 스키마가 막는다 — 서비스가 뒤에서 깎으면 요청보다 적게 반환하게 된다."""
+    from app.schemas.recommendations import LIMIT_MAX
+
+    assert client.post(_URL, json=_body(limit=LIMIT_MAX)).status_code == 200
+    r = client.post(_URL, json=_body(limit=LIMIT_MAX + 1))
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "BAD_REQUEST"
+
+
+def test_config_max_items_cannot_drop_below_contract_limit() -> None:
+    """config 가 계약 상한 아래로 내려가면 기동을 막는다 — 그래야 want < limit 이 불가능하다.
+
+    두 값이 갈리면 `_overfetch_size` 가 어느 쪽으로든 계약을 깬다(응답 크기 상한 뚫림 / 요청보다
+    적게 반환). `expose_max`↔`LIST_MAX_PRODUCTS` 와 같은 방식으로 기동 시점에 잡는다.
+    """
+    import pydantic
+
+    from app.schemas.recommendations import LIMIT_MAX
+
+    with pytest.raises(pydantic.ValidationError):
+        Settings(_env_file=None, home_reco_max_items=LIMIT_MAX - 1)
+
+
+def test_response_never_returns_fewer_than_requested_limit(store: CatalogArtifactStore) -> None:
+    """§3.7 — `limit` 은 최종 노출 목표치이고 AI 는 그보다 **넉넉히** 반환해야 한다."""
+    from app.schemas.recommendations import LIMIT_MAX
+
+    for pid in range(2000, 2200):
         store.upsert(_artifact(pid, [1.0, 0.0, 0.0], doc=f"상품 {pid}"))
-
-    settings = get_settings().model_copy(update={"home_reco_max_items": 20})
-    monkeypatch.setattr(svc, "get_settings", lambda: settings)
-
-    r = client.post(_URL, json=_body(limit=500))
-    assert r.status_code == 200
-    assert len(r.json()["items"]) == 20
+    items = client.post(_URL, json=_body(limit=LIMIT_MAX)).json()["items"]
+    assert len(items) >= LIMIT_MAX
+    assert len(items) <= get_settings().home_reco_max_items
 
 
 # ── 인증 · 입력 검증 ──

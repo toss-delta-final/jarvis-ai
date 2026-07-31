@@ -61,7 +61,14 @@ _SELF_SIGNAL = "최근 관심 있게 보신 상품이에요"
 
 
 def _weighted_add(acc: list[float], vec: list[float], weight: float) -> list[float]:
-    """acc += vec * weight. 차원이 다르면(모델 교체·마이그레이션) 조용히 섞지 않고 무시한다."""
+    """acc += vec * weight. 차원이 다르면(모델 교체·마이그레이션) 조용히 섞지 않고 무시한다.
+
+    **가중치 0 은 더하지 않은 것과 같아야 한다** — 빈 `acc` 에 0 을 곱해 넣으면 길이만 있는
+    **0 벡터**가 만들어져 `if not query_vec` 판정을 통과해 버린다(`home_reco_weight_profile=0`
+    롤백 스위치 + 시그널 없음 조합).
+    """
+    if weight == 0.0:
+        return acc
     if not acc:
         return [v * weight for v in vec]
     if len(acc) != len(vec):
@@ -105,7 +112,11 @@ def build_query_vector(
             acc = _weighted_add(acc, art.embedding, weight)
     if profile_vec:
         acc = _weighted_add(acc, profile_vec, settings.home_reco_weight_profile)
-    return acc
+    # **0 벡터는 질의가 아니다.** 가중치가 전부 0 이거나 시그널 임베딩이 모두 0 이면 길이만 있는
+    # 벡터가 남는데, 그대로 두면 `if not query_vec` 를 통과해 `PERSONALIZED` 로 응답하면서
+    # 실제로는 의미 없는 순서(pg 는 거리 동점, 인메모리는 코사인 -1 → 둘 다 productId 오름차순)를
+    # "개인화"로 내보낸다. 개인화 근거가 없다는 뜻이므로 빈 리스트 = `NO_PROFILE` 로 돌린다.
+    return acc if any(acc) else []
 
 
 def rank_candidates(
