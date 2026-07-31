@@ -22,7 +22,7 @@ from app.core.config import get_settings
 from app.core.pg_resilience import BoundedLRUCache, run_with_query_timeout
 from app.schemas.spring import CartOption
 
-_NAMESPACE_ROOT = "buyer_cart"
+_NAMESPACE_ROOT = "buyer_cart_v2"
 _LAST_RECO_KEY = "last_reco"
 _PENDING_KEY = "pending"
 

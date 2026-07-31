@@ -16,7 +16,14 @@ import jwt
 import pytest
 from fastapi.testclient import TestClient
 
+from app.agents.profile import finalizer as profile_finalizer
 from app.agents.profile import processed_events
+from app.agents.profile.finalizer import (
+    ActiveProfileTaskRegistry,
+    ProfilePhaseResult,
+    ProfilePhaseStatus,
+    process_profile_checkpoint,
+)
 from app.agents.profile.builder import (
     ConsolidationResult,
     consolidate,
@@ -27,6 +34,7 @@ from app.agents.profile.gate import is_remember_command, should_promote
 from app.agents.profile.reader import read_profile_summary
 from app.agents.profile.store import ProfileStore, get_profile_store
 from app.core.config import get_settings
+from app.core import session_context
 from app.core.conversation import conversation_key
 from app.core.llm import LLMError
 from app.main import app
@@ -134,11 +142,249 @@ async def test_generate_session_delta_promotes_via_gate() -> None:
     key = conversation_key("7", "s1")
     await store.append_session_ctx(key, "3만원대 무선 이어폰 위주로 보고 있어요")
     promoted, watermark = await generate_session_delta(
-        "7", key, llm=_ProfileLLM(), settings=get_settings()
+        "7", key, profile_watermark=1, llm=_ProfileLLM(), settings=get_settings()
     )
     assert promoted == ["3~5만원 무선이어폰 선호"]
     assert watermark == 1
     assert "3~5만원 무선이어폰 선호" in await store.get_facts("7")
+
+
+async def test_generate_session_delta_uses_only_supplied_watermark() -> None:
+    store = await get_profile_store()
+    key = conversation_key("7", "bounded")
+    await store.append_session_ctx(key, "워터마크 안쪽")
+    await store.append_session_ctx(key, "워터마크 바깥쪽")
+
+    class _CapturingLLM(_ProfileLLM):
+        prompt = ""
+
+        async def complete(self, *, system, user, tier, max_tokens=1024, json_output=True):
+            if "델타 추출기" in system:
+                self.prompt = user
+            return await super().complete(
+                system=system,
+                user=user,
+                tier=tier,
+                max_tokens=max_tokens,
+                json_output=json_output,
+            )
+
+    llm = _CapturingLLM()
+    promoted, watermark = await generate_session_delta(
+        "7",
+        key,
+        profile_watermark=1,
+        llm=llm,
+        settings=get_settings(),
+    )
+
+    assert promoted == ["3~5만원 무선이어폰 선호"]
+    assert watermark == 1
+    assert llm.prompt == "워터마크 안쪽"
+
+
+async def test_newer_append_cannot_drive_promoted_fact() -> None:
+    store = await get_profile_store()
+    key = conversation_key("7", "bounded-promotion")
+    await store.append_session_ctx(key, "워터마크 안쪽 일반 대화")
+    await store.append_session_ctx(key, "워터마크 바깥쪽 빨간색 선호")
+
+    class _ConditionalLLM(_ProfileLLM):
+        async def complete(self, *, system, user, tier, max_tokens=1024, json_output=True):
+            if "델타 추출기" in system:
+                deltas = (
+                    [
+                        {
+                            "fact": "빨간색 선호",
+                            "salience": 0.9,
+                            "explicit": True,
+                            "repetitionEma": 0.0,
+                        }
+                    ]
+                    if "빨간색 선호" in user
+                    else []
+                )
+                return json.dumps({"deltas": deltas}, ensure_ascii=False)
+            return await super().complete(
+                system=system,
+                user=user,
+                tier=tier,
+                max_tokens=max_tokens,
+                json_output=json_output,
+            )
+
+    promoted, watermark = await generate_session_delta(
+        "7",
+        key,
+        profile_watermark=1,
+        llm=_ConditionalLLM(),
+        settings=get_settings(),
+    )
+
+    assert watermark == 1
+    assert promoted == []
+    assert "빨간색 선호" not in await store.get_facts("7")
+
+
+async def test_active_profile_registry_joins_context_task_with_original_identity() -> None:
+    registry = ActiveProfileTaskRegistry()
+    entered = asyncio.Event()
+    proceed = asyncio.Event()
+
+    async def first_factory() -> ProfilePhaseResult:
+        entered.set()
+        await proceed.wait()
+        return ProfilePhaseResult(ProfilePhaseStatus.COMPLETED)
+
+    first = asyncio.create_task(registry.join_or_start("ctx", "f1", "e1", first_factory))
+    await entered.wait()
+    second = asyncio.create_task(
+        registry.join_or_start(
+            "ctx",
+            "f2",
+            "e2",
+            lambda: asyncio.sleep(0, result=ProfilePhaseResult(ProfilePhaseStatus.NO_WORK)),
+        )
+    )
+    proceed.set()
+
+    owner, joined = await asyncio.gather(first, second)
+    assert owner.finalization_id == joined.finalization_id == "f1"
+    assert owner.event_id == joined.event_id == "e1"
+    assert owner.joined is False
+    assert joined.joined is True
+
+
+async def test_joiner_cancellation_does_not_cancel_shared_profile_task() -> None:
+    registry = ActiveProfileTaskRegistry()
+    entered = asyncio.Event()
+    proceed = asyncio.Event()
+
+    async def factory() -> ProfilePhaseResult:
+        entered.set()
+        await proceed.wait()
+        return ProfilePhaseResult(ProfilePhaseStatus.COMPLETED)
+
+    owner = asyncio.create_task(registry.join_or_start("ctx", "f1", "e1", factory))
+    await entered.wait()
+    joiner = asyncio.create_task(registry.join_or_start("ctx", "f1", "e1", factory))
+    await asyncio.sleep(0)
+    joiner.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await joiner
+
+    assert not owner.done()
+    proceed.set()
+    assert (await owner).result.status is ProfilePhaseStatus.COMPLETED
+    assert registry._active == {}
+
+
+async def test_owner_waiter_cancellation_keeps_background_task_and_cleans_registry() -> None:
+    registry = ActiveProfileTaskRegistry()
+    entered = asyncio.Event()
+    proceed = asyncio.Event()
+    completed = asyncio.Event()
+
+    async def factory() -> ProfilePhaseResult:
+        entered.set()
+        await proceed.wait()
+        completed.set()
+        return ProfilePhaseResult(ProfilePhaseStatus.COMPLETED)
+
+    owner = asyncio.create_task(registry.join_or_start("ctx", "f1", "e1", factory))
+    await entered.wait()
+    owner.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await owner
+
+    proceed.set()
+    await completed.wait()
+    await asyncio.sleep(0)
+    assert registry._active == {}
+
+
+async def test_shared_profile_task_cancellation_reaches_waiters_and_cleans_registry() -> None:
+    registry = ActiveProfileTaskRegistry()
+    entered = asyncio.Event()
+
+    async def factory() -> ProfilePhaseResult:
+        entered.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    owner = asyncio.create_task(registry.join_or_start("ctx", "f1", "e1", factory))
+    await entered.wait()
+    joiner = asyncio.create_task(registry.join_or_start("ctx", "f1", "e1", factory))
+    active = registry._active["ctx"]
+    active.task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await owner
+    with pytest.raises(asyncio.CancelledError):
+        await joiner
+    await asyncio.sleep(0)
+    assert registry._active == {}
+
+
+async def test_empty_bounded_checkpoint_is_success_without_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.agents.profile.finalizer as profile_finalizer
+
+    store = await get_profile_store()
+    key = conversation_key("7", "trimmed")
+    await store.append_session_ctx(key, "새 발화", cap=1)
+
+    def _unexpected_llm():
+        raise AssertionError("빈 bounded snapshot은 LLM을 호출하면 안 됨")
+
+    monkeypatch.setattr(profile_finalizer, "get_llm", _unexpected_llm)
+    result = await process_profile_checkpoint(
+        7,
+        "trimmed",
+        event_id="chat-profile:ctx:1:idle",
+        profile_watermark=0,
+        settings=get_settings(),
+    )
+
+    assert result.status is ProfilePhaseStatus.NO_WORK
+    assert await processed_events.get_status("chat-profile:ctx:1:idle") == "completed"
+    assert await store.get_session_ctx(key) == ["새 발화"]
+
+
+async def test_checkpoint_becomes_no_work_when_cap_trims_bounded_slice_midflight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reads = 0
+
+    class _Store:
+        async def get_session_ctx_upto(self, key: str, watermark: int) -> list[str]:
+            nonlocal reads
+            reads += 1
+            return ["old"] if reads == 1 else []
+
+        async def clear_session_ctx_upto(self, key: str, watermark: int) -> None:
+            raise AssertionError("watermark 밖 항목은 clear 대상이 아님")
+
+    async def _delta(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(
+        profile_finalizer, "get_profile_store", lambda: asyncio.sleep(0, result=_Store())
+    )
+    monkeypatch.setattr(profile_finalizer, "get_llm", lambda: _ProfileLLM())
+    monkeypatch.setattr(profile_finalizer, "generate_session_delta", _delta)
+
+    result = await process_profile_checkpoint(
+        7,
+        "cap-trimmed-midflight",
+        event_id="chat-profile:ctx:2:idle",
+        profile_watermark=1,
+        settings=get_settings(),
+    )
+
+    assert result.status is ProfilePhaseStatus.NO_WORK
+    assert reads == 2
 
 
 async def test_generate_session_delta_gate_rejects_low_signal() -> None:
@@ -148,7 +394,9 @@ async def test_generate_session_delta_gate_rejects_low_signal() -> None:
     llm = _ProfileLLM(
         deltas=[{"fact": "잡담", "salience": 0.1, "explicit": False, "repetitionEma": 0.0}]
     )
-    promoted, watermark = await generate_session_delta("7", key, llm=llm, settings=get_settings())
+    promoted, watermark = await generate_session_delta(
+        "7", key, profile_watermark=1, llm=llm, settings=get_settings()
+    )
     assert promoted == [] and await store.get_facts("7") == []  # 처리됨(non-None)이나 승격 0
     assert watermark == 1
 
@@ -162,7 +410,7 @@ async def test_clear_session_ctx_upto_preserves_concurrent_append() -> None:
     key = conversation_key("7", "race")
     await store.append_session_ctx(key, "A")
     promoted, watermark = await generate_session_delta(
-        "7", key, llm=_ProfileLLM(), settings=get_settings()
+        "7", key, profile_watermark=1, llm=_ProfileLLM(), settings=get_settings()
     )
     assert promoted == ["3~5만원 무선이어폰 선호"] and watermark == 1
     # LLM 호출이 끝나고 clear 하기 전, 그 사이에 새 턴이 도착했다고 가정.
@@ -181,7 +429,7 @@ async def test_clear_session_ctx_upto_survives_cap_eviction_during_llm_call() ->
     key = conversation_key("7", "cap-race")
     await store.append_session_ctx(key, "A", cap=2)
     promoted, watermark = await generate_session_delta(
-        "7", key, llm=_ProfileLLM(), settings=get_settings()
+        "7", key, profile_watermark=1, llm=_ProfileLLM(), settings=get_settings()
     )
     assert promoted == ["3~5만원 무선이어폰 선호"] and watermark == 1
     # LLM 호출 중 cap(2)을 넘겨 A가 앞에서 밀려나는 상황(둘 다 미분석 상태).
@@ -195,7 +443,11 @@ async def test_generate_session_delta_degrades_without_llm_or_buffer() -> None:
     # 버퍼 없음 → None(degrade 신호)
     assert (
         await generate_session_delta(
-            "7", conversation_key("7", "empty"), llm=_ProfileLLM(), settings=get_settings()
+            "7",
+            conversation_key("7", "empty"),
+            profile_watermark=0,
+            llm=_ProfileLLM(),
+            settings=get_settings(),
         )
         is None
     )
@@ -204,7 +456,11 @@ async def test_generate_session_delta_degrades_without_llm_or_buffer() -> None:
     await store.append_session_ctx(conversation_key("7", "s3"), "x")
     assert (
         await generate_session_delta(
-            "7", conversation_key("7", "s3"), llm=None, settings=get_settings()
+            "7",
+            conversation_key("7", "s3"),
+            profile_watermark=1,
+            llm=None,
+            settings=get_settings(),
         )
         is None
     )
@@ -290,9 +546,7 @@ async def test_profile_me_strips_unsafe_llm_markdown() -> None:
 
 
 async def test_session_end_202_and_processes_buffer(monkeypatch: pytest.MonkeyPatch) -> None:
-    import app.api.events as ev
-
-    monkeypatch.setattr(ev, "get_llm", lambda: _ProfileLLM())
+    monkeypatch.setattr(profile_finalizer, "get_llm", lambda: _ProfileLLM())
     store = await get_profile_store()
     key = conversation_key("777", "sess-9")
     await store.append_session_ctx(key, "3만원 무선이어폰 찾아줘")
@@ -305,17 +559,14 @@ async def test_session_end_202_and_processes_buffer(monkeypatch: pytest.MonkeyPa
 
 
 async def test_session_end_dedups_same_session_retry(monkeypatch: pytest.MonkeyPatch) -> None:
-    """같은 (userId, sessionId) 재전송은 duplicate — at-least-once 중복 방어(§2.7, 고정 멱등키)."""
-    import app.api.events as ev
-
-    monkeypatch.setattr(ev, "get_llm", lambda: _ProfileLLM())
+    """같은 terminal lifecycle 재전송은 generation journal 기준 duplicate다."""
+    monkeypatch.setattr(profile_finalizer, "get_llm", lambda: _ProfileLLM())
     store = await get_profile_store()
     await store.append_session_ctx(conversation_key("777", "sess-dup"), "발화")
-    # 동일 통지가 이미 처리됐다고 가정 — (userId, sessionId) 고정 멱등키를 선점.
-    dup_key = "session-end:777:sess-dup"
-    assert await processed_events.mark_if_new(dup_key)
-    r = client.post("/events/session-end", json={"userId": 777, "sessionId": "sess-dup"})
-    assert r.status_code == 202 and r.json()["status"] == "duplicate"
+    first = client.post("/events/session-end", json={"userId": 777, "sessionId": "sess-dup"})
+    duplicate = client.post("/events/session-end", json={"userId": 777, "sessionId": "sess-dup"})
+    assert first.status_code == 202 and first.json()["status"] == "accepted"
+    assert duplicate.status_code == 202 and duplicate.json()["status"] == "duplicate"
 
 
 async def test_session_end_same_session_second_is_duplicate(
@@ -326,9 +577,8 @@ async def test_session_end_same_session_second_is_duplicate(
     Spring 이 쏘는 종료(NEW_CONVERSATION·LOGOUT)는 모두 세션을 삭제하므로 세션당 한 번만 온다.
     같은 (userId, sessionId) 재수신은 at-least-once 재전송으로 보고 고정 멱등키로 중복 처리한다.
     """
-    import app.api.events as ev
 
-    monkeypatch.setattr(ev, "get_llm", lambda: _ProfileLLM())
+    monkeypatch.setattr(profile_finalizer, "get_llm", lambda: _ProfileLLM())
     store = await get_profile_store()
     key = conversation_key("900", "sess-multi")
     await store.append_session_ctx(key, "무선이어폰 3만원대")
@@ -351,7 +601,11 @@ async def test_session_end_no_buffer_is_noop_accepted() -> None:
 
     assert first.status_code == 202 and first.json()["status"] == "accepted"
     assert second.status_code == 202 and second.json()["status"] == "duplicate"
-    assert await processed_events.seen_event("session-end:5:empty-sess")
+    context = await session_context._default_repository.get_context("empty-sess")
+    assert context is not None
+    assert await processed_events.seen_event(
+        f"chat-profile:{context.context_id}:{context.generation}:terminal"
+    )
 
 
 def test_session_end_rejects_missing_identity() -> None:
@@ -406,18 +660,17 @@ def test_session_end_rejects_non_integer_json_userid(invalid_user_id: object) ->
     assert response.json()["error"]["code"] == "BAD_REQUEST"
 
 
-async def test_session_end_idempotency_scoped_per_user(monkeypatch: pytest.MonkeyPatch) -> None:
-    """멱등키는 (userId, sessionId) 파생 — 같은 sessionId라도 userId가 다르면 서로 중복 아님."""
-    import app.api.events as ev
-
-    monkeypatch.setattr(ev, "get_llm", lambda: _ProfileLLM())
+async def test_session_end_rejects_different_owner_for_terminal_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """sessionId lifecycle owner가 정해진 뒤 다른 userId의 I-20은 중복으로 위장하지 않는다."""
+    monkeypatch.setattr(profile_finalizer, "get_llm", lambda: _ProfileLLM())
     store = await get_profile_store()
     await store.append_session_ctx(conversation_key("111", "shared-sess"), "x")
-    await store.append_session_ctx(conversation_key("222", "shared-sess"), "y")
     r1 = client.post("/events/session-end", json={"userId": 111, "sessionId": "shared-sess"})
     r2 = client.post("/events/session-end", json={"userId": 222, "sessionId": "shared-sess"})
     assert r1.json()["status"] == "accepted"
-    assert r2.json()["status"] == "accepted"  # 다른 userId → 중복 아님
+    assert r2.status_code == 403
 
 
 def test_session_end_service_token_enforced(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -447,9 +700,10 @@ async def test_session_end_degrades_without_llm() -> None:
 
 async def test_end_to_end_profile_from_chat(monkeypatch: pytest.MonkeyPatch, buyer_fakes) -> None:
     """회원 채팅 → 세션 종료 → 프로필 생성 → GET /profile/me 노출."""
-    import app.api.events as ev
+    import app.agents.profile.finalizer as profile_finalizer
 
-    monkeypatch.setattr(ev, "get_llm", lambda: _ProfileLLM())
+    monkeypatch.setattr(profile_finalizer, "get_llm", lambda: _ProfileLLM())
+    monkeypatch.setattr(profile_finalizer, "get_llm", lambda: _ProfileLLM())
     hdr = _member_bearer("888")
     # 회원 채팅 1턴 → transient 버퍼 누적
     client.post(
@@ -477,12 +731,11 @@ async def test_session_end_clears_buffer_on_normal_rejection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """LLM 이 정상 실행됐으나 게이트가 전부 반려한 경우도 '처리됨'이라 버퍼를 정리한다(무한 보존 방지)."""
-    import app.api.events as ev
 
     low = _ProfileLLM(
         deltas=[{"fact": "잡담", "salience": 0.1, "explicit": False, "repetitionEma": 0.0}]
     )
-    monkeypatch.setattr(ev, "get_llm", lambda: low)
+    monkeypatch.setattr(profile_finalizer, "get_llm", lambda: low)
     key = conversation_key("66", "s")
     store = await get_profile_store()
     await store.append_session_ctx(key, "음 별로")
@@ -533,7 +786,6 @@ async def test_append_session_ctx_caps_count() -> None:
 
 async def test_session_end_unmarks_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     """처리 실패(LLM 오류) 시 멱등키 마킹 해제 + 버퍼 보존 — 재전송이 재처리 가능(멱등은 성공에만)."""
-    import app.api.events as ev
     from app.core.llm import LLMError
 
     class _Raise:
@@ -543,7 +795,7 @@ async def test_session_end_unmarks_on_failure(monkeypatch: pytest.MonkeyPatch) -
         async def stream(self, **k):
             yield "x"
 
-    monkeypatch.setattr(ev, "get_llm", lambda: _Raise())
+    monkeypatch.setattr(profile_finalizer, "get_llm", lambda: _Raise())
     key = conversation_key("44", "s")
     store = await get_profile_store()
     await store.append_session_ctx(key, "취향 신호")
@@ -558,7 +810,6 @@ async def test_session_end_preserves_buffer_when_consolidation_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """델타 성공 뒤 consolidation 실패도 미처리로 남겨 재시도할 수 있어야 한다."""
-    import app.api.events as ev
 
     class _ConsolidationFails(_ProfileLLM):
         async def complete(self, *, system, user, tier, max_tokens=1024, json_output=True):
@@ -572,7 +823,7 @@ async def test_session_end_preserves_buffer_when_consolidation_fails(
                 )
             raise LLMError("consolidation unavailable")
 
-    monkeypatch.setattr(ev, "get_llm", lambda: _ConsolidationFails())
+    monkeypatch.setattr(profile_finalizer, "get_llm", lambda: _ConsolidationFails())
     key = conversation_key("45", "consolidation-failure")
     store = await get_profile_store()
     await store.append_session_ctx(key, "파란색 상품을 선호해")
@@ -600,7 +851,7 @@ async def test_session_end_releases_claim_when_cancelled(
         started.set()
         await asyncio.Future()
 
-    monkeypatch.setattr(ev, "get_profile_store", _block_until_cancelled)
+    monkeypatch.setattr(profile_finalizer, "get_profile_store", _block_until_cancelled)
     task = asyncio.create_task(
         ev.session_end(
             SessionEndEvent(userId=46, sessionId="cancelled-session"),
@@ -637,7 +888,6 @@ async def test_session_end_release_failure_falls_back_to_lease_recovery(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """claim 해제 DB까지 실패해도 202를 유지하고 lease 만료 뒤 영구 poison 없이 재선점한다."""
-    import app.api.events as ev
 
     async def _store_failure():
         raise RuntimeError("profile store unavailable")
@@ -647,53 +897,56 @@ async def test_session_end_release_failure_falls_back_to_lease_recovery(
 
     original_release = processed_events.release_claim
     monkeypatch.setattr(get_settings(), "session_end_claim_ttl_s", 0.001)
-    monkeypatch.setattr(ev, "get_profile_store", _store_failure)
+    monkeypatch.setattr(profile_finalizer, "get_profile_store", _store_failure)
     monkeypatch.setattr(processed_events, "release_claim", _release_failure)
 
-    with caplog.at_level(logging.WARNING, logger="app.api.events"):
+    with caplog.at_level(logging.WARNING, logger="app.agents.profile.finalizer"):
         response = client.post(
             "/events/session-end",
             json={"userId": 48, "sessionId": "release-failure"},
         )
     assert response.status_code == 202 and response.json()["status"] == "accepted"
-    assert await processed_events.seen_event("session-end:48:release-failure")
+    from app.core import session_context
+
+    context = await session_context._default_repository.get_context("release-failure")
+    assert context is not None
+    event_id = f"chat-profile:{context.context_id}:{context.generation}:terminal"
+    assert await processed_events.seen_event(event_id)
     assert "session-end claim 해제 실패" in caplog.text
 
     monkeypatch.setattr(processed_events, "release_claim", original_release)
     await asyncio.sleep(0.01)
     reclaimed = await processed_events.claim_event(
-        "session-end:48:release-failure",
+        event_id,
         lease_s=1,
     )
     assert reclaimed is not None
-    assert await processed_events.release_claim("session-end:48:release-failure", reclaimed)
+    assert await processed_events.release_claim(event_id, reclaimed)
 
 
-async def test_session_end_logs_claim_ownership_loss(
+async def test_session_end_records_retryable_profile_on_claim_ownership_loss(
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """claim ownership race는 202로 degrade하되 운영에서 관측 가능한 warning을 남긴다."""
+    """profile claim ownership race는 terminal 완료를 되돌리지 않고 재시도로 남긴다."""
 
     async def _lose_claim(*args, **kwargs) -> bool:
         return False
 
     monkeypatch.setattr(processed_events, "complete_claim", _lose_claim)
-    with caplog.at_level(logging.WARNING, logger="app.api.events"):
-        response = client.post(
-            "/events/session-end",
-            json={"userId": 49, "sessionId": "ownership-lost"},
-        )
+    response = client.post(
+        "/events/session-end",
+        json={"userId": 49, "sessionId": "ownership-lost"},
+    )
 
     assert response.status_code == 202 and response.json()["status"] == "accepted"
-    record = next(
-        record
-        for record in caplog.records
-        if record.message == "session-end 내부 처리 실패 — 202 degrade"
-    )
-    assert record.exc_info is not None
-    assert isinstance(record.exc_info[1], RuntimeError)
-    assert str(record.exc_info[1]) == "session-end claim ownership lost"
+    from app.core import session_context
+
+    context = await session_context._default_repository.get_context("ownership-lost")
+    assert context is not None and context.state == "terminal"
+    [candidate] = await session_context._default_repository.list_recoverable_profile_phases(10)
+    journal = await session_context._default_repository.get_finalization(candidate.finalization_id)
+    assert journal.transient_status == "completed"
+    assert journal.profile_status == "retryable"
 
 
 async def test_release_claim_best_effort_retrieves_internal_task_cancellation(
@@ -701,7 +954,6 @@ async def test_release_claim_best_effort_retrieves_internal_task_cancellation(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """outer 요청과 무관하게 release task가 취소돼도 task를 재-await해 결과를 회수한다."""
-    import app.api.events as ev
 
     class _CountingCancelledFuture(asyncio.Future):
         await_count = 0
@@ -717,9 +969,12 @@ async def test_release_claim_best_effort_retrieves_internal_task_cancellation(
         coro.close()
         return cancelled
 
-    monkeypatch.setattr(ev.asyncio, "create_task", _create_cancelled_task)
-    with caplog.at_level(logging.WARNING, logger="app.api.events"):
-        await ev._release_claim_best_effort("session-end:50:cancelled-release", "token")
+    monkeypatch.setattr(profile_finalizer.asyncio, "create_task", _create_cancelled_task)
+    with caplog.at_level(logging.WARNING, logger="app.agents.profile.finalizer"):
+        await profile_finalizer.release_processed_claim_best_effort(
+            "chat-profile:ctx:1:terminal",
+            "token",
+        )
 
     assert cancelled.await_count == 2
     assert "session-end claim 해제 task 취소" in caplog.text
@@ -733,24 +988,21 @@ async def test_session_end_returns_202_when_profile_store_unavailable(
     이관 전엔 인메모리 싱글턴이라 이 호출이 실패할 수 없었지만, 운영(jwks)은 pg-profile 연결
     실패 시 폴백 없이 raise 한다 — try 밖에 있으면 일시적 DB 장애만으로 §3.5(항상 202) 위반.
     """
-    import app.api.events as ev
 
     async def _raise() -> None:
         raise RuntimeError("pg-profile 일시 장애")
 
-    monkeypatch.setattr(ev, "get_profile_store", _raise)
+    monkeypatch.setattr(profile_finalizer, "get_profile_store", _raise)
     r = client.post("/events/session-end", json={"userId": 44, "sessionId": "s"})
     assert r.status_code == 202 and r.json()["status"] == "accepted"
-    # store 실패 시 선점한 멱등키를 해제해 재전송이 다시 처리될 수 있게 한다.
-    assert not await processed_events.seen_event("session-end:44:s")
+    context = await session_context._default_repository.get_context("s")
+    assert context is not None and context.state == "terminal"
 
 
 async def test_session_end_returns_202_and_preserves_buffer_on_store_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """pg-profile query deadline도 §3.5 best-effort 경계에서 202 + 버퍼 보존으로 강등한다."""
-    import app.api.events as ev
-
     key = conversation_key("44", "timeout-session")
     store = await get_profile_store()
     await store.append_session_ctx(key, "재시도할 취향 신호")
@@ -758,7 +1010,7 @@ async def test_session_end_returns_202_and_preserves_buffer_on_store_timeout(
     async def _timeout(*args, **kwargs):
         raise TimeoutError("pg query deadline")
 
-    monkeypatch.setattr(ev.processed_events, "claim_event", _timeout)
+    monkeypatch.setattr(processed_events, "claim_event", _timeout)
     response = client.post(
         "/events/session-end",
         json={"userId": 44, "sessionId": "timeout-session"},

@@ -23,7 +23,7 @@ from app.core.text import _strip_unsafe
 from app.schemas.chat import ConditionChip
 from app.schemas.spring import ProductSearchFilters
 
-_NAMESPACE_ROOT = "buyer_revert"
+_NAMESPACE_ROOT = "buyer_revert_v2"
 _CATEGORIES_KEY = "categories"
 
 # key(thread_key)별 asyncio.Lock — RevertStore.add() 의 get→put(read-modify-write) 구간을

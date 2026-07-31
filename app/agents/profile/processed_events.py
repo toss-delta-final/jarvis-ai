@@ -44,6 +44,13 @@ def session_end_event_id(user_id: str | int, session_id: str) -> str:
     return f"session-end:{int(user_id)}:{session_id}"
 
 
+def profile_phase_event_id(context_id: str, generation: int, reason: str) -> str:
+    """프로필 phase를 lifecycle context 세대와 종료 사유에 한정한 멱등키."""
+    if reason not in ("idle", "terminal"):
+        raise ValueError("invalid profile finalization reason")
+    return f"chat-profile:{context_id}:{generation}:{reason}"
+
+
 async def invalidate_session_end_on_connection(
     conn,  # noqa: ANN001 - caller-owned psycopg AsyncConnection
     user_id: str | int,

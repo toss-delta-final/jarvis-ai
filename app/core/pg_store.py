@@ -115,6 +115,12 @@ async def get_store() -> BaseStore:
                 await asyncio.wait_for(
                     store.setup(), timeout=settings.state_store_connect_timeout_s
                 )
+                from app.core import session_context  # noqa: PLC0415
+
+                await asyncio.wait_for(
+                    session_context.ensure_legacy_store_trigger(),
+                    timeout=settings.state_store_connect_timeout_s,
+                )
                 _store_ctx = ctx
                 _store = store
             except Exception as exc:

@@ -15,11 +15,14 @@ from uuid import UUID
 
 import pytest
 
-from app.agents.buyer.graph import get_thread_store, run_buyer_turn
+from app.agents.buyer.graph import get_thread_store, run_buyer_turn as _production_run_buyer_turn
 from app.agents.buyer.recommendation import graph as recommendation_graph
+from app.agents.buyer.session_state import context_thread_key
+from app.api.deps import buyer_owner_id
+from app.core import session_context
 from app.core.auth import Identity
 from app.core.config import get_settings
-from app.core.conversation import conversation_key
+from app.core.session_context import BuyerSessionInput
 from app.schemas.spring import ProductSearchResult, SpringProduct
 from app.services.spring_client import SpringUnavailableError
 from tests._fakes import DEFAULT_DECOMPOSE, DEFAULT_PRODUCTS, FakeLLM
@@ -35,6 +38,41 @@ def _member() -> Identity:
 
 def _guest() -> Identity:
     return Identity(user_id=None, is_guest=True, seller_id=None, subject=None)
+
+
+async def _committed_observer(request, identity, observer=None):  # noqa: ANN001
+    owner_id = buyer_owner_id(identity, get_settings())
+    context = await session_context._default_repository.touch(
+        BuyerSessionInput(
+            request.session_id,
+            request.thread_id,
+            "guest" if identity.is_guest else "member",
+            owner_id,
+        )
+    )
+    if observer is None:
+        observer = SimpleNamespace(
+            request_id="unit-request",
+            record_model_call=lambda *_: None,
+        )
+    observer.context_id = context.context_id
+    return observer
+
+
+async def run_buyer_turn(request, identity, **kwargs):  # noqa: ANN001
+    observer = await _committed_observer(request, identity, kwargs.pop("observer", None))
+    async for frame in _production_run_buyer_turn(
+        request,
+        identity,
+        observer=observer,
+        **kwargs,
+    ):
+        yield frame
+
+
+async def _thread_key(request, identity) -> str:  # noqa: ANN001
+    observer = await _committed_observer(request, identity)
+    return context_thread_key(observer.context_id, request.thread_id)
 
 
 def _make_search(products):
@@ -554,7 +592,7 @@ async def test_multiturn_filters_persisted_and_fed_back() -> None:
         )
     )
 
-    key = conversation_key("u1", "t1")
+    key = await _thread_key(_req(), ident)
     thread_store = await get_thread_store()
     stored = await thread_store.get(key)
     assert stored is not None and stored.category == "무선이어폰"
@@ -574,12 +612,13 @@ async def test_multiturn_filters_persisted_and_fed_back() -> None:
     assert decompose_calls and "무선이어폰" in decompose_calls[0]
 
 
-async def test_thread_store_scoped_by_identity() -> None:
-    """서로 다른 신원이 같은 threadId 를 써도 필터가 섞이지 않는다(IDOR 방지)."""
+async def test_thread_store_scoped_by_session_context() -> None:
+    """서로 다른 세션 context가 같은 threadId를 써도 필터가 섞이지 않는다."""
     a = Identity(user_id="A", is_guest=False, seller_id=None, subject="A")
+    request_a = _req(session_id="session-a", thread_id="shared")
     await _collect(
         run_buyer_turn(
-            _req(thread_id="shared"),
+            request_a,
             a,
             llm=FakeLLM(),
             search=_make_search(DEFAULT_PRODUCTS),
@@ -587,8 +626,11 @@ async def test_thread_store_scoped_by_identity() -> None:
         )
     )
     thread_store = await get_thread_store()
-    assert await thread_store.get(conversation_key("A", "shared")) is not None
-    assert await thread_store.get(conversation_key("B", "shared")) is None
+    key_a = await _thread_key(request_a, a)
+    b = Identity(user_id="B", is_guest=False, seller_id=None, subject="B")
+    key_b = await _thread_key(_req(session_id="session-b", thread_id="shared"), b)
+    assert await thread_store.get(key_a) is not None
+    assert await thread_store.get(key_b) is None
 
 
 # ─────────── 검색 사후필터 (search_service) ───────────
@@ -1986,7 +2028,6 @@ async def test_recommendation_revert_ignores_non_consumable(
 ) -> None:
     """소모품 화이트리스트 밖 revert 문자열은 무시(무한 누적·임의 문자열 방지, Claude)."""
     from app.agents.buyer.recommendation.state import get_revert_store
-    from app.core.conversation import conversation_key
 
     _fix_now(monkeypatch)
     monkeypatch.setattr(get_settings(), "consumable_categories", ["조미료"])
@@ -2011,7 +2052,7 @@ async def test_recommendation_revert_ignores_non_consumable(
     )
     # 화이트리스트 밖이라 저장 안 됨 → 조미료 억제 유지(되돌려지지 않음)
     revert_store = await get_revert_store()
-    assert await revert_store.get(conversation_key("123", "tN")) == set()
+    assert await revert_store.get(await _thread_key(_req(thread_id="tN"), _member_num())) == set()
 
 
 def test_suggestion_chip_requires_exactly_one_kind() -> None:
@@ -2315,7 +2356,7 @@ async def test_order_status_clears_pending_without_copying_response_into_buyer_s
 
     identity = _order_member()
     request = _req(message="배송 상태 알려줘", thread_id="i4-state")
-    key = conversation_key("42", request.thread_id)
+    key = await _thread_key(request, identity)
     cart_store = await get_cart_store()
     await cart_store.set_pending(key, PendingAdd(product_id=101, quantity=1))
     await cart_store.set_last_reco(key, [(777, "기존 추천 상품")])

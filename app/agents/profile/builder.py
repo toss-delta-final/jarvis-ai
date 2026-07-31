@@ -17,8 +17,8 @@ from enum import StrEnum
 from app.agents.profile.gate import should_promote
 from app.agents.profile.store import get_profile_store
 from app.agents.buyer.recommendation.state import extract_json
-from app.core.config import get_settings
-from app.core.llm import LLMError
+from app.core.config import Settings, get_settings
+from app.core.llm import LLMClient, LLMError
 
 _DELTA_SYSTEM = """당신은 커머스 어시스턴트의 취향 프로필 델타 추출기입니다.
 세션 대화(사용자 발화 모음)에서 장기 보관할 만한 취향 신호만 뽑습니다.
@@ -62,7 +62,12 @@ async def record_remember(user_id: str, fact: str) -> None:
 
 
 async def generate_session_delta(
-    user_id: str, thread_key: str, *, llm, settings
+    user_id: str,
+    thread_key: str,
+    *,
+    profile_watermark: int,
+    llm: LLMClient | None,
+    settings: Settings,
 ) -> tuple[list[str], int] | None:
     """세션 버퍼(transient)에서 후보 델타를 LLM 추출 → 게이트 승격. (승격 fact 목록, 스냅샷 워터마크) 반환.
 
@@ -73,7 +78,7 @@ async def generate_session_delta(
     LLMError 는 전파 — 상위가 degrade 처리. 게스트는 호출 안 함(상위 책임).
     """
     store = await get_profile_store()
-    buffer, watermark = await store.get_session_ctx_snapshot(thread_key)
+    buffer = await store.get_session_ctx_upto(thread_key, profile_watermark)
     if not buffer or llm is None:
         return None  # degrade(버퍼 없음/LLM 미구성) — 처리 안 함(상위가 버퍼 보존)
     # LLMError 는 전파 — 상위(events)가 degrade 로 처리해 버퍼를 보존(정상 반려와 구분).
@@ -96,7 +101,7 @@ async def generate_session_delta(
         ):
             await store.add_fact(user_id, fact, cap=settings.profile_max_facts)
             promoted.append(fact)
-    return promoted, watermark
+    return promoted, profile_watermark
 
 
 async def consolidate(user_id: str, *, llm, settings) -> ConsolidationResult:

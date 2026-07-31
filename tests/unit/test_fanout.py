@@ -9,10 +9,14 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from app.agents.buyer.graph import run_buyer_turn
+from app.agents.buyer.graph import run_buyer_turn as _production_run_buyer_turn
 from app.agents.buyer.recommendation.graph import _merge_fanout_results
 from app.agents.buyer.recommendation.state import build_condition_chips
+from app.api.deps import buyer_owner_id
+from app.core import session_context
 from app.core.auth import Identity
+from app.core.config import get_settings
+from app.core.session_context import BuyerSessionInput
 from app.schemas.spring import ProductSearchFilters, ProductSearchResult, SpringProduct
 from app.services.spring_client import SpringUnavailableError
 from tests._fakes import FakeLLM
@@ -77,6 +81,35 @@ def _req(message: str = "유럽여행 준비물 추천", session_id: str = "s1",
 
 def _member() -> Identity:
     return Identity(user_id="u1", is_guest=False, seller_id=None, subject="u1")
+
+
+async def _committed_observer(request, identity, observer=None):  # noqa: ANN001
+    context = await session_context._default_repository.touch(
+        BuyerSessionInput(
+            request.session_id,
+            request.thread_id,
+            "guest" if identity.is_guest else "member",
+            buyer_owner_id(identity, get_settings()),
+        )
+    )
+    if observer is None:
+        observer = SimpleNamespace(
+            request_id="unit-request",
+            record_model_call=lambda *_: None,
+        )
+    observer.context_id = context.context_id
+    return observer
+
+
+async def run_buyer_turn(request, identity, **kwargs):  # noqa: ANN001
+    observer = await _committed_observer(request, identity, kwargs.pop("observer", None))
+    async for frame in _production_run_buyer_turn(
+        request,
+        identity,
+        observer=observer,
+        **kwargs,
+    ):
+        yield frame
 
 
 class _RecordingPush:

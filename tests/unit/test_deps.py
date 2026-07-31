@@ -16,7 +16,7 @@ def _patch_identity(monkeypatch: pytest.MonkeyPatch, identity: Identity) -> None
 
 def test_require_seller_accepts_seller_with_brand_id(monkeypatch: pytest.MonkeyPatch) -> None:
     """seller_id + brand_id 있는 토큰 → 통과."""
-    ident = Identity(user_id="7", is_guest=False, seller_id="7", brand_id="brand-99")
+    ident = Identity(user_id="7", is_guest=False, seller_id="7", brand_id=99)
     _patch_identity(monkeypatch, ident)
     assert deps.require_seller(authorization="Bearer x") is ident
 

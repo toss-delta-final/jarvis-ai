@@ -108,4 +108,11 @@ def test_events_catalog_is_post_mvp_404() -> None:
 def test_openapi_surface_is_exactly_mvp() -> None:
     """OpenAPI 표면이 정확히 MVP 엔드포인트 집합인지 확인."""
     paths = set(app.openapi()["paths"].keys())
-    assert paths == {"/chat", "/seller/chat", "/health", "/profile/me", "/events/session-end"}
+    assert paths == {
+        "/chat",
+        "/seller/chat",
+        "/health",
+        "/profile/me",
+        "/events/session-end",
+        "/events/session-claim",
+    }
