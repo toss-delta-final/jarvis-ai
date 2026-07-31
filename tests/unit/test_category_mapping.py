@@ -1024,3 +1024,51 @@ async def test_select_stage_failure_keeps_confirmed_legs(caplog) -> None:
     # exact 매치는 보존되고, 택일 대상 leg 은 임베딩 top-1 로 degrade 한다(드롭 아님)
     assert out == [("PC부품 > CPU", "cpu"), ("취미 > 수집용품", "선물용품")]
     assert any(r.msg == "category_select_stage_failed" for r in caplog.records)
+
+
+async def test_selected_distance_is_rounded_like_top1(caplog) -> None:
+    """[PR #188 리뷰] 택일이 확정한 거리도 top-1 과 **같은 정밀도**(4자리)로 남긴다.
+
+    `_top1_with_margin` 은 `round(distance, 4)` 로 저장하는데 택일 경로는 `candidates_by_leg` 의
+    원시 float 를 그대로 실었다. 같은 `distance` 필드에 leg 마다 정밀도가 달라지면 §11 이 명시한
+    임계 재튜닝(distance 분포)에 노이즈가 섞인다.
+
+    정밀도만의 문제가 아니다 — 거리컷은 `picked[1] > distance_max` 비교라, 임계 근처에서 원시값과
+    반올림값이 **채택/드롭을 가른다**(0.220001 은 드롭, 0.22 는 채택).
+    """
+    sel = _FakeSelector(answer="취미 > 종교용품")
+    m = _FakeMapper(
+        exact=set(),
+        nearest={},
+        # 2위를 일부러 4자리 밖 정밀도로 준다 — 택일이 이걸 고르면 로그에 원시값이 샌다
+        hits={"선물용품": [("취미 > 수집용품", 0.2074), ("취미 > 종교용품", 0.21691234)]},
+    )
+    with caplog.at_level("INFO"):
+        out = await m.run([CategoryQuery(None, "선물용품")], select=sel, llm=object())
+    assert out == [("취미 > 종교용품", "선물용품")]
+    assert _record(caplog, "category_selected").distance == 0.2169
+    assert _record(caplog, "category_fallback_top1").distance == 0.2169
+
+
+async def test_input_legs_are_truncated_to_fanout_max(caplog) -> None:
+    """[PR #188 리뷰] 입력 leg 수를 `category_fanout_max` 로 방어적으로 절단한다.
+
+    매핑은 leg 당 raw·query **두 앵커**를 gather 로 동시 조회하므로 한 턴의 pg 커넥션 점유는
+    `2 × leg 수`다. `config._require_pool_covers_anchor_concurrency` 는 `pool >= 2 × fanout_max`
+    를 기동 시 강제하지만, "leg 수 ≤ fanout_max"라는 전제는 호출부(`decompose._parse_category_queries`·
+    `expand_needs`)의 절단에만 의존하고 있었다 — 새 호출부가 절단을 빠뜨리면 풀이 넘치고 증상은
+    **다른 사용자 요청의 PoolTimeout** 으로 나타나 원인 추적이 어렵다. 불변식을 이 함수에서 보장한다.
+
+    절단이 실제로 일어나면 경고로 남긴다 — 조용히 자르면 호출부의 계약 위반이 드러나지 않는다.
+    """
+    legs = [CategoryQuery(None, f"상품{i}") for i in range(8)]
+    m = _FakeMapper(
+        exact=set(), nearest={f"상품{i}": f"카테고리 > C{i}" for i in range(8)}, hits=None
+    )
+    with caplog.at_level("WARNING"):
+        out = await m.run(legs, settings=_settings(fanout_max=3))
+    assert [c for c, _q in out] == ["카테고리 > C0", "카테고리 > C1", "카테고리 > C2"]
+    assert len(m._embedded) == 3  # 앵커 조회도 3건만 — 동시성 상한이 실제로 지켜진다
+    rec = _record(caplog, "category_legs_truncated")
+    assert rec.given == 8
+    assert rec.fanout_max == 3

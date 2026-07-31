@@ -394,9 +394,10 @@ class Settings(BaseSettings):
         올리는 쪽(#168 은 leg 10 계획)이 풀을 잊으면 한 턴이 풀을 소진해 **다른 사용자의 조회가
         대기**한다(증상은 PoolTimeout 이라 원인이 드러나지 않는다). 기동 시점에 막는다.
 
-        `2 ×` 상한의 전제: leg 수는 **호출부**가 `category_fanout_max` 로 절단한다
-        (`decompose._parse_category_queries`·`expand_needs`) — `map_categories` 자신은 출력만
-        절단하므로, 절단 없이 leg 을 넘기는 호출부가 생기면 이 상한도 함께 재검토해야 한다.
+        `2 ×` 상한의 전제(leg 수 ≤ fanout_max)는 **`map_categories` 가 입력을 방어적으로 절단해**
+        스스로 보장한다(PR #188 리뷰) — 호출부(`decompose._parse_category_queries`·`expand_needs`)의
+        절단에만 기대면 새 호출부 하나가 풀을 넘기고, 증상이 다른 요청의 PoolTimeout 이라 원인
+        추적이 어렵다. 절단이 실제로 발생하면 `category_legs_truncated` 로 관측된다.
         """
         need = 2 * self.category_fanout_max
         if self.category_search_pool_max_size < need:

@@ -95,6 +95,10 @@ async def map_categories(
     (canonical-or-null, #20·PR #73 리뷰). 모든 leg 가 드롭되면 빈 리스트를 낸다 — Spring 엔 canonical
     또는 null(생략)만 나간다.
 
+    입력 leg 수는 `category_fanout_max` 로 **방어적으로 절단**한다(PR #188 리뷰) — leg 당 앵커가
+    2개(raw·query)라 한 턴의 pg 커넥션 점유가 `2 × leg 수`이고, 그 상한을 config 검증기가 기동 시
+    강제하기 때문이다. 호출부 절단에만 기대면 새 호출부 하나가 풀을 넘긴다.
+
     (utterance 는 매퍼 인터페이스 파라미터로 유지하되, 현재 앵커는 leg 별 raw·query 만 쓴다.)
     """
     dsn = settings.catalog_db_url
@@ -108,6 +112,19 @@ async def map_categories(
     # 관례에 맞춰 RETRIEVAL_QUERY 로 바인딩한다(문서 쪽 category_seed=document, 이슈 #65·PR #73 리뷰).
     embed = embed or functools.partial(_embed_texts, task_type=settings.embedding_task_query)
     queries = list(category_queries)  # 빈 리스트를 강제로 채우지 않는다 — 신호 없으면 빈 결과(#22)
+    # 입력 leg 수를 fanout_max 로 **방어적으로** 절단한다(PR #188 리뷰). 매핑은 leg 당 raw·query
+    # 두 앵커를 gather 로 동시 조회하므로 한 턴의 pg 커넥션 점유가 `2 × leg 수`이고,
+    # config._require_pool_covers_anchor_concurrency 는 `pool >= 2 × fanout_max` 를 기동 시
+    # 강제한다 — 그 전제("leg 수 ≤ fanout_max")가 호출부 절단에만 의존하면 새 호출부 하나가
+    # 풀을 넘기고, 증상은 **다른 사용자 요청의 PoolTimeout** 이라 원인 추적이 어렵다.
+    # 출력은 어차피 _dedup_truncate 로 같은 상한을 받으므로 초과분은 낭비였다(dedup 이 겹칠 때만
+    # leg 다양성이 줄지만, 그건 호출부 계약 위반 상황이고 풀 고갈보다 가벼운 손해다).
+    if len(queries) > fanout_max:
+        logger.warning(
+            "category_legs_truncated",
+            extra={"given": len(queries), "fanout_max": fanout_max},
+        )
+        queries = queries[:fanout_max]
     raws = [q.raw_category for q in queries]
     qtexts = [q.query for q in queries]  # leg keyword 로 이어 붙일 원 추측 query
 
@@ -286,7 +303,12 @@ async def map_categories(
                     )
                     select_dropped.add(i)
                     continue
-                chosen = {c: d for c, d in candidates_by_leg[i]}.get(pick)
+                raw_chosen = {c: d for c, d in candidates_by_leg[i]}.get(pick)
+                # `_top1_with_margin` 과 **같은 정밀도**로 맞춘다(PR #188 리뷰) — 원시값을 그대로
+                # 두면 같은 `distance` 필드에 leg 마다 정밀도가 달라져 §11 임계 재튜닝 분포에
+                # 노이즈가 섞이고, 거리컷이 `picked[1] > distance_max` 비교라 임계 근처에서
+                # 채택/드롭까지 갈린다(0.220001 은 드롭, 0.22 는 채택).
+                chosen = None if raw_chosen is None else round(raw_chosen, 4)
                 if chosen is None:
                     # 후보 밖 값(주입 fake·환각) — select_category 의 membership 가드가 이미 막지만
                     # 주입형 seam 이라 방어한다. 미검증 값을 canonical 로 내보내지 않고 top-1 유지.
