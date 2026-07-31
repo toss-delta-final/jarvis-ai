@@ -156,6 +156,14 @@ async def _prepare_recommendation(
                 category_queries=decision.category_queries,
                 utterance=request.message,
                 settings=settings,
+                # [#115 §4.4] 마진이 얇은 leg 만 top-k 택일에 쓰는 조건부 LLM — 정상 경로는 0회다.
+                # llm=None 이면 매퍼가 택일을 건너뛰고 임베딩 top-1 을 쓴다(LLM 종속 없음).
+                # tier 는 decompose 와 동일 fast — 후보 중 택일은 경량 판정이다(§4.4).
+                llm=llm,
+                tier="fast",
+                # 택일 호출도 chat_request 모델 집계(§6.3)에 실어야 한다 — 기록은 모델을 실제로
+                # 부르는 select_category 안에서 하므로 여기 책임은 seam 까지 전달하는 것뿐이다.
+                observer=observer,
             )
         except Exception as exc:  # noqa: BLE001 - 매핑 호출 자체의 예외(시그니처 불일치·버그 등)
             # embed/DB 실패는 map_categories 내부에서 leg 단위 격리(exact 보존·§5·#20)로 처리된다.

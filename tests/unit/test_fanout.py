@@ -153,7 +153,7 @@ class _RecordingPush:
 
 
 def _two_leg_mapper():
-    async def _map(*, category_queries, utterance, settings):
+    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
         return [("여행/캠핑 > 여행용품", "파우치"), ("가전 > 어댑터", "어댑터")]
 
     return _map
@@ -250,7 +250,7 @@ async def test_fanout_single_category_preserves_candidate_width() -> None:
         calls.append(filters)
         return _res(101, 102)
 
-    async def _one_leg(*, category_queries, utterance, settings):
+    async def _one_leg(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
         return [("가전 > 이어폰/헤드폰", "무선 이어폰")]
 
     await _collect(
@@ -389,7 +389,7 @@ async def test_multiturn_prior_category_fed_to_decompose_prompt() -> None:
     async def _search(filters, exclude_product_ids=None):
         return _res(101)
 
-    async def _map_leg(*, category_queries, utterance, settings):
+    async def _map_leg(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
         return [("여행 > 여행용품", "파우치")]
 
     llm = FakeLLM()
@@ -423,7 +423,7 @@ async def test_multiturn_prior_category_fed_to_decompose_prompt() -> None:
 async def test_mapper_failure_is_logged(caplog) -> None:
     """mapper() 예외 시 최후 방어 경로가 관측 로그를 남긴다(PR #73 #11 — 무로그 삼킴 방지)."""
 
-    async def _boom(*, category_queries, utterance, settings):
+    async def _boom(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
         raise RuntimeError("boom")
 
     async def _search(filters, exclude_product_ids=None):
@@ -453,7 +453,7 @@ async def test_mapper_failure_degrades_to_null_not_raw() -> None:
         calls.append(filters.category)
         return _res(101)
 
-    async def _boom(*, category_queries, utterance, settings):
+    async def _boom(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
         raise RuntimeError("mapper bug")
 
     d = {
@@ -483,7 +483,7 @@ def _garbage_mapper():
     매퍼는 신호 없는 턴엔 빈 legs 를 내지만(#22), 여기선 prior 승계를 또렷이 검증하려 garbage 를 쓴다.
     """
 
-    async def _map(*, category_queries, utterance, settings):
+    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
         legs = [(q.raw_category, q.query) for q in category_queries if q.raw_category]
         return legs or [("매퍼우회검증_garbage카테고리", None)]
 
@@ -554,7 +554,7 @@ async def test_multiturn_new_situational_query_not_hijacked_by_prior() -> None:
         calls.append(filters.category)
         return _res(101)
 
-    async def _map(*, category_queries, utterance, settings):
+    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
         # raw 있으면 그대로, null-raw+query 는 그 query 로 canonical 매핑(테스트용 lookup)
         qmap = {"여행 파우치": "여행 > 여행용품"}
         legs = []
@@ -616,7 +616,7 @@ async def test_empty_legs_clears_unvalidated_filters_category() -> None:
         calls.append(filters.category)
         return _res(101)
 
-    async def _map_empty(*, category_queries, utterance, settings):
+    async def _map_empty(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
         return []  # 매핑 전량 실패(미시드·하드실패)
 
     # decompose 가 구식 습관으로 filters.category 를 echo
@@ -672,7 +672,7 @@ async def _run_recommend(message: str, decompose: dict, *, expand=None, **kw) ->
         calls.append(filters.category)
         return _res(101)
 
-    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast"):
+    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
         # leg query 를 그대로 canonical 처럼 흘려 전개 결과가 검색까지 도달하는지 본다.
         return [(q.query, q.query) for q in category_queries if q.query]
 
@@ -883,6 +883,49 @@ async def test_expander_receives_observer_for_model_call_logging() -> None:
     )
     assert calls == ["디퓨저", "식기 세트"]  # 전개가 실제로 발동한 턴
     assert got == [observer]  # 같은 observer 가 seam 까지 도달했다
+
+
+async def test_mapper_receives_observer_for_select_model_call_logging() -> None:
+    """[PR #188 리뷰] 그래프는 `observer` 를 매퍼까지 내려보낸다 — §4.4 택일 호출 기록의 전제.
+
+    기록은 모델을 실제로 부르는 `select_category` 가 하므로(주입형 seam 에 유령 호출을 남기지
+    않기 위해), 그래프의 책임은 observer 전달이다. 이 배선이 끊기면 애매한 leg 이 많은 턴의
+    LLM 호출이 `chat_request` 집계(api-spec §6.3)와 요청 트레이싱(#141)에서 조용히 빠진다.
+    """
+    got: list = []
+
+    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **kw):
+        got.append(kw.get("observer"))
+        return [("가전 > 이어폰/헤드폰", "무선 이어폰")]
+
+    observer = _ProbeObserver()
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters.category)
+        return _res(101)
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="무선 이어폰 추천"),
+            _member(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "reply": "",
+                    "case": 1,
+                    "filters": {},
+                    "categoryQueries": [{"category": None, "query": "무선 이어폰"}],
+                }
+            ),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_map,
+            observer=observer,
+        )
+    )
+    assert calls == ["가전 > 이어폰/헤드폰"]
+    assert got == [observer]  # 같은 observer 가 매퍼까지 도달했다
 
 
 # ─────────── 니즈별 목록 분할 (#209, REQ-REC-024 / api-spec §4.2 PICK_ONE×N) ───────────

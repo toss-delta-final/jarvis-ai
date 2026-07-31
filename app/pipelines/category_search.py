@@ -79,22 +79,27 @@ def exact_lookup(values: Sequence[str], dsn: str) -> set[str]:
     return {row[0] for row in rows}
 
 
-def search_categories_pg(query_vec: list[float], dsn: str, *, k: int) -> list[str]:
-    """pg-catalog `categories` 에서 코사인 top-k 카테고리를 직접 조회한다(HNSW).
+def search_categories_pg(query_vec: list[float], dsn: str, *, k: int) -> list[tuple[str, float]]:
+    """pg-catalog `categories` 에서 코사인 top-k 를 `(category, distance)` 로 조회한다(HNSW).
 
     임베딩 미채움(NULL) 행은 제외한다. `<=>` 는 코사인 거리(작을수록 유사).
+
+    **거리를 함께 반환한다(#115).** 종전엔 `embedding <=> q` 로 정렬해놓고 category 만 돌려줘
+    "얼마나 가까운 매칭이었나"가 호출부·로그 어디에도 남지 않았다 — 이것이 #115(카테고리 오추출)
+    진단을 막은 관측 구멍이고, 거리컷(§4)·거리 로그(§11)가 모두 이 값에 의존한다.
+    거리는 정렬 키 별칭(`dist`)으로 뽑는다 — 같은 표현식이라 HNSW 인덱스 사용은 유지된다.
     """
     from pgvector import Vector  # noqa: PLC0415 - LAZY import(유닛테스트 pg 의존 회피)
 
     with _get_pool(dsn).connection() as conn:
         rows = conn.execute(
             """
-            SELECT category
+            SELECT category, embedding <=> %s AS dist
             FROM categories
             WHERE embedding IS NOT NULL
-            ORDER BY embedding <=> %s
+            ORDER BY dist
             LIMIT %s
             """,  # noqa: S608 - 컬럼 상수만 사용, 파라미터 바인딩
             (Vector(query_vec), k),
         ).fetchall()
-    return [row[0] for row in rows]
+    return [(row[0], float(row[1])) for row in rows]
