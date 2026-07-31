@@ -411,7 +411,12 @@ async def stream_recommendation(
     # 세는 단위는 **후보가 실제로 남은 니즈**다(PR #212 리뷰) — 검색 0건·최근구매 dedup 으로
     # 비워진 니즈까지 세면 rerank 가 쓰지도 못할 항목 수를 요구하고 출력 예산만 부푼다.
     # 후보 수를 넘겨도 의미가 없어 함께 상한한다.
-    populated_needs = len({leg_of[p.product_id] for p in candidates if p.product_id in leg_of})
+    # MAX_LISTS 로 클램프 — 계약상 그 이상은 push 되지 않으므로(아래 절단) 잘려나갈 니즈까지
+    # 예산에 세면 rerank 가 쓰지도 못할 항목을 요구한다. config 가 category_fanout_max ≤
+    # MAX_LISTS 를 이미 강제하지만, 두 경로가 나중에 갈라져도 예산은 틀리지 않게 여기서도 막는다.
+    populated_needs = min(
+        len({leg_of[p.product_id] for p in candidates if p.product_id in leg_of}), MAX_LISTS
+    )
     expose_budget = (
         min(settings.expose_max * populated_needs, len(candidates))
         if split_by_need
@@ -474,8 +479,14 @@ async def stream_recommendation(
     )
     # 계약 상한(§4.2 lists ≤10)을 **여기서** 자른다 — 아래 ranked_ids 는 "실제로 push 되는 상품"
     # 이어야 last_reco("그거 담아줘")와 관측 로그가 노출과 어긋나지 않는다.
-    # 실질적으로는 category_fanout_max(기본 5)가 먼저 걸려 도달하지 않는 방어선이다.
-    exposed_groups = exposed_groups[:MAX_LISTS]
+    # config 가 category_fanout_max ≤ MAX_LISTS 를 강제하므로 도달하지 않는 방어선이지만,
+    # 도달하면 니즈가 조용히 사라지는 것이라 로그를 남긴다(silent cap 금지).
+    if len(exposed_groups) > MAX_LISTS:
+        logger.warning(
+            "reco_lists_truncated",
+            extra={"groups": len(exposed_groups), "cap": MAX_LISTS},
+        )
+        exposed_groups = exposed_groups[:MAX_LISTS]
     ranked_ids = [pid for _, group in exposed_groups for pid in group]
 
     # [#101 #8] 관측성 — 파이프라인 후보 깔때기를 한 줄 구조화 로그로 남긴다(recall 손실·자원 진단).

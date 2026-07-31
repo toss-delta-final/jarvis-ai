@@ -56,3 +56,20 @@ def test_expose_min_above_expose_max_is_rejected():
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None, expose_min=9, expose_max=5)
+
+
+def test_category_fanout_max_cannot_exceed_contract_list_cap():
+    """leg 수가 계약 목록 상한(§4.2 lists ≤10)을 넘으면 기동 시점에 거절한다 (PR #212 리뷰).
+
+    통과시키면 case 3 에서 니즈가 10개를 넘고 초과분이 push 직전에 조용히 잘린다 —
+    사용자는 요청한 니즈가 사라진 걸 알 수 없고, rerank 예산도 잘려나갈 니즈까지 포함해
+    부풀어 출력 잘림 위험이 도로 생긴다.
+    """
+    import pytest
+    from pydantic import ValidationError
+
+    from app.schemas.spring import MAX_LISTS
+
+    assert Settings(_env_file=None).category_fanout_max <= MAX_LISTS
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, category_fanout_max=MAX_LISTS + 1)
