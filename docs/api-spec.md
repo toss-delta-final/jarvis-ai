@@ -6,8 +6,8 @@
 
 | 항목 | 값 |
 |---|---|
-| 문서 버전 | v0.17.0 |
-| 작성일 | 2026-07-14 (v0.17.0 개정 2026-07-31 — **[#187] signed `sessionId` 기반 stable `context_id`, guest→member claim, D6/I-20 lifecycle 계약 반영**) (v0.16.3 개정 2026-07-30 — **[#164] I-4 주문 상태 요약 계약·구매자 `order_status` 라우트 구현 정합**, §4.10 신설) (v0.16.2 개정 2026-07-30 — **[#194] I-14/I-15 응답 스키마 BE 실측 확정 + I-6 이상 감지 규칙 명문화**) (v0.16.1 개정 2026-07-30 — **I-21 `listId`를 UUID급 무작위(≥128bit)로 확정**, 순번·타임스탬프 등 추측 가능한 형식 금지) (v0.16.0 개정 2026-07-30 — **`sessionId`(접속)·`threadId`(방) 축 분리**: 동시 스트림 락을 방 단위로, I-20 사유 `logout` 1종, CH-1 멱등(D5), 맥락 TTL 접속 단위(D6)) (v0.15.27 개정 2026-07-30 — 사본 drift 정정: 담기 이벤트 적재 주체(BE→FE)·`budget` 이벤트 제외·`search.query` PII 기준) (v0.15.26 개정 2026-07-28 — 사본 동기화: §3.1 `conditionActions`(칩 제거, #84)·`screen`(화면 맥락, #118) 신설, `conditions` 칩 `field` 6종 확정, in-stream `error`에 `requestId`·`retryable` 추가) (v0.15.25 개정 2026-07-28 — #171: I-1 응답에 reviewCount 추가(AI 계산용·비표시), rating=0 의미 판별(리뷰 부재 vs 저평점). #100 "reviewCount 표시전용·미반환" 부분 개정. / v0.15.24 개정 2026-07-27 — 사본 동기화: S-5 폐기 반영, 상품 수정은 챗봇 HITL(I-11) 유일 경로) |
+| 문서 버전 | v0.18.0 |
+| 작성일 | 2026-07-14 (v0.18.0 개정 2026-07-31 — **[#148] 홈 추천 계약 등재: I-22 §3.7(Spring→AI 위임, `outcome` 3종 전부 200, provenance 비노출) · P-5 §4.11(FE↔Spring 전제), 🔴 C-18 `catalogVersion` 주체 미해결**) (v0.17.0 개정 2026-07-31 — **[#187] signed `sessionId` 기반 stable `context_id`, guest→member claim, D6/I-20 lifecycle 계약 반영**) (v0.16.3 개정 2026-07-30 — **[#164] I-4 주문 상태 요약 계약·구매자 `order_status` 라우트 구현 정합**, §4.10 신설) (v0.16.2 개정 2026-07-30 — **[#194] I-14/I-15 응답 스키마 BE 실측 확정 + I-6 이상 감지 규칙 명문화**) (v0.16.1 개정 2026-07-30 — **I-21 `listId`를 UUID급 무작위(≥128bit)로 확정**, 순번·타임스탬프 등 추측 가능한 형식 금지) (v0.16.0 개정 2026-07-30 — **`sessionId`(접속)·`threadId`(방) 축 분리**: 동시 스트림 락을 방 단위로, I-20 사유 `logout` 1종, CH-1 멱등(D5), 맥락 TTL 접속 단위(D6)) (v0.15.27 개정 2026-07-30 — 사본 drift 정정: 담기 이벤트 적재 주체(BE→FE)·`budget` 이벤트 제외·`search.query` PII 기준) (v0.15.26 개정 2026-07-28 — 사본 동기화: §3.1 `conditionActions`(칩 제거, #84)·`screen`(화면 맥락, #118) 신설, `conditions` 칩 `field` 6종 확정, in-stream `error`에 `requestId`·`retryable` 추가) (v0.15.25 개정 2026-07-28 — #171: I-1 응답에 reviewCount 추가(AI 계산용·비표시), rating=0 의미 판별(리뷰 부재 vs 저평점). #100 "reviewCount 표시전용·미반환" 부분 개정. / v0.15.24 개정 2026-07-27 — 사본 동기화: S-5 폐기 반영, 상품 수정은 챗봇 HITL(I-11) 유일 경로) |
 | 상태 | draft |
 | 대상 독자 | Spring 백엔드 팀, React 프론트엔드(FE) 팀 |
 | 소유 | AI 에이전트 서버 팀 |
@@ -40,19 +40,19 @@
 
 ### 1.2 호출 방향 원칙 (Call Direction)
 
-FE가 사용자 대면 API에 대해 **AI 서버를 직접 호출**하고(결정 19), AI 서버는 후보 검색·구매 이력·주문 상태·장바구니·추천 목록·판매자 집계/이력·판매자 상품 CRUD를 위해 Spring을 역호출하며, AI 생성물 갱신은 Spring 변경분을 pull한다. Spring → AI 이벤트 레인은 **`/events/session-end`와 로그인 승격용 `/events/session-claim`**을 유지한다(§3.5) — 주문 알림은 채택하지 않는다(§3.6·§4.7). 상품 원본 컬럼의 AI측 사본은 두지 않으며 후보 확보는 **질의 시점 I-1 `GET /internal/products/search`**(§4.6), AI 생성물 갱신은 I-17 pull 배치(§4.8)로 분리한다.
+FE가 사용자 대면 API에 대해 **AI 서버를 직접 호출**하고(결정 19), AI 서버는 후보 검색·구매 이력·주문 상태·장바구니·추천 목록·판매자 집계/이력·판매자 상품 CRUD를 위해 Spring을 역호출하며, AI 생성물 갱신은 Spring 변경분을 pull한다. Spring → AI 레인은 **`/events/session-end`와 로그인 승격용 `/events/session-claim`**(§3.5)에 더해 **홈 추천 랭킹 위임 I-22 `POST /internal/recommendations/home`**(§3.7)을 갖는다 — 주문 알림은 채택하지 않는다(§3.6·§4.7). 상품 원본 컬럼의 AI측 사본은 두지 않으며 후보 확보는 **질의 시점 I-1 `GET /internal/products/search`**(§4.6), AI 생성물 갱신은 I-17 pull 배치(§4.8)로 분리한다.
 
 | 레인 | 방향 | 호출 | 인증 | 근거 |
 |---|---|---|---|---|
 | (a) 사용자 대면 | **FE → AI (직접)** | `POST /chat`, `POST /seller/chat`, `GET /profile/me` | 사용자 JWT (§2.3 a) | 결정 19 |
-| (b) 이벤트 | **Spring → AI** | `POST /events/session-end`, `POST /events/session-claim` | 서비스 간 토큰 (§2.3 b) | 결정 12/16/21, #187 |
+| (b) Spring → AI | **Spring → AI** | 이벤트 `POST /events/session-end`·`POST /events/session-claim`(§3.5) + **위임 호출 I-22 `POST /internal/recommendations/home`**(§3.7) | 서비스 간 토큰 (§2.3 b) | 결정 12/16/21, #187, I-22(2026-07-28) |
 | (c) 역방향 | **AI → Spring** | **17건** `{I-1,I-19,I-4,I-2,I-18,I-21,I-6,I-7,I-13,I-14,I-15,I-16,I-9,I-10,I-11,I-12,I-17}` — 후보 검색(§4.6), 구매 이력(§4.7), 주문 상태 요약(§4.10), 장바구니 담기/조회(§4.1/§4.9), 추천 목록 push(§4.2), 판매자 집계·이력(§4.4), 판매자 상품 CRUD(§4.5), AI 생성물 변경분 pull(§4.8) | **전부 서비스 토큰(internal, `X-Internal-Token`)**. 사용자/판매자 스코프 신원은 AI가 검증 JWT 클레임에서만 도출 | 결정 7 / 경로 B / BE DB 정합 |
-| (d) 전제 계약 | **FE → Spring** | 세션+스트림 티켓 발급(CH-1)·티켓 재발급(CH-1b)·판매자 세션(CH-6), 추천 목록 GET(§4.3), (판매자 FE 직접 상품편집 — AI 표면 밖) | Spring 소관 | 결정 19 / 경로 B / v0.15.20 |
+| (d) 전제 계약 | **FE → Spring** | 세션+스트림 티켓 발급(CH-1)·티켓 재발급(CH-1b)·판매자 세션(CH-6), 채팅 추천 목록 GET(CH-5, §4.3), **홈 추천 목록 GET(P-5, §4.11)**, (판매자 FE 직접 상품편집 — AI 표면 밖) | Spring 소관 | 결정 19 / 경로 B / v0.15.20 / P-5(2026-07-28) |
 
 - 레인 (a): 사용자(회원·게스트·판매자)의 요청. 신원은 **토큰 클레임**에서 추출한다(§2.3, §2.6). AI는 사용자 요청 본문의 식별자를 신뢰하지 않는다.
-- 레인 (b): Spring → AI 이벤트는 **세션 종료 통지(`/events/session-end`)와 로그인 소유권 승격(`/events/session-claim`)**이다. 주문 알림은 채택하지 않는다 — 구매 이력은 질의 시점 조회(§4.7)로 확보하며, 카탈로그 변경 이벤트도 존재하지 않는다(사본 없음).
+- 레인 (b): Spring → AI는 **(1) 이벤트 2건** — 세션 종료 통지(`/events/session-end`)와 로그인 소유권 승격(`/events/session-claim`) — **과 (2) 위임 호출 1건 I-22**(홈 추천 랭킹, §3.7)다. 주문 알림은 채택하지 않는다 — 구매 이력은 질의 시점 조회(§4.7)로 확보하며, 카탈로그 변경 이벤트도 존재하지 않는다(사본 없음). **[v0.18.0] 이 레인은 더 이상 "이벤트 채널"만이 아니다** — I-22는 통지가 아니라 응답 본문에 결과가 실려 오는 **동기 요청/응답**이고, 따라서 §2.7의 `/events/*` 멱등 규약이 적용되지 않는다(재시도 = 새 추천 실행).
 - 레인 (c): AI → Spring 역방향은 **정확히 17건**이다 — `{I-1,I-19,I-4,I-2,I-18,I-21,I-6,I-7,I-13,I-14,I-15,I-16,I-9,I-10,I-11,I-12,I-17}`. 이름과 순서는 **후보 검색**, **구매 이력 조회**, **주문 상태 요약(I-4, §4.10)**, **장바구니 담기**, **장바구니 조회**, **추천 목록 push**, **매출 시계열**, **구매전환 퍼널**, **행동 이벤트 집계**, **주문 상태 전이/조회**, **상품 변경 이력**, **이탈 코호트**, **자사 상품 목록 조회**, **상품 등록**, **상품 수정**, **상품 삭제**, **AI 생성물 변경분 pull**이다. I-1/I-19/I-4/I-2/I-18/I-21과 판매자 API는 요청 시점 호출이고, I-17은 배치 pull이다.
-- 레인 (d): FE ↔ Spring 전제 계약(Spring 소유). **[v0.15.20] BE 구현 실측으로 경로·응답 확정.** (1) **세션+스트림 티켓 발급(CH-1, `POST /api/chat/sessions`)** — 응답 `{sessionId, ttlSeconds, streamTicket, ticketTtlSeconds, llmSseUrl}`. 세션 TTL 10분 sliding, 티켓 TTL 60s(RS256). `llmSseUrl`은 FE가 AI 서버에 직결할 SSE 주소로, Spring이 내려준다. (2) **스트림 티켓 재발급(CH-1b, `POST /api/chat/tickets`)** — 요청 `{sessionId}`, 응답은 CH-1과 동일 DTO. 세션 유지한 채 새 티켓만 발급(2번째 메시지·`401` 시)하며 세션 TTL도 함께 갱신한다. **CH-1 재호출은 새 세션(맥락 단절)이라 티켓 재발급에 쓸 수 없다.** (3) **판매자 세션 발급(CH-6, `POST /api/chat/seller/sessions`)** — 판매자 챗 입구. `brandId`는 **BE가 JWT 검증 후 DB에서 도출해** 티켓 클레임에 박는다(클라이언트·LLM 주장 무시). (4) 추천 목록 GET(§4.3). (5) 판매자가 FE에서 직접 상품을 편집하는 경로(AI 표면 밖). ※ 구 "draft 적용 = FE가 S-3 PATCH"는 **폐기** — 채팅 경로 쓰기는 AI 직접(§3.2), `S-3`은 자사 상품 목록 조회(=I-9)다.
+- 레인 (d): FE ↔ Spring 전제 계약(Spring 소유). **[v0.18.0] P-5 `GET /api/products/recommended`(§4.11) 등재** — 홈 "OO님을 위한 추천". Spring이 이를 서빙하려고 내부에서 I-22(§3.7)를 호출하므로 **P-5 ↔ I-22가 서브 관계**다. 게스트는 P-5 대신 P-4(인기 상품)를 직접 호출한다. **[v0.15.20] BE 구현 실측으로 경로·응답 확정.** (1) **세션+스트림 티켓 발급(CH-1, `POST /api/chat/sessions`)** — 응답 `{sessionId, ttlSeconds, streamTicket, ticketTtlSeconds, llmSseUrl}`. 세션 TTL 10분 sliding, 티켓 TTL 60s(RS256). `llmSseUrl`은 FE가 AI 서버에 직결할 SSE 주소로, Spring이 내려준다. (2) **스트림 티켓 재발급(CH-1b, `POST /api/chat/tickets`)** — 요청 `{sessionId}`, 응답은 CH-1과 동일 DTO. 세션 유지한 채 새 티켓만 발급(2번째 메시지·`401` 시)하며 세션 TTL도 함께 갱신한다. **CH-1 재호출은 새 세션(맥락 단절)이라 티켓 재발급에 쓸 수 없다.** (3) **판매자 세션 발급(CH-6, `POST /api/chat/seller/sessions`)** — 판매자 챗 입구. `brandId`는 **BE가 JWT 검증 후 DB에서 도출해** 티켓 클레임에 박는다(클라이언트·LLM 주장 무시). (4) 추천 목록 GET(§4.3). (5) 판매자가 FE에서 직접 상품을 편집하는 경로(AI 표면 밖). ※ 구 "draft 적용 = FE가 S-3 PATCH"는 **폐기** — 채팅 경로 쓰기는 AI 직접(§3.2), `S-3`은 자사 상품 목록 조회(=I-9)다.
 
 > **[HARD] 후보 확보 = 질의 시점 Spring 검색(v0.5.0, 유일·영구)**: 구매자 추천 후보는 **질의 시점에 Spring `POST /products/search`(§4.6)를 위임 호출**하여 확보한다. 상품 원본 컬럼의 AI측 사본은 두지 않는다. **[v0.5.1]** AI 생성물(extras·search_doc·임베딩)은 AI Postgres에 저장하며(§4.8), 질의 시점에 AI 임베딩과 Spring 검색을 어떻게 결합할지는 OPEN(§4.8 말미)이다. rerank(profile_summary 반영)는 여전히 AI 경계에서 수행한다.
 >
@@ -138,9 +138,9 @@ Authorization: Bearer {STREAM_TICKET}   ← Spring이 스트림 단위로 발급
 - **[확정] `403` 규약**: `/seller/chat`는 `role == "seller"`를 요구한다. 판매자 스코프가 없는 토큰의 호출은 **`403 FORBIDDEN`**.
 - **[폐기] `CHAT_SESSION_EXPIRED`(FE/BE 문서의 `400`) 폐기**: `sessionId`에는 만료 의미가 **없다**(§2.6). 인증 실패는 모두 `401`(TOKEN_*)로 통일한다.
 
-#### (b) 이벤트 채널 — 서비스 간 토큰 (레인 b)
+#### (b) Spring → AI — 서비스 간 토큰 (레인 b)
 
-`POST /events/session-end`와 `POST /events/session-claim`(Spring → AI, §3.5)에 적용한다. (v0.5.0에서 주문 알림·카탈로그 배치는 채택하지 않으므로 해당 인증 항목은 없다.)
+`POST /events/session-end`와 `POST /events/session-claim`(Spring → AI, §3.5), **그리고 I-22 `POST /internal/recommendations/home`(§3.7)** 에 적용한다. (v0.5.0에서 주문 알림·카탈로그 배치는 채택하지 않으므로 해당 인증 항목은 없다.) I-22의 토큰 불일치 오류 코드는 `INTERNAL_TOKEN_INVALID`(401)다.
 
 ```
 X-Internal-Token: {SERVICE_TOKEN}
@@ -306,7 +306,7 @@ FE가 AI 서버(FastAPI)를 **다른 오리진에서 직접 호출**하므로 �
 
 ## 3. AI 서버 제공 API
 
-> **호출자 구분**: §3.1~3.4(사용자 대면)은 **FE → AI 직접 호출**(사용자 JWT, 레인 a). §3.5~3.6(`/events/*`)은 **Spring → AI 서버 간 호출**(서비스 토큰, 레인 b). §1.2 참고.
+> **호출자 구분**: §3.1~3.4(사용자 대면)은 **FE → AI 직접 호출**(사용자 JWT, 레인 a). §3.5~3.6(`/events/*`)과 **§3.7(I-22 홈 추천 랭킹)** 은 **Spring → AI 서버 간 호출**(서비스 토큰, 레인 b). §1.2 참고.
 
 ### 3.1 `POST /ai/chat` — 구매자 챗봇 (SSE 스트리밍, FE 직접)
 
@@ -877,6 +877,112 @@ claim commit 뒤 옛 guest 티켓의 `/chat`은 `403 SESSION_FORBIDDEN`이고, �
 
 > **[v0.5.0] 카탈로그 동기화 채널 없음**: AI 카탈로그 사본(미러)을 채택하지 않으므로 카탈로그 변경 이벤트 채널도, 배치 폴링도 **존재하지 않는다**(2026-07-15 확정, §4.6 말미). Spring → AI 이벤트는 §3.5의 `/events/session-end`와 `/events/session-claim`만 남는다.
 
+### 3.7 `POST {AI_SERVER}/internal/recommendations/home` (I-22) — 메인 화면 추천 목록 (Spring → AI) [v0.18.0 신설]
+
+홈 화면 "OO님을 위한 추천"(P-5, §4.11)의 개인화 랭킹을 Spring이 AI에 위임한다. **Spring이 호출 주체**이므로 채팅 경로(CH-2 → I-21 → CH-5)와 달리 **왕복 1회로 끝난다** — 응답 본문에 목록이 담겨 오고 **I-21 콜백(§4.2)을 타지 않는다**. 정본 확정 2026-07-28.
+
+```
+POST {AI_SERVER}/internal/recommendations/home
+X-Internal-Token: {서비스 토큰}   ← internal 그룹 (레인 b)
+```
+
+- **인증**: `X-Internal-Token` 서비스 토큰(§2.3 b). 사용자 JWT를 받지 않는다.
+- **예산**: **P-5 예산 내 — 연결 2s / 응답 3s.** 채팅 스트림 상한(90s, §2.9 c)과 무관하며 **메인 렌더 블로킹 방지**가 목적이다.
+
+#### Spring → AI 요청 (I-22)
+
+```json
+{
+  "memberId": 123,
+  "limit": 12,
+  "catalogVersion": "catalog-20260728T0300Z",
+  "signals": {
+    "recentlyViewedProductIds": [552, 88, 101],
+    "cartProductIds": [205],
+    "recentPurchasedProductIds": [77, 91]
+  }
+}
+```
+
+| 필드 | 타입 | 필수 | 설명 |
+|---|---|---|---|
+| `memberId` | number | 예 | 회원 BIGINT(§2.6). **게스트는 이 API를 호출하지 않는다** — 개인화 대상이 아니라 Spring이 P-4(인기 상품)로 처리한다 |
+| `limit` | number | 예 | **최종 노출 목표 개수.** AI는 Spring의 품절 드롭에 대비해 **이보다 넉넉히 반환**하고, Spring이 판매 불가 상품을 뺀 뒤 `limit`만큼 자른다 |
+| `catalogVersion` | string | 예 | 후보 산출 시점 식별자. 캐시 키·재현에 쓴다. **🔴 값 생성 주체 미해결 — C-18** |
+| `signals` | object | 예 | 아래 3종. 비어 있으면 개인화 근거가 없어 `NO_PROFILE`로 답한다 |
+
+| `signals` 필드 | 출처(Spring) | AI가 쓰는 방식 |
+|---|---|---|
+| `recentlyViewedProductIds` | `product_view` 이벤트 | 해당 상품 임베딩을 프로필 벡터와 **가중 혼합**(최신일수록 높게) |
+| `cartProductIds` | 현재 장바구니(미결제) | 같은 방식, **가중치 더 높게** — 담기까지 갔다는 건 강한 신호다 |
+| `recentPurchasedProductIds` | 최근 주문 | **결과에서 제외**한다(이미 샀으므로). **가중치가 아니라 필터다** |
+
+> **`sessionId`가 없다** — 홈에는 채팅 세션이 없다. 신원은 `memberId`만으로 충분하다. 따라서 §2.6의 `sessionId`/`threadId` 축(§2.9 동시 스트림 락 포함)은 이 API에 적용되지 않는다.
+
+#### 성공 응답 — 200
+
+```json
+{
+  "outcome": "PERSONALIZED",
+  "recommendationRequestId": "a63be350-ec96-4f44-b3f9-c962b6673a68",
+  "listId": "7c1e9f2a4b8d43f5a0c6d1e97b3f8a24",
+  "items": [
+    { "productId": 101, "reason": "최근 선호한 가격대와 카테고리에 맞아요" },
+    { "productId": 552, "reason": null }
+  ]
+}
+```
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `outcome` | string | `PERSONALIZED` \| `NO_PROFILE` \| `INSUFFICIENT_CANDIDATES` — 아래 표 |
+| `recommendationRequestId` | string | 추천 실행 1회를 가리키는 id. **AI가 생성**(I-21의 상관키와 같은 역할) |
+| `listId` | string | **[HARD] AI가 생성하는 UUID급 무작위 식별자(≥128bit)** — I-21(§4.2)과 **동일 규칙**. 순번·타임스탬프 등 추측 가능한 형식 금지. Spring이 저장하고 P-5 응답에 실어 FE에 전달하며, 노출·클릭 이벤트가 이 키로 추천에 귀속된다 |
+| `items` | array | `{productId(숫자), reason}`. **배열 순서가 곧 순위다** — `position`을 싣지 않는다 |
+| `items[].reason` | string\|null | 카드에 표시할 이유. 없으면 `null`(I-21의 `reasons` 생략 규약과 달리 **필드 자체는 유지**) |
+
+**`outcome` 처리**
+
+| 값 | 뜻 | Spring 동작 |
+|---|---|---|
+| `PERSONALIZED` | 개인화 성공 | 그대로 사용, P-5 `source=AI_RECOMMENDED` |
+| `NO_PROFILE` | 프로필 없음(신규 회원) 또는 `signals`가 비어 개인화 근거 없음 | **P-4 인기상품으로 대체**, `source=POPULAR_FALLBACK` · `fallbackReason=PROFILE_MISSING` |
+| `INSUFFICIENT_CANDIDATES` | 후보가 부족해 랭킹이 무의미 | 동일하게 P-4 대체, `fallbackReason=INSUFFICIENT_CANDIDATES` |
+
+> **[HARD] cold start는 오류가 아니다.** 프로필이 없어도 **200 + `outcome`** 으로 답하며, **fallback 판단은 Spring이 한다.** 프로필 부재·후보 부족을 이유로 AI가 4xx/5xx를 내서는 안 된다.
+
+#### 실패 응답
+
+| HTTP | `code` | 조건 |
+|---|---|---|
+| 400 | `BAD_REQUEST` | 필수 필드 누락·타입 오류 |
+| 401 | `INTERNAL_TOKEN_INVALID` | 토큰 없음/불일치 |
+| 503 | `UPSTREAM_UNAVAILABLE` | 내부 의존성(프로필 저장소·LLM) 일시 장애 |
+| 504 | `UPSTREAM_TIMEOUT` | 예산 초과 |
+
+> 위 4종은 **입력·인프라 실패에만** 쓴다 — 앞의 [HARD]와 충돌하지 않는다. cold start(`NO_PROFILE`)·후보 부족(`INSUFFICIENT_CANDIDATES`)은 **정상 200**이다.
+>
+> 4xx/5xx가 나가면 Spring이 P-4로 대체하고 `fallbackReason=AI_ERROR` 또는 `AI_TIMEOUT`으로 기록한다. **어느 경우에도 홈 렌더는 막히지 않는다.**
+
+#### 규약
+
+- **멱등이 아니다** — 재시도하면 **새 `recommendationRequestId`·`listId`가 발급**되며 Spring이 새 추천 실행으로 센다. §2.7의 `/events/*` 멱등 규약은 이 API에 적용되지 않는다.
+- **지면(`surface`)은 요청·응답에 싣지 않는다** — 이 API로 만들어진 목록은 `HOME`, I-21로 온 것은 `CHAT`이라 Spring이 **경로로 판단**해 저장한다.
+- **`recommendation_generated`는 Spring이 server-side로 기록한다** — 목록 저장 시점에 `behavior_events`에 직접 적재(I-21과 동일 규칙). P-4 fallback으로 대체한 경우에도 `source=POPULAR_FALLBACK`으로 구분해 기록한다. **AI는 이 이벤트를 적재하지 않는다.**
+- **[HARD] 프로필 원문·prompt·모델 식별자는 응답·로그·trace에 포함하지 않는다.** 알고리즘·모델 버전은 **AI가 자체 테이블에 보관**하며 **와이어에 싣지 않는다**(평가 산출물 전용). → `algorithmVersion`·`modelVersion`을 응답에 넣는 구현은 계약 위반이다. §6.3 관측 경계와 동일한 기준이다.
+- **후보 확보 경로가 채팅과 다르다** — AI는 **자체 카탈로그 인덱스(I-17로 동기화된 임베딩, §4.8)** 로 순위를 매긴다. Spring이 후보 목록을 요청에 싣지 않으며, **재고·판매상태 반영은 Spring이 카드 조립 시점**에 한다(CH-5와 동일 패턴). ※ §1.2의 "[HARD] 후보 확보 = 질의 시점 Spring 검색(I-1)"은 **채팅 경로의 규약**이고, 홈은 이 절이 정한 자체 인덱스 경로를 쓴다.
+- **캐시·TTL은 P-5 소관**(§4.11) — 개인화 결과 캐시 10분, `listId` 귀속 유효기간 24시간(2026-07-30 확정). 채팅 CH-5의 10분(조회 만료)과는 성격이 다르다.
+
+#### 구현 노트 (v0.18.0, #148) — 계약과 다른 지점
+
+와이어 계약(필드·`outcome`·오류 코드)은 위와 **완전히 일치**한다. 아래는 계약이 규정하지 않았거나, 규정했으나 현 구현이 다르게 채운 내부 동작이다. BE는 읽을 필요가 없고, AI측 후속 작업자가 알아야 한다.
+
+- **프로필 벡터를 질의에 섞지 않는다.** 위 signals 표는 *"해당 상품 임베딩을 **프로필 벡터**와 가중 혼합"* 이라 쓰지만, 현재 프로필은 자연어 markdown 요약이라(`SPEC-PROFILE-001`) 벡터가 없다. 요청 경로에서 프로필을 임베딩하면 Google 임베딩 API 왕복이 하나 더 붙어 **연결 2s/응답 3s 예산을 위협**한다. 그래서 **질의 벡터는 signals만으로** 만들고 프로필은 `reason` 문장의 취향 근거로만 쓴다. 프로필 벡터가 생기면 `build_query_vector`에 항을 더하는 것이 전부다(주입형 seam).
+- **`NO_PROFILE`의 판정 기준 = 질의 벡터를 만들 수 없음.** 정본은 사유를 *"프로필 없음(신규 회원)"* 과 *"signals 비어있음"* 두 갈래로 적었으나, 위 이유로 랭킹이 signals에서만 나오므로 **시그널 임베딩 0건**이 실질 판정이다(시그널이 아직 I-17로 인덱싱되지 않은 경우 포함). Spring 입장에선 셋 다 `PROFILE_MISSING`으로 P-4 대체라 구분 실익이 없다.
+- **503의 범위** — 실패 응답표의 *"내부 의존성(프로필 저장소·LLM) 일시 장애"* 중 **프로필 저장소·LLM 장애는 503을 내지 않는다.** 둘 다 이 구현에선 `reason` 품질에만 영향을 주고 랭킹을 막지 않아 degrade가 옳다(홈 렌더 비차단이 §4.11 취지). **503은 카탈로그 인덱스 장애에만** 쓴다 — 랭킹의 유일한 입력이라 여기가 죽으면 시도조차 못 한다.
+- **`catalogVersion`을 랭킹에 쓰지 않는다**(C-18 미해결) — 받아서 검증만 하고 버린다. AI는 자체 인덱스 현재 상태로 랭킹하므로 이 값에 의존하지 않는다. C-18이 "AI가 값을 만든다"로 확정되면 응답에 싣는 개정이 따른다.
+- **🟡 성능 미검증** — 랭킹이 `store.all()` 전량을 파이썬으로 코사인 계산한다. 카탈로그가 커지면 3s 예산을 넘길 수 있다. pgvector `ORDER BY embedding <=> :q LIMIT k`로 밀어야 하나, 현재 `PgCatalogArtifactStore`에 해당 메서드가 없고 **라이브 환경(임베딩 API·Spring 자격증명) 부재로 실측을 못 했다.** 인덱스 적재 후 측정이 선행 과제다.
+
 ---
 
 ## 4. AI 서버 ↔ Spring 역방향/전제 계약
@@ -1342,6 +1448,69 @@ X-Internal-Token: {서비스 토큰}
   별도 application cache에 추출·복제하지 않는다. 기존 사용자 입력 기반 profile/session 처리와
   non-cart 전환 시 stale pending-cart 정리는 그대로 유지한다.
 
+### 4.11 홈 추천 목록 조회 (P-5 `GET /api/products/recommended`, FE ↔ Spring 전제 계약) — [v0.18.0 신설]
+
+메인 화면 "OO님을 위한 추천" 영역. **이 계약은 FE ↔ Spring 간이며 AI 서버는 관여하지 않는다**(레인 d) — §4.3의 CH-5와 같은 위치다. 다만 **Spring이 내부적으로 I-22(§3.7)를 호출**해 랭킹을 얻으므로, I-22의 `outcome`·상관키가 여기로 어떻게 흘러나가는지를 알아야 §3.7 계약을 정확히 구현할 수 있어 등재한다.
+
+```
+GET {SPRING_BASE_URL}/api/products/recommended
+Authorization: Bearer {AT}   ← 로그인 필요. 파라미터 없음(사용자는 AT에서 식별)
+```
+
+#### 성공 응답 — 200
+
+카드 필드는 P-4(인기 상품)와 동일하고, 여기에 추천 상관키 3종(`source`·`recommendationRequestId`·`listId`)과 카드별 `reason`이 붙는다.
+
+```json
+{
+  "success": true,
+  "data": {
+    "source": "AI_RECOMMENDED",
+    "recommendationRequestId": "a63be350-ec96-4f44-b3f9-c962b6673a68",
+    "listId": "7c1e9f2a4b8d43f5a0c6d1e97b3f8a24",
+    "items": [
+      {
+        "productId": 1, "name": "린넨 셔츠", "brandName": "더센트",
+        "price": 29900, "originalPrice": 39000, "imageUrl": "https://.../1.jpg",
+        "rating": 4.8, "reviewCount": 2847,
+        "reason": "최근 선호한 가격대와 카테고리에 맞아요"
+      }
+    ]
+  }
+}
+```
+
+| 필드 | 값 | FE 사용 |
+|---|---|---|
+| `source` | `AI_RECOMMENDED` \| `POPULAR_FALLBACK` | **표시 분기의 축** — `POPULAR_FALLBACK`이면 "OO님을 위한 추천" 제목과 `reason`을 **띄우지 않는다** |
+| `recommendationRequestId` | 추천 실행 1회를 가리키는 id | 노출·클릭 이벤트(E-1)에 실어 보낸다 |
+| `listId` | 전달된 목록 id(≥128bit 무작위) | 위와 동일 |
+| `reason` | 카드별 추천 이유. 없으면 `null` | `source=AI_RECOMMENDED`일 때만 표시 |
+
+- `items` — **배열 순서가 곧 순위다.** FE는 재정렬하지 않으며 `position`을 싣지 않는다(I-22와 동일).
+- **표시 권위 = Spring**: `name`·`price`·`imageUrl`·`rating`·`reviewCount`를 Spring이 채운다. AI는 I-22로 **id와 `reason`만** 넘긴다(경로 B 일관, 결정 9-B).
+- **와이어에 싣지 않는 것** — `fallbackReason`(`PROFILE_MISSING`·`INSUFFICIENT_CANDIDATES`·`AI_ERROR`·`AI_TIMEOUT`) · `cacheStatus` · `algorithmVersion` · `modelVersion`. FE 동작이 달라지지 않는 값이다. `fallbackReason`은 **`recommendation_generated` 이벤트에 저장**해 장애 관측에 쓴다 — 신규 회원이라 대체된 건지 AI가 죽어서 대체된 건지는 서버만 알면 된다.
+
+#### Fallback 규약 — AI 구현이 지켜야 할 지점
+
+다음 경우 **Spring이** P-4(인기 상품) 결과로 대체해 **항상 200 + items**로 응답하며 `source="POPULAR_FALLBACK"`이 된다:
+
+- I-22가 `outcome=NO_PROFILE` — 프로필 없음(신규 회원) 또는 시그널이 비어 개인화 근거 없음
+- I-22가 `outcome=INSUFFICIENT_CANDIDATES` — 후보 부족으로 랭킹이 무의미
+- I-22 실패·타임아웃(연결 2s / 응답 3s)
+
+> **fallback에도 `recommendationRequestId`·`listId`가 실리며 이때는 Spring이 발급한다.** 상관키가 없으면 FE가 인기상품 카드에 대해 쏘는 노출·클릭 이벤트가 **부모 없는 고아**가 되어 E-1 server-side 검증에서 버려진다. → **AI는 `outcome`만 정확히 내면 되고, fallback 목록·상관키를 대신 만들지 않는다.**
+
+**FastAPI 실패는 P-5의 실패 응답이 아니다** — 타임아웃·에러·프로필 없음은 전부 위 규약으로 200이 된다. P-5가 5xx를 내는 건 Spring 자체 장애뿐이라 FE는 "추천 실패" 화면을 따로 만들지 않는다. P-5 자체의 실패 응답은 인증뿐이다: `401 AUTH_REQUIRED`(게스트는 이 API를 쓰지 않고 P-4를 직접 호출) · `401 AUTH_TOKEN_EXPIRED`(A-4 재발급 후 1회 재시도) · `403 AUTH_FORBIDDEN`(`SELLER`·`ADMIN` 계정 — 이 경로는 `USER` 전용).
+
+#### 캐시 키 규칙 — [확정 2026-07-30]
+
+- 개인화 결과의 캐시 키는 **회원 id + 카탈로그 버전 + 알고리즘 버전**이며 **타 회원 재사용 금지**(키가 새면 남의 추천이 보인다). fallback(P-4) 결과는 공용 캐시를 써도 되나 `recommendationRequestId`·`listId`는 요청마다 새로 발급해 귀속이 뭉개지지 않게 한다.
+- **TTL** — 개인화 결과 캐시는 **10분** 후 재계산. 단 **`listId`의 이벤트 귀속 유효기간은 캐시 TTL과 별개로 24시간**이다 — 목록이 캐시에서 사라져도 `recommendation_generated`가 DB에 남아 귀속이 가능하다.
+- **채팅 CH-5의 10분과 성격이 다르다** — CH-5는 *조회* 만료(Redis에서 목록이 사라지면 404)이고, 홈은 **조회 API가 없고** 카드가 P-5 응답에 바로 실려 오므로 **조회 만료라는 개념 자체가 없다**. 홈은 탭을 열어둔 채 한참 뒤 클릭하는 경우가 흔해 귀속 기간을 길게 잡는다.
+
+> ※ §3.7 I-22 정본 페이지에는 아직 *"홈 목록의 TTL·캐시 정책은 … BE 결정 필요"* 로 남아 있으나, **P-5 정본이 2026-07-30에 10분/24시간으로 확정**했다. 본 사본은 확정본을 따르며 정본 I-22 페이지의 stale 문구는 BE 통보 대상이다.
+
 ---
 
 ## 5. 협의 필요 항목 요약표 (🔴 Consolidated Open Items)
@@ -1369,6 +1538,7 @@ Spring/FE 팀과 확정이 필요한 항목을 통합한다. 각 항목은 본 �
 | C-15 | **후보 검색 위임 = I-1** | **[확정 v0.15.5] GET 그대로 수용**(사용자 지시). BE Notion 파라미터 채택(`keyword·categoryName·minPrice·maxPrice·brandName·size≤30`). **dedup·평점·정렬은 AI 사후필터**(BE I-1에 해당 파라미터 없음). 응답 = `{success,data:{items[...]}}`(§4.6) | I-1 / BE Notion·DDL | 🟢 **확정**(GET·파라미터·응답). 🔴 잔여 — `totalCount` 미제공 → estCount 완화칩 소스 |
 | C-16 | **장바구니 조회 = I-18** | BE 실측 `GET /internal/cart`(§4.9, "챗봇 장바구니 조회"), 서비스 토큰. 질의 응답 + 담기 시 기존 보유·합산 안내. `productName`/`optionName` 포함 필요(챗 답변 생성용) | I-18 / BE DB | 🟢 **[해소 2026-07-18] `productName`/`optionName` 필수 포함 · `CART_QUERY_INVALID`(400) BE I-18 확정** |
 | C-17 | **[신규 2026-07-20] 방식1용 id 제약 조회** | §4.8 결합 방식1(AI 벡터→Spring hydrate)용 — I-1(§4.6)에 `productIds`(숫자 배열) 필터 추가 또는 by-id 조회 엔드포인트. 벡터 후보의 가용성(재고·활성)·상세를 Spring 권위로 확인(원본 사본 금지). **방식2는 불요** | I-1 / BE 요청 | 🔴 BE 협의 — **방식1 라이브 전제**(방식2·오프라인 골든셋 비교는 무의존, 착수 무대기) |
+| C-18 | **[신규 v0.18.0] I-22 `catalogVersion` 값 생성 주체** | 정본 I-22(§3.7)는 `catalogVersion`을 **Spring이 요청에 실어 보내는** 필수 필드로 규정하는데, 같은 문서가 *"FastAPI는 **자체** 카탈로그 인덱스(I-17로 동기화된 임베딩)로 순위를 매긴다"* 고 한다. **Spring은 AI의 인덱스 버전을 알 수 없다** — 보낼 수 있는 건 Spring 자기 카탈로그의 버전뿐이라, 그 값으로 캐시를 키잉하면 **AI 인덱스가 갱신돼도 캐시가 무효화되지 않는다**(P-5 캐시 키가 "회원 id + 카탈로그 버전 + 알고리즘 버전"이라 직격, §4.11). 필드 자체는 캐시 키·재현에 필요하니 유지하되, **값을 AI가 만들어 응답에 실어 보내고 Spring이 그것을 캐시 키에 쓰는 방향**을 제안한다 | I-22 / 이슈 #148 | 🔴 **미해결 — 정본 개정 + BE 합의 선행.** #148 착수 전 필수 |
 
 > 참고(v0.5.0): **C-15 신설**(후보 검색 — 유일 경로·최우선). **C-4 폐기**(카탈로그 동기화 자체 없음). **C-6 재정의**(주문 알림/미러 → 질의 시점 구매 이력 조회 §4.7). **C-7 해소**(I-6 콜백, 세부는 C-13). C-1/C-2/C-3은 확정안 반영이나 Spring 수용 전까지 🔴 잔여를 유지한다.
 > 참고(v0.6.0): **C-3 재작성**(BE I-2 문서 채택 — 구 JWT 포워딩/`items[]` 제안 폐기, 게스트 담기 허용). **C-16 신설**(장바구니 조회).
@@ -1427,6 +1597,7 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 
 | 버전 | 날짜 | 변경 |
 |---|---|---|
+| v0.18.0 | 2026-07-31 | **[#148] 홈 추천 계약 등재 — I-22(§3.7)·P-5(§4.11)가 사본에 통째로 누락돼 있던 drift를 해소했다.** 정본(Notion「📡 API 명세서」) 2026-07-28 확정본을 대조해 옮겼다. (1) **§3.7 I-22 `POST {AI_SERVER}/internal/recommendations/home` 신설** — Spring → AI 위임 호출, `X-Internal-Token`, **연결 2s/응답 3s**(채팅 90s와 무관, 메인 렌더 블로킹 방지). 요청 `{memberId, limit, catalogVersion, signals{recentlyViewed·cart·recentPurchased}}`에서 `limit`은 **최종 노출 목표치**(AI는 품절 드롭 대비해 넉넉히 반환, Spring이 자름)이고 `recentPurchasedProductIds`는 **가중치가 아니라 제외 필터**다. 응답 `{outcome, recommendationRequestId, listId, items[{productId, reason}]}` — **배열 순서가 곧 순위**(`position` 없음), `listId`는 AI 생성 **≥128bit 무작위**(I-21 §4.2와 동일 규칙). **왕복 1회로 끝나며 I-21 콜백을 타지 않는다.** (2) **`outcome` 3종과 cold start 규약** — `PERSONALIZED`/`NO_PROFILE`/`INSUFFICIENT_CANDIDATES`를 **전부 200**으로 답하고 **fallback 판단은 Spring이** 한다. 프로필 부재·후보 부족으로 AI가 4xx/5xx를 내면 계약 위반이다. 단 **입력·인프라 실패용 4종은 존재한다**(`BAD_REQUEST`/`INTERNAL_TOKEN_INVALID`/`UPSTREAM_UNAVAILABLE`/`UPSTREAM_TIMEOUT`) — 이슈 #148 본문의 *"FastAPI가 4xx/5xx를 내지 않는다"* 는 **cold start에만 걸리는 서술**이라 여기서 범위를 명확히 했다. (3) **provenance 비노출 [HARD]** — 프로필 원문·prompt·모델 식별자를 응답·로그·trace에 싣지 않고, 알고리즘·모델 버전은 AI 자체 테이블 보관(평가 산출물 전용)이라 **`algorithmVersion`을 응답에 넣는 구현은 계약 위반**이다. (4) **§4.11 P-5 `GET /api/products/recommended` 신설**(레인 d, FE↔Spring) — Spring이 이를 서빙하려 I-22를 호출하는 **서브 관계**라 등재해야 의존이 드러난다. `source=AI_RECOMMENDED|POPULAR_FALLBACK`, fallback 시 상관키는 **Spring이 발급**(AI가 대신 만들지 않는다), `fallbackReason`·`cacheStatus`·`algorithmVersion`·`modelVersion`은 와이어 비노출. **캐시 TTL 10분 · `listId` 귀속 유효기간 24시간 확정(2026-07-30)** — 홈은 조회 API가 없어 CH-5의 *조회* 만료와 성격이 다르다. 정본 I-22 페이지에 남은 *"TTL은 BE 결정 필요"* 는 stale이며 BE 통보 대상. (5) **§1.2 레인 (b) 재정의** — 더 이상 "이벤트 채널"만이 아니다. I-22는 통지가 아닌 **동기 요청/응답**이라 §2.7 `/events/*` 멱등 규약이 적용되지 않으며 **재시도 = 새 `recommendationRequestId`·`listId` 발급**이다. 레인 (d)에 P-5, §2.3 (b)에 I-22 인증을 등재했다. (6) **🔴 C-18 신설 — `catalogVersion` 값 생성 주체 미해결.** 정본은 Spring이 실어 보내게 규정하는데 랭킹은 AI 자체 인덱스로 매긴다 — **Spring은 그 버전을 알 수 없어** 그 값으로 캐시를 키잉하면 AI 인덱스가 갱신돼도 캐시가 무효화되지 않는다. **정본 개정 + BE 합의가 #148 착수 전 필수**다. ※ 본 개정은 문서 등재만이며 구현은 #148, 재사용할 scoring baseline은 #145다. |
 | v0.17.0 | 2026-07-31 | **[#187] signed `sessionId` 기반 stable `context_id`와 guest→member claim, D6/I-20 lifecycle을 확정했다.** `/events/session-claim`의 strict BIGINT/서비스 토큰 계약, claim 뒤 old guest의 turn/thread 미생성, guest transcript와 member profile 입력 격리, 재시작 가능한 backfill과 단조 grace(최소 24시간), PostgreSQL clock 기준 durable quiet(최소 90초이자 stream timeout 이상), exact legacy late-write reopen 및 destructive GC gate를 명시했다. 외부 출시는 BE #63 signed-ticket 증거, 90초 drain, FE #52 실제 3-tab 검증, 운영 지표 확인 뒤에만 완료로 본다. |
 | v0.16.3 | 2026-07-30 | **[#164] I-4 주문 상태 문의 구현 계약 정합.** 구매자 라우팅을 `recommend`/`cart_add`/`cart_view`/`order_status`/`general` 5-way로 확장하고 §4.10을 신설했다. JWT-derived member identity, `GET /internal/members/{userId}/orders/status?recent=3`, internal token/3초 timeout, literal-success envelope, aware timestamp와 Spring 어휘/canonical pair의 전체 payload 검증, 최대 3개 주문·주문당 3개 상품 및 `외 N개`, empty와 dependency degradation 구분, `token`→`done(stop)` 정상 종료, privacy-safe correlated route log, 일반 대화 보존과 response-derived state non-copy 경계를 확정했다. §1.2·§4의 reverse-call 현황도 정확한 17건 `{I-1,I-19,I-4,I-2,I-18,I-21,I-6,I-7,I-13,I-14,I-15,I-16,I-9,I-10,I-11,I-12,I-17}`로 정정했다. |
 | v0.16.2 | 2026-07-30 | **[#194] I-14/I-15 응답 스키마 BE 실측 확정 + I-6 이상 감지 규칙 명문화.** (1) **I-14 `order-events` 응답 확정** — `rows`/`total`/`byStatus`/`cancelReasonsTop` (shape 상호 배제: 목록/stats/groupBy=memberId). 구 추정 스키마(`events`/`stats`)는 BE에 없는 필드라 AI 도구가 **항상 0건**을 반환하던 버그의 원인(`extra="allow"`가 검증 실패를 은폐). (2) **I-15 `product-changes` 응답 확정** — `rows[{productId,productName,changeType,oldValue,newValue,createdAt}]`+`total` (구 `logs` 폐기, 동일 패턴 버그). (3) **I-6 이상 감지 규칙 명문화(BE `SellerSalesService.withAnomaly` 실측)** — 직전 최소 3(MIN_WINDOW)·최대 7(MOVING_WINDOW)포인트 평균 대비 ±30%, 기준선 0 + 매출 발생 = 이상(`deviationPct` null), **매출 0 포인트는 이상 아님**(저볼륨 무판매일 -100% 노이즈 방지). AI `calc.detect_sales_anomalies`를 동일 규칙으로 정렬. (4) I-14/I-15 `limit`(기본 100) 쿼리 등재 — `rows`는 절단본, 전수는 `total`. |
