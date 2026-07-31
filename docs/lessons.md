@@ -113,6 +113,18 @@
 
 ---
 
+## [2026-07-30] 집계 0 ≠ 실제 0 — 이벤트 카운트는 "귀속 경로"부터 확인한다
+
+- 증상: behavior 워커 검증(#196)에서 I-13 상품별 `purchaseComplete` 가 **항상 0** — 실구매·이벤트 적재 모두 존재하는데 "조회 많음·구매 전무" 가짜 패턴으로 이어질 상태였다. 추가로 상품별 rows 상한(5) < 시드 상품 수(7)라 하위 2종 수치가 매 호출 소실되고 있었다.
+- 원인: purchase_complete 는 주문 단위 이벤트라 FE 가 productId 없이 발사(`properties.orderId`만) → `behavior_events.product_id = NULL` → I-13 의 product 조인 스코프에서 행이 통째로 탈락. **0 이 "행동 없음"이 아니라 "귀속 실패"였다.** 상한 문제는 "잘림 = 개수만 남기고 수치 소실" 구조라, 상한값을 올려도 상품 수가 더 많은 판매자에서 재발한다.
+- 규칙:
+  1. 집계 API 의 0/빈 값은 "데이터 없음"으로 읽기 전에 **원천 컬럼의 귀속 경로(NULL 허용 컬럼·조인 스코프)를 먼저 확인**한다 — 특히 다:1 이벤트(주문→상품)는 단일 FK 귀속이 구조적으로 불가능하다.
+  2. 도구 요약의 상한 초과분은 개수가 아니라 **합계로 남긴다** — "외 N건"은 표본 누락이고 "외 N건 합계: …"는 요약이다. 상한값 조정은 구조 수정이 아니다.
+  3. 교차 검증 지침(다른 도구로 확인)은 프롬프트에 적기 전에 **그 다른 도구가 실제로 다른 원천을 쓰는지 실측**한다(I-7 purchase 단 = order_item 기반이라 유효했음).
+- 관련: #196, jarvis-backend#62, `app/agents/seller/tools.py`(`_BEHAVIOR_AUTHORITY_NOTE`·`_summarize_behavior`), `app/core/config.py`(`seller_summary_max_products`), api-spec §4.4 I-13 v0.17.4
+
+---
+
 ## [2026-07-30] 응답 스키마를 추정으로 두려면 `extra="allow"` 가 불일치를 은폐함을 전제하라 — 미확정 계약은 "빈 결과"를 의심한다
 
 - 증상: `sales_anomaly` 워커의 I-14(`get_order_events`)·I-15(`get_product_change_logs`) 도구가 **항상 0건**을 반환했다(#194). Spring 은 `rows`/`total`(+ stats 모드 `byStatus`/`cancelReasonsTop`)을 내려보내는데 AI 스키마는 추정 필드(`events`/`stats`, `logs`)를 기다렸고, `SellerAggregateModel` 의 `extra="allow"` 가 실측 필드를 여분 필드로 조용히 흡수해 **ValidationError 도 로그도 없이** 기본값 빈 목록이 됐다. 이상 감지 로직도 Spring(`withAnomaly`: 직전 최소 3점 판정·기준선 0+매출=이상·매출 0원=이상 아님)과 3개 규칙이 어긋나 있었다.

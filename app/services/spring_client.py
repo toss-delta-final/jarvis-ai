@@ -769,7 +769,10 @@ class SpringClient:
         """
         params: dict = {"from": from_, "to": to}
         if event_type:
-            params["eventType"] = event_type  # httpx 가 리스트를 반복 쿼리로 직렬화
+            # [#196] CSV 명시 직렬화 — 구 반복 쿼리(eventType=a&eventType=b)는
+            # Spring 의 암묵 변환(반복 파라미터→콤마 문자열)에 의존했다. BE 계약은
+            # String eventType + comma split(api-spec §4.4 I-13) — CSV 로 명시한다.
+            params["eventType"] = ",".join(event_type)
         if product_id is not None:
             params["productId"] = product_id
         if group_by:
