@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import Counter
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -138,14 +139,27 @@ def _need_names(
     굶은 니즈가 rationale 없는 검색순서 보충으로 채워진다(PR #212 리뷰).
     반대로 이 순번을 `label` 로 쓰면 "니즈 2" 같은 무의미한 이름이 사용자에게 노출되므로
     `label` 은 종전대로 `_need_label` 이 만든 진짜 이름만 쓰고, 없으면 None 이다.
+
+    이름이 **겹치는 경우에도** 순번을 붙인다(PR #212 리뷰) — 서로 다른 두 니즈가 같은 canonical
+    로 매핑되면 같은 라벨이 나오는데, rerank 는 `dict.fromkeys(values)` 로 NEEDS 를 만들어
+    **두 leg 를 하나로 뭉갠다**. 그러면 "니즈마다 상위 N개" 지시가 둘을 구분하지 못해 쏠림이
+    그대로 재발한다. 겹치지 않으면 이름을 그대로 둬 프롬프트를 읽기 쉽게 유지한다.
     """
-    names: dict[int, str] = {}
+    legs_present: list[int] = []
     for pid in product_ids:
         leg = leg_of.get(pid)
-        if leg is None:
-            continue
-        names[pid] = _need_label(need_legs[leg]) or f"니즈 {leg + 1}"
-    return names
+        if leg is not None and leg not in legs_present:
+            legs_present.append(leg)
+
+    label_by_leg = {leg: _need_label(need_legs[leg]) or "" for leg in legs_present}
+    seen = Counter(label_by_leg.values())
+    for leg, label in label_by_leg.items():
+        if not label:
+            label_by_leg[leg] = f"니즈 {leg + 1}"
+        elif seen[label] > 1:
+            label_by_leg[leg] = f"{label} (니즈 {leg + 1})"
+
+    return {pid: label_by_leg[leg] for pid in product_ids if (leg := leg_of.get(pid)) is not None}
 
 
 def _split_by_need(
@@ -168,7 +182,21 @@ def _split_by_need(
     후보가 부족한 니즈는 있는 만큼만 담고, 하나도 없으면 **그룹 자체를 만들지 않는다** —
     빈 목록은 400 이 아니라 "보내지 않는 것"이 맞다(§4.2).
     """
-    leg_for = (lambda pid: leg_of.get(pid, 0)) if leg_of else (lambda pid: 0)
+    # leg 를 모르는 상품은 leg 0 으로 접되 **조용히 넘기지 않는다**(PR #212 리뷰) — 어느 니즈에도
+    # 속하지 않는 상품이 남의 목록에 섞이는 것이라, 아래 reco_lists_truncated 와 같은 기준으로
+    # 진단을 남긴다. 현재 candidates 는 leg_of 의 부분집합이라 도달하지 않는 경계지만, 검색
+    # 백엔드가 leg 없는 상품을 후보에 섞으면 깨진다.
+    orphans: set[int] = set()
+
+    def leg_for(pid: int) -> int:
+        if not leg_of:
+            return 0
+        leg = leg_of.get(pid)
+        if leg is None:
+            orphans.add(pid)
+            return 0
+        return leg
+
     ranked_by_leg: dict[int, list[int]] = {}
     for pid in ranked_ids:
         ranked_by_leg.setdefault(leg_for(pid), []).append(pid)
@@ -192,6 +220,11 @@ def _split_by_need(
         group = group[:expose_max]
         if group:  # 후보 0건 니즈는 목록을 만들지 않는다(§4.2)
             groups.append((leg, group))
+    if orphans:
+        logger.warning(
+            "reco_products_without_leg",
+            extra={"count": len(orphans), "fallback_leg": 0},
+        )
     return groups
 
 

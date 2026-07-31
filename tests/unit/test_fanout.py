@@ -1258,3 +1258,54 @@ def test_need_names_prefer_real_labels() -> None:
     names = _need_names(legs, leg_of={101: 0, 201: 1}, product_ids=[101, 201])
 
     assert names == {101: "파우치", 201: "니즈 2"}
+
+
+def test_need_names_disambiguate_colliding_labels() -> None:
+    """두 니즈가 같은 라벨을 내면 구분자를 붙인다 (PR #212 리뷰).
+
+    rerank 는 `dict.fromkeys(need_of.values())` 로 NEEDS 목록을 만들어서, 토큰이 겹치면
+    **두 leg 를 하나의 니즈로 뭉갠다** — "니즈마다 상위 N개" 지시가 둘을 구분하지 못해
+    이 PR 이 고치려던 쏠림이 그대로 재발한다. rerank 는 정상 성공이라 드러나지도 않는다.
+    """
+    from app.agents.buyer.recommendation.graph import _need_names
+
+    # 서로 다른 두 니즈가 같은 canonical 로 매핑되고 query 는 둘 다 정제 후 빈 경우.
+    legs = [("패션 > 가방", "​"), ("패션 > 가방", "​")]
+    names = _need_names(legs, leg_of={101: 0, 201: 1}, product_ids=[101, 201])
+
+    assert names[101] != names[201], "겹치면 rerank 가 두 니즈를 하나로 본다"
+    assert len(set(names.values())) == 2
+
+
+def test_need_names_keep_clean_labels_when_distinct() -> None:
+    """겹치지 않으면 이름을 그대로 둔다 — 구분자는 충돌할 때만 붙인다."""
+    from app.agents.buyer.recommendation.graph import _need_names
+
+    legs = [("여행/캠핑 > 여행용품", "파우치"), ("가전 > 어댑터", "어댑터")]
+    names = _need_names(legs, leg_of={101: 0, 201: 1}, product_ids=[101, 201])
+
+    assert names == {101: "파우치", 201: "어댑터"}
+
+
+def test_split_by_need_logs_products_without_leg(caplog) -> None:
+    """leg 를 모르는 상품이 섞이면 조용히 leg 0 에 넣지 않고 로그를 남긴다 (PR #212 리뷰).
+
+    같은 PR 의 reco_lists_truncated 와 같은 기준이다 — 도달하지 않아야 하는 경계가 도달하면
+    어느 니즈에도 속하지 않는 상품이 남의 목록에 섞이는데, 로그가 없으면 영영 안 드러난다.
+    """
+    import logging
+
+    from app.agents.buyer.recommendation.graph import _split_by_need
+
+    with caplog.at_level(logging.WARNING):
+        groups = _split_by_need(
+            [101, 999],  # 999 는 leg_of 에 없다
+            _res(101, 999).products,
+            leg_of={101: 0},
+            leg_count=2,
+            expose_min=1,
+            expose_max=5,
+        )
+
+    assert groups  # 동작은 종전대로 — 진단만 추가한다
+    assert any("leg" in r.message for r in caplog.records)
