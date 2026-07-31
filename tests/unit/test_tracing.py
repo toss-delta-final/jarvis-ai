@@ -693,9 +693,29 @@ def test_opaque_identifiers_never_trip_the_pii_canary() -> None:
         "연락처 010 1234 5678 입니다",
         "900101-1234567",
         "주민 900101-1234567 확인",
+        # PR #218 리뷰 — 오탐을 "hex 문자 인접"으로 막으면 hex 로 끝나는 흔한 영단어 뒤에
+        # 구분자 없이 붙은 진짜 PII 가 통째로 탐지를 피한다. 그 회피 경로를 여기서 막는다.
+        "face01012345678",
+        "userid01012345678",
+        "cafe9001011234567",
     ],
 )
 def test_real_pii_is_still_rejected(value: str) -> None:
     """오탐을 줄이려다 진짜 PII 를 놓치면 안 된다 — 카나리아의 존재 이유다."""
     with pytest.raises(UnsafeTelemetryError):
         validate_export_payload({"metadata": {"model": value}})
+
+
+@pytest.mark.parametrize("key", ["requestId", "sessionFp", "threadFp"])
+@pytest.mark.parametrize(
+    "canary",
+    ["Bearer abcdefghijklmnop", "person@example.com", "sk-abcdefghijklmnop1234"],
+)
+def test_opaque_identifier_fields_still_reject_non_numeric_canaries(key: str, canary: str) -> None:
+    """불투명 식별자 필드의 면제는 **숫자열 카나리아에만** 적용된다.
+
+    면제가 넓어져 그 필드가 검사에서 통째로 빠지면, 값 생성 경로가 바뀌었을 때 토큰·이메일이
+    조용히 나간다. 면제 범위를 좁게 고정한다.
+    """
+    with pytest.raises(UnsafeTelemetryError):
+        validate_export_payload({"metadata": {key: canary}})

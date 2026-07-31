@@ -85,22 +85,30 @@ _UNSAFE_KEY_PARTS = (
     "tool",
     "customer",
 )
-_CANARY_PATTERNS = (
+# 문자열 어디에 있어도 잡아야 하는 카나리아 — 토큰·API 키·이메일. 리터럴 접두사나 `@` 를
+# 요구해 무작위 hex 에 우연히 걸리지 않으므로 모든 값에 항상 적용한다.
+_TEXT_CANARY_PATTERNS = (
     re.compile(r"\bbearer\s+\S+", re.IGNORECASE),
     re.compile(r"\b(?:sk-|lsv2_)[A-Za-z0-9_-]{12,}\b", re.IGNORECASE),
     re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE),
-    # 숫자열 카나리아(휴대폰·주민번호)의 경계는 `(?<!\d)`/`(?!\d)` 가 아니라 **hex 경계**다.
-    # 이 페이로드에서 카나리아 검사를 받는 랜덤 문자열은 사실상 기계 생성 식별자뿐인데
-    # (`dotted_order` = `<timestamp><uuid4>`, `sessionFp`/`threadFp` = 16-hex 지문;
-    # `id`/`trace_id` 는 UUID 객체라 str 검사 대상이 아니다), 그 hex 안의 숫자열이 휴대폰
-    # 모양과 겹치면 트레이스가 통째로 드롭된다 — 스팬당 약 1.7e-4 라 "가끔 아무 테스트나
-    # 하나 깨지는" 형태로 나타났다(#208 검증 중 발견). hex 문자를 경계에서 배제하면 UUID·
-    # 지문 안의 숫자열은 항상 한쪽이 hex 에 붙어 있어 구조적으로 걸리지 않는다.
-    # 탐지력 손실은 "hex 문자에 공백 없이 바로 붙은 진짜 전화번호/주민번호" 뿐이다 —
-    # 실제 PII 는 값 하나로 오거나 공백·구두점·따옴표로 끊긴다(test_real_pii_is_still_rejected).
-    re.compile(r"(?<![0-9a-fA-F])01[016789][ -]?\d{3,4}[ -]?\d{4}(?![0-9a-fA-F])"),
-    re.compile(r"(?<![0-9a-fA-F])\d{6}[ -]?[1-4]\d{6}(?![0-9a-fA-F])"),
 )
+# 숫자열 카나리아 — 휴대폰·주민번호. 숫자만으로 이뤄져 무작위 16진수와 우연히 겹칠 수 있다.
+_NUMERIC_CANARY_PATTERNS = (
+    re.compile(r"(?<!\d)01[016789][ -]?\d{3,4}[ -]?\d{4}(?!\d)"),
+    re.compile(r"(?<!\d)\d{6}[ -]?[1-4]\d{6}(?!\d)"),
+)
+_CANARY_PATTERNS = _TEXT_CANARY_PATTERNS + _NUMERIC_CANARY_PATTERNS
+
+# 서버가 만든 불투명 식별자 — **사용자 데이터가 도달할 수 없는** 필드다.
+#   dotted_order = `<타임스탬프><uuid4>` (`_build_export_payloads` 조립)
+#   requestId    = `uuid.uuid4().hex` (`app/core/errors.py::new_request_id`, 클라이언트 헤더 미수용)
+#   sessionFp/threadFp = HMAC hexdigest (`app/core/logging.py::safe_fingerprint`)
+# 이 hex 안의 숫자열이 휴대폰/주민번호 패턴과 우연히 겹쳐 **트레이스가 통째로 버려지던** 오탐의
+# 유일한 원인이라(실측 오탐률·경위는 docs/lessons.md 2026-07-31 항목) 여기서만 숫자열 카나리아를
+# 끈다. 패턴 자체의 경계를 hex 로 넓히는 방식은 쓰지 않는다 — 그러면 `userid01012345678` 처럼
+# hex 로 끝나는 흔한 단어 뒤에 붙은 **진짜 PII 까지 모든 문자열에서** 탐지를 피한다(PR #218 리뷰).
+# 키를 추가할 때는 "그 값이 서버 생성임을 코드로 보일 수 있는가"에 답할 수 있어야 한다.
+_OPAQUE_IDENTIFIER_KEYS = frozenset({"dotted_order", "requestId", "sessionFp", "threadFp"})
 
 
 class UnsafeTelemetryError(ValueError):
@@ -113,7 +121,12 @@ def validate_export_payload(payload: object) -> None:
     _validate_value(payload)
 
 
-def _validate_value(value: object, *, metadata: bool = False) -> None:
+def _validate_value(value: object, *, metadata: bool = False, opaque: bool = False) -> None:
+    """`opaque` 는 이 값이 서버 생성 불투명 식별자라 숫자열 카나리아를 면제한다는 뜻이다.
+
+    면제는 `_NUMERIC_CANARY_PATTERNS` 에만 적용된다 — 토큰·키·이메일 카나리아는 어떤 필드에서도
+    끄지 않는다(`_OPAQUE_IDENTIFIER_KEYS` 주석 참조).
+    """
     if isinstance(value, Mapping):
         for raw_key, nested in value.items():
             key = str(raw_key)
@@ -126,18 +139,24 @@ def _validate_value(value: object, *, metadata: bool = False) -> None:
             ):
                 if not isinstance(nested, Mapping) or nested:
                     raise UnsafeTelemetryError("raw-data field is not empty")
-            _validate_value(nested, metadata=key == "metadata")
+            _validate_value(
+                nested,
+                metadata=key == "metadata",
+                opaque=key in _OPAQUE_IDENTIFIER_KEYS,
+            )
         return
     if isinstance(value, (list, tuple)):
         for nested in value:
-            _validate_value(nested, metadata=metadata)
+            _validate_value(nested, metadata=metadata, opaque=opaque)
         return
     if isinstance(value, BaseException):
         _validate_value(value.args)
         _validate_value(vars(value))
         return
-    if isinstance(value, str) and any(pattern.search(value) for pattern in _CANARY_PATTERNS):
-        raise UnsafeTelemetryError("sensitive value canary detected")
+    if isinstance(value, str):
+        patterns = _TEXT_CANARY_PATTERNS if opaque else _CANARY_PATTERNS
+        if any(pattern.search(value) for pattern in patterns):
+            raise UnsafeTelemetryError("sensitive value canary detected")
 
 
 @dataclass
