@@ -11,7 +11,7 @@ from weakref import WeakValueDictionary
 from app.agents.buyer.cart import state as cart_state
 from app.core import pg_store, session_context
 from app.core.pg_resilience import is_state_store_unavailable, run_with_query_timeout
-from app.core.session_context import SessionContext, SessionStateUnavailable
+from app.core.session_context import SessionContext, SessionForbidden, SessionStateUnavailable
 
 _LEGACY_FILTER_ROOT = "buyer_thread_filters"
 _LEGACY_CART_ROOT = "buyer_cart"
@@ -395,7 +395,12 @@ async def _resolve_context_and_legacy_owner(
     if repo._pool is None:
         row = repo._context_by_id(context_id)
         if thread_id not in row.threads or row.owner_id != current_owner_id:
-            raise RuntimeError("session context owner or thread mismatch")
+            raise SessionForbidden(
+                # owner/thread 불일치는 신원 경계 위반이라 403 SESSION_FORBIDDEN 이다
+                # (SPEC-CHAT-SESSION-CONTEXT-187 §5). RuntimeError 로 던지면
+                # errors.py 의 _SESSION_ERROR_MAP 을 못 타고 500 INTERNAL 로 나간다.
+                "session context owner or thread mismatch"
+            )
         history = repo._owner_claims.get(row.session_id)
         legacy_owner = (
             history[0]
@@ -428,7 +433,12 @@ async def _resolve_context_and_legacy_owner(
             )
         ).fetchone()
     if row is None:
-        raise RuntimeError("session context owner or thread mismatch")
+        raise SessionForbidden(
+            # owner/thread 불일치는 신원 경계 위반이라 403 SESSION_FORBIDDEN 이다
+            # (SPEC-CHAT-SESSION-CONTEXT-187 §5). RuntimeError 로 던지면
+            # errors.py 의 _SESSION_ERROR_MAP 을 못 타고 500 INTERNAL 로 나간다.
+            "session context owner or thread mismatch"
+        )
     context = SessionContext(
         str(_column(row, 0, "context_id")),
         _column(row, 1, "session_id"),

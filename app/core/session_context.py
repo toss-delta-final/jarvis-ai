@@ -769,7 +769,13 @@ class SessionContextRepository:
                 else:
                     row.authority_source = "runtime"
                     row.state = "active"
-            if history == (guest_id, target) and row is not None:
+            # duplicate 단축 반환도 아래 terminal/idle_finalizing 게이트를 통과해야 한다 —
+            # 먼저 평가되므로 상태를 안 보면 이 분기가 게이트의 예외가 된다.
+            if (
+                history == (guest_id, target)
+                and row is not None
+                and row.state not in ("idle_finalizing", "terminal")
+            ):
                 context = _memory_context(row)
                 await self._resolve_authoritative_conflict(None, context)
                 return ClaimOutcome(context, False)
@@ -872,7 +878,17 @@ class SessionContextRepository:
                         (row[0],),
                     )
                 ).fetchone()
-        if history == (guest_id, target) and row is not None:
+        # duplicate 단축 반환도 아래 terminal/idle_finalizing 게이트를 통과해야 한다 —
+        # 먼저 평가되므로 상태를 안 보면 이 분기가 게이트의 예외가 된다.
+        if (
+            history == (guest_id, target)
+            and row is not None
+            and row[5]
+            not in (
+                "idle_finalizing",
+                "terminal",
+            )
+        ):
             context = _row_to_context(row)
             await self._resolve_authoritative_conflict(conn, context)
             return ClaimOutcome(context, False)

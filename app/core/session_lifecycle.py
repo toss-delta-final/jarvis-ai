@@ -108,11 +108,17 @@ class SessionLifecycleCoordinator:
                 target = str(event.user_id)
                 context = snapshot.context
 
+                # 멱등 duplicate 단축 반환에도 상태 게이트를 건다. 아래 else 절의
+                # idle_finalizing/terminal 검사보다 먼저 평가되므로, 상태를 안 보면
+                # 이 분기 자체가 게이트의 예외가 된다 — 정리 진행 중(idle_finalizing)이나
+                # 종료된(terminal) 세션에 같은 claim 이 재전송되면 409 대신 조용히
+                # 성공 처리된다(SPEC-CHAT-SESSION-CONTEXT-187 §상태기계: 새 touch/claim 은 409).
                 if (
                     snapshot.history == (event.guest_id, target)
                     and context is not None
                     and context.owner_type == "member"
                     and context.owner_id == target
+                    and context.state not in ("idle_finalizing", "terminal")
                 ):
                     outcome = ClaimOutcome(context, False)
                     await repository._resolve_authoritative_conflict(uow.conn, context)

@@ -157,11 +157,23 @@ def _claims_to_identity(claims: dict, *, require_identity_claim: bool = False) -
                 session_id=session_id,
             )
         if sub_type == SUB_TYPE_MEMBER:
+            # 타입만 정규화하고 값 형식은 검증하지 않는다.
+            # 정규화 이유: 발급자가 sub 를 JSON 숫자로 실으면 int 가 들어오는데
+            # (66행 brand_id 주석의 동일 사례), /events/* 는 str(event.user_id) 로
+            # 정규화하므로 맞춰두지 않으면 같은 사용자의 owner 비교가 42 != "42" 로 깨진다.
+            # 형식 검증을 하지 않는 이유: 잘못된 member sub 는 401 로 채팅 전체를 막지 않고
+            # 신원이 필요한 하위 능력(주문조회)에서만 차단하는 것이 계약이다
+            # (test_order_status_invalid_member_identity_is_blocked_before_spring).
+            member_subject = (
+                str(subject)
+                if isinstance(subject, int) and not isinstance(subject, bool)
+                else subject
+            )
             return Identity(
-                user_id=subject,
+                user_id=member_subject,
                 is_guest=False,
                 seller_id=None,
-                subject=subject,
+                subject=member_subject,
                 session_id=session_id,
             )
         # 미지 sub_type — 정본 값 집합(member|guest) 밖은 신원 판정 불가로 거부.
