@@ -13,6 +13,19 @@
 
 ---
 
+## [2026-07-31] 이벤트 루프보다 오래 사는 커넥션 풀 — 취소를 삼키는 워커가 teardown 을 영원히 멈춘다
+
+- 증상: `uv run pytest -m integration` 이 **간헐적으로 무한 대기**했다(#208). 실패도 오류도 없이 매달리고, 테스트는 전부 통과한 상태였다. 재현율은 두 파일 조합에서 8회 중 1회. 메인 스레드는 언제나 `pytest_asyncio/plugin.py::_scoped_runner` → `Runner.close()` → `asyncio.runners._cancel_all_tasks()` → `run_until_complete(gather(...))` 안이었다.
+- 원인: 두 겹이 겹쳤다.
+  1. **상류** — psycopg_pool 의 async 빌드는 `CLIENT_EXCEPTIONS = (Exception, asyncio.CancelledError)` 이고(`pool_async.py`), `AsyncConnectionPool.worker()` 가 `await task.run()` 을 그걸로 감싼다. 그래서 유지보수 태스크를 **실행 중인** 워커를 취소하면 `CancelledError` 가 삼켜지고 워커는 `await q.get()` 으로 되돌아간다 — 불사 태스크가 된다. `_cancel_all_tasks()` 는 태스크 목록을 **한 번만** 취소하고 무기한 gather 로 기다리므로 그대로 교착한다. 워커가 큐에 park 중이면 정상 취소돼 죽는다 — 그래서 간헐적이었다.
+  2. **우리 코드** — pg 모듈 6곳(`processed_events`·`session_activity`·`conversation`·`pg_store`·`profile/store`·`session_context`)이 sync 리셋터에서 await 할 수 없다는 이유로 풀 close 를 "다음 async 진입"으로 미룬다. 그래서 매 테스트가 **살아 있는 풀**(워커 3 + 스케줄러)을 곧 파괴될 루프에 남겼다. 창을 만든 건 우리고, 그 창을 교착으로 바꾼 건 상류다.
+- 규칙:
+  1. **비동기 리소스는 자기를 만든 이벤트 루프 안에서 닫는다.** "다음 호출에서 정리"는 그 다음 호출이 *같은 루프*라는 보장이 있을 때만 성립한다 — pytest-asyncio(테스트마다 새 루프)·`TestClient`(자체 portal 루프)에서는 성립하지 않는다. sync 리셋터에 정리를 미뤘다면 **짝이 되는 async close 를 함께 만들고** teardown 훅에 배선한다.
+  2. **간헐적 hang 은 타이밍 문제가 아니라 대개 "취소 불응 태스크" 문제다.** `faulthandler` 는 스레드만 덤프하니 asyncio 는 안 보인다. `asyncio.runners._cancel_all_tasks` 를 감싸 워치독 스레드로 `all_tasks()` + `task.cancelling()`/`_fut_waiter` 를 덤프하면 한 방에 나온다. **관측 코드가 타이밍을 바꾸면 재현이 사라진다** — `asyncio.wait(timeout=...)` 을 끼우자 15회 내내 통과했다. 진단 도구는 루프에 타이머를 추가하지 않는 형태로 만든다.
+  3. `cancelling() > 0` 인데 `done() == False` 이고 `_fut_waiter` 가 **새 PENDING future** 면, 취소가 전달됐다가 삼켜지고 재대기에 들어갔다는 뜻이다. 라이브러리의 `except` 절이 `CancelledError` 를 포함하는지 먼저 grep 한다.
+  4. 죽은 루프에 묶인 풀을 살아 있는 루프에서 닫으려 하면 실패하고 워커 코루틴만 미회수로 GC 돼 `PytestUnraisableExceptionWarning` 이 뜬다. **정리 훅은 "이 루프에 묶인 것"으로 범위를 좁힌다**(`asyncio.all_tasks()` 에 `pool-*` 태스크가 있는지로 판정).
+- 관련: #208, `tests/conftest.py::close_pg_pools_on_loop`, `tests/unit/test_pool_worker_cancellation.py`, `tests/integration/test_pg_pool_loop_teardown.py`
+
 ## [2026-07-31] repo 밖에서 `gh` 를 부르면 실패하는데 `| tail -1` 이 그 오류를 가린다
 
 - 증상: PR #211 본문 갱신을 `cd <스크래치패드> && python3 ...` 로 파일을 고친 뒤 이어서 `gh pr edit 211 --body-file ...` 로 실행하고 "갱신했다"고 보고했다. 로컬 파일은 정확히 바뀌었지만 **원격 PR 본문은 그대로**였다. 다음 턴에 `grep -c "v0.17.2"` 가 `0` 을 내서야 드러났다.

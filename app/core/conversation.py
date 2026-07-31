@@ -468,6 +468,17 @@ async def _drain_pending_cleanup() -> None:
             pass
 
 
+async def close_store() -> None:
+    """지금 열려 있는 풀을 **이 이벤트 루프에서** 닫는다 (이슈 #208).
+
+    sync `set_store()` 가 미룬 close 는 보통 다른 루프에서 실행된다. 살아 있는 풀을 남긴 채
+    루프가 닫히면 teardown 의 `_cancel_all_tasks()` 가 취소를 삼키는 psycopg 워커와 교착한다
+    (app/agents/profile/processed_events.py `close_pool` 과 동일 근거).
+    """
+    set_store(None)
+    await _drain_pending_cleanup()
+
+
 async def get_conversation_store() -> ConversationStoreProtocol:
     """대화 저장소 — pg-profile(conversation_turns) 지연 초기화, 실패 시 dev 한정 인메모리 폴백.
 
