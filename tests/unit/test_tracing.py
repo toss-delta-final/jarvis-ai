@@ -1,4 +1,6 @@
 import asyncio
+import random
+import uuid
 from dataclasses import fields, is_dataclass
 from collections.abc import Mapping
 
@@ -643,3 +645,57 @@ async def test_cancelled_trace_finish_shields_one_export_and_reuses_it() -> None
     root = exporter.exported[0][0]
     assert root.error_type is None
     assert root.metadata["terminalReason"] == "done"
+
+
+# --- PII 카나리아 오탐 (#208 검증 중 발견) ---------------------------------------
+#
+# `dotted_order` 는 `<timestamp><uuid4>` 로 조립되는 **기계 생성** 문자열이고, 페이로드에서
+# 카나리아 검사를 받는 유일한 랜덤 문자열이다(`id`/`trace_id` 는 UUID 객체라 str 검사 대상이
+# 아니다). 한국 휴대폰 정규식이 UUID 의 hex 숫자열과 겹쳐 오탐하면 `validate_export_payload`
+# 가 UnsafeTelemetryError 를 던지고 **트레이스가 통째로 드롭**된다 — 그때마다 exported 를
+# 검증하던 아무 테스트나 하나가 깨졌다(수정 전 스팬당 약 1.7e-4, 손 안 댄 dev 에서도 재현).
+# 같은 오탐은 16-hex 지문(`sessionFp`·`threadFp`)에도 성립한다.
+
+# 실제로 오탐을 일으킨 UUID 들 — 회귀 고정용.
+_UUID_FALSE_POSITIVES = [
+    "6a31007e-22e1-4659-8a6a-0181980191ee",
+    "f73ba1f0-b9a0-4139-8a33-f01625126608",
+    "8d010084-1377-45fb-830c-603c3d1722c1",
+    "da75b05d-f7ef-424a-b124-d0106877030c",
+    "93e67d23-1924-40e5-a016-54952023d4cd",
+]
+
+
+@pytest.mark.parametrize("node_id", _UUID_FALSE_POSITIVES)
+def test_machine_generated_uuid_does_not_trip_pii_canary(node_id: str) -> None:
+    """랜덤 UUID hex 는 PII 가 아니다 — 오탐하면 트레이스가 통째로 드롭된다."""
+    validate_export_payload({"dotted_order": f"20260731T152345123456Z{node_id}"})
+
+
+def test_opaque_identifiers_never_trip_the_pii_canary() -> None:
+    """고정 시드 corpus — UUID·16-hex 지문 어느 쪽도 오탐이 0 이어야 한다.
+
+    표본 5개만 고정하면 정규식을 그 5개에만 맞춰 깎는 수정도 통과한다. 클래스 전체가
+    닫혔는지 보려면 corpus 가 필요하고, 시드를 고정해야 CI 가 흔들리지 않는다.
+    """
+    rnd = random.Random(208)
+    for _ in range(20_000):
+        node_id = uuid.UUID(int=rnd.getrandbits(128), version=4)
+        validate_export_payload({"dotted_order": f"20260731T152345123456Z{node_id}"})
+        validate_export_payload({"metadata": {"sessionFp": f"{rnd.getrandbits(64):016x}"}})
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "01012345678",
+        "010-1234-5678",
+        "연락처 010 1234 5678 입니다",
+        "900101-1234567",
+        "주민 900101-1234567 확인",
+    ],
+)
+def test_real_pii_is_still_rejected(value: str) -> None:
+    """오탐을 줄이려다 진짜 PII 를 놓치면 안 된다 — 카나리아의 존재 이유다."""
+    with pytest.raises(UnsafeTelemetryError):
+        validate_export_payload({"metadata": {"model": value}})

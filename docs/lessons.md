@@ -13,6 +13,17 @@
 
 ---
 
+## [2026-07-31] PII 정규식을 기계 생성 식별자에 들이대면 오탐이 "확률적 플레이크"가 된다
+
+- 증상: 단위 스위트가 대략 8~15회에 1회 깨졌는데 **매번 다른 테스트**였다(`test_seller_tools`·`test_observability`·`test_llm_provider` …). 공통점은 로그의 `trace dropped ... code=TELEMETRY_REDACTION_FAILED` 하나뿐이었고, 실패 형태는 `exporter.exported[0]` 의 `IndexError` 였다 — 검증이 트레이스를 통째로 버리니 export 가 비었던 것이다.
+- 원인: `app/core/tracing.py` 의 한국 휴대폰 카나리아 `(?<!\d)01[016789][ -]?\d{3,4}[ -]?\d{4}(?!\d)` 가 **랜덤 UUID 의 hex 숫자열**에 걸렸다. 페이로드에서 카나리아 검사를 받는 랜덤 문자열은 사실상 `dotted_order`(`<timestamp><uuid4>`) 하나뿐인데(`id`·`trace_id` 는 UUID 객체라 `isinstance(value, str)` 검사를 안 탄다), `...8a6a-0181980191ee` 같은 조각이 전화번호 모양과 일치했다. 실측 오탐률은 스팬당 **1.7e-4** — 스위트가 만드는 스팬 수를 곱하면 "가끔 아무 테스트나 하나 깨진다"가 된다. 16-hex 지문(`sessionFp`)도 같은 클래스다.
+- 규칙:
+  1. **PII 정규식의 경계는 "숫자가 아님"이 아니라 "그 값이 놓인 문자 집합이 아님"으로 잡는다.** hex 식별자와 공존하는 필드라면 `(?<![0-9a-fA-F])` 처럼 hex 를 경계에서 배제해야 UUID·해시 안의 숫자열이 구조적으로 안 걸린다. 탐지력 손실("hex 문자에 공백 없이 바로 붙은 진짜 전화번호")은 실제 PII 의 등장 형태와 맞지 않아 무시 가능하다.
+  2. **fail-closed 검증은 오탐 비용이 곧 가용성 비용이다.** "의심되면 버린다"가 맞는 기본값이라도, 검사 대상에 **랜덤 기계 생성 값**이 섞이면 버림이 확률적으로 일어나 원인 추적이 어려운 플레이크가 된다. 카나리아를 붙이기 전에 "이 필드에 사용자 데이터가 도달할 수 있나"를 먼저 답하고, 답이 '아니오'인 랜덤 필드는 패턴 쪽에서 오탐을 닫는다.
+  3. **매번 다른 테스트가 깨지면 테스트가 아니라 공유 경로를 의심한다.** 실패 메시지가 아니라 **로그의 공통 줄**로 묶어 보면 한 지점이 나온다.
+  4. 회귀 테스트는 오탐 표본 몇 개만 고정하면 "그 표본만 피해가는 수정"도 통과한다. **고정 시드 corpus**(예: `random.Random(208)` 로 만든 UUID 2만 개)로 클래스 전체가 닫혔음을 확인한다 — 시드를 고정해야 CI 가 흔들리지 않는다.
+- 관련: `app/core/tracing.py::_CANARY_PATTERNS`, `tests/unit/test_tracing.py::test_opaque_identifiers_never_trip_the_pii_canary`, #208 검증 중 발견(손 안 댄 `dev` 에서도 15회 중 1회 재현 — 이번 변경과 무관한 기존 결함)
+
 ## [2026-07-31] 이벤트 루프보다 오래 사는 커넥션 풀 — 취소를 삼키는 워커가 teardown 을 영원히 멈춘다
 
 - 증상: `uv run pytest -m integration` 이 **간헐적으로 무한 대기**했다(#208). 실패도 오류도 없이 매달리고, 테스트는 전부 통과한 상태였다. 재현율은 두 파일 조합에서 8회 중 1회. 메인 스레드는 언제나 `pytest_asyncio/plugin.py::_scoped_runner` → `Runner.close()` → `asyncio.runners._cancel_all_tasks()` → `run_until_complete(gather(...))` 안이었다.

@@ -89,8 +89,17 @@ _CANARY_PATTERNS = (
     re.compile(r"\bbearer\s+\S+", re.IGNORECASE),
     re.compile(r"\b(?:sk-|lsv2_)[A-Za-z0-9_-]{12,}\b", re.IGNORECASE),
     re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE),
-    re.compile(r"(?<!\d)01[016789][ -]?\d{3,4}[ -]?\d{4}(?!\d)"),
-    re.compile(r"(?<!\d)\d{6}[ -]?[1-4]\d{6}(?!\d)"),
+    # 숫자열 카나리아(휴대폰·주민번호)의 경계는 `(?<!\d)`/`(?!\d)` 가 아니라 **hex 경계**다.
+    # 이 페이로드에서 카나리아 검사를 받는 랜덤 문자열은 사실상 기계 생성 식별자뿐인데
+    # (`dotted_order` = `<timestamp><uuid4>`, `sessionFp`/`threadFp` = 16-hex 지문;
+    # `id`/`trace_id` 는 UUID 객체라 str 검사 대상이 아니다), 그 hex 안의 숫자열이 휴대폰
+    # 모양과 겹치면 트레이스가 통째로 드롭된다 — 스팬당 약 1.7e-4 라 "가끔 아무 테스트나
+    # 하나 깨지는" 형태로 나타났다(#208 검증 중 발견). hex 문자를 경계에서 배제하면 UUID·
+    # 지문 안의 숫자열은 항상 한쪽이 hex 에 붙어 있어 구조적으로 걸리지 않는다.
+    # 탐지력 손실은 "hex 문자에 공백 없이 바로 붙은 진짜 전화번호/주민번호" 뿐이다 —
+    # 실제 PII 는 값 하나로 오거나 공백·구두점·따옴표로 끊긴다(test_real_pii_is_still_rejected).
+    re.compile(r"(?<![0-9a-fA-F])01[016789][ -]?\d{3,4}[ -]?\d{4}(?![0-9a-fA-F])"),
+    re.compile(r"(?<![0-9a-fA-F])\d{6}[ -]?[1-4]\d{6}(?![0-9a-fA-F])"),
 )
 
 
