@@ -172,8 +172,17 @@ class ProfileStore:
 
         여기는 sleep-time consolidation 경로라(요청 경로 아님) 임베딩 API 왕복을 감당할 수 있다.
         I-22 가 요청 시점에 임베딩하면 예산(연결 2s/응답 3s)을 위협하므로 미리 만드는 것이 요점이다.
+
+        **임베딩이 실패하면 기존 벡터를 살려 둔다.** `aput` 은 값을 통째로 덮어쓰므로 그냥 두면
+        재-consolidation 때 일시 실패(레이트리밋·네트워크) 한 번으로 **이미 벡터를 갖고 있던
+        사용자의 개인화 항이 조용히 사라진다** — 신규 프로필뿐 아니라 기존 사용자에게도 회귀다.
+        살려 둔 벡터는 직전 요약 기준이라 새 요약과 약간 어긋나지만, 프로필 취향은 천천히 변하고
+        **개인화가 통째로 빠지는 것보다 낫다.** 다음 성공한 consolidation 이 갱신한다.
         """
         embedding = await _embed_summary(markdown)
+        if embedding is None:
+            existing = await self.get_summary(user_id)
+            embedding = existing.embedding if existing else None
         value: dict = {"markdown": markdown, "generated_at": generated_at}
         if embedding is not None:
             value["embedding"] = embedding

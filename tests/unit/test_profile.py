@@ -91,6 +91,45 @@ async def test_reader_returns_stored_summary() -> None:
     assert got and got["markdown"] == "# 요약\n- x" and got["generated_at"].startswith("2026")
 
 
+async def test_summary_embedding_survives_a_failed_re_embed(monkeypatch) -> None:
+    """[#148] 재-consolidation 때 임베딩이 실패해도 **기존 벡터를 잃지 않는다**.
+
+    `aput` 은 값을 통째로 덮어쓰므로, 실패 시 embedding 키를 빼면 이미 벡터를 갖고 있던 사용자의
+    홈 추천(I-22) 개인화 항이 조용히 사라진다 — 신규 프로필뿐 아니라 기존 사용자에게도 회귀다.
+    """
+    from app.agents.profile import store as store_mod
+
+    async def _ok(_markdown: str) -> list[float]:
+        return [0.5, 0.5]
+
+    async def _fail(_markdown: str) -> None:
+        return None
+
+    store = await get_profile_store()
+    monkeypatch.setattr(store_mod, "_embed_summary", _ok)
+    await store.set_summary("7", "# 요약 v1", "2026-07-20T00:00:00+00:00")
+    assert (await store.get_summary("7")).embedding == [0.5, 0.5]
+
+    monkeypatch.setattr(store_mod, "_embed_summary", _fail)
+    await store.set_summary("7", "# 요약 v2", "2026-07-21T00:00:00+00:00")
+    got = await store.get_summary("7")
+    assert got.markdown == "# 요약 v2", "요약 본문은 갱신된다"
+    assert got.embedding == [0.5, 0.5], "임베딩 실패는 기존 벡터를 지우지 않는다"
+
+
+async def test_summary_embedding_is_none_when_never_embedded(monkeypatch) -> None:
+    """기존 벡터가 없으면 그대로 None — 살릴 것이 없다."""
+    from app.agents.profile import store as store_mod
+
+    async def _fail(_markdown: str) -> None:
+        return None
+
+    monkeypatch.setattr(store_mod, "_embed_summary", _fail)
+    store = await get_profile_store()
+    await store.set_summary("8", "# 요약", "2026-07-20T00:00:00+00:00")
+    assert (await store.get_summary("8")).embedding is None
+
+
 # ─────────── gate ───────────
 
 
