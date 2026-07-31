@@ -617,6 +617,61 @@ def test_reason_lookup_failure_degrades_to_null_reasons(monkeypatch: pytest.Monk
     assert all(i["reason"] is None for i in data["items"])
 
 
+def test_catalog_hang_is_504_not_indefinite_wait(
+    monkeypatch: pytest.MonkeyPatch, store: CatalogArtifactStore
+) -> None:
+    """pg 지연·락이 요청을 붙들면 계약의 504 UPSTREAM_TIMEOUT 으로 끝난다(§3.7 실패 응답표).
+
+    이 경로가 없으면 계약이 정의한 504 가 어떤 코드에서도 발생하지 않는다(PR 리뷰) —
+    hang 또는 미처리 예외로 끝난다.
+    """
+    import time as _time
+
+    fast = get_settings().model_copy(update={"home_reco_store_timeout_s": 0.05})
+    monkeypatch.setattr(svc, "get_settings", lambda: fast)
+
+    def slow_top_k(query_vec, *, k, exclude=None):
+        _time.sleep(0.5)  # 예산(0.05s)을 확실히 넘긴다
+        return []
+
+    monkeypatch.setattr(store, "top_k_by_vector", slow_top_k)
+    r = client.post(_URL, json=_body())
+    assert r.status_code == 504
+    assert r.json()["error"]["code"] == "UPSTREAM_TIMEOUT"
+
+
+def test_reason_timeout_degrades_not_504(
+    monkeypatch: pytest.MonkeyPatch, store: CatalogArtifactStore
+) -> None:
+    """reason 재료 조회의 타임아웃은 504 가 아니라 degrade — 확정된 랭킹을 버리지 않는다."""
+    import time as _time
+
+    fast = get_settings().model_copy(update={"home_reco_store_timeout_s": 0.2})
+    monkeypatch.setattr(svc, "get_settings", lambda: fast)
+
+    def slow_reasons(**kwargs):
+        _time.sleep(0.5)
+        return {}
+
+    monkeypatch.setattr(svc, "build_reasons", slow_reasons)
+    r = client.post(_URL, json=_body(limit=10))
+    assert r.status_code == 200
+    data = r.json()
+    assert data["outcome"] == "PERSONALIZED"
+    assert data["items"] and all(i["reason"] is None for i in data["items"])
+
+
+def test_overfetch_uses_ceil_not_float_truncation() -> None:
+    """배율이 이진 부동소수점으로 부정확한 값(1.3)일 때 int 절단이 여유분을 1개 깎는다 — ceil 로 고정.
+
+    10×1.3 = 12.999…(IEEE-754) → int() 는 12, ceil 은 13. "넉넉히" 계약의 안전한 방향은 올림이다.
+    """
+    tuned = get_settings().model_copy(
+        update={"home_reco_overfetch_ratio": 1.3, "home_reco_max_items": 120}
+    )
+    assert svc._overfetch_size(10, tuned) == 13
+
+
 def test_profile_store_failure_degrades_to_200(monkeypatch: pytest.MonkeyPatch) -> None:
     """프로필 저장소 장애는 degrade — 프로필은 reason 근거일 뿐 랭킹 입력이 아니다."""
 

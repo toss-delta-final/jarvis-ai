@@ -196,8 +196,15 @@ class PgCatalogArtifactStore:
         채 탐색을 이어가는 모드다. SET LOCAL 이라 풀에 반환된 커넥션에 새지 않고, Seq Scan 플랜에는
         영향이 없다.
         """
+        # statement_timeout — 호출측 asyncio.wait_for(504 변환)와 이중 방어다. to_thread 취소는
+        # 밑에서 도는 쿼리를 죽이지 못해, DB 쪽 상한이 없으면 지연 쿼리가 풀 커넥션을 계속 붙들어
+        # 후속 요청까지 말려든다(PR #213 리뷰). SET LOCAL 이라 트랜잭션 밖으로 새지 않는다.
+        from app.core.config import get_settings  # noqa: PLC0415 - 순환 임포트 회피(모듈 관례)
+
+        timeout_ms = int(get_settings().home_reco_store_timeout_s * 1000)
         skip = list(exclude or ())
         with self._pool.connection() as conn, conn.transaction():
+            conn.execute(f"SET LOCAL statement_timeout = {timeout_ms}")
             conn.execute("SET LOCAL hnsw.iterative_scan = strict_order")
             rows = conn.execute(
                 """

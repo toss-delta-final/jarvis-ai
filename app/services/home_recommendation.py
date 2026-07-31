@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 import uuid
 
@@ -49,6 +50,21 @@ class UpstreamUnavailable(HTTPException):
         super().__init__(
             status_code=503,
             detail={"code": "UPSTREAM_UNAVAILABLE", "message": "추천 의존성 일시 장애"},
+        )
+
+
+class UpstreamTimeout(HTTPException):
+    """504 UPSTREAM_TIMEOUT — 카탈로그 조회가 I-22 예산을 넘겼다 (§3.7 실패 응답표).
+
+    이 코드가 없으면 계약이 정의한 504 가 어떤 경로에서도 발생하지 않는다(PR 리뷰) — pg 지연·락이
+    요청을 예산 밖까지 붙들면 hang 또는 미처리 예외로 끝난다. Spring 은 fallbackReason=AI_TIMEOUT
+    으로 기록하고 P-4 로 대체한다(§4.11).
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            status_code=504,
+            detail={"code": "UPSTREAM_TIMEOUT", "message": "추천 의존성 응답 지연"},
         )
 
 
@@ -141,8 +157,13 @@ def rank_candidates(
 
 
 def _overfetch_size(limit: int, settings: Settings) -> int:
-    """limit(최종 노출 목표) 대비 넉넉히 반환할 개수 — Spring 이 품절을 뺀 뒤 자른다(§3.7)."""
-    target = int(limit * settings.home_reco_overfetch_ratio)
+    """limit(최종 노출 목표) 대비 넉넉히 반환할 개수 — Spring 이 품절을 뺀 뒤 자른다(§3.7).
+
+    `ceil` 인 이유(PR 리뷰): `int()` 절단은 배율이 이진 부동소수점으로 정확히 표현되지 않을 때
+    (예: 1.3 → 10×1.3 = 12.999…) 의도보다 1 작게 잘라 여유분을 조용히 깎는다. "넉넉히" 계약의
+    안전한 방향은 올림이다 — 과잉은 최대 1개이고 max_items 캡이 어차피 막는다.
+    """
+    target = math.ceil(limit * settings.home_reco_overfetch_ratio)
     return min(max(limit, target), settings.home_reco_max_items)
 
 
@@ -287,16 +308,25 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
     # 이벤트 루프가 통째로 막히고, 같은 워커의 채팅 SSE 스트림까지 함께 지연된다. 같은 스토어를
     # 쓰는 `search_service`·`category_mapping` 이 PR #42 리뷰 이후 지키는 컨벤션이다.
     # 유닛 테스트는 인메모리 스토어를 주입해 이 블로킹을 재현하지 못하므로 규약으로 지킨다.
+    # 스토어 호출마다 `wait_for` 상한을 건다 — pg 지연·락이 요청을 I-22 예산 밖까지 붙들면
+    # 계약의 504(UPSTREAM_TIMEOUT)로 끝나야 한다(§3.7 실패 응답표). to_thread 취소는 밑의 쿼리
+    # 스레드를 죽이지 못하므로 DB 쪽도 statement_timeout 으로 이중 방어한다(top_k_by_vector).
     try:
         store = get_catalog_store()
-        query_vec = await asyncio.to_thread(
-            build_query_vector,
-            cart_ids=signals.cart_product_ids,
-            viewed_ids=signals.recently_viewed_product_ids,
-            store=store,
-            settings=settings,
-            profile_vec=profile_vec,
+        query_vec = await asyncio.wait_for(
+            asyncio.to_thread(
+                build_query_vector,
+                cart_ids=signals.cart_product_ids,
+                viewed_ids=signals.recently_viewed_product_ids,
+                store=store,
+                settings=settings,
+                profile_vec=profile_vec,
+            ),
+            timeout=settings.home_reco_store_timeout_s,
         )
+    except TimeoutError as exc:
+        logger.warning("home_reco_catalog_timeout")
+        raise UpstreamTimeout from exc
     except Exception as exc:
         logger.warning("home_reco_catalog_unavailable")
         raise UpstreamUnavailable from exc
@@ -317,14 +347,20 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
     # 필요한 만큼만 가져온다 — overfetch 목표와 부족 판정선 중 큰 쪽. 전량을 끌어오면 예산을 넘긴다.
     want = _overfetch_size(request.limit, settings)
     try:
-        ranked = await asyncio.to_thread(
-            rank_candidates,
-            query_vec=query_vec,
-            store=store,
-            exclude=exclude,
-            settings=settings,
-            k=max(want, settings.home_reco_min_candidates),
+        ranked = await asyncio.wait_for(
+            asyncio.to_thread(
+                rank_candidates,
+                query_vec=query_vec,
+                store=store,
+                exclude=exclude,
+                settings=settings,
+                k=max(want, settings.home_reco_min_candidates),
+            ),
+            timeout=settings.home_reco_store_timeout_s,
         )
+    except TimeoutError as exc:
+        logger.warning("home_reco_catalog_timeout")
+        raise UpstreamTimeout from exc
     except Exception as exc:
         logger.warning("home_reco_catalog_unavailable")
         raise UpstreamUnavailable from exc
@@ -351,14 +387,17 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
     # 쓰게 된다. `reason` 은 계약상 nullable 이고 위 프로필 조회도 같은 이유로 degrade 하므로,
     # 여기서도 reason 만 비우고 개인화 결과는 그대로 내보내는 쪽이 "홈 렌더 비차단"(§4.11)에 맞다.
     try:
-        reasons = await asyncio.to_thread(
-            build_reasons,
-            product_ids=top,
-            store=store,
-            cart_ids=signals.cart_product_ids,
-            viewed_ids=signals.recently_viewed_product_ids,
-            profile_markdown=profile_markdown,
-            settings=settings,
+        reasons = await asyncio.wait_for(
+            asyncio.to_thread(
+                build_reasons,
+                product_ids=top,
+                store=store,
+                cart_ids=signals.cart_product_ids,
+                viewed_ids=signals.recently_viewed_product_ids,
+                profile_markdown=profile_markdown,
+                settings=settings,
+            ),
+            timeout=settings.home_reco_store_timeout_s,
         )
     except Exception:
         # 예외 문자열은 업스트림 상태를 유출할 수 있어 클래스명도 남기지 않는다(#141 규약).
