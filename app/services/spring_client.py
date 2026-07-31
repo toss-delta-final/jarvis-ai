@@ -838,31 +838,40 @@ class SpringClient:
         )
         return self._validate(ProductChangeLogResult, data)
 
-    async def get_churn(self, brand_id: int, inactive_days: int) -> ChurnResult:
-        """I-16 이탈 코호트 조회 (§4.4). inactiveDays 무활동 기준일."""
+    async def get_churn(
+        self, brand_id: int, from_: str, to: str, inactive_days: int
+    ) -> ChurnResult:
+        """I-16 이탈 코호트 조회 (§4.4). 코호트 = from~to 에 자사 상품과 상호작용한
+        회원, 이탈 = 최근 inactiveDays 무활동(BE SellerAnalyticsService.churn 실측).
+
+        [#197] from/to 는 필수다 — Spring AnalysisPeriod.of 가 누락·형식 오류·역전을
+        400 INVALID_PERIOD 로 거부한다. 종전에는 inactiveDays 만 보내 이 조회가
+        무조건 400 → degrade 로 새던 버그(주 소스 전면 불능)의 원인이었다.
+        """
         data = await self._request(
             "GET",
             f"/internal/seller/{brand_id}/churn",
             operation="get_churn",
-            params={"inactiveDays": inactive_days},
+            params={"from": from_, "to": to, "inactiveDays": inactive_days},
         )
         return self._validate(ChurnResult, data)
 
     async def get_account_events(
         self,
+        from_: str,
+        to: str,
         event_type: str | None = None,
-        from_: str | None = None,
-        to: str | None = None,
         group_by: str | None = None,
     ) -> AccountEventsResult:
-        """I-8 계정/보안 이벤트 집계 조회 (§4.4). ⚠️ brandId path 없음 — 전역·admin 소유 🔴."""
-        params: dict = {}
+        """I-8 계정/보안 이벤트 집계 조회 (§4.4). ⚠️ brandId path 없음 — 전역·admin 소유 🔴.
+
+        [#197] from/to 는 필수다(AnalysisPeriod.of — 누락 시 400 INVALID_PERIOD).
+        groupBy 는 BE 화이트리스트 eventType(기본)|hour|ip 만 허용 — 그 외 400
+        INVALID_GROUP_BY (AccountEventAggregateResponse 실측).
+        """
+        params: dict = {"from": from_, "to": to}
         if event_type:
             params["eventType"] = event_type
-        if from_:
-            params["from"] = from_
-        if to:
-            params["to"] = to
         if group_by:
             params["groupBy"] = group_by
         data = await self._request(

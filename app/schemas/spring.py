@@ -729,20 +729,68 @@ class ProductChangeLogResult(SellerAggregateModel):
 # ── I-16 이탈 코호트 (§4.4) ──
 
 
-class ChurnResult(SellerAggregateModel):
-    """I-16 GET /internal/seller/{brandId}/churn 응답 — churnRate/preChurnSignals."""
+class PreChurnSignals(SellerAggregateModel):
+    """I-16 preChurnSignals — Spring SellerChurnResponse.PreChurnSignals 실측(#197).
 
-    churn_rate: float = 0.0
-    pre_churn_signals: list[dict] = Field(default_factory=list)
+    이탈 회원 전체 기준 집계다. zeroResultSearchSessions 는 현 수집 스키마상 상시
+    0(E-1 FE 에 검색 결과 수 미적재, 노션 I-16 합의) — '검색 불만 없음'의 근거로
+    쓰면 안 된다. priceIncreaseExposed = PRICE 인상 이후 해당 상품을 조회한 이탈
+    회원 수(근사, 명수)."""
+
+    cancel_count: int = 0
+    return_reasons_top: list[dict] = Field(default_factory=list)  # ReasonCount {reason, count}
+    zero_result_search_sessions: int = 0
+    price_increase_exposed: int = 0
+
+
+class ChurnMember(SellerAggregateModel):
+    """I-16 members[] 항목(SellerChurnResponse.Member 실측, #197) — 이탈 회원 상세.
+
+    preChurnEvent: 클레임 있으면 "RETURNED(상품불량)" 형식(최신 1건), 없으면 마지막
+    행동 이벤트 타입. 서버가 CHURN_LIST_CAP=50 으로 절단해 내려보낸다(별도 total
+    없음 — 이탈 전수는 cohortSize×churnRate 로 유추)."""
+
+    member_id: int | None = None
+    last_activity_at: str | None = None
+    last_login_at: str | None = None  # 로그인 이벤트가 없으면 null
+    # to_camel("sessions_30d") 은 "sessions30D"(숫자 뒤 접미 대문자화)라 와이어 키
+    # "sessions30d" 와 어긋난다 — 명시 alias 로 고정한다(#197, 테스트로 회귀 방지).
+    sessions_30d: int | None = Field(default=None, alias="sessions30d")
+    pre_churn_event: str | None = None
+
+
+class ChurnResult(SellerAggregateModel):
+    """I-16 GET /internal/seller/{brandId}/churn 응답(SellerChurnResponse 실측 정렬).
+
+    [수정 #197] 구 pre_churn_signals: list[dict] 폐기 — Spring 은 객체를 내려보내
+    ValidationError → degrade 로 새던 버그의 원인(I-14/I-15 #194 와 동일 패턴).
+    churnRate 는 소수(fraction, 0.6=60%, round3 — DTO 주석 명시) — % 변환은 표시
+    계층(tools)만 한다(스키마는 와이어 값 보존). 응답의 brandId/from/to/inactiveDays
+    에코는 extra="allow" 로 흡수한다. 코호트 0명이면 cohortSize=0·churnRate=0.0·
+    빈 signals·빈 members 로 온다(BE short-circuit)."""
+
+    churn_rate: float = 0.0  # fraction (0.0~1.0)
+    cohort_size: int | None = None
+    pre_churn_signals: PreChurnSignals | None = None  # 실측상 항상 옴 — None 은 방어 기본값
+    members: list[ChurnMember] = Field(default_factory=list)
 
 
 # ── I-8 계정/보안 이벤트 집계 (전역, brandId 없음) (§4.4) ──
 
 
 class AccountEventsResult(SellerAggregateModel):
-    """I-8 GET /internal/account-events 응답 — 전역(브랜드 스코프 아님)·admin 소유 🔴."""
+    """I-8 GET /internal/account-events 응답(AccountEventAggregateResponse 실측) —
+    전역(브랜드 스코프 아님)·IP 마스킹·집계 전용, admin 소유 🔴.
 
-    events: list[dict] = Field(default_factory=list)
+    [수정 #197] 구 events 필드 폐기 — Spring 은 rows 를 내려보낸다. extra="allow"
+    탓에 검증이 조용히 통과해 항상 "0건 집계됨"으로 새던 I-14/I-15(#194)와 동일
+    패턴. rows 는 groupBy 별 이형(異形) — eventType|hour: Bucket{key, count} /
+    ip: IpRow{ipMasked, failCount, distinctMembers, nullMemberRatio, isSuspicious,
+    firstSeen, lastSeen}(무차별 대입 신호) — 이라 dict 유지, kv 요약이 소화한다.
+    응답의 groupBy 에코는 서버가 실제 적용한 집계 기준 고지용."""
+
+    group_by: str | None = None
+    rows: list[dict] = Field(default_factory=list)
 
 
 # ── I-9 자사 상품 목록 (§4.5) ──

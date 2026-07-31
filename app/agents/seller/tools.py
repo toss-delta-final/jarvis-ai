@@ -391,37 +391,100 @@ async def get_product_change_logs(
     )
 
 
+# I-16 신호 해석 주의 문구 — 상시 부착(#197, _BEHAVIOR_AUTHORITY_NOTE 와 같은 패턴).
+_CHURN_SIGNAL_RULES_NOTE = (
+    "※ 검색 무결과 세션은 현 수집 스키마상 상시 0(미적재) — '검색 불만 없음'의 "
+    "근거로 쓰지 말 것. 이탈률 분모는 기간 내 자사 상품 상호작용 회원(코호트)이다."
+)
+
+
 @tool
 @_traced_tool("tool.get_churn_cohort")
 async def get_churn_cohort(
-    runtime: ToolRuntime[SellerContext], inactive_days: int | None = None
+    runtime: ToolRuntime[SellerContext],
+    from_date: str,
+    to_date: str,
+    inactive_days: int | None = None,
 ) -> str:
     """이탈 코호트(무활동 고객) 이탈률·이탈 전 신호를 요약한다(I-16, api-spec §4.4).
 
+    코호트 = from~to 기간에 자사 상품과 상호작용한 회원. 이탈 = 그중 최근
+    inactive_days 동안 무활동인 회원.
+
     Args:
+        from_date: 코호트 기간 시작일(YYYY-MM-DD, 필수).
+        to_date: 코호트 기간 종료일(YYYY-MM-DD, 필수).
         inactive_days: 무활동 판정 기준일(선택, 미지정 시 설정 기본값).
     """
     brand_id = runtime.context.brand_id
+    settings = get_settings()
     # 기본값을 호출 시점에 해석한다 — 임포트 시점 고정 방지(Settings 주입 원칙).
     effective_days = (
-        inactive_days if inactive_days is not None else get_settings().seller_churn_inactive_days
+        inactive_days if inactive_days is not None else settings.seller_churn_inactive_days
     )
     try:
-        result = await get_spring_client().get_churn(brand_id, effective_days)
+        result = await get_spring_client().get_churn(
+            brand_id, from_date, to_date, effective_days
+        )
     except SpringUnavailableError as exc:
         return f"Error: 이탈 코호트 데이터를 불러오지 못했습니다({exc})."
+    # 코호트 0명(기간 내 상호작용 회원 없음)은 "이탈률 0%"와 다른 상태 — 구분 표기(#197).
+    if result.cohort_size == 0:
+        return (
+            f"코호트 0명 — 기간 내 자사 상품과 상호작용한 회원이 없어 이탈 판정 대상이 "
+            f"없습니다. (기준: inactiveDays={effective_days}) "
+            f"{_reference_note(from_date, to_date)}"
+        )
+    cohort_note = f"코호트 {result.cohort_size}명 중 " if result.cohort_size is not None else ""
+    # churn_rate 는 fraction(0.6=60%) — ":.1%" 로만 변환한다(#197 — 구 ":.1f}%" 는
+    # 60% 를 "0.6%" 로 왜곡해 워커가 이탈 미미로 오판하던 수치 버그).
+    head = f"{cohort_note}이탈률 {result.churn_rate:.1%} (기준: inactiveDays={effective_days})."
+    s = result.pre_churn_signals
+    if s is None:
+        signals_note = " 이탈 전 신호: 미수신."
+    else:
+        reasons = (
+            ", ".join(
+                f"{r.get('reason', '?')}({r.get('count', '?')}건)" for r in s.return_reasons_top
+            )
+            or "없음"
+        )
+        signals_note = (
+            f" 이탈 전 신호: 취소 {s.cancel_count}건, 반품 사유 상위: {reasons}, "
+            f"가격인상 노출 {s.price_increase_exposed}명, "
+            f"검색 무결과 세션 {s.zero_result_search_sessions}건."
+        )
+    if result.members:
+        shown = result.members[: settings.seller_summary_max_events]
+        member_lines = "; ".join(
+            f"[{m.member_id if m.member_id is not None else '?'}] "
+            f"마지막 활동 {m.last_activity_at or '?'}"
+            f"·최근30일 세션 {m.sessions_30d if m.sessions_30d is not None else '?'}"
+            f"·이탈 전 이벤트 {m.pre_churn_event or '-'}"
+            for m in shown
+        )
+        omitted = len(result.members) - len(shown)
+        omitted_note = f" 외 {omitted}명" if omitted > 0 else ""
+        # members 는 서버 CHURN_LIST_CAP=50 절단본일 수 있다 — 표본=전수 오해석 방지
+        # 고지(I-14 total_note 와 같은 취지, 전수는 코호트×이탈률로 유추 가능).
+        members_note = (
+            f" 이탈 회원 {len(result.members)}명(서버 상한 50 절단본일 수 있음): "
+            f"{member_lines}{omitted_note}."
+        )
+    else:
+        members_note = ""
     return (
-        f"이탈률 {result.churn_rate:.1f}%, 이탈 전 신호 {len(result.pre_churn_signals)}건. "
-        f"(기준: inactiveDays={effective_days})"
+        f"{head}{signals_note}{members_note} "
+        f"{_CHURN_SIGNAL_RULES_NOTE} {_reference_note(from_date, to_date)}"
     )
 
 
 @tool
 @_traced_tool("tool.get_account_events")
 async def get_account_events(
+    from_date: str,
+    to_date: str,
     event_type: str | None = None,
-    from_date: str | None = None,
-    to_date: str | None = None,
     group_by: str | None = None,
 ) -> str:
     """계정/보안 이벤트 집계를 조회해 요약한다.
@@ -430,18 +493,30 @@ async def get_account_events(
     신원 컨텍스트가 필요 없어 runtime 파라미터도 없다.
 
     Args:
-        event_type: 이벤트 종류(선택).
-        from_date: 조회 시작일(선택, YYYY-MM-DD).
-        to_date: 조회 종료일(선택, YYYY-MM-DD).
-        group_by: 집계 그룹 기준(선택).
+        from_date: 조회 시작일(YYYY-MM-DD, 필수).
+        to_date: 조회 종료일(YYYY-MM-DD, 필수).
+        event_type: 이벤트 종류 필터(선택).
+        group_by: eventType(기본, 유형별 합계) | hour(시간대별) | ip(IP별 —
+            무차별 대입 신호: failCount·isSuspicious 등). 이 3종 외 값은 오류다.
     """
     try:
         result = await get_spring_client().get_account_events(
-            event_type, from_date, to_date, group_by
+            from_date, to_date, event_type, group_by
         )
     except SpringUnavailableError as exc:
         return f"Error: 계정 이벤트 데이터를 불러오지 못했습니다({exc})."
-    return f"계정/보안 이벤트 {len(result.events)}건 집계됨(전역)."
+    # [#197] BE 실측 응답(rows — groupBy 별 Bucket/IpRow 이형) 기준으로 요약한다 —
+    # 구 events 필드는 Spring 에 없어 항상 "0건 집계됨"으로 새던 버그의 원인.
+    applied = result.group_by or group_by or "eventType"
+    if not result.rows:
+        return (
+            f"계정/보안 이벤트 0건(전역, groupBy={applied}). "
+            f"{_reference_note(from_date, to_date)}"
+        )
+    return (
+        f"계정/보안 이벤트 {len(result.rows)}건(전역, groupBy={applied}): "
+        f"{_summarize_events(result.rows)}. {_reference_note(from_date, to_date)}"
+    )
 
 
 @tool
