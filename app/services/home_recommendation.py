@@ -68,6 +68,33 @@ class UpstreamTimeout(HTTPException):
         )
 
 
+def _swallow_abandoned(task: "asyncio.Task") -> None:
+    """포기한 스토어 태스크의 늦은 예외를 회수한다 — 안 하면 'exception was never retrieved' 경고."""
+    if task.cancelled():
+        return
+    task.exception()
+
+
+async def _call_store(fn, /, *, timeout: float, **kwargs):
+    """스토어 호출을 별도 스레드에서 돌리되 **벽시계를 실제로 묶는다**.
+
+    `asyncio.wait_for(to_thread(...))` 는 이 목적에 **틀린 도구다** — 동기 psycopg 쿼리가 이미
+    스레드에서 도는 중이면 취소가 불가능해, wait_for 는 취소 완료를 기다리느라 **스레드가 끝날
+    때까지 블록한 뒤에야** TimeoutError 를 던진다(이 함정을 회귀 테스트가 잡았다 — 예산 0.3s 에
+    벽시계 1.15s). `asyncio.wait(timeout=...)` 는 기다림만 포기하고 즉시 돌아온다.
+
+    포기된 스레드는 계속 돈다 — 그 쿼리는 DB 쪽 `statement_timeout`(pg_artifact_store)이 잘라
+    커넥션을 회수한다. 두 층의 역할 분담이 이것이다: 여기는 **요청의 벽시계**, DB 상한은
+    **커넥션 점유**.
+    """
+    task = asyncio.create_task(asyncio.to_thread(fn, **kwargs))
+    done, _ = await asyncio.wait({task}, timeout=timeout)
+    if task in done:
+        return task.result()  # 원 예외(코드 버그 포함)는 그대로 전파된다
+    task.add_done_callback(_swallow_abandoned)
+    raise TimeoutError
+
+
 # reason 문장 틀. 태그가 뒤에 조사를 요구하지 않도록 **`에` 형태로 통일**한다 — 한국어 조사는
 # 받침에 따라 을/를·이/가가 갈리는데 태그는 자유 텍스트라 형태를 미리 알 수 없다.
 _CART_FRAME = "장바구니 상품과 함께 {tag}에 쓰기 좋아요"
@@ -308,27 +335,37 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
     # 이벤트 루프가 통째로 막히고, 같은 워커의 채팅 SSE 스트림까지 함께 지연된다. 같은 스토어를
     # 쓰는 `search_service`·`category_mapping` 이 PR #42 리뷰 이후 지키는 컨벤션이다.
     # 유닛 테스트는 인메모리 스토어를 주입해 이 블로킹을 재현하지 못하므로 규약으로 지킨다.
-    # 스토어 호출마다 `wait_for` 상한을 건다 — pg 지연·락이 요청을 I-22 예산 밖까지 붙들면
+    # 스토어 호출마다 벽시계 상한을 건다(_call_store) — pg 지연·락이 요청을 I-22 예산 밖까지 붙들면
     # 계약의 504(UPSTREAM_TIMEOUT)로 끝나야 한다(§3.7 실패 응답표). to_thread 취소는 밑의 쿼리
-    # 스레드를 죽이지 못하므로 DB 쪽도 statement_timeout 으로 이중 방어한다(top_k_by_vector).
+    # 스레드를 죽이지 못하므로 DB 쪽도 statement_timeout 으로 이중 방어한다(pg_artifact_store).
+    #
+    # 상한은 **호출별이 아니라 잔여 예산과의 min** 이다 — 호출이 3번이라 호출별 고정 상한만으로는
+    # 최악 2s×3=6s 로 "응답 3s"(§3.7)를 넘는다(PR 리뷰). 예산이 바닥나면 랭킹 경로는 504 다.
+    #
+    # 예외 처분: TimeoutError=504, 그 외 Exception=503. 503 으로 뭉치면 코드 버그(TypeError 등)가
+    # "일시 장애"로 둔갑하므로 **traceback 을 로컬 로그에 남긴다**(logger.exception —
+    # errors.py 의 500 처리와 같은 관례). 와이어·trace 로는 코드만 나간다(§3.7 [HARD] 불변).
+    deadline = started + settings.home_reco_budget_s
+
+    def _remaining() -> float:
+        return deadline - time.perf_counter()
+
     try:
         store = get_catalog_store()
-        query_vec = await asyncio.wait_for(
-            asyncio.to_thread(
-                build_query_vector,
-                cart_ids=signals.cart_product_ids,
-                viewed_ids=signals.recently_viewed_product_ids,
-                store=store,
-                settings=settings,
-                profile_vec=profile_vec,
-            ),
-            timeout=settings.home_reco_store_timeout_s,
+        query_vec = await _call_store(
+            build_query_vector,
+            timeout=min(settings.home_reco_store_timeout_s, max(_remaining(), 0.001)),
+            cart_ids=signals.cart_product_ids,
+            viewed_ids=signals.recently_viewed_product_ids,
+            store=store,
+            settings=settings,
+            profile_vec=profile_vec,
         )
     except TimeoutError as exc:
         logger.warning("home_reco_catalog_timeout")
         raise UpstreamTimeout from exc
     except Exception as exc:
-        logger.warning("home_reco_catalog_unavailable")
+        logger.exception("home_reco_catalog_unavailable")
         raise UpstreamUnavailable from exc
 
     # 1) 개인화 근거가 없으면 NO_PROFILE — 신규 회원이거나 시그널이 비었거나, 시그널 상품이 아직
@@ -346,23 +383,24 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
     exclude = set(signals.recent_purchased_product_ids)  # 가중치가 아니라 제외 필터(§3.7)
     # 필요한 만큼만 가져온다 — overfetch 목표와 부족 판정선 중 큰 쪽. 전량을 끌어오면 예산을 넘긴다.
     want = _overfetch_size(request.limit, settings)
+    if _remaining() <= 0:
+        logger.warning("home_reco_catalog_timeout")
+        raise UpstreamTimeout
     try:
-        ranked = await asyncio.wait_for(
-            asyncio.to_thread(
-                rank_candidates,
-                query_vec=query_vec,
-                store=store,
-                exclude=exclude,
-                settings=settings,
-                k=max(want, settings.home_reco_min_candidates),
-            ),
-            timeout=settings.home_reco_store_timeout_s,
+        ranked = await _call_store(
+            rank_candidates,
+            timeout=min(settings.home_reco_store_timeout_s, max(_remaining(), 0.001)),
+            query_vec=query_vec,
+            store=store,
+            exclude=exclude,
+            settings=settings,
+            k=max(want, settings.home_reco_min_candidates),
         )
     except TimeoutError as exc:
         logger.warning("home_reco_catalog_timeout")
         raise UpstreamTimeout from exc
     except Exception as exc:
-        logger.warning("home_reco_catalog_unavailable")
+        logger.exception("home_reco_catalog_unavailable")
         raise UpstreamUnavailable from exc
 
     # 2) 후보가 부족하면 랭킹이 무의미하다 — INSUFFICIENT_CANDIDATES (역시 200)
@@ -386,23 +424,29 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
     # reason 조회 순단으로 그것까지 버리면 Spring 이 멀쩡한 결과 대신 인기상품 폴백(AI_ERROR)을
     # 쓰게 된다. `reason` 은 계약상 nullable 이고 위 프로필 조회도 같은 이유로 degrade 하므로,
     # 여기서도 reason 만 비우고 개인화 결과는 그대로 내보내는 쪽이 "홈 렌더 비차단"(§4.11)에 맞다.
-    try:
-        reasons = await asyncio.wait_for(
-            asyncio.to_thread(
+    if (reason_budget := _remaining()) <= 0:
+        # 랭킹이 예산을 다 썼다 — reason 은 부가 정보라 skip 이 맞고, 확정된 랭킹은 그대로 나간다.
+        logger.warning("home_reco_reason_skipped_budget")
+        reasons = {}
+    else:
+        try:
+            reasons = await _call_store(
                 build_reasons,
+                timeout=min(settings.home_reco_store_timeout_s, reason_budget),
                 product_ids=top,
                 store=store,
                 cart_ids=signals.cart_product_ids,
                 viewed_ids=signals.recently_viewed_product_ids,
                 profile_markdown=profile_markdown,
                 settings=settings,
-            ),
-            timeout=settings.home_reco_store_timeout_s,
-        )
-    except Exception:
-        # 예외 문자열은 업스트림 상태를 유출할 수 있어 클래스명도 남기지 않는다(#141 규약).
-        logger.warning("home_reco_reason_unavailable")
-        reasons = {}
+            )
+        except TimeoutError:
+            logger.warning("home_reco_reason_timeout")
+            reasons = {}
+        except Exception:
+            # 코드 버그가 degrade 에 묻히지 않게 traceback 을 로컬 로그에 남긴다(랭킹 경로와 동일).
+            logger.exception("home_reco_reason_unavailable")
+            reasons = {}
     return _respond(
         "PERSONALIZED",
         top,

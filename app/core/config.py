@@ -242,10 +242,14 @@ class Settings(BaseSettings):
     home_reco_max_items: int = Field(default=HOME_RECO_LIMIT_MAX * 2, ge=HOME_RECO_LIMIT_MAX)
     # 이 수 미만이면 랭킹이 무의미하다고 보고 INSUFFICIENT_CANDIDATES 로 답한다(200).
     home_reco_min_candidates: int = Field(default=5, gt=0)
-    # 카탈로그 스토어 호출(질의 벡터 조립·top-k·reason 재료 조회) 상한 — I-22 예산(연결 2s/
-    # 응답 3s, §3.7) 안에서 pg-catalog 지연·락이 요청을 무한정 붙들지 않게 한다. 초과 시
-    # 랭킹 경로는 504 UPSTREAM_TIMEOUT(계약 실패표), reason 경로는 null degrade 다.
+    # 카탈로그 스토어 **호출 1회** 상한 — pg-catalog 지연·락이 한 단계를 무한정 붙들지 않게 한다.
+    # 초과 시 랭킹 경로는 504 UPSTREAM_TIMEOUT(계약 실패표), reason 경로는 null degrade 다.
     home_reco_store_timeout_s: float = Field(default=2.0, gt=0.0)
+    # 요청 **전체** 예산 — 스토어 호출이 3번이라 호출별 상한만으로는 최악 2s×3=6s 로 §3.7 의
+    # "응답 3s" 를 넘는다(PR #213 리뷰). 각 호출은 min(호출 상한, 남은 예산)으로 기다리고,
+    # 예산이 바닥나면 랭킹 경로는 504·reason 경로는 skip 이다. 3s 계약에서 직렬화·네트워크
+    # 여유 0.5s 를 뺀 값이 기본이다.
+    home_reco_budget_s: float = Field(default=2.5, gt=0.0)
     # 프로필 매칭 태그 길이 하한(build_reasons 3순위) — 부분 문자열 매칭이라 1자 태그는
     # "방"⊂"주방" 류 오탐의 주범이다(PR #213 리뷰). 2자 이상이면 포함이 대체로 의미 연관.
     home_reco_profile_tag_min_chars: int = Field(default=2, ge=1)

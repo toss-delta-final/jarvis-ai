@@ -640,6 +640,54 @@ def test_catalog_hang_is_504_not_indefinite_wait(
     assert r.json()["error"]["code"] == "UPSTREAM_TIMEOUT"
 
 
+def test_total_wall_clock_is_bounded_by_budget_not_per_call_sum(
+    monkeypatch: pytest.MonkeyPatch, store: CatalogArtifactStore
+) -> None:
+    """호출별 상한의 합(3×)이 아니라 **요청 전체 예산**이 벽시계를 지배한다(§3.7 응답 3s).
+
+    각 단계가 상한 직전까지 걸리면 고정 상한 방식은 최대 3배까지 늘어난다(PR 리뷰) — 잔여 예산
+    방식에서는 앞 단계가 먹은 시간이 뒷 단계 상한에서 빠져 총합이 예산 근처에서 끊긴다.
+    """
+    import time as _time
+
+    tuned = get_settings().model_copy(
+        update={"home_reco_store_timeout_s": 10.0, "home_reco_budget_s": 0.3}
+    )
+    monkeypatch.setattr(svc, "get_settings", lambda: tuned)
+
+    orig_get_many = store.get_many
+
+    def slow_get_many(product_ids):
+        _time.sleep(0.15)  # 1단계가 예산 절반을 먹는다
+        return orig_get_many(product_ids)
+
+    def slow_top_k(query_vec, *, k, exclude=None):
+        _time.sleep(1.0)  # 잔여 예산(~0.15s)보다 길다 — 고정 상한(10s)이면 통과했을 시간
+        return []
+
+    monkeypatch.setattr(store, "get_many", slow_get_many)
+    monkeypatch.setattr(store, "top_k_by_vector", slow_top_k)
+
+    # HTTP(TestClient) 대신 핸들러를 직접 잰다 — TestClient 는 요청별 portal 을 닫으며 포기된
+    # 스토어 스레드까지 join 해서(운영 uvicorn 에는 없는 동작) 응답 시점이 가려진다.
+    import asyncio as _asyncio
+
+    from app.schemas.recommendations import HomeRecommendationRequest
+
+    req = HomeRecommendationRequest.model_validate(_body())
+
+    async def run() -> float:
+        t = _time.perf_counter()
+        try:
+            await svc.rank_home(req)
+        except svc.UpstreamTimeout:
+            return _time.perf_counter() - t
+        pytest.fail("예산 초과인데 504 가 나오지 않았다")
+
+    elapsed = _asyncio.run(run())
+    assert elapsed < 1.0, f"예산 0.3s 인데 {elapsed:.2f}s — 잔여 예산이 반영되지 않았다"
+
+
 def test_reason_timeout_degrades_not_504(
     monkeypatch: pytest.MonkeyPatch, store: CatalogArtifactStore
 ) -> None:
