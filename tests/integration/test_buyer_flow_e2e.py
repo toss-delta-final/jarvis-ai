@@ -6,9 +6,27 @@ AI↔Spring(stub)을 붙여 api-spec §3.1(SSE)·§3.3(경로 B)·§4.6(I-1)·§
 
 from __future__ import annotations
 
-from tests.integration.conftest import auth_header, event_types, first_of, parse_sse
+import jwt
+import pytest
+
+from tests.integration.conftest import (
+    auth_header,
+    event_types,
+    first_of,
+    parse_sse,
+    seller_token,
+)
 
 BUYER_MESSAGE = "유럽 여행 가는데 기내 반입 되는 파우치 추천해줘"
+
+
+def _buyer_session_header(subject: str, sub_type: str, session_id: str) -> dict[str, str]:
+    token = jwt.encode(
+        {"sub": subject, "sub_type": sub_type, "sessionId": session_id},
+        "dev-only-not-a-secret-0123456789",
+        algorithm="HS256",
+    )
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _chat(
@@ -24,6 +42,231 @@ def _chat(
         json={"sessionId": session, "threadId": thread, "message": message},
         headers=headers or {},
     )
+
+
+def _select_order_status(llm) -> None:
+    llm._decompose = {
+        "intent": "order_status",
+        "reply": "",
+        "case": 2,
+        "semanticQuery": "",
+        "categoryQueries": [],
+        "filters": {},
+    }
+
+
+def _order_status_events(client, llm, *, message="내 주문 어디까지 왔어?", headers=None):
+    _select_order_status(llm)
+    response = _chat(client, message, headers=headers)
+    assert response.status_code == 200
+    return parse_sse(response.text)
+
+
+def _token_text(events: list[dict]) -> str:
+    return "".join(event["data"].get("text", "") for event in events if event["type"] == "token")
+
+
+def _assert_order_status_terminal_contract(events: list[dict]) -> None:
+    types = event_types(events)
+    assert types.count("token") == 1
+    assert types.count("done") == 1
+    assert events[-1] == {"type": "done", "data": {"finishReason": "stop"}}
+    assert {"products.ready", "action", "error"}.isdisjoint(types)
+
+
+def _status_order(*, order_id: int = 81001, ordered_at: str = "2026-07-29T15:30:00Z"):
+    return {
+        "orderId": order_id,
+        "orderedAt": ordered_at,
+        "representativeStatus": "배송중",
+        "items": [
+            {"productName": "여행용 파우치", "status": "SHIPPING", "statusText": "배송중"},
+            {"productName": "세면도구 케이스", "status": "ORDERED", "statusText": "주문 완료"},
+            {"productName": "네임 태그", "status": "DELIVERED", "statusText": "배송 완료"},
+            {"productName": "압축 백", "status": "PENDING", "statusText": "결제 대기"},
+            {"productName": "신발 주머니", "status": "CONFIRMED", "statusText": "구매 확정"},
+        ],
+    }
+
+
+def test_order_status_stub_route_precedes_generic_member_orders(spring_http, spring):
+    spring.order_status_orders = [_status_order()]
+    spring.orders = [{"orderId": 99999, "items": [{"productId": 101}]}]
+
+    response = spring_http.get(
+        "/internal/members/42/orders/status",
+        params={"recent": 3},
+        headers={"X-Internal-Token": "e2e-internal-token"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["orders"] == spring.order_status_orders
+    assert response.json()["data"]["orders"] != spring.orders
+    assert spring.requests[-1]["path"] == "/internal/members/42/orders/status"
+    assert spring.requests[-1]["query"] == {"recent": "3"}
+
+
+def test_order_status_success_uses_i4_contract_and_bypasses_recommendation(client, spring, llm):
+    """Authenticated I-4 renders bounded deterministic text and invokes no other buyer backend."""
+    spring.order_status_orders = [_status_order()]
+    # If the generic I-19 prefix wins, this incompatible purchase payload exposes the regression.
+    spring.orders = [{"orderId": 99999, "items": [{"productId": 101}]}]
+
+    events = _order_status_events(
+        client,
+        llm,
+        message="내 주문 999번 말고 JWT 회원 주문 어디까지 왔어?",
+        headers=auth_header("42"),
+    )
+
+    _assert_order_status_terminal_contract(events)
+    text = _token_text(events)
+    assert "81001" in text
+    assert "7월 30일" in text
+    assert "여행용 파우치" in text
+    assert "배송중" in text
+    assert "외 2개" in text
+    assert "압축 백" not in text
+    assert "99999" not in text
+
+    request = spring.requests_to("/internal/members/42/orders/status")
+    assert len(request) == 1
+    assert request[0]["method"] == "GET"
+    assert request[0]["path"] == "/internal/members/42/orders/status"
+    assert request[0]["query"] == {"recent": "3"}
+    assert request[0]["body"] is None
+    assert request[0]["headers"]["x-internal-token"] == "e2e-internal-token"
+    assert spring.requests_to("/internal/products/search") == []
+    assert spring.requests_to("/internal/recommendations") == []
+    assert not any(row["path"] == "/internal/members/42/orders" for row in spring.requests)
+    assert [kind for kind, _tier in llm.calls] == ["decompose"]
+
+
+def test_order_status_empty_is_not_degraded(client, spring, llm):
+    spring.order_status_orders = []
+
+    events = _order_status_events(client, llm, headers=auth_header())
+
+    _assert_order_status_terminal_contract(events)
+    assert "최근 주문 내역이 없어요" in _token_text(events)
+    assert "잠시 후" not in _token_text(events)
+
+
+def test_order_status_guest_is_blocked_before_spring(client, spring, llm):
+    events = _order_status_events(client, llm)
+
+    _assert_order_status_terminal_contract(events)
+    assert "로그인" in _token_text(events)
+    assert spring.requests_to("/internal/members/") == []
+
+
+def test_order_status_uses_jwt_subject_not_message_number(client, spring, llm):
+    spring.order_status_orders = [_status_order()]
+
+    events = _order_status_events(
+        client,
+        llm,
+        message="회원 777777의 배송 상태를 보여줘",
+        headers=auth_header("42"),
+    )
+
+    _assert_order_status_terminal_contract(events)
+    member_requests = spring.requests_to("/internal/members/")
+    assert [row["path"] for row in member_requests] == ["/internal/members/42/orders/status"]
+    assert "777777" not in _token_text(events)
+
+
+def test_order_status_seller_is_blocked_before_spring(client, spring, llm):
+    response = _chat(
+        client,
+        "내 주문 어디까지 왔어?",
+        headers={"Authorization": f"Bearer {seller_token()}"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "FORBIDDEN"
+    assert spring.requests_to("/internal/members/") == []
+    assert llm.calls == []
+
+
+@pytest.mark.parametrize("invalid_subject", ["0", "-1", "abc", " 42", "９"])
+def test_order_status_invalid_member_identity_is_blocked_before_spring(
+    client, spring, llm, invalid_subject
+):
+    events = _order_status_events(client, llm, headers=auth_header(invalid_subject))
+
+    _assert_order_status_terminal_contract(events)
+    assert "로그인" in _token_text(events) or "인증" in _token_text(events)
+    assert spring.requests_to("/internal/members/") == []
+
+
+@pytest.mark.parametrize("status_code", [404, 503])
+def test_order_status_http_failure_degrades_without_error_event(client, spring, llm, status_code):
+    spring.fail_order_status = status_code
+
+    events = _order_status_events(client, llm, headers=auth_header())
+
+    _assert_order_status_terminal_contract(events)
+    assert "잠시 후" in _token_text(events)
+    assert "최근 주문 내역이 없어요" not in _token_text(events)
+
+
+def test_order_status_transport_failure_degrades_without_error_event(client, spring, llm):
+    import httpx
+
+    spring.order_status_exception = httpx.ReadTimeout("injected timeout")
+
+    events = _order_status_events(client, llm, headers=auth_header())
+
+    _assert_order_status_terminal_contract(events)
+    assert "잠시 후" in _token_text(events)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"success": 1, "data": {"orders": []}},
+        {"success": True},
+        {"success": True, "data": {}},
+        {"success": True, "data": {"orders": None}},
+        {"success": True, "data": {"orders": "not-a-list"}},
+        {
+            "success": True,
+            "data": {
+                "orders": [
+                    {
+                        **_status_order(),
+                        "orderId": "81001",
+                    }
+                ]
+            },
+        },
+    ],
+)
+def test_order_status_malformed_envelope_or_schema_degrades(client, spring, llm, payload):
+    spring.order_status_payload = payload
+
+    events = _order_status_events(client, llm, headers=auth_header())
+
+    _assert_order_status_terminal_contract(events)
+    text = _token_text(events)
+    assert "잠시 후" in text
+    assert "최근 주문 내역이 없어요" not in text
+
+
+def test_order_status_naive_timestamp_degrades_entire_payload(client, spring, llm):
+    spring.order_status_orders = [
+        _status_order(),
+        _status_order(order_id=81002, ordered_at="2026-07-29T15:30:00"),
+    ]
+
+    events = _order_status_events(client, llm, headers=auth_header())
+
+    _assert_order_status_terminal_contract(events)
+    text = _token_text(events)
+    assert "잠시 후" in text
+    assert "81001" not in text
+    assert "81002" not in text
 
 
 def test_buyer_recommend_flow_end_to_end(client, spring, llm) -> None:
@@ -246,3 +489,136 @@ def test_cart_view_flow_reads_spring(client, spring, llm) -> None:
 
     text = "".join(e["data"].get("text", "") for e in events if e["type"] == "token")
     assert "여행용 방수 파우치 L" in text
+
+
+async def test_guest_session_d6_expires_all_threads_then_claim_keeps_context(
+    client, spring, llm, monkeypatch
+) -> None:
+    """D6는 탭이 아니라 세션 전체에 적용되고, 재구축 후 claim은 context를 복사하지 않는다."""
+    from app.agents.buyer.cart.state import get_cart_store
+    from app.agents.buyer.graph import get_thread_store
+    from app.agents.buyer.recommendation.state import get_revert_store
+    from app.agents.buyer.session_state import context_thread_key
+    from app.core import session_context
+    from app.core.conversation import conversation_key, get_conversation_store
+    from app.core.session_context import SessionContextRepository
+    from app.core.session_lifecycle import SessionLifecycleCoordinator
+    from app.schemas.spring import ProductSearchFilters
+
+    now = [0.0]
+    repo = SessionContextRepository(clock=lambda: now[0])
+    monkeypatch.setattr(session_context, "_default_repository", repo)
+    guest_headers = _buyer_session_header("G1", "guest", "S1")
+    member_headers = _buyer_session_header("1", "member", "S1")
+
+    for thread_id in ("T1", "T2", "T3"):
+        response = _chat(client, session="S1", thread=thread_id, headers=guest_headers)
+        assert response.status_code == 200
+        assert parse_sse(response.text)[-1]["type"] == "done"
+
+    original = await repo.get_context("S1")
+    assert original is not None
+    assert await repo.get_threads(original.context_id) == ["T1", "T2", "T3"]
+    keys = [context_thread_key(original.context_id, thread_id) for thread_id in ("T1", "T2", "T3")]
+    filter_store = await get_thread_store()
+    cart_store = await get_cart_store()
+    revert_store = await get_revert_store()
+    await revert_store.add(keys[1], {"여행용품"})
+    assert all([await filter_store.get(key) is not None for key in keys])
+    assert all([await cart_store.get_last_reco(key) for key in keys])
+    assert await revert_store.get(keys[1]) == {"여행용품"}
+    conversation_store = await get_conversation_store()
+    guest_conversation_key = conversation_key("G1", "S1")
+    pre_d6_turns = await conversation_store.turns_for(guest_conversation_key)
+    pre_d6_transcript = [
+        (turn.turn_id, turn.user_text, turn.assistant_text, turn.status) for turn in pre_d6_turns
+    ]
+    assert len(pre_d6_transcript) == 3
+    assert all(
+        user_text and assistant_text for _, user_text, assistant_text, _ in pre_d6_transcript
+    )
+
+    async def assert_pre_d6_transcript_preserved() -> None:
+        for turn_id, user_text, assistant_text, status in pre_d6_transcript:
+            current = await conversation_store.get_turn(turn_id)
+            assert current is not None
+            assert (current.user_text, current.assistant_text, current.status) == (
+                user_text,
+                assistant_text,
+                status,
+            )
+
+    now[0] = 500.0
+    touched = _chat(client, "T1만 다시 사용", session="S1", thread="T1", headers=guest_headers)
+    assert touched.status_code == 200
+    now[0] = 1_099.0
+    assert await repo.claim_expired_contexts(600, 30, 1) == []
+
+    now[0] = 1_101.0
+    [idle_claim] = await repo.claim_expired_contexts(600, 30, 1)
+    outcome = await SessionLifecycleCoordinator(repo).process_idle_transient(idle_claim)
+    assert outcome.status == "completed"
+    expired = await repo.get_context("S1")
+    assert expired is not None and expired.state == "idle_expired"
+    assert expired.context_id == original.context_id
+    assert await repo.get_threads(original.context_id) == []
+    assert all([await filter_store.get(key) is None for key in keys])
+    assert all([await cart_store.get_last_reco(key) == [] for key in keys])
+    assert await revert_store.get(keys[1]) == set()
+    await assert_pre_d6_transcript_preserved()
+
+    now[0] = 1_102.0
+    for thread_id in ("T1", "T2", "T3"):
+        rebuilt = _chat(client, session="S1", thread=thread_id, headers=guest_headers)
+        assert rebuilt.status_code == 200
+    rebuilt_context = await repo.get_context("S1")
+    assert rebuilt_context is not None
+    assert rebuilt_context.context_id == original.context_id
+    await assert_pre_d6_transcript_preserved()
+
+    filter_sentinel = ProductSearchFilters(
+        category="CLAIM_FILTER_SENTINEL",
+        keyword="CLAIM_KEYWORD_SENTINEL",
+    )
+    cart_sentinel = [(9_876_543_210, "CLAIM_CART_SENTINEL")]
+    revert_sentinel = {"CLAIM_REVERT_SENTINEL"}
+    await filter_store.put(keys[0], filter_sentinel)
+    await cart_store.set_last_reco(keys[1], cart_sentinel)
+    await revert_store.add(keys[2], revert_sentinel)
+
+    claim = client.post(
+        "/events/session-claim",
+        json={"sessionId": "S1", "guestId": "G1", "userId": 1},
+        headers={"X-Internal-Token": "e2e-internal-token"},
+    )
+    assert claim.status_code == 202
+    assert claim.json() == {"status": "accepted"}
+    claimed_context = await repo.get_context("S1")
+    assert claimed_context is not None
+    assert claimed_context.context_id == original.context_id
+    assert claimed_context.owner_type == "member"
+    assert claimed_context.owner_id == "1"
+    assert await filter_store.get(keys[0]) == filter_sentinel
+    assert await cart_store.get_last_reco(keys[1]) == cart_sentinel
+    assert await revert_store.get(keys[2]) == revert_sentinel
+    await assert_pre_d6_transcript_preserved()
+
+    for thread_id in ("T1", "T2", "T3"):
+        continued = _chat(client, session="S1", thread=thread_id, headers=member_headers)
+        assert continued.status_code == 200
+        assert (await repo.get_context("S1")).context_id == original.context_id
+
+    threads_before_rejected_guest = await repo.get_threads(original.context_id)
+    context_before_rejected_guest = await repo.get_context("S1")
+    guest_turn_count_before_rejected_guest = len(
+        await conversation_store.turns_for(guest_conversation_key)
+    )
+    old_guest = _chat(client, "옛 게스트 재접속", session="S1", thread="T4", headers=guest_headers)
+    assert old_guest.status_code == 403
+    assert old_guest.json()["error"]["code"] == "SESSION_FORBIDDEN"
+    assert await repo.get_threads(original.context_id) == threads_before_rejected_guest
+    assert await repo.get_context("S1") == context_before_rejected_guest
+    assert (
+        len(await conversation_store.turns_for(guest_conversation_key))
+        == guest_turn_count_before_rejected_guest
+    )

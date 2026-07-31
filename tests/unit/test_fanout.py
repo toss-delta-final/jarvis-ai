@@ -9,10 +9,14 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from app.agents.buyer.graph import run_buyer_turn
+from app.agents.buyer.graph import run_buyer_turn as _production_run_buyer_turn
 from app.agents.buyer.recommendation.graph import _merge_fanout_results
 from app.agents.buyer.recommendation.state import build_condition_chips
+from app.api.deps import buyer_owner_id
+from app.core import session_context
 from app.core.auth import Identity
+from app.core.config import get_settings
+from app.core.session_context import BuyerSessionInput
 from app.schemas.spring import ProductSearchFilters, ProductSearchResult, SpringProduct
 from app.services.spring_client import SpringUnavailableError
 from tests._fakes import FakeLLM
@@ -77,6 +81,35 @@ def _req(message: str = "유럽여행 준비물 추천", session_id: str = "s1",
 
 def _member() -> Identity:
     return Identity(user_id="u1", is_guest=False, seller_id=None, subject="u1")
+
+
+async def _committed_observer(request, identity, observer=None):  # noqa: ANN001
+    context = await session_context._default_repository.touch(
+        BuyerSessionInput(
+            request.session_id,
+            request.thread_id,
+            "guest" if identity.is_guest else "member",
+            buyer_owner_id(identity, get_settings()),
+        )
+    )
+    if observer is None:
+        observer = SimpleNamespace(
+            request_id="unit-request",
+            record_model_call=lambda *_: None,
+        )
+    observer.context_id = context.context_id
+    return observer
+
+
+async def run_buyer_turn(request, identity, **kwargs):  # noqa: ANN001
+    observer = await _committed_observer(request, identity, kwargs.pop("observer", None))
+    async for frame in _production_run_buyer_turn(
+        request,
+        identity,
+        observer=observer,
+        **kwargs,
+    ):
+        yield frame
 
 
 class _RecordingPush:
@@ -584,3 +617,238 @@ def test_condition_chips_empty_categories_no_fallback() -> None:
     # 미지정(None)은 기존대로 filters.category 파생 유지
     chips2 = build_condition_chips(ProductSearchFilters(category="가전 > TV"))
     assert any(c.field == "category" and c.value == "가전 > TV" for c in chips2)
+
+
+# ── #198 목적·상황형 발화의 상품 전개 배선 (DESIGN-NEEDS-EXPANSION-198 §4·§6·§7) ──
+
+
+def _expansion_probe():
+    """전개 호출 여부를 기록하는 주입형 전개기 — 호출되면 고정 상품 목록을 낸다."""
+    seen: list[str] = []
+
+    async def _expand(utterance, **_):
+        seen.append(utterance)
+        return ["디퓨저", "식기 세트", "핸드워시 세트"]
+
+    return seen, _expand
+
+
+async def _run_recommend(message: str, decompose: dict, *, expand=None, **kw) -> list:
+    """단일 턴을 돌리고 각 검색 leg 의 category 를 반환한다."""
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters.category)
+        return _res(101)
+
+    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast"):
+        # leg query 를 그대로 canonical 처럼 흘려 전개 결과가 검색까지 도달하는지 본다.
+        return [(q.query, q.query) for q in category_queries if q.query]
+
+    await _collect(
+        run_buyer_turn(
+            _req(message=message),
+            _member(),
+            llm=FakeLLM(decompose=decompose),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_map,
+            expand_needs=expand,
+            **kw,
+        )
+    )
+    return calls
+
+
+async def test_purpose_utterance_is_expanded_into_products() -> None:
+    """[#198] 목적형 발화가 전개되어 **구체 상품**이 검색 leg 이 된다 — 이 이슈의 목표.
+
+    종전: `['집들이 선물']` 이 그대로 leg 이 되어 매핑 불가(거리컷 드롭) → 카테고리 없이 검색.
+    """
+    seen, expand = _expansion_probe()
+    calls = await _run_recommend(
+        "집들이 선물로 뭐 사갈까",
+        {
+            "intent": "recommend",
+            "reply": "",
+            "case": 3,
+            "filters": {},
+            "categoryQueries": [{"category": None, "query": "집들이 선물"}],
+        },
+        expand=expand,
+    )
+    assert seen == ["집들이 선물로 뭐 사갈까"]  # 발화가 전개기로 전달됨
+    assert calls == ["디퓨저", "식기 세트", "핸드워시 세트"]  # 전개 결과가 fan-out 검색까지 도달
+
+
+async def test_normal_product_utterance_is_not_expanded() -> None:
+    """단일 상품 질의는 전개하지 않는다 — 불필요한 LLM 호출·엉뚱한 확장 방지(§4 정밀도 우선)."""
+    seen, expand = _expansion_probe()
+    calls = await _run_recommend(
+        "청바지",
+        {
+            "intent": "recommend",
+            "reply": "",
+            "case": 1,
+            "filters": {},
+            "categoryQueries": [{"category": None, "query": "청바지"}],
+        },
+        expand=expand,
+    )
+    assert seen == []  # 전개 미호출
+    assert calls == ["청바지"]
+
+
+async def test_refine_turn_carries_prior_and_is_never_expanded() -> None:
+    """[회귀 방지] 리파인 턴("더 저렴한 걸로")은 **전개하지 않고** 직전 카테고리를 승계한다.
+
+    D1(`no_legs`) 조건과 멀티턴 승계 조건이 겹친다 — 둘 다 "이번 턴 카테고리 신호 없음"이다.
+    전개를 승계 가드보다 먼저 놓으면 리파인 턴이 엉뚱한 상품 목록으로 바뀌어 직전 맥락이 날아간다
+    (PR #73 #12/#19 가 세운 승계 규약이 반대 방향으로 깨진다). 전개는 **승계 대상이 아닐 때만**.
+    """
+    seen: list[str] = []
+
+    async def _expand(utterance, **_):
+        seen.append(utterance)
+        return ["엉뚱한상품A", "엉뚱한상품B"]
+
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters.category)
+        return _res(101)
+
+    d1 = {
+        "intent": "recommend",
+        "reply": "",
+        "case": 2,
+        "filters": {},
+        "categoryQueries": [{"category": "여행 > 여행용품", "query": "파우치"}],
+    }
+    d2 = {"intent": "recommend", "reply": "", "case": 2, "filters": {}}  # 신호 없음
+    for msg, d in (("여행 파우치", d1), ("더 저렴한 걸로", d2)):
+        await _collect(
+            run_buyer_turn(
+                _req(thread_id="tx", message=msg),
+                _member(),
+                llm=FakeLLM(decompose=d),
+                search=_search,
+                push_fn=_RecordingPush(),
+                map_categories=_garbage_mapper(),
+                expand_needs=_expand,
+            )
+        )
+    assert seen == []  # 리파인 턴에 전개 호출이 없어야 한다
+    assert calls[-1] == "여행 > 여행용품"  # 직전 카테고리 승계 유지
+
+
+async def test_expansion_failure_keeps_original_legs() -> None:
+    """전개가 실패하면(빈 리스트) `decompose` 원본 legs 를 그대로 쓴다 — 후퇴 없음(§7).
+
+    전개는 **개선 시도**이며, 실패가 기존 경로를 악화시켜서는 안 된다. 최악이 "지금과 동일".
+    """
+
+    async def _expand_fail(utterance, **_):
+        return []
+
+    calls = await _run_recommend(
+        "집들이 선물로 뭐 사갈까",
+        {
+            "intent": "recommend",
+            "reply": "",
+            "case": 3,
+            "filters": {},
+            "categoryQueries": [{"category": None, "query": "집들이 선물"}],
+        },
+        expand=_expand_fail,
+    )
+    assert calls == ["집들이 선물"]  # 원본 leg 유지(종전 동작)
+
+
+async def test_category_agnostic_case2_is_never_expanded() -> None:
+    """[PR #203 리뷰] case 2(구조화 조건만) 발화는 전개하지 않는다 — 무필터 계약 보존(#22·#162).
+
+    `"5만원 이하 아무거나"` 도 `categoryQueries` 가 비어 D1 조건에 걸린다. 전개 LLM 은 "최소 2개"를
+    강제하므로 목적이 없는 입력에도 상품명을 지어내고, 그것이 legs 를 교체하면 `filters.category` 가
+    채워져 "카테고리 무관·가격만 필터"라는 사용자 의도가 파괴된다. #162 가 개선할 경로이기도 하다.
+    """
+    seen, expand = _expansion_probe()
+    calls = await _run_recommend(
+        "5만원 이하 아무거나",
+        {
+            "intent": "recommend",
+            "reply": "",
+            "case": 2,  # 구조화 조건만 — 좁히면 안 되는 질의
+            "filters": {"priceMax": 50000},
+            "categoryQueries": [],
+        },
+        expand=expand,
+    )
+    assert seen == []  # 전개 미호출
+    assert calls == [None]  # 카테고리 없이(무필터) 검색
+
+
+async def test_raw_only_leg_is_not_replaced_by_expansion() -> None:
+    """[PR #203 리뷰] `category` 만 있고 `query=null` 인 leg 은 신호이므로 전개로 교체되지 않는다.
+
+    저장소 규약은 `raw_category or query` 다. query 만 보면 D1 이 오탐해 정상 분류된 카테고리를
+    지어낸 상품 목록으로 통째로 교체한다.
+    """
+    seen, expand = _expansion_probe()
+    await _run_recommend(
+        "무선 이어폰 추천해줘",
+        {
+            "intent": "recommend",
+            "reply": "",
+            "case": 1,
+            "filters": {},
+            "categoryQueries": [{"category": "음향가전", "query": None}],
+        },
+        expand=expand,
+    )
+    assert seen == []  # 전개 미호출 — raw 가 신호로 인정됨
+
+
+class _ProbeObserver:
+    """그래프가 observer 에 실제로 쓰는 두 면만 갖는 스텁 — request_id 조회 + 모델 호출 기록."""
+
+    request_id = "req-probe"
+
+    def __init__(self) -> None:
+        self.models: list[str] = []
+
+    def record_model_call(
+        self, model: str, prompt_tokens: int = 0, completion_tokens: int = 0
+    ) -> None:
+        self.models.append(model)
+
+
+async def test_expander_receives_observer_for_model_call_logging() -> None:
+    """[PR #203 리뷰] 그래프는 `observer` 를 전개기까지 내려보낸다 — §6.3 모델 호출 기록의 전제.
+
+    전개는 **조건부 +1 LLM 호출**이고(정본 SPEC-RECOMMEND-001 AC-REC-37·§비기능 `2 + 1`),
+    `chat_request` 로그의 `model`/토큰 합산이 그 호출을 담아야 비용·사용량 집계가 맞는다. 기록은
+    LLM 을 실제로 쓰는 `_llm_expand` 가 하므로(방식 B·C 전개기에 유령 호출을 남기지 않기 위해),
+    그래프의 책임은 **observer 를 seam 으로 전달**하는 것이다. 이 배선이 끊기면 기록이 조용히 사라진다.
+    """
+    got: list = []
+
+    async def _expand(utterance, *, observer=None, **_):
+        got.append(observer)
+        return ["디퓨저", "식기 세트"]
+
+    observer = _ProbeObserver()
+    calls = await _run_recommend(
+        "집들이 선물로 뭐 사갈까",
+        {
+            "intent": "recommend",
+            "reply": "",
+            "case": 3,
+            "filters": {},
+            "categoryQueries": [{"category": None, "query": "집들이 선물"}],
+        },
+        expand=_expand,
+        observer=observer,
+    )
+    assert calls == ["디퓨저", "식기 세트"]  # 전개가 실제로 발동한 턴
+    assert got == [observer]  # 같은 observer 가 seam 까지 도달했다

@@ -11,11 +11,10 @@ SearchBackend로 구현해 골든셋 확정(api-spec §4.8 말미·§4.6, C-17).
 
 from __future__ import annotations
 
-import logging
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LLMProvider = Literal["openai", "anthropic"]
@@ -33,6 +32,14 @@ class Settings(BaseSettings):
         extra="ignore",
         case_sensitive=False,
     )
+
+    # ── Runtime environment and explicit request tracing ──
+    app_environment: Literal["local", "staging", "production", "test"] = "local"
+    langsmith_tracing: bool = False
+    langsmith_api_key: SecretStr | None = None
+    langsmith_project: str = "jarvis-ai-local"
+    langsmith_tracing_sampling_rate: float = Field(default=1.0, ge=0.0, le=1.0)
+    langsmith_export_timeout_s: float = Field(default=0.5, gt=0.0, le=5.0)
 
     # ── LLM provider 토글 (이슈 #40) ──
     # "openai"(기본) | "anthropic". 호출부는 tier("fast"|"smart")로 부르고 provider 가 모델을 해석한다.
@@ -98,11 +105,9 @@ class Settings(BaseSettings):
     jwks_url: str | None = None
     jwt_issuer: str | None = "jarvis-spring-auth"
     jwt_audience: str | None = "jarvis-fastapi-ai"
-    # 스트림 티켓 scope 검증값 (§2.3 v0.10.0 확정 검증 항목). None 이면 scope 검증 생략 —
-    # issuer/audience=None 과 같은 규칙. 실값(제안 chat:stream)이 C-1 미확정이라 기본은
-    # None 이다: 미확정 추정값을 활성 강제하면 Spring 발급 티켓과 어긋나는 순간 전면 401
-    # 장애가 된다(PR #39 리뷰 반영). 운영(jwks) 전환 시 확정값을 env JWT_SCOPE 로 주입할 것.
-    jwt_scope: str | None = None
+    # 스트림 티켓 scope 확정값. 다른 값/빈 값/None은 설정 검증에서 기동을 막고,
+    # decode 경계도 이 설정과 별개로 exact chat:stream을 항상 강제한다.
+    jwt_scope: Literal["chat:stream"] = "chat:stream"
     # JWKS tier-1 캐시 TTL(s) — 만료 전에는 kid miss 시에만 refetch(§2.3), 요청마다 왕복 금지.
     jwks_cache_ttl_s: float = 300.0
 
@@ -224,6 +229,38 @@ class Settings(BaseSettings):
     # 동시 요청 헤드룸으로 명시(암묵 하드코딩 제거, PR #73 리뷰).
     category_search_pool_max_size: int = 10
 
+    # ── 목적·상황형 발화의 상품 전개 (이슈 #198, DESIGN-NEEDS-EXPANSION-198) ──
+    # "집들이 선물" 처럼 무엇을 살지 사용자가 말하지 않은 발화를 구체 상품 목록으로 전개한다
+    # (정본 SPEC-RECOMMEND-001 §5.1 shopping_list 분해, EX-7 v0.10.0 개정으로 전용 호출 허용).
+    # 전개 실패는 **코드가 결정적으로 감지**한다(설계 §4 D1~D3) — LLM 자기 보고(case)는 전개와 같은
+    # 호출의 산출물이라 실패 회차의 값을 신뢰할 수 없음이 실측으로 확인됐다(§4.1).
+    # 목적 표현 marker — leg query 가 이것으로 **끝나면** 목적 표현으로 본다. `in` 이 아니라
+    # `endswith` 인 이유: '한우 선물세트'·'과일 선물세트' 같은 정당한 상품명이 marker '선물' 에 걸려
+    # 오탐된다('집들이 선물'.endswith('선물')=True / '한우 선물세트'.endswith('선물')=False).
+    # 실측 기반 초기값이며 관측 로그(needs_expansion_triggered.reason) 분포로 조정한다(설계 OPEN-1).
+    needs_expansion_enabled: bool = True  # 전개 단계 on/off(롤백 스위치)
+    # 전개 호출 tier. `fast` 로 시작한다 — §2 의 실패는 "fast 라서"가 아니라 "한 호출에 6가지 작업이
+    # 얹혀서"였으므로, **단일 작업 전용 호출**의 fast 성능은 별개 측정 대상이다(설계 OPEN-2).
+    # 실측 미달 시 "smart" 로 승격한다.
+    # Literal 로 좁힌다 — 이 값은 `resolve_model_id` 에 들어가고 그것은 미지 tier 에 LLMError 를
+    # 던진다. 전개는 그 호출을 관측 기록(§6.3)보다 **뒤에** 하므로(needs_expansion.py) 오타 하나가
+    # 퇴화가 아니라 턴 예외가 된다. 잘못된 설정은 부팅 시 pydantic 이 막는 게 맞다.
+    needs_expansion_tier: Literal["fast", "smart"] = "fast"
+    # 이 개수 미만이면 전개 실패로 본다 — 1개면 발화 복사로 되돌아가므로 최소 2개.
+    needs_expansion_min_items: int = Field(default=2, ge=1)
+    needs_expansion_purpose_markers: list[str] = [
+        "선물",
+        "답례품",
+        "준비물",
+        "용품",
+        "아이템",
+        "키트",
+        "물품",
+        "추천",
+        "것",
+        "거",
+    ]
+
     # ── 장바구니 (이슈 #3, api-spec §4.1) ──
     # CART_OPTION_INVALID 재질문 상한 — 초과 시 action CART_ERROR(§4.1). 하드코딩 금지.
     cart_option_reask_max: int = 1
@@ -255,6 +292,10 @@ class Settings(BaseSettings):
     profile_idle_max_concurrency: int = 2
     # batch=10/concurrency=2에서 2단 LLM 처리가 여러 wave로 이어져도 claim이 만료되지 않게 둔다.
     profile_idle_claim_ttl_s: float = 900.0
+    session_lifecycle_legacy_grace_s: float = 86400.0
+    session_lifecycle_legacy_quiet_s: float = 90.0
+    session_lifecycle_gc_batch_size: int = 100
+    session_lifecycle_backfill_max_batches: int = 1000
 
     profile_summary_max_chars: int = 1000  # §5.1 요약 상한(생성 측 압축 재작성)
     # AsyncPostgresStore(pg-profile) 초기 연결 대기 상한(이슈 #33) — 초과 시 dev 는 InMemory 폴백.
@@ -346,6 +387,17 @@ class Settings(BaseSettings):
             raise ValueError("PROFILE_IDLE_SWEEP_BATCH_SIZE must be positive")
         if self.profile_idle_max_concurrency <= 0:
             raise ValueError("PROFILE_IDLE_MAX_CONCURRENCY must be positive")
+        if self.session_lifecycle_legacy_grace_s < 86400:
+            raise ValueError("SESSION_LIFECYCLE_LEGACY_GRACE_S must be at least 86400")
+        if self.session_lifecycle_legacy_quiet_s < max(90, self.stream_total_timeout_s):
+            raise ValueError(
+                "SESSION_LIFECYCLE_LEGACY_QUIET_S must cover STREAM_TOTAL_TIMEOUT_S "
+                "and be at least 90"
+            )
+        if self.session_lifecycle_gc_batch_size <= 0:
+            raise ValueError("SESSION_LIFECYCLE_GC_BATCH_SIZE must be positive")
+        if self.session_lifecycle_backfill_max_batches <= 0:
+            raise ValueError("SESSION_LIFECYCLE_BACKFILL_MAX_BATCHES must be positive")
         idle_batch_waves = (
             self.profile_idle_sweep_batch_size + self.profile_idle_max_concurrency - 1
         ) // self.profile_idle_max_concurrency
@@ -381,14 +433,6 @@ class Settings(BaseSettings):
             raise ValueError(
                 "REVIEW_TIER 경계는 many >= some >= few 여야 합니다"
                 f" ({self.review_tier_many}/{self.review_tier_some}/{self.review_tier_few})"
-            )
-        # scope 는 §2.3 확정 검증 항목이지만 값이 C-1 미확정이라 fail-fast 로 막지 않는다
-        # (미확정 추정값 강제 시 전면 401 장애 — PR #39 1R 리뷰). 대신 설정 누락이 조용히
-        # 지나가지 않게 기동 경고를 남긴다(4R 리뷰). C-1 확정 후 JWT_SCOPE 주입 시 활성화.
-        if self.auth_mode == "jwks" and not self.jwt_scope:
-            logging.getLogger(__name__).warning(
-                "auth_mode=jwks 인데 JWT_SCOPE 미설정 — §2.3 scope 검증이 비활성 상태로 "
-                "기동합니다 (C-1 확정 후 반드시 주입)"
             )
         return self
 

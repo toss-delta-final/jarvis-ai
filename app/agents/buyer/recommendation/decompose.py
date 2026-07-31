@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from pydantic import ValidationError
 
 from app.agents.buyer.recommendation.state import (
@@ -18,11 +20,13 @@ from app.agents.buyer.recommendation.state import (
 from app.core.llm import LLMClient, LLMError
 from app.schemas.spring import ProductSearchFilters
 
+logger = logging.getLogger(__name__)
+
 _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
 사용자 발화를 분석해 intent 를 정하고, 추천이면 구조화 필터/의미쿼리를, 장바구니면 상품/옵션/수량을 산출합니다.
 반드시 아래 JSON 만 출력하세요(설명·코드펜스 금지):
 {
-  "intent": "recommend" | "cart_add" | "cart_view" | "general",
+  "intent": "recommend" | "cart_add" | "cart_view" | "order_status" | "general",
   "reply": "intent가 general일 때만 줄 짧은 한국어 답변, 아니면 빈 문자열",
   "case": 1 | 2 | 3,
   "semanticQuery": "정형 제약을 제외한 벡터 검색용 자연어",
@@ -39,7 +43,12 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
 }
 규칙:
 - intent 판별: 상품을 찾아달라는 요청이면 recommend, "담아줘/장바구니에 넣어"면 cart_add,
-  "장바구니 보여줘/뭐 있어?"면 cart_view, 그 외 잡담·무관 질문이면 general.
+  "장바구니 보여줘/뭐 있어?"면 cart_view, 회원 본인의 최근 주문·배송 진행 상태를 묻는 요청이면
+  order_status, 그 외 잡담·무관 질문이면 general.
+- order_status 긍정 예: "내 주문 어디까지 왔어?", "배송 상태 알려줘", "최근 주문 진행 상황".
+- order_status로 분류하지 않는 예: "배송 빠른 상품 추천해줘"는 recommend,
+  "이 상품 주문하고 싶어"는 기존 상품 추천/장바구니 의미, "주문 취소 방법"은 general,
+  "예전에 뭘 샀지?"는 이번 주문 상태 조회 범위가 아니므로 general.
 - recommend: 정확한 수치 제약은 filters 에 넣고 semanticQuery 로 근사하지 마세요.
   PRIOR_FILTERS 가 있으면 병합(좁히면 add, 모순되면 replace)하세요.
   색상 조건(예: "빨간", "검정")이 있으면 filters.color 에 넣으세요.
@@ -50,6 +59,14 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
   semanticQuery 는 **동의어·상위어를 함께 담은 의미 중심** 자연어로 쓰세요 — 표현이 상품명과 달라도
   임베딩 재정렬이 잡도록(예: "청바지" → "청바지 데님 팬츠", "운동화" → "운동화 스니커즈",
   "무선 이어폰" → "무선 블루투스 이어폰"). 사전에 없는 억지 동의어는 넣지 말고 흔한 표현만.
+- case: **발화가 무엇을 주는지**로 판정합니다(SPEC-RECOMMEND-001 REQ-REC-002).
+  1 = **상품명이 발화에 있음** — "청바지", "무선 이어폰 추천해줘", "나이키 운동화"
+  2 = 상품명 없이 **구조화 조건만** 있음 — "5만원 이하 아무거나", "평점 높은 거"
+  3 = **상황·목적만 있고 무엇을 살지는 사용자가 말하지 않음** — "집들이 선물", "유럽여행 준비물",
+      "부모님 환갑 선물", "발이 시려워", "자취 시작할 때 필요한거".
+      또는 **서로 다른 상품 2개 이상**을 한 번에 요구 — "이어폰이랑 노트북 추천해줘".
+  판정 기준: 사용자가 **살 물건을 지목했으면 1**, 조건만 말했으면 2, **목적/상황만 말했으면 3**입니다.
+  "선물"·"준비물"·"필요한 것" 같은 말은 물건 이름이 아니므로 1이 아니라 **3**입니다.
 - attrConditions/attrRemovals: 사용자가 **명시한** 상품 속성만 다룹니다(추측 선호는 넣지 말고
   semanticQuery/발화 맥락에 맡김 — 재랭킹이 판단). 축은 소재·핏·용도·방수 등, 값은 짧은 자연어.
   attrConditions = 이번 턴에 **새로 설정하거나 바꾸는** {축: 값}만(예: "린넨 오버핏 셔츠" →
@@ -87,7 +104,7 @@ async def decompose(
     pending_cart: dict | None = None,
     category_fanout_max: int = 5,
 ) -> RouteDecision:
-    """Haiku 1회 호출로 intent(추천/담기/조회/일반)·필터·장바구니 의도를 산출한다.
+    """Haiku 1회 호출로 intent(추천/담기/장바구니조회/주문상태/일반)와 필터를 산출한다.
 
     prior_filters(추천 멀티턴)·last_recommendations(담기 productId 해소)·pending_cart(옵션 되물음)를
     프롬프트에 실어 문맥을 위임한다. LLM 오류/타임아웃/JSON·스키마 파싱 실패는 LLMError 로 전파.
@@ -122,7 +139,7 @@ async def decompose(
     intent_raw = data.get("intent")
     intent = (
         intent_raw
-        if intent_raw in ("recommend", "cart_add", "cart_view", "general")
+        if intent_raw in ("recommend", "cart_add", "cart_view", "order_status", "general")
         else "recommend"
     )
     # JSON 파싱은 됐지만 필드 값이 스키마와 안 맞을 수 있다 → extract_json 처럼 LLMError 로 통일해
@@ -174,6 +191,20 @@ async def decompose(
         filters.attr_conditions = merged or None
     except (ValidationError, ValueError, TypeError) as exc:
         raise LLMError("decompose 필터/케이스/장바구니 파싱 실패") from exc
+    # [#198 §10] 관측 — recommend 턴의 case·leg 요약. **"case==3(전개 필요를 인지)인데 legs<=1
+    # (전개 실패)"인 턴의 빈도가 #198 의 핵심 지표**다. 이 로그가 없어 지금까지 진단 스크립트로만
+    # 측정할 수 있었다. leg_queries 는 D3 marker 튜닝(#198 OPEN-1)의 입력이기도 하다.
+    # cart/general 턴은 case 가 의미 없어 제외한다 — 지표는 한 가지를 뜻해야 한다(category_unmapped
+    # 를 인프라 실패와 섞지 않는 것과 같은 취지).
+    if intent == "recommend":
+        logger.info(
+            "decompose_case",
+            extra={
+                "case": case,
+                "legs": len(category_queries),
+                "leg_queries": [q.query for q in category_queries],
+            },
+        )
     return RouteDecision(
         intent=intent,
         filters=filters,

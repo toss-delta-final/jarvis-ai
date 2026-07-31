@@ -3,6 +3,7 @@
 AI → Spring 질의 시점 역방향 + 배치 (구매자, 모듈 레벨 함수):
   - search_products        : 후보 확보 (I-1, GET /internal/products/search, §4.6, C-15) — [배선 완료]
   - get_recent_purchases   : 구매 이력 조회 (I-19, GET /internal/members/{id}/orders, §4.7, C-6) — dedup·프로필 소스
+  - get_order_status       : 주문 상태 요약 (I-4, GET /internal/members/{id}/orders/status, §4.10)
   - add_to_cart            : 장바구니 담기 (I-2, POST /internal/cart/items, 단건, §4.1)
   - get_cart               : 장바구니 조회 (I-18, GET /internal/cart, §4.9, C-16)
   - push_recommendations   : 최종 랭크 id push (I-21, POST /internal/recommendations, 경로 B, §4.2) — [배선 완료]
@@ -28,14 +29,18 @@ AI 는 커머스 DB 에 직접 write 하지 않는다. 와이어 포맷은 camel
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 import logging
 import math
-from typing import TypeVar
+from types import TracebackType
+from typing import Literal, TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError
 
 from app.core.config import get_settings
+from app.core.tracing import TraceNode, trace_span
 from app.schemas.spring import (
     AccountEventsResult,
     AddToCartRequest,
@@ -46,6 +51,8 @@ from app.schemas.spring import (
     ChurnResult,
     FunnelResult,
     OrderEventsResult,
+    ORDER_STATUS_RECENT,
+    OrderStatusSummary,
     ProductChangeLogResult,
     ProductChangesPage,
     ProductCreate,
@@ -63,13 +70,81 @@ from app.schemas.spring import (
 )
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
+_SpringOperation = Literal[
+    "search_products",
+    "get_recent_purchases",
+    "get_order_status",
+    "add_to_cart",
+    "get_cart",
+    "push_recommendations",
+    "fetch_product_changes",
+    "get_sales",
+    "get_funnel",
+    "get_events",
+    "get_order_events",
+    "get_product_changes",
+    "get_churn",
+    "get_account_events",
+    "list_products",
+    "create_product",
+    "update_product",
+    "delete_product",
+]
 
 
 _log = logging.getLogger(__name__)
 
 
+@contextmanager
+def _spring_span(operation: _SpringOperation, method: str) -> Iterator[TraceNode | None]:
+    """Trace one outbound Spring request without retaining request or response data."""
+    # ⚠️ 의도된 stash-and-rethrow — `raise` 로 되돌리지 말 것(f77af25).
+    # `trace_span` 은 본문에서 예외가 전파될 때 `node.error_type = type(exc).__name__` 을 채운다.
+    # Spring 스팬은 예외 클래스명(CartStockInsufficient 등 업스트림 상태 유출)까지 막고 유계
+    # transport 메타데이터만 내보내는 게 계약이라, 예외를 여기 모았다가 `trace_span` 이 정상
+    # 종료한 뒤 밖에서 재던져 error_type 을 비워 둔다. 전역 시리얼라이저에서 errorType 을 막는
+    # 대안은 기각 — 비-Spring 스팬은 자동 예외 분류가 그대로 필요하다.
+    # 실패 표식은 statusClass 로만 남는다: timeout·connection_error(아래) + 4xx/5xx
+    # (`_record_spring_status` 가 raise_for_status 앞에서 기록). 회귀 테스트는
+    # tests/unit/test_buyer_tracing.py::test_buyer_spring_* 4종 + seller 대응.
+    failure: tuple[BaseException, TracebackType | None] | None = None
+    with trace_span(
+        f"spring.{operation}",
+        "tool",
+        {"httpMethod": method, "upstream": "spring"},
+    ) as span:
+        try:
+            yield span
+        except BaseException as exc:
+            if span is not None:
+                if isinstance(exc, httpx.TimeoutException):
+                    span.metadata["statusClass"] = "timeout"
+                elif isinstance(exc, httpx.NetworkError):
+                    span.metadata["statusClass"] = "connection_error"
+            failure = (exc, exc.__traceback__)
+
+    if failure is not None:
+        exc, traceback = failure
+        raise exc.with_traceback(traceback)
+
+
+def _record_spring_status(span: TraceNode | None, response: httpx.Response) -> None:
+    if span is not None:
+        span.metadata["statusClass"] = f"{response.status_code // 100}xx"
+
+
 class SpringUnavailableError(Exception):
     """Spring 서버 도달 불가/오류 응답. 상위에서 SEARCH_FAILED 등으로 매핑한다."""
+
+
+class OrderStatusUnavailableError(SpringUnavailableError):
+    """I-4 안전한 실패 분류. 원 예외·경로·응답 데이터는 보존하지 않는다."""
+
+    def __init__(self, category: Literal["upstream_unavailable", "malformed_response"]) -> None:
+        if category not in {"upstream_unavailable", "malformed_response"}:
+            raise ValueError("invalid order status error category")
+        self.category = category
+        super().__init__(f"order status unavailable: {category}")
 
 
 class InvalidCursorError(SpringUnavailableError):
@@ -341,10 +416,12 @@ async def search_products(filters: ProductSearchFilters) -> ProductSearchResult:
     """
     params = _search_query_params(filters)
     try:
-        async with _client() as client:
-            resp = await client.get("/internal/products/search", params=params)
-            resp.raise_for_status()
-            data = resp.json()
+        with _spring_span("search_products", "GET") as span:
+            async with _client() as client:
+                resp = await client.get("/internal/products/search", params=params)
+                _record_spring_status(span, resp)
+                resp.raise_for_status()
+                data = resp.json()
         # 응답 파싱·검증도 같은 경계 안 — 200 이지만 스키마 불일치인 malformed 응답도
         # SEARCH_FAILED degrade(§7)로 흐르게 한다(ValidationError 가 그대로 새어 500 되지 않게).
         return _parse_search_response(data)
@@ -366,15 +443,52 @@ async def get_recent_purchases(user_id: int, status: str | None = None) -> Recen
     if status is not None:
         params["status"] = status
     try:
-        async with _client() as client:
-            resp = await client.get(f"/internal/members/{user_id}/orders", params=params)
-            resp.raise_for_status()
-            data = resp.json()
+        with _spring_span("get_recent_purchases", "GET") as span:
+            async with _client() as client:
+                resp = await client.get(f"/internal/members/{user_id}/orders", params=params)
+                _record_spring_status(span, resp)
+                resp.raise_for_status()
+                data = resp.json()
         payload = data.get("data") if isinstance(data, dict) else None
         orders = payload.get("orders") if isinstance(payload, dict) else None
         return RecentPurchases.model_validate({"orders": orders or []})
     except (httpx.HTTPError, ValueError, ValidationError) as exc:
         raise SpringUnavailableError(f"get_recent_purchases 실패: {exc}") from exc
+
+
+async def get_order_status(user_id: int) -> OrderStatusSummary:
+    """회원의 최근 I-4 주문 상태를 strict envelope/schema로 검증한다."""
+    try:
+        with _spring_span("get_order_status", "GET") as span:
+            async with _client() as client:
+                response = await client.get(
+                    f"/internal/members/{user_id}/orders/status",
+                    params={"recent": ORDER_STATUS_RECENT},
+                )
+                _record_spring_status(span, response)
+                response.raise_for_status()
+    except httpx.HTTPError:
+        raise OrderStatusUnavailableError("upstream_unavailable") from None
+
+    try:
+        body = response.json()
+    except ValueError:
+        raise OrderStatusUnavailableError("malformed_response") from None
+
+    if (
+        type(body) is not dict
+        or body.get("success") is not True
+        or "data" not in body
+        or type(body["data"]) is not dict
+        or "orders" not in body["data"]
+        or type(body["data"]["orders"]) is not list
+    ):
+        raise OrderStatusUnavailableError("malformed_response") from None
+
+    try:
+        return OrderStatusSummary.model_validate({"orders": body["data"]["orders"]})
+    except ValidationError:
+        raise OrderStatusUnavailableError("malformed_response") from None
 
 
 async def add_to_cart(request: AddToCartRequest) -> AddToCartResult:
@@ -388,8 +502,12 @@ async def add_to_cart(request: AddToCartRequest) -> AddToCartResult:
     CartQuantityExceeded, 404→CartProductNotFound, 그 외→CartError.
     """
     try:
-        async with _client() as client:
-            resp = await client.post("/internal/cart/items", json=request.model_dump(by_alias=True))
+        with _spring_span("add_to_cart", "POST") as span:
+            async with _client() as client:
+                resp = await client.post(
+                    "/internal/cart/items", json=request.model_dump(by_alias=True)
+                )
+                _record_spring_status(span, resp)
     except httpx.HTTPError as exc:
         raise CartError(f"add_to_cart 도달 실패: {exc}") from exc
 
@@ -441,10 +559,12 @@ async def get_cart(user_id: int | None = None, guest_id: str | None = None) -> C
     if guest_id is not None:
         params["guestId"] = guest_id
     try:
-        async with _client() as client:
-            resp = await client.get("/internal/cart", params=params)
-            resp.raise_for_status()
-            data = resp.json()
+        with _spring_span("get_cart", "GET") as span:
+            async with _client() as client:
+                resp = await client.get("/internal/cart", params=params)
+                _record_spring_status(span, resp)
+                resp.raise_for_status()
+                data = resp.json()
         payload = data.get("data") if isinstance(data, dict) else None
         items = payload.get("items") if isinstance(payload, dict) else None
         return CartView.model_validate({"items": items or []})
@@ -461,12 +581,14 @@ async def push_recommendations(push: RecommendationPush) -> bool:
     도달 불가/오류 응답은 SpringUnavailableError 로 전파(상위가 products.ready 스킵).
     """
     try:
-        async with _client() as client:
-            resp = await client.post(
-                "/internal/recommendations",
-                json=push.model_dump(by_alias=True),
-            )
-            resp.raise_for_status()
+        with _spring_span("push_recommendations", "POST") as span:
+            async with _client() as client:
+                resp = await client.post(
+                    "/internal/recommendations",
+                    json=push.model_dump(by_alias=True),
+                )
+                _record_spring_status(span, resp)
+                resp.raise_for_status()
     except httpx.HTTPError as exc:
         raise SpringUnavailableError(f"push_recommendations 실패: {exc}") from exc
     return True
@@ -482,20 +604,24 @@ async def fetch_product_changes(cursor: str | None, limit: int = 500) -> Product
     """
     params: dict[str, object] = {"since": cursor or "0", "limit": limit}
     try:
-        async with _client() as client:
-            resp = await client.get("/internal/products/changes", params=params)
-            if resp.status_code == 400:
-                try:
-                    error_body = resp.json()
-                except ValueError:
-                    error_body = None
-                if isinstance(error_body, dict):
-                    error = error_body.get("error")
-                    code = error.get("code") if isinstance(error, dict) else error_body.get("code")
-                    if code == "INVALID_CURSOR":
-                        raise InvalidCursorError("fetch_product_changes: INVALID_CURSOR")
-            resp.raise_for_status()
-            data = resp.json()
+        with _spring_span("fetch_product_changes", "GET") as span:
+            async with _client() as client:
+                resp = await client.get("/internal/products/changes", params=params)
+                _record_spring_status(span, resp)
+                if resp.status_code == 400:
+                    try:
+                        error_body = resp.json()
+                    except ValueError:
+                        error_body = None
+                    if isinstance(error_body, dict):
+                        error = error_body.get("error")
+                        code = (
+                            error.get("code") if isinstance(error, dict) else error_body.get("code")
+                        )
+                        if code == "INVALID_CURSOR":
+                            raise InvalidCursorError("fetch_product_changes: INVALID_CURSOR")
+                resp.raise_for_status()
+                data = resp.json()
         # 200 이어도 success=false / data=null 은 실패 envelope — 빈 페이지로 오인해 배치가
         # 조기 종료(정합성 손상)되지 않게 명시 검증한다(리뷰 반영).
         if (
@@ -544,6 +670,7 @@ class SpringClient:
         method: str,
         path: str,
         *,
+        operation: _SpringOperation,
         params: dict | None = None,
         json_body: dict | None = None,
     ) -> dict:
@@ -551,24 +678,26 @@ class SpringClient:
         예외를 SpringUnavailableError 로 통일 변환한다."""
         headers = {"X-Internal-Token": self._internal_token} if self._internal_token else {}
         try:
-            async with httpx.AsyncClient(
-                base_url=self._base_url, transport=self._transport, timeout=self._timeout
-            ) as client:
-                response = await client.request(
-                    method, path, params=params, json=json_body, headers=headers
-                )
-                response.raise_for_status()
-                payload = response.json()
-                # [변경 2026-07-19, REALIGN ②-3] BE 확정 명세(I-13 실측)가
-                # {success, data:{...}} 봉투를 쓴다 — data 만 벗겨 모델에 넘긴다.
-                # 봉투 없는 응답(과도기·타 API)은 그대로 통과(하위 호환).
-                if (
-                    isinstance(payload, dict)
-                    and "success" in payload
-                    and isinstance(payload.get("data"), dict)
-                ):
-                    return payload["data"]
-                return payload
+            with _spring_span(operation, method) as span:
+                async with httpx.AsyncClient(
+                    base_url=self._base_url, transport=self._transport, timeout=self._timeout
+                ) as client:
+                    response = await client.request(
+                        method, path, params=params, json=json_body, headers=headers
+                    )
+                    _record_spring_status(span, response)
+                    response.raise_for_status()
+                    payload = response.json()
+                    # [변경 2026-07-19, REALIGN ②-3] BE 확정 명세(I-13 실측)가
+                    # {success, data:{...}} 봉투를 쓴다 — data 만 벗겨 모델에 넘긴다.
+                    # 봉투 없는 응답(과도기·타 API)은 그대로 통과(하위 호환).
+                    if (
+                        isinstance(payload, dict)
+                        and "success" in payload
+                        and isinstance(payload.get("data"), dict)
+                    ):
+                        return payload["data"]
+                    return payload
         except httpx.TimeoutException as exc:
             raise SpringUnavailableError(
                 f"Spring 콜백 타임아웃({self._timeout}s): {method} {path}"
@@ -605,6 +734,7 @@ class SpringClient:
         data = await self._request(
             "GET",
             f"/internal/seller/{brand_id}/sales",
+            operation="get_sales",
             params={"from": from_, "to": to, "granularity": granularity},
         )
         return self._validate(SalesResult, data)
@@ -612,7 +742,10 @@ class SpringClient:
     async def get_funnel(self, brand_id: int, from_: str, to: str) -> FunnelResult:
         """I-7 구매전환 퍼널 조회 (§4.4). view→cart→checkout→purchase 4단."""
         data = await self._request(
-            "GET", f"/internal/seller/{brand_id}/funnel", params={"from": from_, "to": to}
+            "GET",
+            f"/internal/seller/{brand_id}/funnel",
+            operation="get_funnel",
+            params={"from": from_, "to": to},
         )
         return self._validate(FunnelResult, data)
 
@@ -640,7 +773,12 @@ class SpringClient:
             params["productId"] = product_id
         if group_by:
             params["groupBy"] = group_by
-        data = await self._request("GET", f"/internal/seller/{brand_id}/events", params=params)
+        data = await self._request(
+            "GET",
+            f"/internal/seller/{brand_id}/events",
+            operation="get_events",
+            params=params,
+        )
         return self._validate(BehaviorEventsResult, data)
 
     async def get_order_events(
@@ -667,7 +805,10 @@ class SpringClient:
         if stats is not None:
             params["stats"] = stats
         data = await self._request(
-            "GET", f"/internal/seller/{brand_id}/order-events", params=params
+            "GET",
+            f"/internal/seller/{brand_id}/order-events",
+            operation="get_order_events",
+            params=params,
         )
         return self._validate(OrderEventsResult, data)
 
@@ -689,7 +830,10 @@ class SpringClient:
         if product_id:
             params["productId"] = product_id
         data = await self._request(
-            "GET", f"/internal/seller/{brand_id}/product-changes", params=params
+            "GET",
+            f"/internal/seller/{brand_id}/product-changes",
+            operation="get_product_changes",
+            params=params,
         )
         return self._validate(ProductChangeLogResult, data)
 
@@ -698,6 +842,7 @@ class SpringClient:
         data = await self._request(
             "GET",
             f"/internal/seller/{brand_id}/churn",
+            operation="get_churn",
             params={"inactiveDays": inactive_days},
         )
         return self._validate(ChurnResult, data)
@@ -719,7 +864,12 @@ class SpringClient:
             params["to"] = to
         if group_by:
             params["groupBy"] = group_by
-        data = await self._request("GET", "/internal/account-events", params=params)
+        data = await self._request(
+            "GET",
+            "/internal/account-events",
+            operation="get_account_events",
+            params=params,
+        )
         return self._validate(AccountEventsResult, data)
 
     async def list_products(
@@ -740,7 +890,12 @@ class SpringClient:
             params["limit"] = limit
         if offset is not None:
             params["offset"] = offset
-        data = await self._request("GET", f"/internal/seller/{brand_id}/products", params=params)
+        data = await self._request(
+            "GET",
+            f"/internal/seller/{brand_id}/products",
+            operation="list_products",
+            params=params,
+        )
         return self._validate(SellerProductList, data)
 
     # ── 쓰기 3종 (product_agent 전용, HITL 승인 후에만 호출, api-spec §4.5) ──
@@ -754,6 +909,7 @@ class SpringClient:
         data = await self._request(
             "POST",
             f"/internal/seller/{brand_id}/products",
+            operation="create_product",
             json_body=payload.model_dump(by_alias=True, exclude_none=True),
         )
         return self._validate(ProductCreateResult, data)
@@ -765,13 +921,18 @@ class SpringClient:
         data = await self._request(
             "PATCH",
             f"/internal/seller/{brand_id}/products/{product_id}",
+            operation="update_product",
             json_body=patch.model_dump(by_alias=True, exclude_none=True),
         )
         return self._validate(ProductUpdateResult, data)
 
     async def delete_product(self, brand_id: int, product_id: int) -> ProductDeleteResult:
         """I-12 상품 삭제(soft) (§4.5). 물리 삭제 없음 — status=HIDDEN 전환."""
-        data = await self._request("DELETE", f"/internal/seller/{brand_id}/products/{product_id}")
+        data = await self._request(
+            "DELETE",
+            f"/internal/seller/{brand_id}/products/{product_id}",
+            operation="delete_product",
+        )
         return self._validate(ProductDeleteResult, data)
 
 

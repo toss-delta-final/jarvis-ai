@@ -14,10 +14,14 @@ import pytest
 
 from app.agents.buyer.cart.graph import stream_cart_add, stream_cart_view
 from app.agents.buyer.cart.state import CartStateStore, PendingAdd
-from app.agents.buyer.graph import run_buyer_turn
+from app.agents.buyer.graph import run_buyer_turn as _production_run_buyer_turn
 from app.agents.buyer.recommendation.state import CartIntent
+from app.agents.buyer.session_state import context_thread_key
+from app.api.deps import buyer_owner_id
+from app.core import session_context
 from app.core.auth import Identity
 from app.core.config import get_settings
+from app.core.session_context import BuyerSessionInput
 from app.schemas.spring import (
     AddToCartResult,
     CartOption,
@@ -46,6 +50,38 @@ def _guest() -> Identity:
 
 def _anon() -> Identity:
     return Identity(user_id=None, is_guest=True, seller_id=None, subject=None)
+
+
+async def _committed_observer(request, identity):  # noqa: ANN001
+    context = await session_context._default_repository.touch(
+        BuyerSessionInput(
+            request.session_id,
+            request.thread_id,
+            "guest" if identity.is_guest else "member",
+            buyer_owner_id(identity, get_settings()),
+        )
+    )
+    return SimpleNamespace(
+        context_id=context.context_id,
+        request_id="unit-request",
+        record_model_call=lambda *_: None,
+    )
+
+
+async def run_buyer_turn(request, identity, **kwargs):  # noqa: ANN001
+    observer = await _committed_observer(request, identity)
+    async for frame in _production_run_buyer_turn(
+        request,
+        identity,
+        observer=observer,
+        **kwargs,
+    ):
+        yield frame
+
+
+async def _thread_key(request, identity) -> str:  # noqa: ANN001
+    observer = await _committed_observer(request, identity)
+    return context_thread_key(observer.context_id, request.thread_id)
 
 
 async def _collect(gen) -> list[dict]:
@@ -577,12 +613,12 @@ async def test_route_cart_add(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sc, "get_cart", fake_get)
     # 직전 추천이 있어야 담기 가능(경로 B) — last_reco 시드.
     from app.agents.buyer.cart.state import get_cart_store
-    from app.core.conversation import conversation_key
 
     seed_store = await get_cart_store()
-    await seed_store.set_last_reco(conversation_key("123", "t1"), [(101, "이어폰")])
+    request = _req()
+    await seed_store.set_last_reco(await _thread_key(request, _member()), [(101, "이어폰")])
     llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 101, "quantity": 1}})
-    events = await _collect(run_buyer_turn(_req(), _member(), llm=llm))
+    events = await _collect(run_buyer_turn(request, _member(), llm=llm))
     action = next(e for e in events if e["type"] == "action")["data"]
     assert action["type"] == "CART_ADDED" and action["cartItemId"] == 42
 
@@ -606,7 +642,6 @@ async def test_route_cart_view(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_last_reco_stored_after_recommendation() -> None:
     """추천 턴이 후보를 last_reco 로 저장해 이후 담기의 productId 해소 소스가 된다."""
     from app.agents.buyer.cart.state import get_cart_store
-    from app.core.conversation import conversation_key
     from tests._fakes import DEFAULT_PRODUCTS, FakeLLM
 
     async def search(filters, exclude_product_ids=None):
@@ -625,7 +660,9 @@ async def test_last_reco_stored_after_recommendation() -> None:
         )
     )
     cart_store = await get_cart_store()
-    reco = await cart_store.get_last_reco(conversation_key("123", "t9"))
+    reco = await cart_store.get_last_reco(
+        await _thread_key(_req(message="무선 이어폰 추천", thread_id="t9"), _member())
+    )
     assert [pid for pid, _ in reco] == [101, 102, 103]
 
 
@@ -906,7 +943,6 @@ async def test_cart_add_invalid_quantity_maps_cart_error() -> None:
 async def test_last_reco_stored_in_ranked_display_order() -> None:
     """last_reco 는 검색순서가 아니라 노출(rerank) 순서로 저장된다(Codex P1, Fix3)."""
     from app.agents.buyer.cart.state import get_cart_store
-    from app.core.conversation import conversation_key
     from tests._fakes import DEFAULT_PRODUCTS, FakeLLM
 
     async def search(filters, exclude_product_ids=None):
@@ -928,7 +964,7 @@ async def test_last_reco_stored_in_ranked_display_order() -> None:
         )
     )
     cart_store = await get_cart_store()
-    reco = await cart_store.get_last_reco(conversation_key("123", "tR"))
+    reco = await cart_store.get_last_reco(await _thread_key(_req(thread_id="tR"), _member()))
     # 노출 순서: rerank [103,101] + expose_min 보충 102 → [103,101,102] (검색순서 아님)
     assert [pid for pid, _ in reco][:2] == [103, 101]
 
@@ -939,7 +975,6 @@ async def test_last_reco_stored_in_ranked_display_order() -> None:
 async def test_last_reco_not_stored_when_push_fails() -> None:
     """push 실패로 카드가 노출되지 않으면 last_reco 를 저장하지 않는다(R1 — 경로 B 불변식)."""
     from app.agents.buyer.cart.state import get_cart_store
-    from app.core.conversation import conversation_key
     from tests._fakes import DEFAULT_PRODUCTS, FakeLLM
 
     async def search(filters, exclude_product_ids=None):
@@ -960,7 +995,7 @@ async def test_last_reco_not_stored_when_push_fails() -> None:
         )
     )
     cart_store = await get_cart_store()
-    reco = await cart_store.get_last_reco(conversation_key("123", "tNo"))
+    reco = await cart_store.get_last_reco(await _thread_key(_req(thread_id="tNo"), _member()))
     assert reco == []  # 저장 안 됨 → 다음 턴 "그거 담아줘"가 미노출 상품을 담지 못함
 
 
@@ -1132,10 +1167,9 @@ async def test_cart_add_non_numeric_member_maps_cart_error() -> None:
 async def test_general_intent_clears_pending(monkeypatch: pytest.MonkeyPatch) -> None:
     """되물음 중 취소(general 전환)하면 stale pending 이 정리된다(라운드4)."""
     from app.agents.buyer.cart.state import PendingAdd, get_cart_store
-    from app.core.conversation import conversation_key
     from tests._fakes import FakeLLM
 
-    key = conversation_key("123", "t1")
+    key = await _thread_key(_req(), _member())
     cart_store = await get_cart_store()
     await cart_store.set_pending(
         key, PendingAdd(product_id=1, quantity=1, options=[CartOption(option_id=3, name="블루")])
@@ -1143,6 +1177,18 @@ async def test_general_intent_clears_pending(monkeypatch: pytest.MonkeyPatch) ->
     llm = FakeLLM(decompose={"intent": "general", "reply": "네, 취소할게요."})
     await _collect(run_buyer_turn(_req(message="그만할래"), _member(), llm=llm))
     assert await cart_store.get_pending(key) is None  # 정리됨
+
+
+def test_local_recommendation_cache_pop_removes_only_requested_key() -> None:
+    from app.core.pg_resilience import BoundedLRUCache
+
+    cache = BoundedLRUCache[str, str](max_entries=2)
+    cache["context-a:thread"] = "a"
+    cache["context-b:thread"] = "b"
+
+    assert cache.pop("context-a:thread") == "a"
+    assert cache.pop("missing") is None
+    assert cache.get("context-b:thread") == "b"
 
 
 # ─────────── #18 리뷰 수정 회귀 ───────────
@@ -1379,6 +1425,227 @@ async def test_cart_state_store_all_operations_have_query_deadline(
     for operation in operations:
         with pytest.raises(TimeoutError):
             await operation()
+
+
+# ─────────── 유일 옵션 자동 선택 (이슈 #114) ───────────
+
+
+async def _run_add(store, cart, add_fn, *, get_cart_fn=None, thread_key="m:t"):
+    """자동 선택 테스트 공용 구동 — 담기 스트림 이벤트 목록을 돌려준다."""
+    return await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=cart,
+            cart_store=store,
+            thread_key=thread_key,
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=get_cart_fn or _empty_cart(),
+        )
+    )
+
+
+async def test_cart_add_single_option_autoselected() -> None:
+    """옵션 후보가 1개뿐이면 되묻지 않고 그 optionId 로 즉시 재담기한다(#114)."""
+    store = CartStateStore()
+    calls: list[int | None] = []
+
+    async def add_fn(req):
+        calls.append(req.option_id)
+        if req.option_id is None:
+            raise CartOptionRequired([CartOption(option_id=7, name="단일 사이즈")])
+        return AddToCartResult(success=True, cart_item_id=70)
+
+    events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
+
+    assert calls == [None, 7]  # 되물음 없이 유일 옵션으로 재호출
+    assert "token" not in _types(events)  # 되묻지 않는다
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADDED" and action["cartItemId"] == 70
+    assert "단일 사이즈 옵션으로" in action["message"]  # 대신 고른 옵션을 밝힌다
+    assert await store.get_pending("m:t") is None
+
+
+async def test_cart_add_autoselect_message_strips_seller_text() -> None:
+    """자동 선택 안내에 실리는 옵션명(판매자 입력)도 위험 문자를 제거한다(#114)."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        if req.option_id is None:
+            raise CartOptionRequired([CartOption(option_id=7, name="블\x1b[31m랙​")])
+        return AddToCartResult(success=True, cart_item_id=71)
+
+    events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
+
+    message = next(e for e in events if e["type"] == "action")["data"]["message"]
+    assert "블[31m랙 옵션으로" in message
+    assert all(ch not in message for ch in ("\x1b", "​"))
+
+
+async def test_cart_add_autoselect_message_shows_surcharge() -> None:
+    """AI 가 대신 고른 옵션에 추가금이 있으면 안내에 밝힌다 — 되물음 문구와 같은 규칙(#114 PR 리뷰).
+
+    자동 선택은 사용자가 고를 기회 자체가 없으므로, 추가금을 숨기면 결제 단계에서야 알게 된다.
+    """
+    store = CartStateStore()
+
+    async def add_fn(req):
+        if req.option_id is None:
+            raise CartOptionRequired([CartOption(option_id=7, name="블랙", extra_price=2000)])
+        return AddToCartResult(success=True, cart_item_id=74)
+
+    events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
+
+    message = next(e for e in events if e["type"] == "action")["data"]["message"]
+    assert message == "블랙(+2,000원) 옵션으로 담았어요."
+
+
+async def test_cart_add_autoselect_message_hides_nonpositive_surcharge() -> None:
+    """추가금 0·음수(계약 미정의)는 자동 선택 안내에서도 표시하지 않는다(#114 PR 리뷰)."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        if req.option_id is None:
+            raise CartOptionRequired([CartOption(option_id=7, name="블랙", extra_price=-1000)])
+        return AddToCartResult(success=True, cart_item_id=75)
+
+    events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
+
+    message = next(e for e in events if e["type"] == "action")["data"]["message"]
+    assert message == "블랙 옵션으로 담았어요."
+    assert "+-" not in message and "1,000" not in message
+
+
+async def test_cart_add_autoselect_keeps_merge_notice() -> None:
+    """자동 선택으로 담아도 기존 보유가 있으면 합산 안내를 유지한다(#114)."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        if req.option_id is None:
+            raise CartOptionRequired([CartOption(option_id=7, name="블랙")])
+        return AddToCartResult(success=True, cart_item_id=72)
+
+    async def get_cart_fn(*, user_id=None, guest_id=None):
+        return CartView(items=[CartViewItem(cart_item_id=9, product_id=1, option_id=7, quantity=2)])
+
+    events = await _run_add(
+        store, CartIntent(product_id=1, quantity=1), add_fn, get_cart_fn=get_cart_fn
+    )
+
+    message = next(e for e in events if e["type"] == "action")["data"]["message"]
+    assert "블랙 옵션으로" in message and "더했" in message
+
+
+async def test_cart_add_autoselect_merge_notice_ignores_other_option() -> None:
+    """자동 선택으로 담길 옵션과 다른 옵션의 보유는 합산 안내 근거가 아니다(#114 PR 리뷰).
+
+    담기 전 조회는 optionId 미상이라 그 상품의 모든 항목을 센다. 지금 후보가 1개라는 사실이
+    기존 항목도 그 옵션이라는 뜻은 아니다(단종·품절로 후보에서 빠진 옛 옵션) — Spring 은 새 줄로
+    담는데 "수량을 더했어요"라고 말하면 안내가 실제 결과와 어긋난다(REQ-CART-031).
+    """
+    store = CartStateStore()
+
+    async def add_fn(req):
+        if req.option_id is None:
+            raise CartOptionRequired([CartOption(option_id=7, name="블랙")])
+        return AddToCartResult(success=True, cart_item_id=73)
+
+    async def get_cart_fn(*, user_id=None, guest_id=None):
+        # 후보에 없는 옛 옵션(3)으로 담아둔 항목 — 자동 선택될 7 과는 다른 줄이다.
+        return CartView(items=[CartViewItem(cart_item_id=9, product_id=1, option_id=3, quantity=2)])
+
+    events = await _run_add(
+        store, CartIntent(product_id=1, quantity=1), add_fn, get_cart_fn=get_cart_fn
+    )
+
+    message = next(e for e in events if e["type"] == "action")["data"]["message"]
+    assert message == "블랙 옵션으로 담았어요."
+    assert "더했" not in message
+
+
+async def test_cart_add_multiple_options_still_reasks() -> None:
+    """옵션이 2개 이상이면 자동 선택하지 않고 기존 되물음 멀티턴을 유지한다(#114 회귀)."""
+    store = CartStateStore()
+    calls: list[int | None] = []
+
+    async def add_fn(req):
+        calls.append(req.option_id)
+        raise CartOptionRequired(
+            [CartOption(option_id=3, name="블루"), CartOption(option_id=4, name="레드")]
+        )
+
+    events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
+
+    assert calls == [None]  # 임의 선택 금지 — 재호출하지 않는다
+    assert "action" not in _types(events)
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert "블루" in token and "레드" in token
+    assert (await store.get_pending("m:t")) is not None
+
+
+async def test_cart_add_autoselect_retries_only_once() -> None:
+    """자동 선택한 옵션에도 REQUIRED 가 또 오면 재시도를 멈추고 되물음으로 degrade 한다(#114)."""
+    store = CartStateStore()
+    calls: list[int | None] = []
+
+    async def add_fn(req):
+        calls.append(req.option_id)
+        raise CartOptionRequired([CartOption(option_id=7, name="블랙")])
+
+    events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
+
+    assert calls == [None, 7]  # 무한 재시도 금지 — 자동 선택은 1회
+    assert "action" not in _types(events)
+    assert "블랙" in next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert (await store.get_pending("m:t")) is not None
+
+
+async def test_cart_add_autoselect_skipped_when_same_option_sent() -> None:
+    """이미 보낸 optionId 와 유일 후보가 같으면 같은 요청을 되풀이하지 않는다(#114)."""
+    store = CartStateStore()
+    calls: list[int | None] = []
+
+    async def add_fn(req):
+        calls.append(req.option_id)
+        raise CartOptionRequired([CartOption(option_id=7, name="블랙")])
+
+    events = await _run_add(store, CartIntent(product_id=1, option_id=7, quantity=1), add_fn)
+
+    assert calls == [7]  # 동일 요청 재호출 없음
+    assert "action" not in _types(events) and "token" in _types(events)
+
+
+async def test_cart_add_autoselect_failure_maps_to_action() -> None:
+    """자동 선택 재담기가 실패하면 기존 오류 매핑(재고 부족 등)을 그대로 탄다(#114)."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        if req.option_id is None:
+            raise CartOptionRequired([CartOption(option_id=7, name="블랙")])
+        raise CartStockInsufficient(available_stock=2)
+
+    events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
+
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADD_FAILED" and action["reason"] == "STOCK_INSUFFICIENT"
+    assert "2개뿐" in action["message"]
+    assert await store.get_pending("m:t") is None
+
+
+async def test_cart_add_autoselect_invalid_falls_back_to_reask() -> None:
+    """자동 선택한 옵션이 INVALID 면 기존 상한 있는 되물음 재시도로 이어진다(#114)."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        if req.option_id is None:
+            raise CartOptionRequired([CartOption(option_id=7, name="블랙")])
+        raise CartOptionInvalid([CartOption(option_id=8, name="화이트")])
+
+    events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
+
+    assert "action" not in _types(events)  # 상한(기본 1) 내 → 재질문
+    pending = await store.get_pending("m:t")
+    assert pending is not None and pending.attempts == 1
 
 
 async def test_last_reco_name_cache_is_bounded_lru(monkeypatch: pytest.MonkeyPatch) -> None:

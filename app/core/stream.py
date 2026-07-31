@@ -15,16 +15,21 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Callable
+from contextlib import nullcontext
+from dataclasses import dataclass
+from typing import Any
 
 from fastapi import HTTPException, Request, status
 from fastapi.responses import StreamingResponse
+from langsmith.run_helpers import tracing_context
 
 from app.core.auth import Identity
 from app.core.config import get_settings
 from app.core.conversation import TurnStatus
 from app.core.errors import new_request_id
 from app.core.logging import get_logger
-from app.core.observability import RequestObservation
+from app.core.observability import RequestObservation, identifier_fingerprint
+from app.core.tracing import RequestTrace, bind_request_trace
 from app.schemas.chat import DoneData, ErrorData
 
 logger = get_logger(__name__)
@@ -35,26 +40,96 @@ _SSE_HEADERS = {
 }
 
 
+@dataclass
+class _ScopeIdleWaiters:
+    event: asyncio.Event
+    count: int = 0
+
+
 class ActiveStreamRegistry:
     """인메모리 활성 스트림 레지스트리 (§2.9 a). acquire/release 는 await 를 끼지 않아
     이벤트 루프 상에서 원자적이다 (check-then-add 사이 선점 없음)."""
 
     def __init__(self) -> None:
-        self._active: set[str] = set()
+        self._active: dict[str, tuple[str, str] | None] = {}
+        self._fences: dict[tuple[str, str], StreamScopeFence] = {}
+        self._scope_idle: dict[tuple[str, str], _ScopeIdleWaiters] = {}
 
-    def acquire(self, stream_key: str) -> bool:
-        """활성 등록. 이미 활성이면 False (호출자가 409 로 거절)."""
+    def acquire(
+        self,
+        stream_key: str,
+        *,
+        owner_id: str | None = None,
+        session_id: str | None = None,
+    ) -> bool:
+        """활성 등록. buyer scope가 fenced 상태이거나 key가 활성이면 False."""
+        if (owner_id is None) != (session_id is None):
+            raise ValueError("owner_id and session_id must be provided together")
         if stream_key in self._active:
             return False
-        self._active.add(stream_key)
+        scope = (owner_id, session_id) if owner_id is not None and session_id is not None else None
+        if scope is not None and scope in self._fences:
+            return False
+        self._active[stream_key] = scope
+        if scope is not None:
+            waiters = self._scope_idle.get(scope)
+            if waiters is not None:
+                waiters.event.clear()
         return True
 
     def release(self, stream_key: str) -> None:
         """활성 해제 (중복 해제 무해)."""
-        self._active.discard(stream_key)
+        scope = self._active.pop(stream_key, None)
+        if scope is not None and scope not in self._active.values():
+            waiters = self._scope_idle.get(scope)
+            if waiters is not None:
+                waiters.event.set()
 
     def is_active(self, stream_key: str) -> bool:
         return stream_key in self._active
+
+    def acquire_fence(self, owner_id: str, session_id: str) -> StreamScopeFence | None:
+        """해당 buyer session scope에 active stream이 없을 때 non-blocking fence를 획득한다."""
+        scope = (owner_id, session_id)
+        if scope in self._fences or scope in self._active.values():
+            return None
+        token = StreamScopeFence(owner_id=owner_id, session_id=session_id)
+        self._fences[scope] = token
+        return token
+
+    def release_fence(self, token: StreamScopeFence) -> None:
+        """발급한 동일 token 객체만 fence를 해제할 수 있다."""
+        scope = (token.owner_id, token.session_id)
+        if self._fences.get(scope) is not token:
+            raise ValueError("stream scope fence token is not active")
+        del self._fences[scope]
+
+    def is_fenced(self, owner_id: str, session_id: str) -> bool:
+        return (owner_id, session_id) in self._fences
+
+    async def wait_for_scope_idle(self, owner_id: str, session_id: str) -> None:
+        """해당 buyer session scope의 기존 stream이 모두 종료될 때까지 event 기반 대기한다."""
+        scope = (owner_id, session_id)
+        while scope in self._active.values():
+            waiters = self._scope_idle.get(scope)
+            if waiters is None or waiters.event.is_set():
+                waiters = _ScopeIdleWaiters(asyncio.Event())
+                self._scope_idle[scope] = waiters
+            waiters.count += 1
+            try:
+                await waiters.event.wait()
+            finally:
+                waiters.count -= 1
+                if waiters.count == 0 and self._scope_idle.get(scope) is waiters:
+                    del self._scope_idle[scope]
+
+
+@dataclass(frozen=True)
+class StreamScopeFence:
+    """Owner/session registry fence identity token."""
+
+    owner_id: str
+    session_id: str
 
 
 _registry = ActiveStreamRegistry()
@@ -122,11 +197,11 @@ async def _safe_finish(
     try:
         await observer.finish(loop_time, *args)
     except Exception:
-        logger.exception("observer.finish 실패 stream_key=%s", stream_key)
+        logger.exception("observer.finish 실패 streamFp=%s", identifier_fingerprint(stream_key))
 
 
-def _error_code_of(frame: str) -> str | None:
-    """SSE 프레임이 in-stream error 이벤트면 code 를 반환(그 외 None). 그래프 자체 error emit 감지용."""
+def _terminal_event_of(frame: str) -> tuple[str | None, str | None]:
+    """SSE 종결 이벤트의 terminal reason 과 error code 를 반환한다."""
     import json
 
     try:
@@ -135,12 +210,211 @@ def _error_code_of(frame: str) -> str | None:
             line = line[len("data:") :].strip()
         payload = json.loads(line)
     except (ValueError, TypeError):
-        return None
-    if not isinstance(payload, dict) or payload.get("type") != "error":
-        return None
+        return None, None
+    if not isinstance(payload, dict):
+        return None, None
+    event_type = payload.get("type")
+    if event_type == "done":
+        return "done", None
+    if event_type != "error":
+        return None, None
     data = payload.get("data") or {}
     code = data.get("code") if isinstance(data, dict) else None
-    return code if isinstance(code, str) else "INTERNAL"
+    return "error_frame", code if isinstance(code, str) else "INTERNAL"
+
+
+_PUMP_EOF = object()
+
+
+class _IteratorPump:
+    """One-task, demand-driven owner for an async iterator and its trace context."""
+
+    def __init__(self, iterator: AsyncIterator[str], trace: RequestTrace | None) -> None:
+        self._iterator = iterator
+        self._trace = trace
+        self._demands: asyncio.Queue[asyncio.Future[object]] = asyncio.Queue(maxsize=1)
+        self._terminal_ack = asyncio.Event()
+        self._task = asyncio.create_task(self._run())
+        self._stopped = False
+
+    def request(self) -> asyncio.Future[object]:
+        """Submit exactly one pull without allowing eager prefetch."""
+        if self._stopped:
+            raise RuntimeError("stream iterator pump is stopped")
+        reply: asyncio.Future[object] = asyncio.get_running_loop().create_future()
+        self._demands.put_nowait(reply)
+        return reply
+
+    async def cancel_and_wait(self) -> None:
+        if not self._task.done():
+            self._task.cancel()
+        await asyncio.gather(self._task, return_exceptions=True)
+
+    async def wait_closed(self) -> None:
+        await self._task
+
+    def acknowledge_terminal(self) -> None:
+        self._terminal_ack.set()
+
+    def done(self) -> bool:
+        return self._task.done()
+
+    async def _run(self) -> None:
+        current_reply: asyncio.Future[object] | None = None
+        context: Any = bind_request_trace(self._trace) if self._trace is not None else nullcontext()
+        try:
+            # LANGSMITH_TRACING is the application feature flag as well as an SDK
+            # auto-tracing flag. Disable the latter at the persistent producer task
+            # boundary so every seller LangGraph/LLM/tool child task inherits the
+            # suppression while our independent RequestTrace context stays active.
+            with tracing_context(enabled=False):
+                with context:
+                    while True:
+                        current_reply = await self._demands.get()
+                        try:
+                            item = await self._iterator.__anext__()
+                        except StopAsyncIteration:
+                            self._stopped = True
+                            current_reply.set_result(_PUMP_EOF)
+                            current_reply = None
+                            break
+                        except asyncio.CancelledError as exc:
+                            # A generator-raised cancellation is a stream outcome. A task
+                            # cancellation has a positive cancelling() count and must tear
+                            # down the producer immediately.
+                            if asyncio.current_task() and asyncio.current_task().cancelling():
+                                raise
+                            self._stopped = True
+                            current_reply.set_exception(exc)
+                            current_reply = None
+                            break
+                        except BaseException as exc:
+                            self._stopped = True
+                            current_reply.set_exception(exc)
+                            current_reply = None
+                            break
+
+                        current_reply.set_result(item)
+                        current_reply = None
+                        if _terminal_event_of(item)[0] is not None:
+                            self._stopped = True
+                            await self._terminal_ack.wait()
+                            break
+        finally:
+            self._stopped = True
+            if current_reply is not None and not current_reply.done():
+                current_reply.cancel()
+            try:
+                await self._iterator.aclose()  # type: ignore[attr-defined]
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("stream iterator close failed code=STREAM_CLOSE_FAILED")
+
+
+class _ResponseLifecycle:
+    """Idempotent owner armed before a StreamingResponse leaves open_stream()."""
+
+    def __init__(
+        self,
+        *,
+        pump: _IteratorPump,
+        registry: ActiveStreamRegistry,
+        stream_key: str,
+        observer: RequestObservation | None,
+        loop: asyncio.AbstractEventLoop,
+        prefetched_terminal: bool,
+    ) -> None:
+        self._pump = pump
+        self._registry = registry
+        self._stream_key = stream_key
+        self._observer = observer
+        self._loop = loop
+        self._prefetched_terminal = prefetched_terminal
+        self._lock = asyncio.Lock()
+        self._finished = False
+
+    async def finish(
+        self,
+        *,
+        stream_status: TurnStatus,
+        error_type: str | None,
+        terminal_reason: str,
+        natural_stop: bool,
+        pending_reply: asyncio.Future[object] | None = None,
+    ) -> None:
+        async with self._lock:
+            if self._finished:
+                return
+            try:
+                if pending_reply is not None and not pending_reply.done():
+                    pending_reply.cancel()
+                if natural_stop or self._prefetched_terminal:
+                    self._pump.acknowledge_terminal()
+                if natural_stop or self._prefetched_terminal or self._pump.done():
+                    await self._pump.wait_closed()
+                else:
+                    await self._pump.cancel_and_wait()
+            finally:
+                self._registry.release(self._stream_key)
+                if self._observer is not None:
+                    await _safe_finish(
+                        self._observer,
+                        self._stream_key,
+                        self._loop.time(),
+                        stream_status,
+                        error_type,
+                        terminal_reason,
+                    )
+                self._finished = True
+
+    async def cancel(self) -> None:
+        await self.finish(
+            stream_status=TurnStatus.CANCELLED,
+            error_type=None,
+            terminal_reason="client_disconnect",
+            natural_stop=False,
+        )
+
+
+class _ArmedBodyIterator:
+    """Async iterator whose close hook works even before its first __anext__."""
+
+    def __init__(self, iterator: AsyncIterator[str], lifecycle: _ResponseLifecycle) -> None:
+        self._iterator = iterator
+        self._lifecycle = lifecycle
+        self.started = False
+
+    def __aiter__(self) -> _ArmedBodyIterator:
+        return self
+
+    async def __anext__(self) -> str:
+        self.started = True
+        return await self._iterator.__anext__()
+
+    async def aclose(self) -> None:
+        if self.started:
+            await self._iterator.aclose()  # type: ignore[attr-defined]
+        else:
+            await self._lifecycle.cancel()
+
+    async def abort(self) -> None:
+        await self._lifecycle.cancel()
+        if self.started:
+            await self._iterator.aclose()  # type: ignore[attr-defined]
+
+
+class _LifecycleStreamingResponse(StreamingResponse):
+    """StreamingResponse that owns cancellation in the header/body handoff."""
+
+    body_iterator: _ArmedBodyIterator
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        except BaseException:
+            await self.body_iterator.abort()
+            raise
 
 
 async def open_stream(
@@ -160,11 +434,22 @@ async def open_stream(
     registry = get_registry()
     loop = asyncio.get_event_loop()
     stream_request_id = observer.request_id if observer is not None else new_request_id()
+    trace = observer.trace if observer is not None else None
 
-    if not registry.acquire(stream_key):
+    buyer_session = getattr(observer, "buyer_session", None)
+    if not registry.acquire(
+        stream_key,
+        owner_id=buyer_session.owner_id if buyer_session is not None else None,
+        session_id=buyer_session.session_id if buyer_session is not None else None,
+    ):
         if observer is not None:
             await _safe_finish(
-                observer, stream_key, loop.time(), TurnStatus.FAILED, "STREAM_IN_PROGRESS"
+                observer,
+                stream_key,
+                loop.time(),
+                TurnStatus.FAILED,
+                "STREAM_IN_PROGRESS",
+                "stream_in_progress",
             )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -186,11 +471,25 @@ async def open_stream(
             # except Exception 으로는 안 잡혀 release 가 스킵됐었다(슬롯 영구 누수, PR #48
             # 후속 리뷰) — 명시적으로 잡아 슬롯을 풀고 CANCELLED 로 마감 후 취소를 재전파한다.
             registry.release(stream_key)
-            await _safe_finish(observer, stream_key, loop.time(), TurnStatus.CANCELLED)
+            await _safe_finish(
+                observer,
+                stream_key,
+                loop.time(),
+                TurnStatus.CANCELLED,
+                None,
+                "client_disconnect",
+            )
             raise
         except Exception:
             registry.release(stream_key)
-            await _safe_finish(observer, stream_key, loop.time(), TurnStatus.FAILED, "INTERNAL")
+            await _safe_finish(
+                observer,
+                stream_key,
+                loop.time(),
+                TurnStatus.FAILED,
+                "INTERNAL",
+                "store_unavailable",
+            )
             raise
 
     start = loop.time()
@@ -200,8 +499,11 @@ async def open_stream(
         # 그래프 진입 검증 등 inner_factory 동기 예외 — 슬롯·턴 누수 방지.
         registry.release(stream_key)
         if observer is not None:
-            await _safe_finish(observer, stream_key, loop.time(), TurnStatus.FAILED, "INTERNAL")
+            await _safe_finish(
+                observer, stream_key, loop.time(), TurnStatus.FAILED, "INTERNAL", "tool_error"
+            )
         raise
+    pump = _IteratorPump(agen, trace)
 
     poll = settings.stream_disconnect_poll_s
     deadline = start + settings.stream_total_timeout_s
@@ -214,152 +516,228 @@ async def open_stream(
     # (c) first-token 상한 — 첫 이벤트 도착 전이므로 아직 200 헤더 전. 초과 시 504(§2.5).
     # (b) 이 대기 구간에서도 disconnect 를 폴링한다 — 첫 이벤트 전에 클라이언트가 떠나면
     #     상류 LLM 비용·레지스트리 슬롯을 first-token 상한(기본 10s)까지 붙들지 않는다.
-    # wait_for 로 __anext__ 를 취소하면 제너레이터가 손상되므로 task 폴링을 쓴다(_wrapped 동일).
+    # wait_for 로 reply를 취소하지 않고 persistent producer의 단일 demand를 폴링한다.
     # 스트림 반환 전 실패는 _wrapped finally 가 안 도므로 여기서 해제하고, 정상/빈 스트림만
     # _wrapped finally 한 곳에서 해제한다(이중 해제 레이스 방지).
-    ft_task = asyncio.ensure_future(agen.__anext__())
+    first_reply = pump.request()
 
     async def _abort_prestream() -> None:
-        registry.release(stream_key)
-        if not ft_task.done():
-            ft_task.cancel()
-        await asyncio.gather(ft_task, return_exceptions=True)
-        await agen.aclose()
+        try:
+            if not first_reply.done():
+                first_reply.cancel()
+            await pump.cancel_and_wait()
+        finally:
+            registry.release(stream_key)
 
     first: str | None = None
-    while True:
-        remaining = ft_deadline - loop.time()
-        if remaining <= 0:
-            await _abort_prestream()
-            if observer is not None:
-                await _safe_finish(
-                    observer, stream_key, loop.time(), TurnStatus.FAILED, "UPSTREAM_TIMEOUT"
-                )
-            raise HTTPException(
-                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                detail={"code": "UPSTREAM_TIMEOUT", "message": "상류(LLM) 응답 지연"},
-            )
-        completed, _ = await asyncio.wait({ft_task}, timeout=min(remaining, poll))
-        if ft_task in completed:
-            try:
-                first = ft_task.result()
-            except StopAsyncIteration:
-                first = None  # 빈 스트림 — 해제는 _wrapped finally 에서.
-            except asyncio.CancelledError:
-                await _abort_prestream()
-                if observer is not None:
-                    await _safe_finish(observer, stream_key, loop.time(), TurnStatus.CANCELLED)
-                raise
-            except Exception:
-                # 첫 프레임 전 상류 오류(LLM/Spring 등) — 누수 방지 후 전파.
+    try:
+        while True:
+            remaining = ft_deadline - loop.time()
+            if remaining <= 0:
                 await _abort_prestream()
                 if observer is not None:
                     await _safe_finish(
-                        observer, stream_key, loop.time(), TurnStatus.FAILED, "INTERNAL"
+                        observer,
+                        stream_key,
+                        loop.time(),
+                        TurnStatus.FAILED,
+                        "UPSTREAM_TIMEOUT",
+                        "first_event_timeout",
                     )
-                raise
-            break
-        if await request.is_disconnected():
-            # (b) 첫 이벤트 전 연결 종료 — 정리 후 즉시 종료(소비될 응답 없음).
-            logger.info("stream cancelled before first token stream_key=%s", stream_key)
-            await _abort_prestream()
-            if observer is not None:
-                await _safe_finish(observer, stream_key, loop.time(), TurnStatus.CANCELLED)
-            return StreamingResponse(
-                _empty_stream(),
-                media_type="text/event-stream; charset=utf-8",
-                headers=_SSE_HEADERS,
+                raise HTTPException(
+                    status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                    detail={"code": "UPSTREAM_TIMEOUT", "message": "상류(LLM) 응답 지연"},
+                )
+            completed, _ = await asyncio.wait({first_reply}, timeout=min(remaining, poll))
+            if first_reply in completed:
+                try:
+                    result = first_reply.result()
+                    if result is _PUMP_EOF:
+                        first = None
+                    else:
+                        first = result  # type: ignore[assignment]
+                except StopAsyncIteration:  # pragma: no cover - pump converts EOF to sentinel
+                    first = None  # 빈 스트림 — 해제는 _wrapped finally 에서.
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # 첫 프레임 전 상류 오류(LLM/Spring 등) — 누수 방지 후 전파.
+                    await _abort_prestream()
+                    if observer is not None:
+                        await _safe_finish(
+                            observer,
+                            stream_key,
+                            loop.time(),
+                            TurnStatus.FAILED,
+                            "INTERNAL",
+                            "tool_error",
+                        )
+                    raise
+                break
+            if await request.is_disconnected():
+                # (b) 첫 이벤트 전 연결 종료 — 정리 후 즉시 종료(소비될 응답 없음).
+                logger.info(
+                    "stream cancelled before first token streamFp=%s",
+                    identifier_fingerprint(stream_key),
+                )
+                await _abort_prestream()
+                if observer is not None:
+                    await _safe_finish(
+                        observer,
+                        stream_key,
+                        loop.time(),
+                        TurnStatus.CANCELLED,
+                        None,
+                        "client_disconnect",
+                    )
+                return StreamingResponse(
+                    _empty_stream(),
+                    media_type="text/event-stream; charset=utf-8",
+                    headers=_SSE_HEADERS,
+                )
+    except asyncio.CancelledError:
+        await _abort_prestream()
+        if observer is not None:
+            await _safe_finish(
+                observer,
+                stream_key,
+                loop.time(),
+                TurnStatus.CANCELLED,
+                None,
+                "client_disconnect",
             )
+        raise
 
-    # 첫 이벤트 확보 — first-token 지연 기록 + 부분 텍스트 누적 시작(§6.3).
+    # 첫 이벤트 확보 — SSE readiness와 user-visible text 지연을 분리 기록(§6.3).
     if observer is not None and first is not None:
-        observer.on_first_token(loop.time())
-        observer.record_frame(first)
+        observer.record_frame(first, loop.time())
+
+    first_terminal = first is None or (
+        first is not None and _terminal_event_of(first)[0] is not None
+    )
+    lifecycle = _ResponseLifecycle(
+        pump=pump,
+        registry=registry,
+        stream_key=stream_key,
+        observer=observer,
+        loop=loop,
+        prefetched_terminal=first_terminal,
+    )
 
     async def _wrapped() -> AsyncIterator[str]:
-        # 다음 이벤트 대기는 지속 task 로 폴링한다 — wait_for 로 __anext__ 를 취소하면
-        # 제너레이터가 망가지므로(다음 호출이 StopAsyncIteration) asyncio.wait 로 완료만 관찰한다.
-        next_task: asyncio.Task | None = None
+        # 다음 이벤트는 persistent producer에 하나씩 demand한다. outward yield 동안에는
+        # outstanding demand가 없으므로 terminal 뒤 over-pull이나 eager prefetch가 없다.
+        next_reply: asyncio.Future[object] | None = None
         stream_status = TurnStatus.COMPLETED
         error_type: str | None = None
+        terminal_reason = "eof"
+        natural_stop = False
         try:
+            if first is None:
+                natural_stop = True
+                return
             if first is not None:
-                first_err = _error_code_of(first)
-                yield first  # first 는 위에서 record_frame 됨(중복 누적 방지)
+                first_terminal, first_err = _terminal_event_of(first)
+                if first_terminal is not None:
+                    terminal_reason = first_terminal
+                    natural_stop = True
                 if first_err is not None:
-                    # in-stream error 는 종결 이벤트(§3.1) — 이후 이벤트 당기지 않는다.
+                    # terminal error 상태는 프레임을 넘기기 전에 확정한다. 소비자가 이 프레임
+                    # 직후 iterator 를 닫아도 finally 가 FAILED/error_type 으로 마감해야 한다.
                     stream_status = TurnStatus.FAILED
                     error_type = first_err
+                yield first  # first 는 위에서 record_frame 됨(중복 누적 방지)
+                if first_terminal is not None:
+                    # done/error 는 모두 종결 이벤트 — 이후 프레임을 당기지 않는다.
                     return
-            next_task = asyncio.ensure_future(agen.__anext__())
+            next_reply = pump.request()
             while True:
                 remaining = deadline - loop.time()
                 if remaining <= 0:
                     # (c) 전체 상한 초과 — done(stop)으로 정상 절단(COMPLETED, FAILED 아님).
-                    logger.info("stream total cap reached stream_key=%s", stream_key)
-                    yield _done_stop_frame()
+                    logger.info(
+                        "stream total cap reached streamFp=%s", identifier_fingerprint(stream_key)
+                    )
+                    terminal_reason = "total_timeout_stop"
+                    done_frame = _done_stop_frame()
+                    if observer is not None:
+                        observer.record_frame(done_frame, loop.time())
+                    yield done_frame
                     break
-                completed, _ = await asyncio.wait({next_task}, timeout=min(remaining, poll))
-                if next_task not in completed:
+                completed, _ = await asyncio.wait({next_reply}, timeout=min(remaining, poll))
+                if next_reply not in completed:
                     # 아직 이벤트 없음(제너레이터 유휴) — (b) 연결 종료 조기 감지.
                     if await request.is_disconnected():
                         logger.info(
-                            "stream cancelled by client disconnect stream_key=%s", stream_key
+                            "stream cancelled by client disconnect streamFp=%s",
+                            identifier_fingerprint(stream_key),
                         )
                         stream_status = TurnStatus.CANCELLED
+                        terminal_reason = "client_disconnect"
                         break
                     continue  # 같은 task 를 계속 기다린다(제너레이터 보존)
                 try:
-                    item = next_task.result()
-                except StopAsyncIteration:
+                    result = next_reply.result()
+                    if result is _PUMP_EOF:
+                        natural_stop = True
+                        break
+                    item = result  # type: ignore[assignment]
+                except StopAsyncIteration:  # pragma: no cover - pump converts EOF to sentinel
                     break
                 except Exception:
                     # (c) 첫 이벤트 후(=200 전송 후) 상류 오류 — 계약상 in-stream error 로
                     #     마무리해야 한다(연결만 끊기지 않게, §2.9 c/§3.1). 기본 INTERNAL.
                     #     실제 그래프는 필요 시 자체 error(LLM_UNAVAILABLE 등)를 먼저 emit 가능.
-                    logger.exception("in-stream error stream_key=%s", stream_key)
+                    logger.exception(
+                        "in-stream error streamFp=%s", identifier_fingerprint(stream_key)
+                    )
                     stream_status = TurnStatus.FAILED
                     error_type = "INTERNAL"
-                    yield _error_frame(
+                    terminal_reason = "tool_error"
+                    natural_stop = True
+                    error_frame = _error_frame(
                         "INTERNAL",
                         "처리 중 오류가 발생했습니다",
                         request_id=stream_request_id,
                         retryable=True,
                     )
+                    if observer is not None:
+                        observer.record_frame(error_frame, loop.time())
+                    yield error_frame
                     break
                 if observer is not None:
-                    observer.record_frame(item)  # 부분 텍스트 누적(§6.3 a)
-                item_err = _error_code_of(item)
-                yield item
+                    observer.record_frame(item, loop.time())  # 부분 텍스트 누적(§6.3 a)
+                item_terminal, item_err = _terminal_event_of(item)
+                if item_terminal is not None:
+                    terminal_reason = item_terminal
+                    natural_stop = True
                 if item_err is not None:
-                    # 그래프가 자체 in-stream error(LLM_UNAVAILABLE 등)를 emit — 실패로 마감하고
-                    # 종결한다(§3.1/§6.3). break 없으면 이후 token/done 이 저장소를 오염시킨다.
                     stream_status = TurnStatus.FAILED
                     error_type = item_err
+                yield item
+                if item_terminal is not None:
+                    # 그래프 terminal 프레임 뒤 token/done 을 당겨 응답·저장소를 오염시키지 않는다.
                     break
-                next_task = asyncio.ensure_future(agen.__anext__())
+                next_reply = pump.request()
         except asyncio.CancelledError:
             # Starlette 가 클라이언트 disconnect 로 응답 task 를 취소한 경우 — CANCELLED 로 마감.
             stream_status = TurnStatus.CANCELLED
+            terminal_reason = "client_disconnect"
             raise
         finally:
-            # (b) 취소·상한·정상 종료 공통 정리: 대기 중 task 취소 → 내부 제너레이터 close
-            #     (LLM 스트림/그래프 task 로 취소 전파) → 레지스트리 해제 → 대화 저장·로그 마감.
-            if next_task is not None and not next_task.done():
-                next_task.cancel()
-                await asyncio.gather(next_task, return_exceptions=True)
-            await agen.aclose()
-            registry.release(stream_key)
-            if observer is not None:
-                # 이 시점엔 이미 SSE 헤더/프레임이 클라이언트로 전송된 뒤다 — finish() 가
-                # 예외를 던지면 done/error 종결 프레임 없이 스트림이 끊기거나(§2.9/§3.1
-                # 위반), CancelledError 로 취소 전파 중이던 경우 그 취소가 이 새 예외로
-                # 대체돼 정상 client disconnect 가 엉뚱한 오류로 둔갑한다(PR #48 후속 리뷰).
-                # 관측 실패가 스트림 종료 자체를 막지 않도록 로그만 남기고 삼킨다.
-                await _safe_finish(observer, stream_key, loop.time(), stream_status, error_type)
+            # (b) 취소·상한·정상 종료 공통 정리: persistent producer가 내부 제너레이터를
+            #     같은 task/context에서 close → 레지스트리 해제 → 대화 저장·로그 마감.
+            await lifecycle.finish(
+                stream_status=stream_status,
+                error_type=error_type,
+                terminal_reason=terminal_reason,
+                natural_stop=natural_stop,
+                pending_reply=next_reply,
+            )
 
-    return StreamingResponse(
-        _wrapped(),
+    body = _ArmedBodyIterator(_wrapped(), lifecycle)
+    return _LifecycleStreamingResponse(
+        body,
         media_type="text/event-stream; charset=utf-8",
         headers=_SSE_HEADERS,
     )

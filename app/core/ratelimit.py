@@ -166,7 +166,13 @@ async def rate_limit_middleware(request: Request, call_next):
         if over:
             rid = get_request_id(request)
             scope = sub_key or ip_key
-            emit_rejection(rid, "RATE_LIMITED", scope=scope, path=request.url.path)
+            emit_rejection(
+                rid,
+                "RATE_LIMITED",
+                scope=scope,
+                ip=_host(request),
+                path=request.url.path,
+            )
             return JSONResponse(
                 status_code=429,
                 content=error_envelope("RATE_LIMITED", "요청이 너무 많습니다", rid),

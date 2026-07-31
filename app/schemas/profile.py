@@ -10,6 +10,7 @@ from __future__ import annotations
 from pydantic import Field, field_validator
 
 from app.schemas.chat import CamelModel
+from app.schemas.events import StrictEventModel
 
 _BIGINT_MAX = 2**63 - 1  # PostgreSQL BIGINT 상한 — 신원 id 범위 방어
 _SESSION_END_REASON_MAX_CHARS = 64  # 알려진 enum 이름은 최대 17자; 확장 허용 + inbound 남용 방어
@@ -24,7 +25,7 @@ class ProfileView(CamelModel):
     generated_at: str | None = None  # ISO-8601, 요약 생성 시각
 
 
-class SessionEndEvent(CamelModel):
+class SessionEndEvent(StrictEventModel):
     """POST /events/session-end 수신 (§3.5, I-20). best-effort·멱등((userId, sessionId) 고정키).
 
     [v0.15.17, 이슈 #62] BE 실측 payload 정렬 — 구 초안의 eventId·endedAt 제거, userId 를
@@ -40,8 +41,8 @@ class SessionEndEvent(CamelModel):
     user_id: int = Field(strict=True, gt=0, le=_BIGINT_MAX)
     # 종료된 세션 식별자(멱등키·세션 버퍼 키의 필수 요소) — 빈 문자열 거부(§3.5 essential):
     # 빈 값은 conversation_key/dedup_key 를 퇴화시키고, 최대 길이는 아래 validator 가 강제.
-    session_id: str = Field(min_length=1)
-    reason: str | None = Field(default=None, max_length=_SESSION_END_REASON_MAX_CHARS)
+    session_id: str = Field(strict=True, min_length=1)
+    reason: str | None = Field(default=None, strict=True, max_length=_SESSION_END_REASON_MAX_CHARS)
 
     @field_validator("session_id")
     @classmethod

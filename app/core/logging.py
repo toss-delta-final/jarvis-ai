@@ -7,6 +7,10 @@ MVP 단계에서는 표준 logging 구성만 제공한다. 구조화 로깅(JSON
 from __future__ import annotations
 
 import logging
+import hashlib
+import hmac
+
+from app.core.config import get_settings
 
 
 def configure_logging(level: int = logging.INFO) -> None:
@@ -20,3 +24,11 @@ def configure_logging(level: int = logging.INFO) -> None:
 def get_logger(name: str) -> logging.Logger:
     """모듈별 로거 획득 헬퍼."""
     return logging.getLogger(name)
+
+
+def safe_fingerprint(value: str | None) -> str | None:
+    """서버 pepper 기반 로그 상관관계 지문."""
+    if value is None:
+        return None
+    pepper = get_settings().pii_hash_pepper.encode("utf-8")
+    return hmac.new(pepper, value.encode("utf-8"), hashlib.sha256).hexdigest()[:16]

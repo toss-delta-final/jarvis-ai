@@ -1,6 +1,6 @@
 ---
 id: SPEC-CART-001
-version: 0.2.4
+version: 0.2.5
 status: draft
 created: 2026-07-17
 author: navis
@@ -17,6 +17,7 @@ issue_number: null
 
 ## HISTORY
 
+- **v0.2.5 (2026-07-31, 이슈 #114)** — **유일 옵션 자동 선택** 신설(REQ-CART-026/027, REQ-CART-020 단서 추가, §7 오류표 갱신): `CART_OPTION_REQUIRED` 의 옵션 후보가 **1개뿐이면** 되묻지 않고 그 `optionId` 로 즉시 재담기한다 — 선택지가 하나면 되물어도 답이 정해져 있어 불필요한 왕복만 생긴다. **계약 변경 없음**(AI 가 I-2 를 `optionId` 로 재호출할 뿐 — api-spec §4.1·SSE·스키마 불변). 자동 선택 재시도는 **1회**로 고정하고, 후보가 2개 이상이면 기존 되물음 멀티턴을 그대로 유지한다.
 - **v0.2.4 (2026-07-19)** — PR #17 리뷰(별도 사항) + PR #21과의 병합: `productName`/`optionName`(C-16)이 BE I-18 문서(2026-07-18)로 필수 포함 확정됨을 반영해 REQ-CART-036·OPEN-CART-2를 완전히 해소(v0.2.3/PR #21 시점엔 이 부분만 미확정으로 남아 있었음). `CART_QUERY_INVALID`(I-18 400) 오류 처리를 §7에 신설. `reason`·options 구조를 SPEC에 값으로 직접 중복 기재하지 않고 api-spec §4.1 참조로 전환(§5.3, REQ-CART-025/051) — REQ-CART-025엔 PR #21의 방어적 스킵 문구를 유지. 경로 B productId 요구사항은 PR #21이 붙인 `REQ-CART-001a` 번호를 그대로 채택(중복 REQ-CART-008 제거). PRD-RECOMMEND-PROFILE-AGENT.md에도 동일 내용 반영, api-spec 참조 버전 v0.15.8 유지.
 - **v0.2.3 (2026-07-19, PR #21)** — api-spec v0.15.8 동기화(#17 리뷰 반영): (1) `OUT_OF_STOCK` **폐기**(v0.15.5 C-3 해소 — 담기 재고검증 없음, 재고 차감=주문 시점) → 담기 실패 **2종**(`PRODUCT_NOT_FOUND`/`CART_ERROR`); §5.3·REQ-CART-015·051·EX-CART-2·§7 오류표·OPEN-CART-1 반영. (2) **옵션 스키마 확정**(BE 2026-07-18) — `CART_OPTION_REQUIRED` → `error.detail.options: [{optionId, name, extraPrice}]`, REQ-CART-025·OPEN-CART-2 해소. (3) **경로 B productId 해소 요구사항 신설**(REQ-CART-001a) — SSE에 카드가 없어 productId 를 직전 추천(last_reco) 문맥에서 확정하고 미노출 상품 담기를 차단(코드 구현 정합). 참조 버전 v0.15.3→v0.15.8.
 - **v0.2.2 (2026-07-19)** — 팀 피드백(PRD.pdf) 반영: `product_id`/`option_id`를 `str`→`int`(BIGINT)로, `guest_id`를 `int`→`str`(UUID)로 수정(정본 §2.6 확정 — product/product_option id는 숫자, guest.id는 CHAR(36) UUID). §5.2 응답과 §5.3 SSE 페이로드 간 `cartItemId` 타입 불일치를 `int`로 통일. OPEN-CART-5(`productId` 타입)를 해소 처리. api-spec 참조 버전 v0.14.0→v0.15.3.
@@ -169,12 +170,14 @@ class CartItem(BaseModel):
 
 ### 6.3 옵션 되물음 멀티턴 (option re-ask, REQ-CART-020~025)
 
-- **REQ-CART-020** (Event-Driven): **When** I-2가 `400 CART_OPTION_REQUIRED`(옵션 목록 포함)를 반환하면, the cart 서브그래프 **shall** 실패 `action`을 emit하지 **않고**, `token` 텍스트로 옵션을 재질문한다(예: "어떤 색상으로 담을까요?").
+- **REQ-CART-020** (Event-Driven): **When** I-2가 `400 CART_OPTION_REQUIRED`(옵션 목록 포함)를 반환하면, the cart 서브그래프 **shall** 실패 `action`을 emit하지 **않고**, `token` 텍스트로 옵션을 재질문한다(예: "어떤 색상으로 담을까요?") — 단 옵션 후보가 1개뿐이면 REQ-CART-026의 자동 선택이 우선한다.
 - **REQ-CART-021** (Event-Driven): **When** 사용자가 다음 턴에서 옵션을 답하면, the cart 서브그래프 **shall** 그 답을 `optionId`로 해석해 I-2를 재호출한다(재담기).
 - **REQ-CART-022** (Event-Driven): **When** I-2가 `400 CART_OPTION_INVALID`(옵션이 해당 상품 소속 아님)를 반환하면, the cart 서브그래프 **shall** options 목록을 다시 제시하며 **1회 재시도**로 되물음한다.
 - **REQ-CART-023** (Unwanted): **If** `CART_OPTION_INVALID` 되물음 재시도(REQ-CART-022) 후에도 실패하면, **then** the cart 서브그래프 **shall** 반복 재시도하지 않고 `action`(`CART_ADD_FAILED`, `reason: "CART_ERROR"`)으로 종료한다.
 - **REQ-CART-024** (Ubiquitous): 되물음 중인 상태(대상 상품·옵션 후보 목록)는 그래프 state(thread checkpointer)에 임시 보관하며, 프로필 store에 영속하지 **않는다**.
 - **REQ-CART-025** (Ubiquitous, 2026-07-19 확정): options 목록 **shall** api-spec §4.1이 정의하는 구조를 따른다(정확한 필드는 본 SPEC에 중복 기재하지 않음). 되물음 문구 생성은 그 구조의 표시명 필드(`name`)를 사용하며, 형식 이상 항목은 방어적으로 건너뛴다.
+- **REQ-CART-026** (Event-Driven, 2026-07-31 이슈 #114): **When** `CART_OPTION_REQUIRED`의 옵션 후보가 **정확히 1개**이고 그것이 직전 호출에 실은 `optionId`와 다르면, the cart 서브그래프 **shall** 되묻지 **않고** 그 `optionId`로 I-2를 즉시 재호출하며, 성공 시 자동 선택한 옵션의 표시 라벨(표시명 + 추가금이 있으면 함께 — 되물음 문구와 **동일한 규칙**, REQ-CART-025)을 담기 안내 문구(`action.message`)에 밝힌다. 자동 선택은 사용자가 고를 기회 자체가 없으므로 추가금을 숨기면 결제 단계에서야 알게 된다 — 선택지가 하나면 되물어도 답이 정해져 있어 왕복만 늘어난다. 합산 안내(REQ-CART-031)의 근거 보유 수량은 **확정된 `optionId` 기준**으로 센다 — 담기 전 조회 시점엔 `optionId`가 미상이라 그 상품의 다른 옵션(후보에서 빠진 옛 옵션 등) 보유까지 합산될 수 있고, 그러면 안내가 Spring의 실제 합산 결과와 어긋난다. 후보가 2개 이상이면 AI가 임의로 고르지 **않는다**(REQ-CART-020 유지).
+- **REQ-CART-027** (Unwanted, 2026-07-31 이슈 #114): **If** 자동 선택 재담기(REQ-CART-026)가 다시 실패하면, **then** the cart 서브그래프 **shall** 추가 자동 재시도 없이 그 실패 코드의 기존 처리를 따른다 — `CART_OPTION_REQUIRED` 재발은 되물음(REQ-CART-020), `CART_OPTION_INVALID`는 상한 있는 재시도(REQ-CART-022/023), 그 밖은 `action` 매핑(REQ-CART-013/014, api-spec §4.1). 자동 선택은 **1회로 고정**한다(무한 재시도 금지).
 
 ### 6.4 담기 전 보유 조회 (pre-add lookup, REQ-CART-030~033)
 
@@ -207,7 +210,7 @@ class CartItem(BaseModel):
 
 | 실패 지점 | 감지 | 처리 | 안전 불변식 |
 |---|---|---|---|
-| I-2 `CART_OPTION_REQUIRED` | 400 응답 | 되물음 멀티턴(REQ-CART-020) | 실패 action emit 금지 |
+| I-2 `CART_OPTION_REQUIRED` | 400 응답 | 후보 1개면 자동 선택 재담기(REQ-CART-026), 2개 이상이면 되물음 멀티턴(REQ-CART-020) | 실패 action emit 금지, 자동 선택 재시도 1회(REQ-CART-027) |
 | I-2 `CART_OPTION_INVALID` | 400 응답 | 되물음 1회 재시도 후 실패 시 CART_ERROR(REQ-CART-022/023) | 무한 재시도 금지 |
 | I-2 `PRODUCT_NOT_FOUND` | 404 응답 | `action`(CART_ADD_FAILED, PRODUCT_NOT_FOUND) | 후보 날조 금지 |
 | I-2 `INTERNAL_TOKEN_INVALID` | 401 응답 | `action`(CART_ERROR) + 서버 로그, 내부 원인 미노출 | 사용자에 내부 오류 상세 노출 금지 |

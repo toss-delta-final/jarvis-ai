@@ -30,6 +30,7 @@ from app.agents.seller import history
 from app.agents.seller import thread as seller_thread
 from app.agents.seller.context import SellerContext
 from app.agents.seller.middleware import check_scope
+from app.agents.seller.models import SellerRole, seller_trace_model_metadata
 from app.agents.seller.pipeline import (
     ALL_WORKERS_FAILED_TOKEN,
     PROGRESS_TOKENS,
@@ -66,6 +67,7 @@ from app.agents.seller.workers import (
 )
 from app.core.config import get_settings
 from app.core.llm import LLMNotConfigured
+from app.core.tracing import current_request_trace, trace_span
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +82,15 @@ WORKER_BUILDERS: dict[AnalysisType, Callable[[], CompiledStateGraph]] = {
     "churn": build_churn_agent,
     "abuse": build_abuse_agent,
 }
+
+
+def _llm_metadata(role: SellerRole) -> dict[str, str] | None:
+    return seller_trace_model_metadata(role)
+
+
+def _mark_degraded(reason: str) -> None:
+    if trace := current_request_trace():
+        trace.mark_degraded(reason)
 
 
 # ── supervisor 라우팅 (4-1a) ──────────────────────────────────────────────────
@@ -119,12 +130,14 @@ async def route_question(
     supervisor_input = seller_thread.build_contextual_input(question, recent_turns)
     try:
         supervisor = build_supervisor()
-        result = await asyncio.wait_for(
-            supervisor.ainvoke(
-                {"messages": [HumanMessage(content=supervisor_input)]}, context=context
-            ),
-            timeout=settings.seller_route_timeout_s,
-        )
+        with trace_span("llm.seller.supervisor", "llm", _llm_metadata("supervisor")):
+            result = await asyncio.wait_for(
+                supervisor.ainvoke(
+                    {"messages": [HumanMessage(content=supervisor_input)]},
+                    context=context,
+                ),
+                timeout=settings.seller_route_timeout_s,
+            )
         decision = result.get("structured_response")
         if not isinstance(decision, RouteDecision):
             raise TypeError("supervisor 가 RouteDecision 을 반환하지 않았다")
@@ -175,11 +188,13 @@ async def _run_one_worker(
 
     타임아웃·예외는 여기서 처리하지 않고 올린다 — 수렴은 run_workers 소관.
     """
-    agent = WORKER_BUILDERS[analysis_type]()
-    result = await asyncio.wait_for(
-        agent.ainvoke({"messages": [HumanMessage(content=message)]}, context=context),
-        timeout=timeout_s,
-    )
+    with trace_span(f"seller.worker.{analysis_type}", "chain"):
+        agent = WORKER_BUILDERS[analysis_type]()
+        with trace_span("llm.seller.worker", "llm", _llm_metadata("worker")):
+            result = await asyncio.wait_for(
+                agent.ainvoke({"messages": [HumanMessage(content=message)]}, context=context),
+                timeout=timeout_s,
+            )
     finding = result.get("structured_response")
     if not isinstance(finding, AnalysisFinding):
         raise TypeError(f"워커 {analysis_type} 가 AnalysisFinding 을 반환하지 않았다")
@@ -231,7 +246,10 @@ async def run_workers(
             findings.append(result)
 
     if failures and failures == len(plan.analyses):
+        _mark_degraded("all_workers_failed")
         raise AllWorkersFailedError("선택된 분석 워커가 전부 실패했다")
+    if failures:
+        _mark_degraded("worker_degrade")
     return findings
 
 
@@ -301,34 +319,44 @@ async def write_verified_report(
             else format_rewrite_input(findings, report or "", feedback)
         )
         try:
-            result = await asyncio.wait_for(
-                report_agent.ainvoke(
-                    {"messages": [HumanMessage(content=message)]}, context=context
-                ),
-                timeout=timeout_s,
-            )
+            llm_role = "report" if attempt == 1 else "rewrite"
+            with trace_span(
+                f"llm.seller.{llm_role}",
+                "llm",
+                _llm_metadata("report"),
+            ):
+                result = await asyncio.wait_for(
+                    report_agent.ainvoke(
+                        {"messages": [HumanMessage(content=message)]},
+                        context=context,
+                    ),
+                    timeout=timeout_s,
+                )
             report = _content_to_text(result["messages"][-1].content)
         except Exception as exc:
             if report is None:
                 raise  # 1차 작성 실패 — 내보낼 보고서가 없다(호출부 사과 경로)
             logger.warning("보고서 재작성 %d회차 실패(%r) — 기존 보고서 미달 채택", attempt, exc)
+            _mark_degraded("partial_report")
             return VerifiedReport(report, passed=False, attempts=attempt - 1, last_score=last_score)
 
         await emit(PROGRESS_TOKENS["verify"])
         det_reasons = run_deterministic_checks(report, findings)
         try:
-            judge_result = await asyncio.wait_for(
-                judge_agent.ainvoke(
-                    {"messages": [HumanMessage(content=format_judge_input(findings, report))]},
-                    context=context,
-                ),
-                timeout=timeout_s,
-            )
+            with trace_span("llm.seller.judge", "llm", _llm_metadata("judge")):
+                judge_result = await asyncio.wait_for(
+                    judge_agent.ainvoke(
+                        {"messages": [HumanMessage(content=format_judge_input(findings, report))]},
+                        context=context,
+                    ),
+                    timeout=timeout_s,
+                )
             score = judge_result.get("structured_response")
             if not isinstance(score, ReportScore):
                 raise TypeError("judge 가 ReportScore 를 반환하지 않았다")
         except Exception as exc:
             logger.warning("judge %d회차 실패(%r) — 현재 보고서 미검증 채택", attempt, exc)
+            _mark_degraded("partial_report")
             return VerifiedReport(report, passed=False, attempts=attempt, last_score=last_score)
 
         last_score = score
@@ -345,6 +373,7 @@ async def write_verified_report(
         )
 
     logger.warning("보고서 검증 %d회 미달 — 마지막 보고서 채택(§7 degrade)", max_attempts)
+    _mark_degraded("partial_report")
     return VerifiedReport(report or "", passed=False, attempts=max_attempts, last_score=last_score)
 
 
@@ -367,13 +396,14 @@ async def run_recommend(
     await emit(PROGRESS_TOKENS["recommend"])
     agent = build_recommend_agent()
     try:
-        result = await asyncio.wait_for(
-            agent.ainvoke(
-                {"messages": [HumanMessage(content=format_recommend_input(findings, report))]},
-                context=context,
-            ),
-            timeout=get_settings().seller_worker_timeout_s,
-        )
+        with trace_span("llm.seller.recommend", "llm", _llm_metadata("recommend")):
+            result = await asyncio.wait_for(
+                agent.ainvoke(
+                    {"messages": [HumanMessage(content=format_recommend_input(findings, report))]},
+                    context=context,
+                ),
+                timeout=get_settings().seller_worker_timeout_s,
+            )
         recommendations = result.get("structured_response")
         if not isinstance(recommendations, RecommendationSet):
             raise TypeError("recommend 가 RecommendationSet 을 반환하지 않았다")
@@ -442,10 +472,11 @@ async def run_analysis_pipeline(
 
     await emit(PROGRESS_TOKENS["planner"])
     planner = build_analysis_planner()
-    result = await asyncio.wait_for(
-        planner.ainvoke({"messages": [HumanMessage(content=planner_input)]}, context=context),
-        timeout=settings.seller_worker_timeout_s,
-    )
+    with trace_span("llm.seller.planner", "llm", _llm_metadata("planner")):
+        result = await asyncio.wait_for(
+            planner.ainvoke({"messages": [HumanMessage(content=planner_input)]}, context=context),
+            timeout=settings.seller_worker_timeout_s,
+        )
     plan = result.get("structured_response")
     if not isinstance(plan, AnalysisPlan):
         raise TypeError("planner 가 AnalysisPlan 을 반환하지 않았다")

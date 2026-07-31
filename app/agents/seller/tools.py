@@ -14,6 +14,9 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
+from functools import wraps
+from typing import Any
 
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
@@ -21,10 +24,30 @@ from langchain_core.tools import BaseTool, tool
 from app.agents.seller import calc
 from app.agents.seller.context import SellerContext
 from app.core.config import get_settings
+from app.core.tracing import trace_span
 from app.schemas.spring import BehaviorEventsResult, ProductCreate, ProductUpdate
 from app.services.spring_client import SpringUnavailableError, get_spring_client
 
 _log = logging.getLogger(__name__)
+
+
+def _traced_tool(
+    name: str,
+) -> Callable[[Callable[..., Awaitable[str]]], Callable[..., Awaitable[str]]]:
+    """Add a payload-free bounded tool span without changing LangChain's tool schema."""
+
+    def decorate(func: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str]]:
+        @wraps(func)
+        async def wrapped(*args: Any, **kwargs: Any) -> str:
+            with trace_span(name, "tool") as span:
+                result = await func(*args, **kwargs)
+                if span is not None and result.startswith("Error:"):
+                    span.error_type = "TOOL_ERROR"
+                return result
+
+        return wrapped
+
+    return decorate
 
 
 def _reference_note(from_date: str, to_date: str) -> str:
@@ -51,6 +74,7 @@ def _summarize_events(events: list[dict]) -> str:
 
 
 @tool
+@_traced_tool("tool.get_sales_timeseries")
 async def get_sales_timeseries(
     runtime: ToolRuntime[SellerContext],
     from_date: str,
@@ -125,6 +149,7 @@ async def get_sales_timeseries(
 
 
 @tool
+@_traced_tool("tool.get_funnel")
 async def get_funnel(runtime: ToolRuntime[SellerContext], from_date: str, to_date: str) -> str:
     """구매전환 퍼널(조회→장바구니→결제→구매) 단계별 인원·전환율을 요약한다.
 
@@ -225,6 +250,7 @@ def _summarize_behavior(result: BehaviorEventsResult) -> str:
 
 
 @tool
+@_traced_tool("tool.get_behavior_events")
 async def get_behavior_events(
     runtime: ToolRuntime[SellerContext],
     from_date: str,
@@ -271,6 +297,7 @@ _PRODUCT_LOG_RULES_NOTE = (
 
 
 @tool
+@_traced_tool("tool.get_order_events")
 async def get_order_events(
     runtime: ToolRuntime[SellerContext],
     from_date: str,
@@ -332,6 +359,7 @@ async def get_order_events(
 
 
 @tool
+@_traced_tool("tool.get_product_change_logs")
 async def get_product_change_logs(
     runtime: ToolRuntime[SellerContext],
     from_date: str,
@@ -386,6 +414,7 @@ async def get_product_change_logs(
 
 
 @tool
+@_traced_tool("tool.get_churn_cohort")
 async def get_churn_cohort(
     runtime: ToolRuntime[SellerContext], inactive_days: int | None = None
 ) -> str:
@@ -410,6 +439,7 @@ async def get_churn_cohort(
 
 
 @tool
+@_traced_tool("tool.get_account_events")
 async def get_account_events(
     event_type: str | None = None,
     from_date: str | None = None,
@@ -437,6 +467,7 @@ async def get_account_events(
 
 
 @tool
+@_traced_tool("tool.list_my_products")
 async def list_my_products(
     runtime: ToolRuntime[SellerContext],
     status: str | None = None,
@@ -482,6 +513,7 @@ async def list_my_products(
 
 
 @tool
+@_traced_tool("tool.calculate")
 async def calculate(expression: str) -> str:
     """사칙연산·round()·비율 등 수치 확인이 필요할 때 사용하는 안전 계산기.
 
@@ -502,6 +534,7 @@ async def calculate(expression: str) -> str:
 
 
 @tool
+@_traced_tool("tool.search_analysis_guide")
 async def search_analysis_guide(query: str) -> str:
     """판매자 분석 기준서(용어·산식 정의)를 검색한다.
 
@@ -522,6 +555,7 @@ async def search_analysis_guide(query: str) -> str:
 
 
 @tool
+@_traced_tool("tool.create_product")
 async def create_product(
     runtime: ToolRuntime[SellerContext],
     name: str,
@@ -558,6 +592,7 @@ async def create_product(
 
 
 @tool
+@_traced_tool("tool.update_product")
 async def update_product(
     runtime: ToolRuntime[SellerContext],
     product_id: int,
@@ -606,6 +641,7 @@ async def update_product(
 
 
 @tool
+@_traced_tool("tool.delete_product")
 async def delete_product(runtime: ToolRuntime[SellerContext], product_id: int) -> str:
     """상품을 삭제(숨김)한다(I-12, api-spec §4.5). 물리 삭제 없음 — HITL 승인 후 호출.
 

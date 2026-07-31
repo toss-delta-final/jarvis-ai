@@ -12,7 +12,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.core.config import get_settings
-from app.core.stream import get_registry, open_stream
+from app.core.stream import StreamScopeFence, get_registry, open_stream
 from app.main import app
 
 client = TestClient(app)
@@ -79,6 +79,28 @@ def test_same_session_different_threads_are_not_blocked() -> None:
         _ = r.text
     finally:
         registry.release("anon:thread-a")
+
+
+def test_registry_fence_requires_issued_token_identity_and_preserves_legacy_slots() -> None:
+    registry = get_registry()
+    token = registry.acquire_fence("guest-1", "session-1")
+    assert token is not None
+    assert registry.acquire("legacy-thread")
+    assert not registry.acquire(
+        "guest-1:new-thread",
+        owner_id="guest-1",
+        session_id="session-1",
+    )
+
+    forged = StreamScopeFence(owner_id="guest-1", session_id="session-1")
+    with pytest.raises(ValueError, match="not active"):
+        registry.release_fence(forged)
+    assert registry.is_fenced("guest-1", "session-1")
+
+    registry.release_fence(token)
+    assert not registry.is_fenced("guest-1", "session-1")
+    with pytest.raises(ValueError, match="not active"):
+        registry.release_fence(token)
 
 
 def test_registry_released_after_stream() -> None:
@@ -348,6 +370,34 @@ def test_5xx_hides_internal_detail() -> None:
     env = r.json()["error"]
     assert env["code"] == "INTERNAL"
     assert "secret" not in env["message"]
+
+
+@pytest.mark.parametrize(
+    ("error_type", "status_code", "code"),
+    [
+        ("SessionForbidden", 403, "SESSION_FORBIDDEN"),
+        ("SessionFinalizing", 409, "SESSION_FINALIZING"),
+        ("SessionActive", 409, "SESSION_ACTIVE"),
+        ("SessionClaimConflict", 409, "SESSION_CLAIM_CONFLICT"),
+        ("SessionStateUnavailable", 503, "STATE_UNAVAILABLE"),
+    ],
+)
+def test_session_domain_errors_have_safe_wire_mapping(
+    error_type: str, status_code: int, code: str
+) -> None:
+    from app.core import session_context
+    from app.main import create_app
+
+    app2 = create_app()
+
+    async def _raise() -> None:
+        raise getattr(session_context, error_type)()
+
+    app2.add_api_route(f"/_session-error/{code}", _raise, methods=["GET"])
+    response = TestClient(app2, raise_server_exceptions=False).get(f"/_session-error/{code}")
+    assert response.status_code == status_code
+    assert response.json()["error"]["code"] == code
+    assert "requestId" in response.json()["error"]
 
 
 def test_registry_key_binds_identity() -> None:

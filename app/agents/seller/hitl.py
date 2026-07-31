@@ -42,6 +42,7 @@ from app.agents.seller import checkpoint as seller_checkpoint
 from app.agents.seller.schemas import DraftChange, DraftProposal
 from app.core.config import get_settings
 from app.core.text import _strip_unsafe, _strip_unsafe_multiline
+from app.core.tracing import trace_span
 from app.schemas.spring import ProductCreate, ProductUpdate, SellerProductRow
 from app.services.spring_client import get_spring_client
 
@@ -329,7 +330,8 @@ async def _hitl_node(state: HitlState) -> HitlState:
     """
     record = DraftRecord.model_validate(state["draft"])
     interrupt({"draftId": record.draft_id, "op": record.op})
-    outcome, text = await _execute_draft(record)
+    with trace_span("seller.worker.hitl_write", "chain"):
+        outcome, text = await _execute_draft(record)
     return {"outcome": outcome, "result": text}
 
 

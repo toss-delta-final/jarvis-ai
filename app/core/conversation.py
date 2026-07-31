@@ -18,10 +18,19 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol
 
-from app.agents.profile import session_activity
+from app.core import session_context
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.core.pg_resilience import hardened_pg_conninfo, run_with_query_timeout
+from app.core.pg_resilience import (
+    hardened_pg_conninfo,
+    is_state_store_unavailable,
+    run_with_query_timeout,
+)
+from app.core.session_context import (
+    BuyerSessionInput,
+    SessionStateUnavailable,
+    resolve_touch_register_on_connection,
+)
 
 logger = get_logger(__name__)
 
@@ -49,6 +58,14 @@ class Turn:
     status: TurnStatus = TurnStatus.PENDING
 
 
+@dataclass(frozen=True)
+class CommittedTurn:
+    """사용자 턴과 buyer lifecycle context의 commit 결과."""
+
+    turn_id: str
+    context_id: str | None
+
+
 class ConversationStoreProtocol(Protocol):
     """대화 저장소 공유 계약 — ConversationStore(인메모리)·PgConversationStore(pg-profile)."""
 
@@ -59,9 +76,9 @@ class ConversationStoreProtocol(Protocol):
         role: str,
         text: str,
         *,
-        session_id: str | None = None,
         thread_id: str | None = None,
-    ) -> str: ...
+        buyer_session: BuyerSessionInput | None = None,
+    ) -> CommittedTurn: ...
 
     async def finalize_assistant(
         self, turn_id: str, assistant_text: str, status: TurnStatus
@@ -93,10 +110,14 @@ class ConversationStore:
         role: str,
         text: str,
         *,
-        session_id: str | None = None,
         thread_id: str | None = None,
-    ) -> str:
+        buyer_session: BuyerSessionInput | None = None,
+    ) -> CommittedTurn:
         """사용자 메시지 수신 즉시 저장(§6.3 a). turn_id 를 반환한다(assistant 마감에 사용)."""
+        context_id = None
+        if buyer_session is not None:
+            context = await session_context._default_repository.touch(buyer_session)
+            context_id = context.context_id
         turn_id = f"turn-{next(self._seq)}"
         self._turns[turn_id] = Turn(
             turn_id=turn_id,
@@ -109,10 +130,7 @@ class ConversationStore:
         self._by_conversation.setdefault(conversation_id, []).append(turn_id)
         self._order.append(turn_id)
         self._evict_if_needed()
-        member_id = _profile_member_id(user_id, role)
-        if member_id is not None and session_id is not None:
-            await session_activity.touch_session(member_id, session_id)
-        return turn_id
+        return CommittedTurn(turn_id, context_id)
 
     def _evict_if_needed(self) -> None:
         """상한 초과 시 **확정된** 턴부터 축출(무제한 메모리 증가 방지).
@@ -137,19 +155,23 @@ class ConversationStore:
                     del self._by_conversation[turn.conversation_id]
 
     async def finalize_assistant(
-        self, turn_id: str, assistant_text: str, status: TurnStatus
+        self, turn_id: str | CommittedTurn, assistant_text: str, status: TurnStatus
     ) -> None:
         """어시스턴트 응답을 상태와 함께 마감한다. FAILED/CANCELLED 도 부분 텍스트를 보존한다."""
-        turn = self._turns.get(turn_id)
+        normalized_turn_id = _turn_id(turn_id)
+        turn = self._turns.get(normalized_turn_id)
         if turn is None:
             # 축출됐거나 미지의 turn — 응답이 저장소에서 유실됨(관측 가능하게 경고).
-            logger.warning("finalize on evicted/unknown turn_id=%s (assistant 응답 유실)", turn_id)
+            logger.warning(
+                "finalize on evicted/unknown turn_id=%s (assistant 응답 유실)",
+                normalized_turn_id,
+            )
             return
         turn.assistant_text = assistant_text
         turn.status = status
 
-    async def get_turn(self, turn_id: str) -> Turn | None:
-        return self._turns.get(turn_id)
+    async def get_turn(self, turn_id: str | CommittedTurn) -> Turn | None:
+        return self._turns.get(_turn_id(turn_id))
 
     async def turns_for(self, conversation_id: str) -> list[Turn]:
         return [self._turns[t] for t in self._by_conversation.get(conversation_id, [])]
@@ -232,13 +254,6 @@ class PgConversationStore:
                         "CREATE INDEX IF NOT EXISTS idx_conversation_turns_thread "
                         "ON conversation_turns (conversation_id, thread_id)"
                     )
-                    # session_activity 자체 migration pool과 같은 lock을 사용해야 두 connection이
-                    # profile_session_activity CREATE TABLE/INDEX를 동시에 시작하지 않는다.
-                    await conn.execute(
-                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                        (session_activity.SCHEMA_LOCK_KEY,),
-                    )
-                    await session_activity.ensure_schema_on_connection(conn)
 
         await asyncio.wait_for(_run(), timeout=settings.state_store_migration_timeout_s)
 
@@ -263,46 +278,85 @@ class PgConversationStore:
         role: str,
         text: str,
         *,
-        session_id: str | None = None,
         thread_id: str | None = None,
-    ) -> str:
+        buyer_session: BuyerSessionInput | None = None,
+    ) -> CommittedTurn:
         turn_id = uuid.uuid4().hex
-        member_id = _profile_member_id(user_id, role)
-
-        if member_id is None or session_id is None:
+        if buyer_session is None:
             await self._execute(
                 "INSERT INTO conversation_turns "
                 "(turn_id, conversation_id, thread_id, user_id, role, user_text) "
                 "VALUES (%s, %s, %s, %s, %s, %s)",
                 (turn_id, conversation_id, thread_id, user_id, role, text),
             )
-            return turn_id
+            return CommittedTurn(turn_id, None)
 
-        async def _run() -> None:
+        async def _run() -> str:
             async with self._pool.connection() as conn:
                 async with conn.transaction():
-                    await conn.execute(
-                        "INSERT INTO conversation_turns "
-                        "(turn_id, conversation_id, thread_id, user_id, role, user_text) "
-                        "VALUES (%s, %s, %s, %s, %s, %s)",
-                        (turn_id, conversation_id, thread_id, user_id, role, text),
+                    context = await resolve_touch_register_on_connection(conn, buyer_session)
+                    await self._insert_turn_on_connection(
+                        conn,
+                        turn_id,
+                        conversation_id,
+                        thread_id,
+                        user_id,
+                        role,
+                        text,
+                        context.context_id,
+                        buyer_session.session_id,
                     )
-                    await session_activity.touch_on_connection(conn, member_id, session_id)
+                    return context.context_id
 
-        await run_with_query_timeout(_run())
-        return turn_id
+        try:
+            context_id = await run_with_query_timeout(_run())
+        except Exception as exc:
+            if is_state_store_unavailable(exc):
+                raise SessionStateUnavailable from exc
+            raise
+        return CommittedTurn(turn_id, context_id)
+
+    async def _insert_turn_on_connection(
+        self,
+        conn,
+        turn_id: str,
+        conversation_id: str,
+        thread_id: str | None,
+        user_id: str | None,
+        role: str,
+        text: str,
+        context_id: str,
+        session_id: str,
+    ) -> None:
+        await conn.execute(
+            "INSERT INTO conversation_turns "
+            "(turn_id, conversation_id, thread_id, user_id, role, user_text, "
+            "context_id, session_id) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (
+                turn_id,
+                conversation_id,
+                thread_id,
+                user_id,
+                role,
+                text,
+                context_id,
+                session_id,
+            ),
+        )
 
     async def finalize_assistant(
-        self, turn_id: str, assistant_text: str, status: TurnStatus
+        self, turn_id: str | CommittedTurn, assistant_text: str, status: TurnStatus
     ) -> None:
+        normalized_turn_id = _turn_id(turn_id)
         rowcount = await self._execute(
             "UPDATE conversation_turns SET assistant_text = %s, status = %s WHERE turn_id = %s",
-            (assistant_text, status.value, turn_id),
+            (assistant_text, status.value, normalized_turn_id),
         )
         if rowcount == 0:
-            logger.warning("conversation turn finalize 대상 없음: turn_id=%s", turn_id)
+            logger.warning("conversation turn finalize 대상 없음: turn_id=%s", normalized_turn_id)
 
-    async def get_turn(self, turn_id: str) -> Turn | None:
+    async def get_turn(self, turn_id: str | CommittedTurn) -> Turn | None:
         # 읽기도 쓰기(_execute)와 동일 실행 상한 — 타임아웃이 없으면 pg 가 멈출 때 이 await 가
         # 영영 안 끝날 뿐 아니라 연결이 풀에 물린 채 반환되지 않아, 풀 고갈로 타임아웃이 걸린
         # 쓰기 경로(슬롯 확보/마감)까지 연쇄로 막힌다(PR #48 후속 리뷰).
@@ -313,7 +367,7 @@ class PgConversationStore:
                         "SELECT turn_id, conversation_id, thread_id, user_id, role, user_text, "
                         "assistant_text, status "
                         "FROM conversation_turns WHERE turn_id = %s",
-                        (turn_id,),
+                        (_turn_id(turn_id),),
                     )
                 ).fetchone()
             return _row_to_turn(row) if row else None
@@ -351,15 +405,8 @@ def _row_to_turn(row: tuple) -> Turn:
     )
 
 
-def _profile_member_id(user_id: str | None, role: str) -> int | None:
-    """프로필 대상 회원 BIGINT만 activity touch 대상으로 정규화한다."""
-    if role != "member" or user_id is None:
-        return None
-    try:
-        value = int(user_id)
-    except (TypeError, ValueError):
-        return None
-    return value if 0 < value < 2**63 else None
+def _turn_id(value: str | CommittedTurn) -> str:
+    return value.turn_id if isinstance(value, CommittedTurn) else value
 
 
 def conversation_key(subject: str | None, session_id: str) -> str:
@@ -495,5 +542,6 @@ def reset_store() -> None:
     (app/core/pg_store.py 와 동일 문제, 실제 재현·수정 이력은 docs/lessons.md).
     """
     global _init_lock
+    session_context.reset()
     set_store(ConversationStore())
     _init_lock = asyncio.Lock()
