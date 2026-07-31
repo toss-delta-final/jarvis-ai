@@ -114,9 +114,13 @@ def _need_label(leg: tuple[str, str | None]) -> str | None:
     """니즈 목록의 표시 이름 — leg 검색어("파우치")를 쓰고 없으면 canonical 카테고리로 폴백한다.
 
     LLM 산출 자유 텍스트라 push(신뢰경계) 직전 정제 + 계약 상한(§4.2 `label` ≤50자)으로 자른다.
+    폴백 판정은 **정제 이후**에 한다 — query 가 zero-width·제어문자로만 이뤄지면 truthy 인데도
+    정제 결과가 비어, 정제 전에 고르면 canonical 을 못 보고 라벨이 조용히 사라진다(PR #212 리뷰).
     """
     canonical, query = leg
-    label = _strip_unsafe((query or canonical or "").strip())
+    label = _strip_unsafe((query or "").strip())
+    if not label:
+        label = _strip_unsafe((canonical or "").strip())
     return label[:LIST_LABEL_MAX_LEN] or None
 
 

@@ -1208,3 +1208,27 @@ async def test_non_case3_rerank_prompt_has_no_need_section() -> None:
     smart_user = next(user for tier, user in llm.calls if tier == "smart")
     assert "NEEDS" not in smart_user
     assert '"need"' not in smart_user
+
+
+def test_need_label_falls_back_to_canonical_after_sanitizing() -> None:
+    """정제 결과가 비면 canonical 로 폴백한다 (PR #212 리뷰).
+
+    query 는 decompose LLM 산출 자유 텍스트라 zero-width·제어문자만 남는 경우가 있다.
+    `query or canonical` 을 정제 **전에** 판정하면 query 가 truthy 라 canonical 을 못 보고
+    label 이 조용히 사라진다 — 니즈별 목록에서 이름 없는 목록이 나온다.
+    """
+    from app.agents.buyer.recommendation.graph import _need_label
+
+    assert _need_label(("가전 > 어댑터", "어댑터")) == "어댑터"
+    assert _need_label(("가전 > 어댑터", "​​")) == "가전 > 어댑터"  # 정제 후 폴백
+    assert _need_label(("가전 > 어댑터", None)) == "가전 > 어댑터"
+    assert _need_label(("​", "​")) is None  # 양쪽 다 비면 라벨 없음
+
+
+def test_need_label_truncates_to_contract_cap() -> None:
+    """label 은 계약 상한(§4.2 ≤50자)으로 자른다 — 초과하면 Spring 이 400 이다."""
+    from app.agents.buyer.recommendation.graph import _need_label
+    from app.schemas.spring import LIST_LABEL_MAX_LEN
+
+    label = _need_label(("c", "가" * 80))
+    assert len(label) == LIST_LABEL_MAX_LEN
