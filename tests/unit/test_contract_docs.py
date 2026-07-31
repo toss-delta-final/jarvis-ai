@@ -7,7 +7,9 @@ def test_i20_contract_has_no_stale_open_contract_markers() -> None:
     spec = (Path(__file__).parents[2] / "docs" / "api-spec.md").read_text(encoding="utf-8")
     c8_row = next(line for line in spec.splitlines() if line.startswith("| C-8 |"))
     event_success_rule = next(line for line in spec.splitlines() if "정상 신규·중복 통지는" in line)
-    event_auth = spec.split("#### (b) 이벤트 채널", 1)[1].split("### 2.4", 1)[0]
+    # v0.18.0에서 레인 b 제목이 "이벤트 채널"→"Spring → AI"로 바뀌었다 — I-22(§3.7)가
+    # 통지가 아닌 동기 위임 호출로 같은 레인에 합류했기 때문이다(§1.2).
+    event_auth = spec.split("#### (b) Spring → AI", 1)[1].split("### 2.4", 1)[0]
     i20 = spec.split("### 3.5 ", 1)[1].split("### 3.6 ", 1)[0]
 
     assert "확정" in c8_row

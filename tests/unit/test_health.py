@@ -115,4 +115,7 @@ def test_openapi_surface_is_exactly_mvp() -> None:
         "/profile/me",
         "/events/session-end",
         "/events/session-claim",
+        # [#148] I-22 홈 추천 랭킹 — Spring → AI 위임(레인 b, api-spec §3.7).
+        # `/events/*` 와 같은 서비스 토큰 레인이지만 통지가 아니라 동기 요청/응답이다.
+        "/internal/recommendations/home",
     }
