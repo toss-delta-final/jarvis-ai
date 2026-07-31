@@ -386,6 +386,16 @@ class CartView(CamelModel):
 
 # ── 5. 추천 목록 push (I-21, §4.2, 경로 B) ──
 
+# I-21 계약 하드 상한(api-spec §4.2) — **튜너블이 아니다.** Spring 이 400 으로 거절하는 경계라
+# 설정으로 넘길 수 있으면 안 된다. config 의 노출 개수(expose_max)가 이 값을 참조해 상한을
+# 넘지 못하도록 기동 시점에 검증한다(core/config.py) — 넘으면 push 페이로드 생성에서
+# ValidationError 가 나는데, 그 지점은 degrade 블록 밖이라 SSE 스트림이 통째로 끊긴다(PR #212 리뷰).
+LIST_MAX_PRODUCTS = 9  # 목록당 상품(2026-07-30 확정, 구 Top5 에서 상향)
+MAX_LISTS = 10  # 한 콜백의 목록 수 — 목록 10 × 상품 9 = 90, FE 는 CH-5 를 10번 호출한다
+LIST_ID_MAX_LEN = 64  # Redis 키 오염 방지
+LIST_LABEL_MAX_LEN = 50  # BE VARCHAR(50)
+REQUEST_ID_MAX_LEN = 36  # BE CHAR(36)
+
 
 class RecoReason(CamelModel):
     """I-21 추천 근거 항목 — Spring 이 Redis 저장 → CH-5 카드에 echo (§4.2 v0.15.15 확정, C-9).
@@ -411,12 +421,13 @@ class RecommendationListEntry(CamelModel):
     """
 
     # 허용 문자 영숫자·`-`·`_`, ≤64자 — Redis 키 오염 방지(§4.2 400 조건).
-    list_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    list_id: str = Field(pattern=rf"^[A-Za-z0-9_-]{{1,{LIST_ID_MAX_LEN}}}$")
     # 세트 성격("알뜰")·니즈 이름("파우치"). BE VARCHAR(50) — 초과 시 400.
-    label: str | None = Field(default=None, max_length=50)
+    label: str | None = Field(default=None, max_length=LIST_LABEL_MAX_LEN)
     # 순서 유지 = 렌더 순서. 목록당 1~9개(2026-07-30 확정, 구 Top5 에서 상향).
-    product_ids: list[int] = Field(min_length=1, max_length=9)
-    reasons: list[RecoReason] = Field(default_factory=list, max_length=9)  # productId로 키잉(§4.2)
+    product_ids: list[int] = Field(min_length=1, max_length=LIST_MAX_PRODUCTS)
+    # productId로 키잉(§4.2) — 상품마다 최대 1건이라 상품 상한과 같은 값.
+    reasons: list[RecoReason] = Field(default_factory=list, max_length=LIST_MAX_PRODUCTS)
 
     @field_validator("product_ids")
     @classmethod
@@ -446,12 +457,12 @@ class RecommendationPush(CamelModel):
     session_id: str
     # 추천 실행 1회를 가리키는 opaque id(FastAPI 생성). 노출·클릭·담기·주문을 그 추천에
     # 귀속시키는 조인 키로 listId 와 역할이 달라 서로 대체하지 않는다(이슈 #140). BE CHAR(36).
-    recommendation_request_id: str = Field(max_length=36)
+    recommendation_request_id: str = Field(max_length=REQUEST_ID_MAX_LEN)
     # 목록 안 상품들이 대체재(PICK_ONE — 하나만 산다)인지 보완재(BUY_ALL — 전부 산다)인지.
     # 목록 개수는 lists 길이로 알 수 있지만 이 값은 개수로 복원할 수 없어 항상 싣는다(§4.2).
     list_type: Literal["PICK_ONE", "BUY_ALL"]
     total_budget: int | None = None  # BUY_ALL + 예산 발화 시에만("5만원 내로" → 50000)
-    lists: list[RecommendationListEntry] = Field(min_length=1, max_length=10)
+    lists: list[RecommendationListEntry] = Field(min_length=1, max_length=MAX_LISTS)
 
     @field_validator("lists")
     @classmethod

@@ -17,6 +17,10 @@ from typing import Literal
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# I-21 계약 하드 상한(api-spec §4.2) — 노출 개수 설정이 계약을 넘지 못하게 묶는 기준.
+# 계약 값의 단일 출처는 스키마다(app/schemas/spring.py) — 여기서 숫자를 다시 적지 않는다.
+from app.schemas.spring import LIST_MAX_PRODUCTS
+
 LLMProvider = Literal["openai", "anthropic"]
 # 검색 백엔드 선택(#101) — spring: Spring 위임만(방식1 이전 MVP), embedding_rerank: Spring 전량 →
 # pgvector 의미 재정렬(방식2, MVP 기본), vector: AI 벡터검색 → Spring hydrate(방식1, C-17 미착수).
@@ -187,8 +191,14 @@ class Settings(BaseSettings):
     embedding_rerank_limit: int = Field(default=30, ge=0)
     search_default_limit: int = 30
     top_k: int = 30
-    expose_min: int = 5
-    expose_max: int = 8
+    # 노출 개수(REQ-REC-021, api-spec §3.3) — **목록 하나 기준**이다. 니즈별 추천처럼 목록이
+    # 여럿이면 목록마다 이 상한이 걸린다(REQ-REC-024).
+    # 상한이 LIST_MAX_PRODUCTS 로 묶여 있는 이유: 이 값을 넘기면 push 페이로드 생성
+    # (RecommendationListEntry)에서 ValidationError 가 나는데, 그 지점은 SpringUnavailableError
+    # degrade 블록 **밖**이라 §3.3 의 "목록을 준비하는 데 문제가 있었어요" 대신 일반 INTERNAL 로
+    # SSE 스트림이 끊긴다(PR #212 리뷰). 잘못된 설정은 런타임이 아니라 기동 시점에 잡는다.
+    expose_min: int = Field(default=5, ge=1, le=LIST_MAX_PRODUCTS)
+    expose_max: int = Field(default=LIST_MAX_PRODUCTS, ge=1, le=LIST_MAX_PRODUCTS)
     reason_max_len: int = (
         200  # I-21 reason 안전 상한(§4.2) — 표시 목표는 프롬프트 40자, 이건 방어캡
     )
@@ -429,6 +439,14 @@ class Settings(BaseSettings):
             raise ValueError(
                 "REVIEW_TIER 경계는 many >= some >= few 여야 합니다"
                 f" ({self.review_tier_many}/{self.review_tier_some}/{self.review_tier_few})"
+            )
+        # 노출 개수 경계(REQ-REC-021) — expose_min 은 "부족하면 검색순서로 채우는" 하한이라
+        # 상한을 넘으면 보충 루프가 곧바로 상한 절단에 되잘리는 모순이 된다. 개별 le 로는
+        # 두 값의 관계를 못 잡아 여기서 함께 본다.
+        if self.expose_min > self.expose_max:
+            raise ValueError(
+                "EXPOSE_MIN 은 EXPOSE_MAX 이하여야 합니다"
+                f" (min={self.expose_min}, max={self.expose_max})"
             )
         return self
 
