@@ -34,6 +34,7 @@ from app.schemas.spring import (
     AddToCartResult,
     ProductSearchFilters,
     ProductSearchResult,
+    RecommendationListEntry,
     RecommendationPush,
 )
 from app.services.spring_client import (
@@ -703,8 +704,14 @@ async def test_all_buyer_spring_operations_trace_timeout_without_changing_error_
             lambda: spring_client.push_recommendations(
                 RecommendationPush(
                     session_id="private-session",
-                    list_id="private-list",
-                    product_ids=[91929394959697],
+                    recommendation_request_id="private-request",
+                    list_type="PICK_ONE",
+                    lists=[
+                        RecommendationListEntry(
+                            list_id="private-list",
+                            product_ids=[91929394959697],
+                        )
+                    ],
                 )
             ),
             SpringUnavailableError,

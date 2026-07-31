@@ -320,13 +320,18 @@ def test_path_b_list_id_resolves_to_cards_via_spring(client, spring, spring_http
     # Spring 이 표시 필드를 채워 돌려준다(AI 는 미보유)
     assert all("price" in c for c in cards)
 
-    # push 본문은 id 목록 + 상품별 근거(reasons)만 — 표시 필드(price/image) 미포함(§4.2)
+    # push 본문은 lists[] + 상품별 근거(reasons)만 — 표시 필드(price/image) 미포함(§4.2 v0.17.1)
     pushed = spring.requests_to("/internal/recommendations")[0]["body"]
-    assert set(pushed) == {"sessionId", "listId", "productIds", "reasons"}
-    assert all(isinstance(pid, int) for pid in pushed["productIds"])
+    assert set(pushed) == {"sessionId", "recommendationRequestId", "listType", "lists"}
+    assert pushed["listType"] == "PICK_ONE"  # 항상 싣는다(개수로 복원 불가)
+    # 구 평평 3필드는 최상위에 없다 — BE 과도기 수용 코드 제거 조건(#209)
+    assert not {"listId", "productIds", "reasons"} & set(pushed)
+    entry = pushed["lists"][0]
+    assert set(entry) == {"listId", "productIds", "reasons"}  # label 은 미지정이라 생략
+    assert all(isinstance(pid, int) for pid in entry["productIds"])
     # reasons 는 {productId, reason} 항목 — productId 로 키잉(순서 권위는 productIds, §4.2)
-    assert all(set(r) == {"productId", "reason"} for r in pushed["reasons"])
-    assert all(isinstance(r["productId"], int) for r in pushed["reasons"])
+    assert all(set(r) == {"productId", "reason"} for r in entry["reasons"])
+    assert all(isinstance(r["productId"], int) for r in entry["reasons"])
 
 
 def test_rerank_order_is_preserved_into_push(client, spring, llm) -> None:

@@ -28,6 +28,9 @@ def test_seller_settings_defaults() -> None:
     assert settings.seller_draft_ttl_minutes == 10
     assert settings.seller_history_recent_n == 5
     assert settings.seller_tool_call_limit == 8
+    # [#196] I-13 상품별 rows 상한 — I-14 용 max_events(5)와 분리 신설.
+    assert settings.seller_summary_max_events == 5
+    assert settings.seller_summary_max_products == 10
 
 
 def test_seller_ma_window_invalid_config_fails_fast() -> None:
