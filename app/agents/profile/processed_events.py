@@ -105,6 +105,19 @@ async def _drain_pending_cleanup() -> None:
             pass
 
 
+async def close_pool() -> None:
+    """지금 열려 있는 풀을 **이 이벤트 루프에서** 닫는다 (이슈 #208).
+
+    `set_pool(None)`/`reset()` 은 sync 라 close 를 다음 `_get_pool()` 로 미루는데, 그 "다음"은
+    보통 **다른 이벤트 루프**다. 그 사이 살아 있는 `AsyncConnectionPool` 을 만든 루프가 그대로
+    닫히면, 루프 teardown 의 `asyncio.runners._cancel_all_tasks()` 가 취소를 삼키는 psycopg 워커와
+    만나 영원히 반환하지 않는다(재현·근거는 tests/unit/test_pool_worker_cancellation.py).
+    async 컨텍스트가 아직 살아 있는 지점(테스트 teardown·앱 종료)에서 부른다.
+    """
+    set_pool(None)
+    await _drain_pending_cleanup()
+
+
 def reset() -> None:
     """테스트 격리용 — InMemory 폴백으로 초기화(실제 연결 시도 없이 즉시 blank).
 
