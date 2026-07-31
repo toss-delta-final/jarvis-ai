@@ -151,6 +151,78 @@ def test_cart_signal_outweighs_recently_viewed(store: CatalogArtifactStore) -> N
     assert viewed_rank < cart_rank, "역할을 바꾸면 순서도 뒤집힌다(기하가 아니라 가중치가 원인)"
 
 
+# ── 장기 취향(프로필 벡터)이 랭킹에 반영된다 (#148) ──
+
+
+def _profile_with(vec: list[float] | None, markdown: str = "# 취향"):
+    async def _read(user_id: str | None) -> dict | None:
+        return {"markdown": markdown, "generated_at": "2026-07-31T00:00:00Z", "embedding": vec}
+
+    return _read
+
+
+def test_profile_vector_alone_personalizes_without_signals(monkeypatch: pytest.MonkeyPatch) -> None:
+    """시그널이 비어도 프로필만으로 질의 벡터가 선다 — 홈 첫 방문 회원도 대화 취향으로 개인화된다.
+
+    프로필 벡터 도입 전에는 이 경우가 무조건 NO_PROFILE 이었다.
+    """
+    monkeypatch.setattr(svc, "read_profile_summary", _profile_with([0.0, 1.0, 0.0]))
+    signals = {
+        "recentlyViewedProductIds": [],
+        "cartProductIds": [],
+        "recentPurchasedProductIds": [],
+    }
+    data = client.post(_URL, json=_body(limit=10, signals=signals)).json()
+    assert data["outcome"] == "PERSONALIZED"
+    ids = [i["productId"] for i in data["items"]]
+    # [0,1,0] 축에 가장 가까운 1010(=[0.5,0.5,0]) 쪽이 앞선다
+    assert ids.index(1010) < ids.index(1001)
+
+
+def test_profile_vector_shifts_ranking_when_signals_exist(monkeypatch: pytest.MonkeyPatch) -> None:
+    """프로필이 시그널과 다른 축을 가리키면 순위가 그쪽으로 당겨진다."""
+
+    def ranking(profile_vec: list[float] | None) -> list[int]:
+        monkeypatch.setattr(svc, "read_profile_summary", _profile_with(profile_vec))
+        return [i["productId"] for i in client.post(_URL, json=_body(limit=10)).json()["items"]]
+
+    without = ranking(None)
+    with_profile = ranking([0.0, 1.0, 0.0])  # 시그널([1,0,0])과 직교
+    assert without != with_profile, "프로필 벡터가 랭킹을 바꿔야 한다"
+    assert with_profile.index(1010) < without.index(1010), "프로필 축 상품이 위로 올라온다"
+
+
+def test_missing_profile_embedding_degrades_to_signals_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """구 요약·임베딩 실패분(embedding=None)은 그 항만 빠지고 나머지는 그대로 동작한다."""
+    monkeypatch.setattr(svc, "read_profile_summary", _profile_with(None))
+    r = client.post(_URL, json=_body(limit=10))
+    assert r.status_code == 200
+    assert r.json()["outcome"] == "PERSONALIZED"
+
+
+def test_profile_vector_dimension_mismatch_is_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    """차원이 다른 벡터(모델 교체·마이그레이션 중)는 조용히 섞지 않는다."""
+    monkeypatch.setattr(svc, "read_profile_summary", _profile_with([0.1] * 7))
+    baseline_ids = [i["productId"] for i in client.post(_URL, json=_body(limit=10)).json()["items"]]
+    monkeypatch.setattr(svc, "read_profile_summary", _no_profile)
+    plain_ids = [i["productId"] for i in client.post(_URL, json=_body(limit=10)).json()["items"]]
+    assert baseline_ids == plain_ids
+
+
+def test_profile_weight_zero_removes_it_from_ranking(monkeypatch: pytest.MonkeyPatch) -> None:
+    """가중치 0 = 롤백 스위치 — 프로필이 랭킹에서 빠지고 reason 근거로만 남는다."""
+    monkeypatch.setattr(svc, "read_profile_summary", _profile_with([0.0, 1.0, 0.0]))
+    with_weight = [i["productId"] for i in client.post(_URL, json=_body(limit=10)).json()["items"]]
+
+    base = get_settings()
+    zeroed = base.model_copy(update={"home_reco_weight_profile": 0.0})
+    monkeypatch.setattr(svc, "get_settings", lambda: zeroed)
+    without = [i["productId"] for i in client.post(_URL, json=_body(limit=10)).json()["items"]]
+    assert with_weight != without
+
+
 # ── outcome 3종은 모두 200 (cold start 는 오류가 아니다) ──
 
 

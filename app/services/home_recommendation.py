@@ -74,19 +74,25 @@ def build_query_vector(
     viewed_ids: list[int],
     store: ArtifactStore,
     settings: Settings,
+    profile_vec: list[float] | None = None,
 ) -> list[float]:
-    """시그널 상품 임베딩의 가중 평균으로 질의 벡터를 만든다 (§3.7 signals 표).
+    """시그널 상품 임베딩과 **프로필 벡터**의 가중 평균으로 질의 벡터를 만든다 (§3.7 signals 표).
 
-    cart 는 담기까지 갔다는 강한 신호라 조회보다 가중치가 높고, 조회는 최신일수록 높다(배열 앞이 최신
-    이라는 §3.7 전제 — decay 를 인덱스 거듭제곱으로 적용). 인덱스에 임베딩이 없는 시그널은 건너뛴다.
-    하나도 못 찾으면 빈 리스트를 반환하며, 호출부는 이를 `NO_PROFILE` 로 해석한다.
+    두 축을 섞는다 — **행동**(지금 담고 본 것)과 **장기 취향**(프로필). cart 는 담기까지 갔다는
+    강한 신호라 조회보다 가중치가 높고, 조회는 최신일수록 높다(배열 앞이 최신이라는 §3.7 전제 —
+    decay 를 인덱스 거듭제곱으로 적용). 프로필은 그 사이 가중치로, 오래된 취향이 지금의 관심을
+    덮지 않게 한다.
+
+    `profile_vec` 은 요약 생성 시점에 미리 만들어 둔 것이다(`profile/store._embed_summary`) —
+    여기서 임베딩하면 API 왕복이 붙어 예산을 위협한다. 없으면 그 항만 빠진다.
+
+    **시그널이 비어도 프로필만으로 질의 벡터가 선다** — 홈에 처음 들어온 회원도 대화로 쌓인 취향으로
+    개인화된다. 셋 다 없을 때만 빈 리스트이고, 호출부는 이를 `NO_PROFILE` 로 해석한다.
     """
-    wanted = list(dict.fromkeys([*cart_ids, *viewed_ids]))  # 중복 제거(순서 보존), 조회 1회
-    if not wanted:
-        return []
-    arts = store.get_many(wanted)
-
     acc: list[float] = []
+    wanted = list(dict.fromkeys([*cart_ids, *viewed_ids]))  # 중복 제거(순서 보존), 조회 1회
+    arts = store.get_many(wanted) if wanted else {}
+
     for pid in cart_ids:
         art = arts.get(pid)
         if art and art.embedding:
@@ -96,6 +102,8 @@ def build_query_vector(
         if art and art.embedding:
             weight = settings.home_reco_weight_viewed * (settings.home_reco_viewed_decay**rank)
             acc = _weighted_add(acc, art.embedding, weight)
+    if profile_vec:
+        acc = _weighted_add(acc, profile_vec, settings.home_reco_weight_profile)
     return acc
 
 
@@ -235,8 +243,8 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
     settings = get_settings()
     signals = request.signals
 
-    # 프로필 저장소 장애는 **degrade** 한다 — 이 구현에서 프로필은 reason 문장의 취향 근거일 뿐
-    # 랭킹 입력이 아니라, 없다고 추천을 못 만들지 않는다. 홈 렌더를 막지 않는 쪽이 §4.11 취지에 맞다.
+    # 프로필 저장소 장애는 **degrade** 한다 — 프로필은 랭킹의 한 항(장기 취향)이자 reason 근거지만
+    # 유일한 입력이 아니라, 없으면 시그널만으로 추천을 만든다. 홈 렌더를 막지 않는 쪽이 §4.11 취지다.
     # 신원은 서비스 토큰이 인가하고 memberId 는 §3.7 계약상 본문으로 온다(레인 b).
     try:
         profile = await read_profile_summary(str(request.member_id))
@@ -245,6 +253,8 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
         logger.warning("home_reco_profile_unavailable")
         profile = None
     profile_markdown = (profile or {}).get("markdown", "") or ""
+    # 미리 만들어 둔 취향 벡터(§3.7 "프로필 벡터와 가중 혼합"). 구 요약·임베딩 실패분은 None.
+    profile_vec = (profile or {}).get("embedding") or None
 
     # 카탈로그 인덱스는 **랭킹의 유일한 입력**이라 degrade 할 수 없다 — 여기가 죽으면 503 이고,
     # Spring 이 P-4 로 대체하며 fallbackReason=AI_ERROR 로 기록한다(§3.7 실패 응답표·§4.11).
@@ -255,6 +265,7 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
             viewed_ids=signals.recently_viewed_product_ids,
             store=store,
             settings=settings,
+            profile_vec=profile_vec,
         )
     except Exception as exc:
         logger.warning("home_reco_catalog_unavailable")
