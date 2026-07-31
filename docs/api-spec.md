@@ -6,8 +6,8 @@
 
 | 항목 | 값 |
 |---|---|
-| 문서 버전 | v0.17.0 |
-| 작성일 | 2026-07-14 (v0.17.0 개정 2026-07-31 — **[#187] signed `sessionId` 기반 stable `context_id`, guest→member claim, D6/I-20 lifecycle 계약 반영**) (v0.16.3 개정 2026-07-30 — **[#164] I-4 주문 상태 요약 계약·구매자 `order_status` 라우트 구현 정합**, §4.10 신설) (v0.16.2 개정 2026-07-30 — **[#194] I-14/I-15 응답 스키마 BE 실측 확정 + I-6 이상 감지 규칙 명문화**) (v0.16.1 개정 2026-07-30 — **I-21 `listId`를 UUID급 무작위(≥128bit)로 확정**, 순번·타임스탬프 등 추측 가능한 형식 금지) (v0.16.0 개정 2026-07-30 — **`sessionId`(접속)·`threadId`(방) 축 분리**: 동시 스트림 락을 방 단위로, I-20 사유 `logout` 1종, CH-1 멱등(D5), 맥락 TTL 접속 단위(D6)) (v0.15.27 개정 2026-07-30 — 사본 drift 정정: 담기 이벤트 적재 주체(BE→FE)·`budget` 이벤트 제외·`search.query` PII 기준) (v0.15.26 개정 2026-07-28 — 사본 동기화: §3.1 `conditionActions`(칩 제거, #84)·`screen`(화면 맥락, #118) 신설, `conditions` 칩 `field` 6종 확정, in-stream `error`에 `requestId`·`retryable` 추가) (v0.15.25 개정 2026-07-28 — #171: I-1 응답에 reviewCount 추가(AI 계산용·비표시), rating=0 의미 판별(리뷰 부재 vs 저평점). #100 "reviewCount 표시전용·미반환" 부분 개정. / v0.15.24 개정 2026-07-27 — 사본 동기화: S-5 폐기 반영, 상품 수정은 챗봇 HITL(I-11) 유일 경로) |
+| 문서 버전 | v0.17.1 |
+| 작성일 | 2026-07-14 (v0.17.1 개정 2026-07-31 — **[#209] I-21 다중 목록(`lists[]`) 정본 정합** — `recommendationRequestId`·`listType`·`totalBudget`·`label` 신설, 목록당 상품 9개, 멱등 키·400 조건 등재) (v0.17.0 개정 2026-07-31 — **[#187] signed `sessionId` 기반 stable `context_id`, guest→member claim, D6/I-20 lifecycle 계약 반영**) (v0.16.3 개정 2026-07-30 — **[#164] I-4 주문 상태 요약 계약·구매자 `order_status` 라우트 구현 정합**, §4.10 신설) (v0.16.2 개정 2026-07-30 — **[#194] I-14/I-15 응답 스키마 BE 실측 확정 + I-6 이상 감지 규칙 명문화**) (v0.16.1 개정 2026-07-30 — **I-21 `listId`를 UUID급 무작위(≥128bit)로 확정**, 순번·타임스탬프 등 추측 가능한 형식 금지) (v0.16.0 개정 2026-07-30 — **`sessionId`(접속)·`threadId`(방) 축 분리**: 동시 스트림 락을 방 단위로, I-20 사유 `logout` 1종, CH-1 멱등(D5), 맥락 TTL 접속 단위(D6)) (v0.15.27 개정 2026-07-30 — 사본 drift 정정: 담기 이벤트 적재 주체(BE→FE)·`budget` 이벤트 제외·`search.query` PII 기준) (v0.15.26 개정 2026-07-28 — 사본 동기화: §3.1 `conditionActions`(칩 제거, #84)·`screen`(화면 맥락, #118) 신설, `conditions` 칩 `field` 6종 확정, in-stream `error`에 `requestId`·`retryable` 추가) (v0.15.25 개정 2026-07-28 — #171: I-1 응답에 reviewCount 추가(AI 계산용·비표시), rating=0 의미 판별(리뷰 부재 vs 저평점). #100 "reviewCount 표시전용·미반환" 부분 개정. / v0.15.24 개정 2026-07-27 — 사본 동기화: S-5 폐기 반영, 상품 수정은 챗봇 HITL(I-11) 유일 경로) |
 | 상태 | draft |
 | 대상 독자 | Spring 백엔드 팀, React 프론트엔드(FE) 팀 |
 | 소유 | AI 에이전트 서버 팀 |
@@ -741,9 +741,10 @@ FE/BE 문서에 없으나 MVP에 필요한 아래 3종은 **모두 구매자 SSE
 ```
 [0] AI: decompose → Spring POST /products/search 위임 조회(§4.6) → 후보 목록(price 포함) → rerank(profile_summary)
 [1] AI: rerank 완료 → listId 생성 → 최종 id 목록 push (AI → Spring, I-21 §4.2)
-        POST {SPRING_BASE_URL}/internal/recommendations { sessionId, listId, productIds:[Top5 숫자] }
-[2] Spring: productIds를 Redis에 listId 키로 TTL 저장 + 표시 필드(price·imageUrl·reviewCount 등) enrich
-[3] AI: 콜백 성공 → SSE `products.ready`({ sessionId, listIds:[listId] }) emit (reason은 콜백에 포함돼 CH-5로 전달)
+        POST {SPRING_BASE_URL}/internal/recommendations
+        { sessionId, recommendationRequestId, listType, totalBudget?, lists:[{ listId, label?, productIds:[숫자 ≤9] }] }
+[2] Spring: 목록별 productIds를 Redis에 listId 키로 TTL 저장 + 표시 필드(price·imageUrl·reviewCount 등) enrich
+[3] AI: 콜백 성공 → SSE `products.ready`({ sessionId, listIds }) emit (reason은 콜백에 포함돼 CH-5로 전달)
 [4] FE: `products.ready` 수신 → 카드 GET (FE → Spring, CH-5 §4.3) → 우측 상품 패널 렌더
 ```
 
@@ -935,9 +936,11 @@ X-Internal-Token: {서비스 토큰}   ← internal 그룹, 타임아웃 권장 
 
 > **잔여 협의(C-3)** — 대부분 해소, 서비스 토큰만 남음: (1) ~~재고 오류~~ **해소(v0.15.16)** — 담기 재고검증 **있음**: BE `400 CART_STOCK_INSUFFICIENT` + `availableStock`(2026-07-22) → `reason STOCK_INSUFFICIENT`(구 `OUT_OF_STOCK` 폐기 유지, 품절≠재고부족). (2) ~~`CART_OPTION_REQUIRED` options 스키마~~ **해소(BE 2026-07-18)** — `error.detail.options: [{optionId, name, extraPrice}]`. (3) ~~`productId` 타입~~ **해소(v0.15.3)** — 숫자 BIGINT(§2.6). (4) 🔴 **서비스 토큰(`X-Internal-Token`) 발급·교환 방식** — 유일 잔여.
 
-### 4.2 추천 목록 전달 API (I-21 `POST /internal/recommendations`) — [BE DB 등재 v0.15.0, reasons 확정 v0.15.15 🟢]
+### 4.2 추천 목록 전달 API (I-21 `POST /internal/recommendations`) — [BE DB 등재 v0.15.0, reasons 확정 v0.15.15 🟢, **다중 목록 확정 v0.17.1** 🟢]
 
-rerank 완료 후 AI가 **최종 랭크 상품 id(Top5)만** Spring에 POST한다. Spring이 Redis에 TTL 저장하고 표시 필드를 enrich하며, FE가 **CH-5**(§4.3)로 카드를 조회한다. **[07/17 BE 신설]** 합의된 추천 흐름 6번("FastAPI가 최종 추천 상품 ID만 Spring에 전달")의 실제 API.
+rerank 완료 후 AI가 **최종 랭크 상품 id 목록만** Spring에 POST한다. Spring이 Redis에 TTL 저장하고 표시 필드를 enrich하며, FE가 **CH-5**(§4.3)로 카드를 조회한다. **[07/17 BE 신설]** 합의된 추천 흐름 6번("FastAPI가 최종 추천 상품 ID만 Spring에 전달")의 실제 API.
+
+> **[v0.17.1] 한 번의 추천이 목록을 여러 개 낼 수 있다** — 니즈별 추천("유럽여행 필요한 거" → 파우치·어댑터 각각의 후보)과 세트 여러 안("감자탕 재료" → 조합 A·B·C)은 목록 하나로 표현되지 않는다. 요청 최상위는 **`lists[]` 배열**이며, 목록이 1개여도 길이 1 배열로 보낸다. 구 평평한 3필드(`listId`·`productIds`·`reasons`)는 **폐기**한다.
 
 #### AI → Spring 요청 (I-21)
 
@@ -946,31 +949,106 @@ POST {SPRING_BASE_URL}/internal/recommendations
 X-Internal-Token: {서비스 토큰}   ← internal 그룹, 3s
 ```
 
+**단일 목록** (일반 추천 — 목록 안 상품들이 서로 대안):
+
 ```json
 {
   "sessionId": "550e8400-e29b-41d4-a716-446655440000",
-  "listId": "9f2c1a7e4b8d43f5a0c6e1d97b3f8a24",
-  "productIds": [101, 205, 552, 88, 13],
-  "reasons": [
-    { "productId": 101, "reason": "방수 등급이 높아 우천 시에도 안전합니다." },
-    { "productId": 205, "reason": "가벼워 휴대가 편합니다." }
+  "recommendationRequestId": "a63be350-ec96-4f44-b3f9-c962b6673a68",
+  "listType": "PICK_ONE",
+  "lists": [
+    {
+      "listId": "3f9a2c1e7b8d4e5fa0c6d1e97b3f8a24",
+      "productIds": [101, 205, 552, 88, 13],
+      "reasons": [
+        { "productId": 101, "reason": "방수 등급이 높아 우천 시에도 안전합니다." },
+        { "productId": 205, "reason": "가벼워 휴대가 편합니다." }
+      ]
+    }
   ]
 }
 ```
 
-| 필드 | 타입 | 설명 |
-|---|---|---|
-| `sessionId` | string(UUID) | 상관관계 키(`products.ready`와 상관) |
-| `listId` | string | **[HARD] FastAPI가 생성하는 UUID급 무작위 식별자(≥128bit)** — 순번·타임스탬프 등 추측 가능한 형식 금지. 현재 구현은 `uuid4().hex` 32자리 lowercase hex. Spring이 Redis에 이 키로 TTL 저장하고 FE가 CH-5로 조회 |
-| `productIds` | number[] | 최종 랭크 상품 id(Top5). **순서 유지 = 렌더 순서**(리랭킹 순서). 숫자 id(§2.6 internal) |
-| `reasons` | array | **[확정 v0.15.15, BE 구현 2026-07-18] 상품별 추천 근거** `{productId(숫자), reason}` — productId로 키잉(순서 권위는 `productIds`, 부분집합/순서무관). Spring이 Redis 저장 → **CH-5 카드에 `reason` echo**(§4.3). 선택 필드 — 근거 없는 상품은 생략(🟢). **`reason` 생성 목표 = 한글 ≤40자 1문장**(rerank 프롬프트). AI가 push 전 개행 제거·안전 상한(config `reason_max_len`) 방어 정제하고, **표시 오버플로(줄임/더보기)는 FE 소관**(경로 B, 표시 권위=FE) |
+**여러 목록** (총액 예산 세트 — 목록 하나가 한 세트):
 
-- **[변경 07/17] payload = id 배열만** — 구 §4.2 `groups[{title,category,items[{productId,rank,reason}]}]` 구조는 **폐기**. 묶음 제목·순위·근거는 콜백에 싣지 않는다.
-- **`listId`는 FastAPI가 UUID급 무작위(≥128bit)로 생성한다.** 구 "Spring이 listId 발급" 가정과 `list-4471` 같은 순번형 예시는 폐기한다. CH-5가 인증 불필요 공개 조회라 `listId`가 사실상 bearer 키이므로 **순번·타임스탬프 등 추측 가능한 형식은 금지**한다. 여기서 `≥128bit`는 **식별자 표현 폭** 기준이며, 현재 UUIDv4 구현은 128bit UUID 중 version·variant 고정 비트를 제외한 122bit를 무작위로 생성한다. **TTL = 10분(config, 세션 TTL 이하) 제안** — FE가 products.ready 직후 CH-5 조회하므로 짧아도 됨, 🔴 미확정.
-- **[확정 v0.15.15] `reason`은 이 콜백에 포함**(🟢, BE 구현 2026-07-18) — `reasons[{productId, reason}]`를 Spring이 Redis 저장 → **CH-5 카드에 echo**(§4.3)해 FE에 전달. 구 BE 07/17 제안(reason=SSE·콜백 불포함)은 폐기 — SSE(`products.ready`)는 상관키만 유지, 경로 B 일관·FE join 불필요. AI→Spring 전송분은 jarvis-ai 이슈 #61에서 구현.
-- **규약**: FastAPI는 이 콜백이 **성공한 뒤에만** SSE `products.ready`({sessionId, listIds:[listId]})를 발행한다 — 콜백 실패 시 미발행(FE가 빈 목록 조회 방지, §3.3).
+```json
+{
+  "sessionId": "550e8400-e29b-41d4-a716-446655440000",
+  "recommendationRequestId": "a63be350-ec96-4f44-b3f9-c962b6673a68",
+  "listType": "BUY_ALL",
+  "totalBudget": 50000,
+  "lists": [
+    { "listId": "9f2c1a7e4b8d43f5a0c6e1d97b3f8a24", "label": "알뜰", "productIds": [101, 205, 552], "reasons": [] },
+    { "listId": "4b8d43f5a0c6e1d97b3f8a249f2c1a7e", "label": "균형", "productIds": [101, 88],       "reasons": [] }
+  ]
+}
+```
+
+| 필드 | 타입 | 필수 | 설명 |
+|---|---|---|---|
+| `sessionId` | string(UUID) | 예 | 상관관계 키(`products.ready`와 상관). UUID 형식이 아니면 400 — **값의 생존 여부는 검증하지 않는다** |
+| `recommendationRequestId` | string(≤36자) | 예 | **[v0.17.1 신설] 추천 실행 1회**를 가리키는 opaque id(UUID/ULID). **FastAPI가 생성**. 이후 노출·클릭·담기·주문을 이 추천에 귀속시키는 조인 키다. `listId`(사용자에게 전달된 목록)와 **역할이 달라 서로 대체하지 않는다**. 36자 초과 시 400(BE `CHAR(36)`) |
+| `listType` | enum | 예 | **[v0.17.1 신설] 목록 안의 상품들이 서로 대체재인지 보완재인지.** `PICK_ONE`(서로 대안 — 그중 **하나만** 산다) / `BUY_ALL`(각자 다른 역할 — **전부** 산다). **항상 싣는다** |
+| `totalBudget` | int | 아니오 | **[v0.17.1 신설] `BUY_ALL` + 예산 발화 시에만.** 사용자가 말한 예산 상한 — *"5만원 내로"* 에서 AI가 뽑아낸 `50000` |
+| `lists` | array | 예 | 목록 배열. **1~10개** (0개·10개 초과 = 400). 목록이 1개여도 배열이다 |
+| `lists[].listId` | string(≤64자) | 예 | **[HARD] FastAPI가 생성하는 UUID급 무작위 식별자(≥128bit)** — 순번·타임스탬프 등 추측 가능한 형식 금지. 허용 문자는 **영숫자·`-`·`_`** 이며 벗어나거나 64자를 넘으면 400(Redis 키 오염 방지). 현재 구현은 `uuid4().hex` 32자리 lowercase hex |
+| `lists[].label` | string(≤50자) | 아니오 | **[v0.17.1 신설] 목록 이름.** `BUY_ALL`이면 세트 성격("알뜰"·"균형"), `PICK_ONE`이면 니즈 이름("파우치"·"어댑터"). 50자 초과 시 400(BE `VARCHAR(50)`) |
+| `lists[].productIds` | number[] | 예 | 최종 랭크 상품 id. **순서 유지 = 렌더 순서**(리랭킹 순서). 숫자 id(§2.6 internal). **목록당 최대 9개**(2026-07-30 확정 — 구 Top5에서 상향), 비었거나 9개 초과면 400 |
+| `lists[].reasons` | array | 아니오 | **[확정 v0.15.15, BE 구현 2026-07-18] 상품별 추천 근거** `{productId(숫자), reason}` — productId로 키잉(순서 권위는 `productIds`, 부분집합/순서무관). Spring이 저장 → **CH-5 카드에 `reason` echo**(§4.3). 선택 필드 — 근거 없는 상품은 생략(🟢). 배열 **최대 9개**, `reason` **최대 200자**. **생성 목표 = 한글 ≤40자 1문장**(rerank 프롬프트). AI가 push 전 개행 제거·안전 상한(config `reason_max_len`) 방어 정제하고, **표시 오버플로(줄임/더보기)는 FE 소관**(경로 B, 표시 권위=FE) |
+
+##### `listType` — 세 모양이 이 한 필드로 표현된다
+
+| `listType` | `lists` 길이 | 의미 |
+|---|---|---|
+| `PICK_ONE` | 1 | **일반 추천** — 후보 중 하나를 고른다 |
+| `PICK_ONE` | N | **니즈별 추천** — "유럽여행 필요한 거" → 파우치 후보 / 어댑터 후보 |
+| `BUY_ALL` | N | **세트 여러 안** — "감자탕 재료" → 조합 A·B·C |
+
+- **판단 기준은 예산이 아니다** — "감자탕 재료"는 예산이 없어도 `BUY_ALL`이고, "5만원으로 파우치"는 예산이 있어도 `PICK_ONE`이다.
+- **목록 개수는 싣지 않는다**(`lists` 길이로 알 수 있음). 반면 `listType`은 개수로 알 수 없어 **서버가 말해줘야 한다**.
+
+#### 성공 응답 — 200
+
+```json
+{ "success": true }
+```
+
+#### 규약
+
+- **멱등 키는 (`recommendationRequestId`, `listId`) 쌍이다.** 같은 쌍의 재전송은 목록을 중복 저장하지 않고 200으로 응답한다(타임아웃 후 재시도 대비). **`recommendationRequestId` 단독을 키로 쓰면 안 된다** — 여러 묶음 요청에서는 한 실행에 목록이 여러 개 오므로 두 번째 이후 목록이 "중복"으로 잘못 버려진다. **한 콜백 안에 같은 `listId`가 두 번 오면 400**(뒤 목록이 재전송으로 오해돼 조용히 버려지므로 거절한다).
+- **[변경 07/17] payload = id 배열만** — 구 §4.2 `groups[{title,category,items[{productId,rank,reason}]}]` 구조는 **폐기**. 표시 필드·순위·카드 제목은 콜백에 싣지 않는다. **[v0.17.1] `listType`·`label`·`totalBudget`은 표시 필드가 아니라 목록의 성격 메타**이며, 표시 권위는 그대로 Spring에 있다(경로 B 유지) — `products.ready`는 이 값들을 싣지 않고 CH-5 응답이 나른다(§3.1).
+- **`listId`는 FastAPI가 UUID급 무작위(≥128bit)로 생성한다.** 구 "Spring이 listId 발급" 가정과 `list-4471` 같은 순번형 예시는 폐기한다. CH-5가 인증 불필요 공개 조회라 `listId`가 사실상 bearer 키이므로 **순번·타임스탬프 등 추측 가능한 형식은 금지**한다. 여기서 `≥128bit`는 **식별자 표현 폭** 기준이며, 현재 UUIDv4 구현은 128bit UUID 중 version·variant 고정 비트를 제외한 122bit를 무작위로 생성한다.
+- **`listId` TTL = 10분(config).** **세션이 sliding으로 연장돼도 목록 TTL은 생성 시점 고정**이다 — 대화가 이어지는 중에도 오래된 카드는 만료된다. 만료 시 CH-5는 404이며, FE는 오류 화면 대신 자기가 가진 카드 스냅샷으로 폴백한다.
+- **[확정 v0.15.15] `reason`은 이 콜백에 포함**(🟢, BE 구현 2026-07-18) — `reasons[{productId, reason}]`를 Spring이 저장 → **CH-5 카드에 echo**(§4.3)해 FE에 전달. 구 BE 07/17 제안(reason=SSE·콜백 불포함)은 폐기 — SSE(`products.ready`)는 상관키만 유지, 경로 B 일관·FE join 불필요. 추천 이유는 **이원화**(2026-07-18 합의): SSE = 채팅 말풍선용(Spring 무관), 콜백 `reasons` = 우측 추천 카드용(CH-5 echo).
+- **규약**: FastAPI는 이 콜백이 **성공한 뒤에만** SSE `products.ready`({sessionId, listIds})를 발행한다 — 콜백 실패 시 미발행(FE가 빈 목록 조회 방지, §3.3). `listIds`의 **순서·개수는 `lists`와 같다**(§3.1).
+- **`recommendation_generated`는 Spring이 server-side로 기록한다** — 이 콜백이 성공한 시점에 `behavior_events`에 직접 적재하며, **FastAPI는 E-1(`POST /api/events`)로 같은 이벤트를 보내지 않는다.** E-1은 인증이 없어 분모가 조작 가능해지고, 양쪽이 다 기록하면 이중 계상된다.
 - **인증**: `X-Internal-Token` 서비스 토큰.
-- 🔴 협의(C-9): `listId` TTL·재조회 정책. (`listId` 형식은 v0.16.1에서 UUID급 무작위 ≥128bit로, `reason` 전달 방식은 v0.15.15에서 콜백 포함으로 확정 🟢.)
+
+#### 실패 응답
+
+| HTTP | code | 조건 |
+|---|---|---|
+| 401 | `INTERNAL_TOKEN_INVALID` | `X-Internal-Token` 없음·불일치, 또는 **서버에 토큰 미설정(fail-closed)** |
+| 400 | `VALIDATION_ERROR` (`error.fields[]` 포함) | 필수 필드 누락(`sessionId`·`listId`·`productIds`) |
+| 400 | `VALIDATION_ERROR` | `sessionId`가 UUID 형식이 아님 · `recommendationRequestId` 36자 초과 |
+| 400 | `VALIDATION_ERROR` | `lists`가 비었거나 **10개 초과** — 목록 10 × 상품 9 = 90개고 FE는 CH-5를 10번 호출해야 한다. 상한이 없으면 버그 한 번에 Redis 키·DB 행이 수백 개 생긴다 |
+| 400 | `VALIDATION_ERROR` | `listId`가 허용 문자(영숫자·`-`·`_`)를 벗어나거나 64자 초과 · 한 콜백 안 `listId` 중복 |
+| 400 | `VALIDATION_ERROR` | `productIds`가 비었거나 9개 초과 · 숫자 배열이 아님 · 한 목록 안 `productId` 중복 · `label` 50자 초과 |
+| 500 | `INTERNAL_ERROR` | Redis 쓰기·직렬화 실패 — **폴백이 없다.** `products.ready`를 발행하면 안 되고, 재시도하거나 카드 없이 텍스트만 응답한다 |
+
+**빈 목록은 400이 아니라 "보내지 않는 것"이 맞다** — 빈 목록을 저장하면 FE가 빈 카드 패널을 받는다. 후보가 없으면 콜백 자체를 생략하며, 그러면 `products.ready`도 발행되지 않는다.
+
+##### 실패가 아닌 것 (200)
+
+| 상황 | 이유 |
+|---|---|
+| 같은 (`recommendationRequestId`, `listId`) 재전송 | **멱등**이다. 타임아웃 후 재시도가 안전하도록 중복 저장 없이 200 |
+| 존재하지 않거나 만료된 `sessionId` | 세션 생존을 검증하지 않는다 — 목록 TTL은 세션과 무관하게 생성 시점부터 10분. 다만 신원을 구할 수 없어 **익명 저장**(2026-07-28 확정)되고, 그 목록은 **CH-5에서 조회되지 않는다**(소유자 미기록 = fail-closed) |
+| `productIds`에 `HIDDEN`·품절 상품 포함 | 저장 시점엔 거르지 않는다. **드롭은 조회(CH-5) 시점**이며 `itemsDropped`로 알린다 |
+| `reasons` 생략·일부만 있음 | 선택 필드다. 없는 상품의 카드는 `reason: null`로 내려간다 |
+| `reasons`에 `productIds`에 없는 상품이 섞임 | 매칭되지 않는 이유는 쓰이지 않는다 — 400으로 만들지 않는다 |
+
+- 🔴 협의(C-9): 잔여 없음. (`listId` 형식은 v0.16.1에서 UUID급 무작위 ≥128bit로, `reason` 전달 방식은 v0.15.15에서 콜백 포함으로, **TTL 10분·다중 목록은 v0.17.1에서 확정** 🟢.)
 
 ### 4.3 추천 목록/카드 조회 (CH-5 `GET /api/chat/lists/{listId}`, FE ↔ Spring 전제 계약) — [BE DB 등재 v0.15.0, 스키마 OPEN]
 
@@ -1360,7 +1438,7 @@ Spring/FE 팀과 확정이 필요한 항목을 통합한다. 각 항목은 본 �
 | C-6 | **[정정 v0.15.5] 구매 이력 = I-19** | `GET /internal/members/{id}/orders`(§4.7). camelCase·숫자 id(DDL)·`shippingFee` 0. **`status` = 6종**(`PAID/PREPARING/SHIPPING/DELIVERED/CANCELED/RETURNED`, Notion I-19). **`categoryName` 포함**(BE 확정 2026-07-19 — 카테고리 억제·productId dedup 모두 가능) | I-19 / Notion·DDL | 🟢 확정(status·타입·**categoryName BE 확정 2026-07-19**). 🔴 잔여 — Notion 페이지 stale BE 통보 |
 | C-7 | **판매자 판매 데이터 소스** | **[해소]** 원천 = **Spring 집계 API(I-6) 질의 시점 콜백**(§3.2·§4.4). 구 기본안(주문 미러 sellerId·금액 확장) 폐기 | 결정 20 개정/Batch 1 | ✅ **해소** — 계약 세부는 C-13으로 이관 |
 | C-8 | **[해소 v0.15.19] 세션 종료 통지 = I-20** | `POST /events/session-end` `{sessionId,userId(number BIGINT),reason?}` + `X-Internal-Token`. UUID 포함 불투명 sessionId, reason 최대 64자, 파생 멱등키, 202 `accepted`/`duplicate`(§3.5) | 이슈 #62/#79 / Spring PR #24 | 🟢 계약 확정 — **[v0.16.0]** Spring 알려진 reason=`logout` **1종**(`newConversation` 제거 — 새 대화는 threadId만 갱신, §2.6), AI 내부 10분 비활동 종료, enum 미강제 |
-| C-9 | **[BE 신설 07/17] 추천 push = I-21** | `POST /internal/recommendations` `{sessionId, listId, productIds[Top5 숫자], reasons[{productId,reason}]}`(§4.2). **listId=FastAPI 생성(UUID급 무작위 ≥128bit)**, **reason=콜백 포함(v0.15.15 확정, BE 구현 07-18)**, 콜백 성공 후 products.ready. 구 groups 구조·추측 가능한 listId 폐기 | I-21 / BE DB | 🟢 reason·listId 형식 확정. 🔴 잔여: listId TTL |
+| C-9 | **[BE 신설 07/17] 추천 push = I-21** | `POST /internal/recommendations` `{sessionId, recommendationRequestId, listType, totalBudget?, lists[{listId, label?, productIds[≤9 숫자], reasons[{productId,reason}]}]}`(§4.2). **listId=FastAPI 생성(UUID급 무작위 ≥128bit)**, **reason=콜백 포함(v0.15.15 확정, BE 구현 07-18)**, **다중 목록·멱등 키(recommendationRequestId, listId)·TTL 10분(v0.17.1 확정)**, 콜백 성공 후 products.ready. 구 groups 구조·추측 가능한 listId·평평한 단일 목록 폐기 | I-21 / BE DB | 🟢 전부 확정 (잔여 없음) |
 | C-10 | **식별자 = 토큰 클레임** | **확정(숫자 사용자 id)**: 사용자/게스트/판매자 = 숫자 id, JWT `sub`에 문자열화. `role` enum 구분(§2.6). **양팀 통보 필요** | 결정 8/19 / 2026-07-14 세션 확정 | 🔴 미확정 — 클레임 키·id 타입 세부 |
 | C-11 | **[v0.7.0 축소] CORS 허용 오리진** | 레이트 리밋은 **확정**(FastAPI 미들웨어 + in-memory, 분당 10/시간당 100 config, §2.8) — 협의 잔여는 **FE 허용 오리진 목록**뿐 | 결정 19 / v0.7.0 확정 | 🔴 잔여 — 허용 오리진(FE 통보) |
 | C-12 | **[BE 신설 07/17] 카드 조회 = CH-5** | `GET /api/chat/lists/{listId}`(§4.3, 구 P-7 대체) — Spring이 표시 필드 enrich·서빙, FE↔Spring. AI 미관여 | CH-5 / BE DB | 🔴 카드 응답 스키마(FE↔Spring 소유, LLM 사안 아님) |
@@ -1427,6 +1505,7 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 
 | 버전 | 날짜 | 변경 |
 |---|---|---|
+| v0.17.1 | 2026-07-31 | **[#209] I-21 다중 목록 정합 — 사본 §4.2가 정본(Notion I-21, 2026-07-28~30 개정)의 구 형식에 머물러 있던 드리프트를 해소했다.** (1) **요청 최상위를 `lists[]` 배열로 전환** — 구 평평한 3필드(`listId`·`productIds`·`reasons`)는 폐기한다. 목록이 1개여도 길이 1 배열이다. 니즈별 추천(파우치·어댑터 각각의 후보)과 세트 여러 안(조합 A·B·C)은 목록 하나로 표현되지 않는다. (2) **`recommendationRequestId` 신설** — 추천 실행 1회를 가리키는 opaque id(FastAPI 생성, ≤36자). 노출·클릭·담기·주문을 그 추천에 귀속시키는 조인 키로, `listId`와 **역할이 달라 서로 대체하지 않는다**(이슈 #140의 상관키와 같은 대상). (3) **`listType` 신설**(`PICK_ONE`/`BUY_ALL`, 항상 전송) — 목록 안 상품들이 대체재인지 보완재인지를 나타내며 세 모양(`PICK_ONE`+1=일반, `PICK_ONE`+N=니즈별, `BUY_ALL`+N=세트 복수안)이 이 한 필드로 표현된다. **판단 기준은 예산이 아니다** — "감자탕 재료"는 예산이 없어도 `BUY_ALL`, "5만원으로 파우치"는 예산이 있어도 `PICK_ONE`. 목록 개수는 `lists` 길이로 알 수 있어 싣지 않지만 `listType`은 개수로 복원할 수 없어 서버가 말해줘야 한다. (4) **`totalBudget`·`lists[].label` 신설** — `BUY_ALL`일 때의 예산 상한과 목록 이름(세트 성격 "알뜰"/니즈 이름 "파우치", ≤50자). 이 셋은 표시 필드가 아니라 **목록 성격 메타**이며 표시 권위는 그대로 Spring에 있다(경로 B 유지) — `products.ready`는 싣지 않고 CH-5가 나른다. (5) **목록당 상품 상한 Top5 → 9개**(2026-07-30 확정), `lists` 1~10개, `reasons` ≤9·`reason` ≤200자. (6) **멱등 키 = (`recommendationRequestId`, `listId`) 쌍** — 단독 키로 쓰면 한 실행의 두 번째 이후 목록이 중복으로 잘못 버려진다. 한 콜백 안 `listId` 중복은 400. (7) **실패 응답표·"실패가 아닌 것"표 등재** — `listId` 허용 문자(영숫자·`-`·`_` ≤64자, Redis 키 오염 방지)·만료 `sessionId`의 익명 저장(CH-5 미조회, fail-closed)·`HIDDEN`/품절은 CH-5 시점 드롭 등 정본 규약을 옮겼다. (8) **`listId` TTL 10분 확정**(🔴 C-9 잔여 해소) — 세션이 sliding으로 연장돼도 목록 TTL은 생성 시점 고정이며 만료 시 CH-5 404, FE는 카드 스냅샷 폴백. (9) **`recommendation_generated`는 Spring이 server-side 적재** — FastAPI가 E-1로 같은 이벤트를 보내지 않는다(E-1은 무인증이라 분모 조작 가능, 양쪽 기록 시 이중 계상). §3.3 경로 B 다이어그램과 §5.1 C-9 행도 함께 정정했다. **사본 자기모순 해소** — §3.1(`listIds` 배열, v0.15.26)이 "I-21이 `lists`를 1~10개 보내므로(§4.2)"라고 §4.2를 인용하는데 정작 §4.2에 `lists`가 없던 상태였다. **jarvis-back은 이미 신 형식 구현 완료**(`RecommendationCallbackRequest.resolvedLists()`가 구 형식을 과도기 수용 중이며 FastAPI 전환 후 제거 예정)이므로 **코드 전환(`RecommendationPush`)이 후속**이다. |
 | v0.17.0 | 2026-07-31 | **[#187] signed `sessionId` 기반 stable `context_id`와 guest→member claim, D6/I-20 lifecycle을 확정했다.** `/events/session-claim`의 strict BIGINT/서비스 토큰 계약, claim 뒤 old guest의 turn/thread 미생성, guest transcript와 member profile 입력 격리, 재시작 가능한 backfill과 단조 grace(최소 24시간), PostgreSQL clock 기준 durable quiet(최소 90초이자 stream timeout 이상), exact legacy late-write reopen 및 destructive GC gate를 명시했다. 외부 출시는 BE #63 signed-ticket 증거, 90초 drain, FE #52 실제 3-tab 검증, 운영 지표 확인 뒤에만 완료로 본다. |
 | v0.16.3 | 2026-07-30 | **[#164] I-4 주문 상태 문의 구현 계약 정합.** 구매자 라우팅을 `recommend`/`cart_add`/`cart_view`/`order_status`/`general` 5-way로 확장하고 §4.10을 신설했다. JWT-derived member identity, `GET /internal/members/{userId}/orders/status?recent=3`, internal token/3초 timeout, literal-success envelope, aware timestamp와 Spring 어휘/canonical pair의 전체 payload 검증, 최대 3개 주문·주문당 3개 상품 및 `외 N개`, empty와 dependency degradation 구분, `token`→`done(stop)` 정상 종료, privacy-safe correlated route log, 일반 대화 보존과 response-derived state non-copy 경계를 확정했다. §1.2·§4의 reverse-call 현황도 정확한 17건 `{I-1,I-19,I-4,I-2,I-18,I-21,I-6,I-7,I-13,I-14,I-15,I-16,I-9,I-10,I-11,I-12,I-17}`로 정정했다. |
 | v0.16.2 | 2026-07-30 | **[#194] I-14/I-15 응답 스키마 BE 실측 확정 + I-6 이상 감지 규칙 명문화.** (1) **I-14 `order-events` 응답 확정** — `rows`/`total`/`byStatus`/`cancelReasonsTop` (shape 상호 배제: 목록/stats/groupBy=memberId). 구 추정 스키마(`events`/`stats`)는 BE에 없는 필드라 AI 도구가 **항상 0건**을 반환하던 버그의 원인(`extra="allow"`가 검증 실패를 은폐). (2) **I-15 `product-changes` 응답 확정** — `rows[{productId,productName,changeType,oldValue,newValue,createdAt}]`+`total` (구 `logs` 폐기, 동일 패턴 버그). (3) **I-6 이상 감지 규칙 명문화(BE `SellerSalesService.withAnomaly` 실측)** — 직전 최소 3(MIN_WINDOW)·최대 7(MOVING_WINDOW)포인트 평균 대비 ±30%, 기준선 0 + 매출 발생 = 이상(`deviationPct` null), **매출 0 포인트는 이상 아님**(저볼륨 무판매일 -100% 노이즈 방지). AI `calc.detect_sales_anomalies`를 동일 규칙으로 정렬. (4) I-14/I-15 `limit`(기본 100) 쿼리 등재 — `rows`는 절단본, 전수는 `total`. |
