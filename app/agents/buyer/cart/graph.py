@@ -2,7 +2,8 @@
 
 담기: (상품·옵션·수량) 의도 확정 → add_to_cart(I-2, 단건) → SSE action.
       옵션 필수(CART_OPTION_REQUIRED)면 실패 action 없이 token 되물음 → pending 저장 →
-      다음 턴 사용자 답을 optionId 로 해석해 재담기(§4.1 멀티턴). 담기 전 get_cart(§4.9)로
+      다음 턴 사용자 답을 optionId 로 해석해 재담기(§4.1 멀티턴). 단 후보가 1개뿐이면 되묻지
+      않고 그 옵션으로 즉시 재담기한다(이슈 #114). 담기 전 get_cart(§4.9)로
       기존 보유를 확인해 합산 안내(조회 실패 시에도 담기 진행, degrade).
 조회: get_cart(I-18) → token 텍스트 답변(별도 이벤트 없음, §3.1).
 게스트 담기 허용(userId|guestId, §4.1) — 신원은 JWT sub 유래(요청 본문 불신).
@@ -20,7 +21,7 @@ from app.agents.buyer.recommendation.state import CartIntent
 from app.core.text import _strip_unsafe
 from app.core.tracing import current_request_trace
 from app.schemas.chat import ActionData, DoneData, TokenData
-from app.schemas.spring import AddToCartRequest, CartOption
+from app.schemas.spring import AddToCartRequest, AddToCartResult, CartOption
 from app.services import spring_client
 from app.services.spring_client import (
     CartError,
@@ -61,6 +62,29 @@ def _options_text(options: list[CartOption]) -> str:
         else:
             parts.append(opt.name)
     return _strip_unsafe(" / ".join(parts)) if parts else "옵션"
+
+
+async def _add_with_single_option(
+    add_fn, req: AddToCartRequest
+) -> tuple[AddToCartResult, CartOption | None]:
+    """I-2 담기 — 옵션 후보가 1개뿐이면 되묻지 않고 그 optionId 로 즉시 재담기한다(이슈 #114).
+
+    선택지가 하나면 되물어도 답이 정해져 있어 왕복만 늘어난다. 계약 변경은 없다 — AI 가 유일
+    옵션의 optionId 로 I-2 를 재호출할 뿐(api-spec §4.1). 자동 선택 재시도는 **1회**로 고정한다:
+    자동 선택한 옵션에도 REQUIRED 가 또 오면 계약 이상이므로 예외를 그대로 올려 기존 되물음
+    멀티턴으로 degrade 한다(무한 재시도 금지). 후보가 여럿이면 임의로 고르지 않고, 이미 보낸
+    optionId 와 같으면 같은 요청을 되풀이하지 않는다. 나머지 오류(INVALID·재고·수량 등)는 그대로
+    상위로 올려 기존 action 매핑을 탄다.
+
+    반환값 두 번째는 자동 선택한 옵션(없었으면 None) — AI 가 대신 골랐음을 안내 문구에 밝히기 위함.
+    """
+    try:
+        return await add_fn(req), None
+    except CartOptionRequired as exc:
+        if len(exc.options) != 1 or exc.options[0].option_id == req.option_id:
+            raise
+        option = exc.options[0]
+        return await add_fn(req.model_copy(update={"option_id": option.option_id})), option
 
 
 def _done() -> str:
@@ -137,7 +161,8 @@ async def stream_cart_add(
         yield _done()
         return
 
-    # 담기 전 기존 보유 확인(안내용, degrade) — 동일 상품·옵션 보유 수량.
+    # 담기 전 기존 보유 확인(안내용, degrade) — 동일 상품·옵션 보유 수량. optionId 미상(None)이면
+    # 그 상품의 모든 항목을 센다 — 유일 옵션 자동 선택(#114)으로 담길 옵션도 이 안에 포함된다.
     existing = 0
     try:
         cart_view = await get_cart_fn(user_id=user_id, guest_id=guest_id)
@@ -157,7 +182,7 @@ async def stream_cart_add(
             option_id=option_id,
             quantity=quantity,
         )
-        result = await add_fn(req)
+        result, auto_option = await _add_with_single_option(add_fn, req)
     except CartOptionRequired as exc:
         # api-spec §4.1 — REQUIRED 는 **상한 없는 되물음 멀티턴**(사용자가 옵션을 아직 안 준 정상 흐름).
         # 각 되물음은 사용자 입력을 요구하므로 서버 무한 루프가 아니다. INVALID 카운터(attempts)는
@@ -270,6 +295,14 @@ async def stream_cart_add(
         message = "이미 담겨 있던 상품이라 수량을 더했어요."
     else:
         message = "장바구니에 담았어요."
+    # 유일 옵션을 AI 가 대신 골랐으면 무엇으로 담았는지 밝힌다(이슈 #114). 옵션명은 판매자 입력
+    # 영향권이라 되물음 문구와 동일하게 정제한다(빈 이름이면 기본 문구 유지).
+    if auto_option is not None and (option_name := _strip_unsafe(auto_option.name)):
+        message = (
+            f"{option_name} 옵션으로 담아 수량을 더했어요."
+            if existing > 0
+            else f"{option_name} 옵션으로 담았어요."
+        )
     yield sse(
         "action",
         ActionData(type="CART_ADDED", message=message, cart_item_id=result.cart_item_id).model_dump(
