@@ -795,6 +795,22 @@ class SessionContextRepository:
                 elif row.owner_type != "guest" or row.owner_id != guest_id:
                     raise SessionClaimConflict
                 else:
+                    # SQL 경로(_claim_owner_on_connection)와 같은 순서를 지킨다 —
+                    # generation 을 올리기 전에 현재 세대의 진행 중 idle finalization 을
+                    # 먼저 닫는다. 건너뛰면 row 는 이전 세대에 남고 어느 재수집 경로에도
+                    # 걸리지 않는 고아가 된다.
+                    for stale in self._finalizations.values():
+                        if (
+                            stale.context_id == row.context_id
+                            and stale.generation == row.generation
+                            and stale.reason == "idle"
+                            and stale.status != "superseded"
+                            and stale.transient_status == "pending"
+                        ):
+                            stale.status = "superseded"
+                            stale.claim_token = None
+                            stale.lease_expires_at = None
+                            stale.superseded_at = self._clock()
                     row.owner_type = "member"
                     row.owner_id = target
                     row.generation += 1

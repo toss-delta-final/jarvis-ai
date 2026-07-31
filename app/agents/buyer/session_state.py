@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -27,6 +28,22 @@ _CATEGORIES_KEY = "categories"
 _adoption_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 _legacy_root_memory_fence = asyncio.Lock()
 _LEGACY_ROOT_FENCE_KEY = "migration:buyer-legacy-roots"
+
+# adoption_status='complete' 는 종단 상태다 — _begin_adoption 의 CASE 가 complete 를
+# 다른 값으로 되돌리지 않는다. 그래서 완료를 한 번 관측한 (context_id, thread_id) 는
+# 전역 fence 를 다시 잡지 않는다. 이 fence 는 고정 키 하나(_LEGACY_ROOT_FENCE_KEY)의
+# 블로킹 advisory lock 이라, 캐시가 없으면 마이그레이션이 끝난 뒤에도 서로 무관한
+# 사용자·세션·스레드의 모든 buyer 턴이 이 락 하나에서 직렬화된다.
+# 캐시 미스는 기존 동작(락 획득)으로 떨어지므로 안전 방향으로만 틀린다.
+_ADOPTED_CACHE_MAX = 8192
+_adopted_threads: OrderedDict[tuple[str, str], None] = OrderedDict()
+
+
+def _mark_adopted(key: tuple[str, str]) -> None:
+    _adopted_threads[key] = None
+    _adopted_threads.move_to_end(key)
+    while len(_adopted_threads) > _ADOPTED_CACHE_MAX:
+        _adopted_threads.popitem(last=False)
 
 
 @dataclass(frozen=True)
@@ -466,12 +483,17 @@ async def adopt_legacy_thread(
 ) -> AdoptionResult:
     adoption_key = context_thread_key(context.context_id, thread_id)
     legacy_key = f"{legacy_owner_id}:{thread_id}"
+    cache_key = (context.context_id, thread_id)
+    if cache_key in _adopted_threads:
+        _adopted_threads.move_to_end(cache_key)
+        return AdoptionResult(False)
     async with _lock_for(adoption_key):
         try:
             async with _legacy_root_fence(
                 session_context._default_repository, transaction_scoped=False
             ) as fence_conn:
                 if not await _begin_adoption(context, thread_id, legacy_owner_id, fence_conn):
+                    _mark_adopted(cache_key)
                     return AdoptionResult(False)
                 if fence_conn is not None:
                     await fence_conn.commit()

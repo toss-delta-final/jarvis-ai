@@ -592,6 +592,22 @@ def _claim_memory_under_lock(
         )
         repository._contexts[event.session_id] = row
     else:
+        # SQL 경로(_claim_owner_on_connection)·in-memory claim_owner 와 같은 순서 —
+        # generation 을 올리기 전에 현재 세대의 진행 중 idle finalization 을 먼저 닫는다.
+        # pool 미구성 환경에서 idle sweep 과 로그인 claim 이 겹치면 finalization 이
+        # 이전 세대에 고아로 남아 회수되지 않는다.
+        for stale in repository._finalizations.values():
+            if (
+                stale.context_id == row.context_id
+                and stale.generation == row.generation
+                and stale.reason == "idle"
+                and stale.status != "superseded"
+                and stale.transient_status == "pending"
+            ):
+                stale.status = "superseded"
+                stale.claim_token = None
+                stale.lease_expires_at = None
+                stale.superseded_at = repository._clock()
         row.owner_type = "member"
         row.owner_id = target
         row.generation += 1
