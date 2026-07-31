@@ -32,15 +32,18 @@ from app.agents.buyer.recommendation.needs_expansion import expand_needs as _exp
 from app.agents.buyer.recommendation.state import get_revert_store
 from app.agents.buyer.recommendation.graph import stream_recommendation
 from app.agents.profile.builder import record_remember
+from app.agents.buyer.session_state import context_thread_key, ensure_thread_adopted
 from app.agents.profile.gate import is_remember_command
 from app.agents.profile.reader import read_profile_summary
 from app.agents.profile.store import get_profile_store
 from app.core import pg_store
+from app.api.deps import buyer_owner_id
 from app.core.config import get_settings
 from app.core.conversation import conversation_key
 from app.core.errors import new_request_id
 from app.core.llm import LLMError, get_llm, resolve_model_id
 from app.core.pg_resilience import run_with_query_timeout
+from app.core.session_context import SessionStateUnavailable
 from app.core.text import _strip_unsafe
 from app.core.tracing import trace_span
 from app.agents.buyer.recommendation.state import CartIntent, CategoryQuery
@@ -50,7 +53,7 @@ from app.services import search_service, spring_client
 
 logger = logging.getLogger(__name__)
 
-_NAMESPACE_ROOT = "buyer_thread_filters"
+_NAMESPACE_ROOT = "buyer_thread_filters_v2"
 _FILTERS_KEY = "filters"
 
 
@@ -219,6 +222,19 @@ async def run_buyer_turn(
     resolved_request_id = cast(
         str, request_id or getattr(observer, "request_id", None) or new_request_id()
     )
+    # lifecycle authority가 원자적 turn 저장에서 확정한 context만 buyer 상태 키로 사용한다.
+    # raw owner/session 식별자는 상태 키나 로그 상관키로 재사용하지 않는다.
+    # 검증은 LLM/상태 접근보다 먼저 수행해 서명 세션 실패가 200 SSE로 완화되지 않게 한다.
+    context_id = getattr(observer, "context_id", None)
+    if not isinstance(context_id, str) or not context_id:
+        raise SessionStateUnavailable
+    await ensure_thread_adopted(
+        context_id,
+        request.thread_id,
+        buyer_owner_id(identity, settings),
+    )
+    thread_key = context_thread_key(context_id, request.thread_id)
+
     llm = llm or get_llm()
     if llm is None:
         yield sse(
@@ -233,10 +249,6 @@ async def run_buyer_turn(
         return
     search = search or search_service.search_catalog
     push_fn = push_fn or spring_client.push_recommendations
-
-    # 멀티턴 누적 필터 로드 (신원 스코프 키)
-    subject = identity.user_id or identity.subject
-    thread_key = conversation_key(subject, request.thread_id)
     thread_store = await get_thread_store()
     prior = await thread_store.get(thread_key)
 

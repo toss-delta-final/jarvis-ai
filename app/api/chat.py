@@ -17,12 +17,14 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from app.agents.buyer.graph import run_buyer_turn
-from app.api.deps import get_identity
+from app.api import deps as auth_deps
 from app.core.auth import Identity
 from app.core.config import get_settings
 from app.core.conversation import TurnStatus, get_conversation_store
 from app.core.errors import get_request_id
 from app.core.observability import emit_rejection, finish_trace_safely, start_observation
+from app.core.pg_resilience import is_state_store_unavailable
+from app.core.session_context import BuyerSessionInput, SessionStateUnavailable
 from app.core.stream import open_stream, registry_key
 from app.core.tracing import start_request_trace_safely
 from app.schemas.chat import ChatRequest
@@ -34,9 +36,17 @@ router = APIRouter(tags=["chat"])
 async def chat(
     request: ChatRequest,
     http_request: Request,
-    identity: Identity = Depends(get_identity),
+    identity: Identity = Depends(auth_deps.get_identity),
 ) -> StreamingResponse:
     """구매자 챗봇 SSE 스트리밍 (api-spec §3.1)."""
+    settings = auth_deps.get_settings()
+    auth_deps.require_buyer_session(identity, request.session_id, settings)
+    buyer_session = BuyerSessionInput(
+        session_id=request.session_id,
+        thread_id=request.thread_id,
+        owner_type="guest" if identity.is_guest else "member",
+        owner_id=auth_deps.buyer_owner_id(identity, settings),
+    )
     request_id = get_request_id(http_request)
     trace = start_request_trace_safely(
         name="buyer_chat_turn",
@@ -56,7 +66,7 @@ async def chat(
             terminal_reason="client_disconnect",
         )
         raise
-    except Exception:
+    except Exception as exc:
         await finish_trace_safely(
             trace,
             status=TurnStatus.FAILED,
@@ -73,6 +83,8 @@ async def chat(
             conversationId=request.session_id,
             threadId=request.thread_id,
         )
+        if is_state_store_unavailable(exc):
+            raise SessionStateUnavailable from exc
         raise
     observation = start_observation(
         request_id=request_id,
@@ -83,6 +95,7 @@ async def chat(
         store=store,
         now=asyncio.get_running_loop().time(),
         trace=trace,
+        buyer_session=buyer_session,
     )
     return await open_stream(
         http_request,

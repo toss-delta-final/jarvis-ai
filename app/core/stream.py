@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import nullcontext
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import HTTPException, Request, status
@@ -27,7 +28,7 @@ from app.core.config import get_settings
 from app.core.conversation import TurnStatus
 from app.core.errors import new_request_id
 from app.core.logging import get_logger
-from app.core.observability import RequestObservation
+from app.core.observability import RequestObservation, identifier_fingerprint
 from app.core.tracing import RequestTrace, bind_request_trace
 from app.schemas.chat import DoneData, ErrorData
 
@@ -39,26 +40,96 @@ _SSE_HEADERS = {
 }
 
 
+@dataclass
+class _ScopeIdleWaiters:
+    event: asyncio.Event
+    count: int = 0
+
+
 class ActiveStreamRegistry:
     """인메모리 활성 스트림 레지스트리 (§2.9 a). acquire/release 는 await 를 끼지 않아
     이벤트 루프 상에서 원자적이다 (check-then-add 사이 선점 없음)."""
 
     def __init__(self) -> None:
-        self._active: set[str] = set()
+        self._active: dict[str, tuple[str, str] | None] = {}
+        self._fences: dict[tuple[str, str], StreamScopeFence] = {}
+        self._scope_idle: dict[tuple[str, str], _ScopeIdleWaiters] = {}
 
-    def acquire(self, stream_key: str) -> bool:
-        """활성 등록. 이미 활성이면 False (호출자가 409 로 거절)."""
+    def acquire(
+        self,
+        stream_key: str,
+        *,
+        owner_id: str | None = None,
+        session_id: str | None = None,
+    ) -> bool:
+        """활성 등록. buyer scope가 fenced 상태이거나 key가 활성이면 False."""
+        if (owner_id is None) != (session_id is None):
+            raise ValueError("owner_id and session_id must be provided together")
         if stream_key in self._active:
             return False
-        self._active.add(stream_key)
+        scope = (owner_id, session_id) if owner_id is not None and session_id is not None else None
+        if scope is not None and scope in self._fences:
+            return False
+        self._active[stream_key] = scope
+        if scope is not None:
+            waiters = self._scope_idle.get(scope)
+            if waiters is not None:
+                waiters.event.clear()
         return True
 
     def release(self, stream_key: str) -> None:
         """활성 해제 (중복 해제 무해)."""
-        self._active.discard(stream_key)
+        scope = self._active.pop(stream_key, None)
+        if scope is not None and scope not in self._active.values():
+            waiters = self._scope_idle.get(scope)
+            if waiters is not None:
+                waiters.event.set()
 
     def is_active(self, stream_key: str) -> bool:
         return stream_key in self._active
+
+    def acquire_fence(self, owner_id: str, session_id: str) -> StreamScopeFence | None:
+        """해당 buyer session scope에 active stream이 없을 때 non-blocking fence를 획득한다."""
+        scope = (owner_id, session_id)
+        if scope in self._fences or scope in self._active.values():
+            return None
+        token = StreamScopeFence(owner_id=owner_id, session_id=session_id)
+        self._fences[scope] = token
+        return token
+
+    def release_fence(self, token: StreamScopeFence) -> None:
+        """발급한 동일 token 객체만 fence를 해제할 수 있다."""
+        scope = (token.owner_id, token.session_id)
+        if self._fences.get(scope) is not token:
+            raise ValueError("stream scope fence token is not active")
+        del self._fences[scope]
+
+    def is_fenced(self, owner_id: str, session_id: str) -> bool:
+        return (owner_id, session_id) in self._fences
+
+    async def wait_for_scope_idle(self, owner_id: str, session_id: str) -> None:
+        """해당 buyer session scope의 기존 stream이 모두 종료될 때까지 event 기반 대기한다."""
+        scope = (owner_id, session_id)
+        while scope in self._active.values():
+            waiters = self._scope_idle.get(scope)
+            if waiters is None or waiters.event.is_set():
+                waiters = _ScopeIdleWaiters(asyncio.Event())
+                self._scope_idle[scope] = waiters
+            waiters.count += 1
+            try:
+                await waiters.event.wait()
+            finally:
+                waiters.count -= 1
+                if waiters.count == 0 and self._scope_idle.get(scope) is waiters:
+                    del self._scope_idle[scope]
+
+
+@dataclass(frozen=True)
+class StreamScopeFence:
+    """Owner/session registry fence identity token."""
+
+    owner_id: str
+    session_id: str
 
 
 _registry = ActiveStreamRegistry()
@@ -126,7 +197,7 @@ async def _safe_finish(
     try:
         await observer.finish(loop_time, *args)
     except Exception:
-        logger.exception("observer.finish 실패 stream_key=%s", stream_key)
+        logger.exception("observer.finish 실패 streamFp=%s", identifier_fingerprint(stream_key))
 
 
 def _terminal_event_of(frame: str) -> tuple[str | None, str | None]:
@@ -365,7 +436,12 @@ async def open_stream(
     stream_request_id = observer.request_id if observer is not None else new_request_id()
     trace = observer.trace if observer is not None else None
 
-    if not registry.acquire(stream_key):
+    buyer_session = getattr(observer, "buyer_session", None)
+    if not registry.acquire(
+        stream_key,
+        owner_id=buyer_session.owner_id if buyer_session is not None else None,
+        session_id=buyer_session.session_id if buyer_session is not None else None,
+    ):
         if observer is not None:
             await _safe_finish(
                 observer,
@@ -500,7 +576,10 @@ async def open_stream(
                 break
             if await request.is_disconnected():
                 # (b) 첫 이벤트 전 연결 종료 — 정리 후 즉시 종료(소비될 응답 없음).
-                logger.info("stream cancelled before first token stream_key=%s", stream_key)
+                logger.info(
+                    "stream cancelled before first token streamFp=%s",
+                    identifier_fingerprint(stream_key),
+                )
                 await _abort_prestream()
                 if observer is not None:
                     await _safe_finish(
@@ -576,7 +655,9 @@ async def open_stream(
                 remaining = deadline - loop.time()
                 if remaining <= 0:
                     # (c) 전체 상한 초과 — done(stop)으로 정상 절단(COMPLETED, FAILED 아님).
-                    logger.info("stream total cap reached stream_key=%s", stream_key)
+                    logger.info(
+                        "stream total cap reached streamFp=%s", identifier_fingerprint(stream_key)
+                    )
                     terminal_reason = "total_timeout_stop"
                     done_frame = _done_stop_frame()
                     if observer is not None:
@@ -588,7 +669,8 @@ async def open_stream(
                     # 아직 이벤트 없음(제너레이터 유휴) — (b) 연결 종료 조기 감지.
                     if await request.is_disconnected():
                         logger.info(
-                            "stream cancelled by client disconnect stream_key=%s", stream_key
+                            "stream cancelled by client disconnect streamFp=%s",
+                            identifier_fingerprint(stream_key),
                         )
                         stream_status = TurnStatus.CANCELLED
                         terminal_reason = "client_disconnect"
@@ -606,7 +688,9 @@ async def open_stream(
                     # (c) 첫 이벤트 후(=200 전송 후) 상류 오류 — 계약상 in-stream error 로
                     #     마무리해야 한다(연결만 끊기지 않게, §2.9 c/§3.1). 기본 INTERNAL.
                     #     실제 그래프는 필요 시 자체 error(LLM_UNAVAILABLE 등)를 먼저 emit 가능.
-                    logger.exception("in-stream error stream_key=%s", stream_key)
+                    logger.exception(
+                        "in-stream error streamFp=%s", identifier_fingerprint(stream_key)
+                    )
                     stream_status = TurnStatus.FAILED
                     error_type = "INTERNAL"
                     terminal_reason = "tool_error"

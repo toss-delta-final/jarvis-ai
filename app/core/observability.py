@@ -10,6 +10,7 @@ errorType 를 요청당 1건의 구조화 로그로 남기고, 어시스턴트 �
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -18,7 +19,8 @@ from dataclasses import dataclass, field
 from app.core.auth import Identity
 from app.core.config import get_settings
 from app.core.conversation import ConversationStoreProtocol, TurnStatus, conversation_key
-from app.core.logging import get_logger
+from app.core.logging import get_logger, safe_fingerprint
+from app.core.session_context import BuyerSessionInput
 from app.core.tracing import RequestTrace
 
 logger = get_logger("observability")
@@ -31,7 +33,7 @@ async def finish_trace_safely(
     error_type: str | None,
     terminal_reason: str,
 ) -> None:
-    """Finish telemetry without allowing it to replace the request/stream outcome."""
+    """추적 실패가 실제 요청/스트림 결과를 대체하지 않게 마감한다."""
     try:
         await trace.finish(
             status=status.value,
@@ -39,7 +41,7 @@ async def finish_trace_safely(
             terminal_reason=terminal_reason,
         )
     except Exception:
-        logger.exception(
+        logger.warning(
             "trace.finish 실패 terminal_reason=%s code=TELEMETRY_FINISH_FAILED",
             terminal_reason,
         )
@@ -55,6 +57,22 @@ def message_fingerprint(text: str) -> tuple[int, str]:
     pepper = get_settings().pii_hash_pepper.encode("utf-8")
     digest = hmac.new(pepper, text.encode("utf-8"), hashlib.sha256).hexdigest()[:16]
     return len(text), digest
+
+
+def identifier_fingerprint(value: str | None) -> str | None:
+    """로그 상관관계용 비가역 식별자 지문."""
+    return safe_fingerprint(value)
+
+
+class _LogFingerprint(str):
+    """`fingerprint_log_value`만 생성하는 rejection 로그 전용 branded string."""
+
+
+def fingerprint_log_value(value: str) -> str:
+    """raw 값을 peppered HMAC branded string으로 바꿔 rejection 필드 provenance를 보장한다."""
+    fingerprint = identifier_fingerprint(value)
+    assert fingerprint is not None
+    return _LogFingerprint(fingerprint)
 
 
 def role_of(identity: Identity) -> str:
@@ -77,12 +95,15 @@ class ModelCall:
 
 @dataclass
 class RequestObservation:
-    """요청 1건의 관측 상태. open_stream 이 record_frame/finish 훅을 호출한다."""
+    """요청 1건의 관측 상태. open_stream 이 훅(on_first_token/record_frame/finish)을 호출한다."""
 
     request_id: str
     conversation_id: str
     thread_id: str | None
     user_id: str | None
+    # Identity.brand_id 와 같은 계약 — JWKS 판매자 경로는 int 를 강제하고(auth.py `type is int`)
+    # 관용 경로는 문자열도 통과시킨다. 지문 계산 전 str() 캐스팅이 반드시 필요하다.
+    brand_id: str | int | None
     role: str
     store: ConversationStoreProtocol
     message_length: int
@@ -90,14 +111,16 @@ class RequestObservation:
     started: float
     pending_message: str
     pending_key: str
-    pending_session_id: str
+    buyer_session: BuyerSessionInput | None = None
     trace: RequestTrace | None = None
     turn_id: str | None = None
+    context_id: str | None = None
     first_event_at: float | None = None
     first_text_token_at: float | None = None
     assistant_parts: list[str] = field(default_factory=list)
     model_calls: list[ModelCall] = field(default_factory=list)
     finished: bool = False
+    _finish_task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
 
     async def commit_user_message(self) -> None:
         """스트림 슬롯 확보(§2.9 a 409 통과) **후** 사용자 메시지를 저장한다(§6.3 a).
@@ -105,14 +128,16 @@ class RequestObservation:
         409로 거절된 중복/더블클릭 요청은 이 호출에 도달하지 않으므로 유령 턴(응답 없는
         FAILED 턴)이 다음 컨텍스트를 오염시키지 않는다."""
         if self.turn_id is None:
-            self.turn_id = await self.store.save_user_message(
+            committed = await self.store.save_user_message(
                 self.pending_key,
                 self.user_id,
                 self.role,
                 self.pending_message,
-                session_id=self.pending_session_id,
                 thread_id=self.thread_id,
+                buyer_session=self.buyer_session,
             )
+            self.turn_id = committed.turn_id
+            self.context_id = committed.context_id
 
     def record_model_call(
         self, model: str, prompt_tokens: int = 0, completion_tokens: int = 0
@@ -133,7 +158,7 @@ class RequestObservation:
         return round((self.first_text_token_at - self.started) * 1000)
 
     def record_frame(self, frame: str, now: float) -> None:
-        """첫 SSE 이벤트와 첫 non-empty token 텍스트를 서로 분리해 기록한다."""
+        """첫 SSE 이벤트와 첫 non-empty token 텍스트를 분리해 기록한다."""
         if frame.strip() and self.first_event_at is None:
             self.first_event_at = now
         text = _extract_token_text(frame)
@@ -146,13 +171,25 @@ class RequestObservation:
         self,
         now: float,
         status: TurnStatus,
+        error_type: str | None = None,
+        terminal_reason: str = "eof",
+    ) -> None:
+        """취소와 동시 호출에도 하나의 cleanup task로 턴·로그·trace를 마감한다."""
+        task = self._finish_task
+        if task is None:
+            task = asyncio.create_task(
+                self._complete_finish(now, status, error_type, terminal_reason)
+            )
+            self._finish_task = task
+        await asyncio.shield(task)
+
+    async def _complete_finish(
+        self,
+        now: float,
+        status: TurnStatus,
         error_type: str | None,
         terminal_reason: str,
     ) -> None:
-        """어시스턴트 응답을 상태와 함께 마감하고 요청 구조화 로그를 남긴다(멱등)."""
-        if self.finished:
-            return
-        self.finished = True
         if self.turn_id is not None:
             try:
                 await self.store.finalize_assistant(
@@ -164,21 +201,35 @@ class RequestObservation:
                 # 는 이제 실 pg-profile I/O 라 실패할 수 있는데, 여기서 전파하면 아래 chat_request
                 # 로그(latency·model·tokens·streamStatus 등)가 통째로 유실되고 finished=True 라
                 # 재시도 여지도 없다(PR #48 후속 리뷰). 실패는 관측 가능하게 남기고 계속 진행한다.
-                logger.exception(
-                    "finalize_assistant 실패 turn_id=%s (대화 저장 유실)", self.turn_id
+                logger.error(
+                    "finalize_assistant 실패 turnFp=%s code=CONVERSATION_FINALIZE_FAILED",
+                    identifier_fingerprint(self.turn_id),
                 )
             stream_status = status.value
         else:
             stream_status = None  # 스트림 시작 전 거부(409 등) — 저장된 턴 없음
 
         latency_total_ms = round((now - self.started) * 1000)
+        identity_fields = (
+            {
+                "sellerFp": identifier_fingerprint(self.user_id),
+                "brandFp": (
+                    identifier_fingerprint(str(self.brand_id))
+                    if self.brand_id is not None
+                    else None
+                ),
+            }
+            if self.role == "seller"
+            else {"ownerFp": identifier_fingerprint(self.user_id)}
+        )
         record = {
             "event": "chat_request",
             "requestId": self.request_id,
-            "userId": self.user_id,
+            **identity_fields,
             "role": self.role,
-            "conversationId": self.conversation_id,
-            "threadId": self.thread_id,
+            "sessionFp": identifier_fingerprint(self.conversation_id),
+            "contextFp": identifier_fingerprint(self.context_id),
+            "threadFp": identifier_fingerprint(self.thread_id),
             "latencyFirstToken": self.server_first_text_token_ms,
             "latencyTotal": latency_total_ms,
             "model": [m.model for m in self.model_calls] or None,
@@ -202,6 +253,7 @@ class RequestObservation:
                 error_type=error_type,
                 terminal_reason=terminal_reason,
             )
+        self.finished = True
 
 
 def _extract_token_text(frame: str) -> str | None:
@@ -229,6 +281,7 @@ def start_observation(
     message: str,
     store: ConversationStoreProtocol,
     now: float,
+    buyer_session: BuyerSessionInput | None = None,
     trace: RequestTrace | None = None,
 ) -> RequestObservation:
     """사용자 메시지를 저장(§6.3 a)하고 관측 컨텍스트를 만든다. 원문은 저장소에만, 로그엔 지문만."""
@@ -236,12 +289,14 @@ def start_observation(
     role = role_of(identity)
     subject = identity.user_id or identity.subject
     # 메시지 저장은 open_stream 의 슬롯 확보 후 commit_user_message()에서(유령 턴 방지).
-    # 저장 키는 신원 스코프(IDOR 방지) — 로그 conversationId 는 원 sessionId 유지(상관관계).
+    # 저장 키는 대화 저장소 내부 신원 스코프이며 buyer transient 상태는 commit 결과의
+    # lifecycle context_id:thread_id만 사용한다. 외부 로그에는 식별자 지문만 남긴다.
     return RequestObservation(
         request_id=request_id,
         conversation_id=conversation_id,
         thread_id=thread_id,
         user_id=subject,
+        brand_id=identity.brand_id,
         role=role,
         store=store,
         message_length=length,
@@ -249,7 +304,7 @@ def start_observation(
         started=now,
         pending_message=message,
         pending_key=conversation_key(subject, conversation_id),
-        pending_session_id=conversation_id,
+        buyer_session=buyer_session,
         trace=trace,
     )
 
@@ -259,11 +314,88 @@ def emit_rejection(request_id: str, error_type: str, **fields: object) -> None:
 
     레이트 리밋(§2.8)·409(§2.9 a) 발동을 상한 튜닝 근거로 관측 가능하게 남긴다.
     """
+
+    def _take(*keys: str) -> object | None:
+        found = None
+        for key in keys:
+            value = fields.pop(key, None)
+            if found is None and value is not None:
+                found = value
+        return found
+
+    raw_owner = _take("userId", "ownerId", "guestId", "subject", "sub")
+    raw_seller = _take("sellerId")
+    raw_brand = _take("brandId")
+    raw_session = _take("conversationId", "sessionId")
+    raw_thread = _take("threadId")
+    raw_stream = _take("streamKey", "stream_key")
+    raw_context = _take("contextId")
+    raw_ip = _take("ip", "ipAddress", "clientIp")
+    raw_scope = _take("scope")
+    scope_type = None
+    scope_owner = None
+    if raw_scope is not None:
+        scope_text = str(raw_scope)
+        prefix, separator, value = scope_text.partition(":")
+        scope_type = prefix if separator and prefix in {"sub", "ip"} else "other"
+        if scope_type == "sub" and value:
+            scope_owner = value
+        elif scope_type == "ip" and value and raw_ip is None:
+            raw_ip = value
+
+    # 임의 **fields를 그대로 병합하지 않는다. 새 필드는 비민감 allowlist에 명시적으로
+    # 추가해야 하며, 식별자처럼 보이는 미지 키는 기본적으로 폐기한다.
+    safe_text_values = {
+        "path": {"/chat", "/seller/chat"},
+        "role": {"member", "guest", "seller"},
+        "status": {"COMPLETED", "FAILED", "CANCELLED"},
+        "action": {"confirm"},
+    }
+    safe_fields = {
+        key: value
+        for key, allowed in safe_text_values.items()
+        if isinstance((value := fields.get(key)), str) and value in allowed
+    }
+    retryable = fields.get("retryable")
+    if isinstance(retryable, bool):
+        safe_fields["retryable"] = retryable
+
+    def _branded_fingerprint(key: str) -> str | None:
+        value = fields.get(key)
+        return str(value) if isinstance(value, _LogFingerprint) else None
+
+    provided_owner_fp = _branded_fingerprint("ownerFp")
+    provided_scope_fp = _branded_fingerprint("scopeFp")
+    provided_ip_fp = _branded_fingerprint("ipFp")
+    provided_scope_type = fields.get("scopeType")
+    if not isinstance(provided_scope_type, str) or provided_scope_type not in {
+        "sub",
+        "ip",
+        "other",
+    }:
+        provided_scope_type = None
+
     record = {
         "event": "chat_request",
         "requestId": request_id,
         "errorType": error_type,
         "streamStatus": None,
-        **fields,
+        "ownerFp": (
+            identifier_fingerprint(str(raw_owner if raw_owner is not None else scope_owner))
+            if raw_owner is not None or scope_owner is not None
+            else provided_owner_fp
+        ),
+        "sellerFp": identifier_fingerprint(str(raw_seller)) if raw_seller is not None else None,
+        "brandFp": identifier_fingerprint(str(raw_brand)) if raw_brand is not None else None,
+        "sessionFp": identifier_fingerprint(str(raw_session)) if raw_session is not None else None,
+        "threadFp": identifier_fingerprint(str(raw_thread)) if raw_thread is not None else None,
+        "contextFp": identifier_fingerprint(str(raw_context)) if raw_context is not None else None,
+        "streamFp": identifier_fingerprint(str(raw_stream)) if raw_stream is not None else None,
+        "scopeFp": (
+            identifier_fingerprint(str(raw_scope)) if raw_scope is not None else provided_scope_fp
+        ),
+        "scopeType": scope_type if scope_type is not None else provided_scope_type,
+        "ipFp": (identifier_fingerprint(str(raw_ip)) if raw_ip is not None else provided_ip_fp),
+        **safe_fields,
     }
     logger.info(json.dumps(record, ensure_ascii=False))

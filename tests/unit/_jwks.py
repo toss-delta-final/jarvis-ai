@@ -61,6 +61,15 @@ def ticket_claims(**overrides) -> dict:
     return claims
 
 
+def seller_ticket_claims(**overrides) -> dict:
+    """§2.3 seller 티켓 shape: buyer sub_type 없이 exact role과 brandId만 둔다."""
+    claims = ticket_claims()
+    claims.pop("sub_type")
+    claims.update({"role": "seller", "brandId": 77})
+    claims.update(overrides)
+    return claims
+
+
 def install_jwks_fetch(monkeypatch, supplier) -> dict:
     """PyJWKClient.fetch_data 를 supplier() 가 주는 JWKS dict 로 패치한다.
 

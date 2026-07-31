@@ -33,6 +33,7 @@ docker run -p 8000:8000 --env-file deploy.env jarvis-ai:dev
 | `AUTH_MODE` | 운영은 **`jwks`**(Spring 공개키 RS256 검증). `dev`는 서명 검증 없이 디코드 — **로컬 전용, 운영 금지**. |
 | `JWKS_URL` | Spring `GET /.well-known/jwks.json`(배포된 Spring 주소 기준). |
 | `JWT_ISSUER` / `JWT_AUDIENCE` | 토큰 iss/aud 검증값(기본 `jarvis-spring-auth` / `jarvis-fastapi-ai`). |
+| `JWT_SCOPE` | **exact `chat:stream` 필수**. 빈 값·다른 값·복합 scope는 허용하지 않으며 잘못 주입하면 기동 실패한다. |
 | `INTERNAL_API_TOKEN` | AI↔Spring `X-Internal-Token`. **백엔드 `app.internal.token` 과 동일 값**(불일치 시 검색·담기·주문 등 `/internal` 양방향 차단). `jwks` 모드에서 미설정 시 **기동 실패**. |
 | `SPRING_BASE_URL` | 역호출 대상 Spring API 주소(검색·장바구니·주문·카탈로그 배치). |
 | `OPENAI_API_KEY` | 기본 provider(`LLM_PROVIDER=openai`)일 때 필수. |
@@ -41,7 +42,7 @@ docker run -p 8000:8000 --env-file deploy.env jarvis-ai:dev
 
 **LLM provider 토글**: `LLM_PROVIDER=openai`(기본) → `OPENAI_API_KEY`. `anthropic` 으로 바꾸면 → `ANTHROPIC_API_KEY`. 모델 id(`OPENAI_*_MODEL_ID`·`HAIKU/SONNET_MODEL_ID`)는 각 대시보드 실값으로.
 
-**선택 (기본값 있음):** 상태저장 타임아웃/풀(`STATE_STORE_*`), 배치 주기(`CATALOG_BATCH_INTERVAL_S`=300), 검색·추천 튜너블(`TOP_K`·`EXPOSE_*`·`LLM_CALL_LIMIT` 등), 프로필 튜너블(`PROFILE_*`), 스트림 티켓 scope(`JWT_SCOPE` — C-1 실값 확정 후 운영 주입 권장).
+**선택 (기본값 있음):** 상태저장 타임아웃/풀(`STATE_STORE_*`), 배치 주기(`CATALOG_BATCH_INTERVAL_S`=300), 검색·추천 튜너블(`TOP_K`·`EXPOSE_*`·`LLM_CALL_LIMIT` 등), 프로필 튜너블(`PROFILE_*`).
 
 ## 3. ⚠️ 시크릿 — repo에 실제 값은 없다
 
@@ -61,16 +62,26 @@ repo에는 **키 목록(`.env.example`)만** 있고 실제 시크릿은 없다(�
 
 **A. 컨테이너로 띄우는 경우(권장 — compose와 동일):** `pgvector/pgvector:pg16` 두 개를 각각 띄우고 init 스크립트를 `/docker-entrypoint-initdb.d`로 마운트하면 **빈 볼륨 최초 부팅 시 자동 생성**된다.
 - catalog init: [`db/catalog/init/`](db/catalog/init/) (`00_products.sql` → `02_categories.sql`)
-- profile init: [`db/profile/init/`](db/profile/init/) (`00_processed_events.sql` → `01_conversation_turns.sql` → `02_profile_session_activity.sql`)
+- profile init: [`db/profile/init/`](db/profile/init/) (`00_processed_events.sql` → `01_conversation_turns.sql` → `02_profile_session_activity.sql` → **`03_chat_session_contexts.sql`**)
 
 **B. 관리형 PostgreSQL(RDS 등)인 경우:** pgvector 확장 가용 확인 후 위 init SQL을 순서대로 수동 적용. **기존 볼륨 업그레이드**는 [`db/catalog/migrations/`](db/catalog/migrations/)의 마이그레이션도 적용:
 ```bash
 psql "$CATALOG_DB_URL" -f db/catalog/init/00_products.sql   # 이후 02
-psql "$PROFILE_DB_URL" -f db/profile/init/00_processed_events.sql   # 이후 01, 02
+psql "$PROFILE_DB_URL" -f db/profile/init/00_processed_events.sql   # 이후 01, 02, 03
 # 기존 볼륨: db/catalog/migrations/*.sql 을 날짜순 적용
 ```
 
 > 앱은 부팅 시 pgvector 확장 + LangGraph 스토어 스키마를 idempotent 하게 자체 `setup()` 하고, `processed_events`도 앱 연결 시 idempotent migration 한다. 위 init/migration은 **상품·프로필 도메인 테이블**을 준비하는 것.
+
+### 4.1 #187 lifecycle 기동 순서
+
+AI 프로세스는 외부 요청과 scheduler를 열기 전에 다음 순서를 완료해야 한다.
+
+1. `03_chat_session_contexts.sql`을 포함한 lifecycle schema를 idempotent 적용한다.
+2. legacy activity를 설정된 batch 상한 안에서 **bounded backfill**하고 완료/재개 지점을 확정한다.
+3. schema와 backfill이 성공한 뒤에만 inactivity/recovery scheduler를 시작한다.
+
+schema 또는 backfill이 실패한 인스턴스는 readiness에 들어가거나 scheduler를 먼저 실행하면 안 된다.
 
 ## 5. 헬스체크
 
@@ -86,11 +97,23 @@ psql "$PROFILE_DB_URL" -f db/profile/init/00_processed_events.sql   # 이후 01,
 
 - [ ] `docker build -t jarvis-ai .`
 - [ ] `deploy.env` 작성 — §2 필수값, `AUTH_MODE=jwks`, `INTERNAL_API_TOKEN`은 백엔드와 동일, `CORS_ORIGINS`에 FE 운영 오리진
-- [ ] PostgreSQL ×2(pgvector) 준비 + init/migration 적용(§4)
+- [ ] `JWT_SCOPE=chat:stream` exact 값 확인(빈 값·다른 값 금지)
+- [ ] PostgreSQL ×2(pgvector) 준비 + profile `03_chat_session_contexts.sql`까지 init/migration 적용(§4)
+- [ ] AI startup 로그에서 schema → bounded backfill 완료 → scheduler 시작 순서를 확인
 - [ ] 컨테이너 실행(`-p 8000:8000`) 후 `GET /health` = `{"status":"ok"}` 확인
 - [ ] Spring(`SPRING_BASE_URL`)·JWKS(`JWKS_URL`) 도달 확인 — 검색·인증 레인 정상
 - [ ] FE팀에 **공개 AI API URL(SSE)** 공유
 - [ ] (공개 노출 시) `/internal/**` 인그레스 차단
+
+### 7.1 #187 외부 release gate — 순서 변경 금지
+
+이 저장소의 로컬/CI 통과만으로 아래 외부 gate 완료를 주장하지 않는다.
+
+1. **BE #63**: signed `sessionId`, `scope="chat:stream"`, `ticketTtlSeconds=60` 실제 증거를 먼저 남긴다.
+2. 마지막 구 계약 티켓 발급 뒤 **90초 drain**(60초 TTL + 30초 여유)을 기다린다.
+3. **AI**: lifecycle schema → bounded backfill → scheduler 순서로 배포한다.
+4. **FE #52**: 실제 3-tab 로그인/refresh 시나리오를 검증한다.
+5. 운영에서 missing-session, claim-conflict, cleanup-retry 등 합의된 **metrics**를 확인한 뒤에만 release gate를 닫는다.
 
 ## 8. LangSmith request tracing 운영 정책
 

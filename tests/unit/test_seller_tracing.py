@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import types
 from time import perf_counter
 
@@ -44,9 +45,12 @@ def fake_trace_factory(monkeypatch: pytest.MonkeyPatch) -> CapturingTraceFactory
     set_trace_factory(None)
 
 
-def _seller_headers() -> dict[str, str]:
+def _seller_headers(
+    seller_id: str = "7",
+    brand_id: str = "3",
+) -> dict[str, str]:
     token = jwt.encode(
-        {"sub": "7", "role": "SELLER", "brandId": "3"},
+        {"sub": seller_id, "role": "SELLER", "brandId": brand_id},
         "unused-dev-secret-at-least-32-bytes",
         algorithm="HS256",
     )
@@ -290,9 +294,11 @@ def test_seller_sse_is_identical_with_tracing_disabled(
 
 def test_seller_endpoint_canaries_reach_provider_seams_but_not_trace_payloads(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     from langsmith import Client
 
+    caplog.set_level(logging.INFO)
     from app.agents.seller.schemas import RouteDecision
     from app.api import seller as seller_api
     from tests.unit.test_tracing import (
@@ -333,8 +339,16 @@ def test_seller_endpoint_canaries_reach_provider_seams_but_not_trace_payloads(
     monkeypatch.setattr(seller_api, "route_question", route)
     monkeypatch.setattr(seller_api, "build_general_agent", lambda today, checkpointer=None: Agent())
     monkeypatch.setattr("app.core.errors.new_request_id", lambda: "req-seller-canary-141")
+    raw_seller = "700000000007"
+    raw_brand = "300000000003"
+    raw_threads = (
+        "seller-thread-private-normal",
+        "seller-thread-private-error",
+        "seller-thread-private-sdk-normal",
+        "seller-thread-private-sdk-error",
+    )
     headers = {
-        **_seller_headers(),
+        **_seller_headers(raw_seller, raw_brand),
         "X-Authorization-Canary": PRIVACY_CANARIES["authorization"],
         "X-Cookie-Canary": PRIVACY_CANARIES["cookie"],
     }
@@ -353,7 +367,7 @@ def test_seller_endpoint_canaries_reach_provider_seams_but_not_trace_payloads(
         "/seller/chat",
         json={
             "sessionId": "seller-canary-141",
-            "threadId": "seller-canary-141",
+            "threadId": raw_threads[0],
             "message": message,
         },
         headers=headers,
@@ -362,7 +376,7 @@ def test_seller_endpoint_canaries_reach_provider_seams_but_not_trace_payloads(
         "/seller/chat",
         json={
             "sessionId": "seller-exception-141",
-            "threadId": "seller-exception-141",
+            "threadId": raw_threads[1],
             "message": PRIVACY_CANARIES["provider_exception"],
         },
         headers=headers,
@@ -400,7 +414,7 @@ def test_seller_endpoint_canaries_reach_provider_seams_but_not_trace_payloads(
         "/seller/chat",
         json={
             "sessionId": "seller-sdk-canary-141",
-            "threadId": "seller-sdk-canary-141",
+            "threadId": raw_threads[2],
             "message": message,
         },
         headers=headers,
@@ -409,7 +423,7 @@ def test_seller_endpoint_canaries_reach_provider_seams_but_not_trace_payloads(
         "/seller/chat",
         json={
             "sessionId": "seller-sdk-exception-141",
-            "threadId": "seller-sdk-exception-141",
+            "threadId": raw_threads[3],
             "message": PRIVACY_CANARIES["provider_exception"],
         },
         headers=headers,
@@ -431,6 +445,52 @@ def test_seller_endpoint_canaries_reach_provider_seams_but_not_trace_payloads(
     _assert_canaries_absent(
         [_serialized_operation_content(operation) for operation in serialized_operations]
     )
+    log_text = caplog.text
+    for raw in (
+        raw_seller,
+        raw_brand,
+        *raw_threads,
+        PRIVACY_CANARIES["seller_message"],
+        PRIVACY_CANARIES["provider_exception"],
+    ):
+        assert raw not in log_text
+    from app.core.logging import safe_fingerprint
+
+    assert safe_fingerprint(raw_seller) in log_text
+    assert safe_fingerprint(raw_brand) in log_text
+    assert safe_fingerprint(raw_threads[0]) in log_text
+
+
+async def test_invalid_seller_identity_log_contains_only_fingerprints(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from app.api.seller import _seller_stream
+    from app.core.logging import safe_fingerprint
+
+    raw_seller = "invalid-seller-private"
+    raw_brand = "invalid-brand-private"
+    raw_thread = "invalid-thread-private"
+    request = SellerChatRequest(
+        session_id="invalid-session-private",
+        thread_id=raw_thread,
+        message="invalid-message-private",
+    )
+    identity = Identity(
+        user_id=raw_seller,
+        is_guest=False,
+        seller_id=raw_seller,
+        brand_id=raw_brand,
+        subject=raw_seller,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="app.api.seller"):
+        events = [event async for event in _seller_stream(request, identity)]
+
+    assert len(events) == 1 and '"code": "INTERNAL"' in events[0]
+    for raw in (raw_seller, raw_brand, raw_thread, request.message):
+        assert raw not in caplog.text
+    assert safe_fingerprint(raw_seller) in caplog.text
+    assert safe_fingerprint(raw_brand) in caplog.text
 
 
 def test_analysis_request_through_open_stream_finishes_done_with_intact_tree(

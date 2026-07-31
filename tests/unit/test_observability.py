@@ -8,20 +8,29 @@ import logging
 import types
 
 import jwt
+import psycopg
 
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from app.core import observability
 from app.core.auth import Identity
 from app.core.conversation import (
+    CommittedTurn,
     PgConversationStore,
     TurnStatus,
     conversation_key,
     get_conversation_store,
 )
 from app.core.config import get_settings
-from app.core.observability import message_fingerprint, start_observation
+from app.core.observability import (
+    emit_rejection,
+    identifier_fingerprint,
+    message_fingerprint,
+    start_observation,
+)
+from app.core.session_context import BuyerSessionInput, SessionFinalizing, SessionForbidden
 from app.core.stream import get_registry
 from app.core.stream import open_stream
 from app.core.tracing import FakeTraceExporter, RequestTrace, TraceFactory
@@ -68,8 +77,11 @@ def _trace(exporter: FakeTraceExporter) -> RequestTrace:
     )
 
 
-def _bearer(sub: str) -> dict:
-    token = jwt.encode({"sub": sub}, "test-secret-key-0123456789abcdef", algorithm="HS256")
+def _bearer(sub: str, sub_type: str | None = None) -> dict:
+    claims = {"sub": sub}
+    if sub_type is not None:
+        claims["sub_type"] = sub_type
+    token = jwt.encode(claims, "test-secret-key-0123456789abcdef", algorithm="HS256")
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -167,6 +179,56 @@ async def test_stream_completes_when_finalize_assistant_fails(
     assert has_chat_request, "finalize 실패 시 §6.3 b 구조화 로그가 유실됨"
 
 
+async def test_buyer_logs_use_fingerprints_without_raw_identifiers(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """구매자 구조화/stream 로그에는 raw 신원·세션·thread·stream key가 남지 않는다."""
+    owner = "member-raw-owner"
+    session = "session-raw-secret"
+    thread = "thread-raw-secret"
+    identity = Identity(user_id=owner, is_guest=False, seller_id=None, subject=owner)
+    obs = start_observation(
+        request_id="req-safe",
+        identity=identity,
+        conversation_id=session,
+        thread_id=thread,
+        message="질문",
+        store=await get_conversation_store(),
+        now=asyncio.get_running_loop().time(),
+        buyer_session=BuyerSessionInput(session, thread, "member", owner),
+    )
+
+    async def done():
+        yield 'data: {"type":"done","data":{"finishReason":"stop"}}\n\n'
+
+    with caplog.at_level(logging.INFO):
+        response = await open_stream(
+            _FakeRequest(disconnected=True),
+            f"{owner}:{thread}",
+            done,
+            observer=obs,
+        )
+        _ = [chunk async for chunk in response.body_iterator]
+
+    text = caplog.text
+    assert owner not in text
+    assert session not in text
+    assert thread not in text
+    assert f"{owner}:{thread}" not in text
+    records = [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if record.name == "observability" and record.getMessage().startswith("{")
+    ]
+    [chat_record] = [record for record in records if record.get("event") == "chat_request"]
+    assert chat_record["ownerFp"]
+    assert chat_record["sessionFp"]
+    assert chat_record["threadFp"]
+    assert "userId" not in chat_record
+    assert "conversationId" not in chat_record
+    assert "threadId" not in chat_record
+
+
 async def test_slot_released_when_commit_user_message_cancelled() -> None:
     """commit_user_message(pg-profile write) 중 disconnect 로 취소돼도 슬롯이 해제된다.
 
@@ -219,6 +281,67 @@ async def test_pg_conversation_store_query_timeout(
         await store.get_turn("t")
     with pytest.raises(TimeoutError):
         await store.turns_for("c")
+
+
+@pytest.mark.parametrize("failure", [TimeoutError("pool"), psycopg.OperationalError("down")])
+async def test_buyer_chat_pg_operational_failure_maps_to_state_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+) -> None:
+    """buyer atomic turn 경계의 연결/timeout 장애는 중앙 503 봉투로 변환한다."""
+
+    class _FailConnection:
+        async def __aenter__(self):
+            raise failure
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class _FailPool:
+        def connection(self):
+            return _FailConnection()
+
+    store = PgConversationStore(_FailPool())
+
+    async def get_store():
+        return store
+
+    monkeypatch.setattr("app.api.chat.get_conversation_store", get_store)
+    response = client.post(
+        "/chat",
+        json={"sessionId": "db-fail-session", "threadId": "db-fail-thread", "message": "질문"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "STATE_UNAVAILABLE"
+
+
+async def test_buyer_chat_programming_error_is_not_masked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SQL programming 결함은 STATE_UNAVAILABLE로 위장하지 않는다."""
+
+    class _FailConnection:
+        async def __aenter__(self):
+            raise psycopg.ProgrammingError("bad sql")
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class _FailPool:
+        def connection(self):
+            return _FailConnection()
+
+    store = PgConversationStore(_FailPool())
+    with pytest.raises(psycopg.ProgrammingError):
+        await store.save_user_message(
+            "db-code-session",
+            "owner",
+            "member",
+            "질문",
+            thread_id="db-code-thread",
+            buyer_session=BuyerSessionInput("db-code-session", "db-code-thread", "member", "owner"),
+        )
 
 
 async def test_pg_conversation_finalize_missing_turn_warns(
@@ -346,7 +469,26 @@ def test_chat_emits_rejection_log_when_conversation_store_fails(
     ]
     assert hits, "pg-profile 장애 시 chat_request errorType 로그 누락"
     assert hits[0]["streamStatus"] is None
-    assert hits[0].get("conversationId") == "cfail"
+    assert hits[0].get("sessionFp") == identifier_fingerprint("cfail")
+    assert "conversationId" not in hits[0]
+
+
+@pytest.mark.parametrize("failure", [TimeoutError("pool"), psycopg.OperationalError("down")])
+def test_chat_store_initialization_failure_maps_to_state_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+) -> None:
+    async def fail_store():
+        raise failure
+
+    monkeypatch.setattr("app.api.chat.get_conversation_store", fail_store)
+    response = client.post(
+        "/chat",
+        json={"sessionId": "init-fail", "threadId": "thread", "message": "질문"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "STATE_UNAVAILABLE"
 
 
 # ─────────── §6.3 (b) 구조화 로그 + PII ───────────
@@ -676,8 +818,9 @@ def test_structured_log_has_fields_and_hides_raw_message(
     record = json.loads(logs[-1])
     for key in (
         "requestId",
-        "conversationId",
-        "threadId",
+        "ownerFp",
+        "sessionFp",
+        "threadFp",
         "latencyTotal",
         "streamStatus",
         "messageLength",
@@ -688,8 +831,8 @@ def test_structured_log_has_fields_and_hides_raw_message(
     ):
         assert key in record, f"필드 누락: {key}"
     assert record["streamStatus"] == "COMPLETED"
-    assert record["conversationId"] == "c2"
-    assert record["threadId"] == "t"
+    assert record["sessionFp"] == identifier_fingerprint("c2")
+    assert record["threadFp"] == identifier_fingerprint("t")
     assert record["messageLength"] == len(msg)
     # [PII] 원문은 로그 어디에도 없고, 해시만 있다.
     assert msg not in logs[-1]
@@ -785,9 +928,165 @@ async def test_commit_user_message_failure_releases_slot() -> None:
     assert not get_registry().is_active("member:slotfail")
 
 
-def test_rate_limit_emits_structured_observation(caplog: pytest.LogCaptureFixture) -> None:
-    """429 발동도 errorType=RATE_LIMITED 구조화 로그로 관측된다(§6.3 b)."""
-    headers = _bearer("rl-obs")
+@pytest.mark.parametrize("error", [SessionForbidden(), SessionFinalizing(), RuntimeError("boom")])
+async def test_commit_user_message_any_failure_releases_slot(error: Exception) -> None:
+    obs = await _obs("slot-domain-fail")
+
+    class _FailingStore:
+        async def save_user_message(self, *args, **kwargs):
+            raise error
+
+        async def finalize_assistant(self, *args, **kwargs):
+            return None
+
+        async def get_turn(self, *args, **kwargs):
+            return None
+
+        async def turns_for(self, *args, **kwargs):
+            return []
+
+    obs.store = _FailingStore()
+
+    async def unreachable():
+        yield "data: never\n\n"
+
+    with pytest.raises(type(error)):
+        await open_stream(
+            _FakeRequest(),
+            "member:slot-domain-fail",
+            unreachable,
+            observer=obs,
+        )
+    assert not get_registry().is_active("member:slot-domain-fail")
+
+
+async def test_observation_stores_and_logs_committed_buyer_context(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    store = await get_conversation_store()
+    observation = start_observation(
+        request_id="buyer-context",
+        identity=Identity(
+            user_id="7",
+            is_guest=False,
+            seller_id=None,
+            subject="7",
+            session_id="buyer-session",
+        ),
+        conversation_id="buyer-session",
+        thread_id="buyer-thread",
+        message="질문",
+        store=store,
+        now=0.0,
+        buyer_session=BuyerSessionInput(
+            session_id="buyer-session",
+            thread_id="buyer-thread",
+            owner_type="member",
+            owner_id="7",
+        ),
+    )
+
+    await observation.commit_user_message()
+    with caplog.at_level(logging.INFO, logger="observability"):
+        await observation.finish(1.0, TurnStatus.COMPLETED)
+
+    assert observation.turn_id is not None
+    assert observation.context_id is not None
+    record = next(
+        json.loads(item.getMessage())
+        for item in caplog.records
+        if item.name == "observability" and item.getMessage().startswith("{")
+    )
+    assert record["contextFp"] == identifier_fingerprint(observation.context_id)
+
+
+async def test_seller_observation_fingerprints_int_brand_id(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """운영 JWKS 판매자 경로의 brandId 는 int 다(auth.py `type is int` 강제).
+
+    지문 계산 전 str() 캐스팅이 빠지면 safe_fingerprint 의 `.encode` 에서 AttributeError 가
+    나고, 그 예외가 chat_request 구조화 로그와 trace.finish() 앞에서 터져 판매자 채널의
+    관측이 매 요청 조용히 사라진다(호출부가 예외를 삼켜 SSE 는 정상으로 보인다).
+    """
+    store = await get_conversation_store()
+    observation = start_observation(
+        request_id="seller-int-brand",
+        identity=Identity(
+            user_id="7",
+            is_guest=False,
+            seller_id="7",
+            brand_id=3,
+            subject="7",
+        ),
+        conversation_id="seller-session",
+        thread_id="seller-thread",
+        message="질문",
+        store=store,
+        now=0.0,
+    )
+
+    await observation.commit_user_message()
+    with caplog.at_level(logging.INFO, logger="observability"):
+        await observation.finish(1.0, TurnStatus.COMPLETED)
+
+    record = next(
+        json.loads(item.getMessage())
+        for item in caplog.records
+        if item.name == "observability" and item.getMessage().startswith("{")
+    )
+    assert record["brandFp"] == identifier_fingerprint("3")
+    assert record["brandFp"] not in ("3", 3)
+
+
+async def test_seller_style_observation_logs_null_context(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    store = await get_conversation_store()
+    observation = start_observation(
+        request_id="seller-context",
+        identity=Identity(
+            user_id="7",
+            is_guest=False,
+            seller_id="7",
+            brand_id="3",
+            subject="7",
+        ),
+        conversation_id="seller-session",
+        thread_id="seller-thread",
+        message="질문",
+        store=store,
+        now=0.0,
+    )
+
+    await observation.commit_user_message()
+    with caplog.at_level(logging.INFO, logger="observability"):
+        await observation.finish(1.0, TurnStatus.COMPLETED)
+
+    assert isinstance(
+        CommittedTurn(observation.turn_id or "", observation.context_id),
+        CommittedTurn,
+    )
+    assert observation.context_id is None
+    record = next(
+        json.loads(item.getMessage())
+        for item in caplog.records
+        if item.name == "observability" and item.getMessage().startswith("{")
+    )
+    assert record["contextFp"] is None
+
+
+@pytest.mark.parametrize(
+    ("raw_subject", "sub_type"),
+    [("member-rate-limit-canary", "member"), ("guest-rate-limit-canary", "guest")],
+)
+def test_subject_rate_limit_logs_only_fingerprints(
+    caplog: pytest.LogCaptureFixture,
+    raw_subject: str,
+    sub_type: str,
+) -> None:
+    """실 429 member/guest sub 경로는 raw subject/IP 대신 fingerprint만 기록한다."""
+    headers = _bearer(raw_subject, sub_type)
     with caplog.at_level(logging.INFO, logger="observability"):
         for i in range(11):
             client.post(
@@ -798,7 +1097,201 @@ def test_rate_limit_emits_structured_observation(caplog: pytest.LogCaptureFixtur
     logs = [json.loads(r.getMessage()) for r in caplog.records if r.name == "observability"]
     rate_logs = [entry for entry in logs if entry.get("errorType") == "RATE_LIMITED"]
     assert rate_logs, "429 구조화 로그 없음"
-    assert rate_logs[0]["streamStatus"] is None
+    record = rate_logs[0]
+    serialized = json.dumps(record, ensure_ascii=False)
+    assert record["streamStatus"] is None
+    assert record["scopeFp"]
+    assert record["scopeType"] == "sub"
+    assert record["scopeFp"] == identifier_fingerprint(f"sub:{raw_subject}")
+    assert record["ownerFp"] == identifier_fingerprint(raw_subject)
+    assert record["ipFp"] == identifier_fingerprint("testclient")
+    assert raw_subject not in serialized
+    assert f"sub:{raw_subject}" not in serialized
+    assert "testclient" not in serialized
+    assert '"scope"' not in serialized
+    assert raw_subject not in caplog.text
+    assert "testclient" not in caplog.text
+
+
+def test_ip_fallback_rate_limit_logs_only_fingerprint(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """무토큰 IP fallback의 실 429도 raw IP를 남기지 않는다."""
+    import app.core.ratelimit as ratelimit
+
+    settings = get_settings().model_copy(
+        update={"rate_limit_per_min": 1, "rate_limit_per_hour": 1, "rate_limit_host_multiplier": 1}
+    )
+    monkeypatch.setattr(ratelimit, "get_settings", lambda: settings)
+    with caplog.at_level(logging.INFO, logger="observability"):
+        client.post("/chat", json={"sessionId": "ip-1", "threadId": "t", "message": "m"})
+        response = client.post(
+            "/chat",
+            json={
+                "sessionId": "ip-secret-session",
+                "threadId": "secret-thread",
+                "message": "secret",
+            },
+        )
+
+    assert response.status_code == 429
+    record = next(
+        json.loads(item.getMessage())
+        for item in caplog.records
+        if item.name == "observability" and '"errorType": "RATE_LIMITED"' in item.getMessage()
+    )
+    serialized = json.dumps(record, ensure_ascii=False)
+    assert record["scopeType"] == "ip"
+    assert record["scopeFp"] == identifier_fingerprint("ip:testclient")
+    assert record["ipFp"] == identifier_fingerprint("testclient")
+    for raw in ("testclient", "ip:testclient", "ip-secret-session", "secret-thread", "secret"):
+        assert raw not in serialized
+        assert raw not in caplog.text
+
+
+def test_rejection_sanitizer_absorbs_guest_and_drops_unknown_identifier_keys(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.INFO, logger="observability"):
+        emit_rejection(
+            "req-sanitize",
+            "RATE_LIMITED",
+            guestId="guest-raw",
+            scope="sub:guest-raw",
+            ip="203.0.113.10",
+            path="/chat",
+            arbitraryIdentifier="must-not-leak",
+            ownerFp="raw-owner-disguised-as-fingerprint",
+            token="raw-token",
+            message="raw-message",
+            Authorization="Bearer raw-token",
+        )
+
+    record = json.loads(caplog.records[-1].getMessage())
+    serialized = json.dumps(record, ensure_ascii=False)
+    assert record["ownerFp"] == identifier_fingerprint("guest-raw")
+    assert record["scopeFp"] == identifier_fingerprint("sub:guest-raw")
+    assert record["scopeType"] == "sub"
+    assert record["ipFp"] == identifier_fingerprint("203.0.113.10")
+    assert record["path"] == "/chat"
+    for raw in (
+        "guest-raw",
+        "sub:guest-raw",
+        "203.0.113.10",
+        "must-not-leak",
+        "raw-owner-disguised-as-fingerprint",
+        "raw-token",
+        "raw-message",
+    ):
+        assert raw not in serialized
+        assert raw not in caplog.text
+    for key in ("guestId", "scope", "ip", "arbitraryIdentifier"):
+        assert key not in record
+
+
+def test_rejection_accepts_only_branded_fingerprints_and_validated_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    branded_owner = observability.fingerprint_log_value("member-42")
+    branded_scope = observability.fingerprint_log_value("sub:member-42")
+    branded_ip = observability.fingerprint_log_value("203.0.113.10")
+    with caplog.at_level(logging.INFO, logger="observability"):
+        emit_rejection(
+            "req-branded",
+            "RATE_LIMITED",
+            ownerFp=branded_owner,
+            scopeFp=branded_scope,
+            ipFp=branded_ip,
+            scopeType="sub",
+            path="/chat",
+            role="member",
+            status="FAILED",
+            action="confirm",
+        )
+
+    record = json.loads(caplog.records[-1].getMessage())
+    assert record["ownerFp"] == str(branded_owner)
+    assert record["scopeFp"] == str(branded_scope)
+    assert record["ipFp"] == str(branded_ip)
+    assert record["scopeType"] == "sub"
+    assert record["path"] == "/chat"
+    assert record["role"] == "member"
+    assert record["status"] == "FAILED"
+    assert record["action"] == "confirm"
+    assert json.loads(json.dumps(record)) == record
+
+
+def test_rejection_drops_plain_hex_fingerprints_and_untrusted_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    raw_values = (
+        "deadbeefdeadbeef",
+        "0123456789abcdef",
+        "/chat?token=raw-token",
+        "seller raw-subject",
+        "FAILED raw-exception",
+        "confirm raw-message",
+        "raw-token",
+        "raw-message",
+    )
+    with caplog.at_level(logging.INFO, logger="observability"):
+        emit_rejection(
+            "req-untrusted",
+            "RATE_LIMITED",
+            ownerFp=raw_values[0],
+            scopeFp=raw_values[1],
+            ipFp=raw_values[0],
+            scopeType="sub:raw-subject",
+            path=raw_values[2],
+            role=raw_values[3],
+            status=raw_values[4],
+            action=raw_values[5],
+            token=raw_values[6],
+            message=raw_values[7],
+            Authorization="Bearer raw-token",
+        )
+
+    record = json.loads(caplog.records[-1].getMessage())
+    serialized = json.dumps(record, ensure_ascii=False)
+    assert record["ownerFp"] is None
+    assert record["scopeFp"] is None
+    assert record["ipFp"] is None
+    assert record["scopeType"] is None
+    assert "path" not in record
+    assert "role" not in record
+    assert "status" not in record
+    assert "action" not in record
+    for raw in raw_values:
+        assert raw not in serialized
+        assert raw not in caplog.text
+
+
+def test_rejection_fingerprints_raw_sixteen_digit_identifiers_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    raw = "1234567890123456"
+    raw_scope = f"sub:{raw}"
+    with caplog.at_level(logging.INFO, logger="observability"):
+        emit_rejection(
+            "req-raw-sixteen",
+            "RATE_LIMITED",
+            ownerId=raw,
+            scope=raw_scope,
+            ip=raw,
+            ownerFp=raw,
+            scopeFp=raw,
+            ipFp=raw,
+        )
+
+    record = json.loads(caplog.records[-1].getMessage())
+    serialized = json.dumps(record, ensure_ascii=False)
+    assert record["ownerFp"] == identifier_fingerprint(raw)
+    assert record["scopeFp"] == identifier_fingerprint(raw_scope)
+    assert record["ipFp"] == identifier_fingerprint(raw)
+    assert raw not in serialized
+    assert raw_scope not in serialized
+    assert raw not in caplog.text
 
 
 async def test_error_frame_terminates_stream() -> None:
@@ -1292,3 +1785,69 @@ async def test_total_timeout_cancels_and_awaits_same_task_pump_without_leaks(
     assert not get_registry().is_active(key)
     assert len(exporter.exported) == 1
     assert exporter.exported[0][0].metadata["terminalReason"] == "total_timeout_stop"
+
+
+async def test_cancelled_finish_keeps_one_cleanup_until_turn_log_and_trace_complete(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """finish 대기자가 취소돼도 공유 cleanup은 계속되고 재호출과 합쳐 정확히 1회 실행된다."""
+    exporter = FakeTraceExporter()
+    obs = await _obs("cancel-safe-finish", trace=_trace(exporter))
+    await obs.commit_user_message()
+    finalize_started = asyncio.Event()
+    finalize_proceed = asyncio.Event()
+    finalize_calls = 0
+    original_finalize = obs.store.finalize_assistant
+
+    async def blocking_finalize(turn_id, assistant_text, status):
+        nonlocal finalize_calls
+        finalize_calls += 1
+        finalize_started.set()
+        await finalize_proceed.wait()
+        await original_finalize(turn_id, assistant_text, status)
+
+    obs.store.finalize_assistant = blocking_finalize
+    stream_key = "member:cancel-safe-finish"
+
+    async def done():
+        yield 'data: {"type":"done","data":{"finishReason":"stop"}}\n\n'
+
+    with caplog.at_level(logging.INFO, logger="observability"):
+        response = await open_stream(_FakeRequest(), stream_key, done, observer=obs)
+        consumer = asyncio.create_task(anext(response.body_iterator))
+        assert '"type":"done"' in await consumer
+        closing = asyncio.create_task(anext(response.body_iterator))
+        await finalize_started.wait()
+        closing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await closing
+
+        assert not get_registry().is_active(stream_key)
+        assert obs.finished is False
+        finalize_proceed.set()
+        await asyncio.gather(
+            obs.finish(
+                asyncio.get_running_loop().time(),
+                TurnStatus.COMPLETED,
+                None,
+                "done",
+            ),
+            obs.finish(
+                asyncio.get_running_loop().time(),
+                TurnStatus.FAILED,
+                "INTERNAL",
+                "retry_must_not_replace",
+            ),
+        )
+
+    assert finalize_calls == 1
+    assert obs.finished is True
+    turn = await obs.store.get_turn(obs.turn_id)
+    assert turn is not None and turn.status == TurnStatus.COMPLETED
+    assert len(exporter.exported) == 1
+    records = [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if record.name == "observability" and record.getMessage().startswith("{")
+    ]
+    assert sum(record.get("event") == "chat_request" for record in records) == 1

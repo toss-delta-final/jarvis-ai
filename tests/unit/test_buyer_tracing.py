@@ -12,9 +12,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.agents.buyer.cart.state import get_cart_store
-from app.agents.buyer.graph import run_buyer_turn
+from app.agents.buyer.graph import run_buyer_turn as _production_run_buyer_turn
+from app.agents.buyer.session_state import context_thread_key
+from app.api.deps import buyer_owner_id
+from app.core import session_context
 from app.core.auth import Identity
-from app.core.conversation import conversation_key
+from app.core.config import get_settings
+from app.core.session_context import BuyerSessionInput
 from app.core.tracing import (
     FakeTraceExporter,
     LangSmithTraceExporter,
@@ -66,6 +70,30 @@ def _request(message: str = "민감한-사용자-메시지") -> SimpleNamespace:
 
 def _member() -> Identity:
     return Identity(user_id="123", is_guest=False, seller_id=None, subject="123")
+
+
+async def run_buyer_turn(request, identity, **kwargs):  # noqa: ANN001
+    """Tracing unit calls still cross the same committed lifecycle boundary as /chat."""
+    context = await session_context._default_repository.touch(
+        BuyerSessionInput(
+            request.session_id,
+            request.thread_id,
+            "guest" if identity.is_guest else "member",
+            buyer_owner_id(identity, get_settings()),
+        )
+    )
+    observer = kwargs.pop("observer", None) or SimpleNamespace(
+        request_id="buyer-trace-unit",
+        record_model_call=lambda *_: None,
+    )
+    observer.context_id = context.context_id
+    async for frame in _production_run_buyer_turn(
+        request,
+        identity,
+        observer=observer,
+        **kwargs,
+    ):
+        yield frame
 
 
 async def _collect(stream) -> list[str]:
@@ -873,8 +901,17 @@ async def test_cart_merge_failure_marks_routed_cart_without_changing_frames(
     monkeypatch.setattr("app.services.spring_client.get_cart", get_cart)
     monkeypatch.setattr("app.services.spring_client.add_to_cart", add_cart)
     cart_store = await get_cart_store()
+    request = _request()
+    context = await session_context._default_repository.touch(
+        BuyerSessionInput(
+            request.session_id,
+            request.thread_id,
+            "member",
+            buyer_owner_id(_member(), get_settings()),
+        )
+    )
     await cart_store.set_last_reco(
-        conversation_key("123", "thread-trace"),
+        context_thread_key(context.context_id, request.thread_id),
         [(101, "상품")],
     )
     decompose = {

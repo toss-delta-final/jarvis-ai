@@ -227,6 +227,13 @@ class ProfileStore:
         buf = item.value["items"]
         return [text for _, text in buf], (buf[-1][0] if buf else 0)
 
+    async def get_session_ctx_upto(self, key: str, watermark: int) -> list[str]:
+        """이미 lifecycle journal에 고정된 watermark 이하 발화만 반환한다."""
+        item = await run_with_query_timeout(self._store.aget((_SESSION_NS_ROOT, key), _SESSION_KEY))
+        if not item:
+            return []
+        return [text for seq, text in item.value["items"] if seq <= watermark]
+
     async def clear_session_ctx_upto(self, key: str, watermark: int) -> None:
         """watermark(seq) 이하 항목만 제거 — cap 트리밍으로 스냅샷 항목이 먼저 밀려나 있어도,
         그 사이 새로 추가된 항목(seq > watermark)은 위치와 무관하게 항상 보존된다."""

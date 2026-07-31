@@ -57,7 +57,12 @@ from app.core.config import get_settings
 from app.core.conversation import TurnStatus, get_conversation_store
 from app.core.errors import get_request_id, new_request_id
 from app.core.llm import LLMNotConfigured
-from app.core.observability import emit_rejection, finish_trace_safely, start_observation
+from app.core.observability import (
+    emit_rejection,
+    finish_trace_safely,
+    identifier_fingerprint,
+    start_observation,
+)
 from app.core.stream import open_stream, registry_key
 from app.core.tracing import current_request_trace, start_request_trace_safely, trace_span
 from app.core.text import _strip_unsafe, _strip_unsafe_multiline
@@ -82,6 +87,32 @@ _ANALYSIS_APOLOGY_TOKEN = (
 
 # 진행 token 큐 종료 신호 — 파이프라인 완료(정상/예외 공통)를 스트림 루프에 알린다.
 _PIPELINE_DONE = object()
+
+
+def _seller_log(
+    level: int,
+    event: str,
+    *,
+    context: SellerContext | None = None,
+    identity: Identity | None = None,
+    thread_id: str | None = None,
+    action: str | None = None,
+    error_code: str | None = None,
+    status: str | None = None,
+) -> None:
+    """판매자 로그는 고정 상태와 peppered 식별자 지문만 허용한다."""
+    seller_id = context.seller_id if context is not None else getattr(identity, "seller_id", None)
+    brand_id = context.brand_id if context is not None else getattr(identity, "brand_id", None)
+    record = {
+        "event": event,
+        "sellerFp": identifier_fingerprint(str(seller_id)) if seller_id is not None else None,
+        "brandFp": identifier_fingerprint(str(brand_id)) if brand_id is not None else None,
+        "threadFp": identifier_fingerprint(thread_id),
+        "action": action,
+        "errorCode": error_code,
+        "status": status,
+    }
+    logger.log(level, json.dumps(record, ensure_ascii=False))
 
 
 def _sse(event_type: str, data: dict) -> str:
@@ -137,13 +168,22 @@ def _error(
     )
 
 
-def _llm_unavailable(*, lane: str, thread_id: str, request_id: str) -> str:
+def _llm_unavailable(
+    *,
+    lane: str,
+    thread_id: str,
+    request_id: str,
+    context: SellerContext,
+) -> str:
     """활성 provider 미구성을 비밀값 없는 오류 로그와 계약 이벤트로 변환한다."""
-    logger.error(
-        "판매자 LLM provider 미구성: provider=%s lane=%s thread=%s",
-        get_settings().llm_provider,
-        lane,
-        thread_id,
+    _seller_log(
+        logging.ERROR,
+        "seller_llm_unavailable",
+        context=context,
+        thread_id=thread_id,
+        action=lane,
+        error_code="LLM_UNAVAILABLE",
+        status="FAILED",
     )
     return _error(
         "LLM_UNAVAILABLE",
@@ -300,6 +340,7 @@ async def _general_stream(
             lane="general",
             thread_id=request.thread_id,
             request_id=request_id,
+            context=context,
         )
     except (TimeoutError, asyncio.TimeoutError):
         yield _error(
@@ -309,7 +350,15 @@ async def _general_stream(
             retryable=True,
         )
     except Exception:
-        logger.exception("판매자 general 스트림 실패 (thread=%s)", request.thread_id)
+        _seller_log(
+            logging.ERROR,
+            "seller_stream_failed",
+            context=context,
+            thread_id=request.thread_id,
+            action="general",
+            error_code="INTERNAL",
+            status="FAILED",
+        )
         yield _error(
             "INTERNAL",
             "일시적인 오류가 발생했습니다.",
@@ -376,6 +425,7 @@ async def _analysis_stream(
                 lane="analysis",
                 thread_id=request.thread_id,
                 request_id=request_id,
+                context=context,
             )
             return
         except (TimeoutError, asyncio.TimeoutError):
@@ -388,7 +438,15 @@ async def _analysis_stream(
             )
             return
         except Exception:
-            logger.exception("분석 파이프라인 실패 (thread=%s)", request.thread_id)
+            _seller_log(
+                logging.ERROR,
+                "seller_stream_failed",
+                context=context,
+                thread_id=request.thread_id,
+                action="analysis",
+                error_code="INTERNAL",
+                status="FAILED",
+            )
             yield _token(_ANALYSIS_APOLOGY_TOKEN)
             yield _error(
                 "INTERNAL",
@@ -447,6 +505,7 @@ async def _product_stream(
             lane="product",
             thread_id=request.thread_id,
             request_id=request_id,
+            context=context,
         )
         return
     except (TimeoutError, asyncio.TimeoutError):
@@ -458,7 +517,15 @@ async def _product_stream(
         )
         return
     except Exception:
-        logger.exception("product draft 생성 실패 (thread=%s)", request.thread_id)
+        _seller_log(
+            logging.ERROR,
+            "seller_stream_failed",
+            context=context,
+            thread_id=request.thread_id,
+            action="product",
+            error_code="INTERNAL",
+            status="FAILED",
+        )
         yield _error(
             "INTERNAL",
             "일시적인 오류가 발생했습니다.",
@@ -489,7 +556,15 @@ async def _product_stream(
     try:
         await start_draft(record)  # checkpoint 저장 + interrupt 대기(안전장치 ①)
     except Exception:
-        logger.exception("draft checkpoint 저장 실패 (thread=%s)", request.thread_id)
+        _seller_log(
+            logging.ERROR,
+            "seller_checkpoint_failed",
+            context=context,
+            thread_id=request.thread_id,
+            action="product",
+            error_code="INTERNAL",
+            status="FAILED",
+        )
         yield _error(
             "INTERNAL",
             "일시적인 오류가 발생했습니다.",
@@ -581,7 +656,15 @@ async def _apply_stream(
         )
         return
     except Exception:
-        logger.exception("추천 적용 처리 실패 (thread=%s, n=%d)", request.thread_id, n)
+        _seller_log(
+            logging.ERROR,
+            "seller_apply_failed",
+            context=context,
+            thread_id=request.thread_id,
+            action="apply",
+            error_code="INTERNAL",
+            status="FAILED",
+        )
         yield _error(
             "INTERNAL",
             "일시적인 오류가 발생했습니다.",
@@ -600,7 +683,15 @@ async def _apply_stream(
     try:
         await start_draft(record)  # 4-2 재사용 — draftId↔checkpoint 바인딩
     except Exception:
-        logger.exception("추천 적용 draft 저장 실패 (thread=%s)", request.thread_id)
+        _seller_log(
+            logging.ERROR,
+            "seller_checkpoint_failed",
+            context=context,
+            thread_id=request.thread_id,
+            action="apply",
+            error_code="INTERNAL",
+            status="FAILED",
+        )
         yield _error(
             "INTERNAL",
             "일시적인 오류가 발생했습니다.",
@@ -651,7 +742,15 @@ async def _confirm_stream(
         )
         return
     except Exception:
-        logger.exception("confirm 처리 실패 (draftId=%s)", draft_id)
+        _seller_log(
+            logging.ERROR,
+            "seller_confirm_failed",
+            context=context,
+            thread_id=request.thread_id,
+            action="confirm",
+            error_code="INTERNAL",
+            status="FAILED",
+        )
         yield _error(
             "INTERNAL",
             "일시적인 오류가 발생했습니다.",
@@ -678,10 +777,13 @@ async def _seller_stream(
     try:
         context = _seller_context(identity)
     except (TypeError, ValueError):
-        logger.warning(
-            "판매자 신원 클레임이 숫자가 아니다 (sub=%r, brandId=%r)",
-            identity.seller_id,
-            identity.brand_id,
+        _seller_log(
+            logging.WARNING,
+            "seller_identity_rejected",
+            identity=identity,
+            thread_id=request.thread_id,
+            error_code="INVALID_SELLER_IDENTITY",
+            status="REJECTED",
         )
         yield _error(
             "INTERNAL",
@@ -734,14 +836,16 @@ async def _seller_stream(
             lane="routing",
             thread_id=request.thread_id,
             request_id=request_id,
+            context=context,
         )
         return
-    logger.info(
-        "판매자 라우팅: %s (confidence=%.2f, thread=%s) — %s",
-        decision.category,
-        decision.confidence,
-        request.thread_id,
-        decision.reason,
+    _seller_log(
+        logging.INFO,
+        "seller_routed",
+        context=context,
+        thread_id=request.thread_id,
+        action=decision.category,
+        status="ROUTED",
     )
 
     if decision.category == "analysis":
@@ -809,6 +913,8 @@ async def seller_chat(
             "INTERNAL",
             conversationId=request.session_id,
             threadId=request.thread_id,
+            sellerId=identity.seller_id,
+            brandId=identity.brand_id,
         )
         raise
     observation = start_observation(
@@ -820,6 +926,7 @@ async def seller_chat(
         store=store,
         now=asyncio.get_running_loop().time(),
         trace=trace,
+        buyer_session=None,
     )
     return await open_stream(
         http_request,

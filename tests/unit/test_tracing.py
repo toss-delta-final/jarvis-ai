@@ -4,6 +4,7 @@ from collections.abc import Mapping
 
 import pytest
 
+from app.core.logging import safe_fingerprint
 from app.core.tracing import (
     BUYER_DEGRADE_REASON_PRECEDENCE,
     FakeTraceExporter,
@@ -178,8 +179,8 @@ async def test_trace_records_bounded_root_observability_metadata() -> None:
     root = exporter.exported[0][0]
     assert root.metadata == {
         "requestId": "req-1",
-        "conversationId": "session-1",
-        "threadId": "thread-1",
+        "sessionFp": safe_fingerprint("session-1"),
+        "threadFp": safe_fingerprint("thread-1"),
         "lane": "buyer",
         "environment": "test",
         "provider_ttft_ms": 42,
@@ -601,3 +602,44 @@ async def test_application_sampler_is_sole_decision_before_sdk_serialization(
         operation.deserialize_run_info()["name"] == "buyer_chat_turn"
         for operation in serialized_operations
     )
+
+
+async def test_cancelled_trace_finish_shields_one_export_and_reuses_it() -> None:
+    """export 대기 caller가 취소돼도 동일 cleanup task가 끝나며 재호출은 중복 export하지 않는다."""
+
+    class BlockingExporter:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.proceed = asyncio.Event()
+            self.calls = 0
+            self.exported = []
+
+        async def export(self, nodes) -> None:
+            self.calls += 1
+            self.started.set()
+            await self.proceed.wait()
+            self.exported.append(nodes)
+
+    exporter = BlockingExporter()
+    trace = _start_trace(TraceFactory(exporter=exporter, enabled=True, sampling_rate=1.0))
+    first = asyncio.create_task(
+        trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+    )
+    await exporter.started.wait()
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    assert trace._finished is False
+    exporter.proceed.set()
+    await asyncio.gather(
+        trace.finish(status="FAILED", error_type="INTERNAL", terminal_reason="retry"),
+        trace.finish(status="CANCELLED", error_type=None, terminal_reason="retry"),
+    )
+
+    assert trace._finished is True
+    assert exporter.calls == 1
+    assert len(exporter.exported) == 1
+    root = exporter.exported[0][0]
+    assert root.error_type is None
+    assert root.metadata["terminalReason"] == "done"
