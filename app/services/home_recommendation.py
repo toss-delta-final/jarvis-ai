@@ -131,7 +131,7 @@ def rank_candidates(
 def _overfetch_size(limit: int, settings: Settings) -> int:
     """limit(최종 노출 목표) 대비 넉넉히 반환할 개수 — Spring 이 품절을 뺀 뒤 자른다(§3.7)."""
     target = int(limit * settings.home_reco_overfetch_ratio)
-    return max(limit, min(target, settings.home_reco_max_items))
+    return min(max(limit, target), settings.home_reco_max_items)
 
 
 def _sanitize_reason(text: str, max_len: int) -> str:

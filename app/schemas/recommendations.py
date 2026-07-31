@@ -56,8 +56,8 @@ class HomeRecommendationRequest(StrictEventModel):
 
     @field_validator("catalog_version")
     @classmethod
-    def _limit_version_length(cls, value: str) -> str:
-        if len(value) > _CATALOG_VERSION_MAX_CHARS:
+    def _limit_version_length(cls, value: str | None) -> str | None:
+        if value is not None and len(value) > _CATALOG_VERSION_MAX_CHARS:
             raise ValueError("catalogVersion 이 허용 길이를 초과했습니다")
         return value
 

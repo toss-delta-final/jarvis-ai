@@ -344,6 +344,28 @@ def test_catalog_version_is_omittable() -> None:
     assert r.json()["outcome"] == "PERSONALIZED"
 
 
+def test_catalog_version_null_is_accepted() -> None:
+    """Spring 이 null 을 보내도 400 이 아니라 200 이어야 한다(C-18 과잉 안전성)."""
+    r = client.post(_URL, json=_body(catalogVersion=None))
+    assert r.status_code == 200
+    assert r.json()["outcome"] == "PERSONALIZED"
+
+
+def test_request_limit_higher_than_max_items_is_capped(
+    monkeypatch: pytest.MonkeyPatch, store: CatalogArtifactStore
+) -> None:
+    """limit 값이 크더라도 응답은 home_reco_max_items 를 넘길 수 없다."""
+    for pid in range(2000, 2080):
+        store.upsert(_artifact(pid, [1.0, 0.0, 0.0], doc=f"상품 {pid}"))
+
+    settings = get_settings().model_copy(update={"home_reco_max_items": 20})
+    monkeypatch.setattr(svc, "get_settings", lambda: settings)
+
+    r = client.post(_URL, json=_body(limit=500))
+    assert r.status_code == 200
+    assert len(r.json()["items"]) == 20
+
+
 # ── 인증 · 입력 검증 ──
 
 
