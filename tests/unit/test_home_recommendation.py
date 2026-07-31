@@ -84,13 +84,7 @@ def test_personalized_returns_camel_case_contract_surface() -> None:
     r = client.post(_URL, json=_body())
     assert r.status_code == 200
     data = r.json()
-    assert set(data) == {
-        "outcome",
-        "recommendationRequestId",
-        "listId",
-        "catalogVersion",  # [C-18] AI 가 만든 인덱스 지문 — 요청의 동명 필드를 대체
-        "items",
-    }
+    assert set(data) == {"outcome", "recommendationRequestId", "listId", "items"}
     assert data["outcome"] == "PERSONALIZED"
     assert data["items"], "개인화 성공이면 items 가 비어있지 않다"
     assert set(data["items"][0]) == {"productId", "reason"}
@@ -255,48 +249,27 @@ def test_ranking_is_stable_regardless_of_store_iteration_order() -> None:
     assert got[0] == got[1] == [2001, 2002, 2003]
 
 
-# ── catalogVersion (C-18) — 값 생성 주체가 AI 로 이관 ──
+# ── catalogVersion (C-18) — 계약에서 폐기 제안 중 ──
 
 
-def test_catalog_version_is_generated_by_ai_not_echoed(store: CatalogArtifactStore) -> None:
-    """요청으로 들어온 값을 되돌려주지 않는다 — Spring 은 AI 인덱스 버전을 알 수 없다(C-18)."""
-    data = client.post(_URL, json=_body(catalogVersion="spring-이 보낸-값")).json()
-    assert data["catalogVersion"] != "spring-이 보낸-값"
-    assert data["catalogVersion"].startswith("cat-")
+def test_catalog_version_is_accepted_but_never_echoed() -> None:
+    """받아도 무시한다 — 응답에 싣지 않는다(C-18 폐기 제안).
+
+    AI 가 지문을 만들어 실어 보낸 적이 있으나 되돌렸다. `products` 는 I-17 이 제자리 upsert 해
+    **그 시점의 임베딩을 보존하지 않으므로** 버전 라벨로 재현할 수 없고, 재현이 필요하지도 않다 —
+    산출물(목록·reason)은 Spring 이 `recommendation_generated` 로 이미 저장한다(§3.7).
+    """
+    data = client.post(_URL, json=_body(catalogVersion="spring-이-보낸-값")).json()
+    assert "catalogVersion" not in data
 
 
-def test_catalog_version_is_omittable_for_be_transition() -> None:
-    """전환기 — Spring 이 보내지 않아도(또는 보내도) 깨지지 않는다. 선택 필드로 완화했다."""
+def test_catalog_version_is_omittable() -> None:
+    """Spring 이 안 보내도 깨지지 않는다 — 선택 필드로 완화했다(계약 제거 전 전환기)."""
     body = _body()
     body.pop("catalogVersion")
     r = client.post(_URL, json=body)
     assert r.status_code == 200
-    assert r.json()["catalogVersion"].startswith("cat-")
-
-
-def test_catalog_version_is_stable_for_same_index(store: CatalogArtifactStore) -> None:
-    """같은 인덱스 상태면 같은 값 — 재현·캐시 판정의 전제다."""
-    a = client.post(_URL, json=_body()).json()["catalogVersion"]
-    b = client.post(_URL, json=_body()).json()["catalogVersion"]
-    assert a == b
-
-
-def test_catalog_version_changes_when_index_changes(store: CatalogArtifactStore) -> None:
-    """인덱스가 바뀌면 값도 바뀐다 — 안 바뀌면 Spring 의 P-5 캐시가 낡은 추천을 계속 준다."""
-    before = client.post(_URL, json=_body()).json()["catalogVersion"]
-    store.upsert(_artifact(4242, [0.5, 0.5, 0.0]))
-    after = client.post(_URL, json=_body()).json()["catalogVersion"]
-    assert before != after
-
-
-def test_catalog_version_leaks_no_model_identity(store: CatalogArtifactStore) -> None:
-    """지문은 불투명해야 한다 — 모델·차원이 드러나면 §3.7 [HARD] 위반이다."""
-    art = store.get(9001)
-    art.embed_model, art.embed_dim = "gemini-embedding-001", 1536
-    store.upsert(art)
-    version = client.post(_URL, json=_body()).json()["catalogVersion"]
-    for banned in ("gemini", "embedding-001", "1536", "RETRIEVAL"):
-        assert banned not in version
+    assert r.json()["outcome"] == "PERSONALIZED"
 
 
 # ── 인증 · 입력 검증 ──

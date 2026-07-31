@@ -9,21 +9,9 @@ PgCatalogArtifactStore(pg_artifact_store.py)를 반환한다. CatalogArtifactSto
 
 from __future__ import annotations
 
-import hashlib
 import threading
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
-
-
-def _fingerprint(material: str) -> str:
-    """인덱스 상태 지문 — I-22 `catalogVersion` (C-18, api-spec §3.7).
-
-    **불투명 해시**여야 한다. 이 값은 Spring 의 P-5 캐시 키에 들어가 외부로 흐르는데, 사람이 읽을
-    수 있는 형태면 임베딩 모델·차원 같은 내부 사실이 새어나갈 여지가 생긴다 — §3.7 [HARD] 는
-    모델 식별자의 와이어 노출을 금지한다. 그래서 지문 재료에도 모델·차원을 넣지 않는다(행 수·갱신
-    시각만). 같은 인덱스 상태면 같은 값이라 재현·캐시 무효화 판정에 쓸 수 있다.
-    """
-    return "cat-" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
 
 
 @dataclass
@@ -65,7 +53,6 @@ class ArtifactStore(Protocol):
     def top_k_by_vector(
         self, query_vec: list[float], *, k: int, exclude: set[int] | None = None
     ) -> list[int]: ...
-    def catalog_version(self) -> str: ...
     def get_cursor(self) -> str | None: ...
     def set_cursor(self, cursor: str | None) -> None: ...
 
@@ -129,15 +116,6 @@ class CatalogArtifactStore:
         ]
         scored.sort(key=lambda t: (-t[0], t[1]))
         return [pid for _, pid in scored[:k]]
-
-    def catalog_version(self) -> str:
-        """인덱스 상태 지문 (I-22 `catalogVersion`, C-18).
-
-        인메모리 구현은 `updated_at` 이 없어 **보유 productId 집합**으로 지문을 만든다 — 내용이
-        바뀌면 값이 바뀌어야 한다는 요구만 만족하면 되고, 테스트 규모라 O(N) 이 문제되지 않는다.
-        """
-        marker = ",".join(str(pid) for pid in sorted(self._items))
-        return _fingerprint(f"{len(self._items)}:{marker}")
 
     def get_cursor(self) -> str | None:
         return self._cursor

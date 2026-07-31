@@ -250,8 +250,6 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
     # Spring 이 P-4 로 대체하며 fallbackReason=AI_ERROR 로 기록한다(§3.7 실패 응답표·§4.11).
     try:
         store = get_catalog_store()
-        # [C-18] 랭킹에 쓸 인덱스의 상태 지문 — 응답에 실어 Spring 이 P-5 캐시 키로 쓴다.
-        catalog_version = store.catalog_version()
         query_vec = build_query_vector(
             cart_ids=signals.cart_product_ids,
             viewed_ids=signals.recently_viewed_product_ids,
@@ -272,7 +270,6 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
             started=started,
             candidates=0,
             settings=settings,
-            catalog_version=catalog_version,
         )
 
     exclude = set(signals.recent_purchased_product_ids)  # 가중치가 아니라 제외 필터(§3.7)
@@ -299,7 +296,6 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
             started=started,
             candidates=len(ranked),
             settings=settings,
-            catalog_version=catalog_version,
         )
 
     top = ranked[:want]
@@ -321,7 +317,6 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
         started=started,
         candidates=len(ranked),
         settings=settings,
-        catalog_version=catalog_version,
     )
 
 
@@ -333,7 +328,6 @@ def _respond(
     started: float,
     candidates: int,
     settings: Settings,
-    catalog_version: str,
 ) -> HomeRecommendationResponse:
     """응답 조립 + 관측 로그 1건.
 
@@ -357,8 +351,6 @@ def _respond(
         recommendation_request_id=str(uuid.uuid4()),
         # ≥128bit 무작위 — P-5 를 거쳐 공개되는 귀속 키라 추측 가능한 형식 금지(I-21 §4.2 동일 규칙).
         list_id=uuid.uuid4().hex,
-        # [C-18] 랭킹에 쓴 인덱스 상태 지문 — Spring 이 P-5 캐시 키에 쓴다.
-        catalog_version=catalog_version,
         items=[
             HomeRecommendationItem(product_id=pid, reason=reasons.get(pid)) for pid in product_ids
         ],

@@ -16,7 +16,7 @@ from pgvector.psycopg import register_vector
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
-from app.pipelines.artifact_store import CatalogArtifact, _fingerprint
+from app.pipelines.artifact_store import CatalogArtifact
 
 
 def _to_list(value: object) -> list[float]:
@@ -200,22 +200,6 @@ class PgCatalogArtifactStore:
                 (skip or None, skip or None, Vector(query_vec), k),
             ).fetchall()
         return [r[0] for r in rows]
-
-    def catalog_version(self) -> str:
-        """인덱스 상태 지문 (I-22 `catalogVersion`, C-18, api-spec §3.7).
-
-        **Spring 은 이 값을 만들 수 없다** — AI 는 자체 카탈로그 인덱스로 순위를 매기고 Spring 은
-        그 인덱스의 동기화 시점을 모른다. 정본이 요청에 싣게 규정했던 것을 AI 생성으로 옮긴 이유다.
-
-        재료는 `(행 수, 최종 갱신 시각)` 이다 — I-17 배치가 upsert 할 때마다 `updated_at` 이
-        올라가므로 인덱스가 바뀌면 값도 바뀌고, Spring 의 P-5 개인화 캐시가 자동으로 무효화된다.
-        모델·차원은 재료에 넣지 않는다(§3.7 [HARD] provenance 비노출).
-        """
-        with self._pool.connection() as conn:
-            count, latest = conn.execute(
-                "SELECT count(*), max(updated_at) FROM products"
-            ).fetchone()
-        return _fingerprint(f"{count}:{latest.isoformat() if latest else ''}")
 
     def get_cursor(self) -> str | None:
         with self._pool.connection() as conn:
