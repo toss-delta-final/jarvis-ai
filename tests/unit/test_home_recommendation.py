@@ -801,43 +801,56 @@ def test_reason_falls_back_to_viewed_tag(store: CatalogArtifactStore) -> None:
     assert reason == "최근 보신 상품처럼 캠핑에 맞아요"
 
 
-def test_reason_falls_back_to_profile_keyword(
+def test_avoided_brand_is_never_presented_as_a_match(
     store: CatalogArtifactStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """시그널과 공통 태그가 없으면 프로필 원문에서 태그를 찾는다."""
+    """회피 브랜드가 "맞춰 골랐어요"로 소개되지 않는다 — 프로필 문자열 매칭 분기 제거의 근거.
+
+    프로필 요약은 LLM 자유 마크다운이라 선호/회피 극성을 파싱할 앵커가 없다(PR 리뷰). 분기가
+    있으면 "회피 브랜드: 나이키"의 "나이키"가 태그와 부분 문자열로 매칭돼, 사용자가 피하겠다는
+    브랜드를 취향이라고 소개한다.
+    """
     _with_extras(store, 9001, situation_tags=["무관한태그"])
-    _with_extras(store, 1001, situation_tags=["등산"])
+    _with_extras(store, 1001, situation_tags=["나이키"], review_pros=["쿠션이 좋다는 평"])
 
     async def _profile(user_id: str | None) -> dict | None:
         return {
-            "markdown": "사용자는 등산 용품을 자주 본다",
+            "markdown": "## 구조화 블록\n- 회피 브랜드: 나이키\n",
             "generated_at": "2026-07-31T00:00:00Z",
+            "embedding": None,
         }
 
     monkeypatch.setattr(svc, "read_profile_summary", _profile)
     items = client.post(_URL, json=_body(limit=10)).json()["items"]
     reason = next(i["reason"] for i in items if i["productId"] == 1001)
-    assert reason == "등산에 맞춰 골랐어요"
+    assert reason == "쿠션이 좋다는 평", f"회피 브랜드가 취향으로 소개됐다: {reason!r}"
+    assert all("맞춰 골랐어요" not in (i["reason"] or "") for i in items)
 
 
-def test_profile_match_skips_single_char_tags(
-    store: CatalogArtifactStore, monkeypatch: pytest.MonkeyPatch
+def test_duplicate_signal_ids_do_not_inflate_the_query_vector(
+    store: CatalogArtifactStore,
 ) -> None:
-    """1자 태그는 프로필 부분 문자열 매칭에서 제외한다 — "방"이 "주방"에 걸리는 오탐 방지.
+    """같은 id 가 여러 번 와도 질의 벡터를 지배하지 못한다 — 가중 누적도 dedup 목록을 돈다.
 
-    cart/viewed 경로는 정확한 집합 교집합이라 무관하고, 자유 텍스트 프로필을 상대하는
-    3순위 분기만 길이 하한을 건다(PR 리뷰).
+    스키마는 배열 길이·값 범위만 막고 중복은 막지 않는다(PR 리뷰). dedup 없이는 viewed 의
+    decay 도 같은 상품을 서로 다른 rank 로 중복 합산한다.
     """
-    _with_extras(store, 9001, situation_tags=["무관한태그"])
-    _with_extras(store, 1001, situation_tags=["방"], review_pros=["튼튼하다는 평"])
+    store.upsert(_artifact(9002, [0.0, 1.0, 0.0], doc="시그널 상품 B"))
 
-    async def _profile(user_id: str | None) -> dict | None:
-        return {"markdown": "주방용품을 자주 산다", "generated_at": "2026-07-31T00:00:00Z"}
+    def ranking(viewed: list[int]) -> list[int]:
+        signals = {
+            "recentlyViewedProductIds": viewed,
+            "cartProductIds": [],
+            "recentPurchasedProductIds": [],
+        }
+        return [
+            i["productId"]
+            for i in client.post(_URL, json=_body(limit=10, signals=signals)).json()["items"]
+        ]
 
-    monkeypatch.setattr(svc, "read_profile_summary", _profile)
-    items = client.post(_URL, json=_body(limit=10)).json()["items"]
-    reason = next(i["reason"] for i in items if i["productId"] == 1001)
-    assert reason == "튼튼하다는 평", '"방에 맞춰 골랐어요" 오탐이 나오면 안 된다'
+    assert ranking([9001, 9002]) == ranking(
+        [9001, 9002, 9002, 9002, 9002]
+    ), "중복 9002 가 벡터를 지배하면 순위가 달라진다"
 
 
 def test_reason_falls_back_to_review_pro(store: CatalogArtifactStore) -> None:

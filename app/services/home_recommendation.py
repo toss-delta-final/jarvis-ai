@@ -99,7 +99,6 @@ async def _call_store(fn, /, *, timeout: float, **kwargs):
 # 받침에 따라 을/를·이/가가 갈리는데 태그는 자유 텍스트라 형태를 미리 알 수 없다.
 _CART_FRAME = "장바구니 상품과 함께 {tag}에 쓰기 좋아요"
 _VIEWED_FRAME = "최근 보신 상품처럼 {tag}에 맞아요"
-_PROFILE_FRAME = "{tag}에 맞춰 골랐어요"
 _SELF_SIGNAL = "최근 관심 있게 보신 상품이에요"
 
 
@@ -144,11 +143,14 @@ def build_query_vector(
     wanted = list(dict.fromkeys([*cart_ids, *viewed_ids]))  # 중복 제거(순서 보존), 조회 1회
     arts = store.get_many(wanted) if wanted else {}
 
-    for pid in cart_ids:
+    # 가중 누적도 **dedup 목록**을 돈다(조회용 wanted 와 동일) — 스키마는 중복을 막지 않아,
+    # 같은 id 가 여러 번 오면 그 상품이 질의 벡터를 부당하게 지배하고 viewed 는 같은 상품이
+    # 서로 다른 rank 로 중복 합산된다(PR 리뷰). 중복은 첫 등장(최신) 위치만 인정한다.
+    for pid in dict.fromkeys(cart_ids):
         art = arts.get(pid)
         if art and art.embedding:
             acc = _weighted_add(acc, art.embedding, settings.home_reco_weight_cart)
-    for rank, pid in enumerate(viewed_ids):
+    for rank, pid in enumerate(dict.fromkeys(viewed_ids)):
         art = arts.get(pid)
         if art and art.embedding:
             weight = settings.home_reco_weight_viewed * (settings.home_reco_viewed_decay**rank)
@@ -246,7 +248,6 @@ def build_reasons(
     store: ArtifactStore,
     cart_ids: list[int],
     viewed_ids: list[int],
-    profile_markdown: str,
     settings: Settings,
 ) -> dict[int, str]:
     """미리 만들어 둔 `extras` 재료로 reason 을 **고른다**. LLM 호출 0회.
@@ -256,8 +257,14 @@ def build_reasons(
     배치가 **상품당 1회** 수행해 `extras` 에 넣어두고(§4.8), 여기서는 사용자 맥락에 맞는 재료를
     고르기만 한다. 따라서 결정적이며(동일 입력 → 동일 reason) 예산과 무관하다.
 
-    우선순위는 신호 강도를 따른다 — 담기(§3.7 "강한 신호") > 조회 > 프로필 > 상품 고유 폴백.
+    우선순위는 신호 강도를 따른다 — 담기(§3.7 "강한 신호") > 조회 > 상품 고유 폴백.
     아무것도 못 고르면 `None` 이고, reason 은 nullable 이라 계약상 정상이다(P-5 는 표시하지 않는다).
+
+    **프로필 markdown 부분 문자열 분기는 제거했다**(PR 리뷰 3건 누적 — 오탐·길이 하한·극성).
+    프로필 요약은 LLM 이 쓰는 자유 마크다운이라 선호/**회피** 극성을 파싱할 앵커가 없다 —
+    "회피 브랜드: 나이키"의 "나이키"가 태그와 매칭되면 사용자가 피하겠다는 브랜드를 "맞춰
+    골랐어요"로 소개한다. 문장 근거는 시그널 태그·상품 리뷰로 한정한다. 장기 취향의 랭킹 반영은
+    프로필 **벡터**(build_query_vector)가 담당하므로 개인화가 사라지는 것이 아니다.
     """
     wanted = list(dict.fromkeys([*product_ids, *cart_ids, *viewed_ids]))
     arts = store.get_many(wanted)
@@ -279,23 +286,6 @@ def build_reasons(
             text = _CART_FRAME.format(tag=tag)
         elif (tag := _pick(tags, viewed_tags)) is not None:
             text = _VIEWED_FRAME.format(tag=tag)
-        elif profile_markdown and (
-            tag := next(
-                (
-                    t
-                    for t in sorted(set(tags))
-                    # 부분 문자열 매칭이라 초단문 태그는 오탐의 주범이다 — "방"이 "주방"에,
-                    # "장"이 "화장품"에 걸린다(PR 리뷰). 한국어는 교착어라 단어 경계 매칭이
-                    # 비현실적이고 프로필은 자유 텍스트라 태그 집합 교집합도 불가능하므로,
-                    # 길이 하한으로 오탐 표면을 줄인다. 2자 이상이면 포함 관계가 대체로
-                    # 의미 연관이다("여행" ⊂ "해외여행"·"여행지").
-                    if len(t) >= settings.home_reco_profile_tag_min_chars and t in profile_markdown
-                ),
-                None,
-            )
-        ):
-            # 프로필 원문은 **여기서 매칭에만** 쓰고 응답·로그로는 내보내지 않는다(§3.7 [HARD]).
-            text = _PROFILE_FRAME.format(tag=tag)
         elif pro := _first_pro(art):
             text = pro
 
@@ -341,8 +331,9 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
         # 예외 문자열은 업스트림 상태를 유출할 수 있어 클래스명도 남기지 않는다(#141 규약).
         logger.warning("home_reco_profile_unavailable")
         profile = None
-    profile_markdown = (profile or {}).get("markdown", "") or ""
     # 미리 만들어 둔 취향 벡터(§3.7 "프로필 벡터와 가중 혼합"). 구 요약·임베딩 실패분은 None.
+    # markdown 원문은 여기서 쓰지 않는다 — reason 매칭 분기는 극성(선호/회피) 문제로 제거했다
+    # (build_reasons docstring).
     profile_vec = (profile or {}).get("embedding") or None
 
     # 카탈로그 인덱스는 **랭킹의 유일한 입력**이라 degrade 할 수 없다 — 여기가 죽으면 503 이고,
@@ -449,7 +440,6 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
                 store=store,
                 cart_ids=signals.cart_product_ids,
                 viewed_ids=signals.recently_viewed_product_ids,
-                profile_markdown=profile_markdown,
                 settings=settings,
             )
         except TimeoutError:
