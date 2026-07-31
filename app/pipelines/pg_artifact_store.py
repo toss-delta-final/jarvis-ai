@@ -170,6 +170,37 @@ class PgCatalogArtifactStore:
             row = conn.execute("SELECT count(*) FROM products").fetchone()
         return row[0] if row else 0
 
+    def top_k_by_vector(
+        self, query_vec: list[float], *, k: int, exclude: set[int] | None = None
+    ) -> list[int]:
+        """질의 벡터에 가까운 상위 k productId — **HNSW 인덱스로 DB 에서** 정렬한다 (I-22, #148).
+
+        전량을 파이썬으로 끌어와 코사인을 도는 방식은 7,220건 기준 **p50 3.3초**로 I-22 예산
+        (연결 2s/응답 3s, §3.7)을 그 자체로 초과했다. 실측 후 SQL 로 밀었다.
+
+        `<#>` (음의 내적)를 쓰는 이유는 카탈로그 HNSW 인덱스가 `vector_ip_ops` 로 만들어져 있어
+        이 연산자만 인덱스를 타기 때문이다. **임베딩이 L2 정규화돼 있으면 내적 순위 = 코사인 순위**이며
+        (`embedding.py::_l2_normalize`, `normalized` 컬럼이 그 사실을 기록한다) 정규화가 깨지면
+        순위 의미도 깨진다 — 정규화는 이 경로의 전제다.
+
+        동점은 `product_id` 오름차순으로 tiebreak 해 결정적이다(동일 snapshot → 동일 ranking).
+        HNSW 는 근사 탐색이지만 인덱스·질의가 같으면 같은 결과를 준다.
+        """
+        skip = list(exclude or ())
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT product_id
+                FROM products
+                WHERE embedding IS NOT NULL
+                  AND (%s::bigint[] IS NULL OR product_id <> ALL(%s::bigint[]))
+                ORDER BY embedding <#> %s, product_id
+                LIMIT %s
+                """,
+                (skip or None, skip or None, Vector(query_vec), k),
+            ).fetchall()
+        return [r[0] for r in rows]
+
     def get_cursor(self) -> str | None:
         with self._pool.connection() as conn:
             row = conn.execute("SELECT cursor FROM batch_state WHERE id = 1").fetchone()

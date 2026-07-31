@@ -48,9 +48,12 @@ def store() -> CatalogArtifactStore:
 
 @pytest.fixture(autouse=True)
 def _inject(monkeypatch: pytest.MonkeyPatch, store: CatalogArtifactStore):
-    """전역 pg 스토어·LLM 을 테스트 주입으로 대체한다 (유닛 테스트는 실 DB·네트워크 금지)."""
+    """전역 pg 스토어를 인메모리로 대체한다 (유닛 테스트는 실 DB·네트워크 금지).
+
+    reason 은 요청 경로에서 LLM 을 부르지 않으므로 주입할 LLM 이 없다 — 미리 만들어 둔 `extras`
+    재료를 읽을 뿐이다(#148 실측으로 LLM 경로 폐기).
+    """
     monkeypatch.setattr(svc, "get_catalog_store", lambda: store)
-    monkeypatch.setattr(svc, "get_llm", lambda: None)  # 기본은 reason 없음(null)
     monkeypatch.setattr(svc, "read_profile_summary", _no_profile)
     yield
 
@@ -348,82 +351,140 @@ def test_profile_store_failure_degrades_to_200(monkeypatch: pytest.MonkeyPatch) 
     assert r.json()["outcome"] == "PERSONALIZED"
 
 
-# ── reason (Haiku 배치 1회) ──
+# ── reason: 미리 만들어 둔 extras 재료에서 고른다 (LLM 0회) ──
 
 
-class _ReasonLLM:
-    """상위 N개 reason 을 한 번의 배치 호출로 돌려주는 가짜 LLM."""
-
-    def __init__(self, payload: object, *, tier_seen: list | None = None) -> None:
-        self._payload = payload
-        self.tier_seen = tier_seen if tier_seen is not None else []
-        self.calls = 0
-        self.last_user = ""
-        self.last_system = ""
-
-    async def complete(self, *, system, user, tier, max_tokens=1024, json_output=True) -> str:
-        self.calls += 1
-        self.tier_seen.append(tier)
-        self.last_user = user
-        self.last_system = system
-        if isinstance(self._payload, Exception):
-            raise self._payload
-        return json.dumps(self._payload, ensure_ascii=False)
+def _with_extras(store: CatalogArtifactStore, product_id: int, **extras) -> None:
+    art = store.get(product_id)
+    art.extras = dict(extras)
+    store.upsert(art)
 
 
-def test_reason_is_generated_in_one_fast_tier_batch_call(monkeypatch: pytest.MonkeyPatch) -> None:
-    llm = _ReasonLLM({"reasons": [{"productId": 9001, "reason": "최근 본 상품과 비슷해요"}]})
-    monkeypatch.setattr(svc, "get_llm", lambda: llm)
+def test_reason_picks_cart_tag_first(store: CatalogArtifactStore) -> None:
+    """담기는 §3.7 이 '강한 신호'라 한 축 — 담기 태그가 조회 태그보다 우선한다."""
+    _with_extras(store, 9001, situation_tags=["조회태그"])
+    store.upsert(_artifact(9002, [1.0, 0.0, 0.0], doc="담기상품"))
+    _with_extras(store, 9002, situation_tags=["담기태그"])
+    _with_extras(store, 1001, situation_tags=["담기태그", "조회태그"])
+
+    signals = {
+        "recentlyViewedProductIds": [9001],
+        "cartProductIds": [9002],
+        "recentPurchasedProductIds": [],
+    }
+    items = client.post(_URL, json=_body(limit=10, signals=signals)).json()["items"]
+    reason = next(i["reason"] for i in items if i["productId"] == 1001)
+    assert reason == "장바구니 상품과 함께 담기태그에 쓰기 좋아요"
+
+
+def test_reason_falls_back_to_viewed_tag(store: CatalogArtifactStore) -> None:
+    _with_extras(store, 9001, situation_tags=["캠핑"])
+    _with_extras(store, 1001, situation_tags=["캠핑"])
     items = client.post(_URL, json=_body(limit=10)).json()["items"]
-    assert llm.calls == 1, "reason 은 상위 N개를 한 번의 배치 호출로 만든다"
-    assert llm.tier_seen == ["fast"], "3s 예산이라 fast tier(Haiku)"
-    by_id = {i["productId"]: i["reason"] for i in items}
-    assert by_id[9001] == "최근 본 상품과 비슷해요"
-    assert by_id[1001] is None, "근거를 못 받은 상품은 null (필드 자체는 유지)"
+    reason = next(i["reason"] for i in items if i["productId"] == 1001)
+    assert reason == "최근 보신 상품처럼 캠핑에 맞아요"
 
 
-def test_reason_llm_failure_degrades_to_null_not_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    """LLM 실패가 홈 렌더를 막지 않는다 — reason 만 null 로 degrade."""
-    monkeypatch.setattr(svc, "get_llm", lambda: _ReasonLLM(RuntimeError("boom")))
-    r = client.post(_URL, json=_body())
-    assert r.status_code == 200
-    data = r.json()
-    assert data["outcome"] == "PERSONALIZED"
-    assert data["items"]
-    assert all(i["reason"] is None for i in data["items"])
+def test_reason_falls_back_to_profile_keyword(
+    store: CatalogArtifactStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """시그널과 공통 태그가 없으면 프로필 원문에서 태그를 찾는다."""
+    _with_extras(store, 9001, situation_tags=["무관한태그"])
+    _with_extras(store, 1001, situation_tags=["등산"])
+
+    async def _profile(user_id: str | None) -> dict | None:
+        return {
+            "markdown": "사용자는 등산 용품을 자주 본다",
+            "generated_at": "2026-07-31T00:00:00Z",
+        }
+
+    monkeypatch.setattr(svc, "read_profile_summary", _profile)
+    items = client.post(_URL, json=_body(limit=10)).json()["items"]
+    reason = next(i["reason"] for i in items if i["productId"] == 1001)
+    assert reason == "등산에 맞춰 골랐어요"
 
 
-def test_reason_malformed_json_degrades_to_null(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(svc, "get_llm", lambda: _ReasonLLM("not-a-json-object"))
-    data = client.post(_URL, json=_body()).json()
-    assert data["outcome"] == "PERSONALIZED"
-    assert all(i["reason"] is None for i in data["items"])
-
-
-def test_reason_is_sanitized_and_capped(monkeypatch: pytest.MonkeyPatch) -> None:
-    """자유 텍스트가 신뢰경계를 넘기 전에 제어문자 제거 + 상한 truncate (I-21 과 동일 규약)."""
-    dirty = "줄바꿈\n과 제어\x00문자 " + "가" * 500
-    monkeypatch.setattr(
-        svc, "get_llm", lambda: _ReasonLLM({"reasons": [{"productId": 9001, "reason": dirty}]})
+def test_reason_falls_back_to_review_pro(store: CatalogArtifactStore) -> None:
+    """아무 매칭도 없으면 상품 고유 재료(리뷰 장점)를 쓴다."""
+    _with_extras(store, 9001, situation_tags=["무관"])
+    _with_extras(
+        store, 1001, situation_tags=["다른것"], review_pros=["수납공간이 넓어 정리에 좋음"]
     )
-    items = client.post(_URL, json=_body()).json()["items"]
-    reason = next(i["reason"] for i in items if i["productId"] == 9001)
+    items = client.post(_URL, json=_body(limit=10)).json()["items"]
+    reason = next(i["reason"] for i in items if i["productId"] == 1001)
+    assert reason == "수납공간이 넓어 정리에 좋음"
+
+
+def test_reason_is_null_when_no_material(store: CatalogArtifactStore) -> None:
+    """재료가 없으면 null — 계약상 정상이고 P-5 가 표시하지 않는다."""
+    _with_extras(store, 9001)
+    _with_extras(store, 1001)
+    items = client.post(_URL, json=_body(limit=10)).json()["items"]
+    assert next(i["reason"] for i in items if i["productId"] == 1001) is None
+
+
+def test_reason_reads_legacy_tags_key(store: CatalogArtifactStore) -> None:
+    """구 enrichment 스키마(`tags`)도 재료로 인정한다 — 신규/기존 상품이 섞여 있다."""
+    _with_extras(store, 9001, tags=["여행"])
+    _with_extras(store, 1001, tags=["여행"])
+    items = client.post(_URL, json=_body(limit=10)).json()["items"]
+    assert (
+        next(i["reason"] for i in items if i["productId"] == 1001)
+        == "최근 보신 상품처럼 여행에 맞아요"
+    )
+
+
+def test_reason_is_deterministic_across_calls(store: CatalogArtifactStore) -> None:
+    """LLM 이 없으므로 reason 도 결정적이다 — 완료조건(동일 입력 → 복원 가능)에 부합."""
+    _with_extras(store, 9001, situation_tags=["가", "나"])
+    _with_extras(store, 1001, situation_tags=["나", "가"])
+    a = {
+        i["productId"]: i["reason"] for i in client.post(_URL, json=_body(limit=10)).json()["items"]
+    }
+    b = {
+        i["productId"]: i["reason"] for i in client.post(_URL, json=_body(limit=10)).json()["items"]
+    }
+    assert a == b
+    # 공통 태그가 여럿이면 사전순 첫 항목 — 저장 순서에 의존하지 않는다
+    assert a[1001] == "최근 보신 상품처럼 가에 맞아요"
+
+
+def test_signal_product_itself_gets_own_frame(store: CatalogArtifactStore) -> None:
+    """시그널 상품이 후보로 올라오면 '비슷한 상품' 서술이 어색하다 — 전용 문구."""
+    _with_extras(store, 9001, situation_tags=["캠핑"])
+    items = client.post(_URL, json=_body(limit=10)).json()["items"]
+    assert (
+        next(i["reason"] for i in items if i["productId"] == 9001)
+        == "최근 관심 있게 보신 상품이에요"
+    )
+
+
+def test_reason_is_sanitized_and_capped(store: CatalogArtifactStore) -> None:
+    """재료가 신뢰경계를 넘기 전에 제어문자 제거 + 상한 truncate (I-21 과 동일 규약)."""
+    dirty = "줄바꿈\n과 제어\x00문자 " + "가" * 500
+    _with_extras(store, 9001, situation_tags=["무관"])
+    _with_extras(store, 1001, review_pros=[dirty])
+    items = client.post(_URL, json=_body(limit=10)).json()["items"]
+    reason = next(i["reason"] for i in items if i["productId"] == 1001)
     assert "\n" not in reason
     assert "\x00" not in reason
     assert len(reason) <= get_settings().reason_max_len
 
 
-def test_no_reason_call_when_outcome_is_not_personalized(monkeypatch: pytest.MonkeyPatch) -> None:
-    """개인화가 아니면 items 가 비어 reason 을 만들 대상이 없다 — LLM 을 부르지 않는다(예산 절약)."""
-    llm = _ReasonLLM({"reasons": []})
-    monkeypatch.setattr(svc, "get_llm", lambda: llm)
-    signals = {
-        "recentlyViewedProductIds": [],
-        "cartProductIds": [],
-        "recentPurchasedProductIds": [],
-    }
-    client.post(_URL, json=_body(signals=signals))
-    assert llm.calls == 0
+def test_reason_never_calls_an_llm(
+    store: CatalogArtifactStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """요청 경로에서 LLM 을 부르지 않는다 — 3s 예산의 근거이자 결정성의 근거다."""
+
+    def _boom():
+        raise AssertionError("요청 경로에서 LLM 을 부르면 안 된다")
+
+    monkeypatch.setattr("app.core.llm.get_llm", _boom)
+    _with_extras(store, 9001, situation_tags=["캠핑"])
+    _with_extras(store, 1001, situation_tags=["캠핑"])
+    r = client.post(_URL, json=_body(limit=10))
+    assert r.status_code == 200
+    assert any(i["reason"] for i in r.json()["items"])
 
 
 # ── provenance 비노출 [HARD] ──
@@ -431,9 +492,8 @@ def test_no_reason_call_when_outcome_is_not_personalized(monkeypatch: pytest.Mon
 
 def test_response_carries_no_algorithm_or_model_version(monkeypatch: pytest.MonkeyPatch) -> None:
     """알고리즘·모델 버전은 와이어에 싣지 않는다 — 내부 테이블 보관(§3.7 [HARD])."""
-    monkeypatch.setattr(svc, "get_llm", lambda: _ReasonLLM({"reasons": []}))
     raw = client.post(_URL, json=_body()).text
-    for banned in ("algorithmVersion", "modelVersion", "claude", "haiku", "prompt"):
+    for banned in ("algorithmVersion", "modelVersion", "claude", "haiku", "gpt", "prompt"):
         assert banned not in raw
 
 
@@ -459,9 +519,6 @@ def test_log_has_fixed_safe_key_set_only(
         return {"markdown": secret, "generated_at": "2026-07-31T00:00:00Z"}
 
     monkeypatch.setattr(svc, "read_profile_summary", _profile)
-    monkeypatch.setattr(
-        svc, "get_llm", lambda: _ReasonLLM({"reasons": [{"productId": 9001, "reason": "이유"}]})
-    )
     with caplog.at_level(logging.INFO, logger=svc.logger.name):
         client.post(_URL, json=_body())
 

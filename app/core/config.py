@@ -206,10 +206,11 @@ class Settings(BaseSettings):
     home_reco_max_items: int = Field(default=60, gt=0)  # overfetch 절대 상한(응답 크기 방어)
     # 이 수 미만이면 랭킹이 무의미하다고 보고 INSUFFICIENT_CANDIDATES 로 답한다(200).
     home_reco_min_candidates: int = Field(default=5, gt=0)
-    # reason 배치 호출 상한 — P-5 예산(연결 2s/응답 3s) 안에 들어야 하므로 짧게 잡는다.
-    # 초과·실패는 reason=null 로 degrade 하며 홈 렌더를 막지 않는다.
-    home_reco_reason_timeout_s: float = Field(default=1.5, gt=0.0)
-    home_reco_reason_max_items: int = Field(default=20, ge=0)  # reason 을 만들 상위 N개
+    # [#148 실측 2026-07-31] reason 을 요청 경로에서 LLM 으로 만드는 방식은 **폐기**했다.
+    # gpt-5-nano 배치 1회가 항목 수에 선형으로 늘어(20개 7970ms · 12개 3852ms · 6개 2102ms)
+    # I-22 예산(연결 2s/응답 3s)을 5개에서도 넘겼다. 지금은 I-17 배치가 상품당 1회 만들어 둔
+    # `extras`(situation_tags·review_pros)에서 **고르기만** 한다(`home_recommendation.build_reasons`).
+    # 따라서 reason 관련 timeout·상한 설정이 없다 — 실패할 여지도 예산 소모도 없기 때문이다.
     # rating·reviewCount 등급화 경계(#171 PR#172) — 비표시 정밀값 유출 방지용으로 rerank LLM 에
     # 정확한 숫자 대신 등급만 전달할 때 쓰는 임계. 내림차순(높은 등급부터). 데모 카탈로그 실측 후 조정.
     rating_tier_excellent: float = 4.5  # ≥ → 매우높음
