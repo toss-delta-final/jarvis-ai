@@ -181,8 +181,15 @@ class ProfileStore:
         """
         embedding = await _embed_summary(markdown)
         if embedding is None:
-            existing = await self.get_summary(user_id)
-            embedding = existing.embedding if existing else None
+            # 폴백 조회 자체도 실패할 수 있다(pg-profile 일시 장애·타임아웃) — 여기서 안 잡으면
+            # 아래 요약 저장까지 통째로 죽어 "임베딩 실패가 요약 저장을 막지 않는다"는 보장이
+            # 깨진다(PR #213 리뷰). 벡터를 못 살리는 건 degrade, 요약 저장은 필수다.
+            try:
+                existing = await self.get_summary(user_id)
+                embedding = existing.embedding if existing else None
+            except Exception:
+                logger.warning("profile_summary_embedding_carryover_failed")
+                embedding = None
         value: dict = {"markdown": markdown, "generated_at": generated_at}
         if embedding is not None:
             value["embedding"] = embedding

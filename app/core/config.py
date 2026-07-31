@@ -233,7 +233,9 @@ class Settings(BaseSettings):
     # overfetch 절대 상한(응답 크기 방어). **요청 `limit` 상한(`LIMIT_MAX`) 이상이어야 한다** —
     # 아래로 내려가면 `_overfetch_size` 가 요청받은 `limit` 보다 적게 반환해 "품절 드롭 대비
     # 넉넉히"(§3.7)가 깨진다. 기동 시점에 잡는다(`expose_max`/LIST_MAX_PRODUCTS 와 같은 방식).
-    home_reco_max_items: int = Field(default=60, ge=HOME_RECO_LIMIT_MAX)
+    # 기본값은 LIMIT_MAX 의 2배(= 기본 overfetch 배율) — LIMIT_MAX 와 같게 두면 `limit` 이
+    # 상한에 가까울수록 여유분이 0 으로 죽어 "넉넉히" 계약이 최댓값에서 깨진다(PR #213 리뷰).
+    home_reco_max_items: int = Field(default=HOME_RECO_LIMIT_MAX * 2, ge=HOME_RECO_LIMIT_MAX)
     # 이 수 미만이면 랭킹이 무의미하다고 보고 INSUFFICIENT_CANDIDATES 로 답한다(200).
     home_reco_min_candidates: int = Field(default=5, gt=0)
     # 프로필 매칭 태그 길이 하한(build_reasons 3순위) — 부분 문자열 매칭이라 1자 태그는

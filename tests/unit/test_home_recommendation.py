@@ -413,13 +413,18 @@ def test_config_min_candidates_cannot_exceed_max_items() -> None:
 
 
 def test_response_never_returns_fewer_than_requested_limit(store: CatalogArtifactStore) -> None:
-    """§3.7 — `limit` 은 최종 노출 목표치이고 AI 는 그보다 **넉넉히** 반환해야 한다."""
+    """§3.7 — `limit` 은 최종 노출 목표치이고 AI 는 그보다 **넉넉히** 반환해야 한다.
+
+    "이상(≥)"이 아니라 **초과(>)** 를 단언한다 — max_items 기본값이 LIMIT_MAX 와 같으면
+    `limit` 최댓값에서 여유분이 정확히 0 이 되는데(overfetch 1.0x), ≥ 단언은 그 축소를
+    통과시켰다(PR 리뷰). 후보가 충분한 한 상한 `limit` 에서도 품절 드롭 여유가 있어야 한다.
+    """
     from app.schemas.recommendations import LIMIT_MAX
 
     for pid in range(2000, 2200):
         store.upsert(_artifact(pid, [1.0, 0.0, 0.0], doc=f"상품 {pid}"))
     items = client.post(_URL, json=_body(limit=LIMIT_MAX)).json()["items"]
-    assert len(items) >= LIMIT_MAX
+    assert len(items) > LIMIT_MAX, "상한 limit 에서도 품절 드롭 대비 여유가 있어야 한다"
     assert len(items) <= get_settings().home_reco_max_items
 
 
