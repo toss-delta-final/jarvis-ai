@@ -147,6 +147,31 @@ def test_cart_option_required_triggers_reask(client, spring, llm) -> None:
     assert event_types(events)[-1] == "done"
 
 
+def test_cart_single_option_autoselected_without_reask(client, spring, llm) -> None:
+    """옵션 후보가 1개뿐이면 되묻지 않고 그 optionId 로 재담기해 CART_ADDED 로 끝낸다 (#114)."""
+    _chat(client)  # 추천 턴 (last_reco 적재)
+
+    spring.fail_cart_add_code = "CART_OPTION_REQUIRED"
+    spring.cart_option_payload = [{"optionId": 5001, "name": "프리 사이즈", "extraPrice": 0}]
+    llm._decompose = {
+        "intent": "cart_add",
+        "reply": "",
+        "case": 2,
+        "semanticQuery": "",
+        "filters": {},
+        "cart": {"productId": 102, "quantity": 1},
+    }
+
+    events = parse_sse(_chat(client, "그거 담아줘").text)
+    action = first_of(events, "action")
+    option_ids = [r["body"].get("optionId") for r in spring.requests_to("/internal/cart/items")]
+
+    assert "token" not in event_types(events), "되묻지 않는다"
+    assert action["type"] == "CART_ADDED"
+    assert "프리 사이즈 옵션으로" in action["message"]
+    assert option_ids == [None, 5001]  # 유일 옵션으로 1회 재담기
+
+
 def test_cart_product_not_found_reports_action_failure(client, spring, llm) -> None:
     """담기 404 PRODUCT_NOT_FOUND → action 으로 실패 사유를 알린다 (§4.1)."""
     _chat(client)

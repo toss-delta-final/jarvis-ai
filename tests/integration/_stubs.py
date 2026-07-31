@@ -157,7 +157,11 @@ class SpringStub:
     # ── I-2 담기 (§4.1) ──
 
     def _cart_add(self, body: Any) -> httpx.Response:
-        if self.fail_cart_add_code == "CART_OPTION_REQUIRED":
+        # optionId 를 실어 오면 옵션 요구는 해소된 것 — 유일 옵션 자동 선택(#114) 재담기가 성공한다.
+        if (
+            self.fail_cart_add_code == "CART_OPTION_REQUIRED"
+            and (body or {}).get("optionId") is None
+        ):
             return httpx.Response(
                 400,
                 json={
