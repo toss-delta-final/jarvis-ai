@@ -1,9 +1,9 @@
 ---
 id: SPEC-RECOMMEND-001
-version: 0.10.0
+version: 0.11.0
 status: draft
 created: 2026-07-07
-updated: 2026-07-30
+updated: 2026-07-31
 author: navis
 priority: high
 issue_number: null
@@ -28,6 +28,25 @@ issue_number: null
 > **v0.9.0 (2026-07-28, #101 정합) — 검색 아키텍처 supersede 노트**: 본 SPEC은 결정 3 시절 **"질의 시점 단일 SQL(WHERE + pgvector 유사도)"**·**결정 9-B "Spring MySQL 원본 → AI Postgres 필터 컬럼 미러"** 를 전제로 서술한 부분이 있으나(§0 EX-5·§2 `search` tool·§4 결정 3·결정 9 표 등), 이는 **api-spec v0.5.0의 Spring 위임 피벗으로 폐기**됐다(상품 원본 컬럼 AI 사본 금지, AI Postgres엔 생성물[extras·search_doc·임베딩]만). **#101이 채택·구현한 실제 검색 아키텍처 = api-spec §4.8 방식2**: ① Spring I-1(`GET /internal/products/search`, §4.6)이 고정필터(카테고리·가격·브랜드) 후보를 전량 반환(원본 SQL 아님), ② AI가 그 후보의 attribute를 decompose 명시 속성조건(`attr_conditions`)과 관대 하드 매칭 + catalog DB(pgvector) 임베딩과 `semantic_query`의 코사인으로 재정렬, ③ 최근구매 dedup 이후 `embedding_rerank_limit`으로 압축해 rerank(Sonnet) 입력 생성. 즉 "단일 SQL"은 **Spring 1차 위임 + AI 2차 압축(`EmbeddingRerankBackend`)** 으로, "미러"는 **AI 생성물만 저장(원본 미러 없음)** 으로 읽는다. 계약이 어긋나면 **api-spec을 따른다**(상단 mirror 노트). 요구사항 번호·State 스키마·인수 기준은 무개정.
 
 ## HISTORY
+
+- **v0.11.0 (2026-07-31, #209 후속)** — **Case 3 니즈별 노출을 "목록 여러 개"로 확정**(REQ-REC-021·
+  REQ-REC-096 개정, REQ-REC-024 신설). REQ-REC-012 가 이미 *"니즈별 병렬 검색 + 결과를 카테고리 단위로
+  **그룹화**"* 를 요구하고 있었는데, 그룹이 **어디로 나가는지**가 비어 있었다 — 그래서 구현은 그룹을
+  병합해 **목록 하나**로 눌러 보내고 있었고(`_merge_fanout_results` 가 leg 정체성을 버린다), "유럽여행
+  필요한 거"의 파우치 후보와 어댑터 후보가 한 카드 묶음에 뒤섞였다. api-spec §4.2 는 v0.17.1 부터
+  `lists[]` 배열을 받으며 `listType: PICK_ONE` + N개가 **정확히 니즈별 추천**의 모양이므로, 그룹을
+  목록으로 그대로 내보내는 것이 계약과도 맞는다.
+  - **REQ-REC-021 노출 상한 5~8 → 5~9** — api-spec §4.2 가 목록당 9개를 허용하는데 노출 상한이 8이라
+    계약 상한이 도달 불가능한 값이었다(api-spec v0.17.3 §3.3 동반 개정). 이 개수는 **목록 하나 기준**.
+  - **REQ-REC-096 개정 — 니즈당 "노출" 반비례 축소를 철회하고 상한만 니즈별로 건다.** 종전 조항은
+    총 rerank **입력** 예산과 **노출** 개수를 한 문장에 묶어 니즈가 많으면 니즈당 1개까지 줄이라고
+    했는데, 목록을 나눈 뒤에는 "니즈당 1개"가 **선택지가 없는 목록**을 만든다(`PICK_ONE` 인데 고를 게
+    하나뿐). 입력 예산 고정은 유지하고(`embedding_rerank_limit`·니즈당 검색 `top_k` 반비례),
+    **노출은 목록마다 `expose_max` 상한**으로 바꾼다 — 실질 상한은 rerank 입력 예산이 이미 누르므로
+    니즈가 많다고 카드가 무한히 늘지 않는다.
+  - **REQ-REC-024 신설** — 니즈별 그룹을 I-21 `lists[]` 항목으로 1:1 대응시키고 `label` 에 니즈 이름을
+    싣는다. LLM 호출은 **늘리지 않는다**(전역 rerank 1회 유지, 결과를 leg 로 그룹핑) — REQ-REC-023 의
+    "니즈 수만큼 무제한 fan-out 금지"를 그대로 지킨다.
 
 - **v0.10.0 (2026-07-30, #198)** — **`shopping_list` 분해 전용 LLM 호출 허용**(EX-7·AC-REC-37·§비기능
   개정). 종전 제약("Case 3 분해는 `decompose` 단일 출력에서 파생, 별도 호출 금지")이 **실측으로
@@ -278,7 +297,7 @@ class SearchToolOutput(BaseModel):
     "case": 1 | 2 | 3,
     "overall_comment": str,
     "relaxation_notice": str | None,        # 완화 미적용 시 null
-    "items": [ ProductPayload, ... ],        # Case 1/2: 평면 목록 (5~8개)
+    "items": [ ProductPayload, ... ],        # Case 1/2: 평면 목록 (5~9개)
     "groups": [ ProductGroup, ... ] | None,  # Case 3: 카테고리별 묶음. Case 1/2는 null
     "budget": BudgetSummary | None,          # Case 3 + total_budget일 때만. 그 외 null
     "suggestions": [ Suggestion, ... ]       # 제안 칩 목록 (결정 14-D). 없으면 []
@@ -359,10 +378,12 @@ class SearchToolOutput(BaseModel):
 ### 6.4 재랭킹 (rerank)
 
 - **REQ-REC-020** (Event-Driven): **When** `search`가 후보를 반환하면, the `rerank` 노드 **shall** Claude Sonnet 5를 **정확히 1회** 호출하여 최대 30개 후보와 `profile_summary`로 재랭킹하고 `ranked`(상품별 근거 포함)를 산출한다.
-- **REQ-REC-021** (Ubiquitous): The `rerank` 노드 **shall** 최종 노출을 5~8개(config 주입)로 제한하고, 상품당 1문장 근거 + 전체 코멘트 1개를 생성한다.
+- **REQ-REC-021** (Ubiquitous, **[v0.11.0 개정]**): The `rerank` 노드 **shall** 최종 노출을 **목록 하나당** 5~9개(config 주입)로 제한하고, 상품당 1문장 근거 + 전체 코멘트 1개를 생성한다. 상한 9는 api-spec §4.2 의 목록당 상품 상한과 **같은 값**이며(v0.17.3 §3.3 동반 개정), 종전 8은 계약 상한을 도달 불가능하게 만들던 값이었다. 목록이 여럿이면(REQ-REC-024) 이 상한은 **목록마다** 걸린다.
 - **REQ-REC-022** (Unwanted): The `rerank` 노드 **shall not** 후보가 실제로 갖지 않은 속성을 주장하는 근거를 생성하지 않는다(선호/속성 환각 방지 — 결정 4의 속성 검증 가드).
 - **REQ-REC-023** (State-Driven, 개정 — 결정 14-E): **While** `case`가 3인 동안, the `rerank`(랭킹·선택) 단계 **shall** config로 선택된 랭킹·선택 전략(코드 per-item 결정론 선택[**MVP 기본**] / LLM 묶음 병렬 / 단일 LLM 콜, REQ-REC-097)을 따르며, LLM 호출은 config 상한(기본 2, Case 3 묶음 병렬 시 예: 최대 4) 내로 제한한다. 이는 이전 판의 경직된 "정확히 단일 콜/fan-out 절대 금지" 표현을 **config 상한 표현으로 완화**한 것이다 — 니즈 수만큼의 무제한 LLM fan-out은 여전히 금지하되(REQ-REC-097), 데이터로 선택된 전략에 따라 소수의 병렬 콜(config 상한 내)은 허용한다.
-- **REQ-REC-096** (State-Driven, 결정 14-E): **While** `case`가 3인 동안, the 랭킹·선택 단계 **shall** 니즈당 후보·노출 수를 **니즈 수에 반비례**로 축소하여 총 rerank 입력을 config 주입 예산(예: ~40) 이내로 고정한다 — 니즈가 많으면 니즈당 1개, 적으면 2~3개로 산정하며, 니즈 수에 하드 캡을 두지 않는다(REQ-REC-004). 총 입력 예산·반비례 산식은 config 주입한다(하드코딩 금지).
+- **REQ-REC-096** (State-Driven, 결정 14-E, **[v0.11.0 개정]**): **While** `case`가 3인 동안, the 랭킹·선택 단계 **shall** 니즈당 **후보(rerank 입력)** 수를 **니즈 수에 반비례**로 축소하여 총 rerank 입력을 config 주입 예산 이내로 고정하고, **노출**은 목록마다 `expose_max` 상한(REQ-REC-021)을 적용한다. 니즈 수에 하드 캡을 두지 않는다(REQ-REC-004). 총 입력 예산·반비례 산식은 config 주입한다(하드코딩 금지).
+  - **[v0.11.0] 종전 조항의 "니즈당 노출 1개"를 철회한 이유**: 그룹을 목록으로 나눈 뒤에는(REQ-REC-024) 니즈당 1개가 **고를 것이 없는 `PICK_ONE` 목록**을 만든다. 축소 대상은 **입력**이지 노출이 아니다 — 입력 예산이 이미 눌러 주므로 니즈가 많다고 카드가 무한히 늘지 않으며, 노출까지 반비례로 깎으면 목록의 존재 이유(대안 비교)가 사라진다.
+- **REQ-REC-024** (State-Driven, **[v0.11.0 신설]**, #209): **While** `case`가 3이고 니즈 leg 이 2개 이상인 동안, the `respond` 단계 **shall** REQ-REC-012 가 만든 니즈 그룹을 I-21(`api-spec §4.2`) `lists[]` 항목에 **1:1 대응**시켜 push하고, `listType`을 `PICK_ONE`으로, 각 `lists[].label`을 그 니즈 이름으로 싣는다. **shall not** 이를 위해 LLM 호출을 늘리지 않는다 — 전역 rerank **1회**를 유지하고 그 결과를 leg 로 그룹핑한다(REQ-REC-020·023 의 호출 상한 불변). 니즈가 1개거나 `case`가 3이 아니면 종전대로 **목록 1건**(길이 1 배열)을 보낸다.
 - **REQ-REC-097** (Ubiquitous, 결정 14-E): The 랭킹·선택 단계 **shall** 랭킹·선택 방식을 config로 선택 가능하게 하되 **기본값은 방식1(코드 per-item 결정론 점수 top-1/few 선택 + LLM 전체 코멘트 1회)**로 하고, 방식2(LLM 묶음 병렬 — 작은 묶음별 병렬 LLM, config 상한 예: 3~4콜)와 방식3(단일 LLM 콜 — 그룹 전체 1회)을 config 옵션으로 제공한다. **shall not** 니즈 수만큼 LLM을 무제한 fan-out하지 않으며(방식2도 config 상한 내 소수 콜), 스테이플·커머디티 다수 상황에서는 방식1이 기본이다(단일 물품 선택에 LLM 불필요). 어느 방식이 우세한지는 골든셋/시뮬레이터(§6.12)로 측정 후 확정한다.
 - **REQ-REC-098** (State-Driven, 결정 14-E/14-H): **While** 니즈 수가 config 임계를 초과하는 극단적 상황인 동안, the 랭킹·선택 단계 **shall** `ShoppingItem.priority` 오름차순(1 필수 먼저, 2 권장, 3 선택 순)으로 니즈를 우선 노출하며, 니즈(레시피 재료)를 하드 절단하지 **않는다** — priority는 극단적 과부하 시 노출 우선순위 신호일 뿐 아이템 목록에서 제거하는 근거가 아니다.
 
@@ -411,17 +432,17 @@ class SearchToolOutput(BaseModel):
 
 - **REQ-REC-060** (Unwanted): **If** `decompose` LLM 호출이 실패(오류/타임아웃)하면, **then** the 서브그래프 **shall** `error`(code `DECOMPOSE_FAILED`) 이벤트를 emit하고 `search`로 진행하지 **않는다**.
 - **REQ-REC-061** (Unwanted): **If** 카탈로그 검색 tool이 오류(DB/연결 등)를 발생시키면, **then** the 서브그래프 **shall** `error`(code `SEARCH_FAILED`) 이벤트를 emit하고 후보를 **날조하지 않는다**.
-- **REQ-REC-062** (Unwanted): **If** `rerank` LLM 호출이 1회 재시도 후에도 실패하면, **then** the 서브그래프 **shall** 검색 순서(이미 WHERE로 하드 제약이 적용된 안전한 후보) 상위 5~8개로 degrade하여 일반 코멘트와 함께 응답하되, 하드 제약을 위반하지 **않는다**(spec-level 결정, §9 OPEN-3에서 재검토 여지 명시).
+- **REQ-REC-062** (Unwanted): **If** `rerank` LLM 호출이 1회 재시도 후에도 실패하면, **then** the 서브그래프 **shall** 검색 순서(이미 WHERE로 하드 제약이 적용된 안전한 후보) 상위 5~9개로 degrade하여 일반 코멘트와 함께 응답하되, 하드 제약을 위반하지 **않는다**(spec-level 결정, §9 OPEN-3에서 재검토 여지 명시).
 - **REQ-REC-063** (Ubiquitous): The 서브그래프 **shall** 0건 결과를 오류가 아닌 정상 결과로 처리하며(폴백 경로), 0건을 이유로 `error` 이벤트를 emit하지 **않는다**.
 
 ### 6.10 재랭킹 견고성 (rerank robustness — 결정 14-B)
 
-노출 5~8개 소규모 리랭킹 구간의 순서 민감성·후보 외 환각·근거 속성 환각을 코드로 차단한다. 아래 요구는 모두 **결정론적 코드**이며 LLM 호출을 추가하지 않는다(§비기능 "LLM 호출 수 상한 = 최대 2회" 불변).
+노출 5~9개 소규모 리랭킹 구간의 순서 민감성·후보 외 환각·근거 속성 환각을 코드로 차단한다. 아래 요구는 모두 **결정론적 코드**이며 LLM 호출을 추가하지 않는다(§비기능 "LLM 호출 수 상한 = 최대 2회" 불변).
 
 - **REQ-REC-080** (Event-Driven): **When** `search` 후보를 `rerank` 프롬프트에 투입하기 직전, the `search`→`rerank` 경계 **shall** 후보 순서를 config 주입 셔플로 무작위화하며, 유사도순으로 나열하지 **않는다**(순서 민감성 방지 — 셔플 시드/횟수는 `core/config.py` 주입). *(지연 여유 시 셔플-병합 앙상블은 선택이며, 그 반복 횟수도 config 주입이다.)*
 - **REQ-REC-081** (Unwanted): The `rerank` 출력 검증기 **shall not** `rerank`가 출력한 `product_id` 중 검색 후보 집합(`candidates`)에 없는 ID를 노출한다 — 코드로 후보 집합과 대조하여 후보 외 ID를 제거/거부한다(후보 외 환각 차단).
 - **REQ-REC-082** (Unwanted): The `rerank` 출력 검증기 **shall not** 근거문(`rationale`)이 주장하는 속성(브랜드·평점·태그 등)을 후보 상품 데이터와의 대조 없이 노출한다 — 프롬프트 제약(REQ-REC-022) + 후보 데이터와의 결정적 사후 대조의 **2중 가드**를 적용하고, 대조 실패한 속성 주장을 제거한 뒤에만 노출한다.
-- **REQ-REC-083** (Unwanted, REQ-REC-062 보강): **If** rerank 출력 검증이 실패(후보 외 `product_id` / 형식 오류 / 속성 대조 실패)하면, **then** the 서브그래프 **shall** 이를 degrade 트리거에 포함하여 검색(SQL+pgvector) 순서 상위 5~8개로 degrade하되, 하드 제약(예: `price_max` WHERE)을 위반하지 **않는다**. 본 요구는 REQ-REC-062(LLM 오류/타임아웃 degrade)를 확장하며, 두 트리거 모두 동일한 검색-순서 degrade 경로를 공유한다.
+- **REQ-REC-083** (Unwanted, REQ-REC-062 보강): **If** rerank 출력 검증이 실패(후보 외 `product_id` / 형식 오류 / 속성 대조 실패)하면, **then** the 서브그래프 **shall** 이를 degrade 트리거에 포함하여 검색(SQL+pgvector) 순서 상위 5~9개로 degrade하되, 하드 제약(예: `price_max` WHERE)을 위반하지 **않는다**. 본 요구는 REQ-REC-062(LLM 오류/타임아웃 degrade)를 확장하며, 두 트리거 모두 동일한 검색-순서 degrade 경로를 공유한다.
 
 ### 6.11 모호 속성 라우팅 (ambiguous-attribute routing — 결정 14-B)
 
@@ -460,8 +481,8 @@ class SearchToolOutput(BaseModel):
 |---|---|---|---|
 | `decompose` 실패 (LLM 오류/타임아웃) | Haiku 호출 예외 | 최대 1회 재시도 후 `error`(`DECOMPOSE_FAILED`). search 미진행 | 필터 없이 검색 금지 |
 | `search` 실패 (DB/연결/쿼리 오류) | tool 예외 | 최대 1회 재시도 후 `error`(`SEARCH_FAILED`). 후보 날조 금지 | 존재하지 않는 상품 반환 금지 |
-| `rerank` 실패 (LLM 오류/타임아웃) | Sonnet 호출 예외 | 1회 재시도 후 검색 순서 상위 5~8개로 degrade(근거 없이 일반 코멘트) + `done`. WHERE 제약 유지 | 하드 제약(가격 상한 등) 위반 금지 |
-| `rerank` 출력 검증 실패 (후보 외 ID/형식 오류/속성 대조 실패, 결정 14-B) | 출력 검증기 코드 대조 | 검색 순서 상위 5~8개로 degrade + `done`. WHERE 제약 유지(REQ-REC-081/082/083) | 후보 외 ID·미검증 속성 주장 노출 금지, 하드 제약 위반 금지 |
+| `rerank` 실패 (LLM 오류/타임아웃) | Sonnet 호출 예외 | 1회 재시도 후 검색 순서 상위 5~9개로 degrade(근거 없이 일반 코멘트) + `done`. WHERE 제약 유지 | 하드 제약(가격 상한 등) 위반 금지 |
+| `rerank` 출력 검증 실패 (후보 외 ID/형식 오류/속성 대조 실패, 결정 14-B) | 출력 검증기 코드 대조 | 검색 순서 상위 5~9개로 degrade + `done`. WHERE 제약 유지(REQ-REC-081/082/083) | 후보 외 ID·미검증 속성 주장 노출 금지, 하드 제약 위반 금지 |
 | 0건 결과 | `total_found == 0` | 오류 아님 — 1회 완화(REQ-REC-040) → 여전히 0건이면 조건 변경 유도(`finish_reason: zero_result`) | 명시적 제약 무단 위반 금지 |
 | 스트림 중 소비자 abort | HTTP 연결 종료 | 진행 중 LLM 호출 취소, 리소스 정리 | — |
 
@@ -474,7 +495,7 @@ class SearchToolOutput(BaseModel):
 
 모든 기준은 관찰 가능/테스트 가능해야 한다. Given-When-Then 형식.
 
-- **AC-REC-01 (Case 1 해피패스)**: **Given** "아이폰 15 케이스 추천해줘"라는 질의, **When** 서브그래프가 실행되면, **Then** `case == 1`이고, Haiku 호출은 1회, `products` 이벤트가 정확히 1회 push되며, 노출 상품 수는 5~8개, 각 상품에 1문장 `rationale`이 존재한다.
+- **AC-REC-01 (Case 1 해피패스)**: **Given** "아이폰 15 케이스 추천해줘"라는 질의, **When** 서브그래프가 실행되면, **Then** `case == 1`이고, Haiku 호출은 1회, `products` 이벤트가 정확히 1회 push되며, 노출 상품 수는 5~9개, 각 상품에 1문장 `rationale`이 존재한다.
 - **AC-REC-02 (Case 2 해피패스)**: **Given** "5만원 이하 무선 이어폰"이라는 질의, **When** 실행되면, **Then** `filters.price_max == 50000`이 SQL WHERE로 적용되고, 반환된 모든 후보/노출 상품은 가격 상한 제약을 만족한다(§AC-REC-08과 연계).
 - **AC-REC-03 (Case 3 묶음 추천)**: **Given** "유럽여행 갈건데 필요한 거 다 추천해줘"라는 질의, **When** 실행되면, **Then** `case == 3`, `shopping_list`가 2개 이상 아이템으로 분해되고, 검색은 아이템별 병렬 실행되며, `products.groups`가 카테고리별로 묶여 반환되고, LLM 호출은 decompose 1회 + rerank 1회로 총 2회를 초과하지 않는다.
 - **AC-REC-04 (멀티턴 add)**: **Given** 직전 턴 `filters = {category: 무선이어폰, price_max: 50000}`, **When** "그중에 검은색만"이 입력되면, **Then** decompose 출력은 직전 필터를 유지한 채 색상 속성이 **추가**된 필터 집합(`attributes.color == "검정"`, `price_max` 유지)이다.
@@ -486,7 +507,7 @@ class SearchToolOutput(BaseModel):
 - **AC-REC-10 (휘발성 필드 미포함)**: **Given** 임의의 정상 추천 응답, **When** `products` 페이로드를 검사하면, **Then** 각 `ProductPayload`에는 `product_id`가 존재하고 현재 `price`/`stock` 권위 필드는 포함되지 않는다(소비자 오버레이 계약 준수).
 - **AC-REC-11 (SSE 이벤트 순서/유일성)**: **Given** 정상 추천, **When** SSE 스트림을 수신하면, **Then** 이벤트는 `text.delta`(0회 이상) → `products`(정확히 1회) → `done`(1회) 순서로 관찰되며, `products`는 rerank 완료 이후에만 나타난다.
 - **AC-REC-12 (decompose/search 실패 시 안전)**: **Given** decompose 또는 search가 강제 실패하도록 주입된 상태, **When** 실행되면, **Then** 각각 `error.code == DECOMPOSE_FAILED` 또는 `SEARCH_FAILED`가 emit되고, 후속 노드로 진행하거나 후보를 날조하지 않는다.
-- **AC-REC-13 (rerank 실패 degrade)**: **Given** rerank가 재시도 후에도 실패하는 상태, **When** 실행되면, **Then** 검색 순서 상위 5~8개가 응답되고 모든 하드 제약(예: `price_max`)이 유지되며 `error`가 아닌 `done`으로 종료된다.
+- **AC-REC-13 (rerank 실패 degrade)**: **Given** rerank가 재시도 후에도 실패하는 상태, **When** 실행되면, **Then** 검색 순서 상위 5~9개가 응답되고 모든 하드 제약(예: `price_max`)이 유지되며 `error`가 아닌 `done`으로 종료된다.
 - **AC-REC-14 (총액 예산 해피패스)**: **Given** "5만원 내로 유럽여행 필요한 거"라는 질의, **When** 실행되면, **Then** `filters.price_scope == "total_budget"`, `total_budget == 50000`이고, `budget.verified_sum`은 **코드가 index price로 합산한 값**이며 `budget.verified_sum <= 50000`, `budget.within_budget == true`이다.
 - **AC-REC-15 (price_scope 오판 가드)**: **Given** "각각 5만원 이하로 여행용품 추천"(per_item)과 "5만원 내로 여행용품 다 추천"(total_budget) 두 질의, **When** 각각 실행되면, **Then** 전자는 `price_scope == "per_item"`(각 상품 `price_max == 50000`), 후자는 `price_scope == "total_budget"`(묶음 합 ≤ 50000)로 서로 다르게 판별된다.
 - **AC-REC-16 (예산 불가능 투명 안내)**: **Given** 필수 아이템 최저가 합이 예산을 초과하는 total_budget 질의, **When** 실행되면, **Then** 아이템이 조용히 누락되지 않고 `budget.feasibility_notice`가 non-null이며 `budget.dropped_items`에 제외 아이템이 명시되고, `budget.within_budget == false`가 안내된다.
@@ -495,7 +516,7 @@ class SearchToolOutput(BaseModel):
 - **AC-REC-19 (후보 외 ID 미노출)**: **Given** `rerank`가 검색 후보 집합(`candidates`)에 없는 `product_id`를 하나 이상 출력하도록 주입된 상태, **When** 출력 검증이 수행되면, **Then** 후보 외 ID의 노출 수는 0이고 해당 ID는 `rerank_validation.dropped_out_of_candidate_ids`에 기록된다(REQ-REC-081).
 - **AC-REC-20 (근거 속성 대조 실패 처리)**: **Given** `rationale`이 후보 데이터와 불일치하는 속성(예: 실제와 다른 브랜드/평점)을 주장하도록 주입된 상태, **When** 결정적 속성 대조가 수행되면, **Then** 대조 실패 속성 주장은 그대로 노출되지 않고(속성 제거 또는 degrade), `rerank_validation.attr_mismatch == true`가 기록된다(REQ-REC-082).
 - **AC-REC-21 (모호 속성 라우팅)**: **Given** 확신 없는 모호 속성이 포함된 질의(예: "감성 있는 조명"의 "감성"), **When** decompose가 실행되면, **Then** 해당 모호 속성은 `price_max`류 하드 WHERE 필터로 변환되지 않고 `semantic_query`에 반영되며, 명시적 정확 제약(가격 상한·카테고리)은 여전히 `filters`(WHERE)로 남는다(REQ-REC-084, REQ-REC-003 정련).
-- **AC-REC-22 (출력 검증 실패 degrade)**: **Given** rerank 출력 검증이 실패(후보 외 ID/형식 오류/속성 대조 실패)하도록 주입된 상태, **When** 실행되면, **Then** 검색 순서 상위 5~8개가 응답되고 모든 하드 제약(예: `price_max`)이 유지되며, `rerank_validation.degraded == true`이고 `error`가 아닌 `done`으로 종료된다(REQ-REC-083, REQ-REC-062 보강).
+- **AC-REC-22 (출력 검증 실패 degrade)**: **Given** rerank 출력 검증이 실패(후보 외 ID/형식 오류/속성 대조 실패)하도록 주입된 상태, **When** 실행되면, **Then** 검색 순서 상위 5~9개가 응답되고 모든 하드 제약(예: `price_max`)이 유지되며, `rerank_validation.degraded == true`이고 `error`가 아닌 `done`으로 종료된다(REQ-REC-083, REQ-REC-062 보강).
 - **AC-REC-23 (완화 최대 라운드 config)**: **Given** `max_relaxation_rounds`가 config로 주입되고(기본 3) 여러 라운드 완화가 필요한 0건 질의, **When** 실행되면, **Then** 자동 완화 라운드 수는 주입값 이하이며 하드코딩된 "1회" 상한에 묶이지 않는다(REQ-REC-040).
 - **AC-REC-24 (수치 최소 초과분 완화)**: **Given** "5만원 이하"로 0건이 되지만 "5.3만원 이하"에서 결과가 나오는 질의(가격이 비명시·완화 대상으로 판정된 경우), **When** 수치 완화가 수행되면, **Then** 완화된 상한은 뭉뚱그린 고정 비율(±20% = 6만원)이 아니라 결과가 나오는 **최소 초과분**(예: 5.3만원)으로 계산되며, 그 근거가 관찰 가능하다(REQ-REC-045).
 - **AC-REC-25 (명시 가격 제약 제안 칩)**: **Given** 사용자가 명시(`sources["price_max"] == "user"`)한 가격 상한으로 0건이 되는 질의, **When** 실행되면, **Then** 서브그래프는 가격을 자동 완화하지 않고 `products.suggestions`에 완화 옵션 칩을 제시하며, 각 칩은 `est_count`(예상 결과 수)를 포함하고 `est_count == 0`인 칩은 목록에서 제외된다(REQ-REC-046, REQ-REC-043).
@@ -569,7 +590,7 @@ class SearchToolOutput(BaseModel):
 - **재랭킹 입력 크기**: 후보는 `Candidate`의 압축 표현(전체 `search_doc` 아님, `doc_snippet` 발췌)으로 직렬화하여 Sonnet 입력 토큰을 통제한다.
 - **Sonnet 토크나이저 보정**: Sonnet 5는 동일 텍스트 대비 ~30% 토큰 증가(결정 5) — 비용 모델링 시 `count_tokens`로 재기준.
 - **프롬프트 캐싱**: 공유 시스템 프롬프트는 프롬프트 캐싱하여 ITPM 한도에서 제외(결정 5)되도록 한다(데모 동시접속 대비).
-- **config 주입 기본값**: `top_k = 30`, 재랭킹 입력 30, 최종 노출 5~8, `max_relaxation_rounds = 3`(결정 14-D), 수치 최소 초과분 계산 임계, 근거 1문장/상품, `rank.strategy`(A=`llm`/B=`scoring`, 결정 14-C), 추천 스냅샷 로깅 활성화 — 그리고 **결정 14-E**: 총 rerank 입력 예산(예: ~40)·니즈당 `top_k` 반비례 산식(고정 30 아님)·Case 3 랭킹·선택 전략(`case3.select_strategy` = `code_per_item`[기본]/`llm_bundle_parallel`/`single_call`)·LLM 콜 상한(기본 2, 묶음 병렬 시 예 최대 4)·priority 우선 노출 임계(결정 14-H) — 전부 `core/config.py` 주입(하드코딩 금지).
+- **config 주입 기본값**: `top_k = 30`, 재랭킹 입력 30, 최종 노출 5~9, `max_relaxation_rounds = 3`(결정 14-D), 수치 최소 초과분 계산 임계, 근거 1문장/상품, `rank.strategy`(A=`llm`/B=`scoring`, 결정 14-C), 추천 스냅샷 로깅 활성화 — 그리고 **결정 14-E**: 총 rerank 입력 예산(예: ~40)·니즈당 `top_k` 반비례 산식(고정 30 아님)·Case 3 랭킹·선택 전략(`case3.select_strategy` = `code_per_item`[기본]/`llm_bundle_parallel`/`single_call`)·LLM 콜 상한(기본 2, 묶음 병렬 시 예 최대 4)·priority 우선 노출 임계(결정 14-H) — 전부 `core/config.py` 주입(하드코딩 금지).
 
 ### 안전/일관성 불변식 (must-hold)
 
