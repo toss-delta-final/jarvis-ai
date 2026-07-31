@@ -1482,6 +1482,40 @@ async def test_cart_add_autoselect_message_strips_seller_text() -> None:
     assert all(ch not in message for ch in ("\x1b", "​"))
 
 
+async def test_cart_add_autoselect_message_shows_surcharge() -> None:
+    """AI 가 대신 고른 옵션에 추가금이 있으면 안내에 밝힌다 — 되물음 문구와 같은 규칙(#114 PR 리뷰).
+
+    자동 선택은 사용자가 고를 기회 자체가 없으므로, 추가금을 숨기면 결제 단계에서야 알게 된다.
+    """
+    store = CartStateStore()
+
+    async def add_fn(req):
+        if req.option_id is None:
+            raise CartOptionRequired([CartOption(option_id=7, name="블랙", extra_price=2000)])
+        return AddToCartResult(success=True, cart_item_id=74)
+
+    events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
+
+    message = next(e for e in events if e["type"] == "action")["data"]["message"]
+    assert message == "블랙(+2,000원) 옵션으로 담았어요."
+
+
+async def test_cart_add_autoselect_message_hides_nonpositive_surcharge() -> None:
+    """추가금 0·음수(계약 미정의)는 자동 선택 안내에서도 표시하지 않는다(#114 PR 리뷰)."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        if req.option_id is None:
+            raise CartOptionRequired([CartOption(option_id=7, name="블랙", extra_price=-1000)])
+        return AddToCartResult(success=True, cart_item_id=75)
+
+    events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
+
+    message = next(e for e in events if e["type"] == "action")["data"]["message"]
+    assert message == "블랙 옵션으로 담았어요."
+    assert "+-" not in message and "1,000" not in message
+
+
 async def test_cart_add_autoselect_keeps_merge_notice() -> None:
     """자동 선택으로 담아도 기존 보유가 있으면 합산 안내를 유지한다(#114)."""
     store = CartStateStore()

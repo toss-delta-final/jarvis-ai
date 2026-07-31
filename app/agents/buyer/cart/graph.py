@@ -50,18 +50,26 @@ def cart_identity(identity) -> tuple[int | None, str | None]:
     return None, None
 
 
+def _option_label(option: CartOption) -> str:
+    """옵션 표시 라벨 — 표시명(판매자 입력이라 정제)에 추가금이 양수면 함께 붙인다. 이름 없으면 "".
+
+    extraPrice 는 api-spec §4.1 상 surcharge(≥0) — 양수만 표시. 0/음수(계약 미정의)는 미표시.
+    되물음 문구(_options_text)와 자동 선택 안내(#114)가 같은 규칙을 쓰도록 한 곳에 둔다.
+    """
+    name = _strip_unsafe(option.name)
+    if not name:
+        return ""
+    return f"{name}(+{option.extra_price:,}원)" if _has_surcharge(option) else name
+
+
+def _has_surcharge(option: CartOption) -> bool:
+    return bool(option.extra_price and option.extra_price > 0)
+
+
 def _options_text(options: list[CartOption]) -> str:
     """옵션 목록을 되물음 문구로 나열한다 — 추가금(extraPrice)이 있으면 함께 표시."""
-    parts: list[str] = []
-    for opt in options:
-        if not opt.name:
-            continue
-        # extraPrice 는 api-spec §4.1 상 surcharge(≥0) — 양수만 표시. 0/음수(계약 미정의)는 미표시.
-        if opt.extra_price and opt.extra_price > 0:
-            parts.append(f"{opt.name}(+{opt.extra_price:,}원)")
-        else:
-            parts.append(opt.name)
-    return _strip_unsafe(" / ".join(parts)) if parts else "옵션"
+    parts = [label for opt in options if (label := _option_label(opt))]
+    return " / ".join(parts) if parts else "옵션"
 
 
 def _existing_quantity(items: list[CartViewItem], product_id: int, option_id: int | None) -> int:
@@ -308,13 +316,14 @@ async def stream_cart_add(
         message = "이미 담겨 있던 상품이라 수량을 더했어요."
     else:
         message = "장바구니에 담았어요."
-    # 유일 옵션을 AI 가 대신 골랐으면 무엇으로 담았는지 밝힌다(이슈 #114). 옵션명은 판매자 입력
-    # 영향권이라 되물음 문구와 동일하게 정제한다(빈 이름이면 기본 문구 유지).
-    if auto_option is not None and (option_name := _strip_unsafe(auto_option.name)):
+    # 유일 옵션을 AI 가 대신 골랐으면 무엇으로 담았는지 밝힌다(이슈 #114). 라벨은 되물음 문구와
+    # 같은 _option_label — 추가금도 함께 알린다(자동 선택은 사용자가 고를 기회가 없었으므로 숨기면
+    # 결제 단계에서야 알게 된다, PR #211 리뷰). 이름이 비면 기본 문구를 유지한다.
+    if auto_option is not None and (option_label := _option_label(auto_option)):
         message = (
-            f"{option_name} 옵션으로 담아 수량을 더했어요."
+            f"{option_label} 옵션으로 담아 수량을 더했어요."
             if existing > 0
-            else f"{option_name} 옵션으로 담았어요."
+            else f"{option_label} 옵션으로 담았어요."
         )
     yield sse(
         "action",
