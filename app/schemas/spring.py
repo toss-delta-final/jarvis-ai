@@ -461,7 +461,10 @@ class RecommendationPush(CamelModel):
     # 목록 안 상품들이 대체재(PICK_ONE — 하나만 산다)인지 보완재(BUY_ALL — 전부 산다)인지.
     # 목록 개수는 lists 길이로 알 수 있지만 이 값은 개수로 복원할 수 없어 항상 싣는다(§4.2).
     list_type: Literal["PICK_ONE", "BUY_ALL"]
-    total_budget: int | None = None  # BUY_ALL + 예산 발화 시에만("5만원 내로" → 50000)
+    # BUY_ALL + 예산 발화 시에만("5만원 내로" → 50000). 채우는 쪽은 LLM 이 발화에서 뽑아낸
+    # 값이라 신뢰경계에서 하한을 막는다 — 예산 상한이 음수일 수는 없다(#60·#163 착수 전 예방).
+    # 상한은 두지 않는다: 과도하게 큰 값은 "제한 없음"과 같아 무해하고 가격은 BIGINT 다.
+    total_budget: int | None = Field(default=None, ge=0)
     lists: list[RecommendationListEntry] = Field(min_length=1, max_length=MAX_LISTS)
 
     @field_validator("lists")

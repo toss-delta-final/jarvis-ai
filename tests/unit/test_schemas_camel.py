@@ -248,3 +248,20 @@ def test_product_create_by_alias() -> None:
         "description": None,
         "imageUrl": None,
     }
+
+
+def test_recommendation_push_rejects_negative_total_budget() -> None:
+    """totalBudget 은 예산 상한이라 음수가 될 수 없다 (PR #212 리뷰).
+
+    지금은 그래프가 채우지 않지만(#60·#163 미착수), 채우는 쪽은 "5만원 내로" 를 LLM 이 뽑아낸
+    값이다 — 이 파일의 다른 필드처럼 신뢰경계에서 막아 둔다. 상한은 두지 않는다: 과도하게 큰
+    상한은 "제한 없음"과 같아 무해하고, 실제 가격은 BIGINT 라 자연 상한이 없다.
+    """
+    with pytest.raises(ValidationError):
+        RecommendationPush(
+            session_id="s-1",
+            recommendation_request_id="a63be350",
+            list_type="BUY_ALL",
+            total_budget=-1,
+            lists=[_entry()],
+        )
