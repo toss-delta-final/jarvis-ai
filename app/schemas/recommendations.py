@@ -1,0 +1,82 @@
+"""홈 추천 랭킹 스키마 — I-22 (api-spec §3.7, 이슈 #148).
+
+Spring → AI inbound(레인 b)라 요청은 `StrictEventModel`(extra=forbid, camelCase 전용)을 쓴다 —
+`/events/*` 와 같은 신뢰경계이고, 미지 필드를 조용히 흡수하면 계약 불일치가 은폐된다
+(lessons 2026-07-30 `extra="allow"` 은폐 사례).
+
+응답은 `CamelModel` — FastAPI 가 `response_model` 로 by_alias 직렬화한다. **알고리즘·모델 버전과
+프로필 원문은 이 스키마에 자리가 없다**(§3.7 [HARD] provenance 비노출) — 필드를 추가하면 계약 위반이다.
+"""
+
+from __future__ import annotations
+
+from typing import Literal
+
+from pydantic import Field, field_validator
+
+from app.schemas.chat import CamelModel
+from app.schemas.events import StrictEventModel
+
+_BIGINT_MAX = 2**63 - 1  # PostgreSQL BIGINT 상한 — 신원 id 범위 방어
+_CATALOG_VERSION_MAX_CHARS = 200  # 불투명 키 남용 방어(chat_key_max_chars 와 같은 취지)
+
+HomeRecommendationOutcome = Literal["PERSONALIZED", "NO_PROFILE", "INSUFFICIENT_CANDIDATES"]
+
+
+class HomeRecommendationSignals(StrictEventModel):
+    """개인화 입력 신호 (§3.7).
+
+    셋 다 선택이다 — 전부 비면 개인화 근거가 없어 `NO_PROFILE` 로 답한다(오류가 아니다).
+    `recent_purchased_product_ids` 는 **가중치가 아니라 제외 필터**다(이미 샀으므로).
+    """
+
+    recently_viewed_product_ids: list[int] = Field(default_factory=list)
+    cart_product_ids: list[int] = Field(default_factory=list)
+    recent_purchased_product_ids: list[int] = Field(default_factory=list)
+
+
+class HomeRecommendationRequest(StrictEventModel):
+    """I-22 요청 본문 (§3.7).
+
+    `sessionId` 가 **없다** — 홈에는 채팅 세션이 없고 신원은 `memberId` 만으로 충분하다.
+    미지 필드는 `extra=forbid` 가 400 으로 거부하므로 `sessionId` 를 실어 보내면 즉시 드러난다.
+    게스트는 이 API 를 호출하지 않는다(Spring 이 P-4 로 처리) — 그래서 `memberId` 는 필수다.
+    """
+
+    member_id: int = Field(strict=True, gt=0, le=_BIGINT_MAX)
+    # 최종 노출 목표 개수. FastAPI 는 Spring 의 품절 드롭에 대비해 이보다 넉넉히 반환한다.
+    limit: int = Field(strict=True, gt=0, le=1000)
+    # 후보 산출 시점 식별자(캐시 키·재현). 🔴 값 생성 주체는 미해결(C-18) — 현재는 받기만 하고
+    # 랭킹에 쓰지 않는다. AI 는 자체 카탈로그 인덱스로 순위를 매기므로 이 값에 의존하지 않는다.
+    catalog_version: str = Field(strict=True, min_length=1)
+    signals: HomeRecommendationSignals
+
+    @field_validator("catalog_version")
+    @classmethod
+    def _limit_version_length(cls, value: str) -> str:
+        if len(value) > _CATALOG_VERSION_MAX_CHARS:
+            raise ValueError("catalogVersion 이 허용 길이를 초과했습니다")
+        return value
+
+
+class HomeRecommendationItem(CamelModel):
+    """추천 1건. `position` 을 싣지 않는다 — **배열 순서가 곧 순위**다(§3.7)."""
+
+    product_id: int
+    # 카드에 표시할 이유. 근거를 못 만들었으면 null(필드 자체는 유지 — CH-5·P-5 와 같은 규칙).
+    reason: str | None = None
+
+
+class HomeRecommendationResponse(CamelModel):
+    """I-22 성공 응답 — `outcome` 3종 모두 **200** 이다 (§3.7).
+
+    cold start 는 오류가 아니다. 프로필이 없어도 200 + `outcome` 으로 답하고 **fallback 판단은
+    Spring 이** 한다. 여기에 `algorithmVersion`·`modelVersion` 을 더하면 [HARD] 위반이다.
+    """
+
+    outcome: HomeRecommendationOutcome
+    # 추천 실행 1회를 가리키는 id. 재시도하면 새 값이 발급된다(멱등 아님).
+    recommendation_request_id: str
+    # ≥128bit 무작위(I-21 과 동일 규칙) — 순번·타임스탬프 등 추측 가능한 형식 금지.
+    list_id: str
+    items: list[HomeRecommendationItem] = Field(default_factory=list)

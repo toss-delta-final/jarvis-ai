@@ -194,6 +194,22 @@ class Settings(BaseSettings):
     )
     llm_call_limit: int = 2
     relaxation_max_rounds: int = 3
+
+    # ── 홈 추천 랭킹 (I-22, api-spec §3.7 · 이슈 #148) ──
+    # 질의 벡터 = 시그널 상품 임베딩의 가중 평균. cart 는 "담기까지 갔다"는 강한 신호라 조회보다 높게,
+    # 조회는 최신일수록 높게(recency decay 를 인덱스 거듭제곱으로 적용) — §3.7 signals 표.
+    home_reco_weight_cart: float = Field(default=1.0, ge=0.0)
+    home_reco_weight_viewed: float = Field(default=0.6, ge=0.0)
+    home_reco_viewed_decay: float = Field(default=0.85, gt=0.0, le=1.0)
+    # limit 은 최종 노출 목표치 — Spring 의 품절 드롭에 대비해 이 배수만큼 넉넉히 반환한다(§3.7).
+    home_reco_overfetch_ratio: float = Field(default=2.0, ge=1.0)
+    home_reco_max_items: int = Field(default=60, gt=0)  # overfetch 절대 상한(응답 크기 방어)
+    # 이 수 미만이면 랭킹이 무의미하다고 보고 INSUFFICIENT_CANDIDATES 로 답한다(200).
+    home_reco_min_candidates: int = Field(default=5, gt=0)
+    # reason 배치 호출 상한 — P-5 예산(연결 2s/응답 3s) 안에 들어야 하므로 짧게 잡는다.
+    # 초과·실패는 reason=null 로 degrade 하며 홈 렌더를 막지 않는다.
+    home_reco_reason_timeout_s: float = Field(default=1.5, gt=0.0)
+    home_reco_reason_max_items: int = Field(default=20, ge=0)  # reason 을 만들 상위 N개
     # rating·reviewCount 등급화 경계(#171 PR#172) — 비표시 정밀값 유출 방지용으로 rerank LLM 에
     # 정확한 숫자 대신 등급만 전달할 때 쓰는 임계. 내림차순(높은 등급부터). 데모 카탈로그 실측 후 조정.
     rating_tier_excellent: float = 4.5  # ≥ → 매우높음
