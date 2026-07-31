@@ -154,7 +154,14 @@ class PgCatalogArtifactStore:
         """
         if not product_ids:
             return {}
-        with self._pool.connection() as conn:
+        # statement_timeout — top_k_by_vector 와 같은 이유(PR #213 리뷰). I-22 만이 아니라
+        # 채팅 rerank 도 이 메서드를 타므로, PK 배치 조회가 2초를 넘기는 병리 상황(예: I-17
+        # replace_all 의 테이블 락)에서 풀 커넥션이 무한정 붙잡히는 것을 모든 호출자에 대해 막는다.
+        from app.core.config import get_settings  # noqa: PLC0415 - 순환 임포트 회피(모듈 관례)
+
+        timeout_ms = int(get_settings().catalog_store_query_timeout_s * 1000)
+        with self._pool.connection() as conn, conn.transaction():
+            conn.execute(f"SET LOCAL statement_timeout = {timeout_ms}")
             rows = conn.execute(
                 f"SELECT {_SELECT_COLS} FROM products WHERE product_id = ANY(%s)", (product_ids,)
             ).fetchall()
@@ -173,50 +180,65 @@ class PgCatalogArtifactStore:
     def top_k_by_vector(
         self, query_vec: list[float], *, k: int, exclude: set[int] | None = None
     ) -> list[int]:
-        """질의 벡터에 가까운 상위 k productId — **HNSW 인덱스로 DB 에서** 정렬한다 (I-22, #148).
+        """질의 벡터에 가까운 상위 k productId — 코사인 거리(`<=>`)로 DB 에서 자른다 (I-22, #148).
 
         전량을 파이썬으로 끌어와 코사인을 도는 방식은 7,220건 기준 **p50 3.3초**로 I-22 예산
         (연결 2s/응답 3s, §3.7)을 그 자체로 초과했다. 실측 후 SQL 로 밀었다.
 
-        `<#>` (음의 내적)를 쓰는 이유는 카탈로그 HNSW 인덱스가 `vector_ip_ops` 로 만들어져 있어
-        이 연산자만 인덱스를 타기 때문이다. **임베딩이 L2 정규화돼 있으면 내적 순위 = 코사인 순위**이며
-        (`embedding.py::_l2_normalize`, `normalized` 컬럼이 그 사실을 기록한다) 정규화가 깨지면
-        순위 의미도 깨진다 — 정규화는 이 경로의 전제다.
+        **연산자는 `<=>`(코사인 거리)다** — 앱 DDL(`db/catalog/init/00_products.sql`)의 HNSW
+        인덱스가 `vector_cosine_ops` 라서다. 초기 구현은 `<#>`(내적)을 썼는데 **연산자 클래스
+        불일치로 인덱스가 이 쿼리에 절대 쓰일 수 없었다**(PR #213 리뷰 #3 검증 중 발견 —
+        enable_seqscan=off 로도 Seq Scan. "인덱스가 vector_ip_ops" 라던 구 주석은 시드 덤프가
+        만든 별개 테이블의 인덱스를 잘못 본 것). 코사인은 인메모리 구현·`vector_rank` 와 같은
+        척도라 정규화 여부와 무관하게 순위 의미가 일치한다.
 
-        동점은 `product_id` 오름차순으로 tiebreak 해 결정적이다(동일 snapshot → 동일 ranking).
-        HNSW 는 근사 탐색이지만 인덱스·질의가 같으면 같은 결과를 준다.
+        **정렬키는 거리 하나다** — `ORDER BY dist, product_id` 처럼 2차 키가 붙으면 ANN pushdown
+        이 깨져 인덱스 스캔 위에 전체 Sort 가 얹힌다(PR #213 리뷰 #3). 결정성 tiebreak 은 반환된
+        k 행을 파이썬에서 `(dist, product_id)` 로 재정렬해 유지한다 — 같은 snapshot 이면 인덱스
+        상태가 같아 k 경계도 재현된다.
 
-        **HNSW + WHERE(구매 이력 제외) 조합의 recall** — PR 리뷰 지적. HNSW 는 `ef_search` 범위만
-        그래프를 돌고 그 결과에 필터를 적용하므로, 제외 대상이 탐색 상위권에 몰리면 후보가 충분해도
-        k 개 미만이 나올 수 있다(가짜 INSUFFICIENT_CANDIDATES). 실측(2026-07-31, 7,220건)으로는
-        **재현되지 않았다** — EXPLAIN 확인 결과 이 쿼리 모양(OR + 배열 필터)에서 플래너가 Seq Scan
-        (정확 탐색)을 택해, 최근접 3,000개를 제외해도 24/24 가 나온다. 다만 카탈로그가 커져 플래너가
-        인덱스 경로로 넘어가면 지적이 유효해지므로 `SET LOCAL hnsw.iterative_scan = strict_order`
-        (pgvector ≥0.8, 현재 0.8.5)를 미리 걸어 둔다 — 필터로 k 개를 못 채우면 정확한 순서를 유지한
-        채 탐색을 이어가는 모드다. SET LOCAL 이라 풀에 반환된 커넥션에 새지 않고, Seq Scan 플랜에는
-        영향이 없다.
+        recall 방어 — HNSW 는 `ef_search` 범위만 돌고 필터를 적용하므로 제외 대상이 상위권에
+        몰리면 k 미만이 나올 수 있다(가짜 INSUFFICIENT_CANDIDATES). `iterative_scan =
+        strict_order`(pgvector ≥0.8)로 필터에 걸린 만큼 탐색을 이어가게 한다. 현 규모에선
+        플래너가 Seq Scan(정확 탐색)을 택해 어느 쪽이든 안전하다(실측: 최근접 3,000 제외에도
+        24/24).
+
+        statement_timeout — 호출측 asyncio.wait_for(504 변환)와 이중 방어다. to_thread 취소는
+        밑에서 도는 쿼리를 죽이지 못해, DB 쪽 상한이 없으면 지연 쿼리가 풀 커넥션을 계속 붙들어
+        후속 요청까지 말려든다. SET LOCAL 이라 트랜잭션 밖으로 새지 않는다.
         """
-        # statement_timeout — 호출측 asyncio.wait_for(504 변환)와 이중 방어다. to_thread 취소는
-        # 밑에서 도는 쿼리를 죽이지 못해, DB 쪽 상한이 없으면 지연 쿼리가 풀 커넥션을 계속 붙들어
-        # 후속 요청까지 말려든다(PR #213 리뷰). SET LOCAL 이라 트랜잭션 밖으로 새지 않는다.
         from app.core.config import get_settings  # noqa: PLC0415 - 순환 임포트 회피(모듈 관례)
 
-        timeout_ms = int(get_settings().home_reco_store_timeout_s * 1000)
+        timeout_ms = int(get_settings().catalog_store_query_timeout_s * 1000)
         skip = list(exclude or ())
+        qvec = Vector(query_vec)
+        # 제외 유무로 쿼리 모양을 가른다 — `(%s IS NULL OR ...)` 패턴은 플래너가 인덱스 경로를
+        # 잡기 어렵게 만든다. 술어는 단순할수록 pushdown 이 산다.
+        if skip:
+            sql = """
+                SELECT product_id, embedding <=> %s AS dist
+                FROM products
+                WHERE embedding IS NOT NULL AND product_id <> ALL(%s::bigint[])
+                ORDER BY embedding <=> %s
+                LIMIT %s
+                """
+            params: tuple = (qvec, skip, qvec, k)
+        else:
+            sql = """
+                SELECT product_id, embedding <=> %s AS dist
+                FROM products
+                WHERE embedding IS NOT NULL
+                ORDER BY embedding <=> %s
+                LIMIT %s
+                """
+            params = (qvec, qvec, k)
         with self._pool.connection() as conn, conn.transaction():
             conn.execute(f"SET LOCAL statement_timeout = {timeout_ms}")
             conn.execute("SET LOCAL hnsw.iterative_scan = strict_order")
-            rows = conn.execute(
-                """
-                SELECT product_id
-                FROM products
-                WHERE embedding IS NOT NULL
-                  AND (%s::bigint[] IS NULL OR product_id <> ALL(%s::bigint[]))
-                ORDER BY embedding <#> %s, product_id
-                LIMIT %s
-                """,
-                (skip or None, skip or None, Vector(query_vec), k),
-            ).fetchall()
+            rows = conn.execute(sql, params).fetchall()
+        # 결정적 tiebreak — 동거리(중복 상품 등)는 productId 오름차순. SQL 2차 정렬키 대신
+        # 여기서 하는 이유는 위 docstring(ANN pushdown) 참조.
+        rows.sort(key=lambda r: (r[1], r[0]))
         return [r[0] for r in rows]
 
     def get_cursor(self) -> str | None:
