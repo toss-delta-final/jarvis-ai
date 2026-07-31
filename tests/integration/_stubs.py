@@ -224,13 +224,31 @@ class SpringStub:
     # ── I-21 목록 push (§4.2, 경로 B) ──
 
     def _push(self, body: Any) -> httpx.Response:
+        """lists[] 최상위만 받는다 (§4.2 v0.17.1) — 구 평평 3필드는 400 이다.
+
+        BE 는 전환 기간에만 구 형식을 함께 수용하므로(RecommendationCallbackRequest), 이 스텁은
+        전환 완료 상태를 재현해 우리가 구 형식으로 되돌아가면 통합 테스트가 깨지게 한다(이슈 #209).
+        """
         if self.fail_push:
             return httpx.Response(500, json={"success": False, "error": {"code": "PUSH_FAILED"}})
         payload = body or {}
-        self.pushed_lists[str(payload.get("listId"))] = list(payload.get("productIds") or [])
-        return httpx.Response(
-            200, json={"success": True, "data": {"listId": payload.get("listId")}}
+        lists = payload.get("lists")
+        list_ids = [str(item.get("listId")) for item in lists] if isinstance(lists, list) else []
+        invalid = (
+            not isinstance(lists, list)
+            or not 1 <= len(lists) <= 10  # §4.2 상한
+            or len(set(list_ids)) != len(list_ids)  # 한 콜백 안 listId 중복
+            or payload.get("listType") not in ("PICK_ONE", "BUY_ALL")  # 항상 싣는다
+            or not payload.get("recommendationRequestId")
+            or "listId" in payload  # 구 평평 형식 잔재
         )
+        if invalid:
+            return httpx.Response(
+                400, json={"success": False, "error": {"code": "VALIDATION_ERROR"}}
+            )
+        for item in lists:
+            self.pushed_lists[str(item.get("listId"))] = list(item.get("productIds") or [])
+        return httpx.Response(200, json={"success": True, "data": {"listIds": list_ids}})
 
     # ── CH-5 목록 조회 (§4.3, FE→Spring) ──
 
