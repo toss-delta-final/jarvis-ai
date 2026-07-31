@@ -7,6 +7,7 @@ from collections.abc import Mapping
 import pytest
 
 from app.core.logging import safe_fingerprint
+from app.core.errors import new_request_id
 from app.core.tracing import (
     BUYER_DEGRADE_REASON_PRECEDENCE,
     FakeTraceExporter,
@@ -22,6 +23,7 @@ from app.core.tracing import (
     trace_span,
     validate_export_payload,
 )
+from app.core.tracing import _build_export_payloads, _is_opaque_identifier
 
 
 def _start_trace(factory: TraceFactory):
@@ -706,6 +708,38 @@ def test_real_pii_is_still_rejected(value: str) -> None:
         validate_export_payload({"metadata": {"model": value}})
 
 
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        # 값이 그 생성기의 산출물 모양이 아니면 면제가 붙으면 안 된다.
+        ("requestId", "010-1234-5678"),
+        ("sessionFp", "01012345678"),
+        ("threadFp", "900101-1234567"),
+        ("sessionFp", "연락처 010 1234 5678"),
+    ],
+)
+def test_opaque_key_with_non_identifier_value_is_still_scanned(key: str, value: str) -> None:
+    """면제는 **키 이름이 아니라 값의 모양**으로 결정된다 (PR #218 리뷰).
+
+    키 이름만 보면 트리 어디서든 같은 이름을 쓰는 dict 가 생기는 순간 면제가 따라붙는다.
+    """
+    with pytest.raises(UnsafeTelemetryError):
+        validate_export_payload({"metadata": {key: value}})
+
+
+@pytest.mark.parametrize("key", ["sessionFp", "threadFp", "requestId"])
+def test_opaque_metadata_keys_are_not_exempt_outside_metadata(key: str) -> None:
+    """메타데이터 문맥 밖(예: 예외 `vars()`)의 동명 키는 면제 대상이 아니다."""
+    with pytest.raises(UnsafeTelemetryError):
+        validate_export_payload({"extra": {key: "01012345678"}})
+
+
+def test_dotted_order_outside_its_shape_is_still_scanned() -> None:
+    """`dotted_order` 도 정렬 키 모양일 때만 면제된다."""
+    with pytest.raises(UnsafeTelemetryError):
+        validate_export_payload({"dotted_order": "01012345678"})
+
+
 @pytest.mark.parametrize("key", ["requestId", "sessionFp", "threadFp"])
 @pytest.mark.parametrize(
     "canary",
@@ -719,3 +753,31 @@ def test_opaque_identifier_fields_still_reject_non_numeric_canaries(key: str, ca
     """
     with pytest.raises(UnsafeTelemetryError):
         validate_export_payload({"metadata": {key: canary}})
+
+
+async def test_real_export_payload_is_recognized_as_opaque() -> None:
+    """면제 모양 정규식을 **실제 생성기 산출물에 묶는다**.
+
+    모양 기반 면제의 유일한 회귀 위험은 `_build_export_payloads`·`new_request_id`·
+    `safe_fingerprint` 가 형식을 바꿨는데 정규식이 따라가지 못하는 것이다. 그러면 면제가 조용히
+    풀려 오탐 flake 가 되돌아오는데, 확률적이라 다른 테스트로는 안 잡힌다.
+    """
+    exporter = FakeTraceExporter()
+    trace = TraceFactory(exporter=exporter, enabled=True, sampling_rate=1.0).start_request(
+        name="buyer_chat_turn",
+        request_id=new_request_id(),
+        conversation_id="session-opaque",
+        thread_id="thread-opaque",
+        lane="buyer",
+        environment="test",
+    )
+    await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+
+    payloads = _build_export_payloads(exporter.exported[0], project_name=None)
+    assert payloads
+    for payload in payloads:
+        dotted = payload["dotted_order"]
+        assert _is_opaque_identifier("dotted_order", dotted, metadata=False), dotted
+        metadata = payload["extra"]["metadata"]
+        for key in ("requestId", "sessionFp", "threadFp"):
+            assert _is_opaque_identifier(key, metadata[key], metadata=True), (key, metadata[key])

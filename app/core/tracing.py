@@ -99,16 +99,36 @@ _NUMERIC_CANARY_PATTERNS = (
 )
 _CANARY_PATTERNS = _TEXT_CANARY_PATTERNS + _NUMERIC_CANARY_PATTERNS
 
-# 서버가 만든 불투명 식별자 — **사용자 데이터가 도달할 수 없는** 필드다.
-#   dotted_order = `<타임스탬프><uuid4>` (`_build_export_payloads` 조립)
-#   requestId    = `uuid.uuid4().hex` (`app/core/errors.py::new_request_id`, 클라이언트 헤더 미수용)
-#   sessionFp/threadFp = HMAC hexdigest (`app/core/logging.py::safe_fingerprint`)
-# 이 hex 안의 숫자열이 휴대폰/주민번호 패턴과 우연히 겹쳐 **트레이스가 통째로 버려지던** 오탐의
-# 유일한 원인이라(실측 오탐률·경위는 docs/lessons.md 2026-07-31 항목) 여기서만 숫자열 카나리아를
-# 끈다. 패턴 자체의 경계를 hex 로 넓히는 방식은 쓰지 않는다 — 그러면 `userid01012345678` 처럼
-# hex 로 끝나는 흔한 단어 뒤에 붙은 **진짜 PII 까지 모든 문자열에서** 탐지를 피한다(PR #218 리뷰).
+# 서버가 만든 불투명 식별자 — **사용자 데이터가 도달할 수 없는** 필드다. 이 hex 안의 숫자열이
+# 휴대폰/주민번호 패턴과 우연히 겹쳐 **트레이스가 통째로 버려지던** 오탐의 유일한 원인이라
+# (실측 오탐률·경위는 docs/lessons.md 2026-07-31 항목) 여기서만 숫자열 카나리아를 끈다.
+#
+# 면제는 **위치 + 값의 모양**으로 결정한다. 키 이름만 보면 트리 어디서든(예: 예외의 `vars()`)
+# 같은 이름을 쓰는 dict 가 생기는 순간 면제가 따라붙고, 그 값이 해시가 아니라 원본이어도 그냥
+# 통과한다(PR #218 리뷰). 실제 그 생성기의 산출물일 때만 끄면 그 창이 닫힌다.
+#
+# 패턴 자체의 경계를 hex 로 넓히는 방식은 쓰지 않는다 — 그러면 `userid01012345678` 처럼 hex 로
+# 끝나는 흔한 단어 뒤에 붙은 **진짜 PII 까지 모든 문자열에서** 탐지를 피한다(같은 리뷰).
 # 키를 추가할 때는 "그 값이 서버 생성임을 코드로 보일 수 있는가"에 답할 수 있어야 한다.
-_OPAQUE_IDENTIFIER_KEYS = frozenset({"dotted_order", "requestId", "sessionFp", "threadFp"})
+_UUID_RE = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+
+# `extra.metadata` 문맥에서만 면제되는 키 → 그 생성기가 내는 값의 모양.
+_OPAQUE_METADATA_SHAPES = {
+    "requestId": re.compile(r"[0-9a-f]{32}"),  # errors.new_request_id: uuid4().hex
+    "sessionFp": re.compile(r"[0-9a-f]{16}"),  # logging.safe_fingerprint: HMAC hexdigest[:16]
+    "threadFp": re.compile(r"[0-9a-f]{16}"),
+}
+# run payload 최상위에서만 면제되는 키 → LangSmith 정렬 키(`<타임스탬프><uuid>` 를 `.` 로 연결).
+_OPAQUE_PAYLOAD_SHAPES = {
+    "dotted_order": re.compile(rf"\d{{8}}T\d{{12}}Z{_UUID_RE}(?:\.\d{{8}}T\d{{12}}Z{_UUID_RE})*"),
+}
+
+
+def _is_opaque_identifier(key: str, value: object, *, metadata: bool) -> bool:
+    """이 (위치, 키, 값) 이 서버 생성 불투명 식별자로 확인되면 숫자열 카나리아를 면제한다."""
+    shapes = _OPAQUE_METADATA_SHAPES if metadata else _OPAQUE_PAYLOAD_SHAPES
+    shape = shapes.get(key)
+    return bool(shape and isinstance(value, str) and shape.fullmatch(value))
 
 
 class UnsafeTelemetryError(ValueError):
@@ -122,10 +142,10 @@ def validate_export_payload(payload: object) -> None:
 
 
 def _validate_value(value: object, *, metadata: bool = False, opaque: bool = False) -> None:
-    """`opaque` 는 이 값이 서버 생성 불투명 식별자라 숫자열 카나리아를 면제한다는 뜻이다.
+    """`opaque` 는 이 값이 서버 생성 불투명 식별자로 **확인됐다**는 뜻이다(`_is_opaque_identifier`).
 
     면제는 `_NUMERIC_CANARY_PATTERNS` 에만 적용된다 — 토큰·키·이메일 카나리아는 어떤 필드에서도
-    끄지 않는다(`_OPAQUE_IDENTIFIER_KEYS` 주석 참조).
+    끄지 않는다(`_OPAQUE_METADATA_SHAPES` 주석 참조).
     """
     if isinstance(value, Mapping):
         for raw_key, nested in value.items():
@@ -142,7 +162,7 @@ def _validate_value(value: object, *, metadata: bool = False, opaque: bool = Fal
             _validate_value(
                 nested,
                 metadata=key == "metadata",
-                opaque=key in _OPAQUE_IDENTIFIER_KEYS,
+                opaque=_is_opaque_identifier(key, nested, metadata=metadata),
             )
         return
     if isinstance(value, (list, tuple)):
