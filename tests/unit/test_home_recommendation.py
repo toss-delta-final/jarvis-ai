@@ -494,6 +494,47 @@ def test_catalog_failure_message_leaks_no_upstream_detail(monkeypatch: pytest.Mo
         assert banned not in raw
 
 
+def test_store_calls_never_run_on_the_event_loop_thread(
+    monkeypatch: pytest.MonkeyPatch, store: CatalogArtifactStore
+) -> None:
+    """스토어 호출은 전부 별도 스레드에서 돈다 — pg 구현이 psycopg **동기** 드라이버라서다.
+
+    직접 부르면 쿼리가 끝날 때까지 이벤트 루프가 막혀 같은 워커의 채팅 SSE 까지 지연된다
+    (`search_service`·`category_mapping` 이 PR #42 이후 지키는 컨벤션). 인메모리 스토어는
+    블로킹을 재현하지 못하므로 **호출 스레드**를 관찰해 규약을 고정한다.
+    """
+    import asyncio as _asyncio
+
+    # 테스트 함수의 스레드와 비교하면 안 된다 — TestClient 는 이벤트 루프를 별도 portal 스레드에서
+    # 돌리므로 그 비교는 to_thread 없이도 통과한다(헛도는 테스트). **호출 스레드에 실행 중인
+    # 루프가 있는지**를 본다 — 루프 스레드에서 돌면 `get_running_loop()` 가 성공한다.
+    def on_loop_thread() -> bool:
+        try:
+            _asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+        return True
+
+    seen: dict[str, list[bool]] = {"get_many": [], "top_k": []}
+    orig_get_many, orig_top_k = store.get_many, store.top_k_by_vector
+
+    def spy_get_many(product_ids):
+        seen["get_many"].append(on_loop_thread())
+        return orig_get_many(product_ids)
+
+    def spy_top_k(query_vec, *, k, exclude=None):
+        seen["top_k"].append(on_loop_thread())
+        return orig_top_k(query_vec, k=k, exclude=exclude)
+
+    monkeypatch.setattr(store, "get_many", spy_get_many)
+    monkeypatch.setattr(store, "top_k_by_vector", spy_top_k)
+
+    assert client.post(_URL, json=_body(limit=10)).status_code == 200
+    assert seen["get_many"] and seen["top_k"], "스토어가 실제로 호출돼야 관찰이 유효하다"
+    for name, flags in seen.items():
+        assert not any(flags), f"{name} 이 이벤트 루프 스레드에서 실행됐다(블로킹)"
+
+
 def test_reason_lookup_failure_is_503_not_500(monkeypatch: pytest.MonkeyPatch) -> None:
     """`build_reasons` 도 카탈로그 I/O 다 — 여기서 터져도 500 이 아니라 503 이어야 한다.
 

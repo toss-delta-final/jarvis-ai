@@ -17,6 +17,7 @@ consolidation 이 요약을 만들 때 벡터도 함께 만들어 두고(`profil
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
@@ -258,9 +259,15 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
 
     # 카탈로그 인덱스는 **랭킹의 유일한 입력**이라 degrade 할 수 없다 — 여기가 죽으면 503 이고,
     # Spring 이 P-4 로 대체하며 fallbackReason=AI_ERROR 로 기록한다(§3.7 실패 응답표·§4.11).
+    # 스토어 호출은 전부 `asyncio.to_thread` 로 넘긴다 — `PgCatalogArtifactStore` 는 psycopg
+    # **동기** 드라이버(ConnectionPool)라 async 함수 안에서 직접 부르면 쿼리가 끝날 때까지
+    # 이벤트 루프가 통째로 막히고, 같은 워커의 채팅 SSE 스트림까지 함께 지연된다. 같은 스토어를
+    # 쓰는 `search_service`·`category_mapping` 이 PR #42 리뷰 이후 지키는 컨벤션이다.
+    # 유닛 테스트는 인메모리 스토어를 주입해 이 블로킹을 재현하지 못하므로 규약으로 지킨다.
     try:
         store = get_catalog_store()
-        query_vec = build_query_vector(
+        query_vec = await asyncio.to_thread(
+            build_query_vector,
             cart_ids=signals.cart_product_ids,
             viewed_ids=signals.recently_viewed_product_ids,
             store=store,
@@ -287,7 +294,8 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
     # 필요한 만큼만 가져온다 — overfetch 목표와 부족 판정선 중 큰 쪽. 전량을 끌어오면 예산을 넘긴다.
     want = _overfetch_size(request.limit, settings)
     try:
-        ranked = rank_candidates(
+        ranked = await asyncio.to_thread(
+            rank_candidates,
             query_vec=query_vec,
             store=store,
             exclude=exclude,
@@ -318,7 +326,8 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
     # 같은 방식으로 감싸지 않으면 여기서 난 예외가 처리되지 않은 500 으로 나가 "outcome 3종 모두
     # 200" 계약(§3.7)이 깨진다 — 같은 원인이면 같은 코드(503)로 나가야 한다.
     try:
-        reasons = build_reasons(
+        reasons = await asyncio.to_thread(
+            build_reasons,
             product_ids=top,
             store=store,
             cart_ids=signals.cart_product_ids,
