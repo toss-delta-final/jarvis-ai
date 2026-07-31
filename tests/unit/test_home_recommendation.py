@@ -417,6 +417,44 @@ def test_bad_request_is_400(bad: dict) -> None:
     assert r.json()["error"]["code"] == "BAD_REQUEST"
 
 
+@pytest.mark.parametrize(
+    "signals",
+    [
+        {"recentlyViewedProductIds": [2**63]},  # BIGINT 상한 초과 — psycopg 바인딩에서 터진다
+        {"cartProductIds": [0]},  # 양수 아님
+        {"recentPurchasedProductIds": [-1]},
+        {"cartProductIds": ["9001"]},  # 문자열 coercion 거부(strict)
+        {"recentlyViewedProductIds": list(range(1, 202))},  # 배열 길이 상한 초과
+    ],
+)
+def test_signal_ids_are_range_and_length_checked(signals: dict) -> None:
+    """시그널 id 도 memberId 와 같은 수준으로 막는다 — DB 경계에서 터지기 전에 400 으로 거절.
+
+    길이 상한이 없으면 요청당 `get_many`/`exclude` 조회 비용에 상한이 없다(리뷰 지적).
+    """
+    body = _body()
+    body["signals"] = {
+        "recentlyViewedProductIds": [],
+        "cartProductIds": [],
+        "recentPurchasedProductIds": [],
+        **signals,
+    }
+    r = client.post(_URL, json=body)
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "BAD_REQUEST"
+
+
+def test_signal_ids_at_the_length_limit_are_accepted() -> None:
+    """상한 자체는 허용한다 — 경계에서 정상 요청을 막지 않는지 확인."""
+    body = _body()
+    body["signals"] = {
+        "recentlyViewedProductIds": [9001, *range(1, 200)],
+        "cartProductIds": [],
+        "recentPurchasedProductIds": [],
+    }
+    assert client.post(_URL, json=body).status_code == 200
+
+
 def test_identity_comes_from_body_under_service_token_only() -> None:
     """레인 b 계약 — 신원은 본문 memberId 이고 인가는 서비스 토큰이 담당한다(§2.3 b).
 
@@ -454,6 +492,22 @@ def test_catalog_failure_message_leaks_no_upstream_detail(monkeypatch: pytest.Mo
     raw = client.post(_URL, json=_body()).text
     for banned in ("psycopg", "10.0.0.5", "hunter2", "OperationalError", "RuntimeError"):
         assert banned not in raw
+
+
+def test_reason_lookup_failure_is_503_not_500(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`build_reasons` 도 카탈로그 I/O 다 — 여기서 터져도 500 이 아니라 503 이어야 한다.
+
+    LLM 이 없다고 실패 여지가 없는 게 아니다. 내부 `store.get_many` 가 커넥션 장애로 터지면
+    "outcome 3종 모두 200" 계약이 처리되지 않은 500 으로 깨진다(리뷰 지적).
+    """
+
+    def _boom(**kwargs):
+        raise RuntimeError("pg-catalog down mid-request")
+
+    monkeypatch.setattr(svc, "build_reasons", _boom)
+    r = client.post(_URL, json=_body())
+    assert r.status_code == 503
+    assert r.json()["error"]["code"] == "UPSTREAM_UNAVAILABLE"
 
 
 def test_profile_store_failure_degrades_to_200(monkeypatch: pytest.MonkeyPatch) -> None:

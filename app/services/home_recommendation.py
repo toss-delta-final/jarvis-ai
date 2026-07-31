@@ -8,11 +8,11 @@
 **[HARD] provenance 비노출** — 프로필 원문·prompt·모델 식별자는 응답·로그·trace 어디에도 나가지
 않는다. 알고리즘·모델 버전은 와이어에 싣지 않는다(§3.7). 이 모듈의 로그는 유계 코드와 개수만 남긴다.
 
-**정본과의 차이 1건(의도)** — §3.7 은 시그널 임베딩을 "프로필 벡터와 가중 혼합"한다고 쓰지만, 현재
-프로필은 자연어 markdown 요약이라 벡터가 없다(`SPEC-PROFILE-001`). 프로필을 임베딩하려면 요청 경로에
-Google 임베딩 API 왕복이 하나 더 붙어 P-5 예산(연결 2s/응답 3s)을 위협한다. 그래서 **질의 벡터는
-시그널만으로 만들고**, 프로필은 reason 문장의 취향 근거로만 쓴다. 프로필 벡터가 생기면
-`_build_query_vector` 에 항을 더하는 것이 전부다(주입형 seam).
+**프로필 벡터는 미리 만들어 둔 것을 읽는다** — §3.7 대로 질의 벡터는 시그널 임베딩과 프로필 벡터의
+가중 혼합이다. 프로필은 자연어 markdown 요약이라(`SPEC-PROFILE-001`) 원래 벡터가 없었고, 요청 경로에서
+임베딩하면 Google API 왕복이 붙어 P-5 예산(연결 2s/응답 3s)을 위협한다. 그래서 sleep-time
+consolidation 이 요약을 만들 때 벡터도 함께 만들어 두고(`profile/store._embed_summary`), 여기서는
+읽어서 `build_query_vector` 에 항으로 더하기만 한다. 벡터가 없으면(구 요약·임베딩 실패) 그 항만 빠진다.
 """
 
 from __future__ import annotations
@@ -312,15 +312,23 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
     top = ranked[:want]
 
     # reason 은 미리 만들어 둔 `extras` 재료에서 **고른다** — LLM 호출 0회라 상위 N개로 제한할
-    # 이유가 없다(전 카드 대상). 실패할 여지도 없어 degrade 경로가 필요 없다.
-    reasons = build_reasons(
-        product_ids=top,
-        store=store,
-        cart_ids=signals.cart_product_ids,
-        viewed_ids=signals.recently_viewed_product_ids,
-        profile_markdown=profile_markdown,
-        settings=settings,
-    )
+    # 이유가 없다(전 카드 대상).
+    # 실패할 여지가 없는 건 **LLM 호출뿐**이다 — `build_reasons` 는 내부에서 `store.get_many` 로
+    # 카탈로그를 한 번 더 조회하므로 여전히 I/O 다(커넥션 일시 장애 등). 위 두 카탈로그 호출과
+    # 같은 방식으로 감싸지 않으면 여기서 난 예외가 처리되지 않은 500 으로 나가 "outcome 3종 모두
+    # 200" 계약(§3.7)이 깨진다 — 같은 원인이면 같은 코드(503)로 나가야 한다.
+    try:
+        reasons = build_reasons(
+            product_ids=top,
+            store=store,
+            cart_ids=signals.cart_product_ids,
+            viewed_ids=signals.recently_viewed_product_ids,
+            profile_markdown=profile_markdown,
+            settings=settings,
+        )
+    except Exception as exc:
+        logger.warning("home_reco_catalog_unavailable")
+        raise UpstreamUnavailable from exc
     return _respond(
         "PERSONALIZED",
         top,

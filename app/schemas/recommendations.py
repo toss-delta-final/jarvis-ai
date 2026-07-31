@@ -10,7 +10,7 @@ Spring → AI inbound(레인 b)라 요청은 `StrictEventModel`(extra=forbid, ca
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
 
@@ -19,6 +19,13 @@ from app.schemas.events import StrictEventModel
 
 _BIGINT_MAX = 2**63 - 1  # PostgreSQL BIGINT 상한 — 신원 id 범위 방어
 _CATALOG_VERSION_MAX_CHARS = 200  # 불투명 키 남용 방어(chat_key_max_chars 와 같은 취지)
+# 시그널 배열 길이 상한 — 요청당 조회 비용의 상한이다. Spring 버그·신뢰경계 밖 호출자가 거대한
+# 배열을 보내면 매 요청 `get_many`/`exclude` 가 그만큼 커져 I-22 예산을 위협한다.
+_SIGNAL_IDS_MAX_LEN = 200
+
+# 시그널 상품 id — `member_id` 와 같은 수준으로 방어한다. Python int 는 임의 정밀도라 Pydantic 은
+# 통과시키지만, BIGINT 를 넘는 값은 `get_many`/`top_k_by_vector` 의 psycopg 바인딩에서 터진다.
+ProductId = Annotated[int, Field(strict=True, gt=0, le=_BIGINT_MAX)]
 
 HomeRecommendationOutcome = Literal["PERSONALIZED", "NO_PROFILE", "INSUFFICIENT_CANDIDATES"]
 
@@ -28,11 +35,19 @@ class HomeRecommendationSignals(StrictEventModel):
 
     셋 다 선택이다 — 전부 비면 개인화 근거가 없어 `NO_PROFILE` 로 답한다(오류가 아니다).
     `recent_purchased_product_ids` 는 **가중치가 아니라 제외 필터**다(이미 샀으므로).
+
+    항목 값·배열 길이를 여기서 막는다 — 이 값들은 그대로 `store.get_many` 와 `top_k_by_vector` 의
+    `exclude`(`bigint[]` 캐스팅)로 흘러가므로, 범위를 넘으면 DB 경계에서 터지고 길이를 안 막으면
+    요청당 조회 비용에 상한이 없다. 스키마에서 400 으로 거절하는 편이 계약상 명확하다.
     """
 
-    recently_viewed_product_ids: list[int] = Field(default_factory=list)
-    cart_product_ids: list[int] = Field(default_factory=list)
-    recent_purchased_product_ids: list[int] = Field(default_factory=list)
+    recently_viewed_product_ids: list[ProductId] = Field(
+        default_factory=list, max_length=_SIGNAL_IDS_MAX_LEN
+    )
+    cart_product_ids: list[ProductId] = Field(default_factory=list, max_length=_SIGNAL_IDS_MAX_LEN)
+    recent_purchased_product_ids: list[ProductId] = Field(
+        default_factory=list, max_length=_SIGNAL_IDS_MAX_LEN
+    )
 
 
 class HomeRecommendationRequest(StrictEventModel):
