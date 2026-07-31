@@ -487,6 +487,13 @@ decompose 프롬프트("PRIOR_FILTERS 병합")로도 유도하지만(#10a), Haik
   동일 취지).
 - **마진은 드롭 조건이 아니라 택일 트리거**다(§4.0·§4.4). 축적된 분포로 `category_distance_max`·
   `category_select_margin_max` 를 재튜닝한다.
+- **`select_changed`(PR #188 리뷰)** — 택일이 top-1 을 교체한 표본은 `distance` 가 새로 채택된
+  후보 기준인데 `margin` 은 택일 **이전** top1 vs top2 값이라, 한 레코드의 두 숫자가 서로 다른
+  후보를 가리킨다. 위 재튜닝이 두 값의 분포에 의존하므로 `category_distance_rejected`·
+  `category_repaired`·`category_fallback_top1` 에 이 플래그를 실어 분석에서 걸러낼 수 있게 한다.
+  **margin 을 pick 기준으로 재계산하지 않는다** — margin 의 용도가 "택일을 발동시킨 애매함의
+  세기"라 발동 시점 값이어야 하고, distance 는 실제 채택값이어야 거리컷 튜닝에 쓸 수 있다.
+  둘 다 각자의 목적에는 이미 옳으므로 필요한 것은 구분 표시뿐이다.
 - **택일(§4.4) 로그**: `category_selected`(택일로 canonical 이 바뀜 — before/after·거리·마진) /
   `category_select_null`(후보 중 맞는 것 없음 → leg 드롭) / `category_select_unavailable`(LLM 미구성·
   호출 상한 초과 등으로 택일을 못 해 임베딩 top-1 유지). "맞는 후보 없음"(드롭)과 "판정 실패"

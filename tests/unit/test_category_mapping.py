@@ -877,3 +877,38 @@ async def test_select_seam_not_called_when_margin_is_thick() -> None:
     m = _FakeMapper(exact=set(), nearest={"청바지": "여성의류 > 청바지"}, hits=None)
     await m.run([CategoryQuery(None, "청바지")], select=sel, llm=object())
     assert sel.calls == []
+
+
+async def test_select_changed_sample_is_marked_downstream(caplog) -> None:
+    """[PR #188 리뷰] 택일이 top-1 을 **교체한** 표본은 하류 로그에서 구분 가능해야 한다.
+
+    교체되면 `distance` 는 새로 채택된 후보 기준인데 `margin` 은 택일 **이전** top1 vs top2 값이라,
+    한 레코드 안의 두 숫자가 서로 다른 후보를 가리킨다. §11 은 거리컷 임계 재튜닝과 택일 트리거를
+    모두 이 분포에 의존한다고 못박고 있어, 짝이 안 맞는 표본이 섞이면 분석이 오염된다.
+
+    margin 을 pick 기준으로 **재계산하지 않는** 이유: margin 의 용도는 "택일을 발동시킨 애매함의
+    세기"(트리거 임계 튜닝)라 발동 시점 값이어야 의미가 있다. distance 는 실제 채택값이어야
+    거리컷 튜닝에 쓸 수 있다 — 둘 다 각자의 목적에는 이미 옳고, 필요한 건 **구분 표시**다.
+    """
+    sel = _FakeSelector(answer="취미 > 종교용품")  # top-1('취미 > 수집용품')과 다른 후보
+    m = _FakeMapper(exact=set(), nearest={}, hits=_AMBIGUOUS)
+    with caplog.at_level("INFO"):
+        out = await m.run([CategoryQuery(None, "선물용품")], select=sel, llm=object())
+    assert out == [("취미 > 종교용품", "선물용품")]
+    rec = _record(caplog, "category_fallback_top1")
+    assert rec.select_changed is True
+    # distance 는 채택된 후보 기준, margin 은 택일 이전 값 — 그래서 구분이 필요하다
+    assert rec.distance == 0.2169
+    assert rec.margin == 0.0095
+
+
+async def test_untouched_leg_is_not_marked_as_select_changed(caplog) -> None:
+    """택일을 거치지 않은 leg 은 `select_changed=False` — distance·margin 이 같은 후보 기준이다."""
+    m = _FakeMapper(
+        exact=set(),
+        nearest={},
+        hits={"청바지": [("여성의류 > 청바지", 0.1224), ("남성의류 > 청바지", 0.19)]},
+    )
+    with caplog.at_level("INFO"):
+        await m.run([CategoryQuery(None, "청바지")])
+    assert _record(caplog, "category_fallback_top1").select_changed is False

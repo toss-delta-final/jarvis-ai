@@ -192,6 +192,12 @@ async def map_categories(
     # 거리컷이 못 막는 구멍: 추상 라벨은 거리는 가까운데(0.2074 < 컷) 뜻이 틀리다. 마진으로는
     # 잡히지만 마진 드롭은 '양말'(1·2위 둘 다 정답)을 오탐하므로 드롭이 아니라 **택일**한다.
     select_dropped: set[int] = set()  # 택일이 "맞는 후보 없음"을 낸 leg → canonical 없이 드롭
+    # 택일이 top-1 을 **교체한** leg (PR #188 리뷰). 교체되면 하류 로그의 distance 는 새 후보
+    # 기준인데 margin 은 택일 이전 top1 vs top2 값이라 **두 숫자가 서로 다른 후보를 가리킨다**.
+    # margin 을 pick 기준으로 재계산하지 않는 이유: margin 의 용도가 "택일을 발동시킨 애매함의
+    # 세기"(트리거 임계 튜닝, §11)라 발동 시점 값이어야 하고, distance 는 실제 채택값이어야
+    # 거리컷 튜닝에 쓸 수 있다 — 둘 다 각자의 목적에는 옳으므로 필요한 건 **구분 표시**다.
+    select_changed: set[int] = set()
     ambiguous = [
         i
         for i in sorted(nearest)
@@ -274,6 +280,9 @@ async def map_categories(
                     "category_select_unavailable", extra={"reason": "off_candidate", "pick": pick}
                 )
                 continue
+            changed = pick != top1
+            if changed:
+                select_changed.add(i)  # 하류 로그의 distance·margin 기준 불일치 표시(§11)
             # 교체가 없어도(top-1 확정) 남긴다 — "택일이 돌아 확정했다"와 "트리거가 안 됐다"를
             # 사후에 구분할 수 없으면 트리거 임계를 재튜닝할 근거가 사라진다(§11).
             logger.info(
@@ -281,7 +290,7 @@ async def map_categories(
                 extra={
                     "top1": top1,
                     "canonical": pick,
-                    "changed": pick != top1,
+                    "changed": changed,
                     "distance": chosen,
                     "margin": margin,
                     "anchor_kind": kind,
@@ -315,6 +324,8 @@ async def map_categories(
                     "margin": picked[2],
                     "anchor_kind": picked[3],
                     "threshold": distance_max,
+                    # True 면 distance 는 택일이 고른 후보, margin 은 택일 이전 top1 기준이다
+                    "select_changed": i in select_changed,
                 },
             )
             continue
@@ -335,6 +346,9 @@ async def map_categories(
                     "distance": distance,
                     "margin": margin,
                     "anchor_kind": anchor_kind,
+                    # True 면 distance 는 택일이 고른 후보, margin 은 택일 이전 top1 기준이라
+                    # 두 값을 함께 쓰는 분포 분석에서 제외하거나 따로 봐야 한다(§11).
+                    "select_changed": i in select_changed,
                 },
             )
             result.append((canonical, qtexts[i]))
