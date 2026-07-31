@@ -118,10 +118,16 @@ class SessionLifecycleCoordinator:
                     await repository._resolve_authoritative_conflict(uow.conn, context)
                     outcome_name = "duplicate"
                 else:
+                    # finalizing 게이트에는 legacy_backfill 예외를 두지 않는다. 아래 conflict
+                    # 검사들의 예외는 마이그레이션 과도기 owner/terminal 불일치를 관용하려는
+                    # 것이지만, idle_finalizing 은 소유권 문제가 아니라 진행 중인 정리 작업의
+                    # 불변식이다. claim_expired_contexts 는 authority_source 를 거르지 않아
+                    # legacy_backfill row 도 idle_finalizing 으로 전이되므로 이 경로는 도달
+                    # 가능하고, 통과시키면 api-spec 의 "idle_finalizing 중 claim 은 409" 가
+                    # 과도기 row 에서만 조용히 깨진다.
                     if context is not None and context.state == "idle_finalizing":
-                        if snapshot.authority_source != "legacy_backfill":
-                            outcome_name = "finalizing"
-                            raise SessionFinalizing
+                        outcome_name = "finalizing"
+                        raise SessionFinalizing
                     if (
                         snapshot.history is not None
                         or (
@@ -194,12 +200,15 @@ class SessionLifecycleCoordinator:
         claim = outcome.claim
         while claim is not None:
             transient = await self.process_terminal_transient(claim)
-            if transient.status == "skipped" and transient.skip_reason == "active":
-                await registry.wait_for_scope_idle(str(user_id), session_id)
-                claim = (await repository.begin_terminal(user_id, session_id)).claim
-                continue
-            if transient.status == "skipped" and transient.skip_reason == "invalid":
-                claim = (await repository.begin_terminal(user_id, session_id)).claim
+            if transient.status == "skipped" and transient.skip_reason in ("active", "invalid"):
+                if transient.skip_reason == "active":
+                    await registry.wait_for_scope_idle(str(user_id), session_id)
+                # 재조회 결과로 outcome 까지 갱신한다. claim 만 받아오면, lease 가 아직
+                # 살아있어 begin_terminal 이 (claim=None, duplicate=True) 를 돌려줄 때
+                # 루프가 조용히 끝나고 최초의 stale outcome(duplicate=False)이 반환된다 —
+                # transient 정리를 한 번도 끝내지 못했는데 I-20 이 "accepted" 로 응답한다.
+                outcome = await repository.begin_terminal(user_id, session_id)
+                claim = outcome.claim
                 continue
             if transient.status != "completed":
                 return outcome

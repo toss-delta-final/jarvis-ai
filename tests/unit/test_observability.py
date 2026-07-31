@@ -1000,6 +1000,45 @@ async def test_observation_stores_and_logs_committed_buyer_context(
     assert record["contextFp"] == identifier_fingerprint(observation.context_id)
 
 
+async def test_seller_observation_fingerprints_int_brand_id(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """운영 JWKS 판매자 경로의 brandId 는 int 다(auth.py `type is int` 강제).
+
+    지문 계산 전 str() 캐스팅이 빠지면 safe_fingerprint 의 `.encode` 에서 AttributeError 가
+    나고, 그 예외가 chat_request 구조화 로그와 trace.finish() 앞에서 터져 판매자 채널의
+    관측이 매 요청 조용히 사라진다(호출부가 예외를 삼켜 SSE 는 정상으로 보인다).
+    """
+    store = await get_conversation_store()
+    observation = start_observation(
+        request_id="seller-int-brand",
+        identity=Identity(
+            user_id="7",
+            is_guest=False,
+            seller_id="7",
+            brand_id=3,
+            subject="7",
+        ),
+        conversation_id="seller-session",
+        thread_id="seller-thread",
+        message="질문",
+        store=store,
+        now=0.0,
+    )
+
+    await observation.commit_user_message()
+    with caplog.at_level(logging.INFO, logger="observability"):
+        await observation.finish(1.0, TurnStatus.COMPLETED)
+
+    record = next(
+        json.loads(item.getMessage())
+        for item in caplog.records
+        if item.name == "observability" and item.getMessage().startswith("{")
+    )
+    assert record["brandFp"] == identifier_fingerprint("3")
+    assert record["brandFp"] not in ("3", 3)
+
+
 async def test_seller_style_observation_logs_null_context(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

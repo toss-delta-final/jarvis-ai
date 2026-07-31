@@ -101,7 +101,9 @@ class RequestObservation:
     conversation_id: str
     thread_id: str | None
     user_id: str | None
-    brand_id: str | None
+    # Identity.brand_id 와 같은 계약 — JWKS 판매자 경로는 int 를 강제하고(auth.py `type is int`)
+    # 관용 경로는 문자열도 통과시킨다. 지문 계산 전 str() 캐스팅이 반드시 필요하다.
+    brand_id: str | int | None
     role: str
     store: ConversationStoreProtocol
     message_length: int
@@ -211,7 +213,11 @@ class RequestObservation:
         identity_fields = (
             {
                 "sellerFp": identifier_fingerprint(self.user_id),
-                "brandFp": identifier_fingerprint(self.brand_id),
+                "brandFp": (
+                    identifier_fingerprint(str(self.brand_id))
+                    if self.brand_id is not None
+                    else None
+                ),
             }
             if self.role == "seller"
             else {"ownerFp": identifier_fingerprint(self.user_id)}

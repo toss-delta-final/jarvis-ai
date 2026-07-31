@@ -900,6 +900,23 @@ class SessionContextRepository:
             elif row[2] != "guest" or row[3] != guest_id:
                 raise SessionClaimConflict
             else:
+                # 재활성화(resolve_touch_register_on_connection)와 같은 순서를 지킨다 —
+                # generation 을 올리기 전에 현재 세대의 진행 중 idle finalization 을 먼저
+                # superseded 로 닫는다. 이 단계를 건너뛰면 row 는 이전 세대에 남고 context 는
+                # 다음 세대로 가서, claim_expired_contexts(c.generation=f.generation)와
+                # claim_recoverable_finalizations(state IN idle_finalizing/terminal) 어느
+                # 재수집 경로에도 걸리지 않는 고아가 된다.
+                await conn.execute(
+                    """
+                    UPDATE chat_session_finalizations
+                    SET status='superseded', claim_token=NULL, lease_expires_at=NULL,
+                        superseded_at=now(), updated_at=now()
+                    WHERE context_id=%s AND generation=%s AND reason='idle'
+                      AND status <> 'superseded'
+                      AND transient_status='pending'
+                    """,
+                    (row[0], row[4]),
+                )
                 row = await (
                     await conn.execute(
                         """
@@ -1327,6 +1344,12 @@ class SessionContextRepository:
                 (context.context_id, context.generation),
             )
         ).fetchone()
+        # 세대 범위를 일부러 걸지 않는다 — 세션 종료는 이 context 의 모든 세대 idle
+        # finalization 을 흡수한다. 상속(inherited_row)은 같은 세대만 보지만, 상속이
+        # 없으면 terminal 이 Phase A 에서 **현재** watermark 를 새로 캡처하므로
+        # (session_lifecycle `already_prepared` 분기) 이전 세대의 pending profile 작업은
+        # 누적 버퍼째 terminal 스냅샷에 포함된다. 세대를 걸면 같은 구간이 두 번 처리된다.
+        # 계약 고정: test_terminal_supersedes_previous_generation_completed_idle
         await conn.execute(
             """
             UPDATE chat_session_finalizations
