@@ -101,6 +101,9 @@ async def map_categories(
     k = settings.category_top_k
     fanout_max = settings.category_fanout_max
     distance_max = settings.category_distance_max  # 초과 시 leg 드롭(§4 #115)
+    # 거리컷 마진 예외(§4.5 #115) — 튜너블은 **여기서 한 번에** 읽는다. 결과 루프 안에서 읽으면
+    # 설정 하나가 어긋났을 때 이미 확정된 leg 까지 함께 날아간다(PR #188 리뷰).
+    override_margin = settings.category_distance_override_margin
     # 미주입 기본값은 질의(query) 임베딩 — 앵커(raw 추측·leg query)는 질의 쪽이므로 비대칭 검색
     # 관례에 맞춰 RETRIEVAL_QUERY 로 바인딩한다(문서 쪽 category_seed=document, 이슈 #65·PR #73 리뷰).
     embed = embed or functools.partial(_embed_texts, task_type=settings.embedding_task_query)
@@ -198,107 +201,121 @@ async def map_categories(
     # 세기"(트리거 임계 튜닝, §11)라 발동 시점 값이어야 하고, distance 는 실제 채택값이어야
     # 거리컷 튜닝에 쓸 수 있다 — 둘 다 각자의 목적에는 옳으므로 필요한 건 **구분 표시**다.
     select_changed: set[int] = set()
-    ambiguous = [
-        i
-        for i in sorted(nearest)
-        if nearest[i][1] <= distance_max  # 거리컷 통과분만(멀면 이미 버릴 leg)
-        and nearest[i][2] is not None  # 마진 None(히트 1건) = 비교 대상 없음 → 트리거 아님
-        and nearest[i][2] <= settings.category_select_margin_max
-    ]
-    # 사유는 leg 당 하나여야 한다(PR #188 리뷰) — llm 미구성을 먼저 처리하지 않으면 상한 초과분이
-    # "max_calls"(사실 아님) + "llm_unavailable" 로 이중 기록돼 관측 목적을 스스로 훼손한다.
-    targets: list[int] = []
-    if llm is None:  # LLM 미구성 — 매핑을 LLM 에 종속시키지 않는다(전 leg top-1 유지)
-        for i in ambiguous:
-            # margin 을 함께 남긴다 — 이 이벤트의 용도가 마진 분포 기반 임계 재튜닝(§11)이라
-            # 사유별로 payload 가 다르면 그 사유의 표본이 분석에서 빠진다.
-            logger.info(
-                "category_select_unavailable",
-                extra={
-                    "reason": "llm_unavailable",
-                    "canonical": nearest[i][0],
-                    "margin": nearest[i][2],
-                },
-            )
-    else:
-        # 턴당 상한 — fan-out 전 leg 이 애매하면 LLM 이 폭증한다. 초과분은 top-1 유지(종전 동작).
-        # 예산은 **마진이 작은(가장 애매한) leg 부터** 쓴다(PR #188 리뷰) — 애매함의 판정 기준이
-        # 마진인데 배분을 leg 인덱스로 하면 코드 안에서 기준이 어긋나, 마진 0.002 가 검증 없이
-        # top-1 로 남고 컷 턱걸이 0.019 가 예산을 먹는 역전이 생긴다. `legs[0]` 이 대표 카테고리
-        # (칩·멀티턴 승계)라 "눈에 띄는 것 먼저"라는 명분도 있으나, 애매함이 큰 leg 을 방치하면
-        # 틀린 카테고리로 검색이 좁혀지는 손해가 대표 여부와 무관하게 발생한다. 대표 leg 이 정말
-        # 애매하면 마진도 작아 우선순위를 자연히 얻는다. 동률은 leg 인덱스 순(정렬 안정성).
-        max_calls = settings.category_select_max_calls
-        ambiguous.sort(key=lambda i: nearest[i][2])
-        for i in ambiguous[max_calls:]:
-            logger.info(
-                "category_select_unavailable",
-                extra={"reason": "max_calls", "canonical": nearest[i][0], "margin": nearest[i][2]},
-            )
-        targets = ambiguous[:max_calls]
-    if targets:
-        picks = await asyncio.gather(
-            *(
-                select_category(
-                    llm,
-                    # 발화 + 앵커를 둘 다 싣는다 — 발화만 주면 멀티 leg 이 같은 질문을 받아 leg
-                    # 정체성이 사라지고, 앵커만 주면 '선물용품' 같은 라벨은 판단 근거가 없다(§4.4).
-                    query=f"{utterance} / 찾는 상품: {anchor_by_leg[i]}",
-                    candidates=[c for c, _ in candidates_by_leg[i]],
-                    tier=tier,
-                    # 관측(§6.3)은 모델을 실제로 부르는 select 안에서 한다 — 여기서 기록하면
-                    # LLM 을 쓰지 않는 대체 구현에도 유령 호출이 남는다(PR #188 리뷰).
-                    settings=settings,
-                    observer=observer,
-                )
-                for i in targets
-            ),
-            return_exceptions=True,
-        )
-        for i, pick in zip(targets, picks, strict=True):
-            top1, _dist, margin, kind = nearest[i]
-            if isinstance(pick, Exception):
-                # 판정 실패는 "맞는 후보 없음"과 다르다 — 인프라 실패로 카테고리를 잃으면 후퇴이므로
-                # 임베딩 top-1 을 유지한다(§4.4 실패 degrade).
+    # 이 단계 전체를 격리한다(PR #188 리뷰) — LLM 호출은 gather(return_exceptions=True) 로 이미
+    # 막혀 있지만 그 앞뒤의 순수 파이썬 로직(설정 접근·마진 필터·정렬·상한)은 어떤 try 에도 안
+    # 감싸여 있었다. 여기서 예외가 나면 map_categories 가 통째로 던지고 호출부(graph)가
+    # `category_legs = []` 로 만들어 **exact 매치와 이미 성공한 임베딩 top-1 까지 전부 버린다** —
+    # 이 함수가 표방한 "실패는 leg 단위로 격리" 원칙(docstring (5))이 §4.4 추가로 깨져 있었다.
+    # 실패 시 택일만 건너뛰고 전 leg 이 임베딩 top-1 을 유지한다(llm 미구성 경로와 동일 degrade).
+    try:
+        ambiguous = [
+            i
+            for i in sorted(nearest)
+            if nearest[i][1] <= distance_max  # 거리컷 통과분만(멀면 이미 버릴 leg)
+            and nearest[i][2] is not None  # 마진 None(히트 1건) = 비교 대상 없음 → 트리거 아님
+            and nearest[i][2] <= settings.category_select_margin_max
+        ]
+        # 사유는 leg 당 하나여야 한다(PR #188 리뷰) — llm 미구성을 먼저 처리하지 않으면 상한 초과분이
+        # "max_calls"(사실 아님) + "llm_unavailable" 로 이중 기록돼 관측 목적을 스스로 훼손한다.
+        targets: list[int] = []
+        if llm is None:  # LLM 미구성 — 매핑을 LLM 에 종속시키지 않는다(전 leg top-1 유지)
+            for i in ambiguous:
+                # margin 을 함께 남긴다 — 이 이벤트의 용도가 마진 분포 기반 임계 재튜닝(§11)이라
+                # 사유별로 payload 가 다르면 그 사유의 표본이 분석에서 빠진다.
                 logger.info(
                     "category_select_unavailable",
-                    extra={"reason": str(pick), "canonical": top1, "margin": margin},
+                    extra={
+                        "reason": "llm_unavailable",
+                        "canonical": nearest[i][0],
+                        "margin": nearest[i][2],
+                    },
                 )
-                continue
-            if pick is None:
+        else:
+            # 턴당 상한 — fan-out 전 leg 이 애매하면 LLM 이 폭증한다. 초과분은 top-1 유지(종전 동작).
+            # 예산은 **마진이 작은(가장 애매한) leg 부터** 쓴다(PR #188 리뷰) — 애매함의 판정 기준이
+            # 마진인데 배분을 leg 인덱스로 하면 코드 안에서 기준이 어긋나, 마진 0.002 가 검증 없이
+            # top-1 로 남고 컷 턱걸이 0.019 가 예산을 먹는 역전이 생긴다. `legs[0]` 이 대표 카테고리
+            # (칩·멀티턴 승계)라 "눈에 띄는 것 먼저"라는 명분도 있으나, 애매함이 큰 leg 을 방치하면
+            # 틀린 카테고리로 검색이 좁혀지는 손해가 대표 여부와 무관하게 발생한다. 대표 leg 이 정말
+            # 애매하면 마진도 작아 우선순위를 자연히 얻는다. 동률은 leg 인덱스 순(정렬 안정성).
+            max_calls = settings.category_select_max_calls
+            ambiguous.sort(key=lambda i: nearest[i][2])
+            for i in ambiguous[max_calls:]:
                 logger.info(
-                    "category_select_null",
-                    extra={"raw": raws[i], "query": qtexts[i], "top1": top1, "margin": margin},
+                    "category_select_unavailable",
+                    extra={
+                        "reason": "max_calls",
+                        "canonical": nearest[i][0],
+                        "margin": nearest[i][2],
+                    },
                 )
-                select_dropped.add(i)
-                continue
-            chosen = {c: d for c, d in candidates_by_leg[i]}.get(pick)
-            if chosen is None:
-                # 후보 밖 값(주입 fake·환각) — select_category 의 membership 가드가 이미 막지만
-                # 주입형 seam 이라 방어한다. 미검증 값을 canonical 로 내보내지 않고 top-1 유지.
-                logger.warning(
-                    "category_select_unavailable", extra={"reason": "off_candidate", "pick": pick}
-                )
-                continue
-            changed = pick != top1
-            if changed:
-                select_changed.add(i)  # 하류 로그의 distance·margin 기준 불일치 표시(§11)
-            # 교체가 없어도(top-1 확정) 남긴다 — "택일이 돌아 확정했다"와 "트리거가 안 됐다"를
-            # 사후에 구분할 수 없으면 트리거 임계를 재튜닝할 근거가 사라진다(§11).
-            logger.info(
-                "category_selected",
-                extra={
-                    "top1": top1,
-                    "canonical": pick,
-                    "changed": changed,
-                    "distance": chosen,
-                    "margin": margin,
-                    "anchor_kind": kind,
-                },
+            targets = ambiguous[:max_calls]
+        if targets:
+            picks = await asyncio.gather(
+                *(
+                    select_category(
+                        llm,
+                        # 발화 + 앵커를 둘 다 싣는다 — 발화만 주면 멀티 leg 이 같은 질문을 받아 leg
+                        # 정체성이 사라지고, 앵커만 주면 '선물용품' 같은 라벨은 판단 근거가 없다(§4.4).
+                        query=f"{utterance} / 찾는 상품: {anchor_by_leg[i]}",
+                        candidates=[c for c, _ in candidates_by_leg[i]],
+                        tier=tier,
+                        # 관측(§6.3)은 모델을 실제로 부르는 select 안에서 한다 — 여기서 기록하면
+                        # LLM 을 쓰지 않는 대체 구현에도 유령 호출이 남는다(PR #188 리뷰).
+                        settings=settings,
+                        observer=observer,
+                    )
+                    for i in targets
+                ),
+                return_exceptions=True,
             )
-            # 택일 결과에도 거리컷을 다시 적용한다(아래 result 루프) — top-k 안에서 골랐어도 top-1
-            # 보다 먼 후보일 수 있고("선물용품" → 독서용품 0.2292), 그건 "가까운 칸이 없다"는 뜻이다.
-            nearest[i] = (pick, chosen, margin, kind)
+            for i, pick in zip(targets, picks, strict=True):
+                top1, _dist, margin, kind = nearest[i]
+                if isinstance(pick, Exception):
+                    # 판정 실패는 "맞는 후보 없음"과 다르다 — 인프라 실패로 카테고리를 잃으면 후퇴이므로
+                    # 임베딩 top-1 을 유지한다(§4.4 실패 degrade).
+                    logger.info(
+                        "category_select_unavailable",
+                        extra={"reason": str(pick), "canonical": top1, "margin": margin},
+                    )
+                    continue
+                if pick is None:
+                    logger.info(
+                        "category_select_null",
+                        extra={"raw": raws[i], "query": qtexts[i], "top1": top1, "margin": margin},
+                    )
+                    select_dropped.add(i)
+                    continue
+                chosen = {c: d for c, d in candidates_by_leg[i]}.get(pick)
+                if chosen is None:
+                    # 후보 밖 값(주입 fake·환각) — select_category 의 membership 가드가 이미 막지만
+                    # 주입형 seam 이라 방어한다. 미검증 값을 canonical 로 내보내지 않고 top-1 유지.
+                    logger.warning(
+                        "category_select_unavailable",
+                        extra={"reason": "off_candidate", "pick": pick},
+                    )
+                    continue
+                changed = pick != top1
+                if changed:
+                    select_changed.add(i)  # 하류 로그의 distance·margin 기준 불일치 표시(§11)
+                # 교체가 없어도(top-1 확정) 남긴다 — "택일이 돌아 확정했다"와 "트리거가 안 됐다"를
+                # 사후에 구분할 수 없으면 트리거 임계를 재튜닝할 근거가 사라진다(§11).
+                logger.info(
+                    "category_selected",
+                    extra={
+                        "top1": top1,
+                        "canonical": pick,
+                        "changed": changed,
+                        "distance": chosen,
+                        "margin": margin,
+                        "anchor_kind": kind,
+                    },
+                )
+                # 택일 결과에도 거리컷을 다시 적용한다(아래 result 루프) — top-k 안에서 골랐어도 top-1
+                # 보다 먼 후보일 수 있고("선물용품" → 독서용품 0.2292), 그건 "가까운 칸이 없다"는 뜻이다.
+                nearest[i] = (pick, chosen, margin, kind)
+    except Exception as exc:  # noqa: BLE001 - 택일 단계 실패: 전 leg 이 임베딩 top-1 을 유지한다
+        logger.warning("category_select_stage_failed", extra={"reason": str(exc)})
 
     result: list[tuple[str, str | None]] = []
     for i, r in enumerate(raws):
@@ -316,7 +333,7 @@ async def map_categories(
             picked
             and picked[1] > distance_max
             and picked[2] is not None
-            and picked[2] >= settings.category_distance_override_margin
+            and picked[2] >= override_margin
         ):
             logger.info(
                 "category_distance_override",

@@ -934,7 +934,9 @@ async def test_far_but_confident_leg_is_kept(caplog) -> None:
     m = _FakeMapper(
         exact=set(),
         nearest={},
-        hits={"돼지 등뼈": [("축산 > 돼지고기", 0.2661), ("냉장/냉동식품 > 햄/소시지/베이컨", 0.3465)]},
+        hits={
+            "돼지 등뼈": [("축산 > 돼지고기", 0.2661), ("냉장/냉동식품 > 햄/소시지/베이컨", 0.3465)]
+        },
     )
     with caplog.at_level("INFO"):
         out = await m.run([CategoryQuery(None, "돼지 등뼈")])
@@ -993,3 +995,32 @@ async def test_select_null_leg_logs_exactly_one_drop_reason(caplog) -> None:
     assert "category_select_null" in msgs  # 실제 드롭 사유는 이것 하나뿐
     assert "category_distance_override" not in msgs
     assert "category_distance_rejected" not in msgs
+
+
+async def test_select_stage_failure_keeps_confirmed_legs(caplog) -> None:
+    """[PR #188 리뷰] §4.4 택일 단계가 통째로 실패해도 **이미 확정된 leg 은 살아남는다**.
+
+    LLM 호출은 `gather(return_exceptions=True)` 로 격리돼 있지만, 그 앞뒤의 순수 파이썬 로직
+    (설정 접근·마진 필터링·정렬·상한 처리)은 어떤 try 에도 안 감싸여 있었다. 여기서 예외가 나면
+    `map_categories` 전체가 던지고, 호출부(graph)의 `except` 가 `category_legs = []` 로 만들어
+    **exact 매치와 이미 성공한 임베딩 top-1 까지 전부 버린 채** 그 턴을 무필터로 강등시킨다 —
+    이 함수가 docstring 으로 표방한 "실패는 leg 단위로 격리, exact 는 임베딩 실패와 무관하게 보존"
+    원칙이 §4.4 추가로 깨져 있었다.
+
+    실제로 밟은 경로다: `category_distance_override_margin` 을 추가했을 때 그 필드가 없는 설정
+    객체에서 `AttributeError` 가 나 전 leg 이 사라졌다.
+    """
+    # category_select_max_calls 가 없는 설정 — §4.4 블록 진입 후 AttributeError
+    broken = _settings()
+    del broken.category_select_max_calls
+    m = _FakeMapper(exact={"PC부품 > CPU"}, nearest={}, hits=_AMBIGUOUS)
+    with caplog.at_level("WARNING"):
+        out = await m.run(
+            [CategoryQuery("PC부품 > CPU", "cpu"), CategoryQuery(None, "선물용품")],
+            settings=broken,
+            select=_FakeSelector(answer="취미 > 종교용품"),
+            llm=object(),
+        )
+    # exact 매치는 보존되고, 택일 대상 leg 은 임베딩 top-1 로 degrade 한다(드롭 아님)
+    assert out == [("PC부품 > CPU", "cpu"), ("취미 > 수집용품", "선물용품")]
+    assert any(r.msg == "category_select_stage_failed" for r in caplog.records)
