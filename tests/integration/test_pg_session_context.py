@@ -23,6 +23,7 @@ from app.core.config import get_settings
 from app.core.conversation import conversation_key
 from app.core.session_context import (
     BuyerSessionInput,
+    FinalizationClaim,
     SessionClaimConflict,
     SessionContextRepository,
     SessionContextUnitOfWork,
@@ -153,6 +154,16 @@ class _CommitFaultPool:
     async def connection(self):
         async with self._pool.connection() as conn:
             yield _CommitFaultConnection(conn)
+
+
+def _own_claim(claims: list[FinalizationClaim], session_id: str) -> FinalizationClaim:
+    """공유 DB에서는 다른 테스트가 남긴 만료 컨텍스트도 같은 sweep에 딸려온다.
+
+    전역 claim 결과를 그대로 언패킹하면 실행 순서에 따라 간헐 실패하므로,
+    자기 세션이 만든 claim만 골라 검증 대상으로 삼는다.
+    """
+    [own] = [claim for claim in claims if claim.session_id == session_id]
+    return own
 
 
 async def _seed_v2_state(store, key: str, label: str) -> None:  # noqa: ANN001
@@ -2511,7 +2522,7 @@ async def test_terminal_supersedes_previous_generation_completed_idle(pg_repo) -
             "WHERE context_id=%s",
             (context.context_id,),
         )
-    [idle] = await repo.claim_expired_contexts(10, 30, 10)
+    idle = _own_claim(await repo.claim_expired_contexts(10, 30, 100), session_id)
     async with repo.lock_session(session_id) as uow:
         await uow.prepare_idle_finalizing(idle)
         await uow.capture_profile_watermark(idle, 0)
@@ -2980,7 +2991,7 @@ async def test_touch_serializes_after_idle_claim_and_rejects_stale_claim(
     monkeypatch.setattr(session_context_module, "_advisory_lock", blocking_lock)
     touch_task = asyncio.create_task(repo.touch(BuyerSessionInput(session_id, "T2", "guest", "G1")))
     await lock_acquired.wait()
-    [claim] = await repo.claim_expired_contexts(10, 30, 10)
+    claim = _own_claim(await repo.claim_expired_contexts(10, 30, 100), session_id)
     release_touch.set()
     touched = await touch_task
 
@@ -3053,7 +3064,7 @@ async def test_recoverable_finalization_competition_has_single_token_winner(pg_r
             "WHERE context_id=%s",
             (context.context_id,),
         )
-    [first] = await repo.claim_expired_contexts(10, 30, 10)
+    first = _own_claim(await repo.claim_expired_contexts(10, 30, 100), session_id)
     await repo.mark_idle_finalizing(first)
     async with pool.connection() as conn:
         await conn.execute(
@@ -3095,7 +3106,7 @@ async def test_profile_list_then_competing_claim_has_single_cas_winner(pg_repo) 
             "WHERE context_id=%s",
             (context.context_id,),
         )
-    [idle] = await repo.claim_expired_contexts(10, 30, 10)
+    idle = _own_claim(await repo.claim_expired_contexts(10, 30, 100), session_id)
     async with repo.lock_session(session_id) as uow:
         await uow.prepare_idle_finalizing(idle)
         await uow.capture_profile_watermark(idle, 0)
@@ -3244,7 +3255,7 @@ async def test_terminal_recovery_ignores_superseded_idle_batch_row(pg_repo, monk
             "WHERE context_id=%s",
             (context.context_id,),
         )
-    [idle] = await repo.claim_expired_contexts(10, 30, 10)
+    idle = _own_claim(await repo.claim_expired_contexts(10, 30, 100), session_id)
     terminal = await repo.begin_terminal(7, session_id)
     assert terminal.claim is not None
 
@@ -3321,7 +3332,7 @@ async def test_pg_idle_prephase_failure_is_abandoned_and_fresh_sweep_completes(
             "WHERE context_id=%s",
             (context.context_id,),
         )
-    [claim] = await repo.claim_expired_contexts(10, 30, 1)
+    claim = _own_claim(await repo.claim_expired_contexts(10, 30, 100), session_id)
     registry = ActiveStreamRegistry()
 
     class BrokenProfile:
@@ -3384,7 +3395,7 @@ async def test_pg_actual_partial_idle_delete_recovers_and_preserves_other_contex
             "WHERE context_id=%s",
             (target.context_id,),
         )
-    [claim] = await repo.claim_expired_contexts(10, 30, 1)
+    claim = _own_claim(await repo.claim_expired_contexts(10, 30, 100), prefix + "-target")
 
     async with AsyncPostgresStore.from_conn_string(get_settings().profile_db_url) as store:
         await store.setup()
@@ -3504,7 +3515,7 @@ async def test_pg_failed_abandon_is_self_healed_by_public_sweep(
             "WHERE context_id=%s",
             (context.context_id,),
         )
-    [orphan] = await repo.claim_expired_contexts(10, 30, 1)
+    orphan = _own_claim(await repo.claim_expired_contexts(10, 30, 100), session_id)
 
     class BrokenProfile:
         async def get_session_ctx_snapshot(self, key: str):
@@ -3561,7 +3572,7 @@ async def test_pg_claim_only_process_loss_is_reissued_by_public_fresh_stage(
             "WHERE context_id=%s",
             (context.context_id,),
         )
-    [orphan] = await repo.claim_expired_contexts(10, 30, 1)
+    orphan = _own_claim(await repo.claim_expired_contexts(10, 30, 100), session_id)
     async with pool.connection() as conn:
         await conn.execute(
             "UPDATE chat_session_finalizations SET lease_expires_at=now()-interval '1 second' "
@@ -3589,7 +3600,7 @@ async def test_pg_abandon_rejects_same_token_with_changed_lease(pg_repo) -> None
             "WHERE context_id=%s",
             (context.context_id,),
         )
-    [stale] = await repo.claim_expired_contexts(10, 30, 1)
+    stale = _own_claim(await repo.claim_expired_contexts(10, 30, 100), session_id)
     async with pool.connection() as conn:
         await conn.execute(
             "UPDATE chat_session_finalizations "
@@ -3618,7 +3629,7 @@ async def test_pg_concurrent_sweeps_reissue_one_orphan_to_one_fresh_winner(
             "WHERE context_id=%s",
             (context.context_id,),
         )
-    [orphan] = await repo.claim_expired_contexts(10, 30, 1)
+    orphan = _own_claim(await repo.claim_expired_contexts(10, 30, 100), session_id)
     async with pool.connection() as conn:
         await conn.execute(
             "UPDATE chat_session_finalizations SET lease_expires_at=now()-interval '1 second' "
@@ -3630,7 +3641,12 @@ async def test_pg_concurrent_sweeps_reissue_one_orphan_to_one_fresh_winner(
         repo.claim_expired_contexts(10, 30, 1),
         repo.claim_expired_contexts(10, 30, 1),
     )
-    winners = [claim for batch in (first, second) for claim in batch]
+    winners = [
+        claim
+        for batch in (first, second)
+        for claim in batch
+        if claim.finalization_id == orphan.finalization_id
+    ]
 
     assert len(winners) == 1
     winner = winners[0]

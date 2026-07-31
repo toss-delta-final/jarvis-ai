@@ -13,6 +13,17 @@
 
 ---
 
+## [2026-07-31] 전역을 훑는 sweep 결과를 `[x] = await ...` 로 언패킹하면 공유 DB에서 간헐 실패한다
+
+- 증상: `-m integration` 137개가 실행할 때마다 결과가 달랐다. 통과(7초)·`2 failed`·무한 대기가 섞여 나왔고 재현율이 대략 절반이었다. 실패는 `test_pg_session_context.py` 의 `ValueError: too many values to unpack (expected 1)` 와 `RuntimeError: coroutine raised StopIteration` 두 종류였다.
+- 원인: `claim_expired_contexts(idle, lease, batch)` 는 **테이블 전역**에서 만료 컨텍스트를 batch 만큼 claim 한다. 그런데 테스트 11곳이 `[idle] = await repo.claim_expired_contexts(10, 30, 10)` 처럼 **"돌아오는 건 내 것 하나뿐"** 을 전제로 언패킹했다. 각 테스트가 `prefix` 로 세션을 격리해도 **claim 질의는 prefix 를 모른다** — 앞선 테스트가 만료 컨텍스트를 남기면 2건이 돌아와 언패킹이 터진다. 실행 순서·타이밍에 따라 남는 잔여물이 달라져 간헐적으로 보였을 뿐, 논리적으로는 결정적 결함이다. `batch=1` 로 부른 6곳은 더 나빴다 — 남의 행 하나를 claim 해 와서 자기 것인 양 검증한다.
+- 규칙:
+  1. **전역 스캔 API의 결과는 절대 바로 언패킹하지 않는다.** 자기 fixture 가 만든 키(`session_id`·`context_id`)로 걸러낸 뒤 검증한다. 공용 헬퍼 `_own_claim(claims, session_id)` 을 쓴다.
+  2. 격리를 `prefix` 로만 하는 테스트에서 **전역 질의를 부를 때는 batch 를 넉넉히(100) 주고 필터링**한다. batch 를 1로 좁혀 격리를 흉내내면 남의 행을 집어온다.
+  3. 통합 스위트는 **한 번 통과로 판단하지 않는다** — 최소 3회 반복 실행으로 순서 의존을 노출시킨 뒤 그린을 주장한다.
+  4. 앞선 세션이 남긴 pytest 프로세스가 DB를 붙들고 있으면 같은 증상이 난다. 원인을 코드에서 찾기 전에 `pgrep -af bin/pytest` 로 유령부터 확인한다.
+- 관련: #187, `tests/integration/test_pg_session_context.py` (`_own_claim`), `app/core/session_context.py::claim_expired_contexts`
+
 ## [2026-07-30] 죽어 있던 필드·함수를 배선하면 그 "미사용/폐기" 선언을 같은 커밋에서 지운다 — 하루에 3번 나왔다
 
 - 증상: 실제로 쓰이기 시작한 코드에 "안 쓴다"는 선언이 남아 세 번 지적됐다. (1) `category_select.select_category` docstring 이 `"방식 B용 미사용 예비"` 인데 #115 가 마진 택일 경로에 배선했다. (2) `needs_expansion` 모듈 docstring 이 `"case 를 쓰지 않는다"` 인데 같은 파일이 `case != 3` 게이트로 쓴다. (3) `RouteDecision.case` 필드 주석이 `"[폐기, 이슈 #59] 미사용"` 인데 #198 게이트의 유일한 입력이다(PR #203 리뷰).
