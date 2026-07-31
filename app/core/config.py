@@ -233,7 +233,8 @@ class Settings(BaseSettings):
     home_reco_weight_viewed: float = Field(default=0.6, ge=0.0)
     # [#148] 장기 취향 항 — 프로필 요약 벡터(sleep-time consolidation 이 미리 만든다).
     # cart(지금 담은 것)보다 낮게 둔다: 오래된 취향이 현재 관심을 덮으면 홈이 안 바뀐 것처럼 보인다.
-    # 0 으로 두면 프로필이 랭킹에서 빠지고 reason 근거로만 쓰인다(롤백 스위치).
+    # 0 으로 두면 프로필 기여가 **완전히 꺼진다**(롤백 스위치) — reason 의 프로필 문자열 분기는
+    # 극성(선호/회피) 문제로 제거됐으므로(83f78a1) 프로필의 유일한 소비처가 이 벡터 항이다.
     home_reco_weight_profile: float = Field(default=0.5, ge=0.0)
     home_reco_viewed_decay: float = Field(default=0.85, gt=0.0, le=1.0)
     # limit 은 최종 노출 목표치 — Spring 의 품절 드롭에 대비해 이 배수만큼 넉넉히 반환한다(§3.7).
@@ -243,7 +244,7 @@ class Settings(BaseSettings):
     # 넉넉히"(§3.7)가 깨진다. 기동 시점에 잡는다(`expose_max`/LIST_MAX_PRODUCTS 와 같은 방식).
     # 기본값은 LIMIT_MAX 의 2배(= 기본 overfetch 배율) — LIMIT_MAX 와 같게 두면 `limit` 이
     # 상한에 가까울수록 여유분이 0 으로 죽어 "넉넉히" 계약이 최댓값에서 깨진다(PR #213 리뷰).
-    home_reco_max_items: int = Field(default=HOME_RECO_LIMIT_MAX * 2, ge=HOME_RECO_LIMIT_MAX)
+    home_reco_max_items: int = Field(default=HOME_RECO_LIMIT_MAX * 2, gt=HOME_RECO_LIMIT_MAX)
     # 이 수 미만이면 랭킹이 무의미하다고 보고 INSUFFICIENT_CANDIDATES 로 답한다(200).
     home_reco_min_candidates: int = Field(default=5, gt=0)
     # 카탈로그 스토어 **호출 1회** 상한 — pg-catalog 지연·락이 한 단계를 무한정 붙들지 않게 한다.

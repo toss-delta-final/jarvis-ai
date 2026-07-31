@@ -402,6 +402,9 @@ def test_config_max_items_cannot_drop_below_contract_limit() -> None:
 
     with pytest.raises(pydantic.ValidationError):
         Settings(_env_file=None, home_reco_max_items=LIMIT_MAX - 1)
+    # 동률도 거부한다 — max_items == LIMIT_MAX 면 상한 limit 에서 overfetch 여유가 0 이 된다.
+    with pytest.raises(pydantic.ValidationError):
+        Settings(_env_file=None, home_reco_max_items=LIMIT_MAX)
 
 
 def test_config_min_candidates_cannot_exceed_max_items() -> None:

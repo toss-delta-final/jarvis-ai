@@ -328,8 +328,9 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
         logger.warning("home_reco_profile_timeout")
         profile = None
     except Exception:
-        # 예외 문자열은 업스트림 상태를 유출할 수 있어 클래스명도 남기지 않는다(#141 규약).
-        logger.warning("home_reco_profile_unavailable")
+        # 코드 버그가 degrade 에 묻히지 않게 traceback 을 로컬 로그에 남긴다(카탈로그·reason
+        # 경로와 동일 관례). #141 규약이 막는 건 와이어·외부 trace 노출이지 로컬 로그가 아니다.
+        logger.exception("home_reco_profile_unavailable")
         profile = None
     # 미리 만들어 둔 취향 벡터(§3.7 "프로필 벡터와 가중 혼합"). 구 요약·임베딩 실패분은 None.
     # markdown 원문은 여기서 쓰지 않는다 — reason 매칭 분기는 극성(선호/회피) 문제로 제거했다
