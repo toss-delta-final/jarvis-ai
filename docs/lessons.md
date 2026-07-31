@@ -13,6 +13,54 @@
 
 ---
 
+## [2026-07-30] 주입 seam 시그니처를 바꾸면 모든 fake 를 함께 고친다 — 방어 except 가 불일치를 삼켜 "조용한 degrade"가 된다
+- 증상: `map_categories` 에 `llm`·`tier` 파라미터를 추가(#115 §4.4)한 뒤 유닛 테스트 20건이
+  한꺼번에 실패했다. 실패 메시지는 `assert leg.category` → `None` — "카테고리가 안 붙는다"로만
+  보이고 원인(시그니처 불일치)은 어디에도 안 나온다. 더 나쁜 사례가 먼저 있었다:
+  `test_search_lookups_run_in_parallel` 의 fake search 가 계약(`list[tuple[str, float]]`)이 아니라
+  `list[str]` 을 반환하고 있었는데, 그 테스트는 peak 동시성만 assert 해서 **매핑이 통째로 하드실패
+  경로를 타는 상태로 통과**하고 있었다(거리 언패킹 ValueError → `category_embed_failed` → 빈 legs).
+- 원인: 이 저장소는 주입형 seam(embed·search·exact·map_categories·select_category)과 **방어적
+  `except Exception`** 을 많이 쓴다. fake 시그니처가 프로덕션과 어긋나면 `TypeError` 가 나지만,
+  그 예외가 방어 except(`category_map_failed`·`category_embed_failed`)에 먹혀 **정상적인 degrade 처럼
+  보이는 빈 결과**가 된다. 즉 "테스트 하네스 버그"가 "프로덕션 폴백 동작"으로 위장한다.
+- 규칙:
+  - **주입 seam 의 시그니처·반환 계약을 바꾸면 그 seam 의 fake 를 전수 검색해 함께 고친다.**
+    `grep -rn "async def.*<주요 키워드 인자>" tests/` 로 찾는다(이번엔 conftest.py autouse fixture +
+    test_fanout.py 8곳 + test_buyer_flow_e2e.py 1곳). 프로덕션 함수에 새 파라미터를 추가할 때는
+    fake 쪽에 기본값(`llm=None`)을 주어 호출 호환을 유지한다.
+  - **방어 except 로 감싼 경로의 테스트는 "예외가 안 났다"가 아니라 결과(출력)까지 assert 한다.**
+    부수 지표(호출 횟수·동시성 peak)만 보는 테스트는 하네스가 망가져도 통과한다.
+  - degrade 로그(`*_failed`)가 유닛 테스트 실행 중에 나오면 정상이 아니다 — caplog 로 확인한다.
+- **[2026-07-31 갱신]** 같은 seam 에 `observer` 를 추가하며 같은 일을 하루에 **두 번째**로 겪었다
+  (fake 15곳). 매번 전수 수정하는 대신 규칙을 바꾼다: **매퍼·전개기처럼 인자가 늘어나는 seam 의
+  fake 는 `**_` 로 새 인자를 흡수**하고, **배선은 전용 테스트가 보증**한다
+  (`test_mapper_receives_observer_...`·`test_expander_receives_observer_...`). `llm=None`·`tier`
+  처럼 이미 있는 인자는 명시 파라미터로 남겨 바인딩 검증을 유지한다. 관용 fake 만 두고 배선
+  테스트를 안 두면 "그래프가 인자를 안 넘겨도 아무도 모르는" 반대편 구멍이 생기므로 **둘은 짝**이다.
+- 관련: `app/agents/buyer/recommendation/category_mapping.py`, `tests/conftest.py`
+  (`_fake_category_mapping`), `tests/unit/test_fanout.py`, #115 커밋 9d9bf44·112d4b9
+
+## [2026-07-30] 두 이질적 입력을 같은 "거리" 척도로 비교하기 전에, 그 척도가 의미를 반영하는지 실측한다
+- 증상: #115 에서 임베딩 앵커를 "LLM 추측(raw) 우선"에서 "raw·query 둘 다 조회해 **거리가 더 가까운
+  쪽**"으로 고쳤다. 유닛 테스트도 통과했고 4개 실측 케이스가 뒤집혀 개선으로 보였다. 그런데 라이브
+  실측(실 LLM ×3회)에서 `anchor=raw` 로 채택된 12건 중 **11건이 오분류**였다 — 개선한 규칙이 오히려
+  오분류를 만들고 있었다.
+- 원인: 추상 라벨은 **카테고리명과 문자열이 겹쳐 가짜로 가깝게** 나온다. `'주방용품'` → `주방용품 >
+  칼` 0.1387 은 의미 근접이 아니라 표기 겹침이고, 정작 뜻이 맞는 `'냄비 세트'` 는 0.1941 로 더 멀다.
+  즉 이 구간의 코사인 거리는 의미가 아니라 표기를 반영하므로 **성격이 다른 두 앵커(창작 라벨 vs
+  발화)를 같은 거리 척도로 비교하는 것 자체가 성립하지 않았다.** 1차 개정 문서에 "짧고 일반적인
+  앵커가 유리한 편향"이라고 **한계를 적어두고도** 그 크기를 측정하지 않고 수용한 것이 실수다.
+- 규칙:
+  - **"둘 중 점수 좋은 쪽"류 규칙을 도입할 때, 두 입력이 같은 척도로 비교 가능한지 먼저 실측한다.**
+    분포가 겹치거나 한쪽이 체계적으로 유리하면 비교를 포기하고 **신뢰도 높은 쪽을 규칙으로 고정**
+    한다(여기서는 발화 유래 query 우선, raw 는 폴백).
+  - 설계 문서에 "알려진 편향/한계"를 적었다면 **그 크기를 수치로 남긴다** — 적어두기만 하면 다음
+    사람(=나)이 "수용 가능"으로 읽고 넘어간다.
+  - 유닛 테스트 통과 ≠ 규칙이 옳음. fake 는 내가 정한 거리를 그대로 돌려주므로 **척도의 타당성은
+    라이브 실측으로만 반증된다** — LLM·임베딩이 개입하는 규칙은 반드시 라이브로 재확인한다.
+- 관련: `docs/specs/DESIGN-CATEGORY-HYBRID-59.md` §4.3.1,
+  `app/agents/buyer/recommendation/category_mapping.py`, #115 커밋 6c415f2 → c6f4f8f(재개정)
 ## [2026-07-31] 무작위 UUID 가 개인정보 카나리 정규식에 걸려 트레이스가 통째로 버려진다 — 그리고 그 flake 를 내 변경 탓으로 오인했다
 
 - 증상: #209 코드 전환 중 전체 스위트가 간헐적으로 1건 실패했다. 실패 테스트가 매번 달랐고(`test_all_buyer_spring_operations_trace_timeout...`, `test_buyer_spring_http_failure_...[503-5xx]`) 모두 `assert len(spring_payloads) == 1` → `0 == 1` 형태였다. 단독 실행은 항상 통과. 로그엔 `trace dropped code=TELEMETRY_REDACTION_FAILED` 가 찍혀 있었다.
