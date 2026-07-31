@@ -2474,3 +2474,52 @@ async def test_order_status_clears_pending_without_copying_response_into_buyer_s
     )
     for response_only_value in ("87654321", "I4 전용 응답 상품", "배송중"):
         assert response_only_value not in persisted_state
+
+
+# ─────────── rerank 출력 예산 (PR #212 리뷰 — 니즈별 분할이 max_tokens 를 넘기지 않게) ───────────
+
+
+class _RecordingLLM:
+    """complete 호출 인자를 그대로 기록하는 LLM — max_tokens 산정을 검증한다."""
+
+    def __init__(self, ranked: list[dict]) -> None:
+        self._ranked = ranked
+        self.max_tokens: list[int] = []
+
+    async def complete(self, *, system, user, tier, max_tokens=1024, json_output=True):
+        self.max_tokens.append(max_tokens)
+        return json.dumps(
+            {"ranked": self._ranked, "overallComment": "골라봤어요"}, ensure_ascii=False
+        )
+
+
+def _cands(n: int) -> list:
+    from app.schemas.spring import SpringProduct
+
+    return [
+        SpringProduct(product_id=100 + i, name=f"P{i}", price=1000, rating=4.0, category="c")
+        for i in range(n)
+    ]
+
+
+async def test_rerank_output_budget_scales_with_expose_max() -> None:
+    """rerank 의 max_tokens 는 요청한 노출 개수에 비례한다 (PR #212 리뷰).
+
+    고정 1500 이면 니즈가 여럿일 때 항목이 27~30개로 늘어 출력이 중간에 잘리고,
+    extract_json 이 파싱에 실패해 LLMError → rerank_degraded 로 떨어진다. 즉 "니즈별 근거 있는
+    추천"이 정작 니즈가 여러 개일 때 더 자주 깨진다.
+    """
+    from app.agents.buyer.recommendation.rerank import rerank
+
+    llm = _RecordingLLM([{"productId": 100, "rationale": "좋아요"}])
+    await rerank(
+        llm, query="q", candidates=_cands(30), profile_summary=None, tier="smart", expose_max=9
+    )
+    await rerank(
+        llm, query="q", candidates=_cands(30), profile_summary=None, tier="smart", expose_max=30
+    )
+
+    small, large = llm.max_tokens
+    assert large > small, "노출 개수가 늘면 출력 예산도 늘어야 한다"
+    # 종전 단일 목록 경로(expose_max=9)의 실효 예산은 그대로 유지한다 — 회귀 방지.
+    assert small == 1500

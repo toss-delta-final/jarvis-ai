@@ -407,9 +407,13 @@ async def stream_recommendation(
     need_legs = decision.category_legs
     split_by_need = decision.case == 3 and len(need_legs) > 1 and bool(leg_of)
     # 분할 시 rerank 예산은 목록 수만큼 늘린다 — 전역 expose_max 로 자르면 니즈 하나가 예산을
-    # 독식해 나머지 니즈 목록이 비어버린다. 후보 수를 넘겨봐야 의미가 없어 함께 상한한다.
+    # 독식해 나머지 니즈 목록이 비어버린다.
+    # 세는 단위는 **후보가 실제로 남은 니즈**다(PR #212 리뷰) — 검색 0건·최근구매 dedup 으로
+    # 비워진 니즈까지 세면 rerank 가 쓰지도 못할 항목 수를 요구하고 출력 예산만 부푼다.
+    # 후보 수를 넘겨도 의미가 없어 함께 상한한다.
+    populated_needs = len({leg_of[p.product_id] for p in candidates if p.product_id in leg_of})
     expose_budget = (
-        min(settings.expose_max * len(need_legs), len(candidates))
+        min(settings.expose_max * populated_needs, len(candidates))
         if split_by_need
         else settings.expose_max
     )
@@ -470,6 +474,11 @@ async def stream_recommendation(
             "compressed": len(candidates),
             "final": len(ranked_ids),
             "rerank_degraded": rerank_degraded,
+            # [#209 PR#212 리뷰] 니즈별 분할 관측 — rerank degrade 가 **다중 니즈에서만** 튀는지
+            # 보려면 목록 수와 요청한 출력 예산이 같은 줄에 있어야 한다. 출력 잘림은 조용히
+            # LLMError 로만 보여서(파싱 실패) 이 두 값 없이는 원인을 분리할 수 없다.
+            "lists": len(exposed_groups),
+            "expose_budget": expose_budget,
         },
     )
 

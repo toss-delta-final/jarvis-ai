@@ -99,7 +99,10 @@ async def rerank(
         f"CANDIDATES: {json.dumps(cand, ensure_ascii=False)}"
     )
 
-    raw = await llm.complete(system=_SYSTEM, user=user, tier=tier, max_tokens=1500)
+    # 출력 예산은 **요청한 노출 개수에 비례**한다 — 고정값이면 니즈별 분할로 항목이 늘 때
+    # 응답이 잘리고 아래 extract_json 이 파싱에 실패해 LLMError → 근거 없는 degrade 가 된다.
+    max_tokens = settings.rerank_max_tokens_base + settings.rerank_max_tokens_per_item * expose_max
+    raw = await llm.complete(system=_SYSTEM, user=user, tier=tier, max_tokens=max_tokens)
     data = extract_json(raw)
 
     valid_ids = {c.product_id for c in candidates}

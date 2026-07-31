@@ -1134,3 +1134,51 @@ async def test_case3_split_does_not_add_llm_calls() -> None:
     tiers = [tier for tier, _ in llm.calls]
     assert tiers.count("smart") == 1, "rerank(smart)는 니즈 수와 무관하게 1회"
     assert tiers.count("fast") == 1, "decompose(fast)도 1회 — 전개는 이 턴에 트리거되지 않았다"
+
+
+async def test_case3_budget_counts_only_needs_with_candidates(monkeypatch) -> None:
+    """rerank 예산은 **후보가 실제로 남은 니즈** 수로 잡는다 (PR #212 리뷰).
+
+    요청한 leg 수로 잡으면 검색 0건·최근구매 dedup 으로 비워진 니즈까지 예산에 세어, rerank 가
+    쓰지도 못할 항목 수를 요구하고 출력 예산만 부풀린다.
+    """
+    from app.agents.buyer.recommendation import graph as recommendation_graph
+
+    seen: list[int] = []
+    real_rerank = recommendation_graph.rerank
+
+    async def _spy(llm, *, query, candidates, profile_summary, tier, expose_max):
+        seen.append(expose_max)
+        return await real_rerank(
+            llm,
+            query=query,
+            candidates=candidates,
+            profile_summary=profile_summary,
+            tier=tier,
+            expose_max=expose_max,
+        )
+
+    monkeypatch.setattr(recommendation_graph, "rerank", _spy)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "expose_max", 3)
+
+    async def _one_empty_leg(filters, exclude_product_ids=None):
+        # 어댑터 leg 은 0건 — 니즈는 2개로 요청됐지만 후보가 남은 건 파우치뿐이다.
+        # 후보를 넉넉히 둬야 len(candidates) 상한이 아니라 **니즈 수** 산정이 드러난다.
+        if "여행용품" in (filters.category or ""):
+            return _res(101, 102, 103, 104, 105, 106, 107, 108)
+        return _res()
+
+    await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=_needs_llm([{"productId": 101, "rationale": "a"}]),
+            search=_one_empty_leg,
+            push_fn=_RecordingPush(),
+            map_categories=_two_leg_mapper(),
+        )
+    )
+
+    # 후보가 있는 니즈는 1개 → 예산 expose_max×1 = 3. 요청 leg 수(2)로 셌다면 6이 된다.
+    assert seen == [3]
