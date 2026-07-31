@@ -404,6 +404,14 @@ def test_config_max_items_cannot_drop_below_contract_limit() -> None:
         Settings(_env_file=None, home_reco_max_items=LIMIT_MAX - 1)
 
 
+def test_config_min_candidates_cannot_exceed_max_items() -> None:
+    """후보 하한이 응답 상한을 넘으면 기동 실패 — `k=max(want, min_candidates)` 가 상한을 뚫는다."""
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError):
+        Settings(_env_file=None, home_reco_min_candidates=61, home_reco_max_items=60)
+
+
 def test_response_never_returns_fewer_than_requested_limit(store: CatalogArtifactStore) -> None:
     """§3.7 — `limit` 은 최종 노출 목표치이고 AI 는 그보다 **넉넉히** 반환해야 한다."""
     from app.schemas.recommendations import LIMIT_MAX

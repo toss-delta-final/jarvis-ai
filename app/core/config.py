@@ -485,6 +485,23 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _require_home_reco_min_within_max(self) -> "Settings":
+        """홈 추천(I-22) 후보 하한이 응답 상한을 넘으면 기동 실패 (PR #213 리뷰).
+
+        `rank_home` 은 `k=max(want, home_reco_min_candidates)` 로 top-k 를 조회한다 — 하한이
+        `home_reco_max_items`(overfetch 절대 상한, LIMIT_MAX 에 ge 로 묶임)를 넘으면 "응답 크기
+        방어"가 조회 단계에서 무력화된다. `expose_max`↔`LIST_MAX_PRODUCTS` 와 같은 방식으로
+        관계를 기동 시점에 고정한다 — 한쪽만 튜닝하면 조용히 어긋나는 쌍이다.
+        """
+        if self.home_reco_min_candidates > self.home_reco_max_items:
+            raise ValueError(
+                "HOME_RECO_MIN_CANDIDATES must be <= HOME_RECO_MAX_ITEMS "
+                f"(got {self.home_reco_min_candidates} > {self.home_reco_max_items}): "
+                "candidate floor must not defeat the response-size cap"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _require_pepper_in_prod(self) -> "Settings":
         """운영(jwks)에서 PII pepper 미주입이면 기동 실패 — 조용히 약한 해시로 도는 것 방지."""
         if self.auth_mode == "jwks" and not self.pii_hash_pepper:

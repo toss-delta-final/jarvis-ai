@@ -185,9 +185,20 @@ class PgCatalogArtifactStore:
 
         동점은 `product_id` 오름차순으로 tiebreak 해 결정적이다(동일 snapshot → 동일 ranking).
         HNSW 는 근사 탐색이지만 인덱스·질의가 같으면 같은 결과를 준다.
+
+        **HNSW + WHERE(구매 이력 제외) 조합의 recall** — PR 리뷰 지적. HNSW 는 `ef_search` 범위만
+        그래프를 돌고 그 결과에 필터를 적용하므로, 제외 대상이 탐색 상위권에 몰리면 후보가 충분해도
+        k 개 미만이 나올 수 있다(가짜 INSUFFICIENT_CANDIDATES). 실측(2026-07-31, 7,220건)으로는
+        **재현되지 않았다** — EXPLAIN 확인 결과 이 쿼리 모양(OR + 배열 필터)에서 플래너가 Seq Scan
+        (정확 탐색)을 택해, 최근접 3,000개를 제외해도 24/24 가 나온다. 다만 카탈로그가 커져 플래너가
+        인덱스 경로로 넘어가면 지적이 유효해지므로 `SET LOCAL hnsw.iterative_scan = strict_order`
+        (pgvector ≥0.8, 현재 0.8.5)를 미리 걸어 둔다 — 필터로 k 개를 못 채우면 정확한 순서를 유지한
+        채 탐색을 이어가는 모드다. SET LOCAL 이라 풀에 반환된 커넥션에 새지 않고, Seq Scan 플랜에는
+        영향이 없다.
         """
         skip = list(exclude or ())
-        with self._pool.connection() as conn:
+        with self._pool.connection() as conn, conn.transaction():
+            conn.execute("SET LOCAL hnsw.iterative_scan = strict_order")
             rows = conn.execute(
                 """
                 SELECT product_id
