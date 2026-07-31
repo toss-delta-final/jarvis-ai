@@ -21,13 +21,31 @@ def test_category_mapping_settings_defaults() -> None:
 
 
 def test_pool_max_size_covers_fanout_concurrency() -> None:
-    """검색 풀 max_size 는 fan-out 동시 조회(최대 category_fanout_max leg)를 커버해야 한다(PR #73 리뷰).
+    """검색 풀 max_size 는 한 턴의 동시 조회 **× 앵커 수**를 커버해야 한다(PR #73·#188 리뷰).
 
     psycopg_pool 기본 max_size(4) < fanout(5) 이면 5번째 leg 가 커넥션을 기다려 gather 병렬화가
-    부분 무력화된다 — 암묵 하드코딩(psycopg 기본값)을 config 로 빼고 fanout 이상으로 명시한다.
+    부분 무력화된다 — 암묵 하드코딩(psycopg 기본값)을 config 로 뺐다(PR #73).
+
+    [#115] 앵커가 leg 당 raw·query **2개**가 되면서(§4.3) 한 턴의 동시 조회가 `2 × fanout_max`
+    로 늘었다. 종전 기준(`>= fanout_max`)은 10 >= 5 로 통과하지만 **한 턴이 풀 전체를 소진**해
+    동시 요청 헤드룸이 사라진다 — 기준을 실제 필요량으로 올린다(PR #188 리뷰).
     """
     settings = Settings(_env_file=None)
-    assert settings.category_search_pool_max_size >= settings.category_fanout_max
+    assert settings.category_search_pool_max_size >= 2 * settings.category_fanout_max
+
+
+def test_pool_max_size_below_anchor_concurrency_rejected() -> None:
+    """풀이 `2 × fanout_max` 미만이면 **기동 시** 거부한다 (PR #188 리뷰).
+
+    테스트만으로 막으면 `category_fanout_max` 를 올리는 쪽(#168 은 leg 10 을 계획)이 풀을 잊어도
+    기본값 조합에서만 걸린다. 두 값은 함께 움직여야 하는 쌍이므로 config 불변식으로 고정해,
+    fanout 을 올리는 순간 부팅이 막혀 이 결정을 반드시 다시 마주하게 한다.
+    """
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, category_fanout_max=10, category_search_pool_max_size=10)
+    # 함께 올리면 통과한다 — 금지가 아니라 "짝을 맞춰라"는 제약임을 고정
+    ok = Settings(_env_file=None, category_fanout_max=10, category_search_pool_max_size=24)
+    assert ok.category_fanout_max == 10
 
 
 def test_negative_fanout_max_rejected() -> None:
@@ -71,3 +89,34 @@ def test_needs_expansion_tier_rejects_unknown_value() -> None:
     """
     with pytest.raises(ValidationError):
         Settings(_env_file=None, needs_expansion_tier="fasttt")
+
+
+def test_override_margin_must_exceed_select_trigger() -> None:
+    """[PR #188 리뷰] 마진 예외(§4.5)와 택일 트리거(§4.4)의 구간은 겹치면 안 된다.
+
+    두 임계는 **정반대 상태**를 가리킨다 — `margin <= select_margin_max` 는 "1·2위가 거의 붙어
+    애매하다"(LLM 에게 물어본다), `margin >= override_margin` 은 "1위만 확 가까워 확신한다"
+    (거리가 멀어도 채택한다). 한 leg 이 동시에 애매하면서 확신일 수는 없다.
+
+    겹치면 **#115 가 폐기한 실패 모드가 되살아난다**: 마진이 얇다는 건 taxonomy 에 맞는 칸이
+    없다는 신호인데(§4.5), 그 상태에서 LLM 이 고른 먼 후보를 채택하면 그게 바로 "억지 채택"이다
+    (`'선물용품'` 마진 0.0095 → LLM 이 `도서/음반 > 독서용품` 0.2292 선택 → 드롭이 정답).
+
+    관계가 주석·테스트에만 있으면 한쪽 임계를 튜닝할 때 조용히 겹칠 수 있어 config 로 고정한다.
+    """
+    settings = Settings(_env_file=None)
+    assert settings.category_distance_override_margin > settings.category_select_margin_max
+
+    with pytest.raises(ValidationError):  # 겹치는 조합은 기동 시 거부
+        Settings(
+            _env_file=None,
+            category_select_margin_max=0.05,
+            category_distance_override_margin=0.035,
+        )
+    # 함께 올리면 통과한다 — 금지가 아니라 "구간을 겹치지 마라"는 제약임을 고정
+    ok = Settings(
+        _env_file=None,
+        category_select_margin_max=0.05,
+        category_distance_override_margin=0.08,
+    )
+    assert ok.category_select_margin_max == 0.05
