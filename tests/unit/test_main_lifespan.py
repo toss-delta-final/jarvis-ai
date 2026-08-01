@@ -7,17 +7,24 @@ TestClient(app)를 `with`로 감싸야 lifespan 이 실제로 발동한다(경�
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi.testclient import TestClient
 import pytest
 
 import app.main as main_mod
 
 
-def _patch_lifespan_dependencies(monkeypatch, calls, *, failing_resource=None):
+def _patch_lifespan_dependencies(
+    monkeypatch, calls, *, failing_resource=None, cancelling_resource=None
+):
     async def record(name):
         calls.append(name)
         if name == failing_resource:
             raise RuntimeError(f"{name} close failed")
+        if name == cancelling_resource:
+            asyncio.current_task().cancel()
+            await asyncio.sleep(0)
 
     monkeypatch.setattr(main_mod, "initialize_session_lifecycle", lambda: record("initialize"))
     monkeypatch.setattr(main_mod, "start_scheduler", lambda: calls.append("start"))
@@ -124,4 +131,37 @@ async def test_lifespan_continues_cleanup_after_resource_failure(monkeypatch, ca
         "advisory_pool",
     ]
     assert "lifespan resource cleanup failed resource=session_activity_pool" in caplog.text
+    assert "lifespan resource cleanup complete succeeded=8 failed=1" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_lifespan_finishes_cleanup_before_propagating_task_cancellation(monkeypatch, caplog):
+    calls = []
+    _patch_lifespan_dependencies(monkeypatch, calls, cancelling_resource="seller_history_store")
+
+    async def run_lifespan() -> None:
+        async with main_mod._lifespan(main_mod.app):
+            pass
+
+    with caplog.at_level("INFO"):
+        task = asyncio.create_task(run_lifespan())
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert calls == [
+        "initialize",
+        "start",
+        "stop",
+        "session_lifecycle",
+        "seller_history_store",
+        "seller_checkpointer",
+        "profile_store",
+        "session_activity_pool",
+        "processed_events_pool",
+        "conversation_store",
+        "pg_store",
+        "advisory_pool",
+    ]
+    assert task.cancelled()
+    assert "lifespan resource cleanup cancelled resource=seller_history_store" in caplog.text
     assert "lifespan resource cleanup complete succeeded=8 failed=1" in caplog.text

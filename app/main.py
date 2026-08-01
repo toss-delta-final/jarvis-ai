@@ -63,9 +63,14 @@ async def _close_owned_resources() -> None:
         ("advisory_pool", close_advisory_pool),
     )
     failed = 0
+    cancellation: asyncio.CancelledError | None = None
     for name, close in resources:
         try:
             await close()
+        except asyncio.CancelledError as exc:
+            failed += 1
+            cancellation = exc
+            logger.warning("lifespan resource cleanup cancelled resource=%s", name)
         except Exception:
             failed += 1
             logger.exception("lifespan resource cleanup failed resource=%s", name)
@@ -74,6 +79,8 @@ async def _close_owned_resources() -> None:
         len(resources) - failed,
         failed,
     )
+    if cancellation is not None:
+        raise cancellation
 
 
 @asynccontextmanager
