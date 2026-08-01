@@ -2569,3 +2569,261 @@ async def test_rerank_carries_need_boundaries_when_split() -> None:
     assert "파우치" in sent and "어댑터" in sent
     assert '"need"' in sent, "후보마다 소속 니즈를 실어야 LLM 이 경계를 안다"
     assert "3" in sent  # 니즈당 상위 N
+
+
+# ─────────── #119 프로필 개인화 강도 (주입 스코프 · rerank 타이브레이커 · 세션 버퍼) ───────────
+
+
+_PROFILE_MD = "# 취향\n- 3~5만원대 선호\n- 소니 선호, 샤오미 회피\n- 평점 4.5 이상 선호"
+
+
+async def _seed_profile(user_id: str = "u1", markdown: str = _PROFILE_MD) -> None:
+    """회원에게 취향 요약을 심는다 — reader 가 이 값을 그래프로 흘린다."""
+    from app.agents.profile.store import get_profile_store
+
+    store = await get_profile_store()
+    await store.set_summary(user_id, markdown, "2026-07-31T00:00:00Z")
+
+
+def _fast_prompt(llm: FakeLLM) -> str:
+    """FakeLLM 이 기록한 decompose(fast tier) user 프롬프트."""
+    fast = [user for tier, user in llm.calls if tier == "fast"]
+    assert fast, "decompose 가 호출되지 않았다"
+    return fast[0]
+
+
+def _smart_prompt(llm: FakeLLM) -> str:
+    smart = [user for tier, user in llm.calls if tier != "fast"]
+    assert smart, "rerank 가 호출되지 않았다"
+    return smart[0]
+
+
+async def test_member_decompose_prompt_is_identical_to_guest() -> None:
+    """[#119 핵심 회귀] 회원과 게스트의 decompose 프롬프트는 **바이트 동일**해야 한다.
+
+    입력이 같으면 filters·category_legs 가 같은 분포로 나오고, 따라서 회원의 검색 후보가
+    게스트보다 좁아질 수 **없다**. 프로필이 하드필터로 새는 경로(#119 래칫)를 LLM 품질
+    측정 없이 결정론적으로 봉인하는 불변식이다.
+    """
+    await _seed_profile()
+
+    member_llm = FakeLLM()
+    await _collect(
+        run_buyer_turn(_req(session_id="s-m", thread_id="t-m"), _member(), llm=member_llm)
+    )
+    guest_llm = FakeLLM()
+    await _collect(run_buyer_turn(_req(session_id="s-g", thread_id="t-g"), _guest(), llm=guest_llm))
+
+    assert _fast_prompt(member_llm) == _fast_prompt(guest_llm)
+    assert "소니" not in _fast_prompt(member_llm)
+
+
+async def test_profile_reaches_decompose_when_scope_both(monkeypatch) -> None:
+    """롤백 경로 — scope=both 면 종전대로 프로필이 decompose 프롬프트에 실린다."""
+    monkeypatch.setattr(get_settings(), "profile_injection_scope", "both")
+    await _seed_profile()
+
+    llm = FakeLLM()
+    await _collect(run_buyer_turn(_req(), _member(), llm=llm))
+
+    assert "소니" in _fast_prompt(llm)
+
+
+async def test_rerank_still_receives_profile_when_decompose_does_not() -> None:
+    """decompose 주입만 끈다 — rerank 개인화까지 같이 꺼지면 기능이 통째로 사라진다.
+
+    (#119 구현에서 가장 그럴듯한 실수라 전용으로 고정한다.)
+    """
+    await _seed_profile()
+
+    llm = FakeLLM()
+    await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=llm,
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+        )
+    )
+
+    assert "소니" not in _fast_prompt(llm)
+    assert "소니" in _smart_prompt(llm)
+
+
+async def test_profile_injection_scope_off_skips_both(monkeypatch) -> None:
+    """scope=off 는 이번 턴 개인화를 끈다 — 라이브 A/B 의 baseline arm."""
+    monkeypatch.setattr(get_settings(), "profile_injection_scope", "off")
+    await _seed_profile()
+
+    llm = FakeLLM()
+    await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=llm,
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+        )
+    )
+
+    assert "소니" not in _fast_prompt(llm)
+    assert "소니" not in _smart_prompt(llm)
+
+
+async def test_rerank_adds_tiebreak_line_with_profile() -> None:
+    """프로필이 있으면 동점 처리 지시가 user 메시지에 붙는다(문구는 모듈 상수 참조)."""
+    from app.agents.buyer.recommendation.rerank import _PROFILE_TIEBREAK, rerank
+
+    llm = _CapturingLLM([{"productId": 100, "rationale": "좋아요"}])
+    await rerank(
+        llm,
+        query="q",
+        candidates=_cands(3),
+        profile_summary=_PROFILE_MD,
+        tier="smart",
+        expose_max=6,
+    )
+
+    assert _PROFILE_TIEBREAK in llm.user[0]
+
+
+async def test_rerank_prompt_unchanged_without_profile() -> None:
+    """게스트(프로필 None) 프롬프트는 지시가 붙지 않는다 — 잘 도는 경로를 건드리지 않는다."""
+    from app.agents.buyer.recommendation.rerank import _PROFILE_TIEBREAK, rerank
+
+    llm = _CapturingLLM([{"productId": 100, "rationale": "좋아요"}])
+    await rerank(
+        llm, query="q", candidates=_cands(3), profile_summary=None, tier="smart", expose_max=6
+    )
+
+    assert _PROFILE_TIEBREAK not in llm.user[0]
+    assert llm.user[0].startswith("PROFILE_SUMMARY: (없음)\nQUERY: q\n")
+
+
+async def test_rerank_legacy_influence_omits_tiebreak_line(monkeypatch) -> None:
+    """legacy 모드면 프로필이 있어도 지시가 붙지 않는다(롤백 경로)."""
+    from app.agents.buyer.recommendation.rerank import _PROFILE_TIEBREAK, rerank
+
+    monkeypatch.setattr(get_settings(), "profile_rerank_influence", "legacy")
+    llm = _CapturingLLM([{"productId": 100, "rationale": "좋아요"}])
+    await rerank(
+        llm,
+        query="q",
+        candidates=_cands(3),
+        profile_summary=_PROFILE_MD,
+        tier="smart",
+        expose_max=6,
+    )
+
+    assert _PROFILE_TIEBREAK not in llm.user[0]
+
+
+async def test_rerank_system_prompt_has_no_profile_rule() -> None:
+    """분기는 user 메시지에만 둔다 — _SYSTEM 을 건드리면 프로필 없는 경로까지 바뀐다."""
+    from app.agents.buyer.recommendation.rerank import _SYSTEM
+
+    assert "PROFILE" not in _SYSTEM
+
+
+async def _buffer(user_id: str, session_id: str) -> list[str]:
+    from app.agents.profile.store import get_profile_store
+    from app.core.conversation import conversation_key
+
+    store = await get_profile_store()
+    return await store.get_session_ctx(conversation_key(user_id, session_id))
+
+
+async def test_session_buffer_records_recommend_intent() -> None:
+    """추천 턴 발화는 종전대로 취향 소스로 쌓인다(회귀)."""
+    await _collect(run_buyer_turn(_req(session_id="s1"), _member(), llm=FakeLLM()))
+
+    assert await _buffer("u1", "s1") == ["무선 이어폰 추천해줘"]
+
+
+async def test_session_buffer_skips_excluded_intent() -> None:
+    """[#119] 주문조회 발화는 취향 신호가 아니라 버퍼를 오염시킨다 — 적재하지 않는다."""
+    llm = FakeLLM(decompose={"intent": "order_status", "reply": "", "filters": {}})
+
+    async def _orders(user_id, **_):
+        from app.schemas.spring import OrderStatusSummary
+
+        return OrderStatusSummary(orders=[])
+
+    await _collect(
+        run_buyer_turn(
+            _req("주문 어디쯤 왔어?", session_id="s1"),
+            _member(),
+            llm=llm,
+            order_status_fn=_orders,
+        )
+    )
+
+    assert await _buffer("u1", "s1") == []
+
+
+async def test_session_buffer_skipped_when_decompose_fails() -> None:
+    """[#119 행동 변화] 의도를 파악 못 한 턴은 취향 신호로도 쓰지 않는다."""
+    llm = FakeLLM(decompose_error=True)
+    await _collect(run_buyer_turn(_req(session_id="s1"), _member(), llm=llm))
+
+    assert await _buffer("u1", "s1") == []
+
+
+async def test_remember_command_recorded_even_when_decompose_fails() -> None:
+    """ "기억해"는 intent 무관한 명시 명령 — 라우팅 앞 hot-path 로 남아야 한다."""
+    from app.agents.profile.store import get_profile_store
+
+    llm = FakeLLM(decompose_error=True)
+    await _collect(
+        run_buyer_turn(_req("소니 좋아해 기억해줘", session_id="s1"), _member(), llm=llm)
+    )
+
+    store = await get_profile_store()
+    assert await store.get_facts("u1")
+
+
+async def test_profile_injection_scope_off_still_accumulates_profile(monkeypatch) -> None:
+    """[PR #223 리뷰] off 는 **주입만** 끊는다 — 프로필 축적은 계속된다(섀도 모드).
+
+    "게스트 등가"로 읽으면 안 된다: 게스트는 프로필 경로 자체가 없지만(profile_eligible=False),
+    off 인 회원은 세션 버퍼가 쌓이고 "기억해"도 기록돼 세션 종료 후 프로필이 계속 자란다.
+    축적까지 멈추는 킬스위치가 필요해지면 off 의 의미를 좁히지 말고 별도 스위치를 둔다.
+    """
+    from app.agents.profile.store import get_profile_store
+
+    monkeypatch.setattr(get_settings(), "profile_injection_scope", "off")
+    message = "소니 이어폰 좋아해 기억해줘"
+    await _collect(run_buyer_turn(_req(message, session_id="s-off"), _member(), llm=FakeLLM()))
+
+    # 세션 버퍼(세션 종료 델타 소스)는 계속 쌓인다
+    assert await _buffer("u1", "s-off") == [message]
+
+    store = await get_profile_store()
+    # "기억해" hot-path 도 계속 돌아 장기 fact 가 기록된다 — 게스트에겐 없는 경로다
+    assert await store.get_facts("u1")
+    # 다만 요약 재작성은 sleep-time 소관이라 턴 중에는 일어나지 않는다(REQ-PROF-023)
+    assert await store.get_summary("u1") is None
+
+
+async def test_session_buffer_records_cart_add_intent() -> None:
+    """[PR #223 리뷰] 담기 발화는 **일부러** 버퍼에 남긴다 — 제외 목록에 없는 게 의도다.
+
+    담기는 채팅 레인에서 구매에 가장 가까운 행동 신호다. 명세도 write 소스를
+    conversation|purchase 로 두고(REQ-PROF-024) 구매 소스는 명시성 없이 반복성·현저성으로
+    승격한다(REQ-PROF-044) — 제외하면 명세가 인정한 신호원을 코드가 막는다. 발화 자체도
+    취향을 실어 나른다("검정으로 담아줘"). 노이즈("그거 담아줘")는 델타 추출 LLM·게이트·
+    버퍼 상한이 걸러내므로, 되돌릴 수 없는 실수(신호 소실)를 피하는 쪽을 택한다.
+    """
+    message = "검정으로 담아줘"
+    llm = FakeLLM(
+        decompose={
+            "intent": "cart_add",
+            "reply": "",
+            "filters": {},
+            "cart": {"productId": 101, "quantity": 1},
+        }
+    )
+    await _collect(run_buyer_turn(_req(message, session_id="s-cart"), _member(), llm=llm))
+
+    assert await _buffer("u1", "s-cart") == [message]
