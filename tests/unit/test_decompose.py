@@ -458,7 +458,7 @@ async def test_empty_legs_do_not_consume_fanout_budget() -> None:
 async def test_fanout_max_zero_truncates_to_empty() -> None:
     """fanout_max<=0(운영 설정 실수)면 정확히 0개로 절단한다 — slice 의미와 일치(PR #73 리뷰).
 
-    append 후 체크 방식이면 첫 항목이 항상 남아 매핑의 _dedup_truncate(out[:cap])와 절단 의미가
+    append 후 체크 방식이면 첫 항목이 항상 남아 매핑의 dedup_truncate(out[:cap])와 절단 의미가
     어긋난다. 두 절단 지점을 같은 slice 규약으로 통일해 상한 전제를 지킨다.
     """
     many = [{"category": f"c{i} > m{i}", "query": f"q{i}"} for i in range(3)]

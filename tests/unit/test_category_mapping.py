@@ -80,7 +80,12 @@ class _FakeMapper:
     def exact_lookup(self, values, dsn: str) -> set[str]:
         return {v for v in values if v in self._exact}
 
-    async def run(
+    async def run(self, *args, **kwargs):
+        """`legs` 만 돌려준다 — #217 로 반환형이 `CategoryMapping` 이 됐지만 기존 단언은 leg 목록만
+        본다. `unresolved`(§4 D2 트리거 입력)를 검증하는 테스트만 `run_full` 을 쓴다."""
+        return (await self.run_full(*args, **kwargs)).legs
+
+    async def run_full(
         self, queries, utterance="발화", settings=None, *, select=None, llm=None, observer=None
     ):
         kwargs = {}
@@ -795,7 +800,7 @@ async def test_search_lookups_run_in_parallel() -> None:
     assert state["peak"] >= 2  # 병렬이면 동시 진입 ≥2, 순차면 1
     # 성공 경로였음을 함께 확인 — fake 반환형이 계약과 어긋나면 매핑이 조용히 하드실패 경로로
     # 빠져(빈 legs) peak 만 보는 이 테스트가 통과해버린다(실제로 그런 상태를 한 번 지나왔다).
-    assert out == [("가전 > X", None)]  # 3 leg 이 같은 canonical → dedup, query 는 전부 None
+    assert out.legs == [("가전 > X", None)]  # 3 leg 이 같은 canonical → dedup, query 는 전부 None
 
 
 async def test_select_budget_goes_to_smallest_margins_first(caplog) -> None:
@@ -1102,3 +1107,178 @@ async def test_stage_failure_logs_error_type_for_triage(caplog) -> None:
             llm=object(),
         )
     assert _record(caplog, "category_select_stage_failed").error_type == "AttributeError"
+
+
+# ── unresolved — 전개 트리거 입력 (#217, DESIGN-198 §4·§6.2) ─────────────────
+#
+# 매핑이 canonical 을 못 낸 leg 을 상류(graph)에 알린다. 종전 반환형
+# `list[tuple[str, str|None]]` 으로는 "드롭됨"과 "애초에 신호 없음"이 구분되지 않아, 호출부가
+# 전개 여부를 판정할 수 없었다.
+#
+# **무엇을 담고 무엇을 담지 않는지가 이 계약의 전부다.** 인프라 실패(조회 예외)·시드 결측(히트 0건)을
+# 섞으면 pg 순간 장애가 LLM 전개를 부른다 — PR #188 이 `error_type` 으로 "인프라 장애 vs 코드 버그"를
+# 가른 것과 같은 원칙이다.
+
+
+async def test_unresolved_collects_distance_rejected_leg() -> None:
+    """§4 ① 거리컷 드롭 → unresolved. "맞는 칸이 taxonomy 에 없다"는 신호라 전개 대상이다.
+
+    실측 `"김밥 재료"` 0.3027 / 마진 0.0054 대역(§4.5 ②) — 초판 marker 목록에 `재료` 가 없어
+    놓치던 바로 그 경로다.
+    """
+    m = _FakeMapper(
+        exact=set(),
+        nearest={},
+        hits={
+            "김밥 재료": [
+                ("채소 > 파/마늘/양념채소", 0.3027),
+                ("냉장/냉동식품 > 밥류", 0.3081),
+            ]
+        },
+    )
+    out = await m.run_full([CategoryQuery(None, "김밥 재료")])
+    assert out.legs == []
+    assert out.unresolved == ["김밥 재료"]
+
+
+async def test_unresolved_excludes_margin_override_leg() -> None:
+    """§4.5 마진 예외로 **채택된** leg 은 unresolved 가 아니다 — 거리만 보면 안 되는 이유.
+
+    거리는 멀지만 1위가 확실히 이기면 "맞는 칸이 분명히 하나 있다"는 뜻이라 채택한다. 실측
+    `"신학기 준비"` 0.2715 / 마진 0.0483 → `문구/사무용품 > 학용품/학습준비물` 은 **정답**이고,
+    이걸 전개로 갈아엎으면 손해다(§4.5 ④).
+    """
+    m = _FakeMapper(
+        exact=set(),
+        nearest={},
+        hits={
+            "신학기 준비": [
+                ("문구/사무용품 > 학용품/학습준비물", 0.2715),
+                ("문구/사무용품 > 필기구", 0.3198),
+            ]
+        },
+    )
+    out = await m.run_full([CategoryQuery(None, "신학기 준비")])
+    assert out.legs == [("문구/사무용품 > 학용품/학습준비물", "신학기 준비")]
+    assert out.unresolved == []
+
+
+async def test_unresolved_excludes_mapped_leg() -> None:
+    """거리 이내로 채택된 leg 은 unresolved 가 아니다 — 오탐 0 보장의 뿌리(§4.5 ①).
+
+    `"한방재료"` 0.1443 / 마진 0.0640 대역. 초판 marker 에 `재료` 를 넣었다면 이 leg 이 전개로
+    파괴됐다(이슈 본문이 실측으로 기각한 처방).
+    """
+    m = _FakeMapper(
+        exact=set(),
+        nearest={},
+        hits={
+            "한방재료": [
+                ("건강식품 > 인삼/한방재료", 0.1443),
+                ("건강관리용품 > 한방건강보조용품", 0.2083),
+            ]
+        },
+    )
+    out = await m.run_full([CategoryQuery(None, "한방재료")])
+    assert out.legs == [("건강식품 > 인삼/한방재료", "한방재료")]
+    assert out.unresolved == []
+
+
+async def test_unresolved_collects_select_null_leg() -> None:
+    """§4 ② 택일 null → unresolved. "후보 top-k 중 맞는 것이 없다"는 ① 과 같은 의미다.
+
+    거리는 가까운데 뜻이 틀린 추상 라벨이 여기 걸린다 — `'선물용품'` → `취미 > 수집용품` 0.2074 /
+    마진 0.0095(§4.5 ⑤ 의 "오분류지만 마진 얇음" 4건). 거리컷으로는 못 잡고 택일이 잡아낸다.
+    """
+    m = _FakeMapper(exact=set(), nearest={}, hits=_AMBIGUOUS)
+    out = await m.run_full(
+        [CategoryQuery(None, "선물용품")],
+        select=_FakeSelector(answer=None),
+        llm=object(),
+    )
+    assert out.legs == []
+    assert out.unresolved == ["선물용품"]
+
+
+async def test_unresolved_excludes_search_failure() -> None:
+    """§4 ③ 조회 예외는 unresolved 가 **아니다** — 인프라 장애가 LLM 전개를 부르면 안 된다.
+
+    실패 원인이 발화 내용이 아니라 pg 경합·타임아웃이라, 내용 기반 처방(전개)을 붙일 근거가 없다.
+    전개해봐야 같은 인프라를 다시 두드릴 뿐이고 LLM 비용만 든다. PR #188 이 `error_type` 으로
+    "인프라 장애 vs 코드 버그"를 가른 것과 같은 원칙(§4).
+    """
+    m = _FakeMapper(exact=set(), nearest={}, search_raises_for={"청바지"})
+    out = await m.run_full([CategoryQuery(None, "청바지")])
+    assert out.legs == []
+    assert out.unresolved == []
+
+
+async def test_unresolved_excludes_embed_failure() -> None:
+    """embed 전면 실패도 unresolved 가 아니다 — 조회 예외와 같은 이유(인프라·로직 실패)."""
+    m = _FakeMapper(exact=set(), nearest={}, embed_raises=True)
+    out = await m.run_full([CategoryQuery(None, "집들이 선물")])
+    assert out.legs == []
+    assert out.unresolved == []
+
+
+async def test_unresolved_excludes_zero_hit_leg() -> None:
+    """§4 ④ 히트 0건도 unresolved 가 아니다 — `categories` 미시드 신호라 전개로 풀리지 않는다.
+
+    전개된 상품명도 결국 같은 빈 사전을 조회한다. 이건 품질 메트릭(`category_unmapped`)으로
+    남겨야 할 운영 신호이지 발화 해석 문제가 아니다.
+    """
+    m = _FakeMapper(exact=set(), nearest={}, hits={"디퓨저": []})
+    out = await m.run_full([CategoryQuery(None, "디퓨저")])
+    assert out.legs == []
+    assert out.unresolved == []
+
+
+async def test_unresolved_is_empty_when_no_signal() -> None:
+    """신호 없는 leg(raw·query 모두 없음)은 unresolved 가 아니다 — 매핑을 시도조차 안 했다.
+
+    이 경우는 D1(`no_legs`)이 별도로 판정한다(§4). 여기서 unresolved 로 새면 사유가 이중으로
+    기록돼 관측 분포가 오염된다.
+    """
+    m = _FakeMapper(exact=set(), nearest={}, hits={})
+    out = await m.run_full([CategoryQuery(None, None), CategoryQuery(None, "  ")])
+    assert out.legs == []
+    assert out.unresolved == []
+
+
+async def test_unresolved_keeps_partial_success() -> None:
+    """일부만 실패하면 성공 leg 은 legs 에, 실패 leg 만 unresolved 에 — 합집합 배선의 입력(§6).
+
+    `"이사 가는데 냉장고랑 필요한 것들"` 대역. 종전 교체 배선은 전개가 트리거되면 냉장고까지
+    날렸는데, 이제 성공분을 보존한 채 전개분을 더한다.
+    """
+    m = _FakeMapper(
+        exact=set(),
+        nearest={},
+        hits={
+            "냉장고": [("냉장고 > 일반 냉장고", 0.09), ("냉장고 > 김치 냉장고", 0.19)],
+            "이사 필요한 것들": [("수납정리용품 > 이사박스", 0.31), ("생활잡화 > 정리소품", 0.32)],
+        },
+    )
+    out = await m.run_full([CategoryQuery(None, "냉장고"), CategoryQuery(None, "이사 필요한 것들")])
+    assert out.legs == [("냉장고 > 일반 냉장고", "냉장고")]
+    assert out.unresolved == ["이사 필요한 것들"]
+
+
+async def test_unresolved_uses_winning_anchor_text() -> None:
+    """unresolved 에는 **이긴 앵커 텍스트**를 담는다 — 관측이 목적이다(§6.2).
+
+    전개 자체는 발화 원문으로 하므로 이 값이 트리거 판정을 바꾸지는 않는다. 다만 어떤 앵커가
+    실패했는지가 로그에 남아야 하류 `category_distance_rejected` 의 거리·마진과 조인해 임계를
+    재튜닝할 수 있다(§10). query 우선 규약(DESIGN-59 §4.3.1)을 그대로 따른다.
+    """
+    m = _FakeMapper(
+        exact=set(),
+        nearest={},
+        hits={
+            "선물": [("취미 > 수집용품", 0.31), ("취미 > 파티용품", 0.32)],
+            "환갑 선물용": [("출산/돌기념품 > 답례품", 0.30), ("출산/돌기념품 > 돌잔치용품", 0.31)],
+        },
+    )
+    out = await m.run_full([CategoryQuery("선물", "환갑 선물용")])
+    assert out.legs == []
+    assert out.unresolved == ["환갑 선물용"]  # raw("선물") 이 아니라 query 앵커

@@ -10,6 +10,7 @@ import json
 from types import SimpleNamespace
 
 from app.agents.buyer.graph import run_buyer_turn as _production_run_buyer_turn
+from app.agents.buyer.recommendation.category_mapping import CategoryMapping
 from app.agents.buyer.recommendation.graph import _merge_fanout_results
 from app.agents.buyer.recommendation.state import build_condition_chips
 from app.api.deps import buyer_owner_id
@@ -64,7 +65,7 @@ def test_merge_skips_empty_legs() -> None:
 def test_merge_cap_zero_yields_empty() -> None:
     """cap<=0(운영 설정 실수)면 정확히 0개로 절단한다 — slice 의미와 일치(PR #73 리뷰).
 
-    append 후 체크 방식이면 첫 상품이 항상 남아 decompose·_dedup_truncate 의 slice 절단과
+    append 후 체크 방식이면 첫 상품이 항상 남아 decompose·dedup_truncate 의 slice 절단과
     어긋난다. 세 절단 지점(_parse·merge·_dedup)을 같은 slice 규약으로 통일한다.
     """
     merged, leg_of = _merge_fanout_results([(0, _res(1, 2, 3)), (1, _res(4, 5))], cap=0)
@@ -152,9 +153,20 @@ class _RecordingPush:
         return True
 
 
+def _mapping(legs, unresolved=()) -> CategoryMapping:
+    """매퍼 fake 의 반환값 — #217 로 `map_categories` 가 `CategoryMapping` 을 낸다.
+
+    `unresolved` 를 **명시적으로** 채우게 두는 이유: 기본값으로 뭉개면 "전개가 발동하지 않는" 쪽으로
+    조용히 기울어 트리거 회귀를 놓친다. 리스트를 그대로 돌려주는 구식 fake 를 그래프가 관대하게
+    받아주지 않는 것도 같은 이유다 — 실제 매퍼가 계약을 어겨도 조용히 전개가 죽는다
+    (conftest `_fake_map` 주석의 "시그니처 드리프트 → 조용한 degrade" 교훈과 같은 부류).
+    """
+    return CategoryMapping(legs=list(legs), unresolved=list(unresolved))
+
+
 def _two_leg_mapper():
     async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
-        return [("여행/캠핑 > 여행용품", "파우치"), ("가전 > 어댑터", "어댑터")]
+        return _mapping([("여행/캠핑 > 여행용품", "파우치"), ("가전 > 어댑터", "어댑터")])
 
     return _map
 
@@ -251,7 +263,7 @@ async def test_fanout_single_category_preserves_candidate_width() -> None:
         return _res(101, 102)
 
     async def _one_leg(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
-        return [("가전 > 이어폰/헤드폰", "무선 이어폰")]
+        return _mapping([("가전 > 이어폰/헤드폰", "무선 이어폰")])
 
     await _collect(
         run_buyer_turn(
@@ -390,7 +402,7 @@ async def test_multiturn_prior_category_fed_to_decompose_prompt() -> None:
         return _res(101)
 
     async def _map_leg(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
-        return [("여행 > 여행용품", "파우치")]
+        return _mapping([("여행 > 여행용품", "파우치")])
 
     llm = FakeLLM()
     # 턴 1 — 카테고리 확립·저장
@@ -485,7 +497,7 @@ def _garbage_mapper():
 
     async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
         legs = [(q.raw_category, q.query) for q in category_queries if q.raw_category]
-        return legs or [("매퍼우회검증_garbage카테고리", None)]
+        return _mapping(legs or [("매퍼우회검증_garbage카테고리", None)])
 
     return _map
 
@@ -563,7 +575,7 @@ async def test_multiturn_new_situational_query_not_hijacked_by_prior() -> None:
                 legs.append((q.raw_category, q.query))
             elif q.query:
                 legs.append((qmap.get(q.query, "미상"), q.query))
-        return legs
+        return _mapping(legs)
 
     d1 = {
         "intent": "recommend",
@@ -617,7 +629,7 @@ async def test_empty_legs_clears_unvalidated_filters_category() -> None:
         return _res(101)
 
     async def _map_empty(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
-        return []  # 매핑 전량 실패(미시드·하드실패)
+        return _mapping([])  # 매핑 전량 실패(미시드·하드실패)
 
     # decompose 가 구식 습관으로 filters.category 를 echo
     d = {
@@ -664,9 +676,16 @@ def _expansion_probe():
     return seen, _expand
 
 
-async def _run_recommend(message: str, decompose: dict, *, expand=None, **kw) -> list:
-    """단일 턴을 돌리고 각 검색 leg 의 category 를 반환한다."""
+async def _run_recommend(
+    message: str, decompose: dict, *, expand=None, unmapped: set[str] | None = None, **kw
+) -> list:
+    """단일 턴을 돌리고 각 검색 leg 의 category 를 반환한다.
+
+    `unmapped` 는 **매핑이 canonical 을 못 내는 leg query** 집합이다(#217 §4 D2 트리거 입력).
+    실제 매퍼에서는 거리컷·택일 null 이 판정하는 자리를, 여기서는 이름으로 지정해 결정적으로 만든다.
+    """
     calls: list = []
+    unmapped = unmapped or set()
 
     async def _search(filters, exclude_product_ids=None):
         calls.append(filters.category)
@@ -674,7 +693,10 @@ async def _run_recommend(message: str, decompose: dict, *, expand=None, **kw) ->
 
     async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
         # leg query 를 그대로 canonical 처럼 흘려 전개 결과가 검색까지 도달하는지 본다.
-        return [(q.query, q.query) for q in category_queries if q.query]
+        return _mapping(
+            [(q.query, q.query) for q in category_queries if q.query and q.query not in unmapped],
+            [q.query for q in category_queries if q.query and q.query in unmapped],
+        )
 
     await _collect(
         run_buyer_turn(
@@ -692,9 +714,10 @@ async def _run_recommend(message: str, decompose: dict, *, expand=None, **kw) ->
 
 
 async def test_purpose_utterance_is_expanded_into_products() -> None:
-    """[#198] 목적형 발화가 전개되어 **구체 상품**이 검색 leg 이 된다 — 이 이슈의 목표.
+    """[#198·#217] 목적형 발화가 전개되어 **구체 상품**이 검색 leg 이 된다 — 이 이슈의 목표.
 
     종전: `['집들이 선물']` 이 그대로 leg 이 되어 매핑 불가(거리컷 드롭) → 카테고리 없이 검색.
+    #217 이후로는 **그 매핑 실패 자체가 트리거**다 — marker 목록을 보지 않는다.
     """
     seen, expand = _expansion_probe()
     calls = await _run_recommend(
@@ -707,9 +730,106 @@ async def test_purpose_utterance_is_expanded_into_products() -> None:
             "categoryQueries": [{"category": None, "query": "집들이 선물"}],
         },
         expand=expand,
+        unmapped={"집들이 선물"},  # 실측 0.2904 / 0.0073 → 거리컷 드롭
     )
     assert seen == ["집들이 선물로 뭐 사갈까"]  # 발화가 전개기로 전달됨
     assert calls == ["디퓨저", "식기 세트", "핸드워시 세트"]  # 전개 결과가 fan-out 검색까지 도달
+
+
+async def test_marker_free_purpose_expression_is_expanded() -> None:
+    """[#217] 목적 marker 목록에 **없는** 표현도 전개된다 — 이 이슈가 고치는 것.
+
+    `"김밥 재료"`(0.3027 / 마진 0.0054)는 초판 marker 에 `재료` 가 없어 미검출이었다. 목록에
+    `재료` 를 넣는 처방은 이미 정답 매핑되는 `한방재료`·`떡볶이 재료` 를 파괴해 기각됐다(§4.0).
+    """
+    seen, expand = _expansion_probe()
+    calls = await _run_recommend(
+        "감자탕 재료 사려고",
+        {
+            "intent": "recommend",
+            "reply": "",
+            "case": 3,
+            "filters": {},
+            "categoryQueries": [{"category": None, "query": "감자탕 재료"}],
+        },
+        expand=expand,
+        unmapped={"감자탕 재료"},
+    )
+    assert seen == ["감자탕 재료 사려고"]
+    assert calls == ["디퓨저", "식기 세트", "핸드워시 세트"]
+
+
+async def test_mapped_purpose_expression_is_not_expanded() -> None:
+    """[#217] 매핑에 성공한 표현은 목적 표현처럼 보여도 전개하지 않는다 — 오탐 0 보장.
+
+    §4.5 ① 대조군이 여기 걸린다. `"수예 재료"` 는 `홈패브릭/수예 > 수예용품` 0.1590 으로 정확히
+    매핑되고, 전개하면 오히려 `지퍼`→집업·`바늘`→당뇨침으로 오염된다(§4.5 ③).
+    """
+    seen, expand = _expansion_probe()
+    calls = await _run_recommend(
+        "수예 재료 사려고",
+        {
+            "intent": "recommend",
+            "reply": "",
+            "case": 3,
+            "filters": {},
+            "categoryQueries": [{"category": None, "query": "수예 재료"}],
+        },
+        expand=expand,  # unmapped 없음 = 매핑 성공
+    )
+    assert seen == []  # 전개 미호출
+    assert calls == ["수예 재료"]
+
+
+async def test_partial_failure_keeps_mapped_leg_and_adds_expansion() -> None:
+    """[#217] 일부 leg 만 실패하면 **성공한 leg 을 지키고 전개 leg 을 더한다**(§6 합집합).
+
+    종전 교체 배선은 전개가 트리거되면 legs 를 통째로 갈아엎어, 사용자가 **명시한** 카테고리까지
+    날아갔다. 합집합이면 냉장고를 지키면서 나머지를 푼다. 원 leg 이 **앞**에 오는 것도 계약이다 —
+    `category_fanout_max` 절단 시 명시 카테고리가 먼저 살아남아야 한다.
+    """
+    seen, expand = _expansion_probe()
+    calls = await _run_recommend(
+        "이사 가는데 냉장고랑 필요한 것들",
+        {
+            "intent": "recommend",
+            "reply": "",
+            "case": 3,
+            "filters": {},
+            "categoryQueries": [
+                {"category": None, "query": "냉장고"},
+                {"category": None, "query": "이사 필요한 것들"},
+            ],
+        },
+        expand=expand,
+        unmapped={"이사 필요한 것들"},
+    )
+    assert seen == ["이사 가는데 냉장고랑 필요한 것들"]
+    assert calls == ["냉장고", "디퓨저", "식기 세트", "핸드워시 세트"]
+
+
+async def test_expansion_runs_at_most_once_per_turn() -> None:
+    """[#217] 재매핑이 또 실패해도 다시 전개하지 않는다 — 무한 루프 방지(§6.1).
+
+    전개 결과가 전부 매핑 실패하는 회차가 실제로 있다(§4.5 ③ `김밥 재료` → 김·단무지·시금치가
+    전부 거리컷). 그때 "실패했으니 또 전개"로 돌면 턴이 끝나지 않는다.
+    """
+    seen, expand = _expansion_probe()
+    calls = await _run_recommend(
+        "집들이 선물로 뭐 사갈까",
+        {
+            "intent": "recommend",
+            "reply": "",
+            "case": 3,
+            "filters": {},
+            "categoryQueries": [{"category": None, "query": "집들이 선물"}],
+        },
+        expand=expand,
+        # 원 leg 도 전개 결과도 전부 매핑 실패
+        unmapped={"집들이 선물", "디퓨저", "식기 세트", "핸드워시 세트"},
+    )
+    assert len(seen) == 1  # 전개 호출은 정확히 1회
+    assert calls == [None]  # 살아남은 leg 이 없어 무필터 검색(§7 degrade)
 
 
 async def test_normal_product_utterance_is_not_expanded() -> None:
@@ -728,6 +848,30 @@ async def test_normal_product_utterance_is_not_expanded() -> None:
     )
     assert seen == []  # 전개 미호출
     assert calls == ["청바지"]
+
+
+async def test_case_gate_blocks_expansion_even_when_mapping_fails() -> None:
+    """[#217] case 2 는 **매핑이 실패해도** 전개하지 않는다 — 무필터 계약 보존(#22·#162).
+
+    `'평점 높은 거'` 는 `게임 > PC게임` 0.3420 / 마진 0.0171 로 매핑 실패다. case 2 leg 은 맞는
+    칸이 없는 것이 정상이라 매핑 실패가 **구조적으로** 발생하므로, 게이트가 없으면 "카테고리 무관"
+    의도가 지어낸 상품 목록으로 좁혀진다(§4.2).
+    """
+    seen, expand = _expansion_probe()
+    calls = await _run_recommend(
+        "평점 높은 거 보여줘",
+        {
+            "intent": "recommend",
+            "reply": "",
+            "case": 2,
+            "filters": {},
+            "categoryQueries": [{"category": None, "query": "평점 높은 거"}],
+        },
+        expand=expand,
+        unmapped={"평점 높은 거"},
+    )
+    assert seen == []  # 전개 미호출
+    assert calls == [None]  # 카테고리 없이(무필터) 검색
 
 
 async def test_refine_turn_carries_prior_and_is_never_expanded() -> None:
@@ -773,10 +917,14 @@ async def test_refine_turn_carries_prior_and_is_never_expanded() -> None:
     assert calls[-1] == "여행 > 여행용품"  # 직전 카테고리 승계 유지
 
 
-async def test_expansion_failure_keeps_original_legs() -> None:
-    """전개가 실패하면(빈 리스트) `decompose` 원본 legs 를 그대로 쓴다 — 후퇴 없음(§7).
+async def test_expansion_failure_keeps_mapping_result() -> None:
+    """전개가 실패하면(빈 리스트) **원 매핑 결과**를 그대로 쓴다 — 후퇴 없음(§7).
 
     전개는 **개선 시도**이며, 실패가 기존 경로를 악화시켜서는 안 된다. 최악이 "지금과 동일".
+
+    #217 로 기준점이 옮겨졌다 — 종전에는 전개가 매핑보다 앞이라 "원본 `category_queries` 유지"가
+    후퇴 없음이었는데, 이제는 매핑을 이미 지난 뒤라 **매핑 결과 유지**가 그 자리다. 여기서는 원 leg
+    이 거리컷에 걸린 상태이므로 무필터 검색이 되는데, 그것이 정확히 "전개가 없었을 때의 동작"이다.
     """
 
     async def _expand_fail(utterance, **_):
@@ -792,8 +940,37 @@ async def test_expansion_failure_keeps_original_legs() -> None:
             "categoryQueries": [{"category": None, "query": "집들이 선물"}],
         },
         expand=_expand_fail,
+        unmapped={"집들이 선물"},
     )
-    assert calls == ["집들이 선물"]  # 원본 leg 유지(종전 동작)
+    assert calls == [None]  # 매핑 결과(빈 legs) 유지 → 무필터 + semanticQuery
+
+
+async def test_expansion_failure_keeps_mapped_legs_intact() -> None:
+    """전개 실패가 **이미 매핑된 leg** 을 건드리지 않는다 — 합집합 배선의 후퇴 없음 보장(§7).
+
+    합집합이라 "전개가 성공했으나 내용이 엉뚱한" 경우에도 원 leg 을 잃는 경로가 구조적으로 없다.
+    종전 교체 배선에는 그 구멍이 있었다.
+    """
+
+    async def _expand_fail(utterance, **_):
+        return []
+
+    calls = await _run_recommend(
+        "이사 가는데 냉장고랑 필요한 것들",
+        {
+            "intent": "recommend",
+            "reply": "",
+            "case": 3,
+            "filters": {},
+            "categoryQueries": [
+                {"category": None, "query": "냉장고"},
+                {"category": None, "query": "이사 필요한 것들"},
+            ],
+        },
+        expand=_expand_fail,
+        unmapped={"이사 필요한 것들"},
+    )
+    assert calls == ["냉장고"]  # 성공한 leg 은 그대로
 
 
 async def test_category_agnostic_case2_is_never_expanded() -> None:
@@ -880,6 +1057,7 @@ async def test_expander_receives_observer_for_model_call_logging() -> None:
         },
         expand=_expand,
         observer=observer,
+        unmapped={"집들이 선물"},
     )
     assert calls == ["디퓨저", "식기 세트"]  # 전개가 실제로 발동한 턴
     assert got == [observer]  # 같은 observer 가 seam 까지 도달했다
@@ -896,7 +1074,7 @@ async def test_mapper_receives_observer_for_select_model_call_logging() -> None:
 
     async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **kw):
         got.append(kw.get("observer"))
-        return [("가전 > 이어폰/헤드폰", "무선 이어폰")]
+        return _mapping([("가전 > 이어폰/헤드폰", "무선 이어폰")])
 
     observer = _ProbeObserver()
     calls: list = []
@@ -1108,7 +1286,7 @@ async def test_single_need_still_sends_one_list() -> None:
 
     def _one_leg_mapper():
         async def _map(*, category_queries, utterance, settings):
-            return [("여행/캠핑 > 여행용품", "파우치")]
+            return _mapping([("여행/캠핑 > 여행용품", "파우치")])
 
         return _map
 

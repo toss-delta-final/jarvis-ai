@@ -282,7 +282,7 @@ def _parse_category_queries(raw: object, fanout_max: int) -> list[CategoryQuery]
     # 스킵되므로, 절단 전에 빼지 않으면 LLM 이 앞쪽에 빈 항목을 섞어낼 때 fanout 예산만 먹고 뒤쪽
     # 실제 카테고리를 밀어낸다(§9 상한 의도 훼손, PR #73 리뷰).
     signal = [q for q in out if q.raw_category or q.query]
-    # slice 절단 — category_mapping 의 _dedup_truncate·_merge_fanout_results 와 동일 규약
+    # slice 절단 — category_mapping 의 dedup_truncate·_merge_fanout_results 와 동일 규약
     # (fanout_max<=0 이면 정확히 0개; append 후 체크는 첫 항목이 남아 절단 의미가 어긋난다, PR #73 리뷰).
     return signal[:fanout_max]
 

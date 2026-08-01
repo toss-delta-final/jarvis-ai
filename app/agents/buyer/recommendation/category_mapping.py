@@ -17,6 +17,7 @@ import asyncio
 import functools
 import logging
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass, field
 
 from app.agents.buyer.recommendation.category_select import select_category as _select_category
 from app.agents.buyer.recommendation.state import CategoryQuery
@@ -37,6 +38,34 @@ _Picked = tuple[str, float, float | None]
 _Winner = tuple[str, float, float | None, str]
 
 
+@dataclass
+class CategoryMapping:
+    """매핑 결과 — leg 목록 + **canonical 을 못 낸 leg**(이슈 #217, DESIGN-198 §6.2).
+
+    `unresolved` 는 전개 트리거의 입력이다. 종전 반환형(`legs` 리스트 단독)으로는 호출부가
+    "드롭됐다"와 "애초에 신호가 없었다"를 구분할 수 없어, 목적 marker 열거로 미리 맞히는 수밖에
+    없었다(#198 초판 D2·D3). 결과를 보고 판정하면 열거가 필요 없다.
+
+    **무엇을 담고 무엇을 담지 않는지가 이 필드의 전부다**(§4):
+
+    - 담는다 — ① 거리컷 드롭(`category_distance_rejected`) · ② 택일 null(`category_select_null`).
+      둘 다 "이 표현에 맞는 칸이 taxonomy 에 없다"는 같은 뜻이다.
+    - 담지 않는다 — ③ 조회 예외(pg 경합·embed 실패) · ④ 히트 0건(`categories` 미시드).
+      **실패 원인이 발화 내용이 아니라서** 내용 기반 처방(LLM 전개)을 붙일 근거가 없다. 섞으면
+      pg 순간 장애가 전개 호출을 부르고, 전개해봐야 같은 인프라·같은 빈 사전을 다시 두드린다.
+      PR #188 이 `error_type` 으로 "인프라 장애 vs 코드 버그"를 가른 것과 같은 원칙이다.
+    - 신호 없는 leg(raw·query 모두 없음)도 담지 않는다 — 매핑을 시도조차 하지 않았고, 그 상황은
+      호출부가 D1(`no_legs`)로 따로 판정한다. 여기서 새면 사유가 이중 기록돼 관측이 오염된다.
+
+    값은 **이긴 앵커 텍스트**(query 우선, §4.3.1)다. 전개 자체는 발화 원문으로 하므로 이 값이
+    트리거 판정을 바꾸지는 않지만, 어떤 앵커가 왜 실패했는지가 로그에 남아야 하류
+    `category_distance_rejected` 의 거리·마진과 조인해 임계를 재튜닝할 수 있다(§10).
+    """
+
+    legs: list[tuple[str, str | None]] = field(default_factory=list)
+    unresolved: list[str] = field(default_factory=list)
+
+
 def _top1_with_margin(hits: list[tuple[str, float]]) -> _Picked | None:
     """거리 오름차순 top-k 에서 `(canonical, distance, margin)` 을 뽑는다 (히트 0건이면 None).
 
@@ -51,10 +80,15 @@ def _top1_with_margin(hits: list[tuple[str, float]]) -> _Picked | None:
     return canonical, round(distance, 4), margin
 
 
-def _dedup_truncate(
+def dedup_truncate(
     legs: list[tuple[str, str | None]], fanout_max: int
 ) -> list[tuple[str, str | None]]:
-    """canonical 기준 순서보존 dedup(첫 query 유지) 후 fanout_max 로 절단."""
+    """canonical 기준 순서보존 dedup(첫 query 유지) 후 fanout_max 로 절단.
+
+    공개 함수인 이유(#217): 합집합 배선(§6)에서 **호출부가** 원 매핑 legs 와 전개 매핑 legs 를
+    이어붙인 뒤 같은 규칙으로 정리해야 한다. 순서보존이 계약의 일부다 — 원 leg 을 앞에 두면
+    `fanout_max` 절단에서 사용자가 명시한 카테고리가 먼저 살아남는다.
+    """
     seen: set[str] = set()
     out: list[tuple[str, str | None]] = []
     for cat, query in legs:
@@ -76,7 +110,7 @@ async def map_categories(
     tier: str = "fast",
     select_category: SelectFn = _select_category,
     observer=None,
-) -> list[tuple[str, str | None]]:
+) -> CategoryMapping:
     """decompose 추측들을 canonical (category, query) leg 리스트로 보정한다.
 
     각 leg 의 query 는 그 카테고리 전용 검색 키워드(fan-out leg keyword, §6·§9) — 매핑 전
@@ -99,6 +133,11 @@ async def map_categories(
     2개(raw·query)라 한 턴의 pg 커넥션 점유가 `2 × leg 수`이고, 그 상한을 config 검증기가 기동 시
     강제하기 때문이다. 호출부 절단에만 기대면 새 호출부 하나가 풀을 넘긴다.
 
+    반환은 `CategoryMapping(legs, unresolved)` 다(#217, §6.2) — `unresolved` 는 (3)·§4.4 택일 null 로
+    **canonical 을 못 낸 leg** 의 앵커 텍스트이고, 호출부(graph)가 이를 전개 트리거로 쓴다. 조회
+    예외((5))·히트 0건은 담지 않는다: 실패 원인이 발화 내용이 아니라 인프라·시드 상태라서
+    LLM 전개로 풀 수 없다(`CategoryMapping` docstring 참조).
+
     (utterance 는 매퍼 인터페이스 파라미터로 유지하되, 현재 앵커는 leg 별 raw·query 만 쓴다.)
     """
     dsn = settings.catalog_db_url
@@ -117,7 +156,7 @@ async def map_categories(
     # config._require_pool_covers_anchor_concurrency 는 `pool >= 2 × fanout_max` 를 기동 시
     # 강제한다 — 그 전제("leg 수 ≤ fanout_max")가 호출부 절단에만 의존하면 새 호출부 하나가
     # 풀을 넘기고, 증상은 **다른 사용자 요청의 PoolTimeout** 이라 원인 추적이 어렵다.
-    # 출력은 어차피 _dedup_truncate 로 같은 상한을 받으므로 초과분은 낭비였다(dedup 이 겹칠 때만
+    # 출력은 어차피 dedup_truncate 로 같은 상한을 받으므로 초과분은 낭비였다(dedup 이 겹칠 때만
     # leg 다양성이 줄지만, 그건 호출부 계약 위반 상황이고 풀 고갈보다 가벼운 손해다).
     if len(queries) > fanout_max:
         logger.warning(
@@ -354,6 +393,13 @@ async def map_categories(
         )
 
     result: list[tuple[str, str | None]] = []
+    # 전개 트리거 입력(#217 §4) — canonical 을 못 낸 leg 만. 조회 예외·히트 0건은 담지 않는다.
+    unresolved: list[str] = []
+
+    def _anchor_text(i: int) -> str:
+        """실패 leg 을 식별할 텍스트 — 이긴 앵커(query 우선 §4.3.1), 없으면 원 신호로 폴백."""
+        return anchor_by_leg.get(i) or qtexts[i] or raws[i] or ""
+
     for i, r in enumerate(raws):
         if r and r in exact:
             logger.info("category_mapped", extra={"raw": r, "canonical": r})
@@ -403,11 +449,15 @@ async def map_categories(
                     "select_changed": i in select_changed,
                 },
             )
+            # #217 §4 ① — "맞는 칸이 taxonomy 에 없다"는 판정이라 전개 대상이다.
+            unresolved.append(_anchor_text(i))
             continue
         if i in select_dropped:
             # §4.4 택일이 "맞는 후보 없음" → 이미 category_select_null 로 관측됨. 이 leg 은 위
             # 거리 분기에 닿지 않는다 — 택일 트리거(ambiguous)가 **거리컷 통과분만** 대상으로
             # 하므로 nearest[i] 의 거리는 임계 이하다(테스트로 고정).
+            # #217 §4 ② — ① 과 같은 뜻("후보 중 맞는 것이 없다")이라 함께 전개 대상이다.
+            unresolved.append(_anchor_text(i))
             continue
         if picked:
             canonical, distance, margin, anchor_kind = picked
@@ -431,9 +481,13 @@ async def map_categories(
             )
             result.append((canonical, qtexts[i]))
         elif i in failed_idx:
-            continue  # 조회 예외로 실패 — 이미 실패 로그로 관측됨. 품질 메트릭 오염 방지로 드롭만.
+            # 조회 예외로 실패 — 이미 실패 로그로 관측됨. 품질 메트릭 오염 방지로 드롭만.
+            # **`unresolved` 에 담지 않는다**(#217 §4 ③): 실패 원인이 발화 내용이 아니라 인프라라
+            # LLM 전개로 풀리지 않고, 전개해봐야 같은 pg·임베딩을 다시 두드린다.
+            continue
         else:
             # 신호(raw/query)는 있었고 조회도 정상이나 히트 0건 → canonical 없이 드롭(top-k 미스율
             # 품질 신호, §11). categories 미시드·임베딩 결측 등 드문 상태라 관측 가능하게 남긴다(#4).
+            # 여기도 `unresolved` 대상이 아니다(#217 §4 ④) — 전개된 상품명도 같은 빈 사전을 본다.
             logger.warning("category_unmapped", extra={"raw": r})
-    return _dedup_truncate(result, fanout_max)
+    return CategoryMapping(legs=dedup_truncate(result, fanout_max), unresolved=unresolved)

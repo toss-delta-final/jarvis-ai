@@ -102,7 +102,7 @@ def _merge_fanout_results(
             seen.add(product.product_id)
             leg_of[product.product_id] = leg
             merged.append(product)
-    # slice 절단 — decompose 의 _parse_category_queries·_dedup_truncate 와 동일 규약
+    # slice 절단 — decompose 의 _parse_category_queries·dedup_truncate 와 동일 규약
     # (cap<=0 이면 정확히 0개; append 후 체크는 첫 상품이 남아 절단 의미가 어긋난다, PR #73 리뷰).
     merged = merged[:cap]
     # 절단으로 탈락한 상품의 leg 정체성은 남기지 않는다 — 하류가 없는 상품을 니즈에 배정하지 않게.
