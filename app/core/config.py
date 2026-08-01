@@ -340,6 +340,10 @@ class Settings(BaseSettings):
     category_select_margin_max: float = Field(default=0.02, ge=0.0, le=2.0)
     # 턴당 택일 LLM 호출 상한 — fan-out 5 leg 이 모두 애매하면 턴 LLM 이 2→7회로 뛴다. 초과 leg 는
     # 임베딩 top-1 을 그대로 쓴다(종전 동작). ge=0 — 0 이면 택일 기능 off.
+    # ⚠️ **턴당**이 계약이다(#217 PR 리뷰). `map_categories` 는 이 값을 호출 단위로 적용하므로,
+    # #217 로 매핑이 턴에 2회 불리게 된 뒤로는 **호출부가 남은 예산을 계산해 넘겨야** 상한이 지켜진다
+    # (`graph._map_or_empty(select_max_calls=...)` ← `CategoryMapping.select_calls`).
+    # 매핑을 부르는 새 경로를 만들 때 이 배선을 빠뜨리면 상한이 조용히 배수로 깨진다.
     category_select_max_calls: int = Field(default=2, ge=0)
 
     # ── 목적·상황형 발화의 상품 전개 (이슈 #198·#217, DESIGN-NEEDS-EXPANSION-198) ──

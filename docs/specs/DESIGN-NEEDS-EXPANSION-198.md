@@ -454,9 +454,32 @@ dedup_truncate(legs + legs2, category_fanout_max)
 ```
 
 - **전개는 턴당 1회.** 재매핑이 또 실패해도 재전개하지 않는다(무한 루프 방지).
-- 매핑 호출은 **순차** 2회 — `config._require_pool_covers_anchor_concurrency` 의
-  `pool >= 2 × fanout_max` 전제(동시 앵커 수)를 깨지 않는다.
 - D1 경로는 첫 매핑에 앵커가 없어 임베딩·pg 왕복이 발생하지 않는다(낭비 없음).
+
+**매핑이 턴에 2회 불리므로, 늘어난 호출이 어떤 예산도 배수로 만들지 않는지 리소스별로 따진다**
+(PR 리뷰 — 처음에는 pg 커넥션만 따지고 LLM 예산을 놓쳤다):
+
+| 리소스 | 배수가 되나 | 근거 |
+|---|:-:|---|
+| pg 커넥션 | X | 두 호출이 **순차**라 동시 앵커 수는 그대로 — `pool >= 2 × fanout_max` 전제 유지 |
+| **택일 LLM 호출** | **막았다** | `category_select_max_calls` 는 **턴당** 상한인데 매핑 내부에서는 호출 단위로 적용된다. 그대로 두면 2배(기본 2→4)로 깨지므로 **호출부가 남은 예산을 넘긴다**(아래) |
+| 임베딩·pg 왕복 | O(의도) | 1회 추가는 이 설계가 감수하는 비용이다(§8) |
+| 전개 LLM 호출 | X | 턴당 1회 상한 |
+
+```python
+# graph — 첫 매핑이 쓴 몫을 빼고 넘긴다. 0 이면 매퍼가 택일을 건너뛰고 임베딩 top-1 을 쓴다.
+expanded = await _map_or_empty(
+    ..., select_max_calls=max(0, settings.category_select_max_calls - mapping.select_calls)
+)
+```
+
+`CategoryMapping.select_calls` 는 **시도 수**다 — 실패한 택일도 비용이 발생하므로(관측 기록도 호출
+**전**에 한다) 결과를 보고 세면 실패분이 예산에서 빠져 두 번째 매핑이 상한을 넘겨 쓴다.
+
+> **매핑을 부르는 새 경로를 만들 때 이 배선을 빠뜨리면 상한이 조용히 배수로 깨진다.** 회귀 고정:
+> `test_fanout.py::test_select_budget_is_shared_across_both_mapping_calls`,
+> `test_category_mapping.py::test_select_max_calls_override_caps_select`·
+> `test_select_calls_reports_attempted_budget`.
 
 ### 6.2 `map_categories` 반환형
 
@@ -468,10 +491,14 @@ dedup_truncate(legs + legs2, category_fanout_max)
 class CategoryMapping:
     legs: list[tuple[str, str | None]]   # 종전 반환값
     unresolved: list[str]                # §4 ①② 로 canonical 을 못 낸 leg 의 앵커 텍스트
+    select_calls: int = 0                # 이 호출이 **시도한** §4.4 택일 수 (턴당 예산 공유용, §6.1)
 ```
 
 `unresolved` 가 텍스트를 담는 이유는 **관측**이다 — 전개 자체는 발화 원문으로 하므로(§5) 값이 트리거
 판정에 쓰이지는 않지만, 어떤 leg 이 왜 실패했는지가 로그에 남아야 임계를 재튜닝할 수 있다(§10).
+
+`select_calls` 는 **호출부가 두 번째 매핑에 남은 예산을 넘기기 위한 것**이다(§6.1) — `map_categories`
+안에는 턴 단위 카운터가 없어서, 상한을 턴당으로 지키려면 소비량이 밖으로 나와야 한다.
 
 ## 7. 실패 degrade — 후퇴 없음 보장
 

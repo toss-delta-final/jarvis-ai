@@ -1285,7 +1285,11 @@ async def test_single_need_still_sends_one_list() -> None:
     """니즈가 1개면 종전대로 목록 1건이다 — 분할은 니즈가 여럿일 때만 의미가 있다."""
 
     def _one_leg_mapper():
-        async def _map(*, category_queries, utterance, settings):
+        # 시그니처가 프로덕션 호출과 맞아야 한다 — `llm`·`tier`·`observer`·`select_max_calls` 를
+        # 안 받으면 TypeError 가 `_map_or_empty` 의 방어 except 에 먹혀 **매퍼가 아예 안 도는데도**
+        # 무필터 검색으로 목록 1건이 나와 이 테스트가 통과한다(실제로 그 상태였다).
+        # lessons.md "주입 seam 시그니처를 바꾸면 모든 fake 를 함께 고친다" 참조.
+        async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
             return _mapping([("여행/캠핑 > 여행용품", "파우치")])
 
         return _map
@@ -1575,3 +1579,112 @@ async def test_mapper_exception_skips_expansion_and_degrades_to_unfiltered() -> 
     )
     assert seen == []  # 매퍼가 죽었으면 전개 LLM 을 부르지 않는다(헛된 비용)
     assert calls == [None]  # canonical-or-null — 미검증 raw 가 검색에 안 실린다
+
+
+async def test_select_budget_is_shared_across_both_mapping_calls() -> None:
+    """[#217 PR 리뷰] `category_select_max_calls` 는 **턴당** 상한이다 — 매핑 2회가 예산을 나눠 쓴다.
+
+    #217 로 매핑이 턴에 2회(원 legs·전개 legs) 불리는데, 각 호출이 `settings` 값을 독립적으로 쓰면
+    턴당 택일 LLM 호출이 상한의 **2배**까지 나간다(기본 2 → 4). config 주석이 "턴당 택일 LLM 호출
+    상한"이라고 못 박고 있고 `SPEC-RECOMMEND-001 §비기능` 의 턴당 호출 예산도 그 전제에 선다.
+
+    호출부가 첫 매핑이 쓴 몫(`CategoryMapping.select_calls`)을 빼고 남은 예산을 두 번째 호출에
+    넘기는지 고정한다. `pool >= 2 × fanout_max`(pg 커넥션)는 순차 호출이라 무관하지만 LLM 총량은
+    별개 리소스라 따로 막아야 한다.
+    """
+    budgets: list[int | None] = []
+    seen, expand = _expansion_probe()
+
+    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **kw):
+        budgets.append(kw.get("select_max_calls"))
+        # 첫 호출이 예산을 **전부** 썼다고 보고한다 → 두 번째 호출에 남는 몫은 0 이어야 한다.
+        # settings 값을 그대로 쓰는 이유: 기본값(2)을 테스트에 박으면 config 를 튜닝했을 때
+        # 불변식과 무관하게 깨진다. 검증 대상은 "쓴 만큼 빠지는가"이지 특정 숫자가 아니다.
+        used = settings.category_select_max_calls if len(budgets) == 1 else 0
+        return CategoryMapping(
+            legs=[(q.query, q.query) for q in category_queries if q.query and len(budgets) > 1],
+            unresolved=[q.query for q in category_queries if q.query and len(budgets) == 1],
+            select_calls=used,
+        )
+
+    async def _search(filters, exclude_product_ids=None):
+        return _res(101)
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="집들이 선물로 뭐 사갈까"),
+            _member(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "reply": "",
+                    "case": 3,
+                    "filters": {},
+                    "categoryQueries": [{"category": None, "query": "집들이 선물"}],
+                }
+            ),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_map,
+            expand_needs=expand,
+        )
+    )
+    assert seen  # 전개가 실제로 발동한 턴이어야 두 번째 매핑이 존재한다
+    assert len(budgets) == 2  # 원 legs + 전개 legs
+    assert budgets[0] is None  # 첫 호출은 settings 기본값을 쓴다
+    assert budgets[1] == 0  # 첫 호출이 예산을 다 썼으므로 남은 몫 0
+
+
+async def test_union_keeps_select_budget_accounting(caplog) -> None:
+    """[#217] `needs_expansion_union` 이 **두 매핑의 택일 소비 합계**를 보고한다.
+
+    상한이 **턴당**이므로 사후 검증도 턴 단위여야 한다 — 호출별 숫자만 남으면 "상한이 실제로
+    지켜졌나"를 운영 로그로 확인할 수 없다. 어느 한쪽을 빠뜨리면 예산 회계가 거짓이 된다.
+
+    **이 테스트가 덮지 않는 것**: 합집합 객체(`CategoryMapping.select_calls`)의 값 자체. 로그를
+    `replace` 앞에서 찍으므로 객체 쪽을 되돌려도 이 단언은 통과한다 — 그 값은 현재 하류에서 읽는
+    곳이 없어 동작으로 관측되지 않는다. 그럼에도 `dataclasses.replace` 로 이어붙이는 이유는
+    **새 필드가 조용히 기본값으로 리셋되는 것을 구조적으로 막기 위한 위생**이고(실제로 그 상태였다),
+    테스트가 아니라 코드 주석이 그 근거를 진다.
+    """
+    seen, expand = _expansion_probe()
+    calls: list = []
+
+    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
+        first = not calls
+        calls.append(1)
+        return CategoryMapping(
+            legs=[] if first else [(q.query, q.query) for q in category_queries if q.query],
+            unresolved=[q.query for q in category_queries if q.query] if first else [],
+            select_calls=1,  # 두 호출이 각각 1회씩 → 합계 2 여야 한다
+        )
+
+    async def _search(filters, exclude_product_ids=None):
+        return _res(101)
+
+    with caplog.at_level("INFO"):
+        await _collect(
+            run_buyer_turn(
+                _req(message="집들이 선물로 뭐 사갈까"),
+                _member(),
+                llm=FakeLLM(
+                    decompose={
+                        "intent": "recommend",
+                        "reply": "",
+                        "case": 3,
+                        "filters": {},
+                        "categoryQueries": [{"category": None, "query": "집들이 선물"}],
+                    }
+                ),
+                search=_search,
+                push_fn=_RecordingPush(),
+                map_categories=_map,
+                expand_needs=expand,
+            )
+        )
+
+    assert seen and len(calls) == 2  # 전개가 발동해 매핑이 2회 불렸다
+    union = next(r for r in caplog.records if r.msg == "needs_expansion_union")
+    assert union.select_calls == 2  # 1(원 매핑) + 1(전개 매핑) — 어느 쪽도 잃지 않는다
+    assert union.base_legs == 0
+    assert union.expanded_legs == 3

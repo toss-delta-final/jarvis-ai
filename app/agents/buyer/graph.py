@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from typing import cast
 
 from langgraph.store.base import BaseStore
@@ -92,7 +93,9 @@ def _is_timeout(exc: Exception) -> bool:
     return "timeout" in str(exc).lower()
 
 
-async def _map_or_empty(mapper, queries, utterance, settings, llm, observer) -> CategoryMapping:
+async def _map_or_empty(
+    mapper, queries, utterance, settings, llm, observer, *, select_max_calls: int | None = None
+) -> CategoryMapping:
     """매핑 1회 — 호출 자체의 예외는 **빈 결과**로 흡수한다(canonical-or-null 불변식).
 
     embed/DB 실패는 `map_categories` 내부에서 leg 단위로 격리된다(exact 보존·§5·#20). 여기까지
@@ -103,15 +106,23 @@ async def _map_or_empty(mapper, queries, utterance, settings, llm, observer) -> 
     `unresolved` 도 비운다 — 매핑이 성립하지 않았으므로 "발화가 매핑에 실패했다"는 판정을 낼 근거가
     없다. 여기서 채우면 인프라·코드 오류가 LLM 전개를 부른다(§4 ③ 과 같은 원칙).
 
-    #217 로 이 함수가 **턴당 최대 2회**(원 legs·전개 legs) 호출된다. 순차라 동시 앵커 수는 그대로
-    이므로 `config._require_pool_covers_anchor_concurrency` 의 `pool >= 2 × fanout_max` 전제를
-    깨지 않는다.
+    #217 로 이 함수가 **턴당 최대 2회**(원 legs·전개 legs) 호출된다. 늘어난 호출이 **어떤 예산도
+    두 배로 만들지 않는지**를 리소스별로 따진다:
+
+    - **pg 커넥션**: 두 호출이 순차라 동시 앵커 수는 그대로다 —
+      `config._require_pool_covers_anchor_concurrency` 의 `pool >= 2 × fanout_max` 전제 유지.
+    - **택일 LLM 호출**(PR 리뷰): `category_select_max_calls` 는 **턴당** 상한인데 매핑 내부에서는
+      호출 단위로 적용된다. 그대로 두면 턴당 상한이 2배로 깨지므로 호출부가 **남은 예산을 계산해
+      넘긴다**(`select_max_calls`). 첫 호출이 쓴 몫은 `CategoryMapping.select_calls` 로 돌아온다.
+    - **임베딩·pg 왕복**: 1회 추가는 이 설계가 의도한 비용이다(§8).
     """
     try:
         return await mapper(
             category_queries=queries,
             utterance=utterance,
             settings=settings,
+            # None 이면 매퍼가 settings 기본값을 쓴다(첫 호출). 두 번째 호출은 남은 몫을 받는다.
+            select_max_calls=select_max_calls,
             # [#115 §4.4] 마진이 얇은 leg 만 top-k 택일에 쓰는 조건부 LLM — 정상 경로는 0회다.
             # llm=None 이면 매퍼가 택일을 건너뛰고 임베딩 top-1 을 쓴다(LLM 종속 없음).
             # tier 는 decompose 와 동일 fast — 후보 중 택일은 경량 판정이다(§4.4).
@@ -205,6 +216,11 @@ async def _prepare_recommendation(
                         settings,
                         llm,
                         observer,
+                        # 택일 예산은 **턴당**이라 첫 매핑이 쓴 몫을 빼고 넘긴다(PR 리뷰) — 안 그러면
+                        # 상한이 2배로 깨진다. 0 이면 매퍼가 택일을 건너뛰고 임베딩 top-1 을 쓴다.
+                        select_max_calls=max(
+                            0, settings.category_select_max_calls - mapping.select_calls
+                        ),
                     )
                     # **합집합**(§6) — 원 leg 을 **앞에** 둬 fanout_max 절단에서 사용자가 명시한
                     # 카테고리가 먼저 살아남게 한다. 종전 교체 배선은 전개가 트리거되면 성공한 leg
@@ -214,15 +230,22 @@ async def _prepare_recommendation(
                     merged = dedup_truncate(
                         mapping.legs + expanded.legs, settings.category_fanout_max
                     )
+                    # 택일 소비는 **두 호출의 합**이다 — 상한이 턴당이므로 사후 검증도 턴 단위여야
+                    # 한다. 로그에 실어 "상한이 실제로 지켜졌나"를 운영에서 확인할 수 있게 한다.
+                    select_used = mapping.select_calls + expanded.select_calls
                     logger.info(
                         "needs_expansion_union",
                         extra={
                             "base_legs": len(mapping.legs),
                             "expanded_legs": len(expanded.legs),
                             "merged_legs": len(merged),
+                            "select_calls": select_used,
                         },
                     )
-                    mapping = CategoryMapping(legs=merged, unresolved=mapping.unresolved)
+                    # `replace` 로 합친다 — 필드를 나열해 새로 만들면 이번처럼 새 필드
+                    # (`select_calls`)가 조용히 기본값으로 리셋된다. `unresolved` 는 첫 매핑 것을
+                    # 그대로 둔다(재전개 금지, 위 주석).
+                    mapping = replace(mapping, legs=merged, select_calls=select_used)
         decision.category_legs = mapping.legs
     if decision.category_legs:
         # 대표 canonical — 단일 filters.category 필드·조건 칩·멀티턴 승계 호환(§7).

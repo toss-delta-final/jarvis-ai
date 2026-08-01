@@ -86,11 +86,21 @@ class _FakeMapper:
         return (await self.run_full(*args, **kwargs)).legs
 
     async def run_full(
-        self, queries, utterance="발화", settings=None, *, select=None, llm=None, observer=None
+        self,
+        queries,
+        utterance="발화",
+        settings=None,
+        *,
+        select=None,
+        llm=None,
+        observer=None,
+        select_max_calls=None,
     ):
         kwargs = {}
         if select is not None:  # §4.4 택일 주입(미지정이면 프로덕션 기본값 — llm=None 이면 미호출)
             kwargs["select_category"] = select
+        if select_max_calls is not None:  # 턴당 예산 주입(#217 PR 리뷰) — 미지정이면 settings 값
+            kwargs["select_max_calls"] = select_max_calls
         return await map_categories(
             category_queries=queries,
             utterance=utterance,
@@ -1282,3 +1292,46 @@ async def test_unresolved_uses_winning_anchor_text() -> None:
     out = await m.run_full([CategoryQuery("선물", "환갑 선물용")])
     assert out.legs == []
     assert out.unresolved == ["환갑 선물용"]  # raw("선물") 이 아니라 query 앵커
+
+
+async def test_select_max_calls_override_caps_select(caplog) -> None:
+    """[#217 PR 리뷰] `select_max_calls` 주입이 settings 기본값을 대체한다 — 턴당 예산 공유의 수단.
+
+    매핑이 턴에 2회 불릴 때(#217 §6.1) 호출부가 남은 예산을 넘겨야 `category_select_max_calls`
+    ("**턴당** 택일 LLM 호출 상한")가 지켜진다. 주입이 없으면 종전대로 settings 값을 쓴다.
+    """
+    m = _FakeMapper(exact=set(), nearest={}, hits={"선물용품": _AMBIGUOUS["선물용품"]})
+    sel = _FakeSelector(answer=None)
+    with caplog.at_level("INFO"):
+        out = await m.run_full(
+            [CategoryQuery(None, "선물용품")],
+            settings=_settings(select_max_calls=2),
+            select=sel,
+            llm=object(),
+            select_max_calls=0,  # 첫 매핑이 예산을 다 썼다고 가정
+        )
+    assert sel.calls == []  # 예산 0 → 택일 미호출
+    assert out.select_calls == 0
+    assert out.legs == [("취미 > 수집용품", "선물용품")]  # 임베딩 top-1 유지(종전 degrade)
+    assert _record(caplog, "category_select_unavailable").reason == "max_calls"
+
+
+async def test_select_calls_reports_attempted_budget() -> None:
+    """`select_calls` 는 **시도 수**다 — 실패한 택일도 비용이 발생하므로 예산에서 빠지면 안 된다.
+
+    관측 기록(`observer.record_model_call`)을 호출 **전**에 하는 것과 같은 이유다. 결과를 보고 세면
+    LLM 오류가 난 호출이 예산에서 빠져 두 번째 매핑이 상한을 넘겨 쓴다.
+    """
+    m = _FakeMapper(exact=set(), nearest={}, hits={"선물용품": _AMBIGUOUS["선물용품"]})
+
+    async def _boom(*_a, **_k):
+        raise LLMError("select down")
+
+    out = await m.run_full(
+        [CategoryQuery(None, "선물용품")],
+        settings=_settings(select_max_calls=2),
+        select=_boom,
+        llm=object(),
+    )
+    assert out.select_calls == 1  # 던졌어도 1회 소비로 센다
+    assert out.legs == [("취미 > 수집용품", "선물용품")]  # 판정 실패 → top-1 유지(§4.4)

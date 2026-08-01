@@ -64,6 +64,11 @@ class CategoryMapping:
 
     legs: list[tuple[str, str | None]] = field(default_factory=list)
     unresolved: list[str] = field(default_factory=list)
+    # 이 호출이 **실제로 쓴** §4.4 택일 LLM 호출 수(#217 PR 리뷰). `category_select_max_calls` 는
+    # **턴당** 상한인데 #217 로 매핑이 턴에 2회 불리므로, 호출부가 남은 예산을 계산해 두 번째 호출에
+    # 넘겨야 상한이 지켜진다(§6.1). 실패한 호출도 비용이 발생하므로 **시도 수**를 센다 —
+    # `observer.record_model_call` 도 같은 이유로 호출 전에 기록한다.
+    select_calls: int = 0
 
 
 def _top1_with_margin(hits: list[tuple[str, float]]) -> _Picked | None:
@@ -109,6 +114,7 @@ async def map_categories(
     llm=None,
     tier: str = "fast",
     select_category: SelectFn = _select_category,
+    select_max_calls: int | None = None,
     observer=None,
 ) -> CategoryMapping:
     """decompose 추측들을 canonical (category, query) leg 리스트로 보정한다.
@@ -265,6 +271,9 @@ async def map_categories(
     # 세기"(트리거 임계 튜닝, §11)라 발동 시점 값이어야 하고, distance 는 실제 채택값이어야
     # 거리컷 튜닝에 쓸 수 있다 — 둘 다 각자의 목적에는 옳으므로 필요한 건 **구분 표시**다.
     select_changed: set[int] = set()
+    # 이 호출이 실제로 쓴 택일 예산(#217 PR 리뷰) — 호출부가 두 번째 매핑에 남은 몫을 넘긴다.
+    # 택일 단계가 예외로 죽어도 0 이 아니라 **그때까지 시도한 수**여야 예산이 새지 않는다.
+    select_calls = 0
     # 이 단계 전체를 격리한다(PR #188 리뷰) — LLM 호출은 gather(return_exceptions=True) 로 이미
     # 막혀 있지만 그 앞뒤의 순수 파이썬 로직(설정 접근·마진 필터·정렬·상한)은 어떤 try 에도 안
     # 감싸여 있었다. 여기서 예외가 나면 map_categories 가 통째로 던지고 호출부(graph)가
@@ -302,7 +311,12 @@ async def map_categories(
             # (칩·멀티턴 승계)라 "눈에 띄는 것 먼저"라는 명분도 있으나, 애매함이 큰 leg 을 방치하면
             # 틀린 카테고리로 검색이 좁혀지는 손해가 대표 여부와 무관하게 발생한다. 대표 leg 이 정말
             # 애매하면 마진도 작아 우선순위를 자연히 얻는다. 동률은 leg 인덱스 순(정렬 안정성).
-            max_calls = settings.category_select_max_calls
+            # `select_max_calls` 주입이 있으면 그 값을 쓴다(#217 PR 리뷰) — 상한이 **턴당**이라
+            # 매핑이 턴에 2회 불릴 때(원 legs·전개 legs) 각 호출이 예산을 따로 먹으면 상한이 2배로
+            # 깨진다. 호출부가 남은 예산을 계산해 넘긴다(§6.1).
+            max_calls = (
+                settings.category_select_max_calls if select_max_calls is None else select_max_calls
+            )
             ambiguous.sort(key=lambda i: nearest[i][2])
             for i in ambiguous[max_calls:]:
                 logger.info(
@@ -314,6 +328,9 @@ async def map_categories(
                     },
                 )
             targets = ambiguous[:max_calls]
+        # 예산 소비는 **gather 앞에서** 센다 — 실패한 호출도 비용이 발생하므로(관측 기록도 호출 전에
+        # 한다) 결과를 보고 세면 실패분이 예산에서 빠져 다음 매핑이 더 쓰게 된다.
+        select_calls = len(targets)
         if targets:
             picks = await asyncio.gather(
                 *(
@@ -490,4 +507,8 @@ async def map_categories(
             # 품질 신호, §11). categories 미시드·임베딩 결측 등 드문 상태라 관측 가능하게 남긴다(#4).
             # 여기도 `unresolved` 대상이 아니다(#217 §4 ④) — 전개된 상품명도 같은 빈 사전을 본다.
             logger.warning("category_unmapped", extra={"raw": r})
-    return CategoryMapping(legs=dedup_truncate(result, fanout_max), unresolved=unresolved)
+    return CategoryMapping(
+        legs=dedup_truncate(result, fanout_max),
+        unresolved=unresolved,
+        select_calls=select_calls,
+    )
