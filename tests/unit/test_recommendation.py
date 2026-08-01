@@ -2804,3 +2804,26 @@ async def test_profile_injection_scope_off_still_accumulates_profile(monkeypatch
     assert await store.get_facts("u1")
     # 다만 요약 재작성은 sleep-time 소관이라 턴 중에는 일어나지 않는다(REQ-PROF-023)
     assert await store.get_summary("u1") is None
+
+
+async def test_session_buffer_records_cart_add_intent() -> None:
+    """[PR #223 리뷰] 담기 발화는 **일부러** 버퍼에 남긴다 — 제외 목록에 없는 게 의도다.
+
+    담기는 채팅 레인에서 구매에 가장 가까운 행동 신호다. 명세도 write 소스를
+    conversation|purchase 로 두고(REQ-PROF-024) 구매 소스는 명시성 없이 반복성·현저성으로
+    승격한다(REQ-PROF-044) — 제외하면 명세가 인정한 신호원을 코드가 막는다. 발화 자체도
+    취향을 실어 나른다("검정으로 담아줘"). 노이즈("그거 담아줘")는 델타 추출 LLM·게이트·
+    버퍼 상한이 걸러내므로, 되돌릴 수 없는 실수(신호 소실)를 피하는 쪽을 택한다.
+    """
+    message = "검정으로 담아줘"
+    llm = FakeLLM(
+        decompose={
+            "intent": "cart_add",
+            "reply": "",
+            "filters": {},
+            "cart": {"productId": 101, "quantity": 1},
+        }
+    )
+    await _collect(run_buyer_turn(_req(message, session_id="s-cart"), _member(), llm=llm))
+
+    assert await _buffer("u1", "s-cart") == [message]
