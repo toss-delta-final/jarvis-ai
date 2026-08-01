@@ -1335,3 +1335,50 @@ async def test_select_calls_reports_attempted_budget() -> None:
     )
     assert out.select_calls == 1  # 던졌어도 1회 소비로 센다
     assert out.legs == [("취미 > 수집용품", "선물용품")]  # 판정 실패 → top-1 유지(§4.4)
+
+
+class _ExactBoomAfter:
+    """`in` 검사를 N회까지만 통과시키고 그 뒤 터진다 — 조립 루프 안에서 예외를 만드는 유일한 주입점.
+
+    루프는 설정을 읽지 않고(§4.5 튜너블은 밖에서 한 번에 읽는다) 이미 검증된 canonical 만 다뤄서
+    밖에서 실패를 주입할 곳이 여기밖에 없다. `exact` 는 `exact_lookup` seam 의 반환값이라 이렇게
+    바꿔 끼울 수 있다.
+    """
+
+    def __init__(self, allow: int) -> None:
+        self.allow = allow
+        self.calls = 0
+
+    def __contains__(self, item) -> bool:
+        self.calls += 1
+        if self.calls > self.allow:
+            raise RuntimeError("assembly loop blew up")
+        return False
+
+
+async def test_assembly_failure_keeps_confirmed_legs(caplog) -> None:
+    """[#217 PR 리뷰] 조립 루프 예외가 **이미 확정된 leg 과 예산 회계를 버리지 않는다**.
+
+    루프가 통째로 던지면 호출부(`graph._map_or_empty`)가 빈 legs 로 degrade 해 **DB 검증된 exact
+    매치와 채택 canonical 까지** 사라진다 — PR #188 이 택일 단계를 감쌀 때 든 논거와 같고, 이 루프도
+    같은 노출을 갖고 있었다.
+
+    `select_calls` 회계가 함께 살아남는 것도 중요하다. 유실되면 두 번째(전개) 매핑이 턴당 예산을
+    다시 받아 상한이 배수로 깨질 수 있다(§6.1). 지금은 같은 예외가 `unresolved` 도 비워 두 번째
+    호출 자체가 안 일어나 우연히 막히지만, **그 안전성이 결합에 기대지 않게** 만든다.
+    """
+    # raw 2개 → need_idx 계산에서 2회, 조립 루프에서 leg0 이 3회째. leg1(4회째)에서 터진다.
+    exact = _ExactBoomAfter(allow=3)
+    m = _FakeMapper(
+        exact=set(),
+        nearest={},
+        hits={
+            "티비": [("가전 > TV", 0.10), ("가전 > 모니터", 0.30)],
+            "냉장고": [("가전 > 냉장고", 0.11), ("가전 > 김치냉장고", 0.31)],
+        },
+    )
+    m.exact_lookup = lambda values, dsn: exact  # type: ignore[assignment]
+    with caplog.at_level("WARNING"):
+        out = await m.run_full([CategoryQuery("가전1", "티비"), CategoryQuery("가전2", "냉장고")])
+    assert out.legs == [("가전 > TV", "티비")]  # 터지기 전에 확정된 leg 은 살아남는다
+    assert _record(caplog, "category_assembly_failed").error_type == "RuntimeError"
