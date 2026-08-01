@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     # 바꾸면 목록에서 빼는 것으로 원복된다. 매칭은 접두사 — 날짜 스냅샷 ID도 함께 걸린다.
     openai_tool_reasoning_incompatible_models: list[str] = ["gpt-5.6-luna"]
     openai_tool_reasoning_effort_override: str = "none"
+    # 요청 단위 비용 관측 단가(USD / 1,000 tokens). 운영 값은 환경변수 JSON으로 주입한다.
+    # 빈 기본값은 임의 가격을 코드에 박지 않기 위한 fail-visible 설정이며, 미등록 모델은
+    # observability가 비용 0 + 경고로 처리한다.
+    model_price_in_per_1k: dict[str, float] = Field(default_factory=dict)
+    model_price_out_per_1k: dict[str, float] = Field(default_factory=dict)
 
     # ── Google 임베딩 API (MVP, §4.8 배치 + 임베딩 검색) ──
     # [2026-07-20 결정 6 개정, v0.15.14] 셀프호스트 torch → Google gemini-embedding-001 API.

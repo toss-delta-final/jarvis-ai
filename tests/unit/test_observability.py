@@ -828,6 +828,11 @@ def test_structured_log_has_fields_and_hides_raw_message(
         "model",
         "promptTokens",
         "completionTokens",
+        "lane",
+        "degraded",
+        "degradeReason",
+        "costUsd",
+        "toolCalls",
     ):
         assert key in record, f"필드 누락: {key}"
     assert record["streamStatus"] == "COMPLETED"
@@ -838,6 +843,78 @@ def test_structured_log_has_fields_and_hides_raw_message(
     assert msg not in logs[-1]
     _, digest = message_fingerprint(msg)
     assert record["messageHash"] == digest
+
+
+async def test_observation_logs_lane_degrade_cost_and_tool_calls(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """추적 컨텍스트의 레인·degrade와 모델 단가·도구 호출 수를 요청 로그로 합친다."""
+    monkeypatch.setattr(
+        observability,
+        "get_settings",
+        lambda: types.SimpleNamespace(
+            pii_hash_pepper="test-pepper",
+            model_price_in_per_1k={"priced-model": 0.01},
+            model_price_out_per_1k={"priced-model": 0.02},
+        ),
+    )
+    exporter = FakeTraceExporter()
+    trace = _trace(exporter)
+    observation = await _obs("cost-dimensions", trace=trace)
+    observation.record_model_call(
+        "priced-model",
+        prompt_tokens=2_000,
+        completion_tokens=500,
+    )
+    trace.set_lane("recommend")
+    trace.mark_degraded("rerank_fallback")
+    trace.record_tool_call()
+    trace.record_tool_call()
+
+    with caplog.at_level(logging.INFO, logger="observability"):
+        await observation.finish(1.0, TurnStatus.COMPLETED)
+
+    record = next(
+        json.loads(item.getMessage())
+        for item in caplog.records
+        if item.name == "observability" and item.getMessage().startswith("{")
+    )
+    assert record["lane"] == "recommend"
+    assert record["degraded"] is True
+    assert record["degradeReason"] == "rerank_fallback"
+    assert record["costUsd"] == pytest.approx(0.03)
+    assert record["toolCalls"] == 2
+
+
+async def test_unregistered_model_costs_zero_and_warns(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """단가가 없는 모델 비용은 0이지만 누락을 숨기지 않고 경고한다."""
+    monkeypatch.setattr(
+        observability,
+        "get_settings",
+        lambda: types.SimpleNamespace(
+            pii_hash_pepper="test-pepper",
+            model_price_in_per_1k={},
+            model_price_out_per_1k={},
+        ),
+    )
+    observation = await _obs("unknown-price")
+    observation.record_model_call("unregistered-model", 1_000, 1_000)
+
+    with caplog.at_level(logging.INFO, logger="observability"):
+        await observation.finish(1.0, TurnStatus.COMPLETED)
+
+    record = next(
+        json.loads(item.getMessage())
+        for item in caplog.records
+        if item.name == "observability" and item.getMessage().startswith("{")
+    )
+    assert record["costUsd"] == 0
+    assert "MODEL_PRICE_MISSING" in caplog.text
+    assert "unregistered-model" in caplog.text
 
 
 def test_message_fingerprint_is_not_raw() -> None:
@@ -1111,6 +1188,11 @@ def test_subject_rate_limit_logs_only_fingerprints(
     assert '"scope"' not in serialized
     assert raw_subject not in caplog.text
     assert "testclient" not in caplog.text
+    assert record["lane"] is None  # 스트림 전 거부라 라우팅 결과가 아직 없다.
+    assert record["degraded"] is False
+    assert record["degradeReason"] is None
+    assert record["costUsd"] == 0
+    assert record["toolCalls"] == 0
 
 
 def test_ip_fallback_rate_limit_logs_only_fingerprint(

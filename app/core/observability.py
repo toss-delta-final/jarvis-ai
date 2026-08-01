@@ -119,6 +119,10 @@ class RequestObservation:
     first_text_token_at: float | None = None
     assistant_parts: list[str] = field(default_factory=list)
     model_calls: list[ModelCall] = field(default_factory=list)
+    lane: str | None = None
+    degraded: bool = False
+    degrade_reason: str | None = None
+    tool_calls: int = 0
     finished: bool = False
     _finish_task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
 
@@ -144,6 +148,63 @@ class RequestObservation:
     ) -> None:
         """노드별 LLM 호출 기록(model·tokens). 그래프가 호출한다."""
         self.model_calls.append(ModelCall(model, prompt_tokens, completion_tokens))
+
+    def record_model_usage(
+        self,
+        model: str,
+        prompt_tokens: int | None,
+        completion_tokens: int | None,
+    ) -> None:
+        """provider usage를 같은 모델의 미확정 호출에 합치고, 없으면 새 호출로 기록한다."""
+        target = next(
+            (
+                call
+                for call in reversed(self.model_calls)
+                if call.model == model and call.prompt_tokens == 0 and call.completion_tokens == 0
+            ),
+            None,
+        )
+        if target is None:
+            target = ModelCall(model)
+            self.model_calls.append(target)
+        if prompt_tokens is not None:
+            target.prompt_tokens = prompt_tokens
+        if completion_tokens is not None:
+            target.completion_tokens = completion_tokens
+
+    def set_lane(self, lane: str) -> None:
+        """집계용 bounded 레인을 확정한다."""
+        self.lane = lane
+
+    def mark_degraded(self, reason: str) -> None:
+        """trace에서 이미 우선순위가 확정된 단일 degrade 사유를 복제한다."""
+        self.degraded = True
+        self.degrade_reason = reason
+
+    def record_tool_call(self) -> None:
+        """실제 판매자 도구 실행 횟수를 누적한다."""
+        self.tool_calls += 1
+
+    def _cost_usd(self) -> float:
+        """Settings 단가표로 모델 호출 비용을 계산한다(미등록 모델은 0 + 경고)."""
+        settings = get_settings()
+        total = 0.0
+        warned: set[str] = set()
+        for call in self.model_calls:
+            input_price = settings.model_price_in_per_1k.get(call.model)
+            output_price = settings.model_price_out_per_1k.get(call.model)
+            if input_price is None or output_price is None:
+                if call.model not in warned:
+                    logger.warning(
+                        "모델 단가 미등록 model=%s code=MODEL_PRICE_MISSING",
+                        call.model,
+                    )
+                    warned.add(call.model)
+                if input_price is None and output_price is None:
+                    continue
+            total += call.prompt_tokens / 1_000 * (input_price or 0.0)
+            total += call.completion_tokens / 1_000 * (output_price or 0.0)
+        return round(total, 8)
 
     @property
     def server_first_event_ms(self) -> int | None:
@@ -235,6 +296,11 @@ class RequestObservation:
             "model": [m.model for m in self.model_calls] or None,
             "promptTokens": sum(m.prompt_tokens for m in self.model_calls),
             "completionTokens": sum(m.completion_tokens for m in self.model_calls),
+            "lane": self.lane,
+            "degraded": self.degraded,
+            "degradeReason": self.degrade_reason,
+            "costUsd": self._cost_usd(),
+            "toolCalls": self.tool_calls,
             "errorType": error_type,
             "streamStatus": stream_status,
             "messageLength": self.message_length,
@@ -291,7 +357,7 @@ def start_observation(
     # 메시지 저장은 open_stream 의 슬롯 확보 후 commit_user_message()에서(유령 턴 방지).
     # 저장 키는 대화 저장소 내부 신원 스코프이며 buyer transient 상태는 commit 결과의
     # lifecycle context_id:thread_id만 사용한다. 외부 로그에는 식별자 지문만 남긴다.
-    return RequestObservation(
+    observation = RequestObservation(
         request_id=request_id,
         conversation_id=conversation_id,
         thread_id=thread_id,
@@ -307,6 +373,9 @@ def start_observation(
         buyer_session=buyer_session,
         trace=trace,
     )
+    if trace is not None:
+        trace.attach_observation(observation)
+    return observation
 
 
 def emit_rejection(request_id: str, error_type: str, **fields: object) -> None:
@@ -380,6 +449,12 @@ def emit_rejection(request_id: str, error_type: str, **fields: object) -> None:
         "requestId": request_id,
         "errorType": error_type,
         "streamStatus": None,
+        # 스트림 전 거부는 라우팅보다 먼저 일어나 실제 lane을 확정할 수 없다.
+        "lane": None,
+        "degraded": False,
+        "degradeReason": None,
+        "costUsd": 0.0,
+        "toolCalls": 0,
         "ownerFp": (
             identifier_fingerprint(str(raw_owner if raw_owner is not None else scope_owner))
             if raw_owner is not None or scope_owner is not None

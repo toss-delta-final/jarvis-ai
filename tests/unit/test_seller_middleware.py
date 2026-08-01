@@ -6,6 +6,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from app.agents.seller import middleware
+from app.core.tracing import NoopRequestTrace, bind_request_trace
 
 
 # ── 1. scope — check_scope 순수 함수 (코드 경로·미들웨어 공유 판정점) ────────────
@@ -154,3 +155,87 @@ def test_streaming_output_guard_masks_bearer_after_overlong_whitespace_prefix() 
     parts.extend(guard.feed("bcdefghijklmnop"))
     parts.extend(guard.flush())
     assert "".join(parts) == "앞 " + middleware.MASK_REPLACEMENT
+
+
+async def test_tool_call_observation_middleware_counts_actual_execution() -> None:
+    """한도 미들웨어와 별개로 handler에 도달한 실제 도구 호출을 요청 단위로 센다."""
+
+    class Sink:
+        def __init__(self) -> None:
+            self.tool_calls = 0
+
+        def set_lane(self, lane: str) -> None:
+            del lane
+
+        def mark_degraded(self, reason: str) -> None:
+            del reason
+
+        def record_model_usage(self, model, prompt_tokens, completion_tokens) -> None:
+            del model, prompt_tokens, completion_tokens
+
+        def record_tool_call(self) -> None:
+            self.tool_calls += 1
+
+    sink = Sink()
+    trace = NoopRequestTrace(lane="general")
+    trace.attach_observation(sink)
+
+    async def handler(_request):
+        return "tool-result"
+
+    with bind_request_trace(trace):
+        result = await middleware.ToolCallObservationMiddleware().awrap_tool_call(object(), handler)
+
+    assert result == "tool-result"
+    assert sink.tool_calls == 1
+
+
+async def test_model_usage_observation_middleware_records_seller_tokens() -> None:
+    """LangGraph 판매자 호출의 provider usage도 chat_request 비용 원천으로 전달한다."""
+
+    class Sink:
+        def __init__(self) -> None:
+            self.model_usage = []
+
+        def set_lane(self, lane: str) -> None:
+            del lane
+
+        def mark_degraded(self, reason: str) -> None:
+            del reason
+
+        def record_model_usage(self, model, prompt_tokens, completion_tokens) -> None:
+            self.model_usage.append((model, prompt_tokens, completion_tokens))
+
+        def record_tool_call(self) -> None:
+            pass
+
+    sink = Sink()
+    trace = NoopRequestTrace(lane="general")
+    trace.attach_observation(sink)
+    response = type(
+        "Response",
+        (),
+        {
+            "result": [
+                AIMessage(
+                    content="응답",
+                    usage_metadata={
+                        "input_tokens": 17,
+                        "output_tokens": 5,
+                        "total_tokens": 22,
+                    },
+                )
+            ]
+        },
+    )()
+
+    async def handler(_request):
+        return response
+
+    with bind_request_trace(trace):
+        result = await middleware.ModelUsageObservationMiddleware(
+            "seller-priced-model"
+        ).awrap_model_call(object(), handler)
+
+    assert result is response
+    assert sink.model_usage == [("seller-priced-model", 17, 5)]

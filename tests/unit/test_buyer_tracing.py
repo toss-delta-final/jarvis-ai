@@ -843,6 +843,25 @@ async def test_search_failure_marks_bounded_degrade() -> None:
     await _assert_degrade(driver, "search_failed")
 
 
+async def test_recommendation_route_sets_observability_lane() -> None:
+    """구매자 추천 턴은 초기 buyer 표식이 아니라 집계용 recommend 레인으로 확정한다."""
+
+    async def driver() -> None:
+        await _collect(
+            run_buyer_turn(
+                _request(),
+                _member(),
+                llm=FakeLLM(),
+                search=_search_with_span,
+                push_fn=_push_with_span,
+            )
+        )
+
+    exported = await _run_with_trace(driver)
+    root = next(node for node in exported if node.parent_id is None)
+    assert root.metadata["lane"] == "recommend"
+
+
 async def test_rerank_failure_marks_bounded_degrade() -> None:
     async def driver() -> None:
         await _collect(

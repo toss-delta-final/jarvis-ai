@@ -44,12 +44,43 @@ SELLER_DEGRADE_REASON_PRECEDENCE = (
     "worker_degrade",
 )
 SELLER_DEGRADE_REASONS = frozenset(SELLER_DEGRADE_REASON_PRECEDENCE)
+OBSERVABILITY_LANES = frozenset(
+    {
+        "recommend",
+        "cart",
+        "fallback",
+        "analysis",
+        "product",
+        "general",
+        "confirm",
+        "apply",
+        "refused",
+    }
+)
 _BUYER_DEGRADE_REASON_RANK = {
     reason: rank for rank, reason in enumerate(BUYER_DEGRADE_REASON_PRECEDENCE)
 }
 _SELLER_DEGRADE_REASON_RANK = {
     reason: rank for rank, reason in enumerate(SELLER_DEGRADE_REASON_PRECEDENCE)
 }
+
+
+def _preferred_degrade_reason(current: object, reason: str) -> str:
+    """동시 degrade 표시 순서와 무관하게 역할별 단일 사유 우선순위를 적용한다."""
+    if (
+        isinstance(current, str)
+        and current in _BUYER_DEGRADE_REASON_RANK
+        and reason in _BUYER_DEGRADE_REASON_RANK
+    ):
+        return min((current, reason), key=_BUYER_DEGRADE_REASON_RANK.__getitem__)
+    if (
+        isinstance(current, str)
+        and current in _SELLER_DEGRADE_REASON_RANK
+        and reason in _SELLER_DEGRADE_REASON_RANK
+    ):
+        return min((current, reason), key=_SELLER_DEGRADE_REASON_RANK.__getitem__)
+    return reason
+
 
 SAFE_METADATA_KEYS = frozenset(
     {
@@ -66,6 +97,7 @@ SAFE_METADATA_KEYS = frozenset(
         "statusClass",
         "degraded",
         "degradeReason",
+        "toolCalls",
         "errorType",
         "terminalReason",
         "server_first_event_ms",
@@ -73,6 +105,24 @@ SAFE_METADATA_KEYS = frozenset(
         "provider_ttft_ms",
     }
 )
+
+
+class ObservationSink(Protocol):
+    """요청 로그가 추적 샘플링과 무관하게 받는 bounded 관측 이벤트."""
+
+    def set_lane(self, lane: str) -> None: ...
+
+    def mark_degraded(self, reason: str) -> None: ...
+
+    def record_model_usage(
+        self,
+        model: str,
+        prompt_tokens: int | None,
+        completion_tokens: int | None,
+    ) -> None: ...
+
+    def record_tool_call(self) -> None: ...
+
 
 _UNSAFE_KEY_PARTS = (
     "authorization",
@@ -252,6 +302,7 @@ class RequestTrace:
         ]
         self._finished = False
         self._finish_task: asyncio.Task[None] | None = None
+        self._observation: ObservationSink | None = None
 
     def _is_closing(self) -> bool:
         return self._finished or self._finish_task is not None
@@ -286,10 +337,25 @@ class RequestTrace:
         if not self._is_closing():
             self._nodes[0].metadata.setdefault("provider_ttft_ms", milliseconds)
 
+    def attach_observation(self, observation: ObservationSink) -> None:
+        """샘플링된 trace의 bounded 상태를 요청 로그 sink와 연결한다."""
+        self._observation = observation
+        root = self._nodes[0]
+        lane = root.metadata.get("lane")
+        if isinstance(lane, str) and lane in OBSERVABILITY_LANES:
+            observation.set_lane(lane)
+        reason = root.metadata.get("degradeReason")
+        if isinstance(reason, str):
+            observation.mark_degraded(reason)
+        for _ in range(int(root.metadata.get("toolCalls") or 0)):
+            observation.record_tool_call()
+
     def set_lane(self, lane: str) -> None:
         """Replace the request's provisional lane after bounded routing completes."""
         if not self._is_closing():
             self._nodes[0].metadata["lane"] = lane
+            if self._observation is not None and lane in OBSERVABILITY_LANES:
+                self._observation.set_lane(lane)
 
     def record_llm_usage(
         self,
@@ -301,6 +367,8 @@ class RequestTrace:
         """Attach bounded provider facts to the active explicit LLM span."""
         if self._is_closing():
             return
+        if self._observation is not None:
+            self._observation.record_model_usage(model, prompt_tokens, completion_tokens)
         stack = _active_span_stack.get()
         if not stack:
             return
@@ -330,26 +398,19 @@ class RequestTrace:
     def mark_degraded(self, reason: str) -> None:
         if not self._is_closing():
             root = self._nodes[0]
-            current = root.metadata.get("degradeReason")
-            if (
-                isinstance(current, str)
-                and current in _BUYER_DEGRADE_REASON_RANK
-                and reason in _BUYER_DEGRADE_REASON_RANK
-            ):
-                reason = min(
-                    (current, reason),
-                    key=_BUYER_DEGRADE_REASON_RANK.__getitem__,
-                )
-            elif (
-                isinstance(current, str)
-                and current in _SELLER_DEGRADE_REASON_RANK
-                and reason in _SELLER_DEGRADE_REASON_RANK
-            ):
-                reason = min(
-                    (current, reason),
-                    key=_SELLER_DEGRADE_REASON_RANK.__getitem__,
-                )
+            reason = _preferred_degrade_reason(root.metadata.get("degradeReason"), reason)
             root.metadata.update(degraded=True, degradeReason=reason)
+            if self._observation is not None:
+                self._observation.mark_degraded(reason)
+
+    def record_tool_call(self) -> None:
+        """판매자 에이전트가 실제 실행한 도구 호출 수를 요청 단위로 누적한다."""
+        if self._is_closing():
+            return
+        root = self._nodes[0]
+        root.metadata["toolCalls"] = int(root.metadata.get("toolCalls") or 0) + 1
+        if self._observation is not None:
+            self._observation.record_tool_call()
 
     async def finish(
         self,
@@ -409,17 +470,30 @@ class RequestTrace:
 
 
 class NoopRequestTrace(RequestTrace):
-    """Allocation-free request trace used by disabled factory paths."""
+    """export 없이 요청 로그용 bounded 상태만 전달하는 trace."""
 
-    def __init__(self) -> None:
-        # Deliberately avoid RequestTrace initialization: no UUIDs, nodes, or metadata.
-        pass
+    def __init__(self, *, lane: str | None = None) -> None:
+        self._lane = lane
+        self._degrade_reason: str | None = None
+        self._tool_calls = 0
+        self._observation: ObservationSink | None = None
 
     def record_provider_ttft(self, milliseconds: int) -> None:
         del milliseconds
 
+    def attach_observation(self, observation: ObservationSink) -> None:
+        self._observation = observation
+        if self._lane in OBSERVABILITY_LANES:
+            observation.set_lane(self._lane)
+        if self._degrade_reason is not None:
+            observation.mark_degraded(self._degrade_reason)
+        for _ in range(self._tool_calls):
+            observation.record_tool_call()
+
     def set_lane(self, lane: str) -> None:
-        del lane
+        self._lane = lane
+        if self._observation is not None and lane in OBSERVABILITY_LANES:
+            self._observation.set_lane(lane)
 
     def record_llm_usage(
         self,
@@ -428,7 +502,8 @@ class NoopRequestTrace(RequestTrace):
         prompt_tokens: int | None,
         completion_tokens: int | None,
     ) -> None:
-        del model, prompt_tokens, completion_tokens
+        if self._observation is not None:
+            self._observation.record_model_usage(model, prompt_tokens, completion_tokens)
 
     def record_server_timings(
         self,
@@ -439,7 +514,14 @@ class NoopRequestTrace(RequestTrace):
         del first_event_ms, first_text_token_ms
 
     def mark_degraded(self, reason: str) -> None:
-        del reason
+        self._degrade_reason = _preferred_degrade_reason(self._degrade_reason, reason)
+        if self._observation is not None:
+            self._observation.mark_degraded(self._degrade_reason)
+
+    def record_tool_call(self) -> None:
+        self._tool_calls += 1
+        if self._observation is not None:
+            self._observation.record_tool_call()
 
     async def finish(
         self,
@@ -451,7 +533,6 @@ class NoopRequestTrace(RequestTrace):
         del status, error_type, terminal_reason
 
 
-_NOOP_REQUEST_TRACE = NoopRequestTrace()
 _current_request_trace: ContextVar[RequestTrace | None] = ContextVar(
     "current_request_trace", default=None
 )
@@ -483,7 +564,7 @@ class TraceFactory:
         environment: str,
     ) -> RequestTrace:
         if not self._enabled or not _is_sampled(request_id, self._sampling_rate):
-            return _NOOP_REQUEST_TRACE
+            return NoopRequestTrace(lane=lane)
         return RequestTrace(
             exporter=self._exporter,
             name=name,
@@ -634,7 +715,7 @@ def start_request_trace_safely(
         )
     except Exception:
         logger.warning("trace start failed code=TELEMETRY_START_FAILED")
-        return _NOOP_REQUEST_TRACE
+        return NoopRequestTrace(lane=lane)
 
 
 def current_request_trace() -> RequestTrace | None:
