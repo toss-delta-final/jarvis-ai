@@ -409,11 +409,16 @@ class Settings(BaseSettings):
     # 누를 발화도 없다. **점수가 있는 표면에는 가중치, 없는 표면에는 스코프 스위치**다.
     # 채팅 경로의 연속 가중치는 전략 B(scoring) 도입 시(#145) 함께 정의한다.
     profile_rerank_influence: ProfileRerankInfluence = "tiebreak"
-    # 세션 버퍼에 정규화 동일 발화를 중복 적재하지 않는다(REQ-PROF-026). 버퍼는 델타 추출 LLM 에
-    # "\n".join 으로 통째로 실리고 LLM 이 그 중복을 보고 repetitionEma 를 산출하므로(gate:
-    # explicit OR repeated → 승격), **버퍼 중복이 곧 반복성 점수**다 — 같은 말 3~4회로 취향이
-    # 과대 대표되는 경로를 코드로 끊는다. 세션을 넘는 반복은 세션별 델타로 여전히 누적된다.
-    profile_session_buffer_dedup: bool = True
+    # 세션 버퍼에 정규화 동일 발화를 몇 번까지 담을지(REQ-PROF-026). 버퍼는 델타 추출 LLM 에
+    # "\n".join 으로 통째로 실리고 LLM 이 그 중복을 보고 repetitionEma 를 산출하므로
+    # **버퍼 중복이 곧 반복성 점수**다 — 같은 말 3~4회로 취향이 과대 대표된다.
+    # **0/1 로 낮추지 말 것**: 게이트가 `salience AND (explicit OR repeated)`(gate.should_promote)
+    # 라 반복은 명시 표명 없이 승격시키는 **독립 경로**인데, 1 건만 남기면 LLM 이 반복을 볼 수
+    # 없어 그 경로가 통째로 죽는다. 세션 간 누적(GateState)은 미구현이라(SPEC-PROFILE-001
+    # OPEN-P12) 승격 못 한 델타는 버려지므로, 다음 세션이 대신 살려주지도 않는다.
+    # 기본 2 = "반복했다"는 관측 가능한 최소치. 4회든 10회든 2 로 보여 증폭만 잘린다.
+    # 상한을 완전히 끄려면(종전 동작) profile_session_buffer_cap 이상으로 올린다.
+    profile_buffer_repeat_cap: int = Field(default=2, ge=2)
     # 취향 신호가 없는 intent 는 버퍼에 담지 않는다(REQ-PROF-026). 잡담(general)은 제외하지
     # 않는다 — "나 소니 좋아해" 같은 취향 발화가 잡담 턴에 섞이기 때문이다.
     profile_buffer_excluded_intents: list[str] = ["order_status", "cart_view"]

@@ -1197,63 +1197,76 @@ async def test_processed_events_operations_have_query_deadline(
         processed_events.set_pool(None)
 
 
-# ─────────── #119 세션 버퍼 반복 발화 dedup ───────────
+# ─────────── #119 세션 버퍼 반복 발화 상한 ───────────
 
 
-async def test_session_buffer_dedups_identical_utterances() -> None:
-    """[#119] 같은 발화를 4번 해도 버퍼에는 1건만 남는다.
+async def test_session_buffer_caps_repeated_utterances() -> None:
+    """[#119] 같은 발화를 4번 해도 버퍼에는 repeat_cap 개까지만 남는다.
 
     버퍼는 generate_session_delta 에 "\n".join 으로 통째로 실리고 LLM 이 그 중복을 보고
-    repetitionEma 를 산출한다(gate: explicit OR repeated → 승격). 즉 **버퍼 중복이 곧
-    반복성 점수**라, 같은 말을 반복하면 그 취향이 과대 대표된다(REQ-PROF-026).
+    repetitionEma 를 산출하므로, 반복 **횟수**가 그대로 취향 강도가 된다 — 증폭만 자른다.
     """
     store = await get_profile_store()
     for _ in range(4):
-        await store.append_session_ctx("k", "무선 이어폰 추천해줘", cap=100, dedup=True)
+        await store.append_session_ctx("k", "무선 이어폰 추천해줘", cap=100, repeat_cap=2)
 
-    assert await store.get_session_ctx("k") == ["무선 이어폰 추천해줘"]
+    assert await store.get_session_ctx("k") == ["무선 이어폰 추천해줘"] * 2
 
 
-async def test_session_buffer_dedup_normalizes_whitespace_and_case() -> None:
+async def test_session_buffer_keeps_repetition_signal_observable() -> None:
+    """상한은 2 이상이라 "반복했다"는 신호 자체는 델타 추출 LLM 에 남는다.
+
+    게이트는 `salience AND (explicit OR repeated)` 라 반복은 명시 표명 없이 승격시키는
+    **독립 경로**다. 1 건만 남기면 그 경로가 죽고, 세션 간 누적(GateState)은 미구현이라
+    (OPEN-P12) 다음 세션이 대신 살려주지도 않는다.
+    """
+    store = await get_profile_store()
+    for _ in range(3):
+        await store.append_session_ctx("k", "소니 이어폰", cap=100, repeat_cap=2)
+
+    assert (await store.get_session_ctx("k")).count("소니 이어폰") >= 2
+
+
+async def test_session_buffer_repeat_cap_normalizes_whitespace_and_case() -> None:
     """정규화 규약 고정 — 앞뒤 공백·연속 공백·대소문자 차이는 같은 발화로 본다."""
     store = await get_profile_store()
-    for text in ("Sony 이어폰", " sony 이어폰 ", "sony  이어폰"):
-        await store.append_session_ctx("k", text, cap=100, dedup=True)
+    for text in ("Sony 이어폰", " sony 이어폰 ", "sony  이어폰", "SONY 이어폰"):
+        await store.append_session_ctx("k", text, cap=100, repeat_cap=2)
 
-    assert await store.get_session_ctx("k") == ["Sony 이어폰"]
+    assert await store.get_session_ctx("k") == ["Sony 이어폰", " sony 이어폰 "]
 
 
-async def test_session_buffer_dedup_keeps_distinct_utterances() -> None:
+async def test_session_buffer_repeat_cap_keeps_distinct_utterances() -> None:
     """서로 다른 발화는 그대로 쌓인다 — 과한 정규화로 정당한 취향 신호를 잃지 않는다."""
     store = await get_profile_store()
-    await store.append_session_ctx("k", "무선 이어폰 추천해줘", cap=100, dedup=True)
-    await store.append_session_ctx("k", "노이즈캔슬링 되는 걸로", cap=100, dedup=True)
+    await store.append_session_ctx("k", "무선 이어폰 추천해줘", cap=100, repeat_cap=2)
+    await store.append_session_ctx("k", "노이즈캔슬링 되는 걸로", cap=100, repeat_cap=2)
 
     assert await store.get_session_ctx("k") == ["무선 이어폰 추천해줘", "노이즈캔슬링 되는 걸로"]
 
 
-async def test_session_buffer_dedup_off_preserves_legacy() -> None:
-    """롤백 경로 — dedup 미지정이면 종전대로 전부 적재한다(하위 호환)."""
+async def test_session_buffer_repeat_cap_off_preserves_legacy() -> None:
+    """롤백 경로 — repeat_cap 미지정이면 종전대로 전부 적재한다(하위 호환)."""
     store = await get_profile_store()
     for _ in range(3):
         await store.append_session_ctx("k", "같은 말", cap=100)
 
-    assert await store.get_session_ctx("k") == ["같은 말", "같은 말", "같은 말"]
+    assert await store.get_session_ctx("k") == ["같은 말"] * 3
 
 
-async def test_session_buffer_watermark_survives_dedup() -> None:
-    """스킵은 aput 자체를 하지 않으므로 seq 워터마크 불변식이 깨지지 않는다.
+async def test_session_buffer_watermark_survives_repeat_cap() -> None:
+    """상한 스킵은 aput 자체를 하지 않으므로 seq 워터마크 불변식이 깨지지 않는다.
 
     finalizer 는 snapshot 워터마크로 소비 범위를 고정하고 그 지점까지 clear 한다 —
     스킵된 발화가 seq 를 앞당기면 미소비 발화가 조용히 삭제될 수 있다.
     """
     store = await get_profile_store()
-    await store.append_session_ctx("k", "첫 발화", cap=100, dedup=True)
-    await store.append_session_ctx("k", "첫 발화", cap=100, dedup=True)  # 스킵
-    await store.append_session_ctx("k", "둘째 발화", cap=100, dedup=True)
+    for _ in range(3):
+        await store.append_session_ctx("k", "첫 발화", cap=100, repeat_cap=2)  # 3번째는 스킵
+    await store.append_session_ctx("k", "둘째 발화", cap=100, repeat_cap=2)
 
     items, watermark = await store.get_session_ctx_snapshot("k")
-    assert items == ["첫 발화", "둘째 발화"]
+    assert items == ["첫 발화", "첫 발화", "둘째 발화"]
     assert await store.get_session_ctx_upto("k", watermark) == items
 
     await store.clear_session_ctx_upto("k", watermark)

@@ -64,8 +64,19 @@ def test_profile_injection_defaults() -> None:
 
     assert settings.profile_injection_scope == "rerank_only"
     assert settings.profile_rerank_influence == "tiebreak"
-    assert settings.profile_session_buffer_dedup is True
+    assert settings.profile_buffer_repeat_cap == 2
     assert settings.profile_buffer_excluded_intents == ["order_status", "cart_view"]
+
+
+@pytest.mark.parametrize("value", [0, 1])
+def test_profile_buffer_repeat_cap_rejects_below_two(value: int) -> None:
+    """1 이하로 낮추면 게이트의 반복 승격 경로(explicit OR repeated)가 죽는다 — 기동을 막는다.
+
+    버퍼에 1 건만 남으면 델타 추출 LLM 이 반복을 볼 수 없고, 세션 간 누적(GateState)은
+    미구현이라(SPEC-PROFILE-001 OPEN-P12) 다음 세션이 대신 살려주지도 않는다.
+    """
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, profile_buffer_repeat_cap=value)
 
 
 @pytest.mark.parametrize(

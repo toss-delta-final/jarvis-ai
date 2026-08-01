@@ -320,17 +320,18 @@ async def run_buyer_turn(
 
     # transient 세션 버퍼에 발화 누적(승격 전 격리, SPEC-PROFILE-001) — 세션 종료 델타 소스.
     # [#119 REQ-PROF-026] intent 판정 **뒤에** 둔다: 주문조회·장바구니 조회 발화는 취향 신호가
-    # 0인데 버퍼(슬라이딩 윈도우)를 채워 정작 취향 발화를 밀어낸다. 정규화 동일 발화도 접는다 —
-    # 버퍼는 델타 추출 LLM 에 통째로 실리고 LLM 이 그 중복을 보고 repetitionEma 를 산출하므로
-    # 버퍼 중복이 곧 반복성 점수가 된다. 대가로 decompose 실패 턴의 발화는 쌓이지 않는데,
-    # 의도를 파악하지 못한 발화는 취향 신호로도 쓰지 않는다는 판단이다.
+    # 0인데 버퍼(슬라이딩 윈도우)를 채워 정작 취향 발화를 밀어낸다. 반복 발화는 지우지 않고
+    # **상한**만 둔다 — 버퍼가 델타 추출 LLM 에 통째로 실려 반복 횟수가 곧 취향 강도가 되지만,
+    # 전부 접으면 게이트의 반복 승격 경로(explicit OR repeated)까지 죽는다.
+    # 대가로 decompose 실패 턴의 발화는 쌓이지 않는데, 의도를 파악하지 못한 발화는 취향
+    # 신호로도 쓰지 않는다는 판단이다.
     if profile_eligible and decision.intent not in settings.profile_buffer_excluded_intents:
         pstore = await get_profile_store()
         await pstore.append_session_ctx(
             conversation_key(identity.user_id, request.session_id),
             request.message,
             cap=settings.profile_session_buffer_cap,
-            dedup=settings.profile_session_buffer_dedup,
+            repeat_cap=settings.profile_buffer_repeat_cap,
         )
 
     # 되물음 대기 중 사용자가 담기 아닌 의도로 전환(취소·조회·추천)하면 stale pending 을 정리한다
