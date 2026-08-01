@@ -383,6 +383,7 @@ class ModelUsageObservationMiddleware(AgentMiddleware):
                     completion_tokens if isinstance(completion_tokens, int) else None
                 ),
             )
+            break
         return response
 
 

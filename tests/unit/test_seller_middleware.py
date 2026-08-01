@@ -224,7 +224,15 @@ async def test_model_usage_observation_middleware_records_seller_tokens() -> Non
                         "output_tokens": 5,
                         "total_tokens": 22,
                     },
-                )
+                ),
+                AIMessage(
+                    content="중복 usage",
+                    usage_metadata={
+                        "input_tokens": 17,
+                        "output_tokens": 5,
+                        "total_tokens": 22,
+                    },
+                ),
             ]
         },
     )()
