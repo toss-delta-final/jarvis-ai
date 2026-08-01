@@ -45,6 +45,17 @@ _SESSION_NS_ROOT = "session_ctx"
 _SUMMARY_KEY = "summary"
 _SESSION_KEY = "buffer"
 
+
+def _normalize_utterance(text: str) -> str:
+    """세션 버퍼 반복 판정용 정규화 (#119, REQ-PROF-026).
+
+    앞뒤 공백·연속 공백·대소문자만 접는다 — 조사/어미까지 건드리는 과한 정규화는 서로 다른
+    발화를 병합해 **정당한 취향 신호를 잃는다**. 의미 유사 dedup 은 임베딩이 필요하고 척도
+    타당성을 실측해야 하므로(docs/lessons.md 2026-07-30) 여기서 하지 않는다.
+    """
+    return " ".join(text.split()).casefold()
+
+
 # key(conversation_key)별 asyncio.Lock — append_session_ctx/clear_session_ctx_upto 의
 # get→put(read-modify-write) 구간을 직렬화한다. 동일 세션에 연속 발화가 빠르게 들어오면
 # lost update 로 앞선 발화가 통째로 유실될 수 있다(RevertStore.add() 와 동일 근거, PR #47 리뷰).
@@ -248,7 +259,9 @@ class ProfileStore:
                     )
 
     # ── transient 세션 버퍼 (승격 전 격리, REQ-PROF transient) ──
-    async def append_session_ctx(self, key: str, text: str, *, cap: int | None = None) -> None:
+    async def append_session_ctx(
+        self, key: str, text: str, *, cap: int | None = None, repeat_cap: int | None = None
+    ) -> None:
         if not text:
             return
         async with mutation_lock(
@@ -262,6 +275,20 @@ class ProfileStore:
             value = item.value if item else {"items": [], "next_seq": 0}
             seq = value["next_seq"] + 1
             buf: list[list] = value["items"]
+            if repeat_cap and repeat_cap > 0:
+                normalized = _normalize_utterance(text)
+                seen = sum(1 for _, t in buf if _normalize_utterance(t) == normalized)
+                if seen >= repeat_cap:
+                    # 반복 **횟수**가 취향 강도로 환산되는 걸 상한한다(#119, REQ-PROF-026).
+                    # 전부 지우지 않는 이유: 게이트가 `explicit OR repeated` 라 반복은 명시 표명
+                    # 없이 승격시키는 독립 경로다 — 1 건만 남기면 그 경로가 죽는다.
+                    # put 자체를 하지 않으므로 next_seq 가 그대로라 워터마크 불변식이 안전하다.
+                    # 발화 원문·user_id 는 로그에 싣지 않는다(PII).
+                    logger.info(
+                        "profile_buffer_repeat_capped",
+                        extra={"repeat_cap": repeat_cap, "buffered": len(buf)},
+                    )
+                    return
             buf.append([seq, text])
             if cap and cap > 0 and len(buf) > cap:
                 del buf[: len(buf) - cap]  # 최신 cap 개만 유지(무제한 누적 방어)

@@ -257,17 +257,12 @@ async def run_buyer_turn(
 
     # 프로필 주입 (회원만, read-only) — 게스트/신규는 None(개인화 스킵, 결정 8)
     profile = None
-    if not identity.is_guest and identity.user_id and not identity.seller_id:
+    profile_eligible = bool(not identity.is_guest and identity.user_id and not identity.seller_id)
+    if profile_eligible:
         summary = await read_profile_summary(identity.user_id)
         profile = summary.get("markdown") if summary else None
-        # transient 세션 버퍼에 발화 누적(승격 전 격리, SPEC-PROFILE-001) — 세션 종료 델타 소스.
-        # "기억해"류 명시 명령은 게이트 없이 즉시 승격(hot-path, REQ-PROF).
-        pstore = await get_profile_store()
-        await pstore.append_session_ctx(
-            conversation_key(identity.user_id, request.session_id),
-            request.message,
-            cap=settings.profile_session_buffer_cap,
-        )
+        # "기억해"류 명시 명령은 게이트 없이 즉시 승격(hot-path, REQ-PROF). intent 와 무관한
+        # 명시 명령이라 라우팅 앞에 둔다 — decompose 가 실패한 턴에도 기록돼야 한다.
         if is_remember_command(request.message):
             await record_remember(identity.user_id, request.message)
 
@@ -296,7 +291,15 @@ async def run_buyer_turn(
                     llm,
                     query=request.message,
                     prior_filters=prior,
-                    profile_summary=profile,
+                    # [#119] 프로필은 **후보를 줄이는 단계에 넣지 않는다**(REQ-REC-005-A).
+                    # decompose 는 하드필터(WHERE 술어)를 산출하는데, 프로필을 발화와 같은 격으로
+                    # 주면 LLM 이 "3~5만원대 선호"를 priceMax 로 승격시키고 그 필터가
+                    # thread_store 에 영속돼 다음 턴 PRIOR_FILTERS 로 재주입된다(세션 내 래칫).
+                    # 게스트는 그 손실이 없어 개인화가 순손실이 됐다 — 주입을 끊으면 회원
+                    # 프롬프트가 게스트와 바이트 동일해진다. 취향은 rerank 순서로만 반영한다.
+                    profile_summary=(
+                        profile if settings.profile_injection_scope == "both" else None
+                    ),
                     tier="fast",
                     last_recommendations=last_reco,
                     pending_cart=pending_dict,
@@ -314,6 +317,22 @@ async def run_buyer_turn(
             ).model_dump(by_alias=True),
         )
         return
+
+    # transient 세션 버퍼에 발화 누적(승격 전 격리, SPEC-PROFILE-001) — 세션 종료 델타 소스.
+    # [#119 REQ-PROF-026] intent 판정 **뒤에** 둔다: 주문조회·장바구니 조회 발화는 취향 신호가
+    # 0인데 버퍼(슬라이딩 윈도우)를 채워 정작 취향 발화를 밀어낸다. 반복 발화는 지우지 않고
+    # **상한**만 둔다 — 버퍼가 델타 추출 LLM 에 통째로 실려 반복 횟수가 곧 취향 강도가 되지만,
+    # 전부 접으면 게이트의 반복 승격 경로(explicit OR repeated)까지 죽는다.
+    # 대가로 decompose 실패 턴의 발화는 쌓이지 않는데, 의도를 파악하지 못한 발화는 취향
+    # 신호로도 쓰지 않는다는 판단이다.
+    if profile_eligible and decision.intent not in settings.profile_buffer_excluded_intents:
+        pstore = await get_profile_store()
+        await pstore.append_session_ctx(
+            conversation_key(identity.user_id, request.session_id),
+            request.message,
+            cap=settings.profile_session_buffer_cap,
+            repeat_cap=settings.profile_buffer_repeat_cap,
+        )
 
     # 되물음 대기 중 사용자가 담기 아닌 의도로 전환(취소·조회·추천)하면 stale pending 을 정리한다
     # (프롬프트가 약속한 "옛 상품에 갇히지 않게"와 실제 동작 일치).
@@ -383,7 +402,10 @@ async def run_buyer_turn(
             search=search,
             push_fn=push_fn,
             identity=identity,
-            profile=profile,
+            # [#119] rerank 는 개인화의 **유일한 정상 경로**다 — decompose 주입을 끊을 때 여기까지
+            # 같이 끄면 개인화가 통째로 사라진다. off 는 A/B baseline arm 일 때만 — 주입만
+            # 끊을 뿐 위쪽 프로필 read·"기억해" 기록·버퍼 적재는 계속 돈다(config 주석 참조).
+            profile=(None if settings.profile_injection_scope == "off" else profile),
             settings=settings,
             reverted_categories=reverted,
             cart_store=cart_store,
