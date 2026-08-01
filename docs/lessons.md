@@ -13,6 +13,20 @@
 
 ---
 
+## [2026-08-01] 전역 sweep 은 batch 를 키워 격리할 수 없다 — 페이지를 넘겨야 한다
+
+- 증상: `-m integration` 의 `test_pg_session_context.py` 가 간헐 실패했다(#220). 깨지는 테스트는 매번 달랐지만 형태는 하나 — `claim_expired_contexts(10, 30, 100)` 결과에서 자기 세션을 못 찾아 `StopIteration` → `RuntimeError: coroutine raised StopIteration`. 실측 A/B(잔재 150건, 각 8회): 수정 전 **2/8 실패**, 수정 후 **8/8 통과**.
+- 원인: 바로 아래 2026-07-31 항목의 **규칙 2("batch 를 넉넉히(100) 주고 필터링")를 정확히 따른 코드가 그대로 깨졌다.** `claim_expired_contexts` 는 테이블 **전역**을 `last_activity_at` 오름차순으로 batch 만큼 claim 하므로, 전역 만료 후보가 batch 를 넘으면 자기 행이 batch 밖으로 밀린다(실측 후보 133 > batch 100). batch 를 키우는 건 **상수를 잔재량보다 크게 유지하려는 경주**일 뿐이고, 잔재는 여러 worktree 가 같은 pg-profile(포트 5434)을 공유하며 **단조 증가**하므로 결국 진다. "격리를 batch 크기로 흉내낸다"는 발상 자체가 틀렸다.
+- 규칙:
+  1. **전역 스캔 API 에서 자기 행을 찾을 때는 batch 를 키우지 말고 페이지를 넘긴다.** claim 계열은 claim 된 행이 lease 동안 후보에서 빠지므로, 빈 페이지가 나오거나 자기 행을 만날 때까지 반복 호출하면 잔재량과 무관하게 결정적이다(`_claim_own`/`_claim_own_many`).
+  2. **자기 행을 여러 개 찾아야 하면 단건 헬퍼를 반복 호출하지 않는다** — 첫 호출이 나머지도 claim 해 버려 두 번째부터 못 찾는다. 한 번의 페이지 순회로 함께 모은다.
+  3. **"내 행이 결과에 없다"는 부정 단언은 페이지 끝까지 훑고 한다.** 안 그러면 자기 행이 batch 밖으로 밀려도 통과해 **거짓 음성**이 된다.
+  4. 공유 DB 잔재는 **유휴 시간 기준으로만** 지운다(`it-*` + 1시간 초과). 접두만 보고 지우면 동시에 도는 다른 worktree 의 살아있는 행을 죽인다.
+  5. 간헐 실패의 재현·검증은 **잔재를 심어 조건을 결정적으로 만든 뒤 A/B 반복 실행**으로 한다 — "여러 번 돌려보니 되더라"는 근거가 아니다.
+- 관련: #220, `tests/integration/test_pg_session_context.py`(`_claim_own`·`_claim_own_many`·`_drain_claims`·`_delete_stale_residue`), `app/core/session_context.py::claim_expired_contexts`
+
+---
+
 ## [2026-07-31] 이벤트 루프보다 오래 사는 커넥션 풀 — 취소를 삼키는 워커가 teardown 을 영원히 멈춘다
 
 - 증상: `uv run pytest -m integration` 이 **간헐적으로 무한 대기**했다(#208). 실패도 오류도 없이 매달리고, 테스트는 전부 통과한 상태였다. 재현율은 두 파일 조합에서 8회 중 1회. 메인 스레드는 언제나 `pytest_asyncio/plugin.py::_scoped_runner` → `Runner.close()` → `asyncio.runners._cancel_all_tasks()` → `run_until_complete(gather(...))` 안이었다.
@@ -161,8 +175,8 @@
 - 증상: `-m integration` 137개가 실행할 때마다 결과가 달랐다. 통과(7초)·`2 failed`·무한 대기가 섞여 나왔고 재현율이 대략 절반이었다. 실패는 `test_pg_session_context.py` 의 `ValueError: too many values to unpack (expected 1)` 와 `RuntimeError: coroutine raised StopIteration` 두 종류였다.
 - 원인: `claim_expired_contexts(idle, lease, batch)` 는 **테이블 전역**에서 만료 컨텍스트를 batch 만큼 claim 한다. 그런데 테스트 11곳이 `[idle] = await repo.claim_expired_contexts(10, 30, 10)` 처럼 **"돌아오는 건 내 것 하나뿐"** 을 전제로 언패킹했다. 각 테스트가 `prefix` 로 세션을 격리해도 **claim 질의는 prefix 를 모른다** — 앞선 테스트가 만료 컨텍스트를 남기면 2건이 돌아와 언패킹이 터진다. 실행 순서·타이밍에 따라 남는 잔여물이 달라져 간헐적으로 보였을 뿐, 논리적으로는 결정적 결함이다. `batch=1` 로 부른 6곳은 더 나빴다 — 남의 행 하나를 claim 해 와서 자기 것인 양 검증한다.
 - 규칙:
-  1. **전역 스캔 API의 결과는 절대 바로 언패킹하지 않는다.** 자기 fixture 가 만든 키(`session_id`·`context_id`)로 걸러낸 뒤 검증한다. 공용 헬퍼 `_own_claim(claims, session_id)` 을 쓴다.
-  2. 격리를 `prefix` 로만 하는 테스트에서 **전역 질의를 부를 때는 batch 를 넉넉히(100) 주고 필터링**한다. batch 를 1로 좁혀 격리를 흉내내면 남의 행을 집어온다.
+  1. **전역 스캔 API의 결과는 절대 바로 언패킹하지 않는다.** 자기 fixture 가 만든 키(`session_id`·`context_id`)로 걸러낸 뒤 검증한다. 공용 헬퍼 `_claim_own(repo, session_id)` 을 쓴다.
+  2. ~~전역 질의를 부를 때는 batch 를 넉넉히(100) 주고 필터링한다.~~ **[2026-08-01 폐기 — #220]** batch 를 키우는 것으로는 막을 수 없다. 전역 후보가 batch 를 넘으면 자기 행이 밀려 결과가 빈다(실측 133 > 100). **페이지를 넘겨야 한다** — 맨 위 2026-08-01 항목 참조. batch 를 1로 좁혀 격리를 흉내내면 남의 행을 집어오는 것도 여전히 사실이다.
   3. 통합 스위트는 **한 번 통과로 판단하지 않는다** — 최소 3회 반복 실행으로 순서 의존을 노출시킨 뒤 그린을 주장한다.
   4. 앞선 세션이 남긴 pytest 프로세스가 DB를 붙들고 있으면 같은 증상이 난다. 원인을 코드에서 찾기 전에 `pgrep -af bin/pytest` 로 유령부터 확인한다.
 - 관련: #187, `tests/integration/test_pg_session_context.py` (`_own_claim`), `app/core/session_context.py::claim_expired_contexts`
