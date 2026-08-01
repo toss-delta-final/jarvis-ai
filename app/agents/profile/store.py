@@ -104,6 +104,30 @@ def _fake_embed(texts: list[str]) -> list[list[float]]:
     return [[0.0] * dim for _ in texts]
 
 
+async def _embed_summary(markdown: str) -> list[float] | None:
+    """프로필 요약 벡터 — 홈 추천(I-22) 질의 벡터의 장기 취향 항 (#148).
+
+    **task_type 은 query 다.** 이 벡터는 카탈로그 문서 임베딩을 상대로 검색하는 질의 쪽이라
+    저장 문서(`RETRIEVAL_DOCUMENT`)와 달라야 한다(비대칭 임베딩, 이슈 #65).
+
+    실패는 삼킨다 — **벡터가 없어도 프로필 자체는 저장돼야 한다.** 키 미구성(유닛/CI)·API 오류
+    어느 쪽이든 None 이고, 소비처(I-22)는 항이 하나 빠진 질의 벡터로 degrade 한다.
+    `embed_texts` 는 동기 HTTP 호출이라 별도 스레드로 넘겨 이벤트루프를 막지 않는다.
+    """
+    settings = get_settings()
+    if not settings.google_api_key or not markdown:
+        return None
+    try:
+        vectors = await asyncio.to_thread(
+            embed_texts, [markdown], task_type=settings.embedding_task_query
+        )
+    except Exception:
+        # 예외 문자열은 업스트림 상태를 유출할 수 있어 클래스명도 남기지 않는다(#141 규약).
+        logger.warning("profile_summary_embed_failed")
+        return None
+    return vectors[0] if vectors else None
+
+
 def _pg_index_config() -> dict:
     """pg-profile(AsyncPostgresStore) 전용 semantic 인덱스 — 실 Google 임베딩 API.
 
@@ -121,10 +145,16 @@ def _fallback_index_config() -> dict:
 
 @dataclass
 class ProfileSummary:
-    """압축 프로필 요약 (§5.1 3섹션 마크다운 + 생성 시각)."""
+    """압축 프로필 요약 (§5.1 3섹션 마크다운 + 생성 시각).
+
+    `embedding` 은 **[#148]** 홈 추천(I-22)이 질의 벡터에 섞는 장기 취향 항이다. 요약 생성 시점
+    (sleep-time consolidation)에 미리 만들어 둔다 — 요청 경로에서 임베딩하면 Google API 왕복이
+    붙어 I-22 예산(연결 2s/응답 3s)을 위협한다. 구 요약·임베딩 실패분은 None 이다.
+    """
 
     markdown: str
     generated_at: str  # ISO-8601
+    embedding: list[float] | None = None
 
 
 class ProfileStore:
@@ -140,16 +170,45 @@ class ProfileStore:
         )
         if not item:
             return None
+        embedding = item.value.get("embedding")
         return ProfileSummary(
-            markdown=item.value["markdown"], generated_at=item.value["generated_at"]
+            markdown=item.value["markdown"],
+            generated_at=item.value["generated_at"],
+            # 구 요약(embedding 신설 전)·임베딩 실패분은 키가 없다 — None 으로 흡수한다.
+            embedding=list(embedding) if isinstance(embedding, list) and embedding else None,
         )
 
     async def set_summary(self, user_id: str, markdown: str, generated_at: str) -> None:
+        """요약을 저장한다. **[#148] 홈 추천용 취향 벡터를 함께 만들어 둔다.**
+
+        여기는 sleep-time consolidation 경로라(요청 경로 아님) 임베딩 API 왕복을 감당할 수 있다.
+        I-22 가 요청 시점에 임베딩하면 예산(연결 2s/응답 3s)을 위협하므로 미리 만드는 것이 요점이다.
+
+        **임베딩이 실패하면 기존 벡터를 살려 둔다.** `aput` 은 값을 통째로 덮어쓰므로 그냥 두면
+        재-consolidation 때 일시 실패(레이트리밋·네트워크) 한 번으로 **이미 벡터를 갖고 있던
+        사용자의 개인화 항이 조용히 사라진다** — 신규 프로필뿐 아니라 기존 사용자에게도 회귀다.
+        살려 둔 벡터는 직전 요약 기준이라 새 요약과 약간 어긋나지만, 프로필 취향은 천천히 변하고
+        **개인화가 통째로 빠지는 것보다 낫다.** 다음 성공한 consolidation 이 갱신한다.
+        """
+        embedding = await _embed_summary(markdown)
+        if embedding is None:
+            # 폴백 조회 자체도 실패할 수 있다(pg-profile 일시 장애·타임아웃) — 여기서 안 잡으면
+            # 아래 요약 저장까지 통째로 죽어 "임베딩 실패가 요약 저장을 막지 않는다"는 보장이
+            # 깨진다(PR #213 리뷰). 벡터를 못 살리는 건 degrade, 요약 저장은 필수다.
+            try:
+                existing = await self.get_summary(user_id)
+                embedding = existing.embedding if existing else None
+            except Exception:
+                logger.warning("profile_summary_embedding_carryover_failed")
+                embedding = None
+        value: dict = {"markdown": markdown, "generated_at": generated_at}
+        if embedding is not None:
+            value["embedding"] = embedding
         await run_with_query_timeout(
             self._store.aput(
                 (_PROFILE_NS_ROOT, user_id),
                 _SUMMARY_KEY,
-                {"markdown": markdown, "generated_at": generated_at},
+                value,
                 index=False,  # 요약 전문은 semantic 인덱스 대상이 아니다(REQ-PROF-071 — facts 전용)
             )
         )
@@ -333,6 +392,17 @@ async def _drain_pending_cleanup() -> None:
                 raise
         except Exception:
             pass
+
+
+async def close_store() -> None:
+    """지금 열려 있는 store ctx(내부 커넥션 풀)를 **이 이벤트 루프에서** 닫는다 (이슈 #208).
+
+    sync `set_store()` 가 미룬 close 는 보통 다른 루프에서 실행된다. 살아 있는 풀을 남긴 채
+    루프가 닫히면 teardown 의 `_cancel_all_tasks()` 가 취소를 삼키는 psycopg 워커와 교착한다
+    (app/agents/profile/processed_events.py `close_pool` 과 동일 근거).
+    """
+    set_store(None)
+    await _drain_pending_cleanup()
 
 
 async def _get_store() -> BaseStore:

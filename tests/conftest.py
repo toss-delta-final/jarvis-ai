@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 
@@ -18,10 +19,15 @@ if not ("smoke" in " ".join(sys.argv) and "not smoke" not in " ".join(sys.argv))
 from app.agents.buyer.cart.state import reset_cart_store
 from app.agents.buyer.graph import reset_thread_store
 from app.agents.buyer.recommendation.state import reset_revert_store
+from app.agents.profile import processed_events, session_activity
+from app.agents.profile import store as profile_store_module
 from app.agents.profile.store import reset_profile_store
+from app.core import conversation as conversation_module
+from app.core import pg_store
 from app.core.conversation import reset_store
 from app.core.pg_resilience import close_advisory_pool, reset_advisory_pool
 from app.core.ratelimit import reset_limiter
+from app.core.session_context import close_session_lifecycle
 from app.core.stream import get_registry
 from app.pipelines.artifact_store import reset_catalog_store
 from app.services import spring_client as _spring_client
@@ -66,6 +72,58 @@ async def _reset_advisory_state():
     yield
     await close_advisory_pool()
     reset_advisory_pool()
+
+
+def pg_pool_tasks() -> list[asyncio.Task]:
+    """지금 도는 루프에 묶인 psycopg 풀 백그라운드 태스크(워커·스케줄러).
+
+    psycopg_pool 은 이들을 `pool-<n>-worker-<i>` · `pool-<n>-scheduler` 로 이름 붙인다.
+    이 목록이 비어 있으면 이 루프의 teardown 은 #208 로 교착할 수 없다 — 닫을 것이 없다.
+    """
+    return [t for t in asyncio.all_tasks() if t.get_name().startswith("pool-")]
+
+
+async def close_pg_pools_on_loop() -> None:
+    """이 이벤트 루프에서 열린 pg 풀을 전부 닫는다 (이슈 #208).
+
+    pg 모듈들은 sync 리셋터에서 await 할 수 없어 풀 close 를 "다음 async 진입"으로 미룬다.
+    그래서 테스트가 끝날 때 살아 있는 `AsyncConnectionPool` 이 곧 파괴될 루프에 남는데,
+    psycopg_pool 워커는 유지보수 태스크 실행 중 받은 취소를 삼키므로(근거·재현은
+    tests/unit/test_pool_worker_cancellation.py) 루프 teardown 의 `_cancel_all_tasks()` 가
+    영원히 반환하지 않는다. 여기서 미리 닫아 그 창을 없앤다.
+
+    모듈을 새로 추가하면 이 목록에도 배선한다 — 누락은 CI 무한 대기로 나타난다
+    (tests/integration/test_pg_pool_loop_teardown.py 가 누락을 잡는다).
+    """
+    for close in (
+        processed_events.close_pool,
+        session_activity.close_pool,
+        conversation_module.close_store,
+        pg_store.close_store,
+        profile_store_module.close_store,
+        close_session_lifecycle,
+        close_advisory_pool,
+    ):
+        await close()
+
+
+@pytest.fixture(autouse=True)
+async def _close_pg_pools_on_this_loop():
+    """teardown 전용 — 살아 있는 풀을 루프가 죽기 전에 닫는다 (이슈 #208).
+
+    setup 에서는 부르지 않는다. `_reset_infra_state` 가 이미 InMemory 스토어를 꽂아 둔
+    상태라, 여기서 다시 닫으면 그 주입을 되돌려 다음 테스트가 실 pg 를 건드리게 된다.
+    autouse 정의 순서상 이 fixture 는 `_reset_infra_state` **보다 먼저** teardown 되므로,
+    sync 리셋터가 풀을 정리 대기열로 밀어 넣기 전에 살아 있는 풀을 직접 닫는다.
+
+    이 루프에 풀 태스크가 없으면 아무것도 하지 않는다. `TestClient` 는 자체 portal 루프에서
+    앱을 돌리므로 거기서 열린 풀은 **이미 죽은 루프**에 묶여 있다 — 여기서 close 해봐야
+    실패하고 워커 코루틴만 미회수 상태로 GC 되어 `PytestUnraisableExceptionWarning` 만 남는다.
+    그런 풀은 이 루프의 `_cancel_all_tasks()` 대상도 아니라 #208 을 일으키지 못한다(별개 누수).
+    """
+    yield
+    if pg_pool_tasks():
+        await close_pg_pools_on_loop()
 
 
 @pytest.fixture(autouse=True)

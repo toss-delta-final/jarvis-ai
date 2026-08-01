@@ -91,6 +91,72 @@ async def test_reader_returns_stored_summary() -> None:
     assert got and got["markdown"] == "# 요약\n- x" and got["generated_at"].startswith("2026")
 
 
+async def test_summary_embedding_survives_a_failed_re_embed(monkeypatch) -> None:
+    """[#148] 재-consolidation 때 임베딩이 실패해도 **기존 벡터를 잃지 않는다**.
+
+    `aput` 은 값을 통째로 덮어쓰므로, 실패 시 embedding 키를 빼면 이미 벡터를 갖고 있던 사용자의
+    홈 추천(I-22) 개인화 항이 조용히 사라진다 — 신규 프로필뿐 아니라 기존 사용자에게도 회귀다.
+    """
+    from app.agents.profile import store as store_mod
+
+    async def _ok(_markdown: str) -> list[float]:
+        return [0.5, 0.5]
+
+    async def _fail(_markdown: str) -> None:
+        return None
+
+    store = await get_profile_store()
+    monkeypatch.setattr(store_mod, "_embed_summary", _ok)
+    await store.set_summary("7", "# 요약 v1", "2026-07-20T00:00:00+00:00")
+    assert (await store.get_summary("7")).embedding == [0.5, 0.5]
+
+    monkeypatch.setattr(store_mod, "_embed_summary", _fail)
+    await store.set_summary("7", "# 요약 v2", "2026-07-21T00:00:00+00:00")
+    got = await store.get_summary("7")
+    assert got.markdown == "# 요약 v2", "요약 본문은 갱신된다"
+    assert got.embedding == [0.5, 0.5], "임베딩 실패는 기존 벡터를 지우지 않는다"
+
+
+async def test_summary_save_survives_carryover_lookup_failure(monkeypatch) -> None:
+    """벡터 살리기용 조회가 실패해도 **요약 저장은 성공한다** — 조회 실패는 degrade 다.
+
+    폴백 `get_summary` 를 안 감싸면 pg-profile 일시 장애 때 요약 텍스트 저장까지 함께 죽는다 —
+    PR 이전엔 성공했을 저장이 실패하는 회귀(PR 리뷰).
+    """
+    from app.agents.profile import store as store_mod
+
+    async def _fail_embed(_markdown: str) -> None:
+        return None
+
+    monkeypatch.setattr(store_mod, "_embed_summary", _fail_embed)
+    store = await get_profile_store()
+    orig_get_summary = store.get_summary
+
+    async def _boom(user_id: str):
+        raise RuntimeError("pg-profile down")
+
+    monkeypatch.setattr(store, "get_summary", _boom)
+    await store.set_summary("9", "# 요약", "2026-07-20T00:00:00+00:00")  # 예외가 없어야 한다
+
+    monkeypatch.setattr(store, "get_summary", orig_get_summary)
+    got = await store.get_summary("9")
+    assert got.markdown == "# 요약", "요약 저장은 조회 실패와 무관하게 성공한다"
+    assert got.embedding is None
+
+
+async def test_summary_embedding_is_none_when_never_embedded(monkeypatch) -> None:
+    """기존 벡터가 없으면 그대로 None — 살릴 것이 없다."""
+    from app.agents.profile import store as store_mod
+
+    async def _fail(_markdown: str) -> None:
+        return None
+
+    monkeypatch.setattr(store_mod, "_embed_summary", _fail)
+    store = await get_profile_store()
+    await store.set_summary("8", "# 요약", "2026-07-20T00:00:00+00:00")
+    assert (await store.get_summary("8")).embedding is None
+
+
 # ─────────── gate ───────────
 
 
