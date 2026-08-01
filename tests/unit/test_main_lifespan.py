@@ -16,7 +16,12 @@ import app.main as main_mod
 
 
 def _patch_lifespan_dependencies(
-    monkeypatch, calls, *, failing_resource=None, cancelling_resource=None
+    monkeypatch,
+    calls,
+    *,
+    failing_resource=None,
+    cancelling_resource=None,
+    hanging_resource=None,
 ):
     async def record(name):
         calls.append(name)
@@ -25,6 +30,8 @@ def _patch_lifespan_dependencies(
         if name == cancelling_resource:
             asyncio.current_task().cancel()
             await asyncio.sleep(0)
+        if name == hanging_resource:
+            await asyncio.Event().wait()
 
     monkeypatch.setattr(main_mod, "initialize_session_lifecycle", lambda: record("initialize"))
     monkeypatch.setattr(main_mod, "start_scheduler", lambda: calls.append("start"))
@@ -164,4 +171,36 @@ async def test_lifespan_finishes_cleanup_before_propagating_task_cancellation(mo
     ]
     assert task.cancelled()
     assert "lifespan resource cleanup cancelled resource=seller_history_store" in caplog.text
+    assert "lifespan resource cleanup complete succeeded=8 failed=1" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_lifespan_times_out_hung_resource_and_continues_cleanup(monkeypatch, caplog):
+    calls = []
+    _patch_lifespan_dependencies(monkeypatch, calls, hanging_resource="seller_history_store")
+    monkeypatch.setattr(
+        main_mod,
+        "get_settings",
+        lambda: type("Settings", (), {"lifespan_resource_close_timeout_s": 0.01})(),
+    )
+
+    with caplog.at_level("INFO"):
+        async with main_mod._lifespan(main_mod.app):
+            pass
+
+    assert calls == [
+        "initialize",
+        "start",
+        "stop",
+        "session_lifecycle",
+        "seller_history_store",
+        "seller_checkpointer",
+        "profile_store",
+        "session_activity_pool",
+        "processed_events_pool",
+        "conversation_store",
+        "pg_store",
+        "advisory_pool",
+    ]
+    assert "lifespan resource cleanup timed out resource=seller_history_store" in caplog.text
     assert "lifespan resource cleanup complete succeeded=8 failed=1" in caplog.text

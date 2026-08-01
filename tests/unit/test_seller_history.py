@@ -34,6 +34,11 @@ class _StoreContext:
         self.exit_calls.append(args)
 
 
+class _FailingStoreContext:
+    async def __aexit__(self, *_args):
+        raise RuntimeError("history close failed")
+
+
 @pytest.fixture(autouse=True)
 def _fresh_backends():
     """테스트마다 격리된 InMemory store/checkpointer — PG 연결 시도 차단."""
@@ -83,6 +88,16 @@ def test_close_store_is_safe_before_initialization() -> None:
 
     asyncio.run(close_store())
     asyncio.run(close_store())
+
+
+def test_close_store_propagates_context_close_failure(caplog) -> None:
+    history._store = InMemoryStore()
+    history._store_ctx = _FailingStoreContext()
+
+    with caplog.at_level("WARNING"), pytest.raises(RuntimeError, match="history close failed"):
+        asyncio.run(history.close_store())
+
+    assert "seller history store context cleanup failed" in caplog.text
 
 
 async def _save(question: str = "지난달 매출 분석", recs: RecommendationSet | None = None):

@@ -62,15 +62,23 @@ async def _close_owned_resources() -> None:
         ("pg_store", close_pg_store),
         ("advisory_pool", close_advisory_pool),
     )
+    timeout_s = get_settings().lifespan_resource_close_timeout_s
     failed = 0
     cancellation: asyncio.CancelledError | None = None
     for name, close in resources:
         try:
-            await close()
+            await asyncio.wait_for(close(), timeout=timeout_s)
         except asyncio.CancelledError as exc:
             failed += 1
             cancellation = exc
             logger.warning("lifespan resource cleanup cancelled resource=%s", name)
+        except TimeoutError:
+            failed += 1
+            logger.warning(
+                "lifespan resource cleanup timed out resource=%s timeout_s=%s",
+                name,
+                timeout_s,
+            )
         except Exception:
             failed += 1
             logger.exception("lifespan resource cleanup failed resource=%s", name)

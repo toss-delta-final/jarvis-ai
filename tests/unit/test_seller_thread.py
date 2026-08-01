@@ -33,6 +33,11 @@ class _CheckpointerContext:
         self.exit_calls.append(args)
 
 
+class _FailingCheckpointerContext:
+    async def __aexit__(self, *_args):
+        raise RuntimeError("checkpointer close failed")
+
+
 def test_close_checkpointer_closes_context_and_resets_consumers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -61,6 +66,16 @@ def test_close_checkpointer_is_safe_before_initialization() -> None:
 
     asyncio.run(close_checkpointer())
     asyncio.run(close_checkpointer())
+
+
+def test_close_checkpointer_propagates_context_close_failure(caplog) -> None:
+    checkpoint._checkpointer = InMemorySaver()
+    checkpoint._checkpointer_ctx = _FailingCheckpointerContext()
+
+    with caplog.at_level("WARNING"), pytest.raises(RuntimeError, match="checkpointer close failed"):
+        asyncio.run(checkpoint.close_checkpointer())
+
+    assert "seller checkpointer context cleanup failed" in caplog.text
 
 
 def test_chat_thread_id_namespace() -> None:

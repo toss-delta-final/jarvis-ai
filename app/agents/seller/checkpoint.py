@@ -76,7 +76,7 @@ def set_checkpointer(checkpointer: BaseCheckpointSaver | None) -> None:
         hook()
 
 
-async def _drain_pending_cleanup() -> None:
+async def _drain_pending_cleanup(*, propagate_errors: bool = False) -> None:
     """이전 checkpointer ctx를 닫되 현재 태스크의 실제 취소만 다시 전파한다.
 
     sync `set_checkpointer()`는 ctx를 직접 await-close 할 수 없어 대기열로 넘긴다. 이전
@@ -85,6 +85,7 @@ async def _drain_pending_cleanup() -> None:
     `task.cancelling()`으로 둘을 구분해 실제 취소 요청만 다시 던진다
     (`app/core/pg_store.py`와 같은 근거).
     """
+    first_error: Exception | None = None
     while _pending_cleanup:
         ctx = _pending_cleanup.pop()
         try:
@@ -93,14 +94,18 @@ async def _drain_pending_cleanup() -> None:
             task = asyncio.current_task()
             if task is not None and task.cancelling() > 0:
                 raise
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("seller checkpointer context cleanup failed", exc_info=True)
+            if first_error is None:
+                first_error = exc
+    if propagate_errors and first_error is not None:
+        raise first_error
 
 
 async def close_checkpointer() -> None:
     """지금 열린 checkpointer 단일 연결 ctx를 이 이벤트 루프에서 닫는다 (이슈 #221)."""
     set_checkpointer(None)
-    await _drain_pending_cleanup()
+    await _drain_pending_cleanup(propagate_errors=True)
 
 
 async def get_checkpointer() -> BaseCheckpointSaver:
