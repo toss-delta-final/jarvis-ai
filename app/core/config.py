@@ -340,17 +340,23 @@ class Settings(BaseSettings):
     category_select_margin_max: float = Field(default=0.02, ge=0.0, le=2.0)
     # 턴당 택일 LLM 호출 상한 — fan-out 5 leg 이 모두 애매하면 턴 LLM 이 2→7회로 뛴다. 초과 leg 는
     # 임베딩 top-1 을 그대로 쓴다(종전 동작). ge=0 — 0 이면 택일 기능 off.
+    # ⚠️ **턴당**이 계약이다(#217 PR 리뷰). `map_categories` 는 이 값을 호출 단위로 적용하므로,
+    # #217 로 매핑이 턴에 2회 불리게 된 뒤로는 **호출부가 남은 예산을 계산해 넘겨야** 상한이 지켜진다
+    # (`graph._map_or_empty(select_max_calls=...)` ← `CategoryMapping.select_calls`).
+    # 매핑을 부르는 새 경로를 만들 때 이 배선을 빠뜨리면 상한이 조용히 배수로 깨진다.
     category_select_max_calls: int = Field(default=2, ge=0)
 
-    # ── 목적·상황형 발화의 상품 전개 (이슈 #198, DESIGN-NEEDS-EXPANSION-198) ──
+    # ── 목적·상황형 발화의 상품 전개 (이슈 #198·#217, DESIGN-NEEDS-EXPANSION-198) ──
     # "집들이 선물" 처럼 무엇을 살지 사용자가 말하지 않은 발화를 구체 상품 목록으로 전개한다
     # (정본 SPEC-RECOMMEND-001 §5.1 shopping_list 분해, EX-7 v0.10.0 개정으로 전용 호출 허용).
-    # 전개 실패는 **코드가 결정적으로 감지**한다(설계 §4 D1~D3) — LLM 자기 보고(case)는 전개와 같은
+    # 전개 실패는 **코드가 결정적으로 감지**한다(설계 §4) — LLM 자기 보고(case)는 전개와 같은
     # 호출의 산출물이라 실패 회차의 값을 신뢰할 수 없음이 실측으로 확인됐다(§4.1).
-    # 목적 표현 marker — leg query 가 이것으로 **끝나면** 목적 표현으로 본다. `in` 이 아니라
-    # `endswith` 인 이유: '한우 선물세트'·'과일 선물세트' 같은 정당한 상품명이 marker '선물' 에 걸려
-    # 오탐된다('집들이 선물'.endswith('선물')=True / '한우 선물세트'.endswith('선물')=False).
-    # 실측 기반 초기값이며 관측 로그(needs_expansion_triggered.reason) 분포로 조정한다(설계 OPEN-1).
+    #
+    # [#217] 감지 튜너블이 **없다.** 트리거가 목적 marker 열거에서 "매핑 실패"로 바뀌면서
+    # `needs_expansion_purpose_markers` 를 폐기했고(§4.0), 판정은 기존 카테고리 임계
+    # (`category_distance_max`·`category_distance_override_margin`·`category_select_margin_max`)를
+    # 그대로 재사용한다. 전개 전용 거리 임계를 두는 안은 실측으로 기각됐다(§4.5 ④) — 임계를 낮춰
+    # 얻는 회수보다 정상 상품명 오탐이 커서 교환비가 맞지 않았다.
     needs_expansion_enabled: bool = True  # 전개 단계 on/off(롤백 스위치)
     # 전개 호출 tier. `fast` 로 시작한다 — §2 의 실패는 "fast 라서"가 아니라 "한 호출에 6가지 작업이
     # 얹혀서"였으므로, **단일 작업 전용 호출**의 fast 성능은 별개 측정 대상이다(설계 OPEN-2).
@@ -361,18 +367,6 @@ class Settings(BaseSettings):
     needs_expansion_tier: Literal["fast", "smart"] = "fast"
     # 이 개수 미만이면 전개 실패로 본다 — 1개면 발화 복사로 되돌아가므로 최소 2개.
     needs_expansion_min_items: int = Field(default=2, ge=1)
-    needs_expansion_purpose_markers: list[str] = [
-        "선물",
-        "답례품",
-        "준비물",
-        "용품",
-        "아이템",
-        "키트",
-        "물품",
-        "추천",
-        "것",
-        "거",
-    ]
 
     # ── 장바구니 (이슈 #3, api-spec §4.1) ──
     # CART_OPTION_INVALID 재질문 상한 — 초과 시 action CART_ERROR(§4.1). 하드코딩 금지.
