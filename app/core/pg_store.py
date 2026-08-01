@@ -48,7 +48,7 @@ def set_store(store: BaseStore | None) -> None:
         _pending_cleanup.append(old_ctx)
 
 
-async def _drain_pending_cleanup() -> None:
+async def _drain_pending_cleanup(*, propagate_errors: bool = False) -> None:
     """대기열의 이전 store ctx 들을 닫는다 — 다른(이미 소멸한) 이벤트 루프에서 만들어졌을 수 있다.
 
     `AsyncPostgresStore` ctx 의 close(`__aexit__`)는 내부 커넥션 정리를 동반해, 다른/죽은
@@ -62,6 +62,7 @@ async def _drain_pending_cleanup() -> None:
     후자만 다시 던진다(processed_events.py·conversation.py 와 동일 근거·수정, PR #46/#47
     후속 리뷰).
     """
+    first_error: Exception | None = None
     while _pending_cleanup:
         ctx = _pending_cleanup.pop()
         try:
@@ -70,8 +71,12 @@ async def _drain_pending_cleanup() -> None:
             task = asyncio.current_task()
             if task is not None and task.cancelling() > 0:
                 raise
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("pg store context cleanup failed", exc_info=True)
+            if first_error is None:
+                first_error = exc
+    if propagate_errors and first_error is not None:
+        raise first_error
 
 
 async def close_store() -> None:
@@ -82,7 +87,7 @@ async def close_store() -> None:
     (app/agents/profile/processed_events.py `close_pool` 과 동일 근거).
     """
     set_store(None)
-    await _drain_pending_cleanup()
+    await _drain_pending_cleanup(propagate_errors=True)
 
 
 def reset_store() -> None:

@@ -176,6 +176,43 @@ async def test_lifespan_finishes_cleanup_before_propagating_task_cancellation(mo
 
 
 @pytest.mark.asyncio
+async def test_lifespan_consumes_external_cancellation_until_cleanup_finishes(monkeypatch):
+    started = asyncio.Event()
+    observed_cancellation_counts = []
+
+    async def block_until_cancelled():
+        started.set()
+        await asyncio.Event().wait()
+
+    task = None
+
+    async def observe_parent_cancellation():
+        assert task is not None
+        observed_cancellation_counts.append(task.cancelling())
+
+    monkeypatch.setattr(main_mod, "close_session_lifecycle", block_until_cancelled)
+    for name in (
+        "close_seller_history_store",
+        "close_seller_checkpointer",
+        "close_profile_store",
+        "close_session_activity_pool",
+        "close_processed_events_pool",
+        "close_conversation_store",
+        "close_pg_store",
+        "close_advisory_pool",
+    ):
+        monkeypatch.setattr(main_mod, name, observe_parent_cancellation)
+
+    task = asyncio.create_task(main_mod._close_owned_resources())
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert observed_cancellation_counts == [0] * 8
+
+
+@pytest.mark.asyncio
 async def test_lifespan_times_out_hung_resource_and_continues_cleanup(monkeypatch, caplog):
     calls = []
     _patch_lifespan_dependencies(monkeypatch, calls, hanging_resource="seller_history_store")

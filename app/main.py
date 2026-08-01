@@ -77,6 +77,9 @@ async def _close_owned_resources() -> None:
         except asyncio.CancelledError as exc:
             failed += 1
             cancellation = exc
+            task = asyncio.current_task()
+            if task is not None:
+                task.uncancel()
             logger.warning("lifespan resource cleanup cancelled resource=%s", name)
         except TimeoutError:
             failed += 1
