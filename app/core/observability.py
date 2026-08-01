@@ -200,8 +200,7 @@ class RequestObservation:
                         call.model,
                     )
                     warned.add(call.model)
-                if input_price is None and output_price is None:
-                    continue
+                continue
             total += call.prompt_tokens / 1_000 * (input_price or 0.0)
             total += call.completion_tokens / 1_000 * (output_price or 0.0)
         return round(total, 8)

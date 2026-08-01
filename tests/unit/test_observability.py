@@ -917,6 +917,44 @@ async def test_unregistered_model_costs_zero_and_warns(
     assert "unregistered-model" in caplog.text
 
 
+@pytest.mark.parametrize(
+    ("input_prices", "output_prices"),
+    [
+        ({"partial-model": 0.01}, {}),
+        ({}, {"partial-model": 0.02}),
+    ],
+)
+async def test_partially_registered_model_costs_zero(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    input_prices: dict[str, float],
+    output_prices: dict[str, float],
+) -> None:
+    """입출력 단가 중 하나라도 빠지면 그럴듯한 부분 비용 대신 호출 전체를 0 처리한다."""
+    monkeypatch.setattr(
+        observability,
+        "get_settings",
+        lambda: types.SimpleNamespace(
+            pii_hash_pepper="test-pepper",
+            model_price_in_per_1k=input_prices,
+            model_price_out_per_1k=output_prices,
+        ),
+    )
+    observation = await _obs("partial-price")
+    observation.record_model_call("partial-model", 1_000, 1_000)
+
+    with caplog.at_level(logging.INFO, logger="observability"):
+        await observation.finish(1.0, TurnStatus.COMPLETED)
+
+    record = next(
+        json.loads(item.getMessage())
+        for item in caplog.records
+        if item.name == "observability" and item.getMessage().startswith("{")
+    )
+    assert record["costUsd"] == 0
+    assert "MODEL_PRICE_MISSING" in caplog.text
+
+
 def test_message_fingerprint_is_not_raw() -> None:
     """지문은 (길이, 해시)이며 원문을 그대로 노출하지 않는다."""
     length, digest = message_fingerprint("hello")
