@@ -25,6 +25,15 @@ _SYSTEM = """당신은 커머스 추천 재랭킹기입니다. 후보 상품과 
 - rationale 은 한글 40자 이내 1문장으로 간결하게 — 개행 없이.
 - 가장 적합한 순으로 정렬하고 상위만 남기세요."""
 
+# [#119] 프로필이 있는 턴에만 user 메시지에 덧붙는 동점 처리 지시. `_SYSTEM` 에 두지 않는 이유는
+# rerank() docstring 참조(프로필 없는 경로의 프롬프트 불변 유지). 테스트는 리터럴을 복붙하지 말고
+# 이 상수를 import 해 검증한다 — 문구를 다듬어도 테스트가 깨지지 않으면서 배선은 보증된다.
+_PROFILE_TIEBREAK = (
+    "- PROFILE_SUMMARY 는 QUERY 를 만족하는 후보들 사이의 **동점 처리**에만 쓰세요. "
+    "프로필 때문에 QUERY 에 덜 맞는 상품을 위로 올리지 말고, 프로필에만 있고 QUERY 에 "
+    "없는 조건을 근거문에 쓰지 마세요.\n"
+)
+
 
 def _rating_tier(product: SpringProduct, settings) -> str:
     """rerank LLM 에 넘길 평점 등급(정확한 숫자 대신) — 비표시 수치 유출 원천 차단(#171 PR#172).
@@ -114,6 +123,13 @@ async def rerank(
             if need:
                 item["need"] = need
     prof = profile_summary or "(없음)"
+    # [#119] 취향은 발화를 누르지 않는다 — 프로필이 있을 때만 동점 처리 지시를 덧붙인다.
+    # 프로필 없는(게스트) 경로의 프롬프트는 한 글자도 바뀌지 않는다(위 니즈 지시와 동일 규약).
+    # PROFILE_SUMMARY/QUERY 순서는 바꾸지 않는다 — 게스트도 `PROFILE_SUMMARY: (없음)` 줄을
+    # 받으므로 순서를 뒤집으면 잘 도는 경로까지 바뀐다. 위치 효과보다 명시 규칙이 일한다.
+    profile_line = ""
+    if profile_summary and settings.profile_rerank_influence == "tiebreak":
+        profile_line = _PROFILE_TIEBREAK
     # 니즈 지시는 user 메시지에만 덧붙인다 — 단일 목록 경로의 프롬프트를 그대로 두기 위해서다.
     needs_line = ""
     if need_of and per_need:
@@ -125,6 +141,7 @@ async def rerank(
         )
     user = (
         f"PROFILE_SUMMARY: {prof}\nQUERY: {query}\n"
+        f"{profile_line}"
         f"{needs_line}"
         f"CANDIDATES: {json.dumps(cand, ensure_ascii=False)}"
     )

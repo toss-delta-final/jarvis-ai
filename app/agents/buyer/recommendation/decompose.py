@@ -105,6 +105,12 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
 - general: intent=general, reply 에 짧게 답하세요."""
 
 
+def _filter_axes(filters: ProductSearchFilters) -> list[str]:
+    """값이 설정된 하드필터 축 이름 (#119 관측 — 값은 담지 않는다)."""
+    axes = ("category", "price_min", "price_max", "brand", "rating_min", "keyword", "color")
+    return [name for name in axes if getattr(filters, name, None) not in (None, [], "")]
+
+
 async def decompose(
     llm: LLMClient,
     *,
@@ -215,6 +221,11 @@ async def decompose(
                 "case": case,
                 "legs": len(category_queries),
                 "leg_queries": [q.query for q in category_queries],
+                # [#119] 이번 턴에 값이 설정된 하드필터 **축 이름만** — 값은 싣지 않는다(PII,
+                # tracing 카나리 오탐 회피). 같은 발화의 회원/게스트 턴을 대조하면 프로필이
+                # 하드필터로 새는지 휴리스틱 없이 객관적으로 드러난다.
+                "filters_set": _filter_axes(filters),
+                "profile_injected": bool(profile_summary),
             },
         )
     return RouteDecision(
