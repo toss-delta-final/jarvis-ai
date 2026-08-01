@@ -282,6 +282,11 @@ class RequestObservation:
             if self.role == "seller"
             else {"ownerFp": identifier_fingerprint(self.user_id)}
         )
+        try:
+            cost_usd = self._cost_usd()
+        except Exception:
+            logger.warning("model cost calculation failed code=MODEL_COST_CALCULATION_FAILED")
+            cost_usd = 0.0
         record = {
             "event": "chat_request",
             "requestId": self.request_id,
@@ -298,7 +303,7 @@ class RequestObservation:
             "lane": self.lane,
             "degraded": self.degraded,
             "degradeReason": self.degrade_reason,
-            "costUsd": self._cost_usd(),
+            "costUsd": cost_usd,
             "toolCalls": self.tool_calls,
             "errorType": error_type,
             "streamStatus": stream_status,

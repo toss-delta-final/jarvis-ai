@@ -955,6 +955,30 @@ async def test_partially_registered_model_costs_zero(
     assert "MODEL_PRICE_MISSING" in caplog.text
 
 
+async def test_cost_failure_does_not_drop_chat_request(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observation = await _obs("cost-failure")
+
+    def fail_cost() -> float:
+        raise RuntimeError("PRIVATE-COST-CANARY")
+
+    monkeypatch.setattr(observation, "_cost_usd", fail_cost)
+
+    with caplog.at_level(logging.INFO, logger="observability"):
+        await observation.finish(1.0, TurnStatus.COMPLETED)
+
+    record = next(
+        json.loads(item.getMessage())
+        for item in caplog.records
+        if item.name == "observability" and item.getMessage().startswith("{")
+    )
+    assert record["costUsd"] == 0
+    assert "MODEL_COST_CALCULATION_FAILED" in caplog.text
+    assert "PRIVATE-COST-CANARY" not in caplog.text
+
+
 def test_message_fingerprint_is_not_raw() -> None:
     """지문은 (길이, 해시)이며 원문을 그대로 노출하지 않는다."""
     length, digest = message_fingerprint("hello")
