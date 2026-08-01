@@ -851,9 +851,9 @@ def test_duplicate_signal_ids_do_not_inflate_the_query_vector(
             for i in client.post(_URL, json=_body(limit=10, signals=signals)).json()["items"]
         ]
 
-    assert ranking([9001, 9002]) == ranking([9001, 9002, 9002, 9002, 9002]), (
-        "중복 9002 가 벡터를 지배하면 순위가 달라진다"
-    )
+    assert ranking([9001, 9002]) == ranking(
+        [9001, 9002, 9002, 9002, 9002]
+    ), "중복 9002 가 벡터를 지배하면 순위가 달라진다"
 
 
 def test_reason_falls_back_to_review_pro(store: CatalogArtifactStore) -> None:
