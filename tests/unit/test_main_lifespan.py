@@ -31,6 +31,18 @@ def _patch_lifespan_dependencies(monkeypatch, calls, *, failing_resource=None):
     )
     monkeypatch.setattr(
         main_mod,
+        "close_seller_history_store",
+        lambda: record("seller_history_store"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "close_seller_checkpointer",
+        lambda: record("seller_checkpointer"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        main_mod,
         "close_session_activity_pool",
         lambda: record("session_activity_pool"),
         raising=False,
@@ -77,6 +89,8 @@ async def test_lifespan_closes_all_owned_resources_in_reverse_order(monkeypatch)
         "start",
         "stop",
         "session_lifecycle",
+        "seller_history_store",
+        "seller_checkpointer",
         "profile_store",
         "session_activity_pool",
         "processed_events_pool",
@@ -100,6 +114,8 @@ async def test_lifespan_continues_cleanup_after_resource_failure(monkeypatch, ca
         "start",
         "stop",
         "session_lifecycle",
+        "seller_history_store",
+        "seller_checkpointer",
         "profile_store",
         "session_activity_pool",
         "processed_events_pool",
@@ -108,4 +124,4 @@ async def test_lifespan_continues_cleanup_after_resource_failure(monkeypatch, ca
         "advisory_pool",
     ]
     assert "lifespan resource cleanup failed resource=session_activity_pool" in caplog.text
-    assert "lifespan resource cleanup complete succeeded=6 failed=1" in caplog.text
+    assert "lifespan resource cleanup complete succeeded=8 failed=1" in caplog.text

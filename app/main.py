@@ -33,6 +33,8 @@ if sys.platform == "win32":
 from app.agents.profile.processed_events import close_pool as close_processed_events_pool
 from app.agents.profile.session_activity import close_pool as close_session_activity_pool
 from app.agents.profile.store import close_store as close_profile_store
+from app.agents.seller.checkpoint import close_checkpointer as close_seller_checkpointer
+from app.agents.seller.history import close_store as close_seller_history_store
 from app.api import chat, events, internal, profile, seller
 from app.core.conversation import close_store as close_conversation_store
 from app.core.config import get_settings
@@ -51,6 +53,8 @@ async def _close_owned_resources() -> None:
     """소유한 리소스를 의존성 역순으로 닫고 개별 실패를 격리한다."""
     resources = (
         ("session_lifecycle", close_session_lifecycle),
+        ("seller_history_store", close_seller_history_store),
+        ("seller_checkpointer", close_seller_checkpointer),
         ("profile_store", close_profile_store),
         ("session_activity_pool", close_session_activity_pool),
         ("processed_events_pool", close_processed_events_pool),

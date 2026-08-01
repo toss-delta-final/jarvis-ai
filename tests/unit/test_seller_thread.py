@@ -25,6 +25,44 @@ _CTX = SellerContext(seller_id=7, brand_id=3)
 _OTHER = SellerContext(seller_id=8, brand_id=3)
 
 
+class _CheckpointerContext:
+    def __init__(self) -> None:
+        self.exit_calls = []
+
+    async def __aexit__(self, *args):
+        self.exit_calls.append(args)
+
+
+def test_close_checkpointer_closes_context_and_resets_consumers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    close_checkpointer = getattr(checkpoint, "close_checkpointer", None)
+    assert callable(close_checkpointer)
+    ctx = _CheckpointerContext()
+    reset_calls = []
+    monkeypatch.setattr(checkpoint, "_reset_hooks", [lambda: reset_calls.append("reset")])
+    checkpoint._checkpointer = InMemorySaver()
+    checkpoint._checkpointer_ctx = ctx
+    checkpoint._init_lock = asyncio.Lock()
+
+    asyncio.run(close_checkpointer())
+
+    assert ctx.exit_calls == [(None, None, None)]
+    assert checkpoint._checkpointer is None
+    assert checkpoint._checkpointer_ctx is None
+    assert checkpoint._init_lock is None
+    assert reset_calls == ["reset"]
+
+
+def test_close_checkpointer_is_safe_before_initialization() -> None:
+    close_checkpointer = getattr(checkpoint, "close_checkpointer", None)
+    assert callable(close_checkpointer)
+    checkpoint.set_checkpointer(None)
+
+    asyncio.run(close_checkpointer())
+    asyncio.run(close_checkpointer())
+
+
 def test_chat_thread_id_namespace() -> None:
     """seller_id 접두 + seller-chat 네임스페이스 — HITL(seller-draft:)과 충돌 없음."""
     assert thread.chat_thread_id(_CTX, "t-1") == "seller-chat:7:t-1"

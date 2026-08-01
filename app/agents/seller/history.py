@@ -73,6 +73,7 @@ _store: BaseStore | None = None
 _store_ctx: object | None = None  # AsyncPostgresStore cm — 앱 수명 동안 GC 방지
 _fallback_warned = False
 _save_locks: WeakValueDictionary[int, asyncio.Lock] = WeakValueDictionary()
+_pending_cleanup: list[object] = []
 
 
 def _save_lock(seller_id: int) -> asyncio.Lock:
@@ -84,16 +85,46 @@ def _save_lock(seller_id: int) -> asyncio.Lock:
 
 
 def set_store(store: BaseStore | None) -> None:
-    """store 교체(테스트용) — None 이면 다음 사용 시 재초기화한다."""
+    """store 교체(테스트용) — 기존 ctx 정리는 다음 async 진입으로 미룬다."""
     global _store, _store_ctx
+    old_ctx = _store_ctx
     _store = store
     _store_ctx = None
     _save_locks.clear()
+    if old_ctx is not None:
+        _pending_cleanup.append(old_ctx)
+
+
+async def _drain_pending_cleanup() -> None:
+    """이전 store ctx를 닫되 현재 태스크의 실제 취소만 다시 전파한다.
+
+    sync `set_store()`는 ctx를 직접 await-close 할 수 없어 대기열로 넘긴다. 이전 이벤트
+    루프에 묶인 stale ctx의 `__aexit__()`가 `CancelledError`를 낼 수 있지만, 이를 무조건
+    삼키면 현재 종료 태스크 자체의 실제 취소까지 무시된다. `task.cancelling()`으로 둘을
+    구분해 실제 취소 요청만 다시 던진다(`app/core/pg_store.py`와 같은 근거).
+    """
+    while _pending_cleanup:
+        ctx = _pending_cleanup.pop()
+        try:
+            await ctx.__aexit__(None, None, None)
+        except asyncio.CancelledError:
+            task = asyncio.current_task()
+            if task is not None and task.cancelling() > 0:
+                raise
+        except Exception:
+            pass
+
+
+async def close_store() -> None:
+    """지금 열린 분석 이력 store ctx를 이 이벤트 루프에서 닫는다 (이슈 #221)."""
+    set_store(None)
+    await _drain_pending_cleanup()
 
 
 async def _get_store() -> BaseStore:
     """AsyncPostgresStore(pg-profile) 지연 초기화 — 실패 시 dev 한정 InMemoryStore 폴백."""
     global _store, _store_ctx, _fallback_warned
+    await _drain_pending_cleanup()
     if _store is None:
         settings = get_settings()
         try:

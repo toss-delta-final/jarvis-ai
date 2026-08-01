@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 _checkpointer: BaseCheckpointSaver | None = None
 _checkpointer_ctx: object | None = None  # AsyncPostgresSaver cm — 앱 수명 동안 GC 방지
 _fallback_warned = False
+_pending_cleanup: list[object] = []
 
 # 콜드스타트 초기화 직렬화 락(PR #182 리뷰) — 모듈 로드 시점 생성 금지: 테스트가
 # asyncio.run 반복으로 루프를 바꾸면 Lock 의 루프 바인딩(3.12)이 깨진다. 지연 생성하고
@@ -65,11 +66,41 @@ def set_checkpointer(checkpointer: BaseCheckpointSaver | None) -> None:
     (기존 hitl.set_checkpointer 가 _graph·_confirm_locks 를 함께 초기화하던 계약 유지).
     """
     global _checkpointer, _checkpointer_ctx, _init_lock
+    old_ctx = _checkpointer_ctx
     _checkpointer = checkpointer
     _checkpointer_ctx = None
     _init_lock = None  # 루프 교체(테스트 asyncio.run 반복) 대비 락도 재생성
+    if old_ctx is not None:
+        _pending_cleanup.append(old_ctx)
     for hook in _reset_hooks:
         hook()
+
+
+async def _drain_pending_cleanup() -> None:
+    """이전 checkpointer ctx를 닫되 현재 태스크의 실제 취소만 다시 전파한다.
+
+    sync `set_checkpointer()`는 ctx를 직접 await-close 할 수 없어 대기열로 넘긴다. 이전
+    이벤트 루프에 묶인 stale ctx의 `__aexit__()`가 `CancelledError`를 낼 수 있지만,
+    이를 무조건 삼키면 현재 종료 태스크 자체의 실제 취소까지 무시된다.
+    `task.cancelling()`으로 둘을 구분해 실제 취소 요청만 다시 던진다
+    (`app/core/pg_store.py`와 같은 근거).
+    """
+    while _pending_cleanup:
+        ctx = _pending_cleanup.pop()
+        try:
+            await ctx.__aexit__(None, None, None)
+        except asyncio.CancelledError:
+            task = asyncio.current_task()
+            if task is not None and task.cancelling() > 0:
+                raise
+        except Exception:
+            pass
+
+
+async def close_checkpointer() -> None:
+    """지금 열린 checkpointer 단일 연결 ctx를 이 이벤트 루프에서 닫는다 (이슈 #221)."""
+    set_checkpointer(None)
+    await _drain_pending_cleanup()
 
 
 async def get_checkpointer() -> BaseCheckpointSaver:
@@ -80,6 +111,7 @@ async def get_checkpointer() -> BaseCheckpointSaver:
     인스턴스 분열이 생긴다. 바깥 검사(비-None 정상 경로)는 락을 타지 않는다.
     """
     global _checkpointer
+    await _drain_pending_cleanup()
     if _checkpointer is None:
         async with _get_init_lock():
             if _checkpointer is None:  # 락 대기 중 다른 코루틴이 끝냈을 수 있다
