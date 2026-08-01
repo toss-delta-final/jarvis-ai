@@ -354,7 +354,9 @@ class RequestTrace:
         """Replace the request's provisional lane after bounded routing completes."""
         if not self._is_closing():
             self._nodes[0].metadata["lane"] = lane
-            if self._observation is not None and lane in OBSERVABILITY_LANES:
+            if lane not in OBSERVABILITY_LANES:
+                logger.warning("unregistered observability lane code=OBSERVABILITY_LANE_UNKNOWN")
+            elif self._observation is not None:
                 self._observation.set_lane(lane)
 
     def record_llm_usage(
@@ -492,7 +494,9 @@ class NoopRequestTrace(RequestTrace):
 
     def set_lane(self, lane: str) -> None:
         self._lane = lane
-        if self._observation is not None and lane in OBSERVABILITY_LANES:
+        if lane not in OBSERVABILITY_LANES:
+            logger.warning("unregistered observability lane code=OBSERVABILITY_LANE_UNKNOWN")
+        elif self._observation is not None:
             self._observation.set_lane(lane)
 
     def record_llm_usage(
