@@ -1530,3 +1530,48 @@ def test_split_by_need_logs_products_without_leg(caplog) -> None:
 
     assert groups  # 동작은 종전대로 — 진단만 추가한다
     assert any("leg" in r.message for r in caplog.records)
+
+
+async def test_mapper_exception_skips_expansion_and_degrades_to_unfiltered() -> None:
+    """[#217 PR 리뷰] `case 3` 인데 매퍼 **호출 자체**가 예외로 죽으면 전개하지 않고 무필터로 간다.
+
+    #217 로 전개 트리거가 매핑 결과에 종속되면서 생긴 동작이라 명시적으로 고정한다. `_map_or_empty`
+    가 예외를 `CategoryMapping()`(legs·unresolved 모두 빈 값)로 흡수하므로 D1(신호는 있으니 해당
+    없음)·D2(unresolved 비어 해당 없음) 둘 다 걸리지 않는다.
+
+    **결과적 손실은 없다** — 전개가 낸 상품명도 결국 같은 매퍼를 타야 canonical 이 되는데, 그 매퍼가
+    죽어 있다. 종전 배선(전개 먼저 → 매핑 1회)에서도 매핑 예외는 그대로 `category_legs = []` 로
+    떨어져 최종 상태가 **무필터로 동일**했고, 차이는 종전이 헛된 LLM 전개 호출을 한 번 더 썼다는
+    것뿐이다. 즉 이 변경은 실패 모드에서 비용만 줄인다.
+    """
+    seen, expand = _expansion_probe()
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters.category)
+        return _res(101)
+
+    async def _boom(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
+        raise RuntimeError("mapper bug")
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="집들이 선물로 뭐 사갈까"),
+            _member(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "reply": "",
+                    "case": 3,
+                    "filters": {},
+                    "categoryQueries": [{"category": None, "query": "집들이 선물"}],
+                }
+            ),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_boom,
+            expand_needs=expand,
+        )
+    )
+    assert seen == []  # 매퍼가 죽었으면 전개 LLM 을 부르지 않는다(헛된 비용)
+    assert calls == [None]  # canonical-or-null — 미검증 raw 가 검색에 안 실린다
