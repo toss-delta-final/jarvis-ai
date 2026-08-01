@@ -93,6 +93,17 @@ async def _drain_pending_cleanup() -> None:
             pass
 
 
+async def close_pool() -> None:
+    """지금 열려 있는 풀을 **이 이벤트 루프에서** 닫는다 (이슈 #208).
+
+    sync 리셋터가 미룬 close 는 보통 다른 루프에서 실행된다. 살아 있는 풀을 남긴 채 루프가
+    닫히면 teardown 의 `_cancel_all_tasks()` 가 취소를 삼키는 psycopg 워커와 교착한다
+    (processed_events.close_pool 과 동일 근거).
+    """
+    set_pool(None)
+    await _drain_pending_cleanup()
+
+
 async def ensure_schema_on_connection(conn) -> None:  # noqa: ANN001 - psycopg AsyncConnection
     """conversation_turn INSERT와 같은 pool에서도 재사용하는 idempotent schema DDL."""
     await conn.execute(

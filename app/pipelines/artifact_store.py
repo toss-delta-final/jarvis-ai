@@ -50,6 +50,9 @@ class ArtifactStore(Protocol):
     def get_many(self, product_ids: list[int]) -> dict[int, CatalogArtifact]: ...
     def all(self) -> list[CatalogArtifact]: ...
     def count(self) -> int: ...
+    def top_k_by_vector(
+        self, query_vec: list[float], *, k: int, exclude: set[int] | None = None
+    ) -> list[int]: ...
     def get_cursor(self) -> str | None: ...
     def set_cursor(self, cursor: str | None) -> None: ...
 
@@ -93,6 +96,26 @@ class CatalogArtifactStore:
 
     def count(self) -> int:
         return len(self._items)
+
+    def top_k_by_vector(
+        self, query_vec: list[float], *, k: int, exclude: set[int] | None = None
+    ) -> list[int]:
+        """질의 벡터에 가까운 상위 k productId (I-22 랭킹, #148).
+
+        인메모리 구현은 **정확한 코사인**을 쓴다 — 건수가 작아 근사가 불필요하고, 테스트가 기대하는
+        순서가 명확해야 한다(pg 구현은 HNSW 근사, `pg_artifact_store` 주석 참조).
+        동점은 `product_id` 오름차순으로 tiebreak 해 결정적이다.
+        """
+        from app.services.search_service import cosine_similarity  # noqa: PLC0415 - 순환 임포트 회피
+
+        skip = exclude or set()
+        scored = [
+            (cosine_similarity(query_vec, a.embedding), a.product_id)
+            for a in self._items.values()
+            if a.embedding and a.product_id not in skip
+        ]
+        scored.sort(key=lambda t: (-t[0], t[1]))
+        return [pid for _, pid in scored[:k]]
 
     def get_cursor(self) -> str | None:
         return self._cursor

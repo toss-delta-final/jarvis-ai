@@ -566,6 +566,10 @@ async def stream_recommendation(
             # 굶은 니즈가 검색순서 보충으로 채워져 여기가 오른다. rerank_degraded 로는 안 보이는
             # 품질 저하라 별도 지표가 필요하다(PR #212 리뷰).
             "without_reason": sum(1 for pid in ranked_ids if not reason_by_id.get(pid)),
+            # [#119] 회원/게스트 턴을 사후 분리해 깔때기(received·after_dedup)를 대조하기 위한
+            # 조인 키. 개인화가 후보를 줄이면 회원 쪽 received 가 작게 나온다.
+            "profile_present": bool(profile),
+            "profile_scope": settings.profile_injection_scope,
         },
     )
 

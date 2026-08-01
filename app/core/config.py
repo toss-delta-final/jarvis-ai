@@ -19,12 +19,27 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # I-21 계약 하드 상한(api-spec §4.2) — 노출 개수 설정이 계약을 넘지 못하게 묶는 기준.
 # 계약 값의 단일 출처는 스키마다(app/schemas/spring.py) — 여기서 숫자를 다시 적지 않는다.
+from app.schemas.recommendations import LIMIT_MAX as HOME_RECO_LIMIT_MAX
 from app.schemas.spring import LIST_MAX_PRODUCTS, MAX_LISTS
 
 LLMProvider = Literal["openai", "anthropic"]
 # 검색 백엔드 선택(#101) — spring: Spring 위임만(방식1 이전 MVP), embedding_rerank: Spring 전량 →
 # pgvector 의미 재정렬(방식2, MVP 기본), vector: AI 벡터검색 → Spring hydrate(방식1, C-17 미착수).
 SearchBackend = Literal["spring", "embedding_rerank", "vector"]
+# 프로필 주입 소비처(#119) — off: 이번 턴 개인화 미적용, rerank_only: 기본(취향은 순서에만),
+# both: 구 동작(decompose 하드필터 파생 허용, 롤백 경로).
+# ⚠️ off 는 **주입만 차단**하고 프로필 축적(read·"기억해" 기록·세션 버퍼 적재)은 계속된다 —
+# "모으되 아직 쓰지 않는" 섀도 모드이지 **게스트 등가가 아니다**(게스트는 그 경로 자체가 없다,
+# PR #223 리뷰). A/B 에서 off 를 baseline 으로 쓸 때 그 구간의 추천 자체는 프로필 주입이 없어
+# 깨끗하지만, off 기간에도 프로필은 계속 자라므로 "게스트와 동일 조건"으로 읽으면 안 된다.
+# 축적까지 멈추는 킬스위치가 필요해지면 별도 스위치를 둔다 — off 의 의미를 좁히지 않는다.
+ProfileInjectionScope = Literal["off", "rerank_only", "both"]
+# rerank 의 프로필 사용 강도(#119) — tiebreak: 동점 처리 지시 부착, legacy: 지시 없음(현행).
+ProfileRerankInfluence = Literal["tiebreak", "legacy"]
+# decompose 가 산출하는 intent 집합 — 세션 버퍼 제외 intent 검증의 정의역.
+# 정본은 RouteDecision.intent Literal(app/agents/buyer/recommendation/state.py)이며, 런타임
+# import 는 순환이라 여기 복제하고 드리프트는 테스트로 고정한다(test_config_profile.py).
+ROUTE_INTENTS = frozenset({"recommend", "cart_add", "cart_view", "order_status", "general"})
 
 
 class Settings(BaseSettings):
@@ -87,6 +102,14 @@ class Settings(BaseSettings):
     catalog_batch_page_size: int = 500  # I-17 배치 페이지 크기(§4.8, config 주입)
     catalog_vector_overfetch: int = 4  # 방식1 hydrate 후 필터·품절 제거 대비 벡터 여유조회 배수
     catalog_batch_interval_s: float = 300.0  # 주기 증분 pull 배치 스케줄러 간격(이슈 #31)
+    # pg-catalog 질의 statement_timeout — get_many·top_k_by_vector 의 DB 쪽 상한(PR #213 리뷰).
+    # 앱쪽 벽시계 포기는 스레드 밑의 쿼리를 못 죽이므로, 이게 없으면 지연 쿼리(I-17 replace_all
+    # 테이블 락 등)가 풀 커넥션을 계속 붙들어 채팅 rerank 등 다른 경로까지 말려든다.
+    # **앱쪽 호출 상한(home_reco_store_timeout_s)보다 커야 한다** — 같거나 작으면 "쿼리가
+    # 느리다"는 동일 원인이 어느 타이머가 먼저 발동하느냐에 따라 503/504 로 비결정적으로
+    # 갈린다(PR 리뷰: DB 가 먼저 끊으면 psycopg QueryCanceled → except Exception → 503).
+    # 관계는 기동 시점에 강제한다(아래 model_validator).
+    catalog_store_query_timeout_s: float = Field(default=2.5, gt=0.0)
 
     # ── PostgreSQL / pgvector ×2 ──
     # catalog: AI 생성물(extras/search_doc/임베딩, §4.8 I-17 배치 upsert) 호스트, profile: 프로필 스토어+대화 저장(§6.3).
@@ -216,6 +239,41 @@ class Settings(BaseSettings):
     rerank_max_tokens_per_item: int = Field(default=60, ge=1)  # {productId, rationale} 1건 몫
     llm_call_limit: int = 2
     relaxation_max_rounds: int = 3
+
+    # ── 홈 추천 랭킹 (I-22, api-spec §3.7 · 이슈 #148) ──
+    # 질의 벡터 = 시그널 상품 임베딩의 가중 평균. cart 는 "담기까지 갔다"는 강한 신호라 조회보다 높게,
+    # 조회는 최신일수록 높게(recency decay 를 인덱스 거듭제곱으로 적용) — §3.7 signals 표.
+    home_reco_weight_cart: float = Field(default=1.0, ge=0.0)
+    home_reco_weight_viewed: float = Field(default=0.6, ge=0.0)
+    # [#148] 장기 취향 항 — 프로필 요약 벡터(sleep-time consolidation 이 미리 만든다).
+    # cart(지금 담은 것)보다 낮게 둔다: 오래된 취향이 현재 관심을 덮으면 홈이 안 바뀐 것처럼 보인다.
+    # 0 으로 두면 프로필 기여가 **완전히 꺼진다**(롤백 스위치) — reason 의 프로필 문자열 분기는
+    # 극성(선호/회피) 문제로 제거됐으므로(83f78a1) 프로필의 유일한 소비처가 이 벡터 항이다.
+    home_reco_weight_profile: float = Field(default=0.5, ge=0.0)
+    home_reco_viewed_decay: float = Field(default=0.85, gt=0.0, le=1.0)
+    # limit 은 최종 노출 목표치 — Spring 의 품절 드롭에 대비해 이 배수만큼 넉넉히 반환한다(§3.7).
+    home_reco_overfetch_ratio: float = Field(default=2.0, ge=1.0)
+    # overfetch 절대 상한(응답 크기 방어). **요청 `limit` 상한(`LIMIT_MAX`) 이상이어야 한다** —
+    # 아래로 내려가면 `_overfetch_size` 가 요청받은 `limit` 보다 적게 반환해 "품절 드롭 대비
+    # 넉넉히"(§3.7)가 깨진다. 기동 시점에 잡는다(`expose_max`/LIST_MAX_PRODUCTS 와 같은 방식).
+    # 기본값은 LIMIT_MAX 의 2배(= 기본 overfetch 배율) — LIMIT_MAX 와 같게 두면 `limit` 이
+    # 상한에 가까울수록 여유분이 0 으로 죽어 "넉넉히" 계약이 최댓값에서 깨진다(PR #213 리뷰).
+    home_reco_max_items: int = Field(default=HOME_RECO_LIMIT_MAX * 2, gt=HOME_RECO_LIMIT_MAX)
+    # 이 수 미만이면 랭킹이 무의미하다고 보고 INSUFFICIENT_CANDIDATES 로 답한다(200).
+    home_reco_min_candidates: int = Field(default=5, gt=0)
+    # 카탈로그 스토어 **호출 1회** 상한 — pg-catalog 지연·락이 한 단계를 무한정 붙들지 않게 한다.
+    # 초과 시 랭킹 경로는 504 UPSTREAM_TIMEOUT(계약 실패표), reason 경로는 null degrade 다.
+    home_reco_store_timeout_s: float = Field(default=2.0, gt=0.0)
+    # 요청 **전체** 예산 — 스토어 호출이 3번이라 호출별 상한만으로는 최악 2s×3=6s 로 §3.7 의
+    # "응답 3s" 를 넘는다(PR #213 리뷰). 각 호출은 min(호출 상한, 남은 예산)으로 기다리고,
+    # 예산이 바닥나면 랭킹 경로는 504·reason 경로는 skip 이다. 3s 계약에서 직렬화·네트워크
+    # 여유 0.5s 를 뺀 값이 기본이다.
+    home_reco_budget_s: float = Field(default=2.5, gt=0.0)
+    # [#148 실측 2026-07-31] reason 을 요청 경로에서 LLM 으로 만드는 방식은 **폐기**했다.
+    # gpt-5-nano 배치 1회가 항목 수에 선형으로 늘어(20개 7970ms · 12개 3852ms · 6개 2102ms)
+    # I-22 예산(연결 2s/응답 3s)을 5개에서도 넘겼다. 지금은 I-17 배치가 상품당 1회 만들어 둔
+    # `extras`(situation_tags·review_pros)에서 **고르기만** 한다(`home_recommendation.build_reasons`).
+    # 따라서 reason 관련 timeout·상한 설정이 없다 — 실패할 여지도 예산 소모도 없기 때문이다.
     # rating·reviewCount 등급화 경계(#171 PR#172) — 비표시 정밀값 유출 방지용으로 rerank LLM 에
     # 정확한 숫자 대신 등급만 전달할 때 쓰는 임계. 내림차순(높은 등급부터). 데모 카탈로그 실측 후 조정.
     rating_tier_excellent: float = 4.5  # ≥ → 매우높음
@@ -327,6 +385,51 @@ class Settings(BaseSettings):
     # 그대로 쓰면 경계에서 최신 fact 가 잘릴 수 있다(PR #47 후속 리뷰).
     profile_facts_query_margin: int = 50
     profile_session_buffer_cap: int = 100  # 세션 transient 버퍼 발화 개수 상한(무제한 누적 방어)
+
+    # ── 프로필 개인화 강도 (이슈 #119, SPEC-PROFILE-001 §5.1 v0.6.0 · REQ-REC-005-A) ──
+    # 프로필을 **어느 소비처에** 주입할지. 기본 rerank_only 인 근거: decompose(fast tier, 한 호출에
+    # intent 라우팅+필터+장바구니 의도가 얹힌다)의 _SYSTEM 에 프로필 사용 규칙이 없어 LLM 이 취향을
+    # priceMax/brand/color 하드필터로 승격시키고, 그 필터가 thread_store 에 영속돼 다음 턴
+    # PRIOR_FILTERS 로 재주입되며 세션 내내 후보를 좁힌다(래칫). 게스트는 이 입력이 없어 손실이 0이라
+    # 개인화가 순손실이 됐다. 주입을 끊으면 회원 decompose 프롬프트가 게스트와 바이트 동일해진다.
+    # 프롬프트 규칙을 얹지 않고 **입력을 제거**하는 이유: 지시 한 줄은 공짜가 아니다(#198/EX-7 —
+    # 지시 추가로 기존 성공 케이스가 3/3 → 1/3 로 희석된 실측 전례, rerank.py 주석 참조).
+    profile_injection_scope: ProfileInjectionScope = "rerank_only"
+    # rerank 의 프로필 사용 강도. 채팅 경로에 연속 가중치(*_weight)를 두지 않는 이유: 전략 A(LLM
+    # 재랭킹)는 점수가 아니라 순위 목록(RerankResult.ranked)을 산출해 **가중합할 스칼라 자체가
+    # 없고**, "이 상품이 취향에 맞는가"의 ground truth 도 없다(평가 하니스 미구현 — #142/#143).
+    # 코사인 임계 하나(category_distance_max)를 정하는 데도 앵커 76개 실측이 필요했다(#115) —
+    # 정답셋 없이 정한 계수는 튜너블이 아니라 마술 상수다. 위 home_reco_weight_profile(#148)이
+    # 가중치인 것과 모순이 아니다: 홈 추천은 질의 벡터가 임베딩 가중평균이라 스칼라가 실재하고
+    # 누를 발화도 없다. **점수가 있는 표면에는 가중치, 없는 표면에는 스코프 스위치**다.
+    # 채팅 경로의 연속 가중치는 전략 B(scoring) 도입 시(#145) 함께 정의한다.
+    profile_rerank_influence: ProfileRerankInfluence = "tiebreak"
+    # 세션 버퍼에 정규화 동일 발화를 몇 번까지 담을지(REQ-PROF-026). 버퍼는 델타 추출 LLM 에
+    # "\n".join 으로 통째로 실리고 LLM 이 그 중복을 보고 repetitionEma 를 산출하므로
+    # **버퍼 중복이 곧 반복성 점수**다 — 같은 말 3~4회로 취향이 과대 대표된다.
+    # **0/1 로 낮추지 말 것**: 게이트가 `salience AND (explicit OR repeated)`(gate.should_promote)
+    # 라 반복은 명시 표명 없이 승격시키는 **독립 경로**인데, 1 건만 남기면 LLM 이 반복을 볼 수
+    # 없어 그 경로가 통째로 죽는다. 세션 간 누적(GateState)은 미구현이라(SPEC-PROFILE-001
+    # OPEN-P12) 승격 못 한 델타는 버려지므로, 다음 세션이 대신 살려주지도 않는다.
+    # 기본 2 = "반복했다"는 관측 가능한 최소치. 4회든 10회든 2 로 보여 증폭만 잘린다.
+    # 상한을 완전히 끄려면(종전 동작) profile_session_buffer_cap 이상으로 올린다.
+    profile_buffer_repeat_cap: int = Field(default=2, ge=2)
+    # 취향 신호가 **구조적으로** 없는 intent 만 버퍼에서 뺀다(REQ-PROF-026) — 주문조회
+    # ("주문 어디까지 왔어")·장바구니 조회("장바구니 보여줘")는 상태 조회라 원하는 게 뭔지에
+    # 대한 정보가 0인데, 매 세션 반복되며 슬라이딩 윈도우를 채워 정작 취향 발화를 밀어낸다.
+    #
+    # general·cart_add 는 **일부러 남긴다**(PR #223 리뷰 확인):
+    #  - general: "나 소니 좋아해" 같은 명시적 취향 표명이 잡담 턴으로 들어온다.
+    #  - cart_add: 담기는 채팅 레인에서 **구매에 가장 가까운 행동 신호**다. 명세도 write 소스를
+    #    conversation|purchase 로 두고(REQ-PROF-024) 구매 소스는 명시성 없이 반복성·현저성으로
+    #    승격한다(REQ-PROF-044) — 제외하면 명세가 인정한 신호원을 코드가 막는다. 발화 자체도
+    #    취향을 실어 나른다("M 사이즈로", "검정으로", "소니 거 담아줘").
+    #
+    # 판단 기준은 **실수의 비대칭**이다: 취향 있는 intent 를 빼면 신호가 영구히 사라져 복구할
+    # 방법이 없는 반면, 노이즈("그거 담아줘")를 넣으면 델타 추출 LLM 이 걸러내고(_DELTA_SYSTEM
+    # "일회성 잡담·잡음은 제외") 게이트가 한 번 더 막으며 버퍼 상한·반복 상한이 방어한다.
+    # 되돌릴 수 없는 실수를 되돌릴 수 있는 실수보다 무겁게 본다(#119 전체와 같은 논리).
+    profile_buffer_excluded_intents: list[str] = ["order_status", "cart_view"]
     # I-20 처리 중 claim lease. delta+consolidation LLM 2단계의 기본 최악시간(약 120s)보다
     # 길게 두되, 프로세스 crash 잔재가 영구 duplicate가 되지 않도록 유한하게 유지한다.
     session_end_claim_ttl_s: float = 180.0
@@ -403,6 +506,21 @@ class Settings(BaseSettings):
         return value.lower() if isinstance(value, str) else value
 
     @model_validator(mode="after")
+    def _require_known_buffer_excluded_intents(self) -> "Settings":
+        """세션 버퍼 제외 intent 오타를 기동 시 잡는다 (#119).
+
+        `"order-status"` 처럼 한 글자만 어긋나도 비교가 영원히 거짓이 되어 **제외가 조용히
+        무효화**되고, 버퍼는 계속 오염된다 — 로그에도 안 남는 종류의 실패라 기동을 막는다.
+        """
+        unknown = sorted(set(self.profile_buffer_excluded_intents) - ROUTE_INTENTS)
+        if unknown:
+            raise ValueError(
+                f"profile_buffer_excluded_intents has unknown intents {unknown}: "
+                f"must be a subset of {sorted(ROUTE_INTENTS)}"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _require_margin_bands_disjoint(self) -> "Settings":
         """마진 예외(§4.5)와 택일 트리거(§4.4)의 구간이 겹치면 기동 실패 (PR #188 리뷰).
 
@@ -446,6 +564,40 @@ class Settings(BaseSettings):
                 "CATEGORY_SEARCH_POOL_MAX_SIZE must be >= 2 * CATEGORY_FANOUT_MAX "
                 f"(need {need}, got {self.category_search_pool_max_size}): "
                 "mapping probes two anchors (raw, query) per leg concurrently"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_db_timeout_after_app_timeout(self) -> "Settings":
+        """카탈로그 DB 상한이 앱쪽 호출 상한보다 크지 않으면 기동 실패 (PR #213 리뷰).
+
+        앱쪽(_call_store)이 항상 먼저 포기해야 느린 쿼리가 **결정적으로 504**(AI_TIMEOUT)로
+        나간다. DB 가 먼저 끊으면 psycopg QueryCanceled(OperationalError 계열)가 except
+        Exception 에 잡혀 503(AI_ERROR)이 되고, 같은 원인이 지터에 따라 다른 코드로 기록된다
+        (§4.11 fallbackReason 구분 무력화). 포기된 쿼리는 DB 상한이 뒤늦게 잘라 커넥션을 회수한다.
+        """
+        if self.catalog_store_query_timeout_s <= self.home_reco_store_timeout_s:
+            raise ValueError(
+                "CATALOG_STORE_QUERY_TIMEOUT_S must be > HOME_RECO_STORE_TIMEOUT_S "
+                f"(got {self.catalog_store_query_timeout_s} <= {self.home_reco_store_timeout_s}): "
+                "the app-side clock must fire first so slow queries map to 504 deterministically"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_home_reco_min_within_max(self) -> "Settings":
+        """홈 추천(I-22) 후보 하한이 응답 상한을 넘으면 기동 실패 (PR #213 리뷰).
+
+        `rank_home` 은 `k=max(want, home_reco_min_candidates)` 로 top-k 를 조회한다 — 하한이
+        `home_reco_max_items`(overfetch 절대 상한, LIMIT_MAX 에 ge 로 묶임)를 넘으면 "응답 크기
+        방어"가 조회 단계에서 무력화된다. `expose_max`↔`LIST_MAX_PRODUCTS` 와 같은 방식으로
+        관계를 기동 시점에 고정한다 — 한쪽만 튜닝하면 조용히 어긋나는 쌍이다.
+        """
+        if self.home_reco_min_candidates > self.home_reco_max_items:
+            raise ValueError(
+                "HOME_RECO_MIN_CANDIDATES must be <= HOME_RECO_MAX_ITEMS "
+                f"(got {self.home_reco_min_candidates} > {self.home_reco_max_items}): "
+                "candidate floor must not defeat the response-size cap"
             )
         return self
 

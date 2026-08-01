@@ -156,14 +156,107 @@ class _CommitFaultPool:
             yield _CommitFaultConnection(conn)
 
 
-def _own_claim(claims: list[FinalizationClaim], session_id: str) -> FinalizationClaim:
-    """공유 DB에서는 다른 테스트가 남긴 만료 컨텍스트도 같은 sweep에 딸려온다.
+_SWEEP_BATCH = 100
 
-    전역 claim 결과를 그대로 언패킹하면 실행 순서에 따라 간헐 실패하므로,
-    자기 세션이 만든 claim만 골라 검증 대상으로 삼는다.
+
+_SWEEP_MAX_PAGES = 50
+
+
+_RESIDUE_STALE_AFTER = "1 hour"
+_residue_purged = False
+
+
+async def _delete_stale_residue(conn) -> None:  # noqa: ANN001
+    """죽은 통합 실행이 남긴 `it-*` 컨텍스트를 지운다 (#220).
+
+    sweep 은 테이블 전역을 훑으므로 잔재가 쌓일수록 `_claim_own` 이 넘겨야 할 페이지가
+    늘어난다. 잔재는 단조 증가하니 주기적으로 끊어준다.
+
+    유휴 1시간을 넘긴 행만 지운다 — 같은 DB 를 쓰는 다른 worktree 가 지금 돌고 있어도
+    그쪽 살아있는 컨텍스트는 건드리지 않는다.
     """
-    [own] = [claim for claim in claims if claim.session_id == session_id]
-    return own
+    await conn.execute(
+        "DELETE FROM chat_session_contexts "
+        "WHERE session_id LIKE 'it-%%' "
+        f"AND last_activity_at <= now() - interval '{_RESIDUE_STALE_AFTER}'"
+    )
+
+
+async def _purge_stale_residue_once(pool) -> None:  # noqa: ANN001
+    """세션당 한 번만 잔재를 정리한다.
+
+    별도 세션 스코프 픽스처를 두면 풀이 자기 이벤트 루프 밖에서 닫히는 문제(#208)를
+    다시 밟는다. `pg_repo` 자신의 풀에서 돌려 그 함정을 피한다.
+    """
+    global _residue_purged
+    if _residue_purged:
+        return
+    _residue_purged = True
+    async with pool.connection() as conn:
+        await _delete_stale_residue(conn)
+
+
+async def _claim_own_many(
+    repo: SessionContextRepository,
+    session_ids: list[str],
+    idle_timeout_s: float = 10,
+    lease_s: float = 30,
+) -> dict[str, FinalizationClaim]:
+    """전역 sweep 을 페이지 단위로 넘기며 요청한 세션들의 claim 을 모은다.
+
+    `claim_expired_contexts` 는 `chat_session_contexts` **전역**을 last_activity_at
+    오름차순으로 batch 만큼 claim 한다. 다른 worktree·이전 실행이 남긴 만료 잔재가
+    batch 를 넘으면 자기 행이 batch 밖으로 밀려 결과가 비므로, batch 를 키우는 것으로는
+    막을 수 없다(#220).
+
+    claim 된 행은 lease 가 살아 있는 동안 다음 호출의 후보에서 빠지므로, 요청한 세션을
+    모두 만날 때까지 페이지를 넘긴다. 잔재량과 무관하게 결정적이다.
+    """
+    wanted = set(session_ids)
+    found: dict[str, FinalizationClaim] = {}
+    for _ in range(_SWEEP_MAX_PAGES):
+        if wanted <= found.keys():
+            break
+        claims = await repo.claim_expired_contexts(idle_timeout_s, lease_s, _SWEEP_BATCH)
+        if not claims:
+            break
+        for claim in claims:
+            if claim.session_id in wanted:
+                found.setdefault(claim.session_id, claim)
+    missing = wanted - found.keys()
+    if missing:
+        pytest.fail(f"만료 claim 페이지를 모두 넘겼지만 찾지 못한 세션: {sorted(missing)}")
+    return found
+
+
+async def _claim_own(
+    repo: SessionContextRepository,
+    session_id: str,
+    idle_timeout_s: float = 10,
+    lease_s: float = 30,
+) -> FinalizationClaim:
+    """전역 sweep 결과에서 자기 세션이 만든 claim 하나를 찾는다(#220)."""
+    found = await _claim_own_many(repo, [session_id], idle_timeout_s, lease_s)
+    return found[session_id]
+
+
+async def _drain_claims(
+    repo: SessionContextRepository,
+    idle_timeout_s: float = 10,
+    lease_s: float = 30,
+) -> list[FinalizationClaim]:
+    """전역 만료 후보를 페이지 끝까지 claim 해 전부 모은다(#220).
+
+    "우리 세션이 후보에 없다"는 부정 단언은 자기 행이 batch 밖으로 밀려도 통과해버려
+    거짓 음성이 된다. 끝까지 훑어야 단언이 실제 의미를 갖는다.
+    """
+    drained: list[FinalizationClaim] = []
+    for _ in range(_SWEEP_MAX_PAGES):
+        claims = await repo.claim_expired_contexts(idle_timeout_s, lease_s, _SWEEP_BATCH)
+        if not claims:
+            break
+        drained.extend(claims)
+    return drained
 
 
 async def _seed_v2_state(store, key: str, label: str) -> None:  # noqa: ANN001
@@ -220,6 +313,7 @@ async def pg_repo():
     await pool.open(wait=True)
     repo = SessionContextRepository(pool=pool)
     await repo.initialize()
+    await _purge_stale_residue_once(pool)
     prefix = f"it-{uuid.uuid4().hex}"
     try:
         yield repo, pool, prefix
@@ -258,11 +352,7 @@ async def test_touch_invalidates_idle_claim_and_owner_claim_records_history(pg_r
             "WHERE context_id = %s",
             (before.context_id,),
         )
-    idle = next(
-        claim
-        for claim in await repo.claim_expired_contexts(10, 30, 100)
-        if claim.session_id == session_id
-    )
+    idle = await _claim_own(repo, session_id)
     after = await repo.touch(BuyerSessionInput(session_id, "T2", "guest", "G1"))
     assert after.generation == idle.generation + 1
     outcome = await repo.claim_owner(session_id, "G1", 7)
@@ -276,6 +366,76 @@ async def test_touch_invalidates_idle_claim_and_owner_claim_records_history(pg_r
             )
         ).fetchone()
     assert row == ("G1", "7")
+
+
+async def test_own_claim_found_when_residue_exceeds_sweep_batch(pg_repo) -> None:
+    """전역 만료 후보가 sweep batch 를 넘어도 자기 세션 claim 을 찾아야 한다 (#220).
+
+    잔재를 자기 행보다 오래된 것으로 만들어(sweep 은 last_activity_at 오름차순)
+    자기 행이 batch 밖으로 밀리는 상황을 결정적으로 만든다.
+    """
+    repo, pool, prefix = pg_repo
+    for index in range(_SWEEP_BATCH + 20):
+        await repo.touch(BuyerSessionInput(f"{prefix}-residue-{index}", "T1", "guest", "G1"))
+    session_id = prefix + "-own"
+    own = await repo.touch(BuyerSessionInput(session_id, "T1", "guest", "G1"))
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_contexts SET last_activity_at = now() - interval '1 hour' "
+            "WHERE session_id LIKE %s",
+            (prefix + "-residue-%",),
+        )
+        await conn.execute(
+            "UPDATE chat_session_contexts SET last_activity_at = now() - interval '30 minutes' "
+            "WHERE context_id = %s",
+            (own.context_id,),
+        )
+    claim = await _claim_own(repo, session_id)
+    assert claim.context_id == own.context_id
+
+
+async def test_stale_residue_purge_spares_live_rows(pg_repo) -> None:
+    """죽은 실행의 it-* 잔재만 지우고, 동시 실행 중인 행은 남긴다 (#220)."""
+    repo, pool, prefix = pg_repo
+    stale = await repo.touch(BuyerSessionInput(prefix + "-stale", "T1", "guest", "G1"))
+    live = await repo.touch(BuyerSessionInput(prefix + "-live", "T1", "guest", "G1"))
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_contexts SET last_activity_at = now() - interval '2 hours' "
+            "WHERE context_id = %s",
+            (stale.context_id,),
+        )
+        await _delete_stale_residue(conn)
+        remaining = await (
+            await conn.execute(
+                "SELECT context_id FROM chat_session_contexts WHERE session_id LIKE %s",
+                (prefix + "%",),
+            )
+        ).fetchall()
+    assert [str(row[0]) for row in remaining] == [live.context_id]
+
+
+async def test_multiple_own_claims_found_when_residue_exceeds_sweep_batch(pg_repo) -> None:
+    """한 sweep 으로는 못 모으는 복수 자기 세션도 페이지를 넘겨 전부 찾아야 한다 (#220)."""
+    repo, pool, prefix = pg_repo
+    for index in range(_SWEEP_BATCH + 20):
+        await repo.touch(BuyerSessionInput(f"{prefix}-residue-{index}", "T1", "guest", "G1"))
+    session_ids = [f"{prefix}-own-{suffix}" for suffix in ("a", "b", "c")]
+    for index, session_id in enumerate(session_ids):
+        await repo.touch(BuyerSessionInput(session_id, "T1", "member", str(10 + index)))
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chat_session_contexts SET last_activity_at = now() - interval '1 hour' "
+            "WHERE session_id LIKE %s",
+            (prefix + "-residue-%",),
+        )
+        await conn.execute(
+            "UPDATE chat_session_contexts SET last_activity_at = now() - interval '30 minutes' "
+            "WHERE session_id = ANY(%s)",
+            (session_ids,),
+        )
+    claims = await _claim_own_many(repo, session_ids)
+    assert sorted(claims) == sorted(session_ids)
 
 
 async def test_schema_initialize_is_idempotent_and_upgrades_old_turn_table(pg_repo) -> None:
@@ -2485,11 +2645,7 @@ async def test_touch_preserves_completed_idle_profile_candidate(pg_repo) -> None
             "WHERE context_id=%s",
             (context.context_id,),
         )
-    claim = next(
-        item
-        for item in await repo.claim_expired_contexts(10, 30, 10)
-        if item.session_id == session_id
-    )
+    claim = await _claim_own(repo, session_id)
     async with repo.lock_session(session_id) as uow:
         await uow.prepare_idle_finalizing(claim)
         pending = await (
@@ -2522,7 +2678,7 @@ async def test_terminal_supersedes_previous_generation_completed_idle(pg_repo) -
             "WHERE context_id=%s",
             (context.context_id,),
         )
-    idle = _own_claim(await repo.claim_expired_contexts(10, 30, 100), session_id)
+    idle = await _claim_own(repo, session_id)
     async with repo.lock_session(session_id) as uow:
         await uow.prepare_idle_finalizing(idle)
         await uow.capture_profile_watermark(idle, 0)
@@ -2589,11 +2745,7 @@ async def test_pg_i20_supersedes_idle_between_phase_a_and_phase_b(pg_repo) -> No
             "WHERE context_id=%s",
             (context.context_id,),
         )
-    idle = next(
-        claim
-        for claim in await repo.claim_expired_contexts(10, 30, 100)
-        if claim.session_id == session_id
-    )
+    idle = await _claim_own(repo, session_id)
     async with repo.lock_session(session_id) as uow:
         await uow.prepare_idle_finalizing_with_watermark(idle, 0)
 
@@ -2668,11 +2820,7 @@ async def test_pg_expired_processing_profile_rotates_token(pg_repo) -> None:
             "WHERE context_id=%s",
             (context.context_id,),
         )
-    idle = next(
-        claim
-        for claim in await repo.claim_expired_contexts(10, 30, 100)
-        if claim.session_id == session_id
-    )
+    idle = await _claim_own(repo, session_id)
     async with repo.lock_session(session_id) as uow:
         await uow.prepare_idle_finalizing_with_watermark(idle, 0)
         await uow.complete_idle_delete(idle)
@@ -2797,11 +2945,7 @@ async def test_pg_expired_live_profile_task_is_joined_without_parallel_llm(
             "WHERE context_id=%s",
             (context.context_id,),
         )
-    idle = next(
-        claim
-        for claim in await repo.claim_expired_contexts(10, 30, 100)
-        if claim.session_id == session_id
-    )
+    idle = await _claim_own(repo, session_id)
 
     async def clear_context(context_id: str, thread_ids: list[str]):
         from app.agents.buyer.session_state import CleanupCounts
@@ -2881,11 +3025,7 @@ async def test_pg_orphaned_processing_profile_public_recovery_completes(
             "WHERE context_id=%s",
             (context.context_id,),
         )
-    idle = next(
-        claim
-        for claim in await repo.claim_expired_contexts(10, 30, 100)
-        if claim.session_id == session_id
-    )
+    idle = await _claim_own(repo, session_id)
 
     async def clear_context(context_id: str, thread_ids: list[str]):
         from app.agents.buyer.session_state import CleanupCounts
@@ -2959,8 +3099,7 @@ async def test_pg_unit_of_work_rejects_other_session_claim(pg_repo) -> None:
                 "WHERE context_id=%s",
                 (context.context_id,),
             )
-    claims = await repo.claim_expired_contexts(10, 30, 10)
-    claim_a = next(item for item in claims if item.session_id == prefix + "a")
+    claim_a = await _claim_own(repo, prefix + "a")
     async with repo.lock_session(prefix + "b") as uow:
         with pytest.raises(SessionClaimConflict):
             await uow.prepare_idle_finalizing(claim_a)
@@ -2991,7 +3130,7 @@ async def test_touch_serializes_after_idle_claim_and_rejects_stale_claim(
     monkeypatch.setattr(session_context_module, "_advisory_lock", blocking_lock)
     touch_task = asyncio.create_task(repo.touch(BuyerSessionInput(session_id, "T2", "guest", "G1")))
     await lock_acquired.wait()
-    claim = _own_claim(await repo.claim_expired_contexts(10, 30, 100), session_id)
+    claim = await _claim_own(repo, session_id)
     release_touch.set()
     touched = await touch_task
 
@@ -3064,7 +3203,7 @@ async def test_recoverable_finalization_competition_has_single_token_winner(pg_r
             "WHERE context_id=%s",
             (context.context_id,),
         )
-    first = _own_claim(await repo.claim_expired_contexts(10, 30, 100), session_id)
+    first = await _claim_own(repo, session_id)
     await repo.mark_idle_finalizing(first)
     async with pool.connection() as conn:
         await conn.execute(
@@ -3106,7 +3245,7 @@ async def test_profile_list_then_competing_claim_has_single_cas_winner(pg_repo) 
             "WHERE context_id=%s",
             (context.context_id,),
         )
-    idle = _own_claim(await repo.claim_expired_contexts(10, 30, 100), session_id)
+    idle = await _claim_own(repo, session_id)
     async with repo.lock_session(session_id) as uow:
         await uow.prepare_idle_finalizing(idle)
         await uow.capture_profile_watermark(idle, 0)
@@ -3196,11 +3335,7 @@ async def test_cleanup_crash_keeps_gate_and_public_sweep_recovers(pg_repo, monke
             "WHERE context_id=%s",
             (context.context_id,),
         )
-    claim = next(
-        item
-        for item in await repo.claim_expired_contexts(10, 30, 1000)
-        if item.session_id == session_id
-    )
+    claim = await _claim_own(repo, session_id)
     calls = 0
 
     async def crashing_clear(context_id: str, thread_ids: list[str]):
@@ -3255,7 +3390,7 @@ async def test_terminal_recovery_ignores_superseded_idle_batch_row(pg_repo, monk
             "WHERE context_id=%s",
             (context.context_id,),
         )
-    idle = _own_claim(await repo.claim_expired_contexts(10, 30, 100), session_id)
+    idle = await _claim_own(repo, session_id)
     terminal = await repo.begin_terminal(7, session_id)
     assert terminal.claim is not None
 
@@ -3332,7 +3467,7 @@ async def test_pg_idle_prephase_failure_is_abandoned_and_fresh_sweep_completes(
             "WHERE context_id=%s",
             (context.context_id,),
         )
-    claim = _own_claim(await repo.claim_expired_contexts(10, 30, 100), session_id)
+    claim = await _claim_own(repo, session_id)
     registry = ActiveStreamRegistry()
 
     class BrokenProfile:
@@ -3395,7 +3530,7 @@ async def test_pg_actual_partial_idle_delete_recovers_and_preserves_other_contex
             "WHERE context_id=%s",
             (target.context_id,),
         )
-    claim = _own_claim(await repo.claim_expired_contexts(10, 30, 100), prefix + "-target")
+    claim = await _claim_own(repo, prefix + "-target")
 
     async with AsyncPostgresStore.from_conn_string(get_settings().profile_db_url) as store:
         await store.setup()
@@ -3515,7 +3650,7 @@ async def test_pg_failed_abandon_is_self_healed_by_public_sweep(
             "WHERE context_id=%s",
             (context.context_id,),
         )
-    orphan = _own_claim(await repo.claim_expired_contexts(10, 30, 100), session_id)
+    orphan = await _claim_own(repo, session_id)
 
     class BrokenProfile:
         async def get_session_ctx_snapshot(self, key: str):
@@ -3572,7 +3707,7 @@ async def test_pg_claim_only_process_loss_is_reissued_by_public_fresh_stage(
             "WHERE context_id=%s",
             (context.context_id,),
         )
-    orphan = _own_claim(await repo.claim_expired_contexts(10, 30, 100), session_id)
+    orphan = await _claim_own(repo, session_id)
     async with pool.connection() as conn:
         await conn.execute(
             "UPDATE chat_session_finalizations SET lease_expires_at=now()-interval '1 second' "
@@ -3600,7 +3735,7 @@ async def test_pg_abandon_rejects_same_token_with_changed_lease(pg_repo) -> None
             "WHERE context_id=%s",
             (context.context_id,),
         )
-    stale = _own_claim(await repo.claim_expired_contexts(10, 30, 100), session_id)
+    stale = await _claim_own(repo, session_id)
     async with pool.connection() as conn:
         await conn.execute(
             "UPDATE chat_session_finalizations "
@@ -3629,7 +3764,7 @@ async def test_pg_concurrent_sweeps_reissue_one_orphan_to_one_fresh_winner(
             "WHERE context_id=%s",
             (context.context_id,),
         )
-    orphan = _own_claim(await repo.claim_expired_contexts(10, 30, 100), session_id)
+    orphan = await _claim_own(repo, session_id)
     async with pool.connection() as conn:
         await conn.execute(
             "UPDATE chat_session_finalizations SET lease_expires_at=now()-interval '1 second' "
@@ -3680,8 +3815,7 @@ async def test_pg_self_healing_preserves_started_and_superseded_idle_rows(
             "WHERE session_id = ANY(%s)",
             (list(sessions.values()),),
         )
-    claims = await repo.claim_expired_contexts(10, 30, 100)
-    by_session = {claim.session_id: claim for claim in claims}
+    by_session = await _claim_own_many(repo, list(sessions.values()))
     captured = by_session[sessions["captured"]]
     superseded = by_session[sessions["superseded"]]
     completed = by_session[sessions["completed"]]
@@ -3710,7 +3844,7 @@ async def test_pg_self_healing_preserves_started_and_superseded_idle_rows(
             ),
         )
 
-    replacements = await repo.claim_expired_contexts(10, 30, 100)
+    replacements = await _drain_claims(repo)
 
     assert not set(sessions.values()) & {claim.session_id for claim in replacements}
     assert (await repo.get_finalization(captured.finalization_id)).watermark_status == "captured"

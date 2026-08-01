@@ -498,3 +498,38 @@ def test_order_status_prompt_has_five_way_positive_and_negative_rules() -> None:
 async def test_unknown_intent_still_falls_back_to_recommend() -> None:
     decision = await _run(_raw(intent="unknown"))
     assert decision.intent == "recommend"
+
+
+# ─────────── #119 유출 관측 축 (PR #223 리뷰) ───────────
+
+
+def test_filter_axes_covers_every_hard_filter_field() -> None:
+    """새 하드필터 축이 생기면 관측 로그도 함께 늘어나야 한다 — 드리프트 방지.
+
+    관측이 한 축이라도 빠지면 "회원/게스트 filters_set 대조로 프로필 유출을 잡는다"는
+    검증 절차가 그 경로만 조용히 놓친다(attr_conditions 누락, PR #223 리뷰).
+    """
+    from app.agents.buyer.recommendation.decompose import _FILTER_AXES
+    from app.schemas.spring import ProductSearchFilters
+
+    # 후보를 거르는 조건이 아닌 필드 — 의미검색 앵커·dedup 제외목록·top-K 상한
+    not_hard_filters = {"semantic_query", "exclude_product_ids", "limit"}
+    assert set(_FILTER_AXES) == set(ProductSearchFilters.model_fields) - not_hard_filters
+
+
+def test_filter_axes_reports_attr_conditions() -> None:
+    """속성 조건도 하드필터라 관측에 잡힌다 — 빈 dict 는 '설정 안 됨'."""
+    from app.agents.buyer.recommendation.decompose import _filter_axes
+    from app.schemas.spring import ProductSearchFilters
+
+    assert _filter_axes(ProductSearchFilters(attr_conditions={"소재": "면"})) == ["attr_conditions"]
+    assert _filter_axes(ProductSearchFilters(attr_conditions={})) == []
+
+
+def test_filter_axes_keeps_zero_but_drops_empty_containers() -> None:
+    """0 은 LLM 이 실제로 내보낸 값이라 남기고, 빈 컨테이너는 설정 안 됨으로 본다."""
+    from app.agents.buyer.recommendation.decompose import _filter_axes
+    from app.schemas.spring import ProductSearchFilters
+
+    assert _filter_axes(ProductSearchFilters(price_min=0)) == ["price_min"]
+    assert _filter_axes(ProductSearchFilters(brand=[], keyword="")) == []
