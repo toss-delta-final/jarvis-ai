@@ -80,6 +80,14 @@ def test_lifespan_cleanup_budget_stays_below_deploy_stop_grace():
     import pytest
     from pydantic import ValidationError
 
-    assert Settings(_env_file=None).lifespan_cleanup_budget_s == 8.0
+    defaults = Settings(_env_file=None)
+    assert defaults.lifespan_shutdown_grace_s == 10.0
+    assert defaults.lifespan_cleanup_budget_s == 8.0
     with pytest.raises(ValidationError):
-        Settings(_env_file=None, lifespan_cleanup_budget_s=8.01)
+        Settings(_env_file=None, lifespan_cleanup_budget_s=10.0)
+    tuned = Settings(
+        _env_file=None,
+        lifespan_shutdown_grace_s=20.0,
+        lifespan_cleanup_budget_s=15.0,
+    )
+    assert tuned.lifespan_cleanup_budget_s == 15.0
