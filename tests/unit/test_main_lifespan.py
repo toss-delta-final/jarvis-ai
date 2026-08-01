@@ -8,6 +8,7 @@ TestClient(app)를 `with`로 감싸야 lifespan 이 실제로 발동한다(경�
 from __future__ import annotations
 
 import asyncio
+import time
 
 from fastapi.testclient import TestClient
 import pytest
@@ -30,7 +31,7 @@ def _patch_lifespan_dependencies(
         if name == cancelling_resource:
             asyncio.current_task().cancel()
             await asyncio.sleep(0)
-        if name == hanging_resource:
+        if name == hanging_resource or (hanging_resource == "*" and name != "initialize"):
             await asyncio.Event().wait()
 
     monkeypatch.setattr(main_mod, "initialize_session_lifecycle", lambda: record("initialize"))
@@ -181,7 +182,14 @@ async def test_lifespan_times_out_hung_resource_and_continues_cleanup(monkeypatc
     monkeypatch.setattr(
         main_mod,
         "get_settings",
-        lambda: type("Settings", (), {"lifespan_resource_close_timeout_s": 0.01})(),
+        lambda: type(
+            "Settings",
+            (),
+            {
+                "lifespan_resource_close_timeout_s": 0.01,
+                "lifespan_cleanup_budget_s": 0.1,
+            },
+        )(),
     )
 
     with caplog.at_level("INFO"):
@@ -204,3 +212,43 @@ async def test_lifespan_times_out_hung_resource_and_continues_cleanup(monkeypatc
     ]
     assert "lifespan resource cleanup timed out resource=seller_history_store" in caplog.text
     assert "lifespan resource cleanup complete succeeded=8 failed=1" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_lifespan_bounds_total_cleanup_time_while_attempting_every_resource(
+    monkeypatch, caplog
+):
+    calls = []
+    _patch_lifespan_dependencies(monkeypatch, calls, hanging_resource="*")
+    monkeypatch.setattr(
+        main_mod,
+        "get_settings",
+        lambda: type(
+            "Settings",
+            (),
+            {
+                "lifespan_resource_close_timeout_s": 0.1,
+                "lifespan_cleanup_budget_s": 0.09,
+            },
+        )(),
+    )
+
+    started = time.monotonic()
+    with caplog.at_level("INFO"):
+        async with main_mod._lifespan(main_mod.app):
+            pass
+    elapsed = time.monotonic() - started
+
+    assert calls[3:] == [
+        "session_lifecycle",
+        "seller_history_store",
+        "seller_checkpointer",
+        "profile_store",
+        "session_activity_pool",
+        "processed_events_pool",
+        "conversation_store",
+        "pg_store",
+        "advisory_pool",
+    ]
+    assert elapsed < 0.18
+    assert "lifespan resource cleanup complete succeeded=0 failed=9" in caplog.text
