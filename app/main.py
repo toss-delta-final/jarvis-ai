@@ -68,10 +68,9 @@ async def _close_owned_resources() -> None:
     deadline = loop.time() + settings.lifespan_cleanup_budget_s
     failed = 0
     cancellation: asyncio.CancelledError | None = None
-    for index, (name, close) in enumerate(resources):
-        remaining_count = len(resources) - index
+    for name, close in resources:
         remaining_budget_s = max(deadline - loop.time(), 0.0)
-        resource_timeout_s = min(timeout_s, remaining_budget_s / remaining_count)
+        resource_timeout_s = min(timeout_s, remaining_budget_s)
         try:
             async with asyncio.timeout(resource_timeout_s):
                 await close()
