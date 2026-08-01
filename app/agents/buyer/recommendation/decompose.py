@@ -105,10 +105,31 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
 - general: intent=general, reply 에 짧게 답하세요."""
 
 
+# 검색 WHERE 로 나가는 하드필터 축 — 관측 대상(#119). semantic_query(의미검색 앵커)·
+# exclude_product_ids(dedup)·limit(top-K)은 후보를 **거르는** 조건이 아니라 제외한다.
+# 새 하드필터가 생기면 여기도 늘어나야 한다 — 드리프트는 테스트가 잡는다.
+_FILTER_AXES = (
+    "category",
+    "price_min",
+    "price_max",
+    "brand",
+    "rating_min",
+    "keyword",
+    "color",
+    # attr_conditions 도 같은 성격의 하드필터다(attributes 매칭) — 프로필의 소재·핏 같은
+    # 속성 선호가 새는 경로라 관측에서 빠지면 유출 대조가 그 경로만 놓친다(PR #223 리뷰).
+    "attr_conditions",
+)
+
+
 def _filter_axes(filters: ProductSearchFilters) -> list[str]:
-    """값이 설정된 하드필터 축 이름 (#119 관측 — 값은 담지 않는다)."""
-    axes = ("category", "price_min", "price_max", "brand", "rating_min", "keyword", "color")
-    return [name for name in axes if getattr(filters, name, None) not in (None, [], "")]
+    """값이 설정된 하드필터 축 이름 (#119 관측 — 값은 담지 않는다).
+
+    빈 컨테이너(`[]`/`{}`/`""`)는 "설정 안 됨"으로 본다. 다만 `0`은 LLM 이 실제로 내보낸
+    값이므로 설정된 것으로 남긴다 — 유출 관측은 "무엇이 붙었나"를 보는 것이지 그 값이
+    유효한지를 판정하는 자리가 아니다.
+    """
+    return [name for name in _FILTER_AXES if getattr(filters, name, None) not in (None, [], {}, "")]
 
 
 async def decompose(
