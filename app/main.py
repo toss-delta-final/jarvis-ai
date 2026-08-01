@@ -73,7 +73,8 @@ async def _close_owned_resources() -> None:
         remaining_budget_s = max(deadline - loop.time(), 0.0)
         resource_timeout_s = min(timeout_s, remaining_budget_s / remaining_count)
         try:
-            await asyncio.wait_for(close(), timeout=resource_timeout_s)
+            async with asyncio.timeout(resource_timeout_s):
+                await close()
         except asyncio.CancelledError as exc:
             failed += 1
             cancellation = exc

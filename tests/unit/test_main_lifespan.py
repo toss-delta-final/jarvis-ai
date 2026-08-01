@@ -289,3 +289,63 @@ async def test_lifespan_bounds_total_cleanup_time_while_attempting_every_resourc
     ]
     assert elapsed < 0.18
     assert "lifespan resource cleanup complete succeeded=0 failed=9" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_lifespan_starts_remaining_closers_after_budget_is_exhausted(monkeypatch):
+    calls = []
+
+    async def exhaust_budget():
+        calls.append("session_lifecycle")
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.02)
+            raise
+
+    async def record_then_hang(name):
+        calls.append(name)
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(main_mod, "close_session_lifecycle", exhaust_budget)
+    for name, resource_name in (
+        ("close_seller_history_store", "seller_history_store"),
+        ("close_seller_checkpointer", "seller_checkpointer"),
+        ("close_profile_store", "profile_store"),
+        ("close_session_activity_pool", "session_activity_pool"),
+        ("close_processed_events_pool", "processed_events_pool"),
+        ("close_conversation_store", "conversation_store"),
+        ("close_pg_store", "pg_store"),
+        ("close_advisory_pool", "advisory_pool"),
+    ):
+        monkeypatch.setattr(
+            main_mod,
+            name,
+            lambda resource_name=resource_name: record_then_hang(resource_name),
+        )
+    monkeypatch.setattr(
+        main_mod,
+        "get_settings",
+        lambda: type(
+            "Settings",
+            (),
+            {
+                "lifespan_resource_close_timeout_s": 0.1,
+                "lifespan_cleanup_budget_s": 0.01,
+            },
+        )(),
+    )
+
+    await main_mod._close_owned_resources()
+
+    assert calls == [
+        "session_lifecycle",
+        "seller_history_store",
+        "seller_checkpointer",
+        "profile_store",
+        "session_activity_pool",
+        "processed_events_pool",
+        "conversation_store",
+        "pg_store",
+        "advisory_pool",
+    ]
