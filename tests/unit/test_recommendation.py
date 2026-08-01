@@ -2652,7 +2652,7 @@ async def test_rerank_still_receives_profile_when_decompose_does_not() -> None:
 
 
 async def test_profile_injection_scope_off_skips_both(monkeypatch) -> None:
-    """scope=off 는 게스트 등가 — 라이브 A/B 의 baseline arm 이다."""
+    """scope=off 는 이번 턴 개인화를 끈다 — 라이브 A/B 의 baseline arm."""
     monkeypatch.setattr(get_settings(), "profile_injection_scope", "off")
     await _seed_profile()
 
@@ -2781,3 +2781,26 @@ async def test_remember_command_recorded_even_when_decompose_fails() -> None:
 
     store = await get_profile_store()
     assert await store.get_facts("u1")
+
+
+async def test_profile_injection_scope_off_still_accumulates_profile(monkeypatch) -> None:
+    """[PR #223 리뷰] off 는 **주입만** 끊는다 — 프로필 축적은 계속된다(섀도 모드).
+
+    "게스트 등가"로 읽으면 안 된다: 게스트는 프로필 경로 자체가 없지만(profile_eligible=False),
+    off 인 회원은 세션 버퍼가 쌓이고 "기억해"도 기록돼 세션 종료 후 프로필이 계속 자란다.
+    축적까지 멈추는 킬스위치가 필요해지면 off 의 의미를 좁히지 말고 별도 스위치를 둔다.
+    """
+    from app.agents.profile.store import get_profile_store
+
+    monkeypatch.setattr(get_settings(), "profile_injection_scope", "off")
+    message = "소니 이어폰 좋아해 기억해줘"
+    await _collect(run_buyer_turn(_req(message, session_id="s-off"), _member(), llm=FakeLLM()))
+
+    # 세션 버퍼(세션 종료 델타 소스)는 계속 쌓인다
+    assert await _buffer("u1", "s-off") == [message]
+
+    store = await get_profile_store()
+    # "기억해" hot-path 도 계속 돌아 장기 fact 가 기록된다 — 게스트에겐 없는 경로다
+    assert await store.get_facts("u1")
+    # 다만 요약 재작성은 sleep-time 소관이라 턴 중에는 일어나지 않는다(REQ-PROF-023)
+    assert await store.get_summary("u1") is None

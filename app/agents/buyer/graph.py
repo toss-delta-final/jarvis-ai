@@ -403,7 +403,8 @@ async def run_buyer_turn(
             push_fn=push_fn,
             identity=identity,
             # [#119] rerank 는 개인화의 **유일한 정상 경로**다 — decompose 주입을 끊을 때 여기까지
-            # 같이 끄면 개인화가 통째로 사라진다. off 는 게스트 등가 A/B arm 일 때만.
+            # 같이 끄면 개인화가 통째로 사라진다. off 는 A/B baseline arm 일 때만 — 주입만
+            # 끊을 뿐 위쪽 프로필 read·"기억해" 기록·버퍼 적재는 계속 돈다(config 주석 참조).
             profile=(None if settings.profile_injection_scope == "off" else profile),
             settings=settings,
             reverted_categories=reverted,

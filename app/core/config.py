@@ -26,8 +26,13 @@ LLMProvider = Literal["openai", "anthropic"]
 # 검색 백엔드 선택(#101) — spring: Spring 위임만(방식1 이전 MVP), embedding_rerank: Spring 전량 →
 # pgvector 의미 재정렬(방식2, MVP 기본), vector: AI 벡터검색 → Spring hydrate(방식1, C-17 미착수).
 SearchBackend = Literal["spring", "embedding_rerank", "vector"]
-# 프로필 주입 소비처(#119) — off: 게스트 등가(A/B baseline), rerank_only: 기본(취향은 순서에만),
-# both: 현행 유지(decompose 하드필터 파생 허용, 롤백 경로).
+# 프로필 주입 소비처(#119) — off: 이번 턴 개인화 미적용, rerank_only: 기본(취향은 순서에만),
+# both: 구 동작(decompose 하드필터 파생 허용, 롤백 경로).
+# ⚠️ off 는 **주입만 차단**하고 프로필 축적(read·"기억해" 기록·세션 버퍼 적재)은 계속된다 —
+# "모으되 아직 쓰지 않는" 섀도 모드이지 **게스트 등가가 아니다**(게스트는 그 경로 자체가 없다,
+# PR #223 리뷰). A/B 에서 off 를 baseline 으로 쓸 때 그 구간의 추천 자체는 프로필 주입이 없어
+# 깨끗하지만, off 기간에도 프로필은 계속 자라므로 "게스트와 동일 조건"으로 읽으면 안 된다.
+# 축적까지 멈추는 킬스위치가 필요해지면 별도 스위치를 둔다 — off 의 의미를 좁히지 않는다.
 ProfileInjectionScope = Literal["off", "rerank_only", "both"]
 # rerank 의 프로필 사용 강도(#119) — tiebreak: 동점 처리 지시 부착, legacy: 지시 없음(현행).
 ProfileRerankInfluence = Literal["tiebreak", "legacy"]
