@@ -879,6 +879,23 @@ async def test_churn_tool_summarizes_signals_and_members() -> None:
     assert "쓰지 말 것" in result  # _CHURN_SIGNAL_RULES_NOTE 상시 부착
 
 
+async def test_churn_tool_reports_missing_rate_as_unreceived_not_zero() -> None:
+    """[#197 PR 리뷰] churnRate 결측(None)은 "이탈률 0.0%"가 아니라 미수신으로
+    명시 표기한다 — 워커가 "이탈 없음"으로 오판하지 않고 판정을 보류하게."""
+    fake = FakeSpringClient()
+    fake.churn_result = ChurnResult(
+        churn_rate=None, cohort_size=5, pre_churn_signals=PreChurnSignals(), members=[]
+    )
+
+    result = await _call_runtime_tool(
+        get_churn_cohort, {"from_date": "2026-06-01", "to_date": "2026-07-31"}, fake
+    )
+
+    assert "이탈률 미수신" in result
+    assert "판정 보류" in result
+    assert "0.0%" not in result  # 결측의 0% 위장 금지
+
+
 async def test_churn_tool_distinguishes_empty_cohort_from_zero_churn() -> None:
     """[#197] 코호트 0명(기간 내 활동 회원 없음)은 "이탈률 0%"와 구분해 표기한다.
 

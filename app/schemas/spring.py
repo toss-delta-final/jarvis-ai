@@ -769,7 +769,10 @@ class ChurnResult(SellerAggregateModel):
     에코는 extra="allow" 로 흡수한다. 코호트 0명이면 cohortSize=0·churnRate=0.0·
     빈 signals·빈 members 로 온다(BE short-circuit)."""
 
-    churn_rate: float = 0.0  # fraction (0.0~1.0)
+    # [#197 PR 리뷰] 기본값 0.0 금지 — churnRate 키 결측이 조용히 "이탈률 0.0%"로
+    # 렌더링되는 silent-mismatch(이 PR 이 제거한 #194 패턴)를 이 필드만 재도입하지
+    # 않는다. 결측은 None 으로 남겨 표시 계층(tools)이 "미수신"으로 명시 처리한다.
+    churn_rate: float | None = None  # fraction (0.0~1.0), None = 응답 결측
     cohort_size: int | None = None
     pre_churn_signals: PreChurnSignals | None = None  # 실측상 항상 옴 — None 은 방어 기본값
     members: list[ChurnMember] = Field(default_factory=list)

@@ -460,7 +460,14 @@ async def get_churn_cohort(
     cohort_note = f"코호트 {result.cohort_size}명 중 " if result.cohort_size is not None else ""
     # churn_rate 는 fraction(0.6=60%) — ":.1%" 로만 변환한다(#197 — 구 ":.1f}%" 는
     # 60% 를 "0.6%" 로 왜곡해 워커가 이탈 미미로 오판하던 수치 버그).
-    head = f"{cohort_note}이탈률 {result.churn_rate:.1%} (기준: inactiveDays={effective_days})."
+    # [#197 리뷰] 결측(None)은 0.0% 로 위장하지 않고 미수신으로 명시한다 — 워커가
+    # "이탈 없음"이 아니라 "판정 보류"로 해석하게(silent-mismatch 방어 일관성).
+    rate_note = (
+        f"이탈률 {result.churn_rate:.1%}"
+        if result.churn_rate is not None
+        else "이탈률 미수신(churnRate 결측 — 이탈 규모 판정 보류)"
+    )
+    head = f"{cohort_note}{rate_note} (기준: inactiveDays={effective_days})."
     s = result.pre_churn_signals
     if s is None:
         signals_note = " 이탈 전 신호: 미수신."

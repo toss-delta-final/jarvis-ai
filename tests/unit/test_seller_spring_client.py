@@ -299,6 +299,28 @@ async def test_get_churn_parses_measured_response_shape() -> None:
     assert member.pre_churn_event == "RETURNED(상품불량)"
 
 
+async def test_get_churn_missing_rate_parses_as_none_not_zero() -> None:
+    """[#197 PR 리뷰] churnRate 키 결측은 0.0 이 아니라 None 으로 남는다.
+
+    기본값 0.0 이면 BE 필드 누락이 조용히 "이탈률 0.0%"로 렌더링된다 — 이 PR 이
+    제거한 silent-mismatch 패턴을 이 필드만 재도입하지 않게 스키마 기본값을 막는다.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"cohortSize": 5,
+                  "preChurnSignals": {"cancelCount": 0, "returnReasonsTop": [],
+                                      "zeroResultSearchSessions": 0, "priceIncreaseExposed": 0},
+                  "members": []},
+        )
+
+    client = _client(handler)
+    result = await client.get_churn("93", "2026-06-01", "2026-07-31", 30)
+
+    assert result.churn_rate is None  # 0.0 위장 금지 — 표시 계층이 미수신으로 처리
+
+
 async def test_get_churn_signals_shape_drift_maps_to_spring_unavailable() -> None:
     """preChurnSignals 가 다시 배열 등으로 drift 하면 조용한 통과가 아니라
     SpringUnavailableError 로 관측된다(_validate 단일 지점, #197)."""
