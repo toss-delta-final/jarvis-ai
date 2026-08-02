@@ -44,12 +44,43 @@ SELLER_DEGRADE_REASON_PRECEDENCE = (
     "worker_degrade",
 )
 SELLER_DEGRADE_REASONS = frozenset(SELLER_DEGRADE_REASON_PRECEDENCE)
+OBSERVABILITY_LANES = frozenset(
+    {
+        "recommend",
+        "cart",
+        "fallback",
+        "analysis",
+        "product",
+        "general",
+        "confirm",
+        "apply",
+        "refused",
+    }
+)
 _BUYER_DEGRADE_REASON_RANK = {
     reason: rank for rank, reason in enumerate(BUYER_DEGRADE_REASON_PRECEDENCE)
 }
 _SELLER_DEGRADE_REASON_RANK = {
     reason: rank for rank, reason in enumerate(SELLER_DEGRADE_REASON_PRECEDENCE)
 }
+
+
+def _preferred_degrade_reason(current: object, reason: str) -> str:
+    """동시 degrade 표시 순서와 무관하게 역할별 단일 사유 우선순위를 적용한다."""
+    if (
+        isinstance(current, str)
+        and current in _BUYER_DEGRADE_REASON_RANK
+        and reason in _BUYER_DEGRADE_REASON_RANK
+    ):
+        return min((current, reason), key=_BUYER_DEGRADE_REASON_RANK.__getitem__)
+    if (
+        isinstance(current, str)
+        and current in _SELLER_DEGRADE_REASON_RANK
+        and reason in _SELLER_DEGRADE_REASON_RANK
+    ):
+        return min((current, reason), key=_SELLER_DEGRADE_REASON_RANK.__getitem__)
+    return reason
+
 
 SAFE_METADATA_KEYS = frozenset(
     {
@@ -66,6 +97,7 @@ SAFE_METADATA_KEYS = frozenset(
         "statusClass",
         "degraded",
         "degradeReason",
+        "toolCalls",
         "errorType",
         "terminalReason",
         "server_first_event_ms",
@@ -73,6 +105,32 @@ SAFE_METADATA_KEYS = frozenset(
         "provider_ttft_ms",
     }
 )
+
+
+class ObservationSink(Protocol):
+    """요청 로그가 추적 샘플링과 무관하게 받는 bounded 관측 이벤트."""
+
+    def set_lane(self, lane: str) -> None: ...
+
+    def mark_degraded(self, reason: str) -> None: ...
+
+    def record_model_call(
+        self,
+        model: str,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+    ) -> int: ...
+
+    def record_model_usage(
+        self,
+        model: str,
+        prompt_tokens: int | None,
+        completion_tokens: int | None,
+        call_id: int | None = None,
+    ) -> int: ...
+
+    def record_tool_call(self) -> None: ...
+
 
 _UNSAFE_KEY_PARTS = (
     "authorization",
@@ -85,13 +143,50 @@ _UNSAFE_KEY_PARTS = (
     "tool",
     "customer",
 )
-_CANARY_PATTERNS = (
+# 문자열 어디에 있어도 잡아야 하는 카나리아 — 토큰·API 키·이메일. 리터럴 접두사나 `@` 를
+# 요구해 무작위 hex 에 우연히 걸리지 않으므로 모든 값에 항상 적용한다.
+_TEXT_CANARY_PATTERNS = (
     re.compile(r"\bbearer\s+\S+", re.IGNORECASE),
     re.compile(r"\b(?:sk-|lsv2_)[A-Za-z0-9_-]{12,}\b", re.IGNORECASE),
     re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE),
+)
+# 숫자열 카나리아 — 휴대폰·주민번호. 숫자만으로 이뤄져 무작위 16진수와 우연히 겹칠 수 있다.
+_NUMERIC_CANARY_PATTERNS = (
     re.compile(r"(?<!\d)01[016789][ -]?\d{3,4}[ -]?\d{4}(?!\d)"),
     re.compile(r"(?<!\d)\d{6}[ -]?[1-4]\d{6}(?!\d)"),
 )
+_CANARY_PATTERNS = _TEXT_CANARY_PATTERNS + _NUMERIC_CANARY_PATTERNS
+
+# 서버가 만든 불투명 식별자 — **사용자 데이터가 도달할 수 없는** 필드다. 이 hex 안의 숫자열이
+# 휴대폰/주민번호 패턴과 우연히 겹쳐 **트레이스가 통째로 버려지던** 오탐의 유일한 원인이라
+# (실측 오탐률·경위는 docs/lessons.md 2026-07-31 항목) 여기서만 숫자열 카나리아를 끈다.
+#
+# 면제는 **위치 + 값의 모양**으로 결정한다. 키 이름만 보면 트리 어디서든(예: 예외의 `vars()`)
+# 같은 이름을 쓰는 dict 가 생기는 순간 면제가 따라붙고, 그 값이 해시가 아니라 원본이어도 그냥
+# 통과한다(PR #218 리뷰). 실제 그 생성기의 산출물일 때만 끄면 그 창이 닫힌다.
+#
+# 패턴 자체의 경계를 hex 로 넓히는 방식은 쓰지 않는다 — 그러면 `userid01012345678` 처럼 hex 로
+# 끝나는 흔한 단어 뒤에 붙은 **진짜 PII 까지 모든 문자열에서** 탐지를 피한다(같은 리뷰).
+# 키를 추가할 때는 "그 값이 서버 생성임을 코드로 보일 수 있는가"에 답할 수 있어야 한다.
+_UUID_RE = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+
+# `extra.metadata` 문맥에서만 면제되는 키 → 그 생성기가 내는 값의 모양.
+_OPAQUE_METADATA_SHAPES = {
+    "requestId": re.compile(r"[0-9a-f]{32}"),  # errors.new_request_id: uuid4().hex
+    "sessionFp": re.compile(r"[0-9a-f]{16}"),  # logging.safe_fingerprint: HMAC hexdigest[:16]
+    "threadFp": re.compile(r"[0-9a-f]{16}"),
+}
+# run payload 최상위에서만 면제되는 키 → LangSmith 정렬 키(`<타임스탬프><uuid>` 를 `.` 로 연결).
+_OPAQUE_PAYLOAD_SHAPES = {
+    "dotted_order": re.compile(rf"\d{{8}}T\d{{12}}Z{_UUID_RE}(?:\.\d{{8}}T\d{{12}}Z{_UUID_RE})*"),
+}
+
+
+def _is_opaque_identifier(key: str, value: object, *, metadata: bool) -> bool:
+    """이 (위치, 키, 값) 이 서버 생성 불투명 식별자로 확인되면 숫자열 카나리아를 면제한다."""
+    shapes = _OPAQUE_METADATA_SHAPES if metadata else _OPAQUE_PAYLOAD_SHAPES
+    shape = shapes.get(key)
+    return bool(shape and isinstance(value, str) and shape.fullmatch(value))
 
 
 class UnsafeTelemetryError(ValueError):
@@ -104,7 +199,12 @@ def validate_export_payload(payload: object) -> None:
     _validate_value(payload)
 
 
-def _validate_value(value: object, *, metadata: bool = False) -> None:
+def _validate_value(value: object, *, metadata: bool = False, opaque: bool = False) -> None:
+    """`opaque` 는 이 값이 서버 생성 불투명 식별자로 **확인됐다**는 뜻이다(`_is_opaque_identifier`).
+
+    면제는 `_NUMERIC_CANARY_PATTERNS` 에만 적용된다 — 토큰·키·이메일 카나리아는 어떤 필드에서도
+    끄지 않는다(`_OPAQUE_METADATA_SHAPES` 주석 참조).
+    """
     if isinstance(value, Mapping):
         for raw_key, nested in value.items():
             key = str(raw_key)
@@ -117,18 +217,24 @@ def _validate_value(value: object, *, metadata: bool = False) -> None:
             ):
                 if not isinstance(nested, Mapping) or nested:
                     raise UnsafeTelemetryError("raw-data field is not empty")
-            _validate_value(nested, metadata=key == "metadata")
+            _validate_value(
+                nested,
+                metadata=key == "metadata",
+                opaque=_is_opaque_identifier(key, nested, metadata=metadata),
+            )
         return
     if isinstance(value, (list, tuple)):
         for nested in value:
-            _validate_value(nested, metadata=metadata)
+            _validate_value(nested, metadata=metadata, opaque=opaque)
         return
     if isinstance(value, BaseException):
         _validate_value(value.args)
         _validate_value(vars(value))
         return
-    if isinstance(value, str) and any(pattern.search(value) for pattern in _CANARY_PATTERNS):
-        raise UnsafeTelemetryError("sensitive value canary detected")
+    if isinstance(value, str):
+        patterns = _TEXT_CANARY_PATTERNS if opaque else _CANARY_PATTERNS
+        if any(pattern.search(value) for pattern in patterns):
+            raise UnsafeTelemetryError("sensitive value canary detected")
 
 
 @dataclass
@@ -204,6 +310,7 @@ class RequestTrace:
         ]
         self._finished = False
         self._finish_task: asyncio.Task[None] | None = None
+        self._observation: ObservationSink | None = None
 
     def _is_closing(self) -> bool:
         return self._finished or self._finish_task is not None
@@ -238,10 +345,27 @@ class RequestTrace:
         if not self._is_closing():
             self._nodes[0].metadata.setdefault("provider_ttft_ms", milliseconds)
 
+    def attach_observation(self, observation: ObservationSink) -> None:
+        """샘플링된 trace의 bounded 상태를 요청 로그 sink와 연결한다."""
+        self._observation = observation
+        root = self._nodes[0]
+        lane = root.metadata.get("lane")
+        if isinstance(lane, str) and lane in OBSERVABILITY_LANES:
+            observation.set_lane(lane)
+        reason = root.metadata.get("degradeReason")
+        if isinstance(reason, str):
+            observation.mark_degraded(reason)
+        for _ in range(int(root.metadata.get("toolCalls") or 0)):
+            observation.record_tool_call()
+
     def set_lane(self, lane: str) -> None:
         """Replace the request's provisional lane after bounded routing completes."""
         if not self._is_closing():
             self._nodes[0].metadata["lane"] = lane
+            if lane not in OBSERVABILITY_LANES:
+                logger.warning("unregistered observability lane code=OBSERVABILITY_LANE_UNKNOWN")
+            elif self._observation is not None:
+                self._observation.set_lane(lane)
 
     def record_llm_usage(
         self,
@@ -249,23 +373,39 @@ class RequestTrace:
         model: str,
         prompt_tokens: int | None,
         completion_tokens: int | None,
-    ) -> None:
+        call_id: int | None = None,
+    ) -> int | None:
         """Attach bounded provider facts to the active explicit LLM span."""
         if self._is_closing():
-            return
+            return None
+        observation_call_id = None
+        if self._observation is not None:
+            observation_call_id = self._observation.record_model_usage(
+                model,
+                prompt_tokens,
+                completion_tokens,
+                call_id,
+            )
         stack = _active_span_stack.get()
         if not stack:
-            return
+            return observation_call_id
         node = next(
             (candidate for candidate in reversed(self._nodes) if candidate.id == stack[-1]), None
         )
         if node is None or node.run_type != "llm":
-            return
+            return observation_call_id
         node.metadata["model"] = model
         if prompt_tokens is not None:
             node.metadata["promptTokens"] = prompt_tokens
         if completion_tokens is not None:
             node.metadata["completionTokens"] = completion_tokens
+        return observation_call_id
+
+    def record_llm_call(self, *, model: str) -> int | None:
+        """요청 관측에 provider 호출 단위 placeholder를 만들고 ID를 반환한다."""
+        if self._is_closing() or self._observation is None:
+            return None
+        return self._observation.record_model_call(model)
 
     def record_server_timings(
         self,
@@ -282,26 +422,19 @@ class RequestTrace:
     def mark_degraded(self, reason: str) -> None:
         if not self._is_closing():
             root = self._nodes[0]
-            current = root.metadata.get("degradeReason")
-            if (
-                isinstance(current, str)
-                and current in _BUYER_DEGRADE_REASON_RANK
-                and reason in _BUYER_DEGRADE_REASON_RANK
-            ):
-                reason = min(
-                    (current, reason),
-                    key=_BUYER_DEGRADE_REASON_RANK.__getitem__,
-                )
-            elif (
-                isinstance(current, str)
-                and current in _SELLER_DEGRADE_REASON_RANK
-                and reason in _SELLER_DEGRADE_REASON_RANK
-            ):
-                reason = min(
-                    (current, reason),
-                    key=_SELLER_DEGRADE_REASON_RANK.__getitem__,
-                )
+            reason = _preferred_degrade_reason(root.metadata.get("degradeReason"), reason)
             root.metadata.update(degraded=True, degradeReason=reason)
+            if self._observation is not None:
+                self._observation.mark_degraded(reason)
+
+    def record_tool_call(self) -> None:
+        """판매자 에이전트가 실제 실행한 도구 호출 수를 요청 단위로 누적한다."""
+        if self._is_closing():
+            return
+        root = self._nodes[0]
+        root.metadata["toolCalls"] = int(root.metadata.get("toolCalls") or 0) + 1
+        if self._observation is not None:
+            self._observation.record_tool_call()
 
     async def finish(
         self,
@@ -361,17 +494,32 @@ class RequestTrace:
 
 
 class NoopRequestTrace(RequestTrace):
-    """Allocation-free request trace used by disabled factory paths."""
+    """export 없이 요청 로그용 bounded 상태만 전달하는 trace."""
 
-    def __init__(self) -> None:
-        # Deliberately avoid RequestTrace initialization: no UUIDs, nodes, or metadata.
-        pass
+    def __init__(self, *, lane: str | None = None) -> None:
+        self._lane = lane
+        self._degrade_reason: str | None = None
+        self._tool_calls = 0
+        self._observation: ObservationSink | None = None
 
     def record_provider_ttft(self, milliseconds: int) -> None:
         del milliseconds
 
+    def attach_observation(self, observation: ObservationSink) -> None:
+        self._observation = observation
+        if self._lane in OBSERVABILITY_LANES:
+            observation.set_lane(self._lane)
+        if self._degrade_reason is not None:
+            observation.mark_degraded(self._degrade_reason)
+        for _ in range(self._tool_calls):
+            observation.record_tool_call()
+
     def set_lane(self, lane: str) -> None:
-        del lane
+        self._lane = lane
+        if lane not in OBSERVABILITY_LANES:
+            logger.warning("unregistered observability lane code=OBSERVABILITY_LANE_UNKNOWN")
+        elif self._observation is not None:
+            self._observation.set_lane(lane)
 
     def record_llm_usage(
         self,
@@ -379,8 +527,21 @@ class NoopRequestTrace(RequestTrace):
         model: str,
         prompt_tokens: int | None,
         completion_tokens: int | None,
-    ) -> None:
-        del model, prompt_tokens, completion_tokens
+        call_id: int | None = None,
+    ) -> int | None:
+        if self._observation is not None:
+            return self._observation.record_model_usage(
+                model,
+                prompt_tokens,
+                completion_tokens,
+                call_id,
+            )
+        return None
+
+    def record_llm_call(self, *, model: str) -> int | None:
+        if self._observation is None:
+            return None
+        return self._observation.record_model_call(model)
 
     def record_server_timings(
         self,
@@ -391,7 +552,14 @@ class NoopRequestTrace(RequestTrace):
         del first_event_ms, first_text_token_ms
 
     def mark_degraded(self, reason: str) -> None:
-        del reason
+        self._degrade_reason = _preferred_degrade_reason(self._degrade_reason, reason)
+        if self._observation is not None:
+            self._observation.mark_degraded(self._degrade_reason)
+
+    def record_tool_call(self) -> None:
+        self._tool_calls += 1
+        if self._observation is not None:
+            self._observation.record_tool_call()
 
     async def finish(
         self,
@@ -403,7 +571,6 @@ class NoopRequestTrace(RequestTrace):
         del status, error_type, terminal_reason
 
 
-_NOOP_REQUEST_TRACE = NoopRequestTrace()
 _current_request_trace: ContextVar[RequestTrace | None] = ContextVar(
     "current_request_trace", default=None
 )
@@ -435,7 +602,7 @@ class TraceFactory:
         environment: str,
     ) -> RequestTrace:
         if not self._enabled or not _is_sampled(request_id, self._sampling_rate):
-            return _NOOP_REQUEST_TRACE
+            return NoopRequestTrace(lane=lane)
         return RequestTrace(
             exporter=self._exporter,
             name=name,
@@ -586,7 +753,7 @@ def start_request_trace_safely(
         )
     except Exception:
         logger.warning("trace start failed code=TELEMETRY_START_FAILED")
-        return _NOOP_REQUEST_TRACE
+        return NoopRequestTrace(lane=lane)
 
 
 def current_request_trace() -> RequestTrace | None:

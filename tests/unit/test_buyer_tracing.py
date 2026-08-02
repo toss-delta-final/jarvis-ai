@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from app.agents.buyer.cart.state import get_cart_store
 from app.agents.buyer.graph import run_buyer_turn as _production_run_buyer_turn
+from app.agents.buyer.recommendation.category_mapping import CategoryMapping
 from app.agents.buyer.session_state import context_thread_key
 from app.api.deps import buyer_owner_id
 from app.core import session_context
@@ -771,6 +772,14 @@ async def test_needs_expansion_is_owned_by_recommendation_graph() -> None:
         "filters": {},
     }
 
+    async def _map_unresolved(*, category_queries, utterance, settings, **_):
+        """[#217] 전개 트리거가 **매핑 실패**라, 이 스팬을 태우려면 매퍼가 실패를 보고해야 한다.
+
+        `'집들이 선물'` 은 실측 0.2904 / 마진 0.0073 으로 거리컷에 걸린다(설계 §4.5). 종전에는
+        목적 marker `'선물'` 로 매핑 전에 트리거됐으므로 기본 fake 매퍼로도 스팬이 떴다.
+        """
+        return CategoryMapping(legs=[], unresolved=[q.query for q in category_queries if q.query])
+
     async def driver() -> None:
         await _collect(
             run_buyer_turn(
@@ -779,6 +788,7 @@ async def test_needs_expansion_is_owned_by_recommendation_graph() -> None:
                 llm=FakeLLM(decompose=decompose),
                 search=_search_with_span,
                 push_fn=_push_with_span,
+                map_categories=_map_unresolved,
             )
         )
 
@@ -841,6 +851,25 @@ async def test_search_failure_marks_bounded_degrade() -> None:
         )
 
     await _assert_degrade(driver, "search_failed")
+
+
+async def test_recommendation_route_sets_observability_lane() -> None:
+    """구매자 추천 턴은 초기 buyer 표식이 아니라 집계용 recommend 레인으로 확정한다."""
+
+    async def driver() -> None:
+        await _collect(
+            run_buyer_turn(
+                _request(),
+                _member(),
+                llm=FakeLLM(),
+                search=_search_with_span,
+                push_fn=_push_with_span,
+            )
+        )
+
+    exported = await _run_with_trace(driver)
+    root = next(node for node in exported if node.parent_id is None)
+    assert root.metadata["lane"] == "recommend"
 
 
 async def test_rerank_failure_marks_bounded_degrade() -> None:
@@ -964,7 +993,7 @@ async def test_partial_fanout_marks_bounded_degrade() -> None:
     # except 가 삼켜 legs 가 비고, fan-out 이 아예 안 일어나 degrade 도 찍히지 않는다.
     async def mapper(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
         del category_queries, utterance, settings, llm, tier
-        return [("카테고리-A", "A"), ("카테고리-B", "B")]
+        return CategoryMapping(legs=[("카테고리-A", "A"), ("카테고리-B", "B")])
 
     async def search(filters, exclude_product_ids=None):
         del exclude_product_ids
@@ -1007,7 +1036,7 @@ async def test_combined_fanout_and_dedup_failure_uses_stable_precedence(
     # except 가 삼켜 legs 가 비고, fan-out 이 아예 안 일어나 degrade 도 찍히지 않는다.
     async def mapper(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
         del category_queries, utterance, settings, llm, tier
-        return [("카테고리-A", "A"), ("카테고리-B", "B")]
+        return CategoryMapping(legs=[("카테고리-A", "A"), ("카테고리-B", "B")])
 
     async def search(filters, exclude_product_ids=None):
         del exclude_product_ids

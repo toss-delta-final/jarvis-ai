@@ -37,6 +37,9 @@ _STATUS_CODE_MAP: dict[int, str] = {
     409: "STREAM_IN_PROGRESS",
     429: "RATE_LIMITED",
     500: "INTERNAL",
+    # [#148] I-22 실패 응답표(§3.7) — 내부 의존성 일시 장애. 5xx 라 detail 은 무시되고
+    # 이 맵의 코드·고정 메시지가 나간다(업스트림 문자열 유출 방지).
+    503: "UPSTREAM_UNAVAILABLE",
     504: "UPSTREAM_TIMEOUT",
 }
 _DEFAULT_MESSAGE: dict[int, str] = {
@@ -46,6 +49,7 @@ _DEFAULT_MESSAGE: dict[int, str] = {
     409: "동일 방에 진행 중인 스트림이 있습니다",
     429: "요청이 너무 많습니다",
     500: "서버 내부 오류",
+    503: "상류(LLM/저장소) 일시 이용 불가",
     504: "상류(LLM/Spring) 응답 지연",
 }
 

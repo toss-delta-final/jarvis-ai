@@ -39,16 +39,35 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
     "color": string|null
   },
   "cart": { "productId": int|null, "optionId": int|null, "quantity": int },
-  "revertCategories": [string]
+  "revertCategories": [string],
+  "repurchaseProducts": [string]
 }
 규칙:
-- intent 판별: 상품을 찾아달라는 요청이면 recommend, "담아줘/장바구니에 넣어"면 cart_add,
-  "장바구니 보여줘/뭐 있어?"면 cart_view, 회원 본인의 최근 주문·배송 진행 상태를 묻는 요청이면
-  order_status, 그 외 잡담·무관 질문이면 general.
+- intent 판별: 상품을 찾아달라는 요청이면 recommend, "담아줘/장바구니에 넣어/2번 담아줘"처럼
+  명시적으로 담기를 요청하면 cart_add, USER_MESSAGE에 **장바구니를 직접 명시하고 그 내용 조회를
+  요청할 때만** cart_view, 회원 본인의 최근 주문·배송 진행 상태를 묻는 요청이면 order_status,
+  그 외 잡담·무관 질문이면 general.
 - order_status 긍정 예: "내 주문 어디까지 왔어?", "배송 상태 알려줘", "최근 주문 진행 상황".
 - order_status로 분류하지 않는 예: "배송 빠른 상품 추천해줘"는 recommend,
   "이 상품 주문하고 싶어"는 기존 상품 추천/장바구니 의미, "주문 취소 방법"은 general,
   "예전에 뭘 샀지?"는 이번 주문 상태 조회 범위가 아니므로 general.
+- intent는 다음 순서로 판정하세요:
+  0) PENDING_CART가 있고 USER_MESSAGE가 options의 이름·번호·순번("드럼형", "2번", "2번으로",
+     "두 번째")을 고르면 먼저 cart_add로 분류하고 그 optionId를 고르세요.
+  1) "담아줘"·"장바구니에 넣어" 같은 **명시적 담기 동사**가 있으면 cart_add.
+  2) 그 외에는 USER_MESSAGE에 "장바구니"가 직접 나오면서 그 내용을 조회할 때만 cart_view.
+  3) 그 외에 "그거"·"저번에 그거" 같은 상품 지시대명사가 있으면 항상 recommend.
+- PENDING_CART가 있다는 사실만으로 이번 발화를 옵션 답변으로 보지 마세요. USER_MESSAGE가 options의
+  이름·번호·순번을 실제로 고르는 0) 발화는 먼저 옵션 답변으로 처리하고, 그 외 "그거 보여줘"·
+  "그거 사고 싶어" 같은 비옵션 발화에만 위 1)~3) 순서를 적용하세요.
+- cart_view로 분류하지 않는 예: "그거 보여줘" → recommend, "저번에 그거 다시 보여줘" →
+  recommend, "그거 또 사고 싶어" → recommend. "보여줘"·"뭐 있어?" 동사만으로 cart_view를
+  선택하지 마세요. "사고 싶어"는 명시적 담기 동사가 아니므로 cart_add가 아니라 recommend입니다.
+- 상품명 없는 지시대명사는 PRIOR_FILTERS.semanticQuery 또는 LAST_RECOMMENDATIONS 맥락의 **상품**을
+  가리킵니다. 두 맥락이 비어 있어도 상품 요청으로 보고 recommend로 분류하세요. 이 경계는
+  PENDING_CART가 있어도 옵션 답변이 아닌 상품 요청에 그대로 적용합니다.
+- JSON 출력 직전에 intent를 검산하세요. cart_view인데 USER_MESSAGE에 "장바구니"가 없으면 recommend로
+  고치세요. cart_add인데 명시적 담기 동사도 실제 옵션 답변도 없으면 recommend로 고치세요.
 - recommend: 정확한 수치 제약은 filters 에 넣고 semanticQuery 로 근사하지 마세요.
   PRIOR_FILTERS 가 있으면 병합(좁히면 add, 모순되면 replace)하세요.
   색상 조건(예: "빨간", "검정")이 있으면 filters.color 에 넣으세요.
@@ -96,13 +115,47 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
   유지**하세요(카테고리를 비우면 직전 맥락이 사라집니다).
 - cart_add: LAST_RECOMMENDATIONS(직전 추천 목록: productId+이름)에서 사용자가 가리킨 상품의
   productId 를 고르세요. 못 고르면 productId=null. quantity 기본 1.
-- PENDING_CART(옵션 되물음 대기)가 있으면 보통 이번 발화는 옵션 답변입니다 — options 목록에서
-  사용자 답에 맞는 optionId 를 골라 intent=cart_add, cart.optionId 로 주세요. 단,
+- PENDING_CART(옵션 되물음 대기)가 있고 USER_MESSAGE가 options의 이름·번호·순번을 실제로 고른
+  경우에만 옵션 답변입니다 — 사용자 답에 맞는 optionId 를 골라 intent=cart_add,
+  cart.optionId 로 주세요. 단,
   사용자가 다른 상품을 담으려 하면 LAST_RECOMMENDATIONS 의 그 productId 로 cart_add,
   담기를 취소·중단하려 하면 intent=general 로 전환하세요(옛 상품에 갇히지 않게).
 - revertCategories: 사용자가 특정 카테고리를 \"다시 추천받기\"(되돌리기 칩) 하거나 최근 구매로
   가려진 카테고리를 다시 보고 싶어하면 그 카테고리명을 넣으세요(예: [\"조미료\"]). 아니면 [].
+- repurchaseProducts: 사용자가 **최근에 산 특정 상품을 다시 사거나 다시 추천받고 싶다**고 하면
+  그 상품을 가리키는 **상품명**을 넣으세요(예: "최근에 산 무선이어폰 또 추천해줘" → ["무선 이어폰"]).
+  "그거 또 사고 싶어"처럼 상품명이 빠진 지시대명사면 PRIOR_FILTERS 맥락에서 가리키는 **상품명**을
+  해소해 넣으세요. 사용자가 재구매를 말로 지목한 상품만 넣고, LAST_RECOMMENDATIONS 에 있다는
+  이유로 직전 추천 상품을 복사하지 마세요. 보통 상품 1개만 넣으며 재구매 의도가 없으면 [].
+  카테고리 단위 되돌리기는 revertCategories 가 담당하니 카테고리명은 넣지 마세요.
 - general: intent=general, reply 에 짧게 답하세요."""
+
+
+# 검색 WHERE 로 나가는 하드필터 축 — 관측 대상(#119). semantic_query(의미검색 앵커)·
+# exclude_product_ids(dedup)·limit(top-K)은 후보를 **거르는** 조건이 아니라 제외한다.
+# 새 하드필터가 생기면 여기도 늘어나야 한다 — 드리프트는 테스트가 잡는다.
+_FILTER_AXES = (
+    "category",
+    "price_min",
+    "price_max",
+    "brand",
+    "rating_min",
+    "keyword",
+    "color",
+    # attr_conditions 도 같은 성격의 하드필터다(attributes 매칭) — 프로필의 소재·핏 같은
+    # 속성 선호가 새는 경로라 관측에서 빠지면 유출 대조가 그 경로만 놓친다(PR #223 리뷰).
+    "attr_conditions",
+)
+
+
+def _filter_axes(filters: ProductSearchFilters) -> list[str]:
+    """값이 설정된 하드필터 축 이름 (#119 관측 — 값은 담지 않는다).
+
+    빈 컨테이너(`[]`/`{}`/`""`)는 "설정 안 됨"으로 본다. 다만 `0`은 LLM 이 실제로 내보낸
+    값이므로 설정된 것으로 남긴다 — 유출 관측은 "무엇이 붙었나"를 보는 것이지 그 값이
+    유효한지를 판정하는 자리가 아니다.
+    """
+    return [name for name in _FILTER_AXES if getattr(filters, name, None) not in (None, [], {}, "")]
 
 
 async def decompose(
@@ -115,6 +168,7 @@ async def decompose(
     last_recommendations: list[tuple[int, str]] | None = None,
     pending_cart: dict | None = None,
     category_fanout_max: int = 5,
+    repurchase_max: int = 5,
 ) -> RouteDecision:
     """Haiku 1회 호출로 intent(추천/담기/장바구니조회/주문상태/일반)와 필터를 산출한다.
 
@@ -168,6 +222,9 @@ async def decompose(
             if isinstance(raw_revert, list)
             else []
         )
+        repurchase_products = _parse_repurchase_products(
+            data.get("repurchaseProducts"), repurchase_max
+        )
         category_queries = _parse_category_queries(data.get("categoryQueries"), category_fanout_max)
         # semanticQuery 는 filters 밖(최상위)에 오는 의미검색 입력 — 검색 백엔드까지 흐르도록
         # filters 에 실어준다(#101). 폴백 순서(PR#166 리뷰):
@@ -215,6 +272,11 @@ async def decompose(
                 "case": case,
                 "legs": len(category_queries),
                 "leg_queries": [q.query for q in category_queries],
+                # [#119] 이번 턴에 값이 설정된 하드필터 **축 이름만** — 값은 싣지 않는다(PII,
+                # tracing 카나리 오탐 회피). 같은 발화의 회원/게스트 턴을 대조하면 프로필이
+                # 하드필터로 새는지 휴리스틱 없이 객관적으로 드러난다.
+                "filters_set": _filter_axes(filters),
+                "profile_injected": bool(profile_summary),
             },
         )
     return RouteDecision(
@@ -224,6 +286,7 @@ async def decompose(
         reply=str(data.get("reply") or ""),
         cart=cart,
         revert_categories=revert_categories,
+        repurchase_products=repurchase_products,
         category_queries=category_queries,
     )
 
@@ -256,6 +319,19 @@ def _parse_attr_removals(raw: object) -> list[str]:
     return [x.strip() for x in raw if isinstance(x, str) and x.strip()]
 
 
+def _parse_repurchase_products(raw: object, cap: int) -> list[str]:
+    """decompose 의 repurchaseProducts → 재구매 지목 상품명 리스트 (#120).
+
+    리스트가 아니면 빈 리스트, 비문자열·공백 항목은 제외한다(revertCategories 와 동일 규약).
+    `cap` 으로 절단해 LLM 이 긴 목록을 내도 파싱·전달 크기를 유계로 유지한다
+    (`_parse_category_queries` 의 fanout_max 절단과 같은 규약 — slice 절단). 실제 해제 범위는
+    graph 의 단일 지목 가드가 결정한다.
+    """
+    if not isinstance(raw, list):
+        return []
+    return [x.strip() for x in raw if isinstance(x, str) and x.strip()][:cap]
+
+
 def _parse_category_queries(raw: object, fanout_max: int) -> list[CategoryQuery]:
     """decompose 의 categoryQueries → list[CategoryQuery] (방식 A, 이슈 #59).
 
@@ -282,7 +358,7 @@ def _parse_category_queries(raw: object, fanout_max: int) -> list[CategoryQuery]
     # 스킵되므로, 절단 전에 빼지 않으면 LLM 이 앞쪽에 빈 항목을 섞어낼 때 fanout 예산만 먹고 뒤쪽
     # 실제 카테고리를 밀어낸다(§9 상한 의도 훼손, PR #73 리뷰).
     signal = [q for q in out if q.raw_category or q.query]
-    # slice 절단 — category_mapping 의 _dedup_truncate·_merge_fanout_results 와 동일 규약
+    # slice 절단 — category_mapping 의 dedup_truncate·_merge_fanout_results 와 동일 규약
     # (fanout_max<=0 이면 정확히 0개; append 후 체크는 첫 항목이 남아 절단 의미가 어긋난다, PR #73 리뷰).
     return signal[:fanout_max]
 

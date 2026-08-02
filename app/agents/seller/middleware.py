@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
@@ -32,7 +33,10 @@ from langchain.agents.middleware import (
 
 from app.core.config import get_settings
 from app.core.text import _security_skeleton, _strip_unsafe_multiline_controls
+from app.core.tracing import current_request_trace
 from app.core.unicode_security import UnicodeSequenceStreamSanitizer
+
+logger = logging.getLogger(__name__)
 
 # ── 1. scope — 차단 규칙 (사유 → 트리거 부분 문자열, 소문자 비교) ────────────────
 
@@ -343,6 +347,55 @@ class StreamingOutputGuard:
 
 
 # ── ToolCallLimit (prebuilt) — 도구 보유 에이전트 공통 상한 ─────────────────────
+
+
+class ToolCallObservationMiddleware(AgentMiddleware):
+    """한도 검사를 통과해 실제 handler로 전달된 판매자 도구 호출을 센다."""
+
+    async def awrap_tool_call(self, request, handler):  # noqa: ANN001
+        if trace := current_request_trace():
+            trace.record_tool_call()
+        return await handler(request)
+
+
+class ModelUsageObservationMiddleware(AgentMiddleware):
+    """판매자 LangGraph 모델 응답의 bounded usage를 요청 비용 관측으로 전달한다."""
+
+    def __init__(self, model: str | None) -> None:
+        super().__init__()
+        self._model = model
+
+    async def awrap_model_call(self, request, handler):  # noqa: ANN001
+        trace = current_request_trace()
+        call_id = None
+        if trace is not None and self._model is not None:
+            call_id = trace.record_llm_call(model=self._model)
+        response = await handler(request)
+        if trace is None or self._model is None:
+            return response
+        for message in getattr(response, "result", None) or ():
+            usage = getattr(message, "usage_metadata", None)
+            if not isinstance(usage, dict):
+                metadata = getattr(message, "response_metadata", None)
+                usage = metadata.get("token_usage") if isinstance(metadata, dict) else None
+            if not isinstance(usage, dict):
+                continue
+            prompt_tokens = usage.get("input_tokens", usage.get("prompt_tokens"))
+            completion_tokens = usage.get("output_tokens", usage.get("completion_tokens"))
+            prompt_tokens = prompt_tokens if isinstance(prompt_tokens, int) else None
+            completion_tokens = completion_tokens if isinstance(completion_tokens, int) else None
+            if prompt_tokens is None and completion_tokens is None:
+                continue
+            trace.record_llm_usage(
+                model=self._model,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                call_id=call_id,
+            )
+            break
+        else:
+            logger.warning("seller model usage missing code=MODEL_USAGE_MISSING")
+        return response
 
 
 def tool_call_limit_middleware() -> ToolCallLimitMiddleware:

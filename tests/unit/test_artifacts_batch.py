@@ -98,6 +98,35 @@ async def test_enrich_product_returns_extras():
     )
     assert extras["tags"] == ["여행", "방수"]
     assert extras["attributes"] == {"소재": "나일론"}
+    # [#148] situation_tags 는 홈 추천 reason 의 재료다 — LLM 이 안 주면 빈 목록(구 스키마 호환).
+    assert extras["situation_tags"] == []
+
+
+class _SituationLLM:
+    """situation_tags 를 함께 주는 LLM — 확장된 enrichment 스키마(#148)."""
+
+    async def complete(self, *, system, user, tier, max_tokens=1024, json_output=True):
+        return json.dumps(
+            {
+                "tags": ["여행"],
+                "situation_tags": ["해외여행", "  ", "기내반입", ""],
+                "attributes": {},
+            },
+            ensure_ascii=False,
+        )
+
+
+async def test_enrich_product_extracts_situation_tags_for_home_reason():
+    """[#148] 신규 상품도 홈 추천 reason 재료를 갖도록 situation_tags 를 뽑는다.
+
+    이게 없으면 I-17 로 새로 들어온 상품만 조용히 reason 이 비어(기존 덤프 상품은 채워져 있어서)
+    원인 파악이 어려워진다 — lessons "빈 결과는 계약 불일치를 먼저 의심하라" 와 같은 부류.
+    """
+    extras = await enrich_product(
+        {"name": "캐리어", "category": "여행용품"}, llm=_SituationLLM(), settings=get_settings()
+    )
+    # 공백/빈 문자열은 reason 문장 틀에 끼면 "에 맞아요"가 되므로 걸러진다
+    assert extras["situation_tags"] == ["해외여행", "기내반입"]
 
 
 def test_build_search_doc_includes_fields_and_tags():
