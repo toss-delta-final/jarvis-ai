@@ -155,19 +155,184 @@ async def test_get_funnel_flattens_stages_response() -> None:
     assert (result.view, result.cart, result.checkout, result.purchase) == (5000, 800, 0, 120)
 
 
-async def test_account_events_has_no_brand_in_path() -> None:
-    """I-8은 /internal/account-events (brandId 없음)."""
+async def test_account_events_has_no_brand_in_path_and_sends_period() -> None:
+    """I-8은 /internal/account-events (brandId 없음) + from/to 필수 전송(#197).
+
+    from/to 는 Spring AnalysisPeriod.of 필수 — 종전 optional 미전달 호출은 400 이었다.
+    """
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["url"] = str(request.url)
-        return httpx.Response(200, json={"events": []})
+        captured["params"] = dict(request.url.params)
+        return httpx.Response(200, json={"groupBy": "eventType", "rows": []})
 
     client = _client(handler)
-    await client.get_account_events(event_type="LOGIN_FAIL")
+    await client.get_account_events("2026-07-01", "2026-07-31", event_type="LOGIN_FAIL")
 
     assert captured["url"].startswith(f"{BASE_URL}/internal/account-events")
     assert "brand" not in captured["url"].lower().split("?")[0]
+    assert captured["params"]["from"] == "2026-07-01"
+    assert captured["params"]["to"] == "2026-07-31"
+    assert captured["params"]["eventType"] == "LOGIN_FAIL"
+
+
+async def test_account_events_parses_rows_and_group_by_echo() -> None:
+    """I-8 실측 응답(rows — groupBy 별 이형) 파싱(#197 — 구 events 스키마는 상시 0건).
+
+    groupBy=ip 의 IpRow(무차별 대입 신호)도 dict 로 보존돼 요약에 쓸 수 있어야 한다.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "groupBy": "ip",
+                    "eventType": "LOGIN_FAIL",
+                    "from": "2026-07-01",
+                    "to": "2026-07-31",
+                    "rows": [
+                        {
+                            "ipMasked": "121.140.xxx.xxx",
+                            "failCount": 42,
+                            "distinctMembers": 3,
+                            "nullMemberRatio": 0.5,
+                            "isSuspicious": True,
+                            "firstSeen": "2026-07-30T01:00:00+09:00",
+                            "lastSeen": "2026-07-30T02:00:00+09:00",
+                        }
+                    ],
+                },
+            },
+        )
+
+    client = _client(handler)
+    result = await client.get_account_events("2026-07-01", "2026-07-31", group_by="ip")
+
+    assert result.group_by == "ip"
+    assert len(result.rows) == 1
+    assert result.rows[0]["failCount"] == 42
+    assert result.rows[0]["isSuspicious"] is True
+
+
+async def test_get_churn_sends_period_and_inactive_days() -> None:
+    """I-16 쿼리에 from/to/inactiveDays 3종이 실린다(#197 회귀 방지).
+
+    구 코드는 inactiveDays 만 보내 AnalysisPeriod.of 가 400 INVALID_PERIOD 로
+    거부 — 이탈 코호트 조회가 무조건 실패(주 소스 전면 불능)하던 원인.
+    """
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["params"] = dict(request.url.params)
+        return httpx.Response(
+            200,
+            json={"cohortSize": 0, "churnRate": 0.0,
+                  "preChurnSignals": {"cancelCount": 0, "returnReasonsTop": [],
+                                      "zeroResultSearchSessions": 0, "priceIncreaseExposed": 0},
+                  "members": []},
+        )
+
+    client = _client(handler)
+    await client.get_churn("93", "2026-06-01", "2026-07-31", 45)
+
+    assert captured["params"] == {
+        "from": "2026-06-01", "to": "2026-07-31", "inactiveDays": "45"
+    }
+
+
+async def test_get_churn_parses_measured_response_shape() -> None:
+    """I-16 실측 응답(SellerChurnResponse) 파싱(#197 — 구 list[dict] 스키마는
+    preChurnSignals 객체에 ValidationError → degrade 로 새던 원인).
+
+    churnRate 는 fraction 그대로 보존(0.6 — % 변환은 도구 표시 계층 소관),
+    sessions30d 카멜 alias 매핑까지 고정한다.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "brandId": 93,
+                    "from": "2026-06-01",
+                    "to": "2026-07-31",
+                    "inactiveDays": 30,
+                    "cohortSize": 5,
+                    "churnRate": 0.6,
+                    "preChurnSignals": {
+                        "cancelCount": 3,
+                        "returnReasonsTop": [{"reason": "사이즈 불만", "count": 2}],
+                        "zeroResultSearchSessions": 0,
+                        "priceIncreaseExposed": 2,
+                    },
+                    "members": [
+                        {
+                            "memberId": 103,
+                            "lastActivityAt": "2026-06-15T10:00:00+09:00",
+                            "lastLoginAt": None,
+                            "sessions30d": 0,
+                            "preChurnEvent": "RETURNED(상품불량)",
+                        }
+                    ],
+                },
+            },
+        )
+
+    client = _client(handler)
+    result = await client.get_churn("93", "2026-06-01", "2026-07-31", 30)
+
+    assert result.churn_rate == 0.6  # fraction 보존 — 스키마에서 ×100 하지 않는다
+    assert result.cohort_size == 5
+    assert result.pre_churn_signals is not None
+    assert result.pre_churn_signals.cancel_count == 3
+    assert result.pre_churn_signals.return_reasons_top == [{"reason": "사이즈 불만", "count": 2}]
+    assert result.pre_churn_signals.price_increase_exposed == 2
+    assert len(result.members) == 1
+    member = result.members[0]
+    assert member.member_id == 103
+    assert member.sessions_30d == 0  # camel alias "sessions30d" 매핑 고정
+    assert member.last_login_at is None
+    assert member.pre_churn_event == "RETURNED(상품불량)"
+
+
+async def test_get_churn_missing_rate_parses_as_none_not_zero() -> None:
+    """[#197 PR 리뷰] churnRate 키 결측은 0.0 이 아니라 None 으로 남는다.
+
+    기본값 0.0 이면 BE 필드 누락이 조용히 "이탈률 0.0%"로 렌더링된다 — 이 PR 이
+    제거한 silent-mismatch 패턴을 이 필드만 재도입하지 않게 스키마 기본값을 막는다.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"cohortSize": 5,
+                  "preChurnSignals": {"cancelCount": 0, "returnReasonsTop": [],
+                                      "zeroResultSearchSessions": 0, "priceIncreaseExposed": 0},
+                  "members": []},
+        )
+
+    client = _client(handler)
+    result = await client.get_churn("93", "2026-06-01", "2026-07-31", 30)
+
+    assert result.churn_rate is None  # 0.0 위장 금지 — 표시 계층이 미수신으로 처리
+
+
+async def test_get_churn_signals_shape_drift_maps_to_spring_unavailable() -> None:
+    """preChurnSignals 가 다시 배열 등으로 drift 하면 조용한 통과가 아니라
+    SpringUnavailableError 로 관측된다(_validate 단일 지점, #197)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"cohortSize": 5, "churnRate": 0.6, "preChurnSignals": [{"x": 1}]}
+        )
+
+    client = _client(handler)
+    with pytest.raises(SpringUnavailableError):
+        await client.get_churn("93", "2026-06-01", "2026-07-31", 30)
 
 
 async def test_create_product_posts_body_by_alias() -> None:

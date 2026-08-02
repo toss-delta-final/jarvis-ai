@@ -116,11 +116,11 @@ def _spring_span(operation: _SpringOperation, method: str) -> Iterator[TraceNode
         try:
             yield span
         except BaseException as exc:
-            if span is not None:
-                if isinstance(exc, httpx.TimeoutException):
-                    span.metadata["statusClass"] = "timeout"
-                elif isinstance(exc, httpx.NetworkError):
-                    span.metadata["statusClass"] = "connection_error"
+            # 분류는 `_transport_status_class` 한 곳에만 둔다 — 로그(`_failure_status_class`)와
+            # 어휘가 갈리지 않게 코드로 보장한다(PR #235 리뷰). 전송 계층 실패가 아니면 None 이라
+            # 손대지 않는다(4xx/5xx 는 `_record_spring_status` 가 raise_for_status 앞에서 이미 기록).
+            if span is not None and (label := _transport_status_class(exc)) is not None:
+                span.metadata["statusClass"] = label
             failure = (exc, exc.__traceback__)
 
     if failure is not None:
@@ -131,6 +131,68 @@ def _spring_span(operation: _SpringOperation, method: str) -> Iterator[TraceNode
 def _record_spring_status(span: TraceNode | None, response: httpx.Response) -> None:
     if span is not None:
         span.metadata["statusClass"] = f"{response.status_code // 100}xx"
+
+
+# 재시도 대상 4xx (#133, PR #235 리뷰) — "4xx 는 다시 보내도 같은 거절"이라는 일반 규칙의
+# **예외**다. 이 둘은 요청 자체가 유효하고 서버·인프라의 일시 상태일 뿐이라 5xx 와 성격이 같다.
+#   408 Request Timeout   : 서버가 요청 대기 중 끊음
+#   429 Too Many Requests : 레이트 리밋 — **즉시 응답**이라 재시도 비용이 타임아웃과 달리
+#                           밀리초다(턴 예산을 태우지 않는다). 상한 1회라 증폭도 2배를 넘지 않는다.
+# I-1 계약에 두 코드가 명시돼 있지는 않지만 프록시·게이트웨이가 낼 수 있어 방어적으로 받는다.
+# ⚠️ `Retry-After` 는 존중하지 않는다 — backoff 가 없어 즉시 다시 찌른다. 상한 1회라 증폭은
+# 2배로 묶이지만 서버 지시를 따르는 것은 아니다. `spring_max_retries` 를 올릴 때는 backoff 와
+# 함께 이 헤더 처리도 넣어야 한다(현재 상한이 1인 이유).
+_RETRYABLE_4XX = frozenset({408, 429})
+
+
+def _transport_status_class(exc: BaseException) -> str | None:
+    """전송 계층 실패의 유계 라벨 — 없으면 None (#141, PR #235 리뷰).
+
+    **분류를 여기 한 곳에만 둔다.** 로그(`_failure_status_class`)와 trace(`_spring_span`)가
+    각자 isinstance 를 따로 구현하면, 새 예외 타입을 한쪽에만 추가했을 때 라벨이 조용히
+    갈린다 — 이 PR 이 `RemoteProtocolError` 로 그 사고를 실제로 두 번 냈다. 주석으로 "같은
+    어휘를 쓴다"고 약속하는 대신 코드가 보장하게 한다.
+
+    `RemoteProtocolError`(서버가 응답 도중 연결 종료)는 `NetworkError` 의 하위가 아니라
+    **형제**(둘 다 `TransportError` 직계)라 함께 적지 않으면 어느 분기에도 안 걸린다.
+    """
+    if isinstance(exc, httpx.TimeoutException):
+        return "timeout"
+    if isinstance(exc, httpx.NetworkError | httpx.RemoteProtocolError):
+        return "connection_error"
+    return None
+
+
+def _failure_status_class(exc: BaseException) -> str:
+    """재시도 로그 전용 유계 라벨 — 예외 원문은 싣지 않는다(#141).
+
+    재시도 여부는 `_is_retryable` 이 따로 판단한다. 이 함수는 **관측 전용**이다.
+    전송 계층 분류는 `_transport_status_class` 를 공유해 trace 와 어휘가 갈리지 않게 한다.
+    """
+    if (label := _transport_status_class(exc)) is not None:
+        return label
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"{exc.response.status_code // 100}xx"
+    return "malformed_response"
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    """재시도가 의미 있는 실패만 True (#133).
+
+    타임아웃·연결 오류·응답 중단·5xx 와 `_RETRYABLE_4XX`(408·429)는 일시 장애라 같은 요청이
+    다음엔 성공할 수 있다. 반면 그 밖의 4xx 계약 오류와 응답 파싱 실패(ValueError/
+    ValidationError)는 **같은 응답이 또 온다** — 재시도는 턴 예산만 태우고 결과를 바꾸지 못한다.
+
+    전송 계층 판정은 `_transport_status_class` 를 재사용한다 — 재시도 대상과 관측 라벨이 같은
+    분류에서 나와야 "재시도했다"와 "무엇이 실패했다"가 어긋나지 않는다.
+    `LocalProtocolError`(우리 요청이 잘못됨)는 그 함수에서 None 이라 자연히 제외된다.
+    """
+    if _transport_status_class(exc) is not None:
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        return code >= 500 or code in _RETRYABLE_4XX
+    return False
 
 
 class SpringUnavailableError(Exception):
@@ -413,15 +475,36 @@ async def search_products(filters: ProductSearchFilters) -> ProductSearchResult:
     유일·영구 후보 확보 경로. 사용자 확정에 따라 **GET** 으로 호출한다. dedup·평점·정렬은
     응답 후 AI 사후필터(search_service.search_catalog)에서 적용한다. 도달 불가/오류 응답은
     SpringUnavailableError 로 전파 — 상위(추천 그래프)가 SEARCH_FAILED 로 낸다.
+
+    [#133] 재시도 가능한 실패(`_is_retryable`)는 config 상한만큼 재시도한다. 검색은 GET·멱등이라
+    안전하며, 후보가 없으면 추천 자체가 성립하지 않아 한 번의 일시 지연이 곧 턴 종료였다.
+    **재시도 루프는 span 안쪽**이다 — 호출당 span 1개라는 계약(테스트가 고정)을 지키고,
+    `statusClass` 는 마지막 시도의 결과를 남긴다. 재시도 사실은 구조화 로그로만 관측한다.
     """
     params = _search_query_params(filters)
+    attempts = get_settings().spring_max_retries + 1
     try:
         with _spring_span("search_products", "GET") as span:
-            async with _client() as client:
-                resp = await client.get("/internal/products/search", params=params)
-                _record_spring_status(span, resp)
-                resp.raise_for_status()
-                data = resp.json()
+            for attempt in range(1, attempts + 1):
+                try:
+                    async with _client() as client:
+                        resp = await client.get("/internal/products/search", params=params)
+                        _record_spring_status(span, resp)
+                        resp.raise_for_status()
+                        data = resp.json()
+                    break
+                except (httpx.HTTPError, ValueError) as exc:
+                    if attempt >= attempts or not _is_retryable(exc):
+                        raise
+                    # 예외 원문은 남기지 않는다 — 업스트림 상태 유출 방지(#141), 유계 라벨만.
+                    _log.warning(
+                        "spring_search_retry",
+                        extra={
+                            "attempt": attempt,
+                            "maxAttempts": attempts,
+                            "statusClass": _failure_status_class(exc),
+                        },
+                    )
         # 응답 파싱·검증도 같은 경계 안 — 200 이지만 스키마 불일치인 malformed 응답도
         # SEARCH_FAILED degrade(§7)로 흐르게 한다(ValidationError 가 그대로 새어 500 되지 않게).
         return _parse_search_response(data)
@@ -841,31 +924,40 @@ class SpringClient:
         )
         return self._validate(ProductChangeLogResult, data)
 
-    async def get_churn(self, brand_id: int, inactive_days: int) -> ChurnResult:
-        """I-16 이탈 코호트 조회 (§4.4). inactiveDays 무활동 기준일."""
+    async def get_churn(
+        self, brand_id: int, from_: str, to: str, inactive_days: int
+    ) -> ChurnResult:
+        """I-16 이탈 코호트 조회 (§4.4). 코호트 = from~to 에 자사 상품과 상호작용한
+        회원, 이탈 = 최근 inactiveDays 무활동(BE SellerAnalyticsService.churn 실측).
+
+        [#197] from/to 는 필수다 — Spring AnalysisPeriod.of 가 누락·형식 오류·역전을
+        400 INVALID_PERIOD 로 거부한다. 종전에는 inactiveDays 만 보내 이 조회가
+        무조건 400 → degrade 로 새던 버그(주 소스 전면 불능)의 원인이었다.
+        """
         data = await self._request(
             "GET",
             f"/internal/seller/{brand_id}/churn",
             operation="get_churn",
-            params={"inactiveDays": inactive_days},
+            params={"from": from_, "to": to, "inactiveDays": inactive_days},
         )
         return self._validate(ChurnResult, data)
 
     async def get_account_events(
         self,
+        from_: str,
+        to: str,
         event_type: str | None = None,
-        from_: str | None = None,
-        to: str | None = None,
         group_by: str | None = None,
     ) -> AccountEventsResult:
-        """I-8 계정/보안 이벤트 집계 조회 (§4.4). ⚠️ brandId path 없음 — 전역·admin 소유 🔴."""
-        params: dict = {}
+        """I-8 계정/보안 이벤트 집계 조회 (§4.4). ⚠️ brandId path 없음 — 전역·admin 소유 🔴.
+
+        [#197] from/to 는 필수다(AnalysisPeriod.of — 누락 시 400 INVALID_PERIOD).
+        groupBy 는 BE 화이트리스트 eventType(기본)|hour|ip 만 허용 — 그 외 400
+        INVALID_GROUP_BY (AccountEventAggregateResponse 실측).
+        """
+        params: dict = {"from": from_, "to": to}
         if event_type:
             params["eventType"] = event_type
-        if from_:
-            params["from"] = from_
-        if to:
-            params["to"] = to
         if group_by:
             params["groupBy"] = group_by
         data = await self._request(

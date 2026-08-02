@@ -1406,11 +1406,18 @@ async def test_all_seller_spring_operations_trace_timeout_without_changing_mappi
                 product_id=81828384858687,
             ),
         ),
-        ("spring.get_churn", "GET", lambda: client.get_churn(71727374757677, 30)),
+        # [#197] I-16/I-8 은 from/to 필수(AnalysisPeriod.of 400) — 시그니처 정합.
+        (
+            "spring.get_churn",
+            "GET",
+            lambda: client.get_churn(71727374757677, "2026-06-01", "2026-07-31", 30),
+        ),
         (
             "spring.get_account_events",
             "GET",
-            lambda: client.get_account_events(event_type="private-event"),
+            lambda: client.get_account_events(
+                "2026-06-01", "2026-07-31", event_type="private-event"
+            ),
         ),
         (
             "spring.list_products",

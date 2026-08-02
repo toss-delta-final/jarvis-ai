@@ -1,6 +1,6 @@
 ---
 id: SPEC-RECOMMEND-001
-version: 0.13.0
+version: 0.13.1
 status: draft
 created: 2026-07-07
 updated: 2026-08-02
@@ -29,6 +29,7 @@ issue_number: null
 
 ## HISTORY
 
+- **v0.13.1 (2026-08-02, 이슈 #133)** — **구매자 degrade 정직성 + I-1 검색 재시도.** (1) **REQ-REC-064 신설**(REQ-REC-062 보강) — 검색-순서 degrade가 발동하면 품질 저하를 **사용자에게 고지**한다. 초판의 *"일반 코멘트와 함께 응답"* 은 개인화·상품별 근거가 전멸한 사실을 정상 경로와 구분되지 않게 만들어, 판매자 D3(`check_degrade_disclosed`)가 요구하는 degrade 정직성과 **비대칭**이었다. 문구는 config 주입이며 `_strip_unsafe` 정제를 거치고, 실패 단계명·오류 코드를 노출하지 않는다(api-spec §3.3). 문안이 "취향"이 아니라 **"추천 이유"**를 지목하는 이유: 게스트는 프로필이 없어 평상시에도 취향 반영이 없어 참이 되지 않는 반면, 추천 이유는 두 신원 모두에서 사라진다. AC-REC-13b 추가. (2) **검색 재시도의 명세-구현 갭 해소** — §오류 처리 표가 이미 *"최대 1회 재시도"* 를 규정했는데 `spring_client` 에는 재시도가 **0건**이었다. 재시도 대상을 **타임아웃·연결 오류·응답 중단·5xx·일시 4xx(408·429)로 한정**하고(4xx·응답 파싱 실패는 다시 불러도 같은 결과라 즉시 실패) 상한을 config(`spring_max_retries`)로 뺐다. 재시도 총량이 first-token 예산을 넘지 않도록 기동 시점 cross-validator를 뒀다 — 재시도가 예산을 태우면 살리려던 턴을 오히려 죽인다. AC-REC-13c 추가. **와이어 계약(SSE 이벤트·필드·오류 코드) 무변경.** ⚠️ 본 문서는 mirror 이므로 기획 저장소 정본 동기화 필요.
 - **v0.13.0 (2026-08-02, 이슈 #120)** — 결정 14-F의 exact 최근 구매 제외를 **기본값**으로 유지하되, 사용자가 현재 턴에 재구매할 상품을 명시적으로 지목하면 그 상품의 exact 제외와 소모품 카테고리 억제를 함께 해제하는 경로를 명문화했다. 신뢰 경계는 JWT `sub`로 조회한 본인 최근 구매 이력 안으로 한정하고, 정규화·중복 제거 후 고유 지목이 정확히 1건이며 완전 일치하거나 단방향 부분비교가 유일하게 성립할 때만 해제한다(REQ-REC-100 개정, REQ-REC-104·AC-REC-38 신설, AC-REC-32 개정). 신호는 내부 `repurchaseProducts`(상품명 텍스트)이며 와이어 필드가 아니고 현재 턴에만 유효하다 — 멀티턴 지속·exact 되돌리기 칩은 후속 이슈 #232 범위다. api-spec v0.19.0은 결정 14-F 동작 서술만 동기화하며 엔드포인트·필드·SSE·오류 코드 계약은 변경하지 않는다. ⚠️ 본 문서는 mirror 이므로 기획 저장소 정본 동기화 필요.
 - **v0.12.0 (2026-07-31, 이슈 #119)** — **개인화는 후보를 줄이는 데 쓰지 않고 순서로만 반영한다**를 확정했다. 신규 REQ-REC-005-A(Unwanted): `decompose` 는 `profile_summary` 를 `filters`/`attr_conditions` 로 변환하지 않으며, MVP 는 이를 프롬프트 지시가 아니라 **입력 제거**(config `profile_injection_scope` 기본 `rerank_only`)로 집행해 회원과 게스트의 decompose 프롬프트가 동일해지게 한다. REQ-REC-006 에 config 스킵 조건과 "회원 후보가 게스트보다 좁아지지 않는다" 불변식을 추가했다. REQ-REC-047(`source` 태깅)/041(derived 우선 완화)은 **미구현 유예**로 명시 — 소비처인 §6.6 완화가 미구현이고(이슈 #113 소관) 프로필 파생이 차단되면 `derived` 생산자가 사라진다. 토큰/비용 가드레일의 config 목록에 개인화 강도 튜너블 4종을 등재하고, **연속 가중치를 두지 않는 이유**(전략 A 는 점수가 없고 ground truth 미구비 — 이슈 #145/#142/#143 선행)를 함께 적었다. SSE·와이어 계약 무변경(api-spec 무개정). ⚠️ 본 문서는 mirror 이므로 기획 저장소 정본 동기화 필요.
 - **v0.11.0 (2026-07-31, #209 후속)** — **Case 3 니즈별 노출을 "목록 여러 개"로 확정**(REQ-REC-021·
@@ -435,7 +436,8 @@ class SearchToolOutput(BaseModel):
 
 - **REQ-REC-060** (Unwanted): **If** `decompose` LLM 호출이 실패(오류/타임아웃)하면, **then** the 서브그래프 **shall** `error`(code `DECOMPOSE_FAILED`) 이벤트를 emit하고 `search`로 진행하지 **않는다**.
 - **REQ-REC-061** (Unwanted): **If** 카탈로그 검색 tool이 오류(DB/연결 등)를 발생시키면, **then** the 서브그래프 **shall** `error`(code `SEARCH_FAILED`) 이벤트를 emit하고 후보를 **날조하지 않는다**.
-- **REQ-REC-062** (Unwanted): **If** `rerank` LLM 호출이 1회 재시도 후에도 실패하면, **then** the 서브그래프 **shall** 검색 순서(이미 WHERE로 하드 제약이 적용된 안전한 후보) 상위 5~9개로 degrade하여 일반 코멘트와 함께 응답하되, 하드 제약을 위반하지 **않는다**(spec-level 결정, §9 OPEN-3에서 재검토 여지 명시).
+- **REQ-REC-062** (Unwanted): **If** `rerank` LLM 호출이 1회 재시도 후에도 실패하면, **then** the 서브그래프 **shall** 검색 순서(이미 WHERE로 하드 제약이 적용된 안전한 후보) 상위 5~9개로 degrade하여 응답하되, 하드 제약을 위반하지 **않는다**(spec-level 결정, §9 OPEN-3에서 재검토 여지 명시).
+- **REQ-REC-064** (Unwanted, REQ-REC-062 보강 — [v0.13.1 #133]): **If** REQ-REC-062/083의 검색-순서 degrade가 발동하면, **then** the 서브그래프 **shall** 품질 저하를 **사용자에게 고지**하며(config 주입 문구, `_strip_unsafe` 정제 후 `token` 이벤트), 정상 경로와 **구분되지 않는 일반 코멘트를 내지 않는다**. 초판의 *"일반 코멘트와 함께 응답"* 은 개인화·상품별 근거가 전멸한 사실을 사용자가 알 수 없게 만들었다 — 판매자 D3(`check_degrade_disclosed`, §SELLER)가 요구하는 degrade 정직성과 비대칭이었다. 문구는 **실패 단계명·오류 코드를 노출하지 않는다**(api-spec §3.3 "단계별 상세는 서버 로그 전용"). **문안만 튜너블이고 고지 여부는 튜너블이 아니다**(PR #235 리뷰 반영) — 문구를 비우면 안내가 조용히 사라져 본 요구가 환경변수 한 줄로 무효화되므로, 빈 값은 기동 시점에 거부한다. 초판이 이를 "운영 롤백 수단"으로 허용했던 서술은 철회한다.
 - **REQ-REC-063** (Ubiquitous): The 서브그래프 **shall** 0건 결과를 오류가 아닌 정상 결과로 처리하며(폴백 경로), 0건을 이유로 `error` 이벤트를 emit하지 **않는다**.
 
 ### 6.10 재랭킹 견고성 (rerank robustness — 결정 14-B)
@@ -484,8 +486,8 @@ class SearchToolOutput(BaseModel):
 | 실패 지점 | 감지 | 처리 | 안전 불변식 |
 |---|---|---|---|
 | `decompose` 실패 (LLM 오류/타임아웃) | Haiku 호출 예외 | 최대 1회 재시도 후 `error`(`DECOMPOSE_FAILED`). search 미진행 | 필터 없이 검색 금지 |
-| `search` 실패 (DB/연결/쿼리 오류) | tool 예외 | 최대 1회 재시도 후 `error`(`SEARCH_FAILED`). 후보 날조 금지 | 존재하지 않는 상품 반환 금지 |
-| `rerank` 실패 (LLM 오류/타임아웃) | Sonnet 호출 예외 | 1회 재시도 후 검색 순서 상위 5~9개로 degrade(근거 없이 일반 코멘트) + `done`. WHERE 제약 유지 | 하드 제약(가격 상한 등) 위반 금지 |
+| `search` 실패 (DB/연결/쿼리 오류) | tool 예외 | 최대 1회 재시도 후 `error`(`SEARCH_FAILED`). 후보 날조 금지. **[v0.13.1 #133] 재시도 대상은 타임아웃·연결 오류·응답 중단·5xx·일시 4xx(408·429) 뿐** — 그 밖의 4xx 계약 오류와 응답 파싱 실패는 다시 불러도 같은 결과라 즉시 실패한다. 상한은 config(`spring_max_retries`) | 존재하지 않는 상품 반환 금지 |
+| `rerank` 실패 (LLM 오류/타임아웃) | Sonnet 호출 예외 | 1회 재시도 후 검색 순서 상위 5~9개로 degrade + **품질 저하 고지**(REQ-REC-064) + `done`. WHERE 제약 유지 | 하드 제약(가격 상한 등) 위반 금지, **정상 경로와 구분 불가한 코멘트 금지** |
 | `rerank` 출력 검증 실패 (후보 외 ID/형식 오류/속성 대조 실패, 결정 14-B) | 출력 검증기 코드 대조 | 검색 순서 상위 5~9개로 degrade + `done`. WHERE 제약 유지(REQ-REC-081/082/083) | 후보 외 ID·미검증 속성 주장 노출 금지, 하드 제약 위반 금지 |
 | 0건 결과 | `total_found == 0` | 오류 아님 — 1회 완화(REQ-REC-040) → 여전히 0건이면 조건 변경 유도(`finish_reason: zero_result`) | 명시적 제약 무단 위반 금지 |
 | 스트림 중 소비자 abort | HTTP 연결 종료 | 진행 중 LLM 호출 취소, 리소스 정리 | — |
@@ -512,6 +514,8 @@ class SearchToolOutput(BaseModel):
 - **AC-REC-11 (SSE 이벤트 순서/유일성)**: **Given** 정상 추천, **When** SSE 스트림을 수신하면, **Then** 이벤트는 `text.delta`(0회 이상) → `products`(정확히 1회) → `done`(1회) 순서로 관찰되며, `products`는 rerank 완료 이후에만 나타난다.
 - **AC-REC-12 (decompose/search 실패 시 안전)**: **Given** decompose 또는 search가 강제 실패하도록 주입된 상태, **When** 실행되면, **Then** 각각 `error.code == DECOMPOSE_FAILED` 또는 `SEARCH_FAILED`가 emit되고, 후속 노드로 진행하거나 후보를 날조하지 않는다.
 - **AC-REC-13 (rerank 실패 degrade)**: **Given** rerank가 재시도 후에도 실패하는 상태, **When** 실행되면, **Then** 검색 순서 상위 5~9개가 응답되고 모든 하드 제약(예: `price_max`)이 유지되며 `error`가 아닌 `done`으로 종료된다.
+- **AC-REC-13b (degrade 고지, [v0.13.1 #133])**: **Given** 같은 상태, **When** 실행되면, **Then** 사용자에게 나가는 `token` 텍스트가 **정상 경로와 구분 가능한 고지**이며(config 주입 문구), 회원·게스트 어느 신원에서도 같은 고지가 나가고, 실패 단계명·오류 코드를 포함하지 않는다. **그리고** 고지 문구를 빈 값으로 설정하면 서버가 기동하지 않는다(고지 생략 불가).
+- **AC-REC-13c (검색 재시도, [v0.13.1 #133])**: **Given** I-1 검색이 1차 타임아웃 후 2차 성공하는 상태, **When** 실행되면, **Then** 정상 추천이 응답되고 호출은 2회다. **Given** 4xx 응답, **When** 실행되면, **Then** 재시도 없이 1회로 `SEARCH_FAILED`이며, 재시도 총량은 `spring_timeout_s × (spring_max_retries + 1) < stream_first_token_timeout_s`를 기동 시점에 만족한다.
 - **AC-REC-14 (총액 예산 해피패스)**: **Given** "5만원 내로 유럽여행 필요한 거"라는 질의, **When** 실행되면, **Then** `filters.price_scope == "total_budget"`, `total_budget == 50000`이고, `budget.verified_sum`은 **코드가 index price로 합산한 값**이며 `budget.verified_sum <= 50000`, `budget.within_budget == true`이다.
 - **AC-REC-15 (price_scope 오판 가드)**: **Given** "각각 5만원 이하로 여행용품 추천"(per_item)과 "5만원 내로 여행용품 다 추천"(total_budget) 두 질의, **When** 각각 실행되면, **Then** 전자는 `price_scope == "per_item"`(각 상품 `price_max == 50000`), 후자는 `price_scope == "total_budget"`(묶음 합 ≤ 50000)로 서로 다르게 판별된다.
 - **AC-REC-16 (예산 불가능 투명 안내)**: **Given** 필수 아이템 최저가 합이 예산을 초과하는 total_budget 질의, **When** 실행되면, **Then** 아이템이 조용히 누락되지 않고 `budget.feasibility_notice`가 non-null이며 `budget.dropped_items`에 제외 아이템이 명시되고, `budget.within_budget == false`가 안내된다.
