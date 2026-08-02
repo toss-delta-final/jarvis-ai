@@ -112,3 +112,50 @@ def test_lifespan_cleanup_budget_mismatch_warns_at_runtime_instead_of_failing_st
 
     assert settings.lifespan_cleanup_budget_s == 0.1
     assert settings.lifespan_resource_close_floor_s == 0.2
+
+
+def test_degrade_notice_defaults():
+    """rerank 폴백은 기본 고지, dedup 스킵은 기본 미고지(빈 문자열 = off) (#133)."""
+    settings = Settings(_env_file=None)
+
+    assert "검색 결과 순서" in settings.rerank_fallback_notice
+    assert settings.push_skipped_notice  # push 지연 안내는 종전부터 존재
+    assert settings.dedup_skipped_notice == ""
+
+
+def test_search_retry_defaults_fit_first_token_budget():
+    """기본값(3s×2=6s)이 first-token 10s 예산 안에 들어온다 (#133)."""
+    settings = Settings(_env_file=None)
+
+    assert settings.spring_max_retries == 1
+    assert settings.spring_timeout_s * (settings.spring_max_retries + 1) < (
+        settings.stream_first_token_timeout_s
+    )
+
+
+def test_search_retry_budget_overrun_fails_startup():
+    """재시도 총량이 **턴 전체 예산**을 넘으면 기동을 막는다 — 살리려던 턴을 죽이는 설정이다.
+
+    first-token 상한이 아니라 전체 상한과 비교한다(#241/#138 lessons): first-token 이 재는 것은
+    첫 SSE 이벤트까지인데 추천 경로의 첫 이벤트는 `conditions` 이고 검색은 그 뒤라, 검색 재시도는
+    first-token 예산을 쓰지 않는다.
+    """
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="exhaust the buyer turn budget"):
+        Settings(_env_file=None, spring_max_retries=1, spring_timeout_s=20.0)
+
+    # 판매자와 공용인 90s 가 아니라 구매자 전용 30s 와 비교한다 — I-1 검색은 구매자 경로 전용이라
+    # 느슨한 쪽과 비교하면 검증이 이름만 남는다(#138 로 두 상한이 갈렸다).
+    assert Settings(_env_file=None).stream_total_timeout_buyer_s == 30.0
+
+
+def test_search_retries_capped_at_implemented_value():
+    """backoff 가 없으므로 재시도 상한은 1이다 — 2 이상은 기동 실패 (PR #235 리뷰)."""
+    import pytest
+    from pydantic import ValidationError
+
+    assert Settings(_env_file=None, spring_max_retries=0).spring_max_retries == 0
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, spring_max_retries=2)

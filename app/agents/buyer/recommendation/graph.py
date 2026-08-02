@@ -384,9 +384,14 @@ async def stream_recommendation(
                 trace.mark_degraded("fanout_partial")
         return _merge_fanout_results(survived, settings.category_fanout_merge_cap)
 
+    # I-19 조회가 **실패**했는지 — "이력이 없다"(게스트·비회원)와 구분한다. 둘 다 None 을
+    # 돌려주므로 호출부에서는 갈라낼 수 없는데, 없는 기능을 "고장났다"고 고지하면 거짓말이 된다.
+    dedup_degraded = False
+
     async def _fetch_purchases():
         # 게스트/비회원/판매자/비숫자 sub 는 스킵, I-19 실패는 degrade(dedup 없이 진행, §4.7).
         # [IDOR] role==SELLER 는 user_id=sub·seller_id=sub — 판매자 sub 를 memberId 로 쓰면 안 됨.
+        nonlocal dedup_degraded
         if identity is None or identity.is_guest or not identity.user_id or identity.seller_id:
             return None
         try:
@@ -397,12 +402,14 @@ async def stream_recommendation(
         try:
             return await fn(uid)
         except SpringUnavailableError:
+            dedup_degraded = True
             if trace := current_request_trace():
                 trace.mark_degraded("dedup_skipped")
             return None
         except Exception as exc:  # noqa: BLE001 - I-19 실패는 degrade(dedup 없이 진행, SSE 유지)
             # 최근구매 조회가 예상외 예외를 던져도 추천 스트림을 죽이지 않는다 — None → dedup 스킵(§4.7).
             logger.warning("purchases_fetch_failed", extra={"reason": str(exc)})
+            dedup_degraded = True
             if trace := current_request_trace():
                 trace.mark_degraded("dedup_skipped")
             return None
@@ -570,7 +577,11 @@ async def stream_recommendation(
             trace.mark_degraded("rerank_fallback")
         ranked_ids = [p.product_id for p in candidates[:expose_budget]]
         reason_by_id = {}  # degrade 경로엔 rerank 근거 없음 — reasons 는 빈 배열(계약상 선택)
-        comment = "요청하신 조건으로 찾은 상품들이에요."
+        # [#133] 품질 저하를 **고지한다**. 종전 문구("요청하신 조건으로 찾은 상품들이에요")는
+        # 평상시와 구분되지 않아 개인화·근거가 통째로 사라진 사실이 사용자에게 가려졌다.
+        # config 값은 운영자 주입이라 소스 리터럴이 아니다 — 정상 경로(rr.overall_comment)와
+        # 같은 _strip_unsafe 정제를 받는다.
+        comment = _strip_unsafe(settings.rerank_fallback_notice)
 
     # [#120 PR#230 리뷰] 지목 상품 고정 — rerank 는 relevance 로 expose_max 개만 고르고 "이건 반드시"
     # 라는 고정 수단이 없어(need_of/per_need 는 니즈 분할용), exact 제외·상한 절단을 다 통과한
@@ -638,6 +649,12 @@ async def stream_recommendation(
     if comment:
         yield sse("token", TokenData(text=comment).model_dump(by_alias=True))
 
+    # [#133] 최근 구매 제외(I-19) 실패 고지 — **기본 미고지**(config 기본값 "")다. 조회 실패는
+    # "중복이 노출됐다"가 아니라 "걸러내지 못했다"라 실제 중복 여부를 알 수 없어 매 턴 노이즈가
+    # 되고, rerank 폴백과 달리 거짓 주장을 하고 있지도 않다. 판단을 되돌릴 여지만 남긴다.
+    if dedup_degraded and (dedup_notice := _strip_unsafe(settings.dedup_skipped_notice)):
+        yield sse("token", TokenData(text=dedup_notice).model_dump(by_alias=True))
+
     if revert_chips:  # 소모품 카테고리 억제 되돌리기 칩(결정 14-F)
         yield sse("suggestions", SuggestionsData(chips=revert_chips).model_dump(by_alias=True))
 
@@ -696,13 +713,10 @@ async def stream_recommendation(
     else:
         # push 실패 → products.ready 없음. rerank 코멘트가 "찾았다"고 했으니 목록 지연을 고지하고
         # 정상 종료한다(경로 B 실패 계약 — error 아님, done 유지).
+        # [#133] 문안은 config 주입 — degrade 고지 문구를 한 곳에서 관리한다.
         if trace := current_request_trace():
             trace.mark_degraded("push_skipped")
-        yield sse(
-            "token",
-            TokenData(
-                text="목록을 준비하는 데 문제가 있었어요. 잠시 후 다시 시도해 주세요."
-            ).model_dump(by_alias=True),
-        )
+        if push_notice := _strip_unsafe(settings.push_skipped_notice):
+            yield sse("token", TokenData(text=push_notice).model_dump(by_alias=True))
 
     yield sse("done", DoneData(finish_reason="stop").model_dump(by_alias=True))
