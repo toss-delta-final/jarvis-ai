@@ -128,6 +128,11 @@ class Settings(BaseSettings):
     seller_anomaly_deviation_pct: float = 30.0  # 매출 이상판정 편차 임계(%)
     seller_conversion_drop_pct: float = 20.0  # 전환율 하락 이상 임계(%)
     seller_churn_inactive_days: int = 30  # 이탈 코호트 무활동 일수(I-16 inactiveDays 기본)
+    # [#197 PR 리뷰] I-8 계정/보안 이벤트는 전역 데이터(브랜드 스코프 아님)이고
+    # admin 소유 협의가 미완(🔴, api-spec §4.4 v0.17.5)이다. 종전엔 코드 결함(쿼리
+    # 400·스키마 미스매치)이 사실상 차단막이었으나 #197 정합으로 실노출이 가능해져,
+    # 협의 완료 전까지 판매자 워커 표면 노출을 기본 비활성으로 보류한다.
+    seller_account_events_enabled: bool = False
     seller_recent_days_default: int = 7  # normalize_period "최근 N일" 기본 N
     # safe_eval `**` 결과 자릿수 상한(DoS 방어) — 초과 식은 ValueError 로 거부(리뷰 반영).
     seller_calc_max_result_digits: int = 100

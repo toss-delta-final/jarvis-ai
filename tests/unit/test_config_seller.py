@@ -31,6 +31,8 @@ def test_seller_settings_defaults() -> None:
     # [#196] I-13 상품별 rows 상한 — I-14 용 max_events(5)와 분리 신설.
     assert settings.seller_summary_max_events == 5
     assert settings.seller_summary_max_products == 10
+    # [#197 PR 리뷰] I-8 은 admin 소유 협의(🔴) 전까지 판매자 노출 보류 — 기본 비활성.
+    assert settings.seller_account_events_enabled is False
 
 
 def test_seller_ma_window_invalid_config_fails_fast() -> None:

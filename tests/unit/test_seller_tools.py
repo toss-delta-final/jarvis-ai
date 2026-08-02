@@ -940,12 +940,44 @@ async def _call_account_events(args: dict, fake) -> str:
         spring_client_module.set_spring_client(None)
 
 
-async def test_account_events_tool_passes_period_and_summarizes_rows() -> None:
+def _enable_account_events(monkeypatch) -> None:
+    """[#197 PR 리뷰] I-8 노출 보류 플래그를 테스트에서만 켠다.
+
+    admin 소유 협의 미완(🔴, api-spec §4.4 v0.17.5)으로 기본 false — 활성 상태의
+    요약/전달 로직은 협의 종결 후에도 그대로 쓰이므로 플래그만 켜서 검증한다.
+    """
+    from app.agents.seller import tools as tools_module
+    from app.core.config import get_settings
+
+    enabled = get_settings().model_copy(update={"seller_account_events_enabled": True})
+    monkeypatch.setattr(tools_module, "get_settings", lambda: enabled)
+
+
+async def test_account_events_tool_disabled_by_default() -> None:
+    """[#197 PR 리뷰] I-8 은 admin 소유 협의(🔴) 전까지 기본 비활성 — 도구가
+    Spring 호출 없이 "Error:" 문자열을 반환한다(전역 데이터 노출 보류).
+
+    구 코드에선 쿼리 400·스키마 미스매치가 사실상 차단막이었는데 #197 정합이
+    그 차단막을 제거했으므로, 의도된 보류를 플래그로 명시해 회귀를 방지한다.
+    """
+    fake = FakeSpringClient()
+
+    result = await _call_account_events(
+        {"from_date": "2026-07-01", "to_date": "2026-07-31"}, fake
+    )
+
+    assert result.startswith("Error:")
+    assert "비활성" in result
+    assert fake.recorded_account_args is None  # Spring 호출 자체가 차단된다
+
+
+async def test_account_events_tool_passes_period_and_summarizes_rows(monkeypatch) -> None:
     """[#197 회귀] from/to 가 필수 전달되고, rows(구 events 아님) 내용이 노출된다.
 
     구 스키마는 events 필드를 기대해 Spring rows 응답이 extra="allow" 로 조용히
     버려져 항상 "0건 집계됨"이었다(I-14/I-15 #194 와 동일 패턴).
     """
+    _enable_account_events(monkeypatch)
     fake = FakeSpringClient()
     fake.account_events_result = AccountEventsResult(
         group_by="eventType",
@@ -964,8 +996,9 @@ async def test_account_events_tool_passes_period_and_summarizes_rows() -> None:
     assert "2026-07-01~2026-07-31" in result
 
 
-async def test_account_events_tool_empty_rows_says_zero_with_group_by() -> None:
+async def test_account_events_tool_empty_rows_says_zero_with_group_by(monkeypatch) -> None:
     """빈 rows 는 0건 + 적용 groupBy 를 함께 고지한다(정상 0건 표기)."""
+    _enable_account_events(monkeypatch)
     fake = FakeSpringClient()
 
     result = await _call_account_events(
@@ -976,8 +1009,9 @@ async def test_account_events_tool_empty_rows_says_zero_with_group_by() -> None:
     assert "groupBy=ip" in result
 
 
-async def test_account_events_tool_degrades_on_spring_failure() -> None:
+async def test_account_events_tool_degrades_on_spring_failure(monkeypatch) -> None:
     """get_account_events 실패 시 "Error:" 문자열로 degrade 한다(보조 소스 규약)."""
+    _enable_account_events(monkeypatch)
     fake = FakeSpringClient(fail={"get_account_events"})
 
     result = await _call_account_events(
