@@ -506,11 +506,21 @@ class Settings(BaseSettings):
     stream_first_token_timeout_s: float = 10.0
     # 스트림 전체 상한. 초과 시 done(finishReason "stop")으로 정상 절단.
     stream_total_timeout_s: float = 90.0
+    # 구매자 전체 상한 — 판매자와 분리한다(#138). 판매자는 planner→워커 팬아웃→report→
+    # verifier 로 구조적으로 길고 구매자는 decompose+rerank 2회뿐인데, 같은 90s 를 쓰면
+    # 구매자 스트림이 목표(slo_total_buyer_ms 30s)의 3배 느슨한 상한으로 돈다.
+    # 근거: 2026-08-02 로컬 실측(Spring 기동, 동시성 1, n=30) 구매자 total p95 10.5s ·
+    # max 12.8s — 30s 는 실측 max 의 2.3배 여유이고 154턴 중 30s 초과는 0건이었다.
+    stream_total_timeout_buyer_s: float = Field(default=30.0, gt=0.0)
     # disconnect 감지 폴링 간격 (취소 = 연결 종료, §2.9 b).
     stream_disconnect_poll_s: float = 0.5
     # AI→Spring 콜백 타임아웃 (§2.9 c, BE I-2 기준 통일). 실제 호출부에서 사용.
     spring_timeout_s: float = 3.0
     # AI→LLM 단일 호출 타임아웃 + 재시도 횟수 (§2.9 c).
+    # 현행 30s×(1+1)=60s 최악 예산은 구매자 전체 상한 30s(stream_total_timeout_buyer_s, #138)를 넘는다.
+    # timeout 뒤 재시도는 buyer done(stop) 절단 전에 끝날 수 없지만 빠른 오류 재시도는 여전히 유효하다.
+    # 구매자 상한은 재시도를 모두 담는 예산이 아니라 대기 백스톱이라 기동 불변식으로 묶지 않는다.
+    # 단일 호출 실측 p95는 4.3s다. 이 값을 올릴 때는 구매자 상한과의 관계도 함께 검토한다.
     llm_timeout_s: float = 30.0
     llm_max_retries: int = 1
 
@@ -518,7 +528,7 @@ class Settings(BaseSettings):
     # 런타임 동작을 바꾸지 않는 **집계 리포트 전용 목표치**다. 위의 스트림 상한은 "언제 끊나"이고
     # 이 값들은 "무엇을 지켰어야 하나"라서 별도로 둔다 — 상한을 SLO 로 재사용하면 상한 조정이
     # 곧 목표 조정이 돼버린다. 역할별 total 목표 분리(판매자 90s·구매자 30s)는 EVAL-OBS §5
-    # 제안값이며, 런타임 단일 90s 상한(stream_total_timeout_s)의 재조정은 별건(#138)이다.
+    # 제안값이며, 런타임 상한도 역할별로 분리됐지만 SLO 와 상한은 여전히 별개 값이다(#138).
     slo_first_token_ms: int = Field(default=10_000, gt=0)
     slo_total_seller_ms: int = Field(default=90_000, gt=0)
     slo_total_buyer_ms: int = Field(default=30_000, gt=0)
@@ -662,6 +672,29 @@ class Settings(BaseSettings):
                 "CATALOG_STORE_QUERY_TIMEOUT_S must be > HOME_RECO_STORE_TIMEOUT_S "
                 f"(got {self.catalog_store_query_timeout_s} <= {self.home_reco_store_timeout_s}): "
                 "the app-side clock must fire first so slow queries map to 504 deterministically"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_buyer_cap_within_stream_cap(self) -> "Settings":
+        """구매자 상한이 전체 상한을 넘으면 기동 실패 (#138).
+
+        구매자 상한은 전체 상한을 **좁히는** 값이다. 넘어서면 이름과 반대로 판매자보다
+        느슨해져 조용히 무의미해지므로 기동 시점에 고정한다.
+        반대로 first-token 상한보다 짧으면 첫 이벤트 대기를 허용한 시간보다 전체 스트림을
+        먼저 끊는 자기모순이므로 함께 거절한다.
+        """
+        if self.stream_total_timeout_buyer_s > self.stream_total_timeout_s:
+            raise ValueError(
+                "STREAM_TOTAL_TIMEOUT_BUYER_S must not exceed STREAM_TOTAL_TIMEOUT_S "
+                f"(got {self.stream_total_timeout_buyer_s} > {self.stream_total_timeout_s})"
+            )
+        if self.stream_total_timeout_buyer_s < self.stream_first_token_timeout_s:
+            raise ValueError(
+                "STREAM_TOTAL_TIMEOUT_BUYER_S must be at least STREAM_FIRST_TOKEN_TIMEOUT_S "
+                f"(got {self.stream_total_timeout_buyer_s} < "
+                f"{self.stream_first_token_timeout_s}): "
+                "the total stream cap cannot expire before the first-event wait"
             )
         return self
 
