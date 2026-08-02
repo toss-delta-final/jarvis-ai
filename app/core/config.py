@@ -714,15 +714,19 @@ class Settings(BaseSettings):
                 "REVIEW_TIER 경계는 many >= some >= few 여야 합니다"
                 f" ({self.review_tier_many}/{self.review_tier_some}/{self.review_tier_few})"
             )
+        # '저렴/비쌈'은 중앙값(1.0) 기준 아래/위이므로 경계 순서뿐 아니라 방향도 고정한다.
         if not (
             0
             < self.price_tier_very_cheap_ratio
             <= self.price_tier_cheap_ratio
-            < self.price_tier_pricey_ratio
+            <= 1.0
+            <= self.price_tier_pricey_ratio
             <= self.price_tier_very_pricey_ratio
+            and self.price_tier_cheap_ratio < self.price_tier_pricey_ratio
         ):
             raise ValueError(
-                "PRICE_TIER 경계는 0 < very_cheap <= cheap < pricey <= very_pricey 여야 합니다"
+                "PRICE_TIER 경계는 0 < very_cheap <= cheap <= 1.0 <= pricey <= very_pricey 이고"
+                " cheap < pricey 여야 합니다"
                 f" ({self.price_tier_very_cheap_ratio}/{self.price_tier_cheap_ratio}/"
                 f"{self.price_tier_pricey_ratio}/{self.price_tier_very_pricey_ratio})"
             )
