@@ -130,12 +130,17 @@ def aggregate_lines(lines: Iterable[str]) -> dict[str, Any]:
 
     total_turns = len(records)
     executed_records = [record for record in records if _executed(record)]
+    # 개요의 "미실행 턴"과 비용 각주의 "제외한 턴"은 **같은 수**여야 한다. 정의를 두 군데서
+    # 따로 쓰면(예: 키 존재 검사 vs 숫자 검사) 같은 라벨의 두 숫자가 한 리포트 안에서 갈린다.
+    not_executed_count = total_turns - len(executed_records)
     degraded_count = sum(record.get("degraded") is True for record in records)
     error_count = sum(record.get("errorType") is not None for record in records)
+    # 사유 분포는 degrade 율과 **같은 술어**(`degraded is True`)로 세야 한다. 사유만 있고
+    # degraded 가 아닌 줄을 세면 사유 비율의 합이 degrade 율을 넘어 표가 자기모순이 된다.
     degrade_reasons = Counter(
         str(record["degradeReason"])
         for record in records
-        if record.get("degradeReason") is not None
+        if record.get("degraded") is True and record.get("degradeReason") is not None
     )
     error_types = Counter(
         str(record["errorType"]) for record in records if record.get("errorType") is not None
@@ -178,10 +183,7 @@ def aggregate_lines(lines: Iterable[str]) -> dict[str, Any]:
         "total_lines": total_lines,
         "total_turns": total_turns,
         "skipped_lines": total_lines - total_turns,
-        "rejection_turns": sum(
-            record.get("streamStatus") is None and "latencyTotal" not in record
-            for record in records
-        ),
+        "rejection_turns": not_executed_count,
         "degraded_count": degraded_count,
         "degrade_rate": degraded_count / total_turns if total_turns else None,
         "degrade_reasons": {
@@ -198,9 +200,9 @@ def aggregate_lines(lines: Iterable[str]) -> dict[str, Any]:
         "cost": {
             "overall": _cost_stats(executed_records),
             "lane": {lane: _cost_stats(items) for lane, items in sorted(lane_records.items())},
-            # 비용 분모에서 뺀 스트림 전 거부 턴 수. 숨기면 "왜 비용 턴 수가 전체보다 적나"에
-            # 답할 수 없고, 조용히 빼면 분모 조작과 구분되지 않는다.
-            "excluded_rejection_turns": total_turns - len(executed_records),
+            # 비용 분모에서 뺀 미실행 턴 수(개요의 값과 동일한 계산). 숨기면 "왜 비용 턴 수가
+            # 전체보다 적나"에 답할 수 없고, 조용히 빼면 분모 조작과 구분되지 않는다.
+            "excluded_rejection_turns": not_executed_count,
         },
         "records": records,
     }
@@ -315,7 +317,7 @@ def render_markdown(
         f"| 읽은 줄 | {result['total_lines']} |",
         f"| 채택한 chat_request 턴 | {result['total_turns']} |",
         f"| 건너뛴 줄 | {result['skipped_lines']} |",
-        f"| rejection 턴 | {result['rejection_turns']} |",
+        f"| 미실행 턴(스트림 전 거부 등) | {result['rejection_turns']} |",
         "",
         "## 지연",
         "",
@@ -357,9 +359,9 @@ def render_markdown(
     lines.extend(
         [
             "",
-            f"> 비용 분모는 **실제로 실행된 턴**이다. 스트림 전 거부 "
-            f"{result['cost']['excluded_rejection_turns']}건은 LLM 을 호출하지 않고 costUsd 0 을 "
-            f"싣기 때문에 제외했다 — 포함하면 쿼리당 비용이 0 쪽으로 희석된다. "
+            f"> 비용 분모는 **실제로 실행된 턴**이다. 미실행 턴 "
+            f"{result['cost']['excluded_rejection_turns']}건(스트림 전 거부 등)은 LLM 을 호출하지 "
+            f"않고 costUsd 0 을 싣기 때문에 제외했다 — 포함하면 쿼리당 비용이 0 쪽으로 희석된다. "
             f"degrade·error 율의 분모(전체 {result['total_turns']}턴)와 다르다.",
             "",
             "## degrade",

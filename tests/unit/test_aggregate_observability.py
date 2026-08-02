@@ -210,6 +210,48 @@ def test_rejection_zero_cost_does_not_dilute_cost_average():
     assert result["error_rate"] == pytest.approx(0.5)
 
 
+def test_overview_and_cost_footnote_count_unexecuted_turns_identically():
+    """같은 라벨의 두 숫자가 한 리포트 안에서 갈리면 안 된다.
+
+    개요의 미실행 턴과 비용 각주의 제외 턴은 같은 개념이다. 정의를 따로 쓰면(키 존재 검사 vs
+    숫자 검사) `latencyTotal` 이 null 인 줄에서 0 과 1 로 갈렸다.
+    """
+    broken = json.dumps(
+        {
+            "event": "chat_request",
+            "streamStatus": None,
+            "latencyTotal": None,
+            "degraded": False,
+            "errorType": None,
+            "costUsd": 0.0,
+            "lane": "recommend",
+        }
+    )
+    result = aggregate_observability.aggregate_lines([_line(requestId="ok"), broken])
+
+    assert result["rejection_turns"] == result["cost"]["excluded_rejection_turns"] == 1
+    markdown = aggregate_observability.render_markdown(result, _settings())
+    assert "| 미실행 턴(스트림 전 거부 등) | 1 |" in markdown
+    assert "미실행 턴 1건" in markdown
+
+
+def test_degrade_reason_distribution_uses_the_same_predicate_as_the_rate():
+    """사유 분포와 degrade 율이 다른 술어를 쓰면 사유 비율 합이 degrade 율을 넘는다."""
+    result = aggregate_observability.aggregate_lines(
+        [
+            _line(requestId="real", degraded=True, degradeReason="rerank_fallback"),
+            # degraded 가 아닌데 사유만 남은 줄 — 분포에 들어가면 표가 자기모순이 된다.
+            _line(requestId="stale", degraded=False, degradeReason="rerank_fallback"),
+        ]
+    )
+
+    assert result["degrade_rate"] == pytest.approx(0.5)
+    assert result["degrade_reasons"]["rerank_fallback"]["count"] == 1
+    assert sum(stats["rate"] for stats in result["degrade_reasons"].values()) == pytest.approx(
+        result["degrade_rate"]
+    )
+
+
 def test_null_latency_is_excluded_instead_of_counted_as_zero():
     result = aggregate_observability.aggregate_lines(
         [
