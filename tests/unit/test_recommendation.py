@@ -1871,6 +1871,151 @@ def _prod(pid, cat, name="상품"):
     )
 
 
+async def test_recommendation_repurchase_restores_exact_product(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """명시 재구매 상품은 최근 구매 exact 제외를 되돌려 다시 추천됨을 보장한다."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(
+        _sc_mod, "get_recent_purchases", _purchases_cat((101, "무선이어폰", "무선 이어폰 프로"))
+    )
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["무선이어폰"],
+            "filters": {},
+            "case": 1,
+        }
+    )
+    await _collect(
+        run_buyer_turn(
+            _req(), _member_num(), llm=llm, search=_make_search(DEFAULT_PRODUCTS), push_fn=push
+        )
+    )
+    assert 101 in _only_list(push.pushes[0]).product_ids
+
+
+async def test_recommendation_repurchase_restores_only_named_consumable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """명시한 소모품만 exact·카테고리 억제를 면제하고 같은 카테고리의 다른 상품은 억제한다."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(get_settings(), "consumable_categories", ["조미료"])
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases_cat((900, "조미료", "소금")))
+    products = [_prod(900, "조미료", "소금"), _prod(201, "조미료", "후추")]
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["소금"],
+            "filters": {},
+            "case": 1,
+        }
+    )
+    await _collect(
+        run_buyer_turn(_req(), _member_num(), llm=llm, search=_make_search(products), push_fn=push)
+    )
+    assert 900 in _only_list(push.pushes[0]).product_ids
+    assert 201 not in _only_list(push.pushes[0]).product_ids
+
+
+@pytest.mark.parametrize("decompose", [{}, {"repurchaseProducts": []}])
+async def test_recommendation_without_repurchase_keeps_exact_exclusion(
+    monkeypatch: pytest.MonkeyPatch,
+    decompose: dict,
+) -> None:
+    """재구매 신호가 없거나 빈 목록이면 기존 최근 구매 exact 제외가 유지됨을 보장한다."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(
+        _sc_mod, "get_recent_purchases", _purchases_cat((101, "무선이어폰", "무선 이어폰"))
+    )
+    push = _RecordingPush()
+    llm = FakeLLM(decompose={"intent": "recommend", "filters": {}, "case": 1, **decompose})
+    await _collect(
+        run_buyer_turn(
+            _req(), _member_num(), llm=llm, search=_make_search(DEFAULT_PRODUCTS), push_fn=push
+        )
+    )
+    assert 101 not in _only_list(push.pushes[0]).product_ids
+    assert 102 in _only_list(push.pushes[0]).product_ids
+
+
+async def test_recommendation_unrelated_repurchase_keeps_exact_exclusion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """구매 이력과 무관한 상품명 지목은 최근 구매 상품의 exact 제외를 풀지 않음을 보장한다."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(
+        _sc_mod, "get_recent_purchases", _purchases_cat((101, "무선이어폰", "무선 이어폰"))
+    )
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["세탁 세제"],
+            "filters": {},
+            "case": 1,
+        }
+    )
+    await _collect(
+        run_buyer_turn(
+            _req(), _member_num(), llm=llm, search=_make_search(DEFAULT_PRODUCTS), push_fn=push
+        )
+    )
+    assert 101 not in _only_list(push.pushes[0]).product_ids
+    assert 102 in _only_list(push.pushes[0]).product_ids
+
+
+async def test_recommendation_repurchase_resolves_only_against_recent_purchases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """후보에만 있는 지목 상품은 특별 취급하지 않아 해제 집합이 최근 구매 안에 머묾을 보장한다."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(get_settings(), "consumable_categories", ["조미료"])
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases_cat((900, "조미료", "소금")))
+    products = [_prod(201, "조미료", "후추"), _prod(202, "무선이어폰", "이어폰")]
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["후추"],
+            "filters": {},
+            "case": 1,
+        }
+    )
+    await _collect(
+        run_buyer_turn(_req(), _member_num(), llm=llm, search=_make_search(products), push_fn=push)
+    )
+    assert 201 not in _only_list(push.pushes[0]).product_ids
+    assert 202 in _only_list(push.pushes[0]).product_ids
+
+
+async def test_recommendation_guest_ignores_repurchase_without_purchases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """구매 이력이 없는 게스트도 재구매 지목 때문에 크래시하지 않고 정상 추천됨을 보장한다."""
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["후추"],
+            "filters": {},
+            "case": 1,
+        }
+    )
+    await _collect(
+        run_buyer_turn(
+            _req(),
+            _guest(),
+            llm=llm,
+            search=_make_search([_prod(201, "조미료", "후추")]),
+            push_fn=push,
+        )
+    )
+    assert 201 in _only_list(push.pushes[0]).product_ids
+
+
 async def test_recommendation_suppresses_consumable_category(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

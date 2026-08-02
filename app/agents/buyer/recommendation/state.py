@@ -81,6 +81,10 @@ class RouteDecision:
     reply: str = ""  # intent == general 일 때만 사용자에게 줄 답변
     cart: CartIntent | None = None  # intent == cart_add/cart_view 일 때
     revert_categories: list[str] = field(default_factory=list)  # 소모품 억제 되돌리기(결정 14-F)
+    # [#120] 명시 재구매/재추천 지목(상품 지칭 텍스트) — 최근 구매 exact 제외를 되돌리는 신호.
+    # 카테고리 되돌리기(revert_categories)와 대칭. productId 가 아니라 **텍스트**인 이유는
+    # graph 가 본인 구매 이력에 대해서만 해소해 신뢰 경계를 유지하기 때문(#120).
+    repurchase_products: list[str] = field(default_factory=list)
     # 카테고리 하이브리드 매핑(이슈 #59, 방식 A):
     category_queries: list[CategoryQuery] = field(default_factory=list)  # decompose 추측(매핑 전)
     # 매핑 후 (canonical, query) leg 리스트(그래프가 채움; 신호 없거나 실패 시 빈 리스트 → 무필터,

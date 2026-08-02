@@ -383,6 +383,9 @@ class Settings(BaseSettings):
     # 소모품 카테고리(결정 14-F 억제 대상) — MVP config 소스. 정본은 catalog 속성사전
     # (SPEC-CATALOG-DATA-001 REQ-CAT-013 소모품 boolean 플래그). 카테고리명은 BE categoryName 과 일치.
     consumable_categories: list[str] = []
+    # [#120] 명시 재구매 지목(repurchaseProducts) 개수 상한 — LLM 이 긴 목록을 내도 해소 비용과
+    # 오매칭이 무한히 늘지 않게 절단한다(튜너블 하드코딩 금지).
+    dedup_repurchase_max: int = 5
 
     # ── 프로필 (SPEC-PROFILE-001) ──
     profile_recency_highlights: int = 3  # §5.1 최근 맥락 하이라이트 개수

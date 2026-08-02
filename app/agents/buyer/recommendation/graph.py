@@ -228,6 +228,28 @@ def _split_by_need(
     return groups
 
 
+def _resolve_repurchase_ids(recent, references: list[str]) -> set[int]:
+    """명시 재구매 지목(상품명 텍스트) → 그 회원의 최근 구매 productId 집합 (#120).
+
+    **해소 대상은 `recent`(I-19, JWT sub 유래 본인 구매 이력)뿐**이다 — 결과는 구성상 항상
+    exact 제외 대상의 부분집합이라, LLM 이 무엇을 지목하든 임의 productId·타인 상품으로
+    확장될 수 없다(신뢰 경계). 후보(candidates) id 나 LLM 정수는 여기 들어오지 않는다.
+
+    매칭은 공백 제거 + casefold 후 양방향 부분비교 — 발화 표기("무선이어폰")와 상품명
+    ("무선 이어폰 프로")이 띄어쓰기만 달라도 잡히게 하되, 못 잡으면 조용히 빈 집합
+    (= 종전 제외 유지)으로 degrade 한다. 과잉 해제보다 미해제가 안전하다.
+    """
+    if not references:
+        return set()
+    norms = [n for r in references if (n := "".join(r.split()).casefold())]
+    out: set[int] = set()
+    for item in recent:
+        name = "".join((item.product_name or "").split()).casefold()
+        if name and any(n in name or name in n for n in norms):
+            out.add(item.product_id)
+    return out
+
+
 async def stream_recommendation(
     *,
     request,
@@ -394,11 +416,14 @@ async def stream_recommendation(
 
     # 최근 구매(윈도우·취소반품 필터) → exact 제외 + 소모품 카테고리 억제(결정 14-F).
     exclude_ids: set[int] = set()
+    # [#120] 명시 재구매 지목으로 되돌린 productId — exact 제외·소모품 억제를 함께 면제한다.
+    repurchase_ids: set[int] = set()
     cat_samples: dict[str, str] = {}  # 억제 소모품 카테고리 -> 최근 구매 상품명(되돌리기 칩 라벨용)
     if purchases is not None:
         since = _now() - timedelta(days=settings.dedup_recent_days)
         recent = purchases.recent_items(since=since, exclude_statuses=_INACTIVE_STATUSES)
         exclude_ids = {i.product_id for i in recent}
+        repurchase_ids = _resolve_repurchase_ids(recent, decision.repurchase_products)
         consumables = set(settings.consumable_categories)
         for i in recent:
             # 소모품 카테고리인데 사용자가 되돌리지 않은 것만 억제 대상.
@@ -417,6 +442,12 @@ async def stream_recommendation(
     suppressed_by_cat: dict[str, int] = {}
     kept = []
     for product in result.products:
+        # [#120] 명시 재구매 지목은 exact 제외와 소모품 카테고리 억제를 **둘 다** 면제한다 —
+        # exact 만 풀면 소모품 재구매(소금·세제)가 카테고리 억제에 다시 걸려 되돌리기가 안 된다.
+        # 카테고리 억제 카운트(suppressed_by_cat)에도 넣지 않아 되돌리기 칩 추정치가 부풀지 않는다.
+        if product.product_id in repurchase_ids:
+            kept.append(product)
+            continue
         if product.product_id in exclude_ids:
             continue
         if product.category in cat_samples:
