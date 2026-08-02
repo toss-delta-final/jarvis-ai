@@ -76,7 +76,18 @@ def test_needs_expansion_settings_defaults() -> None:
     assert settings.needs_expansion_enabled is True
     assert settings.needs_expansion_tier == "fast"
     assert settings.needs_expansion_min_items == 2
-    assert "선물" in settings.needs_expansion_purpose_markers
+
+
+def test_needs_expansion_has_no_detection_tunable() -> None:
+    """[#217] 감지 튜너블이 없다 — 목적 marker 열거를 폐기하고 새 임계도 두지 않았다(설계 §9).
+
+    트리거가 "매핑 실패"로 바뀌면서 판정은 기존 카테고리 임계를 그대로 재사용한다. 전개 전용
+    거리 임계를 두는 안은 실측으로 기각됐고(§4.5 ④), 여기에 새 키가 다시 생기면 임계가 두 벌이 되어
+    한쪽만 튜닝했을 때 조용히 어긋난다(`category_distance_override_margin` 과
+    `category_select_margin_max` 의 서로소 불변식을 config 검증기로 고정한 것과 같은 이유).
+    """
+    assert "needs_expansion_purpose_markers" not in Settings.model_fields
+    assert not [k for k in Settings.model_fields if k.startswith("needs_expansion_distance")]
 
 
 def test_needs_expansion_tier_rejects_unknown_value() -> None:

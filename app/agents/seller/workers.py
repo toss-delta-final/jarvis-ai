@@ -22,11 +22,13 @@ from langgraph.graph.state import CompiledStateGraph
 from app.agents.seller import tools as seller_tools
 from app.agents.seller.context import SellerContext
 from app.agents.seller.middleware import (
+    ModelUsageObservationMiddleware,
     ScopeGuardMiddleware,
+    ToolCallObservationMiddleware,
     seller_pii_middlewares,
     tool_call_limit_middleware,
 )
-from app.agents.seller.models import init_seller_model
+from app.agents.seller.models import SellerRole, init_seller_model, seller_trace_model_metadata
 from app.agents.seller.prompts import (
     ABUSE_PROMPT,
     BEHAVIOR_PROMPT,
@@ -87,6 +89,11 @@ ABUSE_TOOLS = [
 ]
 
 
+def _model_usage_middleware(role: SellerRole) -> ModelUsageObservationMiddleware:
+    metadata = seller_trace_model_metadata(role)
+    return ModelUsageObservationMiddleware(metadata["model"] if metadata is not None else None)
+
+
 def _build_worker(system_prompt: str, tools: list[BaseTool]) -> CompiledStateGraph:
     """분석 워커 공통 조립 — smart tier · ToolStrategy(AnalysisFinding) · 신원 주입.
 
@@ -101,7 +108,12 @@ def _build_worker(system_prompt: str, tools: list[BaseTool]) -> CompiledStateGra
         system_prompt=system_prompt,
         response_format=ToolStrategy(AnalysisFinding),
         context_schema=SellerContext,
-        middleware=[*seller_pii_middlewares(), tool_call_limit_middleware()],
+        middleware=[
+            _model_usage_middleware("worker"),
+            *seller_pii_middlewares(),
+            tool_call_limit_middleware(),
+            ToolCallObservationMiddleware(),
+        ],
     )
 
 
@@ -168,9 +180,11 @@ def build_general_agent(
         checkpointer=checkpointer,
         # 유일한 자유 텍스트 대면 에이전트 — scope 가드(end 점프)를 직접 붙인다(3-6).
         middleware=[
+            _model_usage_middleware("worker"),
             ScopeGuardMiddleware(),
             *seller_pii_middlewares(),
             tool_call_limit_middleware(),
+            ToolCallObservationMiddleware(),
         ],
     )
 
@@ -203,7 +217,12 @@ def build_product_agent() -> CompiledStateGraph:
         context_schema=SellerContext,
         # 구조화 출력 레인 — scope end 점프 금지(계약 파손), PII·한도만(3-6).
         # scope 는 4단계 product 배선 시 check_scope 코드 경로로 처리한다.
-        middleware=[*seller_pii_middlewares(), tool_call_limit_middleware()],
+        middleware=[
+            _model_usage_middleware("product"),
+            *seller_pii_middlewares(),
+            tool_call_limit_middleware(),
+            ToolCallObservationMiddleware(),
+        ],
     )
 
 
@@ -225,7 +244,7 @@ def build_supervisor() -> CompiledStateGraph:
         response_format=ToolStrategy(RouteDecision),
         context_schema=SellerContext,
         # 구조화 출력 레인 — end 점프 금지, PII 정제만 (3-6 배정표).
-        middleware=[*seller_pii_middlewares()],
+        middleware=[_model_usage_middleware("supervisor"), *seller_pii_middlewares()],
     )
 
 
@@ -247,7 +266,7 @@ def build_analysis_planner() -> CompiledStateGraph:
         response_format=ToolStrategy(AnalysisPlan),
         context_schema=SellerContext,
         # 구조화 출력 레인 — scope 는 orchestrator 코드 경로, 여기는 PII 정제만(3-6).
-        middleware=[*seller_pii_middlewares()],
+        middleware=[_model_usage_middleware("planner"), *seller_pii_middlewares()],
     )
 
 
@@ -271,6 +290,7 @@ def build_report_agent() -> CompiledStateGraph:
         tools=[],
         system_prompt=REPORT_PROMPT,
         context_schema=SellerContext,
+        middleware=[_model_usage_middleware("report")],
     )
 
 
@@ -286,6 +306,7 @@ def build_report_judge() -> CompiledStateGraph:
         system_prompt=JUDGE_PROMPT,
         response_format=ToolStrategy(ReportScore),
         context_schema=SellerContext,
+        middleware=[_model_usage_middleware("judge")],
     )
 
 
@@ -302,5 +323,9 @@ def build_recommend_agent() -> CompiledStateGraph:
         system_prompt=RECOMMEND_PROMPT,
         response_format=ToolStrategy(RecommendationSet),
         context_schema=SellerContext,
-        middleware=[tool_call_limit_middleware()],  # 읽기 2종 호출 상한(3-6)
+        middleware=[
+            _model_usage_middleware("recommend"),
+            tool_call_limit_middleware(),
+            ToolCallObservationMiddleware(),
+        ],  # 읽기 2종 호출 상한 + 실제 호출 관측
     )

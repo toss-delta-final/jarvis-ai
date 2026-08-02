@@ -1,9 +1,9 @@
 ---
 id: SPEC-RECOMMEND-001
-version: 0.11.0
+version: 0.13.0
 status: draft
 created: 2026-07-07
-updated: 2026-07-31
+updated: 2026-08-02
 author: navis
 priority: high
 issue_number: null
@@ -22,13 +22,15 @@ issue_number: null
 > v0.2.0은 추가로 **결정 9-A**(가격·재고 컬럼을 검색 인덱스에 유지, 경량 동기화)와 **결정 14-A**(총액 예산 처리)를 구속 제약으로 반영한다.
 > v0.4.0은 추가로 **결정 14-C**(랭킹 전략 단계적 도입 — MVP=A LLM 리랭크 / B 결정론 스코어링=고도화 실험, 교체 인터페이스·스냅샷 로깅)와 **결정 14-D**(0건 완화 재설계 — config 상한 라운드, 명시/비명시 태깅 기반 최소 이탈 자동 + 명시 제약 제안 칩)를 구속 제약으로 반영한다.
 > v0.5.0은 추가로 **결정 14-E**(Case 3 다중 니즈 랭킹·선택 전략 — 니즈 수 무제한, 니즈당 후보·노출을 니즈 수에 반비례로 축소하여 총 rerank 입력을 config 예산으로 고정, 랭킹·선택 3방식[코드 per-item·LLM 묶음 병렬·단일 콜] config 선택[MVP 기본=코드 per-item], LLM 호출 상한 "2회"→config화, 극단 니즈 수 시 essential 우선)를 구속 제약으로 반영한다.
-> v0.6.0은 추가로 **결정 14-F**(구매 이력 기반 추천 제외 — `search` 단계 필터로 Case 1/2·3 공통 적용, exact `product_id` 항상 제외 + 소모품 카테고리 억제[MVP는 단순판=소모품 boolean 플래그], non-blocking 되돌리기 제안 칩[결정 14-D `suggestions` 재사용], 게스트 스킵[결정 8], 정교한 재구매 주기·다양성 모델은 고도화 유예)를 구속 제약으로 반영한다.
+> v0.6.0은 추가로 **결정 14-F**(구매 이력 기반 추천 제외 — `search` 단계 필터로 Case 1/2·3 공통 적용, exact `product_id` 기본 제외[명시 재구매 지목 시 턴 한정 해제] + 소모품 카테고리 억제[MVP는 단순판=소모품 boolean 플래그], non-blocking 되돌리기 제안 칩[결정 14-D `suggestions` 재사용], 게스트 스킵[결정 8], 정교한 재구매 주기·다양성 모델은 고도화 유예)를 구속 제약으로 반영한다.
 > v0.7.0은 추가로 **결정 14-G**(멀티턴 주제 전환 초기화 — 기존 add/replace에 **reset** 전이 추가, `decompose`가 판단[LLM 추가 호출 없음], 범용 명시 제약[가격 등 `source: user`]은 config `multiturn.carry_on_reset`[기본 `["price"]`]로 캐리, "~도/그리고 + 둘 다 상품"은 reset이 아니라 Case 3 다중 니즈로 승격, 정교한 부분 캐리·병렬 승격 판별은 고도화 유예)를 구속 제약으로 반영한다.
 > v0.8.0은 추가로 **결정 14-H**(Case 3 니즈 우선순위 3단계 — `essential` boolean을 `priority`[1 필수/2 권장/3 선택]로 개정, 판정 기준 "이게 빠지면 그 상황/요리가 성립하는가"는 decompose 프롬프트, 활용은 노출 순서·예산 배분·예산 부족 시 제거 순서[선택→권장, 필수 최후], 하드 절단 금지 불변)를 구속 제약으로 반영한다.
 > **v0.9.0 (2026-07-28, #101 정합) — 검색 아키텍처 supersede 노트**: 본 SPEC은 결정 3 시절 **"질의 시점 단일 SQL(WHERE + pgvector 유사도)"**·**결정 9-B "Spring MySQL 원본 → AI Postgres 필터 컬럼 미러"** 를 전제로 서술한 부분이 있으나(§0 EX-5·§2 `search` tool·§4 결정 3·결정 9 표 등), 이는 **api-spec v0.5.0의 Spring 위임 피벗으로 폐기**됐다(상품 원본 컬럼 AI 사본 금지, AI Postgres엔 생성물[extras·search_doc·임베딩]만). **#101이 채택·구현한 실제 검색 아키텍처 = api-spec §4.8 방식2**: ① Spring I-1(`GET /internal/products/search`, §4.6)이 고정필터(카테고리·가격·브랜드) 후보를 전량 반환(원본 SQL 아님), ② AI가 그 후보의 attribute를 decompose 명시 속성조건(`attr_conditions`)과 관대 하드 매칭 + catalog DB(pgvector) 임베딩과 `semantic_query`의 코사인으로 재정렬, ③ 최근구매 dedup 이후 `embedding_rerank_limit`으로 압축해 rerank(Sonnet) 입력 생성. 즉 "단일 SQL"은 **Spring 1차 위임 + AI 2차 압축(`EmbeddingRerankBackend`)** 으로, "미러"는 **AI 생성물만 저장(원본 미러 없음)** 으로 읽는다. 계약이 어긋나면 **api-spec을 따른다**(상단 mirror 노트). 요구사항 번호·State 스키마·인수 기준은 무개정.
 
 ## HISTORY
 
+- **v0.13.0 (2026-08-02, 이슈 #120)** — 결정 14-F의 exact 최근 구매 제외를 **기본값**으로 유지하되, 사용자가 현재 턴에 재구매할 상품을 명시적으로 지목하면 그 상품의 exact 제외와 소모품 카테고리 억제를 함께 해제하는 경로를 명문화했다. 신뢰 경계는 JWT `sub`로 조회한 본인 최근 구매 이력 안으로 한정하고, 정규화·중복 제거 후 고유 지목이 정확히 1건이며 완전 일치하거나 단방향 부분비교가 유일하게 성립할 때만 해제한다(REQ-REC-100 개정, REQ-REC-104·AC-REC-38 신설, AC-REC-32 개정). 신호는 내부 `repurchaseProducts`(상품명 텍스트)이며 와이어 필드가 아니고 현재 턴에만 유효하다 — 멀티턴 지속·exact 되돌리기 칩은 후속 이슈 #232 범위다. api-spec v0.19.0은 결정 14-F 동작 서술만 동기화하며 엔드포인트·필드·SSE·오류 코드 계약은 변경하지 않는다. ⚠️ 본 문서는 mirror 이므로 기획 저장소 정본 동기화 필요.
+- **v0.12.0 (2026-07-31, 이슈 #119)** — **개인화는 후보를 줄이는 데 쓰지 않고 순서로만 반영한다**를 확정했다. 신규 REQ-REC-005-A(Unwanted): `decompose` 는 `profile_summary` 를 `filters`/`attr_conditions` 로 변환하지 않으며, MVP 는 이를 프롬프트 지시가 아니라 **입력 제거**(config `profile_injection_scope` 기본 `rerank_only`)로 집행해 회원과 게스트의 decompose 프롬프트가 동일해지게 한다. REQ-REC-006 에 config 스킵 조건과 "회원 후보가 게스트보다 좁아지지 않는다" 불변식을 추가했다. REQ-REC-047(`source` 태깅)/041(derived 우선 완화)은 **미구현 유예**로 명시 — 소비처인 §6.6 완화가 미구현이고(이슈 #113 소관) 프로필 파생이 차단되면 `derived` 생산자가 사라진다. 토큰/비용 가드레일의 config 목록에 개인화 강도 튜너블 4종을 등재하고, **연속 가중치를 두지 않는 이유**(전략 A 는 점수가 없고 ground truth 미구비 — 이슈 #145/#142/#143 선행)를 함께 적었다. SSE·와이어 계약 무변경(api-spec 무개정). ⚠️ 본 문서는 mirror 이므로 기획 저장소 정본 동기화 필요.
 - **v0.11.0 (2026-07-31, #209 후속)** — **Case 3 니즈별 노출을 "목록 여러 개"로 확정**(REQ-REC-021·
   REQ-REC-096 개정, REQ-REC-024 신설). REQ-REC-012 가 이미 *"니즈별 병렬 검색 + 결과를 카테고리 단위로
   **그룹화**"* 를 요구하고 있었는데, 그룹이 **어디로 나가는지**가 비어 있었다 — 그래서 구현은 그룹을
@@ -172,7 +174,7 @@ issue_number: null
 | 결정 14-C | 랭킹 방식 단계적 도입 — MVP=A(LLM 리랭크, 본 SPEC 현행) / B(결정론 스코어링)=고도화 실험, 교체 가능한 `Ranker` 인터페이스(`rank.strategy` config), 전환은 골든셋 비교 게이트, 추천 스냅샷 로깅 | §6.13, REQ-REC-094/095 |
 | 결정 14-D | 0건 완화 재설계 — config 상한 라운드(기본 3), 고정 순서 폐기 → 비명시·약한 조건 최소 완화 자동 + 명시 제약 제안 칩(예상 결과 수 포함), 수치 최소 초과분 완화, decompose 명시/비명시 태깅 | §6.1/6.6, REQ-REC-040/041 개정·045/046/047 |
 | 결정 14-E | Case 3 다중 니즈 랭킹·선택 전략 — 니즈 수 무제한, 니즈당 후보·노출을 니즈 수에 반비례 축소(총 rerank 입력 config 예산 고정), 랭킹·선택 3방식(코드 per-item[MVP 기본]/LLM 묶음 병렬/단일 콜) config 선택, LLM 호출 상한 config화(기본 2, 묶음 병렬 시 예 최대 4), 극단 니즈 수 시 essential 우선(→결정 14-H로 priority 3단계 개정) | §6.1/6.3/6.4, REQ-REC-004/012 보강·023 개정·096~098 신설, §비기능 |
-| 결정 14-F | 구매 이력 기반 추천 제외(dedup) — `search` 단계 필터로 Case 1/2·3 공통, exact `product_id` 항상 제외 + 소모품 카테고리 억제(MVP=소모품 boolean 단순판, 다양성 상품은 exact만), non-blocking 되돌리기 제안 칩(결정 14-D `suggestions` 재사용), 게스트 스킵(결정 8), 정교한 재구매/다양성 모델은 고도화 유예 | §6.3/6.14, REQ-REC-100~103 신설, §2 EX-9 |
+| 결정 14-F | 구매 이력 기반 추천 제외(dedup) — `search` 단계 필터로 Case 1/2·3 공통, exact `product_id` 기본 제외 + 명시 재구매 단일 지목 시 턴 한정 해제, 소모품 카테고리 억제(MVP=소모품 boolean 단순판, 다양성 상품은 exact만), non-blocking 되돌리기 제안 칩(결정 14-D `suggestions` 재사용), 게스트 스킵(결정 8), 정교한 재구매/다양성 모델은 고도화 유예 | §6.3/6.14, REQ-REC-100~104, §2 EX-9 |
 | 결정 14-G | 멀티턴 주제 전환 초기화(reset) — 기존 add/replace에 reset 전이 추가, `decompose`가 판단(LLM 추가 호출 없음), 범용 명시 제약(가격 등 `source == user`)은 config `multiturn.carry_on_reset`(기본 `["price"]`)로 캐리·카테고리/상품별 속성은 폐기, "~도+둘 다 상품"은 Case 3 승격, 정교한 부분 캐리·병렬 승격 판별은 고도화 유예 | §6.7, REQ-REC-054~056 신설, §2 EX-10, OPEN-8 부분 해소 |
 | 결정 14-H | Case 3 니즈 우선순위 3단계 — `essential`(boolean) → `priority`(1 필수/2 권장/3 선택), decompose 프롬프트 판정("이게 빠지면 그 상황/요리가 성립하는가"), 활용: 노출 순서·예산 배분·제거 순서(선택→권장, 필수 최후·투명 안내), 하드 절단 금지 불변 | §5.1/6.1/6.4/6.8, REQ-REC-004/098 개정·075/076 보강, AC-REC-28 |
 | 결정 17 | 상품 질문 흐름의 부정 리뷰 답변 시 추천 서브그래프 재호출(대안 추천 전환) — 본 SPEC엔 진입 경로(의존성)만 추가, 계약 상세는 상품 질문 SPEC 소관 | §1.3, OPEN-15 |
@@ -359,12 +361,13 @@ class SearchToolOutput(BaseModel):
 - **REQ-REC-002** (Ubiquitous): The `decompose` 노드 **shall** `case`를 자신의 출력에서 파생한다 — 상품명 감지 시 Case 1, 구조화 필터만 존재 시 Case 2, 상황 키워드 존재 시 Case 3. 별도 classification 호출을 두지 **않는다**.
 - **REQ-REC-003** (Ubiquitous): The `decompose` 노드 **shall** 정확한 수치·범주 제약(예: 가격 상한, 카테고리)을 `filters`에 넣고, 이를 `semantic_query`로 근사하지 **않는다**.
 - **REQ-REC-004** (State-Driven): **While** `case`가 3인 동안, the `decompose` 노드 **shall** 상황을 필요 아이템 목록(`shopping_list`)으로 분해하고 각 아이템에 대한 서브 `filters`/`semantic_query`를 산출한다. **shall not** `shopping_list`의 니즈(아이템) 수에 하드 캡을 두지 않는다(결정 14-E) — 레시피 재료(예: 잡채 재료 10+)를 전부 커버하기 위함이며, 니즈가 많을 때의 규모 제어는 절단이 아니라 니즈당 후보·노출 축소(REQ-REC-096)와 `priority` 태깅(REQ-REC-098)으로 처리한다. 각 아이템은 `ShoppingItem.priority`(1=필수/2=권장/3=선택, 결정 14-H)로 태깅하며, 판정 기준은 decompose 프롬프트의 **"이게 빠지면 그 상황/요리가 성립하는가"** 다 — 1: 없으면 목적 자체 불성립(감자탕에 등뼈), 2: 없으면 아쉽지만 목적은 달성(들깨가루), 3: 있으면 더 좋은 정도(청양고추).
-- **REQ-REC-047** (Ubiquitous, 결정 14-D): The `decompose` 노드 **shall** 각 필터 조건을 **명시(user 발화에 직접 존재)** vs **비명시(프로필·기본값 파생)** 로 태깅하여 `FilterSet`에 조건별 `source`로 표기한다 — 이는 0건 완화 시 완화 우선순위(비명시·약한 조건 우선 자동 완화 vs 명시 제약 제안 칩)를 판단하는 근거다(§6.6 참조).
+- **REQ-REC-047** (Ubiquitous, 결정 14-D): The `decompose` 노드 **shall** 각 필터 조건을 **명시(user 발화에 직접 존재)** vs **비명시(프로필·기본값 파생)** 로 태깅하여 `FilterSet`에 조건별 `source`로 표기한다 — 이는 0건 완화 시 완화 우선순위(비명시·약한 조건 우선 자동 완화 vs 명시 제약 제안 칩)를 판단하는 근거다(§6.6 참조). *(v0.12.0 #119 유예 — **미구현**. 유일한 소비처인 §6.6 완화(REQ-REC-041)가 구현되어 있지 않고, REQ-REC-005-A 로 프로필 파생이 차단되면서 `derived` 생산자가 사실상 사라져 모든 조건이 `user` 로 태깅된다. 태깅은 완화 구현(이슈 #113) 착수 시 함께 도입한다.)*
 
 ### 6.2 프로필 주입 (profile injection)
 
 - **REQ-REC-005** (Ubiquitous): The 서브그래프 **shall** `profile_summary`를 그래프 진입 시 주입된 read-only 값으로만 사용하며, 서브그래프 내부에서 프로필을 write하지 **않는다**.
-- **REQ-REC-006** (State-Driven): **While** `is_guest`가 true(= `profile_summary`가 `None`)인 동안, the 서브그래프 **shall** 개인화(프로필 기반 재랭킹)를 스킵하되 추천 자체는 정상 수행한다(결정 8).
+- **REQ-REC-005-A** (Unwanted, v0.12.0 신규 #119): The `decompose` 노드 **shall not** `profile_summary`를 `filters`(`price_min`/`price_max`/`brand`/`rating_min`/`keyword`/`color`)나 `attr_conditions` 로 변환하지 않는다 — **취향은 후보를 줄이는 데 쓰지 않고 순서로만 반영한다**. MVP 는 이를 프롬프트 지시가 아니라 **입력 제거**로 집행한다: config `profile_injection_scope` 기본 `rerank_only` 로 `profile_summary` 를 decompose 프롬프트에 주입하지 않으므로, **회원과 게스트의 decompose 프롬프트는 동일**하다. 근거는 실측 회귀 #119 — 프로필이 하드 필터로 새면 그 필터가 스레드 필터 저장소에 영속돼 다음 턴 `PRIOR_FILTERS`로 재주입되며 세션 내내 후보를 좁히고, 게스트는 그 손실이 없어 개인화가 순손실이 된다(SPEC-PROFILE-001 §5.1 v0.6.0 유예 연계). 라이브 측정(발화 3종 × 3회)에서 **9턴 중 9턴** 유출했고, 그중 `"10만원대 헤드폰"` 은 게스트 `price_min=100000` vs 회원 `price_min=10000, price_max=100000` 로 **명시 제약까지 프로필이 덮어 REQ-REC-043 을 위반**했다 — 후보 축소를 넘어 계약 위반이라 프롬프트 지시가 아닌 입력 제거로 집행한다.
+- **REQ-REC-006** (State-Driven, v0.12.0 개정): **While** `is_guest`가 true(= `profile_summary`가 `None`)이거나 config 로 개인화가 꺼진(`profile_injection_scope == "off"`) 동안, the 서브그래프 **shall** 개인화(프로필 기반 재랭킹)를 스킵하되 추천 자체는 정상 수행한다(결정 8). **shall not** 회원의 후보 집합이 같은 발화의 게스트보다 좁아지는 경로를 두지 않는다(#119).
 
 ### 6.3 검색 (search)
 
@@ -398,7 +401,7 @@ class SearchToolOutput(BaseModel):
 결정 14-D로 완화 전략을 개정한다: 고정 1회·고정 순서(brand→rating→price) 폐기 → **config 상한 라운드(기본 3)** 내에서 **비명시·약한 조건은 최소 이탈 자동 완화**, **명시 제약(특히 가격)은 자동으로 넘지 않고 제안 칩**으로 사용자에게 위임한다. 완화 우선순위 판단은 REQ-REC-047의 조건별 `source`(명시/비명시) 태깅을 근거로 한다.
 
 - **REQ-REC-040** (Event-Driven, 개정): **When** `search`가 0건을 반환하면, the 서브그래프 **shall** config 주입 최대 완화 라운드(기본 `max_relaxation_rounds = 3`) 이내에서 자동 완화 재검색을 수행한다.
-- **REQ-REC-041** (Ubiquitous, 개정): The 서브그래프 **shall** 완화 시 **비명시·약한 조건(REQ-REC-047의 `source == derived`인 브랜드·평점 등)을 우선 최소 완화**하고, **명시 제약(`source == user`, 특히 가격)은 자동으로 완화하지 않는다** — 고정 순서(brand→rating→price)를 사용하지 않는다.
+- **REQ-REC-041** (Ubiquitous, 개정): The 서브그래프 **shall** 완화 시 **비명시·약한 조건(REQ-REC-047의 `source == derived`인 브랜드·평점 등)을 우선 최소 완화**하고, **명시 제약(`source == user`, 특히 가격)은 자동으로 완화하지 않는다** — 고정 순서(brand→rating→price)를 사용하지 않는다. *(v0.12.0 #119: 본 요구와 REQ-REC-047 은 함께 **미구현**이며 이슈 #113 소관이다. 현행 0건 경로는 완화 없이 안내 후 종료하므로 REQ-REC-043(명시 제약 무단 위반 금지)을 보수적으로 준수한다.)*
 - **REQ-REC-042** (Event-Driven): **When** 완화가 적용되면, the `respond` 노드 **shall** "조건을 조금 넓혔어요"에 해당하는 투명 안내(`relaxation_notice`)를 응답에 포함한다.
 - **REQ-REC-043** (Unwanted): The 서브그래프 **shall not** 사용자의 명시적 제약을 조용히 위반하지 않는다 — 명시 제약은 사용자가 제안 칩으로 동의하기 전에는 자동 완화하지 않으며, 완화는 config 상한 라운드를 초과하지 않는다(EX-8).
 - **REQ-REC-044** (Event-Driven): **If** config 상한 라운드까지 완화한 뒤에도 0건이면, **then** the `respond` 노드 **shall** 상품 목록 없이 조건 변경을 유도하는 응답을 생성하고 `done` 이벤트의 `finish_reason`을 `zero_result`로 설정한다.
@@ -466,12 +469,13 @@ class SearchToolOutput(BaseModel):
 
 ### 6.14 구매 이력 제외 (purchase-history dedup — 결정 14-F)
 
-최근 구매한 상품을 추천에서 제외한다. `search` 단계의 필터로 적용하며 Case 1/2(단일)·Case 3(니즈별) 공통이다. **두 층위** — exact `product_id`는 항상 제외, 카테고리/니즈 억제는 재구매 성향(MVP는 소모품 boolean 플래그)에 의존한다. 억제는 **non-blocking**이며 억제된 니즈는 되돌리기 제안 칩(`suggestions`, 결정 14-D 재사용)으로 재포함 가능하게 제시한다. 게스트는 구매 이력이 없어 스킵한다(결정 8).
+최근 구매한 상품을 추천에서 기본 제외한다. `search` 단계의 필터로 적용하며 Case 1/2(단일)·Case 3(니즈별) 공통이다. **두 층위** — exact `product_id`는 기본 제외하되 현재 턴의 명시 재구매 단일 지목으로 해제할 수 있고, 카테고리/니즈 억제는 재구매 성향(MVP는 소모품 boolean 플래그)에 의존한다. 지목된 상품은 exact 제외와 **그 상품의** 소모품 카테고리 억제를 함께 면제받으며, 같은 카테고리의 다른 상품 억제와 되돌리기 제안 칩(`suggestions`, 결정 14-D 재사용)은 그대로다. 게스트는 구매 이력이 없어 스킵한다(결정 8).
 
-- **REQ-REC-100** (Ubiquitous): The `search` 노드 **shall** 최근 구매한 **exact `product_id`를 항상 제외**한다(방금 산 바로 그 상품 재추천 금지). **While** `is_guest`가 true인 동안(구매 이력 없음, 결정 8), the `search` 노드 **shall** 본 제외 로직을 스킵한다.
+- **REQ-REC-100** (Ubiquitous): The `search` 노드 **shall** 최근 구매한 **exact `product_id`를 기본 제외**한다(방금 산 바로 그 상품 재추천 금지). **When** REQ-REC-104의 명시 재구매 지목이 보수적으로 해소되면, the `search` 노드 **shall** 그 지목 상품의 exact 제외를 현재 턴에 한해 해제한다. **While** `is_guest`가 true인 동안(구매 이력 없음, 결정 8), the `search` 노드 **shall** 본 제외 로직을 스킵한다.
 - **REQ-REC-101** (State-Driven / Optional): **While** 어떤 카테고리에 최근 구매가 있고 그 카테고리가 소모품으로 태깅된 동안(카테고리 재구매 메타 — MVP는 소모품 boolean 플래그, 결정 15), the `search` 노드 **shall** 해당 니즈/카테고리를 억제한다(MVP 단순판). **Where** 카테고리가 다양성 상품(옷·액세서리 등)이면, the `search` 노드 **shall** exact `product_id`만 제외하고 비슷한 상품은 계속 추천한다(카테고리 억제하지 않음).
 - **REQ-REC-102** (Unwanted): The 서브그래프 **shall not** 한 아이템의 억제로 나머지 추천을 막지 않는다 — 억제는 **non-blocking**이며, 억제된 니즈를 조용히 누락하지 않고 되돌리기 제안 칩(`suggestions`, 결정 14-D "소금은 최근 구매 — 다시 추천받기" 형태)으로 재포함 가능하게 제시한다. 조용한 누락은 금지한다.
 - **REQ-REC-103** (Ubiquitous): The 카테고리 억제 판단 **shall** 카테고리 재구매 메타(**MVP는 소모품 boolean 플래그**, 결정 15 카테고리 속성 사전)에 따른다. 정교한 재구매 주기 계산·주기성 상품(화장품·영양제) 주기 내 억제·옷류 variety-seeking 처리 등 **정교한 재구매/다양성 모델은 고도화 범위이며 MVP에서는 구현하지 않는다**(EX-9). 소모품 판정 임계·최근 구매 조회 윈도우 등 값은 config 주입한다(하드코딩 금지).
+- **REQ-REC-104** (Event-Driven / Unwanted): **When** 사용자가 현재 턴에 재구매할 상품을 명시적으로 지목하면, the 서브그래프 **shall** 내부 `repurchaseProducts`의 상품명 텍스트를 JWT `sub`로 조회한 **본인 최근 구매 이력 안에서만** 해소하여 해제 집합이 exact 제외 집합의 부분집합이 되게 한다. 공백 제거·casefold·중복 제거 후 고유 지목이 정확히 1건일 때 완전 일치를 우선하고, 완전 일치가 없으면 `지목 in 구매명` 단방향 부분비교가 유일하게 성립할 때만 그 상품의 exact 제외와 **그 상품의** 소모품 카테고리 억제를 함께 해제한다. **If** 유효 고유 지목이 0건 또는 2건 이상이거나 부분비교가 모호하거나 해소에 실패하면, **then** the 서브그래프 **shall** 종전 제외를 유지한다. 본 신호는 현재 턴에만 유효하며 멀티턴 지속·exact 되돌리기 칩은 후속 이슈 #232 범위다.
 
 ---
 
@@ -526,17 +530,18 @@ class SearchToolOutput(BaseModel):
 - **AC-REC-29 (니즈당 후보·노출 반비례 + 총 입력 예산)**: **Given** 니즈 수가 서로 다른 두 Case 3 질의(예: 3니즈 vs 10니즈)와 config 주입 총 입력 예산, **When** 검색·랭킹이 실행되면, **Then** 니즈가 많은 질의는 니즈당 후보·노출이 더 적게(예: 니즈당 1개) 산정되고 적은 질의는 더 많게(예: 2~3개) 산정되며, 총 rerank 입력은 어느 경우에도 config 예산 이내이다(REQ-REC-012/096).
 - **AC-REC-30 (랭킹·선택 전략 config 선택, 기본=코드 per-item)**: **Given** `case3.select_strategy` config, **When** 추천이 산출되면, **Then** 기본값은 방식1(코드 per-item 결정론 선택 + LLM 전체 코멘트 1회)이고, config로 방식2(LLM 묶음 병렬)·방식3(단일 콜)으로 교체 가능하며, 방식1에서는 개별 물품 선택에 LLM이 호출되지 않는다(REQ-REC-097).
 - **AC-REC-31 (LLM 호출 config 상한 준수)**: **Given** config 주입 LLM 콜 상한(기본 2, Case 3 묶음 병렬 시 예: 최대 4), **When** 임의의 Case에서 추천이 산출되면, **Then** `decompose`는 1회이고 서브그래프 LLM 총 호출 수는 선택된 전략의 config 상한을 초과하지 않으며(방식2 묶음 병렬도 상한 준수, 니즈 수만큼 무제한 fan-out 아님), 재시도는 예외로 계수한다(REQ-REC-023/097, §비기능).
-- **AC-REC-32 (exact 최근 구매 상품 미노출)**: **Given** 사용자가 최근 구매한 `product_id` P가 검색 후보에 포함되는 질의(회원, `is_guest == false`), **When** 서브그래프가 실행되면, **Then** `products` 페이로드의 어떤 항목에도 P가 노출되지 않는다(exact 항상 제외, REQ-REC-100).
+- **AC-REC-32 (재구매 지목 없는 exact 최근 구매 상품 미노출)**: **Given** 사용자가 최근 구매한 `product_id` P가 검색 후보에 포함되고 현재 턴에 명시 재구매 지목이 없는 질의(회원, `is_guest == false`), **When** 서브그래프가 실행되면, **Then** `products` 페이로드의 어떤 항목에도 P가 노출되지 않는다(exact 기본 제외, REQ-REC-100).
 - **AC-REC-33 (소모품 카테고리 억제 + 되돌리기 칩, 나머지 니즈 정상 추천)**: **Given** 소모품으로 태깅된 카테고리(예: 소금)에 최근 구매가 있고 다른 니즈도 함께 있는 Case 3 질의, **When** 실행되면, **Then** 해당 소모품 니즈는 억제되되(추천 목록에서 조용히 빠지지 않음) 나머지 니즈는 정상 추천되고, `products.suggestions`에 그 니즈를 재포함하는 되돌리기 칩(예: "소금은 최근 구매 — 다시 추천받기")이 존재한다(REQ-REC-101/102). 다양성 상품 카테고리(예: 옷)에서 같은 상황이면 exact만 제외되고 비슷한 상품은 계속 추천된다.
 - **AC-REC-34 (게스트 제외 로직 스킵)**: **Given** `is_guest == true`(구매 이력 없음, `profile_summary == None`), **When** 실행되면, **Then** 구매 이력 제외 로직(exact 제외·카테고리 억제)이 스킵되고 추천이 정상 성립한다(REQ-REC-100, 결정 8).
 - **AC-REC-35 (주제 전환 reset + 가격 캐리)**: **Given** 직전 턴 `filters = {category: 무선이어폰, price_max: 50000, attributes: {color: "검정"}, sources: {price_max: "user", ...}}`, **When** 직전과 무관한 주제("무선 키보드 추천해줘")가 입력되면, **Then** decompose 출력은 직전 주제 필터(무선이어폰 카테고리·색상 "검정")를 **폐기(reset)**하되 config `multiturn.carry_on_reset`(기본 `["price"]`) 대상인 `price_max == 50000`(`source == user`)은 **유지**한다(REQ-REC-054/055).
 - **AC-REC-36 (병렬 신호 → Case 3 승격)**: **Given** 직전 턴 주제가 "무선 이어폰", **When** "무선 키보드도 추천해줘"(병렬 신호 + 둘 다 상품)가 입력되면, **Then** decompose는 reset이 아니라 `case == 3`으로 승격하고 `shopping_list`에 이어폰·키보드 두 주제가 모두 포함되어 둘 다 추천된다(REQ-REC-056, REQ-REC-004 연계).
 - **AC-REC-37 (reset 판단이 decompose 파생, 별도 분류 호출 없음)**: **Given** 주제 전환·병렬·정제(add/replace) 중 어느 멀티턴 질의든, **When** 서브그래프가 실행되면, **Then** add/replace/reset 전이 및 Case 3 승격 **판단**은 모두 `decompose`의 단일 출력에서 파생되고 별도 **분류** LLM 호출이 발생하지 않으며, `decompose` LLM 호출은 여전히 1회다(REQ-REC-054/056, REQ-REC-001, EX-7/EX-10). **[v0.10.0 #198]** 단 `shopping_list` **분해(생성)** 가 실패한 것으로 **코드가 감지**된 턴에 한해 전개 호출 1회가 추가될 수 있다 — 이는 판단(분류)이 아니라 생성이며, 결정 14-E 의 config 상한 규약 안에서 계수한다(§비기능). 전개가 트리거되지 않은 턴(Case 1/2 및 분해가 성공한 Case 3)은 종전과 동일하게 `decompose` 1회다.
+- **AC-REC-38 (명시 재구매 지목 상품 재노출)**: **Given** 회원의 최근 구매 `product_id` P가 검색 후보에 포함되고 사용자가 현재 턴에 P의 상품명을 명시적으로 재구매 지목하며 정규화·중복 제거 후 고유 지목이 정확히 1건이고 본인 최근 구매 이력에서 보수적으로 해소되는 질의, **When** 서브그래프가 실행되면, **Then** P는 exact 제외와 P의 소모품 카테고리 억제를 면제받아 `products` 페이로드에 다시 노출된다(REQ-REC-100/104). 다음 턴에는 이 신호가 지속되지 않는다(#232).
 
 ### Definition of Done
 
-- [ ] REQ-REC-001~076, REQ-REC-080~085, REQ-REC-090~092, REQ-REC-094~098, REQ-REC-100~103, REQ-REC-054~056 전 항목이 테스트로 커버됨(REQ-REC-090~092는 평가 하니스 계층). 개정된 REQ-REC-004/012/023/040/041/047/045/046 및 신설 REQ-REC-096~098, REQ-REC-100~103, REQ-REC-054~056 포함.
-- [ ] AC-REC-01~37 전 시나리오가 통과(pytest, integration은 docker compose 앱 + pgvector). 개정된 AC-REC-06/07 및 신설 AC-REC-28~31, AC-REC-32~34, AC-REC-35~37 포함.
+- [ ] REQ-REC-001~076, REQ-REC-080~085, REQ-REC-090~092, REQ-REC-094~098, REQ-REC-100~104, REQ-REC-054~056 전 항목이 테스트로 커버됨(REQ-REC-090~092는 평가 하니스 계층). 개정된 REQ-REC-004/012/023/040/041/047/045/046/100 및 신설 REQ-REC-096~098, REQ-REC-100~104, REQ-REC-054~056 포함.
+- [ ] AC-REC-01~38 전 시나리오가 통과(pytest, integration은 docker compose 앱 + pgvector). 개정된 AC-REC-06/07/32 및 신설 AC-REC-28~31, AC-REC-32~34, AC-REC-35~38 포함.
 - [ ] State/검색 tool/SSE 스키마가 Pydantic 모델로 구현되고 스키마 계약 테스트 존재(`RerankValidation`, `FilterSet.sources`, SSE `suggestions` 포함).
 - [ ] 하드 불변식(가격 제약 불가침, 총액 예산 코드 검증, `products` 1회 push, 명시적 제약 무단 위반 금지·**완화 config 상한 내 + 매 완화 알림**, **리랭크 노출 전 후보 순서 무작위화**, **리랭크 출력 product_id ⊆ 검색 후보 집합**) 회귀 테스트 존재.
 - [ ] 리랭크 출력 검증(후보 외 ID 제거·근거 속성 대조) 및 출력 검증 실패 degrade(REQ-REC-081/082/083, AC-REC-19/20/22) 회귀 테스트 존재.
@@ -544,7 +549,7 @@ class SearchToolOutput(BaseModel):
 - [ ] 랭킹 교체 인터페이스(`Ranker`, `rank.strategy` config)와 추천 스냅샷 로깅(REQ-REC-094/095, AC-REC-27) 구현·테스트 존재.
 - [ ] Case 3 다중 니즈 전략(니즈 수 무제한·니즈당 후보 반비례 축소로 총 입력 config 예산 고정·랭킹 선택 3방식 config[기본=코드 per-item]·priority 우선 노출[결정 14-H], REQ-REC-004/012/023/096/097/098, AC-REC-28~31) 구현·테스트 존재. LLM 콜 상한이 config 상한(기본 2, 묶음 병렬 시 예 최대 4) 내로 강제되는 회귀 테스트 포함.
 - [ ] 평가 하니스 2계층(골든셋 컴포넌트 회귀 + 유저 시뮬레이터 종단, REQ-REC-090/091)과 누출 방지(REQ-REC-092)가 구현되고 게이트로 연결됨.
-- [ ] 구매 이력 제외(결정 14-F, REQ-REC-100~103, AC-REC-32~34) 구현·테스트 존재 — exact `product_id` 항상 제외 + 소모품 카테고리 억제(MVP 단순판=소모품 boolean) + non-blocking 되돌리기 칩(`suggestions`) + 게스트 스킵. 정교한 재구매/다양성 모델은 MVP 비범위(EX-9)임을 회귀 테스트에 반영(고도화 미구현 경계).
+- [ ] 구매 이력 제외(결정 14-F, REQ-REC-100~104, AC-REC-32~34/38) 구현·테스트 존재 — exact `product_id` 기본 제외 + 명시 재구매 단일 지목 시 턴 한정 해제(본인 최근 구매 이력 내 보수적 해소) + 소모품 카테고리 억제(MVP 단순판=소모품 boolean) + non-blocking 되돌리기 칩(`suggestions`) + 게스트 스킵. 정교한 재구매/다양성 모델은 MVP 비범위(EX-9)임을 회귀 테스트에 반영(고도화 미구현 경계).
 - [ ] 멀티턴 reset(결정 14-G, REQ-REC-054~056, AC-REC-35~37) 구현·테스트 존재 — add/replace/reset 3종 전이가 `decompose` 단일 출력에서 파생(별도 분류 호출 없음, decompose 1회 유지) + 범용 명시 제약(config `multiturn.carry_on_reset`, 기본 `["price"]`) 캐리 + "~도+둘 다 상품" Case 3 승격. 캐리 목록·판별 임계는 config 주입(하드코딩 금지) 회귀 테스트 포함. 정교한 부분 캐리·병렬 승격 신뢰성 판별은 MVP 비범위(EX-10)임을 회귀 테스트에 반영(고도화 미구현 경계).
 - [ ] §9의 미해결 항목이 후속 SPEC/이슈로 등록됨.
 
@@ -590,7 +595,7 @@ class SearchToolOutput(BaseModel):
 - **재랭킹 입력 크기**: 후보는 `Candidate`의 압축 표현(전체 `search_doc` 아님, `doc_snippet` 발췌)으로 직렬화하여 Sonnet 입력 토큰을 통제한다.
 - **Sonnet 토크나이저 보정**: Sonnet 5는 동일 텍스트 대비 ~30% 토큰 증가(결정 5) — 비용 모델링 시 `count_tokens`로 재기준.
 - **프롬프트 캐싱**: 공유 시스템 프롬프트는 프롬프트 캐싱하여 ITPM 한도에서 제외(결정 5)되도록 한다(데모 동시접속 대비).
-- **config 주입 기본값**: `top_k = 30`, 재랭킹 입력 30, 최종 노출 5~9, `max_relaxation_rounds = 3`(결정 14-D), 수치 최소 초과분 계산 임계, 근거 1문장/상품, `rank.strategy`(A=`llm`/B=`scoring`, 결정 14-C), 추천 스냅샷 로깅 활성화 — 그리고 **결정 14-E**: 총 rerank 입력 예산(예: ~40)·니즈당 `top_k` 반비례 산식(고정 30 아님)·Case 3 랭킹·선택 전략(`case3.select_strategy` = `code_per_item`[기본]/`llm_bundle_parallel`/`single_call`)·LLM 콜 상한(기본 2, 묶음 병렬 시 예 최대 4)·priority 우선 노출 임계(결정 14-H) — 전부 `core/config.py` 주입(하드코딩 금지).
+- **config 주입 기본값**: `top_k = 30`, 재랭킹 입력 30, 최종 노출 5~9, `max_relaxation_rounds = 3`(결정 14-D), 수치 최소 초과분 계산 임계, 근거 1문장/상품, `rank.strategy`(A=`llm`/B=`scoring`, 결정 14-C), 추천 스냅샷 로깅 활성화 — 그리고 **결정 14-E**: 총 rerank 입력 예산(예: ~40)·니즈당 `top_k` 반비례 산식(고정 30 아님)·Case 3 랭킹·선택 전략(`case3.select_strategy` = `code_per_item`[기본]/`llm_bundle_parallel`/`single_call`)·LLM 콜 상한(기본 2, 묶음 병렬 시 예 최대 4)·priority 우선 노출 임계(결정 14-H) — 전부 `core/config.py` 주입(하드코딩 금지). **[v0.12.0 #119]** 개인화 강도 튜너블 추가: `profile_injection_scope`(`off`/`rerank_only`[기본]/`both` — 주입 소비처 선택, REQ-REC-005-A), `profile_rerank_influence`(`tiebreak`[기본]/`legacy` — rerank 동점 처리 지시 유무), `profile_buffer_repeat_cap`(기본 2, 최솟값 2), `profile_buffer_excluded_intents`(뒤 둘은 SPEC-PROFILE-001 REQ-PROF-026). **채팅 추천 서브그래프에는 연속 가중치(`*_weight`)를 두지 않는다** — 전략 A(`rank.strategy = llm`)의 rerank 는 점수가 아니라 순위 목록을 산출해 **가중합할 스칼라 자체가 없고**, 취향-상품 적합도의 ground truth(평가 하니스 REQ-REC-090/091)가 미구현이라 계수를 정할 근거도 없다. 대비로 홈 추천(I-22, #148)은 질의 벡터가 임베딩 가중평균이라 스칼라가 실재하고 누를 발화도 없어 `home_reco_weight_profile` 이 정의된다 — **점수가 있는 표면에는 가중치, 없는 표면에는 스코프 스위치**가 원칙이다. 채팅 경로의 연속 가중치는 전략 B(`scoring`) 도입 시(이슈 #145, 선행 #142/#143 골든셋·metric) 함께 정의한다.
 
 ### 안전/일관성 불변식 (must-hold)
 

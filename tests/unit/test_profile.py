@@ -91,6 +91,72 @@ async def test_reader_returns_stored_summary() -> None:
     assert got and got["markdown"] == "# 요약\n- x" and got["generated_at"].startswith("2026")
 
 
+async def test_summary_embedding_survives_a_failed_re_embed(monkeypatch) -> None:
+    """[#148] 재-consolidation 때 임베딩이 실패해도 **기존 벡터를 잃지 않는다**.
+
+    `aput` 은 값을 통째로 덮어쓰므로, 실패 시 embedding 키를 빼면 이미 벡터를 갖고 있던 사용자의
+    홈 추천(I-22) 개인화 항이 조용히 사라진다 — 신규 프로필뿐 아니라 기존 사용자에게도 회귀다.
+    """
+    from app.agents.profile import store as store_mod
+
+    async def _ok(_markdown: str) -> list[float]:
+        return [0.5, 0.5]
+
+    async def _fail(_markdown: str) -> None:
+        return None
+
+    store = await get_profile_store()
+    monkeypatch.setattr(store_mod, "_embed_summary", _ok)
+    await store.set_summary("7", "# 요약 v1", "2026-07-20T00:00:00+00:00")
+    assert (await store.get_summary("7")).embedding == [0.5, 0.5]
+
+    monkeypatch.setattr(store_mod, "_embed_summary", _fail)
+    await store.set_summary("7", "# 요약 v2", "2026-07-21T00:00:00+00:00")
+    got = await store.get_summary("7")
+    assert got.markdown == "# 요약 v2", "요약 본문은 갱신된다"
+    assert got.embedding == [0.5, 0.5], "임베딩 실패는 기존 벡터를 지우지 않는다"
+
+
+async def test_summary_save_survives_carryover_lookup_failure(monkeypatch) -> None:
+    """벡터 살리기용 조회가 실패해도 **요약 저장은 성공한다** — 조회 실패는 degrade 다.
+
+    폴백 `get_summary` 를 안 감싸면 pg-profile 일시 장애 때 요약 텍스트 저장까지 함께 죽는다 —
+    PR 이전엔 성공했을 저장이 실패하는 회귀(PR 리뷰).
+    """
+    from app.agents.profile import store as store_mod
+
+    async def _fail_embed(_markdown: str) -> None:
+        return None
+
+    monkeypatch.setattr(store_mod, "_embed_summary", _fail_embed)
+    store = await get_profile_store()
+    orig_get_summary = store.get_summary
+
+    async def _boom(user_id: str):
+        raise RuntimeError("pg-profile down")
+
+    monkeypatch.setattr(store, "get_summary", _boom)
+    await store.set_summary("9", "# 요약", "2026-07-20T00:00:00+00:00")  # 예외가 없어야 한다
+
+    monkeypatch.setattr(store, "get_summary", orig_get_summary)
+    got = await store.get_summary("9")
+    assert got.markdown == "# 요약", "요약 저장은 조회 실패와 무관하게 성공한다"
+    assert got.embedding is None
+
+
+async def test_summary_embedding_is_none_when_never_embedded(monkeypatch) -> None:
+    """기존 벡터가 없으면 그대로 None — 살릴 것이 없다."""
+    from app.agents.profile import store as store_mod
+
+    async def _fail(_markdown: str) -> None:
+        return None
+
+    monkeypatch.setattr(store_mod, "_embed_summary", _fail)
+    store = await get_profile_store()
+    await store.set_summary("8", "# 요약", "2026-07-20T00:00:00+00:00")
+    assert (await store.get_summary("8")).embedding is None
+
+
 # ─────────── gate ───────────
 
 
@@ -1129,3 +1195,79 @@ async def test_processed_events_operations_have_query_deadline(
                 await operation()
     finally:
         processed_events.set_pool(None)
+
+
+# ─────────── #119 세션 버퍼 반복 발화 상한 ───────────
+
+
+async def test_session_buffer_caps_repeated_utterances() -> None:
+    """[#119] 같은 발화를 4번 해도 버퍼에는 repeat_cap 개까지만 남는다.
+
+    버퍼는 generate_session_delta 에 "\n".join 으로 통째로 실리고 LLM 이 그 중복을 보고
+    repetitionEma 를 산출하므로, 반복 **횟수**가 그대로 취향 강도가 된다 — 증폭만 자른다.
+    """
+    store = await get_profile_store()
+    for _ in range(4):
+        await store.append_session_ctx("k", "무선 이어폰 추천해줘", cap=100, repeat_cap=2)
+
+    assert await store.get_session_ctx("k") == ["무선 이어폰 추천해줘"] * 2
+
+
+async def test_session_buffer_keeps_repetition_signal_observable() -> None:
+    """상한은 2 이상이라 "반복했다"는 신호 자체는 델타 추출 LLM 에 남는다.
+
+    게이트는 `salience AND (explicit OR repeated)` 라 반복은 명시 표명 없이 승격시키는
+    **독립 경로**다. 1 건만 남기면 그 경로가 죽고, 세션 간 누적(GateState)은 미구현이라
+    (OPEN-P12) 다음 세션이 대신 살려주지도 않는다.
+    """
+    store = await get_profile_store()
+    for _ in range(3):
+        await store.append_session_ctx("k", "소니 이어폰", cap=100, repeat_cap=2)
+
+    assert (await store.get_session_ctx("k")).count("소니 이어폰") >= 2
+
+
+async def test_session_buffer_repeat_cap_normalizes_whitespace_and_case() -> None:
+    """정규화 규약 고정 — 앞뒤 공백·연속 공백·대소문자 차이는 같은 발화로 본다."""
+    store = await get_profile_store()
+    for text in ("Sony 이어폰", " sony 이어폰 ", "sony  이어폰", "SONY 이어폰"):
+        await store.append_session_ctx("k", text, cap=100, repeat_cap=2)
+
+    assert await store.get_session_ctx("k") == ["Sony 이어폰", " sony 이어폰 "]
+
+
+async def test_session_buffer_repeat_cap_keeps_distinct_utterances() -> None:
+    """서로 다른 발화는 그대로 쌓인다 — 과한 정규화로 정당한 취향 신호를 잃지 않는다."""
+    store = await get_profile_store()
+    await store.append_session_ctx("k", "무선 이어폰 추천해줘", cap=100, repeat_cap=2)
+    await store.append_session_ctx("k", "노이즈캔슬링 되는 걸로", cap=100, repeat_cap=2)
+
+    assert await store.get_session_ctx("k") == ["무선 이어폰 추천해줘", "노이즈캔슬링 되는 걸로"]
+
+
+async def test_session_buffer_repeat_cap_off_preserves_legacy() -> None:
+    """롤백 경로 — repeat_cap 미지정이면 종전대로 전부 적재한다(하위 호환)."""
+    store = await get_profile_store()
+    for _ in range(3):
+        await store.append_session_ctx("k", "같은 말", cap=100)
+
+    assert await store.get_session_ctx("k") == ["같은 말"] * 3
+
+
+async def test_session_buffer_watermark_survives_repeat_cap() -> None:
+    """상한 스킵은 aput 자체를 하지 않으므로 seq 워터마크 불변식이 깨지지 않는다.
+
+    finalizer 는 snapshot 워터마크로 소비 범위를 고정하고 그 지점까지 clear 한다 —
+    스킵된 발화가 seq 를 앞당기면 미소비 발화가 조용히 삭제될 수 있다.
+    """
+    store = await get_profile_store()
+    for _ in range(3):
+        await store.append_session_ctx("k", "첫 발화", cap=100, repeat_cap=2)  # 3번째는 스킵
+    await store.append_session_ctx("k", "둘째 발화", cap=100, repeat_cap=2)
+
+    items, watermark = await store.get_session_ctx_snapshot("k")
+    assert items == ["첫 발화", "첫 발화", "둘째 발화"]
+    assert await store.get_session_ctx_upto("k", watermark) == items
+
+    await store.clear_session_ctx_upto("k", watermark)
+    assert await store.get_session_ctx("k") == []

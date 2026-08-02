@@ -408,6 +408,7 @@ def test_mapped_category_overrides_decompose_into_search(client, spring, llm, mo
     매퍼는 임베딩/DB 없이 결정적 fake 로 주입(get_llm 픽스처와 동일한 모듈 monkeypatch 패턴).
     """
     import app.agents.buyer.graph as buyer_graph
+    from app.agents.buyer.recommendation.category_mapping import CategoryMapping
 
     # 매핑 대상(canonical)이 실제로 검색되도록 카탈로그에 캠핑용품 1건 추가
     spring.catalog.append(
@@ -432,8 +433,9 @@ def test_mapped_category_overrides_decompose_into_search(client, spring, llm, mo
     }
 
     async def _fake_map(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
-        # 추측을 canonical 로 보정했다고 가정(never-null) — (canonical, query) leg 반환, 배선만 검증
-        return [("캠핑용품", "캠핑 파우치")]
+        # 추측을 canonical 로 보정했다고 가정 — 배선만 검증. #217 로 반환형이 CategoryMapping 이며,
+        # `unresolved` 가 비어 있어야 전개가 발동하지 않고 이 매핑값이 그대로 검색에 실린다.
+        return CategoryMapping(legs=[("캠핑용품", "캠핑 파우치")], unresolved=[])
 
     monkeypatch.setattr(buyer_graph, "_map_categories", _fake_map)
 

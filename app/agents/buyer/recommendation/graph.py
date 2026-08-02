@@ -102,7 +102,7 @@ def _merge_fanout_results(
             seen.add(product.product_id)
             leg_of[product.product_id] = leg
             merged.append(product)
-    # slice 절단 — decompose 의 _parse_category_queries·_dedup_truncate 와 동일 규약
+    # slice 절단 — decompose 의 _parse_category_queries·dedup_truncate 와 동일 규약
     # (cap<=0 이면 정확히 0개; append 후 체크는 첫 상품이 남아 절단 의미가 어긋난다, PR #73 리뷰).
     merged = merged[:cap]
     # 절단으로 탈락한 상품의 leg 정체성은 남기지 않는다 — 하류가 없는 상품을 니즈에 배정하지 않게.
@@ -226,6 +226,38 @@ def _split_by_need(
             extra={"count": len(orphans), "fallback_leg": 0},
         )
     return groups
+
+
+def _resolve_repurchase_ids(recent, references: list[str]) -> set[int]:
+    """명시 재구매 지목(상품명 텍스트) → 그 회원의 최근 구매 productId 집합 (#120).
+
+    **해소 대상은 `recent`(I-19, JWT sub 유래 본인 구매 이력)뿐**이다 — 결과는 구성상 항상
+    exact 제외 대상의 부분집합이라, LLM 이 무엇을 지목하든 임의 productId·타인 상품으로
+    확장될 수 없다(신뢰 경계). 후보(candidates) id 나 LLM 정수는 여기 들어오지 않는다.
+
+    공백 제거 + casefold 후 중복을 제거한 유효 **지목이 정확히 1건일 때만** 해소한다. 복수 지목은
+    모델이 LAST_RECOMMENDATIONS 같은 맥락 목록을 에코했을 수 있어, 각 이름이 개별적으로 정확해도
+    전부 미해제한다. 단일 지목은 가장 좁은 후보 집합을 고른다 — 완전 일치가 있으면 그것만, 없을
+    때만 `지목 in 구매명` 단방향 부분비교로 넓힌다. 선택된 후보에서 **구분되는 정규화 상품명이
+    정확히 1개일 때만** 그 이름의 productId를 전부 해제한다. 따라서 재등록·옵션 분리로 같은 이름이
+    여러 productId에 걸려도 모두 해제하지만, 서로 다른 상품명에 걸린 모호한 부분일치는 미해제한다.
+    단방향 폴백은 긴 지목("무선 이어폰 케이스")을 짧은 구매명("이어폰")으로 축약하는 오매칭을
+    막는다. 아무것도 못 잡으면 조용히 빈 집합(= 종전 제외 유지)으로 degrade 한다.
+    """
+    if not references:
+        return set()
+    norms = {n for r in references if (n := "".join(r.split()).casefold())}
+    if len(norms) != 1:
+        return set()
+    names = [
+        (item.product_id, "".join((item.product_name or "").split()).casefold()) for item in recent
+    ]
+    reference = next(iter(norms))
+    exact = [(pid, name) for pid, name in names if name and name == reference]
+    matches = exact or [(pid, name) for pid, name in names if name and reference in name]
+    if len({name for _, name in matches}) != 1:
+        return set()
+    return {pid for pid, _ in matches}
 
 
 async def stream_recommendation(
@@ -394,11 +426,14 @@ async def stream_recommendation(
 
     # 최근 구매(윈도우·취소반품 필터) → exact 제외 + 소모품 카테고리 억제(결정 14-F).
     exclude_ids: set[int] = set()
+    # [#120] 명시 재구매 지목으로 되돌린 productId — exact 제외·소모품 억제를 함께 면제한다.
+    repurchase_ids: set[int] = set()
     cat_samples: dict[str, str] = {}  # 억제 소모품 카테고리 -> 최근 구매 상품명(되돌리기 칩 라벨용)
     if purchases is not None:
         since = _now() - timedelta(days=settings.dedup_recent_days)
         recent = purchases.recent_items(since=since, exclude_statuses=_INACTIVE_STATUSES)
         exclude_ids = {i.product_id for i in recent}
+        repurchase_ids = _resolve_repurchase_ids(recent, decision.repurchase_products)
         consumables = set(settings.consumable_categories)
         for i in recent:
             # 소모품 카테고리인데 사용자가 되돌리지 않은 것만 억제 대상.
@@ -417,6 +452,12 @@ async def stream_recommendation(
     suppressed_by_cat: dict[str, int] = {}
     kept = []
     for product in result.products:
+        # [#120] 명시 재구매 지목은 exact 제외와 소모품 카테고리 억제를 **둘 다** 면제한다 —
+        # exact 만 풀면 소모품 재구매(소금·세제)가 카테고리 억제에 다시 걸려 되돌리기가 안 된다.
+        # 카테고리 억제 카운트(suppressed_by_cat)에도 넣지 않아 되돌리기 칩 추정치가 부풀지 않는다.
+        if product.product_id in repurchase_ids:
+            kept.append(product)
+            continue
         if product.product_id in exclude_ids:
             continue
         if product.category in cat_samples:
@@ -428,6 +469,13 @@ async def stream_recommendation(
     # rerank 후보가 상한 미만이 되는 recall 손실이 있어, 절단을 dedup 이후로 옮겼다(비-fanout 전량·
     # fan-out merge_cap 병합 결과 모두 이 지점에서 최종 절단). matched_after_dedup 은 절단 전 매칭 수.
     matched_after_dedup = len(kept)
+    # [#120 PR#230 리뷰] 명시 재구매 지목은 절단 **전에** 앞으로 당긴다 — 이 절단은 원본 검색
+    # 순서 기준이라, 되살린 상품이 상한(기본 30) 밖이면 exact 제외를 면제해 놓고도 rerank 후보에
+    # 조차 못 들어가 "지목하면 다시 추천된다"는 보장이 조용히 깨진다. 사용자가 직접 지목한 상품이
+    # 검색 순서보다 우선하는 게 맞다. stable sort 라 지목 상품끼리·나머지끼리의 상대 순서는
+    # 그대로고, 지목이 없으면(기본 경로) 정렬 자체를 건너뛰어 종전과 동일하다.
+    if repurchase_ids:
+        kept.sort(key=lambda p: p.product_id not in repurchase_ids)
     kept = kept[: settings.embedding_rerank_limit]
     result = ProductSearchResult(products=kept, total_count=matched_after_dedup)
 
@@ -524,6 +572,20 @@ async def stream_recommendation(
         reason_by_id = {}  # degrade 경로엔 rerank 근거 없음 — reasons 는 빈 배열(계약상 선택)
         comment = "요청하신 조건으로 찾은 상품들이에요."
 
+    # [#120 PR#230 리뷰] 지목 상품 고정 — rerank 는 relevance 로 expose_max 개만 고르고 "이건 반드시"
+    # 라는 고정 수단이 없어(need_of/per_need 는 니즈 분할용), exact 제외·상한 절단을 다 통과한
+    # 지목 상품이 여기서 조용히 빠질 수 있다. 쿼리에 상품명이 있으니 보통은 뽑히지만 그건
+    # 휴리스틱이지 보장이 아니다. **후보에 남아 있는데 rerank 가 빠뜨린 것만** 앞에 얹어
+    # "지목하면 다시 추천된다"를 강제한다 — rerank 가 이미 골랐으면 순서를 건드리지 않는다.
+    # 근거(reason)는 없지만 §4.2 상 reasons 는 선택이고 degrade 경로도 같은 형태다.
+    if repurchase_ids:
+        already = set(ranked_ids)
+        pinned = [
+            p.product_id
+            for p in candidates
+            if p.product_id in repurchase_ids and p.product_id not in already
+        ]
+        ranked_ids = pinned + ranked_ids
     # 노출 개수 보정 + 목록 분할 — 보정·상한은 **목록 하나 기준**이다(REQ-REC-021 5~9개, v0.11.0).
     # 분할하지 않으면 목록이 하나뿐이라 종전과 같은 전역 보정·절단이다.
     exposed_groups = _split_by_need(
@@ -566,6 +628,10 @@ async def stream_recommendation(
             # 굶은 니즈가 검색순서 보충으로 채워져 여기가 오른다. rerank_degraded 로는 안 보이는
             # 품질 저하라 별도 지표가 필요하다(PR #212 리뷰).
             "without_reason": sum(1 for pid in ranked_ids if not reason_by_id.get(pid)),
+            # [#119] 회원/게스트 턴을 사후 분리해 깔때기(received·after_dedup)를 대조하기 위한
+            # 조인 키. 개인화가 후보를 줄이면 회원 쪽 received 가 작게 나온다.
+            "profile_present": bool(profile),
+            "profile_scope": settings.profile_injection_scope,
         },
     )
 

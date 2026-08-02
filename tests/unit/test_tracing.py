@@ -1,10 +1,13 @@
 import asyncio
+import random
+import uuid
 from dataclasses import fields, is_dataclass
 from collections.abc import Mapping
 
 import pytest
 
 from app.core.logging import safe_fingerprint
+from app.core.errors import new_request_id
 from app.core.tracing import (
     BUYER_DEGRADE_REASON_PRECEDENCE,
     FakeTraceExporter,
@@ -20,6 +23,7 @@ from app.core.tracing import (
     trace_span,
     validate_export_payload,
 )
+from app.core.tracing import _build_export_payloads, _is_opaque_identifier
 
 
 def _start_trace(factory: TraceFactory):
@@ -145,6 +149,23 @@ async def test_disabled_tracing_exports_nothing_and_allocates_no_nodes() -> None
     await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
 
     assert exporter.exported == []
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_unregistered_lane_warns_without_exposing_raw_value(
+    caplog: pytest.LogCaptureFixture,
+    enabled: bool,
+) -> None:
+    trace = _start_trace(
+        TraceFactory(exporter=FakeTraceExporter(), enabled=enabled, sampling_rate=1.0)
+    )
+    unknown_lane = "PRIVATE-LANE-CANARY"
+
+    with caplog.at_level("WARNING", logger="app.core.tracing"):
+        trace.set_lane(unknown_lane)
+
+    assert "OBSERVABILITY_LANE_UNKNOWN" in caplog.text
+    assert unknown_lane not in caplog.text
 
 
 async def test_async_children_create_sibling_spans() -> None:
@@ -643,3 +664,137 @@ async def test_cancelled_trace_finish_shields_one_export_and_reuses_it() -> None
     root = exporter.exported[0][0]
     assert root.error_type is None
     assert root.metadata["terminalReason"] == "done"
+
+
+# --- PII 카나리아 오탐 (#208 검증 중 발견) ---------------------------------------
+#
+# `dotted_order` 는 `<timestamp><uuid4>` 로 조립되는 **기계 생성** 문자열이고, 페이로드에서
+# 카나리아 검사를 받는 유일한 랜덤 문자열이다(`id`/`trace_id` 는 UUID 객체라 str 검사 대상이
+# 아니다). 한국 휴대폰 정규식이 UUID 의 hex 숫자열과 겹쳐 오탐하면 `validate_export_payload`
+# 가 UnsafeTelemetryError 를 던지고 **트레이스가 통째로 드롭**된다 — 그때마다 exported 를
+# 검증하던 아무 테스트나 하나가 깨졌다(수정 전 스팬당 약 1.7e-4, 손 안 댄 dev 에서도 재현).
+# 같은 오탐은 16-hex 지문(`sessionFp`·`threadFp`)에도 성립한다.
+
+# 실제로 오탐을 일으킨 UUID 들 — 회귀 고정용.
+_UUID_FALSE_POSITIVES = [
+    "6a31007e-22e1-4659-8a6a-0181980191ee",
+    "f73ba1f0-b9a0-4139-8a33-f01625126608",
+    "8d010084-1377-45fb-830c-603c3d1722c1",
+    "da75b05d-f7ef-424a-b124-d0106877030c",
+    "93e67d23-1924-40e5-a016-54952023d4cd",
+]
+
+
+@pytest.mark.parametrize("node_id", _UUID_FALSE_POSITIVES)
+def test_machine_generated_uuid_does_not_trip_pii_canary(node_id: str) -> None:
+    """랜덤 UUID hex 는 PII 가 아니다 — 오탐하면 트레이스가 통째로 드롭된다."""
+    validate_export_payload({"dotted_order": f"20260731T152345123456Z{node_id}"})
+
+
+def test_opaque_identifiers_never_trip_the_pii_canary() -> None:
+    """고정 시드 corpus — UUID·16-hex 지문 어느 쪽도 오탐이 0 이어야 한다.
+
+    표본 5개만 고정하면 정규식을 그 5개에만 맞춰 깎는 수정도 통과한다. 클래스 전체가
+    닫혔는지 보려면 corpus 가 필요하고, 시드를 고정해야 CI 가 흔들리지 않는다.
+    """
+    rnd = random.Random(208)
+    for _ in range(20_000):
+        node_id = uuid.UUID(int=rnd.getrandbits(128), version=4)
+        validate_export_payload({"dotted_order": f"20260731T152345123456Z{node_id}"})
+        validate_export_payload({"metadata": {"sessionFp": f"{rnd.getrandbits(64):016x}"}})
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "01012345678",
+        "010-1234-5678",
+        "연락처 010 1234 5678 입니다",
+        "900101-1234567",
+        "주민 900101-1234567 확인",
+        # PR #218 리뷰 — 오탐을 "hex 문자 인접"으로 막으면 hex 로 끝나는 흔한 영단어 뒤에
+        # 구분자 없이 붙은 진짜 PII 가 통째로 탐지를 피한다. 그 회피 경로를 여기서 막는다.
+        "face01012345678",
+        "userid01012345678",
+        "cafe9001011234567",
+    ],
+)
+def test_real_pii_is_still_rejected(value: str) -> None:
+    """오탐을 줄이려다 진짜 PII 를 놓치면 안 된다 — 카나리아의 존재 이유다."""
+    with pytest.raises(UnsafeTelemetryError):
+        validate_export_payload({"metadata": {"model": value}})
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        # 값이 그 생성기의 산출물 모양이 아니면 면제가 붙으면 안 된다.
+        ("requestId", "010-1234-5678"),
+        ("sessionFp", "01012345678"),
+        ("threadFp", "900101-1234567"),
+        ("sessionFp", "연락처 010 1234 5678"),
+    ],
+)
+def test_opaque_key_with_non_identifier_value_is_still_scanned(key: str, value: str) -> None:
+    """면제는 **키 이름이 아니라 값의 모양**으로 결정된다 (PR #218 리뷰).
+
+    키 이름만 보면 트리 어디서든 같은 이름을 쓰는 dict 가 생기는 순간 면제가 따라붙는다.
+    """
+    with pytest.raises(UnsafeTelemetryError):
+        validate_export_payload({"metadata": {key: value}})
+
+
+@pytest.mark.parametrize("key", ["sessionFp", "threadFp", "requestId"])
+def test_opaque_metadata_keys_are_not_exempt_outside_metadata(key: str) -> None:
+    """메타데이터 문맥 밖(예: 예외 `vars()`)의 동명 키는 면제 대상이 아니다."""
+    with pytest.raises(UnsafeTelemetryError):
+        validate_export_payload({"extra": {key: "01012345678"}})
+
+
+def test_dotted_order_outside_its_shape_is_still_scanned() -> None:
+    """`dotted_order` 도 정렬 키 모양일 때만 면제된다."""
+    with pytest.raises(UnsafeTelemetryError):
+        validate_export_payload({"dotted_order": "01012345678"})
+
+
+@pytest.mark.parametrize("key", ["requestId", "sessionFp", "threadFp"])
+@pytest.mark.parametrize(
+    "canary",
+    ["Bearer abcdefghijklmnop", "person@example.com", "sk-abcdefghijklmnop1234"],
+)
+def test_opaque_identifier_fields_still_reject_non_numeric_canaries(key: str, canary: str) -> None:
+    """불투명 식별자 필드의 면제는 **숫자열 카나리아에만** 적용된다.
+
+    면제가 넓어져 그 필드가 검사에서 통째로 빠지면, 값 생성 경로가 바뀌었을 때 토큰·이메일이
+    조용히 나간다. 면제 범위를 좁게 고정한다.
+    """
+    with pytest.raises(UnsafeTelemetryError):
+        validate_export_payload({"metadata": {key: canary}})
+
+
+async def test_real_export_payload_is_recognized_as_opaque() -> None:
+    """면제 모양 정규식을 **실제 생성기 산출물에 묶는다**.
+
+    모양 기반 면제의 유일한 회귀 위험은 `_build_export_payloads`·`new_request_id`·
+    `safe_fingerprint` 가 형식을 바꿨는데 정규식이 따라가지 못하는 것이다. 그러면 면제가 조용히
+    풀려 오탐 flake 가 되돌아오는데, 확률적이라 다른 테스트로는 안 잡힌다.
+    """
+    exporter = FakeTraceExporter()
+    trace = TraceFactory(exporter=exporter, enabled=True, sampling_rate=1.0).start_request(
+        name="buyer_chat_turn",
+        request_id=new_request_id(),
+        conversation_id="session-opaque",
+        thread_id="thread-opaque",
+        lane="buyer",
+        environment="test",
+    )
+    await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+
+    payloads = _build_export_payloads(exporter.exported[0], project_name=None)
+    assert payloads
+    for payload in payloads:
+        dotted = payload["dotted_order"]
+        assert _is_opaque_identifier("dotted_order", dotted, metadata=False), dotted
+        metadata = payload["extra"]["metadata"]
+        for key in ("requestId", "sessionFp", "threadFp"):
+            assert _is_opaque_identifier(key, metadata[key], metadata=True), (key, metadata[key])
