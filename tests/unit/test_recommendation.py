@@ -2051,6 +2051,38 @@ async def test_recommendation_repurchase_survives_rerank_omission(
     assert 101 in _only_list(push.pushes[0]).product_ids
 
 
+async def test_recommendation_ambiguous_repurchase_reverts_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """짧고 흔한 지목("세트")이 최근 구매 여러 건에 걸리면 아무것도 되돌리지 않는다(PR #230 리뷰).
+
+    완전 일치 없이 부분비교만으로 여러 건이 걸리는 것은 지목이 모호하다는 신호다. 그대로 풀면
+    사용자가 지목하지 않은 상품까지 dedup 이 통째로 무력화된다 — 미해제 방향으로 degrade 한다.
+    """
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(
+        _sc_mod,
+        "get_recent_purchases",
+        _purchases_cat((301, "식품", "한우 선물세트"), (302, "뷰티", "화장품 세트")),
+    )
+    products = [_prod(301, "식품", "한우 선물세트"), _prod(302, "뷰티", "화장품 세트")]
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["세트"],
+            "filters": {},
+            "case": 1,
+        }
+    )
+    events = await _collect(
+        run_buyer_turn(_req(), _member_num(), llm=llm, search=_make_search(products), push_fn=push)
+    )
+    # 둘 다 최근 구매라 제외 유지 → 노출할 상품이 없다(push 자체가 없음).
+    assert push.pushes == []
+    assert "error" not in _types(events)
+
+
 @pytest.mark.parametrize("decompose", [{}, {"repurchaseProducts": []}])
 async def test_recommendation_without_repurchase_keeps_exact_exclusion(
     monkeypatch: pytest.MonkeyPatch,

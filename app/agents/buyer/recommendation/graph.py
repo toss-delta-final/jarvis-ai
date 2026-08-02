@@ -251,7 +251,17 @@ def _resolve_repurchase_ids(recent, references: list[str]) -> set[int]:
     out: set[int] = set()
     for n in norms:
         exact = {pid for pid, name in names if name and name == n}
-        out |= exact or {pid for pid, name in names if name and (n in name or name in n)}
+        if exact:
+            out |= exact
+            continue
+        # 부분비교는 **모호하지 않을 때만** 쓴다 — "세트"·"리필" 같은 짧고 흔한 지목은 최근 구매
+        # 여러 건에 한꺼번에 걸려 dedup 을 통째로 무력화한다. 길이 하한은 한국어에서 쓸 수 없어
+        # ("소금"·"우유"와 "세트"·"리필"이 모두 2자) 길이 대신 **모호성 자체**를 기준으로 삼는다 —
+        # 언어 중립적이고 새 튜너블도 필요 없다. 2건 이상 걸리면 지목이 특정에 실패한 것이므로
+        # 아무것도 풀지 않는다(과잉 해제보다 미해제, PR #230 리뷰).
+        partial = {pid for pid, name in names if name and (n in name or name in n)}
+        if len(partial) == 1:
+            out |= partial
     return out
 
 
