@@ -897,10 +897,11 @@ async def test_churn_tool_distinguishes_empty_cohort_from_zero_churn() -> None:
 
 
 async def test_churn_tool_caps_member_lines_by_settings() -> None:
-    """이탈 회원 나열은 seller_summary_max_events 상한으로 절단하고 잔여를 고지한다."""
+    """이탈 회원 나열은 I-16 전용 상한(seller_churn_member_max)으로 절단하고 잔여를
+    고지한다 — I-14 kv 상한과 분리돼 서로의 조정에 영향받지 않는다(#197 리뷰)."""
     from app.core.config import get_settings
 
-    cap = get_settings().seller_summary_max_events
+    cap = get_settings().seller_churn_member_max
     fake = FakeSpringClient()
     fake.churn_result = ChurnResult(
         churn_rate=0.5,
@@ -1059,3 +1060,7 @@ def test_worker_prompts_contain_log_interpretation_rules() -> None:
     assert "완료" in CHURN_PROMPT and "교환" in CHURN_PROMPT
     assert "신청 미기록" in ABUSE_PROMPT
     assert "purchaseComplete" in BEHAVIOR_PROMPT
+    # [#197 리뷰] 워커에 전달되는 리터럴의 번호 목록 구조 회귀 방지 — 연속 문장이
+    # 3칸 들여쓰기를 잃으면 목록 밖 독립 문장처럼 보인다(충돌 해결 중 실제 발생).
+    assert "\n   '구매 0' 판정은" in ABUSE_PROMPT
+    assert "\n'구매 0'" not in ABUSE_PROMPT

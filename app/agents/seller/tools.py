@@ -477,7 +477,8 @@ async def get_churn_cohort(
             f"검색 무결과 세션 {s.zero_result_search_sessions}건."
         )
     if result.members:
-        shown = result.members[: settings.seller_summary_max_events]
+        # [#197 리뷰] I-16 전용 상한 — I-14 kv 상한(seller_summary_max_events)과 분리.
+        shown = result.members[: settings.seller_churn_member_max]
         member_lines = "; ".join(
             f"[{m.member_id if m.member_id is not None else '?'}] "
             f"마지막 활동 {m.last_activity_at or '?'}"

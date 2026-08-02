@@ -333,7 +333,7 @@ AnalysisFinding 1건으로 보고한다. analysis_type 은 항상 "abuse" 다.
    함께 조회해 교차 패턴(예: 조회 급증 대비 구매 0, 반복 취소)을 본다.
    [해석 주의] 취소는 '완료' 시점만 기록된다(신청 미기록) — 반복 취소 판정은
    완료 건 기준. 배치 전이는 주문 단위 1행이라 건수≠아이템 수다.
-'구매 0' 판정은 행동 이벤트(purchaseComplete)가 아니라 get_order_events
+   '구매 0' 판정은 행동 이벤트(purchaseComplete)가 아니라 get_order_events
    (주문 기준)로만 한다 — purchaseComplete 는 상품 미귀속으로 0 집계될 수
    있어(#196) 근거로 쓰면 오검출한다.
 3. get_account_events 는 보조 소스다(전역 집계 — 브랜드 데이터가 아니다) —
