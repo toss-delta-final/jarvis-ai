@@ -160,7 +160,7 @@ def _is_retryable(exc: BaseException) -> bool:
 
     타임아웃·연결 오류·응답 중단·5xx 는 일시 장애라 같은 요청이 다음엔 성공할 수 있다. 반면
     4xx 계약 오류와 응답 파싱 실패(ValueError/ValidationError)는 **같은 응답이 또 온다** —
-    재시도는 first-token 예산만 태우고 결과를 바꾸지 못한다.
+    재시도는 턴 예산만 태우고 결과를 바꾸지 못한다.
 
     `RemoteProtocolError` 를 따로 적는 이유: httpx 계층에서 이것은 `NetworkError` 의 하위가
     아니라 **형제**(둘 다 `TransportError` 직계)라, "연결 오류"로 묶으면 빠진다. 서버가 응답

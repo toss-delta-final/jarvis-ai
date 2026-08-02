@@ -752,15 +752,17 @@ class Settings(BaseSettings):
         (llm_max_retries + 1)` 과 같은 결의 예산식이며, 한쪽만 튜닝하면 조용히 어긋나는 쌍이라
         기동 시점에 고정한다.
 
-        ⚠️ #138(PR #241)이 구매자 전용 전체 상한(`stream_total_timeout_buyer_s`, 30s)을 도입하면
-        추천 경로의 실질 상한은 그쪽이다 — 병합 뒤 이 검증도 더 좁은 값을 따라가야 한다.
+        비교 대상은 **구매자 전체 상한**(`stream_total_timeout_buyer_s`, #138)이다 — I-1 검색은
+        구매자 추천 경로에서만 돌고, 그 경로를 실제로 끊는 것은 판매자와 공용인 90s 가 아니라
+        구매자 전용 30s 다. 느슨한 쪽과 비교하면 검증이 이름만 남는다.
         """
         budget = self.spring_timeout_s * (self.spring_max_retries + 1)
-        if budget >= self.stream_total_timeout_s:
+        if budget >= self.stream_total_timeout_buyer_s:
             raise ValueError(
                 "SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1) must be < "
-                f"STREAM_TOTAL_TIMEOUT_S (got {budget} >= {self.stream_total_timeout_s}): "
-                "search retries alone would exhaust the turn budget"
+                f"STREAM_TOTAL_TIMEOUT_BUYER_S (got {budget} >= "
+                f"{self.stream_total_timeout_buyer_s}): "
+                "search retries alone would exhaust the buyer turn budget"
             )
         return self
 

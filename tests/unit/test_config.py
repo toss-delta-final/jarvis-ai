@@ -143,8 +143,12 @@ def test_search_retry_budget_overrun_fails_startup():
     import pytest
     from pydantic import ValidationError
 
-    with pytest.raises(ValidationError, match="exhaust the turn budget"):
-        Settings(_env_file=None, spring_max_retries=1, spring_timeout_s=60.0)
+    with pytest.raises(ValidationError, match="exhaust the buyer turn budget"):
+        Settings(_env_file=None, spring_max_retries=1, spring_timeout_s=20.0)
+
+    # 판매자와 공용인 90s 가 아니라 구매자 전용 30s 와 비교한다 — I-1 검색은 구매자 경로 전용이라
+    # 느슨한 쪽과 비교하면 검증이 이름만 남는다(#138 로 두 상한이 갈렸다).
+    assert Settings(_env_file=None).stream_total_timeout_buyer_s == 30.0
 
 
 def test_search_retries_capped_at_implemented_value():
