@@ -319,24 +319,31 @@ async def get_order_events(
         to_status: 전이 대상 상태(선택) — 주문: PENDING/PAID/PAYMENT_FAILED/CANCELLED,
             아이템: SHIPPING/DELIVERED/CANCELLED/RETURNED (교환 어휘 없음).
         actor_type: 전이 주체(선택) — USER/SELLER/ADMIN/SYSTEM.
+            memberId 집계 시에는 무시된다(아래 group_by 참조).
         group_by: "memberId" 하나뿐(선택) — 회원별 어뷰징 집계로 전환된다.
             rows 가 buyerMemberId/orderCount/cancelCount/cancelRatio/
             maxOrdersPerHour/isSuspicious(코드 판정)로 바뀐다.
-            ※ to_status 와 함께 오면 to_status 를 무시한다(코드 강제) —
+            ※ to_status·actor_type 이 함께 오면 무시한다(코드 강제) —
             분모(orderCount)까지 필터돼 cancelRatio 가 왜곡되기 때문
-            (예: CANCELLED 만 남기면 전원 1.0).
+            (예: CANCELLED 만 남기면 전원 1.0, USER 만 남기면 취소 전이만
+            분모에 남음).
         stats: 집계 모드로 조회할지 여부(선택, api-spec §4.4 `stats` 쿼리) —
             rows 없이 byStatus·cancelReasonsTop 만 반환된다.
     """
     brand_id = runtime.context.brand_id
-    # [#215 리뷰] memberId 집계에 to_status 가 걸리면 Spring 이 분모(orderCount)까지
-    # 필터해 cancelRatio 가 왜곡된다(CANCELLED 만 남기면 전원 1.0 = 전원 의심) —
+    # [#215 리뷰] memberId 집계에 to_status·actor_type 이 걸리면 Spring 이 분모
+    # (orderCount)까지 필터해 cancelRatio 가 왜곡된다 — BE 쿼리(aggregate·maxPerHour
+    # 양쪽)의 두 필터가 GROUP BY 이전에 적용되기 때문. 예: to_status=CANCELLED 면
+    # 전원 1.0, actor_type=USER 면 취소(USER 전이)만 분모에 남아 정상 회원도 1.0.
     # 왜곡된 isSuspicious 는 '코드 판정 번복 금지' 규칙 탓에 그대로 보고되므로,
     # 프롬프트·docstring(소프트 가드)에만 맡기지 않고 코드에서 무시를 강제한다.
     ignored_status_note = ""
-    if group_by == "memberId" and to_status:
+    if group_by == "memberId" and (to_status or actor_type):
         to_status = None
-        ignored_status_note = " ※ memberId 집계에서 to_status 는 무시됨(비율 왜곡 방지)."
+        actor_type = None
+        ignored_status_note = (
+            " ※ memberId 집계에서 to_status/actor_type 필터는 무시됨(비율 왜곡 방지)."
+        )
     try:
         status_filter = [to_status] if to_status else None
         result = await get_spring_client().get_order_events(

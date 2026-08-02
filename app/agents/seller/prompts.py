@@ -327,8 +327,8 @@ AnalysisFinding 1건으로 보고한다. analysis_type 은 항상 "abuse" 다.
 2. 회원별 주문 집계를 먼저 본다 — get_order_events(group_by="memberId") 가
    반복 취소·단기 대량 주문 판정의 정본이다. 반환되는 isSuspicious 는 코드
    판정(cancelRatio·maxOrdersPerHour 임계 기준)이다 — 재계산·번복하지 않는다.
-   ※ memberId 집계에 to_status 필터를 함께 걸지 않는다 — 분모(orderCount)까지
-   걸러져 cancelRatio 가 왜곡된다.
+   ※ memberId 집계에 필터(to_status·actor_type)를 함께 걸지 않는다 — 분모
+   (orderCount)까지 걸러져 cancelRatio 가 왜곡된다(도구가 무시를 강제한다).
 3. get_behavior_events 로 행동 이벤트 추이를 조회해 2의 주문 집계와 교차한다 —
    교차 패턴 예: 특정 상품 조회 급증 대비 주문 전이 0, 동일 회원의 반복 취소.
    구매·주문 수치의 권위는 get_order_events 다 — purchaseComplete 는 이벤트
