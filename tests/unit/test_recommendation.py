@@ -1920,6 +1920,61 @@ async def test_recommendation_repurchase_restores_only_named_consumable(
     assert 201 not in _only_list(push.pushes[0]).product_ids
 
 
+async def test_recommendation_repurchase_prefers_exact_name_over_sibling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """지목과 완전 일치하는 구매가 있으면 접두어 관계인 형제 상품까지 풀지 않음을 보장한다(PR #230 리뷰).
+
+    "무선 이어폰" 지목이 "무선 이어폰 케이스"의 부분문자열이기도 해, 좁은 해석을 고르지 않으면
+    사용자가 지목하지 않은 상품까지 exact 제외가 풀린다.
+    """
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(
+        _sc_mod,
+        "get_recent_purchases",
+        _purchases_cat((101, "음향가전", "무선 이어폰"), (102, "음향가전", "무선 이어폰 케이스")),
+    )
+    products = [_prod(101, "음향가전", "무선 이어폰"), _prod(102, "음향가전", "무선 이어폰 케이스")]
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["무선 이어폰"],
+            "filters": {},
+            "case": 1,
+        }
+    )
+    await _collect(
+        run_buyer_turn(_req(), _member_num(), llm=llm, search=_make_search(products), push_fn=push)
+    )
+    assert 101 in _only_list(push.pushes[0]).product_ids
+    assert 102 not in _only_list(push.pushes[0]).product_ids
+
+
+async def test_recommendation_repurchase_falls_back_to_partial_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """완전 일치가 없으면 부분비교로 넓혀 표기 차이("무선이어폰" vs "무선 이어폰 프로")를 잡는다."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(
+        _sc_mod, "get_recent_purchases", _purchases_cat((101, "음향가전", "무선 이어폰 프로"))
+    )
+    products = [_prod(101, "음향가전", "무선 이어폰 프로")]
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["무선이어폰"],
+            "filters": {},
+            "case": 1,
+        }
+    )
+    await _collect(
+        run_buyer_turn(_req(), _member_num(), llm=llm, search=_make_search(products), push_fn=push)
+    )
+    assert 101 in _only_list(push.pushes[0]).product_ids
+
+
 @pytest.mark.parametrize("decompose", [{}, {"repurchaseProducts": []}])
 async def test_recommendation_without_repurchase_keeps_exact_exclusion(
     monkeypatch: pytest.MonkeyPatch,

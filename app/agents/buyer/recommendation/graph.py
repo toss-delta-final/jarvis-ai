@@ -235,18 +235,23 @@ def _resolve_repurchase_ids(recent, references: list[str]) -> set[int]:
     exact 제외 대상의 부분집합이라, LLM 이 무엇을 지목하든 임의 productId·타인 상품으로
     확장될 수 없다(신뢰 경계). 후보(candidates) id 나 LLM 정수는 여기 들어오지 않는다.
 
-    매칭은 공백 제거 + casefold 후 양방향 부분비교 — 발화 표기("무선이어폰")와 상품명
-    ("무선 이어폰 프로")이 띄어쓰기만 달라도 잡히게 하되, 못 잡으면 조용히 빈 집합
+    매칭은 공백 제거 + casefold 후, 지목 **하나당 가장 좁은 해석**을 고른다 — 완전 일치가 있으면
+    그것만, 없을 때만 양방향 부분비교로 넓힌다. 부분비교를 항상 쓰면 "무선 이어폰" 지목이 접두어
+    관계인 형제 상품("무선 이어폰 케이스")까지 함께 풀어 사용자가 지목하지 않은 상품을 노출한다
+    (PR #230 리뷰). 부분비교 폴백은 남겨 발화 표기("무선이어폰")와 상품명("무선 이어폰 프로")이
+    띄어쓰기·수식어만 다른 경우를 계속 잡는다. 아무것도 못 잡으면 조용히 빈 집합
     (= 종전 제외 유지)으로 degrade 한다. 과잉 해제보다 미해제가 안전하다.
     """
     if not references:
         return set()
     norms = [n for r in references if (n := "".join(r.split()).casefold())]
+    names = [
+        (item.product_id, "".join((item.product_name or "").split()).casefold()) for item in recent
+    ]
     out: set[int] = set()
-    for item in recent:
-        name = "".join((item.product_name or "").split()).casefold()
-        if name and any(n in name or name in n for n in norms):
-            out.add(item.product_id)
+    for n in norms:
+        exact = {pid for pid, name in names if name and name == n}
+        out |= exact or {pid for pid, name in names if name and (n in name or name in n)}
     return out
 
 
