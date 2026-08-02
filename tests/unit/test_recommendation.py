@@ -2038,6 +2038,534 @@ def _prod(pid, cat, name="상품"):
     )
 
 
+async def test_recommendation_repurchase_restores_exact_product(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """명시 재구매 상품은 최근 구매 exact 제외를 되돌려 다시 추천됨을 보장한다."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(
+        _sc_mod, "get_recent_purchases", _purchases_cat((101, "무선이어폰", "무선 이어폰 프로"))
+    )
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["무선이어폰"],
+            "filters": {},
+            "case": 1,
+        }
+    )
+    await _collect(
+        run_buyer_turn(
+            _req(), _member_num(), llm=llm, search=_make_search(DEFAULT_PRODUCTS), push_fn=push
+        )
+    )
+    assert 101 in _only_list(push.pushes[0]).product_ids
+
+
+async def test_recommendation_repurchase_restores_only_named_consumable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """명시한 소모품만 exact·카테고리 억제를 면제하고 같은 카테고리의 다른 상품은 억제한다."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(get_settings(), "consumable_categories", ["조미료"])
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases_cat((900, "조미료", "소금")))
+    products = [_prod(900, "조미료", "소금"), _prod(201, "조미료", "후추")]
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["소금"],
+            "filters": {},
+            "case": 1,
+        }
+    )
+    await _collect(
+        run_buyer_turn(_req(), _member_num(), llm=llm, search=_make_search(products), push_fn=push)
+    )
+    assert 900 in _only_list(push.pushes[0]).product_ids
+    assert 201 not in _only_list(push.pushes[0]).product_ids
+
+
+async def test_recommendation_repurchase_prefers_exact_name_over_sibling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """지목과 완전 일치하는 구매가 있으면 접두어 관계인 형제 상품까지 풀지 않음을 보장한다(PR #230 리뷰).
+
+    "무선 이어폰" 지목이 "무선 이어폰 케이스"의 부분문자열이기도 해, 좁은 해석을 고르지 않으면
+    사용자가 지목하지 않은 상품까지 exact 제외가 풀린다.
+    """
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(
+        _sc_mod,
+        "get_recent_purchases",
+        _purchases_cat((101, "음향가전", "무선 이어폰"), (102, "음향가전", "무선 이어폰 케이스")),
+    )
+    products = [_prod(101, "음향가전", "무선 이어폰"), _prod(102, "음향가전", "무선 이어폰 케이스")]
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["무선 이어폰"],
+            "filters": {},
+            "case": 1,
+        }
+    )
+    await _collect(
+        run_buyer_turn(_req(), _member_num(), llm=llm, search=_make_search(products), push_fn=push)
+    )
+    assert 101 in _only_list(push.pushes[0]).product_ids
+    assert 102 not in _only_list(push.pushes[0]).product_ids
+
+
+async def test_recommendation_repurchase_falls_back_to_partial_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """완전 일치가 없으면 부분비교로 넓혀 표기 차이("무선이어폰" vs "무선 이어폰 프로")를 잡는다."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(
+        _sc_mod, "get_recent_purchases", _purchases_cat((101, "음향가전", "무선 이어폰 프로"))
+    )
+    products = [_prod(101, "음향가전", "무선 이어폰 프로")]
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["무선이어폰"],
+            "filters": {},
+            "case": 1,
+        }
+    )
+    await _collect(
+        run_buyer_turn(_req(), _member_num(), llm=llm, search=_make_search(products), push_fn=push)
+    )
+    assert 101 in _only_list(push.pushes[0]).product_ids
+
+
+async def test_recommendation_repurchase_rejects_reverse_only_partial_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """긴 지목 안에 짧은 구매명이 든 역방향 부분일치는 다른 상품 오해제로 번지지 않는다."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(
+        _sc_mod, "get_recent_purchases", _purchases_cat((101, "음향가전", "이어폰"))
+    )
+    products = [_prod(101, "음향가전", "이어폰"), _prod(202, "음향가전", "헤드폰")]
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["무선 이어폰 케이스"],
+            "filters": {},
+            "case": 1,
+        }
+    )
+    await _collect(
+        run_buyer_turn(_req(), _member_num(), llm=llm, search=_make_search(products), push_fn=push)
+    )
+    assert 101 not in _only_list(push.pushes[0]).product_ids
+    assert 202 in _only_list(push.pushes[0]).product_ids
+
+
+async def test_recommendation_repurchase_survives_rerank_limit_truncation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """되살린 상품이 검색 순서상 rerank 상한 밖이어도 절단에 잘리지 않음을 보장한다(PR #230 리뷰).
+
+    절단(`kept[:embedding_rerank_limit]`)은 원본 검색 순서 기준이라, 지목 상품이 상한 밖이면
+    exact 제외를 면제해 놓고도 rerank 후보에조차 못 들어가 "지목하면 다시 추천된다"가 깨진다.
+    """
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(get_settings(), "embedding_rerank_limit", 2)
+    monkeypatch.setattr(
+        _sc_mod, "get_recent_purchases", _purchases_cat((101, "음향가전", "무선 이어폰"))
+    )
+    # 지목 상품(101)을 검색 순서 **맨 뒤**(상한 2 밖)에 둔다.
+    products = [
+        _prod(201, "음향가전", "유선 이어폰"),
+        _prod(202, "음향가전", "헤드폰"),
+        _prod(101, "음향가전", "무선 이어폰"),
+    ]
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["무선 이어폰"],
+            "filters": {},
+            "case": 1,
+        }
+    )
+    await _collect(
+        run_buyer_turn(_req(), _member_num(), llm=llm, search=_make_search(products), push_fn=push)
+    )
+    assert 101 in _only_list(push.pushes[0]).product_ids
+
+
+async def test_recommendation_repurchase_survives_rerank_omission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """rerank 가 지목 상품을 안 골라도 노출 목록에 포함됨을 보장한다(PR #230 리뷰).
+
+    rerank 는 relevance 로 expose_max 개만 고르고 "이 상품은 반드시" 라는 고정 수단이 없다.
+    절단만 막고 여기를 두면 exact 제외·상한 절단을 다 통과하고도 최종 노출에서 조용히 빠진다.
+    """
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(get_settings(), "expose_min", 1)
+    monkeypatch.setattr(get_settings(), "expose_max", 2)
+    monkeypatch.setattr(
+        _sc_mod, "get_recent_purchases", _purchases_cat((101, "음향가전", "무선 이어폰"))
+    )
+    products = [
+        _prod(101, "음향가전", "무선 이어폰"),
+        _prod(201, "음향가전", "유선 이어폰"),
+        _prod(202, "음향가전", "헤드폰"),
+    ]
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["무선 이어폰"],
+            "filters": {},
+            "case": 1,
+        },
+        # rerank 가 지목 상품(101)을 빼고 고른 상황.
+        rerank={
+            "ranked": [
+                {"productId": 201, "rationale": "가성비가 좋아요"},
+                {"productId": 202, "rationale": "음질이 우수해요"},
+            ],
+            "overallComment": "추천이에요",
+        },
+    )
+    await _collect(
+        run_buyer_turn(_req(), _member_num(), llm=llm, search=_make_search(products), push_fn=push)
+    )
+    assert 101 in _only_list(push.pushes[0]).product_ids
+
+
+async def test_recommendation_repurchase_pin_stays_in_its_fanout_need(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """fan-out에서도 절단 전 우선순위와 rerank pin이 지목 상품을 자기 니즈 목록에만 보존한다."""
+    from app.agents.buyer.recommendation.category_mapping import CategoryMapping
+
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(get_settings(), "embedding_rerank_limit", 3)
+    monkeypatch.setattr(get_settings(), "expose_min", 1)
+    monkeypatch.setattr(get_settings(), "expose_max", 2)
+    monkeypatch.setattr(
+        _sc_mod, "get_recent_purchases", _purchases_cat((101, "전자기기", "여행용 어댑터"))
+    )
+
+    async def _map(**kwargs):
+        return CategoryMapping(legs=[("여행용품", "여행용 파우치"), ("전자기기", "여행용 어댑터")])
+
+    async def _search(filters, exclude_product_ids=None):
+        products = (
+            [_prod(102, "여행용품", "여행용 파우치"), _prod(103, "여행용품", "압축 파우치")]
+            if filters.category == "여행용품"
+            else [
+                _prod(201, "전자기기", "멀티 어댑터"),
+                _prod(101, "전자기기", "여행용 어댑터"),
+            ]
+        )
+        return ProductSearchResult(products=products, total_count=len(products))
+
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["여행용 어댑터"],
+            "categoryQueries": [
+                {"category": "여행용품", "query": "여행용 파우치"},
+                {"category": "전자기기", "query": "여행용 어댑터"},
+            ],
+            "filters": {},
+            "case": 3,
+        },
+        rerank={
+            "ranked": [
+                {"productId": 102, "rationale": "수납하기 좋아요"},
+                {"productId": 201, "rationale": "호환성이 좋아요"},
+            ],
+            "overallComment": "니즈별 추천이에요",
+        },
+    )
+    await _collect(
+        run_buyer_turn(
+            _req(message="여행용 파우치랑 전에 산 어댑터 추천해줘"),
+            _member_num(),
+            llm=llm,
+            search=_search,
+            push_fn=push,
+            map_categories=_map,
+        )
+    )
+
+    lists = push.pushes[0].lists
+    assert len(lists) == 2
+    assert lists[0].product_ids == [102]
+    assert lists[1].product_ids == [101, 201]
+    assert all(len(item.product_ids) <= 2 for item in lists)
+    assert 101 not in {reason.product_id for reason in lists[1].reasons}
+
+
+async def test_recommendation_ambiguous_repurchase_reverts_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """짧고 흔한 지목("세트")이 최근 구매 여러 건에 걸리면 아무것도 되돌리지 않는다(PR #230 리뷰).
+
+    완전 일치 없이 부분비교만으로 여러 건이 걸리는 것은 지목이 모호하다는 신호다. 그대로 풀면
+    사용자가 지목하지 않은 상품까지 dedup 이 통째로 무력화된다 — 미해제 방향으로 degrade 한다.
+    """
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(
+        _sc_mod,
+        "get_recent_purchases",
+        _purchases_cat((301, "식품", "한우 선물세트"), (302, "뷰티", "화장품 세트")),
+    )
+    products = [_prod(301, "식품", "한우 선물세트"), _prod(302, "뷰티", "화장품 세트")]
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["세트"],
+            "filters": {},
+            "case": 1,
+        }
+    )
+    events = await _collect(
+        run_buyer_turn(_req(), _member_num(), llm=llm, search=_make_search(products), push_fn=push)
+    )
+    # 둘 다 최근 구매라 제외 유지 → 노출할 상품이 없다(push 자체가 없음).
+    assert push.pushes == []
+    assert "error" not in _types(events)
+
+
+async def test_recommendation_multiple_repurchase_references_revert_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """맥락 목록이 복수 지목으로 에코되면 각 이름이 정확해도 아무 상품도 되돌리지 않는다."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(
+        _sc_mod,
+        "get_recent_purchases",
+        _purchases_cat(
+            (301, "세탁용품", "리필 세탁 세제 2L"),
+            (302, "세탁용품", "드럼용 세탁 세제"),
+        ),
+    )
+    products = [
+        _prod(301, "세탁용품", "리필 세탁 세제 2L"),
+        _prod(302, "세탁용품", "드럼용 세탁 세제"),
+    ]
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["리필 세탁 세제 2L", "드럼용 세탁 세제"],
+            "filters": {},
+            "case": 1,
+        }
+    )
+    events = await _collect(
+        run_buyer_turn(_req(), _member_num(), llm=llm, search=_make_search(products), push_fn=push)
+    )
+    assert push.pushes == []
+    assert events[-1]["data"]["finishReason"] == "zero_result"
+
+
+async def test_recommendation_duplicate_repurchase_references_restore_product(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """같은 상품명의 반복 지목은 단일 고유 지목으로 보고 정상적으로 되돌린다."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(
+        _sc_mod,
+        "get_recent_purchases",
+        _purchases_cat((301, "음향가전", "무선 이어폰")),
+    )
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["무선 이어폰", "무선 이어폰"],
+            "filters": {},
+            "case": 1,
+        }
+    )
+    await _collect(
+        run_buyer_turn(
+            _req(),
+            _member_num(),
+            llm=llm,
+            search=_make_search([_prod(301, "음향가전", "무선 이어폰")]),
+            push_fn=push,
+        )
+    )
+    assert 301 in _only_list(push.pushes[0]).product_ids
+
+
+async def test_recommendation_repurchase_restores_all_identically_named(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """완전일치 후보의 정규화 상품명이 하나면 여러 productId를 **전부** 되돌린다.
+
+    모호성은 매칭 productId 개수가 아니라 구분되는 정규화 상품명 개수로 판정한다. 재등록·옵션
+    분리로 같은 이름이 여러 productId로 존재해도 이름 그룹은 하나이므로 모두 해제한다.
+    """
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(
+        _sc_mod,
+        "get_recent_purchases",
+        _purchases_cat((401, "음향가전", "무선 이어폰"), (402, "음향가전", "무선 이어폰")),
+    )
+    products = [_prod(401, "음향가전", "무선 이어폰"), _prod(402, "음향가전", "무선 이어폰")]
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["무선 이어폰"],
+            "filters": {},
+            "case": 1,
+        }
+    )
+    await _collect(
+        run_buyer_turn(_req(), _member_num(), llm=llm, search=_make_search(products), push_fn=push)
+    )
+    ids = _only_list(push.pushes[0]).product_ids
+    assert 401 in ids and 402 in ids
+
+
+async def test_recommendation_repurchase_partial_restores_all_identically_named(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """부분일치 후보가 같은 정규화 상품명뿐이면 해당 productId를 전부 되돌린다."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(
+        _sc_mod,
+        "get_recent_purchases",
+        _purchases_cat(
+            (411, "음향가전", "무선 이어폰 프로"),
+            (412, "음향가전", "무선 이어폰 프로"),
+        ),
+    )
+    products = [
+        _prod(411, "음향가전", "무선 이어폰 프로"),
+        _prod(412, "음향가전", "무선 이어폰 프로"),
+        _prod(499, "음향가전", "블루투스 스피커"),
+    ]
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["무선 이어폰"],
+            "filters": {},
+            "case": 1,
+        }
+    )
+    await _collect(
+        run_buyer_turn(_req(), _member_num(), llm=llm, search=_make_search(products), push_fn=push)
+    )
+    assert {411, 412} <= set(_only_list(push.pushes[0]).product_ids)
+
+
+@pytest.mark.parametrize("decompose", [{}, {"repurchaseProducts": []}])
+async def test_recommendation_without_repurchase_keeps_exact_exclusion(
+    monkeypatch: pytest.MonkeyPatch,
+    decompose: dict,
+) -> None:
+    """재구매 신호가 없거나 빈 목록이면 기존 최근 구매 exact 제외가 유지됨을 보장한다."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(
+        _sc_mod, "get_recent_purchases", _purchases_cat((101, "무선이어폰", "무선 이어폰"))
+    )
+    push = _RecordingPush()
+    llm = FakeLLM(decompose={"intent": "recommend", "filters": {}, "case": 1, **decompose})
+    await _collect(
+        run_buyer_turn(
+            _req(), _member_num(), llm=llm, search=_make_search(DEFAULT_PRODUCTS), push_fn=push
+        )
+    )
+    assert 101 not in _only_list(push.pushes[0]).product_ids
+    assert 102 in _only_list(push.pushes[0]).product_ids
+
+
+async def test_recommendation_unrelated_repurchase_keeps_exact_exclusion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """구매 이력과 무관한 상품명 지목은 최근 구매 상품의 exact 제외를 풀지 않음을 보장한다."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(
+        _sc_mod, "get_recent_purchases", _purchases_cat((101, "무선이어폰", "무선 이어폰"))
+    )
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["세탁 세제"],
+            "filters": {},
+            "case": 1,
+        }
+    )
+    await _collect(
+        run_buyer_turn(
+            _req(), _member_num(), llm=llm, search=_make_search(DEFAULT_PRODUCTS), push_fn=push
+        )
+    )
+    assert 101 not in _only_list(push.pushes[0]).product_ids
+    assert 102 in _only_list(push.pushes[0]).product_ids
+
+
+async def test_recommendation_repurchase_resolves_only_against_recent_purchases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """후보에만 있는 지목 상품은 특별 취급하지 않아 해제 집합이 최근 구매 안에 머묾을 보장한다."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(get_settings(), "consumable_categories", ["조미료"])
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases_cat((900, "조미료", "소금")))
+    products = [_prod(201, "조미료", "후추"), _prod(202, "무선이어폰", "이어폰")]
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["후추"],
+            "filters": {},
+            "case": 1,
+        }
+    )
+    await _collect(
+        run_buyer_turn(_req(), _member_num(), llm=llm, search=_make_search(products), push_fn=push)
+    )
+    assert 201 not in _only_list(push.pushes[0]).product_ids
+    assert 202 in _only_list(push.pushes[0]).product_ids
+
+
+async def test_recommendation_guest_ignores_repurchase_without_purchases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """구매 이력이 없는 게스트도 재구매 지목 때문에 크래시하지 않고 정상 추천됨을 보장한다."""
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["후추"],
+            "filters": {},
+            "case": 1,
+        }
+    )
+    await _collect(
+        run_buyer_turn(
+            _req(),
+            _guest(),
+            llm=llm,
+            search=_make_search([_prod(201, "조미료", "후추")]),
+            push_fn=push,
+        )
+    )
+    assert 201 in _only_list(push.pushes[0]).product_ids
+
+
 async def test_recommendation_suppresses_consumable_category(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

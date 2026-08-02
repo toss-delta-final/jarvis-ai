@@ -204,6 +204,39 @@ async def test_blank_revert_category_excluded() -> None:
     assert d.revert_categories == ["조미료"]
 
 
+async def test_repurchase_products_parsed() -> None:
+    """repurchaseProducts 상품명이 RouteDecision 재구매 신호로 정상 파싱됨을 보장한다."""
+    d = await _run(_raw(repurchaseProducts=["무선 이어폰", "소금"]))
+    assert d.repurchase_products == ["무선 이어폰", "소금"]
+
+
+async def test_invalid_repurchase_products_excluded() -> None:
+    """목록이 아니거나 비문자열·공백 항목이면 재구매 신호를 오염시키지 않음을 보장한다."""
+    not_list = await _run(_raw(repurchaseProducts="무선 이어폰"))
+    mixed = await _run(_raw(repurchaseProducts=[1, None, "   ", " 소금 ", ""]))
+    assert not_list.repurchase_products == []
+    assert mixed.repurchase_products == ["소금"]
+
+
+async def test_repurchase_products_truncated_to_max() -> None:
+    """repurchase_max 상한으로 긴 LLM 재구매 목록의 파싱·전달 크기를 제한함을 보장한다."""
+    d = await _run(
+        _raw(repurchaseProducts=["상품1", "상품2", "상품3", "상품4"]),
+        repurchase_max=2,
+    )
+    assert d.repurchase_products == ["상품1", "상품2"]
+
+
+def test_repurchase_prompt_rejects_last_recommendations_echo() -> None:
+    """재구매 규칙은 PRIOR_FILTERS만 해소에 쓰고 직전 추천 목록 복사·복수 지목을 금지한다."""
+    from app.agents.buyer.recommendation.decompose import _SYSTEM
+
+    rule = _SYSTEM.split("- repurchaseProducts:", 1)[1].split("- general:", 1)[0]
+    assert "PRIOR_FILTERS" in rule
+    assert "LAST_RECOMMENDATIONS" in rule and "복사하지 마세요" in rule
+    assert "보통 상품 1개" in rule
+
+
 async def test_attr_conditions_extracted() -> None:
     """[PR②] decompose 가 명시 속성조건을 filters.attr_conditions(축→값)로 추출한다."""
     d = await _run(_raw(attrConditions={"소재": "린넨", "핏": "오버핏"}))

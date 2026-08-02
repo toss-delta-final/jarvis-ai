@@ -388,6 +388,11 @@ class Settings(BaseSettings):
     # 소모품 카테고리(결정 14-F 억제 대상) — MVP config 소스. 정본은 catalog 속성사전
     # (SPEC-CATALOG-DATA-001 REQ-CAT-013 소모품 boolean 플래그). 카테고리명은 BE categoryName 과 일치.
     consumable_categories: list[str] = []
+    # [#120] repurchaseProducts 파싱 개수 상한 — LLM 의 긴 목록을 유계 입력으로 유지한다.
+    # 실제 해제는 graph 가 단일 지목만 신뢰하므로 이 값이 해제 범위를 넓히지는 않는다.
+    # category_fanout_max 와 같은 슬라이스 절단 규약(raw[:cap])이라 음수를 거부한다 — 음수면
+    # "뒤에서 |cap|개 제외"로 뒤집혀 "cap<=0 이면 정확히 0개" 불변식이 깨진다(PR #230 리뷰).
+    dedup_repurchase_max: int = Field(default=5, ge=0)
 
     # ── 프로필 (SPEC-PROFILE-001) ──
     profile_recency_highlights: int = 3  # §5.1 최근 맥락 하이라이트 개수

@@ -39,7 +39,8 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
     "color": string|null
   },
   "cart": { "productId": int|null, "optionId": int|null, "quantity": int },
-  "revertCategories": [string]
+  "revertCategories": [string],
+  "repurchaseProducts": [string]
 }
 규칙:
 - intent 판별: 상품을 찾아달라는 요청이면 recommend, "담아줘/장바구니에 넣어/2번 담아줘"처럼
@@ -120,6 +121,12 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
   담기를 취소·중단하려 하면 intent=general 로 전환하세요(옛 상품에 갇히지 않게).
 - revertCategories: 사용자가 특정 카테고리를 \"다시 추천받기\"(되돌리기 칩) 하거나 최근 구매로
   가려진 카테고리를 다시 보고 싶어하면 그 카테고리명을 넣으세요(예: [\"조미료\"]). 아니면 [].
+- repurchaseProducts: 사용자가 **최근에 산 특정 상품을 다시 사거나 다시 추천받고 싶다**고 하면
+  그 상품을 가리키는 **상품명**을 넣으세요(예: "최근에 산 무선이어폰 또 추천해줘" → ["무선 이어폰"]).
+  "그거 또 사고 싶어"처럼 상품명이 빠진 지시대명사면 PRIOR_FILTERS 맥락에서 가리키는 **상품명**을
+  해소해 넣으세요. 사용자가 재구매를 말로 지목한 상품만 넣고, LAST_RECOMMENDATIONS 에 있다는
+  이유로 직전 추천 상품을 복사하지 마세요. 보통 상품 1개만 넣으며 재구매 의도가 없으면 [].
+  카테고리 단위 되돌리기는 revertCategories 가 담당하니 카테고리명은 넣지 마세요.
 - general: intent=general, reply 에 짧게 답하세요."""
 
 
@@ -160,6 +167,7 @@ async def decompose(
     last_recommendations: list[tuple[int, str]] | None = None,
     pending_cart: dict | None = None,
     category_fanout_max: int = 5,
+    repurchase_max: int = 5,
 ) -> RouteDecision:
     """Haiku 1회 호출로 intent(추천/담기/장바구니조회/주문상태/일반)와 필터를 산출한다.
 
@@ -212,6 +220,9 @@ async def decompose(
             ]  # 공백-only 제외(PR#166)
             if isinstance(raw_revert, list)
             else []
+        )
+        repurchase_products = _parse_repurchase_products(
+            data.get("repurchaseProducts"), repurchase_max
         )
         category_queries = _parse_category_queries(data.get("categoryQueries"), category_fanout_max)
         # semanticQuery 는 filters 밖(최상위)에 오는 의미검색 입력 — 검색 백엔드까지 흐르도록
@@ -274,6 +285,7 @@ async def decompose(
         reply=str(data.get("reply") or ""),
         cart=cart,
         revert_categories=revert_categories,
+        repurchase_products=repurchase_products,
         category_queries=category_queries,
     )
 
@@ -304,6 +316,19 @@ def _parse_attr_removals(raw: object) -> list[str]:
     if not isinstance(raw, list):
         return []
     return [x.strip() for x in raw if isinstance(x, str) and x.strip()]
+
+
+def _parse_repurchase_products(raw: object, cap: int) -> list[str]:
+    """decompose 의 repurchaseProducts → 재구매 지목 상품명 리스트 (#120).
+
+    리스트가 아니면 빈 리스트, 비문자열·공백 항목은 제외한다(revertCategories 와 동일 규약).
+    `cap` 으로 절단해 LLM 이 긴 목록을 내도 파싱·전달 크기를 유계로 유지한다
+    (`_parse_category_queries` 의 fanout_max 절단과 같은 규약 — slice 절단). 실제 해제 범위는
+    graph 의 단일 지목 가드가 결정한다.
+    """
+    if not isinstance(raw, list):
+        return []
+    return [x.strip() for x in raw if isinstance(x, str) and x.strip()][:cap]
 
 
 def _parse_category_queries(raw: object, fanout_max: int) -> list[CategoryQuery]:

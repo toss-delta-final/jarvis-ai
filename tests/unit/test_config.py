@@ -75,6 +75,21 @@ def test_category_fanout_max_cannot_exceed_contract_list_cap():
         Settings(_env_file=None, category_fanout_max=MAX_LISTS + 1)
 
 
+def test_negative_repurchase_max_rejected():
+    """음수 dedup_repurchase_max 는 로드 시 거부한다 (PR #230 리뷰).
+
+    `_parse_repurchase_products` 가 `raw[:cap]` 으로 절단하는데 cap 이 음수면 "뒤에서 |cap|개
+    제외"로 뒤집혀 "cap<=0 이면 정확히 0개"라는 절단 불변식이 조용히 깨진다 — 상한이 오히려
+    대부분을 남긴다. 형제 튜너블 category_fanout_max 와 같은 이유로 소스에서 ge=0 으로 막는다.
+    """
+    import pytest
+    from pydantic import ValidationError
+
+    assert Settings(_env_file=None).dedup_repurchase_max == 5
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, dedup_repurchase_max=-1)
+
+
 def test_lifespan_cleanup_budget_is_independently_tunable():
     """배포 유예 설정과 교차 검증 없이 전체 cleanup 예산만 조정할 수 있다."""
     defaults = Settings(_env_file=None)
