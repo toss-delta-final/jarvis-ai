@@ -681,11 +681,20 @@ class Settings(BaseSettings):
 
         구매자 상한은 전체 상한을 **좁히는** 값이다. 넘어서면 이름과 반대로 판매자보다
         느슨해져 조용히 무의미해지므로 기동 시점에 고정한다.
+        반대로 first-token 상한보다 짧으면 첫 이벤트 대기를 허용한 시간보다 전체 스트림을
+        먼저 끊는 자기모순이므로 함께 거절한다.
         """
         if self.stream_total_timeout_buyer_s > self.stream_total_timeout_s:
             raise ValueError(
                 "STREAM_TOTAL_TIMEOUT_BUYER_S must not exceed STREAM_TOTAL_TIMEOUT_S "
                 f"(got {self.stream_total_timeout_buyer_s} > {self.stream_total_timeout_s})"
+            )
+        if self.stream_total_timeout_buyer_s < self.stream_first_token_timeout_s:
+            raise ValueError(
+                "STREAM_TOTAL_TIMEOUT_BUYER_S must be at least STREAM_FIRST_TOKEN_TIMEOUT_S "
+                f"(got {self.stream_total_timeout_buyer_s} < "
+                f"{self.stream_first_token_timeout_s}): "
+                "the total stream cap cannot expire before the first-event wait"
             )
         return self
 

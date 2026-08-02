@@ -244,6 +244,22 @@ def test_non_positive_buyer_stream_cap_is_rejected(buyer_cap: float) -> None:
         Settings(_env_file=None, stream_total_timeout_buyer_s=buyer_cap)
 
 
+def test_buyer_stream_cap_cannot_be_shorter_than_first_token_cap() -> None:
+    """첫 이벤트 대기보다 전체 상한이 짧은 자기모순은 거절하되 같은 경계는 허용한다."""
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            stream_total_timeout_buyer_s=5.0,
+            stream_first_token_timeout_s=10.0,
+        )
+
+    Settings(
+        _env_file=None,
+        stream_total_timeout_buyer_s=10.0,
+        stream_first_token_timeout_s=10.0,
+    )
+
+
 def test_buyer_endpoint_passes_buyer_stream_role(monkeypatch: pytest.MonkeyPatch) -> None:
     """실제 /chat 호출부가 구매자 상한 선택용 역할을 명시한다."""
     captured: dict[str, object] = {}
