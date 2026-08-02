@@ -435,6 +435,77 @@ async def test_get_order_events_tool_passes_stats_through() -> None:
     assert fake.recorded_stats is True
 
 
+class _FilterRecordingClient(FakeSpringClient):
+    """[#215] get_order_events 로 전달된 필터 인자를 기록하는 이중 — 가드 검증용."""
+
+    async def get_order_events(
+        self, brand_id, from_, to, to_status=None, actor_type=None, group_by=None, stats=None
+    ):
+        self.recorded_brand_id = brand_id
+        self.recorded_filters = (to_status, actor_type, group_by)
+        return self.order_events_result
+
+
+async def test_order_events_member_agg_guard_strips_denominator_filters() -> None:
+    """[#215] memberId 집계 가드 — to_status/actor_type 이 Spring 호출에서 None 으로
+    씻겨 전달된다(분모 오염 차단). 프롬프트·docstring 은 소프트 가드라 코드 동작을
+    테스트로 고정한다(리팩터링 회귀 방지)."""
+    fake = _FilterRecordingClient()
+
+    result = await _call_runtime_tool(
+        get_order_events,
+        {
+            "from_date": "2026-07-01",
+            "to_date": "2026-07-14",
+            "to_status": "CANCELLED",
+            "actor_type": "USER",
+            "group_by": "memberId",
+        },
+        fake,
+    )
+
+    assert fake.recorded_filters == (None, None, "memberId")
+    assert "무시됨" in result  # 무시 사실이 요약에 고지된다
+
+
+async def test_order_events_member_agg_guard_normalizes_group_by_variants() -> None:
+    """[#215] group_by 는 LLM 자유 문자열 — 대소문자·공백 변형("memberid" 등)에도
+    가드가 작동하고, Spring 에는 정규화된 "memberId" 로 전달된다(등호 비교 라우팅)."""
+    fake = _FilterRecordingClient()
+
+    await _call_runtime_tool(
+        get_order_events,
+        {
+            "from_date": "2026-07-01",
+            "to_date": "2026-07-14",
+            "to_status": "CANCELLED",
+            "group_by": " MemberID ",
+        },
+        fake,
+    )
+
+    assert fake.recorded_filters == (None, None, "memberId")
+
+
+async def test_order_events_filters_pass_through_without_member_agg() -> None:
+    """[#215] 가드는 memberId 집계에만 작동 — 목록 조회의 정당한 필터는 그대로 전달된다."""
+    fake = _FilterRecordingClient()
+
+    result = await _call_runtime_tool(
+        get_order_events,
+        {
+            "from_date": "2026-07-01",
+            "to_date": "2026-07-14",
+            "to_status": "CANCELLED",
+            "actor_type": "USER",
+        },
+        fake,
+    )
+
+    assert fake.recorded_filters == (["CANCELLED"], "USER", None)
+    assert "무시됨" not in result
+
+
 async def test_sales_tool_includes_point_detail_and_caps_output() -> None:
     """시계열 상세 나열(안 1, 2026-07-17 확정) — 포인트별 수치를 포함하되
     seller_summary_max_points 초과분은 "외 N개 포인트 생략" 으로 접는다."""
@@ -1079,5 +1150,7 @@ def test_worker_prompts_contain_log_interpretation_rules() -> None:
     assert "purchaseComplete" in BEHAVIOR_PROMPT
     # [#197 리뷰] 워커에 전달되는 리터럴의 번호 목록 구조 회귀 방지 — 연속 문장이
     # 3칸 들여쓰기를 잃으면 목록 밖 독립 문장처럼 보인다(충돌 해결 중 실제 발생).
-    assert "\n   '구매 0' 판정은" in ABUSE_PROMPT
-    assert "\n'구매 0'" not in ABUSE_PROMPT
+    # [#215] purchaseComplete 금지 문구가 3단계로 재작성돼 리터럴을 새 문구로 갱신.
+    assert "\n   구매·주문 수치의 권위는 get_order_events" in ABUSE_PROMPT
+    assert "\n구매·주문 수치의 권위는" not in ABUSE_PROMPT
+    assert "'구매 0'" in ABUSE_PROMPT  # 금지 문구 자체의 존치도 함께 고정

@@ -319,10 +319,37 @@ async def get_order_events(
         to_status: 전이 대상 상태(선택) — 주문: PENDING/PAID/PAYMENT_FAILED/CANCELLED,
             아이템: SHIPPING/DELIVERED/CANCELLED/RETURNED (교환 어휘 없음).
         actor_type: 전이 주체(선택) — USER/SELLER/ADMIN/SYSTEM.
-        group_by: 집계 그룹 기준(선택).
-        stats: 집계 모드로 조회할지 여부(선택, api-spec §4.4 `stats` 쿼리).
+            memberId 집계 시에는 무시된다(아래 group_by 참조).
+        group_by: "memberId" 하나뿐(선택) — 회원별 어뷰징 집계로 전환된다.
+            rows 가 buyerMemberId/orderCount/cancelCount/cancelRatio/
+            maxOrdersPerHour/isSuspicious(코드 판정)로 바뀐다.
+            ※ to_status·actor_type 이 함께 오면 무시한다(코드 강제) —
+            분모(orderCount)까지 필터돼 cancelRatio 가 왜곡되기 때문
+            (예: CANCELLED 만 남기면 전원 1.0, USER 만 남기면 취소 전이만
+            분모에 남음).
+        stats: 집계 모드로 조회할지 여부(선택, api-spec §4.4 `stats` 쿼리) —
+            rows 없이 byStatus·cancelReasonsTop 만 반환된다.
     """
     brand_id = runtime.context.brand_id
+    # [#215 리뷰] memberId 집계에 to_status·actor_type 이 걸리면 Spring 이 분모
+    # (orderCount)까지 필터해 cancelRatio 가 왜곡된다 — BE 쿼리(aggregate·maxPerHour
+    # 양쪽)의 두 필터가 GROUP BY 이전에 적용되기 때문. 예: to_status=CANCELLED 면
+    # 전원 1.0, actor_type=USER 면 취소(USER 전이)만 분모에 남아 정상 회원도 1.0.
+    # 왜곡된 isSuspicious 는 '코드 판정 번복 금지' 규칙 탓에 그대로 보고되므로,
+    # 프롬프트·docstring(소프트 가드)에만 맡기지 않고 코드에서 무시를 강제한다.
+    # [#215 리뷰 2] group_by 는 LLM 이 채우는 자유 문자열(str | None)이라 정확 일치에만
+    # 의존하면 "memberid"·" MemberId " 같은 변형에서 가드가 조용히 무력화된다 — Spring 도
+    # 등호 비교("memberId".equals)라 변형은 회원 집계 대신 목록 조회로 오동작하므로,
+    # 정규화해 가드와 Spring 라우팅을 함께 바로잡는다.
+    if group_by is not None and group_by.strip().lower() == "memberid":
+        group_by = "memberId"
+    ignored_status_note = ""
+    if group_by == "memberId" and (to_status or actor_type):
+        to_status = None
+        actor_type = None
+        ignored_status_note = (
+            " ※ memberId 집계에서 to_status/actor_type 필터는 무시됨(비율 왜곡 방지)."
+        )
     try:
         status_filter = [to_status] if to_status else None
         result = await get_spring_client().get_order_events(
@@ -344,7 +371,9 @@ async def get_order_events(
             stats_note += f". 취소 사유 상위: {reasons}"
         stats_note += "."
     if not result.rows and not stats_note:
-        return f"주문 상태 전이 0건. {_reference_note(from_date, to_date)}"
+        # 0건 조기 반환도 무시 고지를 유지한다 — 빠지면 워커가 필터 무시 사실을
+        # 모른 채 재호출하거나, 회귀 테스트(#215)가 이 경로에서 깨진다.
+        return f"주문 상태 전이 0건.{ignored_status_note} {_reference_note(from_date, to_date)}"
     # rows 는 limit 절단본 — total 이 더 크면 전수를 고지해 표본=전수 오해석을 막는다.
     total = result.total if result.total is not None else len(result.rows)
     total_note = (
@@ -355,7 +384,10 @@ async def get_order_events(
         if result.rows
         else "주문 상태 전이 목록 없음(집계 모드)."
     )
-    return f"{rows_note}{stats_note} {_ORDER_LOG_RULES_NOTE} {_reference_note(from_date, to_date)}"
+    return (
+        f"{rows_note}{stats_note}{ignored_status_note} "
+        f"{_ORDER_LOG_RULES_NOTE} {_reference_note(from_date, to_date)}"
+    )
 
 
 @tool
