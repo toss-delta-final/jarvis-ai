@@ -16,7 +16,7 @@
 >
 > **[v0.5.0 개정 — 2026-07-15 사용자 최종 확정]** 본 개정은 v0.4.0 Batch 2(카탈로그 미러 + 배치 동기화)를 **되돌려**, **후보 검색 = 질의 시점 Spring 위임(`POST /products/search`)** 을 **프로젝트 전 범위의 유일·영구 후보 확보 경로**로 확정한다. **[v0.5.1 정정 — 용어 확정]** 채택하지 않는 것은 **상품 원본 컬럼의 AI측 사본**(가격·재고·상품명 등 필터 컬럼 복제)이다. **AI 생성물 — extras(추론 태그)·search_doc·임베딩 벡터 — 은 AI Postgres에 저장·유지**하며(결정 3 Layer 2/3·결정 6 존속), 상품 변경 반영은 **AI가 요청하는 pull 배치**(§4.8)로 갱신한다. 이는 v0.4.0의 provenance 노트가 폐기했던 검색 위임 노선을 **최종 채택**하는 것이며, 이미 boot-verified 구현 스캐폴드(`~/projet/hk-final`, jarvis-ai, FastAPI+LangGraph)가 이 노선 위에 존재하고 사용자가 이를 구현 기준으로 비준했다.
 > - **핵심 변경**: 후보 확보가 "AI 자기 검색 인덱스(미러)"에서 "질의 시점 Spring `POST /products/search` 위임"(신규 §4.6)으로 **영구 전환**된다. 상품 원본 컬럼의 사본(미러)은 두지 않는다. **[v0.5.1 정정]** AI 생성물(extras·search_doc·임베딩)은 유지하며 bulk export pull 배치(§4.8, C-4 부활)로 갱신한다. 질의 시점 후보 흐름에서 AI 임베딩과 Spring 검색의 결합 방식은 **OPEN**(§4.8 말미 — 두 방식 병행 검토).
-> - **[이벤트 최종 — #187 개정]** `POST /events/session-end`(세션 종료)와 `POST /events/session-claim`(로그인 승격)을 **MVP에 유지**한다. **주문 알림(구 `POST /events/order`)·주문 미러는 채택하지 않는다** — 검색이 질의 시점 위임으로 확정되면서 구매 이력도 **추천 직전 질의 시점 조회(`GET /internal/members/{id}/orders`, §4.7)** 로 확보한다(결정 14-F 동작 요구는 불변, 데이터 획득 방식만 교체). **병행 PRD 초안 라인은 모든 이벤트를 고도화로 옮겼으나, 본 계약은 session-end 유지 한 지점에서 PRD와 갈라진다** — PRD의 events-scope를 **바로잡아야 하며**(§8 항목 6), 본 문서는 PRD를 조용히 따르지 않는다.
+> - **[이벤트 최종 — #187 개정]** `POST /events/session-end`(세션 종료)와 `POST /events/session-claim`(로그인 승격)을 **MVP에 유지**한다. **주문 알림(구 `POST /events/order`)·주문 미러는 채택하지 않는다** — 검색이 질의 시점 위임으로 확정되면서 구매 이력도 **추천 직전 질의 시점 조회(`GET /internal/members/{id}/orders`, §4.7)** 로 확보한다(결정 14-F 동작 요구 — exact 기본 제외와 명시적 재구매 지목 시 해제 포함 — 는 불변, 데이터 획득 방식만 교체). 재구매 지목은 자연어에서 추출해 AI 내부에서 처리하며 와이어 필드를 추가하지 않는다. **병행 PRD 초안 라인은 모든 이벤트를 고도화로 옮겼으나, 본 계약은 session-end 유지 한 지점에서 PRD와 갈라진다** — PRD의 events-scope를 **바로잡아야 하며**(§8 항목 6), 본 문서는 PRD를 조용히 따르지 않는다.
 > - **Batch 1(판매자 확장)은 v0.4.0 그대로 유지**: `POST /seller/chat` = 통계 Q&A(원천 = Spring 집계 I-6 질의 시점 콜백, C-7 해소) + 상세 수정 draft 흐름(I-7 읽기 → LLM 개정안 → SSE `draft` → FE diff 카드 → FE가 Spring `S-3` PATCH로 반영, FE↔Spring 전제).
 > - **[v0.6.0 개정 — 2026-07-15 사용자 확정, BE "챗봇 장바구니 담기(I-2)" 문서 채택]** 장바구니 계약을 BE 팀 I-2 문서 기준으로 재작성한다(§4.1) — **게스트 담기 허용**(02 D30, 결정 8 개정 필요 §8 항목 7), **`POST /internal/cart/items` + `X-Internal-Token` 서비스 토큰 + 본문 신원(userId/guestId, AI-검증 JWT `sub` 유래)**, **`optionId` 필수 옵션 되물음 멀티턴**(400 `CART_OPTION_REQUIRED` + options 목록 → LLM 재질문), 동일 상품·옵션 기존 존재 시 **Spring이 quantity 합산**. **장바구니 조회(§4.9, C-16 신설)** 추가 — "장바구니에 뭐 있어?" 질의 응답 + 담기 시 기존 보유 안내.
 > - **[v0.7.0 개정 — 2026-07-15 사용자 확정, 스트림 운영 규약]** SSE 스트림 수명주기 규약 신설(§2.9) — **동시 스트림 제한(세션당 1개, `409 STREAM_IN_PROGRESS`)**, **취소 = 클라이언트 연결 종료**(FE `AbortController` → AI가 disconnect 감지 시 LLM 스트림 즉시 중단), **타임아웃 기준표**(first-token 10s / 스트림 상한 90s / AI→Spring 3s / LLM 30s+1재시도), **레이트 리밋 값·소유 확정**(FastAPI 미들웨어 + in-memory, 분당·시간당 상한 config). 대화 저장(COMPLETED/FAILED/CANCELLED)·로그/모니터링 필드는 운영 요구로 부록 §6.3에 등재.
@@ -1293,7 +1293,7 @@ X-Internal-Token: {서비스 토큰}
 
 ### 4.7 구매 이력 조회 API (I-19 `GET /internal/members/{id}/orders`, query-time) — [BE 본문 재작성 v0.15.0]
 
-구 주문 이벤트 미러(§3.6 삭제)를 대체한다. 추천 흐름이 **search 직전**(decompose와 병렬 가능)에 호출해 최근 구매를 확보하고, **결정 14-F 판단은 AI-side**에서 수행한다 — exact `productId` 제외 + 소모품 카테고리 억제 + 되돌리기 제안 칩(suggestions) 생성 → **[v0.15.5] 제외는 §4.6 검색 응답을 받은 뒤 AI 사후필터**(I-1엔 제외 파라미터 없음). 프로필 sleep-time 배치도 동일 API를 구매 소스로 조회한다. **게스트는 호출을 스킵**한다(이력 없음, 결정 8).
+구 주문 이벤트 미러(§3.6 삭제)를 대체한다. 추천 흐름이 **search 직전**(decompose와 병렬 가능)에 호출해 최근 구매를 확보하고, **결정 14-F 판단은 AI-side**에서 수행한다 — exact `productId` 기본 제외 + 명시적 재구매 지목 시 해당 exact 제외 해제 + 소모품 카테고리 억제 + 되돌리기 제안 칩(suggestions) 생성 → **[v0.15.5] 제외는 §4.6 검색 응답을 받은 뒤 AI 사후필터**(I-1엔 제외 파라미터 없음). 명시적 재구매 지목은 사용자 자연어에서 추출한 현재 턴 한정 내부 신호이며 별도 요청·응답 필드나 exact 되돌리기 칩을 추가하지 않는다. 프로필 sleep-time 배치도 동일 API를 구매 소스로 조회한다. **게스트는 호출을 스킵**한다(이력 없음, 결정 8).
 
 #### AI → Spring 요청 (I-19, BE 본문 재작성 07/17)
 
@@ -1331,7 +1331,7 @@ X-Internal-Token: {서비스 토큰}
 - **`shippingFee`는 항상 0**(DDL D36 배송비 항 자체 없음) — `totalAmount` = 상품 스냅샷 합. **[통보 대상] BE Notion I-19 페이지는 `shipping_fee: 3000`으로 stale** — 타입/데이터는 DDL 기준(배송비 없음)이라 0.
 - **[정정 v0.15.5] `status` = 주문 상태 enum 6종**(`PAID/PREPARING/SHIPPING/DELIVERED/CANCELED/RETURNED`, BE Notion I-19). 구 `representativeStatus` 8종은 **O-3 `GET /api/orders`(FE 대면, 대표 상태)** 것을 잘못 갖다 쓴 것 — I-19와 별개라 폐기. 표시 문구는 FE 매핑.
 - **[통보 대상] BE Notion I-19 페이지가 stale**: snake_case(`order_id`·`unit_price`)·문자열 id(`"P552"`)로 표기됨 — 타입/케이스는 **DDL·프로젝트 규약 기준**(숫자 BIGINT·camelCase)이 우선(판정규칙). BE에 페이지 갱신 통보.
-- **✅ [dedup 갭 해소 — BE 확정 2026-07-19] items에 `categoryName`(string) 포함** — 결정 14-F의 소모품 **카테고리 억제**·되돌리기 `suggestions.revert.category` 칩(§3.1)의 소스 확보. BE가 I-19 items[]에 `categoryName`을 추가(I-1과 동일 필드). 소모품 판정은 AI-side(MVP config, 정본 catalog 속성사전 SPEC-CATALOG-DATA-001). exact `productId` 제외 + 카테고리 억제 모두 구현 완료.
+- **✅ [dedup 갭 해소 — BE 확정 2026-07-19] items에 `categoryName`(string) 포함** — 결정 14-F의 소모품 **카테고리 억제**·되돌리기 `suggestions.revert.category` 칩(§3.1)의 소스 확보. BE가 I-19 items[]에 `categoryName`을 추가(I-1과 동일 필드). 소모품 판정은 AI-side(MVP config, 정본 catalog 속성사전 SPEC-CATALOG-DATA-001). exact `productId` 기본 제외(명시적 재구매 지목 시 내부 해제) + 카테고리 억제 모두 구현 완료.
 - **지연 가드**: §4.6 검색과 병렬 호출 가능. 실패/타임아웃 시 **dedup 없이 추천 진행**(degrade).
 - 실패: `400 ORDER_INVALID_PARAM`(status enum 위반) / `401 INTERNAL_TOKEN_INVALID` / `404 MEMBER_NOT_FOUND`.
 - 경로·파라미터 수용은 🔴 협의(§5 C-6) — 07/17 BE 확인질문("이대로 가도 되는지").
