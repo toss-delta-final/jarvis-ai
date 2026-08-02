@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
@@ -34,6 +35,8 @@ from app.core.config import get_settings
 from app.core.text import _security_skeleton, _strip_unsafe_multiline_controls
 from app.core.tracing import current_request_trace
 from app.core.unicode_security import UnicodeSequenceStreamSanitizer
+
+logger = logging.getLogger(__name__)
 
 # ── 1. scope — 차단 규칙 (사유 → 트리거 부분 문자열, 소문자 비교) ────────────────
 
@@ -363,8 +366,14 @@ class ModelUsageObservationMiddleware(AgentMiddleware):
         self._model = model
 
     async def awrap_model_call(self, request, handler):  # noqa: ANN001
-        response = await handler(request)
         trace = current_request_trace()
+        if trace is not None and self._model is not None:
+            trace.record_llm_usage(
+                model=self._model,
+                prompt_tokens=None,
+                completion_tokens=None,
+            )
+        response = await handler(request)
         if trace is None or self._model is None:
             return response
         for message in getattr(response, "result", ()):
@@ -384,6 +393,8 @@ class ModelUsageObservationMiddleware(AgentMiddleware):
                 ),
             )
             break
+        else:
+            logger.warning("seller model usage missing code=MODEL_USAGE_MISSING")
         return response
 
 
