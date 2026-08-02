@@ -287,6 +287,11 @@ class Settings(BaseSettings):
     review_tier_many: int = 100  # ≥ → 매우많음
     review_tier_some: int = 20  # ≥ → 많음
     review_tier_few: int = 5  # ≥ → 보통 (그 미만 적음)
+    # price 는 절대 기준이 없어 후보 그룹 중앙값 대비 상대 등급으로만 전달한다(#173).
+    price_tier_very_cheap_ratio: float = 0.6  # 그룹 중앙값 대비 ≤ → 매우저렴
+    price_tier_cheap_ratio: float = 0.85  # ≤ → 저렴
+    price_tier_pricey_ratio: float = 1.15  # ≥ → 비쌈
+    price_tier_very_pricey_ratio: float = 1.5  # ≥ → 매우비쌈
 
     # ── 카테고리 하이브리드 매핑 (이슈 #59, DESIGN-CATEGORY-HYBRID-59) ──
     # 방식 A: decompose 추측 → 임베딩 보정(exact/최근접). canonical-or-null·멀티 fan-out.
@@ -695,6 +700,18 @@ class Settings(BaseSettings):
             raise ValueError(
                 "REVIEW_TIER 경계는 many >= some >= few 여야 합니다"
                 f" ({self.review_tier_many}/{self.review_tier_some}/{self.review_tier_few})"
+            )
+        if not (
+            0
+            < self.price_tier_very_cheap_ratio
+            <= self.price_tier_cheap_ratio
+            < self.price_tier_pricey_ratio
+            <= self.price_tier_very_pricey_ratio
+        ):
+            raise ValueError(
+                "PRICE_TIER 경계는 0 < very_cheap <= cheap < pricey <= very_pricey 여야 합니다"
+                f" ({self.price_tier_very_cheap_ratio}/{self.price_tier_cheap_ratio}/"
+                f"{self.price_tier_pricey_ratio}/{self.price_tier_very_pricey_ratio})"
             )
         # 노출 개수 경계(REQ-REC-021) — expose_min 은 "부족하면 검색순서로 채우는" 하한이라
         # 상한을 넘으면 보충 루프가 곧바로 상한 절단에 되잘리는 모순이 된다. 개별 le 로는

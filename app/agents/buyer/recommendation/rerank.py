@@ -8,6 +8,7 @@ MVP 슬라이스: 후보 외 id 미노출(REQ-REC-081 — 값싼 부분집합 �
 from __future__ import annotations
 
 import json
+from statistics import median
 
 from app.agents.buyer.recommendation.state import RerankResult, extract_json
 from app.core.config import get_settings
@@ -21,7 +22,7 @@ _SYSTEM = """당신은 커머스 추천 재랭킹기입니다. 후보 상품과 
 규칙:
 - productId 는 반드시 후보 목록(CANDIDATES)에 있는 값만 쓰세요. 없는 id 를 만들지 마세요.
 - 후보가 실제로 갖지 않은 속성(브랜드·평점 등)을 근거로 주장하지 마세요.
-- ratingLevel(평가없음/낮음/보통/높음/매우높음)·reviewLevel(정보없음/없음/적음/보통/많음/매우많음)은 등급이며, 근거는 정성적으로만 쓰세요(예: "평점이 높아요", "리뷰가 많아요"). '평가없음'·'정보없음'은 데이터가 없다는 뜻이니 평점·리뷰를 근거로 삼지 마세요. 등급을 그대로 인용해도 좋지만 없는 숫자를 지어내지 마세요.
+- ratingLevel(평가없음/낮음/보통/높음/매우높음)·reviewLevel(정보없음/없음/적음/보통/많음/매우많음)·priceLevel(매우저렴/저렴/보통/비쌈/매우비쌈/정보없음)은 등급이며, 근거는 정성적으로만 쓰세요(예: "평점이 높아요", "리뷰가 많아요"). priceLevel은 후보군 안에서의 상대 등급이며 절대 가격 수준이 아닙니다. 금액·가격 숫자를 쓰지 마세요(정확한 가격은 화면 카드가 보여줍니다). '평가없음'·'정보없음'은 데이터가 없다는 뜻이니 해당 평점·리뷰·가격을 근거로 삼지 마세요. 등급을 그대로 인용해도 좋지만 없는 숫자를 지어내지 마세요.
 - rationale 은 한글 40자 이내 1문장으로 간결하게 — 개행 없이.
 - 가장 적합한 순으로 정렬하고 상위만 남기세요."""
 
@@ -76,6 +77,44 @@ def _review_tier(product: SpringProduct, settings) -> str:
     return "적음"
 
 
+def _price_tier(price: int | None, median_price: float | None, settings) -> str:
+    """rerank LLM 에 넘길 후보군 상대 가격 등급 — 비표시 정밀값 유출 원천 차단(#173).
+
+    절대 가격 기준은 상품군마다 달라 같은 need 후보들의 중앙값 대비 비율로만 등급화한다.
+    정확한 price 는 SpringProduct 원본과 필터 경로에 남고 LLM 에는 전달하지 않는다.
+    """
+    if price is None or median_price is None or median_price <= 0:
+        return "정보없음"
+    if price <= median_price * settings.price_tier_very_cheap_ratio:
+        return "매우저렴"
+    if price <= median_price * settings.price_tier_cheap_ratio:
+        return "저렴"
+    if price >= median_price * settings.price_tier_very_pricey_ratio:
+        return "매우비쌈"
+    if price >= median_price * settings.price_tier_pricey_ratio:
+        return "비쌈"
+    return "보통"
+
+
+def _group_key(product: SpringProduct, need_of: dict[int, str] | None) -> str | None:
+    """priceLevel 중앙값 그룹 키를 일관되게 산출한다(#173)."""
+    # 그룹 키 산출은 한 곳에 둬 중앙값 계산과 조회가 달라지는 KeyError 를 막는다.
+    return need_of.get(product.product_id) if need_of is not None else None
+
+
+def _group_medians(
+    candidates: list[SpringProduct], need_of: dict[int, str] | None
+) -> dict[str | None, float | None]:
+    """후보를 need 별로 묶어 유효 price 중앙값을 한 번씩 계산한다(#173)."""
+    grouped: dict[str | None, list[int]] = {}
+    for candidate in candidates:
+        key = _group_key(candidate, need_of)
+        grouped.setdefault(key, [])
+        if candidate.price is not None:
+            grouped[key].append(candidate.price)
+    return {key: median(prices) if prices else None for key, prices in grouped.items()}
+
+
 async def rerank(
     llm: LLMClient,
     *,
@@ -100,12 +139,17 @@ async def rerank(
     케이스가 3/3 → 1/3 로 희석된 실측 전례가 있다(#198, SPEC §EX-7).
     """
     settings = get_settings()  # 티어 경계 조회 — 후보 루프 밖에서 1회(캐시 싱글턴, 관례 정합)
+    group_medians = _group_medians(candidates, need_of)
     cand = [
         {
             "productId": c.product_id,
             "name": c.name,
             "brand": c.brand,
-            "price": c.price,  # 예산 판단용 정밀값(선존재) — 근거문 유출 방어는 별도 #173
+            "priceLevel": _price_tier(
+                c.price,
+                group_medians[_group_key(c, need_of)],
+                settings,
+            ),
             # rating·reviewCount 는 정확한 숫자 대신 등급으로 — LLM 이 "4.8 평점"·"리뷰 128개"처럼
             # 흘려 CH-5 표시값과 어긋나는 걸 원천 차단한다(#171 PR#172). 정확한 값은 원본에 남아
             # 코드 필터·예산이 계속 쓴다. review_count==0 → 평가없음(#171 rating=0 판별 유지).
