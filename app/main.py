@@ -30,14 +30,70 @@ from fastapi.middleware.cors import CORSMiddleware
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
+from app.agents.profile.processed_events import close_pool as close_processed_events_pool
+from app.agents.profile.session_activity import close_pool as close_session_activity_pool
+from app.agents.profile.store import close_store as close_profile_store
+from app.agents.seller.checkpoint import close_checkpointer as close_seller_checkpointer
+from app.agents.seller.history import close_store as close_seller_history_store
 from app.api import chat, events, internal, profile, seller
+from app.core.conversation import close_store as close_conversation_store
 from app.core.config import get_settings
 from app.core.errors import install_error_handling
-from app.core.logging import configure_logging
+from app.core.logging import configure_logging, get_logger
+from app.core.pg_store import close_store as close_pg_store
 from app.core.pg_resilience import close_advisory_pool
 from app.core.session_context import close_session_lifecycle, initialize_session_lifecycle
 from app.core.ratelimit import rate_limit_middleware
 from app.pipelines.scheduler import start_scheduler, stop_scheduler
+
+logger = get_logger(__name__)
+
+
+async def _close_owned_resources() -> None:
+    """소유한 리소스를 의존성 역순으로 닫고 개별 실패를 격리한다."""
+    resources = (
+        ("session_lifecycle", close_session_lifecycle),
+        ("seller_history_store", close_seller_history_store),
+        ("seller_checkpointer", close_seller_checkpointer),
+        ("profile_store", close_profile_store),
+        ("session_activity_pool", close_session_activity_pool),
+        ("processed_events_pool", close_processed_events_pool),
+        ("conversation_store", close_conversation_store),
+        ("pg_store", close_pg_store),
+        ("advisory_pool", close_advisory_pool),
+    )
+    settings = get_settings()
+    timeout_s = settings.lifespan_resource_close_timeout_s
+    failed = 0
+    cancellation: asyncio.CancelledError | None = None
+    for name, close in resources:
+        try:
+            async with asyncio.timeout(timeout_s):
+                await close()
+        except asyncio.CancelledError as exc:
+            failed += 1
+            cancellation = exc
+            task = asyncio.current_task()
+            if task is not None:
+                task.uncancel()
+            logger.warning("lifespan resource cleanup cancelled resource=%s", name)
+        except TimeoutError:
+            failed += 1
+            logger.warning(
+                "lifespan resource cleanup timed out resource=%s timeout_s=%s",
+                name,
+                timeout_s,
+            )
+        except Exception:
+            failed += 1
+            logger.exception("lifespan resource cleanup failed resource=%s", name)
+    logger.info(
+        "lifespan resource cleanup complete succeeded=%d failed=%d",
+        len(resources) - failed,
+        failed,
+    )
+    if cancellation is not None:
+        raise cancellation
 
 
 @asynccontextmanager
@@ -54,10 +110,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             if scheduler_started:
                 stop_scheduler()
         finally:
-            try:
-                await close_session_lifecycle()
-            finally:
-                await close_advisory_pool()
+            await _close_owned_resources()
 
 
 def create_app() -> FastAPI:

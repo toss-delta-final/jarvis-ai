@@ -81,7 +81,7 @@ def set_pool(pool: AsyncConnectionPool | None) -> None:
         _pending_cleanup.append(old_pool)
 
 
-async def _drain_pending_cleanup() -> None:
+async def _drain_pending_cleanup(*, propagate_errors: bool = False) -> None:
     """대기열의 이전 풀들을 닫는다 — 다른(이미 소멸한) 이벤트 루프에서 만들어진 풀일 수 있다.
 
     `AsyncConnectionPool` 은 백그라운드 워커 태스크를 그 풀을 만든 이벤트 루프에 묶어
@@ -93,6 +93,7 @@ async def _drain_pending_cleanup() -> None:
     (현재 태스크에 대기 중인 취소 요청 수)로 "다른 루프에 묶인 pool 을 닫다 새는 잔재"와
     "이 태스크에 대한 실제 취소 요청"을 구분해, 후자만 다시 던진다.
     """
+    first_error: Exception | None = None
     while _pending_cleanup:
         pool = _pending_cleanup.pop()
         try:
@@ -101,8 +102,12 @@ async def _drain_pending_cleanup() -> None:
             task = asyncio.current_task()
             if task is not None and task.cancelling() > 0:
                 raise
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("processed events pool cleanup failed", exc_info=True)
+            if first_error is None:
+                first_error = exc
+    if propagate_errors and first_error is not None:
+        raise first_error
 
 
 async def close_pool() -> None:
@@ -115,7 +120,7 @@ async def close_pool() -> None:
     async 컨텍스트가 아직 살아 있는 지점(테스트 teardown·앱 종료)에서 부른다.
     """
     set_pool(None)
-    await _drain_pending_cleanup()
+    await _drain_pending_cleanup(propagate_errors=True)
 
 
 def reset() -> None:
