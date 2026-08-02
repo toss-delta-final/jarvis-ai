@@ -943,7 +943,7 @@ async def _call_account_events(args: dict, fake) -> str:
 def _enable_account_events(monkeypatch) -> None:
     """[#197 PR 리뷰] I-8 노출 보류 플래그를 테스트에서만 켠다.
 
-    admin 소유 협의 미완(🔴, api-spec §4.4 v0.17.5)으로 기본 false — 활성 상태의
+    admin 소유 협의 미완(🔴, api-spec §4.4 v0.19.1)으로 기본 false — 활성 상태의
     요약/전달 로직은 협의 종결 후에도 그대로 쓰이므로 플래그만 켜서 검증한다.
     """
     from app.agents.seller import tools as tools_module

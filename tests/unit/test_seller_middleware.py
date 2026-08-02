@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from app.agents.seller import middleware
+from app.core.conversation import ConversationStore
+from app.core.observability import ModelCall, RequestObservation
+from app.core.tracing import NoopRequestTrace, bind_request_trace
 
 
 # ── 1. scope — check_scope 순수 함수 (코드 경로·미들웨어 공유 판정점) ────────────
@@ -154,3 +159,256 @@ def test_streaming_output_guard_masks_bearer_after_overlong_whitespace_prefix() 
     parts.extend(guard.feed("bcdefghijklmnop"))
     parts.extend(guard.flush())
     assert "".join(parts) == "앞 " + middleware.MASK_REPLACEMENT
+
+
+async def test_tool_call_observation_middleware_counts_actual_execution() -> None:
+    """한도 미들웨어와 별개로 handler에 도달한 실제 도구 호출을 요청 단위로 센다."""
+
+    class Sink:
+        def __init__(self) -> None:
+            self.tool_calls = 0
+
+        def set_lane(self, lane: str) -> None:
+            del lane
+
+        def mark_degraded(self, reason: str) -> None:
+            del reason
+
+        def record_model_usage(self, model, prompt_tokens, completion_tokens) -> None:
+            del model, prompt_tokens, completion_tokens
+
+        def record_tool_call(self) -> None:
+            self.tool_calls += 1
+
+    sink = Sink()
+    trace = NoopRequestTrace(lane="general")
+    trace.attach_observation(sink)
+
+    async def handler(_request):
+        return "tool-result"
+
+    with bind_request_trace(trace):
+        result = await middleware.ToolCallObservationMiddleware().awrap_tool_call(object(), handler)
+
+    assert result == "tool-result"
+    assert sink.tool_calls == 1
+
+
+def _model_usage_observation() -> RequestObservation:
+    return RequestObservation(
+        request_id="request-1",
+        conversation_id="conversation-1",
+        thread_id="thread-1",
+        user_id="seller-1",
+        brand_id=1,
+        role="seller",
+        store=ConversationStore(),
+        message_length=0,
+        message_hash="hash",
+        started=0.0,
+        pending_message="",
+        pending_key="seller:seller-1",
+    )
+
+
+async def test_model_usage_observation_middleware_records_seller_tokens() -> None:
+    """LangGraph 판매자 호출의 provider usage도 chat_request 비용 원천으로 전달한다."""
+    observation = _model_usage_observation()
+    trace = NoopRequestTrace(lane="general")
+    trace.attach_observation(observation)
+    response = type(
+        "Response",
+        (),
+        {
+            "result": [
+                AIMessage(
+                    content="응답",
+                    usage_metadata={
+                        "input_tokens": 17,
+                        "output_tokens": 5,
+                        "total_tokens": 22,
+                    },
+                ),
+                AIMessage(
+                    content="중복 usage",
+                    usage_metadata={
+                        "input_tokens": 17,
+                        "output_tokens": 5,
+                        "total_tokens": 22,
+                    },
+                ),
+            ]
+        },
+    )()
+
+    async def handler(_request):
+        return response
+
+    with bind_request_trace(trace):
+        result = await middleware.ModelUsageObservationMiddleware(
+            "seller-priced-model"
+        ).awrap_model_call(object(), handler)
+
+    assert result is response
+    assert observation.model_calls == [ModelCall("seller-priced-model", 17, 5)]
+
+
+async def test_model_usage_observation_records_attempt_before_handler_failure() -> None:
+    """provider 예외가 나도 호출 전 placeholder가 0-token 시도를 보존한다."""
+    observation = _model_usage_observation()
+    trace = NoopRequestTrace(lane="general")
+    trace.attach_observation(observation)
+
+    async def handler(_request):
+        raise RuntimeError("provider failed")
+
+    with bind_request_trace(trace), pytest.raises(RuntimeError, match="provider failed"):
+        await middleware.ModelUsageObservationMiddleware("seller-priced-model").awrap_model_call(
+            object(), handler
+        )
+
+    assert observation.model_calls == [ModelCall("seller-priced-model")]
+
+
+async def test_model_usage_observation_warns_when_usage_is_unparseable(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """성공 응답의 usage를 해석하지 못해도 placeholder와 상수 경고를 남긴다."""
+    observation = _model_usage_observation()
+    trace = NoopRequestTrace(lane="general")
+    trace.attach_observation(observation)
+    response = type("Response", (), {"result": [AIMessage(content="응답")]})()
+
+    async def handler(_request):
+        return response
+
+    with (
+        bind_request_trace(trace),
+        caplog.at_level("WARNING", logger="app.agents.seller.middleware"),
+    ):
+        result = await middleware.ModelUsageObservationMiddleware(
+            "seller-priced-model"
+        ).awrap_model_call(object(), handler)
+
+    assert result is response
+    assert observation.model_calls == [ModelCall("seller-priced-model")]
+    assert "MODEL_USAGE_MISSING" in caplog.text
+
+
+async def test_model_usage_observation_warns_when_usage_has_no_token_fields(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """dict usage라도 입출력 토큰이 없으면 파싱 성공으로 오인하지 않는다."""
+    observation = _model_usage_observation()
+    trace = NoopRequestTrace(lane="general")
+    trace.attach_observation(observation)
+    response = type(
+        "Response",
+        (),
+        {
+            "result": [
+                type(
+                    "Message",
+                    (),
+                    {"usage_metadata": {"total_tokens": 22}},
+                )()
+            ]
+        },
+    )()
+
+    async def handler(_request):
+        return response
+
+    with (
+        bind_request_trace(trace),
+        caplog.at_level("WARNING", logger="app.agents.seller.middleware"),
+    ):
+        result = await middleware.ModelUsageObservationMiddleware(
+            "seller-priced-model"
+        ).awrap_model_call(object(), handler)
+
+    assert result is response
+    assert observation.model_calls == [ModelCall("seller-priced-model")]
+    assert "MODEL_USAGE_MISSING" in caplog.text
+
+
+async def test_model_usage_observation_treats_none_result_as_missing_usage(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """관측 부가기능은 result=None을 빈 결과로 처리하고 요청을 깨뜨리지 않는다."""
+    observation = _model_usage_observation()
+    trace = NoopRequestTrace(lane="general")
+    trace.attach_observation(observation)
+    response = type("Response", (), {"result": None})()
+
+    async def handler(_request):
+        return response
+
+    with (
+        bind_request_trace(trace),
+        caplog.at_level("WARNING", logger="app.agents.seller.middleware"),
+    ):
+        result = await middleware.ModelUsageObservationMiddleware(
+            "seller-priced-model"
+        ).awrap_model_call(object(), handler)
+
+    assert result is response
+    assert observation.model_calls == [ModelCall("seller-priced-model")]
+    assert "MODEL_USAGE_MISSING" in caplog.text
+
+
+async def test_model_usage_observation_keeps_concurrent_same_model_attempts_separate() -> None:
+    """동일 모델 동시 호출의 성공 usage가 실패 placeholder를 덮지 않는다."""
+    observation = _model_usage_observation()
+    trace = NoopRequestTrace(lane="general")
+    trace.attach_observation(observation)
+    both_started = asyncio.Event()
+    started = 0
+
+    async def rendezvous() -> None:
+        nonlocal started
+        started += 1
+        if started == 2:
+            both_started.set()
+        await both_started.wait()
+
+    async def failing_handler(_request):
+        await rendezvous()
+        raise RuntimeError("provider failed")
+
+    response = type(
+        "Response",
+        (),
+        {
+            "result": [
+                AIMessage(
+                    content="응답",
+                    usage_metadata={
+                        "input_tokens": 17,
+                        "output_tokens": 5,
+                        "total_tokens": 22,
+                    },
+                )
+            ]
+        },
+    )()
+
+    async def successful_handler(_request):
+        await rendezvous()
+        return response
+
+    middleware_instance = middleware.ModelUsageObservationMiddleware("seller-priced-model")
+    with bind_request_trace(trace):
+        failed, succeeded = await asyncio.gather(
+            middleware_instance.awrap_model_call(object(), failing_handler),
+            middleware_instance.awrap_model_call(object(), successful_handler),
+            return_exceptions=True,
+        )
+
+    assert isinstance(failed, RuntimeError)
+    assert succeeded is response
+    assert len(observation.model_calls) == 2
+    assert {call.model for call in observation.model_calls} == {"seller-priced-model"}
+    assert sorted(
+        (call.prompt_tokens, call.completion_tokens) for call in observation.model_calls
+    ) == [(0, 0), (17, 5)]

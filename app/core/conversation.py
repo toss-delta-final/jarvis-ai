@@ -447,7 +447,7 @@ def set_store(store: ConversationStoreProtocol | None) -> None:
         _pending_cleanup.append(old_pool)
 
 
-async def _drain_pending_cleanup() -> None:
+async def _drain_pending_cleanup(*, propagate_errors: bool = False) -> None:
     """대기열의 이전 풀들을 닫는다 — 다른(이미 소멸한) 이벤트 루프에서 만들어진 풀일 수 있다.
 
     `AsyncConnectionPool` 은 백그라운드 워커 태스크를 그 풀을 만든 이벤트 루프에 묶어
@@ -456,6 +456,7 @@ async def _drain_pending_cleanup() -> None:
     삼켜져 취소가 무시되는 안티패턴이 된다(processed_events.py 와 동일 근거·수정,
     PR #47 후속 리뷰) — `task.cancelling()` 으로 구분해 실제 취소 요청만 다시 던진다.
     """
+    first_error: Exception | None = None
     while _pending_cleanup:
         pool = _pending_cleanup.pop()
         try:
@@ -464,8 +465,23 @@ async def _drain_pending_cleanup() -> None:
             task = asyncio.current_task()
             if task is not None and task.cancelling() > 0:
                 raise
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("conversation pool cleanup failed", exc_info=True)
+            if first_error is None:
+                first_error = exc
+    if propagate_errors and first_error is not None:
+        raise first_error
+
+
+async def close_store() -> None:
+    """지금 열려 있는 풀을 **이 이벤트 루프에서** 닫는다 (이슈 #208).
+
+    sync `set_store()` 가 미룬 close 는 보통 다른 루프에서 실행된다. 살아 있는 풀을 남긴 채
+    루프가 닫히면 teardown 의 `_cancel_all_tasks()` 가 취소를 삼키는 psycopg 워커와 교착한다
+    (app/agents/profile/processed_events.py `close_pool` 과 동일 근거).
+    """
+    set_store(None)
+    await _drain_pending_cleanup(propagate_errors=True)
 
 
 async def get_conversation_store() -> ConversationStoreProtocol:

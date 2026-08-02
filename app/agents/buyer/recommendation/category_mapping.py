@@ -17,6 +17,7 @@ import asyncio
 import functools
 import logging
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass, field
 
 from app.agents.buyer.recommendation.category_select import select_category as _select_category
 from app.agents.buyer.recommendation.state import CategoryQuery
@@ -37,6 +38,39 @@ _Picked = tuple[str, float, float | None]
 _Winner = tuple[str, float, float | None, str]
 
 
+@dataclass
+class CategoryMapping:
+    """매핑 결과 — leg 목록 + **canonical 을 못 낸 leg**(이슈 #217, DESIGN-198 §6.2).
+
+    `unresolved` 는 전개 트리거의 입력이다. 종전 반환형(`legs` 리스트 단독)으로는 호출부가
+    "드롭됐다"와 "애초에 신호가 없었다"를 구분할 수 없어, 목적 marker 열거로 미리 맞히는 수밖에
+    없었다(#198 초판 D2·D3). 결과를 보고 판정하면 열거가 필요 없다.
+
+    **무엇을 담고 무엇을 담지 않는지가 이 필드의 전부다**(§4):
+
+    - 담는다 — ① 거리컷 드롭(`category_distance_rejected`) · ② 택일 null(`category_select_null`).
+      둘 다 "이 표현에 맞는 칸이 taxonomy 에 없다"는 같은 뜻이다.
+    - 담지 않는다 — ③ 조회 예외(pg 경합·embed 실패) · ④ 히트 0건(`categories` 미시드).
+      **실패 원인이 발화 내용이 아니라서** 내용 기반 처방(LLM 전개)을 붙일 근거가 없다. 섞으면
+      pg 순간 장애가 전개 호출을 부르고, 전개해봐야 같은 인프라·같은 빈 사전을 다시 두드린다.
+      PR #188 이 `error_type` 으로 "인프라 장애 vs 코드 버그"를 가른 것과 같은 원칙이다.
+    - 신호 없는 leg(raw·query 모두 없음)도 담지 않는다 — 매핑을 시도조차 하지 않았고, 그 상황은
+      호출부가 D1(`no_legs`)로 따로 판정한다. 여기서 새면 사유가 이중 기록돼 관측이 오염된다.
+
+    값은 **이긴 앵커 텍스트**(query 우선, §4.3.1)다. 전개 자체는 발화 원문으로 하므로 이 값이
+    트리거 판정을 바꾸지는 않지만, 어떤 앵커가 왜 실패했는지가 로그에 남아야 하류
+    `category_distance_rejected` 의 거리·마진과 조인해 임계를 재튜닝할 수 있다(§10).
+    """
+
+    legs: list[tuple[str, str | None]] = field(default_factory=list)
+    unresolved: list[str] = field(default_factory=list)
+    # 이 호출이 **실제로 쓴** §4.4 택일 LLM 호출 수(#217 PR 리뷰). `category_select_max_calls` 는
+    # **턴당** 상한인데 #217 로 매핑이 턴에 2회 불리므로, 호출부가 남은 예산을 계산해 두 번째 호출에
+    # 넘겨야 상한이 지켜진다(§6.1). 실패한 호출도 비용이 발생하므로 **시도 수**를 센다 —
+    # `observer.record_model_call` 도 같은 이유로 호출 전에 기록한다.
+    select_calls: int = 0
+
+
 def _top1_with_margin(hits: list[tuple[str, float]]) -> _Picked | None:
     """거리 오름차순 top-k 에서 `(canonical, distance, margin)` 을 뽑는다 (히트 0건이면 None).
 
@@ -51,10 +85,15 @@ def _top1_with_margin(hits: list[tuple[str, float]]) -> _Picked | None:
     return canonical, round(distance, 4), margin
 
 
-def _dedup_truncate(
+def dedup_truncate(
     legs: list[tuple[str, str | None]], fanout_max: int
 ) -> list[tuple[str, str | None]]:
-    """canonical 기준 순서보존 dedup(첫 query 유지) 후 fanout_max 로 절단."""
+    """canonical 기준 순서보존 dedup(첫 query 유지) 후 fanout_max 로 절단.
+
+    공개 함수인 이유(#217): 합집합 배선(§6)에서 **호출부가** 원 매핑 legs 와 전개 매핑 legs 를
+    이어붙인 뒤 같은 규칙으로 정리해야 한다. 순서보존이 계약의 일부다 — 원 leg 을 앞에 두면
+    `fanout_max` 절단에서 사용자가 명시한 카테고리가 먼저 살아남는다.
+    """
     seen: set[str] = set()
     out: list[tuple[str, str | None]] = []
     for cat, query in legs:
@@ -75,8 +114,9 @@ async def map_categories(
     llm=None,
     tier: str = "fast",
     select_category: SelectFn = _select_category,
+    select_max_calls: int | None = None,
     observer=None,
-) -> list[tuple[str, str | None]]:
+) -> CategoryMapping:
     """decompose 추측들을 canonical (category, query) leg 리스트로 보정한다.
 
     각 leg 의 query 는 그 카테고리 전용 검색 키워드(fan-out leg keyword, §6·§9) — 매핑 전
@@ -99,6 +139,11 @@ async def map_categories(
     2개(raw·query)라 한 턴의 pg 커넥션 점유가 `2 × leg 수`이고, 그 상한을 config 검증기가 기동 시
     강제하기 때문이다. 호출부 절단에만 기대면 새 호출부 하나가 풀을 넘긴다.
 
+    반환은 `CategoryMapping(legs, unresolved)` 다(#217, §6.2) — `unresolved` 는 (3)·§4.4 택일 null 로
+    **canonical 을 못 낸 leg** 의 앵커 텍스트이고, 호출부(graph)가 이를 전개 트리거로 쓴다. 조회
+    예외((5))·히트 0건은 담지 않는다: 실패 원인이 발화 내용이 아니라 인프라·시드 상태라서
+    LLM 전개로 풀 수 없다(`CategoryMapping` docstring 참조).
+
     (utterance 는 매퍼 인터페이스 파라미터로 유지하되, 현재 앵커는 leg 별 raw·query 만 쓴다.)
     """
     dsn = settings.catalog_db_url
@@ -117,7 +162,7 @@ async def map_categories(
     # config._require_pool_covers_anchor_concurrency 는 `pool >= 2 × fanout_max` 를 기동 시
     # 강제한다 — 그 전제("leg 수 ≤ fanout_max")가 호출부 절단에만 의존하면 새 호출부 하나가
     # 풀을 넘기고, 증상은 **다른 사용자 요청의 PoolTimeout** 이라 원인 추적이 어렵다.
-    # 출력은 어차피 _dedup_truncate 로 같은 상한을 받으므로 초과분은 낭비였다(dedup 이 겹칠 때만
+    # 출력은 어차피 dedup_truncate 로 같은 상한을 받으므로 초과분은 낭비였다(dedup 이 겹칠 때만
     # leg 다양성이 줄지만, 그건 호출부 계약 위반 상황이고 풀 고갈보다 가벼운 손해다).
     if len(queries) > fanout_max:
         logger.warning(
@@ -226,6 +271,9 @@ async def map_categories(
     # 세기"(트리거 임계 튜닝, §11)라 발동 시점 값이어야 하고, distance 는 실제 채택값이어야
     # 거리컷 튜닝에 쓸 수 있다 — 둘 다 각자의 목적에는 옳으므로 필요한 건 **구분 표시**다.
     select_changed: set[int] = set()
+    # 이 호출이 실제로 쓴 택일 예산(#217 PR 리뷰) — 호출부가 두 번째 매핑에 남은 몫을 넘긴다.
+    # 택일 단계가 예외로 죽어도 0 이 아니라 **그때까지 시도한 수**여야 예산이 새지 않는다.
+    select_calls = 0
     # 이 단계 전체를 격리한다(PR #188 리뷰) — LLM 호출은 gather(return_exceptions=True) 로 이미
     # 막혀 있지만 그 앞뒤의 순수 파이썬 로직(설정 접근·마진 필터·정렬·상한)은 어떤 try 에도 안
     # 감싸여 있었다. 여기서 예외가 나면 map_categories 가 통째로 던지고 호출부(graph)가
@@ -263,7 +311,12 @@ async def map_categories(
             # (칩·멀티턴 승계)라 "눈에 띄는 것 먼저"라는 명분도 있으나, 애매함이 큰 leg 을 방치하면
             # 틀린 카테고리로 검색이 좁혀지는 손해가 대표 여부와 무관하게 발생한다. 대표 leg 이 정말
             # 애매하면 마진도 작아 우선순위를 자연히 얻는다. 동률은 leg 인덱스 순(정렬 안정성).
-            max_calls = settings.category_select_max_calls
+            # `select_max_calls` 주입이 있으면 그 값을 쓴다(#217 PR 리뷰) — 상한이 **턴당**이라
+            # 매핑이 턴에 2회 불릴 때(원 legs·전개 legs) 각 호출이 예산을 따로 먹으면 상한이 2배로
+            # 깨진다. 호출부가 남은 예산을 계산해 넘긴다(§6.1).
+            max_calls = (
+                settings.category_select_max_calls if select_max_calls is None else select_max_calls
+            )
             ambiguous.sort(key=lambda i: nearest[i][2])
             for i in ambiguous[max_calls:]:
                 logger.info(
@@ -275,6 +328,9 @@ async def map_categories(
                     },
                 )
             targets = ambiguous[:max_calls]
+        # 예산 소비는 **gather 앞에서** 센다 — 실패한 호출도 비용이 발생하므로(관측 기록도 호출 전에
+        # 한다) 결과를 보고 세면 실패분이 예산에서 빠져 다음 매핑이 더 쓰게 된다.
+        select_calls = len(targets)
         if targets:
             picks = await asyncio.gather(
                 *(
@@ -354,86 +410,117 @@ async def map_categories(
         )
 
     result: list[tuple[str, str | None]] = []
-    for i, r in enumerate(raws):
-        if r and r in exact:
-            logger.info("category_mapped", extra={"raw": r, "canonical": r})
-            result.append((r, qtexts[i]))
-            continue
-        if i not in need_idx:
-            continue  # 신호 없는 leg(raw·query 모두 없음) → 카테고리 강제 없이 스킵(#22)
-        picked = nearest.get(i)
-        # §4.5 거리컷 마진 예외(#115) — 거리가 멀어도 1위만 확 가까우면(마진 두꺼움) "맞는 칸이
-        # 분명히 하나 있다"는 뜻이라 채택한다. 거리는 도메인 어휘 차이(식품은 상품명≠leaf명)에
-        # 오염되지만 마진은 상쇄된다. 마진 None(히트 1건)은 확신을 잴 수 없으므로 예외 대상 아님.
-        if (
-            picked
-            and picked[1] > distance_max
-            and picked[2] is not None
-            and picked[2] >= override_margin
-        ):
-            logger.info(
-                "category_distance_override",
-                extra={
-                    "raw": r,
-                    "query": qtexts[i],
-                    "canonical": picked[0],
-                    "distance": picked[1],
-                    "margin": picked[2],
-                    "anchor_kind": picked[3],
-                    "threshold": distance_max,
-                    "select_changed": i in select_changed,
-                },
-            )
-        elif picked and picked[1] > distance_max:
-            # 거리컷(§4 #115) — 최근접이 너무 멀다 = "맞는 칸이 taxonomy 에 없다". 틀린 카테고리로
-            # 좁히면 정답 상품이 후보에서 아예 제외되므로 canonical 없이 드롭하고 semanticQuery 로
-            # 넓게 찾게 둔다. 전용 이벤트로 남긴다 — category_unmapped(히트 0건=시드 결측 품질 신호)
-            # 와 섞으면 정책적 드롭이 품질 메트릭을 오염시킨다(§5 격리 규약과 동일 취지).
-            logger.info(
-                "category_distance_rejected",
-                extra={
-                    "raw": r,
-                    "query": qtexts[i],
-                    "canonical": picked[0],
-                    "distance": picked[1],
-                    "margin": picked[2],
-                    "anchor_kind": picked[3],
-                    "threshold": distance_max,
-                    # True 면 distance 는 택일이 고른 후보, margin 은 택일 이전 top1 기준이다
-                    "select_changed": i in select_changed,
-                },
-            )
-            continue
-        if i in select_dropped:
-            # §4.4 택일이 "맞는 후보 없음" → 이미 category_select_null 로 관측됨. 이 leg 은 위
-            # 거리 분기에 닿지 않는다 — 택일 트리거(ambiguous)가 **거리컷 통과분만** 대상으로
-            # 하므로 nearest[i] 의 거리는 임계 이하다(테스트로 고정).
-            continue
-        if picked:
-            canonical, distance, margin, anchor_kind = picked
-            # 이벤트는 종전 정의(raw 유무)를 유지해 메트릭 연속성을 지키고, 실제로 canonical 을 낸
-            # 앵커는 anchor_kind 로 구분한다(§11 #115) — raw 가 있어도 query 앵커가 이길 수 있으므로
-            # (§4.3) `category_repaired` + anchor_kind=query 조합이 정상이다. 거리컷 임계 재튜닝과
-            # 후속 top-k 택일 트리거가 distance·margin 분포에 의존한다.
-            event = "category_repaired" if r else "category_fallback_top1"
-            logger.info(
-                event,
-                extra={
-                    "raw": r,
-                    "canonical": canonical,
-                    "distance": distance,
-                    "margin": margin,
-                    "anchor_kind": anchor_kind,
-                    # True 면 distance 는 택일이 고른 후보, margin 은 택일 이전 top1 기준이라
-                    # 두 값을 함께 쓰는 분포 분석에서 제외하거나 따로 봐야 한다(§11).
-                    "select_changed": i in select_changed,
-                },
-            )
-            result.append((canonical, qtexts[i]))
-        elif i in failed_idx:
-            continue  # 조회 예외로 실패 — 이미 실패 로그로 관측됨. 품질 메트릭 오염 방지로 드롭만.
-        else:
-            # 신호(raw/query)는 있었고 조회도 정상이나 히트 0건 → canonical 없이 드롭(top-k 미스율
-            # 품질 신호, §11). categories 미시드·임베딩 결측 등 드문 상태라 관측 가능하게 남긴다(#4).
-            logger.warning("category_unmapped", extra={"raw": r})
-    return _dedup_truncate(result, fanout_max)
+    # 전개 트리거 입력(#217 §4) — canonical 을 못 낸 leg 만. 조회 예외·히트 0건은 담지 않는다.
+    unresolved: list[str] = []
+
+    def _anchor_text(i: int) -> str:
+        """실패 leg 을 식별할 텍스트 — 이긴 앵커(query 우선 §4.3.1), 없으면 원 신호로 폴백."""
+        return anchor_by_leg.get(i) or qtexts[i] or raws[i] or ""
+
+    # 조립 루프도 격리한다(PR 리뷰) — 여기서 예외가 나면 `map_categories` 가 통째로 던지고 호출부가
+    # 빈 legs 로 degrade 해 **이미 DB 검증된 exact 매치와 채택 canonical 까지 버린다.** PR #188 이
+    # 택일 단계를 감싼 것과 같은 이유이며(§5 부분 성공 보존), 덤으로 `select_calls` 회계도 살아남아
+    # 두 번째 매핑이 예산을 다시 받는 일이 없다(#217 §6.1).
+    # 여기 도달하는 것은 I/O 실패가 아니다 — 앵커 조회·택일은 각자 격리돼 있으므로 **순수 로직**
+    # 오류다. `error_type` 을 실어 triage 를 돕는다(PR #188 과 동일 규약).
+    try:
+        for i, r in enumerate(raws):
+            if r and r in exact:
+                logger.info("category_mapped", extra={"raw": r, "canonical": r})
+                result.append((r, qtexts[i]))
+                continue
+            if i not in need_idx:
+                continue  # 신호 없는 leg(raw·query 모두 없음) → 카테고리 강제 없이 스킵(#22)
+            picked = nearest.get(i)
+            # §4.5 거리컷 마진 예외(#115) — 거리가 멀어도 1위만 확 가까우면(마진 두꺼움) "맞는 칸이
+            # 분명히 하나 있다"는 뜻이라 채택한다. 거리는 도메인 어휘 차이(식품은 상품명≠leaf명)에
+            # 오염되지만 마진은 상쇄된다. 마진 None(히트 1건)은 확신을 잴 수 없으므로 예외 대상 아님.
+            if (
+                picked
+                and picked[1] > distance_max
+                and picked[2] is not None
+                and picked[2] >= override_margin
+            ):
+                logger.info(
+                    "category_distance_override",
+                    extra={
+                        "raw": r,
+                        "query": qtexts[i],
+                        "canonical": picked[0],
+                        "distance": picked[1],
+                        "margin": picked[2],
+                        "anchor_kind": picked[3],
+                        "threshold": distance_max,
+                        "select_changed": i in select_changed,
+                    },
+                )
+            elif picked and picked[1] > distance_max:
+                # 거리컷(§4 #115) — 최근접이 너무 멀다 = "맞는 칸이 taxonomy 에 없다". 틀린 카테고리로
+                # 좁히면 정답 상품이 후보에서 아예 제외되므로 canonical 없이 드롭하고 semanticQuery 로
+                # 넓게 찾게 둔다. 전용 이벤트로 남긴다 — category_unmapped(히트 0건=시드 결측 품질 신호)
+                # 와 섞으면 정책적 드롭이 품질 메트릭을 오염시킨다(§5 격리 규약과 동일 취지).
+                logger.info(
+                    "category_distance_rejected",
+                    extra={
+                        "raw": r,
+                        "query": qtexts[i],
+                        "canonical": picked[0],
+                        "distance": picked[1],
+                        "margin": picked[2],
+                        "anchor_kind": picked[3],
+                        "threshold": distance_max,
+                        # True 면 distance 는 택일이 고른 후보, margin 은 택일 이전 top1 기준이다
+                        "select_changed": i in select_changed,
+                    },
+                )
+                # #217 §4 ① — "맞는 칸이 taxonomy 에 없다"는 판정이라 전개 대상이다.
+                unresolved.append(_anchor_text(i))
+                continue
+            if i in select_dropped:
+                # §4.4 택일이 "맞는 후보 없음" → 이미 category_select_null 로 관측됨. 이 leg 은 위
+                # 거리 분기에 닿지 않는다 — 택일 트리거(ambiguous)가 **거리컷 통과분만** 대상으로
+                # 하므로 nearest[i] 의 거리는 임계 이하다(테스트로 고정).
+                # #217 §4 ② — ① 과 같은 뜻("후보 중 맞는 것이 없다")이라 함께 전개 대상이다.
+                unresolved.append(_anchor_text(i))
+                continue
+            if picked:
+                canonical, distance, margin, anchor_kind = picked
+                # 이벤트는 종전 정의(raw 유무)를 유지해 메트릭 연속성을 지키고, 실제로 canonical 을 낸
+                # 앵커는 anchor_kind 로 구분한다(§11 #115) — raw 가 있어도 query 앵커가 이길 수 있으므로
+                # (§4.3) `category_repaired` + anchor_kind=query 조합이 정상이다. 거리컷 임계 재튜닝과
+                # 후속 top-k 택일 트리거가 distance·margin 분포에 의존한다.
+                event = "category_repaired" if r else "category_fallback_top1"
+                logger.info(
+                    event,
+                    extra={
+                        "raw": r,
+                        "canonical": canonical,
+                        "distance": distance,
+                        "margin": margin,
+                        "anchor_kind": anchor_kind,
+                        # True 면 distance 는 택일이 고른 후보, margin 은 택일 이전 top1 기준이라
+                        # 두 값을 함께 쓰는 분포 분석에서 제외하거나 따로 봐야 한다(§11).
+                        "select_changed": i in select_changed,
+                    },
+                )
+                result.append((canonical, qtexts[i]))
+            elif i in failed_idx:
+                # 조회 예외로 실패 — 이미 실패 로그로 관측됨. 품질 메트릭 오염 방지로 드롭만.
+                # **`unresolved` 에 담지 않는다**(#217 §4 ③): 실패 원인이 발화 내용이 아니라 인프라라
+                # LLM 전개로 풀리지 않고, 전개해봐야 같은 pg·임베딩을 다시 두드린다.
+                continue
+            else:
+                # 신호(raw/query)는 있었고 조회도 정상이나 히트 0건 → canonical 없이 드롭(top-k 미스율
+                # 품질 신호, §11). categories 미시드·임베딩 결측 등 드문 상태라 관측 가능하게 남긴다(#4).
+                # 여기도 `unresolved` 대상이 아니다(#217 §4 ④) — 전개된 상품명도 같은 빈 사전을 본다.
+                logger.warning("category_unmapped", extra={"raw": r})
+    except Exception as exc:  # noqa: BLE001 - 조립 로직 오류: 그때까지 확정된 leg 은 보존한다
+        logger.warning(
+            "category_assembly_failed",
+            extra={"reason": str(exc), "error_type": type(exc).__name__},
+        )
+    return CategoryMapping(
+        legs=dedup_truncate(result, fanout_max),
+        unresolved=unresolved,
+        select_calls=select_calls,
+    )

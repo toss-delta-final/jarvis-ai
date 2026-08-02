@@ -522,7 +522,7 @@ async def get_account_events(
             무차별 대입 신호: failCount·isSuspicious 등). 이 3종 외 값은 오류다.
     """
     # [#197 PR 리뷰] I-8 은 전역 데이터·admin 소유 협의 미완(🔴, api-spec §4.4
-    # v0.17.5) — 협의 완료 전까지 판매자 표면에 켜지 않는다(기본 비활성).
+    # v0.19.1) — 협의 완료 전까지 판매자 표면에 켜지 않는다(기본 비활성).
     # 워커 프롬프트의 "보조 소스 Error 관용" 규약에 얹혀 churn/abuse 는 계속 진행한다.
     if not get_settings().seller_account_events_enabled:
         return (

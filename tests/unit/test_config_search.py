@@ -41,6 +41,15 @@ def test_tier_thresholds_defaults_ordered() -> None:
     s = Settings(_env_file=None)
     assert s.rating_tier_excellent >= s.rating_tier_good >= s.rating_tier_fair
     assert s.review_tier_many >= s.review_tier_some >= s.review_tier_few
+    assert (
+        0
+        < s.price_tier_very_cheap_ratio
+        < s.price_tier_cheap_ratio
+        <= 1.0
+        <= s.price_tier_pricey_ratio
+        < s.price_tier_very_pricey_ratio
+    )
+    assert s.price_tier_cheap_ratio < s.price_tier_pricey_ratio
 
 
 def test_rating_tier_misordered_rejected() -> None:
@@ -57,3 +66,28 @@ def test_review_tier_misordered_rejected() -> None:
     """[#171 PR#172 리뷰] review 티어 경계가 many>=some>=few 를 어기면 기동 fail-fast."""
     with pytest.raises(ValidationError):
         Settings(_env_file=None, review_tier_some=3, review_tier_few=10)  # some < few
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"price_tier_very_cheap_ratio": 0},
+        {"price_tier_very_cheap_ratio": 0.9},
+        {"price_tier_cheap_ratio": 1.15},
+        {"price_tier_pricey_ratio": 1.6},
+        {"price_tier_cheap_ratio": 1.2, "price_tier_pricey_ratio": 1.3},
+        {"price_tier_pricey_ratio": 0.9},
+        {"price_tier_very_cheap_ratio": 0.85},
+        {"price_tier_very_pricey_ratio": 1.15},
+    ],
+)
+def test_price_tier_misordered_or_overlapping_rejected(overrides: dict[str, float]) -> None:
+    """[#173] price 티어 경계 순서가 뒤집히거나 cheap/pricey 가 겹치면 기동 fail-fast."""
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **overrides)
+
+
+def test_price_tier_cheap_and_pricey_cannot_both_equal_median() -> None:
+    """[#173] cheap=pricey=1.0 은 저렴·비쌈 경계를 없애므로 엄격 부등호로 거부한다."""
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, price_tier_cheap_ratio=1.0, price_tier_pricey_ratio=1.0)

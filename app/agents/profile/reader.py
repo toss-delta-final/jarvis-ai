@@ -13,8 +13,12 @@ from app.agents.profile.store import get_profile_store
 async def read_profile_summary(user_id: str | None) -> dict | None:
     """user_id 의 압축 프로필 요약을 반환한다.
 
-    반환 dict 키: markdown(str), generated_at(ISO-8601 str). 미보유(게스트/신규) 시 None.
-    LLM 호출 없음 — 저장소(PostgresStore, pg-profile) 단일 get.
+    반환 dict 키: markdown(str), generated_at(ISO-8601 str), embedding(list[float] | None).
+    미보유(게스트/신규) 시 None. LLM 호출 없음 — 저장소(PostgresStore, pg-profile) 단일 get.
+
+    **[#148] `embedding`** 은 요약 생성 시점에 미리 만들어 둔 취향 벡터다(`store._embed_summary`).
+    홈 추천(I-22)이 질의 벡터에 섞어 장기 취향을 랭킹에 반영한다. 구 요약·임베딩 실패분은 None 이고,
+    소비처는 항이 빠진 질의 벡터로 degrade 한다.
     """
     if not user_id:
         return None
@@ -22,4 +26,8 @@ async def read_profile_summary(user_id: str | None) -> dict | None:
     summary = await store.get_summary(user_id)
     if summary is None:
         return None
-    return {"markdown": summary.markdown, "generated_at": summary.generated_at}
+    return {
+        "markdown": summary.markdown,
+        "generated_at": summary.generated_at,
+        "embedding": summary.embedding,
+    }

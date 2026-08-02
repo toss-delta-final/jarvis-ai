@@ -45,6 +45,17 @@ _SESSION_NS_ROOT = "session_ctx"
 _SUMMARY_KEY = "summary"
 _SESSION_KEY = "buffer"
 
+
+def _normalize_utterance(text: str) -> str:
+    """세션 버퍼 반복 판정용 정규화 (#119, REQ-PROF-026).
+
+    앞뒤 공백·연속 공백·대소문자만 접는다 — 조사/어미까지 건드리는 과한 정규화는 서로 다른
+    발화를 병합해 **정당한 취향 신호를 잃는다**. 의미 유사 dedup 은 임베딩이 필요하고 척도
+    타당성을 실측해야 하므로(docs/lessons.md 2026-07-30) 여기서 하지 않는다.
+    """
+    return " ".join(text.split()).casefold()
+
+
 # key(conversation_key)별 asyncio.Lock — append_session_ctx/clear_session_ctx_upto 의
 # get→put(read-modify-write) 구간을 직렬화한다. 동일 세션에 연속 발화가 빠르게 들어오면
 # lost update 로 앞선 발화가 통째로 유실될 수 있다(RevertStore.add() 와 동일 근거, PR #47 리뷰).
@@ -93,6 +104,30 @@ def _fake_embed(texts: list[str]) -> list[list[float]]:
     return [[0.0] * dim for _ in texts]
 
 
+async def _embed_summary(markdown: str) -> list[float] | None:
+    """프로필 요약 벡터 — 홈 추천(I-22) 질의 벡터의 장기 취향 항 (#148).
+
+    **task_type 은 query 다.** 이 벡터는 카탈로그 문서 임베딩을 상대로 검색하는 질의 쪽이라
+    저장 문서(`RETRIEVAL_DOCUMENT`)와 달라야 한다(비대칭 임베딩, 이슈 #65).
+
+    실패는 삼킨다 — **벡터가 없어도 프로필 자체는 저장돼야 한다.** 키 미구성(유닛/CI)·API 오류
+    어느 쪽이든 None 이고, 소비처(I-22)는 항이 하나 빠진 질의 벡터로 degrade 한다.
+    `embed_texts` 는 동기 HTTP 호출이라 별도 스레드로 넘겨 이벤트루프를 막지 않는다.
+    """
+    settings = get_settings()
+    if not settings.google_api_key or not markdown:
+        return None
+    try:
+        vectors = await asyncio.to_thread(
+            embed_texts, [markdown], task_type=settings.embedding_task_query
+        )
+    except Exception:
+        # 예외 문자열은 업스트림 상태를 유출할 수 있어 클래스명도 남기지 않는다(#141 규약).
+        logger.warning("profile_summary_embed_failed")
+        return None
+    return vectors[0] if vectors else None
+
+
 def _pg_index_config() -> dict:
     """pg-profile(AsyncPostgresStore) 전용 semantic 인덱스 — 실 Google 임베딩 API.
 
@@ -110,10 +145,16 @@ def _fallback_index_config() -> dict:
 
 @dataclass
 class ProfileSummary:
-    """압축 프로필 요약 (§5.1 3섹션 마크다운 + 생성 시각)."""
+    """압축 프로필 요약 (§5.1 3섹션 마크다운 + 생성 시각).
+
+    `embedding` 은 **[#148]** 홈 추천(I-22)이 질의 벡터에 섞는 장기 취향 항이다. 요약 생성 시점
+    (sleep-time consolidation)에 미리 만들어 둔다 — 요청 경로에서 임베딩하면 Google API 왕복이
+    붙어 I-22 예산(연결 2s/응답 3s)을 위협한다. 구 요약·임베딩 실패분은 None 이다.
+    """
 
     markdown: str
     generated_at: str  # ISO-8601
+    embedding: list[float] | None = None
 
 
 class ProfileStore:
@@ -129,16 +170,45 @@ class ProfileStore:
         )
         if not item:
             return None
+        embedding = item.value.get("embedding")
         return ProfileSummary(
-            markdown=item.value["markdown"], generated_at=item.value["generated_at"]
+            markdown=item.value["markdown"],
+            generated_at=item.value["generated_at"],
+            # 구 요약(embedding 신설 전)·임베딩 실패분은 키가 없다 — None 으로 흡수한다.
+            embedding=list(embedding) if isinstance(embedding, list) and embedding else None,
         )
 
     async def set_summary(self, user_id: str, markdown: str, generated_at: str) -> None:
+        """요약을 저장한다. **[#148] 홈 추천용 취향 벡터를 함께 만들어 둔다.**
+
+        여기는 sleep-time consolidation 경로라(요청 경로 아님) 임베딩 API 왕복을 감당할 수 있다.
+        I-22 가 요청 시점에 임베딩하면 예산(연결 2s/응답 3s)을 위협하므로 미리 만드는 것이 요점이다.
+
+        **임베딩이 실패하면 기존 벡터를 살려 둔다.** `aput` 은 값을 통째로 덮어쓰므로 그냥 두면
+        재-consolidation 때 일시 실패(레이트리밋·네트워크) 한 번으로 **이미 벡터를 갖고 있던
+        사용자의 개인화 항이 조용히 사라진다** — 신규 프로필뿐 아니라 기존 사용자에게도 회귀다.
+        살려 둔 벡터는 직전 요약 기준이라 새 요약과 약간 어긋나지만, 프로필 취향은 천천히 변하고
+        **개인화가 통째로 빠지는 것보다 낫다.** 다음 성공한 consolidation 이 갱신한다.
+        """
+        embedding = await _embed_summary(markdown)
+        if embedding is None:
+            # 폴백 조회 자체도 실패할 수 있다(pg-profile 일시 장애·타임아웃) — 여기서 안 잡으면
+            # 아래 요약 저장까지 통째로 죽어 "임베딩 실패가 요약 저장을 막지 않는다"는 보장이
+            # 깨진다(PR #213 리뷰). 벡터를 못 살리는 건 degrade, 요약 저장은 필수다.
+            try:
+                existing = await self.get_summary(user_id)
+                embedding = existing.embedding if existing else None
+            except Exception:
+                logger.warning("profile_summary_embedding_carryover_failed")
+                embedding = None
+        value: dict = {"markdown": markdown, "generated_at": generated_at}
+        if embedding is not None:
+            value["embedding"] = embedding
         await run_with_query_timeout(
             self._store.aput(
                 (_PROFILE_NS_ROOT, user_id),
                 _SUMMARY_KEY,
-                {"markdown": markdown, "generated_at": generated_at},
+                value,
                 index=False,  # 요약 전문은 semantic 인덱스 대상이 아니다(REQ-PROF-071 — facts 전용)
             )
         )
@@ -189,7 +259,9 @@ class ProfileStore:
                     )
 
     # ── transient 세션 버퍼 (승격 전 격리, REQ-PROF transient) ──
-    async def append_session_ctx(self, key: str, text: str, *, cap: int | None = None) -> None:
+    async def append_session_ctx(
+        self, key: str, text: str, *, cap: int | None = None, repeat_cap: int | None = None
+    ) -> None:
         if not text:
             return
         async with mutation_lock(
@@ -203,6 +275,20 @@ class ProfileStore:
             value = item.value if item else {"items": [], "next_seq": 0}
             seq = value["next_seq"] + 1
             buf: list[list] = value["items"]
+            if repeat_cap and repeat_cap > 0:
+                normalized = _normalize_utterance(text)
+                seen = sum(1 for _, t in buf if _normalize_utterance(t) == normalized)
+                if seen >= repeat_cap:
+                    # 반복 **횟수**가 취향 강도로 환산되는 걸 상한한다(#119, REQ-PROF-026).
+                    # 전부 지우지 않는 이유: 게이트가 `explicit OR repeated` 라 반복은 명시 표명
+                    # 없이 승격시키는 독립 경로다 — 1 건만 남기면 그 경로가 죽는다.
+                    # put 자체를 하지 않으므로 next_seq 가 그대로라 워터마크 불변식이 안전하다.
+                    # 발화 원문·user_id 는 로그에 싣지 않는다(PII).
+                    logger.info(
+                        "profile_buffer_repeat_capped",
+                        extra={"repeat_cap": repeat_cap, "buffered": len(buf)},
+                    )
+                    return
             buf.append([seq, text])
             if cap and cap > 0 and len(buf) > cap:
                 del buf[: len(buf) - cap]  # 최신 cap 개만 유지(무제한 누적 방어)
@@ -289,7 +375,7 @@ def set_store(store: BaseStore | None) -> None:
         _pending_cleanup.append(old_ctx)
 
 
-async def _drain_pending_cleanup() -> None:
+async def _drain_pending_cleanup(*, propagate_errors: bool = False) -> None:
     """대기열의 이전 store ctx 들을 닫는다 — 다른(이미 소멸한) 이벤트 루프에서 만들어졌을 수 있다.
 
     `AsyncPostgresStore`(AsyncBatchedBaseStore 상속)는 생성 루프에 묶인 백그라운드 배칭
@@ -304,6 +390,7 @@ async def _drain_pending_cleanup() -> None:
     실제 취소 요청"을 구분해, 후자만 다시 던진다(pg_store.py·processed_events.py·
     conversation.py 와 동일 근거·수정, PR #47 후속 리뷰).
     """
+    first_error: Exception | None = None
     while _pending_cleanup:
         ctx = _pending_cleanup.pop()
         try:
@@ -312,8 +399,23 @@ async def _drain_pending_cleanup() -> None:
             task = asyncio.current_task()
             if task is not None and task.cancelling() > 0:
                 raise
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("profile store context cleanup failed", exc_info=True)
+            if first_error is None:
+                first_error = exc
+    if propagate_errors and first_error is not None:
+        raise first_error
+
+
+async def close_store() -> None:
+    """지금 열려 있는 store ctx(내부 커넥션 풀)를 **이 이벤트 루프에서** 닫는다 (이슈 #208).
+
+    sync `set_store()` 가 미룬 close 는 보통 다른 루프에서 실행된다. 살아 있는 풀을 남긴 채
+    루프가 닫히면 teardown 의 `_cancel_all_tasks()` 가 취소를 삼키는 psycopg 워커와 교착한다
+    (app/agents/profile/processed_events.py `close_pool` 과 동일 근거).
+    """
+    set_store(None)
+    await _drain_pending_cleanup(propagate_errors=True)
 
 
 async def _get_store() -> BaseStore:

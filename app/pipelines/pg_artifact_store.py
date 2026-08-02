@@ -154,7 +154,14 @@ class PgCatalogArtifactStore:
         """
         if not product_ids:
             return {}
-        with self._pool.connection() as conn:
+        # statement_timeout — top_k_by_vector 와 같은 이유(PR #213 리뷰). I-22 만이 아니라
+        # 채팅 rerank 도 이 메서드를 타므로, PK 배치 조회가 2초를 넘기는 병리 상황(예: I-17
+        # replace_all 의 테이블 락)에서 풀 커넥션이 무한정 붙잡히는 것을 모든 호출자에 대해 막는다.
+        from app.core.config import get_settings  # noqa: PLC0415 - 순환 임포트 회피(모듈 관례)
+
+        timeout_ms = int(get_settings().catalog_store_query_timeout_s * 1000)
+        with self._pool.connection() as conn, conn.transaction():
+            conn.execute(f"SET LOCAL statement_timeout = {timeout_ms}")
             rows = conn.execute(
                 f"SELECT {_SELECT_COLS} FROM products WHERE product_id = ANY(%s)", (product_ids,)
             ).fetchall()
@@ -169,6 +176,70 @@ class PgCatalogArtifactStore:
         with self._pool.connection() as conn:
             row = conn.execute("SELECT count(*) FROM products").fetchone()
         return row[0] if row else 0
+
+    def top_k_by_vector(
+        self, query_vec: list[float], *, k: int, exclude: set[int] | None = None
+    ) -> list[int]:
+        """질의 벡터에 가까운 상위 k productId — 코사인 거리(`<=>`)로 DB 에서 자른다 (I-22, #148).
+
+        전량을 파이썬으로 끌어와 코사인을 도는 방식은 7,220건 기준 **p50 3.3초**로 I-22 예산
+        (연결 2s/응답 3s, §3.7)을 그 자체로 초과했다. 실측 후 SQL 로 밀었다.
+
+        **연산자는 `<=>`(코사인 거리)다** — 앱 DDL(`db/catalog/init/00_products.sql`)의 HNSW
+        인덱스가 `vector_cosine_ops` 라서다. 초기 구현은 `<#>`(내적)을 썼는데 **연산자 클래스
+        불일치로 인덱스가 이 쿼리에 절대 쓰일 수 없었다**(PR #213 리뷰 #3 검증 중 발견 —
+        enable_seqscan=off 로도 Seq Scan. "인덱스가 vector_ip_ops" 라던 구 주석은 시드 덤프가
+        만든 별개 테이블의 인덱스를 잘못 본 것). 코사인은 인메모리 구현·`vector_rank` 와 같은
+        척도라 정규화 여부와 무관하게 순위 의미가 일치한다.
+
+        **정렬키는 거리 하나다** — `ORDER BY dist, product_id` 처럼 2차 키가 붙으면 ANN pushdown
+        이 깨져 인덱스 스캔 위에 전체 Sort 가 얹힌다(PR #213 리뷰 #3). 결정성 tiebreak 은 반환된
+        k 행을 파이썬에서 `(dist, product_id)` 로 재정렬해 유지한다 — 같은 snapshot 이면 인덱스
+        상태가 같아 k 경계도 재현된다.
+
+        recall 방어 — HNSW 는 `ef_search` 범위만 돌고 필터를 적용하므로 제외 대상이 상위권에
+        몰리면 k 미만이 나올 수 있다(가짜 INSUFFICIENT_CANDIDATES). `iterative_scan =
+        strict_order`(pgvector ≥0.8)로 필터에 걸린 만큼 탐색을 이어가게 한다. 현 규모에선
+        플래너가 Seq Scan(정확 탐색)을 택해 어느 쪽이든 안전하다(실측: 최근접 3,000 제외에도
+        24/24).
+
+        statement_timeout — 호출측 asyncio.wait_for(504 변환)와 이중 방어다. to_thread 취소는
+        밑에서 도는 쿼리를 죽이지 못해, DB 쪽 상한이 없으면 지연 쿼리가 풀 커넥션을 계속 붙들어
+        후속 요청까지 말려든다. SET LOCAL 이라 트랜잭션 밖으로 새지 않는다.
+        """
+        from app.core.config import get_settings  # noqa: PLC0415 - 순환 임포트 회피(모듈 관례)
+
+        timeout_ms = int(get_settings().catalog_store_query_timeout_s * 1000)
+        skip = list(exclude or ())
+        qvec = Vector(query_vec)
+        # 제외 유무로 쿼리 모양을 가른다 — `(%s IS NULL OR ...)` 패턴은 플래너가 인덱스 경로를
+        # 잡기 어렵게 만든다. 술어는 단순할수록 pushdown 이 산다.
+        if skip:
+            sql = """
+                SELECT product_id, embedding <=> %s AS dist
+                FROM products
+                WHERE embedding IS NOT NULL AND product_id <> ALL(%s::bigint[])
+                ORDER BY embedding <=> %s
+                LIMIT %s
+                """
+            params: tuple = (qvec, skip, qvec, k)
+        else:
+            sql = """
+                SELECT product_id, embedding <=> %s AS dist
+                FROM products
+                WHERE embedding IS NOT NULL
+                ORDER BY embedding <=> %s
+                LIMIT %s
+                """
+            params = (qvec, qvec, k)
+        with self._pool.connection() as conn, conn.transaction():
+            conn.execute(f"SET LOCAL statement_timeout = {timeout_ms}")
+            conn.execute("SET LOCAL hnsw.iterative_scan = strict_order")
+            rows = conn.execute(sql, params).fetchall()
+        # 결정적 tiebreak — 동거리(중복 상품 등)는 productId 오름차순. SQL 2차 정렬키 대신
+        # 여기서 하는 이유는 위 docstring(ANN pushdown) 참조.
+        rows.sort(key=lambda r: (r[1], r[0]))
+        return [r[0] for r in rows]
 
     def get_cursor(self) -> str | None:
         with self._pool.connection() as conn:

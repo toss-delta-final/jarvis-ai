@@ -36,3 +36,6 @@ models/
 
 # Claude Code 개인 설정 (팀 공유 안 함)
 .claude/settings.local.json
+
+# Benchmark run artifacts (immutable local/staging measurements)
+evals/benchmark/baselines/
