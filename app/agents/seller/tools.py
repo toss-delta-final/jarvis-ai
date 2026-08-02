@@ -319,10 +319,37 @@ async def get_order_events(
         to_status: 전이 대상 상태(선택) — 주문: PENDING/PAID/PAYMENT_FAILED/CANCELLED,
             아이템: SHIPPING/DELIVERED/CANCELLED/RETURNED (교환 어휘 없음).
         actor_type: 전이 주체(선택) — USER/SELLER/ADMIN/SYSTEM.
-        group_by: 집계 그룹 기준(선택).
-        stats: 집계 모드로 조회할지 여부(선택, api-spec §4.4 `stats` 쿼리).
+            memberId 집계 시에는 무시된다(아래 group_by 참조).
+        group_by: "memberId" 하나뿐(선택) — 회원별 어뷰징 집계로 전환된다.
+            rows 가 buyerMemberId/orderCount/cancelCount/cancelRatio/
+            maxOrdersPerHour/isSuspicious(코드 판정)로 바뀐다.
+            ※ to_status·actor_type 이 함께 오면 무시한다(코드 강제) —
+            분모(orderCount)까지 필터돼 cancelRatio 가 왜곡되기 때문
+            (예: CANCELLED 만 남기면 전원 1.0, USER 만 남기면 취소 전이만
+            분모에 남음).
+        stats: 집계 모드로 조회할지 여부(선택, api-spec §4.4 `stats` 쿼리) —
+            rows 없이 byStatus·cancelReasonsTop 만 반환된다.
     """
     brand_id = runtime.context.brand_id
+    # [#215 리뷰] memberId 집계에 to_status·actor_type 이 걸리면 Spring 이 분모
+    # (orderCount)까지 필터해 cancelRatio 가 왜곡된다 — BE 쿼리(aggregate·maxPerHour
+    # 양쪽)의 두 필터가 GROUP BY 이전에 적용되기 때문. 예: to_status=CANCELLED 면
+    # 전원 1.0, actor_type=USER 면 취소(USER 전이)만 분모에 남아 정상 회원도 1.0.
+    # 왜곡된 isSuspicious 는 '코드 판정 번복 금지' 규칙 탓에 그대로 보고되므로,
+    # 프롬프트·docstring(소프트 가드)에만 맡기지 않고 코드에서 무시를 강제한다.
+    # [#215 리뷰 2] group_by 는 LLM 이 채우는 자유 문자열(str | None)이라 정확 일치에만
+    # 의존하면 "memberid"·" MemberId " 같은 변형에서 가드가 조용히 무력화된다 — Spring 도
+    # 등호 비교("memberId".equals)라 변형은 회원 집계 대신 목록 조회로 오동작하므로,
+    # 정규화해 가드와 Spring 라우팅을 함께 바로잡는다.
+    if group_by is not None and group_by.strip().lower() == "memberid":
+        group_by = "memberId"
+    ignored_status_note = ""
+    if group_by == "memberId" and (to_status or actor_type):
+        to_status = None
+        actor_type = None
+        ignored_status_note = (
+            " ※ memberId 집계에서 to_status/actor_type 필터는 무시됨(비율 왜곡 방지)."
+        )
     try:
         status_filter = [to_status] if to_status else None
         result = await get_spring_client().get_order_events(
@@ -344,7 +371,9 @@ async def get_order_events(
             stats_note += f". 취소 사유 상위: {reasons}"
         stats_note += "."
     if not result.rows and not stats_note:
-        return f"주문 상태 전이 0건. {_reference_note(from_date, to_date)}"
+        # 0건 조기 반환도 무시 고지를 유지한다 — 빠지면 워커가 필터 무시 사실을
+        # 모른 채 재호출하거나, 회귀 테스트(#215)가 이 경로에서 깨진다.
+        return f"주문 상태 전이 0건.{ignored_status_note} {_reference_note(from_date, to_date)}"
     # rows 는 limit 절단본 — total 이 더 크면 전수를 고지해 표본=전수 오해석을 막는다.
     total = result.total if result.total is not None else len(result.rows)
     total_note = (
@@ -355,7 +384,10 @@ async def get_order_events(
         if result.rows
         else "주문 상태 전이 목록 없음(집계 모드)."
     )
-    return f"{rows_note}{stats_note} {_ORDER_LOG_RULES_NOTE} {_reference_note(from_date, to_date)}"
+    return (
+        f"{rows_note}{stats_note}{ignored_status_note} "
+        f"{_ORDER_LOG_RULES_NOTE} {_reference_note(from_date, to_date)}"
+    )
 
 
 @tool
@@ -413,37 +445,113 @@ async def get_product_change_logs(
     )
 
 
+# I-16 신호 해석 주의 문구 — 상시 부착(#197, _BEHAVIOR_AUTHORITY_NOTE 와 같은 패턴).
+_CHURN_SIGNAL_RULES_NOTE = (
+    "※ 검색 무결과 세션은 현 수집 스키마상 상시 0(미적재) — '검색 불만 없음'의 "
+    "근거로 쓰지 말 것. 이탈률 분모는 기간 내 자사 상품 상호작용 회원(코호트)이다."
+)
+
+
 @tool
 @_traced_tool("tool.get_churn_cohort")
 async def get_churn_cohort(
-    runtime: ToolRuntime[SellerContext], inactive_days: int | None = None
+    runtime: ToolRuntime[SellerContext],
+    from_date: str,
+    to_date: str,
+    inactive_days: int | None = None,
 ) -> str:
     """이탈 코호트(무활동 고객) 이탈률·이탈 전 신호를 요약한다(I-16, api-spec §4.4).
 
+    코호트 = from~to 기간에 자사 상품과 상호작용한 회원. 이탈 = 그중 최근
+    inactive_days 동안 무활동인 회원.
+
     Args:
+        from_date: 코호트 기간 시작일(YYYY-MM-DD, 필수).
+        to_date: 코호트 기간 종료일(YYYY-MM-DD, 필수).
         inactive_days: 무활동 판정 기준일(선택, 미지정 시 설정 기본값).
     """
     brand_id = runtime.context.brand_id
+    settings = get_settings()
     # 기본값을 호출 시점에 해석한다 — 임포트 시점 고정 방지(Settings 주입 원칙).
     effective_days = (
-        inactive_days if inactive_days is not None else get_settings().seller_churn_inactive_days
+        inactive_days if inactive_days is not None else settings.seller_churn_inactive_days
     )
     try:
-        result = await get_spring_client().get_churn(brand_id, effective_days)
+        result = await get_spring_client().get_churn(
+            brand_id, from_date, to_date, effective_days
+        )
     except SpringUnavailableError as exc:
         return f"Error: 이탈 코호트 데이터를 불러오지 못했습니다({exc})."
-    return (
-        f"이탈률 {result.churn_rate:.1f}%, 이탈 전 신호 {len(result.pre_churn_signals)}건. "
-        f"(기준: inactiveDays={effective_days})"
+    # 코호트 0명(기간 내 상호작용 회원 없음)은 "이탈률 0%"와 다른 상태 — 구분 표기(#197).
+    if result.cohort_size == 0:
+        return (
+            f"코호트 0명 — 기간 내 자사 상품과 상호작용한 회원이 없어 이탈 판정 대상이 "
+            f"없습니다. (기준: inactiveDays={effective_days}) "
+            f"{_reference_note(from_date, to_date)}"
+        )
+    cohort_note = f"코호트 {result.cohort_size}명 중 " if result.cohort_size is not None else ""
+    # churn_rate 는 fraction(0.6=60%) — ":.1%" 로만 변환한다(#197 — 구 ":.1f}%" 는
+    # 60% 를 "0.6%" 로 왜곡해 워커가 이탈 미미로 오판하던 수치 버그).
+    # [#197 리뷰] 결측(None)은 0.0% 로 위장하지 않고 미수신으로 명시한다 — 워커가
+    # "이탈 없음"이 아니라 "판정 보류"로 해석하게(silent-mismatch 방어 일관성).
+    rate_note = (
+        f"이탈률 {result.churn_rate:.1%}"
+        if result.churn_rate is not None
+        else "이탈률 미수신(churnRate 결측 — 이탈 규모 판정 보류)"
     )
+    head = f"{cohort_note}{rate_note} (기준: inactiveDays={effective_days})."
+    s = result.pre_churn_signals
+    if s is None:
+        signals_note = " 이탈 전 신호: 미수신."
+    else:
+        reasons = (
+            ", ".join(
+                f"{r.get('reason', '?')}({r.get('count', '?')}건)" for r in s.return_reasons_top
+            )
+            or "없음"
+        )
+        signals_note = (
+            f" 이탈 전 신호: 취소 {s.cancel_count}건, 반품 사유 상위: {reasons}, "
+            f"가격인상 노출 {s.price_increase_exposed}명, "
+            f"검색 무결과 세션 {s.zero_result_search_sessions}건."
+        )
+    if result.members:
+        # [#197 리뷰] I-16 전용 상한 — I-14 kv 상한(seller_summary_max_events)과 분리.
+        shown = result.members[: settings.seller_churn_member_max]
+        member_lines = "; ".join(
+            f"[{m.member_id if m.member_id is not None else '?'}] "
+            f"마지막 활동 {m.last_activity_at or '?'}"
+            f"·최근30일 세션 {m.sessions_30d if m.sessions_30d is not None else '?'}"
+            f"·이탈 전 이벤트 {m.pre_churn_event or '-'}"
+            for m in shown
+        )
+        omitted = len(result.members) - len(shown)
+        omitted_note = f" 외 {omitted}명" if omitted > 0 else ""
+        # members 는 서버 CHURN_LIST_CAP=50 절단본일 수 있다 — 표본=전수 오해석 방지
+        # 고지(I-14 total_note 와 같은 취지, 전수는 코호트×이탈률로 유추 가능).
+        members_note = (
+            f" 이탈 회원 {len(result.members)}명(서버 상한 50 절단본일 수 있음): "
+            f"{member_lines}{omitted_note}."
+        )
+    else:
+        members_note = ""
+    return (
+        f"{head}{signals_note}{members_note} "
+        f"{_CHURN_SIGNAL_RULES_NOTE} {_reference_note(from_date, to_date)}"
+    )
+
+
+# I-8 groupBy 화이트리스트(BE AccountEventAggregateResponse 실측, api-spec §4.4 v0.19.1)
+# — 그 외 값은 BE 400 INVALID_GROUP_BY. 도구가 호출 전 선검증한다(#197 리뷰 2).
+_ACCOUNT_EVENTS_GROUP_BY = ("eventType", "hour", "ip")
 
 
 @tool
 @_traced_tool("tool.get_account_events")
 async def get_account_events(
+    from_date: str,
+    to_date: str,
     event_type: str | None = None,
-    from_date: str | None = None,
-    to_date: str | None = None,
     group_by: str | None = None,
 ) -> str:
     """계정/보안 이벤트 집계를 조회해 요약한다.
@@ -452,18 +560,46 @@ async def get_account_events(
     신원 컨텍스트가 필요 없어 runtime 파라미터도 없다.
 
     Args:
-        event_type: 이벤트 종류(선택).
-        from_date: 조회 시작일(선택, YYYY-MM-DD).
-        to_date: 조회 종료일(선택, YYYY-MM-DD).
-        group_by: 집계 그룹 기준(선택).
+        from_date: 조회 시작일(YYYY-MM-DD, 필수).
+        to_date: 조회 종료일(YYYY-MM-DD, 필수).
+        event_type: 이벤트 종류 필터(선택).
+        group_by: eventType(기본, 유형별 합계) | hour(시간대별) | ip(IP별 —
+            무차별 대입 신호: failCount·isSuspicious 등). 이 3종 외 값은 오류다.
     """
+    # [#197 PR 리뷰] I-8 은 전역 데이터·admin 소유 협의 미완(🔴, api-spec §4.4
+    # v0.19.1) — 협의 완료 전까지 판매자 표면에 켜지 않는다(기본 비활성).
+    # 워커 프롬프트의 "보조 소스 Error 관용" 규약에 얹혀 churn/abuse 는 계속 진행한다.
+    if not get_settings().seller_account_events_enabled:
+        return (
+            "Error: 계정/보안 이벤트 집계(I-8)는 전역 데이터 소유 협의 완료 전까지 "
+            "비활성입니다(admin 소유 🔴 — api-spec §4.4)."
+        )
+    # [#197 PR 리뷰 2] groupBy 화이트리스트 선검증 — BE 도 400 INVALID_GROUP_BY 로
+    # 거부하지만(api-spec §4.4), LLM 오타·환각 값 때문에 왕복 1회(3s 타임아웃 예산)를
+    # 쓰고 나서야 degrade 하는 낭비를 막는다. 문구에 유효값을 실어 재시도를 유도한다.
+    if group_by is not None and group_by not in _ACCOUNT_EVENTS_GROUP_BY:
+        return (
+            f"Error: group_by '{group_by}' 는 지원되지 않습니다 — "
+            f"{'/'.join(_ACCOUNT_EVENTS_GROUP_BY)} 중 하나를 사용하세요."
+        )
     try:
         result = await get_spring_client().get_account_events(
-            event_type, from_date, to_date, group_by
+            from_date, to_date, event_type, group_by
         )
     except SpringUnavailableError as exc:
         return f"Error: 계정 이벤트 데이터를 불러오지 못했습니다({exc})."
-    return f"계정/보안 이벤트 {len(result.events)}건 집계됨(전역)."
+    # [#197] BE 실측 응답(rows — groupBy 별 Bucket/IpRow 이형) 기준으로 요약한다 —
+    # 구 events 필드는 Spring 에 없어 항상 "0건 집계됨"으로 새던 버그의 원인.
+    applied = result.group_by or group_by or "eventType"
+    if not result.rows:
+        return (
+            f"계정/보안 이벤트 0건(전역, groupBy={applied}). "
+            f"{_reference_note(from_date, to_date)}"
+        )
+    return (
+        f"계정/보안 이벤트 {len(result.rows)}건(전역, groupBy={applied}): "
+        f"{_summarize_events(result.rows)}. {_reference_note(from_date, to_date)}"
+    )
 
 
 @tool

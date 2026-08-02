@@ -156,12 +156,21 @@ class Settings(BaseSettings):
     seller_anomaly_deviation_pct: float = 30.0  # 매출 이상판정 편차 임계(%)
     seller_conversion_drop_pct: float = 20.0  # 전환율 하락 이상 임계(%)
     seller_churn_inactive_days: int = 30  # 이탈 코호트 무활동 일수(I-16 inactiveDays 기본)
+    # [#197 PR 리뷰] I-8 계정/보안 이벤트는 전역 데이터(브랜드 스코프 아님)이고
+    # admin 소유 협의가 미완(🔴, api-spec §4.4 v0.19.1)이다. 종전엔 코드 결함(쿼리
+    # 400·스키마 미스매치)이 사실상 차단막이었으나 #197 정합으로 실노출이 가능해져,
+    # 협의 완료 전까지 판매자 워커 표면 노출을 기본 비활성으로 보류한다.
+    seller_account_events_enabled: bool = False
     seller_recent_days_default: int = 7  # normalize_period "최근 N일" 기본 N
     # safe_eval `**` 결과 자릿수 상한(DoS 방어) — 초과 식은 ValueError 로 거부(리뷰 반영).
     seller_calc_max_result_digits: int = 100
     # 도구 반환 상세도 상한(안 1+차등, 2026-07-17 사용자 확정) — 컨텍스트 폭주 방지.
     seller_summary_max_points: int = 60  # 시계열 상세 나열 상한(포인트 수)
     seller_summary_max_events: int = 5  # I-14 이벤트 kv 나열 상한(건)
+    # [#197 PR 리뷰] I-16 이탈 회원 나열 상한 — I-14 용 max_events(위)와 분리 신설.
+    # 같은 값 공유 시 I-14 요약 상세도 조정이 이탈 회원 노출 건수까지 바꾸는 결합이
+    # 생긴다(#196 의 max_products 분리와 같은 취지). 서버 절단 상한은 별도로 50.
+    seller_churn_member_max: int = 5  # I-16 members 상세 나열 상한(명)
     # [#196] I-13 상품별 rows 상세 상한 — I-14 용(위)과 분리. 구 공용 상한 5는
     # 시드 브랜드 상품 7종보다 작아 하위 2종이 상시 잘렸다. 상한 초과분은
     # _summarize_behavior 가 꼬리 합계로 남긴다(정보 소실 없음).
@@ -244,6 +253,27 @@ class Settings(BaseSettings):
     rerank_max_tokens_per_item: int = Field(default=60, ge=1)  # {productId, rationale} 1건 몫
     llm_call_limit: int = 2
     relaxation_max_rounds: int = 3
+
+    # ── degrade 고지 문구 (#133) ──
+    # 문안만 튜너블이고 **고지 여부는 튜너블이 아니다**(PR #235 리뷰). 아래 둘은 api-spec 이
+    # 안내 발신 자체를 요구하므로 빈 값을 기동 시점에 막는다(_require_degrade_notices_present).
+    # 초판은 셋 모두에 "빈 문자열 = 고지 끄기"를 뒀는데, 그건 이슈가 요구한 "문안 config 주입"을
+    # 넘어 **정직성 자체를 옵션으로** 만든 것이었다 — 환경변수 한 줄로 #133 이 되돌려진다.
+    #
+    # 판매자에는 degrade 정직성 게이트(verifier.check_degrade_disclosed)가 있는데 구매자에는
+    # 없어, 개인화·근거가 통째로 사라진 폴백이 평상시 문구와 구분되지 않았다.
+    # rerank 폴백 — 사라진 것 중 **사용자가 카드로 확인 가능한** 추천 이유를 지목한다.
+    # "취향"으로 쓰지 않는 이유: 게스트는 프로필이 없어 평상시에도 취향 반영이 없어 참이 아니다.
+    # 실패 단계명·오류 코드는 쓰지 않는다(api-spec §3.3 "단계별 상세는 서버 로그 전용").
+    rerank_fallback_notice: str = "추천 이유까지 정리하진 못했어요. 검색 결과 순서로 보여드릴게요."
+    # 목록 push(I-21) 실패 안내 — 종전 graph.py 하드코딩을 문구 정책 한 곳으로 모은 것이다.
+    # api-spec §3.3 이 "지연 안내가 포함되며"로 발신을 못박는다(§3.1·§4.2 서술도 동일).
+    push_skipped_notice: str = "목록을 준비하는 데 문제가 있었어요. 잠시 후 다시 시도해 주세요."
+    # 최근 구매 제외(I-19) 실패 안내. **여기만 빈 값이 정상이다** — 계약이 요구하지 않고,
+    # 미고지가 문서화된 판단이기 때문이다. 조회 실패는 "중복이 노출됐다"가 아니라 "걸러내지
+    # 못했다"라 실제 중복 발생 여부를 알 수 없고, rerank 폴백과 달리 거짓 주장을 하고 있지도
+    # 않다(#133 판단). 값을 채우면 켜진다 — 판단을 코드 재배포 없이 되돌리기 위한 여지다.
+    dedup_skipped_notice: str = ""
 
     # ── 홈 추천 랭킹 (I-22, api-spec §3.7 · 이슈 #148) ──
     # 질의 벡터 = 시그널 상품 임베딩의 가중 평균. cart 는 "담기까지 갔다"는 강한 신호라 조회보다 높게,
@@ -516,6 +546,16 @@ class Settings(BaseSettings):
     stream_disconnect_poll_s: float = 0.5
     # AI→Spring 콜백 타임아웃 (§2.9 c, BE I-2 기준 통일). 실제 호출부에서 사용.
     spring_timeout_s: float = 3.0
+    # [#133] I-1 검색 재시도 횟수 (SPEC-RECOMMEND-001 §오류처리가 이미 규정한 동작).
+    # 타임아웃 3s 는 일시 지연이 재시도로 살아나는 폭인데 LLM 만 재시도를 갖고 검색은 0회였다.
+    # **재시도가 의미 있는 실패만** 대상이다 — 타임아웃·연결 오류·응답 중단·5xx·일시 4xx(408·429). 4xx 계약 오류와 응답
+    # 파싱 실패는 다시 불러도 같은 결과라 즉시 실패한다. 비멱등 호출(I-2 담기)에는 걸지 않는다.
+    # 재시도 사이 sleep 은 두지 않는다 — 타임아웃 실패는 이미 3s 간격이 생기고 1회로는 herd
+    # 증폭이 2배를 넘지 않는다.
+    # **상한이 1인 이유(PR #235 리뷰)**: backoff 가 구현에 없다. 2·3 을 허용하면 "1 을 넘기려면
+    # backoff 가 필요하다"고 적어 둔 위험을 설정 한 줄로 열어 주는 셈이라, **현재 구현이 감당하는
+    # 값만** 받는다. 더 올리려면 backoff 를 먼저 만들고 이 상한을 함께 푼다.
+    spring_max_retries: int = Field(default=1, ge=0, le=1)
     # AI→LLM 단일 호출 타임아웃 + 재시도 횟수 (§2.9 c).
     # 현행 30s×(1+1)=60s 최악 예산은 구매자 전체 상한 30s(stream_total_timeout_buyer_s, #138)를 넘는다.
     # timeout 뒤 재시도는 buyer done(stop) 절단 전에 끝날 수 없지만 빠른 오류 재시도는 여전히 유효하다.
@@ -724,6 +764,63 @@ class Settings(BaseSettings):
                 f"{self.stream_first_token_timeout_s}): "
                 "the total stream cap cannot expire before the first-event wait"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _require_search_retry_within_stream_budget(self) -> "Settings":
+        """I-1 검색 재시도 총량이 스트림 전체 상한을 넘으면 기동 실패 (#133).
+
+        **first-token 상한이 아니라 전체 상한과 비교하는 이유**(PR #241/#138 lessons 로 정정):
+        `stream_first_token_timeout_s` 가 재는 것은 §2.9 c 의 **첫 SSE 이벤트**까지인데, 추천
+        경로의 첫 이벤트는 `conditions`(`recommendation/graph.py`)이고 **검색은 그 뒤**에 돈다.
+        즉 검색 재시도는 first-token 예산을 한 톨도 쓰지 않는다 — 초판이 파이프라인 그림만 보고
+        "검색이 첫 토큰보다 앞"이라 적었던 것은 **emit 순서를 코드로 확인하지 않은 오류**다.
+
+        재시도가 실제로 갉아먹는 것은 턴 전체 시간이므로 전체 상한과 묶는다. `llm_timeout_s *
+        (llm_max_retries + 1)` 과 같은 결의 예산식이며, 한쪽만 튜닝하면 조용히 어긋나는 쌍이라
+        기동 시점에 고정한다.
+
+        비교 대상은 **구매자 전체 상한**(`stream_total_timeout_buyer_s`, #138)이다 — I-1 검색은
+        구매자 추천 경로에서만 돌고, 그 경로를 실제로 끊는 것은 판매자와 공용인 90s 가 아니라
+        구매자 전용 30s 다. 느슨한 쪽과 비교하면 검증이 이름만 남는다.
+        """
+        budget = self.spring_timeout_s * (self.spring_max_retries + 1)
+        if budget >= self.stream_total_timeout_buyer_s:
+            raise ValueError(
+                "SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1) must be < "
+                f"STREAM_TOTAL_TIMEOUT_BUYER_S (got {budget} >= "
+                f"{self.stream_total_timeout_buyer_s}): "
+                "search retries alone would exhaust the buyer turn budget"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_degrade_notices_present(self) -> "Settings":
+        """계약이 요구하는 degrade 고지 문구가 비면 기동 실패 (#133, PR #235 리뷰).
+
+        문안은 튜너블이지만 **안내를 낼지 말지는 튜너블이 아니다.** api-spec §3.3 은 rerank
+        폴백에 "품질 저하를 고지한다", push 실패에 "지연 안내가 포함되며"로 **발신 자체**를
+        규정한다. 값이 비면 `graph.py` 의 `if comment:` 가 거짓이 되어 안내가 **조용히**
+        사라지고, 서버는 멀쩡히 돌면서 계약만 어긴다 — 아무도 모른다.
+
+        정제(`_strip_unsafe`) **후** 값으로 검사한다. zero-width·제어문자만 든 문자열은 길이는
+        1 이상이라 `min_length` 를 통과하지만 정제 뒤 비어 같은 구멍이 된다.
+
+        `dedup_skipped_notice` 는 **여기 없다** — 계약이 요구하지 않고 미고지가 문서화된
+        판단이라, 빈 값이 정상적인 의사표현이다.
+        """
+        from app.core.text import _strip_unsafe  # 지연 import — config 는 최하위 모듈이다
+
+        required = {
+            "RERANK_FALLBACK_NOTICE": self.rerank_fallback_notice,
+            "PUSH_SKIPPED_NOTICE": self.push_skipped_notice,
+        }
+        for name, value in required.items():
+            if not _strip_unsafe(value):
+                raise ValueError(
+                    f"{name} must not be empty: api-spec §3.3 requires the degrade disclosure "
+                    "to be sent (the wording is tunable, sending it is not)"
+                )
         return self
 
     @model_validator(mode="after")

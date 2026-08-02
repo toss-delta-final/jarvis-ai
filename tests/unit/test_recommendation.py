@@ -296,6 +296,121 @@ async def test_rerank_failure_degrades_to_search_order() -> None:
     assert _only_list(push.pushes[0]).reasons == []
 
 
+# ─────────── degrade 고지 (#133) ───────────
+
+
+async def test_rerank_fallback_discloses_quality_drop() -> None:
+    """rerank 폴백은 품질 저하를 **고지한다** — 평상시 문구와 구분되어야 한다(#133).
+
+    개인화와 상품별 근거가 통째로 사라지는데 종전 문구("요청하신 조건으로 찾은 상품들이에요")는
+    정상 경로와 구분되지 않아, 오히려 조건에 맞게 골라준 것처럼 읽혔다. 판매자에는
+    degrade 정직성 게이트(verifier.check_degrade_disclosed)가 있는데 구매자에만 없던 비대칭.
+    """
+    settings = get_settings()
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(rerank_error=True),
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+        )
+    )
+    texts = " ".join(e["data"].get("text", "") for e in events if e["type"] == "token")
+    assert settings.rerank_fallback_notice in texts
+    # 회귀 가드 — 평상시와 구분 불가하던 종전 문구가 다시 새면 안 된다.
+    assert "요청하신 조건으로 찾은" not in texts
+    assert _types(events)[-1] == "done"  # degrade 는 error 가 아니라 done(§3.3)
+
+
+async def test_rerank_fallback_discloses_for_guest_too() -> None:
+    """게스트 턴에도 **같은** 고지가 나간다 — 문안이 프로필 유무에 의존하지 않는다(#133).
+
+    문안을 "취향"으로 쓰지 않은 이유가 이것이다. 게스트는 프로필이 없어 평상시에도 취향
+    반영이 없으므로 "취향까지 반영하지 못했다"가 참이 되지 않는다. 반면 추천 이유는
+    프로필과 무관하게 폴백에서 항상 사라지므로 두 신원 모두에게 참이다.
+    """
+    settings = get_settings()
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _guest(),
+            llm=FakeLLM(rerank_error=True),
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+        )
+    )
+    texts = " ".join(e["data"].get("text", "") for e in events if e["type"] == "token")
+    assert settings.rerank_fallback_notice in texts
+
+
+async def test_degrade_notice_is_sanitized(monkeypatch: pytest.MonkeyPatch) -> None:
+    """config 주입 문구도 _strip_unsafe 를 통과한다(#67 규약).
+
+    운영자 주입 값이라 소스 리터럴이 아니다 — 정상 경로의 overall_comment 와 같은 정제를 받는다.
+    """
+    settings = get_settings()
+    # zero-width space·RTL override 는 소스에서 눈에 보이지 않아 편집 중 조용히 사라질 수 있다.
+    # 이름을 붙여 두면 주입부와 단언부가 같은 문자를 가리킴이 드러나고, 하나가 지워지면
+    # NameError 로 즉시 깨진다(리터럴을 양쪽에 흩어 두면 조용히 통과한다).
+    zwsp, rlo = "​", "‮"
+    monkeypatch.setattr(settings, "rerank_fallback_notice", f"추천 이유\n정리 실패{zwsp}{rlo} 안내")
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(rerank_error=True),
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+        )
+    )
+    texts = " ".join(e["data"].get("text", "") for e in events if e["type"] == "token")
+    assert "추천 이유 정리 실패 안내" in texts  # 개행은 단일 공백으로 접힘
+    for banned in ("\n", zwsp, rlo):
+        assert banned not in texts
+
+
+def test_degrade_notice_cannot_be_disabled_by_empty_value() -> None:
+    """고지 문구를 비우면 **기동 실패**한다 (#133, PR #235 리뷰).
+
+    초판은 "빈 문자열 = 고지 끄기"를 운영 롤백 수단으로 뒀는데, 그건 이슈가 요구한 "문안 config
+    주입"을 넘어 **정직성 자체를 옵션으로** 만든 것이었다 — api-spec §3.3 이 발신을 규정하는데
+    환경변수 한 줄로 #133 이 조용히 되돌려진다. 문안은 튜너블이고 발신 여부는 아니다.
+    """
+    from pydantic import ValidationError
+
+    from app.core.config import Settings
+
+    for field in ("rerank_fallback_notice", "push_skipped_notice"):
+        with pytest.raises(ValidationError, match="must not be empty"):
+            Settings(_env_file=None, **{field: ""})
+
+    # 정제 후 비는 값도 같은 구멍이다 — zero-width 만 든 문자열은 min_length 를 통과한다.
+    with pytest.raises(ValidationError, match="must not be empty"):
+        Settings(_env_file=None, rerank_fallback_notice="​‮")
+
+    # dedup 고지는 계약이 요구하지 않는다 — 빈 값이 정상적인 의사표현이다.
+    assert Settings(_env_file=None, dedup_skipped_notice="").dedup_skipped_notice == ""
+
+
+async def test_push_skipped_notice_comes_from_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """push 실패 안내도 config 주입이다 — 문구 정책을 한 곳에 모은다(#133)."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "push_skipped_notice", "목록 준비 지연 안내")
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(),
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_failing_push,
+        )
+    )
+    texts = " ".join(e["data"].get("text", "") for e in events if e["type"] == "token")
+    assert "목록 준비 지연 안내" in texts
+    assert _types(events)[-1] == "done"
+
+
 async def test_push_failure_skips_products_ready() -> None:
     """push 실패 시 products.ready 를 emit 하지 않고 done 으로 종료(§3.3)."""
     events = await _collect(
@@ -1675,6 +1790,253 @@ async def test_search_products_missing_data_key_fails_closed(
     assert "data 키" in caplog.text
 
 
+# ─────────── I-1 검색 재시도 (#133) ───────────
+
+_I1_OK = {
+    "success": True,
+    "data": {"items": [{"productId": 101, "name": "P101", "price": 1000}], "totalCount": 1},
+}
+
+
+def _counting_client(monkeypatch: pytest.MonkeyPatch, *responses):
+    """호출 순서대로 응답/예외를 내는 MockTransport 클라이언트 — 호출 횟수를 센다.
+
+    `_FakeClient` 에는 카운터가 없어 재시도 검증에 쓸 수 없다. httpx 실경로를 그대로 태우려고
+    MockTransport 를 쓴다(저장소 관례 — respx 미설치, tests/unit/test_buyer_tracing.py 전례).
+    """
+    import httpx
+
+    import app.services.spring_client as sc
+
+    calls: list[int] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        item = responses[min(len(calls), len(responses) - 1)]
+        calls.append(1)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    monkeypatch.setattr(
+        sc,
+        "_client",
+        lambda: httpx.AsyncClient(
+            base_url="http://spring.test", transport=httpx.MockTransport(_handler)
+        ),
+    )
+    return calls
+
+
+async def test_search_retries_once_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """1차 타임아웃 → 2차 성공이면 정상 결과를 낸다(#133).
+
+    Spring 타임아웃은 3s 로 짧아 일시 지연이 재시도로 살아난다. LLM 만 30s+1회 재시도를 갖고
+    검색은 0회였던 비대칭을 해소한다 — SPEC-RECOMMEND-001 §오류처리가 이미 규정한 동작이다.
+    """
+    import httpx
+
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    calls = _counting_client(
+        monkeypatch, httpx.TimeoutException("slow"), httpx.Response(200, json=_I1_OK)
+    )
+    result = await sc.search_products(ProductSearchFilters())
+    assert [p.product_id for p in result.products] == [101]
+    assert len(calls) == 2
+
+
+async def test_search_gives_up_after_configured_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    """재시도까지 실패하면 SpringUnavailableError — 상위가 SEARCH_FAILED 로 낸다."""
+    import httpx
+
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    calls = _counting_client(monkeypatch, httpx.TimeoutException("slow"))
+    with pytest.raises(SpringUnavailableError):
+        await sc.search_products(ProductSearchFilters())
+    assert len(calls) == 2  # 1차 + 재시도 1회, 무한 재시도 아님
+
+
+async def test_search_retries_on_connect_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """연결 오류도 재시도 대상이다(일시 장애)."""
+    import httpx
+
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    calls = _counting_client(
+        monkeypatch, httpx.ConnectError("refused"), httpx.Response(200, json=_I1_OK)
+    )
+    assert len((await sc.search_products(ProductSearchFilters())).products) == 1
+    assert len(calls) == 2
+
+
+async def test_search_retries_on_5xx(monkeypatch: pytest.MonkeyPatch) -> None:
+    """5xx 는 업스트림 일시 장애라 재시도한다."""
+    import httpx
+
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    calls = _counting_client(monkeypatch, httpx.Response(503), httpx.Response(200, json=_I1_OK))
+    assert len((await sc.search_products(ProductSearchFilters())).products) == 1
+    assert len(calls) == 2
+
+
+async def test_search_retries_on_remote_disconnect(monkeypatch: pytest.MonkeyPatch) -> None:
+    """서버가 응답 도중 끊는 경우도 재시도한다 (#133 자체 점검).
+
+    httpx 계층에서 `RemoteProtocolError` 는 `NetworkError` 의 **하위가 아니라 형제**다
+    (둘 다 `TransportError` 직계). "연결 오류"로만 묶으면 이 흔한 일시 장애가 재시도에서
+    빠지므로 판정에 따로 적었다 — 초판이 실제로 이걸 빠뜨렸다.
+    """
+    import httpx
+
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    assert not isinstance(httpx.RemoteProtocolError("x"), httpx.NetworkError)  # 전제 고정
+    calls = _counting_client(
+        monkeypatch,
+        httpx.RemoteProtocolError("server disconnected"),
+        httpx.Response(200, json=_I1_OK),
+    )
+    assert len((await sc.search_products(ProductSearchFilters())).products) == 1
+    assert len(calls) == 2
+
+
+async def test_retry_log_labels_disconnect_as_connection_error(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """응답 중단을 `malformed_response` 로 오분류하지 않는다 (PR #235 리뷰).
+
+    `RemoteProtocolError` 는 `NetworkError` 의 형제라 분류 함수에서 빠지면 마지막 return 으로
+    떨어져 "스키마 불일치"로 찍힌다. 재시도는 제대로 되는데 로그만 거짓말하는 상태라,
+    운영자가 Spring 응답 계약을 의심하며 없는 문제를 찾게 된다.
+    """
+    import httpx
+
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    _counting_client(
+        monkeypatch, httpx.RemoteProtocolError("disconnected"), httpx.Response(200, json=_I1_OK)
+    )
+    with caplog.at_level("WARNING", logger="app.services.spring_client"):
+        await sc.search_products(ProductSearchFilters())
+
+    retries = [r for r in caplog.records if r.msg == "spring_search_retry"]
+    assert len(retries) == 1
+    assert retries[0].statusClass == "connection_error"
+    assert "disconnected" not in caplog.text  # 예외 원문은 싣지 않는다(#141)
+
+
+@pytest.mark.parametrize("status", [408, 429])
+async def test_search_retries_transient_4xx(monkeypatch: pytest.MonkeyPatch, status: int) -> None:
+    """408·429 는 4xx 지만 재시도한다 (PR #235 리뷰).
+
+    "4xx 는 다시 보내도 같은 거절"이라는 일반 규칙의 예외다 — 요청 자체는 유효하고 서버·인프라의
+    일시 상태일 뿐이라 5xx 와 성격이 같다. 특히 429 는 타임아웃과 달리 **즉시 응답**이라 재시도
+    비용이 밀리초여서, 순간적인 레이트 리밋 하나로 턴이 죽는 손실이 훨씬 크다.
+    """
+    import httpx
+
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    calls = _counting_client(monkeypatch, httpx.Response(status), httpx.Response(200, json=_I1_OK))
+    assert len((await sc.search_products(ProductSearchFilters())).products) == 1
+    assert len(calls) == 2
+
+
+def test_transport_classification_is_shared_between_log_and_trace() -> None:
+    """로그와 trace 가 **같은 분류 함수**를 쓴다 (PR #235 리뷰).
+
+    두 곳이 isinstance 를 따로 구현하면 새 예외 타입을 한쪽에만 추가했을 때 라벨이 조용히
+    갈린다 — 이 PR 이 RemoteProtocolError 로 그 사고를 실제로 두 번 냈다. 주석 약속 대신
+    구조로 고정한다: 전송 계층 실패는 `_transport_status_class` 가 유일한 출처다.
+    """
+    import httpx
+
+    import app.services.spring_client as sc
+
+    for exc, expected in [
+        (httpx.TimeoutException("t"), "timeout"),
+        (httpx.ConnectError("c"), "connection_error"),
+        (httpx.RemoteProtocolError("d"), "connection_error"),
+    ]:
+        assert sc._transport_status_class(exc) == expected
+        assert sc._failure_status_class(exc) == expected  # 로그가 같은 출처를 쓴다
+        assert sc._is_retryable(exc) is True  # 재시도 판정도 같은 출처를 쓴다
+
+    # 전송 계층이 아니면 None — span 은 손대지 않고, 로그는 자체 분기로 내려간다.
+    assert sc._transport_status_class(httpx.LocalProtocolError("l")) is None
+    assert sc._transport_status_class(ValueError("bad json")) is None
+
+
+async def test_search_does_not_retry_local_protocol_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """우리 요청이 잘못된 경우(LocalProtocolError)는 재시도하지 않는다 — 다시 보내도 같다."""
+    import httpx
+
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    calls = _counting_client(
+        monkeypatch, httpx.LocalProtocolError("bad request"), httpx.Response(200, json=_I1_OK)
+    )
+    with pytest.raises(SpringUnavailableError):
+        await sc.search_products(ProductSearchFilters())
+    assert len(calls) == 1
+
+
+async def test_search_does_not_retry_4xx(monkeypatch: pytest.MonkeyPatch) -> None:
+    """4xx 계약 오류는 재시도해도 같은 결과다 — 즉시 실패해 예산을 태우지 않는다(#133)."""
+    import httpx
+
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    calls = _counting_client(monkeypatch, httpx.Response(400), httpx.Response(200, json=_I1_OK))
+    with pytest.raises(SpringUnavailableError):
+        await sc.search_products(ProductSearchFilters())
+    assert len(calls) == 1
+
+
+async def test_search_does_not_retry_malformed_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    """200 이지만 파싱 불가한 응답도 재시도 대상이 아니다 — 같은 응답이 또 온다."""
+    import httpx
+
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    calls = _counting_client(
+        monkeypatch,
+        httpx.Response(200, content=b"not json", headers={"content-type": "application/json"}),
+        httpx.Response(200, json=_I1_OK),
+    )
+    with pytest.raises(SpringUnavailableError):
+        await sc.search_products(ProductSearchFilters())
+    assert len(calls) == 1
+
+
+async def test_search_retry_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """spring_max_retries=0 이면 종전과 같이 1회만 호출한다(롤백 안전성)."""
+    import httpx
+
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    monkeypatch.setattr(get_settings(), "spring_max_retries", 0)
+    calls = _counting_client(monkeypatch, httpx.TimeoutException("slow"))
+    with pytest.raises(SpringUnavailableError):
+        await sc.search_products(ProductSearchFilters())
+    assert len(calls) == 1
+
+
 async def test_expose_min_fill_from_search_order() -> None:
     """rerank 가 expose_min 미만을 내면 검색순서로 보충한다(REQ-REC-021 5~8개)."""
     products = [
@@ -1819,6 +2181,77 @@ async def test_recommendation_degrades_when_purchases_fail(monkeypatch: pytest.M
     )
     assert 101 in _only_list(push.pushes[0]).product_ids  # dedup 없이 진행
     assert _types(events)[-1] == "done"
+
+
+async def test_dedup_skip_is_not_disclosed_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """이력 조회 실패는 **기본 미고지**다(#133 판단).
+
+    조회 실패는 "중복이 노출됐다"가 아니라 "걸러내지 못했다"라 실제 중복 발생 여부를 알 수 없고,
+    rerank 폴백과 달리 거짓 주장을 하고 있지도 않다. 매 턴 붙는 안내는 노이즈가 된다.
+    """
+
+    async def _boom(user_id, status=None):
+        raise SpringUnavailableError("orders down")
+
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _boom)
+    assert get_settings().dedup_skipped_notice == ""  # 기본값이 곧 미고지 수단
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member_num(),
+            llm=FakeLLM(),
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+        )
+    )
+    texts = " ".join(e["data"].get("text", "") for e in events if e["type"] == "token")
+    assert "최근 구매" not in texts
+    assert _types(events)[-1] == "done"
+
+
+async def test_dedup_skip_discloses_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    """문구를 채우면 이력 조회 실패도 고지된다 — 판단을 재배포 없이 되돌리기 위한 여지(#133)."""
+
+    async def _boom(user_id, status=None):
+        raise SpringUnavailableError("orders down")
+
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _boom)
+    monkeypatch.setattr(
+        get_settings(), "dedup_skipped_notice", "최근 구매 제외를 적용하지 못했어요."
+    )
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member_num(),
+            llm=FakeLLM(),
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+        )
+    )
+    texts = " ".join(e["data"].get("text", "") for e in events if e["type"] == "token")
+    assert "최근 구매 제외를 적용하지 못했어요." in texts
+
+
+async def test_dedup_notice_not_emitted_for_guest(monkeypatch: pytest.MonkeyPatch) -> None:
+    """게스트는 **이력이 없는 것**이지 조회에 실패한 게 아니다 — 고지하지 않는다(#133).
+
+    `_fetch_purchases` 는 두 경우 모두 None 을 돌려주므로 호출부에서 구분할 수 없었다.
+    degrade 플래그로 갈라야 "없는 기능이 고장났다"는 거짓 고지를 막는다.
+    """
+    monkeypatch.setattr(
+        get_settings(), "dedup_skipped_notice", "최근 구매 제외를 적용하지 못했어요."
+    )
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _guest(),
+            llm=FakeLLM(),
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+        )
+    )
+    texts = " ".join(e["data"].get("text", "") for e in events if e["type"] == "token")
+    assert "최근 구매 제외를 적용하지 못했어요." not in texts
 
 
 async def test_recommendation_degrades_on_non_numeric_member(
