@@ -235,13 +235,14 @@ def _resolve_repurchase_ids(recent, references: list[str]) -> set[int]:
     exact 제외 대상의 부분집합이라, LLM 이 무엇을 지목하든 임의 productId·타인 상품으로
     확장될 수 없다(신뢰 경계). 후보(candidates) id 나 LLM 정수는 여기 들어오지 않는다.
 
-    공백 제거 + casefold 후 중복을 제거한 유효 지목이 **정확히 1건일 때만** 해소한다. 복수 지목은
+    공백 제거 + casefold 후 중복을 제거한 유효 **지목이 정확히 1건일 때만** 해소한다. 복수 지목은
     모델이 LAST_RECOMMENDATIONS 같은 맥락 목록을 에코했을 수 있어, 각 이름이 개별적으로 정확해도
-    전부 미해제한다. 단일 지목은 가장 좁은 해석을 고른다 — 완전 일치가 있으면 그것만, 없을 때만
-    `지목 in 구매명` 단방향 부분비교로 넓힌다. 단방향 폴백은 발화 표기("무선이어폰")와 상품명
-    ("무선 이어폰 프로")이 띄어쓰기·수식어만 다른 경우를 잡되, 긴 지목("무선 이어폰 케이스")을
-    짧은 구매명("이어폰")으로 축약해 다른 상품을 푸는 오매칭은 막는다. 아무것도 못 잡으면
-    조용히 빈 집합(= 종전 제외 유지)으로 degrade 한다. 과잉 해제보다 미해제가 안전하다.
+    전부 미해제한다. 단일 지목은 가장 좁은 후보 집합을 고른다 — 완전 일치가 있으면 그것만, 없을
+    때만 `지목 in 구매명` 단방향 부분비교로 넓힌다. 선택된 후보에서 **구분되는 정규화 상품명이
+    정확히 1개일 때만** 그 이름의 productId를 전부 해제한다. 따라서 재등록·옵션 분리로 같은 이름이
+    여러 productId에 걸려도 모두 해제하지만, 서로 다른 상품명에 걸린 모호한 부분일치는 미해제한다.
+    단방향 폴백은 긴 지목("무선 이어폰 케이스")을 짧은 구매명("이어폰")으로 축약하는 오매칭을
+    막는다. 아무것도 못 잡으면 조용히 빈 집합(= 종전 제외 유지)으로 degrade 한다.
     """
     if not references:
         return set()
@@ -251,26 +252,12 @@ def _resolve_repurchase_ids(recent, references: list[str]) -> set[int]:
     names = [
         (item.product_id, "".join((item.product_name or "").split()).casefold()) for item in recent
     ]
-    out: set[int] = set()
-    for n in norms:
-        exact = {pid for pid, name in names if name and name == n}
-        if exact:
-            # 완전 일치는 **몇 건이든 전부** 푼다 — 아래 부분비교의 모호성 규칙을 여기 적용하면
-            # 안 된다(PR #230 리뷰 문의). 부분비교의 복수 매칭은 이름이 서로 달라 지목이 특정에
-            # 실패한 것이지만, 완전 일치의 복수 매칭은 전부 **사용자가 말한 바로 그 이름**이라
-            # "지목하지 않은 상품"이 없다. 재등록·옵션 분리로 같은 이름이 두 productId 로
-            # 존재할 때 미해제하면 #120 버그가 그대로 재발한다(회귀 테스트로 고정).
-            out |= exact
-            continue
-        # 부분비교는 **모호하지 않을 때만** 쓴다 — "세트"·"리필" 같은 짧고 흔한 지목은 최근 구매
-        # 여러 건에 한꺼번에 걸려 dedup 을 통째로 무력화한다. 길이 하한은 한국어에서 쓸 수 없어
-        # ("소금"·"우유"와 "세트"·"리필"이 모두 2자) 길이 대신 **모호성 자체**를 기준으로 삼는다 —
-        # 언어 중립적이고 새 튜너블도 필요 없다. 2건 이상 걸리면 지목이 특정에 실패한 것이므로
-        # 아무것도 풀지 않는다(과잉 해제보다 미해제, PR #230 리뷰).
-        partial = {pid for pid, name in names if name and n in name}
-        if len(partial) == 1:
-            out |= partial
-    return out
+    reference = next(iter(norms))
+    exact = [(pid, name) for pid, name in names if name and name == reference]
+    matches = exact or [(pid, name) for pid, name in names if name and reference in name]
+    if len({name for _, name in matches}) != 1:
+        return set()
+    return {pid for pid, _ in matches}
 
 
 async def stream_recommendation(
