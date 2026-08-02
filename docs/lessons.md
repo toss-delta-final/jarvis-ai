@@ -13,6 +13,24 @@
 
 ---
 
+## [2026-08-02] 타임아웃을 판단하기 전에 상한과 지표의 측정 지점을 구분한다
+- 증상: #151 댓글과 baseline README가 `slo_first_token_ms` 10초에
+  `client_ttft_ms` p95 9970ms가 닿는다며 런타임 first-token 상한도 임박한 것으로 해석했다.
+  #138에서 다시 재보니 상한이 실제로 기다리는 첫 SSE 이벤트 p95는 1.4~3.0초였고, measured
+  120건 중 504는 0건이었다.
+- 원인: `stream_first_token_timeout_s`는 api-spec §2.9(c)의 **스트림 첫 이벤트까지**를 재며
+  runner의 `client_first_event_ms`에 해당하지만, `slo_first_token_ms`는 첫 텍스트 토큰인
+  `latencyFirstToken`·`client_ttft_ms`를 평가한다. 구매자는 `conditions` 등이 텍스트보다 먼저
+  나오고, 판매자는 `meta`·`progress`를 p95 1.4초에 보낸 뒤 텍스트를 마지막에 한 번 내보내므로
+  둘의 차이가 더 커진다. first-token SLO 초과 37/154 중 32건이 seller/analysis였던 것도
+  판매자 지연이 아니라 성격이 다른 지점을 비교한 결과다.
+- 규칙: **지연 수치로 타임아웃을 조정하기 전에 코드에서 그 상한이 실제로 재는 지점을 확인한다.**
+  런타임 상한 대상인 `client_first_event_ms`와 SLO 대상인
+  `client_ttft_ms`·`latencyFirstToken`을 섞지 않고, 텍스트를 마지막에 한 번 내보내는 판매자
+  경로에는 첫 텍스트 토큰 기준 SLO를 그대로 적용하지 않는다.
+- 관련: #138, #151, `app/core/stream.py`(`ft_deadline`), api-spec §2.9(c),
+  `app/core/config.py`(`slo_first_token_ms`), `evals/benchmark/baselines/README.md`
+
 ## [2026-08-02] 부하 측정 전에 앱 자기 레이트 리밋을 측정 경로에서 분리한다
 - 증상: 로컬 벤치마크의 measured 270건 중 120건(44%)이 429였고, 마지막 시나리오는 113건
   전량이 `RATE_LIMITED`였다. 성능 대신 앱 자기 리밋을 측정한 실행이라 기준선으로 폐기했다.

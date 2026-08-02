@@ -933,4 +933,5 @@ async def seller_chat(
         registry_key(identity, request.thread_id),
         lambda: _seller_stream(request, identity, request_id=request_id),
         observer=observation,
+        role="seller",
     )

@@ -87,3 +87,68 @@ PostgreSQL을 사용해 블랙박스 HTTP/SSE runner로 측정한 **로컬 기�
 ```bash
 uv run python -m evals.benchmark.runner --base-url http://127.0.0.1:8199 --target-label local-nospring --scenarios buyer_recommend,buyer_fallback,buyer_dependency_degrade --concurrency 1,5,10 --measured-requests 30 --server-log /path/to/server.log --out-dir evals/benchmark/baselines --client-region local-wsl2 --instance-type local-dev-wsl2 --dependency-note 'Spring 미기동 — I-1 검색·I-21 push 불가(degrade 경로)' --dependency-note 'pg-catalog/pg-profile 로컬 컨테이너(5433/5434)' --dependency-note 'AWS staging 부재(#135 blocked:spring) — 로컬 측정' --dependency-note '벤치마크용으로 타깃의 RATE_LIMIT_PER_MIN/HOUR 를 100000 으로 상향(앱 코드 무변경, 타깃 환경변수만)'
 ```
+
+## #138 로컬 Spring 기동 역할별 타임아웃 근거
+
+`20260802T135849104976Z-local-spring-buyer/`와
+`20260802T140556535202Z-local-spring-seller/`는 #151 기준선과 조건이 다르다. Spring 백엔드를
+기동하고 유효한 `X-Internal-Token`으로 I-1 검색을 **42/42 200 OK**로 확인했으며, #151에서 빠졌던
+판매자 시나리오를 처음 측정했다. 두 실행 모두 로컬 WSL2, 동시성 1, 시나리오당 measured n=30
+전용이다. 원본 `report.md`·`metrics.csv`·`raw.jsonl`·`manifest.json`은 불변 측정 아티팩트다.
+
+### 클라이언트 측 측정
+
+| group | first_event p95 | first_text_token p95 | total p50 | total p95 | total max | error |
+|---|---:|---:|---:|---:|---:|---:|
+| buyer_recommend@1 | **2971ms** | 8779ms | 7236ms | 8786ms | 12031ms | 0/30 |
+| buyer_fallback@1 | **2306ms** | 10778ms | 1969ms | 10783ms | 12804ms | 0/30 |
+| seller_general@1 | **1775ms** | 2517ms | 2443ms | 3255ms | 3313ms | 0/30 |
+| seller_analysis@1 | **1434ms** | 11728ms | 10700ms | 11730ms | 12698ms | 0/30 |
+
+### 서버 측 role·lane 롤업
+
+아래 표는 #137 `scripts/aggregate_observability.py`로 154턴을 집계한 결과다.
+
+| role/lane | n | first_token p50 | p95 | p99 | total p95 |
+|---|---:|---:|---:|---:|---:|
+| guest/fallback | 35 | 1956 | 2464 | 2465 | 2465 |
+| guest/recommend | 42 | 7085 | 10761 | 12773 | 10779 |
+| seller/general | 38 | 1711 | 2515 | 2553 | 3251 |
+| seller/analysis | 39 | 10684 | 11725 | 12693 | 11726 |
+| **role:guest 전체** | 77 | 6214 | **10501** | 12773 | **10522** |
+| **role:seller 전체** | 77 | 9049 | **11710** | 12693 | **11710** |
+
+30초를 넘긴 턴은 0/154, 90초를 넘긴 턴도 0/154였고 최대 total은 12.8초였다. I-1 검색
+지연은 직전 로그줄 기준 상한 추정 p50 302ms·p95 517ms·max 781ms(42/42 200), LLM 단일 호출은
+같은 방식의 상한 추정 p50 1295ms·p95 4279ms였다. I-19
+`/internal/members/{id}/orders`는 게스트 신원에 memberId가 없어 호출 0건이므로 측정하지 못했다.
+
+### 판독 주의
+
+1. `client_first_event_ms`와 `client_ttft_ms`는 다른 값이다. 런타임 first-token 상한이 강제하는
+   대상은 **첫 SSE 이벤트인 전자**이며, 첫 텍스트 토큰인 후자가 아니다.
+2. degrade 26.0%는 전량 I-21 `POST /internal/recommendations`의 400 응답에 따른
+   `push_skipped`다. BE 데이터/계약 조건이며 앱 성능 문제가 아니다. error율은 0.0%다.
+3. 이 결과는 로컬 WSL2 측정이며 AWS staging 결과가 아니다. #152가 같은 runner로 staging에서
+   다시 측정한다.
+4. `buyer_dependency_degrade`는 Spring 중단 조건을 전제하므로 Spring 기동 상태인 이번 실행에서
+   제외했다.
+5. p99는 그룹당 30표본이라 runner가 생략했다. 위 p99는 그룹별 runner 결과가 아니라
+   **#137의 154턴 서버 집계**에서 나온 값이다.
+
+### 재현
+
+아래 명령은 각 `manifest.json`의 `command`를 그대로 옮긴 것이다. 판매자 인증은 토큰 값을
+명령에 넣지 않고 `--auth-token-env BENCH_SELLER_TOKEN`으로만 주입한다.
+
+구매자:
+
+```bash
+/home/uuser/orca/workspaces/jarvis-ai/chore-138-timeout-retune-from-metrics/.venv/bin/python3 -m evals.benchmark.runner --base-url http://127.0.0.1:8199 --target-label local-spring-buyer --scenarios buyer_recommend,buyer_fallback --concurrency 1 --measured-requests 30 --server-log /tmp/claude-1000/-home-uuser-orca-workspaces-jarvis-ai-chore-138-timeout-retune-from-metrics/83c4453a-837b-42a9-8ff0-f9270fa1fee3/scratchpad/bench/server.log --out-dir /tmp/claude-1000/-home-uuser-orca-workspaces-jarvis-ai-chore-138-timeout-retune-from-metrics/83c4453a-837b-42a9-8ff0-f9270fa1fee3/scratchpad/bench/out --client-region local-wsl2 --instance-type local-dev-wsl2 --dependency-note 'Spring 기동 — I-1 GET /internal/products/search 200 (X-Internal-Token 유효). #151 baseline 과 결정적으로 다른 조건' --dependency-note 'I-21 POST /internal/recommendations 는 400 응답 — degradeReason=push_skipped 상시 발생(BE 데이터/계약 조건, AI 코드 무관)' --dependency-note 'pg-catalog/pg-profile 로컬 컨테이너(5433/5434), catalog.products 7220건 임베딩 전량' --dependency-note 'AWS staging 부재(#135 blocked:spring) — 로컬 WSL2 측정' --dependency-note '타깃 RATE_LIMIT_PER_MIN/HOUR=100000 상향(앱 코드 무변경, 타깃 환경변수만)' --dependency-note '동시성 1 전용 — #151 에서 동시성 5·10 은 개인 OpenAI 키 provider 429 로 오염됨'
+```
+
+판매자:
+
+```bash
+/home/uuser/orca/workspaces/jarvis-ai/chore-138-timeout-retune-from-metrics/.venv/bin/python3 -m evals.benchmark.runner --base-url http://127.0.0.1:8199 --target-label local-spring-seller --scenarios seller_general,seller_analysis --concurrency 1 --measured-requests 30 --auth-token-env BENCH_SELLER_TOKEN --server-log /tmp/claude-1000/-home-uuser-orca-workspaces-jarvis-ai-chore-138-timeout-retune-from-metrics/83c4453a-837b-42a9-8ff0-f9270fa1fee3/scratchpad/bench/server.log --out-dir /tmp/claude-1000/-home-uuser-orca-workspaces-jarvis-ai-chore-138-timeout-retune-from-metrics/83c4453a-837b-42a9-8ff0-f9270fa1fee3/scratchpad/bench/out --client-region local-wsl2 --instance-type local-dev-wsl2 --dependency-note 'Spring 기동 — 판매자 집계 GET /internal/seller/{brandId}/sales·products 는 404(brandId=1 데이터 없음). 도구 수준에서 처리되며 lane=analysis degraded=false 로 완주' --dependency-note 'dev auth_mode 무서명 JWT(role=seller, sub=1, brandId=1) — 산출물에 토큰 미포함' --dependency-note 'pg-catalog/pg-profile 로컬 컨테이너(5433/5434)' --dependency-note 'AWS staging 부재(#135 blocked:spring) — 로컬 WSL2 측정' --dependency-note '타깃 RATE_LIMIT_PER_MIN/HOUR=100000 상향(앱 코드 무변경, 타깃 환경변수만)' --dependency-note '동시성 1 전용 — #151 에서 동시성 5·10 은 개인 OpenAI 키 provider 429 로 오염됨'
+```
