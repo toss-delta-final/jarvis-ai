@@ -1,15 +1,22 @@
-"""목적·상황형 발화의 상품 전개 — 감지 (이슈 #198, DESIGN-NEEDS-EXPANSION-198 §4).
+"""목적·상황형 발화의 상품 전개 — 감지 (이슈 #198·**#217**, DESIGN-NEEDS-EXPANSION-198 §4).
 
 `decompose` 가 목적형 발화를 구체 상품으로 전개하지 못한 것을 **코드가 결정적으로 판정**한다.
 LLM 에게 "전개했니?"를 묻지 않는다 — `case` 는 같은 호출의 산출물이라 전개 실패 회차의 값을
 신뢰할 수 없음이 실측으로 확인됐다(§4.1, 트리거로 부적합).
 
-단 `case` 는 **게이트**로 쓴다(§4.2, PR #203 리뷰) — `case != 3` 이면 어떤 규칙도 발동하지 않는다.
-case 2 는 의도적으로 카테고리 무관이라 좁히면 안 되는데(#22·#162) leg 유무로도 marker 로도 case 3 과
-구분되지 않기 때문이다. 배제에만 쓰이므로 트리거보다 낮은 신뢰도로 충분하다.
+**#217 로 판정 시점이 바뀌었다** — 목적 marker 열거(초판 D2·D3)로 **미리 맞히지 않고**, 매핑을
+해본 뒤 **실패한 leg 이 있으면** 전개한다(§4). 열거는 목록에 없는 표현(`재료`·`아이디어`·`필수템`)을
+놓치는데, 목록을 늘리면 이미 정답 매핑되는 표현이 파괴된다(§4.0). 남는 규칙은 둘이다:
 
-감지는 **재현율보다 정밀도** 우선 — 오탐하면 "청바지" 같은 정상 질의에 불필요한 LLM 호출과
-엉뚱한 확장이 붙는다.
+- **D1 `no_legs`** — 신호 leg 이 하나도 없다. 매핑할 것이 없어 실패 신호가 나오지 않으므로 이
+  규칙만은 매핑보다 앞에 남는다.
+- **D2 `mapping_failed`** — `map_categories` 가 canonical 을 못 낸 leg 이 있다(`unresolved`).
+  무엇이 `unresolved` 에 담기는지는 매핑 쪽 계약이다(§4 ①②만, ③④ 제외 — `test_category_mapping`).
+
+`case` 는 **게이트**로 쓴다(§4.2, PR #203 리뷰) — `case != 3` 이면 어떤 규칙도 발동하지 않는다.
+case 2 는 의도적으로 카테고리 무관이라 좁히면 안 되는데(#22·#162) **매핑 실패는 case 2 에서
+구조적으로 발생한다** — 맞는 칸이 없는 것이 정상이기 때문이다(`'평점 높은 거'` → `게임 > PC게임`
+0.3420 / 마진 0.0171). 배제에만 쓰이므로 트리거보다 낮은 신뢰도로 충분하다.
 """
 
 from __future__ import annotations
@@ -24,39 +31,44 @@ from app.agents.buyer.recommendation.needs_expansion import (
 from app.agents.buyer.recommendation.state import CategoryQuery
 from app.core.llm import LLMError
 
-# config 기본값과 동일(§9) — 테스트가 config 변경에 끌려다니지 않게 명시적으로 준다.
-# '답례품'·'추천' 은 실측에서 나온 목적 표현이다(`['돌잔치 답례품']`, `['집들이 선물 추천']`).
-MARKERS = ["선물", "답례품", "준비물", "용품", "아이템", "키트", "물품", "추천", "것", "거"]
 
+def _detect(
+    queries: list[str | None],
+    *,
+    case: int = 3,
+    unresolved: list[str] | None = None,
+) -> str | None:
+    """기본 case=3 — 대부분의 테스트는 목적형 발화를 다루므로 그 전제를 기본값으로 둔다.
 
-def _detect(utterance: str, queries: list[str | None], *, case: int = 3) -> str | None:
-    """기본 case=3 — 대부분의 테스트는 목적형 발화를 다루므로 그 전제를 기본값으로 둔다."""
-    legs = [CategoryQuery(None, q) for q in queries]
-    return detect_expansion_need(utterance, legs, markers=MARKERS, case=case)
-
-
-def _detect_legs(utterance: str, legs: list[CategoryQuery], *, case: int = 3) -> str | None:
-    return detect_expansion_need(utterance, legs, markers=MARKERS, case=case)
-
-
-# ── D1 게이트: case 2(구조화 조건만) 보호 (PR #203 리뷰) ──────────────────────
-
-
-def test_case_two_leg_with_marker_suffix_is_still_gated() -> None:
-    """[자체 점검] case 2 발화의 leg 이 marker 로 끝나도 전개하지 않는다 — 게이트는 D3 에도 걸린다.
-
-    D1 만 게이트하면 이 경로로 새어나간다: `"평점 높은 거 보여줘"` → `['평점 높은 거']` 는 marker
-    `'거'` 로 끝나 D3 가 발동한다. `"인기 많은 거 추천해줘"` 도 같다. 무필터 의도인데 지어낸
-    카테고리로 좁혀지므로, 게이트를 **전 규칙**에 건다.
-
-    실패 방향이 비대칭이라는 것이 근거다 — 과하게 막으면 목적 표현 leg 이 남아 하류 거리컷이
-    드롭해 무필터로 흡수되지만(안전), 새면 검색이 엉뚱하게 좁혀진다(유해).
+    `unresolved` 미지정은 **매핑이 전부 성공했다**는 뜻이다(#217 §4 D2 미해당).
     """
-    assert _detect("평점 높은 거 보여줘", ["평점 높은 거"], case=2) is None
-    assert _detect("인기 많은 거 추천해줘", ["인기 많은 거"], case=2) is None
-    # 같은 규칙이라도 case 3 이면 전개 대상이다(게이트만의 차이임을 고정)
-    assert _detect("발이 시려워", ["방한 아이템"], case=3) == "purpose_marker"
-    assert _detect("발이 시려워", ["방한 아이템"], case=2) is None
+    legs = [CategoryQuery(None, q) for q in queries]
+    return detect_expansion_need(legs, case=case, unresolved=unresolved or [])
+
+
+def _detect_legs(
+    legs: list[CategoryQuery], *, case: int = 3, unresolved: list[str] | None = None
+) -> str | None:
+    return detect_expansion_need(legs, case=case, unresolved=unresolved or [])
+
+
+# ── case 게이트: case 2(구조화 조건만) 보호 (PR #203 리뷰 · #217 로 근거 보강) ──
+
+
+def test_case_two_is_gated_even_when_mapping_fails() -> None:
+    """[#217] case 2 발화는 **매핑이 실패해도** 전개하지 않는다 — 게이트가 전 규칙에 걸린다.
+
+    이 회귀는 #217 이후 오히려 더 잘 터진다. 초판에서는 marker `'거'` 로 끝나는 leg 이 D3 를
+    발동시키는 경로였는데, 이제는 **거리·마진이 직접** 걸어들인다 — `'평점 높은 거'` 는
+    `게임 > PC게임` 0.3420 / 마진 0.0171 로 매핑 실패다(§4.5 실측).
+
+    case 2 leg 은 **taxonomy 에 맞는 칸이 없는 것이 정상**이라 매핑 실패가 구조적으로 발생한다.
+    게이트가 없으면 "카테고리 무관·조건만" 의도가 지어낸 상품 목록으로 좁혀진다(#22·#162).
+    """
+    assert _detect(["평점 높은 거"], case=2, unresolved=["평점 높은 거"]) is None
+    assert _detect(["인기 많은 거"], case=2, unresolved=["인기 많은 거"]) is None
+    # 같은 입력이라도 case 3 이면 전개 대상이다(게이트만의 차이임을 고정)
+    assert _detect(["방한 아이템"], case=3, unresolved=["방한 아이템"]) == "mapping_failed"
 
 
 def test_d1_requires_case_three() -> None:
@@ -69,21 +81,21 @@ def test_d1_requires_case_three() -> None:
     `case` 를 **트리거**로 쓰는 것은 §4.1 에서 기각했지만(선언≠사실·오탐), **게이트**로 쓰는 것은
     실측이 뒷받침한다 — `"5만원 이하 아무거나"` 는 3/3 안정적으로 `case=2` 였다.
     """
-    assert _detect("부모님 환갑 선물", [], case=3) == "no_legs"
-    assert _detect("5만원 이하 아무거나", [], case=2) is None
-    assert _detect("청바지", [], case=1) is None
+    assert _detect([], case=3) == "no_legs"
+    assert _detect([], case=2) is None
+    assert _detect([], case=1) is None
 
 
 def test_category_agnostic_query_never_expanded() -> None:
     """조건만 있는 무필터 조회는 전개하지 않는다 — 전개 LLM 이 카테고리를 지어내면 계약이 깨진다.
 
     전개 프롬프트는 "최소 2개를 채우세요"로 **항상 ≥2개를 만들도록** 강제하므로, 목적이 없는
-    입력에도 그럴듯한 상품명을 지어낸다. 그것이 legs 를 교체하면 `filters.category` 가 채워져
+    입력에도 그럴듯한 상품명을 지어낸다. 그것이 legs 에 얹히면 `filters.category` 가 채워져
     "카테고리 무관, 가격만 필터"라는 사용자 의도가 파괴된다(#22 가 테스트로 고정한 계약).
     이 경로는 #162(조건 없는 발화를 인기상품·프로필 후보로)가 개선할 자리이므로 보존해야 한다.
     """
-    for utt in ("5만원 이하 아무거나", "인기 많은 거 추천해줘", "평점 높은 거 보여줘"):
-        assert _detect(utt, [], case=2) is None, utt
+    assert _detect([], case=2) is None
+    assert _detect(["인기 많은 거"], case=2, unresolved=["인기 많은 거"]) is None
 
 
 # ── 신호 판정: raw_category 포함 (PR #203 리뷰) ───────────────────────────────
@@ -95,132 +107,105 @@ def test_raw_only_leg_counts_as_signal() -> None:
     `decompose._parse_category_queries`(`q.raw_category or q.query`)·graph 멀티턴 승계 판정
     (`not any(q.raw_category or q.query ...)`) 모두 두 필드를 함께 본다. 스키마상 `category` 만
     채우고 `query=null` 인 leg 이 나올 수 있는데, 그건 **이미 올바른 카테고리 신호**다. query 만
-    보면 D1 이 오탐해 그 leg 을 지어낸 상품 목록으로 통째로 교체해버린다.
+    보면 D1 이 오탐해 정상 분류된 leg 을 지어낸 상품 목록으로 교체해버린다.
+
+    #217 이후 이 leg 은 **매핑에 태워져** raw 앵커로 조회된다 — 성공하면 canonical 을 내고,
+    실패하면 `unresolved` 로 잡힌다. 어느 쪽이든 D1 이 가로챌 일이 아니다.
     """
-    assert _detect_legs("무선 이어폰 추천해줘", [CategoryQuery("음향가전", None)]) is None
+    assert _detect_legs([CategoryQuery("음향가전", None)]) is None
 
 
-def test_d3_not_triggered_when_a_leg_has_only_raw() -> None:
-    """query 없는 leg 이 섞이면 D3(모든 leg 이 목적 표현)는 성립하지 않는다.
+def test_blank_and_null_queries_are_ignored_as_signal() -> None:
+    """공백·None query 는 신호가 아니다 — 전부 비면 D1 이다.
 
-    raw 만 있는 leg 은 목적 표현 판정 대상이 아니므로 `all()` 을 깨야 한다 — 그 leg 은 정상적으로
-    분류된 카테고리이고, 전개로 교체하면 유실된다.
+    신호 없는 leg 은 map_categories 가 어차피 스킵하므로(#22), 그것 때문에 전개를 트리거하면
+    멀티턴 승계 등 무관한 경로까지 끌려온다.
     """
-    legs = [CategoryQuery(None, "선물용품"), CategoryQuery("음향가전", None)]
-    assert _detect_legs("부모님 환갑 선물", legs) is None
+    assert _detect([None]) == "no_legs"
+    assert _detect(["   "]) == "no_legs"
+    assert _detect([None, "디퓨저"]) is None
 
 
 # ── D1 신호 없음 ────────────────────────────────────────────────────────────
 
 
 def test_d1_no_legs_triggers() -> None:
-    """leg 이 아예 없으면 전개한다 — 실측 `"부모님 환갑 선물"` 3회차가 `[]` 였다."""
-    assert _detect("부모님 환갑 선물", []) == "no_legs"
+    """leg 이 아예 없으면 전개한다 — 실측 `"부모님 환갑 선물"` 3회차가 `[]` 였다.
 
-
-# ── D2 발화 복사 ────────────────────────────────────────────────────────────
-
-
-def test_d2_query_copied_from_utterance_triggers() -> None:
-    """leg 이 1개이고 그 query 가 발화의 일부면 전개한다 — 전개가 아니라 복사다.
-
-    실측: `"집들이 선물로 뭐 사갈까"` → `['집들이 선물']`(3/3), `"돌잔치 답례품 뭐가 좋을까"` →
-    `['돌잔치 답례품']`(3/3). 이 값은 물건 이름이 아니라 목적 표현이라 매핑이 불가능하다.
+    D1 이 매핑 실패 판정과 별도로 남는 이유: **매핑할 것이 없으면 실패 신호도 나오지 않는다.**
+    `unresolved` 는 당연히 비어 있으므로 D2 로는 잡히지 않는다.
     """
-    assert _detect("집들이 선물로 뭐 사갈까", ["집들이 선물"]) == "utterance_copy"
-    assert _detect("돌잔치 답례품 뭐가 좋을까", ["돌잔치 답례품"]) == "utterance_copy"
+    assert _detect([]) == "no_legs"
+    assert _detect([], unresolved=[]) == "no_legs"
 
 
-def test_d2_reverse_containment_also_triggers() -> None:
-    """query 가 발화를 포함하는 경우(LLM 이 발화에 살을 붙인 경우)도 복사로 본다."""
-    assert _detect("집들이 선물", ["집들이 선물 추천"]) == "utterance_copy"
+def test_d1_wins_when_no_signal_legs() -> None:
+    """신호 leg 이 없으면 `no_legs` 로 라벨한다 — 사유는 턴당 하나여야 한다(관측 분포 오염 방지)."""
+    assert _detect([None, "  "], unresolved=["잔여"]) == "no_legs"
 
 
-def test_d2_only_when_single_leg() -> None:
-    """leg 이 여럿이면 D2 를 적용하지 않는다 — 이미 전개가 일어난 것이므로 나머지를 버리지 않는다."""
-    assert _detect("집들이 선물로 뭐 사갈까", ["집들이 선물", "디퓨저"]) is None
+# ── D2 매핑 실패 (#217) ─────────────────────────────────────────────────────
 
 
-# ── D3 목적 표현으로 끝남 ────────────────────────────────────────────────────
+def test_mapping_failure_triggers() -> None:
+    """매핑이 canonical 을 못 낸 leg 이 있으면 전개한다 — marker 목록과 무관하다.
 
+    실측(§4.5 ②)에서 회수되는 것들이 전부 여기다. `재료`·`아이디어`·`필수템` 은 초판 marker
+    목록에 없어 미검출이었다:
 
-def test_d3_purpose_marker_suffix_triggers() -> None:
-    """query 가 목적 marker 로 **끝나면** 전개한다.
-
-    실측 실패: `['환갑 선물 아이템']`·`['자취 시작 키트']`·`['캠핑 용품']` — 발화 복사는 아니지만
-    여전히 "무엇을 살지"가 없는 목적 표현이다.
+        김밥 재료          0.3027 / 0.0054
+        감자탕 재료        0.3177 / 0.0213
+        집들이 선물 아이디어  0.3156 / 0.0133
+        자취 필수템        0.2736 / 0.0202
     """
-    assert _detect("부모님 환갑 선물 추천해줘", ["환갑 선물 아이템"]) == "purpose_marker"
-    assert _detect("자취 시작할 때 필요한거", ["자취 시작 키트"]) == "purpose_marker"
-    assert _detect("캠핑 처음 가는데 뭐 사야해", ["캠핑 용품"]) == "purpose_marker"
+    assert _detect(["김밥 재료"], unresolved=["김밥 재료"]) == "mapping_failed"
+    assert _detect(["자취 필수템"], unresolved=["자취 필수템"]) == "mapping_failed"
 
 
-def test_d2_wins_when_copy_and_marker_both_apply() -> None:
-    """복사이면서 목적 표현이면 `utterance_copy` 로 라벨한다 — 사유는 leg 당 하나여야 한다.
+def test_partial_mapping_failure_triggers() -> None:
+    """leg 일부만 실패해도 전개한다 — 합집합 배선이라 성공한 leg 을 잃지 않는다(§6).
 
-    둘 다 참인 경우가 흔하다(`"자취 시작할 때"` → `['자취 시작할 때 필요한 것']`). 어느 쪽으로
-    기록하든 동작은 같지만, 프롬프트 튜닝 시 "발화를 베꼈다"와 "목적 표현을 만들어냈다"는 다른
-    처방으로 이어지므로 더 구체적인 D2 를 우선한다.
+    초판 D3 는 **모든** leg 이 목적 표현일 때만 트리거했다. 전개가 legs 를 교체했으므로 좋은 leg 이
+    섞이면 그것까지 날아갔기 때문이다. #217 은 성공분을 보존하고 전개분을 **더하므로** 그 보수성이
+    필요 없다 — `"이사 가는데 냉장고랑 필요한 것들"` 에서 냉장고를 지키면서 나머지를 전개한다.
     """
-    assert _detect("자취 시작할 때", ["자취 시작할 때 필요한 것"]) == "utterance_copy"
-
-
-def test_copy_alone_is_not_enough_when_utterance_is_a_product() -> None:
-    """발화 자체가 상품명이면 복사여도 트리거하지 않는다 — D2 에 marker 조건이 필요한 이유.
-
-    `"청바지"` → `['청바지']` 는 완전한 복사지만 **올바른 leg** 이다. 복사 자체가 아니라 **목적
-    표현을 복사한 것**이 문제이며, 이 구분이 없으면 가장 흔한 정상 질의가 전부 오탐된다.
-    """
-    assert _detect("청바지", ["청바지"]) is None
-    assert _detect("무선 이어폰", ["무선 이어폰"]) is None
     assert (
-        _detect("한우 선물세트 추천해줘", ["한우 선물세트"]) is None
-    )  # '선물' 포함이나 endswith 아님
+        _detect(["냉장고", "이사 필요한 것들"], unresolved=["이사 필요한 것들"]) == "mapping_failed"
+    )
 
 
-def test_d3_does_not_flag_legitimate_product_names() -> None:
-    """정당한 상품명은 트리거하지 않는다 — `endswith` 를 쓰는 이유가 이것이다.
+# ── 미트리거(정상 경로) — §4.5 ① 대조군 회귀 고정 ────────────────────────────
 
-    `'집들이 선물'.endswith('선물')` 은 True 지만 `'한우 선물세트'.endswith('선물')` 은 **False** 다.
-    marker 를 `in` 으로 검사하면 `한우 선물세트`·`과일 선물세트` 같은 실제 상품명이 전부 오탐된다.
+
+def test_successful_mapping_never_triggers() -> None:
+    """매핑이 전부 성공하면 전개하지 않는다 — 이 이슈의 오탐 0 보장이 여기서 나온다.
+
+    아래는 §4.5 ① 실측 대조군이다. 초판 marker 에 `재료` 를 넣었다면 앞의 넷이 전개로 갈아엎혔다
+    (오탐 4 / 회수 2 로 손해가 커서 이슈 본문이 기각한 처방):
+
+        한방재료     건강식품 > 인삼/한방재료   0.1443 / 0.0640
+        떡볶이 재료   냉장/냉동식품 > 떡볶이/떡국 0.1736 / 0.1438
+        수예 재료    홈패브릭/수예 > 수예용품    0.1590 / 0.0317
+        베이킹 재료   주방용품 > 홈베이킹용품     0.2068 / 0.0397
     """
-    for q in ("한우 선물세트", "청소도구 세트", "청바지", "무선 이어폰", "디퓨저", "방한 부츠"):
-        assert _detect("발화", [q]) is None, q
-
-
-def test_d3_requires_all_legs_to_be_purpose_expressions() -> None:
-    """일부 leg 만 목적 표현이면 전개하지 않는다 — 이미 전개된 구체 상품을 버리지 않기 위해서다.
-
-    전개는 legs 를 **교체**하므로(§6), 좋은 leg 이 섞여 있을 때 트리거하면 그것까지 날아간다.
-    남은 목적 표현 leg 은 하류에서 거리컷·택일이 흡수한다(DESIGN-59 §4·§4.4).
-    """
-    assert _detect("부모님 환갑 선물", ["홍삼", "선물용품"]) is None
-    assert _detect("부모님 환갑 선물", ["선물용품", "기념 아이템"]) == "purpose_marker"
-
-
-# ── 미트리거(정상 경로) ──────────────────────────────────────────────────────
+    for q in ("한방재료", "떡볶이 재료", "수예 재료", "베이킹 재료"):
+        assert _detect([q]) is None, q
 
 
 def test_normal_product_query_not_triggered() -> None:
-    """단일 상품 질의는 전개하지 않는다 — 불필요한 LLM 호출·엉뚱한 확장 방지."""
-    assert _detect("청바지", ["청바지"]) is None
-    assert _detect("갓성비 무선이어폰", ["무선 이어폰"]) is None
+    """단일 상품 질의는 전개하지 않는다 — 불필요한 LLM 호출·엉뚱한 확장 방지.
+
+    `한우 선물세트`(0.1459)·`청바지`(0.1224)·`무선 이어폰`(0.1955) 전부 매핑 성공이다(§4.5 ①).
+    초판에서는 `endswith` 로 `'선물'` 오탐을 피했는데, 이제는 매핑 결과가 직접 판정한다.
+    """
+    for q in ("청바지", "무선 이어폰", "한우 선물세트", "청소도구 세트"):
+        assert _detect([q]) is None, q
 
 
 def test_already_expanded_turn_not_triggered() -> None:
     """이미 구체 상품으로 전개된 턴은 손대지 않는다 — 실측 성공 회차 재현."""
-    assert _detect("부모님 환갑 선물", ["홍삼", "안마의자", "한우 선물세트", "영양제"]) is None
-    assert _detect("자취 시작할 때 필요한거", ["전자레인지", "이불", "냄비", "빨래바구니"]) is None
-
-
-def test_blank_and_null_queries_are_ignored_as_signal() -> None:
-    """query 가 없는 leg(raw 만 있는 leg)은 D2/D3 판정 대상이 아니다.
-
-    신호 없는 leg 은 map_categories 가 어차피 스킵하므로(#22), 그것 때문에 전개를 트리거하면
-    멀티턴 승계 등 무관한 경로까지 끌려온다.
-    """
-    assert _detect("발화", [None]) == "no_legs"  # 신호 있는 leg 이 0개 → D1
-    assert _detect("발화", [None, "디퓨저"]) is None
+    assert _detect(["홍삼", "안마의자", "한우 선물세트", "영양제"]) is None
+    assert _detect(["전자레인지", "이불", "냄비", "빨래바구니"]) is None
 
 
 # ── 전개 호출 (§5·§7) ────────────────────────────────────────────────────────

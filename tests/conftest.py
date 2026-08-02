@@ -151,12 +151,19 @@ def _fake_category_mapping(monkeypatch):
     test_category_mapping.py 소관). map_categories 를 명시 주입하는 테스트는 이 기본값을 덮는다.
     """
     import app.agents.buyer.graph as bg
+    from app.agents.buyer.recommendation.category_mapping import CategoryMapping
 
     # llm·tier 는 [#115 §4.4] 마진 트리거 택일용으로 graph 가 넘긴다. fake 가 이를 안 받으면
     # TypeError 가 graph 의 방어 except(category_map_failed)에 먹혀 **모든 leg 이 조용히 빈
     # legs 로 degrade** 한다 — 카테고리가 사라진 원인을 추적하기 어려우므로 시그니처를 맞춰둔다.
     async def _fake_map(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
-        return [(q.raw_category, q.query) for q in category_queries if q.raw_category]
+        # #217 — 반환형은 CategoryMapping(legs, unresolved)다. `unresolved` 는 전개 트리거 입력이라
+        # 여기서 비워두면 그래프 테스트가 "전개 미발동" 경로만 타는데, 그게 이 fake 의 의도다
+        # (전개 트리거 검증은 test_fanout·test_needs_expansion 소관).
+        return CategoryMapping(
+            legs=[(q.raw_category, q.query) for q in category_queries if q.raw_category],
+            unresolved=[],
+        )
 
     monkeypatch.setattr(bg, "_map_categories", _fake_map)
 
