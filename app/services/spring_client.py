@@ -116,16 +116,11 @@ def _spring_span(operation: _SpringOperation, method: str) -> Iterator[TraceNode
         try:
             yield span
         except BaseException as exc:
-            if span is not None:
-                if isinstance(exc, httpx.TimeoutException):
-                    span.metadata["statusClass"] = "timeout"
-                # RemoteProtocolError(서버가 응답 도중 연결 종료)를 함께 적는다(PR #235 리뷰):
-                # 이것은 NetworkError 의 하위가 아니라 **형제**(둘 다 TransportError 직계)라
-                # 빠뜨리면 statusClass 가 아예 안 붙어, trace 에서 "실패했는데 원인 미분류"와
-                # "기록 자체가 없음"이 구분되지 않는다. 로그 쪽 `_failure_status_class` 와
-                # **같은 어휘**를 써야 로그↔trace 대조가 성립한다(#141 유계 라벨 규약).
-                elif isinstance(exc, httpx.NetworkError | httpx.RemoteProtocolError):
-                    span.metadata["statusClass"] = "connection_error"
+            # 분류는 `_transport_status_class` 한 곳에만 둔다 — 로그(`_failure_status_class`)와
+            # 어휘가 갈리지 않게 코드로 보장한다(PR #235 리뷰). 전송 계층 실패가 아니면 None 이라
+            # 손대지 않는다(4xx/5xx 는 `_record_spring_status` 가 raise_for_status 앞에서 이미 기록).
+            if span is not None and (label := _transport_status_class(exc)) is not None:
+                span.metadata["statusClass"] = label
             failure = (exc, exc.__traceback__)
 
     if failure is not None:
@@ -138,23 +133,44 @@ def _record_spring_status(span: TraceNode | None, response: httpx.Response) -> N
         span.metadata["statusClass"] = f"{response.status_code // 100}xx"
 
 
-def _failure_status_class(exc: BaseException) -> str:
-    """재시도 로그 전용 유계 라벨 — 예외 원문은 싣지 않는다(#141).
+# 재시도 대상 4xx (#133, PR #235 리뷰) — "4xx 는 다시 보내도 같은 거절"이라는 일반 규칙의
+# **예외**다. 이 둘은 요청 자체가 유효하고 서버·인프라의 일시 상태일 뿐이라 5xx 와 성격이 같다.
+#   408 Request Timeout   : 서버가 요청 대기 중 끊음
+#   429 Too Many Requests : 레이트 리밋 — **즉시 응답**이라 재시도 비용이 타임아웃과 달리
+#                           밀리초다(턴 예산을 태우지 않는다). 상한 1회라 증폭도 2배를 넘지 않는다.
+# I-1 계약에 두 코드가 명시돼 있지는 않지만 프록시·게이트웨이가 낼 수 있어 방어적으로 받는다.
+# ⚠️ `Retry-After` 는 존중하지 않는다 — backoff 가 없어 즉시 다시 찌른다. 상한 1회라 증폭은
+# 2배로 묶이지만 서버 지시를 따르는 것은 아니다. `spring_max_retries` 를 올릴 때는 backoff 와
+# 함께 이 헤더 처리도 넣어야 한다(현재 상한이 1인 이유).
+_RETRYABLE_4XX = frozenset({408, 429})
 
-    재시도 여부는 `_is_retryable` 이 따로 판단한다. 이 함수는 **관측 전용**이다.
-    라벨 어휘는 `_spring_span` 이 span 에 남기는 것과 같게 유지한다 — 로그와 trace 가 같은
-    실패를 다른 말로 부르면 대조가 안 된다.
 
-    `RemoteProtocolError` 를 `connection_error` 에 함께 넣는 이유(PR #235 리뷰): 이것은
-    `NetworkError` 의 **형제**라 `isinstance` 로 안 걸리는데, 빠뜨리면 마지막 `return` 으로
-    떨어져 **`malformed_response`(스키마 불일치)로 오분류**된다. `_is_retryable` 이 재시도
-    대상으로 명시한 바로 그 케이스가 로그에서는 "응답이 깨졌다"로 보이니, 운영자가 없는
-    문제를 찾으러 간다.
+def _transport_status_class(exc: BaseException) -> str | None:
+    """전송 계층 실패의 유계 라벨 — 없으면 None (#141, PR #235 리뷰).
+
+    **분류를 여기 한 곳에만 둔다.** 로그(`_failure_status_class`)와 trace(`_spring_span`)가
+    각자 isinstance 를 따로 구현하면, 새 예외 타입을 한쪽에만 추가했을 때 라벨이 조용히
+    갈린다 — 이 PR 이 `RemoteProtocolError` 로 그 사고를 실제로 두 번 냈다. 주석으로 "같은
+    어휘를 쓴다"고 약속하는 대신 코드가 보장하게 한다.
+
+    `RemoteProtocolError`(서버가 응답 도중 연결 종료)는 `NetworkError` 의 하위가 아니라
+    **형제**(둘 다 `TransportError` 직계)라 함께 적지 않으면 어느 분기에도 안 걸린다.
     """
     if isinstance(exc, httpx.TimeoutException):
         return "timeout"
     if isinstance(exc, httpx.NetworkError | httpx.RemoteProtocolError):
         return "connection_error"
+    return None
+
+
+def _failure_status_class(exc: BaseException) -> str:
+    """재시도 로그 전용 유계 라벨 — 예외 원문은 싣지 않는다(#141).
+
+    재시도 여부는 `_is_retryable` 이 따로 판단한다. 이 함수는 **관측 전용**이다.
+    전송 계층 분류는 `_transport_status_class` 를 공유해 trace 와 어휘가 갈리지 않게 한다.
+    """
+    if (label := _transport_status_class(exc)) is not None:
+        return label
     if isinstance(exc, httpx.HTTPStatusError):
         return f"{exc.response.status_code // 100}xx"
     return "malformed_response"
@@ -163,21 +179,19 @@ def _failure_status_class(exc: BaseException) -> str:
 def _is_retryable(exc: BaseException) -> bool:
     """재시도가 의미 있는 실패만 True (#133).
 
-    타임아웃·연결 오류·응답 중단·5xx 는 일시 장애라 같은 요청이 다음엔 성공할 수 있다. 반면
-    4xx 계약 오류와 응답 파싱 실패(ValueError/ValidationError)는 **같은 응답이 또 온다** —
-    재시도는 턴 예산만 태우고 결과를 바꾸지 못한다.
+    타임아웃·연결 오류·응답 중단·5xx 와 `_RETRYABLE_4XX`(408·429)는 일시 장애라 같은 요청이
+    다음엔 성공할 수 있다. 반면 그 밖의 4xx 계약 오류와 응답 파싱 실패(ValueError/
+    ValidationError)는 **같은 응답이 또 온다** — 재시도는 턴 예산만 태우고 결과를 바꾸지 못한다.
 
-    `RemoteProtocolError` 를 따로 적는 이유: httpx 계층에서 이것은 `NetworkError` 의 하위가
-    아니라 **형제**(둘 다 `TransportError` 직계)라, "연결 오류"로 묶으면 빠진다. 서버가 응답
-    도중 연결을 끊는 흔한 일시 장애가 여기 해당한다. 같은 `ProtocolError` 라도
-    `LocalProtocolError`(우리 요청이 잘못됨)는 재시도 대상이 아니라 명시적으로 제외한다.
+    전송 계층 판정은 `_transport_status_class` 를 재사용한다 — 재시도 대상과 관측 라벨이 같은
+    분류에서 나와야 "재시도했다"와 "무엇이 실패했다"가 어긋나지 않는다.
+    `LocalProtocolError`(우리 요청이 잘못됨)는 그 함수에서 None 이라 자연히 제외된다.
     """
-    if isinstance(exc, httpx.TimeoutException | httpx.NetworkError):
-        return True
-    if isinstance(exc, httpx.RemoteProtocolError):
+    if _transport_status_class(exc) is not None:
         return True
     if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code >= 500
+        code = exc.response.status_code
+        return code >= 500 or code in _RETRYABLE_4XX
     return False
 
 

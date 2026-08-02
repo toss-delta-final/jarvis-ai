@@ -1933,6 +1933,49 @@ async def test_retry_log_labels_disconnect_as_connection_error(
     assert "disconnected" not in caplog.text  # 예외 원문은 싣지 않는다(#141)
 
 
+@pytest.mark.parametrize("status", [408, 429])
+async def test_search_retries_transient_4xx(monkeypatch: pytest.MonkeyPatch, status: int) -> None:
+    """408·429 는 4xx 지만 재시도한다 (PR #235 리뷰).
+
+    "4xx 는 다시 보내도 같은 거절"이라는 일반 규칙의 예외다 — 요청 자체는 유효하고 서버·인프라의
+    일시 상태일 뿐이라 5xx 와 성격이 같다. 특히 429 는 타임아웃과 달리 **즉시 응답**이라 재시도
+    비용이 밀리초여서, 순간적인 레이트 리밋 하나로 턴이 죽는 손실이 훨씬 크다.
+    """
+    import httpx
+
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    calls = _counting_client(monkeypatch, httpx.Response(status), httpx.Response(200, json=_I1_OK))
+    assert len((await sc.search_products(ProductSearchFilters())).products) == 1
+    assert len(calls) == 2
+
+
+def test_transport_classification_is_shared_between_log_and_trace() -> None:
+    """로그와 trace 가 **같은 분류 함수**를 쓴다 (PR #235 리뷰).
+
+    두 곳이 isinstance 를 따로 구현하면 새 예외 타입을 한쪽에만 추가했을 때 라벨이 조용히
+    갈린다 — 이 PR 이 RemoteProtocolError 로 그 사고를 실제로 두 번 냈다. 주석 약속 대신
+    구조로 고정한다: 전송 계층 실패는 `_transport_status_class` 가 유일한 출처다.
+    """
+    import httpx
+
+    import app.services.spring_client as sc
+
+    for exc, expected in [
+        (httpx.TimeoutException("t"), "timeout"),
+        (httpx.ConnectError("c"), "connection_error"),
+        (httpx.RemoteProtocolError("d"), "connection_error"),
+    ]:
+        assert sc._transport_status_class(exc) == expected
+        assert sc._failure_status_class(exc) == expected  # 로그가 같은 출처를 쓴다
+        assert sc._is_retryable(exc) is True  # 재시도 판정도 같은 출처를 쓴다
+
+    # 전송 계층이 아니면 None — span 은 손대지 않고, 로그는 자체 분기로 내려간다.
+    assert sc._transport_status_class(httpx.LocalProtocolError("l")) is None
+    assert sc._transport_status_class(ValueError("bad json")) is None
+
+
 async def test_search_does_not_retry_local_protocol_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
