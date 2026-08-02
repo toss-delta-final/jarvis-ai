@@ -104,3 +104,31 @@ def test_report_exposes_outcome_mismatch_and_unknown_counts() -> None:
     assert summary["outcome_mismatch_count"] == 1
     assert summary["outcome_unknown_count"] == 1
     assert "| 0 | 1 | 1 |" in report
+
+
+def test_report_exposes_price_missing_unknown_count() -> None:
+    records = [
+        {
+            "phase": "measured",
+            "success": True,
+            "client_ttft_ms": 8,
+            "error": False,
+            "timed_out": False,
+            "degraded": False,
+            "server_join": "joined",
+            "model_ids": ["gpt-5-nano"],
+            "cost_usd": None,
+            "cost_unknown_reason": "price_missing(model=gpt-5-nano)",
+        }
+    ]
+    summary = summarize_group(
+        records, elapsed_s=1, p99_min_samples=100, resamples=2, confidence=0.95, seed=1
+    )
+    report = render_markdown(
+        {"measured:buyer@1": summary},
+        join_stats={"joined": 1, "measured": 1, "rate": 1.0},
+        server_log_provided=True,
+        sample_size_rationale=None,
+    )
+    assert "price_missing=1" in report
+    assert "cost=$unknown" in report

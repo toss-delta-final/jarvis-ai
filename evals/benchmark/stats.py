@@ -157,6 +157,11 @@ def summarize_group(
             "joined_samples": len(server_samples),
             "cost_sample_count": len(costs),
             "cost_unknown_count": total - len(costs),
+            "cost_price_missing_count": sum(
+                isinstance(record.get("cost_unknown_reason"), str)
+                and record["cost_unknown_reason"].startswith("price_missing(")
+                for record in phase_records
+            ),
             "cost_usd_total": sum(costs) if costs else None,
             "cost_usd_average": sum(costs) / len(costs) if costs else None,
             "prompt_tokens_sample_count": len(prompt_tokens),

@@ -2,12 +2,66 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping
+from numbers import Real
 from pathlib import Path
 from typing import Any
 
 from scripts.aggregate_observability import parse_log_line
 
 _UNKNOWN_NOT_EMITTED = {"value": None, "unknown_reason": "not_emitted_by_server"}
+_MODEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,80}$")
+_MAX_MODELS_IN_REASON = 5
+
+
+def _price_missing_reason(models: list[str]) -> str:
+    """가격 누락 모델을 정렬하고 개수·길이를 제한한 bounded 사유로 만든다."""
+    bounded = [model if _MODEL_ID_PATTERN.fullmatch(model) else "unknown" for model in models]
+    unique = sorted(set(bounded))
+    visible = unique[:_MAX_MODELS_IN_REASON]
+    if len(unique) == 1:
+        return f"price_missing(model={visible[0]})"
+    suffix = f",+{len(unique) - len(visible)}" if len(unique) > len(visible) else ""
+    return f"price_missing(models={','.join(visible)}{suffix})"
+
+
+def apply_price_evidence(
+    records: list[dict[str, Any]],
+    *,
+    input_prices: Mapping[str, float],
+    output_prices: Mapping[str, float],
+) -> None:
+    """모든 사용 모델의 양쪽 단가가 있을 때만 서버 costUsd를 측정값으로 인정한다."""
+    for record in records:
+        if record.get("server_join") != "joined":
+            record["cost_usd"] = None
+            record["cost_unknown_reason"] = (
+                record.get("server_join_reason") or "server_join_unavailable"
+            )
+            continue
+        models = record.get("model_ids")
+        if not isinstance(models, list) or not models:
+            record["cost_usd"] = None
+            record["cost_unknown_reason"] = "model_ids_not_observed"
+            continue
+        if not all(isinstance(model, str) and model for model in models):
+            record["cost_usd"] = None
+            record["cost_unknown_reason"] = "model_ids_invalid"
+            continue
+        missing = [
+            model for model in models if model not in input_prices or model not in output_prices
+        ]
+        if missing:
+            record["cost_usd"] = None
+            record["cost_unknown_reason"] = _price_missing_reason(missing)
+            continue
+        cost = record.get("cost_usd")
+        if isinstance(cost, bool) or not isinstance(cost, Real):
+            record["cost_usd"] = None
+            record["cost_unknown_reason"] = "cost_not_emitted_by_server"
+            continue
+        record["cost_unknown_reason"] = None
 
 
 def load_server_records(path: Path) -> dict[str, dict[str, Any]]:

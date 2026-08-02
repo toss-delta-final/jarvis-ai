@@ -20,7 +20,7 @@ from evals.benchmark.client import measure_request
 from evals.benchmark.manifest import assert_secret_free, collect_manifest, redact_url_userinfo
 from evals.benchmark.report import render_markdown, write_artifacts
 from evals.benchmark.scenarios import Scenario, evaluate_outcome, load_scenarios
-from evals.benchmark.server_join import join_records, load_server_records
+from evals.benchmark.server_join import apply_price_evidence, join_records, load_server_records
 from evals.benchmark.stats import summarize_group
 
 MIN_MEASURED_CONTRACT_REQUESTS = 30
@@ -236,6 +236,11 @@ def main(argv: list[str] | None = None) -> int:
         raw = asyncio.run(run_network(args, scenarios, levels, token, settings))
         server = load_server_records(args.server_log) if args.server_log else None
         joined, join_stats = join_records(raw, server)
+        apply_price_evidence(
+            joined,
+            input_prices=settings.model_price_in_per_1k,
+            output_prices=settings.model_price_out_per_1k,
+        )
         scenarios_by_id = {scenario.id: scenario for scenario in scenarios}
         for record in joined:
             record.update(evaluate_outcome(record, scenarios_by_id[record["scenario_id"]]))

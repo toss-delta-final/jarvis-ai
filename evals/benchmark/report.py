@@ -74,7 +74,8 @@ def render_markdown(
         lines.append(
             f"- `{group}` server metrics: joined={server['joined_samples']}, "
             f"cost=${server['cost_usd_total'] if server['cost_usd_total'] is not None else 'unknown'} "
-            f"(samples={server['cost_sample_count']}, unknown={server['cost_unknown_count']}), "
+            f"(samples={server['cost_sample_count']}, unknown={server['cost_unknown_count']}, "
+            f"price_missing={server['cost_price_missing_count']}), "
             f"promptTokens={server['prompt_tokens_total'] if server['prompt_tokens_total'] is not None else 'unknown'}, "
             f"completionTokens={server['completion_tokens_total'] if server['completion_tokens_total'] is not None else 'unknown'}, "
             f"models={server['model_ids'] if server['model_ids'] is not None else 'unknown'}"
