@@ -2208,6 +2208,37 @@ async def test_recommendation_multiple_repurchase_references_revert_nothing(
     assert events[-1]["data"]["finishReason"] == "zero_result"
 
 
+async def test_recommendation_duplicate_repurchase_references_restore_product(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """같은 상품명의 반복 지목은 단일 고유 지목으로 보고 정상적으로 되돌린다."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(
+        _sc_mod,
+        "get_recent_purchases",
+        _purchases_cat((301, "음향가전", "무선 이어폰")),
+    )
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["무선 이어폰", "무선 이어폰"],
+            "filters": {},
+            "case": 1,
+        }
+    )
+    await _collect(
+        run_buyer_turn(
+            _req(),
+            _member_num(),
+            llm=llm,
+            search=_make_search([_prod(301, "음향가전", "무선 이어폰")]),
+            push_fn=push,
+        )
+    )
+    assert 301 in _only_list(push.pushes[0]).product_ids
+
+
 async def test_recommendation_repurchase_restores_all_identically_named(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
