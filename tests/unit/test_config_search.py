@@ -44,10 +44,10 @@ def test_tier_thresholds_defaults_ordered() -> None:
     assert (
         0
         < s.price_tier_very_cheap_ratio
-        <= s.price_tier_cheap_ratio
+        < s.price_tier_cheap_ratio
         <= 1.0
         <= s.price_tier_pricey_ratio
-        <= s.price_tier_very_pricey_ratio
+        < s.price_tier_very_pricey_ratio
     )
     assert s.price_tier_cheap_ratio < s.price_tier_pricey_ratio
 
@@ -77,6 +77,8 @@ def test_review_tier_misordered_rejected() -> None:
         {"price_tier_pricey_ratio": 1.6},
         {"price_tier_cheap_ratio": 1.2, "price_tier_pricey_ratio": 1.3},
         {"price_tier_pricey_ratio": 0.9},
+        {"price_tier_very_cheap_ratio": 0.85},
+        {"price_tier_very_pricey_ratio": 1.15},
     ],
 )
 def test_price_tier_misordered_or_overlapping_rejected(overrides: dict[str, float]) -> None:
