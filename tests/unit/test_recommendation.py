@@ -1975,6 +1975,31 @@ async def test_recommendation_repurchase_falls_back_to_partial_name(
     assert 101 in _only_list(push.pushes[0]).product_ids
 
 
+async def test_recommendation_repurchase_rejects_reverse_only_partial_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """긴 지목 안에 짧은 구매명이 든 역방향 부분일치는 다른 상품 오해제로 번지지 않는다."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(
+        _sc_mod, "get_recent_purchases", _purchases_cat((101, "음향가전", "이어폰"))
+    )
+    products = [_prod(101, "음향가전", "이어폰"), _prod(202, "음향가전", "헤드폰")]
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["무선 이어폰 케이스"],
+            "filters": {},
+            "case": 1,
+        }
+    )
+    await _collect(
+        run_buyer_turn(_req(), _member_num(), llm=llm, search=_make_search(products), push_fn=push)
+    )
+    assert 101 not in _only_list(push.pushes[0]).product_ids
+    assert 202 in _only_list(push.pushes[0]).product_ids
+
+
 async def test_recommendation_repurchase_survives_rerank_limit_truncation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2049,6 +2074,73 @@ async def test_recommendation_repurchase_survives_rerank_omission(
         run_buyer_turn(_req(), _member_num(), llm=llm, search=_make_search(products), push_fn=push)
     )
     assert 101 in _only_list(push.pushes[0]).product_ids
+
+
+async def test_recommendation_repurchase_pin_stays_in_its_fanout_need(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """fan-out에서도 절단 전 우선순위와 rerank pin이 지목 상품을 자기 니즈 목록에만 보존한다."""
+    from app.agents.buyer.recommendation.category_mapping import CategoryMapping
+
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(get_settings(), "embedding_rerank_limit", 3)
+    monkeypatch.setattr(get_settings(), "expose_min", 1)
+    monkeypatch.setattr(get_settings(), "expose_max", 2)
+    monkeypatch.setattr(
+        _sc_mod, "get_recent_purchases", _purchases_cat((101, "전자기기", "여행용 어댑터"))
+    )
+
+    async def _map(**kwargs):
+        return CategoryMapping(legs=[("여행용품", "여행용 파우치"), ("전자기기", "여행용 어댑터")])
+
+    async def _search(filters, exclude_product_ids=None):
+        products = (
+            [_prod(102, "여행용품", "여행용 파우치"), _prod(103, "여행용품", "압축 파우치")]
+            if filters.category == "여행용품"
+            else [
+                _prod(201, "전자기기", "멀티 어댑터"),
+                _prod(101, "전자기기", "여행용 어댑터"),
+            ]
+        )
+        return ProductSearchResult(products=products, total_count=len(products))
+
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["여행용 어댑터"],
+            "categoryQueries": [
+                {"category": "여행용품", "query": "여행용 파우치"},
+                {"category": "전자기기", "query": "여행용 어댑터"},
+            ],
+            "filters": {},
+            "case": 3,
+        },
+        rerank={
+            "ranked": [
+                {"productId": 102, "rationale": "수납하기 좋아요"},
+                {"productId": 201, "rationale": "호환성이 좋아요"},
+            ],
+            "overallComment": "니즈별 추천이에요",
+        },
+    )
+    await _collect(
+        run_buyer_turn(
+            _req(message="여행용 파우치랑 전에 산 어댑터 추천해줘"),
+            _member_num(),
+            llm=llm,
+            search=_search,
+            push_fn=push,
+            map_categories=_map,
+        )
+    )
+
+    lists = push.pushes[0].lists
+    assert len(lists) == 2
+    assert lists[0].product_ids == [102]
+    assert lists[1].product_ids == [101, 201]
+    assert all(len(item.product_ids) <= 2 for item in lists)
+    assert 101 not in {reason.product_id for reason in lists[1].reasons}
 
 
 async def test_recommendation_ambiguous_repurchase_reverts_nothing(

@@ -236,11 +236,11 @@ def _resolve_repurchase_ids(recent, references: list[str]) -> set[int]:
     확장될 수 없다(신뢰 경계). 후보(candidates) id 나 LLM 정수는 여기 들어오지 않는다.
 
     매칭은 공백 제거 + casefold 후, 지목 **하나당 가장 좁은 해석**을 고른다 — 완전 일치가 있으면
-    그것만, 없을 때만 양방향 부분비교로 넓힌다. 부분비교를 항상 쓰면 "무선 이어폰" 지목이 접두어
-    관계인 형제 상품("무선 이어폰 케이스")까지 함께 풀어 사용자가 지목하지 않은 상품을 노출한다
-    (PR #230 리뷰). 부분비교 폴백은 남겨 발화 표기("무선이어폰")와 상품명("무선 이어폰 프로")이
-    띄어쓰기·수식어만 다른 경우를 계속 잡는다. 아무것도 못 잡으면 조용히 빈 집합
-    (= 종전 제외 유지)으로 degrade 한다. 과잉 해제보다 미해제가 안전하다.
+    그것만, 없을 때만 `지목 in 구매명` 단방향 부분비교로 넓힌다. 단방향 폴백은 발화 표기
+    ("무선이어폰")와 상품명("무선 이어폰 프로")이 띄어쓰기·수식어만 다른 경우를 잡되, 긴 지목
+    ("무선 이어폰 케이스")을 짧은 구매명("이어폰")으로 축약해 다른 상품을 푸는 오매칭은 막는다.
+    아무것도 못 잡으면 조용히 빈 집합(= 종전 제외 유지)으로 degrade 한다. 과잉 해제보다
+    미해제가 안전하다.
     """
     if not references:
         return set()
@@ -264,7 +264,7 @@ def _resolve_repurchase_ids(recent, references: list[str]) -> set[int]:
         # ("소금"·"우유"와 "세트"·"리필"이 모두 2자) 길이 대신 **모호성 자체**를 기준으로 삼는다 —
         # 언어 중립적이고 새 튜너블도 필요 없다. 2건 이상 걸리면 지목이 특정에 실패한 것이므로
         # 아무것도 풀지 않는다(과잉 해제보다 미해제, PR #230 리뷰).
-        partial = {pid for pid, name in names if name and (n in name or name in n)}
+        partial = {pid for pid, name in names if name and n in name}
         if len(partial) == 1:
             out |= partial
     return out
