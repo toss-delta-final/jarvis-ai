@@ -53,6 +53,22 @@
   아니다.
 - 관련: #151, `evals/benchmark/baselines/README.md`
 
+## [2026-08-02] 프롬프트 계층 intent 안정성은 FakeLLM 단위 테스트가 아니라 실 LLM 반복 분포로 증명한다
+- 증상: #234의 `"그거 보여줘"` intent가 같은 입력에서도 `recommend`·`cart_view` 사이를 오갔지만,
+  `tests/unit/test_decompose.py`는 LLM JSON을 주입하므로 프롬프트를 어떻게 바꿔도 계속 통과했다.
+- 원인: 결함은 파서나 라우팅 코드가 아니라 `gpt-5-nano`가 긴 `_SYSTEM` 규칙을 해석하는 확률적
+  계층에 있었다. 특히 `PENDING_CART`가 있으면 아래쪽 옵션 답변 규칙이 위쪽 지시대명사 경계를
+  덮는 현상은 현실적인 세션 상태를 넣은 반복 호출에서만 드러났다.
+- 규칙:
+  - 프롬프트 intent 결함은 실제 provider/model과 현실적인 세션 상태를 넣고, 발화 × 컨텍스트를
+    여러 번 반복해 **분포**로 수정 전/후를 비교한다. FakeLLM 테스트 통과를 동작 증거로 쓰지 않는다.
+  - 상태만 현실적으로 채우는 것으로 끝내지 말고 **그 상태에서 실제로 나오는 정상 발화**도 대조군에
+    넣는다. 옵션 되물음 상태라면 옵션명·번호 답변을 넣고 intent뿐 아니라 `cart.optionId`까지 집계한다.
+  - 단위 테스트는 실측으로 유효성이 확인된 필수 프롬프트 문구의 회귀 가드로만 쓴다. 채택 전 해당
+    문구를 지워 테스트가 실제로 실패하는지 확인한다.
+  - 목표가 8/8인데 잔여 지터가 있으면 단일 성공 사례로 덮지 말고 정확한 분포와 미달 셀을 남긴다.
+- 관련: `app/agents/buyer/recommendation/decompose.py`, `tests/unit/test_decompose.py`, 이슈 #234
+
 ## [2026-08-02] 프롬프트는 실제 세션 맥락을 모두 채운 상태로 검증한다
 - 증상: `LAST_RECOMMENDATIONS` 없이 재구매 분해를 실측했을 때 오탐이 없었지만, 현실적인 직전 추천
   목록을 넣자 `"그거 다시 추천해줘"`가 목록의 상품 1~3개를 재구매 지목으로 복사했다.
@@ -89,6 +105,7 @@
 - 규칙: **억제(suppress)를 추가하면 그 축의 되돌리기(revert) 경로도 같은 커밋에서 만든다 —
   억제 축이 둘인데 되돌리기가 하나면 사용자는 절대 빠져나올 수 없다.**
 - 관련: #120, `app/agents/buyer/recommendation/graph.py`, `app/agents/buyer/recommendation/decompose.py`
+
 ## [2026-08-02] 회귀 테스트는 "회귀를 흉내 내 실패시켜 본 뒤" 채택한다 — 통과만으로는 지켜준다는 증거가 아니다
 - 증상: #173 에서 "티어화가 원본 price 를 건드리지 않는다"를 고정하려고
   `test_price_tiering_does_not_mutate_product_or_filter_values` 를 넣었는데, 본문이

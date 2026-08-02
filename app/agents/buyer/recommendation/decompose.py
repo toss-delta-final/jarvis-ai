@@ -43,13 +43,31 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
   "repurchaseProducts": [string]
 }
 규칙:
-- intent 판별: 상품을 찾아달라는 요청이면 recommend, "담아줘/장바구니에 넣어"면 cart_add,
-  "장바구니 보여줘/뭐 있어?"면 cart_view, 회원 본인의 최근 주문·배송 진행 상태를 묻는 요청이면
-  order_status, 그 외 잡담·무관 질문이면 general.
+- intent 판별: 상품을 찾아달라는 요청이면 recommend, "담아줘/장바구니에 넣어/2번 담아줘"처럼
+  명시적으로 담기를 요청하면 cart_add, USER_MESSAGE에 **장바구니를 직접 명시하고 그 내용 조회를
+  요청할 때만** cart_view, 회원 본인의 최근 주문·배송 진행 상태를 묻는 요청이면 order_status,
+  그 외 잡담·무관 질문이면 general.
 - order_status 긍정 예: "내 주문 어디까지 왔어?", "배송 상태 알려줘", "최근 주문 진행 상황".
 - order_status로 분류하지 않는 예: "배송 빠른 상품 추천해줘"는 recommend,
   "이 상품 주문하고 싶어"는 기존 상품 추천/장바구니 의미, "주문 취소 방법"은 general,
   "예전에 뭘 샀지?"는 이번 주문 상태 조회 범위가 아니므로 general.
+- intent는 다음 순서로 판정하세요:
+  0) PENDING_CART가 있고 USER_MESSAGE가 options의 이름·번호·순번("드럼형", "2번", "2번으로",
+     "두 번째")을 고르면 먼저 cart_add로 분류하고 그 optionId를 고르세요.
+  1) "담아줘"·"장바구니에 넣어" 같은 **명시적 담기 동사**가 있으면 cart_add.
+  2) 그 외에는 USER_MESSAGE에 "장바구니"가 직접 나오면서 그 내용을 조회할 때만 cart_view.
+  3) 그 외에 "그거"·"저번에 그거" 같은 상품 지시대명사가 있으면 항상 recommend.
+- PENDING_CART가 있다는 사실만으로 이번 발화를 옵션 답변으로 보지 마세요. USER_MESSAGE가 options의
+  이름·번호·순번을 실제로 고르는 0) 발화는 먼저 옵션 답변으로 처리하고, 그 외 "그거 보여줘"·
+  "그거 사고 싶어" 같은 비옵션 발화에만 위 1)~3) 순서를 적용하세요.
+- cart_view로 분류하지 않는 예: "그거 보여줘" → recommend, "저번에 그거 다시 보여줘" →
+  recommend, "그거 또 사고 싶어" → recommend. "보여줘"·"뭐 있어?" 동사만으로 cart_view를
+  선택하지 마세요. "사고 싶어"는 명시적 담기 동사가 아니므로 cart_add가 아니라 recommend입니다.
+- 상품명 없는 지시대명사는 PRIOR_FILTERS.semanticQuery 또는 LAST_RECOMMENDATIONS 맥락의 **상품**을
+  가리킵니다. 두 맥락이 비어 있어도 상품 요청으로 보고 recommend로 분류하세요. 이 경계는
+  PENDING_CART가 있어도 옵션 답변이 아닌 상품 요청에 그대로 적용합니다.
+- JSON 출력 직전에 intent를 검산하세요. cart_view인데 USER_MESSAGE에 "장바구니"가 없으면 recommend로
+  고치세요. cart_add인데 명시적 담기 동사도 실제 옵션 답변도 없으면 recommend로 고치세요.
 - recommend: 정확한 수치 제약은 filters 에 넣고 semanticQuery 로 근사하지 마세요.
   PRIOR_FILTERS 가 있으면 병합(좁히면 add, 모순되면 replace)하세요.
   색상 조건(예: "빨간", "검정")이 있으면 filters.color 에 넣으세요.
@@ -97,8 +115,9 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
   유지**하세요(카테고리를 비우면 직전 맥락이 사라집니다).
 - cart_add: LAST_RECOMMENDATIONS(직전 추천 목록: productId+이름)에서 사용자가 가리킨 상품의
   productId 를 고르세요. 못 고르면 productId=null. quantity 기본 1.
-- PENDING_CART(옵션 되물음 대기)가 있으면 보통 이번 발화는 옵션 답변입니다 — options 목록에서
-  사용자 답에 맞는 optionId 를 골라 intent=cart_add, cart.optionId 로 주세요. 단,
+- PENDING_CART(옵션 되물음 대기)가 있고 USER_MESSAGE가 options의 이름·번호·순번을 실제로 고른
+  경우에만 옵션 답변입니다 — 사용자 답에 맞는 optionId 를 골라 intent=cart_add,
+  cart.optionId 로 주세요. 단,
   사용자가 다른 상품을 담으려 하면 LAST_RECOMMENDATIONS 의 그 productId 로 cart_add,
   담기를 취소·중단하려 하면 intent=general 로 전환하세요(옛 상품에 갇히지 않게).
 - revertCategories: 사용자가 특정 카테고리를 \"다시 추천받기\"(되돌리기 칩) 하거나 최근 구매로
