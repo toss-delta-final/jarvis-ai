@@ -414,13 +414,11 @@ async def test_rerank_ids_subset_of_candidates() -> None:
     assert ids[0] == 101  # rerank 유효 산출이 선두, 나머지는 expose_min 보충
 
 
-async def test_rerank_sends_rating_review_as_tiers_not_numbers() -> None:
-    """[#171 PR#172] rerank LLM 입력의 rating·reviewCount 는 정확한 숫자가 아니라 등급이다.
+async def test_rerank_sends_nondisplay_numbers_as_tiers() -> None:
+    """[#171 PR#172, #173] rerank LLM 입력의 비표시 수치는 정확한 숫자가 아니라 등급이다.
 
-    정확한 4.2·10 을 LLM 에 주면 근거문에 "4.2 평점"·"리뷰 10개"처럼 흘려 CH-5 표시값과 어긋날 수
-    있어, 등급(ratingLevel/reviewLevel)만 준다 → 흘릴 숫자 자체가 없다(유출 원천 차단). review_count
-    ==0(리뷰 없음)은 '평가없음'으로 #171 rating=0 판별을 유지한다. 정확한 값은 원본에 남아 코드
-    필터·예산이 쓴다(질의 "평점 4.5 이상"은 search_catalog 사후필터 소관, 이 티어화 무영향).
+    정확한 price·rating·reviewCount 를 LLM 에 주면 근거문에 숫자를 흘려 CH-5 표시값과 어긋날 수
+    있어 등급만 준다 → 흘릴 숫자 자체가 없다(유출 원천 차단). 정확한 값은 원본에 남는다.
     """
     import json as _json
 
@@ -430,10 +428,22 @@ async def test_rerank_sends_rating_review_as_tiers_not_numbers() -> None:
     llm = FakeLLM(rerank={"ranked": [{"productId": 1, "rationale": "ok"}], "overallComment": "c"})
     candidates = [
         SpringProduct(
-            product_id=1, name="무리뷰", rating=0.0, review_count=0, category="c", brand="b"
+            product_id=1,
+            name="무리뷰",
+            price=39000,
+            rating=0.0,
+            review_count=0,
+            category="c",
+            brand="b",
         ),
         SpringProduct(
-            product_id=2, name="리뷰있음", rating=4.2, review_count=10, category="c", brand="b"
+            product_id=2,
+            name="리뷰있음",
+            price=41000,
+            rating=4.2,
+            review_count=10,
+            category="c",
+            brand="b",
         ),
     ]
     await rerank(
@@ -445,11 +455,132 @@ async def test_rerank_sends_rating_review_as_tiers_not_numbers() -> None:
     # 등급으로 전달 — 정확한 숫자 키(rating/reviewCount)는 없다.
     assert by_id[1]["ratingLevel"] == "평가없음"  # review_count==0 → 데이터 부재(#171)
     assert by_id[1]["reviewLevel"] == "없음"
+    assert by_id[1]["priceLevel"] == "보통"
     assert by_id[2]["ratingLevel"] == "높음"  # 4.2 → 높음
     assert by_id[2]["reviewLevel"] == "보통"  # 10 → 보통
+    assert by_id[2]["priceLevel"] == "보통"
+    assert "price" not in by_id[1]
     assert "rating" not in by_id[1] and "reviewCount" not in by_id[1]
-    # 정확한 숫자(4.2·10)는 LLM 프롬프트에 등장하지 않는다(흘릴 값 없음).
-    assert "4.2" not in user
+    # 정확한 숫자(price 39000·41000, rating 4.2)는 프롬프트에 등장하지 않는다(흘릴 값 없음).
+    assert "39000" not in user and "41000" not in user and "4.2" not in user
+
+
+async def test_rerank_price_level_uses_group_median_ratios() -> None:
+    """[#173] priceLevel 은 전체 후보 중앙값 대비 상대 등급이다."""
+    import json as _json
+
+    from app.agents.buyer.recommendation.rerank import rerank
+    from app.schemas.spring import SpringProduct
+
+    llm = FakeLLM(rerank={"ranked": [{"productId": 1, "rationale": "ok"}], "overallComment": "c"})
+    candidates = [
+        SpringProduct(product_id=i, name=f"p{i}", price=price)
+        for i, price in enumerate([10000, 50000, 100000, 1000000], start=1)
+    ]
+    await rerank(
+        llm, query="q", candidates=candidates, profile_summary=None, tier="smart", expose_max=8
+    )
+    _, user = llm.calls[-1]
+    payload = _json.loads(user.split("CANDIDATES: ", 1)[1])
+    assert {c["productId"]: c["priceLevel"] for c in payload} == {
+        1: "매우저렴",
+        2: "저렴",
+        3: "비쌈",
+        4: "매우비쌈",
+    }
+
+
+async def test_rerank_price_level_keeps_tightly_clustered_prices_normal() -> None:
+    """[#173] 차이가 미미하면 등급을 만들지 않는다 — 분위수의 거짓 우열을 피하는 의도된 붕괴."""
+    import json as _json
+
+    from app.agents.buyer.recommendation.rerank import rerank
+    from app.schemas.spring import SpringProduct
+
+    llm = FakeLLM(rerank={"ranked": [{"productId": 1, "rationale": "ok"}], "overallComment": "c"})
+    candidates = [
+        SpringProduct(product_id=i, name=f"p{i}", price=price)
+        for i, price in enumerate([29000, 30000, 31000, 32000], start=1)
+    ]
+    await rerank(
+        llm, query="q", candidates=candidates, profile_summary=None, tier="smart", expose_max=8
+    )
+    _, user = llm.calls[-1]
+    payload = _json.loads(user.split("CANDIDATES: ", 1)[1])
+    assert {c["priceLevel"] for c in payload} == {"보통"}
+
+
+async def test_rerank_price_level_uses_separate_need_medians() -> None:
+    """[#173] 혼합 상품 후보는 need 별 중앙값으로 비교해 카테고리 가격대를 섞지 않는다."""
+    import json as _json
+
+    from app.agents.buyer.recommendation.rerank import rerank
+    from app.schemas.spring import SpringProduct
+
+    llm = FakeLLM(rerank={"ranked": [{"productId": 1, "rationale": "ok"}], "overallComment": "c"})
+    prices = [1200000, 1500000, 1800000, 10000, 20000, 30000, 40000, 50000]
+    candidates = [
+        SpringProduct(product_id=i, name=f"p{i}", price=price)
+        for i, price in enumerate(prices, start=1)
+    ]
+    need_of = {1: "노트북", 2: "노트북", 3: "노트북", 4: "마우스", 5: "마우스", 6: "마우스"}
+    await rerank(
+        llm,
+        query="q",
+        candidates=candidates,
+        profile_summary=None,
+        tier="smart",
+        expose_max=8,
+        need_of=need_of,
+        per_need=3,
+    )
+    _, user = llm.calls[-1]
+    payload = _json.loads(user.split("CANDIDATES: ", 1)[1])
+    assert {c["productId"]: c["priceLevel"] for c in payload} == {
+        1: "저렴",
+        2: "보통",
+        3: "비쌈",
+        4: "매우저렴",
+        5: "보통",
+        6: "매우비쌈",
+        7: "보통",
+        8: "보통",
+    }
+
+
+async def test_rerank_price_level_handles_missing_and_uninformative_groups() -> None:
+    """[#173] 가격 부재·비양수 중앙값은 정보없음, 단일 유효 가격은 보통이다."""
+    import json as _json
+
+    from app.agents.buyer.recommendation.rerank import rerank
+    from app.schemas.spring import SpringProduct
+
+    llm = FakeLLM(rerank={"ranked": [{"productId": 1, "rationale": "ok"}], "overallComment": "c"})
+    candidates = [
+        SpringProduct(product_id=1, name="none-a", price=None),
+        SpringProduct(product_id=2, name="none-b", price=None),
+        SpringProduct(product_id=3, name="single", price=50000),
+        SpringProduct(product_id=4, name="zero", price=0),
+    ]
+    need_of = {1: "missing", 2: "missing", 3: "single", 4: "zero"}
+    await rerank(
+        llm,
+        query="q",
+        candidates=candidates,
+        profile_summary=None,
+        tier="smart",
+        expose_max=8,
+        need_of=need_of,
+        per_need=2,
+    )
+    _, user = llm.calls[-1]
+    payload = _json.loads(user.split("CANDIDATES: ", 1)[1])
+    assert {c["productId"]: c["priceLevel"] for c in payload} == {
+        1: "정보없음",
+        2: "정보없음",
+        3: "보통",
+        4: "정보없음",
+    }
 
 
 def test_rerank_prompt_lists_all_tier_return_values() -> None:
@@ -459,7 +590,12 @@ def test_rerank_prompt_lists_all_tier_return_values() -> None:
     reviewLevel 목록에 없으면 LLM 이 예고 못 받은 값을 만나 임의 해석·근거 날조할 수 있다. 실제
     반환값 집합과 프롬프트 enum 을 일치시켜 드리프트를 막는다(rating 은 이미 일치).
     """
-    from app.agents.buyer.recommendation.rerank import _SYSTEM, _rating_tier, _review_tier
+    from app.agents.buyer.recommendation.rerank import (
+        _SYSTEM,
+        _price_tier,
+        _rating_tier,
+        _review_tier,
+    )
     from app.core.config import get_settings
     from app.schemas.spring import SpringProduct
 
@@ -473,8 +609,39 @@ def test_rerank_prompt_lists_all_tier_return_values() -> None:
         for r, rc in [(None, 5), (0.0, 0), (0.0, 5), (3.5, 5), (4.2, 5), (4.8, 5)]
     }
     review_vals = {_review_tier(_p(review_count=rc), s) for rc in [None, 0, 3, 10, 50, 200]}
-    for v in rating_vals | review_vals:
+    price_vals = {
+        _price_tier(price, median, s)
+        for price, median in [
+            (None, 100.0),
+            (10, None),
+            (0, 0.0),
+            (50, 100.0),
+            (80, 100.0),
+            (100, 100.0),
+            (120, 100.0),
+            (160, 100.0),
+        ]
+    }
+    for v in rating_vals | review_vals | price_vals:
         assert v in _SYSTEM, f"티어값 {v!r} 이 프롬프트 enum 에 없음"
+
+
+async def test_price_tiering_does_not_mutate_product_or_filter_values() -> None:
+    """[#173] 티어화는 LLM 입력 전용이며 원본 price·Spring maxPrice 정확값은 유지한다."""
+    from app.agents.buyer.recommendation.rerank import rerank
+    from app.schemas.spring import ProductSearchFilters, SpringProduct
+    from app.services.spring_client import _search_query_params
+
+    llm = FakeLLM(rerank={"ranked": [{"productId": 1, "rationale": "ok"}], "overallComment": "c"})
+    products = [
+        SpringProduct(product_id=1, name="a", price=39000),
+        SpringProduct(product_id=2, name="b", price=41000),
+    ]
+    await rerank(
+        llm, query="q", candidates=products, profile_summary=None, tier="smart", expose_max=8
+    )
+    assert [product.price for product in products] == [39000, 41000]
+    assert _search_query_params(ProductSearchFilters(price_max=39000))["maxPrice"] == 39000
 
 
 def test_sanitize_reason_strips_control_and_format_chars() -> None:
