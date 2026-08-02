@@ -337,6 +337,12 @@ async def get_order_events(
     # 전원 1.0, actor_type=USER 면 취소(USER 전이)만 분모에 남아 정상 회원도 1.0.
     # 왜곡된 isSuspicious 는 '코드 판정 번복 금지' 규칙 탓에 그대로 보고되므로,
     # 프롬프트·docstring(소프트 가드)에만 맡기지 않고 코드에서 무시를 강제한다.
+    # [#215 리뷰 2] group_by 는 LLM 이 채우는 자유 문자열(str | None)이라 정확 일치에만
+    # 의존하면 "memberid"·" MemberId " 같은 변형에서 가드가 조용히 무력화된다 — Spring 도
+    # 등호 비교("memberId".equals)라 변형은 회원 집계 대신 목록 조회로 오동작하므로,
+    # 정규화해 가드와 Spring 라우팅을 함께 바로잡는다.
+    if group_by is not None and group_by.strip().lower() == "memberid":
+        group_by = "memberId"
     ignored_status_note = ""
     if group_by == "memberId" and (to_status or actor_type):
         to_status = None
