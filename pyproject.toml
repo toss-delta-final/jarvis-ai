@@ -45,6 +45,7 @@ asyncio_mode = "auto"
 markers = [
     "smoke: 실제 외부 API(Google 임베딩 등) 호출 — 기본 실행에서 제외, 명시적 실행시만 동작",
     "integration: 실 인프라(pg-catalog 등) 필요 — 기본 실행에서 제외",
+    "eval: 결정론적 오프라인 골든셋 평가 — 기본 PR pytest에서도 실행",
 ]
 addopts = "-m 'not smoke and not integration'"
 

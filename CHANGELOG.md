@@ -10,6 +10,7 @@
 ## [Unreleased]
 
 ### Added
+- **#143 — 구매자 추천 품질 metric runner(`evals/metrics/`) 추가** — 골든셋 dev split에서 P@K·R@K·MRR·nDCG@K·Filter Accuracy·HCV·Coverage·Diversity를 네트워크·라이브 LLM 없이 결정적으로 계산하고 case·slice·전체 Markdown/CSV 리포트와 재현용 run manifest를 생성하며, ScriptedLLM + MockTransport로 실제 추천 코드 경로를 실행하고 `pytest -m eval` 가격 제약 PR 게이트로 회귀를 조기에 차단한다.
 - **#142 — 구매자 추천 골든셋 v1 구축** — 라이브 Spring I-1 응답과 실제 카탈로그 상품만으로 검색·개인화·재구매·카테고리 매핑 실패 43건을 구성하고, dev 31건과 라벨이 분리된 sealed holdout 12건을 안정 ID로 고정했다. camelCase 스키마 검증, #32 비교 하니스 어댑터, 합성 구매 이력의 실제 상품 참조, 결정론 스냅샷, dataset hash manifest, split 간 query·정답·persona·fixture 누출 감사와 봉인 해제 기록 API를 추가했다.
 - **#151 — staging·로컬 공용 HTTP/SSE 벤치마크 runner와 불변 baseline 산출물 추가** — 실제 FastAPI→Spring/DB/LLM 경로를 타깃 주입형 블랙박스로 측정하면서 cold·warm-up·measured를 분리하고, 요청마다 고유 thread를 써 동시 스트림 락이 측정을 왜곡하지 않게 했다. 신뢰도 분모는 실패·타임아웃을 포함한 measured 전체로 두되 지연 분모는 non-empty token과 terminal `done`을 모두 받은 성공 요청만 사용하며 제외 건수를 함께 출력한다. TTFT·토큰·비용·서버 조인 누락은 0 대신 bounded `null+reason`/`unknown`으로 보존하고, p99는 100표본 미만이면 생략 사유를 명시하며 p50/p95 bootstrap은 고정 시드와 #137 최근접 순위 정의를 재사용한다. X-Request-Id 기반 `chat_request` 조인, 실행 환경·가격표 manifest, secret 누출 차단, 덮어쓰기 없는 Markdown/long-format CSV/raw JSONL 산출을 포함하며, fixture의 `expected_outcome`은 요청별 `outcome_match` 3상태(true/false/unknown)와 bounded 사유로 대조해 mismatch·미측정을 그룹 리포트에 드러내며, 사용 모델의 입력·출력 단가가 하나라도 없으면 서버의 `costUsd: 0`을 신뢰하지 않고 비용을 `unknown`으로 처리한다. Spring 부재 로컬 타깃에서 시나리오 3종×동시성 1·5·10 baseline을 실제 측정해 불변 아티팩트로 보존했으며, staging 수치가 아니고 provider 스로틀과 상시 degrade 조건이 섞였다는 판독 주의도 함께 남겼다.
 - **#137 — 관측 로그 집계 스크립트와 degrade율 알림 추가 (EVAL-OBS ③-2)** — 수천 줄 `chat_request` 로그를 눈으로 볼 수 없어 "degrade가 얼마나 터지나·쿼리당 비용과 p95는 얼마인가"에 답할 수 없었다. `scripts/aggregate_observability.py`가 로깅 접두사가 붙은 줄과 순수 JSON 줄을 모두 읽어 지연 p50/p95/p99(`role`·`lane`·`model`별)·비용·degrade율·error율·SLO 초과율을 markdown + long-format CSV로 롤업한다. 인프라 0 — 파일이나 stdin만 읽는다.
@@ -79,6 +80,7 @@
 - **#209 후속 — `expose_max` 8 → 9, 그리고 설정이 계약 상한을 넘지 못하게 묶었다** (PR #212 리뷰 반영, api-spec §3.3 v0.17.3 / REQ-REC-021). §4.2가 목록당 9개를 허용하는데 노출 상한이 8이라 **계약 상한이 코드에서 도달 불가능한 값**이었다. 반대로 `expose_max`를 9 초과로 튜닝하면 `RecommendationListEntry` 생성에서 `ValidationError`가 나는데, 그 지점은 `SpringUnavailableError` degrade 블록 **밖**이라 §3.3의 "목록을 준비하는 데 문제가 있었어요" 대신 **일반 `INTERNAL`로 SSE 스트림이 끊긴다**. 계약 상한 상수(`LIST_MAX_PRODUCTS` 등)를 스키마 한 곳에 두고 config가 그 값을 `le`로 참조해, 잘못된 설정을 **런타임이 아니라 기동 시점**에 잡는다. `expose_min > expose_max`(보충 루프가 상한에 되잘리는 모순)도 함께 거절한다.
 
 ### Fixed
+- **#237 — 홈 추천 로그 비노출 테스트의 스레드 ID 우연 일치 flaky 수정** — `test_log_has_fixed_safe_key_set_only`가 `LogRecord.__dict__` 전체의 큰 숫자 필드에서 금지 상품 ID 부분 문자열을 우연히 찾아 간헐 실패하던 문제를, 메시지와 앱이 `extra`로 싣는 필드만 검사하도록 범위를 좁혀 실제 유출 차단 의도는 유지하면서 제거했다.
 - **#234 — 상품 지시대명사 intent가 추천·장바구니 레인 사이에서 흔들리던 문제** — `cart_view`를
   장바구니 자체를 명시한 조회로, `cart_add`를 명시적 담기 동사 또는 실제 옵션 답변으로 한정하고,
   `"그거"`·`"저번에 그거"`는 직전 검색/추천 상품으로 해소해 `recommend`로 분류하도록 질의 분해

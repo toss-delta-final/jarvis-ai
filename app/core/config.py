@@ -617,6 +617,9 @@ class Settings(BaseSettings):
     # 43건 중 12건을 봉인하는 v1 목표 비중이며 감사 보고에 사용한다.
     goldenset_holdout_ratio: float = 0.3
 
+    # ── 구매자 추천 평가 지표(#143, evals/metrics) ──
+    eval_buyer_k_list: tuple[int, ...] = (5, 10, 20)
+
     @field_validator("llm_provider", mode="before")
     @classmethod
     def _normalize_llm_provider(cls, value: object) -> object:
