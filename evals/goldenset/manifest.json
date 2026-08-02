@@ -1,0 +1,161 @@
+{
+  "adjudicators": [],
+  "auditReport": "audit/leakage_report.json",
+  "counts": {
+    "bySlice": {
+      "dev": {
+        "category_mapping_failure": 9,
+        "cold_start": 2,
+        "failure": 5,
+        "guest": 20,
+        "multi_constraint": 4,
+        "personalization": 8,
+        "personalization_overreach": 3,
+        "repurchase": 3,
+        "search": 26
+      },
+      "holdout": {
+        "category_mapping_failure": 2,
+        "cold_start": 0,
+        "failure": 2,
+        "guest": 10,
+        "multi_constraint": 0,
+        "personalization": 2,
+        "personalization_overreach": 0,
+        "repurchase": 1,
+        "search": 10
+      },
+      "total": {
+        "category_mapping_failure": 11,
+        "cold_start": 2,
+        "failure": 7,
+        "guest": 30,
+        "multi_constraint": 4,
+        "personalization": 10,
+        "personalization_overreach": 3,
+        "repurchase": 4,
+        "search": 36
+      }
+    },
+    "dev": 31,
+    "holdout": 12,
+    "total": 43
+  },
+  "createdAt": "2026-08-02",
+  "datasetHash": "206cc7575d5608b0cd6e2f10eeddde643b785c95781ffbf984f6e3321232e6d1",
+  "datasetName": "buyer-goldenset",
+  "datasetVersion": "1.0.0",
+  "files": [
+    {
+      "bytes": 1838,
+      "path": "CHANGELOG.md",
+      "records": 0,
+      "sha256": "fb1bf165f47d89ecdd0c772aecbe6d50e84fe861d37c324f7c4f548a6ff7b53d"
+    },
+    {
+      "bytes": 4743,
+      "path": "GUIDE.md",
+      "records": 0,
+      "sha256": "6d14c34709489e959e9be1dc3a07aa8dd3156ca33676e545afbdb53340e58082"
+    },
+    {
+      "bytes": 1602,
+      "path": "README.md",
+      "records": 0,
+      "sha256": "f1d8d11d864fdb88f442a1c0b4f95a18e93246097b19b3b59803e7264054544a"
+    },
+    {
+      "bytes": 110,
+      "path": "__init__.py",
+      "records": 0,
+      "sha256": "f3752f48ee915e79685ff539e71941fb3a6a37853ffd063cd10b8b4ee8289e2b"
+    },
+    {
+      "bytes": 3164,
+      "path": "audit/leakage_report.json",
+      "records": 9,
+      "sha256": "14fbdee2cba63f077981f4158b0d16c1639e9673d5b275fb0dde8a2d5a8df156"
+    },
+    {
+      "bytes": 1336,
+      "path": "audit/leakage_report.md",
+      "records": 0,
+      "sha256": "97484ca82cbb6e4e01695b4b1ace68c34cf598b2dbacb7081ba90e71d39e7c74"
+    },
+    {
+      "bytes": 9825,
+      "path": "audit.py",
+      "records": 0,
+      "sha256": "e7521dab28fa48ace08beb2c1e2fb12d8da5e353119893e2acf4f3cdd9866eba"
+    },
+    {
+      "bytes": 27284,
+      "path": "cases/buyer_dev.jsonl",
+      "records": 31,
+      "sha256": "2ef8c19cd6ce55c547e9b143120e58c436d3476a48911223075204cd765ae40d"
+    },
+    {
+      "bytes": 6255,
+      "path": "cases/buyer_holdout.jsonl",
+      "records": 12,
+      "sha256": "4148ccdd280836099e235b3743e21ad88f576e76fee535ee9984618a0743bcca"
+    },
+    {
+      "bytes": 4406,
+      "path": "cases/buyer_holdout_labels.jsonl",
+      "records": 12,
+      "sha256": "214cce95f67bf161cbdd08c2604c06b1a9b6296d73f4e504b2bd51b71aa043d2"
+    },
+    {
+      "bytes": 855830,
+      "path": "fixtures/catalog_snapshot.json",
+      "records": 335,
+      "sha256": "db16232a30b1dad49dc9102c25988842cb7878ee522bd2c92c60bed68caf8301"
+    },
+    {
+      "bytes": 6075,
+      "path": "fixtures/purchase_history.json",
+      "records": 11,
+      "sha256": "d9068b703e5ade93df6ab642dc9259b997fc891b6261d64d47968244921b6f74"
+    },
+    {
+      "bytes": 17516,
+      "path": "fixtures/search_responses.json",
+      "records": 43,
+      "sha256": "88eeb27452236d0a9779de3ecb8ab3258503f1d5528f3b832ea2df1488754cf0"
+    },
+    {
+      "bytes": 4109,
+      "path": "loader.py",
+      "records": 0,
+      "sha256": "9c9c0ff282ddc24765f92aad4d8c31e0a671db5324361bb10ceb8ad869bb5b08"
+    },
+    {
+      "bytes": 12238,
+      "path": "schema.py",
+      "records": 0,
+      "sha256": "789681e0e5facd32535c4ddd01b5185fc2205bc5c65834a4892f49358fff19fc"
+    },
+    {
+      "bytes": 2711,
+      "path": "snapshot.py",
+      "records": 0,
+      "sha256": "43c66784b2e3cb345c858fff7465774100b6518ef9c807ef2aeab7a0f9d48724"
+    }
+  ],
+  "labelers": [
+    {
+      "id": "labeler-01",
+      "role": "labeler"
+    }
+  ],
+  "provenance": {
+    "catalogSnapshotRecordedAt": "2026-08-03T00:20:00+09:00",
+    "catalogSource": "pg-catalog(local dev) 7220 products + live Spring I-1 @ localhost:8080",
+    "curated": 30,
+    "productionDerived": 0,
+    "synthetic": 13
+  },
+  "schemaVersion": "1.0.0",
+  "usagePermission": "internal-only"
+}
