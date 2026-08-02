@@ -252,6 +252,11 @@ def _resolve_repurchase_ids(recent, references: list[str]) -> set[int]:
     for n in norms:
         exact = {pid for pid, name in names if name and name == n}
         if exact:
+            # 완전 일치는 **몇 건이든 전부** 푼다 — 아래 부분비교의 모호성 규칙을 여기 적용하면
+            # 안 된다(PR #230 리뷰 문의). 부분비교의 복수 매칭은 이름이 서로 달라 지목이 특정에
+            # 실패한 것이지만, 완전 일치의 복수 매칭은 전부 **사용자가 말한 바로 그 이름**이라
+            # "지목하지 않은 상품"이 없다. 재등록·옵션 분리로 같은 이름이 두 productId 로
+            # 존재할 때 미해제하면 #120 버그가 그대로 재발한다(회귀 테스트로 고정).
             out |= exact
             continue
         # 부분비교는 **모호하지 않을 때만** 쓴다 — "세트"·"리필" 같은 짧고 흔한 지목은 최근 구매

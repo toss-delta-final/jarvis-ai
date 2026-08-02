@@ -2083,6 +2083,39 @@ async def test_recommendation_ambiguous_repurchase_reverts_nothing(
     assert "error" not in _types(events)
 
 
+async def test_recommendation_repurchase_restores_all_identically_named(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """이름이 완전히 같은 최근 구매가 여러 건이면 **전부** 되돌린다(PR #230 리뷰 — 의도된 비대칭).
+
+    부분비교의 모호성 규칙(2건 이상이면 미해제)을 완전 일치에 적용하면 안 된다. 부분비교의
+    복수 매칭은 이름이 **서로 달라** 지목이 특정에 실패한 것이지만, 완전 일치의 복수 매칭은
+    전부 사용자가 말한 바로 그 이름이라 "지목하지 않은 상품"이 없다. 재등록·옵션 분리로 같은
+    이름이 두 productId 로 존재할 때 미해제하면 #120 버그가 그대로 재발한다.
+    """
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(
+        _sc_mod,
+        "get_recent_purchases",
+        _purchases_cat((401, "음향가전", "무선 이어폰"), (402, "음향가전", "무선 이어폰")),
+    )
+    products = [_prod(401, "음향가전", "무선 이어폰"), _prod(402, "음향가전", "무선 이어폰")]
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["무선 이어폰"],
+            "filters": {},
+            "case": 1,
+        }
+    )
+    await _collect(
+        run_buyer_turn(_req(), _member_num(), llm=llm, search=_make_search(products), push_fn=push)
+    )
+    ids = _only_list(push.pushes[0]).product_ids
+    assert 401 in ids and 402 in ids
+
+
 @pytest.mark.parametrize("decompose", [{}, {"repurchaseProducts": []}])
 async def test_recommendation_without_repurchase_keeps_exact_exclusion(
     monkeypatch: pytest.MonkeyPatch,
