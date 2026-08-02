@@ -296,6 +296,118 @@ async def test_rerank_failure_degrades_to_search_order() -> None:
     assert _only_list(push.pushes[0]).reasons == []
 
 
+# ─────────── degrade 고지 (#133) ───────────
+
+
+async def test_rerank_fallback_discloses_quality_drop() -> None:
+    """rerank 폴백은 품질 저하를 **고지한다** — 평상시 문구와 구분되어야 한다(#133).
+
+    개인화와 상품별 근거가 통째로 사라지는데 종전 문구("요청하신 조건으로 찾은 상품들이에요")는
+    정상 경로와 구분되지 않아, 오히려 조건에 맞게 골라준 것처럼 읽혔다. 판매자에는
+    degrade 정직성 게이트(verifier.check_degrade_disclosed)가 있는데 구매자에만 없던 비대칭.
+    """
+    settings = get_settings()
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(rerank_error=True),
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+        )
+    )
+    texts = " ".join(e["data"].get("text", "") for e in events if e["type"] == "token")
+    assert settings.rerank_fallback_notice in texts
+    # 회귀 가드 — 평상시와 구분 불가하던 종전 문구가 다시 새면 안 된다.
+    assert "요청하신 조건으로 찾은" not in texts
+    assert _types(events)[-1] == "done"  # degrade 는 error 가 아니라 done(§3.3)
+
+
+async def test_rerank_fallback_discloses_for_guest_too() -> None:
+    """게스트 턴에도 **같은** 고지가 나간다 — 문안이 프로필 유무에 의존하지 않는다(#133).
+
+    문안을 "취향"으로 쓰지 않은 이유가 이것이다. 게스트는 프로필이 없어 평상시에도 취향
+    반영이 없으므로 "취향까지 반영하지 못했다"가 참이 되지 않는다. 반면 추천 이유는
+    프로필과 무관하게 폴백에서 항상 사라지므로 두 신원 모두에게 참이다.
+    """
+    settings = get_settings()
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _guest(),
+            llm=FakeLLM(rerank_error=True),
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+        )
+    )
+    texts = " ".join(e["data"].get("text", "") for e in events if e["type"] == "token")
+    assert settings.rerank_fallback_notice in texts
+
+
+async def test_degrade_notice_is_sanitized(monkeypatch: pytest.MonkeyPatch) -> None:
+    """config 주입 문구도 _strip_unsafe 를 통과한다(#67 규약).
+
+    운영자 주입 값이라 소스 리터럴이 아니다 — 정상 경로의 overall_comment 와 같은 정제를 받는다.
+    """
+    settings = get_settings()
+    # zero-width space·RTL override 는 소스에서 눈에 보이지 않아 편집 중 조용히 사라질 수 있다.
+    # 이름을 붙여 두면 주입부와 단언부가 같은 문자를 가리킴이 드러나고, 하나가 지워지면
+    # NameError 로 즉시 깨진다(리터럴을 양쪽에 흩어 두면 조용히 통과한다).
+    zwsp, rlo = "​", "‮"
+    monkeypatch.setattr(settings, "rerank_fallback_notice", f"추천 이유\n정리 실패{zwsp}{rlo} 안내")
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(rerank_error=True),
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+        )
+    )
+    texts = " ".join(e["data"].get("text", "") for e in events if e["type"] == "token")
+    assert "추천 이유 정리 실패 안내" in texts  # 개행은 단일 공백으로 접힘
+    for banned in ("\n", zwsp, rlo):
+        assert banned not in texts
+
+
+async def test_empty_rerank_notice_disables_disclosure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """빈 문구는 고지를 끈다 — 추천 자체는 그대로 나간다(운영 롤백 수단, #133)."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "rerank_fallback_notice", "")
+    push = _RecordingPush()
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(rerank_error=True),
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=push,
+        )
+    )
+    types = _types(events)
+    assert "token" not in types
+    assert "products.ready" in types
+    assert types[-1] == "done"
+
+
+async def test_push_skipped_notice_comes_from_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """push 실패 안내도 config 주입이다 — 문구 정책을 한 곳에 모은다(#133)."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "push_skipped_notice", "목록 준비 지연 안내")
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(),
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_failing_push,
+        )
+    )
+    texts = " ".join(e["data"].get("text", "") for e in events if e["type"] == "token")
+    assert "목록 준비 지연 안내" in texts
+    assert _types(events)[-1] == "done"
+
+
 async def test_push_failure_skips_products_ready() -> None:
     """push 실패 시 products.ready 를 emit 하지 않고 done 으로 종료(§3.3)."""
     events = await _collect(
@@ -1819,6 +1931,77 @@ async def test_recommendation_degrades_when_purchases_fail(monkeypatch: pytest.M
     )
     assert 101 in _only_list(push.pushes[0]).product_ids  # dedup 없이 진행
     assert _types(events)[-1] == "done"
+
+
+async def test_dedup_skip_is_not_disclosed_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """이력 조회 실패는 **기본 미고지**다(#133 판단).
+
+    조회 실패는 "중복이 노출됐다"가 아니라 "걸러내지 못했다"라 실제 중복 발생 여부를 알 수 없고,
+    rerank 폴백과 달리 거짓 주장을 하고 있지도 않다. 매 턴 붙는 안내는 노이즈가 된다.
+    """
+
+    async def _boom(user_id, status=None):
+        raise SpringUnavailableError("orders down")
+
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _boom)
+    assert get_settings().dedup_skipped_notice == ""  # 기본값이 곧 미고지 수단
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member_num(),
+            llm=FakeLLM(),
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+        )
+    )
+    texts = " ".join(e["data"].get("text", "") for e in events if e["type"] == "token")
+    assert "최근 구매" not in texts
+    assert _types(events)[-1] == "done"
+
+
+async def test_dedup_skip_discloses_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    """문구를 채우면 이력 조회 실패도 고지된다 — 판단을 재배포 없이 되돌리기 위한 여지(#133)."""
+
+    async def _boom(user_id, status=None):
+        raise SpringUnavailableError("orders down")
+
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _boom)
+    monkeypatch.setattr(
+        get_settings(), "dedup_skipped_notice", "최근 구매 제외를 적용하지 못했어요."
+    )
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member_num(),
+            llm=FakeLLM(),
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+        )
+    )
+    texts = " ".join(e["data"].get("text", "") for e in events if e["type"] == "token")
+    assert "최근 구매 제외를 적용하지 못했어요." in texts
+
+
+async def test_dedup_notice_not_emitted_for_guest(monkeypatch: pytest.MonkeyPatch) -> None:
+    """게스트는 **이력이 없는 것**이지 조회에 실패한 게 아니다 — 고지하지 않는다(#133).
+
+    `_fetch_purchases` 는 두 경우 모두 None 을 돌려주므로 호출부에서 구분할 수 없었다.
+    degrade 플래그로 갈라야 "없는 기능이 고장났다"는 거짓 고지를 막는다.
+    """
+    monkeypatch.setattr(
+        get_settings(), "dedup_skipped_notice", "최근 구매 제외를 적용하지 못했어요."
+    )
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _guest(),
+            llm=FakeLLM(),
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+        )
+    )
+    texts = " ".join(e["data"].get("text", "") for e in events if e["type"] == "token")
+    assert "최근 구매 제외를 적용하지 못했어요." not in texts
 
 
 async def test_recommendation_degrades_on_non_numeric_member(

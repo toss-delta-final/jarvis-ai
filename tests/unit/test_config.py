@@ -112,3 +112,12 @@ def test_lifespan_cleanup_budget_mismatch_warns_at_runtime_instead_of_failing_st
 
     assert settings.lifespan_cleanup_budget_s == 0.1
     assert settings.lifespan_resource_close_floor_s == 0.2
+
+
+def test_degrade_notice_defaults():
+    """rerank 폴백은 기본 고지, dedup 스킵은 기본 미고지(빈 문자열 = off) (#133)."""
+    settings = Settings(_env_file=None)
+
+    assert "검색 결과 순서" in settings.rerank_fallback_notice
+    assert settings.push_skipped_notice  # push 지연 안내는 종전부터 존재
+    assert settings.dedup_skipped_notice == ""
