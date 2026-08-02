@@ -384,8 +384,10 @@ class Settings(BaseSettings):
     # (SPEC-CATALOG-DATA-001 REQ-CAT-013 소모품 boolean 플래그). 카테고리명은 BE categoryName 과 일치.
     consumable_categories: list[str] = []
     # [#120] 명시 재구매 지목(repurchaseProducts) 개수 상한 — LLM 이 긴 목록을 내도 해소 비용과
-    # 오매칭이 무한히 늘지 않게 절단한다(튜너블 하드코딩 금지).
-    dedup_repurchase_max: int = 5
+    # 오매칭이 무한히 늘지 않게 절단한다(튜너블 하드코딩 금지). category_fanout_max 와 같은
+    # 슬라이스 절단 규약(raw[:cap])이라 음수를 거부한다 — 음수면 "뒤에서 |cap|개 제외"로 뒤집혀
+    # "cap<=0 이면 정확히 0개" 불변식이 깨진다(PR #73 리뷰의 같은 함정, PR #230 리뷰).
+    dedup_repurchase_max: int = Field(default=5, ge=0)
 
     # ── 프로필 (SPEC-PROFILE-001) ──
     profile_recency_highlights: int = 3  # §5.1 최근 맥락 하이라이트 개수

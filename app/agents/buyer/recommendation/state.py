@@ -82,8 +82,12 @@ class RouteDecision:
     cart: CartIntent | None = None  # intent == cart_add/cart_view 일 때
     revert_categories: list[str] = field(default_factory=list)  # 소모품 억제 되돌리기(결정 14-F)
     # [#120] 명시 재구매/재추천 지목(상품 지칭 텍스트) — 최근 구매 exact 제외를 되돌리는 신호.
-    # 카테고리 되돌리기(revert_categories)와 대칭. productId 가 아니라 **텍스트**인 이유는
-    # graph 가 본인 구매 이력에 대해서만 해소해 신뢰 경계를 유지하기 때문(#120).
+    # productId 가 아니라 **텍스트**인 이유는 graph 가 본인 구매 이력에 대해서만 해소해 신뢰
+    # 경계를 유지하기 때문(#120).
+    # **이번 턴 한정 신호다** — revert_categories 는 revert_store 에 누적돼 다음 턴까지 남지만
+    # 이 필드는 저장소가 없어 graph 가 소비하고 끝난다. 되돌리기 축을 exact 로 넓힌다는 점에서만
+    # 대칭이고 **지속성은 대칭이 아니다**(PR #230 리뷰). 멀티턴 지속은 store 확장이 필요해 이번
+    # 범위 밖으로 뒀다 — 다음 턴 조건 다듬기 발화면 그 상품은 다시 제외된다(후속 이슈).
     repurchase_products: list[str] = field(default_factory=list)
     # 카테고리 하이브리드 매핑(이슈 #59, 방식 A):
     category_queries: list[CategoryQuery] = field(default_factory=list)  # decompose 추측(매핑 전)
