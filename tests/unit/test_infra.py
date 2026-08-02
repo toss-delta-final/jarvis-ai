@@ -237,6 +237,13 @@ def test_buyer_stream_cap_above_total_cap_is_rejected() -> None:
         )
 
 
+@pytest.mark.parametrize("buyer_cap", [0.0, -1.0])
+def test_non_positive_buyer_stream_cap_is_rejected(buyer_cap: float) -> None:
+    """0 이하 상한의 즉시 절단이 구매자 트래픽 전면 장애로 배포되지 않게 막는다."""
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, stream_total_timeout_buyer_s=buyer_cap)
+
+
 def test_buyer_endpoint_passes_buyer_stream_role(monkeypatch: pytest.MonkeyPatch) -> None:
     """실제 /chat 호출부가 구매자 상한 선택용 역할을 명시한다."""
     captured: dict[str, object] = {}

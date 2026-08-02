@@ -511,7 +511,7 @@ class Settings(BaseSettings):
     # 구매자 스트림이 목표(slo_total_buyer_ms 30s)의 3배 느슨한 상한으로 돈다.
     # 근거: 2026-08-02 로컬 실측(Spring 기동, 동시성 1, n=30) 구매자 total p95 10.5s ·
     # max 12.8s — 30s 는 실측 max 의 2.3배 여유이고 154턴 중 30s 초과는 0건이었다.
-    stream_total_timeout_buyer_s: float = 30.0
+    stream_total_timeout_buyer_s: float = Field(default=30.0, gt=0.0)
     # disconnect 감지 폴링 간격 (취소 = 연결 종료, §2.9 b).
     stream_disconnect_poll_s: float = 0.5
     # AI→Spring 콜백 타임아웃 (§2.9 c, BE I-2 기준 통일). 실제 호출부에서 사용.
