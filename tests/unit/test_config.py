@@ -79,6 +79,7 @@ def test_lifespan_cleanup_budget_is_independently_tunable():
     """배포 유예 설정과 교차 검증 없이 전체 cleanup 예산만 조정할 수 있다."""
     defaults = Settings(_env_file=None)
 
+    assert defaults.lifespan_resource_close_timeout_s == 0.75
     assert defaults.lifespan_cleanup_budget_s == 8.0
     assert (
         Settings(_env_file=None, lifespan_cleanup_budget_s=12.0).lifespan_cleanup_budget_s == 12.0

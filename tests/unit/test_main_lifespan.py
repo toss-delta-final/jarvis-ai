@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 import app.main as main_mod
+from app.core.config import Settings
 
 
 def _patch_lifespan_dependencies(
@@ -292,9 +293,92 @@ async def test_lifespan_uses_remaining_budget_before_resource_timeout(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_lifespan_starts_every_close_after_cleanup_budget_is_exhausted(monkeypatch, caplog):
+async def test_lifespan_default_timeout_leaves_time_for_remaining_resources(monkeypatch, caplog):
     calls = []
-    _patch_lifespan_dependencies(monkeypatch, calls, hanging_resource="*")
+    completed = []
+
+    async def hang_first():
+        calls.append("session_lifecycle")
+        await asyncio.Event().wait()
+
+    async def complete_after_suspension(name):
+        calls.append(name)
+        await asyncio.sleep(0)
+        completed.append(name)
+
+    monkeypatch.setattr(main_mod, "close_session_lifecycle", hang_first)
+    for attribute, resource_name in (
+        ("close_seller_history_store", "seller_history_store"),
+        ("close_seller_checkpointer", "seller_checkpointer"),
+        ("close_profile_store", "profile_store"),
+        ("close_session_activity_pool", "session_activity_pool"),
+        ("close_processed_events_pool", "processed_events_pool"),
+        ("close_conversation_store", "conversation_store"),
+        ("close_pg_store", "pg_store"),
+        ("close_advisory_pool", "advisory_pool"),
+    ):
+        monkeypatch.setattr(
+            main_mod,
+            attribute,
+            lambda resource_name=resource_name: complete_after_suspension(resource_name),
+        )
+    monkeypatch.setattr(main_mod, "get_settings", lambda: Settings(_env_file=None))
+
+    with caplog.at_level("INFO"):
+        await main_mod._close_owned_resources()
+
+    assert calls == [
+        "session_lifecycle",
+        "seller_history_store",
+        "seller_checkpointer",
+        "profile_store",
+        "session_activity_pool",
+        "processed_events_pool",
+        "conversation_store",
+        "pg_store",
+        "advisory_pool",
+    ]
+    assert completed == calls[1:]
+    assert (
+        "lifespan resource cleanup timed out resource=session_lifecycle timeout_s=0.75"
+        in caplog.text
+    )
+    assert (
+        "lifespan resource cleanup budget exhausted resource=session_lifecycle" not in caplog.text
+    )
+    assert "lifespan resource cleanup complete succeeded=8 failed=1" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_lifespan_reserves_budget_for_every_remaining_close(monkeypatch, caplog):
+    calls = []
+    completed = []
+
+    async def hang_first():
+        calls.append("session_lifecycle")
+        await asyncio.Event().wait()
+
+    async def complete_after_suspension(name):
+        calls.append(name)
+        await asyncio.sleep(0)
+        completed.append(name)
+
+    monkeypatch.setattr(main_mod, "close_session_lifecycle", hang_first)
+    for attribute, resource_name in (
+        ("close_seller_history_store", "seller_history_store"),
+        ("close_seller_checkpointer", "seller_checkpointer"),
+        ("close_profile_store", "profile_store"),
+        ("close_session_activity_pool", "session_activity_pool"),
+        ("close_processed_events_pool", "processed_events_pool"),
+        ("close_conversation_store", "conversation_store"),
+        ("close_pg_store", "pg_store"),
+        ("close_advisory_pool", "advisory_pool"),
+    ):
+        monkeypatch.setattr(
+            main_mod,
+            attribute,
+            lambda resource_name=resource_name: complete_after_suspension(resource_name),
+        )
     monkeypatch.setattr(
         main_mod,
         "get_settings",
@@ -322,6 +406,7 @@ async def test_lifespan_starts_every_close_after_cleanup_budget_is_exhausted(mon
         "pg_store",
         "advisory_pool",
     ]
+    assert completed == calls[1:]
     assert "lifespan resource cleanup budget exhausted resource=session_lifecycle" in caplog.text
-    assert "lifespan resource cleanup budget exhausted resource=advisory_pool" in caplog.text
-    assert "lifespan resource cleanup complete succeeded=0 failed=9" in caplog.text
+    assert "lifespan resource cleanup budget exhausted resource=advisory_pool" not in caplog.text
+    assert "lifespan resource cleanup complete succeeded=8 failed=1" in caplog.text

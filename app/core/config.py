@@ -459,8 +459,9 @@ class Settings(BaseSettings):
     state_store_query_timeout_s: float = 3.0
     # 기존 conversation_turns 스키마 백필은 일반 요청 쿼리보다 오래 걸릴 수 있어 별도 상한을 둔다.
     state_store_migration_timeout_s: float = 30.0
-    # lifespan 종료 콜백별 상한. 한 pg 연결이 응답하지 않아도 뒤의 owned resource를 계속 닫는다.
-    lifespan_resource_close_timeout_s: float = Field(default=10.0, gt=0.0, le=60.0)
+    # lifespan 종료 콜백별 상한. 9개가 모두 상한을 써도 8초 전체 예산 안에 여유가 남도록
+    # 기본 0.75초(총 6.75초)로 두어, 한두 pg 연결의 교착이 뒤 자원 정리를 막지 않게 한다.
+    lifespan_resource_close_timeout_s: float = Field(default=0.75, gt=0.0, le=60.0)
     # 전체 cleanup 예산. 배포의 SIGTERM→SIGKILL 유예보다 작게 설정해야 한다. 현재 deploy.yml의
     # `docker stop`은 --time이 없어 Docker 기본 유예 10초에 의존한다. 이 관계는 기동 시 강제하지 않는다.
     lifespan_cleanup_budget_s: float = Field(default=8.0, gt=0.0, le=300.0)
