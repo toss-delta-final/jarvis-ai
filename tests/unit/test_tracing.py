@@ -151,6 +151,23 @@ async def test_disabled_tracing_exports_nothing_and_allocates_no_nodes() -> None
     assert exporter.exported == []
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+def test_unregistered_lane_warns_without_exposing_raw_value(
+    caplog: pytest.LogCaptureFixture,
+    enabled: bool,
+) -> None:
+    trace = _start_trace(
+        TraceFactory(exporter=FakeTraceExporter(), enabled=enabled, sampling_rate=1.0)
+    )
+    unknown_lane = "PRIVATE-LANE-CANARY"
+
+    with caplog.at_level("WARNING", logger="app.core.tracing"):
+        trace.set_lane(unknown_lane)
+
+    assert "OBSERVABILITY_LANE_UNKNOWN" in caplog.text
+    assert unknown_lane not in caplog.text
+
+
 async def test_async_children_create_sibling_spans() -> None:
     exporter = FakeTraceExporter()
     trace = _start_trace(TraceFactory(exporter=exporter, enabled=True, sampling_rate=1.0))
