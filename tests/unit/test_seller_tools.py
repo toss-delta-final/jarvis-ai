@@ -12,7 +12,9 @@ from app.agents.seller.context import SellerContext
 from app.agents.seller.tools import (
     PRODUCT_TOOLS,
     READ_TOOLS,
+    get_account_events,
     get_behavior_events,
+    get_churn_cohort,
     get_funnel,
     get_order_events,
     get_sales_timeseries,
@@ -24,8 +26,10 @@ from app.schemas.spring import (
     AccountEventsResult,
     BehaviorEventsResult,
     BehaviorProductRow,
+    ChurnMember,
     ChurnResult,
     FunnelResult,
+    PreChurnSignals,
     OrderEventsResult,
     ProductChangeLogResult,
     ProductChangeLogRow,
@@ -56,6 +60,14 @@ class FakeSpringClient:
         self.recorded_event_args: tuple | None = None
         self.behavior_result = BehaviorEventsResult()  # I-13 기본 빈 응답(3형 공통)
         self.order_events_result = OrderEventsResult()  # I-14 기본 빈 응답(rows/total, #194)
+        # I-16 기본 응답(#197 — churnRate 는 fraction: 0.05 = 5%. 구 fixture 의 5.0 은
+        # 그 자체가 단위 오독의 산물이었다). 코호트 존재·이탈 회원 없음 상태.
+        self.churn_result = ChurnResult(
+            churn_rate=0.05, cohort_size=20, pre_churn_signals=PreChurnSignals(), members=[]
+        )
+        self.recorded_churn_args: tuple | None = None
+        self.account_events_result = AccountEventsResult()  # I-8 기본 빈 응답(rows, #197)
+        self.recorded_account_args: tuple | None = None
         self._fail = fail or set()
 
     def _maybe_fail(self, method: str) -> None:
@@ -103,14 +115,16 @@ class FakeSpringClient:
         self._maybe_fail("get_product_changes")
         return ProductChangeLogResult()  # I-15 기본 빈 응답(rows/total, #194)
 
-    async def get_churn(self, brand_id, inactive_days):
+    async def get_churn(self, brand_id, from_, to, inactive_days):
         self.recorded_brand_id = brand_id
+        self.recorded_churn_args = (from_, to, inactive_days)
         self._maybe_fail("get_churn")
-        return ChurnResult(churn_rate=5.0, pre_churn_signals=[])
+        return self.churn_result
 
-    async def get_account_events(self, event_type=None, from_=None, to=None, group_by=None):
+    async def get_account_events(self, from_, to, event_type=None, group_by=None):
+        self.recorded_account_args = (from_, to, event_type, group_by)
         self._maybe_fail("get_account_events")
-        return AccountEventsResult(events=[])
+        return self.account_events_result
 
     async def list_products(self, brand_id, status=None, q=None, limit=None, offset=None):
         self.recorded_brand_id = brand_id
@@ -782,6 +796,274 @@ async def test_product_change_logs_empty_says_zero() -> None:
     assert "상품 변경 이력 0건" in result
 
 
+# ── I-16 이탈 코호트 도구 (#197) ──────────────────────────────────────────────
+
+
+async def test_churn_tool_passes_period_and_formats_fraction_rate_as_percent() -> None:
+    """[#197 회귀] from/to 가 client 에 전달되고, fraction 이탈률이 % 로 표시된다.
+
+    구 코드는 (1) from/to 미전달로 무조건 400 degrade, (2) ":.1f}%" 포맷으로
+    0.6(=60%)을 "0.6%" 로 왜곡해 워커가 이탈 미미로 오판했다.
+    """
+    fake = FakeSpringClient()
+    fake.churn_result = ChurnResult(
+        churn_rate=0.6, cohort_size=5, pre_churn_signals=PreChurnSignals(), members=[]
+    )
+
+    result = await _call_runtime_tool(
+        get_churn_cohort,
+        {"from_date": "2026-06-01", "to_date": "2026-07-31", "inactive_days": 45},
+        fake,
+        brand_id=93,
+    )
+
+    assert fake.recorded_brand_id == 93
+    assert fake.recorded_churn_args == ("2026-06-01", "2026-07-31", 45)
+    assert "이탈률 60.0%" in result
+    assert "0.6%" not in result  # 구 왜곡 표기 회귀 방지
+    assert "코호트 5명" in result
+    assert "2026-06-01~2026-07-31" in result  # _reference_note 부착
+
+
+async def test_churn_tool_defaults_inactive_days_from_settings() -> None:
+    """inactive_days 미지정 시 Settings 기본값(seller_churn_inactive_days)을 쓴다."""
+    from app.core.config import get_settings
+
+    fake = FakeSpringClient()
+
+    result = await _call_runtime_tool(
+        get_churn_cohort, {"from_date": "2026-07-01", "to_date": "2026-07-31"}, fake
+    )
+
+    expected = get_settings().seller_churn_inactive_days
+    assert fake.recorded_churn_args == ("2026-07-01", "2026-07-31", expected)
+    assert f"inactiveDays={expected}" in result
+
+
+async def test_churn_tool_summarizes_signals_and_members() -> None:
+    """[#197] 이탈 전 신호 상세(취소·반품 사유·가격인상 노출)와 이탈 회원 요약을 노출한다.
+
+    구 출력은 "신호 N건" 건수뿐이라 워커가 원인 가설을 세울 재료가 없었다.
+    검색 무결과 세션 상시 0(미적재) 주의 문구도 상시 부착된다.
+    """
+    fake = FakeSpringClient()
+    fake.churn_result = ChurnResult(
+        churn_rate=0.6,
+        cohort_size=5,
+        pre_churn_signals=PreChurnSignals(
+            cancel_count=3,
+            return_reasons_top=[{"reason": "사이즈 불만", "count": 2}],
+            zero_result_search_sessions=0,
+            price_increase_exposed=2,
+        ),
+        members=[
+            ChurnMember(
+                member_id=103,
+                last_activity_at="2026-06-15T10:00:00+09:00",
+                sessions_30d=0,
+                pre_churn_event="RETURNED(상품불량)",
+            ),
+            ChurnMember(member_id=104, last_activity_at="2026-06-01T09:00:00+09:00"),
+        ],
+    )
+
+    result = await _call_runtime_tool(
+        get_churn_cohort, {"from_date": "2026-06-01", "to_date": "2026-07-31"}, fake
+    )
+
+    assert "취소 3건" in result
+    assert "사이즈 불만(2건)" in result
+    assert "가격인상 노출 2명" in result
+    assert "이탈 회원 2명" in result
+    assert "[103]" in result and "RETURNED(상품불량)" in result
+    assert "쓰지 말 것" in result  # _CHURN_SIGNAL_RULES_NOTE 상시 부착
+
+
+async def test_churn_tool_reports_missing_rate_as_unreceived_not_zero() -> None:
+    """[#197 PR 리뷰] churnRate 결측(None)은 "이탈률 0.0%"가 아니라 미수신으로
+    명시 표기한다 — 워커가 "이탈 없음"으로 오판하지 않고 판정을 보류하게."""
+    fake = FakeSpringClient()
+    fake.churn_result = ChurnResult(
+        churn_rate=None, cohort_size=5, pre_churn_signals=PreChurnSignals(), members=[]
+    )
+
+    result = await _call_runtime_tool(
+        get_churn_cohort, {"from_date": "2026-06-01", "to_date": "2026-07-31"}, fake
+    )
+
+    assert "이탈률 미수신" in result
+    assert "판정 보류" in result
+    assert "0.0%" not in result  # 결측의 0% 위장 금지
+
+
+async def test_churn_tool_distinguishes_empty_cohort_from_zero_churn() -> None:
+    """[#197] 코호트 0명(기간 내 활동 회원 없음)은 "이탈률 0%"와 구분해 표기한다.
+
+    BE 는 코호트 0명 시 cohortSize=0·churnRate=0.0 short-circuit — 기본 기간(최근
+    7일) 질의에서 흔한 상태라, 워커가 "이탈 없음"으로 단정하지 않게 한다.
+    """
+    fake = FakeSpringClient()
+    fake.churn_result = ChurnResult(churn_rate=0.0, cohort_size=0)
+
+    result = await _call_runtime_tool(
+        get_churn_cohort, {"from_date": "2026-07-25", "to_date": "2026-07-31"}, fake
+    )
+
+    assert "코호트 0명" in result
+    assert "이탈률" not in result
+
+
+async def test_churn_tool_caps_member_lines_by_settings() -> None:
+    """이탈 회원 나열은 I-16 전용 상한(seller_churn_member_max)으로 절단하고 잔여를
+    고지한다 — I-14 kv 상한과 분리돼 서로의 조정에 영향받지 않는다(#197 리뷰)."""
+    from app.core.config import get_settings
+
+    cap = get_settings().seller_churn_member_max
+    fake = FakeSpringClient()
+    fake.churn_result = ChurnResult(
+        churn_rate=0.5,
+        cohort_size=cap * 4,
+        pre_churn_signals=PreChurnSignals(),
+        members=[ChurnMember(member_id=i) for i in range(cap + 3)],
+    )
+
+    result = await _call_runtime_tool(
+        get_churn_cohort, {"from_date": "2026-06-01", "to_date": "2026-07-31"}, fake
+    )
+
+    assert f"이탈 회원 {cap + 3}명" in result
+    assert "외 3명" in result
+
+
+async def test_churn_tool_degrades_on_spring_failure() -> None:
+    """get_churn 실패 시 raise 없이 "Error:" 문자열로 degrade 한다(§3.4)."""
+    fake = FakeSpringClient(fail={"get_churn"})
+
+    result = await _call_runtime_tool(
+        get_churn_cohort, {"from_date": "2026-07-01", "to_date": "2026-07-31"}, fake
+    )
+
+    assert result.startswith("Error: 이탈 코호트")
+
+
+# ── I-8 계정/보안 이벤트 도구 (#197) ──────────────────────────────────────────
+
+
+async def _call_account_events(args: dict, fake) -> str:
+    """runtime 없는 전역 도구 호출 헬퍼 — 싱글턴 교체 후 반드시 원복."""
+    spring_client_module.set_spring_client(fake)
+    try:
+        return await get_account_events.coroutine(**args)
+    finally:
+        spring_client_module.set_spring_client(None)
+
+
+def _enable_account_events(monkeypatch) -> None:
+    """[#197 PR 리뷰] I-8 노출 보류 플래그를 테스트에서만 켠다.
+
+    admin 소유 협의 미완(🔴, api-spec §4.4 v0.19.1)으로 기본 false — 활성 상태의
+    요약/전달 로직은 협의 종결 후에도 그대로 쓰이므로 플래그만 켜서 검증한다.
+    """
+    from app.agents.seller import tools as tools_module
+    from app.core.config import get_settings
+
+    enabled = get_settings().model_copy(update={"seller_account_events_enabled": True})
+    monkeypatch.setattr(tools_module, "get_settings", lambda: enabled)
+
+
+async def test_account_events_tool_disabled_by_default() -> None:
+    """[#197 PR 리뷰] I-8 은 admin 소유 협의(🔴) 전까지 기본 비활성 — 도구가
+    Spring 호출 없이 "Error:" 문자열을 반환한다(전역 데이터 노출 보류).
+
+    구 코드에선 쿼리 400·스키마 미스매치가 사실상 차단막이었는데 #197 정합이
+    그 차단막을 제거했으므로, 의도된 보류를 플래그로 명시해 회귀를 방지한다.
+    """
+    fake = FakeSpringClient()
+
+    result = await _call_account_events(
+        {"from_date": "2026-07-01", "to_date": "2026-07-31"}, fake
+    )
+
+    assert result.startswith("Error:")
+    assert "비활성" in result
+    assert fake.recorded_account_args is None  # Spring 호출 자체가 차단된다
+
+
+async def test_account_events_tool_rejects_unknown_group_by_locally(monkeypatch) -> None:
+    """[#197 PR 리뷰 2] groupBy 화이트리스트(eventType|hour|ip) 밖 값은 Spring 왕복
+    없이 즉시 "Error:" 로 거른다 — BE 400 INVALID_GROUP_BY 까지 가는 타임아웃 예산
+    낭비 방지. 오류 문구에 유효값을 실어 LLM 재시도를 유도한다."""
+    _enable_account_events(monkeypatch)
+    fake = FakeSpringClient()
+
+    result = await _call_account_events(
+        {"from_date": "2026-07-01", "to_date": "2026-07-31", "group_by": "date"}, fake
+    )
+
+    assert result.startswith("Error:")
+    assert "eventType/hour/ip" in result
+    assert fake.recorded_account_args is None  # 호출 전 차단 — 왕복 없음
+
+    # 유효 3종은 그대로 통과한다(선검증이 과차단하지 않는다).
+    for valid in ("eventType", "hour", "ip"):
+        fake2 = FakeSpringClient()
+        ok = await _call_account_events(
+            {"from_date": "2026-07-01", "to_date": "2026-07-31", "group_by": valid}, fake2
+        )
+        assert not ok.startswith("Error:"), valid
+        assert fake2.recorded_account_args == ("2026-07-01", "2026-07-31", None, valid)
+
+
+async def test_account_events_tool_passes_period_and_summarizes_rows(monkeypatch) -> None:
+    """[#197 회귀] from/to 가 필수 전달되고, rows(구 events 아님) 내용이 노출된다.
+
+    구 스키마는 events 필드를 기대해 Spring rows 응답이 extra="allow" 로 조용히
+    버려져 항상 "0건 집계됨"이었다(I-14/I-15 #194 와 동일 패턴).
+    """
+    _enable_account_events(monkeypatch)
+    fake = FakeSpringClient()
+    fake.account_events_result = AccountEventsResult(
+        group_by="eventType",
+        rows=[{"key": "LOGIN_FAIL", "count": 7}, {"key": "LOGIN", "count": 40}],
+    )
+
+    result = await _call_account_events(
+        {"from_date": "2026-07-01", "to_date": "2026-07-31", "event_type": "LOGIN_FAIL"},
+        fake,
+    )
+
+    assert fake.recorded_account_args == ("2026-07-01", "2026-07-31", "LOGIN_FAIL", None)
+    assert "계정/보안 이벤트 2건" in result
+    assert "groupBy=eventType" in result
+    assert "key=LOGIN_FAIL" in result and "count=7" in result
+    assert "2026-07-01~2026-07-31" in result
+
+
+async def test_account_events_tool_empty_rows_says_zero_with_group_by(monkeypatch) -> None:
+    """빈 rows 는 0건 + 적용 groupBy 를 함께 고지한다(정상 0건 표기)."""
+    _enable_account_events(monkeypatch)
+    fake = FakeSpringClient()
+
+    result = await _call_account_events(
+        {"from_date": "2026-07-01", "to_date": "2026-07-31", "group_by": "ip"}, fake
+    )
+
+    assert "계정/보안 이벤트 0건" in result
+    assert "groupBy=ip" in result
+
+
+async def test_account_events_tool_degrades_on_spring_failure(monkeypatch) -> None:
+    """get_account_events 실패 시 "Error:" 문자열로 degrade 한다(보조 소스 규약)."""
+    _enable_account_events(monkeypatch)
+    fake = FakeSpringClient(fail={"get_account_events"})
+
+    result = await _call_account_events(
+        {"from_date": "2026-07-01", "to_date": "2026-07-31"}, fake
+    )
+
+    assert result.startswith("Error: 계정 이벤트")
+
+
 def test_worker_prompts_contain_log_interpretation_rules() -> None:
     """워커 프롬프트에 해석 규칙(완료만 기록·이벤트≠주문 권위)이 남아 있다(회귀 방지)."""
     from app.agents.seller.prompts import (
@@ -795,3 +1077,7 @@ def test_worker_prompts_contain_log_interpretation_rules() -> None:
     assert "완료" in CHURN_PROMPT and "교환" in CHURN_PROMPT
     assert "신청 미기록" in ABUSE_PROMPT
     assert "purchaseComplete" in BEHAVIOR_PROMPT
+    # [#197 리뷰] 워커에 전달되는 리터럴의 번호 목록 구조 회귀 방지 — 연속 문장이
+    # 3칸 들여쓰기를 잃으면 목록 밖 독립 문장처럼 보인다(충돌 해결 중 실제 발생).
+    assert "\n   '구매 0' 판정은" in ABUSE_PROMPT
+    assert "\n'구매 0'" not in ABUSE_PROMPT
