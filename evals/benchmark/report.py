@@ -25,8 +25,8 @@ def render_markdown(
             f"({join_stats['rate'] if join_stats['rate'] is not None else 'unknown'})",
             f"- sample size rationale: {sample_size_rationale or '기본 하한 사용'}",
             "",
-            "| group | reliability denominator | latency denominator | success | error | timeout | degrade (known denominator) | degrade unknown | p50 ms | p95 ms | p99 ms | max ms | throughput req/s |",
-            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+            "| group | reliability denominator | latency denominator | success | error | timeout | degrade (known denominator) | degrade unknown | outcome match | outcome mismatch | outcome unknown | p50 ms | p95 ms | p99 ms | max ms | throughput req/s |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for group, summary in sorted(summaries.items()):
@@ -46,6 +46,9 @@ def render_markdown(
         )
         lines[-1] += (
             f" | {summary['degrade_unknown_count']} | "
+            f"{summary['outcome_match_count']} | "
+            f"{summary['outcome_mismatch_count']} | "
+            f"{summary['outcome_unknown_count']} | "
             f"{latency['p50'] if latency['p50'] is not None else 'unknown'} | "
             f"{latency['p95'] if latency['p95'] is not None else 'unknown'} | "
             f"{latency['p99'] if latency['p99'] is not None else 'unknown'} | "
@@ -62,6 +65,11 @@ def render_markdown(
             f"- `{group}` latency 제외 규칙: 성공(non-empty token 수신 + terminal `done`) "
             f"요청만 포함. 제외 {summary['latency_excluded']}건"
         )
+        if summary["outcome_reason_counts"]:
+            reason_text = ", ".join(
+                f"{reason}={count}" for reason, count in summary["outcome_reason_counts"].items()
+            )
+            lines.append(f"- `{group}` outcome reasons: {reason_text}")
         server = summary["server_metrics"]
         lines.append(
             f"- `{group}` server metrics: joined={server['joined_samples']}, "
@@ -113,8 +121,13 @@ def csv_rows(
             "degrade_known_denominator",
             "degrade_unknown_count",
             "degrade_rate",
+            "outcome_match_count",
+            "outcome_mismatch_count",
+            "outcome_unknown_count",
         ):
             rows.append(("reliability", group, metric, summary[metric]))
+        for reason, count in summary["outcome_reason_counts"].items():
+            rows.append(("outcome_reason", group, reason, count))
         for latency_name, latency_stats in summary["latency"].items():
             for metric, value in latency_stats.items():
                 if isinstance(value, dict):

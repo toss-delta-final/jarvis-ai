@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from app.core.config import Settings
 from evals.benchmark import runner
-from evals.benchmark.scenarios import load_scenarios
+from evals.benchmark.scenarios import evaluate_outcome, load_scenarios
 
 
 def _base(tmp_path: Path) -> list[str]:
@@ -19,6 +19,48 @@ def _base(tmp_path: Path) -> list[str]:
         str(tmp_path),
         "--dry-run",
     ]
+
+
+def test_expected_outcome_match_mismatch_and_unknown() -> None:
+    recommend = load_scenarios({"buyer_recommend"})[0]
+    matched = evaluate_outcome(
+        {
+            "client_ttft_ms": 10,
+            "terminal_event": "done",
+            "server_join": "joined",
+            "lane": "recommend",
+            "degraded": False,
+        },
+        recommend,
+    )
+    assert matched["outcome_match"] is True
+
+    dependency = load_scenarios({"buyer_dependency_degrade"})[0]
+    mismatched = evaluate_outcome(
+        {
+            "client_ttft_ms": 10,
+            "terminal_event": "done",
+            "server_join": "joined",
+            "lane": "recommend",
+            "degraded": False,
+        },
+        dependency,
+    )
+    assert mismatched["outcome_match"] is False
+    assert any("degrade" in reason for reason in mismatched["outcome_mismatch_reasons"])
+
+    unknown = evaluate_outcome(
+        {
+            "client_ttft_ms": 10,
+            "terminal_event": "done",
+            "server_join": "unavailable",
+            "lane": None,
+            "degraded": None,
+        },
+        recommend,
+    )
+    assert unknown["outcome_match"] == "unknown"
+    assert unknown["outcome_match"] is not False
 
 
 def test_small_sample_without_rationale_exits_two(tmp_path, capsys) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+from collections import Counter
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -111,6 +112,13 @@ def summarize_group(
     degrade_known = [record for record in phase_records if isinstance(record.get("degraded"), bool)]
     degrade_count = sum(record["degraded"] is True for record in degrade_known)
     degrade_known_denominator = len(degrade_known)
+    outcome_reasons = Counter(
+        reason
+        for record in phase_records
+        for key in ("outcome_mismatch_reasons", "outcome_unknown_reasons")
+        for reason in record.get(key, [])
+        if isinstance(reason, str)
+    )
     return {
         "reliability_denominator": total,
         "latency_denominator": latency_n,
@@ -128,6 +136,14 @@ def summarize_group(
         "degrade_rate": (
             degrade_count / degrade_known_denominator if degrade_known_denominator else None
         ),
+        "outcome_match_count": sum(record.get("outcome_match") is True for record in phase_records),
+        "outcome_mismatch_count": sum(
+            record.get("outcome_match") is False for record in phase_records
+        ),
+        "outcome_unknown_count": sum(
+            record.get("outcome_match") not in (True, False) for record in phase_records
+        ),
+        "outcome_reason_counts": dict(sorted(outcome_reasons.items())),
         "latency": {
             field: latency_stats(field)
             for field in (

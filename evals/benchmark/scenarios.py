@@ -10,6 +10,28 @@ from typing import Any
 _FIXTURE_DIR = Path(__file__).parent / "fixtures"
 _ALLOWED_ROLES = {"buyer", "seller"}
 _ENDPOINTS = {"buyer": "/chat", "seller": "/seller/chat"}
+_ALLOWED_LANES = {
+    "recommend",
+    "fallback",
+    "cart",
+    "analysis",
+    "product",
+    "general",
+    "confirm",
+    "apply",
+    "refused",
+}
+_ALLOWED_EVENT_TYPES = {
+    "token",
+    "conditions",
+    "action",
+    "suggestions",
+    "budget",
+    "products.ready",
+    "draft",
+    "done",
+    "error",
+}
 
 
 @dataclass(frozen=True)
@@ -23,6 +45,54 @@ class Scenario:
     payload: dict[str, Any]
     expected_outcome: dict[str, Any]
     induced_by: str | None = None
+
+
+def evaluate_outcome(record: dict[str, Any], scenario: Scenario) -> dict[str, Any]:
+    """관측 결과를 fixture 기대와 대조하되 미조인 서버 값은 unknown으로 보존한다."""
+    expected = scenario.expected_outcome
+    mismatches: list[str] = []
+    unknowns: list[str] = []
+
+    token_observed = record.get("client_ttft_ms") is not None
+    if token_observed != expected["expect_token"]:
+        mismatches.append("token_not_observed" if expected["expect_token"] else "token_unexpected")
+
+    terminal = record.get("terminal_event")
+    if terminal != expected["terminal_event"]:
+        actual = terminal if terminal in _ALLOWED_EVENT_TYPES else "unknown"
+        mismatches.append(
+            f"terminal_mismatch(expected={expected['terminal_event']},actual={actual})"
+        )
+
+    joined = record.get("server_join") == "joined"
+    lane = record.get("lane")
+    if not joined or not isinstance(lane, str):
+        unknowns.append("lane_not_observed")
+    elif lane not in expected["expect_lane"]:
+        expected_lanes = ",".join(expected["expect_lane"])
+        actual_lane = lane if lane in _ALLOWED_LANES else "unknown"
+        mismatches.append(f"lane_mismatch(expected=[{expected_lanes}],actual={actual_lane})")
+
+    degraded = record.get("degraded")
+    if not joined or not isinstance(degraded, bool):
+        unknowns.append("degrade_not_observed")
+    elif degraded != expected["expect_degraded"]:
+        mismatches.append(
+            "degrade_not_observed" if expected["expect_degraded"] else "unexpected_degrade"
+        )
+
+    outcome_match: bool | str
+    if mismatches:
+        outcome_match = False
+    elif unknowns:
+        outcome_match = "unknown"
+    else:
+        outcome_match = True
+    return {
+        "outcome_match": outcome_match,
+        "outcome_mismatch_reasons": mismatches,
+        "outcome_unknown_reasons": unknowns,
+    }
 
 
 def _parse(item: object, source: Path) -> Scenario:
@@ -40,8 +110,16 @@ def _parse(item: object, source: Path) -> Scenario:
     expected = item["expected_outcome"]
     if not isinstance(payload, dict) or not {"sessionId", "threadId", "message"} <= payload.keys():
         raise ValueError(f"{source}: invalid payload")
-    if not isinstance(expected, dict) or expected.get("terminal_event") != "done":
-        raise ValueError(f"{source}: expected terminal_event must be done")
+    if (
+        not isinstance(expected, dict)
+        or expected.get("terminal_event") != "done"
+        or not isinstance(expected.get("expect_token"), bool)
+        or not isinstance(expected.get("expect_degraded"), bool)
+        or not isinstance(expected.get("expect_lane"), list)
+        or not expected["expect_lane"]
+        or not all(lane in _ALLOWED_LANES for lane in expected["expect_lane"])
+    ):
+        raise ValueError(f"{source}: invalid expected_outcome")
     serialized = json.dumps(item, ensure_ascii=False).upper()
     if any(marker in serialized for marker in ("API_KEY", "PASSWORD", "AUTHORIZATION")):
         raise ValueError(f"{source}: secret-shaped field is forbidden")

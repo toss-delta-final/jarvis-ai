@@ -43,6 +43,8 @@ def test_report_prints_unknown_degrade_and_cold_limitation() -> None:
             "error": False,
             "timed_out": False,
             "degraded": None,
+            "outcome_match": "unknown",
+            "outcome_unknown_reasons": ["lane_not_observed", "degrade_not_observed"],
         }
     ]
     summary = summarize_group(
@@ -61,4 +63,44 @@ def test_report_prints_unknown_degrade_and_cold_limitation() -> None:
         sample_size_rationale=None,
     )
     assert "| unknown | 1 |" in report
+    assert "outcome mismatch | outcome unknown" in report
+    assert "lane_not_observed=1" in report
     assert "cold 표본" in report
+
+
+def test_report_exposes_outcome_mismatch_and_unknown_counts() -> None:
+    records = [
+        {
+            "phase": "measured",
+            "success": True,
+            "client_ttft_ms": 8,
+            "error": False,
+            "timed_out": False,
+            "degraded": False,
+            "outcome_match": False,
+            "outcome_mismatch_reasons": ["unexpected_degrade"],
+        },
+        {
+            "phase": "measured",
+            "success": True,
+            "client_ttft_ms": 9,
+            "error": False,
+            "timed_out": False,
+            "degraded": None,
+            "outcome_match": "unknown",
+            "outcome_unknown_reasons": ["degrade_not_observed"],
+        },
+    ]
+    summary = summarize_group(
+        records, elapsed_s=1, p99_min_samples=100, resamples=10, confidence=0.95, seed=1
+    )
+    report = render_markdown(
+        {"measured:buyer@1": summary},
+        join_stats={"joined": 1, "measured": 2, "rate": 0.5},
+        server_log_provided=True,
+        sample_size_rationale=None,
+    )
+    assert summary["outcome_match_count"] == 0
+    assert summary["outcome_mismatch_count"] == 1
+    assert summary["outcome_unknown_count"] == 1
+    assert "| 0 | 1 | 1 |" in report

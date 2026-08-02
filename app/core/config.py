@@ -541,8 +541,9 @@ class Settings(BaseSettings):
     forwarded_for_trusted_hops: int = 1
 
     # ── 벤치마크 runner (이슈 #151) ──
-    # measured 30건·p99 100건은 runner가 고정 계약 하한으로 다시 clamp한다. 아래 값은 운영에서
-    # 더 엄격한 하한으로 올릴 수만 있으며 env로 낮춰 정직성 규약을 우회할 수 없다.
+    # measured 30건·p99 100건의 고정 계약 하한은 evals/benchmark/runner.py(measured)와
+    # stats.py(p99)의 max() 클램프에서 강제한다. validator는 값 사이의 상대적 정합만 본다 —
+    # 아래 값은 운영에서 더 엄격하게 올릴 수 있어야 하므로 여기서 하한 미만을 거부하지 않는다.
     benchmark_min_measured_requests: int = 30
     benchmark_p99_min_samples: int = 100
     benchmark_warmup_requests: int = 5
