@@ -574,7 +574,7 @@ class Settings(BaseSettings):
     goldenset_near_dup_relevant_overlap_max: float = 0.5
     # I-1의 AI 후보 기본 limit과 맞춰 질의별 기록량을 유계로 둔다.
     goldenset_snapshot_per_query_max: int = 30
-    # 40건 중 12건을 봉인하는 v1 목표 비중이며 감사 보고에 사용한다.
+    # 43건 중 12건을 봉인하는 v1 목표 비중이며 감사 보고에 사용한다.
     goldenset_holdout_ratio: float = 0.3
 
     @field_validator("llm_provider", mode="before")

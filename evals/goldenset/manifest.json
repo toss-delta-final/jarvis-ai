@@ -42,15 +42,15 @@
     "total": 43
   },
   "createdAt": "2026-08-02",
-  "datasetHash": "206cc7575d5608b0cd6e2f10eeddde643b785c95781ffbf984f6e3321232e6d1",
+  "datasetHash": "764bc148858cb9c04b9da7a210a5479f7f0daa04bec61563c7f94233e9646b04",
   "datasetName": "buyer-goldenset",
   "datasetVersion": "1.0.0",
   "files": [
     {
-      "bytes": 1838,
+      "bytes": 2324,
       "path": "CHANGELOG.md",
       "records": 0,
-      "sha256": "fb1bf165f47d89ecdd0c772aecbe6d50e84fe861d37c324f7c4f548a6ff7b53d"
+      "sha256": "a68b8895fad6c3bb307aef4814712389f44d484baf8498e07ac0b3264190cf2b"
     },
     {
       "bytes": 4743,
