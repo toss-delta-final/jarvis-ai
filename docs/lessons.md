@@ -13,6 +13,30 @@
 
 ---
 
+## [2026-08-03] 결정론 검증은 실행마다 달라지는 인자를 실제로 바꿔서 한다
+- 증상: #143 metric runner의 byte-identical 검증을 같은 `--out` 경로로 두 번 실행해
+  통과시켰지만, 서로 다른 출력 경로로 재실행하자 `run_manifest.json`의 `command`에 경로가
+  들어가 normalized 비교가 실패했다.
+- 원인: 두 실행에서 달라질 수 있는 입력을 하나도 바꾸지 않아, 실행 인자가 산출물로 새는 경로를
+  검증이 구조적으로 관측하지 못했다.
+- 규칙: **byte-identical 결정론을 주장하려면 출력 경로·실행 위치처럼 실행 인스턴스마다 달라지는
+  인자를 실제로 바꾼 두 실행을 비교한다.** 같은 인자의 반복 실행은 인자 누수를 잡지 못한다.
+  `command`·`runId`·`timestamp` 같은 비결정 실행 정보는 manifest의 격리 섹션 한 곳에만 둔다.
+- 관련: #143, `evals/metrics/run_manifest.py`, `evals/metrics/report.py::normalize_artifacts`,
+  `tests/unit/test_eval_metric_report.py`
+
+## [2026-08-03] `Settings(_env_file=None)`은 OS 환경변수까지 차단하지 않는다
+- 증상: #143 오프라인 평가 adapter가 `Settings(_env_file=None, ...)`로 고정 설정을 만든다고
+  보았지만, `EXPOSE_MAX=5`와 `9`에서 coverage가 각각 0.387931과 0.556034로 달라졌고 manifest에는
+  그 차이를 설명할 흔적이 없었다.
+- 원인: pydantic-settings의 `_env_file=None`은 dotenv 소스만 제거하고 env 소스는 유지하므로,
+  프로세스 환경이 평가 결과에 조용히 스며들어 결정론 주장과 재현 manifest를 함께 무효화했다.
+- 규칙: **결정론 실행 하네스는 `settings_customise_sources`로 env·dotenv 소스를 모두 제거한
+  전용 Settings 서브클래스를 사용한다.** 환경변수를 실제로 바꾼 두 실행의 산출물이 같다는 회귀
+  테스트도 함께 둔다.
+- 관련: #143, `evals/metrics/settings.py::EvaluationSettings`,
+  `tests/unit/test_eval_metric_harness.py::test_offline_adapter_ignores_process_environment`
+
 ## [2026-08-03] 카테고리 오분류를 상품 부적합으로 착각해 정답을 금지 결과로 라벨링했다
 - 증상: 골든셋 케이스 `buy-srch-0005`(질의 `체육수업용 축구공 추천`)에서 상품
   9356761664(`아디다스 피파월드컵 26 트리온다 리그 박스 축구공 5호`)와
