@@ -370,24 +370,27 @@ async def test_degrade_notice_is_sanitized(monkeypatch: pytest.MonkeyPatch) -> N
         assert banned not in texts
 
 
-async def test_empty_rerank_notice_disables_disclosure(monkeypatch: pytest.MonkeyPatch) -> None:
-    """빈 문구는 고지를 끈다 — 추천 자체는 그대로 나간다(운영 롤백 수단, #133)."""
-    settings = get_settings()
-    monkeypatch.setattr(settings, "rerank_fallback_notice", "")
-    push = _RecordingPush()
-    events = await _collect(
-        run_buyer_turn(
-            _req(),
-            _member(),
-            llm=FakeLLM(rerank_error=True),
-            search=_make_search(DEFAULT_PRODUCTS),
-            push_fn=push,
-        )
-    )
-    types = _types(events)
-    assert "token" not in types
-    assert "products.ready" in types
-    assert types[-1] == "done"
+def test_degrade_notice_cannot_be_disabled_by_empty_value() -> None:
+    """고지 문구를 비우면 **기동 실패**한다 (#133, PR #235 리뷰).
+
+    초판은 "빈 문자열 = 고지 끄기"를 운영 롤백 수단으로 뒀는데, 그건 이슈가 요구한 "문안 config
+    주입"을 넘어 **정직성 자체를 옵션으로** 만든 것이었다 — api-spec §3.3 이 발신을 규정하는데
+    환경변수 한 줄로 #133 이 조용히 되돌려진다. 문안은 튜너블이고 발신 여부는 아니다.
+    """
+    from pydantic import ValidationError
+
+    from app.core.config import Settings
+
+    for field in ("rerank_fallback_notice", "push_skipped_notice"):
+        with pytest.raises(ValidationError, match="must not be empty"):
+            Settings(_env_file=None, **{field: ""})
+
+    # 정제 후 비는 값도 같은 구멍이다 — zero-width 만 든 문자열은 min_length 를 통과한다.
+    with pytest.raises(ValidationError, match="must not be empty"):
+        Settings(_env_file=None, rerank_fallback_notice="​‮")
+
+    # dedup 고지는 계약이 요구하지 않는다 — 빈 값이 정상적인 의사표현이다.
+    assert Settings(_env_file=None, dedup_skipped_notice="").dedup_skipped_notice == ""
 
 
 async def test_push_skipped_notice_comes_from_config(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1902,6 +1905,32 @@ async def test_search_retries_on_remote_disconnect(monkeypatch: pytest.MonkeyPat
     )
     assert len((await sc.search_products(ProductSearchFilters())).products) == 1
     assert len(calls) == 2
+
+
+async def test_retry_log_labels_disconnect_as_connection_error(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """응답 중단을 `malformed_response` 로 오분류하지 않는다 (PR #235 리뷰).
+
+    `RemoteProtocolError` 는 `NetworkError` 의 형제라 분류 함수에서 빠지면 마지막 return 으로
+    떨어져 "스키마 불일치"로 찍힌다. 재시도는 제대로 되는데 로그만 거짓말하는 상태라,
+    운영자가 Spring 응답 계약을 의심하며 없는 문제를 찾게 된다.
+    """
+    import httpx
+
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    _counting_client(
+        monkeypatch, httpx.RemoteProtocolError("disconnected"), httpx.Response(200, json=_I1_OK)
+    )
+    with caplog.at_level("WARNING", logger="app.services.spring_client"):
+        await sc.search_products(ProductSearchFilters())
+
+    retries = [r for r in caplog.records if r.msg == "spring_search_retry"]
+    assert len(retries) == 1
+    assert retries[0].statusClass == "connection_error"
+    assert "disconnected" not in caplog.text  # 예외 원문은 싣지 않는다(#141)
 
 
 async def test_search_does_not_retry_local_protocol_error(

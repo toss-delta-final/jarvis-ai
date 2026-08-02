@@ -134,10 +134,21 @@ def _record_spring_status(span: TraceNode | None, response: httpx.Response) -> N
 
 
 def _failure_status_class(exc: BaseException) -> str:
-    """실패를 유계 라벨로 분류한다 — 로그·재시도 판정 공용(예외 원문은 싣지 않는다, #141)."""
+    """재시도 로그 전용 유계 라벨 — 예외 원문은 싣지 않는다(#141).
+
+    재시도 여부는 `_is_retryable` 이 따로 판단한다. 이 함수는 **관측 전용**이다.
+    라벨 어휘는 `_spring_span` 이 span 에 남기는 것과 같게 유지한다 — 로그와 trace 가 같은
+    실패를 다른 말로 부르면 대조가 안 된다.
+
+    `RemoteProtocolError` 를 `connection_error` 에 함께 넣는 이유(PR #235 리뷰): 이것은
+    `NetworkError` 의 **형제**라 `isinstance` 로 안 걸리는데, 빠뜨리면 마지막 `return` 으로
+    떨어져 **`malformed_response`(스키마 불일치)로 오분류**된다. `_is_retryable` 이 재시도
+    대상으로 명시한 바로 그 케이스가 로그에서는 "응답이 깨졌다"로 보이니, 운영자가 없는
+    문제를 찾으러 간다.
+    """
     if isinstance(exc, httpx.TimeoutException):
         return "timeout"
-    if isinstance(exc, httpx.NetworkError):
+    if isinstance(exc, httpx.NetworkError | httpx.RemoteProtocolError):
         return "connection_error"
     if isinstance(exc, httpx.HTTPStatusError):
         return f"{exc.response.status_code // 100}xx"

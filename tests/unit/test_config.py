@@ -134,9 +134,24 @@ def test_search_retry_defaults_fit_first_token_budget():
 
 
 def test_search_retry_budget_overrun_fails_startup():
-    """재시도 총량이 first-token 예산을 넘으면 기동을 막는다 — 살리려던 턴을 죽이는 설정이다."""
+    """재시도 총량이 **턴 전체 예산**을 넘으면 기동을 막는다 — 살리려던 턴을 죽이는 설정이다.
+
+    first-token 상한이 아니라 전체 상한과 비교한다(#241/#138 lessons): first-token 이 재는 것은
+    첫 SSE 이벤트까지인데 추천 경로의 첫 이벤트는 `conditions` 이고 검색은 그 뒤라, 검색 재시도는
+    first-token 예산을 쓰지 않는다.
+    """
     import pytest
     from pydantic import ValidationError
 
-    with pytest.raises(ValidationError, match="first-token budget"):
-        Settings(_env_file=None, spring_max_retries=3, spring_timeout_s=3.0)
+    with pytest.raises(ValidationError, match="exhaust the turn budget"):
+        Settings(_env_file=None, spring_max_retries=1, spring_timeout_s=60.0)
+
+
+def test_search_retries_capped_at_implemented_value():
+    """backoff 가 없으므로 재시도 상한은 1이다 — 2 이상은 기동 실패 (PR #235 리뷰)."""
+    import pytest
+    from pydantic import ValidationError
+
+    assert Settings(_env_file=None, spring_max_retries=0).spring_max_retries == 0
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, spring_max_retries=2)
