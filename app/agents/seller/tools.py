@@ -322,12 +322,21 @@ async def get_order_events(
         group_by: "memberId" 하나뿐(선택) — 회원별 어뷰징 집계로 전환된다.
             rows 가 buyerMemberId/orderCount/cancelCount/cancelRatio/
             maxOrdersPerHour/isSuspicious(코드 판정)로 바뀐다.
-            ※ to_status 와 함께 쓰지 말 것 — 분모(orderCount)까지 필터돼
-            cancelRatio 가 왜곡된다(예: CANCELLED 만 남기면 전원 1.0).
+            ※ to_status 와 함께 오면 to_status 를 무시한다(코드 강제) —
+            분모(orderCount)까지 필터돼 cancelRatio 가 왜곡되기 때문
+            (예: CANCELLED 만 남기면 전원 1.0).
         stats: 집계 모드로 조회할지 여부(선택, api-spec §4.4 `stats` 쿼리) —
             rows 없이 byStatus·cancelReasonsTop 만 반환된다.
     """
     brand_id = runtime.context.brand_id
+    # [#215 리뷰] memberId 집계에 to_status 가 걸리면 Spring 이 분모(orderCount)까지
+    # 필터해 cancelRatio 가 왜곡된다(CANCELLED 만 남기면 전원 1.0 = 전원 의심) —
+    # 왜곡된 isSuspicious 는 '코드 판정 번복 금지' 규칙 탓에 그대로 보고되므로,
+    # 프롬프트·docstring(소프트 가드)에만 맡기지 않고 코드에서 무시를 강제한다.
+    ignored_status_note = ""
+    if group_by == "memberId" and to_status:
+        to_status = None
+        ignored_status_note = " ※ memberId 집계에서 to_status 는 무시됨(비율 왜곡 방지)."
     try:
         status_filter = [to_status] if to_status else None
         result = await get_spring_client().get_order_events(
@@ -360,7 +369,10 @@ async def get_order_events(
         if result.rows
         else "주문 상태 전이 목록 없음(집계 모드)."
     )
-    return f"{rows_note}{stats_note} {_ORDER_LOG_RULES_NOTE} {_reference_note(from_date, to_date)}"
+    return (
+        f"{rows_note}{stats_note}{ignored_status_note} "
+        f"{_ORDER_LOG_RULES_NOTE} {_reference_note(from_date, to_date)}"
+    )
 
 
 @tool
