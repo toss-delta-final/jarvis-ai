@@ -10,7 +10,6 @@ graph.py 소관이다 — 완화 폭 계산·문구 생성은 검색 왕복 없�
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -50,11 +49,16 @@ def _relaxed_price_max(current: int, settings) -> int | None:  # noqa: ANN001
     """가격 상한을 config 비율만큼 올리고 올림 단위로 맞춘다 — 5만 → 6.5만.
 
     올림 단위는 "65,437원까지 볼까요?" 같은 읽기 힘든 제안을 막는 표시 목적이다.
+
+    **곱셈 결과를 정수로 먼저 반올림한 뒤** 올림한다 — 부동소수점 오차 때문이다. 예를 들어
+    `ratio=0.1` 이면 `50000 * 1.1 == 55000.00000000001` 이라 곧장 `ceil(.../1000)` 하면 56 이
+    되어 55,000 원이어야 할 제안이 **56,000 원으로 한 단위 튄다**. 기본값(0.3)에서는 안 걸리지만
+    비율은 config 주입이라 운영이 바꾸는 순간 조용히 틀린 숫자가 칩에 찍힌다.
     """
-    widened = current * (1.0 + settings.relaxation_price_step_ratio)
     unit = settings.relaxation_price_round_unit
-    value = int(math.ceil(widened / unit) * unit)
-    # 반올림이 현재값을 못 넘으면 완화가 아니다(비율이 매우 작거나 단위가 클 때).
+    widened = round(current * (1.0 + settings.relaxation_price_step_ratio))
+    value = -(-widened // unit) * unit  # 정수 올림 나눗셈(ceil) — float 경유 없이
+    # 올림 결과가 현재값을 못 넘으면 완화가 아니다(비율이 매우 작거나 단위가 클 때).
     return value if value > current else None
 
 

@@ -458,15 +458,28 @@ async def stream_recommendation(
     # ── 0건/소량 조건 완화 (#113, api-spec §3.1 · SPEC-RECOMMEND-001 §6.6) ──
     # estCount 는 page-local 로 못 구한다 — priceMax·brand·color 는 Spring I-1 쿼리 파라미터라 탈락
     # 상품이 응답에 아예 없다(schemas/spring.py ProductSearchResult docstring). 그래서 완화 필터로
-    # 재검색(probe)해 실제 매칭 수를 센다. Spring 이 size 없이 전량 반환하므로 이 값은 근사가 아니다.
+    # 재검색(probe)해 실제 매칭 수를 센다.
+    #
+    # **estCount 가 정확하다는 전제 = I-1 전량 반환**(api-spec §4.6, 2026-07-23 BE 합의로 size 제거).
+    # I-1 응답에는 totalCount 필드가 없어서(C-15 🔴) 우리가 받은 배열 길이를 세는 것뿐인데, Spring 이
+    # 매칭 전량을 주므로 그 길이가 곧 전체 매칭 수다. **BE 가 나중에 반환 상한을 다시 넣으면 이 값은
+    # 조용히 상한값으로 고정된다** — 오류 없이 숫자만 작아지므로 여기 전제를 적어 둔다.
+    # 단, fan-out(멀티 leg) 턴은 _merge_fanout_results 가 category_fanout_merge_cap 으로 절단한 **뒤**
+    # 라 estCount 가 그 상한을 넘지 않는다(단일 카테고리 턴은 절단 없이 정확).
+    #
+    # estCount 의미 = **완화 적용 후 결과 총수**(§3.1 "완화 적용 시 예상 결과 수"). 소량 경로에서는
+    # 이미 노출 중인 건수도 포함한다 — 되돌리기 칩의 estCount(억제분 delta)와 기준이 다르므로 주의.
     relaxation_notice: str | None = None
     relax_candidates: list[RelaxationCandidate] = []
     probed_counts: dict[str, int] = {}  # 와이어 필드명 -> 완화 시 매칭 수(probe 실패는 미기록)
     adopted_field: str | None = None
     probe_budget = settings.relaxation_max_probes  # 자동 완화 시도와 칩 probe 가 공유하는 예산
+    probes_spent = 0  # 관측용 — 이 턴이 실제로 쓴 추가 Spring 호출 수
 
     async def _probe(cand: RelaxationCandidate):
         """완화 필터로 재검색해 본 경로와 같은 사후필터를 통과시킨다. 실패면 None(그 후보만 탈락)."""
+        nonlocal probes_spent
+        probes_spent += 1  # 실패분도 센다 — 지연·비용은 성공 여부와 무관하게 발생한다
         probed = await _run_search(cand.filters)
         if probed is None:  # _run_search 가 예외를 삼켜 None 을 준다 — 스트림은 계속(§6 degrade)
             return None
@@ -512,7 +525,8 @@ async def stream_recommendation(
             c for c in relax_candidates if c.field not in probed_counts and c.field != adopted_field
         ][:probe_budget]
         if pending:
-            for cand, outcome in zip(pending, await asyncio.gather(*(_probe(c) for c in pending))):
+            outcomes = await asyncio.gather(*(_probe(c) for c in pending))
+            for cand, outcome in zip(pending, outcomes, strict=True):
                 if outcome is not None:
                     probed_counts[cand.field] = outcome[0].total_count
         relaxation_chips = [
@@ -672,6 +686,14 @@ async def stream_recommendation(
             # 굶은 니즈가 검색순서 보충으로 채워져 여기가 오른다. rerank_degraded 로는 안 보이는
             # 품질 저하라 별도 지표가 필요하다(PR #212 리뷰).
             "without_reason": sum(1 for pid in ranked_ids if not reason_by_id.get(pid)),
+            # [#113] 완화 관측 — degrade 가 아니라 **정상 동작**이라 mark_degraded 를 쓰지 않는다.
+            # 그래도 로그에 남겨야 하는 이유: (1) probe 는 0건/소량 턴에만 붙는 추가 Spring 호출이라
+            # 지연·비용의 출처이고, (2) 자동 완화가 걸린 턴은 사용자가 **요청하지 않은 조건**으로
+            # 받은 결과라 품질 지표를 그냥 섞으면 안 된다. relax_field 가 null 이 아닌 턴을 분리해
+            # 볼 수 있어야 한다(#136/#137 관측 라인과 동일 목적).
+            "relax_field": adopted_field,  # 자동 완화로 채택된 필드(없으면 null)
+            "relax_probes": probes_spent,  # 이 턴에 쓴 완화 재검색 횟수
+            "relax_chips": len(relaxation_chips),
             # [#119] 회원/게스트 턴을 사후 분리해 깔때기(received·after_dedup)를 대조하기 위한
             # 조인 키. 개인화가 후보를 줄이면 회원 쪽 received 가 작게 나온다.
             "profile_present": bool(profile),

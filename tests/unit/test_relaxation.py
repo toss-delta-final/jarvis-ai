@@ -11,9 +11,12 @@ search 는 그 전제를 재현하려고 **필터를 실제로 적용**한다(�
 from __future__ import annotations
 
 import json
+import math
+from fractions import Fraction
 
 import pytest
 
+from app.agents.buyer.recommendation.category_mapping import CategoryMapping
 from app.agents.buyer.recommendation.relaxation import build_relaxation_candidates
 from app.core.auth import Identity
 from app.core.config import get_settings
@@ -91,6 +94,25 @@ def test_price_max_candidate_uses_config_ratio_and_round_unit() -> None:
     assert candidates[0].value == 65000
     assert candidates[0].filters.price_max == 65000
     assert "65,000" in candidates[0].label
+
+
+def test_price_relaxation_is_free_of_float_rounding_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """비율을 바꿔도 부동소수점 오차로 한 단위 튀지 않는다.
+
+    `50000 * 1.1 == 55000.00000000001` 이라 곱셈 결과를 그대로 올림하면 55,000 이어야 할 제안이
+    56,000 으로 튄다 — 기본 비율(0.3)에서는 안 걸리지만 비율은 config 주입이라 운영이 바꾸는
+    순간 조용히 틀린 숫자가 칩에 찍힌다. 정확한 유리수 계산과 대조해 고정한다.
+    """
+    settings = get_settings()
+    for ratio in (0.1, 0.15, 0.2, 0.25, 0.3, 0.33, 0.5):
+        monkeypatch.setattr(settings, "relaxation_price_step_ratio", ratio)
+        unit = settings.relaxation_price_round_unit
+        for price in (10000, 50000, 55000, 90000, 100000, 123000):
+            exact = math.ceil(Fraction(price) * (1 + Fraction(str(ratio))) / unit) * unit
+            got = build_relaxation_candidates(ProductSearchFilters(price_max=price), settings)
+            assert got[0].value == exact, f"ratio={ratio} price={price}"
 
 
 def test_category_is_never_a_relaxation_candidate(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -278,6 +300,61 @@ async def test_few_results_emit_chips_before_products_ready() -> None:
     # 순서 계약(§3.1): suggestions 는 products.ready 앞이다.
     assert types.index("suggestions") < types.index("products.ready")
     assert _done(events)["finishReason"] == "stop"
+
+
+async def test_probe_budget_caps_extra_searches(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[비용 가드] 완화 후보가 여럿이어도 추가 검색은 config 상한을 넘지 않는다.
+
+    probe 는 0건 턴에 붙는 **추가 Spring 왕복**이라 상한이 없으면 후보 수만큼 곱해진다.
+    """
+    settings = get_settings()
+    monkeypatch.setattr(settings, "relaxation_max_probes", 1)
+    # 완화 가능한 후보 3종(가격·브랜드·색상)을 주고도 probe 는 1회여야 한다.
+    calls: list[ProductSearchFilters] = []
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(decompose=_decompose_with(priceMax=50000, brand=["BrandZ"], color="검정")),
+            search=_filtered_search([], calls=calls),
+            push_fn=None,
+        )
+    )
+
+    assert len(calls) == 2  # 원 검색 1 + probe 1(상한)
+    assert _done(events)["finishReason"] == "zero_result"
+
+
+async def test_fanout_relaxation_probes_every_leg_with_relaxed_filter() -> None:
+    """fan-out(카테고리 여럿) 턴도 완화 probe 가 leg 구성을 그대로 유지한다.
+
+    probe 가 leg 를 재현하지 않고 단일 검색으로 세면 본 검색과 조건이 어긋나 estCount 가 거짓이 된다.
+    """
+
+    async def _two_leg(*, category_queries, utterance, settings, llm=None, tier="fast", **_):  # noqa: ANN001
+        return CategoryMapping(
+            legs=[("무선이어폰", "무선 이어폰"), ("파우치", "파우치")], unresolved=[]
+        )
+
+    calls: list[ProductSearchFilters] = []
+    products = [_product(201, 60000)]
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(),
+            search=_filtered_search(products, calls=calls),
+            push_fn=None,
+            map_categories=_two_leg,
+        )
+    )
+
+    # leg 2개 × (원 검색 + 완화 probe) = 4회. 완화분은 상향된 상한을 싣는다.
+    relaxed = [f for f in calls if f.price_max == 65000]
+    assert len(relaxed) == 2
+    assert {f.category for f in relaxed} == {"무선이어폰", "파우치"}
+    chips = _suggestions(events)
+    assert [c["relaxation"]["field"] for c in chips] == ["priceMax"]
 
 
 async def test_enough_results_do_not_probe(monkeypatch: pytest.MonkeyPatch) -> None:
