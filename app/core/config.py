@@ -461,10 +461,6 @@ class Settings(BaseSettings):
     state_store_migration_timeout_s: float = 30.0
     # lifespan 종료 콜백별 상한. 한 pg 연결이 응답하지 않아도 뒤의 owned resource를 계속 닫는다.
     lifespan_resource_close_timeout_s: float = Field(default=10.0, gt=0.0, le=60.0)
-    # deploy.yml의 `docker stop` 기본 유예. 배포에서 --time을 바꾸면 이 값도 함께 맞춘다.
-    lifespan_shutdown_grace_s: float = Field(default=10.0, gt=0.0, le=300.0)
-    # 기본은 stop 유예보다 2초 짧다. 교차 검증으로 항상 grace 미만만 허용한다.
-    lifespan_cleanup_budget_s: float = Field(default=8.0, gt=0.0, le=300.0)
     # libpq socket-level 이중 방어(이슈 #50). asyncio.wait_for/statement_timeout과 별개로
     # 네트워크 black-hole에서 커널이 연결을 유한 시간 내 폐기하도록 한다.
     state_store_keepalives_idle_s: int = 10
@@ -608,16 +604,6 @@ class Settings(BaseSettings):
                 "HOME_RECO_MIN_CANDIDATES must be <= HOME_RECO_MAX_ITEMS "
                 f"(got {self.home_reco_min_candidates} > {self.home_reco_max_items}): "
                 "candidate floor must not defeat the response-size cap"
-            )
-        return self
-
-    @model_validator(mode="after")
-    def _require_cleanup_budget_within_shutdown_grace(self) -> "Settings":
-        """lifespan cleanup은 배포 SIGTERM→SIGKILL 유예보다 먼저 끝나야 한다."""
-        if self.lifespan_cleanup_budget_s >= self.lifespan_shutdown_grace_s:
-            raise ValueError(
-                "LIFESPAN_CLEANUP_BUDGET_S must be < LIFESPAN_SHUTDOWN_GRACE_S "
-                f"(got {self.lifespan_cleanup_budget_s} >= {self.lifespan_shutdown_grace_s})"
             )
         return self
 

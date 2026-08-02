@@ -64,15 +64,11 @@ async def _close_owned_resources() -> None:
     )
     settings = get_settings()
     timeout_s = settings.lifespan_resource_close_timeout_s
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + settings.lifespan_cleanup_budget_s
     failed = 0
     cancellation: asyncio.CancelledError | None = None
     for name, close in resources:
-        remaining_budget_s = max(deadline - loop.time(), 0.0)
-        resource_timeout_s = min(timeout_s, remaining_budget_s)
         try:
-            async with asyncio.timeout(resource_timeout_s):
+            async with asyncio.timeout(timeout_s):
                 await close()
         except asyncio.CancelledError as exc:
             failed += 1
@@ -86,7 +82,7 @@ async def _close_owned_resources() -> None:
             logger.warning(
                 "lifespan resource cleanup timed out resource=%s timeout_s=%s",
                 name,
-                resource_timeout_s,
+                timeout_s,
             )
         except Exception:
             failed += 1

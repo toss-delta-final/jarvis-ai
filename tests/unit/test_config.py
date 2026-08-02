@@ -73,21 +73,3 @@ def test_category_fanout_max_cannot_exceed_contract_list_cap():
     assert Settings(_env_file=None).category_fanout_max <= MAX_LISTS
     with pytest.raises(ValidationError):
         Settings(_env_file=None, category_fanout_max=MAX_LISTS + 1)
-
-
-def test_lifespan_cleanup_budget_stays_below_deploy_stop_grace():
-    """docker stop 기본 10초보다 2초 짧게 고정해 SIGKILL 전에 cleanup을 끝낸다."""
-    import pytest
-    from pydantic import ValidationError
-
-    defaults = Settings(_env_file=None)
-    assert defaults.lifespan_shutdown_grace_s == 10.0
-    assert defaults.lifespan_cleanup_budget_s == 8.0
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None, lifespan_cleanup_budget_s=10.0)
-    tuned = Settings(
-        _env_file=None,
-        lifespan_shutdown_grace_s=20.0,
-        lifespan_cleanup_budget_s=15.0,
-    )
-    assert tuned.lifespan_cleanup_budget_s == 15.0
