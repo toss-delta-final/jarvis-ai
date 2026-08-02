@@ -376,7 +376,7 @@ class ModelUsageObservationMiddleware(AgentMiddleware):
         response = await handler(request)
         if trace is None or self._model is None:
             return response
-        for message in getattr(response, "result", ()):
+        for message in getattr(response, "result", None) or ():
             usage = getattr(message, "usage_metadata", None)
             if not isinstance(usage, dict):
                 metadata = getattr(message, "response_metadata", None)

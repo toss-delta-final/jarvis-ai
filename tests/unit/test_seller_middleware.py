@@ -291,3 +291,28 @@ async def test_model_usage_observation_warns_when_usage_is_unparseable(
     assert result is response
     assert observation.model_calls == [ModelCall("seller-priced-model")]
     assert "MODEL_USAGE_MISSING" in caplog.text
+
+
+async def test_model_usage_observation_treats_none_result_as_missing_usage(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """관측 부가기능은 result=None을 빈 결과로 처리하고 요청을 깨뜨리지 않는다."""
+    observation = _model_usage_observation()
+    trace = NoopRequestTrace(lane="general")
+    trace.attach_observation(observation)
+    response = type("Response", (), {"result": None})()
+
+    async def handler(_request):
+        return response
+
+    with (
+        bind_request_trace(trace),
+        caplog.at_level("WARNING", logger="app.agents.seller.middleware"),
+    ):
+        result = await middleware.ModelUsageObservationMiddleware(
+            "seller-priced-model"
+        ).awrap_model_call(object(), handler)
+
+    assert result is response
+    assert observation.model_calls == [ModelCall("seller-priced-model")]
+    assert "MODEL_USAGE_MISSING" in caplog.text
