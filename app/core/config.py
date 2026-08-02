@@ -604,6 +604,19 @@ class Settings(BaseSettings):
     benchmark_bootstrap_confidence: float = 0.95
     benchmark_request_timeout_s: float = 120.0
 
+    # ── 구매자 골든셋(#142, evals/goldenset) ──
+    # 초기 데이터셋은 30~50건으로 작게 시작해 사람이 전수 검수할 수 있게 한다.
+    goldenset_min_cases: int = 30
+    goldenset_max_cases: int = 50
+    # 문자 3-gram Jaccard가 이 값을 넘는 split 간 query는 leakage로 본다.
+    goldenset_near_dup_jaccard_max: float = 0.6
+    # split 간 정답 집합이 절반보다 많이 겹치면 동일 시나리오 누출로 본다.
+    goldenset_near_dup_relevant_overlap_max: float = 0.5
+    # I-1의 AI 후보 기본 limit과 맞춰 질의별 기록량을 유계로 둔다.
+    goldenset_snapshot_per_query_max: int = 30
+    # 43건 중 12건을 봉인하는 v1 목표 비중이며 감사 보고에 사용한다.
+    goldenset_holdout_ratio: float = 0.3
+
     @field_validator("llm_provider", mode="before")
     @classmethod
     def _normalize_llm_provider(cls, value: object) -> object:
@@ -634,6 +647,21 @@ class Settings(BaseSettings):
             or self.benchmark_request_timeout_s <= 0
         ):
             raise ValueError("benchmark runner settings must be positive and non-empty")
+        return self
+
+    @model_validator(mode="after")
+    def _require_valid_goldenset_settings(self) -> "Settings":
+        """구매자 골든셋 크기·누출 임계·기록 상한의 모순을 기동 시점에 막는다."""
+        if not 0 < self.goldenset_min_cases <= self.goldenset_max_cases:
+            raise ValueError("골든셋 최소 케이스 수는 0보다 크고 최대 케이스 수 이하여야 합니다")
+        if not 0 < self.goldenset_near_dup_jaccard_max < 1:
+            raise ValueError("골든셋 query Jaccard 임계값은 0과 1 사이여야 합니다")
+        if not 0 < self.goldenset_near_dup_relevant_overlap_max < 1:
+            raise ValueError("골든셋 정답 겹침 임계값은 0과 1 사이여야 합니다")
+        if self.goldenset_snapshot_per_query_max <= 0:
+            raise ValueError("골든셋 질의별 스냅샷 상한은 0보다 커야 합니다")
+        if not 0 < self.goldenset_holdout_ratio < 1:
+            raise ValueError("골든셋 holdout 비율은 0과 1 사이여야 합니다")
         return self
 
     @model_validator(mode="after")

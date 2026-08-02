@@ -1,0 +1,224 @@
+{
+  "persona-brand-dev-01": {
+    "orders": [
+      {
+        "items": [
+          {
+            "categoryName": "헤드폰",
+            "optionName": null,
+            "orderItemId": 1420901,
+            "price": 250000,
+            "productId": 9205089754,
+            "productName": "삼성전자 갤럭시 버즈3 프로 SM-R630N",
+            "quantity": 1,
+            "status": "DELIVERED"
+          }
+        ],
+        "itemsTotal": 250000,
+        "orderId": 14209,
+        "orderedAt": "2026-07-26T10:00:00+09:00",
+        "shippingFee": 0,
+        "status": "DELIVERED",
+        "totalAmount": 250000
+      }
+    ]
+  },
+  "persona-budget-dev-01": {
+    "orders": [
+      {
+        "items": [
+          {
+            "categoryName": "선크림/선블록",
+            "optionName": null,
+            "orderItemId": 1420101,
+            "price": 7200,
+            "productId": 2378024650,
+            "productName": "(택1)AHC 선스틱14g개 /AHC 썬스틱22g /썬크림/선크림/28년04월까지",
+            "quantity": 1,
+            "status": "DELIVERED"
+          }
+        ],
+        "itemsTotal": 7200,
+        "orderId": 14201,
+        "orderedAt": "2026-07-10T09:00:00+09:00",
+        "shippingFee": 0,
+        "status": "DELIVERED",
+        "totalAmount": 7200
+      }
+    ]
+  },
+  "persona-category-dev-01": {
+    "orders": [
+      {
+        "items": [
+          {
+            "categoryName": "선크림/선블록",
+            "optionName": null,
+            "orderItemId": 1420801,
+            "price": 21510,
+            "productId": 1085982197,
+            "productName": "본트리 베리 에센스 선 블럭 50ml(SPF50+) 3개",
+            "quantity": 1,
+            "status": "DELIVERED"
+          }
+        ],
+        "itemsTotal": 21510,
+        "orderId": 14208,
+        "orderedAt": "2026-07-25T10:00:00+09:00",
+        "shippingFee": 0,
+        "status": "DELIVERED",
+        "totalAmount": 21510
+      }
+    ]
+  },
+  "persona-cheap-dev-01": {
+    "orders": [
+      {
+        "items": [
+          {
+            "categoryName": "자외선 차단패치",
+            "optionName": null,
+            "orderItemId": 1420201,
+            "price": 5940,
+            "productId": 5367233175,
+            "productName": "푸드어홀릭 멀티 선크림 250ml SPF50 PA+++펌프형 백탁없는 혼합자차 썬크림 선블록 자외선차단",
+            "quantity": 1,
+            "status": "DELIVERED"
+          }
+        ],
+        "itemsTotal": 5940,
+        "orderId": 14202,
+        "orderedAt": "2026-07-15T12:00:00+09:00",
+        "shippingFee": 0,
+        "status": "DELIVERED",
+        "totalAmount": 5940
+      }
+    ]
+  },
+  "persona-cold-dev-01": {
+    "orders": []
+  },
+  "persona-cold-dev-02": {
+    "orders": []
+  },
+  "persona-earbuds-dev-01": {
+    "orders": [
+      {
+        "items": [
+          {
+            "categoryName": "헤드폰",
+            "optionName": null,
+            "orderItemId": 1420301,
+            "price": 250000,
+            "productId": 9205089754,
+            "productName": "삼성전자 갤럭시 버즈3 프로 SM-R630N",
+            "quantity": 1,
+            "status": "DELIVERED"
+          }
+        ],
+        "itemsTotal": 250000,
+        "orderId": 14203,
+        "orderedAt": "2026-07-20T18:00:00+09:00",
+        "shippingFee": 0,
+        "status": "DELIVERED",
+        "totalAmount": 250000
+      }
+    ]
+  },
+  "persona-earbuds-hold-01": {
+    "orders": [
+      {
+        "items": [
+          {
+            "categoryName": "이어폰",
+            "optionName": null,
+            "orderItemId": 1420601,
+            "price": 337410,
+            "productId": 9178106390,
+            "productName": "[apple] 에어팟 프로 3세대",
+            "quantity": 1,
+            "status": "DELIVERED"
+          }
+        ],
+        "itemsTotal": 337410,
+        "orderId": 14206,
+        "orderedAt": "2026-07-22T18:00:00+09:00",
+        "shippingFee": 0,
+        "status": "DELIVERED",
+        "totalAmount": 337410
+      }
+    ]
+  },
+  "persona-health-dev-01": {
+    "orders": [
+      {
+        "items": [
+          {
+            "categoryName": "인삼/한방재료",
+            "optionName": null,
+            "orderItemId": 1420401,
+            "price": 90000,
+            "productId": 2888196506,
+            "productName": "광동 맑은365스틱 100포 3개월 목관리 특허원료 TF-343 전통원료 함유",
+            "quantity": 1,
+            "status": "DELIVERED"
+          }
+        ],
+        "itemsTotal": 90000,
+        "orderId": 14204,
+        "orderedAt": "2026-06-20T10:00:00+09:00",
+        "shippingFee": 0,
+        "status": "DELIVERED",
+        "totalAmount": 90000
+      }
+    ]
+  },
+  "persona-hiking-dev-01": {
+    "orders": [
+      {
+        "items": [
+          {
+            "categoryName": "가방액세서리",
+            "optionName": null,
+            "orderItemId": 1420501,
+            "price": 7470,
+            "productId": 7856386468,
+            "productName": "가방 어깨 쿠션 패드 보호대 크로스백 스트랩 군인 군장 행군 등산 배낭 숄더백 가방끈 어깨끈 눌림 받침대",
+            "quantity": 1,
+            "status": "DELIVERED"
+          }
+        ],
+        "itemsTotal": 7470,
+        "orderId": 14205,
+        "orderedAt": "2026-05-15T10:00:00+09:00",
+        "shippingFee": 0,
+        "status": "DELIVERED",
+        "totalAmount": 7470
+      }
+    ]
+  },
+  "persona-lip-hold-01": {
+    "orders": [
+      {
+        "items": [
+          {
+            "categoryName": "립메이크업",
+            "optionName": null,
+            "orderItemId": 1420701,
+            "price": 17100,
+            "productId": 2408561969,
+            "productName": "비판톨 립스틱x2개 /립케어/립밤/입술보호제",
+            "quantity": 1,
+            "status": "DELIVERED"
+          }
+        ],
+        "itemsTotal": 17100,
+        "orderId": 14207,
+        "orderedAt": "2026-06-30T13:00:00+09:00",
+        "shippingFee": 0,
+        "status": "DELIVERED",
+        "totalAmount": 17100
+      }
+    ]
+  }
+}
