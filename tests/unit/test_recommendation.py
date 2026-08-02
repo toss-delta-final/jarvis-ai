@@ -118,6 +118,17 @@ def _types(events) -> list[str]:
     return [e["type"] for e in events]
 
 
+def _revert_chips(events) -> list[dict]:
+    """되돌리기 칩만 추린다 — [#113] 소량 결과의 완화 칩이 같은 suggestions 이벤트에 함께 실린다."""
+    return [
+        chip
+        for e in events
+        if e["type"] == "suggestions"
+        for chip in e["data"]["chips"]
+        if chip.get("revert")
+    ]
+
+
 # ─────────── 해피패스 파이프라인 ───────────
 
 
@@ -1961,7 +1972,7 @@ async def test_recommendation_nonconsumable_not_suppressed(monkeypatch: pytest.M
     )
     assert 202 not in _only_list(push.pushes[0]).product_ids  # exact 제외(구매한 productId)
     assert 201 in _only_list(push.pushes[0]).product_ids  # 조미료지만 구매 안 함 → 유지
-    assert "suggestions" not in _types(events)  # 억제 카테고리 없음 → 칩 없음
+    assert _revert_chips(events) == []  # 억제 카테고리 없음 → 되돌리기 칩 없음
 
 
 async def test_recommendation_no_consumable_config_no_suppression(
@@ -1978,7 +1989,7 @@ async def test_recommendation_no_consumable_config_no_suppression(
         )
     )
     assert 201 in _only_list(push.pushes[0]).product_ids
-    assert "suggestions" not in _types(events)
+    assert _revert_chips(events) == []
 
 
 async def test_recommendation_revert_unsuppresses_category(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2049,7 +2060,7 @@ async def test_recommendation_guest_no_suppression(monkeypatch: pytest.MonkeyPat
         run_buyer_turn(_req(), _guest(), llm=FakeLLM(), search=_make_search(products), push_fn=push)
     )
     assert 201 in _only_list(push.pushes[0]).product_ids
-    assert "suggestions" not in _types(events)
+    assert _revert_chips(events) == []
 
 
 def test_order_item_category_and_recent_items() -> None:

@@ -17,6 +17,10 @@ from uuid import uuid4
 
 from app.agents.buyer._frames import sse
 from app.agents.buyer.recommendation.rerank import rerank
+from app.agents.buyer.recommendation.relaxation import (
+    RelaxationCandidate,
+    build_relaxation_candidates,
+)
 from app.agents.buyer.recommendation.state import RouteDecision, build_condition_chips
 from app.core.llm import LLMClient, LLMError, resolve_model_id
 from app.core.text import _strip_unsafe
@@ -24,15 +28,17 @@ from app.core.tracing import current_request_trace, trace_span
 from app.services import spring_client
 from app.schemas.chat import (
     ConditionsData,
-    DoneData,
     ErrorData,
     ProductsReadyData,
+    RecommendationDoneData,
+    RelaxationRef,
     RevertRef,
     SuggestionChip,
     SuggestionsData,
     TokenData,
 )
 from app.schemas.spring import (
+    ProductSearchFilters,
     ProductSearchResult,
     RecoReason,
     LIST_LABEL_MAX_LEN,
@@ -274,16 +280,21 @@ async def stream_recommendation(
 
     # dedup 소스(I-19)와 검색(§4.6)을 **병렬 실행** — §4.7 지연 가드(순차 시 최악 6s, first-token 예산 잠식).
     # dedup 은 검색 응답 뒤 사후필터라 두 호출은 독립적이다. 각 호출이 자체 실패를 삼켜 gather 는 안 깨진다.
-    async def _run_search() -> tuple[ProductSearchResult, dict[int, int]] | None:
+    async def _run_search(
+        base_filters: ProductSearchFilters | None = None,
+    ) -> tuple[ProductSearchResult, dict[int, int]] | None:
         """검색 결과와 `productId → leg 인덱스` 맵을 함께 돌려준다.
 
         맵이 비어 있으면 leg 개념이 없는 경로(단일 filters 검색)라 하류가 목록 1건으로 간다.
+        [#113] base_filters 로 **완화된 필터**를 넣어 같은 fan-out 의미 그대로 재검색할 수 있다 —
+        완화 probe 가 leg 구성을 따로 재현하면 본 검색과 조건이 어긋나 estCount 가 거짓이 된다.
         """
+        base = decision.filters if base_filters is None else base_filters
         legs = decision.category_legs
         if not legs:
             # 카테고리 매핑 결과 없음(매핑 degrade·비-매핑 경로) → 단일 filters 검색(기존 경로).
             try:
-                found = await search(decision.filters, exclude_product_ids=None)
+                found = await search(base, exclude_product_ids=None)
                 return (found, {}) if found is not None else None
             except SpringUnavailableError:
                 return None
@@ -314,16 +325,14 @@ async def stream_recommendation(
                 # 해도 자연어)로 폴백한다 — breadcrumb 는 임베딩 앵커로 부적합(decompose cat_signal 과
                 # 동일 원칙). 단일 카테고리(leg 1개)는 전역값(LLM 의 가장 풍부한 전체 의도)을 유지한다.
                 leg_semantic = (
-                    (query or decision.filters.semantic_query)
-                    if len(legs) > 1
-                    else decision.filters.semantic_query
+                    (query or base.semantic_query) if len(legs) > 1 else base.semantic_query
                 )
                 # [#51] keyword 는 위에서 계산한 drop_keyword flag 를 공유한다 — 칩 파생과 동일 판단이라
                 # 표시-실제가 어긋나지 않는다. 드롭 시 leg 검색어는 leg_semantic 으로 rerank 를 담당하고
                 # category 가 후보를 확보하므로 keyword 중복 투입은 불필요(config off 면 leg query→keyword
                 # 로 복원, 롤백 안전성). _leg 는 legs 비어있지 않을 때만 호출돼 canonical 은 항상 truthy.
-                leg_keyword = None if drop_keyword else (query or decision.filters.keyword)
-                leg_filters = decision.filters.model_copy(
+                leg_keyword = None if drop_keyword else (query or base.keyword)
+                leg_filters = base.model_copy(
                     update={
                         "category": canonical,
                         "keyword": leg_keyword,
@@ -406,30 +415,118 @@ async def stream_recommendation(
                 cat_samples.setdefault(i.category, i.product_name or i.category)
 
     # 사후필터: exact productId 제외 + 소모품 카테고리 억제(§4.7, C-15).
-    result: ProductSearchResult = search_result
-    # [#101 #8] 관측성 — dedup 이전 수신 후보 수. **경로별 의미 주의(PR#166 리뷰)**: 비-fanout 은
-    # Spring 매칭 전량(#101 로 search_catalog 절단 제거)이지만, fan-out 은 _run_search 안에서 이미
-    # _merge_fanout_results(merge_cap) 로 절단된 **뒤** 값이라 leg 별 실제 수신 합계가 아니다 — fan-out
-    # 의 가장 큰 recall 손실(leg 검색 → merge_cap 절단)은 이 수치 이전에 일어나 로그에 안 잡힌다.
-    # leg-합 관측은 별도 과제(관측 이슈 #136/#137 라인, _run_search 가 pre-merge 합을 노출해야 함).
-    received = len(result.products)
-    had_candidates = bool(result.products)
-    suppressed_by_cat: dict[str, int] = {}
-    kept = []
-    for product in result.products:
-        if product.product_id in exclude_ids:
-            continue
-        if product.category in cat_samples:
-            suppressed_by_cat[product.category] = suppressed_by_cat.get(product.category, 0) + 1
-            continue
-        kept.append(product)
-    # [#101] 최종 rerank 입력 상한 절단 — search_catalog(사전) 가 아니라 최근구매 dedup·소모품 억제
-    # **이후** 여기서 embedding_rerank_limit 으로 압축한다. 사전 절단이면 dedup 대상이 상위에 몰릴 때
-    # rerank 후보가 상한 미만이 되는 recall 손실이 있어, 절단을 dedup 이후로 옮겼다(비-fanout 전량·
-    # fan-out merge_cap 병합 결과 모두 이 지점에서 최종 절단). matched_after_dedup 은 절단 전 매칭 수.
-    matched_after_dedup = len(kept)
-    kept = kept[: settings.embedding_rerank_limit]
-    result = ProductSearchResult(products=kept, total_count=matched_after_dedup)
+    def _post_filter(
+        found: ProductSearchResult,
+    ) -> tuple[ProductSearchResult, dict[str, int], int, bool]:
+        """검색 결과에 dedup·소모품 억제를 적용해 (결과, 억제수, 수신수, 후보유무)를 낸다.
+
+        [#113] 지역 함수로 뽑아 **완화 probe 도 같은 사후필터를 통과**하게 한다 — 칩이 약속한
+        estCount 와 실제로 노출될 수를 같은 기준으로 세지 않으면 "12건"이라 해놓고 8건이 뜬다.
+        """
+        # [#101 #8] 관측성 — dedup 이전 수신 후보 수. **경로별 의미 주의(PR#166 리뷰)**: 비-fanout 은
+        # Spring 매칭 전량(#101 로 search_catalog 절단 제거)이지만, fan-out 은 _run_search 안에서 이미
+        # _merge_fanout_results(merge_cap) 로 절단된 **뒤** 값이라 leg 별 실제 수신 합계가 아니다 —
+        # fan-out 의 가장 큰 recall 손실(leg 검색 → merge_cap 절단)은 이 수치 이전에 일어나 안 잡힌다.
+        # leg-합 관측은 별도 과제(관측 이슈 #136/#137 라인, _run_search 가 pre-merge 합을 노출해야 함).
+        seen = len(found.products)
+        suppressed: dict[str, int] = {}
+        survivors = []
+        for product in found.products:
+            if product.product_id in exclude_ids:
+                continue
+            if product.category in cat_samples:
+                suppressed[product.category] = suppressed.get(product.category, 0) + 1
+                continue
+            survivors.append(product)
+        # [#101] 최종 rerank 입력 상한 절단 — search_catalog(사전) 가 아니라 최근구매 dedup·소모품
+        # 억제 **이후** 여기서 embedding_rerank_limit 으로 압축한다. 사전 절단이면 dedup 대상이 상위에
+        # 몰릴 때 rerank 후보가 상한 미만이 되는 recall 손실이 있어, 절단을 dedup 이후로 옮겼다
+        # (비-fanout 전량·fan-out merge_cap 병합 결과 모두 이 지점에서 최종 절단).
+        matched = len(survivors)
+        return (
+            ProductSearchResult(
+                products=survivors[: settings.embedding_rerank_limit], total_count=matched
+            ),
+            suppressed,
+            seen,
+            bool(found.products),
+        )
+
+    result, suppressed_by_cat, received, had_candidates = _post_filter(search_result)
+    candidates = result.products
+
+    # ── 0건/소량 조건 완화 (#113, api-spec §3.1 · SPEC-RECOMMEND-001 §6.6) ──
+    # estCount 는 page-local 로 못 구한다 — priceMax·brand·color 는 Spring I-1 쿼리 파라미터라 탈락
+    # 상품이 응답에 아예 없다(schemas/spring.py ProductSearchResult docstring). 그래서 완화 필터로
+    # 재검색(probe)해 실제 매칭 수를 센다. Spring 이 size 없이 전량 반환하므로 이 값은 근사가 아니다.
+    relaxation_notice: str | None = None
+    relax_candidates: list[RelaxationCandidate] = []
+    probed_counts: dict[str, int] = {}  # 와이어 필드명 -> 완화 시 매칭 수(probe 실패는 미기록)
+    adopted_field: str | None = None
+    probe_budget = settings.relaxation_max_probes  # 자동 완화 시도와 칩 probe 가 공유하는 예산
+
+    async def _probe(cand: RelaxationCandidate):
+        """완화 필터로 재검색해 본 경로와 같은 사후필터를 통과시킨다. 실패면 None(그 후보만 탈락)."""
+        probed = await _run_search(cand.filters)
+        if probed is None:  # _run_search 가 예외를 삼켜 None 을 준다 — 스트림은 계속(§6 degrade)
+            return None
+        relaxed, relaxed_leg_of = probed
+        return (*_post_filter(relaxed), relaxed_leg_of)
+
+    if not candidates and probe_budget > 0:
+        relax_candidates = build_relaxation_candidates(decision.filters, settings)
+        auto_fields = set(settings.relaxation_auto_fields)
+        rounds = 0
+        for cand in relax_candidates:
+            # [REQ-REC-043 / AC-REC-08] 명시 제약(가격·브랜드)은 **자동으로 넘지 않는다** — 사용자가
+            # 칩으로 동의하기 전까지 상한 초과 상품을 조용히 노출하면 안 된다. 자동은 config
+            # 화이트리스트(기본 평점)에 든 약한 조건뿐이다.
+            if cand.field not in auto_fields:
+                continue
+            if probe_budget <= 0 or rounds >= settings.relaxation_max_rounds:
+                break
+            probe_budget -= 1
+            rounds += 1
+            outcome = await _probe(cand)
+            if outcome is None:
+                continue
+            relaxed_result, relaxed_suppressed, relaxed_seen, relaxed_had, relaxed_leg_of = outcome
+            probed_counts[cand.field] = relaxed_result.total_count
+            if relaxed_result.products:  # 완화가 결과를 살렸다 → 정상 경로로 합류
+                result, suppressed_by_cat = relaxed_result, relaxed_suppressed
+                received, had_candidates = relaxed_seen, relaxed_had
+                leg_of, candidates = relaxed_leg_of, relaxed_result.products
+                relaxation_notice, adopted_field = cand.notice, cand.field
+                break
+        if relaxation_notice:
+            # [REQ-REC-042] 조용히 조건을 바꾸지 않는다 — 산문 안내는 token, 기계 판독 플래그는
+            # done.relaxationNotice 로 **병기**한다(§3.1).
+            yield sse("token", TokenData(text=relaxation_notice).model_dump(by_alias=True))
+
+    # 완화 칩 — 0건이거나 소량(config 임계 미만)일 때 남은 예산만큼 후보를 probe 한다.
+    relaxation_chips: list[SuggestionChip] = []
+    if not candidates or len(candidates) < settings.relaxation_min_results:
+        if not relax_candidates:
+            relax_candidates = build_relaxation_candidates(decision.filters, settings)
+        pending = [
+            c for c in relax_candidates if c.field not in probed_counts and c.field != adopted_field
+        ][:probe_budget]
+        if pending:
+            for cand, outcome in zip(pending, await asyncio.gather(*(_probe(c) for c in pending))):
+                if outcome is not None:
+                    probed_counts[cand.field] = outcome[0].total_count
+        relaxation_chips = [
+            SuggestionChip(
+                label=_strip_unsafe(c.label),
+                relaxation=RelaxationRef(field=c.field, value=c.value),
+                est_count=probed_counts[c.field],
+            )
+            for c in relax_candidates
+            # estCount==0 인 칩은 제외(§3.1) — 눌러도 빈 화면인 제안을 주지 않는다.
+            if c.field != adopted_field and probed_counts.get(c.field, 0) > 0
+        ]
+
+    matched_after_dedup = result.total_count
 
     # 되돌리기 칩 — 억제된 소모품 카테고리별(estCount==0 제외, §3.1).
     # estCount 는 **이번 검색 응답 내 억제 수**(page-local 근사)다 — 소모품 억제는 embedding_rerank_limit
@@ -445,19 +542,28 @@ async def stream_recommendation(
         if n > 0
     ]
 
-    candidates = result.products
     if not candidates:
         # 3분기: 검색 자체 0건 / 소모품 카테고리 억제로 비워짐 / exact 최근구매로 비워짐 — 원인별 안내.
         if not had_candidates:
-            text = "조건에 맞는 상품을 찾지 못했어요. 조건을 조금 바꿔볼까요?"
+            text = (
+                "조건에 맞는 상품을 찾지 못했어요. 아래 조건을 넓혀볼까요?"
+                if relaxation_chips  # 무엇을 어떻게 바꿀지 칩으로 함께 제시한다(#113)
+                else "조건에 맞는 상품을 찾지 못했어요. 조건을 조금 바꿔볼까요?"
+            )
         elif suppressed_by_cat:
             text = "최근 구매하신 카테고리라 결과를 가렸어요. 아래에서 되돌리거나 다른 조건으로 찾아볼까요?"
         else:
             text = "찾은 상품이 모두 최근에 구매하신 것들이에요. 다른 상품을 추천해 드릴까요?"
         yield sse("token", TokenData(text=text).model_dump(by_alias=True))
-        if revert_chips:  # 전부 억제됐어도 되돌리기 칩은 준다(사용자가 복원 가능)
-            yield sse("suggestions", SuggestionsData(chips=revert_chips).model_dump(by_alias=True))
-        yield sse("done", DoneData(finish_reason="zero_result").model_dump(by_alias=True))
+        # 전부 억제됐어도 되돌리기 칩은 준다(사용자가 복원 가능) + 0건 완화 칩(#113).
+        if zero_chips := revert_chips + relaxation_chips:
+            yield sse("suggestions", SuggestionsData(chips=zero_chips).model_dump(by_alias=True))
+        yield sse(
+            "done",
+            RecommendationDoneData(
+                finish_reason="zero_result", relaxation_notice=relaxation_notice
+            ).model_dump(by_alias=True),
+        )
         return
 
     # 니즈별 목록 분할 판정(REQ-REC-024, api-spec §4.2 PICK_ONE×N) — case 3(목적·상황형 발화)이
@@ -576,8 +682,10 @@ async def stream_recommendation(
     if comment:
         yield sse("token", TokenData(text=comment).model_dump(by_alias=True))
 
-    if revert_chips:  # 소모품 카테고리 억제 되돌리기 칩(결정 14-F)
-        yield sse("suggestions", SuggestionsData(chips=revert_chips).model_dump(by_alias=True))
+    # 소모품 카테고리 억제 되돌리기 칩(결정 14-F) + 소량 결과 완화 칩(#113).
+    # products.ready **앞**이라 §3.1 순서 계약(conditions → token+suggestions → products.ready)을 지킨다.
+    if chips_out := revert_chips + relaxation_chips:
+        yield sse("suggestions", SuggestionsData(chips=chips_out).model_dump(by_alias=True))
 
     # push — I-21(경로 B). 성공 시에만 products.ready emit(§3.3).
     # 추천 실행 1회의 상관키(§4.2 v0.17.1) — 노출·클릭·담기·주문을 이 추천에 귀속시키는 조인 키다.
@@ -643,4 +751,9 @@ async def stream_recommendation(
             ).model_dump(by_alias=True),
         )
 
-    yield sse("done", DoneData(finish_reason="stop").model_dump(by_alias=True))
+    yield sse(
+        "done",
+        RecommendationDoneData(
+            finish_reason="stop", relaxation_notice=relaxation_notice
+        ).model_dump(by_alias=True),
+    )

@@ -157,6 +157,19 @@ class DoneData(CamelModel):
     finish_reason: Literal["stop", "zero_result"] = "stop"
 
 
+class RecommendationDoneData(DoneData):
+    """추천 스트림 전용 `done` — 자동 완화 투명 안내를 병기한다(§3.1, 결정 14-D, #113).
+
+    relaxationNotice 는 0건 자동 완화를 적용했을 때의 **기계 판독 플래그**다. 사람이 읽는 산문은
+    `token` 으로 따로 흘리며(조용한 조건 변경 금지, REQ-REC-042), 이 필드는 FE 가 "완화된 결과"임을
+    분기 처리할 근거다. 완화하지 않은 턴은 null.
+    **추천 스트림에만** 둔다 — 장바구니·주문상태·일반대화 `done`(공용 DoneData)은 완화 개념 자체가
+    없어 거기에 항상 null 인 필드를 실으면 계약 잡음이다(§3.1 (5) 페이로드는 finishReason 뿐).
+    """
+
+    relaxation_notice: str | None = None
+
+
 class ErrorData(CamelModel):
     """`error` 이벤트 — 스트림 내부 오류 (api-spec §3.1 (6)).
 

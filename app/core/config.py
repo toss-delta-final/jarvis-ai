@@ -245,6 +245,29 @@ class Settings(BaseSettings):
     llm_call_limit: int = 2
     relaxation_max_rounds: int = 3
 
+    # ── 0건/소량 조건 완화 (#113, api-spec §3.1 suggestions.relaxation · 결정 14-D) ──
+    # 필드명은 **와이어 표기(camelCase)** 다 — 그대로 `relaxation.field` 로 나가므로(§3.1) 내부
+    # snake_case 와의 변환은 relaxation.py 한 곳에서만 한다.
+    # [AC④] 카테고리는 어느 목록에도 넣지 않는다 — 카테고리 판단·승계는 #84 소관이고, 여기서 같이
+    # 풀면 "무선 이어폰이 없으니 유선 어때요"처럼 **살 물건 자체를 바꾸는** 제안이 된다.
+    relaxation_chip_fields: list[str] = Field(
+        default_factory=lambda: ["priceMax", "ratingMin", "brand", "color"]
+    )
+    # 자동 완화(사용자 동의 없이 서버가 먼저 푸는) 허용 목록. 기본은 **평점만** — SPEC REQ-REC-043·
+    # AC-REC-08(가격 제약 불가침)에 따라 가격·브랜드처럼 사용자가 명시한 제약은 자동으로 넘지 않고
+    # 제안 칩으로만 위임한다. REQ-REC-047 명시/비명시 태깅이 구현되면 이 목록 대신 source 로 판단한다.
+    relaxation_auto_fields: list[str] = Field(default_factory=lambda: ["ratingMin"])
+    relaxation_price_step_ratio: float = Field(default=0.3, gt=0.0)  # priceMax 상향 비율
+    relaxation_price_round_unit: int = Field(default=1000, ge=1)  # 상향값 올림 단위(칩 문구 가독성)
+    relaxation_rating_step: float = Field(default=0.5, gt=0.0)  # ratingMin 하향 폭
+    # 완화 후보 probe(재검색) 상한 — estCount 는 page-local 로 못 구한다(가격·브랜드·색상은 Spring
+    # 쿼리 파라미터라 탈락 상품이 응답에 아예 없다, spring.py ProductSearchResult docstring 참조).
+    # 그래서 후보마다 완화 필터로 재검색해 실제 매칭 수를 센다. fan-out 턴은 leg 수만큼 곱해지므로
+    # 낮게 잡는다. 자동 완화 시도와 칩 probe 가 **이 예산을 공유**한다.
+    relaxation_max_probes: int = Field(default=2, ge=0)
+    # 이 수 **미만**이면 "소량"으로 보고 결과가 있어도 완화 칩을 함께 제안한다(AC①). 0 이면 0건일 때만.
+    relaxation_min_results: int = Field(default=3, ge=0)
+
     # ── 홈 추천 랭킹 (I-22, api-spec §3.7 · 이슈 #148) ──
     # 질의 벡터 = 시그널 상품 임베딩의 가중 평균. cart 는 "담기까지 갔다"는 강한 신호라 조회보다 높게,
     # 조회는 최신일수록 높게(recency decay 를 인덱스 거듭제곱으로 적용) — §3.7 signals 표.

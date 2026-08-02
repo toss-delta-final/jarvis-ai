@@ -13,6 +13,43 @@
 
 ---
 
+## [2026-08-02] 공용 계약 모델에 필드를 더하면 그 모델을 쓰는 **모든 흐름의 와이어**가 바뀐다
+- 증상: #113 이슈가 지시한 대로 `DoneData` 에 `relaxationNotice` 를 추가했더니 테스트 **29건**이
+  깨졌다. 그 중 22건은 완화와 아무 상관 없는 장바구니·주문상태·일반대화·판매자-무관 경로였다.
+  `DoneData` 가 추천 전용인 줄 알았는데 `cart/graph.py`·`order_status.py`·`buyer/graph.py`·
+  `core/stream.py` 네 곳이 공유하고 있어, 완화 개념이 없는 흐름의 `done` 에도
+  `"relaxationNotice": null` 이 실려 나갔다.
+- 원인: 이슈 본문이 "`DoneData` 에 필드 추가(chat.py:152)"라고 **파일·줄까지 특정**해서, 그 클래스의
+  사용처를 세지 않고 그대로 따랐다. 계약 모델은 이름이 흐름을 한정하는 것처럼 보여도(`DoneData` =
+  "done 이벤트") 실제로는 여러 흐름의 공용일 수 있다.
+- 규칙:
+  - 계약 스키마에 필드를 더하기 전에 **`grep -rn "ClassName(" app/` 으로 생성 지점을 전부 센다.**
+    2곳 이상이면 "이 필드가 저 흐름에도 의미가 있나"를 먼저 답한다.
+  - 의미가 한 흐름에만 있으면 공용 모델을 넓히지 말고 **서브클래스로 좁힌다**
+    (`RecommendationDoneData(DoneData)`). nullable 이라 하위호환이어도, 항상 null 인 필드는
+    계약을 읽는 사람에게 "이 흐름에도 이 개념이 있다"는 거짓 신호다.
+  - 이슈가 파일·줄을 특정해도 **그 지시의 전제(이 클래스는 이 흐름 전용이다)** 는 코드로 확인한다.
+    특정성이 높을수록 검증 없이 따르기 쉬운데, 틀렸을 때 blast radius 도 그만큼 크다.
+- 관련: `app/schemas/chat.py` `RecommendationDoneData`, 이슈 #113, api-spec §3.1 (5)
+
+## [2026-08-02] 이슈 본문의 기술적 전제도 착수 전에 코드로 검증한다
+- 증상: #113 은 "estCount 는 revert 칩과 동일하게 page-local 근사 사용"이라고 구현 방식까지
+  지정했다. 그대로 만들었으면 **이슈가 대표 예시로 든 가격 완화 칩이 영원히 안 나오는** 코드가
+  나올 뻔했다 — `priceMax`·`brand`·`color` 는 Spring I-1 쿼리 파라미터라 조건에 안 맞는 상품이
+  응답에 아예 없고, page-local 로 세면 항상 0 이며, `estCount == 0` 칩은 계약상 제외되기 때문이다.
+- 원인: revert 칩(이미 받아둔 후보를 AI 가 사후 억제 → 셀 수 있다)의 사정을 완화 칩(Spring 이
+  걸러낸 것 → 셀 대상이 없다)에 그대로 옮긴 착오였다. **같은 "칩"이라도 데이터가 어디서 탈락하냐가
+  다르면 계수 가능성도 다르다.** 정작 `schemas/spring.py` docstring 에는 "완화 칩 estCount 는 이
+  값으로 못 구하고 재쿼리/BE count 필요"라고 **이미 적혀 있었다.**
+- 규칙:
+  - 이슈가 "X 방식으로 하면 된다"고 구현을 지정하면, 착수 전에 **그 방식이 성립하는지 소비처
+    코드로 확인**한다. 특히 "기존 Y 와 동일하게"류 지시는 X 와 Y 의 전제가 같은지부터 본다.
+  - 필터가 **어디서 적용되는지**(BE 쿼리 파라미터 vs AI 사후필터)를 먼저 가른다 — 이게 "그 조건을
+    푼 결과를 셀 수 있나"를 결정한다. `_search_query_params` 가 그 경계다.
+  - 전제가 틀렸으면 조용히 우회하지 말고 **근거(파일·줄)와 함께 드러내 확인받고** 진행한다.
+- 관련: `app/services/spring_client.py::_search_query_params`, `app/schemas/spring.py`
+  `ProductSearchResult` docstring, 이슈 #113
+
 ## [2026-08-02] 병렬 워크트리에서 repo 전역 포매터를 돌리면 남의 파일을 커밋에 끌고 온다
 - 증상: #137 작업 중 CLAUDE.md 커밋 워크플로대로 `uv run ruff check --fix && uv run ruff format` 를
   돌렸더니, 내가 만들지도 않은 `tests/unit/test_home_recommendation.py` 가 수정됨으로 떴다. 내용은
