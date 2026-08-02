@@ -623,7 +623,9 @@ def test_recent_order_limit_has_one_contract_source() -> None:
     """Schema, client, and route must not carry independent copies of recent=3."""
     root = Path(__file__).parents[2]
     files = {
-        path: ast.parse((root / path).read_text())
+        # encoding 명시 — 미지정이면 로케일 기본(Windows 한국어는 cp949)이라 소스의 한국어 주석에서
+        # UnicodeDecodeError 가 난다. 저장소 소스는 전부 UTF-8 이다.
+        path: ast.parse((root / path).read_text(encoding="utf-8"))
         for path in (
             "app/schemas/spring.py",
             "app/services/spring_client.py",
