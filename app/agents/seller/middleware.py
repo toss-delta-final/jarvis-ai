@@ -382,12 +382,14 @@ class ModelUsageObservationMiddleware(AgentMiddleware):
                 continue
             prompt_tokens = usage.get("input_tokens", usage.get("prompt_tokens"))
             completion_tokens = usage.get("output_tokens", usage.get("completion_tokens"))
+            prompt_tokens = prompt_tokens if isinstance(prompt_tokens, int) else None
+            completion_tokens = completion_tokens if isinstance(completion_tokens, int) else None
+            if prompt_tokens is None and completion_tokens is None:
+                continue
             trace.record_llm_usage(
                 model=self._model,
-                prompt_tokens=prompt_tokens if isinstance(prompt_tokens, int) else None,
-                completion_tokens=(
-                    completion_tokens if isinstance(completion_tokens, int) else None
-                ),
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
                 call_id=call_id,
             )
             break
