@@ -1975,6 +1975,40 @@ async def test_recommendation_repurchase_falls_back_to_partial_name(
     assert 101 in _only_list(push.pushes[0]).product_ids
 
 
+async def test_recommendation_repurchase_survives_rerank_limit_truncation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """되살린 상품이 검색 순서상 rerank 상한 밖이어도 절단에 잘리지 않음을 보장한다(PR #230 리뷰).
+
+    절단(`kept[:embedding_rerank_limit]`)은 원본 검색 순서 기준이라, 지목 상품이 상한 밖이면
+    exact 제외를 면제해 놓고도 rerank 후보에조차 못 들어가 "지목하면 다시 추천된다"가 깨진다.
+    """
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(get_settings(), "embedding_rerank_limit", 2)
+    monkeypatch.setattr(
+        _sc_mod, "get_recent_purchases", _purchases_cat((101, "음향가전", "무선 이어폰"))
+    )
+    # 지목 상품(101)을 검색 순서 **맨 뒤**(상한 2 밖)에 둔다.
+    products = [
+        _prod(201, "음향가전", "유선 이어폰"),
+        _prod(202, "음향가전", "헤드폰"),
+        _prod(101, "음향가전", "무선 이어폰"),
+    ]
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["무선 이어폰"],
+            "filters": {},
+            "case": 1,
+        }
+    )
+    await _collect(
+        run_buyer_turn(_req(), _member_num(), llm=llm, search=_make_search(products), push_fn=push)
+    )
+    assert 101 in _only_list(push.pushes[0]).product_ids
+
+
 @pytest.mark.parametrize("decompose", [{}, {"repurchaseProducts": []}])
 async def test_recommendation_without_repurchase_keeps_exact_exclusion(
     monkeypatch: pytest.MonkeyPatch,
