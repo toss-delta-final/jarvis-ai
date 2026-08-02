@@ -6,7 +6,8 @@
   (b) 취소 — 연결 종료 시 Starlette 가 응답 task 를 취소 → finally 로 정리(레지스트리
       해제 + 내부 제너레이터 aclose 로 LLM 스트림/그래프 task 전파). 제너레이터가 유휴일
       때는 is_disconnected() 폴링으로도 조기 감지(§2.9 b)
-  (c) 타임아웃 — first-token 상한 초과 시 스트림 전 504, 전체 상한 초과 시 done(stop) 절단(§2.9 c)
+  (c) 타임아웃 — 역할 공통 first-token 상한 초과 시 스트림 전 504, 역할별 전체 상한
+      (구매자 stream_total_timeout_buyer_s, 판매자·미지정 stream_total_timeout_s) 초과 시 절단(§2.9 c)
 
 MVP 단일 인스턴스 전제. 다중 인스턴스 확장 시 레지스트리를 Redis 로 이관한다.
 """
@@ -17,7 +18,7 @@ import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import HTTPException, Request, status
 from fastapi.responses import StreamingResponse
@@ -423,12 +424,16 @@ async def open_stream(
     inner_factory: Callable[[], AsyncIterator[str]],
     *,
     observer: RequestObservation | None = None,
+    role: Literal["buyer", "seller"] | None = None,
 ) -> StreamingResponse:
     """내부 이벤트 제너레이터를 §2.9 수명주기로 감싼 StreamingResponse 를 만든다.
 
     스트림 시작 전 실패는 예외로 던져 §2.5 봉투로 나간다:
       - 409 STREAM_IN_PROGRESS: 동일 threadId 활성 스트림 존재
       - 504 UPSTREAM_TIMEOUT: first-token 상한 초과 (첫 이벤트 도착 전)
+
+    role 미지정은 기존 전체 상한을 유지한다. 명시하지 않은 호출자가 조용히 더 좁은 구매자
+    상한으로 잘리지 않도록, 역할을 명시한 호출자만 좁은 예산을 받는다.
     """
     settings = get_settings()
     registry = get_registry()
@@ -506,7 +511,12 @@ async def open_stream(
     pump = _IteratorPump(agen, trace)
 
     poll = settings.stream_disconnect_poll_s
-    deadline = start + settings.stream_total_timeout_s
+    total_timeout = (
+        settings.stream_total_timeout_buyer_s
+        if role == "buyer"
+        else settings.stream_total_timeout_s
+    )
+    deadline = start + total_timeout
     ft_deadline = start + settings.stream_first_token_timeout_s
 
     async def _empty_stream() -> AsyncIterator[str]:
