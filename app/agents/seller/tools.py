@@ -371,7 +371,9 @@ async def get_order_events(
             stats_note += f". 취소 사유 상위: {reasons}"
         stats_note += "."
     if not result.rows and not stats_note:
-        return f"주문 상태 전이 0건. {_reference_note(from_date, to_date)}"
+        # 0건 조기 반환도 무시 고지를 유지한다 — 빠지면 워커가 필터 무시 사실을
+        # 모른 채 재호출하거나, 회귀 테스트(#215)가 이 경로에서 깨진다.
+        return f"주문 상태 전이 0건.{ignored_status_note} {_reference_note(from_date, to_date)}"
     # rows 는 limit 절단본 — total 이 더 크면 전수를 고지해 표본=전수 오해석을 막는다.
     total = result.total if result.total is not None else len(result.rows)
     total_note = (
