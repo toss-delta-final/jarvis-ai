@@ -509,6 +509,19 @@ class Settings(BaseSettings):
     llm_timeout_s: float = 30.0
     llm_max_retries: int = 1
 
+    # ── 관측 집계 SLO·degrade 알림 (scripts/aggregate_observability.py 주입, EVAL-OBS §3.3·§5) ──
+    # 런타임 동작을 바꾸지 않는 **집계 리포트 전용 목표치**다. 위의 스트림 상한은 "언제 끊나"이고
+    # 이 값들은 "무엇을 지켰어야 하나"라서 별도로 둔다 — 상한을 SLO 로 재사용하면 상한 조정이
+    # 곧 목표 조정이 돼버린다. 역할별 total 목표 분리(판매자 90s·구매자 30s)는 EVAL-OBS §5
+    # 제안값이며, 런타임 단일 90s 상한(stream_total_timeout_s)의 재조정은 별건(#138)이다.
+    slo_first_token_ms: int = Field(default=10_000, gt=0)
+    slo_total_seller_ms: int = Field(default=90_000, gt=0)
+    slo_total_buyer_ms: int = Field(default=30_000, gt=0)
+    # degrade 율이 이 비율을 넘으면 집계 스크립트가 non-zero exit 으로 CI·cron 에 표면화한다.
+    degrade_rate_alert_threshold: float = Field(default=0.10, ge=0.0, le=1.0)
+    # 표본이 적으면 비율이 요동치므로(1/3 = 33%) 이 표본 수 미만이면 알림하지 않는다(오탐 방지).
+    degrade_alert_min_samples: int = Field(default=50, ge=0)
+
     # ── 레이트 리밋 (api-spec §2.8, 토큰 sub 스코프, 인메모리·단일 인스턴스 전제) ──
     rate_limit_per_min: int = 10
     rate_limit_per_hour: int = 100
