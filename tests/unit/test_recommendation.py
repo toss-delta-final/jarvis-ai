@@ -2175,6 +2175,39 @@ async def test_recommendation_ambiguous_repurchase_reverts_nothing(
     assert "error" not in _types(events)
 
 
+async def test_recommendation_multiple_repurchase_references_revert_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """맥락 목록이 복수 지목으로 에코되면 각 이름이 정확해도 아무 상품도 되돌리지 않는다."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(
+        _sc_mod,
+        "get_recent_purchases",
+        _purchases_cat(
+            (301, "세탁용품", "리필 세탁 세제 2L"),
+            (302, "세탁용품", "드럼용 세탁 세제"),
+        ),
+    )
+    products = [
+        _prod(301, "세탁용품", "리필 세탁 세제 2L"),
+        _prod(302, "세탁용품", "드럼용 세탁 세제"),
+    ]
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["리필 세탁 세제 2L", "드럼용 세탁 세제"],
+            "filters": {},
+            "case": 1,
+        }
+    )
+    events = await _collect(
+        run_buyer_turn(_req(), _member_num(), llm=llm, search=_make_search(products), push_fn=push)
+    )
+    assert push.pushes == []
+    assert events[-1]["data"]["finishReason"] == "zero_result"
+
+
 async def test_recommendation_repurchase_restores_all_identically_named(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

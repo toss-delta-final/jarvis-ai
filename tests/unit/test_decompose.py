@@ -219,12 +219,22 @@ async def test_invalid_repurchase_products_excluded() -> None:
 
 
 async def test_repurchase_products_truncated_to_max() -> None:
-    """repurchase_max 상한으로 긴 LLM 재구매 목록의 해소 비용과 오매칭을 제한함을 보장한다."""
+    """repurchase_max 상한으로 긴 LLM 재구매 목록의 파싱·전달 크기를 제한함을 보장한다."""
     d = await _run(
         _raw(repurchaseProducts=["상품1", "상품2", "상품3", "상품4"]),
         repurchase_max=2,
     )
     assert d.repurchase_products == ["상품1", "상품2"]
+
+
+def test_repurchase_prompt_rejects_last_recommendations_echo() -> None:
+    """재구매 규칙은 PRIOR_FILTERS만 해소에 쓰고 직전 추천 목록 복사·복수 지목을 금지한다."""
+    from app.agents.buyer.recommendation.decompose import _SYSTEM
+
+    rule = _SYSTEM.split("- repurchaseProducts:", 1)[1].split("- general:", 1)[0]
+    assert "PRIOR_FILTERS" in rule
+    assert "LAST_RECOMMENDATIONS" in rule and "복사하지 마세요" in rule
+    assert "보통 상품 1개" in rule
 
 
 async def test_attr_conditions_extracted() -> None:

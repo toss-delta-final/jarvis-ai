@@ -105,9 +105,10 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
   가려진 카테고리를 다시 보고 싶어하면 그 카테고리명을 넣으세요(예: [\"조미료\"]). 아니면 [].
 - repurchaseProducts: 사용자가 **최근에 산 특정 상품을 다시 사거나 다시 추천받고 싶다**고 하면
   그 상품을 가리키는 **상품명**을 넣으세요(예: "최근에 산 무선이어폰 또 추천해줘" → ["무선 이어폰"]).
-  "그거 또 사고 싶어"처럼 상품명이 빠진 지시대명사면 PRIOR_FILTERS·LAST_RECOMMENDATIONS 맥락에서
-  가리키는 **상품명을 해소해 넣으세요**. 재구매 의도가 없으면 []. 카테고리 단위 되돌리기는
-  revertCategories 가 담당하니 카테고리명은 넣지 마세요.
+  "그거 또 사고 싶어"처럼 상품명이 빠진 지시대명사면 PRIOR_FILTERS 맥락에서 가리키는 **상품명**을
+  해소해 넣으세요. 사용자가 재구매를 말로 지목한 상품만 넣고, LAST_RECOMMENDATIONS 에 있다는
+  이유로 직전 추천 상품을 복사하지 마세요. 보통 상품 1개만 넣으며 재구매 의도가 없으면 [].
+  카테고리 단위 되돌리기는 revertCategories 가 담당하니 카테고리명은 넣지 마세요.
 - general: intent=general, reply 에 짧게 답하세요."""
 
 
@@ -303,8 +304,9 @@ def _parse_repurchase_products(raw: object, cap: int) -> list[str]:
     """decompose 의 repurchaseProducts → 재구매 지목 상품명 리스트 (#120).
 
     리스트가 아니면 빈 리스트, 비문자열·공백 항목은 제외한다(revertCategories 와 동일 규약).
-    `cap` 으로 절단해 LLM 이 긴 목록을 내도 해소 비용·오매칭이 무한히 늘지 않게 한다
-    (`_parse_category_queries` 의 fanout_max 절단과 같은 규약 — slice 절단).
+    `cap` 으로 절단해 LLM 이 긴 목록을 내도 파싱·전달 크기를 유계로 유지한다
+    (`_parse_category_queries` 의 fanout_max 절단과 같은 규약 — slice 절단). 실제 해제 범위는
+    graph 의 단일 지목 가드가 결정한다.
     """
     if not isinstance(raw, list):
         return []
