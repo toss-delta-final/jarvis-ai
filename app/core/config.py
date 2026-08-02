@@ -464,9 +464,12 @@ class Settings(BaseSettings):
     state_store_query_timeout_s: float = 3.0
     # 기존 conversation_turns 스키마 백필은 일반 요청 쿼리보다 오래 걸릴 수 있어 별도 상한을 둔다.
     state_store_migration_timeout_s: float = 30.0
-    # lifespan 종료 콜백별 상한. 9개가 모두 상한을 써도 8초 전체 예산 안에 여유가 남도록
-    # 기본 0.75초(총 6.75초)로 두어, 한두 pg 연결의 교착이 뒤 자원 정리를 막지 않게 한다.
-    lifespan_resource_close_timeout_s: float = Field(default=0.75, gt=0.0, le=60.0)
+    # lifespan 종료 콜백별 상한. psycopg_pool 자체 close 기본값과 같은 5초를 허용해 정상 worker
+    # 종료를 바깥에서 더 일찍 자르지 않는다. 뒤 자원 몫은 아래 floor 예약으로 별도 보호한다.
+    lifespan_resource_close_timeout_s: float = Field(default=5.0, gt=0.0, le=60.0)
+    # 느린 자원 하나가 앞에서 cap을 써도 남은 각 자원에 최소 0.2초를 예약한다. 9개·8초 기준
+    # 첫 자원도 6.4초 allowance를 받아 cap 5초를 온전히 쓴다. 자원 수·예산 변경 시 함께 재검토한다.
+    lifespan_resource_close_floor_s: float = Field(default=0.2, ge=0.0, le=60.0)
     # 전체 cleanup 예산. 배포의 SIGTERM→SIGKILL 유예보다 작게 설정해야 한다. 현재 deploy.yml의
     # `docker stop`은 --time이 없어 Docker 기본 유예 10초에 의존한다. 이 관계는 기동 시 강제하지 않는다.
     lifespan_cleanup_budget_s: float = Field(default=8.0, gt=0.0, le=300.0)
