@@ -60,6 +60,24 @@
   남는다.
 - 관련: #142, `app/core/config.py`, `evals/goldenset/snapshot.py`, `evals/goldenset/audit.py`
 
+## [2026-08-02] 타임아웃을 판단하기 전에 상한과 지표의 측정 지점을 구분한다
+- 증상: #151 댓글과 baseline README가 `slo_first_token_ms` 10초에
+  `client_ttft_ms` p95 9970ms가 닿는다며 런타임 first-token 상한도 임박한 것으로 해석했다.
+  #138에서 다시 재보니 상한이 실제로 기다리는 첫 SSE 이벤트 p95는 1.4~3.0초였고, measured
+  120건 중 504는 0건이었다.
+- 원인: `stream_first_token_timeout_s`는 api-spec §2.9(c)의 **스트림 첫 이벤트까지**를 재며
+  runner의 `client_first_event_ms`에 해당하지만, `slo_first_token_ms`는 첫 텍스트 토큰인
+  `latencyFirstToken`·`client_ttft_ms`를 평가한다. 구매자는 `conditions` 등이 텍스트보다 먼저
+  나오고, 판매자는 `meta`·`progress`를 p95 1.4초에 보낸 뒤 텍스트를 마지막에 한 번 내보내므로
+  둘의 차이가 더 커진다. first-token SLO 초과 37/154 중 32건이 seller/analysis였던 것도
+  판매자 지연이 아니라 성격이 다른 지점을 비교한 결과다.
+- 규칙: **지연 수치로 타임아웃을 조정하기 전에 코드에서 그 상한이 실제로 재는 지점을 확인한다.**
+  런타임 상한 대상인 `client_first_event_ms`와 SLO 대상인
+  `client_ttft_ms`·`latencyFirstToken`을 섞지 않고, 텍스트를 마지막에 한 번 내보내는 판매자
+  경로에는 첫 텍스트 토큰 기준 SLO를 그대로 적용하지 않는다.
+- 관련: #138, #151, `app/core/stream.py`(`ft_deadline`), api-spec §2.9(c),
+  `app/core/config.py`(`slo_first_token_ms`), `evals/benchmark/baselines/README.md`
+
 ## [2026-08-02] 부하 측정 전에 앱 자기 레이트 리밋을 측정 경로에서 분리한다
 - 증상: 로컬 벤치마크의 measured 270건 중 120건(44%)이 429였고, 마지막 시나리오는 113건
   전량이 `RATE_LIMITED`였다. 성능 대신 앱 자기 리밋을 측정한 실행이라 기준선으로 폐기했다.
@@ -81,6 +99,22 @@
   확인한다.** 개인 키로 잰 동시성 수치는 provider 스로틀이 없다는 근거 없이는 앱 성능 수치가
   아니다.
 - 관련: #151, `evals/benchmark/baselines/README.md`
+
+## [2026-08-02] 프롬프트 계층 intent 안정성은 FakeLLM 단위 테스트가 아니라 실 LLM 반복 분포로 증명한다
+- 증상: #234의 `"그거 보여줘"` intent가 같은 입력에서도 `recommend`·`cart_view` 사이를 오갔지만,
+  `tests/unit/test_decompose.py`는 LLM JSON을 주입하므로 프롬프트를 어떻게 바꿔도 계속 통과했다.
+- 원인: 결함은 파서나 라우팅 코드가 아니라 `gpt-5-nano`가 긴 `_SYSTEM` 규칙을 해석하는 확률적
+  계층에 있었다. 특히 `PENDING_CART`가 있으면 아래쪽 옵션 답변 규칙이 위쪽 지시대명사 경계를
+  덮는 현상은 현실적인 세션 상태를 넣은 반복 호출에서만 드러났다.
+- 규칙:
+  - 프롬프트 intent 결함은 실제 provider/model과 현실적인 세션 상태를 넣고, 발화 × 컨텍스트를
+    여러 번 반복해 **분포**로 수정 전/후를 비교한다. FakeLLM 테스트 통과를 동작 증거로 쓰지 않는다.
+  - 상태만 현실적으로 채우는 것으로 끝내지 말고 **그 상태에서 실제로 나오는 정상 발화**도 대조군에
+    넣는다. 옵션 되물음 상태라면 옵션명·번호 답변을 넣고 intent뿐 아니라 `cart.optionId`까지 집계한다.
+  - 단위 테스트는 실측으로 유효성이 확인된 필수 프롬프트 문구의 회귀 가드로만 쓴다. 채택 전 해당
+    문구를 지워 테스트가 실제로 실패하는지 확인한다.
+  - 목표가 8/8인데 잔여 지터가 있으면 단일 성공 사례로 덮지 말고 정확한 분포와 미달 셀을 남긴다.
+- 관련: `app/agents/buyer/recommendation/decompose.py`, `tests/unit/test_decompose.py`, 이슈 #234
 
 ## [2026-08-02] 프롬프트는 실제 세션 맥락을 모두 채운 상태로 검증한다
 - 증상: `LAST_RECOMMENDATIONS` 없이 재구매 분해를 실측했을 때 오탐이 없었지만, 현실적인 직전 추천
@@ -118,6 +152,7 @@
 - 규칙: **억제(suppress)를 추가하면 그 축의 되돌리기(revert) 경로도 같은 커밋에서 만든다 —
   억제 축이 둘인데 되돌리기가 하나면 사용자는 절대 빠져나올 수 없다.**
 - 관련: #120, `app/agents/buyer/recommendation/graph.py`, `app/agents/buyer/recommendation/decompose.py`
+
 ## [2026-08-02] 회귀 테스트는 "회귀를 흉내 내 실패시켜 본 뒤" 채택한다 — 통과만으로는 지켜준다는 증거가 아니다
 - 증상: #173 에서 "티어화가 원본 price 를 건드리지 않는다"를 고정하려고
   `test_price_tiering_does_not_mutate_product_or_filter_values` 를 넣었는데, 본문이
