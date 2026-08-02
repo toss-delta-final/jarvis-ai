@@ -461,6 +461,9 @@ class Settings(BaseSettings):
     state_store_migration_timeout_s: float = 30.0
     # lifespan 종료 콜백별 상한. 한 pg 연결이 응답하지 않아도 뒤의 owned resource를 계속 닫는다.
     lifespan_resource_close_timeout_s: float = Field(default=10.0, gt=0.0, le=60.0)
+    # 전체 cleanup 예산. 배포의 SIGTERM→SIGKILL 유예보다 작게 설정해야 한다. 현재 deploy.yml의
+    # `docker stop`은 --time이 없어 Docker 기본 유예 10초에 의존한다. 이 관계는 기동 시 강제하지 않는다.
+    lifespan_cleanup_budget_s: float = Field(default=8.0, gt=0.0, le=300.0)
     # libpq socket-level 이중 방어(이슈 #50). asyncio.wait_for/statement_timeout과 별개로
     # 네트워크 black-hole에서 커널이 연결을 유한 시간 내 폐기하도록 한다.
     state_store_keepalives_idle_s: int = 10

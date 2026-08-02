@@ -218,7 +218,14 @@ async def test_lifespan_times_out_hung_resource_and_continues_cleanup(monkeypatc
     monkeypatch.setattr(
         main_mod,
         "get_settings",
-        lambda: type("Settings", (), {"lifespan_resource_close_timeout_s": 0.01})(),
+        lambda: type(
+            "Settings",
+            (),
+            {
+                "lifespan_resource_close_timeout_s": 0.01,
+                "lifespan_cleanup_budget_s": 0.2,
+            },
+        )(),
     )
 
     with caplog.at_level("INFO"):
@@ -241,3 +248,80 @@ async def test_lifespan_times_out_hung_resource_and_continues_cleanup(monkeypatc
     ]
     assert "lifespan resource cleanup timed out resource=seller_history_store" in caplog.text
     assert "lifespan resource cleanup complete succeeded=8 failed=1" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_lifespan_uses_remaining_budget_before_resource_timeout(monkeypatch, caplog):
+    calls = []
+
+    async def slower_than_budget():
+        calls.append("session_lifecycle")
+        await asyncio.sleep(0.03)
+
+    _patch_lifespan_dependencies(monkeypatch, calls)
+    monkeypatch.setattr(main_mod, "close_session_lifecycle", slower_than_budget)
+    monkeypatch.setattr(
+        main_mod,
+        "get_settings",
+        lambda: type(
+            "Settings",
+            (),
+            {
+                "lifespan_resource_close_timeout_s": 0.1,
+                "lifespan_cleanup_budget_s": 0.01,
+            },
+        )(),
+    )
+
+    with caplog.at_level("INFO"):
+        await main_mod._close_owned_resources()
+
+    assert calls == [
+        "session_lifecycle",
+        "seller_history_store",
+        "seller_checkpointer",
+        "profile_store",
+        "session_activity_pool",
+        "processed_events_pool",
+        "conversation_store",
+        "pg_store",
+        "advisory_pool",
+    ]
+    assert "lifespan resource cleanup budget exhausted resource=session_lifecycle" in caplog.text
+    assert "lifespan resource cleanup complete succeeded=8 failed=1" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_lifespan_starts_every_close_after_cleanup_budget_is_exhausted(monkeypatch, caplog):
+    calls = []
+    _patch_lifespan_dependencies(monkeypatch, calls, hanging_resource="*")
+    monkeypatch.setattr(
+        main_mod,
+        "get_settings",
+        lambda: type(
+            "Settings",
+            (),
+            {
+                "lifespan_resource_close_timeout_s": 0.1,
+                "lifespan_cleanup_budget_s": 0.01,
+            },
+        )(),
+    )
+
+    with caplog.at_level("INFO"):
+        await main_mod._close_owned_resources()
+
+    assert calls == [
+        "session_lifecycle",
+        "seller_history_store",
+        "seller_checkpointer",
+        "profile_store",
+        "session_activity_pool",
+        "processed_events_pool",
+        "conversation_store",
+        "pg_store",
+        "advisory_pool",
+    ]
+    assert "lifespan resource cleanup budget exhausted resource=session_lifecycle" in caplog.text
+    assert "lifespan resource cleanup budget exhausted resource=advisory_pool" in caplog.text
+    assert "lifespan resource cleanup complete succeeded=0 failed=9" in caplog.text
