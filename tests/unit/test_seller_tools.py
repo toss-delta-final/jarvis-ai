@@ -971,6 +971,31 @@ async def test_account_events_tool_disabled_by_default() -> None:
     assert fake.recorded_account_args is None  # Spring 호출 자체가 차단된다
 
 
+async def test_account_events_tool_rejects_unknown_group_by_locally(monkeypatch) -> None:
+    """[#197 PR 리뷰 2] groupBy 화이트리스트(eventType|hour|ip) 밖 값은 Spring 왕복
+    없이 즉시 "Error:" 로 거른다 — BE 400 INVALID_GROUP_BY 까지 가는 타임아웃 예산
+    낭비 방지. 오류 문구에 유효값을 실어 LLM 재시도를 유도한다."""
+    _enable_account_events(monkeypatch)
+    fake = FakeSpringClient()
+
+    result = await _call_account_events(
+        {"from_date": "2026-07-01", "to_date": "2026-07-31", "group_by": "date"}, fake
+    )
+
+    assert result.startswith("Error:")
+    assert "eventType/hour/ip" in result
+    assert fake.recorded_account_args is None  # 호출 전 차단 — 왕복 없음
+
+    # 유효 3종은 그대로 통과한다(선검증이 과차단하지 않는다).
+    for valid in ("eventType", "hour", "ip"):
+        fake2 = FakeSpringClient()
+        ok = await _call_account_events(
+            {"from_date": "2026-07-01", "to_date": "2026-07-31", "group_by": valid}, fake2
+        )
+        assert not ok.startswith("Error:"), valid
+        assert fake2.recorded_account_args == ("2026-07-01", "2026-07-31", None, valid)
+
+
 async def test_account_events_tool_passes_period_and_summarizes_rows(monkeypatch) -> None:
     """[#197 회귀] from/to 가 필수 전달되고, rows(구 events 아님) 내용이 노출된다.
 

@@ -501,6 +501,11 @@ async def get_churn_cohort(
     )
 
 
+# I-8 groupBy 화이트리스트(BE AccountEventAggregateResponse 실측, api-spec §4.4 v0.19.1)
+# — 그 외 값은 BE 400 INVALID_GROUP_BY. 도구가 호출 전 선검증한다(#197 리뷰 2).
+_ACCOUNT_EVENTS_GROUP_BY = ("eventType", "hour", "ip")
+
+
 @tool
 @_traced_tool("tool.get_account_events")
 async def get_account_events(
@@ -528,6 +533,14 @@ async def get_account_events(
         return (
             "Error: 계정/보안 이벤트 집계(I-8)는 전역 데이터 소유 협의 완료 전까지 "
             "비활성입니다(admin 소유 🔴 — api-spec §4.4)."
+        )
+    # [#197 PR 리뷰 2] groupBy 화이트리스트 선검증 — BE 도 400 INVALID_GROUP_BY 로
+    # 거부하지만(api-spec §4.4), LLM 오타·환각 값 때문에 왕복 1회(3s 타임아웃 예산)를
+    # 쓰고 나서야 degrade 하는 낭비를 막는다. 문구에 유효값을 실어 재시도를 유도한다.
+    if group_by is not None and group_by not in _ACCOUNT_EVENTS_GROUP_BY:
+        return (
+            f"Error: group_by '{group_by}' 는 지원되지 않습니다 — "
+            f"{'/'.join(_ACCOUNT_EVENTS_GROUP_BY)} 중 하나를 사용하세요."
         )
     try:
         result = await get_spring_client().get_account_events(
