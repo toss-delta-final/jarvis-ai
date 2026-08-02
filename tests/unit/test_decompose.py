@@ -549,11 +549,13 @@ def test_pronoun_intent_prompt_keeps_product_requests_out_of_cart_view() -> None
 
 
 def test_pending_cart_option_answer_precedes_general_intent_ladder() -> None:
-    """[#234 R1] pending-cart 옵션명·번호 답변은 일반 intent 사다리보다 먼저 해소한다.
+    """[#234 R1/R7] pending-cart 옵션 답변 조건은 일반 intent 사다리와 모순되지 않는다.
 
     라운드 2 실 LLM N=8에서 원본은 ``2번으로``를 ``cart_add×8``로 분류하고 두 번째 optionId를
     7/8 골랐지만, 1)~3) 사다리를 먼저 적용한 프롬프트는 ``cart_view×6 / cart_add×2``와 올바른
     optionId 0/8로 퇴행했다. 번호만 있는 정상 옵션 답변이 다시 사다리 밖으로 밀리지 않게 고정한다.
+    동시에 PENDING_CART 자체를 옵션 답변으로 간주하던 기존 문장이 0) 단계와 모순하지 않도록,
+    실제 옵션 이름·번호·순번 선택일 때만 답변으로 보는 조건도 고정한다.
     """
     from app.agents.buyer.recommendation.decompose import _SYSTEM
 
@@ -561,6 +563,9 @@ def test_pending_cart_option_answer_precedes_general_intent_ladder() -> None:
     assert rule.index("0)") < rule.index("1)")
     for phrase in ("PENDING_CART", "이름", "번호", "순번", "2번으로", "두 번째", "optionId"):
         assert phrase in rule
+    assert "있으면 보통 이번 발화는 옵션 답변" not in _SYSTEM
+    assert "USER_MESSAGE가 options의 이름·번호·순번을 실제로 고른" in _SYSTEM
+    assert "경우에만 옵션 답변" in _SYSTEM
 
 
 async def test_unknown_intent_still_falls_back_to_recommend() -> None:

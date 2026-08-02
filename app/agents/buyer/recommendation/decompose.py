@@ -115,8 +115,9 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
   유지**하세요(카테고리를 비우면 직전 맥락이 사라집니다).
 - cart_add: LAST_RECOMMENDATIONS(직전 추천 목록: productId+이름)에서 사용자가 가리킨 상품의
   productId 를 고르세요. 못 고르면 productId=null. quantity 기본 1.
-- PENDING_CART(옵션 되물음 대기)가 있으면 보통 이번 발화는 옵션 답변입니다 — options 목록에서
-  사용자 답에 맞는 optionId 를 골라 intent=cart_add, cart.optionId 로 주세요. 단,
+- PENDING_CART(옵션 되물음 대기)가 있고 USER_MESSAGE가 options의 이름·번호·순번을 실제로 고른
+  경우에만 옵션 답변입니다 — 사용자 답에 맞는 optionId 를 골라 intent=cart_add,
+  cart.optionId 로 주세요. 단,
   사용자가 다른 상품을 담으려 하면 LAST_RECOMMENDATIONS 의 그 productId 로 cart_add,
   담기를 취소·중단하려 하면 intent=general 로 전환하세요(옛 상품에 갇히지 않게).
 - revertCategories: 사용자가 특정 카테고리를 \"다시 추천받기\"(되돌리기 칩) 하거나 최근 구매로
