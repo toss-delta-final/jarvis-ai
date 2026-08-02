@@ -156,12 +156,21 @@ class Settings(BaseSettings):
     seller_anomaly_deviation_pct: float = 30.0  # 매출 이상판정 편차 임계(%)
     seller_conversion_drop_pct: float = 20.0  # 전환율 하락 이상 임계(%)
     seller_churn_inactive_days: int = 30  # 이탈 코호트 무활동 일수(I-16 inactiveDays 기본)
+    # [#197 PR 리뷰] I-8 계정/보안 이벤트는 전역 데이터(브랜드 스코프 아님)이고
+    # admin 소유 협의가 미완(🔴, api-spec §4.4 v0.19.1)이다. 종전엔 코드 결함(쿼리
+    # 400·스키마 미스매치)이 사실상 차단막이었으나 #197 정합으로 실노출이 가능해져,
+    # 협의 완료 전까지 판매자 워커 표면 노출을 기본 비활성으로 보류한다.
+    seller_account_events_enabled: bool = False
     seller_recent_days_default: int = 7  # normalize_period "최근 N일" 기본 N
     # safe_eval `**` 결과 자릿수 상한(DoS 방어) — 초과 식은 ValueError 로 거부(리뷰 반영).
     seller_calc_max_result_digits: int = 100
     # 도구 반환 상세도 상한(안 1+차등, 2026-07-17 사용자 확정) — 컨텍스트 폭주 방지.
     seller_summary_max_points: int = 60  # 시계열 상세 나열 상한(포인트 수)
     seller_summary_max_events: int = 5  # I-14 이벤트 kv 나열 상한(건)
+    # [#197 PR 리뷰] I-16 이탈 회원 나열 상한 — I-14 용 max_events(위)와 분리 신설.
+    # 같은 값 공유 시 I-14 요약 상세도 조정이 이탈 회원 노출 건수까지 바꾸는 결합이
+    # 생긴다(#196 의 max_products 분리와 같은 취지). 서버 절단 상한은 별도로 50.
+    seller_churn_member_max: int = 5  # I-16 members 상세 나열 상한(명)
     # [#196] I-13 상품별 rows 상세 상한 — I-14 용(위)과 분리. 구 공용 상한 5는
     # 시드 브랜드 상품 7종보다 작아 하위 2종이 상시 잘렸다. 상한 초과분은
     # _summarize_behavior 가 꼬리 합계로 남긴다(정보 소실 없음).
