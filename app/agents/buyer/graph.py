@@ -379,6 +379,7 @@ async def run_buyer_turn(
                     last_recommendations=last_reco,
                     pending_cart=pending_dict,
                     category_fanout_max=settings.category_fanout_max,
+                    repurchase_max=settings.dedup_repurchase_max,
                 )
     except LLMError as exc:
         code = "LLM_TIMEOUT" if _is_timeout(exc) else "LLM_UNAVAILABLE"
