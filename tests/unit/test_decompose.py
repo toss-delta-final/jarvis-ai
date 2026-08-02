@@ -495,6 +495,41 @@ def test_order_status_prompt_has_five_way_positive_and_negative_rules() -> None:
         assert phrase in _SYSTEM
 
 
+def test_pronoun_intent_prompt_keeps_product_requests_out_of_cart_view() -> None:
+    """[#234] 상품 지시대명사는 장바구니 명시/담기 동사가 없으면 추천 레인에 남는다.
+
+    수정 전 실 LLM N=8 프로브에서 ``그거 보여줘``는 맥락 없음 ``cart_view×8``, 직전 추천
+    ``recommend×3 / cart_view×5``, pending-cart ``cart_view×8``이었다. ``그거 또 사고 싶어``도
+    직전 추천·pending-cart에서 각각 ``cart_add×8``로 흔들려, FakeLLM 출력 주입 테스트로는 잡히지
+    않는 프롬프트 계층 회귀를 필수 규칙 문구로 고정한다.
+    """
+    from app.agents.buyer.recommendation.decompose import _SYSTEM
+
+    rule = _SYSTEM.split("- order_status로 분류하지 않는 예:", 1)[1].split("- recommend:", 1)[0]
+    assert "cart_view로 분류하지 않는 예:" in rule
+    for phrase in ("그거 보여줘", "저번에 그거 다시 보여줘", "그거 또 사고 싶어"):
+        assert phrase in rule
+    assert "PRIOR_FILTERS.semanticQuery" in rule
+    assert "LAST_RECOMMENDATIONS" in rule
+    assert "상품" in rule and "recommend" in rule
+    assert "명시적 담기 동사" in rule and "cart_add" in rule
+
+
+def test_pending_cart_option_answer_precedes_general_intent_ladder() -> None:
+    """[#234 R1] pending-cart 옵션명·번호 답변은 일반 intent 사다리보다 먼저 해소한다.
+
+    라운드 2 실 LLM N=8에서 원본은 ``2번으로``를 ``cart_add×8``로 분류하고 두 번째 optionId를
+    7/8 골랐지만, 1)~3) 사다리를 먼저 적용한 프롬프트는 ``cart_view×6 / cart_add×2``와 올바른
+    optionId 0/8로 퇴행했다. 번호만 있는 정상 옵션 답변이 다시 사다리 밖으로 밀리지 않게 고정한다.
+    """
+    from app.agents.buyer.recommendation.decompose import _SYSTEM
+
+    rule = _SYSTEM.split("- order_status로 분류하지 않는 예:", 1)[1].split("- recommend:", 1)[0]
+    assert rule.index("0)") < rule.index("1)")
+    for phrase in ("PENDING_CART", "이름", "번호", "순번", "2번으로", "두 번째", "optionId"):
+        assert phrase in rule
+
+
 async def test_unknown_intent_still_falls_back_to_recommend() -> None:
     decision = await _run(_raw(intent="unknown"))
     assert decision.intent == "recommend"
