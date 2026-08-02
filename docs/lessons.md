@@ -13,6 +13,28 @@
 
 ---
 
+## [2026-08-02] 부하 측정 전에 앱 자기 레이트 리밋을 측정 경로에서 분리한다
+- 증상: 로컬 벤치마크의 measured 270건 중 120건(44%)이 429였고, 마지막 시나리오는 113건
+  전량이 `RATE_LIMITED`였다. 성능 대신 앱 자기 리밋을 측정한 실행이라 기준선으로 폐기했다.
+- 원인: `auth_mode=dev`의 무토큰 요청은 모두 같은 게스트 신원을 사용해 §2.8 토큰 스코프
+  레이트 리밋(분 10·시간 100)을 공유한다. 여러 시나리오의 부하 요청이 한 사용자의 한도를 함께
+  소진하므로 기본 설정은 부하 측정과 구조적으로 충돌한다.
+- 규칙: **로컬·staging 부하 측정 전에 타깃의 `RATE_LIMIT_PER_MIN/HOUR`를 상향하고 그 사실을
+  manifest에 남긴다.** 결과 해석 전에 429 비율부터 확인하며, 앱 자기 리밋이 섞인 측정치는 성능
+  근거로 쓰지 않는다.
+- 관련: #151, api-spec §2.8, `evals/benchmark/baselines/README.md`
+
+## [2026-08-02] LLM_UNAVAILABLE을 앱 용량 문제로 결론내기 전에 provider 응답을 확인한다
+- 증상: 로컬 벤치마크 동시성 5·10에서 `error_type=LLM_UNAVAILABLE` 45건이 발생해 앱이
+  동시성에 약한 것처럼 보였다.
+- 원인: 서버 로그의 실제 원인은 `api.openai.com` 응답 `429 Too Many Requests`였다. 앱 오류
+  코드는 provider 쿼터와 다른 LLM 가용성 실패를 구분하지 않으므로 결과 레코드만으로 원인을
+  확정할 수 없다.
+- 규칙: **LLM_UNAVAILABLE을 앱 용량 문제로 해석하기 전에 provider 응답 코드를 서버 로그에서
+  확인한다.** 개인 키로 잰 동시성 수치는 provider 스로틀이 없다는 근거 없이는 앱 성능 수치가
+  아니다.
+- 관련: #151, `evals/benchmark/baselines/README.md`
+
 ## [2026-08-02] 프롬프트 계층 intent 안정성은 FakeLLM 단위 테스트가 아니라 실 LLM 반복 분포로 증명한다
 - 증상: #234의 `"그거 보여줘"` intent가 같은 입력에서도 `recommend`·`cart_view` 사이를 오갔지만,
   `tests/unit/test_decompose.py`는 LLM JSON을 주입하므로 프롬프트를 어떻게 바꿔도 계속 통과했다.

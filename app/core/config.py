@@ -540,11 +540,51 @@ class Settings(BaseSettings):
     # 신뢰하는 프록시 홉 수(우측부터). 자사 프록시 1대면 1 = 최우측 값.
     forwarded_for_trusted_hops: int = 1
 
+    # ── 벤치마크 runner (이슈 #151) ──
+    # measured 30건·p99 100건의 고정 계약 하한은 evals/benchmark/runner.py(measured)와
+    # stats.py(p99)의 max() 클램프에서 강제한다. validator는 값 사이의 상대적 정합만 본다 —
+    # 아래 값은 운영에서 더 엄격하게 올릴 수 있어야 하므로 여기서 하한 미만을 거부하지 않는다.
+    benchmark_min_measured_requests: int = 30
+    benchmark_p99_min_samples: int = 100
+    benchmark_warmup_requests: int = 5
+    benchmark_cold_requests: int = 3
+    benchmark_concurrency_levels: tuple[int, ...] = (1, 5, 10)
+    benchmark_bootstrap_resamples: int = 1000
+    benchmark_bootstrap_seed: int = 20260803
+    benchmark_bootstrap_confidence: float = 0.95
+    benchmark_request_timeout_s: float = 120.0
+
     @field_validator("llm_provider", mode="before")
     @classmethod
     def _normalize_llm_provider(cls, value: object) -> object:
         """기존 환경변수 호환을 위해 provider 값의 ASCII 대소문자를 정규화한다."""
         return value.lower() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def _require_valid_benchmark_settings(self) -> "Settings":
+        """벤치마크 기본 표본·동시성·bootstrap 설정의 모순을 기동 시점에 막는다."""
+        if self.benchmark_min_measured_requests <= 0:
+            raise ValueError("BENCHMARK_MIN_MEASURED_REQUESTS must be positive")
+        if self.benchmark_p99_min_samples < self.benchmark_min_measured_requests:
+            raise ValueError("BENCHMARK_P99_MIN_SAMPLES must be >= BENCHMARK_MIN_MEASURED_REQUESTS")
+        if self.benchmark_cold_requests + self.benchmark_warmup_requests >= (
+            self.benchmark_min_measured_requests
+        ):
+            raise ValueError(
+                "BENCHMARK_COLD_REQUESTS + BENCHMARK_WARMUP_REQUESTS must be "
+                "< BENCHMARK_MIN_MEASURED_REQUESTS"
+            )
+        if (
+            self.benchmark_cold_requests < 0
+            or self.benchmark_warmup_requests < 0
+            or not self.benchmark_concurrency_levels
+            or any(level <= 0 for level in self.benchmark_concurrency_levels)
+            or self.benchmark_bootstrap_resamples <= 0
+            or not 0 < self.benchmark_bootstrap_confidence < 1
+            or self.benchmark_request_timeout_s <= 0
+        ):
+            raise ValueError("benchmark runner settings must be positive and non-empty")
+        return self
 
     @model_validator(mode="after")
     def _require_known_buffer_excluded_intents(self) -> "Settings":
