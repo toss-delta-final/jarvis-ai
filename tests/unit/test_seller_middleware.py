@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
@@ -316,3 +318,60 @@ async def test_model_usage_observation_treats_none_result_as_missing_usage(
     assert result is response
     assert observation.model_calls == [ModelCall("seller-priced-model")]
     assert "MODEL_USAGE_MISSING" in caplog.text
+
+
+async def test_model_usage_observation_keeps_concurrent_same_model_attempts_separate() -> None:
+    """동일 모델 동시 호출의 성공 usage가 실패 placeholder를 덮지 않는다."""
+    observation = _model_usage_observation()
+    trace = NoopRequestTrace(lane="general")
+    trace.attach_observation(observation)
+    both_started = asyncio.Event()
+    started = 0
+
+    async def rendezvous() -> None:
+        nonlocal started
+        started += 1
+        if started == 2:
+            both_started.set()
+        await both_started.wait()
+
+    async def failing_handler(_request):
+        await rendezvous()
+        raise RuntimeError("provider failed")
+
+    response = type(
+        "Response",
+        (),
+        {
+            "result": [
+                AIMessage(
+                    content="응답",
+                    usage_metadata={
+                        "input_tokens": 17,
+                        "output_tokens": 5,
+                        "total_tokens": 22,
+                    },
+                )
+            ]
+        },
+    )()
+
+    async def successful_handler(_request):
+        await rendezvous()
+        return response
+
+    middleware_instance = middleware.ModelUsageObservationMiddleware("seller-priced-model")
+    with bind_request_trace(trace):
+        failed, succeeded = await asyncio.gather(
+            middleware_instance.awrap_model_call(object(), failing_handler),
+            middleware_instance.awrap_model_call(object(), successful_handler),
+            return_exceptions=True,
+        )
+
+    assert isinstance(failed, RuntimeError)
+    assert succeeded is response
+    assert len(observation.model_calls) == 2
+    assert {call.model for call in observation.model_calls} == {"seller-priced-model"}
+    assert sorted(
+        (call.prompt_tokens, call.completion_tokens) for call in observation.model_calls
+    ) == [(0, 0), (17, 5)]

@@ -114,12 +114,20 @@ class ObservationSink(Protocol):
 
     def mark_degraded(self, reason: str) -> None: ...
 
+    def record_model_call(
+        self,
+        model: str,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+    ) -> int: ...
+
     def record_model_usage(
         self,
         model: str,
         prompt_tokens: int | None,
         completion_tokens: int | None,
-    ) -> None: ...
+        call_id: int | None = None,
+    ) -> int: ...
 
     def record_tool_call(self) -> None: ...
 
@@ -365,25 +373,39 @@ class RequestTrace:
         model: str,
         prompt_tokens: int | None,
         completion_tokens: int | None,
-    ) -> None:
+        call_id: int | None = None,
+    ) -> int | None:
         """Attach bounded provider facts to the active explicit LLM span."""
         if self._is_closing():
-            return
+            return None
+        observation_call_id = None
         if self._observation is not None:
-            self._observation.record_model_usage(model, prompt_tokens, completion_tokens)
+            observation_call_id = self._observation.record_model_usage(
+                model,
+                prompt_tokens,
+                completion_tokens,
+                call_id,
+            )
         stack = _active_span_stack.get()
         if not stack:
-            return
+            return observation_call_id
         node = next(
             (candidate for candidate in reversed(self._nodes) if candidate.id == stack[-1]), None
         )
         if node is None or node.run_type != "llm":
-            return
+            return observation_call_id
         node.metadata["model"] = model
         if prompt_tokens is not None:
             node.metadata["promptTokens"] = prompt_tokens
         if completion_tokens is not None:
             node.metadata["completionTokens"] = completion_tokens
+        return observation_call_id
+
+    def record_llm_call(self, *, model: str) -> int | None:
+        """요청 관측에 provider 호출 단위 placeholder를 만들고 ID를 반환한다."""
+        if self._is_closing() or self._observation is None:
+            return None
+        return self._observation.record_model_call(model)
 
     def record_server_timings(
         self,
@@ -505,9 +527,21 @@ class NoopRequestTrace(RequestTrace):
         model: str,
         prompt_tokens: int | None,
         completion_tokens: int | None,
-    ) -> None:
+        call_id: int | None = None,
+    ) -> int | None:
         if self._observation is not None:
-            self._observation.record_model_usage(model, prompt_tokens, completion_tokens)
+            return self._observation.record_model_usage(
+                model,
+                prompt_tokens,
+                completion_tokens,
+                call_id,
+            )
+        return None
+
+    def record_llm_call(self, *, model: str) -> int | None:
+        if self._observation is None:
+            return None
+        return self._observation.record_model_call(model)
 
     def record_server_timings(
         self,

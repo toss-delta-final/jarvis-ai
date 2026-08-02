@@ -367,12 +367,9 @@ class ModelUsageObservationMiddleware(AgentMiddleware):
 
     async def awrap_model_call(self, request, handler):  # noqa: ANN001
         trace = current_request_trace()
+        call_id = None
         if trace is not None and self._model is not None:
-            trace.record_llm_usage(
-                model=self._model,
-                prompt_tokens=None,
-                completion_tokens=None,
-            )
+            call_id = trace.record_llm_call(model=self._model)
         response = await handler(request)
         if trace is None or self._model is None:
             return response
@@ -391,6 +388,7 @@ class ModelUsageObservationMiddleware(AgentMiddleware):
                 completion_tokens=(
                     completion_tokens if isinstance(completion_tokens, int) else None
                 ),
+                call_id=call_id,
             )
             break
         else:

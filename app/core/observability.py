@@ -145,32 +145,38 @@ class RequestObservation:
 
     def record_model_call(
         self, model: str, prompt_tokens: int = 0, completion_tokens: int = 0
-    ) -> None:
+    ) -> int:
         """노드별 LLM 호출 기록(model·tokens). 그래프가 호출한다."""
         self.model_calls.append(ModelCall(model, prompt_tokens, completion_tokens))
+        return len(self.model_calls) - 1
 
     def record_model_usage(
         self,
         model: str,
         prompt_tokens: int | None,
         completion_tokens: int | None,
-    ) -> None:
-        """provider usage를 같은 모델의 미확정 호출에 합치고, 없으면 새 호출로 기록한다."""
-        target = next(
-            (
-                call
-                for call in reversed(self.model_calls)
-                if call.model == model and call.prompt_tokens == 0 and call.completion_tokens == 0
-            ),
-            None,
-        )
-        if target is None:
-            target = ModelCall(model)
-            self.model_calls.append(target)
+        call_id: int | None = None,
+    ) -> int:
+        """provider usage를 호출 ID 항목에 합치고, 레거시 호출은 모델 placeholder를 찾는다."""
+        if call_id is None:
+            call_id = next(
+                (
+                    index
+                    for index in range(len(self.model_calls) - 1, -1, -1)
+                    if self.model_calls[index].model == model
+                    and self.model_calls[index].prompt_tokens == 0
+                    and self.model_calls[index].completion_tokens == 0
+                ),
+                None,
+            )
+        if call_id is None:
+            call_id = self.record_model_call(model)
+        target = self.model_calls[call_id]
         if prompt_tokens is not None:
             target.prompt_tokens = prompt_tokens
         if completion_tokens is not None:
             target.completion_tokens = completion_tokens
+        return call_id
 
     def set_lane(self, lane: str) -> None:
         """집계용 bounded 레인을 확정한다."""
