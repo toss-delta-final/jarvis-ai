@@ -73,3 +73,27 @@ def test_category_fanout_max_cannot_exceed_contract_list_cap():
     assert Settings(_env_file=None).category_fanout_max <= MAX_LISTS
     with pytest.raises(ValidationError):
         Settings(_env_file=None, category_fanout_max=MAX_LISTS + 1)
+
+
+def test_lifespan_cleanup_budget_is_independently_tunable():
+    """배포 유예 설정과 교차 검증 없이 전체 cleanup 예산만 조정할 수 있다."""
+    defaults = Settings(_env_file=None)
+
+    assert defaults.lifespan_resource_close_timeout_s == 5.0
+    assert defaults.lifespan_resource_close_floor_s == 0.2
+    assert defaults.lifespan_cleanup_budget_s == 8.0
+    assert (
+        Settings(_env_file=None, lifespan_cleanup_budget_s=12.0).lifespan_cleanup_budget_s == 12.0
+    )
+
+
+def test_lifespan_cleanup_budget_mismatch_warns_at_runtime_instead_of_failing_startup():
+    """floor 합이 예산보다 커도 기동은 허용하고 cleanup 경고로 관측한다."""
+    settings = Settings(
+        _env_file=None,
+        lifespan_cleanup_budget_s=0.1,
+        lifespan_resource_close_floor_s=0.2,
+    )
+
+    assert settings.lifespan_cleanup_budget_s == 0.1
+    assert settings.lifespan_resource_close_floor_s == 0.2

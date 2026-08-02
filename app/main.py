@@ -64,11 +64,31 @@ async def _close_owned_resources() -> None:
     )
     settings = get_settings()
     timeout_s = settings.lifespan_resource_close_timeout_s
+    floor_s = settings.lifespan_resource_close_floor_s
+    loop = asyncio.get_running_loop()
+    cleanup_budget_s = settings.lifespan_cleanup_budget_s
+    deadline = loop.time() + cleanup_budget_s
+    required_floor_s = len(resources) * floor_s
+    if cleanup_budget_s < required_floor_s:
+        logger.warning(
+            "lifespan cleanup budget cannot reserve resource floor "
+            "budget_s=%s floor_s=%s resources=%d required_s=%s",
+            cleanup_budget_s,
+            floor_s,
+            len(resources),
+            required_floor_s,
+        )
     failed = 0
     cancellation: asyncio.CancelledError | None = None
-    for name, close in resources:
+    for index, (name, close) in enumerate(resources):
+        remaining_budget_s = max(deadline - loop.time(), 0.0)
+        remaining_count = len(resources) - index
+        reserved_for_rest_s = (remaining_count - 1) * floor_s
+        allowance_s = remaining_budget_s - reserved_for_rest_s
+        resource_timeout_s = min(timeout_s, max(allowance_s, 0.0))
+        budget_limited = allowance_s < timeout_s
         try:
-            async with asyncio.timeout(timeout_s):
+            async with asyncio.timeout(resource_timeout_s):
                 await close()
         except asyncio.CancelledError as exc:
             failed += 1
@@ -79,11 +99,20 @@ async def _close_owned_resources() -> None:
             logger.warning("lifespan resource cleanup cancelled resource=%s", name)
         except TimeoutError:
             failed += 1
-            logger.warning(
-                "lifespan resource cleanup timed out resource=%s timeout_s=%s",
-                name,
-                timeout_s,
-            )
+            if budget_limited:
+                logger.warning(
+                    "lifespan resource cleanup budget exhausted resource=%s "
+                    "timeout_s=%s budget_s=%s",
+                    name,
+                    resource_timeout_s,
+                    cleanup_budget_s,
+                )
+            else:
+                logger.warning(
+                    "lifespan resource cleanup timed out resource=%s timeout_s=%s",
+                    name,
+                    resource_timeout_s,
+                )
         except Exception:
             failed += 1
             logger.exception("lifespan resource cleanup failed resource=%s", name)
