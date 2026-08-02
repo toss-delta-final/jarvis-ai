@@ -2009,6 +2009,48 @@ async def test_recommendation_repurchase_survives_rerank_limit_truncation(
     assert 101 in _only_list(push.pushes[0]).product_ids
 
 
+async def test_recommendation_repurchase_survives_rerank_omission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """rerank 가 지목 상품을 안 골라도 노출 목록에 포함됨을 보장한다(PR #230 리뷰).
+
+    rerank 는 relevance 로 expose_max 개만 고르고 "이 상품은 반드시" 라는 고정 수단이 없다.
+    절단만 막고 여기를 두면 exact 제외·상한 절단을 다 통과하고도 최종 노출에서 조용히 빠진다.
+    """
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(get_settings(), "expose_min", 1)
+    monkeypatch.setattr(get_settings(), "expose_max", 2)
+    monkeypatch.setattr(
+        _sc_mod, "get_recent_purchases", _purchases_cat((101, "음향가전", "무선 이어폰"))
+    )
+    products = [
+        _prod(101, "음향가전", "무선 이어폰"),
+        _prod(201, "음향가전", "유선 이어폰"),
+        _prod(202, "음향가전", "헤드폰"),
+    ]
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "repurchaseProducts": ["무선 이어폰"],
+            "filters": {},
+            "case": 1,
+        },
+        # rerank 가 지목 상품(101)을 빼고 고른 상황.
+        rerank={
+            "ranked": [
+                {"productId": 201, "rationale": "가성비가 좋아요"},
+                {"productId": 202, "rationale": "음질이 우수해요"},
+            ],
+            "overallComment": "추천이에요",
+        },
+    )
+    await _collect(
+        run_buyer_turn(_req(), _member_num(), llm=llm, search=_make_search(products), push_fn=push)
+    )
+    assert 101 in _only_list(push.pushes[0]).product_ids
+
+
 @pytest.mark.parametrize("decompose", [{}, {"repurchaseProducts": []}])
 async def test_recommendation_without_repurchase_keeps_exact_exclusion(
     monkeypatch: pytest.MonkeyPatch,

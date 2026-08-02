@@ -567,6 +567,20 @@ async def stream_recommendation(
         reason_by_id = {}  # degrade 경로엔 rerank 근거 없음 — reasons 는 빈 배열(계약상 선택)
         comment = "요청하신 조건으로 찾은 상품들이에요."
 
+    # [#120 PR#230 리뷰] 지목 상품 고정 — rerank 는 relevance 로 expose_max 개만 고르고 "이건 반드시"
+    # 라는 고정 수단이 없어(need_of/per_need 는 니즈 분할용), exact 제외·상한 절단을 다 통과한
+    # 지목 상품이 여기서 조용히 빠질 수 있다. 쿼리에 상품명이 있으니 보통은 뽑히지만 그건
+    # 휴리스틱이지 보장이 아니다. **후보에 남아 있는데 rerank 가 빠뜨린 것만** 앞에 얹어
+    # "지목하면 다시 추천된다"를 강제한다 — rerank 가 이미 골랐으면 순서를 건드리지 않는다.
+    # 근거(reason)는 없지만 §4.2 상 reasons 는 선택이고 degrade 경로도 같은 형태다.
+    if repurchase_ids:
+        already = set(ranked_ids)
+        pinned = [
+            p.product_id
+            for p in candidates
+            if p.product_id in repurchase_ids and p.product_id not in already
+        ]
+        ranked_ids = pinned + ranked_ids
     # 노출 개수 보정 + 목록 분할 — 보정·상한은 **목록 하나 기준**이다(REQ-REC-021 5~9개, v0.11.0).
     # 분할하지 않으면 목록이 하나뿐이라 종전과 같은 전역 보정·절단이다.
     exposed_groups = _split_by_need(
