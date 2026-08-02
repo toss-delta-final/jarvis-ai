@@ -1,0 +1,53 @@
+{
+  "bootstrap": {
+    "confidence": 0.95,
+    "resamples": 1000,
+    "seed": 20260803
+  },
+  "client_region": "local-wsl2",
+  "client_runtime": {
+    "httpx": "0.28.1",
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "python": "3.12.3 (main, Jun 19 2026, 12:46:00) [GCC 13.3.0]"
+  },
+  "command": "/home/uuser/orca/workspaces/jarvis-ai/chore-138-timeout-retune-from-metrics/.venv/bin/python3 -m evals.benchmark.runner --base-url http://127.0.0.1:8199 --target-label local-spring-buyer --scenarios buyer_recommend,buyer_fallback --concurrency 1 --measured-requests 30 --server-log /tmp/claude-1000/-home-uuser-orca-workspaces-jarvis-ai-chore-138-timeout-retune-from-metrics/83c4453a-837b-42a9-8ff0-f9270fa1fee3/scratchpad/bench/server.log --out-dir /tmp/claude-1000/-home-uuser-orca-workspaces-jarvis-ai-chore-138-timeout-retune-from-metrics/83c4453a-837b-42a9-8ff0-f9270fa1fee3/scratchpad/bench/out --client-region local-wsl2 --instance-type local-dev-wsl2 --dependency-note 'Spring 기동 — I-1 GET /internal/products/search 200 (X-Internal-Token 유효). #151 baseline 과 결정적으로 다른 조건' --dependency-note 'I-21 POST /internal/recommendations 는 400 응답 — degradeReason=push_skipped 상시 발생(BE 데이터/계약 조건, AI 코드 무관)' --dependency-note 'pg-catalog/pg-profile 로컬 컨테이너(5433/5434), catalog.products 7220건 임베딩 전량' --dependency-note 'AWS staging 부재(#135 blocked:spring) — 로컬 WSL2 측정' --dependency-note '타깃 RATE_LIMIT_PER_MIN/HOUR=100000 상향(앱 코드 무변경, 타깃 환경변수만)' --dependency-note '동시성 1 전용 — #151 에서 동시성 5·10 은 개인 OpenAI 키 provider 429 로 오염됨'",
+  "dependency_conditions": [
+    "Spring 기동 — I-1 GET /internal/products/search 200 (X-Internal-Token 유효). #151 baseline 과 결정적으로 다른 조건",
+    "I-21 POST /internal/recommendations 는 400 응답 — degradeReason=push_skipped 상시 발생(BE 데이터/계약 조건, AI 코드 무관)",
+    "pg-catalog/pg-profile 로컬 컨테이너(5433/5434), catalog.products 7220건 임베딩 전량",
+    "AWS staging 부재(#135 blocked:spring) — 로컬 WSL2 측정",
+    "타깃 RATE_LIMIT_PER_MIN/HOUR=100000 상향(앱 코드 무변경, 타깃 환경변수만)",
+    "동시성 1 전용 — #151 에서 동시성 5·10 은 개인 OpenAI 키 provider 429 로 오염됨"
+  ],
+  "dependency_ids": {
+    "fastapi": "0.139.0",
+    "httpx": "0.28.1",
+    "pydantic": "2.13.4"
+  },
+  "ended_at_utc": "2026-08-02T14:05:30.443549+00:00",
+  "git_sha": {
+    "dirty": true,
+    "sha": "52d344f3ca509ef12b846dbd8a45c75f679d279c"
+  },
+  "image": {
+    "unknown_reason": "not_provided",
+    "value": null
+  },
+  "instance_type": "local-dev-wsl2",
+  "lockfile_sha": "85f41455b55376fe54790ccfe407aa56d477301c579e71b940038aec3631742a",
+  "model_ids": [
+    "gpt-5-nano",
+    "gpt-5.6-luna"
+  ],
+  "price_table": {
+    "input_per_1k": {},
+    "output_per_1k": {}
+  },
+  "sample_size_rationale": null,
+  "started_at_utc": "2026-08-02T13:58:49.104976+00:00",
+  "target": {
+    "auth_mode_observed": "dev_guest",
+    "base_url": "http://127.0.0.1:8199",
+    "target_label": "local-spring-buyer"
+  }
+}
