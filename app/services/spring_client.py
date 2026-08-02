@@ -119,7 +119,12 @@ def _spring_span(operation: _SpringOperation, method: str) -> Iterator[TraceNode
             if span is not None:
                 if isinstance(exc, httpx.TimeoutException):
                     span.metadata["statusClass"] = "timeout"
-                elif isinstance(exc, httpx.NetworkError):
+                # RemoteProtocolError(서버가 응답 도중 연결 종료)를 함께 적는다(PR #235 리뷰):
+                # 이것은 NetworkError 의 하위가 아니라 **형제**(둘 다 TransportError 직계)라
+                # 빠뜨리면 statusClass 가 아예 안 붙어, trace 에서 "실패했는데 원인 미분류"와
+                # "기록 자체가 없음"이 구분되지 않는다. 로그 쪽 `_failure_status_class` 와
+                # **같은 어휘**를 써야 로그↔trace 대조가 성립한다(#141 유계 라벨 규약).
+                elif isinstance(exc, httpx.NetworkError | httpx.RemoteProtocolError):
                     span.metadata["statusClass"] = "connection_error"
             failure = (exc, exc.__traceback__)
 
