@@ -80,7 +80,8 @@ def reset() -> None:
         _pending_cleanup.append(old_pool)
 
 
-async def _drain_pending_cleanup() -> None:
+async def _drain_pending_cleanup(*, propagate_errors: bool = False) -> None:
+    first_error: Exception | None = None
     while _pending_cleanup:
         pool = _pending_cleanup.pop()
         try:
@@ -89,8 +90,12 @@ async def _drain_pending_cleanup() -> None:
             task = asyncio.current_task()
             if task is not None and task.cancelling() > 0:
                 raise
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("profile session activity pool cleanup failed", exc_info=True)
+            if first_error is None:
+                first_error = exc
+    if propagate_errors and first_error is not None:
+        raise first_error
 
 
 async def close_pool() -> None:
@@ -101,7 +106,7 @@ async def close_pool() -> None:
     (processed_events.close_pool 과 동일 근거).
     """
     set_pool(None)
-    await _drain_pending_cleanup()
+    await _drain_pending_cleanup(propagate_errors=True)
 
 
 async def ensure_schema_on_connection(conn) -> None:  # noqa: ANN001 - psycopg AsyncConnection

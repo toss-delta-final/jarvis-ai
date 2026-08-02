@@ -26,6 +26,19 @@ from app.services.spring_client import set_spring_client
 _CTX = SellerContext(seller_id=7, brand_id=3)
 
 
+class _StoreContext:
+    def __init__(self) -> None:
+        self.exit_calls = []
+
+    async def __aexit__(self, *args):
+        self.exit_calls.append(args)
+
+
+class _FailingStoreContext:
+    async def __aexit__(self, *_args):
+        raise RuntimeError("history close failed")
+
+
 @pytest.fixture(autouse=True)
 def _fresh_backends():
     """테스트마다 격리된 InMemory store/checkpointer — PG 연결 시도 차단."""
@@ -49,6 +62,42 @@ def _rec(product_id: int = 101, changes: list[ProposedChange] | None = None):
         rationale="매출 하락 구간과 가격 인상 시점 일치",
         changes=changes if changes is not None else [ProposedChange(field="price", after="13500")],
     )
+
+
+def test_close_store_closes_context_and_resets_owned_state() -> None:
+    close_store = getattr(history, "close_store", None)
+    assert callable(close_store)
+    ctx = _StoreContext()
+    history._store = InMemoryStore()
+    history._store_ctx = ctx
+    lock = history._save_lock(7)
+    assert lock is not None and history._save_locks
+
+    asyncio.run(close_store())
+
+    assert ctx.exit_calls == [(None, None, None)]
+    assert history._store is None
+    assert history._store_ctx is None
+    assert not history._save_locks
+
+
+def test_close_store_is_safe_before_initialization() -> None:
+    close_store = getattr(history, "close_store", None)
+    assert callable(close_store)
+    history.set_store(None)
+
+    asyncio.run(close_store())
+    asyncio.run(close_store())
+
+
+def test_close_store_propagates_context_close_failure(caplog) -> None:
+    history._store = InMemoryStore()
+    history._store_ctx = _FailingStoreContext()
+
+    with caplog.at_level("WARNING"), pytest.raises(RuntimeError, match="history close failed"):
+        asyncio.run(history.close_store())
+
+    assert "seller history store context cleanup failed" in caplog.text
 
 
 async def _save(question: str = "지난달 매출 분석", recs: RecommendationSet | None = None):

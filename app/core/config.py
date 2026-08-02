@@ -464,6 +464,8 @@ class Settings(BaseSettings):
     state_store_query_timeout_s: float = 3.0
     # 기존 conversation_turns 스키마 백필은 일반 요청 쿼리보다 오래 걸릴 수 있어 별도 상한을 둔다.
     state_store_migration_timeout_s: float = 30.0
+    # lifespan 종료 콜백별 상한. 한 pg 연결이 응답하지 않아도 뒤의 owned resource를 계속 닫는다.
+    lifespan_resource_close_timeout_s: float = Field(default=10.0, gt=0.0, le=60.0)
     # libpq socket-level 이중 방어(이슈 #50). asyncio.wait_for/statement_timeout과 별개로
     # 네트워크 black-hole에서 커널이 연결을 유한 시간 내 폐기하도록 한다.
     state_store_keepalives_idle_s: int = 10
