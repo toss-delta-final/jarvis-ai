@@ -121,3 +121,22 @@ def test_degrade_notice_defaults():
     assert "검색 결과 순서" in settings.rerank_fallback_notice
     assert settings.push_skipped_notice  # push 지연 안내는 종전부터 존재
     assert settings.dedup_skipped_notice == ""
+
+
+def test_search_retry_defaults_fit_first_token_budget():
+    """기본값(3s×2=6s)이 first-token 10s 예산 안에 들어온다 (#133)."""
+    settings = Settings(_env_file=None)
+
+    assert settings.spring_max_retries == 1
+    assert settings.spring_timeout_s * (settings.spring_max_retries + 1) < (
+        settings.stream_first_token_timeout_s
+    )
+
+
+def test_search_retry_budget_overrun_fails_startup():
+    """재시도 총량이 first-token 예산을 넘으면 기동을 막는다 — 살리려던 턴을 죽이는 설정이다."""
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="first-token budget"):
+        Settings(_env_file=None, spring_max_retries=3, spring_timeout_s=3.0)

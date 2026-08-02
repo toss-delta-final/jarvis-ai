@@ -554,6 +554,51 @@ async def test_buyer_spring_http_failure_preserves_mapping_and_records_only_stat
         assert secret not in serialized
 
 
+async def test_buyer_spring_retry_still_exports_one_span(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#133] I-1 재시도는 **호출당 span 1개**를 깨지 않는다.
+
+    재시도 루프를 span 바깥에 두면 시도마다 span 이 나가 관측 계약(유계 transport 메타데이터
+    1건)이 깨진다. 루프를 안쪽에 두어 statusClass 는 마지막 시도의 결과를 남긴다 —
+    "503 뒤 200" 은 성공한 호출이므로 2xx 다. 재시도 사실은 구조화 로그로만 관측한다.
+    """
+    from app.services import spring_client
+
+    calls: list[int] = []
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        if len(calls) == 1:
+            return httpx.Response(503, json={"error": "private-transient-907"})
+        return httpx.Response(200, json={"success": True, "data": []})
+
+    monkeypatch.setattr(
+        spring_client,
+        "_client",
+        lambda: httpx.AsyncClient(
+            base_url="https://spring.private.test",
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+
+    async def driver() -> None:
+        result = await spring_client.search_products(ProductSearchFilters(keyword="q-907"))
+        assert result.products == []
+
+    payloads = await _run_with_langsmith_payload(driver)
+    spring_payloads = _spring_payloads(payloads)
+
+    assert len(calls) == 2  # 재시도가 실제로 일어났다
+    assert len(spring_payloads) == 1  # 그래도 span 은 1개
+    assert spring_payloads[0]["extra"]["metadata"] == {
+        "httpMethod": "GET",
+        "upstream": "spring",
+        "statusClass": "2xx",
+    }
+    assert "private-transient-907" not in repr(payloads)
+
+
 async def test_buyer_spring_connect_failure_exports_fixed_code_without_exception_details(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

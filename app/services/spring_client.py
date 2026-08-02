@@ -133,6 +133,38 @@ def _record_spring_status(span: TraceNode | None, response: httpx.Response) -> N
         span.metadata["statusClass"] = f"{response.status_code // 100}xx"
 
 
+def _failure_status_class(exc: BaseException) -> str:
+    """실패를 유계 라벨로 분류한다 — 로그·재시도 판정 공용(예외 원문은 싣지 않는다, #141)."""
+    if isinstance(exc, httpx.TimeoutException):
+        return "timeout"
+    if isinstance(exc, httpx.NetworkError):
+        return "connection_error"
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"{exc.response.status_code // 100}xx"
+    return "malformed_response"
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    """재시도가 의미 있는 실패만 True (#133).
+
+    타임아웃·연결 오류·응답 중단·5xx 는 일시 장애라 같은 요청이 다음엔 성공할 수 있다. 반면
+    4xx 계약 오류와 응답 파싱 실패(ValueError/ValidationError)는 **같은 응답이 또 온다** —
+    재시도는 first-token 예산만 태우고 결과를 바꾸지 못한다.
+
+    `RemoteProtocolError` 를 따로 적는 이유: httpx 계층에서 이것은 `NetworkError` 의 하위가
+    아니라 **형제**(둘 다 `TransportError` 직계)라, "연결 오류"로 묶으면 빠진다. 서버가 응답
+    도중 연결을 끊는 흔한 일시 장애가 여기 해당한다. 같은 `ProtocolError` 라도
+    `LocalProtocolError`(우리 요청이 잘못됨)는 재시도 대상이 아니라 명시적으로 제외한다.
+    """
+    if isinstance(exc, httpx.TimeoutException | httpx.NetworkError):
+        return True
+    if isinstance(exc, httpx.RemoteProtocolError):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code >= 500
+    return False
+
+
 class SpringUnavailableError(Exception):
     """Spring 서버 도달 불가/오류 응답. 상위에서 SEARCH_FAILED 등으로 매핑한다."""
 
@@ -413,15 +445,36 @@ async def search_products(filters: ProductSearchFilters) -> ProductSearchResult:
     유일·영구 후보 확보 경로. 사용자 확정에 따라 **GET** 으로 호출한다. dedup·평점·정렬은
     응답 후 AI 사후필터(search_service.search_catalog)에서 적용한다. 도달 불가/오류 응답은
     SpringUnavailableError 로 전파 — 상위(추천 그래프)가 SEARCH_FAILED 로 낸다.
+
+    [#133] 재시도 가능한 실패(`_is_retryable`)는 config 상한만큼 재시도한다. 검색은 GET·멱등이라
+    안전하며, 후보가 없으면 추천 자체가 성립하지 않아 한 번의 일시 지연이 곧 턴 종료였다.
+    **재시도 루프는 span 안쪽**이다 — 호출당 span 1개라는 계약(테스트가 고정)을 지키고,
+    `statusClass` 는 마지막 시도의 결과를 남긴다. 재시도 사실은 구조화 로그로만 관측한다.
     """
     params = _search_query_params(filters)
+    attempts = get_settings().spring_max_retries + 1
     try:
         with _spring_span("search_products", "GET") as span:
-            async with _client() as client:
-                resp = await client.get("/internal/products/search", params=params)
-                _record_spring_status(span, resp)
-                resp.raise_for_status()
-                data = resp.json()
+            for attempt in range(1, attempts + 1):
+                try:
+                    async with _client() as client:
+                        resp = await client.get("/internal/products/search", params=params)
+                        _record_spring_status(span, resp)
+                        resp.raise_for_status()
+                        data = resp.json()
+                    break
+                except (httpx.HTTPError, ValueError) as exc:
+                    if attempt >= attempts or not _is_retryable(exc):
+                        raise
+                    # 예외 원문은 남기지 않는다 — 업스트림 상태 유출 방지(#141), 유계 라벨만.
+                    _log.warning(
+                        "spring_search_retry",
+                        extra={
+                            "attempt": attempt,
+                            "maxAttempts": attempts,
+                            "statusClass": _failure_status_class(exc),
+                        },
+                    )
         # 응답 파싱·검증도 같은 경계 안 — 200 이지만 스키마 불일치인 malformed 응답도
         # SEARCH_FAILED degrade(§7)로 흐르게 한다(ValidationError 가 그대로 새어 500 되지 않게).
         return _parse_search_response(data)

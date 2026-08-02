@@ -540,6 +540,13 @@ class Settings(BaseSettings):
     stream_disconnect_poll_s: float = 0.5
     # AI→Spring 콜백 타임아웃 (§2.9 c, BE I-2 기준 통일). 실제 호출부에서 사용.
     spring_timeout_s: float = 3.0
+    # [#133] I-1 검색 재시도 횟수 (SPEC-RECOMMEND-001 §오류처리가 이미 규정한 동작).
+    # 타임아웃 3s 는 일시 지연이 재시도로 살아나는 폭인데 LLM 만 재시도를 갖고 검색은 0회였다.
+    # **재시도가 의미 있는 실패만** 대상이다 — 타임아웃·연결 오류·응답 중단·5xx. 4xx 계약 오류와 응답
+    # 파싱 실패는 다시 불러도 같은 결과라 즉시 실패한다. 비멱등 호출(I-2 담기)에는 걸지 않는다.
+    # 재시도 사이 sleep 은 두지 않는다 — 타임아웃 실패는 이미 3s 간격이 생기고 1회로는 herd
+    # 증폭이 2배를 넘지 않는다. **1을 넘겨 올릴 땐 backoff 도입이 필요하다.**
+    spring_max_retries: int = Field(default=1, ge=0, le=3)
     # AI→LLM 단일 호출 타임아웃 + 재시도 횟수 (§2.9 c).
     # 현행 30s×(1+1)=60s 최악 예산은 구매자 전체 상한 30s(stream_total_timeout_buyer_s, #138)를 넘는다.
     # timeout 뒤 재시도는 buyer done(stop) 절단 전에 끝날 수 없지만 빠른 오류 재시도는 여전히 유효하다.
@@ -719,6 +726,25 @@ class Settings(BaseSettings):
                 f"(got {self.stream_total_timeout_buyer_s} < "
                 f"{self.stream_first_token_timeout_s}): "
                 "the total stream cap cannot expire before the first-event wait"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_search_retry_within_first_token_budget(self) -> "Settings":
+        """I-1 검색 재시도 총량이 first-token 예산을 넘으면 기동 실패 (#133).
+
+        검색은 첫 SSE 토큰보다 **앞**에 있다(decompose → 카테고리 매핑 → search → rerank →
+        token). 재시도 총량이 first-token 상한을 넘으면 재시도만으로 예산을 태워 504가
+        확정되므로, 살리려던 턴을 오히려 죽인다. `llm_timeout_s * (llm_max_retries + 1)` 과
+        같은 결의 예산식이며 한쪽만 튜닝하면 조용히 어긋나는 쌍이라 기동 시점에 고정한다.
+        """
+        budget = self.spring_timeout_s * (self.spring_max_retries + 1)
+        if budget >= self.stream_first_token_timeout_s:
+            raise ValueError(
+                "SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1) must be < "
+                f"STREAM_FIRST_TOKEN_TIMEOUT_S (got {budget} >= "
+                f"{self.stream_first_token_timeout_s}): search retries would exhaust the "
+                "first-token budget and force a 504"
             )
         return self
 

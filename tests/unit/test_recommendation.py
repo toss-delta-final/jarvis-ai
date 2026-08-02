@@ -1787,6 +1787,184 @@ async def test_search_products_missing_data_key_fails_closed(
     assert "data 키" in caplog.text
 
 
+# ─────────── I-1 검색 재시도 (#133) ───────────
+
+_I1_OK = {
+    "success": True,
+    "data": {"items": [{"productId": 101, "name": "P101", "price": 1000}], "totalCount": 1},
+}
+
+
+def _counting_client(monkeypatch: pytest.MonkeyPatch, *responses):
+    """호출 순서대로 응답/예외를 내는 MockTransport 클라이언트 — 호출 횟수를 센다.
+
+    `_FakeClient` 에는 카운터가 없어 재시도 검증에 쓸 수 없다. httpx 실경로를 그대로 태우려고
+    MockTransport 를 쓴다(저장소 관례 — respx 미설치, tests/unit/test_buyer_tracing.py 전례).
+    """
+    import httpx
+
+    import app.services.spring_client as sc
+
+    calls: list[int] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        item = responses[min(len(calls), len(responses) - 1)]
+        calls.append(1)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    monkeypatch.setattr(
+        sc,
+        "_client",
+        lambda: httpx.AsyncClient(
+            base_url="http://spring.test", transport=httpx.MockTransport(_handler)
+        ),
+    )
+    return calls
+
+
+async def test_search_retries_once_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """1차 타임아웃 → 2차 성공이면 정상 결과를 낸다(#133).
+
+    Spring 타임아웃은 3s 로 짧아 일시 지연이 재시도로 살아난다. LLM 만 30s+1회 재시도를 갖고
+    검색은 0회였던 비대칭을 해소한다 — SPEC-RECOMMEND-001 §오류처리가 이미 규정한 동작이다.
+    """
+    import httpx
+
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    calls = _counting_client(
+        monkeypatch, httpx.TimeoutException("slow"), httpx.Response(200, json=_I1_OK)
+    )
+    result = await sc.search_products(ProductSearchFilters())
+    assert [p.product_id for p in result.products] == [101]
+    assert len(calls) == 2
+
+
+async def test_search_gives_up_after_configured_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    """재시도까지 실패하면 SpringUnavailableError — 상위가 SEARCH_FAILED 로 낸다."""
+    import httpx
+
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    calls = _counting_client(monkeypatch, httpx.TimeoutException("slow"))
+    with pytest.raises(SpringUnavailableError):
+        await sc.search_products(ProductSearchFilters())
+    assert len(calls) == 2  # 1차 + 재시도 1회, 무한 재시도 아님
+
+
+async def test_search_retries_on_connect_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """연결 오류도 재시도 대상이다(일시 장애)."""
+    import httpx
+
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    calls = _counting_client(
+        monkeypatch, httpx.ConnectError("refused"), httpx.Response(200, json=_I1_OK)
+    )
+    assert len((await sc.search_products(ProductSearchFilters())).products) == 1
+    assert len(calls) == 2
+
+
+async def test_search_retries_on_5xx(monkeypatch: pytest.MonkeyPatch) -> None:
+    """5xx 는 업스트림 일시 장애라 재시도한다."""
+    import httpx
+
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    calls = _counting_client(monkeypatch, httpx.Response(503), httpx.Response(200, json=_I1_OK))
+    assert len((await sc.search_products(ProductSearchFilters())).products) == 1
+    assert len(calls) == 2
+
+
+async def test_search_retries_on_remote_disconnect(monkeypatch: pytest.MonkeyPatch) -> None:
+    """서버가 응답 도중 끊는 경우도 재시도한다 (#133 자체 점검).
+
+    httpx 계층에서 `RemoteProtocolError` 는 `NetworkError` 의 **하위가 아니라 형제**다
+    (둘 다 `TransportError` 직계). "연결 오류"로만 묶으면 이 흔한 일시 장애가 재시도에서
+    빠지므로 판정에 따로 적었다 — 초판이 실제로 이걸 빠뜨렸다.
+    """
+    import httpx
+
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    assert not isinstance(httpx.RemoteProtocolError("x"), httpx.NetworkError)  # 전제 고정
+    calls = _counting_client(
+        monkeypatch,
+        httpx.RemoteProtocolError("server disconnected"),
+        httpx.Response(200, json=_I1_OK),
+    )
+    assert len((await sc.search_products(ProductSearchFilters())).products) == 1
+    assert len(calls) == 2
+
+
+async def test_search_does_not_retry_local_protocol_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """우리 요청이 잘못된 경우(LocalProtocolError)는 재시도하지 않는다 — 다시 보내도 같다."""
+    import httpx
+
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    calls = _counting_client(
+        monkeypatch, httpx.LocalProtocolError("bad request"), httpx.Response(200, json=_I1_OK)
+    )
+    with pytest.raises(SpringUnavailableError):
+        await sc.search_products(ProductSearchFilters())
+    assert len(calls) == 1
+
+
+async def test_search_does_not_retry_4xx(monkeypatch: pytest.MonkeyPatch) -> None:
+    """4xx 계약 오류는 재시도해도 같은 결과다 — 즉시 실패해 예산을 태우지 않는다(#133)."""
+    import httpx
+
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    calls = _counting_client(monkeypatch, httpx.Response(400), httpx.Response(200, json=_I1_OK))
+    with pytest.raises(SpringUnavailableError):
+        await sc.search_products(ProductSearchFilters())
+    assert len(calls) == 1
+
+
+async def test_search_does_not_retry_malformed_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    """200 이지만 파싱 불가한 응답도 재시도 대상이 아니다 — 같은 응답이 또 온다."""
+    import httpx
+
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    calls = _counting_client(
+        monkeypatch,
+        httpx.Response(200, content=b"not json", headers={"content-type": "application/json"}),
+        httpx.Response(200, json=_I1_OK),
+    )
+    with pytest.raises(SpringUnavailableError):
+        await sc.search_products(ProductSearchFilters())
+    assert len(calls) == 1
+
+
+async def test_search_retry_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """spring_max_retries=0 이면 종전과 같이 1회만 호출한다(롤백 안전성)."""
+    import httpx
+
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    monkeypatch.setattr(get_settings(), "spring_max_retries", 0)
+    calls = _counting_client(monkeypatch, httpx.TimeoutException("slow"))
+    with pytest.raises(SpringUnavailableError):
+        await sc.search_products(ProductSearchFilters())
+    assert len(calls) == 1
+
+
 async def test_expose_min_fill_from_search_order() -> None:
     """rerank 가 expose_min 미만을 내면 검색순서로 보충한다(REQ-REC-021 5~8개)."""
     products = [
