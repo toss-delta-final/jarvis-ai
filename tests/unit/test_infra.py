@@ -9,9 +9,12 @@ import types
 import jwt
 import pytest
 from fastapi import HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
-from app.core.config import get_settings
+from app.api import chat as chat_api
+from app.core.config import Settings, get_settings
 from app.core.stream import StreamScopeFence, get_registry, open_stream
 from app.main import app
 
@@ -159,6 +162,108 @@ async def test_total_cap_truncates_with_done(monkeypatch: pytest.MonkeyPatch) ->
     assert '"done"' in text
     assert "never" not in text
     assert not get_registry().is_active("cap-sess")
+
+
+async def test_buyer_role_uses_buyer_total_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """구매자 역할은 전체 상한이 아니라 좁은 구매자 상한으로 절단한다."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "stream_first_token_timeout_s", 5.0)
+    monkeypatch.setattr(settings, "stream_total_timeout_buyer_s", 0.05)
+    monkeypatch.setattr(settings, "stream_total_timeout_s", 5.0)
+    monkeypatch.setattr(settings, "stream_disconnect_poll_s", 0.01)
+
+    async def slow():
+        yield 'data: {"type":"token","data":{"text":"hi"}}\n\n'
+        await asyncio.sleep(1.0)
+        yield "data: never\n\n"
+
+    resp = await open_stream(_FakeRequest(), "buyer-cap-sess", slow, role="buyer")
+    parts = [c if isinstance(c, str) else c.decode() async for c in resp.body_iterator]
+    text = "".join(parts)
+
+    assert '"token"' in text
+    assert '"done"' in text
+    assert "never" not in text
+    assert not get_registry().is_active("buyer-cap-sess")
+
+
+@pytest.mark.parametrize("role", ["seller", None])
+async def test_non_buyer_role_keeps_stream_total_cap(
+    monkeypatch: pytest.MonkeyPatch,
+    role: str | None,
+) -> None:
+    """판매자와 미지정 호출자는 좁은 구매자 상한의 영향을 받지 않는다."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "stream_first_token_timeout_s", 5.0)
+    monkeypatch.setattr(settings, "stream_total_timeout_buyer_s", 0.05)
+    monkeypatch.setattr(settings, "stream_total_timeout_s", 1.0)
+    monkeypatch.setattr(settings, "stream_disconnect_poll_s", 0.01)
+
+    async def within_total_cap():
+        yield 'data: {"type":"token","data":{"text":"hi"}}\n\n'
+        await asyncio.sleep(0.1)
+        yield "data: after-buyer-cap\n\n"
+
+    stream_key = f"{role or 'unspecified'}-cap-sess"
+    resp = await open_stream(_FakeRequest(), stream_key, within_total_cap, role=role)
+    parts = [c if isinstance(c, str) else c.decode() async for c in resp.body_iterator]
+    text = "".join(parts)
+
+    assert "after-buyer-cap" in text
+    assert '"done"' not in text
+    assert not get_registry().is_active(stream_key)
+
+
+def test_stream_total_timeout_defaults_are_role_specific(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """dotenv와 OS 환경 오버라이드를 배제한 출하 기본값 조합을 고정한다."""
+    monkeypatch.delenv("STREAM_TOTAL_TIMEOUT_BUYER_S", raising=False)
+    monkeypatch.delenv("STREAM_TOTAL_TIMEOUT_S", raising=False)
+    settings = Settings(_env_file=None)
+
+    assert settings.stream_total_timeout_buyer_s == 30.0
+    assert settings.stream_total_timeout_s == 90.0
+    assert settings.stream_total_timeout_buyer_s <= settings.stream_total_timeout_s
+
+
+def test_buyer_stream_cap_above_total_cap_is_rejected() -> None:
+    """구매자 상한이 전체 상한보다 느슨하면 기동 시점에 거절한다."""
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            stream_total_timeout_buyer_s=91.0,
+            stream_total_timeout_s=90.0,
+        )
+
+
+def test_buyer_endpoint_passes_buyer_stream_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    """실제 /chat 호출부가 구매자 상한 선택용 역할을 명시한다."""
+    captured: dict[str, object] = {}
+
+    async def _capture_open_stream(
+        _request,
+        _stream_key,
+        _factory,
+        *,
+        observer=None,
+        role=None,
+    ):
+        captured["observer"] = observer
+        captured["role"] = role
+
+        async def _body():
+            yield 'data: {"type":"done","data":{"finishReason":"stop"}}\n\n'
+
+        return StreamingResponse(_body(), media_type="text/event-stream")
+
+    monkeypatch.setattr(chat_api, "open_stream", _capture_open_stream)
+
+    response = _chat("role-sess", thread_id="role-thread")
+
+    assert response.status_code == 200
+    assert captured["observer"] is not None
+    assert captured["role"] == "buyer"
 
 
 async def test_disconnect_before_first_token_releases_fast(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -107,4 +107,5 @@ async def chat(
             request_id=request_id,
         ),
         observer=observation,
+        role="buyer",
     )
