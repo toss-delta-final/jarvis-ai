@@ -517,6 +517,10 @@ class Settings(BaseSettings):
     # AI→Spring 콜백 타임아웃 (§2.9 c, BE I-2 기준 통일). 실제 호출부에서 사용.
     spring_timeout_s: float = 3.0
     # AI→LLM 단일 호출 타임아웃 + 재시도 횟수 (§2.9 c).
+    # 현행 30s×(1+1)=60s 최악 예산은 구매자 전체 상한 30s(stream_total_timeout_buyer_s, #138)를 넘는다.
+    # timeout 뒤 재시도는 buyer done(stop) 절단 전에 끝날 수 없지만 빠른 오류 재시도는 여전히 유효하다.
+    # 구매자 상한은 재시도를 모두 담는 예산이 아니라 대기 백스톱이라 기동 불변식으로 묶지 않는다.
+    # 단일 호출 실측 p95는 4.3s다. 이 값을 올릴 때는 구매자 상한과의 관계도 함께 검토한다.
     llm_timeout_s: float = 30.0
     llm_max_retries: int = 1
 
