@@ -45,9 +45,9 @@ from app.core.conversation import conversation_key
 from app.core.errors import new_request_id
 from app.core.llm import LLMError, get_llm, resolve_model_id
 from app.core.pg_resilience import run_with_query_timeout
+from app.core.tracing import current_request_trace, trace_span
 from app.core.session_context import SessionStateUnavailable
 from app.core.text import _strip_unsafe
-from app.core.tracing import trace_span
 from app.agents.buyer.recommendation.state import CartIntent, CategoryQuery
 from app.schemas.chat import DoneData, ErrorData
 from app.schemas.spring import ProductSearchFilters
@@ -415,6 +415,8 @@ async def run_buyer_turn(
         await cart_store.clear_pending(thread_key)
 
     if decision.intent == "order_status":
+        if trace := current_request_trace():
+            trace.set_lane("fallback")
         fetch_order_status = (
             order_status_fn
             if order_status_fn is not None
@@ -431,18 +433,24 @@ async def run_buyer_turn(
         return
 
     if decision.intent == "general":
+        if trace := current_request_trace():
+            trace.set_lane("fallback")
         async for frame in stream_fallback(decision, observer=observer):
             yield frame
         yield sse("done", DoneData(finish_reason="stop").model_dump(by_alias=True))
         return
 
     if decision.intent == "cart_view":
+        if trace := current_request_trace():
+            trace.set_lane("cart")
         with trace_span("buyer.graph.cart", "chain"):
             async for frame in stream_cart_view(identity=identity, observer=observer):
                 yield frame
         return
 
     if decision.intent == "cart_add":
+        if trace := current_request_trace():
+            trace.set_lane("cart")
         allowed = {pid for pid, _ in last_reco}
         with trace_span("buyer.graph.cart", "chain"):
             async for frame in stream_cart_add(
@@ -457,6 +465,8 @@ async def run_buyer_turn(
                 yield frame
         return
 
+    if trace := current_request_trace():
+        trace.set_lane("recommend")
     with trace_span("buyer.graph.recommendation", "chain"):
         reverted = await _prepare_recommendation(
             request=request,
