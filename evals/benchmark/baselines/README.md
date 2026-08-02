@@ -128,7 +128,13 @@ uv run python -m evals.benchmark.runner --base-url http://127.0.0.1:8199 --targe
 1. `client_first_event_ms`와 `client_ttft_ms`는 다른 값이다. 런타임 first-token 상한이 강제하는
    대상은 **첫 SSE 이벤트인 전자**이며, 첫 텍스트 토큰인 후자가 아니다.
 2. degrade 26.0%는 전량 I-21 `POST /internal/recommendations`의 400 응답에 따른
-   `push_skipped`다. BE 데이터/계약 조건이며 앱 성능 문제가 아니다. error율은 0.0%다.
+   `push_skipped`다. 원인은 fixture의 `sessionId`가 UUID가 아니어서 §4.2 규정대로 400이 난
+   것이며, 같은 요청의 `sessionId`를 UUID로 바꾸면 200 응답과 `products.ready`가 확인되고
+   `push_skipped`가 사라져 추천 push 경로는 정상 동작한다. 상품 카드는 경로 B라 push 실패는
+   사용자가 카드를 보지 못한 상태이므로, 이 조건의 측정은 추천 성공 경로를 한 번도 재지 못했다.
+   `manifest.json`의 dependency note에도 같은 오귀속("BE 데이터/계약 조건")이 있으나 불변 측정
+   아티팩트라 수정하지 않으며 이 README가 정정본이다. fixture를 UUID로 고치는 일은 이후 측정
+   조건을 바꾸므로 #151 평가 자산 소유자의 판단 사항이며 #152에 남겼다. error율은 0.0%다.
 3. 이 결과는 로컬 WSL2 측정이며 AWS staging 결과가 아니다. #152가 같은 runner로 staging에서
    다시 측정한다.
 4. `buyer_dependency_degrade`는 Spring 중단 조건을 전제하므로 Spring 기동 상태인 이번 실행에서
