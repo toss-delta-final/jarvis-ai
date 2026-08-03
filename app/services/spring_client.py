@@ -97,6 +97,7 @@ _SpringOperation = Literal[
 _log = logging.getLogger(__name__)
 _color_synonym_limiters: dict[tuple[str, int], threading.BoundedSemaphore] = {}
 _color_synonym_limiter_lock = threading.Lock()
+_background_synonym_tasks: set[asyncio.Task[dict[str, list[str]]]] = set()
 
 
 def _color_synonym_limiter(dsn: str, max_concurrency: int) -> threading.BoundedSemaphore:
@@ -152,6 +153,8 @@ async def _load_color_synonym_map(settings) -> dict[str, list[str]] | None:
             timeout=settings.color_synonym_query_timeout_s,
         )
     except (TimeoutError, asyncio.CancelledError):
+        _background_synonym_tasks.add(task)
+        task.add_done_callback(_background_synonym_tasks.discard)
         task.add_done_callback(_consume_background_synonym_lookup)
         raise
 

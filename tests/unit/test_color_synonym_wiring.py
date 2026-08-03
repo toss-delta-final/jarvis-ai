@@ -125,6 +125,7 @@ async def test_expansion_saturation_degrades_immediately_then_recovers(monkeypat
     monkeypatch.setattr(sc, "get_settings", lambda: current_settings[0])
     monkeypatch.setattr(sc, "_client", lambda: _Client(seen))
     monkeypatch.setattr(sc, "_color_synonym_limiters", {}, raising=False)
+    monkeypatch.setattr(sc, "_background_synonym_tasks", set(), raising=False)
 
     from app.pipelines import color_synonyms
 
@@ -141,6 +142,7 @@ async def test_expansion_saturation_degrades_immediately_then_recovers(monkeypat
     try:
         await sc.search_products(ProductSearchFilters(color="남색"))
         assert started.is_set()
+        assert len(sc._background_synonym_tasks) == 1
 
         current_settings[0] = later_settings
         await asyncio.wait_for(
@@ -156,6 +158,11 @@ async def test_expansion_saturation_degrades_immediately_then_recovers(monkeypat
                 break
             await asyncio.sleep(0.001)
         assert finished.is_set()
+        for _ in range(100):
+            if not sc._background_synonym_tasks:
+                break
+            await asyncio.sleep(0.001)
+        assert not sc._background_synonym_tasks
 
         await sc.search_products(ProductSearchFilters(color="남색"))
         assert calls == 2

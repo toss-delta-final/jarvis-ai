@@ -759,10 +759,12 @@ async def test_color_harvest_saturation_skips_without_delaying_batch(monkeypatch
 
     monkeypatch.setattr(_batch.color_synonym_seed, "harvest_new_terms", blocked_harvest)
     monkeypatch.setattr(_batch, "_harvest_limiters", {})
+    monkeypatch.setattr(_batch, "_background_harvest_tasks", set(), raising=False)
     try:
         with pytest.raises(TimeoutError):
             await _batch._harvest_change_colors(_change(1), settings=settings)
         assert started.is_set()
+        assert len(_batch._background_harvest_tasks) == 1
 
         store = CatalogArtifactStore()
         started_at = asyncio.get_running_loop().time()
@@ -776,7 +778,11 @@ async def test_color_harvest_saturation_skips_without_delaying_batch(monkeypatch
         assert elapsed < 0.1
     finally:
         release.set()
-        await asyncio.sleep(0.01)
+        for _ in range(100):
+            if not _batch._background_harvest_tasks:
+                break
+            await asyncio.sleep(0.001)
+        assert not _batch._background_harvest_tasks
 
 
 async def test_background_harvest_logs_only_late_failure(caplog):

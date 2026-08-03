@@ -63,6 +63,27 @@ def test_runtime_connection_pool_uses_configured_max_size(monkeypatch) -> None:
     assert captured["max_size"] == 7
 
 
+def test_runtime_connection_pool_accepts_configured_boundary_size_one(monkeypatch) -> None:
+    from app.core import config
+    import psycopg_pool
+
+    real_pool = psycopg_pool.ConnectionPool
+
+    def closed_pool(dsn, **kwargs):
+        return real_pool(dsn, **{**kwargs, "open": False})
+
+    settings = Settings(_env_file=None, color_synonym_pool_max_size=1)
+    monkeypatch.setattr(config, "get_settings", lambda: settings)
+    monkeypatch.setattr(psycopg_pool, "ConnectionPool", closed_pool)
+    monkeypatch.setattr(color_synonyms, "_pools", {})
+
+    pool = color_synonyms._get_pool("postgresql://example.invalid/catalog")
+    try:
+        assert pool.min_size <= pool.max_size == 1
+    finally:
+        pool.close()
+
+
 def test_load_synonym_map_uses_approved_non_null_rows_and_deterministic_order(monkeypatch) -> None:
     calls = []
     # 쿼리 자체가 pending/null 을 제외하고, 반환 묶음은 doc_count desc → term asc.

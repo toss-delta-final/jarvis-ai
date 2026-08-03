@@ -442,11 +442,13 @@ def _get_pool(dsn: str):
             if pool is None:
                 # 런타임 승인 사전 풀과 같은 config 상한을 명시해 배치 플래그를 독립적으로
                 # 켜더라도 psycopg 암묵 기본값에 의존하지 않는다.
+                max_size = get_settings().color_synonym_pool_max_size
                 pool = ConnectionPool(
                     dsn,
                     configure=register_vector,
                     open=True,
-                    max_size=get_settings().color_synonym_pool_max_size,
+                    min_size=min(4, max_size),
+                    max_size=max_size,
                 )
                 _pools[dsn] = pool
     return pool

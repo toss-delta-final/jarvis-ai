@@ -27,10 +27,12 @@ def _get_pool(dsn: str):
 
                 # 배치 수확 풀과 같은 config 상한을 명시한다. 런타임 조회는 TTL 캐시가 대부분의
                 # 요청을 흡수하고, 만료 갱신만 이 유계 풀을 사용한다.
+                max_size = get_settings().color_synonym_pool_max_size
                 pool = ConnectionPool(
                     dsn,
                     open=True,
-                    max_size=get_settings().color_synonym_pool_max_size,
+                    min_size=min(4, max_size),
+                    max_size=max_size,
                 )
                 _pools[dsn] = pool
     return pool

@@ -41,6 +41,7 @@ Fetch = Callable[[str | None, int], Awaitable[ProductChangesPage]]
 Embed = Callable[[list[str]], list[list[float]]]
 _harvest_limiters: dict[tuple[str, int], threading.BoundedSemaphore] = {}
 _harvest_limiter_lock = threading.Lock()
+_background_harvest_tasks: set[asyncio.Task[int]] = set()
 
 
 @dataclass
@@ -108,6 +109,8 @@ async def _harvest_change_colors(change: ProductChange, *, settings: Settings) -
     except (TimeoutError, asyncio.CancelledError):
         # timeout·호출자 취소 뒤에도 worker는 shield 아래 계속 돈다. 완료 시 예외를 회수하되,
         # 현재 호출의 기존 실패/취소 전파 규약은 그대로 유지한다.
+        _background_harvest_tasks.add(task)
+        task.add_done_callback(_background_harvest_tasks.discard)
         task.add_done_callback(_consume_background_harvest)
         raise
 

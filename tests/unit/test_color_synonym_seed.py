@@ -382,6 +382,26 @@ def test_seed_connection_pool_is_reused_per_dsn(monkeypatch) -> None:
     assert created[0][1]["max_size"] == 7
 
 
+def test_seed_connection_pool_accepts_configured_boundary_size_one(monkeypatch) -> None:
+    import psycopg_pool
+
+    real_pool = psycopg_pool.ConnectionPool
+
+    def closed_pool(dsn, **kwargs):
+        return real_pool(dsn, **{**kwargs, "open": False})
+
+    settings = Settings(_env_file=None, color_synonym_pool_max_size=1)
+    monkeypatch.setattr(psycopg_pool, "ConnectionPool", closed_pool)
+    monkeypatch.setattr(seed, "_pools", {})
+    monkeypatch.setattr(seed, "get_settings", lambda: settings)
+
+    pool = seed._get_pool("postgresql://example.invalid/catalog")
+    try:
+        assert pool.min_size <= pool.max_size == 1
+    finally:
+        pool.close()
+
+
 def test_batch_harvest_upserts_only_unknown_terms_as_pending_proposals(monkeypatch) -> None:
     executed: list[str] = []
 
