@@ -317,17 +317,39 @@ async def stream_recommendation(
     # 표시-실제 불일치가 남는다(산문 token 은 고지해도 구조화된 칩은 거짓말을 계속한다).
     # §3.1 이 conditions 를 **0~1회**로 못박아 "고쳐서 재전송"이 불가하므로 순서로 푼다.
     #
-    # **모든 턴을 미루지 않는다** — 발동 조건은 검색 전에 이미 확정돼 있다: config 허용 목록에
-    # 든 필드가 이번 턴 필터에 실제로 설정돼 있어야 한다(추측이 아니라 판정이다). 해당 없는
-    # 절대다수 턴은 종전대로 검색 전에 칩을 내보내 첫 프레임 지연이 없다.
+    # **모든 턴을 미루지 않는다** — 자동 완화 대상(config 허용 목록, 기본 `ratingMin`)으로 만들
+    # 수 있는 후보가 이번 턴 필터에 실제로 있어야 한다. 해당 없는 턴은 종전대로 검색 전에 칩을
+    # 내보내 첫 프레임 지연이 없다.
+    #
+    # **다만 이 판정은 "완화가 일어날지"가 아니라 "일어날 수 있는지"다**(PR #248 리뷰) — 자동
+    # 완화는 검색 0건일 때만 도는데 그건 검색 전에 알 수 없다. 그래서 평점 조건이 걸린 턴은
+    # 결과가 넉넉해 완화가 안 일어나도 **매번** 조건 칩이 검색만큼 늦는다. 검색 이전에 나가는
+    # 이벤트는 이 conditions 하나뿐이라(첫 token 도 검색 뒤다) 그 턴의 첫 프레임이 통째로 밀린다.
+    # 그럼에도 미루는 쪽을 택한 이유는 대안이 더 나쁘기 때문이다: 먼저 내보내고 고치는 것은
+    # §3.1 conditions **0~1회**가 막고, 먼저 내보내고 두는 것은 "평점 4.5 이상" 칩 아래 4.0
+    # 상품이 깔리는 거짓말이 된다. 지연은 회복되지만 거짓 표시는 회복되지 않는다.
+    # 이 비용이 아까운 배포는 `relaxation_max_rounds=0` 으로 자동 완화와 함께 지연도 끈다.
+    #
     # 판정은 **자동 완화 자신의 조건**만 본다 — 칩 예산(`relaxation_max_probes`)과 엮으면,
     # 칩을 끈 설정(`=0`)에서 자동 완화는 도는데 조건 칩만 미리 나가 표시-실제 불일치가
     # 되살아난다(PR #248 리뷰 A 로 고친 바로 그 문제).
-    may_auto_relax = settings.relaxation_max_rounds > 0 and any(
-        getattr(decision.filters, attr, None) is not None
-        for field in settings.relaxation_auto_fields
-        if (attr := RELAXATION_FIELD_TO_ATTR.get(field))
-    )
+    # 판정에 후보 생성기를 그대로 쓴다 — 아래 루프가 도는 조건과 **같은 식**이라 어긋날 수 없다.
+    # 기동 검증이 허용 목록을 `{ratingMin}` 으로 잠가 둔 지금은 "필드가 설정돼 있나"를 손으로
+    # 판정하는 것과 결과가 같지만, 그건 그 잠금에 기댄 우연이다: 목록이 넓어지면 "설정은 됐는데
+    # 후보는 안 나오는" 경우(올림 단위 때문에 못 넓히는 priceMax 등)가 생겨 헛되이 미루게 된다.
+    # 완화 가능 여부의 정의를 두 곳에 두지 않는다. 순수 함수라 검색 왕복도 늘지 않는다.
+    try:
+        may_auto_relax = settings.relaxation_max_rounds > 0 and any(
+            candidate.field in settings.relaxation_auto_fields
+            for candidate in build_relaxation_candidates(decision.filters, settings)
+        )
+    except Exception as exc:  # noqa: BLE001 - 판정 실패가 conditions 를 통째로 막지 않게
+        # 이 호출은 conditions 발신 **이전** 경로라, 터지면 이벤트가 하나도 안 나간 채 스트림이
+        # 죽는다(`_merge_fanout_results` 와 같은 모양의 실패 — PR #248 리뷰).
+        # 미루지 않는 쪽으로 떨군다: 같은 이유로 아래 완화 블록도 실패해 완화가 일어나지 않으므로,
+        # 조건 칩을 먼저 내보내도 표시-실제 불일치가 생기지 않는다.
+        logger.warning("relaxation_gate_failed", extra={"reason": str(exc)})
+        may_auto_relax = False
     if not may_auto_relax:
         yield sse(
             "conditions",

@@ -354,6 +354,49 @@ async def test_conditions_chips_are_not_delayed_when_auto_relax_cannot_fire() ->
     assert _types(events).count("conditions") == 1
 
 
+async def test_disabling_auto_relaxation_also_disables_the_conditions_delay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`relaxation_max_rounds=0` 은 자동 완화와 **함께 지연도** 끈다.
+
+    평점 조건이 걸린 턴은 완화가 실제로 안 일어나도 조건 칩이 검색만큼 늦는다(검색 전에 나가는
+    이벤트가 conditions 하나뿐이라 첫 프레임이 통째로 밀린다). 그 비용이 아까운 배포를 위한
+    탈출구가 이 손잡이인데, 게이트가 `max_rounds` 를 안 보면 0 으로 꺼도 지연만 남는다 —
+    완화는 루프 진입 즉시 break 되므로 **아무 이득 없이** 느려지기만 한다.
+    """
+    settings = get_settings()
+    monkeypatch.setattr(settings, "relaxation_max_rounds", 0)
+    seen: list[str] = []
+
+    async def _search(filters, exclude_product_ids=None):  # noqa: ANN001
+        seen.append("search")
+        return ProductSearchResult(products=[_product(101, 39000)], total_count=1)
+
+    async def _push(push) -> bool:  # noqa: ANN001
+        return True
+
+    events = []
+    async for frame in run_buyer_turn(
+        _req(),
+        _member(),
+        # 평점 조건 有 — 게이트가 max_rounds 를 안 보면 이 턴이 미뤄진다
+        llm=FakeLLM(decompose=_decompose_with(ratingMin=4.5)),
+        search=_search,
+        push_fn=_push,
+    ):
+        line = frame.strip()
+        if line.startswith("data:"):
+            evt = json.loads(line[len("data:") :].strip())
+            if evt["type"] == "conditions":
+                seen.append("conditions")
+            events.append(evt)
+
+    assert seen[0] == "conditions"  # 검색보다 먼저 나갔다
+    assert _types(events).count("conditions") == 1
+    rating_chip = next(c for c in _conditions(events) if c["field"] == "ratingMin")
+    assert rating_chip["value"] == 4.5  # 완화가 꺼져 있으니 미리 내보내도 거짓이 아니다
+
+
 async def test_deferred_conditions_survive_fanout_merge_failure(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -520,6 +563,189 @@ async def test_scoped_refine_carries_the_auto_relaxation(caplog: pytest.LogCaptu
     assert "relaxation_carried" in caplog.text
 
 
+async def test_carry_turn_reads_the_store_only_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[PR #248 리뷰] 승계 턴도 스냅샷을 **한 번만** 읽는다.
+
+    `offers`(칩 클릭 판정)와 `applied`(승계)를 따로 읽으면 왕복이 2회로 늘 뿐 아니라, 그 사이에
+    다른 턴의 `put` 이 끼었을 때 옛 offers + 새 applied 라는 찢어진 조합을 본다 — 쓰기를 단일
+    `aput` 으로 묶어 없앤 상태가 읽기 쪽에서 되살아난다.
+    """
+    from app.agents.buyer.recommendation.state import RelaxationOfferStore
+
+    real = RelaxationOfferStore()
+    reads: list = []
+
+    class _Counting:
+        async def get_snapshot(self, key):  # noqa: ANN001
+            reads.append(key)
+            return await real.get_snapshot(key)
+
+        async def put(self, key, offers, applied):  # noqa: ANN001
+            await real.put(key, offers, applied)
+
+    async def _factory():
+        return _Counting()
+
+    monkeypatch.setattr(buyer_graph, "get_relaxation_offer_store", _factory)
+
+    async def _push(push) -> bool:  # noqa: ANN001
+        return True
+
+    calls: list = []
+    products = await _relaxed_first_turn(calls)
+
+    scoped = _decompose_with(ratingMin=4.5)
+    scoped["scopedToPrevious"] = True
+    turn2 = len(calls)
+    reads.clear()
+    await _collect(
+        run_buyer_turn(
+            _req(message="그 중에 더 저렴한 걸로"),
+            _member(),
+            llm=FakeLLM(decompose=scoped),
+            search=_rating_search(products, calls),
+            push_fn=_push,
+        )
+    )
+
+    assert calls[turn2] == 4.0  # 승계는 실제로 일어났다(읽기를 줄이려고 기능을 끈 게 아니다)
+    assert len(reads) == 1, f"승계 턴의 스토어 왕복은 1회여야 한다 — 실제 {len(reads)}회"
+
+
+async def test_store_read_failure_skips_carry_without_a_second_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """스냅샷 읽기가 통째로 실패하면 승계는 **조용히** 빠진다 — 실패 로그는 하나뿐이다.
+
+    읽기를 하나로 합치면서 `applied` 를 try 앞에서 초기화해 둔 이유다. 초기화가 없으면 읽기 실패
+    턴에 승계 분기가 **미정의 지역변수**를 건드려 `UnboundLocalError` 가 나고, 아래 가드가 그걸
+    삼켜 `relaxation_carry_failed` 라는 **가짜 2차 실패**를 남긴다 — 원인이 하나인데 로그가 둘로
+    갈라져 관측이 어긋난다.
+    """
+
+    class _Broken:
+        async def get_snapshot(self, key):  # noqa: ANN001
+            raise RuntimeError("pg down")
+
+        async def put(self, key, offers, applied):  # noqa: ANN001
+            return None
+
+    async def _factory():
+        return _Broken()
+
+    monkeypatch.setattr(buyer_graph, "get_relaxation_offer_store", _factory)
+
+    async def _push(push) -> bool:  # noqa: ANN001
+        return True
+
+    scoped = _decompose_with(ratingMin=4.5)
+    scoped["scopedToPrevious"] = True  # 승계 분기에 실제로 들어가는 턴
+    with caplog.at_level(logging.WARNING):
+        events = await _collect(
+            run_buyer_turn(
+                _req(message="그 중에 더 저렴한 걸로"),
+                _member(),
+                llm=FakeLLM(decompose=scoped),
+                search=_filtered_search([_product(101, 39000, rating=4.8)]),
+                push_fn=_push,
+            )
+        )
+
+    assert _types(events)[-1] == "done" and "error" not in _types(events)
+    assert "relaxation_offer_read_failed" in caplog.text  # 원인은 이것 하나
+    assert "relaxation_carry_failed" not in caplog.text  # 파생된 가짜 실패가 없다
+
+
+async def test_corrupt_stored_relaxation_does_not_kill_the_carry_turn(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """저장된 `applied` 가 손상돼도 승계 턴은 죽지 않고 사용자가 말한 조건으로 검색한다.
+
+    저장소는 신뢰 경계 밖이라 `field` 에 **해시 불가능한 값**(list 등)이 들어올 수 있는데,
+    그러면 `FIELD_TO_ATTR.get(...)` 이 `TypeError` 를 던진다 — `isinstance` 검사만으로는 못 막는
+    자리라 승계 블록의 가드가 실제로 맡는 일이다(가드를 지우면 추천 턴 전체가 죽는다).
+    """
+
+    class _Corrupt:
+        async def get_snapshot(self, key):  # noqa: ANN001
+            return {}, {"field": ["ratingMin"], "value": 4.0}  # field 가 해시 불가
+
+        async def put(self, key, offers, applied):  # noqa: ANN001
+            return None
+
+    async def _factory():
+        return _Corrupt()
+
+    monkeypatch.setattr(buyer_graph, "get_relaxation_offer_store", _factory)
+
+    async def _push(push) -> bool:  # noqa: ANN001
+        return True
+
+    calls: list = []
+    products = await _relaxed_first_turn(calls)  # prior(4.5) 를 만든다
+
+    scoped = _decompose_with(ratingMin=4.5)
+    scoped["scopedToPrevious"] = True
+    turn2 = len(calls)
+    with caplog.at_level(logging.WARNING):
+        events = await _collect(
+            run_buyer_turn(
+                _req(message="그 중에 더 저렴한 걸로"),
+                _member(),
+                llm=FakeLLM(decompose=scoped),
+                search=_rating_search(products, calls),
+                push_fn=_push,
+            )
+        )
+
+    assert _types(events)[-1] == "done" and "error" not in _types(events)
+    assert "relaxation_carry_failed" in caplog.text
+    assert calls[turn2] == 4.5  # 승계만 조용히 빠지고 사용자가 말한 조건은 그대로 산다
+
+
+async def test_conditions_survive_a_broken_relaxation_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """[PR #248 리뷰] 완화 판정이 터져도 조건 칩은 나간다.
+
+    이 판정은 conditions 발신 **이전** 경로라 감싸지 않으면 이벤트가 하나도 없이 스트림이 죽는다
+    (`_merge_fanout_results` 와 같은 모양). 미루지 않는 쪽으로 떨구는 게 맞다 — 같은 이유로 아래
+    완화 블록도 실패해 완화가 일어나지 않으므로 표시-실제 불일치가 생기지 않는다.
+
+    **0건 턴으로 본다** — 결과가 넉넉하면 완화 블록에 들어가지도 않아 "미리 내보내도 안전하다"는
+    바로 그 주장이 검증되지 않는다. 0건이어야 자동 완화가 시도되고, 그게 같은 이유로 실패하는
+    것까지 확인할 수 있다.
+    """
+
+    def _boom(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise RuntimeError("gate boom")
+
+    monkeypatch.setattr(recommendation_graph, "build_relaxation_candidates", _boom)
+    with caplog.at_level(logging.WARNING):
+        events = await _collect(
+            run_buyer_turn(
+                _req(),
+                _member(),
+                llm=FakeLLM(decompose=_decompose_with(ratingMin=4.5)),
+                search=_filtered_search([]),  # 0건 — 자동 완화가 시도되는 턴
+                push_fn=None,
+            )
+        )
+
+    types = _types(events)
+    assert types.count("conditions") == 1  # 조건 칩이 사라지지 않는다
+    assert types[-1] == "done" and "error" not in types  # 스트림은 정상 완주
+    assert "relaxation_gate_failed" in caplog.text  # 판정이 degrade 됐고
+    assert "relaxation_auto_failed" in caplog.text  # 같은 이유로 자동 완화도 안 돌았다
+    # 그래서 미리 내보낸 4.5 는 거짓말이 아니다 — 완화된 상품이 실리지 않았다.
+    rating_chip = next(c for c in _conditions(events) if c["field"] == "ratingMin")
+    assert rating_chip["value"] == 4.5
+    assert "products.ready" not in types
+
+
 async def test_scoped_refine_keeps_this_turn_new_condition() -> None:
     """["그 중에 **더 저렴한** 걸로"] 승계하면서 **이번 턴에 새로 말한 조건**도 지킨다.
 
@@ -630,17 +856,44 @@ async def test_scoped_refine_never_overwrites_a_restated_axis(
     assert seen[turn2] == expected, label
 
 
-async def test_turn_snapshot_is_written_atomically() -> None:
-    """[PR #248 리뷰] 칩 제안과 자동 완화는 **한 번의 쓰기**로 저장된다.
+@pytest.mark.parametrize(
+    "stored",
+    [None, {}, {"offers": "손상", "applied": "손상"}, {"offers": [], "applied": 7}],
+    ids=["없음", "빈스냅샷", "문자열", "타입불일치"],
+)
+async def test_snapshot_falls_back_to_empty_offers_never_none(stored) -> None:  # noqa: ANN001
+    """저장분이 없거나 손상돼도 `offers` 는 **항상 dict**, `applied` 는 None 이다.
+
+    호출부가 `offers.get(message)` 를 바로 부르므로, None 을 돌려주면 저장분이 없는 **첫 턴마다**
+    `AttributeError` → 경고 로그가 뜬다. 사용자에게 보이는 증상은 없지만 정상 동작이 장애로
+    기록되어 관측을 오염시킨다. 폴백 타입은 계약이라 값이 아니라 **타입**을 고정한다.
+    """
+    from app.agents.buyer.recommendation.state import RelaxationOfferStore
+
+    class _Store:
+        async def aget(self, ns, key):  # noqa: ANN001
+            return type("Item", (), {"value": stored})() if stored is not None else None
+
+    offers, applied = await RelaxationOfferStore(_Store()).get_snapshot("t1")
+    assert offers == {} and isinstance(offers, dict)
+    assert applied is None
+
+
+async def test_turn_snapshot_is_read_and_written_atomically() -> None:
+    """[PR #248 리뷰] 칩 제안과 자동 완화는 **한 번의 쓰기·한 번의 읽기**로 오간다.
 
     둘은 "이번 턴 화면에 무엇이 있었나"라는 한 스냅샷이다. 따로 두 번 쓰면 뒤엣것만 pg 일시
     장애로 실패했을 때 `offers` 는 이번 턴인데 `applied` 는 지난 턴인 **찢어진 상태**가 남고,
     다음 턴 "그 중에" 가 화면에 보여준 적 없는 완화를 이어붙인다 — 단일 쓰기로 그 부분 실패를
     구조적으로 없앤다.
+
+    **읽기도 같은 이유로 한 번이다**(2차 리뷰) — 쓰기만 묶고 읽기를 offers/applied 로 나누면,
+    두 `aget` 사이에 다른 턴의 `put` 이 끼었을 때 같은 찢어진 조합이 읽기 쪽에서 되살아난다.
     """
     from app.agents.buyer.recommendation.state import RelaxationOfferStore
 
     writes: list = []
+    reads: list = []
 
     class _CountingStore:
         def __init__(self):
@@ -651,6 +904,7 @@ async def test_turn_snapshot_is_written_atomically() -> None:
             self._data[(ns, key)] = value
 
         async def aget(self, ns, key):  # noqa: ANN001
+            reads.append((ns, key))
             value = self._data.get((ns, key))
             return type("Item", (), {"value": value})() if value is not None else None
 
@@ -660,13 +914,19 @@ async def test_turn_snapshot_is_written_atomically() -> None:
     )
 
     assert len(writes) == 1, f"스냅샷은 단일 쓰기여야 한다 — 실제 {len(writes)}회"
-    assert await store.get("t1") == {"칩": {"field": "priceMax", "value": 65000}}
-    assert await store.get_applied("t1") == {"field": "ratingMin", "value": 4.0}
+    assert await store.get_snapshot("t1") == (
+        {"칩": {"field": "priceMax", "value": 65000}},
+        {"field": "ratingMin", "value": 4.0},
+    )
+    # [PR #248 리뷰] **읽기도 1회**다 — 쓰기를 원자적으로 묶어 찢어짐을 없애 놓고 읽기를
+    # offers/applied 로 나누면, 두 aget 사이에 다른 턴의 put 이 끼었을 때 옛 offers + 새 applied
+    # 라는 같은 찢어짐이 읽기 쪽에서 되살아난다(승계 경로의 pg 왕복도 2회가 된다).
+    assert len(reads) == 1, f"스냅샷은 단일 읽기여야 한다 — 실제 {len(reads)}회"
 
     # 다음 턴에 완화 채택이 없으면 같은 쓰기로 applied 가 비워진다(옛 값이 남지 않는다).
     await store.put("t1", {}, None)
     assert len(writes) == 2
-    assert await store.get("t1") == {} and await store.get_applied("t1") is None
+    assert await store.get_snapshot("t1") == ({}, None)
 
 
 @pytest.mark.parametrize("field", ["relaxation_chip_fields", "relaxation_auto_fields"])
@@ -686,43 +946,48 @@ def test_duplicate_relaxation_fields_fail_startup(field: str) -> None:
     assert field.upper() in str(exc.value)
 
 
-async def test_carry_is_skipped_on_general_turns(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_carry_is_skipped_on_general_turns(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """[PR #248 리뷰] `general` 턴에서는 승계를 계산하지 않는다.
 
     general 은 `stream_fallback` 으로 바로 빠져 `decision.filters` 를 아무도 쓰지 않는다 —
     승계를 계산해 봐야 조용히 버려지고 "영속시킨다"는 주석만 거짓이 된다. 칩 클릭 분기처럼
     intent 를 강제하지도 않는다: 저쪽은 우리가 만든 label 과 정확히 일치해 오해의 여지가 없지만
     `scopedToPrevious` 는 LLM 판정이라 정보성 질문("그 중에 뭐가 인기 많아?")까지 납치한다.
+
+    **승계가 성립하는 상태를 실제로 만들어 놓고 본다** — 신규 스레드는 `prior` 가 없어 intent 와
+    무관하게 승계가 안 걸리므로, 그 상태로 "승계 안 됨"을 단언하면 intent 게이트를 지워도 통과하는
+    빈 테스트가 된다. 그래서 턴1을 완화까지 태워 `prior`(4.5)·`applied`(4.0)를 만든 뒤,
+    **같은 조건을 general 로만 바꿔** 승계가 막히는지 본다.
     """
-    reads: list = []
 
-    class _Spy:
-        async def get(self, key):  # noqa: ANN001
-            return {}
+    async def _push(push) -> bool:  # noqa: ANN001
+        return True
 
-        async def get_applied(self, key):  # noqa: ANN001
-            reads.append(key)
-            return {"field": "ratingMin", "value": 4.0}
+    calls: list = []
+    products = await _relaxed_first_turn(calls)
 
-        async def put(self, key, offers, applied):  # noqa: ANN001
-            return None
-
-    async def _spy():
-        return _Spy()
-
-    monkeypatch.setattr(buyer_graph, "get_relaxation_offer_store", _spy)
-    general = {"intent": "general", "reply": "네 그럼요", "filters": {}, "scopedToPrevious": True}
-    events = await _collect(
-        run_buyer_turn(
-            _req(message="그 중에 뭐가 제일 인기 많아?"),
-            _member(),
-            llm=FakeLLM(decompose=general),
-            search=_filtered_search([]),
-            push_fn=None,
+    # 턴2 — 승계 조건은 그대로 갖추고(scopedToPrevious + prior 와 같은 축 값) intent 만 general.
+    general = _decompose_with(ratingMin=4.5)
+    general["intent"] = "general"
+    general["reply"] = "네 그럼요"
+    general["scopedToPrevious"] = True
+    with caplog.at_level(logging.INFO):
+        events = await _collect(
+            run_buyer_turn(
+                _req(message="그 중에 뭐가 제일 인기 많아?"),
+                _member(),
+                llm=FakeLLM(decompose=general),
+                search=_rating_search(products, calls),
+                push_fn=_push,
+            )
         )
-    )
 
-    assert reads == []  # 승계 조회 자체를 하지 않는다
+    # 승계할 `applied`(4.0)가 저장돼 있고 조건도 맞는데 이어받지 않는다. 읽기 자체는 칩 클릭
+    # 판정 때문에 어차피 하므로(스냅샷 1회로 합쳐졌다) "승계했는가"는 `relaxation_carried` 로 본다.
+    assert "relaxation_carried" not in caplog.text
     assert "products.ready" not in _types(events)  # 추천으로 납치하지 않는다
 
 
@@ -1209,10 +1474,18 @@ async def test_probe_failure_after_search_does_not_kill_the_stream(
     `_run_search` 호출만 감쌌을 때는 그 뒤(병합·사후필터)에서 난 예외가
     `asyncio.gather`(return_exceptions 없음)로 그대로 전파돼, **칩 하나 만들려던 부가 조회가
     SSE 스트림 전체를 죽였다.** 여기서는 완화 probe 응답만 후처리에서 터지는 객체로 돌려준다.
+
+    **fan-out 이 아닌 턴으로 본다**(2차 리뷰) — `categoryQueries` 가 있으면 같은 응답이
+    `_merge_fanout_results` 가드에 **먼저** 걸려(`search_merge_failed`) probe 가드까지 오지 않는다.
+    그러면 이 테스트는 probe 가드를 지워도 통과하는 빈 테스트가 된다. leg 이 없으면 병합 단계가
+    없어 `_post_filter` 에서 터지고, 그게 이 가드가 실제로 맡은 자리다.
     """
 
     async def _push(push) -> bool:  # noqa: ANN001
         return True
+
+    no_fanout = json.loads(json.dumps(DEFAULT_DECOMPOSE))
+    no_fanout["categoryQueries"] = []
 
     class _BrokenResult:
         """후처리(`.products` 접근) 시점에 터지는 응답 — 검색 호출 자체는 성공한 상황."""
@@ -1230,16 +1503,20 @@ async def test_probe_failure_after_search_does_not_kill_the_stream(
 
     with caplog.at_level(logging.WARNING):
         events = await _collect(
-            run_buyer_turn(_req(), _member(), llm=FakeLLM(), search=_search, push_fn=_push)
+            run_buyer_turn(
+                _req(),
+                _member(),
+                llm=FakeLLM(decompose=no_fanout),
+                search=_search,
+                push_fn=_push,
+            )
         )
 
     assert _types(events)[-1] == "done"
     assert "error" not in _types(events)
     assert "products.ready" in _types(events)  # 본 경로는 멀쩡히 완주한다
     assert _suggestions(events) == []  # 터진 후보의 칩만 빠진다
-    # 어느 방어가 잡든 스트림은 살아남아야 한다 — 이 응답은 fan-out 병합에서 먼저 걸리므로
-    # `search_merge_failed`(더 이른 지점)로, 비-fanout 경로면 `relaxation_probe_failed` 로 남는다.
-    assert "search_merge_failed" in caplog.text or "relaxation_probe_failed" in caplog.text
+    assert "relaxation_probe_failed" in caplog.text  # probe 가드가 잡았다(병합 가드가 아니라)
 
 
 @pytest.mark.parametrize(

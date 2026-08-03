@@ -250,20 +250,25 @@ class RelaxationOfferStore:
         )
         return item.value if item and isinstance(item.value, dict) else {}
 
-    async def get(self, key: str) -> dict[str, dict]:
-        """`label → {"field":…, "value":…}`. 저장분이 없으면 빈 dict."""
-        offers = (await self._snapshot(key)).get(_OFFERS_KEY)
-        return offers if isinstance(offers, dict) else {}
+    async def get_snapshot(self, key: str) -> tuple[dict[str, dict], dict | None]:
+        """`(offers, applied)` 를 **한 번의 왕복으로 함께** 돌려준다.
 
-    async def get_applied(self, key: str) -> dict | None:
-        """직전 턴에 **자동 적용**된 완화 `{"field":…, "value":…}`. 없으면 None.
+        - `offers`: `label → {"field":…, "value":…}` — "누르면 이렇게 됩니다"(미동의). 없으면 빈 dict.
+        - `applied`: 직전 턴에 **자동 적용**된 완화 — "서버가 이미 이렇게 적용했습니다"(미동의).
+          다음 턴이 그 결과 집합을 가리키면("그 중에") 사용자가 수용한 것으로 보고 이어받는다(#113).
 
-        칩 제안(`offers`)과 역할이 다르다 — 저건 "누르면 이렇게 됩니다"(미동의)이고, 이건 "서버가
-        이미 이렇게 적용했습니다"(미동의)다. 다음 턴이 그 결과 집합을 가리키면("그 중에") 사용자가
-        수용한 것으로 보고 이어받는다(#113).
+        **둘을 따로 읽지 않는다**(PR #248 리뷰). 쓰기를 원자적으로 묶어 찢어진 상태를 없애 놓고
+        읽기를 두 번으로 나누면, 두 `aget` 사이에 다른 턴의 `put` 이 끼었을 때 `offers` 는 옛
+        스냅샷 · `applied` 는 새 스냅샷인 **같은 찢어짐이 읽기 쪽에서 되살아난다.** 한 번 읽어
+        둘 다 뽑으면 pg 왕복도 절반이다(승계 경로는 종전에 왕복 2회였다).
         """
-        applied = (await self._snapshot(key)).get(_APPLIED_KEY)
-        return applied if isinstance(applied, dict) else None
+        snapshot = await self._snapshot(key)
+        offers = snapshot.get(_OFFERS_KEY)
+        applied = snapshot.get(_APPLIED_KEY)
+        return (
+            offers if isinstance(offers, dict) else {},
+            applied if isinstance(applied, dict) else None,
+        )
 
     async def put(self, key: str, offers: dict[str, dict], applied: dict | None) -> None:
         """이번 턴 스냅샷으로 **통째 교체**한다 — 부분 갱신을 API 로 열어두지 않는다.

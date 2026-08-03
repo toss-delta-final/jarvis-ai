@@ -472,17 +472,27 @@ async def run_buyer_turn(
     # 없는데 매 턴 pg 왕복을 얹으면 완화와 무관한 흐름이 느려진다.
     relax_store = await get_relaxation_offer_store()
     if decision.intent in ("recommend", "general"):
+        # 칩 제안(`offers`)과 적용된 완화(`applied`)를 **한 번에** 읽는다(PR #248 리뷰) —
+        # 둘은 한 스냅샷이라, 따로 두 번 읽으면 그 사이에 다른 턴의 `put` 이 끼었을 때
+        # 옛 offers + 새 applied 라는 찢어진 조합을 볼 수 있다(쓰기 쪽에서 없앤 바로 그 상태).
+        # 승계 경로의 pg 왕복도 2회 → 1회로 준다. 읽기가 통째로 실패하면 아래 승계 분기가
+        # `applied=None` 을 보고 조용히 건너뛴다.
+        applied: dict | None = None
         # **해석까지 통째로 감싼다**(PR #248 리뷰) — 읽기만 감싸면 저장 값이 기대한
         # `{"field":…, "value":…}` 형태가 아닐 때(스키마 변경·롤링 배포 중 신구 혼재·손상)
         # `AttributeError` 가 올라가 턴이 죽는다. 아래 주석이 약속하는 "무해하게 폴백"이
         # 실제로 성립하려면 파싱·검증도 같은 범위 안에 있어야 한다.
         try:
-            offer = (await relax_store.get(thread_key)).get(request.message.strip())
-            relaxed = _relaxed_filters_from_offer(offer, prior or decision.filters)
+            offers, applied = await relax_store.get_snapshot(thread_key)
+            relaxed = _relaxed_filters_from_offer(
+                offers.get(request.message.strip()), prior or decision.filters
+            )
         except Exception as exc:  # noqa: BLE001 - 상태 저장소 장애가 턴을 죽이지 않게(degrade)
             # 이 경로는 **편의 기능**이다 — 실패하면 칩 클릭이 종전처럼 decompose 해석으로
             # 처리될 뿐이다. 여기서 예외를 올리면 pg 한 번 흔들릴 때 완화와 무관한 일반 대화
             # 턴까지 깨진다(§7 degrade 원칙). CancelledError(BaseException)는 전파된다.
+            # 읽기가 성공한 뒤 **해석만** 터진 경우 `applied` 는 이미 채워져 승계 경로가 살아
+            # 있다 — 칩 하나가 손상돼도 무관한 승계까지 같이 죽이지 않는다(종전 동작 유지).
             logger.warning("relaxation_offer_read_failed", extra={"reason": str(exc)})
             relaxed = None
         if relaxed is not None:
@@ -507,7 +517,7 @@ async def run_buyer_turn(
             # 참조가 **없는** 리파인("더 저렴한 걸로")은 여기 오지 않아 원래 조건으로 되돌아가고,
             # 그 턴에 다시 완화가 필요하면 다시 고지된다(SPEC "매 완화 알림" 유지).
             try:
-                applied = await relax_store.get_applied(thread_key)
+                # `applied` 는 위에서 `offers` 와 **같은 스냅샷으로 이미 읽었다**(PR #248 리뷰).
                 # 기준은 **이번 턴 filters** 다(칩 클릭 경로와 다르다) — 칩 클릭은 메시지가 칩
                 # 문구뿐이라 새 의도가 없어 prior 를 그대로 재현하지만, 여기서는 사용자가
                 # "그 중에 **더 저렴한** 걸로"처럼 새 조건을 함께 말한다. prior 를 기준으로 삼으면
@@ -521,8 +531,11 @@ async def run_buyer_turn(
                 carried = None
                 if _carry_axis_untouched_this_turn(applied, prior, decision.filters):
                     carried = _relaxed_filters_from_offer(applied, decision.filters)
-            except Exception as exc:  # noqa: BLE001 - 저장소 장애가 턴을 죽이지 않게(degrade)
-                logger.warning("relaxation_applied_read_failed", extra={"reason": str(exc)})
+            except Exception as exc:  # noqa: BLE001 - 손상된 저장 값이 턴을 죽이지 않게(degrade)
+                # 읽기는 위로 합쳐졌으니 여기 남은 실패는 **해석**뿐이다(저장 값 손상·스키마 혼재).
+                # 그래도 감싼 채로 둔다 — 승계는 편의 기능이라, 실패하면 사용자가 말한 조건만으로
+                # 검색하면 될 뿐 턴을 죽일 이유가 없다(§7 degrade 원칙).
+                logger.warning("relaxation_carry_failed", extra={"reason": str(exc)})
                 carried = None
             if carried is not None:
                 decision.filters = carried
