@@ -1577,6 +1577,53 @@ def test_negative_numeric_filters_are_rejected_by_the_schema(attr: str) -> None:
     assert getattr(ProductSearchFilters.model_validate({attr: 0}), attr) == 0  # 0 은 정상값
 
 
+async def test_pre_existing_negative_thread_filters_do_not_brick_the_thread(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """[PR #248 3차 리뷰] `ge=0` 이 **소급 적용**돼도 옛 레코드가 스레드를 죽이지 않는다.
+
+    이 PR 이전에는 음수가 검증을 통과해 pg-profile 에 영속될 수 있었다. `ThreadFilterStore.get()`
+    은 `run_buyer_turn` 진입 직후 **decompose 보다도 먼저** 불리므로, 감싸지 않으면 그런 스레드는
+    매 턴 여기서 죽고 LLM degrade 같은 정상 오류 이벤트조차 못 낸다(그 코드에 닿기 전이다).
+    pg_store 에 TTL 도 없어 스스로 낫지 않는 **영구 broken** 상태가 된다.
+    """
+    poisoned = {"price_max": -50000, "keyword": "이어폰"}  # 옛 스키마에서는 정상이던 값
+
+    class _Poisoned:
+        async def aget(self, ns, key):  # noqa: ANN001
+            return type("Item", (), {"value": poisoned})()
+
+        async def aput(self, ns, key, value):  # noqa: ANN001
+            return None
+
+    # 스토어 계층 — 터지지 않고 "이전 맥락 없음"으로 떨어진다.
+    with caplog.at_level(logging.WARNING):
+        assert await buyer_graph.ThreadFilterStore(_Poisoned()).get("t1") is None
+    assert "thread_filters_unreadable" in caplog.text  # 조용히 삼키지 않는다
+
+    # 턴 계층 — 그 스레드가 정상적으로 완주한다.
+    async def _push(push) -> bool:  # noqa: ANN001
+        return True
+
+    with pytest.MonkeyPatch.context() as mp:
+
+        async def _store():
+            return buyer_graph.ThreadFilterStore(_Poisoned())
+
+        mp.setattr(buyer_graph, "get_thread_store", _store)
+        events = await _collect(
+            run_buyer_turn(
+                _req(),
+                _member(),
+                llm=FakeLLM(decompose=_decompose_with(priceMax=50000)),
+                search=_filtered_search([_product(101, 39000)]),
+                push_fn=_push,
+            )
+        )
+
+    assert _types(events)[-1] == "done" and "error" not in _types(events)
+
+
 def test_auto_relaxation_can_be_disabled_but_not_widened() -> None:
     """목록을 **비우는 것**(자동 완화 전면 off)은 정상적인 의사표현이라 허용한다."""
     assert Settings(relaxation_auto_fields=[]).relaxation_auto_fields == []

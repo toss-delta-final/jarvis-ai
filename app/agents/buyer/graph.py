@@ -71,8 +71,27 @@ class ThreadFilterStore:
         self._store = store or InMemoryStore()
 
     async def get(self, key: str) -> ProductSearchFilters | None:
+        """저장된 누적 필터. 없거나 **지금 스키마로 못 읽으면** None (= 이전 맥락 없음).
+
+        스키마 제약은 **소급 적용된다**(PR #248 3차 리뷰). `ge=0` 을 새로 걸면 그 전에 저장된
+        음수 레코드가 지금은 `ValidationError` 가 되는데, 이 호출은 `run_buyer_turn` 진입 직후
+        **decompose 보다도 먼저** 감싸이지 않은 채 실행된다. 감싸지 않으면 그런 스레드는 매 턴
+        여기서 죽고, LLM degrade 같은 정상 오류 이벤트조차 못 내며(그 코드에 닿기 전이다),
+        pg_store 에 TTL 도 없어 스스로 낫지 않는 **영구 broken** 상태가 된다.
+
+        None 으로 떨구면 그 턴은 "이전 필터 없음"으로 정상 진행하고, 추천 턴 끝의 `put` 이 새
+        값으로 덮어써 **스스로 회복**한다. 읽기 경로에서 삭제 쓰기를 하지는 않는다 — None 을
+        돌려주는 것만으로 증상이 사라지고, 조회에 부작용을 넣으면 실패 모드가 늘어난다.
+        """
         item = await run_with_query_timeout(self._store.aget((_NAMESPACE_ROOT, key), _FILTERS_KEY))
-        return ProductSearchFilters.model_validate(item.value) if item else None
+        if not item:
+            return None
+        try:
+            return ProductSearchFilters.model_validate(item.value)
+        except ValidationError as exc:
+            # 스키마 강화·배포 중 신구 혼재·손상 — 어느 쪽이든 이전 맥락을 잃을 뿐 턴은 산다.
+            logger.warning("thread_filters_unreadable", extra={"reason": str(exc)})
+            return None
 
     async def put(self, key: str, filters: ProductSearchFilters) -> None:
         await run_with_query_timeout(
