@@ -623,6 +623,39 @@ async def test_route_cart_add(monkeypatch: pytest.MonkeyPatch) -> None:
     assert action["type"] == "CART_ADDED" and action["cartItemId"] == 42
 
 
+async def test_route_cart_add_forwards_message_to_pending_switch_detection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """호출부가 원문 발화를 넘겨 fast 에코형 전환도 옛 상품 담기 전에 차단한다."""
+    from app.agents.buyer.cart.state import get_cart_store
+    from tests._fakes import FakeLLM
+    import app.services.spring_client as sc
+
+    async def fake_add(req):
+        raise AssertionError(f"해소 실패 전환은 Spring 담기에 도달하면 안 됨: {req}")
+
+    monkeypatch.setattr(sc, "add_to_cart", fake_add)
+    request = _req(message="다른 거 담아줘", thread_id="t-switch-message")
+    store = await get_cart_store()
+    key = await _thread_key(request, _member())
+    await store.set_last_reco(key, [(101, "세탁 세제"), (201, "무선 이어폰")])
+    await store.set_pending(
+        key,
+        PendingAdd(product_id=101, quantity=1, options=[CartOption(option_id=1001, name="일반형")]),
+    )
+    llm = FakeLLM(
+        decompose={
+            "intent": "cart_add",
+            "cart": {"productId": 101, "optionId": 1002, "quantity": 1},
+        }
+    )
+
+    events = await _collect(run_buyer_turn(request, _member(), llm=llm))
+
+    assert _types(events) == ["token", "done"]
+    assert await store.get_pending(key) is None
+
+
 async def test_route_cart_view(monkeypatch: pytest.MonkeyPatch) -> None:
     from tests._fakes import FakeLLM
     import app.services.spring_client as sc
@@ -1103,7 +1136,8 @@ async def test_cart_add_switches_product_during_pending() -> None:
     """되물음 중 다른 추천 상품으로 전환하면 pending 을 버리고 새 상품을 담는다(라운드3)."""
     store = CartStateStore()
     await store.set_pending(
-        "m:t", PendingAdd(product_id=1, quantity=1, options=[CartOption(option_id=3, name="블루")])
+        "m:t",
+        PendingAdd(product_id=101, quantity=1, options=[CartOption(option_id=1001, name="일반형")]),
     )
     captured = {}
 
@@ -1114,17 +1148,134 @@ async def test_cart_add_switches_product_during_pending() -> None:
     events = await _collect(
         stream_cart_add(
             identity=_member(),
-            cart=CartIntent(product_id=2, quantity=1),  # 다른 상품으로 전환
+            cart=CartIntent(product_id=201, quantity=1),  # 다른 상품으로 전환
             cart_store=store,
             thread_key="m:t",
             settings=get_settings(),
-            allowed_product_ids={1, 2},
+            message="아니 이어폰 담아줘",
+            allowed_product_ids={101, 201},
             add_fn=add_fn,
             get_cart_fn=_empty_cart(),
         )
     )
-    assert captured["productId"] == 2  # 옛 상품(1) 아닌 새 상품(2)
+    assert captured["productId"] == 201  # 옛 상품(101) 아닌 새 상품(201)
     assert next(e for e in events if e["type"] == "action")["data"]["type"] == "CART_ADDED"
+    assert await store.get_pending("m:t") is None
+
+
+@pytest.mark.parametrize(
+    ("message", "cart"),
+    [
+        pytest.param(
+            "다른 거 담아줘",
+            CartIntent(product_id=101, option_id=1002, quantity=1),
+            id="fast-echo",
+        ),
+        pytest.param(
+            "이거 말고 다른 거 담아줘",
+            CartIntent(product_id=None, option_id=None, quantity=1),
+            id="smart-null",
+        ),
+    ],
+)
+async def test_cart_add_unresolved_switch_during_pending_does_not_add_old_product(
+    message: str, cart: CartIntent
+) -> None:
+    """전환을 해소 못한 두 티어 출력은 옛 상품·임의 옵션을 쓰지 않고 pending 을 해제한다."""
+    store = CartStateStore()
+    await store.set_pending(
+        "m:t",
+        PendingAdd(product_id=101, quantity=1, options=[CartOption(option_id=1001, name="일반형")]),
+    )
+
+    async def add_fn(req):
+        raise AssertionError(
+            f"해소 실패 전환은 담기에 도달하면 안 됨: product={req.product_id}, option={req.option_id}"
+        )
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=cart,
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            message=message,
+            allowed_product_ids={101, 201},
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
+        )
+    )
+
+    assert _types(events) == ["token", "done"]
+    assert events[0]["data"]["text"] == (
+        "어떤 상품을 담을까요? 추천을 먼저 받아보시면 담아드릴게요."
+    )
+    assert await store.get_pending("m:t") is None
+
+
+@pytest.mark.parametrize("message", ["일반형", "드럼형으로", "2번으로"])
+async def test_cart_add_option_answer_during_pending_still_adds_pending_product(
+    message: str,
+) -> None:
+    """전환 표지가 없는 옵션 답변은 productId=null 이어도 기존 pending 상품에 정상 적용한다."""
+    store = CartStateStore()
+    await store.set_pending(
+        "m:t",
+        PendingAdd(product_id=101, quantity=1, options=[CartOption(option_id=1001, name="일반형")]),
+    )
+    captured = {}
+
+    async def add_fn(req):
+        captured["productId"] = req.product_id
+        captured["optionId"] = req.option_id
+        return AddToCartResult(success=True, cart_item_id=8)
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(product_id=None, option_id=1001, quantity=1),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            message=message,
+            allowed_product_ids={101, 201},
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
+        )
+    )
+
+    assert captured == {"productId": 101, "optionId": 1001}
+    assert next(e for e in events if e["type"] == "action")["data"]["type"] == "CART_ADDED"
+    assert await store.get_pending("m:t") is None
+
+
+async def test_cart_add_other_color_during_pending_is_documented_safe_false_positive() -> None:
+    """알려진 한계: '다른 색'도 상품 전환으로 감지되지만 오담기 없이 해제 후 되묻는다."""
+    store = CartStateStore()
+    await store.set_pending(
+        "m:t",
+        PendingAdd(product_id=101, quantity=1, options=[CartOption(option_id=1001, name="일반형")]),
+    )
+
+    async def add_fn(req):
+        raise AssertionError(f"안전한 오탐은 담기에 도달하면 안 됨: {req}")
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(product_id=101, option_id=1002, quantity=1),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            message="다른 색으로 해줘",
+            allowed_product_ids={101, 201},
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
+        )
+    )
+
+    assert _types(events) == ["token", "done"]
     assert await store.get_pending("m:t") is None
 
 

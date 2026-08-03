@@ -115,6 +115,7 @@ async def stream_cart_add(
     cart_store: CartStateStore,
     thread_key: str,
     settings,
+    message: str = "",
     allowed_product_ids: set[int] | None = None,
     add_fn=None,
     get_cart_fn=None,
@@ -146,6 +147,14 @@ async def stream_cart_add(
     ):
         await cart_store.clear_pending(thread_key)
         pending = None
+    unresolved_switch = (
+        pending is not None
+        and (cart.product_id is None or cart.product_id == pending.product_id)
+        and any(marker in message for marker in settings.cart_pending_switch_markers)
+    )
+    if unresolved_switch:
+        await cart_store.clear_pending(thread_key)
+        pending = None
     if pending is not None:
         product_id: int | None = pending.product_id
         # 옵션 답변과 함께 수량을 다시 말하면("레드로 5개") 새 수량을 우선한다(기본 1이면 pending 유지).
@@ -155,10 +164,10 @@ async def stream_cart_add(
         quantity = cart.quantity if (cart.quantity != 1 and same_target) else pending.quantity
         attempts = pending.attempts
     else:
-        product_id = cart.product_id
+        product_id = None if unresolved_switch else cart.product_id
         quantity = cart.quantity
         attempts = 0
-    option_id = cart.option_id
+    option_id = None if unresolved_switch else cart.option_id
 
     # 경로 B — SSE에 카드가 없어 문맥으로 상품을 확정한다. 신규 담기는 직전 추천(last_reco)에 있는
     # productId 만 허용(LLM 이 발화 속 임의 숫자를 오추출해 추천 안 된 상품을 담는 것 차단). 되물음
