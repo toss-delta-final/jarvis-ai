@@ -623,6 +623,11 @@ class Settings(BaseSettings):
     # ── 구매자 추천 평가 지표(#143, evals/metrics) ──
     eval_buyer_k_list: tuple[int, ...] = (5, 10, 20)
 
+    # --- #144 actual-model eval 예산 gate ---
+    model_eval_max_calls_per_run: int = Field(default=800, gt=0)
+    model_eval_max_total_tokens_per_run: int = Field(default=30_000_000, gt=0)
+    model_eval_max_cost_usd_per_run: float = Field(default=20.0, gt=0.0)
+
     # ── 추천 scoring baseline(#145, evals/scoring) ──
     # 의미 유사도를 주 신호로 두고, profile·인기도·최신성·다양성은 보조 신호로 제한한다.
     # 최근 exact 재구매는 별도 감점이며 모든 값은 ScoringBuyerAdapter가 직접 소비한다.

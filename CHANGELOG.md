@@ -10,6 +10,7 @@
 ## [Unreleased]
 
 ### Added
+- **#144 — 실제 모델 추천 평가·회귀 리포트 runner 추가** — 고정 골든셋과 기존 metric runner를 runtime 배포 후보 provider/model 설정에 연결해 호출별 exact model·usage·비용·지연을 기록하고, provider 전 reserve형 예산 gate, versioned primary/secondary metric 반복 통계와 paired bootstrap, hard-constraint·coverage release gate, sealed holdout 승인 경로, 코드 해시 manifest 및 사람이 판독 가능한 Markdown/CSV 산출물을 제공한다.
 - **#145 — 설명 가능한 추천 scoring baseline 추가** — LLM 호출 없이 semantic·profile·popularity·주입형 recency·diversity·최근 exact 구매 감점을 성분별로 재구성 가능한 결정론 점수로 기록하고, hard constraint 컷을 점수와 분리한 paired dev 평가 및 고정 baseline을 `evals/scoring/`에 추가했다.
 - **#143 — 구매자 추천 품질 metric runner(`evals/metrics/`) 추가** — 골든셋 dev split에서 P@K·R@K·MRR·nDCG@K·Filter Accuracy·HCV·Coverage·Diversity를 네트워크·라이브 LLM 없이 결정적으로 계산하고 case·slice·전체 Markdown/CSV 리포트와 재현용 run manifest를 생성하며, ScriptedLLM + MockTransport로 실제 추천 코드 경로를 실행하고 `pytest -m eval` 가격 제약 PR 게이트로 회귀를 조기에 차단한다.
 - **#142 — 구매자 추천 골든셋 v1 구축** — 라이브 Spring I-1 응답과 실제 카탈로그 상품만으로 검색·개인화·재구매·카테고리 매핑 실패 43건을 구성하고, dev 31건과 라벨이 분리된 sealed holdout 12건을 안정 ID로 고정했다. camelCase 스키마 검증, #32 비교 하니스 어댑터, 합성 구매 이력의 실제 상품 참조, 결정론 스냅샷, dataset hash manifest, split 간 query·정답·persona·fixture 누출 감사와 봉인 해제 기록 API를 추가했다.
