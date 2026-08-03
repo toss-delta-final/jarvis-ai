@@ -694,16 +694,18 @@ class Settings(BaseSettings):
         """baseline 가중치·골든셋 기준일·최근구매 window를 fail-fast한다."""
         from datetime import date  # noqa: PLC0415 - #145 자기 validator의 ISO 파싱 전용
 
-        weights = (
+        # 감점 항만 켜진 baseline은 모든 상품을 0 이하로만 밀어 의미 있는 양의 신호가 없다.
+        positive_signal_weights = (
             self.scoring_weight_semantic,
             self.scoring_weight_profile_match,
             self.scoring_weight_popularity,
             self.scoring_weight_recency,
             self.scoring_weight_diversity_bonus,
+        )
+        weights = (
+            *positive_signal_weights,
             self.scoring_weight_recent_purchase_penalty,
         )
-        # 감점 항만 켜진 baseline은 모든 상품을 0 이하로만 밀어 의미 있는 양의 신호가 없다.
-        positive_signal_weights = weights[:-1]
         if not all(math.isfinite(weight) for weight in weights):
             raise ValueError("추천 scoring 가중치는 유한한 수여야 합니다")
         if any(weight < 0 for weight in weights):
