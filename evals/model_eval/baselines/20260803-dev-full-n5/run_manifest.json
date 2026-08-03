@@ -1,0 +1,110 @@
+{
+  "commitSha": "8aaa43d73369c5d3150ba652bf67428785d41903",
+  "dirty": true,
+  "hashes": {
+    "config": "26113229c94bc81d4a098f0210302c5c1d5d5056850ed33e7b0926a0395b9251",
+    "datasetManifest": "0f3b91efa922a56d5c053ae26203dc3aaaef0fb0213df744c9dcc48fc8331af7",
+    "evalConfig": "4556e2d0667ae9192f866e81c49eb334474b530373038e02ad1197da9d62fd30",
+    "fixtures": {
+      "catalog_snapshot.json": "db16232a30b1dad49dc9102c25988842cb7878ee522bd2c92c60bed68caf8301",
+      "purchase_history.json": "d9068b703e5ade93df6ab642dc9259b997fc891b6261d64d47968244921b6f74",
+      "search_responses.json": "88eeb27452236d0a9779de3ecb8ab3258503f1d5528f3b832ea2df1488754cf0"
+    },
+    "graph": "1d7bb2b640afa025750f83275199c78786f85727de232f8714e0eb050fce4cc9",
+    "modelEvalModules": {
+      "__init__.py": "99a955c32f5770f5194276195f4fa9dd2778cde579c2477547f8177438949fd8",
+      "__main__.py": "c86340f0f9e20e88f56c2fd39c6be2544e9336bfb348eea9d360b2ffcd1a3902",
+      "adapter.py": "e29c100d36916a616d9e028b27bde480170b5f92311662616003cab7cbf477d8",
+      "budget.py": "82bb811dc3ed17928d578c6d25cc81fc733b263c08bdd8db5416bc08f2b209c2",
+      "cli.py": "4c52dc69acef71c659cbddd8007ff489e89a82021a9acbe83aa815dfdc0034ac",
+      "manifest.py": "788c1c88cee427ba765069e3963cd0dccba503838ff6364c61bca1dbbd26e0c4",
+      "pricing.py": "51c543554be090d77b692f3bf2c455385efa55aec916c96a20209d4270dbead8",
+      "recording.py": "fb6046e431d7247edc329138abfaab378b05bdd041cdee64d6f19278895affd7",
+      "repeats.py": "863de4bfb35999a8d265478154ede8e32313cd97e35bc28243bedbd2971597bc",
+      "report.py": "a6da607795693c2db6cd0c2945d0b9a40220168988fc4170f6affbacb32420c5",
+      "stats.py": "4930aca85b2721ed95ef7970ade88ac0699ea544fbef6b967f1a95340972ceb8"
+    },
+    "pricingManifest": "5b7ba2287f325444144cb4e3d821d1c8fd77cbb673fb124d3cf2eb2a65c73de5",
+    "prompts": {
+      "decompose": "7ff7737c854f38a9b7ad2f85f55598cd92c3df6a48c7e160c5765d4043e4c2b1",
+      "rerank": "bbdd387022db47fd229ef0edf59ed42db1e444a77653a35bc98e7e141529bdbd"
+    },
+    "uvLock": "85f41455b55376fe54790ccfe407aa56d477301c579e71b940038aec3631742a"
+  },
+  "image": null,
+  "modelEval": {
+    "budget": {
+      "maxCalls": 800,
+      "maxCostUsd": 20.0,
+      "maxTotalTokens": 30000000
+    },
+    "caseIds": [
+      "buy-cmap-0001",
+      "buy-cmap-0002",
+      "buy-cmap-0003",
+      "buy-cmap-0004",
+      "buy-cmap-0005",
+      "buy-cmap-0006",
+      "buy-cold-0001",
+      "buy-cold-0002",
+      "buy-fail-0001",
+      "buy-fail-0002",
+      "buy-fail-0003",
+      "buy-gust-0001",
+      "buy-gust-0002",
+      "buy-mult-0001",
+      "buy-mult-0002",
+      "buy-over-0001",
+      "buy-over-0002",
+      "buy-over-0003",
+      "buy-pers-0001",
+      "buy-pers-0002",
+      "buy-pers-0003",
+      "buy-repu-0001",
+      "buy-repu-0002",
+      "buy-repu-0003",
+      "buy-srch-0001",
+      "buy-srch-0002",
+      "buy-srch-0003",
+      "buy-srch-0004",
+      "buy-srch-0005",
+      "buy-srch-0006",
+      "buy-srch-0007"
+    ],
+    "caseOrder": "caseId-asc",
+    "configVersion": "model-eval-config-v1",
+    "declaredRepeats": 5,
+    "executedRepeats": 5,
+    "modelConfig": {
+      "llmTimeoutS": 30.0,
+      "maxRetries": 1,
+      "maxTokens": {
+        "decompose": 800,
+        "rerank": 1500
+      },
+      "provider": "openai",
+      "rerankMaxTokensBase": 960,
+      "rerankMaxTokensPerItem": 60,
+      "searchBackend": "spring",
+      "tiers": {
+        "fast": {
+          "model": "gpt-5-nano",
+          "reasoningEffort": "minimal"
+        },
+        "smart": {
+          "model": "gpt-5.6-luna",
+          "reasoningEffort": "medium"
+        }
+      }
+    },
+    "split": "dev"
+  },
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "pythonVersion": "3.12.3",
+  "run": {
+    "command": "uv run python -m evals.model_eval --out evals/model_eval/baselines/20260803-dev-full-n5 --repeats 5",
+    "runId": "a8d78ae2-762e-4789-8a89-dffba2014beb",
+    "timestamp": "2026-08-03T02:10:12.628564+00:00"
+  },
+  "seed": 20260803
+}

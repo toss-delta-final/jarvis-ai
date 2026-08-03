@@ -82,6 +82,40 @@
   - 전제가 틀렸으면 조용히 우회하지 말고 **근거(파일·줄)와 함께 드러내 확인받고** 진행한다.
 - 관련: `app/services/spring_client.py::_search_query_params`, `app/schemas/spring.py`
   `ProductSearchResult` docstring, 이슈 #113
+
+## [2026-08-03] 스키마 기본 필드가 합집합 분모 지표를 오염시키지 않게 한다
+- 증상: 전량 실행의 `filterAccuracy`가 0.036이었다. `model_dump`가 모델의 판단이 아닌
+  `limit=30`과 `excludeProductIds=[]`까지 `extractedFilters`에 실어, 합집합 분모에서 매번
+  불일치 벌점으로 계산됐다.
+- 원인: 모델 산출과 검색 스키마의 기계적 기본값을 구분하지 않고 직렬화 결과 전체를 지표에
+  전달했다.
+- 규칙: **합집합 분모 지표에 넣는 산출에는 모델이 실제로 결정한 필드만 남긴다.** 스키마
+  기본값은 제거 대상을 명시한 상수로 관리해 직렬화 단계에서 걸러낸다.
+- 관련: #144, `evals/model_eval/adapter.py::_EXTRACTED_FILTER_EXCLUSIONS`,
+  `evals/metrics`의 `filter_accuracy`
+
+## [2026-08-03] 실패 신호가 정답 경로에서도 발생하는지 fixture로 먼저 확인한다
+- 증상: 0건 결과가 정답인 failure slice `buy-cmap-0005`를 `emptyPush` hard failure로
+  집계해, `hardFailureMax=0`인 release gate가 구조적으로 항상 실패할 뻔했다.
+- 원인: push 부재를 검색 후보의 존재 여부와 무관하게 실패로 판정했다.
+- 규칙: **실패 판정을 추가하기 전에 그 신호가 정답 경로에서도 발생하는지 fixture 실측으로
+  확인한다.** 빈 후보가 기대 결과인 케이스의 push 부재는 hard failure로 세지 않는다.
+- 관련: #144, `evals/model_eval/adapter.py`
+
+## [2026-08-03] 커밋된 baseline 산출물의 일치 검증은 manifest의 소스 해시까지 포함해서 한다
+- 증상: #145 리뷰 round-3에서 `config.py` validator를 수정한 뒤 "dev-v1 비교 True"로
+  보고했지만, 오케스트레이터의 독립 재실행 비교는 False였다. 지표·순위 아티팩트는 전부
+  동일했고, 양 arm `run_manifest.json`의 `hashes.config`(`config.py` SHA-256)와 `commitSha`만
+  어긋나 있었다.
+- 원인: run manifest는 재현 가능성을 위해 소스 파일 해시를 기록하므로, **소스를 만지는 모든
+  리뷰 라운드가 커밋된 baseline manifest를 무효화한다.** 결과(지표)가 안 변하는 수정이라는
+  생각에 재생성을 건너뛰었고, 일치 검증도 결과 파일 위주로 봐서 manifest 드리프트를 놓쳤다.
+- 규칙: **manifest가 소스 해시를 기록하는 커밋된 산출물은, 그 소스를 수정하는 라운드마다
+  재생성을 기본 절차에 포함한다.** 일치 검증은 결과 파일만이 아니라 normalize 대상 전체
+  (manifest 포함)의 byte 비교로 한다 — "지표 불변"과 "산출물 일치"는 다른 명제다.
+- 관련: #145, `evals/scoring/baselines/dev-v1/*/run_manifest.json`(`hashes.config`),
+  `evals/scoring/cli.py::normalize_paired_artifacts`, `evals/metrics/run_manifest.py`
+
 ## [2026-08-03] 결정론 검증은 실행마다 달라지는 인자를 실제로 바꿔서 한다
 - 증상: #143 metric runner의 byte-identical 검증을 같은 `--out` 경로로 두 번 실행해
   통과시켰지만, 서로 다른 출력 경로로 재실행하자 `run_manifest.json`의 `command`에 경로가
