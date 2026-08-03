@@ -60,10 +60,15 @@ class ProductSearchFilters(CamelModel):
     """
 
     category: str | None = None
-    price_min: int | None = None
-    price_max: int | None = None
+    # 수치 하한/상한은 **음수가 될 수 없다**(PR #248 3차 리뷰). 제약이 없으면 `priceMax=-50000`
+    # 같은 값이 검증을 통과해 그대로 Spring 쿼리 파라미터로 나가고, 오류 없이 "조건에 맞는 상품이
+    # 없다"는 **조용한 0건**으로만 드러나 원인 추적이 안 된다. 출처는 셋 다 신뢰 경계 밖이다 —
+    # decompose(LLM 산출)·저장된 완화 오퍼(pg-profile 왕복)·멀티턴 병합. 값 검증은 여기 한 곳에
+    # 모으고 호출부는 스키마에 맡긴다(사전 목록을 각자 두면 스키마보다 좁아져 조용히 어긋난다).
+    price_min: int | None = Field(default=None, ge=0)
+    price_max: int | None = Field(default=None, ge=0)
     brand: list[str] | None = None
-    rating_min: float | None = None
+    rating_min: float | None = Field(default=None, ge=0)
     keyword: str | None = None  # 상품명 LIKE — Spring I-1 와이어 파라미터
     # 의미검색용 자연어(#101) — AI 내부 필드. keyword(상품명 LIKE)와 분리되며 Spring 에 안 나가고
     # EmbeddingRerankBackend(방식2)가 pgvector 재정렬의 query 임베딩 입력으로 쓴다(§4.8 방식2).
