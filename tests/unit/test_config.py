@@ -134,12 +134,7 @@ def test_search_retry_defaults_fit_first_token_budget():
 
 
 def test_search_retry_budget_overrun_fails_startup():
-    """재시도 총량이 **턴 전체 예산**을 넘으면 기동을 막는다 — 살리려던 턴을 죽이는 설정이다.
-
-    first-token 상한이 아니라 전체 상한과 비교한다(#241/#138 lessons): first-token 이 재는 것은
-    첫 SSE 이벤트까지인데 추천 경로의 첫 이벤트는 `conditions` 이고 검색은 그 뒤라, 검색 재시도는
-    first-token 예산을 쓰지 않는다.
-    """
+    """재시도 총량이 **턴 전체 예산**을 넘으면 기동을 막는다 — 살리려던 턴을 죽이는 설정이다."""
     import pytest
     from pydantic import ValidationError
 
@@ -149,6 +144,34 @@ def test_search_retry_budget_overrun_fails_startup():
     # 판매자와 공용인 90s 가 아니라 구매자 전용 30s 와 비교한다 — I-1 검색은 구매자 경로 전용이라
     # 느슨한 쪽과 비교하면 검증이 이름만 남는다(#138 로 두 상한이 갈렸다).
     assert Settings(_env_file=None).stream_total_timeout_buyer_s == 30.0
+
+
+def test_search_retry_budget_must_also_fit_the_first_token_window():
+    """[#113 PR #248 3차 리뷰] 재시도 총량은 **first-token 상한** 안에도 들어와야 한다.
+
+    이 검증기는 원래 "추천 경로의 첫 이벤트는 `conditions` 이고 검색은 그 뒤라, 검색 재시도는
+    first-token 예산을 한 톨도 쓰지 않는다"를 전제로 전체 상한(30s)과만 비교했다. **#113 이 그
+    순서를 바꿨다** — 자동 완화가 검색 후에 조건을 바꿀 수 있는 턴은 표시-실제 불일치를 막으려고
+    `conditions` 를 검색 뒤로 미룬다. 그 턴에서는 검색 재시도가 first-token 예산을 실제로 쓰고,
+    넘기면 `stream.py` 의 `ft_deadline` 이 스트림을 끊어 504(UPSTREAM_TIMEOUT)가 된다.
+
+    전체 상한(30s)만 보면 12s 짜리 설정이 조용히 통과해 그 턴들을 죽인다 — 두 상한을 **함께**
+    본다. 재시도 횟수는 이미 `le=1` 로 묶여 있으므로 실제 튜닝 벡터는 타임아웃 값 쪽이다.
+    """
+    import pytest
+    from pydantic import ValidationError
+
+    # 전체 상한(30s)은 통과하지만 first-token(10s)은 못 넘는 구간 — 종전이면 조용히 통과했다.
+    with pytest.raises(ValidationError, match="first-token budget"):
+        Settings(_env_file=None, spring_timeout_s=6.0)  # 6 × 2 = 12s
+
+    # 반대 방향 — first-token 상한을 낮추는 설정도 같은 쌍으로 잡힌다.
+    with pytest.raises(ValidationError, match="first-token budget"):
+        Settings(_env_file=None, stream_first_token_timeout_s=5.0)  # 기본 예산 6s > 5s
+
+    # 예산을 함께 줄이면 정상 — 검증은 **쌍**을 보지 한쪽 값을 금지하지 않는다.
+    assert Settings(_env_file=None, stream_first_token_timeout_s=5.0, spring_timeout_s=2.0)
+    assert Settings(_env_file=None, spring_timeout_s=4.0)  # 8s < 10s — 여유가 있으면 통과
 
 
 def test_search_retries_capped_at_implemented_value():

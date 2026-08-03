@@ -18,7 +18,7 @@ if not ("smoke" in " ".join(sys.argv) and "not smoke" not in " ".join(sys.argv))
 
 from app.agents.buyer.cart.state import reset_cart_store
 from app.agents.buyer.graph import reset_thread_store
-from app.agents.buyer.recommendation.state import reset_revert_store
+from app.agents.buyer.recommendation.state import reset_repurchase_store, reset_revert_store
 from app.agents.profile import processed_events, session_activity
 from app.agents.profile import store as profile_store_module
 from app.agents.profile.store import reset_profile_store
@@ -46,6 +46,7 @@ def _reset_infra_state():
     reset_thread_store()
     reset_cart_store()
     reset_revert_store()
+    reset_repurchase_store()
     reset_profile_store()
     reset_catalog_store()
     get_registry()._active.clear()
@@ -57,6 +58,7 @@ def _reset_infra_state():
     reset_thread_store()
     reset_cart_store()
     reset_revert_store()
+    reset_repurchase_store()
     reset_profile_store()
     reset_catalog_store()
     get_registry()._active.clear()
