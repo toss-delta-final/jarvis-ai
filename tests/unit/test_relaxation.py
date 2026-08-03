@@ -260,6 +260,96 @@ async def test_auto_relaxation_emits_notice_and_recovers_products() -> None:
     assert push_calls
 
 
+def _conditions(events) -> list[dict]:
+    return [c for e in events if e["type"] == "conditions" for c in e["data"]["chips"]]
+
+
+async def test_conditions_chips_reflect_the_auto_relaxed_value(monkeypatch) -> None:  # noqa: ANN001
+    """[PR #248 리뷰 A] 자동 완화가 걸리면 조건 칩도 **완화된 값**으로 나간다.
+
+    조건 칩은 원래 검색 전에 나가는데 자동 완화는 검색 후에 조건을 바꾼다 — 먼저 내보내면
+    "평점 4.5 이상" 칩이 떠 있는데 실제 상품은 4.0 기준인 표시-실제 불일치가 남는다.
+    §3.1 이 conditions 를 0~1회로 못박아 재전송이 불가하므로 **순서**로 푼다.
+    """
+
+    async def _push(push) -> bool:  # noqa: ANN001
+        return True
+
+    products = [_product(101, 39000, rating=4.2), _product(102, 48000, rating=4.1)]
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(decompose=_decompose_with(ratingMin=4.5)),
+            search=_filtered_search(products),
+            push_fn=_push,
+        )
+    )
+
+    rating_chip = next(c for c in _conditions(events) if c["field"] == "ratingMin")
+    assert rating_chip["value"] == 4.0  # 완화된 값 — 사용자가 보는 조건과 실제가 같다
+    types = _types(events)
+    assert types.count("conditions") == 1  # §3.1 0~1회 — 재전송하지 않는다
+    # §3.1 순서 계약: conditions → token(완화 고지 포함) → products.ready
+    assert types.index("conditions") < types.index("token") < types.index("products.ready")
+
+
+async def test_conditions_chips_are_not_delayed_when_auto_relax_cannot_fire() -> None:
+    """완화가 불가능한 턴(평점 조건 없음)은 종전대로 **검색 전에** 칩을 내보낸다.
+
+    모든 턴을 미루면 드문 경우 하나 때문에 절대다수 턴의 첫 프레임이 늦어진다.
+    """
+    seen: list[str] = []
+
+    async def _search(filters, exclude_product_ids=None):  # noqa: ANN001
+        seen.append("search")
+        return ProductSearchResult(products=[_product(101, 39000)], total_count=1)
+
+    async def _push(push) -> bool:  # noqa: ANN001
+        return True
+
+    events = []
+    async for frame in run_buyer_turn(
+        _req(), _member(), llm=FakeLLM(), search=_search, push_fn=_push
+    ):
+        line = frame.strip()
+        if line.startswith("data:"):
+            evt = json.loads(line[len("data:") :].strip())
+            if evt["type"] == "conditions":
+                seen.append("conditions")
+            events.append(evt)
+
+    assert seen[0] == "conditions"  # 검색보다 먼저 나갔다
+    assert _types(events).count("conditions") == 1
+
+
+async def test_deferred_conditions_still_emitted_when_search_fails() -> None:
+    """미룬 조건 칩이 검색 실패 턴에서 통째로 사라지지 않는다.
+
+    `SEARCH_FAILED` 는 완화 판정보다 **앞에서** 종료하므로, 미루기만 하고 이 경로를 빠뜨리면
+    평점 조건이 걸린 턴만 조건 칩이 사라진다(미루기 전에는 항상 나갔다).
+    """
+
+    async def _dead_search(filters, exclude_product_ids=None):  # noqa: ANN001
+        raise SpringUnavailableError("spring down")
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(decompose=_decompose_with(ratingMin=4.5)),  # 완화 가능 턴 → 칩 미뤄짐
+            search=_dead_search,
+            push_fn=None,
+        )
+    )
+
+    types = _types(events)
+    assert types.count("conditions") == 1
+    assert types.index("conditions") < types.index("error")
+    rating_chip = next(c for c in _conditions(events) if c["field"] == "ratingMin")
+    assert rating_chip["value"] == 4.5  # 완화가 일어나지 않았으므로 원래 값
+
+
 async def test_explicit_price_constraint_is_never_auto_relaxed() -> None:
     """[AC-REC-08 회귀] 가격은 자동 완화 대상이 아니다 — 상한 초과 상품이 조용히 노출되면 안 된다."""
     products = [_product(201, 55000), _product(202, 60000)]

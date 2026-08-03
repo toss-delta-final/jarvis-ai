@@ -18,6 +18,7 @@ from uuid import uuid4
 from app.agents.buyer._frames import sse
 from app.agents.buyer.recommendation.rerank import rerank
 from app.agents.buyer.recommendation.relaxation import (
+    FIELD_TO_ATTR as RELAXATION_FIELD_TO_ATTR,
     RelaxationCandidate,
     build_relaxation_candidates,
 )
@@ -305,11 +306,30 @@ async def stream_recommendation(
     # keyword 를 드롭하면 조건 칩에서도 keyword 를 빼 "적용되지 않는 필터를 제거 가능 조건으로 광고"
     # 하는 표시-실제 불일치를 막는다. keyword 값은 decision.filters 에 그대로 남겨 멀티턴 기억
     # (PRIOR_FILTERS)으로만 쓰고, 칩 파생용 사본에서만 제거한다(칩 제거 왕복 X 는 별개 관심사).
-    chip_filters = decision.filters
-    if drop_keyword:
-        chip_filters = decision.filters.model_copy(update={"keyword": None})
-    chips = build_condition_chips(chip_filters, categories=[c for c, _ in decision.category_legs])
-    yield sse("conditions", ConditionsData(chips=chips).model_dump(by_alias=True))
+    def _condition_chips(filters: ProductSearchFilters):
+        """확정 필터에서 conditions 칩을 만든다(자동 완화 후 재파생할 수 있게 함수로 뽑음)."""
+        source = filters.model_copy(update={"keyword": None}) if drop_keyword else filters
+        return build_condition_chips(source, categories=[c for c, _ in decision.category_legs])
+
+    # [#113 PR #248 리뷰 A] 자동 완화가 **일어날 수 있는 턴이면** conditions 를 검색 뒤로 미룬다.
+    # 조건 칩은 원래 검색 **전에** 내보내 화면이 빨리 뜨게 하는데, 자동 완화는 검색 **후에**
+    # 조건을 바꾼다 — 먼저 내보내면 "평점 4.5 이상" 칩이 떠 있는데 실제 상품은 4.0 기준인
+    # 표시-실제 불일치가 남는다(산문 token 은 고지해도 구조화된 칩은 거짓말을 계속한다).
+    # §3.1 이 conditions 를 **0~1회**로 못박아 "고쳐서 재전송"이 불가하므로 순서로 푼다.
+    #
+    # **모든 턴을 미루지 않는다** — 발동 조건은 검색 전에 이미 확정돼 있다: config 허용 목록에
+    # 든 필드가 이번 턴 필터에 실제로 설정돼 있어야 한다(추측이 아니라 판정이다). 해당 없는
+    # 절대다수 턴은 종전대로 검색 전에 칩을 내보내 첫 프레임 지연이 없다.
+    may_auto_relax = settings.relaxation_max_probes > 0 and any(
+        getattr(decision.filters, attr, None) is not None
+        for field in settings.relaxation_auto_fields
+        if (attr := RELAXATION_FIELD_TO_ATTR.get(field))
+    )
+    if not may_auto_relax:
+        yield sse(
+            "conditions",
+            ConditionsData(chips=_condition_chips(decision.filters)).model_dump(by_alias=True),
+        )
 
     # dedup 소스(I-19)와 검색(§4.6)을 **병렬 실행** — §4.7 지연 가드(순차 시 최악 6s, first-token 예산 잠식).
     # dedup 은 검색 응답 뒤 사후필터라 두 호출은 독립적이다. 각 호출이 자체 실패를 삼켜 gather 는 안 깨진다.
@@ -428,6 +448,13 @@ async def stream_recommendation(
     if search_bundle is None:  # 검색 실패 → SEARCH_FAILED(종료)
         if trace := current_request_trace():
             trace.mark_degraded("search_failed")
+        if may_auto_relax:
+            # [#113] 미뤄 둔 conditions 를 여기서 낸다 — 검색이 실패했으니 완화는 일어나지 않았고,
+            # 그냥 return 하면 이 턴만 조건 칩이 통째로 사라진다(미루기 전에는 항상 나갔다).
+            yield sse(
+                "conditions",
+                ConditionsData(chips=_condition_chips(decision.filters)).model_dump(by_alias=True),
+            )
         yield sse(
             "error",
             ErrorData(
@@ -536,6 +563,7 @@ async def stream_recommendation(
     relax_candidates: list[RelaxationCandidate] = []
     probed_counts: dict[str, int] = {}  # 와이어 필드명 -> 완화 시 매칭 수(probe 실패는 미기록)
     adopted_field: str | None = None
+    adopted_value = None  # 채택된 완화 값 — 미뤄 둔 conditions 칩을 이 값으로 다시 파생한다
     probe_budget = settings.relaxation_max_probes  # 자동 완화 시도와 칩 probe 가 공유하는 예산
     probes_spent = 0  # 관측용 — 이 턴이 실제로 쓴 추가 Spring 호출 수
 
@@ -588,12 +616,24 @@ async def stream_recommendation(
                 received, had_candidates = relaxed_seen, relaxed_had
                 leg_of, candidates = relaxed_leg_of, relaxed_result.products
                 relaxation_notice, adopted_field = cand.notice, cand.field
+                adopted_value = cand.value
                 break
-        if relaxation_notice:
-            # [REQ-REC-042] 조용히 조건을 바꾸지 않는다 — 고지는 **token 산문**이 전담한다.
-            # done 에는 싣지 않는다: 정본(CH-2)이 done 을 finishReason 만으로 확정했고 FE 도
-            # 그 필드를 읽지 않는다(api-spec §3.1 사본 drift 정정 v0.19.1).
-            yield sse("token", TokenData(text=relaxation_notice).model_dump(by_alias=True))
+    # [#113 PR #248 리뷰 A] 미뤄 둔 conditions 를 여기서 낸다 — 자동 완화가 채택됐으면 **완화된
+    # 값**으로, 아니면 원래 값으로. 어느 쪽이든 화면의 조건 칩과 실제 검색 조건이 일치한다.
+    # **완화 고지 token 보다 먼저** 내보낸다 — §3.1 순서 계약이 conditions → token 이다.
+    if may_auto_relax:
+        shown = decision.filters
+        if adopted_field and (attr := RELAXATION_FIELD_TO_ATTR.get(adopted_field)):
+            shown = decision.filters.model_copy(update={attr: adopted_value})
+        yield sse(
+            "conditions", ConditionsData(chips=_condition_chips(shown)).model_dump(by_alias=True)
+        )
+
+    if relaxation_notice:
+        # [REQ-REC-042] 조용히 조건을 바꾸지 않는다 — 고지는 **token 산문**이 전담한다.
+        # done 에는 싣지 않는다: 정본(CH-2)이 done 을 finishReason 만으로 확정했고 FE 도
+        # 그 필드를 읽지 않는다(api-spec §3.1 사본 drift 정정 v0.19.1).
+        yield sse("token", TokenData(text=relaxation_notice).model_dump(by_alias=True))
 
     # 완화 칩 — 0건이거나 소량(config 임계 미만)일 때 남은 예산만큼 후보를 probe 한다.
     relaxation_chips: list[SuggestionChip] = []
