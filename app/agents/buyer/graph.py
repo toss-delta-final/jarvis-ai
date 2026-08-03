@@ -20,6 +20,7 @@ from typing import cast
 
 from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
+from pydantic import ValidationError
 
 from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.graph import stream_cart_add, stream_cart_view
@@ -92,6 +93,38 @@ def reset_thread_store() -> None:
 def _is_timeout(exc: Exception) -> bool:
     """LLMError 메시지에서 타임아웃 여부를 추정한다(LLM_TIMEOUT vs LLM_UNAVAILABLE 매핑용)."""
     return "timeout" in str(exc).lower()
+
+
+def _relaxed_filters_from_offer(offer, base: ProductSearchFilters) -> ProductSearchFilters | None:  # noqa: ANN001
+    """저장된 완화 칩 제안을 검증해 `base` 에 적용한 필터를 낸다. 못 쓰는 값이면 None (#113).
+
+    저장소는 **신뢰 경계 밖**이다 — 값이 pg-profile 을 왕복(JSON 직렬화/역직렬화)하고, 배포 사이에
+    스키마가 바뀔 수도 있다. 그래서 (1) 봉투 모양, (2) 필드가 완화 대상인지, (3) **값 타입**을
+    차례로 확인한다. 특히 (3) 이 없으면 `model_copy` 가 Pydantic 검증을 건너뛰는 탓에 어긋난
+    타입이 그대로 `decision.filters` 에 실려 Spring I-1 쿼리 파라미터로 나간다 — 검증 오류 없이
+    조용히 틀린 조건으로 검색되거나 하류에서 엉뚱하게 터진다(PR #248 리뷰).
+
+    `model_validate` 로 최종 확인까지 하는 이유: 필드별 제약(예: `limit >= 0`)은 여기서 열거하지
+    않고 스키마에 맡기는 게 옳고, 그래야 스키마가 늘어도 이 함수가 뒤처지지 않는다.
+    """
+    if not isinstance(offer, dict):
+        return None  # 봉투 자체가 기대 형태가 아님(구 스키마·손상)
+    attr = RELAXATION_FIELD_TO_ATTR.get(offer.get("field"))
+    if attr is None:
+        return None  # 완화 대상이 아닌(또는 알 수 없는) 필드 — 조용히 무시한다
+    if "value" not in offer:
+        # 키 자체가 없는 건 **손상**이다 — `.get()` 으로 뭉뚱그리면 None(=조건 해제)으로 읽혀
+        # 의도보다 검색이 더 넓어진다. "없음"과 "null 로 해제"는 다른 사실이라 구분한다.
+        return None
+    value = offer["value"]
+    # None 은 '조건 해제'라는 정상 값이다(brand·color·평점 하한 소멸).
+    # bool 은 int 의 서브클래스라 명시적으로 배제한다 — True 가 가격 상한 1 로 둔갑한다.
+    if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float, str))):
+        return None
+    try:
+        return ProductSearchFilters.model_validate({**base.model_dump(), attr: value})
+    except ValidationError:
+        return None
 
 
 async def _map_or_empty(
@@ -405,25 +438,24 @@ async def run_buyer_turn(
     # 없는데 매 턴 pg 왕복을 얹으면 완화와 무관한 흐름이 느려진다.
     relax_store = await get_relaxation_offer_store()
     if decision.intent in ("recommend", "general"):
+        # **해석까지 통째로 감싼다**(PR #248 리뷰) — 읽기만 감싸면 저장 값이 기대한
+        # `{"field":…, "value":…}` 형태가 아닐 때(스키마 변경·롤링 배포 중 신구 혼재·손상)
+        # `AttributeError` 가 올라가 턴이 죽는다. 아래 주석이 약속하는 "무해하게 폴백"이
+        # 실제로 성립하려면 파싱·검증도 같은 범위 안에 있어야 한다.
         try:
             offer = (await relax_store.get(thread_key)).get(request.message.strip())
+            relaxed = _relaxed_filters_from_offer(offer, prior or decision.filters)
         except Exception as exc:  # noqa: BLE001 - 상태 저장소 장애가 턴을 죽이지 않게(degrade)
-            # 이 조회는 **편의 기능**이다 — 실패하면 칩 클릭이 종전처럼 decompose 해석으로
+            # 이 경로는 **편의 기능**이다 — 실패하면 칩 클릭이 종전처럼 decompose 해석으로
             # 처리될 뿐이다. 여기서 예외를 올리면 pg 한 번 흔들릴 때 완화와 무관한 일반 대화
             # 턴까지 깨진다(§7 degrade 원칙). CancelledError(BaseException)는 전파된다.
             logger.warning("relaxation_offer_read_failed", extra={"reason": str(exc)})
-            offer = None
-        if offer is not None and (attr := RELAXATION_FIELD_TO_ATTR.get(offer.get("field"))):
+            relaxed = None
+        if relaxed is not None:
+            # 정확 일치는 "사용자가 우리가 만든 버튼을 눌렀다"는 명확한 신호라 일반 대화로
+            # 라우팅될 여지가 없다 — decompose 가 의문문을 general 로 봤어도 추천으로 고정한다.
             decision.intent = "recommend"
-            # 기준은 **이번 턴 decompose 산출이 아니라 직전 턴 확정 필터(prior)** 다. 칩의
-            # estCount 는 "직전 필터 전체 + 이 조건 하나만 완화"로 재검색해 센 값인데, 멀티턴
-            # 병합은 코드가 아니라 LLM 이 한다(decompose 프롬프트 PRIOR_FILTERS 병합 지시).
-            # 의문문 label 을 받은 decompose 가 축을 빠뜨리면 브랜드·최소가격 등이 조용히
-            # 유실되어 **약속한 건수와 실제 결과가 어긋난다.** prior 에서 복원하면 probe 가
-            # 실제로 센 그 검색을 그대로 재현한다. prior 가 없으면(스레드 상태 유실) 이번 턴
-            # 산출로 폴백한다 — 축이 좁을 뿐 틀린 결과는 아니다.
-            base = prior if prior is not None else decision.filters
-            decision.filters = base.model_copy(update={attr: offer.get("value")})
+            decision.filters = relaxed
 
     # transient 세션 버퍼에 발화 누적(승격 전 격리, SPEC-PROFILE-001) — 세션 종료 델타 소스.
     # [#119 REQ-PROF-026] intent 판정 **뒤에** 둔다: 주문조회·장바구니 조회 발화는 취향 신호가

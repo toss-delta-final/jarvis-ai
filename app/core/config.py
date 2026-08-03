@@ -264,9 +264,14 @@ class Settings(BaseSettings):
     relaxation_chip_fields: list[str] = Field(
         default_factory=lambda: ["priceMax", "ratingMin", "brand", "color"]
     )
-    # 자동 완화(사용자 동의 없이 서버가 먼저 푸는) 허용 목록. 기본은 **평점만** — SPEC REQ-REC-043·
-    # AC-REC-08(가격 제약 불가침)에 따라 가격·브랜드처럼 사용자가 명시한 제약은 자동으로 넘지 않고
-    # 제안 칩으로만 위임한다. REQ-REC-047 명시/비명시 태깅이 구현되면 이 목록 대신 source 로 판단한다.
+    # 자동 완화(사용자 동의 없이 서버가 먼저 푸는) 허용 목록.
+    # **무엇을 자동으로 풀 수 있는지는 튜너블이 아니다**(#133 `_require_degrade_notices_present` 와
+    # 같은 원칙) — 목록을 **줄이는** 것만 설정이고, 넓히는 건 기동 시점에 막는다
+    # (`_forbid_auto_relaxing_explicit_constraints`). REQ-REC-043·AC-REC-08(가격 제약 불가침)은
+    # SPEC 이 하드 불변식으로 규정했는데, 여기 "priceMax" 한 줄을 더하면 "5만원 이하"라고 말한
+    # 사용자에게 6만 5천원짜리가 **동의 없이** 노출된다 — 환경변수로 꺼지는 하드 룰은 하드 룰이 아니다.
+    # 빈 리스트(=자동 완화 전면 off)는 정상적인 의사표현이라 허용한다.
+    # REQ-REC-047 명시/비명시 태깅이 구현되면 이 목록 대신 source 로 판단하고 이 가드도 재검토한다.
     relaxation_auto_fields: list[str] = Field(default_factory=lambda: ["ratingMin"])
     relaxation_price_step_ratio: float = Field(default=0.3, gt=0.0)  # priceMax 상향 비율
     relaxation_price_round_unit: int = Field(default=1000, ge=1)  # 상향값 올림 단위(칩 문구 가독성)
@@ -856,6 +861,32 @@ class Settings(BaseSettings):
                     f"{name} must not be empty: api-spec §3.3 requires the degrade disclosure "
                     "to be sent (the wording is tunable, sending it is not)"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _forbid_auto_relaxing_explicit_constraints(self) -> "Settings":
+        """사용자 명시 제약을 자동 완화 목록에 넣으면 기동 실패 (#113, PR #248 리뷰).
+
+        REQ-REC-043·AC-REC-08(가격 제약 불가침)은 SPEC 이 **하드 불변식**으로 규정한 것이다.
+        그런데 이를 지키는 게 `relaxation_auto_fields` 기본값뿐이라, 운영자가 `"priceMax"` 를
+        더하는 순간 "5만원 이하"라고 말한 사용자에게 6만 5천원짜리가 **동의 없이** 노출된다.
+        서버는 멀쩡히 돌고 `token` 안내도 나가지만 "동의 전에는 넘지 않는다"는 규칙 자체가
+        깨진다 — #133 이 "고지 여부를 튜너블로 두면 정직성이 옵션이 된다"로 막은 것과 같은 종류다.
+
+        **허용 목록 방식**을 쓴다(금지 목록이 아니라) — 나중에 완화 필드가 추가돼도 기본이
+        '자동 금지'라 fail-closed 다. 지금 자동 완화가 정당한 건 평점뿐이다: 가격·브랜드·색상은
+        사용자가 발화로 명시하는 하드 제약이고, REQ-REC-047 `source` 태깅이 없는 지금은
+        "명시인지 파생인지"를 코드가 구분할 수 없어 전부 명시로 보는 게 안전한 쪽이다.
+        목록을 **비우는 것**(자동 완화 전면 off)은 정상이라 막지 않는다.
+        """
+        allowed = {"ratingMin"}
+        if forbidden := sorted(set(self.relaxation_auto_fields) - allowed):
+            raise ValueError(
+                f"RELAXATION_AUTO_FIELDS must not contain {forbidden}: "
+                "SPEC REQ-REC-043/AC-REC-08 forbid auto-relaxing user-stated constraints "
+                f"without consent (allowed: {sorted(allowed)}; empty list disables auto-relaxation). "
+                "Offer them as suggestion chips instead."
+            )
         return self
 
     @model_validator(mode="after")

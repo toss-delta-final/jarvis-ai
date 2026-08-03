@@ -17,12 +17,13 @@ import math
 from fractions import Fraction
 
 import pytest
+from pydantic import ValidationError
 
 from app.agents.buyer import graph as buyer_graph
 from app.agents.buyer.recommendation.category_mapping import CategoryMapping
 from app.agents.buyer.recommendation.relaxation import build_relaxation_candidates
 from app.core.auth import Identity
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.schemas.spring import ProductSearchFilters, ProductSearchResult, SpringProduct
 from app.services.spring_client import SpringUnavailableError
 from tests._fakes import DEFAULT_DECOMPOSE, FakeLLM
@@ -536,6 +537,96 @@ async def test_offer_store_failure_does_not_break_the_turn(
     assert "products.ready" in _types(events)
     assert "relaxation_offer_read_failed" in caplog.text
     assert "relaxation_offer_write_failed" in caplog.text
+
+
+# ─────────── 하드 불변식·신뢰경계 (PR #248 리뷰) ───────────
+
+
+@pytest.mark.parametrize("field", ["priceMax", "brand", "color", "priceMin"])
+def test_auto_relaxing_explicit_constraints_is_rejected_at_startup(field: str) -> None:
+    """[REQ-REC-043 · AC-REC-08] 명시 제약을 자동 완화 목록에 넣으면 **기동이 실패**한다.
+
+    이 하드 불변식을 지키는 게 config 기본값뿐이면 환경변수 한 줄로 꺼진다 — "5만원 이하"라고
+    말한 사용자에게 6만 5천원짜리가 동의 없이 노출되는데 서버는 멀쩡히 돈다(#133 이 '고지 여부를
+    튜너블로 두면 정직성이 옵션이 된다'로 막은 것과 같은 종류).
+    """
+    with pytest.raises(ValidationError) as exc:
+        Settings(relaxation_auto_fields=["ratingMin", field])
+
+    assert "RELAXATION_AUTO_FIELDS" in str(exc.value)
+    assert field in str(exc.value)
+
+
+def test_auto_relaxation_can_be_disabled_but_not_widened() -> None:
+    """목록을 **비우는 것**(자동 완화 전면 off)은 정상적인 의사표현이라 허용한다."""
+    assert Settings(relaxation_auto_fields=[]).relaxation_auto_fields == []
+    assert Settings(relaxation_auto_fields=["ratingMin"]).relaxation_auto_fields == ["ratingMin"]
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [
+        "그냥 문자열",  # 구 스키마 — dict 가 아님
+        {"field": "priceMax"},  # value 키 누락 — None(조건 해제)으로 뭉개면 검색이 더 넓어진다
+        {"field": "categoryQueries", "value": "x"},  # 완화 대상 아닌 필드
+        {"field": "priceMax", "value": True},  # bool 은 int 서브클래스 — 상한 1 로 둔갑
+        {"field": "priceMax", "value": {"nested": 1}},  # 스칼라 아님
+        {"field": "priceMax", "value": "비싼거"},  # 숫자로 강제 변환 불가
+    ],
+)
+async def test_corrupt_stored_offer_is_ignored_not_crashed(stored) -> None:  # noqa: ANN001
+    """저장소는 신뢰 경계 밖 — 값이 망가져 있어도 턴을 죽이지 않고 조용히 무시한다.
+
+    읽기만 감싸고 해석을 밖에 두면 `AttributeError` 로 턴 전체가 죽는다(PR #248 리뷰).
+    """
+
+    async def _push(push) -> bool:  # noqa: ANN001
+        return True
+
+    class _Store:
+        async def get(self, key):  # noqa: ANN001
+            return {"눌린 칩": stored}
+
+        async def put(self, key, offers):  # noqa: ANN001
+            return None
+
+    async def _fake():
+        return _Store()
+
+    calls: list[ProductSearchFilters] = []
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(buyer_graph, "get_relaxation_offer_store", _fake)
+        events = await _collect(
+            run_buyer_turn(
+                _req(message="눌린 칩"),
+                _member(),
+                llm=FakeLLM(),
+                search=_filtered_search([_product(101, 39000)], calls=calls),
+                push_fn=_push,
+            )
+        )
+
+    assert _types(events)[-1] == "done"
+    assert "error" not in _types(events)
+    # 망가진 값이 필터로 새지 않는다 — decompose 산출(50,000)이 그대로 쓰인다.
+    assert calls[0].price_max == 50000
+
+
+async def test_stored_offer_rejects_wrong_typed_value_from_store_roundtrip() -> None:
+    """저장소 왕복으로 타입이 어긋나 돌아오면 적용하지 않는다 — model_copy 는 검증을 건너뛴다."""
+    base = ProductSearchFilters(price_max=50000, category="무선이어폰")
+
+    assert buyer_graph._relaxed_filters_from_offer({"field": "priceMax", "value": 65000}, base)
+    assert buyer_graph._relaxed_filters_from_offer({"field": "brand", "value": None}, base)
+    # 문자열 숫자는 Pydantic 이 강제 변환하므로 통과하되 **타입이 정규화**돼야 한다.
+    coerced = buyer_graph._relaxed_filters_from_offer({"field": "priceMax", "value": "65000"}, base)
+    assert coerced is not None and coerced.price_max == 65000
+    # 검증 불가 값은 조용히 폐기.
+    assert (
+        buyer_graph._relaxed_filters_from_offer({"field": "priceMax", "value": "비싼거"}, base)
+        is None
+    )
+    assert buyer_graph._relaxed_filters_from_offer(None, base) is None
 
 
 async def test_enough_results_do_not_probe(monkeypatch: pytest.MonkeyPatch) -> None:
