@@ -138,7 +138,7 @@
 
 ### Docs
 - **#159 — item-based CF 도입 판단 조사** — `review` 126,313건도 `member_id`가 전량 `NULL`이고 order/cart/wishlist/실사용 event가 0이라 사용자×상품 행렬은 희소한 것이 아니라 구성 불가임을 확인했다. 7,220개 전량 임베딩 기반 콘텐츠 유사도는 이미 HNSW로 서빙되므로 구현은 `no-go`, 상품 귀속 행동 로그와 반복 item pair가 관측될 때 재검토한다.
-- **#160 — Learning-to-Rank 도입 판단 조사** — 추천 목록·순위 snapshot으로 true impression negative를 만들 구조와 현 scoring 6성분 feature는 있으나, 추천 유래 click 필드 확인·상품 귀속 conversion·추천 시점 feature snapshot이 없어 production 도입은 `조건부`로 보류했다. 누출 없는 snapshot과 30일 실사용 label 조건 뒤 pointwise offline arm부터 기존 ablation 규약으로 비교한다.
+- **#160 — Learning-to-Rank 도입 판단 조사** — 추천 목록·순위 snapshot으로 true impression negative를 만들 구조와 현 scoring 6성분 feature는 있으나, 추천 유래 click 필드 확인·상품 귀속 conversion·추천 시점 feature snapshot이 없어 production 도입은 `조건부`로 보류했다. 누출 없는 snapshot과 30일 실사용 label 조건 뒤 pointwise offline arm부터 기존 ablation 규약으로 비교한다. 행동 로그 없이 LLM teacher로 랭킹을 학습하는 대안 경로는 별도 절로 정리하고 후속 이슈로 분리한다.
 - **#161 — contextual bandit·RL 도입 판단 조사** — 실사용 `behavior_events`·회원·주문이 0이고 결정론 정책의 후보별 propensity 저장 필드도 없어 off-policy 평가와 장기 conversion reward가 모두 성립하지 않음을 확인했다. #160 완료, propensity 100% 기록, 상품 귀속 전환, 28일 10만 노출 전까지 `no-go`이며 hard filter 안 제한 탐색과 가중치 0 롤백만 허용한다.
 - **#244 — #138 후속 문서 정합** — 운영자가 역할별 설정 키를 바로 찾도록 구매자 30s·판매자 90s 스트림 전체 상한을 정본 기준표에서 분리하고, #151 baseline의 I-21 degrade가 BE·앱 문제가 아니라 비 UUID `sessionId` fixture의 §4.2 계약 위반이었다는 오귀속을 바로잡았다. (api-spec §2.9, v0.19.1)
 - **#148 — 홈 추천 계약(I-22 · P-5)을 사본 api-spec에 등재** (api-spec §1.2·§2.3·§3.7·§4.11·C-18, v0.18.0). 정본(Notion「📡 API 명세서」) 2026-07-28 확정본이 사본에 **통째로 없던** drift 해소다 — 착수 전 `I-22`·`catalogVersion`·`recommendations/home`·`products/recommended` 검색이 전부 0건이었다. 구현은 #148, 재사용할 scoring baseline은 #145다.
