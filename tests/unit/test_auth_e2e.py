@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import datetime as dt
 
+import psycopg
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from psycopg_pool import PoolTimeout
 
 from app.api import deps
 from app.core import auth
@@ -429,6 +431,54 @@ def test_seller_ticket_is_rejected_from_buyer_chat_before_state_access(
 
     assert resp.status_code == 403
     assert resp.json()["error"]["code"] == "FORBIDDEN"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        TimeoutError("pg-profile deadline"),
+        PoolTimeout("pg-profile pool exhausted"),
+        psycopg.OperationalError("pg-profile connection reset"),
+    ],
+)
+def test_seller_store_io_failure_maps_to_state_unavailable(
+    jwks_app,
+    rsa_key,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+) -> None:
+    """대화 store I/O 장애는 구매자 /chat 과 같은 503 STATE_UNAVAILABLE 봉투로 나간다."""
+    from app.api import seller as seller_api
+
+    async def fail_store():
+        raise failure
+
+    monkeypatch.setattr(seller_api, "get_conversation_store", fail_store)
+    token = sign_ticket(rsa_key, KID, seller_ticket_claims(sub="9", brandId=3))
+
+    resp = client.post("/seller/chat", json=_chat_body(), headers=_bearer(token))
+
+    assert resp.status_code == 503
+    assert resp.headers["content-type"].startswith("application/json")
+    assert resp.json()["error"]["code"] == "STATE_UNAVAILABLE"
+
+
+def test_seller_store_programming_error_is_not_masked_as_state_unavailable(
+    jwks_app,
+    rsa_key,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """코드 버그는 503 으로 마스킹하지 않는다 — 실 I/O 장애만 STATE_UNAVAILABLE 이다."""
+    from app.api import seller as seller_api
+
+    async def fail_store():
+        raise psycopg.ProgrammingError("bad conversation query")
+
+    monkeypatch.setattr(seller_api, "get_conversation_store", fail_store)
+    token = sign_ticket(rsa_key, KID, seller_ticket_claims(sub="9", brandId=3))
+
+    with pytest.raises(psycopg.ProgrammingError):
+        client.post("/seller/chat", json=_chat_body(), headers=_bearer(token))
 
 
 def test_jwks_uppercase_seller_role_is_not_accepted(jwks_app, rsa_key) -> None:
