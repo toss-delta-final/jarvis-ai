@@ -531,6 +531,66 @@ async def test_scoped_refine_keeps_this_turn_new_condition() -> None:
     assert seen[turn2] == (4.0, 40000)  # 완화 승계(4.0) + 이번 턴 새 조건(40,000) 둘 다
 
 
+@pytest.mark.parametrize(
+    ("label", "turn2_rating", "expected"),
+    [
+        ("그 축을 언급 안 함(prior 그대로)", 4.5, 4.0),  # 승계
+        ("같은 축을 낮춰 새로 말함", 3.0, 3.0),  # 사용자 값 우선
+        ("같은 축을 높여 새로 말함", 4.8, 4.8),  # 사용자 값 우선
+        ("같은 축을 아예 지움", None, None),  # 되살리지 않는다
+    ],
+)
+async def test_scoped_refine_never_overwrites_a_restated_axis(
+    label: str, turn2_rating: float | None, expected: float | None
+) -> None:
+    """[PR #248 리뷰] 승계가 **이번 턴에 다시 말한 같은 축**을 덮어쓰지 않는다.
+
+    "그 중에 평점 3.0 이상도 볼래" 에서 저장된 완화값(4.0)으로 덮으면 방금 말한 3.0 이 흔적도
+    없이 사라진다. 승계는 "직전 결과를 그대로 받아들인다"는 뜻이라, 그 축을 새로 말한 턴에는
+    성립하지 않는다. 축을 **지운** 경우도 되살리지 않는다.
+    """
+
+    async def _push(push) -> bool:  # noqa: ANN001
+        return True
+
+    seen: list = []
+
+    async def _search(filters, exclude_product_ids=None):  # noqa: ANN001
+        seen.append(filters.rating_min)
+        kept = [
+            p
+            for p in [_product(1, 30000, rating=4.2), _product(2, 35000, rating=3.5)]
+            if filters.rating_min is None or (p.rating or 0) >= filters.rating_min
+        ]
+        return ProductSearchResult(products=kept, total_count=len(kept))
+
+    # 턴1 — 평점 4.5 로 0건 → 4.0 자동 완화 채택
+    await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(decompose=_decompose_with(ratingMin=4.5)),
+            search=_search,
+            push_fn=_push,
+        )
+    )
+
+    scoped = _decompose_with(**({"ratingMin": turn2_rating} if turn2_rating is not None else {}))
+    scoped["scopedToPrevious"] = True
+    turn2 = len(seen)
+    await _collect(
+        run_buyer_turn(
+            _req(message="그 중에 골라줘"),
+            _member(),
+            llm=FakeLLM(decompose=scoped),
+            search=_search,
+            push_fn=_push,
+        )
+    )
+
+    assert seen[turn2] == expected, label
+
+
 async def test_scoped_refine_without_prior_relaxation_is_a_noop() -> None:
     """완화가 없었던 스레드에서 "그 중에" 가 와도 아무것도 되살리지 않는다."""
 

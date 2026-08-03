@@ -95,6 +95,30 @@ def _is_timeout(exc: Exception) -> bool:
     return "timeout" in str(exc).lower()
 
 
+def _carry_axis_untouched_this_turn(applied, prior, current: ProductSearchFilters) -> bool:  # noqa: ANN001
+    """승계할 완화 축을 **이번 턴에 사용자가 다시 말하지 않았는지** 판정한다 (#113, PR #248 리뷰).
+
+    자동 완화 승계는 "직전 결과를 그대로 받아들인다"는 뜻이라, 사용자가 **그 축을 새로 말한**
+    턴에는 성립하지 않는다 — "그 중에 평점 3.0 이상도 볼래" 에서 저장된 완화값(4.0)으로 덮으면
+    방금 말한 3.0 이 흔적도 없이 사라진다. 다른 축(가격 등)을 말한 경우는 승계해도 무해하므로
+    **완화 축 하나만** 본다.
+
+    판정 기준은 `이번 턴 값 == prior 값` 이다. decompose 는 PRIOR_FILTERS 를 병합하므로, 그 축을
+    새로 언급하지 않은 턴은 prior 값이 그대로 실려 온다 — 값이 달라졌다는 건 이번 턴에 손댔다는
+    신호다. 축을 아예 지운 경우(None)도 "달라졌다"에 포함되어 승계하지 않는다(사용자가 조건을
+    빼달라고 했는데 되살리면 안 된다).
+
+    prior 가 없으면(스레드 상태 유실) 비교 근거가 없으므로 **승계하지 않는다** — 애매하면
+    사용자가 말한 값을 그대로 두는 쪽이 안전하다(#113 설계 원칙).
+    """
+    if not isinstance(applied, dict) or prior is None:
+        return False
+    attr = RELAXATION_FIELD_TO_ATTR.get(applied.get("field"))
+    if attr is None:
+        return False
+    return getattr(current, attr, None) == getattr(prior, attr, None)
+
+
 def _relaxed_filters_from_offer(offer, base: ProductSearchFilters) -> ProductSearchFilters | None:  # noqa: ANN001
     """저장된 완화 칩 제안을 검증해 `base` 에 적용한 필터를 낸다. 못 쓰는 값이면 None (#113).
 
@@ -473,7 +497,15 @@ async def run_buyer_turn(
                 # 문구뿐이라 새 의도가 없어 prior 를 그대로 재현하지만, 여기서는 사용자가
                 # "그 중에 **더 저렴한** 걸로"처럼 새 조건을 함께 말한다. prior 를 기준으로 삼으면
                 # 이번 턴에 말한 조건이 통째로 버려진다. 완화 축 하나만 덮어쓴다.
-                carried = _relaxed_filters_from_offer(applied, decision.filters)
+                #
+                # **단, 그 축을 이번 턴에 사용자가 다시 말했으면 승계하지 않는다**(PR #248 리뷰).
+                # "그 중에 평점 3.0 이상도 볼래" 처럼 같은 축의 새 값을 말했는데 저장된 완화값(4.0)
+                # 으로 덮으면 **방금 말한 조건이 흔적도 없이 사라진다.** 판정은 이번 턴 값이
+                # prior(직전 확정 필터)와 **다른가** 로 한다 — 다르면 이번 턴에 새로 언급한 것이다.
+                # prior 가 없으면(스레드 상태 유실) 비교할 근거가 없으므로 승계하지 않는다(엄격한 쪽).
+                carried = None
+                if _carry_axis_untouched_this_turn(applied, prior, decision.filters):
+                    carried = _relaxed_filters_from_offer(applied, decision.filters)
             except Exception as exc:  # noqa: BLE001 - 저장소 장애가 턴을 죽이지 않게(degrade)
                 logger.warning("relaxation_applied_read_failed", extra={"reason": str(exc)})
                 carried = None
