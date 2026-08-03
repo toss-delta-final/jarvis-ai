@@ -72,6 +72,54 @@ def _options_text(options: list[CartOption]) -> str:
     return " / ".join(parts) if parts else "옵션"
 
 
+def _all_spans(text: str, needle: str) -> list[tuple[int, int]]:
+    """겹치는 경우까지 needle 의 모든 [start, end) 출현 구간을 돌려준다."""
+    if not needle:
+        return []
+    spans: list[tuple[int, int]] = []
+    start = 0
+    while (index := text.find(needle, start)) >= 0:
+        spans.append((index, index + len(needle)))
+        start = index + 1
+    return spans
+
+
+def _pending_switch_signals(
+    message: str, pending: PendingAdd | None, markers: list[str]
+) -> tuple[bool, bool]:
+    """(독립 전환 마커 있음, 독립 pending 옵션명 있음).
+
+    겹친 문자열은 위치로 판정한다. `대` ⊂ `대신`이면 옵션 언급이 아니고,
+    `말고` ⊂ `말고기`이면 전환 마커가 아니다.
+    """
+    option_spans = (
+        [
+            span
+            for option in pending.options
+            if (name := option.name.strip())
+            for span in _all_spans(message, name)
+        ]
+        if pending is not None
+        else []
+    )
+    marker_spans = [span for marker in markers if marker for span in _all_spans(message, marker)]
+    markers_present = any(
+        not any(
+            option_start <= marker_start and marker_end <= option_end
+            for option_start, option_end in option_spans
+        )
+        for marker_start, marker_end in marker_spans
+    )
+    option_mentioned = any(
+        not any(
+            marker_start <= option_start and option_end <= marker_end
+            for marker_start, marker_end in marker_spans
+        )
+        for option_start, option_end in option_spans
+    )
+    return markers_present, option_mentioned
+
+
 def _existing_quantity(items: list[CartViewItem], product_id: int, option_id: int | None) -> int:
     """담기 전 보유 수량(합산 안내용) — 동일 상품·옵션 합계. optionId 미상이면 그 상품 전체를 센다."""
     return sum(
@@ -147,24 +195,12 @@ async def stream_cart_add(
     ):
         await cart_store.clear_pending(thread_key)
         pending = None
-    message_without_switch_markers = message
-    for marker in settings.cart_pending_switch_markers:
-        if marker:
-            message_without_switch_markers = message_without_switch_markers.replace(marker, " ")
-    # 옵션명 "대"가 마커 "대신"의 일부라는 이유만으로 옵션 답변이 되지 않게, 마커 출현부를
-    # 모두 가린 잔여 발화에서만 pending 옵션명을 찾는다.
-    pending_option_mentioned = pending is not None and any(
-        option.name.strip() in message_without_switch_markers
-        for option in pending.options
-        if option.name.strip()
+    markers_present, pending_option_mentioned = _pending_switch_signals(
+        message, pending, settings.cart_pending_switch_markers
     )
     # 해소된 전환은 위 분기가 pending 을 지웠다. 여기 남은 pending + 전환 표지는 productId 가
     # 에코/null/미추천 값 중 무엇이든 해소 실패이므로 옛 상품에 적용하지 않는다.
-    unresolved_switch = (
-        pending is not None
-        and any(marker in message for marker in settings.cart_pending_switch_markers)
-        and not pending_option_mentioned
-    )
+    unresolved_switch = pending is not None and markers_present and not pending_option_mentioned
     if unresolved_switch:
         await cart_store.clear_pending(thread_key)
         pending = None
