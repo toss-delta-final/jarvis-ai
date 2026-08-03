@@ -622,6 +622,11 @@ class Settings(BaseSettings):
     # ── 구매자 추천 평가 지표(#143, evals/metrics) ──
     eval_buyer_k_list: tuple[int, ...] = (5, 10, 20)
 
+    # --- #144 actual-model eval 예산 gate ---
+    model_eval_max_calls_per_run: int = Field(default=800, gt=0)
+    model_eval_max_total_tokens_per_run: int = Field(default=30_000_000, gt=0)
+    model_eval_max_cost_usd_per_run: float = Field(default=20.0, gt=0.0)
+
     @field_validator("llm_provider", mode="before")
     @classmethod
     def _normalize_llm_provider(cls, value: object) -> object:

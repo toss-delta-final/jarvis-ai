@@ -13,6 +13,25 @@
 
 ---
 
+## [2026-08-03] 스키마 기본 필드가 합집합 분모 지표를 오염시키지 않게 한다
+- 증상: 전량 실행의 `filterAccuracy`가 0.036이었다. `model_dump`가 모델의 판단이 아닌
+  `limit=30`과 `excludeProductIds=[]`까지 `extractedFilters`에 실어, 합집합 분모에서 매번
+  불일치 벌점으로 계산됐다.
+- 원인: 모델 산출과 검색 스키마의 기계적 기본값을 구분하지 않고 직렬화 결과 전체를 지표에
+  전달했다.
+- 규칙: **합집합 분모 지표에 넣는 산출에는 모델이 실제로 결정한 필드만 남긴다.** 스키마
+  기본값은 제거 대상을 명시한 상수로 관리해 직렬화 단계에서 걸러낸다.
+- 관련: #144, `evals/model_eval/adapter.py::_EXTRACTED_FILTER_EXCLUSIONS`,
+  `evals/metrics`의 `filter_accuracy`
+
+## [2026-08-03] 실패 신호가 정답 경로에서도 발생하는지 fixture로 먼저 확인한다
+- 증상: 0건 결과가 정답인 failure slice `buy-cmap-0005`를 `emptyPush` hard failure로
+  집계해, `hardFailureMax=0`인 release gate가 구조적으로 항상 실패할 뻔했다.
+- 원인: push 부재를 검색 후보의 존재 여부와 무관하게 실패로 판정했다.
+- 규칙: **실패 판정을 추가하기 전에 그 신호가 정답 경로에서도 발생하는지 fixture 실측으로
+  확인한다.** 빈 후보가 기대 결과인 케이스의 push 부재는 hard failure로 세지 않는다.
+- 관련: #144, `evals/model_eval/adapter.py`
+
 ## [2026-08-03] 결정론 검증은 실행마다 달라지는 인자를 실제로 바꿔서 한다
 - 증상: #143 metric runner의 byte-identical 검증을 같은 `--out` 경로로 두 번 실행해
   통과시켰지만, 서로 다른 출력 경로로 재실행하자 `run_manifest.json`의 `command`에 경로가
