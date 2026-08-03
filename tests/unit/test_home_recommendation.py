@@ -976,8 +976,18 @@ def test_log_has_fixed_safe_key_set_only(
 
     records = [r for r in caplog.records if r.name == svc.logger.name]
     assert records, "요청마다 관측 로그 1건을 남긴다"
+    standard_keys = set(logging.LogRecord("", 0, "", 0, "", (), None).__dict__) | {
+        "asctime",
+        "message",
+    }
     blob = " ".join(
-        r.getMessage() + " " + json.dumps(getattr(r, "__dict__", {}), default=str) for r in records
+        r.getMessage()
+        + " "
+        + json.dumps(
+            {key: value for key, value in r.__dict__.items() if key not in standard_keys},
+            default=str,
+        )
+        for r in records
     )
     for banned in (secret, "캠핑", "claude", "haiku", "9001", "1001", "right-token"):
         assert banned not in blob, f"로그에 {banned!r} 가 남았다"

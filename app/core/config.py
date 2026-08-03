@@ -619,6 +619,9 @@ class Settings(BaseSettings):
     # 43건 중 12건을 봉인하는 v1 목표 비중이며 감사 보고에 사용한다.
     goldenset_holdout_ratio: float = 0.3
 
+    # ── 구매자 추천 평가 지표(#143, evals/metrics) ──
+    eval_buyer_k_list: tuple[int, ...] = (5, 10, 20)
+
     @field_validator("llm_provider", mode="before")
     @classmethod
     def _normalize_llm_provider(cls, value: object) -> object:
@@ -664,6 +667,13 @@ class Settings(BaseSettings):
             raise ValueError("골든셋 질의별 스냅샷 상한은 0보다 커야 합니다")
         if not 0 < self.goldenset_holdout_ratio < 1:
             raise ValueError("골든셋 holdout 비율은 0과 1 사이여야 합니다")
+        return self
+
+    @model_validator(mode="after")
+    def _require_valid_eval_settings(self) -> "Settings":
+        """추천 평가 K 목록의 빈 값·비양수를 기동 시점에 막는다."""
+        if not self.eval_buyer_k_list or any(k <= 0 for k in self.eval_buyer_k_list):
+            raise ValueError("구매자 추천 평가 K 목록은 비어 있지 않고 모두 0보다 커야 합니다")
         return self
 
     @model_validator(mode="after")
