@@ -186,6 +186,11 @@
 
 ### Changed
 
+- **#32 — 방식1 라이브 전제 C-17(id 제약 조회) 기각** — 골든셋에서 방식1이 방식2를
+  이긴 케이스가 0/26이었고, C-17은 가용성 hydrate만 가능하게 할 뿐 방식1의 핵심 실패인
+  가격 하한·부정어 같은 구조적 제약을 고치지 못하므로 BE 요청을 철회한다. 와이어 계약은
+  바뀌지 않으며 `VectorSearchBackend`는 오프라인 비교 전용으로 존치한다. BE에는 C-17을
+  구현하지 않아도 된다는 철회를 통보해야 한다. (api-spec §4.6·§4.8, v0.19.4)
 - **#186 — 접속(`sessionId`)·방(`threadId`) 축 분리 구현** — 구매자·판매자 스트림 레지스트리 키를 인증 신원+`threadId`로 전환해 같은 접속의 다른 방을 병렬 허용하고 동일 방만 `409 STREAM_IN_PROGRESS`로 차단한다. `conversation_turns`는 session-primary를 유지하면서 nullable `thread_id`를 fresh schema·기존 볼륨 migration·쓰기/조회 모델에 병기하고, 구조화 로그와 저장 실패 로그에 `threadId`를 추가했다. #189의 `requestId`/`listIds` SSE 계약과 함께 동작하도록 충돌을 통합했다. (api-spec §2.5·§2.9·§6.3, v0.16.0)
 
 - **#189 — CH-2/S-4 SSE 응답 계약 정합화** — `products.ready`의 단일 `listId`를 항상 배열인 `listIds`(1~10개, 순서 보존)로 바꾸고, 현재 단일 I-21 push 결과도 길이 1 배열로 반환한다. 구매자·판매자·공통 스트림의 모든 `error`에 HTTP 응답·구조화 로그와 같은 `requestId`와 emit 지점이 판정한 `retryable`을 추가했다. provider 미구성은 재시도 불가, timeout·검색·일시적 내부 장애는 재시도 가능으로 분류한다. (api-spec §3.1·§3.2, v0.15.26)
