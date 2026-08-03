@@ -1,0 +1,24 @@
+{
+  "arms": ["pipeline", "scoring", "single_call"],
+  "bootstrap": {
+    "confidence": 0.95,
+    "resamples": 2000
+  },
+  "caseOrder": "caseId-asc",
+  "configVersion": "ablation-config-v2",
+  "inconclusiveRule": "ciIncludesZero",
+  "missingRunPolicy": "excludePairReportCount",
+  "multiplicity": "primaryConfirmatoryOthersExploratory",
+  "primaryMetric": "overall.ndcgAtK.10",
+  "rankingExclusionPolicy": "nonDiscriminativeRanking",
+  "repeats": 5,
+  "secondaryMetrics": [
+    "overall.filterAccuracy",
+    "overall.hardConstraintViolationRate",
+    "overall.recallAtK.10",
+    "overall.precisionAtK.10",
+    "overall.mrr"
+  ],
+  "seed": 20260803,
+  "split": "dev"
+}
