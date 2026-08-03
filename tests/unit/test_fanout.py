@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from app.agents.buyer.graph import run_buyer_turn as _production_run_buyer_turn
 from app.agents.buyer.recommendation.category_mapping import CategoryMapping
 from app.agents.buyer.recommendation.graph import _merge_fanout_results
@@ -252,10 +254,15 @@ async def test_fanout_all_legs_fail_emits_search_failed() -> None:
     assert events[-1]["data"]["code"] == "SEARCH_FAILED"
 
 
-async def test_fanout_single_category_preserves_candidate_width() -> None:
+async def test_fanout_single_category_preserves_candidate_width(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """단일 카테고리(leg 1개)는 후보 폭을 좁히지 않게 per_cat_limit(10) 이 아니라 merge_cap(30) 을
     size 로 쓴다. 매핑된 단일 질의(leg 1개)도 fan-out 경로를 타므로, 기존 단일검색(limit 30) 대비
     rerank 입력 후보가 줄면 추천 품질이 조용히 저하된다(PR #73 리뷰)."""
+    # [#113] 이 테스트의 관심사는 leg 검색 **폭**이라 완화 probe 를 끈다 — 결과 2건은 기본 임계
+    # (relaxation_min_results=3) 아래라 소량 완화 재검색이 붙어 호출 수 단언이 흐려진다.
+    monkeypatch.setattr(get_settings(), "relaxation_min_results", 0)
     calls: list = []
 
     async def _search(filters, exclude_product_ids=None):
@@ -973,13 +980,15 @@ async def test_expansion_failure_keeps_mapped_legs_intact() -> None:
     assert calls == ["냉장고"]  # 성공한 leg 은 그대로
 
 
-async def test_category_agnostic_case2_is_never_expanded() -> None:
+async def test_category_agnostic_case2_is_never_expanded(monkeypatch: pytest.MonkeyPatch) -> None:
     """[PR #203 리뷰] case 2(구조화 조건만) 발화는 전개하지 않는다 — 무필터 계약 보존(#22·#162).
 
     `"5만원 이하 아무거나"` 도 `categoryQueries` 가 비어 D1 조건에 걸린다. 전개 LLM 은 "최소 2개"를
     강제하므로 목적이 없는 입력에도 상품명을 지어내고, 그것이 legs 를 교체하면 `filters.category` 가
     채워져 "카테고리 무관·가격만 필터"라는 사용자 의도가 파괴된다. #162 가 개선할 경로이기도 하다.
     """
+    # [#113] 검색에 실리는 category 만 보는 테스트라 완화 probe 를 끈다(결과 1건 = 소량 임계 아래).
+    monkeypatch.setattr(get_settings(), "relaxation_min_results", 0)
     seen, expand = _expansion_probe()
     calls = await _run_recommend(
         "5만원 이하 아무거나",

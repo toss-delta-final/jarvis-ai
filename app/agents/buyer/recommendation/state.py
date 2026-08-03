@@ -25,6 +25,10 @@ from app.schemas.spring import ProductSearchFilters
 
 _NAMESPACE_ROOT = "buyer_revert_v2"
 _CATEGORIES_KEY = "categories"
+_RELAX_NAMESPACE_ROOT = "buyer_relaxation_offers_v1"  # [#113] 완화 칩 제안 기억
+_SNAPSHOT_KEY = "turn"  # 이번 턴 화면 상태 — 아래 둘을 한 덩어리로 쓴다(부분 실패 차단)
+_OFFERS_KEY = "offers"  # 제안한 칩(누르면 이렇게 됩니다)
+_APPLIED_KEY = "applied"  # 자동 적용된 완화(서버가 이미 이렇게 했습니다)
 
 # key(thread_key)별 asyncio.Lock — RevertStore.add() 의 get→put(read-modify-write) 구간을
 # 직렬화한다. 동일 스레드로 겹치는 요청(멀티탭·연속 발화)이 오면 나중 aput 이 앞선 갱신을
@@ -89,6 +93,12 @@ class RouteDecision:
     # 대칭이고 **지속성은 대칭이 아니다**(PR #230 리뷰). 멀티턴 지속은 store 확장이 필요해 이번
     # 범위 밖으로 뒀다 — 다음 턴 조건 다듬기 발화면 그 상품은 다시 제외된다(후속 이슈).
     repurchase_products: list[str] = field(default_factory=list)
+    # [#113] 이번 발화가 **직전에 보여준 결과 집합을 가리키는가**("그 중에", "여기서", "보여준
+    # 것들에서"). 참인 턴은 직전 턴에 자동 적용된 완화를 이어받는다 — 사용자가 완화된 결과를
+    # 자기 후보로 인정한 것이라 칩 클릭과 같은 **동의 신호**로 본다(팀 합의).
+    # 기본 False(엄격) — 판정을 놓치면 원래 조건으로 되돌아가 또 완화·또 고지라 무해하지만,
+    # 반대로 오탐하면 사용자가 말한 조건이 조용히 바뀌므로 애매하면 False 로 기운다.
+    scoped_to_previous: bool = False
     # 카테고리 하이브리드 매핑(이슈 #59, 방식 A):
     category_queries: list[CategoryQuery] = field(default_factory=list)  # decompose 추측(매핑 전)
     # 매핑 후 (canonical, query) leg 리스트(그래프가 채움; 신호 없거나 실패 시 빈 리스트 → 무필터,
@@ -208,9 +218,88 @@ class RevertStore:
             )
 
 
+class RelaxationOfferStore:
+    """스레드별 **직전 턴에 제안한 완화 칩** — 칩 클릭을 결정론적으로 되받기 위한 기억(#113).
+
+    FE 는 완화 칩을 누르면 **칩 label 을 다음 턴 message 로 그대로 보낸다**(jarvis-frontend
+    `SuggestionChips.onApply` → `useChat.applySuggestion` → `send(label)`). 그런데 label 은
+    "65,000원까지 볼까요?" 같은 **의문문**이라, 그대로 두면 decompose(LLM)가 그 문장에서 숫자를
+    다시 뽑아내야 한다 — 우리가 이미 정확히 계산해 둔 값(65000)을 버리고 추측으로 복원하는 셈이고,
+    질문으로 해석되면 완화가 아예 안 걸린다.
+
+    그래서 칩을 내보낼 때 `label → (field, value)` 를 기억해 두고, 다음 턴 message 가 그 label 과
+    **정확히 일치**하면 LLM 해석을 건너뛰고 저장된 값을 그대로 적용한다. 일치하지 않으면 아무 일도
+    하지 않고 기존 경로(decompose 해석)로 흐른다 — 지금보다 나빠지지 않는다.
+
+    턴마다 **덮어쓴다**(누적하지 않는다) — 화면에 떠 있는 칩은 항상 마지막 턴 것뿐이라, 옛 제안이
+    남아 있으면 사용자가 보지도 않은 조건이 되살아난다.
+
+    두 값(`offers`·`applied`)은 **한 스냅샷**이다 — 둘 다 "이번 턴 화면에 무엇이 있었나"를
+    기술한다. 그래서 **단일 키에 함께 저장**한다(PR #248 리뷰): 따로 두 번 쓰면 앞의 쓰기만
+    성공하고 뒤가 pg 일시 장애로 실패했을 때 `offers` 는 이번 턴인데 `applied` 는 지난 턴인
+    **찢어진 상태**가 남고, 다음 턴 "그 중에" 가 화면에 보여준 적 없는 완화를 이어붙인다.
+    한 번의 `aput` 으로 만들면 그 부분 실패가 **구조적으로 불가능**해진다.
+    """
+
+    def __init__(self, store: BaseStore | None = None) -> None:
+        self._store = store or InMemoryStore()
+
+    async def _snapshot(self, key: str) -> dict:
+        item = await run_with_query_timeout(
+            self._store.aget((_RELAX_NAMESPACE_ROOT, key), _SNAPSHOT_KEY)
+        )
+        return item.value if item and isinstance(item.value, dict) else {}
+
+    async def get_snapshot(self, key: str) -> tuple[dict[str, dict], dict | None]:
+        """`(offers, applied)` 를 **한 번의 왕복으로 함께** 돌려준다.
+
+        - `offers`: `label → {"field":…, "value":…}` — "누르면 이렇게 됩니다"(미동의). 없으면 빈 dict.
+        - `applied`: 직전 턴에 **자동 적용**된 완화 — "서버가 이미 이렇게 적용했습니다"(미동의).
+          다음 턴이 그 결과 집합을 가리키면("그 중에") 사용자가 수용한 것으로 보고 이어받는다(#113).
+
+        **둘을 따로 읽지 않는다**(PR #248 리뷰). 쓰기를 원자적으로 묶어 찢어진 상태를 없애 놓고
+        읽기를 두 번으로 나누면, 두 `aget` 사이에 다른 턴의 `put` 이 끼었을 때 `offers` 는 옛
+        스냅샷 · `applied` 는 새 스냅샷인 **같은 찢어짐이 읽기 쪽에서 되살아난다.** 한 번 읽어
+        둘 다 뽑으면 pg 왕복도 절반이다(승계 경로는 종전에 왕복 2회였다).
+        """
+        snapshot = await self._snapshot(key)
+        offers = snapshot.get(_OFFERS_KEY)
+        applied = snapshot.get(_APPLIED_KEY)
+        return (
+            offers if isinstance(offers, dict) else {},
+            applied if isinstance(applied, dict) else None,
+        )
+
+    async def put(self, key: str, offers: dict[str, dict], applied: dict | None) -> None:
+        """이번 턴 스냅샷으로 **통째 교체**한다 — 부분 갱신을 API 로 열어두지 않는다.
+
+        락 불필요(읽고 더하는 게 아니라 덮어쓴다). 상품 후보가 확정된 턴마다 덮어쓴다 — 완화가
+        안 걸린 턴에 옛 값이 남아 있으면 한참 뒤 "그 중에" 발화가 **화면에 있지도 않았던** 완화를
+        되살린다.
+
+        **호출되지 않는 경로가 있다**(검색 실패 `SEARCH_FAILED` 는 이 지점 전에 종료). 그런 턴은
+        옛 값이 그대로 남는데, 의도된 쪽이다 — 사용자가 마지막으로 **본** 결과는 여전히 그 완화가
+        걸린 목록이라 "그 중에"의 지시 대상이 바뀌지 않았다. 반대로 0건 턴은 여기까지 와서 비우므로
+        승계가 끊기는데, 이것도 안전한 쪽이다(원래 조건으로 돌아가 다시 고지). 지시 대상이 애매한
+        구간에서는 **승계하지 않는 쪽으로 기운다**(#113 설계 원칙).
+        """
+        await run_with_query_timeout(
+            self._store.aput(
+                (_RELAX_NAMESPACE_ROOT, key),
+                _SNAPSHOT_KEY,
+                {_OFFERS_KEY: offers, _APPLIED_KEY: applied},
+            )
+        )
+
+
 async def get_revert_store() -> RevertStore:
     """되돌리기 스토어 — pg-profile 공유 연결 백엔드(요청마다 얇은 래퍼 재생성)."""
     return RevertStore(await pg_store.get_store())
+
+
+async def get_relaxation_offer_store() -> RelaxationOfferStore:
+    """완화 칩 제안 스토어 — 되돌리기와 같은 pg-profile 백엔드(요청마다 얇은 래퍼)."""
+    return RelaxationOfferStore(await pg_store.get_store())
 
 
 def reset_revert_store() -> None:
