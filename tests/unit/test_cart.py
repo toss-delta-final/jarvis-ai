@@ -1214,6 +1214,40 @@ async def test_cart_add_unresolved_switch_during_pending_does_not_add_old_produc
     assert await store.get_pending("m:t") is None
 
 
+async def test_cart_add_unresolved_switch_rejects_product_outside_allowed_recommendations() -> None:
+    """전환 표지가 있는 미추천 productId도 옛 pending 상품·그 턴 옵션으로 담지 않는다."""
+    store = CartStateStore()
+    await store.set_pending(
+        "m:t",
+        PendingAdd(product_id=101, quantity=1, options=[CartOption(option_id=1001, name="일반형")]),
+    )
+
+    async def add_fn(req):
+        raise AssertionError(
+            f"해소 실패 전환은 담기에 도달하면 안 됨: product={req.product_id}, option={req.option_id}"
+        )
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(product_id=999, option_id=1002, quantity=1),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            message="다른 거 담아줘",
+            allowed_product_ids={101, 201},
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
+        )
+    )
+
+    assert _types(events) == ["token", "done"]
+    assert events[0]["data"]["text"] == (
+        "어떤 상품을 담을까요? 추천을 먼저 받아보시면 담아드릴게요."
+    )
+    assert await store.get_pending("m:t") is None
+
+
 @pytest.mark.parametrize("message", ["일반형", "드럼형으로", "2번으로"])
 async def test_cart_add_option_answer_during_pending_still_adds_pending_product(
     message: str,

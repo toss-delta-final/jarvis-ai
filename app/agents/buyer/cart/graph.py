@@ -150,9 +150,10 @@ async def stream_cart_add(
     pending_option_mentioned = pending is not None and any(
         option.name.strip() in message for option in pending.options if option.name.strip()
     )
+    # 해소된 전환은 위 분기가 pending 을 지웠다. 여기 남은 pending + 전환 표지는 productId 가
+    # 에코/null/미추천 값 중 무엇이든 해소 실패이므로 옛 상품에 적용하지 않는다.
     unresolved_switch = (
         pending is not None
-        and (cart.product_id is None or cart.product_id == pending.product_id)
         and any(marker in message for marker in settings.cart_pending_switch_markers)
         and not pending_option_mentioned
     )
