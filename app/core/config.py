@@ -670,6 +670,13 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _require_valid_eval_settings(self) -> "Settings":
+        """추천 평가 K 목록의 빈 값·비양수를 기동 시점에 막는다."""
+        if not self.eval_buyer_k_list or any(k <= 0 for k in self.eval_buyer_k_list):
+            raise ValueError("구매자 추천 평가 K 목록은 비어 있지 않고 모두 0보다 커야 합니다")
+        return self
+
+    @model_validator(mode="after")
     def _require_known_buffer_excluded_intents(self) -> "Settings":
         """세션 버퍼 제외 intent 오타를 기동 시 잡는다 (#119).
 

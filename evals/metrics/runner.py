@@ -220,6 +220,7 @@ def evaluate(
         raise NotImplementedError("sealed holdout 평가는 #144에서 구현합니다")
     settings = config or EvaluationSettings()
     resolved_k = tuple(k_list or settings.eval_buyer_k_list)
+    # Settings는 로딩 시 fail-fast하고, 이 검사는 직접 전달된 k_list까지 방어한다.
     if not resolved_k or any(k <= 0 for k in resolved_k):
         raise ValueError("eval_buyer_k_list의 K는 모두 0보다 커야 합니다")
     resolved_cases = list(cases) if cases is not None else list(load_cases("dev"))

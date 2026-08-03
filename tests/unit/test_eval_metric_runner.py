@@ -186,6 +186,12 @@ def test_configured_k_list_changes_reported_metrics() -> None:
     assert report["overall"]["recallAtK"] == {"1": 0.0, "2": 1.0}
 
 
+@pytest.mark.parametrize("k_list", [(), (0,), (-1, 5)])
+def test_settings_reject_invalid_eval_buyer_k_list(k_list: tuple[int, ...]) -> None:
+    with pytest.raises(ValueError, match="평가 K 목록"):
+        Settings(_env_file=None, eval_buyer_k_list=k_list)
+
+
 def test_critical_subset_is_constraint_or_failure_union() -> None:
     cases = [
         _case("buy-srch-9001", relevant=[1], grades={1: 3}),
