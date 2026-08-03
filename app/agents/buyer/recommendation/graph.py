@@ -320,7 +320,10 @@ async def stream_recommendation(
     # **모든 턴을 미루지 않는다** — 발동 조건은 검색 전에 이미 확정돼 있다: config 허용 목록에
     # 든 필드가 이번 턴 필터에 실제로 설정돼 있어야 한다(추측이 아니라 판정이다). 해당 없는
     # 절대다수 턴은 종전대로 검색 전에 칩을 내보내 첫 프레임 지연이 없다.
-    may_auto_relax = settings.relaxation_max_probes > 0 and any(
+    # 판정은 **자동 완화 자신의 조건**만 본다 — 칩 예산(`relaxation_max_probes`)과 엮으면,
+    # 칩을 끈 설정(`=0`)에서 자동 완화는 도는데 조건 칩만 미리 나가 표시-실제 불일치가
+    # 되살아난다(PR #248 리뷰 A 로 고친 바로 그 문제).
+    may_auto_relax = settings.relaxation_max_rounds > 0 and any(
         getattr(decision.filters, attr, None) is not None
         for field in settings.relaxation_auto_fields
         if (attr := RELAXATION_FIELD_TO_ATTR.get(field))
@@ -575,7 +578,13 @@ async def stream_recommendation(
     probed_counts: dict[str, int] = {}  # 와이어 필드명 -> 완화 시 매칭 수(probe 실패는 미기록)
     adopted_field: str | None = None
     adopted_value = None  # 채택된 완화 값 — 미뤄 둔 conditions 칩을 이 값으로 다시 파생한다
-    probe_budget = settings.relaxation_max_probes  # 자동 완화 시도와 칩 probe 가 공유하는 예산
+    # [PR #248 리뷰] 예산은 **칩 probe 전용**이다 — 자동 완화와 공유하면, 자동 완화가 먼저 돌아
+    # 예산을 다 쓴 턴에서 칩이 통째로 굶는다(`relaxation_max_probes=1` + 평점 조건이면 항상).
+    # 정작 칩은 **자동 완화가 실패했을 때 쓰라고 있는 폴백**이라, 그 폴백이 굶으면 사용자는
+    # "조건을 바꿔볼까요?"라는 말만 듣고 누를 게 하나도 없는 화면을 받는다.
+    # 자동 완화는 자기 상한(`relaxation_max_rounds`, SPEC REQ-REC-040)으로 따로 제한한다 —
+    # 손잡이 하나가 하나씩만 맡아야 설정값이 이름대로 동작한다.
+    probe_budget = settings.relaxation_max_probes  # 완화 칩 probe 상한(자동 완화와 무관)
     probes_spent = 0  # 관측용 — 이 턴이 실제로 쓴 추가 Spring 호출 수
 
     async def _probe(cand: RelaxationCandidate):
@@ -603,7 +612,7 @@ async def stream_recommendation(
             )
             return None
 
-    if not candidates and probe_budget > 0:
+    if not candidates:
         # [PR #248 2차 리뷰] 루프 전체를 감싼다 — `_probe` 안쪽은 이미 방어하지만 후보 생성
         # (`build_relaxation_candidates`)과 루프 자체는 밖이었다. 여기서 터지면 아래 conditions
         # 발신까지 못 가 조건 칩이 사라진다. 자동 완화는 **선택 기능**이라 실패는 삼키고
@@ -618,9 +627,11 @@ async def stream_recommendation(
                 # 자동은 config 화이트리스트(기본 평점)에 든 약한 조건뿐이다.
                 if cand.field not in auto_fields:
                     continue
-                if probe_budget <= 0 or rounds >= settings.relaxation_max_rounds:
+                # 자동 완화는 **자기 상한**만 쓴다(칩 예산과 분리, 위 probe_budget 주석 참조).
+                # 실질 상한은 허용 목록 크기다 — 기동 검증이 `{ratingMin}` 으로 잠가 뒀으므로
+                # 후보가 1개뿐이라 이 루프는 현재 최대 1회 돈다. max_rounds 는 그 위의 안전망이다.
+                if rounds >= settings.relaxation_max_rounds:
                     break
-                probe_budget -= 1
                 rounds += 1
                 outcome = await _probe(cand)
                 if outcome is None:

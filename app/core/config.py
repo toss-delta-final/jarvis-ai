@@ -277,10 +277,13 @@ class Settings(BaseSettings):
     relaxation_price_step_ratio: float = Field(default=0.3, gt=0.0)  # priceMax 상향 비율
     relaxation_price_round_unit: int = Field(default=1000, ge=1)  # 상향값 올림 단위(칩 문구 가독성)
     relaxation_rating_step: float = Field(default=0.5, gt=0.0)  # ratingMin 하향 폭
-    # 완화 후보 probe(재검색) 상한 — estCount 는 page-local 로 못 구한다(가격·브랜드·색상은 Spring
+    # **완화 칩** probe(재검색) 상한 — estCount 는 page-local 로 못 구한다(가격·브랜드·색상은 Spring
     # 쿼리 파라미터라 탈락 상품이 응답에 아예 없다, spring.py ProductSearchResult docstring 참조).
     # 그래서 후보마다 완화 필터로 재검색해 실제 매칭 수를 센다. fan-out 턴은 leg 수만큼 곱해지므로
-    # 낮게 잡는다. 자동 완화 시도와 칩 probe 가 **이 예산을 공유**한다.
+    # 낮게 잡는다.
+    # **자동 완화와 예산을 공유하지 않는다**(PR #248 리뷰) — 공유하면 자동 완화가 먼저 돌아 예산을
+    # 다 쓴 턴에서 칩이 굶는데, 칩은 정작 **자동 완화가 실패했을 때 쓰라고 있는 폴백**이다.
+    # 자동 완화는 `relaxation_max_rounds` 로 따로 제한한다(손잡이 하나가 하나씩만 맡는다).
     relaxation_max_probes: int = Field(default=2, ge=0)
     # 이 수 **미만**이면 "소량"으로 보고 결과가 있어도 완화 칩을 함께 제안한다(AC①). 0 이면 0건일 때만.
     relaxation_min_results: int = Field(default=3, ge=0)

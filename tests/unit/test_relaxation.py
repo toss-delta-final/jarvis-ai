@@ -295,6 +295,36 @@ async def test_conditions_chips_reflect_the_auto_relaxed_value(monkeypatch) -> N
     assert types.index("conditions") < types.index("token") < types.index("products.ready")
 
 
+@pytest.mark.parametrize("chip_budget", [0, 2])
+async def test_conditions_match_the_search_regardless_of_chip_budget(
+    chip_budget: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """조건 칩 지연은 **자동 완화 자신의 조건**만 보고 정한다 — 칩 예산과 무관하다.
+
+    두 손잡이를 엮으면 칩을 끈 설정(`relaxation_max_probes=0`)에서 자동 완화는 도는데 조건 칩만
+    미리 나가, 화면엔 "평점 4.5" 인데 실제는 4.0 인 표시-실제 불일치가 되살아난다.
+    """
+    monkeypatch.setattr(get_settings(), "relaxation_max_probes", chip_budget)
+
+    async def _push(push) -> bool:  # noqa: ANN001
+        return True
+
+    products = [_product(101, 39000, rating=4.2), _product(102, 48000, rating=4.1)]
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(decompose=_decompose_with(ratingMin=4.5)),
+            search=_filtered_search(products),
+            push_fn=_push,
+        )
+    )
+
+    assert any("넓혔어요" in e["data"].get("text", "") for e in events if e["type"] == "token")
+    rating_chip = next(c for c in _conditions(events) if c["field"] == "ratingMin")
+    assert rating_chip["value"] == 4.0  # 실제 검색값과 일치
+
+
 async def test_conditions_chips_are_not_delayed_when_auto_relax_cannot_fire() -> None:
     """완화가 불가능한 턴(평점 조건 없음)은 종전대로 **검색 전에** 칩을 내보낸다.
 
@@ -602,6 +632,48 @@ async def test_probe_budget_caps_extra_searches(monkeypatch: pytest.MonkeyPatch)
 
     assert len(calls) == 2  # 원 검색 1 + probe 1(상한)
     assert _done(events)["finishReason"] == "zero_result"
+
+
+@pytest.mark.parametrize("budget", [1, 2])
+async def test_auto_relaxation_does_not_starve_the_chip_budget(
+    budget: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """[PR #248 리뷰] 자동 완화가 칩 예산을 먹어치우지 않는다.
+
+    예산을 공유하면 `relaxation_max_probes=1` + 평점 조건인 턴에서 자동 완화가 예산을 다 써
+    **가격 칩을 아예 만들어보지도 못한다.** 정작 칩은 자동 완화가 실패했을 때 쓰라고 있는
+    폴백이라, 사용자는 "조건을 바꿔볼까요?"만 듣고 누를 게 없는 화면을 받는다.
+    """
+    monkeypatch.setattr(get_settings(), "relaxation_max_probes", budget)
+    seen: list = []
+
+    async def _search(filters, exclude_product_ids=None):  # noqa: ANN001
+        seen.append((filters.rating_min, filters.price_max))
+        # 평점은 만족하지만 가격만 초과 — **가격만 넓히면** 결과가 나오는 상황
+        kept = [
+            p
+            for p in [_product(201, 60000, rating=4.8), _product(202, 62000, rating=4.9)]
+            if (filters.rating_min is None or (p.rating or 0) >= filters.rating_min)
+            and (filters.price_max is None or (p.price or 0) <= filters.price_max)
+        ]
+        return ProductSearchResult(products=kept, total_count=len(kept))
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            # 평점(자동 완화 대상) + 가격(칩 대상)이 **동시에** 걸린 0건 턴
+            llm=FakeLLM(decompose=_decompose_with(ratingMin=4.5, priceMax=50000)),
+            search=_search,
+            push_fn=None,
+        )
+    )
+
+    chips = _suggestions(events)
+    assert [c["relaxation"]["field"] for c in chips] == ["priceMax"]
+    assert chips[0]["estCount"] == 2
+    assert (4.0, 50000) in seen  # 자동 완화 probe 는 돌았고(실패)
+    assert (4.5, 65000) in seen  # 칩 probe 도 굶지 않았다
 
 
 async def test_fanout_relaxation_probes_every_leg_with_relaxed_filter() -> None:
