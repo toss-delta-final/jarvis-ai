@@ -17,6 +17,7 @@ from app.services.search_service import (
     EmbeddingRerankBackend,
     VectorSearchBackend,
     _cosine,
+    cosine_similarity,
     vector_rank,
 )
 
@@ -109,7 +110,14 @@ async def test_embedding_rerank_backend_reorders(monkeypatch):
     monkeypatch.setattr(spring_client, "search_products", fake_search)
     backend = EmbeddingRerankBackend(store=store, embed=_embed)
     result = await backend.search(ProductSearchFilters(keyword="여행 방수", limit=10))
-    assert [p.product_id for p in result.products][0] == 1  # 재정렬로 여행 방수가 최상위
+    expected = sorted(
+        result.products,
+        key=lambda product: cosine_similarity(
+            _embed(["여행 방수"])[0], store.get(product.product_id).embedding
+        ),
+        reverse=True,
+    )
+    assert [p.product_id for p in result.products] == [p.product_id for p in expected]
 
 
 async def test_embedding_rerank_embeds_semantic_query_not_keyword(monkeypatch):
@@ -162,22 +170,24 @@ async def test_embedding_rerank_degrades_to_spring_order_on_embed_failure(monkey
     assert result.total_count == 3
 
 
-async def test_embedding_rerank_backend_uses_batch_get(monkeypatch):
-    """[#101] 재정렬은 후보 embedding 을 get_many 1회로 조회한다(후보별 get() N+1 아님)."""
+async def test_embedding_rerank_backend_uses_single_vector_query(monkeypatch):
+    """[#254] 재정렬은 top_k_by_vector 1회로 후보 집합만 순위화한다(N+1 아님)."""
     store = _seed_store()
-    calls = {"get": 0, "get_many": 0}
-    orig_get_many = store.get_many
+    calls = {"get": 0, "top_k_by_vector": []}
+    orig_top_k_by_vector = store.top_k_by_vector
 
     def spy_get(pid):
         calls["get"] += 1
         return CatalogArtifactStore.get(store, pid)
 
-    def spy_get_many(ids):
-        calls["get_many"] += 1
-        return orig_get_many(ids)
+    def spy_top_k_by_vector(query_vec, *, k, exclude=None, include=None):
+        calls["top_k_by_vector"].append(
+            {"query_vec": query_vec, "k": k, "exclude": exclude, "include": include}
+        )
+        return orig_top_k_by_vector(query_vec, k=k, exclude=exclude, include=include)
 
     monkeypatch.setattr(store, "get", spy_get)
-    monkeypatch.setattr(store, "get_many", spy_get_many)
+    monkeypatch.setattr(store, "top_k_by_vector", spy_top_k_by_vector)
 
     async def fake_search(filters):
         return ProductSearchResult(
@@ -188,8 +198,105 @@ async def test_embedding_rerank_backend_uses_batch_get(monkeypatch):
     monkeypatch.setattr(spring_client, "search_products", fake_search)
     backend = EmbeddingRerankBackend(store=store, embed=_embed)
     await backend.search(ProductSearchFilters(keyword="여행 방수", limit=10))
-    assert calls["get_many"] == 1  # 1회 batch 조회
-    assert calls["get"] == 0  # 후보별 get() 없음(N+1 제거)
+    assert calls["top_k_by_vector"] == [
+        {
+            "query_vec": _embed(["여행 방수"])[0],
+            "k": 3,
+            "exclude": None,
+            "include": {1, 2, 3},
+        }
+    ]
+    assert calls["get"] == 0
+
+
+async def test_embedding_rerank_preserves_missing_empty_and_duplicate_candidates(monkeypatch):
+    """[#254] DB 미존재·빈 임베딩·중복 후보도 유실 없이 Spring 상대순서로 꼬리에 둔다."""
+    store = CatalogArtifactStore()
+    store.upsert(CatalogArtifact(product_id=1, search_doc="best", embedding=[1.0, 0.0]))
+    store.upsert(CatalogArtifact(product_id=2, search_doc="empty", embedding=[]))
+    spring_order = [
+        SpringProduct(product_id=9, name="missing-a", price=10),
+        SpringProduct(product_id=1, name="ranked-a", price=10),
+        SpringProduct(product_id=2, name="empty", price=10),
+        SpringProduct(product_id=1, name="ranked-b", price=10),
+        SpringProduct(product_id=8, name="missing-b", price=10),
+    ]
+
+    async def fake_search(_filters):
+        return ProductSearchResult(products=list(spring_order), total_count=len(spring_order))
+
+    monkeypatch.setattr(spring_client, "search_products", fake_search)
+    backend = EmbeddingRerankBackend(store=store, embed=lambda _texts: [[1.0, 0.0]])
+    result = await backend.search(ProductSearchFilters(semantic_query="best"))
+
+    assert len(result.products) == len(spring_order)
+    assert sorted(p.product_id for p in result.products) == sorted(
+        p.product_id for p in spring_order
+    )
+    assert [p.name for p in result.products] == [
+        "ranked-a",
+        "ranked-b",
+        "missing-a",
+        "empty",
+        "missing-b",
+    ]
+
+
+async def test_embedding_rerank_vector_k_max_leaves_overflow_in_spring_order(monkeypatch):
+    """[#254] DB 순위 상한 밖 후보는 자르지 않고 원래 Spring 순서로 꼬리에 보존한다."""
+    from types import SimpleNamespace
+
+    store = CatalogArtifactStore()
+    embeddings = {
+        1: [1.0, 0.0],
+        2: [0.8, 0.2],
+        3: [0.2, 0.8],
+        4: [0.0, 1.0],
+    }
+    for product_id, embedding in embeddings.items():
+        store.upsert(
+            CatalogArtifact(product_id=product_id, search_doc=str(product_id), embedding=embedding)
+        )
+    spring_order = [
+        SpringProduct(product_id=4, name="p4", price=10),
+        SpringProduct(product_id=3, name="p3", price=10),
+        SpringProduct(product_id=2, name="p2", price=10),
+        SpringProduct(product_id=1, name="p1", price=10),
+    ]
+
+    async def fake_search(_filters):
+        return ProductSearchResult(products=list(spring_order), total_count=4)
+
+    monkeypatch.setattr(spring_client, "search_products", fake_search)
+    monkeypatch.setattr(
+        search_service,
+        "get_settings",
+        lambda: SimpleNamespace(embedding_rerank_vector_k_max=2),
+    )
+    backend = EmbeddingRerankBackend(store=store, embed=lambda _texts: [[1.0, 0.0]])
+    result = await backend.search(ProductSearchFilters(semantic_query="query"))
+
+    assert [p.product_id for p in result.products] == [1, 2, 4, 3]
+    assert len(result.products) == len(spring_order)
+
+
+async def test_embedding_rerank_degrades_to_spring_order_on_store_failure(monkeypatch):
+    """[#254] pgvector 장애·statement_timeout도 Spring 원순서 degrade 경계가 흡수한다."""
+    store = _seed_store()
+    spring_order = [SpringProduct(product_id=i, name=f"p{i}", price=10) for i in (3, 2, 1)]
+
+    def boom_top_k(*_args, **_kwargs):
+        raise TimeoutError("pgvector timeout")
+
+    async def fake_search(_filters):
+        return ProductSearchResult(products=list(spring_order), total_count=3)
+
+    monkeypatch.setattr(store, "top_k_by_vector", boom_top_k)
+    monkeypatch.setattr(spring_client, "search_products", fake_search)
+    backend = EmbeddingRerankBackend(store=store, embed=_embed)
+    result = await backend.search(ProductSearchFilters(semantic_query="여행 방수"))
+
+    assert [p.product_id for p in result.products] == [3, 2, 1]
 
 
 async def test_embedding_rerank_offloads_scoring_to_thread(monkeypatch):

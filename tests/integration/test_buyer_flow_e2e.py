@@ -9,6 +9,7 @@ from __future__ import annotations
 import jwt
 import pytest
 
+from app.core.config import get_settings
 from tests.integration.conftest import (
     auth_header,
     event_types,
@@ -382,8 +383,11 @@ def test_recently_purchased_product_is_deduped(client, spring, llm) -> None:
     assert 102 not in spring.pushed_lists[list_id], "최근 구매 상품은 제외돼야 한다"
 
 
-def test_multiturn_accumulates_filters(client, spring, llm) -> None:
+def test_multiturn_accumulates_filters(client, spring, llm, monkeypatch) -> None:
     """멀티턴 — 같은 threadId 의 다음 턴에도 누적 필터가 유지된다 (스레드 스코프 상태)."""
+    # [#113] 턴당 검색 1회를 세는 테스트라 완화 probe 를 끈다 — 소량 결과면 완화 재검색이
+    # 뒤따라 붙어 searches 인덱스가 밀린다(완화 자체는 test_relaxation.py 소관).
+    monkeypatch.setattr(get_settings(), "relaxation_min_results", 0)
     _chat(client, headers=auth_header())
     _chat(client, "더 저렴한 걸로 보여줘", headers=auth_header())
 

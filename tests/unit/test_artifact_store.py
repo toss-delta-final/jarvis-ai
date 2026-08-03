@@ -37,3 +37,20 @@ def test_artifact_carries_provenance():
     assert a.embed_model == "gemini-embedding-001"
     assert a.embed_dim == 1536 and a.embed_task == "RETRIEVAL_DOCUMENT"
     assert a.normalized is True
+
+
+def test_top_k_by_vector_include_contract():
+    store = CatalogArtifactStore()
+    for product_id, embedding in (
+        (1, [1.0, 0.0]),
+        (2, [0.8, 0.2]),
+        (3, [0.0, 1.0]),
+    ):
+        store.upsert(
+            CatalogArtifact(product_id=product_id, search_doc=str(product_id), embedding=embedding)
+        )
+
+    assert store.top_k_by_vector([1.0, 0.0], k=3, include={2, 3}) == [2, 3]
+    assert store.top_k_by_vector([1.0, 0.0], k=3, include=set()) == []
+    assert store.top_k_by_vector([1.0, 0.0], k=3, include=None) == [1, 2, 3]
+    assert store.top_k_by_vector([1.0, 0.0], k=3, include={1, 2}, exclude={1}) == [2]

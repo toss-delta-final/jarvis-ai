@@ -217,6 +217,40 @@ def test_provenance_roundtrip(store):
     assert got.normalized is True
 
 
+def test_top_k_by_vector_include_contract(store, monkeypatch):
+    for product_id, embedding in (
+        (1, _vec(1.0, 0.0)),
+        (2, _vec(0.8, 0.2)),
+        (3, _vec(0.0, 1.0)),
+    ):
+        store.upsert(
+            CatalogArtifact(
+                product_id=product_id,
+                search_doc=str(product_id),
+                embedding=embedding,
+                embed_model="gemini-embedding-001",
+                embed_dim=1536,
+                embed_task="RETRIEVAL_DOCUMENT",
+                normalized=True,
+            )
+        )
+
+    assert store.top_k_by_vector(_vec(1.0, 0.0), k=4, include={2, 3, 999}) == [2, 3]
+    assert store.top_k_by_vector(_vec(1.0, 0.0), k=4, include={1, 2}, exclude={1}) == [2]
+
+    original_pool = store._pool
+
+    class QueryForbiddenPool:
+        def connection(self):
+            pytest.fail("include=set()은 DB 쿼리를 보내면 안 된다")
+
+    monkeypatch.setattr(store, "_pool", QueryForbiddenPool())
+    try:
+        assert store.top_k_by_vector(_vec(1.0, 0.0), k=4, include=set()) == []
+    finally:
+        monkeypatch.setattr(store, "_pool", original_pool)
+
+
 @pytest.mark.integration
 def test_check_rejects_missing_provenance():
     import psycopg

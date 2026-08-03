@@ -152,7 +152,14 @@ class ProductsReadyData(CamelModel):
 
 
 class DoneData(CamelModel):
-    """`done` 이벤트 — 정상 종료. finishReason: stop | zero_result (api-spec §3.1 (5))."""
+    """`done` 이벤트 — 정상 종료. finishReason: stop | zero_result (api-spec §3.1 (5)).
+
+    [#113] `relaxationNotice` 는 **싣지 않는다.** 정본(Notion CH-2)이 `done` 을 `finishReason` 만으로
+    확정했고("구 명세 대비 정정 요약: done — relaxationNotice 제거"), FE 타입도 그 필드를 갖고 있지
+    않다(jarvis-frontend `shared/types/chat.ts`). 자동 완화 투명 안내(REQ-REC-042)는 `token` 산문이
+    담당하므로 사용자 고지는 그대로 유지된다 — 없어지는 건 아무도 읽지 않는 기계 판독 사본뿐이다.
+    FE 가 문장 파싱 없이 분기할 근거가 필요해지면 그때 정본을 개정하고 되살린다.
+    """
 
     finish_reason: Literal["stop", "zero_result"] = "stop"
 
