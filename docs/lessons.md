@@ -83,6 +83,19 @@
 - 관련: `app/services/spring_client.py::_search_query_params`, `app/schemas/spring.py`
   `ProductSearchResult` docstring, 이슈 #113
 
+## [2026-08-03] LLM JSON은 프롬프트 타입과 실패 의미를 양쪽 경계에서 고정한다
+- 증상: single-call live smoke 10회 중 5회가 `brand`와 `attrConditions`를 문자열로 내는
+  등 스키마 타입 차이로 hard failure가 됐고, 정답 형태만 내는 dry-run fake는 이를 잡지
+  못했으며 한 필드 오류가 전체 응답을 폐기했다.
+- 원인: 프롬프트가 필드별 JSON 타입을 명시하지 않았고, pipeline은 단계별 파싱 실패를
+  제한적으로 흡수하는 반면 single-call은 통합 응답 하나를 strict하게 파싱해 비교 arm의 실패
+  의미가 비대칭이었다.
+- 규칙: **구조화 LLM 출력 프롬프트에는 모든 필드의 타입과 예시를 명시하고, 비교 arm에는
+  같은 의미의 field-lenient 실패 규칙을 적용한다.** 알려진 동치 타입은 정규화하고, 미지·검증
+  실패 필드는 해당 필드만 드롭해 경고와 metric 벌점으로 남기되 전체 추천은 살린다. 형태
+  순응도는 fake로 증명할 수 없으므로 전량 실행 전 실 provider 소형 smoke를 반드시 거친다.
+- 관련: #146, `evals/ablation/single_call.py`, findings r3
+
 ## [2026-08-03] 스키마 기본 필드가 합집합 분모 지표를 오염시키지 않게 한다
 - 증상: 전량 실행의 `filterAccuracy`가 0.036이었다. `model_dump`가 모델의 판단이 아닌
   `limit=30`과 `excludeProductIds=[]`까지 `extractedFilters`에 실어, 합집합 분모에서 매번
