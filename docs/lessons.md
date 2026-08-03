@@ -13,6 +13,30 @@
 
 ---
 
+## [2026-08-03] counterfactual fixture가 실제 점수 표면에 닿는지 먼저 확인한다
+- 증상: 개인화 paired 평가에서 글로벌 Sony/이어폰 취향을 모든 케이스에 공통 주입하자 대부분
+  후보 집합과 교집합이 없어 clean/noisy/repeated 지표가 전부 같았다. repeated는 clean과
+  preferences가 완전히 동일했고, clean→noisy margin 판정은 CI `[0, 0]`으로 vacuous pass했다.
+- 원인: arm 이름과 fixture 서술만 다르게 만들고, 그 선호 축이 실제 후보의 category/brand 및
+  profile-match 점수 성분에 닿아 순위를 움직일 수 있는지 확인하지 않았다.
+- 규칙: **counterfactual arm fixture를 설계하면 그 fixture가 실제로 시스템 표면(후보 집합·점수
+  성분)에 닿아 산출을 움직일 수 있는지 baseline 실측으로 먼저 확인한다 — arm 간 지표가 전부
+  동일하면 측정이 아니라 장식이다.**
+- 관련: #147, `evals/personalization/fixtures.py`
+
+## [2026-08-03] LLM JSON은 프롬프트 타입과 실패 의미를 양쪽 경계에서 고정한다
+- 증상: single-call live smoke 10회 중 5회가 `brand`와 `attrConditions`를 문자열로 내는
+  등 스키마 타입 차이로 hard failure가 됐고, 정답 형태만 내는 dry-run fake는 이를 잡지
+  못했으며 한 필드 오류가 전체 응답을 폐기했다.
+- 원인: 프롬프트가 필드별 JSON 타입을 명시하지 않았고, pipeline은 단계별 파싱 실패를
+  제한적으로 흡수하는 반면 single-call은 통합 응답 하나를 strict하게 파싱해 비교 arm의 실패
+  의미가 비대칭이었다.
+- 규칙: **구조화 LLM 출력 프롬프트에는 모든 필드의 타입과 예시를 명시하고, 비교 arm에는
+  같은 의미의 field-lenient 실패 규칙을 적용한다.** 알려진 동치 타입은 정규화하고, 미지·검증
+  실패 필드는 해당 필드만 드롭해 경고와 metric 벌점으로 남기되 전체 추천은 살린다. 형태
+  순응도는 fake로 증명할 수 없으므로 전량 실행 전 실 provider 소형 smoke를 반드시 거친다.
+- 관련: #146, `evals/ablation/single_call.py`, findings r3
+
 ## [2026-08-03] 스키마 기본 필드가 합집합 분모 지표를 오염시키지 않게 한다
 - 증상: 전량 실행의 `filterAccuracy`가 0.036이었다. `model_dump`가 모델의 판단이 아닌
   `limit=30`과 `excludeProductIds=[]`까지 `extractedFilters`에 실어, 합집합 분모에서 매번
