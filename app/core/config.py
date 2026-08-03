@@ -864,6 +864,36 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _require_known_relaxation_chip_fields(self) -> "Settings":
+        """완화 칩 대상에 모르는 필드명이 있으면 기동 실패 (#113, PR #248 리뷰).
+
+        `build_relaxation_candidates` 는 모르는 이름을 `continue` 로 건너뛴다 — 카테고리가 실수로
+        들어와도 후보가 되지 않게 하는 이중 방어인데, **오타에는 그 관대함이 독**이 된다.
+        `"pricemax"`(m 소문자) 하나면 기동은 멀쩡히 성공하고 가격 완화 칩만 영구히 안 나오는데
+        아무도 이유를 모른다. 형제 설정(`relaxation_auto_fields`)은 바로 아래에서 기동 시점에
+        검증하는데 이쪽만 조용히 무해화(silent no-op)되는 비대칭이 있었다.
+
+        빈 목록(= 완화 칩 기능 off)은 정상적인 의사표현이라 막지 않는다.
+
+        허용 집합을 여기 복제하지 않고 `FIELD_TO_ATTR` 를 **지연 import** 하는 이유는 단일 출처를
+        지키기 위해서다 — 복제하면 필드가 늘 때 한쪽만 고쳐 검증이 조용히 뒤처진다.
+        **전제: `relaxation.py` 는 config 를 import 하지 않는다**(settings 를 인자로 받는 순수
+        함수 모듈이다). 그 전제가 깨지면 여기서 순환 import 가 된다 — 다만 Settings 생성 시점
+        (=기동)에 ImportError 로 즉시 터지므로 조용히 썩지는 않는다.
+        """
+        from app.agents.buyer.recommendation.relaxation import (  # 지연 import (위 전제 참조)
+            FIELD_TO_ATTR,
+        )
+
+        if unknown := sorted(set(self.relaxation_chip_fields) - set(FIELD_TO_ATTR)):
+            raise ValueError(
+                f"RELAXATION_CHIP_FIELDS contains unknown field(s) {unknown}: "
+                f"allowed wire names are {sorted(FIELD_TO_ATTR)} "
+                "(category is intentionally excluded from relaxation — see issue #84)"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _forbid_auto_relaxing_explicit_constraints(self) -> "Settings":
         """사용자 명시 제약을 자동 완화 목록에 넣으면 기동 실패 (#113, PR #248 리뷰).
 

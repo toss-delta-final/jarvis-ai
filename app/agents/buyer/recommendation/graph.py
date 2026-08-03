@@ -540,14 +540,29 @@ async def stream_recommendation(
     probes_spent = 0  # 관측용 — 이 턴이 실제로 쓴 추가 Spring 호출 수
 
     async def _probe(cand: RelaxationCandidate):
-        """완화 필터로 재검색해 본 경로와 같은 사후필터를 통과시킨다. 실패면 None(그 후보만 탈락)."""
+        """완화 필터로 재검색해 본 경로와 같은 사후필터를 통과시킨다. 실패면 None(그 후보만 탈락).
+
+        **전 구간을 방어한다**(PR #248 리뷰) — `_run_search` 만 감싸면 뒤이은 `_post_filter` 예외가
+        그대로 올라가고, 아래 `asyncio.gather` 는 `return_exceptions` 가 없어 **칩 하나 만들려던
+        부가 조회가 추천 턴 전체(SSE 스트림)를 죽인다.** 이 함수의 다른 편의 기능(I-19 조회·칩 기억
+        저장소)이 전부 따르는 "실패해도 턴을 죽이지 않는다"(§7)를 이 경로만 빠뜨릴 이유가 없다.
+        """
         nonlocal probes_spent
         probes_spent += 1  # 실패분도 센다 — 지연·비용은 성공 여부와 무관하게 발생한다
-        probed = await _run_search(cand.filters)
-        if probed is None:  # _run_search 가 예외를 삼켜 None 을 준다 — 스트림은 계속(§6 degrade)
+        try:
+            # _run_search 는 자체 예외를 삼켜 None 을 준다(§6 degrade). 그 **뒤**의 병합·사후필터가
+            # 이 try 의 주 보호 대상이다.
+            probed = await _run_search(cand.filters)
+            if probed is None:
+                return None
+            relaxed, relaxed_leg_of = probed
+            return (*_post_filter(relaxed), relaxed_leg_of)
+        except Exception as exc:  # noqa: BLE001 - 완화 probe 실패가 스트림을 죽이지 않게(degrade)
+            # CancelledError(BaseException)는 전파돼 협조적 취소가 보존된다.
+            logger.warning(
+                "relaxation_probe_failed", extra={"field": cand.field, "reason": str(exc)}
+            )
             return None
-        relaxed, relaxed_leg_of = probed
-        return (*_post_filter(relaxed), relaxed_leg_of)
 
     if not candidates and probe_budget > 0:
         relax_candidates = build_relaxation_candidates(decision.filters, settings)

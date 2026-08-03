@@ -563,6 +563,65 @@ def test_auto_relaxation_can_be_disabled_but_not_widened() -> None:
     assert Settings(relaxation_auto_fields=["ratingMin"]).relaxation_auto_fields == ["ratingMin"]
 
 
+@pytest.mark.parametrize("bad", ["pricemax", "price_max", "category", "오타"])
+def test_unknown_chip_field_fails_startup_instead_of_silently_doing_nothing(bad: str) -> None:
+    """[PR #248 리뷰] 완화 칩 대상 오타는 **기동 실패**로 드러낸다.
+
+    후보 생성기가 모르는 이름을 `continue` 로 건너뛰므로, 오타 하나면 기동은 멀쩡히 성공하고
+    그 필드의 완화 칩만 영구히 안 나오는데 아무도 이유를 모른다 — 형제 설정
+    (`relaxation_auto_fields`)은 기동 시점에 검증하는데 이쪽만 조용히 무해화되던 비대칭이다.
+    """
+    with pytest.raises(ValidationError) as exc:
+        Settings(relaxation_chip_fields=["priceMax", bad])
+
+    assert "RELAXATION_CHIP_FIELDS" in str(exc.value)
+    assert bad in str(exc.value)
+
+
+def test_chip_fields_can_be_emptied() -> None:
+    """빈 목록(= 완화 칩 기능 off)은 정상적인 의사표현이라 막지 않는다."""
+    assert Settings(relaxation_chip_fields=[]).relaxation_chip_fields == []
+
+
+async def test_probe_failure_after_search_does_not_kill_the_stream(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """[PR #248 리뷰] probe 가 **검색 이후 단계**에서 터져도 추천 턴은 살아남는다.
+
+    `_run_search` 호출만 감쌌을 때는 그 뒤(병합·사후필터)에서 난 예외가
+    `asyncio.gather`(return_exceptions 없음)로 그대로 전파돼, **칩 하나 만들려던 부가 조회가
+    SSE 스트림 전체를 죽였다.** 여기서는 완화 probe 응답만 후처리에서 터지는 객체로 돌려준다.
+    """
+
+    async def _push(push) -> bool:  # noqa: ANN001
+        return True
+
+    class _BrokenResult:
+        """후처리(`.products` 접근) 시점에 터지는 응답 — 검색 호출 자체는 성공한 상황."""
+
+        total_count = 0
+
+        @property
+        def products(self):  # noqa: ANN201
+            raise RuntimeError("post-search boom")
+
+    async def _search(filters, exclude_product_ids=None):  # noqa: ANN001
+        if filters.price_max == 65000:  # 완화 probe 만 망가진 응답을 받는다
+            return _BrokenResult()
+        return ProductSearchResult(products=[_product(101, 39000)], total_count=1)
+
+    with caplog.at_level(logging.WARNING):
+        events = await _collect(
+            run_buyer_turn(_req(), _member(), llm=FakeLLM(), search=_search, push_fn=_push)
+        )
+
+    assert _types(events)[-1] == "done"
+    assert "error" not in _types(events)
+    assert "products.ready" in _types(events)  # 본 경로는 멀쩡히 완주한다
+    assert "relaxation_probe_failed" in caplog.text
+    assert _suggestions(events) == []  # 터진 후보의 칩만 빠진다
+
+
 @pytest.mark.parametrize(
     "stored",
     [
