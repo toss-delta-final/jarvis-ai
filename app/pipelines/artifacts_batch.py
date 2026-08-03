@@ -95,6 +95,8 @@ async def _harvest_change_colors(change: ProductChange, *, settings: Settings) -
                 embed,
                 settings.embedding_model_id,
                 settings.color_synonym_cluster_threshold,
+                max_terms=settings.color_synonym_harvest_max_terms_per_product,
+                max_term_length=settings.color_synonym_harvest_max_term_length,
             )
         finally:
             # wait_for가 먼저 끝나도 실제 worker가 종료될 때까지 슬롯을 계속 점유한다.

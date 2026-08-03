@@ -136,6 +136,11 @@ class Settings(BaseSettings):
     # wait_for 뒤에도 남는 to_thread 작업의 프로세스 동시 상한. 슬롯이 차면 해당 change 수확만
     # 즉시 건너뛰어 I-17 생성물 갱신과 cursor 전진을 지연시키지 않는다.
     color_synonym_harvest_max_concurrency: int = Field(default=2, ge=1)
+    # 실카탈로그 상품당 색상 개수는 최대·p99 모두 30개였다. 정상 최대에 10개 여유를 둔 40으로
+    # 단일 셀러 입력이 DB 배열·외부 임베딩 호출·pending 행을 무제한 증폭하지 못하게 한다.
+    color_synonym_harvest_max_terms_per_product: int = Field(default=40, ge=1)
+    # 실카탈로그 최장 색상 표기는 28자였다. 복합 표기 여유 12자를 둔 40자까지만 수확한다.
+    color_synonym_harvest_max_term_length: int = Field(default=40, ge=1)
     # 실카탈로그 상위 30 표기가 전체 색상 토큰 출현의 82.2%(8,753/10,645)를 덮는다.
     color_synonym_top_n: int = Field(default=30, ge=0)
     # 실측 최저 정탐 남색-네이비=0.854, 최고 오탐 블랙-블루=0.849로 마진이 0.005뿐이다.

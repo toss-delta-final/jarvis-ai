@@ -44,6 +44,48 @@ def test_count_terms_counts_products_per_term_not_duplicate_tokens() -> None:
     assert counts == Counter({"블랙": 2})
 
 
+def test_color_term_count_limit_caps_offline_harvest_and_logs(caplog) -> None:
+    with caplog.at_level("WARNING"):
+        counts = seed.count_terms(
+            [_change(1, ["블랙", "화이트", "레드"])],
+            max_terms=2,
+            max_term_length=40,
+        )
+
+    assert counts == Counter({"블랙": 1, "화이트": 1})
+    assert "색상 표기 개수 상한 초과" in caplog.text
+    assert "1건 제외" in caplog.text
+
+
+def test_color_term_length_limit_rejects_and_logs(caplog) -> None:
+    with caplog.at_level("WARNING"):
+        terms = seed.extract_color_terms(
+            {"색상": ["블랙", "가" * 41]},
+            max_terms=40,
+            max_term_length=40,
+        )
+
+    assert terms == ["블랙"]
+    assert "색상 표기 문자열 길이 상한 초과" in caplog.text
+    assert "1건 거부" in caplog.text
+
+
+def test_measured_normal_color_boundaries_pass_unchanged_without_warning(caplog) -> None:
+    settings = Settings(_env_file=None)
+    terms = [f"{index:02d}" + ("가" * 26) for index in range(30)]
+
+    with caplog.at_level("WARNING"):
+        extracted = seed.extract_color_terms(
+            {"색상": terms},
+            max_terms=settings.color_synonym_harvest_max_terms_per_product,
+            max_term_length=settings.color_synonym_harvest_max_term_length,
+        )
+
+    assert all(len(term) == 28 for term in terms)
+    assert extracted == terms
+    assert "색상 표기" not in caplog.text
+
+
 async def test_harvest_terms_drains_i17_without_enrichment() -> None:
     pages = [
         ProductChangesPage(items=[_change(1, "블랙")], next_cursor="c1", has_more=True),
@@ -771,7 +813,9 @@ def test_batch_harvest_releases_db_connection_before_embedding(monkeypatch) -> N
     assert max_active_connections == 1
 
 
-def test_batch_harvest_embeds_many_colors_in_shared_chunks_without_loss(monkeypatch) -> None:
+def test_batch_harvest_embeds_many_colors_within_configured_limit_without_loss(
+    monkeypatch,
+) -> None:
     terms = [f"색상-{index}" for index in range(45)]
     embed_calls: list[list[str]] = []
     captured: list[seed.ColorTermRow] = []
@@ -811,7 +855,18 @@ def test_batch_harvest_embeds_many_colors_in_shared_chunks_without_loss(monkeypa
         lambda conn, rows, model: captured.extend(rows) or len(rows),
     )
 
-    assert seed.harvest_new_terms("dsn", {"색상": terms}, embed, "model", 0.84) == 45
+    assert (
+        seed.harvest_new_terms(
+            "dsn",
+            {"색상": terms},
+            embed,
+            "model",
+            0.84,
+            max_terms=45,
+            max_term_length=40,
+        )
+        == 45
+    )
     assert [len(batch) for batch in embed_calls] == [20, 20, 5]
     assert [row.term for row in captured] == terms
 

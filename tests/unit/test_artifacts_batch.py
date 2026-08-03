@@ -696,6 +696,58 @@ async def test_color_harvest_only_adds_pending_new_terms(monkeypatch):
     assert seen == [({"방수": True}, True)]
 
 
+async def test_color_harvest_count_limit_logs_and_does_not_kill_i17_artifact(
+    monkeypatch, caplog
+):
+    settings = get_settings().model_copy(
+        update={
+            "color_synonym_batch_harvest_enabled": True,
+            "color_synonym_harvest_max_terms_per_product": 2,
+            "color_synonym_harvest_max_term_length": 40,
+        }
+    )
+    store = CatalogArtifactStore()
+    change = _change(1).model_copy(
+        update={"attributes": {"색상": ["블랙", "화이트", "레드"]}}
+    )
+    harvested: list[str] = []
+
+    def harvest(
+        dsn,
+        attributes,
+        embed,
+        model,
+        threshold,
+        *,
+        max_terms,
+        max_term_length,
+    ):
+        harvested.extend(
+            _batch.color_synonym_seed.extract_color_terms(
+                attributes,
+                max_terms=max_terms,
+                max_term_length=max_term_length,
+            )
+        )
+        return len(harvested)
+
+    monkeypatch.setattr(_batch.color_synonym_seed, "harvest_new_terms", harvest)
+    monkeypatch.setattr(_batch, "_harvest_limiters", {})
+
+    with caplog.at_level("WARNING"):
+        await _batch._process_change(
+            change,
+            llm=_EnrichLLM(),
+            embed=_embed,
+            store=store,
+            settings=settings,
+        )
+
+    assert harvested == ["블랙", "화이트"]
+    assert "색상 표기 개수 상한 초과" in caplog.text
+    assert store.get(1) is not None
+
+
 async def test_color_harvest_failure_does_not_kill_i17_artifact(monkeypatch, caplog):
     settings = get_settings().model_copy(update={"color_synonym_batch_harvest_enabled": True})
     store = CatalogArtifactStore()

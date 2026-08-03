@@ -111,32 +111,103 @@ class BuildResult:
     unassigned_terms: int = 0
 
 
-def extract_color_terms(attributes: dict | None) -> list[str]:
-    """혼재하는 attributes[색상] str/list/null/부재를 정규화해 비어 있지 않은 표기만 반환."""
+def _color_term_limits(
+    max_terms: int | None,
+    max_term_length: int | None,
+) -> tuple[int, int]:
+    if max_terms is None or max_term_length is None:
+        settings = get_settings()
+        max_terms = (
+            settings.color_synonym_harvest_max_terms_per_product
+            if max_terms is None
+            else max_terms
+        )
+        max_term_length = (
+            settings.color_synonym_harvest_max_term_length
+            if max_term_length is None
+            else max_term_length
+        )
+    if max_terms < 1 or max_term_length < 1:
+        raise ValueError("색상 표기 수확 상한은 1 이상이어야 함")
+    return max_terms, max_term_length
+
+
+def extract_color_terms(
+    attributes: dict | None,
+    *,
+    max_terms: int | None = None,
+    max_term_length: int | None = None,
+) -> list[str]:
+    """혼재 색상 값을 정규화하고 config 기반 개수·길이 상한 안의 표기만 반환한다."""
     if not isinstance(attributes, dict):
         return []
+    max_terms, max_term_length = _color_term_limits(max_terms, max_term_length)
     raw = attributes.get("색상")
     values = [raw] if isinstance(raw, str) else raw if isinstance(raw, list) else []
-    return [value.strip() for value in values if isinstance(value, str) and value.strip()]
+    normalized = [
+        value.strip() for value in values if isinstance(value, str) and value.strip()
+    ]
+    overlong_count = sum(len(value) > max_term_length for value in normalized)
+    if overlong_count:
+        _log.warning(
+            "색상 표기 문자열 길이 상한 초과 — %d건 거부 (max_length=%d)",
+            overlong_count,
+            max_term_length,
+        )
+    accepted = [value for value in normalized if len(value) <= max_term_length]
+    overflow_count = max(0, len(accepted) - max_terms)
+    if overflow_count:
+        _log.warning(
+            "색상 표기 개수 상한 초과 — %d건 제외 (accepted=%d, max_terms=%d)",
+            overflow_count,
+            len(accepted),
+            max_terms,
+        )
+    return accepted[:max_terms]
 
 
-def count_terms(changes: Iterable[ProductChange]) -> Counter[str]:
+def count_terms(
+    changes: Iterable[ProductChange],
+    *,
+    max_terms: int | None = None,
+    max_term_length: int | None = None,
+) -> Counter[str]:
     """각 상품 안의 중복 표기는 한 번만 세어 표기별 상품 수를 집계한다."""
+    max_terms, max_term_length = _color_term_limits(max_terms, max_term_length)
     counts: Counter[str] = Counter()
     for change in changes:
-        counts.update(set(extract_color_terms(change.attributes)))
+        counts.update(
+            set(
+                extract_color_terms(
+                    change.attributes,
+                    max_terms=max_terms,
+                    max_term_length=max_term_length,
+                )
+            )
+        )
     return counts
 
 
 async def harvest_terms(
-    *, fetch: FetchFn = spring_client.fetch_product_changes, page_size: int = 500
+    *,
+    fetch: FetchFn = spring_client.fetch_product_changes,
+    page_size: int = 500,
+    max_terms: int | None = None,
+    max_term_length: int | None = None,
 ) -> Counter[str]:
     """I-17을 since=0부터 소진하며 enrichment 없이 색상 표기만 수확한다."""
+    max_terms, max_term_length = _color_term_limits(max_terms, max_term_length)
     cursor: str | None = "0"
     counts: Counter[str] = Counter()
     while True:
         page = await fetch(cursor, page_size)
-        counts.update(count_terms(page.items))
+        counts.update(
+            count_terms(
+                page.items,
+                max_terms=max_terms,
+                max_term_length=max_term_length,
+            )
+        )
         if not page.has_more:
             return counts
         if not page.next_cursor:
@@ -945,20 +1016,42 @@ def harvest_new_terms(
     embed: EmbedFn,
     model: str,
     threshold: float,
+    *,
+    max_terms: int | None = None,
+    max_term_length: int | None = None,
 ) -> int:
     """한 I-17 상품에서 DB에 없는 색상만 pending_review 제안으로 적재한다.
 
     승인된 임베딩 중 임계 이상 최근접 canonical은 제안값일 뿐 status는 항상 pending_review다.
     """
-    terms = list(dict.fromkeys(extract_color_terms(attributes)))
+    settings = get_settings()
+    max_terms, max_term_length = _color_term_limits(
+        (
+            settings.color_synonym_harvest_max_terms_per_product
+            if max_terms is None
+            else max_terms
+        ),
+        (
+            settings.color_synonym_harvest_max_term_length
+            if max_term_length is None
+            else max_term_length
+        ),
+    )
+    terms = list(
+        dict.fromkeys(
+            extract_color_terms(
+                attributes,
+                max_terms=max_terms,
+                max_term_length=max_term_length,
+            )
+        )
+    )
     if not terms:
         return 0
 
     from pgvector import Vector  # noqa: PLC0415
 
-    from app.core.config import get_settings  # noqa: PLC0415 - 순환 임포트 회피(모듈 관례)
-
-    timeout_ms = int(get_settings().catalog_store_query_timeout_s * 1000)
+    timeout_ms = int(settings.catalog_store_query_timeout_s * 1000)
     with _get_pool(dsn).connection() as conn, conn.transaction():
         conn.execute(f"SET LOCAL statement_timeout = {timeout_ms}")
         existing = {
