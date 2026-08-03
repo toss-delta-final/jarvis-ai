@@ -22,6 +22,53 @@
   결과는 개별 편집의 효과로 해석하지 말고, 실패 셀을 프롬프트 결함으로 보기 전 정답 신호와 겹치는
   픽스처 문자열도 먼저 배제한다.
 - 관련: #240, `app/agents/buyer/recommendation/decompose.py`, `tests/unit/test_decompose.py`
+## [2026-08-03] 커밋된 baseline 산출물의 일치 검증은 manifest의 소스 해시까지 포함해서 한다
+- 증상: #145 리뷰 round-3에서 `config.py` validator를 수정한 뒤 "dev-v1 비교 True"로
+  보고했지만, 오케스트레이터의 독립 재실행 비교는 False였다. 지표·순위 아티팩트는 전부
+  동일했고, 양 arm `run_manifest.json`의 `hashes.config`(`config.py` SHA-256)와 `commitSha`만
+  어긋나 있었다.
+- 원인: run manifest는 재현 가능성을 위해 소스 파일 해시를 기록하므로, **소스를 만지는 모든
+  리뷰 라운드가 커밋된 baseline manifest를 무효화한다.** 결과(지표)가 안 변하는 수정이라는
+  생각에 재생성을 건너뛰었고, 일치 검증도 결과 파일 위주로 봐서 manifest 드리프트를 놓쳤다.
+- 규칙: **manifest가 소스 해시를 기록하는 커밋된 산출물은, 그 소스를 수정하는 라운드마다
+  재생성을 기본 절차에 포함한다.** 일치 검증은 결과 파일만이 아니라 normalize 대상 전체
+  (manifest 포함)의 byte 비교로 한다 — "지표 불변"과 "산출물 일치"는 다른 명제다.
+- 관련: #145, `evals/scoring/baselines/dev-v1/*/run_manifest.json`(`hashes.config`),
+  `evals/scoring/cli.py::normalize_paired_artifacts`, `evals/metrics/run_manifest.py`
+
+## [2026-08-03] 결정론 검증은 실행마다 달라지는 인자를 실제로 바꿔서 한다
+- 증상: #143 metric runner의 byte-identical 검증을 같은 `--out` 경로로 두 번 실행해
+  통과시켰지만, 서로 다른 출력 경로로 재실행하자 `run_manifest.json`의 `command`에 경로가
+  들어가 normalized 비교가 실패했다.
+- 원인: 두 실행에서 달라질 수 있는 입력을 하나도 바꾸지 않아, 실행 인자가 산출물로 새는 경로를
+  검증이 구조적으로 관측하지 못했다.
+- 규칙: **byte-identical 결정론을 주장하려면 출력 경로·실행 위치처럼 실행 인스턴스마다 달라지는
+  인자를 실제로 바꾼 두 실행을 비교한다.** 같은 인자의 반복 실행은 인자 누수를 잡지 못한다.
+  `command`·`runId`·`timestamp` 같은 비결정 실행 정보는 manifest의 격리 섹션 한 곳에만 둔다.
+- 관련: #143, `evals/metrics/run_manifest.py`, `evals/metrics/report.py::normalize_artifacts`,
+  `tests/unit/test_eval_metric_report.py`
+
+## [2026-08-03] `Settings(_env_file=None)`은 OS 환경변수까지 차단하지 않는다
+- 증상: #143 오프라인 평가 adapter가 `Settings(_env_file=None, ...)`로 고정 설정을 만든다고
+  보았지만, `EXPOSE_MAX=5`와 `9`에서 coverage가 각각 0.387931과 0.556034로 달라졌고 manifest에는
+  그 차이를 설명할 흔적이 없었다.
+- 원인: pydantic-settings의 `_env_file=None`은 dotenv 소스만 제거하고 env 소스는 유지하므로,
+  프로세스 환경이 평가 결과에 조용히 스며들어 결정론 주장과 재현 manifest를 함께 무효화했다.
+- 규칙: **결정론 실행 하네스는 `settings_customise_sources`로 env·dotenv 소스를 모두 제거한
+  전용 Settings 서브클래스를 사용한다.** 환경변수를 실제로 바꾼 두 실행의 산출물이 같다는 회귀
+  테스트도 함께 둔다.
+- 관련: #143, `evals/metrics/settings.py::EvaluationSettings`,
+  `tests/unit/test_eval_metric_harness.py::test_offline_adapter_ignores_process_environment`
+
+## [2026-08-03] 한쪽 후보 집합에서 뽑은 라벨로 전 카탈로그 리트리버의 우열을 결론내지 않는다
+- 증상: 방식1(전 카탈로그 벡터검색)과 방식2(Spring 후보 재정렬)의 recall을 비교했을 때
+  방식2가 26건 전부에서 우세했지만, 26건의 정답이 모두 Spring 후보 안에 들어 있었다.
+- 원인: 골든셋 라벨을 Spring I-1 응답에서 골라 만들었다. 후보 집합 밖의 정답은 애초에
+  라벨이 될 수 없어, Spring 후보를 재정렬하는 방식2의 recall 상한이 구조적으로 1.0이 됐다.
+- 규칙: **리트리버 A와 B를 recall로 비교하려면 라벨이 두 후보 집합 어느 쪽에도 종속되지
+  않아야 한다.** 한쪽 출력에서 라벨을 뽑았다면 결론은 상대가 그쪽을 못 이긴다는 데까지만
+  한정하고, 그쪽이 더 낫다고 쓰지 않는다. 측정 설계의 편향은 결과와 함께 반드시 적는다.
+- 관련: #32, `evals/goldenset/`, `app/pipelines/compare.py`
 
 ## [2026-08-03] 카테고리 오분류를 상품 부적합으로 착각해 정답을 금지 결과로 라벨링했다
 - 증상: 골든셋 케이스 `buy-srch-0005`(질의 `체육수업용 축구공 추천`)에서 상품

@@ -10,6 +10,8 @@
 ## [Unreleased]
 
 ### Added
+- **#145 — 설명 가능한 추천 scoring baseline 추가** — LLM 호출 없이 semantic·profile·popularity·주입형 recency·diversity·최근 exact 구매 감점을 성분별로 재구성 가능한 결정론 점수로 기록하고, hard constraint 컷을 점수와 분리한 paired dev 평가 및 고정 baseline을 `evals/scoring/`에 추가했다.
+- **#143 — 구매자 추천 품질 metric runner(`evals/metrics/`) 추가** — 골든셋 dev split에서 P@K·R@K·MRR·nDCG@K·Filter Accuracy·HCV·Coverage·Diversity를 네트워크·라이브 LLM 없이 결정적으로 계산하고 case·slice·전체 Markdown/CSV 리포트와 재현용 run manifest를 생성하며, ScriptedLLM + MockTransport로 실제 추천 코드 경로를 실행하고 `pytest -m eval` 가격 제약 PR 게이트로 회귀를 조기에 차단한다.
 - **#142 — 구매자 추천 골든셋 v1 구축** — 라이브 Spring I-1 응답과 실제 카탈로그 상품만으로 검색·개인화·재구매·카테고리 매핑 실패 43건을 구성하고, dev 31건과 라벨이 분리된 sealed holdout 12건을 안정 ID로 고정했다. camelCase 스키마 검증, #32 비교 하니스 어댑터, 합성 구매 이력의 실제 상품 참조, 결정론 스냅샷, dataset hash manifest, split 간 query·정답·persona·fixture 누출 감사와 봉인 해제 기록 API를 추가했다.
 - **#151 — staging·로컬 공용 HTTP/SSE 벤치마크 runner와 불변 baseline 산출물 추가** — 실제 FastAPI→Spring/DB/LLM 경로를 타깃 주입형 블랙박스로 측정하면서 cold·warm-up·measured를 분리하고, 요청마다 고유 thread를 써 동시 스트림 락이 측정을 왜곡하지 않게 했다. 신뢰도 분모는 실패·타임아웃을 포함한 measured 전체로 두되 지연 분모는 non-empty token과 terminal `done`을 모두 받은 성공 요청만 사용하며 제외 건수를 함께 출력한다. TTFT·토큰·비용·서버 조인 누락은 0 대신 bounded `null+reason`/`unknown`으로 보존하고, p99는 100표본 미만이면 생략 사유를 명시하며 p50/p95 bootstrap은 고정 시드와 #137 최근접 순위 정의를 재사용한다. X-Request-Id 기반 `chat_request` 조인, 실행 환경·가격표 manifest, secret 누출 차단, 덮어쓰기 없는 Markdown/long-format CSV/raw JSONL 산출을 포함하며, fixture의 `expected_outcome`은 요청별 `outcome_match` 3상태(true/false/unknown)와 bounded 사유로 대조해 mismatch·미측정을 그룹 리포트에 드러내며, 사용 모델의 입력·출력 단가가 하나라도 없으면 서버의 `costUsd: 0`을 신뢰하지 않고 비용을 `unknown`으로 처리한다. Spring 부재 로컬 타깃에서 시나리오 3종×동시성 1·5·10 baseline을 실제 측정해 불변 아티팩트로 보존했으며, staging 수치가 아니고 provider 스로틀과 상시 degrade 조건이 섞였다는 판독 주의도 함께 남겼다.
 - **#137 — 관측 로그 집계 스크립트와 degrade율 알림 추가 (EVAL-OBS ③-2)** — 수천 줄 `chat_request` 로그를 눈으로 볼 수 없어 "degrade가 얼마나 터지나·쿼리당 비용과 p95는 얼마인가"에 답할 수 없었다. `scripts/aggregate_observability.py`가 로깅 접두사가 붙은 줄과 순수 JSON 줄을 모두 읽어 지연 p50/p95/p99(`role`·`lane`·`model`별)·비용·degrade율·error율·SLO 초과율을 markdown + long-format CSV로 롤업한다. 인프라 0 — 파일이나 stdin만 읽는다.
@@ -83,6 +85,7 @@
 - **#209 후속 — `expose_max` 8 → 9, 그리고 설정이 계약 상한을 넘지 못하게 묶었다** (PR #212 리뷰 반영, api-spec §3.3 v0.17.3 / REQ-REC-021). §4.2가 목록당 9개를 허용하는데 노출 상한이 8이라 **계약 상한이 코드에서 도달 불가능한 값**이었다. 반대로 `expose_max`를 9 초과로 튜닝하면 `RecommendationListEntry` 생성에서 `ValidationError`가 나는데, 그 지점은 `SpringUnavailableError` degrade 블록 **밖**이라 §3.3의 "목록을 준비하는 데 문제가 있었어요" 대신 **일반 `INTERNAL`로 SSE 스트림이 끊긴다**. 계약 상한 상수(`LIST_MAX_PRODUCTS` 등)를 스키마 한 곳에 두고 config가 그 값을 `le`로 참조해, 잘못된 설정을 **런타임이 아니라 기동 시점**에 잡는다. `expose_min > expose_max`(보충 루프가 상한에 되잘리는 모순)도 함께 거절한다.
 
 ### Fixed
+- **#237 — 홈 추천 로그 비노출 테스트의 스레드 ID 우연 일치 flaky 수정** — `test_log_has_fixed_safe_key_set_only`가 `LogRecord.__dict__` 전체의 큰 숫자 필드에서 금지 상품 ID 부분 문자열을 우연히 찾아 간헐 실패하던 문제를, 메시지와 앱이 `extra`로 싣는 필드만 검사하도록 범위를 좁혀 실제 유출 차단 의도는 유지하면서 제거했다.
 - **#234 — 상품 지시대명사 intent가 추천·장바구니 레인 사이에서 흔들리던 문제** — `cart_view`를
   장바구니 자체를 명시한 조회로, `cart_add`를 명시적 담기 동사 또는 실제 옵션 답변으로 한정하고,
   `"그거"`·`"저번에 그거"`는 직전 검색/추천 상품으로 해소해 `recommend`로 분류하도록 질의 분해
@@ -153,6 +156,17 @@
 
 ### Added
 
+- **#32 — 골든셋 실측으로 방식2(`EmbeddingRerankBackend`)를 검색 기본 백엔드로 확정
+  (백엔드 전환 없음)** — dev `search` 26건·라이브 pg-catalog 7,220건에서 방식1(정확
+  코사인/HNSW)의 mean recall@5/@10/@20은 **0.6026/0.7987/0.8449**, 방식2는
+  **0.7872/0.9205/1.0000**이었고, overlap@10은 **0.4269**, 방식1 승리는 **0/26**,
+  HNSW와 정확 코사인의 상위 10은 **1.00으로 동일**했다. 방식1은 가격 하한·부정어 같은
+  구조적 제약을 임베딩 단독으로 걸지 못했다. 다만 라벨이 Spring I-1 후보에서 유래해
+  26건 모두 정답이 Spring 후보 안에 있으므로 방식2의 상한이 구조적으로 1.0인 편향이 있고,
+  결론은 “방식1이 방식2를 못 이긴다”까지만 유효하다. `search_backend` 기본값은 이미
+  `embedding_rerank`라 전환하지 않으며, C-17 방식1 라이브 hydrate는 미해소로 남기고 운영
+  롤백은 config 토글 `SEARCH_BACKEND=spring`을 쓴다. 실제 fixture 후보를 기존 비교 API에
+  연결하는 재현 하네스와 라이브 회귀 테스트도 함께 고정했다.
 - **#171 — I-1 `reviewCount` 수신 + rating=0 의미 판별** — BE 합의(2026-07-28)로 I-1이 `reviewCount`(조회 시 집계 리뷰수)를 AI 계산용(비표시)으로 함께 반환한다. `SpringProduct.review_count`를 추가하고, `rating`과 짝지어 **"리뷰가 아예 없어 rating=0"(reviewCount==0, 데이터 부재)** 와 **"리뷰가 있고 하한 미달"(reviewCount>0)** 를 구분한다. ① `search_catalog`의 `rating_min` 사후필터는 reviewCount==0을 (rating=None 무평점과 동일하게) 보존하고 실제 리뷰가 있는 미달만 탈락시킨다. ② `rerank`는 reviewCount==0 후보의 rating을 None으로 중립화(저평점 오인 방지)하고 reviewCount를 신뢰 신호로 함께 전달한다. reviewCount가 None(BE 미전송)이면 rating이 지배하는 구 동작으로 폴백한다. **#100의 "reviewCount는 표시 전용·I-1 미반환" 결정을 부분 개정**. (api-spec §4.6, v0.15.25)
 - **#101 PR② — attributes 유연 하드매칭** — 사용자가 명시한 상품 속성(소재·핏·용도·방수 등)을 `SpringProduct.attributes`와 관대 매칭해 하드 필터한다. `ProductSearchFilters.attr_conditions`(AI 내부, 와이어 제외)를 decompose가 추출하고, `search_catalog`가 문자열은 부분매칭·숫자는 완전일치로 비교한다. 조건 축이 없는 상품은 '반증 아님'으로 보존(#100 P0 rating 정책과 정합), 0건이면 축별 완화한다. 멀티턴은 merge(prior∪이번턴) 기본에 `attrRemovals` 명시 제거 신호로 처리 — LLM이 이전 축을 빠뜨려도 유실되지 않는다. 추측 선호(소프트)는 코드 없이 Sonnet 재랭킹이 판단. (api-spec §4.6·§4.8)
 - **#100 P1 — I-1 `color` 검색 조건 연결** — Spring I-1이 `attributes` LIKE로 지원하는 `color` 필터를 AI가 쓰도록, `ProductSearchFilters.color`와 `_search_query_params`의 `color` 전송을 추가하고 decompose 프롬프트가 색상 조건("빨간"·"검정" 등)을 `filters.color`로 추출하게 했다. 그동안 요청 모델·쿼리 변환에 `color`가 없어 Spring의 색상 검색을 못 쓰던 것을 해소. (api-spec §4.6, v0.15.22)
@@ -179,6 +193,11 @@
 
 ### Changed
 
+- **#32 — 방식1 라이브 전제 C-17(id 제약 조회) 기각** — 골든셋에서 방식1이 방식2를
+  이긴 케이스가 0/26이었고, C-17은 가용성 hydrate만 가능하게 할 뿐 방식1의 핵심 실패인
+  가격 하한·부정어 같은 구조적 제약을 고치지 못하므로 BE 요청을 철회한다. 와이어 계약은
+  바뀌지 않으며 `VectorSearchBackend`는 오프라인 비교 전용으로 존치한다. BE에는 C-17을
+  구현하지 않아도 된다는 철회를 통보해야 한다. (api-spec §4.6·§4.8, v0.19.4)
 - **#186 — 접속(`sessionId`)·방(`threadId`) 축 분리 구현** — 구매자·판매자 스트림 레지스트리 키를 인증 신원+`threadId`로 전환해 같은 접속의 다른 방을 병렬 허용하고 동일 방만 `409 STREAM_IN_PROGRESS`로 차단한다. `conversation_turns`는 session-primary를 유지하면서 nullable `thread_id`를 fresh schema·기존 볼륨 migration·쓰기/조회 모델에 병기하고, 구조화 로그와 저장 실패 로그에 `threadId`를 추가했다. #189의 `requestId`/`listIds` SSE 계약과 함께 동작하도록 충돌을 통합했다. (api-spec §2.5·§2.9·§6.3, v0.16.0)
 
 - **#189 — CH-2/S-4 SSE 응답 계약 정합화** — `products.ready`의 단일 `listId`를 항상 배열인 `listIds`(1~10개, 순서 보존)로 바꾸고, 현재 단일 I-21 push 결과도 길이 1 배열로 반환한다. 구매자·판매자·공통 스트림의 모든 `error`에 HTTP 응답·구조화 로그와 같은 `requestId`와 emit 지점이 판정한 `retryable`을 추가했다. provider 미구성은 재시도 불가, timeout·검색·일시적 내부 장애는 재시도 가능으로 분류한다. (api-spec §3.1·§3.2, v0.15.26)

@@ -6,11 +6,13 @@ Spring base URL, 검색 파라미터)을 환경변수로 주입하여 코드 변
 [2026-07-15] MVP 후보 검색은 Spring 위임(GET /internal/products/search, I-1)이며 상품 원본
 컬럼의 AI측 사본(카탈로그 미러)은 두지 않는다.
 [2026-07-20 정정] enrichment·임베딩(§4.8 I-17 배치)은 MVP 편입 확정 — 임베딩 검색 방식1·2를
-SearchBackend로 구현해 골든셋 확정(api-spec §4.8 말미·§4.6, C-17). 구 "post-MVP" 표기 폐기.
+SearchBackend로 구현해 골든셋 비교. [2026-08-03 #32] 방식2를 확정하고 방식1·C-17은 기각 —
+방식1은 오프라인 비교 전용으로 존치한다(api-spec §4.8 말미·§4.6).
 """
 
 from __future__ import annotations
 
+import math
 from functools import lru_cache
 from typing import Literal
 
@@ -23,8 +25,9 @@ from app.schemas.recommendations import LIMIT_MAX as HOME_RECO_LIMIT_MAX
 from app.schemas.spring import LIST_MAX_PRODUCTS, MAX_LISTS
 
 LLMProvider = Literal["openai", "anthropic"]
-# 검색 백엔드 선택(#101) — spring: Spring 위임만(방식1 이전 MVP), embedding_rerank: Spring 전량 →
-# pgvector 의미 재정렬(방식2, MVP 기본), vector: AI 벡터검색 → Spring hydrate(방식1, C-17 미착수).
+# 검색 백엔드 선택(#101) — spring: Spring 위임만(방식1 이전 MVP, 운영 롤백), embedding_rerank:
+# Spring 전량 → pgvector 의미 재정렬(방식2, MVP 기본), vector: 방식1 오프라인 비교 전용
+# (운영 사용 금지, #32 미채택, C-17 기각).
 SearchBackend = Literal["spring", "embedding_rerank", "vector"]
 # 프로필 주입 소비처(#119) — off: 이번 턴 개인화 미적용, rerank_only: 기본(취향은 순서에만),
 # both: 구 동작(decompose 하드필터 파생 허용, 롤백 경로).
@@ -617,6 +620,21 @@ class Settings(BaseSettings):
     # 43건 중 12건을 봉인하는 v1 목표 비중이며 감사 보고에 사용한다.
     goldenset_holdout_ratio: float = 0.3
 
+    # ── 구매자 추천 평가 지표(#143, evals/metrics) ──
+    eval_buyer_k_list: tuple[int, ...] = (5, 10, 20)
+
+    # ── 추천 scoring baseline(#145, evals/scoring) ──
+    # 의미 유사도를 주 신호로 두고, profile·인기도·최신성·다양성은 보조 신호로 제한한다.
+    # 최근 exact 재구매는 별도 감점이며 모든 값은 ScoringBuyerAdapter가 직접 소비한다.
+    scoring_weight_semantic: float = 0.55
+    scoring_weight_profile_match: float = 0.15
+    scoring_weight_popularity: float = 0.15
+    scoring_weight_recency: float = 0.05
+    scoring_weight_diversity_bonus: float = 0.10
+    scoring_weight_recent_purchase_penalty: float = 0.20
+    scoring_reference_date: str = "2026-08-02"
+    scoring_recent_purchase_window_days: int = 90
+
     @field_validator("llm_provider", mode="before")
     @classmethod
     def _normalize_llm_provider(cls, value: object) -> object:
@@ -662,6 +680,47 @@ class Settings(BaseSettings):
             raise ValueError("골든셋 질의별 스냅샷 상한은 0보다 커야 합니다")
         if not 0 < self.goldenset_holdout_ratio < 1:
             raise ValueError("골든셋 holdout 비율은 0과 1 사이여야 합니다")
+        return self
+
+    @model_validator(mode="after")
+    def _require_valid_eval_settings(self) -> "Settings":
+        """추천 평가 K 목록의 빈 값·비양수를 기동 시점에 막는다."""
+        if not self.eval_buyer_k_list or any(k <= 0 for k in self.eval_buyer_k_list):
+            raise ValueError("구매자 추천 평가 K 목록은 비어 있지 않고 모두 0보다 커야 합니다")
+        return self
+
+    @model_validator(mode="after")
+    def _require_valid_scoring_settings(self) -> "Settings":
+        """baseline 가중치·골든셋 기준일·최근구매 window를 fail-fast한다."""
+        from datetime import date  # noqa: PLC0415 - #145 자기 validator의 ISO 파싱 전용
+
+        # 감점 항만 켜진 baseline은 모든 상품을 0 이하로만 밀어 의미 있는 양의 신호가 없다.
+        positive_signal_weights = (
+            self.scoring_weight_semantic,
+            self.scoring_weight_profile_match,
+            self.scoring_weight_popularity,
+            self.scoring_weight_recency,
+            self.scoring_weight_diversity_bonus,
+        )
+        weights = (
+            *positive_signal_weights,
+            self.scoring_weight_recent_purchase_penalty,
+        )
+        if not all(math.isfinite(weight) for weight in weights):
+            raise ValueError("추천 scoring 가중치는 유한한 수여야 합니다")
+        if any(weight < 0 for weight in weights):
+            raise ValueError("추천 scoring 가중치는 음수일 수 없습니다")
+        if not any(positive_signal_weights):
+            raise ValueError(
+                "추천 scoring 양의 신호 가중치"
+                "(semantic·profile·popularity·recency·diversity) 중 하나 이상은 양수여야 합니다"
+            )
+        if self.scoring_recent_purchase_window_days <= 0:
+            raise ValueError("추천 scoring 최근 구매 window는 0보다 커야 합니다")
+        try:
+            date.fromisoformat(self.scoring_reference_date)
+        except ValueError as exc:
+            raise ValueError("추천 scoring 기준일은 ISO 날짜 형식이어야 합니다") from exc
         return self
 
     @model_validator(mode="after")

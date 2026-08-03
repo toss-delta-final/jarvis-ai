@@ -7,8 +7,7 @@ MVP: 질의 시점 Spring 위임(GET /internal/products/search, I-1, §4.6). dec
 
 [결정 2026-07-20, api-spec §4.8 말미] 임베딩 검색을 두 방식으로 구현해 골든셋 확정:
   방식2 EmbeddingRerankBackend — Spring 후보를 AI 임베딩으로 재정렬(라이브, BE 계약 변경 없음).
-  방식1 VectorSearchBackend    — AI 벡터검색으로 후보 확보 → Spring hydrate(가용성·상세).
-                                 라이브 hydrate 는 C-17(§4.6 id 제약 조회) 필요 — 미주입 시 미착수.
+  방식1 VectorSearchBackend    — #32에서 미채택·C-17 기각, 오프라인 골든셋 비교 전용으로 존치.
 AI 생성물(임베딩)은 I-17 배치(§4.8, artifact_store)가 갱신하며 상품 원본 컬럼 미러는 영구 미채택.
 """
 
@@ -61,7 +60,7 @@ _cosine = cosine_similarity  # 기존 내부 호출부 호환 별칭
 def vector_rank(query_vec: list[float], store: ArtifactStore, *, k: int) -> list[int]:
     """query 임베딩과 저장 임베딩의 코사인으로 상위 k productId 를 반환한다 (방식1 코어, 오프라인 안전).
 
-    라이브 가용성(재고·활성) 확인은 별도(C-17 hydrate). 오프라인 골든셋 비교는 이 랭킹만 사용한다.
+    #32에서 방식1 라이브 채택과 C-17 hydrate를 기각했다. 오프라인 골든셋 비교는 이 랭킹만 사용한다.
     """
     scored = [
         (_cosine(query_vec, art.embedding), art.product_id) for art in store.all() if art.embedding
@@ -133,17 +132,17 @@ class EmbeddingRerankBackend:
 class VectorSearchBackend:
     """방식1 — AI 벡터검색으로 상위 N productId 확보 → Spring hydrate(필터·가용성·상세).
 
-    라이브 hydrate 는 C-17(§4.6 id 제약 조회) 필요 — 미주입(hydrate=None) 시 미착수 신호로
-    SpringUnavailableError 를 던진다. hydrate 계약은 (ids, filters): 가격·카테고리·브랜드 등
-    ProductSearchFilters 를 Spring 이 함께 적용하고 품절·비활성을 제거한다. hydrate 후 후보가 줄 수 있어
-    벡터 후보는 limit 의 over_fetch 배로 여유 조회한다(config.catalog_vector_overfetch).
-    오프라인 골든셋 비교는 vector_rank(랭킹)만 쓰고 hydrate 없이 한다.
+    #32 실측으로 방식1을 미채택하고 C-17을 기각했다. 오프라인 골든셋 비교 전용으로 존치하며
+    미주입(hydrate=None) 시 SpringUnavailableError 로 미채택 신호를 낸다. 역사적 hydrate seam의
+    계약은 (ids, filters): Spring이 가격·카테고리·브랜드를 적용하고 품절·비활성을 제거한다.
+    hydrate 후 후보가 줄 수 있어 벡터 후보는 limit 의 over_fetch 배로 여유 조회한다
+    (config.catalog_vector_overfetch). 오프라인 비교는 vector_rank(랭킹)만 쓰고 hydrate 없이 한다.
 
     vector_rank 의 store.all() 은 pg-catalog 대상이면 카탈로그 전체를 블로킹으로 읽어오는
     비용이 크고, 임베딩 호출도 Google API 동기 HTTP 라 블로킹이다 — 둘 다 asyncio.to_thread 로
     이벤트루프 차단은 막았지만(이슈 #31, PR #42 리뷰), "SQL 에서 ORDER BY embedding <-> %s
-    LIMIT k 로 직접 top-k 만 조회"하는 근본 최적화는 아니다. 방식1 승격(§4.8 말미, 골든셋
-    확정 후) 시 함께 재설계할 과제로 남겨둔다.
+    LIMIT k 로 직접 top-k 만 조회"하는 근본 최적화는 아니다. 향후 방식1을 별도 결정으로 다시
+    채택할 때 함께 재설계할 과제로 남겨둔다.
     """
 
     def __init__(
@@ -175,7 +174,7 @@ class VectorSearchBackend:
         ids = await asyncio.to_thread(vector_rank, qvec, self._store, k=k)
         if self._hydrate is None:
             raise spring_client.SpringUnavailableError(
-                "VectorSearchBackend(방식1) 라이브 hydrate 미착수 — C-17(§4.6 id 제약 조회) 필요"
+                "VectorSearchBackend(방식1) 미채택(#32) — 오프라인 비교 전용"
             )
         return await self._hydrate(ids, filters)
 
@@ -193,8 +192,8 @@ default_backend: SearchBackend | None = None
 
 
 def _make_default_backend() -> SearchBackend:
-    """config search_backend 로 hot path 기본 백엔드를 생성한다(#101). vector(방식1)는 hydrate 미주입
-    이라 search() 시 SpringUnavailableError 로 미착수 신호를 낸다(구성 자체는 가능)."""
+    """config search_backend 로 hot path 기본 백엔드를 생성한다(#101). vector(방식1)는 #32에서
+    미채택됐고 hydrate 미주입이라 search() 시 SpringUnavailableError 로 그 상태를 알린다."""
     return _BACKENDS[get_settings().search_backend]()
 
 
