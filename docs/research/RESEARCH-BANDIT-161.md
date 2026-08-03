@@ -40,13 +40,13 @@ I-21은 추천 실행 상관키 `recommendationRequestId`와 목록 키 `listId`
 
 ### 2.1 traffic과 표본 자릿수
 
-목록당 최대 9개 행동 후보, 여러 context feature(surface·profile·listType·semantic 등), 낮을 수 있는 conversion 확률을 함께 추정하려면 각 action/context slice에 반복 노출이 필요하다. 일반 경험칙 수준에서 production 판단에는 최소 `10^5` 노출, 세분화가 많거나 conversion을 보려면 `10^6` 자릿수를 예상해야 한다. 이는 이 작업에서 출처를 검증한 문헌 수치가 아니며, 정확한 최소량은 실제 CTR·전환율·분산으로 power analysis를 다시 해야 한다.
+목록당 최대 9개 행동 후보, 여러 context feature(surface·profile·listType·semantic 등), 낮을 수 있는 conversion 확률을 함께 추정하려면 각 action/context slice에 반복 노출이 필요하다. 내부 screening 관점에서 production 판단에는 최소 `10^5` 노출, 세분화가 많거나 conversion을 보려면 `10^6` 자릿수를 예상한다. 이 자릿수는 이번에 인용한 문헌에서 확인한 수치가 아니라 Jarvis의 후보 수와 slice 수를 보고 정한 내부 판단이며, 정확한 최소량은 실제 CTR·전환율·분산으로 power analysis를 다시 해야 한다.
 
 현재는 실사용 노출이 0이므로 어느 자릿수와 비교해도 학습 가능 여부는 `no`다. `member` 0명·`orders` 0건에서는 context 일반화와 장기 reward를 검증할 holdout도 만들 수 없다.
 
 ### 2.2 propensity 기록이 진짜 선행 조건
 
-IPS·SNIPS·DR 계열은 “그 시점의 행동 정책이 선택한 action의 확률”을 알아야 한다. 사후에 현재 모델로 확률을 재계산하면 당시 후보·feature·정책 버전이 달라질 수 있어 유효하지 않다. 최소 로깅 단위는 다음이다.
+Li et al. 2011은 contextual-bandit 추천 알고리즘의 unbiased offline replay 평가를 다룬다. 이 평가와 IPS·SNIPS·DR 계열은 “그 시점의 행동 정책이 선택한 action의 확률”을 알아야 하며, 사후에 현재 모델로 확률을 재계산하면 당시 후보·feature·정책 버전이 달라질 수 있어 유효하지 않다. 최소 로깅 단위는 다음이다.
 
 - `policy_id` / `policy_version` / `model_version`
 - randomization unit(`list_id` 또는 request)과 seed/nonce
@@ -54,9 +54,7 @@ IPS·SNIPS·DR 계열은 “그 시점의 행동 정책이 선택한 action의 �
 - 실제 선택 action, 순위, `surface`, context/feature schema version
 - control/experiment arm과 exploration budget
 
-현 scorer는 같은 snapshot·config에서 `productId` 오름차순 tiebreak로 결정적이다(`evals/scoring/scorer.py`). 이 정책의 propensity는 선택 상품 1, 나머지 0이어서 support가 없는 action의 counterfactual을 평가할 수 없다. 더구나 현재 저장 컬럼에는 확률을 둘 자리도 없다. 따라서 **policy logging schema 추가와 실제 확률 저장이 bandit의 첫 구현**이며, bandit 모델보다 먼저 배포·검증되어야 한다.
-
-알고리즘과 off-policy estimator의 일반적 성질은 일반 지식 기반이며 이 작업에서 외부 출처를 검증하지 못했다. 판정의 주 근거는 현재 propensity·traffic·reward의 실측 부재다.
+현 scorer는 같은 snapshot·config에서 `productId` 오름차순 tiebreak로 결정적이다(`evals/scoring/scorer.py`). 이 정책의 propensity는 선택 상품 1, 나머지 0이어서 support가 없는 action의 counterfactual을 평가할 수 없다. 더구나 현재 저장 컬럼에는 확률을 둘 자리도 없다. 따라서 **policy logging schema 추가와 실제 확률 저장이 bandit의 첫 구현**이며, Li et al. 2011의 replay 조건을 만족하는지 검증한 뒤 bandit 모델을 배포해야 한다.
 
 ### 2.3 reward: CTR만으로 부족한 이유
 
@@ -87,8 +85,11 @@ I-16 `preChurnSignals.zeroResultSearchSessions`도 E-1의 검색 결과 수 미�
 | 결정론 scoring 유지 | 현행 | 불필요 | 비교 control | 이미 가능 | ✅ control |
 | 고정 소규모 A/B | arm assignment·후보 snapshot | click부터 가능 | direct randomized comparison | arm 0% | 로깅 검증 1순위 |
 | epsilon-greedy contextual bandit | action별 propensity·policy version | click/cart, 이후 conversion | IPS/SNIPS/DR 가능 | epsilon=0 | 조건 충족 뒤 제한 canary |
+| LinUCB contextual bandit | context·action feature와 선택 propensity | click/cart, 이후 conversion | replay·IPS/SNIPS/DR 가능 | allocation/weight=0 | 데이터 충족 뒤 비교 arm |
 | Thompson/UCB 계열 | posterior/stat state + propensity 재현 | 안정적 reward | 구현에 따라 복잡 | exploration weight=0 | 후순위 |
 | 장기 RL | trajectory·상태 전이·delayed reward | 구매·취소·반품 필수 | 장기 OPE 난도 높음 | 정책 전체 switch | 현재 범위에서 제외 |
+
+Li et al. 2010은 콘텐츠·사용자 정보를 함께 쓰는 contextual bandit으로 disjoint linear model 기반 LinUCB를 제시한다. 동적으로 바뀌는 콘텐츠 풀에서 전통적 CF 적용이 어렵다는 문제 의식은 #159와의 차이를 설명하지만, Jarvis에서는 context·reward·propensity가 모두 비어 있어 LinUCB 역시 지금 학습할 수 없다.
 
 초기 online 실험은 contextual bandit보다 먼저 고정 A/B로 logging·attribution을 검증해야 한다. control과 exploration 후보 생성은 동일 hard filter를 공유하고, 모델 선택을 config로 주입한다. `app/core/config.py`의 기존 `home_reco_weight_profile=0` 롤백 사례처럼 `bandit_exploration_weight=0` 또는 traffic allocation 0%로 즉시 결정론 control에 돌아가게 한다. 튜너블 하드코딩은 금지한다.
 
@@ -102,9 +103,9 @@ I-16 `preChurnSignals.zeroResultSearchSessions`도 E-1의 검색 결과 수 미�
 
 조건 충족 뒤 순서는 다음으로 제한한다.
 
-1. 결정론 control + 매우 작은 randomized logging arm으로 support를 만든다.
+1. 결정론 control + 매우 작은 randomized logging arm으로 support를 만든다. Li et al. 2011의 replay 전제를 만족하도록 당시 후보와 선택확률을 함께 고정한다.
 2. policy version·후보 snapshot·propensity coverage를 먼저 감사한다.
-3. click reward로 IPS/SNIPS/DR을 모두 산출하고 estimator 간 방향이 다르면 `inconclusive`로 둔다.
+3. click reward로 IPS, Swaminathan and Joachims 2015의 self-normalized estimator(SNIPS), Dudík et al. 2011의 doubly robust estimator(DR)를 모두 산출하고 estimator 간 방향이 다르면 `inconclusive`로 둔다. SNIPS도 propensity 누락·0과 극단 weight를 자동으로 정당화하지 않으므로 해당 행은 fail-closed한다.
 4. `jarvis-backend#62` 이후 conversion 및 취소/반품 보상 window를 별도 평가한다.
 5. shadow→1% canary→단계 확대 순으로 진행하고 HCV·latency·conversion guardrail 위반 시 allocation 0%로 롤백한다.
 
@@ -131,7 +132,7 @@ I-16 `preChurnSignals.zeroResultSearchSessions`도 E-1의 검색 결과 수 미�
 - 일 단위 purchase reward가 I-6/I-7/I-14 권위와 5% 이내이고, 취소·반품 반영 final reward coverage 95% 이상.
 - shadow replay에서 HCV 0건, propensity validation error 0건, control 대비 추가 p95 latency 15ms 이하.
 
-`10^5` 노출과 arm당 10,000회는 9개까지의 후보와 여러 context slice에 최소 반복을 확보하려는 내부 screening threshold다. 외부 benchmark가 아니며, 최초 4주 실제 CTR·conversion 분산을 얻은 뒤 최소 detectable effect와 confidence interval을 사전 등록해 확대 표본량을 다시 정한다.
+`10^5` 노출과 arm당 10,000회는 이번에 인용한 문헌에서 확인한 수치가 아니라 9개까지의 후보와 여러 context slice에 최소 반복을 확보하려는 이 리포의 내부 screening threshold다. 최초 4주 실제 CTR·conversion 분산을 얻은 뒤 최소 detectable effect와 confidence interval을 사전 등록해 확대 표본량을 다시 정한다.
 
 ## 부록: 근거 출처 · 검증하지 못한 것
 
@@ -150,4 +151,10 @@ I-16 `preChurnSignals.zeroResultSearchSessions`도 E-1의 검색 결과 수 미�
 - FE가 추천 유래 `product_view`에 `listId`·`position`·`recommendationRequestId`를 실제 전송하는지: FE 저장소가 없어 확인 불가.
 - `jarvis-backend#62` 배포 상태, 주문/claim의 실제 지연분포와 취소·반품 귀속: 이 worktree 밖이라 확인 불가.
 - 현재 production traffic/CTR/conversion: 제공된 DB에는 실사용 traffic이 없고 별도 운영 telemetry를 확인하지 못함.
-- 외부 bandit 문헌의 정확한 표본량·효과 수치: 출처를 검증하지 않아 사용하지 않음.
+
+## 참고 문헌
+
+- Lihong Li, Wei Chu, John Langford, Robert E. Schapire, “A Contextual-Bandit Approach to Personalized News Article Recommendation”, WWW 2010.
+- Lihong Li, Wei Chu, John Langford, Xuanhui Wang, “Unbiased Offline Evaluation of Contextual-Bandit-Based News Article Recommendation Algorithms”, WSDM 2011, pp. 297–306, DOI `10.1145/1935826.1935878`.
+- Miroslav Dudík, John Langford, Lihong Li, “Doubly Robust Policy Evaluation and Learning”, ICML 2011, pp. 1097–1104.
+- Adith Swaminathan, Thorsten Joachims, “The Self-Normalized Estimator for Counterfactual Learning”, NIPS 2015, pp. 3231–3239.

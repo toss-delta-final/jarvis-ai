@@ -43,6 +43,8 @@
 
 ### 2.1 후보별 입력 현실성
 
+Sarwar et al. 2001은 item-based CF를 user-item 행렬에서 item 관계를 도출하는 문제로 두고, item-item correlation과 item 벡터 cosine, weighted sum과 regression을 비교한다. 따라서 아래 후보들의 차이보다 먼저 user-item 행렬이 존재해야 하며, 사용자 축이 0인 Jarvis는 원 논문이 비교한 계산 단계에 진입하지 못한다.
+
 | 후보 | 필요한 입력 | 현재 입력 확보 여부 | 장점 | 이 리포의 결론 |
 |---|---|:---:|---|---|
 | cosine(co-occurrence 벡터) | 식별 가능한 사용자/세션×상품 implicit 행렬 | ❌ | 구현·설명 단순, sparse 계산 용이 | 사용자 축이 없어 계산 불가 |
@@ -52,11 +54,11 @@
 | ALS / implicit MF | 충분한 implicit user×item 행렬과 confidence | ❌ | 잠재 취향 축 학습 | 행렬 자체가 구성 불가, 복잡도만 증가 |
 | 콘텐츠 임베딩 cosine(현행) | 상품별 임베딩 | ✅ | 7,220개 전량 cold-start, HNSW 서빙 | 이미 I-22에 존재; 새 CF가 아님 |
 
-여기서 알고리즘의 일반적 성질은 일반 지식 기반이며 이 작업에서 외부 출처를 검증하지 못했다. 후보 판정의 주 근거는 위 Jarvis 실측 입력 유무다.
+Sarwar et al. 2001이 희소성 아래 coverage와 대량 추천 성능도 문제로 다뤘다는 점은 이후 평가축을 뒷받침한다. 다만 Jarvis의 현 결손은 희소성 정도가 아니라 행렬 구성 불가이므로, 논문의 유효성은 `no-go`를 뒤집지 않고 오히려 입력 전제의 부재를 분명히 한다.
 
 ### 2.2 implicit feedback 설계와 현재 결손
 
-데이터가 생기면 `product_view < add_to_cart < checkout_start < purchase_complete` 순으로 confidence를 높이고, 반복 view는 세션 내 cap을 두며 시간 감쇠를 적용하는 설계가 가능하다. 그러나 현재 `purchase_complete`는 FE가 `productId` 없이 `properties.orderId`만 보내 `product_id=NULL`이 되고 상품 조인에서 탈락한다(`docs/api-spec.md` v0.17.4 §4.4 I-13). 가장 강한 신호가 상품에 붙지 않으므로 이 상태에서 가중치를 정하면 “구매 없음”을 학습하는 잘못된 행렬이 된다. 근본 수정은 `jarvis-backend#62` 배포가 선행되어야 한다.
+Hu et al. 2008은 implicit feedback에서 preference와 confidence를 분리하고 상호작용별 신뢰도 가중을 두는 접근을 제시한다. Jarvis에서도 데이터가 생기면 `product_view < add_to_cart < checkout_start < purchase_complete` 순으로 confidence를 높이고, 반복 view는 세션 내 cap을 두며 시간 감쇠를 적용하는 설계가 이에 대응한다. 그러나 현재 `purchase_complete`는 FE가 `productId` 없이 `properties.orderId`만 보내 `product_id=NULL`이 되고 상품 조인에서 탈락한다(`docs/api-spec.md` v0.17.4 §4.4 I-13). 가장 강한 신호가 상품에 붙지 않으므로 이 상태에서는 preference·confidence 축을 신뢰성 있게 구성할 수 없다. 근본 수정은 `jarvis-backend#62` 배포가 선행되어야 한다.
 
 명시적 추천 클릭 타입도 없다. 클릭은 추천 유래 `product_view`에 `list_id`·`position`·`recommendation_request_id`가 실렸을 때만 복원 가능하다. FE 저장소가 이 worktree에 없어 실제 전송 여부는 확인하지 못했다.
 
@@ -64,7 +66,7 @@
 
 ### 2.3 popularity bias와 cold-start
 
-리뷰 보유 상품 상위 10%가 리뷰 41.34%를 차지하므로 raw count를 similarity/confidence에 직접 쓰면 인기 상품이 거의 모든 이웃 목록에 침투할 수 있다. 현 scoring은 이미 후보 내 `log1p(reviewCount)`와 `rating/5`의 평균으로 popularity를 계산해 count를 로그 압축한다(`evals/scoring/components.py`). CF를 재검토할 때도 lift·Jaccard·빈도 정규화 같은 인기 보정 arm을 raw cosine과 함께 비교하고, tail 상품 coverage를 별도 지표로 둬야 한다.
+Abdollahpouri et al. 2017은 LTR 추천에서 popularity bias를 제어하는 문제를 다룬다. Jarvis에서도 리뷰 보유 상품 상위 10%가 리뷰 41.34%를 차지하므로 raw count를 similarity/confidence에 직접 쓰면 인기 상품이 거의 모든 이웃 목록에 침투할 수 있다. 현 scoring은 이미 후보 내 `log1p(reviewCount)`와 `rating/5`의 평균으로 popularity를 계산해 count를 로그 압축한다(`evals/scoring/components.py`). CF를 재검토할 때도 lift·Jaccard·빈도 정규화 같은 인기 보정 arm을 raw cosine과 함께 비교하고, tail 상품 coverage를 별도 지표로 둬야 한다.
 
 반대로 cold-start는 이 리포의 강점이다. 리뷰 0 상품 5,499개(76.16%)에도 임베딩이 전량 존재하므로 협업 이력이 없는 item은 콘텐츠 cosine으로 즉시 폴백할 수 있다. 사용자/게스트 이력이 없을 때도 가짜 중립 프로필을 만들지 않고 기존 degrade 규약을 유지한다.
 
@@ -103,7 +105,7 @@
 2. `view/cart/checkout/purchase` confidence를 사전 등록하고, raw cosine·인기 보정 cosine·lift/Jaccard를 비교한다.
 3. `cf_similarity` score arm만 먼저 추가하고 가중치 0을 rollback으로 둔다.
 4. dev 31건과 `evals/metrics`로 기존 질의 품질·Filter Accuracy·HCV 회귀를 확인한다. 다만 이 골든셋은 질의-정답 기반이라 CF 행동 연관성을 평가하지 못한다.
-5. 별도 행동 평가에서는 leave-one-out과 time-based next-item 예측을 사용하고 nDCG/Recall뿐 아니라 head/tail Coverage를 본다.
+5. 별도 행동 평가에서는 leave-one-out과 time-based next-item 예측을 사용하고 nDCG/Recall뿐 아니라 head/tail Coverage를 본다. Cremonesi et al. 2010이 다룬 top-N 추천 평가 과제는 이 별도 평가축의 문헌 근거이며, Jarvis 고유의 time split·hard constraint gate는 리포 실측에 맞춰 추가한다.
 
 ## 6. 착수 조건 (재검토 트리거)
 
@@ -115,7 +117,7 @@
 4. FE가 추천 유래 `product_view`에 `listId`·`position`·`recommendationRequestId`를 싣고 Spring이 동일 값으로 적재한다는 계약 테스트 또는 샘플 로그를 확보한다.
 5. 학습 snapshot에서 hard filter 통과 전/후 경계를 보존하고 `productId` tiebreak·degrade 기록을 검증하는 테스트 계획을 승인한다.
 
-위 수치는 외부 벤치마크가 아니라 “여러 item pair가 반복 관측되고 30일 time split을 만들 수 있는가”를 거르는 내부 screening threshold다. 첫 축적분으로 pair-frequency 분포와 bootstrap CI를 산출한 뒤 본 학습 최소량을 다시 사전 등록한다.
+위 수치는 이번에 인용한 문헌에서 확인한 수치가 아니라 “여러 item pair가 반복 관측되고 30일 time split을 만들 수 있는가”를 거르는 이 리포의 내부 screening threshold다. 첫 축적분으로 pair-frequency 분포와 bootstrap CI를 산출한 뒤 본 학습 최소량을 다시 사전 등록한다.
 
 ## 부록: 근거 출처 · 검증하지 못한 것
 
@@ -133,4 +135,10 @@
 
 - FE가 추천 유래 `product_view`에 `listId`·`position`·`recommendationRequestId`를 실제로 채우는지: FE 저장소가 없어 확인 불가.
 - BE 수정 `jarvis-backend#62`의 배포 상태와 배포 후 이벤트-주문 정합: 이 worktree 밖이라 확인 불가.
-- 외부 CF 문헌의 특정 표본량·성능 수치: 웹/문헌 검증을 수행하지 않았으며 판정 근거로 사용하지 않음.
+
+## 참고 문헌
+
+- Badrul M. Sarwar, George Karypis, Joseph A. Konstan, John Riedl, “Item-based collaborative filtering recommendation algorithms”, WWW 2001, pp. 285–295, DOI `10.1145/371920.372071`.
+- Yifan Hu, Yehuda Koren, Chris Volinsky, “Collaborative Filtering for Implicit Feedback Datasets”, ICDM 2008, pp. 263–272, DOI `10.1109/ICDM.2008.22`.
+- Paolo Cremonesi, Yehuda Koren, Roberto Turrin, “Performance of recommender algorithms on top-N recommendation tasks”, RecSys 2010, pp. 39–46, DOI `10.1145/1864708.1864721`.
+- Himan Abdollahpouri, Robin Burke, Bamshad Mobasher, “Controlling Popularity Bias in Learning-to-Rank Recommendation”, RecSys 2017, pp. 42–46, DOI `10.1145/3109859.3109912`.

@@ -75,9 +75,9 @@ I-21은 목록당 최대 9개다(`docs/api-spec.md` v0.17.1 §4.2). 9개가 모�
 
 현 scoring의 semantic cosine, profile match, popularity, recency, diversity bonus, recent-purchase penalty를 그대로 수치 feature로 쓸 수 있다(`evals/scoring/components.py`, `scorer.py`). 여기에 `listType`(`PICK_ONE`/`BUY_ALL`), `surface`(`CHAT`/`HOME`), 후보 수, guest/degrade flag를 더한다.
 
-`position`은 노출 편향을 추정하는 학습 보조 정보지만, **재랭킹 전 inference 시점에는 최종 position을 알 수 없다.** 이를 일반 feature로 넣으면 train/serve skew가 생긴다. 따라서 (1) 학습 시 propensity/position debiasing에만 사용하고 serving feature에서는 제외하거나, (2) 1차 점수의 provisional rank를 별도 이름으로 저장해 학습·서빙 양쪽에서 같은 계산을 해야 한다. 실제 노출 `position`과 provisional rank를 같은 필드로 섞지 않는다.
+`position`은 노출 편향을 추정하는 학습 보조 정보지만, **재랭킹 전 inference 시점에는 최종 position을 알 수 없다.** 이를 일반 feature로 넣으면 train/serve skew가 생긴다. Joachims et al. 2017은 click의 position bias에 대해 rank-conditional examination probability를 propensity로 추정하고 로그 상호작용을 inverse-propensity weighting하는 처리를 제시한다. 따라서 Jarvis도 실제 노출 `position`은 serving feature가 아니라 IPS debiasing에 쓰고, 1차 점수의 provisional rank가 필요하면 별도 이름으로 저장해 학습·서빙 양쪽에서 같은 계산을 해야 한다.
 
-모델 계열의 일반적 성질은 일반 지식 기반이며 이 작업에서 외부 출처를 검증하지 못했다. 도입 판정은 Jarvis의 실측 저장 구조·baseline·누출 가능성에 근거한다.
+이 방식도 추천 시점의 rank와 click 로그가 함께 보존되어야 하므로, 현 FE 전송 여부 확인과 feature snapshot 결손을 해결하지 않으면 적용할 수 없다. 문헌은 position을 처리할 방법을 제공하지만 Jarvis의 입력 부재라는 판정 근거는 그대로다.
 
 ## 3. 후보 비교표
 
@@ -87,6 +87,8 @@ I-21은 목록당 최대 9개다(`docs/api-spec.md` v0.17.1 §4.2). 9개가 모�
 | pointwise GBDT | 중간 | 중간 | 작은 tree ensemble은 예산 내 가능하나 실제 p50 계측 필요 | 보통 신규 ML runtime 필요 | 모델 파일/feature schema 버전 필요 | ✅ 비교 arm |
 | pairwise RankNet / LambdaRank 계열 | 중간~높음 | 중간~높음 | model 크기에 따라 증가, 목록당 후보 전체 inference 필요 | 학습 framework 가능성 큼 | pointwise보다 복잡 | 후순위 |
 | listwise LambdaMART / ListNet 계열 | 높음 | 높음 | tree/ensemble 또는 목록 전체 처리 비용, benchmark 필수 | 대개 신규 학습·서빙 의존성 | model switch와 schema 운영 필요 | 데이터 충족 뒤 |
+
+Burges 2010은 RankNet→LambdaRank→LambdaMART의 계보를 설명하고 LambdaMART ranker 앙상블이 2010 Yahoo! Learning To Rank Challenge Track 1에서 우승했다고 기록한다. 따라서 LambdaMART의 후순위 판정은 기법의 성능 가능성을 낮게 본 것이 아니라, 현재 Jarvis의 label 0·신규 의존성 승인·feature snapshot·서빙 benchmark가 선행되지 않았기 때문이다.
 
 지연 비교 기준은 결정론 `scoring` 3.781ms/case, I-22 홈 종단 p50 45ms(예산 3s), 채팅 스트림 전체 상한 30s다(`evals/ablation/DECISION.md`, `CHANGELOG.md` #148/#138). 3s나 30s가 크다고 모델 시간을 임의 소비해서는 안 된다. 초기 gate는 **현 scorer 대비 추가 p50 5ms 이하·p95 15ms 이하**, I-22 종단 p50 60ms 이하로 사전 등록한다. 이는 외부 SLA가 아니라 현재 45ms 경로의 회귀를 조기에 막기 위한 내부 예산이다.
 
@@ -101,10 +103,10 @@ I-21은 목록당 최대 9개다(`docs/api-spec.md` v0.17.1 §4.2). 9개가 모�
 조건 충족 뒤 첫 prototype은 다음으로 제한한다.
 
 1. `list_id` 단위 time split과 7일 click/cart, 30일 purchase attribution window를 사전 등록한다. window 값은 첫 지연분포를 본 뒤 변경 가능하되, 평가 실행 전 고정한다.
-2. 추천 시점 scoring 6성분·surface·listType·degrade flag를 snapshot한다. 실제 `position`은 debiasing 전용이며 serving feature에서 제외한다.
+2. 추천 시점 scoring 6성분·surface·listType·degrade flag를 snapshot한다. 실제 `position`은 Joachims et al. 2017의 rank-conditional examination propensity를 적용하는 IPS debiasing 전용이며 serving feature에서 제외한다.
 3. true impression negative를 전량 사용하고 pointwise logistic과 작은 GBDT만 비교한다.
 4. `evals/ablation` 규약대로 arm·seed·N·primary metric을 실행 전 고정한다. primary는 nDCG@10, bootstrap 95% CI가 0을 포함하면 `inconclusive`다.
-5. baseline은 `pipeline` nDCG@10 0.782943과 `scoring` 0.616852다. dev 31건과 sealed holdout 승인 경계를 지키며 Filter Accuracy·HCV·Coverage·latency도 본다.
+5. baseline은 `pipeline` nDCG@10 0.782943과 `scoring` 0.616852다. Cremonesi et al. 2010이 다룬 top-N 평가 문제와 연결해 nDCG@10을 primary로 두되, dev 31건과 sealed holdout 승인 경계를 지키며 Filter Accuracy·HCV·Coverage·latency도 함께 본다.
 
 기존 골든셋은 실제 impression label이 아니라 질의-정답 relevance이므로 LTR 학습 성능을 단독 증명하지 못한다. 행동 로그 time split을 primary 데이터셋으로 하고, 기존 dev는 추천 품질·hard constraint 회귀 검사로 병행한다.
 
@@ -119,7 +121,7 @@ I-21은 목록당 최대 9개다(`docs/api-spec.md` v0.17.1 §4.2). 9개가 모�
 5. FE가 추천 유래 `product_view`에 `listId`·`position`·`recommendationRequestId`를 보내는지 계약 테스트나 샘플 로그로 확인한다.
 6. 신규 의존성이 필요한 arm은 사람 승인 후 lockfile·license·서빙 이미지 영향까지 검토한다.
 
-10,000개 목록과 2,000 click은 외부 문헌 기준이 아니라 최소 두 개의 시간 구간과 surface/listType slice에 positive를 나눌 수 있는지 확인하는 내부 screening threshold다. 조건 도달 시 실제 click/conversion 비율과 군집 상관을 이용해 power/CI 기반 표본량을 다시 사전 등록한다.
+10,000개 목록과 2,000 click은 이번에 인용한 문헌에서 확인한 수치가 아니라 최소 두 개의 시간 구간과 surface/listType slice에 positive를 나눌 수 있는지 확인하는 이 리포의 내부 screening threshold다. 조건 도달 시 실제 click/conversion 비율과 군집 상관을 이용해 power/CI 기반 표본량을 다시 사전 등록한다.
 
 ## 부록: 근거 출처 · 검증하지 못한 것
 
@@ -138,4 +140,9 @@ I-21은 목록당 최대 9개다(`docs/api-spec.md` v0.17.1 §4.2). 9개가 모�
 - FE가 실제 노출 및 추천 유래 `product_view`에 세 상관 필드를 채우는지: FE 저장소가 없어 확인 불가.
 - BE의 recommendation row가 “저장됨”과 실제 viewport 노출을 어떻게 구분하는지: BE/FE 저장소가 없어 확인 불가.
 - `jarvis-backend#62` 배포 상태와 주문 데이터 조인용 상세 스키마: 이 worktree 밖이라 확인 불가.
-- 외부 LTR 모델별 정확한 표본량·지연 benchmark: 출처를 검증하지 않아 사용하지 않음.
+
+## 참고 문헌
+
+- Paolo Cremonesi, Yehuda Koren, Roberto Turrin, “Performance of recommender algorithms on top-N recommendation tasks”, RecSys 2010, pp. 39–46, DOI `10.1145/1864708.1864721`.
+- Christopher J. C. Burges, “From RankNet to LambdaRank to LambdaMART: An Overview”, Microsoft Research Technical Report MSR-TR-2010-82, 2010.
+- Thorsten Joachims, Adith Swaminathan, Tobias Schnabel, “Unbiased Learning-to-Rank with Biased Feedback”, WSDM 2017, pp. 781–789.
