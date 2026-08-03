@@ -780,7 +780,7 @@ async def test_terminal_transient_cleanup_keeps_terminal_state(monkeypatch, cloc
     async def clear_context(context_id: str, thread_ids: list[str]):
         from app.agents.buyer.session_state import CleanupCounts
 
-        return CleanupCounts(revert=1)
+        return CleanupCounts(revert=1, repurchase=1)
 
     monkeypatch.setattr("app.core.session_lifecycle.session_state.clear_context", clear_context)
     coordinator = SessionLifecycleCoordinator(
@@ -793,6 +793,7 @@ async def test_terminal_transient_cleanup_keeps_terminal_state(monkeypatch, cloc
 
     assert outcome.status == "completed"
     assert outcome.cleanup.revert == 1
+    assert outcome.cleanup.repurchase == 1
     assert (await repo.get_context("S1")).state == "terminal"
     assert (await repo.get_finalization(terminal.claim.finalization_id)).transient_status == (
         "completed"

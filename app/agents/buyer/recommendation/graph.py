@@ -22,7 +22,11 @@ from app.agents.buyer.recommendation.relaxation import (
     RelaxationCandidate,
     build_relaxation_candidates,
 )
-from app.agents.buyer.recommendation.state import RouteDecision, build_condition_chips
+from app.agents.buyer.recommendation.state import (
+    RouteDecision,
+    build_condition_chips,
+    get_repurchase_store,
+)
 from app.core.llm import LLMClient, LLMError, resolve_model_id
 from app.core.text import _strip_unsafe
 from app.core.tracing import current_request_trace, trace_span
@@ -265,6 +269,33 @@ def _resolve_repurchase_ids(recent, references: list[str]) -> set[int]:
     if len({name for _, name in matches}) != 1:
         return set()
     return {pid for pid, _ in matches}
+
+
+async def _load_persisted_repurchase(thread_key, turn_ids, settings) -> set[int]:  # noqa: ANN001
+    """이번 턴 지목을 누적하고 저장된 재구매 면제 id를 반환한다(#232)."""
+    if thread_key is None:
+        return set()
+    try:
+        store = await get_repurchase_store()
+        cap = settings.dedup_repurchase_store_max
+        if turn_ids:
+            persisted = await store.add(
+                thread_key,
+                turn_ids,
+                cap=cap,
+            )
+        else:
+            # 지목 없는 턴은 락·쓰기 없이 기존 지속값만 한 번 읽는다.
+            persisted = await store.get(thread_key)
+        return set(persisted[-cap:] if cap > 0 else [])
+    except Exception as exc:  # noqa: BLE001 - 상태 실패는 SSE를 끊지 않고 이번 턴 신호로 degrade
+        # [#113] `may_auto_relax` 턴은 conditions를 검색·완화 뒤로 미루므로 이 pg 왕복이
+        # **첫 이벤트보다 앞설 수 있다**. 여기서 예외를 올리면 `_merge_fanout_results`·
+        # `_post_filter` 실패와 같은 모양으로 conditions조차 못 낸 채 스트림이 죽는다.
+        # 따라서 예외를 삼켜 이번 턴 지목만 쓰는 쪽으로 degrade한다. 미뤄진 턴은 이 왕복 1회가
+        # 첫 프레임 예산에 들어가지만 `run_with_query_timeout`이 지연 상한을 건다.
+        logger.warning("repurchase_store_failed", extra={"reason": str(exc)})
+        return set()
 
 
 async def stream_recommendation(
@@ -511,7 +542,11 @@ async def stream_recommendation(
         since = _now() - timedelta(days=settings.dedup_recent_days)
         recent = purchases.recent_items(since=since, exclude_statuses=_INACTIVE_STATUSES)
         exclude_ids = {i.product_id for i in recent}
-        repurchase_ids = _resolve_repurchase_ids(recent, decision.repurchase_products)
+        turn_ids = _resolve_repurchase_ids(recent, decision.repurchase_products)
+        # 검색 실패 조기 return 뒤에서만 누적한다 — 검색 실패 턴의 지목을 저장하지 않는 #120의
+        # 기존 해소 위치와 일관된다. 저장값은 매 턴 본인 최근 구매 집합과 교집합해 재검증한다.
+        persisted = await _load_persisted_repurchase(thread_key, turn_ids, settings)
+        repurchase_ids = (turn_ids | persisted) & exclude_ids
         consumables = set(settings.consumable_categories)
         for i in recent:
             # 소모품 카테고리인데 사용자가 되돌리지 않은 것만 억제 대상.

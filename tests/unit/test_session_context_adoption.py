@@ -11,7 +11,7 @@ from app.agents.buyer import session_state as session_state_module
 from app.agents.buyer.cart import state as cart_state
 from app.agents.buyer.cart.state import CartStateStore, PendingAdd
 from app.agents.buyer.graph import ThreadFilterStore, run_buyer_turn
-from app.agents.buyer.recommendation.state import RevertStore
+from app.agents.buyer.recommendation.state import RepurchaseStore, RevertStore
 from app.agents.buyer.session_state import (
     adopt_legacy_thread,
     clear_context,
@@ -48,6 +48,7 @@ async def test_clear_context_removes_only_requested_thread_state() -> None:
     filters = ThreadFilterStore(store)
     cart = CartStateStore(store)
     revert = RevertStore(store)
+    repurchase = RepurchaseStore(store)
     await filters.put(target, ProductSearchFilters(category="대상"))
     await filters.put(other, ProductSearchFilters(category="보존"))
     await cart.set_pending(
@@ -62,6 +63,8 @@ async def test_clear_context_removes_only_requested_thread_state() -> None:
     await cart.set_last_reco(other, [(2, "보존 상품")])
     await revert.add(target, ["세제"])
     await revert.add(other, ["조미료"])
+    await repurchase.add(target, [1], cap=20)
+    await repurchase.add(other, [2], cap=20)
 
     counts = await clear_context("context-a", ["thread-a"])
 
@@ -70,13 +73,16 @@ async def test_clear_context_removes_only_requested_thread_state() -> None:
     assert counts.last_recommendation == 1
     assert counts.local_names == 1
     assert counts.revert == 1
+    assert counts.repurchase == 1
     assert await filters.get(target) is None
     assert await cart.get_pending(target) is None
     assert await cart.get_last_reco(target) == []
     assert await revert.get(target) == set()
+    assert await repurchase.get(target) == []
     assert (await filters.get(other)).category == "보존"
     assert await cart.get_last_reco(other) == [(2, "보존 상품")]
     assert await revert.get(other) == {"조미료"}
+    assert await repurchase.get(other) == [2]
 
 
 async def test_adoption_keeps_v2_scalars_unions_revert_and_deletes_legacy_last() -> None:
