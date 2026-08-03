@@ -1,0 +1,202 @@
+{
+  "ablation": {
+    "arms": [
+      "pipeline",
+      "scoring",
+      "single_call"
+    ],
+    "datasetHash": "764bc148858cb9c04b9da7a210a5479f7f0daa04bec61563c7f94233e9646b04",
+    "datasetVersion": "1.0.0",
+    "inconclusiveRule": "ciIncludesZero",
+    "missingRunPolicy": "excludePairReportCount",
+    "primaryLabel": "confirmatory",
+    "primaryMetric": "overall.ndcgAtK.10",
+    "rankingExclusionPolicy": "nonDiscriminativeRanking",
+    "scoringConfound": "scripted expectedFilters decompose; pipeline과 rerank 축만 다른 비교가 아님",
+    "scoringRepeatedForPairedCondition": true,
+    "secondaryLabel": "exploratory",
+    "singleCallPurchaseHistoryIncluded": false,
+    "totalLatencyDefinition": "adapter 전체 벽시계 latencyMs",
+    "ttft": {
+      "reason": "오프라인 하네스는 server_first_text_token_ms를 직접 관측하지 않음",
+      "status": "unknown",
+      "value": null
+    }
+  },
+  "commitSha": "4d12348b679b515c57e83b81b1a0eabca0f1bc7c",
+  "dirty": true,
+  "hashes": {
+    "ablationModules": {
+      "__init__.py": "92550784ec380543d2c71d8c2a5ad9d548d3f59d04055478e7a222feffc61384",
+      "__main__.py": "0091eab92906c0d331da125e83797e719fbea4049d8d483beaf34950f381bbc5",
+      "adapters.py": "32939aa730d42e3ff41c2add5ac59aee68c23bd0e222a322e370e2aaf6430841",
+      "budget.py": "82bc0829eed01f8c2d3f9752933965bdae1e625cc9504761b1c7c09b4da2bfc2",
+      "cli.py": "bb89eab5b823aa5fcc625e479439ce8c065cf40569dc9edad462ab379a0ee01d",
+      "config.py": "6afad5ced04fe40f1d75d0bc40f5c3d3918a41524a76ac300cc78954f83c0598",
+      "report.py": "64026a72d1b74f8371b8b2be5ccaef258c63b7f62dc89c1547d8685d189ea813",
+      "single_call.py": "5ca18a8559e3bb7b0706910cc1d803173c902661f9b6fe943fc96b363735ce4d",
+      "stats.py": "51e710e67737b24c1bb112e96697ef340524f05f0ef57e885483884e4066cc0f"
+    },
+    "config": "50b026cf9b8e36130630c13f96cbdd17b61b4c18dfe086960ad6bf0e29c57e42",
+    "datasetManifest": "0f3b91efa922a56d5c053ae26203dc3aaaef0fb0213df744c9dcc48fc8331af7",
+    "evalConfig": "37831493e905e6acfb5050ed2d1b04d8d7b4b8c406c2096710f2f0b9db1b246f",
+    "fixtures": {
+      "catalog_snapshot.json": "db16232a30b1dad49dc9102c25988842cb7878ee522bd2c92c60bed68caf8301",
+      "purchase_history.json": "d9068b703e5ade93df6ab642dc9259b997fc891b6261d64d47968244921b6f74",
+      "search_responses.json": "88eeb27452236d0a9779de3ecb8ab3258503f1d5528f3b832ea2df1488754cf0"
+    },
+    "graph": "1d7bb2b640afa025750f83275199c78786f85727de232f8714e0eb050fce4cc9",
+    "modelEvalModules": {
+      "__init__.py": "99a955c32f5770f5194276195f4fa9dd2778cde579c2477547f8177438949fd8",
+      "__main__.py": "c86340f0f9e20e88f56c2fd39c6be2544e9336bfb348eea9d360b2ffcd1a3902",
+      "adapter.py": "4fbc68136ba926039c71ddf9161c1d7df8babb0a874d5c138b2513965a017a85",
+      "budget.py": "82bb811dc3ed17928d578c6d25cc81fc733b263c08bdd8db5416bc08f2b209c2",
+      "cli.py": "4c52dc69acef71c659cbddd8007ff489e89a82021a9acbe83aa815dfdc0034ac",
+      "manifest.py": "788c1c88cee427ba765069e3963cd0dccba503838ff6364c61bca1dbbd26e0c4",
+      "pricing.py": "51c543554be090d77b692f3bf2c455385efa55aec916c96a20209d4270dbead8",
+      "recording.py": "fb6046e431d7247edc329138abfaab378b05bdd041cdee64d6f19278895affd7",
+      "repeats.py": "863de4bfb35999a8d265478154ede8e32313cd97e35bc28243bedbd2971597bc",
+      "report.py": "a6da607795693c2db6cd0c2945d0b9a40220168988fc4170f6affbacb32420c5",
+      "stats.py": "4930aca85b2721ed95ef7970ade88ac0699ea544fbef6b967f1a95340972ceb8"
+    },
+    "pricingManifest": "4c776eac8030f4158d470868742504be30db33024c1cce98df45c884cad01531",
+    "prompts": {
+      "decompose": "7ff7737c854f38a9b7ad2f85f55598cd92c3df6a48c7e160c5765d4043e4c2b1",
+      "rerank": "bbdd387022db47fd229ef0edf59ed42db1e444a77653a35bc98e7e141529bdbd"
+    },
+    "singleCallPrompt": "6cd96436f7a4fc22ab1f5e0d4948c033e3b2748fd2675045bbd96546aa4336a9",
+    "uvLock": "85f41455b55376fe54790ccfe407aa56d477301c579e71b940038aec3631742a"
+  },
+  "image": null,
+  "modelEval": {
+    "budget": {
+      "actual": {
+        "budgetExceeded": false,
+        "budgetExceededReason": null,
+        "callCount": 445,
+        "costGateStatus": "passed",
+        "limits": {
+          "maxCalls": 800,
+          "maxCostUsd": 20.0,
+          "maxTotalTokens": 30000000
+        },
+        "tokenGateStatus": "passed",
+        "totalCostUsd": 0.28132815000000017,
+        "totalTokens": 1106237,
+        "unknownCostCallCount": 0,
+        "unknownTokenCallCount": 0
+      },
+      "limits": {
+        "maxCalls": 800,
+        "maxCostUsd": 20.0,
+        "maxTotalTokens": 30000000
+      },
+      "preflight": {
+        "allowed": true,
+        "caseCount": 31,
+        "expectedCalls": 620,
+        "maxCalls": 800,
+        "maxCostUsd": 20.0,
+        "maxTotalTokens": 30000000,
+        "pipelineCallsPerCase": 3,
+        "pipelineExpectedCalls": 465,
+        "repeats": 5,
+        "singleCallCallsPerCase": 1,
+        "singleCallExpectedCalls": 155
+      }
+    },
+    "caseIds": [
+      "buy-cmap-0001",
+      "buy-cmap-0002",
+      "buy-cmap-0003",
+      "buy-cmap-0004",
+      "buy-cmap-0005",
+      "buy-cmap-0006",
+      "buy-cold-0001",
+      "buy-cold-0002",
+      "buy-fail-0001",
+      "buy-fail-0002",
+      "buy-fail-0003",
+      "buy-gust-0001",
+      "buy-gust-0002",
+      "buy-mult-0001",
+      "buy-mult-0002",
+      "buy-over-0001",
+      "buy-over-0002",
+      "buy-over-0003",
+      "buy-pers-0001",
+      "buy-pers-0002",
+      "buy-pers-0003",
+      "buy-repu-0001",
+      "buy-repu-0002",
+      "buy-repu-0003",
+      "buy-srch-0001",
+      "buy-srch-0002",
+      "buy-srch-0003",
+      "buy-srch-0004",
+      "buy-srch-0005",
+      "buy-srch-0006",
+      "buy-srch-0007"
+    ],
+    "caseOrder": "caseId-asc",
+    "configVersion": "ablation-config-v2",
+    "declaredRepeats": 5,
+    "executedRepeats": 5,
+    "modelConfig": {
+      "pipeline": {
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "scoring": {
+        "decompose": "expectedFilters",
+        "provider": "scripted",
+        "recentPurchaseWindowDays": 90,
+        "referenceDate": "2026-08-02",
+        "rerank": "deterministicScoringBaseline",
+        "weights": {
+          "diversity_bonus": 0.1,
+          "popularity": 0.15,
+          "profile_match": 0.15,
+          "recency": 0.05,
+          "recent_purchase_penalty": 0.2,
+          "semantic": 0.55
+        }
+      },
+      "single_call": {
+        "maxTokens": 1500,
+        "model": "gpt-5.6-luna",
+        "provider": "openai",
+        "purchaseHistoryIncluded": false,
+        "reasoningEffort": "medium",
+        "tier": "smart"
+      }
+    },
+    "split": "dev"
+  },
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "pythonVersion": "3.12.3",
+  "run": {
+    "command": "uv run python -m evals.ablation --out evals/ablation/baselines/20260803-dev-full-n5",
+    "runId": "e3a09704-5a85-401d-a5be-6240c98899a6",
+    "timestamp": "2026-08-03T06:43:48.086009+00:00"
+  },
+  "seed": 20260803
+}
