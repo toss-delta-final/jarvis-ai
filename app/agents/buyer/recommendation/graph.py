@@ -648,15 +648,21 @@ async def stream_recommendation(
         except Exception as exc:  # noqa: BLE001 - 자동 완화 실패가 턴을 죽이지 않게(degrade)
             # CancelledError(BaseException)는 전파돼 협조적 취소가 보존된다.
             logger.warning("relaxation_auto_failed", extra={"reason": str(exc)})
-    # [#113 PR #248 리뷰 A] 미뤄 둔 conditions 를 여기서 낸다 — 자동 완화가 채택됐으면 **완화된
-    # 값**으로, 아니면 원래 값으로. 어느 쪽이든 화면의 조건 칩과 실제 검색 조건이 일치한다.
-    # **완화 고지 token 보다 먼저** 내보낸다 — §3.1 순서 계약이 conditions → token 이다.
+    # [#113 PR #248 리뷰] **이 턴에 실제로 적용된 필터**. 자동 완화가 채택됐으면 그 값이 반영된
+    # 사본이고 아니면 원본이다. 조건 칩 표시와 **완화 칩 후보 생성**이 같은 기준을 쓰게 하는 게
+    # 핵심이다 — 원본으로 후보를 만들면 "평점 4.0" 이 화면에 떠 있는데 그 옆 가격 칩은 4.5 기준으로
+    # probe·클릭돼, 표시와 실제가 어긋날 뿐 아니라 4.5 로 재보면 0건이라 **칩이 통째로 사라진다**.
+    effective_filters = decision.filters
+    if adopted_field and (attr := RELAXATION_FIELD_TO_ATTR.get(adopted_field)):
+        effective_filters = decision.filters.model_copy(update={attr: adopted_value})
+        relax_candidates = []  # 완화 전 기준으로 만든 후보는 버린다 — 아래에서 재생성
+
+    # [PR #248 리뷰 A] 미뤄 둔 conditions 를 여기서 낸다. **완화 고지 token 보다 먼저** 내보낸다 —
+    # §3.1 순서 계약이 conditions → token 이다.
     if may_auto_relax:
-        shown = decision.filters
-        if adopted_field and (attr := RELAXATION_FIELD_TO_ATTR.get(adopted_field)):
-            shown = decision.filters.model_copy(update={attr: adopted_value})
         yield sse(
-            "conditions", ConditionsData(chips=_condition_chips(shown)).model_dump(by_alias=True)
+            "conditions",
+            ConditionsData(chips=_condition_chips(effective_filters)).model_dump(by_alias=True),
         )
 
     if relaxation_notice:
@@ -672,7 +678,7 @@ async def stream_recommendation(
         # `_probe` 바깥이라 방어가 없었다. 완화 칩은 **부가 제안**이라 실패하면 칩 없이 계속한다.
         try:
             if not relax_candidates:
-                relax_candidates = build_relaxation_candidates(decision.filters, settings)
+                relax_candidates = build_relaxation_candidates(effective_filters, settings)
             pending = [
                 c
                 for c in relax_candidates

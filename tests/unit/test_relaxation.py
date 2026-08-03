@@ -926,9 +926,84 @@ def test_unknown_chip_field_fails_startup_instead_of_silently_doing_nothing(bad:
     assert bad in str(exc.value)
 
 
-def test_chip_fields_can_be_emptied() -> None:
-    """빈 목록(= 완화 칩 기능 off)은 정상적인 의사표현이라 막지 않는다."""
-    assert Settings(relaxation_chip_fields=[]).relaxation_chip_fields == []
+def test_auto_fields_must_be_a_subset_of_chip_fields() -> None:
+    """[PR #248 리뷰] 자동 목록이 칩 목록 밖이면 기동 실패.
+
+    후보는 `relaxation_chip_fields` 를 순회해서만 만들어지므로, 칩 목록에서 빠진 필드는 자동
+    목록에 있어도 후보 자체가 안 생겨 **자동 완화가 조용히 영구 비활성화**된다. 두 값이 개별로는
+    유효해 기동은 성공하고, `may_auto_relax` 는 자동 목록만 보므로 매 턴 conditions 만 헛되이
+    지연된다 — 설정 **조합**을 막아야 잡힌다.
+    """
+    with pytest.raises(ValidationError) as exc:
+        Settings(relaxation_chip_fields=["priceMax"], relaxation_auto_fields=["ratingMin"])
+    assert "RELAXATION_CHIP_FIELDS" in str(exc.value)
+
+    # 부분집합이면 통과하고, 자동을 비우는 것도 정상이다.
+    assert Settings(
+        relaxation_chip_fields=["priceMax", "ratingMin"], relaxation_auto_fields=["ratingMin"]
+    ).relaxation_auto_fields == ["ratingMin"]
+    assert (
+        Settings(
+            relaxation_chip_fields=["priceMax"], relaxation_auto_fields=[]
+        ).relaxation_auto_fields
+        == []
+    )
+
+
+async def test_chips_after_auto_relaxation_use_the_relaxed_basis() -> None:
+    """[PR #248 리뷰] 자동 완화가 채택되면 **완화 칩 후보도 그 값 기준**으로 만든다.
+
+    원본 기준으로 만들면 화면엔 "평점 4.0" 이 떠 있는데 그 옆 가격 칩은 4.5 로 probe 돼,
+    표시-실제가 어긋날 뿐 아니라 4.5 로 재보면 0건이라 **칩이 통째로 사라진다**.
+    """
+
+    async def _push(push) -> bool:  # noqa: ANN001
+        return True
+
+    seen: list = []
+
+    async def _search(filters, exclude_product_ids=None):  # noqa: ANN001
+        seen.append((filters.rating_min, filters.price_max))
+        kept = [
+            p
+            for p in [_product(101, 45000, rating=4.2), _product(201, 60000, rating=4.3)]
+            if (filters.rating_min is None or (p.rating or 0) >= filters.rating_min)
+            and (filters.price_max is None or (p.price or 0) <= filters.price_max)
+        ]
+        return ProductSearchResult(products=kept, total_count=len(kept))
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(decompose=_decompose_with(ratingMin=4.5, priceMax=50000)),
+            search=_search,
+            push_fn=_push,
+        )
+    )
+
+    assert (4.0, 50000) in seen  # 자동 완화 채택
+    assert (4.0, 65000) in seen  # 칩 probe 도 **완화된 평점** 기준
+    assert (4.5, 65000) not in seen  # 완화 전 기준으로 재보지 않는다
+    chips = _suggestions(events)
+    assert [c["relaxation"]["field"] for c in chips] == ["priceMax"]
+    assert chips[0]["estCount"] == 2  # 사라지지 않는다
+    rating_chip = next(c for c in _conditions(events) if c["field"] == "ratingMin")
+    assert rating_chip["value"] == 4.0  # 조건 칩과 칩 probe 기준이 같다
+
+
+def test_chip_fields_can_be_emptied_only_together_with_auto_fields() -> None:
+    """완화 기능 전면 off 는 **두 목록을 함께** 비워야 한다.
+
+    칩 목록만 비우면 후보 생성기가 아무것도 못 만들어 자동 완화까지 조용히 죽는다 — 부분집합
+    검증이 그 조합을 기동 시점에 막으므로, 끄려면 의도를 명시적으로 적어야 한다.
+    """
+    off = Settings(relaxation_chip_fields=[], relaxation_auto_fields=[])
+    assert off.relaxation_chip_fields == [] and off.relaxation_auto_fields == []
+
+    # 칩만 비우면 기본 자동 목록(["ratingMin"])이 고아가 되므로 거부한다.
+    with pytest.raises(ValidationError):
+        Settings(relaxation_chip_fields=[])
 
 
 async def test_probe_failure_after_search_does_not_kill_the_stream(

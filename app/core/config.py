@@ -972,6 +972,18 @@ class Settings(BaseSettings):
                 f"without consent (allowed: {sorted(allowed)}; empty list disables auto-relaxation). "
                 "Offer them as suggestion chips instead."
             )
+        # [PR #248 리뷰] 자동 목록은 칩 목록의 **부분집합**이어야 한다. 완화 후보를 만드는
+        # `build_relaxation_candidates` 가 `relaxation_chip_fields` 만 순회하므로, 칩 목록에서 빠진
+        # 필드는 자동 목록에 있어도 후보 자체가 안 만들어져 **자동 완화가 조용히 영구 비활성화**된다.
+        # 두 값이 개별로는 유효해 기동은 성공하고, 게다가 `may_auto_relax` 는 자동 목록만 보므로
+        # 매 턴 conditions 만 헛되이 지연된다 — 설정 **조합**을 여기서 막는다.
+        if orphaned := sorted(set(self.relaxation_auto_fields) - set(self.relaxation_chip_fields)):
+            raise ValueError(
+                f"RELAXATION_AUTO_FIELDS contains field(s) missing from RELAXATION_CHIP_FIELDS: "
+                f"{orphaned}. Relaxation candidates are built from the chip list, so those fields "
+                "would silently never be auto-relaxed. Add them to RELAXATION_CHIP_FIELDS or "
+                "remove them here."
+            )
         return self
 
     @model_validator(mode="after")
