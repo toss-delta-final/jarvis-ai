@@ -178,7 +178,12 @@ class PgCatalogArtifactStore:
         return row[0] if row else 0
 
     def top_k_by_vector(
-        self, query_vec: list[float], *, k: int, exclude: set[int] | None = None
+        self,
+        query_vec: list[float],
+        *,
+        k: int,
+        exclude: set[int] | None = None,
+        include: set[int] | None = None,
     ) -> list[int]:
         """질의 벡터에 가까운 상위 k productId — 코사인 거리(`<=>`)로 DB 에서 자른다 (I-22, #148).
 
@@ -203,35 +208,41 @@ class PgCatalogArtifactStore:
         플래너가 Seq Scan(정확 탐색)을 택해 어느 쪽이든 안전하다(실측: 최근접 3,000 제외에도
         24/24).
 
+        include 가 주어지면 `product_id = ANY(...)`로 후보 집합 안에서만 순위화한다(#254).
+        빈 집합은 DB 왕복 없이 빈 결과다. 실 pg-catalog 300건 후보는 PK Index Scan, 3,000건은
+        Seq Scan 뒤 top-N heapsort를 택해 HNSW 근사가 아닌 정확 탐색이었고, 상위 120은 기존
+        파이썬 코사인 순서와 완전히 같았다. 규모가 커져 HNSW를 택해도 위 strict_order 설정이
+        필터를 통과한 결과를 충분히 찾을 때까지 탐색을 잇는다.
+
         statement_timeout — 호출측 asyncio.wait_for(504 변환)와 이중 방어다. to_thread 취소는
         밑에서 도는 쿼리를 죽이지 못해, DB 쪽 상한이 없으면 지연 쿼리가 풀 커넥션을 계속 붙들어
         후속 요청까지 말려든다. SET LOCAL 이라 트랜잭션 밖으로 새지 않는다.
         """
         from app.core.config import get_settings  # noqa: PLC0415 - 순환 임포트 회피(모듈 관례)
 
+        if include == set():
+            return []
         timeout_ms = int(get_settings().catalog_store_query_timeout_s * 1000)
-        skip = list(exclude or ())
         qvec = Vector(query_vec)
-        # 제외 유무로 쿼리 모양을 가른다 — `(%s IS NULL OR ...)` 패턴은 플래너가 인덱스 경로를
-        # 잡기 어렵게 만든다. 술어는 단순할수록 pushdown 이 산다.
-        if skip:
-            sql = """
-                SELECT product_id, embedding <=> %s AS dist
-                FROM products
-                WHERE embedding IS NOT NULL AND product_id <> ALL(%s::bigint[])
-                ORDER BY embedding <=> %s
-                LIMIT %s
-                """
-            params: tuple = (qvec, skip, qvec, k)
-        else:
-            sql = """
-                SELECT product_id, embedding <=> %s AS dist
-                FROM products
-                WHERE embedding IS NOT NULL
-                ORDER BY embedding <=> %s
-                LIMIT %s
-                """
-            params = (qvec, qvec, k)
+        predicates = ["embedding IS NOT NULL"]
+        predicate_params: list = []
+        if include is not None:
+            predicates.append("product_id = ANY(%s::bigint[])")
+            predicate_params.append(list(include))
+        if exclude:
+            predicates.append("product_id <> ALL(%s::bigint[])")
+            predicate_params.append(list(exclude))
+        # `IS NULL OR` 죽은 분기를 SQL에 두면 플래너가 인덱스 경로를 잡기 어렵다. 고정 술어
+        # 조각만 조립하고 값은 전부 파라미터로 바인딩해 필요한 조건만 쿼리 모양에 남긴다.
+        where_clause = " AND ".join(predicates)
+        sql = f"""
+            SELECT product_id, embedding <=> %s AS dist
+            FROM products
+            WHERE {where_clause}
+            ORDER BY embedding <=> %s
+            LIMIT %s
+            """
+        params = (qvec, *predicate_params, qvec, k)
         with self._pool.connection() as conn, conn.transaction():
             conn.execute(f"SET LOCAL statement_timeout = {timeout_ms}")
             conn.execute("SET LOCAL hnsw.iterative_scan = strict_order")
