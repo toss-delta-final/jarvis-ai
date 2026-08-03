@@ -6,7 +6,8 @@ Spring base URL, 검색 파라미터)을 환경변수로 주입하여 코드 변
 [2026-07-15] MVP 후보 검색은 Spring 위임(GET /internal/products/search, I-1)이며 상품 원본
 컬럼의 AI측 사본(카탈로그 미러)은 두지 않는다.
 [2026-07-20 정정] enrichment·임베딩(§4.8 I-17 배치)은 MVP 편입 확정 — 임베딩 검색 방식1·2를
-SearchBackend로 구현해 골든셋 확정(api-spec §4.8 말미·§4.6, C-17). 구 "post-MVP" 표기 폐기.
+SearchBackend로 구현해 골든셋 비교. [2026-08-03 #32] 방식2를 확정하고 방식1·C-17은 기각 —
+방식1은 오프라인 비교 전용으로 존치한다(api-spec §4.8 말미·§4.6).
 """
 
 from __future__ import annotations
@@ -23,8 +24,9 @@ from app.schemas.recommendations import LIMIT_MAX as HOME_RECO_LIMIT_MAX
 from app.schemas.spring import LIST_MAX_PRODUCTS, MAX_LISTS
 
 LLMProvider = Literal["openai", "anthropic"]
-# 검색 백엔드 선택(#101) — spring: Spring 위임만(방식1 이전 MVP), embedding_rerank: Spring 전량 →
-# pgvector 의미 재정렬(방식2, MVP 기본), vector: AI 벡터검색 → Spring hydrate(방식1, C-17 미착수).
+# 검색 백엔드 선택(#101) — spring: Spring 위임만(방식1 이전 MVP, 운영 롤백), embedding_rerank:
+# Spring 전량 → pgvector 의미 재정렬(방식2, MVP 기본), vector: 방식1 오프라인 비교 전용
+# (운영 사용 금지, #32 미채택, C-17 기각).
 SearchBackend = Literal["spring", "embedding_rerank", "vector"]
 # 프로필 주입 소비처(#119) — off: 이번 턴 개인화 미적용, rerank_only: 기본(취향은 순서에만),
 # both: 구 동작(decompose 하드필터 파생 허용, 롤백 경로).
