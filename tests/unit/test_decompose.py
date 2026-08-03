@@ -549,23 +549,43 @@ def test_pronoun_intent_prompt_keeps_product_requests_out_of_cart_view() -> None
 
 
 def test_pending_cart_option_answer_precedes_general_intent_ladder() -> None:
-    """[#234 R1/R7] pending-cart 옵션 답변 조건은 일반 intent 사다리와 모순되지 않는다.
+    """[#234·#240] pending-cart 결정 절차의 실측 하중 문구를 고정한다.
 
     라운드 2 실 LLM N=8에서 원본은 ``2번으로``를 ``cart_add×8``로 분류하고 두 번째 optionId를
     7/8 골랐지만, 1)~3) 사다리를 먼저 적용한 프롬프트는 ``cart_view×6 / cart_add×2``와 올바른
     optionId 0/8로 퇴행했다. 번호만 있는 정상 옵션 답변이 다시 사다리 밖으로 밀리지 않게 고정한다.
-    동시에 PENDING_CART 자체를 옵션 답변으로 간주하던 기존 문장이 0) 단계와 모순하지 않도록,
-    실제 옵션 이름·번호·순번 선택일 때만 답변으로 보는 조건도 고정한다.
+
+    #240 실측에서 지시대명사 ``항상``과 pending 경계 문장을 함께 뺀 후보 3종은 93/96에서
+    71·74·78/96으로 하락했다. 종결 4)는 ``안녕``[직전추천]을 4/16→23/24,
+    pending을 0/16→5/24로 올렸다. 다만 그 자리에서 order_status를 재나열하면 ``주문 취소 방법``의
+    general이 맥락별 93.8/87.5/87.5%에서 87.5/83.3/83.3%로 내려가, 재나열을 뺀 채택본의
+    100/95.8/91.7%보다 나빴다. cart_add 대상 문장을 추상화한 후보도 productId 해소가
+    15/16에서 14·10·9/16으로 하락했다.
     """
     from app.agents.buyer.recommendation.decompose import _SYSTEM
 
     rule = _SYSTEM.split("- order_status로 분류하지 않는 예:", 1)[1].split("- recommend:", 1)[0]
-    assert rule.index("0)") < rule.index("1)")
+    compact_rule = " ".join(rule.split())
+    ladder = rule.split("- intent는 다음 순서로 판정하세요:", 1)[1].split(
+        "- PENDING_CART가 있다는", 1
+    )[0]
+    assert ladder.index("0)") < ladder.index("1)")
     for phrase in ("PENDING_CART", "이름", "번호", "순번", "2번으로", "두 번째", "optionId"):
         assert phrase in rule
     assert "있으면 보통 이번 발화는 옵션 답변" not in _SYSTEM
-    assert "USER_MESSAGE가 options의 이름·번호·순번을 실제로 고른" in _SYSTEM
-    assert "경우에만 옵션 답변" in _SYSTEM
+    assert "항상" in ladder
+    assert (
+        "이 경계는 PENDING_CART가 있어도 옵션 답변이 아닌 상품 요청에 그대로 적용합니다."
+        in compact_rule
+    )
+    assert "4)" in ladder
+    terminal_branch = ladder.split("4)", 1)[1]
+    assert "general" in terminal_branch
+    assert "order_status" not in terminal_branch
+    assert (
+        "- cart_add: LAST_RECOMMENDATIONS(직전 추천 목록: productId+이름)에서 사용자가 가리킨 상품의\n"
+        "  productId 를 고르세요."
+    ) in _SYSTEM
 
 
 async def test_unknown_intent_still_falls_back_to_recommend() -> None:
