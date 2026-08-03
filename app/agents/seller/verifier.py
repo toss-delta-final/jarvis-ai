@@ -153,12 +153,19 @@ def check_evidence_grounded(
 
     D2(check_numbers_grounded)와 동일한 _normalize_numbers 를 재사용한다 — 한쪽만
     날짜 마스킹·유의숫자 완화를 적용하면 두 층이 드리프트한다(대칭 유지가 핵심).
+
+    [PR 리뷰 반영] claimed 에 finding.recommendation 도 포함한다 — D2·G1 은 이미
+    recommendation 발 수치를 "검증된 근거"로 인정해 보고서·차트 인용을 허용하는데,
+    F2 가 recommendation 을 검사 대상에서 빼두면 워커가 recommendation 에 지어낸
+    숫자가 F2 를 그대로 통과하고 이후 D2/G1 단계에서 오히려 정당한 근거로 취급돼
+    "도구출력⊇finding⊇보고서⊇차트" 근거 사슬이 recommendation 경유로 끊긴다.
     """
     allowed: set[str] = set()
     for output in tool_outputs:
         allowed |= _normalize_numbers(output)
 
     claimed: set[str] = _normalize_numbers(finding.summary)
+    claimed |= _normalize_numbers(finding.recommendation)
     for item in finding.evidence:
         claimed |= _normalize_numbers(item)
     novel = {

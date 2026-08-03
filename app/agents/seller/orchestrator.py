@@ -292,11 +292,19 @@ async def _run_one_branch(
       judge 장애 한 번에 무력화된다. F 가 전부 통과한 상태의 judge 장애만
       미검증 채택(Q2 와 동일 철학 — 재실행 없이 현재 finding 인정)한다.
     - seller_branch_deadline_s 예산을 넘기면 재실행을 포기하고 직전 결과를 채택한다
-      (강등이 아니라 "시간 내 못 끝냄" — §9-R1).
+      (강등이 아니라 "시간 내 못 끝냄" — §9-R1). [PR 리뷰 반영] 데드라인 통과 여부만
+      보면 "새 재실행을 시작은 하되 완료는 못 해 오히려 더 초과"하는 경우를 못
+      막는다 — 재실행 1회(worker+judge)를 끝까지 완주할 잔여 예산이 있을 때만
+      재실행하도록 판단한다(아래 can_retry).
     """
     deadline = time.monotonic() + settings.seller_branch_deadline_s
     max_attempts = settings.seller_worker_max_retries + 1
     threshold = settings.seller_analysis_score_threshold
+    # 재실행 1회의 최악 소요(worker 풀타임아웃 + judge 풀타임아웃) — 잔여 예산이 이보다
+    # 작으면 재실행을 시작해도 도중에 예산을 넘길 뿐이라 애초에 시작하지 않는다.
+    retry_cycle_cost_s = (
+        settings.seller_worker_timeout_s + settings.seller_analysis_judge_timeout_s
+    )
     message = format_worker_input(question, plan)
 
     finding, tool_outputs = await _run_one_worker(
@@ -331,7 +339,11 @@ async def _run_one_branch(
         if not failed_checks and score.total >= threshold:
             return VerifiedFinding(finding, True, attempt, (), score, False)
 
-        can_retry = attempt < max_attempts and time.monotonic() < deadline
+        # [PR 리뷰 반영] "데드라인 통과 전"이 아니라 "재실행 1회를 완주할 잔여 예산이
+        # 있는가"로 판단한다 — 잔여가 retry_cycle_cost_s 보다 작으면 재실행을 시작해도
+        # 도중에 예산을 넘길 뿐이라 애초에 포기한다(§9-R1 의도한 상한 실효화 방지).
+        remaining_s = deadline - time.monotonic()
+        can_retry = attempt < max_attempts and remaining_s >= retry_cycle_cost_s
         if not can_retry:
             break
 

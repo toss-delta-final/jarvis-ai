@@ -39,7 +39,7 @@ def test_seller_settings_defaults() -> None:
     assert settings.seller_worker_max_retries == 1
     assert settings.seller_analysis_score_threshold == 21
     assert settings.seller_analysis_judge_timeout_s == 20.0
-    assert settings.seller_branch_deadline_s == 120.0
+    assert settings.seller_branch_deadline_s == 160.0
 
 
 def test_seller_ma_window_invalid_config_fails_fast() -> None:

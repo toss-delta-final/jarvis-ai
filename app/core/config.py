@@ -207,7 +207,10 @@ class Settings(BaseSettings):
     seller_analysis_judge_timeout_s: float = 20.0
     # 브랜치 1개의 총 예산(worker + judge + 재실행 1회 + judge) — 예산 초과 시 재실행을
     # 포기하고 원 finding 을 채택한다(강등이 아니다, §9-R1).
-    seller_branch_deadline_s: float = 120.0
+    # [PR 리뷰 반영] 기존 120.0 은 기본 타임아웃 조합의 최악 경로(60+20+60+20=160)보다
+    # 작아 애초에 재실행을 허용할 여지가 거의 없었다 — orchestrator._run_one_branch 의
+    # can_retry 판단(잔여 예산 ≥ worker+judge 타임아웃 합)과 짝을 맞춰 160.0 으로 상향한다.
+    seller_branch_deadline_s: float = 160.0
 
     # ── 판매자 대화 스레드 (thread.py — checkpointer 기반 멀티턴 누적) ──
     # supervisor/planner 입력 주입 상한: 최근 턴(user+assistant 쌍) 수와 메시지당 절단.

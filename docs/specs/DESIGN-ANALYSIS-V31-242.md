@@ -366,7 +366,7 @@ D-2 정렬 덕분에 **렌더러는 무수정**이다.
 
 | # | 단계 | 리스크 | 완충 |
 |---|---|---|---|
-| **R1** | 4 | **wall-clock 예산 붕괴(신규)** — 브랜치 최악 경로 `worker → judge → worker → judge` 가 전부 `seller_worker_timeout_s`(60s)를 공유(A-6)하면 이론상 240s. D-1 로 judge 가 smart 라 더 무겁다. §7 의 90s 목표를 깬다 | `seller_analysis_judge_timeout_s`(20s) **분리** + `seller_branch_deadline_s`(120s) **브랜치 총예산** 신설. 재실행 진입 전 잔여 예산 검사 → 부족하면 **재실행 포기하고 원 finding 채택**(강등 아님). 브랜치는 병렬이므로 전체 wall-clock ≈ branch_deadline + report 루프 + (recommend∥graph) |
+| **R1** | 4 | **wall-clock 예산 붕괴(신규)** — 브랜치 최악 경로 `worker → judge → worker → judge` 가 전부 `seller_worker_timeout_s`(60s)를 공유(A-6)하면 이론상 240s. D-1 로 judge 가 smart 라 더 무겁다. §7 의 90s 목표를 깬다 | `seller_analysis_judge_timeout_s`(20s) **분리** + `seller_branch_deadline_s`(160s, **[PR 리뷰 반영] 120s→160s** — worker+judge+재실행 worker+judge = 60+20+60+20 최악 경로와 정합) **브랜치 총예산** 신설. 재실행 진입 전 **"잔여 예산 ≥ 재실행 1회 완주 비용(worker+judge 타임아웃 합)"**을 검사한다(단순 "데드라인 통과 전"이 아니다 — 그것만 보면 재실행을 시작만 하고 끝내 예산을 넘기는 경우를 못 막는다, PR 리뷰 지적) → 부족하면 **재실행 포기하고 원 finding 채택**(강등 아님). 브랜치는 병렬이므로 전체 wall-clock ≈ branch_deadline + report 루프 + (recommend∥graph) |
 | **R2** | 4 | **F2 오탐** — 도구 출력은 `calc` 가공 요약이라 워커의 정당한 파생 계산(비율·증감)이 출력에 없을 수 있다 | ① `_MIN_SIGNIFICANT_DIGITS`(3) 가 이미 대부분 흡수 ② `FINDING_CHECKS` 레지스트리라 **F2 단독 제거 1줄** ③ 7단계에서 F2 발화율 로그 선관측 후 임계 조정 |
 | **R3** | 4 | **degrade 3층 오발동(신규)** — F 미달 강등을 `failures` 에 섞으면 전 워커가 F 미달일 때 `AllWorkersFailedError` → 부분 보고서 대신 **사과 응답**으로 회귀 | 산입 대상을 "워커 단계 **예외**"로 코드에 못박고, "F 미달 5건 = 사과 아님" 회귀 테스트를 4단계 필수 항목으로 |
 | R4 | 4 | 비용 증가 — `analysis_judge` ≤2×N(N≤5 → 최대 10콜), D-1 로 smart | `seller_worker_max_retries=1` 보수 상한 유지. 실측 후 fast 전환은 **7단계 튜닝 백로그**로 남긴다(정책 되돌림이므로 CHANGELOG 필요) |
@@ -381,7 +381,7 @@ seller_worker_max_retries: int = 1              # 브랜치 재실행 상한 (�
 seller_analysis_score_threshold: int = 21       # analysis_judge 통과 임계 21/30 (이슈)
 seller_chart_max: int = 3                       # ChartSet 상한 (이슈)
 seller_analysis_judge_timeout_s: float = 20.0   # ★ R1 — 60s 공유 회피
-seller_branch_deadline_s: float = 120.0         # ★ R1 — 브랜치 총예산
+seller_branch_deadline_s: float = 160.0         # ★ R1 — 브랜치 총예산(PR 리뷰 반영, 120→160)
 ```
 
 ---

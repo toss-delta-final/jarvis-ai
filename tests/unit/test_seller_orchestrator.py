@@ -42,7 +42,7 @@ def _settings(timeout_s: float = 5.0) -> SimpleNamespace:
         seller_worker_max_retries=1,
         seller_analysis_score_threshold=21,
         seller_analysis_judge_timeout_s=timeout_s,
-        seller_branch_deadline_s=120.0,
+        seller_branch_deadline_s=160.0,  # config.py 기본값(PR 리뷰 반영)과 정합
     )
 
 
@@ -493,6 +493,38 @@ def test_run_one_branch_gives_up_retry_when_deadline_exceeded(
     )
 
     assert verified.attempts == 1  # 재실행 없음
+    assert verified.passed is False
+    assert verified.degraded is False  # F 는 통과 — judge 미달만으로는 강등하지 않는다
+
+
+def test_run_one_branch_skips_retry_when_remaining_budget_below_retry_cost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """데드라인이 아직 안 지났어도 재실행 1회(worker+judge)를 완주할 잔여 예산이
+    없으면 재실행을 포기한다(PR 리뷰 반영).
+
+    기존엔 "time.monotonic() < deadline" 만 봐서, 데드라인 직전이라도 재실행을
+    시작은 하고(도중에 끝내 예산을 넘기는) 경우를 못 막았다. 잔여 예산(=deadline
+    까지 남은 시간)이 worker_timeout+judge_timeout 보다 작으면 처음부터 시작하지
+    않아야 한다.
+    """
+    monkeypatch.setitem(
+        orchestrator.WORKER_BUILDERS,
+        "sales_anomaly",
+        lambda: _StubAgent(finding=_finding("sales_anomaly")),
+    )
+    judge = _SeqJudge([_analysis_score(5, feedback="부족")])
+    monkeypatch.setattr(orchestrator, "build_analysis_judge", lambda: judge)
+    settings = _settings(timeout_s=10.0)  # retry_cycle_cost_s = 10 + 10 = 20
+    settings.seller_branch_deadline_s = 5.0  # 잔여 예산(~5s) < retry_cycle_cost_s(20s)
+
+    verified = asyncio.run(
+        orchestrator._run_one_branch(
+            "sales_anomaly", "질문", _plan("sales_anomaly"), _CTX, settings
+        )
+    )
+
+    assert verified.attempts == 1  # 재실행 시도 자체가 없었다
     assert verified.passed is False
     assert verified.degraded is False  # F 는 통과 — judge 미달만으로는 강등하지 않는다
 

@@ -188,6 +188,25 @@ def test_f2_small_numbers_are_tolerated() -> None:
     assert run_finding_checks(finding, [], expected_type="sales_anomaly") == []
 
 
+def test_f2_novel_number_in_recommendation_only_fails() -> None:
+    """F2 — summary/evidence 는 도구 출력에 근거해도 recommendation 에만 지어낸
+    수치가 있으면 실패한다(PR 리뷰 반영).
+
+    D2·G1 은 recommendation 발 수치를 "검증된 근거"로 인정해 보고서·차트 인용을
+    허용한다 — F2 가 recommendation 을 검사하지 않으면 워커가 recommendation 에
+    지어낸 숫자로 F2 를 그대로 우회하고, 그 숫자가 D2/G1 단계에서 오히려 정당한
+    근거로 취급돼 근거 사슬(도구출력⊇finding⊇보고서⊇차트)이 끊긴다.
+    """
+    tool_outputs = ["06-12 매출 180,000원 (직전 7일 평균 310,000원)"]
+    finding = _finding(
+        summary="6월 12일 매출이 직전 7일 평균 대비 42.1% 급락했다.",
+        evidence=["06-12 매출 180,000원 (직전 7일 평균 310,000원)"],
+        recommendation="999999원 규모의 프로모션을 즉시 집행 권장",
+    )
+    reasons = run_finding_checks(finding, tool_outputs, expected_type="sales_anomaly")
+    assert any("근거 없는 수치" in r and "999999" in r for r in reasons)
+
+
 def test_f3_type_mismatch_fails() -> None:
     """F3 — finding.analysis_type 이 배정된 워커 유형과 다르면 실패."""
     finding = _finding(analysis_type="conversion")
