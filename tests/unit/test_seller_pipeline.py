@@ -13,6 +13,10 @@ from app.agents.seller.schemas import (
     AnalysisFinding,
     AnalysisPlan,
     AnalysisType,
+    ChartPoint,
+    ChartSeries,
+    ChartSet,
+    ChartSpec,
     RecommendationSet,
 )
 
@@ -59,6 +63,41 @@ def test_resolve_plan_unsupported_period_propagates() -> None:
         pipeline.resolve_plan(
             _plan(period_expr="이번 달"), today=dt.date(2026, 7, 18), recent_default_days=7
         )
+
+
+def test_resolve_plan_wants_chart_from_plan_field() -> None:
+    """LLM 이 wants_chart=True 로 판단하면 question 키워드 없이도 전파된다."""
+    plan = _plan(wants_chart=True)
+    resolved = pipeline.resolve_plan(plan, today=dt.date(2026, 7, 18), recent_default_days=7)
+    assert resolved.wants_chart is True
+
+
+def test_resolve_plan_wants_chart_from_question_keyword() -> None:
+    """plan.wants_chart=False 여도 question 에 차트 키워드가 있으면 코드가 보강한다."""
+    plan = _plan(wants_chart=False)
+    resolved = pipeline.resolve_plan(
+        plan,
+        today=dt.date(2026, 7, 18),
+        recent_default_days=7,
+        question="지난달 매출 그래프로 보여줘",
+    )
+    assert resolved.wants_chart is True
+
+
+def test_resolve_plan_wants_chart_false_by_default() -> None:
+    """신호가 전혀 없으면 wants_chart=False — 억지 차트 생성 방지."""
+    resolved = pipeline.resolve_plan(
+        _plan(), today=dt.date(2026, 7, 18), recent_default_days=7, question="지난달 매출이 왜 떨어졌어?"
+    )
+    assert resolved.wants_chart is False
+
+
+def test_resolve_plan_question_default_keeps_backward_compat() -> None:
+    """question 미전달(기존 호출부)은 LLM 판정만 반영 — 하위 호환 키워드 기본값."""
+    resolved = pipeline.resolve_plan(
+        _plan(wants_chart=False), today=dt.date(2026, 7, 18), recent_default_days=7
+    )
+    assert resolved.wants_chart is False
 
 
 def test_format_worker_input_contains_period_and_question() -> None:
@@ -154,6 +193,47 @@ def test_compose_response_empty_recommendations() -> None:
     assert "N번" not in with_reason
 
 
+def _chart_set() -> ChartSet:
+    return ChartSet(
+        charts=[
+            ChartSpec(
+                title="일별 매출",
+                chart_type="line",
+                unit="KRW",
+                series=[ChartSeries(label="매출", points=[ChartPoint(x="07-01", y=1240000)])],
+            )
+        ]
+    )
+
+
+def test_compose_response_charts_present_no_extra_notice() -> None:
+    """차트가 실제로 있으면(요청함) 안내 문구를 덧붙이지 않는다 — SSE chart 이벤트가 별도로 전달."""
+    text = pipeline.compose_response(
+        "본문", RecommendationSet(), _chart_set(), chart_requested=True
+    )
+    assert text == "본문"
+    assert "[차트 안내]" not in text
+
+
+def test_compose_response_chart_requested_but_missing_appends_notice() -> None:
+    """요청했는데 차트가 없으면(graph 실패·G1 전건 드랍) 그 경우만 안내한다(D-5)."""
+    text = pipeline.compose_response("본문", RecommendationSet(), None, chart_requested=True)
+    assert "[차트 안내]" in text
+    assert "요청하신 차트를 만들지 못했습니다" in text
+
+    empty_charts_text = pipeline.compose_response(
+        "본문", RecommendationSet(), ChartSet(charts=[]), chart_requested=True
+    )
+    assert "[차트 안내]" in empty_charts_text
+
+
+def test_compose_response_chart_not_requested_no_notice() -> None:
+    """차트를 요청하지 않았으면(chart_requested=False 기본값) 차트 언급 자체가 없다."""
+    text = pipeline.compose_response("본문", RecommendationSet())
+    assert "[차트 안내]" not in text
+    assert text == "본문"
+
+
 def test_format_recommend_input_contract() -> None:
     """recommend 입력 — 분석 결과 + 검증된 보고서 (RECOMMEND_PROMPT 계약)."""
     findings = [
@@ -166,12 +246,80 @@ def test_format_recommend_input_contract() -> None:
     assert "[검증된 보고서]\n검증 본문" in text
 
 
+def test_format_analysis_judge_input_contract() -> None:
+    """analysis_judge 입력 — (1) 도구 원출력 (2) finding (ANALYSIS_JUDGE_PROMPT 계약)."""
+    finding = AnalysisFinding(
+        analysis_type="conversion", summary="병목", evidence=["전환율 2.1%"], severity="warning"
+    )
+    text = pipeline.format_analysis_judge_input(finding, ["전환율 조회 결과: 2.1%"])
+    assert "[도구 원출력]\n- 전환율 조회 결과: 2.1%" in text
+    assert "[분석 결과]" in text
+    assert "conversion" in text
+
+
+def test_format_analysis_judge_input_empty_tool_outputs_is_explicit() -> None:
+    """도구 출력이 비면 '(도구 출력 없음)'을 명시한다 — 빈 문자열 은폐 방지."""
+    finding = AnalysisFinding(
+        analysis_type="abuse", summary="데이터 확보 실패", evidence=[], severity="info"
+    )
+    text = pipeline.format_analysis_judge_input(finding, [])
+    assert "[도구 원출력]\n(도구 출력 없음)" in text
+
+
+def test_format_worker_retry_input_combines_prior_finding_and_feedback() -> None:
+    """브랜치 재실행 입력 — 원 지시(기간·질문) + 이전 finding + 개선 지시(F+judge 합산)."""
+    resolved = pipeline.ResolvedPlan(
+        analyses=("sales_anomaly",),
+        date_from=dt.date(2026, 6, 1),
+        date_to=dt.date(2026, 6, 30),
+    )
+    prev = AnalysisFinding(
+        analysis_type="sales_anomaly",
+        summary="급락 발견",
+        evidence=["999,999원"],
+        severity="warning",
+    )
+    text = pipeline.format_worker_retry_input(
+        "지난달 매출이 왜 떨어졌어?",
+        resolved,
+        prev,
+        "근거 없는 수치 999999 — 도구 출력을 그대로 인용할 것",
+    )
+    assert "[분석 기간] from=2026-06-01 to=2026-06-30" in text
+    assert "[판매자 질문] 지난달 매출이 왜 떨어졌어?" in text
+    assert "[이전 분석 결과]" in text
+    assert "급락 발견" in text
+    assert "[개선 지시]\n근거 없는 수치 999999 — 도구 출력을 그대로 인용할 것" in text
+
+
+def test_format_graph_input_contract() -> None:
+    """graph 입력 — 분석 결과 + 검증된 보고서 + 판매자 질문(GRAPH_PROMPT 계약)."""
+    findings = [
+        AnalysisFinding(
+            analysis_type="sales_anomaly",
+            summary="급락 발견",
+            evidence=["06-12 매출 180,000원"],
+            severity="warning",
+        )
+    ]
+    text = pipeline.format_graph_input(findings, "검증 본문", "지난달 매출 추이 보여줘")
+    assert "[분석 결과]" in text
+    assert "[검증된 보고서]\n검증 본문" in text
+    assert "[판매자 질문]\n지난달 매출 추이 보여줘" in text
+
+
 def test_worker_progress_tokens_cover_all_analysis_types() -> None:
     """진행 token 은 AnalysisType 5종 전부를 커버한다(누락 시 모듈 로드도 실패)."""
     assert set(pipeline.WORKER_PROGRESS_TOKENS) == set(get_args(AnalysisType))
 
 
 def test_progress_token_stages() -> None:
-    """단계 token 키 계약 — 오케스트레이션(3-3~3-5)이 소비하는 4단계."""
-    assert set(pipeline.PROGRESS_TOKENS) == {"planner", "report", "verify", "recommend"}
+    """단계 token 키 계약 — 오케스트레이션(3-3~3-5)+graph(이슈 #242 5단계)가 소비."""
+    assert set(pipeline.PROGRESS_TOKENS) == {
+        "planner",
+        "report",
+        "verify",
+        "recommend",
+        "graph",
+    }
     assert pipeline.ALL_WORKERS_FAILED_TOKEN.startswith("죄송합니다")

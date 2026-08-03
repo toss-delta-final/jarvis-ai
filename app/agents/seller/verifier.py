@@ -11,9 +11,15 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
-from app.agents.seller.schemas import AnalysisFinding
+from app.agents.seller.schemas import (
+    CHART_MAX,
+    AnalysisFinding,
+    AnalysisType,
+    ChartSet,
+    ChartSpec,
+)
 
 _NUMBER_RE = re.compile(r"\d[\d,]*\.?\d*")
 
@@ -116,3 +122,148 @@ def run_deterministic_checks(report: str, findings: list[AnalysisFinding]) -> li
     for _name, check in DETERMINISTIC_CHECKS:
         reasons.extend(check(report, findings))
     return reasons
+
+
+# ── F1~F3 — 브랜치 분석 검증 (이슈 #242, DESIGN-ANALYSIS-V31-242 §4.3) ──────────
+#
+# D1~D3(위)와 같은 파일·다른 레지스트리다 — D1~D3 는 이 절에 무접촉이다.
+# 이 검사는 팬인 이후 전 finding 합집합이 아니라 **그 브랜치의 도구 출력만**을
+# 허용 집합으로 본다 — D2 의 교차 오염(A 워커 evidence 로 B 서술의 환각 통과)을
+# 피하는 것이 F2 신설의 이유다.
+
+
+def _is_degrade_finding(finding: AnalysisFinding) -> bool:
+    """degrade finding 판정 — check_degrade_disclosed(D3)와 동일 구조 판정을 재사용한다.
+
+    모듈 내부에서만 쓰던 판정을 F1 도 참조해야 해 이름 앞의 밑줄은 유지하되
+    이 파일 안에서 공유한다(별칭 없이 그대로 재사용 — 판정 기준 단일 출처).
+    """
+    return finding.severity == "info" and not finding.evidence
+
+
+def check_evidence_required(
+    finding: AnalysisFinding, tool_outputs: Sequence[str], expected_type: AnalysisType
+) -> list[str]:
+    """F1 — degrade finding 이 아닌데 evidence 가 비면 실패(무근거 finding 방지)."""
+    if not _is_degrade_finding(finding) and not finding.evidence:
+        return ["evidence 가 비어 있다 — degrade finding 이 아니라면 근거가 있어야 한다"]
+    return []
+
+
+def check_evidence_grounded(
+    finding: AnalysisFinding, tool_outputs: Sequence[str], expected_type: AnalysisType
+) -> list[str]:
+    """F2 — finding 의 수치가 **그 브랜치의 도구 출력**에 있어야 한다(환각 탐지).
+
+    D2(check_numbers_grounded)와 동일한 _normalize_numbers 를 재사용한다 — 한쪽만
+    날짜 마스킹·유의숫자 완화를 적용하면 두 층이 드리프트한다(대칭 유지가 핵심).
+    """
+    allowed: set[str] = set()
+    for output in tool_outputs:
+        allowed |= _normalize_numbers(output)
+
+    claimed: set[str] = _normalize_numbers(finding.summary)
+    for item in finding.evidence:
+        claimed |= _normalize_numbers(item)
+    novel = {
+        n
+        for n in claimed
+        if n not in allowed and len(n.replace(".", "")) >= _MIN_SIGNIFICANT_DIGITS
+    }
+    if novel:
+        return [
+            "근거 없는 수치 "
+            + ", ".join(sorted(novel))
+            + " — 도구 출력에 없는 숫자를 finding 에 인용했다"
+        ]
+    return []
+
+
+def check_type_match(
+    finding: AnalysisFinding, tool_outputs: Sequence[str], expected_type: AnalysisType
+) -> list[str]:
+    """F3 — finding.analysis_type 이 배정된 워커 유형과 일치해야 한다."""
+    if finding.analysis_type != expected_type:
+        return [f"analysis_type 불일치 — 배정={expected_type}, 반환={finding.analysis_type}"]
+    return []
+
+
+FindingCheckFn = Callable[[AnalysisFinding, Sequence[str], AnalysisType], list[str]]
+
+# 체크 레지스트리 — D1~D3(DETERMINISTIC_CHECKS)와 별개, 항목 추가/제거로 구성을 바꾼다.
+FINDING_CHECKS: list[tuple[str, FindingCheckFn]] = [
+    ("evidence_required", check_evidence_required),
+    ("evidence_grounded", check_evidence_grounded),
+    ("type_match", check_type_match),
+]
+
+
+def run_finding_checks(
+    finding: AnalysisFinding, tool_outputs: Sequence[str], *, expected_type: AnalysisType
+) -> list[str]:
+    """등록된 F 검사를 전부 실행해 실패 사유를 모아 반환한다(빈 리스트 = 통과)."""
+    reasons: list[str] = []
+    for _name, check in FINDING_CHECKS:
+        reasons.extend(check(finding, tool_outputs, expected_type))
+    return reasons
+
+
+# ── G1 — 차트 검증 (이슈 #242, DESIGN-ANALYSIS-V31-242 §4.4) ──────────────────
+#
+# D2/F2 와 같은 정규화(_normalize_numbers)를 재사용해 근거 사슬 대칭을 유지한다
+# (도구출력⊇finding⊇보고서⊇차트). 보고서 검증과 달리 재작성 루프가 없다 —
+# 차트는 부가 가치라 미달분은 재시도 없이 그냥 드랍한다(recommend 의 C2 대칭).
+
+
+def _format_chart_number(value: float) -> str:
+    """정수값은 소수점 없이 문자열화한다 — _normalize_numbers 입력을 깔끔하게 정리."""
+    if value == int(value):
+        return str(int(value))
+    return str(value)
+
+
+def _chart_number_tokens(chart: ChartSpec) -> set[str]:
+    """차트의 y 값 전부를 D2/F2 와 동일 규칙으로 정규화한 토큰 집합으로 반환한다."""
+    tokens: set[str] = set()
+    for series in chart.series:
+        for point in series.points:
+            tokens |= _normalize_numbers(_format_chart_number(point.y))
+    return tokens
+
+
+def run_chart_checks(
+    charts: ChartSet, findings: Sequence[AnalysisFinding]
+) -> tuple[ChartSet, list[str]]:
+    """G1 — 미달 ChartSpec 을 드랍하고 (통과분 ChartSet, 드랍 사유 목록)을 반환한다.
+
+    규칙(DESIGN-ANALYSIS-V31-242 §4.4):
+    - series 가 비었거나 points 가 0개 → 드랍.
+    - points[].y 의 유의 수치가 finding 의 summary·evidence 어디에도 없으면 → 드랍
+      (도구 원출력이 아니라 finding 을 근거로 본다 — graph_agent 입력이 finding+
+      보고서이지 도구 출력이 아니기 때문이다, 결정 D-4).
+    - charts 개수 초과(스키마가 이미 CHART_MAX 로 막지만 방어적으로 재절단) → 앞부터 유지.
+    """
+    allowed: set[str] = set()
+    for finding in findings:
+        allowed |= _normalize_numbers(finding.summary)
+        for item in finding.evidence:
+            allowed |= _normalize_numbers(item)
+
+    passed: list[ChartSpec] = []
+    dropped: list[str] = []
+    for chart in charts.charts[:CHART_MAX]:
+        if not chart.series or not chart.series[0].points:
+            dropped.append(f"'{chart.title}' — 좌표가 없다")
+            continue
+        claimed = _chart_number_tokens(chart)
+        novel = {
+            n
+            for n in claimed
+            if n not in allowed and len(n.replace(".", "")) >= _MIN_SIGNIFICANT_DIGITS
+        }
+        if novel:
+            dropped.append(f"'{chart.title}' — 근거 없는 수치 " + ", ".join(sorted(novel)))
+            continue
+        passed.append(chart)
+
+    return ChartSet(charts=passed), dropped

@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
-from app.agents.seller.schemas import AnalysisFinding
+from app.agents.seller.schemas import (
+    AnalysisFinding,
+    ChartPoint,
+    ChartSeries,
+    ChartSet,
+    ChartSpec,
+)
 from app.agents.seller.verifier import (
     DETERMINISTIC_CHECKS,
+    FINDING_CHECKS,
+    run_chart_checks,
     run_deterministic_checks,
+    run_finding_checks,
 )
 
 
@@ -113,3 +122,126 @@ def test_registry_names_unique() -> None:
     names = [name for name, _fn in DETERMINISTIC_CHECKS]
     assert len(names) == len(set(names))
     assert names == ["not_empty", "numbers_grounded", "degrade_disclosed"]
+
+
+# ── F1~F3 브랜치 분석 검증 (이슈 #242, DESIGN-ANALYSIS-V31-242 §4.3) ────────────
+# D1~D3(위)와 별개 레지스트리 — 이 절은 report/보고서가 아니라 finding 1건 +
+# 그 브랜치의 도구 원출력만을 본다.
+
+
+def test_finding_registry_names_unique() -> None:
+    """F 레지스트리 체크 이름도 D 레지스트리와 마찬가지로 유일해야 한다."""
+    names = [name for name, _fn in FINDING_CHECKS]
+    assert len(names) == len(set(names))
+    assert names == ["evidence_required", "evidence_grounded", "type_match"]
+
+
+def test_f_pass_when_grounded_and_type_matches() -> None:
+    """도구 출력에 있는 수치만 인용 + 유형 일치 → 전체 통과(빈 리스트)."""
+    finding = _finding()  # summary·evidence 에 42.1%·180,000·310,000 포함(위 _finding 정의)
+    tool_outputs = ["06-12 매출 180,000원 (직전 7일 평균 310,000원, 42.1% 급락)"]
+    assert run_finding_checks(finding, tool_outputs, expected_type="sales_anomaly") == []
+
+
+def test_f1_evidence_required_fails_when_non_degrade_has_no_evidence() -> None:
+    """F1 — degrade 가 아닌데(severity!=info 등) evidence 가 비면 실패."""
+    finding = _finding(evidence=[], severity="warning")
+    reasons = run_finding_checks(finding, [], expected_type="sales_anomaly")
+    assert any("evidence" in r for r in reasons)
+
+
+def test_f1_exempts_degrade_finding() -> None:
+    """F1 — degrade finding(severity=info + 빈 evidence)은 evidence 요구를 면제한다."""
+    degraded = AnalysisFinding(
+        analysis_type="abuse",
+        summary="데이터 확보 실패 — 타임아웃",
+        evidence=[],
+        severity="info",
+    )
+    reasons = run_finding_checks(degraded, [], expected_type="abuse")
+    assert reasons == []
+
+
+def test_f2_novel_number_not_in_tool_outputs_fails() -> None:
+    """F2 — finding 의 수치가 도구 출력에 없으면(환각) 실패, 도구 출력 없이는 그 브랜치
+    허용 집합이 비어 있어 유의 수치는 전부 근거 없음으로 판정된다."""
+    finding = _finding()  # summary·evidence 에 42.1%·180,000·310,000 포함
+    reasons = run_finding_checks(finding, [], expected_type="sales_anomaly")
+    assert any("근거 없는 수치" in r for r in reasons)
+
+
+def test_f2_cross_branch_contamination_is_rejected() -> None:
+    """F2 — 다른 브랜치(A)의 도구 출력으로 이 finding(B)의 수치를 근거 삼을 수 없다
+    (D2 의 전 finding 합집합과 달리, F2 는 '그 브랜치의 도구 출력'만 허용한다)."""
+    finding = _finding()  # 180,000원/310,000원/42.1% 주장
+    other_branch_outputs = ["전환율 12.3%, 조회수 5,000건"]  # 전혀 다른 수치
+    reasons = run_finding_checks(finding, other_branch_outputs, expected_type="sales_anomaly")
+    assert any("근거 없는 수치" in r for r in reasons)
+
+
+def test_f2_small_numbers_are_tolerated() -> None:
+    """F2 도 D2 와 동일한 유의숫자 완화(2자리 이하)를 공유한다(대칭 유지)."""
+    finding = _finding(
+        summary="최근 3일 연속 하락했다.",
+        evidence=["1위 카테고리"],
+    )
+    assert run_finding_checks(finding, [], expected_type="sales_anomaly") == []
+
+
+def test_f3_type_mismatch_fails() -> None:
+    """F3 — finding.analysis_type 이 배정된 워커 유형과 다르면 실패."""
+    finding = _finding(analysis_type="conversion")
+    reasons = run_finding_checks(finding, [], expected_type="sales_anomaly")
+    assert any("analysis_type 불일치" in r for r in reasons)
+    assert any("sales_anomaly" in r and "conversion" in r for r in reasons)
+
+
+# ── G1 차트 검증 (이슈 #242, DESIGN-ANALYSIS-V31-242 §4.4) ─────────────────────
+
+
+def _chart(**overrides: object) -> ChartSpec:
+    base: dict = {
+        "title": "일별 매출",
+        "chart_type": "line",
+        "unit": "KRW",
+        "series": [ChartSeries(label="매출", points=[ChartPoint(x="06-12", y=180000)])],
+    }
+    base.update(overrides)
+    return ChartSpec(**base)
+
+
+def test_g1_pass_when_grounded_in_findings() -> None:
+    """차트 수치가 finding 의 summary/evidence 에 있으면 통과(D2/F2 와 동일 정규화)."""
+    passed, dropped = run_chart_checks(ChartSet(charts=[_chart()]), [_finding()])
+    assert dropped == []
+    assert len(passed.charts) == 1
+
+
+def test_g1_drops_chart_with_no_points() -> None:
+    """series 가 비었거나 points 가 0개면 드랍."""
+    chart = _chart(series=[])
+    passed, dropped = run_chart_checks(ChartSet(charts=[chart]), [_finding()])
+    assert passed.charts == []
+    assert any("좌표가 없다" in r for r in dropped)
+
+
+def test_g1_drops_chart_with_ungrounded_number() -> None:
+    """finding 에 없는 수치(환각)를 인용한 차트는 드랍한다."""
+    chart = _chart(
+        series=[ChartSeries(label="매출", points=[ChartPoint(x="06-12", y=999999)])]
+    )
+    passed, dropped = run_chart_checks(ChartSet(charts=[chart]), [_finding()])
+    assert passed.charts == []
+    assert any("근거 없는 수치" in r for r in dropped)
+
+
+def test_g1_partial_drop_keeps_grounded_charts() -> None:
+    """여러 차트 중 미달분만 드랍하고 통과분은 순서 보존한 채 유지한다."""
+    grounded = _chart(title="정상 차트")
+    ungrounded = _chart(
+        title="환각 차트",
+        series=[ChartSeries(label="매출", points=[ChartPoint(x="06-12", y=777777)])],
+    )
+    passed, dropped = run_chart_checks(ChartSet(charts=[grounded, ungrounded]), [_finding()])
+    assert [c.title for c in passed.charts] == ["정상 차트"]
+    assert len(dropped) == 1

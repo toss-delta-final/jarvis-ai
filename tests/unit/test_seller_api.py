@@ -465,6 +465,140 @@ def test_analysis_route_relays_progress_and_report(monkeypatch: pytest.MonkeyPat
     assert events[-1]["data"]["panel"] == "replace"  # 보고서 → 우측 패널 교체
 
 
+def test_analysis_route_emits_chart_event_between_token_and_done(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """chart 는 report·차트 1개 이상일 때만 0~1회, token 뒤·done 앞(§4.5, 이슈 #242)."""
+    from app.agents.seller.orchestrator import PipelineResult
+    from app.agents.seller.schemas import ChartPoint, ChartSeries, ChartSet, ChartSpec
+
+    charts = ChartSet(
+        charts=[
+            ChartSpec(
+                title="일별 매출",
+                chart_type="line",
+                unit="KRW",
+                series=[ChartSeries(label="매출", points=[ChartPoint(x="07-01", y=1240000)])],
+                summary="6월 대비 12% 감소",
+            )
+        ]
+    )
+
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=()):
+        return PipelineResult(kind="report", text="6월 매출 보고서 본문", charts=charts)
+
+    monkeypatch.setattr(seller_api, "route_question", _route_stub("analysis"))
+    monkeypatch.setattr(seller_api, "run_analysis_pipeline", fake_pipeline)
+
+    events = _collect_seller(_request("지난달 매출 그래프로 보여줘"))
+
+    assert [e["type"] for e in events] == ["meta", "token", "chart", "done"]
+    chart_data = events[2]["data"]["charts"][0]
+    assert chart_data["title"] == "일별 매출"
+    assert chart_data["chartType"] == "line"  # 와이어 camelCase
+    assert chart_data["unit"] == "KRW"
+    assert chart_data["series"][0]["label"] == "매출"
+    assert chart_data["series"][0]["points"][0] == {"x": "07-01", "y": 1240000}
+    assert chart_data["summary"] == "6월 대비 12% 감소"
+
+
+def test_analysis_route_no_chart_event_when_charts_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """charts=None(미요청) — chart 이벤트를 아예 보내지 않는다."""
+    from app.agents.seller.orchestrator import PipelineResult
+
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=()):
+        return PipelineResult(kind="report", text="본문")
+
+    monkeypatch.setattr(seller_api, "route_question", _route_stub("analysis"))
+    monkeypatch.setattr(seller_api, "run_analysis_pipeline", fake_pipeline)
+
+    events = _collect_seller(_request("지난달 매출 분석해줘"))
+
+    assert [e["type"] for e in events] == ["meta", "token", "done"]
+
+
+def test_analysis_route_no_chart_event_when_charts_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """charts.charts==[](요청했으나 전건 드랍) — 빈 배열도 보내지 않는다(§4.5)."""
+    from app.agents.seller.orchestrator import PipelineResult
+    from app.agents.seller.schemas import ChartSet
+
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=()):
+        return PipelineResult(kind="report", text="본문", charts=ChartSet(charts=[]))
+
+    monkeypatch.setattr(seller_api, "route_question", _route_stub("analysis"))
+    monkeypatch.setattr(seller_api, "run_analysis_pipeline", fake_pipeline)
+
+    events = _collect_seller(_request("지난달 매출 그래프로 보여줘"))
+
+    assert [e["type"] for e in events] == ["meta", "token", "done"]
+
+
+def test_analysis_route_no_chart_event_for_non_report_kind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """kind!=report(되묻기 등)이면 charts 가 있어도 chart 이벤트를 보내지 않는다."""
+    from app.agents.seller.orchestrator import PipelineResult
+    from app.agents.seller.schemas import ChartPoint, ChartSeries, ChartSet, ChartSpec
+
+    charts = ChartSet(
+        charts=[
+            ChartSpec(
+                title="일별 매출",
+                chart_type="line",
+                unit="KRW",
+                series=[ChartSeries(label="매출", points=[ChartPoint(x="07-01", y=1240000)])],
+            )
+        ]
+    )
+
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=()):
+        return PipelineResult(kind="clarification", text="기간을 명시해 주세요.", charts=charts)
+
+    monkeypatch.setattr(seller_api, "route_question", _route_stub("analysis"))
+    monkeypatch.setattr(seller_api, "run_analysis_pipeline", fake_pipeline)
+
+    events = _collect_seller(_request("차트로 보여줘"))
+
+    assert [e["type"] for e in events] == ["meta", "token", "done"]
+
+
+def test_analysis_chart_event_masks_and_strips_unsafe_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """chart 이벤트도 draft 이벤트와 동일하게 필드별 마스킹·정제를 거친다."""
+    from app.agents.seller.orchestrator import PipelineResult
+    from app.agents.seller.schemas import ChartPoint, ChartSeries, ChartSet, ChartSpec
+
+    zwsp = "​"
+    charts = ChartSet(
+        charts=[
+            ChartSpec(
+                title="6월\x1b[31m 매출",
+                chart_type="line",
+                unit="KRW",
+                series=[ChartSeries(label="매출", points=[ChartPoint(x="07-01", y=1240000)])],
+                summary=f"키는 Bearer abcdefgh{zwsp}ijklmnop1234 입니다",
+            )
+        ]
+    )
+
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=()):
+        return PipelineResult(kind="report", text="본문", charts=charts)
+
+    monkeypatch.setattr(seller_api, "route_question", _route_stub("analysis"))
+    monkeypatch.setattr(seller_api, "run_analysis_pipeline", fake_pipeline)
+
+    events = _collect_seller(_request("차트로 보여줘"))
+
+    chart_event = next(e for e in events if e["type"] == "chart")
+    chart_data = chart_event["data"]["charts"][0]
+    assert "\x1b" not in chart_data["title"]
+    assert "Bearer abcdefghijklmnop1234" not in chart_data["summary"]
+    assert "[민감 정보 차단]" in chart_data["summary"]
+
+
 def test_analysis_token_strips_unsafe_report_text(monkeypatch: pytest.MonkeyPatch) -> None:
     """보고서·compose_response 계열 LLM text 는 token 직전 공용 정제를 거친다."""
     from app.agents.seller.orchestrator import PipelineResult
