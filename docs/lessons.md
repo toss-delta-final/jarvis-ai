@@ -13,6 +13,20 @@
 
 ---
 
+## [2026-08-03] 커밋된 baseline 산출물의 일치 검증은 manifest의 소스 해시까지 포함해서 한다
+- 증상: #145 리뷰 round-3에서 `config.py` validator를 수정한 뒤 "dev-v1 비교 True"로
+  보고했지만, 오케스트레이터의 독립 재실행 비교는 False였다. 지표·순위 아티팩트는 전부
+  동일했고, 양 arm `run_manifest.json`의 `hashes.config`(`config.py` SHA-256)와 `commitSha`만
+  어긋나 있었다.
+- 원인: run manifest는 재현 가능성을 위해 소스 파일 해시를 기록하므로, **소스를 만지는 모든
+  리뷰 라운드가 커밋된 baseline manifest를 무효화한다.** 결과(지표)가 안 변하는 수정이라는
+  생각에 재생성을 건너뛰었고, 일치 검증도 결과 파일 위주로 봐서 manifest 드리프트를 놓쳤다.
+- 규칙: **manifest가 소스 해시를 기록하는 커밋된 산출물은, 그 소스를 수정하는 라운드마다
+  재생성을 기본 절차에 포함한다.** 일치 검증은 결과 파일만이 아니라 normalize 대상 전체
+  (manifest 포함)의 byte 비교로 한다 — "지표 불변"과 "산출물 일치"는 다른 명제다.
+- 관련: #145, `evals/scoring/baselines/dev-v1/*/run_manifest.json`(`hashes.config`),
+  `evals/scoring/cli.py::normalize_paired_artifacts`, `evals/metrics/run_manifest.py`
+
 ## [2026-08-03] 결정론 검증은 실행마다 달라지는 인자를 실제로 바꿔서 한다
 - 증상: #143 metric runner의 byte-identical 검증을 같은 `--out` 경로로 두 번 실행해
   통과시켰지만, 서로 다른 출력 경로로 재실행하자 `run_manifest.json`의 `command`에 경로가
