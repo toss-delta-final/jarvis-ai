@@ -204,6 +204,39 @@ async def test_blank_revert_category_excluded() -> None:
     assert d.revert_categories == ["조미료"]
 
 
+async def test_repurchase_products_parsed() -> None:
+    """repurchaseProducts 상품명이 RouteDecision 재구매 신호로 정상 파싱됨을 보장한다."""
+    d = await _run(_raw(repurchaseProducts=["무선 이어폰", "소금"]))
+    assert d.repurchase_products == ["무선 이어폰", "소금"]
+
+
+async def test_invalid_repurchase_products_excluded() -> None:
+    """목록이 아니거나 비문자열·공백 항목이면 재구매 신호를 오염시키지 않음을 보장한다."""
+    not_list = await _run(_raw(repurchaseProducts="무선 이어폰"))
+    mixed = await _run(_raw(repurchaseProducts=[1, None, "   ", " 소금 ", ""]))
+    assert not_list.repurchase_products == []
+    assert mixed.repurchase_products == ["소금"]
+
+
+async def test_repurchase_products_truncated_to_max() -> None:
+    """repurchase_max 상한으로 긴 LLM 재구매 목록의 파싱·전달 크기를 제한함을 보장한다."""
+    d = await _run(
+        _raw(repurchaseProducts=["상품1", "상품2", "상품3", "상품4"]),
+        repurchase_max=2,
+    )
+    assert d.repurchase_products == ["상품1", "상품2"]
+
+
+def test_repurchase_prompt_rejects_last_recommendations_echo() -> None:
+    """재구매 규칙은 PRIOR_FILTERS만 해소에 쓰고 직전 추천 목록 복사·복수 지목을 금지한다."""
+    from app.agents.buyer.recommendation.decompose import _SYSTEM
+
+    rule = _SYSTEM.split("- repurchaseProducts:", 1)[1].split("- general:", 1)[0]
+    assert "PRIOR_FILTERS" in rule
+    assert "LAST_RECOMMENDATIONS" in rule and "복사하지 마세요" in rule
+    assert "보통 상품 1개" in rule
+
+
 async def test_attr_conditions_extracted() -> None:
     """[PR②] decompose 가 명시 속성조건을 filters.attr_conditions(축→값)로 추출한다."""
     d = await _run(_raw(attrConditions={"소재": "린넨", "핏": "오버핏"}))
@@ -493,6 +526,46 @@ def test_order_status_prompt_has_five_way_positive_and_negative_rules() -> None:
         "예전에 뭘 샀지",
     ):
         assert phrase in _SYSTEM
+
+
+def test_pronoun_intent_prompt_keeps_product_requests_out_of_cart_view() -> None:
+    """[#234] 상품 지시대명사는 장바구니 명시/담기 동사가 없으면 추천 레인에 남는다.
+
+    수정 전 실 LLM N=8 프로브에서 ``그거 보여줘``는 맥락 없음 ``cart_view×8``, 직전 추천
+    ``recommend×3 / cart_view×5``, pending-cart ``cart_view×8``이었다. ``그거 또 사고 싶어``도
+    직전 추천·pending-cart에서 각각 ``cart_add×8``로 흔들려, FakeLLM 출력 주입 테스트로는 잡히지
+    않는 프롬프트 계층 회귀를 필수 규칙 문구로 고정한다.
+    """
+    from app.agents.buyer.recommendation.decompose import _SYSTEM
+
+    rule = _SYSTEM.split("- order_status로 분류하지 않는 예:", 1)[1].split("- recommend:", 1)[0]
+    assert "cart_view로 분류하지 않는 예:" in rule
+    for phrase in ("그거 보여줘", "저번에 그거 다시 보여줘", "그거 또 사고 싶어"):
+        assert phrase in rule
+    assert "PRIOR_FILTERS.semanticQuery" in rule
+    assert "LAST_RECOMMENDATIONS" in rule
+    assert "상품" in rule and "recommend" in rule
+    assert "명시적 담기 동사" in rule and "cart_add" in rule
+
+
+def test_pending_cart_option_answer_precedes_general_intent_ladder() -> None:
+    """[#234 R1/R7] pending-cart 옵션 답변 조건은 일반 intent 사다리와 모순되지 않는다.
+
+    라운드 2 실 LLM N=8에서 원본은 ``2번으로``를 ``cart_add×8``로 분류하고 두 번째 optionId를
+    7/8 골랐지만, 1)~3) 사다리를 먼저 적용한 프롬프트는 ``cart_view×6 / cart_add×2``와 올바른
+    optionId 0/8로 퇴행했다. 번호만 있는 정상 옵션 답변이 다시 사다리 밖으로 밀리지 않게 고정한다.
+    동시에 PENDING_CART 자체를 옵션 답변으로 간주하던 기존 문장이 0) 단계와 모순하지 않도록,
+    실제 옵션 이름·번호·순번 선택일 때만 답변으로 보는 조건도 고정한다.
+    """
+    from app.agents.buyer.recommendation.decompose import _SYSTEM
+
+    rule = _SYSTEM.split("- order_status로 분류하지 않는 예:", 1)[1].split("- recommend:", 1)[0]
+    assert rule.index("0)") < rule.index("1)")
+    for phrase in ("PENDING_CART", "이름", "번호", "순번", "2번으로", "두 번째", "optionId"):
+        assert phrase in rule
+    assert "있으면 보통 이번 발화는 옵션 답변" not in _SYSTEM
+    assert "USER_MESSAGE가 options의 이름·번호·순번을 실제로 고른" in _SYSTEM
+    assert "경우에만 옵션 답변" in _SYSTEM
 
 
 async def test_unknown_intent_still_falls_back_to_recommend() -> None:

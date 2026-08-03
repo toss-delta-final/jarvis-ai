@@ -6,7 +6,8 @@ Spring base URL, 검색 파라미터)을 환경변수로 주입하여 코드 변
 [2026-07-15] MVP 후보 검색은 Spring 위임(GET /internal/products/search, I-1)이며 상품 원본
 컬럼의 AI측 사본(카탈로그 미러)은 두지 않는다.
 [2026-07-20 정정] enrichment·임베딩(§4.8 I-17 배치)은 MVP 편입 확정 — 임베딩 검색 방식1·2를
-SearchBackend로 구현해 골든셋 확정(api-spec §4.8 말미·§4.6, C-17). 구 "post-MVP" 표기 폐기.
+SearchBackend로 구현해 골든셋 비교. [2026-08-03 #32] 방식2를 확정하고 방식1·C-17은 기각 —
+방식1은 오프라인 비교 전용으로 존치한다(api-spec §4.8 말미·§4.6).
 """
 
 from __future__ import annotations
@@ -23,8 +24,9 @@ from app.schemas.recommendations import LIMIT_MAX as HOME_RECO_LIMIT_MAX
 from app.schemas.spring import LIST_MAX_PRODUCTS, MAX_LISTS
 
 LLMProvider = Literal["openai", "anthropic"]
-# 검색 백엔드 선택(#101) — spring: Spring 위임만(방식1 이전 MVP), embedding_rerank: Spring 전량 →
-# pgvector 의미 재정렬(방식2, MVP 기본), vector: AI 벡터검색 → Spring hydrate(방식1, C-17 미착수).
+# 검색 백엔드 선택(#101) — spring: Spring 위임만(방식1 이전 MVP, 운영 롤백), embedding_rerank:
+# Spring 전량 → pgvector 의미 재정렬(방식2, MVP 기본), vector: 방식1 오프라인 비교 전용
+# (운영 사용 금지, #32 미채택, C-17 기각).
 SearchBackend = Literal["spring", "embedding_rerank", "vector"]
 # 프로필 주입 소비처(#119) — off: 이번 턴 개인화 미적용, rerank_only: 기본(취향은 순서에만),
 # both: 구 동작(decompose 하드필터 파생 허용, 롤백 경로).
@@ -156,12 +158,21 @@ class Settings(BaseSettings):
     seller_anomaly_deviation_pct: float = 30.0  # 매출 이상판정 편차 임계(%)
     seller_conversion_drop_pct: float = 20.0  # 전환율 하락 이상 임계(%)
     seller_churn_inactive_days: int = 30  # 이탈 코호트 무활동 일수(I-16 inactiveDays 기본)
+    # [#197 PR 리뷰] I-8 계정/보안 이벤트는 전역 데이터(브랜드 스코프 아님)이고
+    # admin 소유 협의가 미완(🔴, api-spec §4.4 v0.19.1)이다. 종전엔 코드 결함(쿼리
+    # 400·스키마 미스매치)이 사실상 차단막이었으나 #197 정합으로 실노출이 가능해져,
+    # 협의 완료 전까지 판매자 워커 표면 노출을 기본 비활성으로 보류한다.
+    seller_account_events_enabled: bool = False
     seller_recent_days_default: int = 7  # normalize_period "최근 N일" 기본 N
     # safe_eval `**` 결과 자릿수 상한(DoS 방어) — 초과 식은 ValueError 로 거부(리뷰 반영).
     seller_calc_max_result_digits: int = 100
     # 도구 반환 상세도 상한(안 1+차등, 2026-07-17 사용자 확정) — 컨텍스트 폭주 방지.
     seller_summary_max_points: int = 60  # 시계열 상세 나열 상한(포인트 수)
     seller_summary_max_events: int = 5  # I-14 이벤트 kv 나열 상한(건)
+    # [#197 PR 리뷰] I-16 이탈 회원 나열 상한 — I-14 용 max_events(위)와 분리 신설.
+    # 같은 값 공유 시 I-14 요약 상세도 조정이 이탈 회원 노출 건수까지 바꾸는 결합이
+    # 생긴다(#196 의 max_products 분리와 같은 취지). 서버 절단 상한은 별도로 50.
+    seller_churn_member_max: int = 5  # I-16 members 상세 나열 상한(명)
     # [#196] I-13 상품별 rows 상세 상한 — I-14 용(위)과 분리. 구 공용 상한 5는
     # 시드 브랜드 상품 7종보다 작아 하위 2종이 상시 잘렸다. 상한 초과분은
     # _summarize_behavior 가 꼬리 합계로 남긴다(정보 소실 없음).
@@ -268,6 +279,27 @@ class Settings(BaseSettings):
     # 이 수 **미만**이면 "소량"으로 보고 결과가 있어도 완화 칩을 함께 제안한다(AC①). 0 이면 0건일 때만.
     relaxation_min_results: int = Field(default=3, ge=0)
 
+    # ── degrade 고지 문구 (#133) ──
+    # 문안만 튜너블이고 **고지 여부는 튜너블이 아니다**(PR #235 리뷰). 아래 둘은 api-spec 이
+    # 안내 발신 자체를 요구하므로 빈 값을 기동 시점에 막는다(_require_degrade_notices_present).
+    # 초판은 셋 모두에 "빈 문자열 = 고지 끄기"를 뒀는데, 그건 이슈가 요구한 "문안 config 주입"을
+    # 넘어 **정직성 자체를 옵션으로** 만든 것이었다 — 환경변수 한 줄로 #133 이 되돌려진다.
+    #
+    # 판매자에는 degrade 정직성 게이트(verifier.check_degrade_disclosed)가 있는데 구매자에는
+    # 없어, 개인화·근거가 통째로 사라진 폴백이 평상시 문구와 구분되지 않았다.
+    # rerank 폴백 — 사라진 것 중 **사용자가 카드로 확인 가능한** 추천 이유를 지목한다.
+    # "취향"으로 쓰지 않는 이유: 게스트는 프로필이 없어 평상시에도 취향 반영이 없어 참이 아니다.
+    # 실패 단계명·오류 코드는 쓰지 않는다(api-spec §3.3 "단계별 상세는 서버 로그 전용").
+    rerank_fallback_notice: str = "추천 이유까지 정리하진 못했어요. 검색 결과 순서로 보여드릴게요."
+    # 목록 push(I-21) 실패 안내 — 종전 graph.py 하드코딩을 문구 정책 한 곳으로 모은 것이다.
+    # api-spec §3.3 이 "지연 안내가 포함되며"로 발신을 못박는다(§3.1·§4.2 서술도 동일).
+    push_skipped_notice: str = "목록을 준비하는 데 문제가 있었어요. 잠시 후 다시 시도해 주세요."
+    # 최근 구매 제외(I-19) 실패 안내. **여기만 빈 값이 정상이다** — 계약이 요구하지 않고,
+    # 미고지가 문서화된 판단이기 때문이다. 조회 실패는 "중복이 노출됐다"가 아니라 "걸러내지
+    # 못했다"라 실제 중복 발생 여부를 알 수 없고, rerank 폴백과 달리 거짓 주장을 하고 있지도
+    # 않다(#133 판단). 값을 채우면 켜진다 — 판단을 코드 재배포 없이 되돌리기 위한 여지다.
+    dedup_skipped_notice: str = ""
+
     # ── 홈 추천 랭킹 (I-22, api-spec §3.7 · 이슈 #148) ──
     # 질의 벡터 = 시그널 상품 임베딩의 가중 평균. cart 는 "담기까지 갔다"는 강한 신호라 조회보다 높게,
     # 조회는 최신일수록 높게(recency decay 를 인덱스 거듭제곱으로 적용) — §3.7 signals 표.
@@ -310,6 +342,11 @@ class Settings(BaseSettings):
     review_tier_many: int = 100  # ≥ → 매우많음
     review_tier_some: int = 20  # ≥ → 많음
     review_tier_few: int = 5  # ≥ → 보통 (그 미만 적음)
+    # price 는 절대 기준이 없어 후보 그룹 중앙값 대비 상대 등급으로만 전달한다(#173).
+    price_tier_very_cheap_ratio: float = 0.6  # 그룹 중앙값 대비 ≤ → 매우저렴
+    price_tier_cheap_ratio: float = 0.85  # ≤ → 저렴
+    price_tier_pricey_ratio: float = 1.15  # ≥ → 비쌈
+    price_tier_very_pricey_ratio: float = 1.5  # ≥ → 매우비쌈
 
     # ── 카테고리 하이브리드 매핑 (이슈 #59, DESIGN-CATEGORY-HYBRID-59) ──
     # 방식 A: decompose 추측 → 임베딩 보정(exact/최근접). canonical-or-null·멀티 fan-out.
@@ -406,6 +443,11 @@ class Settings(BaseSettings):
     # 소모품 카테고리(결정 14-F 억제 대상) — MVP config 소스. 정본은 catalog 속성사전
     # (SPEC-CATALOG-DATA-001 REQ-CAT-013 소모품 boolean 플래그). 카테고리명은 BE categoryName 과 일치.
     consumable_categories: list[str] = []
+    # [#120] repurchaseProducts 파싱 개수 상한 — LLM 의 긴 목록을 유계 입력으로 유지한다.
+    # 실제 해제는 graph 가 단일 지목만 신뢰하므로 이 값이 해제 범위를 넓히지는 않는다.
+    # category_fanout_max 와 같은 슬라이스 절단 규약(raw[:cap])이라 음수를 거부한다 — 음수면
+    # "뒤에서 |cap|개 제외"로 뒤집혀 "cap<=0 이면 정확히 0개" 불변식이 깨진다(PR #230 리뷰).
+    dedup_repurchase_max: int = Field(default=5, ge=0)
 
     # ── 프로필 (SPEC-PROFILE-001) ──
     profile_recency_highlights: int = 3  # §5.1 최근 맥락 하이라이트 개수
@@ -519,11 +561,31 @@ class Settings(BaseSettings):
     stream_first_token_timeout_s: float = 10.0
     # 스트림 전체 상한. 초과 시 done(finishReason "stop")으로 정상 절단.
     stream_total_timeout_s: float = 90.0
+    # 구매자 전체 상한 — 판매자와 분리한다(#138). 판매자는 planner→워커 팬아웃→report→
+    # verifier 로 구조적으로 길고 구매자는 decompose+rerank 2회뿐인데, 같은 90s 를 쓰면
+    # 구매자 스트림이 목표(slo_total_buyer_ms 30s)의 3배 느슨한 상한으로 돈다.
+    # 근거: 2026-08-02 로컬 실측(Spring 기동, 동시성 1, n=30) 구매자 total p95 10.5s ·
+    # max 12.8s — 30s 는 실측 max 의 2.3배 여유이고 154턴 중 30s 초과는 0건이었다.
+    stream_total_timeout_buyer_s: float = Field(default=30.0, gt=0.0)
     # disconnect 감지 폴링 간격 (취소 = 연결 종료, §2.9 b).
     stream_disconnect_poll_s: float = 0.5
     # AI→Spring 콜백 타임아웃 (§2.9 c, BE I-2 기준 통일). 실제 호출부에서 사용.
     spring_timeout_s: float = 3.0
+    # [#133] I-1 검색 재시도 횟수 (SPEC-RECOMMEND-001 §오류처리가 이미 규정한 동작).
+    # 타임아웃 3s 는 일시 지연이 재시도로 살아나는 폭인데 LLM 만 재시도를 갖고 검색은 0회였다.
+    # **재시도가 의미 있는 실패만** 대상이다 — 타임아웃·연결 오류·응답 중단·5xx·일시 4xx(408·429). 4xx 계약 오류와 응답
+    # 파싱 실패는 다시 불러도 같은 결과라 즉시 실패한다. 비멱등 호출(I-2 담기)에는 걸지 않는다.
+    # 재시도 사이 sleep 은 두지 않는다 — 타임아웃 실패는 이미 3s 간격이 생기고 1회로는 herd
+    # 증폭이 2배를 넘지 않는다.
+    # **상한이 1인 이유(PR #235 리뷰)**: backoff 가 구현에 없다. 2·3 을 허용하면 "1 을 넘기려면
+    # backoff 가 필요하다"고 적어 둔 위험을 설정 한 줄로 열어 주는 셈이라, **현재 구현이 감당하는
+    # 값만** 받는다. 더 올리려면 backoff 를 먼저 만들고 이 상한을 함께 푼다.
+    spring_max_retries: int = Field(default=1, ge=0, le=1)
     # AI→LLM 단일 호출 타임아웃 + 재시도 횟수 (§2.9 c).
+    # 현행 30s×(1+1)=60s 최악 예산은 구매자 전체 상한 30s(stream_total_timeout_buyer_s, #138)를 넘는다.
+    # timeout 뒤 재시도는 buyer done(stop) 절단 전에 끝날 수 없지만 빠른 오류 재시도는 여전히 유효하다.
+    # 구매자 상한은 재시도를 모두 담는 예산이 아니라 대기 백스톱이라 기동 불변식으로 묶지 않는다.
+    # 단일 호출 실측 p95는 4.3s다. 이 값을 올릴 때는 구매자 상한과의 관계도 함께 검토한다.
     llm_timeout_s: float = 30.0
     llm_max_retries: int = 1
 
@@ -531,7 +593,7 @@ class Settings(BaseSettings):
     # 런타임 동작을 바꾸지 않는 **집계 리포트 전용 목표치**다. 위의 스트림 상한은 "언제 끊나"이고
     # 이 값들은 "무엇을 지켰어야 하나"라서 별도로 둔다 — 상한을 SLO 로 재사용하면 상한 조정이
     # 곧 목표 조정이 돼버린다. 역할별 total 목표 분리(판매자 90s·구매자 30s)는 EVAL-OBS §5
-    # 제안값이며, 런타임 단일 90s 상한(stream_total_timeout_s)의 재조정은 별건(#138)이다.
+    # 제안값이며, 런타임 상한도 역할별로 분리됐지만 SLO 와 상한은 여전히 별개 값이다(#138).
     slo_first_token_ms: int = Field(default=10_000, gt=0)
     slo_total_seller_ms: int = Field(default=90_000, gt=0)
     slo_total_buyer_ms: int = Field(default=30_000, gt=0)
@@ -553,11 +615,89 @@ class Settings(BaseSettings):
     # 신뢰하는 프록시 홉 수(우측부터). 자사 프록시 1대면 1 = 최우측 값.
     forwarded_for_trusted_hops: int = 1
 
+    # ── 벤치마크 runner (이슈 #151) ──
+    # measured 30건·p99 100건의 고정 계약 하한은 evals/benchmark/runner.py(measured)와
+    # stats.py(p99)의 max() 클램프에서 강제한다. validator는 값 사이의 상대적 정합만 본다 —
+    # 아래 값은 운영에서 더 엄격하게 올릴 수 있어야 하므로 여기서 하한 미만을 거부하지 않는다.
+    benchmark_min_measured_requests: int = 30
+    benchmark_p99_min_samples: int = 100
+    benchmark_warmup_requests: int = 5
+    benchmark_cold_requests: int = 3
+    benchmark_concurrency_levels: tuple[int, ...] = (1, 5, 10)
+    benchmark_bootstrap_resamples: int = 1000
+    benchmark_bootstrap_seed: int = 20260803
+    benchmark_bootstrap_confidence: float = 0.95
+    benchmark_request_timeout_s: float = 120.0
+
+    # ── 구매자 골든셋(#142, evals/goldenset) ──
+    # 초기 데이터셋은 30~50건으로 작게 시작해 사람이 전수 검수할 수 있게 한다.
+    goldenset_min_cases: int = 30
+    goldenset_max_cases: int = 50
+    # 문자 3-gram Jaccard가 이 값을 넘는 split 간 query는 leakage로 본다.
+    goldenset_near_dup_jaccard_max: float = 0.6
+    # split 간 정답 집합이 절반보다 많이 겹치면 동일 시나리오 누출로 본다.
+    goldenset_near_dup_relevant_overlap_max: float = 0.5
+    # I-1의 AI 후보 기본 limit과 맞춰 질의별 기록량을 유계로 둔다.
+    goldenset_snapshot_per_query_max: int = 30
+    # 43건 중 12건을 봉인하는 v1 목표 비중이며 감사 보고에 사용한다.
+    goldenset_holdout_ratio: float = 0.3
+
+    # ── 구매자 추천 평가 지표(#143, evals/metrics) ──
+    eval_buyer_k_list: tuple[int, ...] = (5, 10, 20)
+
     @field_validator("llm_provider", mode="before")
     @classmethod
     def _normalize_llm_provider(cls, value: object) -> object:
         """기존 환경변수 호환을 위해 provider 값의 ASCII 대소문자를 정규화한다."""
         return value.lower() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def _require_valid_benchmark_settings(self) -> "Settings":
+        """벤치마크 기본 표본·동시성·bootstrap 설정의 모순을 기동 시점에 막는다."""
+        if self.benchmark_min_measured_requests <= 0:
+            raise ValueError("BENCHMARK_MIN_MEASURED_REQUESTS must be positive")
+        if self.benchmark_p99_min_samples < self.benchmark_min_measured_requests:
+            raise ValueError("BENCHMARK_P99_MIN_SAMPLES must be >= BENCHMARK_MIN_MEASURED_REQUESTS")
+        if self.benchmark_cold_requests + self.benchmark_warmup_requests >= (
+            self.benchmark_min_measured_requests
+        ):
+            raise ValueError(
+                "BENCHMARK_COLD_REQUESTS + BENCHMARK_WARMUP_REQUESTS must be "
+                "< BENCHMARK_MIN_MEASURED_REQUESTS"
+            )
+        if (
+            self.benchmark_cold_requests < 0
+            or self.benchmark_warmup_requests < 0
+            or not self.benchmark_concurrency_levels
+            or any(level <= 0 for level in self.benchmark_concurrency_levels)
+            or self.benchmark_bootstrap_resamples <= 0
+            or not 0 < self.benchmark_bootstrap_confidence < 1
+            or self.benchmark_request_timeout_s <= 0
+        ):
+            raise ValueError("benchmark runner settings must be positive and non-empty")
+        return self
+
+    @model_validator(mode="after")
+    def _require_valid_goldenset_settings(self) -> "Settings":
+        """구매자 골든셋 크기·누출 임계·기록 상한의 모순을 기동 시점에 막는다."""
+        if not 0 < self.goldenset_min_cases <= self.goldenset_max_cases:
+            raise ValueError("골든셋 최소 케이스 수는 0보다 크고 최대 케이스 수 이하여야 합니다")
+        if not 0 < self.goldenset_near_dup_jaccard_max < 1:
+            raise ValueError("골든셋 query Jaccard 임계값은 0과 1 사이여야 합니다")
+        if not 0 < self.goldenset_near_dup_relevant_overlap_max < 1:
+            raise ValueError("골든셋 정답 겹침 임계값은 0과 1 사이여야 합니다")
+        if self.goldenset_snapshot_per_query_max <= 0:
+            raise ValueError("골든셋 질의별 스냅샷 상한은 0보다 커야 합니다")
+        if not 0 < self.goldenset_holdout_ratio < 1:
+            raise ValueError("골든셋 holdout 비율은 0과 1 사이여야 합니다")
+        return self
+
+    @model_validator(mode="after")
+    def _require_valid_eval_settings(self) -> "Settings":
+        """추천 평가 K 목록의 빈 값·비양수를 기동 시점에 막는다."""
+        if not self.eval_buyer_k_list or any(k <= 0 for k in self.eval_buyer_k_list):
+            raise ValueError("구매자 추천 평가 K 목록은 비어 있지 않고 모두 0보다 커야 합니다")
+        return self
 
     @model_validator(mode="after")
     def _require_known_buffer_excluded_intents(self) -> "Settings":
@@ -636,6 +776,86 @@ class Settings(BaseSettings):
                 f"(got {self.catalog_store_query_timeout_s} <= {self.home_reco_store_timeout_s}): "
                 "the app-side clock must fire first so slow queries map to 504 deterministically"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _require_buyer_cap_within_stream_cap(self) -> "Settings":
+        """구매자 상한이 전체 상한을 넘으면 기동 실패 (#138).
+
+        구매자 상한은 전체 상한을 **좁히는** 값이다. 넘어서면 이름과 반대로 판매자보다
+        느슨해져 조용히 무의미해지므로 기동 시점에 고정한다.
+        반대로 first-token 상한보다 짧으면 첫 이벤트 대기를 허용한 시간보다 전체 스트림을
+        먼저 끊는 자기모순이므로 함께 거절한다.
+        """
+        if self.stream_total_timeout_buyer_s > self.stream_total_timeout_s:
+            raise ValueError(
+                "STREAM_TOTAL_TIMEOUT_BUYER_S must not exceed STREAM_TOTAL_TIMEOUT_S "
+                f"(got {self.stream_total_timeout_buyer_s} > {self.stream_total_timeout_s})"
+            )
+        if self.stream_total_timeout_buyer_s < self.stream_first_token_timeout_s:
+            raise ValueError(
+                "STREAM_TOTAL_TIMEOUT_BUYER_S must be at least STREAM_FIRST_TOKEN_TIMEOUT_S "
+                f"(got {self.stream_total_timeout_buyer_s} < "
+                f"{self.stream_first_token_timeout_s}): "
+                "the total stream cap cannot expire before the first-event wait"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_search_retry_within_stream_budget(self) -> "Settings":
+        """I-1 검색 재시도 총량이 스트림 전체 상한을 넘으면 기동 실패 (#133).
+
+        **first-token 상한이 아니라 전체 상한과 비교하는 이유**(PR #241/#138 lessons 로 정정):
+        `stream_first_token_timeout_s` 가 재는 것은 §2.9 c 의 **첫 SSE 이벤트**까지인데, 추천
+        경로의 첫 이벤트는 `conditions`(`recommendation/graph.py`)이고 **검색은 그 뒤**에 돈다.
+        즉 검색 재시도는 first-token 예산을 한 톨도 쓰지 않는다 — 초판이 파이프라인 그림만 보고
+        "검색이 첫 토큰보다 앞"이라 적었던 것은 **emit 순서를 코드로 확인하지 않은 오류**다.
+
+        재시도가 실제로 갉아먹는 것은 턴 전체 시간이므로 전체 상한과 묶는다. `llm_timeout_s *
+        (llm_max_retries + 1)` 과 같은 결의 예산식이며, 한쪽만 튜닝하면 조용히 어긋나는 쌍이라
+        기동 시점에 고정한다.
+
+        비교 대상은 **구매자 전체 상한**(`stream_total_timeout_buyer_s`, #138)이다 — I-1 검색은
+        구매자 추천 경로에서만 돌고, 그 경로를 실제로 끊는 것은 판매자와 공용인 90s 가 아니라
+        구매자 전용 30s 다. 느슨한 쪽과 비교하면 검증이 이름만 남는다.
+        """
+        budget = self.spring_timeout_s * (self.spring_max_retries + 1)
+        if budget >= self.stream_total_timeout_buyer_s:
+            raise ValueError(
+                "SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1) must be < "
+                f"STREAM_TOTAL_TIMEOUT_BUYER_S (got {budget} >= "
+                f"{self.stream_total_timeout_buyer_s}): "
+                "search retries alone would exhaust the buyer turn budget"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_degrade_notices_present(self) -> "Settings":
+        """계약이 요구하는 degrade 고지 문구가 비면 기동 실패 (#133, PR #235 리뷰).
+
+        문안은 튜너블이지만 **안내를 낼지 말지는 튜너블이 아니다.** api-spec §3.3 은 rerank
+        폴백에 "품질 저하를 고지한다", push 실패에 "지연 안내가 포함되며"로 **발신 자체**를
+        규정한다. 값이 비면 `graph.py` 의 `if comment:` 가 거짓이 되어 안내가 **조용히**
+        사라지고, 서버는 멀쩡히 돌면서 계약만 어긴다 — 아무도 모른다.
+
+        정제(`_strip_unsafe`) **후** 값으로 검사한다. zero-width·제어문자만 든 문자열은 길이는
+        1 이상이라 `min_length` 를 통과하지만 정제 뒤 비어 같은 구멍이 된다.
+
+        `dedup_skipped_notice` 는 **여기 없다** — 계약이 요구하지 않고 미고지가 문서화된
+        판단이라, 빈 값이 정상적인 의사표현이다.
+        """
+        from app.core.text import _strip_unsafe  # 지연 import — config 는 최하위 모듈이다
+
+        required = {
+            "RERANK_FALLBACK_NOTICE": self.rerank_fallback_notice,
+            "PUSH_SKIPPED_NOTICE": self.push_skipped_notice,
+        }
+        for name, value in required.items():
+            if not _strip_unsafe(value):
+                raise ValueError(
+                    f"{name} must not be empty: api-spec §3.3 requires the degrade disclosure "
+                    "to be sent (the wording is tunable, sending it is not)"
+                )
         return self
 
     @model_validator(mode="after")
@@ -731,6 +951,23 @@ class Settings(BaseSettings):
             raise ValueError(
                 "REVIEW_TIER 경계는 many >= some >= few 여야 합니다"
                 f" ({self.review_tier_many}/{self.review_tier_some}/{self.review_tier_few})"
+            )
+        # '저렴/비쌈'은 중앙값(1.0) 기준 아래/위이므로 경계 순서뿐 아니라 방향도 고정한다.
+        # 각 등급이 도달 가능해야 한다 — 양끝 경계가 같으면 중간 등급이 죽는다.
+        if not (
+            0
+            < self.price_tier_very_cheap_ratio
+            < self.price_tier_cheap_ratio
+            <= 1.0
+            <= self.price_tier_pricey_ratio
+            < self.price_tier_very_pricey_ratio
+            and self.price_tier_cheap_ratio < self.price_tier_pricey_ratio
+        ):
+            raise ValueError(
+                "PRICE_TIER 경계는 0 < very_cheap < cheap <= 1.0 <= pricey < very_pricey 이고"
+                " cheap < pricey 여야 합니다"
+                f" ({self.price_tier_very_cheap_ratio}/{self.price_tier_cheap_ratio}/"
+                f"{self.price_tier_pricey_ratio}/{self.price_tier_very_pricey_ratio})"
             )
         # 노출 개수 경계(REQ-REC-021) — expose_min 은 "부족하면 검색순서로 채우는" 하한이라
         # 상한을 넘으면 보충 루프가 곧바로 상한 절단에 되잘리는 모순이 된다. 개별 le 로는

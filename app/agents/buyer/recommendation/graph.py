@@ -234,6 +234,38 @@ def _split_by_need(
     return groups
 
 
+def _resolve_repurchase_ids(recent, references: list[str]) -> set[int]:
+    """명시 재구매 지목(상품명 텍스트) → 그 회원의 최근 구매 productId 집합 (#120).
+
+    **해소 대상은 `recent`(I-19, JWT sub 유래 본인 구매 이력)뿐**이다 — 결과는 구성상 항상
+    exact 제외 대상의 부분집합이라, LLM 이 무엇을 지목하든 임의 productId·타인 상품으로
+    확장될 수 없다(신뢰 경계). 후보(candidates) id 나 LLM 정수는 여기 들어오지 않는다.
+
+    공백 제거 + casefold 후 중복을 제거한 유효 **지목이 정확히 1건일 때만** 해소한다. 복수 지목은
+    모델이 LAST_RECOMMENDATIONS 같은 맥락 목록을 에코했을 수 있어, 각 이름이 개별적으로 정확해도
+    전부 미해제한다. 단일 지목은 가장 좁은 후보 집합을 고른다 — 완전 일치가 있으면 그것만, 없을
+    때만 `지목 in 구매명` 단방향 부분비교로 넓힌다. 선택된 후보에서 **구분되는 정규화 상품명이
+    정확히 1개일 때만** 그 이름의 productId를 전부 해제한다. 따라서 재등록·옵션 분리로 같은 이름이
+    여러 productId에 걸려도 모두 해제하지만, 서로 다른 상품명에 걸린 모호한 부분일치는 미해제한다.
+    단방향 폴백은 긴 지목("무선 이어폰 케이스")을 짧은 구매명("이어폰")으로 축약하는 오매칭을
+    막는다. 아무것도 못 잡으면 조용히 빈 집합(= 종전 제외 유지)으로 degrade 한다.
+    """
+    if not references:
+        return set()
+    norms = {n for r in references if (n := "".join(r.split()).casefold())}
+    if len(norms) != 1:
+        return set()
+    names = [
+        (item.product_id, "".join((item.product_name or "").split()).casefold()) for item in recent
+    ]
+    reference = next(iter(norms))
+    exact = [(pid, name) for pid, name in names if name and name == reference]
+    matches = exact or [(pid, name) for pid, name in names if name and reference in name]
+    if len({name for _, name in matches}) != 1:
+        return set()
+    return {pid for pid, _ in matches}
+
+
 async def stream_recommendation(
     *,
     request,
@@ -362,9 +394,14 @@ async def stream_recommendation(
                 trace.mark_degraded("fanout_partial")
         return _merge_fanout_results(survived, settings.category_fanout_merge_cap)
 
+    # I-19 조회가 **실패**했는지 — "이력이 없다"(게스트·비회원)와 구분한다. 둘 다 None 을
+    # 돌려주므로 호출부에서는 갈라낼 수 없는데, 없는 기능을 "고장났다"고 고지하면 거짓말이 된다.
+    dedup_degraded = False
+
     async def _fetch_purchases():
         # 게스트/비회원/판매자/비숫자 sub 는 스킵, I-19 실패는 degrade(dedup 없이 진행, §4.7).
         # [IDOR] role==SELLER 는 user_id=sub·seller_id=sub — 판매자 sub 를 memberId 로 쓰면 안 됨.
+        nonlocal dedup_degraded
         if identity is None or identity.is_guest or not identity.user_id or identity.seller_id:
             return None
         try:
@@ -375,12 +412,14 @@ async def stream_recommendation(
         try:
             return await fn(uid)
         except SpringUnavailableError:
+            dedup_degraded = True
             if trace := current_request_trace():
                 trace.mark_degraded("dedup_skipped")
             return None
         except Exception as exc:  # noqa: BLE001 - I-19 실패는 degrade(dedup 없이 진행, SSE 유지)
             # 최근구매 조회가 예상외 예외를 던져도 추천 스트림을 죽이지 않는다 — None → dedup 스킵(§4.7).
             logger.warning("purchases_fetch_failed", extra={"reason": str(exc)})
+            dedup_degraded = True
             if trace := current_request_trace():
                 trace.mark_degraded("dedup_skipped")
             return None
@@ -404,11 +443,14 @@ async def stream_recommendation(
 
     # 최근 구매(윈도우·취소반품 필터) → exact 제외 + 소모품 카테고리 억제(결정 14-F).
     exclude_ids: set[int] = set()
+    # [#120] 명시 재구매 지목으로 되돌린 productId — exact 제외·소모품 억제를 함께 면제한다.
+    repurchase_ids: set[int] = set()
     cat_samples: dict[str, str] = {}  # 억제 소모품 카테고리 -> 최근 구매 상품명(되돌리기 칩 라벨용)
     if purchases is not None:
         since = _now() - timedelta(days=settings.dedup_recent_days)
         recent = purchases.recent_items(since=since, exclude_statuses=_INACTIVE_STATUSES)
         exclude_ids = {i.product_id for i in recent}
+        repurchase_ids = _resolve_repurchase_ids(recent, decision.repurchase_products)
         consumables = set(settings.consumable_categories)
         for i in recent:
             # 소모품 카테고리인데 사용자가 되돌리지 않은 것만 억제 대상.
@@ -433,6 +475,12 @@ async def stream_recommendation(
         suppressed: dict[str, int] = {}
         survivors = []
         for product in found.products:
+            # [#120] 명시 재구매 지목은 exact 제외와 소모품 카테고리 억제를 **둘 다** 면제한다 —
+            # exact 만 풀면 소모품 재구매(소금·세제)가 카테고리 억제에 다시 걸려 되돌리기가 안 된다.
+            # 카테고리 억제 카운트(suppressed)에도 넣지 않아 되돌리기 칩 추정치가 부풀지 않는다.
+            if product.product_id in repurchase_ids:
+                survivors.append(product)
+                continue
             if product.product_id in exclude_ids:
                 continue
             if product.category in cat_samples:
@@ -444,6 +492,13 @@ async def stream_recommendation(
         # 몰릴 때 rerank 후보가 상한 미만이 되는 recall 손실이 있어, 절단을 dedup 이후로 옮겼다
         # (비-fanout 전량·fan-out merge_cap 병합 결과 모두 이 지점에서 최종 절단).
         matched = len(survivors)
+        # [#120 PR#230 리뷰] 명시 재구매 지목은 절단 **전에** 앞으로 당긴다 — 이 절단은 원본 검색
+        # 순서 기준이라, 되살린 상품이 상한(기본 30) 밖이면 exact 제외를 면제해 놓고도 rerank 후보에
+        # 조차 못 들어가 "지목하면 다시 추천된다"는 보장이 조용히 깨진다. 사용자가 직접 지목한 상품이
+        # 검색 순서보다 우선하는 게 맞다. stable sort 라 지목 상품끼리·나머지끼리의 상대 순서는
+        # 그대로고, 지목이 없으면(기본 경로) 정렬 자체를 건너뛰어 종전과 동일하다.
+        if repurchase_ids:
+            survivors.sort(key=lambda p: p.product_id not in repurchase_ids)
         return (
             ProductSearchResult(
                 products=survivors[: settings.embedding_rerank_limit], total_count=matched
@@ -655,8 +710,26 @@ async def stream_recommendation(
             trace.mark_degraded("rerank_fallback")
         ranked_ids = [p.product_id for p in candidates[:expose_budget]]
         reason_by_id = {}  # degrade 경로엔 rerank 근거 없음 — reasons 는 빈 배열(계약상 선택)
-        comment = "요청하신 조건으로 찾은 상품들이에요."
+        # [#133] 품질 저하를 **고지한다**. 종전 문구("요청하신 조건으로 찾은 상품들이에요")는
+        # 평상시와 구분되지 않아 개인화·근거가 통째로 사라진 사실이 사용자에게 가려졌다.
+        # config 값은 운영자 주입이라 소스 리터럴이 아니다 — 정상 경로(rr.overall_comment)와
+        # 같은 _strip_unsafe 정제를 받는다.
+        comment = _strip_unsafe(settings.rerank_fallback_notice)
 
+    # [#120 PR#230 리뷰] 지목 상품 고정 — rerank 는 relevance 로 expose_max 개만 고르고 "이건 반드시"
+    # 라는 고정 수단이 없어(need_of/per_need 는 니즈 분할용), exact 제외·상한 절단을 다 통과한
+    # 지목 상품이 여기서 조용히 빠질 수 있다. 쿼리에 상품명이 있으니 보통은 뽑히지만 그건
+    # 휴리스틱이지 보장이 아니다. **후보에 남아 있는데 rerank 가 빠뜨린 것만** 앞에 얹어
+    # "지목하면 다시 추천된다"를 강제한다 — rerank 가 이미 골랐으면 순서를 건드리지 않는다.
+    # 근거(reason)는 없지만 §4.2 상 reasons 는 선택이고 degrade 경로도 같은 형태다.
+    if repurchase_ids:
+        already = set(ranked_ids)
+        pinned = [
+            p.product_id
+            for p in candidates
+            if p.product_id in repurchase_ids and p.product_id not in already
+        ]
+        ranked_ids = pinned + ranked_ids
     # 노출 개수 보정 + 목록 분할 — 보정·상한은 **목록 하나 기준**이다(REQ-REC-021 5~9개, v0.11.0).
     # 분할하지 않으면 목록이 하나뿐이라 종전과 같은 전역 보정·절단이다.
     exposed_groups = _split_by_need(
@@ -716,6 +789,12 @@ async def stream_recommendation(
 
     if comment:
         yield sse("token", TokenData(text=comment).model_dump(by_alias=True))
+
+    # [#133] 최근 구매 제외(I-19) 실패 고지 — **기본 미고지**(config 기본값 "")다. 조회 실패는
+    # "중복이 노출됐다"가 아니라 "걸러내지 못했다"라 실제 중복 여부를 알 수 없어 매 턴 노이즈가
+    # 되고, rerank 폴백과 달리 거짓 주장을 하고 있지도 않다. 판단을 되돌릴 여지만 남긴다.
+    if dedup_degraded and (dedup_notice := _strip_unsafe(settings.dedup_skipped_notice)):
+        yield sse("token", TokenData(text=dedup_notice).model_dump(by_alias=True))
 
     # 소모품 카테고리 억제 되돌리기 칩(결정 14-F) + 소량 결과 완화 칩(#113).
     # products.ready **앞**이라 §3.1 순서 계약(conditions → token+suggestions → products.ready)을 지킨다.
@@ -777,14 +856,11 @@ async def stream_recommendation(
     else:
         # push 실패 → products.ready 없음. rerank 코멘트가 "찾았다"고 했으니 목록 지연을 고지하고
         # 정상 종료한다(경로 B 실패 계약 — error 아님, done 유지).
+        # [#133] 문안은 config 주입 — degrade 고지 문구를 한 곳에서 관리한다.
         if trace := current_request_trace():
             trace.mark_degraded("push_skipped")
-        yield sse(
-            "token",
-            TokenData(
-                text="목록을 준비하는 데 문제가 있었어요. 잠시 후 다시 시도해 주세요."
-            ).model_dump(by_alias=True),
-        )
+        if push_notice := _strip_unsafe(settings.push_skipped_notice):
+            yield sse("token", TokenData(text=push_notice).model_dump(by_alias=True))
 
     yield sse(
         "done",
