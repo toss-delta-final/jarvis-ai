@@ -83,6 +83,17 @@
 - 관련: `app/services/spring_client.py::_search_query_params`, `app/schemas/spring.py`
   `ProductSearchResult` docstring, 이슈 #113
 
+## [2026-08-03] counterfactual fixture가 실제 점수 표면에 닿는지 먼저 확인한다
+- 증상: 개인화 paired 평가에서 글로벌 Sony/이어폰 취향을 모든 케이스에 공통 주입하자 대부분
+  후보 집합과 교집합이 없어 clean/noisy/repeated 지표가 전부 같았다. repeated는 clean과
+  preferences가 완전히 동일했고, clean→noisy margin 판정은 CI `[0, 0]`으로 vacuous pass했다.
+- 원인: arm 이름과 fixture 서술만 다르게 만들고, 그 선호 축이 실제 후보의 category/brand 및
+  profile-match 점수 성분에 닿아 순위를 움직일 수 있는지 확인하지 않았다.
+- 규칙: **counterfactual arm fixture를 설계하면 그 fixture가 실제로 시스템 표면(후보 집합·점수
+  성분)에 닿아 산출을 움직일 수 있는지 baseline 실측으로 먼저 확인한다 — arm 간 지표가 전부
+  동일하면 측정이 아니라 장식이다.**
+- 관련: #147, `evals/personalization/fixtures.py`
+
 ## [2026-08-03] LLM JSON은 프롬프트 타입과 실패 의미를 양쪽 경계에서 고정한다
 - 증상: single-call live smoke 10회 중 5회가 `brand`와 `attrConditions`를 문자열로 내는
   등 스키마 타입 차이로 hard failure가 됐고, 정답 형태만 내는 dry-run fake는 이를 잡지

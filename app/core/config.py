@@ -671,6 +671,16 @@ class Settings(BaseSettings):
     scoring_reference_date: str = "2026-08-02"
     scoring_recent_purchase_window_days: int = 90
 
+    # ── 개인화 평가 (이슈 #147, evals/personalization) ──
+    # 하드필터와 명시 의도는 안전 불변식이라 기본 허용치를 0으로 사전 선언한다.
+    personalization_eval_hard_filter_violation_max: int = 0
+    personalization_eval_intent_contradiction_max: int = 0
+    personalization_eval_forbidden_inclusion_max: int = 0
+    # clean→noisy NDCG@10 열화는 paired CI 하한이 -3%를 넘는지를 판정한다.
+    personalization_eval_clean_noisy_drop_margin: float = 0.03
+    # 현행 0.15를 중심으로 0~4배 범위를 대칭적이지 않은 실용 구간으로 탐색한다.
+    personalization_eval_weight_sweep: tuple[float, ...] = (0.0, 0.075, 0.15, 0.30, 0.60)
+
     @field_validator("llm_provider", mode="before")
     @classmethod
     def _normalize_llm_provider(cls, value: object) -> object:
@@ -757,6 +767,30 @@ class Settings(BaseSettings):
             date.fromisoformat(self.scoring_reference_date)
         except ValueError as exc:
             raise ValueError("추천 scoring 기준일은 ISO 날짜 형식이어야 합니다") from exc
+        return self
+
+    @model_validator(mode="after")
+    def _require_valid_personalization_eval_settings(self) -> "Settings":
+        """개인화 평가의 사전 선언 margin과 weight sweep을 fail-fast한다."""
+        maxima = (
+            self.personalization_eval_hard_filter_violation_max,
+            self.personalization_eval_intent_contradiction_max,
+            self.personalization_eval_forbidden_inclusion_max,
+        )
+        if any(value < 0 for value in maxima):
+            raise ValueError("개인화 평가 허용 건수는 음수일 수 없습니다")
+        if self.personalization_eval_clean_noisy_drop_margin < 0:
+            raise ValueError("개인화 평가 clean-noisy margin은 음수일 수 없습니다")
+        sweep = self.personalization_eval_weight_sweep
+        if (
+            not sweep
+            or any(not math.isfinite(value) or not 0 <= value <= 1 for value in sweep)
+            or tuple(sorted(set(sweep))) != sweep
+            or 0.15 not in sweep
+        ):
+            raise ValueError(
+                "개인화 평가 weight sweep은 [0,1]의 오름차순 고유 값이며 0.15를 포함해야 합니다"
+            )
         return self
 
     @model_validator(mode="after")

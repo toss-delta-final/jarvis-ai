@@ -1,0 +1,7 @@
+{
+  "provenance": "synthetic-deidentified",
+  "sha256": {
+    "profiles.json": "7c5f7cd625d61570ee73d9275cfde2853629b98d3ee0dd5358daa43c825bad06"
+  },
+  "version": "personalization-profile-manifest-v1"
+}
