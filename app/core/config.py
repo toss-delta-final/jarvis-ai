@@ -415,8 +415,9 @@ class Settings(BaseSettings):
     # CART_OPTION_INVALID 재질문 상한 — 초과 시 action CART_ERROR(§4.1). 하드코딩 금지.
     cart_option_reask_max: int = 1
     # 옵션 되물음 중 상품 전환 신호(#253). 한국어 조사·활용을 흡수하도록 각 표지가 발화에
-    # 포함되는 한 방향만 비교한다.
-    cart_pending_switch_markers: list[str] = ["다른", "말고", "대신", "바꿔", "바꿀", "아니"]
+    # 포함되는 한 방향만 비교한다. "아니"는 간투사 오탐이 흔하고 에코 보완 이득은 1/8뿐이라
+    # 기본값에서 제외한다(운영 설정으로 재추가 가능).
+    cart_pending_switch_markers: list[str] = ["다른", "말고", "대신", "바꿔", "바꿀"]
 
     # ── dedup (#4, api-spec §4.7 결정 14-F) ──
     # 최근 구매 제외 윈도우(일) — 이보다 오래된 구매는 제외 목록에서 뺀다(영구 제외 방지).

@@ -92,6 +92,10 @@ def _pending_switch_signals(
     겹친 문자열은 위치로 판정한다. `대` ⊂ `대신`이면 옵션 언급이 아니고,
     `말고` ⊂ `말고기`이면 전환 마커가 아니다.
     """
+    if pending is not None and any(not option.name.strip() for option in pending.options):
+        # 옵션명을 하나라도 모르면 전환과 옵션 답변을 구별할 근거가 없다. 이 구성에서는
+        # 정밀도를 우선해 휴리스틱을 끄므로 #253 의 옛 상품 오담기 보호가 의도적으로 적용되지 않는다.
+        return False, False
     option_spans = (
         [
             span

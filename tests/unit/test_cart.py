@@ -1284,6 +1284,51 @@ async def test_cart_add_option_answer_during_pending_still_adds_pending_product(
     assert await store.get_pending("m:t") is None
 
 
+async def test_cart_add_discourse_interjection_before_number_option_still_adds() -> None:
+    """기본 전환 마커가 아닌 '아니' 뒤 번호 옵션 답변은 pending 상품에 정상 적용한다."""
+    store = CartStateStore()
+    await store.set_pending(
+        "m:t",
+        PendingAdd(
+            product_id=101,
+            quantity=1,
+            options=[
+                CartOption(option_id=1001, name="일반형"),
+                CartOption(option_id=1002, name="드럼형"),
+            ],
+        ),
+    )
+    captured = {}
+
+    async def add_fn(req):
+        captured["productId"] = req.product_id
+        captured["optionId"] = req.option_id
+        captured["pendingKeptUntilAdd"] = await store.get_pending("m:t") is not None
+        return AddToCartResult(success=True, cart_item_id=8)
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(product_id=101, option_id=1002, quantity=1),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            message="아니 2번이요",
+            allowed_product_ids={101, 201},
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
+        )
+    )
+
+    assert captured == {
+        "productId": 101,
+        "optionId": 1002,
+        "pendingKeptUntilAdd": True,
+    }
+    assert _types(events) == ["action", "done"]
+    assert await store.get_pending("m:t") is None
+
+
 @pytest.mark.parametrize(
     ("message", "option"),
     [
@@ -1291,10 +1336,10 @@ async def test_cart_add_option_answer_during_pending_still_adds_pending_product(
         pytest.param("아니 그냥 레드로 주세요", CartOption(option_id=1002, name="레드"), id="red"),
     ],
 )
-async def test_cart_add_option_correction_marker_still_uses_named_pending_option(
+async def test_cart_add_option_correction_interjection_still_uses_named_pending_option(
     message: str, option: CartOption
 ) -> None:
-    """'아니'가 있어도 pending 옵션명을 말한 턴은 상품 전환이 아니라 옵션 답변으로 처리한다."""
+    """기본 전환 마커가 아닌 '아니' 뒤 옵션명 정정은 정상 옵션 답변으로 처리한다."""
     store = CartStateStore()
     await store.set_pending(
         "m:t",
@@ -1378,8 +1423,8 @@ async def test_cart_add_switch_marker_substring_does_not_count_as_pending_option
     assert await store.get_pending("m:t") is None
 
 
-async def test_cart_add_option_name_outside_marker_still_counts_as_option_answer() -> None:
-    """마커를 제외한 잔여 발화에 옵션명 '대'가 있으면 정상 옵션 정정으로 담는다."""
+async def test_cart_add_short_option_after_removed_interjection_still_counts_as_answer() -> None:
+    """기본 마커에서 빠진 '아니' 뒤 짧은 옵션명 '대'도 정상 옵션 답변으로 담는다."""
     store = CartStateStore()
     await store.set_pending(
         "m:t",
@@ -1469,40 +1514,60 @@ async def test_cart_add_marker_substring_inside_option_name_still_counts_as_opti
     assert await store.get_pending("m:t") is None
 
 
-async def test_cart_add_switch_marker_ignores_empty_pending_option_name() -> None:
-    """빈 옵션명은 모든 발화에 포함되므로 옵션 답변 가드에서 제외하고 전환 감지를 유지한다."""
+@pytest.mark.parametrize(
+    "options",
+    [
+        pytest.param(
+            [CartOption(option_id=1001, name=""), CartOption(option_id=1002, name="")],
+            id="all-empty",
+        ),
+        pytest.param(
+            [CartOption(option_id=1001, name=""), CartOption(option_id=1002, name="드럼형")],
+            id="partly-empty",
+        ),
+    ],
+)
+async def test_cart_add_unnamed_pending_option_skips_switch_heuristic(
+    options: list[CartOption],
+) -> None:
+    """옵션명 하나라도 비면 보수적으로 휴리스틱을 끈다 — 이 구성에서는 #253 보호가 적용되지 않는다."""
     store = CartStateStore()
     await store.set_pending(
         "m:t",
         PendingAdd(
             product_id=101,
             quantity=1,
-            options=[
-                CartOption(option_id=1000, name=""),
-                CartOption(option_id=1001, name="레드"),
-                CartOption(option_id=1002, name="블루"),
-            ],
+            options=options,
         ),
     )
+    captured = {}
 
     async def add_fn(req):
-        raise AssertionError(f"옵션명 없는 전환은 담기에 도달하면 안 됨: {req}")
+        captured["productId"] = req.product_id
+        captured["optionId"] = req.option_id
+        captured["pendingKeptUntilAdd"] = await store.get_pending("m:t") is not None
+        return AddToCartResult(success=True, cart_item_id=8)
 
     events = await _collect(
         stream_cart_add(
             identity=_member(),
-            cart=CartIntent(product_id=101, option_id=1002, quantity=1),
+            cart=CartIntent(product_id=101, option_id=1001, quantity=1),
             cart_store=store,
             thread_key="m:t",
             settings=get_settings(),
-            message="아니 이어폰 담아줘",
+            message="다른 거 담아줘",
             allowed_product_ids={101, 201},
             add_fn=add_fn,
             get_cart_fn=_empty_cart(),
         )
     )
 
-    assert _types(events) == ["token", "done"]
+    assert captured == {
+        "productId": 101,
+        "optionId": 1001,
+        "pendingKeptUntilAdd": True,
+    }
+    assert _types(events) == ["action", "done"]
     assert await store.get_pending("m:t") is None
 
 
