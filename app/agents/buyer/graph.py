@@ -99,13 +99,18 @@ def _relaxed_filters_from_offer(offer, base: ProductSearchFilters) -> ProductSea
     """저장된 완화 칩 제안을 검증해 `base` 에 적용한 필터를 낸다. 못 쓰는 값이면 None (#113).
 
     저장소는 **신뢰 경계 밖**이다 — 값이 pg-profile 을 왕복(JSON 직렬화/역직렬화)하고, 배포 사이에
-    스키마가 바뀔 수도 있다. 그래서 (1) 봉투 모양, (2) 필드가 완화 대상인지, (3) **값 타입**을
-    차례로 확인한다. 특히 (3) 이 없으면 `model_copy` 가 Pydantic 검증을 건너뛰는 탓에 어긋난
-    타입이 그대로 `decision.filters` 에 실려 Spring I-1 쿼리 파라미터로 나간다 — 검증 오류 없이
-    조용히 틀린 조건으로 검색되거나 하류에서 엉뚱하게 터진다(PR #248 리뷰).
+    스키마가 바뀔 수도 있다. 그래서 (1) 봉투 모양, (2) 필드가 완화 대상인지 확인한 뒤,
+    (3) **값 검증은 `model_validate` 에 맡긴다** — `model_copy` 였다면 Pydantic 검증을 건너뛰어
+    어긋난 타입이 그대로 Spring I-1 쿼리 파라미터로 나갔을 자리다(PR #248 리뷰).
 
-    `model_validate` 로 최종 확인까지 하는 이유: 필드별 제약(예: `limit >= 0`)은 여기서 열거하지
-    않고 스키마에 맡기는 게 옳고, 그래야 스키마가 늘어도 이 함수가 뒤처지지 않는다.
+    값 타입을 여기서 열거하지 않는 이유(PR #248 2차 리뷰): 스키마가 이미 필드별로 정확히 거른다.
+    사전 목록을 두면 스키마보다 **좁아져서**, 예컨대 `brand: list[str]` 에 리스트 값을 제안하도록
+    확장하는 순간 여기서 조용히 None 이 되어 칩 클릭이 영구 무동작이 된다. 스키마와 어긋나는
+    이중 규칙을 만들지 않는다.
+
+    **예외는 `bool` 하나다** — Pydantic 은 `price_max=True` 를 거부하지 않고 **`1` 로 강제 변환**한다
+    (실측 확인). 즉 손상된 `true` 하나가 "가격 상한 1원"으로 둔갑해 조용히 0건을 만든다. 스키마가
+    잡아주지 못하는 유일한 케이스라 여기서만 막는다.
     """
     if not isinstance(offer, dict):
         return None  # 봉투 자체가 기대 형태가 아님(구 스키마·손상)
@@ -117,11 +122,10 @@ def _relaxed_filters_from_offer(offer, base: ProductSearchFilters) -> ProductSea
         # 의도보다 검색이 더 넓어진다. "없음"과 "null 로 해제"는 다른 사실이라 구분한다.
         return None
     value = offer["value"]
-    # None 은 '조건 해제'라는 정상 값이다(brand·color·평점 하한 소멸).
-    # bool 은 int 의 서브클래스라 명시적으로 배제한다 — True 가 가격 상한 1 로 둔갑한다.
-    if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float, str))):
+    if isinstance(value, bool):  # 위 docstring 참조 — 스키마가 못 잡는 유일한 케이스
         return None
     try:
+        # None 은 '조건 해제'라는 정상 값이다(brand·color·평점 하한 소멸) — 스키마가 허용한다.
         return ProductSearchFilters.model_validate({**base.model_dump(), attr: value})
     except ValidationError:
         return None

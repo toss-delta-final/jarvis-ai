@@ -535,7 +535,18 @@ async def stream_recommendation(
             bool(found.products),
         )
 
-    result, suppressed_by_cat, received, had_candidates = _post_filter(search_result)
+    try:
+        result, suppressed_by_cat, received, had_candidates = _post_filter(search_result)
+    except Exception:
+        # [PR #248 2차 리뷰] **conditions 발신 보장** — 미룬 턴에서 여기가 터지면 조건 칩이
+        # 통째로 사라진다(미루기 전에는 검색 **전** 순수 계산이라 사실상 실패할 일이 없었다).
+        # 예외는 삼키지 않고 다시 올린다 — 후보가 확정되지 않은 채 추천을 이어갈 수는 없다.
+        if may_auto_relax:
+            yield sse(
+                "conditions",
+                ConditionsData(chips=_condition_chips(decision.filters)).model_dump(by_alias=True),
+            )
+        raise
     candidates = result.products
 
     # ── 0건/소량 조건 완화 (#113, api-spec §3.1 · SPEC-RECOMMEND-001 §6.6) ──
@@ -593,31 +604,39 @@ async def stream_recommendation(
             return None
 
     if not candidates and probe_budget > 0:
-        relax_candidates = build_relaxation_candidates(decision.filters, settings)
-        auto_fields = set(settings.relaxation_auto_fields)
-        rounds = 0
-        for cand in relax_candidates:
-            # [REQ-REC-043 / AC-REC-08] 명시 제약(가격·브랜드)은 **자동으로 넘지 않는다** — 사용자가
-            # 칩으로 동의하기 전까지 상한 초과 상품을 조용히 노출하면 안 된다. 자동은 config
-            # 화이트리스트(기본 평점)에 든 약한 조건뿐이다.
-            if cand.field not in auto_fields:
-                continue
-            if probe_budget <= 0 or rounds >= settings.relaxation_max_rounds:
-                break
-            probe_budget -= 1
-            rounds += 1
-            outcome = await _probe(cand)
-            if outcome is None:
-                continue
-            relaxed_result, relaxed_suppressed, relaxed_seen, relaxed_had, relaxed_leg_of = outcome
-            probed_counts[cand.field] = relaxed_result.total_count
-            if relaxed_result.products:  # 완화가 결과를 살렸다 → 정상 경로로 합류
-                result, suppressed_by_cat = relaxed_result, relaxed_suppressed
-                received, had_candidates = relaxed_seen, relaxed_had
-                leg_of, candidates = relaxed_leg_of, relaxed_result.products
-                relaxation_notice, adopted_field = cand.notice, cand.field
-                adopted_value = cand.value
-                break
+        # [PR #248 2차 리뷰] 루프 전체를 감싼다 — `_probe` 안쪽은 이미 방어하지만 후보 생성
+        # (`build_relaxation_candidates`)과 루프 자체는 밖이었다. 여기서 터지면 아래 conditions
+        # 발신까지 못 가 조건 칩이 사라진다. 자동 완화는 **선택 기능**이라 실패는 삼키고
+        # 완화 없이 계속한다(§7) — 0건 안내와 완화 칩 경로는 그대로 살아 있다.
+        try:
+            relax_candidates = build_relaxation_candidates(decision.filters, settings)
+            auto_fields = set(settings.relaxation_auto_fields)
+            rounds = 0
+            for cand in relax_candidates:
+                # [REQ-REC-043 / AC-REC-08] 명시 제약(가격·브랜드)은 **자동으로 넘지 않는다** —
+                # 사용자가 칩으로 동의하기 전까지 상한 초과 상품을 조용히 노출하면 안 된다.
+                # 자동은 config 화이트리스트(기본 평점)에 든 약한 조건뿐이다.
+                if cand.field not in auto_fields:
+                    continue
+                if probe_budget <= 0 or rounds >= settings.relaxation_max_rounds:
+                    break
+                probe_budget -= 1
+                rounds += 1
+                outcome = await _probe(cand)
+                if outcome is None:
+                    continue
+                relaxed_result, relaxed_suppressed, relaxed_seen, relaxed_had, relaxed_leg = outcome
+                probed_counts[cand.field] = relaxed_result.total_count
+                if relaxed_result.products:  # 완화가 결과를 살렸다 → 정상 경로로 합류
+                    result, suppressed_by_cat = relaxed_result, relaxed_suppressed
+                    received, had_candidates = relaxed_seen, relaxed_had
+                    leg_of, candidates = relaxed_leg, relaxed_result.products
+                    relaxation_notice, adopted_field = cand.notice, cand.field
+                    adopted_value = cand.value
+                    break
+        except Exception as exc:  # noqa: BLE001 - 자동 완화 실패가 턴을 죽이지 않게(degrade)
+            # CancelledError(BaseException)는 전파돼 협조적 취소가 보존된다.
+            logger.warning("relaxation_auto_failed", extra={"reason": str(exc)})
     # [#113 PR #248 리뷰 A] 미뤄 둔 conditions 를 여기서 낸다 — 자동 완화가 채택됐으면 **완화된
     # 값**으로, 아니면 원래 값으로. 어느 쪽이든 화면의 조건 칩과 실제 검색 조건이 일치한다.
     # **완화 고지 token 보다 먼저** 내보낸다 — §3.1 순서 계약이 conditions → token 이다.
@@ -638,26 +657,35 @@ async def stream_recommendation(
     # 완화 칩 — 0건이거나 소량(config 임계 미만)일 때 남은 예산만큼 후보를 probe 한다.
     relaxation_chips: list[SuggestionChip] = []
     if not candidates or len(candidates) < settings.relaxation_min_results:
-        if not relax_candidates:
-            relax_candidates = build_relaxation_candidates(decision.filters, settings)
-        pending = [
-            c for c in relax_candidates if c.field not in probed_counts and c.field != adopted_field
-        ][:probe_budget]
-        if pending:
-            outcomes = await asyncio.gather(*(_probe(c) for c in pending))
-            for cand, outcome in zip(pending, outcomes, strict=True):
-                if outcome is not None:
-                    probed_counts[cand.field] = outcome[0].total_count
-        relaxation_chips = [
-            SuggestionChip(
-                label=_strip_unsafe(c.label),
-                relaxation=RelaxationRef(field=c.field, value=c.value),
-                est_count=probed_counts[c.field],
-            )
-            for c in relax_candidates
-            # estCount==0 인 칩은 제외(§3.1) — 눌러도 빈 화면인 제안을 주지 않는다.
-            if c.field != adopted_field and probed_counts.get(c.field, 0) > 0
-        ]
+        # 자동 완화 루프와 같은 이유로 전체를 감싼다(PR #248 2차 리뷰) — 후보 생성·칩 조립은
+        # `_probe` 바깥이라 방어가 없었다. 완화 칩은 **부가 제안**이라 실패하면 칩 없이 계속한다.
+        try:
+            if not relax_candidates:
+                relax_candidates = build_relaxation_candidates(decision.filters, settings)
+            pending = [
+                c
+                for c in relax_candidates
+                if c.field not in probed_counts and c.field != adopted_field
+            ][:probe_budget]
+            if pending:
+                outcomes = await asyncio.gather(*(_probe(c) for c in pending))
+                for cand, outcome in zip(pending, outcomes, strict=True):
+                    if outcome is not None:
+                        probed_counts[cand.field] = outcome[0].total_count
+            relaxation_chips = [
+                SuggestionChip(
+                    label=_strip_unsafe(c.label),
+                    relaxation=RelaxationRef(field=c.field, value=c.value),
+                    est_count=probed_counts[c.field],
+                )
+                for c in relax_candidates
+                # estCount==0 인 칩은 제외(§3.1) — 눌러도 빈 화면인 제안을 주지 않는다.
+                if c.field != adopted_field and probed_counts.get(c.field, 0) > 0
+            ]
+        except Exception as exc:  # noqa: BLE001 - 완화 칩 실패가 턴을 죽이지 않게(degrade)
+            # CancelledError(BaseException)는 전파돼 협조적 취소가 보존된다.
+            logger.warning("relaxation_chips_failed", extra={"reason": str(exc)})
+            relaxation_chips = []
 
     # [#113] 이번 턴에 제안한 칩을 스레드에 기억한다 — FE 는 칩을 누르면 label 을 그대로 다음 턴
     # message 로 보내므로(jarvis-frontend `applySuggestion`), 다음 턴에 그 label 을 만나면 LLM 이

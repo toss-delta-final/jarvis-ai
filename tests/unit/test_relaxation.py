@@ -20,6 +20,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.agents.buyer import graph as buyer_graph
+from app.agents.buyer.recommendation import graph as recommendation_graph
 from app.agents.buyer.recommendation.category_mapping import CategoryMapping
 from app.agents.buyer.recommendation.relaxation import build_relaxation_candidates
 from app.core.auth import Identity
@@ -759,6 +760,71 @@ async def test_corrupt_stored_offer_is_ignored_not_crashed(stored) -> None:  # n
     assert "error" not in _types(events)
     # 망가진 값이 필터로 새지 않는다 — decompose 산출(50,000)이 그대로 쓰인다.
     assert calls[0].price_max == 50000
+
+
+def test_offer_value_validation_delegates_to_schema_not_a_narrower_allowlist() -> None:
+    """[PR #248 2차 리뷰] 값 검증은 스키마에 맡긴다 — 사전 목록이 스키마보다 좁으면 안 된다.
+
+    `brand: list[str] | None` 처럼 리스트를 받는 필드가 있으므로, 스칼라만 허용하는 사전 목록을
+    두면 brand 완화를 "일부 브랜드만 남기기"로 확장하는 순간 칩 클릭이 영구 무동작이 된다.
+    **단 `bool` 만은 예외** — Pydantic 이 `price_max=True` 를 거부하지 않고 `1` 로 강제 변환해
+    "가격 상한 1원"으로 둔갑시키므로 스키마가 못 잡는 유일한 케이스다(실측).
+    """
+    base = ProductSearchFilters(price_max=50000, category="무선이어폰")
+
+    # 리스트 값도 스키마가 받으면 통과해야 한다(향후 brand 완화 확장 대비).
+    listed = buyer_graph._relaxed_filters_from_offer({"field": "brand", "value": ["A", "B"]}, base)
+    assert listed is not None and listed.brand == ["A", "B"]
+
+    # bool 은 스키마가 1 로 삼켜버리므로 여기서 막는다.
+    assert (
+        buyer_graph._relaxed_filters_from_offer({"field": "priceMax", "value": True}, base) is None
+    )
+    # 스키마가 거부하는 값은 그대로 폐기된다(사전 목록 없이도).
+    assert (
+        buyer_graph._relaxed_filters_from_offer({"field": "brand", "value": "단일문자열"}, base)
+        is None
+    )
+    assert (
+        buyer_graph._relaxed_filters_from_offer({"field": "priceMax", "value": [1, 2]}, base)
+        is None
+    )
+
+
+async def test_conditions_survive_auto_relaxation_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """[PR #248 2차 리뷰] 자동 완화 구간이 터져도 미룬 conditions 는 반드시 나간다.
+
+    미루기 전에는 conditions 가 검색 **전** 순수 계산이라 실패할 일이 없었다. 미룬 뒤로는 그
+    사이에서 예외가 나면 조건 칩이 통째로 사라지므로, 이 구간을 감싸 발신을 보장한다.
+    """
+
+    def _boom(filters, settings):  # noqa: ANN001
+        raise RuntimeError("candidate build boom")
+
+    monkeypatch.setattr(recommendation_graph, "build_relaxation_candidates", _boom)
+    with caplog.at_level(logging.WARNING):
+        events = await _collect(
+            run_buyer_turn(
+                _req(),
+                _member(),
+                llm=FakeLLM(decompose=_decompose_with(ratingMin=4.5)),  # 미루는 턴
+                search=_filtered_search([]),  # 0건 → 자동 완화 진입
+                push_fn=None,
+            )
+        )
+
+    types = _types(events)
+    assert types.count("conditions") == 1  # 조건 칩이 사라지지 않는다
+    assert types[-1] == "done"  # 완화 실패는 턴을 죽이지 않는다
+    assert "error" not in types
+    # 자동 완화 루프와 완화 칩 조립 **양쪽** 이 같은 후보 생성기를 쓰므로 둘 다 흡수돼야 한다.
+    assert "relaxation_auto_failed" in caplog.text
+    assert "relaxation_chips_failed" in caplog.text
+    rating_chip = next(c for c in _conditions(events) if c["field"] == "ratingMin")
+    assert rating_chip["value"] == 4.5  # 완화가 채택되지 않았으므로 원래 값
 
 
 async def test_stored_offer_rejects_wrong_typed_value_from_store_roundtrip() -> None:
