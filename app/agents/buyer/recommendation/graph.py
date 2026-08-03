@@ -571,10 +571,16 @@ async def stream_recommendation(
 
     try:
         result, suppressed_by_cat, received, had_candidates = _post_filter(search_result)
-    except Exception:
+    except Exception as exc:
         # [PR #248 2차 리뷰] **conditions 발신 보장** — 미룬 턴에서 여기가 터지면 조건 칩이
         # 통째로 사라진다(미루기 전에는 검색 **전** 순수 계산이라 사실상 실패할 일이 없었다).
         # 예외는 삼키지 않고 다시 올린다 — 후보가 확정되지 않은 채 추천을 이어갈 수는 없다.
+        #
+        # **다시 올리기 전에 이름표를 남긴다**(PR #248 3차 리뷰) — 이 함수의 다른 실패 경로는 전부
+        # `logger.warning(<이벤트명>, extra={"reason": …})` 로 단계를 특정하는데 여기만 빠져 있어,
+        # 프로덕션에서 터지면 원인 태그 없는 raw traceback 만 남아 집계·분류가 안 된다. 예외가
+        # 유실되는 문제는 아니지만(raise 로 상위에 그대로 간다) **어느 단계였는지**를 잃는다.
+        logger.warning("search_post_filter_failed", extra={"reason": str(exc)})
         if may_auto_relax:
             yield sse(
                 "conditions",
@@ -700,7 +706,13 @@ async def stream_recommendation(
         # [REQ-REC-042] 조용히 조건을 바꾸지 않는다 — 고지는 **token 산문**이 전담한다.
         # done 에는 싣지 않는다: 정본(CH-2)이 done 을 finishReason 만으로 확정했고 FE 도
         # 그 필드를 읽지 않는다(api-spec §3.1 사본 drift 정정 v0.19.1).
-        yield sse("token", TokenData(text=relaxation_notice).model_dump(by_alias=True))
+        # 다른 모든 사용자 노출 텍스트(칩 label·dedup·push 안내·rerank comment)와 같이
+        # `_strip_unsafe` 를 거친다(PR #248 3차 리뷰). 지금 notice 는 하드코딩 한국어 + 숫자
+        # 포맷뿐이라 제어·zero-width·bidi 문자가 섞일 경로가 없지만, 이 자리만 방어가 빠져 있으면
+        # 나중에 문구에 config·가변 텍스트를 섞는 순간 조용히 구멍으로 남는다.
+        yield sse(
+            "token", TokenData(text=_strip_unsafe(relaxation_notice)).model_dump(by_alias=True)
+        )
 
     # 완화 칩 — 0건이거나 소량(config 임계 미만)일 때 남은 예산만큼 후보를 probe 한다.
     relaxation_chips: list[SuggestionChip] = []

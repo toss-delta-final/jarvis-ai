@@ -157,7 +157,12 @@ def _relaxed_filters_from_offer(offer, base: ProductSearchFilters) -> ProductSea
     try:
         # None 은 '조건 해제'라는 정상 값이다(brand·color·평점 하한 소멸) — 스키마가 허용한다.
         return ProductSearchFilters.model_validate({**base.model_dump(), attr: value})
-    except ValidationError:
+    except ValidationError as exc:
+        # **거부도 관측 가능해야 한다**(PR #248 3차 리뷰 — 스윕에서 추가 발견). 조용히 None 을
+        # 돌려주면 손상된 저장 값(음수 가격 등)이 칩 클릭을 영구 무동작으로 만드는데, 사용자에게는
+        # "눌러도 아무 일이 없다"로만 보이고 서버에는 아무 흔적이 없다. 스키마가 잡아 준 사실을
+        # 여기서 이름표와 함께 남겨야 원인 분류가 된다.
+        logger.warning("relaxation_offer_rejected", extra={"reason": str(exc)})
         return None
 
 

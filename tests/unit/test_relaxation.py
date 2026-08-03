@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+from dataclasses import replace
 from fractions import Fraction
 
 import pytest
@@ -506,6 +507,83 @@ async def test_deferred_conditions_survive_fanout_merge_failure(
     assert "search_merge_failed" in caplog.text
     rating_chip = next(c for c in _conditions(events) if c["field"] == "ratingMin")
     assert rating_chip["value"] == 4.5  # 완화가 일어나지 않았으므로 원래 값
+
+
+async def test_post_filter_failure_is_tagged_before_it_propagates(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """[PR #248 3차 리뷰] 사후필터 실패는 다시 올리되 **이름표를 남기고** 올린다.
+
+    이 가드는 예외를 삼키지 않으니 유실 문제는 없다 — 후보가 확정되지 않은 채 추천을 이어갈 수는
+    없어서 **의도적으로** 다시 올린다. 잃는 건 **어느 단계였는지**다: 이 함수의 다른 실패 경로는
+    전부 이벤트명으로 단계를 특정하는데 여기만 없으면 프로덕션에서 원인 태그 없는 raw traceback 만
+    남아 집계·분류가 안 된다. 올리기 **전에** 미룬 조건 칩을 내보내는 것도 같이 고정한다.
+    """
+
+    class _BrokenResult:
+        total_count = 0
+
+        @property
+        def products(self):  # noqa: ANN201
+            raise RuntimeError("post-filter boom")
+
+    async def _search(filters, exclude_product_ids=None):  # noqa: ANN001
+        return _BrokenResult()
+
+    no_fanout = json.loads(json.dumps(DEFAULT_DECOMPOSE))
+    no_fanout["categoryQueries"] = []  # fan-out 병합 가드보다 먼저 걸리지 않게
+    no_fanout["filters"] = {"ratingMin": 4.5}  # 미루는 턴이어야 conditions 보장을 같이 본다
+
+    types: list[str] = []
+    with caplog.at_level(logging.WARNING), pytest.raises(RuntimeError, match="post-filter boom"):
+        # 예외가 전파되는 게 정상이라 `_collect` 대신 직접 돌며 그 **전까지** 나간 이벤트를 본다.
+        async for frame in run_buyer_turn(
+            _req(), _member(), llm=FakeLLM(decompose=no_fanout), search=_search, push_fn=None
+        ):
+            line = frame.strip()
+            if line.startswith("data:"):
+                types.append(json.loads(line[len("data:") :].strip())["type"])
+
+    assert "search_post_filter_failed" in caplog.text  # 단계가 특정된다
+    assert types.count("conditions") == 1  # 올리기 전에 미룬 조건 칩이 나갔다
+
+
+async def test_relaxation_notice_is_sanitized_like_every_other_outbound_text() -> None:
+    """[PR #248 3차 리뷰] 자동 완화 안내문도 다른 출력 텍스트와 같은 정제를 거친다.
+
+    지금 문구는 하드코딩 한국어 + 숫자 포맷뿐이라 실질 위험이 없지만, 이 자리만 방어가 빠져 있으면
+    나중에 config·가변 텍스트를 섞는 순간 조용히 구멍으로 남는다. 그때 깨지는 게 아니라 **지금**
+    깨지도록 고정한다 — 문구 생성기가 위험 문자를 내도 스트림에는 안 나가야 한다.
+    """
+    nasty = "​‮\x07"  # zero-width + bidi override + 제어문자
+
+    def _tainted(filters, settings):  # noqa: ANN001
+        return [
+            replace(c, notice=nasty + c.notice + nasty)
+            for c in build_relaxation_candidates(filters, settings)
+        ]
+
+    async def _push(push) -> bool:  # noqa: ANN001
+        return True
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(recommendation_graph, "build_relaxation_candidates", _tainted)
+        events = await _collect(
+            run_buyer_turn(
+                _req(),
+                _member(),
+                llm=FakeLLM(decompose=_decompose_with(ratingMin=4.5)),
+                search=_rating_search([_product(101, 39000, rating=4.2)], []),
+                push_fn=_push,
+            )
+        )
+
+    notice = next(
+        e["data"]["text"]
+        for e in events
+        if e["type"] == "token" and "넓혔어요" in e["data"]["text"]
+    )
+    assert not any(ch in notice for ch in nasty), f"정제되지 않은 문자가 남았다: {notice!r}"
 
 
 async def test_deferred_conditions_still_emitted_when_search_fails() -> None:
@@ -1435,6 +1513,68 @@ def test_auto_relaxing_explicit_constraints_is_rejected_at_startup(field: str) -
 
     assert "RELAXATION_AUTO_FIELDS" in str(exc.value)
     assert field in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("priceMax", -50000), ("ratingMin", -0.5)],
+    ids=["가격상한", "평점하한"],
+)
+async def test_out_of_range_stored_offer_never_reaches_spring(
+    field: str,
+    value: float,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """[PR #248 3차 리뷰] 손상된 저장 값의 **범위**도 스키마가 막고, 막았다는 사실이 로그에 남는다.
+
+    타입만 보면 `{"field":"priceMax","value":-50000}` 은 멀쩡한 int 다. 스키마에 `ge=0` 이 없으면
+    `model_validate` 를 통과해 그대로 Spring 쿼리 파라미터(`maxPrice=-50000`)로 나가고, 오류 없이
+    **조용한 0건**으로만 드러나 원인 추적이 안 된다. 여기서 걸러 검색 자체를 안 하게 한다.
+    """
+    label = "손상된 칩"
+
+    class _Corrupt:
+        async def get_snapshot(self, key):  # noqa: ANN001
+            return {label: {"field": field, "value": value}}, None
+
+        async def put(self, key, offers, applied):  # noqa: ANN001
+            return None
+
+    async def _factory():
+        return _Corrupt()
+
+    monkeypatch.setattr(buyer_graph, "get_relaxation_offer_store", _factory)
+    calls: list = []
+    with caplog.at_level(logging.WARNING):
+        await _collect(
+            run_buyer_turn(
+                _req(message=label),  # 칩을 누른 것처럼 label 을 그대로 보낸다
+                _member(),
+                llm=FakeLLM(decompose=_decompose_with(priceMax=50000)),
+                search=_filtered_search([_product(101, 39000)], calls=calls),
+                push_fn=None,
+            )
+        )
+
+    assert calls, "검색은 정상 조건으로 수행된다(칩 적용만 거부)"
+    assert all(getattr(f, "price_max", 0) >= 0 for f in calls)  # 음수가 Spring 으로 안 나간다
+    assert all(getattr(f, "price_min", 0) is None or f.price_min >= 0 for f in calls)
+    assert all(f.rating_min is None or f.rating_min >= 0 for f in calls)
+    assert "relaxation_offer_rejected" in caplog.text  # 거부가 조용하지 않다
+
+
+@pytest.mark.parametrize("attr", ["price_min", "price_max", "rating_min"])
+def test_negative_numeric_filters_are_rejected_by_the_schema(attr: str) -> None:
+    """수치 하한/상한은 스키마가 음수를 거부한다 — 검증을 여기 한 곳에 모은다.
+
+    위 완화 오퍼 경로 말고도 출처가 더 있다(decompose LLM 산출·멀티턴 병합). 호출부마다 범위
+    체크를 두면 스키마보다 좁거나 넓어져 조용히 어긋나므로, 스키마에서 한 번에 막는다.
+    `price_min` 은 완화 대상 필드가 아니라 오퍼 경로로는 닿지 않아 여기서만 커버된다.
+    """
+    with pytest.raises(ValidationError):
+        ProductSearchFilters.model_validate({attr: -1})
+    assert getattr(ProductSearchFilters.model_validate({attr: 0}), attr) == 0  # 0 은 정상값
 
 
 def test_auto_relaxation_can_be_disabled_but_not_widened() -> None:
