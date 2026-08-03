@@ -25,6 +25,8 @@ from app.schemas.spring import ProductSearchFilters
 
 _NAMESPACE_ROOT = "buyer_revert_v2"
 _CATEGORIES_KEY = "categories"
+_REPURCHASE_NAMESPACE_ROOT = "buyer_repurchase_v1"
+_PRODUCT_IDS_KEY = "product_ids"
 
 # key(thread_key)별 asyncio.Lock — RevertStore.add() 의 get→put(read-modify-write) 구간을
 # 직렬화한다. 동일 스레드로 겹치는 요청(멀티탭·연속 발화)이 오면 나중 aput 이 앞선 갱신을
@@ -33,6 +35,7 @@ _CATEGORIES_KEY = "categories"
 # 실 PostgreSQL 경로는 mutation_lock의 advisory lock으로 인스턴스 간 직렬화한다. InMemory/test
 # 경로만 이 로컬 lock을 사용하며, WeakValueDictionary라 유휴 key는 GC가 자동 회수한다(이슈 #50).
 _add_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+_repurchase_add_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
 
 def _lock_for(key: str) -> asyncio.Lock:
@@ -40,6 +43,14 @@ def _lock_for(key: str) -> asyncio.Lock:
     if lock is None:
         lock = asyncio.Lock()
         _add_locks[key] = lock
+    return lock
+
+
+def _repurchase_lock_for(key: str) -> asyncio.Lock:
+    lock = _repurchase_add_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _repurchase_add_locks[key] = lock
     return lock
 
 
@@ -84,10 +95,9 @@ class RouteDecision:
     # [#120] 명시 재구매/재추천 지목(상품 지칭 텍스트) — 최근 구매 exact 제외를 되돌리는 신호.
     # productId 가 아니라 **텍스트**인 이유는 graph 가 본인 구매 이력에 대해서만 해소해 신뢰
     # 경계를 유지하기 때문(#120).
-    # **이번 턴 한정 신호다** — revert_categories 는 revert_store 에 누적돼 다음 턴까지 남지만
-    # 이 필드는 저장소가 없어 graph 가 소비하고 끝난다. 되돌리기 축을 exact 로 넓힌다는 점에서만
-    # 대칭이고 **지속성은 대칭이 아니다**(PR #230 리뷰). 멀티턴 지속은 store 확장이 필요해 이번
-    # 범위 밖으로 뒀다 — 다음 턴 조건 다듬기 발화면 그 상품은 다시 제외된다(후속 이슈).
+    # graph 가 이 텍스트를 본인 최근 구매 이력의 productId 로 해소해 RepurchaseStore 에 누적한다.
+    # 이후 매 턴 저장값을 그 시점의 최근 구매 이력과 교집합으로 재검증하므로, 저장소가 오염돼도
+    # 면제 대상은 항상 본인 최근 구매의 부분집합이라는 신뢰 경계를 유지한다(#232).
     repurchase_products: list[str] = field(default_factory=list)
     # 카테고리 하이브리드 매핑(이슈 #59, 방식 A):
     category_queries: list[CategoryQuery] = field(default_factory=list)  # decompose 추측(매핑 전)
@@ -208,9 +218,60 @@ class RevertStore:
             )
 
 
+class RepurchaseStore:
+    """스레드별 재구매 exact 제외 면제 productId 목록 — 오래된 순서대로 유계 누적한다."""
+
+    def __init__(self, store: BaseStore | None = None) -> None:
+        self._store = store or InMemoryStore()
+
+    async def get(self, key: str) -> list[int]:
+        item = await run_with_query_timeout(
+            self._store.aget((_REPURCHASE_NAMESPACE_ROOT, key), _PRODUCT_IDS_KEY)
+        )
+        if item is None or not isinstance(item.value, dict):
+            return []
+        values = item.value.get(_PRODUCT_IDS_KEY)
+        if not isinstance(values, list):
+            return []
+        return [value for value in values if type(value) is int]
+
+    async def add(self, key: str, product_ids, *, cap: int) -> None:
+        if not product_ids:
+            return
+        async with mutation_lock(
+            self._store,
+            f"buyer:repurchase:{key}",
+            _repurchase_lock_for(key),
+        ):
+            current = await self.get(key)
+            incoming: list[int] = []
+            for product_id in product_ids:
+                if type(product_id) is not int:
+                    continue
+                if product_id in incoming:
+                    incoming.remove(product_id)
+                incoming.append(product_id)
+            incoming_ids = set(incoming)
+            merged = [product_id for product_id in current if product_id not in incoming_ids]
+            merged.extend(incoming)
+            retained = merged[-cap:] if cap > 0 else []
+            await run_with_query_timeout(
+                self._store.aput(
+                    (_REPURCHASE_NAMESPACE_ROOT, key),
+                    _PRODUCT_IDS_KEY,
+                    {_PRODUCT_IDS_KEY: retained},
+                )
+            )
+
+
 async def get_revert_store() -> RevertStore:
     """되돌리기 스토어 — pg-profile 공유 연결 백엔드(요청마다 얇은 래퍼 재생성)."""
     return RevertStore(await pg_store.get_store())
+
+
+async def get_repurchase_store() -> RepurchaseStore:
+    """재구매 면제 스토어 — pg-profile 공유 연결 백엔드(요청마다 얇은 래퍼 재생성)."""
+    return RepurchaseStore(await pg_store.get_store())
 
 
 def reset_revert_store() -> None:
@@ -222,3 +283,13 @@ def reset_revert_store() -> None:
     """
     pg_store.reset_store()
     _add_locks.clear()
+
+
+def reset_repurchase_store() -> None:
+    """테스트 격리용 — 공유 pg-profile store와 재구매 key별 락을 초기화한다.
+
+    pytest-asyncio가 테스트마다 새 이벤트 루프를 쓰므로 이전 루프에 묶인 stale ``Lock``을
+    재사용하면 hang이 날 수 있다. 따라서 저장값뿐 아니라 전용 lock dict도 함께 비운다.
+    """
+    pg_store.reset_store()
+    _repurchase_add_locks.clear()
