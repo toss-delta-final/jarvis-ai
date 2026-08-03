@@ -84,6 +84,18 @@ def test_pricing_cost_and_coverage_propagate_unknown(tmp_path: Path) -> None:
     assert coverage == {"costCoverage": 0.5, "tokenCoverage": 0.5}
 
 
+def test_repository_pricing_manifest_includes_luna() -> None:
+    book = PriceBook.load()
+    assert book.cost(
+        model="gpt-5.6-luna", input_tokens=1000, output_tokens=1000
+    ) == pytest.approx(0.0014)
+    assert book.entries["gpt-5.6-luna"]["effectiveDate"] == "2026-07-30"
+    assert (
+        book.entries["gpt-5.6-luna"]["source"]
+        == "https://openai.com/index/advancing-the-price-performance-frontier-with-gpt-5-6/"
+    )
+
+
 class _Message:
     def __init__(
         self,
