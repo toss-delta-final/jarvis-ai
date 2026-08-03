@@ -104,6 +104,67 @@ async def test_expansion_timeout_degrades_to_single_original_color(monkeypatch, 
     assert elapsed < 0.1
 
 
+async def test_expansion_saturation_degrades_immediately_then_recovers(monkeypatch) -> None:
+    import threading
+
+    first_settings = get_settings().model_copy(
+        update={
+            "color_synonym_expansion_enabled": True,
+            "color_synonym_pool_max_size": 1,
+            "color_synonym_query_timeout_s": 0.01,
+        }
+    )
+    later_settings = first_settings.model_copy(update={"color_synonym_query_timeout_s": 0.5})
+    current_settings = [first_settings]
+    seen = []
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    calls = 0
+
+    monkeypatch.setattr(sc, "get_settings", lambda: current_settings[0])
+    monkeypatch.setattr(sc, "_client", lambda: _Client(seen))
+    monkeypatch.setattr(sc, "_color_synonym_limiters", {}, raising=False)
+
+    from app.pipelines import color_synonyms
+
+    def load(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            started.set()
+            release.wait(timeout=1.0)
+            finished.set()
+        return {"남색": ["네이비", "남색"]}
+
+    monkeypatch.setattr(color_synonyms, "get_synonym_map", load)
+    try:
+        await sc.search_products(ProductSearchFilters(color="남색"))
+        assert started.is_set()
+
+        current_settings[0] = later_settings
+        await asyncio.wait_for(
+            sc.search_products(ProductSearchFilters(color="남색")),
+            timeout=0.1,
+        )
+        assert calls == 1
+        assert seen == [{"color": "남색"}, {"color": "남색"}]
+
+        release.set()
+        for _ in range(100):
+            if finished.is_set():
+                break
+            await asyncio.sleep(0.001)
+        assert finished.is_set()
+
+        await sc.search_products(ProductSearchFilters(color="남색"))
+        assert calls == 2
+        assert seen[-1] == {"color": ["네이비", "남색"]}
+    finally:
+        release.set()
+        await asyncio.sleep(0.01)
+
+
 async def test_expansion_loads_off_loop_and_sends_repeated_values(monkeypatch) -> None:
     settings = get_settings().model_copy(update={"color_synonym_expansion_enabled": True})
     seen = []

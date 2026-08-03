@@ -34,6 +34,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 import logging
 import math
+import threading
 from types import TracebackType
 from typing import Literal, TypeVar
 
@@ -94,6 +95,65 @@ _SpringOperation = Literal[
 
 
 _log = logging.getLogger(__name__)
+_color_synonym_limiters: dict[tuple[str, int], threading.BoundedSemaphore] = {}
+_color_synonym_limiter_lock = threading.Lock()
+
+
+def _color_synonym_limiter(dsn: str, max_concurrency: int) -> threading.BoundedSemaphore:
+    key = (dsn, max_concurrency)
+    limiter = _color_synonym_limiters.get(key)
+    if limiter is None:
+        with _color_synonym_limiter_lock:
+            limiter = _color_synonym_limiters.get(key)
+            if limiter is None:
+                limiter = threading.BoundedSemaphore(max_concurrency)
+                _color_synonym_limiters[key] = limiter
+    return limiter
+
+
+def _consume_background_synonym_lookup(task: asyncio.Task[dict[str, list[str]]]) -> None:
+    """타임아웃 뒤 승인 사전 조회의 늦은 실패를 기록하고 예외를 회수한다."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        _log.warning(
+            "색상 동의어 백그라운드 조회 실패",
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+
+
+async def _load_color_synonym_map(settings) -> dict[str, list[str]] | None:
+    """풀 크기만큼만 승인 사전 worker를 허용하고 포화 시 즉시 degrade한다."""
+    from app.pipelines import color_synonyms  # noqa: PLC0415 - lazy DB 경로
+
+    limiter = _color_synonym_limiter(
+        settings.catalog_db_url,
+        settings.color_synonym_pool_max_size,
+    )
+    if not limiter.acquire(blocking=False):
+        _log.warning("색상 동의어 조회 동시 실행 상한 — 원문 단수 color로 검색")
+        return None
+
+    def run() -> dict[str, list[str]]:
+        try:
+            return color_synonyms.get_synonym_map(
+                settings.catalog_db_url,
+                ttl_s=settings.color_synonym_cache_ttl_s,
+            )
+        finally:
+            # wait_for가 먼저 끝나도 실제 worker 종료 전에는 풀 크기 슬롯을 반환하지 않는다.
+            limiter.release()
+
+    task = asyncio.create_task(asyncio.to_thread(run))
+    try:
+        return await asyncio.wait_for(
+            asyncio.shield(task),
+            timeout=settings.color_synonym_query_timeout_s,
+        )
+    except (TimeoutError, asyncio.CancelledError):
+        task.add_done_callback(_consume_background_synonym_lookup)
+        raise
 
 
 @contextmanager
@@ -494,15 +554,9 @@ async def search_products(filters: ProductSearchFilters) -> ProductSearchResult:
         try:
             from app.pipelines import color_synonyms  # noqa: PLC0415 - lazy DB 경로
 
-            mapping = await asyncio.wait_for(
-                asyncio.to_thread(
-                    color_synonyms.get_synonym_map,
-                    settings.catalog_db_url,
-                    ttl_s=settings.color_synonym_cache_ttl_s,
-                ),
-                timeout=settings.color_synonym_query_timeout_s,
-            )
-            color_values = color_synonyms.expand_color(filters.color, mapping)
+            mapping = await _load_color_synonym_map(settings)
+            if mapping is not None:
+                color_values = color_synonyms.expand_color(filters.color, mapping)
         except Exception:
             # 색상 확장은 보조 품질 경로다. DB 장애가 본 검색을 죽이지 않게 기존 단수로 degrade.
             _log.warning("색상 동의어 확장 실패 — 원문 단수 color로 검색", exc_info=True)

@@ -64,9 +64,15 @@ def _harvest_limiter(dsn: str, max_concurrency: int) -> threading.BoundedSemapho
 
 
 def _consume_background_harvest(task: asyncio.Task[int]) -> None:
-    """타임아웃 뒤 계속 도는 shield task 예외를 회수해 unhandled 경고를 막는다."""
-    if not task.cancelled():
-        task.exception()
+    """타임아웃 뒤 shield task의 늦은 실패를 기록하고 예외를 회수한다."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        _log.warning(
+            "색상 표기 백그라운드 수확 실패",
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
 
 
 async def _harvest_change_colors(change: ProductChange, *, settings: Settings) -> int:

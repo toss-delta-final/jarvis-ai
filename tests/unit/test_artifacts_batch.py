@@ -779,6 +779,30 @@ async def test_color_harvest_saturation_skips_without_delaying_batch(monkeypatch
         await asyncio.sleep(0.01)
 
 
+async def test_background_harvest_logs_only_late_failure(caplog):
+    import asyncio
+
+    async def fail():
+        raise RuntimeError("late harvest failure")
+
+    async def succeed():
+        return 1
+
+    failed = asyncio.create_task(fail())
+    succeeded = asyncio.create_task(succeed())
+    cancelled = asyncio.create_task(asyncio.sleep(1))
+    cancelled.cancel()
+    await asyncio.sleep(0)
+
+    with caplog.at_level("WARNING"):
+        _batch._consume_background_harvest(failed)
+        _batch._consume_background_harvest(succeeded)
+        _batch._consume_background_harvest(cancelled)
+
+    assert caplog.text.count("백그라운드") == 1
+    assert "late harvest failure" in caplog.text
+
+
 async def test_color_harvest_cancellation_propagates(monkeypatch):
     import asyncio
 
