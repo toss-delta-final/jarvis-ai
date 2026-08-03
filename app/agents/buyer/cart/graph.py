@@ -147,10 +147,14 @@ async def stream_cart_add(
     ):
         await cart_store.clear_pending(thread_key)
         pending = None
+    pending_option_mentioned = pending is not None and any(
+        option.name.strip() in message for option in pending.options if option.name.strip()
+    )
     unresolved_switch = (
         pending is not None
         and (cart.product_id is None or cart.product_id == pending.product_id)
         and any(marker in message for marker in settings.cart_pending_switch_markers)
+        and not pending_option_mentioned
     )
     if unresolved_switch:
         await cart_store.clear_pending(thread_key)

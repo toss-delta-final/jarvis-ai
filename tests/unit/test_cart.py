@@ -1250,6 +1250,97 @@ async def test_cart_add_option_answer_during_pending_still_adds_pending_product(
     assert await store.get_pending("m:t") is None
 
 
+@pytest.mark.parametrize(
+    ("message", "option"),
+    [
+        pytest.param("아니 파란색이요", CartOption(option_id=1001, name="파란색"), id="blue"),
+        pytest.param("아니 그냥 레드로 주세요", CartOption(option_id=1002, name="레드"), id="red"),
+    ],
+)
+async def test_cart_add_option_correction_marker_still_uses_named_pending_option(
+    message: str, option: CartOption
+) -> None:
+    """'아니'가 있어도 pending 옵션명을 말한 턴은 상품 전환이 아니라 옵션 답변으로 처리한다."""
+    store = CartStateStore()
+    await store.set_pending(
+        "m:t",
+        PendingAdd(
+            product_id=101,
+            quantity=1,
+            options=[
+                CartOption(option_id=1001, name="파란색"),
+                CartOption(option_id=1002, name="레드"),
+            ],
+        ),
+    )
+    captured = {}
+
+    async def add_fn(req):
+        captured["productId"] = req.product_id
+        captured["optionId"] = req.option_id
+        captured["pendingKeptUntilAdd"] = await store.get_pending("m:t") is not None
+        return AddToCartResult(success=True, cart_item_id=8)
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(product_id=101, option_id=option.option_id, quantity=1),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            message=message,
+            allowed_product_ids={101, 201},
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
+        )
+    )
+
+    assert captured == {
+        "productId": 101,
+        "optionId": option.option_id,
+        "pendingKeptUntilAdd": True,
+    }
+    assert _types(events) == ["action", "done"]
+    assert await store.get_pending("m:t") is None
+
+
+async def test_cart_add_switch_marker_ignores_empty_pending_option_name() -> None:
+    """빈 옵션명은 모든 발화에 포함되므로 옵션 답변 가드에서 제외하고 전환 감지를 유지한다."""
+    store = CartStateStore()
+    await store.set_pending(
+        "m:t",
+        PendingAdd(
+            product_id=101,
+            quantity=1,
+            options=[
+                CartOption(option_id=1000, name=""),
+                CartOption(option_id=1001, name="레드"),
+                CartOption(option_id=1002, name="블루"),
+            ],
+        ),
+    )
+
+    async def add_fn(req):
+        raise AssertionError(f"옵션명 없는 전환은 담기에 도달하면 안 됨: {req}")
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(product_id=101, option_id=1002, quantity=1),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            message="아니 이어폰 담아줘",
+            allowed_product_ids={101, 201},
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
+        )
+    )
+
+    assert _types(events) == ["token", "done"]
+    assert await store.get_pending("m:t") is None
+
+
 async def test_cart_add_other_color_during_pending_is_documented_safe_false_positive() -> None:
     """알려진 한계: '다른 색'도 상품 전환으로 감지되지만 오담기 없이 해제 후 되묻는다."""
     store = CartStateStore()
