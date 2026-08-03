@@ -354,9 +354,15 @@
     전제가 그대로 살아남는다. 근거 문장은 코드 한 줄로 반증 가능한 형태로 적는다.
   - 근거를 문서 여러 곳에 복사하기 전에 **한 번 더 확인한다.** 퍼진 뒤 정정하면 api-spec·SPEC·
     CHANGELOG·커밋 메시지를 모두 손봐야 한다(이번에 실제로 그랬다).
+- **[2026-08-04 갱신] 이 전제는 #113 으로 다시 바뀌었다.** 자동 완화가 검색 **후에** 조건을 바꿀
+  수 있는 턴은 표시-실제 불일치를 막으려고 `conditions` 를 검색 뒤로 미룬다 — 그 턴에서는 검색
+  재시도가 first-token 예산을 **실제로 쓴다.** 위 "한 톨도 쓰지 않는다"를 **현재 사실로 읽지 말
+  것**(그 시점의 기록이다). 검증기는 이제 전체 상한·first-token 상한 **둘 다**와 비교한다.
+  이 항목이 남기는 교훈은 방향이 아니라 **"emit 순서가 정한다"** 는 규칙 자체다 — 순서를 바꾸는
+  변경은 이 검증기의 전제도 함께 갱신해야 한다.
 - 관련: `app/core/config.py` `_require_search_retry_within_stream_budget`,
-  `app/agents/buyer/recommendation/graph.py`(`conditions` → search 순서), api-spec §2.9 c,
-  PR #235 리뷰, #138/#241
+  `app/agents/buyer/recommendation/graph.py`(`conditions` ↔ search 순서), api-spec §2.9 c,
+  PR #235 리뷰, #138/#241, #113/PR #248 3차 리뷰
 
 ## [2026-08-02] 타임아웃을 판단하기 전에 상한과 지표의 측정 지점을 구분한다
 - 증상: #151 댓글과 baseline README가 `slo_first_token_ms` 10초에

@@ -916,19 +916,26 @@ class Settings(BaseSettings):
     def _require_search_retry_within_stream_budget(self) -> "Settings":
         """I-1 검색 재시도 총량이 스트림 전체 상한을 넘으면 기동 실패 (#133).
 
-        **first-token 상한이 아니라 전체 상한과 비교하는 이유**(PR #241/#138 lessons 로 정정):
-        `stream_first_token_timeout_s` 가 재는 것은 §2.9 c 의 **첫 SSE 이벤트**까지인데, 추천
-        경로의 첫 이벤트는 `conditions`(`recommendation/graph.py`)이고 **검색은 그 뒤**에 돈다.
-        즉 검색 재시도는 first-token 예산을 한 톨도 쓰지 않는다 — 초판이 파이프라인 그림만 보고
-        "검색이 첫 토큰보다 앞"이라 적었던 것은 **emit 순서를 코드로 확인하지 않은 오류**다.
+        **전체 상한과 비교하는 이유**(PR #241/#138 lessons 로 정정): 재시도가 갉아먹는 것은 턴
+        전체 시간이다. `llm_timeout_s * (llm_max_retries + 1)` 과 같은 결의 예산식이며, 한쪽만
+        튜닝하면 조용히 어긋나는 쌍이라 기동 시점에 고정한다. 비교 대상은 **구매자 전체
+        상한**(`stream_total_timeout_buyer_s`, #138)이다 — I-1 검색은 구매자 추천 경로에서만
+        돌고, 그 경로를 실제로 끊는 것은 판매자와 공용인 90s 가 아니라 구매자 전용 30s 다.
 
-        재시도가 실제로 갉아먹는 것은 턴 전체 시간이므로 전체 상한과 묶는다. `llm_timeout_s *
-        (llm_max_retries + 1)` 과 같은 결의 예산식이며, 한쪽만 튜닝하면 조용히 어긋나는 쌍이라
-        기동 시점에 고정한다.
+        **first-token 상한과도 비교한다**(#113 PR #248 3차 리뷰로 정정): 이 docstring 은 원래
+        "추천 경로의 첫 이벤트는 `conditions` 이고 검색은 그 뒤라 검색 재시도는 first-token
+        예산을 한 톨도 쓰지 않는다"고 적고 있었다. **#113 이 그 순서를 바꿨다** — 자동 완화가
+        검색 **후에** 조건을 바꿀 수 있는 턴(기본 설정에선 `ratingMin` 이 걸린 턴)은 표시-실제
+        불일치를 막으려고 `conditions` 를 검색 뒤로 미룬다(§3.1 이 conditions 를 0~1 회로
+        못박아 "고쳐서 재전송"이 불가능하다). 그 턴에서는 검색 재시도가 first-token 예산을
+        **실제로 쓴다.** 순서를 바꾸고도 이 전제를 갱신하지 않으면, 초판이 저질렀던 "emit 순서를
+        코드로 확인하지 않은 오류"를 방향만 바꿔 되풀이하는 셈이다.
 
-        비교 대상은 **구매자 전체 상한**(`stream_total_timeout_buyer_s`, #138)이다 — I-1 검색은
-        구매자 추천 경로에서만 돌고, 그 경로를 실제로 끊는 것은 판매자와 공용인 90s 가 아니라
-        구매자 전용 30s 다. 느슨한 쪽과 비교하면 검증이 이름만 남는다.
+        **완화 probe 를 곱하지는 않는다.** 미룬 턴의 first-token 경로는 두 갈래인데 배타적이다:
+        검색이 재시도를 소진하고 실패하면 `SEARCH_FAILED` 로 끝나 probe 가 아예 안 돌고,
+        probe 가 도는 것은 검색이 **성공**해서 0 건을 돌려준 경우다(그때 검색은 재시도를 쓰지
+        않았다). 그래서 실측 최악은 `spring_timeout_s + budget` 이지 `2 * budget` 이 아니다.
+        곱해서 검증하면 기본값(12 >= 10)에서 기동이 실패한다 — 일어나지 않는 조합 때문에.
         """
         budget = self.spring_timeout_s * (self.spring_max_retries + 1)
         if budget >= self.stream_total_timeout_buyer_s:
@@ -937,6 +944,14 @@ class Settings(BaseSettings):
                 f"STREAM_TOTAL_TIMEOUT_BUYER_S (got {budget} >= "
                 f"{self.stream_total_timeout_buyer_s}): "
                 "search retries alone would exhaust the buyer turn budget"
+            )
+        if budget >= self.stream_first_token_timeout_s:
+            raise ValueError(
+                "SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1) must be < "
+                f"STREAM_FIRST_TOKEN_TIMEOUT_S (got {budget} >= "
+                f"{self.stream_first_token_timeout_s}): "
+                "conditions is deferred past the search on auto-relaxable turns (#113), "
+                "so search retries consume the first-token budget and would 504"
             )
         return self
 
