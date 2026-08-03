@@ -6,6 +6,13 @@
       "model": "gpt-5-nano",
       "outPer1k": 0.0004,
       "source": "https://developers.openai.com/api/docs/models/gpt-5-nano"
+    },
+    {
+      "effectiveDate": "2026-07-30",
+      "inPer1k": 0.0002,
+      "model": "gpt-5.6-luna",
+      "outPer1k": 0.0012,
+      "source": "https://openai.com/index/advancing-the-price-performance-frontier-with-gpt-5-6/"
     }
   ],
   "version": "1"
