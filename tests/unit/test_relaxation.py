@@ -354,6 +354,45 @@ async def test_conditions_chips_are_not_delayed_when_auto_relax_cannot_fire() ->
     assert _types(events).count("conditions") == 1
 
 
+async def test_deferred_conditions_survive_fanout_merge_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """[PR #248 리뷰] fan-out 병합이 터져도 미뤄 둔 조건 칩은 나간다.
+
+    `_leg` 는 leg 별 실패를 잡는데 그 결과를 합치는 `_merge_fanout_results` 호출만 방어 밖이라,
+    거기서 예외가 나면 `search_bundle is None` 분기(→ SEARCH_FAILED, 미뤄 둔 conditions 발신)에
+    **도달하지 못하고** 스트림이 끊겼다 — conditions 를 검색 뒤로 미루면서 생긴 새 실패 경로다.
+    """
+
+    async def _two_leg(*, category_queries, utterance, settings, llm=None, tier="fast", **_):  # noqa: ANN001
+        return CategoryMapping(legs=[("무선이어폰", "이어폰"), ("파우치", "파우치")], unresolved=[])
+
+    def _boom(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise RuntimeError("merge boom")
+
+    monkeypatch.setattr(recommendation_graph, "_merge_fanout_results", _boom)
+    with caplog.at_level(logging.WARNING):
+        events = await _collect(
+            run_buyer_turn(
+                _req(),
+                _member(),
+                llm=FakeLLM(decompose=_decompose_with(ratingMin=4.5)),  # 미루는 턴
+                search=_filtered_search([_product(101, 30000, rating=4.8)]),
+                push_fn=None,
+                map_categories=_two_leg,
+            )
+        )
+
+    types = _types(events)
+    assert types.count("conditions") == 1  # 조건 칩이 사라지지 않는다
+    assert types.index("conditions") < types.index("error")
+    assert types[-1] == "error"  # 병합 실패는 SEARCH_FAILED 로 degrade
+    assert "search_merge_failed" in caplog.text
+    rating_chip = next(c for c in _conditions(events) if c["field"] == "ratingMin")
+    assert rating_chip["value"] == 4.5  # 완화가 일어나지 않았으므로 원래 값
+
+
 async def test_deferred_conditions_still_emitted_when_search_fails() -> None:
     """미룬 조건 칩이 검색 실패 턴에서 통째로 사라지지 않는다.
 
@@ -1197,8 +1236,10 @@ async def test_probe_failure_after_search_does_not_kill_the_stream(
     assert _types(events)[-1] == "done"
     assert "error" not in _types(events)
     assert "products.ready" in _types(events)  # 본 경로는 멀쩡히 완주한다
-    assert "relaxation_probe_failed" in caplog.text
     assert _suggestions(events) == []  # 터진 후보의 칩만 빠진다
+    # 어느 방어가 잡든 스트림은 살아남아야 한다 — 이 응답은 fan-out 병합에서 먼저 걸리므로
+    # `search_merge_failed`(더 이른 지점)로, 비-fanout 경로면 `relaxation_probe_failed` 로 남는다.
+    assert "search_merge_failed" in caplog.text or "relaxation_probe_failed" in caplog.text
 
 
 @pytest.mark.parametrize(

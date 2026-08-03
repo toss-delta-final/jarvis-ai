@@ -415,7 +415,16 @@ async def stream_recommendation(
         if len(survived) < len(leg_results):
             if trace := current_request_trace():
                 trace.mark_degraded("fanout_partial")
-        return _merge_fanout_results(survived, settings.category_fanout_merge_cap)
+        try:
+            return _merge_fanout_results(survived, settings.category_fanout_merge_cap)
+        except Exception as exc:  # noqa: BLE001 - leg 격리와 같은 원칙으로 병합도 감싼다
+            # [PR #248 리뷰] `_leg` 는 leg 별 실패를 잡는데 그 결과를 합치는 이 호출만 밖에 있었다.
+            # 여기서 터지면 `search_bundle is None` 분기(→ SEARCH_FAILED)에 **도달하지 못해**
+            # 미뤄 둔 conditions 가 통째로 사라진다 — conditions 를 검색 뒤로 미루면서 생긴 새
+            # 실패 경로다(미루기 전에는 이미 나간 뒤였다). None 으로 떨궈 그 분기를 타게 한다.
+            # CancelledError(BaseException)는 전파돼 협조적 취소가 보존된다.
+            logger.warning("search_merge_failed", extra={"reason": str(exc)})
+            return None
 
     # I-19 조회가 **실패**했는지 — "이력이 없다"(게스트·비회원)와 구분한다. 둘 다 None 을
     # 돌려주므로 호출부에서는 갈라낼 수 없는데, 없는 기능을 "고장났다"고 고지하면 거짓말이 된다.
