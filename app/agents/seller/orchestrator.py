@@ -606,9 +606,16 @@ async def run_graph(
 ) -> ChartSet:
     """차트 생성 실행 — 실패는 빈 ChartSet 으로 degrade(보고서를 죽이지 않는다, C2 대칭).
 
-    차트도 recommend 와 같은 부가 가치다: LLM 장애·타임아웃·구조화 출력 실패가
-    나도 검증된 보고서는 그대로 나간다. G1(verifier.run_chart_checks)이 미달
-    ChartSpec 을 드랍한다 — 보고서 검증(D)과 달리 재작성 루프는 없다.
+    차트도 recommend 와 같은 부가 가치다: LLM 장애·타임아웃·구조화 출력 실패는 물론
+    G1(verifier.run_chart_checks) 자체의 실패(예: 향후 verifier 변경으로 인한 버그,
+    비정상 float 값 등)가 나도 검증된 보고서는 그대로 나간다 — [PR 리뷰 반영] G1
+    호출을 agent 호출과 별개의 try/except 로 감싼다. 호출부(run_analysis_pipeline)
+    는 이 함수를 asyncio.gather(run_recommend, run_graph)로 묶되 return_exceptions
+    을 쓰지 않으므로, 이 함수가 예외를 밖으로 흘리면 이미 성공한 recommend 결과·
+    검증된 보고서까지 통째로 사과 응답으로 대체된다(이 함수는 예외를 밖으로
+    내보내면 안 된다는 뜻).
+    G1(verifier.run_chart_checks)이 미달 ChartSpec 을 드랍한다 — 보고서 검증(D)과
+    달리 재작성 루프는 없다.
 
     호출부(run_analysis_pipeline)는 resolved.wants_chart 일 때만 이 함수를
     run_recommend 와 asyncio.gather 로 병렬 호출한다 — 원치 않는 요청까지
@@ -637,7 +644,11 @@ async def run_graph(
         logger.warning("graph 실패(%r) — 차트 없이 계속(C2 대칭)", exc)
         return ChartSet(charts=[])
 
-    passed, dropped = run_chart_checks(charts, findings)
+    try:
+        passed, dropped = run_chart_checks(charts, findings)
+    except Exception as exc:
+        logger.warning("G1 차트 검증 실패(%r) — 차트 없이 계속(C2 대칭)", exc)
+        return ChartSet(charts=[])
     if dropped:
         logger.info("차트 드랍 %d건(G1): %s", len(dropped), "; ".join(dropped))
     return passed

@@ -772,6 +772,37 @@ def test_run_graph_failure_degrades_to_empty(monkeypatch: pytest.MonkeyPatch) ->
     assert result.charts == []
 
 
+def test_run_graph_g1_exception_degrades_to_empty_instead_of_propagating(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """G1(run_chart_checks) 자체가 예외를 던져도 빈 ChartSet 으로 degrade 한다
+    (PR 리뷰 반영 — 기존엔 이 호출이 try 밖에 있어 예외가 run_graph 밖으로
+    전파되고, asyncio.gather(run_recommend, run_graph)에 return_exceptions 이
+    없어 이미 검증된 보고서·recommend 결과까지 통째로 사과 응답이 됐다).
+    """
+    chart = ChartSpec(
+        title="일별 매출",
+        chart_type="line",
+        unit="KRW",
+        series=[ChartSeries(label="매출", points=[ChartPoint(x="06-12", y=180000)])],
+    )
+    agent = _SeqAgent([{"structured_response": ChartSet(charts=[chart])}])
+    monkeypatch.setattr(orchestrator, "build_graph_agent", lambda: agent)
+    monkeypatch.setattr(orchestrator, "get_settings", lambda: _settings())
+
+    def _boom_run_chart_checks(*args: object, **kwargs: object) -> object:
+        raise ValueError("G1 내부 버그(예: 비정상 float 값)")
+
+    monkeypatch.setattr(orchestrator, "run_chart_checks", _boom_run_chart_checks)
+    _, emit = _collect_emit()
+
+    result = asyncio.run(
+        orchestrator.run_graph(_FINDINGS, _GROUNDED, "질문", _CTX, emit=emit)
+    )
+
+    assert result.charts == []
+
+
 def test_run_graph_drops_ungrounded_chart_via_g1(monkeypatch: pytest.MonkeyPatch) -> None:
     """G1 미달(근거 없는 수치) 차트는 드랍되고 빈 ChartSet 이 반환된다(재작성 루프 없음)."""
     hallucinated = ChartSpec(
