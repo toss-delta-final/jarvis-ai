@@ -591,6 +591,66 @@ async def test_scoped_refine_never_overwrites_a_restated_axis(
     assert seen[turn2] == expected, label
 
 
+@pytest.mark.parametrize("field", ["relaxation_chip_fields", "relaxation_auto_fields"])
+def test_duplicate_relaxation_fields_fail_startup(field: str) -> None:
+    """[PR #248 리뷰] 목록에 같은 필드가 중복되면 기동 실패.
+
+    존재 여부만 `set()` 으로 보면 통과하는데, 후보 생성기는 **리스트를 순회**하므로 같은 필드의
+    후보가 두 개 생긴다 — 같은 조건으로 Spring 을 두 번 재검색하고 같은 칩이 화면에 두 번 뜬다.
+    """
+    kwargs = (
+        {"relaxation_chip_fields": ["priceMax", "priceMax", "ratingMin"]}
+        if field == "relaxation_chip_fields"
+        else {"relaxation_auto_fields": ["ratingMin", "ratingMin"]}
+    )
+    with pytest.raises(ValidationError) as exc:
+        Settings(**kwargs)
+    assert field.upper() in str(exc.value)
+
+
+async def test_carry_is_skipped_on_general_turns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[PR #248 리뷰] `general` 턴에서는 승계를 계산하지 않는다.
+
+    general 은 `stream_fallback` 으로 바로 빠져 `decision.filters` 를 아무도 쓰지 않는다 —
+    승계를 계산해 봐야 조용히 버려지고 "영속시킨다"는 주석만 거짓이 된다. 칩 클릭 분기처럼
+    intent 를 강제하지도 않는다: 저쪽은 우리가 만든 label 과 정확히 일치해 오해의 여지가 없지만
+    `scopedToPrevious` 는 LLM 판정이라 정보성 질문("그 중에 뭐가 인기 많아?")까지 납치한다.
+    """
+    reads: list = []
+
+    class _Spy:
+        async def get(self, key):  # noqa: ANN001
+            return {}
+
+        async def get_applied(self, key):  # noqa: ANN001
+            reads.append(key)
+            return {"field": "ratingMin", "value": 4.0}
+
+        async def put(self, key, offers):  # noqa: ANN001
+            return None
+
+        async def put_applied(self, key, applied):  # noqa: ANN001
+            return None
+
+    async def _spy():
+        return _Spy()
+
+    monkeypatch.setattr(buyer_graph, "get_relaxation_offer_store", _spy)
+    general = {"intent": "general", "reply": "네 그럼요", "filters": {}, "scopedToPrevious": True}
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="그 중에 뭐가 제일 인기 많아?"),
+            _member(),
+            llm=FakeLLM(decompose=general),
+            search=_filtered_search([]),
+            push_fn=None,
+        )
+    )
+
+    assert reads == []  # 승계 조회 자체를 하지 않는다
+    assert "products.ready" not in _types(events)  # 추천으로 납치하지 않는다
+
+
 async def test_scoped_refine_without_prior_relaxation_is_a_noop() -> None:
     """완화가 없었던 스레드에서 "그 중에" 가 와도 아무것도 되살리지 않는다."""
 

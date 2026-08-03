@@ -980,6 +980,21 @@ class Settings(BaseSettings):
                 f"allowed wire names are {sorted(FIELD_TO_ATTR)} "
                 "(category is intentionally excluded from relaxation — see issue #84)"
             )
+        # [PR #248 리뷰] 중복도 막는다 — 위 검사는 `set()` 이라 `["priceMax","priceMax"]` 를
+        # 통과시키는데, 후보 생성기는 **리스트를 순회**하므로 같은 필드의 후보가 두 개 생긴다.
+        # 그러면 같은 조건으로 Spring 을 두 번 재검색하고(예산 낭비) 같은 칩이 화면에 두 번 뜬다.
+        # 두 목록 모두 검사한다 — 자동 목록의 중복도 완화 라운드를 헛되이 소모한다.
+        for name, values in (
+            ("RELAXATION_CHIP_FIELDS", self.relaxation_chip_fields),
+            ("RELAXATION_AUTO_FIELDS", self.relaxation_auto_fields),
+        ):
+            if len(values) != len(set(values)):
+                dupes = sorted({v for v in values if values.count(v) > 1})
+                raise ValueError(
+                    f"{name} contains duplicate field(s) {dupes}: candidates are built by "
+                    "iterating the list, so duplicates cause repeated Spring probes and "
+                    "duplicate chips on screen."
+                )
         return self
 
     @model_validator(mode="after")

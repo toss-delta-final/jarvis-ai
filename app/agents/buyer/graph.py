@@ -490,11 +490,20 @@ async def run_buyer_turn(
             # 라우팅될 여지가 없다 — decompose 가 의문문을 general 로 봤어도 추천으로 고정한다.
             decision.intent = "recommend"
             decision.filters = relaxed
-        elif decision.scoped_to_previous:
+        elif decision.scoped_to_previous and decision.intent == "recommend":
             # [#113] "그 중에 더 저렴한 걸로" — 직전 턴에 **자동 적용**된 완화를 이어받는다.
             # 사용자가 완화된 결과를 자기 후보로 인정한 것이라 칩 클릭과 같은 **동의 신호**로
-            # 본다(팀 합의). 동의했으므로 `decision.filters` 에 녹여 아래 thread_store.put 으로
-            # 영속시킨다 — 칩 클릭 경로와 같은 취급이다.
+            # 본다(팀 합의). 승계값은 `decision.filters` 에 녹아 아래 `_prepare_recommendation`
+            # 의 `thread_store.put` 으로 영속된다 — 칩 클릭 경로와 같은 취급이다.
+            #
+            # **`intent == "recommend"` 일 때만 한다**(PR #248 리뷰). general 턴은 이 아래에서
+            # `stream_fallback` 으로 바로 빠져 `decision.filters` 를 아무도 안 쓰므로, 승계를
+            # 계산해 봐야 조용히 버려지고 위 주석만 거짓이 된다.
+            # 칩 클릭 분기처럼 intent 를 **강제하지는 않는다** — 저쪽은 메시지가 우리가 만든 칩
+            # label 과 정확히 일치해 오해의 여지가 없지만, `scopedToPrevious` 는 LLM 판정이라
+            # "그 중에 뭐가 제일 인기 많아?" 같은 정보성 질문까지 추천으로 납치할 수 있다.
+            # 리파인을 general 로 오분류한 턴은 승계 이전에 턴 전체가 어긋난 것이라, 그 증상
+            # 하나만 덮기보다 라우팅 문제로 두는 편이 정직하다.
             # 참조가 **없는** 리파인("더 저렴한 걸로")은 여기 오지 않아 원래 조건으로 되돌아가고,
             # 그 턴에 다시 완화가 필요하면 다시 고지된다(SPEC "매 완화 알림" 유지).
             try:
