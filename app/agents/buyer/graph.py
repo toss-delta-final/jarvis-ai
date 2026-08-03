@@ -110,6 +110,12 @@ def _carry_axis_untouched_this_turn(applied, prior, current: ProductSearchFilter
 
     prior 가 없으면(스레드 상태 유실) 비교 근거가 없으므로 **승계하지 않는다** — 애매하면
     사용자가 말한 값을 그대로 두는 쪽이 안전하다(#113 설계 원칙).
+
+    **알려진 한계**: 사용자가 그 축을 **같은 값으로** 다시 말한 경우("그 중에서 고르되 평점은
+    4.5 그대로")는 병합된 값과 구분되지 않아 승계가 걸린다. decompose 산출만으로는 "언급 안 함"과
+    "같은 값으로 재확인"이 동일하기 때문이다 — 구분하려면 조건별 출처 태깅(REQ-REC-047)이 필요하다.
+    발화 자체가 모순적("그 중에" = 완화된 결과 수용 + "4.5 그대로" = 완화 거부)이라 실사용 빈도가
+    낮다고 보고 한계로 남긴다.
     """
     if not isinstance(applied, dict) or prior is None:
         return False
