@@ -460,6 +460,29 @@ async def run_buyer_turn(
             # 라우팅될 여지가 없다 — decompose 가 의문문을 general 로 봤어도 추천으로 고정한다.
             decision.intent = "recommend"
             decision.filters = relaxed
+        elif decision.scoped_to_previous:
+            # [#113] "그 중에 더 저렴한 걸로" — 직전 턴에 **자동 적용**된 완화를 이어받는다.
+            # 사용자가 완화된 결과를 자기 후보로 인정한 것이라 칩 클릭과 같은 **동의 신호**로
+            # 본다(팀 합의). 동의했으므로 `decision.filters` 에 녹여 아래 thread_store.put 으로
+            # 영속시킨다 — 칩 클릭 경로와 같은 취급이다.
+            # 참조가 **없는** 리파인("더 저렴한 걸로")은 여기 오지 않아 원래 조건으로 되돌아가고,
+            # 그 턴에 다시 완화가 필요하면 다시 고지된다(SPEC "매 완화 알림" 유지).
+            try:
+                applied = await relax_store.get_applied(thread_key)
+                # 기준은 **이번 턴 filters** 다(칩 클릭 경로와 다르다) — 칩 클릭은 메시지가 칩
+                # 문구뿐이라 새 의도가 없어 prior 를 그대로 재현하지만, 여기서는 사용자가
+                # "그 중에 **더 저렴한** 걸로"처럼 새 조건을 함께 말한다. prior 를 기준으로 삼으면
+                # 이번 턴에 말한 조건이 통째로 버려진다. 완화 축 하나만 덮어쓴다.
+                carried = _relaxed_filters_from_offer(applied, decision.filters)
+            except Exception as exc:  # noqa: BLE001 - 저장소 장애가 턴을 죽이지 않게(degrade)
+                logger.warning("relaxation_applied_read_failed", extra={"reason": str(exc)})
+                carried = None
+            if carried is not None:
+                decision.filters = carried
+                # [#113] 승계 턴은 `recommend_pipeline` 의 `relax_field` 에 안 잡힌다(그건 "이번 턴에
+                # 채택된" 완화만 센다). 그런데 이 턴도 **사용자가 처음 말한 조건이 아닌 상태**로
+                # 결과를 받으므로 품질 지표에 그냥 섞으면 안 된다 — 여기서 따로 남긴다.
+                logger.info("relaxation_carried", extra={"field": applied.get("field")})
 
     # transient 세션 버퍼에 발화 누적(승격 전 격리, SPEC-PROFILE-001) — 세션 종료 델타 소스.
     # [#119 REQ-PROF-026] intent 판정 **뒤에** 둔다: 주문조회·장바구니 조회 발화는 취향 신호가

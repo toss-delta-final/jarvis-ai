@@ -701,6 +701,13 @@ async def stream_recommendation(
                     if chip.relaxation is not None
                 },
             )
+            # [#113] 이번 턴에 **자동 적용**된 완화도 따로 기억한다 — 다음 턴이 이 결과 집합을
+            # 가리키면("그 중에") 사용자가 수용한 것으로 보고 이어받는다(팀 합의). 채택이 없었으면
+            # None 으로 **비운다**: 옛 값이 남으면 화면에 있지도 않았던 완화가 되살아난다.
+            await relax_store.put_applied(
+                thread_key,
+                {"field": adopted_field, "value": adopted_value} if adopted_field else None,
+            )
         except Exception as exc:  # noqa: BLE001 - 기억 실패가 스트림을 죽이지 않게(degrade)
             # 여기는 상품·칩이 이미 확정된 지점이다. 기억에 실패하면 다음 턴 칩 클릭이 종전처럼
             # decompose 해석으로 처리될 뿐인데, 예외를 올리면 **정상 완료될 추천 턴이 통째로**

@@ -351,6 +351,191 @@ async def test_deferred_conditions_still_emitted_when_search_fails() -> None:
     assert rating_chip["value"] == 4.5  # 완화가 일어나지 않았으므로 원래 값
 
 
+# ─────────── 자동 완화의 다음 턴 승계 (팀 합의 설계) ───────────
+
+
+def _rating_search(products, calls):
+    async def _search(filters, exclude_product_ids=None):  # noqa: ANN001
+        calls.append(filters.rating_min)
+        kept = [
+            p
+            for p in products
+            if filters.rating_min is None or (p.rating or 0) >= filters.rating_min
+        ]
+        return ProductSearchResult(products=kept, total_count=len(kept))
+
+    return _search
+
+
+async def _relaxed_first_turn(calls):
+    """턴1 — 평점 4.5 로 0건 → 4.0 자동 완화 채택."""
+
+    async def _push(push) -> bool:  # noqa: ANN001
+        return True
+
+    products = [_product(101, 39000, rating=4.2), _product(102, 48000, rating=4.1)]
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(decompose=_decompose_with(ratingMin=4.5)),
+            search=_rating_search(products, calls),
+            push_fn=_push,
+        )
+    )
+    assert any("넓혔어요" in e["data"].get("text", "") for e in events if e["type"] == "token")
+    return products
+
+
+async def test_plain_refine_does_not_carry_the_auto_relaxation() -> None:
+    """["더 저렴한 걸로"] 직전 결과를 가리키지 않으면 **원래 조건(4.5)** 으로 되돌아간다.
+
+    자동 완화는 사용자가 동의한 적 없는 서버 조치라, 참조 없는 리파인은 사용자가 말한 제약을
+    다시 존중한다 — 그 턴에 또 완화가 필요하면 또 고지한다(SPEC "매 완화 알림").
+    """
+
+    async def _push(push) -> bool:  # noqa: ANN001
+        return True
+
+    calls: list = []
+    products = await _relaxed_first_turn(calls)
+
+    turn2 = len(calls)
+    await _collect(
+        run_buyer_turn(
+            _req(message="더 저렴한 걸로"),
+            _member(),
+            # 참조 없는 리파인 — scopedToPrevious 미산출(기본 False)
+            llm=FakeLLM(decompose=_decompose_with(ratingMin=4.5)),
+            search=_rating_search(products, calls),
+            push_fn=_push,
+        )
+    )
+
+    assert calls[turn2] == 4.5  # 원래 조건으로 되돌아간다
+
+
+async def test_scoped_refine_carries_the_auto_relaxation(caplog: pytest.LogCaptureFixture) -> None:
+    """["그 중에 더 저렴한 걸로"] 직전 결과를 가리키면 완화(4.0)를 이어받는다.
+
+    사용자가 완화된 결과를 자기 후보로 인정한 것이라 칩 클릭과 같은 동의 신호로 본다.
+    """
+
+    async def _push(push) -> bool:  # noqa: ANN001
+        return True
+
+    calls: list = []
+    products = await _relaxed_first_turn(calls)
+
+    scoped = _decompose_with(ratingMin=4.5)
+    scoped["scopedToPrevious"] = True
+    turn2 = len(calls)
+    with caplog.at_level(logging.INFO):
+        events = await _collect(
+            run_buyer_turn(
+                _req(message="그 중에 더 저렴한 걸로"),
+                _member(),
+                llm=FakeLLM(decompose=scoped),
+                search=_rating_search(products, calls),
+                push_fn=_push,
+            )
+        )
+
+    assert calls[turn2] == 4.0  # 완화를 이어받아 **헛검색 없이** 바로 결과
+    # 이어받은 턴은 완화가 새로 일어난 게 아니므로 고지가 반복되지 않는다.
+    assert not any("넓혔어요" in e["data"].get("text", "") for e in events if e["type"] == "token")
+    rating_chip = next(c for c in _conditions(events) if c["field"] == "ratingMin")
+    assert rating_chip["value"] == 4.0  # 상태는 조건 칩으로 드러난다
+    # 승계 턴도 "사용자가 처음 말한 조건이 아닌 상태"라 관측에 남아야 한다 — 안 남기면
+    # `relax_field`(이번 턴 채택분)만 세는 지표가 완화된 턴 절반을 놓친다.
+    assert "relaxation_carried" in caplog.text
+
+
+async def test_scoped_refine_keeps_this_turn_new_condition() -> None:
+    """["그 중에 **더 저렴한** 걸로"] 승계하면서 **이번 턴에 새로 말한 조건**도 지킨다.
+
+    승계 기준을 직전 턴 필터(prior)로 잡으면 이번 턴 발화의 새 조건이 통째로 버려진다 —
+    사용자는 "더 저렴한"이라고 말했는데 가격 조건이 사라진다. 완화 축 하나만 덮어써야 한다.
+    """
+
+    async def _push(push) -> bool:  # noqa: ANN001
+        return True
+
+    seen: list = []
+
+    async def _search(filters, exclude_product_ids=None):  # noqa: ANN001
+        seen.append((filters.rating_min, filters.price_max))
+        kept = [
+            p
+            for p in [_product(101, 39000, rating=4.2), _product(102, 48000, rating=4.1)]
+            if (filters.rating_min is None or (p.rating or 0) >= filters.rating_min)
+            and (filters.price_max is None or (p.price or 0) <= filters.price_max)
+        ]
+        return ProductSearchResult(products=kept, total_count=len(kept))
+
+    # 턴1 — 평점 4.5 로 0건 → 4.0 자동 완화
+    await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(decompose=_decompose_with(ratingMin=4.5)),
+            search=_search,
+            push_fn=_push,
+        )
+    )
+
+    # 턴2 — "그 중에 더 저렴한 걸로": decompose 가 새 가격 조건을 냈다
+    scoped = _decompose_with(ratingMin=4.5, priceMax=40000)
+    scoped["scopedToPrevious"] = True
+    turn2 = len(seen)
+    await _collect(
+        run_buyer_turn(
+            _req(message="그 중에 더 저렴한 걸로"),
+            _member(),
+            llm=FakeLLM(decompose=scoped),
+            search=_search,
+            push_fn=_push,
+        )
+    )
+
+    assert seen[turn2] == (4.0, 40000)  # 완화 승계(4.0) + 이번 턴 새 조건(40,000) 둘 다
+
+
+async def test_scoped_refine_without_prior_relaxation_is_a_noop() -> None:
+    """완화가 없었던 스레드에서 "그 중에" 가 와도 아무것도 되살리지 않는다."""
+
+    async def _push(push) -> bool:  # noqa: ANN001
+        return True
+
+    calls: list = []
+    products = [_product(101, 39000, rating=4.8)]
+    # 턴1 — 완화 없이 정상 결과
+    await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(decompose=_decompose_with(ratingMin=4.5)),
+            search=_rating_search(products, calls),
+            push_fn=_push,
+        )
+    )
+
+    scoped = _decompose_with(ratingMin=4.5)
+    scoped["scopedToPrevious"] = True
+    turn2 = len(calls)
+    await _collect(
+        run_buyer_turn(
+            _req(message="그 중에 더 저렴한 걸로"),
+            _member(),
+            llm=FakeLLM(decompose=scoped),
+            search=_rating_search(products, calls),
+            push_fn=_push,
+        )
+    )
+
+    assert calls[turn2] == 4.5  # 이어받을 완화가 없으니 그대로
+
+
 async def test_explicit_price_constraint_is_never_auto_relaxed() -> None:
     """[AC-REC-08 회귀] 가격은 자동 완화 대상이 아니다 — 상한 초과 상품이 조용히 노출되면 안 된다."""
     products = [_product(201, 55000), _product(202, 60000)]

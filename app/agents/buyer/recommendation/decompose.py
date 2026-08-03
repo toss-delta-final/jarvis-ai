@@ -128,6 +128,10 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
   해소해 넣으세요. 사용자가 재구매를 말로 지목한 상품만 넣고, LAST_RECOMMENDATIONS 에 있다는
   이유로 직전 추천 상품을 복사하지 마세요. 보통 상품 1개만 넣으며 재구매 의도가 없으면 [].
   카테고리 단위 되돌리기는 revertCategories 가 담당하니 카테고리명은 넣지 마세요.
+- scopedToPrevious: 이번 발화가 **직전에 보여준 결과 목록 안에서** 고르거나 좁히는 말이면 true.
+  (예: "그 중에 더 저렴한 걸로", "이 중에서 가벼운 거", "여기서 골라줘", "보여준 것들 중에")
+  원래 요청을 다시 다듬는 말이면 false 입니다 — "더 저렴한 걸로", "다른 브랜드로"처럼 **직전
+  결과를 가리키는 말이 없으면** false. 애매하면 **false** 로 두세요.
 - general: intent=general, reply 에 짧게 답하세요."""
 
 
@@ -288,6 +292,10 @@ async def decompose(
         revert_categories=revert_categories,
         repurchase_products=repurchase_products,
         category_queries=category_queries,
+        # [#113] `is True` 로 좁힌다 — 문자열 "false"·1·null 등 애매한 산출을 전부 False 로
+        # 떨어뜨려 **엄격한 쪽**(원래 조건 유지)으로 기울인다. 놓치면 무해하지만 오탐하면
+        # 사용자가 말한 조건이 조용히 바뀐다.
+        scoped_to_previous=data.get("scopedToPrevious") is True,
     )
 
 
