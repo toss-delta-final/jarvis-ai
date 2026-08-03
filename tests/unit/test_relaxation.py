@@ -354,6 +354,78 @@ async def test_conditions_chips_are_not_delayed_when_auto_relax_cannot_fire() ->
     assert _types(events).count("conditions") == 1
 
 
+def _three_axis_catalog():
+    """완화 축마다 **하나씩만** 살아나는 카탈로그 — 축별 estCount 를 독립적으로 검증한다."""
+    return [
+        _product(101, 30000, rating=4.8, brand="BrandX"),  # 원 조건에 맞는 유일한 상품
+        _product(102, 60000, rating=4.8, brand="BrandX"),  # 가격을 풀어야 나온다
+        _product(103, 30000, rating=4.2, brand="BrandX"),  # 평점을 풀어야 나온다
+        _product(104, 30000, rating=4.8, brand="BrandY"),  # 브랜드를 풀어야 나온다
+    ]
+
+
+def _three_axis_decompose():
+    return _decompose_with(priceMax=50000, ratingMin=4.5, brand=["BrandX"])
+
+
+async def test_default_probe_budget_covers_every_default_chip_field() -> None:
+    """[PR #248 2차 리뷰] 기본 설정이 켜 둔 완화 필드는 **전부** 칩이 된다.
+
+    probe 예산이 후보 수보다 적으면 뒤쪽 후보는 estCount 를 못 구하고, estCount 없는 칩은 만들 수
+    없어 조용히 사라진다 — 실제로 그 조건을 풀면 결과가 있는데도. 기본값이 `chip_fields` 4개를
+    켜 두고 예산은 2 라서 앞 2개만 동작하던 자기모순을 고정한다(축 3개면 3개 다 나와야 한다).
+    """
+
+    async def _push(push) -> bool:  # noqa: ANN001
+        return True
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(decompose=_three_axis_decompose()),
+            search=_filtered_search(_three_axis_catalog()),
+            push_fn=_push,
+        )
+    )
+
+    relax = {c["relaxation"]["field"]: c for c in _suggestions(events) if c.get("relaxation")}
+    assert set(relax) == {"priceMax", "ratingMin", "brand"}  # 셋 다 살아남는다
+    assert all(c["estCount"] == 2 for c in relax.values())  # 원본 1건 + 그 축으로 살아난 1건
+
+
+async def test_probe_budget_shortfall_drops_chips_but_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """예산을 조이면 뒤쪽 축이 빠지되 **조용히** 빠지지는 않는다.
+
+    상한을 낮추는 건 운영의 선택이라 막지 않는다. 다만 잘린 사실이 로그에 없으면 "브랜드를 풀면
+    결과가 있는데 칩이 안 뜬다"를 아무도 관측할 수 없어, 다음 사람이 근거 없이 예산을 만지게 된다.
+    """
+    monkeypatch.setattr(get_settings(), "relaxation_max_probes", 2)
+
+    async def _push(push) -> bool:  # noqa: ANN001
+        return True
+
+    with caplog.at_level(logging.INFO):
+        events = await _collect(
+            run_buyer_turn(
+                _req(),
+                _member(),
+                llm=FakeLLM(decompose=_three_axis_decompose()),
+                search=_filtered_search(_three_axis_catalog()),
+                push_fn=_push,
+            )
+        )
+
+    fields = {c["relaxation"]["field"] for c in _suggestions(events) if c.get("relaxation")}
+    assert fields == {"priceMax", "ratingMin"}  # 우선순위 앞 2개만 — brand 는 잘렸다
+    # 무엇이 빠졌는지까지 남는다 — `extra` 는 메시지가 아니라 레코드 속성이라 record 로 본다.
+    dropped = next(r for r in caplog.records if r.message == "relaxation_chips_truncated")
+    assert dropped.dropped == ["brand"] and dropped.budget == 2
+
+
 async def test_disabling_auto_relaxation_also_disables_the_conditions_delay(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

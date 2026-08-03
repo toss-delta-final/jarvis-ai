@@ -279,12 +279,21 @@ class Settings(BaseSettings):
     relaxation_rating_step: float = Field(default=0.5, gt=0.0)  # ratingMin 하향 폭
     # **완화 칩** probe(재검색) 상한 — estCount 는 page-local 로 못 구한다(가격·브랜드·색상은 Spring
     # 쿼리 파라미터라 탈락 상품이 응답에 아예 없다, spring.py ProductSearchResult docstring 참조).
-    # 그래서 후보마다 완화 필터로 재검색해 실제 매칭 수를 센다. fan-out 턴은 leg 수만큼 곱해지므로
-    # 낮게 잡는다.
+    # 그래서 후보마다 완화 필터로 재검색해 실제 매칭 수를 센다. fan-out 턴은 leg 수만큼 곱해진다.
     # **자동 완화와 예산을 공유하지 않는다**(PR #248 리뷰) — 공유하면 자동 완화가 먼저 돌아 예산을
     # 다 쓴 턴에서 칩이 굶는데, 칩은 정작 **자동 완화가 실패했을 때 쓰라고 있는 폴백**이다.
     # 자동 완화는 `relaxation_max_rounds` 로 따로 제한한다(손잡이 하나가 하나씩만 맡는다).
-    relaxation_max_probes: int = Field(default=2, ge=0)
+    #
+    # 기본값은 `relaxation_chip_fields` 개수에 맞춘다(PR #248 2차 리뷰). 종전 2 는 위 분리 **이전**
+    # 자동 완화와 나눠 쓰던 시절의 값인데, 분리 후 재산정되지 않은 채 남아 "칩 필드 4개를 켜 두고도
+    # 앞 2개만 동작"하는 자기모순이 됐다 — 예산이 모자라면 뒤쪽 후보는 estCount 를 못 구하고,
+    # estCount 없는 칩은 만들 수 없어(schema 필수) **말없이 사라진다**(실제로 풀면 결과가 있어도).
+    # 올려도 흔한 턴은 그대로다: 후보는 **값이 설정된 필드**만 되므로 필터를 1~2개 건 턴은 애초에
+    # 예산 이하다. 달라지는 건 3개 이상 건 턴뿐이고, probe 는 `asyncio.gather` 병렬이라 늘어나는
+    # 것은 벽시계가 아니라 **동시 호출 수**다.
+    # 자동 계산(`len(chip_fields)`)으로 묶지는 않는다 — 손잡이가 사라져 필드를 늘릴 때마다 부하가
+    # 말없이 따라 오른다. 조이는 배포는 이 값을 내리면 되고, 그때 잘림은 로그로 드러난다.
+    relaxation_max_probes: int = Field(default=4, ge=0)
     # 이 수 **미만**이면 "소량"으로 보고 결과가 있어도 완화 칩을 함께 제안한다(AC①). 0 이면 0건일 때만.
     relaxation_min_results: int = Field(default=3, ge=0)
 

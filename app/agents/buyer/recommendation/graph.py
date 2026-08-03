@@ -710,12 +710,30 @@ async def stream_recommendation(
         try:
             if not relax_candidates:
                 relax_candidates = build_relaxation_candidates(effective_filters, settings)
-            pending = [
+            probeable = [
                 c
                 for c in relax_candidates
                 if c.field not in probed_counts and c.field != adopted_field
-            ][:probe_budget]
+            ]
+            pending = probeable[:probe_budget]
+            if len(probeable) > len(pending):
+                # **잘린 걸 조용히 넘기지 않는다**(PR #248 2차 리뷰) — 예산을 넘은 후보는 estCount 를
+                # 못 구하고, estCount 없는 칩은 만들 수 없어 아래 조립에서 통째로 빠진다. 실제로
+                # 풀면 결과가 있었을 수도 있는데 화면에는 아무 흔적이 없다. 상한이 얼마나 자주
+                # 무는지 보이지 않으면 다음 사람이 근거 없이 튜닝하게 된다.
+                logger.info(
+                    "relaxation_chips_truncated",
+                    extra={
+                        "budget": probe_budget,
+                        "dropped": [c.field for c in probeable[probe_budget:]],
+                    },
+                )
             if pending:
+                # [지연 특성] 이 probe 는 아래 산문 token 보다 **앞**이라, 결과가 부족한 턴일수록
+                # 첫 글자가 늦게 나간다(결과가 넉넉하면 이 블록 자체를 안 탄다). 병렬이라 후보 수와는
+                # 무관하고 왕복 1회분이며 first-token 예산 안이지만, "실망스러운 턴이 더 느리다"는
+                # 특성은 남는다. 없애려면 token 을 먼저 흘리고 칩만 나중에 붙이는 구조 분리가
+                # 필요한데(§3.1 상 suggestions 는 token 뒤여도 된다), 실측 없이 손댈 일은 아니다.
                 outcomes = await asyncio.gather(*(_probe(c) for c in pending))
                 for cand, outcome in zip(pending, outcomes, strict=True):
                     if outcome is not None:
