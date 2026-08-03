@@ -10,6 +10,7 @@
 ## [Unreleased]
 
 ### Added
+- **#146 — 3-arm 추천 pipeline ablation 하네스와 전량 baseline 추가** — 현행 pipeline, 결정론 scoring, smart-tier single-call을 같은 dev 31건×N=5에서 비교하고 호출별 token·비용·latency, paired bootstrap CI, 재현 manifest와 불변 산출물을 기록했다. 전량 결과 pipeline이 single-call보다 nDCG@10 +0.087(95% CI [0.022, 0.160]) 높고 비용은 사실상 같아 production 전환을 기각했다.
 - **#144 — 실제 모델 추천 평가·회귀 리포트 runner 추가** — 고정 골든셋과 기존 metric runner를 runtime 배포 후보 provider/model 설정에 연결해 호출별 exact model·usage·비용·지연을 기록하고, provider 전 reserve형 예산 gate, versioned primary/secondary metric 반복 통계와 paired bootstrap, hard-constraint·coverage release gate, sealed holdout 승인 경로, 코드 해시 manifest 및 사람이 판독 가능한 Markdown/CSV 산출물을 제공한다.
 - **#145 — 설명 가능한 추천 scoring baseline 추가** — LLM 호출 없이 semantic·profile·popularity·주입형 recency·diversity·최근 exact 구매 감점을 성분별로 재구성 가능한 결정론 점수로 기록하고, hard constraint 컷을 점수와 분리한 paired dev 평가 및 고정 baseline을 `evals/scoring/`에 추가했다.
 - **#143 — 구매자 추천 품질 metric runner(`evals/metrics/`) 추가** — 골든셋 dev split에서 P@K·R@K·MRR·nDCG@K·Filter Accuracy·HCV·Coverage·Diversity를 네트워크·라이브 LLM 없이 결정적으로 계산하고 case·slice·전체 Markdown/CSV 리포트와 재현용 run manifest를 생성하며, ScriptedLLM + MockTransport로 실제 추천 코드 경로를 실행하고 `pytest -m eval` 가격 제약 PR 게이트로 회귀를 조기에 차단한다.
