@@ -130,15 +130,11 @@ def run_deterministic_checks(report: str, findings: list[AnalysisFinding]) -> li
 # 이 검사는 팬인 이후 전 finding 합집합이 아니라 **그 브랜치의 도구 출력만**을
 # 허용 집합으로 본다 — D2 의 교차 오염(A 워커 evidence 로 B 서술의 환각 통과)을
 # 피하는 것이 F2 신설의 이유다.
-
-
-def _is_degrade_finding(finding: AnalysisFinding) -> bool:
-    """degrade finding 판정 — check_degrade_disclosed(D3)와 동일 구조 판정을 재사용한다.
-
-    모듈 내부에서만 쓰던 판정을 F1 도 참조해야 해 이름 앞의 밑줄은 유지하되
-    이 파일 안에서 공유한다(별칭 없이 그대로 재사용 — 판정 기준 단일 출처).
-    """
-    return finding.severity == "info" and not finding.evidence
+#
+# F1(check_evidence_required)이 참조하는 degrade 판정은 89번째 줄의
+# _is_degrade_finding(D3·check_degrade_disclosed 와 동일 구조 판정)을 그대로
+# 재사용한다 — 여기서 재정의하면 모듈 전역 이름이 나중 정의로 덮어써져(ruff F811)
+# D3 쪽 호출까지 조용히 이 절의 정의를 참조하게 되는 위험이 있다.
 
 
 def check_evidence_required(
@@ -238,14 +234,20 @@ def run_chart_checks(
 
     규칙(DESIGN-ANALYSIS-V31-242 §4.4):
     - series 가 비었거나 points 가 0개 → 드랍.
-    - points[].y 의 유의 수치가 finding 의 summary·evidence 어디에도 없으면 → 드랍
-      (도구 원출력이 아니라 finding 을 근거로 본다 — graph_agent 입력이 finding+
-      보고서이지 도구 출력이 아니기 때문이다, 결정 D-4).
+    - points[].y 의 유의 수치가 finding 의 summary·evidence·recommendation 어디에도
+      없으면 → 드랍(도구 원출력이 아니라 finding 을 근거로 본다 — graph_agent 입력이
+      finding+보고서이지 도구 출력이 아니기 때문이다, 결정 D-4).
     - charts 개수 초과(스키마가 이미 CHART_MAX 로 막지만 방어적으로 재절단) → 앞부터 유지.
+
+    allowed 집합은 D2(check_numbers_grounded)와 동일하게 recommendation 도 포함한다
+    — D2가 recommendation 발 수치를 보고서 인용으로 허용하는 이상, 그 수치가 보고서를
+    거쳐 차트에 실릴 수 있다. recommendation 을 빼면 D2는 통과시킨 정당한 수치를 G1이
+    "근거 없음"으로 오탐해 드랍하게 된다(두 검증 층의 근거 사슬 불일치).
     """
     allowed: set[str] = set()
     for finding in findings:
         allowed |= _normalize_numbers(finding.summary)
+        allowed |= _normalize_numbers(finding.recommendation)
         for item in finding.evidence:
             allowed |= _normalize_numbers(item)
 

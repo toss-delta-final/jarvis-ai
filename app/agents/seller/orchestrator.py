@@ -286,6 +286,11 @@ async def _run_one_branch(
       run_workers 와 동일하게 degrade+3층 판정으로 수렴한다(worker 단계 예외만 산입).
     - F 미달·judge 미달·judge 장애는 예외로 올리지 않는다 — 이 함수 안에서
       소진되며 VerifiedFinding.passed=False 로 반환된다(3층 미산입, R3).
+    - judge 장애(타임아웃 등, seller_analysis_judge_timeout_s 초과 시 실제 발생 가능)
+      시에도 F 미달이 남아있으면 재실행 없이 곧장 강등한다 — F 미달 finding 을
+      "미검증 채택"으로 흘리면 이 PR의 핵심(도구 출력 ⊇ finding 근거 사슬 검증)이
+      judge 장애 한 번에 무력화된다. F 가 전부 통과한 상태의 judge 장애만
+      미검증 채택(Q2 와 동일 철학 — 재실행 없이 현재 finding 인정)한다.
     - seller_branch_deadline_s 예산을 넘기면 재실행을 포기하고 직전 결과를 채택한다
       (강등이 아니라 "시간 내 못 끝냄" — §9-R1).
     """
@@ -308,10 +313,19 @@ async def _run_one_branch(
         except LLMNotConfigured:
             raise
         except Exception as exc:
+            if failed_checks:
+                logger.warning(
+                    "analysis_judge %s %d회차 실패(%r) — F 미달 잔존으로 강등",
+                    analysis_type,
+                    attempt,
+                    exc,
+                )
+                degraded = _degrade_finding(analysis_type, "분석 검증 미달")
+                return VerifiedFinding(degraded, False, attempt, tuple(failed_checks), None, True)
             logger.warning(
                 "analysis_judge %s %d회차 실패(%r) — 미검증 채택", analysis_type, attempt, exc
             )
-            return VerifiedFinding(finding, False, attempt, tuple(failed_checks), None, False)
+            return VerifiedFinding(finding, False, attempt, (), None, False)
 
         last_score = score
         if not failed_checks and score.total >= threshold:

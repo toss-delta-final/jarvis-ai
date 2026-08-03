@@ -438,6 +438,39 @@ def test_run_one_branch_judge_crash_adopts_current_unverified(
     assert verified.attempts == 1
 
 
+def test_run_one_branch_judge_crash_with_f_failure_degrades(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """judge 장애 + F 미달(F3 유형 불일치) 동시 발생 → 미검증 채택이 아니라 강등한다.
+
+    judge 만 장애 나고 F 는 통과한 경우(위 테스트)와 달리, F 미달이 남아있는데
+    judge 장애로 "미검증 채택"해버리면 이 PR 의 핵심(도구 출력 ⊇ finding 근거
+    사슬 검증)이 judge 장애 한 번으로 무력화된다(PR 리뷰 지적 사항 반영).
+    """
+    monkeypatch.setitem(
+        orchestrator.WORKER_BUILDERS,
+        "sales_anomaly",
+        lambda: _StubAgent(finding=_finding("conversion")),  # F3 상시 미달(유형 불일치)
+    )
+    judge = _SeqJudge([RuntimeError("judge down")])
+    monkeypatch.setattr(orchestrator, "build_analysis_judge", lambda: judge)
+
+    verified = asyncio.run(
+        orchestrator._run_one_branch(
+            "sales_anomaly", "질문", _plan("sales_anomaly"), _CTX, _settings()
+        )
+    )
+
+    assert verified.passed is False
+    assert verified.degraded is True
+    assert verified.finding.severity == "info"
+    assert verified.finding.evidence == []
+    assert "분석 검증 미달" in verified.finding.summary
+    assert any("analysis_type 불일치" in reason for reason in verified.failed_checks)
+    assert verified.last_score is None
+    assert verified.attempts == 1  # judge 장애는 재실행하지 않는다
+
+
 def test_run_one_branch_gives_up_retry_when_deadline_exceeded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -235,6 +235,20 @@ def test_g1_drops_chart_with_ungrounded_number() -> None:
     assert any("근거 없는 수치" in r for r in dropped)
 
 
+def test_g1_pass_when_grounded_only_in_recommendation() -> None:
+    """차트 수치가 finding.recommendation 에만 있어도 통과한다(D2 대칭, PR 리뷰 지적 반영).
+
+    D2(check_numbers_grounded)는 recommendation 발 수치의 보고서 인용을 이미 허용
+    한다 — G1 이 recommendation 을 allowed 에서 빼면, D2 가 통과시킨 정당한 수치를
+    G1 이 "근거 없음"으로 오탐해 드랍하는 두 검증 층 불일치가 생긴다.
+    """
+    finding = _finding(recommendation="가격을 12,900원으로 조정 권장")
+    chart = _chart(series=[ChartSeries(label="가격", points=[ChartPoint(x="권장가", y=12900)])])
+    passed, dropped = run_chart_checks(ChartSet(charts=[chart]), [finding])
+    assert dropped == []
+    assert len(passed.charts) == 1
+
+
 def test_g1_partial_drop_keeps_grounded_charts() -> None:
     """여러 차트 중 미달분만 드랍하고 통과분은 순서 보존한 채 유지한다."""
     grounded = _chart(title="정상 차트")
