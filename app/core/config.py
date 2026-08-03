@@ -12,6 +12,7 @@ SearchBackend로 구현해 골든셋 비교. [2026-08-03 #32] 방식2를 확정�
 
 from __future__ import annotations
 
+import math
 from functools import lru_cache
 from typing import Literal
 
@@ -627,6 +628,18 @@ class Settings(BaseSettings):
     model_eval_max_total_tokens_per_run: int = Field(default=30_000_000, gt=0)
     model_eval_max_cost_usd_per_run: float = Field(default=20.0, gt=0.0)
 
+    # ── 추천 scoring baseline(#145, evals/scoring) ──
+    # 의미 유사도를 주 신호로 두고, profile·인기도·최신성·다양성은 보조 신호로 제한한다.
+    # 최근 exact 재구매는 별도 감점이며 모든 값은 ScoringBuyerAdapter가 직접 소비한다.
+    scoring_weight_semantic: float = 0.55
+    scoring_weight_profile_match: float = 0.15
+    scoring_weight_popularity: float = 0.15
+    scoring_weight_recency: float = 0.05
+    scoring_weight_diversity_bonus: float = 0.10
+    scoring_weight_recent_purchase_penalty: float = 0.20
+    scoring_reference_date: str = "2026-08-02"
+    scoring_recent_purchase_window_days: int = 90
+
     @field_validator("llm_provider", mode="before")
     @classmethod
     def _normalize_llm_provider(cls, value: object) -> object:
@@ -679,6 +692,40 @@ class Settings(BaseSettings):
         """추천 평가 K 목록의 빈 값·비양수를 기동 시점에 막는다."""
         if not self.eval_buyer_k_list or any(k <= 0 for k in self.eval_buyer_k_list):
             raise ValueError("구매자 추천 평가 K 목록은 비어 있지 않고 모두 0보다 커야 합니다")
+        return self
+
+    @model_validator(mode="after")
+    def _require_valid_scoring_settings(self) -> "Settings":
+        """baseline 가중치·골든셋 기준일·최근구매 window를 fail-fast한다."""
+        from datetime import date  # noqa: PLC0415 - #145 자기 validator의 ISO 파싱 전용
+
+        # 감점 항만 켜진 baseline은 모든 상품을 0 이하로만 밀어 의미 있는 양의 신호가 없다.
+        positive_signal_weights = (
+            self.scoring_weight_semantic,
+            self.scoring_weight_profile_match,
+            self.scoring_weight_popularity,
+            self.scoring_weight_recency,
+            self.scoring_weight_diversity_bonus,
+        )
+        weights = (
+            *positive_signal_weights,
+            self.scoring_weight_recent_purchase_penalty,
+        )
+        if not all(math.isfinite(weight) for weight in weights):
+            raise ValueError("추천 scoring 가중치는 유한한 수여야 합니다")
+        if any(weight < 0 for weight in weights):
+            raise ValueError("추천 scoring 가중치는 음수일 수 없습니다")
+        if not any(positive_signal_weights):
+            raise ValueError(
+                "추천 scoring 양의 신호 가중치"
+                "(semantic·profile·popularity·recency·diversity) 중 하나 이상은 양수여야 합니다"
+            )
+        if self.scoring_recent_purchase_window_days <= 0:
+            raise ValueError("추천 scoring 최근 구매 window는 0보다 커야 합니다")
+        try:
+            date.fromisoformat(self.scoring_reference_date)
+        except ValueError as exc:
+            raise ValueError("추천 scoring 기준일은 ISO 날짜 형식이어야 합니다") from exc
         return self
 
     @model_validator(mode="after")

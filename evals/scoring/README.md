@@ -1,0 +1,73 @@
+# 설명 가능한 추천 scoring baseline
+
+이 패키지는 LLM 최종 판단과 독립인 평가·비교용 참조 랭커다. 네트워크나 현재 시각을 읽지 않고,
+커밋된 dev 임베딩과 골든셋 fixture, 주입된 설정만으로 동일 입력·snapshot의 동일 순위를 만든다.
+실서비스의 rerank LLM 경로와 배선은 바꾸지 않는다.
+
+## 점수
+
+기본 점수는 다음 성분의 가중합이며, 각 상품에 정규화 값·가중치·기여분·degrade 사유를 기록한다.
+
+| 성분 | 기본 가중치 | 정의 |
+|---|---:|---|
+| semantic | 0.55 | query/document 코사인을 `[0,1]`로 선형 변환 |
+| profile match | 0.15 | 구매 카테고리 선호와, 카탈로그에서 복원 가능한 구매 브랜드 선호의 평균 |
+| popularity | 0.15 | 후보 내 `log1p(reviewCount)`와 `rating/5`의 평균 |
+| recency | 0.05 | 외부 `productId → [0,1]` 입력; 기본 실행은 미주입 |
+| diversity bonus | 0.10 | greedy 선택 중 아직 노출하지 않은 `categoryName` |
+| recent purchase penalty | 0.20 | 기준일 2026-08-02부터 90일 내 exact `productId` |
+
+semantic을 주 신호로 두고 profile·인기도·최신성·다양성은 보조 신호로 제한했다. recent purchase는
+별도 감점이며 카테고리 전체로 확대하지 않는다. 최종 동점은 항상 `productId` 오름차순이다.
+
+임베딩 누락, guest/구매 이력 없음, recency 미주입은 각각 값을 0으로 두고 degrade를 기록한다.
+특히 guest를 가짜 중립 프로필로 꾸미지 않는다. 구매 이력에는 브랜드가 없으므로 해당 구매 상품이
+카탈로그 snapshot에도 있을 때만 브랜드를 복원한다.
+
+## hard filter
+
+`hard_filter.py`는 스코어러와 별도 시그니처로 가격·금지 카테고리·금지 상품·must-exclude를 컷한다.
+profile은 입력받지 않으며, 컷된 상품은 높은 점수로 재진입할 수 없다. headline paired run에는
+평가 라벨인 `hardConstraints`/`mustExcludeProductIds`를 주입하지 않고, 양 arm이 공통으로 쓰는
+scripted decompose의 `expectedFilters` 중 price 범위만 사용한다. 나머지 축은 단위 테스트가
+계약을 고정한다.
+
+## 실행
+
+```bash
+uv run python -m evals.scoring --out /tmp/scoring-paired
+```
+
+`passthrough/`와 `scoring/`에 #143 artifact를 각각 만들고, `comparison.json/.md`,
+`scores_scoring.json`, paired `run_manifest.json`을 기록한다. 벽시계 latency는 결정론 대상과
+분리한 `latency.json`에만 둔다. 양 arm의 앱 최근구매 dedup clock은 절대 날짜 fixture와 같은
+`scoring_reference_date` 자정(naive UTC)으로 고정한다. `snapshot_embeddings.py`는 fixture
+갱신 시에만 DB와 Google API를 사용하며, 일반 평가 경로는
+`fixtures/embeddings_dev.json`만 읽는다.
+
+### 최근 구매 penalty의 paired 관측 한계
+
+공정 비교를 위해 paired 실행은 양 arm 모두 실제 앱 경로의 최근구매 dedup을 그대로 탄다. 기본
+dedup window와 scoring penalty window가 모두 90일이므로 exact 최근구매 상품은 rerank 전에
+제거되고, paired 지표에서 penalty 성분의 효과는 구조적으로 제한된다. 이 가중치는 참조 스코어러
+단독 사용과 후속 #146 ablation에서 의미가 있으며, 효과를 만들기 위해 window를 바꾸거나 앱 경로를
+우회하지 않는다.
+
+따라서 `scores_scoring.json`은 앱 파이프라인 dedup 이전 후보 전체에 대한 참조 점수다. 최종 앱
+ranking은 그 후보의 부분집합일 수 있으며, raw score 파일을 그대로 최종 노출 목록으로 읽으면 안
+된다.
+
+현재 비교 기준선은 [`baselines/dev-v1/`](baselines/dev-v1/)이다. dataset hash는
+`764bc148858cb9c04b9da7a210a5479f7f0daa04bec61563c7f94233e9646b04`이며, dev 후보
+232/232와 질의 31/31의 `gemini-embedding-001` 1536차원 벡터를 포함한다.
+
+| metric | passthrough | scoring | delta |
+|---|---:|---:|---:|
+| nDCG@10 | 0.738210 | 0.616852 | -0.121358 |
+| MRR | 0.794974 | 0.791667 | -0.003307 |
+| Precision@10 | 0.266667 | 0.222222 | -0.044444 |
+| Recall@10 | 0.855556 | 0.705556 | -0.150000 |
+| Diversity | 0.659140 | 0.709319 | +0.050179 |
+
+초기 가중치는 다양성은 개선하지만 순위 relevance는 passthrough보다 낮다. 이 결과는 baseline의
+우월성 주장이 아니라 후속 #146 ablation과 튜닝이 비교할 고정 출발점이다.
