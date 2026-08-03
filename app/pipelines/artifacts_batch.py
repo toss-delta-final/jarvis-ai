@@ -13,6 +13,7 @@ fetch·llm·embed·store 는 주입형(테스트·오프라인 대체) — torch
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import logging
 from collections.abc import Awaitable, Callable
@@ -21,6 +22,7 @@ from dataclasses import dataclass
 from app.core.config import Settings, get_settings
 from app.core.llm import LLMClient, get_llm
 from app.pipelines import embedding as _embedding
+from app.pipelines import color_synonym_seed
 from app.pipelines.artifact_store import (
     ArtifactStore,
     CatalogArtifact,
@@ -44,6 +46,19 @@ class BatchResult:
     hidden: int
     pages: int
     cursor: str | None
+
+
+async def _harvest_change_colors(change: ProductChange, *, settings: Settings) -> int:
+    """I-17 한 변경분의 신규 색상 표기를 동기 DB/API 작업 스레드에서 pending으로 제안한다."""
+    embed = functools.partial(_embedding.embed_texts, task_type=settings.embedding_task_document)
+    return await asyncio.to_thread(
+        color_synonym_seed.harvest_new_terms,
+        settings.catalog_db_url,
+        change.attributes,
+        embed,
+        settings.embedding_model_id,
+        settings.color_synonym_cluster_threshold,
+    )
 
 
 async def _process_change(
@@ -79,6 +94,13 @@ async def _process_change(
             normalized=settings.embedding_normalized,
         )
     )
+    # 기본 off: 새 표기마다 임베딩 API와 DB write가 추가되고 검수 테이블도 아직 미검수다.
+    # 초기 검수 완료 뒤에만 켜며, 어떤 실패도 본 I-17 생성물 갱신으로 전파하지 않는다.
+    if settings.color_synonym_batch_harvest_enabled:
+        try:
+            await _harvest_change_colors(change, settings=settings)
+        except Exception:
+            _log.warning("색상 표기 수확 실패 — I-17 생성물 갱신은 계속", exc_info=True)
 
 
 async def _drain(

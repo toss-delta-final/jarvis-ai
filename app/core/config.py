@@ -123,6 +123,28 @@ class Settings(BaseSettings):
     # 관계는 기동 시점에 강제한다(아래 model_validator).
     catalog_store_query_timeout_s: float = Field(default=2.5, gt=0.0)
 
+    # ── 색상 동의어 확장 (이슈 #258) ──
+    # 와이어 리스트 전송은 api-spec §4.6 `color: string` → `string[]` 개정과 BE 배포가
+    # 모두 끝난 뒤에만 켠다. 기본 off에서는 승인 사전 DB도 조회하지 않아 현행 I-1 요청이 불변이다.
+    color_synonym_expansion_enabled: bool = False
+    # 새 표기마다 임베딩 API+DB write가 I-17에 추가되고 테이블도 아직 미검수 상태이므로 기본 off.
+    # 초기 검수 완료 뒤 운영 비용을 확인하고 켠다.
+    color_synonym_batch_harvest_enabled: bool = False
+    # 실카탈로그 상위 30 표기가 전체 색상 토큰 출현의 82.2%(8,753/10,645)를 덮는다.
+    color_synonym_top_n: int = Field(default=30, ge=0)
+    # 실측 최저 정탐 남색-네이비=0.854, 최고 오탐 블랙-블루=0.849로 마진이 0.005뿐이다.
+    # 0.85는 측정 오탐을 막고 핵심 정탐을 남기는 최소 안전선일 뿐 정밀도 보증이 아니다.
+    # 임계만으로 확정하지 않고 LLM 판정 흔적과 경계 표시를 사람이 함께 검수한다.
+    color_synonym_cluster_threshold: float = Field(default=0.85, ge=-1.0, le=1.0)
+    # 임계 바로 위의 불확실한 후보를 검수 큐에서 `확인 필요`로 드러내는 코사인 폭.
+    color_synonym_boundary_band_width: float = Field(default=0.01, ge=0.0, le=2.0)
+    # 실제 438개 제안을 한 응답의 keep[]로 받으면 2048 token에서 잘렸다. 군집별 1개 호출로
+    # 출력 규모를 유계화하고, 한 호출 실패가 다른 군집 판정을 지우지 않게 격리한다.
+    color_synonym_llm_clusters_per_call: int = Field(default=1, ge=1)
+    # 군집 1개 keep/remove JSON에는 충분하면서 무제한 출력을 막는 fast-tier 출력 상한.
+    color_synonym_llm_max_tokens: int = Field(default=2048, ge=1)
+    color_synonym_cache_ttl_s: float = Field(default=300.0, ge=0.0)
+
     # ── PostgreSQL / pgvector ×2 ──
     # catalog: AI 생성물(extras/search_doc/임베딩, §4.8 I-17 배치 upsert) 호스트, profile: 프로필 스토어+대화 저장(§6.3).
     catalog_db_url: str = "postgresql://jarvis:jarvis@localhost:5433/catalog"

@@ -667,3 +667,65 @@ async def test_batch_embed_dim_reflects_actual_vector(monkeypatch):
     await _batch.run_artifacts_batch(fetch=fetch, llm=ScriptedLLM(), store=store)
 
     assert store.get(8).embed_dim == 8
+
+
+async def test_color_harvest_flag_off_does_not_touch_harvester(monkeypatch):
+    settings = get_settings().model_copy(update={"color_synonym_batch_harvest_enabled": False})
+
+    async def forbidden(*args, **kwargs):
+        pytest.fail("default-off batch must not harvest colors")
+
+    monkeypatch.setattr(_batch, "_harvest_change_colors", forbidden)
+    await _batch._process_change(
+        _change(1), llm=_EnrichLLM(), embed=_embed, store=CatalogArtifactStore(), settings=settings
+    )
+
+
+async def test_color_harvest_only_adds_pending_new_terms(monkeypatch):
+    settings = get_settings().model_copy(update={"color_synonym_batch_harvest_enabled": True})
+    seen = []
+
+    async def harvest(change, *, settings):
+        seen.append((change.attributes, settings.color_synonym_batch_harvest_enabled))
+        return 1
+
+    monkeypatch.setattr(_batch, "_harvest_change_colors", harvest)
+    await _batch._process_change(
+        _change(1), llm=_EnrichLLM(), embed=_embed, store=CatalogArtifactStore(), settings=settings
+    )
+    assert seen == [({"방수": True}, True)]
+
+
+async def test_color_harvest_failure_does_not_kill_i17_artifact(monkeypatch, caplog):
+    settings = get_settings().model_copy(update={"color_synonym_batch_harvest_enabled": True})
+    store = CatalogArtifactStore()
+
+    async def fail(*args, **kwargs):
+        raise RuntimeError("color DB unavailable")
+
+    monkeypatch.setattr(_batch, "_harvest_change_colors", fail)
+    with caplog.at_level("WARNING"):
+        await _batch._process_change(
+            _change(1), llm=_EnrichLLM(), embed=_embed, store=store, settings=settings
+        )
+    assert store.get(1) is not None
+    assert "색상 표기 수확 실패" in caplog.text
+
+
+async def test_color_harvest_cancellation_propagates(monkeypatch):
+    import asyncio
+
+    settings = get_settings().model_copy(update={"color_synonym_batch_harvest_enabled": True})
+
+    async def cancel(*args, **kwargs):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(_batch, "_harvest_change_colors", cancel)
+    with pytest.raises(asyncio.CancelledError):
+        await _batch._process_change(
+            _change(1),
+            llm=_EnrichLLM(),
+            embed=_embed,
+            store=CatalogArtifactStore(),
+            settings=settings,
+        )
