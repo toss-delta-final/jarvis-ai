@@ -13,6 +13,22 @@
 
 ---
 
+## [2026-08-03] 같은 의존성을 쓰는 두 라우터는 예외 "처분"까지 짝지어 검증한다
+- 증상: pg-profile(대화 store) 장애 하나에 구매자 `/chat`은 `503 STATE_UNAVAILABLE`,
+  판매자 `/seller/chat`은 `500 INTERNAL`을 반환했다. 재시도 가능 여부라는 신호가 레인마다
+  갈려 FE 재시도 정책과 5xx 알람 집계가 원인 하나에 두 갈래로 흩어졌다.
+- 원인: 두 라우터가 스트림 개시 전 같은 `get_conversation_store()`를 호출하는데,
+  `chat.py`에만 `is_state_store_unavailable` → `SessionStateUnavailable` 변환이 있었다.
+  `seller.py`는 블록을 복붙하면서 `except Exception:`(exc 바인딩조차 없음) 후 그대로
+  `raise` 했다. 두 경로 모두 테스트는 있었지만 각자 자기 상태 코드만 검증해서,
+  "같은 원인 → 같은 코드"라는 교차 불변식은 아무도 보지 않았다.
+- 규칙: **공유 의존성의 실패를 여러 진입점이 각자 처리한다면, 처분(상태 코드·오류 코드)을
+  한 곳으로 모으거나 최소한 "같은 원인은 같은 코드"를 교차 검증하는 테스트를 둔다.**
+  진입점별로 자기 코드만 단언하는 테스트는 이 종류의 비대칭을 구조적으로 놓친다.
+  예외를 옮겨 적을 때 `except Exception:`처럼 바인딩이 빠져 있으면 원본에서 분기가
+  삭제된 흔적일 수 있으니 원본과 대조한다.
+- 관련: `app/api/seller.py`, `app/api/chat.py`, `app/core/pg_resilience.py`, api-spec §2.5·§3.2
+
 ## [2026-08-03] counterfactual fixture가 실제 점수 표면에 닿는지 먼저 확인한다
 - 증상: 개인화 paired 평가에서 글로벌 Sony/이어폰 취향을 모든 케이스에 공통 주입하자 대부분
   후보 집합과 교집합이 없어 clean/noisy/repeated 지표가 전부 같았다. repeated는 clean과

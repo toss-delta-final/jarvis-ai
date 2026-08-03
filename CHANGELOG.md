@@ -87,6 +87,16 @@
 - **#209 후속 — `expose_max` 8 → 9, 그리고 설정이 계약 상한을 넘지 못하게 묶었다** (PR #212 리뷰 반영, api-spec §3.3 v0.17.3 / REQ-REC-021). §4.2가 목록당 9개를 허용하는데 노출 상한이 8이라 **계약 상한이 코드에서 도달 불가능한 값**이었다. 반대로 `expose_max`를 9 초과로 튜닝하면 `RecommendationListEntry` 생성에서 `ValidationError`가 나는데, 그 지점은 `SpringUnavailableError` degrade 블록 **밖**이라 §3.3의 "목록을 준비하는 데 문제가 있었어요" 대신 **일반 `INTERNAL`로 SSE 스트림이 끊긴다**. 계약 상한 상수(`LIST_MAX_PRODUCTS` 등)를 스키마 한 곳에 두고 config가 그 값을 `le`로 참조해, 잘못된 설정을 **런타임이 아니라 기동 시점**에 잡는다. `expose_min > expose_max`(보충 루프가 상한에 되잘리는 모순)도 함께 거절한다.
 
 ### Fixed
+- **대화 store 장애 시 판매자 챗이 503 대신 500을 반환하던 문제** — 같은 pg-profile
+  장애가 구매자 `/chat`에서는 `503 STATE_UNAVAILABLE`, 판매자 `/seller/chat`에서는
+  `500 INTERNAL`로 갈렸다. 스트림 개시 전 `get_conversation_store()` 실패를
+  `chat.py`만 `is_state_store_unavailable`로 판별해 `SessionStateUnavailable`로
+  변환하고 `seller.py`는 그대로 전파했기 때문이다. 재시도 가능 여부라는 신호가
+  레인마다 달라 FE 재시도 정책과 5xx 알람 집계가 원인 하나에 두 갈래로 흩어졌다.
+  이제 판매자 경로도 같은 경계 함수를 쓴다. 변환 대상은 실제 I/O 장애
+  (`TimeoutError`·`PoolTimeout`·`OperationalError`)뿐이며 programming/domain 오류를
+  503으로 마스킹하지 않는다 — 코드 버그가 "일시 장애"로 묻히면 안 된다.
+  (api-spec §2.5 — 정본에 이미 등재된 코드라 명세 개정 없음)
 - **#253 — 옵션 되물음 중 해소되지 않은 상품 전환이 옛 상품을 담던 문제** — 실측에서 `fast`가
   `"다른 거 담아줘"`를 5/8회 pending 상품으로 에코하는 등 총 12회 옛 `productId`를 되돌렸고,
   그 턴의 임의 `optionId`까지 소비하면 사용자가 고르지 않은 옵션으로 옛 상품이 담길 수 있었다.

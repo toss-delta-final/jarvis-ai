@@ -65,6 +65,8 @@ from app.core.observability import (
     identifier_fingerprint,
     start_observation,
 )
+from app.core.pg_resilience import is_state_store_unavailable
+from app.core.session_context import SessionStateUnavailable
 from app.core.stream import open_stream, registry_key
 from app.core.tracing import current_request_trace, start_request_trace_safely, trace_span
 from app.core.text import _strip_unsafe, _strip_unsafe_multiline
@@ -939,7 +941,7 @@ async def seller_chat(
             terminal_reason="client_disconnect",
         )
         raise
-    except Exception:
+    except Exception as exc:
         await finish_trace_safely(
             trace,
             status=TurnStatus.FAILED,
@@ -957,6 +959,12 @@ async def seller_chat(
             sellerId=identity.seller_id,
             brandId=identity.brand_id,
         )
+        # 같은 pg-profile 장애가 구매자 /chat 은 503, 판매자 /seller/chat 은 500 으로 갈리던
+        # 비대칭을 제거한다(§2.5 STATE_UNAVAILABLE). 판별은 chat.py 와 같은 경계 함수를 쓰며
+        # 실제 I/O 장애(timeout·pool·connection)만 변환한다 — programming/domain 오류를
+        # 503 으로 마스킹하면 코드 버그가 "일시 장애"로 묻힌다.
+        if is_state_store_unavailable(exc):
+            raise SessionStateUnavailable from exc
         raise
     observation = start_observation(
         request_id=request_id,
