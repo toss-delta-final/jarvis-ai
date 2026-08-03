@@ -597,6 +597,7 @@ async def run_buyer_turn(
                 cart_store=cart_store,
                 thread_key=thread_key,
                 settings=settings,
+                message=request.message,
                 allowed_product_ids=allowed,
                 observer=observer,
             ):
