@@ -26,6 +26,7 @@ from app.schemas.spring import ProductSearchFilters
 _NAMESPACE_ROOT = "buyer_revert_v2"
 _CATEGORIES_KEY = "categories"
 _RELAX_NAMESPACE_ROOT = "buyer_relaxation_offers_v1"  # [#113] 완화 칩 제안 기억
+_SNAPSHOT_KEY = "turn"  # 이번 턴 화면 상태 — 아래 둘을 한 덩어리로 쓴다(부분 실패 차단)
 _OFFERS_KEY = "offers"  # 제안한 칩(누르면 이렇게 됩니다)
 _APPLIED_KEY = "applied"  # 자동 적용된 완화(서버가 이미 이렇게 했습니다)
 
@@ -232,47 +233,44 @@ class RelaxationOfferStore:
 
     턴마다 **덮어쓴다**(누적하지 않는다) — 화면에 떠 있는 칩은 항상 마지막 턴 것뿐이라, 옛 제안이
     남아 있으면 사용자가 보지도 않은 조건이 되살아난다.
+
+    두 값(`offers`·`applied`)은 **한 스냅샷**이다 — 둘 다 "이번 턴 화면에 무엇이 있었나"를
+    기술한다. 그래서 **단일 키에 함께 저장**한다(PR #248 리뷰): 따로 두 번 쓰면 앞의 쓰기만
+    성공하고 뒤가 pg 일시 장애로 실패했을 때 `offers` 는 이번 턴인데 `applied` 는 지난 턴인
+    **찢어진 상태**가 남고, 다음 턴 "그 중에" 가 화면에 보여준 적 없는 완화를 이어붙인다.
+    한 번의 `aput` 으로 만들면 그 부분 실패가 **구조적으로 불가능**해진다.
     """
 
     def __init__(self, store: BaseStore | None = None) -> None:
         self._store = store or InMemoryStore()
 
+    async def _snapshot(self, key: str) -> dict:
+        item = await run_with_query_timeout(
+            self._store.aget((_RELAX_NAMESPACE_ROOT, key), _SNAPSHOT_KEY)
+        )
+        return item.value if item and isinstance(item.value, dict) else {}
+
     async def get(self, key: str) -> dict[str, dict]:
         """`label → {"field":…, "value":…}`. 저장분이 없으면 빈 dict."""
-        item = await run_with_query_timeout(
-            self._store.aget((_RELAX_NAMESPACE_ROOT, key), _OFFERS_KEY)
-        )
-        offers = item.value.get(_OFFERS_KEY) if item else None
+        offers = (await self._snapshot(key)).get(_OFFERS_KEY)
         return offers if isinstance(offers, dict) else {}
-
-    async def put(self, key: str, offers: dict[str, dict]) -> None:
-        """이번 턴 제안으로 **교체**한다(빈 dict 면 비우기). 락 불필요 — 읽고 더하는 게 아니라 덮어쓴다."""
-        await run_with_query_timeout(
-            self._store.aput(
-                (_RELAX_NAMESPACE_ROOT, key),
-                _OFFERS_KEY,
-                {_OFFERS_KEY: offers},
-            )
-        )
 
     async def get_applied(self, key: str) -> dict | None:
         """직전 턴에 **자동 적용**된 완화 `{"field":…, "value":…}`. 없으면 None.
 
-        칩 제안(`offers`)과 별개다 — 저건 "누르면 이렇게 됩니다"(미동의)이고, 이건 "서버가 이미
-        이렇게 적용했습니다"(미동의)다. 다음 턴이 그 결과 집합을 가리키면("그 중에") 사용자가
+        칩 제안(`offers`)과 역할이 다르다 — 저건 "누르면 이렇게 됩니다"(미동의)이고, 이건 "서버가
+        이미 이렇게 적용했습니다"(미동의)다. 다음 턴이 그 결과 집합을 가리키면("그 중에") 사용자가
         수용한 것으로 보고 이어받는다(#113).
         """
-        item = await run_with_query_timeout(
-            self._store.aget((_RELAX_NAMESPACE_ROOT, key), _APPLIED_KEY)
-        )
-        applied = item.value.get(_APPLIED_KEY) if item else None
+        applied = (await self._snapshot(key)).get(_APPLIED_KEY)
         return applied if isinstance(applied, dict) else None
 
-    async def put_applied(self, key: str, applied: dict | None) -> None:
-        """이번 턴에 적용된 완화로 **교체**한다(None 이면 비우기).
+    async def put(self, key: str, offers: dict[str, dict], applied: dict | None) -> None:
+        """이번 턴 스냅샷으로 **통째 교체**한다 — 부분 갱신을 API 로 열어두지 않는다.
 
-        상품 후보가 확정된 턴마다 덮어쓴다 — 완화가 안 걸린 턴에 옛 값이 남아 있으면, 한참 뒤
-        "그 중에" 발화가 **화면에 있지도 않았던** 완화를 되살린다.
+        락 불필요(읽고 더하는 게 아니라 덮어쓴다). 상품 후보가 확정된 턴마다 덮어쓴다 — 완화가
+        안 걸린 턴에 옛 값이 남아 있으면 한참 뒤 "그 중에" 발화가 **화면에 있지도 않았던** 완화를
+        되살린다.
 
         **호출되지 않는 경로가 있다**(검색 실패 `SEARCH_FAILED` 는 이 지점 전에 종료). 그런 턴은
         옛 값이 그대로 남는데, 의도된 쪽이다 — 사용자가 마지막으로 **본** 결과는 여전히 그 완화가
@@ -283,8 +281,8 @@ class RelaxationOfferStore:
         await run_with_query_timeout(
             self._store.aput(
                 (_RELAX_NAMESPACE_ROOT, key),
-                _APPLIED_KEY,
-                {_APPLIED_KEY: applied},
+                _SNAPSHOT_KEY,
+                {_OFFERS_KEY: offers, _APPLIED_KEY: applied},
             )
         )
 

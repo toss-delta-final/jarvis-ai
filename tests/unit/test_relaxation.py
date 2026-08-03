@@ -591,6 +591,45 @@ async def test_scoped_refine_never_overwrites_a_restated_axis(
     assert seen[turn2] == expected, label
 
 
+async def test_turn_snapshot_is_written_atomically() -> None:
+    """[PR #248 리뷰] 칩 제안과 자동 완화는 **한 번의 쓰기**로 저장된다.
+
+    둘은 "이번 턴 화면에 무엇이 있었나"라는 한 스냅샷이다. 따로 두 번 쓰면 뒤엣것만 pg 일시
+    장애로 실패했을 때 `offers` 는 이번 턴인데 `applied` 는 지난 턴인 **찢어진 상태**가 남고,
+    다음 턴 "그 중에" 가 화면에 보여준 적 없는 완화를 이어붙인다 — 단일 쓰기로 그 부분 실패를
+    구조적으로 없앤다.
+    """
+    from app.agents.buyer.recommendation.state import RelaxationOfferStore
+
+    writes: list = []
+
+    class _CountingStore:
+        def __init__(self):
+            self._data: dict = {}
+
+        async def aput(self, ns, key, value):  # noqa: ANN001
+            writes.append((ns, key))
+            self._data[(ns, key)] = value
+
+        async def aget(self, ns, key):  # noqa: ANN001
+            value = self._data.get((ns, key))
+            return type("Item", (), {"value": value})() if value is not None else None
+
+    store = RelaxationOfferStore(_CountingStore())
+    await store.put(
+        "t1", {"칩": {"field": "priceMax", "value": 65000}}, {"field": "ratingMin", "value": 4.0}
+    )
+
+    assert len(writes) == 1, f"스냅샷은 단일 쓰기여야 한다 — 실제 {len(writes)}회"
+    assert await store.get("t1") == {"칩": {"field": "priceMax", "value": 65000}}
+    assert await store.get_applied("t1") == {"field": "ratingMin", "value": 4.0}
+
+    # 다음 턴에 완화 채택이 없으면 같은 쓰기로 applied 가 비워진다(옛 값이 남지 않는다).
+    await store.put("t1", {}, None)
+    assert len(writes) == 2
+    assert await store.get("t1") == {} and await store.get_applied("t1") is None
+
+
 @pytest.mark.parametrize("field", ["relaxation_chip_fields", "relaxation_auto_fields"])
 def test_duplicate_relaxation_fields_fail_startup(field: str) -> None:
     """[PR #248 리뷰] 목록에 같은 필드가 중복되면 기동 실패.
@@ -626,10 +665,7 @@ async def test_carry_is_skipped_on_general_turns(monkeypatch: pytest.MonkeyPatch
             reads.append(key)
             return {"field": "ratingMin", "value": 4.0}
 
-        async def put(self, key, offers):  # noqa: ANN001
-            return None
-
-        async def put_applied(self, key, applied):  # noqa: ANN001
+        async def put(self, key, offers, applied):  # noqa: ANN001
             return None
 
     async def _spy():
@@ -985,7 +1021,7 @@ async def test_offer_store_failure_does_not_break_the_turn(
         async def get(self, key):  # noqa: ANN001
             raise TimeoutError("pg down")
 
-        async def put(self, key, offers):  # noqa: ANN001
+        async def put(self, key, offers, applied):  # noqa: ANN001
             raise TimeoutError("pg down")
 
     async def _broken():
@@ -1189,7 +1225,7 @@ async def test_corrupt_stored_offer_is_ignored_not_crashed(stored) -> None:  # n
         async def get(self, key):  # noqa: ANN001
             return {"눌린 칩": stored}
 
-        async def put(self, key, offers):  # noqa: ANN001
+        async def put(self, key, offers, applied):  # noqa: ANN001
             return None
 
     async def _fake():

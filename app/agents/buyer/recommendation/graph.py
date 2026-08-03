@@ -710,6 +710,10 @@ async def stream_recommendation(
     # 화면에 없는 옛 제안이 살아 있으면 사용자가 보지도 않은 조건이 되살아난다.
     if relax_store is not None and thread_key:
         try:
+            # 제안한 칩과 **자동 적용된 완화**를 한 스냅샷으로 함께 쓴다(PR #248 리뷰) — 따로
+            # 두 번 쓰면 뒤엣것만 실패했을 때 "칩은 이번 턴, 완화는 지난 턴"인 찢어진 상태가
+            # 남아, 다음 턴 "그 중에" 가 화면에 보여준 적 없는 완화를 이어붙인다.
+            # 채택이 없었으면 applied 를 None 으로 **비운다**: 옛 값이 남으면 같은 일이 벌어진다.
             await relax_store.put(
                 thread_key,
                 {
@@ -717,12 +721,6 @@ async def stream_recommendation(
                     for chip in relaxation_chips
                     if chip.relaxation is not None
                 },
-            )
-            # [#113] 이번 턴에 **자동 적용**된 완화도 따로 기억한다 — 다음 턴이 이 결과 집합을
-            # 가리키면("그 중에") 사용자가 수용한 것으로 보고 이어받는다(팀 합의). 채택이 없었으면
-            # None 으로 **비운다**: 옛 값이 남으면 화면에 있지도 않았던 완화가 되살아난다.
-            await relax_store.put_applied(
-                thread_key,
                 {"field": adopted_field, "value": adopted_value} if adopted_field else None,
             )
         except Exception as exc:  # noqa: BLE001 - 기억 실패가 스트림을 죽이지 않게(degrade)
