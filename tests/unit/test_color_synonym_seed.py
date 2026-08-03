@@ -186,6 +186,243 @@ def test_all_term_embeddings_respect_provider_batch_limit() -> None:
     assert batches == [20] * 10 + [5]
 
 
+def _group_members(result) -> dict[str, set[str]]:
+    return {
+        cluster.canonical: {member.term for member in cluster.members}
+        for cluster in result.clusters
+    }
+
+
+async def test_llm_assignment_json_mode_prompts_explicitly_request_json() -> None:
+    counts = Counter({"블랙": 100, "검정": 10})
+
+    class LLM:
+        async def complete(self, **kwargs):
+            assert kwargs["json_output"] is True
+            assert "JSON" in kwargs["system"]
+            payload = json.loads(kwargs["user"])
+            if payload["stage"] == "anchors":
+                return '{"groups":[{"canonical":"블랙","members":["블랙"]}]}'
+            return '{"assignments":[{"term":"검정","canonical":"블랙"}]}'
+
+    result = await seed.assign_color_clusters(
+        counts,
+        lambda terms: [[1.0, 0.0] for _ in terms],
+        LLM(),
+        top_n=1,
+        terms_per_call=20,
+        threshold=0.85,
+        max_tokens=512,
+    )
+
+    assert _group_members(result) == {"블랙": {"블랙", "검정"}}
+
+
+async def test_llm_assignment_rejects_hallucinated_terms_exactly() -> None:
+    counts = Counter({"블랙": 100, "화이트": 90, "검정": 10})
+
+    class LLM:
+        async def complete(self, **kwargs):
+            payload = json.loads(kwargs["user"])
+            if payload["stage"] == "anchors":
+                return json.dumps(
+                    {
+                        "groups": [
+                            {"canonical": "블랙", "members": ["블랙"]},
+                            {"canonical": "화이트", "members": ["화이트"]},
+                        ]
+                    }
+                )
+            return json.dumps(
+                {
+                    "assignments": [
+                        {"term": "검정", "canonical": "블랙"},
+                        {"term": "오white", "canonical": "화이트"},
+                    ]
+                },
+                ensure_ascii=False,
+            )
+
+    result = await seed.assign_color_clusters(
+        counts,
+        lambda terms: [[1.0, 0.0] for _ in terms],
+        LLM(),
+        top_n=2,
+        terms_per_call=20,
+        threshold=0.85,
+        max_tokens=512,
+    )
+    assert "검정" in _group_members(result)["블랙"]
+    assert all("오white" not in members for members in _group_members(result).values())
+    assert any("환각" in rejection.reason and "오white" in rejection.terms for rejection in result.rejections)
+
+
+async def test_llm_assignment_rejects_duplicate_exclusive_assignments() -> None:
+    counts = Counter({"블랙": 100, "화이트": 90, "크림": 10})
+
+    class LLM:
+        async def complete(self, **kwargs):
+            payload = json.loads(kwargs["user"])
+            if payload["stage"] == "anchors":
+                return '{"groups":[{"canonical":"블랙","members":["블랙"]},{"canonical":"화이트","members":["화이트"]}]}'
+            return '{"assignments":[{"term":"크림","canonical":"블랙"},{"term":"크림","canonical":"화이트"}]}'
+
+    result = await seed.assign_color_clusters(
+        counts,
+        lambda terms: [[1.0, 0.0] for _ in terms],
+        LLM(),
+        top_n=2,
+        terms_per_call=20,
+        threshold=0.85,
+        max_tokens=512,
+    )
+    assert all("크림" not in members for members in _group_members(result).values())
+    assert any(item.term == "크림" and "배타성" in item.reason for item in result.unassigned)
+    assert any("배타성" in rejection.reason for rejection in result.rejections)
+
+
+@pytest.mark.parametrize(
+    "anchor_groups",
+    [
+        [{"canonical": "없는앵커", "members": ["블랙"]}],
+        [{"canonical": "블랙", "members": ["화이트"]}],
+    ],
+)
+async def test_llm_anchor_groups_require_valid_canonical_and_self_membership(anchor_groups) -> None:
+    counts = Counter({"블랙": 100, "화이트": 90})
+
+    class LLM:
+        async def complete(self, **kwargs):
+            return json.dumps({"groups": anchor_groups}, ensure_ascii=False)
+
+    result = await seed.assign_color_clusters(
+        counts,
+        lambda terms: [[1.0, 0.0] for _ in terms],
+        LLM(),
+        top_n=2,
+        terms_per_call=20,
+        threshold=0.85,
+        max_tokens=512,
+    )
+    assert _group_members(result) == {"블랙": {"블랙"}, "화이트": {"화이트"}}
+    assert any("canonical" in rejection.reason for rejection in result.rejections)
+
+
+async def test_llm_anchor_groups_reject_cycles() -> None:
+    counts = Counter({"화이트": 100, "아이보리": 90})
+
+    class LLM:
+        async def complete(self, **kwargs):
+            return (
+                '{"groups":[{"canonical":"화이트","members":["화이트","아이보리"]},'
+                '{"canonical":"아이보리","members":["아이보리","화이트"]}]}'
+            )
+
+    result = await seed.assign_color_clusters(
+        counts,
+        lambda terms: [[1.0, 0.0] for _ in terms],
+        LLM(),
+        top_n=2,
+        terms_per_call=20,
+        threshold=0.85,
+        max_tokens=512,
+    )
+    assert _group_members(result) == {"화이트": {"화이트"}, "아이보리": {"아이보리"}}
+    assert any("순환" in rejection.reason for rejection in result.rejections)
+
+
+async def test_llm_assignment_never_sends_or_groups_sentinels() -> None:
+    counts = Counter({"혼합색상": 1000, "블랙": 100, "화이트": 90, "검정": 10})
+    payloads = []
+
+    class LLM:
+        async def complete(self, **kwargs):
+            payload = json.loads(kwargs["user"])
+            payloads.append(payload)
+            if payload["stage"] == "anchors":
+                return '{"groups":[{"canonical":"블랙","members":["블랙"]},{"canonical":"화이트","members":["화이트"]}]}'
+            return '{"assignments":[{"term":"검정","canonical":"블랙"}]}'
+
+    result = await seed.assign_color_clusters(
+        counts,
+        lambda terms: [[1.0, 0.0] for _ in terms],
+        LLM(),
+        top_n=2,
+        terms_per_call=20,
+        threshold=0.85,
+        max_tokens=512,
+    )
+    assert "혼합색상" not in json.dumps(payloads, ensure_ascii=False)
+    assert all("혼합색상" not in members for members in _group_members(result).values())
+    assert any(item.term == "혼합색상" and "sentinel" in item.reason for item in result.unassigned)
+
+
+async def test_llm_assignment_isolates_failed_term_chunk_as_unassigned() -> None:
+    counts = Counter({"블랙": 100, "화이트": 90, "검정": 10, "오프화이트": 9})
+
+    class LLM:
+        async def complete(self, **kwargs):
+            payload = json.loads(kwargs["user"])
+            if payload["stage"] == "anchors":
+                return '{"groups":[{"canonical":"블랙","members":["블랙"]},{"canonical":"화이트","members":["화이트"]}]}'
+            if payload["terms"] == ["검정"]:
+                raise RuntimeError("one chunk failed")
+            return '{"assignments":[{"term":"오프화이트","canonical":"화이트"}]}'
+
+    result = await seed.assign_color_clusters(
+        counts,
+        lambda terms: [[1.0, 0.0] for _ in terms],
+        LLM(),
+        top_n=2,
+        terms_per_call=1,
+        threshold=0.85,
+        max_tokens=512,
+    )
+    assert "오프화이트" in _group_members(result)["화이트"]
+    assert any(item.term == "검정" and "LLM 실패" in item.reason for item in result.unassigned)
+    assert all("검정" not in members for members in _group_members(result).values())
+
+
+async def test_embedding_only_flags_llm_assignment_disagreement_for_review(tmp_path) -> None:
+    counts = Counter({"네이비": 100, "블루": 90, "남색": 10})
+    vectors = {"네이비": [1.0, 0.0], "블루": [0.0, 1.0], "남색": [0.0, 1.0]}
+
+    class LLM:
+        async def complete(self, **kwargs):
+            payload = json.loads(kwargs["user"])
+            if payload["stage"] == "anchors":
+                return '{"groups":[{"canonical":"네이비","members":["네이비"]},{"canonical":"블루","members":["블루"]}]}'
+            return '{"assignments":[{"term":"남색","canonical":"네이비"}]}'
+
+    result = await seed.assign_color_clusters(
+        counts,
+        lambda terms: [vectors[term] for term in terms],
+        LLM(),
+        top_n=2,
+        terms_per_call=20,
+        threshold=0.85,
+        max_tokens=512,
+    )
+    navy = next(cluster for cluster in result.clusters if cluster.canonical == "네이비")
+    namsaek = next(member for member in navy.members if member.term == "남색")
+    assert namsaek.nearest_anchor == "블루"
+    assert namsaek.cosine == pytest.approx(0.0)
+    assert namsaek.review_required is True
+    assert result.embedding_mismatch_count == 1
+
+    path = tmp_path / "review.md"
+    seed.write_review_queue(
+        result,
+        path,
+        threshold=0.85,
+        boundary_band_width=0.01,
+    )
+    review = path.read_text(encoding="utf-8")
+    assert "LLM=네이비" in review
+    assert "임베딩1위=블루 1.0000" in review
+    assert "확인 필요" in review
+
+
 async def test_refine_clusters_only_removes_members_and_degrades_on_failure(caplog) -> None:
     clusters = [
         seed.Cluster(
@@ -600,12 +837,13 @@ async def test_build_offloads_all_blocking_stages_from_event_loop(monkeypatch, t
     async def harvest(*args, **kwargs):
         return Counter({"블랙": 1})
 
-    def cluster(*args, **kwargs):
-        stage_threads["cluster"] = threading.get_ident()
-        return []
+    def embed(terms):
+        stage_threads["embed"] = threading.get_ident()
+        return [[1.0] for _ in terms]
 
-    async def refine(clusters, *args, **kwargs):
-        return clusters
+    class LLM:
+        async def complete(self, **kwargs):
+            return '{"groups":[{"canonical":"블랙","members":["블랙"]}]}'
 
     def write(*args, **kwargs):
         stage_threads["write"] = threading.get_ident()
@@ -615,18 +853,16 @@ async def test_build_offloads_all_blocking_stages_from_event_loop(monkeypatch, t
         return 1
 
     monkeypatch.setattr(seed, "harvest_terms", harvest)
-    monkeypatch.setattr(seed, "cluster_terms", cluster)
-    monkeypatch.setattr(seed, "refine_clusters", refine)
     monkeypatch.setattr(seed, "write_review_queue", write)
     monkeypatch.setattr(seed, "upsert_color_terms", upsert)
 
     result = await seed.build(
         "dsn",
         tmp_path / "review.md",
-        embed=lambda terms: [],
-        llm=object(),
+        embed=embed,
+        llm=LLM(),
     )
 
     assert result.upserted_rows == 1
-    assert set(stage_threads) == {"cluster", "write", "upsert"}
+    assert set(stage_threads) == {"embed", "write", "upsert"}
     assert all(thread_id != loop_thread for thread_id in stage_threads.values())

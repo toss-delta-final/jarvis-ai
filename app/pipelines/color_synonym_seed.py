@@ -43,6 +43,8 @@ class ClusterMember:
     second_anchor: str | None = None
     second_cosine: float | None = None
     margin: float | None = None
+    review_required: bool = False
+    review_reasons: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -64,12 +66,49 @@ class ColorTermRow:
 
 
 @dataclass(frozen=True)
+class ValidationRejection:
+    stage: str
+    reason: str
+    terms: tuple[str, ...] = ()
+    canonical: str | None = None
+
+
+@dataclass(frozen=True)
+class UnassignedTerm:
+    term: str
+    doc_count: int
+    reason: str
+
+
+@dataclass(frozen=True)
+class ClusteringResult:
+    clusters: tuple[Cluster, ...]
+    unassigned: tuple[UnassignedTerm, ...]
+    rejections: tuple[ValidationRejection, ...]
+    embeddings: dict[str, list[float]]
+
+    @property
+    def embedding_mismatch_count(self) -> int:
+        return sum(
+            member.review_required
+            for cluster in self.clusters
+            for member in cluster.members
+            if member.term != cluster.canonical
+        )
+
+
+@dataclass(frozen=True)
 class BuildResult:
     harvested_terms: int
     cluster_count: int
     llm_adjustments: int
     upserted_rows: int
     review_queue_path: str
+    rejected_proposals: int = 0
+    hallucination_rejections: int = 0
+    exclusivity_rejections: int = 0
+    embedding_mismatches: int = 0
+    unassigned_terms: int = 0
 
 
 def extract_color_terms(attributes: dict | None) -> list[str]:
@@ -143,6 +182,343 @@ def _embed_in_batches(terms: Sequence[str], embed: EmbedFn) -> list[list[float]]
         for start in range(0, len(terms), _EMBED_BATCH_SIZE)
         for vector in embed(list(terms[start : start + _EMBED_BATCH_SIZE]))
     ]
+
+
+def _anchor_groups_from_response(
+    raw: str,
+    anchors: Sequence[str],
+) -> tuple[dict[str, tuple[str, ...]], list[ValidationRejection]]:
+    """앵커 병합 응답을 전역 검증하고 위반 그룹 대신 독립 앵커를 보존한다."""
+    anchor_set = set(anchors)
+    rejections: list[ValidationRejection] = []
+    try:
+        data = json.loads(raw)
+        raw_groups = data.get("groups") if isinstance(data, dict) else None
+        if not isinstance(raw_groups, list):
+            raise ValueError("groups 배열 없음")
+    except Exception as exc:
+        return (
+            {anchor: (anchor,) for anchor in anchors},
+            [ValidationRejection("anchors", f"LLM 응답 파싱 실패: {type(exc).__name__}")],
+        )
+
+    candidates: list[tuple[str, tuple[str, ...]] | None] = []
+    mentioned_anchors: set[str] = set()
+    invalid: dict[int, list[str]] = {}
+    for index, item in enumerate(raw_groups):
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("canonical"), str)
+            or not isinstance(item.get("members"), list)
+            or not all(isinstance(term, str) for term in item["members"])
+        ):
+            candidates.append(None)
+            invalid.setdefault(index, []).append("그룹 스키마 위반")
+            continue
+        canonical = item["canonical"]
+        members = tuple(item["members"])
+        candidates.append((canonical, members))
+        mentioned_anchors.update(term for term in members if term in anchor_set)
+        hallucinated = tuple(term for term in members if term not in anchor_set)
+        if hallucinated:
+            invalid.setdefault(index, []).append("환각 표기")
+            rejections.append(
+                ValidationRejection("anchors", "환각 표기 거부", hallucinated, canonical)
+            )
+        if canonical not in anchor_set:
+            invalid.setdefault(index, []).append("canonical이 앵커 집합 밖")
+        if canonical not in members:
+            invalid.setdefault(index, []).append("canonical이 자기 그룹 멤버가 아님")
+        if len(set(members)) != len(members):
+            invalid.setdefault(index, []).append("배타성 위반: 그룹 안 중복")
+
+    # A←B와 B←A는 그룹 단위로 모두 거부한다. 배타성보다 구체적인 원인을 먼저 남긴다.
+    for left, left_candidate in enumerate(candidates):
+        if left_candidate is None:
+            continue
+        left_canonical, left_members = left_candidate
+        for right in range(left + 1, len(candidates)):
+            right_candidate = candidates[right]
+            if right_candidate is None:
+                continue
+            right_canonical, right_members = right_candidate
+            if right_canonical in left_members and left_canonical in right_members:
+                invalid.setdefault(left, []).append("순환 위반")
+                invalid.setdefault(right, []).append("순환 위반")
+
+    member_owners: dict[str, list[int]] = {}
+    for index, candidate in enumerate(candidates):
+        if candidate is None:
+            continue
+        for term in candidate[1]:
+            if term in anchor_set:
+                member_owners.setdefault(term, []).append(index)
+    for term, owners in member_owners.items():
+        if len(owners) > 1:
+            for index in owners:
+                invalid.setdefault(index, []).append(f"배타성 위반: {term} 중복 배정")
+
+    accepted: dict[str, tuple[str, ...]] = {}
+    assigned: set[str] = set()
+    for index, candidate in enumerate(candidates):
+        if candidate is None:
+            reasons = invalid.get(index, ["그룹 스키마 위반"])
+            rejections.append(ValidationRejection("anchors", "; ".join(dict.fromkeys(reasons))))
+            continue
+        canonical, members = candidate
+        reasons = invalid.get(index)
+        if reasons:
+            rejections.append(
+                ValidationRejection(
+                    "anchors",
+                    "; ".join(dict.fromkeys(reasons)),
+                    tuple(term for term in members if term in anchor_set),
+                    canonical,
+                )
+            )
+            continue
+        accepted[canonical] = members
+        assigned.update(members)
+
+    for anchor in anchors:
+        if anchor not in assigned:
+            accepted[anchor] = (anchor,)
+            if anchor not in mentioned_anchors:
+                rejections.append(
+                    ValidationRejection(
+                        "anchors",
+                        "LLM 응답 누락으로 독립 앵커 유지",
+                        (anchor,),
+                        anchor,
+                    )
+                )
+    return (
+        {anchor: accepted[anchor] for anchor in anchors if anchor in accepted},
+        rejections,
+    )
+
+
+async def _llm_anchor_groups(
+    anchors: Sequence[str],
+    llm: LLMClient,
+    *,
+    max_tokens: int,
+) -> tuple[dict[str, tuple[str, ...]], list[ValidationRejection]]:
+    if not anchors:
+        return {}, []
+    payload = {"stage": "anchors", "anchors": list(anchors)}
+    try:
+        raw = await llm.complete(
+            system=(
+                "JSON 색상 동의어 앵커 병합기다. 입력 anchors의 원문만 사용한다. 같은 색인 "
+                "앵커만 groups[{canonical,members[]}]로 묶고, 모든 canonical은 입력 앵커이며 "
+                "자기 members에 포함되어야 한다. 각 앵커는 정확히 한 그룹에만 나오고 새 "
+                "표기를 만들지 않는다. 병합하지 않는 앵커도 자기 단독 그룹으로 반환한다."
+            ),
+            user=json.dumps(payload, ensure_ascii=False),
+            tier="fast",
+            max_tokens=max_tokens,
+            json_output=True,
+        )
+    except Exception as exc:
+        _log.warning("색상 앵커 LLM 병합 실패 — 독립 앵커로 유지", exc_info=True)
+        return (
+            {anchor: (anchor,) for anchor in anchors},
+            [ValidationRejection("anchors", f"LLM 실패: {type(exc).__name__}")],
+        )
+    return _anchor_groups_from_response(raw, anchors)
+
+
+async def _llm_tail_assignments(
+    terms: Sequence[str],
+    canonicals: Sequence[str],
+    llm: LLMClient,
+    *,
+    terms_per_call: int,
+    max_tokens: int,
+) -> tuple[dict[str, str], list[UnassignedTerm], list[ValidationRejection]]:
+    if terms_per_call < 1:
+        raise ValueError("terms_per_call must be >= 1")
+    canonical_set = set(canonicals)
+    assignments: dict[str, str] = {}
+    unassigned: list[UnassignedTerm] = []
+    rejections: list[ValidationRejection] = []
+    for start in range(0, len(terms), terms_per_call):
+        chunk = list(terms[start : start + terms_per_call])
+        payload = {"stage": "terms", "anchors": list(canonicals), "terms": chunk}
+        try:
+            raw = await llm.complete(
+                system=(
+                    "JSON 색상 동의어 배정기다. 각 입력 terms 원문을 정확히 한 번씩 "
+                    "assignments[{term,canonical}]로 반환한다. canonical은 anchors 중 하나 "
+                    "또는 null이다. 입력에 없는 표기를 만들거나 정규화·번역하지 않는다. "
+                    "수식어의 모양보다 실제 색조와 색상 어근을 우선한다. 예를 들어 해당 "
+                    "앵커가 있으면 남색은 네이비, 다크그린·라이트그린은 그린에 배정한다."
+                ),
+                user=json.dumps(payload, ensure_ascii=False),
+                tier="fast",
+                max_tokens=max_tokens,
+                json_output=True,
+            )
+            data = json.loads(raw)
+            raw_assignments = data.get("assignments") if isinstance(data, dict) else None
+            if not isinstance(raw_assignments, list):
+                raise ValueError("assignments 배열 없음")
+        except Exception as exc:
+            _log.warning("색상 표기 LLM 배정 청크 실패 — 청크만 미배정", exc_info=True)
+            unassigned.extend(
+                UnassignedTerm(term, 0, f"LLM 실패로 미배정: {type(exc).__name__}")
+                for term in chunk
+            )
+            continue
+
+        by_term: dict[str, list[object]] = {}
+        for item in raw_assignments:
+            if not isinstance(item, dict) or not isinstance(item.get("term"), str):
+                rejections.append(ValidationRejection("terms", "배정 스키마 위반"))
+                continue
+            term = item["term"]
+            if term not in chunk:
+                rejections.append(
+                    ValidationRejection("terms", "환각 표기 거부", (term,), item.get("canonical"))
+                )
+                continue
+            by_term.setdefault(term, []).append(item.get("canonical"))
+
+        for term in chunk:
+            choices = by_term.get(term, [])
+            if not choices:
+                unassigned.append(UnassignedTerm(term, 0, "LLM 미응답으로 미배정"))
+                continue
+            if len(choices) > 1:
+                unassigned.append(UnassignedTerm(term, 0, "배타성 위반으로 미배정"))
+                rejections.append(
+                    ValidationRejection("terms", "배타성 위반: 중복 배정 거부", (term,))
+                )
+                continue
+            canonical = choices[0]
+            if canonical is None or canonical == "none":
+                unassigned.append(UnassignedTerm(term, 0, "LLM none으로 미배정"))
+                continue
+            if not isinstance(canonical, str) or canonical not in canonical_set:
+                unassigned.append(UnassignedTerm(term, 0, "canonical 유효성 위반으로 미배정"))
+                rejections.append(
+                    ValidationRejection(
+                        "terms",
+                        "canonical 유효성 위반",
+                        (term,),
+                        canonical if isinstance(canonical, str) else None,
+                    )
+                )
+                continue
+            assignments[term] = canonical
+    return assignments, unassigned, rejections
+
+
+async def assign_color_clusters(
+    counts: Counter[str],
+    embed: EmbedFn,
+    llm: LLMClient,
+    *,
+    top_n: int,
+    terms_per_call: int,
+    threshold: float,
+    max_tokens: int,
+) -> ClusteringResult:
+    """LLM이 의미 군집을 만들고 임베딩은 불일치 근거만 기록하는 검수 후보를 만든다."""
+    ranked = sorted(
+        ((term, count) for term, count in counts.items() if term not in NON_COLOR_TERMS),
+        key=lambda item: (-item[1], item[0]),
+    )
+    terms = [term for term, _ in ranked]
+    vectors = await asyncio.to_thread(_embed_in_batches, terms, embed)
+    vectors_by_term = dict(zip(terms, vectors, strict=True))
+    anchors = terms[: max(0, top_n)]
+    tail = terms[len(anchors) :]
+    anchor_groups, rejections = await _llm_anchor_groups(anchors, llm, max_tokens=max_tokens)
+    canonicals = list(anchor_groups)
+    tail_assignments, tail_unassigned, tail_rejections = await _llm_tail_assignments(
+        tail,
+        canonicals,
+        llm,
+        terms_per_call=terms_per_call,
+        max_tokens=max_tokens,
+    )
+    rejections.extend(tail_rejections)
+
+    assignment: dict[str, str] = {
+        member: canonical
+        for canonical, members in anchor_groups.items()
+        for member in members
+    }
+    assignment.update(tail_assignments)
+    anchor_order = {anchor: index for index, anchor in enumerate(canonicals)}
+    members_by_canonical: dict[str, list[ClusterMember]] = {canonical: [] for canonical in canonicals}
+    for term, _ in ranked:
+        canonical = assignment.get(term)
+        if canonical is None:
+            continue
+        scored = [
+            (_cosine(vectors_by_term[term], vectors_by_term[anchor]), anchor)
+            for anchor in canonicals
+        ]
+        scored.sort(key=lambda item: (-item[0], anchor_order[item[1]], item[1]))
+        nearest_score, nearest_anchor = scored[0]
+        second_score, second_anchor = scored[1] if len(scored) > 1 else (None, None)
+        chosen_score = _cosine(vectors_by_term[term], vectors_by_term[canonical])
+        reasons: list[str] = []
+        if term != canonical and chosen_score < threshold:
+            reasons.append(f"LLM 앵커 코사인 {chosen_score:.4f} < {threshold:.4f}")
+        if term != canonical and nearest_anchor != canonical:
+            reasons.append(f"임베딩 1위 {nearest_anchor} != LLM {canonical}")
+        members_by_canonical[canonical].append(
+            ClusterMember(
+                term,
+                counts[term],
+                vectors_by_term[term],
+                chosen_score,
+                is_anchor=term in anchors,
+                nearest_anchor=nearest_anchor,
+                second_anchor=second_anchor,
+                second_cosine=second_score,
+                margin=(
+                    nearest_score - second_score if second_score is not None else None
+                ),
+                review_required=bool(reasons),
+                review_reasons=tuple(reasons),
+            )
+        )
+
+    sentinel_unassigned = [
+        UnassignedTerm(term, count, "sentinel 보호로 미배정")
+        for term, count in counts.items()
+        if term in NON_COLOR_TERMS
+    ]
+    unassigned = [
+        UnassignedTerm(item.term, counts[item.term], item.reason)
+        for item in tail_unassigned
+    ]
+    clusters = tuple(
+        Cluster(
+            canonical,
+            sorted(
+                members_by_canonical[canonical],
+                key=lambda member: (
+                    member.term != canonical,
+                    -member.doc_count,
+                    member.term,
+                ),
+            ),
+            llm_status="completed",
+        )
+        for canonical in canonicals
+    )
+    return ClusteringResult(
+        clusters,
+        tuple(sentinel_unassigned + unassigned),
+        tuple(rejections),
+        vectors_by_term,
+    )
 
 
 def cluster_terms(
@@ -332,14 +708,93 @@ async def refine_clusters(
     return refined
 
 
+def _write_assignment_review_queue(
+    result: ClusteringResult,
+    path: str | Path,
+    *,
+    threshold: float,
+) -> None:
+    """LLM 배정·엄격 검증·임베딩 교차검증 근거를 한 검수 문서에 쓴다."""
+    lines = [
+        "# 색상 동의어 검수 대기 목록",
+        "",
+        "> 자동 승인되지 않은 `pending_review` 제안입니다.",
+        "> LLM이 의미 배정을 만들고, 임베딩은 자동 판정이 아니라 불일치 교차검증에만 사용합니다.",
+        "",
+        f"- 검증 거부: {len(result.rejections)}건",
+        f"- 미배정: {len(result.unassigned)}건",
+        f"- LLM·임베딩 불일치: {result.embedding_mismatch_count}건",
+        "",
+        "## 검증 거부",
+        "",
+    ]
+    if result.rejections:
+        for rejection in result.rejections:
+            terms = ", ".join(rejection.terms) or "표기 없음"
+            canonical = f" / canonical={rejection.canonical}" if rejection.canonical else ""
+            lines.append(f"- [{rejection.stage}] {rejection.reason}: {terms}{canonical}")
+    else:
+        lines.append("- 없음")
+
+    lines.extend(["", "## 미배정", ""])
+    if result.unassigned:
+        lines.extend(
+            [
+                "| 표기 | 상품 수 | 사유 |",
+                "|---|---:|---|",
+                *[
+                    f"| {item.term} | {item.doc_count} | {item.reason} |"
+                    for item in sorted(
+                        result.unassigned,
+                        key=lambda item: (-item.doc_count, item.term),
+                    )
+                ],
+            ]
+        )
+    else:
+        lines.append("- 없음")
+
+    for cluster in result.clusters:
+        lines.extend(
+            [
+                "",
+                f"## {cluster.canonical}",
+                "",
+                "| 표기 | 상품 수 | LLM 배정 | LLM 코사인 | 임베딩 1위 | 1위 점수 | 판정 |",
+                "|---|---:|---|---:|---|---:|---|",
+            ]
+        )
+        for member in cluster.members:
+            nearest_score = _cosine(
+                member.embedding,
+                result.embeddings[member.nearest_anchor or cluster.canonical],
+            )
+            evidence = (
+                f"LLM={cluster.canonical} / 임베딩1위="
+                f"{member.nearest_anchor or cluster.canonical} {nearest_score:.4f}"
+            )
+            reasons = "; ".join(member.review_reasons)
+            verdict = f"확인 필요 ({evidence}; {reasons})" if member.review_required else ""
+            lines.append(
+                f"| {member.term} | {member.doc_count} | {cluster.canonical} "
+                f"| {member.cosine:.4f} | {member.nearest_anchor or cluster.canonical} "
+                f"| {nearest_score:.4f} | {verdict} |"
+            )
+        lines.append("")
+    Path(path).write_text("\n".join(lines), encoding="utf-8")
+
+
 def write_review_queue(
-    clusters: Sequence[Cluster],
+    clusters: Sequence[Cluster] | ClusteringResult,
     path: str | Path,
     *,
     threshold: float,
     boundary_band_width: float,
 ) -> None:
     """LLM 판정 흔적과 임계 경계를 숨기지 않는 Markdown 검수 대기 목록을 쓴다."""
+    if isinstance(clusters, ClusteringResult):
+        _write_assignment_review_queue(clusters, path, threshold=threshold)
+        return
     lines = [
         "# 색상 동의어 검수 대기 목록",
         "",
@@ -587,6 +1042,27 @@ def _rows_from_clusters(counts: Counter[str], clusters: Sequence[Cluster]) -> li
     ]
 
 
+def _rows_from_result(
+    counts: Counter[str],
+    result: ClusteringResult,
+) -> list[ColorTermRow]:
+    assignments = {
+        member.term: cluster.canonical
+        for cluster in result.clusters
+        for member in cluster.members
+    }
+    return [
+        ColorTermRow(
+            term=term,
+            canonical=assignments.get(term),
+            embedding=result.embeddings.get(term),
+            provenance="seed_pipeline",
+            doc_count=count,
+        )
+        for term, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+
+
 async def build(
     dsn: str,
     review_path: str | Path,
@@ -598,7 +1074,7 @@ async def build(
     threshold: float | None = None,
     page_size: int = 500,
 ) -> BuildResult:
-    """오프라인 1회 빌드로 수확→군집→LLM 다듬기→검수 큐→pending upsert를 실행한다.
+    """오프라인 1회 빌드로 수확→LLM 배정→엄격 검증→교차검증→pending upsert를 실행한다.
 
     임베딩 API·파일·DB 동기 작업은 오래 걸려도 정상인 배치이므로 시간 제한 없이 스레드로
     넘겨, async 진입점이 실행 중인 이벤트 루프만 막지 않는다.
@@ -609,33 +1085,45 @@ async def build(
     if llm is None:
         raise RuntimeError("color synonym build: LLM 미구성")
     counts = await harvest_terms(fetch=fetch, page_size=page_size)
-    initial = await asyncio.to_thread(
-        cluster_terms,
+    result = await assign_color_clusters(
         counts,
         embed,
-        top_n=settings.color_synonym_top_n if top_n is None else top_n,
-        threshold=settings.color_synonym_cluster_threshold if threshold is None else threshold,
-    )
-    refined = await refine_clusters(
-        initial,
         llm,
-        clusters_per_call=settings.color_synonym_llm_clusters_per_call,
+        top_n=settings.color_synonym_top_n if top_n is None else top_n,
+        terms_per_call=(
+            _EMBED_BATCH_SIZE * settings.color_synonym_llm_clusters_per_call
+        ),
+        threshold=settings.color_synonym_cluster_threshold if threshold is None else threshold,
         max_tokens=settings.color_synonym_llm_max_tokens,
     )
-    before = sum(len(cluster.members) for cluster in initial)
-    after = sum(len(cluster.members) for cluster in refined)
     await asyncio.to_thread(
         write_review_queue,
-        refined,
+        result,
         review_path,
         threshold=settings.color_synonym_cluster_threshold if threshold is None else threshold,
         boundary_band_width=settings.color_synonym_boundary_band_width,
     )
-    rows = _rows_from_clusters(counts, refined)
+    rows = _rows_from_result(counts, result)
     upserted = await asyncio.to_thread(
         upsert_color_terms,
         dsn,
         rows,
         settings.embedding_model_id,
     )
-    return BuildResult(len(counts), len(refined), before - after, upserted, str(review_path))
+    assigned_noncanonical = sum(
+        member.term != cluster.canonical
+        for cluster in result.clusters
+        for member in cluster.members
+    )
+    return BuildResult(
+        len(counts),
+        len(result.clusters),
+        assigned_noncanonical,
+        upserted,
+        str(review_path),
+        len(result.rejections),
+        sum("환각" in rejection.reason for rejection in result.rejections),
+        sum("배타성" in rejection.reason for rejection in result.rejections),
+        result.embedding_mismatch_count,
+        len(result.unassigned),
+    )

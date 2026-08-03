@@ -144,10 +144,10 @@ class Settings(BaseSettings):
     color_synonym_cluster_threshold: float = Field(default=0.85, ge=-1.0, le=1.0)
     # 임계 바로 위의 불확실한 후보를 검수 큐에서 `확인 필요`로 드러내는 코사인 폭.
     color_synonym_boundary_band_width: float = Field(default=0.01, ge=0.0, le=2.0)
-    # 실제 438개 제안을 한 응답의 keep[]로 받으면 2048 token에서 잘렸다. 군집별 1개 호출로
-    # 출력 규모를 유계화하고, 한 호출 실패가 다른 군집 판정을 지우지 않게 격리한다.
+    # LLM 우선 배정은 꼬리 표기를 20개 기본 청크로 나누며, 이 값은 한 호출에 묶는 청크 수다.
+    # 기본 1은 출력 규모를 유계화하고 한 호출 실패를 해당 20개 표기에만 격리한다.
     color_synonym_llm_clusters_per_call: int = Field(default=1, ge=1)
-    # 군집 1개 keep/remove JSON에는 충분하면서 무제한 출력을 막는 fast-tier 출력 상한.
+    # 앵커 병합 1회 또는 꼬리 배정 청크 JSON에는 충분하면서 무제한 출력을 막는 fast-tier 상한.
     color_synonym_llm_max_tokens: int = Field(default=2048, ge=1)
     color_synonym_cache_ttl_s: float = Field(default=300.0, ge=0.0)
     # I-1 승인 사전 조회·I-17 신규 표기 수확의 앱쪽 벽시계 상한. 동기 쿼리는 to_thread
