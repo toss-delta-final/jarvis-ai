@@ -245,9 +245,11 @@ class RepurchaseStore:
             return []
         return [value for value in values if type(value) is int]
 
-    async def add(self, key: str, product_ids, *, cap: int) -> None:
+    async def add(self, key: str, product_ids, *, cap: int) -> list[int]:
+        """누적·상한 적용 결과를 반환해 첫 SSE 전 불필요한 재조회 왕복 1회를 없앤다."""
         if not product_ids:
-            return
+            # 호출부는 빈 입력을 get으로 분기하지만, 직접 호출도 락·쓰기 없이 순수 읽기로 둔다.
+            return await self.get(key)
         async with mutation_lock(
             self._store,
             f"buyer:repurchase:{key}",
@@ -272,6 +274,7 @@ class RepurchaseStore:
                     {_PRODUCT_IDS_KEY: retained},
                 )
             )
+            return retained
 
 
 class RelaxationOfferStore:

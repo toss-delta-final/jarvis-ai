@@ -277,14 +277,16 @@ async def _load_persisted_repurchase(thread_key, turn_ids, settings) -> set[int]
         return set()
     try:
         store = await get_repurchase_store()
+        cap = settings.dedup_repurchase_store_max
         if turn_ids:
-            await store.add(
+            persisted = await store.add(
                 thread_key,
                 turn_ids,
-                cap=settings.dedup_repurchase_store_max,
+                cap=cap,
             )
-        persisted = await store.get(thread_key)
-        cap = settings.dedup_repurchase_store_max
+        else:
+            # 지목 없는 턴은 락·쓰기 없이 기존 지속값만 한 번 읽는다.
+            persisted = await store.get(thread_key)
         return set(persisted[-cap:] if cap > 0 else [])
     except Exception as exc:  # noqa: BLE001 - 상태 실패는 SSE를 끊지 않고 이번 턴 신호로 degrade
         # [#113] `may_auto_relax` 턴은 conditions를 검색·완화 뒤로 미루므로 이 pg 왕복이

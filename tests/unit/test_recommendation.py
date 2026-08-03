@@ -2735,7 +2735,7 @@ async def test_recommendation_delayed_conditions_survive_repurchase_store_failur
 
     class BrokenStore:
         async def add(self, key, product_ids, *, cap):
-            return None
+            return await self.get(key)
 
         async def get(self, key):
             raise RuntimeError("store get failed")
@@ -3006,6 +3006,7 @@ async def test_recommendation_repurchase_store_failure_degrades_to_turn_signal(
         async def add(self, key, product_ids, *, cap):
             if failure_point == "add":
                 raise RuntimeError("store add failed")
+            return await self.get(key)
 
         async def get(self, key):
             if failure_point == "get":
@@ -3591,6 +3592,41 @@ async def test_repurchase_store_get_discards_polluted_values() -> None:
     )
 
     assert await store.get("polluted") == [101, 103]
+
+
+async def test_load_persisted_repurchase_avoids_redundant_read_after_add(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """지목 턴은 read+write 2회, 지목 없는 턴은 순수 read 1회만 저장소를 왕복한다."""
+
+    class CountingStore(InMemoryStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.operations: list[str] = []
+
+        async def aget(self, *args, **kwargs):
+            self.operations.append("get")
+            return await super().aget(*args, **kwargs)
+
+        async def aput(self, *args, **kwargs):
+            self.operations.append("put")
+            return await super().aput(*args, **kwargs)
+
+    backend = CountingStore()
+    store = RepurchaseStore(backend)
+
+    async def get_store():
+        return store
+
+    monkeypatch.setattr(recommendation_graph, "get_repurchase_store", get_store)
+    settings = SimpleNamespace(dedup_repurchase_store_max=20)
+
+    assert await recommendation_graph._load_persisted_repurchase("thread", {101}, settings) == {101}
+    assert backend.operations == ["get", "put"]
+
+    backend.operations.clear()
+    assert await recommendation_graph._load_persisted_repurchase("thread", set(), settings) == {101}
+    assert backend.operations == ["get"]
 
 
 async def test_recommendation_suppresses_consumable_category(
