@@ -1338,6 +1338,92 @@ async def test_cart_add_option_correction_marker_still_uses_named_pending_option
     assert await store.get_pending("m:t") is None
 
 
+async def test_cart_add_switch_marker_substring_does_not_count_as_pending_option() -> None:
+    """옵션명 '대'가 전환 마커 '대신' 안에만 있어도 실제 옵션 답변으로 오인하지 않는다."""
+    store = CartStateStore()
+    await store.set_pending(
+        "m:t",
+        PendingAdd(
+            product_id=101,
+            quantity=1,
+            options=[
+                CartOption(option_id=1001, name="대"),
+                CartOption(option_id=1002, name="중"),
+                CartOption(option_id=1003, name="소"),
+            ],
+        ),
+    )
+
+    async def add_fn(req):
+        raise AssertionError(f"마커 안 옵션명은 옛 상품 담기에 쓰면 안 됨: {req}")
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(product_id=101, option_id=1001, quantity=1),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            message="대신 다른 상품 담아줘",
+            allowed_product_ids={101, 201},
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
+        )
+    )
+
+    assert _types(events) == ["token", "done"]
+    assert events[0]["data"]["text"] == (
+        "어떤 상품을 담을까요? 추천을 먼저 받아보시면 담아드릴게요."
+    )
+    assert await store.get_pending("m:t") is None
+
+
+async def test_cart_add_option_name_outside_marker_still_counts_as_option_answer() -> None:
+    """마커를 제외한 잔여 발화에 옵션명 '대'가 있으면 정상 옵션 정정으로 담는다."""
+    store = CartStateStore()
+    await store.set_pending(
+        "m:t",
+        PendingAdd(
+            product_id=101,
+            quantity=1,
+            options=[
+                CartOption(option_id=1001, name="대"),
+                CartOption(option_id=1002, name="중"),
+                CartOption(option_id=1003, name="소"),
+            ],
+        ),
+    )
+    captured = {}
+
+    async def add_fn(req):
+        captured["productId"] = req.product_id
+        captured["optionId"] = req.option_id
+        captured["pendingKeptUntilAdd"] = await store.get_pending("m:t") is not None
+        return AddToCartResult(success=True, cart_item_id=8)
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(product_id=101, option_id=1001, quantity=1),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            message="아니 대로 주세요",
+            allowed_product_ids={101, 201},
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
+        )
+    )
+
+    assert captured == {
+        "productId": 101,
+        "optionId": 1001,
+        "pendingKeptUntilAdd": True,
+    }
+    assert _types(events) == ["action", "done"]
+    assert await store.get_pending("m:t") is None
+
+
 async def test_cart_add_switch_marker_ignores_empty_pending_option_name() -> None:
     """빈 옵션명은 모든 발화에 포함되므로 옵션 답변 가드에서 제외하고 전환 감지를 유지한다."""
     store = CartStateStore()
