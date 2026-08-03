@@ -163,6 +163,47 @@ def _filter_axes(filters: ProductSearchFilters) -> list[str]:
     return [name for name in _FILTER_AXES if getattr(filters, name, None) not in (None, [], {}, "")]
 
 
+def _resolve_contradictory_price_range(
+    filters: ProductSearchFilters,
+    prior: ProductSearchFilters | None,
+) -> ProductSearchFilters:
+    """`price_min > price_max` 인 모순 구간을 **방금 말한 쪽**만 남겨 푼다 (PR #248 3차 리뷰).
+
+    멀티턴 병합은 프롬프트의 산문 한 줄("좁히면 add, 모순되면 replace")에 맡겨져 있어, LLM 이
+    한쪽만 갱신하고 다른 쪽을 그대로 물고 오는 조합이 나올 수 있다 — "3만~5만" 다음 턴에
+    "2만원 이하만" 이면 `min=30000, max=20000`. 이 쌍은 스키마를 통과해 Spring 에
+    `minPrice=30000&maxPrice=20000` 으로 나가고, **오류 없는 0건**으로만 드러나 추적이 안 된다.
+
+    **모순일 때만** 개입한다 — "3만~5만" → "4만 이하"(`min=30000, max=40000`)는 정상적인
+    좁히기라 `price_min` 이 살아야 한다. 통째로 버리면 사용자가 유지한 하한이 사라진다.
+
+    버릴 쪽은 **prior 와 같은 값**(지난 턴에서 딸려온 것)이다 — 이번 턴에 새로 말한 값이 이긴다.
+    버리는 게 하한이든 상한이든 규칙이 하나라 방향을 따로 정할 필요가 없다.
+    prior 가 없어 판별이 안 되면 **하한**을 버린다: 상한은 "말한 예산을 넘지 않는다"(AC-REC-08)가
+    지키는 쪽이라, 애매할 때 넘겨선 안 되는 경계다.
+
+    스키마 검증(`ge=0`)처럼 **거부하지 않는 이유**: 이 자리의 `ValidationError` 는 `LLMError` 로
+    통일돼 턴 전체가 오류 이벤트로 끝난다. 사용자는 정상적인 발화("그 중에 2만원 이하만")를 했고
+    병합을 그르친 건 LLM 인데, 그 대가로 대화가 끊기는 건 과하다.
+    """
+    low, high = filters.price_min, filters.price_max
+    if low is None or high is None or low <= high:
+        return filters
+    # prior 와 **같은 쪽만** 낡은 값이다. 둘 다 같거나(모순이 그대로 저장돼 있었다) 둘 다 다르면
+    # (한 턴에 모순을 말했다) 어느 쪽이 새 값인지 알 수 없으므로 위 docstring 대로 하한을 버린다.
+    min_carried = prior is not None and prior.price_min == low
+    max_carried = prior is not None and prior.price_max == high
+    drop = "price_max" if (max_carried and not min_carried) else "price_min"
+    # 값이 아니라 **어느 축을 버렸는지·prior 로 판별했는지**만 남긴다 — 이 파일의 `decompose_case`
+    # 가 필터 값을 싣지 않는 것과 같은 규약이다(#119 PII·tracing 카나리 오탐 회피). 알고 싶은 건
+    # "LLM 이 얼마나 자주 모순을 내고, 낡은 쪽을 실제로 짚어냈나"라서 값 없이도 답이 된다.
+    logger.warning(
+        "contradictory_price_range",
+        extra={"dropped": drop, "resolved_by_prior": min_carried or max_carried},
+    )
+    return filters.model_copy(update={drop: None})
+
+
 async def decompose(
     llm: LLMClient,
     *,
@@ -216,7 +257,9 @@ async def decompose(
     # JSON 파싱은 됐지만 필드 값이 스키마와 안 맞을 수 있다 → extract_json 처럼 LLMError 로 통일해
     # 상위(graph.py)의 LLM_* error 이벤트로 흐르게 한다(첫 프레임 이전 raw 예외 → 500 방지).
     try:
-        filters = ProductSearchFilters.model_validate(data.get("filters") or {})
+        filters = _resolve_contradictory_price_range(
+            ProductSearchFilters.model_validate(data.get("filters") or {}), prior_filters
+        )
         case = int(data.get("case") or 2)
         cart = _parse_cart(data.get("cart"))
         raw_revert = data.get("revertCategories")

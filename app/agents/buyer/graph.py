@@ -29,7 +29,10 @@ from app.agents.buyer.fallback import stream_fallback
 from app.agents.buyer.order_status import stream_order_status
 from app.agents.buyer.recommendation.category_mapping import CategoryMapping, dedup_truncate
 from app.agents.buyer.recommendation.category_mapping import map_categories as _map_categories
-from app.agents.buyer.recommendation.decompose import decompose
+from app.agents.buyer.recommendation.decompose import (
+    _resolve_contradictory_price_range,
+    decompose,
+)
 from app.agents.buyer.recommendation.needs_expansion import detect_expansion_need
 from app.agents.buyer.recommendation.needs_expansion import expand_needs as _expand_needs
 from app.agents.buyer.recommendation.relaxation import FIELD_TO_ATTR as RELAXATION_FIELD_TO_ATTR
@@ -87,9 +90,21 @@ class ThreadFilterStore:
         if not item:
             return None
         try:
-            return ProductSearchFilters.model_validate(item.value)
-        except ValidationError as exc:
+            # 모순 구간(`price_min > price_max`)도 여기서 푼다 — decompose 는 **자기 산출**만
+            # 고치는데, 이 값은 칩 클릭 경로에서 `_relaxed_filters_from_offer` 의 base 로
+            # **직접** 쓰여 그 보정을 우회한다. 이 수정 이전에 저장된 레코드가 남아 있을 수 있어
+            # 저장소 경계에서 한 번 더 막는다(prior 의 prior 는 없으므로 하한을 버리는 폴백).
+            return _resolve_contradictory_price_range(
+                ProductSearchFilters.model_validate(item.value), None
+            )
+        except Exception as exc:  # noqa: BLE001 - 저장 값을 못 읽는 어떤 이유든 턴은 살려야 한다
             # 스키마 강화·배포 중 신구 혼재·손상 — 어느 쪽이든 이전 맥락을 잃을 뿐 턴은 산다.
+            # **`ValidationError` 로 좁히지 않는다**: 이 try 는 "저장된 값을 해석한다" 전체를
+            # 맡고, 그 안에 검증 말고도 보정 호출이 들어와 있다. 좁혀 두면 거기서 난 다른 예외가
+            # `run_buyer_turn` 의 감싸이지 않은 호출부(`prior = await thread_store.get(...)`)로
+            # 새어나가 스레드가 영구 broken 이 되는 — 이 가드가 애초에 막으려던 바로 그 상태가
+            # 된다. pg 장애는 이 try 밖(`run_with_query_timeout`)이라
+            # 삼켜지지 않고, CancelledError(BaseException)도 전파된다.
             logger.warning("thread_filters_unreadable", extra={"reason": str(exc)})
             return None
 

@@ -27,7 +27,7 @@ from app.agents.buyer.recommendation.relaxation import build_relaxation_candidat
 from app.core.auth import Identity
 from app.core.config import Settings, get_settings
 from app.schemas.spring import ProductSearchFilters, ProductSearchResult, SpringProduct
-from app.services.spring_client import SpringUnavailableError
+from app.services.spring_client import SpringUnavailableError, _search_query_params
 from tests._fakes import DEFAULT_DECOMPOSE, FakeLLM
 from tests.unit.test_recommendation import _collect, _req, _types, run_buyer_turn
 
@@ -1575,6 +1575,57 @@ def test_negative_numeric_filters_are_rejected_by_the_schema(attr: str) -> None:
     with pytest.raises(ValidationError):
         ProductSearchFilters.model_validate({attr: -1})
     assert getattr(ProductSearchFilters.model_validate({attr: 0}), attr) == 0  # 0 은 정상값
+
+
+async def test_unreadable_thread_filters_never_escape_regardless_of_cause(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """저장 값 해석이 **어떤 이유로** 실패해도 새어나가지 않는다 — `ValidationError` 로 좁히지 않는다.
+
+    이 try 는 "저장된 값을 해석한다" 전체를 맡고, 그 안에는 검증 말고 모순 구간 보정 호출도 있다.
+    좁혀 두면 거기서 난 다른 예외가 감싸이지 않은 호출부(`prior = await thread_store.get(...)`)로
+    새어나가 스레드가 영구 broken 이 된다 — 이 가드가 애초에 막으려던 바로 그 상태다.
+    """
+
+    class _Weird:
+        async def aget(self, ns, key):  # noqa: ANN001
+            # 검증은 통과하지만 뒤이은 해석 단계에서 터지는 모양(스키마 변경·신구 혼재의 대역)
+            return type("Item", (), {"value": {"price_min": 1, "price_max": 2}})()
+
+    store = buyer_graph.ThreadFilterStore(_Weird())
+    with pytest.MonkeyPatch.context() as mp:
+
+        def _boom(filters, prior):  # noqa: ANN001
+            raise RuntimeError("resolver boom")  # ValidationError 가 **아닌** 예외
+
+        mp.setattr(buyer_graph, "_resolve_contradictory_price_range", _boom)
+        with caplog.at_level(logging.WARNING):
+            assert await store.get("t1") is None  # 터지지 않고 "이전 맥락 없음"
+
+    assert "thread_filters_unreadable" in caplog.text
+
+
+async def test_stored_contradictory_range_does_not_survive_a_chip_click() -> None:
+    """저장된 모순 구간이 **칩 클릭 경로로 우회**해 Spring 에 나가지 않는다.
+
+    `_resolve_contradictory_price_range` 는 decompose 의 **자기 산출**만 고치는데, 저장된 prior 는
+    칩 클릭에서 `_relaxed_filters_from_offer` 의 base 로 **직접** 쓰여 그 보정을 건너뛴다. 이
+    수정 이전에 저장된 레코드가 남아 있을 수 있으므로 저장소 경계에서 한 번 더 막는다.
+    """
+
+    class _Poisoned:
+        async def aget(self, ns, key):  # noqa: ANN001
+            return type("Item", (), {"value": {"price_min": 30000, "price_max": 20000}})()
+
+        async def aput(self, ns, key, value):  # noqa: ANN001
+            return None
+
+    prior = await buyer_graph.ThreadFilterStore(_Poisoned()).get("t1")
+    assert (prior.price_min, prior.price_max) == (None, 20000)  # 읽는 순간 풀린다
+
+    clicked = buyer_graph._relaxed_filters_from_offer({"field": "priceMax", "value": 26000}, prior)
+    assert clicked.price_min is None and clicked.price_max == 26000
+    assert _search_query_params(clicked) == {"maxPrice": 26000}  # 모순이 안 나간다
 
 
 async def test_pre_existing_negative_thread_filters_do_not_brick_the_thread(
