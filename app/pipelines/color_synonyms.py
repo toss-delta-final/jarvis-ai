@@ -23,13 +23,16 @@ def _get_pool(dsn: str):
             pool = _pools.get(dsn)
             if pool is None:
                 from app.core.config import get_settings  # noqa: PLC0415 - lazy 설정 경로
+                from pgvector.psycopg import register_vector  # noqa: PLC0415
                 from psycopg_pool import ConnectionPool  # noqa: PLC0415 - lazy DB dependency
 
-                # 배치 수확 풀과 같은 config 상한을 명시한다. 런타임 조회는 TTL 캐시가 대부분의
-                # 요청을 흡수하고, 만료 갱신만 이 유계 풀을 사용한다.
+                # 런타임 승인 조회와 배치 수확이 이 dsn별 풀 하나를 공유해 두 플래그를 함께
+                # 켜도 색상 보조 경로의 총 연결 수가 config 상한을 넘지 않는다. 배치의 pgvector
+                # 입출력도 같은 풀에서 안전하도록 모든 연결에 vector adapter를 등록한다.
                 max_size = get_settings().color_synonym_pool_max_size
                 pool = ConnectionPool(
                     dsn,
+                    configure=register_vector,
                     open=True,
                     min_size=min(4, max_size),
                     max_size=max_size,

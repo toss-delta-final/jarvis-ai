@@ -127,11 +127,14 @@ class Settings(BaseSettings):
     # 와이어 리스트 전송은 api-spec §4.6 `color: string` → `string[]` 개정과 BE 배포가
     # 모두 끝난 뒤에만 켠다. 기본 off에서는 승인 사전 DB도 조회하지 않아 현행 I-1 요청이 불변이다.
     color_synonym_expansion_enabled: bool = False
+    # 운영자가 api-spec §4.6의 `color: string[]` 개정과 이를 파싱하는 BE 배포 완료를 함께
+    # 확인했다는 명시적 계약 게이트. 확장 플래그와 이 값을 따로 켜면 기동 시점에 거부한다.
+    color_synonym_array_contract_ready: bool = False
     # 새 표기마다 임베딩 API+DB write가 I-17에 추가되고 테이블도 아직 미검수 상태이므로 기본 off.
     # 초기 검수 완료 뒤 운영 비용을 확인하고 켠다.
     color_synonym_batch_harvest_enabled: bool = False
-    # 런타임 승인 사전과 배치 수확의 독립 pg 풀 상한. psycopg 기본값에 암묵적으로 기대지 않고,
-    # 두 플래그를 각각 켜도 색상 보조 경로가 catalog DB 연결을 무제한 점유하지 않게 한다.
+    # 런타임 승인 사전과 배치 수확이 공유하는 dsn별 pg 풀의 단일 총 상한. 두 플래그를 함께
+    # 켜도 색상 보조 경로의 합계 연결 수가 이 값을 넘지 않는다.
     color_synonym_pool_max_size: int = Field(default=4, ge=1)
     # wait_for 뒤에도 남는 to_thread 작업의 프로세스 동시 상한. 슬롯이 차면 해당 change 수확만
     # 즉시 건너뛰어 I-17 생성물 갱신과 cursor 전진을 지연시키지 않는다.
@@ -939,6 +942,18 @@ class Settings(BaseSettings):
                 f"{self.color_synonym_query_timeout_s}): "
                 "the app-side clock must degrade first and the DB clock must later reclaim "
                 "the connection"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_color_synonym_array_contract_gate(self) -> "Settings":
+        """색상 배열 전송과 외부 계약 준비 선언이 엇갈리면 기동을 막는다."""
+        if self.color_synonym_expansion_enabled != self.color_synonym_array_contract_ready:
+            raise ValueError(
+                "COLOR_SYNONYM_EXPANSION_ENABLED and COLOR_SYNONYM_ARRAY_CONTRACT_READY "
+                "must be enabled together only after api-spec §4.6 is revised to "
+                "`color: string[]` and the supporting BE is deployed "
+                "(api-spec §4.6 개정 + BE 배포 선행 필요)"
             )
         return self
 

@@ -8,7 +8,9 @@ import math
 
 import pytest
 
+from app.core import config
 from app.core.config import Settings
+from app.pipelines import color_synonyms
 from app.pipelines import color_synonym_seed as seed
 from app.schemas.spring import ProductChange, ProductChangesPage
 
@@ -653,8 +655,8 @@ def test_seed_connection_pool_is_reused_per_dsn(monkeypatch) -> None:
 
     settings = Settings(_env_file=None, color_synonym_pool_max_size=7)
     monkeypatch.setattr(psycopg_pool, "ConnectionPool", Pool)
-    monkeypatch.setattr(seed, "_pools", {})
-    monkeypatch.setattr(seed, "get_settings", lambda: settings)
+    monkeypatch.setattr(color_synonyms, "_pools", {})
+    monkeypatch.setattr(config, "get_settings", lambda: settings)
     assert seed._get_pool("postgresql://same") is seed._get_pool("postgresql://same")
     assert len(created) == 1
     assert created[0][0] == "postgresql://same"
@@ -671,8 +673,8 @@ def test_seed_connection_pool_accepts_configured_boundary_size_one(monkeypatch) 
 
     settings = Settings(_env_file=None, color_synonym_pool_max_size=1)
     monkeypatch.setattr(psycopg_pool, "ConnectionPool", closed_pool)
-    monkeypatch.setattr(seed, "_pools", {})
-    monkeypatch.setattr(seed, "get_settings", lambda: settings)
+    monkeypatch.setattr(color_synonyms, "_pools", {})
+    monkeypatch.setattr(config, "get_settings", lambda: settings)
 
     pool = seed._get_pool("postgresql://example.invalid/catalog")
     try:
@@ -723,7 +725,7 @@ def test_batch_harvest_upserts_only_unknown_terms_as_pending_proposals(monkeypat
     import psycopg_pool
 
     monkeypatch.setattr(psycopg_pool, "ConnectionPool", Pool)
-    monkeypatch.setattr(seed, "_pools", {})
+    monkeypatch.setattr(color_synonyms, "_pools", {})
     captured = []
     monkeypatch.setattr(
         seed,

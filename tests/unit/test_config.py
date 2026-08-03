@@ -182,3 +182,48 @@ def test_search_retries_capped_at_implemented_value():
     assert Settings(_env_file=None, spring_max_retries=0).spring_max_retries == 0
     with pytest.raises(ValidationError):
         Settings(_env_file=None, spring_max_retries=2)
+
+
+def test_color_synonym_expansion_requires_array_contract_attestation() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(
+        ValidationError,
+        match=r"api-spec §4\.6.*BE 배포",
+    ):
+        Settings(
+            _env_file=None,
+            color_synonym_expansion_enabled=True,
+            color_synonym_array_contract_ready=False,
+        )
+
+
+def test_color_synonym_contract_attestation_cannot_be_enabled_alone() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="must be enabled together"):
+        Settings(
+            _env_file=None,
+            color_synonym_expansion_enabled=False,
+            color_synonym_array_contract_ready=True,
+        )
+
+
+def test_color_synonym_expansion_and_array_contract_must_be_enabled_together() -> None:
+    settings = Settings(
+        _env_file=None,
+        color_synonym_expansion_enabled=True,
+        color_synonym_array_contract_ready=True,
+    )
+
+    assert settings.color_synonym_expansion_enabled is True
+    assert settings.color_synonym_array_contract_ready is True
+
+
+def test_color_synonym_contract_gate_defaults_both_off() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.color_synonym_expansion_enabled is False
+    assert settings.color_synonym_array_contract_ready is False

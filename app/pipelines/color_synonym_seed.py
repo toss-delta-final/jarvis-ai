@@ -7,7 +7,6 @@ import functools
 import json
 import logging
 import math
-import threading
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -15,13 +14,12 @@ from pathlib import Path
 
 from app.core.config import get_settings
 from app.core.llm import LLMClient, get_llm
+from app.pipelines import color_synonyms
 from app.pipelines.embedding import embed_texts as _embed_texts
 from app.schemas.spring import ProductChange, ProductChangesPage
 from app.services import spring_client
 
 _log = logging.getLogger(__name__)
-_pools: dict[str, object] = {}
-_pool_lock = threading.Lock()
 
 NON_COLOR_TERMS = frozenset(
     {"혼합색상", "기타", "투명", "멀티컬러", "해당없음", "멀티(리버서블)", "멀티(혼합)"}
@@ -957,27 +955,8 @@ ON CONFLICT (term) DO UPDATE SET
 
 
 def _get_pool(dsn: str):
-    """dsn별 vector 등록 ConnectionPool을 프로세스 수명 동안 재사용한다."""
-    from pgvector.psycopg import register_vector  # noqa: PLC0415
-    from psycopg_pool import ConnectionPool  # noqa: PLC0415
-
-    pool = _pools.get(dsn)
-    if pool is None:
-        with _pool_lock:
-            pool = _pools.get(dsn)
-            if pool is None:
-                # 런타임 승인 사전 풀과 같은 config 상한을 명시해 배치 플래그를 독립적으로
-                # 켜더라도 psycopg 암묵 기본값에 의존하지 않는다.
-                max_size = get_settings().color_synonym_pool_max_size
-                pool = ConnectionPool(
-                    dsn,
-                    configure=register_vector,
-                    open=True,
-                    min_size=min(4, max_size),
-                    max_size=max_size,
-                )
-                _pools[dsn] = pool
-    return pool
+    """런타임 승인 조회와 같은 dsn별 vector 등록 풀을 공유한다."""
+    return color_synonyms._get_pool(dsn)
 
 
 def _execute_color_term_upserts(conn, rows: Sequence[ColorTermRow], model: str) -> int:

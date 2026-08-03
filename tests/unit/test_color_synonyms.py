@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 import threading
 
 from app.core.config import Settings
+from app.pipelines import color_synonym_seed
 from app.pipelines import color_synonyms
 
 
@@ -43,6 +44,30 @@ class _Pool:
 
     def connection(self):
         return _Conn(self.rows, self.calls)
+
+
+def test_runtime_and_seed_share_one_vector_configured_pool_per_dsn(monkeypatch) -> None:
+    from app.core import config
+    import psycopg_pool
+
+    created: list[tuple[str, dict]] = []
+
+    class Pool:
+        def __init__(self, dsn, **kwargs):
+            created.append((dsn, kwargs))
+
+    settings = Settings(_env_file=None, color_synonym_pool_max_size=7)
+    monkeypatch.setattr(config, "get_settings", lambda: settings)
+    monkeypatch.setattr(psycopg_pool, "ConnectionPool", Pool)
+    monkeypatch.setattr(color_synonyms, "_pools", {})
+
+    runtime_pool = color_synonyms._get_pool("postgresql://shared")
+    seed_pool = color_synonym_seed._get_pool("postgresql://shared")
+
+    assert runtime_pool is seed_pool
+    assert len(created) == 1
+    assert created[0][1]["max_size"] == 7
+    assert created[0][1]["configure"].__name__ == "register_vector"
 
 
 def test_runtime_connection_pool_uses_configured_max_size(monkeypatch) -> None:
