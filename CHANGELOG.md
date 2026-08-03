@@ -10,6 +10,7 @@
 ## [Unreleased]
 
 ### Added
+- **#147 — 개인화 효과·과반영 평가 하네스 추가** — 합성·비식별 5-arm profile fixture와 profile weight 5점 ablation을 동일 dev 케이스에서 paired 실행하고, slice별 ΔNDCG@K·Δdiversity bootstrap CI, 명시 의도 모순·금지/최근구매 신규 유입·clean→noisy 열화 판정, 전 arm×weight hard-filter 불변식, 실 LLM scope gate wrapper와 arm 배수 예산 dry-run을 제공한다. #119 수정 전후(`both` vs `rerank_only`) 실 LLM paired 회귀 자료를 `baselines/live-v1`에 영속해 수정 전 29/31건 필터 유출·ΔNDCG -0.29에서 수정 후 유출 무신호·CI 0 포함으로의 변화를 기록한다.
 - **#144 — 실제 모델 추천 평가·회귀 리포트 runner 추가** — 고정 골든셋과 기존 metric runner를 runtime 배포 후보 provider/model 설정에 연결해 호출별 exact model·usage·비용·지연을 기록하고, provider 전 reserve형 예산 gate, versioned primary/secondary metric 반복 통계와 paired bootstrap, hard-constraint·coverage release gate, sealed holdout 승인 경로, 코드 해시 manifest 및 사람이 판독 가능한 Markdown/CSV 산출물을 제공한다.
 - **#145 — 설명 가능한 추천 scoring baseline 추가** — LLM 호출 없이 semantic·profile·popularity·주입형 recency·diversity·최근 exact 구매 감점을 성분별로 재구성 가능한 결정론 점수로 기록하고, hard constraint 컷을 점수와 분리한 paired dev 평가 및 고정 baseline을 `evals/scoring/`에 추가했다.
 - **#143 — 구매자 추천 품질 metric runner(`evals/metrics/`) 추가** — 골든셋 dev split에서 P@K·R@K·MRR·nDCG@K·Filter Accuracy·HCV·Coverage·Diversity를 네트워크·라이브 LLM 없이 결정적으로 계산하고 case·slice·전체 Markdown/CSV 리포트와 재현용 run manifest를 생성하며, ScriptedLLM + MockTransport로 실제 추천 코드 경로를 실행하고 `pytest -m eval` 가격 제약 PR 게이트로 회귀를 조기에 차단한다.
