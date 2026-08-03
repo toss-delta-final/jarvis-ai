@@ -401,11 +401,29 @@ async def run_buyer_turn(
     # decompose 가 조건 추출에 실패하거나 되물음으로 흘릴 수 있다 — 그러면 칩이 무동작이 된다.
     # intent 도 recommend 로 고정한다: 정확 일치는 "사용자가 우리가 만든 버튼을 눌렀다"는 명확한
     # 신호라 일반 대화로 라우팅될 여지가 없다.
+    # 조회는 **추천/일반 턴에서만** 한다 — 담기·장바구니·주문조회 발화는 칩 label 과 겹칠 수
+    # 없는데 매 턴 pg 왕복을 얹으면 완화와 무관한 흐름이 느려진다.
     relax_store = await get_relaxation_offer_store()
-    offer = (await relax_store.get(thread_key)).get(request.message.strip())
-    if offer is not None and (attr := RELAXATION_FIELD_TO_ATTR.get(offer.get("field"))):
-        decision.intent = "recommend"
-        setattr(decision.filters, attr, offer.get("value"))
+    if decision.intent in ("recommend", "general"):
+        try:
+            offer = (await relax_store.get(thread_key)).get(request.message.strip())
+        except Exception as exc:  # noqa: BLE001 - 상태 저장소 장애가 턴을 죽이지 않게(degrade)
+            # 이 조회는 **편의 기능**이다 — 실패하면 칩 클릭이 종전처럼 decompose 해석으로
+            # 처리될 뿐이다. 여기서 예외를 올리면 pg 한 번 흔들릴 때 완화와 무관한 일반 대화
+            # 턴까지 깨진다(§7 degrade 원칙). CancelledError(BaseException)는 전파된다.
+            logger.warning("relaxation_offer_read_failed", extra={"reason": str(exc)})
+            offer = None
+        if offer is not None and (attr := RELAXATION_FIELD_TO_ATTR.get(offer.get("field"))):
+            decision.intent = "recommend"
+            # 기준은 **이번 턴 decompose 산출이 아니라 직전 턴 확정 필터(prior)** 다. 칩의
+            # estCount 는 "직전 필터 전체 + 이 조건 하나만 완화"로 재검색해 센 값인데, 멀티턴
+            # 병합은 코드가 아니라 LLM 이 한다(decompose 프롬프트 PRIOR_FILTERS 병합 지시).
+            # 의문문 label 을 받은 decompose 가 축을 빠뜨리면 브랜드·최소가격 등이 조용히
+            # 유실되어 **약속한 건수와 실제 결과가 어긋난다.** prior 에서 복원하면 probe 가
+            # 실제로 센 그 검색을 그대로 재현한다. prior 가 없으면(스레드 상태 유실) 이번 턴
+            # 산출로 폴백한다 — 축이 좁을 뿐 틀린 결과는 아니다.
+            base = prior if prior is not None else decision.filters
+            decision.filters = base.model_copy(update={attr: offer.get("value")})
 
     # transient 세션 버퍼에 발화 누적(승격 전 격리, SPEC-PROFILE-001) — 세션 종료 델타 소스.
     # [#119 REQ-PROF-026] intent 판정 **뒤에** 둔다: 주문조회·장바구니 조회 발화는 취향 신호가

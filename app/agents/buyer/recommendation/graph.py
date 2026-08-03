@@ -525,6 +525,13 @@ async def stream_recommendation(
     #
     # estCount 의미 = **완화 적용 후 결과 총수**(§3.1 "완화 적용 시 예상 결과 수"). 소량 경로에서는
     # 이미 노출 중인 건수도 포함한다 — 되돌리기 칩의 estCount(억제분 delta)와 기준이 다르므로 주의.
+    #
+    # **알려진 한계 — fan-out 턴의 칩 클릭**: probe 는 이번 턴의 leg 전부를 fan-out 해 세지만,
+    # 다음 턴 클릭은 카테고리 신호가 없어 리파인 승계 경로를 타 `prior.category`(대표 canonical)
+    # **한 leg 로 좁혀진다**(buyer/graph.py `_prepare_recommendation`). 그래서 다중 카테고리 턴에서는
+    # 실제 결과가 estCount 보다 적을 수 있다. 이는 "더 저렴한 걸로" 같은 **모든 리파인 턴에 이미
+    # 있는 #59/#73 동작**이지 완화 칩이 만든 회귀가 아니다 — 승계 규약을 바꾸는 건 #84 소관이라
+    # 여기서 건드리지 않고 한계로 남긴다.
     relaxation_notice: str | None = None
     relax_candidates: list[RelaxationCandidate] = []
     probed_counts: dict[str, int] = {}  # 와이어 필드명 -> 완화 시 매칭 수(probe 실패는 미기록)
@@ -568,8 +575,9 @@ async def stream_recommendation(
                 relaxation_notice, adopted_field = cand.notice, cand.field
                 break
         if relaxation_notice:
-            # [REQ-REC-042] 조용히 조건을 바꾸지 않는다 — 산문 안내는 token, 기계 판독 플래그는
-            # done.relaxationNotice 로 **병기**한다(§3.1).
+            # [REQ-REC-042] 조용히 조건을 바꾸지 않는다 — 고지는 **token 산문**이 전담한다.
+            # done 에는 싣지 않는다: 정본(CH-2)이 done 을 finishReason 만으로 확정했고 FE 도
+            # 그 필드를 읽지 않는다(api-spec §3.1 사본 drift 정정 v0.19.1).
             yield sse("token", TokenData(text=relaxation_notice).model_dump(by_alias=True))
 
     # 완화 칩 — 0건이거나 소량(config 임계 미만)일 때 남은 예산만큼 후보를 probe 한다.
@@ -601,14 +609,20 @@ async def stream_recommendation(
     # 의문문에서 숫자를 다시 뽑는 대신 여기 저장한 정확한 값을 쓴다. 칩이 없으면 빈 dict 로 비운다 —
     # 화면에 없는 옛 제안이 살아 있으면 사용자가 보지도 않은 조건이 되살아난다.
     if relax_store is not None and thread_key:
-        await relax_store.put(
-            thread_key,
-            {
-                chip.label: {"field": chip.relaxation.field, "value": chip.relaxation.value}
-                for chip in relaxation_chips
-                if chip.relaxation is not None
-            },
-        )
+        try:
+            await relax_store.put(
+                thread_key,
+                {
+                    chip.label: {"field": chip.relaxation.field, "value": chip.relaxation.value}
+                    for chip in relaxation_chips
+                    if chip.relaxation is not None
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - 기억 실패가 스트림을 죽이지 않게(degrade)
+            # 여기는 상품·칩이 이미 확정된 지점이다. 기억에 실패하면 다음 턴 칩 클릭이 종전처럼
+            # decompose 해석으로 처리될 뿐인데, 예외를 올리면 **정상 완료될 추천 턴이 통째로**
+            # 죽는다. CancelledError(BaseException)는 전파돼 협조적 취소가 보존된다.
+            logger.warning("relaxation_offer_write_failed", extra={"reason": str(exc)})
 
     matched_after_dedup = result.total_count
 

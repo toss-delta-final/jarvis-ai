@@ -1,7 +1,8 @@
-"""0건/소량 조건 완화 (이슈 #113) — 완화 후보 생성 · 완화 칩 emit · 자동 완화 안내.
+"""0건/소량 조건 완화 (이슈 #113) — 완화 후보 생성 · 칩 emit · 자동 완화 안내 · 칩 클릭 되받기.
 
-계약: api-spec §3.1 `suggestions`.`relaxation`={field,value}·estCount, `done.data.relaxationNotice`.
+계약: api-spec §3.1 `suggestions`.`relaxation`={field,value}·estCount.
 SPEC-RECOMMEND-001 §6.6(REQ-REC-040~046), AC-REC-08(가격 제약 불가침).
+자동 완화 고지는 **token 산문**이 담당한다 — `done` 은 정본(CH-2)대로 `finishReason` 뿐이다.
 
 estCount 는 page-local 로 못 구한다 — priceMax·brand·color 는 Spring I-1 쿼리 파라미터라 탈락
 상품이 응답에 아예 없다. 그래서 완화 필터로 **재검색(probe)** 해 실제 매칭 수를 센다. 아래 fake
@@ -11,11 +12,13 @@ search 는 그 전제를 재현하려고 **필터를 실제로 적용**한다(�
 from __future__ import annotations
 
 import json
+import logging
 import math
 from fractions import Fraction
 
 import pytest
 
+from app.agents.buyer import graph as buyer_graph
 from app.agents.buyer.recommendation.category_mapping import CategoryMapping
 from app.agents.buyer.recommendation.relaxation import build_relaxation_candidates
 from app.core.auth import Identity
@@ -227,7 +230,7 @@ async def test_probe_failure_drops_only_that_chip() -> None:
 
 
 async def test_auto_relaxation_emits_notice_and_recovers_products() -> None:
-    """[AC②] 약한 조건(평점)은 자동 완화하고 token 안내 + done.relaxationNotice 로 알린다."""
+    """[AC②] 약한 조건(평점)은 자동 완화하되 **반드시 token 으로 고지**한다."""
     push_calls: list = []
 
     async def _push(push) -> bool:  # noqa: ANN001
@@ -398,6 +401,49 @@ async def test_clicking_chip_applies_exact_stored_value() -> None:
     assert "products.ready" in _types(second)  # 완화된 조건의 상품이 실제로 나간다
 
 
+async def test_clicking_chip_preserves_other_prior_filters() -> None:
+    """칩 클릭 턴은 **직전 필터 전체**를 유지한 채 그 조건 하나만 푼다.
+
+    estCount 는 "직전 필터 + 이 조건만 완화"로 센 값인데, 멀티턴 병합은 코드가 아니라 LLM 이
+    한다(decompose PRIOR_FILTERS 병합 지시). 의문문 label 을 받은 decompose 가 축을 빠뜨리면
+    priceMin·brand 가 조용히 사라져 **약속한 건수와 실제 결과가 어긋난다.**
+    """
+
+    async def _push(push) -> bool:  # noqa: ANN001
+        return True
+
+    products = [_product(201, 60000)]
+    calls: list[ProductSearchFilters] = []
+    search = _filtered_search(products, calls=calls)
+
+    # 1턴 — priceMin 도 함께 걸린 상태에서 0건 → priceMax 완화 칩
+    first = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(decompose=_decompose_with(priceMax=50000, priceMin=10000)),
+            search=search,
+            push_fn=_push,
+        )
+    )
+    label = _suggestions(first)[0]["label"]
+
+    # 2턴 — decompose 가 아무 조건도 못 뽑은 최악의 경우
+    turn2 = len(calls)
+    await _collect(
+        run_buyer_turn(
+            _req(message=label),
+            _member(),
+            llm=FakeLLM(decompose=_decompose_with()),
+            search=search,
+            push_fn=_push,
+        )
+    )
+
+    assert calls[turn2].price_max == 65000  # 완화된 축
+    assert calls[turn2].price_min == 10000  # **유실되면 안 되는 축**
+
+
 async def test_clicking_chip_forces_recommend_route() -> None:
     """칩 클릭은 decompose 가 general 로 라우팅해도 추천 턴으로 처리한다.
 
@@ -451,6 +497,45 @@ async def test_unmatched_message_does_not_apply_stored_offer() -> None:
     )
 
     assert calls[before].price_max == 50000  # 완화가 적용되지 않았다
+
+
+async def test_offer_store_failure_does_not_break_the_turn(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """[degrade] 칩 기억 저장소가 죽어도 턴은 정상 완료된다 — 편의 기능이 본류를 막지 않는다.
+
+    읽기·쓰기 **양쪽 가드가 실제로 실행됐는지**를 로그로 확인한다 — "그냥 안 깨졌다"만 보면
+    가드를 지워도 통과하는(호출 자체가 없는) 테스트가 되어 회귀를 못 잡는다.
+    """
+
+    async def _push(push) -> bool:  # noqa: ANN001
+        return True
+
+    class _BrokenStore:
+        async def get(self, key):  # noqa: ANN001
+            raise TimeoutError("pg down")
+
+        async def put(self, key, offers):  # noqa: ANN001
+            raise TimeoutError("pg down")
+
+    async def _broken():
+        return _BrokenStore()
+
+    monkeypatch.setattr(buyer_graph, "get_relaxation_offer_store", _broken)
+    products = [_product(101, 39000), _product(102, 48000)]  # 2건 = 소량 → 칩 생성 → 쓰기 경로 진입
+    with caplog.at_level(logging.WARNING):
+        events = await _collect(
+            run_buyer_turn(
+                _req(), _member(), llm=FakeLLM(), search=_filtered_search(products), push_fn=_push
+            )
+        )
+
+    assert _types(events)[-1] == "done"
+    assert "error" not in _types(events)
+    assert "products.ready" in _types(events)
+    assert "relaxation_offer_read_failed" in caplog.text
+    assert "relaxation_offer_write_failed" in caplog.text
 
 
 async def test_enough_results_do_not_probe(monkeypatch: pytest.MonkeyPatch) -> None:
