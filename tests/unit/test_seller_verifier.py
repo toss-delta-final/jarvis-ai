@@ -207,6 +207,45 @@ def test_f2_novel_number_in_recommendation_only_fails() -> None:
     assert any("근거 없는 수치" in r and "999999" in r for r in reasons)
 
 
+def test_f2_sign_flipped_recommendation_fails() -> None:
+    """[PR 리뷰 반영] 도구 출력이 양수로 기록한 수치를 finding 이 부호만 뒤집어
+    인용하면(+12,000 → -12,000) 실패한다 — 부호 무시 비교로는 통과하던 버그.
+
+    사용자 리포트: _format_chart_number(-12000.0) 은 "-12000" 을 만들지만 기존
+    _normalize_numbers(무부호)는 "12000" 으로 정규화해 부호 반전 환각이 탐지되지
+    않았다. F2 도 G1 과 같은 부호 보존 정규화를 쓰도록 고쳤다.
+    """
+    tool_outputs = [
+        "06-12 매출 180,000원 (직전 7일 평균 310,000원, 42.1% 급락, 12,000원 증가)"
+    ]
+    finding = _finding(recommendation="전월 대비 -12,000원 감소 추세이니 점검 권장")
+    reasons = run_finding_checks(finding, tool_outputs, expected_type="sales_anomaly")
+    assert any("근거 없는 수치" in r and "-12000" in r for r in reasons)
+
+
+def test_f2_negative_number_grounded_when_sign_matches() -> None:
+    """도구 출력·finding 양쪽에 동일 부호의 음수가 있으면 정상 통과한다(회귀 방지)."""
+    tool_outputs = [
+        "06-12 매출 180,000원 (직전 7일 평균 310,000원), 전월 대비 -12,000원 감소"
+    ]
+    finding = _finding(summary="전월 대비 -12,000원 감소했다.")
+    assert run_finding_checks(finding, tool_outputs, expected_type="sales_anomaly") == []
+
+
+def test_f2_range_hyphen_not_confused_with_sign() -> None:
+    """[PR 리뷰 반영] "300-400원" 같은 구간 표기의 하이픈은 직전이 숫자라 부호로
+    오인하지 않는다 — 새 부호 인식 정규식이 이를 깨뜨리면 evidence 의 "-400"(오인)이
+    도구 출력의 하이픈 없는 "400"과 어긋나 정상 finding 이 F2 를 통과하지 못한다
+    (회귀 방지). 두 숫자를 도구 출력에 하이픈 없이 각각 명시해 evidence 쪽만
+    구간 표기(하이픈)를 쓰는 비대칭 구성으로 오인 여부를 가른다."""
+    tool_outputs = ["매출 300원, 400원 두 구간 모두 집계됐다"]
+    finding = _finding(
+        summary="매출이 300-400원 구간이었다.",
+        evidence=["300-400원 구간"],
+    )
+    assert run_finding_checks(finding, tool_outputs, expected_type="sales_anomaly") == []
+
+
 def test_f3_type_mismatch_fails() -> None:
     """F3 — finding.analysis_type 이 배정된 워커 유형과 다르면 실패."""
     finding = _finding(analysis_type="conversion")
@@ -252,6 +291,19 @@ def test_g1_drops_chart_with_ungrounded_number() -> None:
     passed, dropped = run_chart_checks(ChartSet(charts=[chart]), [_finding()])
     assert passed.charts == []
     assert any("근거 없는 수치" in r for r in dropped)
+
+
+def test_g1_drops_chart_with_sign_flipped_number() -> None:
+    """[PR 리뷰 반영] finding 이 양수로 근거한 수치를 차트가 부호만 뒤집어 그리면
+    (+180,000 → -180,000) 이제 드랍한다 — 부호 무시 비교로는 통과하던 버그(사용자 리포트).
+    """
+    finding = _finding()  # evidence: "06-12 매출 180,000원 (직전 7일 평균 310,000원)"
+    chart = _chart(
+        series=[ChartSeries(label="매출", points=[ChartPoint(x="06-12", y=-180000)])]
+    )
+    passed, dropped = run_chart_checks(ChartSet(charts=[chart]), [finding])
+    assert passed.charts == []
+    assert any("근거 없는 수치" in r and "-180000" in r for r in dropped)
 
 
 def test_g1_pass_when_grounded_only_in_recommendation() -> None:
