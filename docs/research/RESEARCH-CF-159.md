@@ -70,6 +70,8 @@ Abdollahpouri et al. 2017은 LTR 추천에서 popularity bias를 제어하는 �
 
 반대로 cold-start는 이 리포의 강점이다. 리뷰 0 상품 5,499개(76.16%)에도 임베딩이 전량 존재하므로 협업 이력이 없는 item은 콘텐츠 cosine으로 즉시 폴백할 수 있다. 사용자/게스트 이력이 없을 때도 가짜 중립 프로필을 만들지 않고 기존 degrade 규약을 유지한다.
 
+Huang et al. 2025의 ColdLLM은 이력 없는 cold item에 LLM으로 상호작용을 합성하는 접근을 제시한다. 그러나 이는 관측된 협업 신호를 복원하는 것이 아니라 별도 teacher가 신호를 **합성**하는 경로이므로 #159의 `no-go`를 바꾸지 않는다. Jarvis 적용안은 [RESEARCH-LTR-160.md §3-1](./RESEARCH-LTR-160.md#3-1-행동-로그-없이-가능한-대안-경로--llm-teacher-기반-학습)에서 별도 후속으로 다룬다.
+
 ### 2.4 현 scoring과 결합
 
 현 결정론 scorer는 semantic 0.55, profile match 0.15, popularity 0.15, recency 0.05, diversity bonus 0.10, 최근 90일 exact 구매 penalty 0.20을 쓴다(`evals/scoring/scorer.py`, `app/core/config.py`). CF를 붙이는 두 선택지는 다음과 같다.
@@ -142,3 +144,4 @@ Abdollahpouri et al. 2017은 LTR 추천에서 popularity bias를 제어하는 �
 - Yifan Hu, Yehuda Koren, Chris Volinsky, “Collaborative Filtering for Implicit Feedback Datasets”, ICDM 2008, pp. 263–272, DOI `10.1109/ICDM.2008.22`.
 - Paolo Cremonesi, Yehuda Koren, Roberto Turrin, “Performance of recommender algorithms on top-N recommendation tasks”, RecSys 2010, pp. 39–46, DOI `10.1145/1864708.1864721`.
 - Himan Abdollahpouri, Robin Burke, Bamshad Mobasher, “Controlling Popularity Bias in Learning-to-Rank Recommendation”, RecSys 2017, pp. 42–46, DOI `10.1145/3109859.3109912`.
+- Feiran Huang, Yuanchen Bei, Zhenghang Yang, Junyi Jiang, Hao Chen, Qijie Shen, Senzhang Wang, Fakhri Karray, Philip S. Yu, “Large Language Model Simulator for Cold-Start Recommendation”, WSDM 2025 (arXiv:2402.09176).

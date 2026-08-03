@@ -94,6 +94,38 @@ Burges 2010은 RankNet→LambdaRank→LambdaMART의 계보를 설명하고 Lambd
 
 신규 ML 의존성은 팀 규칙상 사람 승인 게이트다. 의존성을 추가하지 않고 고정 계수 pointwise prototype을 먼저 만들고, GBDT/Lambda 계열은 데이터 승리와 dependency 승인을 모두 받은 뒤 비교한다.
 
+## 3-1. 행동 로그 없이 가능한 대안 경로 — LLM teacher 기반 학습
+
+### 발상과 Jarvis 대응
+
+Hinton et al. 2015의 knowledge distillation은 강한 teacher의 지식을 작은 student로 옮기는 출발점이다. 추천에서는 Tang and Wang 2018이 teacher 추천 목록의 top-K 항목으로 student 점수를 유도했다. Jarvis에서는 `pipeline` arm의 LLM rerank를 teacher, 결정론 6성분 scorer를 student로 둘 수 있다.
+
+ablation 실측은 `pipeline` nDCG@10 0.782943·6,362.729ms/case·$0.000897/case, `scoring` nDCG@10 0.616852·0 calls·3.781ms/case다(`evals/ablation/DECISION.md`). 격차는 0.166이다. teacher가 이미 production 기준이므로 목표는 품질 상한 돌파가 아니라 그 격차 일부를 3.781ms 가격으로 가져와 비용·지연을 줄이는 것이다.
+
+### transfer set과 coupled funnel
+
+진짜 병목은 teacher를 실행할 transfer query다. 골든셋은 dev 31건과 sealed holdout 12건, 합계 43건뿐이고, #136 관측 로그는 개인정보 규약상 사용자 message 원문을 금지해 길이와 peppered HMAC 지문만 남긴다(`CHANGELOG.md`). 따라서 질의를 합성해야 하며, 합성 분포가 실사용과 어긋나면 student는 엉뚱한 목표에 최적화된다.
+
+Huang et al. 2025의 ColdLLM은 값싼 필터로 후보를 크게 줄인 뒤 좁은 집합에만 LLM을 적용하는 coupled funnel로 비용을 제한한다. Jarvis에는 7,220건을 검색하는 pgvector HNSW가 이미 있고 #148 실측 p50은 39ms다. 이를 먼저 적용해 후보를 수십 개로 줄인 뒤 teacher를 호출하면 비용과 합성 분포의 탐색 범위를 함께 제한할 수 있다.
+
+teacher 단가를 $0.000897/case로 선형 외삽하면 1,000질의는 약 $0.9, 10,000질의는 약 $9, 100,000질의는 약 $90다. 비교로 기존 ablation 전량은 445 calls·$0.28132815였다. 이 값은 고정 case당 단가의 단순 외삽이며, 실제 transfer set의 길이·후보 수·재시도율을 포함한 실행으로 다시 확인해야 한다.
+
+### 보조 항과 반복 self-training
+
+Wang et al. 2024는 LLM 합성 신호를 auxiliary pairwise loss로 추천 모델에 주입하며 전면 대체하지 않는다. Jarvis도 합성 기여를 별도 가중 항으로 두고 `weight=0`을 즉시 롤백으로 삼는 편이 안전하다. 이는 #148의 `home_reco_weight_profile=0` 사례와 같은 규약이며 튜너블은 `app/core/config.py`로 주입한다.
+
+고정 teacher 모방의 상한은 teacher nDCG@10 0.782943이고 student는 보통 그 아래에 착지한다. Xie et al. 2020의 Noisy Student는 teacher가 pseudo-label을 만들고 더 크고 노이즈를 준 student를 학습한 뒤 그 student를 새 teacher로 반복해 기존 teacher를 넘었다.
+
+Caron et al. 2021의 DINO는 teacher를 student 가중치의 EMA로 갱신하고 teacher에는 stop-gradient를 적용하며 서로 반대 방향인 centering과 sharpening의 균형으로 붕괴를 막는다. 그러나 DINO는 같은 아키텍처의 가중치 평균이 가능한 반면 Jarvis teacher는 프롬프트 기반 LLM, student는 6성분 선형결합이라 평균 낼 가중치 공간이 없다.
+
+따라서 옮길 수 있는 것은 DINO식 EMA가 아니라 Noisy Student식 반복 self-training이다. 반복마다 sealed holdout과 bootstrap 95% CI로 실제 개선을 확인하지 않으면 teacher 오류와 합성 분포 편향을 증폭시킬 수 있으므로, CI가 0을 포함하면 `inconclusive`로 중단한다.
+
+### 안전 경계와 이슈 범위
+
+student도 `hard_filter` 경계, #173의 비표시 정밀 가격 유출 방어, `productId` tiebreak, degrade 기록을 그대로 지켜야 한다. teacher가 틀린 케이스도 그대로 학습되므로 이 불변식은 모방 대상이 아니다. ablation에서 `scoring` Filter Accuracy는 1.000000, `pipeline`은 0.063519로 서로 잘하는 축이 다르므로, teacher의 순위 신호만 물려받고 결정론 filter 축은 남길지 사전 등록해야 한다.
+
+이 경로는 #160이 묻는 행동 로그 기반 supervised LTR의 답이 아니라 라벨 출처를 LLM으로 바꾼 별개 경로다. 따라서 #160의 `조건부` 판정을 바꾸지 않으며, 구현·transfer set 생성·비용 승인은 후속 이슈로 분리한다.
+
 ## 4. 판정: `조건부`
 
 저장 구조와 baseline은 준비됐지만 학습 데이터와 누출 없는 feature snapshot은 준비되지 않았다. 특히 conversion label은 `purchase_complete` 상품 미귀속이 해결되기 전 성립하지 않는다. 따라서 production LTR은 보류하며, §6의 수치 조건과 저장 계약을 충족할 때 offline prototype만 `go`로 전환한다.
@@ -146,3 +178,9 @@ Burges 2010은 RankNet→LambdaRank→LambdaMART의 계보를 설명하고 Lambd
 - Paolo Cremonesi, Yehuda Koren, Roberto Turrin, “Performance of recommender algorithms on top-N recommendation tasks”, RecSys 2010, pp. 39–46, DOI `10.1145/1864708.1864721`.
 - Christopher J. C. Burges, “From RankNet to LambdaRank to LambdaMART: An Overview”, Microsoft Research Technical Report MSR-TR-2010-82, 2010.
 - Thorsten Joachims, Adith Swaminathan, Tobias Schnabel, “Unbiased Learning-to-Rank with Biased Feedback”, WSDM 2017, pp. 781–789.
+- Geoffrey E. Hinton, Oriol Vinyals, Jeff Dean, “Distilling the Knowledge in a Neural Network”, CoRR abs/1503.02531, 2015.
+- Jiaxi Tang, Ke Wang, “Ranking Distillation: Learning Compact Ranking Models With High Performance for Recommender System”, KDD 2018, pp. 2289–2298.
+- Mathilde Caron, Hugo Touvron, Ishan Misra, Hervé Jégou, Julien Mairal, Piotr Bojanowski, Armand Joulin, “Emerging Properties in Self-Supervised Vision Transformers”, ICCV 2021, pp. 9630–9640.
+- Qizhe Xie, Minh-Thang Luong, Eduard H. Hovy, Quoc V. Le, “Self-training with Noisy Student improves ImageNet classification”, CVPR 2020, pp. 10684–10695.
+- Feiran Huang, Yuanchen Bei, Zhenghang Yang, Junyi Jiang, Hao Chen, Qijie Shen, Senzhang Wang, Fakhri Karray, Philip S. Yu, “Large Language Model Simulator for Cold-Start Recommendation”, WSDM 2025 (arXiv:2402.09176).
+- Jianling Wang, Haokai Lu, James Caverlee, Ed H. Chi, Minmin Chen, “Large Language Models as Data Augmenters for Cold-Start Item Recommendation”, arXiv:2402.11724, 2024.

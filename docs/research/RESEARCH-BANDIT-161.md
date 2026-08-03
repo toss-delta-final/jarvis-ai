@@ -56,6 +56,8 @@ Li et al. 2011은 contextual-bandit 추천 알고리즘의 unbiased offline repl
 
 현 scorer는 같은 snapshot·config에서 `productId` 오름차순 tiebreak로 결정적이다(`evals/scoring/scorer.py`). 이 정책의 propensity는 선택 상품 1, 나머지 0이어서 support가 없는 action의 counterfactual을 평가할 수 없다. 더구나 현재 저장 컬럼에는 확률을 둘 자리도 없다. 따라서 **policy logging schema 추가와 실제 확률 저장이 bandit의 첫 구현**이며, Li et al. 2011의 replay 조건을 만족하는지 검증한 뒤 bandit 모델을 배포해야 한다.
 
+LLM teacher가 합성한 label은 propensity를 만들어 주지 않는다. off-policy 평가가 요구하는 값은 실제 로깅 정책이 그 시점에 해당 action을 고를 확률이므로 오프라인 합성으로 대체할 수 없다. [RESEARCH-LTR-160.md §3-1](./RESEARCH-LTR-160.md#3-1-행동-로그-없이-가능한-대안-경로--llm-teacher-기반-학습)이 진행돼도 #161의 `no-go`와 로깅 계약 선행 요구는 그대로다.
+
 ### 2.3 reward: CTR만으로 부족한 이유
 
 클릭만 올리면 호기심을 자극하지만 구매에 불리한 상품, 상단 노출에 유리한 상품, 반복 클릭을 유도하는 상품을 과대평가할 수 있다. Jarvis reward는 최소 다음 단계를 분리해야 한다.
