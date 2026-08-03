@@ -21,7 +21,15 @@
 | `order_item` / `cart_item` / `wishlist` | 0 / 0 / 0 | ❌ | co-occurrence를 만들 행이 없음 |
 | `recommendation_list` / `_item` | 1 / 8 | ❌ | 노출 구조는 있으나 실사용 표본이 없음 |
 
-리뷰는 1,721개 상품에만 있고 5,499개(76.16%)는 리뷰가 없다. 리뷰가 있는 상품에서도 상위 172개(그 집합의 10%)가 전체 리뷰의 41.34%를 차지한다. 상품당 리뷰 수는 min 1, max 600, avg 73.40, sd 107.09이고, 버킷은 1–9건 751개, 10–29건 273개, 30–99건 273개, 100–299건 211개, 300–999건 213개, 1,000건 이상 0개다. 이 분포는 리뷰 수 기반 유사도나 인기도가 head 상품으로 쏠릴 위험을 보여주지만, 리뷰 작성자의 동일성을 복원하지 못하므로 CF 입력으로 바꾸지는 못한다.
+리뷰는 1,721개 상품에만 있고 5,499개(76.16%)는 리뷰가 없다. 리뷰가 있는 상품에서도 상위 172개(그 집합의 10%)가 전체 리뷰의 41.34%를 차지한다. 상품당 리뷰 수는 min 1, max 600, avg 73.40, sd 107.09이고, 버킷은 1–9건 751개, 10–29건 273개, 30–99건 273개, 100–299건 211개, 300–999건 213개, 1,000건 이상 0개다.
+
+`review.author_name`은 126,313건 중 126,312건에 있지만 distinct 값은 66,137개다(2026-08-03 MariaDB 실측).
+
+- `*`가 포함된 마스킹 이름은 93,698건(74.2%)이며, `love****`만 134건·97상품, `park****`만 78건·61상품에 나타난다.
+- `review.order_item_id`가 UNIQUE라 주문 항목당 리뷰는 1건인데도 같은 이름×같은 상품 리뷰가 2회 이상인 경우가 13,095건이다. 서로 다른 실제 사용자가 같은 마스킹 문자열에 충돌한다는 직접 증거다.
+- 상품 2개 이상에 등장한 이름으로 164,551개 상품쌍을 계산할 수 있지만, `author_name`은 신원이 아니라 충돌 버킷이므로 그 쌍은 협업 관계보다 인기 상품끼리 묶이는 편향을 만든다.
+
+164,551쌍 계산 비용은 사소하지만 충돌을 판별할 정답 label이 없다. 따라서 `author_name` 대리 사용자 경로의 기각 사유는 비용이 아니라 **타당성**이다.
 
 > 리뷰 수는 시드 README 표기 126,957건과 달라 2026-08-03 MariaDB 실측 126,313건을 채택했다.
 
@@ -52,6 +60,8 @@ Sarwar et al. 2001은 item-based CF를 user-item 행렬에서 item 관계를 도
 | Jaccard | item별 사용자/세션 집합 | ❌ | 집합 크기 차이를 정규화 | 식별 집합을 만들 수 없음 |
 | 인기 보정 cosine/BM25류 정규화 | co-occurrence + item/user 빈도 | ❌ | head-item 지배 완화 | 원 co-occurrence가 없음 |
 | ALS / implicit MF | 충분한 implicit user×item 행렬과 confidence | ❌ | 잠재 취향 축 학습 | 행렬 자체가 구성 불가, 복잡도만 증가 |
+| `author_name` 그룹핑(리뷰 대리 사용자) | 마스킹 리뷰 이름×상품 집합 | ⚠️ | 164,551개 상품쌍 계산 가능 | 같은 이름×같은 상품 중복 13,095건이 신원 충돌을 입증해 타당성 없음 |
+| session-based(session kNN / 순차 모델) | 세션별 상품 행동 순서 | ❌ | 사용자 식별·재방문·세션 간 연결 불필요 | 실사용 세션 이벤트 0이라 현재 학습 불가 |
 | 콘텐츠 임베딩 cosine(현행) | 상품별 임베딩 | ✅ | 7,220개 전량 cold-start, HNSW 서빙 | 이미 I-22에 존재; 새 CF가 아님 |
 
 Sarwar et al. 2001이 희소성 아래 coverage와 대량 추천 성능도 문제로 다뤘다는 점은 이후 평가축을 뒷받침한다. 다만 Jarvis의 현 결손은 희소성 정도가 아니라 행렬 구성 불가이므로, 논문의 유효성은 `no-go`를 뒤집지 않고 오히려 입력 전제의 부재를 분명히 한다.
@@ -70,6 +80,8 @@ Abdollahpouri et al. 2017은 LTR 추천에서 popularity bias를 제어하는 �
 
 반대로 cold-start는 이 리포의 강점이다. 리뷰 0 상품 5,499개(76.16%)에도 임베딩이 전량 존재하므로 협업 이력이 없는 item은 콘텐츠 cosine으로 즉시 폴백할 수 있다. 사용자/게스트 이력이 없을 때도 가짜 중립 프로필을 만들지 않고 기존 degrade 규약을 유지한다.
 
+Huang et al. 2025의 ColdLLM은 이력 없는 cold item에 LLM으로 상호작용을 합성하는 접근을 제시한다. 그러나 이는 관측된 협업 신호를 복원하는 것이 아니라 별도 teacher가 신호를 **합성**하는 경로이므로 #159의 `no-go`를 바꾸지 않는다. Jarvis 적용안은 [RESEARCH-LTR-160.md §3-1](./RESEARCH-LTR-160.md#3-1-행동-로그-없이-가능한-대안-경로--llm-teacher-기반-학습)에서 별도 후속으로 다룬다.
+
 ### 2.4 현 scoring과 결합
 
 현 결정론 scorer는 semantic 0.55, profile match 0.15, popularity 0.15, recency 0.05, diversity bonus 0.10, 최근 90일 exact 구매 penalty 0.20을 쓴다(`evals/scoring/scorer.py`, `app/core/config.py`). CF를 붙이는 두 선택지는 다음과 같다.
@@ -80,6 +92,22 @@ Abdollahpouri et al. 2017은 LTR 추천에서 popularity bias를 제어하는 �
 | 후보 생성 | seed item의 CF 이웃을 후보 풀에 합침 | 콘텐츠 검색이 놓친 행동 연관 상품을 회수 가능 | 후보 출처 편향·중복과 latency가 늘고, 후단 평가가 복잡 |
 
 첫 prototype은 점수 성분 arm이 더 좁고 되돌리기 쉽다. 어느 방식도 `hard_filter.py`의 가격·금지 카테고리·금지 상품·must-exclude 경계를 우회해서는 안 된다. 컷된 상품은 높은 CF 점수로 재진입할 수 없고, 동점은 `productId` 오름차순, 결손은 값 0 + degrade 기록이어야 한다.
+
+### 2.5 사용자 신원을 요구하지 않는 계열 — session-based
+
+Hidasi et al. 2016의 session-based 추천은 세션 내 행동 순서에 RNN을 적용한다. 이 계열은 사용자 식별·재방문·세션 간 신원 연결을 요구하지 않고 현재 세션의 순서만 쓸 수 있다.
+
+Jarvis에는 `behavior_events.session_key`(`varchar(64)`)가 실재하고, 게스트도 `guest.id` `CHAR(36)` 계약을 가진 1급 시민이다. `member`는 0행이며 현 scoring도 guest를 가짜 프로필로 만들지 않고, #187에서 세션·방 축도 이미 분리했다. 따라서 제품 구조상 session-based 계열과 잘 맞는다.
+
+그러나 session kNN과 순차 모델도 여러 세션에서 반복된 상품 전이·co-occurrence를 학습해야 한다. 세션을 사용자 대신 쓰는 것이지 상호작용 자체를 면제하지 않는다. 현재 `behavior_events`는 스모크 1행, distinct `session_key`도 1개라 실사용 입력은 여전히 0이다.
+
+다만 데이터 요구의 성격은 낮아진다. 회원 가입·로그인·재방문·장기 이력 없이 익명 세션만 쌓이면 되므로, 이 서비스에서는 distinct 회원 수보다 유효 세션 수·세션당 이벤트 수가 더 직접적인 재검토 기준이다.
+
+Jannach and Ludewig 2017은 휴리스틱 session kNN이 테스트한 설정·데이터셋 대다수에서 GRU4Rec을 능가했고 확장성도 확보됐다고 보고한다. Ludewig and Jannach 2018의 비교에서도 최근접이웃 계열이 더 복잡한 신경망과 동등하거나 유의하게 더 나은 경우가 잦았다.
+
+따라서 첫 후보는 신규 ML 의존성과 사람 승인 게이트가 필요한 신경망이 아니라 session kNN이다. 최신 통합 실증 비교의 범위는 Zhang et al. 2025를 함께 참조한다.
+
+session-based는 #159의 `no-go`를 뒤집지 않지만, 데이터 축적 뒤 재검토 1순위다. 착수 조건도 회원 축이 아니라 세션 축으로 측정한다.
 
 ## 3. 후보 비교표
 
@@ -113,7 +141,7 @@ Abdollahpouri et al. 2017은 LTR 추천에서 popularity bias를 제어하는 �
 
 1. `jarvis-backend#62` 배포 후 30일 연속으로 상품 귀속 가능한 `purchase_complete`가 200건 이상이고, I-6/I-7/I-14 주문 권위와 일 단위 건수 차이가 5% 이내다.
 2. 같은 30일에 `list_id IS NOT NULL`인 추천 유래 `product_view` 10,000건, `add_to_cart` 1,000건, `checkout_start` 300건 이상이 적재된다.
-3. 식별 가능한 `member_id` 또는 동의된 guest/session 축이 distinct 500개 이상, 상호작용 상품이 distinct 500개 이상이며, 5회 이상 반복된 item pair가 1,000쌍 이상이다.
+3. 이벤트가 2건 이상인 distinct `session_key`가 500개 이상, 상호작용 상품이 distinct 500개 이상이며, 서로 다른 세션에서 5회 이상 반복된 item pair가 1,000쌍 이상이다.
 4. FE가 추천 유래 `product_view`에 `listId`·`position`·`recommendationRequestId`를 싣고 Spring이 동일 값으로 적재한다는 계약 테스트 또는 샘플 로그를 확보한다.
 5. 학습 snapshot에서 hard filter 통과 전/후 경계를 보존하고 `productId` tiebreak·degrade 기록을 검증하는 테스트 계획을 승인한다.
 
@@ -124,6 +152,7 @@ Abdollahpouri et al. 2017은 LTR 추천에서 popularity bias를 제어하는 �
 ### 근거 출처
 
 - 2026-08-03 pg-catalog/MariaDB 실측: 구현 팩킷 §1-A~§1-D(이 문서에서는 DB 재측정하지 않음).
+- 2026-08-03 MariaDB `review.author_name` 실측: distinct 66,137, 마스킹 93,698건(74.2%), 같은 이름×같은 상품 중복 13,095건, 파생 상품쌍 164,551개(이 문서에서는 DB 재측정하지 않음).
 - `docs/api-spec.md` v0.17.4 §4.4 I-13: `purchase_complete` 상품 미귀속과 주문 권위.
 - `docs/api-spec.md` v0.17.1 §4.2 I-21: `recommendationRequestId`·`listId`·목록당 9개·멱등 규약.
 - `evals/scoring/components.py`, `scorer.py`, `hard_filter.py`, `app/core/config.py`: 현 scoring·안전 경계.
@@ -142,3 +171,8 @@ Abdollahpouri et al. 2017은 LTR 추천에서 popularity bias를 제어하는 �
 - Yifan Hu, Yehuda Koren, Chris Volinsky, “Collaborative Filtering for Implicit Feedback Datasets”, ICDM 2008, pp. 263–272, DOI `10.1109/ICDM.2008.22`.
 - Paolo Cremonesi, Yehuda Koren, Roberto Turrin, “Performance of recommender algorithms on top-N recommendation tasks”, RecSys 2010, pp. 39–46, DOI `10.1145/1864708.1864721`.
 - Himan Abdollahpouri, Robin Burke, Bamshad Mobasher, “Controlling Popularity Bias in Learning-to-Rank Recommendation”, RecSys 2017, pp. 42–46, DOI `10.1145/3109859.3109912`.
+- Feiran Huang, Yuanchen Bei, Zhenghang Yang, Junyi Jiang, Hao Chen, Qijie Shen, Senzhang Wang, Fakhri Karray, Philip S. Yu, “Large Language Model Simulator for Cold-Start Recommendation”, WSDM 2025 (arXiv:2402.09176).
+- Balázs Hidasi, Alexandros Karatzoglou, Linas Baltrunas, Domonkos Tikk, “Session-based Recommendations with Recurrent Neural Networks”, ICLR 2016 (Poster) (arXiv:1511.06939).
+- Dietmar Jannach, Malte Ludewig, “When Recurrent Neural Networks meet the Neighborhood for Session-Based Recommendation”, RecSys 2017, pp. 306–310.
+- Malte Ludewig, Dietmar Jannach, “Evaluation of session-based recommendation algorithms”, User Modeling and User-Adapted Interaction 28(4–5), pp. 331–390, 2018, DOI `10.1007/s11257-018-9209-6`.
+- Qingbo Zhang, Xiangmin Zhou, Xiuzhen Zhang, Xiaochun Yang, Bin Wang, Xun Yi, “Unified Empirical Evaluation and Comparison of Session-based Recommendation Algorithms”, ACM Computing Surveys 57(10), 250:1–250:39, 2025.
