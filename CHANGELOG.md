@@ -10,6 +10,7 @@
 ## [Unreleased]
 
 ### Added
+- **#147 — 개인화 효과·과반영 평가 하네스 추가** — 합성·비식별 5-arm profile fixture와 profile weight 5점 ablation을 동일 dev 케이스에서 paired 실행하고, slice별 ΔNDCG@K·Δdiversity bootstrap CI, 명시 의도 모순·금지/최근구매 신규 유입·clean→noisy 열화 판정, 전 arm×weight hard-filter 불변식, 실 LLM scope gate wrapper와 arm 배수 예산 dry-run을 제공한다. #119 수정 전후(`both` vs `rerank_only`) 실 LLM paired 회귀 자료를 `baselines/live-v1`에 영속해 수정 전 29/31건 필터 유출·ΔNDCG -0.29에서 수정 후 유출 무신호·CI 0 포함으로의 변화를 기록한다.
 - **#146 — 3-arm 추천 pipeline ablation 하네스와 전량 baseline 추가** — 현행 pipeline, 결정론 scoring, smart-tier single-call을 같은 dev 31건×N=5에서 비교하고 호출별 token·비용·latency, paired bootstrap CI, 재현 manifest와 불변 산출물을 기록했다. 전량 결과 pipeline이 single-call보다 nDCG@10 +0.087(95% CI [0.022, 0.160]) 높고 비용은 사실상 같아 production 전환을 기각했다.
 - **#144 — 실제 모델 추천 평가·회귀 리포트 runner 추가** — 고정 골든셋과 기존 metric runner를 runtime 배포 후보 provider/model 설정에 연결해 호출별 exact model·usage·비용·지연을 기록하고, provider 전 reserve형 예산 gate, versioned primary/secondary metric 반복 통계와 paired bootstrap, hard-constraint·coverage release gate, sealed holdout 승인 경로, 코드 해시 manifest 및 사람이 판독 가능한 Markdown/CSV 산출물을 제공한다.
 - **#145 — 설명 가능한 추천 scoring baseline 추가** — LLM 호출 없이 semantic·profile·popularity·주입형 recency·diversity·최근 exact 구매 감점을 성분별로 재구성 가능한 결정론 점수로 기록하고, hard constraint 컷을 점수와 분리한 paired dev 평가 및 고정 baseline을 `evals/scoring/`에 추가했다.
