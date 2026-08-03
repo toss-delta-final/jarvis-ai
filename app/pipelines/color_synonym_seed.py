@@ -136,6 +136,15 @@ def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
     return sum(x * y for x, y in zip(left, right, strict=True)) / denom if denom else -1.0
 
 
+def _embed_in_batches(terms: Sequence[str], embed: EmbedFn) -> list[list[float]]:
+    """임베딩 API 상한 안에서 색상 표기를 공통 고정 크기 청크로 처리한다."""
+    return [
+        vector
+        for start in range(0, len(terms), _EMBED_BATCH_SIZE)
+        for vector in embed(list(terms[start : start + _EMBED_BATCH_SIZE]))
+    ]
+
+
 def cluster_terms(
     counts: Counter[str], embed: EmbedFn, *, top_n: int, threshold: float
 ) -> list[Cluster]:
@@ -148,11 +157,7 @@ def cluster_terms(
     if not anchors:
         return []
     terms = [term for term, _ in ranked]
-    vectors = [
-        vector
-        for start in range(0, len(terms), _EMBED_BATCH_SIZE)
-        for vector in embed(terms[start : start + _EMBED_BATCH_SIZE])
-    ]
+    vectors = _embed_in_batches(terms, embed)
     vectors_by_term = dict(zip(terms, vectors, strict=True))
     anchor_order = {term: index for index, (term, _) in enumerate(anchors)}
 
@@ -435,7 +440,14 @@ def _get_pool(dsn: str):
         with _pool_lock:
             pool = _pools.get(dsn)
             if pool is None:
-                pool = ConnectionPool(dsn, configure=register_vector, open=True)
+                # 런타임 승인 사전 풀과 같은 config 상한을 명시해 배치 플래그를 독립적으로
+                # 켜더라도 psycopg 암묵 기본값에 의존하지 않는다.
+                pool = ConnectionPool(
+                    dsn,
+                    configure=register_vector,
+                    open=True,
+                    max_size=get_settings().color_synonym_pool_max_size,
+                )
                 _pools[dsn] = pool
     return pool
 
@@ -505,7 +517,9 @@ def harvest_new_terms(
     # asyncio.wait_for가 to_thread 아래 동기 호출을 취소해도 스레드는 계속 돈다. 따라서 외부
     # 임베딩 API 자체 상한을 기다리는 동안 DB 연결·트랜잭션은 반드시 놓아 풀 고갈을 완화한다.
     vectors_by_term = (
-        dict(zip(clusterable, embed(clusterable), strict=True)) if clusterable else {}
+        dict(zip(clusterable, _embed_in_batches(clusterable, embed), strict=True))
+        if clusterable
+        else {}
     )
 
     with _get_pool(dsn).connection() as conn, conn.transaction():

@@ -366,16 +366,20 @@ def test_reseed_outside_top_n_keeps_existing_approved_embedding() -> None:
 def test_seed_connection_pool_is_reused_per_dsn(monkeypatch) -> None:
     import psycopg_pool
 
-    created: list[str] = []
+    created: list[tuple[str, dict]] = []
 
     class Pool:
         def __init__(self, dsn, **kwargs):
-            created.append(dsn)
+            created.append((dsn, kwargs))
 
+    settings = Settings(_env_file=None, color_synonym_pool_max_size=7)
     monkeypatch.setattr(psycopg_pool, "ConnectionPool", Pool)
     monkeypatch.setattr(seed, "_pools", {})
+    monkeypatch.setattr(seed, "get_settings", lambda: settings)
     assert seed._get_pool("postgresql://same") is seed._get_pool("postgresql://same")
-    assert created == ["postgresql://same"]
+    assert len(created) == 1
+    assert created[0][0] == "postgresql://same"
+    assert created[0][1]["max_size"] == 7
 
 
 def test_batch_harvest_upserts_only_unknown_terms_as_pending_proposals(monkeypatch) -> None:
@@ -508,6 +512,51 @@ def test_batch_harvest_releases_db_connection_before_embedding(monkeypatch) -> N
     ) == 1
     assert active_connections == 0
     assert max_active_connections == 1
+
+
+def test_batch_harvest_embeds_many_colors_in_shared_chunks_without_loss(monkeypatch) -> None:
+    terms = [f"색상-{index}" for index in range(45)]
+    embed_calls: list[list[str]] = []
+    captured: list[seed.ColorTermRow] = []
+
+    class Result:
+        def fetchall(self):
+            return []
+
+        def fetchone(self):
+            return None
+
+    class Conn:
+        def execute(self, sql, params=None):
+            return Result()
+
+        def transaction(self):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class Pool:
+        def connection(self):
+            return Conn()
+
+    def embed(batch):
+        embed_calls.append(batch)
+        return [[float(index), 0.0] for index, _ in enumerate(batch)]
+
+    monkeypatch.setattr(seed, "_get_pool", lambda dsn: Pool())
+    monkeypatch.setattr(
+        seed,
+        "_execute_color_term_upserts",
+        lambda conn, rows, model: captured.extend(rows) or len(rows),
+    )
+
+    assert seed.harvest_new_terms("dsn", {"색상": terms}, embed, "model", 0.84) == 45
+    assert [len(batch) for batch in embed_calls] == [20, 20, 5]
+    assert [row.term for row in captured] == terms
 
 
 def test_color_synonym_app_timeout_must_be_below_db_timeout() -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 import threading
 
+from app.core.config import Settings
 from app.pipelines import color_synonyms
 
 
@@ -42,6 +43,24 @@ class _Pool:
 
     def connection(self):
         return _Conn(self.rows, self.calls)
+
+
+def test_runtime_connection_pool_uses_configured_max_size(monkeypatch) -> None:
+    from app.core import config
+    import psycopg_pool
+
+    captured = {}
+
+    class Pool:
+        def __init__(self, dsn, **kwargs):
+            captured.update(kwargs)
+
+    settings = Settings(_env_file=None, color_synonym_pool_max_size=7)
+    monkeypatch.setattr(config, "get_settings", lambda: settings)
+    monkeypatch.setattr(psycopg_pool, "ConnectionPool", Pool)
+    monkeypatch.setattr(color_synonyms, "_pools", {})
+    color_synonyms._get_pool("postgresql://size-check")
+    assert captured["max_size"] == 7
 
 
 def test_load_synonym_map_uses_approved_non_null_rows_and_deterministic_order(monkeypatch) -> None:

@@ -22,11 +22,16 @@ def _get_pool(dsn: str):
         with _pool_lock:
             pool = _pools.get(dsn)
             if pool is None:
+                from app.core.config import get_settings  # noqa: PLC0415 - lazy 설정 경로
                 from psycopg_pool import ConnectionPool  # noqa: PLC0415 - lazy DB dependency
 
-                # 와이어 확장 플래그 활성화 전에는 풀 max_size 설정화와 DB 장애 negative
-                # caching을 함께 도입해야 요청별 연결 재시도 비용이 검색 경로에 누적되지 않는다.
-                pool = ConnectionPool(dsn, open=True)
+                # 배치 수확 풀과 같은 config 상한을 명시한다. 런타임 조회는 TTL 캐시가 대부분의
+                # 요청을 흡수하고, 만료 갱신만 이 유계 풀을 사용한다.
+                pool = ConnectionPool(
+                    dsn,
+                    open=True,
+                    max_size=get_settings().color_synonym_pool_max_size,
+                )
                 _pools[dsn] = pool
     return pool
 

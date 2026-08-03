@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import threading
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -38,6 +39,8 @@ _HIDDEN = "HIDDEN"
 
 Fetch = Callable[[str | None, int], Awaitable[ProductChangesPage]]
 Embed = Callable[[list[str]], list[list[float]]]
+_harvest_limiters: dict[tuple[str, int], threading.BoundedSemaphore] = {}
+_harvest_limiter_lock = threading.Lock()
 
 
 @dataclass
@@ -48,20 +51,59 @@ class BatchResult:
     cursor: str | None
 
 
+def _harvest_limiter(dsn: str, max_concurrency: int) -> threading.BoundedSemaphore:
+    key = (dsn, max_concurrency)
+    limiter = _harvest_limiters.get(key)
+    if limiter is None:
+        with _harvest_limiter_lock:
+            limiter = _harvest_limiters.get(key)
+            if limiter is None:
+                limiter = threading.BoundedSemaphore(max_concurrency)
+                _harvest_limiters[key] = limiter
+    return limiter
+
+
+def _consume_background_harvest(task: asyncio.Task[int]) -> None:
+    """타임아웃 뒤 계속 도는 shield task 예외를 회수해 unhandled 경고를 막는다."""
+    if not task.cancelled():
+        task.exception()
+
+
 async def _harvest_change_colors(change: ProductChange, *, settings: Settings) -> int:
     """I-17 한 변경분의 신규 색상 표기를 동기 DB/API 작업 스레드에서 pending으로 제안한다."""
     embed = functools.partial(_embedding.embed_texts, task_type=settings.embedding_task_document)
-    return await asyncio.wait_for(
-        asyncio.to_thread(
-            color_synonym_seed.harvest_new_terms,
-            settings.catalog_db_url,
-            change.attributes,
-            embed,
-            settings.embedding_model_id,
-            settings.color_synonym_cluster_threshold,
-        ),
-        timeout=settings.color_synonym_query_timeout_s,
+    limiter = _harvest_limiter(
+        settings.catalog_db_url,
+        settings.color_synonym_harvest_max_concurrency,
     )
+    if not limiter.acquire(blocking=False):
+        _log.warning("색상 표기 수확 동시 실행 상한 — 해당 change 수확 건너뜀")
+        return 0
+
+    def run() -> int:
+        try:
+            return color_synonym_seed.harvest_new_terms(
+                settings.catalog_db_url,
+                change.attributes,
+                embed,
+                settings.embedding_model_id,
+                settings.color_synonym_cluster_threshold,
+            )
+        finally:
+            # wait_for가 먼저 끝나도 실제 worker가 종료될 때까지 슬롯을 계속 점유한다.
+            limiter.release()
+
+    task = asyncio.create_task(asyncio.to_thread(run))
+    try:
+        return await asyncio.wait_for(
+            asyncio.shield(task),
+            timeout=settings.color_synonym_query_timeout_s,
+        )
+    except (TimeoutError, asyncio.CancelledError):
+        # timeout·호출자 취소 뒤에도 worker는 shield 아래 계속 돈다. 완료 시 예외를 회수하되,
+        # 현재 호출의 기존 실패/취소 전파 규약은 그대로 유지한다.
+        task.add_done_callback(_consume_background_harvest)
+        raise
 
 
 async def _process_change(

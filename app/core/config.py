@@ -130,6 +130,12 @@ class Settings(BaseSettings):
     # 새 표기마다 임베딩 API+DB write가 I-17에 추가되고 테이블도 아직 미검수 상태이므로 기본 off.
     # 초기 검수 완료 뒤 운영 비용을 확인하고 켠다.
     color_synonym_batch_harvest_enabled: bool = False
+    # 런타임 승인 사전과 배치 수확의 독립 pg 풀 상한. psycopg 기본값에 암묵적으로 기대지 않고,
+    # 두 플래그를 각각 켜도 색상 보조 경로가 catalog DB 연결을 무제한 점유하지 않게 한다.
+    color_synonym_pool_max_size: int = Field(default=4, ge=1)
+    # wait_for 뒤에도 남는 to_thread 작업의 프로세스 동시 상한. 슬롯이 차면 해당 change 수확만
+    # 즉시 건너뛰어 I-17 생성물 갱신과 cursor 전진을 지연시키지 않는다.
+    color_synonym_harvest_max_concurrency: int = Field(default=2, ge=1)
     # 실카탈로그 상위 30 표기가 전체 색상 토큰 출현의 82.2%(8,753/10,645)를 덮는다.
     color_synonym_top_n: int = Field(default=30, ge=0)
     # 실측 최저 정탐 남색-네이비=0.854, 최고 오탐 블랙-블루=0.849로 마진이 0.005뿐이다.
