@@ -63,6 +63,11 @@ versioned config에 고정된 값이므로 이후 release 실측이 쌓이면 �
 직접 비교할 수 없다. 이 정규화는 평가 기록만 바꾸며 순위 출력과 primary nDCG에는 영향이 없다.
 
 OpenAI `gpt-5-nano` 단가는 공식 모델 문서의 USD 0.05/1M input, USD 0.40/1M output을
-USD/1K로 변환해 기록했다. `gpt-5.6-luna`의 공개 단가는 확인되지 않아 manifest에서
-의도적으로 제외했고 해당 호출 비용은 unknown으로 흐른다. LLM seed는 provider에서 강제할
-수 없으며 config seed는 순서와 bootstrap 재표본에만 사용한다.
+USD/1K로 변환해 기록했다. `gpt-5.6-luna`도 2026-07-30
+[OpenAI 발표](https://openai.com/index/advancing-the-price-performance-frontier-with-gpt-5-6/)의
+USD 0.20/1M input, USD 1.20/1M output을 각각 USD 0.0002/1K,
+USD 0.0012/1K로 변환해 manifest에 기록했으므로 이후 실행은 usage가 모두 있으면 cost
+coverage 100%가 가능하다. 커밋된 `20260803-dev-full-n5` baseline은 이 단가 항목 추가 전
+실행이라 cost coverage 0.534로 남으며, 불변 산출물의 run manifest에 당시 pricing manifest
+해시가 기록돼 있다. LLM seed는 provider에서 강제할 수 없으며 config seed는 순서와 bootstrap
+재표본에만 사용한다.
