@@ -712,6 +712,29 @@ async def test_color_harvest_failure_does_not_kill_i17_artifact(monkeypatch, cap
     assert "색상 표기 수확 실패" in caplog.text
 
 
+async def test_color_harvest_timeout_does_not_kill_i17_artifact(monkeypatch, caplog):
+    import asyncio
+
+    settings = get_settings().model_copy(
+        update={
+            "color_synonym_batch_harvest_enabled": True,
+            "color_synonym_query_timeout_s": 0.001,
+        }
+    )
+    store = CatalogArtifactStore()
+
+    async def never_finishes(*args, **kwargs):
+        await asyncio.sleep(1)
+
+    monkeypatch.setattr(_batch.asyncio, "to_thread", never_finishes)
+    with caplog.at_level("WARNING"):
+        await _batch._process_change(
+            _change(1), llm=_EnrichLLM(), embed=_embed, store=store, settings=settings
+        )
+    assert store.get(1) is not None
+    assert "색상 표기 수확 실패" in caplog.text
+
+
 async def test_color_harvest_cancellation_propagates(monkeypatch):
     import asyncio
 

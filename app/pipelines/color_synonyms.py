@@ -33,7 +33,11 @@ def _get_pool(dsn: str):
 
 def load_synonym_map(dsn: str) -> dict[str, list[str]]:
     """승인되고 canonical 이 있는 행만 읽어 정규화 표기→결정적 묶음 사전을 만든다."""
-    with _get_pool(dsn).connection() as conn:
+    from app.core.config import get_settings  # noqa: PLC0415 - 순환 임포트 회피(모듈 관례)
+
+    timeout_ms = int(get_settings().catalog_store_query_timeout_s * 1000)
+    with _get_pool(dsn).connection() as conn, conn.transaction():
+        conn.execute(f"SET LOCAL statement_timeout = {timeout_ms}")
         rows = conn.execute(
             """
             SELECT term, canonical, doc_count

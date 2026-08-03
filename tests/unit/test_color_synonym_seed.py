@@ -398,6 +398,9 @@ def test_batch_harvest_upserts_only_unknown_terms_as_pending_proposals(monkeypat
                 return Result([("블랙",)])
             return Result([("네이비", 0.91)])
 
+        def transaction(self):
+            return self
+
         def __enter__(self):
             return self
 
@@ -437,5 +440,18 @@ def test_batch_harvest_upserts_only_unknown_terms_as_pending_proposals(monkeypat
         seed.ColorTermRow("남색", "네이비", [1.0, 0.0], "batch_harvest", 1),
         seed.ColorTermRow("기타", None, None, "batch_harvest", 1),
     ]
-    assert "'approved'" in executed[1]
+    assert executed[0] == "SET LOCAL statement_timeout = 2500"
+    assert "'approved'" in executed[2]
     assert "'pending_review'" in seed.UPSERT_COLOR_TERM_SQL
+
+
+def test_color_synonym_app_timeout_must_be_below_db_timeout() -> None:
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError):
+        Settings(
+            _env_file=None,
+            catalog_store_query_timeout_s=2.0,
+            home_reco_store_timeout_s=1.0,
+            color_synonym_query_timeout_s=2.0,
+        )

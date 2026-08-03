@@ -144,6 +144,10 @@ class Settings(BaseSettings):
     # 군집 1개 keep/remove JSON에는 충분하면서 무제한 출력을 막는 fast-tier 출력 상한.
     color_synonym_llm_max_tokens: int = Field(default=2048, ge=1)
     color_synonym_cache_ttl_s: float = Field(default=300.0, ge=0.0)
+    # I-1 승인 사전 조회·I-17 신규 표기 수확의 앱쪽 벽시계 상한. 동기 쿼리는 to_thread
+    # 취소만으로 멈추지 않으므로 catalog_store_query_timeout_s가 이 값보다 늦게 DB에서 잘라
+    # 커넥션을 회수한다. 앱 상한이 먼저 발동하면 두 경로 모두 기존 품질 degrade를 유지한다.
+    color_synonym_query_timeout_s: float = Field(default=2.0, gt=0.0)
 
     # ── PostgreSQL / pgvector ×2 ──
     # catalog: AI 생성물(extras/search_doc/임베딩, §4.8 I-17 배치 upsert) 호스트, profile: 프로필 스토어+대화 저장(§6.3).
@@ -868,6 +872,19 @@ class Settings(BaseSettings):
                 "CATALOG_STORE_QUERY_TIMEOUT_S must be > HOME_RECO_STORE_TIMEOUT_S "
                 f"(got {self.catalog_store_query_timeout_s} <= {self.home_reco_store_timeout_s}): "
                 "the app-side clock must fire first so slow queries map to 504 deterministically"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_color_synonym_db_timeout_after_app_timeout(self) -> "Settings":
+        """색상 동의어 DB 상한은 앱쪽 품질 degrade 상한보다 늦게 발동해야 한다."""
+        if self.catalog_store_query_timeout_s <= self.color_synonym_query_timeout_s:
+            raise ValueError(
+                "CATALOG_STORE_QUERY_TIMEOUT_S must be > COLOR_SYNONYM_QUERY_TIMEOUT_S "
+                f"(got {self.catalog_store_query_timeout_s} <= "
+                f"{self.color_synonym_query_timeout_s}): "
+                "the app-side clock must degrade first and the DB clock must later reclaim "
+                "the connection"
             )
         return self
 

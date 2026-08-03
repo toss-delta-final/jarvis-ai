@@ -494,10 +494,13 @@ async def search_products(filters: ProductSearchFilters) -> ProductSearchResult:
         try:
             from app.pipelines import color_synonyms  # noqa: PLC0415 - lazy DB 경로
 
-            mapping = await asyncio.to_thread(
-                color_synonyms.get_synonym_map,
-                settings.catalog_db_url,
-                ttl_s=settings.color_synonym_cache_ttl_s,
+            mapping = await asyncio.wait_for(
+                asyncio.to_thread(
+                    color_synonyms.get_synonym_map,
+                    settings.catalog_db_url,
+                    ttl_s=settings.color_synonym_cache_ttl_s,
+                ),
+                timeout=settings.color_synonym_query_timeout_s,
             )
             color_values = color_synonyms.expand_color(filters.color, mapping)
         except Exception:

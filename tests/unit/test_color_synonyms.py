@@ -22,6 +22,9 @@ class _Conn:
         self.calls.append((sql, params))
         return _Result(self.rows)
 
+    def transaction(self):
+        return self
+
     def __enter__(self):
         return self
 
@@ -46,7 +49,8 @@ def test_load_synonym_map_uses_approved_non_null_rows_and_deterministic_order(mo
     mapping = color_synonyms.load_synonym_map("postgresql://x")
     assert mapping["남색"] == ["네이비", "NAVY", "남색"]
     assert mapping["navy"] == ["네이비", "NAVY", "남색"]
-    sql = calls[0][0]
+    assert calls[0] == ("SET LOCAL statement_timeout = 2500", None)
+    sql = calls[1][0]
     assert "status = 'approved'" in sql
     assert "canonical IS NOT NULL" in sql
 

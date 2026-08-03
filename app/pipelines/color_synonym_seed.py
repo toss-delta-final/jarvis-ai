@@ -411,6 +411,8 @@ ON CONFLICT (term) DO UPDATE SET
         WHEN color_synonyms.status <> 'pending_review' THEN color_synonyms.status
         ELSE EXCLUDED.status
     END,
+    -- 임베딩은 사람의 검수 결과가 아니라 term+model의 파생값이라 status로 얼리지 않는다.
+    -- 모델 교체 시 승인 행만 구벡터에 남으면 harvest 최근접 비교가 서로 다른 벡터 공간을 섞는다.
     embedding = COALESCE(EXCLUDED.embedding, color_synonyms.embedding),
     embedding_model = COALESCE(EXCLUDED.embedding_model, color_synonyms.embedding_model),
     provenance = CASE
@@ -438,7 +440,11 @@ def _get_pool(dsn: str):
 
 
 def upsert_color_terms(dsn: str, rows: Sequence[ColorTermRow], model: str) -> int:
-    """검수 결과와 기존 임베딩을 보존하며 색상 표기·빈도를 멱등 upsert한다."""
+    """검수 결과(status·canonical·provenance)는 보존하고 색상 표기·빈도를 멱등 upsert한다.
+
+    임베딩은 NULL 입력으로 지워지지 않지만, 값이 들어오면 embedding_model과 함께 최신 값으로
+    갱신해 한 테이블 안의 비교 벡터 공간을 일치시킨다.
+    """
     from pgvector import Vector  # noqa: PLC0415
 
     with _get_pool(dsn).connection() as conn, conn.transaction():
@@ -475,7 +481,11 @@ def harvest_new_terms(
 
     from pgvector import Vector  # noqa: PLC0415
 
-    with _get_pool(dsn).connection() as conn:
+    from app.core.config import get_settings  # noqa: PLC0415 - 순환 임포트 회피(모듈 관례)
+
+    timeout_ms = int(get_settings().catalog_store_query_timeout_s * 1000)
+    with _get_pool(dsn).connection() as conn, conn.transaction():
+        conn.execute(f"SET LOCAL statement_timeout = {timeout_ms}")
         existing = {
             row[0]
             for row in conn.execute(

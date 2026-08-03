@@ -51,13 +51,16 @@ class BatchResult:
 async def _harvest_change_colors(change: ProductChange, *, settings: Settings) -> int:
     """I-17 한 변경분의 신규 색상 표기를 동기 DB/API 작업 스레드에서 pending으로 제안한다."""
     embed = functools.partial(_embedding.embed_texts, task_type=settings.embedding_task_document)
-    return await asyncio.to_thread(
-        color_synonym_seed.harvest_new_terms,
-        settings.catalog_db_url,
-        change.attributes,
-        embed,
-        settings.embedding_model_id,
-        settings.color_synonym_cluster_threshold,
+    return await asyncio.wait_for(
+        asyncio.to_thread(
+            color_synonym_seed.harvest_new_terms,
+            settings.catalog_db_url,
+            change.attributes,
+            embed,
+            settings.embedding_model_id,
+            settings.color_synonym_cluster_threshold,
+        ),
+        timeout=settings.color_synonym_query_timeout_s,
     )
 
 
