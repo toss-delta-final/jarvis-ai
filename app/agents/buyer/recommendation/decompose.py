@@ -40,7 +40,8 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
   },
   "cart": { "productId": int|null, "optionId": int|null, "quantity": int },
   "revertCategories": [string],
-  "repurchaseProducts": [string]
+  "repurchaseProducts": [string],
+  "scopedToPrevious": bool
 }
 규칙:
 - intent 판별: 상품을 찾아달라는 요청이면 recommend, "담아줘/장바구니에 넣어/2번 담아줘"처럼

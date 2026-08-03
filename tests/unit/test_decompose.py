@@ -6,6 +6,7 @@ decompose 가 `categoryQueries: [{category, query}]` 를 `RouteDecision.category
 
 from __future__ import annotations
 
+import inspect
 import json
 
 from app.agents.buyer.recommendation.decompose import decompose
@@ -606,3 +607,28 @@ def test_filter_axes_keeps_zero_but_drops_empty_containers() -> None:
 
     assert _filter_axes(ProductSearchFilters(price_min=0)) == ["price_min"]
     assert _filter_axes(ProductSearchFilters(brand=[], keyword="")) == []
+
+
+def test_every_parsed_key_appears_in_the_output_template() -> None:
+    """[PR #248 리뷰] 파싱하는 키는 **출력 JSON 템플릿에도** 있어야 한다.
+
+    시스템 프롬프트는 "반드시 아래 JSON 만 출력하세요"로 키 집합을 강제한다. 규칙 절에만 설명하고
+    템플릿에서 빠뜨리면 두 지시가 충돌해 모델이 그 키를 누락하고, 파싱은 조용히 기본값으로
+    떨어진다 — **테스트는 통과하는데 프로덕션에서만 기능이 죽는다**(실제로 `scopedToPrevious`
+    가 이렇게 빠져 있었다. fake LLM 응답에 키를 직접 주입하는 테스트는 이를 잡지 못한다).
+
+    템플릿 = `_SYSTEM` 의 첫 `{` ~ 대응하는 `}` 구간. 파싱 키 = `_parse_route` 가 `data.get(...)`
+    으로 읽는 최상위 키 전부(소스에서 추출해 목록이 뒤처지지 않게 한다).
+    """
+    import re
+
+    from app.agents.buyer.recommendation import decompose as mod
+    from app.agents.buyer.recommendation.decompose import _SYSTEM
+
+    template = _SYSTEM[_SYSTEM.index("{") : _SYSTEM.index("\n}") + 2]
+    source = inspect.getsource(mod)
+    parsed = set(re.findall(r'data\.get\("(\w+)"', source))
+    assert parsed, "파싱 키를 찾지 못했다 — 추출 정규식이 코드와 어긋났을 수 있다"
+
+    missing = sorted(k for k in parsed if f'"{k}"' not in template)
+    assert not missing, f"출력 템플릿에 없는 파싱 키: {missing}"
