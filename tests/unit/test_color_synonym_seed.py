@@ -424,8 +424,8 @@ def test_batch_harvest_upserts_only_unknown_terms_as_pending_proposals(monkeypat
     captured = []
     monkeypatch.setattr(
         seed,
-        "upsert_color_terms",
-        lambda dsn, rows, model: captured.extend(rows) or len(rows),
+        "_execute_color_term_upserts",
+        lambda conn, rows, model: captured.extend(rows) or len(rows),
     )
 
     count = seed.harvest_new_terms(
@@ -441,8 +441,73 @@ def test_batch_harvest_upserts_only_unknown_terms_as_pending_proposals(monkeypat
         seed.ColorTermRow("기타", None, None, "batch_harvest", 1),
     ]
     assert executed[0] == "SET LOCAL statement_timeout = 2500"
-    assert "'approved'" in executed[2]
+    assert executed[2] == "SET LOCAL statement_timeout = 2500"
+    assert "'approved'" in executed[3]
     assert "'pending_review'" in seed.UPSERT_COLOR_TERM_SQL
+
+
+def test_batch_harvest_releases_db_connection_before_embedding(monkeypatch) -> None:
+    active_connections = 0
+    max_active_connections = 0
+
+    class Result:
+        def __init__(self, rows=()):
+            self.rows = rows
+
+        def fetchall(self):
+            return self.rows
+
+        def fetchone(self):
+            return self.rows[0] if self.rows else None
+
+    class Transaction:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class Conn:
+        def execute(self, sql, params=None):
+            if "WHERE term = ANY" in sql:
+                return Result()
+            if "SELECT canonical" in sql:
+                return Result([("네이비", 0.91)])
+            return Result()
+
+        def transaction(self):
+            return Transaction()
+
+        def __enter__(self):
+            nonlocal active_connections, max_active_connections
+            active_connections += 1
+            max_active_connections = max(max_active_connections, active_connections)
+            return self
+
+        def __exit__(self, *args):
+            nonlocal active_connections
+            active_connections -= 1
+            return False
+
+    class Pool:
+        def connection(self):
+            return Conn()
+
+    def embed(terms):
+        assert active_connections == 0
+        return [[1.0, 0.0] for _ in terms]
+
+    monkeypatch.setattr(seed, "_get_pool", lambda dsn: Pool())
+
+    assert seed.harvest_new_terms(
+        "dsn",
+        {"색상": "남색"},
+        embed,
+        "model",
+        0.84,
+    ) == 1
+    assert active_connections == 0
+    assert max_active_connections == 1
 
 
 def test_color_synonym_app_timeout_must_be_below_db_timeout() -> None:

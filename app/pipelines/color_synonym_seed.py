@@ -440,29 +440,34 @@ def _get_pool(dsn: str):
     return pool
 
 
+def _execute_color_term_upserts(conn, rows: Sequence[ColorTermRow], model: str) -> int:
+    """열린 트랜잭션에서 검수 보호형 색상 표기 upsert를 실행한다."""
+    from pgvector import Vector  # noqa: PLC0415
+
+    for row in rows:
+        vector = Vector(row.embedding) if row.embedding is not None else None
+        conn.execute(
+            UPSERT_COLOR_TERM_SQL,
+            (
+                row.term,
+                row.canonical,
+                vector,
+                model if vector is not None else None,
+                row.provenance,
+                row.doc_count,
+            ),
+        )
+    return len(rows)
+
+
 def upsert_color_terms(dsn: str, rows: Sequence[ColorTermRow], model: str) -> int:
     """검수 결과(status·canonical·provenance)는 보존하고 색상 표기·빈도를 멱등 upsert한다.
 
     임베딩은 NULL 입력으로 지워지지 않지만, 값이 들어오면 embedding_model과 함께 최신 값으로
     갱신해 한 테이블 안의 비교 벡터 공간을 일치시킨다.
     """
-    from pgvector import Vector  # noqa: PLC0415
-
     with _get_pool(dsn).connection() as conn, conn.transaction():
-        for row in rows:
-            vector = Vector(row.embedding) if row.embedding is not None else None
-            conn.execute(
-                UPSERT_COLOR_TERM_SQL,
-                (
-                    row.term,
-                    row.canonical,
-                    vector,
-                    model if vector is not None else None,
-                    row.provenance,
-                    row.doc_count,
-                ),
-            )
-    return len(rows)
+        return _execute_color_term_upserts(conn, rows, model)
 
 
 def harvest_new_terms(
@@ -493,13 +498,18 @@ def harvest_new_terms(
                 "SELECT term FROM color_synonyms WHERE term = ANY(%s)", (terms,)
             ).fetchall()
         }
-        new_terms = [term for term in terms if term not in existing]
-        if not new_terms:
-            return 0
-        clusterable = [term for term in new_terms if term not in NON_COLOR_TERMS]
-        vectors_by_term = (
-            dict(zip(clusterable, embed(clusterable), strict=True)) if clusterable else {}
-        )
+    new_terms = [term for term in terms if term not in existing]
+    if not new_terms:
+        return 0
+    clusterable = [term for term in new_terms if term not in NON_COLOR_TERMS]
+    # asyncio.wait_for가 to_thread 아래 동기 호출을 취소해도 스레드는 계속 돈다. 따라서 외부
+    # 임베딩 API 자체 상한을 기다리는 동안 DB 연결·트랜잭션은 반드시 놓아 풀 고갈을 완화한다.
+    vectors_by_term = (
+        dict(zip(clusterable, embed(clusterable), strict=True)) if clusterable else {}
+    )
+
+    with _get_pool(dsn).connection() as conn, conn.transaction():
+        conn.execute(f"SET LOCAL statement_timeout = {timeout_ms}")
         rows: list[ColorTermRow] = []
         for term in new_terms:
             vector = vectors_by_term.get(term)
@@ -538,8 +548,10 @@ def harvest_new_terms(
                     doc_count=1,
                 )
             )
-    # SQL의 VALUES status가 고정 pending_review라 최근접 제안이 있어도 자동 승인되지 않는다.
-    return upsert_color_terms(dsn, rows, model)
+        # 첫 SELECT와 임베딩 사이에 다른 배치가 같은 term을 넣어도 ON CONFLICT가 멱등 처리한다.
+        # 승인 행의 status·canonical·provenance는 CASE 가드로 보존돼 사람 검수 결과를 덮지 않는다.
+        # VALUES status도 고정 pending_review라 최근접 제안이 있어도 자동 승인되지 않는다.
+        return _execute_color_term_upserts(conn, rows, model)
 
 
 def _rows_from_clusters(counts: Counter[str], clusters: Sequence[Cluster]) -> list[ColorTermRow]:
