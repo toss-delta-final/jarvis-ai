@@ -25,6 +25,8 @@ from app.schemas.spring import ProductSearchFilters
 
 _NAMESPACE_ROOT = "buyer_revert_v2"
 _CATEGORIES_KEY = "categories"
+_RELAX_NAMESPACE_ROOT = "buyer_relaxation_offers_v1"  # [#113] 완화 칩 제안 기억
+_OFFERS_KEY = "offers"
 
 # key(thread_key)별 asyncio.Lock — RevertStore.add() 의 get→put(read-modify-write) 구간을
 # 직렬화한다. 동일 스레드로 겹치는 요청(멀티탭·연속 발화)이 오면 나중 aput 이 앞선 갱신을
@@ -200,9 +202,53 @@ class RevertStore:
             )
 
 
+class RelaxationOfferStore:
+    """스레드별 **직전 턴에 제안한 완화 칩** — 칩 클릭을 결정론적으로 되받기 위한 기억(#113).
+
+    FE 는 완화 칩을 누르면 **칩 label 을 다음 턴 message 로 그대로 보낸다**(jarvis-frontend
+    `SuggestionChips.onApply` → `useChat.applySuggestion` → `send(label)`). 그런데 label 은
+    "65,000원까지 볼까요?" 같은 **의문문**이라, 그대로 두면 decompose(LLM)가 그 문장에서 숫자를
+    다시 뽑아내야 한다 — 우리가 이미 정확히 계산해 둔 값(65000)을 버리고 추측으로 복원하는 셈이고,
+    질문으로 해석되면 완화가 아예 안 걸린다.
+
+    그래서 칩을 내보낼 때 `label → (field, value)` 를 기억해 두고, 다음 턴 message 가 그 label 과
+    **정확히 일치**하면 LLM 해석을 건너뛰고 저장된 값을 그대로 적용한다. 일치하지 않으면 아무 일도
+    하지 않고 기존 경로(decompose 해석)로 흐른다 — 지금보다 나빠지지 않는다.
+
+    턴마다 **덮어쓴다**(누적하지 않는다) — 화면에 떠 있는 칩은 항상 마지막 턴 것뿐이라, 옛 제안이
+    남아 있으면 사용자가 보지도 않은 조건이 되살아난다.
+    """
+
+    def __init__(self, store: BaseStore | None = None) -> None:
+        self._store = store or InMemoryStore()
+
+    async def get(self, key: str) -> dict[str, dict]:
+        """`label → {"field":…, "value":…}`. 저장분이 없으면 빈 dict."""
+        item = await run_with_query_timeout(
+            self._store.aget((_RELAX_NAMESPACE_ROOT, key), _OFFERS_KEY)
+        )
+        offers = item.value.get(_OFFERS_KEY) if item else None
+        return offers if isinstance(offers, dict) else {}
+
+    async def put(self, key: str, offers: dict[str, dict]) -> None:
+        """이번 턴 제안으로 **교체**한다(빈 dict 면 비우기). 락 불필요 — 읽고 더하는 게 아니라 덮어쓴다."""
+        await run_with_query_timeout(
+            self._store.aput(
+                (_RELAX_NAMESPACE_ROOT, key),
+                _OFFERS_KEY,
+                {_OFFERS_KEY: offers},
+            )
+        )
+
+
 async def get_revert_store() -> RevertStore:
     """되돌리기 스토어 — pg-profile 공유 연결 백엔드(요청마다 얇은 래퍼 재생성)."""
     return RevertStore(await pg_store.get_store())
+
+
+async def get_relaxation_offer_store() -> RelaxationOfferStore:
+    """완화 칩 제안 스토어 — 되돌리기와 같은 pg-profile 백엔드(요청마다 얇은 래퍼)."""
+    return RelaxationOfferStore(await pg_store.get_store())
 
 
 def reset_revert_store() -> None:

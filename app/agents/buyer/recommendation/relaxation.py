@@ -18,7 +18,7 @@ from app.schemas.spring import ProductSearchFilters
 # 와이어 필드명(camelCase) → ProductSearchFilters 속성명. 계약(§3.1 `relaxation.field`)은 camelCase
 # 이고 내부 필터는 snake_case 라 **여기 한 곳에서만** 잇는다(config 목록도 와이어 표기를 쓴다).
 # category 는 의도적으로 없다 — config 에 실수로 넣어도 후보가 되지 않는 이중 방어다(AC④).
-_FIELD_TO_ATTR: dict[str, str] = {
+FIELD_TO_ATTR: dict[str, str] = {
     "priceMax": "price_max",
     "ratingMin": "rating_min",
     "brand": "brand",
@@ -83,7 +83,7 @@ def build_relaxation_candidates(
     """
     candidates: list[RelaxationCandidate] = []
     for field in settings.relaxation_chip_fields:
-        attr = _FIELD_TO_ATTR.get(field)
+        attr = FIELD_TO_ATTR.get(field)
         if attr is None:  # category 등 완화 대상이 아닌 필드는 조용히 건너뛴다(AC④)
             continue
         current = getattr(filters, attr, None)

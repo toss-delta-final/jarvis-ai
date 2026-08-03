@@ -152,22 +152,16 @@ class ProductsReadyData(CamelModel):
 
 
 class DoneData(CamelModel):
-    """`done` 이벤트 — 정상 종료. finishReason: stop | zero_result (api-spec §3.1 (5))."""
+    """`done` 이벤트 — 정상 종료. finishReason: stop | zero_result (api-spec §3.1 (5)).
 
-    finish_reason: Literal["stop", "zero_result"] = "stop"
-
-
-class RecommendationDoneData(DoneData):
-    """추천 스트림 전용 `done` — 자동 완화 투명 안내를 병기한다(§3.1, 결정 14-D, #113).
-
-    relaxationNotice 는 0건 자동 완화를 적용했을 때의 **기계 판독 플래그**다. 사람이 읽는 산문은
-    `token` 으로 따로 흘리며(조용한 조건 변경 금지, REQ-REC-042), 이 필드는 FE 가 "완화된 결과"임을
-    분기 처리할 근거다. 완화하지 않은 턴은 null.
-    **추천 스트림에만** 둔다 — 장바구니·주문상태·일반대화 `done`(공용 DoneData)은 완화 개념 자체가
-    없어 거기에 항상 null 인 필드를 실으면 계약 잡음이다(§3.1 (5) 페이로드는 finishReason 뿐).
+    [#113] `relaxationNotice` 는 **싣지 않는다.** 정본(Notion CH-2)이 `done` 을 `finishReason` 만으로
+    확정했고("구 명세 대비 정정 요약: done — relaxationNotice 제거"), FE 타입도 그 필드를 갖고 있지
+    않다(jarvis-frontend `shared/types/chat.ts`). 자동 완화 투명 안내(REQ-REC-042)는 `token` 산문이
+    담당하므로 사용자 고지는 그대로 유지된다 — 없어지는 건 아무도 읽지 않는 기계 판독 사본뿐이다.
+    FE 가 문장 파싱 없이 분기할 근거가 필요해지면 그때 정본을 개정하고 되살린다.
     """
 
-    relaxation_notice: str | None = None
+    finish_reason: Literal["stop", "zero_result"] = "stop"
 
 
 class ErrorData(CamelModel):

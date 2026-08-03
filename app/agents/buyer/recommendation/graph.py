@@ -28,9 +28,9 @@ from app.core.tracing import current_request_trace, trace_span
 from app.services import spring_client
 from app.schemas.chat import (
     ConditionsData,
+    DoneData,
     ErrorData,
     ProductsReadyData,
-    RecommendationDoneData,
     RelaxationRef,
     RevertRef,
     SuggestionChip,
@@ -247,6 +247,7 @@ async def stream_recommendation(
     get_purchases_fn=None,
     reverted_categories=frozenset(),
     cart_store=None,
+    relax_store=None,
     thread_key: str | None = None,
     observer=None,
     request_id: str,
@@ -540,6 +541,20 @@ async def stream_recommendation(
             if c.field != adopted_field and probed_counts.get(c.field, 0) > 0
         ]
 
+    # [#113] 이번 턴에 제안한 칩을 스레드에 기억한다 — FE 는 칩을 누르면 label 을 그대로 다음 턴
+    # message 로 보내므로(jarvis-frontend `applySuggestion`), 다음 턴에 그 label 을 만나면 LLM 이
+    # 의문문에서 숫자를 다시 뽑는 대신 여기 저장한 정확한 값을 쓴다. 칩이 없으면 빈 dict 로 비운다 —
+    # 화면에 없는 옛 제안이 살아 있으면 사용자가 보지도 않은 조건이 되살아난다.
+    if relax_store is not None and thread_key:
+        await relax_store.put(
+            thread_key,
+            {
+                chip.label: {"field": chip.relaxation.field, "value": chip.relaxation.value}
+                for chip in relaxation_chips
+                if chip.relaxation is not None
+            },
+        )
+
     matched_after_dedup = result.total_count
 
     # 되돌리기 칩 — 억제된 소모품 카테고리별(estCount==0 제외, §3.1).
@@ -574,9 +589,7 @@ async def stream_recommendation(
             yield sse("suggestions", SuggestionsData(chips=zero_chips).model_dump(by_alias=True))
         yield sse(
             "done",
-            RecommendationDoneData(
-                finish_reason="zero_result", relaxation_notice=relaxation_notice
-            ).model_dump(by_alias=True),
+            DoneData(finish_reason="zero_result").model_dump(by_alias=True),
         )
         return
 
@@ -775,7 +788,5 @@ async def stream_recommendation(
 
     yield sse(
         "done",
-        RecommendationDoneData(
-            finish_reason="stop", relaxation_notice=relaxation_notice
-        ).model_dump(by_alias=True),
+        DoneData(finish_reason="stop").model_dump(by_alias=True),
     )

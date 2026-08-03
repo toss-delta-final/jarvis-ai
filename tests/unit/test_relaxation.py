@@ -246,13 +246,12 @@ async def test_auto_relaxation_emits_notice_and_recovers_products() -> None:
         )
     )
 
-    done = _done(events)
-    assert done["finishReason"] == "stop"
-    assert done["relaxationNotice"]  # 기계 판독 플래그 — null 이 아니다
-    assert "평점" in done["relaxationNotice"]
-    # 산문 안내도 token 으로 흐른다(§3.1) — 조용히 조건을 바꾸지 않는다.
+    assert _done(events)["finishReason"] == "stop"
+    # 투명 안내는 **token 산문**이 담당한다(REQ-REC-042) — 조용히 조건을 바꾸지 않는다.
+    # done 에는 싣지 않는다: 정본(CH-2)이 done 을 finishReason 만으로 확정했고 FE 도 안 읽는다.
     tokens = [e["data"]["text"] for e in events if e["type"] == "token"]
-    assert any("평점" in t for t in tokens)
+    assert any("평점" in t and "넓혔어요" in t for t in tokens)
+    assert "relaxationNotice" not in _done(events)
     assert "products.ready" in _types(events)
     assert push_calls
 
@@ -266,10 +265,10 @@ async def test_explicit_price_constraint_is_never_auto_relaxed() -> None:
         )
     )
 
-    done = _done(events)
-    assert done["finishReason"] == "zero_result"  # 완화 칩만 제안하고 스스로 넘지 않는다
-    assert done["relaxationNotice"] is None
+    assert _done(events)["finishReason"] == "zero_result"  # 완화 칩만 제안하고 스스로 넘지 않는다
     assert "products.ready" not in _types(events)
+    # 자동 완화가 안 걸렸으므로 "넓혔어요" 안내도 없다 — 사용자는 상한이 지켜졌음을 신뢰할 수 있다.
+    assert not [e for e in events if e["type"] == "token" and "넓혔어요" in e["data"]["text"]]
 
 
 # ─────────── 스트림 — 소량 ───────────
@@ -355,6 +354,103 @@ async def test_fanout_relaxation_probes_every_leg_with_relaxed_filter() -> None:
     assert {f.category for f in relaxed} == {"무선이어폰", "파우치"}
     chips = _suggestions(events)
     assert [c["relaxation"]["field"] for c in chips] == ["priceMax"]
+
+
+# ─────────── 칩 클릭 되받기 (FE 는 label 을 다음 턴 message 로 보낸다) ───────────
+
+
+async def test_clicking_chip_applies_exact_stored_value() -> None:
+    """[핵심] 칩 label 이 그대로 다음 턴 message 로 오면 저장된 값을 **정확히** 적용한다.
+
+    FE 는 `applySuggestion` 이 `send(chip.label)` 이라 "65,000원까지 볼까요?" 라는 **의문문**이
+    메시지로 들어온다. LLM 해석에 맡기면 숫자를 못 뽑거나 되물음으로 흘러 칩이 무동작이 된다.
+    """
+
+    async def _push(push) -> bool:  # noqa: ANN001
+        return True
+
+    products = [_product(201, 60000), _product(202, 62000)]
+    calls: list[ProductSearchFilters] = []
+    search = _filtered_search(products, calls=calls)
+
+    # 1턴 — 0건 → 완화 칩 제안(+ 스레드에 기억)
+    first = await _collect(
+        run_buyer_turn(_req(), _member(), llm=FakeLLM(), search=search, push_fn=_push)
+    )
+    label = _suggestions(first)[0]["label"]
+    assert "65,000" in label
+
+    # 2턴 — FE 가 그 label 을 그대로 message 로 보낸다. decompose 는 이 문장에서 조건을 못 뽑는
+    # 상황을 재현하려고 **빈 filters** 를 내도록 둔다 — 그래도 저장된 값이 이겨야 한다.
+    turn2 = len(calls)
+    second = await _collect(
+        run_buyer_turn(
+            _req(message=label),
+            _member(),
+            llm=FakeLLM(decompose=_decompose_with()),
+            search=search,
+            push_fn=_push,
+        )
+    )
+
+    # 2턴의 **본 검색**(뒤따르는 건 소량 완화 probe 라 상한이 더 높다)
+    assert calls[turn2].price_max == 65000  # 우리가 계산해 둔 정확한 값
+    assert "products.ready" in _types(second)  # 완화된 조건의 상품이 실제로 나간다
+
+
+async def test_clicking_chip_forces_recommend_route() -> None:
+    """칩 클릭은 decompose 가 general 로 라우팅해도 추천 턴으로 처리한다.
+
+    label 이 의문문이라 일반 대화로 새기 쉽다 — 그러면 버튼을 눌렀는데 잡담 응답이 돌아온다.
+    """
+
+    async def _push(push) -> bool:  # noqa: ANN001
+        return True
+
+    products = [_product(201, 60000)]
+    search = _filtered_search(products)
+    first = await _collect(
+        run_buyer_turn(_req(), _member(), llm=FakeLLM(), search=search, push_fn=_push)
+    )
+    label = _suggestions(first)[0]["label"]
+
+    second = await _collect(
+        run_buyer_turn(
+            _req(message=label),
+            _member(),
+            llm=FakeLLM(decompose={"intent": "general", "reply": "네 그럼요", "filters": {}}),
+            search=search,
+            push_fn=_push,
+        )
+    )
+
+    assert "products.ready" in _types(second)
+    assert "conditions" in _types(second)  # 추천 경로를 탔다
+
+
+async def test_unmatched_message_does_not_apply_stored_offer() -> None:
+    """저장된 칩과 다른 발화는 기존 경로 그대로 — 옛 제안이 조용히 되살아나지 않는다."""
+
+    async def _push(push) -> bool:  # noqa: ANN001
+        return True
+
+    products = [_product(201, 60000)]
+    calls: list[ProductSearchFilters] = []
+    search = _filtered_search(products, calls=calls)
+    await _collect(run_buyer_turn(_req(), _member(), llm=FakeLLM(), search=search, push_fn=_push))
+
+    before = len(calls)
+    await _collect(
+        run_buyer_turn(
+            _req(message="다른 거 보여줘"),
+            _member(),
+            llm=FakeLLM(),  # DEFAULT_DECOMPOSE — priceMax 50000
+            search=search,
+            push_fn=_push,
+        )
+    )
+
+    assert calls[before].price_max == 50000  # 완화가 적용되지 않았다
 
 
 async def test_enough_results_do_not_probe(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -31,7 +31,8 @@ from app.agents.buyer.recommendation.category_mapping import map_categories as _
 from app.agents.buyer.recommendation.decompose import decompose
 from app.agents.buyer.recommendation.needs_expansion import detect_expansion_need
 from app.agents.buyer.recommendation.needs_expansion import expand_needs as _expand_needs
-from app.agents.buyer.recommendation.state import get_revert_store
+from app.agents.buyer.recommendation.relaxation import FIELD_TO_ATTR as RELAXATION_FIELD_TO_ATTR
+from app.agents.buyer.recommendation.state import get_relaxation_offer_store, get_revert_store
 from app.agents.buyer.recommendation.graph import stream_recommendation
 from app.agents.profile.builder import record_remember
 from app.agents.buyer.session_state import context_thread_key, ensure_thread_adopted
@@ -393,6 +394,18 @@ async def run_buyer_turn(
         )
         return
 
+    # [#113] 완화 칩 클릭 되받기 — 직전 턴에 제안한 칩 label 과 **정확히 일치**하면 LLM 해석을
+    # 건너뛰고 그때 계산해 둔 값을 그대로 적용한다. FE 는 칩을 누르면 label 을 그대로 message 로
+    # 보내는데(jarvis-frontend `applySuggestion`), label 은 "65,000원까지 볼까요?" 같은 **의문문**이라
+    # decompose 가 조건 추출에 실패하거나 되물음으로 흘릴 수 있다 — 그러면 칩이 무동작이 된다.
+    # intent 도 recommend 로 고정한다: 정확 일치는 "사용자가 우리가 만든 버튼을 눌렀다"는 명확한
+    # 신호라 일반 대화로 라우팅될 여지가 없다.
+    relax_store = await get_relaxation_offer_store()
+    offer = (await relax_store.get(thread_key)).get(request.message.strip())
+    if offer is not None and (attr := RELAXATION_FIELD_TO_ATTR.get(offer.get("field"))):
+        decision.intent = "recommend"
+        setattr(decision.filters, attr, offer.get("value"))
+
     # transient 세션 버퍼에 발화 누적(승격 전 격리, SPEC-PROFILE-001) — 세션 종료 델타 소스.
     # [#119 REQ-PROF-026] intent 판정 **뒤에** 둔다: 주문조회·장바구니 조회 발화는 취향 신호가
     # 0인데 버퍼(슬라이딩 윈도우)를 채워 정작 취향 발화를 밀어낸다. 반복 발화는 지우지 않고
@@ -494,6 +507,7 @@ async def run_buyer_turn(
             settings=settings,
             reverted_categories=reverted,
             cart_store=cart_store,
+            relax_store=relax_store,  # [#113] 이번 턴 완화 칩을 기억해 다음 턴 클릭을 되받는다
             thread_key=thread_key,
             observer=observer,
             request_id=resolved_request_id,
