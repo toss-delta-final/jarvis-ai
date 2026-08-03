@@ -56,7 +56,7 @@ from app.core.auth import Identity
 from app.core.config import get_settings
 from app.core.conversation import TurnStatus, get_conversation_store
 from app.core.errors import get_request_id, new_request_id
-from app.core.llm import LLMNotConfigured
+from app.core.llm import LLMNotConfigured, is_timeout_error
 from app.core.observability import (
     emit_rejection,
     finish_trace_safely,
@@ -297,35 +297,40 @@ async def _general_stream(
 
     async def produce() -> None:
         """Run all token-backed trace contexts in one persistent task."""
-        with trace_span("seller.graph.general", "chain"):
-            # 빌드도 producer 안 — 실패 시 기존 error 이벤트 봉투로 종료한다.
-            agent = build_general_agent(
-                today=date.today().isoformat(), checkpointer=await get_checkpointer()
-            )
-            output_guard = StreamingOutputGuard()
-            started = perf_counter()
-            first_text = True
-            with trace_span("llm.seller.general", "llm", _llm_metadata("worker")):
-                async for item in agent.astream(
-                    {"messages": [HumanMessage(content=request.message)]},
-                    config=seller_thread.chat_config(context, request.thread_id),
-                    context=context,
-                    stream_mode="messages",
-                ):
-                    message_chunk = item[0] if isinstance(item, tuple) else item
-                    if not isinstance(message_chunk, AIMessageChunk):
-                        continue
-                    text = _chunk_text(message_chunk.content)
-                    if text and first_text:
-                        first_text = False
-                        if trace := current_request_trace():
-                            trace.record_provider_ttft(
-                                int(round((perf_counter() - started) * 1000))
-                            )
-                    for visible in output_guard.feed(text):
-                        await queue.put(_visible_token(visible))
-            for visible in output_guard.flush():
-                await queue.put(_visible_token(visible))
+        # (#266 P1) 레인 전체 벽시계 상한. 다른 레인이 쓰는 asyncio.wait_for 는 여기서
+        # 쓸 수 없다 — astream 은 중간에 yield 하는 async generator 다. SDK 의 timeout=
+        # 도 스트리밍에서는 청크 간 read 간격만 재므로 상한이 되지 못한다. 빌드·체크포인터
+        # 연결까지 함께 덮어 레인 하나가 붙드는 시간의 총량을 묶는다.
+        async with asyncio.timeout(get_settings().seller_general_timeout_s):
+            with trace_span("seller.graph.general", "chain"):
+                # 빌드도 producer 안 — 실패 시 기존 error 이벤트 봉투로 종료한다.
+                agent = build_general_agent(
+                    today=date.today().isoformat(), checkpointer=await get_checkpointer()
+                )
+                output_guard = StreamingOutputGuard()
+                started = perf_counter()
+                first_text = True
+                with trace_span("llm.seller.general", "llm", _llm_metadata("worker")):
+                    async for item in agent.astream(
+                        {"messages": [HumanMessage(content=request.message)]},
+                        config=seller_thread.chat_config(context, request.thread_id),
+                        context=context,
+                        stream_mode="messages",
+                    ):
+                        message_chunk = item[0] if isinstance(item, tuple) else item
+                        if not isinstance(message_chunk, AIMessageChunk):
+                            continue
+                        text = _chunk_text(message_chunk.content)
+                        if text and first_text:
+                            first_text = False
+                            if trace := current_request_trace():
+                                trace.record_provider_ttft(
+                                    int(round((perf_counter() - started) * 1000))
+                                )
+                        for visible in output_guard.feed(text):
+                            await queue.put(_visible_token(visible))
+                for visible in output_guard.flush():
+                    await queue.put(_visible_token(visible))
 
     producer_task = asyncio.create_task(produce())
     producer_task.add_done_callback(lambda _task: queue.put_nowait(_PIPELINE_DONE))
@@ -344,14 +349,28 @@ async def _general_stream(
             request_id=request_id,
             context=context,
         )
-    except (TimeoutError, asyncio.TimeoutError):
-        yield _error(
-            "LLM_TIMEOUT",
-            "응답 생성이 지연되어 중단됐습니다.",
-            request_id=request_id,
-            retryable=True,
-        )
-    except Exception:
+    except Exception as exc:
+        # (#266 P1) 타임아웃 판정은 **타입**으로 한다. asyncio.timeout 은 TimeoutError 를
+        # 던지지만, SDK 타임아웃(httpx.TimeoutException·provider APITimeoutError)은
+        # TimeoutError 의 서브클래스가 아니라 예전에는 아래 INTERNAL 로 떨어졌다.
+        # is_timeout_error 가 원인 체인까지 따라가므로 감싸인 예외도 잡힌다.
+        if is_timeout_error(exc):
+            _seller_log(
+                logging.WARNING,
+                "seller_stream_timeout",
+                context=context,
+                thread_id=request.thread_id,
+                action="general",
+                error_code="LLM_TIMEOUT",
+                status="FAILED",
+            )
+            yield _error(
+                "LLM_TIMEOUT",
+                "응답 생성이 지연되어 중단됐습니다.",
+                request_id=request_id,
+                retryable=True,
+            )
+            return
         _seller_log(
             logging.ERROR,
             "seller_stream_failed",

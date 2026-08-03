@@ -15,12 +15,74 @@ from pydantic import ValidationError
 
 from app.core import llm as llm_mod
 from app.core.config import Settings
-from app.core.llm import AnthropicLLM, LLMError, OpenAILLM, get_llm
+from app.core.llm import AnthropicLLM, LLMError, OpenAILLM, get_llm, is_timeout_error
 from app.core.tracing import FakeTraceExporter, TraceFactory, bind_request_trace, trace_span
 
 
 def _settings(**kw) -> Settings:
     return Settings(_env_file=None, **kw)
+
+
+# ─────────── is_timeout_error — 타입 기반 타임아웃 판정 (#266 P1) ───────────
+
+
+def test_sdk_timeout_is_not_a_builtin_timeout_error() -> None:
+    """#266 P1 의 **전제**를 코드로 고정한다.
+
+    `except (TimeoutError, asyncio.TimeoutError)` 만으로 SDK 타임아웃이 잡힌다면
+    is_timeout_error 는 존재할 이유가 없다. 라이브러리 업그레이드로 이 전제가 바뀌면
+    이 테스트가 먼저 깨져서 알려준다.
+    """
+    import httpx
+
+    assert not issubclass(httpx.TimeoutException, TimeoutError)
+
+
+def test_is_timeout_error_detects_sdk_timeout_with_empty_message() -> None:
+    """문자열 매칭이 못 잡는 케이스 — `str(exc)` 가 비어도 타입으로 잡아야 한다."""
+    import httpx
+
+    exc = httpx.ReadTimeout("")
+    assert "timeout" not in str(exc).lower(), "문자열 매칭이 통했다면 이 테스트의 전제가 무너진다"
+    assert is_timeout_error(exc) is True
+
+
+def test_is_timeout_error_follows_cause_chain() -> None:
+    """LLMError(str(exc)) from exc 로 감싸도 원인 체인에서 원본 타입을 찾아야 한다."""
+    import httpx
+
+    try:
+        try:
+            raise httpx.ConnectTimeout("")
+        except httpx.TimeoutException as inner:
+            raise LLMError("wrapped") from inner
+    except LLMError as wrapped:
+        assert is_timeout_error(wrapped) is True
+
+
+def test_is_timeout_error_covers_builtin_and_asyncio_timeout() -> None:
+    """asyncio.timeout 이 던지는 TimeoutError 도 같은 판정기로 덮인다(3.11+ 동일 객체)."""
+    import asyncio
+
+    assert asyncio.TimeoutError is TimeoutError
+    assert is_timeout_error(TimeoutError()) is True
+
+
+def test_is_timeout_error_rejects_non_timeout() -> None:
+    """일반 실패를 타임아웃으로 오분류하지 않는다 — None 도 안전하게 False."""
+    assert is_timeout_error(RuntimeError("boom")) is False
+    assert is_timeout_error(LLMError("모델 응답 파싱 실패")) is False
+    assert is_timeout_error(None) is False
+
+
+def test_is_timeout_error_survives_self_referencing_chain() -> None:
+    """원인 체인이 순환해도 무한 루프에 빠지지 않는다."""
+    first = RuntimeError("a")
+    second = RuntimeError("b")
+    first.__cause__ = second
+    second.__cause__ = first
+
+    assert is_timeout_error(first) is False
 
 
 # ─────────── tier 매핑 ───────────

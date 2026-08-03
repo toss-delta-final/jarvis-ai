@@ -13,6 +13,44 @@
 
 ---
 
+## [2026-08-03] 예외는 **타입**으로 잡는다 — 문자열 매칭은 가짜 예외 테스트만 통과시킨다
+- 증상: 판매자 general 레인의 `except (TimeoutError, asyncio.TimeoutError): → LLM_TIMEOUT`
+  분기가 **한 번도 실행되지 않는 죽은 코드**였다. 이 레인만 `asyncio.wait_for` 가 없어
+  `asyncio.TimeoutError` 가 날 일이 없고, SDK 타임아웃(`httpx.TimeoutException`·provider
+  `APITimeoutError`)은 내장 `TimeoutError` 의 서브클래스가 아니라 `except Exception` 으로
+  떨어져 계약상 `LLM_TIMEOUT` 이어야 할 것이 `INTERNAL` 로 나갔다. 구매자 쪽 `_is_timeout`
+  은 같은 문제를 `"timeout" in str(exc).lower()` 로 막고 있었는데, SDK 메시지는
+  `"Request timed out."`(timed **out**)이고 `httpx.ReadTimeout` 은 `str` 이 비는 경우가 있다.
+- 원인: 두 판정 모두 **실제 SDK 예외를 한 번도 통과시켜 본 적이 없다.** 테스트가
+  `RuntimeError("... timeout ...")` 처럼 사람이 만든 예외를 주입했기 때문에, 판정기가 재는
+  것이 "우리가 쓴 문자열"이지 "SDK 가 던지는 것"이 아니었는데도 초록불이 유지됐다.
+- 규칙:
+  - **예외 분기는 타입으로 판정한다.** 메시지 문자열은 라이브러리가 언제든 바꾸는 표현이지
+    계약이 아니다. 원인 체인(`__cause__`/`__context__`)까지 따라가야 `raise X from exc` 로
+    감싼 경우를 놓치지 않는다(순환 방어 필수).
+  - **판정기의 전제를 테스트로 고정한다.** "SDK 타임아웃은 `TimeoutError` 서브클래스가
+    아니다" 같은 전제는 버전 의존이므로, 그 전제 자체를 단언하는 테스트를 두면 업그레이드로
+    전제가 바뀔 때 판정기보다 먼저 깨져서 알려준다.
+  - **가짜 예외로만 검증한 `except` 분기는 검증되지 않은 것으로 본다.** 실제 라이브러리가
+    던지는 인스턴스를 최소 1건 주입한다.
+- 관련: #266 P1, `app/api/seller.py`(`_general_stream`), `app/core/llm.py`(`is_timeout_error`),
+  `app/agents/buyer/graph.py:91-93`(미수정 — 별도 이슈), api-spec §2.9 c,
+  `docs/specs/DESIGN-SELLER-TIMEOUT.md`
+
+## [2026-08-03] 스트리밍 호출의 `timeout=` 은 벽시계 상한이 아니다
+- 증상: general 레인에 상한을 넣으려다 `asyncio.wait_for(agent.astream(...))` 로 감싸려 했으나
+  `astream` 은 중간에 yield 하는 async generator 라 감쌀 수 없었고, "SDK 에 이미 `timeout=30`
+  을 주고 있으니 상한은 있다"는 판단도 틀렸다.
+- 원인: httpx 계열의 `timeout` 은 스트리밍 응답에서 **청크 간 read 간격**을 잰다. 토큰이
+  상한보다 짧은 간격으로 계속 오면 전체 시간이 아무리 길어져도 발동하지 않는다. 같은 이름의
+  파라미터가 non-stream(`ainvoke`)에서는 사실상 총 상한처럼 동작해서 혼동을 키웠다.
+- 규칙: **스트리밍 경로의 총 시간을 묶으려면 청크 루프 전체를 `async with asyncio.timeout(...)`
+  으로 덮는다.** SDK 의 `timeout=` 은 "시도 1회당 상한"이지 "이 호출의 총 상한"이 아니며,
+  `max_retries` 가 붙으면 총 예산이 `timeout × (retries+1)` 로 조용히 늘어난다 — 앱 레벨
+  상한을 정할 때 이 곱을 먼저 계산한다.
+- 관련: #266 P1, `app/api/seller.py`(`_general_stream`), `app/core/llm.py`(`stream`),
+  `app/core/config.py`(`seller_general_timeout_s`)
+
 ## [2026-08-03] 같은 의존성을 쓰는 두 라우터는 예외 "처분"까지 짝지어 검증한다
 - 증상: pg-profile(대화 store) 장애 하나에 구매자 `/chat`은 `503 STATE_UNAVAILABLE`,
   판매자 `/seller/chat`은 `500 INTERNAL`을 반환했다. 재시도 가능 여부라는 신호가 레인마다

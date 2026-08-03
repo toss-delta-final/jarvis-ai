@@ -196,6 +196,15 @@ class Settings(BaseSettings):
     seller_history_report_max_chars: int = 500
     seller_tool_call_limit: int = 8  # ToolCallLimit 전역 한도(선택)
     seller_worker_timeout_s: float = 60.0  # 분석 워커 1종 실행 상한(3-3 팬아웃, §7 90s 목표 내)
+    # general 레인(3-7) 전체 벽시계 상한 (#266 P1). 이 레인만 상한이 없어 스트림 전체
+    # 90s 에만 의존했고, 그래서 LLM 지연이 계약상 LLM_TIMEOUT 이 아니라 INTERNAL 로 나갔다.
+    # **다른 레인처럼 wait_for 로 감쌀 수 없다** — astream 은 중간에 yield 하는 async
+    # generator 다. SDK 의 timeout= 도 답이 아니다: 스트리밍에서 그 값은 **청크 간 read
+    # 간격**을 재므로 토큰이 상한보다 짧은 간격으로 계속 오면 영원히 발동하지 않는다.
+    # 청크 루프를 통째로 덮는 asyncio.timeout 만이 이 레인의 실제 상한이다.
+    # 근거: 2026-08-02 로컬 실측(Spring 기동, 동시성 1, n=30) general total max 2.55s ·
+    # p95 2.52s — 20s 는 실측 max 의 약 8배이고 30턴 중 초과는 0건이었다.
+    seller_general_timeout_s: float = 20.0
 
     # ── 판매자 대화 스레드 (thread.py — checkpointer 기반 멀티턴 누적) ──
     # supervisor/planner 입력 주입 상한: 최근 턴(user+assistant 쌍) 수와 메시지당 절단.

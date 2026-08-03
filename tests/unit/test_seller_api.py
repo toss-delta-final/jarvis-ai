@@ -315,6 +315,111 @@ def test_stream_error_event_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     assert events[-1]["data"]["retryable"] is True
 
 
+# ── #266 P1: general 레인 벽시계 상한 + 타임아웃 오류 매핑 ────────────────────
+
+
+class _SlowStreamAgent:
+    """청크 **사이**를 길게 끄는 에이전트.
+
+    SDK 의 timeout= 이 못 잡는 형태를 재현한다 — 첫 토큰은 즉시 오므로 read 간격
+    기반 상한은 발동하지 않고, 늘어지는 것은 스트림 전체 벽시계뿐이다.
+    """
+
+    def __init__(self, delay_s: float) -> None:
+        self._delay_s = delay_s
+
+    async def astream(
+        self,
+        _input: dict,
+        config: dict | None = None,
+        context: object = None,
+        stream_mode: str = "",
+    ):
+        yield (AIMessageChunk(content="집계 중 "), {"langgraph_node": "model"})
+        await asyncio.sleep(self._delay_s)
+        yield (AIMessageChunk(content="완료했습니다."), {"langgraph_node": "model"})
+
+
+def _settings_with(**overrides):
+    """현재 Settings 를 복제해 일부 값만 덮는다(env·lru_cache 오염 없음)."""
+    from app.core.config import get_settings
+
+    return get_settings().model_copy(update=overrides)
+
+
+def test_general_stream_wall_clock_timeout_maps_to_llm_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """T-1 — general 레인이 상한을 넘기면 INTERNAL 이 아니라 LLM_TIMEOUT 이다.
+
+    상한 도입 전에는 이 레인에 앱 시계가 없어 스트림 전체 90s 에만 의존했고,
+    지연은 어떤 error 코드도 만들지 못했다(#266 P1).
+    """
+    monkeypatch.setattr(
+        seller_api, "get_settings", lambda: _settings_with(seller_general_timeout_s=0.05)
+    )
+    monkeypatch.setattr(
+        seller_api,
+        "build_general_agent",
+        lambda today, checkpointer=None: _SlowStreamAgent(delay_s=1.0),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="app.api.seller"):
+        events = _collect(_request("지난달 매출 알려줘"))
+
+    assert [event["type"] for event in events] == ["meta", "token", "error"]
+    assert events[-1]["data"]["code"] == "LLM_TIMEOUT"
+    assert events[-1]["data"]["requestId"]
+    assert events[-1]["data"]["retryable"] is True
+    assert '"errorCode": "LLM_TIMEOUT"' in caplog.text
+    assert '"action": "general"' in caplog.text
+
+
+def test_general_stream_sdk_timeout_maps_to_llm_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """T-2 — SDK 타임아웃은 TimeoutError 서브클래스가 아니지만 LLM_TIMEOUT 이어야 한다.
+
+    빈 메시지를 쓰는 이유: 문자열 매칭으로 판정했다면 여기서 INTERNAL 로 새는데,
+    그 오분류가 이 이슈의 P1 파생 증상이었다.
+    """
+    import httpx
+
+    agent = _StubStreamAgent([AIMessageChunk(content="일부 ")], exc=httpx.ReadTimeout(""))
+    monkeypatch.setattr(seller_api, "build_general_agent", lambda today, checkpointer=None: agent)
+
+    events = _collect(_request("매출 알려줘"))
+
+    assert [event["type"] for event in events] == ["meta", "token", "error"]
+    assert events[-1]["data"]["code"] == "LLM_TIMEOUT"
+    assert events[-1]["data"]["retryable"] is True
+
+
+def test_general_stream_timeout_budget_is_config_driven(monkeypatch: pytest.MonkeyPatch) -> None:
+    """설정값을 바꾸면 **동작이 실제로 달라지는지** 확인한다.
+
+    lessons.md 2026-08-03 「튜너블을 추가하고 배선하지 않으면 초록불인데 동작은 안 바뀐다」 —
+    값 유효성만 검사하면 배선 누락을 구조적으로 놓친다.
+    """
+    monkeypatch.setattr(
+        seller_api,
+        "build_general_agent",
+        lambda today, checkpointer=None: _SlowStreamAgent(delay_s=0.2),
+    )
+
+    monkeypatch.setattr(
+        seller_api, "get_settings", lambda: _settings_with(seller_general_timeout_s=0.02)
+    )
+    tight = _collect(_request("매출 알려줘"))
+
+    monkeypatch.setattr(
+        seller_api, "get_settings", lambda: _settings_with(seller_general_timeout_s=10.0)
+    )
+    loose = _collect(_request("매출 알려줘"))
+
+    assert tight[-1]["type"] == "error" and tight[-1]["data"]["code"] == "LLM_TIMEOUT"
+    assert loose[-1]["type"] == "done" and loose[-1]["data"]["finishReason"] == "stop"
+
+
 # ── 4-1b: _seller_stream 3분기 디스패치 ──────────────────────────────────────
 
 

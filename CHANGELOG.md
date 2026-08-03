@@ -9,6 +9,10 @@
 
 ## [Unreleased]
 
+### Fixed
+- **#266 — 판매자 general 레인 LLM 타임아웃이 `INTERNAL` 로 나가던 문제 (api-spec §2.9 c)** — 이 레인만 앱 벽시계 상한이 없어 스트림 전체 90s 에만 의존했고, `except (TimeoutError, asyncio.TimeoutError)` 분기는 **도달 불가 코드**였다. `asyncio.wait_for` 는 쓸 수 없다(중간에 yield 하는 async generator) — 청크 루프 전체를 `asyncio.timeout(seller_general_timeout_s)` 으로 덮어 빌드·체크포인터 연결까지 묶었다. 기본값 20s 는 2026-08-02 로컬 실측 general total max 2.55s 의 약 8배다.
+  - **타임아웃 판정을 문자열이 아니라 타입으로 한다** — `core/llm.py` 에 `is_timeout_error()` 를 신설했다. provider SDK 의 메시지는 `"Request timed out."`(timed **out**)이라 `"timeout" in str(exc)` 로는 걸리지 않고 `httpx.ReadTimeout` 은 `str` 이 비는 경우가 있어, 가짜 예외로 쓴 테스트만 통과하고 실제 SDK 예외는 한 번도 통과시켜 본 적이 없는 판정이 된다. 설치된 SDK 만 지연 수집해 타입 비교하며, `LLMError(str(exc)) from exc` 로 감싸인 경우를 위해 원인 체인(`__cause__`/`__context__`)을 순환 방어와 함께 따라간다. 전제(`httpx.TimeoutException` 이 내장 `TimeoutError` 의 서브클래스가 **아님**)도 테스트로 고정해 라이브러리 업그레이드 시 먼저 깨지게 했다.
+
 ### Added
 - **#147 — 개인화 효과·과반영 평가 하네스 추가** — 합성·비식별 5-arm profile fixture와 profile weight 5점 ablation을 동일 dev 케이스에서 paired 실행하고, slice별 ΔNDCG@K·Δdiversity bootstrap CI, 명시 의도 모순·금지/최근구매 신규 유입·clean→noisy 열화 판정, 전 arm×weight hard-filter 불변식, 실 LLM scope gate wrapper와 arm 배수 예산 dry-run을 제공한다. #119 수정 전후(`both` vs `rerank_only`) 실 LLM paired 회귀 자료를 `baselines/live-v1`에 영속해 수정 전 29/31건 필터 유출·ΔNDCG -0.29에서 수정 후 유출 무신호·CI 0 포함으로의 변화를 기록한다.
 - **#146 — 3-arm 추천 pipeline ablation 하네스와 전량 baseline 추가** — 현행 pipeline, 결정론 scoring, smart-tier single-call을 같은 dev 31건×N=5에서 비교하고 호출별 token·비용·latency, paired bootstrap CI, 재현 manifest와 불변 산출물을 기록했다. 전량 결과 pipeline이 single-call보다 nDCG@10 +0.087(95% CI [0.022, 0.160]) 높고 비용은 사실상 같아 production 전환을 기각했다.
