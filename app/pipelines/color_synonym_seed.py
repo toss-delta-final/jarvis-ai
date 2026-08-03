@@ -61,6 +61,7 @@ class ColorTermRow:
     embedding: list[float] | None
     provenance: str
     doc_count: int
+    preserve_existing_canonical: bool = False
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,7 @@ class UnassignedTerm:
     term: str
     doc_count: int
     reason: str
+    preserve_existing_canonical: bool = False
 
 
 @dataclass(frozen=True)
@@ -436,7 +438,12 @@ async def _llm_tail_assignments(
         except Exception as exc:
             _log.warning("색상 표기 LLM 배정 청크 실패 — 청크만 미배정", exc_info=True)
             unassigned.extend(
-                UnassignedTerm(term, 0, f"LLM 실패로 미배정: {type(exc).__name__}")
+                UnassignedTerm(
+                    term,
+                    0,
+                    f"LLM 실패로 미배정: {type(exc).__name__}",
+                    preserve_existing_canonical=True,
+                )
                 for term in chunk
             )
             continue
@@ -457,10 +464,24 @@ async def _llm_tail_assignments(
         for term in chunk:
             choices = by_term.get(term, [])
             if not choices:
-                unassigned.append(UnassignedTerm(term, 0, "LLM 미응답으로 미배정"))
+                unassigned.append(
+                    UnassignedTerm(
+                        term,
+                        0,
+                        "LLM 미응답으로 미배정",
+                        preserve_existing_canonical=True,
+                    )
+                )
                 continue
             if len(choices) > 1:
-                unassigned.append(UnassignedTerm(term, 0, "배타성 위반으로 미배정"))
+                unassigned.append(
+                    UnassignedTerm(
+                        term,
+                        0,
+                        "배타성 위반으로 미배정",
+                        preserve_existing_canonical=True,
+                    )
+                )
                 rejections.append(
                     ValidationRejection("terms", "배타성 위반: 중복 배정 거부", (term,))
                 )
@@ -470,7 +491,14 @@ async def _llm_tail_assignments(
                 unassigned.append(UnassignedTerm(term, 0, "LLM none으로 미배정"))
                 continue
             if not isinstance(canonical, str) or canonical not in canonical_set:
-                unassigned.append(UnassignedTerm(term, 0, "canonical 유효성 위반으로 미배정"))
+                unassigned.append(
+                    UnassignedTerm(
+                        term,
+                        0,
+                        "canonical 유효성 위반으로 미배정",
+                        preserve_existing_canonical=True,
+                    )
+                )
                 rejections.append(
                     ValidationRejection(
                         "terms",
@@ -564,7 +592,12 @@ async def assign_color_clusters(
         if term in NON_COLOR_TERMS
     ]
     unassigned = [
-        UnassignedTerm(item.term, counts[item.term], item.reason)
+        UnassignedTerm(
+            item.term,
+            counts[item.term],
+            item.reason,
+            item.preserve_existing_canonical,
+        )
         for item in tail_unassigned
     ]
     clusters = tuple(
@@ -935,6 +968,9 @@ VALUES (%s, %s, 'pending_review', %s, %s, %s, %s, now())
 ON CONFLICT (term) DO UPDATE SET
     canonical = CASE
         WHEN color_synonyms.status <> 'pending_review' THEN color_synonyms.canonical
+        -- 일시 실패·검증 불가처럼 이번 실행이 유효한 결론을 못 낸 경우만 이전 제안을 보존한다.
+        -- LLM이 명시적으로 none을 선택한 경우에는 false가 전달돼 NULL 철회가 반영된다.
+        WHEN %s THEN color_synonyms.canonical
         ELSE EXCLUDED.canonical
     END,
     status = CASE
@@ -974,6 +1010,7 @@ def _execute_color_term_upserts(conn, rows: Sequence[ColorTermRow], model: str) 
                 model if vector is not None else None,
                 row.provenance,
                 row.doc_count,
+                row.preserve_existing_canonical,
             ),
         )
     return len(rows)
@@ -1123,6 +1160,9 @@ def _rows_from_result(
         for cluster in result.clusters
         for member in cluster.members
     }
+    preserve_existing = {
+        item.term: item.preserve_existing_canonical for item in result.unassigned
+    }
     return [
         ColorTermRow(
             term=term,
@@ -1130,6 +1170,7 @@ def _rows_from_result(
             embedding=result.embeddings.get(term),
             provenance="seed_pipeline",
             doc_count=count,
+            preserve_existing_canonical=preserve_existing.get(term, False),
         )
         for term, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
     ]

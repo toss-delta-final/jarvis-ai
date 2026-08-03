@@ -425,6 +425,33 @@ async def test_llm_assignment_isolates_failed_term_chunk_as_unassigned() -> None
     assert "오프화이트" in _group_members(result)["화이트"]
     assert any(item.term == "검정" and "LLM 실패" in item.reason for item in result.unassigned)
     assert all("검정" not in members for members in _group_members(result).values())
+    failed_row = next(row for row in seed._rows_from_result(counts, result) if row.term == "검정")
+    assert failed_row.preserve_existing_canonical is True
+
+
+async def test_llm_none_clears_previous_pending_canonical_proposal() -> None:
+    counts = Counter({"블랙": 100, "스킨": 10})
+
+    class LLM:
+        async def complete(self, **kwargs):
+            payload = json.loads(kwargs["user"])
+            if payload["stage"] == "anchors":
+                return '{"groups":[{"canonical":"블랙","members":["블랙"]}]}'
+            return '{"assignments":[{"term":"스킨","canonical":null}]}'
+
+    result = await seed.assign_color_clusters(
+        counts,
+        lambda terms: [[1.0, 0.0] for _ in terms],
+        LLM(),
+        top_n=1,
+        terms_per_call=20,
+        threshold=0.85,
+        max_tokens=512,
+    )
+
+    none_row = next(row for row in seed._rows_from_result(counts, result) if row.term == "스킨")
+    assert none_row.canonical is None
+    assert none_row.preserve_existing_canonical is False
 
 
 async def test_embedding_only_flags_llm_assignment_disagreement_for_review(tmp_path) -> None:
@@ -630,12 +657,33 @@ def test_upsert_sql_preserves_human_review_decisions() -> None:
     assert "WHEN color_synonyms.status <> 'pending_review'" in sql
     assert "THEN color_synonyms.status" in sql
     assert "THEN color_synonyms.canonical" in sql
+    assert "WHEN %s THEN color_synonyms.canonical" in sql
     assert "embedding = COALESCE(EXCLUDED.embedding, color_synonyms.embedding)" in sql
     assert (
         "embedding_model = COALESCE(EXCLUDED.embedding_model, color_synonyms.embedding_model)"
         in sql
     )
     assert "doc_count = EXCLUDED.doc_count" in sql
+
+
+def test_upsert_transports_failed_evaluation_canonical_preservation_flag() -> None:
+    calls = []
+
+    class Conn:
+        def execute(self, sql, params):
+            calls.append((sql, params))
+
+    row = seed.ColorTermRow(
+        "남색",
+        None,
+        [1.0, 0.0],
+        "seed_pipeline",
+        8,
+        preserve_existing_canonical=True,
+    )
+
+    assert seed._execute_color_term_upserts(Conn(), [row], "model") == 1
+    assert calls[0][1][-1] is True
 
 
 def test_reseed_outside_top_n_keeps_existing_approved_embedding() -> None:
