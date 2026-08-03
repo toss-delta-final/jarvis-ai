@@ -702,12 +702,17 @@ class Settings(BaseSettings):
             self.scoring_weight_diversity_bonus,
             self.scoring_weight_recent_purchase_penalty,
         )
+        # 감점 항만 켜진 baseline은 모든 상품을 0 이하로만 밀어 의미 있는 양의 신호가 없다.
+        positive_signal_weights = weights[:-1]
         if not all(math.isfinite(weight) for weight in weights):
             raise ValueError("추천 scoring 가중치는 유한한 수여야 합니다")
         if any(weight < 0 for weight in weights):
             raise ValueError("추천 scoring 가중치는 음수일 수 없습니다")
-        if not any(weights):
-            raise ValueError("추천 scoring 가중치 중 하나 이상은 양수여야 합니다")
+        if not any(positive_signal_weights):
+            raise ValueError(
+                "추천 scoring 양의 신호 가중치"
+                "(semantic·profile·popularity·recency·diversity) 중 하나 이상은 양수여야 합니다"
+            )
         if self.scoring_recent_purchase_window_days <= 0:
             raise ValueError("추천 scoring 최근 구매 window는 0보다 커야 합니다")
         try:

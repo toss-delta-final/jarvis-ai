@@ -19,7 +19,12 @@ def test_scoring_settings_reject_non_finite_weight(weight: float) -> None:
 
 def test_scoring_settings_reject_all_zero_weights() -> None:
     with pytest.raises(
-        ValidationError, match="추천 scoring 가중치 중 하나 이상은 양수여야 합니다"
+        ValidationError,
+        match=(
+            "추천 scoring 양의 신호 가중치"
+            r"\(semantic·profile·popularity·recency·diversity\)"
+            " 중 하나 이상은 양수여야 합니다"
+        ),
     ):
         EvaluationSettings(
             scoring_weight_semantic=0,
@@ -29,6 +34,39 @@ def test_scoring_settings_reject_all_zero_weights() -> None:
             scoring_weight_diversity_bonus=0,
             scoring_weight_recent_purchase_penalty=0,
         )
+
+
+def test_scoring_settings_reject_penalty_only_weight() -> None:
+    with pytest.raises(
+        ValidationError,
+        match=(
+            "추천 scoring 양의 신호 가중치"
+            r"\(semantic·profile·popularity·recency·diversity\)"
+            " 중 하나 이상은 양수여야 합니다"
+        ),
+    ):
+        EvaluationSettings(
+            scoring_weight_semantic=0,
+            scoring_weight_profile_match=0,
+            scoring_weight_popularity=0,
+            scoring_weight_recency=0,
+            scoring_weight_diversity_bonus=0,
+            scoring_weight_recent_purchase_penalty=0.5,
+        )
+
+
+def test_scoring_settings_accept_single_positive_signal_without_penalty() -> None:
+    settings = EvaluationSettings(
+        scoring_weight_semantic=0.5,
+        scoring_weight_profile_match=0,
+        scoring_weight_popularity=0,
+        scoring_weight_recency=0,
+        scoring_weight_diversity_bonus=0,
+        scoring_weight_recent_purchase_penalty=0,
+    )
+
+    assert settings.scoring_weight_semantic == 0.5
+    assert settings.scoring_weight_recent_purchase_penalty == 0
 
 
 @pytest.mark.parametrize("reference_date", ["2026-13-01", "not-a-date"])

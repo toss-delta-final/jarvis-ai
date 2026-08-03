@@ -216,11 +216,16 @@ def test_each_weight_changes_ranking(
         "scoring_weight_recent_purchase_penalty": 0,
     }
     zero = ScoringWeights(0, 0, 0, 0, 0, 0)
+    tuned_overrides = {setting_names[weight]: 1}
+    if weight == "recent_purchase_penalty":
+        # penalty-only 설정은 validator가 거부한다. 이 시나리오는 query embedding이 없어
+        # semantic 값이 양 상품 모두 0으로 degrade되므로 양의 신호를 켜도 순위 효과는 penalty뿐이다.
+        tuned_overrides["scoring_weight_semantic"] = 1
     tuned = weights_from_settings(
         EvaluationSettings(
             **{
                 **zero_kwargs,
-                setting_names[weight]: 1,
+                **tuned_overrides,
             }
         )
     )
