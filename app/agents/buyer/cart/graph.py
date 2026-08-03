@@ -72,6 +72,58 @@ def _options_text(options: list[CartOption]) -> str:
     return " / ".join(parts) if parts else "옵션"
 
 
+def _all_spans(text: str, needle: str) -> list[tuple[int, int]]:
+    """겹치는 경우까지 needle 의 모든 [start, end) 출현 구간을 돌려준다."""
+    if not needle:
+        return []
+    spans: list[tuple[int, int]] = []
+    start = 0
+    while (index := text.find(needle, start)) >= 0:
+        spans.append((index, index + len(needle)))
+        start = index + 1
+    return spans
+
+
+def _pending_switch_signals(
+    message: str, pending: PendingAdd | None, markers: list[str]
+) -> tuple[bool, bool]:
+    """(독립 전환 마커 있음, 독립 pending 옵션명 있음).
+
+    겹친 문자열은 위치로 판정한다. `대` ⊂ `대신`이면 옵션 언급이 아니고,
+    `말고` ⊂ `말고기`이면 전환 마커가 아니다.
+    """
+    if pending is not None and any(not option.name.strip() for option in pending.options):
+        # 옵션명을 하나라도 모르면 전환과 옵션 답변을 구별할 근거가 없다. 이 구성에서는
+        # 정밀도를 우선해 휴리스틱을 끄므로 #253 의 옛 상품 오담기 보호가 의도적으로 적용되지 않는다.
+        return False, False
+    option_spans = (
+        [
+            span
+            for option in pending.options
+            if (name := option.name.strip())
+            for span in _all_spans(message, name)
+        ]
+        if pending is not None
+        else []
+    )
+    marker_spans = [span for marker in markers if marker for span in _all_spans(message, marker)]
+    markers_present = any(
+        not any(
+            option_start <= marker_start and marker_end <= option_end
+            for option_start, option_end in option_spans
+        )
+        for marker_start, marker_end in marker_spans
+    )
+    option_mentioned = any(
+        not any(
+            marker_start <= option_start and option_end <= marker_end
+            for marker_start, marker_end in marker_spans
+        )
+        for option_start, option_end in option_spans
+    )
+    return markers_present, option_mentioned
+
+
 def _existing_quantity(items: list[CartViewItem], product_id: int, option_id: int | None) -> int:
     """담기 전 보유 수량(합산 안내용) — 동일 상품·옵션 합계. optionId 미상이면 그 상품 전체를 센다."""
     return sum(
@@ -115,6 +167,7 @@ async def stream_cart_add(
     cart_store: CartStateStore,
     thread_key: str,
     settings,
+    message: str = "",
     allowed_product_ids: set[int] | None = None,
     add_fn=None,
     get_cart_fn=None,
@@ -146,6 +199,15 @@ async def stream_cart_add(
     ):
         await cart_store.clear_pending(thread_key)
         pending = None
+    markers_present, pending_option_mentioned = _pending_switch_signals(
+        message, pending, settings.cart_pending_switch_markers
+    )
+    # 해소된 전환은 위 분기가 pending 을 지웠다. 여기 남은 pending + 전환 표지는 productId 가
+    # 에코/null/미추천 값 중 무엇이든 해소 실패이므로 옛 상품에 적용하지 않는다.
+    unresolved_switch = pending is not None and markers_present and not pending_option_mentioned
+    if unresolved_switch:
+        await cart_store.clear_pending(thread_key)
+        pending = None
     if pending is not None:
         product_id: int | None = pending.product_id
         # 옵션 답변과 함께 수량을 다시 말하면("레드로 5개") 새 수량을 우선한다(기본 1이면 pending 유지).
@@ -155,10 +217,10 @@ async def stream_cart_add(
         quantity = cart.quantity if (cart.quantity != 1 and same_target) else pending.quantity
         attempts = pending.attempts
     else:
-        product_id = cart.product_id
+        product_id = None if unresolved_switch else cart.product_id
         quantity = cart.quantity
         attempts = 0
-    option_id = cart.option_id
+    option_id = None if unresolved_switch else cart.option_id
 
     # 경로 B — SSE에 카드가 없어 문맥으로 상품을 확정한다. 신규 담기는 직전 추천(last_reco)에 있는
     # productId 만 허용(LLM 이 발화 속 임의 숫자를 오추출해 추천 안 된 상품을 담는 것 차단). 되물음
