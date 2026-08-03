@@ -1,0 +1,988 @@
+{
+  "arms": {
+    "pipeline": {
+      "failureCases": [],
+      "filterParseWarningCount": 0,
+      "hardConstraintViolationRate": 0.0,
+      "hardFailureCount": 0,
+      "primaryMean": 0.7829433149160552,
+      "rankingExcludedCaseCount": 13,
+      "resources": {
+        "applicability": "measured",
+        "callCount": 290,
+        "costCoverage": 1.0,
+        "latencyCoverage": 1.0,
+        "perCaseCostUsd": 0.0008972345161290323,
+        "perCaseInputTokens": 4170.1032258064515,
+        "perCaseOutputTokens": 540.5290322580645,
+        "perCaseTotalLatencyMs": 6362.729032258065,
+        "tokenCoverage": 1.0,
+        "ttftMs": null,
+        "ttftStatus": "unknownOfflineHarnessCannotMeasureServerFirstTextToken"
+      },
+      "secondaryMetrics": {
+        "overall.filterAccuracy": {
+          "label": "exploratory",
+          "mean": 0.06351851851851852,
+          "n": 18
+        },
+        "overall.hardConstraintViolationRate": {
+          "label": "exploratory",
+          "mean": 0.0,
+          "n": 18
+        },
+        "overall.mrr": {
+          "label": "exploratory",
+          "mean": 0.8777910052910053,
+          "n": 18
+        },
+        "overall.precisionAtK.10": {
+          "label": "exploratory",
+          "mean": 0.24000000000000002,
+          "n": 18
+        },
+        "overall.recallAtK.10": {
+          "label": "exploratory",
+          "mean": 0.8244444444444444,
+          "n": 18
+        }
+      },
+      "slices": {
+        "category_mapping_failure": {
+          "label": "exploratory",
+          "n": 6,
+          "primaryMean": 0.8227536741867594
+        },
+        "cold_start": {
+          "label": "exploratory",
+          "n": 2,
+          "primaryMean": 0.8461492573362521
+        },
+        "failure": {
+          "label": "exploratory",
+          "n": 0,
+          "primaryMean": null
+        },
+        "guest": {
+          "label": "exploratory",
+          "n": 9,
+          "primaryMean": 0.7876918237346967
+        },
+        "multi_constraint": {
+          "label": "exploratory",
+          "n": 1,
+          "primaryMean": 0.6049470907727005
+        },
+        "personalization": {
+          "label": "exploratory",
+          "n": 7,
+          "primaryMean": 0.7587792486006026
+        },
+        "personalization_overreach": {
+          "label": "exploratory",
+          "n": 3,
+          "primaryMean": 0.6223009830514322
+        },
+        "repurchase": {
+          "label": "exploratory",
+          "n": 2,
+          "primaryMean": 1.0
+        },
+        "search": {
+          "label": "exploratory",
+          "n": 18,
+          "primaryMean": 0.7829433149160552
+        }
+      }
+    },
+    "scoring": {
+      "failureCases": [],
+      "filterParseWarningCount": 0,
+      "hardConstraintViolationRate": 0.03225806451612903,
+      "hardFailureCount": 0,
+      "primaryMean": 0.6168517750152347,
+      "rankingExcludedCaseCount": 13,
+      "resources": {
+        "applicability": "notApplicableNoLlmCalls",
+        "callCount": 0,
+        "costCoverage": null,
+        "latencyCoverage": 1.0,
+        "perCaseCostUsd": null,
+        "perCaseInputTokens": null,
+        "perCaseOutputTokens": null,
+        "perCaseTotalLatencyMs": 3.7806451612903227,
+        "tokenCoverage": null,
+        "ttftMs": null,
+        "ttftStatus": "unknownOfflineHarnessCannotMeasureServerFirstTextToken"
+      },
+      "secondaryMetrics": {
+        "overall.filterAccuracy": {
+          "label": "exploratory",
+          "mean": 1.0,
+          "n": 18
+        },
+        "overall.hardConstraintViolationRate": {
+          "label": "exploratory",
+          "mean": 0.05555555555555555,
+          "n": 18
+        },
+        "overall.mrr": {
+          "label": "exploratory",
+          "mean": 0.7916666666666666,
+          "n": 18
+        },
+        "overall.precisionAtK.10": {
+          "label": "exploratory",
+          "mean": 0.2222222222222222,
+          "n": 18
+        },
+        "overall.recallAtK.10": {
+          "label": "exploratory",
+          "mean": 0.7055555555555555,
+          "n": 18
+        }
+      },
+      "slices": {
+        "category_mapping_failure": {
+          "label": "exploratory",
+          "n": 6,
+          "primaryMean": 0.67971247719487
+        },
+        "cold_start": {
+          "label": "exploratory",
+          "n": 2,
+          "primaryMean": 0.7754047970020513
+        },
+        "failure": {
+          "label": "exploratory",
+          "n": 0,
+          "primaryMean": null
+        },
+        "guest": {
+          "label": "exploratory",
+          "n": 9,
+          "primaryMean": 0.5855909029610267
+        },
+        "multi_constraint": {
+          "label": "exploratory",
+          "n": 1,
+          "primaryMean": 0.47294449414886575
+        },
+        "personalization": {
+          "label": "exploratory",
+          "n": 7,
+          "primaryMean": 0.6117434613744116
+        },
+        "personalization_overreach": {
+          "label": "exploratory",
+          "n": 3,
+          "primaryMean": 0.6576966915252566
+        },
+        "repurchase": {
+          "label": "exploratory",
+          "n": 2,
+          "primaryMean": 0.5
+        },
+        "search": {
+          "label": "exploratory",
+          "n": 18,
+          "primaryMean": 0.6168517750152347
+        }
+      }
+    },
+    "single_call": {
+      "failureCases": [],
+      "filterParseWarningCount": 0,
+      "hardConstraintViolationRate": 0.03225806451612903,
+      "hardFailureCount": 0,
+      "primaryMean": 0.6960836619468312,
+      "rankingExcludedCaseCount": 13,
+      "resources": {
+        "applicability": "measured",
+        "callCount": 155,
+        "costCoverage": 1.0,
+        "latencyCoverage": 1.0,
+        "perCaseCostUsd": 0.0009177858064516128,
+        "perCaseInputTokens": 1993.8709677419354,
+        "perCaseOutputTokens": 432.50967741935483,
+        "perCaseTotalLatencyMs": 4851.825806451613,
+        "tokenCoverage": 1.0,
+        "ttftMs": null,
+        "ttftStatus": "unknownOfflineHarnessCannotMeasureServerFirstTextToken"
+      },
+      "secondaryMetrics": {
+        "overall.filterAccuracy": {
+          "label": "exploratory",
+          "mean": 0.24833333333333332,
+          "n": 18
+        },
+        "overall.hardConstraintViolationRate": {
+          "label": "exploratory",
+          "mean": 0.05555555555555555,
+          "n": 18
+        },
+        "overall.mrr": {
+          "label": "exploratory",
+          "mean": 0.8166666666666667,
+          "n": 18
+        },
+        "overall.precisionAtK.10": {
+          "label": "exploratory",
+          "mean": 0.20777777777777778,
+          "n": 18
+        },
+        "overall.recallAtK.10": {
+          "label": "exploratory",
+          "mean": 0.7318518518518519,
+          "n": 18
+        }
+      },
+      "slices": {
+        "category_mapping_failure": {
+          "label": "exploratory",
+          "n": 6,
+          "primaryMean": 0.8276153075068278
+        },
+        "cold_start": {
+          "label": "exploratory",
+          "n": 2,
+          "primaryMean": 0.852777954086287
+        },
+        "failure": {
+          "label": "exploratory",
+          "n": 0,
+          "primaryMean": null
+        },
+        "guest": {
+          "label": "exploratory",
+          "n": 9,
+          "primaryMean": 0.7500789940151269
+        },
+        "multi_constraint": {
+          "label": "exploratory",
+          "n": 1,
+          "primaryMean": 0.5219722600582622
+        },
+        "personalization": {
+          "label": "exploratory",
+          "n": 7,
+          "primaryMean": 0.5818912943906066
+        },
+        "personalization_overreach": {
+          "label": "exploratory",
+          "n": 3,
+          "primaryMean": 0.4674430003437314
+        },
+        "repurchase": {
+          "label": "exploratory",
+          "n": 2,
+          "primaryMean": 0.8154648767857287
+        },
+        "search": {
+          "label": "exploratory",
+          "n": 18,
+          "primaryMean": 0.6960836619468312
+        }
+      }
+    }
+  },
+  "hardConstraintViolationRateDenominator": "hardFailure 행도 evaluated metric row 분모에 포함되어 위반율이 희석될 수 있음; hardFailureCount를 함께 해석",
+  "pairedComparisons": {
+    "pipeline-scoring": {
+      "bootstrapCi95": {
+        "high": 0.3201287091835346,
+        "low": 0.03531420237340808
+      },
+      "caseDeltas": [
+        {
+          "caseId": "buy-cmap-0001",
+          "delta": -0.021527531958703605,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cmap-0003",
+          "delta": -0.038872837221223144,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cmap-0004",
+          "delta": 0.06737814816655097,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cmap-0006",
+          "delta": 0.01710791804331213,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cold-0001",
+          "delta": 0.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cold-0002",
+          "delta": 0.14148892066840169,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-gust-0002",
+          "delta": 0.5383413494699414,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0001",
+          "delta": 0.13200259662383473,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-over-0001",
+          "delta": -0.20853341912100593,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-over-0002",
+          "delta": -0.16482508582267563,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-over-0003",
+          "delta": 0.2671713795222088,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0001",
+          "delta": -0.04590629367689114,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0002",
+          "delta": 0.18134392968170043,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-repu-0001",
+          "delta": 0.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-repu-0002",
+          "delta": 1.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0002",
+          "delta": 0.29031715891791865,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0005",
+          "delta": 0.0485573410128447,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0007",
+          "delta": 0.785604143908555,
+          "nLeft": 5,
+          "nRight": 5
+        }
+      ],
+      "excludedCaseIds": [
+        {
+          "caseId": "buy-cmap-0002",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-cmap-0005",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-fail-0001",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-fail-0002",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-fail-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-gust-0001",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-mult-0002",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-pers-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-repu-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-srch-0001",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-srch-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-srch-0004",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-srch-0006",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        }
+      ],
+      "label": "confirmatory",
+      "leftArm": "pipeline",
+      "meanDelta": 0.1660915399008205,
+      "missingLeftCount": 0,
+      "missingRightCount": 0,
+      "pairedCaseIds": [
+        "buy-cmap-0001",
+        "buy-cmap-0003",
+        "buy-cmap-0004",
+        "buy-cmap-0006",
+        "buy-cold-0001",
+        "buy-cold-0002",
+        "buy-gust-0002",
+        "buy-mult-0001",
+        "buy-over-0001",
+        "buy-over-0002",
+        "buy-over-0003",
+        "buy-pers-0001",
+        "buy-pers-0002",
+        "buy-repu-0001",
+        "buy-repu-0002",
+        "buy-srch-0002",
+        "buy-srch-0005",
+        "buy-srch-0007"
+      ],
+      "pairedCount": 18,
+      "rightArm": "scoring",
+      "summary": {
+        "iqr": 0.2886989114809124,
+        "mean": 0.1660915399008205,
+        "median": 0.057967744589697834,
+        "n": 18,
+        "sd": 0.3179298695145344
+      },
+      "verdict": "pipelineWins"
+    },
+    "pipeline-single_call": {
+      "bootstrapCi95": {
+        "high": 0.15995802608927143,
+        "low": 0.022035023096324616
+      },
+      "caseDeltas": [
+        {
+          "caseId": "buy-cmap-0001",
+          "delta": -0.23619704109684703,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cmap-0003",
+          "delta": 0.09766214498762837,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cmap-0004",
+          "delta": 0.03246562633344219,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cmap-0006",
+          "delta": 0.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cold-0001",
+          "delta": 0.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cold-0002",
+          "delta": -0.013257393500069603,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-gust-0002",
+          "delta": 0.11833735796201317,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0001",
+          "delta": 0.08297483071443823,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-over-0001",
+          "delta": 0.49538466991312885,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-over-0002",
+          "delta": -0.030810721790026196,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-over-0003",
+          "delta": 0.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0001",
+          "delta": 0.25658304595639425,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0002",
+          "delta": 0.14798843896193248,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-repu-0001",
+          "delta": 0.3690702464285426,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-repu-0002",
+          "delta": 0.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0002",
+          "delta": 0.1663730787200871,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0005",
+          "delta": 0.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0007",
+          "delta": 0.076899469855366,
+          "nLeft": 5,
+          "nRight": 5
+        }
+      ],
+      "excludedCaseIds": [
+        {
+          "caseId": "buy-cmap-0002",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-cmap-0005",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-fail-0001",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-fail-0002",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-fail-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-gust-0001",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-mult-0002",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-pers-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-repu-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-srch-0001",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-srch-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-srch-0004",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-srch-0006",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        }
+      ],
+      "label": "confirmatory",
+      "leftArm": "pipeline",
+      "meanDelta": 0.0868596529692239,
+      "missingLeftCount": 0,
+      "missingRightCount": 0,
+      "pairedCaseIds": [
+        "buy-cmap-0001",
+        "buy-cmap-0003",
+        "buy-cmap-0004",
+        "buy-cmap-0006",
+        "buy-cold-0001",
+        "buy-cold-0002",
+        "buy-gust-0002",
+        "buy-mult-0001",
+        "buy-over-0001",
+        "buy-over-0002",
+        "buy-over-0003",
+        "buy-pers-0001",
+        "buy-pers-0002",
+        "buy-repu-0001",
+        "buy-repu-0002",
+        "buy-srch-0002",
+        "buy-srch-0005",
+        "buy-srch-0007"
+      ],
+      "pairedCount": 18,
+      "rightArm": "single_call",
+      "summary": {
+        "iqr": 0.14798843896193248,
+        "mean": 0.0868596529692239,
+        "median": 0.05468254809440409,
+        "n": 18,
+        "sd": 0.16369619694804624
+      },
+      "verdict": "pipelineWins"
+    },
+    "single_call-scoring": {
+      "bootstrapCi95": {
+        "high": 0.26472837997869203,
+        "low": -0.08621847925436144
+      },
+      "caseDeltas": [
+        {
+          "caseId": "buy-cmap-0001",
+          "delta": 0.21466950913814342,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cmap-0003",
+          "delta": -0.13653498220885152,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cmap-0004",
+          "delta": 0.03491252183310878,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cmap-0006",
+          "delta": 0.01710791804331213,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cold-0001",
+          "delta": 0.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cold-0002",
+          "delta": 0.1547463141684713,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-gust-0002",
+          "delta": 0.42000399150792816,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0001",
+          "delta": 0.049027765909396503,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-over-0001",
+          "delta": -0.7039180890341348,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-over-0002",
+          "delta": -0.13401436403264944,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-over-0003",
+          "delta": 0.2671713795222088,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0001",
+          "delta": -0.3024893396332854,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0002",
+          "delta": 0.033355490719767955,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-repu-0001",
+          "delta": -0.3690702464285426,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-repu-0002",
+          "delta": 1.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0002",
+          "delta": 0.12394408019783154,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0005",
+          "delta": 0.0485573410128447,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0007",
+          "delta": 0.708704674053189,
+          "nLeft": 5,
+          "nRight": 5
+        }
+      ],
+      "excludedCaseIds": [
+        {
+          "caseId": "buy-cmap-0002",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-cmap-0005",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-fail-0001",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-fail-0002",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-fail-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-gust-0001",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-mult-0002",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-pers-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-repu-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-srch-0001",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-srch-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-srch-0004",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-srch-0006",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        }
+      ],
+      "label": "confirmatory",
+      "leftArm": "single_call",
+      "meanDelta": 0.07923188693159659,
+      "missingLeftCount": 0,
+      "missingRightCount": 0,
+      "pairedCaseIds": [
+        "buy-cmap-0001",
+        "buy-cmap-0003",
+        "buy-cmap-0004",
+        "buy-cmap-0006",
+        "buy-cold-0001",
+        "buy-cold-0002",
+        "buy-gust-0002",
+        "buy-mult-0001",
+        "buy-over-0001",
+        "buy-over-0002",
+        "buy-over-0003",
+        "buy-pers-0001",
+        "buy-pers-0002",
+        "buy-repu-0001",
+        "buy-repu-0002",
+        "buy-srch-0002",
+        "buy-srch-0005",
+        "buy-srch-0007"
+      ],
+      "pairedCount": 18,
+      "rightArm": "scoring",
+      "summary": {
+        "iqr": 0.34868387317079286,
+        "mean": 0.07923188693159659,
+        "median": 0.04173493142297674,
+        "n": 18,
+        "sd": 0.38268709227776776
+      },
+      "verdict": "inconclusive"
+    }
+  },
+  "primaryLabel": "confirmatory",
+  "primaryMetric": "overall.ndcgAtK.10",
+  "secondaryLabel": "exploratory"
+}

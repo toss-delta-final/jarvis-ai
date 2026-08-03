@@ -1,0 +1,18 @@
+{
+  "arms": ["guest", "member_no_profile", "clean", "noisy", "repeated"],
+  "bootstrap": {
+    "confidence": 0.95,
+    "resamples": 2000,
+    "seed": 20260803
+  },
+  "configVersion": "personalization-eval-config-v1",
+  "hardFilterViolationMax": 0,
+  "margins": {
+    "cleanNoisyDropMargin": 0.03,
+    "forbiddenInclusionMax": 0,
+    "intentContradictionMax": 0
+  },
+  "primaryMetric": "overall.ndcgAtK.10",
+  "profilePreferenceDerivation": "case-oracle-distractor-v1",
+  "weightSweep": [0.0, 0.075, 0.15, 0.3, 0.6]
+}

@@ -6,7 +6,11 @@ decompose 가 `categoryQueries: [{category, query}]` 를 `RouteDecision.category
 
 from __future__ import annotations
 
+import inspect
 import json
+import logging
+
+import pytest
 
 from app.agents.buyer.recommendation.decompose import decompose
 
@@ -606,3 +610,103 @@ def test_filter_axes_keeps_zero_but_drops_empty_containers() -> None:
 
     assert _filter_axes(ProductSearchFilters(price_min=0)) == ["price_min"]
     assert _filter_axes(ProductSearchFilters(brand=[], keyword="")) == []
+
+
+@pytest.mark.parametrize(
+    ("merged", "prior", "expected"),
+    [
+        # "3만~5만" 다음 턴 "2만원 이하만" — 하한이 지난 턴에서 딸려왔다
+        (
+            {"price_min": 30000, "price_max": 20000},
+            {"price_min": 30000, "price_max": 50000},
+            (None, 20000),
+        ),
+        # "2만 이하" 다음 턴 "5만원 이상" — 이번엔 상한이 딸려왔다(같은 규칙, 반대 방향)
+        ({"price_min": 50000, "price_max": 20000}, {"price_max": 20000}, (50000, None)),
+        # prior 없음(한 턴에 모순) — 판별 불가라 하한을 버린다(상한은 AC-REC-08 보호 대상)
+        ({"price_min": 50000, "price_max": 20000}, None, (None, 20000)),
+        # 모순이 그대로 저장돼 있던 경우 — 양쪽 다 낡아 판별 불가, 같은 폴백
+        (
+            {"price_min": 50000, "price_max": 20000},
+            {"price_min": 50000, "price_max": 20000},
+            (None, 20000),
+        ),
+    ],
+    ids=["하한이_낡음", "상한이_낡음", "prior_없음", "양쪽_낡음"],
+)
+def test_contradictory_price_range_keeps_only_what_was_just_said(
+    merged: dict, prior: dict | None, expected: tuple
+) -> None:
+    """[PR #248 3차 리뷰] `price_min > price_max` 는 **방금 말한 쪽**만 남긴다.
+
+    이 쌍은 스키마를 통과해 Spring 에 `minPrice=30000&maxPrice=20000` 으로 나가고 **오류 없는
+    0건**으로만 드러나 추적이 안 된다. 스키마에서 거부하지 않는 이유는 그 `ValidationError` 가
+    `LLMError` 로 통일돼 턴 전체가 오류로 끝나기 때문이다 — 사용자는 정상적인 발화를 했고 병합을
+    그르친 건 LLM 인데 대화가 끊기는 건 과하다.
+    """
+    from app.agents.buyer.recommendation.decompose import _resolve_contradictory_price_range
+    from app.schemas.spring import ProductSearchFilters
+
+    out = _resolve_contradictory_price_range(
+        ProductSearchFilters(**merged),
+        ProductSearchFilters(**prior) if prior is not None else None,
+    )
+    assert (out.price_min, out.price_max) == expected
+
+
+def test_narrowing_price_range_is_left_alone() -> None:
+    """모순이 **아닌** 좁히기는 건드리지 않는다 — 사용자가 유지한 하한이 사라지면 안 된다.
+
+    "3만~5만" 다음 턴 "그 중에 4만 이하만"은 정상적인 좁히기다. 여기서 하한까지 버리면
+    1만 5천원짜리가 섞여 나와, 모순을 고치려다 멀쩡한 조건을 깨는 꼴이 된다.
+    """
+    from app.agents.buyer.recommendation.decompose import _resolve_contradictory_price_range
+    from app.schemas.spring import ProductSearchFilters
+
+    merged = ProductSearchFilters(price_min=30000, price_max=40000)
+    prior = ProductSearchFilters(price_min=30000, price_max=50000)
+    assert _resolve_contradictory_price_range(merged, prior) is merged  # 사본조차 만들지 않는다
+
+
+async def test_contradictory_range_never_reaches_the_filters(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """모순 구간이 `decompose` 산출에 남지 않고, 남았다는 사실이 로그에 남는다."""
+    from app.schemas.spring import ProductSearchFilters
+
+    with caplog.at_level(logging.WARNING):
+        decision = await decompose(
+            _FakeLLM(_raw(filters={"priceMin": 30000, "priceMax": 20000})),
+            query="그 중에 2만원 이하만",
+            prior_filters=ProductSearchFilters(price_min=30000, price_max=50000),
+            profile_summary=None,
+            tier="fast",
+        )
+
+    assert decision.filters.price_min is None and decision.filters.price_max == 20000
+    assert "contradictory_price_range" in caplog.text
+
+
+def test_every_parsed_key_appears_in_the_output_template() -> None:
+    """[PR #248 리뷰] 파싱하는 키는 **출력 JSON 템플릿에도** 있어야 한다.
+
+    시스템 프롬프트는 "반드시 아래 JSON 만 출력하세요"로 키 집합을 강제한다. 규칙 절에만 설명하고
+    템플릿에서 빠뜨리면 두 지시가 충돌해 모델이 그 키를 누락하고, 파싱은 조용히 기본값으로
+    떨어진다 — **테스트는 통과하는데 프로덕션에서만 기능이 죽는다**(실제로 `scopedToPrevious`
+    가 이렇게 빠져 있었다. fake LLM 응답에 키를 직접 주입하는 테스트는 이를 잡지 못한다).
+
+    템플릿 = `_SYSTEM` 의 첫 `{` ~ 대응하는 `}` 구간. 파싱 키 = `_parse_route` 가 `data.get(...)`
+    으로 읽는 최상위 키 전부(소스에서 추출해 목록이 뒤처지지 않게 한다).
+    """
+    import re
+
+    from app.agents.buyer.recommendation import decompose as mod
+    from app.agents.buyer.recommendation.decompose import _SYSTEM
+
+    template = _SYSTEM[_SYSTEM.index("{") : _SYSTEM.index("\n}") + 2]
+    source = inspect.getsource(mod)
+    parsed = set(re.findall(r'data\.get\("(\w+)"', source))
+    assert parsed, "파싱 키를 찾지 못했다 — 추출 정규식이 코드와 어긋났을 수 있다"
+
+    missing = sorted(k for k in parsed if f'"{k}"' not in template)
+    assert not missing, f"출력 템플릿에 없는 파싱 키: {missing}"

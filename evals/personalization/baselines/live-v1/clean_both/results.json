@@ -1,0 +1,5684 @@
+{
+  "budget": {
+    "budgetExceeded": false,
+    "budgetExceededReason": null,
+    "callCount": 172,
+    "costGateStatus": "passed",
+    "limits": {
+      "maxCalls": 800,
+      "maxCostUsd": 20.0,
+      "maxTotalTokens": 30000000
+    },
+    "tokenGateStatus": "passed",
+    "totalCostUsd": 0.08213575000000002,
+    "totalTokens": 436688,
+    "unknownCostCallCount": 0,
+    "unknownTokenCallCount": 0
+  },
+  "budgetExceeded": false,
+  "casePrimaryMetrics": {
+    "buy-cmap-0001": [
+      0.540460348067574
+    ],
+    "buy-cmap-0006": [
+      0.3903800499921017
+    ],
+    "buy-cold-0001": [
+      0.4692787260227565
+    ],
+    "buy-cold-0002": [
+      0.0
+    ],
+    "buy-gust-0002": [
+      0.7204489239817528
+    ],
+    "buy-mult-0001": [
+      0.5799691778425136
+    ],
+    "buy-over-0001": [
+      0.30446719749051815
+    ],
+    "buy-over-0002": [
+      0.0
+    ],
+    "buy-over-0003": [
+      1.0
+    ],
+    "buy-pers-0001": [
+      0.7541110877910312
+    ],
+    "buy-pers-0002": [
+      0.19694551601238366
+    ],
+    "buy-repu-0001": [
+      1.0
+    ],
+    "buy-repu-0002": [
+      1.0
+    ],
+    "buy-srch-0002": [
+      0.9098158578127802
+    ],
+    "buy-srch-0005": [
+      1.0
+    ],
+    "buy-srch-0007": [
+      0.0
+    ]
+  },
+  "caseRepeatSummaries": {
+    "buy-cmap-0001": {
+      "iqr": 0.0,
+      "mean": 0.540460348067574,
+      "median": 0.540460348067574,
+      "n": 1,
+      "sd": null
+    },
+    "buy-cmap-0006": {
+      "iqr": 0.0,
+      "mean": 0.3903800499921017,
+      "median": 0.3903800499921017,
+      "n": 1,
+      "sd": null
+    },
+    "buy-cold-0001": {
+      "iqr": 0.0,
+      "mean": 0.4692787260227565,
+      "median": 0.4692787260227565,
+      "n": 1,
+      "sd": null
+    },
+    "buy-cold-0002": {
+      "iqr": 0.0,
+      "mean": 0.0,
+      "median": 0.0,
+      "n": 1,
+      "sd": null
+    },
+    "buy-gust-0002": {
+      "iqr": 0.0,
+      "mean": 0.7204489239817528,
+      "median": 0.7204489239817528,
+      "n": 1,
+      "sd": null
+    },
+    "buy-mult-0001": {
+      "iqr": 0.0,
+      "mean": 0.5799691778425136,
+      "median": 0.5799691778425136,
+      "n": 1,
+      "sd": null
+    },
+    "buy-over-0001": {
+      "iqr": 0.0,
+      "mean": 0.30446719749051815,
+      "median": 0.30446719749051815,
+      "n": 1,
+      "sd": null
+    },
+    "buy-over-0002": {
+      "iqr": 0.0,
+      "mean": 0.0,
+      "median": 0.0,
+      "n": 1,
+      "sd": null
+    },
+    "buy-over-0003": {
+      "iqr": 0.0,
+      "mean": 1.0,
+      "median": 1.0,
+      "n": 1,
+      "sd": null
+    },
+    "buy-pers-0001": {
+      "iqr": 0.0,
+      "mean": 0.7541110877910312,
+      "median": 0.7541110877910312,
+      "n": 1,
+      "sd": null
+    },
+    "buy-pers-0002": {
+      "iqr": 0.0,
+      "mean": 0.19694551601238366,
+      "median": 0.19694551601238366,
+      "n": 1,
+      "sd": null
+    },
+    "buy-repu-0001": {
+      "iqr": 0.0,
+      "mean": 1.0,
+      "median": 1.0,
+      "n": 1,
+      "sd": null
+    },
+    "buy-repu-0002": {
+      "iqr": 0.0,
+      "mean": 1.0,
+      "median": 1.0,
+      "n": 1,
+      "sd": null
+    },
+    "buy-srch-0002": {
+      "iqr": 0.0,
+      "mean": 0.9098158578127802,
+      "median": 0.9098158578127802,
+      "n": 1,
+      "sd": null
+    },
+    "buy-srch-0005": {
+      "iqr": 0.0,
+      "mean": 1.0,
+      "median": 1.0,
+      "n": 1,
+      "sd": null
+    },
+    "buy-srch-0007": {
+      "iqr": 0.0,
+      "mean": 0.0,
+      "median": 0.0,
+      "n": 1,
+      "sd": null
+    }
+  },
+  "caseResults": [
+    {
+      "caseId": "buy-cmap-0001",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "attrConditions": {
+          "brand": "Sony"
+        },
+        "brand": [
+          "Sony"
+        ],
+        "ratingMin": 4.5,
+        "semanticQuery": "신라면 봉지라면"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [
+        "attr_conditions",
+        "brand",
+        "rating_min"
+      ],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 9353,
+      "metrics": {
+        "caseId": "buy-cmap-0001",
+        "diversity": 0.7777777777777778,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          1592748007,
+          6566974267,
+          8294300715,
+          8655630774,
+          8811061014,
+          8822328310,
+          9004931407,
+          9016632513,
+          9241259314,
+          9301766879,
+          9344325307,
+          9405845716,
+          9424901383,
+          9433232120,
+          9474702025
+        ],
+        "extractedFilters": {
+          "attrConditions": {
+            "brand": "Sony"
+          },
+          "brand": [
+            "Sony"
+          ],
+          "ratingMin": 4.5,
+          "semanticQuery": "신라면 봉지라면"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 0.5,
+          "ndcgAtK": {
+            "10": 0.540460348067574,
+            "20": 0.540460348067574,
+            "5": 0.540460348067574
+          },
+          "precisionAtK": {
+            "10": 0.2,
+            "20": 0.1,
+            "5": 0.4
+          },
+          "recallAtK": {
+            "10": 0.6666666666666666,
+            "20": 0.6666666666666666,
+            "5": 0.6666666666666666
+          }
+        },
+        "rankedProductIds": [
+          9424901383,
+          8655630774,
+          9474702025,
+          6566974267,
+          9241259314,
+          8811061014,
+          9344325307,
+          9405845716,
+          9433232120
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          1592748007,
+          6566974267,
+          8655630774
+        ],
+        "slices": [
+          "search",
+          "category_mapping_failure",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2944,
+          "callSite": "decompose",
+          "correlationId": "68ee83a2-9f75-4a8c-950a-7a99308b70f7",
+          "costUsd": 0.00022925000000000002,
+          "error": null,
+          "inputTokens": 3049,
+          "latencyMs": 2617,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 192,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2944
+            },
+            "input_tokens": 3049,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 192,
+            "total_tokens": 3241
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 1897,
+          "callSite": "rerank",
+          "correlationId": "8cded8d1-085b-4d62-a0fc-d7d90f71971c",
+          "costUsd": 0.001436,
+          "error": null,
+          "inputTokens": 1900,
+          "latencyMs": 6733,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 880,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 512,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 1897
+            },
+            "input_tokens": 1900,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 512
+            },
+            "output_tokens": 880,
+            "total_tokens": 2780
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        9424901383,
+        8655630774,
+        9474702025,
+        6566974267,
+        9241259314,
+        8811061014,
+        9344325307,
+        9405845716,
+        9433232120
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-cmap-0002",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "attrConditions": {
+          "가격대": "5만원 이하",
+          "브랜드": "Sony",
+          "평점": "4.5 이상"
+        },
+        "brand": [
+          "Sony"
+        ],
+        "keyword": "무선 이어폰",
+        "priceMax": 50000,
+        "ratingMin": 4.5,
+        "semanticQuery": "무선 이어폰"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [
+        "attr_conditions",
+        "brand",
+        "keyword",
+        "price_max",
+        "rating_min"
+      ],
+      "hardFailure": false,
+      "intentContradictionAxes": [
+        "keyword"
+      ],
+      "latencyMs": 4899,
+      "metrics": {
+        "caseId": "buy-cmap-0002",
+        "diversity": 1.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          7566420600,
+          7566500914,
+          8481970686,
+          9478829600,
+          9479369692
+        ],
+        "extractedFilters": {
+          "attrConditions": {
+            "가격대": "5만원 이하",
+            "브랜드": "Sony",
+            "평점": "4.5 이상"
+          },
+          "brand": [
+            "Sony"
+          ],
+          "keyword": "무선 이어폰",
+          "priceMax": 50000,
+          "ratingMin": 4.5,
+          "semanticQuery": "무선 이어폰"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 0.3391602052736162,
+            "20": 0.3391602052736162,
+            "5": 0.3391602052736162
+          },
+          "precisionAtK": {
+            "10": 0.1,
+            "20": 0.05,
+            "5": 0.2
+          },
+          "recallAtK": {
+            "10": 0.2,
+            "20": 0.2,
+            "5": 0.2
+          }
+        },
+        "rankedProductIds": [
+          7566420600
+        ],
+        "rankingExcluded": true,
+        "rankingExclusionReason": "nonDiscriminativeRanking",
+        "relevantProductIds": [
+          7566420600,
+          7566500914,
+          8481970686,
+          9478829600,
+          9479369692
+        ],
+        "slices": [
+          "search",
+          "category_mapping_failure",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "cee86b14-754a-4123-9f17-863b8efaac9d",
+          "costUsd": 0.00023525000000000003,
+          "error": null,
+          "inputTokens": 3049,
+          "latencyMs": 3000,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 207,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 3049,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 207,
+            "total_tokens": 3256
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "beaf6772-54b0-4c24-9899-0f501a6d90f0",
+          "costUsd": 0.00030720000000000004,
+          "error": null,
+          "inputTokens": 684,
+          "latencyMs": 1896,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 142,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 61,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 684,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 61
+            },
+            "output_tokens": 142,
+            "total_tokens": 826
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        7566420600
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-cmap-0003",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "semanticQuery": "A4 복사용지"
+      },
+      "failureReason": "nonRecommendIntent:general",
+      "filterAxisLeakage": [],
+      "hardFailure": true,
+      "intentContradictionAxes": [],
+      "latencyMs": 2866,
+      "metrics": {
+        "caseId": "buy-cmap-0003",
+        "diversity": 0.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          4288557084,
+          7972526163,
+          8280119093,
+          8333869685,
+          8628730674,
+          9283627831,
+          9310126912,
+          9371969848,
+          9381792657
+        ],
+        "extractedFilters": {
+          "semanticQuery": "A4 복사용지"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 0.0,
+          "ndcgAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          },
+          "precisionAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          },
+          "recallAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          }
+        },
+        "rankedProductIds": [],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          4288557084,
+          7972526163,
+          8280119093,
+          8333869685,
+          8628730674
+        ],
+        "slices": [
+          "search",
+          "category_mapping_failure",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 0,
+          "callSite": "decompose",
+          "correlationId": "b9676cd6-4d40-44c8-84d2-5132663b17c5",
+          "costUsd": 0.00022845,
+          "error": null,
+          "inputTokens": 3049,
+          "latencyMs": 2866,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 190,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 3049,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 190,
+            "total_tokens": 3239
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-cmap-0004",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "semanticQuery": "실내건조 섬유유연제"
+      },
+      "failureReason": "nonRecommendIntent:general",
+      "filterAxisLeakage": [],
+      "hardFailure": true,
+      "intentContradictionAxes": [],
+      "latencyMs": 2587,
+      "metrics": {
+        "caseId": "buy-cmap-0004",
+        "diversity": 0.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          1679183612,
+          7794089168,
+          8466941708,
+          8481799754,
+          8775411564,
+          8864611198,
+          8921599557,
+          9057575338,
+          9066206233,
+          9268823473,
+          9277179411,
+          9277776847,
+          9365157030,
+          9412436250,
+          9412588999,
+          9450206475
+        ],
+        "extractedFilters": {
+          "semanticQuery": "실내건조 섬유유연제"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 0.0,
+          "ndcgAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          },
+          "precisionAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          },
+          "recallAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          }
+        },
+        "rankedProductIds": [],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          7794089168,
+          8466941708
+        ],
+        "slices": [
+          "search",
+          "category_mapping_failure",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2944,
+          "callSite": "decompose",
+          "correlationId": "774e92d1-dce6-41f6-8665-b1ffb31d79d4",
+          "costUsd": 0.0002173,
+          "error": null,
+          "inputTokens": 3050,
+          "latencyMs": 2587,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 162,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2944
+            },
+            "input_tokens": 3050,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 162,
+            "total_tokens": 3212
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-cmap-0005",
+      "expectedZeroCandidates": true,
+      "extractedFilters": {
+        "brand": [
+          "Sony"
+        ],
+        "keyword": "수예 재료",
+        "priceMax": 50000,
+        "priceMin": 50000,
+        "ratingMin": 4.5,
+        "semanticQuery": "수예 재료"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [
+        "brand",
+        "keyword",
+        "price_max",
+        "price_min",
+        "rating_min"
+      ],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 2644,
+      "metrics": {
+        "caseId": "buy-cmap-0005",
+        "diversity": 0.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [],
+        "extractedFilters": {
+          "brand": [
+            "Sony"
+          ],
+          "keyword": "수예 재료",
+          "priceMax": 50000,
+          "priceMin": 50000,
+          "ratingMin": 4.5,
+          "semanticQuery": "수예 재료"
+        },
+        "filterAccuracy": 0.16666666666666666,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 0.0,
+          "ndcgAtK": {
+            "10": null,
+            "20": null,
+            "5": null
+          },
+          "precisionAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          },
+          "recallAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          }
+        },
+        "rankedProductIds": [],
+        "rankingExcluded": true,
+        "rankingExclusionReason": "emptyRelevance",
+        "relevantProductIds": [],
+        "slices": [
+          "category_mapping_failure",
+          "failure",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2944,
+          "callSite": "decompose",
+          "correlationId": "2f3f7565-6a5b-4aa8-bfc5-9c6ed581a697",
+          "costUsd": 0.00022550000000000003,
+          "error": null,
+          "inputTokens": 3046,
+          "latencyMs": 2641,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 183,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2944
+            },
+            "input_tokens": 3046,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 183,
+            "total_tokens": 3229
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-cmap-0006",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "attrConditions": {
+          "가격대": "3~5만원",
+          "브랜드": "Sony",
+          "카테고리": "이어폰",
+          "평점": "4.5+"
+        },
+        "brand": [
+          "Sony"
+        ],
+        "priceMax": 50000,
+        "priceMin": 30000,
+        "ratingMin": 4.5,
+        "semanticQuery": "Sony 무선 이어폰"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [
+        "attr_conditions",
+        "brand",
+        "price_max",
+        "price_min",
+        "rating_min"
+      ],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 4836,
+      "metrics": {
+        "caseId": "buy-cmap-0006",
+        "diversity": 1.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          2888196506,
+          8386782901,
+          9380527610,
+          9409881208,
+          9474734087
+        ],
+        "extractedFilters": {
+          "attrConditions": {
+            "가격대": "3~5만원",
+            "브랜드": "Sony",
+            "카테고리": "이어폰",
+            "평점": "4.5+"
+          },
+          "brand": [
+            "Sony"
+          ],
+          "priceMax": 50000,
+          "priceMin": 30000,
+          "ratingMin": 4.5,
+          "semanticQuery": "Sony 무선 이어폰"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 0.3903800499921017,
+            "20": 0.3903800499921017,
+            "5": 0.3903800499921017
+          },
+          "precisionAtK": {
+            "10": 0.1,
+            "20": 0.05,
+            "5": 0.2
+          },
+          "recallAtK": {
+            "10": 0.25,
+            "20": 0.25,
+            "5": 0.25
+          }
+        },
+        "rankedProductIds": [
+          8386782901
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          2888196506,
+          8386782901,
+          9409881208,
+          9474734087
+        ],
+        "slices": [
+          "search",
+          "category_mapping_failure",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2944,
+          "callSite": "decompose",
+          "correlationId": "8fb38efc-fe75-4668-8674-74968e9a666d",
+          "costUsd": 0.00024185,
+          "error": null,
+          "inputTokens": 3045,
+          "latencyMs": 2682,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 224,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2944
+            },
+            "input_tokens": 3045,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 224,
+            "total_tokens": 3269
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "c0ba60bb-50fa-4336-9859-76223480b3e5",
+          "costUsd": 0.0003104,
+          "error": null,
+          "inputTokens": 688,
+          "latencyMs": 2152,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 144,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 79,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 688,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 79
+            },
+            "output_tokens": 144,
+            "total_tokens": 832
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        8386782901
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-cold-0001",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "attrConditions": {
+          "브랜드": "Sony",
+          "카테고리": "이어폰"
+        },
+        "brand": [
+          "Sony"
+        ],
+        "keyword": "고양이 대용량 사료",
+        "priceMax": 50000,
+        "priceMin": 50000,
+        "ratingMin": 4.5,
+        "semanticQuery": "고양이 대용량 사료"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [
+        "attr_conditions",
+        "brand",
+        "keyword",
+        "price_max",
+        "price_min",
+        "rating_min"
+      ],
+      "hardFailure": false,
+      "intentContradictionAxes": [
+        "keyword"
+      ],
+      "latencyMs": 5487,
+      "metrics": {
+        "caseId": "buy-cold-0001",
+        "diversity": 1.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          6842529832,
+          9454308079,
+          9478002020,
+          9478986118
+        ],
+        "extractedFilters": {
+          "attrConditions": {
+            "브랜드": "Sony",
+            "카테고리": "이어폰"
+          },
+          "brand": [
+            "Sony"
+          ],
+          "keyword": "고양이 대용량 사료",
+          "priceMax": 50000,
+          "priceMin": 50000,
+          "ratingMin": 4.5,
+          "semanticQuery": "고양이 대용량 사료"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 0.4692787260227565,
+            "20": 0.4692787260227565,
+            "5": 0.4692787260227565
+          },
+          "precisionAtK": {
+            "10": 0.1,
+            "20": 0.05,
+            "5": 0.2
+          },
+          "recallAtK": {
+            "10": 0.3333333333333333,
+            "20": 0.3333333333333333,
+            "5": 0.3333333333333333
+          }
+        },
+        "rankedProductIds": [
+          9478986118
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          6842529832,
+          9478002020,
+          9478986118
+        ],
+        "slices": [
+          "search",
+          "cold_start"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2944,
+          "callSite": "decompose",
+          "correlationId": "8f7cf6ad-2df4-4a68-aca8-c0fa48e006d8",
+          "costUsd": 0.00022845,
+          "error": null,
+          "inputTokens": 3049,
+          "latencyMs": 2538,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 190,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2944
+            },
+            "input_tokens": 3049,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 190,
+            "total_tokens": 3239
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "253fb12f-2d5d-46e4-9138-fbd6ec6fd93e",
+          "costUsd": 0.0004554,
+          "error": null,
+          "inputTokens": 681,
+          "latencyMs": 2946,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 266,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 184,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 681,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 184
+            },
+            "output_tokens": 266,
+            "total_tokens": 947
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        9478986118
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-cold-0002",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "attrConditions": {
+          "가격": "3~5만원",
+          "브랜드": "Sony",
+          "카테고리": "이어폰",
+          "평점": "4.5 이상"
+        },
+        "brand": [
+          "Sony"
+        ],
+        "priceMax": 50000,
+        "priceMin": 30000,
+        "ratingMin": 4.5,
+        "semanticQuery": "무선 이어폰"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [
+        "attr_conditions",
+        "brand",
+        "price_max",
+        "price_min",
+        "rating_min"
+      ],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 5416,
+      "metrics": {
+        "caseId": "buy-cold-0002",
+        "diversity": 0.5,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          8390877834,
+          9125108289,
+          9203265703,
+          9209697516,
+          9218886535,
+          9311951784,
+          9315015520,
+          9315015522,
+          9475239098
+        ],
+        "extractedFilters": {
+          "attrConditions": {
+            "가격": "3~5만원",
+            "브랜드": "Sony",
+            "카테고리": "이어폰",
+            "평점": "4.5 이상"
+          },
+          "brand": [
+            "Sony"
+          ],
+          "priceMax": 50000,
+          "priceMin": 30000,
+          "ratingMin": 4.5,
+          "semanticQuery": "무선 이어폰"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 0.0,
+          "ndcgAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          },
+          "precisionAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          },
+          "recallAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          }
+        },
+        "rankedProductIds": [
+          9125108289,
+          9203265703
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          8390877834,
+          9209697516,
+          9218886535
+        ],
+        "slices": [
+          "search",
+          "cold_start"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2944,
+          "callSite": "decompose",
+          "correlationId": "f6808295-9a0d-4967-b2fc-fdc1c8165f80",
+          "costUsd": 0.00024120000000000004,
+          "error": null,
+          "inputTokens": 3048,
+          "latencyMs": 2971,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 222,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2944
+            },
+            "input_tokens": 3048,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 222,
+            "total_tokens": 3270
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "f3b27da1-1295-45b6-afd2-25b4ebd06fed",
+          "costUsd": 0.0004274,
+          "error": null,
+          "inputTokens": 781,
+          "latencyMs": 2443,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 226,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 105,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 781,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 105
+            },
+            "output_tokens": 226,
+            "total_tokens": 1007
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        9125108289,
+        9203265703
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-fail-0001",
+      "expectedZeroCandidates": true,
+      "extractedFilters": {
+        "attrConditions": {
+          "가격대": "32000원 이하"
+        },
+        "brand": [
+          "Sony"
+        ],
+        "priceMax": 32000,
+        "priceMin": 0,
+        "ratingMin": 4.5,
+        "semanticQuery": "무선 이어폰"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [
+        "brand",
+        "price_min",
+        "rating_min"
+      ],
+      "hardFailure": false,
+      "intentContradictionAxes": [
+        "attrConditions",
+        "priceMax"
+      ],
+      "latencyMs": 2714,
+      "metrics": {
+        "caseId": "buy-fail-0001",
+        "diversity": 0.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [],
+        "extractedFilters": {
+          "attrConditions": {
+            "가격대": "32000원 이하"
+          },
+          "brand": [
+            "Sony"
+          ],
+          "priceMax": 32000,
+          "priceMin": 0,
+          "ratingMin": 4.5,
+          "semanticQuery": "무선 이어폰"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 0.0,
+          "ndcgAtK": {
+            "10": null,
+            "20": null,
+            "5": null
+          },
+          "precisionAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          },
+          "recallAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          }
+        },
+        "rankedProductIds": [],
+        "rankingExcluded": true,
+        "rankingExclusionReason": "emptyRelevance",
+        "relevantProductIds": [],
+        "slices": [
+          "multi_constraint",
+          "failure",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2944,
+          "callSite": "decompose",
+          "correlationId": "3a59e24f-eb7f-4e8a-a08a-70741d53a6c5",
+          "costUsd": 0.0002278,
+          "error": null,
+          "inputTokens": 3052,
+          "latencyMs": 2713,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 188,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2944
+            },
+            "input_tokens": 3052,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 188,
+            "total_tokens": 3240
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-fail-0002",
+      "expectedZeroCandidates": true,
+      "extractedFilters": {
+        "brand": [
+          "Sony"
+        ],
+        "keyword": "무선 이어폰",
+        "priceMax": 50000,
+        "priceMin": 30000,
+        "ratingMin": 4.5,
+        "semanticQuery": "자비스골든셋존재하지않는상품xyz142"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [
+        "brand",
+        "price_max",
+        "price_min",
+        "rating_min"
+      ],
+      "hardFailure": false,
+      "intentContradictionAxes": [
+        "keyword"
+      ],
+      "latencyMs": 2624,
+      "metrics": {
+        "caseId": "buy-fail-0002",
+        "diversity": 0.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [],
+        "extractedFilters": {
+          "brand": [
+            "Sony"
+          ],
+          "keyword": "무선 이어폰",
+          "priceMax": 50000,
+          "priceMin": 30000,
+          "ratingMin": 4.5,
+          "semanticQuery": "자비스골든셋존재하지않는상품xyz142"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 0.0,
+          "ndcgAtK": {
+            "10": null,
+            "20": null,
+            "5": null
+          },
+          "precisionAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          },
+          "recallAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          }
+        },
+        "rankedProductIds": [],
+        "rankingExcluded": true,
+        "rankingExclusionReason": "emptyRelevance",
+        "relevantProductIds": [],
+        "slices": [
+          "failure",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2944,
+          "callSite": "decompose",
+          "correlationId": "a9c18036-625b-4466-86bf-40e218c1beff",
+          "costUsd": 0.00022950000000000002,
+          "error": null,
+          "inputTokens": 3054,
+          "latencyMs": 2622,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 192,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2944
+            },
+            "input_tokens": 3054,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 192,
+            "total_tokens": 3246
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-fail-0003",
+      "expectedZeroCandidates": true,
+      "extractedFilters": {
+        "attrConditions": {
+          "가격": "10000원 이하",
+          "전송방식": "무선"
+        },
+        "brand": [
+          "Sony"
+        ],
+        "keyword": "무선 이어폰",
+        "priceMax": 10000,
+        "priceMin": 0,
+        "ratingMin": 4.5,
+        "semanticQuery": "무선 이어폰"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [
+        "attr_conditions",
+        "brand",
+        "keyword",
+        "price_min",
+        "rating_min"
+      ],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 3479,
+      "metrics": {
+        "caseId": "buy-fail-0003",
+        "diversity": 0.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [],
+        "extractedFilters": {
+          "attrConditions": {
+            "가격": "10000원 이하",
+            "전송방식": "무선"
+          },
+          "brand": [
+            "Sony"
+          ],
+          "keyword": "무선 이어폰",
+          "priceMax": 10000,
+          "priceMin": 0,
+          "ratingMin": 4.5,
+          "semanticQuery": "무선 이어폰"
+        },
+        "filterAccuracy": 0.2857142857142857,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 0.0,
+          "ndcgAtK": {
+            "10": null,
+            "20": null,
+            "5": null
+          },
+          "precisionAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          },
+          "recallAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          }
+        },
+        "rankedProductIds": [],
+        "rankingExcluded": true,
+        "rankingExclusionReason": "emptyRelevance",
+        "relevantProductIds": [],
+        "slices": [
+          "failure",
+          "multi_constraint",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2944,
+          "callSite": "decompose",
+          "correlationId": "d1f74568-0b86-4c21-b24e-4f2d4835abac",
+          "costUsd": 0.00023595000000000002,
+          "error": null,
+          "inputTokens": 3047,
+          "latencyMs": 3474,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 209,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2944
+            },
+            "input_tokens": 3047,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 209,
+            "total_tokens": 3256
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-gust-0001",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "brand": [
+          "Sony"
+        ],
+        "keyword": "아기 여름 기저귀",
+        "priceMax": 50000,
+        "ratingMin": 4.5,
+        "semanticQuery": "아기 여름 기저귀"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [
+        "brand",
+        "keyword",
+        "price_max",
+        "rating_min"
+      ],
+      "hardFailure": false,
+      "intentContradictionAxes": [
+        "keyword"
+      ],
+      "latencyMs": 4608,
+      "metrics": {
+        "caseId": "buy-gust-0001",
+        "diversity": 1.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          9214523774
+        ],
+        "extractedFilters": {
+          "brand": [
+            "Sony"
+          ],
+          "keyword": "아기 여름 기저귀",
+          "priceMax": 50000,
+          "ratingMin": 4.5,
+          "semanticQuery": "아기 여름 기저귀"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          },
+          "precisionAtK": {
+            "10": 0.1,
+            "20": 0.05,
+            "5": 0.2
+          },
+          "recallAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          }
+        },
+        "rankedProductIds": [
+          9214523774
+        ],
+        "rankingExcluded": true,
+        "rankingExclusionReason": "nonDiscriminativeRanking",
+        "relevantProductIds": [
+          9214523774
+        ],
+        "slices": [
+          "search",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2944,
+          "callSite": "decompose",
+          "correlationId": "a1fc2ce9-0e88-4cbe-8cb0-179a12577e85",
+          "costUsd": 0.0002248,
+          "error": null,
+          "inputTokens": 3048,
+          "latencyMs": 2473,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 181,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2944
+            },
+            "input_tokens": 3048,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 181,
+            "total_tokens": 3229
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "7f473feb-7110-4d26-89d9-53414fb01998",
+          "costUsd": 0.0002634,
+          "error": null,
+          "inputTokens": 705,
+          "latencyMs": 2132,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 102,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 38,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 705,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 38
+            },
+            "output_tokens": 102,
+            "total_tokens": 807
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        9214523774
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-gust-0002",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "brand": [
+          "Sony"
+        ],
+        "priceMax": 50000,
+        "ratingMin": 4.5,
+        "semanticQuery": "눈 건강 비타민"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [
+        "brand",
+        "price_max",
+        "rating_min"
+      ],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 5390,
+      "metrics": {
+        "caseId": "buy-gust-0002",
+        "diversity": 1.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          16202915,
+          1217557184,
+          1375397293,
+          2137780125,
+          2829539071,
+          3282637064,
+          3830007460,
+          3834938566,
+          3914310658,
+          4136679809,
+          4347909601,
+          4361832730,
+          5233499372,
+          5630149146,
+          5810615310,
+          5972920366,
+          6190106791,
+          6316290980,
+          6577554236,
+          6780043279,
+          7242259104,
+          7265440136,
+          7517896801,
+          7659487121,
+          8146889136,
+          8428294107,
+          8431336657,
+          8660504353,
+          8680764845,
+          8745726355
+        ],
+        "extractedFilters": {
+          "brand": [
+            "Sony"
+          ],
+          "priceMax": 50000,
+          "ratingMin": 4.5,
+          "semanticQuery": "눈 건강 비타민"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 0.7204489239817528,
+            "20": 0.7204489239817528,
+            "5": 0.7204489239817528
+          },
+          "precisionAtK": {
+            "10": 0.2,
+            "20": 0.1,
+            "5": 0.4
+          },
+          "recallAtK": {
+            "10": 0.6666666666666666,
+            "20": 0.6666666666666666,
+            "5": 0.6666666666666666
+          }
+        },
+        "rankedProductIds": [
+          8680764845,
+          6190106791,
+          1217557184,
+          1375397293,
+          2137780125
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          1375397293,
+          7265440136,
+          8680764845
+        ],
+        "slices": [
+          "search",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2944,
+          "callSite": "decompose",
+          "correlationId": "a3668377-8bf4-4213-8218-c494f63aa75f",
+          "costUsd": 0.00022230000000000004,
+          "error": null,
+          "inputTokens": 3046,
+          "latencyMs": 2732,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 175,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2944
+            },
+            "input_tokens": 3046,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 175,
+            "total_tokens": 3221
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "e9aea0a3-4e0c-4e6d-9cd3-4e206e096abb",
+          "costUsd": 0.0008828,
+          "error": null,
+          "inputTokens": 2914,
+          "latencyMs": 2647,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 250,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 140,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 2911,
+              "cache_read": 0
+            },
+            "input_tokens": 2914,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 140
+            },
+            "output_tokens": 250,
+            "total_tokens": 3164
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        8680764845,
+        6190106791,
+        1217557184,
+        1375397293,
+        2137780125
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-mult-0001",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "attrConditions": {
+          "가격": "<=20000",
+          "백탁": "낮은",
+          "자외선차단": "SPF50"
+        },
+        "brand": [
+          "Sony"
+        ],
+        "priceMax": 20000,
+        "priceMin": 0,
+        "ratingMin": 4.5,
+        "semanticQuery": "무선 이어폰"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [
+        "brand",
+        "rating_min"
+      ],
+      "hardFailure": false,
+      "intentContradictionAxes": [
+        "attrConditions"
+      ],
+      "latencyMs": 8507,
+      "metrics": {
+        "caseId": "buy-mult-0001",
+        "diversity": 0.8,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          1403303149,
+          1677693211,
+          2374915876,
+          2378024650,
+          2730310079,
+          2829539071,
+          4523196896,
+          4744632097,
+          5346989313,
+          5367233175,
+          5588888475,
+          5807301560,
+          6318746061,
+          6989049238,
+          7591624431,
+          7791911136,
+          8418144778,
+          8819988122,
+          9205558347,
+          9280160690,
+          9406060285,
+          9406065305,
+          9451394813,
+          9468979902,
+          9468989256,
+          9473470615
+        ],
+        "extractedFilters": {
+          "attrConditions": {
+            "가격": "<=20000",
+            "백탁": "낮은",
+            "자외선차단": "SPF50"
+          },
+          "brand": [
+            "Sony"
+          ],
+          "priceMax": 20000,
+          "priceMin": 0,
+          "ratingMin": 4.5,
+          "semanticQuery": "무선 이어폰"
+        },
+        "filterAccuracy": 0.14285714285714285,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 0.5799691778425136,
+            "20": 0.5799691778425136,
+            "5": 0.5799691778425136
+          },
+          "precisionAtK": {
+            "10": 0.2,
+            "20": 0.1,
+            "5": 0.4
+          },
+          "recallAtK": {
+            "10": 0.4,
+            "20": 0.4,
+            "5": 0.4
+          }
+        },
+        "rankedProductIds": [
+          5367233175,
+          5588888475,
+          2374915876,
+          1403303149,
+          1677693211
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          2374915876,
+          2378024650,
+          4523196896,
+          5367233175,
+          5807301560
+        ],
+        "slices": [
+          "search",
+          "multi_constraint",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "1bcd0b7f-e387-4e63-9702-ca24e25ffbb9",
+          "costUsd": 0.00024035000000000001,
+          "error": null,
+          "inputTokens": 3055,
+          "latencyMs": 2755,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 219,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 3055,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 219,
+            "total_tokens": 3274
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "b7f93193-088f-4bca-99d2-4dd2a9a6641c",
+          "costUsd": 0.0012578,
+          "error": null,
+          "inputTokens": 2827,
+          "latencyMs": 5748,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 577,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 435,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 2824,
+              "cache_read": 0
+            },
+            "input_tokens": 2827,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 435
+            },
+            "output_tokens": 577,
+            "total_tokens": 3404
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        5367233175,
+        5588888475,
+        2374915876,
+        1403303149,
+        1677693211
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-mult-0002",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "attrConditions": {
+          "가격": "40000 이하",
+          "사이즈": "15인치"
+        },
+        "brand": [
+          "Sony"
+        ],
+        "priceMax": 40000,
+        "ratingMin": 4.5,
+        "semanticQuery": "4만원 이하 15인치 노트북 파우치"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [
+        "brand",
+        "rating_min"
+      ],
+      "hardFailure": false,
+      "intentContradictionAxes": [
+        "attrConditions"
+      ],
+      "latencyMs": 5249,
+      "metrics": {
+        "caseId": "buy-mult-0002",
+        "diversity": 0.5,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          1852393263,
+          3313197989,
+          3477489470,
+          5741790221,
+          6511512452
+        ],
+        "extractedFilters": {
+          "attrConditions": {
+            "가격": "40000 이하",
+            "사이즈": "15인치"
+          },
+          "brand": [
+            "Sony"
+          ],
+          "priceMax": 40000,
+          "ratingMin": 4.5,
+          "semanticQuery": "4만원 이하 15인치 노트북 파우치"
+        },
+        "filterAccuracy": 0.14285714285714285,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 0.5531464700081438,
+            "20": 0.5531464700081438,
+            "5": 0.5531464700081438
+          },
+          "precisionAtK": {
+            "10": 0.2,
+            "20": 0.1,
+            "5": 0.4
+          },
+          "recallAtK": {
+            "10": 0.4,
+            "20": 0.4,
+            "5": 0.4
+          }
+        },
+        "rankedProductIds": [
+          3477489470,
+          6511512452
+        ],
+        "rankingExcluded": true,
+        "rankingExclusionReason": "nonDiscriminativeRanking",
+        "relevantProductIds": [
+          1852393263,
+          3313197989,
+          3477489470,
+          5741790221,
+          6511512452
+        ],
+        "slices": [
+          "search",
+          "multi_constraint",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2944,
+          "callSite": "decompose",
+          "correlationId": "b0fadb61-ef5c-453e-bfb0-aefb9388753b",
+          "costUsd": 0.00023870000000000003,
+          "error": null,
+          "inputTokens": 3054,
+          "latencyMs": 2679,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 215,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2944
+            },
+            "input_tokens": 3054,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 215,
+            "total_tokens": 3269
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "19c5a2d8-c533-4ada-85b3-0ad41a52036e",
+          "costUsd": 0.0003782,
+          "error": null,
+          "inputTokens": 805,
+          "latencyMs": 2566,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 181,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 65,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 805,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 65
+            },
+            "output_tokens": 181,
+            "total_tokens": 986
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        3477489470,
+        6511512452
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-over-0001",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "attrConditions": {
+          "가격": "70000",
+          "브랜드": "Sony"
+        },
+        "keyword": "프리미엄 선크림",
+        "priceMin": 70000,
+        "ratingMin": 4.5,
+        "semanticQuery": "프리미엄 선크림"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [
+        "keyword",
+        "rating_min"
+      ],
+      "hardFailure": false,
+      "intentContradictionAxes": [
+        "keyword"
+      ],
+      "latencyMs": 9585,
+      "metrics": {
+        "caseId": "buy-over-0001",
+        "diversity": 0.625,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          7510891587,
+          8050319029,
+          8372308572,
+          8432807582,
+          8460595946,
+          8783110754,
+          8789688417,
+          8808747885,
+          9188383733,
+          9188383734,
+          9397815149,
+          9397819432,
+          9431130647,
+          9459906684,
+          9466448368,
+          9468725424
+        ],
+        "extractedFilters": {
+          "attrConditions": {
+            "가격": "70000",
+            "브랜드": "Sony"
+          },
+          "keyword": "프리미엄 선크림",
+          "priceMin": 70000,
+          "ratingMin": 4.5,
+          "semanticQuery": "프리미엄 선크림"
+        },
+        "filterAccuracy": 0.2,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 0.14285714285714285,
+          "ndcgAtK": {
+            "10": 0.30446719749051815,
+            "20": 0.30446719749051815,
+            "5": 0.0
+          },
+          "precisionAtK": {
+            "10": 0.2,
+            "20": 0.1,
+            "5": 0.0
+          },
+          "recallAtK": {
+            "10": 0.6666666666666666,
+            "20": 0.6666666666666666,
+            "5": 0.0
+          }
+        },
+        "rankedProductIds": [
+          9397815149,
+          9397819432,
+          9459906684,
+          9466448368,
+          8460595946,
+          9431130647,
+          7510891587,
+          8372308572
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          7510891587,
+          8050319029,
+          8372308572
+        ],
+        "slices": [
+          "search",
+          "personalization",
+          "personalization_overreach"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2944,
+          "callSite": "decompose",
+          "correlationId": "222bdb43-2d6b-4f50-9460-2d714b4f1272",
+          "costUsd": 0.00023745000000000003,
+          "error": null,
+          "inputTokens": 3061,
+          "latencyMs": 2864,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 211,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2944
+            },
+            "input_tokens": 3061,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 211,
+            "total_tokens": 3272
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "ac75bf06-4b6d-4f3c-8e1b-1e2fa0babe73",
+          "costUsd": 0.0013283999999999998,
+          "error": null,
+          "inputTokens": 1908,
+          "latencyMs": 6715,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 789,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 512,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 1905,
+              "cache_read": 0
+            },
+            "input_tokens": 1908,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 512
+            },
+            "output_tokens": 789,
+            "total_tokens": 2697
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        9397815149,
+        9397819432,
+        9459906684,
+        9466448368,
+        8460595946,
+        9431130647,
+        7510891587,
+        8372308572
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-over-0002",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "attrConditions": {
+          "가격": "3~5만원",
+          "브랜드": "Sony",
+          "카테고리": "이어폰",
+          "평점": "4.5+"
+        },
+        "brand": [
+          "Sony"
+        ],
+        "priceMax": 50000,
+        "priceMin": 30000,
+        "ratingMin": 4.5,
+        "semanticQuery": "무선 이어폰"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [
+        "attr_conditions",
+        "brand",
+        "price_max",
+        "price_min",
+        "rating_min"
+      ],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 5115,
+      "metrics": {
+        "caseId": "buy-over-0002",
+        "diversity": 1.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          1592748007,
+          6566974267,
+          8294300715,
+          8655630774,
+          8811061014,
+          8822328310,
+          9004931407,
+          9016632513,
+          9241259314,
+          9301766879,
+          9344325307,
+          9405845716,
+          9424901383,
+          9433232120,
+          9474702025
+        ],
+        "extractedFilters": {
+          "attrConditions": {
+            "가격": "3~5만원",
+            "브랜드": "Sony",
+            "카테고리": "이어폰",
+            "평점": "4.5+"
+          },
+          "brand": [
+            "Sony"
+          ],
+          "priceMax": 50000,
+          "priceMin": 30000,
+          "ratingMin": 4.5,
+          "semanticQuery": "무선 이어폰"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 0.0,
+          "ndcgAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          },
+          "precisionAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          },
+          "recallAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          }
+        },
+        "rankedProductIds": [
+          8822328310
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          1592748007,
+          6566974267,
+          8655630774
+        ],
+        "slices": [
+          "search",
+          "personalization",
+          "personalization_overreach"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2944,
+          "callSite": "decompose",
+          "correlationId": "c3740004-f5ae-4e91-b378-c15c894ba514",
+          "costUsd": 0.00024300000000000002,
+          "error": null,
+          "inputTokens": 3052,
+          "latencyMs": 2823,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 226,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2944
+            },
+            "input_tokens": 3052,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 226,
+            "total_tokens": 3278
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "851caac6-792d-4582-a489-e0bd9d7be7c9",
+          "costUsd": 0.0003404,
+          "error": null,
+          "inputTokens": 682,
+          "latencyMs": 2288,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 170,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 105,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 682,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 105
+            },
+            "output_tokens": 170,
+            "total_tokens": 852
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        8822328310
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-over-0003",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "attrConditions": {
+          "브랜드": "애플"
+        },
+        "brand": [
+          "소니",
+          "애플"
+        ],
+        "priceMax": 50000,
+        "priceMin": 50000,
+        "ratingMin": 4.5,
+        "semanticQuery": "무선 이어폰"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [
+        "attr_conditions",
+        "price_max",
+        "price_min",
+        "rating_min"
+      ],
+      "hardFailure": false,
+      "intentContradictionAxes": [
+        "brand"
+      ],
+      "latencyMs": 7243,
+      "metrics": {
+        "caseId": "buy-over-0003",
+        "diversity": 0.5,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          9178106390,
+          9205740434,
+          9447516649,
+          9467570175
+        ],
+        "extractedFilters": {
+          "attrConditions": {
+            "브랜드": "애플"
+          },
+          "brand": [
+            "소니",
+            "애플"
+          ],
+          "priceMax": 50000,
+          "priceMin": 50000,
+          "ratingMin": 4.5,
+          "semanticQuery": "무선 이어폰"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          },
+          "precisionAtK": {
+            "10": 0.3,
+            "20": 0.15,
+            "5": 0.6
+          },
+          "recallAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          }
+        },
+        "rankedProductIds": [
+          9205740434,
+          9467570175,
+          9178106390,
+          9447516649
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          9178106390,
+          9205740434,
+          9467570175
+        ],
+        "slices": [
+          "search",
+          "personalization",
+          "personalization_overreach"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2944,
+          "callSite": "decompose",
+          "correlationId": "6590bf14-0222-429b-88de-2b948a44048d",
+          "costUsd": 0.00023249999999999999,
+          "error": null,
+          "inputTokens": 3050,
+          "latencyMs": 2873,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 200,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2944
+            },
+            "input_tokens": 3050,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 200,
+            "total_tokens": 3250
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "b468287a-f212-427b-90b2-e7ed5b7d2e64",
+          "costUsd": 0.0006739999999999999,
+          "error": null,
+          "inputTokens": 910,
+          "latencyMs": 4367,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 410,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 267,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 910,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 267
+            },
+            "output_tokens": 410,
+            "total_tokens": 1320
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        9205740434,
+        9467570175,
+        9178106390,
+        9447516649
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-pers-0001",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "attrConditions": {
+          "가격": "<=10000"
+        },
+        "brand": [
+          "Sony"
+        ],
+        "priceMax": 10000,
+        "priceMin": 0,
+        "ratingMin": 4.5,
+        "semanticQuery": "무선 이어폰"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [
+        "attr_conditions",
+        "brand",
+        "price_min",
+        "rating_min"
+      ],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 6463,
+      "metrics": {
+        "caseId": "buy-pers-0001",
+        "diversity": 0.8,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          2374915876,
+          2378024650,
+          4523196896,
+          5367233175,
+          5807301560,
+          8418144778
+        ],
+        "extractedFilters": {
+          "attrConditions": {
+            "가격": "<=10000"
+          },
+          "brand": [
+            "Sony"
+          ],
+          "priceMax": 10000,
+          "priceMin": 0,
+          "ratingMin": 4.5,
+          "semanticQuery": "무선 이어폰"
+        },
+        "filterAccuracy": 0.14285714285714285,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 0.7541110877910312,
+            "20": 0.7541110877910312,
+            "5": 0.7541110877910312
+          },
+          "precisionAtK": {
+            "10": 0.4,
+            "20": 0.2,
+            "5": 0.8
+          },
+          "recallAtK": {
+            "10": 0.8,
+            "20": 0.8,
+            "5": 0.8
+          }
+        },
+        "rankedProductIds": [
+          5367233175,
+          2374915876,
+          5807301560,
+          4523196896,
+          8418144778
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          2374915876,
+          2378024650,
+          4523196896,
+          5367233175,
+          5807301560
+        ],
+        "slices": [
+          "search",
+          "personalization"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2944,
+          "callSite": "decompose",
+          "correlationId": "36aacb6d-1c5a-4c86-ab70-779fb47561d6",
+          "costUsd": 0.00023125,
+          "error": null,
+          "inputTokens": 3049,
+          "latencyMs": 2695,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 197,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2944
+            },
+            "input_tokens": 3049,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 197,
+            "total_tokens": 3246
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 1047,
+          "callSite": "rerank",
+          "correlationId": "7b50e90b-6c9f-413d-b8a7-9af0b30d8d7f",
+          "costUsd": 0.0006575999999999999,
+          "error": null,
+          "inputTokens": 1050,
+          "latencyMs": 3763,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 373,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 211,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 1047
+            },
+            "input_tokens": 1050,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 211
+            },
+            "output_tokens": 373,
+            "total_tokens": 1423
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        5367233175,
+        2374915876,
+        5807301560,
+        4523196896,
+        8418144778
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-pers-0002",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "attrConditions": {
+          "가격": "5만원 이내"
+        },
+        "brand": [
+          "Sony"
+        ],
+        "priceMax": 50000,
+        "ratingMin": 4.5,
+        "semanticQuery": "홍삼 선물세트"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [
+        "attr_conditions",
+        "brand",
+        "price_max",
+        "rating_min"
+      ],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 8012,
+      "metrics": {
+        "caseId": "buy-pers-0002",
+        "diversity": 0.5,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          2281995417,
+          2888196506,
+          3177983773,
+          3178012032,
+          5134004640,
+          7298492903,
+          8386782901,
+          8629221115,
+          9181094162,
+          9203442779,
+          9262843155,
+          9339005338,
+          9462777060,
+          9466686793,
+          9470241680
+        ],
+        "extractedFilters": {
+          "attrConditions": {
+            "가격": "5만원 이내"
+          },
+          "brand": [
+            "Sony"
+          ],
+          "priceMax": 50000,
+          "ratingMin": 4.5,
+          "semanticQuery": "홍삼 선물세트"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 0.2,
+          "ndcgAtK": {
+            "10": 0.19694551601238366,
+            "20": 0.19694551601238366,
+            "5": 0.19694551601238366
+          },
+          "precisionAtK": {
+            "10": 0.1,
+            "20": 0.05,
+            "5": 0.2
+          },
+          "recallAtK": {
+            "10": 0.3333333333333333,
+            "20": 0.3333333333333333,
+            "5": 0.3333333333333333
+          }
+        },
+        "rankedProductIds": [
+          8386782901,
+          8629221115,
+          9462777060,
+          9181094162,
+          5134004640,
+          9470241680
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          2281995417,
+          2888196506,
+          5134004640
+        ],
+        "slices": [
+          "search",
+          "personalization"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2944,
+          "callSite": "decompose",
+          "correlationId": "a44e068b-fa15-48ea-bb0b-cb9aae302353",
+          "costUsd": 0.0002244,
+          "error": null,
+          "inputTokens": 3048,
+          "latencyMs": 2525,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 180,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2944
+            },
+            "input_tokens": 3048,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 180,
+            "total_tokens": 3228
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "1efe025e-d1b6-4bb3-9e6b-17fec46fa05a",
+          "costUsd": 0.0010647999999999999,
+          "error": null,
+          "inputTokens": 1616,
+          "latencyMs": 5482,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 618,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 375,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 1613,
+              "cache_read": 0
+            },
+            "input_tokens": 1616,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 375
+            },
+            "output_tokens": 618,
+            "total_tokens": 2234
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        8386782901,
+        8629221115,
+        9462777060,
+        9181094162,
+        5134004640,
+        9470241680
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-pers-0003",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "brand": [
+          "Sony"
+        ],
+        "priceMax": 50000,
+        "priceMin": 50000,
+        "ratingMin": 4.5,
+        "semanticQuery": "등산 배낭에 달 소지품 파우치"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [
+        "brand",
+        "price_max",
+        "price_min",
+        "rating_min"
+      ],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 7680,
+      "metrics": {
+        "caseId": "buy-pers-0003",
+        "diversity": 1.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          9462497279
+        ],
+        "extractedFilters": {
+          "brand": [
+            "Sony"
+          ],
+          "priceMax": 50000,
+          "priceMin": 50000,
+          "ratingMin": 4.5,
+          "semanticQuery": "등산 배낭에 달 소지품 파우치"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          },
+          "precisionAtK": {
+            "10": 0.1,
+            "20": 0.05,
+            "5": 0.2
+          },
+          "recallAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          }
+        },
+        "rankedProductIds": [
+          9462497279
+        ],
+        "rankingExcluded": true,
+        "rankingExclusionReason": "nonDiscriminativeRanking",
+        "relevantProductIds": [
+          9462497279
+        ],
+        "slices": [
+          "search",
+          "personalization"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2944,
+          "callSite": "decompose",
+          "correlationId": "538787a3-8047-4fcc-affb-43001c2010bb",
+          "costUsd": 0.00022985,
+          "error": null,
+          "inputTokens": 3053,
+          "latencyMs": 5603,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 193,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2944
+            },
+            "input_tokens": 3053,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 193,
+            "total_tokens": 3246
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "6290f107-fa58-44fd-bc4a-be529272ecc9",
+          "costUsd": 0.0003504,
+          "error": null,
+          "inputTokens": 696,
+          "latencyMs": 2076,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 176,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 96,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 696,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 96
+            },
+            "output_tokens": 176,
+            "total_tokens": 872
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        9462497279
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-repu-0001",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "attrConditions": {
+          "BRAND": "Sony",
+          "CATEGORY": "이어폰",
+          "PRICE": "50000",
+          "RATING": "4.5"
+        },
+        "brand": [
+          "Sony"
+        ],
+        "priceMax": 50000,
+        "priceMin": 30000,
+        "ratingMin": 4.5,
+        "semanticQuery": "무선 이어폰"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [
+        "attr_conditions",
+        "brand",
+        "price_max",
+        "price_min",
+        "rating_min"
+      ],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 4849,
+      "metrics": {
+        "caseId": "buy-repu-0001",
+        "diversity": 1.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          9205089754,
+          9406282766
+        ],
+        "extractedFilters": {
+          "attrConditions": {
+            "BRAND": "Sony",
+            "CATEGORY": "이어폰",
+            "PRICE": "50000",
+            "RATING": "4.5"
+          },
+          "brand": [
+            "Sony"
+          ],
+          "priceMax": 50000,
+          "priceMin": 30000,
+          "ratingMin": 4.5,
+          "semanticQuery": "무선 이어폰"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          },
+          "precisionAtK": {
+            "10": 0.1,
+            "20": 0.05,
+            "5": 0.2
+          },
+          "recallAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          }
+        },
+        "rankedProductIds": [
+          9406282766
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          9406282766
+        ],
+        "slices": [
+          "search",
+          "repurchase",
+          "personalization"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2944,
+          "callSite": "decompose",
+          "correlationId": "169f75f3-330d-4b98-9320-715c9978ebdc",
+          "costUsd": 0.00023999999999999998,
+          "error": null,
+          "inputTokens": 3048,
+          "latencyMs": 2983,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 219,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2944
+            },
+            "input_tokens": 3048,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 219,
+            "total_tokens": 3267
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "deded4d0-e43a-4a13-a998-cb34a18e6bdf",
+          "costUsd": 0.00025059999999999997,
+          "error": null,
+          "inputTokens": 689,
+          "latencyMs": 1864,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 94,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 61,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 689,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 61
+            },
+            "output_tokens": 94,
+            "total_tokens": 783
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        9406282766
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-repu-0002",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "attrConditions": {
+          "가격대": "3~5만원",
+          "브랜드": "Sony",
+          "평점": "4.5 이상"
+        },
+        "brand": [
+          "Sony"
+        ],
+        "priceMax": 50000,
+        "priceMin": 30000,
+        "ratingMin": 4.5,
+        "semanticQuery": "무선 이어폰"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [
+        "attr_conditions",
+        "brand",
+        "price_max",
+        "price_min",
+        "rating_min"
+      ],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 5695,
+      "metrics": {
+        "caseId": "buy-repu-0002",
+        "diversity": 1.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          9205089754,
+          9406282766
+        ],
+        "extractedFilters": {
+          "attrConditions": {
+            "가격대": "3~5만원",
+            "브랜드": "Sony",
+            "평점": "4.5 이상"
+          },
+          "brand": [
+            "Sony"
+          ],
+          "priceMax": 50000,
+          "priceMin": 30000,
+          "ratingMin": 4.5,
+          "semanticQuery": "무선 이어폰"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          },
+          "precisionAtK": {
+            "10": 0.1,
+            "20": 0.05,
+            "5": 0.2
+          },
+          "recallAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          }
+        },
+        "rankedProductIds": [
+          9205089754,
+          9406282766
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          9205089754
+        ],
+        "slices": [
+          "search",
+          "repurchase",
+          "personalization"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2944,
+          "callSite": "decompose",
+          "correlationId": "846ba314-01d3-4e56-8982-c16fd0048501",
+          "costUsd": 0.00023760000000000003,
+          "error": null,
+          "inputTokens": 3056,
+          "latencyMs": 2675,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 212,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2944
+            },
+            "input_tokens": 3056,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 212,
+            "total_tokens": 3268
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "6d78a116-b828-4623-b17a-332db09ae8d5",
+          "costUsd": 0.00048619999999999995,
+          "error": null,
+          "inputTokens": 769,
+          "latencyMs": 3008,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 277,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 168,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 769,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 168
+            },
+            "output_tokens": 277,
+            "total_tokens": 1046
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        9205089754,
+        9406282766
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-repu-0003",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "attrConditions": {
+          "가격": "5만원 이하",
+          "브랜드": "Sony",
+          "카테고리": "이어폰 케이스"
+        },
+        "brand": [
+          "Sony"
+        ],
+        "keyword": "케이스",
+        "priceMax": 50000,
+        "priceMin": 0,
+        "ratingMin": 4.5,
+        "semanticQuery": "무선 이어폰 케이스"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [
+        "attr_conditions",
+        "brand",
+        "keyword",
+        "price_max",
+        "price_min",
+        "rating_min"
+      ],
+      "hardFailure": false,
+      "intentContradictionAxes": [
+        "keyword"
+      ],
+      "latencyMs": 7245,
+      "metrics": {
+        "caseId": "buy-repu-0003",
+        "diversity": 1.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          1670827228,
+          2664196774,
+          3018587338,
+          4288271796,
+          4315852617,
+          5324430409,
+          5356722618,
+          5597978044,
+          6914535179,
+          6989992319,
+          7205023265,
+          8394534637,
+          9035270365,
+          9061564932,
+          9178106390,
+          9192224243,
+          9205089754,
+          9205740434,
+          9244102304,
+          9269659922,
+          9309760122,
+          9310520615,
+          9350044414,
+          9383288942,
+          9406202396,
+          9406282766,
+          9422392127,
+          9436885763,
+          9447516649,
+          9454271189
+        ],
+        "extractedFilters": {
+          "attrConditions": {
+            "가격": "5만원 이하",
+            "브랜드": "Sony",
+            "카테고리": "이어폰 케이스"
+          },
+          "brand": [
+            "Sony"
+          ],
+          "keyword": "케이스",
+          "priceMax": 50000,
+          "priceMin": 0,
+          "ratingMin": 4.5,
+          "semanticQuery": "무선 이어폰 케이스"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 0.0,
+          "ndcgAtK": {
+            "10": null,
+            "20": null,
+            "5": null
+          },
+          "precisionAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          },
+          "recallAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          }
+        },
+        "rankedProductIds": [
+          6989992319,
+          7205023265,
+          9244102304,
+          9309760122,
+          9383288942
+        ],
+        "rankingExcluded": true,
+        "rankingExclusionReason": "emptyRelevance",
+        "relevantProductIds": [],
+        "slices": [
+          "repurchase",
+          "failure"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2944,
+          "callSite": "decompose",
+          "correlationId": "c77e4cc2-2571-4d2e-803e-d9068d610c75",
+          "costUsd": 0.0002417,
+          "error": null,
+          "inputTokens": 3050,
+          "latencyMs": 2912,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 223,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2944
+            },
+            "input_tokens": 3050,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 223,
+            "total_tokens": 3273
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "f0821522-ecdf-4719-a914-e5f829554561",
+          "costUsd": 0.0006874,
+          "error": null,
+          "inputTokens": 1115,
+          "latencyMs": 4331,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 387,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 304,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 1112,
+              "cache_read": 0
+            },
+            "input_tokens": 1115,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 304
+            },
+            "output_tokens": 387,
+            "total_tokens": 1502
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        6989992319,
+        7205023265,
+        9244102304,
+        9309760122,
+        9383288942
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-srch-0001",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "brand": [
+          "Sony"
+        ],
+        "priceMax": 50000,
+        "ratingMin": 4.5,
+        "semanticQuery": "감자탕 재료"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [
+        "brand",
+        "price_max",
+        "rating_min"
+      ],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 4363,
+      "metrics": {
+        "caseId": "buy-srch-0001",
+        "diversity": 1.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          1268795
+        ],
+        "extractedFilters": {
+          "brand": [
+            "Sony"
+          ],
+          "priceMax": 50000,
+          "ratingMin": 4.5,
+          "semanticQuery": "감자탕 재료"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          },
+          "precisionAtK": {
+            "10": 0.1,
+            "20": 0.05,
+            "5": 0.2
+          },
+          "recallAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          }
+        },
+        "rankedProductIds": [
+          1268795
+        ],
+        "rankingExcluded": true,
+        "rankingExclusionReason": "nonDiscriminativeRanking",
+        "relevantProductIds": [
+          1268795
+        ],
+        "slices": [
+          "search",
+          "category_mapping_failure",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2944,
+          "callSite": "decompose",
+          "correlationId": "fd25fc67-d71c-4454-a3e4-be83f1b3f32a",
+          "costUsd": 0.00022550000000000003,
+          "error": null,
+          "inputTokens": 3046,
+          "latencyMs": 2526,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 183,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2944
+            },
+            "input_tokens": 3046,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 183,
+            "total_tokens": 3229
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "7c7c7ed6-a7d8-4ccc-8302-c1f7d842aeea",
+          "costUsd": 0.0003234,
+          "error": null,
+          "inputTokens": 699,
+          "latencyMs": 1833,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 153,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 82,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 699,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 82
+            },
+            "output_tokens": 153,
+            "total_tokens": 852
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        1268795
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-srch-0002",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "attrConditions": {
+          "가격": "3~5만원",
+          "브랜드": "Sony",
+          "용도": "출근용",
+          "평점": "4.5이상"
+        },
+        "brand": [
+          "Sony"
+        ],
+        "priceMax": 50000,
+        "priceMin": 30000,
+        "ratingMin": 4.5,
+        "semanticQuery": "무선 이어폰"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [
+        "attr_conditions",
+        "brand",
+        "price_max",
+        "price_min",
+        "rating_min"
+      ],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 10827,
+      "metrics": {
+        "caseId": "buy-srch-0002",
+        "diversity": 0.25,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          1085982197,
+          1403303149,
+          1536882634,
+          1677693211,
+          2374915876,
+          2378024650,
+          2627452444,
+          2730310079,
+          2749402080,
+          2829539071,
+          3445851710,
+          3745840628,
+          4523196896,
+          4744632097,
+          5346989313,
+          5367233175,
+          5588888475,
+          5650482992,
+          5710396474,
+          5807301560,
+          5887023359,
+          6318746061,
+          6460971321,
+          6523501950,
+          6989049238,
+          7510891587,
+          7591624431,
+          7791911136,
+          8050319029,
+          8372308572
+        ],
+        "extractedFilters": {
+          "attrConditions": {
+            "가격": "3~5만원",
+            "브랜드": "Sony",
+            "용도": "출근용",
+            "평점": "4.5이상"
+          },
+          "brand": [
+            "Sony"
+          ],
+          "priceMax": 50000,
+          "priceMin": 30000,
+          "ratingMin": 4.5,
+          "semanticQuery": "무선 이어폰"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 0.9098158578127802,
+            "20": 0.9098158578127802,
+            "5": 0.9098158578127802
+          },
+          "precisionAtK": {
+            "10": 0.3,
+            "20": 0.15,
+            "5": 0.6
+          },
+          "recallAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          }
+        },
+        "rankedProductIds": [
+          2378024650,
+          7591624431,
+          1085982197,
+          2627452444,
+          5807301560,
+          3445851710,
+          2749402080,
+          3745840628
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          1085982197,
+          2378024650,
+          2627452444
+        ],
+        "slices": [
+          "search",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2944,
+          "callSite": "decompose",
+          "correlationId": "259dbe27-8f52-4f01-9b34-5eb248c87ced",
+          "costUsd": 0.00024395,
+          "error": null,
+          "inputTokens": 3047,
+          "latencyMs": 3109,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 229,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2944
+            },
+            "input_tokens": 3047,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 229,
+            "total_tokens": 3276
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "9cc90f9c-b6cc-4d3b-9994-d03dc403252e",
+          "costUsd": 0.0015772,
+          "error": null,
+          "inputTokens": 3188,
+          "latencyMs": 7553,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 783,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 478,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 3185,
+              "cache_read": 0
+            },
+            "input_tokens": 3188,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 478
+            },
+            "output_tokens": 783,
+            "total_tokens": 3971
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        2378024650,
+        7591624431,
+        1085982197,
+        2627452444,
+        5807301560,
+        3445851710,
+        2749402080,
+        3745840628
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-srch-0003",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "attrConditions": {
+          "가격": "3~5만원",
+          "브랜드": "Sony",
+          "용도": "이어폰",
+          "평점": "4.5"
+        },
+        "brand": [
+          "Sony"
+        ],
+        "priceMax": 50000,
+        "priceMin": 30000,
+        "ratingMin": 4.5,
+        "semanticQuery": "무선 이어폰"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [
+        "attr_conditions",
+        "brand",
+        "price_max",
+        "price_min",
+        "rating_min"
+      ],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 5694,
+      "metrics": {
+        "caseId": "buy-srch-0003",
+        "diversity": 1.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          9205089754,
+          9406282766
+        ],
+        "extractedFilters": {
+          "attrConditions": {
+            "가격": "3~5만원",
+            "브랜드": "Sony",
+            "용도": "이어폰",
+            "평점": "4.5"
+          },
+          "brand": [
+            "Sony"
+          ],
+          "priceMax": 50000,
+          "priceMin": 30000,
+          "ratingMin": 4.5,
+          "semanticQuery": "무선 이어폰"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          },
+          "precisionAtK": {
+            "10": 0.2,
+            "20": 0.1,
+            "5": 0.4
+          },
+          "recallAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          }
+        },
+        "rankedProductIds": [
+          9205089754,
+          9406282766
+        ],
+        "rankingExcluded": true,
+        "rankingExclusionReason": "nonDiscriminativeRanking",
+        "relevantProductIds": [
+          9205089754,
+          9406282766
+        ],
+        "slices": [
+          "search",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2944,
+          "callSite": "decompose",
+          "correlationId": "7b403171-6a71-4ae0-ab71-f2c08ed079f5",
+          "costUsd": 0.00023904999999999998,
+          "error": null,
+          "inputTokens": 3045,
+          "latencyMs": 2898,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 217,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2944
+            },
+            "input_tokens": 3045,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 217,
+            "total_tokens": 3262
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "5696b2cd-3261-40a1-b826-221d0852a087",
+          "costUsd": 0.00043599999999999997,
+          "error": null,
+          "inputTokens": 758,
+          "latencyMs": 2791,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 237,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 123,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 758,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 123
+            },
+            "output_tokens": 237,
+            "total_tokens": 995
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        9205089754,
+        9406282766
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-srch-0004",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "brand": [
+          "Sony"
+        ],
+        "priceMax": 50000,
+        "ratingMin": 4.5,
+        "semanticQuery": "스테인리스 냄비 세트"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [
+        "brand",
+        "price_max",
+        "rating_min"
+      ],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 4903,
+      "metrics": {
+        "caseId": "buy-srch-0004",
+        "diversity": 1.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          9381985666
+        ],
+        "extractedFilters": {
+          "brand": [
+            "Sony"
+          ],
+          "priceMax": 50000,
+          "ratingMin": 4.5,
+          "semanticQuery": "스테인리스 냄비 세트"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          },
+          "precisionAtK": {
+            "10": 0.1,
+            "20": 0.05,
+            "5": 0.2
+          },
+          "recallAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          }
+        },
+        "rankedProductIds": [
+          9381985666
+        ],
+        "rankingExcluded": true,
+        "rankingExclusionReason": "nonDiscriminativeRanking",
+        "relevantProductIds": [
+          9381985666
+        ],
+        "slices": [
+          "search",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2944,
+          "callSite": "decompose",
+          "correlationId": "596bf46a-f645-4425-9786-20b048247f5b",
+          "costUsd": 0.00022889999999999998,
+          "error": null,
+          "inputTokens": 3050,
+          "latencyMs": 2623,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 191,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2944
+            },
+            "input_tokens": 3050,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 191,
+            "total_tokens": 3241
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "cafba395-4493-4325-a5f6-2236c4f1baf6",
+          "costUsd": 0.0003474,
+          "error": null,
+          "inputTokens": 699,
+          "latencyMs": 2277,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 173,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 104,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 699,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 104
+            },
+            "output_tokens": 173,
+            "total_tokens": 872
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        9381985666
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-srch-0005",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "brand": [
+          "Sony"
+        ],
+        "priceMax": 50000,
+        "ratingMin": 4.5,
+        "semanticQuery": "체육 수업용 축구공"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [
+        "brand",
+        "price_max",
+        "rating_min"
+      ],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 6361,
+      "metrics": {
+        "caseId": "buy-srch-0005",
+        "diversity": 1.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          9342917796,
+          9356761664,
+          9445707691,
+          9456600583,
+          9470543964
+        ],
+        "extractedFilters": {
+          "brand": [
+            "Sony"
+          ],
+          "priceMax": 50000,
+          "ratingMin": 4.5,
+          "semanticQuery": "체육 수업용 축구공"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          },
+          "precisionAtK": {
+            "10": 0.3,
+            "20": 0.15,
+            "5": 0.6
+          },
+          "recallAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          }
+        },
+        "rankedProductIds": [
+          9342917796,
+          9356761664,
+          9445707691,
+          9456600583,
+          9470543964
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          9342917796,
+          9356761664,
+          9445707691
+        ],
+        "slices": [
+          "search",
+          "guest",
+          "category_mapping_failure"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2944,
+          "callSite": "decompose",
+          "correlationId": "1102cc50-4ead-410e-8742-aa1b53cb5465",
+          "costUsd": 0.00022485,
+          "error": null,
+          "inputTokens": 3049,
+          "latencyMs": 2537,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 181,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2944
+            },
+            "input_tokens": 3049,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 181,
+            "total_tokens": 3230
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 1059,
+          "callSite": "rerank",
+          "correlationId": "47ce779f-97fd-4ebe-b4b8-37767121abd3",
+          "costUsd": 0.0006707999999999999,
+          "error": null,
+          "inputTokens": 1062,
+          "latencyMs": 3814,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 382,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 233,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 1059
+            },
+            "input_tokens": 1062,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 233
+            },
+            "output_tokens": 382,
+            "total_tokens": 1444
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        9342917796,
+        9356761664,
+        9445707691,
+        9456600583,
+        9470543964
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-srch-0006",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "priceMax": 50000,
+        "priceMin": 30000,
+        "ratingMin": 4.5,
+        "semanticQuery": "대용량 건자두"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [
+        "price_max",
+        "price_min",
+        "rating_min"
+      ],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 5145,
+      "metrics": {
+        "caseId": "buy-srch-0006",
+        "diversity": 1.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          9380527610
+        ],
+        "extractedFilters": {
+          "priceMax": 50000,
+          "priceMin": 30000,
+          "ratingMin": 4.5,
+          "semanticQuery": "대용량 건자두"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          },
+          "precisionAtK": {
+            "10": 0.1,
+            "20": 0.05,
+            "5": 0.2
+          },
+          "recallAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          }
+        },
+        "rankedProductIds": [
+          9380527610
+        ],
+        "rankingExcluded": true,
+        "rankingExclusionReason": "nonDiscriminativeRanking",
+        "relevantProductIds": [
+          9380527610
+        ],
+        "slices": [
+          "search",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2944,
+          "callSite": "decompose",
+          "correlationId": "6841c3e1-e823-4755-8506-bca9697cc1c5",
+          "costUsd": 0.00022515000000000002,
+          "error": null,
+          "inputTokens": 3047,
+          "latencyMs": 3133,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 182,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2944
+            },
+            "input_tokens": 3047,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 182,
+            "total_tokens": 3229
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "b48c60e2-3385-40e0-9b2c-5eeadc0486b1",
+          "costUsd": 0.0003012,
+          "error": null,
+          "inputTokens": 696,
+          "latencyMs": 2009,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 135,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 69,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 696,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 69
+            },
+            "output_tokens": 135,
+            "total_tokens": 831
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        9380527610
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-srch-0007",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "attrConditions": {
+          "가격": "5만원 이하",
+          "브랜드": "Sony",
+          "용도": "이어폰",
+          "평점": "4.5+"
+        },
+        "brand": [
+          "Sony"
+        ],
+        "priceMax": 50000,
+        "ratingMin": 4.5,
+        "semanticQuery": "Sony 이어폰"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [
+        "attr_conditions",
+        "brand",
+        "price_max",
+        "rating_min"
+      ],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 4842,
+      "metrics": {
+        "caseId": "buy-srch-0007",
+        "diversity": 1.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          1714227328,
+          2803258637,
+          3294263680,
+          3610879964,
+          3772427130,
+          5784310647,
+          6108080498,
+          7961701252,
+          8427903232,
+          9029965731,
+          9083199962,
+          9154071030,
+          9200973936,
+          9203951415,
+          9211989671,
+          9258786690,
+          9281865026,
+          9282577680,
+          9282669848,
+          9404566511,
+          9425215731,
+          9426693533,
+          9440517467,
+          9453530463,
+          9454394181,
+          9468048697,
+          9470852962,
+          9471567439,
+          9476138918
+        ],
+        "extractedFilters": {
+          "attrConditions": {
+            "가격": "5만원 이하",
+            "브랜드": "Sony",
+            "용도": "이어폰",
+            "평점": "4.5+"
+          },
+          "brand": [
+            "Sony"
+          ],
+          "priceMax": 50000,
+          "ratingMin": 4.5,
+          "semanticQuery": "Sony 이어폰"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 0.0,
+          "ndcgAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          },
+          "precisionAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          },
+          "recallAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          }
+        },
+        "rankedProductIds": [
+          2803258637,
+          3294263680
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          6108080498,
+          7961701252
+        ],
+        "slices": [
+          "search",
+          "guest",
+          "category_mapping_failure"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "member",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "both",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2944,
+          "callSite": "decompose",
+          "correlationId": "03eb2eec-1b5b-4918-91fb-de0ee28cb300",
+          "costUsd": 0.00024225000000000003,
+          "error": null,
+          "inputTokens": 3045,
+          "latencyMs": 2674,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 225,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2944
+            },
+            "input_tokens": 3045,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 225,
+            "total_tokens": 3270
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "8f098469-72a9-4156-9ad7-61513baa9ea0",
+          "costUsd": 0.0003716,
+          "error": null,
+          "inputTokens": 790,
+          "latencyMs": 2164,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 178,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 75,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 790,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 75
+            },
+            "output_tokens": 178,
+            "total_tokens": 968
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        2803258637,
+        3294263680
+      ],
+      "repeat": 0
+    }
+  ],
+  "configVersion": "personalization-eval-config-v1",
+  "coverage": {
+    "costCoverage": 1.0,
+    "tokenCoverage": 1.0
+  },
+  "datasetHash": "764bc148858cb9c04b9da7a210a5479f7f0daa04bec61563c7f94233e9646b04",
+  "datasetVersion": "1.0.0",
+  "executedRepeats": 1,
+  "hardConstraintViolationCount": 0,
+  "hardConstraintViolationRate": 0.0,
+  "hardFailureCount": 2,
+  "primaryMetric": "overall.ndcgAtK.10",
+  "primarySummary": {
+    "bootstrapCi95": {
+      "high": 0.7359326190682658,
+      "low": 0.36852099948012207
+    },
+    "iqr": 0.7128703418003965,
+    "mean": 0.5541173053133382,
+    "median": 0.5602147629550438,
+    "n": 16,
+    "sd": 0.37729986509363556
+  },
+  "rankingExcludedCases": [
+    {
+      "caseId": "buy-cmap-0002",
+      "reason": "nonDiscriminativeRanking"
+    },
+    {
+      "caseId": "buy-cmap-0005",
+      "reason": "emptyRelevance"
+    },
+    {
+      "caseId": "buy-fail-0001",
+      "reason": "emptyRelevance"
+    },
+    {
+      "caseId": "buy-fail-0002",
+      "reason": "emptyRelevance"
+    },
+    {
+      "caseId": "buy-fail-0003",
+      "reason": "emptyRelevance"
+    },
+    {
+      "caseId": "buy-gust-0001",
+      "reason": "nonDiscriminativeRanking"
+    },
+    {
+      "caseId": "buy-mult-0002",
+      "reason": "nonDiscriminativeRanking"
+    },
+    {
+      "caseId": "buy-pers-0003",
+      "reason": "nonDiscriminativeRanking"
+    },
+    {
+      "caseId": "buy-repu-0003",
+      "reason": "emptyRelevance"
+    },
+    {
+      "caseId": "buy-srch-0001",
+      "reason": "nonDiscriminativeRanking"
+    },
+    {
+      "caseId": "buy-srch-0003",
+      "reason": "nonDiscriminativeRanking"
+    },
+    {
+      "caseId": "buy-srch-0004",
+      "reason": "nonDiscriminativeRanking"
+    },
+    {
+      "caseId": "buy-srch-0006",
+      "reason": "nonDiscriminativeRanking"
+    }
+  ],
+  "repeatsRequested": 1,
+  "secondaryMetricSummaries": {},
+  "uniqueCaseCount": 31
+}
