@@ -75,6 +75,8 @@ I-21은 목록당 최대 9개다(`docs/api-spec.md` v0.17.1 §4.2). 9개가 모�
 
 현 scoring의 semantic cosine, profile match, popularity, recency, diversity bonus, recent-purchase penalty를 그대로 수치 feature로 쓸 수 있다(`evals/scoring/components.py`, `scorer.py`). 여기에 `listType`(`PICK_ONE`/`BUY_ALL`), `surface`(`CHAT`/`HOME`), 후보 수, guest/degrade flag를 더한다.
 
+Hidasi et al. 2016이 다룬 session-based 신호처럼 직전 조회 상품, 세션 내 상품 전이, 카테고리 이동은 사용자 식별 없이도 얻을 수 있는 context feature다. Jarvis에서는 이를 `behavior_events.session_key` 안의 시간순 이벤트로 표현할 수 있다. 다만 현재 실사용 세션 이벤트가 0이므로 #160의 `조건부` 판정과 §6 임계값은 바뀌지 않는다.
+
 `position`은 노출 편향을 추정하는 학습 보조 정보지만, **재랭킹 전 inference 시점에는 최종 position을 알 수 없다.** 이를 일반 feature로 넣으면 train/serve skew가 생긴다. Joachims et al. 2017은 click의 position bias에 대해 rank-conditional examination probability를 propensity로 추정하고 로그 상호작용을 inverse-propensity weighting하는 처리를 제시한다. 따라서 Jarvis도 실제 노출 `position`은 serving feature가 아니라 IPS debiasing에 쓰고, 1차 점수의 provisional rank가 필요하면 별도 이름으로 저장해 학습·서빙 양쪽에서 같은 계산을 해야 한다.
 
 이 방식도 추천 시점의 rank와 click 로그가 함께 보존되어야 하므로, 현 FE 전송 여부 확인과 feature snapshot 결손을 해결하지 않으면 적용할 수 없다. 문헌은 position을 처리할 방법을 제공하지만 Jarvis의 입력 부재라는 판정 근거는 그대로다.
@@ -184,3 +186,4 @@ student도 `hard_filter` 경계, #173의 비표시 정밀 가격 유출 방어, 
 - Qizhe Xie, Minh-Thang Luong, Eduard H. Hovy, Quoc V. Le, “Self-training with Noisy Student improves ImageNet classification”, CVPR 2020, pp. 10684–10695.
 - Feiran Huang, Yuanchen Bei, Zhenghang Yang, Junyi Jiang, Hao Chen, Qijie Shen, Senzhang Wang, Fakhri Karray, Philip S. Yu, “Large Language Model Simulator for Cold-Start Recommendation”, WSDM 2025 (arXiv:2402.09176).
 - Jianling Wang, Haokai Lu, James Caverlee, Ed H. Chi, Minmin Chen, “Large Language Models as Data Augmenters for Cold-Start Item Recommendation”, arXiv:2402.11724, 2024.
+- Balázs Hidasi, Alexandros Karatzoglou, Linas Baltrunas, Domonkos Tikk, “Session-based Recommendations with Recurrent Neural Networks”, ICLR 2016 (Poster) (arXiv:1511.06939).

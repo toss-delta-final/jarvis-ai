@@ -44,6 +44,8 @@ I-21은 추천 실행 상관키 `recommendationRequestId`와 목록 키 `listId`
 
 현재는 실사용 노출이 0이므로 어느 자릿수와 비교해도 학습 가능 여부는 `no`다. `member` 0명·`orders` 0건에서는 context 일반화와 장기 reward를 검증할 holdout도 만들 수 없다.
 
+bandit의 randomization unit은 `list_id`/request뿐 아니라 `session_key`가 될 수도 있어 익명 세션 안에서 arm을 고정할 수 있다. 그러나 세션 단위로 무작위화해도 실제 선택확률을 기록하지 않으면 off-policy 평가는 불가능하므로 propensity 선행 요구와 #161의 `no-go`는 그대로다.
+
 ### 2.2 propensity 기록이 진짜 선행 조건
 
 Li et al. 2011은 contextual-bandit 추천 알고리즘의 unbiased offline replay 평가를 다룬다. 이 평가와 IPS·SNIPS·DR 계열은 “그 시점의 행동 정책이 선택한 action의 확률”을 알아야 하며, 사후에 현재 모델로 확률을 재계산하면 당시 후보·feature·정책 버전이 달라질 수 있어 유효하지 않다. 최소 로깅 단위는 다음이다.
