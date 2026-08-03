@@ -66,17 +66,20 @@ def reset_cache() -> None:
 
 
 def get_synonym_map(dsn: str, *, ttl_s: float) -> dict[str, list[str]]:
-    """dsn별 승인 사전을 monotonic TTL 동안 재사용한다."""
+    """dsn별 승인 사전을 monotonic TTL 동안 재사용하며 DB 조회 중 캐시 락을 놓는다."""
     now = time.monotonic()
     cached = _cache.get(dsn)
     if cached is not None and now < cached[0]:
         return cached[1]
+    # TTL 갱신 창에는 같은 dsn 쿼리가 겹칠 수 있지만, DB 호출 동안 전역 캐시 락을 잡아 다른
+    # 검색 스레드의 wait_for 예산을 락 대기로 소모시키는 것보다 낫다. 결과 반영 시 먼저 끝난
+    # 스레드의 유효 값을 재확인해 같은 dsn 캐시를 불필요하게 덮어쓰지 않는다.
+    mapping = load_synonym_map(dsn)
     with _cache_lock:
         now = time.monotonic()
         cached = _cache.get(dsn)
         if cached is not None and now < cached[0]:
             return cached[1]
-        mapping = load_synonym_map(dsn)
         _cache[dsn] = (now + max(0.0, ttl_s), mapping)
         return mapping
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import json
 import logging
@@ -569,18 +570,23 @@ async def build(
     threshold: float | None = None,
     page_size: int = 500,
 ) -> BuildResult:
-    """수확→군집→LLM 제거 다듬기→검수 큐→pending upsert를 실행한다."""
+    """오프라인 1회 빌드로 수확→군집→LLM 다듬기→검수 큐→pending upsert를 실행한다.
+
+    임베딩 API·파일·DB 동기 작업은 오래 걸려도 정상인 배치이므로 시간 제한 없이 스레드로
+    넘겨, async 진입점이 실행 중인 이벤트 루프만 막지 않는다.
+    """
     settings = get_settings()
     embed = embed or functools.partial(_embed_texts, task_type=settings.embedding_task_document)
     llm = llm or get_llm()
     if llm is None:
         raise RuntimeError("color synonym build: LLM 미구성")
     counts = await harvest_terms(fetch=fetch, page_size=page_size)
-    initial = cluster_terms(
+    initial = await asyncio.to_thread(
+        cluster_terms,
         counts,
         embed,
         top_n=settings.color_synonym_top_n if top_n is None else top_n,
-        threshold=(settings.color_synonym_cluster_threshold if threshold is None else threshold),
+        threshold=settings.color_synonym_cluster_threshold if threshold is None else threshold,
     )
     refined = await refine_clusters(
         initial,
@@ -590,12 +596,18 @@ async def build(
     )
     before = sum(len(cluster.members) for cluster in initial)
     after = sum(len(cluster.members) for cluster in refined)
-    write_review_queue(
+    await asyncio.to_thread(
+        write_review_queue,
         refined,
         review_path,
         threshold=settings.color_synonym_cluster_threshold if threshold is None else threshold,
         boundary_band_width=settings.color_synonym_boundary_band_width,
     )
     rows = _rows_from_clusters(counts, refined)
-    upserted = upsert_color_terms(dsn, rows, settings.embedding_model_id)
+    upserted = await asyncio.to_thread(
+        upsert_color_terms,
+        dsn,
+        rows,
+        settings.embedding_model_id,
+    )
     return BuildResult(len(counts), len(refined), before - after, upserted, str(review_path))

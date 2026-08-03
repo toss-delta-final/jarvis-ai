@@ -455,3 +455,44 @@ def test_color_synonym_app_timeout_must_be_below_db_timeout() -> None:
             home_reco_store_timeout_s=1.0,
             color_synonym_query_timeout_s=2.0,
         )
+
+
+async def test_build_offloads_all_blocking_stages_from_event_loop(monkeypatch, tmp_path) -> None:
+    import threading
+
+    loop_thread = threading.get_ident()
+    stage_threads: dict[str, int] = {}
+
+    async def harvest(*args, **kwargs):
+        return Counter({"블랙": 1})
+
+    def cluster(*args, **kwargs):
+        stage_threads["cluster"] = threading.get_ident()
+        return []
+
+    async def refine(clusters, *args, **kwargs):
+        return clusters
+
+    def write(*args, **kwargs):
+        stage_threads["write"] = threading.get_ident()
+
+    def upsert(*args, **kwargs):
+        stage_threads["upsert"] = threading.get_ident()
+        return 1
+
+    monkeypatch.setattr(seed, "harvest_terms", harvest)
+    monkeypatch.setattr(seed, "cluster_terms", cluster)
+    monkeypatch.setattr(seed, "refine_clusters", refine)
+    monkeypatch.setattr(seed, "write_review_queue", write)
+    monkeypatch.setattr(seed, "upsert_color_terms", upsert)
+
+    result = await seed.build(
+        "dsn",
+        tmp_path / "review.md",
+        embed=lambda terms: [],
+        llm=object(),
+    )
+
+    assert result.upserted_rows == 1
+    assert set(stage_threads) == {"cluster", "write", "upsert"}
+    assert all(thread_id != loop_thread for thread_id in stage_threads.values())

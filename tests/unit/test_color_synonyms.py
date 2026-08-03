@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+import threading
+
 from app.pipelines import color_synonyms
 
 
@@ -93,3 +96,23 @@ def test_cache_uses_monotonic_ttl_and_reset(monkeypatch) -> None:
     color_synonyms.reset_cache()
     color_synonyms.get_synonym_map("dsn", ttl_s=10.0)
     assert loads == ["dsn", "dsn", "dsn"]
+
+
+def test_concurrent_cache_misses_do_not_hold_cache_lock_during_db_load(monkeypatch) -> None:
+    color_synonyms.reset_cache()
+    both_loaders_entered = threading.Barrier(2)
+
+    def load(dsn: str) -> dict[str, list[str]]:
+        both_loaders_entered.wait(timeout=1.0)
+        return {"남색": ["네이비", "남색"]}
+
+    monkeypatch.setattr(color_synonyms, "load_synonym_map", load)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(color_synonyms.get_synonym_map, "dsn", ttl_s=10.0)
+            for _ in range(2)
+        ]
+        assert [future.result(timeout=2.0) for future in futures] == [
+            {"남색": ["네이비", "남색"]},
+            {"남색": ["네이비", "남색"]},
+        ]
