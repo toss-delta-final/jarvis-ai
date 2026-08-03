@@ -1,0 +1,12 @@
+{
+  "entries": [
+    {
+      "effectiveDate": "2025-08-07",
+      "inPer1k": 0.00005,
+      "model": "gpt-5-nano",
+      "outPer1k": 0.0004,
+      "source": "https://developers.openai.com/api/docs/models/gpt-5-nano"
+    }
+  ],
+  "version": "1"
+}
