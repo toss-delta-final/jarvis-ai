@@ -16,7 +16,9 @@ LLM은 `ScriptedLLM`이라 라우팅·decompose·카테고리 매핑 head가 제
 미기동 로컬 환경에서 주입한 값이며, 결과는 staging 성능 수치가 아니다. 인프로세스
 `TestClient`는 SSE 본문을 버퍼링해 첫 이벤트와 전체 종료를 구분하지 못하므로 사용하지 않는다.
 
-불변 원본 결과는 `results/measure-277-20260804.json`이다.
+결과 파일은 2개다. `results/measure-277-20260804.json`은 미룬 턴의 I-1 재시도 스킵
+**전** 불변 원본이고, `results/measure-277-20260804-after-retry-skip.json`은 스킵 **후**
+결과이며 `D3_deferred_worst_no_retry` 시나리오가 추가된 실행이다.
 
 ## 재실행
 
