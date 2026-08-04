@@ -12,18 +12,26 @@ degrade 수렴 3층(§4·§7):
 - 워커 예외·타임아웃·구조화 출력 누락 → 코드가 degrade finding 생성(본 모듈).
 - 선택 워커 **전부 예외** → AllWorkersFailedError → 호출부가 사과 token 후 done.
   워커가 스스로 반환한 degrade finding 은 실패로 세지 않는다(문자열 판정 의존 회피).
+
+브랜치 분석 검증(이슈 #242, DESIGN-ANALYSIS-V31-242): run_branches/_run_one_branch 가
+팬아웃 단위에 F1~F3(verifier.run_finding_checks) + analysis_judge 검증을 추가한다.
+이 검증의 미달(F 잔존 강등·judge 미달)은 위 3층 "워커 예외"와 **다른 신호**다 —
+3층 집계에 섞이면 F 미달이 흔한 상황에서 AllWorkersFailedError 가 오발동한다(R3).
+후단(write_verified_report 이하)은 이 변경으로 무영향이다 — [vf.finding for vf in ...]
+로 평범한 AnalysisFinding 목록을 그대로 받는다.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.graph.state import CompiledStateGraph
 
 from app.agents.seller import history
@@ -37,35 +45,46 @@ from app.agents.seller.pipeline import (
     WORKER_PROGRESS_TOKENS,
     ResolvedPlan,
     compose_response,
+    format_analysis_judge_input,
+    format_graph_input,
     format_judge_input,
     format_recommend_input,
     format_report_input,
     format_rewrite_input,
     format_worker_input,
+    format_worker_retry_input,
     resolve_plan,
 )
 from app.agents.seller.schemas import (
     AnalysisFinding,
     AnalysisPlan,
+    AnalysisScore,
     AnalysisType,
+    ChartSet,
     RecommendationSet,
     ReportScore,
     RouteDecision,
 )
-from app.agents.seller.verifier import run_deterministic_checks
+from app.agents.seller.verifier import (
+    run_chart_checks,
+    run_deterministic_checks,
+    run_finding_checks,
+)
 from app.agents.seller.workers import (
     build_abuse_agent,
+    build_analysis_judge,
     build_analysis_planner,
     build_behavior_agent,
     build_churn_agent,
     build_conversion_agent,
+    build_graph_agent,
     build_recommend_agent,
     build_report_agent,
     build_report_judge,
     build_sales_anomaly_agent,
     build_supervisor,
 )
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.llm import LLMNotConfigured
 from app.core.tracing import current_request_trace, trace_span
 
@@ -178,15 +197,26 @@ def _degrade_finding(analysis_type: AnalysisType, cause: str) -> AnalysisFinding
     )
 
 
+def _harvest_tool_outputs(messages: Sequence[object]) -> list[str]:
+    """ToolMessage 원출력을 F2 근거 대조 재료로 수확한다(이슈 #242 — 도구출력⊇finding).
+
+    이슈 원안은 "팬인 시점에 ToolMessage 가 소실되어 검증이 구조적으로 불가능"
+    이라 적었으나 실측 결과는 다르다 — ainvoke 결과의 messages 는 이 함수 호출
+    시점(브랜치 내부)까지는 살아 있고, 그동안 `_run_one_worker` 가 structured_response
+    만 읽고 버렸을 뿐이다. 그래서 LangGraph 구조 변경 없이 수확 지점만 추가한다.
+    """
+    return [_content_to_text(msg.content) for msg in messages if isinstance(msg, ToolMessage)]
+
+
 async def _run_one_worker(
     analysis_type: AnalysisType,
     message: str,
     context: SellerContext,
     timeout_s: float,
-) -> AnalysisFinding:
-    """워커 1종 실행 — 요청마다 빌드(C1 철학·상태 공유 방지), 구조화 출력을 반환.
+) -> tuple[AnalysisFinding, list[str]]:
+    """워커 1종 실행 — 요청마다 빌드(C1 철학·상태 공유 방지), (finding, 도구 원출력) 반환.
 
-    타임아웃·예외는 여기서 처리하지 않고 올린다 — 수렴은 run_workers 소관.
+    타임아웃·예외는 여기서 처리하지 않고 올린다 — 수렴은 run_branches 소관.
     """
     with trace_span(f"seller.worker.{analysis_type}", "chain"):
         agent = WORKER_BUILDERS[analysis_type]()
@@ -198,17 +228,158 @@ async def _run_one_worker(
     finding = result.get("structured_response")
     if not isinstance(finding, AnalysisFinding):
         raise TypeError(f"워커 {analysis_type} 가 AnalysisFinding 을 반환하지 않았다")
-    return finding
+    tool_outputs = _harvest_tool_outputs(result.get("messages", []))
+    return finding, tool_outputs
 
 
-async def run_workers(
+# ── 브랜치 분석 검증 (3-3 확장, 이슈 #242) — F1~F3 결정론 + analysis_judge ──────
+
+
+@dataclass(frozen=True)
+class VerifiedFinding:
+    """브랜치 1개의 분석 검증 결과 — run_branches 팬인·후단(write_verified_report)
+    입력 재료. degrade 3층(§4·§7)에는 **워커 단계 예외만** 산입되고, 여기 담긴
+    F/judge 미달(passed=False)은 별도 관측 대상이다(R3 — 오발동 방지).
+    """
+
+    finding: AnalysisFinding
+    passed: bool
+    attempts: int
+    failed_checks: tuple[str, ...]
+    last_score: AnalysisScore | None
+    degraded: bool  # F 잔존으로 강등됐는가(True 면 finding 은 이미 degrade 형)
+
+
+async def _score_finding(
+    finding: AnalysisFinding,
+    tool_outputs: list[str],
+    context: SellerContext,
+    settings: Settings,
+) -> AnalysisScore:
+    """analysis_judge 1회 채점 — analysis_judge_timeout_s(워커 타임아웃과 분리, §9-R1)."""
+    judge_agent = build_analysis_judge()
+    judge_input = format_analysis_judge_input(finding, tool_outputs)
+    with trace_span("llm.seller.analysis_judge", "llm", _llm_metadata("analysis_judge")):
+        judge_result = await asyncio.wait_for(
+            judge_agent.ainvoke(
+                {"messages": [HumanMessage(content=judge_input)]},
+                context=context,
+            ),
+            timeout=settings.seller_analysis_judge_timeout_s,
+        )
+    score = judge_result.get("structured_response")
+    if not isinstance(score, AnalysisScore):
+        raise TypeError("analysis_judge 가 AnalysisScore 를 반환하지 않았다")
+    return score
+
+
+async def _run_one_branch(
+    analysis_type: AnalysisType,
+    question: str,
+    plan: ResolvedPlan,
+    context: SellerContext,
+    settings: Settings,
+) -> VerifiedFinding:
+    """브랜치 1개: 워커 실행 → F1~F3 + analysis_judge → 미달 시 ≤N회 재실행(핵심 로직).
+
+    - 워커 예외(초기 호출)는 여기서 처리하지 않고 올린다 — run_branches 가 기존
+      run_workers 와 동일하게 degrade+3층 판정으로 수렴한다(worker 단계 예외만 산입).
+    - F 미달·judge 미달·judge 장애는 예외로 올리지 않는다 — 이 함수 안에서
+      소진되며 VerifiedFinding.passed=False 로 반환된다(3층 미산입, R3).
+    - judge 장애(타임아웃 등, seller_analysis_judge_timeout_s 초과 시 실제 발생 가능)
+      시에도 F 미달이 남아있으면 재실행 없이 곧장 강등한다 — F 미달 finding 을
+      "미검증 채택"으로 흘리면 이 PR의 핵심(도구 출력 ⊇ finding 근거 사슬 검증)이
+      judge 장애 한 번에 무력화된다. F 가 전부 통과한 상태의 judge 장애만
+      미검증 채택(Q2 와 동일 철학 — 재실행 없이 현재 finding 인정)한다.
+    - seller_branch_deadline_s 예산을 넘기면 재실행을 포기하고 직전 결과를 채택한다
+      (강등이 아니라 "시간 내 못 끝냄" — §9-R1). [PR 리뷰 반영] 데드라인 통과 여부만
+      보면 "새 재실행을 시작은 하되 완료는 못 해 오히려 더 초과"하는 경우를 못
+      막는다 — 재실행 1회(worker+judge)를 끝까지 완주할 잔여 예산이 있을 때만
+      재실행하도록 판단한다(아래 can_retry).
+    """
+    deadline = time.monotonic() + settings.seller_branch_deadline_s
+    max_attempts = settings.seller_worker_max_retries + 1
+    threshold = settings.seller_analysis_score_threshold
+    # 재실행 1회의 최악 소요(worker 풀타임아웃 + judge 풀타임아웃) — 잔여 예산이 이보다
+    # 작으면 재실행을 시작해도 도중에 예산을 넘길 뿐이라 애초에 시작하지 않는다.
+    retry_cycle_cost_s = (
+        settings.seller_worker_timeout_s + settings.seller_analysis_judge_timeout_s
+    )
+    message = format_worker_input(question, plan)
+
+    finding, tool_outputs = await _run_one_worker(
+        analysis_type, message, context, settings.seller_worker_timeout_s
+    )
+    last_score: AnalysisScore | None = None
+    failed_checks: list[str] = []
+    attempt = 1
+
+    while True:
+        failed_checks = run_finding_checks(finding, tool_outputs, expected_type=analysis_type)
+        try:
+            score = await _score_finding(finding, tool_outputs, context, settings)
+        except LLMNotConfigured:
+            raise
+        except Exception as exc:
+            if failed_checks:
+                logger.warning(
+                    "analysis_judge %s %d회차 실패(%r) — F 미달 잔존으로 강등",
+                    analysis_type,
+                    attempt,
+                    exc,
+                )
+                degraded = _degrade_finding(analysis_type, "분석 검증 미달")
+                return VerifiedFinding(degraded, False, attempt, tuple(failed_checks), None, True)
+            logger.warning(
+                "analysis_judge %s %d회차 실패(%r) — 미검증 채택", analysis_type, attempt, exc
+            )
+            return VerifiedFinding(finding, False, attempt, (), None, False)
+
+        last_score = score
+        if not failed_checks and score.total >= threshold:
+            return VerifiedFinding(finding, True, attempt, (), score, False)
+
+        # [PR 리뷰 반영] "데드라인 통과 전"이 아니라 "재실행 1회를 완주할 잔여 예산이
+        # 있는가"로 판단한다 — 잔여가 retry_cycle_cost_s 보다 작으면 재실행을 시작해도
+        # 도중에 예산을 넘길 뿐이라 애초에 포기한다(§9-R1 의도한 상한 실효화 방지).
+        remaining_s = deadline - time.monotonic()
+        can_retry = attempt < max_attempts and remaining_s >= retry_cycle_cost_s
+        if not can_retry:
+            break
+
+        feedback = "\n".join([*failed_checks, score.feedback])
+        retry_message = format_worker_retry_input(question, plan, finding, feedback)
+        try:
+            finding, tool_outputs = await _run_one_worker(
+                analysis_type, retry_message, context, settings.seller_worker_timeout_s
+            )
+        except LLMNotConfigured:
+            raise
+        except Exception as exc:
+            logger.warning("브랜치 %s 재실행 실패(%r) — 이전 finding 채택", analysis_type, exc)
+            break
+        attempt += 1
+
+    if failed_checks:
+        degraded = _degrade_finding(analysis_type, "분석 검증 미달")
+        return VerifiedFinding(degraded, False, attempt, tuple(failed_checks), last_score, True)
+    return VerifiedFinding(finding, False, attempt, (), last_score, False)
+
+
+async def run_branches(
     question: str,
     plan: ResolvedPlan,
     context: SellerContext,
     *,
     emit: Emit,
-) -> list[AnalysisFinding]:
-    """선택된 워커를 병렬 실행하고 finding 목록으로 수렴한다 (팬아웃 → 팬인, §2).
+) -> list[VerifiedFinding]:
+    """선택된 브랜치를 병렬 실행하고 VerifiedFinding 목록으로 수렴한다 (팬아웃 → 팬인, §2).
+
+    구 run_workers(3-3)의 팬아웃·degrade 3층 판정을 그대로 유지하되, 브랜치마다
+    F1~F3 + analysis_judge 검증을 추가한다(이슈 #242). **3층 판정은 워커 단계
+    예외만 산입** — F/judge 미달은 _run_one_branch 안에서 소진되고 예외로 올라오지
+    않으므로 여기 집계에 섞이지 않는다(R3, 전 워커 F미달이 사과 응답으로 오발동하는
+    문제 방지).
 
     - 시작 시 워커별 진행 token 을 계획 순서대로 emit(first-token·체감 대기, §7).
     - 실행은 asyncio.gather 병렬 — 반환 순서는 plan.analyses 순서를 유지한다.
@@ -217,16 +388,12 @@ async def run_workers(
     - 전부 예외면 AllWorkersFailedError — 부분 보고서조차 불가능한 경우만이다.
     """
     settings = get_settings()
-    message = format_worker_input(question, plan)
 
     for analysis_type in plan.analyses:
         await emit(WORKER_PROGRESS_TOKENS[analysis_type])
 
     results = await asyncio.gather(
-        *(
-            _run_one_worker(t, message, context, settings.seller_worker_timeout_s)
-            for t in plan.analyses
-        ),
+        *(_run_one_branch(t, question, plan, context, settings) for t in plan.analyses),
         return_exceptions=True,
     )
 
@@ -234,23 +401,35 @@ async def run_workers(
         if isinstance(result, LLMNotConfigured):
             raise result
 
-    findings: list[AnalysisFinding] = []
+    verified: list[VerifiedFinding] = []
     failures = 0
     for analysis_type, result in zip(plan.analyses, results, strict=True):
         if isinstance(result, BaseException):
             failures += 1
-            logger.warning("분석 워커 %s 실패: %r", analysis_type, result)
+            logger.warning("분석 브랜치 %s 실패: %r", analysis_type, result)
             cause = "응답 시간 초과" if isinstance(result, asyncio.TimeoutError) else "내부 오류"
-            findings.append(_degrade_finding(analysis_type, cause))
+            degraded = _degrade_finding(analysis_type, cause)
+            verified.append(VerifiedFinding(degraded, False, 0, (), None, True))
         else:
-            findings.append(result)
+            verified.append(result)
 
     if failures and failures == len(plan.analyses):
         _mark_degraded("all_workers_failed")
         raise AllWorkersFailedError("선택된 분석 워커가 전부 실패했다")
     if failures:
         _mark_degraded("worker_degrade")
-    return findings
+    # F/judge 미달(VerifiedFinding.passed=False)은 SELLER_DEGRADE_REASON_PRECEDENCE
+    # (app/core/tracing.py — 닫힌 4종 계약)에 새 사유를 추가하지 않는 한 여기서
+    # _mark_degraded 하지 않는다. 관측은 7단계(구조화 로그: F2 발화율·judge 미달률
+    # 등, DESIGN-ANALYSIS-V31-242 §6)에서 별도 로그로 다룬다 — degradeReason 계약
+    # 확장은 그 자체로 owner 승인이 필요한 변경이라 1단계 범위 밖이다.
+    if any(not vf.passed for vf in verified if vf.attempts > 0):
+        logger.info(
+            "브랜치 검증 미달 %d/%d건",
+            sum(1 for vf in verified if not vf.passed and vf.attempts > 0),
+            len(verified),
+        )
+    return verified
 
 
 # ── 검증 루프 (3-4) — 결정론 검사 + judge 채점 → ≤N회 재작성 (SPEC §10-⑦) ──────
@@ -413,6 +592,68 @@ async def run_recommend(
         return RecommendationSet(recommendations=[], summary="")
 
 
+# ── graph (이슈 #242) — 차트 생성 + G1 검증. wants_chart 일 때만 run_analysis_pipeline
+# 이 asyncio.gather(run_recommend, run_graph) 로 호출한다(3단계 배선 — 아래 참조) ──
+
+
+async def run_graph(
+    findings: list[AnalysisFinding],
+    report: str,
+    question: str,
+    context: SellerContext,
+    *,
+    emit: Emit,
+) -> ChartSet:
+    """차트 생성 실행 — 실패는 빈 ChartSet 으로 degrade(보고서를 죽이지 않는다, C2 대칭).
+
+    차트도 recommend 와 같은 부가 가치다: LLM 장애·타임아웃·구조화 출력 실패는 물론
+    G1(verifier.run_chart_checks) 자체의 실패(예: 향후 verifier 변경으로 인한 버그,
+    비정상 float 값 등)가 나도 검증된 보고서는 그대로 나간다 — [PR 리뷰 반영] G1
+    호출을 agent 호출과 별개의 try/except 로 감싼다. 호출부(run_analysis_pipeline)
+    는 이 함수를 asyncio.gather(run_recommend, run_graph)로 묶되 return_exceptions
+    을 쓰지 않으므로, 이 함수가 예외를 밖으로 흘리면 이미 성공한 recommend 결과·
+    검증된 보고서까지 통째로 사과 응답으로 대체된다(이 함수는 예외를 밖으로
+    내보내면 안 된다는 뜻).
+    G1(verifier.run_chart_checks)이 미달 ChartSpec 을 드랍한다 — 보고서 검증(D)과
+    달리 재작성 루프는 없다.
+
+    호출부(run_analysis_pipeline)는 resolved.wants_chart 일 때만 이 함수를
+    run_recommend 와 asyncio.gather 로 병렬 호출한다 — 원치 않는 요청까지
+    graph LLM 콜을 태우지 않는다(비용·wall-clock 절약, SPEC-SELLER-001 §1-12
+    조정표의 "chart 는 전달 경로 없어 보류" 원칙이 3단계로 해소된다).
+    """
+    await emit(PROGRESS_TOKENS["graph"])
+    agent = build_graph_agent()
+    try:
+        with trace_span("llm.seller.graph", "llm", _llm_metadata("graph")):
+            result = await asyncio.wait_for(
+                agent.ainvoke(
+                    {
+                        "messages": [
+                            HumanMessage(content=format_graph_input(findings, report, question))
+                        ]
+                    },
+                    context=context,
+                ),
+                timeout=get_settings().seller_worker_timeout_s,
+            )
+        charts = result.get("structured_response")
+        if not isinstance(charts, ChartSet):
+            raise TypeError("graph 가 ChartSet 을 반환하지 않았다")
+    except Exception as exc:
+        logger.warning("graph 실패(%r) — 차트 없이 계속(C2 대칭)", exc)
+        return ChartSet(charts=[])
+
+    try:
+        passed, dropped = run_chart_checks(charts, findings)
+    except Exception as exc:
+        logger.warning("G1 차트 검증 실패(%r) — 차트 없이 계속(C2 대칭)", exc)
+        return ChartSet(charts=[])
+    if dropped:
+        logger.info("차트 드랍 %d건(G1): %s", len(dropped), "; ".join(dropped))
+    return passed
+
+
 @dataclass(frozen=True)
 class PipelineResult:
     """분석 파이프라인 최종 산출 — SSE 계층·save_history(4단계)가 소비한다.
@@ -425,6 +666,7 @@ class PipelineResult:
     text: str
     verified: VerifiedReport | None = None
     recommendations: RecommendationSet | None = None
+    charts: ChartSet | None = None
 
 
 async def run_analysis_pipeline(
@@ -483,18 +725,32 @@ async def run_analysis_pipeline(
 
     try:
         resolved = resolve_plan(
-            plan, today=today, recent_default_days=settings.seller_recent_days_default
+            plan,
+            today=today,
+            recent_default_days=settings.seller_recent_days_default,
+            question=question,
         )
     except ValueError as exc:
         return PipelineResult(kind="clarification", text=str(exc))
 
     try:
-        findings = await run_workers(question, resolved, context, emit=emit)
+        verified_branches = await run_branches(question, resolved, context, emit=emit)
     except AllWorkersFailedError:
         return PipelineResult(kind="apology", text=ALL_WORKERS_FAILED_TOKEN)
+    findings = [vf.finding for vf in verified_branches]
 
     verified = await write_verified_report(findings, context, emit=emit)
-    recommendations = await run_recommend(findings, verified.report, context, emit=emit)
+
+    # wants_chart 일 때만 graph 를 recommend 와 병렬 실행한다(이슈 #242, 3단계 배선) —
+    # 요청 없는 대다수 질문에서 불필요한 LLM 콜·wall-clock 을 추가하지 않는다.
+    if resolved.wants_chart:
+        recommendations, charts = await asyncio.gather(
+            run_recommend(findings, verified.report, context, emit=emit),
+            run_graph(findings, verified.report, question, context, emit=emit),
+        )
+    else:
+        recommendations = await run_recommend(findings, verified.report, context, emit=emit)
+        charts = None
 
     # 4-3 §9.1: compose 후 save_history — §6.3 "N번 적용해줘"·planner 주입의 원천.
     # 저장 실패는 응답을 죽이지 않는다(이력은 부가 데이터 — degrade + warning).
@@ -513,7 +769,13 @@ async def run_analysis_pipeline(
 
     return PipelineResult(
         kind="report",
-        text=compose_response(verified.report, recommendations),
+        text=compose_response(
+            verified.report,
+            recommendations,
+            charts,
+            chart_requested=resolved.wants_chart,
+        ),
         verified=verified,
         recommendations=recommendations,
+        charts=charts,
     )

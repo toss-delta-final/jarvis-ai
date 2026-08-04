@@ -80,14 +80,14 @@ class SpringSearchBackend:
 class EmbeddingRerankBackend:
     """방식2 — Spring 검색(I-1) 후보를 AI 임베딩으로 시맨틱 재정렬. 라이브(BE 계약 변경 없음).
 
-    후보의 저장 임베딩(artifact_store)과 query 임베딩의 코사인으로 재정렬한다. 임베딩이 없는 후보는
-    맨 뒤로(−1.0). keyword 없거나 후보 없으면 Spring 순서 그대로 반환.
+    후보 id 집합을 artifact_store.top_k_by_vector 로 넘겨 DB 코사인 거리 순으로 재정렬한다.
+    DB에 행이 없거나 순위 상한 밖인 후보는 Spring 상대순서를 보존해 꼬리에 둔다. keyword 없거나
+    후보 없으면 Spring 순서 그대로 반환.
 
-    store 조회·정렬과 임베딩 호출 둘 다 블로킹 I/O 다 — store 는 pg-catalog 대상이면 psycopg
+    벡터 순위화와 임베딩 호출 둘 다 블로킹 I/O 다 — store 는 pg-catalog 대상이면 psycopg
     동기 드라이버(이슈 #31), 임베딩은 Google API 동기 HTTP 호출(embedding.py). 둘 다
     asyncio.to_thread 로 별도 스레드에 넘겨 FastAPI 이벤트루프를 막지 않는다(PR #42 리뷰).
-    후보마다 store.get() 을 순차 호출하는 N+1 형태는 남아있다 — SQL 배치 조회로 바꾸는 건
-    방식1/2 승격(§4.8 말미) 때 함께 재설계할 별도 과제로 남겨둔다.
+    #101 규약대로 여기서 후보를 절단하지 않고, graph가 dedup·소모품 억제 후 최종 상한을 적용한다.
     """
 
     def __init__(self, *, store: ArtifactStore | None = None, embed=None) -> None:
@@ -98,14 +98,24 @@ class EmbeddingRerankBackend:
         )
 
     def _rerank(self, products: list, qvec: list[float]) -> list:
-        # 후보 embedding 을 1회 batch 로 조회(N+1 제거, #101). 없거나 빈 embedding 은 −1.0(맨 뒤).
-        arts = self._store.get_many([p.product_id for p in products])
+        ids = [product.product_id for product in products]
+        k = min(len(ids), get_settings().embedding_rerank_vector_k_max)
+        ranked_ids = self._store.top_k_by_vector(qvec, k=k, include=set(ids))
 
-        def score(product) -> float:
-            art = arts.get(product.product_id)
-            return _cosine(qvec, art.embedding) if art and art.embedding else -1.0
+        products_by_id: dict[int, list] = {}
+        for product in products:
+            products_by_id.setdefault(product.product_id, []).append(product)
 
-        return sorted(products, key=score, reverse=True)
+        ranked: list = []
+        ranked_id_set: set[int] = set()
+        for product_id in ranked_ids:
+            if product_id in ranked_id_set:
+                continue
+            ranked.extend(products_by_id.get(product_id, ()))
+            ranked_id_set.add(product_id)
+        # DB 미존재·빈 임베딩·k 상한 밖 후보는 유실하지 않고 원래 Spring 상대순서로 꼬리에 둔다.
+        ranked.extend(product for product in products if product.product_id not in ranked_id_set)
+        return ranked
 
     async def search(self, filters: ProductSearchFilters) -> ProductSearchResult:
         result = await spring_client.search_products(filters)

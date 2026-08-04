@@ -685,14 +685,31 @@ async def test_parallel_workers_are_sibling_spans_with_llm_children(
                 )
             }
 
+    from app.agents.seller.schemas import AnalysisScore
+
+    class JudgeAgent:
+        async def ainvoke(self, _input, context=None):
+            return {
+                "structured_response": AnalysisScore(
+                    grounding=8, sufficiency=8, relevance=8, feedback=""
+                )
+            }
+
     monkeypatch.setitem(
         orchestrator.WORKER_BUILDERS, "sales_anomaly", lambda: Agent("sales_anomaly")
     )
     monkeypatch.setitem(orchestrator.WORKER_BUILDERS, "churn", lambda: Agent("churn"))
+    monkeypatch.setattr(orchestrator, "build_analysis_judge", lambda: JudgeAgent())
     monkeypatch.setattr(
         orchestrator,
         "get_settings",
-        lambda: types.SimpleNamespace(seller_worker_timeout_s=1),
+        lambda: types.SimpleNamespace(
+            seller_worker_timeout_s=1,
+            seller_worker_max_retries=1,
+            seller_analysis_score_threshold=21,
+            seller_analysis_judge_timeout_s=1,
+            seller_branch_deadline_s=120.0,
+        ),
     )
     plan = ResolvedPlan(
         analyses=("sales_anomaly", "churn"),
@@ -708,7 +725,7 @@ async def test_parallel_workers_are_sibling_spans_with_llm_children(
         from app.core.tracing import trace_span
 
         with trace_span("seller.graph.analysis", "chain"):
-            await orchestrator.run_workers(
+            await orchestrator.run_branches(
                 "private question", plan, SellerContext(seller_id=7, brand_id=3), emit=emit
             )
     await _finish(trace)
@@ -739,6 +756,7 @@ async def test_analysis_request_exports_complete_bounded_tree(
     from app.agents.seller.schemas import (
         AnalysisFinding,
         AnalysisPlan,
+        AnalysisScore,
         RecommendationSet,
         ReportScore,
         RouteDecision,
@@ -822,12 +840,27 @@ async def test_analysis_request_exports_complete_bounded_tree(
     )
     monkeypatch.setattr(
         orchestrator,
+        "build_analysis_judge",
+        lambda: Agent(
+            {
+                "structured_response": AnalysisScore(
+                    grounding=8, sufficiency=8, relevance=8, feedback=""
+                )
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
         "get_settings",
         lambda: types.SimpleNamespace(
             seller_worker_timeout_s=1,
             seller_report_score_threshold=21,
             seller_report_max_retries=1,
             seller_recent_days_default=7,
+            seller_worker_max_retries=1,
+            seller_analysis_score_threshold=21,
+            seller_analysis_judge_timeout_s=1,
+            seller_branch_deadline_s=120.0,
         ),
     )
     trace = _start_seller_trace(fake_trace_factory)
@@ -988,12 +1021,27 @@ async def test_existing_seller_degrade_outcomes_use_four_bounded_reasons(
                 raise self.exc
             return self.response
 
+    from app.agents.seller.schemas import AnalysisScore
+
+    class JudgeAgent:
+        async def ainvoke(self, _input, context=None):
+            return {
+                "structured_response": AnalysisScore(
+                    grounding=8, sufficiency=8, relevance=8, feedback=""
+                )
+            }
+
     settings = types.SimpleNamespace(
         seller_worker_timeout_s=1,
         seller_report_score_threshold=21,
         seller_report_max_retries=1,
+        seller_worker_max_retries=1,
+        seller_analysis_score_threshold=21,
+        seller_analysis_judge_timeout_s=1,
+        seller_branch_deadline_s=120.0,
     )
     monkeypatch.setattr(orchestrator, "get_settings", lambda: settings)
+    monkeypatch.setattr(orchestrator, "build_analysis_judge", lambda: JudgeAgent())
     plan = ResolvedPlan(
         analyses=("sales_anomaly", "churn"),
         date_from=dt.date(2026, 7, 1),
@@ -1030,7 +1078,7 @@ async def test_existing_seller_degrade_outcomes_use_four_bounded_reasons(
         lambda: Agent(exc=RuntimeError("private worker error")),
     )
     worker_reason = await capture(
-        orchestrator.run_workers("private", plan, SellerContext(7, 3), emit=emit)
+        orchestrator.run_branches("private", plan, SellerContext(7, 3), emit=emit)
     )
 
     monkeypatch.setitem(
@@ -1039,7 +1087,7 @@ async def test_existing_seller_degrade_outcomes_use_four_bounded_reasons(
         lambda: Agent(exc=RuntimeError("private worker error")),
     )
     all_reason = await capture(
-        orchestrator.run_workers("private", plan, SellerContext(7, 3), emit=emit)
+        orchestrator.run_branches("private", plan, SellerContext(7, 3), emit=emit)
     )
 
     monkeypatch.setattr(

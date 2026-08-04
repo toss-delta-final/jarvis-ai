@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from typing import get_args
 
 import pytest
+from langchain_core.messages import ToolMessage
 
 from app.agents.seller import orchestrator
 from app.agents.seller.context import SellerContext
@@ -19,7 +20,12 @@ from app.agents.seller.schemas import (
     ActionRecommendation,
     AnalysisFinding,
     AnalysisPlan,
+    AnalysisScore,
     AnalysisType,
+    ChartPoint,
+    ChartSeries,
+    ChartSet,
+    ChartSpec,
     RecommendationSet,
     ReportScore,
 )
@@ -32,6 +38,11 @@ def _settings(timeout_s: float = 5.0) -> SimpleNamespace:
         seller_report_score_threshold=21,
         seller_report_max_retries=3,
         seller_recent_days_default=7,
+        # ── 브랜치 분석 검증 (이슈 #242) ──
+        seller_worker_max_retries=1,
+        seller_analysis_score_threshold=21,
+        seller_analysis_judge_timeout_s=timeout_s,
+        seller_branch_deadline_s=160.0,  # config.py 기본값(PR 리뷰 반영)과 정합
     )
 
 
@@ -73,16 +84,61 @@ class _StubAgent:
             await asyncio.sleep(self._delay_s)
         if self._exc is not None:
             raise self._exc
-        return {"structured_response": self._finding}
+        # F2(evidence_grounded) 재료 — finding 의 근거를 도구 원출력으로 되돌려줘서
+        # (실제로는 역방향이지만) 이 스텁이 만든 finding 이 브랜치 검증(F2)에서
+        # "도구 출력에 없는 수치"로 오탐되지 않게 한다(이슈 #242).
+        messages: list[object] = []
+        if self._finding is not None:
+            tool_text = " ".join([self._finding.summary, *self._finding.evidence])
+            messages = [ToolMessage(content=tool_text, tool_call_id="stub")]
+        return {"structured_response": self._finding, "messages": messages}
+
+
+def _analysis_score(total_each: int = 8, feedback: str = "") -> AnalysisScore:
+    """임계 21/30(각 축 8*3=24) 통과 기본값 — 브랜치 검증 스텁 재료."""
+    return AnalysisScore(
+        grounding=total_each, sufficiency=total_each, relevance=total_each, feedback=feedback
+    )
+
+
+class _AlwaysPassJudge:
+    """analysis_judge 대역 — 팬아웃(워커 예외 3층) 테스트 기본값, 항상 통과 점수."""
+
+    async def ainvoke(self, _input: dict, context: object = None) -> dict:
+        return {"structured_response": _analysis_score(8)}
+
+
+class _SeqJudge:
+    """analysis_judge 대역 — 순차 행동(AnalysisScore 또는 예외)을 소비한다(재실행 테스트용)."""
+
+    def __init__(self, behaviors: list[object]) -> None:
+        self._behaviors = list(behaviors)
+        self.received: list[str] = []
+
+    async def ainvoke(self, agent_input: dict, context: object = None) -> dict:
+        self.received.append(agent_input["messages"][0].content)
+        behavior = self._behaviors.pop(0)
+        if isinstance(behavior, Exception):
+            raise behavior
+        return {"structured_response": behavior}
 
 
 def _patch(
-    monkeypatch: pytest.MonkeyPatch, stubs: dict[str, _StubAgent], timeout_s: float = 5.0
+    monkeypatch: pytest.MonkeyPatch,
+    stubs: dict[str, _StubAgent],
+    timeout_s: float = 5.0,
+    judge: object | None = None,
 ) -> None:
-    """WORKER_BUILDERS 와 Settings 타임아웃을 스텁으로 교체한다."""
+    """WORKER_BUILDERS·analysis_judge·Settings 타임아웃을 스텁으로 교체한다.
+
+    judge 미지정 시 항상 통과(_AlwaysPassJudge) — 팬아웃(3층) 테스트가 브랜치
+    검증에 영향받지 않도록 하는 기본값이다.
+    """
     for analysis_type, stub in stubs.items():
         monkeypatch.setitem(orchestrator.WORKER_BUILDERS, analysis_type, lambda s=stub: s)
     monkeypatch.setattr(orchestrator, "get_settings", lambda: _settings(timeout_s))
+    judge_stub = judge if judge is not None else _AlwaysPassJudge()
+    monkeypatch.setattr(orchestrator, "build_analysis_judge", lambda: judge_stub)
 
 
 def _collect_emit() -> tuple[list[str], orchestrator.Emit]:
@@ -99,8 +155,8 @@ def test_worker_builders_cover_all_analysis_types() -> None:
     assert set(orchestrator.WORKER_BUILDERS) == set(get_args(AnalysisType))
 
 
-def test_run_workers_happy_path_preserves_order(monkeypatch: pytest.MonkeyPatch) -> None:
-    """정상 2종 — finding 은 계획 순서, 진행 token 은 실행 전에 유형별로 방출된다."""
+def test_run_branches_happy_path_preserves_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    """정상 2종 — VerifiedFinding 은 계획 순서·passed=True, 진행 token 은 유형별 방출."""
     _patch(
         monkeypatch,
         {
@@ -110,15 +166,16 @@ def test_run_workers_happy_path_preserves_order(monkeypatch: pytest.MonkeyPatch)
     )
     tokens, emit = _collect_emit()
 
-    findings = asyncio.run(
-        orchestrator.run_workers("질문", _plan("sales_anomaly", "churn"), _CTX, emit=emit)
+    verified = asyncio.run(
+        orchestrator.run_branches("질문", _plan("sales_anomaly", "churn"), _CTX, emit=emit)
     )
 
-    assert [f.analysis_type for f in findings] == ["sales_anomaly", "churn"]
+    assert [vf.finding.analysis_type for vf in verified] == ["sales_anomaly", "churn"]
+    assert all(vf.passed for vf in verified)
     assert tokens == ["매출 이상 분석 중…", "고객 이탈 분석 중…"]
 
 
-def test_run_workers_partial_failure_becomes_degrade(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_branches_partial_failure_becomes_degrade(monkeypatch: pytest.MonkeyPatch) -> None:
     """1종 예외 → degrade finding(확보 실패·info·빈 evidence)으로 수렴, 파이프라인 계속."""
     _patch(
         monkeypatch,
@@ -129,19 +186,21 @@ def test_run_workers_partial_failure_becomes_degrade(monkeypatch: pytest.MonkeyP
     )
     _, emit = _collect_emit()
 
-    findings = asyncio.run(
-        orchestrator.run_workers("질문", _plan("sales_anomaly", "abuse"), _CTX, emit=emit)
+    verified = asyncio.run(
+        orchestrator.run_branches("질문", _plan("sales_anomaly", "abuse"), _CTX, emit=emit)
     )
 
-    degraded = findings[1]
-    assert degraded.analysis_type == "abuse"
-    assert degraded.severity == "info"
-    assert "확보 실패" in degraded.summary  # D3 탐지 문자열 유지
-    assert degraded.evidence == []
-    assert findings[0].summary == "sales_anomaly 정상 결과"
+    degraded = verified[1]
+    assert degraded.finding.analysis_type == "abuse"
+    assert degraded.finding.severity == "info"
+    assert "확보 실패" in degraded.finding.summary  # D3 탐지 문자열 유지
+    assert degraded.finding.evidence == []
+    assert degraded.passed is False
+    assert degraded.degraded is True
+    assert verified[0].finding.summary == "sales_anomaly 정상 결과"
 
 
-def test_run_workers_configuration_error_is_not_degraded(
+def test_run_branches_configuration_error_is_not_degraded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """provider 미구성은 정상 finding이 섞여도 부분 실패로 흡수하지 않는다."""
@@ -156,11 +215,11 @@ def test_run_workers_configuration_error_is_not_degraded(
 
     with pytest.raises(LLMNotConfigured):
         asyncio.run(
-            orchestrator.run_workers("질문", _plan("sales_anomaly", "abuse"), _CTX, emit=emit)
+            orchestrator.run_branches("질문", _plan("sales_anomaly", "abuse"), _CTX, emit=emit)
         )
 
 
-def test_run_workers_all_failed_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_branches_all_failed_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     """전부 예외 → AllWorkersFailedError(호출부가 사과 token 후 done, §7)."""
     _patch(
         monkeypatch,
@@ -173,11 +232,11 @@ def test_run_workers_all_failed_raises(monkeypatch: pytest.MonkeyPatch) -> None:
 
     with pytest.raises(orchestrator.AllWorkersFailedError):
         asyncio.run(
-            orchestrator.run_workers("질문", _plan("conversion", "behavior"), _CTX, emit=emit)
+            orchestrator.run_branches("질문", _plan("conversion", "behavior"), _CTX, emit=emit)
         )
 
 
-def test_run_workers_timeout_becomes_degrade(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_branches_timeout_becomes_degrade(monkeypatch: pytest.MonkeyPatch) -> None:
     """타임아웃 초과 워커는 '응답 시간 초과' degrade — 나머지는 정상 수렴."""
     _patch(
         monkeypatch,
@@ -189,16 +248,18 @@ def test_run_workers_timeout_becomes_degrade(monkeypatch: pytest.MonkeyPatch) ->
     )
     _, emit = _collect_emit()
 
-    findings = asyncio.run(
-        orchestrator.run_workers("질문", _plan("sales_anomaly", "churn"), _CTX, emit=emit)
+    verified = asyncio.run(
+        orchestrator.run_branches("질문", _plan("sales_anomaly", "churn"), _CTX, emit=emit)
     )
 
-    assert "응답 시간 초과" in findings[1].summary
-    assert findings[0].summary == "sales_anomaly 정상 결과"
+    assert "응답 시간 초과" in verified[1].finding.summary
+    assert verified[0].finding.summary == "sales_anomaly 정상 결과"
 
 
-def test_run_workers_missing_structured_response_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
-    """structured_response 누락(None)도 내부 오류 degrade 로 수렴한다."""
+def test_run_branches_missing_structured_response_degrades(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """structured_response 누락(None)도 내부 오류 degrade 로 수렴한다(3층 예외 경로)."""
     _patch(
         monkeypatch,
         {
@@ -208,12 +269,286 @@ def test_run_workers_missing_structured_response_degrades(monkeypatch: pytest.Mo
     )
     _, emit = _collect_emit()
 
-    findings = asyncio.run(
-        orchestrator.run_workers("질문", _plan("sales_anomaly", "churn"), _CTX, emit=emit)
+    verified = asyncio.run(
+        orchestrator.run_branches("질문", _plan("sales_anomaly", "churn"), _CTX, emit=emit)
     )
 
-    assert "내부 오류" in findings[0].summary
-    assert findings[1].summary == "churn 정상 결과"
+    assert "내부 오류" in verified[0].finding.summary
+    assert verified[1].finding.summary == "churn 정상 결과"
+
+
+# ── 브랜치 분석 검증 (F1~F3 + analysis_judge, 이슈 #242) ───────────────────────
+
+
+def test_run_one_branch_passes_first_attempt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """F 통과 + 24/30 → 1회에 passed=True, attempts=1."""
+    monkeypatch.setitem(
+        orchestrator.WORKER_BUILDERS,
+        "sales_anomaly",
+        lambda: _StubAgent(finding=_finding("sales_anomaly")),
+    )
+    judge = _SeqJudge([_analysis_score(8)])
+    monkeypatch.setattr(orchestrator, "build_analysis_judge", lambda: judge)
+
+    verified = asyncio.run(
+        orchestrator._run_one_branch(
+            "sales_anomaly", "질문", _plan("sales_anomaly"), _CTX, _settings()
+        )
+    )
+
+    assert verified.passed is True
+    assert verified.attempts == 1
+    assert verified.degraded is False
+    assert verified.failed_checks == ()
+
+
+def test_run_one_branch_retries_on_judge_low_score_then_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """1회차 judge 미달(F 는 통과) → 재실행 입력에 feedback 주입, 2회차 통과."""
+
+    class _WorkerSeq:
+        def __init__(self) -> None:
+            self.received: list[str] = []
+            self._calls = 0
+
+        async def ainvoke(self, agent_input: dict, context: object = None) -> dict:
+            self.received.append(agent_input["messages"][0].content)
+            self._calls += 1
+            return {"structured_response": _finding("sales_anomaly")}
+
+    worker = _WorkerSeq()
+    monkeypatch.setitem(orchestrator.WORKER_BUILDERS, "sales_anomaly", lambda: worker)
+    judge = _SeqJudge(
+        [_analysis_score(5, feedback="근거 수치를 더 구체화할 것"), _analysis_score(8)]
+    )
+    monkeypatch.setattr(orchestrator, "build_analysis_judge", lambda: judge)
+
+    verified = asyncio.run(
+        orchestrator._run_one_branch(
+            "sales_anomaly", "질문", _plan("sales_anomaly"), _CTX, _settings()
+        )
+    )
+
+    assert verified.passed is True
+    assert verified.attempts == 2
+    assert worker._calls == 2
+    assert "근거 수치를 더 구체화할 것" in worker.received[1]
+    assert "[이전 분석 결과]" in worker.received[1]
+
+
+def test_run_one_branch_f_failure_triggers_retry_then_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """1회차 F3(type_match) 미달 → 재실행, 2회차 올바른 유형으로 통과."""
+
+    class _WrongThenRightWorker:
+        def __init__(self) -> None:
+            self._calls = 0
+
+        async def ainvoke(self, agent_input: dict, context: object = None) -> dict:
+            self._calls += 1
+            wrong = self._calls == 1
+            return {"structured_response": _finding("conversion" if wrong else "sales_anomaly")}
+
+    worker = _WrongThenRightWorker()
+    monkeypatch.setitem(orchestrator.WORKER_BUILDERS, "sales_anomaly", lambda: worker)
+    judge = _SeqJudge([_analysis_score(8), _analysis_score(8)])
+    monkeypatch.setattr(orchestrator, "build_analysis_judge", lambda: judge)
+
+    verified = asyncio.run(
+        orchestrator._run_one_branch(
+            "sales_anomaly", "질문", _plan("sales_anomaly"), _CTX, _settings()
+        )
+    )
+
+    assert verified.passed is True
+    assert verified.attempts == 2
+    assert verified.finding.analysis_type == "sales_anomaly"
+
+
+def test_run_one_branch_degrades_after_f_exhausted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """재실행(≤1회) 후에도 F 미달 잔존 → degrade finding 으로 강등(passed=False)."""
+    monkeypatch.setitem(
+        orchestrator.WORKER_BUILDERS,
+        "sales_anomaly",
+        lambda: _StubAgent(finding=_finding("conversion")),  # F3 상시 미달(유형 불일치)
+    )
+    judge = _SeqJudge([_analysis_score(8), _analysis_score(8)])
+    monkeypatch.setattr(orchestrator, "build_analysis_judge", lambda: judge)
+
+    verified = asyncio.run(
+        orchestrator._run_one_branch(
+            "sales_anomaly", "질문", _plan("sales_anomaly"), _CTX, _settings()
+        )
+    )
+
+    assert verified.passed is False
+    assert verified.degraded is True
+    assert verified.finding.severity == "info"
+    assert verified.finding.evidence == []
+    assert "분석 검증 미달" in verified.finding.summary
+    assert any("analysis_type 불일치" in reason for reason in verified.failed_checks)
+
+
+def test_run_one_branch_adopts_unverified_when_only_judge_misses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F 는 항상 통과하나 judge 만 계속 미달 → 미달 채택(passed=False, degraded=False)."""
+    monkeypatch.setitem(
+        orchestrator.WORKER_BUILDERS,
+        "sales_anomaly",
+        lambda: _StubAgent(finding=_finding("sales_anomaly")),
+    )
+    judge = _SeqJudge([_analysis_score(5, feedback="부족"), _analysis_score(5, feedback="부족")])
+    monkeypatch.setattr(orchestrator, "build_analysis_judge", lambda: judge)
+
+    verified = asyncio.run(
+        orchestrator._run_one_branch(
+            "sales_anomaly", "질문", _plan("sales_anomaly"), _CTX, _settings()
+        )
+    )
+
+    assert verified.passed is False
+    assert verified.degraded is False  # F 는 통과했으므로 강등하지 않는다
+    assert verified.finding.analysis_type == "sales_anomaly"  # 원 finding 유지
+    assert verified.last_score is not None and verified.last_score.total == 15
+
+
+def test_run_one_branch_judge_crash_adopts_current_unverified(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """judge 장애(예외) → 재실행 없이 현재 finding 미검증 채택(Q2 와 동일 철학)."""
+    monkeypatch.setitem(
+        orchestrator.WORKER_BUILDERS,
+        "sales_anomaly",
+        lambda: _StubAgent(finding=_finding("sales_anomaly")),
+    )
+    judge = _SeqJudge([RuntimeError("judge down")])
+    monkeypatch.setattr(orchestrator, "build_analysis_judge", lambda: judge)
+
+    verified = asyncio.run(
+        orchestrator._run_one_branch(
+            "sales_anomaly", "질문", _plan("sales_anomaly"), _CTX, _settings()
+        )
+    )
+
+    assert verified.passed is False
+    assert verified.last_score is None
+    assert verified.attempts == 1
+
+
+def test_run_one_branch_judge_crash_with_f_failure_degrades(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """judge 장애 + F 미달(F3 유형 불일치) 동시 발생 → 미검증 채택이 아니라 강등한다.
+
+    judge 만 장애 나고 F 는 통과한 경우(위 테스트)와 달리, F 미달이 남아있는데
+    judge 장애로 "미검증 채택"해버리면 이 PR 의 핵심(도구 출력 ⊇ finding 근거
+    사슬 검증)이 judge 장애 한 번으로 무력화된다(PR 리뷰 지적 사항 반영).
+    """
+    monkeypatch.setitem(
+        orchestrator.WORKER_BUILDERS,
+        "sales_anomaly",
+        lambda: _StubAgent(finding=_finding("conversion")),  # F3 상시 미달(유형 불일치)
+    )
+    judge = _SeqJudge([RuntimeError("judge down")])
+    monkeypatch.setattr(orchestrator, "build_analysis_judge", lambda: judge)
+
+    verified = asyncio.run(
+        orchestrator._run_one_branch(
+            "sales_anomaly", "질문", _plan("sales_anomaly"), _CTX, _settings()
+        )
+    )
+
+    assert verified.passed is False
+    assert verified.degraded is True
+    assert verified.finding.severity == "info"
+    assert verified.finding.evidence == []
+    assert "분석 검증 미달" in verified.finding.summary
+    assert any("analysis_type 불일치" in reason for reason in verified.failed_checks)
+    assert verified.last_score is None
+    assert verified.attempts == 1  # judge 장애는 재실행하지 않는다
+
+
+def test_run_one_branch_gives_up_retry_when_deadline_exceeded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """브랜치 예산 초과 → 재실행 포기, 직전 결과를 그대로 채택(강등 아님, §9-R1)."""
+    monkeypatch.setitem(
+        orchestrator.WORKER_BUILDERS,
+        "sales_anomaly",
+        lambda: _StubAgent(finding=_finding("sales_anomaly")),
+    )
+    judge = _SeqJudge([_analysis_score(5, feedback="부족")])
+    monkeypatch.setattr(orchestrator, "build_analysis_judge", lambda: judge)
+    settings = _settings()
+    # 음수로 둬 시각 오차(나노초 단위 경합)와 무관하게 예산이 항상 소진된 상태로 만든다.
+    settings.seller_branch_deadline_s = -1.0
+
+    verified = asyncio.run(
+        orchestrator._run_one_branch(
+            "sales_anomaly", "질문", _plan("sales_anomaly"), _CTX, settings
+        )
+    )
+
+    assert verified.attempts == 1  # 재실행 없음
+    assert verified.passed is False
+    assert verified.degraded is False  # F 는 통과 — judge 미달만으로는 강등하지 않는다
+
+
+def test_run_one_branch_skips_retry_when_remaining_budget_below_retry_cost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """데드라인이 아직 안 지났어도 재실행 1회(worker+judge)를 완주할 잔여 예산이
+    없으면 재실행을 포기한다(PR 리뷰 반영).
+
+    기존엔 "time.monotonic() < deadline" 만 봐서, 데드라인 직전이라도 재실행을
+    시작은 하고(도중에 끝내 예산을 넘기는) 경우를 못 막았다. 잔여 예산(=deadline
+    까지 남은 시간)이 worker_timeout+judge_timeout 보다 작으면 처음부터 시작하지
+    않아야 한다.
+    """
+    monkeypatch.setitem(
+        orchestrator.WORKER_BUILDERS,
+        "sales_anomaly",
+        lambda: _StubAgent(finding=_finding("sales_anomaly")),
+    )
+    judge = _SeqJudge([_analysis_score(5, feedback="부족")])
+    monkeypatch.setattr(orchestrator, "build_analysis_judge", lambda: judge)
+    settings = _settings(timeout_s=10.0)  # retry_cycle_cost_s = 10 + 10 = 20
+    settings.seller_branch_deadline_s = 5.0  # 잔여 예산(~5s) < retry_cycle_cost_s(20s)
+
+    verified = asyncio.run(
+        orchestrator._run_one_branch(
+            "sales_anomaly", "질문", _plan("sales_anomaly"), _CTX, settings
+        )
+    )
+
+    assert verified.attempts == 1  # 재실행 시도 자체가 없었다
+    assert verified.passed is False
+    assert verified.degraded is False  # F 는 통과 — judge 미달만으로는 강등하지 않는다
+
+
+def test_run_branches_f_failure_alone_does_not_trigger_all_workers_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """전 브랜치 F 미달(예외 아님) → AllWorkersFailedError 오발동하지 않는다(R3)."""
+    monkeypatch.setitem(
+        orchestrator.WORKER_BUILDERS,
+        "sales_anomaly",
+        lambda: _StubAgent(finding=_finding("conversion")),  # F3 상시 미달
+    )
+    monkeypatch.setattr(orchestrator, "get_settings", lambda: _settings())
+    monkeypatch.setattr(orchestrator, "build_analysis_judge", lambda: _AlwaysPassJudge())
+    _, emit = _collect_emit()
+
+    verified = asyncio.run(
+        orchestrator.run_branches("질문", _plan("sales_anomaly"), _CTX, emit=emit)
+    )
+
+    assert len(verified) == 1
+    assert verified[0].passed is False  # F 미달은 결과에 반영되지만
+    # AllWorkersFailedError 는 raise 되지 않는다(위에서 예외 없이 도달했다는 사실 자체가 증거).
 
 
 # ── 검증 루프 (3-4) — write_verified_report ────────────────────────────────────
@@ -398,6 +733,96 @@ def test_run_recommend_failure_degrades_to_empty(monkeypatch: pytest.MonkeyPatch
     assert result.recommendations == []
 
 
+# ── graph (5단계, 이슈 #242) — 차트 생성 + G1, 오케스트레이션 미배선 상태 단독 검증 ──
+
+
+def test_run_graph_happy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """정상 — 근거 있는 차트는 G1 통과, graph 진행 token 방출."""
+    chart = ChartSpec(
+        title="일별 매출",
+        chart_type="line",
+        unit="KRW",
+        series=[ChartSeries(label="매출", points=[ChartPoint(x="06-12", y=180000)])],
+    )
+    agent = _SeqAgent([{"structured_response": ChartSet(charts=[chart])}])
+    monkeypatch.setattr(orchestrator, "build_graph_agent", lambda: agent)
+    monkeypatch.setattr(orchestrator, "get_settings", lambda: _settings())
+    tokens, emit = _collect_emit()
+
+    result = asyncio.run(
+        orchestrator.run_graph(_FINDINGS, _GROUNDED, "지난달 매출 추이 보여줘", _CTX, emit=emit)
+    )
+
+    assert [c.title for c in result.charts] == ["일별 매출"]
+    assert tokens == ["차트를 만들고 있습니다…"]
+    assert "[판매자 질문]\n지난달 매출 추이 보여줘" in agent.received[0]
+
+
+def test_run_graph_failure_degrades_to_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """graph 실패(예외) → 빈 ChartSet 으로 계속(C2 대칭, 보고서를 죽이지 않는다)."""
+    agent = _SeqAgent([RuntimeError("boom")])
+    monkeypatch.setattr(orchestrator, "build_graph_agent", lambda: agent)
+    monkeypatch.setattr(orchestrator, "get_settings", lambda: _settings())
+    _, emit = _collect_emit()
+
+    result = asyncio.run(
+        orchestrator.run_graph(_FINDINGS, _GROUNDED, "질문", _CTX, emit=emit)
+    )
+
+    assert result.charts == []
+
+
+def test_run_graph_g1_exception_degrades_to_empty_instead_of_propagating(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """G1(run_chart_checks) 자체가 예외를 던져도 빈 ChartSet 으로 degrade 한다
+    (PR 리뷰 반영 — 기존엔 이 호출이 try 밖에 있어 예외가 run_graph 밖으로
+    전파되고, asyncio.gather(run_recommend, run_graph)에 return_exceptions 이
+    없어 이미 검증된 보고서·recommend 결과까지 통째로 사과 응답이 됐다).
+    """
+    chart = ChartSpec(
+        title="일별 매출",
+        chart_type="line",
+        unit="KRW",
+        series=[ChartSeries(label="매출", points=[ChartPoint(x="06-12", y=180000)])],
+    )
+    agent = _SeqAgent([{"structured_response": ChartSet(charts=[chart])}])
+    monkeypatch.setattr(orchestrator, "build_graph_agent", lambda: agent)
+    monkeypatch.setattr(orchestrator, "get_settings", lambda: _settings())
+
+    def _boom_run_chart_checks(*args: object, **kwargs: object) -> object:
+        raise ValueError("G1 내부 버그(예: 비정상 float 값)")
+
+    monkeypatch.setattr(orchestrator, "run_chart_checks", _boom_run_chart_checks)
+    _, emit = _collect_emit()
+
+    result = asyncio.run(
+        orchestrator.run_graph(_FINDINGS, _GROUNDED, "질문", _CTX, emit=emit)
+    )
+
+    assert result.charts == []
+
+
+def test_run_graph_drops_ungrounded_chart_via_g1(monkeypatch: pytest.MonkeyPatch) -> None:
+    """G1 미달(근거 없는 수치) 차트는 드랍되고 빈 ChartSet 이 반환된다(재작성 루프 없음)."""
+    hallucinated = ChartSpec(
+        title="환각 차트",
+        chart_type="line",
+        unit="KRW",
+        series=[ChartSeries(label="매출", points=[ChartPoint(x="06-12", y=999999)])],
+    )
+    agent = _SeqAgent([{"structured_response": ChartSet(charts=[hallucinated])}])
+    monkeypatch.setattr(orchestrator, "build_graph_agent", lambda: agent)
+    monkeypatch.setattr(orchestrator, "get_settings", lambda: _settings())
+    _, emit = _collect_emit()
+
+    result = asyncio.run(
+        orchestrator.run_graph(_FINDINGS, _GROUNDED, "질문", _CTX, emit=emit)
+    )
+
+    assert result.charts == []
+
+
 def _patch_pipeline(monkeypatch: pytest.MonkeyPatch, plan: AnalysisPlan) -> None:
     """planner·워커·report·judge·recommend 전부 스텁 — 정상 경로 구성."""
     monkeypatch.setattr(
@@ -410,6 +835,8 @@ def _patch_pipeline(monkeypatch: pytest.MonkeyPatch, plan: AnalysisPlan) -> None
         "sales_anomaly",
         lambda: _StubAgent(finding=_FINDINGS[0]),
     )
+    # 브랜치 분석 검증(이슈 #242) — 항상 통과시켜 후단(report 이하) 회귀 기준을 지킨다.
+    monkeypatch.setattr(orchestrator, "build_analysis_judge", lambda: _AlwaysPassJudge())
     monkeypatch.setattr(
         orchestrator,
         "build_report_agent",
@@ -502,6 +929,91 @@ def test_pipeline_first_report_failure_propagates(monkeypatch: pytest.MonkeyPatc
                 "지난달 매출?", _CTX, today=dt.date(2026, 7, 18), emit=emit
             )
         )
+
+
+def test_pipeline_wants_chart_runs_graph_parallel_with_recommend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """wants_chart=True → recommend 와 graph 를 병렬 실행하고 charts 를 채워 반환한다(3단계 배선)."""
+    plan = AnalysisPlan(
+        analyses=["sales_anomaly"], period_expr="지난달", reason="r", wants_chart=True
+    )
+    _patch_pipeline(monkeypatch, plan)
+    chart = ChartSpec(
+        title="일별 매출",
+        chart_type="line",
+        unit="KRW",
+        series=[ChartSeries(label="매출", points=[ChartPoint(x="06-12", y=180000)])],
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "build_graph_agent",
+        lambda: _SeqAgent([{"structured_response": ChartSet(charts=[chart])}]),
+    )
+    tokens, emit = _collect_emit()
+
+    result = asyncio.run(
+        orchestrator.run_analysis_pipeline(
+            "지난달 매출 추이 그래프로 보여줘", _CTX, today=dt.date(2026, 7, 18), emit=emit
+        )
+    )
+
+    assert result.kind == "report"
+    assert result.charts is not None
+    assert [c.title for c in result.charts.charts] == ["일별 매출"]
+    assert "차트를 만들고 있습니다…" in tokens
+    assert "개선 방안을 정리하고 있습니다…" in tokens
+
+
+def test_pipeline_wants_chart_false_skips_graph(monkeypatch: pytest.MonkeyPatch) -> None:
+    """wants_chart=False(기본값) → graph 는 아예 호출되지 않는다(불필요한 LLM 콜 방지)."""
+    plan = AnalysisPlan(analyses=["sales_anomaly"], period_expr="지난달", reason="r")
+    _patch_pipeline(monkeypatch, plan)
+
+    def _boom_graph() -> object:
+        raise AssertionError("wants_chart=False 인데 build_graph_agent 가 호출됐다")
+
+    monkeypatch.setattr(orchestrator, "build_graph_agent", _boom_graph)
+    _, emit = _collect_emit()
+
+    result = asyncio.run(
+        orchestrator.run_analysis_pipeline(
+            "지난달 매출 왜 떨어졌어?", _CTX, today=dt.date(2026, 7, 18), emit=emit
+        )
+    )
+
+    assert result.charts is None
+
+
+def test_pipeline_wants_chart_requested_but_dropped_appends_notice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """wants_chart=True 인데 G1 전건 드랍(근거 없는 수치) → 안내 문구가 본문에 붙는다(D-5)."""
+    plan = AnalysisPlan(
+        analyses=["sales_anomaly"], period_expr="지난달", reason="r", wants_chart=True
+    )
+    _patch_pipeline(monkeypatch, plan)
+    hallucinated = ChartSpec(
+        title="환각 차트",
+        chart_type="line",
+        unit="KRW",
+        series=[ChartSeries(label="매출", points=[ChartPoint(x="06-12", y=999999)])],
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "build_graph_agent",
+        lambda: _SeqAgent([{"structured_response": ChartSet(charts=[hallucinated])}]),
+    )
+    _, emit = _collect_emit()
+
+    result = asyncio.run(
+        orchestrator.run_analysis_pipeline(
+            "지난달 매출 추이 그래프로 보여줘", _CTX, today=dt.date(2026, 7, 18), emit=emit
+        )
+    )
+
+    assert result.charts is not None and result.charts.charts == []
+    assert "[차트 안내]" in result.text
 
 
 def test_pipeline_all_workers_failed_returns_apology(monkeypatch: pytest.MonkeyPatch) -> None:

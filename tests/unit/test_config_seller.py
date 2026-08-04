@@ -35,6 +35,11 @@ def test_seller_settings_defaults() -> None:
     assert settings.seller_account_events_enabled is False
     # [#197 PR 리뷰] I-16 이탈 회원 나열 상한 — I-14 용 max_events 와 분리(결합 방지).
     assert settings.seller_churn_member_max == 5
+    # ── 브랜치 분석 검증(이슈 #242, DESIGN-ANALYSIS-V31-242 §9) ──
+    assert settings.seller_worker_max_retries == 1
+    assert settings.seller_analysis_score_threshold == 21
+    assert settings.seller_analysis_judge_timeout_s == 20.0
+    assert settings.seller_branch_deadline_s == 160.0
 
 
 def test_seller_ma_window_invalid_config_fails_fast() -> None:
@@ -60,3 +65,34 @@ def test_spring_timeout_default_is_3s() -> None:
     """AI→Spring 전 구간 타임아웃 기본값은 3.0s (api-spec §2.9 c)."""
     settings = Settings(_env_file=None)
     assert settings.spring_timeout_s == 3.0
+
+
+def test_general_lane_budget_must_fit_within_stream_cap() -> None:
+    """#266 P1 리뷰 — general 레인 직렬 예산이 SSE 전체 캡을 넘으면 기동 실패.
+
+    캡이 먼저 끊으면 `_general_stream` 의 예외 분기에 도달하지 못해 매핑된
+    `LLM_TIMEOUT` 대신 오류 코드 없는 `done(stop)` 절단이 된다 — #266 이 고친 상태로
+    되돌아간다.
+    """
+    # 기본값(10 + 20 = 30 < 90)은 통과한다.
+    ok = Settings(_env_file=None)
+    assert ok.seller_route_timeout_s + ok.seller_general_timeout_s < ok.stream_total_timeout_s
+
+    # **단독 비교였다면 통과했을 조합**(85 < 90)이지만 라우팅을 더하면 95 >= 90 이다.
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_general_timeout_s=85.0)
+
+    # 동률(10 + 80 == 90)도 거절한다 — 어느 시계가 먼저 터질지 지터로 갈린다.
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_general_timeout_s=80.0)
+
+    # 경계 바로 아래는 유효하다.
+    edge = Settings(_env_file=None, seller_general_timeout_s=79.0)
+    assert edge.seller_general_timeout_s == 79.0
+
+
+def test_general_lane_budget_tracks_route_timeout() -> None:
+    """라우팅 상한만 올려도 같은 검증에 걸린다 — 두 값이 직렬로 쌓이기 때문이다."""
+    # general 은 기본값(20) 그대로인데 라우팅을 75 로 올리면 95 >= 90.
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_route_timeout_s=75.0)

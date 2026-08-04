@@ -5,9 +5,11 @@ FE 가 Spring 발급 판매자 JWT(role=seller)로 직접 호출한다. 인증 =
 검증된 JWT 클레임에서만 도출한다 — 요청 본문 신원은 신뢰하지 않는다(IDOR 방지).
 
 MVP 범위(api-spec v0.14.0 §3.2, 결정 20 개정): 통계 Q&A + 상세 수정 draft 흐름.
-이벤트: meta / token / progress / draft / done / error — done.finishReason 은 "stop" 단일.
+이벤트: meta / token / progress / draft / chart / done / error — done.finishReason 은 "stop" 단일.
   · meta(lane)  : 매 스트림 첫 프레임(FE 화면 전환 레인, 2026-07-22 B).
   · progress    : 분석 진행 상태(로딩 표시, 최종 답변 아님).
+  · chart       : 분석 레인 전용, wants_chart 요청 + 차트 1개 이상 통과 시 0~1회
+                  (이슈 #242 — DESIGN-ANALYSIS-V31-242 §4.5). token(보고서) 뒤·done 앞.
   · done(panel) : 우측 패널 조치(replace/keep/refresh) — FE 요구 1~3.
 
 [4-1b 3분기 배선 + 4-2 HITL 실행] 입구 판정 순서(REALIGN §4 확정):
@@ -49,7 +51,7 @@ from app.agents.seller.middleware import StreamingOutputGuard, check_scope, mask
 from app.agents.seller.models import SellerRole, seller_trace_model_metadata
 from app.agents.seller.orchestrator import route_question, run_analysis_pipeline
 from app.agents.seller.pipeline import parse_apply_message
-from app.agents.seller.schemas import DraftProposal
+from app.agents.seller.schemas import ChartSet, DraftProposal
 from app.agents.seller.workers import build_general_agent, build_product_agent
 from app.api.deps import require_seller
 from app.core.auth import Identity
@@ -479,6 +481,10 @@ async def _analysis_stream(
         # 대화 스레드 기록(best-effort) — 되묻기 포함 최종 문안이 후속 발화의 맥락이 된다.
         await seller_thread.record_turn(context, request.thread_id, request.message, result.text)
         yield _token(result.text)
+        # chart 는 report·차트 1개 이상 통과 시에만 0~1회(§4.5 미발행 규약 — 빈
+        # 배열도 보내지 않는다). token(보고서) 뒤·done 앞 순서를 지킨다.
+        if result.kind == "report" and result.charts and result.charts.charts:
+            yield _chart_event(result.charts)
         # 보고서만 우측 패널 교체, 되묻기·사과·거절은 대화로 유지.
         yield _done("replace" if result.kind == "report" else "keep")
     finally:
@@ -640,6 +646,41 @@ def _draft_event(record: DraftRecord) -> str:
                 for c in record.changes
             ],
             "summary": mask_output(_strip_unsafe(record.summary)),
+        },
+    )
+
+
+def _chart_event(charts: ChartSet) -> str:
+    """ChartSet → SSE chart 이벤트 (판매자 7종째, 이슈 #242, DESIGN-ANALYSIS-V31-242 §4.5).
+
+    `_draft_event` 와 같은 패턴(camelCase 변환 + 필드별 마스킹) — chart_type 만
+    to_camel 이 필요하고(→ chartType) unit·points[].y 는 Literal·숫자라 그대로
+    나간다. 호출부(_analysis_stream)가 "charts 가 1개 이상일 때만" 호출을
+    보장한다 — 빈 배열도 보내지 않는 계약(§4.5 미발행 규약)은 여기서 강제하지
+    않고 호출부 조건으로 지킨다(이 함수는 항상 charts.charts 를 그대로 직렬화).
+    """
+    return _sse(
+        "chart",
+        {
+            "charts": [
+                {
+                    "title": mask_output(_strip_unsafe(c.title)),
+                    "chartType": c.chart_type,
+                    "unit": c.unit,
+                    "series": [
+                        {
+                            "label": mask_output(_strip_unsafe(s.label)),
+                            "points": [
+                                {"x": mask_output(_strip_unsafe(p.x)), "y": p.y}
+                                for p in s.points
+                            ],
+                        }
+                        for s in c.series
+                    ],
+                    "summary": mask_output(_strip_unsafe_multiline(c.summary)),
+                }
+                for c in charts.charts
+            ]
         },
     )
 

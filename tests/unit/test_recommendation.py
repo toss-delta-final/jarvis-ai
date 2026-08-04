@@ -14,9 +14,11 @@ from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
+from langgraph.store.memory import InMemoryStore
 
 from app.agents.buyer.graph import get_thread_store, run_buyer_turn as _production_run_buyer_turn
 from app.agents.buyer.recommendation import graph as recommendation_graph
+from app.agents.buyer.recommendation.state import RepurchaseStore
 from app.agents.buyer.session_state import context_thread_key
 from app.api.deps import buyer_owner_id
 from app.core import session_context
@@ -116,6 +118,17 @@ async def _collect(gen) -> list[dict]:
 
 def _types(events) -> list[str]:
     return [e["type"] for e in events]
+
+
+def _revert_chips(events) -> list[dict]:
+    """되돌리기 칩만 추린다 — [#113] 소량 결과의 완화 칩이 같은 suggestions 이벤트에 함께 실린다."""
+    return [
+        chip
+        for e in events
+        if e["type"] == "suggestions"
+        for chip in e["data"]["chips"]
+        if chip.get("revert")
+    ]
 
 
 # ─────────── 해피패스 파이프라인 ───────────
@@ -695,6 +708,243 @@ async def test_rerank_price_level_handles_missing_and_uninformative_groups() -> 
         2: "정보없음",
         3: "보통",
         4: "정보없음",
+    }
+
+
+def _levels(llm) -> dict[int, str]:
+    """마지막 rerank 호출의 CANDIDATES 에서 productId → priceLevel 을 뽑는다(#236)."""
+    import json as _json
+
+    _, user = llm.calls[-1]
+    return {c["productId"]: c["priceLevel"] for c in _json.loads(user.split("CANDIDATES: ", 1)[1])}
+
+
+async def test_rerank_price_level_groups_by_category_without_needs() -> None:
+    """[#236] need_of 가 없어도 후보의 category 별 중앙값으로 등급을 매긴다.
+
+    대분류 leg 1개로 검색해도 I-1 응답 `[].categoryName` 은 leaf 라(api-spec §4.6) 가격 스케일이
+    다른 상품군이 한 후보군에 섞인다. 수정 전에는 전 후보가 한 그룹(전역 median 90,000)이라
+    브랜드PC 3건이 전부 '매우비쌈', 노트북가방이 '매우저렴' 으로 쏠렸다.
+    """
+    from app.agents.buyer.recommendation.rerank import rerank
+    from app.schemas.spring import SpringProduct
+
+    llm = FakeLLM(rerank={"ranked": [{"productId": 1, "rationale": "ok"}], "overallComment": "c"})
+    rows = [
+        (1, 1_200_000, "브랜드PC"),
+        (2, 1_500_000, "브랜드PC"),
+        (3, 1_800_000, "브랜드PC"),
+        (4, 70_000, "SSD"),
+        (5, 90_000, "SSD"),
+        (6, 110_000, "SSD"),
+        (7, 30_000, "노트북가방"),
+        (8, 45_000, "노트북가방"),
+        (9, 60_000, "노트북가방"),
+    ]
+    candidates = [
+        SpringProduct(product_id=pid, name=f"p{pid}", price=price, categoryName=category)
+        for pid, price, category in rows
+    ]
+    await rerank(
+        llm, query="q", candidates=candidates, profile_summary=None, tier="smart", expose_max=9
+    )
+    # leaf 마다 저렴/보통/비쌈 이 독립적으로 갈린다 — 상품군 간 스케일이 섞이지 않았다는 뜻.
+    assert _levels(llm) == {
+        1: "저렴",
+        2: "보통",
+        3: "비쌈",
+        4: "저렴",
+        5: "보통",
+        6: "비쌈",
+        7: "저렴",
+        8: "보통",
+        9: "비쌈",
+    }
+
+
+async def test_rerank_price_level_treats_empty_need_of_as_no_needs() -> None:
+    """[#236 PR#274 리뷰] 빈 `need_of` dict 는 `None` 과 똑같이 "니즈 없음"으로 본다.
+
+    `is not None` 으로 판정하면 빈 dict 가 "니즈 있음"으로 새어 전 후보가 `need_of.get()` → `None`
+    단일 그룹으로 묶이고, 이 이슈가 고치려는 버그가 그대로 재발한다. 반면 `rerank()` 본문의
+    `need` 필드·`NEEDS` 지시는 truthy 판정이라 프롬프트만 "니즈 없음"처럼 나가 둘이 갈린다.
+    기대값은 `test_rerank_price_level_groups_by_category_without_needs`(need_of 미전달)와 같다.
+    """
+    from app.agents.buyer.recommendation.rerank import rerank
+    from app.schemas.spring import SpringProduct
+
+    llm = FakeLLM(rerank={"ranked": [{"productId": 1, "rationale": "ok"}], "overallComment": "c"})
+    rows = [
+        (1, 1_200_000, "브랜드PC"),
+        (2, 1_500_000, "브랜드PC"),
+        (3, 1_800_000, "브랜드PC"),
+        (4, 70_000, "SSD"),
+        (5, 90_000, "SSD"),
+        (6, 110_000, "SSD"),
+    ]
+    candidates = [
+        SpringProduct(product_id=pid, name=f"p{pid}", price=price, categoryName=category)
+        for pid, price, category in rows
+    ]
+    await rerank(
+        llm,
+        query="q",
+        candidates=candidates,
+        profile_summary=None,
+        tier="smart",
+        expose_max=6,
+        need_of={},
+        per_need=3,
+    )
+    assert _levels(llm) == {1: "저렴", 2: "보통", 3: "비쌈", 4: "저렴", 5: "보통", 6: "비쌈"}
+    # 프롬프트도 "니즈 없음" 경로 그대로여야 한다 — 그룹핑과 프롬프트가 갈리지 않는다.
+    _, user = llm.calls[-1]
+    assert "NEEDS" not in user and '"need"' not in user
+
+
+async def test_rerank_price_level_marks_lone_category_as_unknown() -> None:
+    """[#236] 비교 대상이 없는 그룹은 '정보없음' — 전역 중앙값으로 폴백하지 않는다.
+
+    전역 중앙값은 후보 전체가 섞인 값이라(여기선 645,000) 거기로 폴백하면 SSD 90,000 이
+    '매우저렴' 이 되어 이 이슈가 고치려는 왜곡을 그 그룹에만 다시 씌운다.
+    """
+    from app.agents.buyer.recommendation.rerank import rerank
+    from app.schemas.spring import SpringProduct
+
+    llm = FakeLLM(rerank={"ranked": [{"productId": 1, "rationale": "ok"}], "overallComment": "c"})
+    rows = [
+        (1, 1_200_000, "브랜드PC"),
+        (2, 1_500_000, "브랜드PC"),
+        (3, 1_800_000, "브랜드PC"),
+        (4, 20_000, "마우스"),
+        (5, 30_000, "마우스"),
+        (6, 90_000, "SSD"),  # 자기 카테고리에 혼자 — 비교 대상 없음
+    ]
+    candidates = [
+        SpringProduct(product_id=pid, name=f"p{pid}", price=price, categoryName=category)
+        for pid, price, category in rows
+    ]
+    await rerank(
+        llm, query="q", candidates=candidates, profile_summary=None, tier="smart", expose_max=6
+    )
+    levels = _levels(llm)
+    assert levels[6] == "정보없음"
+    # 나머지 그룹은 자기 중앙값을 그대로 쓴다 — 싱글턴 처리가 다른 그룹을 오염시키지 않는다.
+    assert levels == {
+        1: "저렴",
+        2: "보통",
+        3: "비쌈",
+        4: "저렴",
+        5: "비쌈",
+        6: "정보없음",
+    }
+
+
+async def test_rerank_price_level_group_min_size_is_configurable(monkeypatch) -> None:
+    """[#236] 그룹 하한은 config 주입이다 — 1 로 낮추면 싱글턴도 자기 중앙값(항상 '보통')을 쓴다."""
+    from app.agents.buyer.recommendation.rerank import rerank
+    from app.schemas.spring import SpringProduct
+
+    monkeypatch.setattr(get_settings(), "price_group_min_size", 1)
+    llm = FakeLLM(rerank={"ranked": [{"productId": 1, "rationale": "ok"}], "overallComment": "c"})
+    rows = [(1, 1_200_000, "브랜드PC"), (2, 1_800_000, "브랜드PC"), (3, 90_000, "SSD")]
+    candidates = [
+        SpringProduct(product_id=pid, name=f"p{pid}", price=price, categoryName=category)
+        for pid, price, category in rows
+    ]
+    await rerank(
+        llm, query="q", candidates=candidates, profile_summary=None, tier="smart", expose_max=3
+    )
+    # 하한이 해제돼 SSD 가 '정보없음' 대신 자기 자신 대비 등급('보통')을 받는다.
+    assert _levels(llm)[3] == "보통"
+
+
+async def test_rerank_price_level_treats_blank_category_as_one_unknown_group() -> None:
+    """[#236] category 가 None·빈문자열·공백이면 하나의 '미상' 버킷으로 합친다.
+
+    BE 자유 문자열이라 `""` 가 실제로 도달하는데, 갈라지면 각 조각이 하한 미달로 떨어져
+    멀쩡한 비교 표본이 통째로 '정보없음' 이 된다(아래 2·3 번이 그 증거).
+    """
+    from app.agents.buyer.recommendation.rerank import rerank
+    from app.schemas.spring import SpringProduct
+
+    llm = FakeLLM(rerank={"ranked": [{"productId": 1, "rationale": "ok"}], "overallComment": "c"})
+    rows = [
+        (1, 10_000, None),
+        (2, 50_000, ""),
+        (3, 100_000, "   "),
+        (4, 1_000_000, None),
+        (5, 1_500_000, "브랜드PC"),
+        (6, 1_600_000, "브랜드PC"),
+        (7, 1_700_000, "브랜드PC"),
+    ]
+    candidates = [
+        SpringProduct(product_id=pid, name=f"p{pid}", price=price, categoryName=category)
+        for pid, price, category in rows
+    ]
+    await rerank(
+        llm, query="q", candidates=candidates, profile_summary=None, tier="smart", expose_max=7
+    )
+    # 미상 4건이 한 버킷(median 75,000)이라 네 등급이 모두 갈린다. 쪼개졌다면 2·3 이 '정보없음'.
+    assert _levels(llm) == {
+        1: "매우저렴",
+        2: "저렴",
+        3: "비쌈",
+        4: "매우비쌈",
+        5: "보통",
+        6: "보통",
+        7: "보통",
+    }
+
+
+async def test_rerank_price_level_ignores_category_when_needs_present() -> None:
+    """[#236] need_of 가 있으면 category 는 무시한다 — 니즈 경계는 상위 판정이라 권위가 높다.
+
+    기대값은 `test_rerank_price_level_uses_separate_need_medians`(#173)와 완전히 동일하다.
+    판별 장치는 **7·8 의 category 를 니즈 이름과 같은 `"노트북"` 으로 둔 것**이다 — `_need_label`
+    이 leg 의 canonical category 를 라벨로 쓰기도 해(graph.py) 실제로 일어나는 충돌이다.
+    `need_of.get(...) or category` 같은 `or` 배선이면 니즈 미매핑인 7·8 이 category 를 타고
+    '노트북' 그룹에 합류해 그 중앙값이 1,200,000 으로 끌려 내려가고 id 1 이 '보통' 이 된다.
+    하한도 need 경로엔 적용되지 않아 7·8(유효 price 2건)이 자기 중앙값으로 '보통' 을 지킨다.
+    """
+    from app.agents.buyer.recommendation.rerank import rerank
+    from app.schemas.spring import SpringProduct
+
+    llm = FakeLLM(rerank={"ranked": [{"productId": 1, "rationale": "ok"}], "overallComment": "c"})
+    rows = [
+        (1, 1_200_000, "노트북"),
+        (2, 1_500_000, "노트북"),
+        (3, 1_800_000, "노트북"),
+        (4, 10_000, "마우스"),
+        (5, 20_000, "마우스"),
+        (6, 30_000, "마우스"),
+        (7, 40_000, "노트북"),  # need_of 미매핑 + 니즈 이름과 같은 category
+        (8, 50_000, "노트북"),
+    ]
+    candidates = [
+        SpringProduct(product_id=pid, name=f"p{pid}", price=price, categoryName=category)
+        for pid, price, category in rows
+    ]
+    need_of = {1: "노트북", 2: "노트북", 3: "노트북", 4: "마우스", 5: "마우스", 6: "마우스"}
+    await rerank(
+        llm,
+        query="q",
+        candidates=candidates,
+        profile_summary=None,
+        tier="smart",
+        expose_max=8,
+        need_of=need_of,
+        per_need=3,
+    )
+    assert _levels(llm) == {
+        1: "저렴",
+        2: "보통",
+        3: "비쌈",
+        4: "매우저렴",
+        5: "보통",
+        6: "매우비쌈",
+        7: "보통",
+        8: "보통",
     }
 
 
@@ -2471,6 +2721,22 @@ def _prod(pid, cat, name="상품"):
     )
 
 
+def _filtered_repurchase_search(products, calls):
+    """재구매·완화 결합 테스트용 — 가격·평점 필터를 실제 적용하고 호출 필터를 기록한다."""
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters)
+        kept = [
+            product
+            for product in products
+            if (filters.price_max is None or (product.price or 0) <= filters.price_max)
+            and (filters.rating_min is None or (product.rating or 0) >= filters.rating_min)
+        ]
+        return ProductSearchResult(products=kept, total_count=len(kept))
+
+    return _search
+
+
 async def test_recommendation_repurchase_restores_exact_product(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2518,6 +2784,541 @@ async def test_recommendation_repurchase_restores_only_named_consumable(
     )
     assert 900 in _only_list(push.pushes[0]).product_ids
     assert 201 not in _only_list(push.pushes[0]).product_ids
+
+
+async def test_recommendation_repurchase_persists_across_refinement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """턴1 재구매 지목은 턴2 조건 다듬기에도 exact 제외 면제로 남는다."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(
+        _sc_mod, "get_recent_purchases", _purchases_cat((101, "무선이어폰", "무선 이어폰 프로"))
+    )
+    request = _req(thread_id="repurchase-persist")
+    products = [_prod(101, "무선이어폰", "무선 이어폰 프로"), _prod(102, "무선이어폰")]
+    first_push = _RecordingPush()
+    await _collect(
+        run_buyer_turn(
+            request,
+            _member_num(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "repurchaseProducts": ["무선 이어폰 프로"],
+                    "filters": {},
+                    "case": 1,
+                }
+            ),
+            search=_make_search(products),
+            push_fn=first_push,
+        )
+    )
+    second_push = _RecordingPush()
+    await _collect(
+        run_buyer_turn(
+            request,
+            _member_num(),
+            llm=FakeLLM(
+                decompose={"intent": "recommend", "filters": {"priceMax": 50000}, "case": 2}
+            ),
+            search=_make_search(products),
+            push_fn=second_push,
+        )
+    )
+
+    assert 101 in _only_list(first_push.pushes[0]).product_ids
+    assert 101 in _only_list(second_push.pushes[0]).product_ids
+
+
+async def test_recommendation_repurchase_persists_when_scoped_refine_carries_relaxation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """완화 승계 턴에서도 직전 재구매 면제와 새 가격 조건을 함께 유지한다."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(
+        _sc_mod, "get_recent_purchases", _purchases_cat((101, "무선이어폰", "무선 이어폰 프로"))
+    )
+    request = _req(thread_id="repurchase-scoped-relax")
+    products = [
+        SpringProduct(
+            product_id=101,
+            name="무선 이어폰 프로",
+            price=40000,
+            rating=4.2,
+            category="무선이어폰",
+            brand="b",
+        )
+    ]
+    calls = []
+    first_push = _RecordingPush()
+    await _collect(
+        run_buyer_turn(
+            request,
+            _member_num(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "repurchaseProducts": ["무선 이어폰 프로"],
+                    "filters": {"ratingMin": 4.5},
+                    "case": 1,
+                }
+            ),
+            search=_filtered_repurchase_search(products, calls),
+            push_fn=first_push,
+        )
+    )
+
+    turn2 = len(calls)
+    second_push = _RecordingPush()
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="그 중에 5만원 이하", thread_id=request.thread_id),
+            _member_num(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "scopedToPrevious": True,
+                    "filters": {"ratingMin": 4.5, "priceMax": 50000},
+                    "case": 2,
+                }
+            ),
+            search=_filtered_repurchase_search(products, calls),
+            push_fn=second_push,
+        )
+    )
+
+    assert 101 in _only_list(first_push.pushes[0]).product_ids
+    assert calls[turn2].rating_min == 4.0
+    assert calls[turn2].price_max == 50000
+    assert second_push.pushes
+    assert 101 in _only_list(second_push.pushes[0]).product_ids
+    rating_chip = next(
+        chip
+        for event in events
+        if event["type"] == "conditions"
+        for chip in event["data"]["chips"]
+        if chip["field"] == "ratingMin"
+    )
+    assert rating_chip["value"] == 4.0
+
+
+async def test_recommendation_relaxation_probe_applies_persisted_repurchase(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """자동 완화 probe도 지속 재구매 면제를 적용해 count와 실제 노출을 일치시킨다."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(
+        _sc_mod, "get_recent_purchases", _purchases_cat((101, "무선이어폰", "무선 이어폰 프로"))
+    )
+    request = _req(thread_id="repurchase-relax-probe")
+    products = [
+        SpringProduct(
+            product_id=101,
+            name="무선 이어폰 프로",
+            price=40000,
+            rating=4.2,
+            category="무선이어폰",
+            brand="b",
+        )
+    ]
+    calls = []
+    await _collect(
+        run_buyer_turn(
+            request,
+            _member_num(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "repurchaseProducts": ["무선 이어폰 프로"],
+                    "filters": {},
+                    "case": 1,
+                }
+            ),
+            search=_filtered_repurchase_search(products, calls),
+            push_fn=_RecordingPush(),
+        )
+    )
+
+    push = _RecordingPush()
+    with caplog.at_level("INFO"):
+        events = await _collect(
+            run_buyer_turn(
+                request,
+                _member_num(),
+                llm=FakeLLM(
+                    decompose={
+                        "intent": "recommend",
+                        "filters": {"ratingMin": 4.5},
+                        "case": 2,
+                    }
+                ),
+                search=_filtered_repurchase_search(products, calls),
+                push_fn=push,
+            )
+        )
+
+    assert "products.ready" in _types(events)
+    exposed = _only_list(push.pushes[0]).product_ids
+    assert exposed == [101]
+    pipeline = next(record for record in caplog.records if record.msg == "recommend_pipeline")
+    assert pipeline.after_dedup == len(exposed) == 1
+
+
+async def test_recommendation_delayed_conditions_survive_repurchase_store_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """자동 완화 가능 턴의 저장소 실패도 conditions를 막지 않고 이번 턴 지목으로 degrade한다."""
+
+    class BrokenStore:
+        async def add(self, key, product_ids, *, cap):
+            return await self.get(key)
+
+        async def get(self, key):
+            raise RuntimeError("store get failed")
+
+    async def broken_store():
+        return BrokenStore()
+
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(recommendation_graph, "get_repurchase_store", broken_store)
+    monkeypatch.setattr(
+        _sc_mod, "get_recent_purchases", _purchases_cat((101, "무선이어폰", "무선 이어폰 프로"))
+    )
+    product = SpringProduct(
+        product_id=101,
+        name="무선 이어폰 프로",
+        price=40000,
+        rating=4.6,
+        category="무선이어폰",
+        brand="b",
+    )
+    push = _RecordingPush()
+    events = await _collect(
+        run_buyer_turn(
+            _req(thread_id="repurchase-delayed-conditions"),
+            _member_num(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "repurchaseProducts": ["무선 이어폰 프로"],
+                    "filters": {"ratingMin": 4.5},
+                    "case": 1,
+                }
+            ),
+            search=_filtered_repurchase_search([product], []),
+            push_fn=push,
+        )
+    )
+
+    assert _types(events).count("conditions") == 1
+    assert 101 in _only_list(push.pushes[0]).product_ids
+    assert _types(events)[-1] == "done"
+
+
+async def test_recommendation_persisted_repurchase_is_revalidated_against_recent_purchases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """저장된 id가 다음 턴 최근 구매 이력에 없으면 면제되지 않는다."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(get_settings(), "consumable_categories", ["조미료"])
+    responses = iter(
+        [
+            await _purchases_cat((101, "조미료", "소금"))("123"),
+            await _purchases_cat((102, "조미료", "후추"))("123"),
+        ]
+    )
+
+    async def changing_purchases(user_id, status=None):
+        return next(responses)
+
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", changing_purchases)
+    request = _req(thread_id="repurchase-revalidate")
+    products = [
+        _prod(101, "조미료", "소금"),
+        _prod(102, "조미료", "후추"),
+        _prod(103, "주방가전", "믹서"),
+    ]
+    first_push = _RecordingPush()
+    await _collect(
+        run_buyer_turn(
+            request,
+            _member_num(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "repurchaseProducts": ["소금"],
+                    "filters": {},
+                    "case": 1,
+                }
+            ),
+            search=_make_search(products),
+            push_fn=first_push,
+        )
+    )
+    second_push = _RecordingPush()
+    await _collect(
+        run_buyer_turn(
+            request,
+            _member_num(),
+            llm=FakeLLM(decompose={"intent": "recommend", "filters": {}, "case": 2}),
+            search=_make_search(products),
+            push_fn=second_push,
+        )
+    )
+
+    assert 101 in _only_list(first_push.pushes[0]).product_ids
+    assert 101 not in _only_list(second_push.pushes[0]).product_ids
+    assert 102 not in _only_list(second_push.pushes[0]).product_ids
+    assert 103 in _only_list(second_push.pushes[0]).product_ids
+
+
+async def test_recommendation_repurchase_store_cap_evicts_oldest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """설정 상한 1은 두 번째 지목 시 오래된 첫 id를 다시 exact 제외시킨다."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(get_settings(), "dedup_repurchase_store_max", 1)
+    monkeypatch.setattr(
+        _sc_mod,
+        "get_recent_purchases",
+        _purchases_cat(
+            (101, "무선이어폰", "무선 이어폰 프로"),
+            (102, "무선이어폰", "다른 이어폰"),
+        ),
+    )
+    request = _req(thread_id="repurchase-cap")
+    products = [
+        _prod(101, "무선이어폰", "무선 이어폰 프로"),
+        _prod(102, "무선이어폰", "다른 이어폰"),
+    ]
+    await _collect(
+        run_buyer_turn(
+            request,
+            _member_num(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "repurchaseProducts": ["무선 이어폰 프로"],
+                    "filters": {},
+                    "case": 1,
+                }
+            ),
+            search=_make_search(products),
+            push_fn=_RecordingPush(),
+        )
+    )
+    second_push = _RecordingPush()
+    await _collect(
+        run_buyer_turn(
+            request,
+            _member_num(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "repurchaseProducts": ["다른 이어폰"],
+                    "filters": {},
+                    "case": 1,
+                }
+            ),
+            search=_make_search(products),
+            push_fn=second_push,
+        )
+    )
+
+    ids = _only_list(second_push.pushes[0]).product_ids
+    assert 101 not in ids
+    assert 102 in ids
+
+
+async def test_recommendation_repurchase_store_cap_zero_applies_to_persisted_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """운영 상한을 0으로 낮추면 새 지목 없는 다음 턴부터 지속 면제가 꺼진다."""
+    _fix_now(monkeypatch)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "dedup_repurchase_store_max", 20)
+    monkeypatch.setattr(
+        _sc_mod, "get_recent_purchases", _purchases_cat((101, "무선이어폰", "무선 이어폰 프로"))
+    )
+    request = _req(thread_id="repurchase-cap-zero")
+    products = [_prod(101, "무선이어폰", "무선 이어폰 프로"), _prod(102, "무선이어폰")]
+    await _collect(
+        run_buyer_turn(
+            request,
+            _member_num(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "repurchaseProducts": ["무선 이어폰 프로"],
+                    "filters": {},
+                    "case": 1,
+                }
+            ),
+            search=_make_search(products),
+            push_fn=_RecordingPush(),
+        )
+    )
+
+    monkeypatch.setattr(settings, "dedup_repurchase_store_max", 0)
+    second_push = _RecordingPush()
+    await _collect(
+        run_buyer_turn(
+            request,
+            _member_num(),
+            llm=FakeLLM(decompose={"intent": "recommend", "filters": {}, "case": 2}),
+            search=_make_search(products),
+            push_fn=second_push,
+        )
+    )
+
+    ids = _only_list(second_push.pushes[0]).product_ids
+    assert 101 not in ids
+    assert 102 in ids
+
+
+async def test_recommendation_repurchase_store_reduced_cap_keeps_latest_persisted_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """운영 상한을 20에서 1로 낮추면 새 지목 없이도 최신 id 하나만 면제한다."""
+    _fix_now(monkeypatch)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "dedup_repurchase_store_max", 20)
+    monkeypatch.setattr(
+        _sc_mod,
+        "get_recent_purchases",
+        _purchases_cat(
+            (101, "무선이어폰", "무선 이어폰 프로"),
+            (102, "무선이어폰", "다른 이어폰"),
+        ),
+    )
+    request = _req(thread_id="repurchase-cap-reduced")
+    products = [
+        _prod(101, "무선이어폰", "무선 이어폰 프로"),
+        _prod(102, "무선이어폰", "다른 이어폰"),
+    ]
+    for reference in ("무선 이어폰 프로", "다른 이어폰"):
+        await _collect(
+            run_buyer_turn(
+                request,
+                _member_num(),
+                llm=FakeLLM(
+                    decompose={
+                        "intent": "recommend",
+                        "repurchaseProducts": [reference],
+                        "filters": {},
+                        "case": 1,
+                    }
+                ),
+                search=_make_search(products),
+                push_fn=_RecordingPush(),
+            )
+        )
+
+    monkeypatch.setattr(settings, "dedup_repurchase_store_max", 1)
+    third_push = _RecordingPush()
+    await _collect(
+        run_buyer_turn(
+            request,
+            _member_num(),
+            llm=FakeLLM(decompose={"intent": "recommend", "filters": {}, "case": 2}),
+            search=_make_search(products),
+            push_fn=third_push,
+        )
+    )
+
+    ids = _only_list(third_push.pushes[0]).product_ids
+    assert 101 not in ids
+    assert 102 in ids
+
+
+@pytest.mark.parametrize("failure_point", ["add", "get"])
+async def test_recommendation_repurchase_store_failure_degrades_to_turn_signal(
+    monkeypatch: pytest.MonkeyPatch,
+    failure_point: str,
+) -> None:
+    """저장소 add/get 실패는 스트림을 끊지 않고 이번 턴 지목을 유지한다."""
+
+    class BrokenStore:
+        async def add(self, key, product_ids, *, cap):
+            if failure_point == "add":
+                raise RuntimeError("store add failed")
+            return await self.get(key)
+
+        async def get(self, key):
+            if failure_point == "get":
+                raise RuntimeError("store get failed")
+            return []
+
+    async def broken_store():
+        return BrokenStore()
+
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(recommendation_graph, "get_repurchase_store", broken_store)
+    monkeypatch.setattr(
+        _sc_mod, "get_recent_purchases", _purchases_cat((101, "무선이어폰", "무선 이어폰 프로"))
+    )
+    push = _RecordingPush()
+    events = await _collect(
+        run_buyer_turn(
+            _req(thread_id="repurchase-degrade"),
+            _member_num(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "repurchaseProducts": ["무선 이어폰 프로"],
+                    "filters": {},
+                    "case": 1,
+                }
+            ),
+            search=_make_search([_prod(101, "무선이어폰", "무선 이어폰 프로")]),
+            push_fn=push,
+        )
+    )
+
+    assert 101 in _only_list(push.pushes[0]).product_ids
+    assert _types(events)[-1] == "done"
+
+
+async def test_recommendation_persisted_repurchase_stays_product_scoped_for_consumables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """지속 면제는 지목한 소금만 복원하고 같은 조미료의 후추로 번지지 않는다."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(get_settings(), "consumable_categories", ["조미료"])
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases_cat((900, "조미료", "소금")))
+    request = _req(thread_id="repurchase-consumable-persist")
+    products = [_prod(900, "조미료", "소금"), _prod(201, "조미료", "후추")]
+    await _collect(
+        run_buyer_turn(
+            request,
+            _member_num(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "repurchaseProducts": ["소금"],
+                    "filters": {},
+                    "case": 1,
+                }
+            ),
+            search=_make_search(products),
+            push_fn=_RecordingPush(),
+        )
+    )
+    second_push = _RecordingPush()
+    await _collect(
+        run_buyer_turn(
+            request,
+            _member_num(),
+            llm=FakeLLM(decompose={"intent": "recommend", "filters": {}, "case": 2}),
+            search=_make_search(products),
+            push_fn=second_push,
+        )
+    )
+
+    ids = _only_list(second_push.pushes[0]).product_ids
+    assert 900 in ids
+    assert 201 not in ids
 
 
 async def test_recommendation_repurchase_prefers_exact_name_over_sibling(
@@ -2978,6 +3779,13 @@ async def test_recommendation_guest_ignores_repurchase_without_purchases(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """구매 이력이 없는 게스트도 재구매 지목 때문에 크래시하지 않고 정상 추천됨을 보장한다."""
+    accessed = {"n": 0}
+
+    async def unexpected_store():
+        accessed["n"] += 1
+        raise AssertionError("guest must not access repurchase store")
+
+    monkeypatch.setattr(recommendation_graph, "get_repurchase_store", unexpected_store)
     push = _RecordingPush()
     llm = FakeLLM(
         decompose={
@@ -2997,6 +3805,65 @@ async def test_recommendation_guest_ignores_repurchase_without_purchases(
         )
     )
     assert 201 in _only_list(push.pushes[0]).product_ids
+    assert accessed["n"] == 0
+
+
+@pytest.mark.parametrize("cap", [0, -1])
+async def test_repurchase_store_nonpositive_cap_persists_empty_list(cap: int) -> None:
+    """cap <= 0은 음수 슬라이스 역전을 피하고 정확히 빈 리스트를 저장한다."""
+    store = RepurchaseStore()
+
+    await store.add("cap-boundary", [101, 102], cap=cap)
+
+    assert await store.get("cap-boundary") == []
+
+
+async def test_repurchase_store_get_discards_polluted_values() -> None:
+    """오염된 저장값은 int 리스트만 방어적으로 복원하고 스트림 입력으로 넘기지 않는다."""
+    backend = InMemoryStore()
+    store = RepurchaseStore(backend)
+    await backend.aput(
+        ("buyer_repurchase_v1", "polluted"),
+        "product_ids",
+        {"product_ids": [101, "102", None, True, 103]},
+    )
+
+    assert await store.get("polluted") == [101, 103]
+
+
+async def test_load_persisted_repurchase_avoids_redundant_read_after_add(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """지목 턴은 read+write 2회, 지목 없는 턴은 순수 read 1회만 저장소를 왕복한다."""
+
+    class CountingStore(InMemoryStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.operations: list[str] = []
+
+        async def aget(self, *args, **kwargs):
+            self.operations.append("get")
+            return await super().aget(*args, **kwargs)
+
+        async def aput(self, *args, **kwargs):
+            self.operations.append("put")
+            return await super().aput(*args, **kwargs)
+
+    backend = CountingStore()
+    store = RepurchaseStore(backend)
+
+    async def get_store():
+        return store
+
+    monkeypatch.setattr(recommendation_graph, "get_repurchase_store", get_store)
+    settings = SimpleNamespace(dedup_repurchase_store_max=20)
+
+    assert await recommendation_graph._load_persisted_repurchase("thread", {101}, settings) == {101}
+    assert backend.operations == ["get", "put"]
+
+    backend.operations.clear()
+    assert await recommendation_graph._load_persisted_repurchase("thread", set(), settings) == {101}
+    assert backend.operations == ["get"]
 
 
 async def test_recommendation_suppresses_consumable_category(
@@ -3089,7 +3956,7 @@ async def test_recommendation_nonconsumable_not_suppressed(monkeypatch: pytest.M
     )
     assert 202 not in _only_list(push.pushes[0]).product_ids  # exact 제외(구매한 productId)
     assert 201 in _only_list(push.pushes[0]).product_ids  # 조미료지만 구매 안 함 → 유지
-    assert "suggestions" not in _types(events)  # 억제 카테고리 없음 → 칩 없음
+    assert _revert_chips(events) == []  # 억제 카테고리 없음 → 되돌리기 칩 없음
 
 
 async def test_recommendation_no_consumable_config_no_suppression(
@@ -3106,7 +3973,7 @@ async def test_recommendation_no_consumable_config_no_suppression(
         )
     )
     assert 201 in _only_list(push.pushes[0]).product_ids
-    assert "suggestions" not in _types(events)
+    assert _revert_chips(events) == []
 
 
 async def test_recommendation_revert_unsuppresses_category(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3177,7 +4044,7 @@ async def test_recommendation_guest_no_suppression(monkeypatch: pytest.MonkeyPat
         run_buyer_turn(_req(), _guest(), llm=FakeLLM(), search=_make_search(products), push_fn=push)
     )
     assert 201 in _only_list(push.pushes[0]).product_ids
-    assert "suggestions" not in _types(events)
+    assert _revert_chips(events) == []
 
 
 def test_order_item_category_and_recent_items() -> None:
