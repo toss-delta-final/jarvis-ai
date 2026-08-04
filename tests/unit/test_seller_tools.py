@@ -578,6 +578,83 @@ async def test_churn_tool_fetches_previous_period_and_reports_significance() -> 
     assert "상관이지 인과가 아니다" in result  # 주의 문구 상시 부착
 
 
+async def test_funnel_tool_degrades_stage_with_inconsistent_counts() -> None:
+    """[PR 리뷰] cart>view 같은 단계 역전 카운트(이벤트 유실로 실데이터 가능)가 와도
+    도구는 raise 하지 않고(§3.4) 해당 단계만 판정 생략한다 — 나머지 단계·요약 유지."""
+
+    class InvertedFunnel(FakeSpringClient):
+        async def get_funnel(self, brand_id, from_, to):
+            self.funnel_calls.append((from_, to))
+            return FunnelResult(view=10, cart=25, checkout=5, purchase=3)  # cart > view
+
+    result = await _call_runtime_tool(
+        get_funnel, {"from_date": "2026-07-08", "to_date": "2026-07-14"}, InvertedFunnel()
+    )
+
+    assert not result.startswith("Error:")  # raise 도 전체 Error 격하도 아니다
+    assert "단계 카운트 정합 이상" in result  # view→cart 는 판정 생략 + 사유 표기
+    assert "cart→checkout 20.0%" in result and "CI" in result  # 정합한 단계는 정상 판정
+    assert "조회 10→장바구니 25" in result  # 원 카운트 요약은 유지(위장 없음)
+
+
+async def test_funnel_tool_keeps_current_ci_when_previous_counts_inconsistent() -> None:
+    """[PR 리뷰] 직전 기간 쪽만 카운트 정합 이상이면 현재 기간 CI 는 유지하고
+    기간 비교만 생략한다(부분 degrade)."""
+
+    class PrevInverted(FakeSpringClient):
+        async def get_funnel(self, brand_id, from_, to):
+            self.funnel_calls.append((from_, to))
+            if len(self.funnel_calls) > 1:  # 직전 기간 응답만 역전
+                return FunnelResult(view=10, cart=25, checkout=5, purchase=3)
+            return FunnelResult(view=100, cart=10, checkout=5, purchase=3)
+
+    result = await _call_runtime_tool(
+        get_funnel, {"from_date": "2026-07-08", "to_date": "2026-07-14"}, PrevInverted()
+    )
+
+    assert not result.startswith("Error:")
+    assert "view→cart 10.0% [95% CI" in result  # 현재 기간 CI 유지
+    assert "직전 기간 검정 불가 — 카운트 정합 이상" in result
+
+
+async def test_churn_tool_holds_judgment_on_out_of_range_rate() -> None:
+    """[PR 리뷰] churnRate 가 fraction [0,1] 밖(BE 정합 이상)이면 raise 없이 판정
+    보류로 표기한다 — clamp 로 정상 CI 위장하지 않는다."""
+    fake = FakeSpringClient()
+    fake.churn_result = ChurnResult(
+        churn_rate=1.2, cohort_size=10, pre_churn_signals=PreChurnSignals(), members=[]
+    )
+
+    result = await _call_runtime_tool(
+        get_churn_cohort, {"from_date": "2026-07-08", "to_date": "2026-07-14"}, fake
+    )
+
+    assert not result.startswith("Error:")
+    assert "이탈률 값 이상" in result and "판정 보류" in result
+    assert "CI" not in result  # 정합 깨진 값으로 CI 를 만들지 않는다
+
+
+async def test_churn_tool_skips_comparison_on_out_of_range_previous_rate() -> None:
+    """[PR 리뷰] 직전 기간 churnRate 가 구간 밖이면 비교만 생략한다(현재 판정 유지)."""
+
+    class PrevBadRate(FakeSpringClient):
+        async def get_churn(self, brand_id, from_, to, inactive_days):
+            self.churn_calls.append((from_, to, inactive_days))
+            if len(self.churn_calls) > 1:
+                return ChurnResult(churn_rate=-0.3, cohort_size=10)
+            return ChurnResult(
+                churn_rate=0.5, cohort_size=10, pre_churn_signals=PreChurnSignals(), members=[]
+            )
+
+    result = await _call_runtime_tool(
+        get_churn_cohort, {"from_date": "2026-07-08", "to_date": "2026-07-14"}, PrevBadRate()
+    )
+
+    assert not result.startswith("Error:")
+    assert "이탈률 50.0%" in result and "CI" in result  # 현재 기간 판정 유지
+    assert "직전 기간 비교 불가" in result
+
+
 async def test_churn_tool_skips_comparison_when_previous_cohort_empty() -> None:
     """[#290] 직전 코호트 0명이면 비교 불가로 표기하고 현재 기간 판정은 유지한다."""
 

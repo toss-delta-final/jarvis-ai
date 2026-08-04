@@ -250,33 +250,55 @@ async def get_funnel(runtime: ToolRuntime[SellerContext], from_date: str, to_dat
     def _stage_summary(
         label: str, key: str, successes: int, trials: int, prev_successes: int, prev_trials: int
     ) -> str:
-        """단계 1개의 전환율 + Wilson CI + 직전 기간 z-검정 문구 (#290)."""
+        """단계 1개의 전환율 + Wilson CI + 직전 기간 z-검정 문구 (#290).
+
+        [PR 리뷰] I-7 은 이벤트 기반 카운트라 단계 역전(cart>view — view 이벤트
+        유실·목록 페이지 직행 담기 등)이 실데이터에서 가능하고, 스키마(FunnelResult)는
+        단계 간 관계를 강제하지 않는다. wilson_interval/compare_rates 는 그 입력을
+        ValueError 로 거부하므로 여기서 잡아 **해당 단계만** 판정을 생략한다(§3.4 —
+        다른 신규 호출부와 동일 패턴). clamp 로 정상 CI 처럼 위장하지 않는다
+        (정합 깨진 데이터의 0/100% 위장 금지 원칙과 동일 취지).
+        """
         rate = rates[key]
         if rate is None:
             return f"{label} 미집계"
         segment = f"{label} {rate:.1f}%"
         if trials > 0:
-            est = proportions.wilson_interval(
-                successes, trials, confidence=settings.seller_wilson_confidence
-            )
+            try:
+                est = proportions.wilson_interval(
+                    successes, trials, confidence=settings.seller_wilson_confidence
+                )
+            except ValueError as exc:
+                _log.warning("퍼널 단계 %s CI·검정 불가 — 카운트 정합 이상: %s", label, exc)
+                return (
+                    f"{label} {rate:.1f}% [CI·검정 불가 — 단계 카운트 정합 이상"
+                    f"({successes}>{trials})]"
+                )
             segment += (
                 f" [{settings.seller_wilson_confidence:.0%} CI"
                 f" {est.ci_low:.1%}~{est.ci_high:.1%}, n={trials}]"
             )
         prev_rate = prev_rates[key] if prev_rates is not None else None
         if prev_rate is not None and trials > 0 and prev_trials > 0:
-            comparison = proportions.compare_rates(
-                successes,
-                trials,
-                prev_successes,
-                prev_trials,
-                alpha=settings.seller_rate_test_alpha,
-                confidence=settings.seller_wilson_confidence,
-            )
-            segment += (
-                f"(직전 {prev_rate:.1f}%, p={comparison.p_value:.3f}"
-                f" — {_VERDICT_LABELS[comparison.verdict]})"
-            )
+            try:
+                comparison = proportions.compare_rates(
+                    successes,
+                    trials,
+                    prev_successes,
+                    prev_trials,
+                    alpha=settings.seller_rate_test_alpha,
+                    confidence=settings.seller_wilson_confidence,
+                )
+            except ValueError as exc:
+                # 직전 기간 쪽 카운트 정합 이상 — 현재 기간 CI 는 유효하므로 유지하고
+                # 기간 비교만 생략한다(부분 degrade).
+                _log.warning("퍼널 단계 %s 기간 비교 불가 — 카운트 정합 이상: %s", label, exc)
+                segment += "(직전 기간 검정 불가 — 카운트 정합 이상)"
+            else:
+                segment += (
+                    f"(직전 {prev_rate:.1f}%, p={comparison.p_value:.3f}"
+                    f" — {_VERDICT_LABELS[comparison.verdict]})"
+                )
         elif prev_result is not None:
             # 직전 기간은 받았지만 이 단계가 미집계/표본 0 — 단계 단위로 검정 제외.
             segment += "(직전 기간 검정 제외 — 미집계/표본 없음)"
@@ -897,17 +919,33 @@ async def get_churn_cohort(
             )
         except SpringUnavailableError as exc:
             _log.warning("이탈 코호트 직전 기간 조회 실패 — 비교 생략: %s", exc)
+
+    # [PR 리뷰] churnRate 는 스키마가 [0,1] 구간을 강제하지 않는다 — BE 정합 이상으로
+    # 1 초과·음수가 오면 round(rate×cohort)가 wilson_interval 의 successes 범위를 벗어나
+    # ValueError 로 도구가 죽는다(§3.4 위반). fraction 정의역 밖 값은 계산 전에 걸러
+    # 판정 보류로 표기한다 — clamp 로 100% CI 처럼 위장하지 않는다(#197 위장 금지 계승).
+    def _valid_fraction(rate: float | None) -> bool:
+        return rate is not None and 0.0 <= rate <= 1.0
+
     prev_comparable = (
-        prev_result is not None and prev_result.cohort_size and prev_result.churn_rate is not None
+        prev_result is not None
+        and prev_result.cohort_size
+        and _valid_fraction(prev_result.churn_rate)
     )
     cohort_note = f"코호트 {result.cohort_size}명 중 " if result.cohort_size is not None else ""
     # churn_rate 는 fraction(0.6=60%) — ":.1%" 로만 변환한다(#197 — 구 ":.1f}%" 는
     # 60% 를 "0.6%" 로 왜곡해 워커가 이탈 미미로 오판하던 수치 버그).
     # [#197 리뷰] 결측(None)은 0.0% 로 위장하지 않고 미수신으로 명시한다 — 워커가
     # "이탈 없음"이 아니라 "판정 보류"로 해석하게(silent-mismatch 방어 일관성).
-    if result.churn_rate is not None and result.cohort_size:
+    if result.churn_rate is not None and not _valid_fraction(result.churn_rate):
+        rate_note = (
+            f"이탈률 값 이상(churnRate={result.churn_rate!r} — fraction [0,1] 밖) "
+            "— 이탈 규모 판정 보류"
+        )
+    elif result.churn_rate is not None and result.cohort_size:
         # [#290] Wilson CI + 직전 기간 z-검정. I-16 은 이탈 '수'가 아니라 fraction 을
-        # 주므로 churned = round(rate×cohort) 근사로 표본을 복원한다(결정론).
+        # 주므로 churned = round(rate×cohort) 근사로 표본을 복원한다(결정론 —
+        # rate∈[0,1] 가드 통과 후라 churned∈[0,cohort] 가 보장돼 raise 경로가 없다).
         churned = round(result.churn_rate * result.cohort_size)
         estimate = proportions.wilson_interval(
             churned, result.cohort_size, confidence=settings.seller_wilson_confidence
@@ -933,7 +971,7 @@ async def get_churn_cohort(
                 f" p={comparison.p_value:.3f} — {_VERDICT_LABELS[comparison.verdict]}"
             )
         else:
-            rate_note += ", 직전 기간 비교 불가(코호트 0명/조회 실패/결측)"
+            rate_note += ", 직전 기간 비교 불가(코호트 0명/조회 실패/결측/값 이상)"
     elif result.churn_rate is not None:
         # cohortSize 결측 — 비율은 표기하되 표본이 없어 CI·검정은 정의 불가.
         rate_note = f"이탈률 {result.churn_rate:.1%} (코호트 규모 미수신 — CI·검정 생략)"
