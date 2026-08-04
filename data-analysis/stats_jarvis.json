@@ -1,0 +1,2644 @@
+{
+  "meta": {
+    "source_files": [
+      "2019-Oct.csv"
+    ],
+    "dataset": "Kaggle mkechinov/ecommerce-behavior-data-from-multi-category-store (REES46)",
+    "script": "extract_stats.py"
+  },
+  "filters": {
+    "included_event_types": [
+      "view",
+      "cart",
+      "purchase"
+    ],
+    "excluded_remove_from_cart_events": 0,
+    "excluded_bot_sessions": 112,
+    "bot_rule": "세션당 이벤트 수 > max(200, p99.9=71) = 200",
+    "rows_after_filter": 42418053,
+    "rows_retained_ratio_of_full": 0.999277,
+    "mapping_note": {
+      "view": "상품 조회 (FunnelResult/BehaviorEventsResult/프로필 신호)",
+      "cart": "AddToCartRequest / 장바구니 퍼널",
+      "purchase": "OrderHistory / RecentPurchases / SalesResult",
+      "user_session": "sessionId",
+      "user_id": "userId/guestId",
+      "product_id": "products.product_id",
+      "category_code": "categories 'top > mid' 매핑 대상",
+      "brand": "SpringProduct.brandName",
+      "price": "가격/매출 통계"
+    }
+  },
+  "event_ratio": {
+    "view": {
+      "count": 40748757,
+      "ratio": 0.960647
+    },
+    "cart": {
+      "count": 926472,
+      "ratio": 0.021841
+    },
+    "purchase": {
+      "count": 742824,
+      "ratio": 0.017512
+    }
+  },
+  "session_funnel": {
+    "sessions": 9244310,
+    "share_with_view": 0.999809,
+    "share_with_cart": 0.061993,
+    "share_with_purchase": 0.068101,
+    "p_cart_given_view": 0.061876,
+    "p_purchase_given_cart": 0.509277,
+    "direct_purchase_share_of_buy_sessions": 0.536404
+  },
+  "transition_matrix_3state": [
+    {
+      "from": "view",
+      "to": "view",
+      "count": 30724107
+    },
+    {
+      "from": "view",
+      "to": "cart",
+      "count": 741051
+    },
+    {
+      "from": "purchase",
+      "to": "view",
+      "count": 448460
+    },
+    {
+      "from": "view",
+      "to": "purchase",
+      "count": 428408
+    },
+    {
+      "from": "cart",
+      "to": "view",
+      "count": 336159
+    },
+    {
+      "from": "cart",
+      "to": "purchase",
+      "count": 312395
+    },
+    {
+      "from": "cart",
+      "to": "cart",
+      "count": 179957
+    },
+    {
+      "from": "purchase",
+      "to": "cart",
+      "count": 2321
+    },
+    {
+      "from": "purchase",
+      "to": "purchase",
+      "count": 885
+    }
+  ],
+  "session_structure": {
+    "purchase_sessions": {
+      "sessions": 629550,
+      "events_per_session": {
+        "p5": 2,
+        "p10": 3,
+        "p25": 3,
+        "p50": 5,
+        "p75": 9,
+        "p90": 15,
+        "p95": 21,
+        "p99": 41,
+        "p99.9": 87,
+        "mean": 7.528
+      },
+      "duration_seconds": {
+        "p5": 49,
+        "p10": 68,
+        "p25": 123,
+        "p50": 248,
+        "p75": 531,
+        "p90": 1113,
+        "p95": 1795,
+        "p99": 5029,
+        "p99.9": 34112,
+        "mean": 658.6
+      },
+      "distinct_products": {
+        "p5": 1,
+        "p10": 1,
+        "p25": 1,
+        "p50": 1,
+        "p75": 3,
+        "p90": 6,
+        "p95": 9,
+        "p99": 20,
+        "p99.9": 44
+      },
+      "distinct_categories": {
+        "p5": 0,
+        "p10": 0,
+        "p25": 1,
+        "p50": 1,
+        "p75": 1,
+        "p90": 1,
+        "p95": 2,
+        "p99": 3,
+        "p99.9": 6
+      }
+    },
+    "non_purchase_sessions": {
+      "sessions": 8614760,
+      "events_per_session": {
+        "p5": 1,
+        "p10": 1,
+        "p25": 1,
+        "p50": 2,
+        "p75": 5,
+        "p90": 10,
+        "p95": 15,
+        "p99": 31,
+        "p99.9": 68,
+        "mean": 4.374
+      },
+      "duration_seconds": {
+        "p5": 0,
+        "p10": 0,
+        "p25": 0,
+        "p50": 50,
+        "p75": 245,
+        "p90": 681,
+        "p95": 1219,
+        "p99": 4865,
+        "p99.9": 264073,
+        "mean": 1069.7
+      },
+      "distinct_products": {
+        "p5": 1,
+        "p10": 1,
+        "p25": 1,
+        "p50": 1,
+        "p75": 3,
+        "p90": 7,
+        "p95": 10,
+        "p99": 20,
+        "p99.9": 43
+      },
+      "distinct_categories": {
+        "p5": 0,
+        "p10": 0,
+        "p25": 0,
+        "p50": 1,
+        "p75": 1,
+        "p90": 1,
+        "p95": 2,
+        "p99": 3,
+        "p99.9": 6
+      }
+    }
+  },
+  "items_per_order": {
+    "p5": 1,
+    "p10": 1,
+    "p25": 1,
+    "p50": 1,
+    "p75": 1,
+    "p90": 2,
+    "p95": 2,
+    "p99": 4,
+    "p99.9": 7,
+    "mean": 1.18,
+    "note": "구매 세션 내 purchase 이벤트 수 = 주문당 아이템 수 근사. REES46에는 수량 컬럼이 없음(1이벤트=1개)."
+  },
+  "user_structure": {
+    "users": 3022146,
+    "sessions_per_user_month": {
+      "p5": 1,
+      "p10": 1,
+      "p25": 1,
+      "p50": 2,
+      "p75": 3,
+      "p90": 7,
+      "p95": 10,
+      "p99": 22,
+      "p99.9": 51,
+      "mean": 3.059
+    },
+    "buyer_ratio": 0.114857,
+    "repeat_buyer_ratio_of_buyers": 0.321667,
+    "period_note": "1개월(입력 파일 기간) 기준 값",
+    "top1_category_share": {
+      "p5": 0.3683523648630171,
+      "p10": 0.4386042343861069,
+      "p25": 0.6005826915618184,
+      "p50": 0.8582570483514395,
+      "p75": 1.0,
+      "p90": 1.0,
+      "p95": 1.0,
+      "p99": 1.0,
+      "p99.9": 1.0,
+      "mean": 0.7877,
+      "users_measured": 1154454,
+      "note": "이벤트 5건 이상 사용자 기준, 사용자별 최다 카테고리 점유율"
+    }
+  },
+  "time_weights_utc": [
+    {
+      "isodow": 1,
+      "hour": 0,
+      "weight": 0.000957
+    },
+    {
+      "isodow": 1,
+      "hour": 1,
+      "weight": 0.001917
+    },
+    {
+      "isodow": 1,
+      "hour": 2,
+      "weight": 0.003252
+    },
+    {
+      "isodow": 1,
+      "hour": 3,
+      "weight": 0.004602
+    },
+    {
+      "isodow": 1,
+      "hour": 4,
+      "weight": 0.005627
+    },
+    {
+      "isodow": 1,
+      "hour": 5,
+      "weight": 0.006304
+    },
+    {
+      "isodow": 1,
+      "hour": 6,
+      "weight": 0.006558
+    },
+    {
+      "isodow": 1,
+      "hour": 7,
+      "weight": 0.006454
+    },
+    {
+      "isodow": 1,
+      "hour": 8,
+      "weight": 0.006748
+    },
+    {
+      "isodow": 1,
+      "hour": 9,
+      "weight": 0.006823
+    },
+    {
+      "isodow": 1,
+      "hour": 10,
+      "weight": 0.006644
+    },
+    {
+      "isodow": 1,
+      "hour": 11,
+      "weight": 0.006262
+    },
+    {
+      "isodow": 1,
+      "hour": 12,
+      "weight": 0.006142
+    },
+    {
+      "isodow": 1,
+      "hour": 13,
+      "weight": 0.00682
+    },
+    {
+      "isodow": 1,
+      "hour": 14,
+      "weight": 0.008137
+    },
+    {
+      "isodow": 1,
+      "hour": 15,
+      "weight": 0.0093
+    },
+    {
+      "isodow": 1,
+      "hour": 16,
+      "weight": 0.009387
+    },
+    {
+      "isodow": 1,
+      "hour": 17,
+      "weight": 0.008319
+    },
+    {
+      "isodow": 1,
+      "hour": 18,
+      "weight": 0.006367
+    },
+    {
+      "isodow": 1,
+      "hour": 19,
+      "weight": 0.003913
+    },
+    {
+      "isodow": 1,
+      "hour": 20,
+      "weight": 0.002128
+    },
+    {
+      "isodow": 1,
+      "hour": 21,
+      "weight": 0.001227
+    },
+    {
+      "isodow": 1,
+      "hour": 22,
+      "weight": 0.000788
+    },
+    {
+      "isodow": 1,
+      "hour": 23,
+      "weight": 0.000681
+    },
+    {
+      "isodow": 2,
+      "hour": 0,
+      "weight": 0.001029
+    },
+    {
+      "isodow": 2,
+      "hour": 1,
+      "weight": 0.001743
+    },
+    {
+      "isodow": 2,
+      "hour": 2,
+      "weight": 0.003784
+    },
+    {
+      "isodow": 2,
+      "hour": 3,
+      "weight": 0.005724
+    },
+    {
+      "isodow": 2,
+      "hour": 4,
+      "weight": 0.006899
+    },
+    {
+      "isodow": 2,
+      "hour": 5,
+      "weight": 0.008038
+    },
+    {
+      "isodow": 2,
+      "hour": 6,
+      "weight": 0.008685
+    },
+    {
+      "isodow": 2,
+      "hour": 7,
+      "weight": 0.008993
+    },
+    {
+      "isodow": 2,
+      "hour": 8,
+      "weight": 0.009124
+    },
+    {
+      "isodow": 2,
+      "hour": 9,
+      "weight": 0.00902
+    },
+    {
+      "isodow": 2,
+      "hour": 10,
+      "weight": 0.008547
+    },
+    {
+      "isodow": 2,
+      "hour": 11,
+      "weight": 0.008281
+    },
+    {
+      "isodow": 2,
+      "hour": 12,
+      "weight": 0.008133
+    },
+    {
+      "isodow": 2,
+      "hour": 13,
+      "weight": 0.009091
+    },
+    {
+      "isodow": 2,
+      "hour": 14,
+      "weight": 0.010416
+    },
+    {
+      "isodow": 2,
+      "hour": 15,
+      "weight": 0.01154
+    },
+    {
+      "isodow": 2,
+      "hour": 16,
+      "weight": 0.011948
+    },
+    {
+      "isodow": 2,
+      "hour": 17,
+      "weight": 0.010392
+    },
+    {
+      "isodow": 2,
+      "hour": 18,
+      "weight": 0.008048
+    },
+    {
+      "isodow": 2,
+      "hour": 19,
+      "weight": 0.004977
+    },
+    {
+      "isodow": 2,
+      "hour": 20,
+      "weight": 0.00262
+    },
+    {
+      "isodow": 2,
+      "hour": 21,
+      "weight": 0.001522
+    },
+    {
+      "isodow": 2,
+      "hour": 22,
+      "weight": 0.000873
+    },
+    {
+      "isodow": 2,
+      "hour": 23,
+      "weight": 0.000796
+    },
+    {
+      "isodow": 3,
+      "hour": 0,
+      "weight": 0.001213
+    },
+    {
+      "isodow": 3,
+      "hour": 1,
+      "weight": 0.002292
+    },
+    {
+      "isodow": 3,
+      "hour": 2,
+      "weight": 0.004081
+    },
+    {
+      "isodow": 3,
+      "hour": 3,
+      "weight": 0.005764
+    },
+    {
+      "isodow": 3,
+      "hour": 4,
+      "weight": 0.007065
+    },
+    {
+      "isodow": 3,
+      "hour": 5,
+      "weight": 0.007945
+    },
+    {
+      "isodow": 3,
+      "hour": 6,
+      "weight": 0.00837
+    },
+    {
+      "isodow": 3,
+      "hour": 7,
+      "weight": 0.008643
+    },
+    {
+      "isodow": 3,
+      "hour": 8,
+      "weight": 0.008817
+    },
+    {
+      "isodow": 3,
+      "hour": 9,
+      "weight": 0.008803
+    },
+    {
+      "isodow": 3,
+      "hour": 10,
+      "weight": 0.008441
+    },
+    {
+      "isodow": 3,
+      "hour": 11,
+      "weight": 0.007933
+    },
+    {
+      "isodow": 3,
+      "hour": 12,
+      "weight": 0.007804
+    },
+    {
+      "isodow": 3,
+      "hour": 13,
+      "weight": 0.008702
+    },
+    {
+      "isodow": 3,
+      "hour": 14,
+      "weight": 0.009927
+    },
+    {
+      "isodow": 3,
+      "hour": 15,
+      "weight": 0.011264
+    },
+    {
+      "isodow": 3,
+      "hour": 16,
+      "weight": 0.011343
+    },
+    {
+      "isodow": 3,
+      "hour": 17,
+      "weight": 0.010105
+    },
+    {
+      "isodow": 3,
+      "hour": 18,
+      "weight": 0.007635
+    },
+    {
+      "isodow": 3,
+      "hour": 19,
+      "weight": 0.004728
+    },
+    {
+      "isodow": 3,
+      "hour": 20,
+      "weight": 0.002543
+    },
+    {
+      "isodow": 3,
+      "hour": 21,
+      "weight": 0.001511
+    },
+    {
+      "isodow": 3,
+      "hour": 22,
+      "weight": 0.000984
+    },
+    {
+      "isodow": 3,
+      "hour": 23,
+      "weight": 0.000782
+    },
+    {
+      "isodow": 4,
+      "hour": 0,
+      "weight": 0.001173
+    },
+    {
+      "isodow": 4,
+      "hour": 1,
+      "weight": 0.001739
+    },
+    {
+      "isodow": 4,
+      "hour": 2,
+      "weight": 0.003945
+    },
+    {
+      "isodow": 4,
+      "hour": 3,
+      "weight": 0.005579
+    },
+    {
+      "isodow": 4,
+      "hour": 4,
+      "weight": 0.006893
+    },
+    {
+      "isodow": 4,
+      "hour": 5,
+      "weight": 0.006928
+    },
+    {
+      "isodow": 4,
+      "hour": 6,
+      "weight": 0.007995
+    },
+    {
+      "isodow": 4,
+      "hour": 7,
+      "weight": 0.008239
+    },
+    {
+      "isodow": 4,
+      "hour": 8,
+      "weight": 0.008404
+    },
+    {
+      "isodow": 4,
+      "hour": 9,
+      "weight": 0.008112
+    },
+    {
+      "isodow": 4,
+      "hour": 10,
+      "weight": 0.007772
+    },
+    {
+      "isodow": 4,
+      "hour": 11,
+      "weight": 0.007481
+    },
+    {
+      "isodow": 4,
+      "hour": 12,
+      "weight": 0.007147
+    },
+    {
+      "isodow": 4,
+      "hour": 13,
+      "weight": 0.008093
+    },
+    {
+      "isodow": 4,
+      "hour": 14,
+      "weight": 0.009535
+    },
+    {
+      "isodow": 4,
+      "hour": 15,
+      "weight": 0.010839
+    },
+    {
+      "isodow": 4,
+      "hour": 16,
+      "weight": 0.011197
+    },
+    {
+      "isodow": 4,
+      "hour": 17,
+      "weight": 0.010063
+    },
+    {
+      "isodow": 4,
+      "hour": 18,
+      "weight": 0.008071
+    },
+    {
+      "isodow": 4,
+      "hour": 19,
+      "weight": 0.004997
+    },
+    {
+      "isodow": 4,
+      "hour": 20,
+      "weight": 0.002667
+    },
+    {
+      "isodow": 4,
+      "hour": 21,
+      "weight": 0.001551
+    },
+    {
+      "isodow": 4,
+      "hour": 22,
+      "weight": 0.001048
+    },
+    {
+      "isodow": 4,
+      "hour": 23,
+      "weight": 0.000843
+    },
+    {
+      "isodow": 5,
+      "hour": 0,
+      "weight": 0.000984
+    },
+    {
+      "isodow": 5,
+      "hour": 1,
+      "weight": 0.001755
+    },
+    {
+      "isodow": 5,
+      "hour": 2,
+      "weight": 0.00326
+    },
+    {
+      "isodow": 5,
+      "hour": 3,
+      "weight": 0.005017
+    },
+    {
+      "isodow": 5,
+      "hour": 4,
+      "weight": 0.006026
+    },
+    {
+      "isodow": 5,
+      "hour": 5,
+      "weight": 0.006833
+    },
+    {
+      "isodow": 5,
+      "hour": 6,
+      "weight": 0.007235
+    },
+    {
+      "isodow": 5,
+      "hour": 7,
+      "weight": 0.007377
+    },
+    {
+      "isodow": 5,
+      "hour": 8,
+      "weight": 0.007639
+    },
+    {
+      "isodow": 5,
+      "hour": 9,
+      "weight": 0.007826
+    },
+    {
+      "isodow": 5,
+      "hour": 10,
+      "weight": 0.007544
+    },
+    {
+      "isodow": 5,
+      "hour": 11,
+      "weight": 0.007317
+    },
+    {
+      "isodow": 5,
+      "hour": 12,
+      "weight": 0.007336
+    },
+    {
+      "isodow": 5,
+      "hour": 13,
+      "weight": 0.008252
+    },
+    {
+      "isodow": 5,
+      "hour": 14,
+      "weight": 0.009073
+    },
+    {
+      "isodow": 5,
+      "hour": 15,
+      "weight": 0.009547
+    },
+    {
+      "isodow": 5,
+      "hour": 16,
+      "weight": 0.009553
+    },
+    {
+      "isodow": 5,
+      "hour": 17,
+      "weight": 0.008524
+    },
+    {
+      "isodow": 5,
+      "hour": 18,
+      "weight": 0.006532
+    },
+    {
+      "isodow": 5,
+      "hour": 19,
+      "weight": 0.004255
+    },
+    {
+      "isodow": 5,
+      "hour": 20,
+      "weight": 0.002462
+    },
+    {
+      "isodow": 5,
+      "hour": 21,
+      "weight": 0.001437
+    },
+    {
+      "isodow": 5,
+      "hour": 22,
+      "weight": 0.000896
+    },
+    {
+      "isodow": 5,
+      "hour": 23,
+      "weight": 0.000702
+    },
+    {
+      "isodow": 6,
+      "hour": 0,
+      "weight": 0.000981
+    },
+    {
+      "isodow": 6,
+      "hour": 1,
+      "weight": 0.002001
+    },
+    {
+      "isodow": 6,
+      "hour": 2,
+      "weight": 0.00355
+    },
+    {
+      "isodow": 6,
+      "hour": 3,
+      "weight": 0.005028
+    },
+    {
+      "isodow": 6,
+      "hour": 4,
+      "weight": 0.006258
+    },
+    {
+      "isodow": 6,
+      "hour": 5,
+      "weight": 0.007018
+    },
+    {
+      "isodow": 6,
+      "hour": 6,
+      "weight": 0.007358
+    },
+    {
+      "isodow": 6,
+      "hour": 7,
+      "weight": 0.007484
+    },
+    {
+      "isodow": 6,
+      "hour": 8,
+      "weight": 0.007518
+    },
+    {
+      "isodow": 6,
+      "hour": 9,
+      "weight": 0.006608
+    },
+    {
+      "isodow": 6,
+      "hour": 10,
+      "weight": 0.007105
+    },
+    {
+      "isodow": 6,
+      "hour": 11,
+      "weight": 0.006851
+    },
+    {
+      "isodow": 6,
+      "hour": 12,
+      "weight": 0.006631
+    },
+    {
+      "isodow": 6,
+      "hour": 13,
+      "weight": 0.007029
+    },
+    {
+      "isodow": 6,
+      "hour": 14,
+      "weight": 0.007755
+    },
+    {
+      "isodow": 6,
+      "hour": 15,
+      "weight": 0.008572
+    },
+    {
+      "isodow": 6,
+      "hour": 16,
+      "weight": 0.008912
+    },
+    {
+      "isodow": 6,
+      "hour": 17,
+      "weight": 0.008221
+    },
+    {
+      "isodow": 6,
+      "hour": 18,
+      "weight": 0.006632
+    },
+    {
+      "isodow": 6,
+      "hour": 19,
+      "weight": 0.004443
+    },
+    {
+      "isodow": 6,
+      "hour": 20,
+      "weight": 0.002722
+    },
+    {
+      "isodow": 6,
+      "hour": 21,
+      "weight": 0.001657
+    },
+    {
+      "isodow": 6,
+      "hour": 22,
+      "weight": 0.000994
+    },
+    {
+      "isodow": 6,
+      "hour": 23,
+      "weight": 0.000744
+    },
+    {
+      "isodow": 7,
+      "hour": 0,
+      "weight": 0.00088
+    },
+    {
+      "isodow": 7,
+      "hour": 1,
+      "weight": 0.001724
+    },
+    {
+      "isodow": 7,
+      "hour": 2,
+      "weight": 0.003328
+    },
+    {
+      "isodow": 7,
+      "hour": 3,
+      "weight": 0.004822
+    },
+    {
+      "isodow": 7,
+      "hour": 4,
+      "weight": 0.006371
+    },
+    {
+      "isodow": 7,
+      "hour": 5,
+      "weight": 0.007015
+    },
+    {
+      "isodow": 7,
+      "hour": 6,
+      "weight": 0.007267
+    },
+    {
+      "isodow": 7,
+      "hour": 7,
+      "weight": 0.007849
+    },
+    {
+      "isodow": 7,
+      "hour": 8,
+      "weight": 0.008074
+    },
+    {
+      "isodow": 7,
+      "hour": 9,
+      "weight": 0.008222
+    },
+    {
+      "isodow": 7,
+      "hour": 10,
+      "weight": 0.00808
+    },
+    {
+      "isodow": 7,
+      "hour": 11,
+      "weight": 0.007564
+    },
+    {
+      "isodow": 7,
+      "hour": 12,
+      "weight": 0.007191
+    },
+    {
+      "isodow": 7,
+      "hour": 13,
+      "weight": 0.007511
+    },
+    {
+      "isodow": 7,
+      "hour": 14,
+      "weight": 0.008264
+    },
+    {
+      "isodow": 7,
+      "hour": 15,
+      "weight": 0.009145
+    },
+    {
+      "isodow": 7,
+      "hour": 16,
+      "weight": 0.009608
+    },
+    {
+      "isodow": 7,
+      "hour": 17,
+      "weight": 0.008749
+    },
+    {
+      "isodow": 7,
+      "hour": 18,
+      "weight": 0.006762
+    },
+    {
+      "isodow": 7,
+      "hour": 19,
+      "weight": 0.004264
+    },
+    {
+      "isodow": 7,
+      "hour": 20,
+      "weight": 0.002369
+    },
+    {
+      "isodow": 7,
+      "hour": 21,
+      "weight": 0.001398
+    },
+    {
+      "isodow": 7,
+      "hour": 22,
+      "weight": 0.00083
+    },
+    {
+      "isodow": 7,
+      "hour": 23,
+      "weight": 0.000673
+    }
+  ],
+  "product_popularity": {
+    "products_with_views": 166774,
+    "view_share_by_top_fraction": {
+      "top_0.01": 0.490599,
+      "top_0.05": 0.728004,
+      "top_0.1": 0.826385,
+      "top_0.2": 0.909352,
+      "top_0.5": 0.982023
+    },
+    "zipf_alpha_fit": 0.8835,
+    "transfer_note": "jarvis 카탈로그(~10k 상품)에 순위 기반 전사용 파라미터"
+  },
+  "categories": [
+    {
+      "category_code": "electronics.smartphone",
+      "events": 11504407,
+      "share": 0.271215,
+      "views": 10616632,
+      "carts": 549757,
+      "purchases": 338018,
+      "cart_per_view": 0.051783,
+      "purchase_per_cart": 0.61485,
+      "purchase_per_view": 0.031839,
+      "price_p25": 177.99,
+      "price_median": 282.94,
+      "price_p75": 717.34
+    },
+    {
+      "category_code": "electronics.clocks",
+      "events": 1309721,
+      "share": 0.030876,
+      "views": 1271471,
+      "carts": 20344,
+      "purchases": 17906,
+      "cart_per_view": 0.016,
+      "purchase_per_cart": 0.880161,
+      "purchase_per_view": 0.014083,
+      "price_p25": 68.05,
+      "price_median": 176.19,
+      "price_p75": 352.78
+    },
+    {
+      "category_code": "computers.notebook",
+      "events": 1136334,
+      "share": 0.026789,
+      "views": 1105117,
+      "carts": 15627,
+      "purchases": 15590,
+      "cart_per_view": 0.014141,
+      "purchase_per_cart": 0.997632,
+      "purchase_per_view": 0.014107,
+      "price_p25": 361.39,
+      "price_median": 561.87,
+      "price_p75": 874.55
+    },
+    {
+      "category_code": "electronics.video.tv",
+      "events": 1112705,
+      "share": 0.026232,
+      "views": 1054919,
+      "carts": 36221,
+      "purchases": 21565,
+      "cart_per_view": 0.034335,
+      "purchase_per_cart": 0.595373,
+      "purchase_per_view": 0.020442,
+      "price_p25": 218.96,
+      "price_median": 369.39,
+      "price_p75": 498.31
+    },
+    {
+      "category_code": "electronics.audio.headphone",
+      "events": 1100056,
+      "share": 0.025934,
+      "views": 1018410,
+      "carts": 51143,
+      "purchases": 30503,
+      "cart_per_view": 0.050218,
+      "purchase_per_cart": 0.596426,
+      "purchase_per_view": 0.029952,
+      "price_p25": 25.75,
+      "price_median": 73.8,
+      "price_p75": 160.83
+    },
+    {
+      "category_code": "appliances.kitchen.refrigerators",
+      "events": 887084,
+      "share": 0.020913,
+      "views": 862740,
+      "carts": 13126,
+      "purchases": 11218,
+      "cart_per_view": 0.015214,
+      "purchase_per_cart": 0.85464,
+      "purchase_per_view": 0.013003,
+      "price_p25": 225.86,
+      "price_median": 289.17,
+      "price_p75": 468.32
+    },
+    {
+      "category_code": "appliances.kitchen.washer",
+      "events": 868794,
+      "share": 0.020482,
+      "views": 830669,
+      "carts": 21977,
+      "purchases": 16148,
+      "cart_per_view": 0.026457,
+      "purchase_per_cart": 0.734768,
+      "purchase_per_view": 0.01944,
+      "price_p25": 206.27,
+      "price_median": 308.14,
+      "price_p75": 388.46
+    },
+    {
+      "category_code": "appliances.environment.vacuum",
+      "events": 800014,
+      "share": 0.01886,
+      "views": 770379,
+      "carts": 17257,
+      "purchases": 12378,
+      "cart_per_view": 0.022401,
+      "purchase_per_cart": 0.717274,
+      "purchase_per_view": 0.016067,
+      "price_p25": 67.41,
+      "price_median": 110.43,
+      "price_p75": 218.02
+    },
+    {
+      "category_code": "apparel.shoes",
+      "events": 762715,
+      "share": 0.017981,
+      "views": 758463,
+      "carts": 0,
+      "purchases": 4252,
+      "cart_per_view": 0.0,
+      "purchase_per_cart": null,
+      "purchase_per_view": 0.005606,
+      "price_p25": 62.88,
+      "price_median": 86.2,
+      "price_p75": 113.1
+    },
+    {
+      "category_code": "auto.accessories.player",
+      "events": 470163,
+      "share": 0.011084,
+      "views": 464227,
+      "carts": 1289,
+      "purchases": 4647,
+      "cart_per_view": 0.002777,
+      "purchase_per_cart": 3.60512,
+      "purchase_per_view": 0.01001,
+      "price_p25": 59.21,
+      "price_median": 120.74,
+      "price_p75": 168.05
+    },
+    {
+      "category_code": "computers.desktop",
+      "events": 424152,
+      "share": 0.009999,
+      "views": 417689,
+      "carts": 3231,
+      "purchases": 3232,
+      "cart_per_view": 0.007735,
+      "purchase_per_cart": 1.00031,
+      "purchase_per_view": 0.007738,
+      "price_p25": 120.89,
+      "price_median": 415.21,
+      "price_p75": 729.69
+    },
+    {
+      "category_code": "apparel.shoes.keds",
+      "events": 410133,
+      "share": 0.009669,
+      "views": 407422,
+      "carts": 0,
+      "purchases": 2711,
+      "cart_per_view": 0.0,
+      "purchase_per_cart": null,
+      "purchase_per_view": 0.006654,
+      "price_p25": 51.22,
+      "price_median": 69.18,
+      "price_p75": 100.61
+    },
+    {
+      "category_code": "furniture.bedroom.bed",
+      "events": 358408,
+      "share": 0.008449,
+      "views": 355269,
+      "carts": 973,
+      "purchases": 2166,
+      "cart_per_view": 0.002739,
+      "purchase_per_cart": 2.226105,
+      "purchase_per_view": 0.006097,
+      "price_p25": 134.13,
+      "price_median": 158.74,
+      "price_p75": 247.42
+    },
+    {
+      "category_code": "electronics.tablet",
+      "events": 316725,
+      "share": 0.007467,
+      "views": 301982,
+      "carts": 9140,
+      "purchases": 5603,
+      "cart_per_view": 0.030267,
+      "purchase_per_cart": 0.61302,
+      "purchase_per_view": 0.018554,
+      "price_p25": 111.08,
+      "price_median": 181.2,
+      "price_p75": 460.81
+    },
+    {
+      "category_code": "electronics.audio.subwoofer",
+      "events": 312896,
+      "share": 0.007376,
+      "views": 309192,
+      "carts": 356,
+      "purchases": 3348,
+      "cart_per_view": 0.001151,
+      "purchase_per_cart": 9.404494,
+      "purchase_per_view": 0.010828,
+      "price_p25": 42.03,
+      "price_median": 62.22,
+      "price_p75": 126.11
+    },
+    {
+      "category_code": "furniture.living_room.cabinet",
+      "events": 301160,
+      "share": 0.0071,
+      "views": 299273,
+      "carts": 0,
+      "purchases": 1887,
+      "cart_per_view": 0.0,
+      "purchase_per_cart": null,
+      "purchase_per_view": 0.006305,
+      "price_p25": 154.19,
+      "price_median": 205.9,
+      "price_p75": 333.26
+    },
+    {
+      "category_code": "construction.tools.drill",
+      "events": 278716,
+      "share": 0.006571,
+      "views": 272358,
+      "carts": 3569,
+      "purchases": 2789,
+      "cart_per_view": 0.013104,
+      "purchase_per_cart": 0.781451,
+      "purchase_per_view": 0.01024,
+      "price_p25": 43.62,
+      "price_median": 68.12,
+      "price_p75": 130.92
+    },
+    {
+      "category_code": "electronics.telephone",
+      "events": 247592,
+      "share": 0.005837,
+      "views": 238512,
+      "carts": 5342,
+      "purchases": 3738,
+      "cart_per_view": 0.022397,
+      "purchase_per_cart": 0.699738,
+      "purchase_per_view": 0.015672,
+      "price_p25": 18.86,
+      "price_median": 30.42,
+      "price_p75": 50.09
+    },
+    {
+      "category_code": "auto.accessories.videoregister",
+      "events": 223951,
+      "share": 0.00528,
+      "views": 218887,
+      "carts": 2689,
+      "purchases": 2375,
+      "cart_per_view": 0.012285,
+      "purchase_per_cart": 0.883228,
+      "purchase_per_view": 0.01085,
+      "price_p25": 56.65,
+      "price_median": 98.54,
+      "price_p75": 147.16
+    },
+    {
+      "category_code": "kids.carriage",
+      "events": 219998,
+      "share": 0.005186,
+      "views": 216745,
+      "carts": 972,
+      "purchases": 2281,
+      "cart_per_view": 0.004485,
+      "purchase_per_cart": 2.346708,
+      "purchase_per_view": 0.010524,
+      "price_p25": 82.1,
+      "price_median": 115.51,
+      "price_p75": 219.26
+    },
+    {
+      "category_code": "furniture.living_room.sofa",
+      "events": 216545,
+      "share": 0.005105,
+      "views": 215461,
+      "carts": 0,
+      "purchases": 1084,
+      "cart_per_view": 0.0,
+      "purchase_per_cart": null,
+      "purchase_per_view": 0.005031,
+      "price_p25": 437.33,
+      "price_median": 543.63,
+      "price_p75": 771.45
+    },
+    {
+      "category_code": "appliances.kitchen.blender",
+      "events": 200938,
+      "share": 0.004737,
+      "views": 194392,
+      "carts": 3503,
+      "purchases": 3043,
+      "cart_per_view": 0.01802,
+      "purchase_per_cart": 0.868684,
+      "purchase_per_view": 0.015654,
+      "price_p25": 33.97,
+      "price_median": 50.51,
+      "price_p75": 65.96
+    },
+    {
+      "category_code": "appliances.kitchen.oven",
+      "events": 194943,
+      "share": 0.004596,
+      "views": 190898,
+      "carts": 1710,
+      "purchases": 2335,
+      "cart_per_view": 0.008958,
+      "purchase_per_cart": 1.365497,
+      "purchase_per_view": 0.012232,
+      "price_p25": 47.5,
+      "price_median": 110.33,
+      "price_p75": 304.93
+    },
+    {
+      "category_code": "auto.accessories.alarm",
+      "events": 194170,
+      "share": 0.004578,
+      "views": 187629,
+      "carts": 4100,
+      "purchases": 2441,
+      "cart_per_view": 0.021852,
+      "purchase_per_cart": 0.595366,
+      "purchase_per_view": 0.01301,
+      "price_p25": 99.12,
+      "price_median": 138.23,
+      "price_p75": 157.53
+    },
+    {
+      "category_code": "accessories.bag",
+      "events": 190551,
+      "share": 0.004492,
+      "views": 188754,
+      "carts": 544,
+      "purchases": 1253,
+      "cart_per_view": 0.002882,
+      "purchase_per_cart": 2.303309,
+      "purchase_per_view": 0.006638,
+      "price_p25": 18.27,
+      "price_median": 43.12,
+      "price_p75": 77.89
+    },
+    {
+      "category_code": "appliances.kitchen.kettle",
+      "events": 184750,
+      "share": 0.004355,
+      "views": 178510,
+      "carts": 3257,
+      "purchases": 2983,
+      "cart_per_view": 0.018245,
+      "purchase_per_cart": 0.915874,
+      "purchase_per_view": 0.016711,
+      "price_p25": 19.67,
+      "price_median": 31.14,
+      "price_p75": 45.91
+    },
+    {
+      "category_code": "appliances.kitchen.microwave",
+      "events": 173247,
+      "share": 0.004084,
+      "views": 164821,
+      "carts": 4717,
+      "purchases": 3709,
+      "cart_per_view": 0.028619,
+      "purchase_per_cart": 0.786305,
+      "purchase_per_view": 0.022503,
+      "price_p25": 56.63,
+      "price_median": 78.52,
+      "price_p75": 112.98
+    },
+    {
+      "category_code": "appliances.iron",
+      "events": 165191,
+      "share": 0.003894,
+      "views": 157443,
+      "carts": 4095,
+      "purchases": 3653,
+      "cart_per_view": 0.026009,
+      "purchase_per_cart": 0.892063,
+      "purchase_per_view": 0.023202,
+      "price_p25": 27.35,
+      "price_median": 45.12,
+      "price_p75": 85.95
+    },
+    {
+      "category_code": "appliances.kitchen.meat_grinder",
+      "events": 160099,
+      "share": 0.003774,
+      "views": 155414,
+      "carts": 2304,
+      "purchases": 2381,
+      "cart_per_view": 0.014825,
+      "purchase_per_cart": 1.03342,
+      "purchase_per_view": 0.01532,
+      "price_p25": 46.4,
+      "price_median": 64.96,
+      "price_p75": 111.65
+    },
+    {
+      "category_code": "appliances.environment.air_heater",
+      "events": 158738,
+      "share": 0.003742,
+      "views": 153273,
+      "carts": 2982,
+      "purchases": 2483,
+      "cart_per_view": 0.019455,
+      "purchase_per_cart": 0.832663,
+      "purchase_per_view": 0.0162,
+      "price_p25": 24.56,
+      "price_median": 36.62,
+      "price_p75": 59.89
+    },
+    {
+      "category_code": "appliances.sewing_machine",
+      "events": 151987,
+      "share": 0.003583,
+      "views": 147761,
+      "carts": 2287,
+      "purchases": 1939,
+      "cart_per_view": 0.015478,
+      "purchase_per_cart": 0.847836,
+      "purchase_per_view": 0.013123,
+      "price_p25": 101.42,
+      "price_median": 136.91,
+      "price_p75": 213.59
+    },
+    {
+      "category_code": "computers.peripherals.printer",
+      "events": 151751,
+      "share": 0.003578,
+      "views": 145570,
+      "carts": 3685,
+      "purchases": 2496,
+      "cart_per_view": 0.025314,
+      "purchase_per_cart": 0.677341,
+      "purchase_per_view": 0.017146,
+      "price_p25": 117.44,
+      "price_median": 154.3,
+      "price_p75": 210.94
+    },
+    {
+      "category_code": "appliances.environment.water_heater",
+      "events": 145441,
+      "share": 0.003429,
+      "views": 138751,
+      "carts": 3916,
+      "purchases": 2774,
+      "cart_per_view": 0.028223,
+      "purchase_per_cart": 0.708376,
+      "purchase_per_view": 0.019993,
+      "price_p25": 82.73,
+      "price_median": 102.95,
+      "price_p75": 117.96
+    },
+    {
+      "category_code": "construction.tools.saw",
+      "events": 143569,
+      "share": 0.003385,
+      "views": 139190,
+      "carts": 2559,
+      "purchases": 1820,
+      "cart_per_view": 0.018385,
+      "purchase_per_cart": 0.711215,
+      "purchase_per_view": 0.013076,
+      "price_p25": 80.1,
+      "price_median": 111.15,
+      "price_p75": 215.76
+    },
+    {
+      "category_code": "apparel.costume",
+      "events": 134945,
+      "share": 0.003181,
+      "views": 134456,
+      "carts": 0,
+      "purchases": 489,
+      "cart_per_view": 0.0,
+      "purchase_per_cart": null,
+      "purchase_per_view": 0.003637,
+      "price_p25": 55.2,
+      "price_median": 77.22,
+      "price_p75": 136.43
+    },
+    {
+      "category_code": "sport.bicycle",
+      "events": 130281,
+      "share": 0.003071,
+      "views": 128750,
+      "carts": 693,
+      "purchases": 838,
+      "cart_per_view": 0.005383,
+      "purchase_per_cart": 1.209235,
+      "purchase_per_view": 0.006509,
+      "price_p25": 118.9,
+      "price_median": 205.92,
+      "price_p75": 457.79
+    },
+    {
+      "category_code": "construction.tools.generator",
+      "events": 114511,
+      "share": 0.0027,
+      "views": 111700,
+      "carts": 1567,
+      "purchases": 1244,
+      "cart_per_view": 0.014029,
+      "purchase_per_cart": 0.793874,
+      "purchase_per_view": 0.011137,
+      "price_p25": 77.38,
+      "price_median": 119.56,
+      "price_p75": 238.23
+    },
+    {
+      "category_code": "kids.toys",
+      "events": 110662,
+      "share": 0.002609,
+      "views": 109102,
+      "carts": 505,
+      "purchases": 1055,
+      "cart_per_view": 0.004629,
+      "purchase_per_cart": 2.089109,
+      "purchase_per_view": 0.00967,
+      "price_p25": 13.42,
+      "price_median": 25.69,
+      "price_p75": 42.67
+    },
+    {
+      "category_code": "furniture.kitchen.chair",
+      "events": 108344,
+      "share": 0.002554,
+      "views": 106334,
+      "carts": 854,
+      "purchases": 1156,
+      "cart_per_view": 0.008031,
+      "purchase_per_cart": 1.35363,
+      "purchase_per_view": 0.010871,
+      "price_p25": 28.69,
+      "price_median": 44.85,
+      "price_p75": 91.67
+    },
+    {
+      "category_code": "appliances.kitchen.hob",
+      "events": 106728,
+      "share": 0.002516,
+      "views": 104522,
+      "carts": 1247,
+      "purchases": 959,
+      "cart_per_view": 0.011931,
+      "purchase_per_cart": 0.769046,
+      "purchase_per_view": 0.009175,
+      "price_p25": 135.73,
+      "price_median": 204.08,
+      "price_p75": 278.52
+    },
+    {
+      "category_code": "appliances.kitchen.hood",
+      "events": 106542,
+      "share": 0.002512,
+      "views": 104526,
+      "carts": 1080,
+      "purchases": 936,
+      "cart_per_view": 0.010332,
+      "purchase_per_cart": 0.866667,
+      "purchase_per_view": 0.008955,
+      "price_p25": 53.33,
+      "price_median": 93.11,
+      "price_p75": 142.88
+    },
+    {
+      "category_code": "furniture.kitchen.table",
+      "events": 105897,
+      "share": 0.002497,
+      "views": 105065,
+      "carts": 90,
+      "purchases": 742,
+      "cart_per_view": 0.000857,
+      "purchase_per_cart": 8.244444,
+      "purchase_per_view": 0.007062,
+      "price_p25": 83.77,
+      "price_median": 119.93,
+      "price_p75": 224.05
+    },
+    {
+      "category_code": "computers.peripherals.monitor",
+      "events": 105893,
+      "share": 0.002496,
+      "views": 103777,
+      "carts": 1081,
+      "purchases": 1035,
+      "cart_per_view": 0.010417,
+      "purchase_per_cart": 0.957447,
+      "purchase_per_view": 0.009973,
+      "price_p25": 127.02,
+      "price_median": 217.95,
+      "price_p75": 317.82
+    },
+    {
+      "category_code": "electronics.audio.acoustic",
+      "events": 95539,
+      "share": 0.002252,
+      "views": 94077,
+      "carts": 574,
+      "purchases": 888,
+      "cart_per_view": 0.006101,
+      "purchase_per_cart": 1.547038,
+      "purchase_per_view": 0.009439,
+      "price_p25": 137.16,
+      "price_median": 214.32,
+      "price_p75": 455.41
+    },
+    {
+      "category_code": "construction.tools.welding",
+      "events": 93938,
+      "share": 0.002215,
+      "views": 90954,
+      "carts": 1903,
+      "purchases": 1081,
+      "cart_per_view": 0.020923,
+      "purchase_per_cart": 0.56805,
+      "purchase_per_view": 0.011885,
+      "price_p25": 87.86,
+      "price_median": 132.57,
+      "price_p75": 256.09
+    },
+    {
+      "category_code": "appliances.kitchen.mixer",
+      "events": 90262,
+      "share": 0.002128,
+      "views": 87611,
+      "carts": 1391,
+      "purchases": 1260,
+      "cart_per_view": 0.015877,
+      "purchase_per_cart": 0.905823,
+      "purchase_per_view": 0.014382,
+      "price_p25": 25.46,
+      "price_median": 42.95,
+      "price_p75": 110.47
+    },
+    {
+      "category_code": "kids.skates",
+      "events": 86247,
+      "share": 0.002033,
+      "views": 84821,
+      "carts": 722,
+      "purchases": 704,
+      "cart_per_view": 0.008512,
+      "purchase_per_cart": 0.975069,
+      "purchase_per_view": 0.0083,
+      "price_p25": 97.78,
+      "price_median": 353.34,
+      "price_p75": 382.43
+    },
+    {
+      "category_code": "appliances.kitchen.dishwasher",
+      "events": 83691,
+      "share": 0.001973,
+      "views": 82075,
+      "carts": 975,
+      "purchases": 641,
+      "cart_per_view": 0.011879,
+      "purchase_per_cart": 0.657436,
+      "purchase_per_view": 0.00781,
+      "price_p25": 308.68,
+      "price_median": 373.53,
+      "price_p75": 504.15
+    },
+    {
+      "category_code": "appliances.kitchen.coffee_machine",
+      "events": 82883,
+      "share": 0.001954,
+      "views": 81765,
+      "carts": 574,
+      "purchases": 544,
+      "cart_per_view": 0.00702,
+      "purchase_per_cart": 0.947735,
+      "purchase_per_view": 0.006653,
+      "price_p25": 51.38,
+      "price_median": 160.98,
+      "price_p75": 533.09
+    },
+    {
+      "category_code": "computers.components.videocards",
+      "events": 81712,
+      "share": 0.001926,
+      "views": 80489,
+      "carts": 387,
+      "purchases": 836,
+      "cart_per_view": 0.004808,
+      "purchase_per_cart": 2.160207,
+      "purchase_per_view": 0.010387,
+      "price_p25": 176.54,
+      "price_median": 251.59,
+      "price_p75": 410.78
+    },
+    {
+      "category_code": "appliances.kitchen.grill",
+      "events": 74629,
+      "share": 0.001759,
+      "views": 72789,
+      "carts": 1117,
+      "purchases": 723,
+      "cart_per_view": 0.015346,
+      "purchase_per_cart": 0.647269,
+      "purchase_per_view": 0.009933,
+      "price_p25": 71.82,
+      "price_median": 110.42,
+      "price_p75": 235.07
+    },
+    {
+      "category_code": "furniture.living_room.chair",
+      "events": 72534,
+      "share": 0.00171,
+      "views": 71418,
+      "carts": 468,
+      "purchases": 648,
+      "cart_per_view": 0.006553,
+      "purchase_per_cart": 1.384615,
+      "purchase_per_view": 0.009073,
+      "price_p25": 52.59,
+      "price_median": 81.2,
+      "price_p75": 169.83
+    },
+    {
+      "category_code": "computers.peripherals.mouse",
+      "events": 72082,
+      "share": 0.001699,
+      "views": 70170,
+      "carts": 861,
+      "purchases": 1051,
+      "cart_per_view": 0.01227,
+      "purchase_per_cart": 1.220674,
+      "purchase_per_view": 0.014978,
+      "price_p25": 6.88,
+      "price_median": 19.61,
+      "price_p75": 37.73
+    },
+    {
+      "category_code": "appliances.personal.hair_cutter",
+      "events": 65940,
+      "share": 0.001555,
+      "views": 63740,
+      "carts": 1153,
+      "purchases": 1047,
+      "cart_per_view": 0.018089,
+      "purchase_per_cart": 0.908066,
+      "purchase_per_view": 0.016426,
+      "price_p25": 18.79,
+      "price_median": 33.43,
+      "price_p75": 53.28
+    },
+    {
+      "category_code": "appliances.personal.scales",
+      "events": 65326,
+      "share": 0.00154,
+      "views": 62582,
+      "carts": 1412,
+      "purchases": 1332,
+      "cart_per_view": 0.022562,
+      "purchase_per_cart": 0.943343,
+      "purchase_per_view": 0.021284,
+      "price_p25": 9.99,
+      "price_median": 13.38,
+      "price_p75": 24.66
+    },
+    {
+      "category_code": "computers.components.hdd",
+      "events": 64839,
+      "share": 0.001529,
+      "views": 62633,
+      "carts": 1171,
+      "purchases": 1035,
+      "cart_per_view": 0.018696,
+      "purchase_per_cart": 0.88386,
+      "purchase_per_view": 0.016525,
+      "price_p25": 38.33,
+      "price_median": 51.08,
+      "price_p75": 82.18
+    },
+    {
+      "category_code": "auto.accessories.compressor",
+      "events": 59698,
+      "share": 0.001407,
+      "views": 58834,
+      "carts": 273,
+      "purchases": 591,
+      "cart_per_view": 0.00464,
+      "purchase_per_cart": 2.164835,
+      "purchase_per_view": 0.010045,
+      "price_p25": 36.83,
+      "price_median": 91.3,
+      "price_p75": 160.95
+    },
+    {
+      "category_code": "apparel.jeans",
+      "events": 56724,
+      "share": 0.001337,
+      "views": 56584,
+      "carts": 0,
+      "purchases": 140,
+      "cart_per_view": 0.0,
+      "purchase_per_cart": null,
+      "purchase_per_view": 0.002474,
+      "price_p25": 40.15,
+      "price_median": 46.08,
+      "price_p75": 51.87
+    },
+    {
+      "category_code": "computers.peripherals.keyboard",
+      "events": 53582,
+      "share": 0.001263,
+      "views": 52561,
+      "carts": 421,
+      "purchases": 600,
+      "cart_per_view": 0.00801,
+      "purchase_per_cart": 1.425178,
+      "purchase_per_view": 0.011415,
+      "price_p25": 12.6,
+      "price_median": 25.29,
+      "price_p75": 69.25
+    },
+    {
+      "category_code": "computers.components.cpu",
+      "events": 48482,
+      "share": 0.001143,
+      "views": 48200,
+      "carts": 81,
+      "purchases": 201,
+      "cart_per_view": 0.00168,
+      "purchase_per_cart": 2.481481,
+      "purchase_per_view": 0.00417,
+      "price_p25": 144.36,
+      "price_median": 211.97,
+      "price_p75": 363.96
+    },
+    {
+      "category_code": "appliances.kitchen.juicer",
+      "events": 47440,
+      "share": 0.001118,
+      "views": 46230,
+      "carts": 656,
+      "purchases": 554,
+      "cart_per_view": 0.01419,
+      "purchase_per_cart": 0.844512,
+      "purchase_per_view": 0.011984,
+      "price_p25": 43.78,
+      "price_median": 86.14,
+      "price_p75": 138.88
+    },
+    {
+      "category_code": "kids.dolls",
+      "events": 46204,
+      "share": 0.001089,
+      "views": 45655,
+      "carts": 205,
+      "purchases": 344,
+      "cart_per_view": 0.00449,
+      "purchase_per_cart": 1.678049,
+      "purchase_per_view": 0.007535,
+      "price_p25": 24.4,
+      "price_median": 39.02,
+      "price_p75": 53.75
+    },
+    {
+      "category_code": "apparel.underwear",
+      "events": 44441,
+      "share": 0.001048,
+      "views": 44344,
+      "carts": 0,
+      "purchases": 97,
+      "cart_per_view": 0.0,
+      "purchase_per_cart": null,
+      "purchase_per_view": 0.002187,
+      "price_p25": 13.7,
+      "price_median": 21.68,
+      "price_p75": 30.21
+    },
+    {
+      "category_code": "computers.components.cooler",
+      "events": 44149,
+      "share": 0.001041,
+      "views": 43580,
+      "carts": 118,
+      "purchases": 451,
+      "cart_per_view": 0.002708,
+      "purchase_per_cart": 3.822034,
+      "purchase_per_view": 0.010349,
+      "price_p25": 16.82,
+      "price_median": 45.8,
+      "price_p75": 83.11
+    },
+    {
+      "category_code": "accessories.wallet",
+      "events": 43581,
+      "share": 0.001027,
+      "views": 43271,
+      "carts": 0,
+      "purchases": 310,
+      "cart_per_view": 0.0,
+      "purchase_per_cart": null,
+      "purchase_per_view": 0.007164,
+      "price_p25": 35.99,
+      "price_median": 46.22,
+      "price_p75": 63.65
+    },
+    {
+      "category_code": "auto.accessories.radar",
+      "events": 43560,
+      "share": 0.001027,
+      "views": 42350,
+      "carts": 716,
+      "purchases": 494,
+      "cart_per_view": 0.016907,
+      "purchase_per_cart": 0.689944,
+      "purchase_per_view": 0.011665,
+      "price_p25": 62.8,
+      "price_median": 83.66,
+      "price_p75": 93.83
+    },
+    {
+      "category_code": "computers.components.motherboard",
+      "events": 43216,
+      "share": 0.001019,
+      "views": 42859,
+      "carts": 87,
+      "purchases": 270,
+      "cart_per_view": 0.00203,
+      "purchase_per_cart": 3.103448,
+      "purchase_per_view": 0.0063,
+      "price_p25": 68.57,
+      "price_median": 101.78,
+      "price_p75": 159.23
+    },
+    {
+      "category_code": "computers.components.memory",
+      "events": 42656,
+      "share": 0.001006,
+      "views": 42062,
+      "carts": 68,
+      "purchases": 526,
+      "cart_per_view": 0.001617,
+      "purchase_per_cart": 7.735294,
+      "purchase_per_view": 0.012505,
+      "price_p25": 35.02,
+      "price_median": 44.51,
+      "price_p75": 88.28
+    },
+    {
+      "category_code": "electronics.camera.video",
+      "events": 40028,
+      "share": 0.000944,
+      "views": 39168,
+      "carts": 510,
+      "purchases": 350,
+      "cart_per_view": 0.013021,
+      "purchase_per_cart": 0.686275,
+      "purchase_per_view": 0.008936,
+      "price_p25": 128.05,
+      "price_median": 304.44,
+      "price_p75": 461.88
+    },
+    {
+      "category_code": "appliances.environment.air_conditioner",
+      "events": 39369,
+      "share": 0.000928,
+      "views": 38603,
+      "carts": 354,
+      "purchases": 412,
+      "cart_per_view": 0.00917,
+      "purchase_per_cart": 1.163842,
+      "purchase_per_view": 0.010673,
+      "price_p25": 205.32,
+      "price_median": 281.4,
+      "price_p75": 411.8
+    },
+    {
+      "category_code": "apparel.dress",
+      "events": 37331,
+      "share": 0.00088,
+      "views": 37316,
+      "carts": 0,
+      "purchases": 15,
+      "cart_per_view": 0.0,
+      "purchase_per_cart": null,
+      "purchase_per_view": 0.000402,
+      "price_p25": 33.82,
+      "price_median": 70.59,
+      "price_p75": 92.67
+    },
+    {
+      "category_code": "electronics.audio.music_tools.piano",
+      "events": 36240,
+      "share": 0.000854,
+      "views": 35407,
+      "carts": 410,
+      "purchases": 423,
+      "cart_per_view": 0.01158,
+      "purchase_per_cart": 1.031707,
+      "purchase_per_view": 0.011947,
+      "price_p25": 84.94,
+      "price_median": 143.12,
+      "price_p75": 236.91
+    },
+    {
+      "category_code": "sport.trainer",
+      "events": 35967,
+      "share": 0.000848,
+      "views": 35246,
+      "carts": 354,
+      "purchases": 367,
+      "cart_per_view": 0.010044,
+      "purchase_per_cart": 1.036723,
+      "purchase_per_view": 0.010413,
+      "price_p25": 178.6,
+      "price_median": 255.86,
+      "price_p75": 454.26
+    },
+    {
+      "category_code": "appliances.ironing_board",
+      "events": 35260,
+      "share": 0.000831,
+      "views": 34242,
+      "carts": 354,
+      "purchases": 664,
+      "cart_per_view": 0.010338,
+      "purchase_per_cart": 1.875706,
+      "purchase_per_view": 0.019391,
+      "price_p25": 24.8,
+      "price_median": 38.59,
+      "price_p75": 52.09
+    },
+    {
+      "category_code": "construction.tools.pump",
+      "events": 34812,
+      "share": 0.000821,
+      "views": 33884,
+      "carts": 606,
+      "purchases": 322,
+      "cart_per_view": 0.017885,
+      "purchase_per_cart": 0.531353,
+      "purchase_per_view": 0.009503,
+      "price_p25": 45.12,
+      "price_median": 89.17,
+      "price_p75": 136.18
+    },
+    {
+      "category_code": "kids.swing",
+      "events": 32051,
+      "share": 0.000756,
+      "views": 31574,
+      "carts": 147,
+      "purchases": 330,
+      "cart_per_view": 0.004656,
+      "purchase_per_cart": 2.244898,
+      "purchase_per_view": 0.010452,
+      "price_p25": 61.02,
+      "price_median": 89.09,
+      "price_p75": 209.86
+    },
+    {
+      "category_code": "computers.ebooks",
+      "events": 29853,
+      "share": 0.000704,
+      "views": 29083,
+      "carts": 476,
+      "purchases": 294,
+      "cart_per_view": 0.016367,
+      "purchase_per_cart": 0.617647,
+      "purchase_per_view": 0.010109,
+      "price_p25": 102.71,
+      "price_median": 152.37,
+      "price_p75": 176.88
+    },
+    {
+      "category_code": "electronics.audio.microphone",
+      "events": 29010,
+      "share": 0.000684,
+      "views": 28384,
+      "carts": 196,
+      "purchases": 430,
+      "cart_per_view": 0.006905,
+      "purchase_per_cart": 2.193878,
+      "purchase_per_view": 0.015149,
+      "price_p25": 20.25,
+      "price_median": 37.94,
+      "price_p75": 133.84
+    },
+    {
+      "category_code": "appliances.kitchen.toster",
+      "events": 26769,
+      "share": 0.000631,
+      "views": 25922,
+      "carts": 388,
+      "purchases": 459,
+      "cart_per_view": 0.014968,
+      "purchase_per_cart": 1.18299,
+      "purchase_per_view": 0.017707,
+      "price_p25": 19.47,
+      "price_median": 31.95,
+      "price_p75": 49.69
+    },
+    {
+      "category_code": "construction.components.faucet",
+      "events": 25824,
+      "share": 0.000609,
+      "views": 25482,
+      "carts": 45,
+      "purchases": 297,
+      "cart_per_view": 0.001766,
+      "purchase_per_cart": 6.6,
+      "purchase_per_view": 0.011655,
+      "price_p25": 23.6,
+      "price_median": 39.18,
+      "price_p75": 83.22
+    },
+    {
+      "category_code": "kids.fmcg.diapers",
+      "events": 25069,
+      "share": 0.000591,
+      "views": 24203,
+      "carts": 98,
+      "purchases": 768,
+      "cart_per_view": 0.004049,
+      "purchase_per_cart": 7.836735,
+      "purchase_per_view": 0.031732,
+      "price_p25": 8.57,
+      "price_median": 13.62,
+      "price_p75": 17.71
+    },
+    {
+      "category_code": "furniture.bedroom.blanket",
+      "events": 22543,
+      "share": 0.000531,
+      "views": 22381,
+      "carts": 0,
+      "purchases": 162,
+      "cart_per_view": 0.0,
+      "purchase_per_cart": null,
+      "purchase_per_view": 0.007238,
+      "price_p25": 16.79,
+      "price_median": 27.19,
+      "price_p75": 47.64
+    },
+    {
+      "category_code": "construction.tools.light",
+      "events": 22164,
+      "share": 0.000523,
+      "views": 21973,
+      "carts": 78,
+      "purchases": 113,
+      "cart_per_view": 0.00355,
+      "purchase_per_cart": 1.448718,
+      "purchase_per_view": 0.005143,
+      "price_p25": 7.62,
+      "price_median": 17.35,
+      "price_p75": 31.44
+    },
+    {
+      "category_code": "furniture.bedroom.pillow",
+      "events": 20838,
+      "share": 0.000491,
+      "views": 20660,
+      "carts": 7,
+      "purchases": 171,
+      "cart_per_view": 0.000339,
+      "purchase_per_cart": 24.428571,
+      "purchase_per_view": 0.008277,
+      "price_p25": 10.3,
+      "price_median": 15.44,
+      "price_p75": 36.57
+    },
+    {
+      "category_code": "apparel.tshirt",
+      "events": 18954,
+      "share": 0.000447,
+      "views": 18877,
+      "carts": 19,
+      "purchases": 58,
+      "cart_per_view": 0.001007,
+      "purchase_per_cart": 3.052632,
+      "purchase_per_view": 0.003073,
+      "price_p25": 33.44,
+      "price_median": 41.16,
+      "price_p75": 45.02
+    },
+    {
+      "category_code": "computers.components.power_supply",
+      "events": 18625,
+      "share": 0.000439,
+      "views": 18336,
+      "carts": 94,
+      "purchases": 195,
+      "cart_per_view": 0.005127,
+      "purchase_per_cart": 2.074468,
+      "purchase_per_view": 0.010635,
+      "price_p25": 30.36,
+      "price_median": 48.96,
+      "price_p75": 75.14
+    },
+    {
+      "category_code": "appliances.personal.massager",
+      "events": 18320,
+      "share": 0.000432,
+      "views": 18018,
+      "carts": 139,
+      "purchases": 163,
+      "cart_per_view": 0.007715,
+      "purchase_per_cart": 1.172662,
+      "purchase_per_view": 0.009047,
+      "price_p25": 38.43,
+      "price_median": 48.39,
+      "price_p75": 88.93
+    },
+    {
+      "category_code": "furniture.bathroom.toilet",
+      "events": 16689,
+      "share": 0.000393,
+      "views": 16492,
+      "carts": 15,
+      "purchases": 182,
+      "cart_per_view": 0.00091,
+      "purchase_per_cart": 12.133333,
+      "purchase_per_view": 0.011036,
+      "price_p25": 58.15,
+      "price_median": 66.16,
+      "price_p75": 98.56
+    },
+    {
+      "category_code": "apparel.trousers",
+      "events": 16087,
+      "share": 0.000379,
+      "views": 16065,
+      "carts": 0,
+      "purchases": 22,
+      "cart_per_view": 0.0,
+      "purchase_per_cart": null,
+      "purchase_per_view": 0.001369,
+      "price_p25": 39.9,
+      "price_median": 60.02,
+      "price_p75": 73.34
+    },
+    {
+      "category_code": "medicine.tools.tonometer",
+      "events": 14802,
+      "share": 0.000349,
+      "views": 13970,
+      "carts": 522,
+      "purchases": 310,
+      "cart_per_view": 0.037366,
+      "purchase_per_cart": 0.59387,
+      "purchase_per_view": 0.02219,
+      "price_p25": 33.53,
+      "price_median": 41.89,
+      "price_p75": 51.43
+    },
+    {
+      "category_code": "construction.tools.painting",
+      "events": 14784,
+      "share": 0.000349,
+      "views": 14643,
+      "carts": 8,
+      "purchases": 133,
+      "cart_per_view": 0.000546,
+      "purchase_per_cart": 16.625,
+      "purchase_per_view": 0.009083,
+      "price_p25": 33.44,
+      "price_median": 50.28,
+      "price_p75": 98.36
+    },
+    {
+      "category_code": "furniture.bathroom.bath",
+      "events": 13591,
+      "share": 0.00032,
+      "views": 13528,
+      "carts": 0,
+      "purchases": 63,
+      "cart_per_view": 0.0,
+      "purchase_per_cart": null,
+      "purchase_per_view": 0.004657,
+      "price_p25": 96.92,
+      "price_median": 127.28,
+      "price_p75": 257.19
+    },
+    {
+      "category_code": "apparel.shirt",
+      "events": 13509,
+      "share": 0.000318,
+      "views": 13471,
+      "carts": 0,
+      "purchases": 38,
+      "cart_per_view": 0.0,
+      "purchase_per_cart": null,
+      "purchase_per_view": 0.002821,
+      "price_p25": 29.6,
+      "price_median": 29.6,
+      "price_p75": 32.51
+    },
+    {
+      "category_code": "appliances.kitchen.steam_cooker",
+      "events": 13494,
+      "share": 0.000318,
+      "views": 13250,
+      "carts": 147,
+      "purchases": 97,
+      "cart_per_view": 0.011094,
+      "purchase_per_cart": 0.659864,
+      "purchase_per_view": 0.007321,
+      "price_p25": 58.46,
+      "price_median": 77.19,
+      "price_p75": 100.53
+    },
+    {
+      "category_code": "apparel.shoes.moccasins",
+      "events": 13435,
+      "share": 0.000317,
+      "views": 13363,
+      "carts": 0,
+      "purchases": 72,
+      "cart_per_view": 0.0,
+      "purchase_per_cart": null,
+      "purchase_per_view": 0.005388,
+      "price_p25": 52.0,
+      "price_median": 64.65,
+      "price_p75": 92.67
+    },
+    {
+      "category_code": "electronics.video.projector",
+      "events": 13146,
+      "share": 0.00031,
+      "views": 12917,
+      "carts": 147,
+      "purchases": 82,
+      "cart_per_view": 0.01138,
+      "purchase_per_cart": 0.557823,
+      "purchase_per_view": 0.006348,
+      "price_p25": 324.98,
+      "price_median": 435.06,
+      "price_p75": 896.91
+    },
+    {
+      "category_code": "auto.accessories.parktronic",
+      "events": 12347,
+      "share": 0.000291,
+      "views": 12301,
+      "carts": 0,
+      "purchases": 46,
+      "cart_per_view": 0.0,
+      "purchase_per_cart": null,
+      "purchase_per_view": 0.00374,
+      "price_p25": 32.18,
+      "price_median": 36.34,
+      "price_p75": 82.29
+    },
+    {
+      "category_code": "appliances.kitchen.coffee_grinder",
+      "events": 11935,
+      "share": 0.000281,
+      "views": 11581,
+      "carts": 222,
+      "purchases": 132,
+      "cart_per_view": 0.019169,
+      "purchase_per_cart": 0.594595,
+      "purchase_per_view": 0.011398,
+      "price_p25": 19.46,
+      "price_median": 25.02,
+      "price_p75": 42.96
+    },
+    {
+      "category_code": "electronics.camera.photo",
+      "events": 11384,
+      "share": 0.000268,
+      "views": 11156,
+      "carts": 54,
+      "purchases": 174,
+      "cart_per_view": 0.00484,
+      "purchase_per_cart": 3.222222,
+      "purchase_per_view": 0.015597,
+      "price_p25": 375.83,
+      "price_median": 631.13,
+      "price_p75": 1178.31
+    },
+    {
+      "category_code": "furniture.universal.light",
+      "events": 9916,
+      "share": 0.000234,
+      "views": 9876,
+      "carts": 0,
+      "purchases": 40,
+      "cart_per_view": 0.0,
+      "purchase_per_cart": null,
+      "purchase_per_view": 0.00405,
+      "price_p25": 29.27,
+      "price_median": 50.05,
+      "price_p75": 200.42
+    },
+    {
+      "category_code": "apparel.shoes.sandals",
+      "events": 9307,
+      "share": 0.000219,
+      "views": 9282,
+      "carts": 0,
+      "purchases": 25,
+      "cart_per_view": 0.0,
+      "purchase_per_cart": null,
+      "purchase_per_view": 0.002693,
+      "price_p25": 27.82,
+      "price_median": 34.97,
+      "price_p75": 42.46
+    },
+    {
+      "category_code": "auto.accessories.winch",
+      "events": 8704,
+      "share": 0.000205,
+      "views": 8678,
+      "carts": 0,
+      "purchases": 26,
+      "cart_per_view": 0.0,
+      "purchase_per_cart": null,
+      "purchase_per_view": 0.002996,
+      "price_p25": 300.91,
+      "price_median": 424.36,
+      "price_p75": 623.71
+    },
+    {
+      "category_code": "stationery.cartrige",
+      "events": 7619,
+      "share": 0.00018,
+      "views": 7379,
+      "carts": 106,
+      "purchases": 134,
+      "cart_per_view": 0.014365,
+      "purchase_per_cart": 1.264151,
+      "purchase_per_view": 0.01816,
+      "price_p25": 6.35,
+      "price_median": 11.64,
+      "price_p75": 24.89
+    },
+    {
+      "category_code": "country_yard.cultivator",
+      "events": 7179,
+      "share": 0.000169,
+      "views": 7140,
+      "carts": 11,
+      "purchases": 28,
+      "cart_per_view": 0.001541,
+      "purchase_per_cart": 2.545455,
+      "purchase_per_view": 0.003922,
+      "price_p25": 255.48,
+      "price_median": 307.89,
+      "price_p75": 351.01
+    },
+    {
+      "category_code": "apparel.shoes.slipons",
+      "events": 5665,
+      "share": 0.000134,
+      "views": 5657,
+      "carts": 0,
+      "purchases": 8,
+      "cart_per_view": 0.0,
+      "purchase_per_cart": null,
+      "purchase_per_view": 0.001414,
+      "price_p25": 35.75,
+      "price_median": 42.29,
+      "price_p75": 66.93
+    },
+    {
+      "category_code": "country_yard.lawn_mower",
+      "events": 5489,
+      "share": 0.000129,
+      "views": 5395,
+      "carts": 50,
+      "purchases": 44,
+      "cart_per_view": 0.009268,
+      "purchase_per_cart": 0.88,
+      "purchase_per_view": 0.008156,
+      "price_p25": 91.33,
+      "price_median": 124.27,
+      "price_p75": 215.83
+    },
+    {
+      "category_code": "computers.peripherals.camera",
+      "events": 5042,
+      "share": 0.000119,
+      "views": 4953,
+      "carts": 46,
+      "purchases": 43,
+      "cart_per_view": 0.009287,
+      "purchase_per_cart": 0.934783,
+      "purchase_per_view": 0.008682,
+      "price_p25": 11.99,
+      "price_median": 25.01,
+      "price_p75": 93.12
+    }
+  ],
+  "categories_note": "이벤트 5000건 이상 카테고리 상위 200개. 전환율은 이벤트 수 비율 기준(세션 기준 아님).",
+  "price_conversion": [
+    {
+      "price_quintile": 1,
+      "price_min": 0.77,
+      "price_max": 17.49,
+      "views": 1904165,
+      "purchases": 25055,
+      "purchase_per_view": 0.013158
+    },
+    {
+      "price_quintile": 2,
+      "price_min": 17.49,
+      "price_max": 46.59,
+      "views": 5262785,
+      "purchases": 83585,
+      "purchase_per_view": 0.015882
+    },
+    {
+      "price_quintile": 3,
+      "price_min": 46.59,
+      "price_max": 100.04,
+      "views": 7088160,
+      "purchases": 100510,
+      "purchase_per_view": 0.01418
+    },
+    {
+      "price_quintile": 4,
+      "price_min": 100.04,
+      "price_max": 233.42,
+      "views": 11173364,
+      "purchases": 230121,
+      "purchase_per_view": 0.020595
+    },
+    {
+      "price_quintile": 5,
+      "price_min": 233.44,
+      "price_max": 2574.07,
+      "views": 15251830,
+      "purchases": 303544,
+      "purchase_per_view": 0.019902
+    }
+  ]
+}

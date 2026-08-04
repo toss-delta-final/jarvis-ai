@@ -1,0 +1,1797 @@
+{
+  "meta": {
+    "source_files": [
+      "2019-Oct.csv"
+    ],
+    "dataset": "Kaggle mkechinov/ecommerce-behavior-data-from-multi-category-store (REES46)",
+    "script": "extract_stats.py"
+  },
+  "profile": {
+    "rows": 42448764,
+    "event_time_min": "2019-10-01 00:00:00",
+    "event_time_max": "2019-10-31 23:59:59",
+    "days_covered": 31,
+    "unique_users": 3022290,
+    "unique_sessions": 9244422,
+    "unique_products": 166794,
+    "unique_category_ids": 624,
+    "unique_category_codes": 126,
+    "unique_brands": 3445,
+    "timezone_note": "event_time 은 UTC 기준",
+    "null_ratio": {
+      "event_time": 0.0,
+      "event_type": 0.0,
+      "product_id": 0.0,
+      "category_id": 0.0,
+      "category_code": 0.318398,
+      "brand": 0.144009,
+      "price": 0.0,
+      "user_id": 0.0,
+      "user_session": 0.0
+    },
+    "duplicate_rows_approx": 30237,
+    "duplicate_ratio_approx": 0.000712
+  },
+  "event_types": {
+    "view": {
+      "count": 40779399,
+      "ratio": 0.960673
+    },
+    "cart": {
+      "count": 926516,
+      "ratio": 0.021827
+    },
+    "purchase": {
+      "count": 742849,
+      "ratio": 0.0175
+    }
+  },
+  "daily_by_type": [
+    {
+      "date": "2019-10-01",
+      "event_type": "cart",
+      "count": 16658
+    },
+    {
+      "date": "2019-10-01",
+      "event_type": "purchase",
+      "count": 19307
+    },
+    {
+      "date": "2019-10-01",
+      "event_type": "view",
+      "count": 1208280
+    },
+    {
+      "date": "2019-10-02",
+      "event_type": "cart",
+      "count": 17268
+    },
+    {
+      "date": "2019-10-02",
+      "event_type": "purchase",
+      "count": 19469
+    },
+    {
+      "date": "2019-10-02",
+      "event_type": "view",
+      "count": 1154591
+    },
+    {
+      "date": "2019-10-03",
+      "event_type": "cart",
+      "count": 19323
+    },
+    {
+      "date": "2019-10-03",
+      "event_type": "purchase",
+      "count": 19255
+    },
+    {
+      "date": "2019-10-03",
+      "event_type": "view",
+      "count": 1088725
+    },
+    {
+      "date": "2019-10-04",
+      "event_type": "cart",
+      "count": 43829
+    },
+    {
+      "date": "2019-10-04",
+      "event_type": "purchase",
+      "count": 27041
+    },
+    {
+      "date": "2019-10-04",
+      "event_type": "view",
+      "count": 1346320
+    },
+    {
+      "date": "2019-10-05",
+      "event_type": "cart",
+      "count": 35497
+    },
+    {
+      "date": "2019-10-05",
+      "event_type": "purchase",
+      "count": 23494
+    },
+    {
+      "date": "2019-10-05",
+      "event_type": "view",
+      "count": 1271348
+    },
+    {
+      "date": "2019-10-06",
+      "event_type": "cart",
+      "count": 32146
+    },
+    {
+      "date": "2019-10-06",
+      "event_type": "purchase",
+      "count": 22171
+    },
+    {
+      "date": "2019-10-06",
+      "event_type": "view",
+      "count": 1264062
+    },
+    {
+      "date": "2019-10-07",
+      "event_type": "cart",
+      "count": 18052
+    },
+    {
+      "date": "2019-10-07",
+      "event_type": "purchase",
+      "count": 21378
+    },
+    {
+      "date": "2019-10-07",
+      "event_type": "view",
+      "count": 1161101
+    },
+    {
+      "date": "2019-10-08",
+      "event_type": "cart",
+      "count": 18442
+    },
+    {
+      "date": "2019-10-08",
+      "event_type": "purchase",
+      "count": 23072
+    },
+    {
+      "date": "2019-10-08",
+      "event_type": "view",
+      "count": 1329119
+    },
+    {
+      "date": "2019-10-09",
+      "event_type": "cart",
+      "count": 18432
+    },
+    {
+      "date": "2019-10-09",
+      "event_type": "purchase",
+      "count": 22748
+    },
+    {
+      "date": "2019-10-09",
+      "event_type": "view",
+      "count": 1306363
+    },
+    {
+      "date": "2019-10-10",
+      "event_type": "cart",
+      "count": 18997
+    },
+    {
+      "date": "2019-10-10",
+      "event_type": "purchase",
+      "count": 21993
+    },
+    {
+      "date": "2019-10-10",
+      "event_type": "view",
+      "count": 1243087
+    },
+    {
+      "date": "2019-10-11",
+      "event_type": "cart",
+      "count": 21450
+    },
+    {
+      "date": "2019-10-11",
+      "event_type": "purchase",
+      "count": 26224
+    },
+    {
+      "date": "2019-10-11",
+      "event_type": "view",
+      "count": 1447669
+    },
+    {
+      "date": "2019-10-12",
+      "event_type": "cart",
+      "count": 20691
+    },
+    {
+      "date": "2019-10-12",
+      "event_type": "purchase",
+      "count": 25373
+    },
+    {
+      "date": "2019-10-12",
+      "event_type": "view",
+      "count": 1433832
+    },
+    {
+      "date": "2019-10-13",
+      "event_type": "cart",
+      "count": 24833
+    },
+    {
+      "date": "2019-10-13",
+      "event_type": "purchase",
+      "count": 29561
+    },
+    {
+      "date": "2019-10-13",
+      "event_type": "view",
+      "count": 1584677
+    },
+    {
+      "date": "2019-10-14",
+      "event_type": "cart",
+      "count": 44858
+    },
+    {
+      "date": "2019-10-14",
+      "event_type": "purchase",
+      "count": 28405
+    },
+    {
+      "date": "2019-10-14",
+      "event_type": "view",
+      "count": 1381439
+    },
+    {
+      "date": "2019-10-15",
+      "event_type": "cart",
+      "count": 49548
+    },
+    {
+      "date": "2019-10-15",
+      "event_type": "purchase",
+      "count": 26372
+    },
+    {
+      "date": "2019-10-15",
+      "event_type": "view",
+      "count": 1466305
+    },
+    {
+      "date": "2019-10-16",
+      "event_type": "cart",
+      "count": 45279
+    },
+    {
+      "date": "2019-10-16",
+      "event_type": "purchase",
+      "count": 31394
+    },
+    {
+      "date": "2019-10-16",
+      "event_type": "view",
+      "count": 1445717
+    },
+    {
+      "date": "2019-10-17",
+      "event_type": "cart",
+      "count": 40378
+    },
+    {
+      "date": "2019-10-17",
+      "event_type": "purchase",
+      "count": 28318
+    },
+    {
+      "date": "2019-10-17",
+      "event_type": "view",
+      "count": 1338311
+    },
+    {
+      "date": "2019-10-18",
+      "event_type": "cart",
+      "count": 40144
+    },
+    {
+      "date": "2019-10-18",
+      "event_type": "purchase",
+      "count": 25850
+    },
+    {
+      "date": "2019-10-18",
+      "event_type": "view",
+      "count": 1415805
+    },
+    {
+      "date": "2019-10-19",
+      "event_type": "cart",
+      "count": 39465
+    },
+    {
+      "date": "2019-10-19",
+      "event_type": "purchase",
+      "count": 24657
+    },
+    {
+      "date": "2019-10-19",
+      "event_type": "view",
+      "count": 1385171
+    },
+    {
+      "date": "2019-10-20",
+      "event_type": "cart",
+      "count": 40534
+    },
+    {
+      "date": "2019-10-20",
+      "event_type": "purchase",
+      "count": 25098
+    },
+    {
+      "date": "2019-10-20",
+      "event_type": "view",
+      "count": 1444360
+    },
+    {
+      "date": "2019-10-21",
+      "event_type": "cart",
+      "count": 36675
+    },
+    {
+      "date": "2019-10-21",
+      "event_type": "purchase",
+      "count": 25167
+    },
+    {
+      "date": "2019-10-21",
+      "event_type": "view",
+      "count": 1343574
+    },
+    {
+      "date": "2019-10-22",
+      "event_type": "cart",
+      "count": 36953
+    },
+    {
+      "date": "2019-10-22",
+      "event_type": "purchase",
+      "count": 25385
+    },
+    {
+      "date": "2019-10-22",
+      "event_type": "view",
+      "count": 1354534
+    },
+    {
+      "date": "2019-10-23",
+      "event_type": "cart",
+      "count": 36407
+    },
+    {
+      "date": "2019-10-23",
+      "event_type": "purchase",
+      "count": 24731
+    },
+    {
+      "date": "2019-10-23",
+      "event_type": "view",
+      "count": 1319988
+    },
+    {
+      "date": "2019-10-24",
+      "event_type": "cart",
+      "count": 35723
+    },
+    {
+      "date": "2019-10-24",
+      "event_type": "purchase",
+      "count": 23999
+    },
+    {
+      "date": "2019-10-24",
+      "event_type": "view",
+      "count": 1256779
+    },
+    {
+      "date": "2019-10-25",
+      "event_type": "cart",
+      "count": 36815
+    },
+    {
+      "date": "2019-10-25",
+      "event_type": "purchase",
+      "count": 23929
+    },
+    {
+      "date": "2019-10-25",
+      "event_type": "view",
+      "count": 1374584
+    },
+    {
+      "date": "2019-10-26",
+      "event_type": "cart",
+      "count": 34776
+    },
+    {
+      "date": "2019-10-26",
+      "event_type": "purchase",
+      "count": 22653
+    },
+    {
+      "date": "2019-10-26",
+      "event_type": "view",
+      "count": 1289839
+    },
+    {
+      "date": "2019-10-27",
+      "event_type": "cart",
+      "count": 34256
+    },
+    {
+      "date": "2019-10-27",
+      "event_type": "purchase",
+      "count": 23403
+    },
+    {
+      "date": "2019-10-27",
+      "event_type": "view",
+      "count": 1330894
+    },
+    {
+      "date": "2019-10-28",
+      "event_type": "cart",
+      "count": 17838
+    },
+    {
+      "date": "2019-10-28",
+      "event_type": "purchase",
+      "count": 21112
+    },
+    {
+      "date": "2019-10-28",
+      "event_type": "view",
+      "count": 1221930
+    },
+    {
+      "date": "2019-10-29",
+      "event_type": "cart",
+      "count": 17455
+    },
+    {
+      "date": "2019-10-29",
+      "event_type": "purchase",
+      "count": 20374
+    },
+    {
+      "date": "2019-10-29",
+      "event_type": "view",
+      "count": 1190081
+    },
+    {
+      "date": "2019-10-30",
+      "event_type": "cart",
+      "count": 16996
+    },
+    {
+      "date": "2019-10-30",
+      "event_type": "purchase",
+      "count": 20817
+    },
+    {
+      "date": "2019-10-30",
+      "event_type": "view",
+      "count": 1172332
+    },
+    {
+      "date": "2019-10-31",
+      "event_type": "cart",
+      "count": 16798
+    },
+    {
+      "date": "2019-10-31",
+      "event_type": "purchase",
+      "count": 20099
+    },
+    {
+      "date": "2019-10-31",
+      "event_type": "view",
+      "count": 1208582
+    }
+  ],
+  "sessions": {
+    "total": 9244422,
+    "events_per_session": {
+      "p5": 1,
+      "p10": 1,
+      "p25": 1,
+      "p50": 2,
+      "p75": 5,
+      "p90": 11,
+      "p95": 16,
+      "p99": 32,
+      "p99.9": 71,
+      "mean": 4.592
+    },
+    "duration_seconds": {
+      "p5": 0,
+      "p10": 0,
+      "p25": 0,
+      "p50": 63,
+      "p75": 270,
+      "p90": 717,
+      "p95": 1269,
+      "p99": 4811,
+      "p99.9": 238514,
+      "mean": 1042.1
+    },
+    "bounce_ratio_single_event": 0.353681,
+    "distinct_products_per_session": {
+      "p5": 1,
+      "p10": 1,
+      "p25": 1,
+      "p50": 2,
+      "p75": 3,
+      "p90": 7,
+      "p95": 10,
+      "p99": 20,
+      "p99.9": 43
+    },
+    "distinct_categories_per_session": {
+      "p5": 0,
+      "p10": 0,
+      "p25": 0,
+      "p50": 1,
+      "p75": 1,
+      "p90": 1,
+      "p95": 2,
+      "p99": 3,
+      "p99.9": 6
+    }
+  },
+  "users": {
+    "total": 3022221,
+    "sessions_per_user": {
+      "p5": 1,
+      "p10": 1,
+      "p25": 1,
+      "p50": 2,
+      "p75": 3,
+      "p90": 7,
+      "p95": 10,
+      "p99": 22,
+      "p99.9": 50,
+      "mean": 3.059
+    },
+    "single_session_user_ratio": 0.488237
+  },
+  "product_popularity": {
+    "products_with_views": 166794,
+    "view_share_by_top_fraction": {
+      "top_0.01": 0.490368,
+      "top_0.05": 0.727797,
+      "top_0.1": 0.826217,
+      "top_0.2": 0.909236,
+      "top_0.5": 0.981995
+    },
+    "zipf_alpha_fit": 0.8832
+  },
+  "brand": {
+    "null_ratio": 0.144009,
+    "top20_by_events": [
+      {
+        "brand": "samsung",
+        "events": 5282775,
+        "share": 0.124451
+      },
+      {
+        "brand": "apple",
+        "events": 4122554,
+        "share": 0.097118
+      },
+      {
+        "brand": "xiaomi",
+        "events": 3083763,
+        "share": 0.072647
+      },
+      {
+        "brand": "huawei",
+        "events": 1111205,
+        "share": 0.026178
+      },
+      {
+        "brand": "lucente",
+        "events": 655861,
+        "share": 0.015451
+      },
+      {
+        "brand": "lg",
+        "events": 562404,
+        "share": 0.013249
+      },
+      {
+        "brand": "bosch",
+        "events": 557090,
+        "share": 0.013124
+      },
+      {
+        "brand": "oppo",
+        "events": 482887,
+        "share": 0.011376
+      },
+      {
+        "brand": "sony",
+        "events": 456644,
+        "share": 0.010758
+      },
+      {
+        "brand": "acer",
+        "events": 428153,
+        "share": 0.010086
+      },
+      {
+        "brand": "cordiant",
+        "events": 368277,
+        "share": 0.008676
+      },
+      {
+        "brand": "artel",
+        "events": 338203,
+        "share": 0.007967
+      },
+      {
+        "brand": "lenovo",
+        "events": 338103,
+        "share": 0.007965
+      },
+      {
+        "brand": "hp",
+        "events": 305242,
+        "share": 0.007191
+      },
+      {
+        "brand": "indesit",
+        "events": 290101,
+        "share": 0.006834
+      },
+      {
+        "brand": "dauscher",
+        "events": 289853,
+        "share": 0.006828
+      },
+      {
+        "brand": "philips",
+        "events": 282699,
+        "share": 0.00666
+      },
+      {
+        "brand": "redmond",
+        "events": 279734,
+        "share": 0.00659
+      },
+      {
+        "brand": "respect",
+        "events": 271167,
+        "share": 0.006388
+      },
+      {
+        "brand": "casio",
+        "events": 258000,
+        "share": 0.006078
+      }
+    ]
+  },
+  "category": {
+    "code_null_ratio": 0.318398,
+    "id_only_ratio": 0.318398,
+    "depth_distribution": {
+      "2": 17356435,
+      "3": 11540478,
+      "4": 36242
+    },
+    "top30_by_events": [
+      {
+        "category_code": "electronics.smartphone",
+        "events": 11507231,
+        "share": 0.271085
+      },
+      {
+        "category_code": "electronics.clocks",
+        "events": 1311033,
+        "share": 0.030885
+      },
+      {
+        "category_code": "computers.notebook",
+        "events": 1137623,
+        "share": 0.0268
+      },
+      {
+        "category_code": "electronics.video.tv",
+        "events": 1113750,
+        "share": 0.026238
+      },
+      {
+        "category_code": "electronics.audio.headphone",
+        "events": 1100188,
+        "share": 0.025918
+      },
+      {
+        "category_code": "appliances.kitchen.refrigerators",
+        "events": 887755,
+        "share": 0.020914
+      },
+      {
+        "category_code": "appliances.kitchen.washer",
+        "events": 869404,
+        "share": 0.020481
+      },
+      {
+        "category_code": "appliances.environment.vacuum",
+        "events": 801670,
+        "share": 0.018886
+      },
+      {
+        "category_code": "apparel.shoes",
+        "events": 763901,
+        "share": 0.017996
+      },
+      {
+        "category_code": "auto.accessories.player",
+        "events": 470208,
+        "share": 0.011077
+      },
+      {
+        "category_code": "computers.desktop",
+        "events": 424242,
+        "share": 0.009994
+      },
+      {
+        "category_code": "apparel.shoes.keds",
+        "events": 410304,
+        "share": 0.009666
+      },
+      {
+        "category_code": "furniture.bedroom.bed",
+        "events": 358453,
+        "share": 0.008444
+      },
+      {
+        "category_code": "electronics.tablet",
+        "events": 316735,
+        "share": 0.007462
+      },
+      {
+        "category_code": "electronics.audio.subwoofer",
+        "events": 313664,
+        "share": 0.007389
+      },
+      {
+        "category_code": "furniture.living_room.cabinet",
+        "events": 301410,
+        "share": 0.007101
+      },
+      {
+        "category_code": "construction.tools.drill",
+        "events": 279948,
+        "share": 0.006595
+      },
+      {
+        "category_code": "electronics.telephone",
+        "events": 247628,
+        "share": 0.005834
+      },
+      {
+        "category_code": "auto.accessories.videoregister",
+        "events": 224076,
+        "share": 0.005279
+      },
+      {
+        "category_code": "kids.carriage",
+        "events": 220242,
+        "share": 0.005188
+      },
+      {
+        "category_code": "furniture.living_room.sofa",
+        "events": 216555,
+        "share": 0.005102
+      },
+      {
+        "category_code": "appliances.kitchen.blender",
+        "events": 200969,
+        "share": 0.004734
+      },
+      {
+        "category_code": "appliances.kitchen.oven",
+        "events": 195037,
+        "share": 0.004595
+      },
+      {
+        "category_code": "auto.accessories.alarm",
+        "events": 194175,
+        "share": 0.004574
+      },
+      {
+        "category_code": "accessories.bag",
+        "events": 190723,
+        "share": 0.004493
+      },
+      {
+        "category_code": "appliances.kitchen.kettle",
+        "events": 184795,
+        "share": 0.004353
+      },
+      {
+        "category_code": "appliances.kitchen.microwave",
+        "events": 173380,
+        "share": 0.004084
+      },
+      {
+        "category_code": "appliances.iron",
+        "events": 165393,
+        "share": 0.003896
+      },
+      {
+        "category_code": "appliances.kitchen.meat_grinder",
+        "events": 160237,
+        "share": 0.003775
+      },
+      {
+        "category_code": "appliances.environment.air_heater",
+        "events": 158855,
+        "share": 0.003742
+      }
+    ]
+  },
+  "price": {
+    "quantiles": {
+      "p5": 18.292376299057157,
+      "p10": 30.71152332551183,
+      "p25": 65.96309999085791,
+      "p50": 163.32925833474096,
+      "p75": 356.5224155338806,
+      "p90": 743.3851206507821,
+      "p95": 1022.1595036150868,
+      "p99": 1727.4757128025042,
+      "p99.9": 2529.918374475593,
+      "mean": 290.32
+    },
+    "zero_or_negative_rows": 68673,
+    "invalid_ratio": 0.001618,
+    "by_event_type": {
+      "purchase": {
+        "mean": 309.56,
+        "median": 179.84
+      },
+      "cart": {
+        "mean": 333.88,
+        "median": 197.04
+      },
+      "view": {
+        "mean": 289.47,
+        "median": 161.84
+      }
+    }
+  },
+  "time_pattern_utc": [
+    {
+      "isodow": 1,
+      "hour": 0,
+      "count": 40857
+    },
+    {
+      "isodow": 1,
+      "hour": 1,
+      "count": 81342
+    },
+    {
+      "isodow": 1,
+      "hour": 2,
+      "count": 137959
+    },
+    {
+      "isodow": 1,
+      "hour": 3,
+      "count": 195396
+    },
+    {
+      "isodow": 1,
+      "hour": 4,
+      "count": 238977
+    },
+    {
+      "isodow": 1,
+      "hour": 5,
+      "count": 267547
+    },
+    {
+      "isodow": 1,
+      "hour": 6,
+      "count": 278165
+    },
+    {
+      "isodow": 1,
+      "hour": 7,
+      "count": 273778
+    },
+    {
+      "isodow": 1,
+      "hour": 8,
+      "count": 286266
+    },
+    {
+      "isodow": 1,
+      "hour": 9,
+      "count": 289451
+    },
+    {
+      "isodow": 1,
+      "hour": 10,
+      "count": 281832
+    },
+    {
+      "isodow": 1,
+      "hour": 11,
+      "count": 265643
+    },
+    {
+      "isodow": 1,
+      "hour": 12,
+      "count": 260533
+    },
+    {
+      "isodow": 1,
+      "hour": 13,
+      "count": 289399
+    },
+    {
+      "isodow": 1,
+      "hour": 14,
+      "count": 345648
+    },
+    {
+      "isodow": 1,
+      "hour": 15,
+      "count": 395021
+    },
+    {
+      "isodow": 1,
+      "hour": 16,
+      "count": 398680
+    },
+    {
+      "isodow": 1,
+      "hour": 17,
+      "count": 353470
+    },
+    {
+      "isodow": 1,
+      "hour": 18,
+      "count": 270591
+    },
+    {
+      "isodow": 1,
+      "hour": 19,
+      "count": 166182
+    },
+    {
+      "isodow": 1,
+      "hour": 20,
+      "count": 90387
+    },
+    {
+      "isodow": 1,
+      "hour": 21,
+      "count": 52088
+    },
+    {
+      "isodow": 1,
+      "hour": 22,
+      "count": 33408
+    },
+    {
+      "isodow": 1,
+      "hour": 23,
+      "count": 28909
+    },
+    {
+      "isodow": 2,
+      "hour": 0,
+      "count": 43805
+    },
+    {
+      "isodow": 2,
+      "hour": 1,
+      "count": 74050
+    },
+    {
+      "isodow": 2,
+      "hour": 2,
+      "count": 160523
+    },
+    {
+      "isodow": 2,
+      "hour": 3,
+      "count": 242788
+    },
+    {
+      "isodow": 2,
+      "hour": 4,
+      "count": 292695
+    },
+    {
+      "isodow": 2,
+      "hour": 5,
+      "count": 341137
+    },
+    {
+      "isodow": 2,
+      "hour": 6,
+      "count": 368634
+    },
+    {
+      "isodow": 2,
+      "hour": 7,
+      "count": 381720
+    },
+    {
+      "isodow": 2,
+      "hour": 8,
+      "count": 387282
+    },
+    {
+      "isodow": 2,
+      "hour": 9,
+      "count": 383099
+    },
+    {
+      "isodow": 2,
+      "hour": 10,
+      "count": 363035
+    },
+    {
+      "isodow": 2,
+      "hour": 11,
+      "count": 351929
+    },
+    {
+      "isodow": 2,
+      "hour": 12,
+      "count": 345242
+    },
+    {
+      "isodow": 2,
+      "hour": 13,
+      "count": 385731
+    },
+    {
+      "isodow": 2,
+      "hour": 14,
+      "count": 441870
+    },
+    {
+      "isodow": 2,
+      "hour": 15,
+      "count": 489519
+    },
+    {
+      "isodow": 2,
+      "hour": 16,
+      "count": 507036
+    },
+    {
+      "isodow": 2,
+      "hour": 17,
+      "count": 441181
+    },
+    {
+      "isodow": 2,
+      "hour": 18,
+      "count": 341773
+    },
+    {
+      "isodow": 2,
+      "hour": 19,
+      "count": 211564
+    },
+    {
+      "isodow": 2,
+      "hour": 20,
+      "count": 111392
+    },
+    {
+      "isodow": 2,
+      "hour": 21,
+      "count": 64797
+    },
+    {
+      "isodow": 2,
+      "hour": 22,
+      "count": 37221
+    },
+    {
+      "isodow": 2,
+      "hour": 23,
+      "count": 33862
+    },
+    {
+      "isodow": 3,
+      "hour": 0,
+      "count": 51486
+    },
+    {
+      "isodow": 3,
+      "hour": 1,
+      "count": 97304
+    },
+    {
+      "isodow": 3,
+      "hour": 2,
+      "count": 173174
+    },
+    {
+      "isodow": 3,
+      "hour": 3,
+      "count": 244600
+    },
+    {
+      "isodow": 3,
+      "hour": 4,
+      "count": 299886
+    },
+    {
+      "isodow": 3,
+      "hour": 5,
+      "count": 337216
+    },
+    {
+      "isodow": 3,
+      "hour": 6,
+      "count": 355162
+    },
+    {
+      "isodow": 3,
+      "hour": 7,
+      "count": 366859
+    },
+    {
+      "isodow": 3,
+      "hour": 8,
+      "count": 374350
+    },
+    {
+      "isodow": 3,
+      "hour": 9,
+      "count": 373637
+    },
+    {
+      "isodow": 3,
+      "hour": 10,
+      "count": 358270
+    },
+    {
+      "isodow": 3,
+      "hour": 11,
+      "count": 336836
+    },
+    {
+      "isodow": 3,
+      "hour": 12,
+      "count": 331196
+    },
+    {
+      "isodow": 3,
+      "hour": 13,
+      "count": 369416
+    },
+    {
+      "isodow": 3,
+      "hour": 14,
+      "count": 421444
+    },
+    {
+      "isodow": 3,
+      "hour": 15,
+      "count": 478294
+    },
+    {
+      "isodow": 3,
+      "hour": 16,
+      "count": 481631
+    },
+    {
+      "isodow": 3,
+      "hour": 17,
+      "count": 429219
+    },
+    {
+      "isodow": 3,
+      "hour": 18,
+      "count": 324210
+    },
+    {
+      "isodow": 3,
+      "hour": 19,
+      "count": 200775
+    },
+    {
+      "isodow": 3,
+      "hour": 20,
+      "count": 108235
+    },
+    {
+      "isodow": 3,
+      "hour": 21,
+      "count": 64248
+    },
+    {
+      "isodow": 3,
+      "hour": 22,
+      "count": 41885
+    },
+    {
+      "isodow": 3,
+      "hour": 23,
+      "count": 33199
+    },
+    {
+      "isodow": 4,
+      "hour": 0,
+      "count": 49777
+    },
+    {
+      "isodow": 4,
+      "hour": 1,
+      "count": 73765
+    },
+    {
+      "isodow": 4,
+      "hour": 2,
+      "count": 167328
+    },
+    {
+      "isodow": 4,
+      "hour": 3,
+      "count": 236662
+    },
+    {
+      "isodow": 4,
+      "hour": 4,
+      "count": 292399
+    },
+    {
+      "isodow": 4,
+      "hour": 5,
+      "count": 294076
+    },
+    {
+      "isodow": 4,
+      "hour": 6,
+      "count": 339233
+    },
+    {
+      "isodow": 4,
+      "hour": 7,
+      "count": 349503
+    },
+    {
+      "isodow": 4,
+      "hour": 8,
+      "count": 356526
+    },
+    {
+      "isodow": 4,
+      "hour": 9,
+      "count": 344139
+    },
+    {
+      "isodow": 4,
+      "hour": 10,
+      "count": 329696
+    },
+    {
+      "isodow": 4,
+      "hour": 11,
+      "count": 317507
+    },
+    {
+      "isodow": 4,
+      "hour": 12,
+      "count": 303359
+    },
+    {
+      "isodow": 4,
+      "hour": 13,
+      "count": 343450
+    },
+    {
+      "isodow": 4,
+      "hour": 14,
+      "count": 404681
+    },
+    {
+      "isodow": 4,
+      "hour": 15,
+      "count": 460055
+    },
+    {
+      "isodow": 4,
+      "hour": 16,
+      "count": 475307
+    },
+    {
+      "isodow": 4,
+      "hour": 17,
+      "count": 427410
+    },
+    {
+      "isodow": 4,
+      "hour": 18,
+      "count": 342892
+    },
+    {
+      "isodow": 4,
+      "hour": 19,
+      "count": 212443
+    },
+    {
+      "isodow": 4,
+      "hour": 20,
+      "count": 113361
+    },
+    {
+      "isodow": 4,
+      "hour": 21,
+      "count": 66172
+    },
+    {
+      "isodow": 4,
+      "hour": 22,
+      "count": 44747
+    },
+    {
+      "isodow": 4,
+      "hour": 23,
+      "count": 35879
+    },
+    {
+      "isodow": 5,
+      "hour": 0,
+      "count": 41746
+    },
+    {
+      "isodow": 5,
+      "hour": 1,
+      "count": 74439
+    },
+    {
+      "isodow": 5,
+      "hour": 2,
+      "count": 138282
+    },
+    {
+      "isodow": 5,
+      "hour": 3,
+      "count": 212992
+    },
+    {
+      "isodow": 5,
+      "hour": 4,
+      "count": 255691
+    },
+    {
+      "isodow": 5,
+      "hour": 5,
+      "count": 289994
+    },
+    {
+      "isodow": 5,
+      "hour": 6,
+      "count": 307009
+    },
+    {
+      "isodow": 5,
+      "hour": 7,
+      "count": 312995
+    },
+    {
+      "isodow": 5,
+      "hour": 8,
+      "count": 324091
+    },
+    {
+      "isodow": 5,
+      "hour": 9,
+      "count": 332007
+    },
+    {
+      "isodow": 5,
+      "hour": 10,
+      "count": 320007
+    },
+    {
+      "isodow": 5,
+      "hour": 11,
+      "count": 310377
+    },
+    {
+      "isodow": 5,
+      "hour": 12,
+      "count": 311189
+    },
+    {
+      "isodow": 5,
+      "hour": 13,
+      "count": 350103
+    },
+    {
+      "isodow": 5,
+      "hour": 14,
+      "count": 385015
+    },
+    {
+      "isodow": 5,
+      "hour": 15,
+      "count": 405479
+    },
+    {
+      "isodow": 5,
+      "hour": 16,
+      "count": 405491
+    },
+    {
+      "isodow": 5,
+      "hour": 17,
+      "count": 361776
+    },
+    {
+      "isodow": 5,
+      "hour": 18,
+      "count": 277095
+    },
+    {
+      "isodow": 5,
+      "hour": 19,
+      "count": 180527
+    },
+    {
+      "isodow": 5,
+      "hour": 20,
+      "count": 104495
+    },
+    {
+      "isodow": 5,
+      "hour": 21,
+      "count": 61033
+    },
+    {
+      "isodow": 5,
+      "hour": 22,
+      "count": 38053
+    },
+    {
+      "isodow": 5,
+      "hour": 23,
+      "count": 29774
+    },
+    {
+      "isodow": 6,
+      "hour": 0,
+      "count": 41592
+    },
+    {
+      "isodow": 6,
+      "hour": 1,
+      "count": 84864
+    },
+    {
+      "isodow": 6,
+      "hour": 2,
+      "count": 150579
+    },
+    {
+      "isodow": 6,
+      "hour": 3,
+      "count": 213291
+    },
+    {
+      "isodow": 6,
+      "hour": 4,
+      "count": 265503
+    },
+    {
+      "isodow": 6,
+      "hour": 5,
+      "count": 297797
+    },
+    {
+      "isodow": 6,
+      "hour": 6,
+      "count": 312366
+    },
+    {
+      "isodow": 6,
+      "hour": 7,
+      "count": 317763
+    },
+    {
+      "isodow": 6,
+      "hour": 8,
+      "count": 319104
+    },
+    {
+      "isodow": 6,
+      "hour": 9,
+      "count": 280566
+    },
+    {
+      "isodow": 6,
+      "hour": 10,
+      "count": 301574
+    },
+    {
+      "isodow": 6,
+      "hour": 11,
+      "count": 290686
+    },
+    {
+      "isodow": 6,
+      "hour": 12,
+      "count": 281338
+    },
+    {
+      "isodow": 6,
+      "hour": 13,
+      "count": 298256
+    },
+    {
+      "isodow": 6,
+      "hour": 14,
+      "count": 329149
+    },
+    {
+      "isodow": 6,
+      "hour": 15,
+      "count": 364130
+    },
+    {
+      "isodow": 6,
+      "hour": 16,
+      "count": 378596
+    },
+    {
+      "isodow": 6,
+      "hour": 17,
+      "count": 349003
+    },
+    {
+      "isodow": 6,
+      "hour": 18,
+      "count": 281551
+    },
+    {
+      "isodow": 6,
+      "hour": 19,
+      "count": 188724
+    },
+    {
+      "isodow": 6,
+      "hour": 20,
+      "count": 115773
+    },
+    {
+      "isodow": 6,
+      "hour": 21,
+      "count": 70608
+    },
+    {
+      "isodow": 6,
+      "hour": 22,
+      "count": 42257
+    },
+    {
+      "isodow": 6,
+      "hour": 23,
+      "count": 31726
+    },
+    {
+      "isodow": 7,
+      "hour": 0,
+      "count": 37542
+    },
+    {
+      "isodow": 7,
+      "hour": 1,
+      "count": 73263
+    },
+    {
+      "isodow": 7,
+      "hour": 2,
+      "count": 141202
+    },
+    {
+      "isodow": 7,
+      "hour": 3,
+      "count": 204556
+    },
+    {
+      "isodow": 7,
+      "hour": 4,
+      "count": 270492
+    },
+    {
+      "isodow": 7,
+      "hour": 5,
+      "count": 297866
+    },
+    {
+      "isodow": 7,
+      "hour": 6,
+      "count": 308523
+    },
+    {
+      "isodow": 7,
+      "hour": 7,
+      "count": 333100
+    },
+    {
+      "isodow": 7,
+      "hour": 8,
+      "count": 342508
+    },
+    {
+      "isodow": 7,
+      "hour": 9,
+      "count": 348784
+    },
+    {
+      "isodow": 7,
+      "hour": 10,
+      "count": 342763
+    },
+    {
+      "isodow": 7,
+      "hour": 11,
+      "count": 320917
+    },
+    {
+      "isodow": 7,
+      "hour": 12,
+      "count": 305011
+    },
+    {
+      "isodow": 7,
+      "hour": 13,
+      "count": 318637
+    },
+    {
+      "isodow": 7,
+      "hour": 14,
+      "count": 350743
+    },
+    {
+      "isodow": 7,
+      "hour": 15,
+      "count": 388392
+    },
+    {
+      "isodow": 7,
+      "hour": 16,
+      "count": 408002
+    },
+    {
+      "isodow": 7,
+      "hour": 17,
+      "count": 371659
+    },
+    {
+      "isodow": 7,
+      "hour": 18,
+      "count": 286851
+    },
+    {
+      "isodow": 7,
+      "hour": 19,
+      "count": 180955
+    },
+    {
+      "isodow": 7,
+      "hour": 20,
+      "count": 100581
+    },
+    {
+      "isodow": 7,
+      "hour": 21,
+      "count": 59476
+    },
+    {
+      "isodow": 7,
+      "hour": 22,
+      "count": 35484
+    },
+    {
+      "isodow": 7,
+      "hour": 23,
+      "count": 28688
+    }
+  ],
+  "transition_matrix_4state": [
+    {
+      "from": "view",
+      "to": "view",
+      "count": 30754546
+    },
+    {
+      "from": "view",
+      "to": "cart",
+      "count": 741114
+    },
+    {
+      "from": "purchase",
+      "to": "view",
+      "count": 448500
+    },
+    {
+      "from": "view",
+      "to": "purchase",
+      "count": 428427
+    },
+    {
+      "from": "cart",
+      "to": "view",
+      "count": 336206
+    },
+    {
+      "from": "cart",
+      "to": "purchase",
+      "count": 312403
+    },
+    {
+      "from": "cart",
+      "to": "cart",
+      "count": 179954
+    },
+    {
+      "from": "purchase",
+      "to": "cart",
+      "count": 2309
+    },
+    {
+      "from": "purchase",
+      "to": "purchase",
+      "count": 883
+    }
+  ],
+  "bot_candidates": {
+    "rule": "세션당 이벤트 수 > max(200, p99.9=71) = 200",
+    "threshold_events_per_session": 200,
+    "sessions_flagged": 112,
+    "events_flagged": 30711,
+    "events_flagged_ratio": 0.000723,
+    "top10_session_sizes": [
+      1159,
+      1137,
+      584,
+      564,
+      425,
+      393,
+      388,
+      365,
+      350,
+      350
+    ]
+  }
+}
