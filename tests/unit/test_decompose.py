@@ -965,12 +965,20 @@ async def test_screen_products_without_columns_keep_ordinal_but_drop_coordinates
 
 
 async def test_screen_filters_and_label_reach_the_prompt_as_display_text() -> None:
-    """filters 값은 이미 사람이 읽는 한글 표시값이라 그대로 싣는다(§3.1)."""
+    """filters 값은 이미 사람이 읽는 한글 표시값이라 그대로 싣는다(§3.1).
+
+    [Claude 리뷰 11차] `_screen_context` 는 `BuyerChatRequest` 로 만든다(구매자 decompose
+    테스트라서) — `pageType` 은 구매자 10종 중에서 골라야 한다. 원래 `seller_orders`(판매자
+    전용)를 썼는데, 11차가 넣은 pageType 역할 경계 검증이 이를 "역할 밖"으로 보고 `screen` 을
+    None 으로 무시해 테스트가 깨졌다(실제 재현 — 역할 경계가 의도대로 동작한 결과다). 이
+    테스트가 검증하는 것은 filters·label 이 그대로 통과하는지이지 특정 pageType 문자열이 아니라
+    `checkout`(구매자 어휘)으로 바꿔도 검증 대상은 동일하다.
+    """
     from app.agents.buyer.recommendation.decompose import build_screen_prompt, decompose
 
     screen = build_screen_prompt(
-        _screen_context("seller_orders", filters={"status": "배송중", "page": "2"}),
-        labels={"seller_orders": "주문 관리"},
+        _screen_context("checkout", filters={"status": "배송중", "page": "2"}),
+        labels={"checkout": "주문 관리"},
     )
     llm = _CapturingLLM()
     await decompose(

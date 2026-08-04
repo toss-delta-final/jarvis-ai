@@ -119,6 +119,77 @@ def test_screen_unknown_page_type_is_ignored_without_validation_error() -> None:
     assert parsed.screen is None
 
 
+# ─────────── Claude 리뷰 11차 — pageType 역할 경계(구매자/판매자) ───────────
+
+
+def test_screen_page_type_from_the_other_role_is_ignored_not_rejected() -> None:
+    """[Claude 리뷰 11차] 역할에 맞지 않는 pageType 은 **400 이 아니라 screen 전체를 관대 무시**한다.
+
+    정본 §3.1 유효성 표는 "pageType 누락·미지의 값 → screen 전체 무시하고 200 진행"이고 screen 은
+    **어떤 경우에도 400 을 내지 않는 것**이 이 필드의 핵심 계약이다(conditionActions 의 엄격함과
+    정반대). 역할 경계는 정본이 어휘를 구매자/판매자로 "분류"했을 뿐 반대 역할 값을 거부하라고
+    명시하지는 않았다 — 이 검증은 계약 위반을 고친 것이 아니라 그 분류를 코드로도 지키는
+    **방어적 강화**이며, 위반해도 "400 없음" 계약은 그대로 지킨다(어휘 밖 값과 같은 경로). 재현:
+    이 검증이 없으면 구매자 요청의 `seller_orders` 가 "주문 관리" 라벨로 그대로 구매자 decompose
+    프롬프트 SCREEN 블록에 실린다(반대 방향도 대칭).
+    """
+    buyer = BuyerChatRequest.model_validate(_buyer_payload(screen={"pageType": "seller_orders"}))
+    assert buyer.screen is None
+
+    seller = SellerChatRequest.model_validate(
+        {
+            "sessionId": "s1",
+            "threadId": "t1",
+            "message": "확인해줘",
+            "screen": {"pageType": "checkout"},
+        }
+    )
+    assert seller.screen is None
+
+
+def test_screen_seller_role_also_ignores_a_wholly_unknown_page_type() -> None:
+    """대조군 — 판매자 요청도 기존 '미지의 값' 무시 동작을 그대로 유지한다(회귀 금지)."""
+    assert "popular_v2" not in SCREEN_PAGE_TYPES
+    seller = SellerChatRequest.model_validate(
+        {"sessionId": "s1", "threadId": "t1", "message": "m", "screen": {"pageType": "popular_v2"}}
+    )
+    assert seller.screen is None
+
+
+@pytest.mark.parametrize(
+    "page_type",
+    [
+        "home",
+        "category",
+        "search",
+        "product_detail",
+        "cart",
+        "checkout",
+        "order_complete",
+        "my",
+        "chat",
+        "auth",
+    ],
+)
+def test_screen_buyer_role_vocabulary_still_passes(page_type: str) -> None:
+    """대조군 — 구매자 10종은 역할 경계 도입 후에도 정상 통과한다(회귀 금지)."""
+    parsed = BuyerChatRequest.model_validate(_buyer_payload(screen={"pageType": page_type}))
+    assert parsed.screen is not None
+    assert parsed.screen.page_type == page_type
+
+
+@pytest.mark.parametrize(
+    "page_type", ["seller_dashboard", "seller_orders", "seller_products", "seller_chat"]
+)
+def test_screen_seller_role_vocabulary_still_passes(page_type: str) -> None:
+    """대조군 — 판매자 4종은 역할 경계 도입 후에도 정상 통과한다(회귀 금지)."""
+    seller = SellerChatRequest.model_validate(
+        {"sessionId": "s1", "threadId": "t1", "message": "m", "screen": {"pageType": page_type}}
+    )
+    assert seller.screen is not None
+    assert seller.screen.page_type == page_type
+
+
 @pytest.mark.parametrize("bad_screen", ["chat", ["chat"], 123])
 def test_screen_non_object_is_ignored_without_validation_error(bad_screen) -> None:  # noqa: ANN001
     parsed = BuyerChatRequest.model_validate(_buyer_payload(screen=bad_screen))
@@ -177,10 +248,12 @@ def test_screen_invalid_columns_is_ignored_but_rest_survives(columns) -> None:  
 
 
 def test_screen_filters_unknown_key_and_non_string_value_are_dropped() -> None:
+    # pageType 은 필터 드롭 로직과 무관하지만 구매자 요청이므로 구매자 어휘를 쓴다(11차 리뷰
+    # 이후 역할 밖 pageType 은 screen 전체가 무시된다).
     parsed = BuyerChatRequest.model_validate(
         _buyer_payload(
             screen={
-                "pageType": "seller_products",
+                "pageType": "cart",
                 "filters": {
                     "status": "판매중",
                     "sort": "최신순",
@@ -443,10 +516,12 @@ def test_screen_product_names_are_sanitized_and_truncated() -> None:
 
 def test_screen_filter_values_are_sanitized_and_blank_results_dropped() -> None:
     cap = get_settings().screen_text_max_chars
+    # pageType 은 정제 로직과 무관하지만 구매자 요청이므로 구매자 어휘를 쓴다(11차 리뷰 이후
+    # 역할 밖 pageType 은 screen 전체가 무시된다).
     request = BuyerChatRequest.model_validate(
         _buyer_payload(
             screen={
-                "pageType": "seller_orders",
+                "pageType": "cart",
                 "filters": {"status": "배​송중", "sort": "​", "page": "1" * (cap + 10)},
             }
         )

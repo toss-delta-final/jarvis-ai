@@ -374,10 +374,17 @@ async def test_init_checkpointer_bounds_setup_not_only_connect(
 
 
 def _screen(**payload):
-    """정본 관대 정규화를 실제로 태운 ScreenContext — 프로덕션과 같은 경로로 만든다."""
-    from app.schemas.chat import BuyerChatRequest
+    """정본 관대 정규화를 실제로 태운 ScreenContext — 프로덕션과 같은 경로로 만든다.
 
-    return BuyerChatRequest.model_validate(
+    [Claude 리뷰 11차] 이 섹션은 전부 **판매자 레인**(`thread.render_screen_context`·
+    `build_contextual_input`) 검증이라 `SellerChatRequest` 로 만든다 — `BuyerChatRequest` 로
+    만들면 11차가 넣은 pageType 역할 경계 검증이 이 섹션의 판매자 pageType(`seller_orders` 등)을
+    전부 "역할 밖"으로 보고 `screen` 을 None 으로 무시해 아래 테스트가 전부 깨진다(실제 재현 —
+    역할 경계가 의도대로 동작한 결과이지 그 검증의 버그가 아니다).
+    """
+    from app.schemas.seller import SellerChatRequest
+
+    return SellerChatRequest.model_validate(
         {"sessionId": "s", "threadId": "t", "message": "m", "screen": payload}
     ).screen
 
@@ -433,14 +440,18 @@ def test_unmapped_page_type_drops_only_the_screen_name() -> None:
     from app.core.config import get_settings
 
     labels = get_settings().screen_page_type_labels
-    assert "home" not in labels  # 매핑에 없는 값인지 사전 확인
+    # `seller_dashboard` 는 판매자 4종 중 표시명 매핑에 없는 값이다(`home` 은 구매자 전용이라
+    # 11차 리뷰 이후 이 섹션의 `SellerChatRequest` 로는 애초에 screen 자체가 무시된다).
+    assert "seller_dashboard" not in labels  # 매핑에 없는 값인지 사전 확인
 
-    with_filters = thread.render_screen_context(_screen(pageType="home", filters={"page": "1"}))
+    with_filters = thread.render_screen_context(
+        _screen(pageType="seller_dashboard", filters={"page": "1"})
+    )
     assert "[현재 화면]" in with_filters and "page=1" in with_filters
-    assert "home" not in with_filters  # 원시 pageType 은 새지 않는다
+    assert "seller_dashboard" not in with_filters  # 원시 pageType 은 새지 않는다
 
-    assert thread.render_screen_context(_screen(pageType="home")) == ""
-    assert thread.build_contextual_input("q", [], _screen(pageType="home")) == "q"
+    assert thread.render_screen_context(_screen(pageType="seller_dashboard")) == ""
+    assert thread.build_contextual_input("q", [], _screen(pageType="seller_dashboard")) == "q"
 
 
 def test_screen_context_blocks_label_forgery() -> None:

@@ -35,9 +35,16 @@ class CamelModel(BaseModel):
 
 # pageType 어휘 (14종 — 구매자 10 · 판매자 4, api-spec §3.1 표, E-1 정본과 공유). 계약 어휘라
 # config 가 아니라 스키마에 둔다(표시명 매핑은 app.core.config.screen_page_type_labels).
-SCREEN_PAGE_TYPES: frozenset[str] = frozenset(
+#
+# [11차 리뷰] 역할별로 나눠 둔 이유 — 아래 `_SCREEN_PAGE_TYPES_BY_REQUEST_CLASS` 가 이 둘을
+# `_normalize_screen` 의 역할별 허용 집합으로 쓴다. **주의: 정본 §3.1 표(라인 415~432)는 어휘를
+# 구매자/판매자로 "분류"했을 뿐, 반대 역할 값을 거부하라고 명시적으로 요구하지 않는다.** 즉
+# 구매자 요청이 `seller_orders` 를 보내도 정본 문면만 보면 위반이 아니다 — 이 분리는 **계약
+# 위반을 고친 것이 아니라 계약이 이미 그어 둔 역할 경계를 코드로도 지키는 방어적 강화**다(관대
+# 무시 없이는 구매자 요청의 `seller_orders` 가 "주문 관리" 라벨로 그대로 구매자 decompose
+# 프롬프트에 실린다 — 실측 재현).
+_BUYER_SCREEN_PAGE_TYPES: frozenset[str] = frozenset(
     {
-        # 구매자 10종
         "home",
         "category",
         "search",
@@ -48,13 +55,32 @@ SCREEN_PAGE_TYPES: frozenset[str] = frozenset(
         "my",
         "chat",
         "auth",
-        # 판매자 4종
+    }
+)
+_SELLER_SCREEN_PAGE_TYPES: frozenset[str] = frozenset(
+    {
         "seller_dashboard",
         "seller_orders",
         "seller_products",
         "seller_chat",
     }
 )
+SCREEN_PAGE_TYPES: frozenset[str] = _BUYER_SCREEN_PAGE_TYPES | _SELLER_SCREEN_PAGE_TYPES
+
+# [11차 리뷰] `_normalize_screen`(아래, `ChatRequest` 의 classmethod validator)이 `cls.__name__`
+# 으로 조회하는 역할별 허용 집합. **리뷰가 제안한 형태(각 서브클래스가 `ClassVar` 를 override)를
+# 그대로 쓰지 않은 이유**: `BuyerChatRequest` 는 이 파일에 있지만 `SellerChatRequest` 는
+# `app/schemas/seller.py` 에 있고, 이번 수정 범위가 `app/schemas/chat.py` 로 한정돼 있어(#132·
+# #277 등이 그 옆 파일을 동시에 작업 중이라 다른 파일을 건드리면 충돌 위험) 그 파일에 override
+# 를 둘 수 없다. `ChatRequest` 가 `SellerChatRequest` 를 import 하면 `seller.py` → `chat.py` →
+# `seller.py` 순환 임포트가 되므로 그 방향의 참조도 불가능하다. 그래서 이름으로 찾는 매핑을 여기
+# 한 곳에 둔다 — 두 서브클래스가 서로 다른 메커니즘(한쪽은 `ClassVar` override, 한쪽은 이름
+# 매핑)을 쓰면 다음 사람이 헷갈리므로 **둘 다 이 매핑 하나로** 통일했다. 매핑에 없는 클래스
+# (맨 `ChatRequest` 를 직접 쓰는 경로 등)는 14종 전체를 허용해 기존 동작을 보존한다.
+_SCREEN_PAGE_TYPES_BY_REQUEST_CLASS: dict[str, frozenset[str]] = {
+    "BuyerChatRequest": _BUYER_SCREEN_PAGE_TYPES,
+    "SellerChatRequest": _SELLER_SCREEN_PAGE_TYPES,
+}
 
 # screen.filters 허용 키 3종(api-spec §3.1) — 그 밖의 키는 관대 무시 대상.
 SCREEN_FILTER_KEYS: frozenset[str] = frozenset({"status", "sort", "page"})
@@ -159,8 +185,16 @@ class ChatRequest(CamelModel):
     def _normalize_screen(cls, v: object) -> dict[str, object] | None:
         """screen 관대 유효성 (api-spec §3.1) — 맥락 힌트라 여기서는 절대 raise 하지 않는다.
 
-        pageType 이 없거나 14종 밖이면 screen 전체를 무시(None)한다. 그 밖의 하위 필드는
-        문제 있는 부분만 버리고 나머지를 살린다(conditionActions 의 엄격(400)과 대비되는 철학).
+        pageType 이 없거나 (역할별 허용 집합 기준, `_SCREEN_PAGE_TYPES_BY_REQUEST_CLASS`) 허용
+        밖이면 screen 전체를 무시(None)한다. 그 밖의 하위 필드는 문제 있는 부분만 버리고
+        나머지를 살린다(conditionActions 의 엄격(400)과 대비되는 철학).
+
+        [11차 리뷰] **역할 경계도 "미지의 값"과 같은 취급이다.** `cls` 가 `BuyerChatRequest` 면
+        허용 집합이 구매자 10종으로, `SellerChatRequest` 면 판매자 4종으로 좁혀진다(field_validator
+        가 classmethod 라 `cls.__name__` 으로 실제 요청 클래스를 안다) — 구매자 요청이
+        `seller_orders` 를 보내도 400 이 아니라 이 자리에서 screen 전체가 조용히 사라진다. 여전히
+        400 을 내지 않는다 — 어휘 밖 값과 같은 경로(§3.1 유효성 표)를 타므로 이 필드의 "screen
+        은 어떤 경우에도 400 을 내지 않는다"는 핵심 계약이 깨지지 않는다.
 
         입력은 세 모양을 받는다 — 와이어 경로의 dict, 임의의 `Mapping`, 그리고 **이미
         `ScreenContext` 인 인스턴스**. 마지막이 없으면 `BuyerChatRequest(screen=ScreenContext(...))`
@@ -184,7 +218,10 @@ class ChatRequest(CamelModel):
             return None
 
         page_type = v.get("pageType", v.get("page_type"))
-        if not isinstance(page_type, str) or page_type not in SCREEN_PAGE_TYPES:
+        allowed_page_types = _SCREEN_PAGE_TYPES_BY_REQUEST_CLASS.get(
+            cls.__name__, SCREEN_PAGE_TYPES
+        )
+        if not isinstance(page_type, str) or page_type not in allowed_page_types:
             return None
 
         from app.core.config import get_settings
