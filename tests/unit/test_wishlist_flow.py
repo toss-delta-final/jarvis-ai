@@ -415,6 +415,57 @@ async def test_wishlist_remove_single_item_auto_resolves() -> None:
     assert _actions(events)[0]["type"] == "WISHLIST_REMOVED"
 
 
+# ─────────── stream_wishlist_remove — 라운드 10: 접두 부정이 단건 자동 규칙에도 적용된다 ───────────
+
+
+def test_resolve_wishlist_remove_target_prefix_negated_single_item_asks() -> None:
+    """직접 호출로 재현 확인(추측 아님) — 찜이 1건뿐일 때 "방금 찜한 건 안 빼도 되고 저건
+    찜 빼줘"(라우팅은 뒤쪽 "찜 빼줘"가 그 자체로 안 부정돼 `wishlist_remove` 로 들어온다)가
+    이름도 문맥 id 도 안 잡혀 "목록 1건 자동" 규칙까지 내려가면, 사용자가 "빼지 말라"고 명시한
+    바로 그 항목이 삭제됐다. 이제 되물음이어야 한다."""
+    from app.agents.buyer.cart.wishlist import _resolve_wishlist_remove_target
+
+    items = [_wishlist_item(10, "이어폰")]
+    result = _resolve_wishlist_remove_target(
+        CartIntent(product_id=None),
+        "방금 찜한 건 안 빼도 되고 저건 찜 빼줘",
+        items,
+        get_settings(),
+    )
+    assert result is None
+
+
+async def test_wishlist_remove_prefix_negated_single_item_asks_via_stream() -> None:
+    """`stream_wishlist_remove` 수준에서도 같은 사실 — remove_wishlist_fn 이 한 번도 안 불린다."""
+
+    async def remove_wishlist_fn(product_id, *, user_id):
+        raise AssertionError("부정된 발화인데 remove_wishlist_fn 이 호출됐다")
+
+    events = await _collect(
+        stream_wishlist_remove(
+            identity=_member(),
+            cart=CartIntent(product_id=None),
+            message="방금 찜한 건 안 빼도 되고 저건 찜 빼줘",
+            settings=get_settings(),
+            get_wishlist_fn=_wishlist(_wishlist_item(10, "이어폰")),
+            remove_wishlist_fn=remove_wishlist_fn,
+        )
+    )
+    assert _types(events) == ["token", "done"]
+
+
+def test_resolve_wishlist_remove_target_single_item_still_works_without_negation() -> None:
+    """부정 신호가 없으면 "목록 1건 자동" 규칙은 그대로 동작한다(회귀 방지)."""
+    from app.agents.buyer.cart.wishlist import _resolve_wishlist_remove_target
+
+    items = [_wishlist_item(10, "이어폰")]
+    result = _resolve_wishlist_remove_target(
+        CartIntent(product_id=None), "찜 빼줘", items, get_settings()
+    )
+    assert result is not None
+    assert result.product_id == 10
+
+
 async def test_wishlist_remove_empty_list_says_empty() -> None:
     async def remove_wishlist_fn(product_id, *, user_id):
         raise AssertionError("빈 목록인데 remove_wishlist_fn 이 호출됐다")

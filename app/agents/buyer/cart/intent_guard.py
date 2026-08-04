@@ -9,78 +9,14 @@ decompose(app/agents/buyer/recommendation/decompose.py)는 다른 이슈(#84) �
 
 from __future__ import annotations
 
+from app.agents.buyer.cart.negation import _spans, has_prefix_negation, matches_unnegated
 
-def _spans(text: str, needle: str) -> list[tuple[int, int]]:
-    """겹치는 경우까지 needle 의 모든 [start, end) 출현 구간을 돌려준다.
-
-    `app/agents/buyer/cart/graph.py::_all_spans` 와 동일한 구현이지만 복제했다 — `graph.py` 가
-    이 모듈(`classify_cart_utterance`)을 가져오므로, 여기서 `graph.py` 를 가져오면 순환
-    임포트가 된다. 10줄짜리 순수 함수를 위해 신원 도출처럼 별도 공유 모듈을 새로 두는 것도
-    과하다고 판단해 그냥 복제를 택했다.
-    """
-    if not needle:
-        return []
-    spans: list[tuple[int, int]] = []
-    start = 0
-    while (index := text.find(needle, start)) >= 0:
-        spans.append((index, index + len(needle)))
-        start = index + 1
-    return spans
-
-
-def _has_prefix_negation(message: str, start: int, prefix_markers: list[str]) -> bool:
-    """`start` 위치에서 시작하는 표지 바로 **앞**에 접두 부정("안"/"못")이 어절 경계로 오는지
-    본다(라운드 9 — 부정 검사가 어미형(뒤쪽, `utterance_negation_markers`)만 보고 접두형(안·못,
-    앞쪽)은 놓쳤다. "안 빼줘도 돼"에서 실제로 항목이 삭제되는 사고로 재현됐다).
-
-    한국어 부정은 어미(`-지 마`)뿐 아니라 부사 접두(`안`·`못`)로도 온다. `"안"`은 극히 흔한
-    조각이라(`안경`·`안쪽`·`가방 안에`) 부분 문자열 검색을 그대로 쓰면 정상 발화를 대량으로
-    삼킨다 — 그래서 **어절 경계**로만 판정한다: 표지 직전에 오는 `"안"`/`"못"` 이 (1) 앞이
-    문자열 시작 또는 공백이고 (2) 뒤(표지와의 사이)가 공백 0~1개일 때만 접두 부정으로 친다.
-    `"안 빼줘"`·`"안빼줘"`는 잡고 `"안경 빼줘"`는 안 잡는다(그 `"안"`은 `"안경"`의 일부라
-    토큰이 아니다) — `"가방 안에 있는 거 빼줘"`처럼 표지에서 멀리 떨어진 `"안"`도 안 잡는다
-    (직전 토큰만 본다).
-    """
-    for gap in (0, 1):
-        anchor = start
-        if gap == 1:
-            if anchor == 0 or message[anchor - 1] != " ":
-                continue
-            anchor -= 1
-        for marker in prefix_markers:
-            prefix_start = anchor - len(marker)
-            if prefix_start < 0 or message[prefix_start:anchor] != marker:
-                continue
-            if prefix_start == 0 or message[prefix_start - 1] == " ":
-                return True
-    return False
-
-
-def _matches_unnegated(
-    message: str,
-    markers: list[str],
-    negation_markers,
-    window: int,
-    prefix_negation_markers,
-) -> bool:
-    """`markers` 중 하나가 발화에 있고, 그 출현 중 **하나라도** 뒤쪽 부정·유보 표지(`window`
-    자 안)와 앞쪽 접두 부정(`_has_prefix_negation`) 어느 쪽에도 안 걸리면 True 다(2차 리뷰
-    지적 1·2·3 + 라운드 9의 공통 원인 — 표지가 있기만 하면 매칭했지 그 표지가 부정·유보된
-    문맥인지 앞뒤 어느 쪽도 보지 않았다).
-
-    같은 표지가 여러 번 나오면 **부정되지 않은 출현이 하나라도** 있어야 매칭이다 — "이건
-    찜해줘, 장바구니에 넣지는 마, 진짜 장바구니에 넣어줘"처럼 뒤에서 다시 긍정으로 반복될
-    수 있어 첫 출현만 보면 오탐(과소 매칭)한다.
-    """
-    for marker in markers:
-        for start, end in _spans(message, marker):
-            following = message[end : end + window]
-            if any(neg in following for neg in negation_markers):
-                continue
-            if _has_prefix_negation(message, start, prefix_negation_markers):
-                continue
-            return True
-    return False
+# 부정·유보 판정은 `negation.py` 에서 가져온다(라운드 10) — 이 판정을 이 파일과 `remove.py` 가
+# 각자 구현했다가 라운드 9 에서 이 파일만 접두 부정을 배웠고 `remove.py` 는 못 배웠다(플래그
+# on 시 실제 데이터 손실로 재현). `_matches_unnegated` 라는 이름을 이 모듈 안에서 계속 쓰기
+# 위해 별칭을 둔다 — 아래 함수 전체를 다시 쓰지 않아도 되고, 이 모듈의 다른 곳에서 이 이름을
+# 참조하는 코드(테스트 포함)와의 diff 도 작아진다.
+_matches_unnegated = matches_unnegated
 
 
 def _matches_cart_add_marker(message: str, settings) -> bool:
@@ -91,8 +27,8 @@ def _matches_cart_add_marker(message: str, settings) -> bool:
     `docs/lessons.md` 에 적은 "전부" ⊂ "전부터" 실수의 재발이다. `wishlist_reference_markers`
     가 "찜한"을 지시 수식어로 다루는 것과 같은 개념으로, 표지 바로 뒤 짧은 창에 과거 참조 꼬리
     (`cart_add_reference_markers`)가 오면 그 출현은 동작 요청이 아니므로 세지 않는다. 부정
-    검사와 같은 창 기계(`_spans` + 창 슬라이스)를 재사용하되, 부정·과거 참조는 서로 다른
-    개념이라 한 목록으로 합치지 않고 별도 배제로 둔다(표지가 왜 안 걸렸는지 진단하기 쉽다).
+    검사와 같은 창 기계(`negation._spans` + 창 슬라이스)를 재사용하되, 부정·과거 참조는 서로
+    다른 개념이라 한 목록으로 합치지 않고 별도 배제로 둔다(표지가 왜 안 걸렸는지 진단하기 쉽다).
     """
     negation_markers = settings.utterance_negation_markers
     prefix_negation_markers = settings.utterance_prefix_negation_markers
@@ -103,7 +39,7 @@ def _matches_cart_add_marker(message: str, settings) -> bool:
             following = message[end : end + window]
             if any(neg in following for neg in negation_markers):
                 continue
-            if _has_prefix_negation(message, start, prefix_negation_markers):
+            if has_prefix_negation(message, start, prefix_negation_markers):
                 continue
             if any(ref in following for ref in reference_markers):
                 continue
@@ -129,10 +65,17 @@ def classify_cart_utterance(message: str, settings) -> str:
     **접두 부정(라운드 9)**: 위 부정 검사는 표지 **뒤**(어미형, `-지 마`)만 봤다. 한국어 부정은
     부사 **접두**(`안`·`못`)로도 오는데("안 빼줘도 돼") 그쪽이 빠져 있어 실제로 항목이
     삭제됐다. `_matches_unnegated`(모든 표지 계열 공통)와 `_matches_cart_add_marker` 둘 다
-    표지 **앞**도 `_has_prefix_negation` 으로 검사한다 — `utterance_negation_markers` 와
-    합치지 않는다(검사 방향이 반대라 한 목록으로 두면 코드가 헷갈린다). `"안"`은 흔한 조각이라
-    어절 경계로만 판정해 `"안경 빼줘"`·`"가방 안에 있는 거 빼줘"` 같은 정상 요청은 죽이지
-    않는다(표지 앞에 함수 docstring 참조).
+    표지 **앞**도 `negation.has_prefix_negation` 으로 검사한다 — `utterance_negation_markers`
+    와 합치지 않는다(검사 방향이 반대라 한 목록으로 두면 코드가 헷갈린다). `"안"`은 흔한
+    조각이라 어절 경계로만 판정해 `"안경 빼줘"`·`"가방 안에 있는 거 빼줘"` 같은 정상 요청은
+    죽이지 않는다(`negation.py` 의 함수 docstring 참조).
+
+    **부정 판정은 `app/agents/buyer/cart/negation.py` 공용 모듈에 있다(라운드 10)**. 원래 이
+    파일에 직접 구현돼 있었는데, `remove.py::_resolve_remove_targets` 가 **같은 개념을 따로
+    구현**하다가 이 파일이 라운드 9 에서 접두 부정을 배울 때 `remove.py` 는 못 배워 플래그 on
+    시 실제 데이터 손실로 재현됐다(부정 인지 결함 3연발의 세 번째). 그래서 판정을
+    `negation.py` 로 뽑아 이 파일과 `remove.py`·`wishlist.py` 가 **같은 함수**를 쓰게 했다 —
+    다음에 또 한쪽만 고치는 재발을 구조적으로 막는다.
 
     **담기 표지의 과거 참조형(2차 리뷰 N-1)**: `cart_add_markers` 매칭은 `_matches_unnegated`
     대신 `_matches_cart_add_marker` 를 쓴다 — 부정 배제에 더해 과거 참조 꼬리

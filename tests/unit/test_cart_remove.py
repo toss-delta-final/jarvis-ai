@@ -224,6 +224,84 @@ def test_resolve_remove_targets_recent_marker_still_works_without_negation() -> 
     assert [item.cart_item_id for item in result] == [2]
 
 
+# ─────────── 대상 해소 — 라운드 10: 접두 부정("안"/"못")이 remove.py 안전장치에도 적용된다 ───────────
+
+
+def test_resolve_remove_targets_prefix_negated_recent_item_asks_instead_of_deleting_it() -> None:
+    """재현 1 — "방금 담은 건 안 빼도 되고, 저번에 산 것도 빼줘": 라운드 9 는 접두 부정을
+    `intent_guard.py` 에만 넣어 `remove.py` 의 "방금 담은 거" 가드는 여전히 어미형만 봤다.
+    사용자가 "빼지 말라"고 명시한 바로 그 항목([2])이 삭제되던 사고였다 — 이제 되물음이어야
+    한다."""
+    from app.agents.buyer.cart.remove import _resolve_remove_targets
+    from app.agents.buyer.cart.state import LastAdd
+
+    items = [_item(1, 10, "이어폰"), _item(2, 20, "세제")]
+    result = _resolve_remove_targets(
+        "방금 담은 건 안 빼도 되고, 저번에 산 것도 빼줘",
+        items,
+        get_settings(),
+        LastAdd(cart_item_id=2, product_id=20),
+    )
+    assert result is None
+
+
+def test_resolve_remove_targets_prefix_negated_all_marker_falls_through_to_name_match() -> None:
+    """재현 2 — "안 전부 빼줘도 되고 이어폰만 빼줘": 전체 삭제([1, 2])가 아니라 이름이 지목된
+    이어폰만([1]) 해소돼야 한다."""
+    from app.agents.buyer.cart.remove import _resolve_remove_targets
+
+    items = [_item(1, 10, "이어폰"), _item(2, 20, "세제")]
+    result = _resolve_remove_targets(
+        "안 전부 빼줘도 되고 이어폰만 빼줘", items, get_settings(), None
+    )
+    assert result is not None
+    assert [item.cart_item_id for item in result] == [1]
+
+
+def test_resolve_remove_targets_prefix_negated_all_marker_without_name_asks() -> None:
+    """재현 3 — "못 전부 빼줘": 전체 삭제([1, 2])가 아니라 이름이 없으므로 되물음이어야 한다."""
+    from app.agents.buyer.cart.remove import _resolve_remove_targets
+
+    items = [_item(1, 10, "이어폰"), _item(2, 20, "세제")]
+    result = _resolve_remove_targets("못 전부 빼줘", items, get_settings(), None)
+    assert result is None
+
+
+def test_resolve_remove_targets_prefix_negation_does_not_falsely_suppress_all_marker() -> None:
+    """거짓 억제 방지(핵심) — "안경"의 "안"은 독립 어절이 아니므로(뒤에 "경"이 바로 붙는다)
+    부정으로 치지 않는다. "안경 다 빼줘"는 여전히 전체 삭제([1, 2])여야 한다."""
+    from app.agents.buyer.cart.remove import _resolve_remove_targets
+
+    items = [_item(1, 10, "이어폰"), _item(2, 20, "세제")]
+    result = _resolve_remove_targets("안경 다 빼줘", items, get_settings(), None)
+    assert result is not None
+    assert sorted(item.cart_item_id for item in result) == [1, 2]
+
+
+async def test_remove_prefix_negated_recent_item_asks_via_stream() -> None:
+    """`stream_cart_remove` 수준에서도 재현 1 과 같은 사실 — delete_fn 이 한 번도 안 불린다."""
+    store = CartStateStore()
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        raise AssertionError("부정된 '방금 담은 거'인데 delete_fn 이 호출됐다")
+
+    thread_key = "m:t-remove-prefix-negation"
+    await store.set_last_add(thread_key, cart_item_id=2, product_id=20)
+
+    events = await _collect(
+        stream_cart_remove(
+            identity=_member(),
+            message="방금 담은 건 안 빼도 되고, 저번에 산 것도 빼줘",
+            cart_store=store,
+            thread_key=thread_key,
+            settings=get_settings(),
+            get_cart_fn=_cart(_item(1, 10, "이어폰"), _item(2, 20, "세제")),
+            delete_fn=delete_fn,
+        )
+    )
+    assert _types(events) == ["token", "done"]
+
+
 async def test_remove_resolves_single_name_match() -> None:
     store = CartStateStore()
     deleted: list[int] = []

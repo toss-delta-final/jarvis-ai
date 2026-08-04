@@ -12,6 +12,7 @@ import logging
 
 from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.identity import cart_identity
+from app.agents.buyer.cart.negation import has_any_negation
 from app.agents.buyer.cart.state import CartStateStore, LastAdd
 from app.core.text import _strip_unsafe
 from app.schemas.chat import ActionData, DoneData, TokenData
@@ -41,10 +42,11 @@ def _resolve_remove_targets(
     자리에서 확정한다(다음 규칙으로 넘어가지 않는다). 어느 규칙도 못 잡으면 `None`(호출부가
     현재 담긴 상품을 나열하며 되묻는다).
 
-    순서(패킷 §5.3, 2차 리뷰 지적 2·3 이후):
-      1. 발화에 부정·대조 표지(`utterance_negation_markers`, **문장 어디든** — 이 층은 위치
-         창이 아니라 전체 검사다, `intent_guard.py` 의 근처 창 검사와 다르다)가 **없을 때만**
-         전체 표지(`cart_remove_all_markers`) → 전 항목. "전체 삭제"·"방금 담은 거"는 사용자가
+    순서(패킷 §5.3, 2차 리뷰 지적 2·3 + 라운드 10 이후):
+      1. 발화에 부정·대조 표지(`negation.has_any_negation` — 어미형(`utterance_negation_markers`)
+         과 접두형(`utterance_prefix_negation_markers`, "안"·"못") 둘 다 본다, **문장 어디든** —
+         이 층은 위치 창이 아니라 전체 검사다, `intent_guard.py` 의 근처 창 검사와 다르다)가
+         **없을 때만** 전체 표지(`cart_remove_all_markers`) → 전 항목. "전체 삭제"·"방금 담은 거"는 사용자가
          이름을 대지 않은 대상을 **코드가 고르는** 규칙이라 다른 규칙보다 엄격해야 한다 — "전부
          빼지는 말고 이어폰만 빼줘"에서 "전부 빼"만 보고 확정하면 사용자가 명시적으로 배제한
          전체 삭제가 실행된다. 대조어("말고")가 표지에서 여러 글자 떨어져 나오므로 위치 창이
@@ -69,8 +71,17 @@ def _resolve_remove_targets(
          그 1건(표지 없는 발화에서만 적용 — 표지가 있었는데 해소에 실패한 경우는 2·3번이 이미
          되물음으로 종결했다).
       5. 그 외 → `None`.
+
+    **[라운드 10]** 이 함수의 부정 판정은 원래 어미형(`utterance_negation_markers`)만 봤다 —
+    `intent_guard.py` 가 라운드 9 에서 접두형("안"·"못")을 배울 때 이 함수는 그대로 남아,
+    "방금 담은 건 안 빼도 되고, 저번에 산 것도 빼줘"류가 `cart_remove` 로 라우팅된 뒤 여기서
+    사용자가 명시적으로 "빼지 말라"고 한 항목이 실제로 삭제됐다(플래그 on 시 데이터 손실).
+    같은 부정 개념이 두 파일에 각자 구현돼 한쪽만 고쳐진 것이 원인이라, 판정을
+    `negation.has_any_negation` 공용 함수로 옮겨 `intent_guard.py` 와 같은 함수를 쓰게 했다.
     """
-    has_negation = any(marker in message for marker in settings.utterance_negation_markers)
+    has_negation = has_any_negation(
+        message, settings.utterance_negation_markers, settings.utterance_prefix_negation_markers
+    )
 
     if not has_negation and any(marker in message for marker in settings.cart_remove_all_markers):
         return list(items)

@@ -37,9 +37,15 @@
     "전부"⊂"전부터"와 같은 급의 반쪽짜리 방어다. 그리고 앞쪽(접두) 검사는 `"안"`처럼 흔한
     조각이라 부분 문자열로 그대로 쓰면 `"안경"`·`"안쪽"`류 정상 발화를 대량으로 삼킨다 —
     반드시 **어절 경계**(앞이 문자열 시작/공백, 표지와의 사이 공백 0~1개)로 판정해야 한다.
+  - **[라운드 10 추가] 같은 판정 개념을 두 곳에 각자 구현하면 한쪽만 고쳐진다.** 이 PR 에서
+    부정 인지 결함이 세 번 났다 — 어미형 도입(라운드 5) → 접두형을 `intent_guard.py` 에만
+    추가(라운드 9) → `remove.py` 의 같은 판정은 그대로 남아 플래그 on 시 실제 데이터 손실로
+    재현(라운드 10). 안전 판정처럼 여러 호출부가 "같은 규칙이어야 하는" 로직은 파일마다 각자
+    구현하지 말고 **공용 함수 하나**로 두고 호출부가 그것을 쓰게 한다 — 그래야 한쪽을 고칠 때
+    나머지도 같이 고쳐진다.
 - 관련: `app/core/config.py`(`cart_remove_all_markers`), `app/agents/buyer/cart/remove.py`,
   이슈 #116 라운드 3 리뷰 F-1. 접두 부정: `app/core/config.py`(`utterance_prefix_negation_markers`),
-  `app/agents/buyer/cart/intent_guard.py`(`_has_prefix_negation`), 라운드 9.
+  `app/agents/buyer/cart/negation.py`(`has_prefix_negation`), 라운드 9·10.
 
 ## [2026-08-04] ORM 이 만드는 SQL 은 **생성물을 봐야** 안다 — JPQL 을 읽고 재현한 SQL 로 성능을 진단하지 않는다
 - 증상: #132 에서 BE `ProductRepository.searchCandidates` 의 JPQL `group by p` 를 "엔티티 전체 컬럼이 그룹 키"로 읽고, 그대로 손으로 옮긴 SQL 을 실측해 **4.15s(PK 그룹 대비 33배)** 라는 병목을 보고했다. `EXPLAIN` 까지 붙여 "TEXT 컬럼 때문에 임시테이블+filesort" 라는 그럴듯한 인과도 만들었다. BE 를 실제로 띄워 재니 같은 질의가 **1.11s** 였다.

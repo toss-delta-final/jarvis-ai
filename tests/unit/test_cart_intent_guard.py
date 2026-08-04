@@ -237,20 +237,25 @@ def test_classify_prefix_negation_does_not_falsely_suppress(message: str, expect
 
 
 def test_has_prefix_negation_word_boundary_rules() -> None:
-    """`_has_prefix_negation` 직접 호출로 어절 경계 규칙을 고정한다 — "안 빼줘"·"안빼줘"(공백
-    0~1개)는 잡고, "안경"의 "안"(뒤에 다른 글자가 붙어 토큰이 아님)과 표지에서 먼 "안"은 안 잡는다."""
-    from app.agents.buyer.cart.intent_guard import _has_prefix_negation
+    """`negation.has_prefix_negation` 직접 호출로 어절 경계 규칙을 고정한다 — "안 빼줘"·
+    "안빼줘"(공백 0~1개)는 잡고, "안경"의 "안"(뒤에 다른 글자가 붙어 토큰이 아님)과 표지에서
+    먼 "안"은 안 잡는다.
+
+    [라운드 10] 이 함수는 원래 `intent_guard.py` 안에 있었는데 부정 판정을 공용 모듈
+    `app/agents/buyer/cart/negation.py` 로 뽑으면서 그쪽으로 옮겼다 — import 경로만 바뀌었고
+    동작은 그대로다(이 테스트가 그 사실을 고정한다)."""
+    from app.agents.buyer.cart.negation import has_prefix_negation
 
     prefix_markers = ["안", "못"]
     # "안 빼줘" — marker "빼줘" starts at index 1 (공백 1개 뒤).
-    assert _has_prefix_negation("안 빼줘", 1, prefix_markers) is True
+    assert has_prefix_negation("안 빼줘", 1, prefix_markers) is True
     # "안빼줘" — marker "빼줘" starts at index 1 (공백 없음).
-    assert _has_prefix_negation("안빼줘", 1, prefix_markers) is True
+    assert has_prefix_negation("안빼줘", 1, prefix_markers) is True
     # "안경 빼줘" — marker "빼줘" starts at index 3; 직전 토큰은 "안경"이지 "안" 단독이 아니다.
-    assert _has_prefix_negation("안경 빼줘", 3, prefix_markers) is False
+    assert has_prefix_negation("안경 빼줘", 3, prefix_markers) is False
     # "가방 안에 있는 거 빼줘" — marker 직전 토큰은 "거"; "안"은 문장 앞쪽에 멀리 있다.
     message = "가방 안에 있는 거 빼줘"
-    assert _has_prefix_negation(message, message.index("빼줘"), prefix_markers) is False
+    assert has_prefix_negation(message, message.index("빼줘"), prefix_markers) is False
 
 
 # ─────────── stream_cart_add 배선 — 찜 오담기 방어 ───────────

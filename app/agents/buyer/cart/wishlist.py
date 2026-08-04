@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 
 from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.identity import cart_identity
+from app.agents.buyer.cart.negation import has_any_negation
 from app.agents.buyer.recommendation.state import CartIntent
 from app.core.text import _strip_unsafe
 from app.schemas.chat import ActionData, DoneData, TokenData
@@ -42,15 +43,16 @@ def _wishlist_unresolved_notice(items: list[WishlistItem]) -> str:
 
 
 def _resolve_wishlist_remove_target(
-    cart: CartIntent, message: str, items: list[WishlistItem]
+    cart: CartIntent, message: str, items: list[WishlistItem], settings
 ) -> WishlistItem | None:
-    """찜 해제 대상을 결정론적으로 해소한다(패킷 §5.4, 2차 리뷰 지적 4 이후) — 강한 신호부터
-    순서대로 확정한다:
+    """찜 해제 대상을 결정론적으로 해소한다(패킷 §5.4, 2차 리뷰 지적 4 + 라운드 10 이후) —
+    강한 신호부터 순서대로 확정한다:
       1. 이름이 발화에 **부분 문자열로** 등장 → 정확히 1건이면 그것, 2건 이상이면 **그 자리에서
          미해소**(2번 문맥 id 로 내려가지 않는다 — `remove.py::_resolve_remove_targets` 와 같은
          "강한 신호가 모호하면 더 약한 신호로 임의로 고르지 않는다" 원칙).
       2. `cart.product_id`(decompose 가 문맥에서 이미 골라 온 값)가 목록 안에 있으면 그것.
-      3. 위 두 규칙이 모두 안 잡히고 목록이 정확히 1건이면 그 1건.
+      3. 발화에 부정·대조 신호(`negation.has_any_negation`, 문장 전체 검사)가 **없을 때만**
+         위 두 규칙이 모두 안 잡히고 목록이 정확히 1건이면 그 1건.
       4. 그 외 → `None`.
 
     **문맥 id 보다 발화의 이름을 먼저 본다**(2차 리뷰 지적 4 — 이전 순서는 반대였다). 재현:
@@ -59,13 +61,23 @@ def _resolve_wishlist_remove_target(
     `docs/lessons.md` 의 "강한 신호(이름 지목)가 있으면 약한 신호로 덮지 않는다"와 정반대다.
     사용자가 입으로 말한 이름은 LLM 이 문맥에서 고른 id 보다 강한 신호다.
 
+    **[라운드 10]** "목록 1건 자동"(3번)도 `remove.py` 의 "전체 삭제"·"방금 담은 거"와 같은
+    성격 — 사용자가 이름을 대지 않은 대상을 코드가 고른다. 직접 호출해 확인한 재현: 찜이
+    1건(`이어폰`)뿐인 상태에서 `"방금 찜한 건 안 빼도 되고 저건 찜 빼줘"` 처럼 다른 대상("저건")
+    을 가리키며 지금 있는 항목은 빼지 말라고 부정한 발화가 `wishlist_remove` 로 라우팅되면(뒤쪽
+    "찜 빼줘"가 그 자체로는 안 부정됐으므로), 이름도 문맥 id 도 안 잡혀 3번이 실행돼 사용자가
+    "빼지 말라"고 명시한 바로 그 항목이 삭제됐다. `negation.has_any_negation` 으로 같은 가드를
+    건다 — `remove.py` 와 같은 공용 함수를 써서 "한쪽만 고치는" 재발을 막는다(부정 인지 결함
+    3연발의 세 번째가 바로 이 함수였다).
+
     `remove.py::_resolve_remove_targets` 와 규칙 모양(강한 신호 우선·부분 문자열 이름 매칭·단건
-    자동)이 겹치지만 **공용 헬퍼로 묶지 않았다**. 자료형이 다르고(`CartViewItem` vs
+    자동·부정 가드)이 겹치지만 **공용 헬퍼로 묶지 않았다**. 자료형이 다르고(`CartViewItem` vs
     `WishlistItem`, 필드명도 `product_name` vs `name`), 이쪽에는 "전체 삭제"·"방금 담은 거"
     같은 규칙이 아예 없다 — 억지로 하나의 함수로 묶으면 두 흐름이 서로 쓰지 않는 매개변수(상대
     쪽의 `cart_remove_all_markers`·`last_add` 같은)까지 시그니처에 끌고 다니게 되고, 한쪽 규칙을
-    바꿀 때 다른 쪽 테스트까지 다시 봐야 한다. 겹치는 부분은 "이름 부분 문자열 매칭" 한 조각뿐이라
-    분리해서 각자 읽기 쉽게 두는 편이 이 겹침의 크기에 비해 더 싸다.
+    바꿀 때 다른 쪽 테스트까지 다시 봐야 한다. 겹치는 부분(이름 매칭·부정 판정)은 각각
+    `_strip_unsafe`·`negation.py` 공용 함수로 이미 공유돼 있어, 남은 겹침은 "이 조각들을 어떤
+    순서로 조합하느냐"뿐이라 분리해서 각자 읽기 쉽게 두는 편이 더 싸다.
     """
     name_matches = [
         item for item in items if (name := _strip_unsafe(item.name or "")) and name in message
@@ -78,7 +90,10 @@ def _resolve_wishlist_remove_target(
         if direct:
             return direct[0]
 
-    if len(items) == 1:
+    has_negation = has_any_negation(
+        message, settings.utterance_negation_markers, settings.utterance_prefix_negation_markers
+    )
+    if not has_negation and len(items) == 1:
         return items[0]
     return None
 
@@ -205,7 +220,7 @@ async def stream_wishlist_remove(
         yield _done()
         return
 
-    target = _resolve_wishlist_remove_target(cart, message, items)
+    target = _resolve_wishlist_remove_target(cart, message, items, settings)
     if target is None:
         yield sse(
             "token",
