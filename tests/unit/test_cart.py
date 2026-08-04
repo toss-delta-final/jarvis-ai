@@ -2134,3 +2134,294 @@ async def test_last_reco_name_cache_is_bounded_lru(monkeypatch: pytest.MonkeyPat
 
     assert await store.get_last_reco("b") == [(2, "")]  # id는 영속, 이름만 LRU miss degrade
     assert len(cart_state._last_reco_names) == 2
+
+
+# ─────────── #118 last_reco 누적화 (담기 가드의 시간 축) ───────────
+
+
+async def test_last_reco_accumulates_across_turns_in_most_recent_order() -> None:
+    """[#118] 새 추천이 옛 추천을 **덮지 않는다** — 정본 §3.1 담기 가드가 "누적 추천 목록"이다.
+
+    덮어쓰기였을 때 깨지던 시나리오: 추천 A(101·102·103) → "101 방수야?" → 추천 B(301·302)
+    → "이거 담아줘". 3단계에서 101 이 사라져 담기가 차단됐다.
+    """
+    from app.agents.buyer.cart import state as cart_state
+
+    cart_state.reset_cart_store()
+    store = CartStateStore()
+    await store.set_last_reco("k", [(101, "이어폰"), (102, "케이스"), (103, "충전기")])
+    await store.set_last_reco("k", [(301, "니트"), (302, "코트")])
+
+    reco = await store.get_last_reco("k")
+    # 최근 언급 순 — 이번 턴이 앞, 그다음이 직전 턴.
+    assert [pid for pid, _ in reco] == [301, 302, 101, 102, 103]
+    # 이름 캐시도 병합돼야 한다(통째 교체면 승계분 이름이 사라진다).
+    assert dict(reco)[101] == "이어폰"
+    assert dict(reco)[301] == "니트"
+
+
+async def test_last_reco_promotes_repeated_product_without_duplicating() -> None:
+    from app.agents.buyer.cart import state as cart_state
+
+    cart_state.reset_cart_store()
+    store = CartStateStore()
+    await store.set_last_reco("k", [(101, "이어폰"), (102, "케이스")])
+    await store.set_last_reco("k", [(102, "케이스"), (301, "니트")])
+
+    assert [pid for pid, _ in await store.get_last_reco("k")] == [102, 301, 101]
+
+
+async def test_last_reco_cap_never_truncates_the_current_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[HARD] I-21 은 한 턴에 최대 10목록 × 9상품 = 90건을 민다.
+
+    단순 `merged[:cap]` 이면 **방금 추천한 상품이 담기 차단되는 회귀**가 된다 — 상한은
+    승계분에만 실효적으로 걸려야 한다.
+    """
+    from app.agents.buyer.cart import state as cart_state
+
+    monkeypatch.setattr(get_settings(), "last_reco_max", 5)
+    cart_state.reset_cart_store()
+    store = CartStateStore()
+    await store.set_last_reco("k", [(pid, f"승계{pid}") for pid in range(1, 4)])
+
+    this_turn = [(1000 + i, f"신규{i}") for i in range(90)]
+    await store.set_last_reco("k", this_turn)
+
+    reco = await store.get_last_reco("k")
+    assert reco[:90] == this_turn  # 이번 턴 90건이 하나도 잘리지 않았다
+    assert len(reco) == 90  # 상한을 넘긴 승계분만 잘렸다
+
+
+async def test_last_reco_cap_applies_to_carried_items(monkeypatch: pytest.MonkeyPatch) -> None:
+    """무한 증가 방지 — 이번 턴이 작으면 상한이 승계분을 실제로 자른다."""
+    from app.agents.buyer.cart import state as cart_state
+
+    monkeypatch.setattr(get_settings(), "last_reco_max", 4)
+    cart_state.reset_cart_store()
+    store = CartStateStore()
+    await store.set_last_reco("k", [(pid, f"옛{pid}") for pid in (1, 2, 3, 4, 5)])
+    await store.set_last_reco("k", [(90, "새1"), (91, "새2")])
+
+    reco = await store.get_last_reco("k")
+    assert [pid for pid, _ in reco] == [90, 91, 1, 2]
+    # 잘려나간 id 의 이름은 캐시에서도 정리(prune)돼야 한다 — 스레드당 dict 가 무한히 자라지 않게.
+    assert set(cart_state._last_reco_names.get("k", {})) == {90, 91, 1, 2}
+
+
+async def test_last_reco_merge_does_not_erase_a_cached_name_with_a_blank_one() -> None:
+    """push 가 이름을 못 실어 온 상품이 캐시의 멀쩡한 이름을 지우면 이름 지목이 이유 없이 나빠진다."""
+    from app.agents.buyer.cart import state as cart_state
+
+    cart_state.reset_cart_store()
+    store = CartStateStore()
+    await store.set_last_reco("k", [(101, "파란 니트")])
+    await store.set_last_reco("k", [(101, "")])
+
+    assert await store.get_last_reco("k") == [(101, "파란 니트")]
+
+
+async def test_cart_add_allows_a_product_recommended_two_turns_ago(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """누적화의 목적 — 추천 A → 질문 → 추천 B 뒤에도 A 의 상품을 담을 수 있어야 한다.
+
+    가드(`allowed`)를 실제로 태우는 `run_buyer_turn` 진입점으로 검증한다. 스토어 단언만으로는
+    "그래서 담기가 되나"를 지나가지 않는다.
+    """
+    import app.services.spring_client as sc
+    from app.agents.buyer.cart.state import get_cart_store
+    from tests._fakes import FakeLLM
+
+    async def fake_add(req):  # noqa: ANN001
+        return AddToCartResult(success=True, cart_item_id=77)
+
+    async def fake_get(*, user_id=None, guest_id=None):  # noqa: ANN001
+        return CartView(items=[])
+
+    monkeypatch.setattr(sc, "add_to_cart", fake_add)
+    monkeypatch.setattr(sc, "get_cart", fake_get)
+
+    request = _req(thread_id="t-accumulate", message="101 담아줘")
+    key = await _thread_key(request, _member())
+    store = await get_cart_store()
+    await store.set_last_reco(key, [(101, "이어폰"), (102, "케이스")])  # 추천 A
+    await store.set_last_reco(key, [(301, "니트"), (302, "코트")])  # 추천 B
+
+    llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 101, "quantity": 1}})
+    events = await _collect(run_buyer_turn(request, _member(), llm=llm))
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADDED"
+    assert action["cartItemId"] == 77
+
+
+class _PromptCapturingLLM:
+    """decompose 프롬프트를 붙잡아 두는 FakeLLM — LAST_RECOMMENDATIONS 내용을 단언한다."""
+
+    def __init__(self, decompose: dict) -> None:
+        import json as _json
+
+        self._raw = _json.dumps({"intent": "cart_add", "filters": {}, **decompose})
+        self.user = ""
+        self.system = ""
+
+    async def complete(self, *, system, user, tier, max_tokens=1024, json_output=True):  # noqa: ANN001
+        self.user, self.system = user, system
+        return self._raw
+
+    async def stream(self, *, system, user, tier, max_tokens=1024):  # noqa: ANN001
+        yield "x"
+
+
+async def test_pending_turn_prompt_excludes_carried_recommendations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#118] 옵션 되물음 중에는 프롬프트에 **승계분을 싣지 않는다** — 가드는 그대로 누적을 쓴다.
+
+    실 LLM N=8 프로브에서 "PENDING_CART 중 상품 전환"(`이어폰으로 할래`)이
+    승계 없음 6/8 · 승계 없음+screen 7/8 · 승계 11건 **1/8** · 승계 상한 6건 **2/8** 이었다.
+    승계분이 2건만 붙어도 #240 이 "낮추지 말 것"으로 못박은 경로가 무너진다.
+    """
+    from app.agents.buyer.cart.state import get_cart_store
+
+    request = _req(thread_id="t-pending-prompt", message="이어폰으로 할래")
+    key = await _thread_key(request, _member())
+    store = await get_cart_store()
+    await store.set_last_reco(key, [(9001, "승계1"), (9002, "승계2")])  # 옛 턴
+    await store.set_last_reco(key, [(101, "세탁 세제"), (201, "무선 이어폰")])  # 이번 턴
+    await store.set_pending(
+        key,
+        PendingAdd(product_id=101, quantity=1, options=[CartOption(option_id=1001, name="일반형")]),
+    )
+
+    llm = _PromptCapturingLLM({"cart": {"productId": 201, "quantity": 1}})
+    await _collect(run_buyer_turn(request, _member(), llm=llm))
+
+    reco_line = next(
+        line for line in llm.user.splitlines() if line.startswith("LAST_RECOMMENDATIONS:")
+    )
+    assert "101" in reco_line and "201" in reco_line  # 이번 턴은 그대로
+    assert "9001" not in reco_line and "9002" not in reco_line  # 승계분은 빠진다
+    # 가드는 여전히 누적 전체다 — 프롬프트에서 뺀 것이 allowed 를 좁히지 않는다.
+    assert {pid for pid, _ in await store.get_last_reco(key)} >= {9001, 9002, 101, 201}
+
+
+async def test_non_pending_turn_prompt_carries_the_accumulated_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """되물음이 아닌 턴에서는 누적 전체를 싣는다 — #118 의 4단계 시나리오 해소가 여기서 일어난다."""
+    from app.agents.buyer.cart.state import get_cart_store
+
+    request = _req(thread_id="t-nonpending-prompt", message="이거 담아줘")
+    key = await _thread_key(request, _member())
+    store = await get_cart_store()
+    await store.set_last_reco(key, [(9001, "추천A-1"), (9002, "추천A-2")])
+    await store.set_last_reco(key, [(301, "추천B-1")])
+
+    llm = _PromptCapturingLLM({"cart": {"productId": 9001, "quantity": 1}})
+    await _collect(run_buyer_turn(request, _member(), llm=llm))
+
+    reco_line = next(
+        line for line in llm.user.splitlines() if line.startswith("LAST_RECOMMENDATIONS:")
+    )
+    assert "9001" in reco_line and "301" in reco_line
+
+
+async def test_missing_turn_count_degrades_to_todays_behaviour() -> None:
+    """구버전 인스턴스가 쓴 값(`turn_count` 없음)을 읽어도 KeyError 없이 오늘 동작으로 degrade 한다.
+
+    롤링 배포 중 신구 혼재에서 담기 턴이 죽으면 안 된다 — 경계를 모르면 **전량을 이번 턴**으로 본다.
+    """
+    from app.agents.buyer.cart import state as cart_state
+    from app.agents.buyer.cart.state import CartStateStore
+
+    cart_state.reset_cart_store()
+    store = CartStateStore()
+    # 구버전 인스턴스의 쓰기를 그대로 재현한다(product_ids 만 있는 값).
+    await store._store.aput(("buyer_cart_v2", "k"), "last_reco", {"product_ids": [1, 2, 3]})
+
+    state = await store.get_last_reco_state("k")
+    assert [pid for pid, _ in state.items] == [1, 2, 3]
+    assert state.turn_count == 3  # 경계 불명 → 전량을 이번 턴으로
+
+
+def _screen_request(message: str, thread_id: str):
+    """screen 이 실린 실제 요청 — 관대 정규화를 그대로 태운다."""
+    from app.schemas.chat import BuyerChatRequest
+
+    return BuyerChatRequest.model_validate(
+        {
+            "sessionId": "s1",
+            "threadId": thread_id,
+            "message": message,
+            "screen": {
+                "pageType": "chat",
+                "columns": 2,
+                "products": [
+                    {"productId": 501, "name": "러그"},
+                    {"productId": 502, "name": "바구니"},
+                ],
+            },
+        }
+    )
+
+
+async def _seed_pending(key: str) -> None:
+    from app.agents.buyer.cart.state import get_cart_store
+
+    store = await get_cart_store()
+    await store.set_last_reco(key, [(9001, "드럼용 세탁 세제")])
+    await store.set_pending(
+        key,
+        PendingAdd(
+            product_id=9001,
+            quantity=1,
+            options=[
+                CartOption(option_id=1001, name="일반형"),
+                CartOption(option_id=1002, name="드럼형"),
+            ],
+        ),
+    )
+
+
+async def test_pending_turn_prompt_excludes_the_screen_block_and_rule() -> None:
+    """[#118 · PR 4차 리뷰] 되물음 턴에는 **screen 도** 프롬프트에서 뺀다 — `prompt_reco` 와 같은 규약.
+
+    싣고 있었을 때 한 턴에 "options 의 번호로 골라라"(PENDING_CART)와 "화면 순번으로 골라라"
+    (SCREEN.상품 + 규칙)가 동시에 주어졌다. `"2번으로"` 가 화면 순번 2로 오인되면 채워지는
+    productId 는 `screen.products` 출신이라 `allowed` 에 반드시 들어 있어 cart/graph.py 의 전환
+    조건을 통과한다 → 되물음이 조용히 버려지고 답한 적 없는 상품이 담긴다(end-to-end 재현:
+    담긴 productId=502·pending 소멸·CART_ADDED). 코드 해소기도 `pending is None` 일 때만 도는데
+    프롬프트만 화면 순번을 가르치던 비대칭이었다.
+    """
+    from app.agents.buyer.recommendation.decompose import _SYSTEM
+
+    request = _screen_request("2번으로", "t-pending-screen")
+    await _seed_pending(await _thread_key(request, _member()))
+
+    llm = _PromptCapturingLLM({"cart": {"productId": 9001, "optionId": 1002, "quantity": 1}})
+    await _collect(run_buyer_turn(request, _member(), llm=llm))
+
+    # user — SCREEN 블록도, 화면 상품 id·순번 라벨도 실리지 않는다.
+    assert "SCREEN" not in llm.user
+    assert "501" not in llm.user and "502" not in llm.user
+    assert "순번" not in llm.user
+    assert "PENDING_CART:" in llm.user  # 되물음 맥락 자체는 그대로다
+    # system — 화면 규칙이 붙지 않은 **원본 프롬프트와 바이트 동일**.
+    assert llm.system == _SYSTEM
+
+
+async def test_non_pending_turn_prompt_carries_the_screen_block_and_rule() -> None:
+    """되물음이 아닌 턴에서는 종전대로 실린다 — 이번 수정이 화면 해소 자체를 끄지 않았다."""
+    from app.agents.buyer.recommendation.decompose import _SYSTEM_WITH_SCREEN
+
+    request = _screen_request("이거 담아줘", "t-nonpending-screen")
+
+    llm = _PromptCapturingLLM({"cart": {"productId": 501, "quantity": 1}})
+    await _collect(run_buyer_turn(request, _member(), llm=llm))
+
+    assert "SCREEN: {" in llm.user
+    assert '"순번": 1' in llm.user and '"순번": 2' in llm.user
+    # system — 화면 규칙이 덧붙은 변형과 **바이트 동일**.
+    assert llm.system == _SYSTEM_WITH_SCREEN

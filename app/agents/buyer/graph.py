@@ -31,6 +31,7 @@ from app.agents.buyer.recommendation.category_mapping import CategoryMapping, de
 from app.agents.buyer.recommendation.category_mapping import map_categories as _map_categories
 from app.agents.buyer.recommendation.decompose import (
     _resolve_contradictory_price_range,
+    build_screen_prompt,
     decompose,
 )
 from app.agents.buyer.recommendation.needs_expansion import detect_expansion_need
@@ -54,6 +55,7 @@ from app.core.tracing import current_request_trace, trace_span
 from app.core.session_context import SessionStateUnavailable
 from app.core.text import _strip_unsafe
 from app.agents.buyer.recommendation.state import CartIntent, CategoryQuery
+from app.agents.buyer.screen_reference import resolve_screen_reference
 from app.schemas.chat import CONDITION_FIELD_TO_FILTER, ConditionAction, DoneData, ErrorData
 from app.schemas.spring import ProductSearchFilters
 from app.services import search_service, spring_client
@@ -472,11 +474,53 @@ async def run_buyer_turn(
             "productId": pending.product_id,
             "options": [{"optionId": o.option_id, "name": o.name} for o in pending.options],
         }
+    # [#118] **옵션 되물음 중에는 화면 맥락을 통째로 끈다.** 이 한 플래그를 아래 세 지점이 함께
+    # 쓴다 — ① decompose 프롬프트 주입(`prompt_screen`) ② 담기 허용 목록(`allowed`)
+    # ③ 코드 해소기(`resolve_screen_reference`). 셋 중 하나만 열려 있어도 구멍이 된다.
+    screen_context_active = pending_dict is None
 
     # decompose — fast tier 1회 (intent 5-way 라우팅 + 필터 + 장바구니 의도)
     if observer is not None:
         observer.record_model_call(resolve_model_id(settings, "fast"))
-    last_reco = await cart_store.get_last_reco(thread_key)
+    reco_state = await cart_store.get_last_reco_state(thread_key)
+    last_reco = reco_state.items
+    # [#118] **담기 가드와 프롬프트를 가른다.** 정본 §3.1 [보안]이 누적을 요구하는 대상은
+    # `allowed`(가드)이고, 프롬프트 LAST_RECOMMENDATIONS 에 무엇을 싣는지는 계약이 아니다.
+    #
+    # 옵션 되물음(PENDING_CART) 중에는 **승계분을 싣지 않는다.** 실 LLM N=8 프로브
+    # (scripts/verify_screen_context_118.py) 에서 "PENDING_CART 중 상품 전환"(`이어폰으로 할래`)이
+    #   승계 없음 6/8(=오늘) · 승계 없음+screen 주입 7/8 · 승계 11건 1/8 · 승계 상한 6건 2/8
+    # 로, 승계분이 **2건만 붙어도** #240 이 "낮추지 말 것"으로 못박은 상품 전환 경로가 무너졌다.
+    # 되물음 중에는 사용자가 특정 상품 하나를 놓고 답하는 중이라, 긴 과거 목록이 그 초점을 흩는다.
+    #
+    # 되물음이 아닌 턴에서는 누적 전체를 싣는다 — 실측상 무해했고(지시대명사 92~94/96,
+    # order_status 48/48), #118 이 풀려는 4단계 시나리오(추천 A → 질문 → 추천 B → "이거 담아줘")의
+    # **해소가 바로 여기서** 일어난다. 이걸 끄면 가드만 열리고 LLM 이 옛 상품을 지목하지 못한다.
+    prompt_reco = last_reco if pending_dict is None else last_reco[: reco_state.turn_count]
+    # [#118] **screen 도 같은 규약을 따른다 — 되물음 턴에는 넘기지 않는다.**
+    # 초판은 위 `prompt_reco` 만 되물음으로 가르고 screen 은 조건 없이 실었는데, 그러면 한 턴에
+    # "options 의 번호로 골라라"(PENDING_CART)와 "화면 순번으로 골라라"(SCREEN.상품 + 규칙)가
+    # **동시에** 주어진다. `"2번으로"` 같은 정상 옵션 답변이 화면 순번 2로 오인될 여지가 생기고,
+    # 그때 채워지는 productId 는 `screen.products` 출신이라 `allowed` 에 **반드시** 들어 있어
+    # cart/graph.py 의 전환 조건(`product_id != pending.product_id and product_id in allowed`)을
+    # 그대로 통과한다 → 진행 중이던 옵션 되물음이 조용히 버려지고 사용자가 답한 적 없는 상품이
+    # 담긴다(PR 4차 리뷰, end-to-end 재현 확인: 담긴 productId=502·pending 소멸·CART_ADDED).
+    # 이 PR 이 막으려는 오담기 클래스와 같은 것이라 프롬프트에서 뺀다.
+    #
+    # 설계 일관성 근거도 같은 방향이다 — 코드 해소기(`resolve_screen_reference`)는 이미 아래
+    # cart_add 분기에서 `pending is None` 일 때만 돈다("그 턴의 2번은 화면 순번이 아니라 옵션
+    # 번호"). 해소기는 안 도는데 프롬프트만 화면 순번을 가르치고 있었던 것이 비대칭이었다.
+    #
+    # 프로브 커버리지도 이쪽이 맞다: 옵션 답변 셀은 전부 `screen=None` 로 측정됐으므로
+    # (scripts/verify_screen_context_118.py 의 `_CTX_PENDING` 에 screen 없음), 이렇게 빼야
+    # 배포 경로가 실제로 잰 조건과 일치한다.
+    prompt_screen = (
+        build_screen_prompt(
+            getattr(request, "screen", None), labels=settings.screen_page_type_labels
+        )
+        if screen_context_active
+        else None
+    )
     try:
         with trace_span("buyer.routing", "chain"):
             with trace_span(
@@ -498,8 +542,12 @@ async def run_buyer_turn(
                         profile if settings.profile_injection_scope == "both" else None
                     ),
                     tier="fast",
-                    last_recommendations=last_reco,
+                    last_recommendations=prompt_reco,
                     pending_cart=pending_dict,
+                    # [#118] 지금 보고 있는 화면 — "이거 담아줘"의 대상 확정. screen 이 없거나
+                    # 관대 무시로 사라졌으면(또는 되물음 턴이면, 위 prompt_screen 주석 참조)
+                    # None 이라 프롬프트가 오늘과 바이트 동일하다.
+                    screen=prompt_screen,
                     category_fanout_max=settings.category_fanout_max,
                     repurchase_max=settings.dedup_repurchase_max,
                 )
@@ -656,16 +704,72 @@ async def run_buyer_turn(
     if decision.intent == "cart_add":
         if trace := current_request_trace():
             trace.set_lane("cart")
-        allowed = {pid for pid, _ in last_reco}
+        # 담기 허용 목록 = 직전 추천 ∪ screen.products 의 productId(api-spec §3.1 [보안] 문단,
+        # 이슈 #118). screen 이 없거나 무시된 요청은 last_reco 만으로 판정해 기존 동작과 동일하다.
+        # 프리패스가 아니다 — 두 목록 밖 id 차단은 cart/graph.py 의 unresolved 판정이 그대로 맡는다.
+        #
+        # **되물음 턴에는 screen 합류를 끈다**(`screen_context_active`, 위 정의). 정본 문면은
+        # "(누적 추천 ∪ `screen.products`) 를 allowed 로 취급"이라 이 게이트는 문면과 어긋난다 —
+        # 그럼에도 그렇게 하는 근거:
+        #   ① 같은 문단이 **강제**하는 것은 "두 목록 **밖**의 id 는 여전히 차단"이고, 빼는 것은
+        #      **더 차단하는** 방향이라 그 보증을 깨지 않는다.
+        #   ② 같은 문단이 스스로 밝힌 목적이 *"LLM 이 발화 속 임의 숫자를 오추출해 담는 것을 막는
+        #      기존 가드는 유지된다"* 인데, 되물음 턴에서 screen id 를 allowed 에 두면 바로 그
+        #      오추출이 **우연히 screen id 와 일치할 때** 가드를 통과한다. 실제로 재현했다 —
+        #      `"502 그램짜리로 할게"` → 오추출 502 가 allowed 에 있어 stream_cart_add 의 전환
+        #      조건을 통과, 되물음이 폐기되고 502 가 담겼다. 즉 게이트는 문면과 어긋나지만
+        #      **그 문단의 목적을 지키는** 방향이다.
+        #   ③ 잃는 실익이 없다. 4차 수정으로 되물음 턴에는 SCREEN 블록이 프롬프트에 실리지
+        #      않으므로(테스트로 고정) LLM 은 screen 상품의 id 도 이름도 알 경로가 없고, id 는
+        #      화면에 표시되지 않아 사용자가 말할 수도 없다. screen 상품이 동시에 직전 추천이면
+        #      `last_reco` 쪽으로 그대로 allowed 에 남는다 — 정상 경로는 하나도 닫히지 않는다.
+        screen = getattr(request, "screen", None)
+        screen_product_ids = (
+            {p.product_id for p in screen.products}
+            if screen is not None and screen_context_active
+            else set()
+        )
+        allowed = {pid for pid, _ in last_reco} | screen_product_ids
+        cart_intent = decision.cart or CartIntent()
+        screen_reason: str | None = None
+        # [#118] 화면 지시어는 **코드가 해소**한다 — 순번·좌표·"후보 1건" 은 결정적인 규칙이라
+        # 확률적 계층에 맡길 이유가 없고, 맡겼더니 사용자가 말하지 않은 상품을 확정하는 일이
+        # 잦았다(실측표는 screen_reference 모듈 docstring). `screen.products` 가 있는 턴에만
+        # 돌아서 #240 회귀 대조군(전부 screen 없음)에는 구조적으로 닿지 않는다. 옵션 되물음
+        # 중에는 "2번"이 화면 순번이 아니라 옵션 번호라 아예 건너뛴다.
+        if screen is not None and screen.products and screen_context_active:
+            resolved = resolve_screen_reference(
+                request.message,
+                products=[(p.product_id, p.name) for p in screen.products],
+                columns=screen.columns,
+                allowed_product_ids=allowed,
+                deictic_markers=settings.screen_deictic_markers,
+                context_reference_markers=settings.screen_context_reference_markers,
+                # [6차 리뷰] 이름 지목 검사(양보 (B))가 화면 상품만 보면, 직전 추천에만 있는
+                # 이름을 지목했을 때 순번 규칙이 이겨 화면의 다른 상품으로 override 한다(오담기,
+                # screen_reference.py 상단 F-8). `last_reco` 는 위에서 `allowed` 를 만들 때 이미
+                # 손에 쥔 값을 그대로 넘긴다.
+                last_recommendation_products=last_reco,
+            )
+            if resolved is not None:
+                logger.info(
+                    "screen_reference_resolved",
+                    extra={"reason": resolved.reason, "forced_null": resolved.product_id is None},
+                )
+                cart_intent = replace(cart_intent, product_id=resolved.product_id)
+                # 되물음 문구를 가르는 신호로만 넘긴다 — 확정된 사유는 문구와 무관하다.
+                if resolved.product_id is None:
+                    screen_reason = resolved.reason
         with trace_span("buyer.graph.cart", "chain"):
             async for frame in stream_cart_add(
                 identity=identity,
-                cart=decision.cart or CartIntent(),
+                cart=cart_intent,
                 cart_store=cart_store,
                 thread_key=thread_key,
                 settings=settings,
                 message=request.message,
                 allowed_product_ids=allowed,
+                screen_reason=screen_reason,
                 observer=observer,
             ):
                 yield frame
