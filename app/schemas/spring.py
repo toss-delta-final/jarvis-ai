@@ -111,9 +111,9 @@ class SpringProduct(CamelModel):
     # 조회 시 집계 리뷰수 — AI 계산용(#171). rating 과 짝지어 '리뷰 없어 0'(review_count==0,
     # 데이터 부재)과 '리뷰 있고 저평점'을 가른다. None/미전송이면 rating 이 지배(구 동작 폴백).
     review_count: int | None = None
-    # [#278] 옵션 이름만 최대 20개 수신한다. option_count 는 절단 전 전체 개수다.
-    # 이 PR은 관대 수신만 하며 rerank·문구·옵션 되물음에서 소비하지 않는다.
-    options: list[str] | None = Field(default=None, max_length=20)
+    # [#278] Spring 송신 계약은 옵션 이름 최대 20개다. AI는 초과분도 원본 배열로 관대 수신한다.
+    # option_count 는 절단 전 전체 개수이며, 이 PR은 rerank·문구·옵션 되물음에서 소비하지 않는다.
+    options: list[str] | None = None
     option_count: int | None = Field(default=None, alias="optionCount", ge=0)
     category: str | None = Field(default=None, alias="categoryName")
     brand: str | None = Field(default=None, alias="brandName")

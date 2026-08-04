@@ -1389,30 +1389,19 @@ def test_i1_envelope_allows_missing_option_fields() -> None:
     assert product.option_count is None
 
 
-def test_i1_options_accepts_20_names_and_rejects_21() -> None:
-    """[#278] options 최대 20개 경계를 실제 I-1 파서에서 강제한다."""
-    import pytest
-    from pydantic import ValidationError
-
+def test_i1_options_over_20_preserve_product_and_unconsumed_metadata() -> None:
+    """[#278] 송신 상한 drift가 미소비 options 때문에 I-1 상품 전체를 제거하지 않는다."""
     from app.services.spring_client import _parse_search_response
 
-    accepted = _parse_search_response(
+    option_names = [f"옵션-{i}" for i in range(21)]
+    product = _parse_search_response(
         {
             "success": True,
-            "data": [{"productId": 1, "name": "상품", "options": [f"옵션-{i}" for i in range(20)]}],
+            "data": [{"productId": 1, "name": "상품", "options": option_names}],
         }
     ).products[0]
-    assert len(accepted.options or []) == 20
-
-    with pytest.raises(ValidationError):
-        _parse_search_response(
-            {
-                "success": True,
-                "data": [
-                    {"productId": 1, "name": "상품", "options": [f"옵션-{i}" for i in range(21)]}
-                ],
-            }
-        )
+    assert product.product_id == 1
+    assert product.options == option_names
 
 
 def test_i1_option_count_rejects_negative_value() -> None:
