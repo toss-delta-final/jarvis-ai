@@ -65,7 +65,9 @@ DEFAULTS = dict(
     cart_item_id_base=300000,
 )
 
-# 주문상태 8종 분포 (사용자 확정 2026-08-04) — 주문 시점과 연동해 배정
+# 주문 "진행 단계" 8종 분포 (사용자 확정 2026-08-04) — 주문 시점과 연동해 배정.
+# ⚠️ 내부 단계 어휘다. DB 로 나갈 때는 orders.status(결제 수준 4종)·order_item.status(이행 9종)로
+#    각각 매핑된다 — 파일 쓰기 직전 _DB_ORDER_STATUS / make_order 의 item_status 참고.
 ORDER_STATUS_DIST = [
     ("DELIVERED", 0.62), ("SHIPPED", 0.10), ("PREPARING", 0.07), ("PAID", 0.06),
     ("PAYMENT_FAILED", 0.05), ("CANCELLED", 0.05), ("RETURNED", 0.03), ("PENDING", 0.02),
@@ -580,18 +582,22 @@ def main():
             tp = t + timedelta(seconds=rng.randrange(30, 300))
             chain.append(("PENDING", "PAID", "SYSTEM", None, tp))
             order["paid_at"] = tp
-            seq = ["PREPARING", "SHIPPED", "DELIVERED"]
-            target_idx = dict(PAID=-1, PREPARING=0, SHIPPED=1, DELIVERED=2, RETURNED=2, CANCELLED=-1)[st]
-            prev = "PAID"
+            # 배송 로그는 주문 단위 ORDERED→SHIPPING→DELIVERED 만 (OrderStatusChanger·01 §6.5 —
+            # 결제 직후 아이템 ORDERED 로그 없음, PREPARING/SHIPPED 는 백엔드에 없는 어휘)
+            ship_seq = [("ORDERED", "SHIPPING"), ("SHIPPING", "DELIVERED")]
+            n_ship = dict(PAID=0, PREPARING=0, SHIPPED=1, DELIVERED=2, RETURNED=2, CANCELLED=0)[st]
             tt = tp
-            for k in range(target_idx + 1):
+            for k in range(n_ship):
                 tt = tt + timedelta(hours=rng.uniform(8, 40))
-                chain.append((prev, seq[k], "SYSTEM", None, tt))
-                prev = seq[k]
+                chain.append((ship_seq[k][0], ship_seq[k][1], "SYSTEM", None, tt))
             if st == "CANCELLED":
-                chain.append(("PAID", "CANCELLED", "USER", rng.choice(CANCEL_REASONS), tp + timedelta(hours=rng.uniform(0.2, 12))))
+                tc = tp + timedelta(hours=rng.uniform(0.2, 12))
+                # 클레임 확정 로그(reason 보존, 01 §6.5 규칙 3) + 전량 취소 승격 로그 (02 D32)
+                chain.append(("CANCEL_REQUESTED", "CANCELLED", "USER", rng.choice(CANCEL_REASONS), tc))
+                chain.append(("PAID", "CANCELLED", "USER", None, tc))
             if st == "RETURNED":
-                chain.append(("DELIVERED", "RETURNED", "USER", rng.choice(RETURN_REASONS), tt + timedelta(days=rng.uniform(1, 5))))
+                # *_REQUESTED 신청 로그는 미기록(정본은 claim 테이블) — 확정 로그만 남긴다
+                chain.append(("RETURN_REQUESTED", "RETURNED", "USER", rng.choice(RETURN_REASONS), tt + timedelta(days=rng.uniform(1, 5))))
         rows = []
         for fr, to, actor, reason, tt in chain:
             olid += 1
@@ -638,8 +644,10 @@ def main():
                      delivery_request=rng.choice(DELIVERY_REQ),
                      paid_at=None, created_at=t + timedelta(seconds=rng.randrange(5, 60)))
         logs = status_logs_for(order, [p["name"] for p in chosen])
-        item_status = {"PENDING": "ORDERED", "PAYMENT_FAILED": "ORDERED", "PAID": "ORDERED",
-                       "PREPARING": "PREPARING", "SHIPPED": "SHIPPED", "DELIVERED": "DELIVERED",
+        # OrderItemStatus 어휘(01 §2-2)로 매핑 — PREPARING/SHIPPED 는 enum 에 없다.
+        # 미결제(PENDING/PAYMENT_FAILED) 주문의 아이템은 PENDING (결제 성공 시에만 ORDERED).
+        item_status = {"PENDING": "PENDING", "PAYMENT_FAILED": "PENDING", "PAID": "ORDERED",
+                       "PREPARING": "ORDERED", "SHIPPED": "SHIPPING", "DELIVERED": "DELIVERED",
                        "CANCELLED": "CANCELLED", "RETURNED": "RETURNED"}[order["status"]]
         st_changed = logs[-1]["created_at"]
         for p in chosen:
@@ -875,6 +883,11 @@ def main():
     ev_rows = [(e["member_id"], e["guest_id"], e["session_key"], e["client_event_id"], e["event_type"],
                 e["product_id"], e["properties"], e["occurred_at"], None, None, None, None, e["created_at"])
                for e in sorted(events, key=lambda x: x["occurred_at"])]
+    # orders.status 는 결제 수준 어휘만 (백엔드 OrderStatus: PENDING/PAID/PAYMENT_FAILED/CANCELLED — 01 §2-1).
+    # 내부 진행 단계(PREPARING/SHIPPED/DELIVERED/RETURNED)는 order_item.status·status_logs 로만 표현.
+    _DB_ORDER_STATUS = {"PENDING": "PENDING", "PAYMENT_FAILED": "PAYMENT_FAILED", "CANCELLED": "CANCELLED"}
+    for _o in orders:
+        _o["status"] = _DB_ORDER_STATUS.get(_o["status"], "PAID")
     order_rows = [(o["id"], o["member_id"], o["status"], o["payment_method"], o["total_amount"],
                    o["recipient"], o["phone"], o["zip_code"], o["address1"], o["address2"],
                    o["delivery_request"], o["paid_at"], o["created_at"], None) for o in orders]
