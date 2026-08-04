@@ -154,7 +154,6 @@ def build_budget_sets(
         return (-combo.score, combo.verified_sum, combo.product_ids)
 
     ordered = sorted(combinations, key=order_key)
-    cheap = min(combinations, key=lambda combo: (combo.verified_sum, order_key(combo)))
     selected: list[BudgetSet] = []
     seen_sets: set[frozenset[int]] = set()
 
@@ -173,7 +172,9 @@ def build_budget_sets(
             )
         )
 
-    add(cheap, "cheap")
+    if not truncated:
+        cheap = min(combinations, key=lambda combo: (combo.verified_sum, order_key(combo)))
+        add(cheap, "cheap")
     add(ordered[0], "balanced")
     for position, leg in enumerate(active):
         focused = [combo for combo in ordered if combo.ranks[position] == 0]

@@ -89,6 +89,62 @@ def test_budget_sets_marks_truncation_and_rejects_cross_leg_duplicates() -> None
     assert all(len(item.product_ids) == len(set(item.product_ids)) for item in plan.sets)
 
 
+def test_truncated_budget_sets_never_claim_partial_minimum_is_cheap() -> None:
+    plan = build_budget_sets(
+        pools=[[(1, 100), (2, 1)], [(10, 100), (11, 100), (12, 100), (13, 100)]],
+        total_budget=None,
+        max_sets=3,
+        max_combinations=1,
+        max_items=9,
+    )
+
+    assert plan is not None
+    assert plan.combinations_truncated is True
+    assert all(item.kind != "cheap" for item in plan.sets)
+
+
+def test_complete_budget_search_keeps_true_cheapest_set() -> None:
+    plan = build_budget_sets(
+        pools=[[(1, 100), (2, 1)], [(10, 100), (11, 100), (12, 100), (13, 100)]],
+        total_budget=None,
+        max_sets=3,
+        max_combinations=20_000,
+        max_items=9,
+    )
+
+    assert plan is not None
+    assert plan.combinations_truncated is False
+    cheap = next(item for item in plan.sets if item.kind == "cheap")
+    assert cheap.verified_sum == 101
+    assert 2 in cheap.product_ids
+
+
+def test_truncated_budget_sets_fill_available_slots_without_breaking_invariants() -> None:
+    pools = [[(1, 100), (2, 1)], [(10, 100), (11, 100), (12, 100), (13, 100)]]
+    first = build_budget_sets(
+        pools=pools,
+        total_budget=200,
+        max_sets=3,
+        max_combinations=3,
+        max_items=9,
+    )
+    second = build_budget_sets(
+        pools=pools,
+        total_budget=200,
+        max_sets=3,
+        max_combinations=3,
+        max_items=9,
+    )
+
+    assert first is not None and first == second
+    assert first.combinations_truncated is True
+    assert len(first.sets) == 3
+    assert all(item.kind != "cheap" for item in first.sets)
+    assert all(item.verified_sum <= 200 for item in first.sets)
+    assert all(len(item.product_ids) == len(set(item.product_ids)) <= 9 for item in first.sets)
+    assert len({frozenset(item.product_ids) for item in first.sets}) == len(first.sets)
+
+
 def test_budget_sets_without_budget_and_max_sets_one_returns_baseline() -> None:
     plan = build_budget_sets(
         pools=[[(1, 5_000), (2, 1_000)], [(3, 6_000), (4, 2_000)]],
