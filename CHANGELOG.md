@@ -9,6 +9,9 @@
 
 ## [Unreleased]
 
+### Docs
+- **#285 — 챗봇 장바구니 삭제·찜 추가·찜 해제 internal 계약 초안** — BE 협의를 위한 제안 문서를 추가했으며, 정본 등재와 사본 동기화는 협의 후 진행한다.
+
 ### Fixed
 - **#266 — 판매자 general 레인 LLM 타임아웃이 `INTERNAL` 로 나가던 문제 (api-spec §2.9 c)** — 이 레인만 앱 벽시계 상한이 없어 스트림 전체 90s 에만 의존했고, `except (TimeoutError, asyncio.TimeoutError)` 분기는 **도달 불가 코드**였다. `asyncio.wait_for` 는 쓸 수 없다(중간에 yield 하는 async generator) — 청크 루프 전체를 `asyncio.timeout(seller_general_timeout_s)` 으로 덮어 빌드·체크포인터 연결까지 묶었다. 기본값 20s 는 2026-08-02 로컬 실측 general total max 2.55s 의 약 8배다.
   - **인프라 장애를 LLM 지연으로 감추지 않는다 (PR 2차 리뷰)** — `get_checkpointer()` 는 운영(`auth_mode=jwks`)에서 폴백 없이 raise 하는데, 그때 나오는 `asyncio.TimeoutError` 는 LLM 타임아웃과 **타입이 같아** 원리적으로 구분할 수 없다(`is_state_store_unavailable` 도 `TimeoutError` 를 포함해 여기서는 쓸 수 없다 — 썼다면 반대로 진짜 LLM 타임아웃까지 삼킨다). 체크포인터 초기화를 general 상한 밖으로 빼고 `_CheckpointerUnavailable` 로 감싸 **발생 지점**으로 가른다. pg-profile 장애는 `INTERNAL` + `seller_checkpointer_unavailable`(ERROR)로 나가고, 반대 방향 오분류(LLM 예산 소진을 인프라 장애로 기록)도 함께 막힌다. 이 오분류는 이 이슈 이전부터 있던 것으로 회귀가 아니다.
