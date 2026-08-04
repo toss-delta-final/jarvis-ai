@@ -34,6 +34,8 @@ GROUP_COUNTS = {
     "switch": 7,
     "order_status": 2,
     "general": 2,
+    # [#84] 카테고리 승계 3분기 — 리파인 4 · 리셋 4 · 교체 3.
+    "category_action": 11,
 }
 
 
@@ -44,7 +46,7 @@ def _raw(name: str = "b") -> dict:
 @pytest.mark.parametrize("name", ["a", "b"])
 def test_committed_anchor_sets_load_and_match_manifest_hash(name: str) -> None:
     anchors = load_anchor_set(name)
-    assert anchors.fixture_version == f"intent-probe-anchors-{name}-v1"
+    assert anchors.fixture_version == f"intent-probe-anchors-{name}-v2"
 
 
 @pytest.mark.parametrize("name", ["a", "b"])
@@ -62,11 +64,12 @@ def test_switch_utterances_are_verbatim_from_issue_260() -> None:
     assert texts == SWITCH_TEXTS
 
 
-def test_cell_count_is_53_and_matches_group_context_product() -> None:
+def test_cell_count_is_64_and_matches_group_context_product() -> None:
     anchors = load_anchor_set("b")
     cells = build_cells(anchors)
     # 발화 × 컨텍스트: 대조군 18 + 지시대명사 12 + 옵션 4 + 전환 7 + 주문 6 + 일반 6
-    assert len(cells) == 53
+    # + [#84] 카테고리 11(단일 컨텍스트) = 64
+    assert len(cells) == 64
     per_group: dict[str, int] = {}
     for cell in cells:
         per_group[cell.utterance.group] = per_group.get(cell.utterance.group, 0) + 1
@@ -77,6 +80,7 @@ def test_cell_count_is_53_and_matches_group_context_product() -> None:
         "switch": 7,
         "order_status": 6,
         "general": 6,
+        "category_action": 11,
     }
 
 
@@ -202,3 +206,82 @@ def test_build_context_kwargs_pending_cart_shape_matches_graph() -> None:
             {"optionId": option.option_id, "name": option.name} for option in anchors.options
         ],
     }
+
+
+# ─────────── #84 카테고리 승계 3분기 축 ───────────
+
+
+def _category_utterance(data: dict) -> dict:
+    return next(u for u in data["utterances"] if u["group"] == "category_action")
+
+
+def test_category_utterance_without_expected_action_is_rejected() -> None:
+    data = _raw("b")
+    _category_utterance(data)["expected"].pop("categoryAction")
+    with pytest.raises(ValidationError, match="categoryAction"):
+        AnchorSet.model_validate(data)
+
+
+def test_category_utterance_declaring_a_legacy_axis_is_rejected() -> None:
+    """새 셀이 기존 축의 분모를 늘리면 커밋된 기준선과 그 축을 비교할 수 없다 — 그 사유가
+    에러 메시지에 들어 있어야 다음 사람이 '축 하나쯤' 하고 붙이지 않는다."""
+    data = _raw("b")
+    _category_utterance(data)["axes"].append("mainIntent")
+    with pytest.raises(ValidationError) as excinfo:
+        AnchorSet.model_validate(data)
+    message = str(excinfo.value)
+    assert "mainIntent" in message
+    assert "baselines/fast-2026-08-04" in message
+    assert "비교할 수 없" in message
+
+
+def test_non_category_utterance_declaring_a_new_axis_is_rejected() -> None:
+    data = _raw("b")
+    next(u for u in data["utterances"] if u["group"] == "general")["axes"].append("categoryClear")
+    with pytest.raises(ValidationError, match="categoryClear"):
+        AnchorSet.model_validate(data)
+
+
+def test_category_utterance_must_use_only_the_category_prior_context() -> None:
+    data = _raw("b")
+    _category_utterance(data)["contexts"] = ["categoryPrior", "none"]
+    with pytest.raises(ValidationError, match="categoryPrior"):
+        AnchorSet.model_validate(data)
+
+
+def test_category_prior_filters_without_a_category_is_rejected() -> None:
+    data = _raw("b")
+    data["categoryPriorFilters"] = {"semanticQuery": "무선 이어폰"}
+    with pytest.raises(ValidationError, match="category"):
+        AnchorSet.model_validate(data)
+
+
+def test_category_utterance_repeating_the_prior_category_leaf_is_rejected() -> None:
+    # 발화가 직전 카테고리 어휘를 쓰면 carry/replace 어느 쪽으로도 읽혀 정답이 자명하지 않다.
+    data = _raw("b")
+    _category_utterance(data)["text"] = "이어폰 말고 더 싼 걸로"
+    with pytest.raises(ValidationError, match="이어폰"):
+        AnchorSet.model_validate(data)
+
+
+def test_category_prior_context_carries_the_category_filters() -> None:
+    anchors = load_anchor_set("b")
+    context = next(c for c in anchors.contexts if c.context_id == "categoryPrior")
+    kwargs = build_context_kwargs(anchors, context)
+    assert kwargs["prior_filters"] is not None
+    assert kwargs["prior_filters"].category == anchors.category_prior_filters["category"]
+    # 이 축은 PRIOR_FILTERS.category 단독의 효과를 잰다 — 직전 추천 목록이 섞이면 오염된다.
+    assert kwargs["last_recommendations"] is None
+    assert kwargs["pending_cart"] is None
+
+
+@pytest.mark.parametrize("context_id", ["lastRecommendations", "pendingCart"])
+def test_existing_contexts_still_carry_the_default_prior_filters(context_id: str) -> None:
+    # 회귀 — 기본 `priorFiltersRef` 가 붙었다고 기존 컨텍스트가 다른 필터를 싣기 시작하면
+    # 기존 축이 통째로 다른 조건에서 측정된다(기준선과 비교 불가).
+    anchors = load_anchor_set("b")
+    context = next(c for c in anchors.contexts if c.context_id == context_id)
+    assert context.prior_filters_ref == "default"
+    kwargs = build_context_kwargs(anchors, context)
+    assert kwargs["prior_filters"].semantic_query == anchors.prior_filters["semanticQuery"]
+    assert kwargs["prior_filters"].category is None

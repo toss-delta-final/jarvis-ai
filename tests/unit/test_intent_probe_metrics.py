@@ -35,6 +35,13 @@ def _sample(cell_id: str, index: int, **overrides: object) -> Sample:
         "case": 2,
         "scoped_to_previous": False,
         "latency_ms": 10,
+        # [#84] 기본은 "카테고리 신호 없음 + 산출 없음" — resolve_category_action 의 폴백(carry)과
+        # 같은 상태다. 카테고리 셀은 아래 _perfect_results 가 명시적으로 덮어쓴다.
+        "has_category_signal": False,
+        "scope_free": None,
+        "category_legs_echo_prior": False,
+        "category_legs": "",
+        "resolved_category_action": "carry",
     }
     base.update(overrides)
     return Sample(**base)  # type: ignore[arg-type]
@@ -51,6 +58,11 @@ def _perfect_results(n: int = N) -> list[CellResult]:
             overrides["product_id"] = ANCHORS.reask_product_id
         if cell.utterance.group == "switch":
             overrides["product_id"] = OTHER_PRODUCT
+        if cell.utterance.group == "category_action":
+            action = expected.category_action
+            overrides["has_category_signal"] = action == "replace"
+            overrides["scope_free"] = action == "clear"
+            overrides["resolved_category_action"] = action
         results.append(
             CellResult(
                 cell_id=cell.cell_id,
@@ -81,6 +93,11 @@ def test_expected_denominators_match_issue_240_shape() -> None:
         "cartAddProductIdLegacy2": 16,
         "orderStatus": 48,
         "general": 48,
+        # [#84] 카테고리 11발화 × categoryPrior 1종 × N=8.
+        "categoryAction3Way": 88,
+        "categoryCarry": 32,
+        "categoryClear": 32,
+        "categoryReplace": 24,
     }
 
 
@@ -227,3 +244,214 @@ def test_every_axis_carries_its_definition_into_the_result() -> None:
         payload = axis.as_dict()
         assert payload["definition"]["numerator"]
         assert payload["definition"]["denominator"]
+
+
+# ─────────── #84 카테고리 승계 3분기 축과 진단 ───────────
+
+
+CATEGORY_CELLS = [cell for cell in CELLS if cell.utterance.group == "category_action"]
+
+
+def _category_results(resolved_for) -> list[CellResult]:  # noqa: ANN001
+    """카테고리 셀만 담은 가상 결과 — `resolved_for(expected)` 가 확정값을 정한다."""
+    results = []
+    for cell in CATEGORY_CELLS:
+        expected = cell.utterance.expected.category_action
+        resolved = resolved_for(expected)
+        results.append(
+            CellResult(
+                cell_id=cell.cell_id,
+                utterance_id=cell.utterance.utterance_id,
+                context_id=cell.context.context_id,
+                group="category_action",
+                samples=[
+                    _sample(
+                        cell.cell_id,
+                        index,
+                        intent="recommend",
+                        has_category_signal=resolved == "replace",
+                        scope_free=resolved == "clear",
+                        resolved_category_action=resolved,
+                    )
+                    for index in range(N)
+                ],
+                attempts=N,
+                filled=True,
+            )
+        )
+    return results
+
+
+def test_category_axes_count_only_their_own_bucket() -> None:
+    axes = score_all(_category_results(lambda expected: expected), ANCHORS, n=N)
+    assert axes["categoryAction3Way"].numerator == 88
+    assert axes["categoryCarry"].numerator == 32
+    assert axes["categoryClear"].numerator == 32
+    assert axes["categoryReplace"].numerator == 24
+    # 기존 축은 카테고리 표본을 한 개도 세지 않는다 — 기준선과 비교 가능성이 이 격리에 달렸다.
+    assert axes["mainIntent"].expected_denominator == 0
+    assert axes["general"].expected_denominator == 0
+
+
+def test_three_way_axis_is_the_sum_of_its_components() -> None:
+    # 리셋만 전부 carry 로 무너진 런 — 합축이 부분축의 합이라는 관계가 유지되어야 한다.
+    axes = score_all(
+        _category_results(lambda expected: "carry" if expected == "clear" else expected),
+        ANCHORS,
+        n=N,
+    )
+    assert axes["categoryClear"].numerator == 0
+    assert axes["categoryAction3Way"].numerator == (
+        axes["categoryCarry"].numerator
+        + axes["categoryClear"].numerator
+        + axes["categoryReplace"].numerator
+    )
+    assert axes["categoryAction3Way"].components == (
+        "categoryCarry",
+        "categoryClear",
+        "categoryReplace",
+    )
+
+
+def test_category_axes_declare_they_are_absent_from_the_baseline() -> None:
+    axes = score_all(_category_results(lambda expected: expected), ANCHORS, n=N)
+    for axis_id in ("categoryAction3Way", "categoryCarry", "categoryClear", "categoryReplace"):
+        assert any(
+            "baselines/fast-2026-08-04" in note for note in axes[axis_id].not_comparable_with
+        )
+
+
+def test_category_axis_scores_the_resolved_value_not_the_raw_signal() -> None:
+    """분류기 산출이 아니라 **확정값**을 센다 — 사용자가 겪는 동작은 가드가 고른 쪽이다."""
+    cell = next(
+        cell for cell in CATEGORY_CELLS if cell.utterance.expected.category_action == "clear"
+    )
+    result = CellResult(
+        cell_id=cell.cell_id,
+        utterance_id=cell.utterance.utterance_id,
+        context_id=cell.context.context_id,
+        group="category_action",
+        samples=[
+            _sample(
+                cell.cell_id,
+                index,
+                intent="recommend",
+                scope_free=False,
+                has_category_signal=True,
+                resolved_category_action="replace",
+            )
+            for index in range(N)
+        ],
+        attempts=N,
+        filled=True,
+    )
+    axes = score_all([result], ANCHORS, n=N)
+    assert axes["categoryClear"].numerator == 0  # 기대는 clear 인데 확정값이 replace 인 표본
+    assert axes["categoryClear"].denominator == N
+
+
+def test_diagnostics_count_refine_turns_that_got_cleared() -> None:
+    carry_cell = next(
+        cell for cell in CATEGORY_CELLS if cell.utterance.expected.category_action == "carry"
+    )
+    clear_cell = next(
+        cell for cell in CATEGORY_CELLS if cell.utterance.expected.category_action == "clear"
+    )
+    results = [
+        # 리파인 셀: 3건은 산출 누락(→ carry 폴백), 2건은 clear 로 풀림(새 회귀 모양).
+        CellResult(
+            cell_id=carry_cell.cell_id,
+            utterance_id=carry_cell.utterance.utterance_id,
+            context_id=carry_cell.context.context_id,
+            group="category_action",
+            samples=[_sample(carry_cell.cell_id, index) for index in range(3)]
+            + [
+                _sample(
+                    carry_cell.cell_id,
+                    index,
+                    scope_free=True,
+                    resolved_category_action="clear",
+                )
+                for index in range(3, 5)
+            ],
+            attempts=5,
+            filled=False,
+        ),
+        # 리셋 셀이 clear 로 확정된 것은 정답이지 회귀가 아니다 — 카운터가 이를 섞으면 안 된다.
+        CellResult(
+            cell_id=clear_cell.cell_id,
+            utterance_id=clear_cell.utterance.utterance_id,
+            context_id=clear_cell.context.context_id,
+            group="category_action",
+            samples=[
+                _sample(
+                    clear_cell.cell_id,
+                    index,
+                    scope_free=True,
+                    resolved_category_action="clear",
+                )
+                for index in range(4)
+            ],
+            attempts=4,
+            filled=False,
+        ),
+    ]
+    counts = diagnostics(results, ANCHORS)
+    # 리파인 기대 셀이 clear 로 풀린 표본만 센다 — 이 변경이 만들 수 있는 유일한 새 회귀 모양이다.
+    assert counts["categoryClearOnRefineCount"] == 2
+    # 카테고리 셀은 전환 진단을 오염시키지 않는다.
+    assert counts["reaskProductEchoCount"] == 0
+    assert counts["productIdNullCount"] == 0
+
+
+def test_carry_is_scored_correct_when_the_legs_merely_echo_the_prior() -> None:
+    """[2차 리뷰 P2] 프롬프트가 시킨 prior 에코 leg 때문에 확정값이 replace 여도 정답이다.
+
+    보정이 없으면 이 축은 **정상 동작을 오답으로** 센다(실측 1/32). 반대로 에코가 아닌 leg 는
+    진짜 교체라 오답으로 남아야 한다 — 아래 대조군이 그 판별력을 준다.
+    """
+    cell = next(
+        cell for cell in CATEGORY_CELLS if cell.utterance.expected.category_action == "carry"
+    )
+
+    def _result(echo: bool) -> CellResult:
+        return CellResult(
+            cell_id=cell.cell_id,
+            utterance_id=cell.utterance.utterance_id,
+            context_id=cell.context.context_id,
+            group="category_action",
+            samples=[
+                _sample(
+                    cell.cell_id,
+                    index,
+                    has_category_signal=True,
+                    resolved_category_action="replace",
+                    category_legs_echo_prior=echo,
+                )
+                for index in range(N)
+            ],
+            attempts=N,
+            filled=True,
+        )
+
+    assert score_all([_result(True)], ANCHORS, n=N)["categoryCarry"].numerator == N
+    assert score_all([_result(False)], ANCHORS, n=N)["categoryCarry"].numerator == 0
+
+
+def test_scope_free_unresolved_is_counted() -> None:
+    cell = next(
+        cell for cell in CATEGORY_CELLS if cell.utterance.expected.category_action == "clear"
+    )
+    results = [
+        CellResult(
+            cell_id=cell.cell_id,
+            utterance_id=cell.utterance.utterance_id,
+            context_id=cell.context.context_id,
+            group="category_action",
+            samples=[_sample(cell.cell_id, index, scope_free=None) for index in range(3)]
+            + [_sample(cell.cell_id, 3, scope_free=True, resolved_category_action="clear")],
+            attempts=4,
+            filled=True,
+        )
+    ]
+    assert diagnostics(results, ANCHORS)["categoryScopeUnresolvedCount"] == 3
