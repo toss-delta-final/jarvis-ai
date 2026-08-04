@@ -352,6 +352,51 @@ def _resolve_contradictory_price_range(
     return filters.model_copy(update={drop: None})
 
 
+def resolve_category_action(
+    *,
+    has_category_signal: bool,
+    scope_free: bool | None,
+) -> str:
+    """이번 턴에 직전 카테고리를 어떻게 할지 확정한다 — carry|clear|replace (#84).
+
+    - **clear** = 직전 카테고리를 푼다(무필터 복원, #22). 신호는 전용 분류기
+      `category_scope.classify_category_scope` 의 `scope_free` 하나다.
+    - **replace** = 이번 턴 `categoryQueries` 에 유효 leg 이 있어 새 카테고리로 간다.
+    - **carry** = 둘 다 아니면 직전 카테고리를 승계한다(#59 규약 = 오늘 동작).
+
+    그래프 가드와 프로브가 **같은 규칙**을 쓰도록 순수 함수로 뽑아 둔다(호출부에 흩어 두면
+    다음 규칙을 더할 때 한쪽만 고쳐진다 — lessons 2026-08-04 「양보를 함수 앞단에」).
+
+    **`scope_free` 가 leg 보다 우선인 근거(실측).** 리셋 발화("5만원 이하 아무거나")의
+    **30~31/32 가 직전 카테고리를 그대로 복사한 leg 를 함께 낸다** — 위 `_SYSTEM` 의
+    `categoryQueries` 불릿이 "조건 다듬기면 PRIOR_FILTERS.category 를 그대로 실어라"라고
+    지시하기 때문이다. 그 leg 는 사용자가 지목한 상품이 아니라 프롬프트가 시킨 **prior 에코**라
+    강한 신호가 아니었고, leg 를 앞에 두면 clear 는 **구조적으로 도달 불가능**했다(실측
+    `categoryClear 0/32`). 뒤집었을 때의 오탐은 **0/56 × 독립 3회**로 측정됐으며, 잔여 위험의
+    성격도 "카테고리가 넓어짐"(#22 무필터)이지 **엉뚱한 카테고리로 좁혀짐이 아니다.**
+
+    **인라인 신호(`decompose` 의 `categoryAction` 필드)는 두지 않는다 — 이미 재봤고 기각됐다.**
+    64셀 전 축 런을 전/후 각 2회 짝지어 잰 결과(fast·N=8·픽스처 v2 앵커 b): 불릿이 **없는**
+    런에서도 `categoryClear` 가 이미 32/32 였고(= 3분기 해소는 전적으로 전용 분류기의 성과,
+    인라인 원 산출은 `clear` 0/32), 불릿을 넣은 런에서는 `PENDING_CART` 중 **상품 전환** 경로가
+    두 런 모두 깎였다(`switchAll7` 37·38 → 32·32, 전환 발화가 `recommend` 로 새는 표본 4~5 →
+    16~17). 즉 **이득 0 · 보호 축 손해**다. smart 티어에서는 인라인 필드가 32/32 였지만 배포
+    티어는 fast 다. 다시 시도하려면 `evals/intent_probe` 로 **전 축을 전/후 각 2회** 재고
+    "내 축이 좋아졌다"가 아니라 **"다른 축이 안 깎였다"** 를 채택 조건으로 삼을 것.
+
+    **직전 카테고리(prior)는 인자로 받지 않는다**(라운드 1 리뷰 F-1). 어떤 규칙에도 prior 가
+    관여하지 않아 인자로 두면 "prior 가 판정에 관여한다"는 거짓 신호가 되고, 이 시그니처는
+    그래프·프로브가 공유하는 계약이라 헛된 배관을 부른다. "승계할 prior 가 있는가"는 호출부
+    책임이다 — `graph.py` 가 `prior is not None and prior.category` 로 이미 판정하고, 거기서
+    carry 는 "승계할 것이 없음"과 같은 뜻이 된다.
+    """
+    if scope_free is True:
+        return "clear"
+    if has_category_signal:
+        return "replace"
+    return "carry"
+
+
 async def decompose(
     llm: LLMClient,
     *,

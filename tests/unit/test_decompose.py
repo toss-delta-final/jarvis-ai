@@ -1151,3 +1151,53 @@ def test_screen_data_notice_avoids_the_position_label_vocabulary() -> None:
 
     assert "줄" not in _SCREEN_DATA_NOTICE
     assert "칸" not in _SCREEN_DATA_NOTICE
+
+
+# ─────────── #84 카테고리 승계 3분기 — 인라인 필드는 실측으로 기각됐다 ───────────
+
+
+def test_system_prompt_has_no_inline_category_action_field() -> None:
+    """[#84] `_SYSTEM` 에 `categoryAction` 이 **없어야** 한다 — 되돌아오면 안 되는 접근이다.
+
+    "직전 카테고리를 어떻게 할지"를 decompose 프롬프트 안의 필드로 받는 안은 64셀 전 축 런을
+    **전/후 각 2회** 짝지어 재서 기각됐다(fast·N=8·픽스처 v2 앵커 b):
+
+    - **이득 0** — 불릿이 없는 런에서도 `categoryClear` 가 이미 32/32 였다(3분기 해소는 전적으로
+      전용 분류기 `category_scope` 의 성과이고, 인라인 원 산출은 `clear` 0/32 였다).
+    - **손해 확정** — 불릿을 넣은 런은 `PENDING_CART` 중 상품 전환 경로가 두 런 모두 깎였다
+      (`switchAll7` 37·38 → 32·32, 전환 발화가 `recommend` 로 새는 표본 4~5 → 16~17). #240 이
+      "낮추지 말 것"으로 못박은 축이다.
+
+    재현: `uv run python -m evals.intent_probe --out <dir> [--prompt-rev <before>]` 를 전/후 각
+    2회. 채택 조건은 "내 축이 좋아졌다"가 아니라 **"다른 축이 안 깎였다"** 다.
+    """
+    from app.agents.buyer.recommendation.decompose import _SYSTEM, _SYSTEM_WITH_SCREEN
+
+    for prompt in (_SYSTEM, _SYSTEM_WITH_SCREEN):
+        assert "categoryAction" not in prompt
+
+
+def test_load_bearing_rules_survive_in_both_prompt_variants() -> None:
+    """하중 문구 6종이 **양쪽 변형에서** 바이트 동일하게 남아 있어야 한다.
+
+    #234/#239/#240 이 실측으로 세운 문구다 — 불릿을 끼우거나 빼다 한 글자라도 밀면 지표가
+    붕괴한 전례가 있다. 기존 테스트는 변형별로 나뉘어 있어 여기서 6종·2변형을 한 번에 잠근다.
+    (#84 가 넣었다가 실측 기각으로 다시 뺀 불릿이 이 문구들을 밀지 않았는지도 이 테스트가 본다.)
+    """
+    from app.agents.buyer.recommendation.decompose import (
+        _CART_ADD_ANCHOR,
+        _SYSTEM,
+        _SYSTEM_WITH_SCREEN,
+    )
+
+    load_bearing = (
+        '  0) PENDING_CART가 있고 USER_MESSAGE가 options의 이름·번호·순번("드럼형", "2번", "2번으로",',
+        '  3) 그 외에 "그거"·"저번에 그거" 같은 상품 지시대명사가 있으면 항상 recommend.',
+        '- JSON 출력 직전에 intent를 검산하세요. cart_view인데 USER_MESSAGE에 "장바구니"가 없으면 recommend로',
+        '- cart_view로 분류하지 않는 예: "그거 보여줘" → recommend, "저번에 그거 다시 보여줘" →',
+        "이유로 직전 추천 상품을 복사하지 마세요.",
+        _CART_ADD_ANCHOR,
+    )
+    for prompt in (_SYSTEM, _SYSTEM_WITH_SCREEN):
+        for phrase in load_bearing:
+            assert phrase in prompt, phrase

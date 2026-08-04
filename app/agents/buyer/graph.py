@@ -13,8 +13,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
+from contextlib import suppress
 from dataclasses import replace
 from typing import cast
 
@@ -28,11 +30,13 @@ from app.agents.buyer.cart.state import get_cart_store
 from app.agents.buyer.fallback import stream_fallback
 from app.agents.buyer.order_status import stream_order_status
 from app.agents.buyer.recommendation.category_mapping import CategoryMapping, dedup_truncate
+from app.agents.buyer.recommendation.category_scope import classify_category_scope
 from app.agents.buyer.recommendation.category_mapping import map_categories as _map_categories
 from app.agents.buyer.recommendation.decompose import (
     _resolve_contradictory_price_range,
     build_screen_prompt,
     decompose,
+    resolve_category_action,
 )
 from app.agents.buyer.recommendation.needs_expansion import detect_expansion_need
 from app.agents.buyer.recommendation.needs_expansion import expand_needs as _expand_needs
@@ -133,6 +137,58 @@ def _remove_condition_actions(
     """conditionActions가 지목한 승계 필터 축을 제거한다(§3.1)."""
     updates = {CONDITION_FIELD_TO_FILTER[action.field]: None for action in actions}
     return prior.model_copy(update=updates)
+
+
+async def _collect_scope_task(task) -> bool | None:  # noqa: ANN001
+    """병렬 분류기 태스크를 회수한다 — 실패는 전부 None(=신호 없음) (#84).
+
+    `classify_category_scope` 가 이미 자기 예외를 삼키지만 여기서 한 겹 더 감싼다: 태스크 레벨
+    실패(취소·이벤트루프 종료 등)는 그 함수 안에서 잡히지 않는데, 그것 때문에 무관한 추천 턴이
+    죽으면 안 된다. 폴백은 오늘 동작(carry)이라 손해가 없다.
+    """
+    if task is None:
+        return None
+    try:
+        return await task
+    except Exception as exc:  # noqa: BLE001 - 보조 신호 회수 실패가 턴을 죽이지 않게(degrade)
+        logger.warning("category_scope_task_failed", extra={"reason": str(exc)})
+        return None
+
+
+async def _discard_scope_task(task) -> None:  # noqa: ANN001
+    """분류기 태스크를 취소하고 회수한다 — 값을 쓰지 않는 경로용 (#84).
+
+    취소만 하고 await 하지 않으면 이벤트루프가 "Task exception was never retrieved" 를 남기고,
+    실제 취소가 반영되기 전에 스트림이 끝난다. `CancelledError` 는 여기서 **삼킨다** — 우리가
+    직접 건 취소이지 바깥에서 온 취소가 아니다.
+
+    **이미 끝난 태스크면 즉시 반환한다**(2차 리뷰 F-3) — 정리 지점이 여럿이라 같은 태스크에
+    두 번 불릴 수 있고, 그때 `cancel()` 이 완료된 태스크를 건드리거나 결과를 두 번 기다리는 일이
+    없어야 한다. 취소는 **대기를 없애는** 수단이기도 하다: 취소된 태스크의 `await` 는 즉시
+    돌아오므로, 값을 안 쓰는 턴이 분류기 완료를 기다리지 않는다(F-2).
+    """
+    if task is None or task.done():
+        return
+    task.cancel()
+    with suppress(asyncio.CancelledError, Exception):
+        await task
+
+
+def _cancel_scope_task(task) -> None:  # noqa: ANN001
+    """분류기 태스크를 **동기적으로만** 취소한다 — teardown(`finally`) 전용 (#84, F-3).
+
+    바깥에서 취소가 들어오면(클라이언트가 첫 이벤트 전에 끊어 요청 태스크가 취소되거나 SSE
+    제너레이터가 조기 종료돼 `GeneratorExit` 가 오는 경우) `CancelledError` 는 `except LLMError`
+    에 걸리지 않아 정상 정리 지점을 **전부 건너뛴다.** 그래서 `finally` 에서 한 번 더 막는다.
+
+    여기서 **`await` 하지 않는 이유**: 이 `finally` 는 우리 자신이 취소되는 중에도 돈다. 그 상태로
+    `await` 하면 그 취소가 이 지점에 배달되고, `_discard_scope_task` 의 `suppress` 가 그것을
+    삼켜 **바깥 취소를 잃을** 수 있다. `cancel()` 은 동기 호출이라 그 위험 없이 취소를 확정하고,
+    회수는 이벤트루프가 태스크를 끝낼 때 이뤄진다(`classify_category_scope` 는 자기 예외를
+    삼키므로 "never retrieved" 경고도 남지 않는다).
+    """
+    if task is not None and not task.done():
+        task.cancel()
 
 
 def _is_timeout(exc: Exception) -> bool:
@@ -267,15 +323,30 @@ async def _prepare_recommendation(
     observer,
     thread_store: ThreadFilterStore,
     thread_key: str,
+    scope_free: bool | None = None,
 ) -> frozenset[str]:
     """Prepare mapped recommendation state inside the recommendation graph span."""
     # recommend — 카테고리 하이브리드 매핑(이슈 #59, 방식 A): decompose 추측을 canonical 로
     # 보정(canonical-or-null). 매핑이 죽거나 신호가 없으면 category 없이(전체) 검색으로 degrade.
-    if (
-        prior is not None
-        and prior.category
-        and not any(q.raw_category or q.query for q in decision.category_queries)
-    ):
+    # [#84] "카테고리 신호 없음"이 곧 리파인은 아니다 — "5만원 이하 아무거나"(카테고리-무관 리셋)도
+    # 신호가 없다. 그 구분은 **전용 분류기 하나**(`category_scope`)가 낸 `scope_free` 로 한다
+    # (정본은 `resolve_category_action` — 그래프와 프로브가 같은 규칙을 쓴다). decompose 프롬프트
+    # 안의 인라인 필드로 받는 안은 실측으로 기각됐다(이득 0 · 전환 축 손해, 그 함수 docstring 참조).
+    # 승계할 prior 가 있는지는 **호출부인 여기서** 본다(아래 if) — 판정 함수는 prior 를 받지 않는다.
+    action = resolve_category_action(
+        has_category_signal=any(q.raw_category or q.query for q in decision.category_queries),
+        scope_free=scope_free,
+    )
+    # 값(카테고리 문자열)은 싣지 않는다 — 이 파일의 기존 규약(#119 PII).
+    logger.info(
+        "category_carry_resolved",
+        extra={
+            "action": action,
+            "had_prior": bool(prior and prior.category),
+            "scope_free": scope_free,
+        },
+    )
+    if prior is not None and prior.category and action == "carry":
         # 리파인 턴(예: "더 저렴한 걸로") — 이번 턴에 카테고리 신호가 전혀 없음(빈 리스트, 또는
         # raw·query 가 모두 없는 leg 만). prior 는 이미 canonical(§7)이라 재매핑(pg 왕복) 없이 그대로
         # 승계한다. 매핑에 태우면 신호가 없어 빈 legs 가 나오고(#22), 아래 else 의 category=None 으로
@@ -283,11 +354,24 @@ async def _prepare_recommendation(
         # 단, raw 는 null 이라도 유의미한 query 가 있으면(신규 상황형 질의) 검색 의도가 있는 것이라
         # 아래 매핑을 태워야 한다 — prior 로 하이재킹하면 fan-out 이 죽고 #59 문제가 재발(PR #73 #19).
         decision.category_legs = [(prior.category, None)]
+    elif action == "clear":
+        # [#84] 카테고리-무관 리셋 — **legs 를 비운다**(→ 아래에서 `filters.category = None`,
+        # #22 무필터 복원). 매핑을 태우지 않으므로 임베딩·pg 왕복도 이 턴에는 없다.
+        #
+        # 초판은 "clear 면 신호가 없으니 매핑이 알아서 빈 legs 를 낸다"고 보고 별도 분기를 두지
+        # 않았는데, **실측이 그 전제를 반증했다**: 리셋 발화의 30~31/32 가 `_SYSTEM` 의
+        # categoryQueries 불릿("조건 다듬기면 PRIOR_FILTERS.category 를 그대로 실어라") 지시대로
+        # **직전 카테고리를 복사한 leg** 를 함께 낸다. 그대로 매핑에 태우면 그 에코가 canonical 이
+        # 돼 사용자가 "아무거나"라고 한 턴이 다시 이어폰으로 좁혀진다 — 해제가 무동작이 된다.
+        decision.category_legs = []
     else:
         # [#198·#217] 목적·상황형 발화의 상품 전개 — **승계 가드 안쪽(else)에 둔다**. D1(`no_legs`)은
         # 리파인 턴("더 저렴한 걸로")의 "신호 없음"과 조건이 겹치므로, 전개를 위 if 보다 앞에 놓으면
         # 리파인 턴이 엉뚱한 상품 목록으로 바뀌어 직전 맥락이 날아간다(PR #73 #12/#19 승계 규약이
         # 반대 방향으로 깨진다). 여기서는 이미 "승계 대상 아님"이 확정돼 있다.
+        #
+        # [#84] 여기 오는 것은 `replace`(새 상품을 말한 턴)와 prior 가 없는 턴뿐이다 — 이 매핑
+        # 경로가 원래 하던 일을 그대로 한다. `carry` 는 위 if, `clear` 는 위 elif 로 갈린다.
         #
         # [#217] 순서가 뒤집혔다 — **매핑을 먼저** 돌리고 그 실패를 전개 트리거로 쓴다(§4·§6.1).
         # 초판은 목적 marker 열거로 매핑 전에 미리 맞혔는데, 열거는 목록에 없는 표현을 놓치고
@@ -479,90 +563,168 @@ async def run_buyer_turn(
     # ③ 코드 해소기(`resolve_screen_reference`). 셋 중 하나만 열려 있어도 구멍이 된다.
     screen_context_active = pending_dict is None
 
-    # decompose — fast tier 1회 (intent 5-way 라우팅 + 필터 + 장바구니 의도)
-    if observer is not None:
-        observer.record_model_call(resolve_model_id(settings, "fast"))
-    reco_state = await cart_store.get_last_reco_state(thread_key)
-    last_reco = reco_state.items
-    # [#118] **담기 가드와 프롬프트를 가른다.** 정본 §3.1 [보안]이 누적을 요구하는 대상은
-    # `allowed`(가드)이고, 프롬프트 LAST_RECOMMENDATIONS 에 무엇을 싣는지는 계약이 아니다.
+    # [#84] 카테고리 범위 해제 분류기 — decompose 와 **병렬**로 띄운다.
     #
-    # 옵션 되물음(PENDING_CART) 중에는 **승계분을 싣지 않는다.** 실 LLM N=8 프로브
-    # (scripts/verify_screen_context_118.py) 에서 "PENDING_CART 중 상품 전환"(`이어폰으로 할래`)이
-    #   승계 없음 6/8(=오늘) · 승계 없음+screen 주입 7/8 · 승계 11건 1/8 · 승계 상한 6건 2/8
-    # 로, 승계분이 **2건만 붙어도** #240 이 "낮추지 말 것"으로 못박은 상품 전환 경로가 무너졌다.
-    # 되물음 중에는 사용자가 특정 상품 하나를 놓고 답하는 중이라, 긴 과거 목록이 그 초점을 흩는다.
+    # 이 판정에 필요한 입력은 `prior.category` 와 이번 발화뿐이라 decompose 결과를 기다릴 이유가
+    # 없다. 순차로 부르면 첫 SSE 이벤트 앞 **직렬 합**이 한 호출만큼 늘어나는데, 그 예산이 실제로
+    # 터진 전례가 있다(#277 — 미룬 턴의 두 I-1 호출이 직렬로 놓여 10s 상한을 8/8 초과).
+    # lessons 2026-08-04 「상한이 안전한지는 단일 호출 예산이 아니라 첫 이벤트 앞 직렬 합으로
+    # 잰다」가 가리키는 자리라, 먼저 띄우고 decompose 뒤에 회수해 **직렬 지연을 0** 으로 둔다.
     #
-    # 되물음이 아닌 턴에서는 누적 전체를 싣는다 — 실측상 무해했고(지시대명사 92~94/96,
-    # order_status 48/48), #118 이 풀려는 4단계 시나리오(추천 A → 질문 → 추천 B → "이거 담아줘")의
-    # **해소가 바로 여기서** 일어난다. 이걸 끄면 가드만 열리고 LLM 이 옛 상품을 지목하지 못한다.
-    prompt_reco = last_reco if pending_dict is None else last_reco[: reco_state.turn_count]
-    # [#118] **screen 도 같은 규약을 따른다 — 되물음 턴에는 넘기지 않는다.**
-    # 초판은 위 `prompt_reco` 만 되물음으로 가르고 screen 은 조건 없이 실었는데, 그러면 한 턴에
-    # "options 의 번호로 골라라"(PENDING_CART)와 "화면 순번으로 골라라"(SCREEN.상품 + 규칙)가
-    # **동시에** 주어진다. `"2번으로"` 같은 정상 옵션 답변이 화면 순번 2로 오인될 여지가 생기고,
-    # 그때 채워지는 productId 는 `screen.products` 출신이라 `allowed` 에 **반드시** 들어 있어
-    # cart/graph.py 의 전환 조건(`product_id != pending.product_id and product_id in allowed`)을
-    # 그대로 통과한다 → 진행 중이던 옵션 되물음이 조용히 버려지고 사용자가 답한 적 없는 상품이
-    # 담긴다(PR 4차 리뷰, end-to-end 재현 확인: 담긴 productId=502·pending 소멸·CART_ADDED).
-    # 이 PR 이 막으려는 오담기 클래스와 같은 것이라 프롬프트에서 뺀다.
+    # 게이트가 거짓이면 태스크를 아예 만들지 않는다 — 호출 0회라 첫 턴·prior 없는 스레드·
+    # 액션-only 턴은 오늘과 **완전히 동일**하다(비용도 0).
     #
-    # 설계 일관성 근거도 같은 방향이다 — 코드 해소기(`resolve_screen_reference`)는 이미 아래
-    # cart_add 분기에서 `pending is None` 일 때만 돈다("그 턴의 2번은 화면 순번이 아니라 옵션
-    # 번호"). 해소기는 안 도는데 프롬프트만 화면 순번을 가르치고 있었던 것이 비대칭이었다.
-    #
-    # 프로브 커버리지도 이쪽이 맞다: 옵션 답변 셀은 전부 `screen=None` 로 측정됐으므로
-    # (scripts/verify_screen_context_118.py 의 `_CTX_PENDING` 에 screen 없음), 이렇게 빼야
-    # 배포 경로가 실제로 잰 조건과 일치한다.
-    prompt_screen = (
-        build_screen_prompt(
-            getattr(request, "screen", None), labels=settings.screen_page_type_labels
+    # [2차 리뷰 F-1] **되물음(PENDING_CART) 턴을 막지 않는다.** 초판은 "되물음 턴은 카테고리 리셋
+    # 턴일 수 없다"고 단정했는데 틀렸다 — 사용자는 되물음을 버릴 수 있다:
+    # `"그건 됐고 종류 상관없이 5만원 이하 아무거나 보여줘"` 는 decompose 가 recommend 로 보내고
+    # (그 프롬프트가 "담기를 취소·중단하려 하면 … 옛 상품에 갇히지 않게"라고 명시한다) 아래에서
+    # pending 도 정리되는데, 분류기만 안 돌면 carry 로 떨어져 **이 이슈가 고치려는 결함이 그
+    # 경로에 그대로 남는다.**
+    # 되물음에서 여는 것이 안전한 이유:
+    #   · 분류기 프롬프트에는 `PENDING_CART` 가 **실리지 않는다**(입력이 직전 카테고리와 발화뿐)라
+    #     되물음 맥락과 교란될 표면이 없다. decompose 의 `prompt_screen`·`prompt_reco` 를 되물음에서
+    #     끄는 이유("한 턴에 두 지시가 겹친다")가 여기에는 해당하지 않는다.
+    #   · 산출은 **추천 경로에서만 소비**된다(`_prepare_recommendation`). 옵션 답변 턴("2번으로")은
+    #     cart_add 로 가서 값이 쓰이지 않는다(아래 intent 분기 회수에서 취소된다).
+    #   · 비용은 되물음 중 prior 카테고리가 있는 턴에 `max_tokens=32` 호출 1회다.
+    scope_gate = (
+        settings.category_scope_classifier_enabled
+        and prior is not None
+        and bool(prior.category)
+        # 액션-only 턴(conditionActions 만, message 빈/공백)은 판정할 발화가 없다.
+        and bool(request.message.strip())
+    )
+    scope_task = (
+        asyncio.create_task(
+            classify_category_scope(
+                llm,
+                message=request.message,
+                prior_category=cast(str, prior.category if prior else ""),
+                settings=settings,
+                observer=observer,
+            )
         )
-        if screen_context_active
+        if scope_gate
         else None
     )
+
+    # [#84·2차 리뷰 F-3] 태스크 생성부터 회수까지를 `try/finally` 로 감싼다. 정리 지점이 정상 회수와
+    # `except LLMError` 둘뿐이면 **바깥에서 온 취소**(클라이언트가 첫 이벤트 전에 끊어 요청 태스크가
+    # 취소되거나 SSE 제너레이터가 조기 종료되는 경우)에 `CancelledError` 가 두 지점을 모두 건너뛰어
+    # 분류기 태스크와 그것이 붙든 HTTP 연결이 스스로 끝날 때까지 남는다.
+    scope_free: bool | None = None
+    scope_settled = False
     try:
-        with trace_span("buyer.routing", "chain"):
-            with trace_span(
-                "llm.decompose",
-                "llm",
-                {"model": resolve_model_id(settings, "fast")},
-            ):
-                decision = await decompose(
-                    llm,
-                    query=request.message,
-                    prior_filters=prior,
-                    # [#119] 프로필은 **후보를 줄이는 단계에 넣지 않는다**(REQ-REC-005-A).
-                    # decompose 는 하드필터(WHERE 술어)를 산출하는데, 프로필을 발화와 같은 격으로
-                    # 주면 LLM 이 "3~5만원대 선호"를 priceMax 로 승격시키고 그 필터가
-                    # thread_store 에 영속돼 다음 턴 PRIOR_FILTERS 로 재주입된다(세션 내 래칫).
-                    # 게스트는 그 손실이 없어 개인화가 순손실이 됐다 — 주입을 끊으면 회원
-                    # 프롬프트가 게스트와 바이트 동일해진다. 취향은 rerank 순서로만 반영한다.
-                    profile_summary=(
-                        profile if settings.profile_injection_scope == "both" else None
-                    ),
-                    tier="fast",
-                    last_recommendations=prompt_reco,
-                    pending_cart=pending_dict,
-                    # [#118] 지금 보고 있는 화면 — "이거 담아줘"의 대상 확정. screen 이 없거나
-                    # 관대 무시로 사라졌으면(또는 되물음 턴이면, 위 prompt_screen 주석 참조)
-                    # None 이라 프롬프트가 오늘과 바이트 동일하다.
-                    screen=prompt_screen,
-                    category_fanout_max=settings.category_fanout_max,
-                    repurchase_max=settings.dedup_repurchase_max,
-                )
-    except LLMError as exc:
-        code = "LLM_TIMEOUT" if _is_timeout(exc) else "LLM_UNAVAILABLE"
-        yield sse(
-            "error",
-            ErrorData(
-                code=code,
-                message="질의를 이해하지 못했어요.",
-                request_id=resolved_request_id,
-                retryable=True,
-            ).model_dump(by_alias=True),
+        # decompose — fast tier 1회 (intent 5-way 라우팅 + 필터 + 장바구니 의도)
+        if observer is not None:
+            observer.record_model_call(resolve_model_id(settings, "fast"))
+        reco_state = await cart_store.get_last_reco_state(thread_key)
+        last_reco = reco_state.items
+        # [#118] **담기 가드와 프롬프트를 가른다.** 정본 §3.1 [보안]이 누적을 요구하는 대상은
+        # `allowed`(가드)이고, 프롬프트 LAST_RECOMMENDATIONS 에 무엇을 싣는지는 계약이 아니다.
+        #
+        # 옵션 되물음(PENDING_CART) 중에는 **승계분을 싣지 않는다.** 실 LLM N=8 프로브
+        # (scripts/verify_screen_context_118.py) 에서 "PENDING_CART 중 상품 전환"(`이어폰으로 할래`)이
+        #   승계 없음 6/8(=오늘) · 승계 없음+screen 주입 7/8 · 승계 11건 1/8 · 승계 상한 6건 2/8
+        # 로, 승계분이 **2건만 붙어도** #240 이 "낮추지 말 것"으로 못박은 상품 전환 경로가 무너졌다.
+        # 되물음 중에는 사용자가 특정 상품 하나를 놓고 답하는 중이라, 긴 과거 목록이 그 초점을 흩는다.
+        #
+        # 되물음이 아닌 턴에서는 누적 전체를 싣는다 — 실측상 무해했고(지시대명사 92~94/96,
+        # order_status 48/48), #118 이 풀려는 4단계 시나리오(추천 A → 질문 → 추천 B → "이거 담아줘")의
+        # **해소가 바로 여기서** 일어난다. 이걸 끄면 가드만 열리고 LLM 이 옛 상품을 지목하지 못한다.
+        prompt_reco = last_reco if pending_dict is None else last_reco[: reco_state.turn_count]
+        # [#118] **screen 도 같은 규약을 따른다 — 되물음 턴에는 넘기지 않는다.**
+        # 초판은 위 `prompt_reco` 만 되물음으로 가르고 screen 은 조건 없이 실었는데, 그러면 한 턴에
+        # "options 의 번호로 골라라"(PENDING_CART)와 "화면 순번으로 골라라"(SCREEN.상품 + 규칙)가
+        # **동시에** 주어진다. `"2번으로"` 같은 정상 옵션 답변이 화면 순번 2로 오인될 여지가 생기고,
+        # 그때 채워지는 productId 는 `screen.products` 출신이라 `allowed` 에 **반드시** 들어 있어
+        # cart/graph.py 의 전환 조건(`product_id != pending.product_id and product_id in allowed`)을
+        # 그대로 통과한다 → 진행 중이던 옵션 되물음이 조용히 버려지고 사용자가 답한 적 없는 상품이
+        # 담긴다(PR 4차 리뷰, end-to-end 재현 확인: 담긴 productId=502·pending 소멸·CART_ADDED).
+        # 이 PR 이 막으려는 오담기 클래스와 같은 것이라 프롬프트에서 뺀다.
+        #
+        # 설계 일관성 근거도 같은 방향이다 — 코드 해소기(`resolve_screen_reference`)는 이미 아래
+        # cart_add 분기에서 `pending is None` 일 때만 돈다("그 턴의 2번은 화면 순번이 아니라 옵션
+        # 번호"). 해소기는 안 도는데 프롬프트만 화면 순번을 가르치고 있었던 것이 비대칭이었다.
+        #
+        # 프로브 커버리지도 이쪽이 맞다: 옵션 답변 셀은 전부 `screen=None` 로 측정됐으므로
+        # (scripts/verify_screen_context_118.py 의 `_CTX_PENDING` 에 screen 없음), 이렇게 빼야
+        # 배포 경로가 실제로 잰 조건과 일치한다.
+        prompt_screen = (
+            build_screen_prompt(
+                getattr(request, "screen", None), labels=settings.screen_page_type_labels
+            )
+            if screen_context_active
+            else None
         )
-        return
+        try:
+            with trace_span("buyer.routing", "chain"):
+                with trace_span(
+                    "llm.decompose",
+                    "llm",
+                    {"model": resolve_model_id(settings, "fast")},
+                ):
+                    decision = await decompose(
+                        llm,
+                        query=request.message,
+                        prior_filters=prior,
+                        # [#119] 프로필은 **후보를 줄이는 단계에 넣지 않는다**(REQ-REC-005-A).
+                        # decompose 는 하드필터(WHERE 술어)를 산출하는데, 프로필을 발화와 같은 격으로
+                        # 주면 LLM 이 "3~5만원대 선호"를 priceMax 로 승격시키고 그 필터가
+                        # thread_store 에 영속돼 다음 턴 PRIOR_FILTERS 로 재주입된다(세션 내 래칫).
+                        # 게스트는 그 손실이 없어 개인화가 순손실이 됐다 — 주입을 끊으면 회원
+                        # 프롬프트가 게스트와 바이트 동일해진다. 취향은 rerank 순서로만 반영한다.
+                        profile_summary=(
+                            profile if settings.profile_injection_scope == "both" else None
+                        ),
+                        tier="fast",
+                        last_recommendations=prompt_reco,
+                        pending_cart=pending_dict,
+                        # [#118] 지금 보고 있는 화면 — "이거 담아줘"의 대상 확정. screen 이 없거나
+                        # 관대 무시로 사라졌으면(또는 되물음 턴이면, 위 prompt_screen 주석 참조)
+                        # None 이라 프롬프트가 오늘과 바이트 동일하다.
+                        screen=prompt_screen,
+                        category_fanout_max=settings.category_fanout_max,
+                        repurchase_max=settings.dedup_repurchase_max,
+                    )
+        except LLMError as exc:
+            # [#84] 이 경로에서 나가기 전에 병렬 태스크를 반드시 정리한다 — 안 하면 태스크가 고아로
+            # 남아 "Task exception was never retrieved" 가 뜨고, 취소되지 않은 LLM 호출이 스트림이
+            # 끝난 뒤까지 예산을 먹는다.
+            await _discard_scope_task(scope_task)
+            scope_settled = True
+            code = "LLM_TIMEOUT" if _is_timeout(exc) else "LLM_UNAVAILABLE"
+            yield sse(
+                "error",
+                ErrorData(
+                    code=code,
+                    message="질의를 이해하지 못했어요.",
+                    request_id=resolved_request_id,
+                    retryable=True,
+                ).model_dump(by_alias=True),
+            )
+            return
+
+        # [#84·2차 리뷰 F-2] 회수는 **intent 를 보고 가른다** — 위치는 여전히 모든 조기 return 보다
+        # 앞이다(정리 누락 방지). 추천 턴만 값을 쓰고, 그 밖(cart_*·general·order_status)은 값을
+        # 쓰지 않으므로 **취소하고** 회수한다: 취소된 태스크의 await 는 즉시 돌아오므로 무관한 턴이
+        # 분류기 완료를 기다리지 않는다(초판은 전부 기다려, 분류기가 느려지면 그만큼 무관한 턴의
+        # 첫 SSE 이벤트가 밀렸다 — 이 설계가 지키려던 "직렬 지연 0"이 그 경로에서 깨졌다).
+        #
+        # **이미 나간 호출의 비용은 취소로 돌아오지 않는다.** 그것은 "intent 를 알기 전에 띄운다"는
+        # 병렬 설계의 의도된 대가다 — 알고 나서 띄우면 추천 턴마다 한 호출이 직렬로 붙는다(#277 이
+        # 밟은 자리). 취소로 **대기**만 없애고 호출은 남긴다.
+        if decision.intent == "recommend":
+            scope_free = await _collect_scope_task(scope_task)
+        else:
+            await _discard_scope_task(scope_task)
+        scope_settled = True
+    finally:
+        # 어느 경로로 나가든 **정확히 한 번** 정리된다 — 정상/오류 경로는 위에서 await 로 회수하고
+        # (`scope_settled`), 그 밖(취소·teardown)은 여기서 동기 취소만 한다
+        # (`_cancel_scope_task` docstring 이 await 하지 않는 이유를 설명한다).
+        if not scope_settled:
+            _cancel_scope_task(scope_task)
 
     # [#113] 완화 칩 클릭 되받기 — 직전 턴에 제안한 칩 label 과 **정확히 일치**하면 LLM 해석을
     # 건너뛰고 그때 계산해 둔 값을 그대로 적용한다. FE 는 칩을 누르면 label 을 그대로 message 로
@@ -653,7 +815,13 @@ async def run_buyer_turn(
     # 전부 접으면 게이트의 반복 승격 경로(explicit OR repeated)까지 죽는다.
     # 대가로 decompose 실패 턴의 발화는 쌓이지 않는데, 의도를 파악하지 못한 발화는 취향
     # 신호로도 쓰지 않는다는 판단이다.
-    if profile_eligible and decision.intent not in settings.profile_buffer_excluded_intents:
+    # [#84] 빈 발화 가드 — conditionActions 만 있고 message 가 빈 턴(계약상 허용, api-spec §3.1)은
+    # 취향 신호가 0인데 버퍼(슬라이딩 윈도우)만 밀어낸다. 공백-only 도 같이 막는다.
+    if (
+        profile_eligible
+        and request.message.strip()
+        and decision.intent not in settings.profile_buffer_excluded_intents
+    ):
         pstore = await get_profile_store()
         await pstore.append_session_ctx(
             conversation_key(identity.user_id, request.session_id),
@@ -789,6 +957,10 @@ async def run_buyer_turn(
             observer=observer,
             thread_store=thread_store,
             thread_key=thread_key,
+            # [#84] `RouteDecision` 에 싣지 않는다 — 그것은 **decompose 산출**을 담는 자료구조이고
+            # 이 값은 다른 호출에서 온 별개 신호다. 섞으면 다음 사람이 decompose 가 낸 값으로
+            # 오해하고, 그 오해 위에서 프롬프트를 고치게 된다.
+            scope_free=scope_free,
         )
         async for frame in stream_recommendation(
             request=request,
