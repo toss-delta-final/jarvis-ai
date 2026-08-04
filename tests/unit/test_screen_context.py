@@ -635,6 +635,7 @@ async def test_screen_reference_never_fires_without_screen_products() -> None:
                 allowed_product_ids={101},
                 deictic_markers=get_settings().screen_deictic_markers,
                 context_reference_markers=get_settings().screen_context_reference_markers,
+                last_recommendation_products=[],
             )
             is None
         )
@@ -651,6 +652,7 @@ def test_screen_reference_leaves_name_and_unmatched_utterances_to_the_llm() -> N
         "allowed_product_ids": {501, 502},
         "deictic_markers": get_settings().screen_deictic_markers,
         "context_reference_markers": get_settings().screen_context_reference_markers,
+        "last_recommendation_products": [],
     }
     assert resolve_screen_reference("라탄 바구니 담아줘", **kwargs) is None
     assert resolve_screen_reference("이 라탄 바구니 담아줘", **kwargs) is None  # 이름이 있으면 양보
@@ -672,6 +674,7 @@ def test_out_of_range_positions_reask_instead_of_guessing() -> None:
         allowed_product_ids=set(),
         deictic_markers=markers,
         context_reference_markers=context_markers,
+        last_recommendation_products=[],
     )
     assert out_of_range is not None and out_of_range.product_id is None
     no_columns = resolve_screen_reference(
@@ -681,6 +684,7 @@ def test_out_of_range_positions_reask_instead_of_guessing() -> None:
         allowed_product_ids=set(),
         deictic_markers=markers,
         context_reference_markers=context_markers,
+        last_recommendation_products=[],
     )
     assert no_columns is not None and no_columns.product_id is None
 
@@ -688,7 +692,7 @@ def test_out_of_range_positions_reask_instead_of_guessing() -> None:
 # ─────────── 라운드 3 — 리뷰 지적 회귀 가드 ───────────
 
 
-def _resolve(message: str, products, columns=3, allowed=None):
+def _resolve(message: str, products, columns=3, allowed=None, last_reco=()):
     """프로덕션 해소기를 config 기본값 그대로 호출한다(기본값 자체가 이번 수정의 일부다)."""
     from app.agents.buyer.screen_reference import resolve_screen_reference
 
@@ -700,6 +704,7 @@ def _resolve(message: str, products, columns=3, allowed=None):
         allowed_product_ids=allowed if allowed is not None else {pid for pid, _ in products},
         deictic_markers=settings.screen_deictic_markers,
         context_reference_markers=settings.screen_context_reference_markers,
+        last_recommendation_products=last_reco,
     )
 
 
@@ -750,6 +755,32 @@ def test_named_product_beats_a_positional_number() -> None:
     # 이름이 없으면 순번은 그대로 발동한다.
     resolved = _resolve("2번째 거 담아줘", products, columns=2)
     assert resolved is not None and resolved.product_id == 501
+
+
+def test_a_name_known_only_from_last_reco_also_beats_a_positional_number() -> None:
+    """[Claude 리뷰 6차, F-8] 이름이 `screen.products` 가 아니라 `last_reco` 에만 있어도 통한다.
+
+    화면은 (501,"러그")·(502,"바구니") 뿐이고 사용자가 지목한 "무선 이어폰"(9001)은 **직전
+    추천에만** 있다. 담기 허용 목록은 `last_reco ∪ screen.products` 이고 decompose 프롬프트에도
+    두 블록이 다 실리는데, 이름 검사가 화면 상품만 보면 (B) 가 발동하지 않아 `"2번째"` 가 순번으로
+    읽혀 화면 2번째 상품(바구니, 502)으로 override 된다 — decompose 는 9001 을 옳게 뽑았을
+    것이다. F-2 와 같은 클래스의 오담기가 이름의 출처만 바뀌어 재발한 것이라 코드가 개입하지
+    않아야 한다(None, LLM 산출 존중).
+    """
+    products = [(501, "러그"), (502, "바구니")]
+    last_reco = [(9001, "무선 이어폰")]
+    assert (
+        _resolve("무선 이어폰 2번째 옵션으로 담아줘", products, columns=2, last_reco=last_reco)
+        is None
+    )
+    # 대조군 — 이름 지목이 **없으면** 순번은 여전히 화면 기준으로 해소된다(회귀 금지).
+    three = [(501, "러그"), (502, "바구니"), (503, "쿠션")]
+    resolved = _resolve("3번째 거 담아줘", three, columns=3, last_reco=last_reco)
+    assert resolved is not None and resolved.product_id == 503
+    # 기존 (B) 케이스 — 이름이 `screen.products` 에 있을 때도 그대로 동작한다(회귀 금지).
+    assert (
+        _resolve("바구니 2번째 옵션으로 담아줘", products, columns=2, last_reco=last_reco) is None
+    )
 
 
 @pytest.mark.parametrize(

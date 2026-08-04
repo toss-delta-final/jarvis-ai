@@ -745,6 +745,11 @@ async def run_buyer_turn(
                 allowed_product_ids=allowed,
                 deictic_markers=settings.screen_deictic_markers,
                 context_reference_markers=settings.screen_context_reference_markers,
+                # [6차 리뷰] 이름 지목 검사(양보 (B))가 화면 상품만 보면, 직전 추천에만 있는
+                # 이름을 지목했을 때 순번 규칙이 이겨 화면의 다른 상품으로 override 한다(오담기,
+                # screen_reference.py 상단 F-8). `last_reco` 는 위에서 `allowed` 를 만들 때 이미
+                # 손에 쥔 값을 그대로 넘긴다.
+                last_recommendation_products=last_reco,
             )
             if resolved is not None:
                 logger.info(

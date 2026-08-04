@@ -42,6 +42,7 @@
     | F-3 | `"10만원대 무선 이어폰 담아줘"` | id 오인 → 정상 발화가 되물음 | `_BARE_NUMBER` 구조화 |
     | F-6 | `"3000 원짜리 담아줘"` (단위 띄어쓰기) | 같은 오인이 공백 케이스로 재발 | 담기 동사 화이트리스트 |
     | F-7 | `"2번째 열 3번째 담아줘"` | `열`(column)을 행으로 읽어 축 반전 → **오담기** | 양보(C) — 해소 안 함 |
+    | F-8 | `"무선 이어폰 2번째 옵션으로 담아줘"`(이름이 `screen.products` 가 아니라 `last_reco` 에만 있음) | 이름 출처를 화면으로만 좁혀 (B) 미발동 → 순번이 이겨 **오담기** | (B) 이름 검사에 `last_recommendation_products` 도 포함 |
 """
 
 from __future__ import annotations
@@ -128,11 +129,20 @@ def resolve_screen_reference(
     # 와도 일관된다. "안전한 기본값"을 여기서 채우려면 이 모듈이 config 를 import 해야 하는데,
     # 그건 도메인 계층이 설정에 결합하는 것이라 택하지 않았다(호출부가 주입한다).
     context_reference_markers: Sequence[str],
+    # [6차 리뷰] 기본값을 두지 않는다 — `context_reference_markers` 와 같은 이유다. 빈 시퀀스가
+    # 기본값이면 호출부가 이 인자를 빠뜨려도 아래 양보 (B) 가 **조용히** `screen.products` 이름만
+    # 보고, 직전 추천에만 있는 이름을 지목한 발화에서 오담기가 재발한다(§ 아래 (B) 주석). 필수로
+    # 두면 빠뜨린 호출부가 `TypeError` 로 즉시 드러난다.
+    last_recommendation_products: Sequence[tuple[int, str]],
 ) -> ScreenResolution | None:
     """발화의 화면 지시어를 해소한다. None = 해당 규칙 없음(LLM 산출을 그대로 둔다).
 
     `products` 는 **정제 후 남은 배열**이고 그 순서가 화면 순서라는 전제로 센다
-    (`decompose.build_screen_prompt` 주석의 전제와 같다).
+    (`decompose.build_screen_prompt` 주석의 전제와 같다). `last_recommendation_products` 는
+    담기 허용 목록(`allowed_product_ids`)을 이루는 두 출처 중 하나인 직전 추천 목록이다 —
+    호출부(`graph.py`)가 `allowed` 를 만들 때 이미 손에 쥔 값을 그대로 넘긴다. 이 함수는 그 안의
+    상품을 화면에 확정하지 않는다(순번·좌표는 어디까지나 `products`=화면 배열 기준) — 아래 양보
+    (B) 의 이름 검사에만 쓴다.
 
     **개입은 규칙이 확실할 때만 한다.** 아래 두 양보(A)(B)가 그 경계다 — 리뷰가 재현한 오담기
     2건이 전부 "결정적이지 않은 입력까지 삼킨" 사례였다. 애매하면 LLM 산출을 존중한다.
@@ -157,7 +167,18 @@ def resolve_screen_reference(
     #     약한 신호로 덮지 않는다. `"옵션"` 같은 수식 대상 단어를 특별 취급하는 방식은 표현이
     #     조금만 달라져도 뚫리므로 **이름 우선**이라는 일반 규칙으로 세웠다.
     #     이름이 없는 `"3번째 거 담아줘"` 에서만 순번이 발동한다.
-    if _mentions_a_product_name(message, names):
+    #
+    #     [6차 리뷰] **이름 출처를 `screen.products` 로만 좁히면 구멍이 남는다.** 담기 허용 목록은
+    #     `last_reco ∪ screen.products` 이고 프롬프트에도 두 블록이 다 실리는데, 이름이 **직전
+    #     추천에만** 있으면 (예: 화면은 (501,"러그")·(502,"바구니"), 직전 추천은 (9001,"무선
+    #     이어폰")) `"무선 이어폰 2번째 옵션으로 담아줘"` 가 이 검사를 통과해 아래 순번 규칙이
+    #     화면 2번째 상품(바구니)으로 override 한다 — decompose 는 9001 을 옳게 뽑았을 텐데도
+    #     같은 F-2 클래스 오담기가 이름의 출처만 바뀌어 재발한다(실제 재현). 그래서 화면 이름과
+    #     직전 추천 이름을 **함께** 본다 — 어느 쪽 출처든 이름이 지목되면 이 함수는 개입하지 않고
+    #     LLM 산출(decompose 가 고른 productId)을 그대로 세운다.
+    if _mentions_a_product_name(
+        message, [*names, *(name for _, name in last_recommendation_products)]
+    ):
         return None
 
     # (C) [양보] **열(column) 기준 좌표는 해소하지 않는다.** 정본 §3.1 지시어 해소 표와 이 PR 이
