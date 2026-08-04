@@ -214,6 +214,33 @@ def test_deferred_retry_guard_allows_reduced_timeout_and_default_off():
     assert Settings(_env_file=None).search_retry_on_deferred_conditions is False
 
 
+def test_deferred_retry_default_path_rejects_serial_budget_when_retries_zero():
+    """기본 경로의 우연한 통과를 막는다(#277 리뷰 3차)."""
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None, spring_max_retries=0, spring_timeout_s=6.0)
+
+    message = str(exc_info.value)
+    assert "SPRING_TIMEOUT_S" in message
+    assert "RELAXATION_MAX_ROUNDS=0" in message
+
+
+def test_deferred_retry_default_path_allows_disabled_relaxation():
+    """완화를 끄면 가드 off의 12s 조합도 첫 이벤트 앞 직렬 호출이 없어 통과한다."""
+    settings = Settings(
+        _env_file=None,
+        spring_max_retries=0,
+        spring_timeout_s=6.0,
+        relaxation_max_rounds=0,
+    )
+
+    assert settings.spring_max_retries == 0
+    assert settings.spring_timeout_s == 6.0
+    assert settings.relaxation_max_rounds == 0
+
+
 def test_search_retries_capped_at_implemented_value():
     """backoff 가 없으므로 재시도 상한은 1이다 — 2 이상은 기동 실패 (PR #235 리뷰)."""
     import pytest

@@ -1162,8 +1162,8 @@ class Settings(BaseSettings):
         종전 동작을 되살리면 두 호출이 각각 재시도해 최대 12s가 되고, #277의 이벤트 0건·504
         조합도 다시 열린다.
 
-        가드를 켜는 설정은 직렬 합 `2 * budget`으로 검증해 기본 튜너블 조합의 기동을 막는다.
-        기본 경로의 직렬 합 검증식 일반화와 타임아웃 재배분은 #288 소관이다.
+        가드 ON/OFF 설정은 각각 직렬 합 `2 * budget`/`2 * spring_timeout_s`로 검증한다.
+        이 식을 첫 이벤트 앞 호출 수 일반형으로 확장하고 타임아웃을 재배분하는 일은 #288 소관이다.
         """
         budget = self.spring_timeout_s * (self.spring_max_retries + 1)
         if budget >= self.stream_total_timeout_buyer_s:
@@ -1173,8 +1173,8 @@ class Settings(BaseSettings):
                 f"{self.stream_total_timeout_buyer_s}): "
                 "search retries alone would exhaust the buyer turn budget"
             )
-        # 단일 I-1 예산은 가드와 무관하게 비교한다. 기본값은 미룬 턴 재시도를 꺼
-        # 2×spring_timeout_s(6s)로 묶고, 아래 조건부 검증은 가드를 켠 종전 12s 경로만 막는다.
+        # 단일 I-1 예산은 가드와 무관하게 비교하고, 아래 검증은 가드 ON/OFF 각각의 실제
+        # 직렬 합(재시도 포함 2회 / 재시도 없는 단일 시도 2회)을 첫 이벤트 상한과 비교한다.
         if budget >= self.stream_first_token_timeout_s:
             raise ValueError(
                 "SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1) must be < "
@@ -1183,18 +1183,24 @@ class Settings(BaseSettings):
                 "conditions is deferred past the search on auto-relaxable turns (#113), "
                 "so search retries consume the first-token budget and would 504"
             )
-        if (
-            self.search_retry_on_deferred_conditions
-            and self.relaxation_max_rounds > 0
-            and 2 * budget >= self.stream_first_token_timeout_s
-        ):
-            raise ValueError(
-                "2 * SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1) must be < "
-                f"STREAM_FIRST_TOKEN_TIMEOUT_S (got {2 * budget} >= "
-                f"{self.stream_first_token_timeout_s}): "
-                "deferred conditions put two serial I-1 calls before the first event; "
+        if self.search_retry_on_deferred_conditions:
+            serial_budget = 2 * budget
+            serial_formula = "2 * SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1)"
+            recovery = (
                 "disable SEARCH_RETRY_ON_DEFERRED_CONDITIONS, lower SPRING_TIMEOUT_S, "
                 "or set RELAXATION_MAX_ROUNDS=0"
+            )
+        else:
+            serial_budget = 2 * self.spring_timeout_s
+            serial_formula = "2 * SPRING_TIMEOUT_S"
+            recovery = "lower SPRING_TIMEOUT_S or set RELAXATION_MAX_ROUNDS=0"
+        if self.relaxation_max_rounds > 0 and serial_budget >= self.stream_first_token_timeout_s:
+            raise ValueError(
+                f"{serial_formula} must be < STREAM_FIRST_TOKEN_TIMEOUT_S "
+                f"(got {serial_budget} >= "
+                f"{self.stream_first_token_timeout_s}): "
+                "deferred conditions put two serial I-1 calls before the first event; "
+                f"{recovery}"
             )
         return self
 
