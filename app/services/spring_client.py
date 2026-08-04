@@ -911,6 +911,26 @@ async def get_cart(user_id: int | None = None, guest_id: str | None = None) -> C
 # ── 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28, 🔶 초안 — BE 협의 전) ──
 
 
+def _envelope_success_false(resp: httpx.Response) -> bool:
+    """200 이지만 공통 실패 봉투(`{success:false, ...}`)로 왔는지만 본다(2차 리뷰 지적 5).
+
+    신설한 delete_cart_item·add_wishlist·remove_wishlist·get_wishlist 는 HTTP 상태만 보고
+    200 이면 성공으로 처리했다 — 정본 공통 봉투는 성공이 `{success:true, …}` 인데, Spring 이
+    200 + `{success:false}` 를 낼 가능성을 놓치고 있었다.
+
+    `success` 키가 **없으면** false 로 간주하지 않는다 — "명시 안 됨"과 "명시적 false"는 다른
+    사실이다(`app/agents/buyer/graph.py::_relaxed_filters_from_offer` 근방의 "없음"과 "null 로
+    해제"를 가르는 것과 같은 구분). 이 함수는 이번에 신설한 4개 함수에만 쓴다 — `add_to_cart`·
+    `get_cart` 는 같은 성질의 선행 구멍이 있지만 이 PR 범위가 아니고 다른 레인이 그 경로에
+    의존해 별도 이슈로 남긴다.
+    """
+    try:
+        body = resp.json()
+    except ValueError:
+        return False
+    return isinstance(body, dict) and body.get("success") is False
+
+
 async def delete_cart_item(
     cart_item_id: int, *, user_id: int | None = None, guest_id: str | None = None
 ) -> None:
@@ -946,6 +966,9 @@ async def delete_cart_item(
         raise CartError(f"delete_cart_item 도달 실패: {exc}") from exc
 
     if resp.status_code == 200:
+        if _envelope_success_false(resp):
+            # 🔶 I-24 협의 대상: 200 + success:false 의 실제 사유(code) 위치가 미확정.
+            raise CartError("delete_cart_item 실패: 200 success=false")
         return
     if resp.status_code == 404:
         raise CartItemNotFound()
@@ -978,6 +1001,9 @@ async def add_wishlist(request: AddWishlistRequest) -> WishlistAddResult:
             data = resp.json()
         except ValueError as exc:
             raise WishlistError(f"add_wishlist 응답 파싱 실패: {exc}") from exc
+        if isinstance(data, dict) and data.get("success") is False:
+            # 🔶 I-26 협의 대상: 200 + success:false 의 실제 사유(code) 위치가 미확정.
+            raise WishlistError("add_wishlist 실패: 200 success=false")
         payload = data.get("data") if isinstance(data, dict) else None
         product_id = payload.get("productId") if isinstance(payload, dict) else None
         return WishlistAddResult(success=True, product_id=product_id)
@@ -1009,6 +1035,9 @@ async def remove_wishlist(product_id: int, *, user_id: int) -> None:
         raise WishlistError(f"remove_wishlist 도달 실패: {exc}") from exc
 
     if resp.status_code == 200:
+        if _envelope_success_false(resp):
+            # 🔶 I-27 협의 대상: 200 + success:false 의 실제 사유(code) 위치가 미확정.
+            raise WishlistError("remove_wishlist 실패: 200 success=false")
         return
     if resp.status_code == 404:
         raise WishlistNotFound()
@@ -1030,6 +1059,10 @@ async def get_wishlist(user_id: int) -> WishlistView:
                 _record_spring_status(span, resp)
                 resp.raise_for_status()
                 data = resp.json()
+        if isinstance(data, dict) and data.get("success") is False:
+            # 200 + success:false 를 "찜 0건"으로 위장시키지 않는다 — 이 ValueError 는 아래
+            # except 가 잡아 SpringUnavailableError 로 낙성한다(get_cart 와 같은 degrade 규약).
+            raise ValueError("get_wishlist 응답 success=false")
         payload = data.get("data") if isinstance(data, dict) else None
         items = payload.get("items") if isinstance(payload, dict) else None
         return WishlistView.model_validate({"items": items or []})

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+import logging
 
 from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.identity import cart_identity
@@ -17,6 +18,8 @@ from app.schemas.chat import ActionData, DoneData, TokenData
 from app.schemas.spring import CartViewItem
 from app.services import spring_client
 from app.services.spring_client import CartError, CartItemNotFound, SpringUnavailableError
+
+_log = logging.getLogger(__name__)
 
 
 def _done() -> str:
@@ -38,8 +41,14 @@ def _resolve_remove_targets(
     자리에서 확정한다(다음 규칙으로 넘어가지 않는다). 어느 규칙도 못 잡으면 `None`(호출부가
     현재 담긴 상품을 나열하며 되묻는다).
 
-    순서(패킷 §5.3):
-      1. 전체 표지(`cart_remove_all_markers`) → 전 항목. 가장 명시적인 신호라 최우선.
+    순서(패킷 §5.3, 2차 리뷰 지적 2·3 이후):
+      1. 발화에 부정·대조 표지(`utterance_negation_markers`, **문장 어디든** — 이 층은 위치
+         창이 아니라 전체 검사다, `intent_guard.py` 의 근처 창 검사와 다르다)가 **없을 때만**
+         전체 표지(`cart_remove_all_markers`) → 전 항목. "전체 삭제"·"방금 담은 거"는 사용자가
+         이름을 대지 않은 대상을 **코드가 고르는** 규칙이라 다른 규칙보다 엄격해야 한다 — "전부
+         빼지는 말고 이어폰만 빼줘"에서 "전부 빼"만 보고 확정하면 사용자가 명시적으로 배제한
+         전체 삭제가 실행된다. 대조어("말고")가 표지에서 여러 글자 떨어져 나오므로 위치 창이
+         아니라 문장 전체를 본다.
       2. 상품명이 발화에 **부분 문자열로** 등장 → 정확히 1건이면 그 항목. 2건 이상이면 어느
          쪽인지 결정할 수 없어 **그 자리에서 되물음**(3·4번으로 넘어가지 않는다 — 이미 "이름을
          지목했다"는 강한 신호가 확보됐는데 모호하면, 더 약한 신호로 임의로 골라잡는 것이 더
@@ -49,15 +58,21 @@ def _resolve_remove_targets(
          문자를 이용해 매칭을 조작하는 표면이 생긴다. 발화(`message`) 쪽은 사용자 입력이고 이미
          API 경계에서 정제된다는 전제라 여기서 다시 정제하지 않는다(`_pending_switch_signals` 와
          같은 전제).
-      3. "방금 담은 거" 표지(`cart_remove_recent_markers`) → `last_add.cart_item_id`. 그 항목이
-         지금 장바구니에 없으면(이미 빠졌거나 다른 세션에서 지워짐) **그 자리에서 되물음**(4번
-         "단건 자동"으로 넘어가지 않는다 — 사용자가 명시적으로 "방금 그거"를 지목했는데 실패하면,
-         장바구니에 다른 게 1건 있다고 그걸 대신 지우는 것은 사용자 의도와 다를 수 있다).
-      4. 위 표지가 **하나도 없고** 장바구니에 항목이 정확히 1건이면 그 1건(표지 없는 발화에서만
-         적용 — 표지가 있었는데 해소에 실패한 경우는 2·3번이 이미 되물음으로 종결했다).
+      3. 부정·대조 표지가 **없을 때만** "방금 담은 거" 표지(`cart_remove_recent_markers`) →
+         `last_add.cart_item_id`. "방금 담은 거 말고 다른 거 빼줘"처럼 사용자가 **제외한** 바로
+         그 상품을 코드가 고르면 안 된다 — 이름이 따로 없으므로 안전한 동작은 되물음이다(1번과
+         같은 이유로 문장 전체 검사). 표지가 있고 부정도 없는데 그 항목이 지금 장바구니에
+         없으면(이미 빠졌거나 다른 세션에서 지워짐) **그 자리에서 되물음**(4번 "단건 자동"으로
+         넘어가지 않는다 — 사용자가 명시적으로 "방금 그거"를 지목했는데 실패하면, 장바구니에
+         다른 게 1건 있다고 그걸 대신 지우는 것은 사용자 의도와 다를 수 있다).
+      4. 위 표지가 **하나도 없고**(또는 부정돼 건너뛰었고) 장바구니에 항목이 정확히 1건이면
+         그 1건(표지 없는 발화에서만 적용 — 표지가 있었는데 해소에 실패한 경우는 2·3번이 이미
+         되물음으로 종결했다).
       5. 그 외 → `None`.
     """
-    if any(marker in message for marker in settings.cart_remove_all_markers):
+    has_negation = any(marker in message for marker in settings.utterance_negation_markers)
+
+    if not has_negation and any(marker in message for marker in settings.cart_remove_all_markers):
         return list(items)
 
     name_matches = [
@@ -68,7 +83,9 @@ def _resolve_remove_targets(
     if name_matches:
         return name_matches if len(name_matches) == 1 else None
 
-    if any(marker in message for marker in settings.cart_remove_recent_markers):
+    if not has_negation and any(
+        marker in message for marker in settings.cart_remove_recent_markers
+    ):
         if last_add is not None:
             recent_match = [item for item in items if item.cart_item_id == last_add.cart_item_id]
             if recent_match:
@@ -131,7 +148,16 @@ async def stream_cart_remove(
         yield _done()
         return
 
-    last_add = await cart_store.get_last_add(thread_key)
+    try:
+        last_add = await cart_store.get_last_add(thread_key)
+    except Exception as exc:  # noqa: BLE001 - "방금 담은 거" 표지 없는 평범한 삭제도 이 읽기를
+        # 항상 먼저 거친다 — 실패가 새면 첫 SSE 프레임도 나가기 전에 삭제 기능이 통째로
+        # 죽는다(2차 리뷰 지적 6·2번). None 으로 degrade하면 _resolve_remove_targets 의
+        # "방금 담은 거" 분기가 표지는 있어도 대상을 못 찾은 것과 같은 경로(되물음)로 자연히
+        # 떨어진다 — 임의로 다른 상품을 고르지 않는다. CancelledError 는 BaseException 이라
+        # 전파된다.
+        _log.warning("last_add_read_failed", extra={"reason": str(exc)})
+        last_add = None
     targets = _resolve_remove_targets(message, items, settings, last_add)
     if targets is None:
         yield sse("token", TokenData(text=_unresolved_notice(items)).model_dump(by_alias=True))

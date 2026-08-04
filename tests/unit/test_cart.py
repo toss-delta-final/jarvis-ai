@@ -923,6 +923,30 @@ async def test_delete_cart_item_uses_guest_id_only(monkeypatch: pytest.MonkeyPat
     assert client.calls == [("DELETE", "/internal/cart/items/55", {"guestId": "guest-uuid-1"})]
 
 
+async def test_delete_cart_item_200_success_false_raises_cart_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """200 이지만 공통 봉투 success:false 면 성공으로 처리하지 않는다(2차 리뷰 지적 5)."""
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(
+        sc, "_client", lambda: _CartClient(_CartResp(200, {"success": False, "data": None}))
+    )
+    with pytest.raises(sc.CartError):
+        await sc.delete_cart_item(55, user_id=1)
+
+
+async def test_delete_cart_item_200_missing_success_key_is_not_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """success 키가 없는 것과 명시적 false 는 다른 사실이다 — 없으면 실패로 보지 않는다."""
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(200, {"data": None})))
+    result = await sc.delete_cart_item(55, user_id=1)
+    assert result is None
+
+
 async def test_delete_cart_item_not_found_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     """I-24 는 비멱등 — 이미 지워진 항목을 다시 지워도(두 번째 호출) 404 그대로다."""
     import app.services.spring_client as sc

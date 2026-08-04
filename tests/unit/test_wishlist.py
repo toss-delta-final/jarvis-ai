@@ -132,6 +132,19 @@ async def test_add_wishlist_500_maps_to_wishlist_error(monkeypatch: pytest.Monke
         await sc.add_wishlist(AddWishlistRequest(user_id=1, product_id=42))
 
 
+async def test_add_wishlist_200_success_false_raises_wishlist_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """200 이지만 공통 봉투 success:false 면 성공으로 처리하지 않는다(2차 리뷰 지적 5)."""
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(
+        sc, "_client", lambda: _WishlistClient(_WishlistResp(200, {"success": False, "data": None}))
+    )
+    with pytest.raises(sc.WishlistError):
+        await sc.add_wishlist(AddWishlistRequest(user_id=1, product_id=42))
+
+
 # ─────────── I-27 찜 해제 ───────────
 
 
@@ -169,6 +182,19 @@ async def test_remove_wishlist_forbidden_maps_to_wishlist_error(
         sc,
         "_client",
         lambda: _WishlistClient(_WishlistResp(403, {"error": {"code": "AUTH_FORBIDDEN"}})),
+    )
+    with pytest.raises(sc.WishlistError):
+        await sc.remove_wishlist(42, user_id=1)
+
+
+async def test_remove_wishlist_200_success_false_raises_wishlist_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """200 이지만 공통 봉투 success:false 면 성공으로 처리하지 않는다(2차 리뷰 지적 5)."""
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(
+        sc, "_client", lambda: _WishlistClient(_WishlistResp(200, {"success": False, "data": None}))
     )
     with pytest.raises(sc.WishlistError):
         await sc.remove_wishlist(42, user_id=1)
@@ -219,6 +245,23 @@ async def test_get_wishlist_empty_is_not_an_error(monkeypatch: pytest.MonkeyPatc
     )
     view = await sc.get_wishlist(1)
     assert view.items == []
+
+
+async def test_get_wishlist_200_success_false_does_not_masquerade_as_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """200 + success:false 를 "찜 0건"으로 위장시키지 않는다(2차 리뷰 지적 5) — 실패는
+    SpringUnavailableError 로 낙성해야지, 빈 목록으로 조용히 넘어가면 사용자는 "찜한 상품이
+    없어요"라는 잘못된 안내를 듣는다."""
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(
+        sc,
+        "_client",
+        lambda: _WishlistClient(_WishlistResp(200, {"success": False, "data": {"items": []}})),
+    )
+    with pytest.raises(sc.SpringUnavailableError):
+        await sc.get_wishlist(1)
 
 
 async def test_get_wishlist_unavailable_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:

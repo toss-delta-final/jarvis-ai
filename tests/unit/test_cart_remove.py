@@ -146,6 +146,84 @@ def test_resolve_remove_targets_jeonbuteo_does_not_resolve_to_all() -> None:
     assert result is None
 
 
+# ─────────── 대상 해소 — 2차 리뷰(Codex) 지적 2·3: 부정·대조 표지(문장 전체 검사) ───────────
+
+
+def test_resolve_remove_targets_excluded_all_marker_falls_through_to_name_match() -> None:
+    """ "전부 빼지는 말고 이어폰만 빼줘" — "전부 빼"가 매칭돼도 문장에 대조 표지("말고")가
+    있으면 전체 삭제 규칙을 건너뛰고 이름 매칭으로 내려가 이어폰만 골라야 한다(2차 리뷰
+    지적 2, 재현: 고치기 전엔 [1, 2] 전체 삭제)."""
+    from app.agents.buyer.cart.remove import _resolve_remove_targets
+
+    items = [_item(1, 10, "이어폰"), _item(2, 20, "세제")]
+    result = _resolve_remove_targets("전부 빼지는 말고 이어폰만 빼줘", items, get_settings(), None)
+    assert result is not None
+    assert [item.cart_item_id for item in result] == [1]
+
+
+def test_resolve_remove_targets_excluded_recent_item_asks_instead_of_deleting_it() -> None:
+    """ "방금 담은 거 말고 다른 거 빼줘" — "방금"이 매칭돼도 대조 표지("말고")가 있으면
+    "방금 담은 거" 규칙을 건너뛴다. 이름도 없고 항목이 2건이라 되물음(None)이어야 한다
+    (2차 리뷰 지적 3, 재현: 고치기 전엔 사용자가 제외한 바로 그 상품 [2]가 삭제됨)."""
+    from app.agents.buyer.cart.remove import _resolve_remove_targets
+    from app.agents.buyer.cart.state import LastAdd
+
+    items = [_item(1, 10, "이어폰"), _item(2, 20, "세제")]
+    result = _resolve_remove_targets(
+        "방금 담은 거 말고 다른 거 빼줘",
+        items,
+        get_settings(),
+        LastAdd(cart_item_id=2, product_id=20),
+    )
+    assert result is None
+
+
+async def test_remove_excluded_all_marker_deletes_only_named_item() -> None:
+    """`stream_cart_remove` 수준에서도 같은 사실 — 전체가 아니라 이름이 지목된 1건만 지운다."""
+    store = CartStateStore()
+    deleted: list[int] = []
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        deleted.append(cart_item_id)
+
+    events = await _collect(
+        stream_cart_remove(
+            identity=_member(),
+            message="전부 빼지는 말고 이어폰만 빼줘",
+            cart_store=store,
+            thread_key="m:t-remove-excluded-all",
+            settings=get_settings(),
+            get_cart_fn=_cart(_item(1, 10, "이어폰"), _item(2, 20, "세제")),
+            delete_fn=delete_fn,
+        )
+    )
+    assert deleted == [1]
+    assert _actions(events)[0]["type"] == "CART_REMOVED"
+
+
+def test_resolve_remove_targets_all_marker_still_works_without_negation() -> None:
+    """부정·대조 표지가 없으면 전체 삭제 규칙은 그대로 동작한다(회귀 방지)."""
+    from app.agents.buyer.cart.remove import _resolve_remove_targets
+
+    items = [_item(1, 10, "이어폰"), _item(2, 20, "세제")]
+    result = _resolve_remove_targets("전부 빼줘", items, get_settings(), None)
+    assert result is not None
+    assert sorted(item.cart_item_id for item in result) == [1, 2]
+
+
+def test_resolve_remove_targets_recent_marker_still_works_without_negation() -> None:
+    """부정·대조 표지가 없으면 "방금 담은 거" 규칙은 그대로 동작한다(회귀 방지)."""
+    from app.agents.buyer.cart.remove import _resolve_remove_targets
+    from app.agents.buyer.cart.state import LastAdd
+
+    items = [_item(1, 10, "이어폰"), _item(2, 20, "세제")]
+    result = _resolve_remove_targets(
+        "방금 담은 거 빼줘", items, get_settings(), LastAdd(cart_item_id=2, product_id=20)
+    )
+    assert result is not None
+    assert [item.cart_item_id for item in result] == [2]
+
+
 async def test_remove_resolves_single_name_match() -> None:
     store = CartStateStore()
     deleted: list[int] = []
@@ -171,7 +249,12 @@ async def test_remove_resolves_single_name_match() -> None:
 
 
 async def test_remove_ambiguous_name_match_asks_instead_of_deleting() -> None:
-    """상품명이 2건 이상에 매칭되면 되물음 — 실패 action 없이 token + done."""
+    """상품명이 2건 이상에 **실제로 부분 문자열 매칭**되면 되물음 — 실패 action 없이 token +
+    done. 매칭은 `상품명 in 발화` 방향이라, 발화가 두 상품명을 모두 포함해야 이 분기가 실제로
+    실행된다(라운드 6 리뷰 — 이전 발화 "파우치 빼줘"는 "파우치 블루"/"파우치 레드" 어느 쪽도
+    포함하지 않아 이름 매칭이 0건이었고, "신호 없음 + 목록 2건" 경로로 우연히 같은 결과에
+    도달했을 뿐이었다. 그 경로는 `test_remove_ambiguous_without_any_signal_asks` 가 이미
+    검증한다)."""
     store = CartStateStore()
 
     async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
@@ -180,7 +263,7 @@ async def test_remove_ambiguous_name_match_asks_instead_of_deleting() -> None:
     events = await _collect(
         stream_cart_remove(
             identity=_member(),
-            message="파우치 빼줘",
+            message="파우치 블루랑 파우치 레드 빼줘",
             cart_store=store,
             thread_key="m:t-remove-ambiguous",
             settings=get_settings(),
@@ -557,3 +640,91 @@ async def test_last_add_not_written_when_flag_off() -> None:
         )
     )
     assert await store.get_last_add(thread_key) is None
+
+
+# ─────────── 예외 격리 — 2차 리뷰(Codex) 지적 6: 선택적 상태 저장소 장애가 스트림을 죽이면 안 된다 ───────────
+
+
+class _FailingLastAddStore(CartStateStore):
+    async def get_last_add(self, key):
+        raise RuntimeError("state store down")
+
+
+class _FailingSetLastAddStore(CartStateStore):
+    async def set_last_add(self, key, cart_item_id, product_id):
+        raise RuntimeError("state store down")
+
+
+async def test_remove_survives_get_last_add_failure_and_still_deletes() -> None:
+    """ "방금 담은 거" 표지가 없는 평범한 삭제는 `get_last_add` 읽기가 죽어도 계속 진행돼야
+    한다(2차 리뷰 지적 6-2, 재현: 고치기 전엔 첫 SSE 프레임도 나가기 전에 예외가 샌다)."""
+    store = _FailingLastAddStore()
+    deleted: list[int] = []
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        deleted.append(cart_item_id)
+
+    events = await _collect(
+        stream_cart_remove(
+            identity=_member(),
+            message="이어폰 빼줘",
+            cart_store=store,
+            thread_key="m:t-remove-store-down",
+            settings=get_settings(),
+            get_cart_fn=_cart(_item(1, 10, "이어폰")),
+            delete_fn=delete_fn,
+        )
+    )
+    assert deleted == [1]
+    assert _actions(events)[0]["type"] == "CART_REMOVED"
+
+
+async def test_remove_get_last_add_failure_with_recent_marker_asks_instead_of_guessing() -> None:
+    """읽기 실패 시 "방금 담은 거" 표지가 있었다면 임의로 다른 상품을 고르지 말고 되물음으로
+    가야 한다(2차 리뷰 지적 6 — degrade 는 `last_add=None` 과 같은 경로를 탄다)."""
+    store = _FailingLastAddStore()
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        raise AssertionError("읽기 실패 + 방금 표지인데 임의로 delete_fn 이 호출됐다")
+
+    events = await _collect(
+        stream_cart_remove(
+            identity=_member(),
+            message="방금 담은 거 빼줘",
+            cart_store=store,
+            thread_key="m:t-remove-store-down-recent",
+            settings=get_settings(),
+            get_cart_fn=_cart(_item(1, 10, "이어폰"), _item(2, 20, "케이스")),
+            delete_fn=delete_fn,
+        )
+    )
+    assert _types(events) == ["token", "done"]
+
+
+async def test_add_success_survives_set_last_add_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Spring 담기가 이미 성공한 뒤 `set_last_add` 쓰기가 죽어도 CART_ADDED/done 은 그대로
+    나가야 한다(2차 리뷰 지적 6-1, 재현: 고치기 전엔 상품은 담겼는데 사용자는 실패를 본다).
+    이 경로가 실제로 도는 걸 보려면 `cart_remove_enabled=True` 여야 한다(off 면 애초에
+    `set_last_add` 를 안 부른다, 라운드 3 F-2)."""
+    monkeypatch.setattr(get_settings(), "cart_remove_enabled", True)
+    store = _FailingSetLastAddStore()
+
+    async def add_fn(req):
+        return AddToCartResult(success=True, cart_item_id=321)
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(product_id=1, quantity=1),
+            cart_store=store,
+            thread_key="m:t-add-store-down",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=_cart(),
+        )
+    )
+    action = _actions(events)[0]
+    assert action["type"] == "CART_ADDED"
+    assert _types(events)[-1] == "done"

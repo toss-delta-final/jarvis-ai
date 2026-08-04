@@ -44,13 +44,20 @@ def _wishlist_unresolved_notice(items: list[WishlistItem]) -> str:
 def _resolve_wishlist_remove_target(
     cart: CartIntent, message: str, items: list[WishlistItem]
 ) -> WishlistItem | None:
-    """찜 해제 대상을 결정론적으로 해소한다(패킷 §5.4) — 강한 신호부터 순서대로 확정한다:
-      1. `cart.product_id`(decompose 가 문맥에서 이미 골라 온 값)가 목록 안에 있으면 그것.
-      2. 이름이 발화에 **부분 문자열로** 등장 → 정확히 1건이면 그것, 2건 이상이면 **그 자리에서
-         미해소**(단건 자동으로 넘어가지 않는다 — `remove.py::_resolve_remove_targets` 와 같은
+    """찜 해제 대상을 결정론적으로 해소한다(패킷 §5.4, 2차 리뷰 지적 4 이후) — 강한 신호부터
+    순서대로 확정한다:
+      1. 이름이 발화에 **부분 문자열로** 등장 → 정확히 1건이면 그것, 2건 이상이면 **그 자리에서
+         미해소**(2번 문맥 id 로 내려가지 않는다 — `remove.py::_resolve_remove_targets` 와 같은
          "강한 신호가 모호하면 더 약한 신호로 임의로 고르지 않는다" 원칙).
+      2. `cart.product_id`(decompose 가 문맥에서 이미 골라 온 값)가 목록 안에 있으면 그것.
       3. 위 두 규칙이 모두 안 잡히고 목록이 정확히 1건이면 그 1건.
       4. 그 외 → `None`.
+
+    **문맥 id 보다 발화의 이름을 먼저 본다**(2차 리뷰 지적 4 — 이전 순서는 반대였다). 재현:
+    찜 목록 `10=이어폰 / 20=케이스`, 발화 `"이어폰 찜 빼줘"`, `cart.product_id=20`(LLM 오추출·
+    stale). 문맥 id 를 먼저 보면 사용자가 입으로 말한 상품이 아니라 케이스가 해제된다 —
+    `docs/lessons.md` 의 "강한 신호(이름 지목)가 있으면 약한 신호로 덮지 않는다"와 정반대다.
+    사용자가 입으로 말한 이름은 LLM 이 문맥에서 고른 id 보다 강한 신호다.
 
     `remove.py::_resolve_remove_targets` 와 규칙 모양(강한 신호 우선·부분 문자열 이름 매칭·단건
     자동)이 겹치지만 **공용 헬퍼로 묶지 않았다**. 자료형이 다르고(`CartViewItem` vs
@@ -60,16 +67,16 @@ def _resolve_wishlist_remove_target(
     바꿀 때 다른 쪽 테스트까지 다시 봐야 한다. 겹치는 부분은 "이름 부분 문자열 매칭" 한 조각뿐이라
     분리해서 각자 읽기 쉽게 두는 편이 이 겹침의 크기에 비해 더 싸다.
     """
-    if cart.product_id is not None:
-        direct = [item for item in items if item.product_id == cart.product_id]
-        if direct:
-            return direct[0]
-
     name_matches = [
         item for item in items if (name := _strip_unsafe(item.name or "")) and name in message
     ]
     if name_matches:
         return name_matches[0] if len(name_matches) == 1 else None
+
+    if cart.product_id is not None:
+        direct = [item for item in items if item.product_id == cart.product_id]
+        if direct:
+            return direct[0]
 
     if len(items) == 1:
         return items[0]

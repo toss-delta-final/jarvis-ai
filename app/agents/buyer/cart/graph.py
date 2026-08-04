@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+import logging
 
 from pydantic import ValidationError
 
@@ -38,6 +39,8 @@ from app.services.spring_client import (
 )
 
 __all__ = ["cart_identity", "stream_cart_add", "stream_cart_view"]
+
+_log = logging.getLogger(__name__)
 
 
 def _option_label(option: CartOption) -> str:
@@ -472,7 +475,14 @@ async def stream_cart_add(
     # 이미 성공한 뒤 CART_ADDED 를 내기 전이라, 쓰지도 않을 값 때문에 스토어 실패가 "상품은 담겼는데
     # 사용자는 깨진 턴을 본다"는 새 실패 모드를 성공 경로에 얹게 된다.
     if settings.cart_remove_enabled and result.cart_item_id is not None:
-        await cart_store.set_last_add(thread_key, result.cart_item_id, product_id)
+        try:
+            await cart_store.set_last_add(thread_key, result.cart_item_id, product_id)
+        except Exception as exc:  # noqa: BLE001 - Spring 담기가 이미 성공한 뒤라 이 쓰기 실패로
+            # CART_ADDED/done 을 죽이면 안 된다(2차 리뷰 지적 6·1번) — 상품은 담겼는데 사용자는
+            # 실패를 보는 게 더 나쁘다. "방금 담은 거" 해소만 다음 턴에 모르는 상태로 degrade될
+            # 뿐이라 로그만 남기고 성공 흐름은 그대로 진행한다(`ThreadFilterStore.get` 과 같은
+            # 취지). CancelledError 는 BaseException 이라 전파된다.
+            _log.warning("last_add_write_failed", extra={"reason": str(exc)})
     if auto_option is not None:
         # 담길 옵션이 확정됐으니 그 옵션 기준으로 다시 센다 — 담기 전 계산은 optionId 미상이라
         # 지금 후보에 없는 옛 옵션(단종·품절)의 보유까지 합산할 수 있고, 그러면 Spring 은 새 줄로

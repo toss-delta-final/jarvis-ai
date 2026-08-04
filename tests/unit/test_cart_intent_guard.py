@@ -111,6 +111,74 @@ def test_classify_cart_remove_unaffected_by_cart_mention_suppression() -> None:
     assert classify_cart_utterance("장바구니에서 빼줘", get_settings()) == "cart_remove"
 
 
+# ─────────── classify_cart_utterance — 2차 리뷰(Codex) 지적 1·3·8: 부정·유보 표지 ───────────
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        # 지적 1 — 부정된 담기 표지는 무효화되고, 찜 표지가 살아 있으면 그쪽으로 간다.
+        ("이건 찜해줘, 장바구니에 넣지는 마", "wishlist_add"),
+        # 지적 1 — "장바구니" 억제도 부정 문맥을 본다: 위와 같은 문장에서 "장바구니" 자체가
+        # 부정된 절 안에 있으므로 찜 추가 억제 근거로 쓰지 않는다(별도 케이스로도 고정).
+        ("장바구니에 넣지는 마, 찜해줘", "wishlist_add"),
+        # 지적 1 — 찜 추가·해제 표지도 부정되면 기본값(cart_add)으로 되돌아간다.
+        ("찜 목록에 추가하지 마", "cart_add"),
+        ("찜 취소하지 마", "cart_add"),
+        # 지적 3 — "야 할"류 유보 표지는 삭제 표지를 무효화한다(질문이지 지시가 아니다).
+        ("장바구니에서 빼줘야 할까?", "cart_add"),
+        # 부정 표지가 없는 정상 발화는 지금까지와 동일해야 한다(회귀 방지).
+        ("장바구니에 넣어줘", "cart_add"),
+        ("찜해줘", "wishlist_add"),
+        ("찜 취소해줘", "wishlist_remove"),
+        ("장바구니에서 빼줘", "cart_remove"),
+    ],
+)
+def test_classify_cart_utterance_negation_layer(message: str, expected: str) -> None:
+    assert classify_cart_utterance(message, get_settings()) == expected
+
+
+def test_classify_wishlist_remove_suppression_does_not_apply_to_remove_markers() -> None:
+    """지적 8 — "장바구니" 억제는 wishlist_add 판정에만 걸린다. wishlist_remove_markers 는 전부
+    "찜"이 붙은 명시적 동작 구라 "장바구니"가 같이 나와도 혼동 여지가 없다."""
+    assert (
+        classify_cart_utterance("찜 취소해줘, 장바구니는 그대로 두고", get_settings())
+        == "wishlist_remove"
+    )
+
+
+def test_classify_negation_only_suppresses_the_negated_occurrence() -> None:
+    """같은 표지가 여러 번 나오면 부정되지 않은 출현이 하나라도 있어야 매칭이다 — 첫 출현만
+    보고 과소 매칭하지 않는다."""
+    assert (
+        classify_cart_utterance("장바구니에 넣지는 마, 그래도 장바구니에 넣어줘", get_settings())
+        == "cart_add"
+    )
+
+
+# ─────────── classify_cart_utterance — 라운드 7: 명시적 찜 동작 표지가 지시 수식어 양보보다 우선 ───────────
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        # 명시적 찜 동작 표지(1·2번)가 지시 수식어("찜한")보다 강한 신호 — 이제 새지 않는다.
+        ("찜한 거 찜 취소해줘", "wishlist_remove"),
+        # 0-a(cart_add_markers)는 순서 변경과 무관하게 여전히 맨 앞이다(회귀 방지).
+        ("찜해둔 이어폰 담아줘", "cart_add"),
+        ("찜한 거 장바구니에 담아줘", "cart_add"),
+        # 명시적 찜 동작 표지가 없으면(순수 지시 수식어만) 알려진 거짓음성이 그대로 유지된다.
+        ("찜한 거 빼줘", "cart_add"),
+        # 부정 검사는 순서를 옮긴 뒤에도 그대로 적용된다.
+        ("찜 취소하지 마", "cart_add"),
+    ],
+)
+def test_classify_explicit_wishlist_action_marker_wins_over_reference_marker(
+    message: str, expected: str
+) -> None:
+    assert classify_cart_utterance(message, get_settings()) == expected
+
+
 # ─────────── stream_cart_add 배선 — 찜 오담기 방어 ───────────
 
 
