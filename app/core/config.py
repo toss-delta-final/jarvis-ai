@@ -716,6 +716,11 @@ class Settings(BaseSettings):
     # backoff 가 필요하다"고 적어 둔 위험을 설정 한 줄로 열어 주는 셈이라, **현재 구현이 감당하는
     # 값만** 받는다. 더 올리려면 backoff 를 먼저 만들고 이 상한을 함께 푼다.
     spring_max_retries: int = Field(default=1, ge=0, le=1)
+    # [#277] conditions 를 검색 뒤로 미룬 턴은 첫 이벤트 앞에 I-1 이 최대 2회 직렬이라,
+    # 재시도까지 얹으면 first-token 상한을 넘어 이벤트 0건·504가 될 수 있다. 한 번의 일시
+    # 지연을 살리는 대가가 턴 전체의 침묵이므로 기본값은 그 턴만 재시도를 끈다.
+    # 구매자 progress 이벤트가 계약에 등재돼 검색 전에 첫 프레임을 낼 수 있으면 원복 가능하다.
+    search_retry_on_deferred_conditions: bool = False
     # AI→LLM 단일 호출 타임아웃 + 재시도 횟수 (§2.9 c).
     # 현행 30s×(1+1)=60s 최악 예산은 구매자 전체 상한 30s(stream_total_timeout_buyer_s, #138)를 넘는다.
     # timeout 뒤 재시도는 buyer done(stop) 절단 전에 끝날 수 없지만 빠른 오류 재시도는 여전히 유효하다.
@@ -1147,14 +1152,20 @@ class Settings(BaseSettings):
         검색 **후에** 조건을 바꿀 수 있는 턴(기본 설정에선 `ratingMin` 이 걸린 턴)은 표시-실제
         불일치를 막으려고 `conditions` 를 검색 뒤로 미룬다(§3.1 이 conditions 를 0~1 회로
         못박아 "고쳐서 재전송"이 불가능하다). 그 턴에서는 검색 재시도가 first-token 예산을
-        **실제로 쓴다.** 순서를 바꾸고도 이 전제를 갱신하지 않으면, 초판이 저질렀던 "emit 순서를
-        코드로 확인하지 않은 오류"를 방향만 바꿔 되풀이하는 셈이다.
+        **실제로 쓸 수 있다.** 기본값은 아래 가드로 재시도를 끄지만, 가드를 되돌릴 때 이 전제를
+        놓치면 초판의 "emit 순서를 코드로 확인하지 않은 오류"를 방향만 바꿔 되풀이하게 된다.
 
-        **완화 probe 를 곱하지는 않는다.** 미룬 턴의 first-token 경로는 두 갈래인데 배타적이다:
-        검색이 재시도를 소진하고 실패하면 `SEARCH_FAILED` 로 끝나 probe 가 아예 안 돌고,
-        probe 가 도는 것은 검색이 **성공**해서 0 건을 돌려준 경우다(그때 검색은 재시도를 쓰지
-        않았다). 그래서 실측 최악은 `spring_timeout_s + budget` 이지 `2 * budget` 이 아니다.
-        곱해서 검증하면 기본값(12 >= 10)에서 기동이 실패한다 — 일어나지 않는 조합 때문에.
+        **이 식은 단일 I-1 호출 예산만 본다**(#277). 종전의 배타성 전제는 실측으로 반증됐다:
+        본 검색이 1 차 타임아웃 뒤 2 차에 0 건으로 성공하면 재시도를 쓰고도 완화 probe 가 돈다.
+        기본 설정은 미룬 턴의 재시도를 건너뛰어 첫 이벤트 앞 직렬 합을
+        `2 * spring_timeout_s`(6s)로 묶는다. `SEARCH_RETRY_ON_DEFERRED_CONDITIONS=true`로
+        종전 동작을 되살리면 두 호출이 각각 재시도해 최대 12s가 되고, #277의 이벤트 0건·504
+        조합도 다시 열린다.
+
+        가드 ON/OFF 설정은 각각 직렬 합 `2 * budget`/`2 * spring_timeout_s`로 검증한다.
+        게이트는 `graph.py`의 `may_auto_relax`처럼 rounds가 양수이고 자동 완화 필드가 있을 때만
+        열어, 실제로 미루지 않는 설정을 일어나지 않는 직렬 호출 때문에 막지 않는다(#277 4차).
+        이 식을 첫 이벤트 앞 호출 수 일반형으로 확장하고 타임아웃을 재배분하는 일은 #288 소관이다.
         """
         budget = self.spring_timeout_s * (self.spring_max_retries + 1)
         if budget >= self.stream_total_timeout_buyer_s:
@@ -1164,6 +1175,8 @@ class Settings(BaseSettings):
                 f"{self.stream_total_timeout_buyer_s}): "
                 "search retries alone would exhaust the buyer turn budget"
             )
+        # 단일 I-1 예산은 가드와 무관하게 비교하고, 아래 검증은 graph.py의 may_auto_relax 전제
+        # (rounds > 0 && 자동 완화 필드 존재)에서만 ON/OFF 각각의 실제 직렬 합을 비교한다.
         if budget >= self.stream_first_token_timeout_s:
             raise ValueError(
                 "SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1) must be < "
@@ -1171,6 +1184,33 @@ class Settings(BaseSettings):
                 f"{self.stream_first_token_timeout_s}): "
                 "conditions is deferred past the search on auto-relaxable turns (#113), "
                 "so search retries consume the first-token budget and would 504"
+            )
+        if self.search_retry_on_deferred_conditions:
+            serial_budget = 2 * budget
+            serial_formula = "2 * SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1)"
+            recovery = (
+                "disable SEARCH_RETRY_ON_DEFERRED_CONDITIONS, lower SPRING_TIMEOUT_S, "
+                "or disable deferral with RELAXATION_MAX_ROUNDS=0 or "
+                "RELAXATION_AUTO_FIELDS=[]"
+            )
+        else:
+            serial_budget = 2 * self.spring_timeout_s
+            serial_formula = "2 * SPRING_TIMEOUT_S"
+            recovery = (
+                "lower SPRING_TIMEOUT_S or disable deferral with "
+                "RELAXATION_MAX_ROUNDS=0 or RELAXATION_AUTO_FIELDS=[]"
+            )
+        if (
+            self.relaxation_max_rounds > 0
+            and self.relaxation_auto_fields
+            and serial_budget >= self.stream_first_token_timeout_s
+        ):
+            raise ValueError(
+                f"{serial_formula} must be < STREAM_FIRST_TOKEN_TIMEOUT_S "
+                f"(got {serial_budget} >= "
+                f"{self.stream_first_token_timeout_s}): "
+                "deferred conditions put two serial I-1 calls before the first event; "
+                f"{recovery}"
             )
         return self
 

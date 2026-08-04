@@ -174,6 +174,85 @@ def test_search_retry_budget_must_also_fit_the_first_token_window():
     assert Settings(_env_file=None, spring_timeout_s=4.0)  # 8s < 10s — 여유가 있으면 통과
 
 
+def test_deferred_retry_guard_rejects_default_serial_budget():
+    """미룬 턴 재시도 가드는 기본 12s 직렬 합이 first-event 10s를 넘으면 기동을 막는다."""
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None, search_retry_on_deferred_conditions=True)
+
+    message = str(exc_info.value)
+    assert "disable SEARCH_RETRY_ON_DEFERRED_CONDITIONS" in message
+    assert "lower SPRING_TIMEOUT_S" in message
+    assert "RELAXATION_MAX_ROUNDS=0" in message
+
+
+def test_deferred_retry_guard_allows_empty_auto_relax_fields():
+    """자동 완화 목록이 비면 미룸이 없어 직렬 합 검증 대상이 아니다."""
+    settings = Settings(
+        _env_file=None,
+        relaxation_auto_fields=[],
+        search_retry_on_deferred_conditions=True,
+    )
+
+    assert settings.relaxation_auto_fields == []
+    assert settings.search_retry_on_deferred_conditions is True
+
+
+def test_deferred_retry_guard_allows_disabled_relaxation():
+    """완화를 끄면 첫 이벤트 앞 직렬 probe가 없으므로 종전 재시도 가드를 켤 수 있다."""
+    settings = Settings(
+        _env_file=None,
+        search_retry_on_deferred_conditions=True,
+        relaxation_max_rounds=0,
+    )
+
+    assert settings.search_retry_on_deferred_conditions is True
+    assert settings.relaxation_max_rounds == 0
+
+
+def test_deferred_retry_guard_allows_reduced_timeout_and_default_off():
+    """Spring 상한을 함께 낮추면 가드가 열리고, 기본값인 가드 off도 종전대로 통과한다."""
+    guarded = Settings(
+        _env_file=None,
+        search_retry_on_deferred_conditions=True,
+        spring_timeout_s=2.0,
+    )
+
+    assert 2 * guarded.spring_timeout_s * (guarded.spring_max_retries + 1) < (
+        guarded.stream_first_token_timeout_s
+    )
+    assert Settings(_env_file=None).search_retry_on_deferred_conditions is False
+
+
+def test_deferred_retry_default_path_rejects_serial_budget_when_retries_zero():
+    """기본 경로의 우연한 통과를 막는다(#277 리뷰 3차)."""
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None, spring_max_retries=0, spring_timeout_s=6.0)
+
+    message = str(exc_info.value)
+    assert "SPRING_TIMEOUT_S" in message
+    assert "RELAXATION_MAX_ROUNDS=0" in message
+
+
+def test_deferred_retry_default_path_allows_disabled_relaxation():
+    """완화를 끄면 가드 off의 12s 조합도 첫 이벤트 앞 직렬 호출이 없어 통과한다."""
+    settings = Settings(
+        _env_file=None,
+        spring_max_retries=0,
+        spring_timeout_s=6.0,
+        relaxation_max_rounds=0,
+    )
+
+    assert settings.spring_max_retries == 0
+    assert settings.spring_timeout_s == 6.0
+    assert settings.relaxation_max_rounds == 0
+
+
 def test_search_retries_capped_at_implemented_value():
     """backoff 가 없으므로 재시도 상한은 1이다 — 2 이상은 기동 실패 (PR #235 리뷰)."""
     import pytest
