@@ -1160,10 +1160,10 @@ class Settings(BaseSettings):
         기본 설정은 미룬 턴의 재시도를 건너뛰어 첫 이벤트 앞 직렬 합을
         `2 * spring_timeout_s`(6s)로 묶는다. `SEARCH_RETRY_ON_DEFERRED_CONDITIONS=true`로
         종전 동작을 되살리면 두 호출이 각각 재시도해 최대 12s가 되고, #277의 이벤트 0건·504
-        조합도 다시 열린다. 이 검증식은 그 가드별 직렬 합을 보지 않는다.
+        조합도 다시 열린다.
 
-        직렬 합 검증 강화와 타임아웃 재배분은 #288 소관이다. 가드를 켠 기본 튜너블에서 식만
-        `2 * budget`으로 바꾸면 12 >= 10이라 기동이 막히므로 함께 결정해야 한다.
+        가드를 켜는 설정은 직렬 합 `2 * budget`으로 검증해 기본 튜너블 조합의 기동을 막는다.
+        기본 경로의 직렬 합 검증식 일반화와 타임아웃 재배분은 #288 소관이다.
         """
         budget = self.spring_timeout_s * (self.spring_max_retries + 1)
         if budget >= self.stream_total_timeout_buyer_s:
@@ -1173,9 +1173,8 @@ class Settings(BaseSettings):
                 f"{self.stream_total_timeout_buyer_s}): "
                 "search retries alone would exhaust the buyer turn budget"
             )
-        # 단일 I-1 예산만 비교한다. 기본값은 미룬 턴 재시도를 꺼 2×spring_timeout_s(6s)로 묶지만,
-        # 가드를 켜면 최대 12s와 이벤트 0건·504 조합이 되살아난다(#277 실측 8/8).
-        # 직렬 합 검증·타임아웃 재배분은 #288 소관이다(12 >= 10이라 식만 바꾸면 기동 실패).
+        # 단일 I-1 예산은 가드와 무관하게 비교한다. 기본값은 미룬 턴 재시도를 꺼
+        # 2×spring_timeout_s(6s)로 묶고, 아래 조건부 검증은 가드를 켠 종전 12s 경로만 막는다.
         if budget >= self.stream_first_token_timeout_s:
             raise ValueError(
                 "SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1) must be < "
@@ -1183,6 +1182,19 @@ class Settings(BaseSettings):
                 f"{self.stream_first_token_timeout_s}): "
                 "conditions is deferred past the search on auto-relaxable turns (#113), "
                 "so search retries consume the first-token budget and would 504"
+            )
+        if (
+            self.search_retry_on_deferred_conditions
+            and self.relaxation_max_rounds > 0
+            and 2 * budget >= self.stream_first_token_timeout_s
+        ):
+            raise ValueError(
+                "2 * SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1) must be < "
+                f"STREAM_FIRST_TOKEN_TIMEOUT_S (got {2 * budget} >= "
+                f"{self.stream_first_token_timeout_s}): "
+                "deferred conditions put two serial I-1 calls before the first event; "
+                "disable SEARCH_RETRY_ON_DEFERRED_CONDITIONS, lower SPRING_TIMEOUT_S, "
+                "or set RELAXATION_MAX_ROUNDS=0"
             )
         return self
 
