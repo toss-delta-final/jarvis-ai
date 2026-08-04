@@ -13,6 +13,12 @@
 
 ---
 
+## [2026-08-04] ORM 이 만드는 SQL 은 **생성물을 봐야** 안다 — JPQL 을 읽고 재현한 SQL 로 성능을 진단하지 않는다
+- 증상: #132 에서 BE `ProductRepository.searchCandidates` 의 JPQL `group by p` 를 "엔티티 전체 컬럼이 그룹 키"로 읽고, 그대로 손으로 옮긴 SQL 을 실측해 **4.15s(PK 그룹 대비 33배)** 라는 병목을 보고했다. `EXPLAIN` 까지 붙여 "TEXT 컬럼 때문에 임시테이블+filesort" 라는 그럴듯한 인과도 만들었다. BE 를 실제로 띄워 재니 같은 질의가 **1.11s** 였다.
+- 원인: Hibernate 6.6 은 엔티티 그룹핑을 **식별자로 최적화**해 `group by p1_0.id` 를 보낸다. 존재하지 않는 쿼리의 비용을 잰 것이다. `EXPLAIN` 이 그럴듯했던 것은 내가 준 SQL 에 대해 정확했기 때문이지 실제 실행 계획이어서가 아니다 — **재현이 틀리면 그 위의 모든 측정과 인과가 함께 틀린다.**
+- 규칙: ORM(JPA/Hibernate·SQLAlchemy) 경로의 성능을 진단할 때는 **생성 SQL 을 먼저 확보한다.** MariaDB 는 `SET GLOBAL general_log='ON'; SET GLOBAL log_output='TABLE';` 후 `mysql.general_log` 조회로 1분이면 뽑는다(끝나면 `OFF`). 앱 SQL 로깅도 같은 값을 준다. 생성 SQL 없이 잰 수치는 문서에 올리지 않는다.
+- 관련: `docs/specs/MEASURE-I1-RESPONSE-132.md` §3 / 이슈 #132
+
 ## [2026-08-04] "자체 상한이 있다"고 인용하기 전에 그 `wait_for` 가 **어디까지** 감싸는지 본다
 - 증상: #266 에서 `get_checkpointer()` 를 레인 상한 밖으로 빼며 근거를 *"자체 상한
   (`seller_checkpoint_connect_timeout_s`, 5s)이 있어 무한 대기가 아니다"* 로 적고, 그 값을
