@@ -52,6 +52,7 @@ def resolve_plan(
     *,
     today: date,
     recent_default_days: int,
+    max_days: int | None = None,
     question: str = "",
 ) -> ResolvedPlan:
     """AnalysisPlan(LLM) → ResolvedPlan(코드) — 불성립은 전부 ValueError.
@@ -59,8 +60,10 @@ def resolve_plan(
     - plan.clarification 이 있으면 계획 불성립: 되묻기 질문을 그대로 ValueError
       메시지로 올린다(호출부가 token 으로 전달).
     - analyses 가 비면 planner 오류로 간주하고 되묻기 처리.
-    - 기간 환산은 calc.normalize_period 소관 — 미지원 표현("이번 달" 등,
-      2026-07-18 확정)의 ValueError 도 그대로 전파된다.
+    - 기간 환산은 calc.normalize_period 소관 — 미지원 표현("이번 달"·"최근 3개월" 등)의
+      ValueError 도 그대로 전파된다. 그 메시지는 판매자에게 그대로 노출되므로
+      calc 쪽에서 안내문 형태로 쓴다(#269).
+    - max_days 미지정이면 calc 이 Settings 에서 읽는다 — 상한 초과는 되묻기다.
     - wants_chart = plan.wants_chart OR _CHART_RE(question) — LLM 판정과 코드
       키워드 검사의 OR(이슈 #242). question 은 키워드 기본값(""라 매칭 안 됨)
       이라 기존 호출부(question 미전달)는 LLM 판정만 반영해 하위 호환된다.
@@ -72,7 +75,10 @@ def resolve_plan(
             "어떤 분석을 원하시는지 파악하지 못했습니다. 조금 더 구체적으로 알려주세요."
         )
     date_from, date_to = calc.normalize_period(
-        plan.period_expr, today=today, recent_default_days=recent_default_days
+        plan.period_expr,
+        today=today,
+        recent_default_days=recent_default_days,
+        max_days=max_days,
     )
     wants_chart = plan.wants_chart or bool(_CHART_RE.search(question))
     return ResolvedPlan(
