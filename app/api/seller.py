@@ -250,6 +250,18 @@ def _chunk_text(content: object) -> str:
     return "".join(parts)
 
 
+class _CheckpointerUnavailable(Exception):
+    """체크포인터(pg-profile) 연결 실패 표식 — LLM 지연과 구분하기 위한 내부 태그 (#266 PR 리뷰).
+
+    `get_checkpointer()` 는 자체적으로 `asyncio.wait_for(..., seller_checkpoint_connect_timeout_s)`
+    를 걸고 운영(`auth_mode=jwks`)에서는 폴백 없이 raise 한다(`seller/checkpoint.py`). 그때 나오는
+    것은 `asyncio.TimeoutError`(= 내장 `TimeoutError`)라 `is_timeout_error` 가 **타입만으로 참**
+    으로 판정한다 — 그대로 두면 pg-profile 장애가 "응답 생성이 지연되어 중단됐습니다"(LLM_TIMEOUT,
+    WARNING)로 나가 인프라 장애가 느린 LLM 응답으로 감춰진다. 타입이 같으므로 **발생 지점**으로만
+    구분할 수 있어 호출부에서 이 예외로 감싸 올린다.
+    """
+
+
 def _seller_context(identity: Identity) -> SellerContext:
     """검증된 Identity → SellerContext 숫자 캐스팅 (판매자·브랜드 id는 숫자 계약, §2.6).
 
@@ -299,15 +311,23 @@ async def _general_stream(
 
     async def produce() -> None:
         """Run all token-backed trace contexts in one persistent task."""
+        # 체크포인터 연결은 general 상한 **밖**에서 먼저 끝낸다 (#266 PR 리뷰).
+        # (a) 자체 상한(seller_checkpoint_connect_timeout_s)이 이미 있어 무한 대기가 아니고,
+        # (b) 안에 두면 pg-profile 장애의 TimeoutError 와 LLM 지연의 TimeoutError 가 같은
+        #     타입으로 섞여 is_timeout_error 가 둘을 구분할 수 없다. 반대 방향 오분류
+        #     (LLM 예산 소진을 인프라 장애로 기록)도 함께 막힌다.
+        try:
+            checkpointer = await get_checkpointer()
+        except Exception as exc:
+            raise _CheckpointerUnavailable from exc
         # (#266 P1) 레인 전체 벽시계 상한. 다른 레인이 쓰는 asyncio.wait_for 는 여기서
         # 쓸 수 없다 — astream 은 중간에 yield 하는 async generator 다. SDK 의 timeout=
-        # 도 스트리밍에서는 청크 간 read 간격만 재므로 상한이 되지 못한다. 빌드·체크포인터
-        # 연결까지 함께 덮어 레인 하나가 붙드는 시간의 총량을 묶는다.
+        # 도 스트리밍에서는 청크 간 read 간격만 재므로 상한이 되지 못한다.
         async with asyncio.timeout(get_settings().seller_general_timeout_s):
             with trace_span("seller.graph.general", "chain"):
                 # 빌드도 producer 안 — 실패 시 기존 error 이벤트 봉투로 종료한다.
                 agent = build_general_agent(
-                    today=date.today().isoformat(), checkpointer=await get_checkpointer()
+                    today=date.today().isoformat(), checkpointer=checkpointer
                 )
                 output_guard = StreamingOutputGuard()
                 started = perf_counter()
@@ -350,6 +370,28 @@ async def _general_stream(
             thread_id=request.thread_id,
             request_id=request_id,
             context=context,
+        )
+    except _CheckpointerUnavailable:
+        # 인프라 장애를 LLM 지연으로 감추지 않는다 (#266 PR 리뷰). 이 분기는 아래
+        # is_timeout_error 보다 **먼저** 와야 한다 — 체크포인터 타임아웃도 TimeoutError 라
+        # 순서가 바뀌면 그대로 LLM_TIMEOUT 으로 흡수된다.
+        # 코드가 INTERNAL 인 이유: 이미 meta 를 발신해 503 봉투로 돌아갈 수 없고, 판매자
+        # in-stream 오류 코드에 STATE_UNAVAILABLE 이 없다(§3.2). 스트림 전 store 장애를
+        # 503 STATE_UNAVAILABLE 로 올리는 경로(seller_chat)와는 단계가 다르다.
+        _seller_log(
+            logging.ERROR,
+            "seller_checkpointer_unavailable",
+            context=context,
+            thread_id=request.thread_id,
+            action="general",
+            error_code="INTERNAL",
+            status="FAILED",
+        )
+        yield _error(
+            "INTERNAL",
+            "일시적인 오류가 발생했습니다.",
+            request_id=request_id,
+            retryable=True,
         )
     except Exception as exc:
         # (#266 P1) 타임아웃 판정은 **타입**으로 한다. asyncio.timeout 은 TimeoutError 를
@@ -671,8 +713,7 @@ def _chart_event(charts: ChartSet) -> str:
                         {
                             "label": mask_output(_strip_unsafe(s.label)),
                             "points": [
-                                {"x": mask_output(_strip_unsafe(p.x)), "y": p.y}
-                                for p in s.points
+                                {"x": mask_output(_strip_unsafe(p.x)), "y": p.y} for p in s.points
                             ],
                         }
                         for s in c.series

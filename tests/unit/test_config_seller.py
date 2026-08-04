@@ -74,25 +74,35 @@ def test_general_lane_budget_must_fit_within_stream_cap() -> None:
     `LLM_TIMEOUT` 대신 오류 코드 없는 `done(stop)` 절단이 된다 — #266 이 고친 상태로
     되돌아간다.
     """
-    # 기본값(10 + 20 = 30 < 90)은 통과한다.
+    # 기본값(10 + 5 + 20 = 35 < 90)은 통과한다.
     ok = Settings(_env_file=None)
-    assert ok.seller_route_timeout_s + ok.seller_general_timeout_s < ok.stream_total_timeout_s
+    serial = (
+        ok.seller_route_timeout_s
+        + ok.seller_checkpoint_connect_timeout_s
+        + ok.seller_general_timeout_s
+    )
+    assert serial < ok.stream_total_timeout_s
 
-    # **단독 비교였다면 통과했을 조합**(85 < 90)이지만 라우팅을 더하면 95 >= 90 이다.
+    # **단독 비교였다면 통과했을 조합**(85 < 90)이지만 직렬 합은 100 >= 90 이다.
     with pytest.raises(ValidationError):
         Settings(_env_file=None, seller_general_timeout_s=85.0)
 
-    # 동률(10 + 80 == 90)도 거절한다 — 어느 시계가 먼저 터질지 지터로 갈린다.
+    # 동률(10 + 5 + 75 == 90)도 거절한다 — 어느 시계가 먼저 터질지 지터로 갈린다.
     with pytest.raises(ValidationError):
-        Settings(_env_file=None, seller_general_timeout_s=80.0)
+        Settings(_env_file=None, seller_general_timeout_s=75.0)
 
     # 경계 바로 아래는 유효하다.
-    edge = Settings(_env_file=None, seller_general_timeout_s=79.0)
-    assert edge.seller_general_timeout_s == 79.0
+    edge = Settings(_env_file=None, seller_general_timeout_s=74.0)
+    assert edge.seller_general_timeout_s == 74.0
 
 
-def test_general_lane_budget_tracks_route_timeout() -> None:
-    """라우팅 상한만 올려도 같은 검증에 걸린다 — 두 값이 직렬로 쌓이기 때문이다."""
-    # general 은 기본값(20) 그대로인데 라우팅을 75 로 올리면 95 >= 90.
+def test_general_lane_budget_tracks_every_serial_term() -> None:
+    """general 이 아닌 항만 올려도 같은 검증에 걸린다 — 세 값이 직렬로 쌓이기 때문이다."""
+    # general 기본값(20)에 라우팅만 70 → 10 이 아니라 70+5+20 = 95 >= 90.
     with pytest.raises(ValidationError):
-        Settings(_env_file=None, seller_route_timeout_s=75.0)
+        Settings(_env_file=None, seller_route_timeout_s=70.0)
+
+    # 체크포인터 연결 상한도 마찬가지다(#266 PR 리뷰로 예산식에 편입).
+    # 10 + 65 + 20 = 95 >= 90.
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_checkpoint_connect_timeout_s=65.0)

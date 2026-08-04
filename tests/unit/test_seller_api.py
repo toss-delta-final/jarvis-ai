@@ -394,6 +394,38 @@ def test_general_stream_sdk_timeout_maps_to_llm_timeout(monkeypatch: pytest.Monk
     assert events[-1]["data"]["retryable"] is True
 
 
+def test_checkpointer_timeout_is_not_reported_as_llm_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """#266 PR 리뷰 — pg-profile 체크포인터 장애를 LLM 지연으로 감추지 않는다.
+
+    get_checkpointer 는 자체 wait_for 상한을 갖고 운영에서는 폴백 없이 raise 한다. 그때
+    나오는 것은 asyncio.TimeoutError(= TimeoutError)라 is_timeout_error 가 **타입만으로**
+    참으로 판정한다 — 발생 지점으로 구분하지 않으면 인프라 장애가 LLM_TIMEOUT 으로 나간다.
+    """
+
+    async def _connect_timeout():
+        raise TimeoutError  # get_checkpointer 의 asyncio.wait_for 가 내는 것과 같은 타입
+
+    monkeypatch.setattr(seller_api, "get_checkpointer", _connect_timeout)
+    monkeypatch.setattr(
+        seller_api,
+        "build_general_agent",
+        lambda today, checkpointer=None: pytest.fail(
+            "체크포인터 실패 시 에이전트를 빌드하면 안 된다"
+        ),
+    )
+
+    with caplog.at_level(logging.ERROR, logger="app.api.seller"):
+        events = _collect(_request("매출 알려줘"))
+
+    assert [event["type"] for event in events] == ["meta", "error"]
+    assert events[-1]["data"]["code"] == "INTERNAL", "인프라 장애가 LLM_TIMEOUT 으로 나가면 안 된다"
+    assert '"event": "seller_checkpointer_unavailable"' in caplog.text
+    assert "seller_stream_timeout" not in caplog.text
+
+
 def test_general_stream_timeout_budget_is_config_driven(monkeypatch: pytest.MonkeyPatch) -> None:
     """설정값을 바꾸면 **동작이 실제로 달라지는지** 확인한다.
 
