@@ -288,8 +288,15 @@ def normalize_period(
         raise ValueError("기간 일수는 1일 이상이어야 합니다. 예를 들어 '최근 7일' 입니다.")
     if n > limit:
         raise ValueError(f"기간이 너무 깁니다. {limit}일 이내로 말씀해 주세요.")
-    end = today - timedelta(days=1)
-    start = today - timedelta(days=n)
+    try:
+        end = today - timedelta(days=1)
+        start = today - timedelta(days=n)
+    except OverflowError as exc:
+        # Settings 는 seller_period_max_days 를 10년으로 묶지만(#269 리뷰), max_days 는
+        # 함수 인자라 호출부가 직접 큰 값을 넘길 수 있다. 그 경우에도 OverflowError 가
+        # 밖으로 나가면 호출부의 except ValueError 를 빠져나가 되묻기 대신 에러 경로가
+        # 된다 — 설정 검증과 별개로 이 함수 자체가 "예외는 ValueError 뿐" 을 보장한다.
+        raise ValueError(f"기간이 너무 깁니다. {limit}일 이내로 말씀해 주세요.") from exc
     return start, end
 
 

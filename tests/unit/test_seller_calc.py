@@ -328,6 +328,22 @@ def test_normalize_period_incidental_unit_char_gets_generic_guidance(expr: str) 
     assert "지난달" in message  # 지원 어휘 안내
 
 
+def test_normalize_period_never_raises_overflow_error() -> None:
+    """max_days 를 크게 넘겨도 OverflowError 가 밖으로 나가지 않는다(#269 리뷰).
+
+    Settings 가 seller_period_max_days 를 10년으로 묶지만 max_days 는 함수 인자라
+    호출부가 직접 큰 값을 넘길 수 있다. 약 74만일부터 date 연산이 date.min 을 넘는데,
+    OverflowError 가 새면 호출부의 except ValueError 를 빠져나가 되묻기 대신 에러
+    경로가 된다 — 설정 검증과 별개로 함수 자체가 이 계약을 지켜야 한다.
+    """
+    today = dt.date(2026, 8, 2)
+    # 상한 이내지만 date 연산 한계를 넘는 구간.
+    with pytest.raises(ValueError):
+        calc.normalize_period(
+            "최근 800000일", today=today, recent_default_days=7, max_days=999_999_999
+        )
+
+
 def test_normalize_period_huge_digit_count_is_wrapped() -> None:
     """자릿수가 터무니없이 많아도 Python 내부 예외 메시지가 새지 않는다(#269 리뷰).
 
