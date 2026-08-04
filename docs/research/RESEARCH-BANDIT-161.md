@@ -44,6 +44,8 @@ I-21은 추천 실행 상관키 `recommendationRequestId`와 목록 키 `listId`
 
 현재는 실사용 노출이 0이므로 어느 자릿수와 비교해도 학습 가능 여부는 `no`다. `member` 0명·`orders` 0건에서는 context 일반화와 장기 reward를 검증할 holdout도 만들 수 없다.
 
+bandit의 randomization unit은 `list_id`/request뿐 아니라 `session_key`가 될 수도 있어 익명 세션 안에서 arm을 고정할 수 있다. 그러나 세션 단위로 무작위화해도 실제 선택확률을 기록하지 않으면 off-policy 평가는 불가능하므로 propensity 선행 요구와 #161의 `no-go`는 그대로다.
+
 ### 2.2 propensity 기록이 진짜 선행 조건
 
 Li et al. 2011은 contextual-bandit 추천 알고리즘의 unbiased offline replay 평가를 다룬다. 이 평가와 IPS·SNIPS·DR 계열은 “그 시점의 행동 정책이 선택한 action의 확률”을 알아야 하며, 사후에 현재 모델로 확률을 재계산하면 당시 후보·feature·정책 버전이 달라질 수 있어 유효하지 않다. 최소 로깅 단위는 다음이다.
@@ -55,6 +57,8 @@ Li et al. 2011은 contextual-bandit 추천 알고리즘의 unbiased offline repl
 - control/experiment arm과 exploration budget
 
 현 scorer는 같은 snapshot·config에서 `productId` 오름차순 tiebreak로 결정적이다(`evals/scoring/scorer.py`). 이 정책의 propensity는 선택 상품 1, 나머지 0이어서 support가 없는 action의 counterfactual을 평가할 수 없다. 더구나 현재 저장 컬럼에는 확률을 둘 자리도 없다. 따라서 **policy logging schema 추가와 실제 확률 저장이 bandit의 첫 구현**이며, Li et al. 2011의 replay 조건을 만족하는지 검증한 뒤 bandit 모델을 배포해야 한다.
+
+LLM teacher가 합성한 label은 propensity를 만들어 주지 않는다. off-policy 평가가 요구하는 값은 실제 로깅 정책이 그 시점에 해당 action을 고를 확률이므로 오프라인 합성으로 대체할 수 없다. [RESEARCH-LTR-160.md §3-1](./RESEARCH-LTR-160.md#3-1-행동-로그-없이-가능한-대안-경로--llm-teacher-기반-학습)이 진행돼도 #161의 `no-go`와 로깅 계약 선행 요구는 그대로다.
 
 ### 2.3 reward: CTR만으로 부족한 이유
 

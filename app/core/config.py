@@ -482,6 +482,9 @@ class Settings(BaseSettings):
     # category_fanout_max 와 같은 슬라이스 절단 규약(raw[:cap])이라 음수를 거부한다 — 음수면
     # "뒤에서 |cap|개 제외"로 뒤집혀 "cap<=0 이면 정확히 0개" 불변식이 깨진다(PR #230 리뷰).
     dedup_repurchase_max: int = Field(default=5, ge=0)
+    # 스레드별 재구매 되돌리기 누적 상한(무한 누적 방어, 이슈 #232). 음수는 상한 의미를
+    # 뒤집으므로 형제 튜너블과 같이 거부한다(PR #230 리뷰).
+    dedup_repurchase_store_max: int = Field(default=20, ge=0)
 
     # ── 프로필 (SPEC-PROFILE-001) ──
     profile_recency_highlights: int = 3  # §5.1 최근 맥락 하이라이트 개수
