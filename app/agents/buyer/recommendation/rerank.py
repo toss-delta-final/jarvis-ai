@@ -35,6 +35,18 @@ _PROFILE_TIEBREAK = (
     "없는 조건을 근거문에 쓰지 마세요.\n"
 )
 
+# [#132] 사용자가 평점을 **명시**한 턴에만 붙는다. rating 사후필터가 '반증된 것만' 제거해
+# (무평점 보존, #100 P0 / #171) 리뷰 없는 신상품이 그대로 올라오는데, 기존 지시는 "평가없음을
+# 근거로 삼지 말라"까지라 **거짓 주장만 막고 고지는 하지 않았다**. `_SYSTEM` 이 아니라 user
+# 메시지에 조건부로 두는 이유는 `_PROFILE_TIEBREAK` 와 같다 — 평점을 안 물어본 턴의 프롬프트를
+# 한 글자도 바꾸지 않기 위해서다(#198: 프롬프트에 지시를 얹었다 성공률이 3/3 → 1/3 로 희석된 전례).
+# 코드(graph `_apply_unrated_disclosure`)가 고지를 이미 보장하므로 이 지시는 문장을 자연스럽게
+# 만드는 보조다 — LLM 이 무시해도 고지 자체는 빠지지 않는다.
+_UNRATED_DISCLOSURE = (
+    "- 사용자가 평점 조건을 말했습니다. ratingLevel 이 '평가없음'인 후보를 추천한다면 근거문에 "
+    "아직 평점이 없다는 사실을 드러내세요 — 평점이 조건을 만족한다고 암시하지 마세요.\n"
+)
+
 
 def _rating_tier(product: SpringProduct, settings) -> str:
     """rerank LLM 에 넘길 평점 등급(정확한 숫자 대신) — 비표시 수치 유출 원천 차단(#171 PR#172).
@@ -172,6 +184,7 @@ async def rerank(
     expose_max: int,
     need_of: dict[int, str] | None = None,
     per_need: int | None = None,
+    rating_min_requested: bool = False,
 ) -> RerankResult:
     """Sonnet 1회 호출로 재랭킹 결과를 산출한다(후보 외 id 는 코드로 제거).
 
@@ -228,10 +241,13 @@ async def rerank(
             f"- 후보의 need 필드가 그 상품이 속한 니즈입니다. 니즈마다 상위 {per_need}개까지"
             " 균형 있게 고르세요 — 한 니즈에 몰아주지 마세요.\n"
         )
+    # [#132] 평점 명시 턴에만 — 위 두 지시와 같은 규약(user 메시지 조건부 덧붙임).
+    unrated_line = _UNRATED_DISCLOSURE if rating_min_requested else ""
     user = (
         f"PROFILE_SUMMARY: {prof}\nQUERY: {query}\n"
         f"{profile_line}"
         f"{needs_line}"
+        f"{unrated_line}"
         f"CANDIDATES: {json.dumps(cand, ensure_ascii=False)}"
     )
 

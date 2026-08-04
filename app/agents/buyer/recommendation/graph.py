@@ -86,6 +86,43 @@ def _sanitize_reason(text: str, max_len: int) -> str:
     return collapsed
 
 
+def _unrated_product_ids(
+    candidates: list[SpringProduct], filters: ProductSearchFilters
+) -> set[int]:
+    """평점을 **명시한** 턴에서 고지가 필요한 무평점 상품 id (#132).
+
+    판정은 rerank `_rating_tier` 와 **같은 규약**이다(#171 / #100 P0) — `rating is None`(미집계)과
+    `review_count == 0`(리뷰가 없어 나온 rating=0 은 저평점이 반증된 게 아니라 데이터 부재) 둘 다
+    무평점이다. 두 곳이 갈리면 LLM 에는 '평가없음'이라 해놓고 코드는 고지를 안 붙이는 식으로
+    조용히 어긋난다.
+
+    사용자가 평점을 말하지 않은 턴은 대상이 아니다 — 그 경로의 근거문은 한 글자도 바뀌지 않는다.
+    """
+    if filters.rating_min is None:
+        return set()
+    return {p.product_id for p in candidates if p.rating is None or p.review_count == 0}
+
+
+def _apply_unrated_disclosure(reason: str, notice: str, max_len: int) -> str:
+    """근거문에 무평점 고지를 덧붙인다 — 상한을 넘으면 **근거를 자르고 고지를 남긴다** (#132).
+
+    `_sanitize_reason` 에 통째로 맡기면 뒤쪽인 고지가 먼저 잘려 나간다. 고지는 이 함수가 존재하는
+    이유이므로 우선순위가 근거보다 높다 — 근거는 잘려도 뜻이 남지만 고지는 잘리면 없는 것과 같다.
+    근거가 비어도 고지는 실린다: rationale 없는 검색순서 보충 카드가 `_reasons()` 에서 통째로
+    빠지면 그 카드만 무고지로 나가는데, 하필 그런 카드일수록 사용자가 근거 없이 신뢰한다.
+
+    고지 자체가 상한보다 길면 상한이 이긴다 — `reason_max_len` 은 신뢰경계(→Spring→CH-5→FE)를
+    넘는 자유 텍스트의 방어캡이라 UX 문구가 뚫을 수 있는 값이 아니다.
+    """
+    cleaned_notice = _sanitize_reason(notice, max_len)
+    if not cleaned_notice:  # 운영자가 고지를 껐다 — 기존 동작 그대로
+        return _sanitize_reason(reason, max_len)
+    suffix = f" ({cleaned_notice})"
+    room = max_len - len(suffix)
+    body = _sanitize_reason(reason, room) if room > 0 else ""
+    return f"{body}{suffix}".strip() if body else cleaned_notice
+
+
 def _merge_fanout_results(
     results: list[tuple[int, ProductSearchResult]], cap: int
 ) -> tuple[ProductSearchResult, dict[int, int]]:
@@ -939,6 +976,9 @@ async def stream_recommendation(
                 expose_max=expose_budget,
                 need_of=need_of,
                 per_need=settings.expose_max if split_by_need else None,
+                # [#132] 사용자가 평점을 명시했는지 — 무평점 후보의 근거문 고지 지시를 켠다.
+                # 완화가 적용됐으면 `effective_filters` 가 그 결과라 표시-실제가 어긋나지 않는다.
+                rating_min_requested=effective_filters.rating_min is not None,
             )
         ranked_ids = [pid for pid, _ in rr.ranked]
         reason_by_id = dict(rr.ranked)  # 상품별 근거(§4.2) — (productId, rationale) 튜플 → 맵
@@ -1208,16 +1248,30 @@ async def stream_recommendation(
     # listId(사용자에게 전달된 목록)와 역할이 달라 서로 대체하지 않으므로 별도로 발급한다(이슈 #140).
     recommendation_request_id = str(uuid4())  # 정규 UUID 36자 — BE CHAR(36)
 
+    # [#132] 사용자가 평점을 명시한 턴의 무평점 상품 — 근거문에 그 사실을 고지한다.
+    # 목록 조립 밖에서 한 번만 구한다(목록마다 후보 전체를 다시 훑지 않게).
+    unrated_ids = _unrated_product_ids(candidates, effective_filters)
+
     def _reasons(product_ids: list[int]) -> list[RecoReason]:
         # reasons — 근거가 있는 **그 목록의** 상품만(빈 rationale·expose_min 보충 상품은 제외).
         # productId 로 키잉하며 순서 권위는 product_ids 라 정렬 불필요(부분집합 허용, §4.2 이슈 #61).
         # 목록 밖 상품의 근거를 실으면 CH-5 가 매칭할 대상이 없어 그대로 버려진다.
         # push(신뢰경계) 직전 정제 — 개행 제거·안전 상한(config, 판매자 입력 영향 자유 텍스트 방어).
-        return [
-            RecoReason(product_id=pid, reason=cleaned)
-            for pid in product_ids
-            if (cleaned := _sanitize_reason(reason_by_id.get(pid, ""), settings.reason_max_len))
-        ]
+        # [#132] 무평점 상품만 예외적으로 **근거가 비어도** 항목을 만든다 — 고지가 실려야 하고,
+        # 근거 없이 보충된 카드일수록 사용자가 그 상품을 근거 없이 신뢰한다.
+        out: list[RecoReason] = []
+        for pid in product_ids:
+            raw = reason_by_id.get(pid, "")
+            cleaned = (
+                _apply_unrated_disclosure(
+                    raw, settings.rating_unrated_disclosure_notice, settings.reason_max_len
+                )
+                if pid in unrated_ids
+                else _sanitize_reason(raw, settings.reason_max_len)
+            )
+            if cleaned:
+                out.append(RecoReason(product_id=pid, reason=cleaned))
+        return out
 
     def _entry(leg: int, product_ids: list[int]) -> RecommendationListEntry:
         return RecommendationListEntry(
