@@ -410,7 +410,9 @@ query 는 발화에 묶여 안정적이라, query 우선이면 raw 흔들림이 
   후보 생성 품질 자체는 별도 이슈 소관으로 둔다.
 
 - **leg 구성**: canonical 카테고리마다 `decision.filters`를 복사해 `category`·`keyword`(해당
-  `query` 있으면 그걸로)·`limit=category_fanout_per_cat_limit`로 교체.
+  `query` 있으면 그걸로)·`limit=category_fanout_merge_cap`로 교체(leg 수와 무관, #89 — 생존 leg
+  수는 gather 이후에야 확정돼 요청 시점 leg 수로 정한 값은 재조정되지 않고, 한 leg 가 병합
+  결과에 실을 수 있는 최대치가 merge_cap 이라 그게 tight bound).
 - **병렬**: `asyncio.gather`, 각 leg(`_leg`)는 실패를 leg 단위로 격리한다 — `SpringUnavailableError`
   뿐 아니라 예상외 예외도 삼켜 `None`(그 leg만 드롭, 로그 `search_leg_failed`). 한 leg의 미처리
   예외가 gather→스트림 상위로 전파돼 SSE 전체가 죽지 않게(단일검색·최근구매 조회도 동일 격리).
@@ -499,7 +501,7 @@ decompose 프롬프트("PRIOR_FILTERS 병합")로도 유도하지만(#10a), Haik
 |---|---|---|
 | `category_top_k` | 5 | raw·query 앵커 최근접 조회 top-k |
 | `category_fanout_max` | 5 | 턴당 최대 카테고리 수(프롬프트 상한 + 코드 절단) |
-| `category_fanout_per_cat_limit` | 10 | leg 별 AI top-K(leg `limit`, size 제거 2026-07-23 §4.6) |
+| `category_fanout_per_cat_limit` | 10 | **[#89] fan-out leg 사전 절단에서 더 이상 소비되지 않음**(merge_cap 이 담당). 필드 제거는 후속 |
 | `category_fanout_merge_cap` | 30 | 병합 후 rerank 입력 상한 |
 | `category_search_pool_max_size` | 20 | pg-catalog 검색 풀 max_size. **하한 `2 × category_fanout_max` 를 기동 시 강제**(PR #188 리뷰) — 매핑이 leg 당 raw·query 두 앵커를 동시 조회하므로(§4.3) 종전 10 은 한 턴이 풀을 소진해 헤드룸이 0 이었다. 20 = 2 × fanout(한 턴) × 동시 턴 2 |
 | `category_distance_max` | **0.22** | **[#115]** 채택 상한 — 최근접 코사인 거리가 이를 넘으면 그 leg 드롭(§4) |
