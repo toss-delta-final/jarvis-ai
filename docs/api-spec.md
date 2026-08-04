@@ -6,8 +6,8 @@
 
 | 항목 | 값 |
 |---|---|
-| 문서 버전 | v0.19.5 |
-| 작성일 | 2026-07-14 (v0.19.5 개정 2026-08-04 — **[#232] §4.7 결정 14-F 재구매 지목을 "현재 턴 한정"에서 "스레드 범위(유계 누적·매 턴 재검증)"로 정정 — 와이어 계약 불변**) (v0.19.4 개정 2026-08-03 — **[#32] 골든셋 실측으로 방식2 확정·방식1 및 C-17 기각 — 와이어 계약 불변**) (v0.19.3 개정 2026-08-03 — **[#138 후속] §2.9(c) 구매자 스트림 전체 상한 30s·판매자 90s 역할별 분리 — 와이어 계약 불변**) (v0.19.2 개정 2026-08-03 — **[#133] 구매자 degrade 고지(§3.3)·I-1 검색 재시도(§2.9 c) 명문화** — 와이어 계약 불변, BE 관측 포인트만 추가) (v0.19.1 개정 2026-08-02 — **[#197] I-16 이탈 코호트 응답 실측 확정(from/to 필수·cohortSize·members·churnRate=fraction) + I-8 실측 명문화(from/to 필수·groupBy 화이트리스트·rows), I-8 admin 소유 🔴 유지 — 협의 전 판매자 노출은 설정 플래그(기본 false)로 보류**) (v0.19.0 개정 2026-07-31 — **[#148] C-18: I-22 `catalogVersion`을 선택으로 완화하고 계약 폐기 제안** — 재현·캐시 어느 명분도 성립하지 않음) (v0.18.0 개정 2026-07-31 — **[#148] 홈 추천 계약 등재: I-22 §3.7(Spring→AI 위임, `outcome` 3종 전부 200, provenance 비노출) · P-5 §4.11(FE↔Spring 전제), 🔴 C-18 `catalogVersion` 주체 미해결**) (v0.17.4 개정 2026-07-31 — **[#196] I-13 계약 명문화 3건** — `eventType` CSV 직렬화 확정·rows 활동량 내림차순 정렬 명문화·purchaseComplete 미귀속(0 집계 가능) 경고, 근본 수정 jarvis-backend#62 연계) (v0.17.3 개정 2026-07-31 — **[#209 후속] 노출 상한 목록당 8→9(§3.3), 니즈별 추천(`PICK_ONE`×N)이 실제 발신 경로로 — §4.2 계약 자체는 불변**) (v0.17.2 개정 2026-07-31 — **[#114] 옵션 후보가 1개면 되묻지 않고 자동 선택해 담기** — §4.1 AI 동작·§3.1 되물음 서술 명확화, **와이어 계약(엔드포인트·SSE 이벤트·필드·오류 코드) 불변**) (v0.17.1 개정 2026-07-31 — **[#209] I-21 다중 목록(`lists[]`) 정본 정합** — `recommendationRequestId`·`listType`·`totalBudget`·`label` 신설, 목록당 상품 9개, 멱등 키·400 조건 등재) (v0.17.0 개정 2026-07-31 — **[#187] signed `sessionId` 기반 stable `context_id`, guest→member claim, D6/I-20 lifecycle 계약 반영**) (v0.16.3 개정 2026-07-30 — **[#164] I-4 주문 상태 요약 계약·구매자 `order_status` 라우트 구현 정합**, §4.10 신설) (v0.16.2 개정 2026-07-30 — **[#194] I-14/I-15 응답 스키마 BE 실측 확정 + I-6 이상 감지 규칙 명문화**) (v0.16.1 개정 2026-07-30 — **I-21 `listId`를 UUID급 무작위(≥128bit)로 확정**, 순번·타임스탬프 등 추측 가능한 형식 금지) (v0.16.0 개정 2026-07-30 — **`sessionId`(접속)·`threadId`(방) 축 분리**: 동시 스트림 락을 방 단위로, I-20 사유 `logout` 1종, CH-1 멱등(D5), 맥락 TTL 접속 단위(D6)) (v0.15.27 개정 2026-07-30 — 사본 drift 정정: 담기 이벤트 적재 주체(BE→FE)·`budget` 이벤트 제외·`search.query` PII 기준) (v0.15.26 개정 2026-07-28 — 사본 동기화: §3.1 `conditionActions`(칩 제거, #84)·`screen`(화면 맥락, #118) 신설, `conditions` 칩 `field` 6종 확정, in-stream `error`에 `requestId`·`retryable` 추가) (v0.15.25 개정 2026-07-28 — #171: I-1 응답에 reviewCount 추가(AI 계산용·비표시), rating=0 의미 판별(리뷰 부재 vs 저평점). #100 "reviewCount 표시전용·미반환" 부분 개정. / v0.15.24 개정 2026-07-27 — 사본 동기화: S-5 폐기 반영, 상품 수정은 챗봇 HITL(I-11) 유일 경로) |
+| 문서 버전 | v0.20.0 |
+| 작성일 | 2026-07-14 (v0.20.0 개정 2026-08-03 — **[#242] 판매자 분석 파이프라인 v3.1: 브랜치 분석 검증(F1~F3+analysis_judge) 신설 + `chart` SSE 이벤트 신설(§2.2·§3.2, 이벤트 6→7종, 추가 전용)** — 기존 이벤트 5종 계약 불변) (v0.19.5 개정 2026-08-04 — **[#232] §4.7 결정 14-F 재구매 지목을 "현재 턴 한정"에서 "스레드 범위(유계 누적·매 턴 재검증)"로 정정 — 와이어 계약 불변**) (v0.19.4 개정 2026-08-03 — **[#32] 골든셋 실측으로 방식2 확정·방식1 및 C-17 기각 — 와이어 계약 불변**) (v0.19.3 개정 2026-08-03 — **[#138 후속] §2.9(c) 구매자 스트림 전체 상한 30s·판매자 90s 역할별 분리 — 와이어 계약 불변**) (v0.19.2 개정 2026-08-03 — **[#133] 구매자 degrade 고지(§3.3)·I-1 검색 재시도(§2.9 c) 명문화** — 와이어 계약 불변, BE 관측 포인트만 추가) (v0.19.1 개정 2026-08-02 — **[#197] I-16 이탈 코호트 응답 실측 확정(from/to 필수·cohortSize·members·churnRate=fraction) + I-8 실측 명문화(from/to 필수·groupBy 화이트리스트·rows), I-8 admin 소유 🔴 유지 — 협의 전 판매자 노출은 설정 플래그(기본 false)로 보류**) (v0.19.0 개정 2026-07-31 — **[#148] C-18: I-22 `catalogVersion`을 선택으로 완화하고 계약 폐기 제안** — 재현·캐시 어느 명분도 성립하지 않음) (v0.18.0 개정 2026-07-31 — **[#148] 홈 추천 계약 등재: I-22 §3.7(Spring→AI 위임, `outcome` 3종 전부 200, provenance 비노출) · P-5 §4.11(FE↔Spring 전제), 🔴 C-18 `catalogVersion` 주체 미해결**) (v0.17.4 개정 2026-07-31 — **[#196] I-13 계약 명문화 3건** — `eventType` CSV 직렬화 확정·rows 활동량 내림차순 정렬 명문화·purchaseComplete 미귀속(0 집계 가능) 경고, 근본 수정 jarvis-backend#62 연계) (v0.17.3 개정 2026-07-31 — **[#209 후속] 노출 상한 목록당 8→9(§3.3), 니즈별 추천(`PICK_ONE`×N)이 실제 발신 경로로 — §4.2 계약 자체는 불변**) (v0.17.2 개정 2026-07-31 — **[#114] 옵션 후보가 1개면 되묻지 않고 자동 선택해 담기** — §4.1 AI 동작·§3.1 되물음 서술 명확화, **와이어 계약(엔드포인트·SSE 이벤트·필드·오류 코드) 불변**) (v0.17.1 개정 2026-07-31 — **[#209] I-21 다중 목록(`lists[]`) 정본 정합** — `recommendationRequestId`·`listType`·`totalBudget`·`label` 신설, 목록당 상품 9개, 멱등 키·400 조건 등재) (v0.17.0 개정 2026-07-31 — **[#187] signed `sessionId` 기반 stable `context_id`, guest→member claim, D6/I-20 lifecycle 계약 반영**) (v0.16.3 개정 2026-07-30 — **[#164] I-4 주문 상태 요약 계약·구매자 `order_status` 라우트 구현 정합**, §4.10 신설) (v0.16.2 개정 2026-07-30 — **[#194] I-14/I-15 응답 스키마 BE 실측 확정 + I-6 이상 감지 규칙 명문화**) (v0.16.1 개정 2026-07-30 — **I-21 `listId`를 UUID급 무작위(≥128bit)로 확정**, 순번·타임스탬프 등 추측 가능한 형식 금지) (v0.16.0 개정 2026-07-30 — **`sessionId`(접속)·`threadId`(방) 축 분리**: 동시 스트림 락을 방 단위로, I-20 사유 `logout` 1종, CH-1 멱등(D5), 맥락 TTL 접속 단위(D6)) (v0.15.27 개정 2026-07-30 — 사본 drift 정정: 담기 이벤트 적재 주체(BE→FE)·`budget` 이벤트 제외·`search.query` PII 기준) (v0.15.26 개정 2026-07-28 — 사본 동기화: §3.1 `conditionActions`(칩 제거, #84)·`screen`(화면 맥락, #118) 신설, `conditions` 칩 `field` 6종 확정, in-stream `error`에 `requestId`·`retryable` 추가) (v0.15.25 개정 2026-07-28 — #171: I-1 응답에 reviewCount 추가(AI 계산용·비표시), rating=0 의미 판별(리뷰 부재 vs 저평점). #100 "reviewCount 표시전용·미반환" 부분 개정. / v0.15.24 개정 2026-07-27 — 사본 동기화: S-5 폐기 반영, 상품 수정은 챗봇 HITL(I-11) 유일 경로) |
 | 상태 | draft |
 | 대상 독자 | Spring 백엔드 팀, React 프론트엔드(FE) 팀 |
 | 소유 | AI 에이전트 서버 팀 |
@@ -92,7 +92,7 @@ MVP(개발 가동 목표 2026-07-19)에 포함되는 API 표면:
 **[HARD] 본 문서의 모든 JSON 필드명·SSE 이벤트명은 FE/BE 팀 챗 API 문서("추천 챗봇 CH-2")를 명명 기준으로 채택한다.**
 
 - **구매자 SSE 이벤트명**: `token` / `conditions` / `action` / `products.ready` / `done` / `error`(§3.1). 구 v0.2.0/`SPEC-RECOMMEND-001` §5.3의 `text.delta`·`products`는 **폐기**한다.
-- **판매자 SSE 이벤트명**: `token` / `draft` / `done` / `error`(§3.2). `products.ready`·`conditions`·`suggestions`·`budget`·`action`은 판매자 스트림에서 **emit하지 않는다**.
+- **판매자 SSE 이벤트명**: `token` / `draft` / `chart` / `done` / `error`(§3.2, `chart`는 [확정 v0.20.0, 이슈 #242] 분석 레인 전용·0~1회). `products.ready`·`conditions`·`suggestions`·`budget`·`action`은 판매자 스트림에서 **emit하지 않는다**.
 - **필드명**: 모든 페이로드는 **camelCase**(`sessionId`·`threadId`·`productId`·`finishReason`·`relaxationNotice`·`verifiedSum`·`withinBudget`·`droppedItems`·`feasibilityNotice`·`cartItemId`…). 구 snake_case는 전 계약에서 폐기한다.
 - **일관성**: `/events/*`(§3.5~3.6)와 `GET /profile/me`(§3.4)도 **camelCase로 통일**할 것을 제안한다(제안(초안)). `SPEC-PROFILE-001` §5.4의 `ProfileViewResponse` 필드 역시 camelCase 정렬 대상이다(§7 후속 개정).
 
@@ -664,14 +664,15 @@ FE/BE 문서에 없으나 MVP에 필요한 아래 3종은 **모두 구매자 SSE
 
 #### 응답 (Response) — `text/event-stream`
 
-**[확정 v0.14.1, 2026-07-22 — 화면 전환 신호]** 판매자 스트림은 이벤트 6종을 쓴다: `meta`·`progress`·`token`·`draft`·`done`·`error`. FE 대시보드가 좌(채팅)/우(패널) 분할이라, 서버가 우측 패널 조치를 명시한다.
+**[확정 v0.20.0, 2026-08-03 — 이슈 #242 개정]** 판매자 스트림은 이벤트 7종을 쓴다: `meta`·`progress`·`token`·`draft`·`chart`·`done`·`error`. FE 대시보드가 좌(채팅)/우(패널) 분할이라, 서버가 우측 패널 조치를 명시한다.
 
 - **`meta`** (매 스트림 첫 프레임): `{ "type":"meta", "data":{ "lane": "analysis"|"product"|"general"|"confirm"|"apply"|"refused" } }`. FE 가 레인을 즉시 알아 레이아웃 전환·로딩을 준비한다.
 - **`progress`** (analysis 진행, 0회 이상): `{ "type":"progress", "data":{ "text": "…" } }`. 로딩 표시 — 최종 답변이 아니다(`token` 과 분리).
+- **`chart`** (analysis 진행, 0~1회) — **[신설 v0.20.0, 이슈 #242]** 판매자가 차트를 요청했고 근거가 검증된 차트가 1개 이상일 때만 `token`(리포트) 뒤·`done` 앞에 온다. 상세는 아래 `chart` 절.
 - **`done`** (종료): `{ "type":"done", "data":{ "finishReason":"stop", "panel":"replace"|"keep"|"refresh" } }`. `panel` 이 우측 패널 조치를 확정한다 — `replace`(리포트·diff 카드로 교체)·`keep`(유지)·`refresh`(쓰기 반영 → 재조회). `error` 로 끝나면 `done` 이 없고 패널은 유지한다.
 - 구현: `app/api/seller.py`. 구매자 `done`(§3.1)에는 `panel` 이 없다 — 판매자 전용 필드다.
 
-**(1) 통계 Q&A 흐름**: `meta{analysis}` → `progress`×N → `token`(리포트) → `done{panel:"replace"}`. 되묻기(기간 불명 등)는 `token` → `done{panel:"keep"}`. 통계 수치는 MVP에서 `token` 산문으로 응답한다. 원천은 **I-6 집계 콜백**(§4.4·아래 데이터 소스).
+**(1) 통계 Q&A 흐름**: `meta{analysis}` → `progress`×N → `token`(리포트) → `chart`(0~1) → `done{panel:"replace"}`. 되묻기(기간 불명 등)는 `token` → `done{panel:"keep"}`. 통계 수치는 MVP에서 `token` 산문으로 응답한다. 원천은 **I-6 집계 콜백**(§4.4·아래 데이터 소스). **차트**는 판매자가 명시·암시로 요청했을 때만(`wants_chart`, planner 판정 + 코드 키워드 검사 OR) `chart` 이벤트로 별도 전달된다(원천은 이미 검증된 finding·보고서 — 새 조회 없음, 이슈 #242).
 
 **(2) 상품 수정/등록/삭제 흐름 — [확정 v0.11.0]**: 판매자 `product_agent`가 상품 쓰기를 **AI가 Spring internal API로 직접 수행**하되, **모든 쓰기는 HITL 승인 게이트를 통과**한다. 채팅 경로 쓰기는 AI가, FE에서 직접 편집하는 경로는 FE↔Spring(AI 표면 밖)이 담당한다.
 
@@ -726,6 +727,44 @@ FE/BE 문서에 없으나 MVP에 필요한 아래 3종은 **모두 구매자 SSE
 - **FE 렌더링**: FE는 `draft`를 **diff 카드**로 렌더하고 `[적용]`/`[취소]` 버튼을 노출한다(승인 UI).
 - **[HARD, 개정 v0.9.0] 반영은 AI가 Spring internal API로 직접 수행** — 판매자 승인(HITL) 후 AI가 **I-11 PATCH(수정)/I-10 POST(등록)/I-12 DELETE(삭제)**(§4.5, `X-Internal-Token`+`{brandId}`)를 호출한다. **구 "FE가 본인 JWT로 S-3 PATCH" 모델은 폐기** — [BE 실측 정정 v0.13.0] **S-3 = `GET /api/seller/products`(SELLER, FE→Spring)** 로 **판매자 본인 FE 대시보드용** 목록이고, AI가 쓰는 목록은 **I-9 `GET /internal/seller/{brandId}/products`(서비스 토큰, AI→Spring)** 로 **별개**다(둘 다 조회, 레인만 다름). 즉 S-3는 PATCH가 아니며 I-9와 동일 엔드포인트도 아니다. 채팅 경로의 쓰기는 AI가 internal API(I-11 등)로 수행한다. (판매자가 **FE에서 직접** 상품을 편집하는 경로는 FE↔Spring 별개, AI 표면 밖.) 반영 결과는 `token`으로 안내.
 - **[HARD] 대화 발화는 동의로 취급하지 않는다** — 채팅의 모호한 발화("응 바꿔")는 승인이 아니다. 반영의 유일한 경로는 **HITL 명시 승인**(아래).
+
+**`chart`** — 분석 차트(0~1회) — **[신설 v0.20.0, 이슈 #242]**
+
+```json
+{
+  "type": "chart",
+  "data": {
+    "charts": [
+      {
+        "title": "일별 매출",
+        "chartType": "line",
+        "unit": "KRW",
+        "series": [
+          { "label": "매출", "points": [{ "x": "07-01", "y": 1240000 }] }
+        ],
+        "summary": "6월 대비 12% 감소"
+      }
+    ]
+  }
+}
+```
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `charts` | array | 차트 목록(최대 3개) |
+| `charts[].title` | string | 차트 제목 |
+| `charts[].chartType` | `"line"` \| `"bar"` | 시계열이면 `line`, 단계·범주 비교면 `bar` |
+| `charts[].unit` | `"KRW"` \| `"COUNT"` \| `"PERCENT"` | 값 단위 |
+| `charts[].series` | array | 계열 목록 — **MVP는 1개만**(FE `AnalysisChart.tsx` 가 `series[0]` 만 렌더) |
+| `charts[].series[].label` | string | 계열 이름(범례) |
+| `charts[].series[].points` | array | `{x: string, y: number}` 좌표 목록(최대 60개) — 시계열이면 시간 순 |
+| `charts[].summary` | string | 보고서 문장에서 인용한 한 줄 요약(선택) |
+
+- **발생 조건**: `analysis` 레인 · 결과가 리포트(`kind=="report"`) · 판매자가 차트를 요청(`wants_chart`) · 근거가 검증된(G1) 차트가 1개 이상 통과했을 때만 **정확히 0~1회**. 위 조건 중 하나라도 어긋나면(요청 안 함, 요청했으나 생성·검증 전건 실패) **이벤트 자체를 보내지 않는다** — 빈 배열(`{"charts": []}`)도 보내지 않는다.
+- **순서**: 보고서 `token` **뒤**, `done` **앞**.
+- **근거 사슬**: 차트의 모든 수치는 이미 검증된 finding·보고서에 있는 값만 사용한다(도구 재조회 없음) — 서버가 새 수치를 계산·추정해 차트에만 넣는 일은 없다.
+- **하위 호환**: 추가 전용 이벤트라 기존 FE는 무시한다(`useChat.ts` switch 에 `default:` 없음 — 미지 이벤트 조용히 무시, 실증됨). 6단계(FE) 배포 전에 서버가 먼저 배포돼도 FE 는 깨지지 않는다.
+- **legacy 부활 없음**: 구 `metrics`/`analysis`/`productStats`/`productDiff` 이벤트는 부활하지 않는다 — `chart` 는 그와 무관한 신규 계약이다.
 
 #### 데이터 소스 계약 — [v0.4.0 해소, C-7 RESOLVED, Batch 1]
 

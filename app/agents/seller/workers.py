@@ -31,10 +31,12 @@ from app.agents.seller.middleware import (
 from app.agents.seller.models import SellerRole, init_seller_model, seller_trace_model_metadata
 from app.agents.seller.prompts import (
     ABUSE_PROMPT,
+    ANALYSIS_JUDGE_PROMPT,
     BEHAVIOR_PROMPT,
     CHURN_PROMPT,
     CONVERSION_PROMPT,
     GENERAL_PROMPT_TEMPLATE,
+    GRAPH_PROMPT,
     JUDGE_PROMPT,
     PLANNER_PROMPT,
     PRODUCT_PROMPT,
@@ -46,6 +48,8 @@ from app.agents.seller.prompts import (
 from app.agents.seller.schemas import (
     AnalysisFinding,
     AnalysisPlan,
+    AnalysisScore,
+    ChartSet,
     DraftProposal,
     RecommendationSet,
     ReportScore,
@@ -307,6 +311,42 @@ def build_report_judge() -> CompiledStateGraph:
         response_format=ToolStrategy(ReportScore),
         context_schema=SellerContext,
         middleware=[_model_usage_middleware("judge")],
+    )
+
+
+def build_analysis_judge() -> CompiledStateGraph:
+    """브랜치 분석 검증 judge (smart tier · 도구 없음 · ToolStrategy(AnalysisScore)).
+
+    이슈 #242 분석 검증 층 — report_judge(build_report_judge)와 대칭이지만 채점
+    대상이 다르다: 이쪽은 (도구 원출력, finding) 1건을 보고 "적절한 분석인가"를
+    채점한다. F1~F3(verifier.run_finding_checks) 결정론 검사와 병행되며, 판정·
+    재실행 상한은 orchestrator(4단계)가 Settings 에서 읽어 수행한다.
+    """
+    return create_agent(
+        model=init_seller_model("analysis_judge"),
+        tools=[],
+        system_prompt=ANALYSIS_JUDGE_PROMPT,
+        response_format=ToolStrategy(AnalysisScore),
+        context_schema=SellerContext,
+        middleware=[_model_usage_middleware("analysis_judge")],
+    )
+
+
+def build_graph_agent() -> CompiledStateGraph:
+    """차트 생성 에이전트 (smart tier · 도구 없음 · ToolStrategy(ChartSet)).
+
+    이슈 #242 5단계 — wants_chart 일 때만 recommend 와 병렬 실행된다(오케스트레이션
+    소관, 6단계까지 미배선). 도구가 없다(결정 D-4) — findings·검증된 보고서·질문만
+    입력으로 받아 이미 있는 수치를 옮겨 담는다. 산출은 G1(verifier.run_chart_checks)
+    검증을 거쳐 미달 차트가 드랍된 뒤에야 SSE 로 나간다.
+    """
+    return create_agent(
+        model=init_seller_model("graph"),
+        tools=[],
+        system_prompt=GRAPH_PROMPT,
+        response_format=ToolStrategy(ChartSet),
+        context_schema=SellerContext,
+        middleware=[_model_usage_middleware("graph")],
     )
 
 

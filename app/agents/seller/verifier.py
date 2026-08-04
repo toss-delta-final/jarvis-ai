@@ -11,11 +11,24 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
-from app.agents.seller.schemas import AnalysisFinding
+from app.agents.seller.schemas import (
+    CHART_MAX,
+    AnalysisFinding,
+    AnalysisType,
+    ChartSet,
+    ChartSpec,
+)
 
 _NUMBER_RE = re.compile(r"\d[\d,]*\.?\d*")
+
+# [PR 리뷰 반영] F2/G1 전용 부호 보존 정규식 — D2(_NUMBER_RE)는 무접촉으로 남긴다.
+# (?<!\d) 로 부호 "-" 바로 앞이 숫자가 아닐 때만 부호로 인정한다 — "06-12"·"2026-07"
+# 같은 날짜/구간 표기의 하이픈은 직전이 숫자라 부호로 오인하지 않고 "06"·"12" 로 각각
+# 분리된다(기존 동작 보존). 반면 "전월 대비 -12,000원"처럼 공백·문두·괄호 뒤에 오는
+# "-" 는 직전이 숫자가 아니므로 부호로 캡처된다.
+_SIGNED_NUMBER_RE = re.compile(r"(?<!\d)-?\d[\d,]*\.?\d*")
 
 # D2 과탐 완화(2026-07-18 확정, 추후 조정 가능): 정규화 후 2자리 이하 숫자는
 # 서술 관용("3일 연속", "1위")으로 흔해 근거 대조에서 제외한다.
@@ -42,6 +55,7 @@ def _normalize_numbers(text: str) -> set[str]:
     """텍스트의 숫자 토큰을 정규화(날짜 마스킹·쉼표 제거·후행 소수점 정리)해 집합으로 반환한다.
 
     report·findings 양쪽에 동일하게 적용된다(대칭 — 한쪽만 마스킹하면 드리프트).
+    D2(check_numbers_grounded)가 쓰는 무접촉 버전 — 부호를 버린다(기존 동작 유지).
     """
     out: set[str] = set()
     for token in _NUMBER_RE.findall(_mask_dates(text)):
@@ -49,6 +63,33 @@ def _normalize_numbers(text: str) -> set[str]:
         if normalized:
             out.add(normalized)
     return out
+
+
+def _normalize_numbers_signed(text: str) -> set[str]:
+    """F2/G1 전용 — 부호를 보존하는 _normalize_numbers 변형.
+
+    [PR 리뷰 반영] _NUMBER_RE(부호 없음)를 공유하면 그래프가 값의 부호를 뒤집어도
+    (예: +12,000 → -12,000) 정규화 후 동일 토큰("12000")이 되어 F2/G1 이 이를
+    그대로 통과시킨다 — 이 PR 이 이 검증 층을 신설한 목적(도구 출력에 없는 수치를
+    지어내도 잡히지 않던 문제 해소)을 부호 반전만으로 비켜가게 된다. D2 는
+    "무접촉" 원칙(§4.3 상단 주석)에 따라 그대로 두고, F2·G1 등 신설 검사에만
+    부호 보존 버전을 적용한다.
+    """
+    out: set[str] = set()
+    for token in _SIGNED_NUMBER_RE.findall(_mask_dates(text)):
+        normalized = token.replace(",", "").rstrip(".")
+        if normalized and normalized != "-":
+            out.add(normalized)
+    return out
+
+
+def _is_significant(token: str) -> bool:
+    """유의 수치 판정 — 부호는 자릿수에 넣지 않는다("-12" 는 2자리로 취급).
+
+    F2/G1(부호 보존 토큰)과 D2(무부호 토큰) 양쪽에서 공용으로 쓴다 — D2 토큰은
+    애초에 "-" 가 없어 lstrip 이 무해하다.
+    """
+    return len(token.lstrip("-").replace(".", "")) >= _MIN_SIGNIFICANT_DIGITS
 
 
 def check_not_empty(report: str, findings: list[AnalysisFinding]) -> list[str]:
@@ -116,3 +157,165 @@ def run_deterministic_checks(report: str, findings: list[AnalysisFinding]) -> li
     for _name, check in DETERMINISTIC_CHECKS:
         reasons.extend(check(report, findings))
     return reasons
+
+
+# ── F1~F3 — 브랜치 분석 검증 (이슈 #242, DESIGN-ANALYSIS-V31-242 §4.3) ──────────
+#
+# D1~D3(위)와 같은 파일·다른 레지스트리다 — D1~D3 는 이 절에 무접촉이다.
+# 이 검사는 팬인 이후 전 finding 합집합이 아니라 **그 브랜치의 도구 출력만**을
+# 허용 집합으로 본다 — D2 의 교차 오염(A 워커 evidence 로 B 서술의 환각 통과)을
+# 피하는 것이 F2 신설의 이유다.
+#
+# F1(check_evidence_required)이 참조하는 degrade 판정은 89번째 줄의
+# _is_degrade_finding(D3·check_degrade_disclosed 와 동일 구조 판정)을 그대로
+# 재사용한다 — 여기서 재정의하면 모듈 전역 이름이 나중 정의로 덮어써져(ruff F811)
+# D3 쪽 호출까지 조용히 이 절의 정의를 참조하게 되는 위험이 있다.
+
+
+def check_evidence_required(
+    finding: AnalysisFinding, tool_outputs: Sequence[str], expected_type: AnalysisType
+) -> list[str]:
+    """F1 — degrade finding 이 아닌데 evidence 가 비면 실패(무근거 finding 방지)."""
+    if not _is_degrade_finding(finding) and not finding.evidence:
+        return ["evidence 가 비어 있다 — degrade finding 이 아니라면 근거가 있어야 한다"]
+    return []
+
+
+def check_evidence_grounded(
+    finding: AnalysisFinding, tool_outputs: Sequence[str], expected_type: AnalysisType
+) -> list[str]:
+    """F2 — finding 의 수치가 **그 브랜치의 도구 출력**에 있어야 한다(환각 탐지).
+
+    D2(check_numbers_grounded)와 날짜 마스킹·유의숫자 완화 규칙은 동일하게 맞추되,
+    부호는 _normalize_numbers_signed 로 보존한다 — [PR 리뷰 반영] 그래프/워커가
+    값의 부호만 뒤집어도(예: +12,000 → -12,000) 무부호 토큰이 같아 F2 를 그대로
+    통과하는 것을 막는다(D2 는 무접촉 원칙에 따라 무부호 버전 유지, F2/G1 만 적용).
+
+    [PR 리뷰 반영] claimed 에 finding.recommendation 도 포함한다 — D2·G1 은 이미
+    recommendation 발 수치를 "검증된 근거"로 인정해 보고서·차트 인용을 허용하는데,
+    F2 가 recommendation 을 검사 대상에서 빼두면 워커가 recommendation 에 지어낸
+    숫자가 F2 를 그대로 통과하고 이후 D2/G1 단계에서 오히려 정당한 근거로 취급돼
+    "도구출력⊇finding⊇보고서⊇차트" 근거 사슬이 recommendation 경유로 끊긴다.
+    """
+    allowed: set[str] = set()
+    for output in tool_outputs:
+        allowed |= _normalize_numbers_signed(output)
+
+    claimed: set[str] = _normalize_numbers_signed(finding.summary)
+    claimed |= _normalize_numbers_signed(finding.recommendation)
+    for item in finding.evidence:
+        claimed |= _normalize_numbers_signed(item)
+    novel = {n for n in claimed if n not in allowed and _is_significant(n)}
+    if novel:
+        return [
+            "근거 없는 수치 "
+            + ", ".join(sorted(novel))
+            + " — 도구 출력에 없는 숫자를 finding 에 인용했다"
+        ]
+    return []
+
+
+def check_type_match(
+    finding: AnalysisFinding, tool_outputs: Sequence[str], expected_type: AnalysisType
+) -> list[str]:
+    """F3 — finding.analysis_type 이 배정된 워커 유형과 일치해야 한다."""
+    if finding.analysis_type != expected_type:
+        return [f"analysis_type 불일치 — 배정={expected_type}, 반환={finding.analysis_type}"]
+    return []
+
+
+FindingCheckFn = Callable[[AnalysisFinding, Sequence[str], AnalysisType], list[str]]
+
+# 체크 레지스트리 — D1~D3(DETERMINISTIC_CHECKS)와 별개, 항목 추가/제거로 구성을 바꾼다.
+FINDING_CHECKS: list[tuple[str, FindingCheckFn]] = [
+    ("evidence_required", check_evidence_required),
+    ("evidence_grounded", check_evidence_grounded),
+    ("type_match", check_type_match),
+]
+
+
+def run_finding_checks(
+    finding: AnalysisFinding, tool_outputs: Sequence[str], *, expected_type: AnalysisType
+) -> list[str]:
+    """등록된 F 검사를 전부 실행해 실패 사유를 모아 반환한다(빈 리스트 = 통과)."""
+    reasons: list[str] = []
+    for _name, check in FINDING_CHECKS:
+        reasons.extend(check(finding, tool_outputs, expected_type))
+    return reasons
+
+
+# ── G1 — 차트 검증 (이슈 #242, DESIGN-ANALYSIS-V31-242 §4.4) ──────────────────
+#
+# F2 와 같은 정규화(_normalize_numbers_signed, 부호 보존)를 재사용해 근거 사슬 대칭을
+# 유지한다(도구출력⊇finding⊇보고서⊇차트). 보고서 검증과 달리 재작성 루프가 없다 —
+# 차트는 부가 가치라 미달분은 재시도 없이 그냥 드랍한다(recommend 의 C2 대칭).
+
+
+def _format_chart_number(value: float) -> str:
+    """정수값은 소수점 없이 문자열화한다 — _normalize_numbers_signed 입력을 깔끔하게 정리.
+
+    음수도 부호를 그대로 남긴다(예: -12000.0 → "-12000") — G1 이 부호를 보존해
+    비교하는 전제다.
+    """
+    if value == int(value):
+        return str(int(value))
+    return str(value)
+
+
+def _chart_number_tokens(chart: ChartSpec) -> set[str]:
+    """차트의 y 값 전부를 부호 보존 규칙(F2 와 동일)으로 정규화한 토큰 집합으로 반환한다.
+
+    [PR 리뷰 반영] point.y 는 이미 정확한 부호를 아는 float 다 — _normalize_numbers(무
+    부호)를 쓰면 그래프가 부호만 뒤집은 환각 값(+12,000 → -12,000)이 그대로
+    "근거 있음"으로 통과한다. _normalize_numbers_signed 로 바꿔 allowed 쪽과 부호까지
+    맞춰야 비교가 성립한다.
+    """
+    tokens: set[str] = set()
+    for series in chart.series:
+        for point in series.points:
+            tokens |= _normalize_numbers_signed(_format_chart_number(point.y))
+    return tokens
+
+
+def run_chart_checks(
+    charts: ChartSet, findings: Sequence[AnalysisFinding]
+) -> tuple[ChartSet, list[str]]:
+    """G1 — 미달 ChartSpec 을 드랍하고 (통과분 ChartSet, 드랍 사유 목록)을 반환한다.
+
+    규칙(DESIGN-ANALYSIS-V31-242 §4.4):
+    - series 가 비었거나 points 가 0개 → 드랍.
+    - points[].y 의 유의 수치가 finding 의 summary·evidence·recommendation 어디에도
+      없으면 → 드랍(도구 원출력이 아니라 finding 을 근거로 본다 — graph_agent 입력이
+      finding+보고서이지 도구 출력이 아니기 때문이다, 결정 D-4).
+    - charts 개수 초과(스키마가 이미 CHART_MAX 로 막지만 방어적으로 재절단) → 앞부터 유지.
+
+    allowed 집합은 D2(check_numbers_grounded)와 동일하게 recommendation 도 포함한다
+    — D2가 recommendation 발 수치를 보고서 인용으로 허용하는 이상, 그 수치가 보고서를
+    거쳐 차트에 실릴 수 있다. recommendation 을 빼면 D2는 통과시킨 정당한 수치를 G1이
+    "근거 없음"으로 오탐해 드랍하게 된다(두 검증 층의 근거 사슬 불일치).
+
+    [PR 리뷰 반영] allowed·claimed 모두 _normalize_numbers_signed 로 부호를 보존한다
+    — 그래프가 finding 에 없는 부호로 값을 뒤집어 그리면(예: 증가 +12,000 을 차트에서
+    -12,000 으로 표시) 무부호 비교로는 잡히지 않던 것을 G1 이 드랍하게 한다.
+    """
+    allowed: set[str] = set()
+    for finding in findings:
+        allowed |= _normalize_numbers_signed(finding.summary)
+        allowed |= _normalize_numbers_signed(finding.recommendation)
+        for item in finding.evidence:
+            allowed |= _normalize_numbers_signed(item)
+
+    passed: list[ChartSpec] = []
+    dropped: list[str] = []
+    for chart in charts.charts[:CHART_MAX]:
+        if not chart.series or not chart.series[0].points:
+            dropped.append(f"'{chart.title}' — 좌표가 없다")
+            continue
+        claimed = _chart_number_tokens(chart)
+        novel = {n for n in claimed if n not in allowed and _is_significant(n)}
+        if novel:
+            dropped.append(f"'{chart.title}' — 근거 없는 수치 " + ", ".join(sorted(novel)))
+            continue
+        passed.append(chart)
+
+    return ChartSet(charts=passed), dropped

@@ -35,6 +35,11 @@ def test_seller_settings_defaults() -> None:
     assert settings.seller_account_events_enabled is False
     # [#197 PR 리뷰] I-16 이탈 회원 나열 상한 — I-14 용 max_events 와 분리(결합 방지).
     assert settings.seller_churn_member_max == 5
+    # ── 브랜치 분석 검증(이슈 #242, DESIGN-ANALYSIS-V31-242 §9) ──
+    assert settings.seller_worker_max_retries == 1
+    assert settings.seller_analysis_score_threshold == 21
+    assert settings.seller_analysis_judge_timeout_s == 20.0
+    assert settings.seller_branch_deadline_s == 160.0
 
 
 def test_seller_ma_window_invalid_config_fails_fast() -> None:

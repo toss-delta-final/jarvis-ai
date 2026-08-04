@@ -239,6 +239,21 @@ class Settings(BaseSettings):
     seller_tool_call_limit: int = 8  # ToolCallLimit 전역 한도(선택)
     seller_worker_timeout_s: float = 60.0  # 분석 워커 1종 실행 상한(3-3 팬아웃, §7 90s 목표 내)
 
+    # ── 브랜치 분석 검증 (이슈 #242, DESIGN-ANALYSIS-V31-242 §4·§9) ──────────────
+    seller_worker_max_retries: int = 1  # F/judge 미달 시 브랜치 재실행 상한(보수적)
+    seller_analysis_score_threshold: int = (
+        21  # analysis_judge 통과 임계(21/30, report 와 동일 눈금)
+    )
+    # judge 를 워커 타임아웃(60s)과 분리 — 브랜치 최악 경로(worker→judge→worker→judge)가
+    # 전 구간 60s 를 공유하면 §7 90s 목표가 붕괴한다(설계서 §9-R1).
+    seller_analysis_judge_timeout_s: float = 20.0
+    # 브랜치 1개의 총 예산(worker + judge + 재실행 1회 + judge) — 예산 초과 시 재실행을
+    # 포기하고 원 finding 을 채택한다(강등이 아니다, §9-R1).
+    # [PR 리뷰 반영] 기존 120.0 은 기본 타임아웃 조합의 최악 경로(60+20+60+20=160)보다
+    # 작아 애초에 재실행을 허용할 여지가 거의 없었다 — orchestrator._run_one_branch 의
+    # can_retry 판단(잔여 예산 ≥ worker+judge 타임아웃 합)과 짝을 맞춰 160.0 으로 상향한다.
+    seller_branch_deadline_s: float = 160.0
+
     # ── 판매자 대화 스레드 (thread.py — checkpointer 기반 멀티턴 누적) ──
     # supervisor/planner 입력 주입 상한: 최근 턴(user+assistant 쌍) 수와 메시지당 절단.
     seller_chat_context_turns: int = 6

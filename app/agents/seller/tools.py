@@ -477,9 +477,7 @@ async def get_churn_cohort(
         inactive_days if inactive_days is not None else settings.seller_churn_inactive_days
     )
     try:
-        result = await get_spring_client().get_churn(
-            brand_id, from_date, to_date, effective_days
-        )
+        result = await get_spring_client().get_churn(brand_id, from_date, to_date, effective_days)
     except SpringUnavailableError as exc:
         return f"Error: 이탈 코호트 데이터를 불러오지 못했습니다({exc})."
     # 코호트 0명(기간 내 상호작용 회원 없음)은 "이탈률 0%"와 다른 상태 — 구분 표기(#197).
@@ -593,8 +591,7 @@ async def get_account_events(
     applied = result.group_by or group_by or "eventType"
     if not result.rows:
         return (
-            f"계정/보안 이벤트 0건(전역, groupBy={applied}). "
-            f"{_reference_note(from_date, to_date)}"
+            f"계정/보안 이벤트 0건(전역, groupBy={applied}). {_reference_note(from_date, to_date)}"
         )
     return (
         f"계정/보안 이벤트 {len(result.rows)}건(전역, groupBy={applied}): "
