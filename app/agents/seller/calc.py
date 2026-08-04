@@ -42,8 +42,20 @@ _PERIOD_GUIDE = "지난달 / 최근 7일 / 어제 / 2026-06-01~2026-06-30 처럼
 # 되묻기 문구에 되비칠 입력 길이 상한 — 장문·개행이 그대로 흘러나가지 않게 자른다.
 _PERIOD_ECHO_MAX_CHARS = 30
 
-# "최근 …" 인데 단위가 '일' 이 아닌 경우를 짚어 안내하기 위한 단위 어휘.
-_NON_DAY_UNITS = ("주", "개월", "달", "년", "분기")
+# "최근 …" 인데 단위가 '일' 이 아닌 경우를 짚어 안내하기 위한 패턴.
+# **단어 경계에 앵커한다.** 부분 문자열 검사(`"달" in text`)로 두면 "최근 목표 달성
+# 현황"의 "달성", "최근 주말 프로모션"의 "주말", "최근 분기점 지표"의 "분기점"에 걸려,
+# 단위를 쓴 적도 없는 판매자가 "일 단위로 말씀해 주세요" 라는 원인을 잘못 짚은 안내를
+# 받는다(#269 리뷰). 되묻기라는 결론은 같아도 이유가 틀리면 대화가 더 꼬인다.
+# 앞은 숫자·공백·문두, 뒤는 공백·문말 — 확신이 설 때만 단위 안내로 보낸다.
+_NON_DAY_UNIT_PATTERN = re.compile(r"(?:^|[\s\d])(?:주일|개월|반년|분기|주|달|년)(?=$|\s)")
+
+# "최근 N일" 의 N 자릿수 상한 — int() 변환 **전에** 검사한다.
+# Python 3.11+ 는 4300자리 초과 문자열→int 변환에서 영어 내부 메시지 ValueError 를
+# 내고("Exceeds the limit (4300) for integer string conversion…"), 그게 되묻기 문구로
+# 그대로 판매자에게 나간다(#269 리뷰). max_days 가 막으려던 것과 같은 실패 양상이
+# 파싱 단계에서 재현되므로, 상한 판정 전에 자릿수로 먼저 끊는다.
+_PERIOD_MAX_DIGITS = 9
 
 # safe_eval 화이트리스트 — 사칙연산·거듭제곱·round() 만 허용한다(§3.3, `calculate` 도구용).
 _ALLOWED_BINOPS = (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow)
@@ -255,8 +267,13 @@ def normalize_period(
     if text == "최근":
         n = recent_default_days
     elif recent_match := _RECENT_N_PATTERN.match(text):
-        n = int(recent_match.group(1))
-    elif text.startswith("최근") and any(unit in text for unit in _NON_DAY_UNITS):
+        raw = recent_match.group(1)
+        if len(raw.lstrip("-")) > _PERIOD_MAX_DIGITS:
+            # int() 로 넘기지 않는다 — 자릿수 상한 ValueError 의 영어 메시지가 그대로
+            # 판매자에게 노출된다(#269 리뷰). 결론은 아래 n>limit 과 같으므로 문구도 같다.
+            raise ValueError(f"기간이 너무 깁니다. {limit}일 이내로 말씀해 주세요.")
+        n = int(raw)
+    elif text.startswith("최근") and _NON_DAY_UNIT_PATTERN.search(text):
         # "최근 3개월"·"최근 2주"·"최근 반년" — 주·개월 환산은 P1(확인 흐름) 소관이라
         # 여기서는 되묻는다. 조용히 기본 7일로 떨어뜨리지 않는 것이 이 이슈의 핵심이다.
         raise ValueError(

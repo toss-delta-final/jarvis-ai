@@ -1371,6 +1371,21 @@ class Settings(BaseSettings):
                 "SELLER_MA_MIN_WINDOW 는 1 이상, SELLER_MA_WINDOW 이하여야 합니다"
                 f" (min_window={self.seller_ma_min_window}, window={self.seller_ma_window})"
             )
+        # 기간 기본값·상한 정합(#269 리뷰) — calc.normalize_period 는 기간 미지정("최근")일
+        # 때 n=recent_default_days 로 두고 곧바로 n>max_days 상한 검사를 통과시킨다.
+        # 상한을 기본값보다 낮게 내리면 가장 흔한 발화("최근 매출 어때?")조차 매번
+        # "기간이 너무 깁니다" 되묻기로 빠진다 — 현재 기본값(7 <= 731)에선 안 드러난다.
+        if self.seller_recent_days_default > self.seller_period_max_days:
+            raise ValueError(
+                "SELLER_RECENT_DAYS_DEFAULT 는 SELLER_PERIOD_MAX_DAYS 이하여야 합니다"
+                f" (default={self.seller_recent_days_default},"
+                f" max={self.seller_period_max_days})"
+            )
+        if self.seller_recent_days_default < 1:
+            raise ValueError(
+                "SELLER_RECENT_DAYS_DEFAULT 는 1 이상이어야 합니다"
+                f" (got {self.seller_recent_days_default})"
+            )
         if not (self.review_tier_many >= self.review_tier_some >= self.review_tier_few):
             raise ValueError(
                 "REVIEW_TIER 경계는 many >= some >= few 여야 합니다"
