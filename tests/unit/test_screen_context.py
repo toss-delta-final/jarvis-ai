@@ -233,6 +233,68 @@ def test_screen_products_drops_only_the_garbage_item() -> None:
     assert [p.product_id for p in parsed.screen.products] == [101, 103]
 
 
+def test_a_product_id_over_the_bigint_max_is_dropped_but_siblings_survive() -> None:
+    """[Claude 리뷰 15차, F-18] `productId` 가 BIGINT 상한(2**63-1)을 넘으면 그 항목만 무효
+    처리된다 — 나머지 상품은 관대 유효성대로 살아남는다.
+
+    수정 전 재현: `_coerce_positive_int` 가 `> 0` 만 확인해 `2**63 + 12345` 가 그대로 통과했다
+    — recommendations.ProductId·events.user_id·profile.user_id 와 달리 이 필드만 BIGINT 상한이
+    빠져 있었다. 통과한 값은 `allowed_product_ids`(app/agents/buyer/graph.py)에 합류해 담기
+    가드를 통과하고, 상한 없는 `AddToCartRequest.product_id` 로 Spring I-2 호출에 실려 Spring
+    Long 역직렬화에서 예측 불가한 실패가 된다.
+    """
+    parsed = BuyerChatRequest.model_validate(
+        _buyer_payload(
+            screen={
+                "pageType": "chat",
+                "products": [
+                    {"productId": 101, "name": "이어폰A"},
+                    {"productId": 2**63 + 12345, "name": "오버플로"},
+                    {"productId": 103, "name": "이어폰C"},
+                ],
+            }
+        )
+    )
+    assert parsed.screen is not None
+    assert [p.product_id for p in parsed.screen.products] == [101, 103]
+
+
+def test_a_product_id_at_the_bigint_max_boundary_still_passes() -> None:
+    """[Claude 리뷰 15차, F-18] 경계값(2**63-1)은 상한 검사에 걸리지 않고 정상 통과한다."""
+    boundary = 2**63 - 1
+    parsed = BuyerChatRequest.model_validate(
+        _buyer_payload(
+            screen={
+                "pageType": "chat",
+                "products": [{"productId": boundary, "name": "경계값"}],
+            }
+        )
+    )
+    assert parsed.screen is not None
+    assert [p.product_id for p in parsed.screen.products] == [boundary]
+
+
+def test_non_positive_and_non_integer_product_ids_are_still_dropped() -> None:
+    """[Claude 리뷰 15차, F-18] 상한 검사를 추가해도 기존 관대 유효성(음수·0·비정수 항목만
+    버림)은 그대로다 — `0 < result <= _BIGINT_MAX` 로 바꿨을 뿐 하한 쪽 동작은 손대지 않았다.
+    """
+    parsed = BuyerChatRequest.model_validate(
+        _buyer_payload(
+            screen={
+                "pageType": "chat",
+                "products": [
+                    {"productId": -1, "name": "음수"},
+                    {"productId": 0, "name": "영"},
+                    {"productId": "abc", "name": "비정수"},
+                    {"productId": 101, "name": "정상"},
+                ],
+            }
+        )
+    )
+    assert parsed.screen is not None
+    assert [p.product_id for p in parsed.screen.products] == [101]
+
+
 def test_invalid_items_before_the_cap_do_not_starve_later_valid_products(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

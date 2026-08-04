@@ -99,6 +99,17 @@ _SCREEN_PAGE_TYPES_BY_REQUEST_CLASS: dict[str, frozenset[str]] = {
 # 상대 순서와 같다)이라 이 변경으로 깨지지 않는다.
 SCREEN_FILTER_KEYS: tuple[str, ...] = ("status", "sort", "page")
 
+# [15차 리뷰, F-18] PostgreSQL BIGINT 상한 — 신원·상품 id 범위 방어.
+#
+# app/schemas/recommendations.py·events.py·profile.py 가 이미 각자 파일에 같은 값으로
+# `_BIGINT_MAX = 2**63 - 1` 를 두고 있다(모듈 간 import 로 공유하지 않는 게 이 저장소의 기존
+# 관행 — 세 파일 다 로컬 정의다). 공용 모듈로 빼는 리팩터링도 검토했지만, 이 PR 은 F-18(BIGINT
+# 상한 누락) 수정 범위이지 기존 3파일의 중복을 정리하는 리팩터링 범위가 아니다 — 지금 빼면
+# 이 변경과 무관한 3개 파일의 import 를 건드리게 돼 리뷰 범위가 부풀고, 기존 관행과도 어긋나지
+# 않는다(이미 4번째 로컬 정의가 아니라 기존 3번째 관행을 그대로 따르는 것). 값을 좁히는 리팩터링이
+# 필요해지면 그때 네 파일을 한 번에 옮기는 편이 낫다.
+_BIGINT_MAX = 2**63 - 1
+
 
 def _coerce_positive_int(value: object) -> int | None:
     """screen.products[].productId 관대 파싱 — bool 제외, 정수 float·숫자 문자열 허용.
@@ -106,6 +117,16 @@ def _coerce_positive_int(value: object) -> int | None:
     app/agents/buyer/recommendation/decompose.py::_as_int 와 같은 규약이지만, 스키마 계층에서
     도메인 로직을 import 하면 계층 역전이라 여기 별도로 둔다. 상품 id 는 양의 BIGINT 라
     0 이하는 버린다(decompose._as_int 에는 없는 추가 규칙).
+
+    [15차 리뷰, F-18] **상한(`_BIGINT_MAX`)도 같은 관대 유효성으로 버린다.** 다른 모든 BIGINT id
+    필드(recommendations.ProductId·member_id, events.user_id, profile.user_id)는 `le=_BIGINT_MAX`
+    를 강제하는데 여기만 빠져 있었다 — `productId=2**63+12345` 가 그대로 통과해
+    `allowed_product_ids`(app/agents/buyer/graph.py)에 합류하고, 상한 없는
+    `AddToCartRequest.product_id`(app/schemas/spring.py)로 Spring I-2 호출에 그대로 실려 Spring
+    Long 역직렬화에서 예측 불가한 실패가 된다(실측 재현: 2**63+12345 가 파싱을 통과함). screen 은
+    400 을 내지 않는 필드라(§3.1 유효성 표) 이 항목도 거부가 아니라 **그 상품 항목만 무효
+    처리**한다 — 호출부(`_normalize_screen`)가 기존 `product_id is None` 경로로 이미 그렇게
+    다룬다.
     """
     if isinstance(value, bool):
         return None
@@ -120,7 +141,7 @@ def _coerce_positive_int(value: object) -> int | None:
             return None
     else:
         return None
-    return result if result > 0 else None
+    return result if 0 < result <= _BIGINT_MAX else None
 
 
 def _clean_screen_text(value: str, max_chars: int, raw_scan_max: int) -> str:
