@@ -714,6 +714,17 @@ class Settings(BaseSettings):
     # ── 화면 맥락 screen (이슈 #118, api-spec §3.1) ──
     # screen.products 상한(정본 명시 기본값) — 초과분은 화면 순서 앞쪽만 취하고 버린다.
     screen_products_max: int = Field(default=20, ge=1)
+    # [13차 리뷰] `screen.products` **원본 배열** 길이 하드 상한 — `screen_products_max` 와는
+    # 별개다. 스키마 정규화(`app.schemas.chat._normalize_screen`)가 불량 항목을 걸러 유효
+    # `screen_products_max` 건을 채울 때까지 원본 배열을 순회하므로(12차 리뷰 이후 규약), 이
+    # 상한이 없으면 무효 항목(빈 dict 등)을 수만~수십만 건 채운 요청이 매번 원본 전체를
+    # 스캔한다 — `message` 는 `chat_message_max_chars` 로 길이 상한이 있는데 `products` 원본
+    # 크기에는 상한이 없던 비대칭이었고, 요청 바디 크기를 자르는 미들웨어도 없어(레이트리밋은
+    # §2.8 요청 "건수"만 제한) 이 경로가 열려 있었다(실제 재현). 기본 500은
+    # `screen_products_max`(20)의 25배 — 정상 FE 페이로드(한 응답에 화면이 보여줄 수 있는 상품은
+    # 무한 스크롤이어도 수십 건을 넘기 어렵다)는 절대 자르지 않으면서, 악성 페이로드의 스캔량을
+    # 유계로 만드는 값이다. 원본 배열 슬라이스도 400 이 아니라 절단이다(관대 유효성 유지).
+    screen_products_raw_scan_max: int = Field(default=500, ge=1)
     # screen 문자열(products[].name · filters 값) 항목당 길이 상한 — **FE 가 보낸 문자열이 그대로
     # LLM 프롬프트에 실리는** 신뢰경계라 절단이 필요하다(초과는 400 이 아니라 절단 — 관대 유효성).
     # 값 근거: 같은 카탈로그 상품명의 와이어 상한 선례가 200 자이므로(`OrderStatusOrder.product_name`

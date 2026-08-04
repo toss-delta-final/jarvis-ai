@@ -301,6 +301,87 @@ def test_no_warning_logged_when_every_screen_item_is_valid(
     assert "screen_products_contained_invalid_items" not in caplog.text
 
 
+def test_products_raw_scan_hard_cap_bounds_the_scan_deterministically(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[Claude 리뷰 13차] 원본 배열 길이 자체에 하드 상한(`screen_products_raw_scan_max`)을 건다.
+
+    12차 수정 이후 필터링 루프는 유효 항목이 `screen_products_max` 에 도달할 때까지 원본 배열을
+    순회한다 — 이 하드 상한이 없으면 무효 항목을 수만~수십만 건 채운 요청이 매번 원본 전체를
+    스캔한다. `screen_products_max` 를 하드 상한보다 **크게** 설정해도(=슬롯이 남아 있어도) 하드
+    상한 밖의 유효 상품은 절대 스캔되지 않는다는 사실 자체가 "원본을 통째로 순회하지 않는다"는
+    증거다.
+    """
+    monkeypatch.setattr(get_settings(), "screen_products_raw_scan_max", 5)
+    monkeypatch.setattr(get_settings(), "screen_products_max", 20)  # 하드 상한보다 크게 설정
+    products = [{"productId": i, "name": f"p{i}"} for i in range(1, 11)]  # 유효 10건
+    parsed = BuyerChatRequest.model_validate(
+        _buyer_payload(screen={"pageType": "chat", "products": products})
+    )
+    assert parsed.screen is not None
+    # 원본 앞 5건(1~5)만 스캔 대상이라 그 안의 유효 상품 5건만 남는다 — products_max=20 이
+    # 더 컸어도 6~10 은 원본 슬라이스 단계에서 이미 잘려 나가 절대 보이지 않는다.
+    assert [p.product_id for p in parsed.screen.products] == [1, 2, 3, 4, 5]
+
+
+def test_a_flood_of_invalid_products_does_not_error_and_stays_fast() -> None:
+    """[Claude 리뷰 13차] `screen.products` 에 무효 항목을 대량으로 채워도 400 이 아니다.
+
+    **주의 — 이 타이밍 값은 채택 근거가 아니라 헐거운 스모크 가드다.** 실측해 보니 하드 상한
+    (`screen_products_raw_scan_max`) 이 없어도 200,000 건을 순회하는 비용 자체는 CPython
+    에서 0.1초 대라 이 시간 상한으로는 고정 전/후를 구분하지 못한다(직접 확인) — 원본을
+    실제로 상한만큼만 스캔한다는 증거는
+    `test_products_raw_scan_hard_cap_bounds_the_scan_deterministically`(내용 기반, 위)가
+    맡는다. 이 테스트는 "대량 무효 입력이 예외 없이 정상 처리된다"는 별개의 회귀만 지킨다.
+    """
+    import time
+
+    huge_invalid_products = [{"foo": i} for i in range(200_000)]  # productId 없음 — 전부 무효
+    started = time.perf_counter()
+    parsed = BuyerChatRequest.model_validate(
+        _buyer_payload(screen={"pageType": "chat", "products": huge_invalid_products})
+    )
+    elapsed = time.perf_counter() - started
+    assert parsed.screen is not None  # 400 이 아니다 — screen 자체는 살아 있다(관대 유효성)
+    assert parsed.screen.products == []  # 전부 무효라 유효 상품은 0건
+    assert elapsed < 5.0, f"극단적으로 느려짐(캡 자체가 아니라 다른 블로우업 의심) — {elapsed:.3f}s"
+
+
+def test_filters_lookup_never_iterates_the_raw_mapping() -> None:
+    """[Claude 리뷰 13차] filters 는 허용 3키만 `.get()` 으로 직접 조회하고 원본을 순회하지 않는다.
+
+    **타이밍으로는 이 변경을 증명할 수 없었다** — 200,000 개 무효 키를 담은 dict 를
+    `.items()` 로 순회해도 0.1초 대라(직접 확인) 순회 유무를 시간으로 가를 수 없다. 그래서
+    `.items()`/`__iter__` 를 부르는 순간 즉시 실패하는 가짜 `Mapping` 을 주입해, 코드가
+    실제로 원본을 한 번도 순회하지 않고 `SCREEN_FILTER_KEYS` 3개만 `.get()` 하는지 **내용이
+    아니라 접근 방식 자체**를 증명한다 — 이것이 이 수정을 채택하는 실제 근거다.
+    """
+    from collections.abc import Mapping as ABCMapping
+
+    class _IterationForbiddenMapping(ABCMapping):
+        def __init__(self, data: dict[str, str]) -> None:
+            self._data = data
+
+        def __getitem__(self, key):  # noqa: ANN001
+            return self._data[key]
+
+        def __len__(self) -> int:
+            return len(self._data)
+
+        def __iter__(self):
+            raise AssertionError(
+                "raw_filters 가 순회됐다 — SCREEN_FILTER_KEYS 3개만 .get() 으로 직접 "
+                "조회해야 한다(13차 리뷰, .items()/for 순회 금지)"
+            )
+
+    poisoned = _IterationForbiddenMapping({"status": "판매중", "sort": "최신순", "page": "1"})
+    parsed = BuyerChatRequest.model_validate(
+        _buyer_payload(screen={"pageType": "chat", "filters": poisoned})
+    )
+    assert parsed.screen is not None
+    assert parsed.screen.filters == {"status": "판매중", "sort": "최신순", "page": "1"}
+
+
 @pytest.mark.parametrize("columns", [None, 0, "3"])
 def test_screen_invalid_columns_is_ignored_but_rest_survives(columns) -> None:  # noqa: ANN001
     screen: dict[str, object] = {

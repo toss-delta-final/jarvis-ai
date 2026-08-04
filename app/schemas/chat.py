@@ -86,7 +86,18 @@ _SCREEN_PAGE_TYPES_BY_REQUEST_CLASS: dict[str, frozenset[str]] = {
 }
 
 # screen.filters 허용 키 3종(api-spec §3.1) — 그 밖의 키는 관대 무시 대상.
-SCREEN_FILTER_KEYS: frozenset[str] = frozenset({"status", "sort", "page"})
+#
+# [13차 리뷰] **frozenset 이 아니라 순서 고정 tuple 이다.** `_normalize_screen` 이 이 3키만
+# 직접 조회(raw_filters.get(key))하도록 바꾸면서(원본 dict.items() 순회를 없애 무계 순회 표면을
+# 지우기 위해서 — 아래 `_normalize_screen` 주석 참조) 결과 `filters` dict 의 키 순서가 이 튜플의
+# 순서를 따르게 됐다. frozenset 은 반복 순서가 정의 순서와 무관해(해시 기반) 이 자리에 쓰면
+# 안 된다(실측: `frozenset({"status","sort","page"})` 를 순회하면 `page, status, sort` 순으로
+# 나온다). 이 순서는 새 계약이 아니다 — 기존에도 `filters` 는 dict 순서를 보장하지 않았다
+# (원본 raw_filters 가 보낸 순서를 그대로 흘렸을 뿐). 순서에 의존하는 기존 테스트를 전부 확인
+# 했다 — 대부분 `==`(순서 무관)·`in` 부분일치이고, 유일한 예외인 SCREEN JSON 문자열 정확
+# 일치 테스트(tests/unit/test_decompose.py)는 그 케이스가 `status`→`page` 순(둘 다 이 튜플의
+# 상대 순서와 같다)이라 이 변경으로 깨지지 않는다.
+SCREEN_FILTER_KEYS: tuple[str, ...] = ("status", "sort", "page")
 
 
 def _coerce_positive_int(value: object) -> int | None:
@@ -236,6 +247,17 @@ class ChatRequest(CamelModel):
         raw_products = v.get("products")
         products: list[dict[str, object]] = []
         if isinstance(raw_products, list):
+            # [13차 리뷰] **원본 배열 길이 자체를 먼저 하드 상한으로 자른다.** 아래 루프는(12차
+            # 수정 이후) 유효 항목이 `products_max` 에 도달할 때까지 순회하므로, 이 슬라이스가
+            # 없으면 `raw_products` 에 무효 항목(빈 dict 등)을 수만~수십만 건 채운 요청이 매번
+            # 그 전체를 스캔한다 — `message` 는 `chat_message_max_chars` 로 길이 상한이 있는데
+            # `products` 원본 크기는 상한이 없었던 비대칭이고, `app/main.py` 에 요청 바디 크기
+            # 제한 미들웨어도 없어(레이트리밋은 §2.8 요청 "건수"만 제한) 이 경로가 열려 있었다
+            # (실제 재현). `screen_products_raw_scan_max`(config, 기본 500 — 근거는 그 필드
+            # 주석)는 `products_max`(20)보다 넉넉해 정상 FE 페이로드(화면에 보이는 상품은 한
+            # 응답에 수십 건을 넘기 어렵다)는 자르지 않으면서 악성 페이로드의 스캔량을 유계로
+            # 만든다. 관대 유효성은 유지한다 — 이 슬라이스도 400 이 아니라 절단이다.
+            raw_products = raw_products[: settings.screen_products_raw_scan_max]
             # 상한 초과분은 화면 순서(배열 순서) 앞쪽만 취한다 — 좌표 해소가 이 순서에 의존하므로
             # dedup 은 하지 않는다(api-spec §3.1 지시어 해소).
             #
@@ -281,8 +303,15 @@ class ChatRequest(CamelModel):
         raw_filters = v.get("filters")
         filters: dict[str, str] = {}
         if isinstance(raw_filters, Mapping):
-            for key, value in raw_filters.items():
-                if key in SCREEN_FILTER_KEYS and isinstance(value, str):
+            # [13차 리뷰] **`.items()` 로 원본을 순회하지 않고 허용 3키만 직접 조회한다.**
+            # products 와 같은 문제였다 — 순회 방식이면 `raw_filters` 에 무효 키를 수만~수십만
+            # 건 채운 요청이 매번 그 전체를 스캔한다. 허용 키가 `SCREEN_FILTER_KEYS` 3종으로
+            # 고정돼 있으므로, `raw_filters` 가 아무리 커도 정확히 3회 `.get()` 만 하면 같은
+            # 결과가 나온다 — products 처럼 별도 하드 상한을 둘 필요 없이 무계 순회 표면 자체가
+            # 사라진다(이쪽이 products 보다 단순한 이유: 허용 집합이 유한하고 작다).
+            for key in SCREEN_FILTER_KEYS:
+                value = raw_filters.get(key)
+                if isinstance(value, str):
                     # 정제 결과가 빈 문자열이면(제어문자만 온 경우) 키 자체를 버린다 — 프롬프트에
                     # `"sort": ""` 같은 빈 항목을 실어 봐야 의미가 없다.
                     if cleaned := _clean_screen_text(value, text_max):
