@@ -859,6 +859,62 @@ async def test_behavior_tool_summarizes_product_rows_with_authority_note() -> No
     assert "구매 전무" in result and "0 집계될 수 있다" in result
 
 
+def _behavior_row(pid: int, view: int, cart: int, checkout: int, purchase: int):
+    """군집화 테스트용 I-13 상품 행 헬퍼(#290)."""
+    return BehaviorProductRow(
+        product_id=pid,
+        product_name=f"상품{pid}",
+        counts={
+            "productView": view,
+            "addToCart": cart,
+            "checkoutStart": checkout,
+            "purchaseComplete": purchase,
+        },
+        view_to_cart_rate=(cart / view) if view else None,
+        unique_visitors=max(1, view // 2),
+    )
+
+
+async def test_behavior_tool_appends_cluster_labels_for_product_rows() -> None:
+    """[#290] 상품 수가 충분하면 k-means 군집 요약(규칙 라벨·중심 비율)이 붙는다 —
+    LLM 이 상품 나열이 아니라 군집 단위로 해석·액션 연결하게."""
+    rows = []
+    for i in range(6):  # 전환직결형 패턴
+        rows.append(_behavior_row(100 + i, 200 + 10 * i, 80 + 4 * i, 60 + 3 * i, 50 + 2 * i))
+    for i in range(6):  # 카트이탈형 패턴(담기율 높고 결제 진입 급락)
+        rows.append(_behavior_row(200 + i, 220 + 10 * i, 90 + 4 * i, 5 + i, 2))
+    fake = FakeSpringClient()
+    fake.behavior_result = BehaviorEventsResult(group_by="product", rows=rows, total=len(rows))
+
+    result = await _call_runtime_tool(
+        get_behavior_events, {"from_date": "2026-07-01", "to_date": "2026-07-14"}, fake
+    )
+
+    assert "행동 군집" in result and "실루엣" in result
+    assert "카트이탈형" in result
+    assert "담기율" in result and "결제진입률" in result
+    assert "권위는 매출 조회(I-6)" in result  # 기존 노트 유지
+
+
+async def test_behavior_tool_skips_clustering_for_few_products_with_reason() -> None:
+    """[#290] 상품 수 미달이면 군집을 생략하되 사유를 명시한다 — '군집 없음 = 패턴
+    없음' 오해석 방지."""
+    fake = FakeSpringClient()
+    fake.behavior_result = BehaviorEventsResult(
+        group_by="product",
+        rows=[_behavior_row(100 + i, 100, 10, 5, 2) for i in range(3)],
+        total=3,
+    )
+
+    result = await _call_runtime_tool(
+        get_behavior_events, {"from_date": "2026-07-01", "to_date": "2026-07-14"}, fake
+    )
+
+    assert "군집 생략" in result
+    assert "상품 3개" in result
+    assert "행동 군집" not in result
+
+
 async def test_behavior_tool_shows_all_seed_products_within_cap() -> None:
     """[#196] 상품별 rows 상한을 I-13 전용 seller_summary_max_products(10)로 분리 —
     시드 브랜드 7종이 구 공용 상한(5)에 잘리지 않고 전부 상세 노출된다."""

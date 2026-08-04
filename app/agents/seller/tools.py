@@ -23,7 +23,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
 
 from app.agents.seller import calc
-from app.agents.seller.analysis import proportions, timeseries
+from app.agents.seller.analysis import proportions, segmentation, timeseries
 from app.agents.seller.context import SellerContext
 from app.core.config import get_settings
 from app.core.tracing import trace_span
@@ -345,6 +345,68 @@ _BEHAVIOR_AUTHORITY_NOTE = (
 )
 
 
+# 군집 문구에 나열할 소속 상품 id 상한 — 대군집이 컨텍스트를 폭주시키지 않게.
+_CLUSTER_PRODUCT_ID_MAX = 5
+
+
+def _summarize_behavior_clusters(rows: list, settings) -> str:
+    """I-13 상품 rows 를 k-means 군집 요약 문구로 바꾼다 (#290 — behavior 워커).
+
+    빈 결과는 군집 생략 사유(상품 수 미달·분리 불능)를 명시한다 — LLM 이 "군집이
+    없다 = 패턴이 없다"로 오해석하지 않게. 중심값은 원 피처 단위(비율·log 조회)라
+    LLM 이 그대로 서술 근거로 쓸 수 있다.
+    """
+    activities = [
+        {
+            "product_id": row.product_id,
+            "view": row.counts.get("productView", 0),
+            "cart": row.counts.get("addToCart", 0),
+            "checkout": row.counts.get("checkoutStart", 0),
+            "purchase": row.counts.get("purchaseComplete", 0),
+            "visitors": row.unique_visitors,
+        }
+        for row in rows
+    ]
+    try:
+        clusters = segmentation.cluster_products(
+            activities,
+            k_min=settings.seller_behavior_kmeans_k_min,
+            k_max=settings.seller_behavior_kmeans_k_max,
+            random_state=settings.seller_kmeans_random_state,
+        )
+    except ValueError as exc:
+        # §3.4 degrade — 설정 오류(기동 검증 우회·회귀)에도 상품 나열 요약은 살린다.
+        _log.warning("행동 군집화 불가 — 분석 설정 오류: %s", exc)
+        return " 군집 분석 불가(분석 설정 오류)."
+    if not clusters:
+        floor = settings.seller_behavior_kmeans_k_min * 3
+        reason = (
+            f"상품 {len(rows)}개 < 최소 {floor}개"
+            if len(rows) < floor
+            else "전 상품 행동 패턴 동일(분리 불능)"
+        )
+        return f" 군집 생략({reason}) — 위 상품별 수치로 직접 판단."
+    parts = []
+    for cluster in clusters:
+        ids = ", ".join(str(pid) for pid in cluster.product_ids[:_CLUSTER_PRODUCT_ID_MAX])
+        ids_note = (
+            f"{ids} 외 {cluster.size - _CLUSTER_PRODUCT_ID_MAX}개"
+            if cluster.size > _CLUSTER_PRODUCT_ID_MAX
+            else ids
+        )
+        centroid = cluster.centroid
+        parts.append(
+            f"[{cluster.label}] {cluster.size}개(id: {ids_note}) — 중심: "
+            f"담기율 {centroid['cart_per_view']:.1%}·결제진입률 {centroid['checkout_per_cart']:.1%}"
+            f"·구매완료율 {centroid['purchase_per_checkout']:.1%}"
+        )
+    return (
+        f" 행동 군집 {len(clusters)}개(k-means, 실루엣 {clusters[0].silhouette:.2f}): "
+        + "; ".join(parts)
+        + "."
+    )
+
+
 def _summarize_behavior(result: BehaviorEventsResult) -> str:
     """I-13 응답을 groupBy 3형에 맞춰 요약한다(REALIGN ②-3 — 확정 명세 기준)."""
     settings = get_settings()
@@ -377,7 +439,10 @@ def _summarize_behavior(result: BehaviorEventsResult) -> str:
             )
         else:
             omitted_note = ""
-        return f"상품별 {len(shown)}건: " + "; ".join(lines) + omitted_note
+        # [#290] 상품 군집화(Chen 2012 k-means + Moe 2003 유형론) — 절단 전 전체 rows 로
+        # 군집을 만들어 LLM 이 상품 나열이 아니라 군집 단위(카트이탈형 등)로 해석하게 한다.
+        cluster_note = _summarize_behavior_clusters(result.rows, settings)
+        return f"상품별 {len(shown)}건: " + "; ".join(lines) + omitted_note + cluster_note
     if result.counts:  # groupBy=eventType
         return "유형별 합계: " + ", ".join(f"{k}={v}" for k, v in result.counts.items())
     if result.series:  # groupBy=date — 키 동적(date + camelCase 카운트)
