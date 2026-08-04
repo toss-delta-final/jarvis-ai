@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 
 import httpx
@@ -143,8 +144,52 @@ def test_guard_timeout_shares_the_transport_timeout_label() -> None:
     로그(`_failure_status_class`)와 trace 가 각자 isinstance 를 구현하면 새 예외 타입을 한쪽에만
     추가했을 때 라벨이 조용히 갈린다 — 그 사고가 실제로 두 번 났다.
     """
-    assert spring_client._transport_status_class(TimeoutError()) == "timeout"
-    assert spring_client._failure_status_class(TimeoutError()) == "timeout"
+    exc = spring_client.SearchBudgetExceeded("budget")
+    assert spring_client._transport_status_class(exc) == "timeout"
+    assert spring_client._failure_status_class(exc) == "timeout"
+
+
+def test_bare_timeout_error_is_not_labeled_as_transport_timeout() -> None:
+    """가드 밖에서 난 `TimeoutError` 는 전송 계층 실패로 분류하지 않는다 (PR #293 리뷰).
+
+    `_transport_status_class` 는 **모든** Spring 호출의 예외 분류에 쓰인다. 내장 `TimeoutError`
+    를 그대로 매칭하면 다른 경로에 `wait_for` 가 하나 생기는 순간부터, 또는 무관한 asyncio
+    대기가 끊기는 순간부터 trace 가 그 실패를 "전송 계층 timeout" 이라 조용히 거짓 보고한다.
+    """
+    assert spring_client._transport_status_class(TimeoutError()) is None
+    # 로그 라벨도 같은 판단을 공유한다 — 전송 계층이 아니면 malformed_response 로 떨어진다.
+    assert spring_client._failure_status_class(TimeoutError()) != "timeout"
+
+
+def test_guard_exception_stays_compatible_with_timeout_handling() -> None:
+    """가드 전용 타입은 `TimeoutError` 하위라 기존 타임아웃 처리와 호환된다."""
+    assert issubclass(spring_client.SearchBudgetExceeded, TimeoutError)
+
+
+async def test_parsing_uses_a_dedicated_executor_not_the_shared_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """파싱은 앱 전역 기본 executor 가 아니라 **전용 풀**에서 돈다 (PR #293 리뷰).
+
+    가드는 await 만 취소하고 스레드는 끝까지 돈다 — 버려진 파싱 스레드가 공유 풀을 점유하면
+    임베딩·카테고리 매핑처럼 전혀 무관한 `to_thread` 호출까지 슬롯을 기다린다. 전용 풀로
+    격리해 고갈의 파급을 검색 파싱 안에 가둔다.
+    """
+    _shrink_budget(monkeypatch, "2.0")
+    _install_transport(monkeypatch, _SlowTransport(delay_s=0.0))
+
+    seen: list[str] = []
+
+    def _record_thread(_data: object) -> ProductSearchResult:
+        seen.append(threading.current_thread().name)
+        return ProductSearchResult(products=[], total_count=0)
+
+    monkeypatch.setattr(spring_client, "_parse_search_response", _record_thread)
+
+    await spring_client.search_products(ProductSearchFilters(keyword="q"))
+
+    assert seen, "파싱이 호출되지 않았다"
+    assert seen[0].startswith("i1-parse"), f"전용 풀이 아니라 {seen[0]} 에서 돌았다"
 
 
 async def test_guard_timeout_is_recorded_on_the_span(monkeypatch: pytest.MonkeyPatch) -> None:

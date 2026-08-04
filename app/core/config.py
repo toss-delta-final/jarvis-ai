@@ -13,6 +13,7 @@ SearchBackend로 구현해 골든셋 비교. [2026-08-03 #32] 방식2를 확정�
 from __future__ import annotations
 
 import math
+import os
 from functools import lru_cache
 from typing import Literal
 
@@ -728,6 +729,14 @@ class Settings(BaseSettings):
     # 지연을 살리는 대가가 턴 전체의 침묵이므로 기본값은 그 턴만 재시도를 끈다.
     # 구매자 progress 이벤트가 계약에 등재돼 검색 전에 첫 프레임을 낼 수 있으면 원복 가능하다.
     search_retry_on_deferred_conditions: bool = False
+    # [#132 PR #293 리뷰] I-1 응답 파싱 **전용** 스레드풀 크기. `asyncio.to_thread` 의 앱 전역
+    # 기본 executor 를 쓰면, 총시간 가드가 버린(=await 는 취소됐지만 계속 도는) 파싱 스레드가
+    # 임베딩·카테고리 매핑·색상 사전과 같은 풀을 놓고 경쟁해 무관한 요청까지 대기시킨다.
+    # 기본값은 CPython 기본 executor 와 같은 식(min(32, cpu+4))이라 **격리만 바뀌고 동시 처리량
+    # 특성은 그대로**다 — 이 값을 줄이는 것은 파싱을 직렬화해 다른 작업 몫을 늘리는 트레이드다.
+    search_parse_max_workers: int = Field(
+        default_factory=lambda: min(32, (os.cpu_count() or 1) + 4), ge=1
+    )
     # AI→LLM 단일 호출 타임아웃 + 재시도 횟수 (§2.9 c).
     # 현행 30s×(1+1)=60s 최악 예산은 구매자 전체 상한 30s(stream_total_timeout_buyer_s, #138)를 넘는다.
     # timeout 뒤 재시도는 buyer done(stop) 절단 전에 끝날 수 없지만 빠른 오류 재시도는 여전히 유효하다.
