@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from app.agents.buyer._frames import sse
+from app.agents.buyer.recommendation.budget_sets import BudgetSet, build_budget_sets
 from app.agents.buyer.recommendation.rerank import rerank
 from app.agents.buyer.recommendation.relaxation import (
     FIELD_TO_ATTR as RELAXATION_FIELD_TO_ATTR,
@@ -43,6 +44,7 @@ from app.schemas.chat import (
     TokenData,
 )
 from app.schemas.spring import (
+    LIST_MAX_PRODUCTS,
     ProductSearchFilters,
     ProductSearchResult,
     RecoReason,
@@ -966,6 +968,102 @@ async def stream_recommendation(
         )
         exposed_groups = exposed_groups[:MAX_LISTS]
     ranked_ids = [pid for _, group in exposed_groups for pid in group]
+    buy_all_mode = settings.budget_set_enabled and decision.buy_all and split_by_need
+    plan = None
+    budget_sets_failed = False
+    infeasible_due_to_budget = False
+    if buy_all_mode:
+        ranked_priority = {product_id: rank for rank, product_id in enumerate(ranked_ids)}
+        candidate_order: dict[int, int] = {}
+        for index, product in enumerate(candidates):
+            candidate_order.setdefault(product.product_id, index)
+        pools: list[list[tuple[int, int | None]]] = []
+        for leg in range(len(need_legs)):
+            # 동일 productId 는 최초 후보 하나만 권위로 삼는다. relevance 순서와 저가 순서를
+            # 교대로 병합해야 cap 안에서도 상위 품질 신호와 예산 가능 대안을 함께 보존한다.
+            unique_candidates = {}
+            for product in candidates:
+                if (
+                    leg_of.get(product.product_id) == leg
+                    and product.product_id not in unique_candidates
+                ):
+                    unique_candidates[product.product_id] = product
+            relevance_order = sorted(
+                unique_candidates.values(),
+                key=lambda product: (
+                    ranked_priority.get(product.product_id, len(ranked_priority)),
+                    candidate_order[product.product_id],
+                    product.product_id,
+                ),
+            )
+            price_order = sorted(
+                unique_candidates.values(),
+                key=lambda product: (
+                    product.price is None,
+                    product.price if product.price is not None else 0,
+                    ranked_priority.get(product.product_id, len(ranked_priority)),
+                    candidate_order[product.product_id],
+                    product.product_id,
+                ),
+            )
+            merged: list[tuple[int, int | None]] = []
+            selected: set[int] = set()
+            positions = [0, 0]
+            while len(merged) < settings.budget_set_alt_pool:
+                added = False
+                for source, ordered in enumerate((relevance_order, price_order)):
+                    while (
+                        positions[source] < len(ordered)
+                        and ordered[positions[source]].product_id in selected
+                    ):
+                        positions[source] += 1
+                    if positions[source] >= len(ordered):
+                        continue
+                    product = ordered[positions[source]]
+                    positions[source] += 1
+                    selected.add(product.product_id)
+                    merged.append((product.product_id, product.price))
+                    added = True
+                    if len(merged) >= settings.budget_set_alt_pool:
+                        break
+                if not added:
+                    break
+            pools.append(merged)
+        try:
+            plan = await asyncio.to_thread(
+                build_budget_sets,
+                pools=pools,
+                total_budget=decision.total_budget,
+                max_sets=settings.budget_set_max_count,
+                max_combinations=settings.budget_set_max_combinations,
+                max_items=LIST_MAX_PRODUCTS,
+            )
+        except Exception as exc:  # noqa: BLE001 - 세트 실패는 종전 PICK_ONE으로 degrade
+            logger.warning("budget_sets_failed", extra={"reason": str(exc)})
+            budget_sets_failed = True
+            plan = None
+        if plan is None and not budget_sets_failed and decision.total_budget is not None:
+            try:
+                # 총액 제한만 제거했을 때 조합이 생기는 경우에만 예산을 실패 원인으로 고지한다.
+                # 후보/가격 자체가 부족한 경우는 같은 입력으로도 None 이라 별도 문구로 분리된다.
+                infeasible_due_to_budget = (
+                    await asyncio.to_thread(
+                        build_budget_sets,
+                        pools=pools,
+                        total_budget=None,
+                        max_sets=settings.budget_set_max_count,
+                        max_combinations=settings.budget_set_max_combinations,
+                        max_items=LIST_MAX_PRODUCTS,
+                    )
+                    is not None
+                )
+            except Exception as exc:  # noqa: BLE001 - 진단 실패도 PICK_ONE 스트림은 살린다
+                logger.warning("budget_sets_failure_diagnosis_failed", extra={"reason": str(exc)})
+                budget_sets_failed = True
+        if plan is not None:
+            ranked_ids = list(
+                dict.fromkeys(product_id for item in plan.sets for product_id in item.product_ids)
+            )
 
     # [#101 #8] 관측성 — 파이프라인 후보 깔때기를 한 줄 구조화 로그로 남긴다(recall 손실·자원 진단).
     # received(수신) → after_dedup(최근구매 제외 후) → compressed(embedding_rerank_limit 절단 후)
@@ -999,6 +1097,12 @@ async def stream_recommendation(
             # 조인 키. 개인화가 후보를 줄이면 회원 쪽 received 가 작게 나온다.
             "profile_present": bool(profile),
             "profile_scope": settings.profile_injection_scope,
+            "budget_sets": len(plan.sets) if plan else 0,
+            "budget_dropped_legs": len(plan.dropped_legs) if plan else 0,
+            "budget_unavailable_legs": len(plan.unavailable_legs) if plan else 0,
+            "budget_limited_legs": len(plan.limited_legs) if plan else 0,
+            "budget_mode": buy_all_mode,
+            "budget_truncated": bool(plan and plan.combinations_truncated),
         },
     )
 
@@ -1011,6 +1115,67 @@ async def stream_recommendation(
     if dedup_degraded and (dedup_notice := _strip_unsafe(settings.dedup_skipped_notice)):
         yield sse("token", TokenData(text=dedup_notice).model_dump(by_alias=True))
 
+    if (
+        buy_all_mode
+        and plan is None
+        and (
+            fallback_notice := _strip_unsafe(
+                settings.budget_set_infeasible_notice
+                if infeasible_due_to_budget
+                else settings.budget_set_candidate_fallback_notice
+            )
+        )
+    ):
+        yield sse("token", TokenData(text=fallback_notice).model_dump(by_alias=True))
+    if plan is not None and decision.total_budget is not None and plan.dropped_legs:
+        dropped_names = [
+            name
+            for leg in plan.dropped_legs
+            if leg < len(need_legs)
+            if (name := _need_label(need_legs[leg]))
+        ]
+        template = _strip_unsafe(settings.budget_set_dropped_notice)
+        if dropped_names and template:
+            try:
+                notice = template.format(items=" · ".join(dropped_names))
+            except (KeyError, IndexError, ValueError):
+                logger.warning("budget_set_dropped_notice_invalid")
+            else:
+                if notice := _strip_unsafe(notice):
+                    yield sse("token", TokenData(text=notice).model_dump(by_alias=True))
+    if plan is not None and plan.unavailable_legs:
+        unavailable_names = [
+            name
+            for leg in plan.unavailable_legs
+            if leg < len(need_legs)
+            if (name := _need_label(need_legs[leg]))
+        ]
+        template = _strip_unsafe(settings.budget_set_unavailable_notice)
+        if unavailable_names and template:
+            try:
+                notice = template.format(items=" · ".join(unavailable_names))
+            except (KeyError, IndexError, ValueError):
+                logger.warning("budget_set_unavailable_notice_invalid")
+            else:
+                if notice := _strip_unsafe(notice):
+                    yield sse("token", TokenData(text=notice).model_dump(by_alias=True))
+    if plan is not None and plan.limited_legs:
+        limited_names = [
+            name
+            for leg in plan.limited_legs
+            if leg < len(need_legs)
+            if (name := _need_label(need_legs[leg]))
+        ]
+        template = _strip_unsafe(settings.budget_set_limited_notice)
+        if limited_names and template:
+            try:
+                notice = template.format(items=" · ".join(limited_names))
+            except (KeyError, IndexError, ValueError):
+                logger.warning("budget_set_limited_notice_invalid")
+            else:
+                if notice := _strip_unsafe(notice):
+                    yield sse("token", TokenData(text=notice).model_dump(by_alias=True))
+
     # 소모품 카테고리 억제 되돌리기 칩(결정 14-F) + 소량 결과 완화 칩(#113).
     # products.ready **앞**이라 §3.1 순서 계약(conditions → token+suggestions → products.ready)을 지킨다.
     if chips_out := revert_chips + relaxation_chips:
@@ -1021,32 +1186,70 @@ async def stream_recommendation(
     # listId(사용자에게 전달된 목록)와 역할이 달라 서로 대체하지 않으므로 별도로 발급한다(이슈 #140).
     recommendation_request_id = str(uuid4())  # 정규 UUID 36자 — BE CHAR(36)
 
-    def _entry(leg: int, product_ids: list[int]) -> RecommendationListEntry:
+    def _reasons(product_ids: list[int]) -> list[RecoReason]:
         # reasons — 근거가 있는 **그 목록의** 상품만(빈 rationale·expose_min 보충 상품은 제외).
         # productId 로 키잉하며 순서 권위는 product_ids 라 정렬 불필요(부분집합 허용, §4.2 이슈 #61).
         # 목록 밖 상품의 근거를 실으면 CH-5 가 매칭할 대상이 없어 그대로 버려진다.
         # push(신뢰경계) 직전 정제 — 개행 제거·안전 상한(config, 판매자 입력 영향 자유 텍스트 방어).
-        reasons = [
+        return [
             RecoReason(product_id=pid, reason=cleaned)
             for pid in product_ids
             if (cleaned := _sanitize_reason(reason_by_id.get(pid, ""), settings.reason_max_len))
         ]
+
+    def _entry(leg: int, product_ids: list[int]) -> RecommendationListEntry:
         return RecommendationListEntry(
             list_id=uuid4().hex,  # 목록마다 새 id — 멱등 키 (requestId, listId) 가 겹치면 안 된다
             label=_need_label(need_legs[leg]) if split_by_need else None,
             product_ids=product_ids,
-            reasons=reasons,
+            reasons=_reasons(product_ids),
         )
 
-    # listType 은 항상 싣는다 — 목록 개수는 lists 길이로 알 수 있지만 이 값은 개수로 복원할 수
-    # 없다(§4.2). 니즈별이든 단일이든 목록 **안**의 상품들은 서로 대안이라 PICK_ONE 이다:
-    # 니즈별은 "파우치 중 하나 + 어댑터 중 하나"이지 "목록 전부를 산다"(BUY_ALL)가 아니다.
-    # 세트 여러 안(BUY_ALL×N)과 totalBudget 은 아직 이 그래프가 내지 않는다(이슈 #60·#163).
+    def _set_label(item: BudgetSet) -> str | None:
+        if item.kind == "cheap":
+            raw = settings.budget_set_label_cheap
+        elif item.kind == "balanced":
+            raw = settings.budget_set_label_balanced
+        elif item.kind == "focus" and item.focus_leg is not None:
+            need = _need_label(need_legs[item.focus_leg])
+            if need is None:
+                raw = settings.budget_set_label_balanced
+            elif "{need}" not in settings.budget_set_label_focus:
+                logger.warning("budget_set_focus_label_invalid")
+                raw = settings.budget_set_label_balanced
+            else:
+                try:
+                    raw = settings.budget_set_label_focus.format(need=need)
+                except (KeyError, IndexError, ValueError):
+                    logger.warning("budget_set_focus_label_invalid")
+                    raw = settings.budget_set_label_balanced
+        else:
+            raw = settings.budget_set_label_alt
+        return _strip_unsafe(raw)[:LIST_LABEL_MAX_LEN] or None
+
+    if plan is not None:
+        lists = [
+            RecommendationListEntry(
+                list_id=uuid4().hex,
+                label=_set_label(item),
+                product_ids=list(item.product_ids),
+                reasons=_reasons(list(item.product_ids)),
+            )
+            for item in plan.sets
+        ]
+        list_type = "BUY_ALL"
+        total_budget = decision.total_budget
+    else:
+        lists = [_entry(leg, group) for leg, group in exposed_groups]
+        list_type = "PICK_ONE"
+        total_budget = None
+
     push = RecommendationPush(
         session_id=request.session_id,
         recommendation_request_id=recommendation_request_id,
-        list_type="PICK_ONE",
-        lists=[_entry(leg, group) for leg, group in exposed_groups],
+        list_type=list_type,
+        total_budget=total_budget,
+        lists=lists,
     )
     try:
         pushed = bool(await push_fn(push))

@@ -710,3 +710,64 @@ def test_every_parsed_key_appears_in_the_output_template() -> None:
 
     missing = sorted(k for k in parsed if f'"{k}"' not in template)
     assert not missing, f"출력 템플릿에 없는 파싱 키: {missing}"
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "expected"),
+    [(True, True), ("true", False), (1, False), (None, False)],
+)
+async def test_buy_all_uses_strict_boolean_parsing(raw_value, expected: bool) -> None:
+    decision = await _run(_raw(buyAll=raw_value))
+    assert decision.buy_all is expected
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "expected"),
+    [
+        (50_000, 50_000),
+        (0, 0),
+        (-1, None),
+        (None, None),
+        (True, None),
+        (50_000.0, None),
+        ("50000", None),
+        ([], None),
+    ],
+)
+async def test_total_budget_accepts_only_nonnegative_json_integers(raw_value, expected) -> None:
+    decision = await _run(_raw(totalBudget=raw_value, filters={"priceMax": 50_000}))
+    assert decision.total_budget == expected
+    assert decision.filters.price_max == 50_000
+
+
+def test_total_budget_prompt_field_distinguishes_total_from_per_item_limit() -> None:
+    from app.agents.buyer.recommendation.decompose import _SYSTEM
+
+    template = _SYSTEM[_SYSTEM.index("{") : _SYSTEM.index("\n}") + 2]
+    assert '"totalBudget": int|null' in template
+    assert '"priceScope"' not in template
+    assert (
+        "- totalBudget: 사용자가 **전부 합쳐서** 얼마라고 말했을 때만 그 금액(원)을 넣으세요"
+        in _SYSTEM
+    )
+    assert "**상품 하나당** 상한이면" in _SYSTEM
+
+
+def test_issue_60_prompt_keeps_measured_intent_load_bearing_rules() -> None:
+    from app.agents.buyer.recommendation.decompose import _SYSTEM
+
+    assert (
+        '  3) 그 외에 "그거"·"저번에 그거" 같은 상품 지시대명사가 있으면 항상 recommend.' in _SYSTEM
+    )
+    assert (
+        '- JSON 출력 직전에 intent를 검산하세요. cart_view인데 USER_MESSAGE에 "장바구니"가 없으면 recommend로'
+        in _SYSTEM
+    )
+    assert (
+        "이 경계는\n  PENDING_CART가 있어도 옵션 답변이 아닌 상품 요청에 그대로 적용합니다."
+        in _SYSTEM
+    )
+    assert (
+        "- cart_add: LAST_RECOMMENDATIONS(직전 추천 목록: productId+이름)에서 사용자가 가리킨 상품의"
+        in _SYSTEM
+    )
