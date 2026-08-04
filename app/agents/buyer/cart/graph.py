@@ -242,6 +242,10 @@ async def stream_cart_add(
         yield _done()
         return
     if intent == "wishlist_add" and settings.wishlist_enabled:
+        # 위 flag-off 분기와 반대로 이 턴은 **실제로 다른 동작을 수행하고 빠진다** — 담기 대기와
+        # 무관한 흐름으로 위임하므로, `graph.py` 665~668행과 같은 취지로 stale pending 을 정리한다
+        # (다음 턴이 옛 상품의 옵션 답변으로 오해석되지 않게).
+        await cart_store.clear_pending(thread_key)
         async for frame in stream_wishlist_add(
             identity=identity,
             cart=cart,
@@ -253,6 +257,7 @@ async def stream_cart_add(
             yield frame
         return
     if intent == "wishlist_remove" and settings.wishlist_enabled:
+        await cart_store.clear_pending(thread_key)
         async for frame in stream_wishlist_remove(
             identity=identity,
             cart=cart,
@@ -265,6 +270,7 @@ async def stream_cart_add(
             yield frame
         return
     if intent == "cart_remove" and settings.cart_remove_enabled:
+        await cart_store.clear_pending(thread_key)
         async for frame in stream_cart_remove(
             identity=identity,
             message=message,

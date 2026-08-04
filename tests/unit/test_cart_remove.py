@@ -12,11 +12,11 @@ import pytest
 
 from app.agents.buyer.cart.graph import stream_cart_add
 from app.agents.buyer.cart.remove import stream_cart_remove
-from app.agents.buyer.cart.state import CartStateStore
+from app.agents.buyer.cart.state import CartStateStore, PendingAdd
 from app.agents.buyer.recommendation.state import CartIntent
 from app.core.auth import Identity
 from app.core.config import get_settings
-from app.schemas.spring import AddToCartResult, CartView, CartViewItem
+from app.schemas.spring import AddToCartResult, CartOption, CartView, CartViewItem
 from app.services.spring_client import CartError, CartItemNotFound, SpringUnavailableError
 
 
@@ -683,6 +683,44 @@ async def test_stream_cart_add_delegates_to_remove_when_flag_on(
     )
     assert deleted == [1]
     assert _actions(events)[0]["type"] == "CART_REMOVED"
+
+
+async def test_stream_cart_add_delegates_to_remove_clears_stale_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """라운드 13(head `14aa26b` 리뷰) — 옵션 되물음(pending) 진행 중에 삭제 판정 턴이 끼면
+    `stream_cart_remove` 로 위임하기 전에 stale pending 을 지워야 한다. 안 지우면 다음 턴 발화가
+    옛 상품의 옵션 답변으로 오해석될 수 있다(`graph.py` 665~668행과 같은 취지)."""
+    monkeypatch.setattr(get_settings(), "cart_remove_enabled", True)
+    store = CartStateStore()
+    thread_key = "m:t-remove-clears-pending"
+    await store.set_pending(
+        thread_key,
+        PendingAdd(
+            product_id=99, quantity=1, options=[CartOption(option_id=1, name="레드", extra_price=0)]
+        ),
+    )
+
+    async def add_fn(req):
+        raise AssertionError("삭제 판정인데 add_fn 이 호출됐다")
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        pass
+
+    await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(product_id=1, quantity=1),
+            cart_store=store,
+            thread_key=thread_key,
+            settings=get_settings(),
+            message="이어폰 빼줘",
+            add_fn=add_fn,
+            get_cart_fn=_cart(_item(1, 10, "이어폰")),
+            delete_fn=delete_fn,
+        )
+    )
+    assert await store.get_pending(thread_key) is None
 
 
 async def test_stream_cart_add_does_not_delegate_when_flag_off() -> None:
