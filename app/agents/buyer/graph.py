@@ -527,6 +527,11 @@ async def run_buyer_turn(
     # 재현됐다(#277). 계약 미등재라 기본 off — 켜면 신규 이벤트 타입이 와이어에 나간다.
     # 세션 프렐류드보다 **뒤**에 두는 이유: 앞에 두면 200 헤더가 먼저 나가
     # SessionStateUnavailable(503 STATE_UNAVAILABLE, §2.5 봉투)이 in-stream error 로 바뀐다.
+    # 관문에서 빠지는 건 decompose LLM head 이후뿐 — 앞의 ensure_thread_adopted·thread_store.get·
+    # 회원 턴 read_profile_summary·cart_store.get_pending/get_last_reco_state 는 여전히 관문 안이다
+    # (flag-on 실측 p50 ~12ms, evals/first_event_budget/). 이 넷은 각각 state_store_query_timeout_s
+    # (3.0s)라 직렬 최악 12.0s > first-token 상한 10.0s — 관문 통과를 보장하지 않는다(pg-profile
+    # 장애 시 504 재현 가능). 상세·협의 선택지는 scratchpad/draft-progress-contract.md §4.
     if settings.progress_events_enabled:
         yield progress_frame("analyzing", settings.progress_analyzing_message)
     try:
