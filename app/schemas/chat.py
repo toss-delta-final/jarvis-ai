@@ -63,6 +63,51 @@ class ChatRequest(CamelModel):
         return v
 
 
+class ConditionAction(CamelModel):
+    """구매자 conditions 칩 제거 신호 (api-spec §3.1)."""
+
+    op: Literal["remove"]
+    field: Literal["category", "priceMax", "priceMin", "brand", "ratingMin", "keyword"]
+
+
+CONDITION_FIELD_TO_FILTER: dict[str, str] = {
+    "category": "category",
+    "priceMax": "price_max",
+    "priceMin": "price_min",
+    "brand": "brand",
+    "ratingMin": "rating_min",
+    "keyword": "keyword",
+}
+
+
+class BuyerChatRequest(ChatRequest):
+    """POST /chat 구매자 요청 — 조건 칩 제거 액션을 선택으로 받는다."""
+
+    condition_actions: list[ConditionAction] = Field(default_factory=list)
+    # [2026-08-04] conditionActions 는 발화가 아닌 구조화 신호라 message 가 없을 수 있다.
+    # 부모 ChatRequest 의 필수 message 를 선택(기본 "")으로 낮추고, 아래 validator 에서
+    # 액션도 발화도 없는 요청만 거절해 기존 일반 발화 필수성은 유지한다.
+    message: str = Field(
+        default="",
+        description="현재 턴 사용자 원문 질의. conditionActions가 있으면 비워도 된다.",
+    )
+
+    @model_validator(mode="after")
+    def _validate_message_and_actions(self) -> "BuyerChatRequest":
+        """중복 제거 액션을 정규화하고 빈 발화·빈 액션 요청은 400으로 거절한다."""
+        seen: set[str] = set()
+        unique_actions: list[ConditionAction] = []
+        for action in self.condition_actions:
+            if action.field in seen:
+                continue
+            seen.add(action.field)
+            unique_actions.append(action)
+        self.condition_actions = unique_actions
+        if not self.message.strip() and not self.condition_actions:
+            raise ValueError("message 또는 conditionActions 가 필요합니다")
+        return self
+
+
 # ── SSE 이벤트 data 페이로드 모델 (api-spec §3.1, 6종) ──
 
 
