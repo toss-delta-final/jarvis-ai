@@ -188,6 +188,18 @@ def test_deferred_retry_guard_rejects_default_serial_budget():
     assert "RELAXATION_MAX_ROUNDS=0" in message
 
 
+def test_deferred_retry_guard_allows_empty_auto_relax_fields():
+    """자동 완화 목록이 비면 미룸이 없어 직렬 합 검증 대상이 아니다."""
+    settings = Settings(
+        _env_file=None,
+        relaxation_auto_fields=[],
+        search_retry_on_deferred_conditions=True,
+    )
+
+    assert settings.relaxation_auto_fields == []
+    assert settings.search_retry_on_deferred_conditions is True
+
+
 def test_deferred_retry_guard_allows_disabled_relaxation():
     """완화를 끄면 첫 이벤트 앞 직렬 probe가 없으므로 종전 재시도 가드를 켤 수 있다."""
     settings = Settings(

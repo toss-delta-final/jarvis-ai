@@ -1163,6 +1163,8 @@ class Settings(BaseSettings):
         조합도 다시 열린다.
 
         가드 ON/OFF 설정은 각각 직렬 합 `2 * budget`/`2 * spring_timeout_s`로 검증한다.
+        게이트는 `graph.py`의 `may_auto_relax`처럼 rounds가 양수이고 자동 완화 필드가 있을 때만
+        열어, 실제로 미루지 않는 설정을 일어나지 않는 직렬 호출 때문에 막지 않는다(#277 4차).
         이 식을 첫 이벤트 앞 호출 수 일반형으로 확장하고 타임아웃을 재배분하는 일은 #288 소관이다.
         """
         budget = self.spring_timeout_s * (self.spring_max_retries + 1)
@@ -1173,8 +1175,8 @@ class Settings(BaseSettings):
                 f"{self.stream_total_timeout_buyer_s}): "
                 "search retries alone would exhaust the buyer turn budget"
             )
-        # 단일 I-1 예산은 가드와 무관하게 비교하고, 아래 검증은 가드 ON/OFF 각각의 실제
-        # 직렬 합(재시도 포함 2회 / 재시도 없는 단일 시도 2회)을 첫 이벤트 상한과 비교한다.
+        # 단일 I-1 예산은 가드와 무관하게 비교하고, 아래 검증은 graph.py의 may_auto_relax 전제
+        # (rounds > 0 && 자동 완화 필드 존재)에서만 ON/OFF 각각의 실제 직렬 합을 비교한다.
         if budget >= self.stream_first_token_timeout_s:
             raise ValueError(
                 "SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1) must be < "
@@ -1188,13 +1190,21 @@ class Settings(BaseSettings):
             serial_formula = "2 * SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1)"
             recovery = (
                 "disable SEARCH_RETRY_ON_DEFERRED_CONDITIONS, lower SPRING_TIMEOUT_S, "
-                "or set RELAXATION_MAX_ROUNDS=0"
+                "or disable deferral with RELAXATION_MAX_ROUNDS=0 or "
+                "RELAXATION_AUTO_FIELDS=[]"
             )
         else:
             serial_budget = 2 * self.spring_timeout_s
             serial_formula = "2 * SPRING_TIMEOUT_S"
-            recovery = "lower SPRING_TIMEOUT_S or set RELAXATION_MAX_ROUNDS=0"
-        if self.relaxation_max_rounds > 0 and serial_budget >= self.stream_first_token_timeout_s:
+            recovery = (
+                "lower SPRING_TIMEOUT_S or disable deferral with "
+                "RELAXATION_MAX_ROUNDS=0 or RELAXATION_AUTO_FIELDS=[]"
+            )
+        if (
+            self.relaxation_max_rounds > 0
+            and self.relaxation_auto_fields
+            and serial_budget >= self.stream_first_token_timeout_s
+        ):
             raise ValueError(
                 f"{serial_formula} must be < STREAM_FIRST_TOKEN_TIMEOUT_S "
                 f"(got {serial_budget} >= "
