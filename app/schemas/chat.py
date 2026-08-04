@@ -123,7 +123,7 @@ def _coerce_positive_int(value: object) -> int | None:
     return result if result > 0 else None
 
 
-def _clean_screen_text(value: str, max_chars: int) -> str:
+def _clean_screen_text(value: str, max_chars: int, raw_scan_max: int) -> str:
     """screen 의 사람이 읽는 문자열 1건을 프롬프트에 실을 수 있게 정제·절단한다 (#118 라운드 2).
 
     `app.core.text._strip_unsafe` 와 같은 정제다 — 제어문자·zero-width·bidi 포맷 문자를 없애고
@@ -132,8 +132,16 @@ def _clean_screen_text(value: str, max_chars: int) -> str:
     (거부하지 않는다 — screen 은 맥락 힌트라 400 을 내지 않는 것이 §3.1 유효성 표다).
 
     절단은 정제 **후**에 잰다. 먼저 자르면 제거될 문자가 예산을 먹어 멀쩡한 이름이 짧아진다.
+
+    [14차 리뷰, F-17] **단, 정제 자체를 원문 전체에 돌리기 전에 `raw_scan_max` 로 먼저 한 번
+    자른다.** `_strip_unsafe` → `strip_invalid_invisible_sequences` 는 문자 단위로 순회하는
+    O(n) 검사라, `max_chars`(절단 상한)만 있고 원문 길이에 사전 상한이 없으면 name·filters 값이
+    수백만 자여도 그 전체를 정제 비용으로 낸 **뒤에야** 잘린다(실측: 200만자 × 50건 = 25.02초,
+    구매자 스트림 전체 상한 30s(§2.9 c)를 위협하는 서비스 거부). `raw_scan_max` 는
+    `screen_text_max_chars` 의 넉넉한 배수라(config 주석 근거) 이 사전 절단이 정상 페이로드의
+    정제 결과를 바꾸지 않는다 — 진짜 악성(수백만 자) 원문만 정제 비용이 유계가 된다.
     """
-    return _strip_unsafe(value)[:max_chars]
+    return _strip_unsafe(value[:raw_scan_max])[:max_chars]
 
 
 class ScreenProduct(CamelModel):
@@ -243,6 +251,7 @@ class ChatRequest(CamelModel):
         settings = get_settings()
         products_max = settings.screen_products_max
         text_max = settings.screen_text_max_chars
+        text_raw_scan_max = settings.screen_text_raw_scan_max
 
         raw_products = v.get("products")
         products: list[dict[str, object]] = []
@@ -283,7 +292,11 @@ class ChatRequest(CamelModel):
                 products.append(
                     {
                         "productId": product_id,
-                        "name": _clean_screen_text(name, text_max) if isinstance(name, str) else "",
+                        "name": (
+                            _clean_screen_text(name, text_max, text_raw_scan_max)
+                            if isinstance(name, str)
+                            else ""
+                        ),
                     }
                 )
             if dropped_any_invalid_item:
@@ -314,7 +327,7 @@ class ChatRequest(CamelModel):
                 if isinstance(value, str):
                     # 정제 결과가 빈 문자열이면(제어문자만 온 경우) 키 자체를 버린다 — 프롬프트에
                     # `"sort": ""` 같은 빈 항목을 실어 봐야 의미가 없다.
-                    if cleaned := _clean_screen_text(value, text_max):
+                    if cleaned := _clean_screen_text(value, text_max, text_raw_scan_max):
                         filters[key] = cleaned
 
         return {

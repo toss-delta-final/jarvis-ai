@@ -734,6 +734,18 @@ class Settings(BaseSettings):
     # 옵션 수식, 통상 60~80 자)은 절단 없이 다 들어간다. filters 표시값("배송중"·"최신순")에는
     # 넉넉하다.
     screen_text_max_chars: int = Field(default=120, ge=1)
+    # [14차 리뷰, F-17] screen 문자열(products[].name · filters 값) **원문** 길이 하드 상한 —
+    # `screen_text_max_chars`(정제 후 절단 상한)와는 별개다. `app.schemas.chat._clean_screen_text`
+    # 가 `_strip_unsafe`(제어·zero-width·bidi 검사, 문자 단위 순회)를 원문 **전체**에 먼저 돌린
+    # 뒤에야 `screen_text_max_chars` 로 잘랐으므로, 원문 길이 자체에는 사전 상한이 없었다 —
+    # `screen_products_raw_scan_max` 가 "원본 배열 길이"는 유계로 만들었지만 그 배열의 각 항목
+    # **문자열 길이**는 열려 있던 비대칭이다. 실측: name 200만자 × 50건이 25.02초 걸렸고,
+    # `screen_products_raw_scan_max`(500)까지 채우면 더 나쁠 수 있다 — 구매자 스트림 전체 상한
+    # 30s(§2.9 c)를 넘겨 사실상 서비스 거부다. `screen_text_max_chars`(120)의 20배로 잡는다 —
+    # 실제 상품명·필터 표시값은 정제 전 원문이라도 수백 자를 넘기 어렵고(위 200자 선례의 12배
+    # 여유), 20배(2,400)면 정상 페이로드는 자르지 않으면서 악성 원문의 정제 비용을 유계로
+    # 만든다. 관대 유효성은 유지한다 — 이 슬라이스도 400 이 아니라 절단이다.
+    screen_text_raw_scan_max: int = Field(default=2400, ge=1)
     # 화면을 가리키는 **맨 지시대명사** 표지 — 이것만 있고 이름·순번·좌표가 없으면 정본 §3.1 의
     # "후보가 1건일 때만 확정, 여러 건이면 되물음"을 코드가 강제한다
     # (app/agents/buyer/screen_reference.py). 조사·활용을 흡수하도록 포함 관계로만 비교한다

@@ -347,6 +347,73 @@ def test_a_flood_of_invalid_products_does_not_error_and_stays_fast() -> None:
     assert elapsed < 5.0, f"극단적으로 느려짐(캡 자체가 아니라 다른 블로우업 의심) — {elapsed:.3f}s"
 
 
+def test_screen_text_raw_scan_hard_cap_bounds_the_strip_cost_deterministically(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[Claude 리뷰 14차, F-17] `name`·`filters` 값의 **원문** 길이 자체에도 하드 상한을 건다.
+
+    `_clean_screen_text` 는 `_strip_unsafe`(문자 단위 O(n) 순회)를 원문 전체에 먼저 돌린 뒤에야
+    `screen_text_max_chars` 로 잘랐다 — 원문 길이 자체에는 사전 상한이 없었다. 이제
+    `screen_text_raw_scan_max` 로 정제 **전에** 먼저 자른다. `screen_products_raw_scan_max` 와
+    같은 증명 패턴(내용 기반) — 원문이 raw_scan_max 를 넘으면 그 뒤쪽은 정제 결과에 아예
+    반영되지 않는다는 것을 직접 확인한다(`screen_text_max_chars` 를 하드 캡보다 크게 둬도
+    잘린 뒤쪽은 절대 돌아오지 않는다).
+    """
+    monkeypatch.setattr(get_settings(), "screen_text_raw_scan_max", 5)
+    monkeypatch.setattr(get_settings(), "screen_text_max_chars", 50)  # 하드 캡보다 크게 설정
+    parsed = BuyerChatRequest.model_validate(
+        _buyer_payload(
+            screen={"pageType": "chat", "products": [{"productId": 1, "name": "1234567890"}]}
+        )
+    )
+    assert parsed.screen is not None
+    # 원문 앞 5자(raw_scan_max)만 정제 대상이라 나머지는 애초에 보이지 않는다 —
+    # screen_text_max_chars(50)가 더 컸어도 6번째 자리부터는 원본 슬라이스 단계에서 이미
+    # 잘려 나가 절대 스캔되지 않는다.
+    assert parsed.screen.products[0].name == "12345"
+
+
+def test_screen_text_of_reasonable_length_is_preserved_byte_identical() -> None:
+    """대조군 — 정상 길이 문자열(기본 raw_scan_max 이내)은 하드 캡 도입 전후로 동일해야 한다."""
+    name = "무선 이어폰 프로 맥스 (블랙, 128GB)"
+    parsed = BuyerChatRequest.model_validate(
+        _buyer_payload(screen={"pageType": "chat", "products": [{"productId": 1, "name": name}]})
+    )
+    assert parsed.screen is not None
+    assert parsed.screen.products[0].name == name
+
+
+def test_a_flood_of_huge_screen_text_does_not_error_and_stays_fast(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[Claude 리뷰 14차, F-17] name·filters 원문이 초대형이어도 400 이 아니고 유계 시간에 끝난다.
+
+    수정 전 실측: name 200만자 × 50건이 25.02초 걸렸다 — `screen_products_raw_scan_max`(500)
+    까지 채우면 더 나쁠 수 있고, 구매자 스트림 전체 상한 30s(§2.9 c)를 넘겨 사실상 서비스
+    거부였다(`_strip_unsafe` 가 원문 전체를 문자 단위로 먼저 순회했기 때문). `screen_products_max`
+    를 50 으로 올려 실측 재현 조건(50건)과 맞춘다 — 기본값(20)이면 앞 20건만 정제되어 원 재현
+    수치와 비교할 수 없다.
+    """
+    import time
+
+    monkeypatch.setattr(get_settings(), "screen_products_max", 50)
+    huge_name = "a" * 2_000_000
+    products = [{"productId": i, "name": huge_name} for i in range(1, 51)]
+    started = time.perf_counter()
+    parsed = BuyerChatRequest.model_validate(
+        _buyer_payload(
+            screen={
+                "pageType": "chat",
+                "products": products,
+                "filters": {"status": huge_name},
+            }
+        )
+    )
+    elapsed = time.perf_counter() - started
+    assert parsed.screen is not None  # 400 이 아니다 — screen 자체는 살아 있다(관대 유효성)
+    assert elapsed < 5.0, f"극단적으로 느려짐(하드 캡이 빠졌을 가능성 — 수정 전 실측 25.02s) — {elapsed:.3f}s"
+
+
 def test_filters_lookup_never_iterates_the_raw_mapping() -> None:
     """[Claude 리뷰 13차] filters 는 허용 3키만 `.get()` 으로 직접 조회하고 원본을 순회하지 않는다.
 
@@ -1050,6 +1117,50 @@ def test_a_standalone_unknown_id_still_forces_a_reask(message: str) -> None:
     resolved = _resolve(message, products, columns=2)
     assert resolved is not None and resolved.product_id is None
     assert resolved.reason == "unknown_product_id_spoken"
+
+
+@pytest.mark.parametrize("message", ["301번 담아줘", "302번 담아줘", "301번", "301번담아줘"])
+def test_an_unknown_id_with_a_bare_beon_suffix_still_forces_a_reask(message: str) -> None:
+    """[Claude 리뷰 14차, F-16] `"번"` 접미(순서수사 `"번째"`가 아니라 상품 번호 표기)가 붙어도
+    같은 가드가 걸려야 한다.
+
+    수정 전 재현: `"301 담아줘"` → `_BARE_NUMBER` `['301']` → 되물음(정상). 그런데
+    `"301번 담아줘"`·`"302번 담아줘"` → `_BARE_NUMBER` `[]` → `None`(가드 미발동) — 한국어에서
+    상품 번호에 `"번"` 을 붙이는 표기가 오히려 더 흔한데, 그 표기만으로 두 목록 밖 id 가드가
+    통째로 빠지고 LLM 오추출이 그대로 담긴다(F-3 류 오담기 재발).
+    """
+    products = [(501, "러그"), (502, "바구니")]
+    resolved = _resolve(message, products, columns=2)
+    assert resolved is not None and resolved.product_id is None
+    assert resolved.reason == "unknown_product_id_spoken"
+
+
+def test_ordinal_beonjjae_is_not_swallowed_by_the_new_bare_beon_suffix() -> None:
+    """[Claude 리뷰 14차, F-16] `"번째"`(순서수사)는 새로 허용한 `"번"` 접미와 겹치면 안 된다.
+
+    `_ORDINAL` 이 `_BARE_NUMBER` 보다 먼저 검사되므로 `"3번째 거 담아줘"` 는 순번으로 풀려야
+    하고, 화면 밖 id 되물음(`unknown_product_id_spoken`)으로 새면 회귀다.
+    """
+    products = [(501, "러그"), (502, "바구니"), (503, "쿠션")]
+    resolved = _resolve("3번째 거 담아줘", products, columns=3)
+    assert resolved is not None and resolved.product_id == 503
+    assert resolved.reason == "ordinal"
+
+
+def test_ambiguous_two_digit_beon_never_self_confirms() -> None:
+    """[Claude 리뷰 14차, F-16] `"10번 담아줘"` 처럼 순번(10번째)인지 id 인지 애매한 두 자리
+    입력도 스스로 확정하지 않는다 — 그래서 어느 해석으로 읽어도 오담기로 이어질 경로가 없다.
+
+    (3) 절은 토큰이 `allowed_product_ids` **밖**일 때만 되물음을 반환하고, 안에 있으면 아무 것도
+    하지 않고 다음 규칙(맨 지시대명사 등)에 넘긴다.
+    """
+    products = [(501, "러그"), (502, "바구니")]
+    # 10 이 허용 목록 밖이면 되묻는다.
+    resolved = _resolve("10번 담아줘", products, columns=2)
+    assert resolved is not None and resolved.product_id is None
+    assert resolved.reason == "unknown_product_id_spoken"
+    # 10 이 마침 허용 목록 **안**이면 이 규칙은 침묵한다(스스로 확정하지 않음).
+    assert _resolve("10번 담아줘", products, columns=2, allowed={501, 502, 10}) is None
 
 
 def test_a_known_id_and_a_non_cart_context_are_left_to_the_llm() -> None:
