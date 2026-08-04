@@ -451,6 +451,13 @@ class Settings(BaseSettings):
     rating_tier_excellent: float = 4.5  # ≥ → 매우높음
     rating_tier_good: float = 4.0  # ≥ → 높음
     rating_tier_fair: float = 3.0  # ≥ → 보통 (그 미만 낮음)
+    # [#132] 사용자가 평점을 **명시**한 턴에서 무평점 상품이 노출될 때 근거문에 덧붙는 고지.
+    # #100 P0 의 rating 사후필터는 '반증된 것만' 제거하므로(무평점 보존, #171) "평점 4.5 이상"이라
+    # 말한 사용자에게도 리뷰 없는 신상품이 올라온다 — 그 사실을 카드마다 드러내지 않으면 사용자는
+    # 4.5↑ 라 믿고 본다. 자동 완화(`relaxation_notice`)는 이미 고지되는데 이쪽만 조용했다.
+    # 빈 값은 "고지하지 않는다"는 정상적인 의사표현이다(`dedup_skipped_notice` 와 같은 규약) —
+    # 계약이 요구하는 degrade 고지가 아니라 UX 정책이라 `_require_*_notice` 검증 대상이 아니다.
+    rating_unrated_disclosure_notice: str = "평점 정보 없음"
     review_tier_many: int = 100  # ≥ → 매우많음
     review_tier_some: int = 20  # ≥ → 많음
     review_tier_few: int = 5  # ≥ → 보통 (그 미만 적음)
