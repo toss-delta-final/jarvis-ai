@@ -1463,9 +1463,15 @@ class Settings(BaseSettings):
         # (Notion CH-2)·api-spec §3.1 등재와 FE 미지 type 무시 확인이 **둘 다** 끝난 뒤에만
         # 켤 수 있다. bool 필드라 .env 한 줄로 뒤집히는데, 지금 그걸 막는 게 사람의 규율뿐이라
         # 운영 레인에서는 기동으로 막는다(위 pepper/토큰 가드와 같은 fail-closed 규약).
+        # **판정 축은 auth_mode == "jwks" 와 app_environment in staging/production 의 합집합이다**
+        # — auth_mode 는 인증 "방식" 선택이라 실트래픽을 보장하지 않고(dev 인증으로 도는
+        # staging 도 있다), app_environment 는 실트래픽 축이지만 운영이 dev 인증으로 도는
+        # 조합을 놓칠 수 있다. 둘 중 하나만 해당해도 막는다(fail-closed 는 넓게 잡는다).
         # **이 가드 제거가 플래그를 켜는 절차의 일부다** — 등재·FE 확인이 끝나면 이 분기를
         # 지운다(scratchpad/draft-progress-contract.md §9 체크리스트).
-        if self.auth_mode == "jwks" and self.progress_events_enabled:
+        if (
+            self.auth_mode == "jwks" or self.app_environment in ("staging", "production")
+        ) and self.progress_events_enabled:
             raise ValueError(
                 "PROGRESS_EVENTS_ENABLED must stay false until the progress event "
                 "is registered in the API contract (#289)"

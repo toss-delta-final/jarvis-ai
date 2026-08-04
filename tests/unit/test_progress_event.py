@@ -434,3 +434,31 @@ def test_progress_events_disabled_succeeds_startup_in_jwks_mode() -> None:
         google_api_key="k",
         progress_events_enabled=False,
     )  # ok
+
+
+def test_progress_events_enabled_fails_startup_in_staging_even_with_dev_auth() -> None:
+    """R5-1 — `auth_mode`는 인증 방식일 뿐 실트래픽을 보장하지 않는다.
+
+    dev 인증으로 도는 staging(실 FE 가 붙을 수 있음)도 `app_environment` 축으로 막아야
+    한다 — jwks 단독 판정이면 이 조합이 가드를 그냥 통과해 계약 미등재 이벤트가 실
+    클라이언트로 나간다(리뷰 4차 지적).
+    """
+    from app.core.config import Settings
+
+    with pytest.raises(Exception, match="PROGRESS_EVENTS_ENABLED"):
+        Settings(
+            auth_mode="dev",
+            app_environment="staging",
+            progress_events_enabled=True,
+        )
+
+
+def test_progress_events_enabled_succeeds_startup_in_local_dev() -> None:
+    """가드를 넓혀도 로컬(기본 `local`)·실측 하네스 경로는 계속 살아 있다.
+
+    실측 하네스(`evals/first_event_budget/measure_first_event.py`)는 `AUTH_MODE=dev`만
+    핀으로 박고 `app_environment`는 기본값(`local`)이라 이 조합과 정확히 같다.
+    """
+    from app.core.config import Settings
+
+    Settings(auth_mode="dev", app_environment="local", progress_events_enabled=True)  # ok
