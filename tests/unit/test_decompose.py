@@ -1005,6 +1005,55 @@ def test_screen_cart_rule_is_appended_not_a_rewrite_of_the_load_bearing_cart_add
     assert "순번" in inserted and "줄" in inserted and "칸" in inserted
 
 
+def test_missing_anchor_raises_at_import_time_instead_of_silently_dropping_screen_rule() -> None:
+    """[Claude 리뷰 10차] 가드가 `assert` 였을 때는 `python -O`/`PYTHONOPTIMIZE=1` 로 통째로
+    사라졌다 — `_CART_ADD_ANCHOR` 가 `_SYSTEM` 에서 바뀌어도 `.replace()` 가 조용히 no-op 이 돼
+    `_SYSTEM_WITH_SCREEN`(system 프롬프트)이 `_SYSTEM` 과 같아지고, screen 이 실린 턴에도
+    "SCREEN.상품에서도 고르라"는 지시 없이 나가 화면 지시어 해소 정확도만 조용히 떨어진다(user
+    쪽 SCREEN JSON·F-10 방어 문구는 그대로 실려 증상이 더 늦게 드러난다). `assert` 를
+    `if`+`raise RuntimeError` 로 바꿔 최적화 모드에서도 살아남게 했다.
+
+    `_CART_ADD_ANCHOR` 를 몽키패치하고 모듈을 `importlib.reload` 하는 방식은 쓸 수 없다 —
+    reload 는 **소스 파일을 다시 읽어 재실행**하므로 몽키패치한 전역값이 곧바로 원래 소스값으로
+    되돌아간다. 대신 앵커 문구가 사라진 **소스 사본**을 만들어 새 모듈 네임스페이스에 직접
+    실행해, 모듈 임포트 시점(=바로 이 검사가 도는 시점)에 `RuntimeError` 가 나는지 확인한다.
+    """
+    import importlib.util
+    import pathlib
+
+    from app.agents.buyer.recommendation import decompose as decompose_module
+
+    module_path = pathlib.Path(decompose_module.__file__)
+    source = module_path.read_text(encoding="utf-8")
+    anchor_line = (
+        '_CART_ADD_ANCHOR = "  productId 를 고르세요. 못 고르면 productId=null. quantity 기본 1."'
+    )
+    assert anchor_line in source, "소스 형태가 바뀌었다 — 이 테스트의 문자열 치환도 갱신하세요"
+    # `_SYSTEM` 안에 존재하지 않는 문구로 바꿔 `.replace()` 를 no-op 으로 만든다.
+    broken_source = source.replace(
+        anchor_line,
+        '_CART_ADD_ANCHOR = "이 문구는 _SYSTEM 안에 존재하지 않는다 — 리뷰 10차 가드 테스트"',
+        1,
+    )
+    assert broken_source != source
+
+    probe_name = "decompose_broken_anchor_probe_10th_review"
+    spec = importlib.util.spec_from_file_location(probe_name, module_path)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    # `sys.modules` 에 등록해야 한다 — `ScreenPrompt`(`@dataclass(..., slots=True)`)가 처리되며
+    # `cls.__module__` 로 이 모듈을 다시 찾는데, 등록 안 된 이름이면 `dataclasses` 내부가
+    # `AttributeError` 로 죽어 우리가 보려는 `RuntimeError` 를 가린다. 테스트가 끝나면 지운다.
+    import sys
+
+    sys.modules[probe_name] = module
+    try:
+        with pytest.raises(RuntimeError, match="_SYSTEM_WITH_SCREEN"):
+            exec(compile(broken_source, str(module_path), "exec"), module.__dict__)
+    finally:
+        del sys.modules[probe_name]
+
+
 def test_screen_variant_prompt_keeps_every_load_bearing_rule_byte_identical() -> None:
     """screen 이 실린 턴의 system 프롬프트도 하중 문구 4종을 그대로 갖고 있어야 한다."""
     from app.agents.buyer.recommendation.decompose import _SYSTEM_WITH_SCREEN

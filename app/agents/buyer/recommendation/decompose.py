@@ -246,7 +246,20 @@ _CART_ADD_ANCHOR = "  productId 를 고르세요. 못 고르면 productId=null. 
 # ⚠️ 이 문장은 **screen 이 실린 턴에만** 붙는다(아래 decompose 참조). screen 이 없으면 system 도
 # user 도 오늘과 바이트 동일해야 한다 — 프로브의 회귀 대조군도 그 전제로 측정했다.
 _SYSTEM_WITH_SCREEN = _SYSTEM.replace(_CART_ADD_ANCHOR, _CART_ADD_ANCHOR + _SCREEN_CART_RULE)
-assert _SYSTEM_WITH_SCREEN != _SYSTEM, "cart_add 앵커 문구가 바뀌어 screen 규칙이 붙지 않았다"
+# [10차 리뷰] `assert` 가 아니라 `if`+`raise` 다 — `assert` 는 `python -O`/`PYTHONOPTIMIZE=1`
+# 로 최적화 모드 배포 시 바이트코드에서 통째로 제거된다(`assert` 문서화된 동작). 이 검사가
+# 지키는 것은 "`_CART_ADD_ANCHOR` 가 `_SYSTEM` 안에 그대로 남아 있어 `.replace()` 가 no-op 이
+# 아니었는가"이고, 없어지면 `_SYSTEM` 의 앵커 문구가 바뀌었을 때 `.replace()` 가 조용히 아무것도
+# 안 바꾼 채 `_SYSTEM_WITH_SCREEN` 이 `_SYSTEM` 과 같아진다 — screen 이 실린 턴에도 system
+# 프롬프트에 "SCREEN.상품에서도 고르라"는 지시가 빠져(user 쪽 SCREEN JSON·F-10 방어 문구는
+# 그대로 실리는데) 화면 지시어 해소 정확도만 조용히 떨어지고, 예외가 없어 배포 후에도 한동안
+# 발견되지 않는다. `raise` 는 최적화 모드에서도 살아남으므로 기동 즉시(모듈 import 시점) 죽는다.
+if _SYSTEM_WITH_SCREEN == _SYSTEM:
+    raise RuntimeError(
+        "_SYSTEM_WITH_SCREEN 이 _SYSTEM 과 동일하다 — _CART_ADD_ANCHOR 문구가 _SYSTEM 에서"
+        " 바뀌어 .replace() 가 screen 규칙(_SCREEN_CART_RULE)을 붙이지 못했다."
+        " _CART_ADD_ANCHOR 를 _SYSTEM 의 현재 cart_add 문구와 다시 맞추세요."
+    )
 
 # [7차 리뷰, F-10] SCREEN.상품 이름·필터 값은 사용자 화면에서 온 데이터이지 사용자의 지시가
 # 아니다. `_clean_screen_text`(app/schemas/chat.py)가 제어문자·zero-width 문자를 없애고 공백류를
