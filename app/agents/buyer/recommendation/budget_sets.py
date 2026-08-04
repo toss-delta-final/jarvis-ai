@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+_MIN_DFS_WORK_LIMIT = 64
+
 
 @dataclass(frozen=True)
 class BudgetSet:
@@ -101,6 +103,19 @@ def build_budget_sets(
 
     combinations: list[_Combination] = []
     truncated = False
+    work_limit = max(
+        _MIN_DFS_WORK_LIMIT,
+        max(1, max_combinations) * (2 * len(active) + 1),
+    )
+    work_done = 0
+
+    def consume_work() -> bool:
+        nonlocal truncated, work_done
+        if work_done >= work_limit:
+            truncated = True
+            return False
+        work_done += 1
+        return True
 
     def visit(
         index: int,
@@ -111,6 +126,8 @@ def build_budget_sets(
     ) -> None:
         nonlocal truncated
         if truncated:
+            return
+        if not consume_work():
             return
         if index == len(active):
             combinations.append(
@@ -131,6 +148,8 @@ def build_budget_sets(
             return
         leg = active[index]
         for rank, (product_id, price) in enumerate(cleaned[leg]):
+            if not consume_work():
+                return
             if product_id in product_ids:
                 continue
             next_sum = partial_sum + price

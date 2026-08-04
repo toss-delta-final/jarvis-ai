@@ -145,6 +145,28 @@ def test_truncated_budget_sets_fill_available_slots_without_breaking_invariants(
     assert len({frozenset(item.product_ids) for item in first.sets}) == len(first.sets)
 
 
+def test_budget_set_work_cap_truncates_sparse_search_before_combination_cap() -> None:
+    pools = [
+        [(1, 1), *[(product_id, 100) for product_id in range(100, 1_100)]],
+        [(2, 1)],
+    ]
+
+    plan = build_budget_sets(
+        pools=pools,
+        total_budget=2,
+        max_sets=3,
+        max_combinations=100,
+        max_items=9,
+    )
+
+    assert plan is not None
+    assert plan.combinations_truncated is True
+    assert len(plan.sets) == 1 < 100
+    assert plan.sets[0].kind == "extra"
+    assert plan.sets[0].product_ids == (1, 2)
+    assert plan.sets[0].verified_sum == 2
+
+
 def test_budget_sets_without_budget_and_max_sets_one_returns_baseline() -> None:
     plan = build_budget_sets(
         pools=[[(1, 5_000), (2, 1_000)], [(3, 6_000), (4, 2_000)]],

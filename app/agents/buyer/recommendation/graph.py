@@ -1030,7 +1030,8 @@ async def stream_recommendation(
                     break
             pools.append(merged)
         try:
-            plan = build_budget_sets(
+            plan = await asyncio.to_thread(
+                build_budget_sets,
                 pools=pools,
                 total_budget=decision.total_budget,
                 max_sets=settings.budget_set_max_count,
@@ -1046,7 +1047,8 @@ async def stream_recommendation(
                 # 총액 제한만 제거했을 때 조합이 생기는 경우에만 예산을 실패 원인으로 고지한다.
                 # 후보/가격 자체가 부족한 경우는 같은 입력으로도 None 이라 별도 문구로 분리된다.
                 infeasible_due_to_budget = (
-                    build_budget_sets(
+                    await asyncio.to_thread(
+                        build_budget_sets,
                         pools=pools,
                         total_budget=None,
                         max_sets=settings.budget_set_max_count,

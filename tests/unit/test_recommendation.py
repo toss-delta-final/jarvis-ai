@@ -3822,6 +3822,20 @@ async def test_infeasible_budget_falls_back_to_pick_one_and_notices_before_ready
 
     monkeypatch.setattr(get_settings(), "expose_min", 1)
     monkeypatch.setattr(get_settings(), "expose_max", 1)
+    build = recommendation_graph.build_budget_sets
+    build_contexts = []
+
+    def _record_build_context(**kwargs):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            on_event_loop = False
+        else:
+            on_event_loop = True
+        build_contexts.append((kwargs["total_budget"], on_event_loop))
+        return build(**kwargs)
+
+    monkeypatch.setattr(recommendation_graph, "build_budget_sets", _record_build_context)
 
     async def _map(**kwargs):
         return CategoryMapping(legs=[("A", "등뼈"), ("B", "대파")])
@@ -3859,6 +3873,7 @@ async def test_infeasible_budget_falls_back_to_pick_one_and_notices_before_ready
     )
 
     assert push.pushes[0].list_type == "PICK_ONE"
+    assert build_contexts == [(10_000, False), (None, False)]
     notice_index = next(
         index
         for index, event in enumerate(events)
