@@ -28,7 +28,7 @@ def _change(pid: int, color: object = None, *, attributes: dict | None = None) -
     ("attributes", "expected"),
     [
         ({"색상": " 블랙 "}, ["블랙"]),
-        ({"색상": [" 핑크 ", "", "  ", "레드", "핑크", None]}, ["핑크", "레드", "핑크"]),
+        ({"색상": [" 핑크 ", "", "  ", "레드", "핑크", None]}, ["핑크", "레드"]),
         ({"색상": None}, []),
         ({}, []),
         (None, []),
@@ -45,6 +45,16 @@ def test_count_terms_counts_products_per_term_not_duplicate_tokens() -> None:
     assert counts == Counter({"블랙": 2})
 
 
+def test_color_term_count_limit_applies_after_order_preserving_dedup() -> None:
+    terms = seed.extract_color_terms(
+        {"색상": ["레드"] * 39 + ["블루", "그린"]},
+        max_terms=40,
+        max_term_length=40,
+    )
+
+    assert terms == ["레드", "블루", "그린"]
+
+
 def test_color_term_count_limit_caps_offline_harvest_and_logs(caplog) -> None:
     with caplog.at_level("WARNING"):
         counts = seed.count_terms(
@@ -56,6 +66,7 @@ def test_color_term_count_limit_caps_offline_harvest_and_logs(caplog) -> None:
     assert counts == Counter({"블랙": 1, "화이트": 1})
     assert "색상 표기 개수 상한 초과" in caplog.text
     assert "1건 제외" in caplog.text
+    assert "레드" in caplog.text
 
 
 def test_color_term_length_limit_rejects_and_logs(caplog) -> None:
@@ -345,6 +356,7 @@ async def test_llm_none_clears_previous_pending_canonical_proposal() -> None:
     none_row = next(row for row in seed._rows_from_result(counts, result) if row.term == "스킨")
     assert none_row.canonical is None
     assert none_row.preserve_existing_canonical is False
+    assert none_row.provenance == "seed_llm_assignment"
 
 
 async def test_embedding_only_flags_llm_assignment_disagreement_for_review(tmp_path) -> None:
@@ -416,7 +428,7 @@ def test_upsert_transports_failed_evaluation_canonical_preservation_flag() -> No
         "남색",
         None,
         [1.0, 0.0],
-        "seed_pipeline",
+        "seed_llm_assignment",
         8,
         preserve_existing_canonical=True,
     )
@@ -527,8 +539,20 @@ def test_batch_harvest_upserts_only_unknown_terms_as_pending_proposals(monkeypat
     )
     assert count == 2
     assert captured == [
-        seed.ColorTermRow("남색", "네이비", [1.0, 0.0], "batch_harvest", 1),
-        seed.ColorTermRow("기타", None, None, "batch_harvest", 1),
+        seed.ColorTermRow(
+            "남색",
+            "네이비",
+            [1.0, 0.0],
+            "batch_embedding_unverified",
+            1,
+        ),
+        seed.ColorTermRow(
+            "기타",
+            None,
+            None,
+            "batch_embedding_unverified",
+            1,
+        ),
     ]
     assert executed[0] == "SET LOCAL statement_timeout = 2500"
     assert executed[2] == "SET LOCAL statement_timeout = 2500"

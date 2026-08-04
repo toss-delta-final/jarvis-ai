@@ -55,7 +55,8 @@
 - 규칙: **임베딩 우선 군집을 색상 동의어에 쓰지 않는다.** 고정 앵커에 대한 LLM 의미 배정을
   먼저 수행하되 원문 정확 일치·배타성·canonical 자기 포함·비순환·sentinel 제외를 엄격 검증한다.
   임베딩은 LLM 선택 코사인과 1위 앵커 불일치를 검수 큐에 보여 주는 교차검증으로만 사용하고,
-  전량을 `pending_review`로 두어 사람이 최종 판정한다.
+  전량을 `pending_review`로 두어 사람이 최종 판정한다. 배치에서 비용상 최근접 임베딩 제안을
+  유지할 때는 `batch_embedding_unverified` provenance로 LLM 배정과 명확히 구분한다.
 - 관련: #258, `app/pipelines/color_synonym_seed.py`, `color_synonyms`
 
 ## [2026-08-03] 테스트가 "통과하는지"가 아니라 "되돌리면 깨지는지"로 검증한다

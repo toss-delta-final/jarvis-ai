@@ -28,6 +28,9 @@ EmbedFn = Callable[[list[str]], list[list[float]]]
 FetchFn = Callable[[str | None, int], Awaitable[ProductChangesPage]]
 # Google 서버 상한(100)보다 작게 나눠 기존 3초 API timeout 안에 전체 꼬리를 처리한다.
 _EMBED_BATCH_SIZE = 20
+SEED_LLM_PROVENANCE = "seed_llm_assignment"
+BATCH_EMBEDDING_PROVENANCE = "batch_embedding_unverified"
+_EXCLUDED_TERM_LOG_PREVIEW = 5
 
 
 @dataclass(frozen=True)
@@ -144,19 +147,26 @@ def extract_color_terms(
     normalized = [
         value.strip() for value in values if isinstance(value, str) and value.strip()
     ]
-    overlong_count = sum(len(value) > max_term_length for value in normalized)
+    unique = list(dict.fromkeys(normalized))
+    overlong_count = sum(len(value) > max_term_length for value in unique)
     if overlong_count:
         _log.warning(
             "색상 표기 문자열 길이 상한 초과 — %d건 거부 (max_length=%d)",
             overlong_count,
             max_term_length,
         )
-    accepted = [value for value in normalized if len(value) <= max_term_length]
-    overflow_count = max(0, len(accepted) - max_terms)
-    if overflow_count:
+    accepted = [value for value in unique if len(value) <= max_term_length]
+    excluded = accepted[max_terms:]
+    if excluded:
+        preview = ", ".join(repr(value) for value in excluded[:_EXCLUDED_TERM_LOG_PREVIEW])
+        remaining = len(excluded) - _EXCLUDED_TERM_LOG_PREVIEW
+        suffix = f", 그 외 {remaining}건" if remaining > 0 else ""
         _log.warning(
-            "색상 표기 개수 상한 초과 — %d건 제외 (accepted=%d, max_terms=%d)",
-            overflow_count,
+            "색상 표기 개수 상한 초과 — %d건 제외: [%s%s] "
+            "(unique_accepted=%d, max_terms=%d)",
+            len(excluded),
+            preview,
+            suffix,
             len(accepted),
             max_terms,
         )
@@ -843,7 +853,7 @@ def harvest_new_terms(
                         term=term,
                         canonical=None,
                         embedding=None,
-                        provenance="batch_harvest",
+                        provenance=BATCH_EMBEDDING_PROVENANCE,
                         doc_count=1,
                     )
                 )
@@ -868,7 +878,7 @@ def harvest_new_terms(
                     term=term,
                     canonical=canonical,
                     embedding=vector,
-                    provenance="batch_harvest",
+                    provenance=BATCH_EMBEDDING_PROVENANCE,
                     doc_count=1,
                 )
             )
@@ -895,7 +905,7 @@ def _rows_from_result(
             term=term,
             canonical=assignments.get(term),
             embedding=result.embeddings.get(term),
-            provenance="seed_pipeline",
+            provenance=SEED_LLM_PROVENANCE,
             doc_count=count,
             preserve_existing_canonical=preserve_existing.get(term, False),
         )
