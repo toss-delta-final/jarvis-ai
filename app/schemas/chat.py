@@ -14,12 +14,15 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Literal
 
 from pydantic import field_validator, model_validator, BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 from app.core.text import _strip_unsafe
+
+logger = logging.getLogger(__name__)
 
 
 class CamelModel(BaseModel):
@@ -235,11 +238,24 @@ class ChatRequest(CamelModel):
         if isinstance(raw_products, list):
             # 상한 초과분은 화면 순서(배열 순서) 앞쪽만 취한다 — 좌표 해소가 이 순서에 의존하므로
             # dedup 은 하지 않는다(api-spec §3.1 지시어 해소).
-            for item in raw_products[:products_max]:
+            #
+            # [12차 리뷰] **불량 항목을 먼저 거르고, 그다음 `products_max` 로 자른다** — 순서를
+            # 반대로 하면(절단 먼저, 필터링 나중) 앞쪽 불량 항목이 상한 슬롯을 자릿수로 먹어
+            # 배열 뒤쪽의 정상 상품이 불필요하게 잘려나간다(실제 재현: 불량 N건 + 정상
+            # products_max 건이 앞뒤로 섞이면 정상 상품이 N건 밀려 잘린다). 정본 §3.1 유효성
+            # 표의 "products 상한 초과 → 앞 products_max 건만 취하고 버림"은 "건"이 원본(raw)
+            # 항목인지 유효 항목인지 명시하지 않는다 — 유효 항목으로 세는 편이 사용자에게
+            # 유리하고(정상 상품이 덜 잘림) 계약 문면과도 어긋나지 않는다는 해석을 택했다.
+            dropped_any_invalid_item = False
+            for item in raw_products:
+                if len(products) >= products_max:
+                    break
                 if not isinstance(item, Mapping):
+                    dropped_any_invalid_item = True
                     continue
                 product_id = _coerce_positive_int(item.get("productId", item.get("product_id")))
                 if product_id is None:
+                    dropped_any_invalid_item = True
                     continue
                 name = item.get("name")
                 products.append(
@@ -248,6 +264,15 @@ class ChatRequest(CamelModel):
                         "name": _clean_screen_text(name, text_max) if isinstance(name, str) else "",
                     }
                 )
+            if dropped_any_invalid_item:
+                # 이 인덱스 시프트 자체는 구조적으로 없앨 수 없다 — 서버는 FE 가 실제로 몇
+                # 번째 자리에 그 상품을 그렸는지 알 방법이 없고, 순번·좌표 해소
+                # (screen_reference.resolve_screen_reference)와 `grid_position` 은 여기 남은
+                # 배열의 인덱스를 "화면 실제 위치"로 신뢰할 수밖에 없다(build_screen_prompt
+                # 주석과 같은 전제). 되물음 강제·프롬프트 경고 주입 같은 대응은 과설계다 —
+                # 정상 요청에서는 FE 가 애초에 불량 항목을 보내지 않으므로, 이 로그 한 줄로
+                # "그 전제가 이번 요청에서 흔들렸다"만 관측 가능하게 남긴다.
+                logger.warning("screen_products_contained_invalid_items")
 
         columns = v.get("columns")
         if isinstance(columns, bool) or not isinstance(columns, int) or columns < 1:

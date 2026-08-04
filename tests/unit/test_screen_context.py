@@ -233,6 +233,74 @@ def test_screen_products_drops_only_the_garbage_item() -> None:
     assert [p.product_id for p in parsed.screen.products] == [101, 103]
 
 
+def test_invalid_items_before_the_cap_do_not_starve_later_valid_products(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[Claude 리뷰 12차] 절단보다 필터링이 먼저다 — 앞쪽 불량 항목이 상한 슬롯을 먹지 않는다.
+
+    `products_max=3` 인 상태에서 앞에 불량 항목 2건을 두고 뒤에 정상 5건을 두면, "먼저 자르고
+    나중에 거르는"(절단 먼저) 순서에서는 `raw_products[:3]` 이 이미 불량 2건 + 정상 1건이라
+    정제 후 정상 상품이 **1건**만 남는다(뒤쪽 정상 4건이 불필요하게 잘림, 실제 재현). 올바른
+    순서(먼저 거르고 나중에 자름)에서는 상한만큼(3건) 정상 상품이 그대로 남아야 한다.
+    """
+    monkeypatch.setattr(get_settings(), "screen_products_max", 3)
+    parsed = BuyerChatRequest.model_validate(
+        _buyer_payload(
+            screen={
+                "pageType": "chat",
+                "products": [
+                    {"foo": 1},  # 불량 1 — Mapping 이지만 productId 없음
+                    "garbage",  # 불량 2 — Mapping 도 아님
+                    {"productId": 1, "name": "p1"},
+                    {"productId": 2, "name": "p2"},
+                    {"productId": 3, "name": "p3"},
+                    {"productId": 4, "name": "p4"},
+                    {"productId": 5, "name": "p5"},
+                ],
+            }
+        )
+    )
+    assert parsed.screen is not None
+    assert [p.product_id for p in parsed.screen.products] == [1, 2, 3]
+
+
+def test_dropped_invalid_screen_items_are_logged(caplog: pytest.LogCaptureFixture) -> None:
+    """[Claude 리뷰 12차] 불량 항목이 하나라도 걸러지면 그 사실을 로그로 남긴다.
+
+    불량 항목이 있었다는 것은 `resolve_screen_reference`·`grid_position` 이 신뢰하는 "남은
+    배열의 인덱스 = 화면 실제 위치"라는 전제가 이번 요청에서 흔들렸을 수 있다는 뜻이다(인덱스
+    시프트 자체는 FE 가 보낸 배열을 신뢰할 수밖에 없어 구조적으로 없앨 수 없다 — 관측만 남긴다).
+    """
+    with caplog.at_level("WARNING"):
+        parsed = BuyerChatRequest.model_validate(
+            _buyer_payload(
+                screen={
+                    "pageType": "chat",
+                    "products": [{"productId": 101, "name": "A"}, {"foo": 1}],
+                }
+            )
+        )
+    assert parsed.screen is not None
+    assert "screen_products_contained_invalid_items" in caplog.text
+
+
+def test_no_warning_logged_when_every_screen_item_is_valid(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """대조군 — 불량 항목이 하나도 없으면 경고 로그가 없다(무해한 정상 경로 소음 방지)."""
+    with caplog.at_level("WARNING"):
+        parsed = BuyerChatRequest.model_validate(
+            _buyer_payload(
+                screen={
+                    "pageType": "chat",
+                    "products": [{"productId": 101, "name": "A"}, {"productId": 102, "name": "B"}],
+                }
+            )
+        )
+    assert parsed.screen is not None
+    assert "screen_products_contained_invalid_items" not in caplog.text
+
+
 @pytest.mark.parametrize("columns", [None, 0, "3"])
 def test_screen_invalid_columns_is_ignored_but_rest_survives(columns) -> None:  # noqa: ANN001
     screen: dict[str, object] = {
