@@ -54,6 +54,37 @@ def test_seller_ma_window_invalid_config_fails_fast() -> None:
     assert ok.seller_ma_min_window == 3
 
 
+def test_seller_period_max_days_bounds_fail_fast() -> None:
+    """[#269 리뷰] 기간 상한 자체가 date 연산 한계를 넘게 설정되면 기동 시점에 실패한다.
+
+    약 74만일부터 `today - timedelta(days=n)` 이 date.min 을 넘어 OverflowError 를 낸다.
+    호출부는 except ValueError 만 잡으므로, 그렇게 설정되면 이 이슈가 막으려던
+    "되묻기 대신 에러 경로" 가 그대로 재현된다. 상한의 상한을 10년으로 묶는다.
+    """
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_period_max_days=7_310_000)  # 자릿수 오타 상정
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_period_max_days=0)
+    # 경계는 유효하다.
+    assert Settings(_env_file=None, seller_period_max_days=3653).seller_period_max_days == 3653
+
+
+def test_seller_recent_default_within_period_max() -> None:
+    """[#269 리뷰] 기본 일수가 상한을 넘으면 기동 시점에 실패한다.
+
+    normalize_period 는 기간 미지정("최근")일 때 n=recent_default_days 로 두고 곧바로
+    n>max_days 검사를 통과시킨다. 상한을 기본값보다 낮추면 가장 흔한 발화조차 매번
+    "기간이 너무 깁니다" 되묻기로 빠지는데, 현재 기본값(7 <= 731)에선 안 드러난다.
+    """
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_recent_days_default=30, seller_period_max_days=7)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_recent_days_default=0)
+    # 경계(default == max)는 유효하다.
+    ok = Settings(_env_file=None, seller_recent_days_default=7, seller_period_max_days=7)
+    assert ok.seller_recent_days_default == 7
+
+
 def test_seller_model_temperatures() -> None:
     """SPEC-SELLER-001 §8 — Haiku t=0 / Sonnet t=0.2 기본값 (2-3 모델 팩토리 재료)."""
     settings = Settings(_env_file=None)

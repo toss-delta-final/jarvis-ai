@@ -38,6 +38,7 @@ def _settings(timeout_s: float = 5.0) -> SimpleNamespace:
         seller_report_score_threshold=21,
         seller_report_max_retries=3,
         seller_recent_days_default=7,
+        seller_period_max_days=731,  # #269 — run_analysis_pipeline 이 resolve_plan 에 넘긴다
         # ── 브랜치 분석 검증 (이슈 #242) ──
         seller_worker_max_retries=1,
         seller_analysis_score_threshold=21,

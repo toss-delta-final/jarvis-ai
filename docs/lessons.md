@@ -94,6 +94,21 @@
 - 관련: #118 라운드 2, `app/agents/buyer/screen_reference.py`, api-spec §3.1 "지시어 해소",
   `scripts/verify_screen_context_118.py`
 
+## [2026-08-04] 상한이 안전한지는 단일 호출 예산이 아니라 첫 이벤트 앞 **직렬 합**으로 잰다
+- 증상: I-1 단일 호출 예산 `3s × 2 = 6s < 10s` 기동 검증을 통과한 출고 기본값에서,
+  미룬 턴의 두 재시도 응답이 상한 직전(2.9s)에 오자 첫 SSE 이벤트가 하나도 나가지 않은 채
+  10.01s에 504가 **8/8** 재현됐다(재시도 뒤 즉답이면 7.09s·200). 이 PR은 미룬 턴의
+  재시도를 꺼 이 조합을 닫았고 `SEARCH_RETRY_ON_DEFERRED_CONDITIONS=true`로 되돌릴 수 있다.
+- 원인: #113의 `may_auto_relax` 턴은 `conditions`를 검색 뒤로 미뤄 첫 이벤트 앞에 본 검색과
+  자동 완화 probe 두 I-1 호출이 직렬로 놓인다. "probe가 돌면 본 검색은 재시도를 안 썼다"는
+  배타성 논거도 1차 타임아웃 → 2차 0건 성공 실측으로 반증돼 최대 합은 12s다.
+- 규칙:
+  - 순서를 근거로 쓴 서술은 **그 순서를 바꾼 PR이 함께 갱신한다.**
+  - 예산 검증은 첫 이벤트 앞에 호출이 **몇 번** 놓이는지까지 센다. 인프로세스 `TestClient`는
+    SSE 본문을 버퍼링하므로 첫 이벤트 측정에 쓰지 않고 실 HTTP 경계에서 잰다.
+- 관련: #277, #113/PR #248, `app/core/config.py`
+  `_require_search_retry_within_stream_budget`, `evals/first_event_budget/`, api-spec §2.9(c)
+
 ## [2026-08-04] "자체 상한이 있다"고 인용하기 전에 그 `wait_for` 가 **어디까지** 감싸는지 본다
 - 증상: #266 에서 `get_checkpointer()` 를 레인 상한 밖으로 빼며 근거를 *"자체 상한
   (`seller_checkpoint_connect_timeout_s`, 5s)이 있어 무한 대기가 아니다"* 로 적고, 그 값을

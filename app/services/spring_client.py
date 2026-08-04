@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 import logging
 import math
 import threading
@@ -98,6 +99,21 @@ _log = logging.getLogger(__name__)
 _color_synonym_limiters: dict[tuple[str, int], threading.BoundedSemaphore] = {}
 _color_synonym_limiter_lock = threading.Lock()
 _background_synonym_tasks: set[asyncio.Task[dict[str, list[str]]]] = set()
+# ContextVar로 SpringSearchBackend·EmbeddingRerankBackend·VectorSearchBackend와 search_catalog
+# 시그니처를 바꾸지 않고 호출 구간만 표시한다. gather 자식 태스크는 생성 시 컨텍스트를 복사한다.
+_search_retry_suppressed: ContextVar[bool] = ContextVar(
+    "search_retry_suppressed", default=False
+)
+
+
+@contextmanager
+def suppress_search_retry() -> Iterator[None]:
+    """현재 호출 컨텍스트의 I-1 검색 재시도만 일시적으로 끈다."""
+    token = _search_retry_suppressed.set(True)
+    try:
+        yield
+    finally:
+        _search_retry_suppressed.reset(token)
 
 
 def _color_synonym_limiter(dsn: str, max_concurrency: int) -> threading.BoundedSemaphore:
@@ -574,7 +590,7 @@ async def search_products(filters: ProductSearchFilters) -> ProductSearchResult:
             # 색상 확장은 보조 품질 경로다. DB 장애가 본 검색을 죽이지 않게 기존 단수로 degrade.
             _log.warning("색상 동의어 확장 실패 — 원문 단수 color로 검색", exc_info=True)
     params = _search_query_params(filters, color_values=color_values)
-    attempts = settings.spring_max_retries + 1
+    attempts = 1 if _search_retry_suppressed.get() else settings.spring_max_retries + 1
     try:
         with _spring_span("search_products", "GET") as span:
             for attempt in range(1, attempts + 1):

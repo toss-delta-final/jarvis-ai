@@ -857,6 +857,7 @@ async def test_analysis_request_exports_complete_bounded_tree(
             seller_report_score_threshold=21,
             seller_report_max_retries=1,
             seller_recent_days_default=7,
+            seller_period_max_days=731,  # #269 — resolve_plan 인자로 읽힌다
             seller_worker_max_retries=1,
             seller_analysis_score_threshold=21,
             seller_analysis_judge_timeout_s=1,

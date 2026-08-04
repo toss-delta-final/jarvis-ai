@@ -742,6 +742,7 @@ async def run_analysis_pipeline(
             plan,
             today=today,
             recent_default_days=settings.seller_recent_days_default,
+            max_days=settings.seller_period_max_days,
             question=question,
         )
     except ValueError as exc:
