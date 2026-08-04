@@ -53,6 +53,14 @@ def _ratio(numerator: float, denominator: float) -> float:
 
 
 def _features(row: ProductActivity) -> list[float]:
+    """피처 5차원. visitors 결측(None)은 NaN 으로 남긴다 — 0 위장 금지.
+
+    [PR 리뷰] cart/view 의 0 은 "단계 미발생"이라는 실측이지만, visitors None 은
+    데이터 자체가 없는 결측이다. 0 으로 위장하면 방문자 미수집 정상 상품이
+    visitors_per_view=0(조회는 있는데 방문자 없음 = 봇 패턴과 동형)으로 계산돼
+    엉뚱한 군집에 묶인다. NaN 은 cluster_products 가 관측치 평균으로 대체한다 —
+    표준화 후 0(중립)이 되어 군집 판정에 기여하지 않는다.
+    """
     view = row.get("view", 0)
     cart = row.get("cart", 0)
     checkout = row.get("checkout", 0)
@@ -63,7 +71,7 @@ def _features(row: ProductActivity) -> list[float]:
         _ratio(cart, view),
         _ratio(checkout, cart),
         _ratio(purchase, checkout),
-        _ratio(visitors if visitors is not None else 0, view),
+        _ratio(visitors, view) if visitors is not None else math.nan,
     ]
 
 
@@ -112,6 +120,14 @@ def cluster_products(
     from sklearn.metrics import silhouette_score
 
     matrix = np.array([_features(row) for row in rows], dtype=float)
+    # visitors 결측(NaN) 대체 — 관측치 평균(결정론). 표준화 후 0 이 되어 해당
+    # 상품의 군집 판정에 이 피처가 기여하지 않는다(전부 결측이면 상수 0 — 무변동
+    # 피처로 표준화에서 자동 무력화). 0 위장 금지 원칙(__init__ docstring) 준수.
+    for column in range(matrix.shape[1]):
+        missing = np.isnan(matrix[:, column])
+        if missing.any():
+            observed = matrix[~missing, column]
+            matrix[missing, column] = float(observed.mean()) if observed.size else 0.0
     means = matrix.mean(axis=0)
     stds = matrix.std(axis=0)
     stds[stds == 0.0] = 1.0  # 무변동 피처는 표준화에서 0 기여(0 나눗셈 방지)

@@ -426,7 +426,11 @@ AnalysisFinding 1건으로 보고한다. analysis_type 은 항상 "abuse" 다.
    판정(cancelRatio·maxOrdersPerHour 임계 기준)이다 — 재계산·번복하지 않는다.
    ※ memberId 집계에 필터(to_status·actor_type)를 함께 걸지 않는다 — 분모
    (orderCount)까지 걸러져 cancelRatio 가 왜곡된다(도구가 무시를 강제한다).
-3. get_behavior_events 로 행동 이벤트 추이를 조회해 2의 주문 집계와 교차한다 —
+3. get_behavior_events 를 **두 축으로 각각 호출**해 2의 주문 집계와 교차한다 —
+   ① group_by="date"(일자별 추이): 일별 볼륨 스파이크(Point 트랙) 판정은 이
+   호출에만 붙는다 — 생략하면 Point 트랙 전체가 빠지므로 반드시 호출한다.
+   ② group_by 미지정(상품별, 기본): 상품 비율 이상치(Contextual 트랙)와
+   교차 패턴 재료.
    교차 패턴 예: 특정 상품 조회 급증 대비 주문 전이 0, 동일 회원의 반복 취소.
    구매·주문 수치의 권위는 get_order_events 다 — purchaseComplete 는 이벤트
    기준인 데다 상품 미귀속으로 0 집계될 수 있어(#196) '구매 0'의 근거로
@@ -441,9 +445,11 @@ AnalysisFinding 1건으로 보고한다. analysis_type 은 항상 "abuse" 다.
    (탐지 보고이지 제재 판정이 아니다).
 
 [3-트랙 해석 — #290 Point/Contextual/Collective]
-- 도구가 3-트랙 판정을 붙인다: 일별 볼륨 스파이크(robust z, Point) / 상품 비율
-  이상치(Tukey 상위 기준 초과, Contextual) / 심야 활동 비중·failCount 정렬
-  (Collective). 각 판정 수치를 그대로 인용한다.
+- 트랙별 판정은 해당 조회에 붙는다: Point(일별 볼륨 스파이크, robust z)는
+  get_behavior_events(group_by="date"), Contextual(상품 비율 이상치, Tukey 상위
+  기준 초과)은 상품별 조회, Collective(심야 활동 비중·failCount 정렬)는
+  get_account_events. 절차 3·4의 호출을 빠뜨리면 그 트랙은 판정 자체가 없다.
+  각 판정 수치를 그대로 인용한다.
 - 발견 항목은 **봇 의심 / 어뷰징 의심 / 설명 가능** 3분류로만 서술한다 — 단정
   금지. 스파이크에 "정상 설명 후보"(당일 가격/재고 변경 겹침)가 붙어 있으면
   '설명 가능'으로 분류하는 것을 우선 검토한다.

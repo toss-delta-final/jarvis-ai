@@ -95,6 +95,19 @@ def test_duplicate_labels_get_numbered() -> None:
         assert len(labels) == len(set(labels))  # 중복 라벨 없음(번호 부여)
 
 
+def test_missing_visitors_does_not_distort_cluster_assignment() -> None:
+    """[PR 리뷰] visitors 결측(None)은 0 위장이 아니라 관측치 평균 대체(표준화 후
+    중립) — 방문자 미수집 정상 상품이 봇 패턴(visitors_per_view=0)으로 계산돼
+    엉뚱한 군집에 묶이지 않는다."""
+    products = _three_pattern_products()
+    # 전환직결형 패턴과 동일한 상품인데 visitors 만 결측 — 같은 군집에 묶여야 한다.
+    products.append(_product(106, 230, 92, 69, 56, None))
+    clusters = segmentation.cluster_products(products, **_PARAMS)
+    home = next(c for c in clusters if 106 in c.product_ids)
+    assert 100 in home.product_ids  # 전환직결형 무리와 동거 — 결측이 소속을 바꾸지 않는다
+    assert home.label.startswith("전환직결형")
+
+
 def test_invalid_k_range_raises() -> None:
     """k 범위 오류는 호출부 설정 문제 — ValueError(도구가 degrade 로 흡수)."""
     with pytest.raises(ValueError):

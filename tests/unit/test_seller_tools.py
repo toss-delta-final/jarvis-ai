@@ -1075,6 +1075,34 @@ async def test_behavior_tool_product_rows_flag_ratio_outliers() -> None:
     assert "구매 0 — 조회 폭증 패턴" in result
 
 
+async def test_behavior_tool_ratio_outlier_not_masked_by_zero_purchase_volume() -> None:
+    """[PR 리뷰] 구매 0 대량 조회 상품이 '조회/구매' 분포를 부풀려 진짜 비율 이상치를
+    가리던 오미탐 회귀 — 비율 트랙(purchase>0 전용)과 구매 0 조회 폭증 트랙(브랜드
+    조회량 분포)을 분리해 둘 다 잡는다."""
+    rows = [_behavior_row(100 + i, 500, 50, 25, 5) for i in range(6)]  # 조회/구매 = 100
+    rows.append(_behavior_row(777, 5000, 60, 30, 10))  # 조회/구매 = 500 — 진짜 비율 이상치
+    rows.append(_behavior_row(999, 4000, 10, 1, 0))  # 구매 0 + 대량 조회 — 별도 트랙
+    fake = FakeSpringClient()
+    fake.behavior_result = BehaviorEventsResult(group_by="product", rows=rows, total=len(rows))
+
+    result = await _call_runtime_tool(
+        get_behavior_events, {"from_date": "2026-07-01", "to_date": "2026-07-14"}, fake
+    )
+
+    # 구 방식이면 [999]의 4,000(원시 조회수)이 분포에 섞여 [777](500)이 fence 아래 숨었다.
+    assert "[777] 조회/구매 500.0" in result
+    assert "[999]" in result and "구매 0 — 조회 폭증 패턴" in result
+
+
+def test_abuse_prompt_mandates_date_group_by_for_point_track() -> None:
+    """[PR 리뷰] Point 트랙(일별 볼륨 스파이크)은 group_by="date" 호출에만 붙는다 —
+    abuse 프롬프트가 그 호출을 명시하지 않으면 트랙이 확률적으로 통째로 빠진다."""
+    from app.agents.seller.prompts import ABUSE_PROMPT
+
+    assert 'group_by="date"' in ABUSE_PROMPT
+    assert "Point 트랙" in ABUSE_PROMPT
+
+
 async def test_account_events_hour_group_reports_night_share(monkeypatch) -> None:
     """[#290 abuse Collective 트랙] hour-groupBy 는 심야(0~6시) 활동 비중을 계산해
     붙인다 — 심야 편중은 봇 신호(Tan & Kumar)다."""

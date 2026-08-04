@@ -432,17 +432,23 @@ def _summarize_behavior_clusters(rows: list, settings) -> str:
 def _summarize_ratio_outliers(rows: list, settings) -> str:
     """상품별 비율의 브랜드 내 Tukey 상위 fence 초과 요약 (#290 abuse Contextual 트랙).
 
-    비율 3종은 전부 "높을수록 의심" 방향(Tan & Kumar 봇 피처의 집계 단위 번역):
-    - 조회/구매: purchase=0 이면 분모 1 로 치환 — "조회 폭증+구매 0" 패턴이 그대로
-      큰 값으로 드러난다(패턴명을 문구에 병기).
+    지표는 전부 "높을수록 의심" 방향(Tan & Kumar 봇 피처의 집계 단위 번역):
+    - 조회/구매(view/purchase): **purchase>0 상품만** — 순수 비율 분포로 검정한다.
+      [PR 리뷰] 구 방식(purchase=0 → 분모 1 치환)은 비율과 원시 조회수를 한 분포에
+      섞어 fence 를 왜곡했다 — 구매 0 대량 조회 상품이 분포를 부풀려 진짜 비율
+      이상치가 fence 아래 숨는 오미탐 경로.
+    - 구매 0 조회 폭증: purchase=0 상품은 별도 판정 — **브랜드 전체 조회량 분포**의
+      상위 fence 초과일 때만 "조회 폭증+구매 0" 패턴으로 표기한다(정의 그대로).
     - 담기율(cart/view): 장바구니 어뷰징(담기 봇) 신호.
     - 방문자당 조회(view/visitors): 소수 방문자의 반복 조회(크롤러/봇) 신호.
+      visitors 결측 상품은 이 지표에서 제외한다(결측 0 위장 금지).
     """
     per_metric: dict[str, list[tuple[str, float]]] = {
         "조회/구매": [],
         "담기율": [],
         "방문자당 조회": [],
     }
+    view_items: list[tuple[str, float]] = []  # 전 상품 조회량 — 구매 0 폭증 판정의 분포
     zero_purchase_ids: set[str] = set()
     for row in rows:
         counts = row.counts
@@ -451,8 +457,10 @@ def _summarize_ratio_outliers(rows: list, settings) -> str:
         cart = counts.get("addToCart", 0)
         target = f"[{row.product_id}]"
         if view > 0:
-            per_metric["조회/구매"].append((target, view / max(1, purchase)))
-            if purchase == 0:
+            view_items.append((target, float(view)))
+            if purchase > 0:
+                per_metric["조회/구매"].append((target, view / purchase))
+            else:
                 zero_purchase_ids.add(target)
             per_metric["담기율"].append((target, cart / view))
             if row.unique_visitors:
@@ -460,25 +468,33 @@ def _summarize_ratio_outliers(rows: list, settings) -> str:
     flags = []
     for metric, items in per_metric.items():
         flags.extend(outliers.tukey_upper_outliers(items, k=settings.seller_tukey_k, metric=metric))
-    if not flags:
+    # 구매 0 트랙 — fence 는 브랜드 전체 조회량 분포로 만들되, 구매 0 상품의 초과만
+    # 이상으로 본다(구매가 있는 고조회 상품은 인기이지 어뷰징 신호가 아니다).
+    zero_purchase_flags = [
+        flag
+        for flag in outliers.tukey_upper_outliers(
+            view_items, k=settings.seller_tukey_k, metric="조회량"
+        )
+        if flag.target in zero_purchase_ids
+    ]
+    if not flags and not zero_purchase_flags:
         # 최대 표본 기준으로 판정 수행 여부를 구분한다 — "없음"과 "판정 보류"는 다르다.
-        max_items = max((len(items) for items in per_metric.values()), default=0)
+        max_items = max((len(items) for items in (*per_metric.values(), view_items)), default=0)
         if max_items >= 4:
             return f" 상품 비율 이상치 없음(Tukey Q3+{settings.seller_tukey_k:g}×IQR 기준)."
         return " 상품 비율 이상치 판정 보류(비교 가능 상품 4개 미만)."
-    parts = []
-    for flag in flags:
-        pattern_note = (
-            ", 구매 0 — 조회 폭증 패턴"
-            if flag.metric == "조회/구매" and flag.target in zero_purchase_ids
-            else ""
-        )
-        parts.append(
-            f"{flag.target} {flag.metric} {flag.value:,.1f}"
-            f"(상위 기준 {flag.threshold:,.1f} 초과{pattern_note})"
-        )
+    parts = [
+        f"{flag.target} {flag.metric} {flag.value:,.1f}(상위 기준 {flag.threshold:,.1f} 초과)"
+        for flag in flags
+    ]
+    parts.extend(
+        f"{flag.target} 조회량 {flag.value:,.0f}"
+        f"(브랜드 상위 기준 {flag.threshold:,.0f} 초과, 구매 0 — 조회 폭증 패턴)"
+        for flag in zero_purchase_flags
+    )
+    total = len(flags) + len(zero_purchase_flags)
     return (
-        f" 상품 비율 이상치 {len(flags)}건"
+        f" 상품 비율 이상치 {total}건"
         f"(브랜드 내 Tukey Q3+{settings.seller_tukey_k:g}×IQR 초과): " + ", ".join(parts) + "."
     )
 
