@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import threading
 import time
 
@@ -190,6 +191,43 @@ async def test_parsing_uses_a_dedicated_executor_not_the_shared_default(
 
     assert seen, "파싱이 호출되지 않았다"
     assert seen[0].startswith("i1-parse"), f"전용 풀이 아니라 {seen[0]} 에서 돌았다"
+
+
+async def test_guard_timeout_drops_parse_work_still_waiting_in_the_queue() -> None:
+    """가드 취소는 **아직 시작 안 된** 파싱 작업을 큐에서 제거한다 (PR #293 리뷰 검증).
+
+    이게 성립하지 않으면 "버려진 작업이 큐를 채워 신규 요청이 파싱을 시작도 못 하고 예산을
+    태우고, 그 요청의 작업도 큐에 남아" 자기증폭하는 연쇄 실패가 된다. 취소가 executor future
+    까지 전파되는 덕에 큐가 스스로 빠지는 것이 그 시나리오를 막는 유일한 근거이므로,
+    이후 리팩터가 조용히 깨뜨리지 못하게 여기서 고정한다.
+    """
+    pool = ThreadPoolExecutor(max_workers=1)
+    ran: list[str] = []
+
+    def _work(tag: str, seconds: float) -> str:
+        ran.append(tag)
+        time.sleep(seconds)
+        return tag
+
+    async def _submit(tag: str) -> str:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(pool, _work, tag, 0.05)
+
+    try:
+        loop = asyncio.get_running_loop()
+        occupying = loop.run_in_executor(pool, _work, "occupying", 0.4)
+        await asyncio.sleep(0.05)  # 하나뿐인 워커를 확실히 점유시킨다
+
+        # 슬롯이 없어 큐에서 대기하다 예산 초과 — 실제 가드와 같은 모양(wait_for(코루틴)).
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(_submit("queued"), timeout=0.05)
+
+        await occupying
+        await asyncio.sleep(0.2)  # 점유가 풀린 뒤에도 되살아나지 않는지 본다
+    finally:
+        pool.shutdown(wait=True)
+
+    assert "queued" not in ran, "취소된 파싱 작업이 큐에 남아 나중에 실행됐다"
 
 
 async def test_guard_timeout_is_recorded_on_the_span(monkeypatch: pytest.MonkeyPatch) -> None:
