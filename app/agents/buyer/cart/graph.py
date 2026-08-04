@@ -186,7 +186,11 @@ _SCREEN_POSITION_REASONS = frozenset(
 # degrade 한다. 실패 action(WISHLIST_ADD_FAILED 등)이 아니라 token 인 이유: 이건 오류가 아니라
 # "아직 지원 안 하는 기능"에 대한 안내라 되물음(옵션 되물음 등)과 같은 취급이 맞다 — 사용자가
 # 다시 말할 대상도, 재시도할 오류도 아니다.
-_WISHLIST_DISABLED_NOTICE = "찜 기능은 아직 준비 중이에요. 장바구니에 담아 드릴까요?"
+# intent 별로 문구를 가른다(2차 리뷰 N-3) — 찜 추가 요청에는 담기를 대안으로 제안해도 자연스럽지만
+# ("찜 대신 담아 드릴까요?"), 찜 해제 요청에 같은 제안을 하면 빼 달라는 사용자에게 담아 주겠다고
+# 답하는 꼴이 된다. 해제 쪽은 대안 제안 없이 상태만 안내한다.
+_WISHLIST_ADD_DISABLED_NOTICE = "찜 기능은 아직 준비 중이에요. 장바구니에 담아 드릴까요?"
+_WISHLIST_REMOVE_DISABLED_NOTICE = "찜 기능은 아직 준비 중이에요."
 
 
 def _unresolved_notice(screen_reason: str | None) -> str:
@@ -229,7 +233,12 @@ async def stream_cart_add(
     if intent in ("wishlist_add", "wishlist_remove") and not settings.wishlist_enabled:
         # pending 은 지우지 않는다 — 이 턴은 담기 흐름에 개입하지 않고 그냥 빠지는 것이라, 옵션
         # 되물음 중이던 사용자가 "찜해줘"를 말했다고 진행 중이던 담기를 버릴 이유가 없다.
-        yield sse("token", TokenData(text=_WISHLIST_DISABLED_NOTICE).model_dump(by_alias=True))
+        notice = (
+            _WISHLIST_ADD_DISABLED_NOTICE
+            if intent == "wishlist_add"
+            else _WISHLIST_REMOVE_DISABLED_NOTICE
+        )
+        yield sse("token", TokenData(text=notice).model_dump(by_alias=True))
         yield _done()
         return
     if intent == "wishlist_add" and settings.wishlist_enabled:

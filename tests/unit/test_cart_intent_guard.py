@@ -179,11 +179,37 @@ def test_classify_explicit_wishlist_action_marker_wins_over_reference_marker(
     assert classify_cart_utterance(message, get_settings()) == expected
 
 
+# ─────────── classify_cart_utterance — 2차 리뷰(Claude) N-1: 담기 표지의 과거 참조형 ───────────
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        # 재현 — "담아"가 과거 참조형("담아뒀던"·"담아둔")에 부분 문자열로 걸려 뒤의 삭제·찜
+        # 해제 판정까지 못 내려갔다.
+        ("담아뒀던 거 다 빼줘", "cart_remove"),
+        ("담아둔 이어폰 찜 취소해줘", "wishlist_remove"),
+        # "장바구니에 넣" 표지도 같은 방식으로 걸려야 한다("어"가 하나 끼어도 창 검사로 잡힌다).
+        ("장바구니에 넣어뒀던 거 빼줘", "cart_remove"),
+        # ⚠️ 회귀 금지 — 참조 꼬리가 없는 정상 담기 요청은 전부 cart_add 그대로.
+        ("장바구니에 담아줘", "cart_add"),
+        ("찜한 거 장바구니에 담아줘", "cart_add"),
+        ("찜해둔 이어폰 담아줘", "cart_add"),
+        ("하나 빼고 담아줘", "cart_add"),
+    ],
+)
+def test_classify_cart_add_marker_excludes_past_reference_tail(message: str, expected: str) -> None:
+    assert classify_cart_utterance(message, get_settings()) == expected
+
+
 # ─────────── stream_cart_add 배선 — 찜 오담기 방어 ───────────
 
 
 async def test_stream_cart_add_wishlist_intent_degrades_without_calling_add_fn() -> None:
-    """찜 판정 + wishlist_enabled=False(기본) → token 안내 + done 만. add_fn 은 한 번도 안 불린다."""
+    """찜 추가 판정 + wishlist_enabled=False(기본) → token 안내 + done 만. add_fn 은 한 번도
+    안 불린다. 찜 추가 요청이니 담기를 대안으로 제안하는 문구가 나가야 한다(2차 리뷰 N-3)."""
+    from app.agents.buyer.cart.graph import _WISHLIST_ADD_DISABLED_NOTICE
+
     store = CartStateStore()
 
     async def add_fn(req):
@@ -203,11 +229,16 @@ async def test_stream_cart_add_wishlist_intent_degrades_without_calling_add_fn()
     )
     assert _types(events) == ["token", "done"]
     token_text = next(e for e in events if e["type"] == "token")["data"]["text"]
-    assert "찜" in token_text
+    assert token_text == _WISHLIST_ADD_DISABLED_NOTICE
     assert not any(e["type"] == "action" for e in events)
 
 
 async def test_stream_cart_add_wishlist_remove_intent_also_degrades() -> None:
+    """찜 해제 판정 + wishlist_enabled=False(기본) → 담기를 대안으로 제안하지 않는 문구가
+    나가야 한다(2차 리뷰 N-3 — "찜 빼줘"에 "장바구니에 담아 드릴까요?" 라고 답하면 빼 달라는
+    사용자에게 담아 주겠다고 제안하는 꼴이 된다)."""
+    from app.agents.buyer.cart.graph import _WISHLIST_REMOVE_DISABLED_NOTICE
+
     store = CartStateStore()
 
     async def add_fn(req):
@@ -226,6 +257,9 @@ async def test_stream_cart_add_wishlist_remove_intent_also_degrades() -> None:
         )
     )
     assert _types(events) == ["token", "done"]
+    token_text = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token_text == _WISHLIST_REMOVE_DISABLED_NOTICE
+    assert "담아" not in token_text
     assert not any(e["type"] == "action" for e in events)
 
 

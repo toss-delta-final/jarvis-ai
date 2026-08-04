@@ -567,7 +567,10 @@ async def test_stream_cart_add_delegates_to_wishlist_remove_when_flag_on(
 
 
 async def test_stream_cart_add_wishlist_degrade_notice_unchanged_when_flag_off() -> None:
-    """wishlist_enabled=False(기본) 면 여전히 라운드 2 의 degrade 안내 그대로 나간다."""
+    """wishlist_enabled=False(기본) 면 여전히 라운드 2 의 degrade 안내(찜 추가 문구)가 그대로
+    나간다(2차 리뷰 N-3 이후에도 찜 추가는 담기 대안 제안 문구를 유지한다)."""
+    from app.agents.buyer.cart.graph import _WISHLIST_ADD_DISABLED_NOTICE
+
     store = CartStateStore()
 
     async def add_fn(req):
@@ -590,5 +593,5 @@ async def test_stream_cart_add_wishlist_degrade_notice_unchanged_when_flag_off()
     )
     assert _types(events) == ["token", "done"]
     token_text = next(e for e in events if e["type"] == "token")["data"]["text"]
-    assert "찜" in token_text
+    assert token_text == _WISHLIST_ADD_DISABLED_NOTICE
     assert not _actions(events)

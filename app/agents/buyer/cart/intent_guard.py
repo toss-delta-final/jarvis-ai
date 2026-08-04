@@ -45,6 +45,31 @@ def _matches_unnegated(message: str, markers: list[str], negation_markers, windo
     return False
 
 
+def _matches_cart_add_marker(message: str, settings) -> bool:
+    """`cart_add_markers` 매칭 — 부정(`_matches_unnegated` 와 같은 원리)에 더해 과거 참조형
+    (2차 리뷰 N-1)도 배제한다.
+
+    "담아"는 "담아뒀던"·"담아둔"처럼 과거 참조형에도 부분 문자열로 걸린다 — 이 PR 에서
+    `docs/lessons.md` 에 적은 "전부" ⊂ "전부터" 실수의 재발이다. `wishlist_reference_markers`
+    가 "찜한"을 지시 수식어로 다루는 것과 같은 개념으로, 표지 바로 뒤 짧은 창에 과거 참조 꼬리
+    (`cart_add_reference_markers`)가 오면 그 출현은 동작 요청이 아니므로 세지 않는다. 부정
+    검사와 같은 창 기계(`_spans` + 창 슬라이스)를 재사용하되, 부정·과거 참조는 서로 다른
+    개념이라 한 목록으로 합치지 않고 별도 배제로 둔다(표지가 왜 안 걸렸는지 진단하기 쉽다).
+    """
+    negation_markers = settings.utterance_negation_markers
+    reference_markers = settings.cart_add_reference_markers
+    window = settings.utterance_negation_window
+    for marker in settings.cart_add_markers:
+        for _start, end in _spans(message, marker):
+            following = message[end : end + window]
+            if any(neg in following for neg in negation_markers):
+                continue
+            if any(ref in following for ref in reference_markers):
+                continue
+            return True
+    return False
+
+
 def classify_cart_utterance(message: str, settings) -> str:
     """'cart_add' | 'cart_remove' | 'wishlist_add' | 'wishlist_remove' — 확실할 때만 갈라낸다.
 
@@ -60,12 +85,19 @@ def classify_cart_utterance(message: str, settings) -> str:
     개별 케이스를 특례로 막지 않고 이 한 규칙으로 처리한다 — 넓게 잡으면 개입을 **줄이는**
     방향이라 오탐해도 "오늘 동작으로 되돌아갈" 뿐이다.
 
+    **담기 표지의 과거 참조형(2차 리뷰 N-1)**: `cart_add_markers` 매칭은 `_matches_unnegated`
+    대신 `_matches_cart_add_marker` 를 쓴다 — 부정 배제에 더해 과거 참조 꼬리
+    (`cart_add_reference_markers`: 뒀·둔·두었·놨·놓)도 같은 창에서 배제한다. "담아"는
+    "담아뒀던"·"담아둔"처럼 과거 참조형에도 부분 문자열로 걸려("담아뒀던 거 다 빼줘"가 삭제
+    대신 담기로 오담기), 그 출현은 지금 담아 달라는 요청이 아니므로 표지로 세지 않는다.
+
     판정 순서:
       0-a. `cart_add_markers`(담아·장바구니에 넣)가 있으면 즉시 `"cart_add"`. 담기는 이 판별기가
            다루는 신호 중 가장 강하다 — "찜한 거 장바구니에 담아줘"·"하나 빼고 담아줘"처럼 찜/삭제
            표지처럼 보이는 조각과 같은 발화에 있어도 담기가 이긴다. "장바구니에서 빼줘"는 이
            표지에 걸리지 않는다("장바구니에 넣"과 다른 문자열이라 오탐이 아니다) — 그래서
-           삭제 판정(0-a 다음 단계)까지 내려갈 수 있다.
+           삭제 판정(0-a 다음 단계)까지 내려갈 수 있다. "담아뒀던 거 다 빼줘"·"담아둔 이어폰
+           찜 취소해줘"류도 과거 참조형 배제로 이 표지에 걸리지 않는다(바로 위 문단 참조).
       1. `wishlist_remove_markers` 매칭 → `"wishlist_remove"`. **`cart_remove_markers` 보다
          먼저 본다** — "찜 빼줘"는 "빼줘"(삭제 표지)도 부분 문자열로 동시에 매칭하는데, 찜
          해제를 삭제보다 먼저 확정해야 "찜 빼줘"가 `cart_remove`로 새지 않는다. **`"장바구니"`
@@ -99,7 +131,7 @@ def classify_cart_utterance(message: str, settings) -> str:
     negation_markers = settings.utterance_negation_markers
     window = settings.utterance_negation_window
 
-    if _matches_unnegated(message, settings.cart_add_markers, negation_markers, window):
+    if _matches_cart_add_marker(message, settings):
         return "cart_add"
 
     if _matches_unnegated(message, settings.wishlist_remove_markers, negation_markers, window):
