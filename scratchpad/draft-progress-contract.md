@@ -102,6 +102,38 @@ decompose 직전에 두면 §2.5 봉투가 전부 보존되면서, 관문(first-
 같은 오류가 여전히 in-stream `error`로 나가되, **504·이벤트 0건 없이 최소 한 프레임은 보장**된다는
 차이다).
 
+### 남는 위험 — `progress`는 관문 통과를 보장하지 않는다
+
+emit(`progress_frame` yield, `app/agents/buyer/graph.py` L531) **앞**에도 상태 저장소 호출이
+남아 있고, 그중 회원 턴 기준 **직렬 4회**가 각각 `run_with_query_timeout`
+(`state_store_query_timeout_s` **3.0s**)로 감싸여 있다:
+
+| # | 호출 | 위치 | 상한 |
+|---|---|---|---|
+| 1 | `thread_store.get` | L450 (`ThreadFilterStore.get`) | 3.0s |
+| 1b | `thread_store.put` | L456(conditionActions 있는 턴만) | 3.0s |
+| 2 | `read_profile_summary` → `ProfileStore.get_summary` | L462 → `app/agents/profile/store.py` L168 | 3.0s |
+| 3 | `cart_store.get_pending` | L471 (`CartStateStore.get_pending`) | 3.0s |
+| 4 | `cart_store.get_last_reco_state` | L486 | 3.0s |
+
+**직렬 합 최악 = 4 × 3.0s = 12.0s > first-token 상한 10.0s**(`stream_first_token_timeout_s`).
+여기에 콜드스타트 커넥션(`state_store_connect_timeout_s` **5.0s**)이 끼면 더 나빠진다.
+즉 **pg-profile 이 다중 초 단위로 느려지면 `progress` 프레임을 내보내기도 전에 관문 예산이
+소진돼 이벤트 0건·504가 재현될 수 있다** — **#289는 이 경로를 좁히지만 구조적으로 소멸시키지는
+않는다.** 이슈 본문의 "504 경로가 구조적으로 소멸한다"는 표현은 이 문서가 그대로 승계하지
+않는다.
+
+소멸시키려면 emit을 이 프렐류드보다 **앞**에 둬야 하는데, 그러면 지금 §2.5 스트림 전 오류
+봉투(`503 STATE_UNAVAILABLE`)로 나가는 pg-profile 장애가 in-stream `error`로 바뀐다 — **한
+계약 위반을 다른 계약 위반과 맞바꾸는 것**이라 이건 구현 선택이 아니라 **계약 결정 사항**이다
+(§2.5 봉투를 좁히는 승인이 필요하고, 그 승인은 이 PR이 재료를 대는 바로 그 FE/BE 협의에서
+받는다).
+
+두 실패 모드는 **성격이 다르다.** #277이 잡은 것은 **정상 동작 중**의 지연(검색 재시도·자동
+완화는 장애가 아니라 설계된 경로)이 관문을 넘긴 경우였고, 여기 남는 것은 **pg-profile 장애
+상태**에서의 지연이다 — 후자는 그 턴이 어차피 실패하는 상황이라 위험도가 같지는 않지만,
+그렇다고 "구조적으로 소멸했다"고 말할 수는 없다.
+
 ## 5. 구매자·판매자 대칭
 
 판매자 스트림(§3.2)은 이미 `meta`가 매 스트림 첫 프레임이라 같은 관문 문제가 없다. **이 PR 은
@@ -203,6 +235,13 @@ yield, `app/agents/buyer/graph.py` L531)보다 **앞**에 있는 세션·스레�
 `cart_store.get_last_reco_state`(L486)·`screen` 프롬프트 구성. 이 프렐류드 pg 왕복·읽기의
 합이 바로 flag-on 실측 p50 ~12~15ms의 정체다.
 
+**두 얼굴을 함께 읽는다 — 평상시 ~12ms, 그러나 상한은 12s.** 측정값이 낮다는 것이 상한이
+안전하다는 뜻은 아니다. 이 프렐류드 중 pg 왕복 4회(§4 "남는 위험" 표)는 각각
+`state_store_query_timeout_s`(3.0s)로 묶여 있어 **직렬 최악 12.0s**까지 벌어질 수 있고, 이는
+first-token 상한(10.0s)을 넘는다. 평상시 관측치(~12ms)와 이론적 상한(12.0s)의 간극이
+1,000배 — 정상 경로에서 낮게 재는 실측이 장애 시나리오의 안전을 보증하지 않는다는 것을
+이 표가 그대로 보여준다.
+
 ## 8-1. 측정되지 않은 것 / 관문 안팎 재정리
 
 이 하네스는 `ScriptedLLM`이라 decompose LLM head가 이미 제외돼 있다. flag-off 대비 개선분에는
@@ -228,3 +267,8 @@ LLM head 절감(#151 baseline p95 ≈3.0s)이 **잡히지 않는다** — 실제
 - [ ] **정본(Notion CH-2) 개정 합의** — 이 문서를 입력으로 FE/BE 협의.
 - [ ] **`docs/api-spec.md` §3.1 사본 동기화** — 정본 등재 후.
 - [ ] **플래그 on 전환 + #277 재시도 스킵 원복(§7)** — 등재·배포 후 별도 PR.
+- [ ] **프렐류드 직렬 예산 vs first-token 상한**(§4) — 상태 저장소 프렐류드 직렬 합(최악 12s)이
+      first-token 상한(10s)을 넘는다. 선택지: (a) emit을 프렐류드 앞으로 올리고 pg 장애를
+      in-stream error로 내보낸다(§2.5 봉투 축소 — 계약 변경), (b) 프렐류드 호출을 병렬화하거나
+      예산을 재배분한다(#288 소관), (c) 현행 유지 + 위험 수용. **이 PR은 (c)로 두고 결정을
+      협의에 넘긴다.**
