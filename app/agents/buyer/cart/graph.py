@@ -16,6 +16,7 @@ from collections.abc import AsyncIterator
 from pydantic import ValidationError
 
 from app.agents.buyer._frames import sse
+from app.agents.buyer.cart.intent_guard import classify_cart_utterance
 from app.agents.buyer.cart.state import CartStateStore, PendingAdd
 from app.agents.buyer.recommendation.state import CartIntent
 from app.core.text import _strip_unsafe
@@ -189,6 +190,12 @@ _SCREEN_POSITION_REASONS = frozenset(
     }
 )
 
+# 찜 오담기 방어(이슈 #117, 패킷 §4) — wishlist_enabled=False 인 동안 찜 판정이 나오면 이 문구로
+# degrade 한다. 실패 action(WISHLIST_ADD_FAILED 등)이 아니라 token 인 이유: 이건 오류가 아니라
+# "아직 지원 안 하는 기능"에 대한 안내라 되물음(옵션 되물음 등)과 같은 취급이 맞다 — 사용자가
+# 다시 말할 대상도, 재시도할 오류도 아니다.
+_WISHLIST_DISABLED_NOTICE = "찜 기능은 아직 준비 중이에요. 장바구니에 담아 드릴까요?"
+
 
 def _unresolved_notice(screen_reason: str | None) -> str:
     """되물음 문구를 화면 해소 사유로 가른다. 사유가 없으면 오늘 문구 그대로."""
@@ -219,6 +226,20 @@ async def stream_cart_add(
     (#118). 되물음 문구를 상황에 맞게 가르는 데만 쓰고 판정에는 관여하지 않는다 — `None` 이면
     (= FE 가 `screen` 을 안 보냈거나 해소기가 개입하지 않은 절대다수 경로) 문구는 오늘과 같다.
     """
+    # 찜 오담기 방어(이슈 #117, 패킷 §4) — 신원 도출·pending 조회보다 앞에서 판별한다. LLM 을
+    # 새로 부르지 않는 결정론적 판정이라 순서가 앞이어도 비용이 없고, wishlist_enabled=False 인
+    # 동안은 이 턴이 어차피 담기로 흘러가면 안 되므로 다른 상태를 건드리기 전에 빠져야 한다.
+    intent = classify_cart_utterance(message, settings)
+    if intent in ("wishlist_add", "wishlist_remove") and not settings.wishlist_enabled:
+        # pending 은 지우지 않는다 — 이 턴은 담기 흐름에 개입하지 않고 그냥 빠지는 것이라, 옵션
+        # 되물음 중이던 사용자가 "찜해줘"를 말했다고 진행 중이던 담기를 버릴 이유가 없다.
+        yield sse("token", TokenData(text=_WISHLIST_DISABLED_NOTICE).model_dump(by_alias=True))
+        yield _done()
+        return
+    # intent == "wishlist_add"/"wishlist_remove" + wishlist_enabled=True 는 라운드 4 에서
+    # stream_wishlist_* 로 배선한다 — 지금은 아무 것도 하지 않고 아래 오늘 동작(담기)으로 흘러간다.
+    # intent == "cart_remove" 도 이번 라운드에서는 아무 것도 하지 않는다(오늘 동작 그대로, 라운드 3).
+
     add_fn = add_fn or spring_client.add_to_cart
     get_cart_fn = get_cart_fn or spring_client.get_cart
 

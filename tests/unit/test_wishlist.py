@@ -147,7 +147,8 @@ async def test_remove_wishlist_success_returns_none(monkeypatch: pytest.MonkeyPa
 
 
 async def test_remove_wishlist_not_found_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    """404 WISHLIST_NOT_FOUND — 찜 안 한 상품 = 이미 해제 = 없는 상품도 동일 코드(구별 불가)."""
+    """404 WISHLIST_NOT_FOUND — 찜 안 한 상품 = 이미 해제 = 없는 상품도 동일 코드(구별 불가).
+    비멱등 — 이미 해제된 걸 다시 해제해도(두 번째 호출) 404 그대로다."""
     import app.services.spring_client as sc
 
     monkeypatch.setattr(
@@ -155,21 +156,6 @@ async def test_remove_wishlist_not_found_raises(monkeypatch: pytest.MonkeyPatch)
         "_client",
         lambda: _WishlistClient(_WishlistResp(404, {"error": {"code": "WISHLIST_NOT_FOUND"}})),
     )
-    with pytest.raises(sc.WishlistNotFound):
-        await sc.remove_wishlist(42, user_id=1)
-
-
-async def test_remove_wishlist_second_call_still_404(monkeypatch: pytest.MonkeyPatch) -> None:
-    """비멱등 — 이미 해제된 걸 다시 해제하면 두 번째 호출도 404."""
-    import app.services.spring_client as sc
-
-    monkeypatch.setattr(
-        sc,
-        "_client",
-        lambda: _WishlistClient(_WishlistResp(404, {"error": {"code": "WISHLIST_NOT_FOUND"}})),
-    )
-    with pytest.raises(sc.WishlistNotFound):
-        await sc.remove_wishlist(42, user_id=1)
     with pytest.raises(sc.WishlistNotFound):
         await sc.remove_wishlist(42, user_id=1)
 

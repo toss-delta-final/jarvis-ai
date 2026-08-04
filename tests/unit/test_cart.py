@@ -924,6 +924,7 @@ async def test_delete_cart_item_uses_guest_id_only(monkeypatch: pytest.MonkeyPat
 
 
 async def test_delete_cart_item_not_found_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """I-24 는 비멱등 — 이미 지워진 항목을 다시 지워도(두 번째 호출) 404 그대로다."""
     import app.services.spring_client as sc
 
     monkeypatch.setattr(
@@ -933,21 +934,6 @@ async def test_delete_cart_item_not_found_raises(monkeypatch: pytest.MonkeyPatch
     )
     with pytest.raises(sc.CartItemNotFound):
         await sc.delete_cart_item(999, user_id=1)
-
-
-async def test_delete_cart_item_second_call_still_404(monkeypatch: pytest.MonkeyPatch) -> None:
-    """I-24 는 비멱등 — 이미 지워진 항목을 다시 지우면 두 번째 호출도 404."""
-    import app.services.spring_client as sc
-
-    monkeypatch.setattr(
-        sc,
-        "_client",
-        lambda: _CartClient(_CartResp(404, {"error": {"code": "CART_ITEM_NOT_FOUND"}})),
-    )
-    with pytest.raises(sc.CartItemNotFound):
-        await sc.delete_cart_item(55, user_id=1)
-    with pytest.raises(sc.CartItemNotFound):
-        await sc.delete_cart_item(55, user_id=1)
 
 
 async def test_delete_cart_item_forbidden_maps_to_cart_error(
