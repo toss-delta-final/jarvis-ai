@@ -253,6 +253,107 @@ def test_deferred_retry_default_path_allows_disabled_relaxation():
     assert settings.relaxation_max_rounds == 0
 
 
+def test_deferred_first_event_i1_calls_matches_default_config():
+    """기본 조합(rounds=3, auto=["ratingMin"], chip 4종)의 직렬 호출 수는 2다(#288 일반형)."""
+    from app.core.config import _deferred_first_event_i1_calls
+
+    assert (
+        _deferred_first_event_i1_calls(
+            relaxation_max_rounds=3,
+            auto_fields=["ratingMin"],
+            chip_fields=["priceMax", "ratingMin", "brand", "color"],
+        )
+        == 2
+    )
+
+
+def test_deferred_first_event_i1_calls_zero_when_relaxation_disabled():
+    """rounds=0 이거나 auto 목록이 비면 미룸 자체가 없어 0이다 — 검증 대상 아님."""
+    from app.core.config import _deferred_first_event_i1_calls
+
+    assert (
+        _deferred_first_event_i1_calls(
+            relaxation_max_rounds=0,
+            auto_fields=["ratingMin"],
+            chip_fields=["ratingMin"],
+        )
+        == 0
+    )
+    assert (
+        _deferred_first_event_i1_calls(
+            relaxation_max_rounds=3,
+            auto_fields=[],
+            chip_fields=["priceMax", "ratingMin"],
+        )
+        == 0
+    )
+
+
+def test_deferred_first_event_i1_calls_zero_when_auto_field_missing_from_chip():
+    """auto 필드가 칩 목록에 없으면 후보 자체가 안 생겨(build_relaxation_candidates가 칩만
+    순회) 0이다 — 합집합이 아니라 교집합으로 세야 하는 이유."""
+    from app.core.config import _deferred_first_event_i1_calls
+
+    assert (
+        _deferred_first_event_i1_calls(
+            relaxation_max_rounds=3,
+            auto_fields=["ratingMin"],
+            chip_fields=["priceMax", "brand", "color"],
+        )
+        == 0
+    )
+
+
+def test_deferred_first_event_i1_calls_grows_with_intersection_and_caps_at_rounds():
+    """교집합이 2로 늘면 호출 수도 3으로 늘고, rounds가 그 아래면 min이 실제로 상한을 묶는다."""
+    from app.core.config import _deferred_first_event_i1_calls
+
+    assert (
+        _deferred_first_event_i1_calls(
+            relaxation_max_rounds=3,
+            auto_fields=["ratingMin", "priceMax"],
+            chip_fields=["priceMax", "ratingMin", "brand", "color"],
+        )
+        == 3
+    )
+    assert (
+        _deferred_first_event_i1_calls(
+            relaxation_max_rounds=1,
+            auto_fields=["ratingMin", "priceMax"],
+            chip_fields=["priceMax", "ratingMin", "brand", "color"],
+        )
+        == 2
+    )
+
+
+def test_default_settings_pass_deferred_serial_budget_by_formula():
+    """기본값은 일반형으로도 2 * 3.0 = 6.0 < 10.0 이라 기동이 통과한다."""
+    from app.core.config import _deferred_first_event_i1_calls
+
+    settings = Settings(_env_file=None)
+    calls = _deferred_first_event_i1_calls(
+        relaxation_max_rounds=settings.relaxation_max_rounds,
+        auto_fields=settings.relaxation_auto_fields,
+        chip_fields=settings.relaxation_chip_fields,
+    )
+
+    assert calls == 2
+    assert calls * settings.spring_timeout_s == 6.0 < settings.stream_first_token_timeout_s
+
+
+def test_deferred_retry_guard_off_rejects_serial_budget_tie():
+    """동률(==)도 거절한다 — 어느 시계가 먼저 터지는지가 지터로 갈리는 비결정성을 막는다."""
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None, spring_max_retries=0, spring_timeout_s=5.0)
+
+    assert "must be < STREAM_FIRST_TOKEN_TIMEOUT_S" in str(exc_info.value)
+    # 바로 아래(9.8 < 10)는 통과 — 검증이 쌍을 보지 한쪽 값을 금지하지 않는다.
+    assert Settings(_env_file=None, spring_max_retries=0, spring_timeout_s=4.9)
+
+
 def test_search_retries_capped_at_implemented_value():
     """backoff 가 없으므로 재시도 상한은 1이다 — 2 이상은 기동 실패 (PR #235 리뷰)."""
     import pytest
