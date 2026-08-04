@@ -44,6 +44,8 @@
     | F-7 | `"2번째 열 3번째 담아줘"` | `열`(column)을 행으로 읽어 축 반전 → **오담기** | 양보(C) — 해소 안 함 |
     | F-8 | `"무선 이어폰 2번째 옵션으로 담아줘"`(이름이 `screen.products` 가 아니라 `last_reco` 에만 있음) | 이름 출처를 화면으로만 좁혀 (B) 미발동 → 순번이 이겨 **오담기** | (B) 이름 검사에 `last_recommendation_products` 도 포함 |
     | F-9 | `"3줄 2단 정리함 담아줘"`·`"2줄 3인용 소파 담아줘"` | 두 번째 숫자 접미사가 선택이라 좌표로 오인 → **오담기** | `_COORD` 두 번째 숫자 접미사를 필수로 |
+    | F-11 | `"3번째 줄에 있는 거 담아줘"`(columns=3) | `_COORD` 실패 뒤 순번이 "3"을 배열 순번으로 잡음 → **오담기** | `_ROW_ONLY` — 순번보다 먼저 되물음 |
+    | F-12 | `"얘기했던 걸로 담아줘"`(화면 1건) | `deictic_markers` 의 `"얘"`(1글자)가 "얘기"에 부분일치 → 되물음 없이 확정 | config `screen_deictic_markers` 에서 `"얘"` 제거 |
 """
 
 from __future__ import annotations
@@ -87,6 +89,19 @@ def resolve_grid_index(row: int, col: int, columns: int) -> int:
 _COORD = re.compile(r"(\d+)\s*(?:번째\s*)?(?:줄|행)\s*(?:에\s*)?(\d+)\s*(?:번째|번|칸)")
 # 열(column) 기준 좌표 표기. **해소하지 않고 LLM 에 넘기기 위해** 따로 잡는다 — 아래 양보 (C).
 _COLUMN_FIRST = re.compile(r"\d+\s*(?:번째\s*)?열")
+# [8차 리뷰, F-11] **줄|행만 말하고 칸을 안 말한 경우** — `"3번째 줄에 있는 거 담아줘"`. `_COORD`
+# 는 두 번째 숫자가 없으면 실패하고, 그러면 바로 아래 (2) 순번이 "3"을 **배열 순번**으로 잡아
+# columns=3 일 때 실제 3번째 줄(index 6~8)과 무관한 상품(배열 3번째, index 2)을 확정한다(실제
+# 재현). 사용자가 행을 말했는데 순번으로 해석하는 것은 F-1/F-2/F-7 이 막은 것과 같은 클래스의
+# 오담기라, `_COORD` 실패 뒤에도 순번보다 먼저 걸러 되물음(§3.1 "좌표 지시만 불가"와 같은 취급,
+# `coordinate_without_columns`)으로 보낸다.
+#
+# **F-9(두 번째 숫자는 있지만 접미사가 없는 경우, `"3줄 2단 정리함"`)와는 구분해야 한다** —
+# 그쪽은 "2단"이 좌표가 아니라 상품 설명이라 LLM 산출을 존중해야(`None`) 한다. 그래서 뒤에
+# **숫자가 아예 없을 때만** 매칭하도록 부정형 전방탐색 `(?!\s*(?:에\s*)?\d)` 를 둔다 — 단순히
+# `\s*` 뒤에 `(?!\d)` 만 두면 정규식이 공백을 0개만 소비하도록 역추적해 "3줄 2단"의 공백 앞에서
+# 통과해 버린다(실제 확인). 탐색 자체에 공백·"에"까지 포함해야 그 역추적 구멍이 막힌다.
+_ROW_ONLY = re.compile(r"\d+\s*(?:번째\s*)?(?:줄|행)(?!\s*(?:에\s*)?\d)")
 _ORDINAL = re.compile(r"(\d+)\s*번째")
 # 사용자가 **상품 id 를 직접 말한** 경우의 맨 정수 토큰. 2자리 이상만 본다(한 자리 숫자는
 # "2번"처럼 순번·옵션 표기일 확률이 높다).
@@ -211,6 +226,14 @@ def resolve_screen_reference(
         if 0 <= index < len(products):
             return ScreenResolution(products[index][0], "coordinate")
         return ScreenResolution(None, "coordinate_out_of_range")
+
+    # [8차 리뷰, F-11] 줄|행은 말했는데 칸이 없어 `_COORD` 가 실패한 경우 — 아래 (2) 순번에
+    # 넘기지 않는다. 넘기면 "3번째 줄"의 "3"이 배열 순번으로 오인돼 실제 3번째 줄과 무관한
+    # 상품이 확정된다(오담기). columns 없는 좌표와 같은 사유(`coordinate_without_columns`)로
+    # 묶는다 — 사용자가 취해야 할 다음 행동이 "위치를 다시 말한다"로 같다(cart/graph.py
+    # `_UNRESOLVED_SCREEN_POSITION` 문구가 그 사유를 그렇게 취급한다).
+    if _ROW_ONLY.search(message):
+        return ScreenResolution(None, "coordinate_without_columns")
 
     # (2) 순번 — "3번째 거". 배열 순서만 있으면 풀린다.
     if ordinal := _ORDINAL.search(message):

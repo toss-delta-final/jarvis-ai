@@ -1002,6 +1002,120 @@ def test_coord_regex_requires_a_suffix_on_the_second_number_only() -> None:
     assert _COORD.search("2줄 3인용 소파") is None
 
 
+# ─────────── Claude 리뷰 8차 — F-11 줄(row)만 말하고 칸을 안 말한 경우 ───────────
+
+
+def test_row_only_utterance_is_a_reask_not_a_positional_number() -> None:
+    """[Claude 리뷰 8차, F-11] 줄만 말하고 칸을 안 말하면 `_COORD` 가 실패하고, 아래 (2) 순번이
+    그 숫자를 **배열 순번**으로 잡아 실제 그 줄과 무관한 상품을 확정한다.
+
+    columns=3 인 9건 화면에서 `"3번째 줄"` 의 실제 대상은 index 6~8(7~9번째 상품)인데, 순번으로
+    새면 `"3"` 이 배열 3번째(index 2)로 읽혀 **완전히 다른 상품**이 확정된다(실제 재현). 사용자가
+    행을 말했는데 순번으로 해석하는 것은 F-1/F-2/F-7 이 막은 것과 같은 클래스의 오담기라, 이
+    함수는 확정하지 말고 되물음으로 보내야 한다(columns 없는 좌표와 같은 사유).
+    """
+    products = [(3100 + i, f"상품{i}") for i in range(1, 10)]  # 9건 × columns=3
+    for message in ("3번째 줄에 있는 거 담아줘", "2번째 줄 상품 담아줘"):
+        resolved = _resolve(message, products, columns=3)
+        assert resolved is not None, message
+        assert resolved.product_id is None, message
+        assert resolved.reason == "coordinate_without_columns", message
+
+
+def test_row_only_reask_does_not_regress_valid_coordinates_or_ordinals() -> None:
+    """대조군 — 정상 좌표·정상 지시대명사·F-9 의 비좌표 발화는 이 변경으로 영향받지 않는다."""
+    products = [(3100 + i, f"상품{i}") for i in range(1, 10)]  # 9건 × columns=3
+
+    # 정상 좌표: 칸까지 말했으면 종전대로 `_COORD` 가 먼저 해소한다.
+    resolved = _resolve("3번째 줄 2번째 담아줘", products, columns=3)
+    assert resolved is not None and resolved.product_id == 3108
+    assert resolved.reason == "coordinate"
+
+    # 순번만 말했으면(줄|행 언급 없음) 종전대로 배열 순번이 해소한다.
+    resolved = _resolve("3번째 거 담아줘", products, columns=3)
+    assert resolved is not None and resolved.product_id == 3103
+    assert resolved.reason == "ordinal"
+
+    # F-9: 두 번째 숫자가 있지만 좌표 접미사가 아닌 경우는 여전히 LLM 산출을 존중한다(None) —
+    # `_ROW_ONLY` 가 이 케이스까지 삼키면 F-9 가 조용히 재발한다.
+    for message in ("3줄 2단 정리함 담아줘", "2줄 3인용 소파 담아줘"):
+        assert _resolve(message, products, columns=3) is None, message
+
+    # 정상 지시대명사(화면 1건)는 종전대로 해소된다.
+    single = [(9001, "무선 이어폰")]
+    resolved = _resolve("이거 담아줘", single, columns=1)
+    assert resolved is not None and resolved.product_id == 9001
+
+
+def test_row_only_regex_requires_the_absence_of_a_following_number() -> None:
+    """`_ROW_ONLY` 자체의 의미를 고정한다 — 줄|행 뒤에 숫자가 **전혀 없을 때만** 매칭된다.
+
+    단순히 `\\s*(?!\\d)` 로만 막으면 정규식이 공백을 0개 소비하도록 역추적해 `"3줄 2단"` 의 공백
+    앞에서 통과해 버린다(실제로 확인했다) — 다음 사람이 이 구멍을 다시 뚫지 않도록 못박는다.
+    """
+    from app.agents.buyer.screen_reference import _ROW_ONLY
+
+    assert _ROW_ONLY.search("3번째 줄에 있는 거 담아줘") is not None
+    assert _ROW_ONLY.search("2번째 줄 상품 담아줘") is not None
+    # 뒤에 숫자가 있으면(칸 표기 시도든 F-9 의 비좌표 설명이든) 매칭되지 않는다.
+    assert _ROW_ONLY.search("3번째 줄 2번째") is None
+    assert _ROW_ONLY.search("3줄 2단 정리함") is None
+    assert _ROW_ONLY.search("2줄 3인용 소파") is None
+
+
+# ─────────── Claude 리뷰 8차 — F-12 1글자 지시대명사 표지의 부분일치 오탐 ───────────
+
+
+def test_a_single_character_deictic_marker_would_false_positive_on_unrelated_words() -> None:
+    """[Claude 리뷰 8차, F-12] `"얘"`(1글자)를 표지로 두면 `"얘기"`·`"얘들아"` 에 부분일치한다.
+
+    이 매칭은 포함 관계(부분 문자열)라 조사·활용을 흡수하도록 설계됐다(config 주석) — 표지가
+    2글자 이상이면 우연 일치가 드물지만, `"얘"` 만은 1글자라 무관한 단어에 걸린다. 실제로
+    화면 후보가 1건이면 `"얘기했던 걸로 담아줘"`(대화 맥락 참조, 화면 지시가 아님)가
+    **되물음 없이 확정**됐다 — `context_reference_markers`(`"아까"`·`"저번"` 등)에도 안 걸리기
+    때문이다. `screen_deictic_markers` 에서 `"얘"` 를 뺀 뒤에는 이 함수가 개입하지 않는다(None).
+    """
+    fake_markers = ["이거", "이것", "요거", "요것", "저거", "저것", "얘"]
+    products = [(555, "러그")]
+    assert (
+        _resolve(
+            "얘기했던 걸로 담아줘",
+            products,
+            columns=1,
+            allowed={555},
+        )
+        is None
+    )  # 대조: 현재 config(아래) 로는 개입하지 않는다 — 아래 with_markers 로 옛 동작을 재현한다.
+
+    def _resolve_with_markers(message: str, markers: list[str]):
+        from app.agents.buyer.screen_reference import resolve_screen_reference
+
+        return resolve_screen_reference(
+            message,
+            products=products,
+            columns=1,
+            allowed_product_ids={555},
+            deictic_markers=markers,
+            context_reference_markers=get_settings().screen_context_reference_markers,
+            last_recommendation_products=[],
+        )
+
+    # 옛 표지 목록(`"얘"` 포함)으로는 대화 맥락 참조 발화가 화면 상품으로 **오확정**됐다(재현).
+    for message in ("얘기했던 걸로 담아줘", "얘들아 담아줘"):
+        resolved = _resolve_with_markers(message, fake_markers)
+        assert resolved is not None and resolved.product_id == 555, message
+
+
+def test_screen_deictic_markers_no_longer_include_the_single_character_marker() -> None:
+    """config `screen_deictic_markers` 에 1글자 표지가 없어야 한다 — 다른 표지는 그대로다."""
+    markers = get_settings().screen_deictic_markers
+    assert "얘" not in markers
+    assert all(len(marker) >= 2 for marker in markers)
+    # 나머지 표지의 기존 동작은 바뀌지 않는다(회귀 금지).
+    for marker in ("이거", "이것", "요거", "요것", "저거", "저것"):
+        assert marker in markers
+
+
 # ─────────── PR 5차 리뷰 — 되물음 턴의 allowed 게이트 ───────────
 
 
