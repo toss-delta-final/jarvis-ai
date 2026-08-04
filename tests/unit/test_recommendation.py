@@ -5264,11 +5264,17 @@ async def test_buy_all_ten_legs_respects_list_product_contract_and_discloses_lim
 async def test_budget_set_exception_degrades_to_pick_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """[R1 F2] 순수 조합기가 예외를 내도 기존 PICK_ONE 스트림은 완료된다."""
+    """[R1 F2] 조합기 예외도 후보 폴백을 고지하고 PICK_ONE 스트림은 완료된다."""
     from app.agents.buyer.recommendation.category_mapping import CategoryMapping
 
-    monkeypatch.setattr(get_settings(), "expose_min", 1)
-    monkeypatch.setattr(get_settings(), "expose_max", 1)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "expose_min", 1)
+    monkeypatch.setattr(settings, "expose_max", 1)
+    monkeypatch.setattr(
+        settings,
+        "budget_set_candidate_fallback_notice",
+        "후보\u200b 조합 오류로\n상품별로 보여드릴게요.",
+    )
 
     async def _map(**kwargs):
         return CategoryMapping(legs=[("A", "등뼈"), ("B", "대파")])
@@ -5306,6 +5312,16 @@ async def test_budget_set_exception_degrades_to_pick_one(
     )
 
     assert push.pushes[0].list_type == "PICK_ONE"
+    notice_index = next(
+        index
+        for index, event in enumerate(events)
+        if event["type"] == "token"
+        and event["data"]["text"] == "후보 조합 오류로 상품별로 보여드릴게요."
+    )
+    ready_index = next(
+        index for index, event in enumerate(events) if event["type"] == "products.ready"
+    )
+    assert notice_index < ready_index
     assert _types(events)[-2:] == ["products.ready", "done"]
 
 

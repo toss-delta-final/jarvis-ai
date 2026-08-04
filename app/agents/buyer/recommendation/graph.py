@@ -1116,7 +1116,6 @@ async def stream_recommendation(
     if (
         buy_all_mode
         and plan is None
-        and not budget_sets_failed
         and (
             fallback_notice := _strip_unsafe(
                 settings.budget_set_infeasible_notice

@@ -89,7 +89,7 @@ def test_budget_sets_marks_truncation_and_rejects_cross_leg_duplicates() -> None
     assert all(len(item.product_ids) == len(set(item.product_ids)) for item in plan.sets)
 
 
-def test_truncated_budget_sets_never_claim_partial_minimum_is_cheap() -> None:
+def test_truncated_budget_sets_use_only_neutral_extra_kind() -> None:
     plan = build_budget_sets(
         pools=[[(1, 100), (2, 1)], [(10, 100), (11, 100), (12, 100), (13, 100)]],
         total_budget=None,
@@ -100,7 +100,7 @@ def test_truncated_budget_sets_never_claim_partial_minimum_is_cheap() -> None:
 
     assert plan is not None
     assert plan.combinations_truncated is True
-    assert all(item.kind != "cheap" for item in plan.sets)
+    assert {item.kind for item in plan.sets} == {"extra"}
 
 
 def test_complete_budget_search_keeps_true_cheapest_set() -> None:
@@ -139,7 +139,7 @@ def test_truncated_budget_sets_fill_available_slots_without_breaking_invariants(
     assert first is not None and first == second
     assert first.combinations_truncated is True
     assert len(first.sets) == 3
-    assert all(item.kind != "cheap" for item in first.sets)
+    assert {item.kind for item in first.sets} == {"extra"}
     assert all(item.verified_sum <= 200 for item in first.sets)
     assert all(len(item.product_ids) == len(set(item.product_ids)) <= 9 for item in first.sets)
     assert len({frozenset(item.product_ids) for item in first.sets}) == len(first.sets)

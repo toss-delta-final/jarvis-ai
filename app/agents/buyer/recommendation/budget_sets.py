@@ -172,16 +172,19 @@ def build_budget_sets(
             )
         )
 
-    if not truncated:
+    if truncated:
+        for combo in ordered:
+            add(combo, "extra")
+    else:
         cheap = min(combinations, key=lambda combo: (combo.verified_sum, order_key(combo)))
         add(cheap, "cheap")
-    add(ordered[0], "balanced")
-    for position, leg in enumerate(active):
-        focused = [combo for combo in ordered if combo.ranks[position] == 0]
-        if focused:
-            add(focused[0], "focus", leg)
-    for combo in ordered:
-        add(combo, "extra")
+        add(ordered[0], "balanced")
+        for position, leg in enumerate(active):
+            focused = [combo for combo in ordered if combo.ranks[position] == 0]
+            if focused:
+                add(focused[0], "focus", leg)
+        for combo in ordered:
+            add(combo, "extra")
 
     return BudgetSetPlan(
         sets=tuple(selected),
