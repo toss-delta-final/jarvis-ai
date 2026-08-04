@@ -761,27 +761,49 @@ def test_named_product_beats_a_positional_number() -> None:
         "2024년형 담아줘",
         "55인치 담아줘",
         "500ml 담아줘",
+        # [PR 리뷰] 단위가 **띄어쓰인** 경우 — 2판("앞뒤에 문자가 붙지 않은 토큰")이 놓쳤다.
+        "3000 원짜리",
+        "3000 원짜리 담아줘",
+        "10 만원대",
+        "128 GB 모델",
+        "12 개월 할부로",
+        "30 개 담아줘",
     ],
 )
 def test_measurements_and_years_are_not_mistaken_for_product_ids(message: str) -> None:
-    """[리뷰 F-3] 가격·연도·용량의 숫자를 상품 id 로 오인해 **정상 발화가 되물음으로 막혔다**.
+    """[리뷰 F-3 · PR 리뷰 후속] 가격·연도·용량의 숫자를 상품 id 로 오인해 **정상 발화가 막혔다**.
 
     방향은 안전(오담기가 아니라 되물음)하지만 `"10만원대 무선 이어폰 담아줘"` 는 흔한 발화다.
-    단위·수식이 붙은 숫자는 문자와 맞닿아 있다는 **구조적 성질**로 배제한다 — 접미 목록을 늘리는
-    땜질은 새 단위가 나올 때마다 다시 뚫린다.
+    붙여 쓴 경우는 "앞뒤에 문자가 붙지 않은 토큰"으로 막았는데, **띄어 쓰면 그대로 샜다** —
+    `"3000 원짜리"` 가 그 예다. 이제 숫자 뒤가 **담기 동사이거나 문장 끝일 때만** id 후보로 본다.
     """
     products = [(501, "러그"), (502, "바구니")]
     assert _resolve(message, products, columns=2) is None
 
 
-def test_a_standalone_unknown_id_still_forces_a_reask() -> None:
-    """F-3 을 좁히면서 원래 목적은 지켜야 한다 — 두 목록 밖 id 는 여전히 되물음이다."""
+@pytest.mark.parametrize("message", ["301 담아줘", "301", "301담아줘", "301 넣어줘"])
+def test_a_standalone_unknown_id_still_forces_a_reask(message: str) -> None:
+    """F-3 을 좁히면서 원래 목적은 지켜야 한다 — 두 목록 밖 id 는 여전히 되물음이다.
+
+    **`"301 담아줘"` 는 이 규칙이 존재하는 이유 그 자체다** — #118 의 보안 논거가 "LLM 이 발화
+    속 임의 숫자를 오추출해 추천 안 된 상품을 담는 것을 차단"이고, 프로브에서 screen 주입 후
+    1/8·6/8 로 깎였던 셀을 이 규칙이 8/8 로 되돌렸다. PR 리뷰가 제안한 수정
+    (`(?!\\s*[0-9A-Za-z가-힣])` 로 배제를 넓히기)은 숫자 뒤가 공백+한글인 이 발화까지 함께
+    배제해 **규칙을 죽인다** — 그래서 배제를 넓히는 대신 허용 목록으로 뒤집었다.
+    """
     products = [(501, "러그"), (502, "바구니")]
-    resolved = _resolve("301 담아줘", products, columns=2)
+    resolved = _resolve(message, products, columns=2)
     assert resolved is not None and resolved.product_id is None
     assert resolved.reason == "unknown_product_id_spoken"
-    # 목록 안 id 를 말했으면 막지 않는다.
+
+
+def test_a_known_id_and_a_non_cart_context_are_left_to_the_llm() -> None:
+    """목록 안 id 는 막지 않고, 담기 지목이 아닌 숫자는 애초에 규칙이 발동하지 않는다."""
+    products = [(501, "러그"), (502, "바구니")]
     assert _resolve("501 담아줘", products, columns=2) is None
+    # 화이트리스트는 **놓치는 쪽으로 기운다** — 못 잡으면 LLM 산출이 그대로 남을 뿐이라
+    # (규칙 도입 전 동작), 정상 발화를 막는 오탐보다 안전한 방향이다.
+    assert _resolve("301 상품 담아줘", products, columns=2) is None
 
 
 async def test_screenless_reask_wording_is_byte_identical_to_today(
