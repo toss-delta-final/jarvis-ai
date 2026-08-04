@@ -210,6 +210,14 @@ class Settings(BaseSettings):
     # 협의 완료 전까지 판매자 워커 표면 노출을 기본 비활성으로 보류한다.
     seller_account_events_enabled: bool = False
     seller_recent_days_default: int = 7  # normalize_period "최근 N일" 기본 N
+    # 기간 상한(일) — 초과는 ValueError(되묻기)로 떨어뜨린다. 상한이 없으면
+    # "최근 999999일" 이 date 연산에서 OverflowError 를 내고 호출부의
+    # except ValueError 를 빠져나가 되묻기 대신 에러 경로로 샌다(#269). 기본 2년.
+    # 상한 자체의 상한(#269 리뷰) — 약 74만일부터 `today - timedelta(days=n)` 이
+    # date.min 을 넘어 OverflowError 를 낸다. 이 이슈가 막으려던 바로 그 실패 양상이라,
+    # env 오설정을 기동 시점에 끊는다. 10년(3653일)은 판매 데이터 분석에 필요한 범위를
+    # 한참 넘고 date 연산 한계보다 훨씬 앞이라, 자릿수 오타(731 → 7310000)를 일찍 잡는다.
+    seller_period_max_days: int = Field(default=731, ge=1, le=3653)
     # safe_eval `**` 결과 자릿수 상한(DoS 방어) — 초과 식은 ValueError 로 거부(리뷰 반영).
     seller_calc_max_result_digits: int = 100
     # 도구 반환 상세도 상한(안 1+차등, 2026-07-17 사용자 확정) — 컨텍스트 폭주 방지.
@@ -1378,6 +1386,21 @@ class Settings(BaseSettings):
             raise ValueError(
                 "SELLER_MA_MIN_WINDOW 는 1 이상, SELLER_MA_WINDOW 이하여야 합니다"
                 f" (min_window={self.seller_ma_min_window}, window={self.seller_ma_window})"
+            )
+        # 기간 기본값·상한 정합(#269 리뷰) — calc.normalize_period 는 기간 미지정("최근")일
+        # 때 n=recent_default_days 로 두고 곧바로 n>max_days 상한 검사를 통과시킨다.
+        # 상한을 기본값보다 낮게 내리면 가장 흔한 발화("최근 매출 어때?")조차 매번
+        # "기간이 너무 깁니다" 되묻기로 빠진다 — 현재 기본값(7 <= 731)에선 안 드러난다.
+        if self.seller_recent_days_default > self.seller_period_max_days:
+            raise ValueError(
+                "SELLER_RECENT_DAYS_DEFAULT 는 SELLER_PERIOD_MAX_DAYS 이하여야 합니다"
+                f" (default={self.seller_recent_days_default},"
+                f" max={self.seller_period_max_days})"
+            )
+        if self.seller_recent_days_default < 1:
+            raise ValueError(
+                "SELLER_RECENT_DAYS_DEFAULT 는 1 이상이어야 합니다"
+                f" (got {self.seller_recent_days_default})"
             )
         if not (self.review_tier_many >= self.review_tier_some >= self.review_tier_few):
             raise ValueError(
