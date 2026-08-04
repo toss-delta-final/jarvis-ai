@@ -229,8 +229,12 @@ def _transport_status_class(exc: BaseException) -> str | None:
 
     `RemoteProtocolError`(서버가 응답 도중 연결 종료)는 `NetworkError` 의 하위가 아니라
     **형제**(둘 다 `TransportError` 직계)라 함께 적지 않으면 어느 분기에도 안 걸린다.
+
+    [#132] 내장 `TimeoutError`(= `asyncio.TimeoutError`)도 여기서 분류한다 — 검색 총시간 가드
+    (`search_products` 의 `asyncio.wait_for`)가 내는 실패다. httpx 타임아웃과 원인이 다르지만
+    관측 어휘까지 갈라 놓으면 "왜 timeout 이 두 종류인가"를 매번 다시 조사하게 된다.
     """
-    if isinstance(exc, httpx.TimeoutException):
+    if isinstance(exc, httpx.TimeoutException | TimeoutError):
         return "timeout"
     if isinstance(exc, httpx.NetworkError | httpx.RemoteProtocolError):
         return "connection_error"
@@ -575,32 +579,52 @@ async def search_products(filters: ProductSearchFilters) -> ProductSearchResult:
             _log.warning("색상 동의어 확장 실패 — 원문 단수 color로 검색", exc_info=True)
     params = _search_query_params(filters, color_values=color_values)
     attempts = settings.spring_max_retries + 1
-    try:
-        with _spring_span("search_products", "GET") as span:
-            for attempt in range(1, attempts + 1):
-                try:
-                    async with _client() as client:
-                        resp = await client.get("/internal/products/search", params=params)
-                        _record_spring_status(span, resp)
-                        resp.raise_for_status()
-                        data = resp.json()
-                    break
-                except (httpx.HTTPError, ValueError) as exc:
-                    if attempt >= attempts or not _is_retryable(exc):
-                        raise
-                    # 예외 원문은 남기지 않는다 — 업스트림 상태 유출 방지(#141), 유계 라벨만.
-                    _log.warning(
-                        "spring_search_retry",
-                        extra={
-                            "attempt": attempt,
-                            "maxAttempts": attempts,
-                            "statusClass": _failure_status_class(exc),
-                        },
-                    )
+    # [#132] 검색 1회의 **총시간** 상한. `spring_timeout_s` 는 httpx 에 스칼라로 주입돼
+    # connect/read/write/pool 네 시계가 되는데 `read` 는 **청크 사이 간격** 상한이라, 바디가
+    # 끊기지 않고 계속 오면 한 번도 물리지 않는다 — `size` 제거(전량 반환, §4.6)로 바디가 커진
+    # 뒤로는 "3s 안에 끝난다"가 보장이 아니다. config 는 이미 `spring_timeout_s × (재시도+1)` 을
+    # 검색 예산으로 **가정**하고 스트림 상한을 기동 검증하는데, 그 가정을 집행하는 코드가
+    # 없었다. 새 튜너블을 만들지 않고 같은 식을 쓴다 — 검증과 집행이 갈라지면 한쪽만 고쳐
+    # 놓고 지켜진다고 믿게 된다.
+    budget_s = settings.spring_timeout_s * attempts
+
+    async def _fetch_and_parse(span: TraceNode | None) -> ProductSearchResult:
+        for attempt in range(1, attempts + 1):
+            try:
+                async with _client() as client:
+                    resp = await client.get("/internal/products/search", params=params)
+                    _record_spring_status(span, resp)
+                    resp.raise_for_status()
+                    # [#132] 역직렬화를 이벤트루프 밖으로 — 전량 반환이라 바디 크기에 상한이
+                    # 없고, 루프 위에서 돌면 그 시간만큼 **같은 워커의 다른 SSE 스트림이 전부
+                    # 멈춘다**(실 응답 13.33MB/7,245건 실측: 5 동시 992ms 정지 → 424ms,
+                    # MEASURE-I1-RESPONSE-132 §4).
+                    data = await asyncio.to_thread(resp.json)
+                break
+            except (httpx.HTTPError, ValueError) as exc:
+                if attempt >= attempts or not _is_retryable(exc):
+                    raise
+                # 예외 원문은 남기지 않는다 — 업스트림 상태 유출 방지(#141), 유계 라벨만.
+                _log.warning(
+                    "spring_search_retry",
+                    extra={
+                        "attempt": attempt,
+                        "maxAttempts": attempts,
+                        "statusClass": _failure_status_class(exc),
+                    },
+                )
         # 응답 파싱·검증도 같은 경계 안 — 200 이지만 스키마 불일치인 malformed 응답도
         # SEARCH_FAILED degrade(§7)로 흐르게 한다(ValidationError 가 그대로 새어 500 되지 않게).
-        return _parse_search_response(data)
-    except (httpx.HTTPError, ValueError, ValidationError) as exc:
+        # 역직렬화와 같은 이유로 스레드에 넘긴다 — N× model_validate 가 파싱 비용의 본체다.
+        return await asyncio.to_thread(_parse_search_response, data)
+
+    try:
+        with _spring_span("search_products", "GET") as span:
+            # ⚠️ `wait_for` 는 **await 를 취소할 뿐 스레드를 죽이지 못한다** — 초과 시 파싱
+            # 스레드는 끝까지 돈다. 그래도 턴은 즉시 degrade 로 풀려나 사용자 지연과 스트림
+            # 예산은 유계가 된다(스레드는 곧 스스로 끝난다).
+            return await asyncio.wait_for(_fetch_and_parse(span), timeout=budget_s)
+    except (httpx.HTTPError, ValueError, ValidationError, TimeoutError) as exc:
         raise SpringUnavailableError(f"search_products 실패: {exc}") from exc
 
 
