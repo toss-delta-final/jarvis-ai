@@ -9,6 +9,9 @@
 
 ## [Unreleased]
 
+### Added
+- **#290 — 판매자 분석 워커 5종을 논문 기반 계산 층으로 고도화** — 예시 수준 수식(SMA ±30%·drop_pct 임계)을 검증된 방법론으로 교체했다. 신규 패키지 `app/agents/seller/analysis/`(pandas·scipy·statsmodels·scikit-learn 도입, §0.1 C stdlib-only 해제): ① sales_anomaly = S-H-ESD(STL period=7 계절조정 + robust GESD, Hochenbaum 2017·Cleveland 1990) — 주말 정상 저매출 오탐 제거, lookback 28일 확장 조회(보고는 요청 기간 내 한정), ② conversion·churn = Wilson CI + 직전 동일 길이 기간 자동 비교 two-proportion z-검정(Sismeiro 2004 축약형) — 저볼륨 오탐을 표본 크기가 통제, churn 신호는 코호트 정규화 원인 후보 top-3(상관≠인과 명시), ③ behavior = 상품 축 k-means(k=2~5 실루엣, seed 고정, Chen 2012) + Moe 2003 유형 라벨(카트이탈형 등), ④ abuse = Chandola 2009 3-트랙(Point=MAD 스파이크+가격변경일 대조 '정상 설명 후보', Contextual=Tukey 상위 fence, Collective=심야 비중·failCount 정렬). 전 모듈 순수 함수·결정론(seed 주입)·Settings 튜너블 17종(기동 fail-fast 검증)·"판정 보류≠이상 없음" 구분·프록시 basis 표기 규약. 워커 프롬프트 5종에 통계 판정 해석 규칙(p≥α 보류·상관≠인과·근사 표기) 추가. 논문 재현 합성 테스트로 고정(계절 시계열 −40% 주입 검출·주말 오탐 0, 동일 낙폭 n=10 비유의/n=1000 유의, 3패턴 군집 복원). 상세: `docs/specs/workers/DESIGN-*-290.md` 5건·`docs/worker-papers.md`. BG/NBD·SHAP·iForest 등 고객/세션 원시 데이터 필요 기법은 Phase B(별도 이슈). 계약(api-spec) 무변경 — 현행 I-6/I-7/I-13/I-16/I-8 범위 내.
+
 ### Docs
 - **#285 — 챗봇 장바구니 삭제·수량 변경·찜 추가·해제·목록 internal 계약 초안을 정본에 등재** — Notion 「📡 API 명세서」에 I-24~I-28로 등재했다. 발명이 아니라 FE↔BE 정본 실측(C-4 삭제·C-3 수량 변경·M-5 찜 추가·M-6 찜 해제·M-4 찜 목록)의 의미론과 I-2/I-18의 internal 규약(`X-Internal-Token`, AI가 검증한 JWT `sub` 유래 신원, 3초 타임아웃, 응답 envelope)을 이식한 제안이며, I-25 수량 변경은 이슈 본문에 없던 신규 편입이다. 아직 BE 협의 전으로 각 정본 페이지에 초안 배너가 있고 잔여 안건은 이슈 #285 코멘트에 남겼으며, 사본 `docs/api-spec.md` 동기화와 CH-2 `action` 8종 확장은 협의 후 진행한다.
 
