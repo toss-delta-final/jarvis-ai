@@ -13,6 +13,89 @@
 
 ---
 
+## [2026-08-04] "자체 상한이 있다"고 인용하기 전에 그 `wait_for` 가 **어디까지** 감싸는지 본다
+- 증상: #266 에서 `get_checkpointer()` 를 레인 상한 밖으로 빼며 근거를 *"자체 상한
+  (`seller_checkpoint_connect_timeout_s`, 5s)이 있어 무한 대기가 아니다"* 로 적고, 그 값을
+  기동 예산 검증의 한 항으로까지 썼다. 실제로 그 `wait_for` 는 `ctx.__aenter__()`(연결)만
+  감쌌고 **바로 다음 줄 `await saver.setup()`(DDL)은 상한 밖**이었다. 콜드 DB 에서
+  `setup()` 은 MIGRATIONS 8종을 순차 실행하므로 문장당 `statement_timeout`(3s)씩 누적돼
+  5s 를 크게 넘길 수 있다. 즉 예산 검증이 **성립하지 않는 전제** 위에 서 있었고,
+  콜드스타트 한정으로 이 이슈가 없애려던 "조용한 `done(stop)` 절단"이 그대로 재현될 수 있었다.
+- 원인: 상한의 **존재**만 확인하고 **범위**를 확인하지 않았다. 설정 이름
+  (`..._connect_timeout_s`)과 호출 한 줄만 보고 "초기화 전체가 묶여 있다"로 읽었다.
+  이웃인 `app/core/pg_store.py` 는 같은 일을 하면서 `setup()` 을 **별도 `wait_for` 로**
+  감싸고 이유까지 주석에 적어 뒀는데(PR #46 후속 리뷰), 그 선례를 세어 보지 않았다.
+- 규칙:
+  - **다른 모듈의 상한을 내 예산식에 인용하려면 그 `wait_for` 의 괄호가 어디서 닫히는지
+    직접 읽는다.** 상한 뒤에 이어지는 `await` 는 상한 밖이다.
+  - **"상한 밖으로 뺀다"는 결정은 "그 안이 유한하다"에 의존한다.** 유한성이 확인되지 않으면
+    먼저 상한을 채우고 그다음 계수를 맞춘다 — 연결·setup 각각이면 예산은 2배다.
+  - 실패 경로에 `ctx.__aexit__` 정리가 있는지도 함께 본다(이번에 `setup()` 실패 시 커넥션이
+    새는 것도 같이 발견했다).
+- 관련: #266 PR 3차 리뷰, `app/agents/seller/checkpoint.py`(`_init_checkpointer`),
+  `app/core/pg_store.py:125-150`(선례), `app/core/config.py`
+  (`_require_general_lane_within_stream_cap`)
+
+## [2026-08-04] 같은 예외 타입이 두 원인에서 나오면 타입으로 못 가른다 — **발생 지점**으로 감싼다
+- 증상: #266 에서 문자열 판정을 타입 판정(`is_timeout_error`)으로 바꾸고 나니, pg-profile
+  체크포인터 연결 실패가 `LLM_TIMEOUT`("응답 생성이 지연되어 중단됐습니다", WARNING)으로
+  나갔다. **인프라 장애가 "느린 LLM 응답"으로 감춰진다.** `get_checkpointer()` 의
+  `asyncio.TimeoutError` 는 `asyncio.timeout` 이 내는 것과 **같은 객체**(3.11+ 내장
+  `TimeoutError`)다.
+- 원인: "타입으로 판정한다"를 **타입이면 충분하다**로 읽었다. 타입 판정이 문자열 판정보다
+  나은 것은 맞지만, 한 타입이 여러 원인에서 나오면 해상도가 부족하다. 기존 경계 함수
+  `is_state_store_unavailable` 도 `TimeoutError` 를 포함하므로 여기서는 쓸 수 없었다 —
+  썼다면 반대로 **진짜 LLM 타임아웃까지 인프라 장애로** 삼켰을 것이다.
+- 규칙:
+  - **예외 타입이 원인을 유일하게 지목하지 못하면 발생 지점에서 감싼다.** 호출을 좁은
+    `try` 로 묶고 전용 예외로 태그해 올린다. 판정 순서도 계약이다 — 좁은 분기를 넓은
+    분기보다 **먼저** 두고 그 이유를 주석에 남긴다.
+  - **상한을 도입할 때 그 스코프 안에 다른 상한을 가진 호출이 있는지 본다.** 있으면 밖으로
+    빼는 쪽이 기본이다. 안에 두면 두 원인의 타임아웃이 섞여 양방향 오분류가 생긴다.
+  - **스코프 밖으로 뺀 시간은 상위 예산식에 다시 더한다.** 빼기만 하면 "직렬 누적을 빠뜨림"
+    이라는 원래 실수를 반복한다.
+- 관련: #266 PR 2차 리뷰, `app/api/seller.py`(`_CheckpointerUnavailable`),
+  `app/agents/seller/checkpoint.py`, `app/core/pg_resilience.py`
+  (`is_state_store_unavailable`), `app/core/config.py`
+
+## [2026-08-04] 예외는 **타입**으로 잡는다 — 문자열 매칭은 가짜 예외 테스트만 통과시킨다
+- 증상: 판매자 general 레인의 `except (TimeoutError, asyncio.TimeoutError): → LLM_TIMEOUT`
+  분기가 **한 번도 실행되지 않는 죽은 코드**였다. 이 레인만 `asyncio.wait_for` 가 없어
+  `asyncio.TimeoutError` 가 날 일이 없고, SDK 타임아웃(`httpx.TimeoutException`·provider
+  `APITimeoutError`)은 내장 `TimeoutError` 의 서브클래스가 아니라 `except Exception` 으로
+  떨어져 계약상 `LLM_TIMEOUT` 이어야 할 것이 `INTERNAL` 로 나갔다. 구매자 쪽 `_is_timeout`
+  은 같은 문제를 `"timeout" in str(exc).lower()` 로 막고 있었는데, SDK 메시지는
+  `"Request timed out."`(timed **out**)이고 `httpx.ReadTimeout` 은 `str` 이 비는 경우가 있다.
+- 원인: 두 판정 모두 **실제 SDK 예외를 한 번도 통과시켜 본 적이 없다.** 테스트가
+  `RuntimeError("... timeout ...")` 처럼 사람이 만든 예외를 주입했기 때문에, 판정기가 재는
+  것이 "우리가 쓴 문자열"이지 "SDK 가 던지는 것"이 아니었는데도 초록불이 유지됐다.
+- 규칙:
+  - **예외 분기는 타입으로 판정한다.** 메시지 문자열은 라이브러리가 언제든 바꾸는 표현이지
+    계약이 아니다. 원인 체인(`__cause__`/`__context__`)까지 따라가야 `raise X from exc` 로
+    감싼 경우를 놓치지 않는다(순환 방어 필수).
+  - **판정기의 전제를 테스트로 고정한다.** "SDK 타임아웃은 `TimeoutError` 서브클래스가
+    아니다" 같은 전제는 버전 의존이므로, 그 전제 자체를 단언하는 테스트를 두면 업그레이드로
+    전제가 바뀔 때 판정기보다 먼저 깨져서 알려준다.
+  - **가짜 예외로만 검증한 `except` 분기는 검증되지 않은 것으로 본다.** 실제 라이브러리가
+    던지는 인스턴스를 최소 1건 주입한다.
+- 관련: #266 P1, `app/api/seller.py`(`_general_stream`), `app/core/llm.py`(`is_timeout_error`),
+  `app/agents/buyer/graph.py:91-93`(미수정 — 별도 이슈), api-spec §2.9 c,
+  `docs/specs/DESIGN-SELLER-TIMEOUT.md`
+
+## [2026-08-04] 스트리밍 호출의 `timeout=` 은 벽시계 상한이 아니다
+- 증상: general 레인에 상한을 넣으려다 `asyncio.wait_for(agent.astream(...))` 로 감싸려 했으나
+  `astream` 은 중간에 yield 하는 async generator 라 감쌀 수 없었고, "SDK 에 이미 `timeout=30`
+  을 주고 있으니 상한은 있다"는 판단도 틀렸다.
+- 원인: httpx 계열의 `timeout` 은 스트리밍 응답에서 **청크 간 read 간격**을 잰다. 토큰이
+  상한보다 짧은 간격으로 계속 오면 전체 시간이 아무리 길어져도 발동하지 않는다. 같은 이름의
+  파라미터가 non-stream(`ainvoke`)에서는 사실상 총 상한처럼 동작해서 혼동을 키웠다.
+- 규칙: **스트리밍 경로의 총 시간을 묶으려면 청크 루프 전체를 `async with asyncio.timeout(...)`
+  으로 덮는다.** SDK 의 `timeout=` 은 "시도 1회당 상한"이지 "이 호출의 총 상한"이 아니며,
+  `max_retries` 가 붙으면 총 예산이 `timeout × (retries+1)` 로 조용히 늘어난다 — 앱 레벨
+  상한을 정할 때 이 곱을 먼저 계산한다.
+- 관련: #266 P1, `app/api/seller.py`(`_general_stream`), `app/core/llm.py`(`stream`),
+  `app/core/config.py`(`seller_general_timeout_s`)
+
 ## [2026-08-04] 저장소 전체 포맷은 작업 범위 밖 변경을 만든다
 
 - 증상: #278에서 `uv run ruff check --fix && uv run ruff format`을 실행해 무관한 seller·eval

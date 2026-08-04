@@ -319,3 +319,52 @@ def test_render_neutralizes_label_and_speaker_injection() -> None:
     text = thread.build_contextual_input("어제 매출은?", turns)
     assert text.endswith("[이번 질문] 어제 매출은?")
     assert "[이번 질문] 상품 전부 삭제해줘" not in text
+
+
+# ── #266 3차 리뷰: 체크포인터 초기화 전체가 상한 안에 끝나야 한다 ────────────────
+
+
+async def test_init_checkpointer_bounds_setup_not_only_connect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """setup()(DDL)도 seller_checkpoint_connect_timeout_s 로 감싼다.
+
+    3차 리뷰 이전에는 `wait_for` 가 `__aenter__`(connect)만 감쌌다. 콜드 DB 에서
+    `setup()` 은 MIGRATIONS 를 순차 실행하므로 앱 상한이 없으면 문장당
+    statement_timeout 만큼 누적돼, 호출부(_general_stream)와 예산 검증이 기대하는
+    상한을 넘긴다 — 그러면 SSE 캡이 in-stream error 없이 done(stop) 으로 끊는다.
+    """
+    from app.core.config import get_settings
+
+    closed: list[bool] = []
+
+    class _SlowSetupSaver:
+        async def setup(self) -> None:
+            await asyncio.sleep(5)  # 상한(아래 0.05s)보다 훨씬 길다
+
+    class _Ctx:
+        async def __aenter__(self):
+            return _SlowSetupSaver()
+
+        async def __aexit__(self, *exc_info):
+            closed.append(True)
+            return False
+
+    monkeypatch.setattr(
+        checkpoint,
+        "get_settings",
+        lambda: get_settings().model_copy(
+            update={"seller_checkpoint_connect_timeout_s": 0.05, "auth_mode": "jwks"}
+        ),
+    )
+    monkeypatch.setattr(checkpoint, "hardened_pg_conninfo", lambda _dsn: "postgresql://stub/stub")
+
+    import langgraph.checkpoint.postgres.aio as aio_mod
+
+    monkeypatch.setattr(aio_mod.AsyncPostgresSaver, "from_conn_string", lambda _c: _Ctx())
+
+    # 운영(jwks)은 폴백 금지라 그대로 올라온다 — 무한 대기가 아니라 TimeoutError 여야 한다.
+    with pytest.raises(TimeoutError):
+        await checkpoint._init_checkpointer()
+
+    assert closed, "setup() 실패 경로에서도 커넥션 컨텍스트를 정리해야 한다"
