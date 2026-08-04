@@ -459,13 +459,17 @@ async def stream_recommendation(
         # fan-out — canonical 카테고리마다 leg 를 병렬 검색(§6). leg 별 filters 는 category·
         # keyword([#51] 위 drop_keyword flag 로 결정 — 드롭 아니면 그 카테고리 query/base)·semantic_query·
         # limit(leg 별 AI top-K, §4.6 size 아님) 만 교체한다.
-        # 단일 카테고리(leg 1개)는 후보 폭을 좁히지 않게 merge_cap(=단일 rerank 입력 예산)을 쓰고,
-        # 멀티 fan-out 일 때만 leg 당 per_cat_limit 으로 제한한다(합쳐서 merge_cap 로 재절단).
-        leg_limit = (
-            settings.category_fanout_per_cat_limit
-            if len(legs) > 1
-            else settings.category_fanout_merge_cap
-        )
+        # leg 사전 절단 상한은 생존 leg 수에 의존하지 않는다(#89). leg 수(요청 시점)로 정하면
+        # 일부 leg 가 SpringUnavailableError 로 죽어도 재조정되지 않아, 생존 leg 의 후보 폭이
+        # 단일 카테고리 턴보다 좁아진다. 한 leg 가 병합 결과에 실을 수 있는 항목 수는
+        # `merged[:merge_cap]` 때문에 merge_cap 을 넘지 못한다 — 초과분이 쓰일 여지는 그 leg
+        # 앞쪽이 전부 다른 leg 와 중복되는 dedup 경계뿐이라 극히 좁아, merge_cap 이 사전 절단
+        # 상한으로 실질 tight bound 다. 더 작게 잡으면 부분 실패 턴에서만 손해다. 균형(한
+        # 카테고리 독점 방지)은 사전 절단이 아니라 `_merge_fanout_results` 의 round-robin 이
+        # 담당한다. 재조회(2차 왕복) 없이 해결되는 이유: `filters.limit` 은 Spring 요청
+        # 파라미터가 아니라 AI 쪽 절단 knob 이라(§4.6 size 제거, 2026-07-23) 값을 키워도
+        # 왕복·페이로드는 그대로다.
+        leg_limit = settings.category_fanout_merge_cap
 
         async def _leg(canonical: str, query: str | None) -> ProductSearchResult | None:
             # leg 전체를 try 로 감싼다 — model_copy·search 어디서 실패해도 그 leg 만 드롭한다.
