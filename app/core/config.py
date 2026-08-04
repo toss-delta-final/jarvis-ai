@@ -123,6 +123,47 @@ class Settings(BaseSettings):
     # 관계는 기동 시점에 강제한다(아래 model_validator).
     catalog_store_query_timeout_s: float = Field(default=2.5, gt=0.0)
 
+    # ── 색상 동의어 확장 (이슈 #258) ──
+    # 와이어 리스트 전송은 api-spec §4.6 `color: string` → `string[]` 개정과 BE 배포가
+    # 모두 끝난 뒤에만 켠다. 기본 off에서는 승인 사전 DB도 조회하지 않아 현행 I-1 요청이 불변이다.
+    color_synonym_expansion_enabled: bool = False
+    # 운영자가 api-spec §4.6의 `color: string[]` 개정과 이를 파싱하는 BE 배포 완료를 함께
+    # 확인했다는 명시적 계약 게이트. 확장 플래그와 이 값을 따로 켜면 기동 시점에 거부한다.
+    color_synonym_array_contract_ready: bool = False
+    # 새 표기마다 임베딩 API+DB write가 I-17에 추가되고 테이블도 아직 미검수 상태이므로 기본 off.
+    # 초기 검수 완료 뒤 운영 비용을 확인하고 켠다.
+    color_synonym_batch_harvest_enabled: bool = False
+    # 런타임 승인 사전과 배치 수확이 공유하는 dsn별 pg 풀의 단일 총 상한. 배치 수확을 켜면
+    # 해당 예산을 먼저 떼고 나머지를 검색 전용으로 쓰며, 끄면 검색이 풀 전체를 사용한다.
+    color_synonym_pool_max_size: int = Field(default=4, ge=1)
+    # wait_for 뒤에도 남는 to_thread 작업의 프로세스 동시 상한. 슬롯이 차면 해당 change 수확만
+    # 즉시 건너뛰어 I-17 생성물 갱신과 cursor 전진을 지연시키지 않는다.
+    color_synonym_harvest_max_concurrency: int = Field(default=2, ge=1)
+    # 실카탈로그 상품당 색상 개수는 최대·p99 모두 30개였다. 정상 최대에 10개 여유를 둔 40으로
+    # 단일 셀러 입력이 DB 배열·외부 임베딩 호출·pending 행을 무제한 증폭하지 못하게 한다.
+    color_synonym_harvest_max_terms_per_product: int = Field(default=40, ge=1)
+    # dedup 전에 원본 배열을 순회하는 CPU 상한. 실측 p99 30개의 13배인 400까지 스캔해 정상·
+    # 중복 입력이 max_terms 밖의 고유 표기를 밀어내지 않게 하면서 비정상 대형 배열은 유계화한다.
+    color_synonym_harvest_scan_max_values_per_product: int = Field(default=400, ge=1)
+    # 실카탈로그 최장 색상 표기는 28자였다. 복합 표기 여유 12자를 둔 40자까지만 수확한다.
+    color_synonym_harvest_max_term_length: int = Field(default=40, ge=1)
+    # 실카탈로그 상위 30 표기가 전체 색상 토큰 출현의 82.2%(8,753/10,645)를 덮는다.
+    color_synonym_top_n: int = Field(default=30, ge=0)
+    # 실측 최저 정탐 남색-네이비=0.854, 최고 오탐 블랙-블루=0.849로 마진이 0.005뿐이다.
+    # 0.85는 측정 오탐을 막고 핵심 정탐을 남기는 최소 안전선일 뿐 정밀도 보증이 아니다.
+    # 임계만으로 확정하지 않고 LLM 판정 흔적과 경계 표시를 사람이 함께 검수한다.
+    color_synonym_cluster_threshold: float = Field(default=0.85, ge=-1.0, le=1.0)
+    # LLM 우선 배정은 꼬리 표기를 20개 기본 청크로 나누며, 이 값은 한 호출에 묶는 청크 수다.
+    # 기본 1은 출력 규모를 유계화하고 한 호출 실패를 해당 20개 표기에만 격리한다.
+    color_synonym_llm_clusters_per_call: int = Field(default=1, ge=1)
+    # 앵커 병합 1회 또는 꼬리 배정 청크 JSON에는 충분하면서 무제한 출력을 막는 fast-tier 상한.
+    color_synonym_llm_max_tokens: int = Field(default=2048, ge=1)
+    color_synonym_cache_ttl_s: float = Field(default=300.0, ge=0.0)
+    # I-1 승인 사전 조회·I-17 신규 표기 수확의 앱쪽 벽시계 상한. 동기 쿼리는 to_thread
+    # 취소만으로 멈추지 않으므로 catalog_store_query_timeout_s가 이 값보다 늦게 DB에서 잘라
+    # 커넥션을 회수한다. 앱 상한이 먼저 발동하면 두 경로 모두 기존 품질 degrade를 유지한다.
+    color_synonym_query_timeout_s: float = Field(default=2.0, gt=0.0)
+
     # ── PostgreSQL / pgvector ×2 ──
     # catalog: AI 생성물(extras/search_doc/임베딩, §4.8 I-17 배치 upsert) 호스트, profile: 프로필 스토어+대화 저장(§6.3).
     catalog_db_url: str = "postgresql://jarvis:jarvis@localhost:5433/catalog"
@@ -912,6 +953,63 @@ class Settings(BaseSettings):
                 "CATALOG_STORE_QUERY_TIMEOUT_S must be > HOME_RECO_STORE_TIMEOUT_S "
                 f"(got {self.catalog_store_query_timeout_s} <= {self.home_reco_store_timeout_s}): "
                 "the app-side clock must fire first so slow queries map to 504 deterministically"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_color_synonym_db_timeout_after_app_timeout(self) -> "Settings":
+        """색상 동의어 DB 상한은 앱쪽 품질 degrade 상한보다 늦게 발동해야 한다."""
+        if self.catalog_store_query_timeout_s <= self.color_synonym_query_timeout_s:
+            raise ValueError(
+                "CATALOG_STORE_QUERY_TIMEOUT_S must be > COLOR_SYNONYM_QUERY_TIMEOUT_S "
+                f"(got {self.catalog_store_query_timeout_s} <= "
+                f"{self.color_synonym_query_timeout_s}): "
+                "the app-side clock must degrade first and the DB clock must later reclaim "
+                "the connection"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_color_synonym_array_contract_gate(self) -> "Settings":
+        """색상 배열 전송과 외부 계약 준비 선언이 엇갈리면 기동을 막는다."""
+        if self.color_synonym_expansion_enabled != self.color_synonym_array_contract_ready:
+            raise ValueError(
+                "COLOR_SYNONYM_EXPANSION_ENABLED and COLOR_SYNONYM_ARRAY_CONTRACT_READY "
+                "must be enabled together only after api-spec §4.6 is revised to "
+                "`color: string[]` and the supporting BE is deployed "
+                "(api-spec §4.6 개정 + BE 배포 선행 필요)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _reserve_color_synonym_runtime_pool_slot(self) -> "Settings":
+        """배치 수확을 켰을 때만 공유 풀에 사용자 대면 검색 슬롯을 하나 이상 남긴다."""
+        if (
+            self.color_synonym_batch_harvest_enabled
+            and self.color_synonym_harvest_max_concurrency
+            >= self.color_synonym_pool_max_size
+        ):
+            raise ValueError(
+                "COLOR_SYNONYM_HARVEST_MAX_CONCURRENCY must be less than "
+                "COLOR_SYNONYM_POOL_MAX_SIZE "
+                f"(got {self.color_synonym_harvest_max_concurrency} >= "
+                f"{self.color_synonym_pool_max_size}): reserve at least one "
+                "runtime search connection"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_color_synonym_scan_budget_above_result_budget(self) -> "Settings":
+        """dedup 전 스캔 예산은 반환 상한보다 커야 중복이 고유 표기를 밀어내지 않는다."""
+        if (
+            self.color_synonym_harvest_scan_max_values_per_product
+            <= self.color_synonym_harvest_max_terms_per_product
+        ):
+            raise ValueError(
+                "COLOR_SYNONYM_HARVEST_SCAN_MAX_VALUES_PER_PRODUCT must be greater than "
+                "COLOR_SYNONYM_HARVEST_MAX_TERMS_PER_PRODUCT "
+                f"(got {self.color_synonym_harvest_scan_max_values_per_product} <= "
+                f"{self.color_synonym_harvest_max_terms_per_product})"
             )
         return self
 
