@@ -29,10 +29,12 @@ AI 는 커머스 DB 에 직접 write 하지 않는다. 와이어 포맷은 camel
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from contextlib import contextmanager
 import logging
 import math
+import threading
 from types import TracebackType
 from typing import Literal, TypeVar
 
@@ -93,6 +95,78 @@ _SpringOperation = Literal[
 
 
 _log = logging.getLogger(__name__)
+_color_synonym_limiters: dict[tuple[str, int], threading.BoundedSemaphore] = {}
+_color_synonym_limiter_lock = threading.Lock()
+_background_synonym_tasks: set[asyncio.Task[dict[str, list[str]]]] = set()
+
+
+def _color_synonym_limiter(dsn: str, max_concurrency: int) -> threading.BoundedSemaphore:
+    key = (dsn, max_concurrency)
+    limiter = _color_synonym_limiters.get(key)
+    if limiter is None:
+        with _color_synonym_limiter_lock:
+            limiter = _color_synonym_limiters.get(key)
+            if limiter is None:
+                limiter = threading.BoundedSemaphore(max_concurrency)
+                _color_synonym_limiters[key] = limiter
+    return limiter
+
+
+def _color_synonym_runtime_max_concurrency(settings) -> int:
+    """배치가 꺼져 있으면 공유 풀 전체를, 켜져 있으면 예약분을 제외한 검색 몫을 반환한다."""
+    if not settings.color_synonym_batch_harvest_enabled:
+        return settings.color_synonym_pool_max_size
+    return (
+        settings.color_synonym_pool_max_size
+        - settings.color_synonym_harvest_max_concurrency
+    )
+
+
+def _consume_background_synonym_lookup(task: asyncio.Task[dict[str, list[str]]]) -> None:
+    """타임아웃 뒤 승인 사전 조회의 늦은 실패를 기록하고 예외를 회수한다."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        _log.warning(
+            "색상 동의어 백그라운드 조회 실패",
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+
+
+async def _load_color_synonym_map(settings) -> dict[str, list[str]] | None:
+    """배치 예산을 제외한 검색 전용 worker만 허용하고 포화 시 즉시 degrade한다."""
+    from app.pipelines import color_synonyms  # noqa: PLC0415 - lazy DB 경로
+
+    limiter = _color_synonym_limiter(
+        settings.catalog_db_url,
+        _color_synonym_runtime_max_concurrency(settings),
+    )
+    if not limiter.acquire(blocking=False):
+        _log.warning("색상 동의어 조회 동시 실행 상한 — 원문 단수 color로 검색")
+        return None
+
+    def run() -> dict[str, list[str]]:
+        try:
+            return color_synonyms.get_synonym_map(
+                settings.catalog_db_url,
+                ttl_s=settings.color_synonym_cache_ttl_s,
+            )
+        finally:
+            # wait_for가 먼저 끝나도 실제 worker 종료 전에는 풀 크기 슬롯을 반환하지 않는다.
+            limiter.release()
+
+    task = asyncio.create_task(asyncio.to_thread(run))
+    try:
+        return await asyncio.wait_for(
+            asyncio.shield(task),
+            timeout=settings.color_synonym_query_timeout_s,
+        )
+    except (TimeoutError, asyncio.CancelledError):
+        _background_synonym_tasks.add(task)
+        task.add_done_callback(_background_synonym_tasks.discard)
+        task.add_done_callback(_consume_background_synonym_lookup)
+        raise
 
 
 @contextmanager
@@ -274,7 +348,9 @@ def _client() -> httpx.AsyncClient:
     )
 
 
-def _search_query_params(filters: ProductSearchFilters) -> dict:
+def _search_query_params(
+    filters: ProductSearchFilters, *, color_values: list[str] | None = None
+) -> dict:
     """decompose 필터 → BE I-1 GET 쿼리 파라미터 (§4.6, C-15).
 
     BE I-1 파라미터는 keyword/categoryName/minPrice/maxPrice/brandName/color 뿐이다(color=#100 P1).
@@ -303,7 +379,9 @@ def _search_query_params(filters: ProductSearchFilters) -> dict:
         if brands:
             params["brandName"] = brands
     if filters.color and filters.color.strip():
-        params["color"] = filters.color
+        # None은 계약 변경 전 현행 단수 경로다. 리스트는 api-spec §4.6 `color: string[]`
+        # 개정과 BE 배포 뒤 플래그가 켜진 경우에만 httpx 반복 파라미터로 직렬화한다.
+        params["color"] = filters.color if color_values is None else color_values
     return params
 
 
@@ -481,8 +559,22 @@ async def search_products(filters: ProductSearchFilters) -> ProductSearchResult:
     **재시도 루프는 span 안쪽**이다 — 호출당 span 1개라는 계약(테스트가 고정)을 지키고,
     `statusClass` 는 마지막 시도의 결과를 남긴다. 재시도 사실은 구조화 로그로만 관측한다.
     """
-    params = _search_query_params(filters)
-    attempts = get_settings().spring_max_retries + 1
+    settings = get_settings()
+    color_values: list[str] | None = None
+    # 계약 게이트: api-spec §4.6 color가 string→string[]으로 개정되고 BE가 배포된 뒤에만 on.
+    # off면 색상 사전 캐시/DB를 아예 건드리지 않아 기존 와이어를 바이트 단위로 보존한다.
+    if settings.color_synonym_expansion_enabled and filters.color and filters.color.strip():
+        try:
+            from app.pipelines import color_synonyms  # noqa: PLC0415 - lazy DB 경로
+
+            mapping = await _load_color_synonym_map(settings)
+            if mapping is not None:
+                color_values = color_synonyms.expand_color(filters.color, mapping)
+        except Exception:
+            # 색상 확장은 보조 품질 경로다. DB 장애가 본 검색을 죽이지 않게 기존 단수로 degrade.
+            _log.warning("색상 동의어 확장 실패 — 원문 단수 color로 검색", exc_info=True)
+    params = _search_query_params(filters, color_values=color_values)
+    attempts = settings.spring_max_retries + 1
     try:
         with _spring_span("search_products", "GET") as span:
             for attempt in range(1, attempts + 1):

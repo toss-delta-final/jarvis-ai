@@ -182,3 +182,89 @@ def test_search_retries_capped_at_implemented_value():
     assert Settings(_env_file=None, spring_max_retries=0).spring_max_retries == 0
     with pytest.raises(ValidationError):
         Settings(_env_file=None, spring_max_retries=2)
+
+
+def test_color_synonym_expansion_requires_array_contract_attestation() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(
+        ValidationError,
+        match=r"api-spec §4\.6.*BE 배포",
+    ):
+        Settings(
+            _env_file=None,
+            color_synonym_expansion_enabled=True,
+            color_synonym_array_contract_ready=False,
+        )
+
+
+def test_color_synonym_contract_attestation_cannot_be_enabled_alone() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="must be enabled together"):
+        Settings(
+            _env_file=None,
+            color_synonym_expansion_enabled=False,
+            color_synonym_array_contract_ready=True,
+        )
+
+
+def test_color_synonym_expansion_and_array_contract_must_be_enabled_together() -> None:
+    settings = Settings(
+        _env_file=None,
+        color_synonym_expansion_enabled=True,
+        color_synonym_array_contract_ready=True,
+    )
+
+    assert settings.color_synonym_expansion_enabled is True
+    assert settings.color_synonym_array_contract_ready is True
+
+
+def test_color_synonym_contract_gate_defaults_both_off() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.color_synonym_expansion_enabled is False
+    assert settings.color_synonym_array_contract_ready is False
+
+
+def test_color_synonym_pool_reserves_runtime_search_slot_only_when_harvest_enabled() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    settings = Settings(
+        _env_file=None,
+        color_synonym_batch_harvest_enabled=False,
+        color_synonym_pool_max_size=1,
+        color_synonym_harvest_max_concurrency=2,
+    )
+    assert settings.color_synonym_pool_max_size == 1
+
+    with pytest.raises(
+        ValidationError,
+        match="COLOR_SYNONYM_HARVEST_MAX_CONCURRENCY must be less than "
+        "COLOR_SYNONYM_POOL_MAX_SIZE",
+    ):
+        Settings(
+            _env_file=None,
+            color_synonym_batch_harvest_enabled=True,
+            color_synonym_pool_max_size=2,
+            color_synonym_harvest_max_concurrency=2,
+        )
+
+
+def test_color_synonym_scan_budget_must_exceed_accepted_term_budget() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(
+        ValidationError,
+        match="COLOR_SYNONYM_HARVEST_SCAN_MAX_VALUES_PER_PRODUCT must be greater than "
+        "COLOR_SYNONYM_HARVEST_MAX_TERMS_PER_PRODUCT",
+    ):
+        Settings(
+            _env_file=None,
+            color_synonym_harvest_max_terms_per_product=40,
+            color_synonym_harvest_scan_max_values_per_product=40,
+        )
