@@ -279,6 +279,64 @@ async def test_wishlist_remove_resolves_by_context_product_id() -> None:
     assert _actions(events)[0]["type"] == "WISHLIST_REMOVED"
 
 
+# ─── 라운드 16(head `3ca0f40` 리뷰): 문맥 productId 규칙(2번)도 문장 전체 부정 가드 ───
+
+
+def test_resolve_wishlist_remove_target_negated_context_id_asks() -> None:
+    """재현(라운드 16 패킷) — 이름을 대지 않고 어미형 부정만 있는 발화는 문맥 id 를 무시해야
+    한다. 고치기 전엔 세 규칙 중 2번(문맥 id)에만 가드가 없어 "그건 빼지 말고 찜 빼줘"가
+    사용자가 배제하려던 항목(20=케이스)을 그대로 반환했다."""
+    from app.agents.buyer.cart.wishlist import _resolve_wishlist_remove_target
+
+    items = [_wishlist_item(10, "이어폰"), _wishlist_item(20, "케이스")]
+    result = _resolve_wishlist_remove_target(
+        CartIntent(product_id=20), "그건 빼지 말고 찜 빼줘", items, get_settings()
+    )
+    assert result is None
+
+
+def test_resolve_wishlist_remove_target_prefix_negated_context_id_asks() -> None:
+    """재현 2 — 접두형 부정("안")도 같은 이유로 문맥 id 를 무시해야 한다."""
+    from app.agents.buyer.cart.wishlist import _resolve_wishlist_remove_target
+
+    items = [_wishlist_item(10, "이어폰"), _wishlist_item(20, "케이스")]
+    result = _resolve_wishlist_remove_target(
+        CartIntent(product_id=20), "안 빼도 되고 찜 빼줘", items, get_settings()
+    )
+    assert result is None
+
+
+def test_resolve_wishlist_remove_target_context_id_still_works_without_negation() -> None:
+    """회귀 — 부정 신호가 없으면 문맥 id 규칙은 그대로 동작한다(기존 동작 불변)."""
+    from app.agents.buyer.cart.wishlist import _resolve_wishlist_remove_target
+
+    items = [_wishlist_item(10, "이어폰"), _wishlist_item(20, "케이스")]
+    result = _resolve_wishlist_remove_target(
+        CartIntent(product_id=20), "찜 빼줘", items, get_settings()
+    )
+    assert result is not None
+    assert result.product_id == 20
+
+
+async def test_wishlist_remove_negated_context_id_asks_via_stream() -> None:
+    """`stream_wishlist_remove` 수준에서도 같은 사실 — remove_wishlist_fn 이 한 번도 안 불린다."""
+
+    async def remove_wishlist_fn(product_id, *, user_id):
+        raise AssertionError("부정된 문맥 id 인데 remove_wishlist_fn 이 호출됐다")
+
+    events = await _collect(
+        stream_wishlist_remove(
+            identity=_member(),
+            cart=CartIntent(product_id=20),
+            message="그건 빼지 말고 찜 빼줘",
+            settings=get_settings(),
+            get_wishlist_fn=_wishlist(_wishlist_item(10, "이어폰"), _wishlist_item(20, "케이스")),
+            remove_wishlist_fn=remove_wishlist_fn,
+        )
+    )
+    assert _types(events) == ["token", "done"]
+
+
 async def test_wishlist_remove_spoken_name_wins_over_stale_context_product_id() -> None:
     """2차 리뷰 지적 4 — 발화의 명시적 상품명이 문맥 `cart.product_id` 보다 강한 신호다.
 

@@ -54,7 +54,10 @@ def _resolve_wishlist_remove_target(
          (`has_any_negation`)가 아니라 `negation.matches_unnegated` 의 **출현 단위** 판정을
          쓴다 — 문장 전체 가드를 이름 매칭에 쓰면 "이어폰은 찜 빼지 말고 케이스 찜 빼줘"에서
          정상 해제 대상인 "케이스"까지 함께 죽어 되물음이 된다.
-      2. `cart.product_id`(decompose 가 문맥에서 이미 골라 온 값)가 목록 안에 있으면 그것.
+      2. 발화에 부정·대조 신호(`negation.has_any_negation`, 문장 전체 검사)가 **없을 때만**
+         `cart.product_id`(decompose 가 문맥에서 이미 골라 온 값)가 목록 안에 있으면 그것.
+         **[라운드 16]** 문맥 id 는 이름이 없어도 쓰이는 신호라 "출현 단위"로 볼 대상 자체가
+         없다 — 그래서 1번(이름 매칭)처럼 출현 단위가 아니라 3번과 같은 문장 전체 판정을 쓴다.
       3. 발화에 부정·대조 신호가 **없고**, 목록 어느 항목의 이름도 (경계와 무관하게) 발화에
          아예 등장하지 않을 때만 위 두 규칙이 모두 안 잡히고 목록이 정확히 1건이면 그 1건.
       4. 그 외 → `None`.
@@ -95,6 +98,19 @@ def _resolve_wishlist_remove_target(
     그 1건을 자동 선택해 같은 결과가 나올 수 있다 — `remove.py` 와 같은 이유로 3번에도 이름을
     대려는 시도(경계·부정과 무관한 원문 부분 문자열 겹침)가 있으면 자동 선택을 건너뛴다(새
     신호 아님, 이미 계산해 둔 겹침 재사용).
+
+    **[라운드 16, head `3ca0f40` 리뷰]** docstring 은 줄곧 문맥 id(2번)를 이름(1번)보다 **약한**
+    신호로 규정해 왔는데(2차 리뷰 지적 4), 정작 세 규칙 중 2번에만 부정 가드가 없었다 — 1번은
+    출현 단위(라운드 11·15), 3번은 문장 전체(라운드 10) 가드를 진작 받았다. 그래서 이름을
+    대지 않고 부정만 있는 발화("그건 빼지 말고 찜 빼줘", 찜 `[10=이어폰, 20=케이스]`,
+    `cart.product_id=20`)에서 이름 매칭은 애초에 안 잡히니 곧장 2번으로 내려가 부정을 무시하고
+    20 을 반환했다(재현 확인 — 사용자가 "빼지 말라"고 한 항목이 해제됨). 문맥 id 는 발화에
+    이름이 없어도 쓰이는 신호라 부정 판정을 앵커할 특정 출현이 없다 — 그래서 1번처럼 출현 단위
+    (`negation.matches_name_unnegated`)가 아니라 3번과 같은 문장 전체 판정(`negation.
+    has_any_negation`, 라운드 10 공용 모듈)을 쓴다. `has_negation` 계산을 2번 앞으로 올려
+    2·3번이 같은 값을 공유한다(중복 계산도, 판정 재구현도 아니다). `remove.py::
+    _resolve_remove_targets` 는 네 규칙 모두 이미 가드를 받고 있어(라운드 10·11·15) 손대지
+    않는다.
     """
     name_matches = [
         item
@@ -112,14 +128,15 @@ def _resolve_wishlist_remove_target(
     if name_matches:
         return name_matches[0] if len(name_matches) == 1 else None
 
-    if cart.product_id is not None:
+    has_negation = has_any_negation(
+        message, settings.utterance_negation_markers, settings.utterance_prefix_negation_markers
+    )
+
+    if cart.product_id is not None and not has_negation:
         direct = [item for item in items if item.product_id == cart.product_id]
         if direct:
             return direct[0]
 
-    has_negation = has_any_negation(
-        message, settings.utterance_negation_markers, settings.utterance_prefix_negation_markers
-    )
     name_mentioned = any(
         (name := _strip_unsafe(item.name or "")) and name in message for item in items
     )
