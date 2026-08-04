@@ -20,6 +20,7 @@ from app.agents.buyer.cart.identity import cart_identity
 from app.agents.buyer.cart.intent_guard import classify_cart_utterance
 from app.agents.buyer.cart.remove import stream_cart_remove
 from app.agents.buyer.cart.state import CartStateStore, PendingAdd
+from app.agents.buyer.cart.wishlist import stream_wishlist_add, stream_wishlist_remove
 from app.agents.buyer.recommendation.state import CartIntent
 from app.core.text import _strip_unsafe
 from app.core.tracing import current_request_trace
@@ -207,6 +208,9 @@ async def stream_cart_add(
     add_fn=None,
     get_cart_fn=None,
     delete_fn=None,
+    add_wishlist_fn=None,
+    get_wishlist_fn=None,
+    remove_wishlist_fn=None,
     observer=None,
 ) -> AsyncIterator[str]:
     """담기 서브그래프. action(CART_ADDED/CART_ADD_FAILED) 또는 옵션 되물음 token 을 낸다.
@@ -225,8 +229,29 @@ async def stream_cart_add(
         yield sse("token", TokenData(text=_WISHLIST_DISABLED_NOTICE).model_dump(by_alias=True))
         yield _done()
         return
-    # intent == "wishlist_add"/"wishlist_remove" + wishlist_enabled=True 는 라운드 4 에서
-    # stream_wishlist_* 로 배선한다 — 지금은 아무 것도 하지 않고 아래 오늘 동작(담기)으로 흘러간다.
+    if intent == "wishlist_add" and settings.wishlist_enabled:
+        async for frame in stream_wishlist_add(
+            identity=identity,
+            cart=cart,
+            settings=settings,
+            allowed_product_ids=allowed_product_ids,
+            add_wishlist_fn=add_wishlist_fn,
+            observer=observer,
+        ):
+            yield frame
+        return
+    if intent == "wishlist_remove" and settings.wishlist_enabled:
+        async for frame in stream_wishlist_remove(
+            identity=identity,
+            cart=cart,
+            message=message,
+            settings=settings,
+            get_wishlist_fn=get_wishlist_fn,
+            remove_wishlist_fn=remove_wishlist_fn,
+            observer=observer,
+        ):
+            yield frame
+        return
     if intent == "cart_remove" and settings.cart_remove_enabled:
         async for frame in stream_cart_remove(
             identity=identity,
