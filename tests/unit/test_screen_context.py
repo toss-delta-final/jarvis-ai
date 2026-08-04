@@ -1047,20 +1047,81 @@ def test_row_only_reask_does_not_regress_valid_coordinates_or_ordinals() -> None
     assert resolved is not None and resolved.product_id == 9001
 
 
-def test_row_only_regex_requires_the_absence_of_a_following_number() -> None:
-    """`_ROW_ONLY` 자체의 의미를 고정한다 — 줄|행 뒤에 숫자가 **전혀 없을 때만** 매칭된다.
+def test_row_only_regex_requires_a_number_word_but_tolerates_unrelated_trailing_digits() -> None:
+    """`_ROW_ONLY` 자체의 의미를 고정한다(F-14 로 갱신됨).
 
-    단순히 `\\s*(?!\\d)` 로만 막으면 정규식이 공백을 0개 소비하도록 역추적해 `"3줄 2단"` 의 공백
-    앞에서 통과해 버린다(실제로 확인했다) — 다음 사람이 이 구멍을 다시 뚫지 않도록 못박는다.
+    [9차 리뷰, F-14 이전] 초판은 "줄|행 뒤에 숫자가 **전혀 없을 때만**" 매칭했다. 그런데 그
+    조건은 F-9(`"3줄 2단"`)를 막는 데는 맞았지만, `"3번째 줄 5000원 넘는거 담아줘"`처럼 줄 뒤에
+    **좌표가 아닌** 숫자(가격·수량)가 있는 발화까지 함께 매칭을 포기시켜 F-11 이 막으려던
+    오담기가 그대로 재발했다(실제 재현) — `_COORD`도 실패(접미사 없음)·`_ROW_ONLY`도 실패(숫자
+    있음) → 아래 (2) 순번이 "3"을 배열 순번으로 잡는다.
+
+    [F-14 갱신] 그래서 두 조건으로 나눴다: ① 첫 숫자에 `번째`가 붙어 있어야 하고(F-9 의 맨
+    "3줄"·"2줄"은 제외), ② 뒤에 **유효한 좌표 접미사를 동반한 숫자만** 없으면 매칭한다(좌표가
+    아닌 숫자는 매칭을 막지 않는다).
     """
     from app.agents.buyer.screen_reference import _ROW_ONLY
 
+    # 순번을 명시한(`번째`) 행 지시 + 뒤에 좌표 아닌 숫자 — F-14 가 새로 잡아야 하는 케이스.
+    assert _ROW_ONLY.search("3번째 줄 5000원 넘는거 담아줘") is not None
+    assert _ROW_ONLY.search("3번째 줄에 5개 담아줘") is not None
+    # 뒤에 숫자가 아예 없는 F-11 원 케이스도 여전히 잡는다.
     assert _ROW_ONLY.search("3번째 줄에 있는 거 담아줘") is not None
     assert _ROW_ONLY.search("2번째 줄 상품 담아줘") is not None
-    # 뒤에 숫자가 있으면(칸 표기 시도든 F-9 의 비좌표 설명이든) 매칭되지 않는다.
+    # 뒤에 **유효한 좌표**(숫자+접미사)가 있으면 `_COORD` 가 해소할 몫이라 매칭하지 않는다.
     assert _ROW_ONLY.search("3번째 줄 2번째") is None
+    # F-9: `번째` 가 없는 맨 "숫자+줄|행"은 상품 설명일 수 있어 여전히 매칭하지 않는다.
     assert _ROW_ONLY.search("3줄 2단 정리함") is None
     assert _ROW_ONLY.search("2줄 3인용 소파") is None
+
+
+# ─────────── Claude 리뷰 9차 — F-14 F-11 의 "뒤에 숫자 없음" 조건이 만든 구멍 ───────────
+
+
+def test_row_only_reask_survives_a_trailing_non_coordinate_number() -> None:
+    """[Claude 리뷰 9차, F-14] "번째 줄" 뒤에 **좌표가 아닌** 숫자(가격·수량)가 와도 되물음이다.
+
+    F-11 초판은 "줄|행 뒤에 숫자가 전혀 없을 때만" `_ROW_ONLY` 를 매칭시켰다. `"3번째 줄 5000원
+    넘는거 담아줘"`·`"3번째 줄에 5개 담아줘"` 는 줄 뒤에 숫자(5000·5)가 있어 그 조건에 걸려
+    `_ROW_ONLY` 가 포기했고, `_COORD` 도 두 번째 숫자 접미사가 없어 실패해 아래 (2) 순번이 "3"을
+    **배열 순번**으로 잡았다(columns=3 인 9건 화면에서 실제 3번째 줄과 무관한 상품 확정, 실제
+    재현) — F-1/F-2/F-7/F-11 과 같은 클래스의 오담기다.
+    """
+    products = [(3100 + i, f"상품{i}") for i in range(1, 10)]  # 9건 × columns=3
+    for message in ("3번째 줄 5000원 넘는거 담아줘", "3번째 줄에 5개 담아줘"):
+        resolved = _resolve(message, products, columns=3)
+        assert resolved is not None, message
+        assert resolved.product_id is None, message
+        assert resolved.reason == "coordinate_without_columns", message
+
+
+def test_row_only_trailing_number_fix_does_not_regress_f9_or_valid_coordinates() -> None:
+    """대조군 — F-14 수정이 F-9(비좌표 숫자 설명)·정상 좌표·정상 순번을 다시 깨지 않는다.
+
+    9차 리뷰가 제안한 단순 교체(`(?!\\s*(?:에\\s*)?\\d+\\s*(?:번째|번|칸))` 로만 바꾸기)는 F-9 를
+    되살렸다 — "2단"·"3인용"도 "숫자 뒤에 좌표 접미사가 없다"를 그대로 만족해 되물음으로 샜다
+    (직접 검증해 확인, 그래서 채택하지 않았다). 이 테스트가 그 회귀를 고정한다.
+    """
+    products = [(3100 + i, f"상품{i}") for i in range(1, 10)]  # 9건 × columns=3
+
+    # F-9: 두 번째 숫자가 있지만 좌표 접미사가 아니고 첫 숫자에 `번째` 도 없는 경우는
+    # 여전히 LLM 산출을 존중한다(None).
+    for message in ("3줄 2단 정리함 담아줘", "2줄 3인용 소파 담아줘"):
+        assert _resolve(message, products, columns=3) is None, message
+
+    # 정상 좌표: 칸까지 말했으면 종전대로 `_COORD` 가 먼저 해소한다.
+    resolved = _resolve("3번째 줄 2번째 담아줘", products, columns=3)
+    assert resolved is not None and resolved.product_id == 3108
+    assert resolved.reason == "coordinate"
+    resolved = _resolve("3줄 2칸 담아줘", products, columns=3)
+    assert resolved is not None and resolved.product_id == 3108
+    resolved = _resolve("3행 2번째 담아줘", products, columns=3)
+    assert resolved is not None and resolved.product_id == 3108
+
+    # 줄|행 언급이 아예 없는 순번 발화는 종전대로 배열 순번이 해소한다.
+    resolved = _resolve("3번째 거 담아줘", products, columns=3)
+    assert resolved is not None and resolved.product_id == 3103
+    assert resolved.reason == "ordinal"
 
 
 # ─────────── Claude 리뷰 8차 — F-12 1글자 지시대명사 표지의 부분일치 오탐 ───────────
