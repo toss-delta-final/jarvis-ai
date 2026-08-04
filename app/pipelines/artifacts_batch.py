@@ -13,14 +13,17 @@ fetch·llm·embed·store 는 주입형(테스트·오프라인 대체) — torch
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import logging
+import threading
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from app.core.config import Settings, get_settings
 from app.core.llm import LLMClient, get_llm
 from app.pipelines import embedding as _embedding
+from app.pipelines import color_synonym_seed
 from app.pipelines.artifact_store import (
     ArtifactStore,
     CatalogArtifact,
@@ -36,6 +39,9 @@ _HIDDEN = "HIDDEN"
 
 Fetch = Callable[[str | None, int], Awaitable[ProductChangesPage]]
 Embed = Callable[[list[str]], list[list[float]]]
+_harvest_limiters: dict[tuple[str, int], threading.BoundedSemaphore] = {}
+_harvest_limiter_lock = threading.Lock()
+_background_harvest_tasks: set[asyncio.Task[int]] = set()
 
 
 @dataclass
@@ -44,6 +50,74 @@ class BatchResult:
     hidden: int
     pages: int
     cursor: str | None
+
+
+def _harvest_limiter(dsn: str, max_concurrency: int) -> threading.BoundedSemaphore:
+    key = (dsn, max_concurrency)
+    limiter = _harvest_limiters.get(key)
+    if limiter is None:
+        with _harvest_limiter_lock:
+            limiter = _harvest_limiters.get(key)
+            if limiter is None:
+                limiter = threading.BoundedSemaphore(max_concurrency)
+                _harvest_limiters[key] = limiter
+    return limiter
+
+
+def _consume_background_harvest(task: asyncio.Task[int]) -> None:
+    """타임아웃 뒤 shield task의 늦은 실패를 기록하고 예외를 회수한다."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        _log.warning(
+            "색상 표기 백그라운드 수확 실패",
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+
+
+async def _harvest_change_colors(change: ProductChange, *, settings: Settings) -> int:
+    """I-17 한 변경분의 신규 색상 표기를 동기 DB/API 작업 스레드에서 pending으로 제안한다."""
+    embed = functools.partial(_embedding.embed_texts, task_type=settings.embedding_task_document)
+    limiter = _harvest_limiter(
+        settings.catalog_db_url,
+        settings.color_synonym_harvest_max_concurrency,
+    )
+    if not limiter.acquire(blocking=False):
+        _log.warning("색상 표기 수확 동시 실행 상한 — 해당 change 수확 건너뜀")
+        return 0
+
+    def run() -> int:
+        try:
+            return color_synonym_seed.harvest_new_terms(
+                settings.catalog_db_url,
+                change.attributes,
+                embed,
+                settings.embedding_model_id,
+                settings.color_synonym_cluster_threshold,
+                max_terms=settings.color_synonym_harvest_max_terms_per_product,
+                max_term_length=settings.color_synonym_harvest_max_term_length,
+                scan_max_values=(
+                    settings.color_synonym_harvest_scan_max_values_per_product
+                ),
+            )
+        finally:
+            # wait_for가 먼저 끝나도 실제 worker가 종료될 때까지 슬롯을 계속 점유한다.
+            limiter.release()
+
+    task = asyncio.create_task(asyncio.to_thread(run))
+    try:
+        return await asyncio.wait_for(
+            asyncio.shield(task),
+            timeout=settings.color_synonym_query_timeout_s,
+        )
+    except (TimeoutError, asyncio.CancelledError):
+        # timeout·호출자 취소 뒤에도 worker는 shield 아래 계속 돈다. 완료 시 예외를 회수하되,
+        # 현재 호출의 기존 실패/취소 전파 규약은 그대로 유지한다.
+        _background_harvest_tasks.add(task)
+        task.add_done_callback(_background_harvest_tasks.discard)
+        task.add_done_callback(_consume_background_harvest)
+        raise
 
 
 async def _process_change(
@@ -79,6 +153,13 @@ async def _process_change(
             normalized=settings.embedding_normalized,
         )
     )
+    # 기본 off: 새 표기마다 임베딩 API와 DB write가 추가되고 검수 테이블도 아직 미검수다.
+    # 초기 검수 완료 뒤에만 켜며, 어떤 실패도 본 I-17 생성물 갱신으로 전파하지 않는다.
+    if settings.color_synonym_batch_harvest_enabled:
+        try:
+            await _harvest_change_colors(change, settings=settings)
+        except Exception:
+            _log.warning("색상 표기 수확 실패 — I-17 생성물 갱신은 계속", exc_info=True)
 
 
 async def _drain(
