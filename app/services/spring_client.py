@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 import logging
 import math
 import threading
@@ -98,6 +99,21 @@ _log = logging.getLogger(__name__)
 _color_synonym_limiters: dict[tuple[str, int], threading.BoundedSemaphore] = {}
 _color_synonym_limiter_lock = threading.Lock()
 _background_synonym_tasks: set[asyncio.Task[dict[str, list[str]]]] = set()
+# ContextVar로 SpringSearchBackend·EmbeddingRerankBackend·VectorSearchBackend와 search_catalog
+# 시그니처를 바꾸지 않고 호출 구간만 표시한다. gather 자식 태스크는 생성 시 컨텍스트를 복사한다.
+_search_retry_suppressed: ContextVar[bool] = ContextVar(
+    "search_retry_suppressed", default=False
+)
+
+
+@contextmanager
+def suppress_search_retry() -> Iterator[None]:
+    """현재 호출 컨텍스트의 I-1 검색 재시도만 일시적으로 끈다."""
+    token = _search_retry_suppressed.set(True)
+    try:
+        yield
+    finally:
+        _search_retry_suppressed.reset(token)
 
 
 def _color_synonym_limiter(dsn: str, max_concurrency: int) -> threading.BoundedSemaphore:
@@ -578,7 +594,7 @@ async def search_products(filters: ProductSearchFilters) -> ProductSearchResult:
             # 색상 확장은 보조 품질 경로다. DB 장애가 본 검색을 죽이지 않게 기존 단수로 degrade.
             _log.warning("색상 동의어 확장 실패 — 원문 단수 color로 검색", exc_info=True)
     params = _search_query_params(filters, color_values=color_values)
-    attempts = settings.spring_max_retries + 1
+    attempts = 1 if _search_retry_suppressed.get() else settings.spring_max_retries + 1
     # [#132] 검색 1회의 **총시간** 상한. `spring_timeout_s` 는 httpx 에 스칼라로 주입돼
     # connect/read/write/pool 네 시계가 되는데 `read` 는 **청크 사이 간격** 상한이라, 바디가
     # 끊기지 않고 계속 오면 한 번도 물리지 않는다 — `size` 제거(전량 반환, §4.6)로 바디가 커진
@@ -586,6 +602,10 @@ async def search_products(filters: ProductSearchFilters) -> ProductSearchResult:
     # 검색 예산으로 **가정**하고 스트림 상한을 기동 검증하는데, 그 가정을 집행하는 코드가
     # 없었다. 새 튜너블을 만들지 않고 같은 식을 쓴다 — 검증과 집행이 갈라지면 한쪽만 고쳐
     # 놓고 지켜진다고 믿게 된다.
+    # [#277 병합] 곱하는 값은 상수가 아니라 **실제 시도 수**(`attempts`)다 — 재시도를 끈 턴
+    # (`suppress_search_retry`, 미룬 conditions 가 first-token 예산을 쓰는 경로)은 예산도 1회분으로
+    # 함께 좁아져야 한다. `spring_max_retries + 1` 을 그대로 쓰면 억제한 턴이 억제 안 한 턴과
+    # 같은 상한을 갖게 돼 #277 이 아낀 예산을 이 가드가 도로 늘려 준다.
     budget_s = settings.spring_timeout_s * attempts
 
     async def _fetch_and_parse(span: TraceNode | None) -> ProductSearchResult:

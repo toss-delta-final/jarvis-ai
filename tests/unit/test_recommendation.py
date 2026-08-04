@@ -2347,6 +2347,119 @@ async def test_search_retry_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> 
     assert len(calls) == 1
 
 
+async def test_recommendation_deferred_conditions_suppresses_search_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """미룬 턴은 첫 이벤트 앞 I-1 직렬 예산을 지키려고 본 검색 재시도를 건너뛴다(#277)."""
+    import httpx
+
+    calls = _counting_client(monkeypatch, httpx.Response(503))
+    events = await _collect(
+        run_buyer_turn(
+            _req(thread_id="deferred-retry-suppressed"),
+            _guest(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "filters": {"ratingMin": 4.5},
+                    "case": 2,
+                }
+            ),
+        )
+    )
+
+    assert len(calls) == 1
+    assert _types(events) == ["conditions", "error"]
+    assert events[-1]["data"]["code"] == "SEARCH_FAILED"
+
+
+async def test_recommendation_nondeferred_conditions_keeps_search_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """conditions를 먼저 내는 턴은 첫 이벤트 예산 밖이므로 I-1 재시도 1회를 유지한다(#277)."""
+    import httpx
+
+    calls = _counting_client(monkeypatch, httpx.Response(503))
+    events = await _collect(
+        run_buyer_turn(
+            _req(thread_id="nondeferred-retry-kept"),
+            _guest(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "filters": {},
+                    "case": 2,
+                }
+            ),
+        )
+    )
+
+    assert len(calls) == 2
+    assert _types(events) == ["conditions", "error"]
+    assert events[-1]["data"]["code"] == "SEARCH_FAILED"
+
+
+async def test_recommendation_deferred_conditions_retry_can_be_restored_by_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """가드를 켜면 미룬 턴도 종전처럼 I-1 재시도 1회를 쓴다(#277 롤백 손잡이)."""
+    import httpx
+
+    monkeypatch.setattr(get_settings(), "search_retry_on_deferred_conditions", True)
+    calls = _counting_client(monkeypatch, httpx.Response(503))
+    events = await _collect(
+        run_buyer_turn(
+            _req(thread_id="deferred-retry-restored"),
+            _guest(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "filters": {"ratingMin": 4.5},
+                    "case": 2,
+                }
+            ),
+        )
+    )
+
+    assert len(calls) == 2
+    assert _types(events) == ["conditions", "error"]
+    assert events[-1]["data"]["code"] == "SEARCH_FAILED"
+
+
+async def test_recommendation_relaxation_chip_probe_keeps_search_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """conditions 뒤 완화 칩 probe는 첫 이벤트 예산 밖이라 I-1 재시도를 유지한다(#277)."""
+    import httpx
+
+    empty = httpx.Response(200, json={"success": True, "data": []})
+    calls = _counting_client(
+        monkeypatch,
+        empty,  # 본 검색
+        empty,  # ratingMin 자동 완화 probe
+        httpx.Response(503),  # conditions 뒤 priceMax 완화 칩 probe 1차
+        httpx.Response(200, json=_I1_OK),  # 완화 칩 probe 재시도
+    )
+    events = await _collect(
+        run_buyer_turn(
+            _req(thread_id="relaxation-chip-retry-kept"),
+            _guest(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "filters": {"ratingMin": 4.5, "priceMax": 50000},
+                    "case": 2,
+                }
+            ),
+        )
+    )
+
+    assert len(calls) == 4
+    assert _types(events)[0] == "conditions"
+    assert "suggestions" in _types(events)
+    assert _types(events)[-1] == "done"
+
+
 async def test_expose_min_fill_from_search_order() -> None:
     """rerank 가 expose_min 미만을 내면 검색순서로 보충한다(REQ-REC-021 5~8개)."""
     products = [
@@ -3074,6 +3187,71 @@ async def test_recommendation_delayed_conditions_survive_repurchase_store_failur
     assert _types(events).count("conditions") == 1
     assert 101 in _only_list(push.pushes[0]).product_ids
     assert _types(events)[-1] == "done"
+
+
+async def test_recommendation_delays_conditions_until_search_and_auto_relax_probe_finish() -> None:
+    """자동 완화 가능 턴은 본 검색과 probe 두 I-1 호출이 끝난 뒤 conditions를 낸다(#277)."""
+    calls = []
+    product = SpringProduct(
+        product_id=101,
+        name="무선 이어폰 프로",
+        price=40000,
+        rating=4.2,
+        category="무선이어폰",
+        brand="b",
+    )
+    conditions_call_counts = []
+
+    async for frame in run_buyer_turn(
+        _req(thread_id="first-event-two-searches"),
+        _member_num(),
+        llm=FakeLLM(
+            decompose={
+                "intent": "recommend",
+                "filters": {"ratingMin": 4.5},
+                "case": 2,
+            }
+        ),
+        search=_filtered_repurchase_search([product], calls),
+        push_fn=_RecordingPush(),
+    ):
+        line = frame.strip()
+        if line.startswith("data:"):
+            event = json.loads(line[len("data:") :].strip())
+            if event["type"] == "conditions":
+                conditions_call_counts.append(len(calls))
+
+    assert conditions_call_counts == [2]  # 본 검색 0건 + ratingMin 자동 완화 probe
+
+
+async def test_recommendation_emits_conditions_before_search_when_auto_relax_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """relaxation_max_rounds=0이면 ratingMin 턴도 검색 전에 conditions를 낸다(#277)."""
+    monkeypatch.setattr(get_settings(), "relaxation_max_rounds", 0)
+    calls = []
+    conditions_call_counts = []
+
+    async for frame in run_buyer_turn(
+        _req(thread_id="first-event-auto-relax-disabled"),
+        _member_num(),
+        llm=FakeLLM(
+            decompose={
+                "intent": "recommend",
+                "filters": {"ratingMin": 4.5},
+                "case": 2,
+            }
+        ),
+        search=_filtered_repurchase_search([], calls),
+        push_fn=_RecordingPush(),
+    ):
+        line = frame.strip()
+        if line.startswith("data:"):
+            event = json.loads(line[len("data:") :].strip())
+            if event["type"] == "conditions":
+                conditions_call_counts.append(len(calls))
+
+    assert conditions_call_counts == [0]
 
 
 async def test_recommendation_persisted_repurchase_is_revalidated_against_recent_purchases(

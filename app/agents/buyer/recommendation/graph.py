@@ -12,6 +12,7 @@ import asyncio
 import logging
 from collections import Counter
 from collections.abc import AsyncIterator
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -420,6 +421,9 @@ async def stream_recommendation(
         # 조건 칩을 먼저 내보내도 표시-실제 불일치가 생기지 않는다.
         logger.warning("relaxation_gate_failed", extra={"reason": str(exc)})
         may_auto_relax = False
+    suppress_deferred_search_retry = (
+        may_auto_relax and not settings.search_retry_on_deferred_conditions
+    )
     if not may_auto_relax:
         yield sse(
             "conditions",
@@ -548,7 +552,15 @@ async def stream_recommendation(
                 trace.mark_degraded("dedup_skipped")
             return None
 
-    search_bundle, purchases = await asyncio.gather(_run_search(), _fetch_purchases())
+    # 미룬 턴은 첫 이벤트 앞 본 검색·자동 완화 probe만 재시도를 끈다(#277). conditions 뒤의
+    # 완화 칩 probe는 첫 이벤트 예산 밖이라 제외하며, 이 with는 await 뒤 즉시 닫아 yield·다음
+    # 턴으로 ContextVar가 새지 않게 한다. progress 이벤트가 계약에 생기면 이 스킵은 원복 가능하다.
+    with (
+        spring_client.suppress_search_retry()
+        if suppress_deferred_search_retry
+        else nullcontext()
+    ):
+        search_bundle, purchases = await asyncio.gather(_run_search(), _fetch_purchases())
     if search_bundle is None:  # 검색 실패 → SEARCH_FAILED(종료)
         if trace := current_request_trace():
             trace.mark_degraded("search_failed")
@@ -744,7 +756,13 @@ async def stream_recommendation(
                 if rounds >= settings.relaxation_max_rounds:
                     break
                 rounds += 1
-                outcome = await _probe(cand)
+                # conditions 전 자동 완화 probe까지만 억제한다. 아래 완화 칩 probe는 감싸지 않는다.
+                with (
+                    spring_client.suppress_search_retry()
+                    if suppress_deferred_search_retry
+                    else nullcontext()
+                ):
+                    outcome = await _probe(cand)
                 if outcome is None:
                     continue
                 relaxed_result, relaxed_suppressed, relaxed_seen, relaxed_had, relaxed_leg = outcome
