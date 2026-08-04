@@ -97,22 +97,69 @@ def _price_tier(price: int | None, median_price: float | None, settings) -> str:
 
 
 def _group_key(product: SpringProduct, need_of: dict[int, str] | None) -> str | None:
-    """priceLevel 중앙값 그룹 키를 일관되게 산출한다(#173)."""
-    # 그룹 키 산출은 한 곳에 둬 중앙값 계산과 조회가 달라지는 KeyError 를 막는다.
-    return need_of.get(product.product_id) if need_of is not None else None
+    """priceLevel 중앙값 그룹 키를 산출한다(#173, #236).
+
+    `need_of` 가 오면 **니즈가 그룹**이다 — 상위가 "이 후보들은 서로 다른 니즈"라고 내린 판정이라
+    상품의 category 보다 권위 있다. 여기서 category 로 보조 분할하면 #173 이 고정한 니즈 경계가
+    흔들린다. 그래서 `need_of.get(...) or category` 같은 `or` 배선이 아니라 **하드 분기**다 —
+    `or` 로 쓰면 니즈에 미매핑된 후보(키 `None`)가 category 로 새어 #173 동작이 깨진다.
+
+    [#236] `need_of` 가 없는 턴(대분류 leg 1개·리파인 승계·leg 없는 단일 filters 검색)은 종전에
+    전 후보가 한 그룹(`None`)이라, 2만원 마우스와 150만원 노트북이 같은 중앙값을 공유해 등급이
+    **적극적으로 틀렸다**. I-1 요청 categoryName 은 대분류여도 응답 `[].categoryName` 은 leaf 라
+    (api-spec §4.6) 후보의 category 가 곧 상품군 파티션이다.
+    빈 문자열·공백만인 category 는 `None` 과 **같은 '미상' 버킷**이다 — BE 자유 문자열이라(검증기
+    없는 `str | None`) `""` 가 실제로 오는데, 별도 버킷이 되면 미상이 갈라져 각각 하한 미달로
+    떨어진다. casefold 는 하지 않는다 — leaf 가 한국어라 얻는 게 없고 라틴 leaf 만 잘못 합친다.
+
+    판정은 `is not None` 이 아니라 **truthy** 다(PR #274 리뷰) — 빈 dict 는 "니즈 매핑이 하나도
+    없다"라 의미상 `None` 과 같은데, `is not None` 으로 보면 전 후보가 `need_of.get()` → `None`
+    으로 묶여 **이 이슈가 고치려는 단일 그룹 버그가 그대로 재발**한다. `rerank()` 본문의
+    `if need_of:`·`if need_of and per_need:` 도 truthy 라 기준을 여기에 맞춰야 프롬프트와 그룹핑이
+    갈리지 않는다. 오늘은 `_merge_fanout_results` 가 `leg_of` 를 생존 id 로 잘라내(graph.py) 빈
+    dict 가 만들어지지 않지만, 그 보장은 타입에도 호출부에도 강제돼 있지 않다.
+    """
+    if need_of:
+        return need_of.get(product.product_id)
+    return (product.category or "").strip() or None
 
 
-def _group_medians(
-    candidates: list[SpringProduct], need_of: dict[int, str] | None
-) -> dict[str | None, float | None]:
-    """후보를 need 별로 묶어 유효 price 중앙값을 한 번씩 계산한다(#173)."""
+def _price_medians(
+    candidates: list[SpringProduct], need_of: dict[int, str] | None, settings
+) -> list[float | None]:
+    """후보 순서에 **1:1 정렬된** priceLevel 기준 중앙값을 낸다(#173, #236).
+
+    반환을 그룹 키 dict 가 아니라 후보 정렬 리스트로 잡는 이유(#236): 종전엔 호출부가 `_group_key`
+    를 한 번 더 불러 `group_medians[key]` 로 조회해, 두 곳의 키 산출이 어긋나는 순간 KeyError 로
+    턴 전체가 미처리 예외로 죽었다(rerank 의 LLMError degrade 로도 안 잡힌다). 키를 한 번만
+    산출해 후보 위치로 답을 확정하면 그 어긋남 자체가 성립 불가능해진다. productId 키도 아니다 —
+    비-fanout 경로엔 productId dedup 이 없어(`_parse_search_response`·`search_catalog`) 중복이
+    오면 조용히 한쪽으로 접힌다. 위치 정렬은 `zip(..., strict=True)` 로 어긋남이 즉시 터진다.
+
+    하한 폴백은 **`need_of` 가 없는 턴에만** 쓴다(빈 dict 도 없는 것으로 본다 — `_group_key`
+    docstring 참조). 니즈 경계는 상위 판정이라 그룹이 곧 정답이지만
+    category 는 휴리스틱 파티션이고, leaf 가 잘게 쪼개져 유효 price 가 1건이면 중앙값이 자기
+    자신이라 비율이 항상 1.0 → 전원 '보통' 으로 신호가 죽는다. 그런 그룹은 **전역 중앙값으로
+    폴백하지 않고** 중앙값을 `None` 으로 둬 `_price_tier` 가 '정보없음' 을 내게 한다 — 전역
+    중앙값은 후보 전체가 섞인 값이라 거기로 보내면 이 이슈가 고치려는 왜곡을 그 그룹에만 다시
+    씌운다(노트북 20건이 지배하는 중앙값에 마우스 2건을 재는 꼴).
+    """
+    keys = [_group_key(c, need_of) for c in candidates]  # 후보 순서와 1:1 — 키 산출은 여기 한 번뿐
     grouped: dict[str | None, list[int]] = {}
-    for candidate in candidates:
-        key = _group_key(candidate, need_of)
+    for candidate, key in zip(candidates, keys, strict=True):
         grouped.setdefault(key, [])
         if candidate.price is not None:
             grouped[key].append(candidate.price)
-    return {key: median(prices) if prices else None for key, prices in grouped.items()}
+    medians: dict[str | None, float | None] = {
+        key: median(prices) if prices else None for key, prices in grouped.items()
+    }
+    if not need_of:
+        # 세는 대상은 멤버 수가 아니라 **유효 price 를 가진 멤버 수**다 — 중앙값이 그 표본에서만
+        # 나오므로, 5건 중 1건만 가격이 있으면 중앙값이 곧 그 1건이라 같은 퇴화가 남는다.
+        for key, prices in grouped.items():
+            if len(prices) < settings.price_group_min_size:
+                medians[key] = None
+    return [medians[key] for key in keys]
 
 
 async def rerank(
@@ -139,17 +186,14 @@ async def rerank(
     케이스가 3/3 → 1/3 로 희석된 실측 전례가 있다(#198, SPEC §EX-7).
     """
     settings = get_settings()  # 티어 경계 조회 — 후보 루프 밖에서 1회(캐시 싱글턴, 관례 정합)
-    group_medians = _group_medians(candidates, need_of)
+    price_medians = _price_medians(candidates, need_of, settings)
     cand = [
         {
             "productId": c.product_id,
             "name": c.name,
             "brand": c.brand,
-            "priceLevel": _price_tier(
-                c.price,
-                group_medians[_group_key(c, need_of)],
-                settings,
-            ),
+            # [#236] 기준 중앙값은 need(있으면)·아니면 후보의 category 그룹 — 위에서 확정된다.
+            "priceLevel": _price_tier(c.price, med, settings),
             # rating·reviewCount 는 정확한 숫자 대신 등급으로 — LLM 이 "4.8 평점"·"리뷰 128개"처럼
             # 흘려 CH-5 표시값과 어긋나는 걸 원천 차단한다(#171 PR#172). 정확한 값은 원본에 남아
             # 코드 필터·예산이 계속 쓴다. review_count==0 → 평가없음(#171 rating=0 판별 유지).
@@ -157,7 +201,8 @@ async def rerank(
             "reviewLevel": _review_tier(c, settings),
             "category": c.category,
         }
-        for c in candidates
+        # strict — 중앙값이 후보와 1:1 로 정렬돼 있음을 여기서 강제한다(#236).
+        for c, med in zip(candidates, price_medians, strict=True)
     ]
     if need_of:
         # 니즈별 분할 턴에서만 실린다 — 상품의 category(분류 경로)와 달리 "이 후보가 어느

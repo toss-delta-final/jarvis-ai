@@ -91,3 +91,15 @@ def test_price_tier_cheap_and_pricey_cannot_both_equal_median() -> None:
     """[#173] cheap=pricey=1.0 은 저렴·비쌈 경계를 없애므로 엄격 부등호로 거부한다."""
     with pytest.raises(ValidationError):
         Settings(_env_file=None, price_tier_cheap_ratio=1.0, price_tier_pricey_ratio=1.0)
+
+
+def test_price_group_min_size_default_and_lower_bound() -> None:
+    """[#236] 카테고리 그룹 하한은 config 주입이며 0 이하는 기동 fail-fast.
+
+    0 이면 어떤 그룹도 하한에 걸리지 않아 폴백 자체가 죽은 설정이 되고, 음수는 의미가 없다.
+    1 은 "싱글턴도 자기 중앙값을 쓴다"(사실상 해제)라 유효 값으로 허용한다.
+    """
+    assert Settings(_env_file=None).price_group_min_size == 2
+    assert Settings(_env_file=None, price_group_min_size=1).price_group_min_size == 1
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, price_group_min_size=0)

@@ -9,7 +9,7 @@ from time import perf_counter
 from typing import Any
 
 from app.agents.buyer.recommendation.rerank import (
-    _group_medians,
+    _price_medians,
     _price_tier,
     _rating_tier,
     _review_tier,
@@ -92,9 +92,14 @@ def _filter_model_output(
 def _candidate_payload(
     products: list[SpringProduct], settings: Settings
 ) -> list[dict[str, object]]:
-    """원시 rating/reviewCount/price를 정성 tier로 바꾼 LLM 후보 표현을 만든다."""
-    medians = _group_medians(products, None)
-    median_price = medians.get(None)
+    """원시 rating/reviewCount/price를 정성 tier로 바꾼 LLM 후보 표현을 만든다.
+
+    [#236] priceLevel 기준 중앙값은 production `rerank()` 와 **같은 함수**로 낸다 — pipeline arm 은
+    실제 `stream_recommendation` 을 돌리므로(`evals/model_eval/adapter.py`), 여기만 옛 전역
+    중앙값을 쓰면 arm 간 가격 표현이 달라져 "단일 호출 vs 분리 파이프라인" 비교에 교란변수가 낀다.
+    `need_of` 는 이 arm 에 니즈 개념이 없어 `None` 이며, 그 경로가 곧 category 그룹핑이다.
+    """
+    medians = _price_medians(products, None, settings)
     return [
         {
             "productId": product.product_id,
@@ -106,7 +111,7 @@ def _candidate_payload(
             "ratingLevel": _rating_tier(product, settings),
             "reviewLevel": _review_tier(product, settings),
         }
-        for product in products
+        for product, median_price in zip(products, medians, strict=True)
     ]
 
 
