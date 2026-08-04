@@ -70,6 +70,11 @@ async def _seed_v2_state(store: InMemoryStore, key: str, label: str) -> None:
         "categories",
         {"categories": [label]},
     )
+    await store.aput(
+        ("buyer_relaxation_offers_v1", key),
+        "turn",
+        {"offers": {label: {"field": "max_price", "value": 1}}, "applied": None},
+    )
     cart_state._last_reco_names[key] = {1: label}
 
 
@@ -78,6 +83,7 @@ async def _assert_v2_deleted(store: InMemoryStore, key: str) -> None:
     assert await store.aget(("buyer_cart_v2", key), "pending") is None
     assert await store.aget(("buyer_cart_v2", key), "last_reco") is None
     assert await store.aget(("buyer_revert_v2", key), "categories") is None
+    assert await store.aget(("buyer_relaxation_offers_v1", key), "turn") is None
     assert cart_state._last_reco_names.get(key) is None
 
 
@@ -86,6 +92,7 @@ async def _assert_v2_preserved(store: InMemoryStore, key: str) -> None:
     assert await store.aget(("buyer_cart_v2", key), "pending") is not None
     assert await store.aget(("buyer_cart_v2", key), "last_reco") is not None
     assert await store.aget(("buyer_revert_v2", key), "categories") is not None
+    assert await store.aget(("buyer_relaxation_offers_v1", key), "turn") is not None
     assert cart_state._last_reco_names.get(key) is not None
 
 
@@ -780,7 +787,7 @@ async def test_terminal_transient_cleanup_keeps_terminal_state(monkeypatch, cloc
     async def clear_context(context_id: str, thread_ids: list[str]):
         from app.agents.buyer.session_state import CleanupCounts
 
-        return CleanupCounts(revert=1, repurchase=1)
+        return CleanupCounts(revert=1, repurchase=1, relaxation_offers=1)
 
     monkeypatch.setattr("app.core.session_lifecycle.session_state.clear_context", clear_context)
     coordinator = SessionLifecycleCoordinator(
@@ -794,6 +801,7 @@ async def test_terminal_transient_cleanup_keeps_terminal_state(monkeypatch, cloc
     assert outcome.status == "completed"
     assert outcome.cleanup.revert == 1
     assert outcome.cleanup.repurchase == 1
+    assert outcome.cleanup.relaxation_offers == 1
     assert (await repo.get_context("S1")).state == "terminal"
     assert (await repo.get_finalization(terminal.claim.finalization_id)).transient_status == (
         "completed"
