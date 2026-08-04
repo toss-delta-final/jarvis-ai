@@ -667,3 +667,218 @@ async def test_batch_embed_dim_reflects_actual_vector(monkeypatch):
     await _batch.run_artifacts_batch(fetch=fetch, llm=ScriptedLLM(), store=store)
 
     assert store.get(8).embed_dim == 8
+
+
+async def test_color_harvest_flag_off_does_not_touch_harvester(monkeypatch):
+    settings = get_settings().model_copy(update={"color_synonym_batch_harvest_enabled": False})
+
+    async def forbidden(*args, **kwargs):
+        pytest.fail("default-off batch must not harvest colors")
+
+    monkeypatch.setattr(_batch, "_harvest_change_colors", forbidden)
+    await _batch._process_change(
+        _change(1), llm=_EnrichLLM(), embed=_embed, store=CatalogArtifactStore(), settings=settings
+    )
+
+
+async def test_color_harvest_only_adds_pending_new_terms(monkeypatch):
+    settings = get_settings().model_copy(update={"color_synonym_batch_harvest_enabled": True})
+    seen = []
+
+    async def harvest(change, *, settings):
+        seen.append((change.attributes, settings.color_synonym_batch_harvest_enabled))
+        return 1
+
+    monkeypatch.setattr(_batch, "_harvest_change_colors", harvest)
+    await _batch._process_change(
+        _change(1), llm=_EnrichLLM(), embed=_embed, store=CatalogArtifactStore(), settings=settings
+    )
+    assert seen == [({"방수": True}, True)]
+
+
+async def test_color_harvest_count_limit_logs_and_does_not_kill_i17_artifact(
+    monkeypatch, caplog
+):
+    settings = get_settings().model_copy(
+        update={
+            "color_synonym_batch_harvest_enabled": True,
+            "color_synonym_harvest_max_terms_per_product": 2,
+            "color_synonym_harvest_scan_max_values_per_product": 100,
+            "color_synonym_harvest_max_term_length": 40,
+        }
+    )
+    store = CatalogArtifactStore()
+    change = _change(1).model_copy(
+        update={"attributes": {"색상": ["블랙", "화이트", "레드"]}}
+    )
+    harvested: list[str] = []
+
+    def harvest(
+        dsn,
+        attributes,
+        embed,
+        model,
+        threshold,
+        *,
+        max_terms,
+        max_term_length,
+        scan_max_values,
+    ):
+        assert scan_max_values == 100
+        harvested.extend(
+            _batch.color_synonym_seed.extract_color_terms(
+                attributes,
+                max_terms=max_terms,
+                max_term_length=max_term_length,
+                scan_max_values=scan_max_values,
+            )
+        )
+        return len(harvested)
+
+    monkeypatch.setattr(_batch.color_synonym_seed, "harvest_new_terms", harvest)
+    monkeypatch.setattr(_batch, "_harvest_limiters", {})
+
+    with caplog.at_level("WARNING"):
+        await _batch._process_change(
+            change,
+            llm=_EnrichLLM(),
+            embed=_embed,
+            store=store,
+            settings=settings,
+        )
+
+    assert harvested == ["블랙", "화이트"]
+    assert "색상 표기 개수 상한 초과" in caplog.text
+    assert store.get(1) is not None
+
+
+async def test_color_harvest_failure_does_not_kill_i17_artifact(monkeypatch, caplog):
+    settings = get_settings().model_copy(update={"color_synonym_batch_harvest_enabled": True})
+    store = CatalogArtifactStore()
+
+    async def fail(*args, **kwargs):
+        raise RuntimeError("color DB unavailable")
+
+    monkeypatch.setattr(_batch, "_harvest_change_colors", fail)
+    with caplog.at_level("WARNING"):
+        await _batch._process_change(
+            _change(1), llm=_EnrichLLM(), embed=_embed, store=store, settings=settings
+        )
+    assert store.get(1) is not None
+    assert "색상 표기 수확 실패" in caplog.text
+
+
+async def test_color_harvest_timeout_does_not_kill_i17_artifact(monkeypatch, caplog):
+    import asyncio
+
+    settings = get_settings().model_copy(
+        update={
+            "color_synonym_batch_harvest_enabled": True,
+            "color_synonym_query_timeout_s": 0.001,
+        }
+    )
+    store = CatalogArtifactStore()
+
+    async def never_finishes(*args, **kwargs):
+        await asyncio.sleep(1)
+
+    monkeypatch.setattr(_batch.asyncio, "to_thread", never_finishes)
+    with caplog.at_level("WARNING"):
+        await _batch._process_change(
+            _change(1), llm=_EnrichLLM(), embed=_embed, store=store, settings=settings
+        )
+    assert store.get(1) is not None
+    assert "색상 표기 수확 실패" in caplog.text
+
+
+async def test_color_harvest_saturation_skips_without_delaying_batch(monkeypatch):
+    import asyncio
+    import threading
+
+    settings = get_settings().model_copy(
+        update={
+            "color_synonym_batch_harvest_enabled": True,
+            "color_synonym_harvest_max_concurrency": 1,
+            "color_synonym_query_timeout_s": 0.01,
+        }
+    )
+    started = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def blocked_harvest(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        started.set()
+        release.wait(timeout=1.0)
+        return 1
+
+    monkeypatch.setattr(_batch.color_synonym_seed, "harvest_new_terms", blocked_harvest)
+    monkeypatch.setattr(_batch, "_harvest_limiters", {})
+    monkeypatch.setattr(_batch, "_background_harvest_tasks", set(), raising=False)
+    try:
+        with pytest.raises(TimeoutError):
+            await _batch._harvest_change_colors(_change(1), settings=settings)
+        assert started.is_set()
+        assert len(_batch._background_harvest_tasks) == 1
+
+        store = CatalogArtifactStore()
+        started_at = asyncio.get_running_loop().time()
+        await _batch._process_change(
+            _change(2), llm=_EnrichLLM(), embed=_embed, store=store, settings=settings
+        )
+        elapsed = asyncio.get_running_loop().time() - started_at
+
+        assert store.get(2) is not None
+        assert calls == 1
+        assert elapsed < 0.1
+    finally:
+        release.set()
+        for _ in range(100):
+            if not _batch._background_harvest_tasks:
+                break
+            await asyncio.sleep(0.001)
+        assert not _batch._background_harvest_tasks
+
+
+async def test_background_harvest_logs_only_late_failure(caplog):
+    import asyncio
+
+    async def fail():
+        raise RuntimeError("late harvest failure")
+
+    async def succeed():
+        return 1
+
+    failed = asyncio.create_task(fail())
+    succeeded = asyncio.create_task(succeed())
+    cancelled = asyncio.create_task(asyncio.sleep(1))
+    cancelled.cancel()
+    await asyncio.sleep(0)
+
+    with caplog.at_level("WARNING"):
+        _batch._consume_background_harvest(failed)
+        _batch._consume_background_harvest(succeeded)
+        _batch._consume_background_harvest(cancelled)
+
+    assert caplog.text.count("백그라운드") == 1
+    assert "late harvest failure" in caplog.text
+
+
+async def test_color_harvest_cancellation_propagates(monkeypatch):
+    import asyncio
+
+    settings = get_settings().model_copy(update={"color_synonym_batch_harvest_enabled": True})
+
+    async def cancel(*args, **kwargs):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(_batch, "_harvest_change_colors", cancel)
+    with pytest.raises(asyncio.CancelledError):
+        await _batch._process_change(
+            _change(1),
+            llm=_EnrichLLM(),
+            embed=_embed,
+            store=CatalogArtifactStore(),
+            settings=settings,
+        )
