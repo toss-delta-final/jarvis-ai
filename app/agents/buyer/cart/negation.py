@@ -96,6 +96,65 @@ def matches_unnegated(
     return False
 
 
+_BOUNDARY_PUNCTUATION = frozenset(",.!?;:\"'()[]{}~·…")
+
+
+def _is_boundary_char(ch: str) -> bool:
+    return ch == " " or ch in _BOUNDARY_PUNCTUATION
+
+
+def _starts_with_particle(message: str, end: int, particles: list[str]) -> bool:
+    return any(
+        particle and message[end : end + len(particle)] == particle for particle in particles
+    )
+
+
+def matches_name_unnegated(
+    message: str,
+    name: str,
+    negation_markers: list[str],
+    window: int,
+    prefix_negation_markers: list[str],
+    boundary_particles: list[str],
+) -> bool:
+    """상품명이 발화에 **온전한 어절 경계로**, 그리고 **부정되지 않은 출현으로** 등장하는지 본다
+    (라운드 15, head `0b33e06` 리뷰 B — `remove.py`/`wishlist.py` 의 이름 매칭 전용).
+
+    `matches_unnegated` 와 합치지 않고 별도 함수로 둔다 — `matches_unnegated`(그리고 그걸 쓰는
+    `intent_guard.py`)의 `markers` 인자는 "빼줘"·"장바구니에 넣어줘" 같은 **동사구**라 경계
+    개념이 다르다(동사구는 애초에 앞뒤에 조사가 안 붙는 구조라 경계 검사가 무의미하거나 오히려
+    해롭다). 반면 여기 `name` 은 **상품명**(사용자·판매자가 임의로 짓는 문자열)이라 다른
+    낱말에 파묻힐 수 있다("이어폰케이스"의 "이어폰"). 두 검사를 하나로 합치면 동사구 매칭에도
+    경계 검사가 강제돼 엉뚱한 회귀를 낳는다.
+
+    경계 규칙: 이름 바로 **왼쪽**은 문자열 시작·공백·문장부호여야 하고, 바로 **오른쪽**은
+    문자열 끝·공백·문장부호 **또는** `boundary_particles`(한국어 조사) 중 하나여야 유효한
+    매칭이다. 순진하게 "오른쪽이 공백/문장부호가 아니면 전부 무효"로 자르면 조사가 이름
+    바로 뒤에 붙는 정상 발화("그 세제**를** 빼줘")까지 깨진다 — 조사를 허용해야 "이어폰**케**
+    이스"의 "이어폰"(뒤가 "케", 조사도 공백도 아님)만 걸러지고 "세제**를**"은 살아남는다.
+
+    **알려진 한계**(이번 라운드 범위 밖, 의도적으로 손대지 않음): 이름 뒤가 **공백**이면 경계
+    규칙을 그대로 통과하므로, "이어폰 케이스 빼줘"에서 장바구니의 "이어폰"이 여전히 매칭된다.
+    사용자가 말한 "이어폰 케이스"가 통짜 상품명이라는 것을 알려면 장바구니에 **없는** 그 상품의
+    이름을 알아야 하는데 이 함수는 그 정보가 없다. "뒤에 명사가 더 오면 무효" 류 추측성
+    휴리스틱은 "이어폰이랑 세제 빼줘" 같은 정상 발화(접속 조사 뒤에 다른 상품명이 옴)를
+    깨뜨리므로 넣지 않는다 — 플래그를 켜기 전에 다시 볼 항목이다.
+    """
+    for start, end in _spans(message, name):
+        if start != 0 and not _is_boundary_char(message[start - 1]):
+            continue
+        if end != len(message) and not (
+            _is_boundary_char(message[end])
+            or _starts_with_particle(message, end, boundary_particles)
+        ):
+            continue
+        if is_occurrence_unnegated(
+            message, start, end, negation_markers, prefix_negation_markers, window
+        ):
+            return True
+    return False
+
+
 def has_prefix_negation_anywhere(message: str, prefix_markers: list[str]) -> bool:
     """발화 **어디에든** 접두 부정 표지("안"/"못")가 독립된 어절로 나타나는지 본다(문장 전체
     검사 — 특정 표지의 직전에 앵커하지 않는다는 점이 `has_prefix_negation`(위치 앵커형)과

@@ -12,7 +12,7 @@ import logging
 
 from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.identity import cart_identity
-from app.agents.buyer.cart.negation import has_any_negation, matches_unnegated
+from app.agents.buyer.cart.negation import has_any_negation, matches_name_unnegated
 from app.agents.buyer.cart.state import CartStateStore, LastAdd
 from app.core.text import _strip_unsafe
 from app.schemas.chat import ActionData, DoneData, TokenData
@@ -73,9 +73,9 @@ def _resolve_remove_targets(
          없으면(이미 빠졌거나 다른 세션에서 지워짐) **그 자리에서 되물음**(4번 "단건 자동"으로
          넘어가지 않는다 — 사용자가 명시적으로 "방금 그거"를 지목했는데 실패하면, 장바구니에
          다른 게 1건 있다고 그걸 대신 지우는 것은 사용자 의도와 다를 수 있다).
-      4. 부정·대조 표지가 **없을 때만**(위 규칙들과 같은 이유 — 이름 없이 코드가 고르는
-         규칙이다) 장바구니에 항목이 정확히 1건이면 그 1건(표지 없는 발화에서만 적용 — 표지가
-         있었는데 해소에 실패한 경우는 2·3번이 이미 되물음으로 종결했다).
+      4. 부정·대조 표지가 **없고**, 발화에 어느 항목의 이름도 (경계와 무관하게) **아예 등장하지
+         않을 때만** 장바구니에 항목이 정확히 1건이면 그 1건(표지도 이름도 없는 발화에서만 적용
+         — 표지가 있었는데 해소에 실패한 경우는 2·3번이 이미 되물음으로 종결했다).
       5. 그 외 → `None`.
 
     **[라운드 10]** 이 함수의 부정 판정은 원래 어미형(`utterance_negation_markers`)만 봤다 —
@@ -87,8 +87,31 @@ def _resolve_remove_targets(
 
     **[라운드 11]** 라운드 10 은 1·3·4번(전체 삭제·방금 담은 거·단건 자동)에 문장 전체 가드를
     붙였지만 **가장 강한 신호인 2번(이름 매칭)은 그대로 남겨** "이어폰은 빼지 말고 케이스
-    빼줘"에서 이름이 지목된 이어폰이 그대로 매칭돼 삭제됐다. 2번은 `negation.matches_unnegated`
-    (출현 단위 — `negation.py` 에 이미 있던 함수, 새로 만들지 않았다)를 쓴다.
+    빼줘"에서 이름이 지목된 이어폰이 그대로 매칭돼 삭제됐다. 2번은 (라운드 15 이전엔)
+    `negation.matches_unnegated`(출현 단위 — `negation.py` 에 이미 있던 함수, 새로 만들지
+    않았다)를 썼다.
+
+    **[라운드 15, head `0b33e06` 리뷰 B]** 2번의 이름 매칭에 **경계 검사**가 없어 "이어폰케이스
+    빼줘"(장바구니에 이어폰만 있음)에서 다른 낱말 안에 파묻힌 "이어폰"까지 매칭됐다. 순진한
+    "앞뒤가 공백/문장부호가 아니면 무효" 규칙은 "그 세제**를** 빼줘"(목적격 조사가 이름 바로
+    뒤에 붙는 정상 발화)를 깨뜨리므로, 오른쪽 경계에 한국어 조사를 허용하는
+    `negation.matches_name_unnegated` 를 새로 만들어 쓴다(기존 `matches_unnegated` 에 합치지
+    않은 이유는 그 함수 정의를 보라 — 동사구 매칭과 이름 매칭은 경계 개념이 다르다). **알려진
+    한계**: 이름 뒤가 **공백**이면(문장부호도 조사도 아니어도) 여전히 매칭되므로 "이어폰 케이스
+    빼줘"(장바구니에 이어폰만 있음)에서 "이어폰"이 오탐하는 문제는 이 라운드에서 고치지
+    않는다 — 사용자가 말한 "이어폰 케이스"가 통짜 상품명인지 알려면 장바구니에 없는 그 상품의
+    이름이 필요한데 그 정보가 없고, "뒤에 명사가 더 오면 무효" 같은 추측성 휴리스틱은 "이어폰
+    이랑 세제 빼줘" 같은 정상 발화를 깨뜨린다. 플래그를 켜기 전에 다시 볼 항목이다.
+
+    경계 검사가 2번을 정확하게 만들어도(=이제 "이어폰케이스"의 "이어폰"을 매칭에서 뺀다),
+    장바구니가 1건뿐이면 4번이 표지 없이도 그 1건을 자동으로 고르므로 **결과가 그대로 같아질
+    수 있다**(이름을 댔는데 아무것도 안 맞았어도 "1건뿐이니 그거겠지"로 밀어붙이는 셈) —
+    boundary 수정만으로는 안 끝난다는 뜻이라 4번에도 손을 댔다: 어느 항목 이름이든 (경계·부정과
+    무관하게) 발화에 **원문 부분 문자열로라도** 나타나면 "이름을 대려는 시도가 있었다"로 보고
+    4번을 건너뛴다(추측성 휴리스틱이 아니다 — 새 신호를 만들지 않고, 이미 계산해 둔 부분
+    문자열 겹침을 그대로 재사용한다). "이어폰케이스 빼줘"(장바구니 `[이어폰]`)는 "이어폰"이
+    원문에 나타나므로 4번을 건너뛰어 되물음이 된다. "그거 지워줘"처럼 어느 이름도 원문에 없으면
+    그대로 4번이 동작한다(회귀 없음).
     """
     has_negation = has_any_negation(
         message, settings.utterance_negation_markers, settings.utterance_prefix_negation_markers
@@ -101,12 +124,13 @@ def _resolve_remove_targets(
         item
         for item in items
         if (name := _strip_unsafe(item.product_name or ""))
-        and matches_unnegated(
+        and matches_name_unnegated(
             message,
-            [name],
+            name,
             settings.utterance_negation_markers,
             settings.utterance_negation_window,
             settings.utterance_prefix_negation_markers,
+            settings.utterance_name_boundary_particles,
         )
     ]
     if name_matches:
@@ -121,7 +145,15 @@ def _resolve_remove_targets(
                 return recent_match
         return None
 
-    if not has_negation and len(items) == 1:
+    # 라운드 15 — 2번의 경계 검사가 이름 매칭을 정확히 만들어도, 장바구니 1건뿐이면 아래 단건
+    # 자동이 표지 없이도 그 1건을 자동 선택해 같은 결과가 나올 수 있다("이어폰케이스 빼줘"가
+    # "이어폰"에 boundary 로 안 걸려도 단건 자동으로 새 버린다). 그래서 이름을 대려는 시도가
+    # 있었는지(경계·부정과 무관한 원문 부분 문자열 겹침, 새 신호 아님)도 확인해 있으면 단건
+    # 자동을 건너뛴다.
+    name_mentioned = any(
+        (name := _strip_unsafe(item.product_name or "")) and name in message for item in items
+    )
+    if not has_negation and not name_mentioned and len(items) == 1:
         return items
     return None
 

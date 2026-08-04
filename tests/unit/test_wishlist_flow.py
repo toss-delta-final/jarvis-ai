@@ -703,6 +703,52 @@ def test_resolve_wishlist_remove_target_ji_mal_marker_does_not_swallow_normal_re
     assert result.product_id == 10
 
 
+# ─── 라운드 15(head `0b33e06` 리뷰 B): 이름 매칭 경계(조사 허용) — 찜 동형 ───
+
+
+def test_resolve_wishlist_remove_target_name_inside_word_does_not_match() -> None:
+    """재현(라운드 15 패킷, 찜 동형) — 찜 목록에 "이어폰"만 있을 때 "이어폰케이스 찜 빼줘"는
+    다른 낱말 안에 파묻힌 "이어폰"을 매칭해선 안 된다. 단건 자동(3번) 뒷문도 막혀야 하므로
+    되물음이어야 한다."""
+    from app.agents.buyer.cart.wishlist import _resolve_wishlist_remove_target
+
+    items = [_wishlist_item(10, "이어폰")]
+    result = _resolve_wishlist_remove_target(
+        CartIntent(product_id=None), "이어폰케이스 찜 빼줘", items, get_settings()
+    )
+    assert result is None
+
+
+def test_resolve_wishlist_remove_target_name_followed_by_particle_still_matches() -> None:
+    """회귀 — 목적격 조사 "를"이 이름 바로 뒤에 붙는 정상 발화는 계속 매칭돼야 한다."""
+    from app.agents.buyer.cart.wishlist import _resolve_wishlist_remove_target
+
+    items = [_wishlist_item(20, "세제")]
+    result = _resolve_wishlist_remove_target(
+        CartIntent(product_id=None), "그 세제를 찜 빼줘", items, get_settings()
+    )
+    assert result is not None
+    assert result.product_id == 20
+
+
+def test_resolve_wishlist_remove_target_boundary_violation_blocks_single_auto() -> None:
+    """단건 자동(3번) 뒷문 방지 — 이름을 대려는 시도(경계 위반)가 있으면 목록이 1건뿐이고
+    다른 표지가 없어도 단건 자동으로 새지 않는다. 대조로 이름이 전혀 없으면(무신호) 그대로
+    동작한다(회귀 없음)."""
+    from app.agents.buyer.cart.wishlist import _resolve_wishlist_remove_target
+
+    items = [_wishlist_item(10, "이어폰")]
+    result = _resolve_wishlist_remove_target(
+        CartIntent(product_id=None), "이어폰케이스 찜 빼줘", items, get_settings()
+    )
+    assert result is None
+    result_no_name = _resolve_wishlist_remove_target(
+        CartIntent(product_id=None), "찜 빼줘", items, get_settings()
+    )
+    assert result_no_name is not None
+    assert result_no_name.product_id == 10
+
+
 # ─────────── stream_cart_add 배선 ───────────
 
 

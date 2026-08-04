@@ -1006,7 +1006,14 @@ async def add_wishlist(request: AddWishlistRequest) -> WishlistAddResult:
             raise WishlistError("add_wishlist 실패: 200 success=false")
         payload = data.get("data") if isinstance(data, dict) else None
         product_id = payload.get("productId") if isinstance(payload, dict) else None
-        return WishlistAddResult(success=True, product_id=product_id)
+        try:
+            return WishlistAddResult(success=True, product_id=product_id)
+        except ValidationError as exc:
+            # productId 가 dict·문자열 등 변환 불가 값이면(스키마 이상) 다른 어댑터와 같은 규약으로
+            # WishlistError 로 낙성한다(라운드 15 — get_wishlist 는 이미 이렇게 하는데 이 함수만
+            # 빠져 있었다. ValidationError 가 그대로 새면 stream_wishlist_add 의 `except
+            # WishlistError` 에 안 걸려 우아한 degrade 가 무너지고 상위 스트림의 범용 오류로 샌다).
+            raise WishlistError(f"add_wishlist 응답 스키마 이상: {exc}") from exc
 
     if resp.status_code == 404:
         raise WishlistProductNotFound()

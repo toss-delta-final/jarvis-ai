@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator
 
 from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.identity import cart_identity
-from app.agents.buyer.cart.negation import has_any_negation, matches_unnegated
+from app.agents.buyer.cart.negation import has_any_negation, matches_name_unnegated
 from app.agents.buyer.recommendation.state import CartIntent
 from app.core.text import _strip_unsafe
 from app.schemas.chat import ActionData, DoneData, TokenData
@@ -55,8 +55,8 @@ def _resolve_wishlist_remove_target(
          쓴다 — 문장 전체 가드를 이름 매칭에 쓰면 "이어폰은 찜 빼지 말고 케이스 찜 빼줘"에서
          정상 해제 대상인 "케이스"까지 함께 죽어 되물음이 된다.
       2. `cart.product_id`(decompose 가 문맥에서 이미 골라 온 값)가 목록 안에 있으면 그것.
-      3. 발화에 부정·대조 신호(`negation.has_any_negation`, 문장 전체 검사)가 **없을 때만**
-         위 두 규칙이 모두 안 잡히고 목록이 정확히 1건이면 그 1건.
+      3. 발화에 부정·대조 신호가 **없고**, 목록 어느 항목의 이름도 (경계와 무관하게) 발화에
+         아예 등장하지 않을 때만 위 두 규칙이 모두 안 잡히고 목록이 정확히 1건이면 그 1건.
       4. 그 외 → `None`.
 
     **문맥 id 보다 발화의 이름을 먼저 본다**(2차 리뷰 지적 4 — 이전 순서는 반대였다). 재현:
@@ -82,17 +82,31 @@ def _resolve_wishlist_remove_target(
     바꿀 때 다른 쪽 테스트까지 다시 봐야 한다. 겹치는 부분(이름 매칭·부정 판정)은 각각
     `_strip_unsafe`·`negation.py` 공용 함수로 이미 공유돼 있어, 남은 겹침은 "이 조각들을 어떤
     순서로 조합하느냐"뿐이라 분리해서 각자 읽기 쉽게 두는 편이 더 싸다.
+
+    **[라운드 15, head `0b33e06` 리뷰 B]** 1번의 이름 매칭에 경계 검사가 없어 "이어폰케이스
+    찜 빼줘"류(찜 목록에 이어폰만 있음)에서 다른 낱말에 파묻힌 이름까지 매칭됐다. `remove.py`
+    와 같은 이유로 `negation.matches_name_unnegated`(오른쪽 경계에 한국어 조사를 허용하는
+    전용 헬퍼, `matches_unnegated` 와 별개 — 그 함수 정의의 근거 참조)를 쓴다. **알려진
+    한계**: 이름 뒤가 공백이면(예 "이어폰 케이스 찜 빼줘") 여전히 매칭되는 문제는 `remove.py`
+    와 동일하게 이 라운드에서 고치지 않는다 — 근거도 같다(장바구니에 없는 상품명을 알아야
+    풀리는 문제라 이 함수가 가진 정보로는 못 고치고, 추측성 휴리스틱은 정상 발화를 깨뜨린다).
+
+    경계 검사가 1번을 정확하게 만들어도, 찜 목록이 1건뿐이면 3번(목록 1건 자동)이 표지 없이도
+    그 1건을 자동 선택해 같은 결과가 나올 수 있다 — `remove.py` 와 같은 이유로 3번에도 이름을
+    대려는 시도(경계·부정과 무관한 원문 부분 문자열 겹침)가 있으면 자동 선택을 건너뛴다(새
+    신호 아님, 이미 계산해 둔 겹침 재사용).
     """
     name_matches = [
         item
         for item in items
         if (name := _strip_unsafe(item.name or ""))
-        and matches_unnegated(
+        and matches_name_unnegated(
             message,
-            [name],
+            name,
             settings.utterance_negation_markers,
             settings.utterance_negation_window,
             settings.utterance_prefix_negation_markers,
+            settings.utterance_name_boundary_particles,
         )
     ]
     if name_matches:
@@ -106,7 +120,10 @@ def _resolve_wishlist_remove_target(
     has_negation = has_any_negation(
         message, settings.utterance_negation_markers, settings.utterance_prefix_negation_markers
     )
-    if not has_negation and len(items) == 1:
+    name_mentioned = any(
+        (name := _strip_unsafe(item.name or "")) and name in message for item in items
+    )
+    if not has_negation and not name_mentioned and len(items) == 1:
         return items[0]
     return None
 

@@ -652,6 +652,91 @@ def test_resolve_remove_targets_single_item_negated_name_asks_not_auto_resolve()
     assert result is None
 
 
+# ─── 대상 해소 — 라운드 15(head `0b33e06` 리뷰 B): 이름 매칭 경계(조사 허용) ───
+
+
+def test_resolve_remove_targets_name_inside_word_does_not_match() -> None:
+    """재현(라운드 15 패킷) — 장바구니에 "이어폰"만 있을 때 "이어폰케이스 빼줘"는 다른 낱말
+    ("이어폰케이스") 안에 파묻힌 "이어폰"을 매칭해선 안 된다(뒤 문자 "케"가 공백·문장부호·
+    조사 어느 것도 아니므로 경계 위반). 이름 매칭이 비어도 단건 자동(4번)이 뒷문이 되지
+    않도록(이름을 대려는 시도가 있었으므로) 되물음이어야 한다."""
+    from app.agents.buyer.cart.remove import _resolve_remove_targets
+
+    items = [_item(1, 10, "이어폰")]
+    result = _resolve_remove_targets("이어폰케이스 빼줘", items, get_settings(), None)
+    assert result is None
+
+
+def test_resolve_remove_targets_name_followed_by_particle_still_matches() -> None:
+    """회귀(라운드 15 패킷 핵심) — 순진한 경계 검사는 "그 세제를 빼줘"(목적격 조사 "를"이
+    이름 바로 뒤에 붙는 정상 발화)를 깨뜨린다. 오른쪽 경계에 조사를 허용해야 계속 매칭된다."""
+    from app.agents.buyer.cart.remove import _resolve_remove_targets
+
+    items = [_item(1, 20, "세제")]
+    result = _resolve_remove_targets("그 세제를 빼줘", items, get_settings(), None)
+    assert result is not None
+    assert [item.cart_item_id for item in result] == [1]
+
+
+def test_resolve_remove_targets_bare_name_still_matches() -> None:
+    """회귀 — 뒤가 공백인 온전한 이름 매칭은 그대로 유지된다."""
+    from app.agents.buyer.cart.remove import _resolve_remove_targets
+
+    items = [_item(1, 10, "이어폰")]
+    result = _resolve_remove_targets("이어폰 빼줘", items, get_settings(), None)
+    assert result is not None
+    assert [item.cart_item_id for item in result] == [1]
+
+
+def test_resolve_remove_targets_spaced_longer_name_still_false_matches_known_limitation() -> None:
+    """알려진 한계(라운드 15 패킷 C, 이번 라운드 범위 밖) — 띄어쓰기가 있는 더 긴 상품명은
+    여전히 오탐한다. "이어폰 케이스 빼줘"에서 "이어폰" 뒤가 공백이라 경계 검사를 통과하므로
+    장바구니의 "이어폰"이 매칭된다. 장바구니에 없는 "이어폰 케이스"가 통짜 상품명인지 알 방법이
+    없어 이 라운드에서 고치지 않는다 — 이 테스트는 한계가 문서화된 대로 남아 있음을 고정한다
+    (다음에 이 테스트가 실패하면 한계가 없어진 것이니 docstring 도 함께 갱신할 것)."""
+    from app.agents.buyer.cart.remove import _resolve_remove_targets
+
+    items = [_item(1, 10, "이어폰")]
+    result = _resolve_remove_targets("이어폰 케이스 빼줘", items, get_settings(), None)
+    assert result is not None
+    assert [item.cart_item_id for item in result] == [1]
+
+
+def test_resolve_remove_targets_boundary_violation_does_not_fall_back_to_single_auto() -> None:
+    """단건 자동(4번) 뒷문 방지 재확인 — 이름을 대려는 시도(경계 위반이라도 원문 부분 문자열
+    겹침)가 있으면, 장바구니가 1건뿐이고 다른 표지가 전혀 없어도 단건 자동으로 새지 않는다."""
+    from app.agents.buyer.cart.remove import _resolve_remove_targets
+
+    items = [_item(1, 10, "이어폰")]
+    result = _resolve_remove_targets("이어폰케이스 빼줘", items, get_settings(), None)
+    assert result is None
+    # 대조 — 이름이 전혀 없으면(무신호) 단건 자동은 그대로 동작한다(회귀 없음).
+    result_no_name = _resolve_remove_targets("그거 지워줘", items, get_settings(), None)
+    assert result_no_name is not None
+    assert [item.cart_item_id for item in result_no_name] == [1]
+
+
+async def test_remove_name_inside_word_asks_via_stream() -> None:
+    """`stream_cart_remove` 수준에서도 같은 사실 — delete_fn 이 한 번도 안 불린다."""
+    store = CartStateStore()
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        raise AssertionError("경계 위반 매칭인데 delete_fn 이 호출됐다")
+
+    events = await _collect(
+        stream_cart_remove(
+            identity=_member(),
+            message="이어폰케이스 빼줘",
+            cart_store=store,
+            thread_key="m:t-remove-boundary",
+            settings=get_settings(),
+            get_cart_fn=_cart(_item(1, 10, "이어폰")),
+            delete_fn=delete_fn,
+        )
+    )
+    assert _types(events) == ["token", "done"]
+
+
 # ─────────── stream_cart_add 배선 (플래그·last_add) ───────────
 
 

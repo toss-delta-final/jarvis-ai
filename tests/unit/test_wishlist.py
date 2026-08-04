@@ -145,6 +145,27 @@ async def test_add_wishlist_200_success_false_raises_wishlist_error(
         await sc.add_wishlist(AddWishlistRequest(user_id=1, product_id=42))
 
 
+async def test_add_wishlist_unparseable_product_id_raises_wishlist_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """라운드 15, head `0b33e06` 리뷰 A — Spring 이 200 + productId 를 dict 등 변환 불가 값으로
+    주면 pydantic `ValidationError` 가 그대로 새서 `stream_wishlist_add` 의 `except
+    WishlistError` 를 비껴가 우아한 degrade 가 무너졌다(재현 확인). 같은 파일 `get_wishlist` 는
+    이미 `ValidationError` 를 낙성하는데 `add_wishlist` 만 빠져 있었다 — 다른 어댑터와 같은
+    규약으로 `WishlistError` 로 낙성해야 한다."""
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(
+        sc,
+        "_client",
+        lambda: _WishlistClient(
+            _WishlistResp(200, {"success": True, "data": {"productId": {"nested": "object"}}})
+        ),
+    )
+    with pytest.raises(sc.WishlistError):
+        await sc.add_wishlist(AddWishlistRequest(user_id=1, product_id=42))
+
+
 # ─────────── I-27 찜 해제 ───────────
 
 
