@@ -521,7 +521,7 @@
     계약을 읽는 사람에게 "이 흐름에도 이 개념이 있다"는 거짓 신호다.
   - 이슈가 파일·줄을 특정해도 **그 지시의 전제(이 클래스는 이 흐름 전용이다)** 는 코드로 확인한다.
     특정성이 높을수록 검증 없이 따르기 쉬운데, 틀렸을 때 blast radius 도 그만큼 크다.
-- 관련: `app/schemas/chat.py` `RecommendationDoneData`, 이슈 #113, api-spec §3.1 (5)
+- 관련: `app/schemas/chat.py` `RecommendationDoneData`, 이슈 #113, api-spec §3.1 (6)
 
 ## [2026-08-02] 이슈 본문의 기술적 전제도 착수 전에 코드로 검증한다
 - 증상: #113 은 "estCount 는 revert 칩과 동일하게 page-local 근사 사용"이라고 구현 방식까지
