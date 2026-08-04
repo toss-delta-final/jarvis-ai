@@ -3016,6 +3016,71 @@ async def test_recommendation_delayed_conditions_survive_repurchase_store_failur
     assert _types(events)[-1] == "done"
 
 
+async def test_recommendation_delays_conditions_until_search_and_auto_relax_probe_finish() -> None:
+    """자동 완화 가능 턴은 본 검색과 probe 두 I-1 호출이 끝난 뒤 conditions를 낸다(#277)."""
+    calls = []
+    product = SpringProduct(
+        product_id=101,
+        name="무선 이어폰 프로",
+        price=40000,
+        rating=4.2,
+        category="무선이어폰",
+        brand="b",
+    )
+    conditions_call_counts = []
+
+    async for frame in run_buyer_turn(
+        _req(thread_id="first-event-two-searches"),
+        _member_num(),
+        llm=FakeLLM(
+            decompose={
+                "intent": "recommend",
+                "filters": {"ratingMin": 4.5},
+                "case": 2,
+            }
+        ),
+        search=_filtered_repurchase_search([product], calls),
+        push_fn=_RecordingPush(),
+    ):
+        line = frame.strip()
+        if line.startswith("data:"):
+            event = json.loads(line[len("data:") :].strip())
+            if event["type"] == "conditions":
+                conditions_call_counts.append(len(calls))
+
+    assert conditions_call_counts == [2]  # 본 검색 0건 + ratingMin 자동 완화 probe
+
+
+async def test_recommendation_emits_conditions_before_search_when_auto_relax_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """relaxation_max_rounds=0이면 ratingMin 턴도 검색 전에 conditions를 낸다(#277)."""
+    monkeypatch.setattr(get_settings(), "relaxation_max_rounds", 0)
+    calls = []
+    conditions_call_counts = []
+
+    async for frame in run_buyer_turn(
+        _req(thread_id="first-event-auto-relax-disabled"),
+        _member_num(),
+        llm=FakeLLM(
+            decompose={
+                "intent": "recommend",
+                "filters": {"ratingMin": 4.5},
+                "case": 2,
+            }
+        ),
+        search=_filtered_repurchase_search([], calls),
+        push_fn=_RecordingPush(),
+    ):
+        line = frame.strip()
+        if line.startswith("data:"):
+            event = json.loads(line[len("data:") :].strip())
+            if event["type"] == "conditions":
+                conditions_call_counts.append(len(calls))
+
+    assert conditions_call_counts == [0]
+
+
 async def test_recommendation_persisted_repurchase_is_revalidated_against_recent_purchases(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
