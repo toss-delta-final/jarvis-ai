@@ -762,6 +762,46 @@ async def test_rerank_price_level_groups_by_category_without_needs() -> None:
     }
 
 
+async def test_rerank_price_level_treats_empty_need_of_as_no_needs() -> None:
+    """[#236 PR#274 리뷰] 빈 `need_of` dict 는 `None` 과 똑같이 "니즈 없음"으로 본다.
+
+    `is not None` 으로 판정하면 빈 dict 가 "니즈 있음"으로 새어 전 후보가 `need_of.get()` → `None`
+    단일 그룹으로 묶이고, 이 이슈가 고치려는 버그가 그대로 재발한다. 반면 `rerank()` 본문의
+    `need` 필드·`NEEDS` 지시는 truthy 판정이라 프롬프트만 "니즈 없음"처럼 나가 둘이 갈린다.
+    기대값은 `test_rerank_price_level_groups_by_category_without_needs`(need_of 미전달)와 같다.
+    """
+    from app.agents.buyer.recommendation.rerank import rerank
+    from app.schemas.spring import SpringProduct
+
+    llm = FakeLLM(rerank={"ranked": [{"productId": 1, "rationale": "ok"}], "overallComment": "c"})
+    rows = [
+        (1, 1_200_000, "브랜드PC"),
+        (2, 1_500_000, "브랜드PC"),
+        (3, 1_800_000, "브랜드PC"),
+        (4, 70_000, "SSD"),
+        (5, 90_000, "SSD"),
+        (6, 110_000, "SSD"),
+    ]
+    candidates = [
+        SpringProduct(product_id=pid, name=f"p{pid}", price=price, categoryName=category)
+        for pid, price, category in rows
+    ]
+    await rerank(
+        llm,
+        query="q",
+        candidates=candidates,
+        profile_summary=None,
+        tier="smart",
+        expose_max=6,
+        need_of={},
+        per_need=3,
+    )
+    assert _levels(llm) == {1: "저렴", 2: "보통", 3: "비쌈", 4: "저렴", 5: "보통", 6: "비쌈"}
+    # 프롬프트도 "니즈 없음" 경로 그대로여야 한다 — 그룹핑과 프롬프트가 갈리지 않는다.
+    _, user = llm.calls[-1]
+    assert "NEEDS" not in user and '"need"' not in user
+
+
 async def test_rerank_price_level_marks_lone_category_as_unknown() -> None:
     """[#236] 비교 대상이 없는 그룹은 '정보없음' — 전역 중앙값으로 폴백하지 않는다.
 

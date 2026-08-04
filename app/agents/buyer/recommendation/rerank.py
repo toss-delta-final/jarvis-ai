@@ -111,8 +111,15 @@ def _group_key(product: SpringProduct, need_of: dict[int, str] | None) -> str | 
     빈 문자열·공백만인 category 는 `None` 과 **같은 '미상' 버킷**이다 — BE 자유 문자열이라(검증기
     없는 `str | None`) `""` 가 실제로 오는데, 별도 버킷이 되면 미상이 갈라져 각각 하한 미달로
     떨어진다. casefold 는 하지 않는다 — leaf 가 한국어라 얻는 게 없고 라틴 leaf 만 잘못 합친다.
+
+    판정은 `is not None` 이 아니라 **truthy** 다(PR #274 리뷰) — 빈 dict 는 "니즈 매핑이 하나도
+    없다"라 의미상 `None` 과 같은데, `is not None` 으로 보면 전 후보가 `need_of.get()` → `None`
+    으로 묶여 **이 이슈가 고치려는 단일 그룹 버그가 그대로 재발**한다. `rerank()` 본문의
+    `if need_of:`·`if need_of and per_need:` 도 truthy 라 기준을 여기에 맞춰야 프롬프트와 그룹핑이
+    갈리지 않는다. 오늘은 `_merge_fanout_results` 가 `leg_of` 를 생존 id 로 잘라내(graph.py) 빈
+    dict 가 만들어지지 않지만, 그 보장은 타입에도 호출부에도 강제돼 있지 않다.
     """
-    if need_of is not None:
+    if need_of:
         return need_of.get(product.product_id)
     return (product.category or "").strip() or None
 
@@ -129,7 +136,8 @@ def _price_medians(
     비-fanout 경로엔 productId dedup 이 없어(`_parse_search_response`·`search_catalog`) 중복이
     오면 조용히 한쪽으로 접힌다. 위치 정렬은 `zip(..., strict=True)` 로 어긋남이 즉시 터진다.
 
-    하한 폴백은 **`need_of` 가 없는 턴에만** 쓴다. 니즈 경계는 상위 판정이라 그룹이 곧 정답이지만
+    하한 폴백은 **`need_of` 가 없는 턴에만** 쓴다(빈 dict 도 없는 것으로 본다 — `_group_key`
+    docstring 참조). 니즈 경계는 상위 판정이라 그룹이 곧 정답이지만
     category 는 휴리스틱 파티션이고, leaf 가 잘게 쪼개져 유효 price 가 1건이면 중앙값이 자기
     자신이라 비율이 항상 1.0 → 전원 '보통' 으로 신호가 죽는다. 그런 그룹은 **전역 중앙값으로
     폴백하지 않고** 중앙값을 `None` 으로 둬 `_price_tier` 가 '정보없음' 을 내게 한다 — 전역
@@ -145,7 +153,7 @@ def _price_medians(
     medians: dict[str | None, float | None] = {
         key: median(prices) if prices else None for key, prices in grouped.items()
     }
-    if need_of is None:
+    if not need_of:
         # 세는 대상은 멤버 수가 아니라 **유효 price 를 가진 멤버 수**다 — 중앙값이 그 표본에서만
         # 나오므로, 5건 중 1건만 가격이 있으면 중앙값이 곧 그 1건이라 같은 퇴화가 남는다.
         for key, prices in grouped.items():
