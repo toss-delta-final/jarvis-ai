@@ -196,6 +196,18 @@ def test_progress_data_is_camel_model_and_serializes_like_the_wire() -> None:
     }
 
 
+def test_progress_data_rejects_unregistered_stage() -> None:
+    """R7-1 — `stage` 는 `Literal["analyzing"]`이라 계약(§3.1)에 없는 값은 생성 자체가 거부된다.
+
+    계약이 확정한 어휘(`analyzing` 1종)를 코드가 강제한다는 이 라운드의 요지를 고정한다 —
+    어휘를 넓히려면 §3.1 개정과 이 `Literal`을 함께 고쳐야 한다.
+    """
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        ProgressData(stage="searching")
+
+
 # ─────────── AC-4.1/2 — 대표 턴 유형: 플래그 off 바이트 동일 / on 첫 프레임 progress ───────────
 
 
