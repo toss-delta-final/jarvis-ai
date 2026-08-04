@@ -869,3 +869,60 @@ def test_unresolved_notice_falls_back_to_the_default_for_unknown_reasons() -> No
     assert _unresolved_notice(None) == "어떤 상품을 담을까요? 추천을 먼저 받아보시면 담아드릴게요."
     assert _unresolved_notice("some_future_reason") == _unresolved_notice(None)
     assert _unresolved_notice("ambiguous_screen_candidates") != _unresolved_notice(None)
+
+
+# ─────────── PR 2차 리뷰 — 좌표 축 반전 (열 = column) ───────────
+
+
+def test_row_coordinates_resolve_and_column_coordinates_defer_to_the_llm() -> None:
+    """[PR 2차 리뷰] `열`(column)을 행 표지로 읽어 **축이 뒤집혔다**.
+
+    `"2번째 열 3번째"` 는 col=2·row=3 이므로 정본 산술로 index 7(8번째 상품)인데, 초판 정규식이
+    `줄|행|열` 을 모두 첫 숫자(행)의 표지로 삼아 row=2·col=3 → index 5 를 확정했다. 그 id 는
+    화면 목록 **안**이라 담기 가드가 막지 못한다(오담기).
+
+    정본 §3.1 과 `_SCREEN_CART_RULE` 이 가르치는 어휘는 `줄`(row)·`칸`(column) 뿐이고 `열` 은
+    어디에도 없어, 지원하는 대신 **해소를 건너뛰어 LLM 산출을 세운다**. `_COORD` 에서 `열` 만
+    빼는 것으로는 부족하다 — 남은 `"2번째"` 를 순번 규칙이 가로채 또 다른 상품을 확정한다.
+    """
+    products = [(3100 + i, f"상품{i}") for i in range(1, 10)]  # 9건 × columns=3
+
+    # 줄(행) 표기는 그대로 해소된다 — index (3-1)*3+(2-1) = 7 → 8번째 상품.
+    for message in ("3번째 줄 2번째 담아줘", "3행 2번째 담아줘", "3줄 2칸 담아줘"):
+        resolved = _resolve(message, products, columns=3)
+        assert resolved is not None, message
+        assert resolved.product_id == 3108, message
+        assert resolved.reason == "coordinate"
+
+    # 열(칸) 기준 표기는 코드가 개입하지 않는다 — 축을 뒤집어 확정하지도, 순번으로 오독하지도 않는다.
+    for message in ("2번째 열 3번째 담아줘", "2열 3번째 담아줘", "2번째 열 담아줘"):
+        assert _resolve(message, products, columns=3) is None, message
+
+
+def test_column_marker_yield_does_not_suppress_unrelated_utterances() -> None:
+    """양보 (C)가 좌표와 무관한 발화까지 삼키지 않는지 — 삼켜도 오늘 동작과 같아야 한다."""
+    products = [(3101, "코튼 러그"), (3102, "라탄 바구니")]
+
+    # `열` 이 없는 발화는 종전대로 해소된다.
+    resolved = _resolve("2번째 거 담아줘", products, columns=2)
+    assert resolved is not None and resolved.product_id == 3102
+
+    # 상품명에 섞인 `열`(예: "10 열쇠고리")은 원래도 어떤 규칙에도 안 걸렸으므로 None 그대로다.
+    assert _resolve("10 열쇠고리 담아줘", products, columns=2) is None
+
+
+def test_coord_regex_treats_only_row_markers_as_the_first_axis() -> None:
+    """`_COORD` 자체의 의미를 고정한다 — 첫 숫자의 표지는 `줄`·`행` 뿐이다.
+
+    위 양보 (C)가 `열` 발화를 먼저 걷어내므로 `_COORD` 의 `열` 분기는 **도달 불가**다. 그래서
+    행위 테스트만으로는 이 정규식이 되돌아가도 빨간불이 안 뜬다(실제로 확인했다). 다음 사람이
+    (C)를 지우는 순간 축 반전이 조용히 되살아나지 않도록 정규식 의미를 직접 못박는다.
+    """
+    from app.agents.buyer.screen_reference import _COORD
+
+    assert _COORD.search("3번째 줄 2번째").groups() == ("3", "2")
+    assert _COORD.search("3행 2번째").groups() == ("3", "2")
+    assert _COORD.search("3줄 2칸").groups() == ("3", "2")
+    # `열` 은 column 이라 첫 숫자의 표지가 될 수 없다.
+    assert _COORD.search("2번째 열 3번째") is None
+    assert _COORD.search("2열 3번째") is None
