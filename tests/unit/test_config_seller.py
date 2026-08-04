@@ -85,6 +85,94 @@ def test_seller_recent_default_within_period_max() -> None:
     assert ok.seller_recent_days_default == 7
 
 
+def test_seller_analysis_defaults() -> None:
+    """[#290] 분석 계산 층 튜너블 기본값 — 근거는 docs/worker-papers.md 논문 권장값."""
+    settings = Settings(_env_file=None)
+    assert settings.seller_stl_period == 7
+    assert settings.seller_gesd_alpha == 0.05
+    assert settings.seller_gesd_max_anomalies_ratio == 0.2
+    assert settings.seller_analysis_lookback_days == 28
+    assert settings.seller_min_history_for_stl == 14
+    assert settings.seller_rate_test_alpha == 0.05
+    assert settings.seller_wilson_confidence == 0.95
+    assert settings.seller_mad_threshold == 3.5
+    assert settings.seller_tukey_k == 1.5
+    assert settings.seller_night_hours_start == 0
+    assert settings.seller_night_hours_end == 6
+    assert settings.seller_behavior_kmeans_k_min == 2
+    assert settings.seller_behavior_kmeans_k_max == 5
+    assert settings.seller_kmeans_random_state == 42
+    assert settings.seller_churn_signal_top_k == 3
+
+
+def test_seller_analysis_stl_relations_fail_fast() -> None:
+    """[#290] STL 관계 오설정은 기동 시점에 실패한다.
+
+    min_history < 2×period 면 폴백 경계를 통과한 입력이 STL 내부에서 죽고,
+    lookback < min_history 면 확장 조회 비용만 내고 STL 은 영영 폴백이다(무음 무효화).
+    """
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_stl_period=1)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_min_history_for_stl=13)  # < 2×7
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_analysis_lookback_days=10)  # < min_history 14
+    # 경계(2×period == min_history == lookback)는 유효하다.
+    ok = Settings(
+        _env_file=None,
+        seller_stl_period=7,
+        seller_min_history_for_stl=14,
+        seller_analysis_lookback_days=14,
+    )
+    assert ok.seller_analysis_lookback_days == 14
+
+
+def test_seller_analysis_statistical_params_fail_fast() -> None:
+    """[#290] 통계 파라미터 구간 오설정은 기동 시점에 실패한다."""
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_gesd_alpha=0.0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_rate_test_alpha=1.0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_wilson_confidence=1.0)
+    # GESD 는 이상점 수 < 표본 절반 전제 — 0.49 초과는 검정 전제 붕괴(S-H-ESD §3).
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_gesd_max_anomalies_ratio=0.5)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_mad_threshold=0.0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_tukey_k=-1.0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_night_hours_start=6, seller_night_hours_end=6)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_behavior_kmeans_k_min=6)  # > k_max 5
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_behavior_kmeans_k_min=1)  # 군집 최소 2
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_churn_signal_top_k=0)
+    # 경계 유효값 — ratio 상한 0.49, 심야 [0, 24).
+    ok = Settings(
+        _env_file=None,
+        seller_gesd_max_anomalies_ratio=0.49,
+        seller_night_hours_start=22,
+        seller_night_hours_end=24,
+    )
+    assert ok.seller_gesd_max_anomalies_ratio == 0.49
+
+
+def test_seller_analysis_types_proxy_basis() -> None:
+    """[#290] 프록시 근사 규약 — basis 필드가 원천을 지목하고 결과는 불변(frozen)이다."""
+    from app.agents.seller.analysis.types import ProxyValue, RateEstimate
+
+    proxy = ProxyValue(name="recency_days", value=12.0, basis="proxy:last_activity_at")
+    assert proxy.basis.startswith("proxy:")
+    estimate = RateEstimate(
+        successes=3, trials=10, rate=0.3, ci_low=0.11, ci_high=0.6, confidence=0.95
+    )
+    with pytest.raises(AttributeError):  # frozen dataclass — 계산 결과 사후 변조 금지
+        estimate.rate = 0.9  # type: ignore[misc]
+
+
 def test_seller_model_temperatures() -> None:
     """SPEC-SELLER-001 §8 — Haiku t=0 / Sonnet t=0.2 기본값 (2-3 모델 팩토리 재료)."""
     settings = Settings(_env_file=None)

@@ -234,6 +234,34 @@ class Settings(BaseSettings):
     seller_summary_max_products: int = 10  # I-13 상품별 rows 상세 나열 상한(건)
     seller_list_default_limit: int = 20  # I-9 상품 목록 기본 limit(미지정 시)
 
+    # ── 판매자 분석 계산 층 (이슈 #290, app/agents/seller/analysis/ 주입) ──
+    # 근거 논문·산식은 docs/worker-papers.md — 아래 기본값은 논문 권장값이다.
+    # [timeseries — S-H-ESD (Hochenbaum 2017) + STL (Cleveland 1990)]
+    seller_stl_period: int = 7  # STL 계절 주기(일) — 요일 효과. Spring 주간 리듬 전제
+    seller_gesd_alpha: float = 0.05  # GESD 검정 유의수준
+    # GESD 최대 이상점 수 = ceil(기간 길이 × 이 비율) — S-H-ESD 권장 상한(≤0.49).
+    seller_gesd_max_anomalies_ratio: float = 0.2
+    # 도구가 요청 기간 앞에 붙여 조회하는 lookback(일) — STL 은 period 의 2주기 이상
+    # 이력이 있어야 계절 성분을 추정한다(2×7=14 에 여유 2주기 = 28).
+    seller_analysis_lookback_days: int = 28
+    # STL 적용 최소 이력(일) — 미만이면 STL 생략, robust z-score 폴백(분해 자체가 불능).
+    seller_min_history_for_stl: int = 14
+    # [proportions — Wilson CI + two-proportion z-검정 (conversion·churn 공용)]
+    seller_rate_test_alpha: float = 0.05  # 기간 비교 z-검정 유의수준
+    seller_wilson_confidence: float = 0.95  # Wilson 신뢰구간 수준
+    # [outliers — abuse 3-트랙 (Tan&Kumar 2002 피처, Chandola 2009 유형)]
+    seller_mad_threshold: float = 3.5  # robust z(MAD) 스파이크 임계 — Iglewicz-Hoaglin 권장
+    seller_tukey_k: float = 1.5  # Tukey fence 계수(Q3 + k×IQR)
+    # 심야 활동 판정 시간대 [start, end) — I-8 hour-groupBy Collective 트랙.
+    seller_night_hours_start: int = 0
+    seller_night_hours_end: int = 6
+    # [segmentation — k-means (Chen 2012), k 는 실루엣 최대 선택]
+    seller_behavior_kmeans_k_min: int = 2
+    seller_behavior_kmeans_k_max: int = 5
+    seller_kmeans_random_state: int = 42  # 결정론(§10-②) — 같은 입력 = 같은 군집
+    # [churn — 신호 순위화] pre_churn_signals 정규화 후 보고할 원인 후보 상위 k.
+    seller_churn_signal_top_k: int = 3
+
     # ── 판매자 후속 단계 대비 선등록 (1단계 미소비, 하드코딩 재발 방지) ──
     seller_report_score_threshold: int = 21  # 보고서 검증 통과 점수(21/30)
     seller_report_max_retries: int = 3  # 검증 루프 상한
@@ -1052,8 +1080,7 @@ class Settings(BaseSettings):
         """배치 수확을 켰을 때만 공유 풀에 사용자 대면 검색 슬롯을 하나 이상 남긴다."""
         if (
             self.color_synonym_batch_harvest_enabled
-            and self.color_synonym_harvest_max_concurrency
-            >= self.color_synonym_pool_max_size
+            and self.color_synonym_harvest_max_concurrency >= self.color_synonym_pool_max_size
         ):
             raise ValueError(
                 "COLOR_SYNONYM_HARVEST_MAX_CONCURRENCY must be less than "
@@ -1448,6 +1475,67 @@ class Settings(BaseSettings):
             raise ValueError(
                 "SELLER_RECENT_DAYS_DEFAULT 는 1 이상이어야 합니다"
                 f" (got {self.seller_recent_days_default})"
+            )
+        # ── 분석 계산 층 정합(#290) — env 오설정이면 조회 도구가 매 요청 실패하므로
+        # 기동 시점 fail-fast(#194 seller_ma window 검증과 같은 취지). ──
+        if self.seller_stl_period < 2:
+            # statsmodels STL 은 period>=2 요구 — 1 이면 계절 성분 정의 불가.
+            raise ValueError(
+                f"SELLER_STL_PERIOD 는 2 이상이어야 합니다 (got {self.seller_stl_period})"
+            )
+        if self.seller_min_history_for_stl < 2 * self.seller_stl_period:
+            # STL 은 최소 2 주기 이력이 필요하다(Cleveland 1990) — 미만 설정이면 폴백
+            # 경계(min_history_for_stl)를 통과한 입력이 STL 내부에서 죽는다.
+            raise ValueError(
+                "SELLER_MIN_HISTORY_FOR_STL 은 SELLER_STL_PERIOD 의 2배 이상이어야 합니다"
+                f" (min_history={self.seller_min_history_for_stl}, period={self.seller_stl_period})"
+            )
+        if self.seller_analysis_lookback_days < self.seller_min_history_for_stl:
+            # lookback 이 STL 최소 이력보다 짧으면 확장 조회를 하고도 상시 폴백이라
+            # lookback 비용만 내고 STL 은 영영 못 쓴다(무음 무효화 방지).
+            raise ValueError(
+                "SELLER_ANALYSIS_LOOKBACK_DAYS 는 SELLER_MIN_HISTORY_FOR_STL 이상이어야 합니다"
+                f" (lookback={self.seller_analysis_lookback_days},"
+                f" min_history={self.seller_min_history_for_stl})"
+            )
+        for alpha_name, alpha_value in (
+            ("SELLER_GESD_ALPHA", self.seller_gesd_alpha),
+            ("SELLER_RATE_TEST_ALPHA", self.seller_rate_test_alpha),
+        ):
+            if not 0.0 < alpha_value < 1.0:
+                raise ValueError(f"{alpha_name} 는 (0, 1) 구간이어야 합니다 (got {alpha_value})")
+        if not 0.0 < self.seller_wilson_confidence < 1.0:
+            raise ValueError(
+                f"SELLER_WILSON_CONFIDENCE 는 (0, 1) 구간이어야 합니다"
+                f" (got {self.seller_wilson_confidence})"
+            )
+        if not 0.0 < self.seller_gesd_max_anomalies_ratio <= 0.49:
+            # GESD 는 이상점 수 < 표본의 절반 전제 — 0.49 초과는 검정 전제 붕괴(S-H-ESD §3).
+            raise ValueError(
+                "SELLER_GESD_MAX_ANOMALIES_RATIO 는 (0, 0.49] 구간이어야 합니다"
+                f" (got {self.seller_gesd_max_anomalies_ratio})"
+            )
+        if self.seller_mad_threshold <= 0 or self.seller_tukey_k <= 0:
+            raise ValueError(
+                "SELLER_MAD_THRESHOLD·SELLER_TUKEY_K 는 양수여야 합니다"
+                f" (mad={self.seller_mad_threshold}, tukey={self.seller_tukey_k})"
+            )
+        if not (0 <= self.seller_night_hours_start < self.seller_night_hours_end <= 24):
+            raise ValueError(
+                "심야 시간대는 0 <= start < end <= 24 여야 합니다"
+                f" (start={self.seller_night_hours_start}, end={self.seller_night_hours_end})"
+            )
+        if not 2 <= self.seller_behavior_kmeans_k_min <= self.seller_behavior_kmeans_k_max:
+            # k<2 는 군집이 아니라 전체 1군집이라 무의미 — sklearn 도 n_clusters>=2 를 요구.
+            raise ValueError(
+                "SELLER_BEHAVIOR_KMEANS_K 범위는 2 <= k_min <= k_max 여야 합니다"
+                f" (k_min={self.seller_behavior_kmeans_k_min},"
+                f" k_max={self.seller_behavior_kmeans_k_max})"
+            )
+        if self.seller_churn_signal_top_k < 1:
+            raise ValueError(
+                f"SELLER_CHURN_SIGNAL_TOP_K 는 1 이상이어야 합니다"
+                f" (got {self.seller_churn_signal_top_k})"
             )
         if not (self.review_tier_many >= self.review_tier_some >= self.review_tier_few):
             raise ValueError(
