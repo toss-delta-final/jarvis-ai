@@ -18,6 +18,7 @@ langgraph-checkpoint-postgres 계약). HITL 전용일 땐 충분했지만 채팅
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Callable
 
@@ -132,6 +133,7 @@ async def _init_checkpointer() -> BaseCheckpointSaver:
     """
     global _checkpointer_ctx, _fallback_warned
     settings = get_settings()
+    ctx = None
     try:
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
@@ -142,10 +144,22 @@ async def _init_checkpointer() -> BaseCheckpointSaver:
         saver = await asyncio.wait_for(
             ctx.__aenter__(), timeout=settings.seller_checkpoint_connect_timeout_s
         )
-        await saver.setup()
+        # setup()(DDL)도 **동일 상한으로 감싼다** (#266 PR 리뷰) — 이웃인 pg_store.py 가
+        # 이미 같은 이유로 그렇게 한다(PR #46 후속 리뷰). 여기만 빠져 있었다.
+        # 콜드 DB 에서 setup() 은 MIGRATIONS 8종 + 조회/기록을 **순차 실행**하므로, 앱 상한이
+        # 없으면 문장당 statement_timeout(3s)씩 누적돼 이 상수가 뜻하는 5s 를 크게 넘는다.
+        # 호출부(_general_stream)는 이 함수 전체가 상한 안에 끝난다고 보고 레인 예산을
+        # 계산하므로(config `_require_general_lane_within_stream_cap`), 그 전제를 여기서 지킨다.
+        await asyncio.wait_for(saver.setup(), timeout=settings.seller_checkpoint_connect_timeout_s)
         _checkpointer_ctx = ctx
         return saver
     except Exception as exc:
+        if ctx is not None:
+            # __aenter__ 타임아웃으로 취소된 경우도 포함해 항상 정리를 시도한다 — 좁히면
+            # 부분적으로 열린 커넥션이 그대로 샌다(pg_store.py 와 동일 논리). setup() 실패
+            # 경로에서도 커넥션이 남지 않게 한다.
+            with contextlib.suppress(Exception):
+                await ctx.__aexit__(type(exc), exc, exc.__traceback__)
         if settings.auth_mode == "jwks":
             raise  # 운영 — 폴백 금지, 기동/요청 실패로 드러낸다
         if not _fallback_warned:

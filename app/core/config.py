@@ -241,6 +241,15 @@ class Settings(BaseSettings):
     seller_history_report_max_chars: int = 500
     seller_tool_call_limit: int = 8  # ToolCallLimit 전역 한도(선택)
     seller_worker_timeout_s: float = 60.0  # 분석 워커 1종 실행 상한(3-3 팬아웃, §7 90s 목표 내)
+    # general 레인(3-7) 전체 벽시계 상한 (#266 P1). 이 레인만 상한이 없어 스트림 전체
+    # 90s 에만 의존했고, 그래서 LLM 지연이 계약상 LLM_TIMEOUT 이 아니라 INTERNAL 로 나갔다.
+    # **다른 레인처럼 wait_for 로 감쌀 수 없다** — astream 은 중간에 yield 하는 async
+    # generator 다. SDK 의 timeout= 도 답이 아니다: 스트리밍에서 그 값은 **청크 간 read
+    # 간격**을 재므로 토큰이 상한보다 짧은 간격으로 계속 오면 영원히 발동하지 않는다.
+    # 청크 루프를 통째로 덮는 asyncio.timeout 만이 이 레인의 실제 상한이다.
+    # 근거: 2026-08-02 로컬 실측(Spring 기동, 동시성 1, n=30) general total max 2.55s ·
+    # p95 2.52s — 20s 는 실측 max 의 약 8배이고 30턴 중 초과는 0건이었다.
+    seller_general_timeout_s: float = 20.0
 
     # ── 브랜치 분석 검증 (이슈 #242, DESIGN-ANALYSIS-V31-242 §4·§9) ──────────────
     seller_worker_max_retries: int = 1  # F/judge 미달 시 브랜치 재실행 상한(보수적)
@@ -1033,6 +1042,59 @@ class Settings(BaseSettings):
                 f"(got {self.stream_total_timeout_buyer_s} < "
                 f"{self.stream_first_token_timeout_s}): "
                 "the total stream cap cannot expire before the first-event wait"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_general_lane_within_stream_cap(self) -> "Settings":
+        """판매자 general 레인 직렬 예산이 스트림 전체 상한을 넘으면 기동 실패 (#266 P1 리뷰).
+
+        이 검증이 없으면 #266 이 고친 것이 **설정 하나로 되돌아간다.** general 레인의
+        `asyncio.timeout` 이 발동하기 전에 SSE 계층의 `stream_total_timeout_s` 캡이 먼저
+        끊으면(`stream.py` 전체 상한 → `done(stop)`), `_general_stream` 의 예외 분기에 아예
+        도달하지 못해 in-stream `error`(`LLM_TIMEOUT`) 대신 **오류 코드 없는 조용한 절단**이
+        되고 관측에는 `COMPLETED` 로 남는다. 앱 시계가 항상 먼저 터져야 결정적으로 매핑된다
+        (`_require_db_timeout_after_app_timeout` 와 같은 원칙의 LLM 판).
+
+        **라우팅을 더해서 비교하는 이유**(상한이 재는 구간을 emit 순서로 확인):
+        general 경로의 첫 SSE 이벤트는 `meta{lane}` 인데 `lane` 은 라우팅 산출물이라
+        `route_question` **뒤**에서야 나간다(`app/api/seller.py` `_seller_stream`).
+        반면 general 레인의 `asyncio.timeout` 시계는 그 뒤에 시작하므로 두 상한은 **직렬로
+        쌓인다.** `seller_general_timeout_s` 만 단독 비교하면 `route=10 + general=85 = 95 > 90`
+        같은 조합이 검증을 통과해 검증이 이름만 남는다.
+
+        **체크포인터 초기화도 더한다**(#266 PR 리뷰): pg-profile 최초 연결은 general 상한
+        **밖**에서 돈다 — 안에 두면 그 `TimeoutError` 와 LLM 지연의 `TimeoutError` 가 같은
+        타입이라 구분이 불가능해지기 때문이다(`app/api/seller.py` `_CheckpointerUnavailable`).
+        밖으로 뺀 대가로 이 시간은 general 예산에 잡히지 않고 캡을 향해 **직렬로 더해지므로**
+        예산식에도 함께 넣는다. 콜드스타트 1회에만 드는 비용이지만 검증은 최악을 본다.
+
+        **`2 *` 인 이유**(#266 PR 3차 리뷰): `_init_checkpointer` 는 연결(`__aenter__`)과
+        `setup()`(DDL)을 **각각** 이 상한으로 감싼다 — 이웃 `pg_store.py` 와 같은 형태다.
+        따라서 초기화 1회의 실질 최악은 상수의 2배다. 3차 리뷰 이전에는 `setup()` 이 아예
+        상한 밖이라 이 항 자체가 **성립하지 않는 전제** 위에 서 있었다(콜드 DB 에서 MIGRATIONS
+        8종이 문장당 `statement_timeout` 3s 씩 누적). 상한을 먼저 채우고 계수를 맞춘다.
+
+        **커버하지 않는 것**: 라우팅 앞의 `load_recent_turns` 조회는 이 식에 없다 —
+        `state_store_query_timeout_s` 로 따로 묶이고, 엄격 부등식과 기본값 여유(35 < 90)가
+        흡수한다. 이 항을 넣지 않은 것은 누락이 아니라 판단이다.
+
+        `>=` 로 거절하는 이유: 동률이면 어느 시계가 먼저 터지는지가 지터로 갈려
+        같은 원인이 `LLM_TIMEOUT`/`done(stop)` 두 갈래로 기록된다 — 이 이슈가 없애려는
+        비결정성 그 자체다(`_require_search_retry_within_stream_budget` 와 같은 기준).
+        """
+        budget = (
+            self.seller_route_timeout_s
+            + 2 * self.seller_checkpoint_connect_timeout_s
+            + self.seller_general_timeout_s
+        )
+        if budget >= self.stream_total_timeout_s:
+            raise ValueError(
+                "SELLER_ROUTE_TIMEOUT_S + 2 * SELLER_CHECKPOINT_CONNECT_TIMEOUT_S + "
+                "SELLER_GENERAL_TIMEOUT_S must be < STREAM_TOTAL_TIMEOUT_S "
+                f"(got {budget} >= {self.stream_total_timeout_s}): "
+                "the SSE total cap would cut the general lane before its own timeout fires, "
+                "degrading a mapped LLM_TIMEOUT into a silent done(stop)"
             )
         return self
 

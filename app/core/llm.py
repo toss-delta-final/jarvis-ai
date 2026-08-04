@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from functools import lru_cache
+from importlib import import_module
 from time import perf_counter
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -47,6 +49,51 @@ class LLMError(Exception):
 
 class LLMNotConfigured(LLMError):
     """활성 provider의 API key가 없어 모델을 만들 수 없다."""
+
+
+@lru_cache(maxsize=1)
+def _timeout_exception_types() -> tuple[type[BaseException], ...]:
+    """타임아웃으로 볼 예외 타입 집합 — 설치된 SDK 만 지연 수집한다.
+
+    내장 ``TimeoutError`` 는 3.11+ 에서 ``asyncio.TimeoutError`` 와 **같은 객체**라
+    한 항목으로 둘 다 덮인다. httpx·provider SDK 는 import 실패를 무시한다 —
+    이 모듈의 기존 규약대로 SDK 없이도 테스트가 돌아야 하기 때문이다.
+    """
+    types_: list[type[BaseException]] = [TimeoutError]
+    for module_name, attr in (
+        ("httpx", "TimeoutException"),
+        ("anthropic", "APITimeoutError"),
+        ("openai", "APITimeoutError"),
+    ):
+        try:
+            module = import_module(module_name)
+        except ImportError:  # pragma: no cover - SDK 미설치 환경
+            continue
+        candidate = getattr(module, attr, None)
+        if isinstance(candidate, type) and issubclass(candidate, BaseException):
+            types_.append(candidate)
+    return tuple(types_)
+
+
+def is_timeout_error(exc: BaseException | None) -> bool:
+    """예외(와 그 원인 체인)가 상류 타임아웃인지 **타입으로** 판정한다.
+
+    문자열 매칭을 쓰지 않는 이유: provider SDK 의 메시지는 ``"Request timed out."``
+    (timed **out**, 공백 포함)이라 ``"timeout" in str(exc)`` 로는 걸리지 않고,
+    ``httpx.ReadTimeout`` 은 ``str(exc)`` 가 비는 경우가 있다. 가짜 예외로 쓴 테스트만
+    통과하고 실제 SDK 예외는 한 번도 통과시켜 본 적이 없는 판정이 된다.
+
+    원인 체인을 따라가는 이유: ``AnthropicLLM.complete`` 등이 SDK 예외를
+    ``raise LLMError(str(exc)) from exc`` 로 감싸므로 원본 타입이 ``__cause__`` 에만 남는다.
+    """
+    seen: set[int] = set()
+    current = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, _timeout_exception_types()):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def resolve_model_id(settings: Settings, tier: ModelTier) -> str:
