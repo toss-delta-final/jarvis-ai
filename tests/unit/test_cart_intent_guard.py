@@ -202,6 +202,57 @@ def test_classify_cart_add_marker_excludes_past_reference_tail(message: str, exp
     assert classify_cart_utterance(message, get_settings()) == expected
 
 
+# ─────────── classify_cart_utterance — 라운드 9: 접두 부정("안"/"못") ───────────
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        # 재현 — 부정 검사가 어미형(뒤쪽, "-지 마")만 보고 접두형(안·못, 앞쪽)을 놓쳐, 삭제·찜
+        # 하지 말라는 발화가 그대로 실행됐다.
+        ("안 빼줘도 돼", "cart_add"),
+        ("안 지워줘도 돼", "cart_add"),
+        ("안 찜해줘도 돼", "cart_add"),
+        ("못 빼줘도 괜찮아", "cart_add"),
+        # 이 검사는 모든 표지 계열(담기·삭제·찜 추가·찜 해제)에 동일하게 적용된다 — 담기 표지만
+        # 예외로 남으면 이 발화가 다시 어긋난다.
+        ("안 담아도 되고 그냥 빼줘", "cart_remove"),
+    ],
+)
+def test_classify_prefix_negation_suppresses_marker(message: str, expected: str) -> None:
+    assert classify_cart_utterance(message, get_settings()) == expected
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        # 거짓 억제 방지(핵심) — "안"은 흔한 조각이라 부분 문자열로 보면 정상 삭제 요청까지
+        # 죽는다. 어절 경계 판정이라 "안경"의 "안"·발화 앞쪽의 "안"은 표지를 무효화하지 않는다.
+        ("안경 빼줘", "cart_remove"),
+        ("가방 안에 있는 거 빼줘", "cart_remove"),
+    ],
+)
+def test_classify_prefix_negation_does_not_falsely_suppress(message: str, expected: str) -> None:
+    assert classify_cart_utterance(message, get_settings()) == expected
+
+
+def test_has_prefix_negation_word_boundary_rules() -> None:
+    """`_has_prefix_negation` 직접 호출로 어절 경계 규칙을 고정한다 — "안 빼줘"·"안빼줘"(공백
+    0~1개)는 잡고, "안경"의 "안"(뒤에 다른 글자가 붙어 토큰이 아님)과 표지에서 먼 "안"은 안 잡는다."""
+    from app.agents.buyer.cart.intent_guard import _has_prefix_negation
+
+    prefix_markers = ["안", "못"]
+    # "안 빼줘" — marker "빼줘" starts at index 1 (공백 1개 뒤).
+    assert _has_prefix_negation("안 빼줘", 1, prefix_markers) is True
+    # "안빼줘" — marker "빼줘" starts at index 1 (공백 없음).
+    assert _has_prefix_negation("안빼줘", 1, prefix_markers) is True
+    # "안경 빼줘" — marker "빼줘" starts at index 3; 직전 토큰은 "안경"이지 "안" 단독이 아니다.
+    assert _has_prefix_negation("안경 빼줘", 3, prefix_markers) is False
+    # "가방 안에 있는 거 빼줘" — marker 직전 토큰은 "거"; "안"은 문장 앞쪽에 멀리 있다.
+    message = "가방 안에 있는 거 빼줘"
+    assert _has_prefix_negation(message, message.index("빼줘"), prefix_markers) is False
+
+
 # ─────────── stream_cart_add 배선 — 찜 오담기 방어 ───────────
 
 
