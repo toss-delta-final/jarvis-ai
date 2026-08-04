@@ -2264,9 +2264,10 @@ class _PromptCapturingLLM:
 
         self._raw = _json.dumps({"intent": "cart_add", "filters": {}, **decompose})
         self.user = ""
+        self.system = ""
 
     async def complete(self, *, system, user, tier, max_tokens=1024, json_output=True):  # noqa: ANN001
-        self.user = user
+        self.user, self.system = user, system
         return self._raw
 
     async def stream(self, *, system, user, tier, max_tokens=1024):  # noqa: ANN001
@@ -2343,3 +2344,84 @@ async def test_missing_turn_count_degrades_to_todays_behaviour() -> None:
     state = await store.get_last_reco_state("k")
     assert [pid for pid, _ in state.items] == [1, 2, 3]
     assert state.turn_count == 3  # 경계 불명 → 전량을 이번 턴으로
+
+
+def _screen_request(message: str, thread_id: str):
+    """screen 이 실린 실제 요청 — 관대 정규화를 그대로 태운다."""
+    from app.schemas.chat import BuyerChatRequest
+
+    return BuyerChatRequest.model_validate(
+        {
+            "sessionId": "s1",
+            "threadId": thread_id,
+            "message": message,
+            "screen": {
+                "pageType": "chat",
+                "columns": 2,
+                "products": [
+                    {"productId": 501, "name": "러그"},
+                    {"productId": 502, "name": "바구니"},
+                ],
+            },
+        }
+    )
+
+
+async def _seed_pending(key: str) -> None:
+    from app.agents.buyer.cart.state import get_cart_store
+
+    store = await get_cart_store()
+    await store.set_last_reco(key, [(9001, "드럼용 세탁 세제")])
+    await store.set_pending(
+        key,
+        PendingAdd(
+            product_id=9001,
+            quantity=1,
+            options=[
+                CartOption(option_id=1001, name="일반형"),
+                CartOption(option_id=1002, name="드럼형"),
+            ],
+        ),
+    )
+
+
+async def test_pending_turn_prompt_excludes_the_screen_block_and_rule() -> None:
+    """[#118 · PR 4차 리뷰] 되물음 턴에는 **screen 도** 프롬프트에서 뺀다 — `prompt_reco` 와 같은 규약.
+
+    싣고 있었을 때 한 턴에 "options 의 번호로 골라라"(PENDING_CART)와 "화면 순번으로 골라라"
+    (SCREEN.상품 + 규칙)가 동시에 주어졌다. `"2번으로"` 가 화면 순번 2로 오인되면 채워지는
+    productId 는 `screen.products` 출신이라 `allowed` 에 반드시 들어 있어 cart/graph.py 의 전환
+    조건을 통과한다 → 되물음이 조용히 버려지고 답한 적 없는 상품이 담긴다(end-to-end 재현:
+    담긴 productId=502·pending 소멸·CART_ADDED). 코드 해소기도 `pending is None` 일 때만 도는데
+    프롬프트만 화면 순번을 가르치던 비대칭이었다.
+    """
+    from app.agents.buyer.recommendation.decompose import _SYSTEM
+
+    request = _screen_request("2번으로", "t-pending-screen")
+    await _seed_pending(await _thread_key(request, _member()))
+
+    llm = _PromptCapturingLLM({"cart": {"productId": 9001, "optionId": 1002, "quantity": 1}})
+    await _collect(run_buyer_turn(request, _member(), llm=llm))
+
+    # user — SCREEN 블록도, 화면 상품 id·순번 라벨도 실리지 않는다.
+    assert "SCREEN" not in llm.user
+    assert "501" not in llm.user and "502" not in llm.user
+    assert "순번" not in llm.user
+    assert "PENDING_CART:" in llm.user  # 되물음 맥락 자체는 그대로다
+    # system — 화면 규칙이 붙지 않은 **원본 프롬프트와 바이트 동일**.
+    assert llm.system == _SYSTEM
+
+
+async def test_non_pending_turn_prompt_carries_the_screen_block_and_rule() -> None:
+    """되물음이 아닌 턴에서는 종전대로 실린다 — 이번 수정이 화면 해소 자체를 끄지 않았다."""
+    from app.agents.buyer.recommendation.decompose import _SYSTEM_WITH_SCREEN
+
+    request = _screen_request("이거 담아줘", "t-nonpending-screen")
+
+    llm = _PromptCapturingLLM({"cart": {"productId": 501, "quantity": 1}})
+    await _collect(run_buyer_turn(request, _member(), llm=llm))
+
+    assert "SCREEN: {" in llm.user
+    assert '"순번": 1' in llm.user and '"순번": 2' in llm.user
+    # system — 화면 규칙이 덧붙은 변형과 **바이트 동일**.
+    assert llm.system == _SYSTEM_WITH_SCREEN

@@ -493,6 +493,30 @@ async def run_buyer_turn(
     # order_status 48/48), #118 이 풀려는 4단계 시나리오(추천 A → 질문 → 추천 B → "이거 담아줘")의
     # **해소가 바로 여기서** 일어난다. 이걸 끄면 가드만 열리고 LLM 이 옛 상품을 지목하지 못한다.
     prompt_reco = last_reco if pending_dict is None else last_reco[: reco_state.turn_count]
+    # [#118] **screen 도 같은 규약을 따른다 — 되물음 턴에는 넘기지 않는다.**
+    # 초판은 위 `prompt_reco` 만 되물음으로 가르고 screen 은 조건 없이 실었는데, 그러면 한 턴에
+    # "options 의 번호로 골라라"(PENDING_CART)와 "화면 순번으로 골라라"(SCREEN.상품 + 규칙)가
+    # **동시에** 주어진다. `"2번으로"` 같은 정상 옵션 답변이 화면 순번 2로 오인될 여지가 생기고,
+    # 그때 채워지는 productId 는 `screen.products` 출신이라 `allowed` 에 **반드시** 들어 있어
+    # cart/graph.py 의 전환 조건(`product_id != pending.product_id and product_id in allowed`)을
+    # 그대로 통과한다 → 진행 중이던 옵션 되물음이 조용히 버려지고 사용자가 답한 적 없는 상품이
+    # 담긴다(PR 4차 리뷰, end-to-end 재현 확인: 담긴 productId=502·pending 소멸·CART_ADDED).
+    # 이 PR 이 막으려는 오담기 클래스와 같은 것이라 프롬프트에서 뺀다.
+    #
+    # 설계 일관성 근거도 같은 방향이다 — 코드 해소기(`resolve_screen_reference`)는 이미 아래
+    # cart_add 분기에서 `pending is None` 일 때만 돈다("그 턴의 2번은 화면 순번이 아니라 옵션
+    # 번호"). 해소기는 안 도는데 프롬프트만 화면 순번을 가르치고 있었던 것이 비대칭이었다.
+    #
+    # 프로브 커버리지도 이쪽이 맞다: 옵션 답변 셀은 전부 `screen=None` 로 측정됐으므로
+    # (scripts/verify_screen_context_118.py 의 `_CTX_PENDING` 에 screen 없음), 이렇게 빼야
+    # 배포 경로가 실제로 잰 조건과 일치한다.
+    prompt_screen = (
+        None
+        if pending_dict is not None
+        else build_screen_prompt(
+            getattr(request, "screen", None), labels=settings.screen_page_type_labels
+        )
+    )
     try:
         with trace_span("buyer.routing", "chain"):
             with trace_span(
@@ -517,11 +541,9 @@ async def run_buyer_turn(
                     last_recommendations=prompt_reco,
                     pending_cart=pending_dict,
                     # [#118] 지금 보고 있는 화면 — "이거 담아줘"의 대상 확정. screen 이 없거나
-                    # 관대 무시로 사라졌으면 None 이라 프롬프트가 오늘과 바이트 동일하다.
-                    screen=build_screen_prompt(
-                        getattr(request, "screen", None),
-                        labels=settings.screen_page_type_labels,
-                    ),
+                    # 관대 무시로 사라졌으면(또는 되물음 턴이면, 위 prompt_screen 주석 참조)
+                    # None 이라 프롬프트가 오늘과 바이트 동일하다.
+                    screen=prompt_screen,
                     category_fanout_max=settings.category_fanout_max,
                     repurchase_max=settings.dedup_repurchase_max,
                 )
