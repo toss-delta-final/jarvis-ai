@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from time import perf_counter
@@ -22,6 +23,15 @@ from evals.model_eval.budget import BudgetExceeded
 
 BACKOFF_BASE_S = 0.5
 BACKOFF_MAX_S = 8.0
+
+# provider 오류 메시지에 섞여 오는 계정·키 식별자. 산출물은 리포에 커밋되므로 지우고 남긴다
+# (429 본문에 org id 가 그대로 들어온다 — 실측에서 확인).
+_IDENTIFIER_RE = re.compile(r"\b(org|proj|user|sk)-[A-Za-z0-9_-]{6,}")
+
+
+def scrub_message(message: str) -> str:
+    """실패 메시지에서 계정 식별자를 지운다 — 원인 판별에 필요한 문구는 남긴다."""
+    return _IDENTIFIER_RE.sub(lambda match: f"{match.group(1)}-***", message)
 
 
 @dataclass(frozen=True)
@@ -133,7 +143,7 @@ async def run_cell(
                     cell_id=cell.cell_id,
                     attempt=result.attempts,
                     error_type=type(exc).__name__,
-                    message=str(exc)[:200],
+                    message=scrub_message(str(exc))[:200],
                 )
             )
             await sleep(backoff_seconds(len(result.failures)))

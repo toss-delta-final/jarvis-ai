@@ -143,6 +143,26 @@ def test_unfillable_run_exits_4_and_lists_the_cells(tmp_path: Path, monkeypatch)
     assert (out / "failures.csv").read_text(encoding="utf-8").count("LLMError") == 12
 
 
+def test_budget_exceeded_exits_3_with_partial_artifacts(tmp_path: Path, monkeypatch) -> None:
+    # 예산 게이트는 dry-run 가짜가 예산을 쓰지 않아 평소 실행되지 않는 경로다 — 여기서만 밟힌다.
+    from evals.intent_probe import cli as cli_module
+    from evals.intent_probe.fakes import ScriptedDecomposeLLM
+    from evals.model_eval.budget import BudgetExceeded
+
+    class _BudgetBurstLLM(ScriptedDecomposeLLM):
+        async def complete(self, **kwargs: object) -> str:
+            if self._attempts >= 4:
+                raise BudgetExceeded("maxCallsExceeded")
+            return await super().complete(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(cli_module, "ScriptedDecomposeLLM", _BudgetBurstLLM)
+    out = tmp_path / "run"
+    assert main(["--out", str(out), "--dry-run", "--repeats", "2", "--concurrency", "1"]) == 3
+    assert {path.name for path in out.iterdir()} == ARTIFACT_NAMES
+    results = _results(out)
+    assert results["cellCount"] < 53  # 중단 시점까지의 부분 결과만 기록된다
+
+
 def test_probe_is_not_wired_into_ci(tmp_path: Path) -> None:
     # #260 §5: 실 LLM 비용·비결정론 때문에 CI 에서 돌리지 않는다.
     workflows = Path(__file__).resolve().parents[2] / ".github" / "workflows"

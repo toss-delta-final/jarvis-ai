@@ -1,0 +1,924 @@
+{
+  "axes": {
+    "cartAddProductIdLegacy2": {
+      "axisId": "cartAddProductIdLegacy2",
+      "definition": {
+        "components": [],
+        "denominator": "switchLegacy2 와 동일 표본(전환 2발화 × PENDING_CART × N)",
+        "notComparableWith": [
+          "switchLegacy2",
+          "#240 전환 축"
+        ],
+        "numerator": "intent 가 cart_add 이고 cart.productId 가 LAST_RECOMMENDATIONS 안에 있는 표본 수 — **되물음 상품을 그대로 에코해도 정답으로 센다**. #234 정의이며 switchLegacy2 와 같은 표본을 다른 정의로 다시 센 값이다"
+      },
+      "denominator": 16,
+      "expectedDenominator": 16,
+      "numerator": 5,
+      "ratio": 0.3125,
+      "title": "cart_add productId(#234 정의)",
+      "unfilledSampleCount": 0
+    },
+    "cartControl": {
+      "axisId": "cartControl",
+      "definition": {
+        "components": [],
+        "denominator": "장바구니 대조군 6발화 × 컨텍스트 3종 × N",
+        "notComparableWith": [],
+        "numerator": "intent 가 기대 intent(cart_view 또는 cart_add)와 일치한 표본 수"
+      },
+      "denominator": 144,
+      "expectedDenominator": 144,
+      "numerator": 144,
+      "ratio": 1.0,
+      "title": "장바구니 대조군",
+      "unfilledSampleCount": 0
+    },
+    "demonstrative": {
+      "axisId": "demonstrative",
+      "definition": {
+        "components": [],
+        "denominator": "지시대명사 4발화 × 컨텍스트 3종 × N",
+        "notComparableWith": [],
+        "numerator": "intent 가 recommend 인 표본 수"
+      },
+      "denominator": 96,
+      "expectedDenominator": 96,
+      "numerator": 93,
+      "ratio": 0.96875,
+      "title": "지시대명사",
+      "unfilledSampleCount": 0
+    },
+    "general": {
+      "axisId": "general",
+      "definition": {
+        "components": [],
+        "denominator": "general 2발화 × 컨텍스트 3종 × N",
+        "notComparableWith": [],
+        "numerator": "intent 가 general 인 표본 수"
+      },
+      "denominator": 48,
+      "expectedDenominator": 48,
+      "numerator": 37,
+      "ratio": 0.7708333333333334,
+      "title": "general",
+      "unfilledSampleCount": 0
+    },
+    "mainIntent": {
+      "axisId": "mainIntent",
+      "definition": {
+        "components": [
+          "cartControl",
+          "demonstrative"
+        ],
+        "denominator": "장바구니 대조군 6발화 + 지시대명사 4발화 × 컨텍스트 3종 × N",
+        "notComparableWith": [],
+        "numerator": "intent 가 기대 intent 와 일치한 표본 수 (장바구니 대조군 + 지시대명사)"
+      },
+      "denominator": 240,
+      "expectedDenominator": 240,
+      "numerator": 237,
+      "ratio": 0.9875,
+      "title": "본 표 intent",
+      "unfilledSampleCount": 0
+    },
+    "optionAnswer": {
+      "axisId": "optionAnswer",
+      "definition": {
+        "components": [],
+        "denominator": "옵션 답변 4발화 × PENDING_CART 컨텍스트 × N",
+        "notComparableWith": [],
+        "numerator": "intent 가 cart_add 이고 cart.optionId 까지 기대값과 일치한 표본 수 (하나만 맞으면 오답 — 옵션을 잘못 담는 것은 실패다)"
+      },
+      "denominator": 32,
+      "expectedDenominator": 32,
+      "numerator": 27,
+      "ratio": 0.84375,
+      "title": "옵션 답변",
+      "unfilledSampleCount": 0
+    },
+    "orderStatus": {
+      "axisId": "orderStatus",
+      "definition": {
+        "components": [],
+        "denominator": "order_status 2발화 × 컨텍스트 3종 × N",
+        "notComparableWith": [],
+        "numerator": "intent 가 order_status 인 표본 수"
+      },
+      "denominator": 48,
+      "expectedDenominator": 48,
+      "numerator": 48,
+      "ratio": 1.0,
+      "title": "order_status",
+      "unfilledSampleCount": 0
+    },
+    "switchAll7": {
+      "axisId": "switchAll7",
+      "definition": {
+        "components": [],
+        "denominator": "전환 7발화 × PENDING_CART 컨텍스트 × N",
+        "notComparableWith": [
+          "switchLegacy2",
+          "#240 전환 축(분모 16)"
+        ],
+        "numerator": "switchLegacy2 와 같은 술어를 전환 7발화 전부에 적용한 표본 수"
+      },
+      "denominator": 56,
+      "expectedDenominator": 56,
+      "numerator": 29,
+      "ratio": 0.5178571428571429,
+      "title": "전환(#260 7발화)",
+      "unfilledSampleCount": 0
+    },
+    "switchLegacy2": {
+      "axisId": "switchLegacy2",
+      "definition": {
+        "components": [],
+        "denominator": "#240 이 쓴 전환 2발화(`이어폰으로 할래`·`다른 거 담아줘`) × PENDING_CART × N",
+        "notComparableWith": [
+          "cartAddProductIdLegacy2",
+          "switchAll7",
+          "#234 productId 표"
+        ],
+        "numerator": "intent 가 cart_add 이고 cart.productId 가 **되물음 상품이 아닌** LAST_RECOMMENDATIONS 안의 상품인 표본 수 — #240 정의"
+      },
+      "denominator": 16,
+      "expectedDenominator": 16,
+      "numerator": 0,
+      "ratio": 0.0,
+      "title": "전환(#240 2발화)",
+      "unfilledSampleCount": 0
+    }
+  },
+  "budget": {
+    "budgetExceeded": false,
+    "budgetExceededReason": null,
+    "callCount": 424,
+    "costGateStatus": "unknown",
+    "limits": {
+      "maxCalls": 1272,
+      "maxCostUsd": 20.0,
+      "maxTotalTokens": 30000000
+    },
+    "tokenGateStatus": "unknown",
+    "totalCostUsd": 0.07626650000000004,
+    "totalTokens": 1133085,
+    "unknownCostCallCount": 72,
+    "unknownTokenCallCount": 72
+  },
+  "cellCount": 53,
+  "cells": [
+    {
+      "attempts": 8,
+      "cellId": "cart-control-001|lastRecommendations",
+      "contextId": "lastRecommendations",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_view": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-001|none",
+      "contextId": "none",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_view": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-001|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_view": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-002|lastRecommendations",
+      "contextId": "lastRecommendations",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_view": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-002|none",
+      "contextId": "none",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_view": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-002|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_view": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-003|lastRecommendations",
+      "contextId": "lastRecommendations",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_view": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-003"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-003|none",
+      "contextId": "none",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_view": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-003"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-003|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_view": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-003"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-004|lastRecommendations",
+      "contextId": "lastRecommendations",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-004"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-004|none",
+      "contextId": "none",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-004"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-004|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-004"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-005|lastRecommendations",
+      "contextId": "lastRecommendations",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-005"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-005|none",
+      "contextId": "none",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-005"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-005|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-005"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-006|lastRecommendations",
+      "contextId": "lastRecommendations",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-006"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-006|none",
+      "contextId": "none",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-006"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-006|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-006"
+    },
+    {
+      "attempts": 8,
+      "cellId": "demonstrative-001|lastRecommendations",
+      "contextId": "lastRecommendations",
+      "failureCount": 0,
+      "filled": true,
+      "group": "demonstrative",
+      "intentCounts": {
+        "general": 1,
+        "recommend": 7
+      },
+      "sampleCount": 8,
+      "utteranceId": "demonstrative-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "demonstrative-001|none",
+      "contextId": "none",
+      "failureCount": 0,
+      "filled": true,
+      "group": "demonstrative",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "demonstrative-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "demonstrative-001|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "demonstrative",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "demonstrative-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "demonstrative-002|lastRecommendations",
+      "contextId": "lastRecommendations",
+      "failureCount": 0,
+      "filled": true,
+      "group": "demonstrative",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "demonstrative-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "demonstrative-002|none",
+      "contextId": "none",
+      "failureCount": 0,
+      "filled": true,
+      "group": "demonstrative",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "demonstrative-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "demonstrative-002|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "demonstrative",
+      "intentCounts": {
+        "cart_add": 1,
+        "recommend": 7
+      },
+      "sampleCount": 8,
+      "utteranceId": "demonstrative-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "demonstrative-003|lastRecommendations",
+      "contextId": "lastRecommendations",
+      "failureCount": 0,
+      "filled": true,
+      "group": "demonstrative",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "demonstrative-003"
+    },
+    {
+      "attempts": 8,
+      "cellId": "demonstrative-003|none",
+      "contextId": "none",
+      "failureCount": 0,
+      "filled": true,
+      "group": "demonstrative",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "demonstrative-003"
+    },
+    {
+      "attempts": 8,
+      "cellId": "demonstrative-003|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "demonstrative",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "demonstrative-003"
+    },
+    {
+      "attempts": 8,
+      "cellId": "demonstrative-004|lastRecommendations",
+      "contextId": "lastRecommendations",
+      "failureCount": 0,
+      "filled": true,
+      "group": "demonstrative",
+      "intentCounts": {
+        "general": 1,
+        "recommend": 7
+      },
+      "sampleCount": 8,
+      "utteranceId": "demonstrative-004"
+    },
+    {
+      "attempts": 8,
+      "cellId": "demonstrative-004|none",
+      "contextId": "none",
+      "failureCount": 0,
+      "filled": true,
+      "group": "demonstrative",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "demonstrative-004"
+    },
+    {
+      "attempts": 8,
+      "cellId": "demonstrative-004|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "demonstrative",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "demonstrative-004"
+    },
+    {
+      "attempts": 8,
+      "cellId": "general-001|lastRecommendations",
+      "contextId": "lastRecommendations",
+      "failureCount": 0,
+      "filled": true,
+      "group": "general",
+      "intentCounts": {
+        "general": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "general-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "general-001|none",
+      "contextId": "none",
+      "failureCount": 0,
+      "filled": true,
+      "group": "general",
+      "intentCounts": {
+        "general": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "general-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "general-001|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "general",
+      "intentCounts": {
+        "general": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "general-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "general-002|lastRecommendations",
+      "contextId": "lastRecommendations",
+      "failureCount": 0,
+      "filled": true,
+      "group": "general",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "general-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "general-002|none",
+      "contextId": "none",
+      "failureCount": 0,
+      "filled": true,
+      "group": "general",
+      "intentCounts": {
+        "general": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "general-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "general-002|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "general",
+      "intentCounts": {
+        "general": 5,
+        "recommend": 3
+      },
+      "sampleCount": 8,
+      "utteranceId": "general-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "option-answer-001|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "option_answer",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "option-answer-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "option-answer-002|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "option_answer",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "option-answer-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "option-answer-003|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "option_answer",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "option-answer-003"
+    },
+    {
+      "attempts": 8,
+      "cellId": "option-answer-004|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "option_answer",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "option-answer-004"
+    },
+    {
+      "attempts": 8,
+      "cellId": "order-status-001|lastRecommendations",
+      "contextId": "lastRecommendations",
+      "failureCount": 0,
+      "filled": true,
+      "group": "order_status",
+      "intentCounts": {
+        "order_status": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "order-status-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "order-status-001|none",
+      "contextId": "none",
+      "failureCount": 0,
+      "filled": true,
+      "group": "order_status",
+      "intentCounts": {
+        "order_status": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "order-status-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "order-status-001|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "order_status",
+      "intentCounts": {
+        "order_status": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "order-status-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "order-status-002|lastRecommendations",
+      "contextId": "lastRecommendations",
+      "failureCount": 0,
+      "filled": true,
+      "group": "order_status",
+      "intentCounts": {
+        "order_status": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "order-status-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "order-status-002|none",
+      "contextId": "none",
+      "failureCount": 0,
+      "filled": true,
+      "group": "order_status",
+      "intentCounts": {
+        "order_status": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "order-status-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "order-status-002|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "order_status",
+      "intentCounts": {
+        "order_status": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "order-status-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "switch-001|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "switch",
+      "intentCounts": {
+        "cart_add": 1,
+        "recommend": 7
+      },
+      "sampleCount": 8,
+      "utteranceId": "switch-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "switch-002|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "switch",
+      "intentCounts": {
+        "cart_add": 4,
+        "cart_view": 2,
+        "recommend": 2
+      },
+      "sampleCount": 8,
+      "utteranceId": "switch-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "switch-003|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "switch",
+      "intentCounts": {
+        "cart_add": 5,
+        "cart_view": 3
+      },
+      "sampleCount": 8,
+      "utteranceId": "switch-003"
+    },
+    {
+      "attempts": 8,
+      "cellId": "switch-004|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "switch",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "switch-004"
+    },
+    {
+      "attempts": 8,
+      "cellId": "switch-005|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "switch",
+      "intentCounts": {
+        "cart_add": 3,
+        "recommend": 5
+      },
+      "sampleCount": 8,
+      "utteranceId": "switch-005"
+    },
+    {
+      "attempts": 8,
+      "cellId": "switch-006|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "switch",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "switch-006"
+    },
+    {
+      "attempts": 8,
+      "cellId": "switch-007|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "switch",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "switch-007"
+    }
+  ],
+  "diagnostics": {
+    "definition": {
+      "productIdNullCount": "전환 셀에서 cart_add 인데 productId 가 null 인 표본 수 — 되물음이 유지되는 안전한 퇴화",
+      "reaskProductEchoCount": "전환 셀에서 cart.productId 가 되물음 상품과 같은 표본 수 — 사용자가 고르지 않은 옵션으로 옛 상품이 담기는 위험한 실패"
+    },
+    "productIdNullCount": 0,
+    "reaskProductEchoCount": 8
+  },
+  "dryRun": false,
+  "fixture": {
+    "name": "anchors_b.json",
+    "reaskProductId": 102,
+    "reaskProductListPosition": 2,
+    "sha256": "3ad868ff2a4002022641204ae34e850e44063dd54a30f1877c0a8286e426e8fe",
+    "version": "intent-probe-anchors-b-v1"
+  },
+  "issue240AxisOrder": [
+    "mainIntent",
+    "cartControl",
+    "demonstrative",
+    "optionAnswer",
+    "switchLegacy2",
+    "orderStatus",
+    "general",
+    "cartAddProductIdLegacy2"
+  ],
+  "issue240Line": "237/144/93/27/0/48/37/5",
+  "modelConfig": {
+    "fastModel": "gpt-5-nano",
+    "fastReasoningEffort": "minimal",
+    "maxRetries": 0,
+    "provider": "openai",
+    "smartModel": "gpt-5.6-luna",
+    "smartReasoningEffort": "medium",
+    "timeoutS": 30.0
+  },
+  "n": 8,
+  "pacer": {
+    "acquireCount": 424,
+    "estimatedTokensPerCall": 3900,
+    "maxRpm": 45,
+    "maxTpm": 200000,
+    "maxWaitS": 34.767,
+    "totalWaitS": 385.653,
+    "waitCount": 202,
+    "windowS": 60.0
+  },
+  "prompt": {
+    "charCount": 5892,
+    "sha12": "e5e195822495",
+    "sha256": "e5e195822495f0dce512aee641c5bf488b5fa5fdb656eaf8e382a22089df2247",
+    "source": "git:3f1dec7"
+  },
+  "tier": "fast",
+  "unfilledCells": []
+}

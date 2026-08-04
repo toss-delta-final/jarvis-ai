@@ -32,6 +32,9 @@ from evals.model_eval.recording import RecordingLLM
 
 DECOMPOSE_RELPATH = "app/agents/buyer/recommendation/decompose.py"
 REPO_PROMPT_SOURCE = "repo:_SYSTEM"
+# `git show` 는 CWD 기준으로 리포를 찾는다 — 실행 위치에 기대지 않도록 루트를 명시한다
+# (`evals/metrics/run_manifest.py` 가 커밋 해시를 읽을 때와 같은 규약).
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 @dataclass(frozen=True)
@@ -86,6 +89,7 @@ def read_prompt_from_git(rev: str, *, relpath: str = DECOMPOSE_RELPATH) -> str:
     """
     result = subprocess.run(
         ["git", "show", f"{rev}:{relpath}"],
+        cwd=REPO_ROOT,
         capture_output=True,
         text=True,
         encoding="utf-8",

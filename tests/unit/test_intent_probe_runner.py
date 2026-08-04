@@ -22,7 +22,7 @@ from evals.intent_probe.client import (
 from evals.intent_probe.fakes import ScriptedDecomposeLLM
 from evals.intent_probe.loader import build_cells, load_anchor_set
 from evals.intent_probe.pacer import GlobalPacer, PacerLimits
-from evals.intent_probe.runner import run_cell, run_probe
+from evals.intent_probe.runner import run_cell, run_probe, scrub_message
 from evals.model_eval.budget import BudgetExceeded
 
 ANCHORS = load_anchor_set("b")
@@ -163,6 +163,31 @@ def test_prompt_and_prompt_rev_are_mutually_exclusive(tmp_path: Path) -> None:
     path.write_text("후보", encoding="utf-8")
     with pytest.raises(ValueError, match="함께"):
         resolve_system_prompt(prompt_path=path, prompt_rev="HEAD")
+
+
+def test_prompt_rev_reads_git_regardless_of_cwd(tmp_path: Path, monkeypatch) -> None:
+    # `git show` 는 CWD 기준으로 리포를 찾는다 — 실행 위치에 기대면 리포 밖에서 조용히 실패한다.
+    monkeypatch.chdir(tmp_path)
+    text, identity = resolve_system_prompt(prompt_rev="HEAD")
+    assert text and "당신은 커머스 어시스턴트의 질의 분해기입니다" in text
+    assert identity.source == "git:HEAD"
+
+
+def test_prompt_rev_reports_unknown_revision(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="읽지 못했습니다"):
+        resolve_system_prompt(prompt_rev="not-a-real-rev")
+
+
+def test_failure_messages_drop_account_identifiers() -> None:
+    # 산출물은 리포에 커밋된다. 429 본문에 org id 가 그대로 들어오므로 지우고 남긴다.
+    raw = (
+        "Error code: 429 - Rate limit reached for gpt-5-nano in organization "
+        "org-erkD3CljLOJzAjKPgPzUBmRl on tokens per min (TPM): Limit 200000, Used 200000"
+    )
+    scrubbed = scrub_message(raw)
+    assert "org-erkD3CljLOJzAjKPgPzUBmRl" not in scrubbed
+    assert "org-***" in scrubbed
+    assert "Limit 200000, Used 200000" in scrubbed  # 원인 판별에 필요한 문구는 살린다
 
 
 def test_extract_system_prompt_reads_the_literal() -> None:
