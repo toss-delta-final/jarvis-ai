@@ -13,6 +13,27 @@
 
 ---
 
+## [2026-08-04] 튜너블을 근거로 결함을 판단하기 전에 그 값이 **실제로 소비되는지** grep 으로 먼저 본다
+- 증상: #89 는 "fan-out 부분 실패 후 생존 leg 가 `category_fanout_per_cat_limit`(10)에 계속
+  묶인다"를 결함으로 보고했고, 3안(생존 leg 재조회/사전 over-fetch/동적 사이징) 중 재조회를
+  기본안으로 제시했다. 그런데 실측하니 이슈가 보고한 축소는 **현재 hot path 에서 관측되지
+  않았다** — `filters.limit` 을 읽는 백엔드가 없다(`SpringSearchBackend`·
+  `EmbeddingRerankBackend` 모두 미참조, §4.6 size 제거·#101 절단 재배치 이후). 그대로 재조회를
+  골랐다면 **완전히 같은 응답을 다시 받는** 왕복을 degraded 경로에 추가할 뻔했다 — `limit` 이
+  네트워크에 실리지 않으니 재검색은 효과가 0이었다.
+- 원인: `category_fanout_per_cat_limit` 이라는 이름과 주변 주석이 여전히 "leg top-K"로
+  읽혀서, 그 값이 실제로 절단에 관여한다고 가정한 채로 수정안을 골랐다. 소비 지점을 먼저
+  확인하지 않으면 "값을 조정하면 동작이 바뀐다"는 전제 자체가 틀릴 수 있다.
+- 규칙: 튜너블(config 값)을 근거로 결함이나 수정안을 판단하기 전에 **그 값이 실제로 읽히는
+  지점을 grep 으로 먼저 확인**한다. 소비되지 않는 튜너블을 발견하면 그 사실을 주석에 남겨
+  다음 사람이 같은 가정을 반복하지 않게 한다. 값을 소비하지 않아도 "정확한 상한"(예: merge_cap)
+  으로 정해 두면 값이 소비되기 시작해도 안전하다 — 우연에 기대지 않는 수정을 고른다.
+- 관련: #89, `app/agents/buyer/recommendation/graph.py`(`_run_search` fan-out 절),
+  `app/services/search_service.py`(`search_catalog`), `app/core/config.py`
+  (`category_fanout_per_cat_limit`), `app/services/spring_client.py:373-374`
+
+---
+
 ## [2026-08-04] 상한이 안전한지는 단일 호출 예산이 아니라 첫 이벤트 앞 **직렬 합**으로 잰다
 - 증상: I-1 단일 호출 예산 `3s × 2 = 6s < 10s` 기동 검증을 통과한 출고 기본값에서,
   미룬 턴의 두 재시도 응답이 상한 직전(2.9s)에 오자 첫 SSE 이벤트가 하나도 나가지 않은 채

@@ -204,12 +204,13 @@ async def test_fanout_searches_each_canonical_category() -> None:
     assert set(by_cat) == {"여행/캠핑 > 여행용품", "가전 > 어댑터"}
     # [#51] canonical category 가 있으면 keyword(상품명 LIKE)는 드롭한다 — leg query 는
     # semantic_query 로 흘러 임베딩 rerank 를 담당(동의어가 retrieval 을 원천 배제하지 않게).
-    # limit = category_fanout_per_cat_limit(기본 10).
+    # limit = category_fanout_merge_cap(기본 30) — #89: leg 사전 절단은 leg 수와 무관하게
+    # merge_cap 을 쓴다(per_cat_limit 은 더 이상 소비되지 않음).
     assert by_cat["여행/캠핑 > 여행용품"].keyword is None
     assert by_cat["여행/캠핑 > 여행용품"].semantic_query == "파우치"
     assert by_cat["가전 > 어댑터"].keyword is None
     assert by_cat["가전 > 어댑터"].semantic_query == "어댑터"
-    assert by_cat["가전 > 어댑터"].limit == 10
+    assert by_cat["가전 > 어댑터"].limit == 30
 
 
 async def test_fanout_merges_results_from_all_legs() -> None:
@@ -259,7 +260,10 @@ async def test_fanout_single_category_preserves_candidate_width(
 ) -> None:
     """단일 카테고리(leg 1개)는 후보 폭을 좁히지 않게 per_cat_limit(10) 이 아니라 merge_cap(30) 을
     size 로 쓴다. 매핑된 단일 질의(leg 1개)도 fan-out 경로를 타므로, 기존 단일검색(limit 30) 대비
-    rerank 입력 후보가 줄면 추천 품질이 조용히 저하된다(PR #73 리뷰)."""
+    rerank 입력 후보가 줄면 추천 품질이 조용히 저하된다(PR #73 리뷰).
+
+    #89 이후로는 leg 수와 무관하게 항상 merge_cap 이므로 단일 카테고리만의 특례는 아니다 — 이
+    테스트는 그중 단일 leg 경로의 폭을 계속 고정한다."""
     # [#113] 이 테스트의 관심사는 leg 검색 **폭**이라 완화 probe 를 끈다 — 결과 2건은 기본 임계
     # (relaxation_min_results=3) 아래라 소량 완화 재검색이 붙어 호출 수 단언이 흐려진다.
     monkeypatch.setattr(get_settings(), "relaxation_min_results", 0)
@@ -308,6 +312,118 @@ async def test_fanout_partial_leg_failure_uses_survivors() -> None:
     )
     assert "error" not in [e["type"] for e in events]
     assert set(push.pushes[0].lists[0].product_ids) <= {101, 102}
+
+
+def _three_leg_mapper():
+    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
+        return _mapping(
+            [
+                ("여행/캠핑 > 여행용품", "파우치"),
+                ("가전 > 어댑터", "어댑터"),
+                ("패션 > 의류", "의류"),
+            ]
+        )
+
+    return _map
+
+
+async def test_fanout_partial_failure_keeps_survivor_candidate_width() -> None:
+    """[#89] 3-leg 중 2개가 SpringUnavailableError 로 죽어도 생존 leg 의 후보 폭이
+    per_cat_limit(10) 이 아니라 merge_cap(30) 으로 유지된다 — leg 사전 절단 상한은 요청 시점
+    leg 수가 아니라 merge_cap 을 쓴다(#89, 재조정 자체가 불필요).
+
+    fake search 는 `filters.limit` 을 **존중**해 반환을 자른다(방식1/미래 백엔드 시뮬레이션) —
+    지금 다른 fake 들은 limit 을 무시해서 이 결함을 못 잡는다.
+    """
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters)
+        if filters.category != "여행/캠핑 > 여행용품":
+            raise SpringUnavailableError("leg down")
+        all_products = _res(*range(1, 41)).products  # 40건 보유
+        return ProductSearchResult(
+            products=all_products[: filters.limit], total_count=len(all_products)
+        )
+
+    push = _RecordingPush()
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(),
+            search=_search,
+            push_fn=push,
+            map_categories=_three_leg_mapper(),
+        )
+    )
+    assert "error" not in [e["type"] for e in events]
+
+    survivor_calls = [f for f in calls if f.category == "여행/캠핑 > 여행용품"]
+    assert len(survivor_calls) == 1  # 생존 leg 검색은 정확히 1회 — 재조회 없음
+    limit_used = survivor_calls[0].limit
+    assert limit_used == 30  # per_cat_limit(10) 이 아니라 merge_cap(30)
+
+    # limit 이 30으로 전달된 것만으로는 후보 폭이 실제로 넓어졌는지 증명하지 못한다 — limit 을
+    # 존중하는 경로에서 병합 산출까지 재현해 폭 자체를 단언한다(노출 단계는 expose_max(9) 로
+    # 잘려 30을 관측할 수 없으므로 _merge_fanout_results 산출을 직접 본다).
+    survivor_result = ProductSearchResult(
+        products=_res(*range(1, 41)).products[:limit_used], total_count=40
+    )
+    merged, _ = _merge_fanout_results(
+        [(0, survivor_result)], cap=get_settings().category_fanout_merge_cap
+    )
+    assert len(merged.products) == 30  # per_cat_limit(10) 이 아니라 merge_cap(30) 만큼 후보 확보
+
+
+async def test_fanout_normal_path_unchanged_when_all_legs_survive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#89] 정상 경로 고정핀 — 전 leg 생존 시 검색 호출 수 회귀 0, 병합 후보가 merge_cap 을
+    넘지 않고 round-robin 대표성(한 leg 독점 아님)이 유지된다. limit-존중 fake 로 leg 사전
+    절단이 실제로 작동하는 경로에서 검증한다."""
+    monkeypatch.setattr(get_settings(), "relaxation_min_results", 0)
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters)
+        if "여행용품" in filters.category:
+            all_products = _res(*range(1, 41)).products
+        else:
+            all_products = _res(*range(101, 141)).products
+        return ProductSearchResult(
+            products=all_products[: filters.limit], total_count=len(all_products)
+        )
+
+    push = _RecordingPush()
+    await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(),
+            search=_search,
+            push_fn=push,
+            map_categories=_two_leg_mapper(),
+        )
+    )
+    assert len(calls) == 2  # leg 수만큼만 호출 — 완화 재조회 외 추가 왕복 0
+
+    by_cat = {f.category: f for f in calls}
+    leg0 = ProductSearchResult(
+        products=_res(*range(1, 41)).products[: by_cat["여행/캠핑 > 여행용품"].limit],
+        total_count=40,
+    )
+    leg1 = ProductSearchResult(
+        products=_res(*range(101, 141)).products[: by_cat["가전 > 어댑터"].limit],
+        total_count=40,
+    )
+    merge_cap = get_settings().category_fanout_merge_cap
+    merged, _ = _merge_fanout_results([(0, leg0), (1, leg1)], cap=merge_cap)
+    assert len(merged.products) <= merge_cap  # 병합 후보가 merge_cap 을 넘지 않음
+    ids = _ids(merged)
+    # round-robin — 두 leg 모두 대표된다(한 leg 가 병합 앞부분을 독점하지 않음).
+    assert set(ids[:2]) == {1, 101}
+    assert any(pid <= 40 for pid in ids) and any(pid >= 101 for pid in ids)
 
 
 async def test_fanout_leg_unexpected_exception_isolated_not_stream_crash() -> None:
