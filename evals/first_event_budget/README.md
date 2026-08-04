@@ -16,9 +16,16 @@ LLM은 `ScriptedLLM`이라 라우팅·decompose·카테고리 매핑 head가 제
 미기동 로컬 환경에서 주입한 값이며, 결과는 staging 성능 수치가 아니다. 인프로세스
 `TestClient`는 SSE 본문을 버퍼링해 첫 이벤트와 전체 종료를 구분하지 못하므로 사용하지 않는다.
 
-결과 파일은 2개다. `results/measure-277-20260804.json`은 미룬 턴의 I-1 재시도 스킵
+결과 파일은 4개다. `results/measure-277-20260804.json`은 미룬 턴의 I-1 재시도 스킵
 **전** 불변 원본이고, `results/measure-277-20260804-after-retry-skip.json`은 스킵 **후**
-결과이며 `D3_deferred_worst_no_retry` 시나리오가 추가된 실행이다.
+결과이며 `D3_deferred_worst_no_retry` 시나리오가 추가된 실행이다. **[#289 추가]**
+`results/measure-289-20260805-flag-off.json`/`…-flag-on.json`은 구매자 `progress` 이벤트
+(계약 미등재, 기본 off — `app/core/config.py::progress_events_enabled`)를 끈/켠 상태에서
+같은 하네스를 재실행한 결과다. `payload["config"].progress_events_enabled`가 그 실행의
+조건을 스스로 말한다(하네스 로직·시나리오·seed는 #289에서 변경하지 않았다). off는 #277
+이후(재시도 스킵 적용) 상태와 사실상 동일한 기준선이고, on은 모든 시나리오의 첫 이벤트가
+`progress`로 바뀌며 p50이 6개 대표 시나리오 전부에서 ~12~15ms로 수렴한다(`D3`는
+6869.8ms→11.6ms) — 상세 비교표와 해석은 `scratchpad/draft-progress-contract.md` §8 참고.
 
 ## 재실행
 

@@ -22,6 +22,7 @@ from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
 from pydantic import ValidationError
 
+from app.agents.buyer._frames import progress as progress_frame
 from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.graph import stream_cart_add, stream_cart_view
 from app.agents.buyer.cart.state import get_cart_store
@@ -521,6 +522,13 @@ async def run_buyer_turn(
         if screen_context_active
         else None
     )
+    # [#289] 첫 SSE 프레임을 decompose 앞으로 당긴다 — first-token 관문(§2.9 c, 10s)이
+    # LLM head·검색·재시도·자동 완화를 통째로 안고 있어 미룬 턴 최악에서 이벤트 0건·504가
+    # 재현됐다(#277). 계약 미등재라 기본 off — 켜면 신규 이벤트 타입이 와이어에 나간다.
+    # 세션 프렐류드보다 **뒤**에 두는 이유: 앞에 두면 200 헤더가 먼저 나가
+    # SessionStateUnavailable(503 STATE_UNAVAILABLE, §2.5 봉투)이 in-stream error 로 바뀐다.
+    if settings.progress_events_enabled:
+        yield progress_frame("analyzing", settings.progress_analyzing_message)
     try:
         with trace_span("buyer.routing", "chain"):
             with trace_span(

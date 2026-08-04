@@ -907,6 +907,13 @@ class Settings(BaseSettings):
     # 현행 0.15를 중심으로 0~4배 범위를 대칭적이지 않은 실용 구간으로 탐색한다.
     personalization_eval_weight_sweep: tuple[float, ...] = (0.0, 0.075, 0.15, 0.30, 0.60)
 
+    # ── 구매자 progress 이벤트 (이슈 #289, 계약 미등재 — 정본 등재 전까지 기본 off) ──
+    # 정본(Notion CH-2)·api-spec §3.1 등재 전에는 켜지 않는다. 켜면 구매자 스트림에 신규
+    # 이벤트 타입(`progress`)이 나가므로 와이어 계약 변경이다 — 이 PR 은 절대 켜지 않은 채 끝난다.
+    progress_events_enabled: bool = False
+    # 빈 문자열이면 프레임 `data`에 `message` 키 자체를 싣지 않는다(app/agents/buyer/_frames.py).
+    progress_analyzing_message: str = "요청을 확인하고 있어요"
+
     @field_validator("llm_provider", mode="before")
     @classmethod
     def _normalize_llm_provider(cls, value: object) -> object:

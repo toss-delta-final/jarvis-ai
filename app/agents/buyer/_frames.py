@@ -12,3 +12,11 @@ import json
 def sse(event_type: str, data: dict) -> str:
     """SSE `data:` 프레임 1줄을 직렬화한다."""
     return f"data: {json.dumps({'type': event_type, 'data': data}, ensure_ascii=False)}\n\n"
+
+
+def progress(stage: str, message: str | None = None) -> str:
+    """진행 단계 프레임(이슈 #289, 계약 미등재·플래그 gated)."""
+    data: dict = {"stage": stage}
+    if message:
+        data["message"] = message
+    return sse("progress", data)
