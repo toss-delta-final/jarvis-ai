@@ -46,6 +46,30 @@ ProfileRerankInfluence = Literal["tiebreak", "legacy"]
 ROUTE_INTENTS = frozenset({"recommend", "cart_add", "cart_view", "order_status", "general"})
 
 
+def _deferred_first_event_i1_calls(
+    *,
+    relaxation_max_rounds: int,
+    auto_fields: list[str],
+    chip_fields: list[str],
+) -> int:
+    """미룬 턴의 첫 이벤트(`conditions`) 앞에 직렬로 놓이는 I-1 호출 수 (#288).
+
+    순수 함수 + 모듈 수준으로 둔 이유는 `_require_search_retry_within_stream_budget` 를
+    테스트가 실제 config 조합(교집합 ≥ 2)으로 부를 유일한 표면이기 때문이다 — `Settings` 는
+    `relaxation_auto_fields` 를 `{"ratingMin"}` 부분집합으로 잠그므로(`_forbid_auto_relaxing_
+    explicit_constraints`) 인스턴스 경로만으로는 이 식의 `min`/교집합 분기를 실측할 수 없다.
+
+    `graph.py` 의 `may_auto_relax` 판정·자동 완화 루프와 **같은 식**이어야 어긋나지 않는다:
+    후보 생성기(`build_relaxation_candidates`)는 `chip_fields` 를 순회하므로 `auto_fields` 에만
+    있고 `chip_fields` 에 없는 필드는 후보 자체가 안 생긴다 → 교집합으로 센다. 루프는
+    `rounds >= relaxation_max_rounds` 에서 break 하므로 `min` 으로 상한을 씌운다.
+    """
+    intersection_size = len(set(auto_fields) & set(chip_fields))
+    if relaxation_max_rounds <= 0 or intersection_size == 0:
+        return 0  # may_auto_relax가 False — conditions가 검색 앞에 나가 직렬 검증 대상이 아니다
+    return 1 + min(relaxation_max_rounds, intersection_size)
+
+
 class Settings(BaseSettings):
     """환경변수 기반 전역 설정. 접두사 없이 대문자 필드명과 매핑된다."""
 
@@ -1270,10 +1294,46 @@ class Settings(BaseSettings):
         종전 동작을 되살리면 두 호출이 각각 재시도해 최대 12s가 되고, #277의 이벤트 0건·504
         조합도 다시 열린다.
 
-        가드 ON/OFF 설정은 각각 직렬 합 `2 * budget`/`2 * spring_timeout_s`로 검증한다.
-        게이트는 `graph.py`의 `may_auto_relax`처럼 rounds가 양수이고 자동 완화 필드가 있을 때만
-        열어, 실제로 미루지 않는 설정을 일어나지 않는 직렬 호출 때문에 막지 않는다(#277 4차).
-        이 식을 첫 이벤트 앞 호출 수 일반형으로 확장하고 타임아웃을 재배분하는 일은 #288 소관이다.
+        **직렬 합의 일반형**(#288) — 상수 `2` 는 `_deferred_first_event_i1_calls` 가 계산하는
+        `1 + min(relaxation_max_rounds, |relaxation_auto_fields ∩ relaxation_chip_fields|)` 로
+        바뀐다. 각 항의 출처:
+        - `1`: 본 검색 1회(`asyncio.gather(_run_search(), _fetch_purchases())` — I-19 는 병렬이라
+          합산 대상이 아니고, fan-out leg 도 병렬이라 1회분).
+        - **교집합**(합집합·`auto_fields` 단독이 아니라): 후보 생성기 `build_relaxation_candidates`
+          가 `relaxation_chip_fields` 를 **순회**하며 후보를 만들고, 자동 완화 루프는 그중
+          `relaxation_auto_fields` 에 든 것만 쓴다. 칩 목록에 없는 자동 필드는 후보 자체가 안
+          생겨 probe 가 돌지 않는다. `_forbid_auto_relaxing_explicit_constraints` 가 자동 목록을
+          칩 목록의 부분집합으로 이미 강제하지만, 그 검증기는 **이 검증기보다 아래에 선언**돼
+          있고 pydantic 의 `mode="after"` 검증기는 선언 순으로 돈다 — 이 검증기가 도는 시점에는
+          그 조합이 아직 거절되지 않았을 수 있어 자기 입력만으로 정확해야 한다. 교집합이 비어
+          이 검증을 건너뛰어도 그 조합은 아래 검증기가 결국 거절하므로 조용히 통과하는 설정이
+          생기지는 않는다.
+        - `min(relaxation_max_rounds, ...)`: 자동 완화 루프가 `rounds >= relaxation_max_rounds`
+          에서 break 하므로, probe 횟수는 교집합 크기와 라운드 상한 중 작은 쪽으로 잡힌다.
+        - 1 회 호출의 벽시계 예산(`budget`/`spring_timeout_s`)은 아래 가드 ON/OFF 분기 그대로다.
+
+        **오늘 이 식의 값은 항상 2 다** — `_forbid_auto_relaxing_explicit_constraints` 가
+        `relaxation_auto_fields ⊆ {ratingMin}` 로 잠가 교집합이 항상 ≤ 1 이기 때문이다. 그래도
+        상수 `2` 대신 일반형을 쓰는 이유는, 그 허용 목록이 넓어지는 순간(`graph.py` 의
+        `may_auto_relax` 주석이 "목록이 넓어지면"을 명시적으로 예상한다) 상수는 **조용히
+        과소평가**되어 #277 이 없앤 이벤트 0건·504 조합이 되살아나기 때문이다. 계수를 다른
+        검증기의 허용 목록에 암묵적으로 의존시키지 않는다(lessons 2026-08-04
+        "상한이 안전한지는 단일 호출 예산이 아니라 첫 이벤트 앞 직렬 합으로 잰다").
+
+        가드 ON/OFF 설정은 각각 직렬 합 `calls * budget`/`calls * spring_timeout_s`로 검증한다.
+        게이트는 `calls == 0`(= `graph.py`의 `may_auto_relax`가 False)일 때만 검증을 건너뛰어,
+        실제로 미루지 않는 설정을 일어나지 않는 직렬 호출 때문에 막지 않는다(#277 4차 원칙을
+        일반형으로 그대로 유지).
+
+        **커버하지 않는 것**(누락이 아니라 판단): LLM head(#151 baseline p95 ≈3.0s)와 pg 왕복은
+        이 식에 없고, `conditions` 뒤에 도는 완화 칩 probe(`relaxation_max_probes`)도 첫 이벤트
+        예산 밖이다(그 probe는 이미 첫 이벤트가 나간 뒤라 first-token 상한과 무관하다). head 를
+        포함한 타임아웃 재배분은 #288 의 잔여 후보로 남는다. 구매자 `progress` 이벤트(#289)가
+        계약에 등재되면 미룸 자체가 사라져 이 검증기는 보험 계층이 된다.
+
+        **계약 무변경**: 이 검증은 내부 기동 로직이고 AI→Spring 3s 규약과 미룬 턴 재시도
+        스킵은 api-spec §2.9(c)(v0.20.2)에 이미 등재돼 있다 — 이 변경으로 와이어·명세를
+        건드리지 않는다.
         """
         budget = self.spring_timeout_s * (self.spring_max_retries + 1)
         if budget >= self.stream_total_timeout_buyer_s:
@@ -1284,7 +1344,7 @@ class Settings(BaseSettings):
                 "search retries alone would exhaust the buyer turn budget"
             )
         # 단일 I-1 예산은 가드와 무관하게 비교하고, 아래 검증은 graph.py의 may_auto_relax 전제
-        # (rounds > 0 && 자동 완화 필드 존재)에서만 ON/OFF 각각의 실제 직렬 합을 비교한다.
+        # (calls > 0, 즉 rounds > 0 && 교집합 존재)에서만 ON/OFF 각각의 실제 직렬 합을 비교한다.
         if budget >= self.stream_first_token_timeout_s:
             raise ValueError(
                 "SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1) must be < "
@@ -1293,32 +1353,35 @@ class Settings(BaseSettings):
                 "conditions is deferred past the search on auto-relaxable turns (#113), "
                 "so search retries consume the first-token budget and would 504"
             )
+        deferred_calls = _deferred_first_event_i1_calls(
+            relaxation_max_rounds=self.relaxation_max_rounds,
+            auto_fields=self.relaxation_auto_fields,
+            chip_fields=self.relaxation_chip_fields,
+        )
+        if deferred_calls == 0:
+            return self
         if self.search_retry_on_deferred_conditions:
-            serial_budget = 2 * budget
-            serial_formula = "2 * SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1)"
+            serial_budget = deferred_calls * budget
+            serial_formula = f"{deferred_calls} * SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1)"
             recovery = (
                 "disable SEARCH_RETRY_ON_DEFERRED_CONDITIONS, lower SPRING_TIMEOUT_S, "
                 "or disable deferral with RELAXATION_MAX_ROUNDS=0 or "
                 "RELAXATION_AUTO_FIELDS=[]"
             )
         else:
-            serial_budget = 2 * self.spring_timeout_s
-            serial_formula = "2 * SPRING_TIMEOUT_S"
+            serial_budget = deferred_calls * self.spring_timeout_s
+            serial_formula = f"{deferred_calls} * SPRING_TIMEOUT_S"
             recovery = (
                 "lower SPRING_TIMEOUT_S or disable deferral with "
                 "RELAXATION_MAX_ROUNDS=0 or RELAXATION_AUTO_FIELDS=[]"
             )
-        if (
-            self.relaxation_max_rounds > 0
-            and self.relaxation_auto_fields
-            and serial_budget >= self.stream_first_token_timeout_s
-        ):
+        if serial_budget >= self.stream_first_token_timeout_s:
             raise ValueError(
                 f"{serial_formula} must be < STREAM_FIRST_TOKEN_TIMEOUT_S "
                 f"(got {serial_budget} >= "
                 f"{self.stream_first_token_timeout_s}): "
-                "deferred conditions put two serial I-1 calls before the first event; "
-                f"{recovery}"
+                f"deferred conditions put {deferred_calls} serial I-1 calls before the first "
+                f"event; {recovery}"
             )
         return self
 
