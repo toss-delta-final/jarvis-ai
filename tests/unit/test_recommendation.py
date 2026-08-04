@@ -1357,6 +1357,66 @@ def test_i1_envelope_parses_review_count() -> None:
     assert products[1].review_count == 37
 
 
+def test_i1_envelope_parses_option_names_and_total_count() -> None:
+    """[#278] I-1 options/optionCount 를 이름 배열과 절단 전 전체 개수로 수신한다."""
+    from app.services.spring_client import _parse_search_response
+
+    product = _parse_search_response(
+        {
+            "success": True,
+            "data": [
+                {
+                    "productId": 1,
+                    "name": "린넨 셔츠",
+                    "options": ["화이트/M", "화이트/L", "블랙/M"],
+                    "optionCount": 5,
+                }
+            ],
+        }
+    ).products[0]
+    assert product.options == ["화이트/M", "화이트/L", "블랙/M"]
+    assert product.option_count == 5
+
+
+def test_i1_envelope_allows_missing_option_fields() -> None:
+    """[#278] 두 선택 필드가 없는 기존 I-1 응답도 그대로 파싱한다."""
+    from app.services.spring_client import _parse_search_response
+
+    product = _parse_search_response(
+        {"success": True, "data": [{"productId": 1, "name": "린넨 셔츠"}]}
+    ).products[0]
+    assert product.options is None
+    assert product.option_count is None
+
+
+def test_i1_options_over_20_preserve_product_and_unconsumed_metadata() -> None:
+    """[#278] 송신 상한 drift가 미소비 options 때문에 I-1 상품 전체를 제거하지 않는다."""
+    from app.services.spring_client import _parse_search_response
+
+    option_names = [f"옵션-{i}" for i in range(21)]
+    product = _parse_search_response(
+        {
+            "success": True,
+            "data": [{"productId": 1, "name": "상품", "options": option_names}],
+        }
+    ).products[0]
+    assert product.product_id == 1
+    assert product.options == option_names
+
+
+def test_i1_option_count_rejects_negative_value() -> None:
+    """[#278] 절단 전 전체 옵션 개수는 음수가 될 수 없다."""
+    import pytest
+    from pydantic import ValidationError
+
+    from app.services.spring_client import _parse_search_response
+
+    with pytest.raises(ValidationError):
+        _parse_search_response(
+            {"success": True, "data": [{"productId": 1, "name": "상품", "optionCount": -1}]}
+        )
+
+
 def test_i1_attributes_accepts_non_string_values() -> None:
     """[PR#127 리뷰] attributes 값이 문자열이 아니어도(bool·숫자) 파싱이 실패하지 않는다.
 
