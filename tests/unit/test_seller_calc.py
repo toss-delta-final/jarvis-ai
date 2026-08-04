@@ -201,6 +201,100 @@ def test_normalize_period_unsupported_expr_raises() -> None:
             calc.normalize_period(expr, today=today, recent_default_days=7)
 
 
+# ── #269 "최근 …" 침묵 폴백 제거 ──────────────────────────────────────────────
+
+# sellerperiodtestcases.md B-1 표 이식. 종전 구조(`"최근" in text` 부분 일치 + 정규식
+# 실패 시 기본값)에서는 아래가 **전부 조용히 7일**로 통과했다 — 되묻기도 경고도 없이.
+_SILENT_FALLBACK_EXPRS = (
+    "최근 2주",
+    "최근 3개월",
+    "최근 한 달",
+    "최근 1주일",
+    "최근 반년",
+    "최근 -3일",
+    "최근에",
+    "최근 며칠",
+    "이번 달 들어 최근 7일",  # 미지원 어휘가 앞에 붙어도 부분 일치로 통과하던 구멍
+)
+
+
+@pytest.mark.parametrize("expr", _SILENT_FALLBACK_EXPRS)
+def test_normalize_period_no_silent_default_fallback(expr: str) -> None:
+    """인식하지 못한 "최근 …" 표현은 기본 일수로 떨어지지 않고 되묻기로 간다(#269)."""
+    today = dt.date(2026, 8, 2)
+    with pytest.raises(ValueError):
+        calc.normalize_period(expr, today=today, recent_default_days=7, max_days=731)
+
+
+def test_normalize_period_upper_bound_raises_value_error() -> None:
+    """ "최근 999999일" 은 OverflowError 가 아니라 ValueError 다(#269).
+
+    호출부(orchestrator)는 except ValueError 만 잡으므로, OverflowError 면 되묻기가
+    아니라 파이프라인 예외로 전파돼 사과/error 경로로 샌다.
+    """
+    today = dt.date(2026, 8, 2)
+    with pytest.raises(ValueError):
+        calc.normalize_period("최근 999999일", today=today, recent_default_days=7, max_days=731)
+
+    # 상한 이내는 정상 통과 — 가드가 정상 범위를 막지 않는다.
+    start, end = calc.normalize_period(
+        "최근 731일", today=today, recent_default_days=7, max_days=731
+    )
+    assert (end - start).days + 1 == 731
+
+
+def test_normalize_period_normalizes_fullwidth_digits() -> None:
+    """전각 숫자("최근 ７일")는 NFKC 정규화로 반각과 같게 해석한다(#269)."""
+    today = dt.date(2026, 8, 2)
+    kwargs = {"today": today, "recent_default_days": 3, "max_days": 731}
+    assert calc.normalize_period("최근 ７일", **kwargs) == calc.normalize_period(
+        "최근 7일", **kwargs
+    )
+
+
+def test_normalize_period_canonical_vocab_regression_guard() -> None:
+    """회귀 가드 — 정규 어휘 4종의 결과는 #269 전후로 동일하다.
+
+    이 테스트가 깨지면 기존 판매자가 잘 쓰던 경로를 건드린 것이다.
+    """
+    kwargs = {"today": dt.date(2026, 8, 2), "recent_default_days": 7, "max_days": 731}
+    assert calc.normalize_period("지난달", **kwargs) == (
+        dt.date(2026, 7, 1),
+        dt.date(2026, 7, 31),
+    )
+    assert calc.normalize_period("최근 7일", **kwargs) == (
+        dt.date(2026, 7, 26),
+        dt.date(2026, 8, 1),
+    )
+    # N 미지정("최근")은 정확히 이 두 글자일 때만 기본 일수를 쓴다.
+    assert calc.normalize_period("최근", **kwargs) == (dt.date(2026, 7, 26), dt.date(2026, 8, 1))
+    assert calc.normalize_period("어제", **kwargs) == (dt.date(2026, 8, 1), dt.date(2026, 8, 1))
+    assert calc.normalize_period("2026-06-01~2026-06-30", **kwargs) == (
+        dt.date(2026, 6, 1),
+        dt.date(2026, 6, 30),
+    )
+
+
+def test_normalize_period_error_message_is_user_facing() -> None:
+    """되묻기 메시지는 판매자에게 그대로 노출된다 — 개발자 문자열을 쓰지 않는다(#269).
+
+    resolve_plan 이 이 ValueError 메시지를 PipelineResult(kind="clarification").text 로
+    그대로 흘리므로, 메시지 자체가 사용자 대면 문구여야 한다.
+    """
+    kwargs = {"today": dt.date(2026, 8, 2), "recent_default_days": 7, "max_days": 731}
+
+    with pytest.raises(ValueError) as unsupported:
+        calc.normalize_period("이번 달", **kwargs)
+    message = str(unsupported.value)
+    assert "파싱" not in message
+    assert "period_expr" not in message
+    assert "지난달" in message  # 지원 어휘 안내를 포함한다
+
+    with pytest.raises(ValueError) as wrong_unit:
+        calc.normalize_period("최근 3개월", **kwargs)
+    assert "일 단위" in str(wrong_unit.value)  # 단위를 짚어 안내한다
+
+
 def test_safe_eval_basic_arithmetic() -> None:
     """사칙연산·거듭제곱·round() 는 허용된다 (calculate 도구 기반)."""
     assert calc.safe_eval("1200000 / 45 * 100") == 1200000 / 45 * 100

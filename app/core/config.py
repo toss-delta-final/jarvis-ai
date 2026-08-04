@@ -210,6 +210,10 @@ class Settings(BaseSettings):
     # 협의 완료 전까지 판매자 워커 표면 노출을 기본 비활성으로 보류한다.
     seller_account_events_enabled: bool = False
     seller_recent_days_default: int = 7  # normalize_period "최근 N일" 기본 N
+    # 기간 상한(일) — 초과는 ValueError(되묻기)로 떨어뜨린다. 상한이 없으면
+    # "최근 999999일" 이 date 연산에서 OverflowError 를 내고 호출부의
+    # except ValueError 를 빠져나가 되묻기 대신 에러 경로로 샌다(#269). 기본 2년.
+    seller_period_max_days: int = 731
     # safe_eval `**` 결과 자릿수 상한(DoS 방어) — 초과 식은 ValueError 로 거부(리뷰 반영).
     seller_calc_max_result_digits: int = 100
     # 도구 반환 상세도 상한(안 1+차등, 2026-07-17 사용자 확정) — 컨텍스트 폭주 방지.
