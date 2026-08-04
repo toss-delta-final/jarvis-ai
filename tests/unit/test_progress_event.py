@@ -398,3 +398,39 @@ def test_seller_analysis_progress_unaffected_by_buyer_progress_flag(
         assert progress_payload["data"] == {"text": "매출 이상 분석 중…"}
     finally:
         hitl.set_checkpointer(None)
+
+
+# ─────────── R4-1 — 운영 레인(jwks)에서 플래그가 켜져 있으면 기동 실패 ───────────
+
+
+def test_progress_events_enabled_fails_startup_in_jwks_mode() -> None:
+    """운영(jwks)에서 PROGRESS_EVENTS_ENABLED=true 이면 Settings 기동이 실패한다.
+
+    계약 미등재 이벤트가 .env 실수 한 줄로 운영 와이어에 나가는 사고를 막는
+    fail-closed 가드다(`_require_pepper_in_prod`, 이 파일의 pepper/토큰 가드와 같은 관용구).
+    """
+    from app.core.config import Settings
+
+    with pytest.raises(Exception, match="PROGRESS_EVENTS_ENABLED"):
+        Settings(
+            auth_mode="jwks",
+            jwks_url="http://x",
+            pii_hash_pepper="p",
+            internal_api_token="tok",
+            google_api_key="k",
+            progress_events_enabled=True,
+        )
+
+
+def test_progress_events_disabled_succeeds_startup_in_jwks_mode() -> None:
+    """가드는 정상 운영 설정(플래그 off)까지 막지 않는다."""
+    from app.core.config import Settings
+
+    Settings(
+        auth_mode="jwks",
+        jwks_url="http://x",
+        pii_hash_pepper="p",
+        internal_api_token="tok",
+        google_api_key="k",
+        progress_events_enabled=False,
+    )  # ok

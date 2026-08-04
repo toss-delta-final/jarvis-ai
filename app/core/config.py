@@ -1459,6 +1459,17 @@ class Settings(BaseSettings):
         # 반복한다(PR #42 리뷰, 이슈 #31). 런타임 무한 no-op 대신 기동 시점에 fail-fast.
         if self.auth_mode == "jwks" and not self.google_api_key:
             raise ValueError("GOOGLE_API_KEY must be set when auth_mode=jwks")
+        # [#289] 계약 미등재 이벤트가 운영 와이어에 나가는 사고 방지 — 이 플래그는 정본
+        # (Notion CH-2)·api-spec §3.1 등재와 FE 미지 type 무시 확인이 **둘 다** 끝난 뒤에만
+        # 켤 수 있다. bool 필드라 .env 한 줄로 뒤집히는데, 지금 그걸 막는 게 사람의 규율뿐이라
+        # 운영 레인에서는 기동으로 막는다(위 pepper/토큰 가드와 같은 fail-closed 규약).
+        # **이 가드 제거가 플래그를 켜는 절차의 일부다** — 등재·FE 확인이 끝나면 이 분기를
+        # 지운다(scratchpad/draft-progress-contract.md §9 체크리스트).
+        if self.auth_mode == "jwks" and self.progress_events_enabled:
+            raise ValueError(
+                "PROGRESS_EVENTS_ENABLED must stay false until the progress event "
+                "is registered in the API contract (#289)"
+            )
         if self.state_store_pool_max_size < 1:
             raise ValueError("STATE_STORE_POOL_MAX_SIZE must be at least 1")
         if self.state_store_migration_timeout_s <= 0:
