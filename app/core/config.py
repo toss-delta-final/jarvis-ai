@@ -560,6 +560,15 @@ class Settings(BaseSettings):
     # 포함되는 한 방향만 비교한다. "아니"는 간투사 오탐이 흔하고 에코 보완 이득은 1/8뿐이라
     # 기본값에서 제외한다(운영 설정으로 재추가 가능).
     cart_pending_switch_markers: list[str] = ["다른", "말고", "대신", "바꿔", "바꿀"]
+    # [#118] last_reco 누적 상한 — 담기 허용 목록(정본 §3.1 [보안] "누적 추천 목록 ∪
+    # screen.products")의 시간 축을 보존하되 무한 증가를 막는다. **상한은 승계분에만 실효적으로
+    # 걸린다** — 이번 턴 항목은 잘리지 않는다(CartStateStore.set_last_reco 주석 참조).
+    # 값 근거: 한 턴 최대는 I-21 의 MAX_LISTS(10) × LIST_MAX_PRODUCTS(9) = 90 이지만, 통상
+    # 추천 턴은 category_fanout_max(5) 이하 × 9 = ≤45, 실측 대다수는 1~3 leg(9~27건)다.
+    # 30 이면 통상 한 턴 전체 + 직전 턴 승계분을 담으면서 LAST_RECOMMENDATIONS 길이를 #234/#240
+    # 기준선을 잰 규모 근처로 유지한다. 90 으로 잡으면 목록이 3배가 되어 "LLM 오추출 표면을
+    # 넓히지 않는다"(2026-07-30 계약 코멘트)와 어긋난다. screen_products_max(20)와도 같은 자릿수다.
+    last_reco_max: int = Field(default=30, ge=1)
 
     # ── dedup (#4, api-spec §4.7 결정 14-F) ──
     # 최근 구매 제외 윈도우(일) — 이보다 오래된 구매는 제외 목록에서 뺀다(영구 제외 방지).
@@ -686,8 +695,24 @@ class Settings(BaseSettings):
     # ── 화면 맥락 screen (이슈 #118, api-spec §3.1) ──
     # screen.products 상한(정본 명시 기본값) — 초과분은 화면 순서 앞쪽만 취하고 버린다.
     screen_products_max: int = Field(default=20, ge=1)
+    # screen 문자열(products[].name · filters 값) 항목당 길이 상한 — **FE 가 보낸 문자열이 그대로
+    # LLM 프롬프트에 실리는** 신뢰경계라 절단이 필요하다(초과는 400 이 아니라 절단 — 관대 유효성).
+    # 값 근거: 같은 카탈로그 상품명의 와이어 상한 선례가 200 자이므로(`OrderStatusOrder.product_name`
+    # max_length=200) 그보다 긴 문자열은 실제 상품명일 수 없다. 그런데 200 을 그대로 쓰면 최악
+    # 20건 × 200 = 4,000 자로 사용자 발화 상한(chat_message_max_chars=4000) 전체와 맞먹는 분량이
+    # 프롬프트에 얹힌다. 120 이면 최악 2,400 자로 묶이면서 실제 한국어 커머스 상품명(브랜드+모델+
+    # 옵션 수식, 통상 60~80 자)은 절단 없이 다 들어간다. filters 표시값("배송중"·"최신순")에는
+    # 넉넉하다.
+    screen_text_max_chars: int = Field(default=120, ge=1)
+    # 화면을 가리키는 **맨 지시대명사** 표지 — 이것만 있고 이름·순번·좌표가 없으면 정본 §3.1 의
+    # "후보가 1건일 때만 확정, 여러 건이면 되물음"을 코드가 강제한다
+    # (app/agents/buyer/screen_reference.py). 조사·활용을 흡수하도록 포함 관계로만 비교한다
+    # (cart_pending_switch_markers 와 같은 규약). 운영에서 표지를 늘릴 수 있게 config 로 둔다.
+    screen_deictic_markers: list[str] = ["이거", "이것", "저거", "저것", "그거", "그것", "얘"]
     # pageType → 한글 표시명 매핑(정본: "AI 가 pageType→표시명 매핑을 config 로 갖는다").
-    # 이번 라운드는 값만 정의하고 프롬프트에 주입하지 않는다(라운드 2). 실제 오는 3종만 채운다.
+    # decompose 프롬프트의 SCREEN 블록에 이 표시명이 실린다. **매핑에 없는 pageType 은 화면명을
+    # 생략**한다 — 원시 pageType 문자열을 프롬프트에 흘리지 않는 것이 정본이 매핑을 AI 에 둔 이유다.
+    # 실제 오는 3종만 채운다(나머지 11종은 E-1 page_view 전용).
     screen_page_type_labels: dict[str, str] = Field(
         default_factory=lambda: {
             "chat": "인기 상품",

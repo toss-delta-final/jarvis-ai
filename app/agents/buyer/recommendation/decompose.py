@@ -8,6 +8,9 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
@@ -17,8 +20,13 @@ from app.agents.buyer.recommendation.state import (
     RouteDecision,
     extract_json,
 )
+from app.agents.buyer.screen_reference import grid_position
 from app.core.llm import LLMClient, LLMError
 from app.schemas.spring import ProductSearchFilters
+
+# 계약 스키마는 타입에만 쓴다 — 프롬프트 계층이 요청 스키마에 런타임 결합하지 않게.
+if TYPE_CHECKING:
+    from app.schemas.chat import ScreenContext
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +153,102 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
 - general: intent=general, reply 에 짧게 답하세요."""
 
 
+# ── 화면 맥락 screen (이슈 #118, api-spec §3.1) ────────────────────────────────────────────
+# 사용자가 우측 패널을 보며 "이거"라고 말한 대상은 발화만으로 확정할 수 없다 — 무엇이 어떻게
+# 보이고 있었는지는 FE 만 아는 사실이다. 그 목록을 프롬프트에 실어 지시어를 해소한다.
+#
+# ⚠️ `screen` 이 None 이면 프롬프트는 오늘과 **바이트 단위로 동일**해야 한다(빈 블록·null 줄조차
+# 추가하지 않는다). FE 는 아직 screen 을 보내지 않으므로 그쪽이 절대다수 경로다.
+#
+# 상품 1건에 실리는 라벨: 순번(1-base) + (columns 가 있으면) 줄·칸. 좌표 산술
+# `index = (row-1) × columns + (col-1)`(정본 §3.1)은 **코드가 미리 계산해 라벨로** 준다 —
+# LLM 에게 산수를 시키지 않는 쪽이 안정적이다.
+
+
+@dataclass(frozen=True, slots=True)
+class ScreenPrompt:
+    """decompose 프롬프트에 실을 화면 맥락 — 스키마(ScreenContext)의 프롬프트 투영.
+
+    `label` 은 pageType 의 **한글 표시명**(config `screen_page_type_labels`)이다. 매핑에 없으면
+    None 이고 화면명은 생략된다 — 원시 pageType 문자열은 프롬프트에 흘리지 않는다(정본이 표시명
+    매핑을 AI 에 둔 이유). `filters` 값은 이미 사람이 읽는 한글 표시값이라 그대로 싣는다.
+
+    문자열 정제·길이 절단은 **스키마 정규화 단계**(`app.schemas.chat._clean_screen_text`)에서
+    이미 끝났다 — 여기 오는 문자열은 신뢰경계를 통과한 값이다.
+    """
+
+    label: str | None
+    filters: Mapping[str, str]
+    products: Sequence[tuple[int, str]]
+    columns: int | None
+
+
+def build_screen_prompt(
+    screen: ScreenContext | None, *, labels: Mapping[str, str]
+) -> ScreenPrompt | None:
+    """`ScreenContext` → `ScreenPrompt`. 실을 것이 하나도 없으면 None(=프롬프트 무변경).
+
+    **순번·줄·칸은 여기 남은 배열을 기준으로 센다.** 스키마 정규화는 먼저 `screen_products_max`
+    만큼 자르고 그다음 불량 항목(비 dict·productId 파싱 실패)을 버리므로, 앞쪽에 불량 항목이
+    섞여 있었다면 남은 배열의 인덱스가 실제 화면 위치와 어긋날 수 있다. 서버는 버려진 자리를
+    복원할 수단이 없으므로 **정제 후 배열이 화면 순서**라는 전제로 해소하는 수밖에 없다
+    (FE 가 정상 페이로드를 보내는 한 어긋나지 않는다).
+    """
+    if screen is None:
+        return None
+    label = labels.get(screen.page_type)
+    products = [(p.product_id, p.name) for p in screen.products]
+    filters = dict(screen.filters)
+    if not label and not products and not filters:
+        return None
+    return ScreenPrompt(label=label, filters=filters, products=products, columns=screen.columns)
+
+
+def _screen_product_entries(screen: ScreenPrompt) -> list[dict[str, object]]:
+    """화면 상품 목록을 순번·줄·칸 라벨이 붙은 JSON 항목으로 만든다."""
+    entries: list[dict[str, object]] = []
+    for index, (product_id, name) in enumerate(screen.products):
+        entry: dict[str, object] = {
+            "productId": product_id,
+            "name": name,
+            "순번": index + 1,
+        }
+        if position := grid_position(index, screen.columns):
+            entry["줄"], entry["칸"] = position
+        entries.append(entry)
+    return entries
+
+
+def _screen_payload(screen: ScreenPrompt) -> dict[str, object]:
+    """SCREEN 줄에 실을 dict. 비어 있는 키는 넣지 않는다(프롬프트에 null 을 흘리지 않는다)."""
+    payload: dict[str, object] = {}
+    if screen.label:
+        payload["화면"] = screen.label
+    if screen.filters:
+        payload["필터"] = dict(screen.filters)
+    if screen.products:
+        payload["상품"] = _screen_product_entries(screen)
+    return payload
+
+
+# 화면 상품을 **별도 SCREEN 블록**으로 싣고 cart_add 규칙에 한 문장을 **덧붙인다**(기존 문면을
+# 재작성하지 않는다). 실 LLM N=8 프로브(scripts/verify_screen_context_118.py)에서 대안 —
+# 화면 상품을 LAST_RECOMMENDATIONS 에 합류시켜 `_SYSTEM` 을 아예 건드리지 않는 안 — 을 함께
+# 재고 이쪽을 채택했다: 신규 지시어 해소 27/48 대 13/48 이고, 회귀 대조군은 두 안이 동률이거나
+# 이쪽이 나았다(옵션 답변 26/32 대 24/32, general 22/24 대 20/24). 합류안은 "직전 추천"과 "지금
+# 보는 화면"이 한 목록으로 섞여 순번 지시("3번째 거")가 0/8 로 무너졌고, 발화 속 임의 숫자를
+# 담기 대상으로 확정하는 것도 늘었다(301 확정 금지 1/8 대 6/8).
+_SCREEN_CART_RULE = (
+    "\n  SCREEN.상품(지금 화면에 보이는 목록: productId·이름·순번·줄·칸)이 있으면 거기서도"
+    '\n  고르세요 — "이거"·"3번째 거"·"3번째 줄 2번째"·이름 지목이 이 라벨로 풀립니다.'
+)
+_CART_ADD_ANCHOR = "  productId 를 고르세요. 못 고르면 productId=null. quantity 기본 1."
+# ⚠️ 이 문장은 **screen 이 실린 턴에만** 붙는다(아래 decompose 참조). screen 이 없으면 system 도
+# user 도 오늘과 바이트 동일해야 한다 — 프로브의 회귀 대조군도 그 전제로 측정했다.
+_SYSTEM_WITH_SCREEN = _SYSTEM.replace(_CART_ADD_ANCHOR, _CART_ADD_ANCHOR + _SCREEN_CART_RULE)
+assert _SYSTEM_WITH_SCREEN != _SYSTEM, "cart_add 앵커 문구가 바뀌어 screen 규칙이 붙지 않았다"
+
+
 # 검색 WHERE 로 나가는 하드필터 축 — 관측 대상(#119). semantic_query(의미검색 앵커)·
 # exclude_product_ids(dedup)·limit(top-K)은 후보를 **거르는** 조건이 아니라 제외한다.
 # 새 하드필터가 생기면 여기도 늘어나야 한다 — 드리프트는 테스트가 잡는다.
@@ -222,13 +326,15 @@ async def decompose(
     tier: str,
     last_recommendations: list[tuple[int, str]] | None = None,
     pending_cart: dict | None = None,
+    screen: ScreenPrompt | None = None,
     category_fanout_max: int = 5,
     repurchase_max: int = 5,
 ) -> RouteDecision:
     """Haiku 1회 호출로 intent(추천/담기/장바구니조회/주문상태/일반)와 필터를 산출한다.
 
-    prior_filters(추천 멀티턴)·last_recommendations(담기 productId 해소)·pending_cart(옵션 되물음)를
-    프롬프트에 실어 문맥을 위임한다. LLM 오류/타임아웃/JSON·스키마 파싱 실패는 LLMError 로 전파.
+    prior_filters(추천 멀티턴)·last_recommendations(담기 productId 해소)·pending_cart(옵션 되물음)·
+    screen(지금 보고 있는 화면 — 지시어 해소, #118)을 프롬프트에 실어 문맥을 위임한다.
+    LLM 오류/타임아웃/JSON·스키마 파싱 실패는 LLMError 로 전파.
     """
     import json
 
@@ -239,22 +345,29 @@ async def decompose(
             prior_filters.model_dump(by_alias=True, exclude_none=True), ensure_ascii=False
         )
     )
-    reco_json = json.dumps(
-        [{"productId": pid, "name": name} for pid, name in (last_recommendations or [])],
-        ensure_ascii=False,
-    )
+    reco_entries: list[dict[str, object]] = [
+        {"productId": pid, "name": name} for pid, name in (last_recommendations or [])
+    ]
+    # screen 이 None 이면 아래 두 값이 그대로라 프롬프트는 오늘과 바이트 단위로 동일하다.
+    screen_line = ""
+    system = _SYSTEM
+    if screen is not None and (payload := _screen_payload(screen)):
+        system = _SYSTEM_WITH_SCREEN
+        screen_line = f"SCREEN: {json.dumps(payload, ensure_ascii=False)}\n"
+    reco_json = json.dumps(reco_entries, ensure_ascii=False)
     pending_json = "null" if not pending_cart else json.dumps(pending_cart, ensure_ascii=False)
     prof = profile_summary or "(없음)"
     user = (
         f"CATEGORY_FANOUT_MAX: {category_fanout_max}\n"
         f"PRIOR_FILTERS: {prior_json}\n"
         f"LAST_RECOMMENDATIONS: {reco_json}\n"
+        f"{screen_line}"
         f"PENDING_CART: {pending_json}\n"
         f"PROFILE_SUMMARY: {prof}\n"
         f"USER_MESSAGE: {query}"
     )
 
-    raw = await llm.complete(system=_SYSTEM, user=user, tier=tier, max_tokens=800)
+    raw = await llm.complete(system=system, user=user, tier=tier, max_tokens=800)
     data = extract_json(raw)
 
     intent_raw = data.get("intent")

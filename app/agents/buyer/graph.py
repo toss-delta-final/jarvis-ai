@@ -31,6 +31,7 @@ from app.agents.buyer.recommendation.category_mapping import CategoryMapping, de
 from app.agents.buyer.recommendation.category_mapping import map_categories as _map_categories
 from app.agents.buyer.recommendation.decompose import (
     _resolve_contradictory_price_range,
+    build_screen_prompt,
     decompose,
 )
 from app.agents.buyer.recommendation.needs_expansion import detect_expansion_need
@@ -54,6 +55,7 @@ from app.core.tracing import current_request_trace, trace_span
 from app.core.session_context import SessionStateUnavailable
 from app.core.text import _strip_unsafe
 from app.agents.buyer.recommendation.state import CartIntent, CategoryQuery
+from app.agents.buyer.screen_reference import resolve_screen_reference
 from app.schemas.chat import CONDITION_FIELD_TO_FILTER, ConditionAction, DoneData, ErrorData
 from app.schemas.spring import ProductSearchFilters
 from app.services import search_service, spring_client
@@ -476,7 +478,21 @@ async def run_buyer_turn(
     # decompose — fast tier 1회 (intent 5-way 라우팅 + 필터 + 장바구니 의도)
     if observer is not None:
         observer.record_model_call(resolve_model_id(settings, "fast"))
-    last_reco = await cart_store.get_last_reco(thread_key)
+    reco_state = await cart_store.get_last_reco_state(thread_key)
+    last_reco = reco_state.items
+    # [#118] **담기 가드와 프롬프트를 가른다.** 정본 §3.1 [보안]이 누적을 요구하는 대상은
+    # `allowed`(가드)이고, 프롬프트 LAST_RECOMMENDATIONS 에 무엇을 싣는지는 계약이 아니다.
+    #
+    # 옵션 되물음(PENDING_CART) 중에는 **승계분을 싣지 않는다.** 실 LLM N=8 프로브
+    # (scripts/verify_screen_context_118.py) 에서 "PENDING_CART 중 상품 전환"(`이어폰으로 할래`)이
+    #   승계 없음 6/8(=오늘) · 승계 없음+screen 주입 7/8 · 승계 11건 1/8 · 승계 상한 6건 2/8
+    # 로, 승계분이 **2건만 붙어도** #240 이 "낮추지 말 것"으로 못박은 상품 전환 경로가 무너졌다.
+    # 되물음 중에는 사용자가 특정 상품 하나를 놓고 답하는 중이라, 긴 과거 목록이 그 초점을 흩는다.
+    #
+    # 되물음이 아닌 턴에서는 누적 전체를 싣는다 — 실측상 무해했고(지시대명사 92~94/96,
+    # order_status 48/48), #118 이 풀려는 4단계 시나리오(추천 A → 질문 → 추천 B → "이거 담아줘")의
+    # **해소가 바로 여기서** 일어난다. 이걸 끄면 가드만 열리고 LLM 이 옛 상품을 지목하지 못한다.
+    prompt_reco = last_reco if pending_dict is None else last_reco[: reco_state.turn_count]
     try:
         with trace_span("buyer.routing", "chain"):
             with trace_span(
@@ -498,8 +514,14 @@ async def run_buyer_turn(
                         profile if settings.profile_injection_scope == "both" else None
                     ),
                     tier="fast",
-                    last_recommendations=last_reco,
+                    last_recommendations=prompt_reco,
                     pending_cart=pending_dict,
+                    # [#118] 지금 보고 있는 화면 — "이거 담아줘"의 대상 확정. screen 이 없거나
+                    # 관대 무시로 사라졌으면 None 이라 프롬프트가 오늘과 바이트 동일하다.
+                    screen=build_screen_prompt(
+                        getattr(request, "screen", None),
+                        labels=settings.screen_page_type_labels,
+                    ),
                     category_fanout_max=settings.category_fanout_max,
                     repurchase_max=settings.dedup_repurchase_max,
                 )
@@ -664,10 +686,30 @@ async def run_buyer_turn(
             {p.product_id for p in screen.products} if screen is not None else set()
         )
         allowed = {pid for pid, _ in last_reco} | screen_product_ids
+        cart_intent = decision.cart or CartIntent()
+        # [#118] 화면 지시어는 **코드가 해소**한다 — 순번·좌표·"후보 1건" 은 결정적인 규칙이라
+        # 확률적 계층에 맡길 이유가 없고, 맡겼더니 사용자가 말하지 않은 상품을 확정하는 일이
+        # 잦았다(실측표는 screen_reference 모듈 docstring). `screen.products` 가 있는 턴에만
+        # 돌아서 #240 회귀 대조군(전부 screen 없음)에는 구조적으로 닿지 않는다. 옵션 되물음
+        # 중에는 "2번"이 화면 순번이 아니라 옵션 번호라 아예 건너뛴다.
+        if screen is not None and screen.products and pending is None:
+            resolved = resolve_screen_reference(
+                request.message,
+                products=[(p.product_id, p.name) for p in screen.products],
+                columns=screen.columns,
+                allowed_product_ids=allowed,
+                deictic_markers=settings.screen_deictic_markers,
+            )
+            if resolved is not None:
+                logger.info(
+                    "screen_reference_resolved",
+                    extra={"reason": resolved.reason, "forced_null": resolved.product_id is None},
+                )
+                cart_intent = replace(cart_intent, product_id=resolved.product_id)
         with trace_span("buyer.graph.cart", "chain"):
             async for frame in stream_cart_add(
                 identity=identity,
-                cart=decision.cart or CartIntent(),
+                cart=cart_intent,
                 cart_store=cart_store,
                 thread_key=thread_key,
                 settings=settings,

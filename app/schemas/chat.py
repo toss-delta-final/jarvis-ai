@@ -19,6 +19,8 @@ from typing import Any, Literal
 from pydantic import field_validator, model_validator, BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
+from app.core.text import _strip_unsafe
+
 
 class CamelModel(BaseModel):
     """camelCase 직렬화 공통 베이스.
@@ -79,6 +81,19 @@ def _coerce_positive_int(value: object) -> int | None:
     else:
         return None
     return result if result > 0 else None
+
+
+def _clean_screen_text(value: str, max_chars: int) -> str:
+    """screen 의 사람이 읽는 문자열 1건을 프롬프트에 실을 수 있게 정제·절단한다 (#118 라운드 2).
+
+    `app.core.text._strip_unsafe` 와 같은 정제다 — 제어문자·zero-width·bidi 포맷 문자를 없애고
+    공백류를 단일 공백으로 접는다. FE 문자열이 LLM 프롬프트로 직행하므로 ANSI 이스케이프·양방향
+    조작·보이지 않는 지시문 삽입 표면을 여기서 닫는다. 그 뒤 `max_chars` 로 **절단**한다
+    (거부하지 않는다 — screen 은 맥락 힌트라 400 을 내지 않는 것이 §3.1 유효성 표다).
+
+    절단은 정제 **후**에 잰다. 먼저 자르면 제거될 문자가 예산을 먹어 멀쩡한 이름이 짧아진다.
+    """
+    return _strip_unsafe(value)[:max_chars]
 
 
 class ScreenProduct(CamelModel):
@@ -146,8 +161,26 @@ class ChatRequest(CamelModel):
 
         pageType 이 없거나 14종 밖이면 screen 전체를 무시(None)한다. 그 밖의 하위 필드는
         문제 있는 부분만 버리고 나머지를 살린다(conditionActions 의 엄격(400)과 대비되는 철학).
+
+        입력은 세 모양을 받는다 — 와이어 경로의 dict, 임의의 `Mapping`, 그리고 **이미
+        `ScreenContext` 인 인스턴스**. 마지막이 없으면 `BuyerChatRequest(screen=ScreenContext(...))`
+        처럼 요청을 코드로 구성할 때 screen 이 소리 없이 사라진다(라운드 1 리뷰). 인스턴스도
+        그대로 통과시키지 않고 dict 로 되돌려 **같은 정제 경로**를 태운다 — 그래야 구성 경로에
+        따라 정제 여부가 갈리지 않는다.
+
+        [#118 라운드 2] `products[].name` 과 `filters` 값은 **FE 가 보낸 문자열이 그대로 LLM
+        프롬프트에 실린다**. 정제(제어·zero-width·bidi 제거)와 항목당 길이 절단
+        (`screen_text_max_chars`)을 **여기 스키마 정규화 단계**에 둔 이유:
+          1. 라운드 1 이 이미 이 한 곳에서 screen 전체를 정규화한다 — 신뢰경계 감사 지점이 하나다.
+          2. `screen` 은 구매자·판매자 공용 필드다. 판매자 프롬프트(라운드 3)가 같은 문자열을
+             다른 주입 지점에서 쓰는데, 주입 지점마다 정제를 두면 한쪽이 빠뜨릴 수 있다.
+        초과 길이는 400 이 아니라 **절단**이다(관대 유효성 유지).
         """
-        if not isinstance(v, dict):
+        from collections.abc import Mapping
+
+        if isinstance(v, ScreenContext):
+            v = v.model_dump(by_alias=True)
+        if not isinstance(v, Mapping):
             return None
 
         page_type = v.get("pageType", v.get("page_type"))
@@ -156,7 +189,9 @@ class ChatRequest(CamelModel):
 
         from app.core.config import get_settings
 
-        products_max = get_settings().screen_products_max
+        settings = get_settings()
+        products_max = settings.screen_products_max
+        text_max = settings.screen_text_max_chars
 
         raw_products = v.get("products")
         products: list[dict[str, object]] = []
@@ -164,14 +199,17 @@ class ChatRequest(CamelModel):
             # 상한 초과분은 화면 순서(배열 순서) 앞쪽만 취한다 — 좌표 해소가 이 순서에 의존하므로
             # dedup 은 하지 않는다(api-spec §3.1 지시어 해소).
             for item in raw_products[:products_max]:
-                if not isinstance(item, dict):
+                if not isinstance(item, Mapping):
                     continue
                 product_id = _coerce_positive_int(item.get("productId", item.get("product_id")))
                 if product_id is None:
                     continue
                 name = item.get("name")
                 products.append(
-                    {"productId": product_id, "name": name if isinstance(name, str) else ""}
+                    {
+                        "productId": product_id,
+                        "name": _clean_screen_text(name, text_max) if isinstance(name, str) else "",
+                    }
                 )
 
         columns = v.get("columns")
@@ -180,10 +218,13 @@ class ChatRequest(CamelModel):
 
         raw_filters = v.get("filters")
         filters: dict[str, str] = {}
-        if isinstance(raw_filters, dict):
+        if isinstance(raw_filters, Mapping):
             for key, value in raw_filters.items():
                 if key in SCREEN_FILTER_KEYS and isinstance(value, str):
-                    filters[key] = value
+                    # 정제 결과가 빈 문자열이면(제어문자만 온 경우) 키 자체를 버린다 — 프롬프트에
+                    # `"sort": ""` 같은 빈 항목을 실어 봐야 의미가 없다.
+                    if cleaned := _clean_screen_text(value, text_max):
+                        filters[key] = cleaned
 
         return {
             "pageType": page_type,
