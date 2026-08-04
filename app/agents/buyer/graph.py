@@ -474,6 +474,10 @@ async def run_buyer_turn(
             "productId": pending.product_id,
             "options": [{"optionId": o.option_id, "name": o.name} for o in pending.options],
         }
+    # [#118] **옵션 되물음 중에는 화면 맥락을 통째로 끈다.** 이 한 플래그를 아래 세 지점이 함께
+    # 쓴다 — ① decompose 프롬프트 주입(`prompt_screen`) ② 담기 허용 목록(`allowed`)
+    # ③ 코드 해소기(`resolve_screen_reference`). 셋 중 하나만 열려 있어도 구멍이 된다.
+    screen_context_active = pending_dict is None
 
     # decompose — fast tier 1회 (intent 5-way 라우팅 + 필터 + 장바구니 의도)
     if observer is not None:
@@ -511,11 +515,11 @@ async def run_buyer_turn(
     # (scripts/verify_screen_context_118.py 의 `_CTX_PENDING` 에 screen 없음), 이렇게 빼야
     # 배포 경로가 실제로 잰 조건과 일치한다.
     prompt_screen = (
-        None
-        if pending_dict is not None
-        else build_screen_prompt(
+        build_screen_prompt(
             getattr(request, "screen", None), labels=settings.screen_page_type_labels
         )
+        if screen_context_active
+        else None
     )
     try:
         with trace_span("buyer.routing", "chain"):
@@ -703,9 +707,27 @@ async def run_buyer_turn(
         # 담기 허용 목록 = 직전 추천 ∪ screen.products 의 productId(api-spec §3.1 [보안] 문단,
         # 이슈 #118). screen 이 없거나 무시된 요청은 last_reco 만으로 판정해 기존 동작과 동일하다.
         # 프리패스가 아니다 — 두 목록 밖 id 차단은 cart/graph.py 의 unresolved 판정이 그대로 맡는다.
+        #
+        # **되물음 턴에는 screen 합류를 끈다**(`screen_context_active`, 위 정의). 정본 문면은
+        # "(누적 추천 ∪ `screen.products`) 를 allowed 로 취급"이라 이 게이트는 문면과 어긋난다 —
+        # 그럼에도 그렇게 하는 근거:
+        #   ① 같은 문단이 **강제**하는 것은 "두 목록 **밖**의 id 는 여전히 차단"이고, 빼는 것은
+        #      **더 차단하는** 방향이라 그 보증을 깨지 않는다.
+        #   ② 같은 문단이 스스로 밝힌 목적이 *"LLM 이 발화 속 임의 숫자를 오추출해 담는 것을 막는
+        #      기존 가드는 유지된다"* 인데, 되물음 턴에서 screen id 를 allowed 에 두면 바로 그
+        #      오추출이 **우연히 screen id 와 일치할 때** 가드를 통과한다. 실제로 재현했다 —
+        #      `"502 그램짜리로 할게"` → 오추출 502 가 allowed 에 있어 stream_cart_add 의 전환
+        #      조건을 통과, 되물음이 폐기되고 502 가 담겼다. 즉 게이트는 문면과 어긋나지만
+        #      **그 문단의 목적을 지키는** 방향이다.
+        #   ③ 잃는 실익이 없다. 4차 수정으로 되물음 턴에는 SCREEN 블록이 프롬프트에 실리지
+        #      않으므로(테스트로 고정) LLM 은 screen 상품의 id 도 이름도 알 경로가 없고, id 는
+        #      화면에 표시되지 않아 사용자가 말할 수도 없다. screen 상품이 동시에 직전 추천이면
+        #      `last_reco` 쪽으로 그대로 allowed 에 남는다 — 정상 경로는 하나도 닫히지 않는다.
         screen = getattr(request, "screen", None)
         screen_product_ids = (
-            {p.product_id for p in screen.products} if screen is not None else set()
+            {p.product_id for p in screen.products}
+            if screen is not None and screen_context_active
+            else set()
         )
         allowed = {pid for pid, _ in last_reco} | screen_product_ids
         cart_intent = decision.cart or CartIntent()
@@ -715,7 +737,7 @@ async def run_buyer_turn(
         # 잦았다(실측표는 screen_reference 모듈 docstring). `screen.products` 가 있는 턴에만
         # 돌아서 #240 회귀 대조군(전부 screen 없음)에는 구조적으로 닿지 않는다. 옵션 되물음
         # 중에는 "2번"이 화면 순번이 아니라 옵션 번호라 아예 건너뛴다.
-        if screen is not None and screen.products and pending is None:
+        if screen is not None and screen.products and screen_context_active:
             resolved = resolve_screen_reference(
                 request.message,
                 products=[(p.product_id, p.name) for p in screen.products],

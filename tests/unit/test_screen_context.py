@@ -926,3 +926,172 @@ def test_coord_regex_treats_only_row_markers_as_the_first_axis() -> None:
     # `열` 은 column 이라 첫 숫자의 표지가 될 수 없다.
     assert _COORD.search("2번째 열 3번째") is None
     assert _COORD.search("2열 3번째") is None
+
+
+# ─────────── PR 5차 리뷰 — 되물음 턴의 allowed 게이트 ───────────
+
+
+async def test_pending_turn_blocks_a_screen_id_and_keeps_the_reask(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[PR 5차 리뷰] 되물음 턴에는 `screen.products` 를 `allowed` 에 합류시키지 않는다.
+
+    합류시켜 두면 LLM 이 **발화 속 숫자를 오추출**했는데 그 값이 마침 화면 상품 id 와 같을 때
+    `cart.product_id in allowed` 가 참이 되어 `stream_cart_add` 의 전환 조건을 통과한다 →
+    진행 중이던 옵션 되물음이 조용히 버려지고 답한 적 없는 상품이 담긴다. 실제로 재현했다
+    (`"502 그램짜리로 할게"` → 502 담김·pending 소멸).
+
+    정본 §3.1 [보안] 문단이 스스로 밝힌 목적이 "LLM 이 발화 속 임의 숫자를 오추출해 담는 것을
+    막는 기존 가드는 유지된다"이므로, 이 게이트는 문면과 어긋나되 **그 목적을 지키는** 방향이다.
+    """
+    import app.services.spring_client as sc
+    from app.agents.buyer.cart.state import PendingAdd, get_cart_store
+    from app.schemas.spring import CartOption
+    from app.services.spring_client import CartOptionRequired
+
+    attempted: list[int] = []
+
+    async def fake_add(req):  # noqa: ANN001
+        attempted.append(req.product_id)
+        if req.option_id is None:  # 실제 I-2 동작 — 옵션 없이 담으면 되물음
+            # 후보 2개 — 1개면 #114 자동 선택이 걸려 되물음이 아니라 담기로 끝난다.
+            raise CartOptionRequired(
+                [
+                    CartOption(option_id=1001, name="일반형"),
+                    CartOption(option_id=1002, name="드럼형"),
+                ]
+            )
+        return AddToCartResult(success=True, cart_item_id=1)
+
+    monkeypatch.setattr(sc, "add_to_cart", fake_add)
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(
+            message="502 그램짜리로 할게",
+            threadId="t-pending-allowed",
+            screen={
+                "pageType": "chat",
+                "columns": 2,
+                "products": [
+                    {"productId": 501, "name": "러그"},
+                    {"productId": 502, "name": "바구니"},
+                ],
+            },
+        )
+    )
+    key = await _thread_key(request, _member())
+    store = await get_cart_store()
+    await store.set_last_reco(key, [(9001, "드럼용 세탁 세제")])
+    await store.set_pending(
+        key,
+        PendingAdd(
+            product_id=9001,
+            quantity=1,
+            options=[
+                CartOption(option_id=1001, name="일반형"),
+                CartOption(option_id=1002, name="드럼형"),
+            ],
+        ),
+    )
+
+    # LLM 오추출 — 발화 속 502 를 productId 로 뽑았다.
+    llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 502, "quantity": 1}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+
+    # 오추출한 화면 상품은 **담기 시도조차 되지 않는다**(전환 조건을 통과하지 못한다).
+    assert 502 not in attempted
+    assert attempted == [9001]  # 되물음 대상 상품으로만 재시도한다
+    assert "action" not in [e["type"] for e in events]  # CART_ADDED 없음 — 되물음으로 흐른다
+    # **되물음이 살아 있어야 한다** — 전환으로 오인돼 폐기되면 사용자는 답할 대상을 잃는다.
+    assert await store.get_pending(key) is not None
+
+
+async def test_non_pending_turn_still_unions_screen_products_into_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """되물음이 아닌 턴의 합집합은 그대로다 — 이번 게이트가 정본 동작을 끄지 않았다."""
+    import app.services.spring_client as sc
+    from app.agents.buyer.cart.state import get_cart_store
+
+    added: dict = {}
+
+    async def fake_add(req):  # noqa: ANN001
+        added["product_id"] = req.product_id
+        return AddToCartResult(success=True, cart_item_id=55)
+
+    monkeypatch.setattr(sc, "add_to_cart", fake_add)
+    monkeypatch.setattr(sc, "get_cart", _empty_cart_view())
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(
+            message="바구니 담아줘",
+            threadId="t-nonpending-allowed",
+            screen={
+                "pageType": "chat",
+                "columns": 2,
+                "products": [
+                    {"productId": 501, "name": "러그"},
+                    {"productId": 502, "name": "바구니"},
+                ],
+            },
+        )
+    )
+    await (await get_cart_store()).set_last_reco(
+        await _thread_key(request, _member()), [(9001, "드럼용 세탁 세제")]
+    )
+
+    # 502 는 직전 추천에 없고 **screen.products 에만** 있다 — 합집합이 살아 있어야 담긴다.
+    llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 502, "quantity": 1}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADDED"
+    assert added["product_id"] == 502
+
+
+async def test_pending_turn_still_allows_a_previously_recommended_product(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """게이트가 **정상 전환 경로를 닫지 않는다** — 직전 추천 상품은 되물음 중에도 그대로 허용된다.
+
+    화면 상품이 동시에 직전 추천이면 `last_reco` 쪽으로 allowed 에 남는다는 근거의 실측판이다.
+    """
+    import app.services.spring_client as sc
+    from app.agents.buyer.cart.state import PendingAdd, get_cart_store
+    from app.schemas.spring import CartOption
+
+    added: dict = {}
+
+    async def fake_add(req):  # noqa: ANN001
+        added["product_id"] = req.product_id
+        return AddToCartResult(success=True, cart_item_id=66)
+
+    monkeypatch.setattr(sc, "add_to_cart", fake_add)
+    monkeypatch.setattr(sc, "get_cart", _empty_cart_view())
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(
+            message="다른 거 담아줘",
+            threadId="t-pending-lastreco",
+            screen={"pageType": "chat", "products": [{"productId": 502, "name": "바구니"}]},
+        )
+    )
+    key = await _thread_key(request, _member())
+    store = await get_cart_store()
+    # 202 는 직전 추천 — screen 에는 없다.
+    await store.set_last_reco(key, [(9001, "드럼용 세탁 세제"), (202, "무선 이어폰")])
+    await store.set_pending(
+        key,
+        PendingAdd(
+            product_id=9001,
+            quantity=1,
+            options=[CartOption(option_id=1001, name="일반형")],
+        ),
+    )
+
+    llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 202, "quantity": 1}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADDED"
+    assert added["product_id"] == 202  # 직전 추천 경유 전환은 그대로 동작한다
