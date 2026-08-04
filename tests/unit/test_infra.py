@@ -395,7 +395,7 @@ def test_ip_backstop_limits_token_rotation() -> None:
 
 def test_validation_error_400_envelope() -> None:
     """본문 검증 실패 → 400 BAD_REQUEST 봉투(422 아님, §2.5 표 정합)."""
-    r = client.post("/chat", json={"sessionId": "x"})  # threadId/message 누락
+    r = client.post("/chat", json={"sessionId": "x"})  # threadId 누락
     assert r.status_code == 400
     env = r.json()["error"]
     assert env["code"] == "BAD_REQUEST"

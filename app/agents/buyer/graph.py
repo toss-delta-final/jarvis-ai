@@ -54,7 +54,7 @@ from app.core.tracing import current_request_trace, trace_span
 from app.core.session_context import SessionStateUnavailable
 from app.core.text import _strip_unsafe
 from app.agents.buyer.recommendation.state import CartIntent, CategoryQuery
-from app.schemas.chat import DoneData, ErrorData
+from app.schemas.chat import CONDITION_FIELD_TO_FILTER, ConditionAction, DoneData, ErrorData
 from app.schemas.spring import ProductSearchFilters
 from app.services import search_service, spring_client
 
@@ -122,6 +122,15 @@ async def get_thread_store() -> ThreadFilterStore:
 def reset_thread_store() -> None:
     """테스트 격리용 — 공유 pg-profile store(InMemoryStore)를 비운다."""
     pg_store.reset_store()
+
+
+def _remove_condition_actions(
+    prior: ProductSearchFilters,
+    actions: list[ConditionAction],
+) -> ProductSearchFilters:
+    """conditionActions가 지목한 승계 필터 축을 제거한다(§3.1)."""
+    updates = {CONDITION_FIELD_TO_FILTER[action.field]: None for action in actions}
+    return prior.model_copy(update=updates)
 
 
 def _is_timeout(exc: Exception) -> bool:
@@ -436,6 +445,12 @@ async def run_buyer_turn(
     push_fn = push_fn or spring_client.push_recommendations
     thread_store = await get_thread_store()
     prior = await thread_store.get(thread_key)
+    condition_actions = getattr(request, "condition_actions", None) or []
+    if prior is not None and condition_actions:
+        # conditionActions 반영 — 제거된 축을 prior 에서 실제로 비운다(§3.1).
+        prior = _remove_condition_actions(prior, condition_actions)
+        # 추천 외 intent 로 라우팅돼도 다음 턴에 제거한 칩이 되살아나지 않게 즉시 영속한다.
+        await thread_store.put(thread_key, prior)
 
     # 프로필 주입 (회원만, read-only) — 게스트/신규는 None(개인화 스킵, 결정 8)
     profile = None

@@ -27,14 +27,14 @@ from app.core.pg_resilience import is_state_store_unavailable
 from app.core.session_context import BuyerSessionInput, SessionStateUnavailable
 from app.core.stream import open_stream, registry_key
 from app.core.tracing import start_request_trace_safely
-from app.schemas.chat import ChatRequest
+from app.schemas.chat import BuyerChatRequest
 
 router = APIRouter(tags=["chat"])
 
 
 @router.post("/chat")
 async def chat(
-    request: ChatRequest,
+    request: BuyerChatRequest,
     http_request: Request,
     identity: Identity = Depends(auth_deps.get_identity),
 ) -> StreamingResponse:
