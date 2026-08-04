@@ -133,8 +133,8 @@ class Settings(BaseSettings):
     # 새 표기마다 임베딩 API+DB write가 I-17에 추가되고 테이블도 아직 미검수 상태이므로 기본 off.
     # 초기 검수 완료 뒤 운영 비용을 확인하고 켠다.
     color_synonym_batch_harvest_enabled: bool = False
-    # 런타임 승인 사전과 배치 수확이 공유하는 dsn별 pg 풀의 단일 총 상한. 배치 수확 예산을
-    # 먼저 떼고 나머지를 검색 전용으로 써, 두 경로의 합계 연결 수가 이 값을 넘지 않는다.
+    # 런타임 승인 사전과 배치 수확이 공유하는 dsn별 pg 풀의 단일 총 상한. 배치 수확을 켜면
+    # 해당 예산을 먼저 떼고 나머지를 검색 전용으로 쓰며, 끄면 검색이 풀 전체를 사용한다.
     color_synonym_pool_max_size: int = Field(default=4, ge=1)
     # wait_for 뒤에도 남는 to_thread 작업의 프로세스 동시 상한. 슬롯이 차면 해당 change 수확만
     # 즉시 건너뛰어 I-17 생성물 갱신과 cursor 전진을 지연시키지 않는다.
@@ -142,6 +142,9 @@ class Settings(BaseSettings):
     # 실카탈로그 상품당 색상 개수는 최대·p99 모두 30개였다. 정상 최대에 10개 여유를 둔 40으로
     # 단일 셀러 입력이 DB 배열·외부 임베딩 호출·pending 행을 무제한 증폭하지 못하게 한다.
     color_synonym_harvest_max_terms_per_product: int = Field(default=40, ge=1)
+    # dedup 전에 원본 배열을 순회하는 CPU 상한. 실측 p99 30개의 13배인 400까지 스캔해 정상·
+    # 중복 입력이 max_terms 밖의 고유 표기를 밀어내지 않게 하면서 비정상 대형 배열은 유계화한다.
+    color_synonym_harvest_scan_max_values_per_product: int = Field(default=400, ge=1)
     # 실카탈로그 최장 색상 표기는 28자였다. 복합 표기 여유 12자를 둔 40자까지만 수확한다.
     color_synonym_harvest_max_term_length: int = Field(default=40, ge=1)
     # 실카탈로그 상위 30 표기가 전체 색상 토큰 출현의 82.2%(8,753/10,645)를 덮는다.
@@ -980,9 +983,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _reserve_color_synonym_runtime_pool_slot(self) -> "Settings":
-        """공유 풀에서 배치 예산을 빼고도 사용자 대면 검색 슬롯을 하나 이상 남긴다."""
+        """배치 수확을 켰을 때만 공유 풀에 사용자 대면 검색 슬롯을 하나 이상 남긴다."""
         if (
-            self.color_synonym_harvest_max_concurrency
+            self.color_synonym_batch_harvest_enabled
+            and self.color_synonym_harvest_max_concurrency
             >= self.color_synonym_pool_max_size
         ):
             raise ValueError(
@@ -991,6 +995,21 @@ class Settings(BaseSettings):
                 f"(got {self.color_synonym_harvest_max_concurrency} >= "
                 f"{self.color_synonym_pool_max_size}): reserve at least one "
                 "runtime search connection"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_color_synonym_scan_budget_above_result_budget(self) -> "Settings":
+        """dedup 전 스캔 예산은 반환 상한보다 커야 중복이 고유 표기를 밀어내지 않는다."""
+        if (
+            self.color_synonym_harvest_scan_max_values_per_product
+            <= self.color_synonym_harvest_max_terms_per_product
+        ):
+            raise ValueError(
+                "COLOR_SYNONYM_HARVEST_SCAN_MAX_VALUES_PER_PRODUCT must be greater than "
+                "COLOR_SYNONYM_HARVEST_MAX_TERMS_PER_PRODUCT "
+                f"(got {self.color_synonym_harvest_scan_max_values_per_product} <= "
+                f"{self.color_synonym_harvest_max_terms_per_product})"
             )
         return self
 

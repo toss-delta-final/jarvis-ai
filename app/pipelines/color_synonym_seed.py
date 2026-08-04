@@ -7,6 +7,7 @@ import functools
 import json
 import logging
 import math
+import unicodedata
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -114,8 +115,9 @@ class BuildResult:
 def _color_term_limits(
     max_terms: int | None,
     max_term_length: int | None,
-) -> tuple[int, int]:
-    if max_terms is None or max_term_length is None:
+    scan_max_values: int | None,
+) -> tuple[int, int, int]:
+    if max_terms is None or max_term_length is None or scan_max_values is None:
         settings = get_settings()
         max_terms = (
             settings.color_synonym_harvest_max_terms_per_product
@@ -127,9 +129,16 @@ def _color_term_limits(
             if max_term_length is None
             else max_term_length
         )
-    if max_terms < 1 or max_term_length < 1:
+        scan_max_values = (
+            settings.color_synonym_harvest_scan_max_values_per_product
+            if scan_max_values is None
+            else scan_max_values
+        )
+    if max_terms < 1 or max_term_length < 1 or scan_max_values < 1:
         raise ValueError("색상 표기 수확 상한은 1 이상이어야 함")
-    return max_terms, max_term_length
+    if scan_max_values <= max_terms:
+        raise ValueError("색상 표기 스캔 상한은 반환 상한보다 커야 함")
+    return max_terms, max_term_length, scan_max_values
 
 
 def extract_color_terms(
@@ -137,16 +146,38 @@ def extract_color_terms(
     *,
     max_terms: int | None = None,
     max_term_length: int | None = None,
+    scan_max_values: int | None = None,
 ) -> list[str]:
     """혼재 색상 값을 정규화하고 config 기반 개수·길이 상한 안의 표기만 반환한다."""
     if not isinstance(attributes, dict):
         return []
-    max_terms, max_term_length = _color_term_limits(max_terms, max_term_length)
+    max_terms, max_term_length, scan_max_values = _color_term_limits(
+        max_terms,
+        max_term_length,
+        scan_max_values,
+    )
     raw = attributes.get("색상")
-    values = [raw] if isinstance(raw, str) else raw if isinstance(raw, list) else []
-    normalized = [
-        value.strip() for value in values if isinstance(value, str) and value.strip()
-    ]
+    values = (
+        [raw]
+        if isinstance(raw, str)
+        else raw[:scan_max_values]
+        if isinstance(raw, list)
+        else []
+    )
+    if isinstance(raw, list) and len(raw) > scan_max_values:
+        _log.warning(
+            "색상 원본 배열 스캔 상한 초과 — %d건 미처리 (raw=%d, scan_max_values=%d)",
+            len(raw) - scan_max_values,
+            len(raw),
+            scan_max_values,
+        )
+    normalized: list[str] = []
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        stripped = value.strip()
+        if stripped:
+            normalized.append(stripped)
     unique = list(dict.fromkeys(normalized))
     overlong_count = sum(len(value) > max_term_length for value in unique)
     if overlong_count:
@@ -178,9 +209,14 @@ def count_terms(
     *,
     max_terms: int | None = None,
     max_term_length: int | None = None,
+    scan_max_values: int | None = None,
 ) -> Counter[str]:
     """각 상품 안의 중복 표기는 한 번만 세어 표기별 상품 수를 집계한다."""
-    max_terms, max_term_length = _color_term_limits(max_terms, max_term_length)
+    max_terms, max_term_length, scan_max_values = _color_term_limits(
+        max_terms,
+        max_term_length,
+        scan_max_values,
+    )
     counts: Counter[str] = Counter()
     for change in changes:
         counts.update(
@@ -189,6 +225,7 @@ def count_terms(
                     change.attributes,
                     max_terms=max_terms,
                     max_term_length=max_term_length,
+                    scan_max_values=scan_max_values,
                 )
             )
         )
@@ -201,9 +238,14 @@ async def harvest_terms(
     page_size: int = 500,
     max_terms: int | None = None,
     max_term_length: int | None = None,
+    scan_max_values: int | None = None,
 ) -> Counter[str]:
     """I-17을 since=0부터 소진하며 enrichment 없이 색상 표기만 수확한다."""
-    max_terms, max_term_length = _color_term_limits(max_terms, max_term_length)
+    max_terms, max_term_length, scan_max_values = _color_term_limits(
+        max_terms,
+        max_term_length,
+        scan_max_values,
+    )
     cursor: str | None = "0"
     counts: Counter[str] = Counter()
     while True:
@@ -213,6 +255,7 @@ async def harvest_terms(
                 page.items,
                 max_terms=max_terms,
                 max_term_length=max_term_length,
+                scan_max_values=scan_max_values,
             )
         )
         if not page.has_more:
@@ -629,6 +672,23 @@ async def assign_color_clusters(
     )
 
 
+def _review_text(value: str) -> str:
+    """셀러 원문을 알아볼 수 있게 남기면서 Markdown 구조 제어 문자만 가시화한다."""
+    value = value.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br>")
+    rendered: list[str] = []
+    for character in value:
+        if character == "|":
+            rendered.append("&#124;")
+        elif unicodedata.category(character) == "Cc":
+            codepoint = ord(character)
+            rendered.append(
+                f"\\x{codepoint:02x}" if codepoint <= 0xFF else f"\\u{codepoint:04x}"
+            )
+        else:
+            rendered.append(character)
+    return "".join(rendered)
+
+
 def _write_assignment_review_queue(
     result: ClusteringResult,
     path: str | Path,
@@ -651,9 +711,16 @@ def _write_assignment_review_queue(
     ]
     if result.rejections:
         for rejection in result.rejections:
-            terms = ", ".join(rejection.terms) or "표기 없음"
-            canonical = f" / canonical={rejection.canonical}" if rejection.canonical else ""
-            lines.append(f"- [{rejection.stage}] {rejection.reason}: {terms}{canonical}")
+            terms = ", ".join(_review_text(term) for term in rejection.terms) or "표기 없음"
+            canonical = (
+                f" / canonical={_review_text(rejection.canonical)}"
+                if rejection.canonical
+                else ""
+            )
+            lines.append(
+                f"- [{_review_text(rejection.stage)}] {_review_text(rejection.reason)}: "
+                f"{terms}{canonical}"
+            )
     else:
         lines.append("- 없음")
 
@@ -664,7 +731,8 @@ def _write_assignment_review_queue(
                 "| 표기 | 상품 수 | 사유 |",
                 "|---|---:|---|",
                 *[
-                    f"| {item.term} | {item.doc_count} | {item.reason} |"
+                    f"| {_review_text(item.term)} | {item.doc_count} "
+                    f"| {_review_text(item.reason)} |"
                     for item in sorted(
                         result.unassigned,
                         key=lambda item: (-item.doc_count, item.term),
@@ -679,26 +747,26 @@ def _write_assignment_review_queue(
         lines.extend(
             [
                 "",
-                f"## {cluster.canonical}",
+                f"## {_review_text(cluster.canonical)}",
                 "",
                 "| 표기 | 상품 수 | LLM 배정 | LLM 코사인 | 임베딩 1위 | 1위 점수 | 판정 |",
                 "|---|---:|---|---:|---|---:|---|",
             ]
         )
         for member in cluster.members:
+            canonical = _review_text(cluster.canonical)
+            term = _review_text(member.term)
+            nearest_anchor = _review_text(member.nearest_anchor or cluster.canonical)
             nearest_score = _cosine(
                 member.embedding,
                 result.embeddings[member.nearest_anchor or cluster.canonical],
             )
-            evidence = (
-                f"LLM={cluster.canonical} / 임베딩1위="
-                f"{member.nearest_anchor or cluster.canonical} {nearest_score:.4f}"
-            )
-            reasons = "; ".join(member.review_reasons)
+            evidence = f"LLM={canonical} / 임베딩1위={nearest_anchor} {nearest_score:.4f}"
+            reasons = "; ".join(_review_text(reason) for reason in member.review_reasons)
             verdict = f"확인 필요 ({evidence}; {reasons})" if member.review_required else ""
             lines.append(
-                f"| {member.term} | {member.doc_count} | {cluster.canonical} "
-                f"| {member.cosine:.4f} | {member.nearest_anchor or cluster.canonical} "
+                f"| {term} | {member.doc_count} | {canonical} "
+                f"| {member.cosine:.4f} | {nearest_anchor} "
                 f"| {nearest_score:.4f} | {verdict} |"
             )
         lines.append("")
@@ -722,6 +790,10 @@ VALUES (%s, %s, 'pending_review', %s, %s, %s, %s, now())
 ON CONFLICT (term) DO UPDATE SET
     canonical = CASE
         WHEN color_synonyms.status <> 'pending_review' THEN color_synonyms.canonical
+        -- 늦게 커밋된 배치 임베딩 추정은 먼저 저장된 LLM 의미 배정을 강등하지 않는다.
+        WHEN color_synonyms.provenance = 'seed_llm_assignment'
+         AND EXCLUDED.provenance = 'batch_embedding_unverified'
+        THEN color_synonyms.canonical
         -- 일시 실패·검증 불가처럼 이번 실행이 유효한 결론을 못 낸 경우만 이전 제안을 보존한다.
         -- LLM이 명시적으로 none을 선택한 경우에는 false가 전달돼 NULL 철회가 반영된다.
         WHEN %s THEN color_synonyms.canonical
@@ -737,9 +809,17 @@ ON CONFLICT (term) DO UPDATE SET
     embedding_model = COALESCE(EXCLUDED.embedding_model, color_synonyms.embedding_model),
     provenance = CASE
         WHEN color_synonyms.status <> 'pending_review' THEN color_synonyms.provenance
+        WHEN color_synonyms.provenance = 'seed_llm_assignment'
+         AND EXCLUDED.provenance = 'batch_embedding_unverified'
+        THEN color_synonyms.provenance
         ELSE EXCLUDED.provenance
     END,
-    doc_count = EXCLUDED.doc_count,
+    doc_count = CASE
+        WHEN color_synonyms.provenance = 'seed_llm_assignment'
+         AND EXCLUDED.provenance = 'batch_embedding_unverified'
+        THEN color_synonyms.doc_count
+        ELSE EXCLUDED.doc_count
+    END,
     updated_at = now()
 """
 
@@ -789,13 +869,14 @@ def harvest_new_terms(
     *,
     max_terms: int | None = None,
     max_term_length: int | None = None,
+    scan_max_values: int | None = None,
 ) -> int:
     """한 I-17 상품에서 DB에 없는 색상만 pending_review 제안으로 적재한다.
 
     승인된 임베딩 중 임계 이상 최근접 canonical은 제안값일 뿐 status는 항상 pending_review다.
     """
     settings = get_settings()
-    max_terms, max_term_length = _color_term_limits(
+    max_terms, max_term_length, scan_max_values = _color_term_limits(
         (
             settings.color_synonym_harvest_max_terms_per_product
             if max_terms is None
@@ -806,6 +887,11 @@ def harvest_new_terms(
             if max_term_length is None
             else max_term_length
         ),
+        (
+            settings.color_synonym_harvest_scan_max_values_per_product
+            if scan_max_values is None
+            else scan_max_values
+        ),
     )
     terms = list(
         dict.fromkeys(
@@ -813,6 +899,7 @@ def harvest_new_terms(
                 attributes,
                 max_terms=max_terms,
                 max_term_length=max_term_length,
+                scan_max_values=scan_max_values,
             )
         )
     )
@@ -865,10 +952,11 @@ def harvest_new_terms(
                     WHERE status = 'approved'
                       AND canonical IS NOT NULL
                       AND embedding IS NOT NULL
+                      AND embedding_model = %s
                     ORDER BY embedding <=> %s
                     LIMIT 1
                     """,
-                (Vector(vector), Vector(vector)),
+                (Vector(vector), model, Vector(vector)),
             ).fetchone()
             canonical = (
                 nearest[0] if nearest is not None and float(nearest[1]) >= threshold else None

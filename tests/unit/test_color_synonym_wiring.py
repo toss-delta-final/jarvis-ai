@@ -110,6 +110,7 @@ async def test_expansion_saturation_degrades_immediately_then_recovers(monkeypat
     first_settings = get_settings().model_copy(
         update={
             "color_synonym_expansion_enabled": True,
+            "color_synonym_batch_harvest_enabled": True,
             "color_synonym_pool_max_size": 2,
             "color_synonym_harvest_max_concurrency": 1,
             "color_synonym_query_timeout_s": 0.01,
@@ -171,6 +172,20 @@ async def test_expansion_saturation_degrades_immediately_then_recovers(monkeypat
     finally:
         release.set()
         await asyncio.sleep(0.01)
+
+
+def test_runtime_lookup_uses_full_pool_when_harvest_is_disabled() -> None:
+    settings = get_settings().model_copy(
+        update={
+            "color_synonym_batch_harvest_enabled": False,
+            "color_synonym_pool_max_size": 4,
+            "color_synonym_harvest_max_concurrency": 2,
+        }
+    )
+    assert sc._color_synonym_runtime_max_concurrency(settings) == 4
+
+    enabled = settings.model_copy(update={"color_synonym_batch_harvest_enabled": True})
+    assert sc._color_synonym_runtime_max_concurrency(enabled) == 2
 
 
 async def test_expansion_loads_off_loop_and_sends_repeated_values(monkeypatch) -> None:

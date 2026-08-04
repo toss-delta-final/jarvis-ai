@@ -55,6 +55,21 @@ def test_color_term_count_limit_applies_after_order_preserving_dedup() -> None:
     assert terms == ["레드", "블루", "그린"]
 
 
+def test_color_term_scan_budget_stops_before_processing_abusive_tail() -> None:
+    class ExplodingStr(str):
+        def strip(self, chars=None):
+            raise AssertionError("scan budget 밖 값을 정규화하면 안 됨")
+
+    terms = seed.extract_color_terms(
+        {"색상": ["레드"] * 99 + ["블루", ExplodingStr("폭발")]},
+        max_terms=40,
+        max_term_length=40,
+        scan_max_values=100,
+    )
+
+    assert terms == ["레드", "블루"]
+
+
 def test_color_term_count_limit_caps_offline_harvest_and_logs(caplog) -> None:
     with caplog.at_level("WARNING"):
         counts = seed.count_terms(
@@ -398,6 +413,41 @@ async def test_embedding_only_flags_llm_assignment_disagreement_for_review(tmp_p
     assert "확인 필요" in review
 
 
+def test_review_queue_sanitizes_seller_control_characters_without_hiding_text(tmp_path) -> None:
+    canonical = "블루|확인됨\n가짜"
+    nearest = "네이비|위조\n열"
+    member = seed.ClusterMember(
+        "악성|표기\n확인 필요 (위조)\x01",
+        1,
+        [1.0, 0.0],
+        0.0,
+        nearest_anchor=nearest,
+        review_required=True,
+        review_reasons=("셀러|사유\n위조\x02",),
+    )
+    result = seed.ClusteringResult(
+        (seed.Cluster(canonical, [member]),),
+        (),
+        (),
+        {
+            canonical: [1.0, 0.0],
+            nearest: [1.0, 0.0],
+        },
+    )
+    path = tmp_path / "review.md"
+
+    seed.write_review_queue(result, path, threshold=0.85)
+
+    review = path.read_text(encoding="utf-8")
+    member_row = next(line for line in review.splitlines() if line.startswith("| 악성"))
+    assert member_row.count("|") == 8
+    assert "악성&#124;표기<br>확인 필요 (위조)\\x01" in member_row
+    assert "블루&#124;확인됨<br>가짜" in member_row
+    assert "네이비&#124;위조<br>열" in member_row
+    assert "셀러&#124;사유<br>위조\\x02" in member_row
+    assert "\n가짜" not in review
+
+
 def test_llm_assignment_tunables_are_config_injected() -> None:
     assert Settings.model_fields["color_synonym_llm_clusters_per_call"].default == 1
     assert Settings.model_fields["color_synonym_llm_max_tokens"].default == 2048
@@ -414,7 +464,9 @@ def test_upsert_sql_preserves_human_review_decisions() -> None:
         "embedding_model = COALESCE(EXCLUDED.embedding_model, color_synonyms.embedding_model)"
         in sql
     )
-    assert "doc_count = EXCLUDED.doc_count" in sql
+    assert "color_synonyms.provenance = 'seed_llm_assignment'" in sql
+    assert "EXCLUDED.provenance = 'batch_embedding_unverified'" in sql
+    assert "THEN color_synonyms.doc_count" in sql
 
 
 def test_upsert_transports_failed_evaluation_canonical_preservation_flag() -> None:
@@ -481,7 +533,7 @@ def test_seed_connection_pool_accepts_configured_boundary_size_two(monkeypatch) 
 
 
 def test_batch_harvest_upserts_only_unknown_terms_as_pending_proposals(monkeypatch) -> None:
-    executed: list[str] = []
+    executed: list[tuple[str, object]] = []
 
     class Result:
         def __init__(self, rows):
@@ -495,7 +547,7 @@ def test_batch_harvest_upserts_only_unknown_terms_as_pending_proposals(monkeypat
 
     class Conn:
         def execute(self, sql, params=None):
-            executed.append(sql)
+            executed.append((sql, params))
             if "WHERE term = ANY" in sql:
                 return Result([("블랙",)])
             return Result([("네이비", 0.91)])
@@ -554,9 +606,11 @@ def test_batch_harvest_upserts_only_unknown_terms_as_pending_proposals(monkeypat
             1,
         ),
     ]
-    assert executed[0] == "SET LOCAL statement_timeout = 2500"
-    assert executed[2] == "SET LOCAL statement_timeout = 2500"
-    assert "'approved'" in executed[3]
+    assert executed[0][0] == "SET LOCAL statement_timeout = 2500"
+    assert executed[2][0] == "SET LOCAL statement_timeout = 2500"
+    assert "'approved'" in executed[3][0]
+    assert "embedding_model = %s" in executed[3][0]
+    assert executed[3][1][1] == "model"
     assert "'pending_review'" in seed.UPSERT_COLOR_TERM_SQL
 
 

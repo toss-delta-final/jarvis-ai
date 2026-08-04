@@ -703,6 +703,7 @@ async def test_color_harvest_count_limit_logs_and_does_not_kill_i17_artifact(
         update={
             "color_synonym_batch_harvest_enabled": True,
             "color_synonym_harvest_max_terms_per_product": 2,
+            "color_synonym_harvest_scan_max_values_per_product": 100,
             "color_synonym_harvest_max_term_length": 40,
         }
     )
@@ -721,12 +722,15 @@ async def test_color_harvest_count_limit_logs_and_does_not_kill_i17_artifact(
         *,
         max_terms,
         max_term_length,
+        scan_max_values,
     ):
+        assert scan_max_values == 100
         harvested.extend(
             _batch.color_synonym_seed.extract_color_terms(
                 attributes,
                 max_terms=max_terms,
                 max_term_length=max_term_length,
+                scan_max_values=scan_max_values,
             )
         )
         return len(harvested)

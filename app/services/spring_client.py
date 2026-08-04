@@ -112,6 +112,16 @@ def _color_synonym_limiter(dsn: str, max_concurrency: int) -> threading.BoundedS
     return limiter
 
 
+def _color_synonym_runtime_max_concurrency(settings) -> int:
+    """배치가 꺼져 있으면 공유 풀 전체를, 켜져 있으면 예약분을 제외한 검색 몫을 반환한다."""
+    if not settings.color_synonym_batch_harvest_enabled:
+        return settings.color_synonym_pool_max_size
+    return (
+        settings.color_synonym_pool_max_size
+        - settings.color_synonym_harvest_max_concurrency
+    )
+
+
 def _consume_background_synonym_lookup(task: asyncio.Task[dict[str, list[str]]]) -> None:
     """타임아웃 뒤 승인 사전 조회의 늦은 실패를 기록하고 예외를 회수한다."""
     if task.cancelled():
@@ -130,10 +140,7 @@ async def _load_color_synonym_map(settings) -> dict[str, list[str]] | None:
 
     limiter = _color_synonym_limiter(
         settings.catalog_db_url,
-        (
-            settings.color_synonym_pool_max_size
-            - settings.color_synonym_harvest_max_concurrency
-        ),
+        _color_synonym_runtime_max_concurrency(settings),
     )
     if not limiter.acquire(blocking=False):
         _log.warning("색상 동의어 조회 동시 실행 상한 — 원문 단수 color로 검색")
