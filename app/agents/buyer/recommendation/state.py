@@ -157,7 +157,7 @@ def build_condition_chips(
     """병합 필터에서 conditions 칩을 결정론적으로 파생한다(FE 제거 가능, 카드 아님).
 
     LLM 의 임의 conditions 출력에 의존하지 않고 확정된 필터에서 파생 — 테스트 가능·일관.
-    카테고리 칩을 먼저 둔다(api-spec §3.1 (2) 예시 순).
+    카테고리 칩을 먼저 둔다(api-spec §3.1 (3) 예시 순).
 
     categories 가 주어지면(fan-out 매핑 결과 canonical 전체)로 카테고리 칩을 만든다 — 멀티면
     검색한 카테고리 전부를 조인 문자열 하나로 표시한다(api-spec §3.1 예시가 value 를 스칼라

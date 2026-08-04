@@ -88,7 +88,7 @@ issue_number: null
 | 결정 8 (개정 필요) | 원래 "장바구니·구매는 회원 전용"이었으나 BE I-2 문서(2026-07-10)로 게스트 담기 허용 확정 — 결정 8 개정 레코드 필요(api-spec §8 항목7, 아직 미등록) | REQ-CART-040~042, §9 OPEN-CART-3 |
 | api-spec §4.1 | I-2 요청/응답/오류 코드 계약 | §5.2, §6.2/6.3 |
 | api-spec §4.9 | I-18 요청/응답 계약, 두 용도(질의 응답·보유 확인) | §5.2, §6.4/6.5 |
-| api-spec §3.1 (3) | SSE `action` 이벤트 페이로드 | §5.3, §6.6 |
+| api-spec §3.1 (4) | SSE `action` 이벤트 페이로드 | §5.3, §6.6 |
 | api-spec §2.3/§2.6 | 신원은 JWT `sub` 도출, 요청 본문 신뢰 금지(IDOR 방지) | REQ-CART-002 |
 
 ---
@@ -200,7 +200,7 @@ class CartItem(BaseModel):
 
 ### 6.7 결과 통지 (SSE action, REQ-CART-050~052)
 
-- **REQ-CART-050** (Ubiquitous): The cart 서브그래프 **shall** 담기 결과를 SSE `action` 이벤트로 통지하며, 이벤트 타입은 `CART_ADDED` | `CART_ADD_FAILED` 2종으로 고정한다(api-spec §3.1 (3)).
+- **REQ-CART-050** (Ubiquitous): The cart 서브그래프 **shall** 담기 결과를 SSE `action` 이벤트로 통지하며, 이벤트 타입은 `CART_ADDED` | `CART_ADD_FAILED` 2종으로 고정한다(api-spec §3.1 (4)).
 - **REQ-CART-051** (Ubiquitous, 2026-07-19 개정): `CART_ADD_FAILED`의 `reason` 필드 **shall** api-spec §4.1이 정의하는 허용 값 집합 안에서만 채워진다 — 정확한 값 목록은 본 SPEC에 중복 기재하지 않고 api-spec을 단일 소스로 따른다(리뷰 반영).
 - **REQ-CART-052** (Unwanted): 옵션 되물음(REQ-CART-020)과 장바구니 질의 응답(REQ-CART-034)은 `action` 이벤트를 **사용하지 않는다** — `token` 텍스트로만 처리한다(REQ-CART-020/034 재확인).
 
@@ -277,7 +277,7 @@ class CartItem(BaseModel):
 ## 참조 (References)
 
 - [`PRD-RECOMMEND-PROFILE-AGENT.md`](../PRD-RECOMMEND-PROFILE-AGENT.md) §3.3/§5.4/§7/§10-F — 본 SPEC의 직접 입력
-- [`api-spec.md`](../api-spec.md) §3.1 (3)/§4.1/§4.9/§8 항목7 — 외부 계약 정본
+- [`api-spec.md`](../api-spec.md) §3.1 (4)/§4.1/§4.9/§8 항목7 — 외부 계약 정본
 - [`mvp-plan.md`](../mvp-plan.md) §2, [`mvp-todo.md`](../mvp-todo.md) §2 — MVP 범위·체크리스트
 - `app/agents/buyer/cart/{graph,state}.py` — 실제 구현(이슈 #3, PR #16) — 본 SPEC의 REQ-CART-001a·`last_reco`는 이 구현체와 대조해 문서화함
 - Notion "📡 API 명세서" DB — I-2/I-18 경로·Method·인증 레인 확정 소스(2026-07-16 대조)

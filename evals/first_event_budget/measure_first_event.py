@@ -400,6 +400,7 @@ def main() -> None:
             "relaxation_auto_fields": settings.relaxation_auto_fields,
             "state_store_query_timeout_s": settings.state_store_query_timeout_s,
             "search_backend": settings.search_backend,
+            "progress_events_enabled": settings.progress_events_enabled,
         },
         "bootstrap": {"resamples": 2000, "confidence": 0.95, "seed": 277},
         "scenarios": results,
