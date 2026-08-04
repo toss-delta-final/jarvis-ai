@@ -10,7 +10,7 @@
 ## [Unreleased]
 
 ### Docs
-- **#285 — 챗봇 장바구니 삭제·찜 추가·찜 해제 internal 계약 초안** — BE 협의를 위한 제안 문서를 추가했으며, 정본 등재와 사본 동기화는 협의 후 진행한다.
+- **#285 — 챗봇 장바구니 삭제·수량 변경·찜 추가·해제·목록 internal 계약 초안을 정본에 등재** — Notion 「📡 API 명세서」에 I-24~I-28로 등재했다. 발명이 아니라 FE↔BE 정본 실측(C-4 삭제·C-3 수량 변경·M-5 찜 추가·M-6 찜 해제·M-4 찜 목록)의 의미론과 I-2/I-18의 internal 규약(`X-Internal-Token`, AI가 검증한 JWT `sub` 유래 신원, 3초 타임아웃, 응답 envelope)을 이식한 제안이며, I-25 수량 변경은 이슈 본문에 없던 신규 편입이다. 아직 BE 협의 전으로 각 정본 페이지에 초안 배너가 있고 잔여 안건은 이슈 #285 코멘트에 남겼으며, 사본 `docs/api-spec.md` 동기화와 CH-2 `action` 8종 확장은 협의 후 진행한다.
 
 ### Fixed
 - **#266 — 판매자 general 레인 LLM 타임아웃이 `INTERNAL` 로 나가던 문제 (api-spec §2.9 c)** — 이 레인만 앱 벽시계 상한이 없어 스트림 전체 90s 에만 의존했고, `except (TimeoutError, asyncio.TimeoutError)` 분기는 **도달 불가 코드**였다. `asyncio.wait_for` 는 쓸 수 없다(중간에 yield 하는 async generator) — 청크 루프 전체를 `asyncio.timeout(seller_general_timeout_s)` 으로 덮어 빌드·체크포인터 연결까지 묶었다. 기본값 20s 는 2026-08-02 로컬 실측 general total max 2.55s 의 약 8배다.
