@@ -3621,6 +3621,153 @@ async def test_buy_all_budget_builds_top_k_sets_from_wider_candidate_pools(
     assert ready["data"]["listIds"] == [item.list_id for item in sent.lists]
 
 
+async def test_buy_all_pool_keeps_cheap_candidate_below_relevance_cutoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """relevance 7위 저가 후보도 유계 풀에 남아 실제 예산 가능 BUY_ALL 조합을 만든다."""
+    from app.agents.buyer.recommendation.category_mapping import CategoryMapping
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "expose_min", 1)
+    monkeypatch.setattr(settings, "expose_max", 1)
+    monkeypatch.setattr(settings, "budget_set_alt_pool", 6)
+    observed_pools = []
+    build = recommendation_graph.build_budget_sets
+
+    def _record_bounded_pools(**kwargs):
+        observed_pools.append(kwargs["pools"])
+        return build(**kwargs)
+
+    monkeypatch.setattr(recommendation_graph, "build_budget_sets", _record_bounded_pools)
+
+    async def _map(**kwargs):
+        return CategoryMapping(legs=[("A", "파우치"), ("B", "어댑터")])
+
+    pools = {
+        category: [
+            _prod(base + rank, category, f"{category}{rank}").model_copy(
+                update={"price": 10_000 if rank == 7 else 30_000}
+            )
+            for rank in range(1, 8)
+        ]
+        for category, base in (("A", 10), ("B", 20))
+    }
+
+    async def _search(filters, exclude_product_ids=None):
+        products = pools[filters.category]
+        return ProductSearchResult(products=products, total_count=len(products))
+
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "case": 3,
+            "buyAll": True,
+            "totalBudget": 50_000,
+            "categoryQueries": [
+                {"category": "A", "query": "파우치"},
+                {"category": "B", "query": "어댑터"},
+            ],
+            "filters": {"priceMax": 50_000},
+        },
+        rerank={
+            "ranked": [
+                {"productId": 11, "rationale": "관련도가 높아요"},
+                {"productId": 21, "rationale": "관련도가 높아요"},
+            ],
+            "overallComment": "세트 추천이에요",
+        },
+    )
+
+    await _collect(
+        run_buyer_turn(
+            _req("5만원으로 파우치와 어댑터 전부"),
+            _member_num(),
+            llm=llm,
+            search=_search,
+            push_fn=push,
+            map_categories=_map,
+        )
+    )
+
+    sent = push.pushes[0]
+    assert sent.list_type == "BUY_ALL"
+    assert observed_pools
+    assert all(len(pool) <= settings.budget_set_alt_pool for pool in observed_pools[0])
+    assert {11, 17} <= {product_id for product_id, _ in observed_pools[0][0]}
+    assert {21, 27} <= {product_id for product_id, _ in observed_pools[0][1]}
+    assert any({17, 27} <= set(item.product_ids) for item in sent.lists)
+    assert all(len(item.product_ids) == 2 for item in sent.lists)
+
+
+async def test_buy_all_pool_finds_priced_candidate_below_unpriced_relevance_cutoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """상위 relevance 후보가 모두 무가격이어도 뒤의 priced 후보를 보존해 거짓 고지를 막는다."""
+    from app.agents.buyer.recommendation.category_mapping import CategoryMapping
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "expose_min", 1)
+    monkeypatch.setattr(settings, "expose_max", 1)
+    monkeypatch.setattr(settings, "budget_set_alt_pool", 6)
+
+    async def _map(**kwargs):
+        return CategoryMapping(legs=[("A", "등뼈"), ("B", "대파")])
+
+    pools = {
+        category: [
+            _prod(base + rank, category, f"{category}{rank}").model_copy(
+                update={"price": 10_000 if rank == 7 else None}
+            )
+            for rank in range(1, 8)
+        ]
+        for category, base in (("A", 10), ("B", 20))
+    }
+
+    async def _search(filters, exclude_product_ids=None):
+        products = pools[filters.category]
+        return ProductSearchResult(products=products, total_count=len(products))
+
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "case": 3,
+            "buyAll": True,
+            "categoryQueries": [
+                {"category": "A", "query": "등뼈"},
+                {"category": "B", "query": "대파"},
+            ],
+            "filters": {},
+        },
+        rerank={
+            "ranked": [
+                {"productId": 11, "rationale": "관련도가 높아요"},
+                {"productId": 21, "rationale": "관련도가 높아요"},
+            ],
+            "overallComment": "세트 추천이에요",
+        },
+    )
+
+    events = await _collect(
+        run_buyer_turn(
+            _req("감자탕 재료 전부"),
+            _member_num(),
+            llm=llm,
+            search=_search,
+            push_fn=push,
+            map_categories=_map,
+        )
+    )
+
+    sent = push.pushes[0]
+    assert sent.list_type == "BUY_ALL"
+    assert all({17, 27} <= set(item.product_ids) for item in sent.lists)
+    token_texts = [event["data"]["text"] for event in events if event["type"] == "token"]
+    assert settings.budget_set_candidate_fallback_notice not in token_texts
+    assert not any("가격 후보가 없어" in text for text in token_texts)
+
+
 async def test_buy_all_without_budget_still_builds_sets(monkeypatch: pytest.MonkeyPatch) -> None:
     """[#60] BUY_ALL 판정은 예산 유무와 독립이며 totalBudget은 선택 필드다."""
     from app.agents.buyer.recommendation.category_mapping import CategoryMapping

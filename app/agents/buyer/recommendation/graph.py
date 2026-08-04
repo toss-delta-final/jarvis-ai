@@ -974,23 +974,61 @@ async def stream_recommendation(
     infeasible_due_to_budget = False
     if buy_all_mode:
         ranked_priority = {product_id: rank for rank, product_id in enumerate(ranked_ids)}
+        candidate_order: dict[int, int] = {}
+        for index, product in enumerate(candidates):
+            candidate_order.setdefault(product.product_id, index)
         pools: list[list[tuple[int, int | None]]] = []
         for leg in range(len(need_legs)):
-            leg_candidates = [
-                product for product in candidates if leg_of.get(product.product_id) == leg
-            ]
-            leg_candidates.sort(
+            # 동일 productId 는 최초 후보 하나만 권위로 삼는다. relevance 순서와 저가 순서를
+            # 교대로 병합해야 cap 안에서도 상위 품질 신호와 예산 가능 대안을 함께 보존한다.
+            unique_candidates = {}
+            for product in candidates:
+                if (
+                    leg_of.get(product.product_id) == leg
+                    and product.product_id not in unique_candidates
+                ):
+                    unique_candidates[product.product_id] = product
+            relevance_order = sorted(
+                unique_candidates.values(),
                 key=lambda product: (
                     ranked_priority.get(product.product_id, len(ranked_priority)),
-                    candidates.index(product),
-                )
+                    candidate_order[product.product_id],
+                    product.product_id,
+                ),
             )
-            pools.append(
-                [
-                    (product.product_id, product.price)
-                    for product in leg_candidates[: settings.budget_set_alt_pool]
-                ]
+            price_order = sorted(
+                unique_candidates.values(),
+                key=lambda product: (
+                    product.price is None,
+                    product.price if product.price is not None else 0,
+                    ranked_priority.get(product.product_id, len(ranked_priority)),
+                    candidate_order[product.product_id],
+                    product.product_id,
+                ),
             )
+            merged: list[tuple[int, int | None]] = []
+            selected: set[int] = set()
+            positions = [0, 0]
+            while len(merged) < settings.budget_set_alt_pool:
+                added = False
+                for source, ordered in enumerate((relevance_order, price_order)):
+                    while (
+                        positions[source] < len(ordered)
+                        and ordered[positions[source]].product_id in selected
+                    ):
+                        positions[source] += 1
+                    if positions[source] >= len(ordered):
+                        continue
+                    product = ordered[positions[source]]
+                    positions[source] += 1
+                    selected.add(product.product_id)
+                    merged.append((product.product_id, product.price))
+                    added = True
+                    if len(merged) >= settings.budget_set_alt_pool:
+                        break
+                if not added:
+                    break
+            pools.append(merged)
         try:
             plan = build_budget_sets(
                 pools=pools,
