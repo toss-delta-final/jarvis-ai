@@ -65,9 +65,7 @@ DEFAULTS = dict(
     cart_item_id_base=300000,
 )
 
-# 주문 "진행 단계" 8종 분포 (사용자 확정 2026-08-04) — 주문 시점과 연동해 배정.
-# ⚠️ 내부 단계 어휘다. DB 로 나갈 때는 orders.status(결제 수준 4종)·order_item.status(이행 9종)로
-#    각각 매핑된다 — 파일 쓰기 직전 _DB_ORDER_STATUS / make_order 의 item_status 참고.
+# 주문상태 8종 분포 (사용자 확정 2026-08-04) — 주문 시점과 연동해 배정
 ORDER_STATUS_DIST = [
     ("DELIVERED", 0.62), ("SHIPPED", 0.10), ("PREPARING", 0.07), ("PAID", 0.06),
     ("PAYMENT_FAILED", 0.05), ("CANCELLED", 0.05), ("RETURNED", 0.03), ("PENDING", 0.02),
@@ -125,27 +123,46 @@ def parse_tuples(sql_text: str):
                 c = sql_text[j]
                 if in_str:
                     if c == "\\":
-                        cur.append(sql_text[j + 1]); j += 2; continue
+                        cur.append(sql_text[j + 1])
+                        j += 2
+                        continue
                     if c == "'":
                         if j + 1 < n and sql_text[j + 1] == "'":
-                            cur.append("'"); j += 2; continue
-                        in_str = False; j += 1; continue
-                    cur.append(c); j += 1; continue
+                            cur.append("'")
+                            j += 2
+                            continue
+                        in_str = False
+                        j += 1
+                        continue
+                    cur.append(c)
+                    j += 1
+                    continue
                 if c == "'":
-                    in_str = True; j += 1; continue
+                    in_str = True
+                    j += 1
+                    continue
                 if c == "(":
                     depth += 1
                     if depth > 1:
                         cur.append(c)
-                    j += 1; continue
+                    j += 1
+                    continue
                 if c == ")":
                     depth -= 1
                     if depth == 0:
-                        fields.append("".join(cur)); j += 1; break
-                    cur.append(c); j += 1; continue
+                        fields.append("".join(cur))
+                        j += 1
+                        break
+                    cur.append(c)
+                    j += 1
+                    continue
                 if c == "," and depth == 1:
-                    fields.append("".join(cur)); cur = []; j += 1; continue
-                cur.append(c); j += 1
+                    fields.append("".join(cur))
+                    cur = []
+                    j += 1
+                    continue
+                cur.append(c)
+                j += 1
             out.append(fields)
             i = j
             while i < n and sql_text[i] in " \r\n\t":
@@ -386,7 +403,8 @@ def hour_weights_kst(stats):
     for x in stats["time_weights_utc"]:
         by_dow[x["isodow"]] += x["weight"]
         by_hour[x["hour"]] += x["weight"]
-    sd = sum(by_dow.values()); sh = sum(by_hour.values())
+    sd = sum(by_dow.values())
+    sh = sum(by_hour.values())
     dow_w = [(d, by_dow[d] / sd) for d in sorted(by_dow)]
     hour_w = [(h, by_hour[h] / sh) for h in sorted(by_hour)]
     return dow_w, hour_w
@@ -417,7 +435,8 @@ def main():
             ap.add_argument(f"--{k.replace('_','-')}", default=v, type=t)
     args = ap.parse_args()
     cfg = {k: getattr(args, k) for k in DEFAULTS}
-    out = Path(args.out_dir); out.mkdir(parents=True, exist_ok=True)
+    out = Path(args.out_dir)
+    out.mkdir(parents=True, exist_ok=True)
 
     rng = random.Random(cfg["rng_seed"])
     stats = json.loads((Path(args.stats_dir) / "stats_jarvis.json").read_text(encoding="utf-8"))
@@ -551,7 +570,6 @@ def main():
     oslogs = []
     carts = defaultdict(dict)   # actor_key -> {(product_id): dict(qty, added_at, updated)}
     cart_events_count = 0
-    checkout_no_purchase_target = []  # 이탈 checkout 세션 만들 후보
 
     oid = cfg["order_id_base"]
     oiid = cfg["order_item_id_base"]
@@ -582,22 +600,18 @@ def main():
             tp = t + timedelta(seconds=rng.randrange(30, 300))
             chain.append(("PENDING", "PAID", "SYSTEM", None, tp))
             order["paid_at"] = tp
-            # 배송 로그는 주문 단위 ORDERED→SHIPPING→DELIVERED 만 (OrderStatusChanger·01 §6.5 —
-            # 결제 직후 아이템 ORDERED 로그 없음, PREPARING/SHIPPED 는 백엔드에 없는 어휘)
-            ship_seq = [("ORDERED", "SHIPPING"), ("SHIPPING", "DELIVERED")]
-            n_ship = dict(PAID=0, PREPARING=0, SHIPPED=1, DELIVERED=2, RETURNED=2, CANCELLED=0)[st]
+            seq = ["PREPARING", "SHIPPED", "DELIVERED"]
+            target_idx = dict(PAID=-1, PREPARING=0, SHIPPED=1, DELIVERED=2, RETURNED=2, CANCELLED=-1)[st]
+            prev = "PAID"
             tt = tp
-            for k in range(n_ship):
+            for k in range(target_idx + 1):
                 tt = tt + timedelta(hours=rng.uniform(8, 40))
-                chain.append((ship_seq[k][0], ship_seq[k][1], "SYSTEM", None, tt))
+                chain.append((prev, seq[k], "SYSTEM", None, tt))
+                prev = seq[k]
             if st == "CANCELLED":
-                tc = tp + timedelta(hours=rng.uniform(0.2, 12))
-                # 클레임 확정 로그(reason 보존, 01 §6.5 규칙 3) + 전량 취소 승격 로그 (02 D32)
-                chain.append(("CANCEL_REQUESTED", "CANCELLED", "USER", rng.choice(CANCEL_REASONS), tc))
-                chain.append(("PAID", "CANCELLED", "USER", None, tc))
+                chain.append(("PAID", "CANCELLED", "USER", rng.choice(CANCEL_REASONS), tp + timedelta(hours=rng.uniform(0.2, 12))))
             if st == "RETURNED":
-                # *_REQUESTED 신청 로그는 미기록(정본은 claim 테이블) — 확정 로그만 남긴다
-                chain.append(("RETURN_REQUESTED", "RETURNED", "USER", rng.choice(RETURN_REASONS), tt + timedelta(days=rng.uniform(1, 5))))
+                chain.append(("DELIVERED", "RETURNED", "USER", rng.choice(RETURN_REASONS), tt + timedelta(days=rng.uniform(1, 5))))
         rows = []
         for fr, to, actor, reason, tt in chain:
             olid += 1
@@ -627,12 +641,15 @@ def main():
         n_lines = sample_lines()
         chosen, seen = [], set()
         first = pick_product(ctx, prefer, purchasable=True, focus_leaf=focus_leaf)
-        chosen.append(first); seen.add(first["id"])
+        chosen.append(first)
+        seen.add(first["id"])
         for _ in range(n_lines - 1):
             for _ in range(30):
                 q = pick_product(ctx, {first["root"]}, purchasable=True)
                 if q["id"] not in seen:
-                    chosen.append(q); seen.add(q["id"]); break
+                    chosen.append(q)
+                    seen.add(q["id"])
+                    break
         oid += 1
         addr = member_addr[member_id]
         st = pick_order_status(t)
@@ -644,10 +661,8 @@ def main():
                      delivery_request=rng.choice(DELIVERY_REQ),
                      paid_at=None, created_at=t + timedelta(seconds=rng.randrange(5, 60)))
         logs = status_logs_for(order, [p["name"] for p in chosen])
-        # OrderItemStatus 어휘(01 §2-2)로 매핑 — PREPARING/SHIPPED 는 enum 에 없다.
-        # 미결제(PENDING/PAYMENT_FAILED) 주문의 아이템은 PENDING (결제 성공 시에만 ORDERED).
-        item_status = {"PENDING": "PENDING", "PAYMENT_FAILED": "PENDING", "PAID": "ORDERED",
-                       "PREPARING": "ORDERED", "SHIPPED": "SHIPPING", "DELIVERED": "DELIVERED",
+        item_status = {"PENDING": "ORDERED", "PAYMENT_FAILED": "ORDERED", "PAID": "ORDERED",
+                       "PREPARING": "PREPARING", "SHIPPED": "SHIPPED", "DELIVERED": "DELIVERED",
                        "CANCELLED": "CANCELLED", "RETURNED": "RETURNED"}[order["status"]]
         st_changed = logs[-1]["created_at"]
         for p in chosen:
@@ -784,7 +799,6 @@ def main():
             focus = leaf_pick["cat"]
 
         viewed = []
-        carted_this = []
         n_views = max(1, n_ev - (2 if is_purchase else (1 if wants_cart else 0)))
         for _ in range(n_views):
             t += timedelta(seconds=rng.uniform(2, min(gap * 1.5, 1500.0)))
@@ -810,7 +824,8 @@ def main():
             cart_events_count += 1
             c = carts[actor_key].get(p["id"])
             if c:
-                c["qty"] += 1; c["updated"] = tt
+                c["qty"] += 1
+                c["updated"] = tt
             else:
                 carts[actor_key][p["id"]] = dict(qty=1, added_at=tt, updated=None, product=p)
 
@@ -870,7 +885,8 @@ def main():
             mc = carts[("m", mid)]
             for pid_, c in gc.items():
                 if pid_ in mc:
-                    mc[pid_]["qty"] += c["qty"]; mc[pid_]["updated"] = c["added_at"]
+                    mc[pid_]["qty"] += c["qty"]
+                    mc[pid_]["updated"] = c["added_at"]
                 else:
                     mc[pid_] = c
 
@@ -883,11 +899,6 @@ def main():
     ev_rows = [(e["member_id"], e["guest_id"], e["session_key"], e["client_event_id"], e["event_type"],
                 e["product_id"], e["properties"], e["occurred_at"], None, None, None, None, e["created_at"])
                for e in sorted(events, key=lambda x: x["occurred_at"])]
-    # orders.status 는 결제 수준 어휘만 (백엔드 OrderStatus: PENDING/PAID/PAYMENT_FAILED/CANCELLED — 01 §2-1).
-    # 내부 진행 단계(PREPARING/SHIPPED/DELIVERED/RETURNED)는 order_item.status·status_logs 로만 표현.
-    _DB_ORDER_STATUS = {"PENDING": "PENDING", "PAYMENT_FAILED": "PAYMENT_FAILED", "CANCELLED": "CANCELLED"}
-    for _o in orders:
-        _o["status"] = _DB_ORDER_STATUS.get(_o["status"], "PAID")
     order_rows = [(o["id"], o["member_id"], o["status"], o["payment_method"], o["total_amount"],
                    o["recipient"], o["phone"], o["zip_code"], o["address1"], o["address2"],
                    o["delivery_request"], o["paid_at"], o["created_at"], None) for o in orders]
@@ -908,7 +919,7 @@ def main():
     write_sql(out / "35_product_brand_fill.sql", "product", [], [],
               header="")  # 별도 UPDATE 형식이라 아래에서 직접 씀
     with open(out / "35_product_brand_fill.sql", "w", encoding="utf-8") as f:
-        f.write(f"-- product.brand_id 보정 (시드 미비 — 승인: 2026-08-04)\n")
+        f.write("-- product.brand_id 보정 (시드 미비 — 승인: 2026-08-04)\n")
         f.write(f"-- ① ci-중복 브랜드 리맵 {len(brand_remap)}건: uk_brand_name 은 case-insensitive 라\n")
         f.write("--    대소문자만 다른 브랜드 행은 적재 시 탈락한다. 탈락 id 참조 상품을 생존 id로 리맵.\n")
         f.write("--    (탈락 브랜드가 실제로 없는 DB에서만 발동 — NOT EXISTS 가드)\n")
