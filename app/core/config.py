@@ -133,8 +133,8 @@ class Settings(BaseSettings):
     # 새 표기마다 임베딩 API+DB write가 I-17에 추가되고 테이블도 아직 미검수 상태이므로 기본 off.
     # 초기 검수 완료 뒤 운영 비용을 확인하고 켠다.
     color_synonym_batch_harvest_enabled: bool = False
-    # 런타임 승인 사전과 배치 수확이 공유하는 dsn별 pg 풀의 단일 총 상한. 두 플래그를 함께
-    # 켜도 색상 보조 경로의 합계 연결 수가 이 값을 넘지 않는다.
+    # 런타임 승인 사전과 배치 수확이 공유하는 dsn별 pg 풀의 단일 총 상한. 배치 수확 예산을
+    # 먼저 떼고 나머지를 검색 전용으로 써, 두 경로의 합계 연결 수가 이 값을 넘지 않는다.
     color_synonym_pool_max_size: int = Field(default=4, ge=1)
     # wait_for 뒤에도 남는 to_thread 작업의 프로세스 동시 상한. 슬롯이 차면 해당 change 수확만
     # 즉시 건너뛰어 I-17 생성물 갱신과 cursor 전진을 지연시키지 않는다.
@@ -150,8 +150,6 @@ class Settings(BaseSettings):
     # 0.85는 측정 오탐을 막고 핵심 정탐을 남기는 최소 안전선일 뿐 정밀도 보증이 아니다.
     # 임계만으로 확정하지 않고 LLM 판정 흔적과 경계 표시를 사람이 함께 검수한다.
     color_synonym_cluster_threshold: float = Field(default=0.85, ge=-1.0, le=1.0)
-    # 임계 바로 위의 불확실한 후보를 검수 큐에서 `확인 필요`로 드러내는 코사인 폭.
-    color_synonym_boundary_band_width: float = Field(default=0.01, ge=0.0, le=2.0)
     # LLM 우선 배정은 꼬리 표기를 20개 기본 청크로 나누며, 이 값은 한 호출에 묶는 청크 수다.
     # 기본 1은 출력 규모를 유계화하고 한 호출 실패를 해당 20개 표기에만 격리한다.
     color_synonym_llm_clusters_per_call: int = Field(default=1, ge=1)
@@ -954,6 +952,22 @@ class Settings(BaseSettings):
                 "must be enabled together only after api-spec §4.6 is revised to "
                 "`color: string[]` and the supporting BE is deployed "
                 "(api-spec §4.6 개정 + BE 배포 선행 필요)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _reserve_color_synonym_runtime_pool_slot(self) -> "Settings":
+        """공유 풀에서 배치 예산을 빼고도 사용자 대면 검색 슬롯을 하나 이상 남긴다."""
+        if (
+            self.color_synonym_harvest_max_concurrency
+            >= self.color_synonym_pool_max_size
+        ):
+            raise ValueError(
+                "COLOR_SYNONYM_HARVEST_MAX_CONCURRENCY must be less than "
+                "COLOR_SYNONYM_POOL_MAX_SIZE "
+                f"(got {self.color_synonym_harvest_max_concurrency} >= "
+                f"{self.color_synonym_pool_max_size}): reserve at least one "
+                "runtime search connection"
             )
         return self
 

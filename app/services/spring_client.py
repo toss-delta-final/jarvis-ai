@@ -125,12 +125,15 @@ def _consume_background_synonym_lookup(task: asyncio.Task[dict[str, list[str]]])
 
 
 async def _load_color_synonym_map(settings) -> dict[str, list[str]] | None:
-    """풀 크기만큼만 승인 사전 worker를 허용하고 포화 시 즉시 degrade한다."""
+    """배치 예산을 제외한 검색 전용 worker만 허용하고 포화 시 즉시 degrade한다."""
     from app.pipelines import color_synonyms  # noqa: PLC0415 - lazy DB 경로
 
     limiter = _color_synonym_limiter(
         settings.catalog_db_url,
-        settings.color_synonym_pool_max_size,
+        (
+            settings.color_synonym_pool_max_size
+            - settings.color_synonym_harvest_max_concurrency
+        ),
     )
     if not limiter.acquire(blocking=False):
         _log.warning("색상 동의어 조회 동시 실행 상한 — 원문 단수 color로 검색")

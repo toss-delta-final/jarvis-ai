@@ -227,3 +227,19 @@ def test_color_synonym_contract_gate_defaults_both_off() -> None:
 
     assert settings.color_synonym_expansion_enabled is False
     assert settings.color_synonym_array_contract_ready is False
+
+
+def test_color_synonym_pool_reserves_at_least_one_runtime_search_slot() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(
+        ValidationError,
+        match="COLOR_SYNONYM_HARVEST_MAX_CONCURRENCY must be less than "
+        "COLOR_SYNONYM_POOL_MAX_SIZE",
+    ):
+        Settings(
+            _env_file=None,
+            color_synonym_pool_max_size=2,
+            color_synonym_harvest_max_concurrency=2,
+        )

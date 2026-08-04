@@ -49,9 +49,6 @@ class ClusterMember:
 class Cluster:
     canonical: str
     members: list[ClusterMember]
-    llm_status: str = "not_run"
-    llm_kept: tuple[ClusterMember, ...] = ()
-    llm_removed: tuple[ClusterMember, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -611,7 +608,6 @@ async def assign_color_clusters(
                     member.term,
                 ),
             ),
-            llm_status="completed",
         )
         for canonical in canonicals
     )
@@ -621,193 +617,6 @@ async def assign_color_clusters(
         tuple(rejections),
         vectors_by_term,
     )
-
-
-def cluster_terms(
-    counts: Counter[str], embed: EmbedFn, *, top_n: int, threshold: float
-) -> list[Cluster]:
-    """빈도 상위 N 앵커는 greedy 병합하고, 나머지 전체 표기를 최근접 앵커에 제안한다."""
-    ranked = sorted(
-        ((term, count) for term, count in counts.items() if term not in NON_COLOR_TERMS),
-        key=lambda item: (-item[1], item[0]),
-    )
-    anchors = ranked[: max(0, top_n)]
-    if not anchors:
-        return []
-    terms = [term for term, _ in ranked]
-    vectors = _embed_in_batches(terms, embed)
-    vectors_by_term = dict(zip(terms, vectors, strict=True))
-    anchor_order = {term: index for index, (term, _) in enumerate(anchors)}
-
-    def ranked_anchors(vector: Sequence[float], *, exclude: str | None = None):
-        scored = [
-            (_cosine(vector, vectors_by_term[anchor]), anchor)
-            for anchor, _ in anchors
-            if anchor != exclude
-        ]
-        scored.sort(key=lambda item: (-item[0], anchor_order[item[1]], item[1]))
-        return scored
-
-    owner_by_anchor: dict[str, str] = {}
-    members_by_canonical: dict[str, list[ClusterMember]] = {}
-    canonical_order: list[str] = []
-
-    # 상위 앵커끼리의 기존 빈도 seed greedy 병합은 유지한다.
-    for seed_term, seed_count in anchors:
-        if seed_term in owner_by_anchor:
-            continue
-        owner_by_anchor[seed_term] = seed_term
-        canonical_order.append(seed_term)
-        second = ranked_anchors(vectors_by_term[seed_term], exclude=seed_term)
-        members = [
-            ClusterMember(
-                seed_term,
-                seed_count,
-                vectors_by_term[seed_term],
-                1.0,
-                is_anchor=True,
-                nearest_anchor=seed_term,
-                second_anchor=second[0][1] if second else None,
-                second_cosine=second[0][0] if second else None,
-                margin=1.0 - second[0][0] if second else None,
-            )
-        ]
-        members_by_canonical[seed_term] = members
-        seed_vector = vectors_by_term[seed_term]
-        for anchor_term, anchor_count in anchors:
-            if anchor_term in owner_by_anchor:
-                continue
-            score = _cosine(seed_vector, vectors_by_term[anchor_term])
-            if score < threshold:
-                continue
-            alternatives = ranked_anchors(vectors_by_term[anchor_term], exclude=anchor_term)
-            second = next(
-                ((sim, term) for sim, term in alternatives if term != seed_term),
-                None,
-            )
-            members.append(
-                ClusterMember(
-                    anchor_term,
-                    anchor_count,
-                    vectors_by_term[anchor_term],
-                    score,
-                    is_anchor=True,
-                    nearest_anchor=seed_term,
-                    second_anchor=second[1] if second else None,
-                    second_cosine=second[0] if second else None,
-                    margin=score - second[0] if second else None,
-                )
-            )
-            owner_by_anchor[anchor_term] = seed_term
-
-    # 희귀 꼬리를 버리지 않고 전부 앵커와 비교한다. 임계 미만은 DB에 미배정 행으로 남는다.
-    for term, count in ranked[len(anchors) :]:
-        nearest = ranked_anchors(vectors_by_term[term])
-        if not nearest or nearest[0][0] < threshold:
-            continue
-        top_score, top_anchor = nearest[0]
-        second_score, second_anchor = nearest[1] if len(nearest) > 1 else (None, None)
-        canonical = owner_by_anchor[top_anchor]
-        members_by_canonical[canonical].append(
-            ClusterMember(
-                term,
-                count,
-                vectors_by_term[term],
-                top_score,
-                nearest_anchor=top_anchor,
-                second_anchor=second_anchor,
-                second_cosine=second_score,
-                margin=top_score - second_score if second_score is not None else None,
-            )
-        )
-
-    clusters: list[Cluster] = []
-    for canonical in canonical_order:
-        clusters.append(Cluster(canonical=canonical, members=members_by_canonical[canonical]))
-    return clusters
-
-
-async def _refine_cluster_chunk(
-    clusters: list[Cluster],
-    llm: LLMClient,
-    *,
-    max_tokens: int,
-) -> list[Cluster]:
-    """한 유계 청크를 다듬고 이 청크만 실패 격리한다."""
-    if not clusters:
-        return []
-    payload = [
-        {"canonical": cluster.canonical, "terms": [member.term for member in cluster.members]}
-        for cluster in clusters
-    ]
-    try:
-        raw = await llm.complete(
-            system=(
-                "색상 동의어 군집 검수 보조다. 같은 색이 아닌 표기만 제거한다. "
-                "표기를 추가하거나 canonical을 바꾸지 말고 JSON clusters[{canonical,keep[]}]만 반환하라."
-            ),
-            user=json.dumps(payload, ensure_ascii=False),
-            tier="fast",
-            max_tokens=max_tokens,
-            json_output=True,
-        )
-        data = json.loads(raw)
-        decisions = data.get("clusters") if isinstance(data, dict) else None
-        if not isinstance(decisions, list):
-            raise ValueError("clusters 배열 없음")
-        keeps = {
-            item["canonical"]: set(item["keep"])
-            for item in decisions
-            if isinstance(item, dict)
-            and isinstance(item.get("canonical"), str)
-            and isinstance(item.get("keep"), list)
-            and all(isinstance(term, str) for term in item["keep"])
-        }
-        refined: list[Cluster] = []
-        for cluster in clusters:
-            allowed = keeps.get(cluster.canonical)
-            if allowed is None:
-                refined.append(Cluster(cluster.canonical, cluster.members, llm_status="failed"))
-                continue
-            # canonical 자체는 대표 표기이므로 LLM이 실수로 빼도 보존한다.
-            members = [
-                member
-                for member in cluster.members
-                if member.term == cluster.canonical or member.term in allowed
-            ]
-            removed = [member for member in cluster.members if member not in members]
-            refined.append(
-                Cluster(
-                    cluster.canonical,
-                    members,
-                    llm_status="completed",
-                    llm_kept=tuple(members),
-                    llm_removed=tuple(removed),
-                )
-            )
-        return refined
-    except Exception:  # LLM/파싱 실패는 1차 군집으로 안전 degrade
-        _log.warning("색상 군집 LLM 다듬기 실패 — 1차 군집 그대로 사용", exc_info=True)
-        return [
-            Cluster(cluster.canonical, cluster.members, llm_status="failed") for cluster in clusters
-        ]
-
-
-async def refine_clusters(
-    clusters: list[Cluster],
-    llm: LLMClient,
-    *,
-    clusters_per_call: int,
-    max_tokens: int,
-) -> list[Cluster]:
-    """군집을 유계 청크로 나눠 다듬고, 실패한 청크만 미판정으로 남긴다."""
-    if clusters_per_call < 1:
-        raise ValueError("clusters_per_call must be >= 1")
-    refined: list[Cluster] = []
-    for start in range(0, len(clusters), clusters_per_call):
-        chunk = clusters[start : start + clusters_per_call]
-        refined.extend(await _refine_cluster_chunk(chunk, llm, max_tokens=max_tokens))
-    return refined
 
 
 def _write_assignment_review_queue(
@@ -887,78 +696,13 @@ def _write_assignment_review_queue(
 
 
 def write_review_queue(
-    clusters: Sequence[Cluster] | ClusteringResult,
+    result: ClusteringResult,
     path: str | Path,
     *,
     threshold: float,
-    boundary_band_width: float,
 ) -> None:
-    """LLM 판정 흔적과 임계 경계를 숨기지 않는 Markdown 검수 대기 목록을 쓴다."""
-    if isinstance(clusters, ClusteringResult):
-        _write_assignment_review_queue(clusters, path, threshold=threshold)
-        return
-    lines = [
-        "# 색상 동의어 검수 대기 목록",
-        "",
-        "> 자동 승인되지 않은 제안입니다.",
-        "> 알려진 실패 모드: 임베딩에서 다크/라이트 같은 수식어 토큰이 색상 어근을 지배해",
-        "> `다크그린 → 다크그레이`처럼 의미가 다른 앵커가 1위가 될 수 있습니다.",
-        "",
-    ]
-    for cluster in clusters:
-        lines.extend([f"## {cluster.canonical}", ""])
-        if cluster.llm_status == "completed":
-            kept = ", ".join(member.term for member in cluster.llm_kept) or "없음"
-            removed = ", ".join(member.term for member in cluster.llm_removed) or "없음"
-            lines.extend(["- LLM 실행: 성공", f"- 유지: {kept}", f"- 제거: {removed}"])
-            candidates = (*cluster.llm_kept, *cluster.llm_removed)
-        elif cluster.llm_status == "failed":
-            lines.append("- LLM 실행: 실패 (1차 군집을 미판정 상태로 유지)")
-            candidates = tuple(cluster.members)
-        else:
-            lines.append("- LLM 실행: 미실행")
-            candidates = tuple(cluster.members)
-        lines.extend(
-            [
-                "",
-                "| 표기 | 상품 수 | 1위 앵커 | 2위 앵커 | 마진 | LLM 결과 | 경계 |",
-                "|---|---:|---|---|---:|---|---|",
-            ]
-        )
-        removed_terms = {member.term for member in cluster.llm_removed}
-        ordered = sorted(
-            candidates,
-            key=lambda member: (
-                member.term != cluster.canonical,
-                member.margin is None,
-                member.margin if member.margin is not None else math.inf,
-                -member.doc_count,
-                member.term,
-            ),
-        )
-        for member in ordered:
-            if cluster.llm_status == "failed":
-                llm_result = "미판정"
-            elif member.term in removed_terms:
-                llm_result = "제거 제안"
-            else:
-                llm_result = "유지 제안"
-            boundary = (
-                "확인 필요" if threshold <= member.cosine < threshold + boundary_band_width else ""
-            )
-            top_anchor = member.nearest_anchor or cluster.canonical
-            second = (
-                f"{member.second_anchor} {member.second_cosine:.4f}"
-                if member.second_anchor is not None and member.second_cosine is not None
-                else ""
-            )
-            margin = f"{member.margin:.4f}" if member.margin is not None else ""
-            lines.append(
-                f"| {member.term} | {member.doc_count} | {top_anchor} {member.cosine:.4f} "
-                f"| {second} | {margin} | {llm_result} | {boundary} |"
-            )
-        lines.append("")
-    Path(path).write_text("\n".join(lines), encoding="utf-8")
+    """LLM 배정과 임베딩 교차검증 근거를 Markdown 검수 대기 목록에 쓴다."""
+    _write_assignment_review_queue(result, path, threshold=threshold)
 
 
 UPSERT_COLOR_TERM_SQL = """
@@ -1134,23 +878,6 @@ def harvest_new_terms(
         return _execute_color_term_upserts(conn, rows, model)
 
 
-def _rows_from_clusters(counts: Counter[str], clusters: Sequence[Cluster]) -> list[ColorTermRow]:
-    assignments: dict[str, tuple[str, list[float]]] = {}
-    for cluster in clusters:
-        for member in cluster.members:
-            assignments[member.term] = (cluster.canonical, member.embedding)
-    return [
-        ColorTermRow(
-            term=term,
-            canonical=assignments.get(term, (None, None))[0],
-            embedding=assignments.get(term, (None, None))[1],
-            provenance="seed_pipeline",
-            doc_count=count,
-        )
-        for term, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
-    ]
-
-
 def _rows_from_result(
     counts: Counter[str],
     result: ClusteringResult,
@@ -1214,7 +941,6 @@ async def build(
         result,
         review_path,
         threshold=settings.color_synonym_cluster_threshold if threshold is None else threshold,
-        boundary_band_width=settings.color_synonym_boundary_band_width,
     )
     rows = _rows_from_result(counts, result)
     upserted = await asyncio.to_thread(

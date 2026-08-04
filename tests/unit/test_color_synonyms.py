@@ -88,7 +88,7 @@ def test_runtime_connection_pool_uses_configured_max_size(monkeypatch) -> None:
     assert captured["max_size"] == 7
 
 
-def test_runtime_connection_pool_accepts_configured_boundary_size_one(monkeypatch) -> None:
+def test_runtime_connection_pool_accepts_configured_boundary_size_two(monkeypatch) -> None:
     from app.core import config
     import psycopg_pool
 
@@ -97,14 +97,18 @@ def test_runtime_connection_pool_accepts_configured_boundary_size_one(monkeypatc
     def closed_pool(dsn, **kwargs):
         return real_pool(dsn, **{**kwargs, "open": False})
 
-    settings = Settings(_env_file=None, color_synonym_pool_max_size=1)
+    settings = Settings(
+        _env_file=None,
+        color_synonym_pool_max_size=2,
+        color_synonym_harvest_max_concurrency=1,
+    )
     monkeypatch.setattr(config, "get_settings", lambda: settings)
     monkeypatch.setattr(psycopg_pool, "ConnectionPool", closed_pool)
     monkeypatch.setattr(color_synonyms, "_pools", {})
 
     pool = color_synonyms._get_pool("postgresql://example.invalid/catalog")
     try:
-        assert pool.min_size <= pool.max_size == 1
+        assert pool.min_size <= pool.max_size == 2
     finally:
         pool.close()
 

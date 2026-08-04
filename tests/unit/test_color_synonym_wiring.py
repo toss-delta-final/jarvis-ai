@@ -110,7 +110,8 @@ async def test_expansion_saturation_degrades_immediately_then_recovers(monkeypat
     first_settings = get_settings().model_copy(
         update={
             "color_synonym_expansion_enabled": True,
-            "color_synonym_pool_max_size": 1,
+            "color_synonym_pool_max_size": 2,
+            "color_synonym_harvest_max_concurrency": 1,
             "color_synonym_query_timeout_s": 0.01,
         }
     )
