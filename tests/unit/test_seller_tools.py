@@ -915,6 +915,127 @@ async def test_behavior_tool_skips_clustering_for_few_products_with_reason() -> 
     assert "행동 군집" not in result
 
 
+async def test_behavior_tool_date_series_flags_spike_with_price_change_overlap() -> None:
+    """[#290 abuse Point 트랙] date-groupBy 일별 총량의 MAD 스파이크를 표기하고,
+    스파이크일이 가격/재고 변경일과 겹치면 '정상 설명 후보'를 동봉한다(오탐 통제)."""
+
+    class SpikyWithPriceChange(FakeSpringClient):
+        async def get_events(
+            self, brand_id, from_, to, event_type=None, product_id=None, group_by=None
+        ):
+            self.recorded_brand_id = brand_id
+            series = [
+                {"date": f"2026-07-{d:02d}", "productView": 100, "addToCart": 10}
+                for d in range(1, 10)
+            ]
+            series.append({"date": "2026-07-10", "productView": 5000, "addToCart": 400})
+            return BehaviorEventsResult(group_by="date", series=series)
+
+        async def get_product_changes(self, brand_id, from_, to, change_type=None, product_id=None):
+            return ProductChangeLogResult(
+                rows=[
+                    ProductChangeLogRow(
+                        product_id=7,
+                        change_type="PRICE",
+                        old_value="20000",
+                        new_value="9900",
+                        created_at="2026-07-10T09:00:00+09:00",
+                    )
+                ],
+                total=1,
+            )
+
+    result = await _call_runtime_tool(
+        get_behavior_events,
+        {"from_date": "2026-07-01", "to_date": "2026-07-10", "group_by": "date"},
+        SpikyWithPriceChange(),
+    )
+
+    assert "일별 볼륨 스파이크 1건" in result
+    assert "2026-07-10" in result and "robust z" in result
+    assert "정상 설명 후보" in result  # 가격 인하와 겹침 — 봇 단정 오탐 통제
+
+
+async def test_behavior_tool_date_series_survives_change_log_failure() -> None:
+    """[#290] I-15 대조 실패는 보조 실패 — 스파이크 보고는 유지, 겹침 미확인만 고지."""
+
+    class SpikyChangeLogFails(FakeSpringClient):
+        async def get_events(
+            self, brand_id, from_, to, event_type=None, product_id=None, group_by=None
+        ):
+            series = [{"date": f"2026-07-{d:02d}", "productView": 100} for d in range(1, 10)]
+            series.append({"date": "2026-07-10", "productView": 5000})
+            return BehaviorEventsResult(group_by="date", series=series)
+
+        async def get_product_changes(self, brand_id, from_, to, change_type=None, product_id=None):
+            raise SpringUnavailableError("Spring 콜백 타임아웃(3.0s): get_product_changes")
+
+    result = await _call_runtime_tool(
+        get_behavior_events,
+        {"from_date": "2026-07-01", "to_date": "2026-07-10", "group_by": "date"},
+        SpikyChangeLogFails(),
+    )
+
+    assert not result.startswith("Error:")
+    assert "일별 볼륨 스파이크 1건" in result
+    assert "겹침 미확인" in result
+
+
+async def test_behavior_tool_product_rows_flag_ratio_outliers() -> None:
+    """[#290 abuse Contextual 트랙] 브랜드 내 비율 분포의 Tukey 상위 fence 초과 상품을
+    표기한다 — '조회 폭증+구매 0' 패턴은 패턴명을 병기한다."""
+    rows = [_behavior_row(100 + i, 100, 10, 5, 4) for i in range(6)]
+    rows.append(_behavior_row(999, 5000, 12, 1, 0))  # 조회 폭증 + 구매 0
+    fake = FakeSpringClient()
+    fake.behavior_result = BehaviorEventsResult(group_by="product", rows=rows, total=len(rows))
+
+    result = await _call_runtime_tool(
+        get_behavior_events, {"from_date": "2026-07-01", "to_date": "2026-07-14"}, fake
+    )
+
+    assert "상품 비율 이상치" in result
+    assert "[999]" in result
+    assert "구매 0 — 조회 폭증 패턴" in result
+
+
+async def test_account_events_hour_group_reports_night_share(monkeypatch) -> None:
+    """[#290 abuse Collective 트랙] hour-groupBy 는 심야(0~6시) 활동 비중을 계산해
+    붙인다 — 심야 편중은 봇 신호(Tan & Kumar)다."""
+    _enable_account_events(monkeypatch)
+    fake = FakeSpringClient()
+    fake.account_events_result = AccountEventsResult(
+        group_by="hour",
+        rows=[{"key": 2, "count": 300}, {"key": 4, "count": 200}, {"key": 15, "count": 500}],
+    )
+
+    result = await _call_account_events(
+        {"from_date": "2026-07-01", "to_date": "2026-07-31", "group_by": "hour"}, fake
+    )
+
+    assert "심야(0~6시) 활동 비중 50.0%(500/1000건)" in result
+
+
+async def test_account_events_ip_group_sorts_by_fail_count(monkeypatch) -> None:
+    """[#290 abuse Collective 트랙] ip-groupBy 는 failCount 내림차순으로 정렬해 무차별
+    대입 신호를 상단에 노출하고 isSuspicious 건수를 요약한다."""
+    _enable_account_events(monkeypatch)
+    fake = FakeSpringClient()
+    fake.account_events_result = AccountEventsResult(
+        group_by="ip",
+        rows=[
+            {"ipMasked": "1.2.3.*", "failCount": 2, "isSuspicious": False},
+            {"ipMasked": "9.9.9.*", "failCount": 42, "isSuspicious": True},
+        ],
+    )
+
+    result = await _call_account_events(
+        {"from_date": "2026-07-01", "to_date": "2026-07-31", "group_by": "ip"}, fake
+    )
+
+    assert result.index("9.9.9.*") < result.index("1.2.3.*")  # failCount 상위 우선
+    assert "isSuspicious(코드 판정) 1건" in result
+
+
 async def test_behavior_tool_shows_all_seed_products_within_cap() -> None:
     """[#196] 상품별 rows 상한을 I-13 전용 seller_summary_max_products(10)로 분리 —
     시드 브랜드 7종이 구 공용 상한(5)에 잘리지 않고 전부 상세 노출된다."""

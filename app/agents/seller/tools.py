@@ -23,7 +23,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
 
 from app.agents.seller import calc
-from app.agents.seller.analysis import proportions, segmentation, timeseries
+from app.agents.seller.analysis import outliers, proportions, segmentation, timeseries
 from app.agents.seller.context import SellerContext
 from app.core.config import get_settings
 from app.core.tracing import trace_span
@@ -407,6 +407,60 @@ def _summarize_behavior_clusters(rows: list, settings) -> str:
     )
 
 
+def _summarize_ratio_outliers(rows: list, settings) -> str:
+    """상품별 비율의 브랜드 내 Tukey 상위 fence 초과 요약 (#290 abuse Contextual 트랙).
+
+    비율 3종은 전부 "높을수록 의심" 방향(Tan & Kumar 봇 피처의 집계 단위 번역):
+    - 조회/구매: purchase=0 이면 분모 1 로 치환 — "조회 폭증+구매 0" 패턴이 그대로
+      큰 값으로 드러난다(패턴명을 문구에 병기).
+    - 담기율(cart/view): 장바구니 어뷰징(담기 봇) 신호.
+    - 방문자당 조회(view/visitors): 소수 방문자의 반복 조회(크롤러/봇) 신호.
+    """
+    per_metric: dict[str, list[tuple[str, float]]] = {
+        "조회/구매": [],
+        "담기율": [],
+        "방문자당 조회": [],
+    }
+    zero_purchase_ids: set[str] = set()
+    for row in rows:
+        counts = row.counts
+        view = counts.get("productView", 0)
+        purchase = counts.get("purchaseComplete", 0)
+        cart = counts.get("addToCart", 0)
+        target = f"[{row.product_id}]"
+        if view > 0:
+            per_metric["조회/구매"].append((target, view / max(1, purchase)))
+            if purchase == 0:
+                zero_purchase_ids.add(target)
+            per_metric["담기율"].append((target, cart / view))
+            if row.unique_visitors:
+                per_metric["방문자당 조회"].append((target, view / row.unique_visitors))
+    flags = []
+    for metric, items in per_metric.items():
+        flags.extend(outliers.tukey_upper_outliers(items, k=settings.seller_tukey_k, metric=metric))
+    if not flags:
+        # 최대 표본 기준으로 판정 수행 여부를 구분한다 — "없음"과 "판정 보류"는 다르다.
+        max_items = max((len(items) for items in per_metric.values()), default=0)
+        if max_items >= 4:
+            return f" 상품 비율 이상치 없음(Tukey Q3+{settings.seller_tukey_k:g}×IQR 기준)."
+        return " 상품 비율 이상치 판정 보류(비교 가능 상품 4개 미만)."
+    parts = []
+    for flag in flags:
+        pattern_note = (
+            ", 구매 0 — 조회 폭증 패턴"
+            if flag.metric == "조회/구매" and flag.target in zero_purchase_ids
+            else ""
+        )
+        parts.append(
+            f"{flag.target} {flag.metric} {flag.value:,.1f}"
+            f"(상위 기준 {flag.threshold:,.1f} 초과{pattern_note})"
+        )
+    return (
+        f" 상품 비율 이상치 {len(flags)}건"
+        f"(브랜드 내 Tukey Q3+{settings.seller_tukey_k:g}×IQR 초과): " + ", ".join(parts) + "."
+    )
+
+
 def _summarize_behavior(result: BehaviorEventsResult) -> str:
     """I-13 응답을 groupBy 3형에 맞춰 요약한다(REALIGN ②-3 — 확정 명세 기준)."""
     settings = get_settings()
@@ -442,7 +496,11 @@ def _summarize_behavior(result: BehaviorEventsResult) -> str:
         # [#290] 상품 군집화(Chen 2012 k-means + Moe 2003 유형론) — 절단 전 전체 rows 로
         # 군집을 만들어 LLM 이 상품 나열이 아니라 군집 단위(카트이탈형 등)로 해석하게 한다.
         cluster_note = _summarize_behavior_clusters(result.rows, settings)
-        return f"상품별 {len(shown)}건: " + "; ".join(lines) + omitted_note + cluster_note
+        # [#290] abuse Contextual 트랙 — 브랜드 내 비율 분포의 Tukey 상위 fence 초과.
+        ratio_note = _summarize_ratio_outliers(result.rows, settings)
+        return (
+            f"상품별 {len(shown)}건: " + "; ".join(lines) + omitted_note + cluster_note + ratio_note
+        )
     if result.counts:  # groupBy=eventType
         return "유형별 합계: " + ", ".join(f"{k}={v}" for k, v in result.counts.items())
     if result.series:  # groupBy=date — 키 동적(date + camelCase 카운트)
@@ -486,7 +544,66 @@ async def get_behavior_events(
     summary = _summarize_behavior(result)
     if not summary:
         return f"행동 이벤트 0건. {_reference_note(from_date, to_date)}"
-    return f"{summary}. {_BEHAVIOR_AUTHORITY_NOTE} {_reference_note(from_date, to_date)}"
+    # [#290] abuse Point 트랙 — date-groupBy 일별 총량의 MAD 스파이크 + 가격/재고
+    # 변경일 겹침 대조(오탐 통제). product-groupBy 의 Contextual 트랙은
+    # _summarize_behavior 내부(_summarize_ratio_outliers)에서 부착된다.
+    spike_note = ""
+    if result.series:
+        spike_note = await _point_spike_note(brand_id, from_date, to_date, result.series)
+    return (
+        f"{summary}.{spike_note} {_BEHAVIOR_AUTHORITY_NOTE} {_reference_note(from_date, to_date)}"
+    )
+
+
+async def _point_spike_note(brand_id: int, from_date: str, to_date: str, series: list) -> str:
+    """I-13 일별 시계열의 볼륨 스파이크 요약 (#290 abuse Point 트랙 — Chandola).
+
+    스파이크일이 가격/재고 변경 이력(I-15)과 겹치면 "정상 설명 후보"를 동봉한다 —
+    프로모션 가격 인하로 인한 트래픽 급증을 봇으로 단정하는 오탐을 통제한다.
+    I-15 실패는 보조 대조 실패 — 스파이크 보고는 유지하고 대조만 생략(§3.4 관용).
+    """
+    settings = get_settings()
+    dates: list[str] = []
+    totals: list[float] = []
+    for point in series:
+        day = point.get("date")
+        if day is None:
+            continue  # 비정상 행 관대 수신
+        dates.append(str(day))
+        totals.append(float(sum(v for k, v in point.items() if k != "date" and isinstance(v, int))))
+    try:
+        spikes = outliers.mad_spikes(
+            dates, totals, threshold=settings.seller_mad_threshold, metric="일별 이벤트 총량"
+        )
+    except ValueError as exc:
+        _log.warning("볼륨 스파이크 판정 불가 — 분석 설정 오류: %s", exc)
+        return " 일별 볼륨 스파이크 판정 불가(분석 설정 오류)."
+    if not spikes:
+        return f" 일별 볼륨 스파이크 없음(robust z<{settings.seller_mad_threshold})."
+    change_dates: set[str] = set()
+    overlap_checked = True
+    try:
+        changes = await get_spring_client().get_product_changes(
+            brand_id, from_date, to_date, None, None
+        )
+        change_dates = {row.created_at[:10] for row in changes.rows if row.created_at}
+    except SpringUnavailableError as exc:
+        _log.warning("스파이크-변경 이력 대조 불가(I-15 실패) — 대조 생략: %s", exc)
+        overlap_checked = False
+    parts = []
+    for spike in spikes:
+        z_note = "∞" if spike.value == float("inf") else f"{spike.value:.1f}"
+        raw = totals[dates.index(spike.target)]
+        note = f"{spike.target} 총 {raw:,.0f}건(robust z {z_note}≥{spike.threshold:g})"
+        if spike.target in change_dates:
+            note += " ※당일 가격/재고 변경 이력 있음 — 정상 설명 후보"
+        parts.append(note)
+    unchecked_note = " (변경 이력 대조 실패 — 겹침 미확인)" if not overlap_checked else ""
+    return (
+        f" 일별 볼륨 스파이크 {len(spikes)}건(봇 유입 신호 후보): "
+        + ", ".join(parts)
+        + f".{unchecked_note}"
+    )
 
 
 # I-14/I-15 기록 규칙 주의 문구 (REALIGN ②-4 — schema.sql D32/D34 확정 반영).
@@ -908,9 +1025,35 @@ async def get_account_events(
         return (
             f"계정/보안 이벤트 0건(전역, groupBy={applied}). {_reference_note(from_date, to_date)}"
         )
+    # [#290] abuse Collective 트랙 — hour: 심야 활동 비중 / ip: failCount 내림차순
+    # 정렬 + isSuspicious(코드 판정 — 번복 금지 규칙은 프롬프트 소관) 건수 요약.
+    rows = result.rows
+    collective_note = ""
+    settings = get_settings()
+    if applied == "hour":
+        share = outliers.night_activity_share(
+            rows,
+            start=settings.seller_night_hours_start,
+            end=settings.seller_night_hours_end,
+        )
+        collective_note = (
+            f" 심야({settings.seller_night_hours_start}~{settings.seller_night_hours_end}시)"
+            f" 활동 비중 {share[0]:.1%}({share[1]}/{share[2]}건)."
+            if share is not None
+            else " 심야 활동 비중 판정 보류(유효 집계 없음)."
+        )
+    elif applied == "ip":
+
+        def _fail_count(row: dict) -> int:
+            count = row.get("failCount", 0)
+            return count if isinstance(count, int) else 0
+
+        rows = sorted(rows, key=_fail_count, reverse=True)  # 무차별 대입 신호 우선 노출
+        suspicious = sum(1 for row in rows if row.get("isSuspicious") is True)
+        collective_note = f" failCount 내림차순 정렬 — isSuspicious(코드 판정) {suspicious}건."
     return (
-        f"계정/보안 이벤트 {len(result.rows)}건(전역, groupBy={applied}): "
-        f"{_summarize_events(result.rows)}. {_reference_note(from_date, to_date)}"
+        f"계정/보안 이벤트 {len(rows)}건(전역, groupBy={applied}): "
+        f"{_summarize_events(rows)}.{collective_note} {_reference_note(from_date, to_date)}"
     )
 
 
