@@ -96,12 +96,18 @@ def _resolve_remove_targets(
     "앞뒤가 공백/문장부호가 아니면 무효" 규칙은 "그 세제**를** 빼줘"(목적격 조사가 이름 바로
     뒤에 붙는 정상 발화)를 깨뜨리므로, 오른쪽 경계에 한국어 조사를 허용하는
     `negation.matches_name_unnegated` 를 새로 만들어 쓴다(기존 `matches_unnegated` 에 합치지
-    않은 이유는 그 함수 정의를 보라 — 동사구 매칭과 이름 매칭은 경계 개념이 다르다). **알려진
-    한계**: 이름 뒤가 **공백**이면(문장부호도 조사도 아니어도) 여전히 매칭되므로 "이어폰 케이스
-    빼줘"(장바구니에 이어폰만 있음)에서 "이어폰"이 오탐하는 문제는 이 라운드에서 고치지
-    않는다 — 사용자가 말한 "이어폰 케이스"가 통짜 상품명인지 알려면 장바구니에 없는 그 상품의
-    이름이 필요한데 그 정보가 없고, "뒤에 명사가 더 오면 무효" 같은 추측성 휴리스틱은 "이어폰
-    이랑 세제 빼줘" 같은 정상 발화를 깨뜨린다. 플래그를 켜기 전에 다시 볼 항목이다.
+    않은 이유는 그 함수 정의를 보라 — 동사구 매칭과 이름 매칭은 경계 개념이 다르다).
+
+    **[라운드 17, head `6ab47c9` 리뷰]** 라운드 15 는 "이름 뒤가 공백이면(문장부호도 조사도
+    아니어도) 여전히 매칭"되는 문제를 "덜 친절한 문구"급 알려진 한계로 미뤘는데, 그 판단이
+    틀렸다 — "이어폰 케이스 빼줘"(장바구니에 이어폰만 있음)는 사용자가 요청하지 않은
+    "이어폰"이 확인 없이 삭제되는 **파괴적 동작**이라, 이 판별기 전체가 막으려던 바로 그
+    클래스다. `matches_name_unnegated` 의 오른쪽 경계를 "이름 + (조사) + (filler) + 표지"
+    형태만 인정하도록 전면 개정했다(구체적인 조사·filler 소비 순서와 `other_names` 로 다른
+    항목 이름 나열까지 인정하는 이유는 그 함수 정의를 보라 — 이름 매칭 로직 자체는 여기서
+    새로 만들지 않고 그 공용 함수를 그대로 쓴다). 이제 남는 진짜 한계는: filler 목록이나
+    표지 목록에 없는 낯선 수식어가 이름과 표지 사이에 오면("이어폰 저거 빼줘"처럼) 여전히
+    매칭에서 제외될 수 있다는 정도이고, 이건 "친절함"의 문제이지 "파괴적 오삭제"가 아니다.
 
     경계 검사가 2번을 정확하게 만들어도(=이제 "이어폰케이스"의 "이어폰"을 매칭에서 뺀다),
     장바구니가 1건뿐이면 4번이 표지 없이도 그 1건을 자동으로 고르므로 **결과가 그대로 같아질
@@ -120,6 +126,7 @@ def _resolve_remove_targets(
     if not has_negation and any(marker in message for marker in settings.cart_remove_all_markers):
         return list(items)
 
+    all_names = [name for item in items if (name := _strip_unsafe(item.product_name or ""))]
     name_matches = [
         item
         for item in items
@@ -131,6 +138,9 @@ def _resolve_remove_targets(
             settings.utterance_negation_window,
             settings.utterance_prefix_negation_markers,
             settings.utterance_name_boundary_particles,
+            settings.utterance_name_trailing_filler_words,
+            settings.cart_remove_markers,
+            all_names,
         )
     ]
     if name_matches:

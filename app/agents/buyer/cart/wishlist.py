@@ -89,10 +89,15 @@ def _resolve_wishlist_remove_target(
     **[라운드 15, head `0b33e06` 리뷰 B]** 1번의 이름 매칭에 경계 검사가 없어 "이어폰케이스
     찜 빼줘"류(찜 목록에 이어폰만 있음)에서 다른 낱말에 파묻힌 이름까지 매칭됐다. `remove.py`
     와 같은 이유로 `negation.matches_name_unnegated`(오른쪽 경계에 한국어 조사를 허용하는
-    전용 헬퍼, `matches_unnegated` 와 별개 — 그 함수 정의의 근거 참조)를 쓴다. **알려진
-    한계**: 이름 뒤가 공백이면(예 "이어폰 케이스 찜 빼줘") 여전히 매칭되는 문제는 `remove.py`
-    와 동일하게 이 라운드에서 고치지 않는다 — 근거도 같다(장바구니에 없는 상품명을 알아야
-    풀리는 문제라 이 함수가 가진 정보로는 못 고치고, 추측성 휴리스틱은 정상 발화를 깨뜨린다).
+    전용 헬퍼, `matches_unnegated` 와 별개 — 그 함수 정의의 근거 참조)를 쓴다.
+
+    **[라운드 17, head `6ab47c9` 리뷰]** 라운드 15 는 이름 뒤가 공백이면(예 "이어폰 케이스
+    찜 빼줘") 여전히 매칭되는 문제를 알려진 한계로 미뤘는데, 그 판단이 틀렸다 — 찜 목록에
+    "이어폰"만 있을 때 이 발화는 사용자가 요청하지 않은 "이어폰"을 확인 없이 해제하는
+    **파괴적 동작**이다(`remove.py` 와 같은 이유, 그 파일 docstring 참조). `matches_name_
+    unnegated` 오른쪽 경계를 "이름 + (조사) + (filler) + 표지" 형태만 인정하도록 고쳐서
+    해결했다 — 판정은 `remove.py` 와 완전히 같은 공용 함수(`negation.matches_name_unnegated`)
+    를 그대로 쓴다(새로 구현하지 않는다).
 
     경계 검사가 1번을 정확하게 만들어도, 찜 목록이 1건뿐이면 3번(목록 1건 자동)이 표지 없이도
     그 1건을 자동 선택해 같은 결과가 나올 수 있다 — `remove.py` 와 같은 이유로 3번에도 이름을
@@ -112,6 +117,7 @@ def _resolve_wishlist_remove_target(
     _resolve_remove_targets` 는 네 규칙 모두 이미 가드를 받고 있어(라운드 10·11·15) 손대지
     않는다.
     """
+    all_names = [name for item in items if (name := _strip_unsafe(item.name or ""))]
     name_matches = [
         item
         for item in items
@@ -123,6 +129,9 @@ def _resolve_wishlist_remove_target(
             settings.utterance_negation_window,
             settings.utterance_prefix_negation_markers,
             settings.utterance_name_boundary_particles,
+            settings.utterance_name_trailing_filler_words,
+            settings.wishlist_remove_markers,
+            all_names,
         )
     ]
     if name_matches:

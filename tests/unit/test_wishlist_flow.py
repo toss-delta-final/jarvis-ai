@@ -807,6 +807,95 @@ def test_resolve_wishlist_remove_target_boundary_violation_blocks_single_auto() 
     assert result_no_name.product_id == 10
 
 
+# ─── 라운드 17(head `6ab47c9` 리뷰): 이름 뒤 "조사+filler+표지" 만 유효 매칭으로 인정 — 찜 동형 ───
+
+
+def test_resolve_wishlist_remove_target_spaced_name_followed_by_other_word_asks() -> None:
+    """고쳐지는 것(라운드 17 패킷 핵심, 찜 동형) — "이어폰 케이스 찜 빼줘"(찜 목록에 이어폰만
+    있음)는 사용자가 요청하지 않은 "이어폰"을 확인 없이 해제하는 파괴적 동작이었다(재현).
+    "케이스"가 조사·filler·표지 어느 것도 아니라 이제 되물음이어야 한다."""
+    from app.agents.buyer.cart.wishlist import _resolve_wishlist_remove_target
+
+    items = [_wishlist_item(10, "이어폰")]
+    result = _resolve_wishlist_remove_target(
+        CartIntent(product_id=None), "이어폰 케이스 찜 빼줘", items, get_settings()
+    )
+    assert result is None
+
+
+def test_resolve_wishlist_remove_target_name_followed_by_filler_then_marker_still_matches() -> None:
+    """깨지면 안 되는 것 — "이어폰 좀 찜 빼줘"는 "좀"이 filler 라 소비되고 뒤에 표지("찜 빼줘")
+    가 오므로 여전히 매칭돼야 한다."""
+    from app.agents.buyer.cart.wishlist import _resolve_wishlist_remove_target
+
+    items = [_wishlist_item(10, "이어폰")]
+    result = _resolve_wishlist_remove_target(
+        CartIntent(product_id=None), "이어폰 좀 찜 빼줘", items, get_settings()
+    )
+    assert result is not None
+    assert result.product_id == 10
+
+
+def test_resolve_wishlist_remove_target_particle_then_marker_still_matches() -> None:
+    """회귀 — 목적격 조사가 이름 바로 뒤에 붙고 곧장 표지가 오는 정상 발화는 계속 매칭돼야
+    한다."""
+    from app.agents.buyer.cart.wishlist import _resolve_wishlist_remove_target
+
+    items = [_wishlist_item(20, "세제")]
+    result = _resolve_wishlist_remove_target(
+        CartIntent(product_id=None), "그 세제를 찜 빼줘", items, get_settings()
+    )
+    assert result is not None
+    assert result.product_id == 20
+
+
+def test_resolve_wishlist_remove_target_ambiguous_listing_with_particle_still_asks() -> None:
+    """깨지면 안 되는 것(핵심 회귀, 찜 동형) — "파우치 블루랑 파우치 레드 찜 빼줘"는 다른
+    항목 이름 허용이 없으면 "파우치 블루"만 무효로 걸러지고 모호 판정이 깨진다. 둘 다 유효해야
+    모호(되물음)로 남는다."""
+    from app.agents.buyer.cart.wishlist import _resolve_wishlist_remove_target
+
+    items = [_wishlist_item(10, "파우치 블루"), _wishlist_item(20, "파우치 레드")]
+    result = _resolve_wishlist_remove_target(
+        CartIntent(product_id=None), "파우치 블루랑 파우치 레드 찜 빼줘", items, get_settings()
+    )
+    assert result is None
+
+
+def test_resolve_wishlist_remove_target_negated_name_with_valid_trailing_still_matches_other() -> (
+    None
+):
+    """회귀(라운드 11) — "이어폰은 찜 빼지 말고 케이스 찜 빼줘"에서 "케이스"는 새 오른쪽
+    경계 검사를 통과하고, "이어폰"은 부정으로 무효화돼 케이스만 남는다."""
+    from app.agents.buyer.cart.wishlist import _resolve_wishlist_remove_target
+
+    items = [_wishlist_item(10, "이어폰"), _wishlist_item(20, "케이스")]
+    result = _resolve_wishlist_remove_target(
+        CartIntent(product_id=None), "이어폰은 찜 빼지 말고 케이스 찜 빼줘", items, get_settings()
+    )
+    assert result is not None
+    assert result.product_id == 20
+
+
+async def test_wishlist_remove_spaced_name_followed_by_other_word_asks_via_stream() -> None:
+    """`stream_wishlist_remove` 수준에서도 같은 사실 — remove_wishlist_fn 이 한 번도 안 불린다."""
+
+    async def remove_wishlist_fn(product_id, *, user_id):
+        raise AssertionError("파괴적 오해제인데 remove_wishlist_fn 이 호출됐다")
+
+    events = await _collect(
+        stream_wishlist_remove(
+            identity=_member(),
+            cart=CartIntent(product_id=None),
+            message="이어폰 케이스 찜 빼줘",
+            settings=get_settings(),
+            get_wishlist_fn=_wishlist(_wishlist_item(10, "이어폰")),
+            remove_wishlist_fn=remove_wishlist_fn,
+        )
+    )
+    assert _types(events) == ["token", "done"]
+
+
 # ─────────── stream_cart_add 배선 ───────────
 
 

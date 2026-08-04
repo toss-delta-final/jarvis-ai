@@ -103,10 +103,61 @@ def _is_boundary_char(ch: str) -> bool:
     return ch == " " or ch in _BOUNDARY_PUNCTUATION
 
 
-def _starts_with_particle(message: str, end: int, particles: list[str]) -> bool:
-    return any(
-        particle and message[end : end + len(particle)] == particle for particle in particles
-    )
+def _consume_prefix(message: str, pos: int, options: list[str]) -> int:
+    """`pos` 에서 `options` 중 하나가 리터럴로 시작하면 그만큼 소비한 새 위치를 돌려준다(못
+    찾으면 `pos` 그대로)."""
+    for option in options:
+        if option and message[pos : pos + len(option)] == option:
+            return pos + len(option)
+    return pos
+
+
+def _skip_trailing_filler(message: str, pos: int, filler_words: list[str]) -> int:
+    """`pos` 부터 (공백 → filler 낱말)* 을 반복 소비한 새 위치를 돌려준다 — "이름 좀 빼줘"처럼
+    조사 뒤에 filler 가 끼어도 표지까지 계속 건너뛴다."""
+    while True:
+        next_pos = pos
+        while next_pos < len(message) and message[next_pos] == " ":
+            next_pos += 1
+        consumed = _consume_prefix(message, next_pos, filler_words)
+        if consumed == next_pos:
+            return next_pos
+        pos = consumed
+
+
+def _has_valid_name_trailing(
+    message: str,
+    end: int,
+    boundary_particles: list[str],
+    filler_words: list[str],
+    trailing_markers: list[str],
+    other_names: list[str],
+) -> bool:
+    """이름 매칭 뒤(`end` 위치부터)가 "이름 + (조사) + (filler) + 표지" 형태인지 검사한다
+    (라운드 17, head `6ab47c9` 리뷰 — `matches_name_unnegated` 의 오른쪽 경계 판정 본체).
+
+    순서: (1) 조사 하나를 소비한다 (2) 공백을 건너뛴다 (3) filler 낱말이 있으면 소비하고 (2)로
+    돌아간다 (4) 남은 텍스트가 **비어 있거나**, `trailing_markers`(그 흐름의 삭제/찜 표지)로
+    **시작하거나**, `other_names`(같은 목록의 다른 항목 이름) 중 하나로 **시작하면** 유효하다.
+    그 밖의 것이 오면 무효(이 출현은 매칭에서 제외).
+
+    `other_names` 를 허용하는 이유 — "파우치 블루랑 파우치 레드 빼줘"(장바구니에 둘 다 있음)를
+    깨뜨리지 않기 위해서다. "파우치 블루" 뒤는 "랑"(조사) 다음 "파우치 레드"(다른 항목 이름)로
+    이어지는데, filler 목록에 없는 텍스트라 그것만 보면 무효로 잘못 걸러진다 — 그러면 "파우치
+    블루"는 매칭에서 빠지고 "파우치 레드"만 단독 매칭돼 모호 판정(2건 → 되물음)이 아니라
+    되레 단일 확정으로 오판된다. 그래서 "다음이 (알려진) 다른 상품명으로 시작한다"도 유효
+    종결로 인정한다 — 이건 임의의 명사를 허용하는 추측이 아니라, 지금 이 해소에 실제로 후보로
+    올라 있는 **닫힌 목록**(장바구니/찜 목록의 실제 항목명) 검사라 "뒤에 명사가 오면 무효"류
+    휴리스틱과 다르다(그 명사가 이 목록에 없으면 여전히 무효).
+    """
+    pos = _consume_prefix(message, end, boundary_particles)
+    pos = _skip_trailing_filler(message, pos, filler_words)
+    remainder = message[pos:]
+    if remainder == "":
+        return True
+    if any(marker and remainder.startswith(marker) for marker in trailing_markers):
+        return True
+    return any(other and remainder.startswith(other) for other in other_names)
 
 
 def matches_name_unnegated(
@@ -116,6 +167,9 @@ def matches_name_unnegated(
     window: int,
     prefix_negation_markers: list[str],
     boundary_particles: list[str],
+    filler_words: list[str],
+    trailing_markers: list[str],
+    other_names: list[str],
 ) -> bool:
     """상품명이 발화에 **온전한 어절 경계로**, 그리고 **부정되지 않은 출현으로** 등장하는지 본다
     (라운드 15, head `0b33e06` 리뷰 B — `remove.py`/`wishlist.py` 의 이름 매칭 전용).
@@ -127,25 +181,27 @@ def matches_name_unnegated(
     낱말에 파묻힐 수 있다("이어폰케이스"의 "이어폰"). 두 검사를 하나로 합치면 동사구 매칭에도
     경계 검사가 강제돼 엉뚱한 회귀를 낳는다.
 
-    경계 규칙: 이름 바로 **왼쪽**은 문자열 시작·공백·문장부호여야 하고, 바로 **오른쪽**은
-    문자열 끝·공백·문장부호 **또는** `boundary_particles`(한국어 조사) 중 하나여야 유효한
-    매칭이다. 순진하게 "오른쪽이 공백/문장부호가 아니면 전부 무효"로 자르면 조사가 이름
-    바로 뒤에 붙는 정상 발화("그 세제**를** 빼줘")까지 깨진다 — 조사를 허용해야 "이어폰**케**
-    이스"의 "이어폰"(뒤가 "케", 조사도 공백도 아님)만 걸러지고 "세제**를**"은 살아남는다.
+    왼쪽 경계: 이름 바로 **왼쪽**은 문자열 시작·공백·문장부호여야 한다("이어폰케이스"의
+    "이어폰"처럼 다른 낱말 뒤에 바로 붙어 시작하는 매칭은 배제).
 
-    **알려진 한계**(이번 라운드 범위 밖, 의도적으로 손대지 않음): 이름 뒤가 **공백**이면 경계
-    규칙을 그대로 통과하므로, "이어폰 케이스 빼줘"에서 장바구니의 "이어폰"이 여전히 매칭된다.
-    사용자가 말한 "이어폰 케이스"가 통짜 상품명이라는 것을 알려면 장바구니에 **없는** 그 상품의
-    이름을 알아야 하는데 이 함수는 그 정보가 없다. "뒤에 명사가 더 오면 무효" 류 추측성
-    휴리스틱은 "이어폰이랑 세제 빼줘" 같은 정상 발화(접속 조사 뒤에 다른 상품명이 옴)를
-    깨뜨리므로 넣지 않는다 — 플래그를 켜기 전에 다시 볼 항목이다.
+    오른쪽 경계(**[라운드 17, head `6ab47c9` 리뷰]** 전면 개정): 라운드 15 는 "오른쪽이
+    공백/문장부호/조사면 유효"였는데, 이는 "이어폰 케이스 빼줘"(장바구니에 "이어폰"만 있음)
+    에서 "이어폰" 뒤가 공백이라는 이유만으로 매칭을 허용해, 사용자가 요청하지 않은 상품
+    ("이어폰 케이스")과 다른 실제 보유 상품("이어폰")을 혼동한 채 **삭제까지 실행**했다(라운드
+    15 는 이걸 "덜 친절한 문구" 급의 알려진 한계로 미뤘으나, 이 라운드에서 그 판단을 뒤집는다
+    — "사용자가 요청하지 않은 파괴적 동작"은 플래그 뒤에 있어도 한계로 미루지 않는다). 그래서
+    오른쪽 경계를 `_has_valid_name_trailing` 로 교체한다 — 조사를 소비하고, filler 낱말을
+    건너뛴 뒤, 남는 텍스트가 비어 있거나 그 흐름의 삭제/찜 표지로 시작해야만("이름 + (조사) +
+    (filler) + 표지" 형태) 유효한 매칭으로 친다. 리뷰어의 원안("매칭 뒤에 다른 토큰이 있으면
+    모두 무효")을 그대로 쓰면 "이어폰 **빼줘**"의 "빼줘"도 토큰이라 정상 매칭까지 죽는다 —
+    표지로 시작하는 건 허용해야 그 차이가 갈린다. `other_names` 로 다른 항목 이름 나열도
+    허용하는 이유는 이 함수 자체의 docstring 을 보라.
     """
     for start, end in _spans(message, name):
         if start != 0 and not _is_boundary_char(message[start - 1]):
             continue
-        if end != len(message) and not (
-            _is_boundary_char(message[end])
-            or _starts_with_particle(message, end, boundary_particles)
+        if not _has_valid_name_trailing(
+            message, end, boundary_particles, filler_words, trailing_markers, other_names
         ):
             continue
         if is_occurrence_unnegated(
