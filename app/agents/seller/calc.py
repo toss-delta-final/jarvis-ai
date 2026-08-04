@@ -61,13 +61,6 @@ _ALLOWED_UNARYOPS = (ast.UAdd, ast.USub)
 _ALLOWED_FUNCS = {"round": round}
 
 
-def deviation_pct(actual: float, baseline: float) -> float:
-    """기준(baseline) 대비 실측(actual)의 편차 %. baseline==0 이면 0 나눗셈 방지로 0.0."""
-    if baseline == 0:
-        return 0.0
-    return (actual - baseline) / baseline * 100
-
-
 def _safe_ratio_pct(numerator: int, denominator: int) -> float:
     """분모 0 이면 0.0 (0 나눗셈 방지) — 전환율 계산 내부 헬퍼."""
     if denominator == 0:
@@ -94,28 +87,6 @@ def conversion_rates(funnel: FunnelResult) -> dict[str, float | None]:
         "cart_to_checkout": _rate("checkout", "cart", funnel.checkout, funnel.cart),
         "checkout_to_purchase": _rate("purchase", "checkout", funnel.purchase, funnel.checkout),
     }
-
-
-def compare_conversion(
-    current: FunnelResult, baseline: FunnelResult, *, drop_pct: float
-) -> dict[str, bool]:
-    """단계별 전환율이 baseline 대비 drop_pct 이상 하락했는지 판정한다.
-
-    baseline 전환율이 0 이면 비교 기준이 없어 하락 판정을 내리지 않는다(False).
-    어느 한쪽이 미집계(None, PR#184 리뷰 반영)여도 판정 불가 = False 다.
-    """
-    current_rates = conversion_rates(current)
-    baseline_rates = conversion_rates(baseline)
-
-    result: dict[str, bool] = {}
-    for stage, base_rate in baseline_rates.items():
-        current_rate = current_rates[stage]
-        if base_rate is None or current_rate is None or base_rate == 0:
-            result[stage] = False
-            continue
-        deviation = deviation_pct(current_rate, base_rate)
-        result[stage] = deviation <= -drop_pct
-    return result
 
 
 def _echo_period(text: str) -> str:

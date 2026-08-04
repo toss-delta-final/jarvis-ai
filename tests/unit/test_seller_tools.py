@@ -66,6 +66,8 @@ class FakeSpringClient:
             churn_rate=0.05, cohort_size=20, pre_churn_signals=PreChurnSignals(), members=[]
         )
         self.recorded_churn_args: tuple | None = None
+        self.churn_calls: list[tuple] = []  # [#290] 현재+직전 기간 2회 호출 기록
+        self.funnel_calls: list[tuple] = []  # [#290] 현재+직전 기간 2회 호출 기록
         self.account_events_result = AccountEventsResult()  # I-8 기본 빈 응답(rows, #197)
         self.recorded_account_args: tuple | None = None
         self._fail = fail or set()
@@ -91,6 +93,7 @@ class FakeSpringClient:
 
     async def get_funnel(self, brand_id, from_, to):
         self.recorded_brand_id = brand_id
+        self.funnel_calls.append((from_, to))  # [#290] 직전 기간 자동 비교 조회 검증용
         self._maybe_fail("get_funnel")
         return FunnelResult(view=100, cart=10, checkout=5, purchase=3)
 
@@ -117,7 +120,11 @@ class FakeSpringClient:
 
     async def get_churn(self, brand_id, from_, to, inactive_days):
         self.recorded_brand_id = brand_id
-        self.recorded_churn_args = (from_, to, inactive_days)
+        # [#290] 직전 기간 자동 비교로 호출이 2회가 됐다 — recorded_churn_args 는
+        # 첫 호출(현재 기간) 유지, 전체 호출은 churn_calls 로 검증한다.
+        if self.recorded_churn_args is None:
+            self.recorded_churn_args = (from_, to, inactive_days)
+        self.churn_calls.append((from_, to, inactive_days))
         self._maybe_fail("get_churn")
         return self.churn_result
 
@@ -480,6 +487,118 @@ async def test_sales_tool_non_daily_fetch_is_not_extended() -> None:
     )
 
     assert fake.recorded_sales_args == ("2026-07-01", "2026-07-31", "weekly")
+
+
+async def test_funnel_tool_fetches_previous_adjacent_period_and_reports_significance() -> None:
+    """[#290] 퍼널은 직전 인접 동일 길이 기간을 자동 추가 조회하고, 단계별 Wilson CI 와
+    z-검정 판정(유의한 하락/상승/변화없음)을 붙인다 — drop_pct 단순 임계 대체."""
+    fake = FakeSpringClient()
+
+    result = await _call_runtime_tool(
+        get_funnel, {"from_date": "2026-07-08", "to_date": "2026-07-14"}, fake
+    )
+
+    # 7일 요청 → 직전 7일(2026-07-01~2026-07-07)을 추가 조회한다.
+    assert fake.funnel_calls == [("2026-07-08", "2026-07-14"), ("2026-07-01", "2026-07-07")]
+    # 동일 fixture 를 두 번 받으므로 모든 단계는 "유의한 변화 없음"이다.
+    assert "CI" in result
+    assert "유의한 변화 없음" in result
+    assert "유의한 하락" not in result
+    assert "직전 기간 2026-07-01~2026-07-07 대비" in result
+
+
+async def test_funnel_tool_survives_previous_period_failure() -> None:
+    """[#290] 직전 기간 조회 실패는 보조 조회 실패 — 본 요약·CI 는 유지하고 비교만
+    생략한다(§3.4 관용). 전체를 Error 로 격하하지 않는다."""
+
+    class SecondCallFails(FakeSpringClient):
+        async def get_funnel(self, brand_id, from_, to):
+            self.funnel_calls.append((from_, to))
+            if len(self.funnel_calls) > 1:
+                raise SpringUnavailableError("Spring 콜백 타임아웃(3.0s): get_funnel")
+            return FunnelResult(view=100, cart=10, checkout=5, purchase=3)
+
+    result = await _call_runtime_tool(
+        get_funnel, {"from_date": "2026-07-08", "to_date": "2026-07-14"}, SecondCallFails()
+    )
+
+    assert not result.startswith("Error:")
+    assert "전환율" in result and "CI" in result
+    assert "기간 비교 생략" in result
+
+
+async def test_funnel_tool_excludes_uncomputable_stage_from_test() -> None:
+    """[#290+#184] 미집계 단계(checkout 등)는 CI·검정 대상에서 빠지고 '미집계'로
+    표기된다 — 0% 로 위장해 유의성 검정에 들어가면 안 된다."""
+
+    class UncomputableCheckout(FakeSpringClient):
+        async def get_funnel(self, brand_id, from_, to):
+            self.funnel_calls.append((from_, to))
+            return FunnelResult(
+                view=100, cart=10, checkout=0, purchase=3, uncomputable_stages=["checkout"]
+            )
+
+    result = await _call_runtime_tool(
+        get_funnel, {"from_date": "2026-07-08", "to_date": "2026-07-14"}, UncomputableCheckout()
+    )
+
+    assert "cart→checkout 미집계" in result
+    assert "checkout→purchase 미집계" in result
+    assert "view→cart 10.0%" in result  # 집계 가능한 단계는 정상 판정
+    assert "판단 제외" in result  # 미집계 주의 문구 유지
+
+
+async def test_churn_tool_fetches_previous_period_and_reports_significance() -> None:
+    """[#290] 이탈률에 Wilson CI 가 붙고, 직전 인접 동일 길이 기간과의 z-검정 판정이
+    보고된다. 신호는 코호트 대비 정규화 + 직전 대비 변화(%p)로 순위화된다."""
+    fake = FakeSpringClient()
+    fake.churn_result = ChurnResult(
+        churn_rate=0.6,
+        cohort_size=20,
+        pre_churn_signals=PreChurnSignals(
+            cancel_count=12,
+            return_reasons_top=[{"reason": "사이즈 불만", "count": 5}],
+            price_increase_exposed=8,
+        ),
+        members=[],
+    )
+
+    result = await _call_runtime_tool(
+        get_churn_cohort, {"from_date": "2026-07-08", "to_date": "2026-07-14"}, fake
+    )
+
+    assert fake.churn_calls[0][:2] == ("2026-07-08", "2026-07-14")
+    assert fake.churn_calls[1][:2] == ("2026-07-01", "2026-07-07")
+    assert fake.churn_calls[0][2] == fake.churn_calls[1][2]  # inactiveDays 동일 적용
+    assert "이탈률 60.0%" in result and "CI" in result
+    assert "유의한 변화 없음" in result  # 동일 fixture 2회 → 변화 없음
+    # 신호 순위화: 취소(12) > 가격인상(8) > 반품(5) — 정규화 비중·직전 대비 병기.
+    assert "1) 취소 12건·코호트 60.0%" in result
+    assert "+0.0%p" in result  # 동일 fixture → 변화 0
+    assert "상관이지 인과가 아니다" in result  # 주의 문구 상시 부착
+
+
+async def test_churn_tool_skips_comparison_when_previous_cohort_empty() -> None:
+    """[#290] 직전 코호트 0명이면 비교 불가로 표기하고 현재 기간 판정은 유지한다."""
+
+    class EmptyPreviousCohort(FakeSpringClient):
+        async def get_churn(self, brand_id, from_, to, inactive_days):
+            self.churn_calls.append((from_, to, inactive_days))
+            if len(self.churn_calls) > 1:
+                return ChurnResult(churn_rate=0.0, cohort_size=0)
+            return ChurnResult(
+                churn_rate=0.5, cohort_size=10, pre_churn_signals=PreChurnSignals(), members=[]
+            )
+
+    result = await _call_runtime_tool(
+        get_churn_cohort,
+        {"from_date": "2026-07-08", "to_date": "2026-07-14"},
+        EmptyPreviousCohort(),
+    )
+
+    assert "이탈률 50.0%" in result and "CI" in result
+    assert "직전 기간 비교 불가" in result
+    assert "직전 −" in result  # 신호 변화율도 비교 불가 표기
 
 
 async def test_get_order_events_tool_passes_stats_through() -> None:
@@ -1024,7 +1143,9 @@ async def test_churn_tool_reports_missing_rate_as_unreceived_not_zero() -> None:
 
     assert "이탈률 미수신" in result
     assert "판정 보류" in result
-    assert "0.0%" not in result  # 결측의 0% 위장 금지
+    # 결측의 0% 위장 금지 — 단, [#290] 신호 정규화 비중("취소 0건·코호트 0.0%")은
+    # 실측 0 이라 정당하다. 금지 대상은 이탈률 표기뿐이므로 단언을 그 구간으로 좁힌다.
+    assert "이탈률 0.0%" not in result
 
 
 async def test_churn_tool_distinguishes_empty_cohort_from_zero_churn() -> None:

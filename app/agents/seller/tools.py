@@ -23,7 +23,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
 
 from app.agents.seller import calc
-from app.agents.seller.analysis import timeseries
+from app.agents.seller.analysis import proportions, timeseries
 from app.agents.seller.context import SellerContext
 from app.core.config import get_settings
 from app.core.tracing import trace_span
@@ -55,6 +55,32 @@ def _traced_tool(
 def _reference_note(from_date: str, to_date: str) -> str:
     """모든 조회 도구 응답에 기준 시점을 고지한다(답변 신뢰성)."""
     return f"(기준: {from_date}~{to_date} 집계값)"
+
+
+def _previous_period(from_date: str, to_date: str) -> tuple[str, str] | None:
+    """직전 인접 동일 길이 기간 (#290 — funnel·churn 기간 비교 공용).
+
+    날짜 형식 오류·역전 범위면 None — 비교만 생략하고 본 조회는 계속한다
+    (형식 검증은 Spring 오류 경로 소관, 여기서 raise 하지 않는다).
+    """
+    try:
+        start = date.fromisoformat(from_date)
+        end = date.fromisoformat(to_date)
+    except ValueError:
+        return None
+    if end < start:
+        return None
+    prev_end = start - timedelta(days=1)
+    prev_start = prev_end - timedelta(days=(end - start).days)
+    return prev_start.isoformat(), prev_end.isoformat()
+
+
+# RateComparison.verdict → 판매자 표면 어휘 (proportions 모듈과 짝).
+_VERDICT_LABELS = {
+    "significant_drop": "유의한 하락",
+    "significant_rise": "유의한 상승",
+    "no_significant_change": "유의한 변화 없음",
+}
 
 
 def _summarize_events(events: list[dict]) -> str:
@@ -194,34 +220,114 @@ async def get_funnel(runtime: ToolRuntime[SellerContext], from_date: str, to_dat
         to_date: 조회 종료일(YYYY-MM-DD).
     """
     brand_id = runtime.context.brand_id
+    settings = get_settings()
     try:
         result = await get_spring_client().get_funnel(brand_id, from_date, to_date)
     except SpringUnavailableError as exc:
         return f"Error: 퍼널 데이터를 불러오지 못했습니다({exc})."
+    # [#290] 직전 인접 동일 길이 기간 자동 추가 조회 — 기간 비교 z-검정(Sismeiro
+    # 단계분해 축약형)의 비교쌍. 직전 기간 실패는 보조 조회라 본 요약을 죽이지
+    # 않고 비교만 생략한다(§3.4 degrade 관용).
+    prev_result = None
+    prev_range = _previous_period(from_date, to_date)
+    prev_skip_reason = "직전 기간 산정 불가(날짜 해석 실패)" if prev_range is None else ""
+    if prev_range is not None:
+        try:
+            prev_result = await get_spring_client().get_funnel(brand_id, *prev_range)
+        except SpringUnavailableError as exc:
+            _log.warning("퍼널 직전 기간 조회 실패 — 비교 생략: %s", exc)
+            prev_skip_reason = f"직전 기간({prev_range[0]}~{prev_range[1]}) 조회 실패"
     rates = calc.conversion_rates(result)
     # [PR#184 리뷰 반영] 미집계 단계(I-7 count=null·computable=false)는 "실제 0건"이
     # 아니다 — 카운트·전환율 모두 "미집계"로 표기해 LLM 이 0% 전환으로 오해석하지
     # 않게 한다(0 으로 내보내면 워커가 "전환 전무"로 보고할 위험).
     uncomputable = set(result.uncomputable_stages)
+    prev_rates = calc.conversion_rates(prev_result) if prev_result is not None else None
 
     def _count(field: str, value: int) -> str:
         return "미집계" if field in uncomputable else str(value)
 
-    def _rate(value: float | None) -> str:
-        return "미집계" if value is None else f"{value:.1f}%"
+    def _stage_summary(
+        label: str, key: str, successes: int, trials: int, prev_successes: int, prev_trials: int
+    ) -> str:
+        """단계 1개의 전환율 + Wilson CI + 직전 기간 z-검정 문구 (#290)."""
+        rate = rates[key]
+        if rate is None:
+            return f"{label} 미집계"
+        segment = f"{label} {rate:.1f}%"
+        if trials > 0:
+            est = proportions.wilson_interval(
+                successes, trials, confidence=settings.seller_wilson_confidence
+            )
+            segment += (
+                f" [{settings.seller_wilson_confidence:.0%} CI"
+                f" {est.ci_low:.1%}~{est.ci_high:.1%}, n={trials}]"
+            )
+        prev_rate = prev_rates[key] if prev_rates is not None else None
+        if prev_rate is not None and trials > 0 and prev_trials > 0:
+            comparison = proportions.compare_rates(
+                successes,
+                trials,
+                prev_successes,
+                prev_trials,
+                alpha=settings.seller_rate_test_alpha,
+                confidence=settings.seller_wilson_confidence,
+            )
+            segment += (
+                f"(직전 {prev_rate:.1f}%, p={comparison.p_value:.3f}"
+                f" — {_VERDICT_LABELS[comparison.verdict]})"
+            )
+        elif prev_result is not None:
+            # 직전 기간은 받았지만 이 단계가 미집계/표본 0 — 단계 단위로 검정 제외.
+            segment += "(직전 기간 검정 제외 — 미집계/표본 없음)"
+        return segment
 
+    stage_segments = [
+        _stage_summary(
+            "view→cart",
+            "view_to_cart",
+            result.cart,
+            result.view,
+            prev_result.cart if prev_result else 0,
+            prev_result.view if prev_result else 0,
+        ),
+        _stage_summary(
+            "cart→checkout",
+            "cart_to_checkout",
+            result.checkout,
+            result.cart,
+            prev_result.checkout if prev_result else 0,
+            prev_result.cart if prev_result else 0,
+        ),
+        _stage_summary(
+            "checkout→purchase",
+            "checkout_to_purchase",
+            result.purchase,
+            result.checkout,
+            prev_result.purchase if prev_result else 0,
+            prev_result.checkout if prev_result else 0,
+        ),
+    ]
     uncomputable_note = (
         " ※ '미집계' 단계는 해당 구간 집계가 불가한 것(0건 아님) — 관련 전환율은 판단 제외."
         if uncomputable
         else ""
     )
+    prev_note = (
+        f" ※ {prev_skip_reason} — 기간 비교 생략."
+        if prev_skip_reason
+        else (
+            f" (직전 기간 {prev_range[0]}~{prev_range[1]} 대비 양측 z-검정,"
+            f" α={settings.seller_rate_test_alpha})"
+            if prev_result is not None
+            else ""
+        )
+    )
     return (
         f"조회 {_count('view', result.view)}→장바구니 {_count('cart', result.cart)}"
         f"→결제 {_count('checkout', result.checkout)}"
         f"→구매 {_count('purchase', result.purchase)}, "
-        f"전환율 view→cart {_rate(rates['view_to_cart'])} · "
-        f"cart→checkout {_rate(rates['cart_to_checkout'])} · "
-        f"checkout→purchase {_rate(rates['checkout_to_purchase'])}.{uncomputable_note} "
+        f"전환율 {' · '.join(stage_segments)}.{prev_note}{uncomputable_note} "
         f"{_reference_note(from_date, to_date)}"
     )
 
@@ -482,8 +588,84 @@ async def get_product_change_logs(
 # I-16 신호 해석 주의 문구 — 상시 부착(#197, _BEHAVIOR_AUTHORITY_NOTE 와 같은 패턴).
 _CHURN_SIGNAL_RULES_NOTE = (
     "※ 검색 무결과 세션은 현 수집 스키마상 상시 0(미적재) — '검색 불만 없음'의 "
-    "근거로 쓰지 말 것. 이탈률 분모는 기간 내 자사 상품 상호작용 회원(코호트)이다."
+    "근거로 쓰지 말 것. 이탈률 분모는 기간 내 자사 상품 상호작용 회원(코호트)이다. "
+    "신호 순위는 상관이지 인과가 아니다 — 원인 단정 금지."
 )
+
+
+def _reason_total(reasons: list[dict]) -> int:
+    """ReasonCount 목록의 count 합 — 비정상 값(비수치)은 0 으로 관대 수신."""
+    total = 0
+    for reason in reasons:
+        count = reason.get("count", 0)
+        total += count if isinstance(count, int) else 0
+    return total
+
+
+def _summarize_churn_signals(result, prev_result, *, top_k: int) -> str:
+    """pre_churn_signals 를 코호트 대비 정규화해 원인 후보 순위로 요약한다 (#290).
+
+    Ahn 2020 피처 카탈로그의 신호(취소·반품·가격노출·검색무결과)를 count/cohort_size
+    비중으로 정규화하고 직전 기간 비중과의 변화(%p)를 병기한다 — LLM 이 "많아
+    보이는 것"이 아니라 비중·변화 수치로 원인 후보를 고르게 한다. 원 count 는
+    그대로 유지한다(analysis_judge 검증 가능 — 도구 원출력 수치 보존 규약).
+    prev_result 는 비교 가능할 때만 넘어온다(코호트 0·결측·실패 시 None → "직전 −").
+    """
+    signals = result.pre_churn_signals
+    if signals is None:
+        return " 이탈 전 신호: 미수신."
+    cohort = result.cohort_size or 0
+    prev_signals = prev_result.pre_churn_signals if prev_result is not None else None
+    prev_cohort = prev_result.cohort_size if prev_result is not None else 0
+
+    entries = [
+        ("취소", signals.cancel_count, "건", prev_signals.cancel_count if prev_signals else None),
+        (
+            "반품",
+            _reason_total(signals.return_reasons_top),
+            "건",
+            _reason_total(prev_signals.return_reasons_top) if prev_signals else None,
+        ),
+        (
+            "가격인상 노출",
+            signals.price_increase_exposed,
+            "명",
+            prev_signals.price_increase_exposed if prev_signals else None,
+        ),
+        (
+            "검색 무결과 세션",
+            signals.zero_result_search_sessions,
+            "건",
+            prev_signals.zero_result_search_sessions if prev_signals else None,
+        ),
+    ]
+    # 분모(코호트)가 공통이라 비중 순위 = count 순위 — 동률은 이름순(결정론).
+    ranked = sorted(entries, key=lambda e: (-e[1], e[0]))
+
+    def _entry(rank: int, name: str, count: int, unit: str, prev_count: int | None) -> str:
+        share = f"{count / cohort:.1%}" if cohort else "?"
+        if prev_count is not None and prev_cohort:
+            prev_share = prev_count / prev_cohort
+            change = (count / cohort - prev_share) * 100 if cohort else None
+            prev_note = f"(직전 {prev_share:.1%}, {change:+.1f}%p)" if change is not None else ""
+        else:
+            prev_note = "(직전 −)"
+        return f"{rank}) {name} {count}{unit}·코호트 {share}{prev_note}"
+
+    top = [_entry(i + 1, *e) for i, e in enumerate(ranked[:top_k])]
+    rest = ", ".join(f"{name} {count}{unit}" for name, count, unit, _ in ranked[top_k:])
+    reasons = (
+        ", ".join(
+            f"{r.get('reason', '?')}({r.get('count', '?')}건)" for r in signals.return_reasons_top
+        )
+        or "없음"
+    )
+    rest_note = f" 그 외: {rest}." if rest else ""
+    return (
+        f" 이탈 전 신호(원인 후보 상위 {len(top)}, 코호트 대비 정규화): "
+        + " ".join(top)
+        + f".{rest_note} 반품 사유 상위: {reasons}."
+    )
 
 
 @tool
@@ -515,38 +697,72 @@ async def get_churn_cohort(
     except SpringUnavailableError as exc:
         return f"Error: 이탈 코호트 데이터를 불러오지 못했습니다({exc})."
     # 코호트 0명(기간 내 상호작용 회원 없음)은 "이탈률 0%"와 다른 상태 — 구분 표기(#197).
+    # 직전 기간 조회 전에 조기 반환한다 — 비교 대상 자체가 없어 보조 조회 비용을 아낀다.
     if result.cohort_size == 0:
         return (
             f"코호트 0명 — 기간 내 자사 상품과 상호작용한 회원이 없어 이탈 판정 대상이 "
             f"없습니다. (기준: inactiveDays={effective_days}) "
             f"{_reference_note(from_date, to_date)}"
         )
+    # [#290] 직전 인접 동일 길이 기간 추가 조회 — 이탈률 z-검정·신호 변화율의 비교쌍.
+    # 보조 조회라 실패해도 본 요약은 계속한다(§3.4 관용).
+    prev_result = None
+    prev_range = _previous_period(from_date, to_date)
+    if prev_range is not None:
+        try:
+            prev_result = await get_spring_client().get_churn(
+                brand_id, prev_range[0], prev_range[1], effective_days
+            )
+        except SpringUnavailableError as exc:
+            _log.warning("이탈 코호트 직전 기간 조회 실패 — 비교 생략: %s", exc)
+    prev_comparable = (
+        prev_result is not None and prev_result.cohort_size and prev_result.churn_rate is not None
+    )
     cohort_note = f"코호트 {result.cohort_size}명 중 " if result.cohort_size is not None else ""
     # churn_rate 는 fraction(0.6=60%) — ":.1%" 로만 변환한다(#197 — 구 ":.1f}%" 는
     # 60% 를 "0.6%" 로 왜곡해 워커가 이탈 미미로 오판하던 수치 버그).
     # [#197 리뷰] 결측(None)은 0.0% 로 위장하지 않고 미수신으로 명시한다 — 워커가
     # "이탈 없음"이 아니라 "판정 보류"로 해석하게(silent-mismatch 방어 일관성).
-    rate_note = (
-        f"이탈률 {result.churn_rate:.1%}"
-        if result.churn_rate is not None
-        else "이탈률 미수신(churnRate 결측 — 이탈 규모 판정 보류)"
-    )
-    head = f"{cohort_note}{rate_note} (기준: inactiveDays={effective_days})."
-    s = result.pre_churn_signals
-    if s is None:
-        signals_note = " 이탈 전 신호: 미수신."
-    else:
-        reasons = (
-            ", ".join(
-                f"{r.get('reason', '?')}({r.get('count', '?')}건)" for r in s.return_reasons_top
+    if result.churn_rate is not None and result.cohort_size:
+        # [#290] Wilson CI + 직전 기간 z-검정. I-16 은 이탈 '수'가 아니라 fraction 을
+        # 주므로 churned = round(rate×cohort) 근사로 표본을 복원한다(결정론).
+        churned = round(result.churn_rate * result.cohort_size)
+        estimate = proportions.wilson_interval(
+            churned, result.cohort_size, confidence=settings.seller_wilson_confidence
+        )
+        rate_note = (
+            f"이탈률 {result.churn_rate:.1%}"
+            f" [{settings.seller_wilson_confidence:.0%} CI"
+            f" {estimate.ci_low:.1%}~{estimate.ci_high:.1%}]"
+        )
+        if prev_comparable:
+            prev_churned = round(prev_result.churn_rate * prev_result.cohort_size)
+            comparison = proportions.compare_rates(
+                churned,
+                result.cohort_size,
+                prev_churned,
+                prev_result.cohort_size,
+                alpha=settings.seller_rate_test_alpha,
+                confidence=settings.seller_wilson_confidence,
             )
-            or "없음"
-        )
-        signals_note = (
-            f" 이탈 전 신호: 취소 {s.cancel_count}건, 반품 사유 상위: {reasons}, "
-            f"가격인상 노출 {s.price_increase_exposed}명, "
-            f"검색 무결과 세션 {s.zero_result_search_sessions}건."
-        )
+            rate_note += (
+                f", 직전 기간({prev_range[0]}~{prev_range[1]},"
+                f" 코호트 {prev_result.cohort_size}명) {prev_result.churn_rate:.1%} 대비"
+                f" p={comparison.p_value:.3f} — {_VERDICT_LABELS[comparison.verdict]}"
+            )
+        else:
+            rate_note += ", 직전 기간 비교 불가(코호트 0명/조회 실패/결측)"
+    elif result.churn_rate is not None:
+        # cohortSize 결측 — 비율은 표기하되 표본이 없어 CI·검정은 정의 불가.
+        rate_note = f"이탈률 {result.churn_rate:.1%} (코호트 규모 미수신 — CI·검정 생략)"
+    else:
+        rate_note = "이탈률 미수신(churnRate 결측 — 이탈 규모 판정 보류)"
+    head = f"{cohort_note}{rate_note} (기준: inactiveDays={effective_days})."
+    signals_note = _summarize_churn_signals(
+        result,
+        prev_result if prev_comparable else None,
+        top_k=settings.seller_churn_signal_top_k,
+    )
     if result.members:
         # [#197 리뷰] I-16 전용 상한 — I-14 kv 상한(seller_summary_max_events)과 분리.
         shown = result.members[: settings.seller_churn_member_max]

@@ -16,40 +16,13 @@ from app.agents.seller import calc
 from app.schemas.spring import FunnelResult
 
 
-def test_deviation_pct_sign_and_zero_baseline() -> None:
-    """양/음 부호가 실측-기준 방향과 일치하고, baseline==0 이면 0.0."""
-    assert calc.deviation_pct(120.0, 100.0) == 20.0
-    assert calc.deviation_pct(80.0, 100.0) == -20.0
-    assert calc.deviation_pct(50.0, 0.0) == 0.0
-
-
-def test_conversion_rates_and_drop() -> None:
-    """단계 전환율 계산과 baseline 대비 하락 임계 판정."""
+def test_conversion_rates() -> None:
+    """단계 전환율 계산 — 기간 비교 판정은 analysis.proportions(z-검정)로 이관됐다(#290)."""
     current = FunnelResult(view=1000, cart=100, checkout=50, purchase=40)
     rates = calc.conversion_rates(current)
     assert rates["view_to_cart"] == 10.0
     assert rates["cart_to_checkout"] == 50.0
     assert rates["checkout_to_purchase"] == 80.0
-
-    baseline = FunnelResult(view=1000, cart=200, checkout=100, purchase=90)
-    drop = calc.compare_conversion(current, baseline, drop_pct=20.0)
-    # view_to_cart: baseline 20% → current 10% → -50% 하락 → 이상.
-    assert drop["view_to_cart"] is True
-    # cart_to_checkout: baseline 50% → current 50% → 하락 없음.
-    assert drop["cart_to_checkout"] is False
-
-
-def test_compare_conversion_baseline_zero_no_drop() -> None:
-    """baseline 전환율이 0(분모 0)이면 비교 기준이 없어 하락으로 판정하지 않는다(opus 리뷰 m6)."""
-    # baseline.cart == 0 → cart_to_checkout 의 baseline 전환율(=checkout/cart)이 0.
-    baseline = FunnelResult(view=1000, cart=0, checkout=0, purchase=0)
-    current = FunnelResult(view=1000, cart=100, checkout=50, purchase=40)
-
-    drop = calc.compare_conversion(current, baseline, drop_pct=20.0)
-
-    assert drop["view_to_cart"] is False
-    assert drop["cart_to_checkout"] is False
-    assert drop["checkout_to_purchase"] is False
 
 
 def test_normalize_period_last_month_year_rollover() -> None:

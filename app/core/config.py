@@ -198,10 +198,10 @@ class Settings(BaseSettings):
     # 구 seller 전용 키 service_token(인바운드)·internal_token(아웃바운드)은 폐기.
     # spring_timeout_s 도 팀 정의(아래 공통 블록)를 재사용한다 — 중복 정의 금지.
 
-    # ── 판매자 분석 임계값 (app/agents/seller/calc.py 주입, 하드코딩 금지) ──
-    # [#290] 구 SMA 튜너블(seller_ma_window·seller_ma_min_window·
-    # seller_anomaly_deviation_pct)은 S-H-ESD 교체로 폐기 — 아래 분석 계산 층 블록이 대체.
-    seller_conversion_drop_pct: float = 20.0  # 전환율 하락 이상 임계(%)
+    # ── 판매자 분석 임계값 (app/agents/seller 주입, 하드코딩 금지) ──
+    # [#290] 구 임계 튜너블(seller_ma_window·seller_ma_min_window·
+    # seller_anomaly_deviation_pct·seller_conversion_drop_pct)은 논문 기반 교체로
+    # 폐기 — 아래 "분석 계산 층" 블록(S-H-ESD·Wilson/z-검정)이 대체한다.
     seller_churn_inactive_days: int = 30  # 이탈 코호트 무활동 일수(I-16 inactiveDays 기본)
     # [#197 PR 리뷰] I-8 계정/보안 이벤트는 전역 데이터(브랜드 스코프 아님)이고
     # admin 소유 협의가 미완(🔴, api-spec §4.4 v0.19.1)이다. 종전엔 코드 결함(쿼리

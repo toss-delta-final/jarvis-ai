@@ -16,9 +16,9 @@ def test_seller_settings_defaults() -> None:
     settings = Settings(_env_file=None)
     # [통일 2026-07-20] 서비스 토큰은 팀 규약 internal_api_token 단일 키(기본 미설정).
     assert settings.internal_api_token == ""
-    # [#290] 구 SMA 튜너블(seller_ma_*·seller_anomaly_deviation_pct)은 S-H-ESD 교체로
-    # 폐기 — 대체 튜너블은 test_seller_analysis_defaults 가 검증한다.
-    assert settings.seller_conversion_drop_pct == 20.0
+    # [#290] 구 임계 튜너블(seller_ma_*·seller_anomaly_deviation_pct·
+    # seller_conversion_drop_pct)은 논문 기반 교체로 폐기 — 대체 튜너블은
+    # test_seller_analysis_defaults 가 검증한다.
     assert settings.seller_churn_inactive_days == 30
     assert settings.seller_recent_days_default == 7
     assert settings.seller_calc_max_result_digits == 100
