@@ -765,9 +765,7 @@ def test_run_graph_failure_degrades_to_empty(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(orchestrator, "get_settings", lambda: _settings())
     _, emit = _collect_emit()
 
-    result = asyncio.run(
-        orchestrator.run_graph(_FINDINGS, _GROUNDED, "질문", _CTX, emit=emit)
-    )
+    result = asyncio.run(orchestrator.run_graph(_FINDINGS, _GROUNDED, "질문", _CTX, emit=emit))
 
     assert result.charts == []
 
@@ -796,9 +794,7 @@ def test_run_graph_g1_exception_degrades_to_empty_instead_of_propagating(
     monkeypatch.setattr(orchestrator, "run_chart_checks", _boom_run_chart_checks)
     _, emit = _collect_emit()
 
-    result = asyncio.run(
-        orchestrator.run_graph(_FINDINGS, _GROUNDED, "질문", _CTX, emit=emit)
-    )
+    result = asyncio.run(orchestrator.run_graph(_FINDINGS, _GROUNDED, "질문", _CTX, emit=emit))
 
     assert result.charts == []
 
@@ -816,9 +812,7 @@ def test_run_graph_drops_ungrounded_chart_via_g1(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(orchestrator, "get_settings", lambda: _settings())
     _, emit = _collect_emit()
 
-    result = asyncio.run(
-        orchestrator.run_graph(_FINDINGS, _GROUNDED, "질문", _CTX, emit=emit)
-    )
+    result = asyncio.run(orchestrator.run_graph(_FINDINGS, _GROUNDED, "질문", _CTX, emit=emit))
 
     assert result.charts == []
 
@@ -1176,3 +1170,133 @@ def test_pipeline_injects_recent_turns_before_history_block(
     assert sent.startswith("[최근 대화]")
     assert sent.index("[최근 대화]") < sent.index("[최근 분석 이력]")
     assert sent.endswith("[이번 질문] 이번엔 7월은?")
+
+
+# ─────────── S-4 화면 맥락 주입 — planner (이슈 #118) ───────────
+
+
+def _screen_ctx(**payload):
+    from app.schemas.seller import SellerChatRequest
+
+    return SellerChatRequest.model_validate(
+        {"sessionId": "s", "threadId": "t", "message": "m", "screen": payload}
+    ).screen
+
+
+def test_pipeline_without_screen_sends_the_same_planner_input_as_today(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[회귀 0] `screen=None` 이면 planner 입력이 오늘과 **바이트 동일**하다."""
+    from app.agents.seller import history
+
+    # 파이프라인을 두 번 돌리므로 첫 회차가 저장한 이력이 둘째 회차 입력에 섞인다 —
+    # 비교 대상은 screen 유무 하나뿐이어야 하므로 이력 축을 고정한다.
+    async def _no_history(*_args, **_kwargs):
+        return []
+
+    async def _no_save(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(history, "load_recent", _no_history)
+    monkeypatch.setattr(history, "save_history", _no_save)
+
+    plan = AnalysisPlan(analyses=["sales_anomaly"], period_expr="지난달", reason="r")
+    turns = [("user", "어제 매출 알려줘"), ("assistant", "120만원입니다.")]
+
+    sent: list[str] = []
+    for screen_kwargs in ({}, {"screen": None}):
+        _patch_pipeline(monkeypatch, plan)
+        planner = _SeqAgent([{"structured_response": plan}])
+        monkeypatch.setattr(orchestrator, "build_analysis_planner", lambda: planner)
+        _, emit = _collect_emit()
+        asyncio.run(
+            orchestrator.run_analysis_pipeline(
+                "그럼 지난주는?",
+                _CTX,
+                today=dt.date(2026, 7, 18),
+                emit=emit,
+                recent_turns=turns,
+                **screen_kwargs,
+            )
+        )
+        sent.append(planner.received[0])
+
+    assert sent[0] == sent[1]
+    assert "[현재 화면]" not in sent[0]
+
+
+def test_pipeline_injects_screen_context_into_planner_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """화면 맥락은 이력과 **같은 두 곳**(supervisor·planner)에만 주입한다."""
+    plan = AnalysisPlan(analyses=["sales_anomaly"], period_expr="지난달", reason="r")
+    _patch_pipeline(monkeypatch, plan)
+    planner = _SeqAgent([{"structured_response": plan}])
+    monkeypatch.setattr(orchestrator, "build_analysis_planner", lambda: planner)
+    _, emit = _collect_emit()
+
+    asyncio.run(
+        orchestrator.run_analysis_pipeline(
+            "이 목록 왜 비어?",
+            _CTX,
+            today=dt.date(2026, 7, 18),
+            emit=emit,
+            screen=_screen_ctx(pageType="seller_products", filters={"status": "품절"}),
+        )
+    )
+
+    sent = planner.received[0]
+    assert sent.startswith("[현재 화면]")
+    assert "상품 관리" in sent and "status=품절" in sent
+    assert sent.endswith("[이번 질문] 이 목록 왜 비어?")
+
+
+def test_pipeline_orders_conversation_then_screen_then_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """순서: [최근 대화] → [현재 화면] → [최근 분석 이력] → [이번 질문]."""
+    from app.agents.seller import history
+
+    asyncio.run(
+        history.save_history(
+            7,
+            question="6월 매출 분석",
+            analyses=["sales_anomaly"],
+            date_from="2026-06-01",
+            date_to="2026-06-30",
+            report="이전 보고서",
+            recommendations=RecommendationSet(),
+        )
+    )
+    plan = AnalysisPlan(analyses=["sales_anomaly"], period_expr="지난달", reason="r")
+    _patch_pipeline(monkeypatch, plan)
+    planner = _SeqAgent([{"structured_response": plan}])
+    monkeypatch.setattr(orchestrator, "build_analysis_planner", lambda: planner)
+    _, emit = _collect_emit()
+    turns = [("user", "어제 매출 알려줘"), ("assistant", "120만원입니다.")]
+
+    asyncio.run(
+        orchestrator.run_analysis_pipeline(
+            "이 목록 왜 비어?",
+            _CTX,
+            today=dt.date(2026, 7, 18),
+            emit=emit,
+            recent_turns=turns,
+            screen=_screen_ctx(pageType="seller_orders", filters={"status": "신규주문"}),
+        )
+    )
+
+    sent = planner.received[0]
+    assert (
+        sent.index("[최근 대화]")
+        < sent.index("[현재 화면]")
+        < sent.index("[최근 분석 이력]")
+        < sent.rindex("[이번 질문]")
+    )
+
+
+def test_planner_prompt_is_untouched_by_screen_injection() -> None:
+    """프롬프트 파일은 한 글자도 바꾸지 않는다 — 주입은 **입력 메시지에만**."""
+    from app.agents.seller import prompts
+
+    assert "현재 화면" not in prompts.PLANNER_PROMPT

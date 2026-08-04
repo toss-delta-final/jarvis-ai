@@ -687,6 +687,7 @@ async def run_buyer_turn(
         )
         allowed = {pid for pid, _ in last_reco} | screen_product_ids
         cart_intent = decision.cart or CartIntent()
+        screen_reason: str | None = None
         # [#118] 화면 지시어는 **코드가 해소**한다 — 순번·좌표·"후보 1건" 은 결정적인 규칙이라
         # 확률적 계층에 맡길 이유가 없고, 맡겼더니 사용자가 말하지 않은 상품을 확정하는 일이
         # 잦았다(실측표는 screen_reference 모듈 docstring). `screen.products` 가 있는 턴에만
@@ -699,6 +700,7 @@ async def run_buyer_turn(
                 columns=screen.columns,
                 allowed_product_ids=allowed,
                 deictic_markers=settings.screen_deictic_markers,
+                context_reference_markers=settings.screen_context_reference_markers,
             )
             if resolved is not None:
                 logger.info(
@@ -706,6 +708,9 @@ async def run_buyer_turn(
                     extra={"reason": resolved.reason, "forced_null": resolved.product_id is None},
                 )
                 cart_intent = replace(cart_intent, product_id=resolved.product_id)
+                # 되물음 문구를 가르는 신호로만 넘긴다 — 확정된 사유는 문구와 무관하다.
+                if resolved.product_id is None:
+                    screen_reason = resolved.reason
         with trace_span("buyer.graph.cart", "chain"):
             async for frame in stream_cart_add(
                 identity=identity,
@@ -715,6 +720,7 @@ async def run_buyer_turn(
                 settings=settings,
                 message=request.message,
                 allowed_product_ids=allowed,
+                screen_reason=screen_reason,
                 observer=observer,
             ):
                 yield frame

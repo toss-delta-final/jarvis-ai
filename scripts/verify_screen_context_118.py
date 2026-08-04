@@ -400,6 +400,7 @@ async def _run_cell(  # noqa: ANN001
                 columns=screen.columns,
                 allowed_product_ids=allowed,
                 deictic_markers=get_settings().screen_deictic_markers,
+                context_reference_markers=get_settings().screen_context_reference_markers,
             )
             if resolved is not None:
                 decision.cart = replace(

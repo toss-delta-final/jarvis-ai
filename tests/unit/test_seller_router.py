@@ -193,3 +193,67 @@ def test_route_injects_recent_turns_into_input(monkeypatch: pytest.MonkeyPatch) 
     assert sent.startswith("[최근 대화]")
     assert "사용자: 어제 매출 알려줘" in sent
     assert sent.endswith("[이번 질문] 그럼 지난주는?")
+
+
+# ─────────── S-4 화면 맥락 주입 (이슈 #118) ───────────
+
+
+def _screen_ctx(**payload):
+    """정본 관대 정규화를 실제로 태운 ScreenContext."""
+    from app.schemas.seller import SellerChatRequest
+
+    return SellerChatRequest.model_validate(
+        {"sessionId": "s", "threadId": "t", "message": "m", "screen": payload}
+    ).screen
+
+
+def test_route_without_screen_sends_the_same_input_as_today(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[회귀 0] `screen=None` 이면 supervisor 입력이 오늘과 **바이트 동일**하다.
+
+    판매자 FE 도 아직 `screen` 을 보내지 않으므로 이게 절대다수 경로다.
+    """
+    decision = RouteDecision(category="general", reason="r", confidence=0.9)
+    turns = [("user", "어제 매출 알려줘"), ("assistant", "120만원입니다.")]
+
+    stub_without = _CapturingSupervisor(decision)
+    _patch(monkeypatch, stub_without)
+    asyncio.run(orchestrator.route_question("그럼 지난주는?", _CTX, recent_turns=turns))
+
+    stub_explicit_none = _CapturingSupervisor(decision)
+    _patch(monkeypatch, stub_explicit_none)
+    asyncio.run(
+        orchestrator.route_question("그럼 지난주는?", _CTX, recent_turns=turns, screen=None)
+    )
+
+    assert stub_without.received == stub_explicit_none.received
+    assert "[현재 화면]" not in stub_without.received[0]
+
+
+def test_route_injects_screen_context_into_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    """정본 §3.2 — `pageType`·`filters` 가 실려 "이 목록 왜 비어?" 류에 답할 수 있다."""
+    decision = RouteDecision(category="general", reason="r", confidence=0.9)
+    stub = _CapturingSupervisor(decision)
+    _patch(monkeypatch, stub)
+
+    asyncio.run(
+        orchestrator.route_question(
+            "이 목록 왜 비어?",
+            _CTX,
+            screen=_screen_ctx(pageType="seller_orders", filters={"status": "신규주문"}),
+        )
+    )
+
+    sent = stub.received[0]
+    assert sent.startswith("[현재 화면]")
+    assert "주문 관리" in sent and "status=신규주문" in sent
+    assert sent.endswith("[이번 질문] 이 목록 왜 비어?")
+
+
+def test_route_screen_injection_does_not_touch_the_supervisor_prompt() -> None:
+    """프롬프트 파일은 한 글자도 바꾸지 않는다 — 주입은 **입력 메시지에만**(§9.1 이력 선례)."""
+    from app.agents.seller import prompts
+
+    assert "현재 화면" not in prompts.SUPERVISOR_PROMPT
+    assert "screen" not in prompts.SUPERVISOR_PROMPT.lower()

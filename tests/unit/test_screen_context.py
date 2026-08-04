@@ -548,7 +548,10 @@ async def test_ambiguous_screen_candidates_force_a_reask(
     events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
     assert "action" not in [e["type"] for e in events]
     token_text = next(e for e in events if e["type"] == "token")["data"]["text"]
-    assert "어떤 상품을 담을까요" in token_text
+    # 되물음 문구가 상황에 맞아야 한다 — 화면에 상품이 보이는데 "추천을 먼저 받아보시면"이라고
+    # 답하면 사용자는 무엇을 물어야 할지 알 수 없다(라운드 2 리뷰 0-a).
+    assert "화면에 보이는 상품 중" in token_text
+    assert "추천을 먼저 받아보시면" not in token_text
 
 
 async def test_ordinal_and_coordinate_references_are_resolved_by_code(
@@ -631,6 +634,7 @@ async def test_screen_reference_never_fires_without_screen_products() -> None:
                 columns=3,
                 allowed_product_ids={101},
                 deictic_markers=get_settings().screen_deictic_markers,
+                context_reference_markers=get_settings().screen_context_reference_markers,
             )
             is None
         )
@@ -646,6 +650,7 @@ def test_screen_reference_leaves_name_and_unmatched_utterances_to_the_llm() -> N
         "columns": 2,
         "allowed_product_ids": {501, 502},
         "deictic_markers": get_settings().screen_deictic_markers,
+        "context_reference_markers": get_settings().screen_context_reference_markers,
     }
     assert resolve_screen_reference("라탄 바구니 담아줘", **kwargs) is None
     assert resolve_screen_reference("이 라탄 바구니 담아줘", **kwargs) is None  # 이름이 있으면 양보
@@ -657,13 +662,16 @@ def test_out_of_range_positions_reask_instead_of_guessing() -> None:
     from app.agents.buyer.screen_reference import resolve_screen_reference
 
     products = [(500 + i, f"상품{i}") for i in range(1, 4)]
-    markers = get_settings().screen_deictic_markers
+    settings = get_settings()
+    markers = settings.screen_deictic_markers
+    context_markers = settings.screen_context_reference_markers
     out_of_range = resolve_screen_reference(
         "9번째 거 담아줘",
         products=products,
         columns=3,
         allowed_product_ids=set(),
         deictic_markers=markers,
+        context_reference_markers=context_markers,
     )
     assert out_of_range is not None and out_of_range.product_id is None
     no_columns = resolve_screen_reference(
@@ -672,5 +680,170 @@ def test_out_of_range_positions_reask_instead_of_guessing() -> None:
         columns=None,
         allowed_product_ids=set(),
         deictic_markers=markers,
+        context_reference_markers=context_markers,
     )
     assert no_columns is not None and no_columns.product_id is None
+
+
+# ─────────── 라운드 3 — 리뷰 지적 회귀 가드 ───────────
+
+
+def _resolve(message: str, products, columns=3, allowed=None):
+    """프로덕션 해소기를 config 기본값 그대로 호출한다(기본값 자체가 이번 수정의 일부다)."""
+    from app.agents.buyer.screen_reference import resolve_screen_reference
+
+    settings = get_settings()
+    return resolve_screen_reference(
+        message,
+        products=products,
+        columns=columns,
+        allowed_product_ids=allowed if allowed is not None else {pid for pid, _ in products},
+        deictic_markers=settings.screen_deictic_markers,
+        context_reference_markers=settings.screen_context_reference_markers,
+    )
+
+
+def test_conversation_deictic_is_not_forced_onto_the_screen_product() -> None:
+    """[리뷰 F-1] `"아까 추천해준 그거 담아줘"` 가 화면 상품으로 확정되면 **오담기**다.
+
+    직전 추천이 (101,"이어폰")이고 화면이 (555,"러그") 1건일 때, 사용자는 명시적으로 대화 맥락을
+    참조했는데 해소기가 러그로 확정했다(실제 재현). 이 저장소에서 `"그거"`·`"아까"` 류는 직전
+    추천 맥락으로 확립돼 있고(decompose `_SYSTEM` 하중 문구·#234 프로브), 정본 §3.1 지시어 해소
+    표가 든 예는 `"이거"` 다. 두 방향 모두로 막는다 — 대화 참조 표지, 그리고 근칭만 남긴 기본값.
+    """
+    products = [(555, "러그")]
+    assert _resolve("아까 추천해준 그거 담아줘", products, columns=1, allowed={101, 555}) is None
+    assert _resolve("저번에 본 그거 담아줘", products, columns=1, allowed={101, 555}) is None
+    # 대화 참조 표지가 없어도 `"그거"` 자체가 화면 지시어 기본값에서 빠져 있다(막는 축 ①).
+    assert _resolve("그거 담아줘", products, columns=1, allowed={101, 555}) is None
+    # 막는 축 ② — **근칭을 써도** 대화 참조가 있으면 화면으로 확정하지 않는다. 축 ①만으로는
+    # 이 두 발화가 각각 화면 1건 확정·순번 확정으로 새므로, 축 ②를 독립적으로 고정한다.
+    assert _resolve("아까 추천해준 이거 담아줘", products, columns=1, allowed={101, 555}) is None
+    five = [(500 + i, f"상품{i}") for i in range(1, 6)]
+    assert _resolve("저번에 말한 3번째 거 담아줘", five, columns=3) is None
+    # 근칭 + 대화 참조 없음은 그대로 화면을 가리킨다 — 라운드 2가 되찾은 동작이 살아 있어야 한다.
+    resolved = _resolve("이거 담아줘", products, columns=1, allowed={101, 555})
+    assert resolved is not None and resolved.product_id == 555
+
+
+def test_conversation_reference_markers_are_configured_and_narrow() -> None:
+    """대화 참조 표지는 좁게 유지한다 — 넓히면 정상적인 화면 지시까지 LLM 으로 넘어간다."""
+    settings = get_settings()
+    assert "아까" in settings.screen_context_reference_markers
+    assert "저번" in settings.screen_context_reference_markers
+    # `"그거"`·`"그것"` 은 대화 지시어라 화면 지시어 기본값에서 빠져 있어야 한다.
+    assert "그거" not in settings.screen_deictic_markers
+    assert "그것" not in settings.screen_deictic_markers
+    assert "이거" in settings.screen_deictic_markers
+
+
+def test_named_product_beats_a_positional_number() -> None:
+    """[리뷰 F-2] 이름을 지목했는데 순번이 이기면 **엉뚱한 상품이 담긴다**.
+
+    `"무선 이어폰 2번째 옵션으로 담아줘"` 의 `"2번째"` 는 **옵션**을 수식하는데 화면 순번으로
+    읽혀 러그(501)가 확정됐다(실제 재현). 이름 매칭은 프로브에서 LLM 이 8/8 로 가장 잘하는
+    신호이고 순번은 그보다 약하다 — 강한 신호가 있으면 약한 신호로 덮지 않는다.
+    """
+    products = [(502, "무선 이어폰"), (501, "러그")]
+    assert _resolve("무선 이어폰 2번째 옵션으로 담아줘", products, columns=2) is None
+    assert _resolve("무선 이어폰 2번째 줄 1번째로 담아줘", products, columns=2) is None
+    # 이름이 없으면 순번은 그대로 발동한다.
+    resolved = _resolve("2번째 거 담아줘", products, columns=2)
+    assert resolved is not None and resolved.product_id == 501
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "10만원대 무선 이어폰 담아줘",  # 숫자 바로 뒤가 `만` 이라 접미 목록으로는 못 막았다
+        "2026년형 TV 담아줘",
+        "128GB 모델 담아줘",
+        "2024년형 담아줘",
+        "55인치 담아줘",
+        "500ml 담아줘",
+    ],
+)
+def test_measurements_and_years_are_not_mistaken_for_product_ids(message: str) -> None:
+    """[리뷰 F-3] 가격·연도·용량의 숫자를 상품 id 로 오인해 **정상 발화가 되물음으로 막혔다**.
+
+    방향은 안전(오담기가 아니라 되물음)하지만 `"10만원대 무선 이어폰 담아줘"` 는 흔한 발화다.
+    단위·수식이 붙은 숫자는 문자와 맞닿아 있다는 **구조적 성질**로 배제한다 — 접미 목록을 늘리는
+    땜질은 새 단위가 나올 때마다 다시 뚫린다.
+    """
+    products = [(501, "러그"), (502, "바구니")]
+    assert _resolve(message, products, columns=2) is None
+
+
+def test_a_standalone_unknown_id_still_forces_a_reask() -> None:
+    """F-3 을 좁히면서 원래 목적은 지켜야 한다 — 두 목록 밖 id 는 여전히 되물음이다."""
+    products = [(501, "러그"), (502, "바구니")]
+    resolved = _resolve("301 담아줘", products, columns=2)
+    assert resolved is not None and resolved.product_id is None
+    assert resolved.reason == "unknown_product_id_spoken"
+    # 목록 안 id 를 말했으면 막지 않는다.
+    assert _resolve("501 담아줘", products, columns=2) is None
+
+
+async def test_screenless_reask_wording_is_byte_identical_to_today(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[회귀 0] `screen` 이 없는 담기 되물음 문구는 오늘과 **바이트 동일**해야 한다.
+
+    라운드 3이 추가한 화면용 문구가 기존 경로로 새면, FE 가 `screen` 을 보내지 않는 절대다수
+    경로의 사용자 경험이 조용히 바뀐다.
+    """
+    import app.services.spring_client as sc
+
+    async def fake_add(req):  # noqa: ANN001
+        raise AssertionError(f"해소 실패가 담기까지 도달하면 안 됨: {req}")
+
+    monkeypatch.setattr(sc, "add_to_cart", fake_add)
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(message="그거 담아줘", threadId="t-screenless-wording")
+    )
+    assert request.screen is None
+    llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 999, "quantity": 1}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    token_text = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token_text == "어떤 상품을 담을까요? 추천을 먼저 받아보시면 담아드릴게요."
+
+
+async def test_spoken_unknown_id_reask_says_it_could_not_be_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """미지 id 는 위치를 되묻는 것이 답이 아니다 — 못 찾았다는 사실을 먼저 알린다."""
+    import app.services.spring_client as sc
+
+    async def fake_add(req):  # noqa: ANN001
+        raise AssertionError(f"말하지 않은 상품이 대신 담기면 안 됨: {req}")
+
+    monkeypatch.setattr(sc, "add_to_cart", fake_add)
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(
+            message="301 담아줘",
+            threadId="t-screen-notfound-wording",
+            screen={
+                "pageType": "chat",
+                "columns": 2,
+                "products": [
+                    {"productId": 501, "name": "러그"},
+                    {"productId": 502, "name": "바구니"},
+                ],
+            },
+        )
+    )
+    llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 501, "quantity": 1}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    token_text = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert "화면에서 찾지 못했어요" in token_text
+
+
+def test_unresolved_notice_falls_back_to_the_default_for_unknown_reasons() -> None:
+    """새 사유가 생겨도 문구 분기가 조용히 빈 문자열을 내지 않는다(기본 문구로 degrade)."""
+    from app.agents.buyer.cart.graph import _unresolved_notice
+
+    assert _unresolved_notice(None) == "어떤 상품을 담을까요? 추천을 먼저 받아보시면 담아드릴게요."
+    assert _unresolved_notice("some_future_reason") == _unresolved_notice(None)
+    assert _unresolved_notice("ambiguous_screen_candidates") != _unresolved_notice(None)
