@@ -21,15 +21,17 @@ from dataclasses import dataclass, field
 class SeasonalAnomaly:
     """S-H-ESD 이상점 1건 (timeseries.detect_seasonal_anomalies 출력).
 
-    expected 는 STL 재구성 기대값(추세+계절), deviation_pct 는 계절조정 편차(%),
-    sigma 는 잔차의 robust z(|residual - median| / MAD 기준) 크기다.
+    expected 는 STL 재구성 기대값(추세+계절), deviation_pct 는 계절조정 편차(%) —
+    expected 가 0 이하면 정의 불가라 None 이다(0 나눗셈 위장 금지, #194 계승).
+    sigma 는 잔차의 robust z(|residual - median| / (1.4826×MAD)) 크기다 — MAD=0 인
+    극단 수열은 MeanAD 폴백으로 표준화하고, 그마저 0 인 방어 경로만 math.inf 다.
     direction 은 "drop" | "spike" — LLM 프롬프트가 급락/급증 어휘로 옮긴다.
     """
 
     date: str
     actual: float
     expected: float
-    deviation_pct: float
+    deviation_pct: float | None
     sigma: float
     direction: str
 

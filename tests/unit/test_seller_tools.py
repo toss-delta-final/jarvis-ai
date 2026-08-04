@@ -401,15 +401,15 @@ async def test_sales_tool_skips_anomaly_detection_for_non_daily_granularity() ->
 
 
 async def test_sales_tool_degrades_when_anomaly_config_invalid(monkeypatch) -> None:
-    """[#194 리뷰 3] detect_sales_anomalies 의 ValueError 가 도구 밖으로 전파되지 않는다
-    (§3.4 degrade 규약) — 기동 시점 검증(config)이 우회·회귀로 뚫려도 매출 요약은
-    살리고 이상 감지만 생략한다."""
-    from app.agents.seller import calc as calc_module
+    """[#194 리뷰 3 계승, #290] detect_seasonal_anomalies 의 ValueError 가 도구 밖으로
+    전파되지 않는다(§3.4 degrade 규약) — 기동 시점 검증(config)이 우회·회귀로 뚫려도
+    매출 요약은 살리고 이상 감지만 생략한다."""
+    from app.agents.seller.analysis import timeseries as timeseries_module
 
     def _boom(*_args, **_kwargs):
-        raise ValueError("window(2)/min_window(3) 설정이 유효하지 않다")
+        raise ValueError("dates(1)/values(2) 길이가 다르다")
 
-    monkeypatch.setattr(calc_module, "detect_sales_anomalies", _boom)
+    monkeypatch.setattr(timeseries_module, "detect_seasonal_anomalies", _boom)
 
     result = await _call_runtime_tool(
         get_sales_timeseries,
@@ -420,6 +420,66 @@ async def test_sales_tool_degrades_when_anomaly_config_invalid(monkeypatch) -> N
     assert "총매출" in result  # 매출 요약은 유지된다
     assert "이상 감지 판정 불가" in result
     assert not result.startswith("Error:")  # 전체 실패로 격하하지 않는다
+
+
+class RecordingSalesClient(FakeSpringClient):
+    """조회 인자·시계열을 기록/주입하는 이중 — lookback 확장 검증용(#290)."""
+
+    def __init__(self, series=None) -> None:
+        super().__init__()
+        self.recorded_sales_args: tuple | None = None
+        self._series = series or []
+
+    async def get_sales(self, brand_id, from_, to, granularity="daily"):
+        self.recorded_brand_id = brand_id
+        self.recorded_sales_args = (from_, to, granularity)
+        from app.schemas.spring import SalesResult
+
+        return SalesResult(series=self._series)
+
+
+async def test_sales_tool_extends_daily_fetch_by_lookback_but_reports_requested_window() -> None:
+    """[#290] daily 는 STL 학습용으로 lookback(28일)만큼 앞당겨 조회하되, 총매출·상세
+    나열·이상 보고는 요청 기간 내로 한정한다 — 판매자가 묻지 않은 기간의 수치·이상을
+    노출하지 않는다(질문 범위 준수)."""
+    series = [
+        # lookback 구간(요청 밖) — 여기 급증(9만원)은 보고되면 안 된다.
+        SalesSeriesPoint(date="2026-06-20", sales=1000, order_count=1),
+        SalesSeriesPoint(date="2026-06-21", sales=90000, order_count=9),
+        SalesSeriesPoint(date="2026-06-22", sales=1000, order_count=1),
+        # 요청 기간.
+        SalesSeriesPoint(date="2026-07-01", sales=1000, order_count=1),
+        SalesSeriesPoint(date="2026-07-02", sales=2000, order_count=2),
+    ]
+    fake = RecordingSalesClient(series)
+
+    result = await _call_runtime_tool(
+        get_sales_timeseries,
+        {"from_date": "2026-07-01", "to_date": "2026-07-02", "granularity": "daily"},
+        fake,
+    )
+
+    # 조회는 28일 앞당긴 2026-06-03 부터(설정 기본값 seller_analysis_lookback_days=28).
+    assert fake.recorded_sales_args == ("2026-06-03", "2026-07-02", "daily")
+    # 총매출·상세는 요청 기간(3,000원/3건)만 — lookback 의 9만원이 섞이면 안 된다.
+    assert "총매출 3,000원" in result
+    assert "주문 3건" in result
+    assert "2026-06-21" not in result  # lookback 구간 수치·이상 미노출
+    assert "기간 2026-07-01~2026-07-02" in result
+
+
+async def test_sales_tool_non_daily_fetch_is_not_extended() -> None:
+    """[#290] weekly/monthly 는 이상 감지를 안 하므로 lookback 확장도 없다 — 요청
+    기간 그대로 조회한다(불필요한 집계 비용·구간 왜곡 방지)."""
+    fake = RecordingSalesClient([SalesSeriesPoint(date="2026-07-01", sales=1000, order_count=1)])
+
+    await _call_runtime_tool(
+        get_sales_timeseries,
+        {"from_date": "2026-07-01", "to_date": "2026-07-31", "granularity": "weekly"},
+        fake,
+    )
+
+    assert fake.recorded_sales_args == ("2026-07-01", "2026-07-31", "weekly")
 
 
 async def test_get_order_events_tool_passes_stats_through() -> None:
@@ -1051,9 +1111,7 @@ async def test_account_events_tool_disabled_by_default() -> None:
     """
     fake = FakeSpringClient()
 
-    result = await _call_account_events(
-        {"from_date": "2026-07-01", "to_date": "2026-07-31"}, fake
-    )
+    result = await _call_account_events({"from_date": "2026-07-01", "to_date": "2026-07-31"}, fake)
 
     assert result.startswith("Error:")
     assert "비활성" in result
@@ -1128,9 +1186,7 @@ async def test_account_events_tool_degrades_on_spring_failure(monkeypatch) -> No
     _enable_account_events(monkeypatch)
     fake = FakeSpringClient(fail={"get_account_events"})
 
-    result = await _call_account_events(
-        {"from_date": "2026-07-01", "to_date": "2026-07-31"}, fake
-    )
+    result = await _call_account_events({"from_date": "2026-07-01", "to_date": "2026-07-31"}, fake)
 
     assert result.startswith("Error: 계정 이벤트")
 

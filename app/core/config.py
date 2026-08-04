@@ -199,10 +199,8 @@ class Settings(BaseSettings):
     # spring_timeout_s 도 팀 정의(아래 공통 블록)를 재사용한다 — 중복 정의 금지.
 
     # ── 판매자 분석 임계값 (app/agents/seller/calc.py 주입, 하드코딩 금지) ──
-    seller_ma_window: int = 7  # 매출 이동평균 window(일) — Spring MOVING_WINDOW 정렬
-    # 이상판정 최소 표본 수(직전 포인트 수) — Spring(SellerSalesService) MIN_WINDOW 정렬(#194).
-    seller_ma_min_window: int = 3
-    seller_anomaly_deviation_pct: float = 30.0  # 매출 이상판정 편차 임계(%)
+    # [#290] 구 SMA 튜너블(seller_ma_window·seller_ma_min_window·
+    # seller_anomaly_deviation_pct)은 S-H-ESD 교체로 폐기 — 아래 분석 계산 층 블록이 대체.
     seller_conversion_drop_pct: float = 20.0  # 전환율 하락 이상 임계(%)
     seller_churn_inactive_days: int = 30  # 이탈 코호트 무활동 일수(I-16 inactiveDays 기본)
     # [#197 PR 리뷰] I-8 계정/보안 이벤트는 전역 데이터(브랜드 스코프 아님)이고
@@ -1451,15 +1449,6 @@ class Settings(BaseSettings):
             raise ValueError(
                 "RATING_TIER 경계는 excellent >= good >= fair 여야 합니다"
                 f" ({self.rating_tier_excellent}/{self.rating_tier_good}/{self.rating_tier_fair})"
-            )
-        # 이상 감지 window 정합(#194 PR 리뷰) — env 오설정(min_window ≤ 0 또는
-        # min_window > window)이면 calc.detect_sales_anomalies 가 daily 매출 조회
-        # 매 요청마다 ValueError 로 죽는다. 설정값은 요청마다 변하지 않으므로
-        # 런타임 반복 실패 대신 기동 시점에 fail-fast 한다.
-        if self.seller_ma_min_window < 1 or self.seller_ma_window < self.seller_ma_min_window:
-            raise ValueError(
-                "SELLER_MA_MIN_WINDOW 는 1 이상, SELLER_MA_WINDOW 이하여야 합니다"
-                f" (min_window={self.seller_ma_min_window}, window={self.seller_ma_window})"
             )
         # 기간 기본값·상한 정합(#269 리뷰) — calc.normalize_period 는 기간 미지정("최근")일
         # 때 n=recent_default_days 로 두고 곧바로 n>max_days 상한 검사를 통과시킨다.

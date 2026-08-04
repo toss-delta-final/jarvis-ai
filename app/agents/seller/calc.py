@@ -1,14 +1,13 @@
-"""판매자 분석 순수 함수 (DESIGN-SELLER-TOOLS-STAGE1 §4, SPEC-SELLER-001 §5).
+"""판매자 분석 순수 함수 — 기간 파싱·전환율·안전 계산기 (DESIGN-SELLER-TOOLS-STAGE1 §4).
 
-3층 분담("Spring 원시 집계 → AI 고도화 계산(본 모듈) → LLM 자연어화") 중 계산 층.
-stdlib `statistics`만 사용한다(pandas 미설치, §0.1 C) — 부작용 없는 순수 함수로만 구성해
-같은 입력이면 같은 출력을 보장한다(결정론, §10-②).
+3층 분담("Spring 원시 집계 → AI 고도화 계산 → LLM 자연어화") 중 계산 층의 stdlib 부분.
+[#290] 통계 알고리즘(이상 탐지·비율 검정·군집화)은 `analysis/` 패키지로 이관됐다 —
+구 detect_sales_anomalies(SMA 편차)는 analysis.timeseries(S-H-ESD)가 대체한다.
+이 모듈에는 논문 의존이 없는 유틸(normalize_period·safe_eval·전환율 산식)만 남는다.
 
-[중요] Spring 이 준 SalesSeriesPoint.isAnomaly/deviationPct 는 참고치일 뿐이며, 본 모듈은
-원시 sales 값으로 이동평균·편차를 직접 재계산해 판정한다(§0.1 D, C-13 경계 미확정 대비).
-
-임계값(window·threshold_pct·drop_pct 등)은 전부 호출부가 app.core.config.Settings 에서
-읽어 인자로 주입한다 — 이 파일 내부에 튜너블 숫자를 하드코딩하지 않는다.
+부작용 없는 순수 함수로만 구성해 같은 입력이면 같은 출력을 보장한다(결정론, §10-②).
+임계값·상한은 전부 호출부가 app.core.config.Settings 에서 읽어 인자로 주입한다 —
+이 파일 내부에 튜너블 숫자를 하드코딩하지 않는다.
 """
 
 from __future__ import annotations
@@ -16,12 +15,11 @@ from __future__ import annotations
 import ast
 import math
 import re
-import statistics
 import unicodedata
 from datetime import date, timedelta
 
 from app.core.config import get_settings
-from app.schemas.spring import FunnelResult, SalesSeriesPoint
+from app.schemas.spring import FunnelResult
 
 # "최근 N일" 표현 (normalize_period) — **문자열 전체가** 이 형태여야 한다(^…$).
 # 종전에는 `"최근" in text` 부분 일치로 분기한 뒤 이 패턴이 안 걸리면 기본 일수로
@@ -63,83 +61,11 @@ _ALLOWED_UNARYOPS = (ast.UAdd, ast.USub)
 _ALLOWED_FUNCS = {"round": round}
 
 
-def moving_average(values: list[float], window: int) -> list[float | None]:
-    """단순 이동평균(SMA). window 미만 구간(경계)은 None 으로 채운다.
-
-    window <= 0 이면 ValueError(호출부 설정 오류 방어).
-    """
-    if window <= 0:
-        raise ValueError(f"window 는 1 이상이어야 한다: {window}")
-
-    result: list[float | None] = []
-    for i in range(len(values)):
-        if i < window - 1:
-            result.append(None)
-            continue
-        segment = values[i - window + 1 : i + 1]
-        result.append(statistics.fmean(segment))
-    return result
-
-
 def deviation_pct(actual: float, baseline: float) -> float:
     """기준(baseline) 대비 실측(actual)의 편차 %. baseline==0 이면 0 나눗셈 방지로 0.0."""
     if baseline == 0:
         return 0.0
     return (actual - baseline) / baseline * 100
-
-
-def is_anomaly(deviation: float, *, threshold_pct: float) -> bool:
-    """|deviation| >= threshold_pct 면 이상. 경계(==)도 이상으로 판정한다."""
-    return abs(deviation) >= threshold_pct
-
-
-def detect_sales_anomalies(
-    series: list[SalesSeriesPoint], *, window: int, min_window: int, threshold_pct: float
-) -> list[tuple[str, float | None, bool]]:
-    """일별 매출을 "직전 최대 window 일(최소 min_window 일) 평균" 대비 편차·이상판정한다.
-
-    (date, deviationPct, isAnomaly) 목록 반환. 당일 값은 자신의 기준(baseline) 계산에
-    포함하지 않는다 — 급증/급락일이 스스로를 평균에 섞어 편차를 희석하는 것을 방지한다.
-
-    [수정 2026-07-30, #194] Spring(SellerSalesService.withAnomaly) 실측 정렬 — 종전
-    고정 window(직전 7점 필수) 방식은 Spring(직전 3점부터 판정)과 어긋나 최근 기간
-    질의에서 이상을 놓쳤다. 규칙 3개를 동일하게 맞춘다:
-      1) 직전 포인트가 min_window(3) 개 이상이면 판정 — baseline 은 직전 최대 window(7) 개 평균.
-      2) baseline 0 + 매출 발생 = 이상(deviation 은 None — Spring deviationPct=null).
-      3) 매출 0 원인 포인트는 이상 아님 — 저볼륨에서 무판매일이 전부 -100% 판정되는
-         노이즈 방지(Spring `sales > 0 &&` 가드와 동일).
-    판정 불가 구간(직전 min_window 미만)의 deviation 도 None 이다(구 0.0 → 의미 구분).
-
-    [전제, #194 리뷰 3] sales 는 비음수다 — 원천이 Spring I-6 집계(PAID 주문 아이템 매출
-    합, 환불은 상태 전이로 관리)라 음수 매출·음수 기준선은 발생하지 않는다. 따라서
-    `baseline > 0` 의 else 분기는 곧 "무매출(0) 기준선"이며 Spring 과 동일하게 음수
-    기준선을 별도 구분하지 않는다. 이 전제가 깨지면(예: 환불을 음수 매출로 적재하도록
-    BE 변경) else 분기 의미와 호출부의 "무매출 기준선" 문구를 함께 재검토해야 한다.
-
-    Spring 이 준 point.is_anomaly/point.deviation_pct 는 무시하고 point.sales 원시값만으로
-    재계산한다(§0.1 D) — 로직을 정렬해 두 판정이 자연 일치하게 한다.
-    """
-    # 호출부 프로그래밍 오류 방어(2중 안전망) — Settings 주입 경로는 기동 시점에 이미
-    # 검증된다(config.py model_validator, #194 PR 리뷰: 매 요청 반복 raise 대신 fail-fast).
-    if min_window <= 0 or window < min_window:
-        raise ValueError(f"window({window})/min_window({min_window}) 설정이 유효하지 않다")
-    values = [point.sales for point in series]
-
-    results: list[tuple[str, float | None, bool]] = []
-    for i, point in enumerate(series):
-        history = values[:i]  # 당일 미포함 직전 전체 이력
-        if len(history) < min_window:
-            results.append((point.date, None, False))
-            continue
-        baseline = statistics.fmean(history[-window:])
-        if baseline > 0:
-            deviation = deviation_pct(point.sales, baseline)
-            flagged = point.sales > 0 and is_anomaly(deviation, threshold_pct=threshold_pct)
-            results.append((point.date, deviation, flagged))
-        else:
-            # 무매출 구간 직후 매출 발생 — 기준선 0 이라 편차 정의 불가(None), 발생 자체가 이상.
-            results.append((point.date, None, point.sales > 0))
-    return results
 
 
 def _safe_ratio_pct(numerator: int, denominator: int) -> float:

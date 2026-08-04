@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
+from datetime import date, timedelta
 from functools import wraps
 from typing import Any
 
@@ -22,6 +23,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
 
 from app.agents.seller import calc
+from app.agents.seller.analysis import timeseries
 from app.agents.seller.context import SellerContext
 from app.core.config import get_settings
 from app.core.tracing import trace_span
@@ -92,52 +94,69 @@ async def get_sales_timeseries(
     """
     brand_id = runtime.context.brand_id  # 검증된 JWT 클레임 유래 — LLM 이 만들 수 없다.
     settings = get_settings()
+    # [#290] daily 는 요청 기간 앞에 lookback 을 붙여 조회한다 — STL(period 7)은
+    # 최소 2주기 이력이 있어야 계절 성분을 추정한다. 요약·상세 나열은 요청 기간 내만
+    # 쓰고, lookback 구간은 이상 감지 학습에만 쓴다(판매자에게 요청 밖 수치 미노출).
+    fetch_from = from_date
+    if granularity == "daily":
+        try:
+            parsed_from = date.fromisoformat(from_date)
+        except ValueError:
+            pass  # 형식 오류는 확장 없이 그대로 — Spring 검증/오류 경로에 맡긴다.
+        else:
+            fetch_from = (
+                parsed_from - timedelta(days=settings.seller_analysis_lookback_days)
+            ).isoformat()
     try:
-        result = await get_spring_client().get_sales(brand_id, from_date, to_date, granularity)
+        result = await get_spring_client().get_sales(brand_id, fetch_from, to_date, granularity)
     except SpringUnavailableError as exc:
         return (
             f"Error: 매출 데이터를 불러오지 못했습니다({exc}). "
             "다른 기간으로 다시 시도하거나 없이 진행하세요."
         )
-    total_sales = sum(point.sales for point in result.series)
-    total_orders = sum(point.order_count for point in result.series)
+    # 요청 기간 내 포인트(ISO 날짜라 문자열 비교 = 날짜 비교). lookback 은 학습 전용.
+    window_points = [p for p in result.series if p.date >= from_date]
+    total_sales = sum(point.sales for point in window_points)
+    total_orders = sum(point.order_count for point in window_points)
     # 상세 포함+상한(안 1, 2026-07-17 확정): 워커가 추이를 직접 서술할 수 있도록
     # 포인트별 수치를 나열하되 seller_summary_max_points 로 컨텍스트 폭주를 막는다.
-    shown = result.series[: settings.seller_summary_max_points]
+    shown = window_points[: settings.seller_summary_max_points]
     detail_lines = ", ".join(f"{p.date} {p.sales:,}원/{p.order_count}건" for p in shown)
-    omitted = len(result.series) - len(shown)
+    omitted = len(window_points) - len(shown)
     omitted_note = f" (외 {omitted}개 포인트 생략)" if omitted > 0 else ""
-    # 이동평균 window(seller_ma_window, §5)는 "일" 단위 전제 — daily 일 때만 이상 감지.
+    # STL period(seller_stl_period)는 "일" 단위 요일 주기 전제 — daily 일 때만 이상 감지.
     if granularity == "daily":
         # Spring 의 isAnomaly/deviationPct 는 참고치일 뿐 — 원시 sales 로 재판정한다(§0.1 D).
-        # [#194] 적응형 window(직전 최소 min_window·최대 window 일) — Spring withAnomaly 정렬.
+        # [#290] SMA 편차 → S-H-ESD(STL 잔차 + robust GESD) 교체. 요일 효과를 분해로
+        # 걷어내 "주말이라 원래 낮음"을 급락으로 오탐하지 않는다(worker-papers.md).
         try:
-            anomalies = calc.detect_sales_anomalies(
-                result.series,
-                window=settings.seller_ma_window,
-                min_window=settings.seller_ma_min_window,
-                threshold_pct=settings.seller_anomaly_deviation_pct,
+            anomalies = timeseries.detect_seasonal_anomalies(
+                [p.date for p in result.series],
+                [float(p.sales) for p in result.series],
+                period=settings.seller_stl_period,
+                alpha=settings.seller_gesd_alpha,
+                max_anomalies_ratio=settings.seller_gesd_max_anomalies_ratio,
+                min_history_for_stl=settings.seller_min_history_for_stl,
             )
         except ValueError as exc:
-            # [#194 리뷰 3] §3.4 degrade 규약 준수 — window 설정 검증은 기동 시점
-            # (config.py model_validator)이 1차 방어지만, 그 안전망이 우회·회귀로 뚫려도
-            # 이 도구만 unhandled 예외로 죽지 않는다. 매출 요약은 살리고 판정만 생략.
-            _log.warning("이상 감지 판정 불가 — window 설정 오류: %s", exc)
-            anomaly_note = " 이상 감지 판정 불가(window 설정 오류)."
+            # [#194 리뷰 3 계승] §3.4 degrade 규약 — 설정 검증은 기동 시점(config.py)이
+            # 1차 방어지만, 그 안전망이 우회·회귀로 뚫려도 이 도구만 죽지 않는다.
+            _log.warning("이상 감지 판정 불가 — 분석 설정 오류: %s", exc)
+            anomaly_note = " 이상 감지 판정 불가(분석 설정 오류)."
         else:
-            # deviation None + 이상 = 무매출 기준선(0원) 구간 직후 매출 발생(#194, 편차 정의 불가).
-            flagged = [
-                f"{date} ({deviation:+.1f}%)"
-                if deviation is not None
-                else f"{date} (무매출 기준선 → 매출 발생)"
-                for date, deviation, is_anom in anomalies
-                if is_anom
-            ]
+            # lookback 구간에서 검출된 이상은 요청 밖이라 보고하지 않는다(질문 범위 준수).
+            flagged = [_format_seasonal_anomaly(a) for a in anomalies if a.date >= from_date]
+            seasonal_adjusted = len(result.series) >= settings.seller_min_history_for_stl
+            method_note = (
+                "STL 계절조정·GESD"
+                if seasonal_adjusted
+                else f"robust 판정 — 이력 {len(result.series)}일"
+                f"<{settings.seller_min_history_for_stl}일이라 계절 미조정"
+            )
             anomaly_note = (
-                f" 이상 감지 {len(flagged)}건(직전 최대 {settings.seller_ma_window}일"
-                f"·최소 {settings.seller_ma_min_window}일 평균 대비): " + ", ".join(flagged) + "."
+                f" 이상 감지 {len(flagged)}건({method_note}): " + ", ".join(flagged) + "."
                 if flagged
-                else " 이상 감지 없음."
+                else f" 이상 감지 없음({method_note})."
             )
     else:
         anomaly_note = ""
@@ -145,6 +164,21 @@ async def get_sales_timeseries(
         f"기간 {from_date}~{to_date} 총매출 {total_sales:,}원, 주문 {total_orders}건.\n"
         f"{granularity} 상세: {detail_lines}{omitted_note}.{anomaly_note} "
         f"{_reference_note(from_date, to_date)}"
+    )
+
+
+def _format_seasonal_anomaly(anomaly) -> str:
+    """SeasonalAnomaly 1건 → 요약 문구. 편차% 미정의(기대 0 이하)·무한 σ를 구분 표기한다."""
+    direction = "급락" if anomaly.direction == "drop" else "급증"
+    pct = (
+        f"계절조정 {anomaly.deviation_pct:+.1f}%"
+        if anomaly.deviation_pct is not None
+        else "편차% 산정 불가(기대 0원 이하)"
+    )
+    sigma = "σ산정 불가(무변동 이력)" if anomaly.sigma == float("inf") else f"{anomaly.sigma:.1f}σ"
+    return (
+        f"{anomaly.date} 실측 {anomaly.actual:,.0f}원·기대 {anomaly.expected:,.0f}원"
+        f" ({pct}, {sigma}, {direction})"
     )
 
 

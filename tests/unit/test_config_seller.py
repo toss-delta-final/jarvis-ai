@@ -16,9 +16,8 @@ def test_seller_settings_defaults() -> None:
     settings = Settings(_env_file=None)
     # [통일 2026-07-20] 서비스 토큰은 팀 규약 internal_api_token 단일 키(기본 미설정).
     assert settings.internal_api_token == ""
-    assert settings.seller_ma_window == 7
-    assert settings.seller_ma_min_window == 3  # Spring MIN_WINDOW 정렬(#194)
-    assert settings.seller_anomaly_deviation_pct == 30.0
+    # [#290] 구 SMA 튜너블(seller_ma_*·seller_anomaly_deviation_pct)은 S-H-ESD 교체로
+    # 폐기 — 대체 튜너블은 test_seller_analysis_defaults 가 검증한다.
     assert settings.seller_conversion_drop_pct == 20.0
     assert settings.seller_churn_inactive_days == 30
     assert settings.seller_recent_days_default == 7
@@ -40,18 +39,6 @@ def test_seller_settings_defaults() -> None:
     assert settings.seller_analysis_score_threshold == 21
     assert settings.seller_analysis_judge_timeout_s == 20.0
     assert settings.seller_branch_deadline_s == 160.0
-
-
-def test_seller_ma_window_invalid_config_fails_fast() -> None:
-    """[#194 PR 리뷰] 이상 감지 window 오설정은 기동 시점에 실패한다 — 런타임에
-    daily 매출 조회가 매 요청 ValueError 로 죽는 것 방지(설정값은 요청마다 안 변함)."""
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None, seller_ma_min_window=0)
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None, seller_ma_window=2, seller_ma_min_window=3)
-    # 경계(min_window == window)는 유효하다.
-    ok = Settings(_env_file=None, seller_ma_window=3, seller_ma_min_window=3)
-    assert ok.seller_ma_min_window == 3
 
 
 def test_seller_period_max_days_bounds_fail_fast() -> None:
