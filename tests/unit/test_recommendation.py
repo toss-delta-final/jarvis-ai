@@ -3544,6 +3544,246 @@ async def test_recommendation_repurchase_pin_stays_in_its_fanout_need(
     assert 101 not in {reason.product_id for reason in lists[1].reasons}
 
 
+async def test_buy_all_budget_builds_top_k_sets_from_wider_candidate_pools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#60] 노출 후보보다 넓은 leg 풀로 예산 준수 BUY_ALL 세트와 ready id를 만든다."""
+    from app.agents.buyer.recommendation.category_mapping import CategoryMapping
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "expose_min", 1)
+    monkeypatch.setattr(settings, "expose_max", 1)
+    monkeypatch.setattr(settings, "budget_set_alt_pool", 3)
+    monkeypatch.setattr(settings, "budget_set_max_count", 3)
+    monkeypatch.setattr(settings, "budget_set_label_focus", "형식 누락")
+
+    async def _map(**kwargs):
+        return CategoryMapping(legs=[("A", "파우치"), ("B", "어댑터")])
+
+    pools = {
+        "A": [
+            _prod(11, "A", "A1").model_copy(update={"price": 30_000}),
+            _prod(12, "A", "A2").model_copy(update={"price": 20_000}),
+            _prod(13, "A", "A3").model_copy(update={"price": 10_000}),
+        ],
+        "B": [
+            _prod(21, "B", "B1").model_copy(update={"price": 30_000}),
+            _prod(22, "B", "B2").model_copy(update={"price": 20_000}),
+            _prod(23, "B", "B3").model_copy(update={"price": 10_000}),
+        ],
+    }
+
+    async def _search(filters, exclude_product_ids=None):
+        products = pools[filters.category]
+        return ProductSearchResult(products=products, total_count=len(products))
+
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "case": 3,
+            "buyAll": True,
+            "totalBudget": 50_000,
+            "categoryQueries": [
+                {"category": "A", "query": "파우치"},
+                {"category": "B", "query": "어댑터"},
+            ],
+            "filters": {"priceMax": 50_000},
+        },
+        rerank={
+            "ranked": [
+                {"productId": 11, "rationale": "튼튼해요"},
+                {"productId": 21, "rationale": "호환돼요"},
+            ],
+            "overallComment": "세트 추천이에요",
+        },
+    )
+    events = await _collect(
+        run_buyer_turn(
+            _req("5만원으로 파우치와 어댑터 전부"),
+            _member_num(),
+            llm=llm,
+            search=_search,
+            push_fn=push,
+            map_categories=_map,
+        )
+    )
+
+    sent = push.pushes[0]
+    assert sent.list_type == "BUY_ALL"
+    assert sent.total_budget == 50_000
+    assert len(sent.lists) == settings.budget_set_max_count
+    assert [item.label for item in sent.lists] == ["알뜰", "균형", "균형"]
+    prices = {p.product_id: p.price for products in pools.values() for p in products}
+    assert all(sum(prices[pid] for pid in item.product_ids) <= 50_000 for item in sent.lists)
+    assert len({item.list_id for item in sent.lists}) == len(sent.lists)
+    ready = next(event for event in events if event["type"] == "products.ready")
+    assert ready["data"]["listIds"] == [item.list_id for item in sent.lists]
+
+
+async def test_buy_all_without_budget_still_builds_sets(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[#60] BUY_ALL 판정은 예산 유무와 독립이며 totalBudget은 선택 필드다."""
+    from app.agents.buyer.recommendation.category_mapping import CategoryMapping
+
+    monkeypatch.setattr(get_settings(), "expose_min", 1)
+    monkeypatch.setattr(get_settings(), "expose_max", 1)
+
+    async def _map(**kwargs):
+        return CategoryMapping(legs=[("A", "등뼈"), ("B", "대파")])
+
+    async def _search(filters, exclude_product_ids=None):
+        base = 10 if filters.category == "A" else 20
+        products = [
+            _prod(base + 1, filters.category, "상품1"),
+            _prod(base + 2, filters.category, "상품2").model_copy(update={"price": 20_000}),
+        ]
+        return ProductSearchResult(products=products, total_count=len(products))
+
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "case": 3,
+            "buyAll": True,
+            "categoryQueries": [
+                {"category": "A", "query": "등뼈"},
+                {"category": "B", "query": "대파"},
+            ],
+            "filters": {},
+        }
+    )
+    await _collect(
+        run_buyer_turn(
+            _req("감자탕 재료"),
+            _member_num(),
+            llm=llm,
+            search=_search,
+            push_fn=push,
+            map_categories=_map,
+        )
+    )
+
+    assert push.pushes[0].list_type == "BUY_ALL"
+    assert push.pushes[0].total_budget is None
+
+
+async def test_infeasible_budget_falls_back_to_pick_one_and_notices_before_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#60] 어떤 세트도 불가능하면 종전 목록으로 폴백하고 ready 전에 투명 고지한다."""
+    from app.agents.buyer.recommendation.category_mapping import CategoryMapping
+
+    monkeypatch.setattr(get_settings(), "expose_min", 1)
+    monkeypatch.setattr(get_settings(), "expose_max", 1)
+
+    async def _map(**kwargs):
+        return CategoryMapping(legs=[("A", "등뼈"), ("B", "대파")])
+
+    async def _search(filters, exclude_product_ids=None):
+        product_id = 11 if filters.category == "A" else 21
+        products = [
+            _prod(product_id, filters.category, "상품").model_copy(update={"price": 20_000})
+        ]
+        return ProductSearchResult(products=products, total_count=1)
+
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "case": 3,
+            "buyAll": True,
+            "totalBudget": 10_000,
+            "categoryQueries": [
+                {"category": "A", "query": "등뼈"},
+                {"category": "B", "query": "대파"},
+            ],
+            "filters": {"priceMax": 10_000},
+        }
+    )
+    events = await _collect(
+        run_buyer_turn(
+            _req("1만원으로 전부"),
+            _member_num(),
+            llm=llm,
+            search=_search,
+            push_fn=push,
+            map_categories=_map,
+        )
+    )
+
+    assert push.pushes[0].list_type == "PICK_ONE"
+    notice_index = next(
+        index
+        for index, event in enumerate(events)
+        if event["type"] == "token" and "예산 안에 드는 조합" in event["data"]["text"]
+    )
+    ready_index = next(
+        index for index, event in enumerate(events) if event["type"] == "products.ready"
+    )
+    assert notice_index < ready_index
+
+
+async def test_partial_budget_set_names_dropped_need_before_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#60] 일부 니즈를 제외한 세트는 제외 이름을 정제한 token으로 투명하게 고지한다."""
+    from app.agents.buyer.recommendation.category_mapping import CategoryMapping
+
+    monkeypatch.setattr(get_settings(), "expose_min", 1)
+    monkeypatch.setattr(get_settings(), "expose_max", 1)
+
+    async def _map(**kwargs):
+        return CategoryMapping(legs=[("A", "등뼈"), ("B", "대파"), ("C", "들깨가루")])
+
+    prices = {"A": 40_000, "B": 20_000, "C": 10_000}
+
+    async def _search(filters, exclude_product_ids=None):
+        product_id = {"A": 11, "B": 21, "C": 31}[filters.category]
+        products = [
+            _prod(product_id, filters.category, "상품").model_copy(
+                update={"price": prices[filters.category]}
+            )
+        ]
+        return ProductSearchResult(products=products, total_count=1)
+
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "case": 3,
+            "buyAll": True,
+            "totalBudget": 35_000,
+            "categoryQueries": [
+                {"category": "A", "query": "등뼈"},
+                {"category": "B", "query": "대파"},
+                {"category": "C", "query": "들깨가루"},
+            ],
+            "filters": {"priceMax": 35_000},
+        }
+    )
+    events = await _collect(
+        run_buyer_turn(
+            _req("3만5천원으로 감자탕 재료 전부"),
+            _member_num(),
+            llm=llm,
+            search=_search,
+            push_fn=push,
+            map_categories=_map,
+        )
+    )
+
+    assert push.pushes[0].list_type == "BUY_ALL"
+    notice_index = next(
+        index
+        for index, event in enumerate(events)
+        if event["type"] == "token" and "등뼈" in event["data"]["text"]
+    )
+    ready_index = next(
+        index for index, event in enumerate(events) if event["type"] == "products.ready"
+    )
+    assert notice_index < ready_index
+
+
 async def test_recommendation_ambiguous_repurchase_reverts_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4822,3 +5062,271 @@ async def test_session_buffer_records_cart_add_intent() -> None:
     await _collect(run_buyer_turn(_req(message, session_id="s-cart"), _member(), llm=llm))
 
     assert await _buffer("u1", "s-cart") == [message]
+
+
+async def test_buy_all_ten_legs_respects_list_product_contract_and_discloses_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[R1 F1] fanout 10도 목록당 9상품을 넘지 않고 빠진 니즈를 투명하게 알린다."""
+    from app.agents.buyer.recommendation.category_mapping import CategoryMapping
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "category_fanout_max", 10)
+    monkeypatch.setattr(settings, "expose_min", 1)
+    monkeypatch.setattr(settings, "expose_max", 1)
+    legs = [(f"C{leg}", f"니즈{leg}") for leg in range(10)]
+
+    async def _map(**kwargs):
+        return CategoryMapping(legs=legs)
+
+    async def _search(filters, exclude_product_ids=None):
+        leg = int(filters.category[1:])
+        products = [
+            _prod(100 + leg, filters.category, f"상품{leg}").model_copy(
+                update={"price": (leg + 1) * 1_000}
+            )
+        ]
+        return ProductSearchResult(products=products, total_count=1)
+
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "case": 3,
+            "buyAll": True,
+            "categoryQueries": [{"category": category, "query": query} for category, query in legs],
+            "filters": {},
+        }
+    )
+    events = await _collect(
+        run_buyer_turn(
+            _req("열 가지를 전부 추천해줘"),
+            _member_num(),
+            llm=llm,
+            search=_search,
+            push_fn=push,
+            map_categories=_map,
+        )
+    )
+
+    assert push.pushes[0].list_type == "BUY_ALL"
+    assert all(len(item.product_ids) <= 9 for item in push.pushes[0].lists)
+    assert any(event["type"] == "token" and "니즈9" in event["data"]["text"] for event in events)
+
+
+async def test_budget_set_exception_degrades_to_pick_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[R1 F2] 순수 조합기가 예외를 내도 기존 PICK_ONE 스트림은 완료된다."""
+    from app.agents.buyer.recommendation.category_mapping import CategoryMapping
+
+    monkeypatch.setattr(get_settings(), "expose_min", 1)
+    monkeypatch.setattr(get_settings(), "expose_max", 1)
+
+    async def _map(**kwargs):
+        return CategoryMapping(legs=[("A", "등뼈"), ("B", "대파")])
+
+    async def _search(filters, exclude_product_ids=None):
+        product_id = 11 if filters.category == "A" else 21
+        return ProductSearchResult(products=[_prod(product_id, filters.category)], total_count=1)
+
+    def _boom(**kwargs):
+        raise AssertionError("불변식 실패 흉내")
+
+    monkeypatch.setattr(recommendation_graph, "build_budget_sets", _boom)
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "case": 3,
+            "buyAll": True,
+            "categoryQueries": [
+                {"category": "A", "query": "등뼈"},
+                {"category": "B", "query": "대파"},
+            ],
+            "filters": {},
+        }
+    )
+    events = await _collect(
+        run_buyer_turn(
+            _req("감자탕 재료"),
+            _member_num(),
+            llm=llm,
+            search=_search,
+            push_fn=push,
+            map_categories=_map,
+        )
+    )
+
+    assert push.pushes[0].list_type == "PICK_ONE"
+    assert _types(events)[-2:] == ["products.ready", "done"]
+
+
+async def test_buy_all_without_budget_does_not_blame_unavailable_need_on_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """가격 후보가 없는 일부 니즈를 이름으로 고지하되 예산 제외와 섞지 않는다."""
+    from app.agents.buyer.recommendation.category_mapping import CategoryMapping
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "expose_min", 1)
+    monkeypatch.setattr(settings, "expose_max", 1)
+    monkeypatch.setattr(
+        settings,
+        "budget_set_unavailable_notice",
+        "{items}은(는) 가격 후보가 없어 조합에서 뺐어요.",
+    )
+
+    async def _map(**kwargs):
+        return CategoryMapping(legs=[("A", "등뼈"), ("B", "대파")])
+
+    async def _search(filters, exclude_product_ids=None):
+        products = [] if filters.category == "B" else [_prod(11, "A", "등뼈")]
+        return ProductSearchResult(products=products, total_count=len(products))
+
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "case": 3,
+            "buyAll": True,
+            "categoryQueries": [
+                {"category": "A", "query": "등뼈"},
+                {"category": "B", "query": "대파"},
+            ],
+            "filters": {},
+        }
+    )
+    events = await _collect(
+        run_buyer_turn(
+            _req("감자탕 재료 추천해줘"),
+            _member_num(),
+            llm=llm,
+            search=_search,
+            push_fn=push,
+            map_categories=_map,
+        )
+    )
+
+    assert push.pushes[0].list_type == "BUY_ALL"
+    unavailable_indices = [
+        index
+        for index, event in enumerate(events)
+        if event["type"] == "token" and "대파" in event["data"]["text"]
+    ]
+    assert unavailable_indices, "빠진 니즈 이름을 담은 token 고지가 없다"
+    ready_index = next(
+        index for index, event in enumerate(events) if event["type"] == "products.ready"
+    )
+    assert unavailable_indices[0] < ready_index
+    assert all(
+        settings.budget_set_dropped_notice.split("{items}", 1)[0] not in event["data"]["text"]
+        for event in events
+        if event["type"] == "token"
+    )
+
+
+async def test_unpriced_budget_set_uses_candidate_fallback_notice_not_budget_notice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """가격 없는 후보뿐이면 PICK_ONE으로 생존하고 예산이 아닌 후보 원인을 고지한다."""
+    from app.agents.buyer.recommendation.category_mapping import CategoryMapping
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "expose_min", 1)
+    monkeypatch.setattr(settings, "expose_max", 1)
+    monkeypatch.setattr(
+        settings,
+        "budget_set_candidate_fallback_notice",
+        "가격 후보가 부족해 상품별로 보여드릴게요.",
+    )
+
+    async def _map(**kwargs):
+        return CategoryMapping(legs=[("A", "등뼈"), ("B", "대파")])
+
+    async def _search(filters, exclude_product_ids=None):
+        product_id = 11 if filters.category == "A" else 21
+        product = _prod(product_id, filters.category).model_copy(update={"price": None})
+        return ProductSearchResult(products=[product], total_count=1)
+
+    push = _RecordingPush()
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "case": 3,
+            "buyAll": True,
+            "totalBudget": 10_000,
+            "categoryQueries": [
+                {"category": "A", "query": "등뼈"},
+                {"category": "B", "query": "대파"},
+            ],
+            "filters": {"priceMax": 10_000},
+        }
+    )
+    events = await _collect(
+        run_buyer_turn(
+            _req("1만원으로 감자탕 재료 전부"),
+            _member_num(),
+            llm=llm,
+            search=_search,
+            push_fn=push,
+            map_categories=_map,
+        )
+    )
+
+    assert push.pushes[0].list_type == "PICK_ONE"
+    token_texts = [event["data"]["text"] for event in events if event["type"] == "token"]
+    assert settings.budget_set_candidate_fallback_notice in token_texts
+    assert settings.budget_set_infeasible_notice not in token_texts
+    assert _types(events)[-2:] == ["products.ready", "done"]
+
+
+async def test_total_budget_output_controls_push_independently_of_price_max(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """같은 상품별 상한에서도 별도 totalBudget 출력만 push 총액을 제어한다."""
+    from app.agents.buyer.recommendation.category_mapping import CategoryMapping
+
+    monkeypatch.setattr(get_settings(), "expose_min", 1)
+    monkeypatch.setattr(get_settings(), "expose_max", 1)
+
+    async def _map(**kwargs):
+        return CategoryMapping(legs=[("A", "파우치"), ("B", "어댑터")])
+
+    async def _search(filters, exclude_product_ids=None):
+        product_id = 11 if filters.category == "A" else 21
+        return ProductSearchResult(products=[_prod(product_id, filters.category)], total_count=1)
+
+    totals = []
+    for index, total_budget in enumerate((50_000, None)):
+        push = _RecordingPush()
+        llm = FakeLLM(
+            decompose={
+                "intent": "recommend",
+                "case": 3,
+                "buyAll": True,
+                "totalBudget": total_budget,
+                "categoryQueries": [
+                    {"category": "A", "query": "파우치"},
+                    {"category": "B", "query": "어댑터"},
+                ],
+                "filters": {"priceMax": 50_000},
+            }
+        )
+        await _collect(
+            run_buyer_turn(
+                _req(
+                    "5만원으로 파우치와 어댑터",
+                    session_id=f"budget-s{index}",
+                    thread_id=f"budget-t{index}",
+                ),
+                _member_num(),
+                llm=llm,
+                search=_search,
+                push_fn=push,
+                map_categories=_map,
+            )
+        )
+        totals.append(push.pushes[0].total_budget)
+
+    assert totals == [50_000, None]

@@ -315,6 +315,31 @@ class Settings(BaseSettings):
     reason_max_len: int = (
         200  # I-21 reason 안전 상한(§4.2) — 표시 목표는 프롬프트 40자, 이건 방어캡
     )
+    # [#60] 세트 모드를 즉시 종전 PICK_ONE 경로로 되돌리는 운영 롤백 스위치.
+    budget_set_enabled: bool = True
+    # 기본 3안은 선택 부담을 제한하면서 알뜰·균형·강조 조합을 함께 보여주는 최소 top-K다.
+    budget_set_max_count: int = Field(default=3, ge=1, le=MAX_LISTS)
+    # 노출 수보다 넓은 니즈당 6개 풀로 저가 대안을 보존한다(REQ-REC-077).
+    budget_set_alt_pool: int = Field(default=6, ge=1)
+    # 기본 5니즈×6대안=7,776 완전 탐색을 수용하고 비정상 폭발만 20,000에서 끊는다.
+    budget_set_max_combinations: int = Field(default=20_000, gt=0)
+    budget_set_label_cheap: str = "알뜰"
+    budget_set_label_balanced: str = "균형"
+    budget_set_label_focus: str = "{need} 중심"
+    budget_set_label_alt: str = "다른 조합"
+    budget_set_dropped_notice: str = "예산에 맞추려고 {items}은(는) 이번 조합에서 뺐어요."
+    budget_set_unavailable_notice: str = (
+        "{items}은(는) 가격을 확인할 수 있는 상품이 없어 이번 조합에서 뺐어요."
+    )
+    budget_set_limited_notice: str = (
+        "한 조합에 담을 수 있는 상품 수에 맞춰 {items}은(는) 이번 조합에서 뺐어요."
+    )
+    budget_set_infeasible_notice: str = (
+        "말씀하신 예산 안에 드는 조합을 찾지 못해 상품별로 보여드릴게요."
+    )
+    budget_set_candidate_fallback_notice: str = (
+        "가격을 확인할 수 있는 상품 조합을 만들지 못해 상품별로 보여드릴게요."
+    )
     # rerank 응답 출력 예산 — **노출 개수에 비례**해야 한다(PR #212 리뷰). 니즈별 분할이면
     # 한 번의 rerank 가 목록 수만큼 항목을 내는데, 고정 예산이면 항목이 27~30개로 늘 때 응답이
     # 중간에 잘리고 extract_json 이 파싱에 실패해 LLMError → 근거 없는 degrade 로 떨어진다.
