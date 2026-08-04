@@ -33,59 +33,59 @@ prompt=e5e195822495 (git:3f1dec7) · tier=fast · model=gpt-5-nano · fixture=in
 
 | 셀 | 표본 | 시도 | intent 분포 |
 |---|---|---|---|
-| `cart-control-001|lastRecommendations` | 8 | 8 | cart_view 8 |
-| `cart-control-001|none` | 8 | 8 | cart_view 8 |
-| `cart-control-001|pendingCart` | 8 | 8 | cart_view 8 |
-| `cart-control-002|lastRecommendations` | 8 | 8 | cart_view 8 |
-| `cart-control-002|none` | 8 | 8 | cart_view 8 |
-| `cart-control-002|pendingCart` | 8 | 8 | cart_view 8 |
-| `cart-control-003|lastRecommendations` | 8 | 8 | cart_view 8 |
-| `cart-control-003|none` | 8 | 8 | cart_view 8 |
-| `cart-control-003|pendingCart` | 8 | 8 | cart_view 8 |
-| `cart-control-004|lastRecommendations` | 8 | 8 | cart_add 8 |
-| `cart-control-004|none` | 8 | 8 | cart_add 8 |
-| `cart-control-004|pendingCart` | 8 | 8 | cart_add 8 |
-| `cart-control-005|lastRecommendations` | 8 | 8 | cart_add 8 |
-| `cart-control-005|none` | 8 | 8 | cart_add 8 |
-| `cart-control-005|pendingCart` | 8 | 8 | cart_add 8 |
-| `cart-control-006|lastRecommendations` | 8 | 8 | cart_add 8 |
-| `cart-control-006|none` | 8 | 8 | cart_add 8 |
-| `cart-control-006|pendingCart` | 8 | 8 | cart_add 8 |
-| `demonstrative-001|lastRecommendations` | 8 | 8 | general 1, recommend 7 |
-| `demonstrative-001|none` | 8 | 8 | recommend 8 |
-| `demonstrative-001|pendingCart` | 8 | 8 | recommend 8 |
-| `demonstrative-002|lastRecommendations` | 8 | 8 | recommend 8 |
-| `demonstrative-002|none` | 8 | 8 | recommend 8 |
-| `demonstrative-002|pendingCart` | 8 | 8 | cart_add 1, recommend 7 |
-| `demonstrative-003|lastRecommendations` | 8 | 8 | recommend 8 |
-| `demonstrative-003|none` | 8 | 8 | recommend 8 |
-| `demonstrative-003|pendingCart` | 8 | 8 | recommend 8 |
-| `demonstrative-004|lastRecommendations` | 8 | 8 | general 1, recommend 7 |
-| `demonstrative-004|none` | 8 | 8 | recommend 8 |
-| `demonstrative-004|pendingCart` | 8 | 8 | recommend 8 |
-| `general-001|lastRecommendations` | 8 | 8 | general 8 |
-| `general-001|none` | 8 | 8 | general 8 |
-| `general-001|pendingCart` | 8 | 8 | general 8 |
-| `general-002|lastRecommendations` | 8 | 8 | recommend 8 |
-| `general-002|none` | 8 | 8 | general 8 |
-| `general-002|pendingCart` | 8 | 8 | general 5, recommend 3 |
-| `option-answer-001|pendingCart` | 8 | 8 | cart_add 8 |
-| `option-answer-002|pendingCart` | 8 | 8 | cart_add 8 |
-| `option-answer-003|pendingCart` | 8 | 8 | cart_add 8 |
-| `option-answer-004|pendingCart` | 8 | 8 | cart_add 8 |
-| `order-status-001|lastRecommendations` | 8 | 8 | order_status 8 |
-| `order-status-001|none` | 8 | 8 | order_status 8 |
-| `order-status-001|pendingCart` | 8 | 8 | order_status 8 |
-| `order-status-002|lastRecommendations` | 8 | 8 | order_status 8 |
-| `order-status-002|none` | 8 | 8 | order_status 8 |
-| `order-status-002|pendingCart` | 8 | 8 | order_status 8 |
-| `switch-001|pendingCart` | 8 | 8 | cart_add 1, recommend 7 |
-| `switch-002|pendingCart` | 8 | 8 | cart_add 4, cart_view 2, recommend 2 |
-| `switch-003|pendingCart` | 8 | 8 | cart_add 5, cart_view 3 |
-| `switch-004|pendingCart` | 8 | 8 | cart_add 8 |
-| `switch-005|pendingCart` | 8 | 8 | cart_add 3, recommend 5 |
-| `switch-006|pendingCart` | 8 | 8 | cart_add 8 |
-| `switch-007|pendingCart` | 8 | 8 | cart_add 8 |
+| `cart-control-001\|lastRecommendations` | 8 | 8 | cart_view 8 |
+| `cart-control-001\|none` | 8 | 8 | cart_view 8 |
+| `cart-control-001\|pendingCart` | 8 | 8 | cart_view 8 |
+| `cart-control-002\|lastRecommendations` | 8 | 8 | cart_view 8 |
+| `cart-control-002\|none` | 8 | 8 | cart_view 8 |
+| `cart-control-002\|pendingCart` | 8 | 8 | cart_view 8 |
+| `cart-control-003\|lastRecommendations` | 8 | 8 | cart_view 8 |
+| `cart-control-003\|none` | 8 | 8 | cart_view 8 |
+| `cart-control-003\|pendingCart` | 8 | 8 | cart_view 8 |
+| `cart-control-004\|lastRecommendations` | 8 | 8 | cart_add 8 |
+| `cart-control-004\|none` | 8 | 8 | cart_add 8 |
+| `cart-control-004\|pendingCart` | 8 | 8 | cart_add 8 |
+| `cart-control-005\|lastRecommendations` | 8 | 8 | cart_add 8 |
+| `cart-control-005\|none` | 8 | 8 | cart_add 8 |
+| `cart-control-005\|pendingCart` | 8 | 8 | cart_add 8 |
+| `cart-control-006\|lastRecommendations` | 8 | 8 | cart_add 8 |
+| `cart-control-006\|none` | 8 | 8 | cart_add 8 |
+| `cart-control-006\|pendingCart` | 8 | 8 | cart_add 8 |
+| `demonstrative-001\|lastRecommendations` | 8 | 8 | general 1, recommend 7 |
+| `demonstrative-001\|none` | 8 | 8 | recommend 8 |
+| `demonstrative-001\|pendingCart` | 8 | 8 | recommend 8 |
+| `demonstrative-002\|lastRecommendations` | 8 | 8 | recommend 8 |
+| `demonstrative-002\|none` | 8 | 8 | recommend 8 |
+| `demonstrative-002\|pendingCart` | 8 | 8 | cart_add 1, recommend 7 |
+| `demonstrative-003\|lastRecommendations` | 8 | 8 | recommend 8 |
+| `demonstrative-003\|none` | 8 | 8 | recommend 8 |
+| `demonstrative-003\|pendingCart` | 8 | 8 | recommend 8 |
+| `demonstrative-004\|lastRecommendations` | 8 | 8 | general 1, recommend 7 |
+| `demonstrative-004\|none` | 8 | 8 | recommend 8 |
+| `demonstrative-004\|pendingCart` | 8 | 8 | recommend 8 |
+| `general-001\|lastRecommendations` | 8 | 8 | general 8 |
+| `general-001\|none` | 8 | 8 | general 8 |
+| `general-001\|pendingCart` | 8 | 8 | general 8 |
+| `general-002\|lastRecommendations` | 8 | 8 | recommend 8 |
+| `general-002\|none` | 8 | 8 | general 8 |
+| `general-002\|pendingCart` | 8 | 8 | general 5, recommend 3 |
+| `option-answer-001\|pendingCart` | 8 | 8 | cart_add 8 |
+| `option-answer-002\|pendingCart` | 8 | 8 | cart_add 8 |
+| `option-answer-003\|pendingCart` | 8 | 8 | cart_add 8 |
+| `option-answer-004\|pendingCart` | 8 | 8 | cart_add 8 |
+| `order-status-001\|lastRecommendations` | 8 | 8 | order_status 8 |
+| `order-status-001\|none` | 8 | 8 | order_status 8 |
+| `order-status-001\|pendingCart` | 8 | 8 | order_status 8 |
+| `order-status-002\|lastRecommendations` | 8 | 8 | order_status 8 |
+| `order-status-002\|none` | 8 | 8 | order_status 8 |
+| `order-status-002\|pendingCart` | 8 | 8 | order_status 8 |
+| `switch-001\|pendingCart` | 8 | 8 | cart_add 1, recommend 7 |
+| `switch-002\|pendingCart` | 8 | 8 | cart_add 4, cart_view 2, recommend 2 |
+| `switch-003\|pendingCart` | 8 | 8 | cart_add 5, cart_view 3 |
+| `switch-004\|pendingCart` | 8 | 8 | cart_add 8 |
+| `switch-005\|pendingCart` | 8 | 8 | cart_add 3, recommend 5 |
+| `switch-006\|pendingCart` | 8 | 8 | cart_add 8 |
+| `switch-007\|pendingCart` | 8 | 8 | cart_add 8 |
 
 ## 채우지 못한 셀
 

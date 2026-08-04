@@ -43,6 +43,15 @@ def _write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, Any]]) ->
         writer.writerows(rows)
 
 
+def md_cell(value: str) -> str:
+    """마크다운 표 칸에 안전하게 넣는다.
+
+    cellId 는 `발화|컨텍스트` 라 파이프가 들어 있고, GFM 은 코드스팬 안이라도 파이프를 열
+    구분자로 먹는다 — 이스케이프하지 않으면 표가 통째로 어긋난다.
+    """
+    return value.replace("|", "\\|")
+
+
 def header_line(results: dict[str, Any]) -> str:
     """이 표가 무엇을 잰 것인지 한 줄로."""
     prompt = results["prompt"]
@@ -154,14 +163,15 @@ def render_report(results: dict[str, Any]) -> str:
     for cell in results["cells"]:
         counts = ", ".join(f"{key} {value}" for key, value in cell["intentCounts"].items())
         lines.append(
-            f"| `{cell['cellId']}` | {cell['sampleCount']} | {cell['attempts']} | {counts} |"
+            f"| `{md_cell(cell['cellId'])}` | {cell['sampleCount']} | {cell['attempts']} | "
+            f"{counts} |"
         )
 
     lines += ["", "## 채우지 못한 셀", ""]
     if results["unfilledCells"]:
         lines += ["| 셀 | 채움/목표 | 시도 | 오류 |", "|---|---|---|---|"]
         lines += [
-            f"| `{row['cellId']}` | {row['got']}/{row['want']} | {row['attempts']} | "
+            f"| `{md_cell(row['cellId'])}` | {row['got']}/{row['want']} | {row['attempts']} | "
             f"{', '.join(row['errorTypes']) or '-'} |"
             for row in results["unfilledCells"]
         ]

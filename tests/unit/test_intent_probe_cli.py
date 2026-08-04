@@ -44,6 +44,25 @@ def test_dry_run_is_deterministic(tmp_path: Path) -> None:
     assert normalized_artifact_bytes(first) == normalized_artifact_bytes(second)
 
 
+def test_dry_run_is_independent_of_concurrency(tmp_path: Path) -> None:
+    # 동시성이 바뀌어도 같은 표가 나와야 한다 — 가짜 LLM 의 오답 주기가 셀 밖으로 새면
+    # 스케줄링에 따라 숫자가 달라지고, 결정론이 '운'이 된다.
+    serial, parallel = tmp_path / "c1", tmp_path / "c8"
+    assert _run(serial, "--concurrency", "1") == 0
+    assert _run(parallel, "--concurrency", "8") == 0
+    # run_manifest 는 제외한다 — 거기에는 `concurrency: 1|8` 이 설정으로 기록되며, 그건 달라야 한다.
+    measured = {
+        name: value
+        for name, value in normalized_artifact_bytes(serial).items()
+        if name != "run_manifest.json"
+    }
+    assert measured == {
+        name: value
+        for name, value in normalized_artifact_bytes(parallel).items()
+        if name != "run_manifest.json"
+    }
+
+
 def test_existing_out_dir_is_refused(tmp_path: Path) -> None:
     out = tmp_path / "run"
     out.mkdir()
@@ -69,6 +88,18 @@ def test_report_header_carries_prompt_tier_fixture(tmp_path: Path) -> None:
     assert "tier=fast" in report
     assert "intent-probe-anchors-b-v1" in report
     assert "이건 골든셋이 아니다" in report
+
+
+def test_report_tables_escape_pipes_in_cell_ids(tmp_path: Path) -> None:
+    # cellId 는 `발화|컨텍스트` 라 이스케이프하지 않으면 마크다운 표가 통째로 어긋난다.
+    out = tmp_path / "run"
+    assert _run(out) == 0
+    report = (out / "report.md").read_text(encoding="utf-8")
+    table_rows = [line for line in report.splitlines() if line.startswith("| `")]
+    assert table_rows
+    for row in table_rows:
+        assert row.count("|") - row.count("\\|") == 5  # 표 구분자 5개(4열)만 남아야 한다
+    assert "cart-control-001\\|none" in report
 
 
 def test_axis_definitions_travel_with_the_numbers(tmp_path: Path) -> None:

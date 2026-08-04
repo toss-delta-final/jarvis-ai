@@ -71,10 +71,12 @@ class ScriptedDecomposeLLM:
 
     def _answer(self, user: str) -> dict[str, Any]:
         text = _field(user, _USER_MESSAGE_PREFIX)
-        has_pending = _field(user, _PENDING_PREFIX) not in ("", "null")
-        cell_key = f"{text}|{has_pending}"
-        index = self._per_cell[cell_key]
-        self._per_cell[cell_key] += 1
+        # 카운터는 **user 메시지 전체**로 나눈다 — 컨텍스트별로 실려 나가는 줄이 다르므로 셀마다
+        # 고유하다. 발화+되물음여부로만 나누면 `맥락 없음`과 `직전 추천` 셀이 카운터를 공유해
+        # 오답 주기가 셀 간에 섞이고, 그 순서는 동시성 스케줄링에 달린다 — dry-run 산출물의
+        # 결정론이 운에 걸린다. run_cell 은 셀 안에서 순차 호출하므로 이 키면 항상 결정론이다.
+        index = self._per_cell[user]
+        self._per_cell[user] += 1
         utterance = self._by_text.get(text)
         if utterance is None:
             return self._envelope("general")
