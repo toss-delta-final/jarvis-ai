@@ -492,6 +492,9 @@ class Settings(BaseSettings):
     # 현재 사실상 무효다 — 방식1(VectorSearchBackend, hydrate 미주입이라 hot path 미탑재)만 참조한다.
     # leg 균형은 _merge_fanout_results 의 round-robin + merge_cap 이 담당한다. 값 변경이 방식2
     # 동작에 영향 없음(fan-out 절단 재배치는 별도 과제).
+    # [#89] fan-out leg 사전 절단은 더 이상 이 값을 소비하지 않는다 — category_fanout_merge_cap
+    # 이 leg 수와 무관하게 담당한다(생존 leg 수는 gather 이후에야 확정돼 요청 시점 값으로는
+    # 재조정이 안 됨). 필드 제거는 후속 과제.
     category_fanout_per_cat_limit: int = Field(
         default=10, ge=0
     )  # leg top-K(§4.6 size 아님) — 방식2 hot path 에선 현재 무효(위 주석)
