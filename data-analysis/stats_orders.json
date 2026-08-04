@@ -1,0 +1,254 @@
+{
+  "meta": {
+    "source_files": [
+      "kz.csv"
+    ],
+    "dataset": "Kaggle mkechinov/ecommerce-purchase-history-from-electronics-store",
+    "script": "extract_aux_stats.py",
+    "mode": "orders"
+  },
+  "meta_local": {
+    "rows": 2633521,
+    "raw_rows": 2633521,
+    "dropped_row_share": 0.0,
+    "orders": 1435266,
+    "users_non_null": 233834,
+    "event_time_min": "1970-01-01 00:33:40",
+    "event_time_max": "2020-11-21 10:10:30",
+    "period_days": 18587,
+    "null_user_row_share": 0.785774
+  },
+  "order_composition": {
+    "lines_per_order": {
+      "p5": 1,
+      "p10": 1,
+      "p25": 1,
+      "p50": 1,
+      "p75": 2,
+      "p90": 4,
+      "p95": 5,
+      "p99": 8,
+      "p99.9": 13,
+      "mean": 1.835
+    },
+    "distinct_products_per_order": {
+      "p5": 1,
+      "p10": 1,
+      "p25": 1,
+      "p50": 1,
+      "p75": 2,
+      "p90": 4,
+      "p95": 5,
+      "p99": 8,
+      "p99.9": 13
+    },
+    "multi_product_order_share": 0.392404,
+    "multi_category_order_share_of_categorized": 0.317941,
+    "order_value": {
+      "p5": 4.7834148363629065,
+      "p10": 10.19910492368171,
+      "p25": 29.859815436373495,
+      "p50": 113.8649932757227,
+      "p75": 300.5849453556502,
+      "p90": 629.7318093929658,
+      "p95": 915.6333453226771,
+      "p99": 1608.6885564445015,
+      "p99.9": 3171.868924912923,
+      "mean": 239.55
+    }
+  },
+  "quantity_per_order_product": {
+    "p5": 1,
+    "p10": 1,
+    "p25": 1,
+    "p50": 1,
+    "p75": 1,
+    "p90": 1,
+    "p95": 1,
+    "p99": 1,
+    "p99.9": 1,
+    "mean": 1.0,
+    "share_qty_gt_1": 0.000247,
+    "note": "동일 주문 내 같은 product_id 반복 행 수 = 수량 근사 (이 데이터셋에 수량 컬럼 없음)"
+  },
+  "reorder_gap_days": {
+    "p5": 0,
+    "p10": 0,
+    "p25": 0,
+    "p50": 5,
+    "p75": 27,
+    "p90": 76,
+    "p95": 114,
+    "p99": 210,
+    "p99.9": 18373,
+    "mean": 74.61,
+    "pairs_measured": 166704,
+    "note": "관측 기간 18587일 내 연속 주문 간격 — 우측 절단(censoring) 있음"
+  },
+  "orders_per_user_period": {
+    "p5": 1,
+    "p10": 1,
+    "p25": 1,
+    "p50": 1,
+    "p75": 2,
+    "p90": 3,
+    "p95": 4,
+    "p99": 9,
+    "p99.9": 23,
+    "mean": 1.713,
+    "repeat_buyer_share": 0.317999,
+    "period_days": 18587
+  },
+  "category_copurchase_top30": [
+    {
+      "a": "16.18",
+      "b": "electronics.smartphone",
+      "orders": 50732
+    },
+    {
+      "a": "8.10",
+      "b": "electronics.smartphone",
+      "orders": 37040
+    },
+    {
+      "a": "9.26",
+      "b": "electronics.smartphone",
+      "orders": 35550
+    },
+    {
+      "a": "29.63",
+      "b": "electronics.smartphone",
+      "orders": 28044
+    },
+    {
+      "a": "8.10",
+      "b": "9.26",
+      "orders": 26407
+    },
+    {
+      "a": "6.94",
+      "b": "electronics.smartphone",
+      "orders": 16257
+    },
+    {
+      "a": "4.63",
+      "b": "electronics.smartphone",
+      "orders": 15662
+    },
+    {
+      "a": "electronics.smartphone",
+      "b": "electronics.video.tv",
+      "orders": 12741
+    },
+    {
+      "a": "6.94",
+      "b": "8.10",
+      "orders": 12522
+    },
+    {
+      "a": "6.94",
+      "b": "9.26",
+      "orders": 11864
+    },
+    {
+      "a": "appliances.kitchen.refrigerators",
+      "b": "appliances.kitchen.washer",
+      "orders": 10825
+    },
+    {
+      "a": "16.18",
+      "b": "9.26",
+      "orders": 10561
+    },
+    {
+      "a": "furniture.kitchen.table",
+      "b": "furniture.living_room.cabinet",
+      "orders": 10444
+    },
+    {
+      "a": "16.18",
+      "b": "8.10",
+      "orders": 10360
+    },
+    {
+      "a": "computers.notebook",
+      "b": "computers.peripherals.mouse",
+      "orders": 9924
+    },
+    {
+      "a": "13.87",
+      "b": "electronics.smartphone",
+      "orders": 9864
+    },
+    {
+      "a": "electronics.audio.headphone",
+      "b": "electronics.smartphone",
+      "orders": 9770
+    },
+    {
+      "a": "appliances.kitchen.hood",
+      "b": "appliances.kitchen.oven",
+      "orders": 9558
+    },
+    {
+      "a": "57.87",
+      "b": "appliances.kitchen.refrigerators",
+      "orders": 9043
+    },
+    {
+      "a": "29.63",
+      "b": "8.10",
+      "orders": 8906
+    },
+    {
+      "a": "29.63",
+      "b": "9.26",
+      "orders": 8458
+    },
+    {
+      "a": "13.87",
+      "b": "16.18",
+      "orders": 8354
+    },
+    {
+      "a": "16.18",
+      "b": "29.63",
+      "orders": 7849
+    },
+    {
+      "a": "4.63",
+      "b": "8.10",
+      "orders": 7544
+    },
+    {
+      "a": "57.87",
+      "b": "electronics.video.tv",
+      "orders": 7481
+    },
+    {
+      "a": "3.89",
+      "b": "electronics.smartphone",
+      "orders": 6996
+    },
+    {
+      "a": "4.63",
+      "b": "9.26",
+      "orders": 6903
+    },
+    {
+      "a": "4.63",
+      "b": "electronics.video.tv",
+      "orders": 6722
+    },
+    {
+      "a": "electronics.smartphone",
+      "b": "furniture.bedroom.pillow",
+      "orders": 6230
+    },
+    {
+      "a": "appliances.kitchen.refrigerators",
+      "b": "electronics.video.tv",
+      "orders": 6208
+    }
+  ]
+}

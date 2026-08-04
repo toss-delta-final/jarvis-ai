@@ -1,0 +1,75 @@
+{
+  "meta": {
+    "source_files": [
+      "2019-Dec.csv"
+    ],
+    "dataset": "Kaggle mkechinov/ecommerce-events-history-in-cosmetics-shop",
+    "script": "extract_aux_stats.py",
+    "mode": "cosmetics"
+  },
+  "meta_local": {
+    "rows": 3533286,
+    "bot_rule": "세션당 이벤트 수 > max(200, p99.9=146) = 200",
+    "bot_sessions_excluded": 366,
+    "event_time_min": "2019-12-01 00:00:00",
+    "event_time_max": "2019-12-31 23:59:57",
+    "sessions": 839447,
+    "users": 370023
+  },
+  "event_ratio": {
+    "view": {
+      "count": 1709525,
+      "ratio": 0.500434
+    },
+    "cart": {
+      "count": 889335,
+      "ratio": 0.260338
+    },
+    "remove_from_cart": {
+      "count": 609048,
+      "ratio": 0.178288
+    },
+    "purchase": {
+      "count": 208174,
+      "ratio": 0.060939
+    }
+  },
+  "remove_per_cart": 0.684835,
+  "session_level": {
+    "p_remove_session_given_cart_session": 0.406597,
+    "remove_without_any_cart_session_share": 0.20408,
+    "removes_per_remove_session": {
+      "p5": 1,
+      "p10": 1,
+      "p25": 2,
+      "p50": 4,
+      "p75": 8,
+      "p90": 17,
+      "p95": 26,
+      "p99": 56,
+      "p99.9": 115,
+      "mean": 7.228
+    },
+    "p_purchase_given_remove_session": 0.205682,
+    "p_purchase_given_cart_session_no_remove": 0.077133,
+    "note": "마지막 두 값 비교 = remove가 구매로 이어지는 세션인지(장바구니 정리) 이탈 신호인지"
+  },
+  "product_level": {
+    "removed_pairs": 407801,
+    "removed_with_prior_cart_share": 0.382981,
+    "seconds_cart_to_remove": {
+      "p5": 16,
+      "p10": 38,
+      "p25": 138,
+      "p50": 425,
+      "p75": 1121,
+      "p90": 2708,
+      "p95": 4859,
+      "p99": 109949,
+      "p99.9": 1332686
+    },
+    "p_recart_same_product_after_remove": 0.044451,
+    "p_purchase_same_product_after_remove": 0.029443,
+    "note": "removed_with_prior_cart_share < 1 인 만큼은 이전 세션 장바구니 정리(세션 경계 밖 cart)"
+  }
+}
