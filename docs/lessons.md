@@ -13,6 +13,46 @@
 
 ---
 
+## [2026-08-05] `monkeypatch.setenv` + `get_settings.cache_clear()` 는 전역 autouse 픽스처와 경합해 다음 테스트로 샌다
+- 증상: #299 의 `test_limit_configurable_via_env` 가 `REQUEST_BODY_MAX_BYTES=20` 을
+  `monkeypatch.setenv` + `get_settings.cache_clear()` 로 주입했는데, 이 테스트 **하나만** 파일
+  안에서 통과해도 그 뒤에 실행되는 무관한 테스트 파일(`test_buyer_tracing.py`)의 `/chat`
+  요청이 실제 바디 크기와 무관하게 전부 400 으로 깨졌다 — 값이 20 인 채로 굳어 있었다.
+- 원인: `tests/conftest.py` 의 전역 autouse `_reset_infra_state` 가 teardown 에서
+  `reset_cart_store()` → `get_settings()` 를 다시 부른다. 이 프로젝트 conftest 픽스처는 테스트
+  모듈 자체의 autouse 픽스처보다 **먼저 set up** 되므로 LIFO 로 **더 늦게 teardown** 된다 —
+  즉 파일 안에서 `get_settings.cache_clear()` 를 `yield` 뒤에 불러도, 그보다 늦게 도는
+  `_reset_infra_state` 의 `get_settings()` 호출이 **monkeypatch 가 env 를 복원하기 전에** 캐시를
+  재구성해 버려 낮춰진 값이 그대로 굳는다(monkeypatch 는 자신이 건드린 attr/env 만 복원할 뿐,
+  그 사이 재구성된 lru_cache 싱글턴은 모른다). 파일 로컬 autouse 픽스처의 teardown 타이밍만
+  보고 "여기서 지웠으니 안전하다"고 판단한 것이 오판이었다 — 실제 순서는 다른 conftest 계층과
+  얽혀 있어 실측(디버그 프린트/트레이스백) 없이는 알 수 없었다.
+- 규칙: `monkeypatch.setenv` 로 config 값을 바꾸는 테스트는 픽스처 teardown 타이밍에 기대지
+  말고, **테스트 본문 안에서 `monkeypatch.undo()` 를 직접 호출해 env 복원을 먼저 강제한 뒤**
+  `get_settings.cache_clear()` 를 부른다(`try/finally`). 이렇게 하면 그 뒤에 도는 어떤 픽스처의
+  `get_settings()` 재호출도 항상 이미 복원된 env 로 재구성된다. 이 레포처럼 전역 conftest 가
+  많은 곳에서는 "내 픽스처가 마지막에 돈다"를 가정하지 말 것 — 의심되면 `pytest_runtest_setup`
+  훅 플러그인으로 다음 테스트 시작 시점의 실제 값을 직접 찍어 확인한다.
+- 관련: #299, `tests/conftest.py::_reset_infra_state`, `tests/unit/test_body_limit.py::test_limit_configurable_via_env`
+
+---
+
+## [2026-08-05] `ruff format`(인수 없이) 은 diff 밖 파일까지 재포맷한다 — 항상 대상 파일을 명시한다
+- 증상: #299 작업에서 검증 절차대로 `uv run ruff check --fix && uv run ruff format` 을 인수 없이
+  돌렸더니, 내가 건드리지 않은 32개 파일(`app/services/spring_client.py` 등)이 재포맷되어
+  `git status` 에 잡혔다 — 로컬 ruff(0.15.21) 의 포맷 규칙이 저장소에 마지막으로 적용된
+  시점의 규칙과 미묘하게 달라 드러난 기존 드리프트였다.
+- 원인: `ruff format`(대상 미지정)은 `pyproject.toml` 의 `[tool.ruff]` 설정을 프로젝트 전체
+  파일에 적용한다 — 워크트리에 반영되지 않은 채 남아 있던 포맷 드리프트가 있으면 내 작업과
+  무관한 파일까지 diff 에 섞인다. "허용 편집 파일" 이 좁게 지정된 작업에서 이 diff 는 그대로
+  범위 위반이 된다.
+- 규칙: 좁은 스코프 작업에서는 `ruff check`/`ruff format` 에 **내가 만든/수정한 파일 경로를
+  명시**해 실행한다. 전체 대상 실행은 `git status --short` 로 의도치 않은 파일이 없는지 반드시
+  확인하고, 있으면 `git checkout --`  으로 되돌린 뒤 좁힌 대상으로 재실행한다.
+- 관련: #299, `app/core/body_limit.py`
+
+---
+
 ## [2026-08-05] 이슈 본문의 결함 서술은 그 이슈를 낳은 PR 의 후속 리뷰에서 이미 고쳐졌을 수 있다
 - 증상: #288 은 "검증기가 단일 I-1 호출 예산만 본다"는 결함으로 열렸다. 그런데 착수 시점 `dev`
   에는 그 이슈를 낳은 #277(PR #287) 의 리뷰 4차에서 이미 첫 이벤트 앞 **직렬 합** 검증이
