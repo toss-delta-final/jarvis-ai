@@ -24,7 +24,7 @@ from app.agents.buyer import session_state as session_state_module
 from app.agents.buyer.cart import state as cart_state
 from app.agents.buyer.cart.state import CartStateStore, PendingAdd
 from app.agents.buyer.graph import ThreadFilterStore
-from app.agents.buyer.recommendation.state import RevertStore
+from app.agents.buyer.recommendation.state import RepurchaseStore, RevertStore
 from app.agents.buyer.session_state import (
     adopt_legacy_thread,
     clear_context,
@@ -134,6 +134,7 @@ async def test_context_cleanup_removes_only_selected_v2_thread(pg_store) -> None
     filters = ThreadFilterStore(pg_store)
     cart = CartStateStore(pg_store)
     revert = RevertStore(pg_store)
+    repurchase = RepurchaseStore(pg_store)
     await filters.put(target, ProductSearchFilters(category="삭제"))
     await filters.put(other, ProductSearchFilters(category="보존"))
     await cart.set_last_reco(target, [(1, "삭제")])
@@ -141,16 +142,21 @@ async def test_context_cleanup_removes_only_selected_v2_thread(pg_store) -> None
     await cart.set_pending(target, PendingAdd(product_id=1, quantity=1))
     await revert.add(target, ["A"])
     await revert.add(other, ["B"])
+    await repurchase.add(target, [1], cap=20)
+    await repurchase.add(other, [2], cap=20)
     pg_store_module.set_store(pg_store)
 
     counts = await clear_context(context_id, ["target"])
 
     assert counts.filters == counts.pending == counts.last_recommendation == 1
     assert counts.local_names == counts.revert == 1
+    assert counts.repurchase == 1
     assert await filters.get(target) is None
     assert (await filters.get(other)).category == "보존"
     assert await cart.get_last_reco(other) == [(2, "보존")]
     assert await revert.get(other) == {"B"}
+    assert await repurchase.get(target) == []
+    assert await repurchase.get(other) == [2]
 
 
 async def test_verified_adoption_marks_complete_after_legacy_keys_are_deleted(pg_store) -> None:

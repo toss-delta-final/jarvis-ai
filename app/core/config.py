@@ -276,6 +276,46 @@ class Settings(BaseSettings):
     llm_call_limit: int = 2
     relaxation_max_rounds: int = 3
 
+    # ── 0건/소량 조건 완화 (#113, api-spec §3.1 suggestions.relaxation · 결정 14-D) ──
+    # 필드명은 **와이어 표기(camelCase)** 다 — 그대로 `relaxation.field` 로 나가므로(§3.1) 내부
+    # snake_case 와의 변환은 relaxation.py 한 곳에서만 한다.
+    # [AC④] 카테고리는 어느 목록에도 넣지 않는다 — 카테고리 판단·승계는 #84 소관이고, 여기서 같이
+    # 풀면 "무선 이어폰이 없으니 유선 어때요"처럼 **살 물건 자체를 바꾸는** 제안이 된다.
+    relaxation_chip_fields: list[str] = Field(
+        default_factory=lambda: ["priceMax", "ratingMin", "brand", "color"]
+    )
+    # 자동 완화(사용자 동의 없이 서버가 먼저 푸는) 허용 목록.
+    # **무엇을 자동으로 풀 수 있는지는 튜너블이 아니다**(#133 `_require_degrade_notices_present` 와
+    # 같은 원칙) — 목록을 **줄이는** 것만 설정이고, 넓히는 건 기동 시점에 막는다
+    # (`_forbid_auto_relaxing_explicit_constraints`). REQ-REC-043·AC-REC-08(가격 제약 불가침)은
+    # SPEC 이 하드 불변식으로 규정했는데, 여기 "priceMax" 한 줄을 더하면 "5만원 이하"라고 말한
+    # 사용자에게 6만 5천원짜리가 **동의 없이** 노출된다 — 환경변수로 꺼지는 하드 룰은 하드 룰이 아니다.
+    # 빈 리스트(=자동 완화 전면 off)는 정상적인 의사표현이라 허용한다.
+    # REQ-REC-047 명시/비명시 태깅이 구현되면 이 목록 대신 source 로 판단하고 이 가드도 재검토한다.
+    relaxation_auto_fields: list[str] = Field(default_factory=lambda: ["ratingMin"])
+    relaxation_price_step_ratio: float = Field(default=0.3, gt=0.0)  # priceMax 상향 비율
+    relaxation_price_round_unit: int = Field(default=1000, ge=1)  # 상향값 올림 단위(칩 문구 가독성)
+    relaxation_rating_step: float = Field(default=0.5, gt=0.0)  # ratingMin 하향 폭
+    # **완화 칩** probe(재검색) 상한 — estCount 는 page-local 로 못 구한다(가격·브랜드·색상은 Spring
+    # 쿼리 파라미터라 탈락 상품이 응답에 아예 없다, spring.py ProductSearchResult docstring 참조).
+    # 그래서 후보마다 완화 필터로 재검색해 실제 매칭 수를 센다. fan-out 턴은 leg 수만큼 곱해진다.
+    # **자동 완화와 예산을 공유하지 않는다**(PR #248 리뷰) — 공유하면 자동 완화가 먼저 돌아 예산을
+    # 다 쓴 턴에서 칩이 굶는데, 칩은 정작 **자동 완화가 실패했을 때 쓰라고 있는 폴백**이다.
+    # 자동 완화는 `relaxation_max_rounds` 로 따로 제한한다(손잡이 하나가 하나씩만 맡는다).
+    #
+    # 기본값은 `relaxation_chip_fields` 개수에 맞춘다(PR #248 2차 리뷰). 종전 2 는 위 분리 **이전**
+    # 자동 완화와 나눠 쓰던 시절의 값인데, 분리 후 재산정되지 않은 채 남아 "칩 필드 4개를 켜 두고도
+    # 앞 2개만 동작"하는 자기모순이 됐다 — 예산이 모자라면 뒤쪽 후보는 estCount 를 못 구하고,
+    # estCount 없는 칩은 만들 수 없어(schema 필수) **말없이 사라진다**(실제로 풀면 결과가 있어도).
+    # 올려도 흔한 턴은 그대로다: 후보는 **값이 설정된 필드**만 되므로 필터를 1~2개 건 턴은 애초에
+    # 예산 이하다. 달라지는 건 3개 이상 건 턴뿐이고, probe 는 `asyncio.gather` 병렬이라 늘어나는
+    # 것은 벽시계가 아니라 **동시 호출 수**다.
+    # 자동 계산(`len(chip_fields)`)으로 묶지는 않는다 — 손잡이가 사라져 필드를 늘릴 때마다 부하가
+    # 말없이 따라 오른다. 조이는 배포는 이 값을 내리면 되고, 그때 잘림은 로그로 드러난다.
+    relaxation_max_probes: int = Field(default=4, ge=0)
+    # 이 수 **미만**이면 "소량"으로 보고 결과가 있어도 완화 칩을 함께 제안한다(AC①). 0 이면 0건일 때만.
+    relaxation_min_results: int = Field(default=3, ge=0)
+
     # ── degrade 고지 문구 (#133) ──
     # 문안만 튜너블이고 **고지 여부는 튜너블이 아니다**(PR #235 리뷰). 아래 둘은 api-spec 이
     # 안내 발신 자체를 요구하므로 빈 값을 기동 시점에 막는다(_require_degrade_notices_present).
@@ -449,6 +489,9 @@ class Settings(BaseSettings):
     # category_fanout_max 와 같은 슬라이스 절단 규약(raw[:cap])이라 음수를 거부한다 — 음수면
     # "뒤에서 |cap|개 제외"로 뒤집혀 "cap<=0 이면 정확히 0개" 불변식이 깨진다(PR #230 리뷰).
     dedup_repurchase_max: int = Field(default=5, ge=0)
+    # 스레드별 재구매 되돌리기 누적 상한(무한 누적 방어, 이슈 #232). 음수는 상한 의미를
+    # 뒤집으므로 형제 튜너블과 같이 거부한다(PR #230 리뷰).
+    dedup_repurchase_store_max: int = Field(default=20, ge=0)
 
     # ── 프로필 (SPEC-PROFILE-001) ──
     profile_recency_highlights: int = 3  # §5.1 최근 맥락 하이라이트 개수
@@ -891,19 +934,26 @@ class Settings(BaseSettings):
     def _require_search_retry_within_stream_budget(self) -> "Settings":
         """I-1 검색 재시도 총량이 스트림 전체 상한을 넘으면 기동 실패 (#133).
 
-        **first-token 상한이 아니라 전체 상한과 비교하는 이유**(PR #241/#138 lessons 로 정정):
-        `stream_first_token_timeout_s` 가 재는 것은 §2.9 c 의 **첫 SSE 이벤트**까지인데, 추천
-        경로의 첫 이벤트는 `conditions`(`recommendation/graph.py`)이고 **검색은 그 뒤**에 돈다.
-        즉 검색 재시도는 first-token 예산을 한 톨도 쓰지 않는다 — 초판이 파이프라인 그림만 보고
-        "검색이 첫 토큰보다 앞"이라 적었던 것은 **emit 순서를 코드로 확인하지 않은 오류**다.
+        **전체 상한과 비교하는 이유**(PR #241/#138 lessons 로 정정): 재시도가 갉아먹는 것은 턴
+        전체 시간이다. `llm_timeout_s * (llm_max_retries + 1)` 과 같은 결의 예산식이며, 한쪽만
+        튜닝하면 조용히 어긋나는 쌍이라 기동 시점에 고정한다. 비교 대상은 **구매자 전체
+        상한**(`stream_total_timeout_buyer_s`, #138)이다 — I-1 검색은 구매자 추천 경로에서만
+        돌고, 그 경로를 실제로 끊는 것은 판매자와 공용인 90s 가 아니라 구매자 전용 30s 다.
 
-        재시도가 실제로 갉아먹는 것은 턴 전체 시간이므로 전체 상한과 묶는다. `llm_timeout_s *
-        (llm_max_retries + 1)` 과 같은 결의 예산식이며, 한쪽만 튜닝하면 조용히 어긋나는 쌍이라
-        기동 시점에 고정한다.
+        **first-token 상한과도 비교한다**(#113 PR #248 3차 리뷰로 정정): 이 docstring 은 원래
+        "추천 경로의 첫 이벤트는 `conditions` 이고 검색은 그 뒤라 검색 재시도는 first-token
+        예산을 한 톨도 쓰지 않는다"고 적고 있었다. **#113 이 그 순서를 바꿨다** — 자동 완화가
+        검색 **후에** 조건을 바꿀 수 있는 턴(기본 설정에선 `ratingMin` 이 걸린 턴)은 표시-실제
+        불일치를 막으려고 `conditions` 를 검색 뒤로 미룬다(§3.1 이 conditions 를 0~1 회로
+        못박아 "고쳐서 재전송"이 불가능하다). 그 턴에서는 검색 재시도가 first-token 예산을
+        **실제로 쓴다.** 순서를 바꾸고도 이 전제를 갱신하지 않으면, 초판이 저질렀던 "emit 순서를
+        코드로 확인하지 않은 오류"를 방향만 바꿔 되풀이하는 셈이다.
 
-        비교 대상은 **구매자 전체 상한**(`stream_total_timeout_buyer_s`, #138)이다 — I-1 검색은
-        구매자 추천 경로에서만 돌고, 그 경로를 실제로 끊는 것은 판매자와 공용인 90s 가 아니라
-        구매자 전용 30s 다. 느슨한 쪽과 비교하면 검증이 이름만 남는다.
+        **완화 probe 를 곱하지는 않는다.** 미룬 턴의 first-token 경로는 두 갈래인데 배타적이다:
+        검색이 재시도를 소진하고 실패하면 `SEARCH_FAILED` 로 끝나 probe 가 아예 안 돌고,
+        probe 가 도는 것은 검색이 **성공**해서 0 건을 돌려준 경우다(그때 검색은 재시도를 쓰지
+        않았다). 그래서 실측 최악은 `spring_timeout_s + budget` 이지 `2 * budget` 이 아니다.
+        곱해서 검증하면 기본값(12 >= 10)에서 기동이 실패한다 — 일어나지 않는 조합 때문에.
         """
         budget = self.spring_timeout_s * (self.spring_max_retries + 1)
         if budget >= self.stream_total_timeout_buyer_s:
@@ -912,6 +962,14 @@ class Settings(BaseSettings):
                 f"STREAM_TOTAL_TIMEOUT_BUYER_S (got {budget} >= "
                 f"{self.stream_total_timeout_buyer_s}): "
                 "search retries alone would exhaust the buyer turn budget"
+            )
+        if budget >= self.stream_first_token_timeout_s:
+            raise ValueError(
+                "SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1) must be < "
+                f"STREAM_FIRST_TOKEN_TIMEOUT_S (got {budget} >= "
+                f"{self.stream_first_token_timeout_s}): "
+                "conditions is deferred past the search on auto-relaxable turns (#113), "
+                "so search retries consume the first-token budget and would 504"
             )
         return self
 
@@ -942,6 +1000,89 @@ class Settings(BaseSettings):
                     f"{name} must not be empty: api-spec §3.3 requires the degrade disclosure "
                     "to be sent (the wording is tunable, sending it is not)"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _require_known_relaxation_chip_fields(self) -> "Settings":
+        """완화 칩 대상에 모르는 필드명이 있으면 기동 실패 (#113, PR #248 리뷰).
+
+        `build_relaxation_candidates` 는 모르는 이름을 `continue` 로 건너뛴다 — 카테고리가 실수로
+        들어와도 후보가 되지 않게 하는 이중 방어인데, **오타에는 그 관대함이 독**이 된다.
+        `"pricemax"`(m 소문자) 하나면 기동은 멀쩡히 성공하고 가격 완화 칩만 영구히 안 나오는데
+        아무도 이유를 모른다. 형제 설정(`relaxation_auto_fields`)은 바로 아래에서 기동 시점에
+        검증하는데 이쪽만 조용히 무해화(silent no-op)되는 비대칭이 있었다.
+
+        빈 목록(= 완화 칩 기능 off)은 정상적인 의사표현이라 막지 않는다.
+
+        허용 집합을 여기 복제하지 않고 `FIELD_TO_ATTR` 를 **지연 import** 하는 이유는 단일 출처를
+        지키기 위해서다 — 복제하면 필드가 늘 때 한쪽만 고쳐 검증이 조용히 뒤처진다.
+        **전제: `relaxation.py` 는 config 를 import 하지 않는다**(settings 를 인자로 받는 순수
+        함수 모듈이다). 그 전제가 깨지면 여기서 순환 import 가 된다 — 다만 Settings 생성 시점
+        (=기동)에 ImportError 로 즉시 터지므로 조용히 썩지는 않는다.
+        """
+        from app.agents.buyer.recommendation.relaxation import (  # 지연 import (위 전제 참조)
+            FIELD_TO_ATTR,
+        )
+
+        if unknown := sorted(set(self.relaxation_chip_fields) - set(FIELD_TO_ATTR)):
+            raise ValueError(
+                f"RELAXATION_CHIP_FIELDS contains unknown field(s) {unknown}: "
+                f"allowed wire names are {sorted(FIELD_TO_ATTR)} "
+                "(category is intentionally excluded from relaxation — see issue #84)"
+            )
+        # [PR #248 리뷰] 중복도 막는다 — 위 검사는 `set()` 이라 `["priceMax","priceMax"]` 를
+        # 통과시키는데, 후보 생성기는 **리스트를 순회**하므로 같은 필드의 후보가 두 개 생긴다.
+        # 그러면 같은 조건으로 Spring 을 두 번 재검색하고(예산 낭비) 같은 칩이 화면에 두 번 뜬다.
+        # 두 목록 모두 검사한다 — 자동 목록의 중복도 완화 라운드를 헛되이 소모한다.
+        for name, values in (
+            ("RELAXATION_CHIP_FIELDS", self.relaxation_chip_fields),
+            ("RELAXATION_AUTO_FIELDS", self.relaxation_auto_fields),
+        ):
+            if len(values) != len(set(values)):
+                dupes = sorted({v for v in values if values.count(v) > 1})
+                raise ValueError(
+                    f"{name} contains duplicate field(s) {dupes}: candidates are built by "
+                    "iterating the list, so duplicates cause repeated Spring probes and "
+                    "duplicate chips on screen."
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _forbid_auto_relaxing_explicit_constraints(self) -> "Settings":
+        """사용자 명시 제약을 자동 완화 목록에 넣으면 기동 실패 (#113, PR #248 리뷰).
+
+        REQ-REC-043·AC-REC-08(가격 제약 불가침)은 SPEC 이 **하드 불변식**으로 규정한 것이다.
+        그런데 이를 지키는 게 `relaxation_auto_fields` 기본값뿐이라, 운영자가 `"priceMax"` 를
+        더하는 순간 "5만원 이하"라고 말한 사용자에게 6만 5천원짜리가 **동의 없이** 노출된다.
+        서버는 멀쩡히 돌고 `token` 안내도 나가지만 "동의 전에는 넘지 않는다"는 규칙 자체가
+        깨진다 — #133 이 "고지 여부를 튜너블로 두면 정직성이 옵션이 된다"로 막은 것과 같은 종류다.
+
+        **허용 목록 방식**을 쓴다(금지 목록이 아니라) — 나중에 완화 필드가 추가돼도 기본이
+        '자동 금지'라 fail-closed 다. 지금 자동 완화가 정당한 건 평점뿐이다: 가격·브랜드·색상은
+        사용자가 발화로 명시하는 하드 제약이고, REQ-REC-047 `source` 태깅이 없는 지금은
+        "명시인지 파생인지"를 코드가 구분할 수 없어 전부 명시로 보는 게 안전한 쪽이다.
+        목록을 **비우는 것**(자동 완화 전면 off)은 정상이라 막지 않는다.
+        """
+        allowed = {"ratingMin"}
+        if forbidden := sorted(set(self.relaxation_auto_fields) - allowed):
+            raise ValueError(
+                f"RELAXATION_AUTO_FIELDS must not contain {forbidden}: "
+                "SPEC REQ-REC-043/AC-REC-08 forbid auto-relaxing user-stated constraints "
+                f"without consent (allowed: {sorted(allowed)}; empty list disables auto-relaxation). "
+                "Offer them as suggestion chips instead."
+            )
+        # [PR #248 리뷰] 자동 목록은 칩 목록의 **부분집합**이어야 한다. 완화 후보를 만드는
+        # `build_relaxation_candidates` 가 `relaxation_chip_fields` 만 순회하므로, 칩 목록에서 빠진
+        # 필드는 자동 목록에 있어도 후보 자체가 안 만들어져 **자동 완화가 조용히 영구 비활성화**된다.
+        # 두 값이 개별로는 유효해 기동은 성공하고, 게다가 `may_auto_relax` 는 자동 목록만 보므로
+        # 매 턴 conditions 만 헛되이 지연된다 — 설정 **조합**을 여기서 막는다.
+        if orphaned := sorted(set(self.relaxation_auto_fields) - set(self.relaxation_chip_fields)):
+            raise ValueError(
+                f"RELAXATION_AUTO_FIELDS contains field(s) missing from RELAXATION_CHIP_FIELDS: "
+                f"{orphaned}. Relaxation candidates are built from the chip list, so those fields "
+                "would silently never be auto-relaxed. Add them to RELAXATION_CHIP_FIELDS or "
+                "remove them here."
+            )
         return self
 
     @model_validator(mode="after")

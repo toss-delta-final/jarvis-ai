@@ -20,6 +20,7 @@ from typing import cast
 
 from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
+from pydantic import ValidationError
 
 from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.graph import stream_cart_add, stream_cart_view
@@ -28,10 +29,14 @@ from app.agents.buyer.fallback import stream_fallback
 from app.agents.buyer.order_status import stream_order_status
 from app.agents.buyer.recommendation.category_mapping import CategoryMapping, dedup_truncate
 from app.agents.buyer.recommendation.category_mapping import map_categories as _map_categories
-from app.agents.buyer.recommendation.decompose import decompose
+from app.agents.buyer.recommendation.decompose import (
+    _resolve_contradictory_price_range,
+    decompose,
+)
 from app.agents.buyer.recommendation.needs_expansion import detect_expansion_need
 from app.agents.buyer.recommendation.needs_expansion import expand_needs as _expand_needs
-from app.agents.buyer.recommendation.state import get_revert_store
+from app.agents.buyer.recommendation.relaxation import FIELD_TO_ATTR as RELAXATION_FIELD_TO_ATTR
+from app.agents.buyer.recommendation.state import get_relaxation_offer_store, get_revert_store
 from app.agents.buyer.recommendation.graph import stream_recommendation
 from app.agents.profile.builder import record_remember
 from app.agents.buyer.session_state import context_thread_key, ensure_thread_adopted
@@ -69,8 +74,39 @@ class ThreadFilterStore:
         self._store = store or InMemoryStore()
 
     async def get(self, key: str) -> ProductSearchFilters | None:
+        """저장된 누적 필터. 없거나 **지금 스키마로 못 읽으면** None (= 이전 맥락 없음).
+
+        스키마 제약은 **소급 적용된다**(PR #248 3차 리뷰). `ge=0` 을 새로 걸면 그 전에 저장된
+        음수 레코드가 지금은 `ValidationError` 가 되는데, 이 호출은 `run_buyer_turn` 진입 직후
+        **decompose 보다도 먼저** 감싸이지 않은 채 실행된다. 감싸지 않으면 그런 스레드는 매 턴
+        여기서 죽고, LLM degrade 같은 정상 오류 이벤트조차 못 내며(그 코드에 닿기 전이다),
+        pg_store 에 TTL 도 없어 스스로 낫지 않는 **영구 broken** 상태가 된다.
+
+        None 으로 떨구면 그 턴은 "이전 필터 없음"으로 정상 진행하고, 추천 턴 끝의 `put` 이 새
+        값으로 덮어써 **스스로 회복**한다. 읽기 경로에서 삭제 쓰기를 하지는 않는다 — None 을
+        돌려주는 것만으로 증상이 사라지고, 조회에 부작용을 넣으면 실패 모드가 늘어난다.
+        """
         item = await run_with_query_timeout(self._store.aget((_NAMESPACE_ROOT, key), _FILTERS_KEY))
-        return ProductSearchFilters.model_validate(item.value) if item else None
+        if not item:
+            return None
+        try:
+            # 모순 구간(`price_min > price_max`)도 여기서 푼다 — decompose 는 **자기 산출**만
+            # 고치는데, 이 값은 칩 클릭 경로에서 `_relaxed_filters_from_offer` 의 base 로
+            # **직접** 쓰여 그 보정을 우회한다. 이 수정 이전에 저장된 레코드가 남아 있을 수 있어
+            # 저장소 경계에서 한 번 더 막는다(prior 의 prior 는 없으므로 하한을 버리는 폴백).
+            return _resolve_contradictory_price_range(
+                ProductSearchFilters.model_validate(item.value), None
+            )
+        except Exception as exc:  # noqa: BLE001 - 저장 값을 못 읽는 어떤 이유든 턴은 살려야 한다
+            # 스키마 강화·배포 중 신구 혼재·손상 — 어느 쪽이든 이전 맥락을 잃을 뿐 턴은 산다.
+            # **`ValidationError` 로 좁히지 않는다**: 이 try 는 "저장된 값을 해석한다" 전체를
+            # 맡고, 그 안에 검증 말고도 보정 호출이 들어와 있다. 좁혀 두면 거기서 난 다른 예외가
+            # `run_buyer_turn` 의 감싸이지 않은 호출부(`prior = await thread_store.get(...)`)로
+            # 새어나가 스레드가 영구 broken 이 되는 — 이 가드가 애초에 막으려던 바로 그 상태가
+            # 된다. pg 장애는 이 try 밖(`run_with_query_timeout`)이라
+            # 삼켜지지 않고, CancelledError(BaseException)도 전파된다.
+            logger.warning("thread_filters_unreadable", extra={"reason": str(exc)})
+            return None
 
     async def put(self, key: str, filters: ProductSearchFilters) -> None:
         await run_with_query_timeout(
@@ -91,6 +127,77 @@ def reset_thread_store() -> None:
 def _is_timeout(exc: Exception) -> bool:
     """LLMError 메시지에서 타임아웃 여부를 추정한다(LLM_TIMEOUT vs LLM_UNAVAILABLE 매핑용)."""
     return "timeout" in str(exc).lower()
+
+
+def _carry_axis_untouched_this_turn(applied, prior, current: ProductSearchFilters) -> bool:  # noqa: ANN001
+    """승계할 완화 축을 **이번 턴에 사용자가 다시 말하지 않았는지** 판정한다 (#113, PR #248 리뷰).
+
+    자동 완화 승계는 "직전 결과를 그대로 받아들인다"는 뜻이라, 사용자가 **그 축을 새로 말한**
+    턴에는 성립하지 않는다 — "그 중에 평점 3.0 이상도 볼래" 에서 저장된 완화값(4.0)으로 덮으면
+    방금 말한 3.0 이 흔적도 없이 사라진다. 다른 축(가격 등)을 말한 경우는 승계해도 무해하므로
+    **완화 축 하나만** 본다.
+
+    판정 기준은 `이번 턴 값 == prior 값` 이다. decompose 는 PRIOR_FILTERS 를 병합하므로, 그 축을
+    새로 언급하지 않은 턴은 prior 값이 그대로 실려 온다 — 값이 달라졌다는 건 이번 턴에 손댔다는
+    신호다. 축을 아예 지운 경우(None)도 "달라졌다"에 포함되어 승계하지 않는다(사용자가 조건을
+    빼달라고 했는데 되살리면 안 된다).
+
+    prior 가 없으면(스레드 상태 유실) 비교 근거가 없으므로 **승계하지 않는다** — 애매하면
+    사용자가 말한 값을 그대로 두는 쪽이 안전하다(#113 설계 원칙).
+
+    **알려진 한계**: 사용자가 그 축을 **같은 값으로** 다시 말한 경우("그 중에서 고르되 평점은
+    4.5 그대로")는 병합된 값과 구분되지 않아 승계가 걸린다. decompose 산출만으로는 "언급 안 함"과
+    "같은 값으로 재확인"이 동일하기 때문이다 — 구분하려면 조건별 출처 태깅(REQ-REC-047)이 필요하다.
+    발화 자체가 모순적("그 중에" = 완화된 결과 수용 + "4.5 그대로" = 완화 거부)이라 실사용 빈도가
+    낮다고 보고 한계로 남긴다.
+    """
+    if not isinstance(applied, dict) or prior is None:
+        return False
+    attr = RELAXATION_FIELD_TO_ATTR.get(applied.get("field"))
+    if attr is None:
+        return False
+    return getattr(current, attr, None) == getattr(prior, attr, None)
+
+
+def _relaxed_filters_from_offer(offer, base: ProductSearchFilters) -> ProductSearchFilters | None:  # noqa: ANN001
+    """저장된 완화 칩 제안을 검증해 `base` 에 적용한 필터를 낸다. 못 쓰는 값이면 None (#113).
+
+    저장소는 **신뢰 경계 밖**이다 — 값이 pg-profile 을 왕복(JSON 직렬화/역직렬화)하고, 배포 사이에
+    스키마가 바뀔 수도 있다. 그래서 (1) 봉투 모양, (2) 필드가 완화 대상인지 확인한 뒤,
+    (3) **값 검증은 `model_validate` 에 맡긴다** — `model_copy` 였다면 Pydantic 검증을 건너뛰어
+    어긋난 타입이 그대로 Spring I-1 쿼리 파라미터로 나갔을 자리다(PR #248 리뷰).
+
+    값 타입을 여기서 열거하지 않는 이유(PR #248 2차 리뷰): 스키마가 이미 필드별로 정확히 거른다.
+    사전 목록을 두면 스키마보다 **좁아져서**, 예컨대 `brand: list[str]` 에 리스트 값을 제안하도록
+    확장하는 순간 여기서 조용히 None 이 되어 칩 클릭이 영구 무동작이 된다. 스키마와 어긋나는
+    이중 규칙을 만들지 않는다.
+
+    **예외는 `bool` 하나다** — Pydantic 은 `price_max=True` 를 거부하지 않고 **`1` 로 강제 변환**한다
+    (실측 확인). 즉 손상된 `true` 하나가 "가격 상한 1원"으로 둔갑해 조용히 0건을 만든다. 스키마가
+    잡아주지 못하는 유일한 케이스라 여기서만 막는다.
+    """
+    if not isinstance(offer, dict):
+        return None  # 봉투 자체가 기대 형태가 아님(구 스키마·손상)
+    attr = RELAXATION_FIELD_TO_ATTR.get(offer.get("field"))
+    if attr is None:
+        return None  # 완화 대상이 아닌(또는 알 수 없는) 필드 — 조용히 무시한다
+    if "value" not in offer:
+        # 키 자체가 없는 건 **손상**이다 — `.get()` 으로 뭉뚱그리면 None(=조건 해제)으로 읽혀
+        # 의도보다 검색이 더 넓어진다. "없음"과 "null 로 해제"는 다른 사실이라 구분한다.
+        return None
+    value = offer["value"]
+    if isinstance(value, bool):  # 위 docstring 참조 — 스키마가 못 잡는 유일한 케이스
+        return None
+    try:
+        # None 은 '조건 해제'라는 정상 값이다(brand·color·평점 하한 소멸) — 스키마가 허용한다.
+        return ProductSearchFilters.model_validate({**base.model_dump(), attr: value})
+    except ValidationError as exc:
+        # **거부도 관측 가능해야 한다**(PR #248 3차 리뷰 — 스윕에서 추가 발견). 조용히 None 을
+        # 돌려주면 손상된 저장 값(음수 가격 등)이 칩 클릭을 영구 무동작으로 만드는데, 사용자에게는
+        # "눌러도 아무 일이 없다"로만 보이고 서버에는 아무 흔적이 없다. 스키마가 잡아 준 사실을
+        # 여기서 이름표와 함께 남겨야 원인 분류가 된다.
+        logger.warning("relaxation_offer_rejected", extra={"reason": str(exc)})
+        return None
 
 
 async def _map_or_empty(
@@ -394,6 +501,88 @@ async def run_buyer_turn(
         )
         return
 
+    # [#113] 완화 칩 클릭 되받기 — 직전 턴에 제안한 칩 label 과 **정확히 일치**하면 LLM 해석을
+    # 건너뛰고 그때 계산해 둔 값을 그대로 적용한다. FE 는 칩을 누르면 label 을 그대로 message 로
+    # 보내는데(jarvis-frontend `applySuggestion`), label 은 "65,000원까지 볼까요?" 같은 **의문문**이라
+    # decompose 가 조건 추출에 실패하거나 되물음으로 흘릴 수 있다 — 그러면 칩이 무동작이 된다.
+    # intent 도 recommend 로 고정한다: 정확 일치는 "사용자가 우리가 만든 버튼을 눌렀다"는 명확한
+    # 신호라 일반 대화로 라우팅될 여지가 없다.
+    # 조회는 **추천/일반 턴에서만** 한다 — 담기·장바구니·주문조회 발화는 칩 label 과 겹칠 수
+    # 없는데 매 턴 pg 왕복을 얹으면 완화와 무관한 흐름이 느려진다.
+    relax_store = await get_relaxation_offer_store()
+    if decision.intent in ("recommend", "general"):
+        # 칩 제안(`offers`)과 적용된 완화(`applied`)를 **한 번에** 읽는다(PR #248 리뷰) —
+        # 둘은 한 스냅샷이라, 따로 두 번 읽으면 그 사이에 다른 턴의 `put` 이 끼었을 때
+        # 옛 offers + 새 applied 라는 찢어진 조합을 볼 수 있다(쓰기 쪽에서 없앤 바로 그 상태).
+        # 승계 경로의 pg 왕복도 2회 → 1회로 준다. 읽기가 통째로 실패하면 아래 승계 분기가
+        # `applied=None` 을 보고 조용히 건너뛴다.
+        applied: dict | None = None
+        # **해석까지 통째로 감싼다**(PR #248 리뷰) — 읽기만 감싸면 저장 값이 기대한
+        # `{"field":…, "value":…}` 형태가 아닐 때(스키마 변경·롤링 배포 중 신구 혼재·손상)
+        # `AttributeError` 가 올라가 턴이 죽는다. 아래 주석이 약속하는 "무해하게 폴백"이
+        # 실제로 성립하려면 파싱·검증도 같은 범위 안에 있어야 한다.
+        try:
+            offers, applied = await relax_store.get_snapshot(thread_key)
+            relaxed = _relaxed_filters_from_offer(
+                offers.get(request.message.strip()), prior or decision.filters
+            )
+        except Exception as exc:  # noqa: BLE001 - 상태 저장소 장애가 턴을 죽이지 않게(degrade)
+            # 이 경로는 **편의 기능**이다 — 실패하면 칩 클릭이 종전처럼 decompose 해석으로
+            # 처리될 뿐이다. 여기서 예외를 올리면 pg 한 번 흔들릴 때 완화와 무관한 일반 대화
+            # 턴까지 깨진다(§7 degrade 원칙). CancelledError(BaseException)는 전파된다.
+            # 읽기가 성공한 뒤 **해석만** 터진 경우 `applied` 는 이미 채워져 승계 경로가 살아
+            # 있다 — 칩 하나가 손상돼도 무관한 승계까지 같이 죽이지 않는다(종전 동작 유지).
+            logger.warning("relaxation_offer_read_failed", extra={"reason": str(exc)})
+            relaxed = None
+        if relaxed is not None:
+            # 정확 일치는 "사용자가 우리가 만든 버튼을 눌렀다"는 명확한 신호라 일반 대화로
+            # 라우팅될 여지가 없다 — decompose 가 의문문을 general 로 봤어도 추천으로 고정한다.
+            decision.intent = "recommend"
+            decision.filters = relaxed
+        elif decision.scoped_to_previous and decision.intent == "recommend":
+            # [#113] "그 중에 더 저렴한 걸로" — 직전 턴에 **자동 적용**된 완화를 이어받는다.
+            # 사용자가 완화된 결과를 자기 후보로 인정한 것이라 칩 클릭과 같은 **동의 신호**로
+            # 본다(팀 합의). 승계값은 `decision.filters` 에 녹아 아래 `_prepare_recommendation`
+            # 의 `thread_store.put` 으로 영속된다 — 칩 클릭 경로와 같은 취급이다.
+            #
+            # **`intent == "recommend"` 일 때만 한다**(PR #248 리뷰). general 턴은 이 아래에서
+            # `stream_fallback` 으로 바로 빠져 `decision.filters` 를 아무도 안 쓰므로, 승계를
+            # 계산해 봐야 조용히 버려지고 위 주석만 거짓이 된다.
+            # 칩 클릭 분기처럼 intent 를 **강제하지는 않는다** — 저쪽은 메시지가 우리가 만든 칩
+            # label 과 정확히 일치해 오해의 여지가 없지만, `scopedToPrevious` 는 LLM 판정이라
+            # "그 중에 뭐가 제일 인기 많아?" 같은 정보성 질문까지 추천으로 납치할 수 있다.
+            # 리파인을 general 로 오분류한 턴은 승계 이전에 턴 전체가 어긋난 것이라, 그 증상
+            # 하나만 덮기보다 라우팅 문제로 두는 편이 정직하다.
+            # 참조가 **없는** 리파인("더 저렴한 걸로")은 여기 오지 않아 원래 조건으로 되돌아가고,
+            # 그 턴에 다시 완화가 필요하면 다시 고지된다(SPEC "매 완화 알림" 유지).
+            try:
+                # `applied` 는 위에서 `offers` 와 **같은 스냅샷으로 이미 읽었다**(PR #248 리뷰).
+                # 기준은 **이번 턴 filters** 다(칩 클릭 경로와 다르다) — 칩 클릭은 메시지가 칩
+                # 문구뿐이라 새 의도가 없어 prior 를 그대로 재현하지만, 여기서는 사용자가
+                # "그 중에 **더 저렴한** 걸로"처럼 새 조건을 함께 말한다. prior 를 기준으로 삼으면
+                # 이번 턴에 말한 조건이 통째로 버려진다. 완화 축 하나만 덮어쓴다.
+                #
+                # **단, 그 축을 이번 턴에 사용자가 다시 말했으면 승계하지 않는다**(PR #248 리뷰).
+                # "그 중에 평점 3.0 이상도 볼래" 처럼 같은 축의 새 값을 말했는데 저장된 완화값(4.0)
+                # 으로 덮으면 **방금 말한 조건이 흔적도 없이 사라진다.** 판정은 이번 턴 값이
+                # prior(직전 확정 필터)와 **다른가** 로 한다 — 다르면 이번 턴에 새로 언급한 것이다.
+                # prior 가 없으면(스레드 상태 유실) 비교할 근거가 없으므로 승계하지 않는다(엄격한 쪽).
+                carried = None
+                if _carry_axis_untouched_this_turn(applied, prior, decision.filters):
+                    carried = _relaxed_filters_from_offer(applied, decision.filters)
+            except Exception as exc:  # noqa: BLE001 - 손상된 저장 값이 턴을 죽이지 않게(degrade)
+                # 읽기는 위로 합쳐졌으니 여기 남은 실패는 **해석**뿐이다(저장 값 손상·스키마 혼재).
+                # 그래도 감싼 채로 둔다 — 승계는 편의 기능이라, 실패하면 사용자가 말한 조건만으로
+                # 검색하면 될 뿐 턴을 죽일 이유가 없다(§7 degrade 원칙).
+                logger.warning("relaxation_carry_failed", extra={"reason": str(exc)})
+                carried = None
+            if carried is not None:
+                decision.filters = carried
+                # [#113] 승계 턴은 `recommend_pipeline` 의 `relax_field` 에 안 잡힌다(그건 "이번 턴에
+                # 채택된" 완화만 센다). 그런데 이 턴도 **사용자가 처음 말한 조건이 아닌 상태**로
+                # 결과를 받으므로 품질 지표에 그냥 섞으면 안 된다 — 여기서 따로 남긴다.
+                logger.info("relaxation_carried", extra={"field": applied.get("field")})
+
     # transient 세션 버퍼에 발화 누적(승격 전 격리, SPEC-PROFILE-001) — 세션 종료 델타 소스.
     # [#119 REQ-PROF-026] intent 판정 **뒤에** 둔다: 주문조회·장바구니 조회 발화는 취향 신호가
     # 0인데 버퍼(슬라이딩 윈도우)를 채워 정작 취향 발화를 밀어낸다. 반복 발화는 지우지 않고
@@ -496,6 +685,7 @@ async def run_buyer_turn(
             settings=settings,
             reverted_categories=reverted,
             cart_store=cart_store,
+            relax_store=relax_store,  # [#113] 이번 턴 완화 칩을 기억해 다음 턴 클릭을 되받는다
             thread_key=thread_key,
             observer=observer,
             request_id=resolved_request_id,
