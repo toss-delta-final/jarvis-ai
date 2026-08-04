@@ -683,6 +683,19 @@ class Settings(BaseSettings):
     # sessionId/threadId 길이 상한 — 불투명 키가 registry·저장소·로그에 쌓이는 남용 방어.
     chat_key_max_chars: int = 200
 
+    # ── 화면 맥락 screen (이슈 #118, api-spec §3.1) ──
+    # screen.products 상한(정본 명시 기본값) — 초과분은 화면 순서 앞쪽만 취하고 버린다.
+    screen_products_max: int = Field(default=20, ge=1)
+    # pageType → 한글 표시명 매핑(정본: "AI 가 pageType→표시명 매핑을 config 로 갖는다").
+    # 이번 라운드는 값만 정의하고 프롬프트에 주입하지 않는다(라운드 2). 실제 오는 3종만 채운다.
+    screen_page_type_labels: dict[str, str] = Field(
+        default_factory=lambda: {
+            "chat": "인기 상품",
+            "seller_orders": "주문 관리",
+            "seller_products": "상품 관리",
+        }
+    )
+
     # ── SSE 스트림 수명주기 (api-spec §2.9, 값은 config 기본값·운영 조정 가능) ──
     # first-token: 첫 이벤트까지 상한. 초과 시 스트림 시작 전이면 504, 후면 in-stream error.
     stream_first_token_timeout_s: float = 10.0
@@ -1020,8 +1033,7 @@ class Settings(BaseSettings):
         """배치 수확을 켰을 때만 공유 풀에 사용자 대면 검색 슬롯을 하나 이상 남긴다."""
         if (
             self.color_synonym_batch_harvest_enabled
-            and self.color_synonym_harvest_max_concurrency
-            >= self.color_synonym_pool_max_size
+            and self.color_synonym_harvest_max_concurrency >= self.color_synonym_pool_max_size
         ):
             raise ValueError(
                 "COLOR_SYNONYM_HARVEST_MAX_CONCURRENCY must be less than "

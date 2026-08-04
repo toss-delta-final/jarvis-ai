@@ -656,7 +656,14 @@ async def run_buyer_turn(
     if decision.intent == "cart_add":
         if trace := current_request_trace():
             trace.set_lane("cart")
-        allowed = {pid for pid, _ in last_reco}
+        # 담기 허용 목록 = 직전 추천 ∪ screen.products 의 productId(api-spec §3.1 [보안] 문단,
+        # 이슈 #118). screen 이 없거나 무시된 요청은 last_reco 만으로 판정해 기존 동작과 동일하다.
+        # 프리패스가 아니다 — 두 목록 밖 id 차단은 cart/graph.py 의 unresolved 판정이 그대로 맡는다.
+        screen = getattr(request, "screen", None)
+        screen_product_ids = (
+            {p.product_id for p in screen.products} if screen is not None else set()
+        )
+        allowed = {pid for pid, _ in last_reco} | screen_product_ids
         with trace_span("buyer.graph.cart", "chain"):
             async for frame in stream_cart_add(
                 identity=identity,

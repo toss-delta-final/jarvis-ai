@@ -31,13 +31,90 @@ class CamelModel(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
 
+# pageType 어휘 (14종 — 구매자 10 · 판매자 4, api-spec §3.1 표, E-1 정본과 공유). 계약 어휘라
+# config 가 아니라 스키마에 둔다(표시명 매핑은 app.core.config.screen_page_type_labels).
+SCREEN_PAGE_TYPES: frozenset[str] = frozenset(
+    {
+        # 구매자 10종
+        "home",
+        "category",
+        "search",
+        "product_detail",
+        "cart",
+        "checkout",
+        "order_complete",
+        "my",
+        "chat",
+        "auth",
+        # 판매자 4종
+        "seller_dashboard",
+        "seller_orders",
+        "seller_products",
+        "seller_chat",
+    }
+)
+
+# screen.filters 허용 키 3종(api-spec §3.1) — 그 밖의 키는 관대 무시 대상.
+SCREEN_FILTER_KEYS: frozenset[str] = frozenset({"status", "sort", "page"})
+
+
+def _coerce_positive_int(value: object) -> int | None:
+    """screen.products[].productId 관대 파싱 — bool 제외, 정수 float·숫자 문자열 허용.
+
+    app/agents/buyer/recommendation/decompose.py::_as_int 와 같은 규약이지만, 스키마 계층에서
+    도메인 로직을 import 하면 계층 역전이라 여기 별도로 둔다. 상품 id 는 양의 BIGINT 라
+    0 이하는 버린다(decompose._as_int 에는 없는 추가 규칙).
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        result = value
+    elif isinstance(value, float) and value.is_integer():
+        result = int(value)
+    elif isinstance(value, str):
+        try:
+            result = int(value.strip())
+        except ValueError:
+            return None
+    else:
+        return None
+    return result if result > 0 else None
+
+
+class ScreenProduct(CamelModel):
+    """screen.products 항목 — 서버가 모르는 목록의 상품 1건 (api-spec §3.1)."""
+
+    product_id: int
+    name: str = ""  # 누락/비문자열이면 "" (관대, ChatRequest._normalize_screen 이 정제)
+
+
+class ScreenContext(CamelModel):
+    """screen — 사용자가 지금 보고 있는 화면 (api-spec §3.1, 이슈 #118).
+
+    관대 유효성(400 을 내지 않음)은 ChatRequest._normalize_screen 이 미리 정제한 뒤에만
+    이 모델로 넘기므로, 여기서는 이미 정제된 구조를 그대로 받는다.
+    """
+
+    page_type: str
+    filters: dict[str, str] = Field(default_factory=dict)
+    products: list[ScreenProduct] = Field(default_factory=list)
+    columns: int | None = None
+
+
 class ChatRequest(CamelModel):
-    """POST /chat 및 POST /seller/chat 공통 요청 본문 (api-spec §3.1 / §3.2)."""
+    """POST /chat 및 POST /seller/chat 공통 요청 본문 (api-spec §3.1 / §3.2).
+
+    screen 은 구매자·판매자 공용 필드다(conditionActions 가 구매자 전용인 것과 다르다) —
+    BuyerChatRequest/SellerChatRequest 가 상속으로 받는다(api-spec §3.1 말미).
+    """
 
     session_id: str = Field(..., description="Spring 발급 불투명 스레드 키 (만료 없음, §2.6)")
     thread_id: str = Field(..., description="대화 스레드 식별자. 멀티턴 필터 누적 대상")
     message: str = Field(
         ..., description="현재 턴 사용자 원문 질의 (길이 상한은 config chat_message_max_chars)"
+    )
+    screen: ScreenContext | None = Field(
+        default=None, description="사용자가 보고 있는 화면 맥락 (api-spec §3.1, 이슈 #118)"
     )
 
     @field_validator("message")
@@ -61,6 +138,59 @@ class ChatRequest(CamelModel):
         if len(v) > cap:
             raise ValueError(f"identifier exceeds {cap} characters")
         return v
+
+    @field_validator("screen", mode="before")
+    @classmethod
+    def _normalize_screen(cls, v: object) -> dict[str, object] | None:
+        """screen 관대 유효성 (api-spec §3.1) — 맥락 힌트라 여기서는 절대 raise 하지 않는다.
+
+        pageType 이 없거나 14종 밖이면 screen 전체를 무시(None)한다. 그 밖의 하위 필드는
+        문제 있는 부분만 버리고 나머지를 살린다(conditionActions 의 엄격(400)과 대비되는 철학).
+        """
+        if not isinstance(v, dict):
+            return None
+
+        page_type = v.get("pageType", v.get("page_type"))
+        if not isinstance(page_type, str) or page_type not in SCREEN_PAGE_TYPES:
+            return None
+
+        from app.core.config import get_settings
+
+        products_max = get_settings().screen_products_max
+
+        raw_products = v.get("products")
+        products: list[dict[str, object]] = []
+        if isinstance(raw_products, list):
+            # 상한 초과분은 화면 순서(배열 순서) 앞쪽만 취한다 — 좌표 해소가 이 순서에 의존하므로
+            # dedup 은 하지 않는다(api-spec §3.1 지시어 해소).
+            for item in raw_products[:products_max]:
+                if not isinstance(item, dict):
+                    continue
+                product_id = _coerce_positive_int(item.get("productId", item.get("product_id")))
+                if product_id is None:
+                    continue
+                name = item.get("name")
+                products.append(
+                    {"productId": product_id, "name": name if isinstance(name, str) else ""}
+                )
+
+        columns = v.get("columns")
+        if isinstance(columns, bool) or not isinstance(columns, int) or columns < 1:
+            columns = None
+
+        raw_filters = v.get("filters")
+        filters: dict[str, str] = {}
+        if isinstance(raw_filters, dict):
+            for key, value in raw_filters.items():
+                if key in SCREEN_FILTER_KEYS and isinstance(value, str):
+                    filters[key] = value
+
+        return {
+            "pageType": page_type,
+            "filters": filters,
+            "products": products,
+            "columns": columns,
+        }
 
 
 class ConditionAction(CamelModel):
