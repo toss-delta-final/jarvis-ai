@@ -41,6 +41,8 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
   "cart": { "productId": int|null, "optionId": int|null, "quantity": int },
   "revertCategories": [string],
   "repurchaseProducts": [string],
+  "buyAll": bool,
+  "totalBudget": int|null,
   "scopedToPrevious": bool
 }
 규칙:
@@ -129,6 +131,13 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
   해소해 넣으세요. 사용자가 재구매를 말로 지목한 상품만 넣고, LAST_RECOMMENDATIONS 에 있다는
   이유로 직전 추천 상품을 복사하지 마세요. 보통 상품 1개만 넣으며 재구매 의도가 없으면 [].
   카테고리 단위 되돌리기는 revertCategories 가 담당하니 카테고리명은 넣지 마세요.
+- buyAll: 이번 발화가 **여러 물건을 한꺼번에 다 사려는** 것이면 true, **여러 후보 중 하나만
+  고르려는** 것이면 false 입니다. 예산 유무로 정하지 마세요 — "감자탕 재료"는 예산이 없어도
+  true, "5만원으로 파우치 추천"은 예산이 있어도 false 입니다. 애매하면 **false**.
+- totalBudget: 사용자가 **전부 합쳐서** 얼마라고 말했을 때만 그 금액(원)을 넣으세요
+  ("5만원 내로 다", "총 10만원", "예산 3만원으로 전부"). **상품 하나당** 상한이면
+  ("각각 5만원 이하", "5만원 이하 이어폰") null 로 두고 filters.priceMax 로만 보내세요.
+  발화에 금액이 없으면 null 입니다 — PRIOR_FILTERS·LAST_RECOMMENDATIONS 의 숫자를 옮겨 적지 마세요.
 - scopedToPrevious: 이번 발화가 **직전에 보여준 결과 목록 안에서** 고르거나 좁히는 말이면 true.
   (예: "그 중에 더 저렴한 걸로", "이 중에서 가벼운 거", "여기서 골라줘", "보여준 것들 중에")
   원래 요청을 다시 다듬는 말이면 false 입니다 — "더 저렴한 걸로", "다른 브랜드로"처럼 **직전
@@ -306,6 +315,11 @@ async def decompose(
         for axis in _parse_attr_removals(data.get("attrRemovals")):
             merged.pop(axis, None)
         filters.attr_conditions = merged or None
+        buy_all = data.get("buyAll") is True
+        raw_total_budget = data.get("totalBudget")
+        total_budget = (
+            raw_total_budget if type(raw_total_budget) is int and raw_total_budget >= 0 else None
+        )
     except (ValidationError, ValueError, TypeError) as exc:
         raise LLMError("decompose 필터/케이스/장바구니 파싱 실패") from exc
     # [#198 §10] 관측 — recommend 턴의 case·leg 요약. **"case==3(전개 필요를 인지)인데 legs<=1
@@ -325,6 +339,8 @@ async def decompose(
                 # 하드필터로 새는지 휴리스틱 없이 객관적으로 드러난다.
                 "filters_set": _filter_axes(filters),
                 "profile_injected": bool(profile_summary),
+                "buy_all": buy_all,
+                "budget_set": total_budget is not None,
             },
         )
     return RouteDecision(
@@ -340,6 +356,8 @@ async def decompose(
         # 떨어뜨려 **엄격한 쪽**(원래 조건 유지)으로 기울인다. 놓치면 무해하지만 오탐하면
         # 사용자가 말한 조건이 조용히 바뀐다.
         scoped_to_previous=data.get("scopedToPrevious") is True,
+        buy_all=buy_all,
+        total_budget=total_budget,
     )
 
 

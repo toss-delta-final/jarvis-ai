@@ -109,6 +109,14 @@ class RouteDecision:
     # 기본 False(엄격) — 판정을 놓치면 원래 조건으로 되돌아가 또 완화·또 고지라 무해하지만,
     # 반대로 오탐하면 사용자가 말한 조건이 조용히 바뀌므로 애매하면 False 로 기운다.
     scoped_to_previous: bool = False
+    # [#60] 목록 안 상품을 전부 사는가(BUY_ALL) — 하나만 고르는가(PICK_ONE). 판정 기준은 예산이
+    # 아니다(api-spec §4.2): "감자탕 재료"는 예산이 없어도 BUY_ALL, "5만원으로 파우치"는 예산이
+    # 있어도 PICK_ONE. 기본 False(엄격) — 오탐하면 사용자가 고르려던 대안이 세트로 묶여 버린다.
+    buy_all: bool = False
+    # [#60] 총액 예산(원). **개별 상품 상한(filters.price_max)과 다른 축**이다 — "각각 5만원"은
+    # price_max, "전부 5만원"은 이 값이다. BUY_ALL + 이 값이 둘 다 있을 때만 push totalBudget 에
+    # 실린다(§4.2). 음수는 decompose 파싱이 None 으로 떨군다.
+    total_budget: int | None = None
     # 카테고리 하이브리드 매핑(이슈 #59, 방식 A):
     category_queries: list[CategoryQuery] = field(default_factory=list)  # decompose 추측(매핑 전)
     # 매핑 후 (canonical, query) leg 리스트(그래프가 채움; 신호 없거나 실패 시 빈 리스트 → 무필터,
