@@ -6,10 +6,18 @@ import pytest
 from pydantic import ValidationError
 
 from app.agents.seller.schemas import (
+    ANALYSIS_SCORE_AXES,
+    CHART_MAX,
+    CHART_POINTS_MAX,
     SCORE_AXES,
     ActionRecommendation,
     AnalysisFinding,
     AnalysisPlan,
+    AnalysisScore,
+    ChartPoint,
+    ChartSeries,
+    ChartSet,
+    ChartSpec,
     DraftChange,
     DraftProposal,
     ProposedChange,
@@ -28,6 +36,13 @@ def test_analysis_plan_defaults_and_construction() -> None:
     assert plan.analyses == ["sales_anomaly", "conversion"]
     assert plan.period_expr == "최근"
     assert plan.clarification == ""
+    assert plan.wants_chart is False
+
+
+def test_analysis_plan_wants_chart_explicit_true() -> None:
+    """wants_chart=True 를 명시하면 그대로 보존된다(이슈 #242 — resolve_plan OR 판정 재료)."""
+    plan = AnalysisPlan(analyses=["sales_anomaly"], reason="추이", wants_chart=True)
+    assert plan.wants_chart is True
 
 
 def test_analysis_plan_dedupes_preserving_order() -> None:
@@ -122,6 +137,97 @@ def test_score_axes_constant_matches_model_fields() -> None:
     """SCORE_AXES(확장 지점)는 실제 모델 필드와 어긋나면 안 된다 — total 합산의 안전망."""
     for axis in SCORE_AXES:
         assert axis in ReportScore.model_fields
+
+
+# ── 이슈 #242: AnalysisScore (분석 검증 층, ReportScore 와 축 이름 분리) ────────
+
+
+def test_analysis_score_total_is_code_sum() -> None:
+    """총점은 LLM 필드가 아니라 코드 property — 3축 합산이 그대로 나온다."""
+    score = AnalysisScore(grounding=8, sufficiency=7, relevance=6, feedback="근거 보강 필요")
+    assert score.total == 21  # ReportScore 와 같은 임계 눈금(21/30)
+
+
+def test_analysis_score_axis_bounds() -> None:
+    """축 점수는 0~10 을 벗어나면 거부된다(ge/le) — judge 가 배점을 지어낼 수 없다."""
+    with pytest.raises(ValidationError):
+        AnalysisScore(grounding=11, sufficiency=5, relevance=5, feedback="f")
+    with pytest.raises(ValidationError):
+        AnalysisScore(grounding=5, sufficiency=-1, relevance=5, feedback="f")
+
+
+def test_analysis_score_axes_constant_matches_model_fields() -> None:
+    """ANALYSIS_SCORE_AXES(확장 지점)는 실제 모델 필드와 어긋나면 안 된다."""
+    for axis in ANALYSIS_SCORE_AXES:
+        assert axis in AnalysisScore.model_fields
+
+
+def test_analysis_score_axes_distinct_from_report_score_axes() -> None:
+    """두 judge 가 보는 대상이 다르므로 축 이름을 공유하지 않는다(설계 §4.1)."""
+    assert set(ANALYSIS_SCORE_AXES).isdisjoint(SCORE_AXES)
+
+
+# ── 이슈 #242: ChartSet (graph_agent 구조화 출력, FE SellerAnalysis 정렬 — 결정 D-2) ──
+
+
+def _chart(**overrides: object) -> ChartSpec:
+    base: dict = {
+        "title": "일별 매출",
+        "chart_type": "line",
+        "unit": "KRW",
+        "series": [ChartSeries(label="매출", points=[ChartPoint(x="07-01", y=1240000)])],
+    }
+    base.update(overrides)
+    return ChartSpec(**base)
+
+
+def test_chart_spec_defaults_and_construction() -> None:
+    """정상 차트 — summary 기본값은 빈 문자열."""
+    chart = _chart()
+    assert chart.chart_type == "line"
+    assert chart.unit == "KRW"
+    assert chart.summary == ""
+    assert chart.series[0].points[0].x == "07-01"
+    assert chart.series[0].points[0].y == 1240000
+
+
+def test_chart_spec_rejects_unknown_chart_type_and_unit() -> None:
+    """chart_type·unit 은 Literal 밖 값을 거부한다(LLM 이 신규값을 지어낼 수 없다)."""
+    with pytest.raises(ValidationError):
+        _chart(chart_type="pie")
+    with pytest.raises(ValidationError):
+        _chart(unit="USD")
+
+
+def test_chart_spec_series_capped_at_one() -> None:
+    """series 상한은 1(결정 D-3) — FE AnalysisChart.tsx 가 series[0] 만 그린다."""
+    with pytest.raises(ValidationError):
+        _chart(
+            series=[
+                ChartSeries(label="A", points=[ChartPoint(x="1", y=1)]),
+                ChartSeries(label="B", points=[ChartPoint(x="1", y=2)]),
+            ]
+        )
+
+
+def test_chart_series_points_capped() -> None:
+    """points 상한은 CHART_POINTS_MAX — 시계열 과다 방지."""
+    with pytest.raises(ValidationError):
+        ChartSeries(
+            label="매출",
+            points=[ChartPoint(x=str(i), y=i) for i in range(CHART_POINTS_MAX + 1)],
+        )
+
+
+def test_chart_set_charts_capped_at_max() -> None:
+    """charts 상한은 CHART_MAX(3) — 스키마 계약(와이어 아님)이라 상수."""
+    with pytest.raises(ValidationError):
+        ChartSet(charts=[_chart() for _ in range(CHART_MAX + 1)])
+
+
+def test_chart_set_allows_empty() -> None:
+    """그릴 게 없으면 빈 목록을 허용한다(억지 차트 금지)."""
+    assert ChartSet().charts == []
 
 
 def test_recommendation_set_preserves_order() -> None:

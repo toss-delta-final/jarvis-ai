@@ -33,9 +33,23 @@ from app.core.llm import ModelTier, resolve_provider_model
 
 logger = logging.getLogger(__name__)
 
-SellerRole = Literal["supervisor", "planner", "worker", "judge", "product", "report", "recommend"]
+SellerRole = Literal[
+    "supervisor",
+    "planner",
+    "worker",
+    "judge",
+    "product",
+    "report",
+    "recommend",
+    "analysis_judge",
+    "graph",
+]
 
 # SPEC §8 표의 코드화 — 판매자 전 역할 smart(2026-07-29, 품질 우선 전환).
+# analysis_judge(이슈 #242 분석 검증 층)도 이 정책을 따른다 — DESIGN-ANALYSIS-V31-242
+# 결정 D-1: 이슈 원안(fast)을 채택하지 않고 판정 품질을 우선한다. 비용·wall-clock 은
+# seller_analysis_judge_timeout_s 분리로 흡수한다(같은 설계서 §9-R1).
+# graph(차트 생성, 이슈 #242 5단계)도 smart — 이슈 원안 그대로이며 전 역할 정책과도 일치한다.
 ROLE_TIER: dict[SellerRole, ModelTier] = {
     "supervisor": "smart",
     "planner": "smart",
@@ -44,6 +58,8 @@ ROLE_TIER: dict[SellerRole, ModelTier] = {
     "product": "smart",
     "report": "smart",
     "recommend": "smart",
+    "analysis_judge": "smart",
+    "graph": "smart",
 }
 
 

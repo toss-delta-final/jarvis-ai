@@ -39,6 +39,9 @@ def _record_factory(
 
 def test_role_tier_matches_provider_neutral_spec() -> None:
     # 2026-07-29 품질 우선 전환 — 판매자 전 역할 smart(fast 역할 없음).
+    # analysis_judge(이슈 #242, DESIGN-ANALYSIS-V31-242 결정 D-1)도 이 정책을 따른다 —
+    # 이슈 원안(fast)을 채택하지 않고 판정 품질을 우선했다.
+    # graph(5단계, 같은 이슈)도 smart — 이슈 원안 그대로 전 역할 정책과 일치.
     assert ROLE_TIER == {
         "supervisor": "smart",
         "planner": "smart",
@@ -47,6 +50,8 @@ def test_role_tier_matches_provider_neutral_spec() -> None:
         "product": "smart",
         "report": "smart",
         "recommend": "smart",
+        "analysis_judge": "smart",
+        "graph": "smart",
     }
 
 

@@ -1,6 +1,6 @@
 # SPEC-SELLER-001 — 판매자 멀티에이전트 그래프
 
-> **버전**: v1.1.4 (라우팅 오류 meta-first 정합, 2026-07-23) · **상태**: MVP 구현 완료(1~4-3단계) — **정본 승격(기획 저장소 `.moai/specs/`) 은 미완**
+> **버전**: v1.2.0 (2026-08-03 — **[이슈 #242] 분석 검증 2층 분리(F1~F3+analysis_judge) + chart_agent 활성화·§12 차트 보류 해제**, 라우팅 오류 meta-first 정합, 2026-07-23) · **상태**: MVP 구현 완료(1~4-3단계) — **정본 승격(기획 저장소 `.moai/specs/`) 은 미완**
 > **현재 상태 문서**: 워크플로우 [SELLER-FINAL-WORKFLOW](SELLER-FINAL-WORKFLOW.md) · 기술 [SELLER-FINAL-TECH](SELLER-FINAL-TECH.md) · 미결 [SELLER-FINAL-RISKS](SELLER-FINAL-RISKS.md) · 확장 [SELLER-FINAL-ROADMAP](SELLER-FINAL-ROADMAP.md)
 > **소유 코드**: `app/agents/seller/` · `app/api/seller.py` · `app/services/spring_client.py`(판매자 함수군)
 > **상위 계약**: [`../api-spec.md`](../api-spec.md) §3.2(SSE·HITL) · §4.4(집계 7종) · §4.5(상품 CRUD 4종) — 본 SPEC과 어긋나면 **api-spec 우선**.
@@ -12,7 +12,8 @@
 ## 0. 범위
 
 - **범위**: `POST /seller/chat` 그래프 내부 로직 전체 — supervisor 라우팅, 분석 서브그래프(워커 5종 · 보고서 · 검증 루프 · 행동 추천), 상품관리(HITL 쓰기), 일반질문, 판매자 분석 이력 저장·조회, RAG 지식 베이스, 일관성 장치.
-- **비범위**: 리뷰 인사이트(고도화 — roadmap) · 차트 이미지 전달(계약 미정 — §12) · 판매자 FE 직접 상품편집(FE↔Spring, AI 표면 밖) · 구매자 취향 프로필(SPEC-PROFILE-001 — 본 SPEC과 무관, §9.3).
+- **비범위**: 리뷰 인사이트(고도화 — roadmap) · 판매자 FE 직접 상품편집(FE↔Spring, AI 표면 밖) · 구매자 취향 프로필(SPEC-PROFILE-001 — 본 SPEC과 무관, §9.3).
+- **[해소 v1.2.0, 이슈 #242]** 차트(시각화) 전달은 더 이상 비범위가 아니다 — `chart` SSE 이벤트로 전달 경로가 생겼다(§2·§12). PNG 이미지가 아니라 **구조화 데이터**(`ChartSpec[]`)를 전달하는 형태로 확정됐다 — 렌더링은 FE `AnalysisChart.tsx` 소관.
 
 ## 1. 설계서 v3 → 본 SPEC 정합 조정표
 
@@ -31,7 +32,7 @@
 | 9 | 도구 httpx `timeout=10` | AI→Spring 전 구간 **3s** | api-spec §2.9 c |
 | 10 | `MemorySaver` / `InMemoryStore` | **PostgresSaver / PostgresStore** (처음부터) | mvp-plan 7번 · 의존성 설치됨 |
 | 11 | 독립 `seller_agent/` 프로젝트 구조(app.py·api/·db.py) | `app/agents/seller/`로 그래프 층만 이식, 인프라 층 폐기 (§11) | 2026-07-17 확정 ⑤ |
-| 12 | chart_agent PNG 저장 → 경로 반환 | **MVP 보류** — SSE 이벤트 4종에 전달 경로 없음 (§12 🔴) | api-spec §3.2 이벤트 제한 |
+| 12 | chart_agent PNG 저장 → 경로 반환 | ~~MVP 보류~~ **[해소 v1.2.0, 이슈 #242]** PNG 저장이 아니라 **구조화 데이터**(`ChartSpec[]`, 도구 없이 finding·보고서에서 옮겨 담기)를 `chart` SSE 이벤트로 전달 — §12 참조 | api-spec §3.2 `chart` 이벤트 |
 
 설계서의 그래프 위상(supervisor 구조화 출력 라우팅, Send 팬아웃, 검증 루프, defer 팬인), 상태·스키마 설계, 일관성 8장치, RAG 파이프라인, 프로필 반영 3지점은 **그대로 채택**한다.
 
@@ -59,8 +60,8 @@ flowchart TD
     SAVE --> END
 ```
 
-- 서브에이전트 구성은 api-spec §8 항목 8과 일치: sales_anomaly · conversion · behavior · churn · abuse · general · recommend · (chart — 보류) · **product_agent**.
-- chart_agent는 전달 계약 확정 전까지 그래프에서 **비활성**(feature flag, §12). 설계서의 "chart ∥ recommend 병렬 팬아웃"은 계약 확정 시 복원한다(`defer=True` 팬인 구조는 유지).
+- 서브에이전트 구성은 api-spec §8 항목 8과 일치: sales_anomaly · conversion · behavior · churn · abuse · general · recommend · graph(구 chart) · **product_agent**.
+- **[해소 v1.2.0, 이슈 #242]** graph_agent(구 chart_agent)는 판매자가 차트를 요청(`wants_chart` — planner 판정 + 코드 키워드 검사 OR)했을 때만 활성화된다 — `run_analysis_pipeline` 이 `asyncio.gather(run_recommend, run_graph)` 로 병렬 실행(설계서의 "chart ∥ recommend 병렬 팬아웃" 그대로 복원). 도구는 주지 않는다(D-4, 근거 사슬 유지) — 이미 확보된 finding·보고서에서 숫자를 옮겨 담을 뿐 새 조회를 하지 않는다. 미요청 시에는 호출 자체가 없다(불필요한 LLM 콜 방지).
 - **진행 상황 token**: planner·워커·report 등 단계 진입 시 짧은 안내 텍스트("매출 이상 분석 중…")를 `token`으로 emit — first-token 10s(§2.9) 충족 + 장시간 분석의 체감 대기 완화.
 
 ## 3. 상태·스키마
@@ -167,7 +168,7 @@ SSE 1스트림 = 응답 1회이므로 승인 대기를 한 연결에 물지 않�
 
 | 역할 | tier | OpenAI(기본) | Anthropic |
 |---|---|---|---|
-| supervisor · analysis_planner · 분석 워커 5종 · report_verifier judge · product_agent · report_agent · recommend_agent | **smart** | `openai_smart_model_id`, `temperature` 미전달, `reasoning_effort=medium` | `sonnet_model_id`, `temperature=0.2` |
+| supervisor · analysis_planner · 분석 워커 5종 · report_verifier judge · product_agent · report_agent · recommend_agent · **analysis_judge**(⑨, 신설) · **graph**(구 chart_agent, 신설) | **smart** | `openai_smart_model_id`, `temperature` 미전달, `reasoning_effort=medium` | `sonnet_model_id`, `temperature=0.2` |
 
 - 근거(2026-07-29 개정): **판매자 전 역할을 `smart` 하나로 통일한다.** supervisor 3분기 라우팅과 analysis_planner 워커 선택의 오분류는 하위 단계에서 복구되지 않으므로, 라우팅·분류·정형 분석에서도 판단 품질을 우선한다. 호출부는 provider 모델명이 아닌 `fast`/`smart` 의도만 선택한다는 원칙은 유지 — `fast` 축은 폐기가 아니라 판매자 그래프에서 미사용 상태이며, 구매자 그래프·enrichment 파이프라인은 계속 `fast`를 쓴다.
 - 되돌림: 지연·비용이 문제되면 전량 롤백이 아니라 **`supervisor`·`judge`부터 `fast`로 부분 롤백**한다(`ROLE_TIER` 해당 항목만 변경). 전 역할이 동일 티어인 동안에는 `_cached_model` lru_cache가 모델 인스턴스를 1개만 생성한다.
@@ -208,6 +209,7 @@ SSE 1스트림 = 응답 1회이므로 승인 대기를 한 연결에 물지 않�
 | ⑥ | 가드레일 미들웨어(scope→PII→출력 검사) | 유지. PII는 리포 로깅 규칙(원문 로그 금지)과 정합 |
 | ⑦ | 보고서 검증 루프(결정론→LLM 채점, 21/30, ≤3회) | 유지. 임계·횟수는 Settings 주입 |
 | ⑧ | 시맨틱 캐시(question_cache) | 유지 — 유사도·동일 기간·당일이면 이전 보고서 반환(LLM 미실행), 아니면 이전 보고서 앵커 주입 |
+| ⑨ | **[신설 v1.2.0, 이슈 #242] 브랜치 분석 검증 루프**(F1~F3 결정론→analysis_judge 채점, 21/30, ≤1회 재실행) | ⑦(보고서 검증, D1~D3+report_judge)과 **다른 층** — ⑦은 팬인 후 "제대로 작성됐는가", ⑨는 팬아웃 내부 브랜치 단위로 "적절한 분석인가"(근거 대조·유형 일치)를 검증한다. 미달은 `degrade` 강등 또는 미검증 채택이며, 기존 3층 degrade 판정(§7)과는 **별도 집계**로 섞이지 않는다(오발동 방지). 근거 사슬: 도구 출력 ⊇ finding ⊇ 보고서 ⊇ 차트 |
 
 ## 11. 디렉터리 매핑 (설계서 §2.7 → jarvis-ai)
 
@@ -218,7 +220,7 @@ SSE 1스트림 = 응답 1회이므로 승인 대기를 한 연결에 물지 않�
 | `api/routers/` `api/db.py` | **폐기** — spring_client(§4) | 데이터 API의 소유는 Spring |
 | `config/analysis_config.py` | `app/core/config.py` Settings | |
 | `rag/ingest.py` `retriever.py` | `app/pipelines/seller_kb.py` + `app/agents/seller/rag.py` | |
-| `charts/` | 보류(§12) | |
+| `charts/` | `app/agents/seller/schemas.py`(`ChartSet`/`ChartSpec`/`ChartSeries`/`ChartPoint`) + `workers.py::build_graph_agent` + `orchestrator.py::run_graph` | **[해소 v1.2.0]** PNG 파일 저장이 아니라 구조화 데이터 — §0·§12 참조 |
 | `.env`의 `MYSQL_URL` | **없음** — AI는 MySQL 미접속 | |
 
 ## 12. 미결(🔴) · 의존 목록
@@ -228,7 +230,7 @@ SSE 1스트림 = 응답 1회이므로 승인 대기를 한 연결에 물지 않�
 | C-13 | 집계 7종 응답 스키마 + **계산 경계표**(§5) + metric/기간 파라미터 값 집합 | 분석 워커 전체 |
 | C-14 | CRUD 4종 정확 응답 스키마 · categoryId/attributes | product_agent |
 | HITL confirm | 전송 형식(별도 요청 vs 특수 message)·이벤트명 — BE/FE | 스트림 2(실행) 전송 계층 |
-| 차트 전달 | SSE 4종에 경로 없음 — 새 이벤트 or 파일 URL 계약 신설(정본 먼저) vs post-MVP 확정 | chart_agent 활성화 |
+| ~~차트 전달~~ | ✅ **[해소 v1.2.0, 이슈 #242]** `chart` SSE 이벤트 신설(api-spec §3.2) — `wants_chart` 요청 + G1 검증 통과 시 0~1회, 구조화 데이터(`ChartSpec[]`) 전달 | (해소) |
 | I-8 account-events | admin 소유 협의 | abuse 워커 일부 소스 |
 | 분석 기준서 | `analysis_guides` 원천 문서 작성(산출물) | RAG·워커 프롬프트 |
 | 90s 초과 | 실측 후 §2.9 판매자 예외 개정 제안 여부 | 운영 |
