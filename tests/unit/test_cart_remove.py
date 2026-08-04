@@ -589,6 +589,69 @@ async def test_remove_partial_failure_isolated_and_done_once() -> None:
     assert _types(events)[-1] == "done"
 
 
+# ─────── 대상 해소 — 라운드 11: 이름 매칭(가장 강한 신호)에도 출현 단위 부정 가드 ───────
+
+
+def test_resolve_remove_targets_negated_only_name_match_asks() -> None:
+    """재현(라운드 11 패킷) — "이어폰은 빼지 말고 케이스 빼줘": 장바구니에 이어폰만 있으면
+    이름 매칭이 그 부정된 출현 하나뿐이라 되물음이어야 한다(고치기 전엔 [이어폰]이 삭제됐다 —
+    사용자가 '빼지 말라'고 명시한 바로 그 상품)."""
+    from app.agents.buyer.cart.remove import _resolve_remove_targets
+
+    items = [_item(1, 10, "이어폰")]
+    result = _resolve_remove_targets("이어폰은 빼지 말고 케이스 빼줘", items, get_settings(), None)
+    assert result is None
+
+
+def test_resolve_remove_targets_negated_name_still_resolves_other_name() -> None:
+    """같은 발화라도 케이스가 실제로 장바구니에 있으면 케이스만 삭제돼야 한다 — 문장 전체
+    가드를 이름 매칭에 쓰면 케이스까지 함께 죽어 되물음이 되는데, 그건 틀렸다(라운드 11 패킷
+    핵심). 출현 단위 판정이라 이어폰의 부정된 출현은 제외되고 케이스의 부정 없는 출현만
+    남는다."""
+    from app.agents.buyer.cart.remove import _resolve_remove_targets
+
+    items = [_item(1, 10, "이어폰"), _item(2, 20, "케이스")]
+    result = _resolve_remove_targets("이어폰은 빼지 말고 케이스 빼줘", items, get_settings(), None)
+    assert result is not None
+    assert [item.cart_item_id for item in result] == [2]
+
+
+async def test_remove_negated_name_match_deletes_only_unnegated_item() -> None:
+    """`stream_cart_remove` 수준에서도 같은 사실 — delete_fn 이 케이스(2)에만 불린다."""
+    store = CartStateStore()
+    deleted: list[int] = []
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        deleted.append(cart_item_id)
+
+    events = await _collect(
+        stream_cart_remove(
+            identity=_member(),
+            message="이어폰은 빼지 말고 케이스 빼줘",
+            cart_store=store,
+            thread_key="m:t-remove-negated-name",
+            settings=get_settings(),
+            get_cart_fn=_cart(_item(1, 10, "이어폰"), _item(2, 20, "케이스")),
+            delete_fn=delete_fn,
+        )
+    )
+    assert deleted == [2]
+    action = _actions(events)[0]
+    assert action["type"] == "CART_REMOVED"
+    assert "케이스" in action["message"]
+
+
+def test_resolve_remove_targets_single_item_negated_name_asks_not_auto_resolve() -> None:
+    """단건 자동 규칙(4번)이 이름 매칭 실패의 뒷문이 되면 안 된다 — 이어폰 1건뿐인 장바구니에서
+    "이어폰은 빼지 말고 케이스 빼줘"는 이름 매칭이 부정으로 비어도, 부정 표지가 있으므로 단건
+    자동으로 새지 않고 되물음이어야 한다."""
+    from app.agents.buyer.cart.remove import _resolve_remove_targets
+
+    items = [_item(1, 10, "이어폰")]
+    result = _resolve_remove_targets("이어폰은 빼지 말고 케이스 빼줘", items, get_settings(), None)
+    assert result is None
+
+
 # ─────────── stream_cart_add 배선 (플래그·last_add) ───────────
 
 

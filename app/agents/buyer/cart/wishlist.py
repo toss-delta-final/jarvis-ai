@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator
 
 from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.identity import cart_identity
-from app.agents.buyer.cart.negation import has_any_negation
+from app.agents.buyer.cart.negation import has_any_negation, matches_unnegated
 from app.agents.buyer.recommendation.state import CartIntent
 from app.core.text import _strip_unsafe
 from app.schemas.chat import ActionData, DoneData, TokenData
@@ -45,11 +45,15 @@ def _wishlist_unresolved_notice(items: list[WishlistItem]) -> str:
 def _resolve_wishlist_remove_target(
     cart: CartIntent, message: str, items: list[WishlistItem], settings
 ) -> WishlistItem | None:
-    """찜 해제 대상을 결정론적으로 해소한다(패킷 §5.4, 2차 리뷰 지적 4 + 라운드 10 이후) —
+    """찜 해제 대상을 결정론적으로 해소한다(패킷 §5.4, 2차 리뷰 지적 4 + 라운드 10·11 이후) —
     강한 신호부터 순서대로 확정한다:
-      1. 이름이 발화에 **부분 문자열로** 등장 → 정확히 1건이면 그것, 2건 이상이면 **그 자리에서
-         미해소**(2번 문맥 id 로 내려가지 않는다 — `remove.py::_resolve_remove_targets` 와 같은
-         "강한 신호가 모호하면 더 약한 신호로 임의로 고르지 않는다" 원칙).
+      1. 이름이 발화에 **부분 문자열로**, 그리고 **부정되지 않은 출현으로** 등장 → 정확히
+         1건이면 그것, 2건 이상이면 **그 자리에서 미해소**(2번 문맥 id 로 내려가지 않는다 —
+         `remove.py::_resolve_remove_targets` 와 같은 "강한 신호가 모호하면 더 약한 신호로
+         임의로 고르지 않는다" 원칙). **[라운드 11]** 부정 판정은 3번의 문장 전체 가드
+         (`has_any_negation`)가 아니라 `negation.matches_unnegated` 의 **출현 단위** 판정을
+         쓴다 — 문장 전체 가드를 이름 매칭에 쓰면 "이어폰은 찜 빼지 말고 케이스 찜 빼줘"에서
+         정상 해제 대상인 "케이스"까지 함께 죽어 되물음이 된다.
       2. `cart.product_id`(decompose 가 문맥에서 이미 골라 온 값)가 목록 안에 있으면 그것.
       3. 발화에 부정·대조 신호(`negation.has_any_negation`, 문장 전체 검사)가 **없을 때만**
          위 두 규칙이 모두 안 잡히고 목록이 정확히 1건이면 그 1건.
@@ -80,7 +84,16 @@ def _resolve_wishlist_remove_target(
     순서로 조합하느냐"뿐이라 분리해서 각자 읽기 쉽게 두는 편이 더 싸다.
     """
     name_matches = [
-        item for item in items if (name := _strip_unsafe(item.name or "")) and name in message
+        item
+        for item in items
+        if (name := _strip_unsafe(item.name or ""))
+        and matches_unnegated(
+            message,
+            [name],
+            settings.utterance_negation_markers,
+            settings.utterance_negation_window,
+            settings.utterance_prefix_negation_markers,
+        )
     ]
     if name_matches:
         return name_matches[0] if len(name_matches) == 1 else None

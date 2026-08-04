@@ -12,7 +12,7 @@ import logging
 
 from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.identity import cart_identity
-from app.agents.buyer.cart.negation import has_any_negation
+from app.agents.buyer.cart.negation import has_any_negation, matches_unnegated
 from app.agents.buyer.cart.state import CartStateStore, LastAdd
 from app.core.text import _strip_unsafe
 from app.schemas.chat import ActionData, DoneData, TokenData
@@ -51,15 +51,21 @@ def _resolve_remove_targets(
          빼지는 말고 이어폰만 빼줘"에서 "전부 빼"만 보고 확정하면 사용자가 명시적으로 배제한
          전체 삭제가 실행된다. 대조어("말고")가 표지에서 여러 글자 떨어져 나오므로 위치 창이
          아니라 문장 전체를 본다.
-      2. 상품명이 발화에 **부분 문자열로** 등장 → 정확히 1건이면 그 항목. 2건 이상이면 어느
-         쪽인지 결정할 수 없어 **그 자리에서 되물음**(3·4번으로 넘어가지 않는다 — 이미 "이름을
-         지목했다"는 강한 신호가 확보됐는데 모호하면, 더 약한 신호로 임의로 골라잡는 것이 더
-         위험하다). 이름은 `_strip_unsafe` 로 정제한 값으로 매칭한다 — product_name 은 판매자
-         입력이라 제어·zero-width·bidi 문자가 섞일 수 있고, 원문 그대로 매칭하면 (a) 육안상
-         똑같아 보이는 이름이 안 보이는 문자 때문에 조용히 매칭 실패하거나 (b) 반대로 그 안 보이는
-         문자를 이용해 매칭을 조작하는 표면이 생긴다. 발화(`message`) 쪽은 사용자 입력이고 이미
-         API 경계에서 정제된다는 전제라 여기서 다시 정제하지 않는다(`_pending_switch_signals` 와
-         같은 전제).
+      2. 상품명이 발화에 **부분 문자열로**, 그리고 **부정되지 않은 출현으로** 등장 → 정확히
+         1건이면 그 항목. 2건 이상이면 어느 쪽인지 결정할 수 없어 **그 자리에서 되물음**(3·4번
+         으로 넘어가지 않는다 — 이미 "이름을 지목했다"는 강한 신호가 확보됐는데 모호하면, 더
+         약한 신호로 임의로 골라잡는 것이 더 위험하다). 이름은 `_strip_unsafe` 로 정제한 값으로
+         매칭한다 — product_name 은 판매자 입력이라 제어·zero-width·bidi 문자가 섞일 수 있고,
+         원문 그대로 매칭하면 (a) 육안상 똑같아 보이는 이름이 안 보이는 문자 때문에 조용히
+         매칭 실패하거나 (b) 반대로 그 안 보이는 문자를 이용해 매칭을 조작하는 표면이 생긴다.
+         발화(`message`) 쪽은 사용자 입력이고 이미 API 경계에서 정제된다는 전제라 여기서 다시
+         정제하지 않는다(`_pending_switch_signals` 와 같은 전제). **[라운드 11]** 부정 판정은
+         1·3번의 문장 전체 가드(`has_any_negation`)가 아니라 `negation.matches_unnegated` 의
+         **출현 단위** 판정을 쓴다 — "이어폰은 빼지 말고 케이스 빼줘"에서 문장 전체 가드를
+         쓰면 정상 삭제 대상인 "케이스"까지 함께 죽어 되물음이 된다. 이름별로 발화에 나온 각
+         출현의 앞뒤(접두·어미 부정)를 보고, **부정되지 않은 출현이 하나라도 있는 이름만**
+         매칭으로 친다 — "이어폰"은 뒤에 "말고"가 붙어 그 출현이 무효화되지만 "케이스"는
+         부정 없이 살아남는다.
       3. 부정·대조 표지가 **없을 때만** "방금 담은 거" 표지(`cart_remove_recent_markers`) →
          `last_add.cart_item_id`. "방금 담은 거 말고 다른 거 빼줘"처럼 사용자가 **제외한** 바로
          그 상품을 코드가 고르면 안 된다 — 이름이 따로 없으므로 안전한 동작은 되물음이다(1번과
@@ -67,9 +73,9 @@ def _resolve_remove_targets(
          없으면(이미 빠졌거나 다른 세션에서 지워짐) **그 자리에서 되물음**(4번 "단건 자동"으로
          넘어가지 않는다 — 사용자가 명시적으로 "방금 그거"를 지목했는데 실패하면, 장바구니에
          다른 게 1건 있다고 그걸 대신 지우는 것은 사용자 의도와 다를 수 있다).
-      4. 위 표지가 **하나도 없고**(또는 부정돼 건너뛰었고) 장바구니에 항목이 정확히 1건이면
-         그 1건(표지 없는 발화에서만 적용 — 표지가 있었는데 해소에 실패한 경우는 2·3번이 이미
-         되물음으로 종결했다).
+      4. 부정·대조 표지가 **없을 때만**(위 규칙들과 같은 이유 — 이름 없이 코드가 고르는
+         규칙이다) 장바구니에 항목이 정확히 1건이면 그 1건(표지 없는 발화에서만 적용 — 표지가
+         있었는데 해소에 실패한 경우는 2·3번이 이미 되물음으로 종결했다).
       5. 그 외 → `None`.
 
     **[라운드 10]** 이 함수의 부정 판정은 원래 어미형(`utterance_negation_markers`)만 봤다 —
@@ -78,6 +84,11 @@ def _resolve_remove_targets(
     사용자가 명시적으로 "빼지 말라"고 한 항목이 실제로 삭제됐다(플래그 on 시 데이터 손실).
     같은 부정 개념이 두 파일에 각자 구현돼 한쪽만 고쳐진 것이 원인이라, 판정을
     `negation.has_any_negation` 공용 함수로 옮겨 `intent_guard.py` 와 같은 함수를 쓰게 했다.
+
+    **[라운드 11]** 라운드 10 은 1·3·4번(전체 삭제·방금 담은 거·단건 자동)에 문장 전체 가드를
+    붙였지만 **가장 강한 신호인 2번(이름 매칭)은 그대로 남겨** "이어폰은 빼지 말고 케이스
+    빼줘"에서 이름이 지목된 이어폰이 그대로 매칭돼 삭제됐다. 2번은 `negation.matches_unnegated`
+    (출현 단위 — `negation.py` 에 이미 있던 함수, 새로 만들지 않았다)를 쓴다.
     """
     has_negation = has_any_negation(
         message, settings.utterance_negation_markers, settings.utterance_prefix_negation_markers
@@ -89,7 +100,14 @@ def _resolve_remove_targets(
     name_matches = [
         item
         for item in items
-        if (name := _strip_unsafe(item.product_name or "")) and name in message
+        if (name := _strip_unsafe(item.product_name or ""))
+        and matches_unnegated(
+            message,
+            [name],
+            settings.utterance_negation_markers,
+            settings.utterance_negation_window,
+            settings.utterance_prefix_negation_markers,
+        )
     ]
     if name_matches:
         return name_matches if len(name_matches) == 1 else None
@@ -103,7 +121,7 @@ def _resolve_remove_targets(
                 return recent_match
         return None
 
-    if len(items) == 1:
+    if not has_negation and len(items) == 1:
         return items
     return None
 

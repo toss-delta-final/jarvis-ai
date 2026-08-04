@@ -559,6 +559,150 @@ async def test_wishlist_remove_action_never_carries_product_id() -> None:
     assert "productId" not in action
 
 
+# ─── stream_wishlist_remove — 라운드 11·12: 이름 매칭(가장 강한 신호)에도 출현 단위 부정 가드 ───
+#
+# 라운드 11 은 패킷의 원문 "이어폰은 찜 빼지 말고 케이스 찜 빼줘"가 공용 부정 창(8자)에서
+# "말고"를 못 담는다는 이유로 대체 문구로 바꿔 테스트했는데, 그건 절차 위반이었다 — 리뷰어가
+# 실제로 재현해 신고한 문장을 통과하는 문장으로 갈아끼우면 테스트는 초록이 돼도 신고된 결함은
+# 남는다(실제로 남아 있었다: 이어폰만 있을 때 여전히 이어폰이 해제 대상으로 확정됐다). 라운드
+# 12 는 원인을 "창이 한 글자 모자란 것"이 아니라 "표지 목록이 '말' 활용형(-지 말고 등)을 못
+# 잡는 것"으로 지목해 `utterance_negation_markers`에 "지 말"을 추가했다(창 크기는 그대로 8).
+# 아래 원문 케이스가 그 수정의 회귀 테스트다. 라운드 11 의 대체 문구 테스트는 다른 회귀
+# 조합(조사 생략형)으로 남긴다.
+
+
+def test_resolve_wishlist_remove_target_negated_only_name_match_asks() -> None:
+    """재현(라운드 11 패킷, 구조 동일) — 찜 목록에 이어폰만 있으면 그 부정된 출현 하나뿐이라
+    되물음이어야 한다(고치기 전엔 이어폰이 해제됐다 — 사용자가 '빼지 말라'고 명시한 그 상품)."""
+    from app.agents.buyer.cart.wishlist import _resolve_wishlist_remove_target
+
+    items = [_wishlist_item(10, "이어폰")]
+    result = _resolve_wishlist_remove_target(
+        CartIntent(product_id=None), "이어폰 찜 빼지 말고 케이스 찜 빼줘", items, get_settings()
+    )
+    assert result is None
+
+
+def test_resolve_wishlist_remove_target_negated_name_still_resolves_other_name() -> None:
+    """같은 발화라도 케이스가 실제로 찜 목록에 있으면 케이스만 해제 대상이어야 한다 — 문장
+    전체 가드를 이름 매칭에 쓰면 케이스까지 함께 죽어 되물음이 되는데, 그건 틀렸다(라운드 11
+    패킷 핵심)."""
+    from app.agents.buyer.cart.wishlist import _resolve_wishlist_remove_target
+
+    items = [_wishlist_item(10, "이어폰"), _wishlist_item(20, "케이스")]
+    result = _resolve_wishlist_remove_target(
+        CartIntent(product_id=None), "이어폰 찜 빼지 말고 케이스 찜 빼줘", items, get_settings()
+    )
+    assert result is not None
+    assert result.product_id == 20
+
+
+async def test_wishlist_remove_negated_name_match_removes_only_unnegated_item() -> None:
+    """`stream_wishlist_remove` 수준에서도 같은 사실 — remove_wishlist_fn 이 케이스(20)에만
+    불린다."""
+    remove_calls: list[int] = []
+
+    async def remove_wishlist_fn(product_id, *, user_id):
+        remove_calls.append(product_id)
+
+    events = await _collect(
+        stream_wishlist_remove(
+            identity=_member(),
+            cart=CartIntent(product_id=None),
+            message="이어폰 찜 빼지 말고 케이스 찜 빼줘",
+            settings=get_settings(),
+            get_wishlist_fn=_wishlist(_wishlist_item(10, "이어폰"), _wishlist_item(20, "케이스")),
+            remove_wishlist_fn=remove_wishlist_fn,
+        )
+    )
+    assert remove_calls == [20]
+    action = _actions(events)[0]
+    assert action["type"] == "WISHLIST_REMOVED"
+    assert "케이스" in action["message"]
+
+
+def test_resolve_wishlist_remove_target_single_item_negated_name_asks_not_auto_resolve() -> None:
+    """단건 자동 규칙(3번)이 이름 매칭 실패의 뒷문이 되면 안 된다 — 이어폰 1건뿐인 찜 목록에서
+    부정 표지가 있으면 단건 자동으로 새지 않고 되물음이어야 한다."""
+    from app.agents.buyer.cart.wishlist import _resolve_wishlist_remove_target
+
+    items = [_wishlist_item(10, "이어폰")]
+    result = _resolve_wishlist_remove_target(
+        CartIntent(product_id=None), "이어폰 찜 빼지 말고 케이스 찜 빼줘", items, get_settings()
+    )
+    assert result is None
+
+
+# ─── 라운드 12 — 리뷰어 원문 그대로("이어폰은 찜 빼지 말고 케이스 찜 빼줘", 조사 "은" 포함) ───
+
+
+def test_resolve_wishlist_remove_target_reviewer_original_phrasing_only_earphone_asks() -> None:
+    """리뷰어가 실제로 재현해 신고한 문장(라운드 12 패킷) — 대체 문구가 아니라 이 문장 자체가
+    통과해야 결함이 실제로 고쳐진 것이다. 고치기 전(라운드 11 상태)엔 이 문장에서 "이어폰"
+    뒤 8자 창이 "은 찜 빼지 말"로 끊겨 "말고"를 못 담았고, "지 말"이 표지에 없어 그 출현이
+    부정으로 안 잡혀 이어폰이 그대로 해제 대상으로 확정됐다(직접 재현 확인). "지 말" 표지
+    추가로 같은 창(8자) 안에서 "지 말"이 잡혀 되물음이 된다."""
+    from app.agents.buyer.cart.wishlist import _resolve_wishlist_remove_target
+
+    items = [_wishlist_item(10, "이어폰")]
+    result = _resolve_wishlist_remove_target(
+        CartIntent(product_id=None), "이어폰은 찜 빼지 말고 케이스 찜 빼줘", items, get_settings()
+    )
+    assert result is None
+
+
+def test_resolve_wishlist_remove_target_reviewer_original_phrasing_resolves_case() -> None:
+    """같은 원문 문장에서 케이스가 실제로 찜 목록에 있으면 케이스만 해제 대상이어야 한다 —
+    출현 단위 판정이라 이어폰의 부정된 출현만 제외되고 케이스는 살아남는다(문장 전체 가드였다면
+    케이스까지 죽어 되물음이 됐을 것)."""
+    from app.agents.buyer.cart.wishlist import _resolve_wishlist_remove_target
+
+    items = [_wishlist_item(10, "이어폰"), _wishlist_item(20, "케이스")]
+    result = _resolve_wishlist_remove_target(
+        CartIntent(product_id=None), "이어폰은 찜 빼지 말고 케이스 찜 빼줘", items, get_settings()
+    )
+    assert result is not None
+    assert result.product_id == 20
+
+
+async def test_wishlist_remove_reviewer_original_phrasing_removes_only_case_via_stream() -> None:
+    """`stream_wishlist_remove` 수준에서도 리뷰어 원문으로 같은 사실 — remove_wishlist_fn 이
+    케이스(20)에만 불린다."""
+    remove_calls: list[int] = []
+
+    async def remove_wishlist_fn(product_id, *, user_id):
+        remove_calls.append(product_id)
+
+    events = await _collect(
+        stream_wishlist_remove(
+            identity=_member(),
+            cart=CartIntent(product_id=None),
+            message="이어폰은 찜 빼지 말고 케이스 찜 빼줘",
+            settings=get_settings(),
+            get_wishlist_fn=_wishlist(_wishlist_item(10, "이어폰"), _wishlist_item(20, "케이스")),
+            remove_wishlist_fn=remove_wishlist_fn,
+        )
+    )
+    assert remove_calls == [20]
+    action = _actions(events)[0]
+    assert action["type"] == "WISHLIST_REMOVED"
+    assert "케이스" in action["message"]
+
+
+def test_resolve_wishlist_remove_target_ji_mal_marker_does_not_swallow_normal_remove() -> None:
+    """ "지 말" 표지 추가가 정상 발화를 삼키지 않는지 확인 — "말"이 들어간 무관한 단어("말투"
+    등)가 아니라 실제 부정 활용형만 잡아야 한다. 부정 신호 없는 평범한 단건 해제는 그대로
+    동작해야 한다(회귀 방지)."""
+    from app.agents.buyer.cart.wishlist import _resolve_wishlist_remove_target
+
+    items = [_wishlist_item(10, "이어폰")]
+    result = _resolve_wishlist_remove_target(
+        CartIntent(product_id=None), "이어폰 찜 빼줘", items, get_settings()
+    )
+    assert result is not None
+    assert result.product_id == 10
+
+
 # ─────────── stream_cart_add 배선 ───────────
 
 
