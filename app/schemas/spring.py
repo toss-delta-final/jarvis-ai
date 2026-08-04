@@ -877,3 +877,44 @@ class ProductDeleteResult(SellerAggregateModel):
 
     product_id: int
     status: str = "HIDDEN"
+
+
+# ── 7. 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28, 🔶 초안 — BE 협의 전) ──
+
+
+class AddWishlistRequest(CamelModel):
+    """I-26 POST /internal/wishlist 요청 본문(🔶 초안, BE 협의 전).
+
+    회원 전용(USER) — guestId 없음(게스트 찜은 없다). userId 는 AI-검증 JWT sub 유래
+    (요청 본문 불신, §2.3과 동일 규약).
+    """
+
+    user_id: int
+    product_id: int
+
+
+class WishlistAddResult(CamelModel):
+    """I-26 200 성공 응답(🔶 초안) — {success, data:{productId}}, wishlistId 없음."""
+
+    success: bool
+    product_id: int | None = None
+
+
+class WishlistItem(CamelModel):
+    """I-28 GET /internal/wishlist 응답 항목(🔶 초안, BE 협의 전).
+
+    AI 가 실제로 쓰는 필드는 productId·name·purchasable 세 개뿐이다(경로 B — SSE 에는 상품 카드를
+    싣지 않는다). brandName·price·originalPrice·imageUrl·rating·reviewCount 같은 표시 필드는
+    BE 응답에는 있어도 이 스키마에는 두지 않는다 — AI 가 쓰지 않는 필드까지 파싱·보존하면
+    사용처 없는 결합만 늘어난다.
+    """
+
+    product_id: int
+    name: str | None = None  # BE 필드명은 name(productName 아님)
+    purchasable: bool = True
+
+
+class WishlistView(CamelModel):
+    """I-28 응답(🔶 초안). 찜 0건도 200 + items:[](404 아님, get_cart 와 같은 규약)."""
+
+    items: list[WishlistItem] = Field(default_factory=list)

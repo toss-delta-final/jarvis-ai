@@ -720,6 +720,7 @@ class _CartResp:
 class _CartClient:
     def __init__(self, resp) -> None:
         self._resp = resp
+        self.calls: list[tuple[str, str, dict | None]] = []
 
     async def __aenter__(self):
         return self
@@ -728,9 +729,15 @@ class _CartClient:
         return False
 
     async def post(self, url, json=None):
+        self.calls.append(("POST", url, json))
         return self._resp
 
     async def get(self, url, params=None):
+        self.calls.append(("GET", url, params))
+        return self._resp
+
+    async def delete(self, url, params=None):
+        self.calls.append(("DELETE", url, params))
         return self._resp
 
 
@@ -892,6 +899,97 @@ async def test_get_cart_parses_items(monkeypatch: pytest.MonkeyPatch) -> None:
         and view.items[0].option_name == "블루"
         and view.items[0].quantity == 2
     )
+
+
+# ─────────── spring_client 배선 (I-24 삭제, 이슈 #116, 🔶 초안) ───────────
+
+
+async def test_delete_cart_item_success_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.services.spring_client as sc
+
+    client = _CartClient(_CartResp(200, {"success": True, "data": None}))
+    monkeypatch.setattr(sc, "_client", lambda: client)
+    result = await sc.delete_cart_item(55, user_id=1)
+    assert result is None
+    assert client.calls == [("DELETE", "/internal/cart/items/55", {"userId": 1})]
+
+
+async def test_delete_cart_item_uses_guest_id_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.services.spring_client as sc
+
+    client = _CartClient(_CartResp(200, {"success": True, "data": None}))
+    monkeypatch.setattr(sc, "_client", lambda: client)
+    await sc.delete_cart_item(55, guest_id="guest-uuid-1")
+    assert client.calls == [("DELETE", "/internal/cart/items/55", {"guestId": "guest-uuid-1"})]
+
+
+async def test_delete_cart_item_not_found_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(
+        sc,
+        "_client",
+        lambda: _CartClient(_CartResp(404, {"error": {"code": "CART_ITEM_NOT_FOUND"}})),
+    )
+    with pytest.raises(sc.CartItemNotFound):
+        await sc.delete_cart_item(999, user_id=1)
+
+
+async def test_delete_cart_item_second_call_still_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    """I-24 는 비멱등 — 이미 지워진 항목을 다시 지우면 두 번째 호출도 404."""
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(
+        sc,
+        "_client",
+        lambda: _CartClient(_CartResp(404, {"error": {"code": "CART_ITEM_NOT_FOUND"}})),
+    )
+    with pytest.raises(sc.CartItemNotFound):
+        await sc.delete_cart_item(55, user_id=1)
+    with pytest.raises(sc.CartItemNotFound):
+        await sc.delete_cart_item(55, user_id=1)
+
+
+async def test_delete_cart_item_forbidden_maps_to_cart_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """403 AUTH_FORBIDDEN(소유자 불일치) 은 전용 예외 없이 CartError 로 낙성한다."""
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(
+        sc, "_client", lambda: _CartClient(_CartResp(403, {"error": {"code": "AUTH_FORBIDDEN"}}))
+    )
+    with pytest.raises(sc.CartError):
+        await sc.delete_cart_item(55, user_id=1)
+
+
+async def test_delete_cart_item_500_maps_to_cart_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(
+        sc, "_client", lambda: _CartClient(_CartResp(500, {"error": {"code": "INTERNAL_ERROR"}}))
+    )
+    with pytest.raises(sc.CartError):
+        await sc.delete_cart_item(55, user_id=1)
+
+
+async def test_delete_cart_item_rejects_zero_identity_queries() -> None:
+    """신원 query 0개(둘 다 None) — 어댑터가 방어적으로 호출 자체를 막는다."""
+    import app.services.spring_client as sc
+
+    with pytest.raises(sc.CartError):
+        await sc.delete_cart_item(55)
+
+
+async def test_delete_cart_item_rejects_two_identity_queries() -> None:
+    """신원 query 2개(둘 다 not None) — "정확히 하나" 계약을 어댑터가 방어한다."""
+    import app.services.spring_client as sc
+
+    with pytest.raises(sc.CartError):
+        await sc.delete_cart_item(55, user_id=1, guest_id="guest-uuid-1")
+
+
+# ─────────── spring_client 배선 (I-26/I-27/I-28 찜, 이슈 #117, 🔶 초안) 은 tests/unit/test_wishlist.py ───────────
 
 
 # ─────────── 리뷰 수정 회귀 (Fix 1~4) ───────────
