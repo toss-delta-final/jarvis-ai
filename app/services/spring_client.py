@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar
 import logging
@@ -104,6 +105,56 @@ _background_synonym_tasks: set[asyncio.Task[dict[str, list[str]]]] = set()
 _search_retry_suppressed: ContextVar[bool] = ContextVar(
     "search_retry_suppressed", default=False
 )
+
+
+class SearchBudgetExceeded(TimeoutError):
+    """I-1 검색 총시간 가드가 예산을 넘겨 잘라낸 실패 (#132).
+
+    `TimeoutError` 를 상속해 기존 타임아웃 처리와 호환되면서도, `_transport_status_class` 가
+    **이 타입만** 전송 계층 `timeout` 으로 분류하게 해 다른 Spring 호출의 무관한 `TimeoutError`
+    가 같은 라벨을 얻지 않게 한다(PR #293 리뷰).
+    """
+
+
+# [#132 PR #293 리뷰] I-1 응답 파싱 전용 스레드풀. `asyncio.to_thread` 는 **앱 전역 기본
+# executor** 를 쓰는데, 그 풀은 임베딩·카테고리 매핑·색상 사전·예산 세트 조립이 함께 쓴다.
+# 총시간 가드는 await 만 취소하고 **스레드는 끝까지 돈다** — 가드가 자주 트립하는 부하에서
+# 버려진 파싱 스레드가 공유 풀을 점유하면, 정작 검색과 무관한 요청까지 슬롯을 기다린다.
+# 전용 풀로 격리해 고갈의 파급을 검색 파싱 안에 가둔다(개별 호출 지연은 가드가, 워커 전체
+# 처리량은 이 격리가 맡는다). 크기 기본값은 기존 기본 executor 와 같은 식이라 격리만 바뀌고
+# 동시 처리량 특성은 그대로다.
+_parse_executor: ThreadPoolExecutor | None = None
+_parse_executor_lock = threading.Lock()
+
+
+def _get_parse_executor() -> ThreadPoolExecutor:
+    """파싱 전용 executor 를 지연 생성한다(이중 확인 락 — 스케줄러·이벤트루프 동시 진입 방어).
+
+    **큐는 스스로 빠진다** — 가드가 초과를 잡아 `wait_for` 가 코루틴을 취소하면 그 취소가
+    `run_in_executor` future 로 전파돼, **아직 시작되지 않은** 파싱 작업은 큐에서 제거되고
+    영영 실행되지 않는다(PR #293 리뷰 검증: 실 코드 구조로 재현). 그래서 "버려진 작업이 큐를
+    채워 신규 요청이 파싱을 시작도 못 하고 예산을 태우는" 자기증폭은 성립하지 않는다.
+
+    남는 점유는 **이미 실행 중이던** 작업뿐이고 그 수는 `max_workers` 로 유계다(스레드는 취소가
+    안 되므로 끝까지 돈다). 각 작업은 실측 200ms 안에 끝나므로(13.33MB/7,245건) 포화는 그 시간
+    규모에서 자연히 풀린다. 다만 **파싱 시간이 예산을 넘게 커지면** 이 전제가 깨진다 — 그때는
+    모든 요청이 파싱 도중 버려져 워커가 계속 점유되므로, 그 지점에서는 큐 깊이 기반
+    backpressure(포화 시 즉시 실패)가 필요하다. 현 규모(예산 3~6s vs 파싱 0.2s)에서는 멀다.
+    """
+    global _parse_executor
+    if _parse_executor is None:
+        with _parse_executor_lock:
+            if _parse_executor is None:
+                _parse_executor = ThreadPoolExecutor(
+                    max_workers=get_settings().search_parse_max_workers,
+                    thread_name_prefix="i1-parse",
+                )
+    return _parse_executor
+
+
+async def _run_in_parse_executor(fn, *args):
+    """전용 풀에서 동기 함수를 돌린다 — `asyncio.to_thread` 의 전용 executor 판."""
+    return await asyncio.get_running_loop().run_in_executor(_get_parse_executor(), fn, *args)
 
 
 @contextmanager
@@ -245,8 +296,14 @@ def _transport_status_class(exc: BaseException) -> str | None:
 
     `RemoteProtocolError`(서버가 응답 도중 연결 종료)는 `NetworkError` 의 하위가 아니라
     **형제**(둘 다 `TransportError` 직계)라 함께 적지 않으면 어느 분기에도 안 걸린다.
+
+    [#132] 검색 총시간 가드의 초과도 `timeout` 으로 분류하되, **가드 전용 타입**
+    (`SearchBudgetExceeded`)으로만 받는다 — 내장 `TimeoutError` 를 그대로 매칭하면 이 함수가
+    쓰이는 **모든** Spring 호출(`get_recent_purchases`·`add_to_cart`·`push_recommendations` …)에서
+    무관한 이유로 난 `TimeoutError` 까지 전송 계층 실패로 둔갑한다(PR #293 리뷰). 나중에 다른
+    경로에 `wait_for` 가 하나 생기면 그때부터 trace 가 조용히 거짓말을 시작하는 종류의 넓이다.
     """
-    if isinstance(exc, httpx.TimeoutException):
+    if isinstance(exc, httpx.TimeoutException | SearchBudgetExceeded):
         return "timeout"
     if isinstance(exc, httpx.NetworkError | httpx.RemoteProtocolError):
         return "connection_error"
@@ -591,32 +648,67 @@ async def search_products(filters: ProductSearchFilters) -> ProductSearchResult:
             _log.warning("색상 동의어 확장 실패 — 원문 단수 color로 검색", exc_info=True)
     params = _search_query_params(filters, color_values=color_values)
     attempts = 1 if _search_retry_suppressed.get() else settings.spring_max_retries + 1
-    try:
-        with _spring_span("search_products", "GET") as span:
-            for attempt in range(1, attempts + 1):
-                try:
-                    async with _client() as client:
-                        resp = await client.get("/internal/products/search", params=params)
-                        _record_spring_status(span, resp)
-                        resp.raise_for_status()
-                        data = resp.json()
-                    break
-                except (httpx.HTTPError, ValueError) as exc:
-                    if attempt >= attempts or not _is_retryable(exc):
-                        raise
-                    # 예외 원문은 남기지 않는다 — 업스트림 상태 유출 방지(#141), 유계 라벨만.
-                    _log.warning(
-                        "spring_search_retry",
-                        extra={
-                            "attempt": attempt,
-                            "maxAttempts": attempts,
-                            "statusClass": _failure_status_class(exc),
-                        },
-                    )
+    # [#132] 검색 1회의 **총시간** 상한. `spring_timeout_s` 는 httpx 에 스칼라로 주입돼
+    # connect/read/write/pool 네 시계가 되는데 `read` 는 **청크 사이 간격** 상한이라, 바디가
+    # 끊기지 않고 계속 오면 한 번도 물리지 않는다 — `size` 제거(전량 반환, §4.6)로 바디가 커진
+    # 뒤로는 "3s 안에 끝난다"가 보장이 아니다. config 는 이미 `spring_timeout_s × (재시도+1)` 을
+    # 검색 예산으로 **가정**하고 스트림 상한을 기동 검증하는데, 그 가정을 집행하는 코드가
+    # 없었다. 새 튜너블을 만들지 않고 같은 식을 쓴다 — 검증과 집행이 갈라지면 한쪽만 고쳐
+    # 놓고 지켜진다고 믿게 된다.
+    # [#277 병합] 곱하는 값은 상수가 아니라 **실제 시도 수**(`attempts`)다 — 재시도를 끈 턴
+    # (`suppress_search_retry`, 미룬 conditions 가 first-token 예산을 쓰는 경로)은 예산도 1회분으로
+    # 함께 좁아져야 한다. `spring_max_retries + 1` 을 그대로 쓰면 억제한 턴이 억제 안 한 턴과
+    # 같은 상한을 갖게 돼 #277 이 아낀 예산을 이 가드가 도로 늘려 준다.
+    budget_s = settings.spring_timeout_s * attempts
+
+    async def _fetch_and_parse(span: TraceNode | None) -> ProductSearchResult:
+        for attempt in range(1, attempts + 1):
+            try:
+                async with _client() as client:
+                    resp = await client.get("/internal/products/search", params=params)
+                    _record_spring_status(span, resp)
+                    resp.raise_for_status()
+                    # [#132] 역직렬화를 이벤트루프 밖으로 — 전량 반환이라 바디 크기에 상한이
+                    # 없고, 루프 위에서 돌면 그 시간만큼 **같은 워커의 다른 SSE 스트림이 전부
+                    # 멈춘다**(실 응답 13.33MB/7,245건 실측: 5 동시 992ms 정지 → 424ms,
+                    # MEASURE-I1-RESPONSE-132 §4). 전용 풀인 이유는 `_get_parse_executor` 참조.
+                    data = await _run_in_parse_executor(resp.json)
+                break
+            except (httpx.HTTPError, ValueError) as exc:
+                if attempt >= attempts or not _is_retryable(exc):
+                    raise
+                # 예외 원문은 남기지 않는다 — 업스트림 상태 유출 방지(#141), 유계 라벨만.
+                _log.warning(
+                    "spring_search_retry",
+                    extra={
+                        "attempt": attempt,
+                        "maxAttempts": attempts,
+                        "statusClass": _failure_status_class(exc),
+                    },
+                )
         # 응답 파싱·검증도 같은 경계 안 — 200 이지만 스키마 불일치인 malformed 응답도
         # SEARCH_FAILED degrade(§7)로 흐르게 한다(ValidationError 가 그대로 새어 500 되지 않게).
-        return _parse_search_response(data)
-    except (httpx.HTTPError, ValueError, ValidationError) as exc:
+        # 역직렬화와 같은 이유로 스레드에 넘긴다 — N× model_validate 가 파싱 비용의 본체다.
+        return await _run_in_parse_executor(_parse_search_response, data)
+
+    try:
+        with _spring_span("search_products", "GET") as span:
+            try:
+                # ⚠️ `wait_for` 는 **await 를 취소할 뿐 스레드를 죽이지 못한다** — 초과 시 파싱
+                # 스레드는 전용 풀에서 끝까지 돈다. 그래도 턴은 즉시 degrade 로 풀려나 사용자
+                # 지연과 스트림 예산은 유계가 된다(스레드는 곧 스스로 끝난다).
+                return await asyncio.wait_for(_fetch_and_parse(span), timeout=budget_s)
+            except TimeoutError as exc:
+                # 가드 전용 타입으로 좁혀 던진다 — 분류(`_transport_status_class`)가 이 경로만
+                # timeout 으로 보게 하려는 것이다(PR #293 리뷰).
+                # **조용히 자르지 않는다**: 이 가드가 자주 트립하면 전용 풀에 버려진 파싱
+                # 스레드가 쌓인다는 신호라, 트립 자체가 운영 관측 대상이다.
+                _log.warning(
+                    "spring_search_budget_exceeded",
+                    extra={"budgetS": budget_s, "attempts": attempts},
+                )
+                raise SearchBudgetExceeded(f"검색 총시간 예산 초과({budget_s}s)") from exc
+    except (httpx.HTTPError, ValueError, ValidationError, TimeoutError) as exc:
         raise SpringUnavailableError(f"search_products 실패: {exc}") from exc
 
 
