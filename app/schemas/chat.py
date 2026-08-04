@@ -404,7 +404,18 @@ class BuyerChatRequest(ChatRequest):
         return self
 
 
-# ── SSE 이벤트 data 페이로드 모델 (api-spec §3.1, 6종) ──
+# ── SSE 이벤트 data 페이로드 모델 (api-spec §3.1 번호 이벤트 7종 — suggestions 는 §3.1 「MVP 추가 페이로드」 절이라 별도) ──
+
+
+class ProgressData(CamelModel):
+    """`progress` 이벤트 페이로드 (api-spec §3.1 (1), 이슈 #289 — 계약 등재 2026-08-05).
+
+    stage 확정 어휘는 `analyzing` 1종(searching/relaxing/reranking 은 후속 확장 후보·미구현).
+    message 는 선택 — 서버가 비우면 와이어에서 키 자체가 빠진다(`app/agents/buyer/_frames.py`).
+    """
+
+    stage: str
+    message: str | None = None
 
 
 class TokenData(CamelModel):

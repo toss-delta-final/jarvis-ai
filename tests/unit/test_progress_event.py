@@ -27,6 +27,7 @@ from app.core.auth import Identity
 from app.core.config import get_settings
 from app.core.observability import RequestObservation
 from app.core.session_context import BuyerSessionInput, SessionStateUnavailable
+from app.schemas.chat import CamelModel, ProgressData
 from app.schemas.seller import SellerChatRequest
 from app.schemas.spring import AddToCartResult, CartView, ProductSearchResult
 from tests._fakes import DEFAULT_DECOMPOSE, DEFAULT_PRODUCTS, FakeLLM
@@ -169,6 +170,29 @@ def test_progress_frame_includes_message_when_present() -> None:
     assert payload == {
         "type": "progress",
         "data": {"stage": "analyzing", "message": "요청을 확인하고 있어요"},
+    }
+
+
+# ─────────── R6-1 — progress() 도 다른 이벤트와 같은 CamelModel 직렬화 경로를 쓴다 ───────────
+
+
+def test_progress_data_is_camel_model_and_serializes_like_the_wire() -> None:
+    """`ProgressData` 는 다른 SSE 페이로드(`TokenData` 등)와 같은 `CamelModel` 규약을 따른다.
+
+    이 테스트가 깨진다는 것은 `progress()` 가 다시 raw dict 로 우회했다는 뜻이다 — "다른
+    이벤트와 같은 경로로 직렬화된다"는 이 라운드의 요지 자체를 고정한다.
+    """
+    assert issubclass(ProgressData, CamelModel)
+
+    with_message = ProgressData(stage="analyzing", message="요청을 확인하고 있어요")
+    assert with_message.model_dump(by_alias=True, exclude_none=True) == {
+        "stage": "analyzing",
+        "message": "요청을 확인하고 있어요",
+    }
+
+    without_message = ProgressData(stage="analyzing", message=None)
+    assert without_message.model_dump(by_alias=True, exclude_none=True) == {
+        "stage": "analyzing",
     }
 
 

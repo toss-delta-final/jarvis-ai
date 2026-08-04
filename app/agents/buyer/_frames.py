@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 
+from app.schemas.chat import ProgressData
+
 
 def sse(event_type: str, data: dict) -> str:
     """SSE `data:` 프레임 1줄을 직렬화한다."""
@@ -15,8 +17,10 @@ def sse(event_type: str, data: dict) -> str:
 
 
 def progress(stage: str, message: str | None = None) -> str:
-    """진행 단계 프레임(이슈 #289, 계약 미등재·플래그 gated)."""
-    data: dict = {"stage": stage}
-    if message:
-        data["message"] = message
-    return sse("progress", data)
+    """진행 단계 프레임(이슈 #289, api-spec §3.1 — 다른 SSE 페이로드와 같은 CamelModel 경로)."""
+    return sse(
+        "progress",
+        ProgressData(stage=stage, message=message or None).model_dump(
+            by_alias=True, exclude_none=True
+        ),
+    )
