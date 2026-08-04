@@ -369,6 +369,14 @@ class Settings(BaseSettings):
     price_tier_cheap_ratio: float = 0.85  # ≤ → 저렴
     price_tier_pricey_ratio: float = 1.15  # ≥ → 비쌈
     price_tier_very_pricey_ratio: float = 1.5  # ≥ → 매우비쌈
+    # [#236] need_of 가 없는 턴은 후보의 category 로 그룹을 나눈다 — I-1 요청 categoryName 이
+    # 대분류여도 응답 [].categoryName 은 leaf 라(§4.6), 대분류 leg 1개·leg 없는 검색에서
+    # 상품군이 섞여 전역 중앙값 하나로는 등급이 적극적으로 틀린다. 다만 leaf 가 잘게 쪼개져
+    # **유효 price 가 이 수 미만**인 그룹은 중앙값이 사실상 자기 자신이라 전원 '보통'으로 신호가
+    # 죽으므로 등급 산출을 포기하고 '정보없음'으로 내린다. 전역 중앙값으로 폴백하지 **않는다** —
+    # 전역은 후보가 섞인 값이라 작은 그룹에 이 이슈의 왜곡을 그대로 다시 씌운다.
+    # need_of 가 있는 턴에는 적용하지 않는다 — 니즈 경계는 상위 판정이라 #173 그룹이 곧 정답이다.
+    price_group_min_size: int = Field(default=2, ge=1)  # 미만 → 정보없음 (1 이면 사실상 해제)
 
     # ── 카테고리 하이브리드 매핑 (이슈 #59, DESIGN-CATEGORY-HYBRID-59) ──
     # 방식 A: decompose 추측 → 임베딩 보정(exact/최근접). canonical-or-null·멀티 fan-out.
