@@ -965,11 +965,17 @@ class Settings(BaseSettings):
         쌓인다.** `seller_general_timeout_s` 만 단독 비교하면 `route=10 + general=85 = 95 > 90`
         같은 조합이 검증을 통과해 검증이 이름만 남는다.
 
-        **체크포인터 연결도 더한다**(#266 PR 리뷰): pg-profile 최초 연결은 general 상한
+        **체크포인터 초기화도 더한다**(#266 PR 리뷰): pg-profile 최초 연결은 general 상한
         **밖**에서 돈다 — 안에 두면 그 `TimeoutError` 와 LLM 지연의 `TimeoutError` 가 같은
         타입이라 구분이 불가능해지기 때문이다(`app/api/seller.py` `_CheckpointerUnavailable`).
         밖으로 뺀 대가로 이 시간은 general 예산에 잡히지 않고 캡을 향해 **직렬로 더해지므로**
         예산식에도 함께 넣는다. 콜드스타트 1회에만 드는 비용이지만 검증은 최악을 본다.
+
+        **`2 *` 인 이유**(#266 PR 3차 리뷰): `_init_checkpointer` 는 연결(`__aenter__`)과
+        `setup()`(DDL)을 **각각** 이 상한으로 감싼다 — 이웃 `pg_store.py` 와 같은 형태다.
+        따라서 초기화 1회의 실질 최악은 상수의 2배다. 3차 리뷰 이전에는 `setup()` 이 아예
+        상한 밖이라 이 항 자체가 **성립하지 않는 전제** 위에 서 있었다(콜드 DB 에서 MIGRATIONS
+        8종이 문장당 `statement_timeout` 3s 씩 누적). 상한을 먼저 채우고 계수를 맞춘다.
 
         **커버하지 않는 것**: 라우팅 앞의 `load_recent_turns` 조회는 이 식에 없다 —
         `state_store_query_timeout_s` 로 따로 묶이고, 엄격 부등식과 기본값 여유(35 < 90)가
@@ -981,12 +987,12 @@ class Settings(BaseSettings):
         """
         budget = (
             self.seller_route_timeout_s
-            + self.seller_checkpoint_connect_timeout_s
+            + 2 * self.seller_checkpoint_connect_timeout_s
             + self.seller_general_timeout_s
         )
         if budget >= self.stream_total_timeout_s:
             raise ValueError(
-                "SELLER_ROUTE_TIMEOUT_S + SELLER_CHECKPOINT_CONNECT_TIMEOUT_S + "
+                "SELLER_ROUTE_TIMEOUT_S + 2 * SELLER_CHECKPOINT_CONNECT_TIMEOUT_S + "
                 "SELLER_GENERAL_TIMEOUT_S must be < STREAM_TOTAL_TIMEOUT_S "
                 f"(got {budget} >= {self.stream_total_timeout_s}): "
                 "the SSE total cap would cut the general lane before its own timeout fires, "

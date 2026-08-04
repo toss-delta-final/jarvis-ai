@@ -74,35 +74,39 @@ def test_general_lane_budget_must_fit_within_stream_cap() -> None:
     `LLM_TIMEOUT` 대신 오류 코드 없는 `done(stop)` 절단이 된다 — #266 이 고친 상태로
     되돌아간다.
     """
-    # 기본값(10 + 5 + 20 = 35 < 90)은 통과한다.
+    # 기본값(10 + 2*5 + 20 = 40 < 90)은 통과한다.
     ok = Settings(_env_file=None)
     serial = (
         ok.seller_route_timeout_s
-        + ok.seller_checkpoint_connect_timeout_s
+        + 2 * ok.seller_checkpoint_connect_timeout_s
         + ok.seller_general_timeout_s
     )
     assert serial < ok.stream_total_timeout_s
 
-    # **단독 비교였다면 통과했을 조합**(85 < 90)이지만 직렬 합은 100 >= 90 이다.
+    # **단독 비교였다면 통과했을 조합**(85 < 90)이지만 직렬 합은 105 >= 90 이다.
     with pytest.raises(ValidationError):
         Settings(_env_file=None, seller_general_timeout_s=85.0)
 
-    # 동률(10 + 5 + 75 == 90)도 거절한다 — 어느 시계가 먼저 터질지 지터로 갈린다.
+    # 동률(10 + 10 + 70 == 90)도 거절한다 — 어느 시계가 먼저 터질지 지터로 갈린다.
     with pytest.raises(ValidationError):
-        Settings(_env_file=None, seller_general_timeout_s=75.0)
+        Settings(_env_file=None, seller_general_timeout_s=70.0)
 
     # 경계 바로 아래는 유효하다.
-    edge = Settings(_env_file=None, seller_general_timeout_s=74.0)
-    assert edge.seller_general_timeout_s == 74.0
+    edge = Settings(_env_file=None, seller_general_timeout_s=69.0)
+    assert edge.seller_general_timeout_s == 69.0
 
 
 def test_general_lane_budget_tracks_every_serial_term() -> None:
     """general 이 아닌 항만 올려도 같은 검증에 걸린다 — 세 값이 직렬로 쌓이기 때문이다."""
-    # general 기본값(20)에 라우팅만 70 → 10 이 아니라 70+5+20 = 95 >= 90.
+    # general 기본값(20)에 라우팅만 70 → 70 + 10 + 20 = 100 >= 90.
     with pytest.raises(ValidationError):
         Settings(_env_file=None, seller_route_timeout_s=70.0)
 
-    # 체크포인터 연결 상한도 마찬가지다(#266 PR 리뷰로 예산식에 편입).
-    # 10 + 65 + 20 = 95 >= 90.
+    # 체크포인터 상한은 **2배**로 잡힌다(#266 3차 리뷰) — _init_checkpointer 가 연결과
+    # setup() 을 각각 이 상한으로 감싸기 때문이다.
+    # 31 은 계수를 판별하는 값이다: 1배면 10+31+20 = 61 < 90 으로 통과하지만,
+    # 실제 2배면 10+62+20 = 92 >= 90 으로 거절돼야 한다. 계수를 1배로 되돌리면 이 단언이
+    # 깨진다 — 상수만 바꾸고 계수 배선을 빠뜨리는 회귀를 잡는다.
+    assert 10.0 + 31.0 + 20.0 < 90.0, "이 값이 1배 계산에서는 통과한다는 전제"
     with pytest.raises(ValidationError):
-        Settings(_env_file=None, seller_checkpoint_connect_timeout_s=65.0)
+        Settings(_env_file=None, seller_checkpoint_connect_timeout_s=31.0)

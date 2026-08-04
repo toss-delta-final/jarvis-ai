@@ -13,6 +13,51 @@
 
 ---
 
+## [2026-08-04] "자체 상한이 있다"고 인용하기 전에 그 `wait_for` 가 **어디까지** 감싸는지 본다
+- 증상: #266 에서 `get_checkpointer()` 를 레인 상한 밖으로 빼며 근거를 *"자체 상한
+  (`seller_checkpoint_connect_timeout_s`, 5s)이 있어 무한 대기가 아니다"* 로 적고, 그 값을
+  기동 예산 검증의 한 항으로까지 썼다. 실제로 그 `wait_for` 는 `ctx.__aenter__()`(연결)만
+  감쌌고 **바로 다음 줄 `await saver.setup()`(DDL)은 상한 밖**이었다. 콜드 DB 에서
+  `setup()` 은 MIGRATIONS 8종을 순차 실행하므로 문장당 `statement_timeout`(3s)씩 누적돼
+  5s 를 크게 넘길 수 있다. 즉 예산 검증이 **성립하지 않는 전제** 위에 서 있었고,
+  콜드스타트 한정으로 이 이슈가 없애려던 "조용한 `done(stop)` 절단"이 그대로 재현될 수 있었다.
+- 원인: 상한의 **존재**만 확인하고 **범위**를 확인하지 않았다. 설정 이름
+  (`..._connect_timeout_s`)과 호출 한 줄만 보고 "초기화 전체가 묶여 있다"로 읽었다.
+  이웃인 `app/core/pg_store.py` 는 같은 일을 하면서 `setup()` 을 **별도 `wait_for` 로**
+  감싸고 이유까지 주석에 적어 뒀는데(PR #46 후속 리뷰), 그 선례를 세어 보지 않았다.
+- 규칙:
+  - **다른 모듈의 상한을 내 예산식에 인용하려면 그 `wait_for` 의 괄호가 어디서 닫히는지
+    직접 읽는다.** 상한 뒤에 이어지는 `await` 는 상한 밖이다.
+  - **"상한 밖으로 뺀다"는 결정은 "그 안이 유한하다"에 의존한다.** 유한성이 확인되지 않으면
+    먼저 상한을 채우고 그다음 계수를 맞춘다 — 연결·setup 각각이면 예산은 2배다.
+  - 실패 경로에 `ctx.__aexit__` 정리가 있는지도 함께 본다(이번에 `setup()` 실패 시 커넥션이
+    새는 것도 같이 발견했다).
+- 관련: #266 PR 3차 리뷰, `app/agents/seller/checkpoint.py`(`_init_checkpointer`),
+  `app/core/pg_store.py:125-150`(선례), `app/core/config.py`
+  (`_require_general_lane_within_stream_cap`)
+
+## [2026-08-04] 같은 예외 타입이 두 원인에서 나오면 타입으로 못 가른다 — **발생 지점**으로 감싼다
+- 증상: #266 에서 문자열 판정을 타입 판정(`is_timeout_error`)으로 바꾸고 나니, pg-profile
+  체크포인터 연결 실패가 `LLM_TIMEOUT`("응답 생성이 지연되어 중단됐습니다", WARNING)으로
+  나갔다. **인프라 장애가 "느린 LLM 응답"으로 감춰진다.** `get_checkpointer()` 의
+  `asyncio.TimeoutError` 는 `asyncio.timeout` 이 내는 것과 **같은 객체**(3.11+ 내장
+  `TimeoutError`)다.
+- 원인: "타입으로 판정한다"를 **타입이면 충분하다**로 읽었다. 타입 판정이 문자열 판정보다
+  나은 것은 맞지만, 한 타입이 여러 원인에서 나오면 해상도가 부족하다. 기존 경계 함수
+  `is_state_store_unavailable` 도 `TimeoutError` 를 포함하므로 여기서는 쓸 수 없었다 —
+  썼다면 반대로 **진짜 LLM 타임아웃까지 인프라 장애로** 삼켰을 것이다.
+- 규칙:
+  - **예외 타입이 원인을 유일하게 지목하지 못하면 발생 지점에서 감싼다.** 호출을 좁은
+    `try` 로 묶고 전용 예외로 태그해 올린다. 판정 순서도 계약이다 — 좁은 분기를 넓은
+    분기보다 **먼저** 두고 그 이유를 주석에 남긴다.
+  - **상한을 도입할 때 그 스코프 안에 다른 상한을 가진 호출이 있는지 본다.** 있으면 밖으로
+    빼는 쪽이 기본이다. 안에 두면 두 원인의 타임아웃이 섞여 양방향 오분류가 생긴다.
+  - **스코프 밖으로 뺀 시간은 상위 예산식에 다시 더한다.** 빼기만 하면 "직렬 누적을 빠뜨림"
+    이라는 원래 실수를 반복한다.
+- 관련: #266 PR 2차 리뷰, `app/api/seller.py`(`_CheckpointerUnavailable`),
+  `app/agents/seller/checkpoint.py`, `app/core/pg_resilience.py`
+  (`is_state_store_unavailable`), `app/core/config.py`
+
 ## [2026-08-04] 예외는 **타입**으로 잡는다 — 문자열 매칭은 가짜 예외 테스트만 통과시킨다
 - 증상: 판매자 general 레인의 `except (TimeoutError, asyncio.TimeoutError): → LLM_TIMEOUT`
   분기가 **한 번도 실행되지 않는 죽은 코드**였다. 이 레인만 `asyncio.wait_for` 가 없어

@@ -426,6 +426,27 @@ def test_checkpointer_timeout_is_not_reported_as_llm_timeout(
     assert "seller_stream_timeout" not in caplog.text
 
 
+def test_checkpoint_io_failure_during_stream_is_internal_not_llm_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#266 3차 리뷰 — 스트림 **도중**의 체크포인트 I/O 장애도 LLM_TIMEOUT 이 아니다.
+
+    최초 연결 이후 pg-profile 이 죽으면 그 예외는 general 상한 **안**에서 올라온다.
+    psycopg 의 `QueryCanceled`(statement_timeout)·`PoolTimeout` 은 이름과 달리
+    `OperationalError` 계열이라 `TimeoutError` 가 아니고, 그래서 `is_timeout_error` 가
+    False 를 내 INTERNAL 로 분류된다 — 이 성질에 의존하므로 회귀로 고정한다.
+    """
+    from psycopg.errors import QueryCanceled
+
+    agent = _StubStreamAgent([AIMessageChunk(content="집계 ")], exc=QueryCanceled("canceled"))
+    monkeypatch.setattr(seller_api, "build_general_agent", lambda today, checkpointer=None: agent)
+
+    events = _collect(_request("매출 알려줘"))
+
+    assert [event["type"] for event in events] == ["meta", "token", "error"]
+    assert events[-1]["data"]["code"] == "INTERNAL", "pg 오류가 LLM_TIMEOUT 으로 나가면 안 된다"
+
+
 def test_general_stream_timeout_budget_is_config_driven(monkeypatch: pytest.MonkeyPatch) -> None:
     """설정값을 바꾸면 **동작이 실제로 달라지는지** 확인한다.
 

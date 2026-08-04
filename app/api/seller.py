@@ -311,11 +311,24 @@ async def _general_stream(
 
     async def produce() -> None:
         """Run all token-backed trace contexts in one persistent task."""
-        # 체크포인터 연결은 general 상한 **밖**에서 먼저 끝낸다 (#266 PR 리뷰).
-        # (a) 자체 상한(seller_checkpoint_connect_timeout_s)이 이미 있어 무한 대기가 아니고,
-        # (b) 안에 두면 pg-profile 장애의 TimeoutError 와 LLM 지연의 TimeoutError 가 같은
-        #     타입으로 섞여 is_timeout_error 가 둘을 구분할 수 없다. 반대 방향 오분류
-        #     (LLM 예산 소진을 인프라 장애로 기록)도 함께 막힌다.
+        # 체크포인터 초기화는 general 상한 **밖**에서 먼저 끝낸다 (#266 PR 리뷰).
+        # 안에 두면 pg-profile 장애의 TimeoutError 와 LLM 지연의 TimeoutError 가 같은
+        # 타입으로 섞여 is_timeout_error 가 둘을 구분할 수 없다. 반대 방향 오분류
+        # (LLM 예산 소진을 인프라 장애로 기록)도 함께 막힌다.
+        #
+        # 밖에 두는 대신 **초기화 전체가 유한**해야 한다 — 그러지 않으면 이 앞에서 늘어져
+        # SSE 캡(stream_total_timeout_s)이 in-stream error 없이 done(stop) 으로 끊는,
+        # 이 이슈가 없애려는 실패 모드가 콜드스타트에 재현된다. `_init_checkpointer` 가
+        # 연결과 setup() 을 **각각** seller_checkpoint_connect_timeout_s 로 감싸 그 유한성을
+        # 보장하고(3차 리뷰로 setup() 누락 수정), 예산식은 2배로 계산한다
+        # (config `_require_general_lane_within_stream_cap`).
+        #
+        # [남는 한계] 스트림 **도중**의 체크포인트 read/write 는 여전히 아래 상한 안에서 돈다.
+        # pg 가 오류를 던지면(statement_timeout → QueryCanceled, PoolTimeout — 둘 다
+        # psycopg OperationalError 라 TimeoutError 가 아니다) is_timeout_error 가 False 를
+        # 내 INTERNAL 로 정확히 분류된다. 다만 pg 가 "오류 없이 느리기만" 하면 그 시간은
+        # LLM 예산을 잠식하고 레인 타이머가 LLM_TIMEOUT 으로 보고한다 — 그 시점의 정보로는
+        # 원인을 가릴 수 없다(각 문장은 statement_timeout 3s 로 묶여 있다).
         try:
             checkpointer = await get_checkpointer()
         except Exception as exc:
