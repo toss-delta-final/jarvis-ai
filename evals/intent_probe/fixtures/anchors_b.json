@@ -1,0 +1,250 @@
+{
+  "fixtureVersion": "intent-probe-anchors-b-v1",
+  "schemaVersion": "1.0.0",
+  "reaskProductId": 102,
+  "reaskProductListPosition": 2,
+  "reaskPositionRationale": "되물음 상품이 LAST_RECOMMENDATIONS 의 몇 번째인지를 명시적으로 고정한다. #240 에서 이 위치가 1번이냐 2번이냐만으로 `일반형`(1번 옵션) 정답률이 fast 기준 8/8 ↔ 3/8 로 갈렸고(smart 는 양쪽 8/8), 그 차이 때문에 cand11 채택 판정이 뒤집혔다. 위치가 옵션 선택에 샌다는 것이 실측된 이상 이 값을 고정하지 않으면 어떤 표도 재현되지 않는다. anchors_a.json(1번)과 anchors_b.json(2번)의 차이는 이 축 하나뿐이며, 앵커를 바꾸면 결과가 달라진다는 사실 자체를 두 판본으로 시연한다.",
+  "switchTargets": ["이어폰", "섬유유연제"],
+  "priorFilters": { "semanticQuery": "세탁 세제" },
+  "lastRecommendations": [
+    { "productId": 101, "name": "리필 세탁 세제 2L" },
+    { "productId": 102, "name": "고농축 액상 세탁 세제" },
+    { "productId": 103, "name": "섬유유연제 라벤더 향" },
+    { "productId": 104, "name": "무선 블루투스 이어폰" }
+  ],
+  "options": [
+    { "optionId": 1001, "name": "일반형" },
+    { "optionId": 1002, "name": "드럼형" }
+  ],
+  "contexts": [
+    {
+      "contextId": "none",
+      "includePriorFilters": false,
+      "includeLastRecommendations": false,
+      "includePendingCart": false
+    },
+    {
+      "contextId": "lastRecommendations",
+      "includePriorFilters": true,
+      "includeLastRecommendations": true,
+      "includePendingCart": false
+    },
+    {
+      "contextId": "pendingCart",
+      "includePriorFilters": true,
+      "includeLastRecommendations": true,
+      "includePendingCart": true
+    }
+  ],
+  "utterances": [
+    {
+      "utteranceId": "cart-control-001",
+      "group": "cart_control",
+      "text": "장바구니 보여줘",
+      "contexts": ["none", "lastRecommendations", "pendingCart"],
+      "expected": { "intent": "cart_view" },
+      "axes": ["mainIntent", "cartControl"]
+    },
+    {
+      "utteranceId": "cart-control-002",
+      "group": "cart_control",
+      "text": "장바구니에 뭐 있어?",
+      "contexts": ["none", "lastRecommendations", "pendingCart"],
+      "expected": { "intent": "cart_view" },
+      "axes": ["mainIntent", "cartControl"]
+    },
+    {
+      "utteranceId": "cart-control-003",
+      "group": "cart_control",
+      "text": "내 장바구니 확인해줘",
+      "contexts": ["none", "lastRecommendations", "pendingCart"],
+      "expected": { "intent": "cart_view" },
+      "axes": ["mainIntent", "cartControl"]
+    },
+    {
+      "utteranceId": "cart-control-004",
+      "group": "cart_control",
+      "text": "그거 담아줘",
+      "contexts": ["none", "lastRecommendations", "pendingCart"],
+      "expected": { "intent": "cart_add" },
+      "axes": ["mainIntent", "cartControl"]
+    },
+    {
+      "utteranceId": "cart-control-005",
+      "group": "cart_control",
+      "text": "장바구니에 넣어줘",
+      "contexts": ["none", "lastRecommendations", "pendingCart"],
+      "expected": { "intent": "cart_add" },
+      "axes": ["mainIntent", "cartControl"],
+      "note": "'장바구니'가 들어 있지만 담기 동사가 우선 — cart_view 로 새는지 보는 대조군."
+    },
+    {
+      "utteranceId": "cart-control-006",
+      "group": "cart_control",
+      "text": "2번 담아줘",
+      "contexts": ["none", "lastRecommendations", "pendingCart"],
+      "expected": { "intent": "cart_add" },
+      "axes": ["mainIntent", "cartControl"]
+    },
+    {
+      "utteranceId": "demonstrative-001",
+      "group": "demonstrative",
+      "text": "저번에 그거 다시 보여줘",
+      "contexts": ["none", "lastRecommendations", "pendingCart"],
+      "expected": { "intent": "recommend" },
+      "axes": ["mainIntent", "demonstrative"]
+    },
+    {
+      "utteranceId": "demonstrative-002",
+      "group": "demonstrative",
+      "text": "저번에 그거 다시 사고 싶어",
+      "contexts": ["none", "lastRecommendations", "pendingCart"],
+      "expected": { "intent": "recommend" },
+      "axes": ["mainIntent", "demonstrative"],
+      "note": "#240 §3: 맥락 없음 100% / 직전추천 95% / PENDING_CART 58% — 맥락 주입이 원인임을 드러내는 셀."
+    },
+    {
+      "utteranceId": "demonstrative-003",
+      "group": "demonstrative",
+      "text": "그거 또 사고 싶어",
+      "contexts": ["none", "lastRecommendations", "pendingCart"],
+      "expected": { "intent": "recommend" },
+      "axes": ["mainIntent", "demonstrative"]
+    },
+    {
+      "utteranceId": "demonstrative-004",
+      "group": "demonstrative",
+      "text": "그거 보여줘",
+      "contexts": ["none", "lastRecommendations", "pendingCart"],
+      "expected": { "intent": "recommend" },
+      "axes": ["mainIntent", "demonstrative"],
+      "note": "#234 대조군이자 #240 이 안정화 목표로 지목한 셀 — cand11 이 픽스처 A 에서 20/24 → 10/24 로 무너뜨렸다."
+    },
+    {
+      "utteranceId": "option-answer-001",
+      "group": "option_answer",
+      "text": "드럼형으로",
+      "contexts": ["pendingCart"],
+      "expected": { "intent": "cart_add", "optionId": 1002 },
+      "axes": ["optionAnswer"]
+    },
+    {
+      "utteranceId": "option-answer-002",
+      "group": "option_answer",
+      "text": "일반형",
+      "contexts": ["pendingCart"],
+      "expected": { "intent": "cart_add", "optionId": 1001 },
+      "axes": ["optionAnswer"],
+      "note": "1번 옵션. 되물음 상품의 목록 위치에 가장 민감한 셀 — reaskPositionRationale 참조."
+    },
+    {
+      "utteranceId": "option-answer-003",
+      "group": "option_answer",
+      "text": "드럼형으로 담아줘",
+      "contexts": ["pendingCart"],
+      "expected": { "intent": "cart_add", "optionId": 1002 },
+      "axes": ["optionAnswer"]
+    },
+    {
+      "utteranceId": "option-answer-004",
+      "group": "option_answer",
+      "text": "2번으로",
+      "contexts": ["pendingCart"],
+      "expected": { "intent": "cart_add", "optionId": 1002 },
+      "axes": ["optionAnswer"],
+      "note": "순번 지시 — options 배열의 2번째가 정답이다."
+    },
+    {
+      "utteranceId": "switch-001",
+      "group": "switch",
+      "text": "이어폰으로 할래",
+      "contexts": ["pendingCart"],
+      "expected": { "intent": "cart_add", "productIdRule": "notReaskProduct" },
+      "axes": ["switchAll7", "switchLegacy2", "cartAddProductIdLegacy2"],
+      "note": "#240 전환 축(분모 16)의 2발화 중 하나. cartAddProductIdLegacy2 는 같은 표본을 #234 정의로 다시 센다."
+    },
+    {
+      "utteranceId": "switch-002",
+      "group": "switch",
+      "text": "다른 거 담아줘",
+      "contexts": ["pendingCart"],
+      "expected": { "intent": "cart_add", "productIdRule": "notReaskProduct" },
+      "axes": ["switchAll7", "switchLegacy2", "cartAddProductIdLegacy2"],
+      "note": "#240 픽스처 A 기준 12/40(30%) — 가장 약한 전환 셀."
+    },
+    {
+      "utteranceId": "switch-003",
+      "group": "switch",
+      "text": "이거 말고 다른 거 담아줘",
+      "contexts": ["pendingCart"],
+      "expected": { "intent": "cart_add", "productIdRule": "notReaskProduct" },
+      "axes": ["switchAll7"]
+    },
+    {
+      "utteranceId": "switch-004",
+      "group": "switch",
+      "text": "그거 말고 이어폰 담아줘",
+      "contexts": ["pendingCart"],
+      "expected": { "intent": "cart_add", "productIdRule": "notReaskProduct" },
+      "axes": ["switchAll7"]
+    },
+    {
+      "utteranceId": "switch-005",
+      "group": "switch",
+      "text": "이어폰으로 바꿔줘",
+      "contexts": ["pendingCart"],
+      "expected": { "intent": "cart_add", "productIdRule": "notReaskProduct" },
+      "axes": ["switchAll7"]
+    },
+    {
+      "utteranceId": "switch-006",
+      "group": "switch",
+      "text": "섬유유연제로 담아줘",
+      "contexts": ["pendingCart"],
+      "expected": { "intent": "cart_add", "productIdRule": "notReaskProduct" },
+      "axes": ["switchAll7"]
+    },
+    {
+      "utteranceId": "switch-007",
+      "group": "switch",
+      "text": "아니 이어폰 담아줘",
+      "contexts": ["pendingCart"],
+      "expected": { "intent": "cart_add", "productIdRule": "notReaskProduct" },
+      "axes": ["switchAll7"]
+    },
+    {
+      "utteranceId": "order-status-001",
+      "group": "order_status",
+      "text": "내 주문 어디까지 왔어?",
+      "contexts": ["none", "lastRecommendations", "pendingCart"],
+      "expected": { "intent": "order_status" },
+      "axes": ["orderStatus"]
+    },
+    {
+      "utteranceId": "order-status-002",
+      "group": "order_status",
+      "text": "배송 상태 알려줘",
+      "contexts": ["none", "lastRecommendations", "pendingCart"],
+      "expected": { "intent": "order_status" },
+      "axes": ["orderStatus"]
+    },
+    {
+      "utteranceId": "general-001",
+      "group": "general",
+      "text": "주문 취소 방법",
+      "contexts": ["none", "lastRecommendations", "pendingCart"],
+      "expected": { "intent": "general" },
+      "axes": ["general"],
+      "note": "order_status 로 새기 쉬운 경계 발화 — 프롬프트가 general 로 못 박은 예시다."
+    },
+    {
+      "utteranceId": "general-002",
+      "group": "general",
+      "text": "안녕",
+      "contexts": ["none", "lastRecommendations", "pendingCart"],
+      "expected": { "intent": "general" },
+      "axes": ["general"],
+      "note": "#240 §3: 맥락 없음 100% / 직전추천 45% / PENDING_CART 30%. 맥락 주입이 원인임을 가장 크게 드러내는 셀."
+    }
+  ]
+}
