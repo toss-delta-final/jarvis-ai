@@ -610,7 +610,10 @@ async def test_guest_session_d6_expires_all_threads_then_claim_keeps_context(
     assert claimed_context.owner_type == "member"
     assert claimed_context.owner_id == "1"
     assert await filter_store.get(keys[0]) == filter_sentinel
-    assert await cart_store.get_last_reco(keys[1]) == cart_sentinel
+    # [#118] last_reco 는 스레드 내 **누적**이라 rebuild 턴이 남긴 직전 추천이 뒤에 함께 남는다.
+    # 이 단언이 지키려는 것은 "claim 이 스레드 상태를 보존한다"이므로, 방금 쓴 sentinel 이
+    # 최근 언급 순 **맨 앞에** 살아 있는지를 본다.
+    assert (await cart_store.get_last_reco(keys[1]))[: len(cart_sentinel)] == cart_sentinel
     assert await revert_store.get(keys[2]) == revert_sentinel
     await assert_pre_d6_transcript_preserved()
 

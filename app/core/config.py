@@ -605,6 +605,15 @@ class Settings(BaseSettings):
     # 포함되는 한 방향만 비교한다. "아니"는 간투사 오탐이 흔하고 에코 보완 이득은 1/8뿐이라
     # 기본값에서 제외한다(운영 설정으로 재추가 가능).
     cart_pending_switch_markers: list[str] = ["다른", "말고", "대신", "바꿔", "바꿀"]
+    # [#118] last_reco 누적 상한 — 담기 허용 목록(정본 §3.1 [보안] "누적 추천 목록 ∪
+    # screen.products")의 시간 축을 보존하되 무한 증가를 막는다. **상한은 승계분에만 실효적으로
+    # 걸린다** — 이번 턴 항목은 잘리지 않는다(CartStateStore.set_last_reco 주석 참조).
+    # 값 근거: 한 턴 최대는 I-21 의 MAX_LISTS(10) × LIST_MAX_PRODUCTS(9) = 90 이지만, 통상
+    # 추천 턴은 category_fanout_max(5) 이하 × 9 = ≤45, 실측 대다수는 1~3 leg(9~27건)다.
+    # 30 이면 통상 한 턴 전체 + 직전 턴 승계분을 담으면서 LAST_RECOMMENDATIONS 길이를 #234/#240
+    # 기준선을 잰 규모 근처로 유지한다. 90 으로 잡으면 목록이 3배가 되어 "LLM 오추출 표면을
+    # 넓히지 않는다"(2026-07-30 계약 코멘트)와 어긋난다. screen_products_max(20)와도 같은 자릿수다.
+    last_reco_max: int = Field(default=30, ge=1)
 
     # ── dedup (#4, api-spec §4.7 결정 14-F) ──
     # 최근 구매 제외 윈도우(일) — 이보다 오래된 구매는 제외 목록에서 뺀다(영구 제외 방지).
@@ -727,6 +736,73 @@ class Settings(BaseSettings):
     chat_message_max_chars: int = 4000
     # sessionId/threadId 길이 상한 — 불투명 키가 registry·저장소·로그에 쌓이는 남용 방어.
     chat_key_max_chars: int = 200
+
+    # ── 화면 맥락 screen (이슈 #118, api-spec §3.1) ──
+    # screen.products 상한(정본 명시 기본값) — 초과분은 화면 순서 앞쪽만 취하고 버린다.
+    screen_products_max: int = Field(default=20, ge=1)
+    # [13차 리뷰] `screen.products` **원본 배열** 길이 하드 상한 — `screen_products_max` 와는
+    # 별개다. 스키마 정규화(`app.schemas.chat._normalize_screen`)가 불량 항목을 걸러 유효
+    # `screen_products_max` 건을 채울 때까지 원본 배열을 순회하므로(12차 리뷰 이후 규약), 이
+    # 상한이 없으면 무효 항목(빈 dict 등)을 수만~수십만 건 채운 요청이 매번 원본 전체를
+    # 스캔한다 — `message` 는 `chat_message_max_chars` 로 길이 상한이 있는데 `products` 원본
+    # 크기에는 상한이 없던 비대칭이었고, 요청 바디 크기를 자르는 미들웨어도 없어(레이트리밋은
+    # §2.8 요청 "건수"만 제한) 이 경로가 열려 있었다(실제 재현). 기본 500은
+    # `screen_products_max`(20)의 25배 — 정상 FE 페이로드(한 응답에 화면이 보여줄 수 있는 상품은
+    # 무한 스크롤이어도 수십 건을 넘기 어렵다)는 절대 자르지 않으면서, 악성 페이로드의 스캔량을
+    # 유계로 만드는 값이다. 원본 배열 슬라이스도 400 이 아니라 절단이다(관대 유효성 유지).
+    screen_products_raw_scan_max: int = Field(default=500, ge=1)
+    # screen 문자열(products[].name · filters 값) 항목당 길이 상한 — **FE 가 보낸 문자열이 그대로
+    # LLM 프롬프트에 실리는** 신뢰경계라 절단이 필요하다(초과는 400 이 아니라 절단 — 관대 유효성).
+    # 값 근거: 같은 카탈로그 상품명의 와이어 상한 선례가 200 자이므로(`OrderStatusOrder.product_name`
+    # max_length=200) 그보다 긴 문자열은 실제 상품명일 수 없다. 그런데 200 을 그대로 쓰면 최악
+    # 20건 × 200 = 4,000 자로 사용자 발화 상한(chat_message_max_chars=4000) 전체와 맞먹는 분량이
+    # 프롬프트에 얹힌다. 120 이면 최악 2,400 자로 묶이면서 실제 한국어 커머스 상품명(브랜드+모델+
+    # 옵션 수식, 통상 60~80 자)은 절단 없이 다 들어간다. filters 표시값("배송중"·"최신순")에는
+    # 넉넉하다.
+    screen_text_max_chars: int = Field(default=120, ge=1)
+    # [14차 리뷰, F-17] screen 문자열(products[].name · filters 값) **원문** 길이 하드 상한 —
+    # `screen_text_max_chars`(정제 후 절단 상한)와는 별개다. `app.schemas.chat._clean_screen_text`
+    # 가 `_strip_unsafe`(제어·zero-width·bidi 검사, 문자 단위 순회)를 원문 **전체**에 먼저 돌린
+    # 뒤에야 `screen_text_max_chars` 로 잘랐으므로, 원문 길이 자체에는 사전 상한이 없었다 —
+    # `screen_products_raw_scan_max` 가 "원본 배열 길이"는 유계로 만들었지만 그 배열의 각 항목
+    # **문자열 길이**는 열려 있던 비대칭이다. 실측: name 200만자 × 50건이 25.02초 걸렸고,
+    # `screen_products_raw_scan_max`(500)까지 채우면 더 나쁠 수 있다 — 구매자 스트림 전체 상한
+    # 30s(§2.9 c)를 넘겨 사실상 서비스 거부다. `screen_text_max_chars`(120)의 20배로 잡는다 —
+    # 실제 상품명·필터 표시값은 정제 전 원문이라도 수백 자를 넘기 어렵고(위 200자 선례의 12배
+    # 여유), 20배(2,400)면 정상 페이로드는 자르지 않으면서 악성 원문의 정제 비용을 유계로
+    # 만든다. 관대 유효성은 유지한다 — 이 슬라이스도 400 이 아니라 절단이다.
+    screen_text_raw_scan_max: int = Field(default=2400, ge=1)
+    # 화면을 가리키는 **맨 지시대명사** 표지 — 이것만 있고 이름·순번·좌표가 없으면 정본 §3.1 의
+    # "후보가 1건일 때만 확정, 여러 건이면 되물음"을 코드가 강제한다
+    # (app/agents/buyer/screen_reference.py). 조사·활용을 흡수하도록 포함 관계로만 비교한다
+    # (cart_pending_switch_markers 와 같은 규약). 운영에서 표지를 늘릴 수 있게 config 로 둔다.
+    # **근칭만 둔다.** `"그거"`·`"그것"` 은 이 저장소에서 **대화 지시어**로 확립돼 있어(decompose
+    # `_SYSTEM` 의 하중 문구가 `"그거 보여줘"`·`"그거 또 사고 싶어"` 를 직전 추천 맥락으로 다루고
+    # #234 프로브가 그 경로를 측정했다) 화면 지시로 보면 직전 추천을 가리킨 발화가 화면 상품으로
+    # 확정된다 — 리뷰 F-1 에서 실제 오담기로 재현됐다. 정본 §3.1 지시어 해소 표가 든 예도 `"이거"`다.
+    # `"저거"` 는 화면에 보이는 것을 가리키는 원칭이고 대화 지시어 선례가 없어 남긴다.
+    # [8차 리뷰, F-12] `"얘"` 는 뺐다 — 매칭이 포함 관계(부분 문자열)인데 이 표지만 1글자라
+    # `"얘기했던 걸로 담아줘"`·`"얘들아 담아줘"` 처럼 무관한 단어(얘기·얘들아)에 걸린다. 그 발화들은
+    # 대화 맥락 지시("얘기했던 것")이지 화면 지시가 아닌데, `context_reference_markers` 에도 안
+    # 걸려 화면 후보가 1건이면 되물음 없이 **그대로 확정**됐다(실제 재현, 오담기). 목록의 나머지
+    # 표지는 전부 2글자 이상이라 이런 우연 부분일치가 나지 않는다 — 포함 관계 비교 자체는 조사·
+    # 활용을 흡수하려는 의도된 설계라 바꾸지 않고(위 주석), 이 표지만 뺐다.
+    screen_deictic_markers: list[str] = ["이거", "이것", "요거", "요것", "저거", "저것"]
+    # 발화가 **대화 맥락**을 명시적으로 참조하는 표지 — 있으면 화면 해소를 통째로 건너뛰고 LLM 에
+    # 맡긴다(`"아까 추천해준 그거 담아줘"` 가 화면 상품으로 확정되던 리뷰 F-1). 좁게 유지한다:
+    # 넓히면 정상적인 화면 지시까지 LLM 으로 넘어가 라운드 2가 되찾은 정확도를 잃는다.
+    screen_context_reference_markers: list[str] = ["아까", "저번", "지난번", "이전에", "방금 전"]
+    # pageType → 한글 표시명 매핑(정본: "AI 가 pageType→표시명 매핑을 config 로 갖는다").
+    # decompose 프롬프트의 SCREEN 블록에 이 표시명이 실린다. **매핑에 없는 pageType 은 화면명을
+    # 생략**한다 — 원시 pageType 문자열을 프롬프트에 흘리지 않는 것이 정본이 매핑을 AI 에 둔 이유다.
+    # 실제 오는 3종만 채운다(나머지 11종은 E-1 page_view 전용).
+    screen_page_type_labels: dict[str, str] = Field(
+        default_factory=lambda: {
+            "chat": "인기 상품",
+            "seller_orders": "주문 관리",
+            "seller_products": "상품 관리",
+        }
+    )
 
     # ── SSE 스트림 수명주기 (api-spec §2.9, 값은 config 기본값·운영 조정 가능) ──
     # first-token: 첫 이벤트까지 상한. 초과 시 스트림 시작 전이면 504, 후면 in-stream error.

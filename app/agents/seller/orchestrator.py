@@ -29,7 +29,7 @@ import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import date
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.graph.state import CompiledStateGraph
@@ -88,6 +88,10 @@ from app.core.config import Settings, get_settings
 from app.core.llm import LLMNotConfigured
 from app.core.tracing import current_request_trace, trace_span
 
+# 계약 스키마는 타입에만 쓴다 — 판매자 레인이 요청 스키마에 런타임 결합하지 않게.
+if TYPE_CHECKING:
+    from app.schemas.chat import ScreenContext
+
 logger = logging.getLogger(__name__)
 
 # 진행 token 방출 콜백 — SSE 계층이 주입한다(예: 큐 put). 테스트는 리스트 수집.
@@ -127,6 +131,7 @@ async def route_question(
     question: str,
     context: SellerContext,
     recent_turns: Sequence[seller_thread.Turn] = (),
+    screen: ScreenContext | None = None,
 ) -> RouteDecision:
     """supervisor 3분기 라우팅 + 코드 후처리 (4-1a, REALIGN §4 → #180 개정).
 
@@ -141,12 +146,13 @@ async def route_question(
     scope 선차단·confirm 코드 선판정은 호출부(SSE 배선) 소관 — 이 함수는
     라우팅만 담당한다(관심사 분리).
 
-    recent_turns(대화 스레드 최근 턴)는 **입력 메시지에만** 주입한다 — 프롬프트
-    불변(§9.1 이력 주입 선례). "그럼 지난주는?" 류 후속 발화가 직전 대화 맥락으로
-    분류된다. 맥락이 없으면 질문 원문 그대로다(기존 계약 불변).
+    recent_turns(대화 스레드 최근 턴)와 screen(지금 보고 있는 화면, #118 S-4)은
+    **입력 메시지에만** 주입한다 — 프롬프트 불변(§9.1 이력 주입 선례). "그럼 지난주는?"
+    류 후속 발화가 직전 대화 맥락으로 분류되고, "이 목록 왜 비어?" 류가 화면 맥락을 얻는다.
+    맥락이 둘 다 없으면 질문 원문 그대로다(기존 계약 불변).
     """
     settings = get_settings()
-    supervisor_input = seller_thread.build_contextual_input(question, recent_turns)
+    supervisor_input = seller_thread.build_contextual_input(question, recent_turns, screen)
     try:
         supervisor = build_supervisor()
         with trace_span("llm.seller.supervisor", "llm", _llm_metadata("supervisor")):
@@ -302,9 +308,7 @@ async def _run_one_branch(
     threshold = settings.seller_analysis_score_threshold
     # 재실행 1회의 최악 소요(worker 풀타임아웃 + judge 풀타임아웃) — 잔여 예산이 이보다
     # 작으면 재실행을 시작해도 도중에 예산을 넘길 뿐이라 애초에 시작하지 않는다.
-    retry_cycle_cost_s = (
-        settings.seller_worker_timeout_s + settings.seller_analysis_judge_timeout_s
-    )
+    retry_cycle_cost_s = settings.seller_worker_timeout_s + settings.seller_analysis_judge_timeout_s
     message = format_worker_input(question, plan)
 
     finding, tool_outputs = await _run_one_worker(
@@ -676,6 +680,7 @@ async def run_analysis_pipeline(
     today: date,
     emit: Emit,
     recent_turns: Sequence[seller_thread.Turn] = (),
+    screen: ScreenContext | None = None,
 ) -> PipelineResult:
     """분석 레인 전체: planner → resolve → 팬아웃 → 검증 루프 → recommend → compose.
 
@@ -705,12 +710,21 @@ async def run_analysis_pipeline(
 
     # 대화 스레드 최근 턴 주입 — 순서: [최근 대화] → [최근 분석 이력] → [이번 질문].
     # 이력 블록이 없으면(원문 그대로면) [이번 질문] 라벨은 대화 블록 쪽이 단다.
-    conversation_block = seller_thread.render_recent_turns(recent_turns)
-    if conversation_block:
+    # [#118 S-4] 화면 맥락도 같은 자리에 붙인다 — 순서: [최근 대화] → [현재 화면] →
+    # [최근 분석 이력] → [이번 질문]. 둘 다 없으면 planner_input 은 오늘과 바이트 동일하다.
+    context_block = "\n\n".join(
+        block
+        for block in (
+            seller_thread.render_recent_turns(recent_turns),
+            seller_thread.render_screen_context(screen),
+        )
+        if block
+    )
+    if context_block:
         if planner_input == question:
-            planner_input = seller_thread.build_contextual_input(question, recent_turns)
+            planner_input = seller_thread.build_contextual_input(question, recent_turns, screen)
         else:
-            planner_input = f"{conversation_block}\n\n{planner_input}"
+            planner_input = f"{context_block}\n\n{planner_input}"
 
     await emit(PROGRESS_TOKENS["planner"])
     planner = build_analysis_planner()

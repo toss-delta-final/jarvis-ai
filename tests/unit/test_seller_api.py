@@ -512,13 +512,13 @@ def test_non_numeric_seller_identity_error_is_not_retryable() -> None:
 def _route_stub(category: str, confidence: float = 0.9):
     from app.agents.seller.schemas import RouteDecision
 
-    async def stub(question, context, recent_turns=()):
+    async def stub(question, context, recent_turns=(), screen=None):
         return RouteDecision(category=category, reason="stub", confidence=confidence)
 
     return stub
 
 
-def _no_route(question, context, recent_turns=()):
+def _no_route(question, context, recent_turns=(), screen=None):
     raise AssertionError("이 경로에서는 라우팅(LLM)을 호출하면 안 된다")
 
 
@@ -607,7 +607,7 @@ def test_analysis_route_relays_progress_and_report(monkeypatch: pytest.MonkeyPat
     """analysis 분기 — 진행 token(emit 중계) → 최종 text token → done."""
     from app.agents.seller.orchestrator import PipelineResult
 
-    async def fake_pipeline(question, context, *, today, emit, recent_turns=()):
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
         await emit("매출 이상 분석 중…")
         return PipelineResult(kind="report", text="6월 매출 보고서 본문")
 
@@ -642,7 +642,7 @@ def test_analysis_route_emits_chart_event_between_token_and_done(
         ]
     )
 
-    async def fake_pipeline(question, context, *, today, emit, recent_turns=()):
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
         return PipelineResult(kind="report", text="6월 매출 보고서 본문", charts=charts)
 
     monkeypatch.setattr(seller_api, "route_question", _route_stub("analysis"))
@@ -664,7 +664,7 @@ def test_analysis_route_no_chart_event_when_charts_none(monkeypatch: pytest.Monk
     """charts=None(미요청) — chart 이벤트를 아예 보내지 않는다."""
     from app.agents.seller.orchestrator import PipelineResult
 
-    async def fake_pipeline(question, context, *, today, emit, recent_turns=()):
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
         return PipelineResult(kind="report", text="본문")
 
     monkeypatch.setattr(seller_api, "route_question", _route_stub("analysis"))
@@ -682,7 +682,7 @@ def test_analysis_route_no_chart_event_when_charts_empty(
     from app.agents.seller.orchestrator import PipelineResult
     from app.agents.seller.schemas import ChartSet
 
-    async def fake_pipeline(question, context, *, today, emit, recent_turns=()):
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
         return PipelineResult(kind="report", text="본문", charts=ChartSet(charts=[]))
 
     monkeypatch.setattr(seller_api, "route_question", _route_stub("analysis"))
@@ -711,7 +711,7 @@ def test_analysis_route_no_chart_event_for_non_report_kind(
         ]
     )
 
-    async def fake_pipeline(question, context, *, today, emit, recent_turns=()):
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
         return PipelineResult(kind="clarification", text="기간을 명시해 주세요.", charts=charts)
 
     monkeypatch.setattr(seller_api, "route_question", _route_stub("analysis"))
@@ -742,7 +742,7 @@ def test_analysis_chart_event_masks_and_strips_unsafe_fields(
         ]
     )
 
-    async def fake_pipeline(question, context, *, today, emit, recent_turns=()):
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
         return PipelineResult(kind="report", text="본문", charts=charts)
 
     monkeypatch.setattr(seller_api, "route_question", _route_stub("analysis"))
@@ -761,7 +761,7 @@ def test_analysis_token_strips_unsafe_report_text(monkeypatch: pytest.MonkeyPatc
     """보고서·compose_response 계열 LLM text 는 token 직전 공용 정제를 거친다."""
     from app.agents.seller.orchestrator import PipelineResult
 
-    async def fake_pipeline(question, context, *, today, emit, recent_turns=()):
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
         return PipelineResult(
             kind="report",
             text="6월\x1b[31m 매출\n보고서\u200b\u202e\n   기대 효과: 유지",
@@ -784,7 +784,7 @@ def test_analysis_token_masks_secret_after_stripping_unsafe_text(
     """분석 결과도 정제 후 마스킹해 zero-width 기반 시크릿 우회를 차단한다."""
     from app.agents.seller.orchestrator import PipelineResult
 
-    async def fake_pipeline(question, context, *, today, emit, recent_turns=()):
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
         return PipelineResult(
             kind="report",
             text="키는 Bearer abcdefgh\u200bijklmnop1234 입니다",
@@ -804,7 +804,7 @@ def test_analysis_route_clarification_is_token_done(monkeypatch: pytest.MonkeyPa
     """되묻기(kind=clarification)도 동일 계약 — text→token→done (error 아님)."""
     from app.agents.seller.orchestrator import PipelineResult
 
-    async def fake_pipeline(question, context, *, today, emit, recent_turns=()):
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
         return PipelineResult(kind="clarification", text="기간을 명시해 주세요.")
 
     monkeypatch.setattr(seller_api, "route_question", _route_stub("analysis"))
@@ -822,7 +822,7 @@ def test_analysis_route_exception_maps_to_apology_and_error(
 ) -> None:
     """예외 전파(planner 장애 등) → 사과 token + error(INTERNAL) 종료(§5-2 매핑)."""
 
-    async def fake_pipeline(question, context, *, today, emit, recent_turns=()):
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
         await emit("분석 계획 수립 중…")
         raise RuntimeError("planner down")
 
@@ -839,7 +839,7 @@ def test_analysis_route_exception_maps_to_apology_and_error(
 def test_analysis_route_timeout_maps_to_llm_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     """파이프라인 TimeoutError → 사과 token + error(LLM_TIMEOUT)."""
 
-    async def fake_pipeline(question, context, *, today, emit, recent_turns=()):
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
         raise TimeoutError("planner timeout")
 
     monkeypatch.setattr(seller_api, "route_question", _route_stub("analysis"))
@@ -1153,7 +1153,7 @@ def test_route_model_not_configured_emits_llm_unavailable(
 ) -> None:
     """supervisor 생성 전 provider 미구성도 general meta 뒤 error로 종료한다."""
 
-    async def not_configured(question, context, recent_turns=()):
+    async def not_configured(question, context, recent_turns=(), screen=None):
         raise LLMNotConfigured("openai key missing")
 
     monkeypatch.setattr(seller_api, "route_question", not_configured)
@@ -1199,7 +1199,7 @@ def test_analysis_progress_is_separate_from_report(monkeypatch: pytest.MonkeyPat
     """진행 상태는 progress, 최종 보고서는 token — FE 가 로딩과 답변을 구분한다."""
     from app.agents.seller.orchestrator import PipelineResult
 
-    async def fake_pipeline(question, context, *, today, emit, recent_turns=()):
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
         await emit("워커 실행 중…")
         await emit("보고서 작성 중…")
         return PipelineResult(kind="report", text="최종 보고서")
@@ -1276,7 +1276,7 @@ def test_analysis_clarification_is_recorded_to_thread(
     from app.agents.seller.context import SellerContext
     from app.agents.seller.orchestrator import PipelineResult
 
-    async def fake_pipeline(question, context, *, today, emit, recent_turns=()):
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
         return PipelineResult(kind="clarification", text="어느 기간을 분석할까요?")
 
     monkeypatch.setattr(seller_api, "route_question", _route_stub("analysis"))
@@ -1326,7 +1326,7 @@ def test_routing_receives_recent_turns_from_thread(
     asyncio.run(seller_thread.record_turn(ctx, "t-1", "어제 매출?", "120만원입니다."))
     seen: dict = {}
 
-    async def capturing_route(question, context, recent_turns=()):
+    async def capturing_route(question, context, recent_turns=(), screen=None):
         seen["turns"] = list(recent_turns)
         return RouteDecision(category="general", reason="stub", confidence=0.9)
 
@@ -1340,3 +1340,73 @@ def test_routing_receives_recent_turns_from_thread(
     _collect_seller(_request("그럼 지난주는?"))
 
     assert seen["turns"] == [("user", "어제 매출?"), ("assistant", "120만원입니다.")]
+
+
+# ─────────── S-4 화면 맥락 배선 (이슈 #118) ───────────
+
+
+def test_routing_and_pipeline_receive_screen_from_the_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[배선 가드] 입구가 `request.screen` 을 supervisor·planner 두 경로로 흘린다.
+
+    orchestrator·thread 단위 테스트만 있으면 여기 배선을 통째로 빠뜨려도 전부 초록이다 —
+    `screen` 이 실제 요청에서 출발해 두 주입 지점에 도달하는지는 이 층에서만 확인된다.
+    """
+    from app.agents.seller.orchestrator import PipelineResult
+    from app.agents.seller.schemas import RouteDecision
+
+    seen: dict = {}
+
+    async def capturing_route(question, context, recent_turns=(), screen=None):
+        seen["route_screen"] = screen
+        return RouteDecision(category="analysis", reason="stub", confidence=0.9)
+
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
+        seen["pipeline_screen"] = screen
+        return PipelineResult(kind="report", text="보고서")
+
+    monkeypatch.setattr(seller_api, "route_question", capturing_route)
+    monkeypatch.setattr(seller_api, "run_analysis_pipeline", fake_pipeline)
+
+    request = SellerChatRequest.model_validate(
+        {
+            "sessionId": "s-1",
+            "threadId": "t-1",
+            "message": "이 목록 왜 비어?",
+            "screen": {"pageType": "seller_orders", "filters": {"status": "신규주문"}},
+        }
+    )
+    events = _collect_seller(request)
+
+    for key in ("route_screen", "pipeline_screen"):
+        assert seen[key] is not None, key
+        assert seen[key].page_type == "seller_orders"
+        assert seen[key].filters == {"status": "신규주문"}
+    # 스텁 파이프라인이 정상 종료했는지까지 본다 — 스텁이 예외로 죽으면 분석 레인이 사과 token
+    # 으로 흘러 위 단언만으로는 "주입은 됐지만 흐름은 깨진" 상태를 구분하지 못한다.
+    assert "error" not in [event.get("type") for event in events]
+
+
+def test_routing_receives_none_screen_for_a_legacy_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`screen` 없는 기존 요청은 `None` 이 흘러 입력 문자열이 오늘과 같아진다."""
+    from app.agents.seller.schemas import RouteDecision
+
+    seen: dict = {}
+
+    async def capturing_route(question, context, recent_turns=(), screen=None):
+        seen["screen"] = screen
+        return RouteDecision(category="general", reason="stub", confidence=0.9)
+
+    monkeypatch.setattr(seller_api, "route_question", capturing_route)
+    monkeypatch.setattr(
+        seller_api,
+        "build_general_agent",
+        lambda today, checkpointer=None: _StubStreamAgent([AIMessageChunk(content="네")]),
+    )
+
+    _collect_seller(_request("안녕하세요"))
+
+    assert seen["screen"] is None
