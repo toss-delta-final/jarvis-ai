@@ -1,0 +1,559 @@
+"""장바구니 삭제 흐름 (이슈 #116, 패킷 §5.3) — `stream_cart_remove` 대상 해소·오류 매핑·배선.
+
+Spring 이 아직 I-24 를 구현하지 않아 실호출 통합 테스트는 하지 않는다(상대가 없다). `get_cart_fn`/
+`delete_fn` 주입으로 단위 테스트한다(`stream_cart_add` 의 add_fn/get_cart_fn 주입 패턴과 동일).
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from app.agents.buyer.cart.graph import stream_cart_add
+from app.agents.buyer.cart.remove import stream_cart_remove
+from app.agents.buyer.cart.state import CartStateStore
+from app.agents.buyer.recommendation.state import CartIntent
+from app.core.auth import Identity
+from app.core.config import get_settings
+from app.schemas.spring import AddToCartResult, CartView, CartViewItem
+from app.services.spring_client import CartError, CartItemNotFound, SpringUnavailableError
+
+
+def _member() -> Identity:
+    return Identity(user_id="123", is_guest=False, seller_id=None, subject="123")
+
+
+def _anon() -> Identity:
+    return Identity(user_id=None, is_guest=True, seller_id=None, subject=None)
+
+
+async def _collect(gen) -> list[dict]:
+    events: list[dict] = []
+    async for frame in gen:
+        line = frame.strip()
+        if line.startswith("data:"):
+            events.append(json.loads(line[len("data:") :].strip()))
+    return events
+
+
+def _types(events) -> list[str]:
+    return [e["type"] for e in events]
+
+
+def _actions(events) -> list[dict]:
+    return [e["data"] for e in events if e["type"] == "action"]
+
+
+def _cart(*items: CartViewItem):
+    async def _get(*, user_id=None, guest_id=None):
+        return CartView(items=list(items))
+
+    return _get
+
+
+def _item(cart_item_id: int, product_id: int, name: str) -> CartViewItem:
+    return CartViewItem(cart_item_id=cart_item_id, product_id=product_id, product_name=name)
+
+
+# ─────────── 대상 해소 ───────────
+
+
+async def test_remove_all_marker_deletes_every_item() -> None:
+    store = CartStateStore()
+    deleted: list[int] = []
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        deleted.append(cart_item_id)
+
+    events = await _collect(
+        stream_cart_remove(
+            identity=_member(),
+            message="전부 빼줘",
+            cart_store=store,
+            thread_key="m:t-remove-all",
+            settings=get_settings(),
+            get_cart_fn=_cart(_item(1, 10, "이어폰"), _item(2, 20, "케이스")),
+            delete_fn=delete_fn,
+        )
+    )
+    assert sorted(deleted) == [1, 2]
+    actions = _actions(events)
+    assert len(actions) == 2
+    assert all(a["type"] == "CART_REMOVED" for a in actions)
+    assert _types(events)[-1] == "done"
+
+
+@pytest.mark.parametrize("message", ["전부 빼줘", "다 빼줘", "모두 빼줘"])
+async def test_remove_all_marker_variants_still_delete_every_item(message: str) -> None:
+    """ "전부"·"다"·"모두" 를 동작 구로 좁힌 뒤에도(라운드 3 리뷰 F-1) 기존 전체 삭제 표지는
+    그대로 전체 삭제로 동작해야 한다(회귀 방지)."""
+    store = CartStateStore()
+    deleted: list[int] = []
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        deleted.append(cart_item_id)
+
+    events = await _collect(
+        stream_cart_remove(
+            identity=_member(),
+            message=message,
+            cart_store=store,
+            thread_key=f"m:t-remove-all-{message}",
+            settings=get_settings(),
+            get_cart_fn=_cart(_item(1, 10, "이어폰"), _item(2, 20, "케이스")),
+            delete_fn=delete_fn,
+        )
+    )
+    assert sorted(deleted) == [1, 2]
+    assert _types(events)[-1] == "done"
+
+
+async def test_remove_all_marker_does_not_match_jeonbuteo_substring() -> None:
+    """ "전부"는 "전부터"의 부분 문자열이라 "전부터 쓰던 거 빼줘"가 장바구니 전체를 지우는
+    사고가 재현됐다(라운드 3 리뷰 F-1). 최종 판정이 무엇이든(되물음이든 이름 매칭이든) 전 항목
+    삭제만 아니면 된다 — 이 발화는 이름 매칭도 "방금" 표지도 없고 항목이 2건이라 되물음으로
+    끝난다."""
+    store = CartStateStore()
+    deleted: list[int] = []
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        deleted.append(cart_item_id)
+
+    events = await _collect(
+        stream_cart_remove(
+            identity=_member(),
+            message="전부터 쓰던 거 빼줘",
+            cart_store=store,
+            thread_key="m:t-remove-not-all",
+            settings=get_settings(),
+            get_cart_fn=_cart(_item(1, 10, "이어폰"), _item(2, 20, "세제")),
+            delete_fn=delete_fn,
+        )
+    )
+    assert sorted(deleted) != [1, 2]
+    assert deleted == []
+    assert _types(events) == ["token", "done"]
+
+
+def test_resolve_remove_targets_jeonbuteo_does_not_resolve_to_all() -> None:
+    """`_resolve_remove_targets` 직접 호출로도 같은 사실을 고정한다(리뷰가 재현한 그 호출)."""
+    from app.agents.buyer.cart.remove import _resolve_remove_targets
+
+    items = [_item(1, 10, "이어폰"), _item(2, 20, "세제")]
+    result = _resolve_remove_targets("전부터 쓰던 거 빼줘", items, get_settings(), None)
+    assert result != items
+    assert result is None
+
+
+async def test_remove_resolves_single_name_match() -> None:
+    store = CartStateStore()
+    deleted: list[int] = []
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        deleted.append(cart_item_id)
+
+    events = await _collect(
+        stream_cart_remove(
+            identity=_member(),
+            message="이어폰 빼줘",
+            cart_store=store,
+            thread_key="m:t-remove-name",
+            settings=get_settings(),
+            get_cart_fn=_cart(_item(1, 10, "이어폰"), _item(2, 20, "케이스")),
+            delete_fn=delete_fn,
+        )
+    )
+    assert deleted == [1]
+    action = _actions(events)[0]
+    assert action["type"] == "CART_REMOVED"
+    assert "이어폰" in action["message"]
+
+
+async def test_remove_ambiguous_name_match_asks_instead_of_deleting() -> None:
+    """상품명이 2건 이상에 매칭되면 되물음 — 실패 action 없이 token + done."""
+    store = CartStateStore()
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        raise AssertionError("모호한데 delete_fn 이 호출됐다")
+
+    events = await _collect(
+        stream_cart_remove(
+            identity=_member(),
+            message="파우치 빼줘",
+            cart_store=store,
+            thread_key="m:t-remove-ambiguous",
+            settings=get_settings(),
+            get_cart_fn=_cart(_item(1, 10, "파우치 블루"), _item(2, 20, "파우치 레드")),
+            delete_fn=delete_fn,
+        )
+    )
+    assert _types(events) == ["token", "done"]
+    token_text = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert "파우치 블루" in token_text and "파우치 레드" in token_text
+
+
+async def test_remove_recent_marker_resolves_last_add() -> None:
+    store = CartStateStore()
+    thread_key = "m:t-remove-recent"
+    await store.set_last_add(thread_key, cart_item_id=2, product_id=20)
+    deleted: list[int] = []
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        deleted.append(cart_item_id)
+
+    events = await _collect(
+        stream_cart_remove(
+            identity=_member(),
+            message="방금 담은 거 빼줘",
+            cart_store=store,
+            thread_key=thread_key,
+            settings=get_settings(),
+            get_cart_fn=_cart(_item(1, 10, "이어폰"), _item(2, 20, "케이스")),
+            delete_fn=delete_fn,
+        )
+    )
+    assert deleted == [2]
+    assert _actions(events)[0]["type"] == "CART_REMOVED"
+
+
+async def test_remove_recent_marker_item_missing_from_cart_asks() -> None:
+    """last_add 의 항목이 지금 장바구니에 없으면(이미 빠짐) 단건 자동으로 넘어가지 않고 되물음."""
+    store = CartStateStore()
+    thread_key = "m:t-remove-recent-missing"
+    await store.set_last_add(thread_key, cart_item_id=99, product_id=999)
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        raise AssertionError("해소 실패인데 delete_fn 이 호출됐다")
+
+    events = await _collect(
+        stream_cart_remove(
+            identity=_member(),
+            message="방금 담은 거 빼줘",
+            cart_store=store,
+            thread_key=thread_key,
+            settings=get_settings(),
+            get_cart_fn=_cart(_item(1, 10, "이어폰")),
+            delete_fn=delete_fn,
+        )
+    )
+    assert _types(events) == ["token", "done"]
+
+
+async def test_remove_single_item_auto_resolves_without_markers() -> None:
+    store = CartStateStore()
+    deleted: list[int] = []
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        deleted.append(cart_item_id)
+
+    events = await _collect(
+        stream_cart_remove(
+            identity=_member(),
+            message="그거 지워줘",
+            cart_store=store,
+            thread_key="m:t-remove-single",
+            settings=get_settings(),
+            get_cart_fn=_cart(_item(1, 10, "이어폰")),
+            delete_fn=delete_fn,
+        )
+    )
+    assert deleted == [1]
+    assert _actions(events)[0]["type"] == "CART_REMOVED"
+
+
+async def test_remove_ambiguous_without_any_signal_asks() -> None:
+    """표지도 없고 이름 매칭도 없고 항목이 2건 이상이면 되물음(실패 action 없음)."""
+    store = CartStateStore()
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        raise AssertionError("미해소인데 delete_fn 이 호출됐다")
+
+    events = await _collect(
+        stream_cart_remove(
+            identity=_member(),
+            message="그거 지워줘",
+            cart_store=store,
+            thread_key="m:t-remove-multi-unresolved",
+            settings=get_settings(),
+            get_cart_fn=_cart(_item(1, 10, "이어폰"), _item(2, 20, "케이스")),
+            delete_fn=delete_fn,
+        )
+    )
+    assert _types(events) == ["token", "done"]
+    assert not _actions(events)
+
+
+# ─────────── 오류 매핑 ───────────
+
+
+async def test_remove_not_found_ends_as_removed_not_failure() -> None:
+    """404 CartItemNotFound → CART_REMOVED(성공 취급) + "이미 빠져 있어요", 실패 action 아님."""
+    store = CartStateStore()
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        raise CartItemNotFound()
+
+    events = await _collect(
+        stream_cart_remove(
+            identity=_member(),
+            message="이어폰 빼줘",
+            cart_store=store,
+            thread_key="m:t-remove-404",
+            settings=get_settings(),
+            get_cart_fn=_cart(_item(1, 10, "이어폰")),
+            delete_fn=delete_fn,
+        )
+    )
+    action = _actions(events)[0]
+    assert action["type"] == "CART_REMOVED"
+    assert "이미 빠져" in action["message"]
+
+
+async def test_remove_cart_error_maps_to_remove_failed() -> None:
+    store = CartStateStore()
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        raise CartError("boom")
+
+    events = await _collect(
+        stream_cart_remove(
+            identity=_member(),
+            message="이어폰 빼줘",
+            cart_store=store,
+            thread_key="m:t-remove-error",
+            settings=get_settings(),
+            get_cart_fn=_cart(_item(1, 10, "이어폰")),
+            delete_fn=delete_fn,
+        )
+    )
+    action = _actions(events)[0]
+    assert action["type"] == "CART_REMOVE_FAILED"
+    assert action["reason"] == "CART_ERROR"
+
+
+async def test_remove_get_cart_failure_maps_to_remove_failed() -> None:
+    store = CartStateStore()
+
+    async def get_cart_fn(*, user_id=None, guest_id=None):
+        raise SpringUnavailableError("boom")
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        raise AssertionError("조회 실패인데 delete_fn 이 호출됐다")
+
+    events = await _collect(
+        stream_cart_remove(
+            identity=_member(),
+            message="이어폰 빼줘",
+            cart_store=store,
+            thread_key="m:t-remove-getcart-fail",
+            settings=get_settings(),
+            get_cart_fn=get_cart_fn,
+            delete_fn=delete_fn,
+        )
+    )
+    action = _actions(events)[0]
+    assert action["type"] == "CART_REMOVE_FAILED"
+    assert action["reason"] == "CART_ERROR"
+
+
+async def test_remove_empty_cart_says_empty() -> None:
+    store = CartStateStore()
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        raise AssertionError("빈 장바구니인데 delete_fn 이 호출됐다")
+
+    events = await _collect(
+        stream_cart_remove(
+            identity=_member(),
+            message="이어폰 빼줘",
+            cart_store=store,
+            thread_key="m:t-remove-empty",
+            settings=get_settings(),
+            get_cart_fn=_cart(),
+            delete_fn=delete_fn,
+        )
+    )
+    assert _types(events) == ["token", "done"]
+
+
+async def test_remove_anon_identity_makes_zero_internal_calls() -> None:
+    store = CartStateStore()
+
+    async def get_cart_fn(*, user_id=None, guest_id=None):
+        raise AssertionError("익명인데 get_cart_fn 이 호출됐다")
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        raise AssertionError("익명인데 delete_fn 이 호출됐다")
+
+    events = await _collect(
+        stream_cart_remove(
+            identity=_anon(),
+            message="이어폰 빼줘",
+            cart_store=store,
+            thread_key="m:t-remove-anon",
+            settings=get_settings(),
+            get_cart_fn=get_cart_fn,
+            delete_fn=delete_fn,
+        )
+    )
+    assert _types(events) == ["token", "done"]
+
+
+async def test_remove_partial_failure_isolated_and_done_once() -> None:
+    """한 항목이 실패해도 나머지는 계속 진행하고 done 은 정확히 1회."""
+    store = CartStateStore()
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        if cart_item_id == 1:
+            raise CartError("boom")
+
+    events = await _collect(
+        stream_cart_remove(
+            identity=_member(),
+            message="전부 빼줘",
+            cart_store=store,
+            thread_key="m:t-remove-partial",
+            settings=get_settings(),
+            get_cart_fn=_cart(_item(1, 10, "이어폰"), _item(2, 20, "케이스")),
+            delete_fn=delete_fn,
+        )
+    )
+    actions = _actions(events)
+    assert len(actions) == 2
+    types_by_item = {a.get("cartItemId"): a["type"] for a in actions}
+    assert types_by_item[1] == "CART_REMOVE_FAILED"
+    assert types_by_item[2] == "CART_REMOVED"
+    assert _types(events).count("done") == 1
+    assert _types(events)[-1] == "done"
+
+
+# ─────────── stream_cart_add 배선 (플래그·last_add) ───────────
+
+
+async def test_stream_cart_add_delegates_to_remove_when_flag_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(get_settings(), "cart_remove_enabled", True)
+    store = CartStateStore()
+    deleted: list[int] = []
+
+    async def add_fn(req):
+        raise AssertionError("삭제 판정인데 add_fn 이 호출됐다")
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        deleted.append(cart_item_id)
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(product_id=1, quantity=1),
+            cart_store=store,
+            thread_key="m:t-add-delegates-remove",
+            settings=get_settings(),
+            message="이어폰 빼줘",
+            add_fn=add_fn,
+            get_cart_fn=_cart(_item(1, 10, "이어폰")),
+            delete_fn=delete_fn,
+        )
+    )
+    assert deleted == [1]
+    assert _actions(events)[0]["type"] == "CART_REMOVED"
+
+
+async def test_stream_cart_add_does_not_delegate_when_flag_off() -> None:
+    """cart_remove_enabled=False(기본) 면 cart_remove 판정이어도 이 경로가 절대 안 돈다 —
+    delete_fn 이 안 불리고 오늘 동작(담기)이 그대로 실행된다."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        return AddToCartResult(success=True, cart_item_id=55)
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        raise AssertionError("플래그 off 인데 delete_fn 이 호출됐다")
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(product_id=1, quantity=1),
+            cart_store=store,
+            thread_key="m:t-add-no-delegate",
+            settings=get_settings(),
+            message="장바구니에서 빼줘",
+            add_fn=add_fn,
+            get_cart_fn=_cart(),
+            delete_fn=delete_fn,
+        )
+    )
+    action = _actions(events)[0]
+    assert action["type"] == "CART_ADDED"
+
+
+async def test_last_add_stored_only_on_add_success_when_flag_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cart_remove_enabled=True 이면 담기 성공에서만 last_add 가 저장된다 — 실패·되물음 턴에서는
+    바뀌지 않는다."""
+    from app.services.spring_client import CartProductNotFound
+
+    monkeypatch.setattr(get_settings(), "cart_remove_enabled", True)
+    store = CartStateStore()
+    thread_key = "m:t-last-add"
+
+    async def failing_add_fn(req):
+        raise CartProductNotFound()
+
+    await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(product_id=999, quantity=1),
+            cart_store=store,
+            thread_key=thread_key,
+            settings=get_settings(),
+            add_fn=failing_add_fn,
+            get_cart_fn=_cart(),
+        )
+    )
+    assert await store.get_last_add(thread_key) is None
+
+    async def succeeding_add_fn(req):
+        return AddToCartResult(success=True, cart_item_id=321)
+
+    await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(product_id=1, quantity=1),
+            cart_store=store,
+            thread_key=thread_key,
+            settings=get_settings(),
+            add_fn=succeeding_add_fn,
+            get_cart_fn=_cart(),
+        )
+    )
+    last_add = await store.get_last_add(thread_key)
+    assert last_add is not None
+    assert last_add.cart_item_id == 321 and last_add.product_id == 1
+
+
+async def test_last_add_not_written_when_flag_off() -> None:
+    """cart_remove_enabled=False(기본) 이면 담기 성공에도 last_add 저장소 쓰기가 아예 안 일어난다
+    (라운드 3 리뷰 F-2) — 이 값을 읽는 곳은 삭제 흐름뿐이라 기본 배포에서는 아무도 읽지 않는
+    쓰기이고, 플래그 off 경로의 저장소 쓰기 횟수는 오늘(이 필드가 없던 시절)과 같아야 한다."""
+    store = CartStateStore()
+    thread_key = "m:t-last-add-flag-off"
+
+    async def succeeding_add_fn(req):
+        return AddToCartResult(success=True, cart_item_id=321)
+
+    await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(product_id=1, quantity=1),
+            cart_store=store,
+            thread_key=thread_key,
+            settings=get_settings(),
+            add_fn=succeeding_add_fn,
+            get_cart_fn=_cart(),
+        )
+    )
+    assert await store.get_last_add(thread_key) is None

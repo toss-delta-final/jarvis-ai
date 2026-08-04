@@ -25,6 +25,7 @@ from app.schemas.spring import CartOption
 _NAMESPACE_ROOT = "buyer_cart_v2"
 _LAST_RECO_KEY = "last_reco"
 _PENDING_KEY = "pending"
+_LAST_ADD_KEY = "last_add"
 
 # last_reco 의 상품명(product.name 원본 컬럼 사본)은 pg-profile 에 저장하지 않는다 — CLAUDE.md
 # "AI Postgres 에는 AI 생성물만 저장, 상품 원본 컬럼 사본 금지"(PR #46 후속 리뷰). pg-profile 엔
@@ -62,6 +63,14 @@ class PendingAdd:
     quantity: int
     options: list[CartOption] = field(default_factory=list)
     attempts: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class LastAdd:
+    """마지막 담기 성공 기록 (이슈 #116) — "방금 담은 거" 삭제 대상 해소 소스(패킷 §5.3)."""
+
+    cart_item_id: int
+    product_id: int
 
 
 class CartStateStore:
@@ -191,6 +200,35 @@ class CartStateStore:
 
     async def clear_pending(self, key: str) -> None:
         await run_with_query_timeout(self._store.adelete(self._ns(key), _PENDING_KEY))
+
+    async def set_last_add(self, key: str, cart_item_id: int, product_id: int) -> None:
+        """담기 **성공** 직후에만 호출한다(이슈 #116) — "방금 담은 거" 삭제 해소 소스."""
+        await run_with_query_timeout(
+            self._store.aput(
+                self._ns(key),
+                _LAST_ADD_KEY,
+                {"cart_item_id": cart_item_id, "product_id": product_id},
+            )
+        )
+
+    async def get_last_add(self, key: str) -> LastAdd | None:
+        """마지막 담기 기록. 값이 없거나 형태가 이상하면 조용히 `None` 으로 degrade한다 —
+
+        저장 값은 신뢰 경계 밖이라는 `get_last_reco_state` 와 같은 어조: 롤링 배포 중 구버전
+        인스턴스가 다른 모양의 값을 남겼거나 스토어가 손상돼도 삭제 대상 해소가 예외로 죽지
+        않고 "모른다"로만 degrade해 되물음으로 흐르게 한다.
+        """
+        item = await run_with_query_timeout(self._store.aget(self._ns(key), _LAST_ADD_KEY))
+        if not item:
+            return None
+        value = item.value
+        cart_item_id = value.get("cart_item_id")
+        product_id = value.get("product_id")
+        if not isinstance(cart_item_id, int) or isinstance(cart_item_id, bool):
+            return None
+        if not isinstance(product_id, int) or isinstance(product_id, bool):
+            return None
+        return LastAdd(cart_item_id=cart_item_id, product_id=product_id)
 
 
 async def get_cart_store() -> CartStateStore:

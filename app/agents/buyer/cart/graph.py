@@ -16,7 +16,9 @@ from collections.abc import AsyncIterator
 from pydantic import ValidationError
 
 from app.agents.buyer._frames import sse
+from app.agents.buyer.cart.identity import cart_identity
 from app.agents.buyer.cart.intent_guard import classify_cart_utterance
+from app.agents.buyer.cart.remove import stream_cart_remove
 from app.agents.buyer.cart.state import CartStateStore, PendingAdd
 from app.agents.buyer.recommendation.state import CartIntent
 from app.core.text import _strip_unsafe
@@ -34,21 +36,7 @@ from app.services.spring_client import (
     SpringUnavailableError,
 )
 
-
-def cart_identity(identity) -> tuple[int | None, str | None]:
-    """신원 → (userId, guestId). 회원=userId(숫자), 게스트=guestId(UUID), 익명(dev 무토큰)=둘 다 None.
-
-    user_id 는 JWT sub 원문 문자열이라 숫자 보장이 없다 — 비숫자면 익명 취급((None, None))해
-    상위가 CART_ERROR 로 우아하게 처리하게 한다(미처리 ValueError 로 스트림이 죽지 않게).
-    """
-    if not identity.is_guest and identity.user_id:
-        try:
-            return int(identity.user_id), None
-        except (ValueError, TypeError):
-            return None, None
-    if identity.is_guest and identity.subject:
-        return None, identity.subject
-    return None, None
+__all__ = ["cart_identity", "stream_cart_add", "stream_cart_view"]
 
 
 def _option_label(option: CartOption) -> str:
@@ -218,6 +206,7 @@ async def stream_cart_add(
     screen_reason: str | None = None,
     add_fn=None,
     get_cart_fn=None,
+    delete_fn=None,
     observer=None,
 ) -> AsyncIterator[str]:
     """담기 서브그래프. action(CART_ADDED/CART_ADD_FAILED) 또는 옵션 되물음 token 을 낸다.
@@ -238,7 +227,23 @@ async def stream_cart_add(
         return
     # intent == "wishlist_add"/"wishlist_remove" + wishlist_enabled=True 는 라운드 4 에서
     # stream_wishlist_* 로 배선한다 — 지금은 아무 것도 하지 않고 아래 오늘 동작(담기)으로 흘러간다.
-    # intent == "cart_remove" 도 이번 라운드에서는 아무 것도 하지 않는다(오늘 동작 그대로, 라운드 3).
+    if intent == "cart_remove" and settings.cart_remove_enabled:
+        async for frame in stream_cart_remove(
+            identity=identity,
+            message=message,
+            cart_store=cart_store,
+            thread_key=thread_key,
+            settings=settings,
+            get_cart_fn=get_cart_fn,
+            delete_fn=delete_fn,
+            observer=observer,
+        ):
+            yield frame
+        return
+    # cart_remove_enabled=False 면 cart_remove 판정이어도 **오늘 동작 그대로**(담기로 흘러간다) —
+    # 안내를 내지 않는다. 찜과 다르게 취급하는 이유: 찜은 "담지 말아야 할" 오담기라 개입해야
+    # 안전하지만, 삭제 발화가 담기로 잘못 오는 경우는 드물고 여기서 안내를 내면 정상 담기가 더
+    # 자주 깨질 위험이 있다(패킷 §5 라운드 3).
 
     add_fn = add_fn or spring_client.add_to_cart
     get_cart_fn = get_cart_fn or spring_client.get_cart
@@ -433,6 +438,16 @@ async def stream_cart_add(
 
     # 성공 — 되물음 상태 정리 + 합산 안내.
     await cart_store.clear_pending(thread_key)
+    # "방금 담은 거" 삭제 해소 소스(이슈 #116) — 담기 **성공** 경로에서만 기록한다(실패·되물음은
+    # 갱신하지 않음). cart_item_id 가 없으면(계약상 있어야 하지만 방어) 해소에 쓸 수 없어 저장하지
+    # 않는다.
+    # [라운드 3 리뷰 F-2] 이 값을 읽는 곳은 삭제 흐름뿐이라 cart_remove_enabled=False 인 기본
+    # 배포에서는 아무도 읽지 않는 쓰기다 — 플래그로 가두지 않으면 (1) "플래그 off 면 기존 동작과
+    # 동일"이라는 이 레인의 수용 기준에 저장소 부작용이 하나 더 생기고, (2) 이 자리는 Spring 담기가
+    # 이미 성공한 뒤 CART_ADDED 를 내기 전이라, 쓰지도 않을 값 때문에 스토어 실패가 "상품은 담겼는데
+    # 사용자는 깨진 턴을 본다"는 새 실패 모드를 성공 경로에 얹게 된다.
+    if settings.cart_remove_enabled and result.cart_item_id is not None:
+        await cart_store.set_last_add(thread_key, result.cart_item_id, product_id)
     if auto_option is not None:
         # 담길 옵션이 확정됐으니 그 옵션 기준으로 다시 센다 — 담기 전 계산은 optionId 미상이라
         # 지금 후보에 없는 옛 옵션(단종·품절)의 보유까지 합산할 수 있고, 그러면 Spring 은 새 줄로
