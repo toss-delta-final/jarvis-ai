@@ -959,6 +959,49 @@ def test_coord_regex_treats_only_row_markers_as_the_first_axis() -> None:
     assert _COORD.search("2열 3번째") is None
 
 
+# ─────────── Claude 리뷰 7차 — F-9 좌표 오인 (두 번째 숫자 접미사 생략) ───────────
+
+
+def test_second_number_without_a_coordinate_suffix_is_not_a_coordinate() -> None:
+    """[Claude 리뷰 7차, F-9] 두 번째 숫자 뒤 접미사가 없어도 좌표로 확정되면 **오담기**다.
+
+    `"3줄 2단 정리함 담아줘"` 는 "2단"이 상품 설명(단 수납장 몇 단)이지 좌표 지시가 아닌데,
+    초판 정규식은 두 번째 숫자의 접미사(`번째|번|칸`)를 선택으로 둬 "숫자 + 줄/행 + 숫자"만
+    있으면 좌표로 읽었다(`("3","2")` → 화면 8번째 상품 확정, 실제 재현). `"2줄 3인용 소파
+    담아줘"` 도 "3인용"이 소파 설명이지 좌표가 아닌데 같은 방식으로 샜다(`("2","3")`). 둘 다
+    사용자가 좌표를 말한 적 없는데 화면 목록 **안**의 엉뚱한 상품이 확정되는 오담기라
+    F-1/F-2/F-7 과 같은 클래스다 — 이 함수는 개입하지 않아야 한다(None, LLM 산출 존중).
+    """
+    products = [(3100 + i, f"상품{i}") for i in range(1, 10)]  # 9건 × columns=3
+    for message in ("3줄 2단 정리함 담아줘", "2줄 3인용 소파 담아줘"):
+        assert _resolve(message, products, columns=3) is None, message
+
+
+def test_coordinate_suffix_requirement_does_not_regress_valid_coordinate_utterances() -> None:
+    """대조군 — 두 번째 숫자에 접미사가 **있는** 정상 좌표 발화는 그대로 해소된다(회귀 금지)."""
+    products = [(3100 + i, f"상품{i}") for i in range(1, 10)]  # 9건 × columns=3
+    for message in ("3번째 줄 2번째 담아줘", "3줄 2칸 담아줘", "3행 2번째 담아줘"):
+        resolved = _resolve(message, products, columns=3)
+        assert resolved is not None and resolved.product_id == 3108, message
+        assert resolved.reason == "coordinate", message
+
+
+def test_coord_regex_requires_a_suffix_on_the_second_number_only() -> None:
+    """`_COORD` 자체의 의미를 고정한다 — 첫 숫자의 `번째` 는 선택, 두 번째 숫자의 접미사는 필수다.
+
+    다음 사람이 이 요구사항을 다시 선택으로 되돌리는 순간 F-9 가 조용히 재발하지 않도록
+    정규식 의미를 직접 못박는다(`test_coord_regex_treats_only_row_markers_as_the_first_axis`
+    와 같은 이유).
+    """
+    from app.agents.buyer.screen_reference import _COORD
+
+    # 첫 숫자는 접미사가 없어도 매칭된다(`"3줄 2칸"`).
+    assert _COORD.search("3줄 2칸").groups() == ("3", "2")
+    # 두 번째 숫자는 접미사(`번째|번|칸`)가 없으면 매칭되지 않는다.
+    assert _COORD.search("3줄 2단 정리함") is None
+    assert _COORD.search("2줄 3인용 소파") is None
+
+
 # ─────────── PR 5차 리뷰 — 되물음 턴의 allowed 게이트 ───────────
 
 
