@@ -21,11 +21,14 @@ _FILTER_ROOT = "buyer_thread_filters_v2"
 _CART_ROOT = "buyer_cart_v2"
 _REVERT_ROOT = "buyer_revert_v2"
 _REPURCHASE_ROOT = "buyer_repurchase_v1"
+_RELAX_ROOT = "buyer_relaxation_offers_v1"
 _FILTERS_KEY = "filters"
 _PENDING_KEY = "pending"
 _LAST_RECO_KEY = "last_reco"
 _CATEGORIES_KEY = "categories"
 _PRODUCT_IDS_KEY = "product_ids"
+# RelaxationOfferStore 는 offers·applied 를 한 덩어리로 이 키 하나에 쓴다(#113) — 정리도 1회다.
+_SNAPSHOT_KEY = "turn"
 
 _adoption_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 _legacy_root_memory_fence = asyncio.Lock()
@@ -56,6 +59,7 @@ class CleanupCounts:
     local_names: int = 0
     revert: int = 0
     repurchase: int = 0
+    relaxation_offers: int = 0
 
     def __add__(self, other: "CleanupCounts") -> "CleanupCounts":
         return CleanupCounts(
@@ -65,6 +69,7 @@ class CleanupCounts:
             self.local_names + other.local_names,
             self.revert + other.revert,
             self.repurchase + other.repurchase,
+            self.relaxation_offers + other.relaxation_offers,
         )
 
 
@@ -286,8 +291,17 @@ async def clear_thread(context_id: str, thread_id: str) -> CleanupCounts:
     last_recommendation = await _delete(store, _CART_ROOT, key, _LAST_RECO_KEY)
     revert = await _delete(store, _REVERT_ROOT, key, _CATEGORIES_KEY)
     repurchase = await _delete(store, _REPURCHASE_ROOT, key, _PRODUCT_IDS_KEY)
+    relaxation_offers = await _delete(store, _RELAX_ROOT, key, _SNAPSHOT_KEY)
     local_names = int(cart_state._last_reco_names.pop(key) is not None)
-    return CleanupCounts(filters, pending, last_recommendation, local_names, revert, repurchase)
+    return CleanupCounts(
+        filters,
+        pending,
+        last_recommendation,
+        local_names,
+        revert,
+        repurchase,
+        relaxation_offers,
+    )
 
 
 async def clear_context(context_id: str, thread_ids: Sequence[str]) -> CleanupCounts:

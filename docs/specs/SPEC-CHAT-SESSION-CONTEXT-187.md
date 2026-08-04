@@ -62,7 +62,10 @@
   `context_id` FK는 `ON DELETE SET NULL`이고 turn 자체는 삭제하지 않는다.
 
 구매자 구조화 상태 namespace는 `buyer_thread_filters_v2`, `buyer_cart_v2`,
-`buyer_revert_v2`이며 key는 `context_id:threadId`다. 회원 프로필 후보 버퍼는
+`buyer_revert_v2`, `buyer_repurchase_v1`(#232), `buyer_relaxation_offers_v1`(#113)이며
+key는 `context_id:threadId`다. **스레드 스코프 상태는 전부 `clear_thread`에 등록한다** —
+루트를 열거하는 유일한 지점이라 빠지면 스레드 종료 후에도 영구 잔존한다(#276).
+회원 프로필 후보 버퍼는
 `conversation_key(memberId, sessionId)`로 별도 격리된다. guest transcript를 claim 시
 회원 프로필 버퍼로 복사하지 않는다.
 
