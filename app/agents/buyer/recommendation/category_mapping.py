@@ -108,6 +108,31 @@ def dedup_truncate(
     return out[:fanout_max]
 
 
+def _interleave_by_leg(
+    by_leg: dict[int, list[tuple[str, str | None]]],
+) -> list[tuple[str, str | None]]:
+    """[#222 PR #318 리뷰 R5-1] leg 마다 모은 후보를 leg 순서대로 한 개씩 번갈아 뽑아 평탄화한다.
+
+    unresolved leg 이 여럿인데 `expansion_leaves` 를 leg 순서대로 이어 붙이기만 하면, 그 뒤
+    `dedup_truncate(..., category_expand_legs)` 가 **턴 전체 상한**을 앞쪽부터 잘라 먼저 처리된
+    leg 이 예산을 통째로 가져가고 뒤 leg 은 0개가 된다("캠핑용품이랑 낚시용품" 이 둘 다 매핑
+    실패하면 캠핑 8개만 검색되고 낚시는 조용히 사라지는 식). `recommendation/graph.py` 의
+    `_merge_fanout_results` 가 "한 카테고리가 rerank 입력을 독점하지 않게" 쓰는 것과 같은
+    round-robin 규약을 여기서도 쓴다 — leg 별 상한이 아니라 **인터리브 뒤 한 번만** 전체
+    상한을 적용해야 leg 간 형평이 산다. 후보가 적은 leg 은 그 라운드에서 건너뛰고 후보가
+    남은 leg 이 계속 순서를 채운다(예산 누수 없음).
+    """
+    ordered = sorted(by_leg)  # leg 인덱스 순서 보존
+    lists = [by_leg[i] for i in ordered]
+    depth = max((len(pl) for pl in lists), default=0)
+    out: list[tuple[str, str | None]] = []
+    for d in range(depth):
+        for pl in lists:
+            if d < len(pl):
+                out.append(pl[d])
+    return out
+
+
 async def map_categories(
     *,
     category_queries: Sequence[CategoryQuery],
@@ -430,7 +455,11 @@ async def map_categories(
     # 전개 트리거 입력(#217 §4) — canonical 을 못 낸 leg 만. 조회 예외·히트 0건은 담지 않는다.
     unresolved: list[str] = []
     # [#222] 광역 발화 fan-out 후보 — unresolved 와 같은 조건(거리컷 드롭·택일 null)에서만 채운다.
-    expansion_leaves: list[tuple[str, str | None]] = []
+    # [PR #318 리뷰 R5-1] leg **별로** 모은다(합쳐서 하나의 flat list 에 바로 넣지 않는다) —
+    # unresolved leg 이 여럿이면 아래에서 leg 순서대로 라운드로빈 인터리브한 뒤에야
+    # `category_expand_legs`(턴 전체 상한)를 적용해야, 먼저 처리된 leg 이 예산을 통째로
+    # 가져가고 뒤 leg 이 0개가 되는 예산 독식을 막는다.
+    expansion_by_leg: dict[int, list[tuple[str, str | None]]] = {}
 
     def _anchor_text(i: int) -> str:
         """실패 leg 을 식별할 텍스트 — 이긴 앵커(query 우선 §4.3.1), 없으면 원 신호로 폴백."""
@@ -471,7 +500,8 @@ async def map_categories(
             if mid not in seen_mid:
                 seen_mid.add(mid)
                 mids.append(mid)
-        expansion_leaves.extend((canonical, qtexts[i]) for canonical, _distance in leaves)
+        # 이 leg 의 후보만 담는다 — 다른 leg 과 섞지 않는다(R5-1, 아래 인터리브가 leg 경계를 쓴다).
+        expansion_by_leg[i] = [(canonical, qtexts[i]) for canonical, _distance in leaves]
         logger.info(
             "category_expansion_leaves",
             extra={"anchor_kind": anchor_kind, "count": len(leaves), "mids": mids},
@@ -586,5 +616,9 @@ async def map_categories(
         legs=dedup_truncate(result, fanout_max),
         unresolved=unresolved,
         select_calls=select_calls,
-        expansion_leaves=dedup_truncate(expansion_leaves, settings.category_expand_legs),
+        # R5-1: 인터리브가 **먼저**, 절단(dedup_truncate)이 **나중**이어야 leg 간 형평이 산다 —
+        # 순서를 바꾸면 leg 0 이 이미 상한을 다 채운 뒤라 인터리브가 의미 없어진다.
+        expansion_leaves=dedup_truncate(
+            _interleave_by_leg(expansion_by_leg), settings.category_expand_legs
+        ),
     )

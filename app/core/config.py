@@ -618,6 +618,11 @@ class Settings(BaseSettings):
     # top-N leaf 를 그대로 fan-out leg 으로 쓴다(`CategoryMapping.expansion_leaves`). 협소 발화는
     # canonical 을 내므로 이 경로에 애초에 진입하지 않아 협소 회귀가 구조적으로 0 이다.
     category_expand_enabled: bool = True  # 광역 fan-out 롤백 스위치
+    # [PR #318 리뷰 R5-1] **턴 전체 상한**이다 — unresolved leg 당 상한이 아니다. unresolved leg
+    # 이 여럿이면 `category_mapping._collect_expansion_leaves` 가 leg 마다 모은 후보를 라운드로빈
+    # 인터리브(`recommendation/graph._merge_fanout_results` 와 같은 규약)로 평탄화한 뒤 이 값으로
+    # 한 번만 자른다 — leg 별로 이 값을 각각 적용하면 먼저 처리된 leg 이 예산을 통째로 가져가고
+    # 뒤 leg 은 0개가 된다(사용자가 명시한 두 번째 니즈가 검색조차 안 되는 조용한 손실).
     # 확장 leg 수 상한. category_fanout_max 와 같은 이유로 le=MAX_LISTS — 확장 턴이 case 3 과
     # 겹치면 leg 마다 목록이 생겨 계약 상한(§4.2 lists ≤ 10)을 넘긴다.
     category_expand_legs: int = Field(default=8, ge=0, le=MAX_LISTS)

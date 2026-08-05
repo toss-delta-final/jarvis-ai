@@ -1503,6 +1503,78 @@ async def test_expansion_leaves_dedup_across_legs() -> None:
     assert canonicals.count("채소 > 파/마늘/양념채소") == 1  # 중복 제거
 
 
+# ── 라운드로빈 인터리브 (PR #318 리뷰 R5-1) ────────────────────────────────────
+#
+# `category_expand_legs` 는 **턴 전체 상한**이지 leg 당 상한이 아니다. unresolved leg 이 여럿일 때
+# leg 순서대로 이어 붙이기만 하면 앞 leg 이 예산을 통째로 채우고 뒤 leg 은 0개가 된다 —
+# "캠핑용품이랑 낚시용품 추천해줘"에서 둘 다 매핑 실패하면 캠핑 8개만 나오고 낚시가 사용자가
+# 알아챌 방법도 없이 조용히 사라진다(R4-1 로 확장 턴은 니즈별 목록 분할도 안 하므로 더 그렇다).
+# `recommendation/graph._merge_fanout_results` 와 같은 round-robin 규약으로 고친다.
+
+
+async def test_expansion_leaves_interleaved_when_both_legs_exceed_cap() -> None:
+    """leg 2개가 각각 cap 이상 히트 → 결과에 두 leg 의 후보가 모두 들어간다(어느 한쪽도 0이 아니다).
+
+    수정 전에는 leg 0(캠핑)이 `category_expand_legs`(8) 를 전부 채워 leg 1(낚시)은 0개였다.
+    """
+    hits_camp = [(f"캠핑 > 종류{i}", 0.30 + i * 0.001) for i in range(10)]
+    hits_fish = [(f"낚시 > 종류{i}", 0.30 + i * 0.001) for i in range(10)]
+    m = _FakeMapper(exact=set(), nearest={}, hits={"캠핑용품": hits_camp, "낚시용품": hits_fish})
+    out = await m.run_full(
+        [CategoryQuery(None, "캠핑용품"), CategoryQuery(None, "낚시용품")],
+        settings=_settings(expand_legs=8),
+    )
+    canonicals = [c for c, _ in out.expansion_leaves]
+    assert len(out.expansion_leaves) == 8  # 턴 전체 상한
+    camp = sum(1 for c in canonicals if c.startswith("캠핑"))
+    fish = sum(1 for c in canonicals if c.startswith("낚시"))
+    assert camp > 0 and fish > 0  # 어느 한쪽도 0이 아니다 — 이게 이 결함의 핵심
+    assert camp == 4 and fish == 4  # 라운드로빈이면 정확히 반반
+
+
+async def test_expansion_leaves_each_leg_gets_at_least_one_when_uneven_split() -> None:
+    """leg 3개 + `category_expand_legs=4`(나누어떨어지지 않음) 도 각 leg 이 최소 1개는 받는다."""
+    hits_a = [(f"A > 종류{i}", 0.30 + i * 0.001) for i in range(4)]
+    hits_b = [(f"B > 종류{i}", 0.30 + i * 0.001) for i in range(4)]
+    hits_c = [(f"C > 종류{i}", 0.30 + i * 0.001) for i in range(4)]
+    m = _FakeMapper(exact=set(), nearest={}, hits={"가": hits_a, "나": hits_b, "다": hits_c})
+    out = await m.run_full(
+        [CategoryQuery(None, "가"), CategoryQuery(None, "나"), CategoryQuery(None, "다")],
+        settings=_settings(expand_legs=4),
+    )
+    canonicals = [c for c, _ in out.expansion_leaves]
+    assert len(out.expansion_leaves) == 4
+    assert any(c.startswith("A") for c in canonicals)
+    assert any(c.startswith("B") for c in canonicals)
+    assert any(c.startswith("C") for c in canonicals)
+
+
+async def test_expansion_leaves_big_leg_backfills_after_small_leg_exhausted() -> None:
+    """후보가 적은 leg(1개)이 먼저 소진돼도 나머지 예산을 후보가 많은 leg 이 이어받아 총 개수가
+    cap 을 채운다(예산 누수 없음) — 적은 leg 을 건너뛰고 계속 진행해야 하는 이유."""
+    hits_small = [("작은카테고리 > 유일종류", 0.30)]
+    hits_big = [(f"큰카테고리 > 종류{i}", 0.30 + i * 0.001) for i in range(10)]
+    m = _FakeMapper(exact=set(), nearest={}, hits={"희귀 발화": hits_small, "흔한 발화": hits_big})
+    out = await m.run_full(
+        [CategoryQuery(None, "희귀 발화"), CategoryQuery(None, "흔한 발화")],
+        settings=_settings(expand_legs=8),
+    )
+    assert len(out.expansion_leaves) == 8  # 예산이 전부 채워진다 — 적은 leg 때문에 새지 않는다
+    canonicals = [c for c, _ in out.expansion_leaves]
+    assert canonicals.count("작은카테고리 > 유일종류") == 1  # 적은 leg 의 유일 후보도 살아남는다
+    assert (
+        sum(1 for c in canonicals if c.startswith("큰카테고리")) == 7
+    )  # 나머지는 큰 leg 이 채운다
+
+
+async def test_expansion_leaves_single_leg_unaffected_by_interleave() -> None:
+    """[회귀 고정] 단일 leg 턴은 인터리브를 거쳐도 종전과 동일한 순서·개수를 낸다."""
+    hits = [(f"카테고리{i} > 소분류{i}", 0.30 + i * 0.001) for i in range(8)]
+    m = _FakeMapper(exact=set(), nearest={}, hits={"애매한 발화": hits})
+    out = await m.run_full([CategoryQuery(None, "애매한 발화")], settings=_settings(expand_legs=3))
+    assert out.expansion_leaves == [(c, "애매한 발화") for c, _ in hits[:3]]
+
+
 async def test_expansion_leaves_log_carries_anchor_kind_count_and_mids(caplog) -> None:
     """관측 로그 `category_expansion_leaves` 가 anchor_kind·count·중복 제거된 중분류를 싣는다."""
     hits = [
