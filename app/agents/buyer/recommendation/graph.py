@@ -1278,6 +1278,17 @@ async def stream_recommendation(
     # 어차피 `query` 를 우선하므로 canonical 선택은 라벨에 드러나지 않는다.
     # distinct query 가 1개(대다수 확장 턴 — leaf 8개가 전부 같은 원 query 를 공유)면 번역할 게
     # 없다 — leaf 리스트를 그대로 두고, 아래 `split_by_need` 가드가 분할 자체를 막는다(기존 동작).
+    # [PR #351 리뷰 R3-1] **query 가 전부 실재할 때만** 번역한다 — `query=None` 인 확장 leaf(raw
+    # 만 있던 unresolved leg 파생)가 서로 다른 니즈 2개 이상에서 나오면 `None` 하나의 키로
+    # 뭉쳐 서로 다른 니즈의 상품이 한 그룹에 섞이고, 그 혼합 그룹이 canonical 폴백 라벨로
+    # 나간다 — 니즈 정체성을 확신할 수 없을 때 틀리게 가르느니 안 가른다(#51). `None` 이 하나라도
+    # 섞이면 번역하지 않아 아래 가드가 분할을 막고 단일 목록(T3 이전 동작)으로 안전 후퇴한다.
+    # 원본 leg 인덱스를 키로 쓰는 대안(리뷰어 제안)은 채택하지 않는다 — ① 동일 텍스트 query 인
+    # leg 2개를 인덱스로 가르면 **라벨이 같은 목록 2개**가 나온다(R4-1[PR #318]이 결함으로 규정한
+    # 바로 그 출력 — 라벨이 같으면 사용자 관점에선 같은 니즈라 병합이 옳다). ② 원본 leg 인덱스는
+    # `expansion_leaves`(2-튜플) 평탄화에서 이미 소실됐고, 실으려면 `category_legs` 의
+    # `list[tuple[str, str|None]]` 계약을 3-튜플로 넓혀 `_leg` 언패킹 등 소비부 전체가 흔들린다
+    # — None 엣지 하나에 비례하지 않는 변경이다.
     expansion_grouped_by_need = False
     if decision.category_expanded and leg_of:
         seen_queries: set[str | None] = set()
@@ -1288,7 +1299,7 @@ async def stream_recommendation(
                 seen_queries.add(query)
                 distinct_queries.append(query)
                 first_leaf_for_query[query] = i
-        if len(distinct_queries) > 1:
+        if len(distinct_queries) > 1 and None not in seen_queries:
             query_to_need_idx = {q: idx for idx, q in enumerate(distinct_queries)}
             leaf_query = [query for _, query in need_legs]
             leg_of = {pid: query_to_need_idx[leaf_query[leaf]] for pid, leaf in leg_of.items()}

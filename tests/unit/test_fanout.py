@@ -2335,6 +2335,122 @@ async def test_expanded_turn_with_two_unresolved_legs_splits_by_need() -> None:
     assert push.pushes[0].list_type == "PICK_ONE"
 
 
+# ── PR #351 리뷰 R3-1 — T3 그룹핑은 query 가 전부 실재할 때만 ──────────────────────────
+#
+# `query=None` 인 확장 leaf(raw 만 있던 unresolved leg 파생)가 서로 다른 니즈 2개 이상에서
+# 나오면 `None` 하나의 키로 뭉쳐 서로 다른 니즈의 상품이 한 그룹에 섞인다 — None 이 하나라도
+# 섞이면 번역하지 않고 단일 목록(T3 이전 동작)으로 안전 후퇴해야 한다.
+
+
+async def test_expanded_turn_with_none_query_legs_falls_back_to_single_list() -> None:
+    """[PR #351 R3-1 fail-first] query=None 인 leaf 가 서로 다른 두 leg 에서 나오고, 실제
+    query 를 가진 leaf 도 하나 섞인 확장 턴 → 목록이 **1개**다(섞인 그룹이 만들어지지 않는다).
+
+    수정 전 코드는 `None` 을 하나의 키로 취급해 distinct query 가 2(None·"실니즈")로 세지고,
+    서로 무관한 두 leg(leafA·leafB)의 상품이 "None" 그룹 하나로 뭉쳐 목록 2개로 쪼개졌다 —
+    이 테스트는 수정 전엔 `len(lists) == 2`(그것도 섞인 그룹 포함)로 실패해야 한다."""
+    leaves = [
+        ("카테고리A > leafA", None),  # raw 만 있던 unresolved leg 1 파생
+        ("실니즈 > leafC", "실니즈"),  # query 가 있는 leaf
+        ("카테고리B > leafB", None),  # raw 만 있던 unresolved leg 2 파생 — leafA 와 다른 leg 기원
+    ]
+    leaf_order = [c for c, _ in leaves]
+
+    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
+        return CategoryMapping(
+            legs=[], unresolved=["카테고리A", "실니즈", "카테고리B"], expansion_leaves=list(leaves)
+        )
+
+    async def _search(filters, exclude_product_ids=None):
+        idx = leaf_order.index(filters.category)
+        return _res(100 + idx)
+
+    push = _RecordingPush()
+    await _collect(
+        run_buyer_turn(
+            _req(message="이것저것 다 추천해줘"),
+            _member(),
+            llm=FakeLLM(decompose=_broad_decompose(case=3)),
+            search=_search,
+            push_fn=push,
+            map_categories=_map,
+        )
+    )
+    assert len(push.pushes[0].lists) == 1  # None 충돌로 안전 후퇴 — leafA·leafB 가 섞이지 않는다
+
+
+async def test_expanded_turn_all_none_query_legs_stays_single_list() -> None:
+    """[PR #351 R3-1 명시 고정] 확장 leaf 전부가 query=None 이면(현행이지만 명시 고정) 목록은
+    1개다 — distinct query 가 `{None}` 하나뿐이라 애초에 번역 조건(`> 1`)에 도달하지 않는다."""
+    leaves = [
+        ("카테고리A > leafA", None),
+        ("카테고리B > leafB", None),
+    ]
+    leaf_order = [c for c, _ in leaves]
+
+    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
+        return CategoryMapping(legs=[], unresolved=["카테고리A", "카테고리B"], expansion_leaves=list(leaves))
+
+    async def _search(filters, exclude_product_ids=None):
+        idx = leaf_order.index(filters.category)
+        return _res(100 + idx)
+
+    push = _RecordingPush()
+    await _collect(
+        run_buyer_turn(
+            _req(message="이것저것 다 추천해줘"),
+            _member(),
+            llm=FakeLLM(decompose=_broad_decompose(case=3)),
+            search=_search,
+            push_fn=push,
+            map_categories=_map,
+        )
+    )
+    assert len(push.pushes[0].lists) == 1
+
+
+async def test_expanded_turn_same_text_query_legs_merge_into_one_group() -> None:
+    """[PR #351 R3-1 병합 의도 고정] 서로 다른 두 unresolved leg 이 우연히 같은 query 텍스트
+    ("아웃도어용품")를 내고, 세 번째 leg 은 다른 query("캠핑용품")를 내는 확장 턴 → 목록은
+    **2개**이고 "아웃도어용품" 목록엔 **두 leg 의 상품이 함께** 담긴다.
+
+    라벨이 같으면 사용자 관점에선 같은 니즈다 — 원본 leg 인덱스로 갈라 라벨이 같은 목록 2개를
+    내는 것(리뷰어 제안)은 R4-1(PR #318)이 결함으로 규정한 바로 그 출력이라 채택하지 않는다."""
+    leaves = [
+        ("카테고리A > leafA", "아웃도어용품"),  # unresolved leg 1
+        ("카테고리B > leafB", "아웃도어용품"),  # unresolved leg 2 — 다른 leg 기원, 같은 query 텍스트
+        ("카테고리C > leafC", "캠핑용품"),  # unresolved leg 3
+    ]
+    leaf_order = [c for c, _ in leaves]
+
+    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
+        return CategoryMapping(
+            legs=[], unresolved=["카테고리A", "카테고리B", "카테고리C"], expansion_leaves=list(leaves)
+        )
+
+    async def _search(filters, exclude_product_ids=None):
+        idx = leaf_order.index(filters.category)
+        return _res(100 + idx)
+
+    push = _RecordingPush()
+    await _collect(
+        run_buyer_turn(
+            _req(message="아웃도어용품이랑 캠핑용품 다 추천해줘"),
+            _member(),
+            llm=FakeLLM(decompose=_broad_decompose(case=3)),
+            search=_search,
+            push_fn=push,
+            map_categories=_map,
+        )
+    )
+    lists = push.pushes[0].lists
+    assert len(lists) == 2
+    assert [entry.label for entry in lists] == ["아웃도어용품", "캠핑용품"]
+    # leafA(100)·leafB(101) 가 같은 "아웃도어용품" 목록에 함께 담긴다 — 병합이 의도다.
+    assert set(lists[0].product_ids) == {100, 101}
+    assert set(lists[1].product_ids) == {102}
+
+
 # ── R6-1 (PR #318 리뷰 3차) — 확장 턴은 filters.category 를 영속하지 않는다 ────────────
 #
 # `category_legs[0][0]` 은 확장 leaf 8개 중 임의의 하나일 뿐이다. 그걸 그대로
