@@ -193,6 +193,15 @@ class UnsafeTelemetryError(ValueError):
     """Raised when a trace payload may contain raw or sensitive data."""
 
 
+# [#326] 콘텐츠 서브트리에서 숫자열 카나리아까지 면제되는 키 — 발화·LLM 원문 전용.
+# `record_request_content`/`record_llm_content` 가 쓰는 키와 정확히 일치한다. 사용자가 직접
+# 타이핑한 텍스트라 가격·수량 등 숫자 오탐이 잦은 자리다. 여기 없는 키(예: Spring 페이로드의
+# `requestBody`/`responseBody`)는 콘텐츠여도 숫자열 카나리아가 **그대로 적용**된다 — 업스트림
+# API 원본에 실린 실제 회원 전화번호·주민번호는 오탐이 아니라 정탐이기 때문이다(PR #327 리뷰).
+# 기본이 strict 라서 새 콘텐츠 작성자가 키를 추가해도 조용히 면제를 얻지 못한다.
+_LLM_CONTENT_KEYS = frozenset({"message", "system", "user", "content"})
+
+
 def validate_export_payload(payload: object, *, allow_content: bool = False) -> None:
     """Fail closed when an export payload contains unsafe keys or canary values.
 
@@ -200,9 +209,10 @@ def validate_export_payload(payload: object, *, allow_content: bool = False) -> 
     서브트리에서 **구조 검증(키 allowlist·raw-data 키 금지)만** 면제한다(발화·prompt·응답·
     Spring 페이로드가 실리는 자리라 이 면제가 곧 기능이다). 텍스트 카나리아
     (`_TEXT_CANARY_PATTERNS`: bearer 토큰·`sk-`/`lsv2_` API 키·이메일)는 콘텐츠 안에서도
-    **계속 적용**된다 — 발화에 붙여넣은 credential 이나 응답에 노출된 시크릿이 모드와 무관하게
-    나가지 않도록(PR #327 리뷰). 걸리면 기존 fail-closed 대로 trace 전체가 버려진다 — 콘텐츠
-    모드에서 이메일·토큰이 섞인 요청의 트레이스가 사라지는 것은 의도된 트레이드오프다.
+    **계속 적용**되고, 숫자열 카나리아(휴대폰·주민번호)는 발화·LLM 원문 키
+    (`_LLM_CONTENT_KEYS`)에서만 면제된다 — Spring 페이로드 등 업스트림 원본은 전체 카나리아
+    대상이다. 걸리면 기존 fail-closed 대로 trace 전체가 버려진다 — 콘텐츠 모드에서 이메일·
+    토큰·업스트림 PII 가 섞인 요청의 트레이스가 사라지는 것은 의도된 트레이드오프다.
     metadata allowlist 와 나머지 필드의 검증은 그대로 유지된다.
     """
 
@@ -215,21 +225,31 @@ def _validate_value(
     metadata: bool = False,
     opaque: bool = False,
     allow_content: bool = False,
-    content: bool = False,
+    content: str | None = None,
 ) -> None:
     """`opaque` 는 이 값이 서버 생성 불투명 식별자로 **확인됐다**는 뜻이다(`_is_opaque_identifier`).
 
-    `_NUMERIC_CANARY_PATTERNS` 는 `opaque`(서버 생성 식별자)에서 면제된다. 토큰·키·이메일
-    카나리아(`_TEXT_CANARY_PATTERNS`)는 **어떤 필드에서도 끄지 않는다** — [#326] 콘텐츠
-    모드의 `inputs`/`outputs` 서브트리(`content=True`)에서도 구조 검증만 면제되고 이 텍스트
-    카나리아는 그대로 적용된다(`validate_export_payload` docstring 참조).
+    `content` 는 [#326] 콘텐츠 서브트리 안에서의 검증 강도다 — `"strict"`(기본: 구조 검증만
+    면제, 카나리아 전체 적용) 또는 `"lenient"`(`_LLM_CONTENT_KEYS` 의 발화·LLM 원문: 숫자열
+    카나리아까지 면제). 토큰·키·이메일 카나리아(`_TEXT_CANARY_PATTERNS`)는 **어떤 필드에서도
+    끄지 않는다**(`validate_export_payload` docstring 참조).
     """
     if isinstance(value, Mapping):
         for raw_key, nested in value.items():
             key = str(raw_key)
-            if content or (allow_content and not metadata and key in ("inputs", "outputs")):
-                # 콘텐츠 서브트리 — 키 검사 없이 값의 텍스트 카나리아만 계속 본다.
-                _validate_value(nested, allow_content=allow_content, content=True)
+            if content is None and allow_content and not metadata and key in ("inputs", "outputs"):
+                # 콘텐츠 컨테이너 진입 — 강도는 컨테이너가 아니라 그 안의 키가 결정한다("auto").
+                _validate_value(nested, allow_content=allow_content, content="auto")
+                continue
+            if content is not None:
+                # 콘텐츠 서브트리 — 키 검사 없이 카나리아만 본다. 강도는 발화·LLM 원문 키만
+                # lenient, 나머지(Spring 페이로드 등)는 strict(숫자열 카나리아 유지). 한 번
+                # 정해진 강도는 더 깊은 값에 그대로 상속된다.
+                if content == "auto":
+                    mode = "lenient" if key in _LLM_CONTENT_KEYS else "strict"
+                else:
+                    mode = content
+                _validate_value(nested, allow_content=allow_content, content=mode)
                 continue
             normalized_key = re.sub(r"[^a-z0-9]", "", key.lower())
             if metadata and key not in SAFE_METADATA_KEYS:
@@ -262,9 +282,9 @@ def _validate_value(
         _validate_value(vars(value), allow_content=allow_content, content=content)
         return
     if isinstance(value, str):
-        # 콘텐츠 서브트리는 원문(가격·전화번호 형태 숫자 포함)이 정상이라 숫자열 카나리아를
-        # 끄고 텍스트 카나리아만 본다 — credential 차단은 유지, 정상 발화 오탐은 회피.
-        patterns = _TEXT_CANARY_PATTERNS if (opaque or content) else _CANARY_PATTERNS
+        # lenient 콘텐츠(발화·LLM 원문)만 숫자열 카나리아를 끈다 — 가격·수량 오탐 회피.
+        # strict 콘텐츠(Spring 페이로드)와 일반 필드는 전체 카나리아 대상이다.
+        patterns = _TEXT_CANARY_PATTERNS if (opaque or content == "lenient") else _CANARY_PATTERNS
         if any(pattern.search(value) for pattern in patterns):
             raise UnsafeTelemetryError("sensitive value canary detected")
 

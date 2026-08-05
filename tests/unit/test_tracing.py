@@ -927,3 +927,41 @@ def test_allow_content_permits_normal_utterance_with_numbers() -> None:
         }
     ]
     validate_export_payload(payload, allow_content=True)
+
+
+def test_spring_payload_content_keeps_numeric_canaries() -> None:
+    """[#326] Spring 원본(`responseBody` 등)은 콘텐츠여도 휴대폰·주민번호 카나리아를 유지한다."""
+    payload = [
+        {
+            "inputs": {},
+            "outputs": {"responseBody": '{"receiverPhone": "010-1234-5678"}'},
+            "extra": {"metadata": {}},
+        }
+    ]
+    with pytest.raises(UnsafeTelemetryError):
+        validate_export_payload(payload, allow_content=True)
+
+
+def test_llm_content_keys_stay_lenient_for_numeric_shapes() -> None:
+    """발화·LLM 원문 키는 숫자열 카나리아 면제 — 전화번호 형태를 직접 말한 발화는 통과한다."""
+    payload = [
+        {
+            "inputs": {"message": "010-1234-5678 로 배송 문자 줘"},
+            "outputs": {"content": "네, 010-1234-5678 로 안내드릴게요"},
+            "extra": {"metadata": {}},
+        }
+    ]
+    validate_export_payload(payload, allow_content=True)
+
+
+def test_unknown_content_key_defaults_to_strict() -> None:
+    """새 콘텐츠 키는 등록 없이 lenient 를 얻지 못한다 — 기본 strict(fail-closed)."""
+    payload = [
+        {
+            "inputs": {"somethingNew": "010-1234-5678"},
+            "outputs": {},
+            "extra": {"metadata": {}},
+        }
+    ]
+    with pytest.raises(UnsafeTelemetryError):
+        validate_export_payload(payload, allow_content=True)
