@@ -57,7 +57,7 @@ def _actions(events) -> list[dict]:
 
 
 def _wishlist_item(product_id: int, name: str) -> WishlistItem:
-    return WishlistItem(product_id=product_id, name=name, purchasable=True)
+    return WishlistItem(product_id=product_id, name=name, purchase_state="AVAILABLE")
 
 
 def _wishlist(*items: WishlistItem):

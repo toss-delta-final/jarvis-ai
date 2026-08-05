@@ -240,7 +240,7 @@ async def test_get_wishlist_parses_items(monkeypatch: pytest.MonkeyPatch) -> Non
                     "imageUrl": "https://example.com/x.jpg",
                     "rating": 4.5,
                     "reviewCount": 10,
-                    "purchasable": True,
+                    "purchaseState": "AVAILABLE",
                 }
             ]
         },
@@ -251,8 +251,43 @@ async def test_get_wishlist_parses_items(monkeypatch: pytest.MonkeyPatch) -> Non
     assert len(view.items) == 1
     assert view.items[0].product_id == 42
     assert view.items[0].name == "파우치"
-    assert view.items[0].purchasable is True
+    assert view.items[0].purchase_state == "AVAILABLE"
     assert client.calls == [("GET", "/internal/wishlist", {"userId": 1})]
+
+
+async def test_get_wishlist_missing_purchase_state_key_defaults_to_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """I-28 은 BE 미구현 초안이라 `purchaseState` 키가 아예 없는 응답이 올 수 있다 — 예외 없이
+    파싱되고 기본값 `"AVAILABLE"`로 채워져야 한다(구 boolean 필드의 기본값 참과 같은 의미,
+    BE 미구현 구간을 버티는 것이 이 기본값의 존재 이유)."""
+    import app.services.spring_client as sc
+
+    body = {
+        "success": True,
+        "data": {"items": [{"productId": 42, "name": "파우치"}]},
+    }
+    client = _WishlistClient(_WishlistResp(200, body))
+    monkeypatch.setattr(sc, "_client", lambda: client)
+    view = await sc.get_wishlist(1)
+    assert view.items[0].purchase_state == "AVAILABLE"
+
+
+@pytest.mark.parametrize("purchase_state", ["SOLD_OUT", "HIDDEN"])
+async def test_get_wishlist_parses_non_default_purchase_states(
+    monkeypatch: pytest.MonkeyPatch, purchase_state: str
+) -> None:
+    """`Literal` 오타 방어 — `SOLD_OUT`/`HIDDEN` 값도 그대로 파싱돼야 한다."""
+    import app.services.spring_client as sc
+
+    body = {
+        "success": True,
+        "data": {"items": [{"productId": 42, "name": "파우치", "purchaseState": purchase_state}]},
+    }
+    client = _WishlistClient(_WishlistResp(200, body))
+    monkeypatch.setattr(sc, "_client", lambda: client)
+    view = await sc.get_wishlist(1)
+    assert view.items[0].purchase_state == purchase_state
 
 
 async def test_get_wishlist_empty_is_not_an_error(monkeypatch: pytest.MonkeyPatch) -> None:

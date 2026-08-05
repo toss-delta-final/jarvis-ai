@@ -900,18 +900,28 @@ class WishlistAddResult(CamelModel):
     product_id: int | None = None
 
 
+PurchaseState = Literal["AVAILABLE", "SOLD_OUT", "HIDDEN"]
+
+
 class WishlistItem(CamelModel):
     """I-28 GET /internal/wishlist 응답 항목(🔶 초안, BE 협의 전).
 
-    AI 가 실제로 쓰는 필드는 productId·name·purchasable 세 개뿐이다(경로 B — SSE 에는 상품 카드를
+    AI 가 실제로 쓰는 필드는 productId·name·purchaseState 세 개뿐이다(경로 B — SSE 에는 상품 카드를
     싣지 않는다). brandName·price·originalPrice·imageUrl·rating·reviewCount 같은 표시 필드는
     BE 응답에는 있어도 이 스키마에는 두지 않는다 — AI 가 쓰지 않는 필드까지 파싱·보존하면
     사용처 없는 결합만 늘어난다.
+
+    교체 근거: 2026-08-05 M-4 개정으로 구 boolean 필드(기본값 참, 지금은 사라짐)를
+    `purchaseState`(enum)로 대체했다 — 🔶 I-28 (확정 2026-08-05) — Spring 구현 진행 중.
+    기본값 재검토는 #310.
+    잔여 위험 — BE 가 나중에 이 세 값 밖의 네 번째 상태를 추가하면 `ValidationError` 가 나고,
+    `get_wishlist` 가 그걸 `SpringUnavailableError` 로 낙성하므로 찜 해제 흐름 전체가 죽는다
+    (키 미수신은 기본값이 막아주지만 미지의 값은 못 막는다) — 이 사실도 #310 재검토 항목이다.
     """
 
     product_id: int
     name: str | None = None  # BE 필드명은 name(productName 아님)
-    purchasable: bool = True
+    purchase_state: PurchaseState = "AVAILABLE"
 
 
 class WishlistView(CamelModel):
