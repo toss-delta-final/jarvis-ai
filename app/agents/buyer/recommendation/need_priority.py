@@ -19,13 +19,19 @@ import json
 import logging
 from collections.abc import Sequence
 
+from app.agents.buyer.recommendation.budget_sets import VALID_PRIORITIES
 from app.agents.buyer.recommendation.state import extract_json
 from app.core.llm import resolve_model_id
 from app.core.tracing import trace_span
 
 logger = logging.getLogger(__name__)
 
-_VALID_PRIORITIES = (1, 2, 3)
+# [PR #314 리뷰 F-7] "무엇이 유효한 priority 인가"의 정의는 `budget_sets.py` 가 정본이다(그
+# 값을 소비하는 knapsack 쪽이 계약을 정한다) — 여기서는 import 만 하고 다시 정의하지 않는다.
+# 이 파일에서도 따로 검증하는 이유는 정의 중복이 아니라 **의도된 방어 심층화**다: 여기는
+# 미검증 LLM 산출을 거르는 1차 관문이고, `budget_sets._normalize_priorities` 는 호출자가
+# 누구든 성립해야 하는 공개 API 경계 방어다 — 한쪽만 고치고 다른 쪽을 잊으면(예: priority 를
+# 4단계로 넓힐 때) 검증 기준이 조용히 갈라지므로 정의는 이 상수 하나로만 공유한다.
 
 # 니즈 이름은 LLM·DB 산출 자유 텍스트라 지시문처럼 보이는 문구가 섞일 수 있다 — 데이터/지시
 # 경계를 문장으로 못박는다(decompose._SCREEN_DATA_NOTICE 와 같은 방어, #118).
@@ -59,7 +65,7 @@ def _validate_priorities(raw: object, expected_len: int) -> tuple[int, ...] | No
         return None
     for value in raw:
         is_valid_int = isinstance(value, int) and not isinstance(value, bool)
-        if not is_valid_int or value not in _VALID_PRIORITIES:
+        if not is_valid_int or value not in VALID_PRIORITIES:
             return None
     return tuple(raw)
 

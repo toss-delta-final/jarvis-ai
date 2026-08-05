@@ -12,7 +12,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agents.buyer.recommendation.need_priority import _SYSTEM, classify_need_priorities
+from app.agents.buyer.recommendation import budget_sets
+from app.agents.buyer.recommendation.need_priority import (
+    _SYSTEM,
+    _validate_priorities,
+    classify_need_priorities,
+)
 from app.core.config import get_settings
 from app.core.llm import LLMError
 
@@ -179,3 +184,27 @@ def test_system_prompt_keeps_the_spec_wording() -> None:
     )
     for anchor in anchors:
         assert anchor in _SYSTEM, anchor
+
+
+# ─────────── [PR #314 리뷰 F-7] 유효 priority 정의는 budget_sets.py 가 정본이다 ───────────
+
+
+def test_need_priority_imports_the_same_valid_priorities_object_as_budget_sets() -> None:
+    """이 모듈은 자기 상수를 다시 정의하지 않고 `budget_sets.VALID_PRIORITIES` 를 그대로
+    가져다 쓴다 — `is` 로 **같은 객체**임을 확인한다(값만 같은 별도 튜플이면, 나중에 한쪽만
+    고쳐도 이 단언은 여전히 통과해 회귀를 못 잡는다). 새 값이 추가돼도(예: 4단계로 확장) 두
+    모듈이 **같은 튜플 객체**를 참조하는 한 함께 움직인다는 것을 정적으로 고정한다."""
+    from app.agents.buyer.recommendation.need_priority import VALID_PRIORITIES as imported
+
+    assert imported is budget_sets.VALID_PRIORITIES
+
+
+def test_validate_priorities_rejects_exactly_what_is_outside_the_shared_definition() -> None:
+    """`need_priority._validate_priorities` 의 수용 범위가 **공유 상수 그 자체**로 정의됨을
+    행동으로 고정한다 — 상수 안의 값은 전부 받아들이고 바로 밖의 값은 전부 거부한다."""
+    from app.agents.buyer.recommendation.need_priority import VALID_PRIORITIES
+
+    for value in VALID_PRIORITIES:
+        assert _validate_priorities([value], 1) == (value,)
+    just_outside = max(VALID_PRIORITIES) + 1
+    assert _validate_priorities([just_outside], 1) is None

@@ -177,6 +177,24 @@ def _need_label(leg: tuple[str, str | None]) -> str | None:
     return label[:LIST_LABEL_MAX_LEN] or None
 
 
+def _need_priority_labels(need_legs: list[tuple[str, str | None]]) -> list[str] | None:
+    """priority 분류기에 넘길 니즈 이름 목록 — 라벨 없는 leg 이 하나라도 있으면 `None`.
+
+    [PR #314 리뷰 F-8] 반환 타입 자체(`list[str] | None`)가 all-or-nothing 을 강제한다 — 라벨을
+    만나는 즉시 담고, `None` 을 만나면 그 자리에서 포기하고 돌아간다. 부분적으로 걸러낸
+    `list[str]` 을 만들 길이 코드 모양에 없으므로 "None 인 leg 만 개별 스킵"으로 리팩터하려면
+    이 함수의 조기 반환 자체를 고쳐야 한다(= 실수로 못 미끄러진다). 호출부는 `is None` 분기
+    이후 `list[str]` 로 자연히 좁혀지므로 `cast` 가 필요 없다.
+    """
+    labels: list[str] = []
+    for leg in need_legs:
+        label = _need_label(leg)
+        if label is None:
+            return None
+        labels.append(label)
+    return labels
+
+
 def _need_names(
     need_legs: list[tuple[str, str | None]],
     *,
@@ -1019,8 +1037,8 @@ async def stream_recommendation(
     )
     priority_task = None
     if need_priority_gate:
-        need_priority_labels = [_need_label(leg) for leg in need_legs]
-        if any(label is None for label in need_priority_labels):
+        need_priority_labels = _need_priority_labels(need_legs)
+        if need_priority_labels is None:
             # 라벨 없는 leg 이 섞이면 분류기 프롬프트의 니즈 이름 목록에 빈 자리가 생겨 LLM 이
             # 보는 인덱스와 need_legs 인덱스의 정합을 장담할 수 없다 — 그 leg 하나 때문에 신호
             # 전체를 못 믿느니 분류기를 아예 돌리지 않는다(폴백은 오늘 동작이라 손해가 없다).
@@ -1030,7 +1048,7 @@ async def stream_recommendation(
                 classify_need_priorities(
                     llm,
                     message=request.message,
-                    needs=[label for label in need_priority_labels if label is not None],
+                    needs=need_priority_labels,
                     settings=settings,
                     observer=observer,
                 )

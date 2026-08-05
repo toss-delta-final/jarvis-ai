@@ -12,7 +12,16 @@ _MIN_DFS_WORK_LIMIT = 64
 # (= 기존 "최저가가 비싼 leg 부터" tie-break 로 정확히 되돌아간다). 어떤 정수를 골라도
 # 결과가 같으므로 config 로 노출할 튜너블이 아니다.
 _UNIFORM_PRIORITY = 0
-_VALID_PRIORITIES = (1, 2, 3)
+
+# [PR #314 리뷰 F-7] "무엇이 유효한 priority 인가"의 **정본**. 이 값을 소비하는 쪽(knapsack)이
+# 계약을 정하므로 여기가 정의처이고, `need_priority.py`(LLM 미검증 산출을 거르는 1차 방어)가
+# 여기서 import 한다 — 반대 방향으로 두면 이 순수 알고리즘 모듈이 `app.core.llm`/`tracing` 을
+# 아는 LLM 호출 모듈에 의존하게 돼 방향이 뒤집힌다. 밑줄 없는 이름으로 공개 export 한다.
+# 두 곳에서 각각 검증하는 것은 정의 중복이 아니라 **의도된 방어 심층화**다 — `need_priority.py`
+# 쪽은 미검증 LLM 산출을 거르고, 여기(`_normalize_priorities`)는 호출자가 누구든 성립해야 하는
+# 공개 API 경계 방어다. 검증 호출은 두 곳, 유효값 정의는 한 곳 — 다음 사람이 "중복이네" 하고
+# 한쪽을 지우지 않도록 남긴다.
+VALID_PRIORITIES = (1, 2, 3)
 
 
 @dataclass(frozen=True)
@@ -57,7 +66,7 @@ def _normalize_priorities(priorities: Sequence[int] | None, pool_count: int) -> 
     if priorities is None or len(priorities) != pool_count:
         return [_UNIFORM_PRIORITY] * pool_count
     for value in priorities:
-        if isinstance(value, bool) or not isinstance(value, int) or value not in _VALID_PRIORITIES:
+        if isinstance(value, bool) or not isinstance(value, int) or value not in VALID_PRIORITIES:
             return [_UNIFORM_PRIORITY] * pool_count
     return list(priorities)
 
