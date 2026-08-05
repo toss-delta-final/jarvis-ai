@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import types
 
 import pytest
 from langchain_core.messages import AIMessageChunk
@@ -18,6 +19,7 @@ from app.agents.seller import hitl
 from app.api import seller as seller_api
 from app.core.auth import Identity
 from app.core.llm import LLMNotConfigured
+from app.core.logging import safe_fingerprint
 from app.schemas.seller import SellerChatRequest
 
 _IDENTITY = Identity(user_id=None, is_guest=False, seller_id="7", brand_id="3")
@@ -42,6 +44,44 @@ def _confirm_request(draft_id: str) -> SellerChatRequest:
     )
 
 
+async def test_seller_endpoint_scopes_stream_lock_by_thread_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """판매자 엔드포인트도 sessionId가 아니라 threadId를 스트림 락 키로 사용한다."""
+    captured: dict[str, object] = {}
+    marker = object()
+
+    async def _capture_open_stream(_request, stream_key, _factory, *, observer=None, role=None):
+        captured["stream_key"] = stream_key
+        captured["observer"] = observer
+        captured["role"] = role
+        return marker
+
+    monkeypatch.setattr(seller_api, "open_stream", _capture_open_stream)
+    identity = Identity(
+        user_id="7",
+        is_guest=False,
+        seller_id="7",
+        brand_id="3",
+        subject="7",
+    )
+    http_request = types.SimpleNamespace(state=types.SimpleNamespace(request_id="req-seller"))
+
+    response = await seller_api.seller_chat(
+        SellerChatRequest(
+            session_id="shared-session", thread_id="seller-room", message="매출 알려줘"
+        ),
+        http_request,
+        identity,
+    )
+
+    assert response is marker
+    assert identity.session_id is None, "판매자 티켓에는 구매자 sessionId claim을 요구하지 않는다"
+    assert captured["stream_key"] == "7:seller-room"
+    assert captured["observer"].buyer_session is None
+    assert captured["role"] == "seller"
+
+
 class _StubStreamAgent:
     """astream 만 흉내 — (AIMessageChunk, metadata) 튜플을 순서대로 방출한다."""
 
@@ -49,7 +89,13 @@ class _StubStreamAgent:
         self._chunks = chunks
         self._exc = exc
 
-    async def astream(self, _input: dict, context: object = None, stream_mode: str = ""):
+    async def astream(
+        self,
+        _input: dict,
+        config: dict | None = None,
+        context: object = None,
+        stream_mode: str = "",
+    ):
         for chunk in self._chunks:
             yield (chunk, {"langgraph_node": "model"})
         if self._exc is not None:
@@ -78,7 +124,7 @@ def test_stream_tokens_then_done(monkeypatch: pytest.MonkeyPatch) -> None:
             AIMessageChunk(content="1,200,000원입니다."),
         ]
     )
-    monkeypatch.setattr(seller_api, "build_general_agent", lambda today: agent)
+    monkeypatch.setattr(seller_api, "build_general_agent", lambda today, checkpointer=None: agent)
 
     events = _collect(_request("지난달 매출 알려줘"))
 
@@ -99,7 +145,7 @@ def test_stream_sanitizes_chunks_without_losing_boundary_space(
             AIMessageChunk(content="\u202e1,200,000원\n입니다."),
         ]
     )
-    monkeypatch.setattr(seller_api, "build_general_agent", lambda today: agent)
+    monkeypatch.setattr(seller_api, "build_general_agent", lambda today, checkpointer=None: agent)
 
     events = _collect(_request("지난달 매출 알려줘"))
 
@@ -116,7 +162,7 @@ def test_stream_skips_tool_use_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
             AIMessageChunk(content=[{"type": "text", "text": "조회 결과입니다."}]),
         ]
     )
-    monkeypatch.setattr(seller_api, "build_general_agent", lambda today: agent)
+    monkeypatch.setattr(seller_api, "build_general_agent", lambda today, checkpointer=None: agent)
 
     events = _collect(_request("매출 조회"))
 
@@ -127,7 +173,7 @@ def test_stream_skips_tool_use_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_stream_masks_output_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
     """출력 검사(§10-⑥) — 청크에 섞인 시크릿 패턴이 마스킹되어 나간다."""
     agent = _StubStreamAgent([AIMessageChunk(content="키는 sk-abcdefghijklmnop1234 입니다")])
-    monkeypatch.setattr(seller_api, "build_general_agent", lambda today: agent)
+    monkeypatch.setattr(seller_api, "build_general_agent", lambda today, checkpointer=None: agent)
 
     events = _collect(_request("설정 알려줘"))
 
@@ -140,7 +186,7 @@ def test_stream_masks_secret_obfuscated_with_unsafe_character(
 ) -> None:
     """위험 문자로 시크릿 정규식을 우회해도 정제 후 마스킹되어야 한다."""
     agent = _StubStreamAgent([AIMessageChunk(content="키는 sk-abcdefgh\u200bijklmnop1234 입니다")])
-    monkeypatch.setattr(seller_api, "build_general_agent", lambda today: agent)
+    monkeypatch.setattr(seller_api, "build_general_agent", lambda today, checkpointer=None: agent)
 
     events = _collect(_request("설정 알려줘"))
 
@@ -165,7 +211,7 @@ def test_stream_masks_secrets_split_across_chunks(
 ) -> None:
     """최소 길이 전에서 분할된 시크릿도 조각을 노출하지 않고 한 번 마스킹한다."""
     agent = _StubStreamAgent([AIMessageChunk(content=chunk) for chunk in chunks])
-    monkeypatch.setattr(seller_api, "build_general_agent", lambda today: agent)
+    monkeypatch.setattr(seller_api, "build_general_agent", lambda today, checkpointer=None: agent)
 
     events = _collect(_request("설정 알려줘"))
 
@@ -193,7 +239,7 @@ def test_stream_sanitizes_unicode_sequences_split_across_chunks(
 ) -> None:
     """청크 경계의 등록 시퀀스는 보존하고 비지원 Tag payload는 제거한다."""
     agent = _StubStreamAgent([AIMessageChunk(content=chunk) for chunk in chunks])
-    monkeypatch.setattr(seller_api, "build_general_agent", lambda today: agent)
+    monkeypatch.setattr(seller_api, "build_general_agent", lambda today, checkpointer=None: agent)
 
     events = _collect(_request("표시해줘"))
 
@@ -204,7 +250,7 @@ def test_stream_sanitizes_unicode_sequences_split_across_chunks(
 def test_stream_scope_refusal_without_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     """scope 위반 → 에이전트 미빌드(LLM 0회), 거절 token + done."""
 
-    def _fail_build(today: str):
+    def _fail_build(today: str, checkpointer: object = None):
         raise AssertionError("scope 차단 시 에이전트를 빌드하면 안 된다")
 
     monkeypatch.setattr(seller_api, "build_general_agent", _fail_build)
@@ -218,7 +264,7 @@ def test_stream_scope_refusal_without_llm(monkeypatch: pytest.MonkeyPatch) -> No
 def test_stream_error_event_on_build_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     """에이전트 빌드 실패도 error 이벤트 봉투로 종료 — 무봉투 파손 금지(마감 리뷰 M2)."""
 
-    def _boom(today: str):
+    def _boom(today: str, checkpointer: object = None):
         raise RuntimeError("settings broken")
 
     monkeypatch.setattr(seller_api, "build_general_agent", _boom)
@@ -235,7 +281,7 @@ def test_stream_model_not_configured_maps_to_llm_unavailable(
 ) -> None:
     """활성 provider 키 누락은 일반 INTERNAL이 아니라 LLM_UNAVAILABLE이다."""
 
-    def _not_configured(today: str):
+    def _not_configured(today: str, checkpointer: object = None):
         raise LLMNotConfigured("openai key missing")
 
     monkeypatch.setattr(seller_api, "build_general_agent", _not_configured)
@@ -245,14 +291,19 @@ def test_stream_model_not_configured_maps_to_llm_unavailable(
 
     assert [event["type"] for event in events] == ["meta", "error"]
     assert events[-1]["data"]["code"] == "LLM_UNAVAILABLE"
-    assert "provider=openai lane=general thread=t-1" in caplog.text
+    assert events[-1]["data"]["requestId"]
+    assert events[-1]["data"]["retryable"] is False
+    assert '"action": "general"' in caplog.text
+    assert '"errorCode": "LLM_UNAVAILABLE"' in caplog.text
+    assert safe_fingerprint("t-1") in caplog.text
+    assert "thread=t-1" not in caplog.text
     assert "openai key missing" not in caplog.text
 
 
 def test_stream_error_event_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     """스트림 내부 예외 → error 이벤트(INTERNAL)로 종료(§2.7 — 봉투 아님)."""
     agent = _StubStreamAgent([AIMessageChunk(content="일부 ")], exc=RuntimeError("boom"))
-    monkeypatch.setattr(seller_api, "build_general_agent", lambda today: agent)
+    monkeypatch.setattr(seller_api, "build_general_agent", lambda today, checkpointer=None: agent)
 
     events = _collect(_request("매출 알려줘"))
 
@@ -260,16 +311,179 @@ def test_stream_error_event_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     assert events[1]["type"] == "token"
     assert events[-1]["type"] == "error"
     assert events[-1]["data"]["code"] == "INTERNAL"
+    assert events[-1]["data"]["requestId"]
+    assert events[-1]["data"]["retryable"] is True
+
+
+# ── #266 P1: general 레인 벽시계 상한 + 타임아웃 오류 매핑 ────────────────────
+
+
+class _SlowStreamAgent:
+    """청크 **사이**를 길게 끄는 에이전트.
+
+    SDK 의 timeout= 이 못 잡는 형태를 재현한다 — 첫 토큰은 즉시 오므로 read 간격
+    기반 상한은 발동하지 않고, 늘어지는 것은 스트림 전체 벽시계뿐이다.
+    """
+
+    def __init__(self, delay_s: float) -> None:
+        self._delay_s = delay_s
+
+    async def astream(
+        self,
+        _input: dict,
+        config: dict | None = None,
+        context: object = None,
+        stream_mode: str = "",
+    ):
+        yield (AIMessageChunk(content="집계 중 "), {"langgraph_node": "model"})
+        await asyncio.sleep(self._delay_s)
+        yield (AIMessageChunk(content="완료했습니다."), {"langgraph_node": "model"})
+
+
+def _settings_with(**overrides):
+    """현재 Settings 를 복제해 일부 값만 덮는다(env·lru_cache 오염 없음)."""
+    from app.core.config import get_settings
+
+    return get_settings().model_copy(update=overrides)
+
+
+def test_general_stream_wall_clock_timeout_maps_to_llm_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """T-1 — general 레인이 상한을 넘기면 INTERNAL 이 아니라 LLM_TIMEOUT 이다.
+
+    상한 도입 전에는 이 레인에 앱 시계가 없어 스트림 전체 90s 에만 의존했고,
+    지연은 어떤 error 코드도 만들지 못했다(#266 P1).
+    """
+    monkeypatch.setattr(
+        seller_api, "get_settings", lambda: _settings_with(seller_general_timeout_s=0.05)
+    )
+    monkeypatch.setattr(
+        seller_api,
+        "build_general_agent",
+        lambda today, checkpointer=None: _SlowStreamAgent(delay_s=1.0),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="app.api.seller"):
+        events = _collect(_request("지난달 매출 알려줘"))
+
+    assert [event["type"] for event in events] == ["meta", "token", "error"]
+    assert events[-1]["data"]["code"] == "LLM_TIMEOUT"
+    assert events[-1]["data"]["requestId"]
+    assert events[-1]["data"]["retryable"] is True
+    assert '"errorCode": "LLM_TIMEOUT"' in caplog.text
+    assert '"action": "general"' in caplog.text
+
+
+def test_general_stream_sdk_timeout_maps_to_llm_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """T-2 — SDK 타임아웃은 TimeoutError 서브클래스가 아니지만 LLM_TIMEOUT 이어야 한다.
+
+    빈 메시지를 쓰는 이유: 문자열 매칭으로 판정했다면 여기서 INTERNAL 로 새는데,
+    그 오분류가 이 이슈의 P1 파생 증상이었다.
+    """
+    import httpx
+
+    agent = _StubStreamAgent([AIMessageChunk(content="일부 ")], exc=httpx.ReadTimeout(""))
+    monkeypatch.setattr(seller_api, "build_general_agent", lambda today, checkpointer=None: agent)
+
+    events = _collect(_request("매출 알려줘"))
+
+    assert [event["type"] for event in events] == ["meta", "token", "error"]
+    assert events[-1]["data"]["code"] == "LLM_TIMEOUT"
+    assert events[-1]["data"]["retryable"] is True
+
+
+def test_checkpointer_timeout_is_not_reported_as_llm_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """#266 PR 리뷰 — pg-profile 체크포인터 장애를 LLM 지연으로 감추지 않는다.
+
+    get_checkpointer 는 자체 wait_for 상한을 갖고 운영에서는 폴백 없이 raise 한다. 그때
+    나오는 것은 asyncio.TimeoutError(= TimeoutError)라 is_timeout_error 가 **타입만으로**
+    참으로 판정한다 — 발생 지점으로 구분하지 않으면 인프라 장애가 LLM_TIMEOUT 으로 나간다.
+    """
+
+    async def _connect_timeout():
+        raise TimeoutError  # get_checkpointer 의 asyncio.wait_for 가 내는 것과 같은 타입
+
+    monkeypatch.setattr(seller_api, "get_checkpointer", _connect_timeout)
+    monkeypatch.setattr(
+        seller_api,
+        "build_general_agent",
+        lambda today, checkpointer=None: pytest.fail(
+            "체크포인터 실패 시 에이전트를 빌드하면 안 된다"
+        ),
+    )
+
+    with caplog.at_level(logging.ERROR, logger="app.api.seller"):
+        events = _collect(_request("매출 알려줘"))
+
+    assert [event["type"] for event in events] == ["meta", "error"]
+    assert events[-1]["data"]["code"] == "INTERNAL", "인프라 장애가 LLM_TIMEOUT 으로 나가면 안 된다"
+    assert '"event": "seller_checkpointer_unavailable"' in caplog.text
+    assert "seller_stream_timeout" not in caplog.text
+
+
+def test_checkpoint_io_failure_during_stream_is_internal_not_llm_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#266 3차 리뷰 — 스트림 **도중**의 체크포인트 I/O 장애도 LLM_TIMEOUT 이 아니다.
+
+    최초 연결 이후 pg-profile 이 죽으면 그 예외는 general 상한 **안**에서 올라온다.
+    psycopg 의 `QueryCanceled`(statement_timeout)·`PoolTimeout` 은 이름과 달리
+    `OperationalError` 계열이라 `TimeoutError` 가 아니고, 그래서 `is_timeout_error` 가
+    False 를 내 INTERNAL 로 분류된다 — 이 성질에 의존하므로 회귀로 고정한다.
+    """
+    from psycopg.errors import QueryCanceled
+
+    agent = _StubStreamAgent([AIMessageChunk(content="집계 ")], exc=QueryCanceled("canceled"))
+    monkeypatch.setattr(seller_api, "build_general_agent", lambda today, checkpointer=None: agent)
+
+    events = _collect(_request("매출 알려줘"))
+
+    assert [event["type"] for event in events] == ["meta", "token", "error"]
+    assert events[-1]["data"]["code"] == "INTERNAL", "pg 오류가 LLM_TIMEOUT 으로 나가면 안 된다"
+
+
+def test_general_stream_timeout_budget_is_config_driven(monkeypatch: pytest.MonkeyPatch) -> None:
+    """설정값을 바꾸면 **동작이 실제로 달라지는지** 확인한다.
+
+    lessons.md 2026-08-03 「튜너블을 추가하고 배선하지 않으면 초록불인데 동작은 안 바뀐다」 —
+    값 유효성만 검사하면 배선 누락을 구조적으로 놓친다.
+    """
+    monkeypatch.setattr(
+        seller_api,
+        "build_general_agent",
+        lambda today, checkpointer=None: _SlowStreamAgent(delay_s=0.2),
+    )
+
+    monkeypatch.setattr(
+        seller_api, "get_settings", lambda: _settings_with(seller_general_timeout_s=0.02)
+    )
+    tight = _collect(_request("매출 알려줘"))
+
+    monkeypatch.setattr(
+        seller_api, "get_settings", lambda: _settings_with(seller_general_timeout_s=10.0)
+    )
+    loose = _collect(_request("매출 알려줘"))
+
+    assert tight[-1]["type"] == "error" and tight[-1]["data"]["code"] == "LLM_TIMEOUT"
+    assert loose[-1]["type"] == "done" and loose[-1]["data"]["finishReason"] == "stop"
 
 
 # ── 4-1b: _seller_stream 3분기 디스패치 ──────────────────────────────────────
 
 
-def _collect_seller(request: SellerChatRequest) -> list[dict]:
+def _collect_seller(
+    request: SellerChatRequest,
+    identity: Identity = _IDENTITY,
+) -> list[dict]:
     """_seller_stream(통합 입구)을 전부 소비해 SSE 페이로드 목록으로 파싱한다."""
 
     async def run() -> list[str]:
-        return [line async for line in seller_api._seller_stream(request, _IDENTITY)]
+        return [line async for line in seller_api._seller_stream(request, identity)]
 
     lines = asyncio.run(run())
     payloads = []
@@ -279,16 +493,32 @@ def _collect_seller(request: SellerChatRequest) -> list[dict]:
     return payloads
 
 
+def test_non_numeric_seller_identity_error_is_not_retryable() -> None:
+    """토큰 발급 결함인 비숫자 판매자 클레임은 같은 요청 재시도로 복구되지 않는다."""
+    malformed_identity = Identity(
+        user_id=None,
+        is_guest=False,
+        seller_id="not-a-number",
+        brand_id="3",
+    )
+
+    events = _collect_seller(_request("매출 알려줘"), malformed_identity)
+
+    assert [event["type"] for event in events] == ["error"]
+    assert events[0]["data"]["code"] == "INTERNAL"
+    assert events[0]["data"]["retryable"] is False
+
+
 def _route_stub(category: str, confidence: float = 0.9):
     from app.agents.seller.schemas import RouteDecision
 
-    async def stub(question, context):
+    async def stub(question, context, recent_turns=(), screen=None):
         return RouteDecision(category=category, reason="stub", confidence=confidence)
 
     return stub
 
 
-def _no_route(question, context):
+def _no_route(question, context, recent_turns=(), screen=None):
     raise AssertionError("이 경로에서는 라우팅(LLM)을 호출하면 안 된다")
 
 
@@ -377,7 +607,7 @@ def test_analysis_route_relays_progress_and_report(monkeypatch: pytest.MonkeyPat
     """analysis 분기 — 진행 token(emit 중계) → 최종 text token → done."""
     from app.agents.seller.orchestrator import PipelineResult
 
-    async def fake_pipeline(question, context, *, today, emit):
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
         await emit("매출 이상 분석 중…")
         return PipelineResult(kind="report", text="6월 매출 보고서 본문")
 
@@ -393,11 +623,145 @@ def test_analysis_route_relays_progress_and_report(monkeypatch: pytest.MonkeyPat
     assert events[-1]["data"]["panel"] == "replace"  # 보고서 → 우측 패널 교체
 
 
+def test_analysis_route_emits_chart_event_between_token_and_done(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """chart 는 report·차트 1개 이상일 때만 0~1회, token 뒤·done 앞(§4.5, 이슈 #242)."""
+    from app.agents.seller.orchestrator import PipelineResult
+    from app.agents.seller.schemas import ChartPoint, ChartSeries, ChartSet, ChartSpec
+
+    charts = ChartSet(
+        charts=[
+            ChartSpec(
+                title="일별 매출",
+                chart_type="line",
+                unit="KRW",
+                series=[ChartSeries(label="매출", points=[ChartPoint(x="07-01", y=1240000)])],
+                summary="6월 대비 12% 감소",
+            )
+        ]
+    )
+
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
+        return PipelineResult(kind="report", text="6월 매출 보고서 본문", charts=charts)
+
+    monkeypatch.setattr(seller_api, "route_question", _route_stub("analysis"))
+    monkeypatch.setattr(seller_api, "run_analysis_pipeline", fake_pipeline)
+
+    events = _collect_seller(_request("지난달 매출 그래프로 보여줘"))
+
+    assert [e["type"] for e in events] == ["meta", "token", "chart", "done"]
+    chart_data = events[2]["data"]["charts"][0]
+    assert chart_data["title"] == "일별 매출"
+    assert chart_data["chartType"] == "line"  # 와이어 camelCase
+    assert chart_data["unit"] == "KRW"
+    assert chart_data["series"][0]["label"] == "매출"
+    assert chart_data["series"][0]["points"][0] == {"x": "07-01", "y": 1240000}
+    assert chart_data["summary"] == "6월 대비 12% 감소"
+
+
+def test_analysis_route_no_chart_event_when_charts_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """charts=None(미요청) — chart 이벤트를 아예 보내지 않는다."""
+    from app.agents.seller.orchestrator import PipelineResult
+
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
+        return PipelineResult(kind="report", text="본문")
+
+    monkeypatch.setattr(seller_api, "route_question", _route_stub("analysis"))
+    monkeypatch.setattr(seller_api, "run_analysis_pipeline", fake_pipeline)
+
+    events = _collect_seller(_request("지난달 매출 분석해줘"))
+
+    assert [e["type"] for e in events] == ["meta", "token", "done"]
+
+
+def test_analysis_route_no_chart_event_when_charts_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """charts.charts==[](요청했으나 전건 드랍) — 빈 배열도 보내지 않는다(§4.5)."""
+    from app.agents.seller.orchestrator import PipelineResult
+    from app.agents.seller.schemas import ChartSet
+
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
+        return PipelineResult(kind="report", text="본문", charts=ChartSet(charts=[]))
+
+    monkeypatch.setattr(seller_api, "route_question", _route_stub("analysis"))
+    monkeypatch.setattr(seller_api, "run_analysis_pipeline", fake_pipeline)
+
+    events = _collect_seller(_request("지난달 매출 그래프로 보여줘"))
+
+    assert [e["type"] for e in events] == ["meta", "token", "done"]
+
+
+def test_analysis_route_no_chart_event_for_non_report_kind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """kind!=report(되묻기 등)이면 charts 가 있어도 chart 이벤트를 보내지 않는다."""
+    from app.agents.seller.orchestrator import PipelineResult
+    from app.agents.seller.schemas import ChartPoint, ChartSeries, ChartSet, ChartSpec
+
+    charts = ChartSet(
+        charts=[
+            ChartSpec(
+                title="일별 매출",
+                chart_type="line",
+                unit="KRW",
+                series=[ChartSeries(label="매출", points=[ChartPoint(x="07-01", y=1240000)])],
+            )
+        ]
+    )
+
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
+        return PipelineResult(kind="clarification", text="기간을 명시해 주세요.", charts=charts)
+
+    monkeypatch.setattr(seller_api, "route_question", _route_stub("analysis"))
+    monkeypatch.setattr(seller_api, "run_analysis_pipeline", fake_pipeline)
+
+    events = _collect_seller(_request("차트로 보여줘"))
+
+    assert [e["type"] for e in events] == ["meta", "token", "done"]
+
+
+def test_analysis_chart_event_masks_and_strips_unsafe_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """chart 이벤트도 draft 이벤트와 동일하게 필드별 마스킹·정제를 거친다."""
+    from app.agents.seller.orchestrator import PipelineResult
+    from app.agents.seller.schemas import ChartPoint, ChartSeries, ChartSet, ChartSpec
+
+    zwsp = "​"
+    charts = ChartSet(
+        charts=[
+            ChartSpec(
+                title="6월\x1b[31m 매출",
+                chart_type="line",
+                unit="KRW",
+                series=[ChartSeries(label="매출", points=[ChartPoint(x="07-01", y=1240000)])],
+                summary=f"키는 Bearer abcdefgh{zwsp}ijklmnop1234 입니다",
+            )
+        ]
+    )
+
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
+        return PipelineResult(kind="report", text="본문", charts=charts)
+
+    monkeypatch.setattr(seller_api, "route_question", _route_stub("analysis"))
+    monkeypatch.setattr(seller_api, "run_analysis_pipeline", fake_pipeline)
+
+    events = _collect_seller(_request("차트로 보여줘"))
+
+    chart_event = next(e for e in events if e["type"] == "chart")
+    chart_data = chart_event["data"]["charts"][0]
+    assert "\x1b" not in chart_data["title"]
+    assert "Bearer abcdefghijklmnop1234" not in chart_data["summary"]
+    assert "[민감 정보 차단]" in chart_data["summary"]
+
+
 def test_analysis_token_strips_unsafe_report_text(monkeypatch: pytest.MonkeyPatch) -> None:
     """보고서·compose_response 계열 LLM text 는 token 직전 공용 정제를 거친다."""
     from app.agents.seller.orchestrator import PipelineResult
 
-    async def fake_pipeline(question, context, *, today, emit):
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
         return PipelineResult(
             kind="report",
             text="6월\x1b[31m 매출\n보고서\u200b\u202e\n   기대 효과: 유지",
@@ -420,7 +784,7 @@ def test_analysis_token_masks_secret_after_stripping_unsafe_text(
     """분석 결과도 정제 후 마스킹해 zero-width 기반 시크릿 우회를 차단한다."""
     from app.agents.seller.orchestrator import PipelineResult
 
-    async def fake_pipeline(question, context, *, today, emit):
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
         return PipelineResult(
             kind="report",
             text="키는 Bearer abcdefgh\u200bijklmnop1234 입니다",
@@ -440,7 +804,7 @@ def test_analysis_route_clarification_is_token_done(monkeypatch: pytest.MonkeyPa
     """되묻기(kind=clarification)도 동일 계약 — text→token→done (error 아님)."""
     from app.agents.seller.orchestrator import PipelineResult
 
-    async def fake_pipeline(question, context, *, today, emit):
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
         return PipelineResult(kind="clarification", text="기간을 명시해 주세요.")
 
     monkeypatch.setattr(seller_api, "route_question", _route_stub("analysis"))
@@ -458,7 +822,7 @@ def test_analysis_route_exception_maps_to_apology_and_error(
 ) -> None:
     """예외 전파(planner 장애 등) → 사과 token + error(INTERNAL) 종료(§5-2 매핑)."""
 
-    async def fake_pipeline(question, context, *, today, emit):
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
         await emit("분석 계획 수립 중…")
         raise RuntimeError("planner down")
 
@@ -475,7 +839,7 @@ def test_analysis_route_exception_maps_to_apology_and_error(
 def test_analysis_route_timeout_maps_to_llm_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     """파이프라인 TimeoutError → 사과 token + error(LLM_TIMEOUT)."""
 
-    async def fake_pipeline(question, context, *, today, emit):
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
         raise TimeoutError("planner timeout")
 
     monkeypatch.setattr(seller_api, "route_question", _route_stub("analysis"))
@@ -774,7 +1138,7 @@ def test_general_route_uses_general_stream(monkeypatch: pytest.MonkeyPatch) -> N
     """general 분기 — 기존 astream 스트림 경로로 위임된다."""
     agent = _StubStreamAgent([AIMessageChunk(content="안녕하세요, 무엇을 도와드릴까요?")])
     monkeypatch.setattr(seller_api, "route_question", _route_stub("general"))
-    monkeypatch.setattr(seller_api, "build_general_agent", lambda today: agent)
+    monkeypatch.setattr(seller_api, "build_general_agent", lambda today, checkpointer=None: agent)
 
     events = _collect_seller(_request("안녕"))
 
@@ -789,7 +1153,7 @@ def test_route_model_not_configured_emits_llm_unavailable(
 ) -> None:
     """supervisor 생성 전 provider 미구성도 general meta 뒤 error로 종료한다."""
 
-    async def not_configured(question, context):
+    async def not_configured(question, context, recent_turns=(), screen=None):
         raise LLMNotConfigured("openai key missing")
 
     monkeypatch.setattr(seller_api, "route_question", not_configured)
@@ -800,7 +1164,12 @@ def test_route_model_not_configured_emits_llm_unavailable(
     assert [event["type"] for event in events] == ["meta", "error"]
     assert events[0]["data"]["lane"] == "general"
     assert events[1]["data"]["code"] == "LLM_UNAVAILABLE"
-    assert "provider=openai lane=routing thread=t-1" in caplog.text
+    assert events[1]["data"]["requestId"]
+    assert events[1]["data"]["retryable"] is False
+    assert '"action": "routing"' in caplog.text
+    assert '"errorCode": "LLM_UNAVAILABLE"' in caplog.text
+    assert safe_fingerprint("t-1") in caplog.text
+    assert "thread=t-1" not in caplog.text
     assert "openai key missing" not in caplog.text
 
 
@@ -811,7 +1180,7 @@ def test_every_stream_starts_with_meta_lane(monkeypatch: pytest.MonkeyPatch) -> 
     """모든 판매자 스트림의 첫 프레임은 meta{lane} — FE 가 레인을 즉시 안다."""
     agent = _StubStreamAgent([AIMessageChunk(content="네")])
     monkeypatch.setattr(seller_api, "route_question", _route_stub("general"))
-    monkeypatch.setattr(seller_api, "build_general_agent", lambda today: agent)
+    monkeypatch.setattr(seller_api, "build_general_agent", lambda today, checkpointer=None: agent)
 
     events = _collect_seller(_request("안녕"))
 
@@ -830,7 +1199,7 @@ def test_analysis_progress_is_separate_from_report(monkeypatch: pytest.MonkeyPat
     """진행 상태는 progress, 최종 보고서는 token — FE 가 로딩과 답변을 구분한다."""
     from app.agents.seller.orchestrator import PipelineResult
 
-    async def fake_pipeline(question, context, *, today, emit):
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
         await emit("워커 실행 중…")
         await emit("보고서 작성 중…")
         return PipelineResult(kind="report", text="최종 보고서")
@@ -856,7 +1225,7 @@ def test_panel_action_per_lane(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         seller_api,
         "build_general_agent",
-        lambda today: _StubStreamAgent([AIMessageChunk(content="네")]),
+        lambda today, checkpointer=None: _StubStreamAgent([AIMessageChunk(content="네")]),
     )
     ev = _collect_seller(_request("배송 정책 뭐야?"))
     assert ev[-1]["data"]["panel"] == "keep"
@@ -870,3 +1239,174 @@ def test_panel_action_per_lane(monkeypatch: pytest.MonkeyPatch) -> None:
     ev2 = _collect_seller(_confirm_request("d-9"))
     assert ev2[0]["data"]["lane"] == "confirm"
     assert ev2[-1]["data"]["panel"] == "refresh"
+
+
+# ── 대화 스레드 배선 — general thread config · 비-general 레인 record_turn ────────
+
+
+def test_general_lane_passes_thread_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """general astream 에 seller-chat:{sellerId}:{threadId} config 가 전달된다."""
+    captured: dict = {}
+
+    class _ConfigCapturingAgent(_StubStreamAgent):
+        async def astream(self, _input, config=None, context=None, stream_mode=""):
+            captured["config"] = config
+            async for item in super().astream(
+                _input, config=config, context=context, stream_mode=stream_mode
+            ):
+                yield item
+
+    monkeypatch.setattr(seller_api, "route_question", _route_stub("general"))
+    monkeypatch.setattr(
+        seller_api,
+        "build_general_agent",
+        lambda today, checkpointer=None: _ConfigCapturingAgent([AIMessageChunk(content="네")]),
+    )
+
+    _collect_seller(_request("어제 매출 알려줘"))
+
+    assert captured["config"] == {"configurable": {"thread_id": "seller-chat:7:t-1"}}
+
+
+def test_analysis_clarification_is_recorded_to_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """되묻기 문안도 스레드에 기록된다 — '되묻기 턴 미저장' 해소, 후속 발화 맥락."""
+    from app.agents.seller import thread as seller_thread
+    from app.agents.seller.context import SellerContext
+    from app.agents.seller.orchestrator import PipelineResult
+
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
+        return PipelineResult(kind="clarification", text="어느 기간을 분석할까요?")
+
+    monkeypatch.setattr(seller_api, "route_question", _route_stub("analysis"))
+    monkeypatch.setattr(seller_api, "run_analysis_pipeline", fake_pipeline)
+
+    _collect_seller(_request("매출 왜 떨어졌어?"))
+
+    turns = asyncio.run(
+        seller_thread.load_recent_turns(SellerContext(seller_id=7, brand_id=3), "t-1")
+    )
+    assert turns == [
+        ("user", "매출 왜 떨어졌어?"),
+        ("assistant", "어느 기간을 분석할까요?"),
+    ]
+
+
+def test_confirm_outcome_is_recorded_with_placeholder_user_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """confirm 은 message 가 빈 계약 — '(초안 승인)' 플레이스홀더로 스레드에 남는다."""
+    from app.agents.seller import thread as seller_thread
+    from app.agents.seller.context import SellerContext
+
+    async def fake_confirm(draft_id, *, seller_id, brand_id):
+        return hitl.ConfirmOutcome("executed", "변경을 반영했습니다.")
+
+    monkeypatch.setattr(seller_api, "route_question", _no_route)
+    monkeypatch.setattr(seller_api, "confirm_draft", fake_confirm)
+
+    _collect_seller(_confirm_request("d-1"))
+
+    turns = asyncio.run(
+        seller_thread.load_recent_turns(SellerContext(seller_id=7, brand_id=3), "t-1")
+    )
+    assert turns == [("user", "(초안 승인)"), ("assistant", "변경을 반영했습니다.")]
+
+
+def test_routing_receives_recent_turns_from_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """입구 ③에서 스레드 최근 턴을 조회해 route_question 에 넘긴다."""
+    from app.agents.seller import thread as seller_thread
+    from app.agents.seller.context import SellerContext
+    from app.agents.seller.schemas import RouteDecision
+
+    ctx = SellerContext(seller_id=7, brand_id=3)
+    asyncio.run(seller_thread.record_turn(ctx, "t-1", "어제 매출?", "120만원입니다."))
+    seen: dict = {}
+
+    async def capturing_route(question, context, recent_turns=(), screen=None):
+        seen["turns"] = list(recent_turns)
+        return RouteDecision(category="general", reason="stub", confidence=0.9)
+
+    monkeypatch.setattr(seller_api, "route_question", capturing_route)
+    monkeypatch.setattr(
+        seller_api,
+        "build_general_agent",
+        lambda today, checkpointer=None: _StubStreamAgent([AIMessageChunk(content="네")]),
+    )
+
+    _collect_seller(_request("그럼 지난주는?"))
+
+    assert seen["turns"] == [("user", "어제 매출?"), ("assistant", "120만원입니다.")]
+
+
+# ─────────── S-4 화면 맥락 배선 (이슈 #118) ───────────
+
+
+def test_routing_and_pipeline_receive_screen_from_the_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[배선 가드] 입구가 `request.screen` 을 supervisor·planner 두 경로로 흘린다.
+
+    orchestrator·thread 단위 테스트만 있으면 여기 배선을 통째로 빠뜨려도 전부 초록이다 —
+    `screen` 이 실제 요청에서 출발해 두 주입 지점에 도달하는지는 이 층에서만 확인된다.
+    """
+    from app.agents.seller.orchestrator import PipelineResult
+    from app.agents.seller.schemas import RouteDecision
+
+    seen: dict = {}
+
+    async def capturing_route(question, context, recent_turns=(), screen=None):
+        seen["route_screen"] = screen
+        return RouteDecision(category="analysis", reason="stub", confidence=0.9)
+
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
+        seen["pipeline_screen"] = screen
+        return PipelineResult(kind="report", text="보고서")
+
+    monkeypatch.setattr(seller_api, "route_question", capturing_route)
+    monkeypatch.setattr(seller_api, "run_analysis_pipeline", fake_pipeline)
+
+    request = SellerChatRequest.model_validate(
+        {
+            "sessionId": "s-1",
+            "threadId": "t-1",
+            "message": "이 목록 왜 비어?",
+            "screen": {"pageType": "seller_orders", "filters": {"status": "신규주문"}},
+        }
+    )
+    events = _collect_seller(request)
+
+    for key in ("route_screen", "pipeline_screen"):
+        assert seen[key] is not None, key
+        assert seen[key].page_type == "seller_orders"
+        assert seen[key].filters == {"status": "신규주문"}
+    # 스텁 파이프라인이 정상 종료했는지까지 본다 — 스텁이 예외로 죽으면 분석 레인이 사과 token
+    # 으로 흘러 위 단언만으로는 "주입은 됐지만 흐름은 깨진" 상태를 구분하지 못한다.
+    assert "error" not in [event.get("type") for event in events]
+
+
+def test_routing_receives_none_screen_for_a_legacy_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`screen` 없는 기존 요청은 `None` 이 흘러 입력 문자열이 오늘과 같아진다."""
+    from app.agents.seller.schemas import RouteDecision
+
+    seen: dict = {}
+
+    async def capturing_route(question, context, recent_turns=(), screen=None):
+        seen["screen"] = screen
+        return RouteDecision(category="general", reason="stub", confidence=0.9)
+
+    monkeypatch.setattr(seller_api, "route_question", capturing_route)
+    monkeypatch.setattr(
+        seller_api,
+        "build_general_agent",
+        lambda today, checkpointer=None: _StubStreamAgent([AIMessageChunk(content="네")]),
+    )
+
+    _collect_seller(_request("안녕하세요"))
+
+    assert seen["screen"] is None

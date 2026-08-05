@@ -8,6 +8,7 @@ import pytest
 
 from app.agents.profile import session_activity
 from app.agents.profile.session_activity import ActivityClaim
+from app.core import session_context
 from app.core.config import get_settings
 from app.core.conversation import ConversationStore, conversation_key
 
@@ -153,34 +154,30 @@ async def test_concurrent_claimers_only_one_owns_session(
     assert sum(len(claims) for claims in results) == 1
 
 
-async def test_conversation_store_touches_only_member_session() -> None:
+async def test_conversation_store_uses_lifecycle_input_not_legacy_session_id() -> None:
     store = ConversationStore()
 
-    await store.save_user_message(
+    committed = await store.save_user_message(
         conversation_key("11", "member-session"),
         "11",
         "member",
         "회원 발화",
-        session_id="member-session",
-    )
-    await store.save_user_message(
-        conversation_key("guest-1", "guest-session"),
-        "guest-1",
-        "guest",
-        "게스트 발화",
-        session_id="guest-session",
-    )
-    await store.save_user_message(
-        conversation_key("22", "seller-session"),
-        "22",
-        "seller",
-        "판매자 발화",
-        session_id="seller-session",
+        buyer_session=session_context.BuyerSessionInput(
+            "member-session", "thread-1", "member", "11"
+        ),
     )
 
-    assert await session_activity.get_session(11, "member-session") is not None
-    assert await session_activity.get_session(1, "guest-session") is None
-    assert await session_activity.get_session(22, "seller-session") is None
+    assert committed.context_id is not None
+    assert await session_activity.get_session(11, "member-session") is None
+
+    with pytest.raises(TypeError, match="session_id"):
+        await store.save_user_message(
+            conversation_key("11", "legacy-session"),
+            "11",
+            "member",
+            "legacy activity 입력",
+            session_id="legacy-session",
+        )
 
 
 async def test_session_activity_queries_have_application_deadline(

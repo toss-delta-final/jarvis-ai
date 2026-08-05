@@ -1,6 +1,6 @@
 # FE 계약 명세 — S-4 `POST /seller/chat` (판매자 대시보드)
 
-> **버전**: v1.0.0 · **작성**: 2026-07-22 · **상태**: **A~E 전부 해소** — 코드·노션·api-spec 정합 완료. FE 착수 가능.
+> **버전**: v1.1.0(2026-08-03 개정 — **[이슈 #242] `chart` 이벤트 신설, 이벤트 6→7종**, §1.2·§1.4(A)·§3.2·§3.9 갱신) · **작성**: 2026-07-22 · **상태**: **A~E 전부 해소**, **F(신규) 서버측 해소·FE 타입 확장(F-2) 확인 대기**.
 > **대상 독자**: FE. 이 문서 하나로 판매자 챗 대시보드를 붙일 수 있도록 분기별 요청/응답 JSON·성공/실패를 전부 담았다.
 > **대조 기준**: 노션 「📡 API 현재」 S-4 페이지 · 리포 `docs/api-spec.md` §3.2 · **실제 코드**
 > (`app/api/seller.py` · `app/agents/seller/hitl.py` · `app/schemas/chat.py` · `app/agents/seller/schemas.py`)
@@ -61,6 +61,7 @@
 |---|---|---|---|---|---|
 | 1. 첫 질문 → 분할 | (무엇이든) | (있음) | `meta` … | — | 첫 `meta` 수신 시 레이아웃 전환 |
 | 2. 분석 화면 | "지난달 매출 어때?" | `analysis` | `meta`→`progress`×N→`token`→`done` | `replace` | **분석 리포트로 교체** |
+| 2. 분석 화면(차트 요청, 이슈 #242) | "지난달 매출 그래프로 보여줘" | `analysis` | `meta`→`progress`×N→`token`→`chart`(0~1)→`done` | `replace` | **분석 리포트 + 차트로 교체** |
 | 2. 분석 되묻기 | "매출 분석"(기간 없음) | `analysis` | `meta`→`token`→`done` | `keep` | 유지(되묻기는 대화) |
 | 3. 등록/수정/삭제 | "1번 상품 27500원으로" | `product` | `meta`→`draft`→`done` | `replace` | **diff 카드 + [적용]/[취소]** |
 | 3. 추천 적용 | "2번 적용해줘" | `apply` | `meta`→`draft`→`done` | `replace` | **diff 카드** |
@@ -113,6 +114,18 @@ progress  { "text": "보고서 작성 중…" }
 token     { "text": "6월 매출은 전월 대비 12%…" }  // 최종 리포트 1건
 done      { "finishReason": "stop", "panel": "replace" }   // → 우측 패널에 리포트
 ```
+성공(리포트 + 차트, 판매자가 시각화를 요청했고 근거 검증을 통과한 차트가 있을 때 — **[신설, 이슈 #242]**):
+```
+meta      { "lane": "analysis" }
+progress  { "text": "…" }
+token     { "text": "6월 매출은 전월 대비 12%…" }
+chart     { "charts": [{ "title": "일별 매출", "chartType": "line", "unit": "KRW",
+                          "series": [{ "label": "매출", "points": [{ "x": "07-01", "y": 1240000 }] }],
+                          "summary": "6월 대비 12% 감소" }] }
+done      { "finishReason": "stop", "panel": "replace" }
+```
+차트를 요청했으나 만들지 못한 경우(생성 실패·근거 검증 전건 탈락)는 `chart` 이벤트가 **오지 않고**, 대신 `token` 본문 말미에 "[차트 안내] 요청하신 차트를 만들지 못했습니다…" 한 줄이 덧붙는다(빈 배열도 보내지 않는다, §3.9).
+
 되묻기(기간 불명 등 — 화면 안 바뀜):
 ```
 meta   { "lane": "analysis" }
@@ -214,7 +227,7 @@ done   { "finishReason": "stop", "panel": "keep" }
 
 #### 스트림 시작 전 거부(요청 자체가 틀림 — SSE 아님, HTTP 오류 봉투)
 
-`meta` 조차 못 받는다. HTTP 상태 + JSON 봉투로 온다(§4.1): `400`(필드 누락·`action=="confirm"`인데 `draftId` 없음)·`401`(토큰)·`403`(seller 아님)·`409`(동일 sessionId 동시 스트림).
+`meta` 조차 못 받는다. HTTP 상태 + JSON 봉투로 온다(§4.1): `400`(필드 누락·`action=="confirm"`인데 `draftId` 없음)·`401`(토큰)·`403`(seller 아님)·`409`(동일 threadId 동시 스트림).
 
 ---
 
@@ -307,6 +320,7 @@ es.onmessage = (e) => {
     case 'progress': showLoading(data.text); break;                // 분석 로딩(답변 아님)
     case 'token':    appendToken(data.text); break;                // 대화/보고서 본문
     case 'draft':    renderDiffCard(data); break;                  // diff 카드
+    case 'chart':    renderCharts(data.charts); break;             // 분석 차트(0~1, 이슈 #242)
     case 'done':     finish(data.panel); break;                    // panel: replace|keep|refresh
     case 'error':    showError(data.code, data.message); break;    // 종결(뒤에 done 없음)
   }
@@ -315,7 +329,7 @@ es.onmessage = (e) => {
 
 > 참고: `POST` + 커스텀 헤더가 필요하므로 브라우저 표준 `EventSource` 는 쓸 수 없다(GET·헤더 불가). `fetch` + `ReadableStream` 수동 파싱 또는 `@microsoft/fetch-event-source` 류가 필요하다.
 
-### 3.2 이벤트 6종 요약
+### 3.2 이벤트 7종 요약 — **[6→7종, 이슈 #242]**
 
 | 이벤트 | 언제 | data | 개수 |
 |---|---|---|---|
@@ -323,6 +337,7 @@ es.onmessage = (e) => {
 | `progress` | 분석 진행 상태(로딩, 답변 아님) | `{ text }` | 0+ (analysis 만) |
 | `token` | 대화/보고서/결과 본문 | `{ text }` | 0+ |
 | `draft` | 상품 초안(diff 카드) | `{ draftId, op, productId, changes[], summary }` | 0~1 |
+| `chart` | 분석 차트(§3.9, **신설**) | `{ charts: [{title,chartType,unit,series,summary}] }` | 0~1 (analysis 만, token 뒤·done 앞) |
 | `done` | 정상 종료 | `{ finishReason, panel }` | 0~1 (error 시 없음) |
 | `error` | 스트림 내부 오류(종결) | `{ code, message }` | 0~1 |
 
@@ -431,6 +446,48 @@ name  price  originalPrice  description  category  imageUrl  status  stockQuanti
 
 **`error` 는 종결 이벤트다 — 뒤에 `done` 이 오지 않는다.** FE 는 `done` 또는 `error` 중 **하나**를 스트림 종료 신호로 처리해야 한다. `error` 로 끝나면 패널은 유지(keep)한다.
 
+### 3.9 `chart` — 분석 차트 (**신설, 이슈 #242**)
+
+```json
+{
+  "type": "chart",
+  "data": {
+    "charts": [
+      {
+        "title": "일별 매출",
+        "chartType": "line",
+        "unit": "KRW",
+        "series": [
+          { "label": "매출", "points": [{ "x": "07-01", "y": 1240000 }] }
+        ],
+        "summary": "6월 대비 12% 감소"
+      }
+    ]
+  }
+}
+```
+
+| 필드 | 타입 | 비고 |
+|---|---|---|
+| `charts` | array | 최대 3개 |
+| `charts[].title` | string | 차트 제목 |
+| `charts[].chartType` | `"line"` \| `"bar"` | 시계열=`line`, 단계·범주 비교=`bar` |
+| `charts[].unit` | `"KRW"` \| `"COUNT"` \| `"PERCENT"` | 값 단위. **`PERCENT` 는 이번에 추가된 값** — 기존 FE `SellerAnalysis.unit` 이 `"KRW"｜"COUNT"` 2종이면 타입 확장 필요(전환율 워커가 PERCENT 를 쓴다) |
+| `charts[].series` | array | **MVP 는 항상 1개** — 서버 스키마가 `max_length=1` 로 강제한다. FE `AnalysisChart.tsx` 가 `series[0]` 만 그리는 기존 동작과 정합 |
+| `charts[].series[].label` | string | 범례 |
+| `charts[].series[].points[]` | `{x: string, y: number}` | 최대 60점, 시계열이면 시간 순 |
+| `charts[].summary` | string | 보고서에서 인용한 한 줄(선택, 빈 문자열 가능) |
+
+**발생 조건 — 전부 참이어야 온다**: (1) `analysis` 레인, (2) 결과가 리포트(`kind=="report"`, 되묻기·사과·거절 아님), (3) 판매자가 차트를 요청(명시 키워드 "차트"/"그래프"/"시각화"/"도표"/"그려" 또는 planner 가 암시 요청으로 판단), (4) 그 요청에 대해 근거 검증(서버 G1)을 통과한 차트가 1개 이상.
+
+**미발행 규약(중요) — 다음은 전부 "이벤트 자체를 안 보낸다"**: 차트를 요청하지 않음 / 요청했으나 생성 실패 / 요청했으나 검증에서 전건 탈락. **빈 배열(`{"charts": []}`)도 보내지 않는다** — FE 는 `chart` 이벤트 수신 여부로만 렌더 여부를 결정하면 되고, 빈 배열 케이스를 별도로 처리할 필요가 없다. 다만 (3)이 참인데 (4)가 거짓이면 `token` 본문 말미에 "[차트 안내] 요청하신 차트를 만들지 못했습니다 — 데이터 부족으로 생략합니다." 한 줄이 붙는다 — FE 는 이 문장을 특별 취급할 필요 없이 리포트 본문의 일부로 그대로 렌더하면 된다.
+
+**순서**: 항상 리포트 `token` **뒤**, `done` **앞**(§1.4 (A) 예시 참조).
+
+**FE 작업 범위(§7 `DESIGN-ANALYSIS-V31-242.md` 요약)**: 필드명을 기존 `SellerAnalysis` 타입에 그대로 맞췄으므로 `AnalysisChart.tsx` 렌더러는 **무수정**이다. 필요한 변경은 (a) `ChatEvent` union 에 `chart` 케이스 추가, (b) 차트 상태 1개 필드(예: `analysisCharts`) 추가 + `meta` 수신 시 초기화, (c) `unit` 타입에 `"PERCENT"` 추가 + `formatMetric` 대응 확인뿐이다.
+
+**하위 호환**: 추가 전용 이벤트다. 기존 FE(`useChat.ts` switch 에 `default:` 없음)는 미지 `type` 을 조용히 무시하도록 이미 돼 있어, 서버가 FE 배포보다 먼저 나가도 기존 화면은 깨지지 않는다(렌더만 안 될 뿐).
+
 ---
 
 ## 4. 성공·실패 케이스 전수 (코드 실측)
@@ -445,7 +502,7 @@ name  price  originalPrice  description  category  imageUrl  status  stockQuanti
 | 401 | `TOKEN_EXPIRED` | 토큰(스트림 티켓) 만료 → 재발급 후 재시도 | `deps.get_identity` |
 | 401 | `TOKEN_INVALID` | 서명·형식·scope 불일치, 토큰 없음 | `deps.get_identity` |
 | 403 | `FORBIDDEN` | `seller_id` 클레임 없음(`"seller scope required"`) 또는 `brandId` 클레임 없음 | `deps.require_seller` |
-| 409 | `STREAM_IN_PROGRESS` | 같은 `sessionId` 로 이미 활성 스트림 존재(동시 요청) | `core.stream.open_stream` |
+| 409 | `STREAM_IN_PROGRESS` | 같은 `threadId` 로 이미 활성 스트림 존재(동시 요청) | `core.stream.open_stream` |
 | 429 | `RATE_LIMITED` | 요청 과다 — 기본 **10회/분·100회/시**(config `rate_limit_per_min`/`_per_hour`), sub 스코프 + IP 백스톱 | `core.ratelimit.rate_limit_middleware` |
 | 504 | `UPSTREAM_TIMEOUT` | first-token/전체 타임아웃(§2.9) — 상류(LLM) 응답 지연 | `core.stream.open_stream` |
 
@@ -556,6 +613,13 @@ name  price  originalPrice  description  category  imageUrl  status  stockQuanti
 | **E-3** | scope 차단 | ✅ **노션에 추가** — 도메인 밖 질문은 `meta{refused}`+거절 token+`done{keep}`(LLM 0회) |
 | **E-4** | `field` 8종 목록 | ✅ **노션 정정** — 5종→camelCase 8종(C-1 과 함께) |
 
+### F. ✅ 해소 완료 (2026-08-03, 이슈 #242) — `chart` 이벤트 신설
+
+| # | 항목 | 조치 |
+|---|---|---|
+| **F-1** | 판매자 분석 차트 전달 경로 부재 | ✅ **`chart` SSE 이벤트 신설**(§3.9) — 서버가 이미 확보한 finding·보고서에서 숫자를 그대로 옮겨 담고(새 조회 없음), 근거 검증(G1) 통과분만 전달 |
+| **F-2** | `SellerAnalysis.unit` 타입 부족 | 🟡 FE 확인 필요 — `unit` 에 `"PERCENT"` 추가돼야 전환율 차트를 받을 수 있다(§3.9) |
+
 ---
 
 ## 6. 권장 처리 순서
@@ -564,8 +628,9 @@ name  price  originalPrice  description  category  imageUrl  status  stockQuanti
 2. ✅ **B 완료(2026-07-22)** — `meta`/`progress`/`done.panel` 로 화면 전환 신호 구현. FE 요구 1~3 은 이 문서 §1.4·§3 으로 구현 가능.
 3. ✅ **C 완료(2026-07-22)** — C-1(field camelCase) 코드 수정, C-2~C-5 명세 정정.
 4. ✅ **D·E 완료(2026-07-22)** — 오류표 정정(confirm-200·429 구현 확인·409/504 추가) + 누락 계약(추천 적용·취소·scope) 노션 반영. **코드 변경 없음**(전부 문서 정합).
+5. ✅ **F 서버측 완료(2026-08-03, 이슈 #242)** — `chart` 이벤트 신설(§3.9). 🟡 FE 는 `unit: "PERCENT"` 타입 확장 확인(F-2) 필요.
 
-> **A~E 전부 해소.** FE 는 이 문서 + 노션 S-4 로 판매자 챗 대시보드를 붙일 수 있다. 남은 것은 상류 재대조뿐(§7).
+> **A~E 전부 해소, F 신규 반영.** FE 는 이 문서 + 노션 S-4 로 판매자 챗 대시보드를 붙일 수 있다. 남은 것은 상류 재대조(§7)와 F-2 타입 확장뿐.
 
 ---
 

@@ -6,6 +6,8 @@
   되물음 : 옵션 필수 상품인데 optionId 없음 → I-2 가 400 CART_OPTION_REQUIRED(options 목록)
            → 실패 action 없이 token 으로 "어떤 색상으로 담을까요?" 재질문 → 다음 턴에서
            사용자 답을 optionId 로 해석해 재담기 (멀티턴, §4.1).
+           단 후보가 1개뿐이면 되묻지 않고 그 옵션으로 즉시 재담기 (이슈 #114,
+           SPEC-CART-001 REQ-CART-026 — 계약 변경 없이 I-2 재호출).
   조회   : "장바구니에 뭐 있어?" → spring_client.get_cart(I-18) → token 텍스트 답변.
            담기 전 조회로 기존 보유 확인 → 합산 안내("이미 담겨 있어 N개로 늘렸어요").
            합산 실행 권위는 Spring — 조회 실패 시에도 담기는 진행(degrade, §4.9).
@@ -14,6 +16,7 @@ AI 서버는 커머스 DB 에 직접 write 하지 않는다 — 담기 실행·�
 [변경 v0.6.0] 게스트 담기 허용(BE 02 D30, 결정 8 개정) — 구 게스트 선차단/가입 유도 폐기.
 로그인 유도는 결제 시점 FE 몫.
 
-TODO: intent 추출 노드(상품/옵션/수량) + 되물음 상태 관리 + add_to_cart/get_cart 호출
-      + 응답 분기 (PRODUCT_NOT_FOUND/STOCK_INSUFFICIENT/CART_ERROR, api-spec §4.1).
+구성: intent(상품/옵션/수량) 추출은 decompose 가 CartIntent 로 함께 산출하고, graph.py 가
+되물음 상태 관리(CartStateStore.pending)·add_to_cart/get_cart 호출·응답 분기
+(PRODUCT_NOT_FOUND/STOCK_INSUFFICIENT/CART_ERROR, api-spec §4.1)를 담당한다.
 """

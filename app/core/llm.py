@@ -9,15 +9,25 @@ OpenAI: fast=gpt-5-nano/smart=gpt-5.6-luna). get_llm 이 settings.llm_provider �
 지연 import 하여 테스트가 SDK 없이도 돈다. 타임아웃·재시도는 config(llm_timeout_s /
 llm_max_retries). OpenAI 는 complete(JSON 태스크)에서만 response_format=json 을 강제하고
 stream(평문 채팅)에서는 제외한다.
+
+OpenAI 는 모델별로 function tools + reasoning_effort 조합 지원이 갈린다 — 조합 미지원
+모델(config 목록)에서는 tool 을 싣는 호출(resolve_provider_model(with_tools=True))의
+effort 를 override 값으로 강등한다(이슈 #178).
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from functools import lru_cache
+from importlib import import_module
+from time import perf_counter
 from typing import Any, Literal, Protocol, runtime_checkable
 
+from langsmith.run_helpers import tracing_context
+
 from app.core.config import LLMProvider, Settings, get_settings
+from app.core.tracing import current_request_trace
 
 ModelTier = Literal["fast", "smart"]
 
@@ -41,6 +51,51 @@ class LLMNotConfigured(LLMError):
     """활성 provider의 API key가 없어 모델을 만들 수 없다."""
 
 
+@lru_cache(maxsize=1)
+def _timeout_exception_types() -> tuple[type[BaseException], ...]:
+    """타임아웃으로 볼 예외 타입 집합 — 설치된 SDK 만 지연 수집한다.
+
+    내장 ``TimeoutError`` 는 3.11+ 에서 ``asyncio.TimeoutError`` 와 **같은 객체**라
+    한 항목으로 둘 다 덮인다. httpx·provider SDK 는 import 실패를 무시한다 —
+    이 모듈의 기존 규약대로 SDK 없이도 테스트가 돌아야 하기 때문이다.
+    """
+    types_: list[type[BaseException]] = [TimeoutError]
+    for module_name, attr in (
+        ("httpx", "TimeoutException"),
+        ("anthropic", "APITimeoutError"),
+        ("openai", "APITimeoutError"),
+    ):
+        try:
+            module = import_module(module_name)
+        except ImportError:  # pragma: no cover - SDK 미설치 환경
+            continue
+        candidate = getattr(module, attr, None)
+        if isinstance(candidate, type) and issubclass(candidate, BaseException):
+            types_.append(candidate)
+    return tuple(types_)
+
+
+def is_timeout_error(exc: BaseException | None) -> bool:
+    """예외(와 그 원인 체인)가 상류 타임아웃인지 **타입으로** 판정한다.
+
+    문자열 매칭을 쓰지 않는 이유: provider SDK 의 메시지는 ``"Request timed out."``
+    (timed **out**, 공백 포함)이라 ``"timeout" in str(exc)`` 로는 걸리지 않고,
+    ``httpx.ReadTimeout`` 은 ``str(exc)`` 가 비는 경우가 있다. 가짜 예외로 쓴 테스트만
+    통과하고 실제 SDK 예외는 한 번도 통과시켜 본 적이 없는 판정이 된다.
+
+    원인 체인을 따라가는 이유: ``AnthropicLLM.complete`` 등이 SDK 예외를
+    ``raise LLMError(str(exc)) from exc`` 로 감싸므로 원본 타입이 ``__cause__`` 에만 남는다.
+    """
+    seen: set[int] = set()
+    current = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, _timeout_exception_types()):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def resolve_model_id(settings: Settings, tier: ModelTier) -> str:
     """API key와 무관하게 활성 provider의 tier별 모델 ID를 해석한다."""
     if tier not in ("fast", "smart"):
@@ -54,8 +109,30 @@ def resolve_model_id(settings: Settings, tier: ModelTier) -> str:
     return {"fast": settings.haiku_model_id, "smart": settings.sonnet_model_id}[tier]
 
 
-def resolve_provider_model(settings: Settings, tier: ModelTier) -> ResolvedModel:
-    """provider/tier를 모델 ID·API key·reasoning effort로 해석한다."""
+def supports_tool_reasoning(settings: Settings, model_id: str) -> bool:
+    """model_id 가 function tools + reasoning_effort 동시 사용을 지원하는지 (이슈 #178).
+
+    config 의 미지원 목록과 **접두사** 매칭한다 — 날짜 스냅샷 ID(예:
+    gpt-5.6-luna-2026-07-01)도 같은 제약을 받는다고 본다. 빈 항목은 전체 매칭을
+    유발하므로 무시한다.
+    """
+    return not any(
+        entry and model_id.startswith(entry)
+        for entry in settings.openai_tool_reasoning_incompatible_models
+    )
+
+
+def resolve_provider_model(
+    settings: Settings, tier: ModelTier, *, with_tools: bool = False
+) -> ResolvedModel:
+    """provider/tier를 모델 ID·API key·reasoning effort로 해석한다.
+
+    with_tools 는 호출부가 **function tools 를 싣는다**는 선언이다 — 판매자 그래프의
+    create_agent 는 tools 가 비어도 ToolStrategy 구조화 출력이 function tool 로 나가므로
+    전부 해당한다. 조합 미지원 모델에서는 effort 를 config override 값으로 강등해
+    400(invalid_request_error)을 막는다(이슈 #178). 구매자 레인(OpenAILLM.complete/
+    stream)은 tool 을 싣지 않아 기본값 False 로 영향이 없다.
+    """
     model_id = resolve_model_id(settings, tier)
 
     provider = settings.llm_provider
@@ -66,12 +143,15 @@ def resolve_provider_model(settings: Settings, tier: ModelTier) -> ResolvedModel
             "fast": settings.openai_fast_reasoning_effort,
             "smart": settings.openai_smart_reasoning_effort,
         }
+        effort = reasoning[tier]
+        if with_tools and not supports_tool_reasoning(settings, model_id):
+            effort = settings.openai_tool_reasoning_effort_override
         return ResolvedModel(
             provider=provider,
             tier=tier,
             model_id=model_id,
             api_key=settings.openai_api_key,
-            reasoning_effort=reasoning[tier],
+            reasoning_effort=effort,
         )
 
     if not settings.anthropic_api_key:
@@ -116,6 +196,25 @@ def _as_text(content: Any) -> str:
     return str(content)
 
 
+def _record_usage(message: Any, model: str) -> None:
+    """Record only normalized model/token facts on the active explicit LLM span."""
+    usage = getattr(message, "usage_metadata", None)
+    if not isinstance(usage, dict):
+        response_metadata = getattr(message, "response_metadata", None)
+        usage = (
+            response_metadata.get("token_usage") if isinstance(response_metadata, dict) else None
+        )
+    usage = usage if isinstance(usage, dict) else {}
+    prompt_tokens = usage.get("input_tokens", usage.get("prompt_tokens"))
+    completion_tokens = usage.get("output_tokens", usage.get("completion_tokens"))
+    if trace := current_request_trace():
+        trace.record_llm_usage(
+            model=model,
+            prompt_tokens=prompt_tokens if isinstance(prompt_tokens, int) else None,
+            completion_tokens=completion_tokens if isinstance(completion_tokens, int) else None,
+        )
+
+
 class AnthropicLLM:
     """ChatAnthropic 래퍼. tier → 모델 id 매핑(fast=haiku/smart=sonnet), (model, max_tokens)별 캐시."""
 
@@ -155,14 +254,17 @@ class AnthropicLLM:
         # json_output: Anthropic 은 프롬프트 기반 JSON 이라 무시(시그니처 정합용).
         from langchain_core.messages import HumanMessage, SystemMessage
 
+        model = self._resolve(tier)
         try:
-            resp = await self._chat(self._resolve(tier), max_tokens).ainvoke(
-                [SystemMessage(content=system), HumanMessage(content=user)]
-            )
+            with tracing_context(enabled=False):
+                resp = await self._chat(model, max_tokens).ainvoke(
+                    [SystemMessage(content=system), HumanMessage(content=user)]
+                )
         except LLMError:
             raise
         except Exception as exc:  # noqa: BLE001 - SDK 예외를 LLMError 로 통일 매핑
             raise LLMError(str(exc)) from exc
+        _record_usage(resp, model)
         return _as_text(resp.content)
 
     async def stream(
@@ -170,13 +272,24 @@ class AnthropicLLM:
     ) -> AsyncIterator[str]:
         from langchain_core.messages import HumanMessage, SystemMessage
 
+        model = self._resolve(tier)
+        started = perf_counter()
+        first_text = True
         try:
-            async for chunk in self._chat(self._resolve(tier), max_tokens).astream(
-                [SystemMessage(content=system), HumanMessage(content=user)]
-            ):
-                text = _as_text(chunk.content)
-                if text:
-                    yield text
+            with tracing_context(enabled=False):
+                async for chunk in self._chat(model, max_tokens).astream(
+                    [SystemMessage(content=system), HumanMessage(content=user)]
+                ):
+                    _record_usage(chunk, model)
+                    text = _as_text(chunk.content)
+                    if text:
+                        if first_text:
+                            first_text = False
+                            if trace := current_request_trace():
+                                trace.record_provider_ttft(
+                                    int(round((perf_counter() - started) * 1000))
+                                )
+                        yield text
         except LLMError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -244,14 +357,17 @@ class OpenAILLM:
     ) -> str:
         from langchain_core.messages import HumanMessage, SystemMessage
 
+        model, _ = self._resolve(tier)
         try:
-            resp = await self._chat(tier, max_tokens, json_mode=json_output).ainvoke(
-                [SystemMessage(content=system), HumanMessage(content=user)]
-            )
+            with tracing_context(enabled=False):
+                resp = await self._chat(tier, max_tokens, json_mode=json_output).ainvoke(
+                    [SystemMessage(content=system), HumanMessage(content=user)]
+                )
         except LLMError:
             raise
         except Exception as exc:  # noqa: BLE001
             raise LLMError(str(exc)) from exc
+        _record_usage(resp, model)
         return _as_text(resp.content)
 
     async def stream(
@@ -259,13 +375,24 @@ class OpenAILLM:
     ) -> AsyncIterator[str]:
         from langchain_core.messages import HumanMessage, SystemMessage
 
+        model, _ = self._resolve(tier)
+        started = perf_counter()
+        first_text = True
         try:
-            async for chunk in self._chat(tier, max_tokens, json_mode=False).astream(
-                [SystemMessage(content=system), HumanMessage(content=user)]
-            ):
-                text = _as_text(chunk.content)
-                if text:
-                    yield text
+            with tracing_context(enabled=False):
+                async for chunk in self._chat(tier, max_tokens, json_mode=False).astream(
+                    [SystemMessage(content=system), HumanMessage(content=user)]
+                ):
+                    _record_usage(chunk, model)
+                    text = _as_text(chunk.content)
+                    if text:
+                        if first_text:
+                            first_text = False
+                            if trace := current_request_trace():
+                                trace.record_provider_ttft(
+                                    int(round((perf_counter() - started) * 1000))
+                                )
+                        yield text
         except LLMError:
             raise
         except Exception as exc:  # noqa: BLE001

@@ -1,9 +1,9 @@
 ---
 id: SPEC-PROFILE-001
-version: 0.4.0
+version: 0.7.0
 status: draft
 created: 2026-07-10
-updated: 2026-07-23
+updated: 2026-08-05
 author: navis
 priority: high
 issue_number: 79
@@ -21,6 +21,9 @@ issue_number: 79
 
 ## HISTORY
 
+- **v0.7.0 (2026-08-05, 이슈 #149)** — 승격된 취향을 **사용자가 항목 단위로 고칠 수 있게** 하는 계약(api-spec §3.8·§3.9, 신규 `SPEC-PROFILE-GRAPH-149`)과 정합을 맞췄다. **이는 구현 부채 상환이 아니라 설계 결정의 번복이다** — 결정 16의 "마이페이지 GET only"를 넘어서므로 결정 개정 레코드가 필요하고(api-spec §8 항목 9), 승인 전까지 그 계약은 🔴 초안이다. 근거는 이슈 #147의 커밋된 실측이다: 프로필이 깨끗하면 +0.20, 노이즈가 섞이면 −0.053, 반복으로 부풀려지면 −0.117 nDCG@10 — 즉 **오염된 프로필은 측정 가능한 품질 손실을 만드는데 그것을 되돌릴 수 있는 유일한 주체(사용자)에게 권한이 없었다.** 개정 내용: (1) **EX-P3 배제 범위를 `PUT /profile/me` 마크다운 전문 편집으로 한정** — LLM이 쓴 산문의 부분 수정은 여전히 불가능하고, 항목(edge) 단위 제어가 그 문제를 우회한다. (2) **EX-P6과 충돌하지 않음을 명문화** — 기각된 것은 temporal KG 백엔드·그래프 추론·파라메트릭 편집이며 신규 표면은 저장 모델을 바꾸지 않는 1-hop 읽기 투영이다(graph DB 미도입 불변). (3) **REQ-PROF-034 적용 범위를 기계 경로로 한정** — 사용자 개별 삭제는 tombstone이라 삭제가 아니고, 사용자가 명시적으로 요구한 전체 초기화는 기계 자동 처리가 아니어서 금지 대상이 아니다. 금지되는 것은 *기계가 사용자 데이터를 조용히 지우는 것*이다. AC-PROF-13을 기계 경로로 좁히고 AC-PROF-31/32를 신설했다. (4) **REQ-PROF-012의 confidence 수치 미노출을 `profile_summary` 스코프로 한정** — 그래프 표면은 3버킷 라벨만 노출하므로 수치 불변식은 유지된다(축소된 번복). (5) 신규 REQ-PROF-083~086(개인화 중지 전파·억제 제외·초기화 범위·구조화 트리플 산출). (6) **OPEN-P12는 해소가 아니라 우선순위 상향** — 신규 계약이 결정론적 트리플 산출을 이슈 #150의 **선결 조건**으로 만들었고, 후보 방향(consolidation이 구조화 산출물을 함께 낸다)을 확정 방향으로 승격한다. OPEN-P10은 부분 해소. 파이프라인 동작·저장소 구성·게이트 규칙 자체는 무변경이다.
+- **v0.6.0 (2026-07-31, 이슈 #119)** — 프로필 **주입 스코프**를 도입하고 세션 버퍼 적재 규율을 신설했다. 실측 회귀: `profile_summary`를 decompose 프롬프트에 발화와 같은 격으로 주입하면 LLM 이 취향을 `priceMax`/`brand`/`color` 하드 필터로 승격시키고, 그 필터가 스레드 필터 저장소에 영속돼 다음 턴 `PRIOR_FILTERS`로 재주입되며 세션 내내 후보를 좁힌다 — 게스트는 이 입력이 없어 손실이 0이므로 **개인화가 순손실**이 되는 비대칭이 발생했다. 따라서 **이는 구현 부채 상환이 아니라 설계 결정의 번복**이다: §5.1·REQ-PROF-011 이 승인하던 "구조화 블록 → decompose `derived` 필터 파생"을 MVP 에서 유예하고(config `profile_injection_scope` 기본 `rerank_only`), 개인화는 rerank 순서 신호로만 수행한다. REQ-PROF-014 는 입법 의도(소비처별 요약 **생성** 금지)를 유지한 채 "주입하는 경우 동일 문자열"로 자구를 정리했다 — 스코프 선택은 요약을 다르게 만드는 것이 아니다. 신규 REQ-PROF-026(세션 버퍼 intent 배제 + 정규화 동일 발화 **적재 상한**, 결정론 코드)을 추가했다 — 상한은 최소 2 이며, 1로 낮추면 게이트의 반복 승격 경로가 죽는다(반복 신호 제거가 아니라 증폭 차단이 목적). 요구사항 스키마·저장소 구성 무변경. api-spec 무개정(개인화 강도는 와이어 계약에 없음).
+- **v0.5.0 (2026-07-30, api-spec v0.16.0 동기화)** — session/thread 축 분리(SPEC-CHAT-SESSION Option B)를 반영해 **Spring I-20 발화 사유를 `logout` 하나로 축소**했다. 구 `newConversation`은 제거 — 축이 갈린 뒤 "새 대화"는 FE가 `threadId`만 새로 생성하고 세션을 유지하므로 CH-1도 I-20도 호출되지 않아 **사유 자체가 발화되지 않는다**. `reason`은 enum 미강제라 수신해도 400은 아니고 관측용으로 기록만 된다. **프로필 파이프라인은 종전대로 session 축**이며(세션버퍼·`profile_session_activity`·멱등키 모두 `(userId, sessionId)`), 한 접속 아래 여러 방의 발화가 **한 세션 버퍼로 모이는** 구조가 이 축 분리의 전제와 정합한다 — 따라서 REQ/AC의 실질 로직 변경은 없고 사유 목록만 좁혔다(REQ-PROF-051, AC-PROF-28, §1.3 표, 결정 12 행).
 - **v0.4.0 (2026-07-23, 이슈 #79)** — MVP 세션 종료 트리거 소유권을 확정했다. Spring I-20은 `logout`·`newConversation`만 전달하고 탭 닫기 신호는 제거한다. AI는 수락된 회원 발화 저장 시 pg-profile의 세션 활동 시각을 DB 서버 시각으로 갱신하고, 기본 10분 timeout/60초 sweep의 단일 인스턴스 스케줄러가 인덱스 기반 bounded batch로 비활성 세션을 선점한다. 내부 timeout은 HTTP 자기 호출 없이 I-20과 같은 finalizer·고정키 claim을 사용하되, idle 성공은 영구 종료가 아닌 재개 가능한 checkpoint로 claim을 해제한다. 새 활동은 completed activity를 active로 되돌리고 이전 종료 generation을 같은 transaction에서 무효화하며, terminal finalizer는 처리 중 새 activity를 completed로 덮지 않는다. scheduler는 라이브 스트림 슬롯을 점유하지 않는다. 처리 전 활동/활성 스트림 재확인, token+lease claim, claim별 실패 격리·crash 재시도와 명시적 종료 경합 인수 기준을 추가했다.
 - **v0.3.0 (2026-07-20, 이슈 #33; v0.15.17 구현 보강)** — 저장소 이관 구현 완료 반영. (1) **임베딩 모델/차원 갱신**: 결정 6 "셀프호스트 1024차원"은 카탈로그 파이프라인이 이슈 #31 로 Google `gemini-embedding-001`(1536-dim, MRL 절단 수동 L2 정규화)로 전환되며 stale — REQ-PROF-074 자체가 "카탈로그와 모델 공유"를 요구하므로 프로필도 동일 모델/차원을 그대로 따른다(신규 계약 협의 아님, 기존 REQ 의 자연스러운 적용). §5.3 네임스페이스 주석·§1.3·§4 결정 6 행·REQ-PROF-074·§10 비용 문구 갱신(차원 1024→1536, 임베딩 비용 0 문구 삭제 — Google API 호출이라 토큰 비용 발생). (2) **checkpointer→BaseStore 로 구현 확정, OPEN-P9 해소**: session_context(구매자 스레드 상태 전반 — ThreadFilter/Cart/Revert/session_ctx)는 실제 LangGraph StateGraph 가 없는 구매자 실행 모델(단순 함수 호출 체인) 특성상 checkpointer 가 아니라 BaseStore(app/core/pg_store.py 공유 연결, 별도 인스턴스는 아니고 같은 pg-profile 물리 인스턴스 내 별도 store 객체) 로 구현됨 — write 소유는 구매자 그래프(app/agents/buyer/graph.py) 그대로. (3) **fact 저장 단위 확정**: REQ-PROF-070 "위키 파일 1개 = item 1개" 원칙을 그대로 적용해 fact 마다 개별 store item(uuid 키)으로 저장 — semantic 인덱스가 fact 단위로 실제 동작(요약/세션버퍼는 `index=False`). (4) **session-end 멱등 파생키 lifecycle**: 전용 `processed_events` 테이블에서 `session-end:{userId}:{sessionId}`의 PROCESSING(token+lease)과 COMPLETED를 분리한다. 실패·취소는 claim 해제, crash 잔재는 lease 재선점하며 성공 뒤에만 완료 마킹한다(app/agents/profile/processed_events.py, db/profile/init/00_processed_events.sql). (5) OPEN-P11 부분 해소: 서빙 형태는 FastAPI 프로세스 내 동기 SDK 호출(app.pipelines.embedding.embed_texts, google-genai)로 확정. 요구사항·스키마 구조·게이트 규칙은 무변경.
 - **v0.2.0 (2026-07-15)** — 결정 16-A(저장소 물리 구성 개정) 반영. "카탈로그와 완전 별도 Postgres 인스턴스"를 MVP 기준 **단일 Postgres 인스턴스 안의 별도 데이터베이스 2개**(catalog/profile)로 개정 — 논리 분리 규율(DB 단위 분리로 cross-DB 조인 구조적 차단 + 계정 분리[search read-only/프로필 워커 profile 한정] + cross-DB 의존 금지)로 부하 격리 목적을 대체하고, 물리 인스턴스 분리는 고도화 승격 경로(연결 문자열 교체 수준)로 유예. REQ-PROF-072/073/074 개정, AC-PROF-21 개정, DoD·불변식 문구 갱신, OPEN-P9에 물리 결합 논점 소멸 주석. 그 외 요구사항·스키마 불변. 근거: 데모 규모에 격리할 부하 없음(2026-07-15 AWS 배포 구성 논의, product.md 결정 16-A).
@@ -45,6 +48,7 @@ issue_number: 79
 - hot-path "기억해": fact 즉시 기록, 턴 중 요약 재생성 없음.
 - 저장소 스키마: Store item 구조(valid_from/last_confirmed/superseded_by 포함 frontmatter 메타·confidence·type semantic|episodic), 네임스페이스 레이아웃, 임베딩 인덱스 구성.
 - 마이페이지 표시용 `GET /profile/{user_id}` API(마크다운 passthrough).
+- **[v0.7.0, 이슈 #149]** consolidation이 요약과 함께 산출하는 **구조화 트리플**(REQ-PROF-086)과, 개인화 중지·사용자 억제 상태를 요약·reader에 반영하는 규율(REQ-PROF-083/084/085). 그래프 투영·제어 API 자체의 모델·규칙은 `SPEC-PROFILE-GRAPH-149` 소관이다.
 - 오류 처리(델타/consolidation LLM 실패, store 불가용, activity claim 고착 — 데이터 날조 금지, MoAI 3회 재시도 원칙), 인수 기준, DoD.
 
 ### 1.3 의존성 (Dependencies — 본 SPEC 외부, 참조만)
@@ -57,9 +61,10 @@ issue_number: 79
 | 추천 서브그래프 (SPEC-RECOMMEND-001) | `profile_summary`를 read-only 문자열로 소비(REQ-REC-005/006, OPEN-9 해소 대상) | SPEC-RECOMMEND-001 |
 | session_context / 프로필 세션 버퍼 (BaseStore) | 대화 스레드 상태와 회원 발화 버퍼의 영속 저장. 세션 중 write는 구매자 그래프 소관 | 구매자 그래프 SPEC(별도) — 본 SPEC은 finalizer에서 버퍼를 소비(§9 OPEN-P9) |
 | 주문 이벤트 미러 (결정 9 채널 확장 / 14-F) | 사용자별 경량 구매 이력 미러(user_id·product_id·category·purchased_at) — read-only 조회. 추천 dedup(14-F)과 동일 미러 공유 | 카탈로그/주문 이벤트 SPEC(별도) |
-| Spring 세션 종료 통지 (I-20) | `logout`·`newConversation` 명시적 종료의 조기 트리거(best-effort) — 유실 허용 | Spring / api-spec §3.5 |
+| Spring 세션 종료 통지 (I-20) | **`logout`** 명시적 종료의 조기 트리거(best-effort) — 유실 허용. **[v0.5.0]** 구 `newConversation` 제거 | Spring / api-spec §3.5 |
 | 임베딩 모델 (결정 6, v0.3.0 갱신) | BaseStore 내장 semantic 인덱스의 1536차원(Google `gemini-embedding-001`) 임베딩 계산(카탈로그 파이프라인과 모델 공유, 인스턴스는 별도) | `app.pipelines.embedding`(이슈 #31/#33) |
 | 리뷰 분석 그래프 (결정 10-A) | (고도화) 작성자 취향 신호 공급 — 본 SPEC은 수신 계약 자리만 예약 | 리뷰 분석 SPEC(별도, 고도화) |
+| 개인화 그래프 (v0.7.0, 이슈 #149) | 승격된 취향의 node·edge 투영과 사용자 제어(수정·삭제·복구·초기화·중지). 본 SPEC이 산출하는 구조화 트리플(REQ-PROF-086)을 소비하고, 억제·중지 상태를 본 SPEC의 요약·reader에 되돌려 반영한다 | `SPEC-PROFILE-GRAPH-149` / api-spec §3.8·§3.9 |
 
 ---
 
@@ -70,9 +75,11 @@ issue_number: 79
 - **EX-P1 추천 서브그래프 동작**: `profile_summary`를 소비하는 재랭킹·개인화 로직은 SPEC-RECOMMEND-001 소관(REQ-REC-005/006). 본 파이프라인은 그 문자열을 **생산·공급**하고, 소비 측은 이를 불투명 read-only 문자열로만 취급한다. 추천이 요약을 어떻게 쓰는지는 본 SPEC의 범위가 아니다.
 - **EX-P2 리뷰 신호 수신 구현**: 리뷰 분석 그래프(결정 10-A)가 공급하는 작성자 취향 신호의 실제 수신·게이팅 구현은 **고도화 범위(MVP 비구현)**. 본 SPEC은 수신 계약 슬롯(write 소스 열거의 예약 항목)만 남기고 동작을 구현하지 않는다(REQ-PROF-024).
 - **EX-P3 프로필 편집 PUT**: 마이페이지에서 사용자가 프로필을 직접 수정하는 PUT(사용자 수정 = confidence 최상급 병합, 결정 4-A 보강 6)은 **고도화 범위(MVP 비구현)**. MVP는 조회(GET)만 제공한다(REQ-PROF-082).
+  - **[개정 v0.7.0, 이슈 #149] 배제 범위는 `PUT /profile/me` 마크다운 전문 편집으로 한정한다.** LLM이 생성한 산문을 사용자가 부분 수정할 수 있는 형태가 아니라는 것이 전문 편집을 계속 배제하는 이유이며, 이 배제는 유지된다. 반면 **항목(edge) 단위 수정·삭제·복구·전체 초기화·개인화 중지는 그래프 표면으로 제안**된다(api-spec §3.8·§3.9, `SPEC-PROFILE-GRAPH-149`) — 결정 4-A 보강 6의 "사용자 수정 = confidence 최상급 병합"은 그 경로에서 이행된다. 🔴 결정 16 개정 승인 전까지 초안(api-spec §8 항목 9).
 - **EX-P4 브라우저 탭 종료 신호·Spring 세션 수명 판정**: 탭 닫기 전용 FE→BE→AI 또는 FE→AI API를 만들지 않는다. AI의 10분 비활동 판정은 **프로필 버퍼 flush 시점**만 소유하며 Spring Redis 세션의 유효성·만료 응답을 대신 판정하지 않는다. 사용자가 제한 시간 안에 돌아와 발화하면 활동 시각이 갱신되고, 돌아오지 않으면 timeout이 처리한다.
 - **EX-P5 주문 이벤트 미러 적재 계약**: 주문 이벤트 → AI 경량 미러의 **적재(ingestion) 계약·이벤트 채널**은 카탈로그/주문 이벤트 SPEC 소관(결정 9/14-F). 본 SPEC은 이미 적재된 미러를 **read-only로 스캔**만 한다(REQ-PROF-054).
 - **EX-P6 완전한 시간 인식 지식 그래프·유저별 LoRA**: temporal KG 백엔드(Zep/Graphiti)와 파라메트릭/유저별 LoRA는 결정 4에서 **v2로 유예·명시 기각**됨. 본 SPEC은 OKF 위키(자연어 마크다운 + frontmatter) 논리 모델과 결정론적 recency-wins만 구현하며, 그래프 추론·파라메트릭 편집은 구현하지 않는다.
+  - **[정합 v0.7.0, 이슈 #149] 개인화 관계 그래프(api-spec §3.8)는 이 배제와 충돌하지 않는다.** EX-P6이 기각한 것은 **temporal KG 백엔드**(Zep/Graphiti)·**그래프 추론**·**파라메트릭 편집**이다. 신규 표면은 저장 모델을 바꾸지 않는 **1-hop 읽기 투영**이며 **graph database를 도입하지 않고**(신규 SPEC EX-G3) 다홉 순회·추론도 구현하지 않는다 — 즉 EX-P6의 실질 배제는 그대로 남는다. 사용자 편집은 파라메트릭(모델 가중치) 편집이 아니라 **데이터 항목 편집**이다.
 - **EX-P7 턴 중 요약 재생성**: `profile_summary` 재생성은 **sleep-time consolidation 전용**이다. 턴 중(요청 경로) 또는 "기억해" hot-path에서 요약을 재생성하지 **않는다**. 같은 세션 내에서 방금 기록된 fact의 즉시 반영은 추천 서브그래프의 멀티턴 filters 병합(SPEC-RECOMMEND-001 §6.7, 본 SPEC 비범위)이 커버한다(REQ-PROF-061).
 
 ---
@@ -115,7 +122,7 @@ issue_number: 79
 | 결정 8 | 비회원은 프로필 없음, AI 서버 무상태 — 게스트는 reader `None`, build 스킵 | REQ-PROF-003/041 |
 | 결정 9 | 이벤트 기반 준실시간 동기화, 일 1회 보정 배치 패턴 — 주문 미러 채널의 근간 | §1.3, REQ-PROF-054 |
 | 결정 10-A | 리뷰 분석 그래프가 (고도화) 작성자 취향 신호 공급 — 본 SPEC은 수신 계약 슬롯만 예약 | EX-P2, REQ-PROF-024 |
-| 결정 12 / 이슈 #79 | 종료 트리거 소유권 분리 — Spring=`logout`·`newConversation`, AI=프로필 버퍼 10분 비활동 flush, 탭 닫기 신호 없음 | EX-P4, REQ-PROF-051/056~059 |
+| 결정 12 / 이슈 #79 | 종료 트리거 소유권 분리 — **Spring=`logout` 하나만**(v0.5.0, 구 `newConversation` 제거), AI=프로필 버퍼 10분 비활동 flush, 탭 닫기 신호 없음 | EX-P4, REQ-PROF-051/056~059 |
 | 결정 14-F | 구매 이력 미러는 추천 dedup과 공유. 미러 이벤트 채널 계약은 카탈로그/주문 이벤트 SPEC 소유, 본 SPEC은 read-only 소비 | EX-P5, REQ-PROF-054 |
 
 ---
@@ -125,6 +132,7 @@ issue_number: 79
 ### 5.1 `profile_summary` 섹션 레이아웃
 
 `reader`가 반환하고 추천·재랭킹이 소비하는 하이브리드 단일 마크다운 문자열의 논리 구조. 실제 타입은 `str | None`이며(SPEC-RECOMMEND-001 State `profile_summary: str | None` 무개정), 아래는 그 문자열의 **내부 섹션 규약**이다. `decompose`와 `rerank`에 **동일한 문자열**이 주입된다(결정 16). 구조화 블록 필드는 decompose의 `source == derived` 필터 유일 원천(SPEC-RECOMMEND-001 REQ-REC-047 연계)이다.
+> **[v0.6.0 #119 유예]** 단, MVP 는 `profile_injection_scope` 기본 `rerank_only` 로 `profile_summary` 를 **decompose 에 주입하지 않는다** — 프로필이 하드 필터로 새어 발화 의도를 누르는 실측 회귀(#119) 때문이다. 따라서 구조화 블록은 현재 **rerank 순서 신호 전용**이며, `derived` 필터 연계는 REQ-REC-047/041(0건 완화, 이슈 #113) 착수 시 함께 해제한다. 블록의 **내용 규약(FilterSet 매핑 속성 한정)은 그대로 유효**하다.
 
 ```
 # (섹션 1) 구조화 블록 — FilterSet 매핑 가능 속성 한정
@@ -213,6 +221,10 @@ class StoreItemValue(BaseModel):
     type: Literal["semantic", "episodic"]    # 결정 4 (필수)
     tags: list[str] = []
     confidence: float | None = None          # 내부 메타 — profile_summary에는 미노출
+                                             # (v0.7.0) 개인화 그래프는 3버킷 라벨만 노출 — 수치는 계속 미노출
+    suppressed_at: str | None = None         # (v0.7.0, #149) 사용자 개별 삭제 tombstone
+    graph_triples: list[dict] = []           # (v0.7.0, #149) 투영 원천 — 마크다운 파싱 금지(REQ-PROF-086)
+    derived_from_sensitive: bool = False     # (v0.7.0, #149) 민감 주제 파생 — 보존기간 만료 시 물리 삭제
     valid_from: str | None = None            # 결정 4-A (5)
     last_confirmed: str | None = None
     superseded_by: str | None = None
@@ -265,11 +277,11 @@ class ProfileViewResponse(BaseModel):
 ### 6.2 `profile_summary` 생성 계약 (summary contract)
 
 - **REQ-PROF-010** (Ubiquitous): The `profile_summary` **shall** 하이브리드 단일 마크다운 문자열이며 §5.1의 세 섹션(구조화 블록 / 산문 / 최근 맥락)을 포함한다.
-- **REQ-PROF-011** (Ubiquitous): The 구조화 블록 **shall** FilterSet 매핑 가능 속성(가격 성향·선호/회피 브랜드·평점 성향·Layer 2 속성)만 담고, 그 외 속성을 담지 **않는다** — 이 블록은 decompose의 `source == derived` 필터 유일 원천이기 때문이다(SPEC-RECOMMEND-001 REQ-REC-047 연계).
-- **REQ-PROF-012** (Ubiquitous): The 산문 섹션 **shall** rerank용 취향 서술을 자연어로 담되, confidence 수치·내부 메타를 노출하지 **않는다**(강도는 자연어로만).
+- **REQ-PROF-011** (Ubiquitous): The 구조화 블록 **shall** FilterSet 매핑 가능 속성(가격 성향·선호/회피 브랜드·평점 성향·Layer 2 속성)만 담고, 그 외 속성을 담지 **않는다** — 이 블록은 decompose의 `source == derived` 필터 유일 원천이기 때문이다(SPEC-RECOMMEND-001 REQ-REC-047 연계). *(v0.6.0 #119: derived 필터 파생은 MVP 유예 — §5.1 유예 주석 참조. 블록의 내용 규약 자체는 rerank 입력 품질에 여전히 유효하다.)*
+- **REQ-PROF-012** (Ubiquitous): The 산문 섹션 **shall** rerank용 취향 서술을 자연어로 담되, confidence 수치·내부 메타를 노출하지 **않는다**(강도는 자연어로만). **[스코프 한정 v0.7.0, 이슈 #149]** 이 금지는 **`profile_summary`(프롬프트 입력)** 대상이다. 개인화 그래프 표면(api-spec §3.8)은 **3버킷 라벨만** 노출하고 수치·버킷 경계는 와이어에 싣지 않으므로 수치 미노출 불변식은 유지된다 — 축소된 번복으로 기록한다.
 - **REQ-PROF-013** (Ubiquitous): The 최근 맥락 섹션 **shall** recency 윈도우(config `summary.recency_window`) 내 episodic 하이라이트를 config 개수(기본 2~3개)로 담는다.
-- **REQ-PROF-014** (Ubiquitous): The `reader`/생성기 **shall** `decompose`와 `rerank`에 **동일한** `profile_summary` 문자열을 주입한다 — 소비처별로 다른 요약을 생성하지 **않는다**(결정 16).
-- **REQ-PROF-015** (Ubiquitous): The `profile_summary` **shall** 승격 게이트를 통과했고(§6.5) `superseded_by`가 없는(미폐기) fact만 반영한다(결정 16, 결정 14-B 항목 6 이행). *(단, 최근 맥락 섹션의 episodic 하이라이트가 반복성 게이트에 종속되는지 여부는 §9 OPEN-P8 참조 — 본 SPEC은 episodic 하이라이트를 recency+salience 선택으로 처리한다고 가정한다.)*
+- **REQ-PROF-014** (Ubiquitous, v0.6.0 개정): The `reader`/생성기 **shall** 소비처별로 다른 요약을 생성하지 **않는다** — 단일 `profile_summary` 문자열만 만들고, **주입하는 소비처에는 그 동일한 문자열을 주입한다**(결정 16). 어느 소비처에 주입할지는 config(`profile_injection_scope`)가 정하며, 이는 요약을 다르게 **만드는** 것이 아니라 소비처를 **선택**하는 것이다(#119). *(금지 대상은 **요약의 분기** — 소비처마다 다른 요약 텍스트를 생성하는 것 — 이지 인코딩이 아니다. 단일 요약을 생성 시점에 한 번 임베딩해 벡터로도 보관하는 것(#148 `ProfileSummary.embedding`, 홈 추천 I-22 소비)은 같은 요약의 다른 인코딩이므로 본 요구에 부합한다.)*
+- **REQ-PROF-015** (Ubiquitous): The `profile_summary` **shall** 승격 게이트를 통과했고(§6.5) `superseded_by`가 없는(미폐기) **그리고 사용자에 의해 억제되지 않은**(v0.7.0, 이슈 #149) fact만 반영한다(결정 16, 결정 14-B 항목 6 이행). *(단, 최근 맥락 섹션의 episodic 하이라이트가 반복성 게이트에 종속되는지 여부는 §9 OPEN-P8 참조 — 본 SPEC은 episodic 하이라이트를 recency+salience 선택으로 처리한다고 가정한다.)*
 - **REQ-PROF-016** (Ubiquitous): The 요약 크기 상한 **shall** 문자 기반 config 값(`summary.char_cap`, 기본 1,000)으로 하며, 집행은 **생성 측(consolidation) 압축 재작성**으로 수행하고 소비 측 절단으로 처리하지 **않는다**(결정 16).
 - **REQ-PROF-017** (State-Driven): **While** 신규 회원이라 승격 fact가 없는 동안, the 생성기 **shall** 요약을 억지로 생성하지 않고 `None`을 유지한다(콜드스타트 = 게스트와 동일, REQ-PROF-003).
 
@@ -281,6 +293,9 @@ class ProfileViewResponse(BaseModel):
 - **REQ-PROF-023** (Unwanted): The `builder` **shall not** 턴 중(요청 경로)에 프로필 store에 write하지 않는다 — 관찰은 session_context 버퍼에만 누적하고, 델타 생성은 세션 종료 후(sleep-time 배치)에만 수행한다(결정 4-A 3, 2단 비동기).
 - **REQ-PROF-024** (Optional): **Where** write 소스가 대화(`conversation`) 또는 구매(`purchase`)인 경우에 한하여, the `builder` **shall** 델타를 생성한다. 리뷰(`review`) 소스는 수신 계약 슬롯만 예약하며 MVP에서 델타 생성을 구현하지 **않는다**(EX-P2, 고도화 — 결정 10-A).
 - **REQ-PROF-025** (Ubiquitous): The `builder` 1단계 **shall** 각 델타에 대상 위키 파일 경로(`target_path` = Store item key)와 `type`(semantic|episodic)을 부여한다 — 지속 취향/예산은 semantic, 최근 상황·구매는 episodic로 분류한다(결정 4 메모리 분할).
+- **REQ-PROF-026** (Ubiquitous, v0.6.0 신규 #119): The 세션 버퍼 적재 **shall** (a) config 지정 intent(`profile_buffer_excluded_intents`, 기본 주문조회·장바구니 조회)의 발화를 배제하고, (b) 정규화(공백 접기·casefold) 후 동일한 발화를 `profile_buffer_repeat_cap`(기본 2, **최솟값 2**) 개까지만 적재한다. 반복 빈도의 **상한**은 결정론적 코드가 집행하며 델타 생성 LLM 의 자기보고(`repetitionEma`)에 위임하지 않는다 — 버퍼가 `"\n".join` 으로 통째로 델타 프롬프트에 실리므로 **반복 횟수가 그대로 취향 강도**가 되어, 같은 말 3~4회로 취향이 과대 대표된다(#119).
+  > **상한을 1(완전 dedup)로 낮추지 않는 이유**: 승격 게이트가 `salience AND (explicit OR repeated)`(§6.5)라 **반복은 명시 표명 없이 승격시키는 독립 경로**다. 버퍼에 1건만 남기면 델타 LLM 이 반복을 관측할 수 없어 그 경로가 통째로 죽고, 세션 간 반복 누적(`GateState.ema_confidence`)은 미구현이라(§9 OPEN-P12) 승격하지 못한 델타는 버려질 뿐 다음 세션이 대신 살려주지도 않는다. 즉 본 요구는 **반복 신호를 없애는 것이 아니라 증폭을 자르는 것**이다.
+  *(intent 판정 이후로 적재가 이동하므로 decompose 실패 턴의 발화는 버퍼에 쌓이지 않는다 — 의도를 파악하지 못한 발화는 취향 신호로도 쓰지 않는다.)*
 
 ### 6.4 빌더 2단계 — sleep-time consolidation
 
@@ -289,6 +304,8 @@ class ProfileViewResponse(BaseModel):
 - **REQ-PROF-032** (Ubiquitous): The `builder` 2단계 **shall** 반복성 EMA 누적, 승격 판정, recency-wins 충돌 해소, supersede 처리, 중복 병합을 **결정론적 코드**로 수행한다(재현 가능).
 - **REQ-PROF-033** (Unwanted): The `builder` 2단계 **shall not** 최신성 판단을 LLM에 위임하지 않는다 — 최신성 충돌은 `valid_from`/`last_confirmed` 타임스탬프 비교의 결정론적 recency-wins 코드로 해소한다(결정 4-A 5, STALE arXiv:2605.06527 근거).
 - **REQ-PROF-034** (Unwanted): The `builder` 2단계 **shall not** fact를 삭제하지 않는다 — 폐기 대신 `superseded_by`로 supersede하여 이력을 보존한다. 재확인되지 않은 선호는 EMA 감쇠를 적용한다(결정 4-A 5).
+  - **[적용 범위 한정 v0.7.0, 이슈 #149] 이 금지는 기계(파이프라인) 경로를 구속한다.** 사용자가 명시적으로 요구한 삭제는 두 등급으로 나뉘며 이 금지의 대상이 아니다: (a) **개별 삭제 = 억제(tombstone)** — 투영·요약·랭킹에서 즉시 제외하되 이력을 보존하고 복구 가능하게 한다(삭제가 아니므로 본 조항과 애초에 정합한다). (b) **전체 초기화 = 물리 삭제** — 사용자 자신의 명시적 요청이며 기계 자동 처리가 아니므로 본 조항의 구속 대상이 아니고, 변경 감사 로그(api-spec §6.3 c)로 추적한다. 즉 **금지되는 것은 기계가 사용자 데이터를 조용히 지우는 것**이고 사용자 자신의 삭제권은 금지 대상이 아니다. 규격은 `SPEC-PROFILE-GRAPH-149` §6.3·§6.7.
+  - **좁은 예외 1건**: 민감 주제에서 파생된 항목은 보존기간 경과 시 **기계가 물리 삭제해야 한다**(신규 SPEC REQ-PGRAPH-077). 이것이 기계 경로 하드 삭제가 *의무*인 유일한 경우다.
 - **REQ-PROF-035** (Event-Driven): **When** consolidation이 완료되면, the `builder` 2단계 **shall** `profile_summary`를 §6.2 계약(문자 상한 내 압축 재작성)에 따라 재생성한다 — 요약 재생성은 sleep-time에만 발생한다(결정 16).
 - **REQ-PROF-036** (Ubiquitous): The `builder` 2단계 **shall** 승격 시 각 fact에 `valid_from`을, 재확인 시 `last_confirmed`를 갱신하여 감쇠·모순 해소 메타를 유지한다(결정 4-A 5).
 - **REQ-PROF-037** (Ubiquitous): The `builder` 2단계 **shall** Spring I-20 조기 통지 또는 AI inactivity timeout이 공통 session finalizer를 호출할 때 실행한다. 별도 전역 sleep-time 주기나 `run_after_session_end` 이중 경로를 두지 않는다(결정 16, 이슈 #79).
@@ -306,7 +323,7 @@ class ProfileViewResponse(BaseModel):
 ### 6.6 트리거 · 스케줄 (triggers & scheduling)
 
 - **REQ-PROF-050** (Ubiquitous): The 파이프라인 **shall** 델타 생성의 정합성 원천을 pg-profile에 영속 저장된 **회원 세션 버퍼**로 두며, Spring 통지 payload의 내용이나 전달 성공에 정합성을 의존하지 **않는다**.
-- **REQ-PROF-051** (Event-Driven): **When** Spring이 `logout` 또는 `newConversation` 종료를 통지하면, the 파이프라인 **shall** 이를 best-effort 조기 트리거로 사용한다. I-20은 같은 `(userId, sessionId)` 재전송에 idempotent하며 `tabClose`·`inactivityTimeout`을 Spring wire 사유로 요구하지 않는다(api-spec §3.5).
+- **REQ-PROF-051** (Event-Driven): **When** Spring이 `logout` 종료를 통지하면, the 파이프라인 **shall** 이를 best-effort 조기 트리거로 사용한다. I-20은 같은 `(userId, sessionId)` 재전송에 idempotent하며 `tabClose`·`inactivityTimeout`을 Spring wire 사유로 요구하지 않는다(api-spec §3.5). **[개정 v0.5.0 — api-spec v0.16.0]** 구 `newConversation`은 **제거** — session/thread 축 분리로 "새 대화"가 `threadId`만 갱신하고 세션을 유지하게 되어 그 사유 자체가 발화되지 않는다. `reason`은 enum 미강제라 수신 시 400은 아니며 관측용으로만 기록한다.
 - **REQ-PROF-052** (Ubiquitous): The 파이프라인 **shall** Spring I-20과 AI 내부 timeout을 하나의 session finalizer 및 고정키 `PROCESSING` claim으로 직렬화한다. Spring I-20 성공은 processed event를 영구 `COMPLETED`로 확정하지만, 처리 중 activity generation 또는 claim 소유권이 바뀌면 terminal 완료를 중단한다. AI idle 성공은 같은 claim을 해제하는 checkpoint로 끝내 동일 sessionId의 후속 활동을 다시 처리할 수 있어야 한다. 실패·취소 시 버퍼를 보존하고 activity claim을 `ACTIVE`로 되돌려 재시도를 허용한다.
 - **REQ-PROF-053** (Ubiquitous): The 파이프라인 **shall** 비활동 기준(기본 600초), sweep 주기(기본 60초), 한 번의 조회 상한, 최대 동시 finalizer 수와 claim lease를 config 주입값으로 운용한다. activity claim lease는 `ceil(batch size / max concurrency) × 2단계 LLM 최악 예산`보다 길어 모든 batch wave의 대기·처리를 포괄해야 한다.
 - **REQ-PROF-054** (Event-Driven): **When** sleep-time 배치가 실행되면, the 파이프라인 **shall** 구매 이력 미러(주문 이벤트 → AI 경량 미러)를 read-only로 스캔하여 구매 소스 델타 후보를 생성한다 — 미러의 적재 계약·이벤트 채널은 본 SPEC 소관이 아니다(EX-P5, 결정 14-F와 미러 공유).
@@ -325,7 +342,7 @@ class ProfileViewResponse(BaseModel):
 ### 6.8 저장소 스키마 (storage)
 
 - **REQ-PROF-070** (Ubiquitous): The 파이프라인 **shall** 프로필을 PostgresStore(LangGraph BaseStore)에 저장하며, 위키 "파일" 1개 = Store item 1개(key = 위키 파일 경로, value = frontmatter 필드 + 마크다운 본문)로 매핑한다(결정 16, §5.3).
-- **REQ-PROF-071** (Ubiquitous): The 파이프라인 **shall** 네임스페이스를 `("profile" | "facts" | "episodes", user_id)`로 구성한다 — `profile`은 index.md 압축 요약, `facts`는 semantic 지식 단위, `episodes`는 episodic 파일(결정 16).
+- **REQ-PROF-071** (Ubiquitous): The 파이프라인 **shall** 네임스페이스를 `("profile" | "facts" | "episodes", user_id)`로 구성한다 — `profile`은 index.md 압축 요약, `facts`는 semantic 지식 단위, `episodes`는 episodic 파일(결정 16). **[v0.7.0, 이슈 #149]** 개인화 그래프 투영 문서를 위한 네임스페이스가 추가된다 — 사용자당 문서 1개이며, 다중 항목으로 쪼개지 않는 이유는 현행 인프라에 **다중 항목 원자성이 없기** 때문이다(`SPEC-PROFILE-GRAPH-149` §7.1). `facts`는 그대로 **증거 저장소**로 유지한다.
 - **REQ-PROF-072** (Ubiquitous, 결정 16-A 개정): The 프로필 store **shall** 카탈로그 검색 인덱스와 **별도의 데이터베이스**를 사용한다 — MVP는 단일 Postgres 인스턴스 내 DB 분리(catalog/profile) + 계정 분리(`search_service`는 catalog read-only, 프로필 워커는 profile 한정)이며, cross-DB 조인에 의존하지 **않는다**. 물리 인스턴스 분리는 부하 격리가 실제 필요해질 때의 고도화 승격 경로다(연결 문자열 교체 수준).
 - **REQ-PROF-073** (Ubiquitous, 결정 16-A 개정): The 프로필 데이터베이스 **shall** pgvector 확장을 갖춘다(BaseStore 내장 semantic 인덱스가 요구 — catalog/profile 두 DB 각각 `CREATE EXTENSION`).
 - **REQ-PROF-074** (Ubiquitous, v0.3.0 갱신): The BaseStore 내장 semantic 인덱스 **shall** fact 항목(1 fact = 1 Store item)을 결정 6의 Google `gemini-embedding-001` 1536차원 모델로 임베딩하며, 임베딩 함수·차원은 config 주입한다(하드코딩 금지, `embedding_model_id`·`embedding_dim`) — 카탈로그와 모델은 공유하되 데이터베이스는 별도다(결정 16-A). summary·session_ctx 항목은 semantic 인덱스 대상이 아니다(`index=False`).
@@ -337,7 +354,11 @@ class ProfileViewResponse(BaseModel):
 
 - **REQ-PROF-080** (Event-Driven): **When** `GET /profile/{user_id}` 요청이 도착하면, the API **shall** 해당 사용자의 사람이 읽는 프로필 마크다운을 `ProfileViewResponse`로 반환한다(자연어 마크다운 passthrough — 결정 4-A 보강 6 "노출" 이행, 결정 16 MVP GET only).
 - **REQ-PROF-081** (State-Driven): **While** 대상 `user_id`가 게스트이거나 프로필이 없는 동안, the API **shall** `exists = false`, `markdown = null`을 반환하고 오류를 발생시키지 **않는다**.
-- **REQ-PROF-082** (Unwanted): The API **shall not** 프로필 수정(PUT)을 제공하지 않는다 — 사용자 편집(수정 = confidence 최상급 병합)은 고도화 범위다(EX-P3, 결정 16).
+- **REQ-PROF-082** (Unwanted): The API **shall not** 마크다운 전문 수정(`PUT /profile/me`)을 제공하지 않는다 — 산문 전문 편집은 계속 배제한다(EX-P3, 결정 16). **[한정 v0.7.0, 이슈 #149]** 항목 단위 제어는 api-spec §3.9(별도 표면)로 제안되며 본 조항의 대상이 아니다.
+- **REQ-PROF-083** (Event-driven): When 회원이 개인화 중지 상태이면, the `reader` **shall** `profile_summary`를 `None`으로 반환하고 요약 markdown 노출도 중단한다 — 랭킹 소비처(rerank 주입·홈 프로필 벡터)도 동일하게 프로필을 쓰지 않는다(신규 SPEC REQ-PGRAPH-051).
+- **REQ-PROF-084** (Event-driven): When 회원이 개인화 중지 상태이면, the `builder` **shall** 세션 버퍼 적재·델타 생성·consolidation·요약 임베딩과 "기억해" hot-path 기록을 **모두 중단**한다. 단 공통 session finalizer는 버퍼 정리와 처리 완료 표시를 계속해 세션 라이프사이클이 멈추지 않게 한다(신규 SPEC REQ-PGRAPH-052/053). 중지 기간의 발화는 **소급 반영하지 않는다**(REQ-PGRAPH-056).
+- **REQ-PROF-085** (Event-driven): When 사용자가 전체 초기화를 요청하면, the 파이프라인 **shall** fact·요약(마크다운 및 임베딩)·억제 표식·미처리 세션 버퍼·누적 게이트 상태를 물리 삭제하고, **변경 감사 로그와 대화 전사록은 보존**한다(신규 SPEC REQ-PGRAPH-061/062). 초기화는 개인화 중지 상태를 변경하지 않는다.
+- **REQ-PROF-086** (Ubiquitous): The `builder` 2단계 **shall** 요약 마크다운과 함께 **기계 판독용 구조화 트리플**을 산출해 저장한다 — 이것이 개인화 그래프 투영의 유일한 원천이며 마크다운 본문 파싱은 금지된다(신규 SPEC REQ-PGRAPH-001). §9 OPEN-P12의 선결과제가 이 조항으로 확정 방향이 된다.
 
 ### 6.10 오류 처리 관련 요구 (see §7)
 
@@ -383,7 +404,9 @@ class ProfileViewResponse(BaseModel):
 - **AC-PROF-10 (세션별 관심 분포 스냅샷)**: **Given** 델타가 생성된 세션, **When** 1단계가 완료되면, **Then** 해당 세션의 `InterestDistributionSnapshot`이 저장되어 엔트로피 신호의 입력으로 사용 가능하다(REQ-PROF-021).
 - **AC-PROF-11 (턴 중 write 금지)**: **Given** 진행 중인 대화 턴, **When** 사용자 발화가 처리되면(비 "기억해"), **Then** 프로필 store에 대한 write는 발생하지 않고 관찰은 session_context에만 누적되며, 델타 생성은 세션 종료 후 배치에서만 발생한다(REQ-PROF-023).
 - **AC-PROF-12 (EMA·승격·recency-wins 코드 결정론)**: **Given** 동일한 델타 집합, **When** consolidation을 두 번 실행하면, **Then** EMA 누적·승격 판정·recency-wins 결과가 동일하며(재현 가능), 이 판정에 LLM이 호출되지 않는다(REQ-PROF-032/033).
-- **AC-PROF-13 (supersede not delete)**: **Given** 기존 fact와 그를 대체하는 최신 fact, **When** consolidation이 충돌을 해소하면, **Then** 구 fact는 삭제되지 않고 `superseded_by`가 설정되어 이력이 보존된다(REQ-PROF-034).
+- **AC-PROF-13 (supersede not delete — 기계 경로 한정)**: **Given** 기존 fact와 그를 대체하는 최신 fact, **When** consolidation이 충돌을 해소하면, **Then** 구 fact는 삭제되지 않고 `superseded_by`가 설정되어 이력이 보존된다(REQ-PROF-034). **[v0.7.0]** 범위는 **기계(파이프라인) 경로**이며 사용자 개시 삭제는 AC-PROF-31/32가 다룬다.
+- **AC-PROF-31 (사용자 개별 삭제 = 억제·복구 가능)**: **Given** 승격된 fact를 가진 회원, **When** 사용자가 그 항목을 삭제하면, **Then** 그 항목은 투영·요약·랭킹에서 즉시 제외되지만 이력이 보존되어 복구할 수 있고, **이후 배치가 같은 취향을 재파생해도 다시 나타나지 않는다**(REQ-PROF-015/034, 신규 SPEC REQ-PGRAPH-022/023/031).
+- **AC-PROF-32 (전체 초기화 = 물리 삭제·전사록 불변)**: **Given** 프로필과 대화 전사록을 가진 회원, **When** 사용자가 전체 초기화를 요청하면, **Then** fact·요약·임베딩·억제 표식·미처리 버퍼가 물리 삭제되고 **변경 감사 로그와 전사록은 남으며**, 버전 값은 되돌아가지 않고 개인화 중지 상태도 바뀌지 않는다(REQ-PROF-085).
 - **AC-PROF-14 (구매 신호 명시성 없이 승격)**: **Given** 명시성 신호가 없는 구매 소스 델타가 반복성·현저성을 충족, **When** 게이트가 판정하면, **Then** 해당 선호가 승격된다 — 명시성 부재가 승격을 원천 차단하지 않는다(REQ-PROF-044).
 - **AC-PROF-15 (엔트로피 최소 세션 가드)**: **Given** config `entropy.min_sessions` 미달의 사용자, **When** 게이트가 transient (b) 엔트로피 신호를 판정하면, **Then** 이 신호는 비활성 처리되어 오탐(노이즈)이 발생하지 않는다(REQ-PROF-043).
 - **AC-PROF-16 (transient 격리)**: **Given** "이번엔 비싸도 돼" 같은 일시적 발화, **When** 델타가 transient로 태깅되면, **Then** 해당 델타는 session_context에만 남고 프로필 승격 후보에서 배제되어 장기 프로필로 전파되지 않는다(REQ-PROF-042).
@@ -398,7 +421,7 @@ class ProfileViewResponse(BaseModel):
 - **AC-PROF-25 (reader store 불가용 → None 폴백)**: **Given** store read가 강제 실패하도록 주입된 상태, **When** 그래프가 진입하면, **Then** `reader`는 `profile_summary == None`을 반환해 요청 경로를 막지 않고, 추천은 게스트 경로로 정상 성립한다(REQ-PROF-092).
 - **AC-PROF-26 (10분 경계와 재활동)**: **Given** timeout=600초인 회원 세션, **When** 마지막 활동이 599초 전이면 대상이 아니고 600초 이상이면 대상이며, 처리 전 새 발화가 저장되면 **Then** 활동 시각이 갱신되어 이번 timeout finalization은 실행되지 않는다(REQ-PROF-056~058).
 - **AC-PROF-27 (bounded indexed sweep)**: **Given** 대량의 세션 활동 행과 batch size=N, **When** sweep 1회가 실행되면, **Then** 최대 N개만 claim하고 `(status,last_activity_at)` 인덱스를 사용하는 후보 쿼리가 실행되며 `conversation_turns` 전체 집계는 발생하지 않는다(REQ-PROF-057).
-- **AC-PROF-28 (timeout·I-20 경합 멱등)**: **Given** 동일 `(userId,sessionId)`에 AI timeout과 Spring `logout`/`newConversation` 통지가 경합, **When** 둘이 동시에 finalizer에 진입하면, **Then** 델타·consolidation·버퍼 삭제는 논리적으로 한 번만 완료되고 한 경로는 `duplicate`로 수렴한다(REQ-PROF-052/059).
+- **AC-PROF-28 (timeout·I-20 경합 멱등)**: **Given** 동일 `(userId,sessionId)`에 AI timeout과 Spring `logout` 통지가 경합, **When** 둘이 동시에 finalizer에 진입하면, **Then** 델타·consolidation·버퍼 삭제는 논리적으로 한 번만 완료되고 한 경로는 `duplicate`로 수렴한다(REQ-PROF-052/059).
 - **AC-PROF-29 (timeout 실패 복구)**: **Given** timeout finalizer가 델타/consolidation 중 실패하거나 프로세스가 crash, **When** claim이 해제되거나 lease가 만료된 뒤 다음 sweep이 실행되면, **Then** 보존된 버퍼가 재처리되고 실패 실행은 `COMPLETED`로 남지 않는다(REQ-PROF-052/058/059).
 - **AC-PROF-30 (종료/checkpoint 후 같은 세션 재개)**: **Given** idle checkpoint 또는 Spring terminal 처리가 시작·완료된 sessionId, **When** 같은 sessionId의 새 회원 발화가 저장되거나 finalizer 처리 중 새 stream이 시작되면, **Then** 정상 채팅은 scheduler 때문에 409를 받지 않고 activity는 `ACTIVE`로 재개되며 이전 processed-event generation은 무효화된다. 처리 중 terminal finalizer는 새 activity를 `COMPLETED`로 덮지 않고, 새 버퍼는 다음 timeout/I-20에서 다시 처리된다(REQ-PROF-052/056/058/059).
 
@@ -432,8 +455,10 @@ class ProfileViewResponse(BaseModel):
 - **OPEN-P7 (3조건 게이트 AND vs 가중 앙상블 의미론)**: 결정 16은 구매 신호를 "명시성 없이 반복성·현저성 중심으로 판정"한다고 하나(REQ-PROF-044), 결정 4-A의 "3조건 게이트"가 3조건을 strict AND로 요구하는지 가중 앙상블(명시성은 기여 신호)인지 명시하지 않는다. 두 판독이 상충한다 — strict AND면 구매 신호가 명시성 부재로 **영원히 승격 불가**해 결정 16의 "구매도 write 소스" 의도와 모순되고, 가중 앙상블이면 "기억해" hot-path 예외(REQ-PROF-045)가 자연스럽다. 본 SPEC은 **가중 앙상블(명시성 필수 아님)** 을 가정하고 진행하나, 정확한 게이트 의미론과 가중치는 실측·확정 대상(TBD). 🔴 이는 판독 긴장이므로 상위 결정 계층에서 확인 필요.
 - **OPEN-P8 (최근 맥락 episodic의 게이트 예외 경계)**: 결정 16은 요약이 "게이트 통과 미폐기 fact만" 반영한다고 하나(REQ-PROF-015), 동시에 최근 맥락 섹션은 recency 윈도우 내 **episodic 하이라이트 2~3개**를 담는다(REQ-PROF-013). episodic 하이라이트는 최근 단발 이벤트라 반복성(EMA) 조건을 구조적으로 충족하지 못한다 — "게이트 통과"(반복성 포함)와 "최근 episodic 포함"이 상충한다. 본 SPEC은 최근 맥락 섹션의 episodic 하이라이트를 **반복성 게이트가 아닌 recency 윈도우 + salience 선택**으로 처리한다고 가정하나, 이 예외의 정확한 경계(어떤 episodic이 요약에 오를 자격이 있는가)는 확정 대상(TBD). 🔴 판독 긴장, 상위 결정 계층 확인 필요.
 - **[v0.3.0 해소] OPEN-P9 (session_context 소유·물리 배치 경계)**: 구매자 실행 모델이 실제 LangGraph StateGraph 가 아니라 단순 함수 호출 체인이라 "checkpointer"라는 메커니즘 자체를 적용할 수 없음이 이슈 #33 구현 중 확인됨 — 대신 BaseStore(app/core/pg_store.py, pg-profile 동거)로 구현했다. write 소유는 그대로 구매자 그래프(app/agents/buyer/graph.py) — 프로필 파이프라인은 read-only 소비만 한다(REQ-PROF-050/075 불변). 결정 16-A(단일 인스턴스)로 물리 결합 우려는 이미 소멸했었고, 이번에 스키마·구현 소유까지 확정됨.
-- **OPEN-P10 (GET 마이페이지 노출 범위)**: 결정 16은 GET이 "자연어 마크다운"을 반환한다고만 하고 노출 범위(index.md 압축 요약만인지, 전체 지식 단위 번들을 조립한 마크다운인지)를 명시하지 않는다. reader(그래프 진입)는 압축 요약만 로드하나(결정 4 읽기 정책), 마이페이지는 사용자 투명성용(결정 4-A 6)이라 더 넓은 노출이 자연스럽다. 본 SPEC은 GET을 **사람이 읽는 프로필 마크다운(reader 압축 요약보다 넓을 수 있음)** 으로 가정하나, 정확한 조립 범위는 확정 대상(TBD). 🔴 기획 UX 확인 항목.
+- **OPEN-P10 (GET 마이페이지 노출 범위)**: 결정 16은 GET이 "자연어 마크다운"을 반환한다고만 하고 노출 범위(index.md 압축 요약만인지, 전체 지식 단위 번들을 조립한 마크다운인지)를 명시하지 않는다. reader(그래프 진입)는 압축 요약만 로드하나(결정 4 읽기 정책), 마이페이지는 사용자 투명성용(결정 4-A 6)이라 더 넓은 노출이 자연스럽다. 본 SPEC은 GET을 **사람이 읽는 프로필 마크다운(reader 압축 요약보다 넓을 수 있음)** 으로 가정하나, 정확한 조립 범위는 확정 대상(TBD). 🔴 기획 UX 확인 항목. **[부분 해소 v0.7.0, 이슈 #149]** "더 넓은 투명성 노출"의 요구는 **개인화 그래프 투영**(api-spec §3.8)이 답한다 — 항목 단위로 출처·근거 횟수·확신도 버킷까지 보여주므로 마크다운을 넓힐 필요가 없어졌고, 마크다운 GET은 현행(압축 요약 passthrough) 유지다. 마크다운 자체의 조립 범위는 계속 TBD.
 - **[v0.3.0 해소] OPEN-P11 (임베딩 서빙 형태 공유 의존)**: 결정 6 이 이슈 #31 로 확정됨(Google `gemini-embedding-001` API, FastAPI 프로세스 내 동기 SDK 호출, `app.pipelines.embedding.embed_texts`) — 프로필도 동일 함수를 그대로 재사용한다(REQ-PROF-074). 별도 경량 임베딩 서비스 분리는 채택되지 않았다.
+- **OPEN-P12 (게이트 누적 상태 미구현 — REQ-PROF-032/033/034/036 gap, v0.6.0 #119 등록)**: §5.2 `GateState`(`preference_key`·`ema_confidence`·`observation_count`·`valid_from`·`last_confirmed`·`superseded_by`)가 **구현되어 있지 않다**. 현재 fact store item 값은 `{"fact": str}` 단일 필드이고, dedup 은 완전 문자열 일치뿐이며, recency-wins 는 consolidation 프롬프트 문구("중복 병합, 최신 우선")로만 존재한다 — 즉 REQ-PROF-032("결정론적 코드")/033("LLM 위임 금지")를 **현행 구현이 위반**한다. #119 는 세션 버퍼 단계의 반복 통제(REQ-PROF-026)로 **부분 완화**했을 뿐, 세션을 넘는 빈도 편향과 supersede 이력 보존은 미해결이다. 선결과제: 자유형 한국어 fact 에서 안정적 `preference_key`("brand:소니")를 결정론적으로 도출하는 방법 — 이것이 없으면 EMA 를 누적할 키가 없다(§5.1 구조화 블록을 `consolidate` 가 JSON 으로도 산출하게 하는 방향이 후보). 명세를 코드에 맞춰 낮추지 않고 gap 으로 남긴다(TBD).
+  - **[우선순위 상향 v0.7.0, 이슈 #149 — 해소 아님]** 개인화 그래프 계약(api-spec §3.8·§3.9)이 **결정론적 투영과 중복 불가**를 요구하므로, 자유형 fact 위에서는 그 계약이 **원리적으로 달성 불가**하다. 따라서 이 항목은 이슈 #150의 **선결 조건(blocking)** 으로 승격되고 위 후보 방향은 **확정 방향**이 된다 — REQ-PROF-086이 그것을 조항으로 못 박았다. 키 도출 방식은 `SPEC-PROFILE-GRAPH-149` §6.2가 소유한다(LLM은 타입 붙은 제안만 산출하고 키 확정은 kind별 결정론적 resolver가 수행 — LLM이 키를 직접 만들면 같은 발화에서 값이 흔들려 누적이 성립하지 않는다는 실측이 근거다). **남은 미확정은 거리 임계의 재측정**이며 신규 SPEC OPEN-G1로 이관한다.
 
 ---
 
@@ -461,7 +486,9 @@ class ProfileViewResponse(BaseModel):
 - reader는 LLM 0회·단일 get, 게스트·신규 회원 `None`(REQ-PROF-001/002/003, AC-PROF-01/02).
 - 턴 중 프로필 write 금지, 델타 생성은 sleep-time 전용(REQ-PROF-023, AC-PROF-11).
 - 최신성 충돌은 항상 코드 결정론적 recency-wins, LLM 최신성 판단 위임 금지(REQ-PROF-033, AC-PROF-12).
-- fact 폐기 대신 supersede(이력 보존), 삭제 금지(REQ-PROF-034, AC-PROF-13).
+- **기계 경로의** fact 폐기 대신 supersede(이력 보존). **사용자 요청 삭제는 억제(개별)/물리 삭제(전체 초기화) 2등급이며 항상 감사된다** — 금지 대상은 기계가 조용히 지우는 것이다(REQ-PROF-034/085, AC-PROF-13/31/32, v0.7.0 이슈 #149). 민감 파생 항목의 보존기간 만료 삭제는 명시된 좁은 예외다.
+- 개인화 중지는 **사용과 수집을 동시에** 멈추고 데이터는 보존하며, 중지 중에도 조회·정리 동작은 허용된다(REQ-PROF-083/084).
+- 개인화 그래프 투영의 원천은 **구조화 트리플**이며 요약 마크다운 파싱이 아니다(REQ-PROF-086).
 - 요약 문자 상한은 생성 측 압축 재작성으로 집행, 소비 측 절단 아님(REQ-PROF-016, AC-PROF-07).
 - 요약은 게이트 통과·미폐기 fact만 반영(REQ-PROF-015, AC-PROF-08 — 단 episodic 예외 §9 OPEN-P8).
 - `decompose`·`rerank`에 동일 `profile_summary` 문자열 주입(REQ-PROF-014, AC-PROF-06).

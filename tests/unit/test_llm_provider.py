@@ -8,16 +8,81 @@ resolve/분기 로직만 확인한다.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from pydantic import ValidationError
 
 from app.core import llm as llm_mod
 from app.core.config import Settings
-from app.core.llm import AnthropicLLM, LLMError, OpenAILLM, get_llm
+from app.core.llm import AnthropicLLM, LLMError, OpenAILLM, get_llm, is_timeout_error
+from app.core.tracing import FakeTraceExporter, TraceFactory, bind_request_trace, trace_span
 
 
 def _settings(**kw) -> Settings:
     return Settings(_env_file=None, **kw)
+
+
+# ─────────── is_timeout_error — 타입 기반 타임아웃 판정 (#266 P1) ───────────
+
+
+def test_sdk_timeout_is_not_a_builtin_timeout_error() -> None:
+    """#266 P1 의 **전제**를 코드로 고정한다.
+
+    `except (TimeoutError, asyncio.TimeoutError)` 만으로 SDK 타임아웃이 잡힌다면
+    is_timeout_error 는 존재할 이유가 없다. 라이브러리 업그레이드로 이 전제가 바뀌면
+    이 테스트가 먼저 깨져서 알려준다.
+    """
+    import httpx
+
+    assert not issubclass(httpx.TimeoutException, TimeoutError)
+
+
+def test_is_timeout_error_detects_sdk_timeout_with_empty_message() -> None:
+    """문자열 매칭이 못 잡는 케이스 — `str(exc)` 가 비어도 타입으로 잡아야 한다."""
+    import httpx
+
+    exc = httpx.ReadTimeout("")
+    assert "timeout" not in str(exc).lower(), "문자열 매칭이 통했다면 이 테스트의 전제가 무너진다"
+    assert is_timeout_error(exc) is True
+
+
+def test_is_timeout_error_follows_cause_chain() -> None:
+    """LLMError(str(exc)) from exc 로 감싸도 원인 체인에서 원본 타입을 찾아야 한다."""
+    import httpx
+
+    try:
+        try:
+            raise httpx.ConnectTimeout("")
+        except httpx.TimeoutException as inner:
+            raise LLMError("wrapped") from inner
+    except LLMError as wrapped:
+        assert is_timeout_error(wrapped) is True
+
+
+def test_is_timeout_error_covers_builtin_and_asyncio_timeout() -> None:
+    """asyncio.timeout 이 던지는 TimeoutError 도 같은 판정기로 덮인다(3.11+ 동일 객체)."""
+    import asyncio
+
+    assert asyncio.TimeoutError is TimeoutError
+    assert is_timeout_error(TimeoutError()) is True
+
+
+def test_is_timeout_error_rejects_non_timeout() -> None:
+    """일반 실패를 타임아웃으로 오분류하지 않는다 — None 도 안전하게 False."""
+    assert is_timeout_error(RuntimeError("boom")) is False
+    assert is_timeout_error(LLMError("모델 응답 파싱 실패")) is False
+    assert is_timeout_error(None) is False
+
+
+def test_is_timeout_error_survives_self_referencing_chain() -> None:
+    """원인 체인이 순환해도 무한 루프에 빠지지 않는다."""
+    first = RuntimeError("a")
+    second = RuntimeError("b")
+    first.__cause__ = second
+    second.__cause__ = first
+
+    assert is_timeout_error(first) is False
 
 
 # ─────────── tier 매핑 ───────────
@@ -161,6 +226,72 @@ def test_settings_rejects_unknown_provider() -> None:
         _settings(llm_provider="other")
 
 
+# ─────────── tool + reasoning_effort capability 게이팅 (이슈 #178) ───────────
+
+
+def test_tool_lane_downgrades_effort_on_incompatible_model() -> None:
+    """gpt-5.6-luna 는 tools + reasoning_effort 를 400 으로 거부 — override 로 강등한다."""
+    settings = _settings(openai_api_key="k", openai_smart_model_id="gpt-5.6-luna")
+
+    smart = llm_mod.resolve_provider_model(settings, "smart", with_tools=True)
+
+    assert smart.reasoning_effort == settings.openai_tool_reasoning_effort_override
+    assert smart.reasoning_effort == "none"
+
+
+def test_non_tool_lane_keeps_effort_on_incompatible_model() -> None:
+    """구매자 레인(OpenAILLM.complete/stream)은 tool 을 싣지 않아 강등 대상이 아니다."""
+    settings = _settings(openai_api_key="k", openai_smart_model_id="gpt-5.6-luna")
+
+    smart = llm_mod.resolve_provider_model(settings, "smart")
+
+    assert smart.reasoning_effort == settings.openai_smart_reasoning_effort
+
+
+def test_tool_lane_keeps_effort_on_compatible_model() -> None:
+    """gpt-5-nano 는 tools + minimal 조합이 통과한다(aa0a2b6 이전 판매자 레인 실측)."""
+    settings = _settings(openai_api_key="k")
+
+    fast = llm_mod.resolve_provider_model(settings, "fast", with_tools=True)
+
+    assert fast.model_id == "gpt-5-nano"
+    assert fast.reasoning_effort == settings.openai_fast_reasoning_effort
+
+
+def test_incompatible_match_is_prefix_based() -> None:
+    """날짜 스냅샷 ID 도 같은 제약을 받는다 — 접두사 매칭."""
+    settings = _settings(openai_api_key="k", openai_smart_model_id="gpt-5.6-luna-2026-07-01")
+
+    smart = llm_mod.resolve_provider_model(settings, "smart", with_tools=True)
+
+    assert smart.reasoning_effort == "none"
+
+
+def test_empty_incompatible_entry_does_not_match_everything() -> None:
+    """빈 문자열 항목이 전체 모델을 강등시키지 않는다."""
+    settings = _settings(openai_api_key="k", openai_tool_reasoning_incompatible_models=[""])
+
+    assert llm_mod.supports_tool_reasoning(settings, "gpt-5.6-luna")
+
+
+def test_gating_disabled_by_empty_model_list() -> None:
+    """조합을 지원하는 모델로 갈아타면 목록을 비우는 것으로 원복된다."""
+    settings = _settings(openai_api_key="k", openai_tool_reasoning_incompatible_models=[])
+
+    smart = llm_mod.resolve_provider_model(settings, "smart", with_tools=True)
+
+    assert smart.reasoning_effort == settings.openai_smart_reasoning_effort
+
+
+def test_anthropic_tool_lane_has_no_reasoning_effort() -> None:
+    """anthropic 은 reasoning_effort 자체가 없어 with_tools 와 무관하다."""
+    settings = _settings(llm_provider="anthropic", anthropic_api_key="k")
+
+    smart = llm_mod.resolve_provider_model(settings, "smart", with_tools=True)
+
+    assert smart.reasoning_effort is None
+
+
 # ─────────── get_llm 분기 ───────────
 
 
@@ -212,6 +343,174 @@ def _openai(**kw) -> OpenAILLM:
     )
     base.update(kw)
     return OpenAILLM("sk-test", **base)
+
+
+def _provider(provider: str):
+    if provider == "anthropic":
+        return AnthropicLLM(
+            "key", fast_model="fast-model", smart_model="smart-model", timeout=1, max_retries=0
+        )
+    return OpenAILLM(
+        "key", fast_model="fast-model", smart_model="smart-model", timeout=1, max_retries=0
+    )
+
+
+def _trace():
+    exporter = FakeTraceExporter()
+    trace = TraceFactory(exporter=exporter, enabled=True, sampling_rate=1.0).start_request(
+        name="buyer_chat_turn",
+        request_id="req-provider",
+        conversation_id="conversation",
+        thread_id="thread",
+        lane="buyer",
+        environment="test",
+    )
+    return trace, exporter
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "openai"])
+async def test_provider_stream_records_first_nonempty_ttft_and_disables_implicit_tracing(
+    monkeypatch: pytest.MonkeyPatch, provider: str
+) -> None:
+    from langsmith.run_helpers import get_tracing_context
+
+    contexts: list[bool | str | None] = []
+
+    class Chat:
+        async def astream(self, messages):
+            del messages
+            contexts.append(get_tracing_context()["enabled"])
+            yield SimpleNamespace(content="")
+            yield SimpleNamespace(
+                content="첫 토큰",
+                usage_metadata={"input_tokens": 11, "output_tokens": 3},
+            )
+
+    llm = _provider(provider)
+    monkeypatch.setattr(llm, "_chat", lambda *args, **kwargs: Chat())
+    times = iter([10.0, 10.025])
+    monkeypatch.setattr(llm_mod, "perf_counter", lambda: next(times), raising=False)
+    trace, exporter = _trace()
+
+    with bind_request_trace(trace):
+        with trace_span("llm.fallback", "llm", {"model": "fast-model"}):
+            chunks = [
+                chunk
+                async for chunk in llm.stream(
+                    system="private system", user="private user", tier="fast"
+                )
+            ]
+    await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+
+    assert chunks == ["첫 토큰"]
+    root = next(node for node in exporter.exported[0] if node.parent_id is None)
+    span = next(node for node in exporter.exported[0] if node.name == "llm.fallback")
+    assert root.metadata["provider_ttft_ms"] == 25
+    assert span.metadata == {
+        "model": "fast-model",
+        "promptTokens": 11,
+        "completionTokens": 3,
+    }
+    assert contexts == [False]
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "openai"])
+async def test_provider_complete_records_usage_without_provider_ttft(
+    monkeypatch: pytest.MonkeyPatch, provider: str
+) -> None:
+    from langsmith.run_helpers import get_tracing_context
+
+    contexts: list[bool | str | None] = []
+
+    class Chat:
+        async def ainvoke(self, messages):
+            del messages
+            contexts.append(get_tracing_context()["enabled"])
+            return SimpleNamespace(
+                content='{"ok": true}',
+                usage_metadata={"input_tokens": 7, "output_tokens": 2},
+            )
+
+    llm = _provider(provider)
+    monkeypatch.setattr(llm, "_chat", lambda *args, **kwargs: Chat())
+    trace, exporter = _trace()
+
+    with bind_request_trace(trace):
+        with trace_span("llm.decompose", "llm", {"model": "fast-model"}):
+            result = await llm.complete(system="private system", user="private user", tier="fast")
+    await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+
+    assert result == '{"ok": true}'
+    root = next(node for node in exporter.exported[0] if node.parent_id is None)
+    span = next(node for node in exporter.exported[0] if node.name == "llm.decompose")
+    assert "provider_ttft_ms" not in root.metadata
+    assert span.metadata == {
+        "model": "fast-model",
+        "promptTokens": 7,
+        "completionTokens": 2,
+    }
+    assert contexts == [False]
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "openai"])
+async def test_request_provider_ttft_is_first_write_wins_across_streams_and_complete(
+    monkeypatch: pytest.MonkeyPatch, provider: str
+) -> None:
+    calls = 0
+
+    class Chat:
+        async def astream(self, messages):
+            del messages
+            yield SimpleNamespace(content="")
+            yield SimpleNamespace(content="")
+            yield SimpleNamespace(content=f"stream-{calls}")
+
+        async def ainvoke(self, messages):
+            del messages
+            return SimpleNamespace(
+                content='{"ok": true}',
+                usage_metadata={"input_tokens": 1, "output_tokens": 1},
+            )
+
+    llm = _provider(provider)
+
+    def chat(*args, **kwargs):
+        del args, kwargs
+        nonlocal calls
+        calls += 1
+        return Chat()
+
+    monkeypatch.setattr(llm, "_chat", chat)
+    times = iter([10.0, 10.010, 20.0, 20.250])
+    monkeypatch.setattr(llm_mod, "perf_counter", lambda: next(times))
+    trace, exporter = _trace()
+
+    with bind_request_trace(trace):
+        with trace_span("llm.fallback", "llm", {"model": "fast-model"}):
+            first = [
+                chunk
+                async for chunk in llm.stream(
+                    system="private system", user="private user", tier="fast"
+                )
+            ]
+        with trace_span("llm.fallback", "llm", {"model": "fast-model"}):
+            second = [
+                chunk
+                async for chunk in llm.stream(
+                    system="private system", user="private user", tier="fast"
+                )
+            ]
+        with trace_span("llm.decompose", "llm", {"model": "fast-model"}):
+            completed = await llm.complete(
+                system="private system", user="private user", tier="fast"
+            )
+    await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+
+    assert first == ["stream-1"]
+    assert second == ["stream-2"]
+    assert completed == '{"ok": true}'
+    root = next(node for node in exporter.exported[0] if node.parent_id is None)
+    assert root.metadata["provider_ttft_ms"] == 10
 
 
 def test_openai_json_output_toggles_response_format() -> None:

@@ -134,3 +134,30 @@ def test_embed_texts_omits_task_type_by_default(monkeypatch):
     emb.embed_texts(["d"])
 
     assert getattr(client.models.last_config, "task_type", None) is None
+
+
+def test_client_sets_http_timeout_from_config(monkeypatch):
+    """[#101 PR#166 리뷰] genai.Client 에 config embedding_timeout_s(ms) 를 http_options 로 건다.
+
+    이 PR 로 방식2(임베딩 재정렬)가 hot path 기본이 돼 매 추천 턴마다 Google 임베딩 API 를 탄다.
+    상한이 없으면 그 API 가 느려질 때 SSE 스트림이 first-token 도 못 내고 무기한 대기한다 —
+    CLAUDE.md 'AI→외부 3s' 규약대로 클라이언트에 요청 타임아웃을 건다(초과 시 상위에서 degrade).
+    """
+    import google.genai as genai_mod
+
+    captured = {}
+
+    class _FakeClient:
+        def __init__(self, *, api_key, http_options=None):
+            captured["api_key"] = api_key
+            captured["http_options"] = http_options
+
+    monkeypatch.setattr(genai_mod, "Client", _FakeClient)
+    settings = Settings(_env_file=None, google_api_key="k", embedding_timeout_s=3.0)
+    monkeypatch.setattr(emb, "get_settings", lambda: settings)
+    emb._CLIENT_CACHE.clear()
+
+    emb._client("k")
+
+    assert captured["http_options"] is not None
+    assert captured["http_options"].timeout == 3000  # 3.0s → 3000ms(HttpOptions.timeout 은 ms)

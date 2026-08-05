@@ -17,26 +17,29 @@ data: {"type":"<event>","data":{...}}
 token / conditions / suggestions / action / products.ready / done / error
 ```
 
-판매자 `/seller/chat` 활성 event:
+판매자 `/seller/chat` 활성 event(**[정정 v0.20.0, 이슈 #242] `meta`·`progress` 가 이 목록에서 누락돼 있었다** — 실제로는 4-1b·3-3 부터 이미 emit 중이었고, 이번에 `chart` 를 신설하며 함께 바로잡는다):
 
 ```text
-token / draft / done / error
+meta / progress / token / draft / chart / done / error
 ```
 
 ## 2. 활성 event payload
 
 | event | payload | 발생 조건 |
 |---|---|---|
+| `meta` | `{lane}` | 매 스트림 첫 프레임 — 구매자·판매자 공통(FE 레인 전환) |
+| `progress` | `{text: string}` | 판매자 analysis 레인 진행 상태(로딩 표시, 최종 답변 아님) |
 | `token` | `{text: string}` | 답변, 추천 코멘트, 되묻기, 진행 문구 |
 | `conditions` | `{chips: [{field,label,value}]}` | 구매자 추천 검색 직전 |
 | `suggestions` | `{chips: [{label,revert?,relaxation?,estCount}]}` | 현재는 최근 구매 소모품 category 되돌리기 |
 | `action` | `{type,message,cartItemId?,reason?}` | 구매자 장바구니 담기 성공/실패 |
-| `products.ready` | `{sessionId,listId}` | Spring 추천 목록 push 성공 뒤 |
+| `products.ready` | `{sessionId,listIds}` | Spring 추천 목록 push 성공 뒤(1~10개, 단일도 배열) |
 | `draft` | `{draftId,op,productId,changes,summary}` | 판매자 상품 변경 초안 저장 성공 |
+| `chart` | `{charts: [{title,chartType,unit,series,summary}]}` | **[신설 v0.20.0, 이슈 #242]** 판매자 analysis 레인, `wants_chart` 요청 + 근거 검증(G1) 통과 차트 1개 이상 시 0~1회(token 뒤·done 앞) — api-spec §3.2 참조 |
 | `done` | `{finishReason: stop|zero_result}` | 정상/degrade 종료 |
-| `error` | `{code,message}` | stream 내부 치명 오류 종료 |
+| `error` | `{code,message,requestId,retryable}` | stream 내부 치명 오류 종료 |
 
-`error.code`는 `LLM_TIMEOUT | LLM_UNAVAILABLE | SEARCH_FAILED | INTERNAL`이다. `action.reason`의 현재 runtime 값은 `PRODUCT_NOT_FOUND | CART_ERROR`다.
+`error.code`는 `LLM_TIMEOUT | LLM_UNAVAILABLE | SEARCH_FAILED | INTERNAL`이다. `requestId`는 같은 HTTP 요청·구조화 로그의 상관키이며, `retryable`은 emit 지점이 판단한다. `action.reason`의 현재 runtime 값은 `PRODUCT_NOT_FOUND | CART_ERROR`다.
 
 ## 3. 구매자 sequence
 
@@ -67,7 +70,8 @@ token / draft / done / error
 |---|---|
 | general 성공 | `token... → done(stop)` |
 | scope 거절 | `token(거절문) → done(stop)` |
-| 분석 성공/clarification/all-worker degrade | `token(진행)* → token(결과) → done(stop)` |
+| 분석 성공(차트 요청 없음)/clarification/all-worker degrade | `meta(analysis) → progress(진행)* → token(결과) → done(stop)` |
+| 분석 성공(차트 요청 + 검증 통과 ≥1건) | `meta(analysis) → progress(진행)* → token(결과) → chart → done(stop)` |
 | 분석 planner/report 치명 실패 | `token(진행)* → token(사과) → error(INTERNAL|LLM_TIMEOUT)` |
 | 상품 초안 성공 | `draft → done(stop)` |
 | 상품 정보 부족/초안 검증 실패 | `token(되묻기) → done(stop)` |
@@ -116,6 +120,10 @@ stream 시작 전 실패는 SSE가 아닌 JSON이다.
 2. AI confirm은 JSON을 요구하지만 FE 버튼은 `[수정 확인] {draftId}`를 보낸다.
 3. AI confirm 결과는 token뿐인데 FE diff settled 상태는 판매자 action을 기대한다.
 4. `done.zero_result`가 FE 결과 panel을 비우지 않아 이전 상품이 남는다.
-5. 판매자 분석은 token 산문인데 FE 차트/지표 panel은 legacy 구조화 event를 기다린다.
+5. ~~판매자 분석은 token 산문인데 FE 차트/지표 panel은 legacy 구조화 event를 기다린다.~~
+   **[해소 v0.20.0, 이슈 #242]** `chart` 이벤트 신설로 전달 경로가 생겼다 — FE 는
+   `case "chart"` 리듀서 1개 + 스토어 1필드 추가로 기존 `AnalysisChart.tsx` 를
+   무수정 재사용한다(`DESIGN-ANALYSIS-V31-242.md` §7). legacy `metrics`/`analysis`/
+   `productStats`/`productDiff` 는 부활하지 않는다 — `chart` 는 그와 무관한 신규 계약이다.
 
 이 항목을 고칠 때는 AI emitter test와 FE reducer/render test를 함께 추가해야 한다.

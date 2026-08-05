@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import hmac
+
 from fastapi import Header, HTTPException, status
 
 from app.core.auth import AuthError, Identity, TokenExpiredError, decode_token
@@ -80,6 +82,38 @@ def require_seller(authorization: str | None = Header(default=None)) -> Identity
     return identity
 
 
+def require_buyer_session(
+    identity: Identity,
+    session_id: str,
+    settings: Settings,
+) -> None:
+    """구매자 body sessionId를 서명된 스트림 티켓의 접속에 바인딩한다."""
+    if identity.seller_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "FORBIDDEN", "message": "buyer scope required"},
+        )
+    if settings.auth_mode == "dev" and identity.session_id is None:
+        return
+    if not identity.session_id or identity.session_id != session_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "SESSION_FORBIDDEN", "message": "session access denied"},
+        )
+
+
+def buyer_owner_id(identity: Identity, settings: Settings) -> str:
+    """구매자 세션 상태의 소유자 키를 검증된 subject에서 도출한다."""
+    if identity.subject:
+        return identity.subject
+    if settings.auth_mode == "dev":
+        return "dev-anon"
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={"code": "SESSION_FORBIDDEN", "message": "session access denied"},
+    )
+
+
 def verify_service_token(
     x_internal_token: str | None = Header(default=None, alias="X-Internal-Token"),
 ) -> None:
@@ -92,7 +126,11 @@ def verify_service_token(
     # 토큰 미설정·불일치 모두 401(프로필 오염 IDOR 방지, 리뷰 반영).
     if settings.auth_mode == "dev":
         return
-    if not settings.internal_api_token or x_internal_token != settings.internal_api_token:
+    if (
+        not settings.internal_api_token
+        or x_internal_token is None
+        or not hmac.compare_digest(x_internal_token, settings.internal_api_token)
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"code": "INTERNAL_TOKEN_INVALID", "message": "서비스 토큰 필요/불일치"},

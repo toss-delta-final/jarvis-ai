@@ -11,6 +11,7 @@ AI 서버는 단독 실행이 불가하고 Spring 역호출에 의존한다(api-
 
 Spring stub 커버 범위 (api-spec §4):
   I-1  GET  /internal/products/search      (§4.6 후보 검색)
+  I-4  GET  /internal/members/{id}/orders/status (§4.10 주문 상태)
   I-2  POST /internal/cart/items           (§4.1 담기)
   I-18 GET  /internal/cart                 (§4.9 조회)
   I-19 GET  /internal/members/{id}/orders  (§4.7 구매 이력)
@@ -70,6 +71,7 @@ class SpringStub:
     """
 
     catalog: list[dict] = field(default_factory=lambda: [dict(p) for p in DEFAULT_CATALOG])
+    order_status_orders: list[dict] = field(default_factory=list)
     orders: list[dict] = field(default_factory=list)
     changes_pages: list[dict] = field(default_factory=list)
     cart_items: list[dict] = field(default_factory=list)
@@ -80,6 +82,9 @@ class SpringStub:
 
     # 실패 주입 (degrade 검증용)
     fail_search: bool = False
+    fail_order_status: int | None = None
+    order_status_exception: Exception | None = None
+    order_status_payload: Any | None = None
     fail_purchases: bool = False
     fail_push: bool = False
     fail_cart_add_code: str | None = None  # CART_OPTION_REQUIRED 등
@@ -112,6 +117,13 @@ class SpringStub:
             return self._cart_add(body)
         if request.method == "GET" and path == "/internal/cart":
             return self._cart_view()
+        # I-4 must precede the generic I-19 member route: both share the same prefix.
+        if (
+            request.method == "GET"
+            and path.startswith("/internal/members/")
+            and path.endswith("/orders/status")
+        ):
+            return self._order_status()
         if request.method == "GET" and path.startswith("/internal/members/"):
             return self._orders()
         if request.method == "POST" and path == "/internal/recommendations":
@@ -145,7 +157,11 @@ class SpringStub:
     # ── I-2 담기 (§4.1) ──
 
     def _cart_add(self, body: Any) -> httpx.Response:
-        if self.fail_cart_add_code == "CART_OPTION_REQUIRED":
+        # optionId 를 실어 오면 옵션 요구는 해소된 것 — 유일 옵션 자동 선택(#114) 재담기가 성공한다.
+        if (
+            self.fail_cart_add_code == "CART_OPTION_REQUIRED"
+            and (body or {}).get("optionId") is None
+        ):
             return httpx.Response(
                 400,
                 json={
@@ -184,6 +200,22 @@ class SpringStub:
 
     # ── I-19 구매 이력 (§4.7) ──
 
+    def _order_status(self) -> httpx.Response:
+        """I-4 status summary, isolated from I-19 purchase-dedup state/failures."""
+        if self.order_status_exception is not None:
+            raise self.order_status_exception
+        if self.fail_order_status is not None:
+            return httpx.Response(
+                self.fail_order_status,
+                json={"success": False, "error": {"code": "UNAVAILABLE"}},
+            )
+        if self.order_status_payload is not None:
+            return httpx.Response(200, json=self.order_status_payload)
+        return httpx.Response(
+            200,
+            json={"success": True, "data": {"orders": self.order_status_orders}},
+        )
+
     def _orders(self) -> httpx.Response:
         if self.fail_purchases:
             return httpx.Response(503, json={"success": False, "error": {"code": "UNAVAILABLE"}})
@@ -192,13 +224,31 @@ class SpringStub:
     # ── I-21 목록 push (§4.2, 경로 B) ──
 
     def _push(self, body: Any) -> httpx.Response:
+        """lists[] 최상위만 받는다 (§4.2 v0.17.1) — 구 평평 3필드는 400 이다.
+
+        BE 는 전환 기간에만 구 형식을 함께 수용하므로(RecommendationCallbackRequest), 이 스텁은
+        전환 완료 상태를 재현해 우리가 구 형식으로 되돌아가면 통합 테스트가 깨지게 한다(이슈 #209).
+        """
         if self.fail_push:
             return httpx.Response(500, json={"success": False, "error": {"code": "PUSH_FAILED"}})
         payload = body or {}
-        self.pushed_lists[str(payload.get("listId"))] = list(payload.get("productIds") or [])
-        return httpx.Response(
-            200, json={"success": True, "data": {"listId": payload.get("listId")}}
+        lists = payload.get("lists")
+        list_ids = [str(item.get("listId")) for item in lists] if isinstance(lists, list) else []
+        invalid = (
+            not isinstance(lists, list)
+            or not 1 <= len(lists) <= 10  # §4.2 상한
+            or len(set(list_ids)) != len(list_ids)  # 한 콜백 안 listId 중복
+            or payload.get("listType") not in ("PICK_ONE", "BUY_ALL")  # 항상 싣는다
+            or not payload.get("recommendationRequestId")
+            or "listId" in payload  # 구 평평 형식 잔재
         )
+        if invalid:
+            return httpx.Response(
+                400, json={"success": False, "error": {"code": "VALIDATION_ERROR"}}
+            )
+        for item in lists:
+            self.pushed_lists[str(item.get("listId"))] = list(item.get("productIds") or [])
+        return httpx.Response(200, json={"success": True, "data": {"listIds": list_ids}})
 
     # ── CH-5 목록 조회 (§4.3, FE→Spring) ──
 

@@ -11,6 +11,9 @@ SPEC-RECOMMEND-001 §7 + api-spec §3.3 의 degrade 규약을 실 HTTP 경계로
 
 from __future__ import annotations
 
+import json
+import logging
+
 from tests.integration.conftest import auth_header, event_types, first_of, parse_sse
 
 MESSAGE = "여행용 파우치 추천해줘"
@@ -24,13 +27,27 @@ def _chat(client, message: str = MESSAGE, *, thread: str = "th-deg", headers=Non
     )
 
 
-def test_search_failure_emits_search_failed(client, spring, llm) -> None:
-    """I-1 검색 5xx → in-stream error SEARCH_FAILED 로 종료한다 (§7)."""
+def test_search_failure_emits_correlated_retryable_error(client, spring, llm, caplog) -> None:
+    """I-1 검색 실패는 응답 헤더·로그와 같은 requestId의 재시도 가능 오류로 종료한다."""
     spring.fail_search = True
 
-    events = parse_sse(_chat(client).text)
+    with caplog.at_level(logging.INFO, logger="observability"):
+        response = _chat(client)
+    events = parse_sse(response.text)
     error = first_of(events, "error")
-    assert error is not None and error["code"] == "SEARCH_FAILED"
+    records = [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if record.name == "observability" and record.getMessage().startswith("{")
+    ]
+
+    assert error == {
+        "code": "SEARCH_FAILED",
+        "message": "상품 검색에 실패했어요.",
+        "requestId": response.headers["X-Request-Id"],
+        "retryable": True,
+    }
+    assert records[-1]["requestId"] == error["requestId"]
     # 후보가 없으므로 목록 push 는 하지 않는다
     assert spring.requests_to("/internal/recommendations") == []
 
@@ -41,8 +58,11 @@ def test_llm_unavailable_emits_error(client, spring, monkeypatch) -> None:
 
     monkeypatch.setattr(buyer_graph, "get_llm", lambda: None)
 
-    error = first_of(parse_sse(_chat(client).text), "error")
+    response = _chat(client)
+    error = first_of(parse_sse(response.text), "error")
     assert error is not None and error["code"] == "LLM_UNAVAILABLE"
+    assert error["requestId"] == response.headers["X-Request-Id"]
+    assert error["retryable"] is False
     assert spring.requests_to("/internal/products/search") == []
 
 
@@ -56,8 +76,11 @@ def test_decompose_timeout_maps_to_llm_timeout(client, spring, monkeypatch) -> N
         buyer_graph, "get_llm", lambda: ScriptedLLM(decompose_error=True, timeout=True)
     )
 
-    error = first_of(parse_sse(_chat(client).text), "error")
+    response = _chat(client)
+    error = first_of(parse_sse(response.text), "error")
     assert error is not None and error["code"] == "LLM_TIMEOUT"
+    assert error["requestId"] == response.headers["X-Request-Id"]
+    assert error["retryable"] is True
 
 
 def test_rerank_failure_falls_back_to_search_order(client, spring, monkeypatch) -> None:
@@ -75,7 +98,7 @@ def test_rerank_failure_falls_back_to_search_order(client, spring, monkeypatch) 
     # 폴백이어도 경로 B 는 성립 — 검색 순서대로 push 된다
     ready = first_of(events, "products.ready")
     assert ready is not None
-    assert spring.pushed_lists[ready["listId"]], "폴백 순서로라도 목록은 push 된다"
+    assert spring.pushed_lists[ready["listIds"][0]], "폴백 순서로라도 목록은 push 된다"
 
 
 def test_push_failure_skips_products_ready_but_completes(client, spring, llm) -> None:
@@ -122,6 +145,31 @@ def test_cart_option_required_triggers_reask(client, spring, llm) -> None:
     text = "".join(e["data"].get("text", "") for e in events if e["type"] == "token")
     assert "사이즈" in text, "되물음 문구에 옵션이 제시돼야 한다"
     assert event_types(events)[-1] == "done"
+
+
+def test_cart_single_option_autoselected_without_reask(client, spring, llm) -> None:
+    """옵션 후보가 1개뿐이면 되묻지 않고 그 optionId 로 재담기해 CART_ADDED 로 끝낸다 (#114)."""
+    _chat(client)  # 추천 턴 (last_reco 적재)
+
+    spring.fail_cart_add_code = "CART_OPTION_REQUIRED"
+    spring.cart_option_payload = [{"optionId": 5001, "name": "프리 사이즈", "extraPrice": 0}]
+    llm._decompose = {
+        "intent": "cart_add",
+        "reply": "",
+        "case": 2,
+        "semanticQuery": "",
+        "filters": {},
+        "cart": {"productId": 102, "quantity": 1},
+    }
+
+    events = parse_sse(_chat(client, "그거 담아줘").text)
+    action = first_of(events, "action")
+    option_ids = [r["body"].get("optionId") for r in spring.requests_to("/internal/cart/items")]
+
+    assert "token" not in event_types(events), "되묻지 않는다"
+    assert action["type"] == "CART_ADDED"
+    assert "프리 사이즈 옵션으로" in action["message"]
+    assert option_ids == [None, 5001]  # 유일 옵션으로 1회 재담기
 
 
 def test_cart_product_not_found_reports_action_failure(client, spring, llm) -> None:

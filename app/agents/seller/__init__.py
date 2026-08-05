@@ -17,8 +17,12 @@ done.finishReason 은 "stop" 단일. 비범위(고도화): 리뷰 인사이트.
 [대체] 구 order_seed 시드 집계(구 결정 22)·주문 미러 확장(구 결정 20 기본안) 폐기 —
 SpringClient 콜백(§4.4/§4.5)으로 대체.
 
-TODO(seller graph SPEC, 2단계 이후): 통계 질의 파싱 → READ_TOOLS 조회 도구 호출 →
-token 산문 응답 / draft intent → list_my_products(before) → 개정안 → draft emit → 승인 후
-쓰기 도구 호출. 본 패키지의 1단계(Tool 계층) 산출물은 calc.py(순수 계산)·tools.py(@tool
-클로저 팩토리)이며, 그래프/서브에이전트 배선은 이 파일의 범위 밖(2단계 이후)이다.
+패키지 구성: calc.py(순수 계산)·tools.py(@tool 클로저 팩토리)가 Tool 계층이고, 그 위에
+orchestrator.py(supervisor 라우팅·워커 팬아웃·검증 루프)·workers.py(워커 5종+general+
+planner+recommend+product)·pipeline.py(compose·진행 token)·verifier.py(결정론 D1~D3)·
+hitl.py(draft 검증·checkpoint·confirm 실행)·history.py(분석 이력)·middleware.py(scope/PII/
+출력 검사)가 배선돼 있다.
+
+미구현 잔여: search_analysis_guide RAG(이슈 #91, tools.py 스텁)·시맨틱 캐시 question_cache
+(이슈 #122)·차트(SPEC §12 보류 — chart_data_hint 필드만 보존).
 """

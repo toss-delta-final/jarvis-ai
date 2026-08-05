@@ -38,42 +38,48 @@ def _record_factory(
 
 
 def test_role_tier_matches_provider_neutral_spec() -> None:
+    # 2026-07-29 품질 우선 전환 — 판매자 전 역할 smart(fast 역할 없음).
+    # analysis_judge(이슈 #242, DESIGN-ANALYSIS-V31-242 결정 D-1)도 이 정책을 따른다 —
+    # 이슈 원안(fast)을 채택하지 않고 판정 품질을 우선했다.
+    # graph(5단계, 같은 이슈)도 smart — 이슈 원안 그대로 전 역할 정책과 일치.
     assert ROLE_TIER == {
-        "supervisor": "fast",
-        "planner": "fast",
-        "worker": "fast",
-        "judge": "fast",
-        "product": "fast",
+        "supervisor": "smart",
+        "planner": "smart",
+        "worker": "smart",
+        "judge": "smart",
+        "product": "smart",
         "report": "smart",
         "recommend": "smart",
+        "analysis_judge": "smart",
+        "graph": "smart",
     }
 
 
-def test_openai_fast_roles_use_reasoning_without_temperature(
+def test_openai_all_seller_roles_share_smart_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = Settings(_env_file=None, openai_api_key="openai-key")
     calls, _ = _record_factory(monkeypatch, lambda: settings)
 
-    instances = [
-        init_seller_model(role) for role in ("supervisor", "planner", "worker", "judge", "product")
-    ]
+    instances = [init_seller_model(role) for role in ROLE_TIER]
 
+    # 전 역할이 같은 tier → 같은 실효 설정 → lru_cache 로 인스턴스 1개만 생성된다.
     assert all(model is instances[0] for model in instances)
     assert calls == [
         {
             "args": (),
-            "model": settings.openai_fast_model_id,
+            "model": settings.openai_smart_model_id,
             "model_provider": "openai",
             "api_key": "openai-key",
             "timeout": settings.llm_timeout_s,
             "max_retries": settings.llm_max_retries,
-            "reasoning_effort": settings.openai_fast_reasoning_effort,
+            # 판매자 레인은 with_tools=True — luna 는 tools 와 effort 를 함께 못 받는다(#178).
+            "reasoning_effort": settings.openai_tool_reasoning_effort_override,
         }
     ]
 
 
-def test_openai_smart_roles_use_smart_reasoning_without_temperature(
+def test_openai_seller_roles_downgrade_reasoning_without_temperature(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = Settings(_env_file=None, openai_api_key="openai-key")
@@ -82,11 +88,27 @@ def test_openai_smart_roles_use_smart_reasoning_without_temperature(
     assert init_seller_model("report") is init_seller_model("recommend")
 
     assert calls[0]["model"] == settings.openai_smart_model_id
-    assert calls[0]["reasoning_effort"] == settings.openai_smart_reasoning_effort
+    assert calls[0]["reasoning_effort"] == settings.openai_tool_reasoning_effort_override
     assert "temperature" not in calls[0]
 
 
-def test_anthropic_tiers_keep_seller_temperatures(
+def test_openai_seller_roles_keep_effort_on_compatible_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """조합 지원 모델로 갈아타면 강등 없이 설정한 effort 가 그대로 실린다(#178)."""
+    settings = Settings(
+        _env_file=None,
+        openai_api_key="openai-key",
+        openai_smart_model_id="gpt-5-nano",
+    )
+    calls, _ = _record_factory(monkeypatch, lambda: settings)
+
+    init_seller_model("supervisor")
+
+    assert calls[0]["reasoning_effort"] == settings.openai_smart_reasoning_effort
+
+
+def test_anthropic_seller_roles_keep_sonnet_temperature(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = Settings(
@@ -101,16 +123,9 @@ def test_anthropic_tiers_keep_seller_temperatures(
     init_seller_model("worker")
     init_seller_model("report")
 
+    # 전 역할 smart → sonnet + seller_sonnet_temperature 만 쓰인다.
+    # seller_haiku_temperature 는 판매자 경로에서 더 이상 참조되지 않는다.
     assert calls == [
-        {
-            "args": (),
-            "model": settings.haiku_model_id,
-            "model_provider": "anthropic",
-            "api_key": "anthropic-key",
-            "timeout": settings.llm_timeout_s,
-            "max_retries": settings.llm_max_retries,
-            "temperature": 0.1,
-        },
         {
             "args": (),
             "model": settings.sonnet_model_id,

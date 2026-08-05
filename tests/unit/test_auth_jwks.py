@@ -4,7 +4,8 @@ RSA 키페어로 실 JWKS dict 를 구성하고 PyJWKClient 의 HTTP fetch 계�
 kid→공개키 매칭·JWK 파싱·kid miss refetch 가 실제 라이브러리 경로로 돈다(tests/unit/_jwks.py).
 
 검증 항목(§2.3 확정): signature / exp / iss / aud / scope.
-클레임 매핑: sub_type(member|guest, v0.10.0 티켓 정본) 우선 + 구 role 폴백(C-1 잔여).
+클레임 매핑: JWKS buyer exact sub_type(member|guest), seller exact lowercase role="seller".
+legacy role 폴백은 dev decode 전용이며 이 JWKS 모듈에서는 허용하지 않는다.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from tests.unit._jwks import (
     install_jwks_fetch,
     jwks_of,
     make_rsa_key,
+    seller_ticket_claims,
     sign_ticket,
     ticket_claims,
 )
@@ -63,7 +65,7 @@ def _decode(token: str | None, *, scope: str | None = SCOPE):
     )
 
 
-# ── 티켓 클레임 매핑 (§2.3 v0.10.0: sub_type 정본, 구 role 폴백) ──
+# ── 티켓 클레임 매핑 (§2.3: buyer exact sub_type, seller exact lowercase role) ──
 
 
 def test_member_ticket_maps_to_member(rsa_key, jwks_calls) -> None:
@@ -91,48 +93,139 @@ def test_unknown_sub_type_rejected(rsa_key, jwks_calls) -> None:
         _decode(token)
 
 
-def test_legacy_role_user_fallback(rsa_key, jwks_calls) -> None:
-    """sub_type 없는 구 role=USER 토큰 → 회원 폴백 매핑 유지 (C-1 형식 확정 전 호환)."""
+@pytest.mark.parametrize("sub_type", [[], {}])
+def test_non_string_sub_type_is_rejected_as_auth_error(rsa_key, jwks_calls, sub_type) -> None:
+    """JSON 배열·객체 discriminator도 500이 아니라 인증 오류로 fail-closed 한다."""
+    token = sign_ticket(rsa_key, KID, ticket_claims(sub_type=sub_type))
+    with pytest.raises(AuthError):
+        _decode(token)
+
+
+def test_jwks_legacy_role_user_is_rejected(rsa_key, jwks_calls) -> None:
+    """JWKS에서 sub_type 없는 구 role=USER 토큰은 fail-closed 한다."""
     claims = ticket_claims(sub="7")
     del claims["sub_type"]
     claims["role"] = auth.ROLE_USER
-    identity = _decode(sign_ticket(rsa_key, KID, claims))
-    assert identity.user_id == "7"
-    assert identity.is_guest is False
+    with pytest.raises(AuthError):
+        _decode(sign_ticket(rsa_key, KID, claims))
 
 
-def test_legacy_role_guest_fallback(rsa_key, jwks_calls) -> None:
-    """sub_type 없는 구 role=GUEST 토큰 → 게스트 폴백 매핑 유지."""
+def test_jwks_legacy_role_guest_is_rejected(rsa_key, jwks_calls) -> None:
+    """JWKS에서 sub_type 없는 구 role=GUEST 토큰은 fail-closed 한다."""
     claims = ticket_claims()
     del claims["sub_type"]
     claims["role"] = auth.ROLE_GUEST
-    identity = _decode(sign_ticket(rsa_key, KID, claims))
-    assert identity.user_id is None
-    assert identity.is_guest is True
+    with pytest.raises(AuthError):
+        _decode(sign_ticket(rsa_key, KID, claims))
 
 
 def test_seller_role_with_brand_id(rsa_key, jwks_calls) -> None:
-    """role=SELLER + brandId 클레임 → 판매자 스코프 + brand_id 보존 ({brandId} path용, §2.3)."""
-    claims = ticket_claims(sub="9")
-    claims["role"] = auth.ROLE_SELLER
-    claims["brandId"] = "77"
+    """확정 role="seller" + brandId → 판매자 스코프와 brand_id를 보존한다."""
+    claims = seller_ticket_claims(sub="9", brandId=77)
     identity = _decode(sign_ticket(rsa_key, KID, claims))
     assert identity.seller_id == "9"
-    assert identity.brand_id == "77"
+    assert identity.brand_id == 77
     assert identity.is_guest is False
 
 
-def test_lowercase_seller_role_accepted(rsa_key, jwks_calls) -> None:
-    """§2.3 표기 그대로 role="seller"(소문자) → 판매자 스코프 (대소문자 무관 비교, 리뷰 반영).
-
-    C-1 로 role 실값 형식이 미확정이라 소문자 발급 시 전면 403 이 되지 않게 한다.
-    """
-    claims = ticket_claims(sub="9")
-    claims["role"] = "seller"
-    claims["brandId"] = "77"
+def test_exact_lowercase_seller_role_accepted(rsa_key, jwks_calls) -> None:
+    """확정값 role="seller" 소문자 정확 일치만 판매자 스코프를 연다."""
+    claims = seller_ticket_claims(sub="9", brandId=77)
     identity = _decode(sign_ticket(rsa_key, KID, claims))
     assert identity.seller_id == "9"
-    assert identity.brand_id == "77"
+    assert identity.brand_id == 77
+
+
+@pytest.mark.parametrize(
+    "brand_id",
+    [None, "77", 77.0, True, False, [], {}, 0, -1, 2**63],
+)
+def test_seller_brand_id_must_be_positive_bigint_integer(
+    rsa_key,
+    jwks_calls,
+    brand_id: object,
+) -> None:
+    """seller brandId는 bool/coercion 없이 양의 PostgreSQL BIGINT 정수만 허용한다."""
+    token = sign_ticket(
+        rsa_key,
+        KID,
+        seller_ticket_claims(sub="9", brandId=brand_id),
+    )
+
+    with pytest.raises(AuthError):
+        _decode(token)
+
+
+@pytest.mark.parametrize("subject", ["", "0", "-1", "seller-9", str(2**63)])
+def test_seller_subject_must_be_positive_bigint_string(
+    rsa_key,
+    jwks_calls,
+    subject: str,
+) -> None:
+    """seller sub는 seller_id로 쓰이므로 양의 BIGINT 숫자 문자열이어야 한다."""
+    token = sign_ticket(
+        rsa_key,
+        KID,
+        seller_ticket_claims(sub=subject, brandId=77),
+    )
+
+    with pytest.raises(AuthError):
+        _decode(token)
+
+
+@pytest.mark.parametrize("sub_type", ["member", "guest", "admin"])
+def test_seller_role_rejects_any_buyer_sub_type(rsa_key, jwks_calls, sub_type: str) -> None:
+    """판매자 discriminator와 buyer discriminator가 함께 있으면 값과 무관하게 거부한다."""
+    claims = ticket_claims(sub="9", sub_type=sub_type)
+    claims.update({"role": auth.ROLE_SELLER, "brandId": "77"})
+
+    with pytest.raises(AuthError):
+        _decode(sign_ticket(rsa_key, KID, claims))
+
+
+@pytest.mark.parametrize("sub_type", ["member", "guest"])
+def test_buyer_sub_type_rejects_any_role_claim(
+    rsa_key,
+    jwks_calls,
+    sub_type: str,
+) -> None:
+    """buyer 티켓은 role 클레임 자체가 없어야 한다."""
+    claims = ticket_claims(sub_type=sub_type)
+    claims["role"] = auth.ROLE_USER
+
+    with pytest.raises(AuthError):
+        _decode(sign_ticket(rsa_key, KID, claims))
+
+
+@pytest.mark.parametrize(
+    ("role_present", "role", "sub_type_present", "sub_type"),
+    [
+        (True, None, True, "member"),
+        (True, "seller", True, None),
+        (True, None, True, None),
+        (True, None, False, None),
+        (False, None, True, None),
+    ],
+)
+def test_jwks_discriminator_null_presence_is_rejected(
+    rsa_key,
+    jwks_calls,
+    role_present: bool,
+    role: str | None,
+    sub_type_present: bool,
+    sub_type: str | None,
+) -> None:
+    """운영 discriminator는 값뿐 아니라 key presence도 정확히 한 쪽이어야 한다."""
+    claims = ticket_claims()
+    claims.pop("role", None)
+    claims.pop("sub_type", None)
+    if role_present:
+        claims["role"] = role
+    if sub_type_present:
+        claims["sub_type"] = sub_type
+
+    with pytest.raises(AuthError):
+        _decode(sign_ticket(rsa_key, KID, claims))
 
 
 def test_token_without_identity_claims_rejected(rsa_key, jwks_calls) -> None:
@@ -163,15 +256,13 @@ def test_empty_role_without_sub_type_rejected(rsa_key, jwks_calls, empty_role) -
         _decode(token)
 
 
-def test_unrecognized_role_falls_back_to_member(rsa_key, jwks_calls) -> None:
-    """미지 role 값(예: MEMBER)은 회원 관용 폴백 — C-1 값 집합 미확정 상태에서
-    회원 role 실값이 예상과 달라도 전면 401 이 되지 않게 한다 (의도된 관용, 리뷰 반영)."""
+def test_jwks_unrecognized_role_is_rejected(rsa_key, jwks_calls) -> None:
+    """미지 role은 buyer sub_type 정본을 대신할 수 없다."""
     claims = ticket_claims(sub="42")
     del claims["sub_type"]
     claims["role"] = "MEMBER"
-    identity = _decode(sign_ticket(rsa_key, KID, claims))
-    assert identity.user_id == "42"
-    assert identity.is_guest is False
+    with pytest.raises(AuthError):
+        _decode(sign_ticket(rsa_key, KID, claims))
 
 
 # ── 검증 항목: signature / exp / iss / aud / scope (§2.3 확정) ──
@@ -228,18 +319,24 @@ def test_scope_missing_rejected(rsa_key, jwks_calls) -> None:
         _decode(token)
 
 
-def test_scope_list_claim_accepted(rsa_key, jwks_calls) -> None:
-    """scope 가 리스트 형태여도 요구 scope 포함이면 통과 (발급측 표현 관용)."""
-    token = sign_ticket(rsa_key, KID, ticket_claims(scope=["chat:stream", "other"]))
-    assert _decode(token).user_id == "42"
+@pytest.mark.parametrize(
+    "scope",
+    ["chat:stream other", ["chat:stream"], ["chat:stream", "other"], 1, True, None, {}],
+)
+def test_scope_must_be_exact_string(rsa_key, jwks_calls, scope: object) -> None:
+    """scope는 복합/비문자 표현을 허용하지 않고 exact chat:stream 문자열만 받는다."""
+    token = sign_ticket(rsa_key, KID, ticket_claims(scope=scope))
+    with pytest.raises(AuthError):
+        _decode(token)
 
 
-def test_scope_check_skipped_when_not_required(rsa_key, jwks_calls) -> None:
-    """요구 scope 미설정(config None)이면 scope 검증 생략 — 전환기 호환."""
+def test_scope_check_cannot_be_disabled_by_none(rsa_key, jwks_calls) -> None:
+    """JWKS 호출자가 scope=None을 넘겨도 exact 운영 scope 검증은 비활성화되지 않는다."""
     claims = ticket_claims()
     del claims["scope"]
     token = sign_ticket(rsa_key, KID, claims)
-    assert _decode(token, scope=None).user_id == "42"
+    with pytest.raises(AuthError):
+        _decode(token, scope=None)
 
 
 def test_missing_sub_rejected(rsa_key, jwks_calls) -> None:

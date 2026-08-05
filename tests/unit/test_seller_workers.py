@@ -11,10 +11,12 @@ import pytest
 from app.agents.seller import models as seller_models
 from app.agents.seller.prompts import (
     ABUSE_PROMPT,
+    ANALYSIS_JUDGE_PROMPT,
     BEHAVIOR_PROMPT,
     CHURN_PROMPT,
     CONVERSION_PROMPT,
     GENERAL_PROMPT_TEMPLATE,
+    GRAPH_PROMPT,
     JUDGE_PROMPT,
     PLANNER_PROMPT,
     PRODUCT_PROMPT,
@@ -34,11 +36,13 @@ from app.agents.seller.workers import (
     RECOMMEND_TOOLS,
     SALES_ANOMALY_TOOLS,
     build_abuse_agent,
+    build_analysis_judge,
     build_analysis_planner,
     build_behavior_agent,
     build_churn_agent,
     build_conversion_agent,
     build_general_agent,
+    build_graph_agent,
     build_product_agent,
     build_recommend_agent,
     build_report_agent,
@@ -297,6 +301,17 @@ def test_judge_prompt_principles() -> None:
     assert "feedback" in JUDGE_PROMPT
 
 
+def test_analysis_judge_prompt_principles() -> None:
+    """analysis_judge(이슈 #242) — 3축(grounding/sufficiency/relevance)·관대한 채점
+    금지·degrade finding 비감점 규칙·report_judge 와 다른 층임을 명시."""
+    for axis in ("grounding", "sufficiency", "relevance"):
+        assert axis in ANALYSIS_JUDGE_PROMPT
+    assert "관대한 채점 금지" in ANALYSIS_JUDGE_PROMPT
+    assert "feedback" in ANALYSIS_JUDGE_PROMPT
+    assert "degrade finding" in ANALYSIS_JUDGE_PROMPT
+    assert "report_judge" in ANALYSIS_JUDGE_PROMPT  # 글쓰기 검증과의 층 구분 명시
+
+
 def test_recommend_prompt_principles() -> None:
     """recommend — product_id 실존 확인·중복 추천 회피·실행 금지·순서=우선순위."""
     assert "list_my_products" in RECOMMEND_PROMPT  # 실존 확인 강제
@@ -307,6 +322,25 @@ def test_recommend_prompt_principles() -> None:
 
 
 def test_pipeline_builders_compile() -> None:
-    """report·judge·recommend 조립이 성공하고 실행 인터페이스를 갖는다 — LLM 호출 없음."""
-    for builder in (build_report_agent, build_report_judge, build_recommend_agent):
+    """report·judge·recommend·analysis_judge·graph 조립이 성공하고 실행 인터페이스를 갖는다.
+
+    LLM 호출 없음 — analysis_judge·graph(이슈 #242) 모두 도구 없는 구조화 출력
+    에이전트라 report_judge 와 동일한 조립 계약을 공유한다.
+    """
+    for builder in (
+        build_report_agent,
+        build_report_judge,
+        build_recommend_agent,
+        build_analysis_judge,
+        build_graph_agent,
+    ):
         assert hasattr(builder(), "ainvoke")
+
+
+def test_graph_prompt_principles() -> None:
+    """graph(이슈 #242 5단계) — 숫자 재사용 강제·차트 유형 판정 기준·계열 1개·빈 목록 허용."""
+    assert "계산·추정" in GRAPH_PROMPT or "새 수치를 만들지 않는다" in GRAPH_PROMPT
+    assert "line" in GRAPH_PROMPT
+    assert "bar" in GRAPH_PROMPT
+    assert "1개만" in GRAPH_PROMPT
+    assert "charts=[]" in GRAPH_PROMPT  # 억지 차트 금지

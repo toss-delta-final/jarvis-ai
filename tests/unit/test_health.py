@@ -4,7 +4,7 @@
   - GET /health == 200
   - POST /chat 가 text/event-stream 을 스트리밍하고 done 이벤트로 종료
   - SSE 이벤트명·필드가 api-spec v0.4.0 §3.1 과 일치 (camelCase, 6-event 세트)
-  - [HARD] SSE 는 상품 카드를 싣지 않는다 (경로 B): products.ready 는 {sessionId, listId} 상관키만
+  - [HARD] SSE 는 상품 카드를 싣지 않는다 (경로 B): products.ready 는 {sessionId, listIds} 상관키만
   - MVP 표면: /profile/me, /events/* 는 404
 """
 
@@ -63,11 +63,11 @@ def test_chat_streams_sse_ending_with_done(buyer_fakes) -> None:
         assert "rationale" not in data
         assert "items" not in data  # 카드 목록 없음
 
-    # products.ready 는 상관관계 키만 (camelCase): sessionId + 비어있지 않은 listId.
+    # products.ready 는 상관관계 키만 (camelCase): sessionId + 비어있지 않은 listIds.
     ready = next(e for e in events if e["type"] == "products.ready")["data"]
-    assert set(ready.keys()) == {"sessionId", "listId"}
+    assert set(ready.keys()) == {"sessionId", "listIds"}
     assert ready["sessionId"] == "sess-1"
-    assert ready["listId"]
+    assert len(ready["listIds"]) == 1
 
     # conditions 는 chips 배열, 카테고리 칩이 먼저.
     conditions = next(e for e in events if e["type"] == "conditions")["data"]
@@ -108,4 +108,14 @@ def test_events_catalog_is_post_mvp_404() -> None:
 def test_openapi_surface_is_exactly_mvp() -> None:
     """OpenAPI 표면이 정확히 MVP 엔드포인트 집합인지 확인."""
     paths = set(app.openapi()["paths"].keys())
-    assert paths == {"/chat", "/seller/chat", "/health", "/profile/me", "/events/session-end"}
+    assert paths == {
+        "/chat",
+        "/seller/chat",
+        "/health",
+        "/profile/me",
+        "/events/session-end",
+        "/events/session-claim",
+        # [#148] I-22 홈 추천 랭킹 — Spring → AI 위임(레인 b, api-spec §3.7).
+        # `/events/*` 와 같은 서비스 토큰 레인이지만 통지가 아니라 동기 요청/응답이다.
+        "/internal/recommendations/home",
+    }

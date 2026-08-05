@@ -3,24 +3,37 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import types
 
 import jwt
 import pytest
 from fastapi import HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
-from app.core.config import get_settings
-from app.core.stream import get_registry, open_stream
+from app.api import chat as chat_api
+from app.core.config import Settings, get_settings
+from app.core.stream import StreamScopeFence, get_registry, open_stream
 from app.main import app
 
 client = TestClient(app)
 
 
-def _chat(session_id: str, headers: dict | None = None):
+def _chat(
+    session_id: str,
+    headers: dict | None = None,
+    *,
+    thread_id: str | None = None,
+):
     return client.post(
         "/chat",
-        json={"sessionId": session_id, "threadId": "t", "message": "m"},
+        json={
+            "sessionId": session_id,
+            "threadId": thread_id or f"thread-{session_id}",
+            "message": "m",
+        },
         headers=headers or {},
     )
 
@@ -45,30 +58,64 @@ class _FakeRequest:
 # ─────────── §2.9 (a) 동시 스트림 제한 ───────────
 
 
-def test_concurrent_same_session_returns_409() -> None:
-    """동일 sessionId 활성 스트림 존재 시 새 요청은 409 STREAM_IN_PROGRESS."""
-    # dev 무토큰 게스트 → subject None → registry_key owner="anon" → "anon:busy-sess"
-    get_registry().acquire("anon:busy-sess")
+def test_concurrent_same_thread_returns_409() -> None:
+    """sessionId가 달라도 동일 threadId 활성 스트림에는 409를 반환한다."""
+    # dev 무토큰 게스트 → subject None → registry_key owner="anon" → "anon:busy-thread"
+    get_registry().acquire("anon:busy-thread")
     try:
-        r = _chat("busy-sess")
+        r = _chat("new-session", thread_id="busy-thread")
         assert r.status_code == 409
         env = r.json()["error"]
         assert env["code"] == "STREAM_IN_PROGRESS"
         assert env["requestId"]
     finally:
-        get_registry().release("anon:busy-sess")
+        get_registry().release("anon:busy-thread")
+
+
+def test_same_session_different_threads_are_not_blocked() -> None:
+    """같은 sessionId라도 다른 threadId의 활성 스트림은 서로 막지 않는다."""
+    registry = get_registry()
+    assert registry.acquire("anon:thread-a")
+    try:
+        r = _chat("shared-session", thread_id="thread-b")
+        assert r.status_code == 200
+        _ = r.text
+    finally:
+        registry.release("anon:thread-a")
+
+
+def test_registry_fence_requires_issued_token_identity_and_preserves_legacy_slots() -> None:
+    registry = get_registry()
+    token = registry.acquire_fence("guest-1", "session-1")
+    assert token is not None
+    assert registry.acquire("legacy-thread")
+    assert not registry.acquire(
+        "guest-1:new-thread",
+        owner_id="guest-1",
+        session_id="session-1",
+    )
+
+    forged = StreamScopeFence(owner_id="guest-1", session_id="session-1")
+    with pytest.raises(ValueError, match="not active"):
+        registry.release_fence(forged)
+    assert registry.is_fenced("guest-1", "session-1")
+
+    registry.release_fence(token)
+    assert not registry.is_fenced("guest-1", "session-1")
+    with pytest.raises(ValueError, match="not active"):
+        registry.release_fence(token)
 
 
 def test_registry_released_after_stream() -> None:
-    """정상 스트림 종료 후 레지스트리에서 세션이 해제된다(다음 요청 가능)."""
-    r = _chat("done-sess")
+    """정상 스트림 종료 후 레지스트리에서 방이 해제된다(다음 요청 가능)."""
+    r = _chat("done-sess", thread_id="done-thread")
     assert r.status_code == 200
     _ = r.text  # 스트림 소비 → 제너레이터 완료 → finally 해제
-    assert not get_registry().is_active("anon:done-sess")
+    assert not get_registry().is_active("anon:done-thread")
 
 
-def test_different_sessions_not_blocked() -> None:
-    """서로 다른 세션은 서로를 막지 않는다."""
+def test_different_sessions_and_threads_not_blocked() -> None:
+    """서로 다른 세션·방은 서로를 막지 않는다."""
     r1 = _chat("sess-a")
     _ = r1.text
     r2 = _chat("sess-b")
@@ -117,6 +164,131 @@ async def test_total_cap_truncates_with_done(monkeypatch: pytest.MonkeyPatch) ->
     assert not get_registry().is_active("cap-sess")
 
 
+async def test_buyer_role_uses_buyer_total_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """구매자 역할은 전체 상한이 아니라 좁은 구매자 상한으로 절단한다."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "stream_first_token_timeout_s", 5.0)
+    monkeypatch.setattr(settings, "stream_total_timeout_buyer_s", 0.05)
+    monkeypatch.setattr(settings, "stream_total_timeout_s", 5.0)
+    monkeypatch.setattr(settings, "stream_disconnect_poll_s", 0.01)
+
+    async def slow():
+        yield 'data: {"type":"token","data":{"text":"hi"}}\n\n'
+        await asyncio.sleep(1.0)
+        yield "data: never\n\n"
+
+    resp = await open_stream(_FakeRequest(), "buyer-cap-sess", slow, role="buyer")
+    parts = [c if isinstance(c, str) else c.decode() async for c in resp.body_iterator]
+    text = "".join(parts)
+
+    assert '"token"' in text
+    assert '"done"' in text
+    assert "never" not in text
+    assert not get_registry().is_active("buyer-cap-sess")
+
+
+@pytest.mark.parametrize("role", ["seller", None])
+async def test_non_buyer_role_keeps_stream_total_cap(
+    monkeypatch: pytest.MonkeyPatch,
+    role: str | None,
+) -> None:
+    """판매자와 미지정 호출자는 좁은 구매자 상한의 영향을 받지 않는다."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "stream_first_token_timeout_s", 5.0)
+    monkeypatch.setattr(settings, "stream_total_timeout_buyer_s", 0.05)
+    monkeypatch.setattr(settings, "stream_total_timeout_s", 1.0)
+    monkeypatch.setattr(settings, "stream_disconnect_poll_s", 0.01)
+
+    async def within_total_cap():
+        yield 'data: {"type":"token","data":{"text":"hi"}}\n\n'
+        await asyncio.sleep(0.1)
+        yield "data: after-buyer-cap\n\n"
+
+    stream_key = f"{role or 'unspecified'}-cap-sess"
+    resp = await open_stream(_FakeRequest(), stream_key, within_total_cap, role=role)
+    parts = [c if isinstance(c, str) else c.decode() async for c in resp.body_iterator]
+    text = "".join(parts)
+
+    assert "after-buyer-cap" in text
+    assert '"done"' not in text
+    assert not get_registry().is_active(stream_key)
+
+
+def test_stream_total_timeout_defaults_are_role_specific(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """dotenv와 OS 환경 오버라이드를 배제한 출하 기본값 조합을 고정한다."""
+    monkeypatch.delenv("STREAM_TOTAL_TIMEOUT_BUYER_S", raising=False)
+    monkeypatch.delenv("STREAM_TOTAL_TIMEOUT_S", raising=False)
+    settings = Settings(_env_file=None)
+
+    assert settings.stream_total_timeout_buyer_s == 30.0
+    assert settings.stream_total_timeout_s == 90.0
+    assert settings.stream_total_timeout_buyer_s <= settings.stream_total_timeout_s
+
+
+def test_buyer_stream_cap_above_total_cap_is_rejected() -> None:
+    """구매자 상한이 전체 상한보다 느슨하면 기동 시점에 거절한다."""
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            stream_total_timeout_buyer_s=91.0,
+            stream_total_timeout_s=90.0,
+        )
+
+
+@pytest.mark.parametrize("buyer_cap", [0.0, -1.0])
+def test_non_positive_buyer_stream_cap_is_rejected(buyer_cap: float) -> None:
+    """0 이하 상한의 즉시 절단이 구매자 트래픽 전면 장애로 배포되지 않게 막는다."""
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, stream_total_timeout_buyer_s=buyer_cap)
+
+
+def test_buyer_stream_cap_cannot_be_shorter_than_first_token_cap() -> None:
+    """첫 이벤트 대기보다 전체 상한이 짧은 자기모순은 거절하되 같은 경계는 허용한다."""
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            stream_total_timeout_buyer_s=5.0,
+            stream_first_token_timeout_s=10.0,
+        )
+
+    Settings(
+        _env_file=None,
+        stream_total_timeout_buyer_s=10.0,
+        stream_first_token_timeout_s=10.0,
+    )
+
+
+def test_buyer_endpoint_passes_buyer_stream_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    """실제 /chat 호출부가 구매자 상한 선택용 역할을 명시한다."""
+    captured: dict[str, object] = {}
+
+    async def _capture_open_stream(
+        _request,
+        _stream_key,
+        _factory,
+        *,
+        observer=None,
+        role=None,
+    ):
+        captured["observer"] = observer
+        captured["role"] = role
+
+        async def _body():
+            yield 'data: {"type":"done","data":{"finishReason":"stop"}}\n\n'
+
+        return StreamingResponse(_body(), media_type="text/event-stream")
+
+    monkeypatch.setattr(chat_api, "open_stream", _capture_open_stream)
+
+    response = _chat("role-sess", thread_id="role-thread")
+
+    assert response.status_code == 200
+    assert captured["observer"] is not None
+    assert captured["role"] == "buyer"
+
+
 async def test_disconnect_before_first_token_releases_fast(monkeypatch: pytest.MonkeyPatch) -> None:
     """첫 이벤트 도착 전 연결 종료 시 first-token 상한을 기다리지 않고 즉시 정리한다(§2.9 b)."""
     s = get_settings()
@@ -144,8 +316,14 @@ async def test_in_stream_error_emits_error_event() -> None:
     parts = [c if isinstance(c, str) else c.decode() async for c in resp.body_iterator]
     text = "".join(parts)
     assert '"token"' in text
-    assert '"error"' in text
-    assert '"INTERNAL"' in text  # 연결만 끊기지 않고 error 프레임으로 종료
+    error = next(
+        json.loads(part.removeprefix("data: "))["data"]
+        for part in parts
+        if '"type": "error"' in part
+    )
+    assert error["code"] == "INTERNAL"  # 연결만 끊기지 않고 error 프레임으로 종료
+    assert error["requestId"]
+    assert error["retryable"] is True
     assert not get_registry().is_active("instream-err")
 
 
@@ -217,7 +395,7 @@ def test_ip_backstop_limits_token_rotation() -> None:
 
 def test_validation_error_400_envelope() -> None:
     """본문 검증 실패 → 400 BAD_REQUEST 봉투(422 아님, §2.5 표 정합)."""
-    r = client.post("/chat", json={"sessionId": "x"})  # threadId/message 누락
+    r = client.post("/chat", json={"sessionId": "x"})  # threadId 누락
     assert r.status_code == 400
     env = r.json()["error"]
     assert env["code"] == "BAD_REQUEST"
@@ -320,6 +498,34 @@ def test_5xx_hides_internal_detail() -> None:
     env = r.json()["error"]
     assert env["code"] == "INTERNAL"
     assert "secret" not in env["message"]
+
+
+@pytest.mark.parametrize(
+    ("error_type", "status_code", "code"),
+    [
+        ("SessionForbidden", 403, "SESSION_FORBIDDEN"),
+        ("SessionFinalizing", 409, "SESSION_FINALIZING"),
+        ("SessionActive", 409, "SESSION_ACTIVE"),
+        ("SessionClaimConflict", 409, "SESSION_CLAIM_CONFLICT"),
+        ("SessionStateUnavailable", 503, "STATE_UNAVAILABLE"),
+    ],
+)
+def test_session_domain_errors_have_safe_wire_mapping(
+    error_type: str, status_code: int, code: str
+) -> None:
+    from app.core import session_context
+    from app.main import create_app
+
+    app2 = create_app()
+
+    async def _raise() -> None:
+        raise getattr(session_context, error_type)()
+
+    app2.add_api_route(f"/_session-error/{code}", _raise, methods=["GET"])
+    response = TestClient(app2, raise_server_exceptions=False).get(f"/_session-error/{code}")
+    assert response.status_code == status_code
+    assert response.json()["error"]["code"] == code
+    assert "requestId" in response.json()["error"]
 
 
 def test_registry_key_binds_identity() -> None:

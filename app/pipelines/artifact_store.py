@@ -47,8 +47,17 @@ class ArtifactStore(Protocol):
         self, artifacts: list[CatalogArtifact], cursor: str | None
     ) -> None: ...
     def get(self, product_id: int) -> CatalogArtifact | None: ...
+    def get_many(self, product_ids: list[int]) -> dict[int, CatalogArtifact]: ...
     def all(self) -> list[CatalogArtifact]: ...
     def count(self) -> int: ...
+    def top_k_by_vector(
+        self,
+        query_vec: list[float],
+        *,
+        k: int,
+        exclude: set[int] | None = None,
+        include: set[int] | None = None,
+    ) -> list[int]: ...
     def get_cursor(self) -> str | None: ...
     def set_cursor(self, cursor: str | None) -> None: ...
 
@@ -83,11 +92,46 @@ class CatalogArtifactStore:
     def get(self, product_id: int) -> CatalogArtifact | None:
         return self._items.get(product_id)
 
+    def get_many(self, product_ids: list[int]) -> dict[int, CatalogArtifact]:
+        """요청 id 를 productId→artifact dict 로 반환(없는 id 는 생략) — 방식2 재정렬 N+1 제거(#101)."""
+        return {pid: self._items[pid] for pid in product_ids if pid in self._items}
+
     def all(self) -> list[CatalogArtifact]:
         return list(self._items.values())
 
     def count(self) -> int:
         return len(self._items)
+
+    def top_k_by_vector(
+        self,
+        query_vec: list[float],
+        *,
+        k: int,
+        exclude: set[int] | None = None,
+        include: set[int] | None = None,
+    ) -> list[int]:
+        """질의 벡터에 가까운 상위 k productId (I-22 랭킹, #148).
+
+        인메모리 구현은 **정확한 코사인**을 쓴다 — 건수가 작아 근사가 불필요하고, 테스트가 기대하는
+        순서가 명확해야 한다(pg 구현은 HNSW 근사, `pg_artifact_store` 주석 참조).
+        include 가 주어지면 해당 productId 집합 안에서만 채점하며, 빈 집합은 즉시 빈 결과다.
+        exclude 와 함께 주어지면 두 필터를 모두 적용한다.
+        동점은 `product_id` 오름차순으로 tiebreak 해 결정적이다.
+        """
+        from app.services.search_service import cosine_similarity  # noqa: PLC0415 - 순환 임포트 회피
+
+        if include == set():
+            return []
+        skip = exclude or set()
+        scored = [
+            (cosine_similarity(query_vec, a.embedding), a.product_id)
+            for a in self._items.values()
+            if a.embedding
+            and a.product_id not in skip
+            and (include is None or a.product_id in include)
+        ]
+        scored.sort(key=lambda t: (-t[0], t[1]))
+        return [pid for _, pid in scored[:k]]
 
     def get_cursor(self) -> str | None:
         return self._cursor

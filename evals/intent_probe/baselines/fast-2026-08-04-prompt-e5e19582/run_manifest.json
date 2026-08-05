@@ -1,0 +1,220 @@
+{
+  "commitSha": "1d1b1bb79b823255e709a8868783d3e4ac4fd67b",
+  "dirty": true,
+  "hashes": {
+    "anchorFixture": "3ad868ff2a4002022641204ae34e850e44063dd54a30f1877c0a8286e426e8fe",
+    "config": "cb466c529eab8f0eda5e1263677ebd0b177338044d3dde377410a2ffb7877400",
+    "datasetManifest": "0f3b91efa922a56d5c053ae26203dc3aaaef0fb0213df744c9dcc48fc8331af7",
+    "fixtures": {
+      "catalog_snapshot.json": "db16232a30b1dad49dc9102c25988842cb7878ee522bd2c92c60bed68caf8301",
+      "purchase_history.json": "d9068b703e5ade93df6ab642dc9259b997fc891b6261d64d47968244921b6f74",
+      "search_responses.json": "88eeb27452236d0a9779de3ecb8ab3258503f1d5528f3b832ea2df1488754cf0"
+    },
+    "intentProbeModules": {
+      "__init__.py": "e11a9e613c8b4ec21a60b4780ca3588e5675532f5d10e7a81bf7debe6019d8ab",
+      "__main__.py": "c660464354120c4a507dd49c27e613e2e01d658f6ebb05d2e54902de0974b9b8",
+      "cli.py": "d4ffcb87b0e503bd021f57e2134bac3b750d657edf85329d5b8b86e14e7197a3",
+      "client.py": "dd8496427843d9bee41f6c0ecbb589cf4fe89041bdb4edda40a30a200381ff86",
+      "fakes.py": "cf2f8369a85413c261587e578caeed6a747726032dea77036830d622850dbc99",
+      "loader.py": "1d29c068522a1b6c060e60054fec5cb00fb3cea701d09e8e374474f75219b251",
+      "manifest.py": "e300b2aaf0f291af09b3ec25acc5da50110ef748b3696a4b1a7609b1241317f9",
+      "metrics.py": "5576c0abe5336a8957d7931b05208ef168d3d748faeb58fb2cb5a8db0ca0fa7b",
+      "pacer.py": "1776b6130b3dd7c06a9b7bf57904a6ae3a12f05cee65ef46ab6aac097e3b56b3",
+      "report.py": "1a7ebb67c91ed53717d0bac3320be2c7427023dc0788407b1d18fec3c3dfa827",
+      "runner.py": "b4eb34ddf1842e1b576c92053bf25004f23644234e867120e87cc46a177f4fba",
+      "schema.py": "8d3f898da34aa0a96b3436ce343ce33845b8d7f217804ff7710e76a8418c6f43"
+    },
+    "prompts": {
+      "decompose": "d29fec0af116057a1c1006fb2ee36dc850388d5b630f8ea37dd39307ccd2f7c0",
+      "rerank": "05827c3cdfbd1eba179457a15950f7d11843c7c8c9995a34d06bd921e984ea91"
+    },
+    "systemPrompt": "e5e195822495f0dce512aee641c5bf488b5fa5fdb656eaf8e382a22089df2247",
+    "uvLock": "85f41455b55376fe54790ccfe407aa56d477301c579e71b940038aec3631742a"
+  },
+  "image": null,
+  "intentProbe": {
+    "attemptMultiplier": 3,
+    "axisDefinitions": {
+      "cartAddProductIdLegacy2": {
+        "components": [],
+        "denominator": "switchLegacy2 와 동일 표본(전환 2발화 × PENDING_CART × N)",
+        "notComparableWith": [
+          "switchLegacy2",
+          "#240 전환 축"
+        ],
+        "numerator": "intent 가 cart_add 이고 cart.productId 가 LAST_RECOMMENDATIONS 안에 있는 표본 수 — **되물음 상품을 그대로 에코해도 정답으로 센다**. #234 정의이며 switchLegacy2 와 같은 표본을 다른 정의로 다시 센 값이다"
+      },
+      "cartControl": {
+        "components": [],
+        "denominator": "장바구니 대조군 6발화 × 컨텍스트 3종 × N",
+        "notComparableWith": [],
+        "numerator": "intent 가 기대 intent(cart_view 또는 cart_add)와 일치한 표본 수"
+      },
+      "demonstrative": {
+        "components": [],
+        "denominator": "지시대명사 4발화 × 컨텍스트 3종 × N",
+        "notComparableWith": [],
+        "numerator": "intent 가 recommend 인 표본 수"
+      },
+      "general": {
+        "components": [],
+        "denominator": "general 2발화 × 컨텍스트 3종 × N",
+        "notComparableWith": [],
+        "numerator": "intent 가 general 인 표본 수"
+      },
+      "mainIntent": {
+        "components": [
+          "cartControl",
+          "demonstrative"
+        ],
+        "denominator": "장바구니 대조군 6발화 + 지시대명사 4발화 × 컨텍스트 3종 × N",
+        "notComparableWith": [],
+        "numerator": "intent 가 기대 intent 와 일치한 표본 수 (장바구니 대조군 + 지시대명사)"
+      },
+      "optionAnswer": {
+        "components": [],
+        "denominator": "옵션 답변 4발화 × PENDING_CART 컨텍스트 × N",
+        "notComparableWith": [],
+        "numerator": "intent 가 cart_add 이고 cart.optionId 까지 기대값과 일치한 표본 수 (하나만 맞으면 오답 — 옵션을 잘못 담는 것은 실패다)"
+      },
+      "orderStatus": {
+        "components": [],
+        "denominator": "order_status 2발화 × 컨텍스트 3종 × N",
+        "notComparableWith": [],
+        "numerator": "intent 가 order_status 인 표본 수"
+      },
+      "switchAll7": {
+        "components": [],
+        "denominator": "전환 7발화 × PENDING_CART 컨텍스트 × N",
+        "notComparableWith": [
+          "switchLegacy2",
+          "#240 전환 축(분모 16)"
+        ],
+        "numerator": "switchLegacy2 와 같은 술어를 전환 7발화 전부에 적용한 표본 수"
+      },
+      "switchLegacy2": {
+        "components": [],
+        "denominator": "#240 이 쓴 전환 2발화(`이어폰으로 할래`·`다른 거 담아줘`) × PENDING_CART × N",
+        "notComparableWith": [
+          "cartAddProductIdLegacy2",
+          "switchAll7",
+          "#234 productId 표"
+        ],
+        "numerator": "intent 가 cart_add 이고 cart.productId 가 **되물음 상품이 아닌** LAST_RECOMMENDATIONS 안의 상품인 표본 수 — #240 정의"
+      }
+    },
+    "budget": {
+      "budgetExceeded": false,
+      "budgetExceededReason": null,
+      "callCount": 424,
+      "costGateStatus": "unknown",
+      "limits": {
+        "maxCalls": 1272,
+        "maxCostUsd": 20.0,
+        "maxTotalTokens": 30000000
+      },
+      "tokenGateStatus": "unknown",
+      "totalCostUsd": 0.07626650000000004,
+      "totalTokens": 1133085,
+      "unknownCostCallCount": 72,
+      "unknownTokenCallCount": 72
+    },
+    "cellIds": [
+      "cart-control-001|lastRecommendations",
+      "cart-control-001|none",
+      "cart-control-001|pendingCart",
+      "cart-control-002|lastRecommendations",
+      "cart-control-002|none",
+      "cart-control-002|pendingCart",
+      "cart-control-003|lastRecommendations",
+      "cart-control-003|none",
+      "cart-control-003|pendingCart",
+      "cart-control-004|lastRecommendations",
+      "cart-control-004|none",
+      "cart-control-004|pendingCart",
+      "cart-control-005|lastRecommendations",
+      "cart-control-005|none",
+      "cart-control-005|pendingCart",
+      "cart-control-006|lastRecommendations",
+      "cart-control-006|none",
+      "cart-control-006|pendingCart",
+      "demonstrative-001|lastRecommendations",
+      "demonstrative-001|none",
+      "demonstrative-001|pendingCart",
+      "demonstrative-002|lastRecommendations",
+      "demonstrative-002|none",
+      "demonstrative-002|pendingCart",
+      "demonstrative-003|lastRecommendations",
+      "demonstrative-003|none",
+      "demonstrative-003|pendingCart",
+      "demonstrative-004|lastRecommendations",
+      "demonstrative-004|none",
+      "demonstrative-004|pendingCart",
+      "general-001|lastRecommendations",
+      "general-001|none",
+      "general-001|pendingCart",
+      "general-002|lastRecommendations",
+      "general-002|none",
+      "general-002|pendingCart",
+      "option-answer-001|pendingCart",
+      "option-answer-002|pendingCart",
+      "option-answer-003|pendingCart",
+      "option-answer-004|pendingCart",
+      "order-status-001|lastRecommendations",
+      "order-status-001|none",
+      "order-status-001|pendingCart",
+      "order-status-002|lastRecommendations",
+      "order-status-002|none",
+      "order-status-002|pendingCart",
+      "switch-001|pendingCart",
+      "switch-002|pendingCart",
+      "switch-003|pendingCart",
+      "switch-004|pendingCart",
+      "switch-005|pendingCart",
+      "switch-006|pendingCart",
+      "switch-007|pendingCart"
+    ],
+    "concurrency": 4,
+    "dryRun": false,
+    "fixtureName": "anchors_b.json",
+    "fixtureVersion": "intent-probe-anchors-b-v1",
+    "modelConfig": {
+      "fastModel": "gpt-5-nano",
+      "fastReasoningEffort": "minimal",
+      "maxRetries": 0,
+      "provider": "openai",
+      "smartModel": "gpt-5.6-luna",
+      "smartReasoningEffort": "medium",
+      "timeoutS": 30.0
+    },
+    "n": 8,
+    "notGoldenset": "추천 품질(nDCG·MRR)이 아니라 intent 라우팅 분포다. evals/goldenset 과 숫자를 섞지 말 것.",
+    "pacer": {
+      "acquireCount": 424,
+      "estimatedTokensPerCall": 3900,
+      "maxRpm": 45,
+      "maxTpm": 200000,
+      "maxWaitS": 34.767,
+      "totalWaitS": 385.653,
+      "waitCount": 202,
+      "windowS": 60.0
+    },
+    "prompt": {
+      "charCount": 5892,
+      "sha12": "e5e195822495",
+      "sha256": "e5e195822495f0dce512aee641c5bf488b5fa5fdb656eaf8e382a22089df2247",
+      "source": "git:3f1dec7"
+    },
+    "seedScope": "셀 순서에만 쓴다. provider 샘플링 seed 는 강제할 수 없다.",
+    "singleRunNotAVerdict": "단일 실행은 채택 판정이 아니다 — 축당 ±2 흔들린다. 독립 2~3회 분포로 판정한다 (#240 §6).",
+    "tier": "fast"
+  },
+  "platform": "Windows-11-10.0.22631-SP0",
+  "pythonVersion": "3.12.13",
+  "run": {
+    "command": "uv run python -m evals.intent_probe --out evals/intent_probe/baselines/fast-2026-08-04-prompt-e5e19582 --repeats 8 --tier fast --concurrency 4 --prompt-rev 3f1dec7",
+    "runId": "5f29bf92-eb21-475d-bc27-c5cecb562927",
+    "timestamp": "2026-08-04T07:21:18.473412+00:00"
+  },
+  "seed": 20260803
+}

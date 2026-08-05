@@ -1,0 +1,5248 @@
+{
+  "budget": {
+    "budgetExceeded": false,
+    "budgetExceededReason": null,
+    "callCount": 58,
+    "costGateStatus": "passed",
+    "limits": {
+      "maxCalls": 800,
+      "maxCostUsd": 20.0,
+      "maxTotalTokens": 30000000
+    },
+    "tokenGateStatus": "passed",
+    "totalCostUsd": 0.029313950000000005,
+    "totalTokens": 147483,
+    "unknownCostCallCount": 0,
+    "unknownTokenCallCount": 0
+  },
+  "budgetExceeded": false,
+  "casePrimaryMetrics": {
+    "buy-cmap-0001": [
+      0.3345973292241887
+    ],
+    "buy-cmap-0003": [
+      0.7519811757232179
+    ],
+    "buy-cmap-0004": [
+      1.0
+    ],
+    "buy-cmap-0006": [
+      1.0
+    ],
+    "buy-cold-0001": [
+      1.0
+    ],
+    "buy-cold-0002": [
+      0.8603443310417203
+    ],
+    "buy-gust-0002": [
+      0.7112458488441695
+    ],
+    "buy-mult-0001": [
+      0.6921505301214563
+    ],
+    "buy-over-0001": [
+      0.32358669697378784
+    ],
+    "buy-over-0002": [
+      0.1606021509485402
+    ],
+    "buy-over-0003": [
+      1.0
+    ],
+    "buy-pers-0001": [
+      0.9149871004746095
+    ],
+    "buy-pers-0002": [
+      0.7636451603657846
+    ],
+    "buy-repu-0001": [
+      0.6309297535714574
+    ],
+    "buy-repu-0002": [
+      1.0
+    ],
+    "buy-srch-0002": [
+      0.9045769045236105
+    ],
+    "buy-srch-0005": [
+      1.0
+    ],
+    "buy-srch-0007": [
+      1.0
+    ]
+  },
+  "caseRepeatSummaries": {
+    "buy-cmap-0001": {
+      "iqr": 0.0,
+      "mean": 0.3345973292241887,
+      "median": 0.3345973292241887,
+      "n": 1,
+      "sd": null
+    },
+    "buy-cmap-0003": {
+      "iqr": 0.0,
+      "mean": 0.7519811757232179,
+      "median": 0.7519811757232179,
+      "n": 1,
+      "sd": null
+    },
+    "buy-cmap-0004": {
+      "iqr": 0.0,
+      "mean": 1.0,
+      "median": 1.0,
+      "n": 1,
+      "sd": null
+    },
+    "buy-cmap-0006": {
+      "iqr": 0.0,
+      "mean": 1.0,
+      "median": 1.0,
+      "n": 1,
+      "sd": null
+    },
+    "buy-cold-0001": {
+      "iqr": 0.0,
+      "mean": 1.0,
+      "median": 1.0,
+      "n": 1,
+      "sd": null
+    },
+    "buy-cold-0002": {
+      "iqr": 0.0,
+      "mean": 0.8603443310417203,
+      "median": 0.8603443310417203,
+      "n": 1,
+      "sd": null
+    },
+    "buy-gust-0002": {
+      "iqr": 0.0,
+      "mean": 0.7112458488441695,
+      "median": 0.7112458488441695,
+      "n": 1,
+      "sd": null
+    },
+    "buy-mult-0001": {
+      "iqr": 0.0,
+      "mean": 0.6921505301214563,
+      "median": 0.6921505301214563,
+      "n": 1,
+      "sd": null
+    },
+    "buy-over-0001": {
+      "iqr": 0.0,
+      "mean": 0.32358669697378784,
+      "median": 0.32358669697378784,
+      "n": 1,
+      "sd": null
+    },
+    "buy-over-0002": {
+      "iqr": 0.0,
+      "mean": 0.1606021509485402,
+      "median": 0.1606021509485402,
+      "n": 1,
+      "sd": null
+    },
+    "buy-over-0003": {
+      "iqr": 0.0,
+      "mean": 1.0,
+      "median": 1.0,
+      "n": 1,
+      "sd": null
+    },
+    "buy-pers-0001": {
+      "iqr": 0.0,
+      "mean": 0.9149871004746095,
+      "median": 0.9149871004746095,
+      "n": 1,
+      "sd": null
+    },
+    "buy-pers-0002": {
+      "iqr": 0.0,
+      "mean": 0.7636451603657846,
+      "median": 0.7636451603657846,
+      "n": 1,
+      "sd": null
+    },
+    "buy-repu-0001": {
+      "iqr": 0.0,
+      "mean": 0.6309297535714574,
+      "median": 0.6309297535714574,
+      "n": 1,
+      "sd": null
+    },
+    "buy-repu-0002": {
+      "iqr": 0.0,
+      "mean": 1.0,
+      "median": 1.0,
+      "n": 1,
+      "sd": null
+    },
+    "buy-srch-0002": {
+      "iqr": 0.0,
+      "mean": 0.9045769045236105,
+      "median": 0.9045769045236105,
+      "n": 1,
+      "sd": null
+    },
+    "buy-srch-0005": {
+      "iqr": 0.0,
+      "mean": 1.0,
+      "median": 1.0,
+      "n": 1,
+      "sd": null
+    },
+    "buy-srch-0007": {
+      "iqr": 0.0,
+      "mean": 1.0,
+      "median": 1.0,
+      "n": 1,
+      "sd": null
+    }
+  },
+  "caseResults": [
+    {
+      "caseId": "buy-cmap-0001",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "semanticQuery": "신라면 봉지라면"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 9790,
+      "metrics": {
+        "caseId": "buy-cmap-0001",
+        "diversity": 0.6666666666666666,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          1592748007,
+          6566974267,
+          8294300715,
+          8655630774,
+          8811061014,
+          8822328310,
+          9004931407,
+          9016632513,
+          9241259314,
+          9301766879,
+          9344325307,
+          9405845716,
+          9424901383,
+          9433232120,
+          9474702025
+        ],
+        "extractedFilters": {
+          "semanticQuery": "신라면 봉지라면"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 0.16666666666666666,
+          "ndcgAtK": {
+            "10": 0.3345973292241887,
+            "20": 0.3345973292241887,
+            "5": 0.0
+          },
+          "precisionAtK": {
+            "10": 0.2,
+            "20": 0.1,
+            "5": 0.0
+          },
+          "recallAtK": {
+            "10": 0.6666666666666666,
+            "20": 0.6666666666666666,
+            "5": 0.0
+          }
+        },
+        "rankedProductIds": [
+          9424901383,
+          8811061014,
+          9241259314,
+          9004931407,
+          9016632513,
+          8655630774,
+          9474702025,
+          9301766879,
+          6566974267
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          1592748007,
+          6566974267,
+          8655630774
+        ],
+        "slices": [
+          "search",
+          "category_mapping_failure",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "ec8b5e50-79d9-48cd-9257-668ed6741164",
+          "costUsd": 0.00021715000000000002,
+          "error": null,
+          "inputTokens": 2967,
+          "latencyMs": 2961,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 172,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 2967,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 172,
+            "total_tokens": 3139
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 1755,
+          "callSite": "rerank",
+          "correlationId": "1ee5c760-a65a-40c5-b150-d85994779eac",
+          "costUsd": 0.0013775999999999997,
+          "error": null,
+          "inputTokens": 1758,
+          "latencyMs": 6825,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 855,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 505,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 1755
+            },
+            "input_tokens": 1758,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 505
+            },
+            "output_tokens": 855,
+            "total_tokens": 2613
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        9424901383,
+        8811061014,
+        9241259314,
+        9004931407,
+        9016632513,
+        8655630774,
+        9474702025,
+        9301766879,
+        6566974267
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-cmap-0002",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "semanticQuery": "서울 멸균우유 대용량"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 6003,
+      "metrics": {
+        "caseId": "buy-cmap-0002",
+        "diversity": 0.4,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          7566420600,
+          7566500914,
+          8481970686,
+          9478829600,
+          9479369692
+        ],
+        "extractedFilters": {
+          "semanticQuery": "서울 멸균우유 대용량"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          },
+          "precisionAtK": {
+            "10": 0.5,
+            "20": 0.25,
+            "5": 1.0
+          },
+          "recallAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          }
+        },
+        "rankedProductIds": [
+          7566500914,
+          7566420600,
+          8481970686,
+          9478829600,
+          9479369692
+        ],
+        "rankingExcluded": true,
+        "rankingExclusionReason": "nonDiscriminativeRanking",
+        "relevantProductIds": [
+          7566420600,
+          7566500914,
+          8481970686,
+          9478829600,
+          9479369692
+        ],
+        "slices": [
+          "search",
+          "category_mapping_failure",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "62b540f3-ddf7-4912-a8a8-b31eea0804a8",
+          "costUsd": 0.00022075,
+          "error": null,
+          "inputTokens": 2967,
+          "latencyMs": 2898,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 181,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 2967,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 181,
+            "total_tokens": 3148
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "8b1d9b5f-5620-48d6-91a6-2c8b1e232510",
+          "costUsd": 0.0005808,
+          "error": null,
+          "inputTokens": 840,
+          "latencyMs": 3102,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 344,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 144,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 840,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 144
+            },
+            "output_tokens": 344,
+            "total_tokens": 1184
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        7566500914,
+        7566420600,
+        8481970686,
+        9478829600,
+        9479369692
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-cmap-0003",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "semanticQuery": "A4 복사용지"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 8710,
+      "metrics": {
+        "caseId": "buy-cmap-0003",
+        "diversity": 0.7142857142857143,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          4288557084,
+          7972526163,
+          8280119093,
+          8333869685,
+          8628730674,
+          9283627831,
+          9310126912,
+          9371969848,
+          9381792657
+        ],
+        "extractedFilters": {
+          "semanticQuery": "A4 복사용지"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 0.7519811757232179,
+            "20": 0.7519811757232179,
+            "5": 0.507420608541331
+          },
+          "precisionAtK": {
+            "10": 0.4,
+            "20": 0.2,
+            "5": 0.4
+          },
+          "recallAtK": {
+            "10": 0.8,
+            "20": 0.8,
+            "5": 0.4
+          }
+        },
+        "rankedProductIds": [
+          8280119093,
+          9283627831,
+          9310126912,
+          7972526163,
+          9381792657,
+          4288557084,
+          8333869685
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          4288557084,
+          7972526163,
+          8280119093,
+          8333869685,
+          8628730674
+        ],
+        "slices": [
+          "search",
+          "category_mapping_failure",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "234c4027-1b27-4d49-8b20-a7a0e9480fbc",
+          "costUsd": 0.00021355000000000001,
+          "error": null,
+          "inputTokens": 2967,
+          "latencyMs": 2327,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 163,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 2967,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 163,
+            "total_tokens": 3130
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 1278,
+          "callSite": "rerank",
+          "correlationId": "717e7a63-cba7-4fde-be73-209ce30586f7",
+          "costUsd": 0.0012054000000000001,
+          "error": null,
+          "inputTokens": 1281,
+          "latencyMs": 6380,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 791,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 512,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 1278
+            },
+            "input_tokens": 1281,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 512
+            },
+            "output_tokens": 791,
+            "total_tokens": 2072
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        8280119093,
+        9283627831,
+        9310126912,
+        7972526163,
+        9381792657,
+        4288557084,
+        8333869685
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-cmap-0004",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "semanticQuery": "실내건조 섬유유연제"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 5464,
+      "metrics": {
+        "caseId": "buy-cmap-0004",
+        "diversity": 0.8333333333333334,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          1679183612,
+          7794089168,
+          8466941708,
+          8481799754,
+          8775411564,
+          8864611198,
+          8921599557,
+          9057575338,
+          9066206233,
+          9268823473,
+          9277179411,
+          9277776847,
+          9365157030,
+          9412436250,
+          9412588999,
+          9450206475
+        ],
+        "extractedFilters": {
+          "semanticQuery": "실내건조 섬유유연제"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          },
+          "precisionAtK": {
+            "10": 0.2,
+            "20": 0.1,
+            "5": 0.4
+          },
+          "recallAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          }
+        },
+        "rankedProductIds": [
+          8466941708,
+          7794089168,
+          9450206475,
+          8864611198,
+          9066206233,
+          9412436250
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          7794089168,
+          8466941708
+        ],
+        "slices": [
+          "search",
+          "category_mapping_failure",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "ec9fe6ff-643f-4990-b5b7-40fee41c1bac",
+          "costUsd": 0.00022160000000000002,
+          "error": null,
+          "inputTokens": 2968,
+          "latencyMs": 2307,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 183,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 2968,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 183,
+            "total_tokens": 3151
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 1887,
+          "callSite": "rerank",
+          "correlationId": "0f6efa6e-b027-4d45-b140-9788c59a7702",
+          "costUsd": 0.0008028,
+          "error": null,
+          "inputTokens": 1890,
+          "latencyMs": 3155,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 354,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 107,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 1887
+            },
+            "input_tokens": 1890,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 107
+            },
+            "output_tokens": 354,
+            "total_tokens": 2244
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        8466941708,
+        7794089168,
+        9450206475,
+        8864611198,
+        9066206233,
+        9412436250
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-cmap-0005",
+      "expectedZeroCandidates": true,
+      "extractedFilters": {
+        "semanticQuery": "수예 재료"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 2535,
+      "metrics": {
+        "caseId": "buy-cmap-0005",
+        "diversity": 0.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [],
+        "extractedFilters": {
+          "semanticQuery": "수예 재료"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 0.0,
+          "ndcgAtK": {
+            "10": null,
+            "20": null,
+            "5": null
+          },
+          "precisionAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          },
+          "recallAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          }
+        },
+        "rankedProductIds": [],
+        "rankingExcluded": true,
+        "rankingExclusionReason": "emptyRelevance",
+        "relevantProductIds": [],
+        "slices": [
+          "category_mapping_failure",
+          "failure",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "f45d1515-e92a-4fea-a52a-44439284a269",
+          "costUsd": 0.0002146,
+          "error": null,
+          "inputTokens": 2964,
+          "latencyMs": 2534,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 166,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 2964,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 166,
+            "total_tokens": 3130
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-cmap-0006",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "semanticQuery": "한방 재료"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 7272,
+      "metrics": {
+        "caseId": "buy-cmap-0006",
+        "diversity": 0.2,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          2888196506,
+          8386782901,
+          9380527610,
+          9409881208,
+          9474734087
+        ],
+        "extractedFilters": {
+          "semanticQuery": "한방 재료"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          },
+          "precisionAtK": {
+            "10": 0.4,
+            "20": 0.2,
+            "5": 0.8
+          },
+          "recallAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          }
+        },
+        "rankedProductIds": [
+          9409881208,
+          8386782901,
+          9474734087,
+          2888196506,
+          9380527610
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          2888196506,
+          8386782901,
+          9409881208,
+          9474734087
+        ],
+        "slices": [
+          "search",
+          "category_mapping_failure",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "198a455a-4513-4d91-a101-336fe10262f0",
+          "costUsd": 0.00021655000000000003,
+          "error": null,
+          "inputTokens": 2963,
+          "latencyMs": 2401,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 171,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 2963,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 171,
+            "total_tokens": 3134
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "e8e4283d-b1b7-4753-a18c-14ed49a751bb",
+          "costUsd": 0.000838,
+          "error": null,
+          "inputTokens": 926,
+          "latencyMs": 4868,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 544,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 374,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 926,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 374
+            },
+            "output_tokens": 544,
+            "total_tokens": 1470
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        9409881208,
+        8386782901,
+        9474734087,
+        2888196506,
+        9380527610
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-cold-0001",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "semanticQuery": "고양이 사료 대용량 추천"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 6365,
+      "metrics": {
+        "caseId": "buy-cold-0001",
+        "diversity": 1.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          6842529832,
+          9454308079,
+          9478002020,
+          9478986118
+        ],
+        "extractedFilters": {
+          "semanticQuery": "고양이 사료 대용량 추천"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          },
+          "precisionAtK": {
+            "10": 0.3,
+            "20": 0.15,
+            "5": 0.6
+          },
+          "recallAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          }
+        },
+        "rankedProductIds": [
+          6842529832,
+          9478002020,
+          9478986118,
+          9454308079
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          6842529832,
+          9478002020,
+          9478986118
+        ],
+        "slices": [
+          "search",
+          "cold_start"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "625d3159-fd67-4d94-bfa1-f85e93bd9917",
+          "costUsd": 0.00021835000000000002,
+          "error": null,
+          "inputTokens": 2967,
+          "latencyMs": 2464,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 175,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 2967,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 175,
+            "total_tokens": 3142
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "8aeae8b7-c3fa-419b-ab63-3cd387bcf371",
+          "costUsd": 0.0006929999999999999,
+          "error": null,
+          "inputTokens": 795,
+          "latencyMs": 3898,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 445,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 297,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 795,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 297
+            },
+            "output_tokens": 445,
+            "total_tokens": 1240
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        6842529832,
+        9478002020,
+        9478986118,
+        9454308079
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-cold-0002",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "semanticQuery": "커피믹스"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 9213,
+      "metrics": {
+        "caseId": "buy-cold-0002",
+        "diversity": 0.75,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          8390877834,
+          9125108289,
+          9203265703,
+          9209697516,
+          9218886535,
+          9311951784,
+          9315015520,
+          9315015522,
+          9475239098
+        ],
+        "extractedFilters": {
+          "semanticQuery": "커피믹스"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 0.8603443310417203,
+            "20": 0.8603443310417203,
+            "5": 0.7039180890341348
+          },
+          "precisionAtK": {
+            "10": 0.3,
+            "20": 0.15,
+            "5": 0.4
+          },
+          "recallAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 0.6666666666666666
+          }
+        },
+        "rankedProductIds": [
+          9209697516,
+          9475239098,
+          8390877834,
+          9125108289,
+          9203265703,
+          9311951784,
+          9218886535,
+          9315015522
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          8390877834,
+          9209697516,
+          9218886535
+        ],
+        "slices": [
+          "search",
+          "cold_start"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "4596934a-5b84-4cc8-8bff-382775cf0ada",
+          "costUsd": 0.00021750000000000003,
+          "error": null,
+          "inputTokens": 2966,
+          "latencyMs": 2359,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 173,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 2966,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 173,
+            "total_tokens": 3139
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 1215,
+          "callSite": "rerank",
+          "correlationId": "acca59a0-19d1-4c59-b764-5b658efe2563",
+          "costUsd": 0.0011472,
+          "error": null,
+          "inputTokens": 1218,
+          "latencyMs": 6852,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 753,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 461,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 1215
+            },
+            "input_tokens": 1218,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 461
+            },
+            "output_tokens": 753,
+            "total_tokens": 1971
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        9209697516,
+        9475239098,
+        8390877834,
+        9125108289,
+        9203265703,
+        9311951784,
+        9218886535,
+        9315015522
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-fail-0001",
+      "expectedZeroCandidates": true,
+      "extractedFilters": {
+        "attrConditions": {
+          "priceMax": "30000"
+        },
+        "priceMax": 30000,
+        "semanticQuery": "고양이 사료"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [
+        "attrConditions"
+      ],
+      "latencyMs": 3030,
+      "metrics": {
+        "caseId": "buy-fail-0001",
+        "diversity": 0.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [],
+        "extractedFilters": {
+          "attrConditions": {
+            "priceMax": "30000"
+          },
+          "priceMax": 30000,
+          "semanticQuery": "고양이 사료"
+        },
+        "filterAccuracy": 0.25,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 0.0,
+          "ndcgAtK": {
+            "10": null,
+            "20": null,
+            "5": null
+          },
+          "precisionAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          },
+          "recallAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          }
+        },
+        "rankedProductIds": [],
+        "rankingExcluded": true,
+        "rankingExclusionReason": "emptyRelevance",
+        "relevantProductIds": [],
+        "slices": [
+          "multi_constraint",
+          "failure",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 0,
+          "callSite": "decompose",
+          "correlationId": "796403ff-426a-450e-866a-9ed79293b11e",
+          "costUsd": 0.00021730000000000002,
+          "error": null,
+          "inputTokens": 2970,
+          "latencyMs": 3028,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 172,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 2970,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 172,
+            "total_tokens": 3142
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-fail-0002",
+      "expectedZeroCandidates": true,
+      "extractedFilters": {
+        "keyword": "자비스골든셋존재하지않는상품xyz142",
+        "semanticQuery": "자비스골든셋존재하지않는상품xyz142"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 2541,
+      "metrics": {
+        "caseId": "buy-fail-0002",
+        "diversity": 0.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [],
+        "extractedFilters": {
+          "keyword": "자비스골든셋존재하지않는상품xyz142",
+          "semanticQuery": "자비스골든셋존재하지않는상품xyz142"
+        },
+        "filterAccuracy": 0.5,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 0.0,
+          "ndcgAtK": {
+            "10": null,
+            "20": null,
+            "5": null
+          },
+          "precisionAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          },
+          "recallAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          }
+        },
+        "rankedProductIds": [],
+        "rankingExcluded": true,
+        "rankingExclusionReason": "emptyRelevance",
+        "relevantProductIds": [],
+        "slices": [
+          "failure",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "c9e1a2fe-22b3-4cce-af46-b6c55b492faa",
+          "costUsd": 0.00021779999999999998,
+          "error": null,
+          "inputTokens": 2972,
+          "latencyMs": 2540,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 173,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 2972,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 173,
+            "total_tokens": 3145
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-fail-0003",
+      "expectedZeroCandidates": true,
+      "extractedFilters": {
+        "priceMax": 10000,
+        "semanticQuery": "무선 이어폰"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 4316,
+      "metrics": {
+        "caseId": "buy-fail-0003",
+        "diversity": 0.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [],
+        "extractedFilters": {
+          "priceMax": 10000,
+          "semanticQuery": "무선 이어폰"
+        },
+        "filterAccuracy": 0.3333333333333333,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 0.0,
+          "ndcgAtK": {
+            "10": null,
+            "20": null,
+            "5": null
+          },
+          "precisionAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          },
+          "recallAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          }
+        },
+        "rankedProductIds": [],
+        "rankingExcluded": true,
+        "rankingExclusionReason": "emptyRelevance",
+        "relevantProductIds": [],
+        "slices": [
+          "failure",
+          "multi_constraint",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "e4f815b9-3476-48d4-a141-ba78fe9392a0",
+          "costUsd": 0.00022345000000000004,
+          "error": null,
+          "inputTokens": 2965,
+          "latencyMs": 4316,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 188,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 2965,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 188,
+            "total_tokens": 3153
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-gust-0001",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "semanticQuery": "아기 여름 기저귀"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 4453,
+      "metrics": {
+        "caseId": "buy-gust-0001",
+        "diversity": 1.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          9214523774
+        ],
+        "extractedFilters": {
+          "semanticQuery": "아기 여름 기저귀"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          },
+          "precisionAtK": {
+            "10": 0.1,
+            "20": 0.05,
+            "5": 0.2
+          },
+          "recallAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          }
+        },
+        "rankedProductIds": [
+          9214523774
+        ],
+        "rankingExcluded": true,
+        "rankingExclusionReason": "nonDiscriminativeRanking",
+        "relevantProductIds": [
+          9214523774
+        ],
+        "slices": [
+          "search",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "ed2a825e-512a-4274-aa6c-e4b2f29227a3",
+          "costUsd": 0.00021630000000000003,
+          "error": null,
+          "inputTokens": 2966,
+          "latencyMs": 2294,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 170,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 2966,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 170,
+            "total_tokens": 3136
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "1a9cda96-d379-493d-baaf-2f9deae03c53",
+          "costUsd": 0.00033099999999999997,
+          "error": null,
+          "inputTokens": 563,
+          "latencyMs": 2156,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 182,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 112,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 563,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 112
+            },
+            "output_tokens": 182,
+            "total_tokens": 745
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        9214523774
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-gust-0002",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "semanticQuery": "눈 건강 비타민"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 6463,
+      "metrics": {
+        "caseId": "buy-gust-0002",
+        "diversity": 1.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          16202915,
+          1217557184,
+          1375397293,
+          2137780125,
+          2829539071,
+          3282637064,
+          3830007460,
+          3834938566,
+          3914310658,
+          4136679809,
+          4347909601,
+          4361832730,
+          5233499372,
+          5630149146,
+          5810615310,
+          5972920366,
+          6190106791,
+          6316290980,
+          6577554236,
+          6780043279,
+          7242259104,
+          7265440136,
+          7517896801,
+          7659487121,
+          8146889136,
+          8428294107,
+          8431336657,
+          8660504353,
+          8680764845,
+          8745726355
+        ],
+        "extractedFilters": {
+          "semanticQuery": "눈 건강 비타민"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 0.7112458488441695,
+            "20": 0.7112458488441695,
+            "5": 0.7112458488441695
+          },
+          "precisionAtK": {
+            "10": 0.2,
+            "20": 0.1,
+            "5": 0.4
+          },
+          "recallAtK": {
+            "10": 0.6666666666666666,
+            "20": 0.6666666666666666,
+            "5": 0.6666666666666666
+          }
+        },
+        "rankedProductIds": [
+          8680764845,
+          6190106791,
+          16202915,
+          1217557184,
+          1375397293
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          1375397293,
+          7265440136,
+          8680764845
+        ],
+        "slices": [
+          "search",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "7b104a7c-84ed-4d9f-9ff8-94d89e19827a",
+          "costUsd": 0.0002142,
+          "error": null,
+          "inputTokens": 2964,
+          "latencyMs": 2392,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 165,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 2964,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 165,
+            "total_tokens": 3129
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 3168,
+          "callSite": "rerank",
+          "correlationId": "393455a8-f9b4-4a3b-9e45-cd91c9db6def",
+          "costUsd": 0.001113,
+          "error": null,
+          "inputTokens": 3171,
+          "latencyMs": 4067,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 399,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 285,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 3168
+            },
+            "input_tokens": 3171,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 285
+            },
+            "output_tokens": 399,
+            "total_tokens": 3570
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        8680764845,
+        6190106791,
+        16202915,
+        1217557184,
+        1375397293
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-mult-0001",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "attrConditions": {
+          "가격": "20000 미만"
+        },
+        "priceMax": 20000,
+        "priceMin": 0,
+        "semanticQuery": "SPF50 선크림 백탁 적은"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [
+        "attrConditions"
+      ],
+      "latencyMs": 9070,
+      "metrics": {
+        "caseId": "buy-mult-0001",
+        "diversity": 0.4,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          1403303149,
+          1677693211,
+          2374915876,
+          2378024650,
+          2730310079,
+          2829539071,
+          4523196896,
+          4744632097,
+          5346989313,
+          5367233175,
+          5588888475,
+          5807301560,
+          6318746061,
+          6989049238,
+          7591624431,
+          7791911136,
+          8418144778,
+          8819988122,
+          9205558347,
+          9280160690,
+          9406060285,
+          9406065305,
+          9451394813,
+          9468979902,
+          9468989256,
+          9473470615
+        ],
+        "extractedFilters": {
+          "attrConditions": {
+            "가격": "20000 미만"
+          },
+          "priceMax": 20000,
+          "priceMin": 0,
+          "semanticQuery": "SPF50 선크림 백탁 적은"
+        },
+        "filterAccuracy": 0.2,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 0.6921505301214563,
+            "20": 0.6921505301214563,
+            "5": 0.6921505301214563
+          },
+          "precisionAtK": {
+            "10": 0.3,
+            "20": 0.15,
+            "5": 0.6
+          },
+          "recallAtK": {
+            "10": 0.6,
+            "20": 0.6,
+            "5": 0.6
+          }
+        },
+        "rankedProductIds": [
+          5367233175,
+          5588888475,
+          2374915876,
+          6989049238,
+          4523196896
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          2374915876,
+          2378024650,
+          4523196896,
+          5367233175,
+          5807301560
+        ],
+        "slices": [
+          "search",
+          "multi_constraint",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "ed1ab6e7-c206-49e2-9274-4f5f104f3708",
+          "costUsd": 0.00021625,
+          "error": null,
+          "inputTokens": 2973,
+          "latencyMs": 2633,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 169,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 2973,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 169,
+            "total_tokens": 3142
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 2793,
+          "callSite": "rerank",
+          "correlationId": "9cc9e624-bcb8-4c43-b702-c51461bb1f0f",
+          "costUsd": 0.0014135999999999999,
+          "error": null,
+          "inputTokens": 2796,
+          "latencyMs": 6434,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 712,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 512,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 2793
+            },
+            "input_tokens": 2796,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 512
+            },
+            "output_tokens": 712,
+            "total_tokens": 3508
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        5367233175,
+        5588888475,
+        2374915876,
+        6989049238,
+        4523196896
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-mult-0002",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "attrConditions": {
+          "PRICE": "40000원 이하",
+          "사이즈": "15인치"
+        },
+        "priceMax": 40000,
+        "semanticQuery": "노트북 파우치 15인치"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [
+        "attrConditions"
+      ],
+      "latencyMs": 5608,
+      "metrics": {
+        "caseId": "buy-mult-0002",
+        "diversity": 0.25,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          1852393263,
+          3313197989,
+          3477489470,
+          5741790221,
+          6511512452
+        ],
+        "extractedFilters": {
+          "attrConditions": {
+            "PRICE": "40000원 이하",
+            "사이즈": "15인치"
+          },
+          "priceMax": 40000,
+          "semanticQuery": "노트북 파우치 15인치"
+        },
+        "filterAccuracy": 0.2,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 0.8687949224876583,
+            "20": 0.8687949224876583,
+            "5": 0.8687949224876583
+          },
+          "precisionAtK": {
+            "10": 0.4,
+            "20": 0.2,
+            "5": 0.8
+          },
+          "recallAtK": {
+            "10": 0.8,
+            "20": 0.8,
+            "5": 0.8
+          }
+        },
+        "rankedProductIds": [
+          3477489470,
+          1852393263,
+          6511512452,
+          5741790221
+        ],
+        "rankingExcluded": true,
+        "rankingExclusionReason": "nonDiscriminativeRanking",
+        "relevantProductIds": [
+          1852393263,
+          3313197989,
+          3477489470,
+          5741790221,
+          6511512452
+        ],
+        "slices": [
+          "search",
+          "multi_constraint",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "0285f00a-89a9-42d4-9fff-8635740a4f1b",
+          "costUsd": 0.0002318,
+          "error": null,
+          "inputTokens": 2972,
+          "latencyMs": 2463,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 208,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 2972,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 208,
+            "total_tokens": 3180
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "e84ccab5-0c14-453f-a1c5-0f873a89cdd5",
+          "costUsd": 0.0005489999999999999,
+          "error": null,
+          "inputTokens": 855,
+          "latencyMs": 3142,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 315,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 138,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 855,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 138
+            },
+            "output_tokens": 315,
+            "total_tokens": 1170
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        3477489470,
+        1852393263,
+        6511512452,
+        5741790221
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-over-0001",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "attrConditions": {
+          "가격대": "70000 이상"
+        },
+        "priceMin": 70000,
+        "semanticQuery": "프리미엄 선크림"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 13225,
+      "metrics": {
+        "caseId": "buy-over-0001",
+        "diversity": 0.5,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          7510891587,
+          8050319029,
+          8372308572,
+          8432807582,
+          8460595946,
+          8783110754,
+          8789688417,
+          8808747885,
+          9188383733,
+          9188383734,
+          9397815149,
+          9397819432,
+          9431130647,
+          9459906684,
+          9466448368,
+          9468725424
+        ],
+        "extractedFilters": {
+          "attrConditions": {
+            "가격대": "70000 이상"
+          },
+          "priceMin": 70000,
+          "semanticQuery": "프리미엄 선크림"
+        },
+        "filterAccuracy": 0.25,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 0.16666666666666666,
+          "ndcgAtK": {
+            "10": 0.32358669697378784,
+            "20": 0.32358669697378784,
+            "5": 0.0
+          },
+          "precisionAtK": {
+            "10": 0.2,
+            "20": 0.1,
+            "5": 0.0
+          },
+          "recallAtK": {
+            "10": 0.6666666666666666,
+            "20": 0.6666666666666666,
+            "5": 0.0
+          }
+        },
+        "rankedProductIds": [
+          9397815149,
+          9397819432,
+          9459906684,
+          9466448368,
+          8460595946,
+          7510891587,
+          8372308572,
+          8808747885
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          7510891587,
+          8050319029,
+          8372308572
+        ],
+        "slices": [
+          "search",
+          "personalization",
+          "personalization_overreach"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "d135eea4-f7d9-4e3a-a26e-99c31e628a12",
+          "costUsd": 0.00022055,
+          "error": null,
+          "inputTokens": 2979,
+          "latencyMs": 2302,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 179,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 2979,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 179,
+            "total_tokens": 3158
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 1969,
+          "callSite": "rerank",
+          "correlationId": "1e6cc870-2d7c-4865-a5fc-cd957460f725",
+          "costUsd": 0.0020168,
+          "error": null,
+          "inputTokens": 1972,
+          "latencyMs": 10919,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 1352,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 1025,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 1969
+            },
+            "input_tokens": 1972,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 1025
+            },
+            "output_tokens": 1352,
+            "total_tokens": 3324
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        9397815149,
+        9397819432,
+        9459906684,
+        9466448368,
+        8460595946,
+        7510891587,
+        8372308572,
+        8808747885
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-over-0002",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "semanticQuery": "신라면"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 9444,
+      "metrics": {
+        "caseId": "buy-over-0002",
+        "diversity": 0.8888888888888888,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          1592748007,
+          6566974267,
+          8294300715,
+          8655630774,
+          8811061014,
+          8822328310,
+          9004931407,
+          9016632513,
+          9241259314,
+          9301766879,
+          9344325307,
+          9405845716,
+          9424901383,
+          9433232120,
+          9474702025
+        ],
+        "extractedFilters": {
+          "semanticQuery": "신라면"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 0.125,
+          "ndcgAtK": {
+            "10": 0.1606021509485402,
+            "20": 0.1606021509485402,
+            "5": 0.0
+          },
+          "precisionAtK": {
+            "10": 0.1,
+            "20": 0.05,
+            "5": 0.0
+          },
+          "recallAtK": {
+            "10": 0.3333333333333333,
+            "20": 0.3333333333333333,
+            "5": 0.0
+          }
+        },
+        "rankedProductIds": [
+          8811061014,
+          9424901383,
+          9241259314,
+          9016632513,
+          9344325307,
+          9433232120,
+          9405845716,
+          6566974267,
+          9004931407
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          1592748007,
+          6566974267,
+          8655630774
+        ],
+        "slices": [
+          "search",
+          "personalization",
+          "personalization_overreach"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "29bd9dfc-d38e-46f5-9eb3-1ecc6436d0f0",
+          "costUsd": 0.00020770000000000003,
+          "error": null,
+          "inputTokens": 2970,
+          "latencyMs": 2630,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 148,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 2970,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 148,
+            "total_tokens": 3118
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 1758,
+          "callSite": "rerank",
+          "correlationId": "1b11b31c-70cc-4adb-9347-6719b388c54f",
+          "costUsd": 0.0013901999999999999,
+          "error": null,
+          "inputTokens": 1761,
+          "latencyMs": 6811,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 865,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 393,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 1758
+            },
+            "input_tokens": 1761,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 393
+            },
+            "output_tokens": 865,
+            "total_tokens": 2626
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        8811061014,
+        9424901383,
+        9241259314,
+        9016632513,
+        9344325307,
+        9433232120,
+        9405845716,
+        6566974267,
+        9004931407
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-over-0003",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "brand": [
+          "애플"
+        ],
+        "semanticQuery": "무선 이어폰"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [
+        "brand"
+      ],
+      "latencyMs": 5478,
+      "metrics": {
+        "caseId": "buy-over-0003",
+        "diversity": 0.5,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          9178106390,
+          9205740434,
+          9447516649,
+          9467570175
+        ],
+        "extractedFilters": {
+          "brand": [
+            "애플"
+          ],
+          "semanticQuery": "무선 이어폰"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          },
+          "precisionAtK": {
+            "10": 0.3,
+            "20": 0.15,
+            "5": 0.6
+          },
+          "recallAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          }
+        },
+        "rankedProductIds": [
+          9178106390,
+          9205740434,
+          9467570175,
+          9447516649
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          9178106390,
+          9205740434,
+          9467570175
+        ],
+        "slices": [
+          "search",
+          "personalization",
+          "personalization_overreach"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 0,
+          "callSite": "decompose",
+          "correlationId": "4a1ebedb-d7b7-45bd-85c8-d7ce37e240ee",
+          "costUsd": 0.0002176,
+          "error": null,
+          "inputTokens": 2968,
+          "latencyMs": 2606,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 173,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 2968,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 173,
+            "total_tokens": 3141
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "71b101dc-3fca-447c-8566-4c3110ab84a4",
+          "costUsd": 0.0005771999999999999,
+          "error": null,
+          "inputTokens": 768,
+          "latencyMs": 2869,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 353,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 211,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 768,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 211
+            },
+            "output_tokens": 353,
+            "total_tokens": 1121
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        9178106390,
+        9205740434,
+        9467570175,
+        9447516649
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-pers-0001",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "priceMax": 10000,
+        "semanticQuery": "선크림"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 7731,
+      "metrics": {
+        "caseId": "buy-pers-0001",
+        "diversity": 0.6,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          2374915876,
+          2378024650,
+          4523196896,
+          5367233175,
+          5807301560,
+          8418144778
+        ],
+        "extractedFilters": {
+          "priceMax": 10000,
+          "semanticQuery": "선크림"
+        },
+        "filterAccuracy": 0.3333333333333333,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 0.9149871004746095,
+            "20": 0.9149871004746095,
+            "5": 0.9149871004746095
+          },
+          "precisionAtK": {
+            "10": 0.5,
+            "20": 0.25,
+            "5": 1.0
+          },
+          "recallAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          }
+        },
+        "rankedProductIds": [
+          5367233175,
+          2378024650,
+          2374915876,
+          4523196896,
+          5807301560
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          2374915876,
+          2378024650,
+          4523196896,
+          5367233175,
+          5807301560
+        ],
+        "slices": [
+          "search",
+          "personalization"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "cf5f068a-14d6-4907-8fc6-d70fb8ea8d2a",
+          "costUsd": 0.00021995,
+          "error": null,
+          "inputTokens": 2967,
+          "latencyMs": 4729,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 179,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 2967,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 179,
+            "total_tokens": 3146
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "2fa14964-87de-4f9f-9cd1-227824bf0e6c",
+          "costUsd": 0.0005446,
+          "error": null,
+          "inputTokens": 1007,
+          "latencyMs": 2998,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 286,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 115,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 1007,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 115
+            },
+            "output_tokens": 286,
+            "total_tokens": 1293
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        5367233175,
+        2378024650,
+        2374915876,
+        4523196896,
+        5807301560
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-pers-0002",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "semanticQuery": "부모님 선물용 홍삼"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 7588,
+      "metrics": {
+        "caseId": "buy-pers-0002",
+        "diversity": 0.5,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          2281995417,
+          2888196506,
+          3177983773,
+          3178012032,
+          5134004640,
+          7298492903,
+          8386782901,
+          8629221115,
+          9181094162,
+          9203442779,
+          9262843155,
+          9339005338,
+          9462777060,
+          9466686793,
+          9470241680
+        ],
+        "extractedFilters": {
+          "semanticQuery": "부모님 선물용 홍삼"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 0.7636451603657846,
+            "20": 0.7636451603657846,
+            "5": 0.7636451603657846
+          },
+          "precisionAtK": {
+            "10": 0.2,
+            "20": 0.1,
+            "5": 0.4
+          },
+          "recallAtK": {
+            "10": 0.6666666666666666,
+            "20": 0.6666666666666666,
+            "5": 0.6666666666666666
+          }
+        },
+        "rankedProductIds": [
+          2281995417,
+          9462777060,
+          5134004640,
+          9181094162,
+          8386782901,
+          8629221115
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          2281995417,
+          2888196506,
+          5134004640
+        ],
+        "slices": [
+          "search",
+          "personalization"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "0996a90e-eed7-46a8-8779-41ef53cb2a60",
+          "costUsd": 0.00021830000000000002,
+          "error": null,
+          "inputTokens": 2966,
+          "latencyMs": 2371,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 175,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 2966,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 175,
+            "total_tokens": 3141
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "c9d0ad20-0a01-4852-b693-7ba60ad15123",
+          "costUsd": 0.001077,
+          "error": null,
+          "inputTokens": 1731,
+          "latencyMs": 5215,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 609,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 361,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 1728,
+              "cache_read": 0
+            },
+            "input_tokens": 1731,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 361
+            },
+            "output_tokens": 609,
+            "total_tokens": 2340
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        2281995417,
+        9462777060,
+        5134004640,
+        9181094162,
+        8386782901,
+        8629221115
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-pers-0003",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "semanticQuery": "등산 배낭 소지품 파우치"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 4120,
+      "metrics": {
+        "caseId": "buy-pers-0003",
+        "diversity": 1.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          9462497279
+        ],
+        "extractedFilters": {
+          "semanticQuery": "등산 배낭 소지품 파우치"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          },
+          "precisionAtK": {
+            "10": 0.1,
+            "20": 0.05,
+            "5": 0.2
+          },
+          "recallAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          }
+        },
+        "rankedProductIds": [
+          9462497279
+        ],
+        "rankingExcluded": true,
+        "rankingExclusionReason": "nonDiscriminativeRanking",
+        "relevantProductIds": [
+          9462497279
+        ],
+        "slices": [
+          "search",
+          "personalization"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "1dc04f3a-2c7b-4ee7-9d66-c72f23596484",
+          "costUsd": 0.00022015,
+          "error": null,
+          "inputTokens": 2971,
+          "latencyMs": 2950,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 179,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 2971,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 179,
+            "total_tokens": 3150
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "3f0dad66-e46c-48ca-990e-754d696dc978",
+          "costUsd": 0.0001972,
+          "error": null,
+          "inputTokens": 554,
+          "latencyMs": 1169,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 72,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 0,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 554,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 72,
+            "total_tokens": 626
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        9462497279
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-repu-0001",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "semanticQuery": "무선 이어폰"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 4626,
+      "metrics": {
+        "caseId": "buy-repu-0001",
+        "diversity": 1.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          9205089754,
+          9406282766
+        ],
+        "extractedFilters": {
+          "semanticQuery": "무선 이어폰"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": true,
+        "metrics": {
+          "mrr": 0.5,
+          "ndcgAtK": {
+            "10": 0.6309297535714574,
+            "20": 0.6309297535714574,
+            "5": 0.6309297535714574
+          },
+          "precisionAtK": {
+            "10": 0.1,
+            "20": 0.05,
+            "5": 0.2
+          },
+          "recallAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          }
+        },
+        "rankedProductIds": [
+          9205089754,
+          9406282766
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          9406282766
+        ],
+        "slices": [
+          "search",
+          "repurchase",
+          "personalization"
+        ],
+        "unknownProductIds": [],
+        "violations": [
+          {
+            "constraint": "mustExclude",
+            "productId": 9205089754
+          }
+        ]
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "be5016d9-f139-4849-9e28-78a8e2c1fe1c",
+          "costUsd": 0.0002167,
+          "error": null,
+          "inputTokens": 2966,
+          "latencyMs": 2371,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 171,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 2966,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 171,
+            "total_tokens": 3137
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "1a2adb53-b3d9-42e5-8843-4d0b3dac9745",
+          "costUsd": 0.0003614,
+          "error": null,
+          "inputTokens": 619,
+          "latencyMs": 2253,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 198,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 101,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 619,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 101
+            },
+            "output_tokens": 198,
+            "total_tokens": 817
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        9205089754,
+        9406282766
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-repu-0002",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "semanticQuery": "무선 블루투스 이어폰"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 5092,
+      "metrics": {
+        "caseId": "buy-repu-0002",
+        "diversity": 1.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          9205089754,
+          9406282766
+        ],
+        "extractedFilters": {
+          "semanticQuery": "무선 블루투스 이어폰"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          },
+          "precisionAtK": {
+            "10": 0.1,
+            "20": 0.05,
+            "5": 0.2
+          },
+          "recallAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          }
+        },
+        "rankedProductIds": [
+          9205089754,
+          9406282766
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          9205089754
+        ],
+        "slices": [
+          "search",
+          "repurchase",
+          "personalization"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "af24f8b4-a3b3-463d-a99b-51ce459021fa",
+          "costUsd": 0.0002223,
+          "error": null,
+          "inputTokens": 2974,
+          "latencyMs": 3086,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 184,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 2974,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 184,
+            "total_tokens": 3158
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "619b07ad-505f-4d5a-a378-e8374f17d35d",
+          "costUsd": 0.000327,
+          "error": null,
+          "inputTokens": 627,
+          "latencyMs": 2004,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 168,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 56,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 627,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 56
+            },
+            "output_tokens": 168,
+            "total_tokens": 795
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        9205089754,
+        9406282766
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-repu-0003",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "semanticQuery": "무선 이어폰 케이스"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 6079,
+      "metrics": {
+        "caseId": "buy-repu-0003",
+        "diversity": 0.8,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          1670827228,
+          2664196774,
+          3018587338,
+          4288271796,
+          4315852617,
+          5324430409,
+          5356722618,
+          5597978044,
+          6914535179,
+          6989992319,
+          7205023265,
+          8394534637,
+          9035270365,
+          9061564932,
+          9178106390,
+          9192224243,
+          9205089754,
+          9205740434,
+          9244102304,
+          9269659922,
+          9309760122,
+          9310520615,
+          9350044414,
+          9383288942,
+          9406202396,
+          9406282766,
+          9422392127,
+          9436885763,
+          9447516649,
+          9454271189
+        ],
+        "extractedFilters": {
+          "semanticQuery": "무선 이어폰 케이스"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 0.0,
+          "ndcgAtK": {
+            "10": null,
+            "20": null,
+            "5": null
+          },
+          "precisionAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          },
+          "recallAtK": {
+            "10": 0.0,
+            "20": 0.0,
+            "5": 0.0
+          }
+        },
+        "rankedProductIds": [
+          9035270365,
+          6989992319,
+          9422392127,
+          9350044414,
+          1670827228
+        ],
+        "rankingExcluded": true,
+        "rankingExclusionReason": "emptyRelevance",
+        "relevantProductIds": [],
+        "slices": [
+          "repurchase",
+          "failure"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "c5f251da-d8a0-424d-bbe4-c229f35c43cd",
+          "costUsd": 0.00021920000000000002,
+          "error": null,
+          "inputTokens": 2968,
+          "latencyMs": 2438,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 177,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 2968,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 177,
+            "total_tokens": 3145
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "d4519f93-529a-4fbd-93ed-1c13fada97f6",
+          "costUsd": 0.001093,
+          "error": null,
+          "inputTokens": 3083,
+          "latencyMs": 3636,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 397,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 214,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 3080,
+              "cache_read": 0
+            },
+            "input_tokens": 3083,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 214
+            },
+            "output_tokens": 397,
+            "total_tokens": 3480
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        9035270365,
+        6989992319,
+        9422392127,
+        9350044414,
+        1670827228
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-srch-0001",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "semanticQuery": "감자탕 재료"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 4110,
+      "metrics": {
+        "caseId": "buy-srch-0001",
+        "diversity": 1.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          1268795
+        ],
+        "extractedFilters": {
+          "semanticQuery": "감자탕 재료"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          },
+          "precisionAtK": {
+            "10": 0.1,
+            "20": 0.05,
+            "5": 0.2
+          },
+          "recallAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          }
+        },
+        "rankedProductIds": [
+          1268795
+        ],
+        "rankingExcluded": true,
+        "rankingExclusionReason": "nonDiscriminativeRanking",
+        "relevantProductIds": [
+          1268795
+        ],
+        "slices": [
+          "search",
+          "category_mapping_failure",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "0473e20d-91ca-42c0-a7fa-0616a142836e",
+          "costUsd": 0.0002082,
+          "error": null,
+          "inputTokens": 2964,
+          "latencyMs": 2307,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 150,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 2964,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 150,
+            "total_tokens": 3114
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "14f766ad-bdf3-4dff-8140-2cceda62b881",
+          "costUsd": 0.0002902,
+          "error": null,
+          "inputTokens": 557,
+          "latencyMs": 1800,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 149,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 79,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 557,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 79
+            },
+            "output_tokens": 149,
+            "total_tokens": 706
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        1268795
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-srch-0002",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "semanticQuery": "출근용 선크림"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 11161,
+      "metrics": {
+        "caseId": "buy-srch-0002",
+        "diversity": 0.4444444444444444,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          1085982197,
+          1403303149,
+          1536882634,
+          1677693211,
+          2374915876,
+          2378024650,
+          2627452444,
+          2730310079,
+          2749402080,
+          2829539071,
+          3445851710,
+          3745840628,
+          4523196896,
+          4744632097,
+          5346989313,
+          5367233175,
+          5588888475,
+          5650482992,
+          5710396474,
+          5807301560,
+          5887023359,
+          6318746061,
+          6460971321,
+          6523501950,
+          6989049238,
+          7510891587,
+          7591624431,
+          7791911136,
+          8050319029,
+          8372308572
+        ],
+        "extractedFilters": {
+          "semanticQuery": "출근용 선크림"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 0.9045769045236105,
+            "20": 0.9045769045236105,
+            "5": 0.7232329748419101
+          },
+          "precisionAtK": {
+            "10": 0.3,
+            "20": 0.15,
+            "5": 0.4
+          },
+          "recallAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 0.6666666666666666
+          }
+        },
+        "rankedProductIds": [
+          1085982197,
+          2627452444,
+          2374915876,
+          5807301560,
+          3445851710,
+          2378024650,
+          7591624431,
+          5367233175,
+          2749402080
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          1085982197,
+          2378024650,
+          2627452444
+        ],
+        "slices": [
+          "search",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "37cea5f5-512a-42d7-85f4-46995785ada8",
+          "costUsd": 0.00021785000000000004,
+          "error": null,
+          "inputTokens": 2965,
+          "latencyMs": 2450,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 174,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 2965,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 174,
+            "total_tokens": 3139
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 3242,
+          "callSite": "rerank",
+          "correlationId": "16a18b86-3bb2-41d9-bc38-95df15d0b104",
+          "costUsd": 0.0014373999999999997,
+          "error": null,
+          "inputTokens": 3245,
+          "latencyMs": 8709,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 657,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 352,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 3242
+            },
+            "input_tokens": 3245,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 352
+            },
+            "output_tokens": 657,
+            "total_tokens": 3902
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        1085982197,
+        2627452444,
+        2374915876,
+        5807301560,
+        3445851710,
+        2378024650,
+        7591624431,
+        5367233175,
+        2749402080
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-srch-0003",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "semanticQuery": "무선 이어폰"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 5125,
+      "metrics": {
+        "caseId": "buy-srch-0003",
+        "diversity": 1.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          9205089754,
+          9406282766
+        ],
+        "extractedFilters": {
+          "semanticQuery": "무선 이어폰"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          },
+          "precisionAtK": {
+            "10": 0.2,
+            "20": 0.1,
+            "5": 0.4
+          },
+          "recallAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          }
+        },
+        "rankedProductIds": [
+          9205089754,
+          9406282766
+        ],
+        "rankingExcluded": true,
+        "rankingExclusionReason": "nonDiscriminativeRanking",
+        "relevantProductIds": [
+          9205089754,
+          9406282766
+        ],
+        "slices": [
+          "search",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "29c13a04-93f4-4583-afec-a0bf15a247fa",
+          "costUsd": 0.00021455,
+          "error": null,
+          "inputTokens": 2963,
+          "latencyMs": 2491,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 166,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 2963,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 166,
+            "total_tokens": 3129
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "c7dee10c-9294-4096-8259-9a20ae0026e3",
+          "costUsd": 0.0004076,
+          "error": null,
+          "inputTokens": 616,
+          "latencyMs": 2631,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 237,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 136,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 616,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 136
+            },
+            "output_tokens": 237,
+            "total_tokens": 853
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        9205089754,
+        9406282766
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-srch-0004",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "semanticQuery": "스테인리스 냄비 세트"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 4124,
+      "metrics": {
+        "caseId": "buy-srch-0004",
+        "diversity": 1.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          9381985666
+        ],
+        "extractedFilters": {
+          "semanticQuery": "스테인리스 냄비 세트"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          },
+          "precisionAtK": {
+            "10": 0.1,
+            "20": 0.05,
+            "5": 0.2
+          },
+          "recallAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          }
+        },
+        "rankedProductIds": [
+          9381985666
+        ],
+        "rankingExcluded": true,
+        "rankingExclusionReason": "nonDiscriminativeRanking",
+        "relevantProductIds": [
+          9381985666
+        ],
+        "slices": [
+          "search",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "8652df3c-6241-42c4-b59b-95a09cf76987",
+          "costUsd": 0.0002208,
+          "error": null,
+          "inputTokens": 2968,
+          "latencyMs": 2443,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 181,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 2968,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 181,
+            "total_tokens": 3149
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "0ef2f4d3-fc66-428b-b43b-2290aa121d12",
+          "costUsd": 0.00027100000000000003,
+          "error": null,
+          "inputTokens": 557,
+          "latencyMs": 1679,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 133,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 67,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 557,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 67
+            },
+            "output_tokens": 133,
+            "total_tokens": 690
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        9381985666
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-srch-0005",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "semanticQuery": "체육수업용 축구공"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 7719,
+      "metrics": {
+        "caseId": "buy-srch-0005",
+        "diversity": 1.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          9342917796,
+          9356761664,
+          9445707691,
+          9456600583,
+          9470543964
+        ],
+        "extractedFilters": {
+          "semanticQuery": "체육수업용 축구공"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          },
+          "precisionAtK": {
+            "10": 0.3,
+            "20": 0.15,
+            "5": 0.6
+          },
+          "recallAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          }
+        },
+        "rankedProductIds": [
+          9342917796,
+          9356761664,
+          9445707691,
+          9470543964,
+          9456600583
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          9342917796,
+          9356761664,
+          9445707691
+        ],
+        "slices": [
+          "search",
+          "guest",
+          "category_mapping_failure"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "59389b86-8b57-4313-8b42-e28c398a7a2f",
+          "costUsd": 0.00021915000000000001,
+          "error": null,
+          "inputTokens": 2967,
+          "latencyMs": 2623,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 177,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 2967,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 177,
+            "total_tokens": 3144
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "fa241be8-3fce-4591-8688-992734fb3eeb",
+          "costUsd": 0.0009052,
+          "error": null,
+          "inputTokens": 920,
+          "latencyMs": 5094,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 601,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 377,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 920,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 377
+            },
+            "output_tokens": 601,
+            "total_tokens": 1521
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        9342917796,
+        9356761664,
+        9445707691,
+        9470543964,
+        9456600583
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-srch-0006",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "keyword": "대용량 건자두",
+        "semanticQuery": "대용량 건자두"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [
+        "keyword"
+      ],
+      "latencyMs": 4626,
+      "metrics": {
+        "caseId": "buy-srch-0006",
+        "diversity": 1.0,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          9380527610
+        ],
+        "extractedFilters": {
+          "keyword": "대용량 건자두",
+          "semanticQuery": "대용량 건자두"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          },
+          "precisionAtK": {
+            "10": 0.1,
+            "20": 0.05,
+            "5": 0.2
+          },
+          "recallAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          }
+        },
+        "rankedProductIds": [
+          9380527610
+        ],
+        "rankingExcluded": true,
+        "rankingExclusionReason": "nonDiscriminativeRanking",
+        "relevantProductIds": [
+          9380527610
+        ],
+        "slices": [
+          "search",
+          "guest"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "59558090-1c04-4983-ab35-c9f6321647f9",
+          "costUsd": 0.00021745000000000003,
+          "error": null,
+          "inputTokens": 2965,
+          "latencyMs": 2319,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 173,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 2965,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 173,
+            "total_tokens": 3138
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 0,
+          "callSite": "rerank",
+          "correlationId": "f681cca1-2053-4cf9-bdd1-540b85f08edb",
+          "costUsd": 0.0003076,
+          "error": null,
+          "inputTokens": 554,
+          "latencyMs": 2304,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 164,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 89,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 0
+            },
+            "input_tokens": 554,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 89
+            },
+            "output_tokens": 164,
+            "total_tokens": 718
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        9380527610
+      ],
+      "repeat": 0
+    },
+    {
+      "caseId": "buy-srch-0007",
+      "expectedZeroCandidates": false,
+      "extractedFilters": {
+        "semanticQuery": "야구 장비"
+      },
+      "failureReason": null,
+      "filterAxisLeakage": [],
+      "hardFailure": false,
+      "intentContradictionAxes": [],
+      "latencyMs": 7558,
+      "metrics": {
+        "caseId": "buy-srch-0007",
+        "diversity": 0.3333333333333333,
+        "duplicateCount": 0,
+        "eligibleProductIds": [
+          1714227328,
+          2803258637,
+          3294263680,
+          3610879964,
+          3772427130,
+          5784310647,
+          6108080498,
+          7961701252,
+          8427903232,
+          9029965731,
+          9083199962,
+          9154071030,
+          9200973936,
+          9203951415,
+          9211989671,
+          9258786690,
+          9281865026,
+          9282577680,
+          9282669848,
+          9404566511,
+          9425215731,
+          9426693533,
+          9440517467,
+          9453530463,
+          9454394181,
+          9468048697,
+          9470852962,
+          9471567439,
+          9476138918
+        ],
+        "extractedFilters": {
+          "semanticQuery": "야구 장비"
+        },
+        "filterAccuracy": 0.0,
+        "hardConstraintViolated": false,
+        "metrics": {
+          "mrr": 1.0,
+          "ndcgAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          },
+          "precisionAtK": {
+            "10": 0.2,
+            "20": 0.1,
+            "5": 0.4
+          },
+          "recallAtK": {
+            "10": 1.0,
+            "20": 1.0,
+            "5": 1.0
+          }
+        },
+        "rankedProductIds": [
+          7961701252,
+          6108080498,
+          9453530463,
+          9476138918,
+          9440517467,
+          3610879964,
+          3772427130,
+          5784310647,
+          2803258637
+        ],
+        "rankingExcluded": false,
+        "rankingExclusionReason": null,
+        "relevantProductIds": [
+          6108080498,
+          7961701252
+        ],
+        "slices": [
+          "search",
+          "guest",
+          "category_mapping_failure"
+        ],
+        "unknownProductIds": [],
+        "violations": []
+      },
+      "modelConfig": {
+        "identityKind": "guest",
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "profileScope": "off",
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "providerCalls": [
+        {
+          "cacheTokens": 2816,
+          "callSite": "decompose",
+          "correlationId": "1868fcdd-af87-434c-9e67-bff0df88ee24",
+          "costUsd": 0.00021335,
+          "error": null,
+          "inputTokens": 2963,
+          "latencyMs": 2516,
+          "model": "gpt-5-nano",
+          "observedChunkCount": 1,
+          "outputTokens": 163,
+          "reasoningEffort": "minimal",
+          "reasoningTokens": 0,
+          "tier": "fast",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2816
+            },
+            "input_tokens": 2963,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 0
+            },
+            "output_tokens": 163,
+            "total_tokens": 3126
+          },
+          "usageSource": "usage_metadata"
+        },
+        {
+          "cacheTokens": 2902,
+          "callSite": "rerank",
+          "correlationId": "53e390e4-9a83-4fb5-bf5d-98e3433a0e89",
+          "costUsd": 0.0013082,
+          "error": null,
+          "inputTokens": 2905,
+          "latencyMs": 5037,
+          "model": "gpt-5.6-luna",
+          "observedChunkCount": 1,
+          "outputTokens": 606,
+          "reasoningEffort": "medium",
+          "reasoningTokens": 232,
+          "tier": "smart",
+          "usageMetadata": {
+            "input_token_details": {
+              "audio": 0,
+              "cache_creation": 0,
+              "cache_read": 2902
+            },
+            "input_tokens": 2905,
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 232
+            },
+            "output_tokens": 606,
+            "total_tokens": 3511
+          },
+          "usageSource": "usage_metadata"
+        }
+      ],
+      "rankedProductIds": [
+        7961701252,
+        6108080498,
+        9453530463,
+        9476138918,
+        9440517467,
+        3610879964,
+        3772427130,
+        5784310647,
+        2803258637
+      ],
+      "repeat": 0
+    }
+  ],
+  "configVersion": "personalization-eval-config-v1",
+  "coverage": {
+    "costCoverage": 1.0,
+    "tokenCoverage": 1.0
+  },
+  "datasetHash": "764bc148858cb9c04b9da7a210a5479f7f0daa04bec61563c7f94233e9646b04",
+  "datasetVersion": "1.0.0",
+  "executedRepeats": 1,
+  "hardConstraintViolationCount": 1,
+  "hardConstraintViolationRate": 0.03225806451612903,
+  "hardFailureCount": 0,
+  "primaryMetric": "overall.ndcgAtK.10",
+  "primarySummary": {
+    "bootstrapCi95": {
+      "high": 0.8880112094737099,
+      "low": 0.653944678042443
+    },
+    "iqr": 0.30784946987854367,
+    "mean": 0.7804803878784745,
+    "median": 0.8824606177826654,
+    "n": 18,
+    "sd": 0.26624418845977804
+  },
+  "rankingExcludedCases": [
+    {
+      "caseId": "buy-cmap-0002",
+      "reason": "nonDiscriminativeRanking"
+    },
+    {
+      "caseId": "buy-cmap-0005",
+      "reason": "emptyRelevance"
+    },
+    {
+      "caseId": "buy-fail-0001",
+      "reason": "emptyRelevance"
+    },
+    {
+      "caseId": "buy-fail-0002",
+      "reason": "emptyRelevance"
+    },
+    {
+      "caseId": "buy-fail-0003",
+      "reason": "emptyRelevance"
+    },
+    {
+      "caseId": "buy-gust-0001",
+      "reason": "nonDiscriminativeRanking"
+    },
+    {
+      "caseId": "buy-mult-0002",
+      "reason": "nonDiscriminativeRanking"
+    },
+    {
+      "caseId": "buy-pers-0003",
+      "reason": "nonDiscriminativeRanking"
+    },
+    {
+      "caseId": "buy-repu-0003",
+      "reason": "emptyRelevance"
+    },
+    {
+      "caseId": "buy-srch-0001",
+      "reason": "nonDiscriminativeRanking"
+    },
+    {
+      "caseId": "buy-srch-0003",
+      "reason": "nonDiscriminativeRanking"
+    },
+    {
+      "caseId": "buy-srch-0004",
+      "reason": "nonDiscriminativeRanking"
+    },
+    {
+      "caseId": "buy-srch-0006",
+      "reason": "nonDiscriminativeRanking"
+    }
+  ],
+  "repeatsRequested": 1,
+  "secondaryMetricSummaries": {},
+  "uniqueCaseCount": 31
+}

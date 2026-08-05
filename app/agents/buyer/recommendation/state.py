@@ -23,8 +23,14 @@ from app.core.text import _strip_unsafe
 from app.schemas.chat import ConditionChip
 from app.schemas.spring import ProductSearchFilters
 
-_NAMESPACE_ROOT = "buyer_revert"
+_NAMESPACE_ROOT = "buyer_revert_v2"
 _CATEGORIES_KEY = "categories"
+_REPURCHASE_NAMESPACE_ROOT = "buyer_repurchase_v1"
+_PRODUCT_IDS_KEY = "product_ids"
+_RELAX_NAMESPACE_ROOT = "buyer_relaxation_offers_v1"  # [#113] 완화 칩 제안 기억
+_SNAPSHOT_KEY = "turn"  # 이번 턴 화면 상태 — 아래 둘을 한 덩어리로 쓴다(부분 실패 차단)
+_OFFERS_KEY = "offers"  # 제안한 칩(누르면 이렇게 됩니다)
+_APPLIED_KEY = "applied"  # 자동 적용된 완화(서버가 이미 이렇게 했습니다)
 
 # key(thread_key)별 asyncio.Lock — RevertStore.add() 의 get→put(read-modify-write) 구간을
 # 직렬화한다. 동일 스레드로 겹치는 요청(멀티탭·연속 발화)이 오면 나중 aput 이 앞선 갱신을
@@ -33,6 +39,7 @@ _CATEGORIES_KEY = "categories"
 # 실 PostgreSQL 경로는 mutation_lock의 advisory lock으로 인스턴스 간 직렬화한다. InMemory/test
 # 경로만 이 로컬 lock을 사용하며, WeakValueDictionary라 유휴 key는 GC가 자동 회수한다(이슈 #50).
 _add_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+_repurchase_add_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
 
 def _lock_for(key: str) -> asyncio.Lock:
@@ -40,6 +47,14 @@ def _lock_for(key: str) -> asyncio.Lock:
     if lock is None:
         lock = asyncio.Lock()
         _add_locks[key] = lock
+    return lock
+
+
+def _repurchase_lock_for(key: str) -> asyncio.Lock:
+    lock = _repurchase_add_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _repurchase_add_locks[key] = lock
     return lock
 
 
@@ -69,13 +84,51 @@ class CategoryQuery:
 class RouteDecision:
     """decompose(Haiku) 1회 산출 — intent 라우팅 + 병합 필터/의미쿼리/case + 폴백 답변 + 장바구니 의도."""
 
-    intent: Literal["recommend", "cart_add", "cart_view", "general"]
+    intent: Literal[
+        "recommend",
+        "cart_add",
+        "cart_view",
+        "order_status",
+        "general",
+        # [라운드 24, #116·#117] decompose 가 직접 산출하는 삭제·찜 intent. cart/graph.py 의
+        # classify_cart_utterance(cart_add 로 들어온 발화의 2선 방어)와 값 집합이 겹친다 —
+        # buyer/graph.py 의 라우팅 docstring 참조.
+        "cart_remove",
+        "wishlist_add",
+        "wishlist_remove",
+    ]
     filters: ProductSearchFilters
-    semantic_query: str
-    case: int = 2  # [폐기, 이슈 #59] 미사용 — 단일/멀티는 len(category_queries)로 판정, 파싱만 유지
+    # [#101] 의미쿼리는 검색 입력이라 filters.semantic_query 로 이관(decompose 가 세팅). 하류가
+    # 그 필드를 읽으므로 RouteDecision 에는 더 두지 않는다.
+    # [이슈 #198] 전개 게이트로 사용 — `case != 3` 이면 상품 전개를 발동하지 않는다
+    # (`needs_expansion.detect_expansion_need`, DESIGN-NEEDS-EXPANSION-198 §4.2). case 2
+    # ("5만원 이하 아무거나")의 무필터 의도를 보호하는 유일한 신호이므로 제거하면 안 된다.
+    # 단일/멀티 판정에는 여전히 쓰지 않는다(len(category_queries) 기준, #59).
+    case: int = 2
     reply: str = ""  # intent == general 일 때만 사용자에게 줄 답변
     cart: CartIntent | None = None  # intent == cart_add/cart_view 일 때
     revert_categories: list[str] = field(default_factory=list)  # 소모품 억제 되돌리기(결정 14-F)
+    # [#120] 명시 재구매/재추천 지목(상품 지칭 텍스트) — 최근 구매 exact 제외를 되돌리는 신호.
+    # productId 가 아니라 **텍스트**인 이유는 graph 가 본인 구매 이력에 대해서만 해소해 신뢰
+    # 경계를 유지하기 때문(#120).
+    # graph 가 이 텍스트를 본인 최근 구매 이력의 productId 로 해소해 RepurchaseStore 에 누적한다.
+    # 이후 매 턴 저장값을 그 시점의 최근 구매 이력과 교집합으로 재검증하므로, 저장소가 오염돼도
+    # 면제 대상은 항상 본인 최근 구매의 부분집합이라는 신뢰 경계를 유지한다(#232).
+    repurchase_products: list[str] = field(default_factory=list)
+    # [#113] 이번 발화가 **직전에 보여준 결과 집합을 가리키는가**("그 중에", "여기서", "보여준
+    # 것들에서"). 참인 턴은 직전 턴에 자동 적용된 완화를 이어받는다 — 사용자가 완화된 결과를
+    # 자기 후보로 인정한 것이라 칩 클릭과 같은 **동의 신호**로 본다(팀 합의).
+    # 기본 False(엄격) — 판정을 놓치면 원래 조건으로 되돌아가 또 완화·또 고지라 무해하지만,
+    # 반대로 오탐하면 사용자가 말한 조건이 조용히 바뀌므로 애매하면 False 로 기운다.
+    scoped_to_previous: bool = False
+    # [#60] 목록 안 상품을 전부 사는가(BUY_ALL) — 하나만 고르는가(PICK_ONE). 판정 기준은 예산이
+    # 아니다(api-spec §4.2): "감자탕 재료"는 예산이 없어도 BUY_ALL, "5만원으로 파우치"는 예산이
+    # 있어도 PICK_ONE. 기본 False(엄격) — 오탐하면 사용자가 고르려던 대안이 세트로 묶여 버린다.
+    buy_all: bool = False
+    # [#60] 총액 예산(원). **개별 상품 상한(filters.price_max)과 다른 축**이다 — "각각 5만원"은
+    # price_max, "전부 5만원"은 이 값이다. BUY_ALL + 이 값이 둘 다 있을 때만 push totalBudget 에
+    # 실린다(§4.2). 음수는 decompose 파싱이 None 으로 떨군다.
+    total_budget: int | None = None
     # 카테고리 하이브리드 매핑(이슈 #59, 방식 A):
     category_queries: list[CategoryQuery] = field(default_factory=list)  # decompose 추측(매핑 전)
     # 매핑 후 (canonical, query) leg 리스트(그래프가 채움; 신호 없거나 실패 시 빈 리스트 → 무필터,
@@ -116,7 +169,7 @@ def build_condition_chips(
     """병합 필터에서 conditions 칩을 결정론적으로 파생한다(FE 제거 가능, 카드 아님).
 
     LLM 의 임의 conditions 출력에 의존하지 않고 확정된 필터에서 파생 — 테스트 가능·일관.
-    카테고리 칩을 먼저 둔다(api-spec §3.1 (2) 예시 순).
+    카테고리 칩을 먼저 둔다(api-spec §3.1 (3) 예시 순).
 
     categories 가 주어지면(fan-out 매핑 결과 canonical 전체)로 카테고리 칩을 만든다 — 멀티면
     검색한 카테고리 전부를 조인 문자열 하나로 표시한다(api-spec §3.1 예시가 value 를 스칼라
@@ -195,9 +248,142 @@ class RevertStore:
             )
 
 
+class RepurchaseStore:
+    """스레드별 재구매 exact 제외 면제 productId 목록 — 오래된 순서대로 유계 누적한다."""
+
+    def __init__(self, store: BaseStore | None = None) -> None:
+        self._store = store or InMemoryStore()
+
+    async def get(self, key: str) -> list[int]:
+        item = await run_with_query_timeout(
+            self._store.aget((_REPURCHASE_NAMESPACE_ROOT, key), _PRODUCT_IDS_KEY)
+        )
+        if item is None or not isinstance(item.value, dict):
+            return []
+        values = item.value.get(_PRODUCT_IDS_KEY)
+        if not isinstance(values, list):
+            return []
+        return [value for value in values if type(value) is int]
+
+    async def add(self, key: str, product_ids, *, cap: int) -> list[int]:
+        """누적·상한 적용 결과를 반환해 첫 SSE 전 불필요한 재조회 왕복 1회를 없앤다."""
+        if not product_ids:
+            # 호출부는 빈 입력을 get으로 분기하지만, 직접 호출도 락·쓰기 없이 순수 읽기로 둔다.
+            return await self.get(key)
+        async with mutation_lock(
+            self._store,
+            f"buyer:repurchase:{key}",
+            _repurchase_lock_for(key),
+        ):
+            current = await self.get(key)
+            incoming: list[int] = []
+            for product_id in product_ids:
+                if type(product_id) is not int:
+                    continue
+                if product_id in incoming:
+                    incoming.remove(product_id)
+                incoming.append(product_id)
+            incoming_ids = set(incoming)
+            merged = [product_id for product_id in current if product_id not in incoming_ids]
+            merged.extend(incoming)
+            retained = merged[-cap:] if cap > 0 else []
+            await run_with_query_timeout(
+                self._store.aput(
+                    (_REPURCHASE_NAMESPACE_ROOT, key),
+                    _PRODUCT_IDS_KEY,
+                    {_PRODUCT_IDS_KEY: retained},
+                )
+            )
+            return retained
+
+
+class RelaxationOfferStore:
+    """스레드별 **직전 턴에 제안한 완화 칩** — 칩 클릭을 결정론적으로 되받기 위한 기억(#113).
+
+    FE 는 완화 칩을 누르면 **칩 label 을 다음 턴 message 로 그대로 보낸다**(jarvis-frontend
+    `SuggestionChips.onApply` → `useChat.applySuggestion` → `send(label)`). 그런데 label 은
+    "65,000원까지 볼까요?" 같은 **의문문**이라, 그대로 두면 decompose(LLM)가 그 문장에서 숫자를
+    다시 뽑아내야 한다 — 우리가 이미 정확히 계산해 둔 값(65000)을 버리고 추측으로 복원하는 셈이고,
+    질문으로 해석되면 완화가 아예 안 걸린다.
+
+    그래서 칩을 내보낼 때 `label → (field, value)` 를 기억해 두고, 다음 턴 message 가 그 label 과
+    **정확히 일치**하면 LLM 해석을 건너뛰고 저장된 값을 그대로 적용한다. 일치하지 않으면 아무 일도
+    하지 않고 기존 경로(decompose 해석)로 흐른다 — 지금보다 나빠지지 않는다.
+
+    턴마다 **덮어쓴다**(누적하지 않는다) — 화면에 떠 있는 칩은 항상 마지막 턴 것뿐이라, 옛 제안이
+    남아 있으면 사용자가 보지도 않은 조건이 되살아난다.
+
+    두 값(`offers`·`applied`)은 **한 스냅샷**이다 — 둘 다 "이번 턴 화면에 무엇이 있었나"를
+    기술한다. 그래서 **단일 키에 함께 저장**한다(PR #248 리뷰): 따로 두 번 쓰면 앞의 쓰기만
+    성공하고 뒤가 pg 일시 장애로 실패했을 때 `offers` 는 이번 턴인데 `applied` 는 지난 턴인
+    **찢어진 상태**가 남고, 다음 턴 "그 중에" 가 화면에 보여준 적 없는 완화를 이어붙인다.
+    한 번의 `aput` 으로 만들면 그 부분 실패가 **구조적으로 불가능**해진다.
+    """
+
+    def __init__(self, store: BaseStore | None = None) -> None:
+        self._store = store or InMemoryStore()
+
+    async def _snapshot(self, key: str) -> dict:
+        item = await run_with_query_timeout(
+            self._store.aget((_RELAX_NAMESPACE_ROOT, key), _SNAPSHOT_KEY)
+        )
+        return item.value if item and isinstance(item.value, dict) else {}
+
+    async def get_snapshot(self, key: str) -> tuple[dict[str, dict], dict | None]:
+        """`(offers, applied)` 를 **한 번의 왕복으로 함께** 돌려준다.
+
+        - `offers`: `label → {"field":…, "value":…}` — "누르면 이렇게 됩니다"(미동의). 없으면 빈 dict.
+        - `applied`: 직전 턴에 **자동 적용**된 완화 — "서버가 이미 이렇게 적용했습니다"(미동의).
+          다음 턴이 그 결과 집합을 가리키면("그 중에") 사용자가 수용한 것으로 보고 이어받는다(#113).
+
+        **둘을 따로 읽지 않는다**(PR #248 리뷰). 쓰기를 원자적으로 묶어 찢어진 상태를 없애 놓고
+        읽기를 두 번으로 나누면, 두 `aget` 사이에 다른 턴의 `put` 이 끼었을 때 `offers` 는 옛
+        스냅샷 · `applied` 는 새 스냅샷인 **같은 찢어짐이 읽기 쪽에서 되살아난다.** 한 번 읽어
+        둘 다 뽑으면 pg 왕복도 절반이다(승계 경로는 종전에 왕복 2회였다).
+        """
+        snapshot = await self._snapshot(key)
+        offers = snapshot.get(_OFFERS_KEY)
+        applied = snapshot.get(_APPLIED_KEY)
+        return (
+            offers if isinstance(offers, dict) else {},
+            applied if isinstance(applied, dict) else None,
+        )
+
+    async def put(self, key: str, offers: dict[str, dict], applied: dict | None) -> None:
+        """이번 턴 스냅샷으로 **통째 교체**한다 — 부분 갱신을 API 로 열어두지 않는다.
+
+        락 불필요(읽고 더하는 게 아니라 덮어쓴다). 상품 후보가 확정된 턴마다 덮어쓴다 — 완화가
+        안 걸린 턴에 옛 값이 남아 있으면 한참 뒤 "그 중에" 발화가 **화면에 있지도 않았던** 완화를
+        되살린다.
+
+        **호출되지 않는 경로가 있다**(검색 실패 `SEARCH_FAILED` 는 이 지점 전에 종료). 그런 턴은
+        옛 값이 그대로 남는데, 의도된 쪽이다 — 사용자가 마지막으로 **본** 결과는 여전히 그 완화가
+        걸린 목록이라 "그 중에"의 지시 대상이 바뀌지 않았다. 반대로 0건 턴은 여기까지 와서 비우므로
+        승계가 끊기는데, 이것도 안전한 쪽이다(원래 조건으로 돌아가 다시 고지). 지시 대상이 애매한
+        구간에서는 **승계하지 않는 쪽으로 기운다**(#113 설계 원칙).
+        """
+        await run_with_query_timeout(
+            self._store.aput(
+                (_RELAX_NAMESPACE_ROOT, key),
+                _SNAPSHOT_KEY,
+                {_OFFERS_KEY: offers, _APPLIED_KEY: applied},
+            )
+        )
+
+
 async def get_revert_store() -> RevertStore:
     """되돌리기 스토어 — pg-profile 공유 연결 백엔드(요청마다 얇은 래퍼 재생성)."""
     return RevertStore(await pg_store.get_store())
+
+
+async def get_repurchase_store() -> RepurchaseStore:
+    """재구매 면제 스토어 — pg-profile 공유 연결 백엔드(요청마다 얇은 래퍼 재생성)."""
+    return RepurchaseStore(await pg_store.get_store())
+
+
+async def get_relaxation_offer_store() -> RelaxationOfferStore:
+    """완화 칩 제안 스토어 — 되돌리기와 같은 pg-profile 백엔드(요청마다 얇은 래퍼)."""
+    return RelaxationOfferStore(await pg_store.get_store())
 
 
 def reset_revert_store() -> None:
@@ -209,3 +395,13 @@ def reset_revert_store() -> None:
     """
     pg_store.reset_store()
     _add_locks.clear()
+
+
+def reset_repurchase_store() -> None:
+    """테스트 격리용 — 공유 pg-profile store와 재구매 key별 락을 초기화한다.
+
+    pytest-asyncio가 테스트마다 새 이벤트 루프를 쓰므로 이전 루프에 묶인 stale ``Lock``을
+    재사용하면 hang이 날 수 있다. 따라서 저장값뿐 아니라 전용 lock dict도 함께 비운다.
+    """
+    pg_store.reset_store()
+    _repurchase_add_locks.clear()

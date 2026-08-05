@@ -1,14 +1,13 @@
-"""판매자 분석 순수 함수 (DESIGN-SELLER-TOOLS-STAGE1 §4, SPEC-SELLER-001 §5).
+"""판매자 분석 순수 함수 — 기간 파싱·전환율·안전 계산기 (DESIGN-SELLER-TOOLS-STAGE1 §4).
 
-3층 분담("Spring 원시 집계 → AI 고도화 계산(본 모듈) → LLM 자연어화") 중 계산 층.
-stdlib `statistics`만 사용한다(pandas 미설치, §0.1 C) — 부작용 없는 순수 함수로만 구성해
-같은 입력이면 같은 출력을 보장한다(결정론, §10-②).
+3층 분담("Spring 원시 집계 → AI 고도화 계산 → LLM 자연어화") 중 계산 층의 stdlib 부분.
+[#290] 통계 알고리즘(이상 탐지·비율 검정·군집화)은 `analysis/` 패키지로 이관됐다 —
+구 detect_sales_anomalies(SMA 편차)는 analysis.timeseries(S-H-ESD)가 대체한다.
+이 모듈에는 논문 의존이 없는 유틸(normalize_period·safe_eval·전환율 산식)만 남는다.
 
-[중요] Spring 이 준 SalesSeriesPoint.isAnomaly/deviationPct 는 참고치일 뿐이며, 본 모듈은
-원시 sales 값으로 이동평균·편차를 직접 재계산해 판정한다(§0.1 D, C-13 경계 미확정 대비).
-
-임계값(window·threshold_pct·drop_pct 등)은 전부 호출부가 app.core.config.Settings 에서
-읽어 인자로 주입한다 — 이 파일 내부에 튜너블 숫자를 하드코딩하지 않는다.
+부작용 없는 순수 함수로만 구성해 같은 입력이면 같은 출력을 보장한다(결정론, §10-②).
+임계값·상한은 전부 호출부가 app.core.config.Settings 에서 읽어 인자로 주입한다 —
+이 파일 내부에 튜너블 숫자를 하드코딩하지 않는다.
 """
 
 from __future__ import annotations
@@ -16,79 +15,50 @@ from __future__ import annotations
 import ast
 import math
 import re
-import statistics
+import unicodedata
 from datetime import date, timedelta
 
 from app.core.config import get_settings
-from app.schemas.spring import FunnelResult, SalesSeriesPoint
+from app.schemas.spring import FunnelResult
 
-# "최근 N일" 표현에서 N 을 추출하는 패턴 (normalize_period).
-_RECENT_N_PATTERN = re.compile(r"최근\s*(\d+)\s*일")
+# "최근 N일" 표현 (normalize_period) — **문자열 전체가** 이 형태여야 한다(^…$).
+# 종전에는 `"최근" in text` 부분 일치로 분기한 뒤 이 패턴이 안 걸리면 기본 일수로
+# 떨어뜨렸다. 그 구조 때문에 "최근 3개월"·"최근 반년"·"이번 달 들어 최근 7일" 이
+# 되묻기도 경고도 없이 전부 7일로 처리됐다(#269). 부분 일치 금지.
+# 음수 부호를 패턴에 포함하는 이유: "최근 -3일" 이 매치 실패로 새어 기본값으로
+# 떨어지지 않고 아래 n<=0 가드에 도달하게 하려는 것이다.
+_RECENT_N_PATTERN = re.compile(r"^최근\s*(-?\d+)\s*일$")
 
 # 명시 날짜 범위 "YYYY-MM-DD~YYYY-MM-DD" 패턴 (normalize_period, 3-1 확장).
 _EXPLICIT_RANGE_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2})\s*~\s*(\d{4}-\d{2}-\d{2})$")
+
+# 되묻기 문구에 넣는 지원 어휘 안내 — 판매자에게 그대로 노출된다.
+# 예외 메시지가 곧 사용자 대면 문구다(pipeline.resolve_plan → PipelineResult(kind="clarification")).
+# 개발자용 문자열("파싱 불가한 기간 표현: ...")을 노출하지 않는다.
+_PERIOD_GUIDE = "지난달 / 최근 7일 / 어제 / 2026-06-01~2026-06-30 처럼 말씀해 주세요"
+
+# 되묻기 문구에 되비칠 입력 길이 상한 — 장문·개행이 그대로 흘러나가지 않게 자른다.
+_PERIOD_ECHO_MAX_CHARS = 30
+
+# "최근 …" 인데 단위가 '일' 이 아닌 경우를 짚어 안내하기 위한 패턴.
+# **단어 경계에 앵커한다.** 부분 문자열 검사(`"달" in text`)로 두면 "최근 목표 달성
+# 현황"의 "달성", "최근 주말 프로모션"의 "주말", "최근 분기점 지표"의 "분기점"에 걸려,
+# 단위를 쓴 적도 없는 판매자가 "일 단위로 말씀해 주세요" 라는 원인을 잘못 짚은 안내를
+# 받는다(#269 리뷰). 되묻기라는 결론은 같아도 이유가 틀리면 대화가 더 꼬인다.
+# 앞은 숫자·공백·문두, 뒤는 공백·문말 — 확신이 설 때만 단위 안내로 보낸다.
+_NON_DAY_UNIT_PATTERN = re.compile(r"(?:^|[\s\d])(?:주일|개월|반년|분기|주|달|년)(?=$|\s)")
+
+# "최근 N일" 의 N 자릿수 상한 — int() 변환 **전에** 검사한다.
+# Python 3.11+ 는 4300자리 초과 문자열→int 변환에서 영어 내부 메시지 ValueError 를
+# 내고("Exceeds the limit (4300) for integer string conversion…"), 그게 되묻기 문구로
+# 그대로 판매자에게 나간다(#269 리뷰). max_days 가 막으려던 것과 같은 실패 양상이
+# 파싱 단계에서 재현되므로, 상한 판정 전에 자릿수로 먼저 끊는다.
+_PERIOD_MAX_DIGITS = 9
 
 # safe_eval 화이트리스트 — 사칙연산·거듭제곱·round() 만 허용한다(§3.3, `calculate` 도구용).
 _ALLOWED_BINOPS = (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow)
 _ALLOWED_UNARYOPS = (ast.UAdd, ast.USub)
 _ALLOWED_FUNCS = {"round": round}
-
-
-def moving_average(values: list[float], window: int) -> list[float | None]:
-    """단순 이동평균(SMA). window 미만 구간(경계)은 None 으로 채운다.
-
-    window <= 0 이면 ValueError(호출부 설정 오류 방어).
-    """
-    if window <= 0:
-        raise ValueError(f"window 는 1 이상이어야 한다: {window}")
-
-    result: list[float | None] = []
-    for i in range(len(values)):
-        if i < window - 1:
-            result.append(None)
-            continue
-        segment = values[i - window + 1 : i + 1]
-        result.append(statistics.fmean(segment))
-    return result
-
-
-def deviation_pct(actual: float, baseline: float) -> float:
-    """기준(baseline) 대비 실측(actual)의 편차 %. baseline==0 이면 0 나눗셈 방지로 0.0."""
-    if baseline == 0:
-        return 0.0
-    return (actual - baseline) / baseline * 100
-
-
-def is_anomaly(deviation: float, *, threshold_pct: float) -> bool:
-    """|deviation| >= threshold_pct 면 이상. 경계(==)도 이상으로 판정한다."""
-    return abs(deviation) >= threshold_pct
-
-
-def detect_sales_anomalies(
-    series: list[SalesSeriesPoint], *, window: int, threshold_pct: float
-) -> list[tuple[str, float, bool]]:
-    """일별 매출을 "직전 window 일 이동평균" 대비 편차·이상판정한다.
-
-    (date, deviationPct, isAnomaly) 목록 반환. 당일 값은 자신의 기준(baseline) 계산에
-    포함하지 않는다 — 급증/급락일이 스스로를 평균에 섞어 편차를 희석하는 것을 방지한다.
-    moving_average(values, window)[i-1] 이 곧 "i일 직전 window 일 평균"이라는 성질을 이용한다.
-
-    Spring 이 준 point.is_anomaly/point.deviation_pct 는 무시하고 point.sales 원시값만으로
-    재계산한다(§0.1 D) — 경계표가 확정되기 전까지 AI 판정을 신뢰 원천으로 둔다.
-    """
-    values = [point.sales for point in series]
-    trailing_averages = moving_average(values, window)
-
-    results: list[tuple[str, float, bool]] = []
-    for i, point in enumerate(series):
-        # i-1 위치의 이동평균 = i 이전 window 일 평균(당일 미포함). 초반 경계는 baseline 없음.
-        baseline = trailing_averages[i - 1] if i > 0 else None
-        if baseline is None:
-            results.append((point.date, 0.0, False))
-            continue
-        deviation = deviation_pct(point.sales, baseline)
-        results.append((point.date, deviation, is_anomaly(deviation, threshold_pct=threshold_pct)))
-    return results
 
 
 def _safe_ratio_pct(numerator: int, denominator: int) -> float:
@@ -98,49 +68,70 @@ def _safe_ratio_pct(numerator: int, denominator: int) -> float:
     return numerator / denominator * 100
 
 
-def conversion_rates(funnel: FunnelResult) -> dict[str, float]:
-    """구매전환 퍼널 단계별 전환율(%) — view→cart→checkout→purchase."""
+def conversion_rates(funnel: FunnelResult) -> dict[str, float | None]:
+    """구매전환 퍼널 단계별 전환율(%) — view→cart→checkout→purchase.
+
+    [PR#184 리뷰 반영] 미집계 단계(funnel.uncomputable_stages — I-7 stages[] 의
+    count=null·computable=false, 예: checkout v1 미계산 구간)가 분자/분모로 걸리는
+    전환율은 None 을 반환한다 — 0%(전환 전무)와 "집계 안 됨"을 구분하기 위함이다.
+    """
+    uncomputable = set(funnel.uncomputable_stages)
+
+    def _rate(num_field: str, den_field: str, numerator: int, denominator: int) -> float | None:
+        if num_field in uncomputable or den_field in uncomputable:
+            return None
+        return _safe_ratio_pct(numerator, denominator)
+
     return {
-        "view_to_cart": _safe_ratio_pct(funnel.cart, funnel.view),
-        "cart_to_checkout": _safe_ratio_pct(funnel.checkout, funnel.cart),
-        "checkout_to_purchase": _safe_ratio_pct(funnel.purchase, funnel.checkout),
+        "view_to_cart": _rate("cart", "view", funnel.cart, funnel.view),
+        "cart_to_checkout": _rate("checkout", "cart", funnel.checkout, funnel.cart),
+        "checkout_to_purchase": _rate("purchase", "checkout", funnel.purchase, funnel.checkout),
     }
 
 
-def compare_conversion(
-    current: FunnelResult, baseline: FunnelResult, *, drop_pct: float
-) -> dict[str, bool]:
-    """단계별 전환율이 baseline 대비 drop_pct 이상 하락했는지 판정한다.
-
-    baseline 전환율이 0 이면 비교 기준이 없어 하락 판정을 내리지 않는다(False).
-    """
-    current_rates = conversion_rates(current)
-    baseline_rates = conversion_rates(baseline)
-
-    result: dict[str, bool] = {}
-    for stage, base_rate in baseline_rates.items():
-        if base_rate == 0:
-            result[stage] = False
-            continue
-        deviation = deviation_pct(current_rates[stage], base_rate)
-        result[stage] = deviation <= -drop_pct
-    return result
+def _echo_period(text: str) -> str:
+    """되묻기 문구에 되비칠 입력 — 개행 제거 + 길이 절단(장문 반사 방지)."""
+    flat = " ".join(text.split())
+    if len(flat) > _PERIOD_ECHO_MAX_CHARS:
+        return flat[:_PERIOD_ECHO_MAX_CHARS] + "…"
+    return flat
 
 
-def normalize_period(expr: str, *, today: date, recent_default_days: int) -> tuple[date, date]:
+def normalize_period(
+    expr: str,
+    *,
+    today: date,
+    recent_default_days: int,
+    max_days: int | None = None,
+) -> tuple[date, date]:
     """자연어 기간 표현 → (from, to) 날짜 범위.
 
     - "지난달": 전월 1일 ~ 전월 말일(연 경계 롤오버 처리 — 1월이면 전년 12월).
     - "최근 N일" / "최근": (today - N) ~ (today - 1). 오늘은 항상 제외한다
       (§10-④, 당일 데이터는 아직 집계가 완결되지 않았을 수 있어 경계에서 뺀다).
-      N 이 명시되지 않으면 recent_default_days 를 사용한다.
+      N 이 없는 "최근"(정확히 이 두 글자)일 때만 recent_default_days 를 쓴다.
     - "어제": (today - 1) ~ (today - 1).
     - "YYYY-MM-DD~YYYY-MM-DD"(3-1 확장): 명시 범위 그대로. LLM 은 질문의 날짜를
       옮겨적기만 한다(날짜 산수 금지, 장치 ④). from > to 면 ValueError.
-    - 파싱 불가 표현("이번 달" 포함, 2026-07-18 확정)은 ValueError
-      (호출부가 사용자에게 되물어야 함을 알린다).
+    - 그 밖의 표현("이번 달"·"최근 3개월"·"최근 2주" 등)은 전부 ValueError —
+      호출부가 사용자에게 되묻는다.
+
+    [#269, 2026-08-03] **기본값 폴백 금지.** 인식하지 못한 표현을 조용히
+    recent_default_days 로 대체하지 않는다. 종전 구조(`"최근" in text` 부분 일치 +
+    정규식 실패 시 기본값)에서는 판매자가 3개월을 물어도 7일 결과를 받고 그 사실을
+    알 방법이 없었다. 기본값이 쓰이는 지점은 expr 이 정확히 "최근" 일 때 하나뿐이다.
+
+    예외 메시지는 그대로 판매자에게 노출되므로(호출부가 되묻기 token 으로 전달)
+    개발자용 문자열이 아니라 다음 행동을 알려주는 안내문으로 쓴다.
+
+    max_days 는 기간 상한(일)이다. 미지정이면 Settings 에서 읽는다 — 상한이 없으면
+    "최근 999999일" 이 date 연산에서 OverflowError 를 내고, 호출부의 except ValueError
+    를 빠져나가 되묻기가 아니라 에러 경로로 샌다(#269).
     """
-    text = expr.strip()
+    # 전각 숫자("최근 ７일")·이형 공백을 먼저 흡수한다 — 정규화 없이는 매치 실패로
+    # 떨어져 되묻기가 되는데, 판매자 의도는 명확하므로 정상 해석하는 편이 맞다.
+    text = " ".join(unicodedata.normalize("NFKC", expr).split())
+    limit = max_days if max_days is not None else get_settings().seller_period_max_days
 
     range_match = _EXPLICIT_RANGE_PATTERN.match(text)
     if range_match:
@@ -148,9 +139,15 @@ def normalize_period(expr: str, *, today: date, recent_default_days: int) -> tup
             start = date.fromisoformat(range_match.group(1))
             end = date.fromisoformat(range_match.group(2))
         except ValueError as exc:
-            raise ValueError(f"유효하지 않은 날짜: {expr!r}") from exc
+            raise ValueError(
+                f"달력에 없는 날짜입니다('{_echo_period(text)}'). 다시 확인해 주세요."
+            ) from exc
         if start > end:
-            raise ValueError(f"기간 역전(from > to): {expr!r}")
+            raise ValueError(
+                f"시작일이 종료일보다 뒤입니다('{_echo_period(text)}'). 순서를 바꿔 말씀해 주세요."
+            )
+        if (end - start).days + 1 > limit:
+            raise ValueError(f"기간이 너무 깁니다. {limit}일 이내로 말씀해 주세요.")
         return start, end
 
     if text in ("지난달", "지난 달"):
@@ -159,21 +156,45 @@ def normalize_period(expr: str, *, today: date, recent_default_days: int) -> tup
         first_day_prev_month = last_day_prev_month.replace(day=1)
         return first_day_prev_month, last_day_prev_month
 
-    if "최근" in text:
-        match = _RECENT_N_PATTERN.search(text)
-        n = int(match.group(1)) if match else recent_default_days
-        if n <= 0:
-            # "최근 0일" 등 — 역전 범위(from>to)가 무음 통과하던 구멍(마감 리뷰 M3).
-            raise ValueError(f"기간 일수가 유효하지 않다: {expr!r}")
-        end = today - timedelta(days=1)
-        start = today - timedelta(days=n)
-        return start, end
-
     if text == "어제":
         yesterday = today - timedelta(days=1)
         return yesterday, yesterday
 
-    raise ValueError(f"파싱 불가한 기간 표현: {expr!r}")
+    # N 미지정은 **정확히 "최근"** 일 때만 — 부분 일치로 넓히지 않는다(#269).
+    if text == "최근":
+        n = recent_default_days
+    elif recent_match := _RECENT_N_PATTERN.match(text):
+        raw = recent_match.group(1)
+        if len(raw.lstrip("-")) > _PERIOD_MAX_DIGITS:
+            # int() 로 넘기지 않는다 — 자릿수 상한 ValueError 의 영어 메시지가 그대로
+            # 판매자에게 노출된다(#269 리뷰). 결론은 아래 n>limit 과 같으므로 문구도 같다.
+            raise ValueError(f"기간이 너무 깁니다. {limit}일 이내로 말씀해 주세요.")
+        n = int(raw)
+    elif text.startswith("최근") and _NON_DAY_UNIT_PATTERN.search(text):
+        # "최근 3개월"·"최근 2주"·"최근 반년" — 주·개월 환산은 P1(확인 흐름) 소관이라
+        # 여기서는 되묻는다. 조용히 기본 7일로 떨어뜨리지 않는 것이 이 이슈의 핵심이다.
+        raise ValueError(
+            f"아직 일 단위 기간만 볼 수 있습니다. '{_echo_period(text)}' 대신 "
+            "'최근 90일' 처럼 말씀해 주세요."
+        )
+    else:
+        raise ValueError(f"'{_echo_period(text)}' 기간을 이해하지 못했습니다. {_PERIOD_GUIDE}.")
+
+    if n <= 0:
+        # "최근 0일"·"최근 -3일" — 역전 범위(from>to)가 무음 통과하던 구멍(마감 리뷰 M3).
+        raise ValueError("기간 일수는 1일 이상이어야 합니다. 예를 들어 '최근 7일' 입니다.")
+    if n > limit:
+        raise ValueError(f"기간이 너무 깁니다. {limit}일 이내로 말씀해 주세요.")
+    try:
+        end = today - timedelta(days=1)
+        start = today - timedelta(days=n)
+    except OverflowError as exc:
+        # Settings 는 seller_period_max_days 를 10년으로 묶지만(#269 리뷰), max_days 는
+        # 함수 인자라 호출부가 직접 큰 값을 넘길 수 있다. 그 경우에도 OverflowError 가
+        # 밖으로 나가면 호출부의 except ValueError 를 빠져나가 되묻기 대신 에러 경로가
+        # 된다 — 설정 검증과 별개로 이 함수 자체가 "예외는 ValueError 뿐" 을 보장한다.
+        raise ValueError(f"기간이 너무 깁니다. {limit}일 이내로 말씀해 주세요.") from exc
+    return start, end
 
 
 def safe_eval(expression: str) -> float:

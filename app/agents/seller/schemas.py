@@ -19,10 +19,11 @@ AnalysisType = Literal["sales_anomaly", "conversion", "behavior", "churn", "abus
 
 
 class RouteDecision(BaseModel):
-    """supervisor 의 3분기 라우팅 결과 (SPEC §2 — fast tier 구조화 출력 라우팅).
+    """supervisor 의 3분기 라우팅 결과 (SPEC §2 — smart tier 구조화 출력 라우팅).
 
     category 는 Literal 로 세 값만 허용 — LLM 이 신규 카테고리를 지어낼 수 없다(장치 ⑤).
-    confidence 는 "애매하면 analysis 보수적 라우팅" 규칙의 코드 분기 재료다.
+    confidence 는 "애매하면 general 재지정"(#180 저신뢰 폴백 역전) 규칙의 코드 분기
+    재료다 — orchestrator.route_question 이 seller_route_confidence_min 과 비교한다.
     """
 
     category: Literal["analysis", "product", "general"] = Field(description="질문 카테고리")
@@ -59,7 +60,7 @@ class AnalysisFinding(BaseModel):
 
 
 class AnalysisPlan(BaseModel):
-    """analysis_planner 의 구조화 출력 (SPEC §2 — 워커 선택 + 기간 표현, fast tier).
+    """analysis_planner 의 구조화 출력 (SPEC §2 — 워커 선택 + 기간 표현, smart tier).
 
     기간의 날짜 환산은 LLM 소관이 아니다(장치 ④) — planner 는 질문의 기간 표현을
     정규 어휘(period_expr)로 재표현만 하고, 실제 (from, to) 환산은 파이프라인 코드가
@@ -88,6 +89,15 @@ class AnalysisPlan(BaseModel):
         default="",
         description="기간·범위 해석 불능 시 되물을 질문 — 비어있지 않으면 계획 불성립",
     )
+    wants_chart: bool = Field(
+        default=False,
+        description=(
+            "판매자가 차트·시각화를 원하는가(이슈 #242) — 명시 키워드가 없어도 "
+            "'한눈에 보여줘' 류 암시 요청이면 True. 최종 판정은 이 값과 코드 "
+            "키워드 검사(_CHART_RE)의 OR 다(pipeline.resolve_plan) — LLM 이 놓친 "
+            "명시 키워드를 코드가 보강한다."
+        ),
+    )
 
     @field_validator("analyses")
     @classmethod
@@ -110,7 +120,7 @@ SCORE_AXIS_MAX = (
 
 
 class ReportScore(BaseModel):
-    """report_verifier의 fast-tier judge 결과 (SPEC §10-⑦ — 21/30 판정 재료, ≤3회 루프).
+    """report_verifier의 smart-tier judge 결과 (SPEC §10-⑦ — 21/30 판정 재료, ≤3회 루프).
 
     총점·통과 여부는 LLM 필드로 두지 않는다 — LLM 산수 오류를 배제하기 위해
     total 은 코드 property 로 합산하고, 임계·루프 횟수는 verifier 노드(3단계)가
@@ -140,6 +150,47 @@ class ReportScore(BaseModel):
     def total(self) -> int:
         """축 합산 총점(현재 만점 30) — 판정 재료. 판정 자체는 verifier 코드 소관."""
         return sum(getattr(self, axis) for axis in SCORE_AXES)
+
+
+# ── 4단계: AnalysisScore (analysis_judge 구조화 출력 — 분석 검증 층, 이슈 #242) ─
+
+# ReportScore 와 축당 만점(SCORE_AXIS_MAX=10, 만점 30)을 공유하되 축 이름은 분리한다
+# — 두 judge 가 보는 대상이 다르다(분석 행위 vs 서술 품질). 같은 이름이면 프롬프트·
+# 로그·회귀 테스트에서 섞인다(DESIGN-ANALYSIS-V31-242 §4.1).
+ANALYSIS_SCORE_AXES: tuple[str, ...] = ("grounding", "sufficiency", "relevance")
+
+
+class AnalysisScore(BaseModel):
+    """analysis_judge 의 브랜치 검증 채점 결과 (분석 검증 층 — F1~F3 결정론 검사와 병행).
+
+    총점·통과 여부는 ReportScore 와 동일 원칙으로 LLM 필드에 두지 않는다 —
+    total 은 코드 property, 임계·재실행 횟수는 orchestrator(4단계)가 Settings 에서
+    읽어 판정한다.
+    """
+
+    grounding: int = Field(
+        ge=0,
+        le=SCORE_AXIS_MAX,
+        description="근거 대조 — finding 의 evidence 가 도구 출력에서 나왔는가",
+    )
+    sufficiency: int = Field(
+        ge=0,
+        le=SCORE_AXIS_MAX,
+        description="충분성 — 배정된 분석 유형을 실제로 수행했는가",
+    )
+    relevance: int = Field(
+        ge=0,
+        le=SCORE_AXIS_MAX,
+        description="적합성 — 판매자 질문·기간에 답하는 분석인가",
+    )
+    feedback: str = Field(
+        description="미달 축 중심의 개선 지시 — 워커 재실행 입력에 주입",
+    )
+
+    @property
+    def total(self) -> int:
+        """축 합산 총점(만점 30) — 판정 재료. 판정 자체는 orchestrator 코드 소관."""
+        return sum(getattr(self, axis) for axis in ANALYSIS_SCORE_AXES)
 
 
 # update_product 인자 8종과 1:1 — 도구 시그니처가 바뀌면 여기도 함께 갱신한다.
@@ -250,3 +301,66 @@ class RecommendationSet(BaseModel):
         description="행동 추천 목록(≤5) — 순서 보존이 §6.3 조회 계약",
     )
     summary: str = Field(default="", description="추천 전체 한 줄 요약 — compose_response 용(선택)")
+
+
+# ── 5단계: ChartSet (graph_agent 구조화 출력 — 이슈 #242, DESIGN-ANALYSIS-V31-242 §4.2) ──
+#
+# 필드명을 FE jarvis-front `SellerAnalysis` 타입(features/seller/types.ts)에 그대로
+# 정렬한다(결정 D-2) — AnalysisChart.tsx 컴포넌트를 무수정 재사용하기 위해서다.
+# 서버 내부는 snake_case 유지(schemas.py 전역 규약), SSE 로 나갈 때만 camelCase 변환
+# (6단계 _chart_event, _draft_event 의 to_camel 선례와 동일).
+
+# ChartSet 상한 — 스키마 계약(와이어 아님)이라 Settings 가 아닌 상수(MAX_RECOMMENDATIONS 와 동일 원칙).
+CHART_MAX = 3
+CHART_POINTS_MAX = 60  # 시계열 과다 방지(일별 약 2개월) — 도구 상한(seller_summary_max_points)과 별개
+
+
+class ChartPoint(BaseModel):
+    """차트 좌표 1점 — x 는 축 라벨(날짜·카테고리 등) 문자열로 통일한다."""
+
+    x: str = Field(description="축 라벨 — '07-01'·'장바구니' 등")
+    y: float = Field(description="값 — finding·보고서에 나온 수치만(G1 검증 대상)")
+
+
+class ChartSeries(BaseModel):
+    """차트 계열 1개."""
+
+    label: str = Field(description="계열 이름 — 범례에 쓰인다")
+    points: list[ChartPoint] = Field(
+        default_factory=list,
+        max_length=CHART_POINTS_MAX,
+        description="좌표 목록 — 시계열이면 시간 순",
+    )
+
+
+class ChartSpec(BaseModel):
+    """차트 1개 — FE AnalysisChart.tsx 의 SellerAnalysis 와 1:1 대응.
+
+    series 상한을 1로 강제한다(결정 D-3, MVP) — FE 컴포넌트가 series[0] 만
+    그리므로, 스키마로 막지 않으면 서버가 2계열을 보내고 FE 가 조용히 1개만
+    그리는 은폐 버그가 된다. 다계열이 필요해지면 max_length 완화와 FE 컴포넌트
+    확장을 같은 릴리스로 묶어야 한다.
+    """
+
+    title: str = Field(description="차트 제목")
+    chart_type: Literal["line", "bar"] = Field(
+        description="시계열이면 line, 단계·범주 비교면 bar — 와이어 chartType"
+    )
+    unit: Literal["KRW", "COUNT", "PERCENT"] = Field(description="값 단위")
+    series: list[ChartSeries] = Field(
+        default_factory=list, max_length=1, description="계열 목록 — MVP 는 1개만(결정 D-3)"
+    )
+    summary: str = Field(default="", description="보고서 문장에서 인용한 한 줄 요약(선택)")
+
+
+class ChartSet(BaseModel):
+    """graph_agent 구조화 출력 (response_format=ToolStrategy(ChartSet)).
+
+    도구를 주지 않는다(결정 D-4) — 근거 사슬(도구출력⊇finding⊇보고서⊇차트) 유지가
+    목적이라, graph_agent 는 이미 확보된 finding·보고서에서 숫자를 옮겨 담을 뿐
+    새 조회를 하지 않는다. 그릴 게 없으면 빈 목록을 허용한다(억지 차트 금지).
+    """
+
+    charts: list[ChartSpec] = Field(
+        default_factory=list, max_length=CHART_MAX, description="차트 목록(≤3)"
+    )

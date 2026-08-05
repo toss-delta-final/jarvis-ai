@@ -1,8 +1,8 @@
 """supervisor 라우팅(orchestrator.route_question) 검증 (4-1a).
 
-실 LLM 없음 — build_supervisor 를 스텁으로 교체한다. 검증 항목(REALIGN §4 확정):
+실 LLM 없음 — build_supervisor 를 스텁으로 교체한다. 검증 항목(REALIGN §4 → #180 개정):
   - 정상 분류는 그대로 통과
-  - confidence 미달 → analysis 보수 재지정 (원분류 analysis 는 재지정 없음)
+  - confidence 미달 → general 재지정 (#180 저신뢰 폴백 역전 — 원분류 general 은 그대로)
   - supervisor 장애(예외·타임아웃·비정형 출력) → general 폴백
 
 confirm 선판정은 2026-07-22(FE 계약 A-2)에 message 파싱에서 요청 스키마 필드로 이관됐다 —
@@ -73,24 +73,44 @@ def test_confident_decision_passes_through(monkeypatch: pytest.MonkeyPatch) -> N
     assert result is decision  # 재작성 없이 원본 통과
 
 
-def test_low_confidence_reroutes_to_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
-    """confidence 미달(원분류 general) → analysis 보수 재지정(SPEC 장치 ⑤)."""
-    decision = RouteDecision(category="general", reason="애매", confidence=0.4)
+def test_low_confidence_analysis_reroutes_to_general(monkeypatch: pytest.MonkeyPatch) -> None:
+    """confidence 미달(원분류 analysis) → general 재지정(#180 저신뢰 폴백 역전).
+
+    단순 조회가 analysis 로 가면 5단 파이프라인이라 회복 불가·최고 비용 —
+    불확실하면 가벼운 레인에서 답하고 general 의 분석 안내로 회복한다.
+    """
+    decision = RouteDecision(category="analysis", reason="애매", confidence=0.4)
     _patch(monkeypatch, _StubSupervisor(decision=decision), confidence_min=0.6)
 
-    result = _route()
+    result = _route("최근 7일 매출")
 
-    assert result.category == "analysis"
-    assert orchestrator.ROUTE_CONSERVATIVE_REASON in result.reason
+    assert result.category == "general"
+    assert orchestrator.ROUTE_LOW_CONFIDENCE_REASON in result.reason
+    assert "analysis" in result.reason  # 원분류 보존(디버깅 재료)
     assert result.confidence == 0.4  # 원 confidence 보존(디버깅 재료)
 
 
-def test_low_confidence_analysis_stays_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
-    """원분류가 analysis 면 confidence 미달이어도 재지정 없이 그대로 간다."""
-    decision = RouteDecision(category="analysis", reason="분석 추정", confidence=0.3)
+def test_low_confidence_product_reroutes_to_general(monkeypatch: pytest.MonkeyPatch) -> None:
+    """confidence 미달(원분류 product) → general 재지정 — 변경 레인도 예외가 아니다.
+
+    불확실한 변경 발화가 product 로 가면 엉뚱한 draft 가 생성될 수 있다 —
+    general 이 조회로 답하거나 상품관리 기능을 안내해 회복한다.
+    """
+    decision = RouteDecision(category="product", reason="변경 추정", confidence=0.3)
+    _patch(monkeypatch, _StubSupervisor(decision=decision), confidence_min=0.6)
+
+    result = _route("그거 바꿔줘")
+
+    assert result.category == "general"
+    assert orchestrator.ROUTE_LOW_CONFIDENCE_REASON in result.reason
+
+
+def test_low_confidence_general_stays_general(monkeypatch: pytest.MonkeyPatch) -> None:
+    """원분류가 general 이면 confidence 미달이어도 재지정 없이 그대로 간다."""
+    decision = RouteDecision(category="general", reason="단편 발화", confidence=0.3)
     _patch(monkeypatch, _StubSupervisor(decision=decision))
 
-    result = _route()
+    result = _route("최근 7일")
 
     assert result is decision
 
@@ -132,3 +152,108 @@ def test_malformed_structured_response_falls_back(monkeypatch: pytest.MonkeyPatc
 
 
 # confirm 선판정 테스트는 test_seller_chat_request.py(SellerChatRequest 스키마)로 이관됐다.
+
+
+# ── 대화 스레드 맥락 주입 — 프롬프트 불변, 입력 메시지 조립만 ─────────────────────
+
+
+class _CapturingSupervisor(_StubSupervisor):
+    """입력 메시지를 기록하는 스텁 — 맥락 주입 형식 검증용."""
+
+    def __init__(self, decision: RouteDecision) -> None:
+        super().__init__(decision=decision)
+        self.received: list[str] = []
+
+    async def ainvoke(self, agent_input: dict, context: object = None) -> dict:
+        self.received.append(agent_input["messages"][0].content)
+        return await super().ainvoke(agent_input, context=context)
+
+
+def test_route_without_turns_sends_raw_question(monkeypatch: pytest.MonkeyPatch) -> None:
+    """맥락이 없으면 질문 원문 그대로 — 기존 supervisor 입력 계약 불변."""
+    decision = RouteDecision(category="general", reason="r", confidence=0.9)
+    stub = _CapturingSupervisor(decision)
+    _patch(monkeypatch, stub)
+
+    asyncio.run(orchestrator.route_question("어제 매출 알려줘", _CTX))
+
+    assert stub.received == ["어제 매출 알려줘"]
+
+
+def test_route_injects_recent_turns_into_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    """최근 대화가 있으면 [최근 대화] 블록 + [이번 질문] 라벨로 입력을 조립한다."""
+    decision = RouteDecision(category="analysis", reason="r", confidence=0.9)
+    stub = _CapturingSupervisor(decision)
+    _patch(monkeypatch, stub)
+    turns = [("user", "어제 매출 알려줘"), ("assistant", "어제 매출은 120만원입니다.")]
+
+    asyncio.run(orchestrator.route_question("그럼 지난주는?", _CTX, recent_turns=turns))
+
+    sent = stub.received[0]
+    assert sent.startswith("[최근 대화]")
+    assert "사용자: 어제 매출 알려줘" in sent
+    assert sent.endswith("[이번 질문] 그럼 지난주는?")
+
+
+# ─────────── S-4 화면 맥락 주입 (이슈 #118) ───────────
+
+
+def _screen_ctx(**payload):
+    """정본 관대 정규화를 실제로 태운 ScreenContext."""
+    from app.schemas.seller import SellerChatRequest
+
+    return SellerChatRequest.model_validate(
+        {"sessionId": "s", "threadId": "t", "message": "m", "screen": payload}
+    ).screen
+
+
+def test_route_without_screen_sends_the_same_input_as_today(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[회귀 0] `screen=None` 이면 supervisor 입력이 오늘과 **바이트 동일**하다.
+
+    판매자 FE 도 아직 `screen` 을 보내지 않으므로 이게 절대다수 경로다.
+    """
+    decision = RouteDecision(category="general", reason="r", confidence=0.9)
+    turns = [("user", "어제 매출 알려줘"), ("assistant", "120만원입니다.")]
+
+    stub_without = _CapturingSupervisor(decision)
+    _patch(monkeypatch, stub_without)
+    asyncio.run(orchestrator.route_question("그럼 지난주는?", _CTX, recent_turns=turns))
+
+    stub_explicit_none = _CapturingSupervisor(decision)
+    _patch(monkeypatch, stub_explicit_none)
+    asyncio.run(
+        orchestrator.route_question("그럼 지난주는?", _CTX, recent_turns=turns, screen=None)
+    )
+
+    assert stub_without.received == stub_explicit_none.received
+    assert "[현재 화면]" not in stub_without.received[0]
+
+
+def test_route_injects_screen_context_into_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    """정본 §3.2 — `pageType`·`filters` 가 실려 "이 목록 왜 비어?" 류에 답할 수 있다."""
+    decision = RouteDecision(category="general", reason="r", confidence=0.9)
+    stub = _CapturingSupervisor(decision)
+    _patch(monkeypatch, stub)
+
+    asyncio.run(
+        orchestrator.route_question(
+            "이 목록 왜 비어?",
+            _CTX,
+            screen=_screen_ctx(pageType="seller_orders", filters={"status": "신규주문"}),
+        )
+    )
+
+    sent = stub.received[0]
+    assert sent.startswith("[현재 화면]")
+    assert "주문 관리" in sent and "status=신규주문" in sent
+    assert sent.endswith("[이번 질문] 이 목록 왜 비어?")
+
+
+def test_route_screen_injection_does_not_touch_the_supervisor_prompt() -> None:
+    """프롬프트 파일은 한 글자도 바꾸지 않는다 — 주입은 **입력 메시지에만**(§9.1 이력 선례)."""
+    from app.agents.seller import prompts
+
+    assert "현재 화면" not in prompts.SUPERVISOR_PROMPT
+    assert "screen" not in prompts.SUPERVISOR_PROMPT.lower()

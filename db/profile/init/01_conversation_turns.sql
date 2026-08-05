@@ -9,6 +9,9 @@ CREATE TABLE IF NOT EXISTS conversation_turns (
     turn_id         text PRIMARY KEY,
     sequence_id     bigserial NOT NULL,
     conversation_id text NOT NULL,
+    thread_id       text,
+    context_id      uuid,
+    session_id      text,
     user_id         text,
     role            text NOT NULL,
     user_text       text NOT NULL,
@@ -20,3 +23,7 @@ CREATE TABLE IF NOT EXISTS conversation_turns (
 -- turns_for(conversation_id) 조회 + 실제 INSERT 순서 정렬용.
 CREATE INDEX IF NOT EXISTS idx_conversation_turns_sequence
     ON conversation_turns (conversation_id, sequence_id);
+
+-- session(접속) 내 thread(방)별 턴 조회용. 기존 볼륨의 과거 행은 NULL을 허용한다.
+CREATE INDEX IF NOT EXISTS idx_conversation_turns_thread
+    ON conversation_turns (conversation_id, thread_id);

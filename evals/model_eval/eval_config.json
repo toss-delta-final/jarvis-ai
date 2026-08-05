@@ -1,0 +1,27 @@
+{
+  "bootstrap": {
+    "confidence": 0.95,
+    "resamples": 2000
+  },
+  "caseOrder": "caseId-asc",
+  "configVersion": "model-eval-config-v1",
+  "hardFailureMax": 0,
+  "missingRunPolicy": "excludePairReportCount",
+  "multiplicity": "primaryConfirmatoryOthersExploratory",
+  "primaryMetric": "overall.ndcgAtK.10",
+  "releaseHardConstraintViolationMax": 0,
+  "releaseQualityLowerBound": {
+    "overall.ndcgAtK.10": 0.60
+  },
+  "regressionMargin": {
+    "overall.ndcgAtK.10": 0.03
+  },
+  "repeats": 5,
+  "secondaryMetrics": [
+    "overall.filterAccuracy",
+    "overall.hardConstraintViolationRate",
+    "overall.recallAtK.10",
+    "overall.mrr"
+  ],
+  "seed": 20260803
+}

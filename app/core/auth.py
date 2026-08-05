@@ -13,9 +13,10 @@
 스트림 티켓 클레임 (§2.3 v0.10.0):
   - sub      : 사용자 식별자 (회원/판매자=숫자 문자열, 게스트=UUID, §2.6)
   - sub_type : member | guest — 티켓 정본 클레임. 그 외 값은 fail-closed 거부.
-  - scope    : 용도 검증 (제안값 chat:stream — 값은 config 주입, C-1 확정 대기)
-  - role     : 구 클레임 폴백 + 판매자 판정(SELLER) — 판매자 티켓 형식은 🔴 C-1 잔여.
-  - brandId  : 판매자(role=SELLER) 브랜드 id — {brandId} path용, 요청 본문 불신(§2.6).
+  - scope    : 용도 검증 (확정값 chat:stream, config 주입)
+  - role     : JWKS에서는 판매자 exact lowercase "seller" 전용. buyer role 대체 금지.
+  - brandId  : 판매자(role="seller") 브랜드 id — {brandId} path용, 요청 본문 불신(§2.6).
+  - sessionId: 구매자 티켓이 증명한 Spring 접속 id — /chat body와 일치해야 한다.
 
 [보안] 신원(user_id)·게스트 여부·판매자 스코프는 오직 토큰 클레임에서만 도출한다.
 요청 본문의 식별자는 절대 신뢰하지 않는다 (사칭 방지, api-spec §2.3 a / §2.5 / §3.1 / §3.2).
@@ -35,34 +36,39 @@ CLAIM_SUB_TYPE = "sub_type"
 CLAIM_SCOPE = "scope"
 CLAIM_ROLE = "role"
 CLAIM_BRAND_ID = "brandId"
+CLAIM_SESSION_ID = "sessionId"
 
 # sub_type 값 (§2.3 v0.10.0 확정 — member|guest 두 값만 정본)
 SUB_TYPE_MEMBER = "member"
 SUB_TYPE_GUEST = "guest"
 
-# role 값 매핑 — TODO(C-1): 게스트/판매자 role 최종값을 Spring 회원 스키마 확정 시 반영.
+# dev legacy buyer role과 JWKS exact seller role.
 ROLE_USER = "USER"
-ROLE_GUEST = "GUEST"  # TODO: 최종 게스트 role 값 확정 대기
-ROLE_SELLER = "SELLER"  # TODO: 최종 판매자 role 값 확정 대기
+ROLE_GUEST = "GUEST"  # dev legacy compatibility only; JWKS guest는 sub_type="guest"
+ROLE_SELLER = "seller"
+STREAM_SCOPE = "chat:stream"
+_BIGINT_MAX = 2**63 - 1
 
 
 @dataclass(frozen=True)
 class Identity:
     """토큰에서 도출한 호출자 신원. 요청 본문이 아니라 오직 토큰이 근거다.
 
-    brand_id 는 role==SELLER 토큰의 `brandId` 클레임 — 판매자 역호출(§4.4/§4.5)의
+    brand_id 는 role=="seller" 토큰의 `brandId` 클레임 — 판매자 역호출(§4.4/§4.5)의
     `{brandId}` path 에 쓴다. 요청 본문/발화에서 받지 않는다 (IDOR 방지, §2.6).
     """
 
     user_id: str | None
     is_guest: bool
     seller_id: str | None
-    # 발급자에 따라 숫자(1)·문자열("1") 클레임이 모두 관측됨 — Identity 는 검증된
-    # 클레임을 원형 보존하고, 숫자 정규화는 소비처(seller.py _seller_context)가 한다.
+    # JWKS seller는 decode 경계에서 JSON int 양의 BIGINT로 검증한다. dev legacy decode는
+    # 기존 로컬 토큰 호환을 위해 문자열을 보존할 수 있다.
     brand_id: str | int | None = None
     # subject: 검증된 raw `sub` 클레임 — 게스트 UUID 포함 모든 역할에 보존한다.
     # 레이트 리밋·동시성 레지스트리의 신원 스코프 키로 일관되게 쓴다(§2.8/§2.9).
     subject: str | None = None
+    # 구매자 티켓이 증명한 Spring 접속 id. 판매자 티켓과 dev 무토큰에는 없을 수 있다.
+    session_id: str | None = None
 
 
 class AuthError(Exception):
@@ -78,13 +84,7 @@ class TokenExpiredError(AuthError):
 
 
 def _norm_role(role: object) -> str | None:
-    """role 클레임 정규화(대문자 비교용).
-
-    api-spec §2.3 표기는 `role == "seller"`(소문자)인데 구 코드 상수는 대문자였고,
-    실값 대소문자 형식은 🔴 C-1 잔여다. 값을 지어내지 않는 선에서 **대소문자 무관
-    비교**로 두 표기를 모두 수용한다 (PR #39 리뷰 반영 — 소문자 발급 시 판매자
-    전면 403 방지). C-1 확정 시 상수/비교를 실값으로 고정한다.
-    """
+    """dev 레거시 호환에만 쓰는 role 대문자 정규화."""
     if not isinstance(role, str):
         return None
     normalized = role.strip().upper()
@@ -97,59 +97,112 @@ def _claims_to_identity(claims: dict, *, require_identity_claim: bool = False) -
     """검증된 클레임 dict → Identity 매핑.
 
     우선순위 (§2.3 v0.10.0):
-      1. role == seller(대소문자 무관) → 판매자 (seller_id = sub, brand_id = brandId 클레임).
-                                         판매자 티켓의 정확한 클레임 형식은 🔴 C-1 잔여.
+      1. JWKS role == "seller" 정확 일치 → 판매자 (seller_id=sub, brand_id=brandId).
       2. sub_type == member|guest      → 티켓 정본 클레임. 그 외 값은 fail-closed 거부.
-      3. 구 role 폴백 (GUEST/USER 등)  → C-1 값 집합 확정 전 호환 유지(미지 role 은 회원 관용).
+      3. dev의 구 role 폴백(GUEST/USER 등) → 로컬 호환 유지.
 
-    require_identity_claim=True(jwks 실배선 레인)면 sub_type·role 이 **둘 다 없는**
-    서명 유효 토큰을 거부한다 — §2.3 은 sub_type 을 티켓 필수 클레임으로 확정했고,
-    신원 유형 클레임이 전무한 토큰을 회원으로 기본 승인하면 미지 sub_type 거부와
-    방어 원칙이 어긋난다 (PR #39 리뷰 반영). dev 모드는 로컬 편의 레인이라 관용 유지.
+    require_identity_claim=True(JWKS 실배선 레인)는 exact lowercase role="seller"가
+    아니면 정확한 sub_type=member|guest를 요구한다. dev 모드만 legacy role을 관용한다.
     """
     subject = claims.get(CLAIM_SUBJECT)
-    role = _norm_role(claims.get(CLAIM_ROLE))
+    raw_role = claims.get(CLAIM_ROLE)
+    role = _norm_role(raw_role)
     sub_type = claims.get(CLAIM_SUB_TYPE)
+    session_id = claims.get(CLAIM_SESSION_ID)
 
-    if role == ROLE_SELLER:
+    if require_identity_claim:
+        role_present = CLAIM_ROLE in claims
+        sub_type_present = CLAIM_SUB_TYPE in claims
+        if role_present == sub_type_present:
+            raise AuthError("exactly one identity discriminator is required")
+        if role_present and (not isinstance(raw_role, str) or raw_role != ROLE_SELLER):
+            raise AuthError("invalid seller role claim")
+        if sub_type_present and (
+            not isinstance(sub_type, str) or sub_type not in (SUB_TYPE_MEMBER, SUB_TYPE_GUEST)
+        ):
+            raise AuthError("invalid buyer sub_type claim")
+    if (require_identity_claim and raw_role == ROLE_SELLER) or (
+        not require_identity_claim and role == ROLE_SELLER.upper()
+    ):
+        if require_identity_claim:
+            brand_id = claims.get(CLAIM_BRAND_ID)
+            if (
+                not isinstance(subject, str)
+                or not subject.isascii()
+                or not subject.isdigit()
+                or len(subject) > 19
+                or not 1 <= int(subject) <= _BIGINT_MAX
+            ):
+                raise AuthError("invalid seller subject claim")
+            if type(brand_id) is not int or not 1 <= brand_id <= _BIGINT_MAX:
+                raise AuthError("invalid seller brandId claim")
+        else:
+            brand_id = claims.get(CLAIM_BRAND_ID)
         # 판매자는 sub 를 판매자 식별자로도 사용한다 (스코프 근거는 role 클레임).
         return Identity(
             user_id=subject,
             is_guest=False,
             seller_id=subject,
-            brand_id=claims.get(CLAIM_BRAND_ID),
+            brand_id=brand_id,
             subject=subject,
+            session_id=session_id,
         )
     if sub_type is not None:
         if sub_type == SUB_TYPE_GUEST:
-            return Identity(user_id=None, is_guest=True, seller_id=None, subject=subject)
+            return Identity(
+                user_id=None,
+                is_guest=True,
+                seller_id=None,
+                subject=subject,
+                session_id=session_id,
+            )
         if sub_type == SUB_TYPE_MEMBER:
-            return Identity(user_id=subject, is_guest=False, seller_id=None, subject=subject)
+            # 타입만 정규화하고 값 형식은 검증하지 않는다.
+            # 정규화 이유: 발급자가 sub 를 JSON 숫자로 실으면 int 가 들어오는데
+            # (66행 brand_id 주석의 동일 사례), /events/* 는 str(event.user_id) 로
+            # 정규화하므로 맞춰두지 않으면 같은 사용자의 owner 비교가 42 != "42" 로 깨진다.
+            # 형식 검증을 하지 않는 이유: 잘못된 member sub 는 401 로 채팅 전체를 막지 않고
+            # 신원이 필요한 하위 능력(주문조회)에서만 차단하는 것이 계약이다
+            # (test_order_status_invalid_member_identity_is_blocked_before_spring).
+            member_subject = (
+                str(subject)
+                if isinstance(subject, int) and not isinstance(subject, bool)
+                else subject
+            )
+            return Identity(
+                user_id=member_subject,
+                is_guest=False,
+                seller_id=None,
+                subject=member_subject,
+                session_id=session_id,
+            )
         # 미지 sub_type — 정본 값 집합(member|guest) 밖은 신원 판정 불가로 거부.
         raise AuthError(f"unknown sub_type: {sub_type}")
+    if require_identity_claim:
+        # 운영 티켓은 구매자 신원 유형을 오직 정본 sub_type으로 판정한다. role은
+        # 판매자 전용 discriminator이며 legacy/미지 role을 buyer로 관용하지 않는다.
+        raise AuthError("missing exact buyer sub_type claim")
     if role == ROLE_GUEST:
-        return Identity(user_id=None, is_guest=True, seller_id=None, subject=subject)
-    if role is None and require_identity_claim:
-        # 신원 유형 클레임(sub_type·role) 전무 — 실배선 레인은 회원 기본 승인 금지.
-        raise AuthError("missing sub_type/role claim")
-    # 구 role 폴백: 값 집합이 C-1 미확정이라 미지 role(USER 등)은 회원으로 관용 —
-    # sub 는 서명 검증을 통과했고, 회원 role 실값이 달라도 전면 401 이 되지 않게 한다.
-    return Identity(user_id=subject, is_guest=False, seller_id=None, subject=subject)
+        return Identity(
+            user_id=None,
+            is_guest=True,
+            seller_id=None,
+            subject=subject,
+            session_id=session_id,
+        )
+    # dev 전용 legacy role 폴백: 로컬 기존 토큰은 미지 role도 회원으로 관용한다.
+    return Identity(
+        user_id=subject,
+        is_guest=False,
+        seller_id=None,
+        subject=subject,
+        session_id=session_id,
+    )
 
 
 def _verify_scope(claims: dict, required: str) -> None:
-    """scope 클레임 검증 (§2.3 확정 검증 항목 — 토큰 용도 혼용 방지).
-
-    발급측 표현 관용: 공백 구분 문자열(OAuth 관례) 또는 리스트 모두 수용한다.
-    """
-    raw = claims.get(CLAIM_SCOPE)
-    if isinstance(raw, str):
-        granted = set(raw.split())
-    elif isinstance(raw, (list, tuple)):
-        granted = {str(item) for item in raw}
-    else:
-        granted = set()
-    if required not in granted:
+    """scope 클레임은 확정된 단일 문자열과 정확히 일치해야 한다."""
+    if claims.get(CLAIM_SCOPE) != required:
         raise AuthError("missing or mismatched scope")
 
 
@@ -188,8 +241,7 @@ def decode_token(
     그 외에는 토큰이 없거나 검증 실패 시 AuthError (만료는 TokenExpiredError).
 
     jwks 모드 검증 항목(§2.3 확정): signature / exp / iss / aud / scope.
-    scope=None 이면 scope 검증을 생략한다 (issuer/audience=None 과 같은 규칙 —
-    전환기 호환, 운영값은 config jwt_scope 주입).
+    JWKS scope는 호출자 설정과 무관하게 exact ``chat:stream``을 항상 검증한다.
     """
     if auth_mode == "dev":
         if not token:
@@ -197,7 +249,7 @@ def decode_token(
             # 무토큰 익명은 식별 근거가 없어 registry_key owner 가 "anon" 으로 공유된다.
             # (프로덕션 jwks 모드는 무토큰이 401 이라 이 경로에 도달하지 않고, 실제 게스트는
             #  익명 JWT 의 sub 로 개별 스코프된다.) 여기에 요청마다 고유 subject 를 부여하면
-            # 세션당 1스트림 제한(§2.9 a)이 익명에서 무력화되므로 그렇게 하지 않는다.
+            # 방당 1스트림 제한(§2.9 a)이 익명에서 무력화되므로 그렇게 하지 않는다.
             return Identity(user_id=None, is_guest=True, seller_id=None)
         try:
             claims = jwt.decode(token, options={"verify_signature": False})
@@ -233,8 +285,7 @@ def decode_token(
             raise TokenExpiredError("token expired") from exc
         except jwt.PyJWTError as exc:
             raise AuthError("invalid token") from exc
-        if scope is not None:
-            _verify_scope(claims, scope)
+        _verify_scope(claims, STREAM_SCOPE)
         # 실배선 레인 — 신원 유형 클레임(sub_type·role) 전무 토큰은 fail-closed.
         return _claims_to_identity(claims, require_identity_claim=True)
 

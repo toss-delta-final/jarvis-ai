@@ -1,0 +1,27 @@
+[
+  {
+    "id": "buyer_recommend",
+    "role": "buyer",
+    "endpoint": "/chat",
+    "description": "예산 조건이 붙은 대표 추천 질의",
+    "payload": {"sessionId": "fixture-session", "threadId": "fixture-thread", "message": "5만원 이하 캠핑용 경량 버너 추천해줘"},
+    "expected_outcome": {"expect_token": true, "expect_lane": ["recommend", "fallback"], "expect_degraded": false, "terminal_event": "done"}
+  },
+  {
+    "id": "buyer_fallback",
+    "role": "buyer",
+    "endpoint": "/chat",
+    "description": "추천이 아닌 일반 질의의 fallback 경로",
+    "payload": {"sessionId": "fixture-session", "threadId": "fixture-thread", "message": "캠핑 초보가 준비할 기본 사항을 알려줘"},
+    "expected_outcome": {"expect_token": true, "expect_lane": ["fallback"], "expect_degraded": false, "terminal_event": "done"}
+  },
+  {
+    "id": "buyer_dependency_degrade",
+    "role": "buyer",
+    "endpoint": "/chat",
+    "description": "Spring 의존성 중단 타깃에서의 degrade 경로",
+    "payload": {"sessionId": "fixture-session", "threadId": "fixture-thread", "message": "3만원 이하 보온병을 추천해줘"},
+    "expected_outcome": {"expect_token": true, "expect_lane": ["recommend", "fallback"], "expect_degraded": true, "terminal_event": "done"},
+    "induced_by": "spring_unavailable"
+  }
+]

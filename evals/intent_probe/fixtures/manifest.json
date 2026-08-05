@@ -1,0 +1,8 @@
+{
+  "provenance": "reconstructed-from-issue-240-and-pr-239; category_action group added by #84 (mixed utterances in round 3); screen cells absorbed from #118 by #300",
+  "sha256": {
+    "anchors_a.json": "cf3f099a71a21faa70114642ab5273c4ad2d1494564541a5fd6eac3db0db6023",
+    "anchors_b.json": "63b2bc92324fe0d883c129974a705517ebf2056f2593b4a6f7e00c477ce24dea"
+  },
+  "version": "intent-probe-anchors-manifest-v4"
+}

@@ -13,14 +13,43 @@
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Awaitable, Callable
+from datetime import date, timedelta
+from functools import wraps
+from typing import Any
+
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
 
 from app.agents.seller import calc
+from app.agents.seller.analysis import outliers, proportions, segmentation, timeseries
 from app.agents.seller.context import SellerContext
 from app.core.config import get_settings
+from app.core.tracing import trace_span
 from app.schemas.spring import BehaviorEventsResult, ProductCreate, ProductUpdate
 from app.services.spring_client import SpringUnavailableError, get_spring_client
+
+_log = logging.getLogger(__name__)
+
+
+def _traced_tool(
+    name: str,
+) -> Callable[[Callable[..., Awaitable[str]]], Callable[..., Awaitable[str]]]:
+    """Add a payload-free bounded tool span without changing LangChain's tool schema."""
+
+    def decorate(func: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str]]:
+        @wraps(func)
+        async def wrapped(*args: Any, **kwargs: Any) -> str:
+            with trace_span(name, "tool") as span:
+                result = await func(*args, **kwargs)
+                if span is not None and result.startswith("Error:"):
+                    span.error_type = "TOOL_ERROR"
+                return result
+
+        return wrapped
+
+    return decorate
 
 
 def _reference_note(from_date: str, to_date: str) -> str:
@@ -28,12 +57,38 @@ def _reference_note(from_date: str, to_date: str) -> str:
     return f"(기준: {from_date}~{to_date} 집계값)"
 
 
-def _summarize_events(events: list[dict]) -> str:
-    """I-13/I-14 이벤트를 kv 나열로 요약한다(중간 상세도 — 계약 🔴 미확정 대응).
+def _previous_period(from_date: str, to_date: str) -> tuple[str, str] | None:
+    """직전 인접 동일 길이 기간 (#290 — funnel·churn 기간 비교 공용).
 
-    응답 필드가 확정되지 않아(extra="allow" dict) 어떤 키가 와도 상위
-    seller_summary_max_events 건까지 "key=value" 형태로 그대로 노출한다 —
-    워커가 최소한의 재료를 갖되, 확정 후(C-13) 필드 선별 요약으로 교체한다.
+    날짜 형식 오류·역전 범위면 None — 비교만 생략하고 본 조회는 계속한다
+    (형식 검증은 Spring 오류 경로 소관, 여기서 raise 하지 않는다).
+    """
+    try:
+        start = date.fromisoformat(from_date)
+        end = date.fromisoformat(to_date)
+    except ValueError:
+        return None
+    if end < start:
+        return None
+    prev_end = start - timedelta(days=1)
+    prev_start = prev_end - timedelta(days=(end - start).days)
+    return prev_start.isoformat(), prev_end.isoformat()
+
+
+# RateComparison.verdict → 판매자 표면 어휘 (proportions 모듈과 짝).
+_VERDICT_LABELS = {
+    "significant_drop": "유의한 하락",
+    "significant_rise": "유의한 상승",
+    "no_significant_change": "유의한 변화 없음",
+}
+
+
+def _summarize_events(events: list[dict]) -> str:
+    """I-14 rows 를 kv 나열로 요약한다(중간 상세도).
+
+    [#194] rows 는 groupBy 에 따라 Row/MemberRow 이형(異形) dict 라 키를 고정하지 않고
+    상위 seller_summary_max_events 건까지 "key=value" 형태로 그대로 노출한다 —
+    워커가 어느 shape 든 최소한의 재료를 갖는다.
     """
     settings = get_settings()
     shown = events[: settings.seller_summary_max_events]
@@ -47,6 +102,7 @@ def _summarize_events(events: list[dict]) -> str:
 
 
 @tool
+@_traced_tool("tool.get_sales_timeseries")
 async def get_sales_timeseries(
     runtime: ToolRuntime[SellerContext],
     from_date: str,
@@ -64,39 +120,79 @@ async def get_sales_timeseries(
     """
     brand_id = runtime.context.brand_id  # 검증된 JWT 클레임 유래 — LLM 이 만들 수 없다.
     settings = get_settings()
+    # [#290] daily 는 요청 기간 앞에 lookback 을 붙여 조회한다 — STL(period 7)은
+    # 최소 2주기 이력이 있어야 계절 성분을 추정한다. 요약·상세 나열은 요청 기간 내만
+    # 쓰고, lookback 구간은 이상 감지 학습에만 쓴다(판매자에게 요청 밖 수치 미노출).
+    fetch_from = from_date
+    if granularity == "daily":
+        try:
+            parsed_from = date.fromisoformat(from_date)
+        except ValueError:
+            pass  # 형식 오류는 확장 없이 그대로 — Spring 검증/오류 경로에 맡긴다.
+        else:
+            fetch_from = (
+                parsed_from - timedelta(days=settings.seller_analysis_lookback_days)
+            ).isoformat()
     try:
-        result = await get_spring_client().get_sales(brand_id, from_date, to_date, granularity)
+        result = await get_spring_client().get_sales(brand_id, fetch_from, to_date, granularity)
     except SpringUnavailableError as exc:
         return (
             f"Error: 매출 데이터를 불러오지 못했습니다({exc}). "
             "다른 기간으로 다시 시도하거나 없이 진행하세요."
         )
-    total_sales = sum(point.sales for point in result.series)
-    total_orders = sum(point.order_count for point in result.series)
+    # 요청 기간 내 포인트(ISO 날짜라 문자열 비교 = 날짜 비교). lookback 은 학습 전용.
+    # [PR 리뷰] 이 필터는 **daily 전용**이다 — lookback 확장 조회를 한 유일한 경로라
+    # 요청 밖 구간을 걷어낼 필요가 있다. weekly/monthly 는 확장 조회가 없고, 버킷
+    # date 가 버킷 시작일(요청 from 이전일 수 있음)인지 계약(I-6)에 정의가 없어
+    # 무조건 필터하면 정상 첫 버킷이 조용히 빠져 합계가 축소될 수 있다 — 검증 안 된
+    # 전제에 기대지 않고 종전(PR 이전) 동작대로 전체 series 를 합산한다.
+    window_points = (
+        [p for p in result.series if p.date >= from_date]
+        if granularity == "daily"
+        else list(result.series)
+    )
+    total_sales = sum(point.sales for point in window_points)
+    total_orders = sum(point.order_count for point in window_points)
     # 상세 포함+상한(안 1, 2026-07-17 확정): 워커가 추이를 직접 서술할 수 있도록
     # 포인트별 수치를 나열하되 seller_summary_max_points 로 컨텍스트 폭주를 막는다.
-    shown = result.series[: settings.seller_summary_max_points]
+    shown = window_points[: settings.seller_summary_max_points]
     detail_lines = ", ".join(f"{p.date} {p.sales:,}원/{p.order_count}건" for p in shown)
-    omitted = len(result.series) - len(shown)
+    omitted = len(window_points) - len(shown)
     omitted_note = f" (외 {omitted}개 포인트 생략)" if omitted > 0 else ""
-    # 이동평균 window(seller_ma_window, §5)는 "일" 단위 전제 — daily 일 때만 이상 감지.
+    # STL period(seller_stl_period)는 "일" 단위 요일 주기 전제 — daily 일 때만 이상 감지.
     if granularity == "daily":
         # Spring 의 isAnomaly/deviationPct 는 참고치일 뿐 — 원시 sales 로 재판정한다(§0.1 D).
-        anomalies = calc.detect_sales_anomalies(
-            result.series,
-            window=settings.seller_ma_window,
-            threshold_pct=settings.seller_anomaly_deviation_pct,
-        )
-        flagged = [
-            f"{date} ({deviation:+.1f}%)" for date, deviation, is_anom in anomalies if is_anom
-        ]
-        anomaly_note = (
-            f" 이상 감지 {len(flagged)}건(직전 {settings.seller_ma_window}일 평균 대비): "
-            + ", ".join(flagged)
-            + "."
-            if flagged
-            else " 이상 감지 없음."
-        )
+        # [#290] SMA 편차 → S-H-ESD(STL 잔차 + robust GESD) 교체. 요일 효과를 분해로
+        # 걷어내 "주말이라 원래 낮음"을 급락으로 오탐하지 않는다(worker-papers.md).
+        try:
+            anomalies = timeseries.detect_seasonal_anomalies(
+                [p.date for p in result.series],
+                [float(p.sales) for p in result.series],
+                period=settings.seller_stl_period,
+                alpha=settings.seller_gesd_alpha,
+                max_anomalies_ratio=settings.seller_gesd_max_anomalies_ratio,
+                min_history_for_stl=settings.seller_min_history_for_stl,
+            )
+        except ValueError as exc:
+            # [#194 리뷰 3 계승] §3.4 degrade 규약 — 설정 검증은 기동 시점(config.py)이
+            # 1차 방어지만, 그 안전망이 우회·회귀로 뚫려도 이 도구만 죽지 않는다.
+            _log.warning("이상 감지 판정 불가 — 분석 설정 오류: %s", exc)
+            anomaly_note = " 이상 감지 판정 불가(분석 설정 오류)."
+        else:
+            # lookback 구간에서 검출된 이상은 요청 밖이라 보고하지 않는다(질문 범위 준수).
+            flagged = [_format_seasonal_anomaly(a) for a in anomalies if a.date >= from_date]
+            seasonal_adjusted = len(result.series) >= settings.seller_min_history_for_stl
+            method_note = (
+                "STL 계절조정·GESD"
+                if seasonal_adjusted
+                else f"robust 판정 — 이력 {len(result.series)}일"
+                f"<{settings.seller_min_history_for_stl}일이라 계절 미조정"
+            )
+            anomaly_note = (
+                f" 이상 감지 {len(flagged)}건({method_note}): " + ", ".join(flagged) + "."
+                if flagged
+                else f" 이상 감지 없음({method_note})."
+            )
     else:
         anomaly_note = ""
     return (
@@ -106,7 +202,23 @@ async def get_sales_timeseries(
     )
 
 
+def _format_seasonal_anomaly(anomaly) -> str:
+    """SeasonalAnomaly 1건 → 요약 문구. 편차% 미정의(기대 0 이하)·무한 σ를 구분 표기한다."""
+    direction = "급락" if anomaly.direction == "drop" else "급증"
+    pct = (
+        f"계절조정 {anomaly.deviation_pct:+.1f}%"
+        if anomaly.deviation_pct is not None
+        else "편차% 산정 불가(기대 0원 이하)"
+    )
+    sigma = "σ산정 불가(무변동 이력)" if anomaly.sigma == float("inf") else f"{anomaly.sigma:.1f}σ"
+    return (
+        f"{anomaly.date} 실측 {anomaly.actual:,.0f}원·기대 {anomaly.expected:,.0f}원"
+        f" ({pct}, {sigma}, {direction})"
+    )
+
+
 @tool
+@_traced_tool("tool.get_funnel")
 async def get_funnel(runtime: ToolRuntime[SellerContext], from_date: str, to_date: str) -> str:
     """구매전환 퍼널(조회→장바구니→결제→구매) 단계별 인원·전환율을 요약한다.
 
@@ -117,31 +229,294 @@ async def get_funnel(runtime: ToolRuntime[SellerContext], from_date: str, to_dat
         to_date: 조회 종료일(YYYY-MM-DD).
     """
     brand_id = runtime.context.brand_id
+    settings = get_settings()
     try:
         result = await get_spring_client().get_funnel(brand_id, from_date, to_date)
     except SpringUnavailableError as exc:
         return f"Error: 퍼널 데이터를 불러오지 못했습니다({exc})."
+    # [#290] 직전 인접 동일 길이 기간 자동 추가 조회 — 기간 비교 z-검정(Sismeiro
+    # 단계분해 축약형)의 비교쌍. 직전 기간 실패는 보조 조회라 본 요약을 죽이지
+    # 않고 비교만 생략한다(§3.4 degrade 관용).
+    prev_result = None
+    prev_range = _previous_period(from_date, to_date)
+    prev_skip_reason = "직전 기간 산정 불가(날짜 해석 실패)" if prev_range is None else ""
+    if prev_range is not None:
+        try:
+            prev_result = await get_spring_client().get_funnel(brand_id, *prev_range)
+        except SpringUnavailableError as exc:
+            _log.warning("퍼널 직전 기간 조회 실패 — 비교 생략: %s", exc)
+            prev_skip_reason = f"직전 기간({prev_range[0]}~{prev_range[1]}) 조회 실패"
     rates = calc.conversion_rates(result)
+    # [PR#184 리뷰 반영] 미집계 단계(I-7 count=null·computable=false)는 "실제 0건"이
+    # 아니다 — 카운트·전환율 모두 "미집계"로 표기해 LLM 이 0% 전환으로 오해석하지
+    # 않게 한다(0 으로 내보내면 워커가 "전환 전무"로 보고할 위험).
+    uncomputable = set(result.uncomputable_stages)
+    prev_rates = calc.conversion_rates(prev_result) if prev_result is not None else None
+
+    def _count(field: str, value: int) -> str:
+        return "미집계" if field in uncomputable else str(value)
+
+    def _stage_summary(
+        label: str, key: str, successes: int, trials: int, prev_successes: int, prev_trials: int
+    ) -> str:
+        """단계 1개의 전환율 + Wilson CI + 직전 기간 z-검정 문구 (#290).
+
+        [PR 리뷰] I-7 은 이벤트 기반 카운트라 단계 역전(cart>view — view 이벤트
+        유실·목록 페이지 직행 담기 등)이 실데이터에서 가능하고, 스키마(FunnelResult)는
+        단계 간 관계를 강제하지 않는다. wilson_interval/compare_rates 는 그 입력을
+        ValueError 로 거부하므로 여기서 잡아 **해당 단계만** 판정을 생략한다(§3.4 —
+        다른 신규 호출부와 동일 패턴). clamp 로 정상 CI 처럼 위장하지 않는다
+        (정합 깨진 데이터의 0/100% 위장 금지 원칙과 동일 취지).
+        """
+        rate = rates[key]
+        if rate is None:
+            return f"{label} 미집계"
+        segment = f"{label} {rate:.1f}%"
+        if trials > 0:
+            try:
+                est = proportions.wilson_interval(
+                    successes, trials, confidence=settings.seller_wilson_confidence
+                )
+            except ValueError as exc:
+                _log.warning("퍼널 단계 %s CI·검정 불가 — 카운트 정합 이상: %s", label, exc)
+                return (
+                    f"{label} {rate:.1f}% [CI·검정 불가 — 단계 카운트 정합 이상"
+                    f"({successes}>{trials})]"
+                )
+            segment += (
+                f" [{settings.seller_wilson_confidence:.0%} CI"
+                f" {est.ci_low:.1%}~{est.ci_high:.1%}, n={trials}]"
+            )
+        prev_rate = prev_rates[key] if prev_rates is not None else None
+        if prev_rate is not None and trials > 0 and prev_trials > 0:
+            try:
+                comparison = proportions.compare_rates(
+                    successes,
+                    trials,
+                    prev_successes,
+                    prev_trials,
+                    alpha=settings.seller_rate_test_alpha,
+                    confidence=settings.seller_wilson_confidence,
+                )
+            except ValueError as exc:
+                # 직전 기간 쪽 카운트 정합 이상 — 현재 기간 CI 는 유효하므로 유지하고
+                # 기간 비교만 생략한다(부분 degrade).
+                _log.warning("퍼널 단계 %s 기간 비교 불가 — 카운트 정합 이상: %s", label, exc)
+                segment += "(직전 기간 검정 불가 — 카운트 정합 이상)"
+            else:
+                segment += (
+                    f"(직전 {prev_rate:.1f}%, p={comparison.p_value:.3f}"
+                    f" — {_VERDICT_LABELS[comparison.verdict]})"
+                )
+        elif prev_result is not None:
+            # 직전 기간은 받았지만 이 단계가 미집계/표본 0 — 단계 단위로 검정 제외.
+            segment += "(직전 기간 검정 제외 — 미집계/표본 없음)"
+        return segment
+
+    stage_segments = [
+        _stage_summary(
+            "view→cart",
+            "view_to_cart",
+            result.cart,
+            result.view,
+            prev_result.cart if prev_result else 0,
+            prev_result.view if prev_result else 0,
+        ),
+        _stage_summary(
+            "cart→checkout",
+            "cart_to_checkout",
+            result.checkout,
+            result.cart,
+            prev_result.checkout if prev_result else 0,
+            prev_result.cart if prev_result else 0,
+        ),
+        _stage_summary(
+            "checkout→purchase",
+            "checkout_to_purchase",
+            result.purchase,
+            result.checkout,
+            prev_result.purchase if prev_result else 0,
+            prev_result.checkout if prev_result else 0,
+        ),
+    ]
+    uncomputable_note = (
+        " ※ '미집계' 단계는 해당 구간 집계가 불가한 것(0건 아님) — 관련 전환율은 판단 제외."
+        if uncomputable
+        else ""
+    )
+    prev_note = (
+        f" ※ {prev_skip_reason} — 기간 비교 생략."
+        if prev_skip_reason
+        else (
+            f" (직전 기간 {prev_range[0]}~{prev_range[1]} 대비 양측 z-검정,"
+            f" α={settings.seller_rate_test_alpha})"
+            if prev_result is not None
+            else ""
+        )
+    )
     return (
-        f"조회 {result.view}→장바구니 {result.cart}→결제 {result.checkout}"
-        f"→구매 {result.purchase}, 전환율 view→cart {rates['view_to_cart']:.1f}% · "
-        f"cart→checkout {rates['cart_to_checkout']:.1f}% · "
-        f"checkout→purchase {rates['checkout_to_purchase']:.1f}%. "
+        f"조회 {_count('view', result.view)}→장바구니 {_count('cart', result.cart)}"
+        f"→결제 {_count('checkout', result.checkout)}"
+        f"→구매 {_count('purchase', result.purchase)}, "
+        f"전환율 {' · '.join(stage_segments)}.{prev_note}{uncomputable_note} "
         f"{_reference_note(from_date, to_date)}"
     )
 
 
+# [#196] purchase_complete 는 FE 가 productId 없이 발사(주문 단위 이벤트)해
+# behavior_events.product_id = NULL 로 적재되고, I-13 집계(product 조인 스코프)에서
+# 통째로 탈락한다 — 상품별·합계 모두 0 으로 내려올 수 있다(실데이터 존재해도).
+# BE 근본 수정(order_item 기반 귀속, jarvis-backend#62) 배포 전까지 워커가 0 을
+# '구매 전무'로 오해석하지 않도록 노트로 통제한다. 배포 후 완화(후속 커밋).
 _BEHAVIOR_AUTHORITY_NOTE = (
-    "※ purchaseComplete 는 이벤트 기준(완료 페이지 발사) — "
-    "매출·주문수의 권위는 매출 조회(I-6)/주문 전이(I-14)다."
+    "※ purchaseComplete 는 이벤트 기준(완료 페이지 발사)인데 현 수집 경로상 "
+    "상품 미귀속으로 0 집계될 수 있다(실제 구매 있어도) — 0 을 '구매 전무'의 "
+    "근거로 쓰지 말 것. 구매 존재·규모의 권위는 매출 조회(I-6)/퍼널(I-7)/"
+    "주문 전이(I-14)다."
 )
+
+
+# 군집 문구에 나열할 소속 상품 id 상한 — 대군집이 컨텍스트를 폭주시키지 않게.
+_CLUSTER_PRODUCT_ID_MAX = 5
+
+
+def _summarize_behavior_clusters(rows: list, settings) -> str:
+    """I-13 상품 rows 를 k-means 군집 요약 문구로 바꾼다 (#290 — behavior 워커).
+
+    빈 결과는 군집 생략 사유(상품 수 미달·분리 불능)를 명시한다 — LLM 이 "군집이
+    없다 = 패턴이 없다"로 오해석하지 않게. 중심값은 원 피처 단위(비율·log 조회)라
+    LLM 이 그대로 서술 근거로 쓸 수 있다.
+    """
+    activities = [
+        {
+            "product_id": row.product_id,
+            "view": row.counts.get("productView", 0),
+            "cart": row.counts.get("addToCart", 0),
+            "checkout": row.counts.get("checkoutStart", 0),
+            "purchase": row.counts.get("purchaseComplete", 0),
+            "visitors": row.unique_visitors,
+        }
+        for row in rows
+    ]
+    try:
+        clusters = segmentation.cluster_products(
+            activities,
+            k_min=settings.seller_behavior_kmeans_k_min,
+            k_max=settings.seller_behavior_kmeans_k_max,
+            random_state=settings.seller_kmeans_random_state,
+        )
+    except ValueError as exc:
+        # §3.4 degrade — 설정 오류(기동 검증 우회·회귀)에도 상품 나열 요약은 살린다.
+        _log.warning("행동 군집화 불가 — 분석 설정 오류: %s", exc)
+        return " 군집 분석 불가(분석 설정 오류)."
+    if not clusters:
+        floor = settings.seller_behavior_kmeans_k_min * 3
+        reason = (
+            f"상품 {len(rows)}개 < 최소 {floor}개"
+            if len(rows) < floor
+            else "전 상품 행동 패턴 동일(분리 불능)"
+        )
+        return f" 군집 생략({reason}) — 위 상품별 수치로 직접 판단."
+    parts = []
+    for cluster in clusters:
+        ids = ", ".join(str(pid) for pid in cluster.product_ids[:_CLUSTER_PRODUCT_ID_MAX])
+        ids_note = (
+            f"{ids} 외 {cluster.size - _CLUSTER_PRODUCT_ID_MAX}개"
+            if cluster.size > _CLUSTER_PRODUCT_ID_MAX
+            else ids
+        )
+        centroid = cluster.centroid
+        parts.append(
+            f"[{cluster.label}] {cluster.size}개(id: {ids_note}) — 중심: "
+            f"담기율 {centroid['cart_per_view']:.1%}·결제진입률 {centroid['checkout_per_cart']:.1%}"
+            f"·구매완료율 {centroid['purchase_per_checkout']:.1%}"
+        )
+    return (
+        f" 행동 군집 {len(clusters)}개(k-means, 실루엣 {clusters[0].silhouette:.2f}): "
+        + "; ".join(parts)
+        + "."
+    )
+
+
+def _summarize_ratio_outliers(rows: list, settings) -> str:
+    """상품별 비율의 브랜드 내 Tukey 상위 fence 초과 요약 (#290 abuse Contextual 트랙).
+
+    지표는 전부 "높을수록 의심" 방향(Tan & Kumar 봇 피처의 집계 단위 번역):
+    - 조회/구매(view/purchase): **purchase>0 상품만** — 순수 비율 분포로 검정한다.
+      [PR 리뷰] 구 방식(purchase=0 → 분모 1 치환)은 비율과 원시 조회수를 한 분포에
+      섞어 fence 를 왜곡했다 — 구매 0 대량 조회 상품이 분포를 부풀려 진짜 비율
+      이상치가 fence 아래 숨는 오미탐 경로.
+    - 구매 0 조회 폭증: purchase=0 상품은 별도 판정 — **브랜드 전체 조회량 분포**의
+      상위 fence 초과일 때만 "조회 폭증+구매 0" 패턴으로 표기한다(정의 그대로).
+    - 담기율(cart/view): 장바구니 어뷰징(담기 봇) 신호.
+    - 방문자당 조회(view/visitors): 소수 방문자의 반복 조회(크롤러/봇) 신호.
+      visitors 결측 상품은 이 지표에서 제외한다(결측 0 위장 금지).
+    """
+    per_metric: dict[str, list[tuple[str, float]]] = {
+        "조회/구매": [],
+        "담기율": [],
+        "방문자당 조회": [],
+    }
+    view_items: list[tuple[str, float]] = []  # 전 상품 조회량 — 구매 0 폭증 판정의 분포
+    zero_purchase_ids: set[str] = set()
+    for row in rows:
+        counts = row.counts
+        view = counts.get("productView", 0)
+        purchase = counts.get("purchaseComplete", 0)
+        cart = counts.get("addToCart", 0)
+        target = f"[{row.product_id}]"
+        if view > 0:
+            view_items.append((target, float(view)))
+            if purchase > 0:
+                per_metric["조회/구매"].append((target, view / purchase))
+            else:
+                zero_purchase_ids.add(target)
+            per_metric["담기율"].append((target, cart / view))
+            if row.unique_visitors:
+                per_metric["방문자당 조회"].append((target, view / row.unique_visitors))
+    flags = []
+    for metric, items in per_metric.items():
+        flags.extend(outliers.tukey_upper_outliers(items, k=settings.seller_tukey_k, metric=metric))
+    # 구매 0 트랙 — fence 는 브랜드 전체 조회량 분포로 만들되, 구매 0 상품의 초과만
+    # 이상으로 본다(구매가 있는 고조회 상품은 인기이지 어뷰징 신호가 아니다).
+    zero_purchase_flags = [
+        flag
+        for flag in outliers.tukey_upper_outliers(
+            view_items, k=settings.seller_tukey_k, metric="조회량"
+        )
+        if flag.target in zero_purchase_ids
+    ]
+    if not flags and not zero_purchase_flags:
+        # 최대 표본 기준으로 판정 수행 여부를 구분한다 — "없음"과 "판정 보류"는 다르다.
+        max_items = max((len(items) for items in (*per_metric.values(), view_items)), default=0)
+        if max_items >= 4:
+            return f" 상품 비율 이상치 없음(Tukey Q3+{settings.seller_tukey_k:g}×IQR 기준)."
+        return " 상품 비율 이상치 판정 보류(비교 가능 상품 4개 미만)."
+    parts = [
+        f"{flag.target} {flag.metric} {flag.value:,.1f}(상위 기준 {flag.threshold:,.1f} 초과)"
+        for flag in flags
+    ]
+    parts.extend(
+        f"{flag.target} 조회량 {flag.value:,.0f}"
+        f"(브랜드 상위 기준 {flag.threshold:,.0f} 초과, 구매 0 — 조회 폭증 패턴)"
+        for flag in zero_purchase_flags
+    )
+    total = len(flags) + len(zero_purchase_flags)
+    return (
+        f" 상품 비율 이상치 {total}건"
+        f"(브랜드 내 Tukey Q3+{settings.seller_tukey_k:g}×IQR 초과): " + ", ".join(parts) + "."
+    )
 
 
 def _summarize_behavior(result: BehaviorEventsResult) -> str:
     """I-13 응답을 groupBy 3형에 맞춰 요약한다(REALIGN ②-3 — 확정 명세 기준)."""
     settings = get_settings()
     if result.rows:  # groupBy=product (기본)
-        shown = result.rows[: settings.seller_summary_max_events]
+        # [#196] 상한은 seller_summary_max_products(I-13 전용) — I-14 용
+        # seller_summary_max_events 와 분리(브랜드 상품 수 > 상한이면 상시 잘리던 문제).
+        # rows 는 BE 가 활동량(4종 합계) 내림차순으로 내려준다(api-spec §4.4 I-13) —
+        # 잘리는 건 저활동 상품이고, 잘린 행도 아래 꼬리 합계로 남겨 정보 소실을 막는다.
+        shown = result.rows[: settings.seller_summary_max_products]
         lines = []
         for row in shown:
             c = row.counts
@@ -152,9 +527,27 @@ def _summarize_behavior(result: BehaviorEventsResult) -> str:
                 f"결제시작 {c.get('checkoutStart', 0)} 구매 {c.get('purchaseComplete', 0)} "
                 f"(조회→담기 {rate}, 방문자 {row.unique_visitors if row.unique_visitors is not None else '-'})"
             )
-        omitted = (result.total or len(result.rows)) - len(shown)
-        omitted_note = f" 외 {omitted}건" if omitted > 0 else ""
-        return f"상품별 {len(shown)}건: " + "; ".join(lines) + omitted_note
+        omitted_rows = result.rows[len(shown) :]
+        if omitted_rows:
+            tail = {
+                key: sum(r.counts.get(key, 0) for r in omitted_rows)
+                for key in ("productView", "addToCart", "checkoutStart", "purchaseComplete")
+            }
+            omitted_note = (
+                f" 외 {len(omitted_rows)}건(저활동) 합계: "
+                f"조회 {tail['productView']} 담기 {tail['addToCart']} "
+                f"결제시작 {tail['checkoutStart']} 구매 {tail['purchaseComplete']}"
+            )
+        else:
+            omitted_note = ""
+        # [#290] 상품 군집화(Chen 2012 k-means + Moe 2003 유형론) — 절단 전 전체 rows 로
+        # 군집을 만들어 LLM 이 상품 나열이 아니라 군집 단위(카트이탈형 등)로 해석하게 한다.
+        cluster_note = _summarize_behavior_clusters(result.rows, settings)
+        # [#290] abuse Contextual 트랙 — 브랜드 내 비율 분포의 Tukey 상위 fence 초과.
+        ratio_note = _summarize_ratio_outliers(result.rows, settings)
+        return (
+            f"상품별 {len(shown)}건: " + "; ".join(lines) + omitted_note + cluster_note + ratio_note
+        )
     if result.counts:  # groupBy=eventType
         return "유형별 합계: " + ", ".join(f"{k}={v}" for k, v in result.counts.items())
     if result.series:  # groupBy=date — 키 동적(date + camelCase 카운트)
@@ -167,6 +560,7 @@ def _summarize_behavior(result: BehaviorEventsResult) -> str:
 
 
 @tool
+@_traced_tool("tool.get_behavior_events")
 async def get_behavior_events(
     runtime: ToolRuntime[SellerContext],
     from_date: str,
@@ -197,7 +591,66 @@ async def get_behavior_events(
     summary = _summarize_behavior(result)
     if not summary:
         return f"행동 이벤트 0건. {_reference_note(from_date, to_date)}"
-    return f"{summary}. {_BEHAVIOR_AUTHORITY_NOTE} {_reference_note(from_date, to_date)}"
+    # [#290] abuse Point 트랙 — date-groupBy 일별 총량의 MAD 스파이크 + 가격/재고
+    # 변경일 겹침 대조(오탐 통제). product-groupBy 의 Contextual 트랙은
+    # _summarize_behavior 내부(_summarize_ratio_outliers)에서 부착된다.
+    spike_note = ""
+    if result.series:
+        spike_note = await _point_spike_note(brand_id, from_date, to_date, result.series)
+    return (
+        f"{summary}.{spike_note} {_BEHAVIOR_AUTHORITY_NOTE} {_reference_note(from_date, to_date)}"
+    )
+
+
+async def _point_spike_note(brand_id: int, from_date: str, to_date: str, series: list) -> str:
+    """I-13 일별 시계열의 볼륨 스파이크 요약 (#290 abuse Point 트랙 — Chandola).
+
+    스파이크일이 가격/재고 변경 이력(I-15)과 겹치면 "정상 설명 후보"를 동봉한다 —
+    프로모션 가격 인하로 인한 트래픽 급증을 봇으로 단정하는 오탐을 통제한다.
+    I-15 실패는 보조 대조 실패 — 스파이크 보고는 유지하고 대조만 생략(§3.4 관용).
+    """
+    settings = get_settings()
+    dates: list[str] = []
+    totals: list[float] = []
+    for point in series:
+        day = point.get("date")
+        if day is None:
+            continue  # 비정상 행 관대 수신
+        dates.append(str(day))
+        totals.append(float(sum(v for k, v in point.items() if k != "date" and isinstance(v, int))))
+    try:
+        spikes = outliers.mad_spikes(
+            dates, totals, threshold=settings.seller_mad_threshold, metric="일별 이벤트 총량"
+        )
+    except ValueError as exc:
+        _log.warning("볼륨 스파이크 판정 불가 — 분석 설정 오류: %s", exc)
+        return " 일별 볼륨 스파이크 판정 불가(분석 설정 오류)."
+    if not spikes:
+        return f" 일별 볼륨 스파이크 없음(robust z<{settings.seller_mad_threshold})."
+    change_dates: set[str] = set()
+    overlap_checked = True
+    try:
+        changes = await get_spring_client().get_product_changes(
+            brand_id, from_date, to_date, None, None
+        )
+        change_dates = {row.created_at[:10] for row in changes.rows if row.created_at}
+    except SpringUnavailableError as exc:
+        _log.warning("스파이크-변경 이력 대조 불가(I-15 실패) — 대조 생략: %s", exc)
+        overlap_checked = False
+    parts = []
+    for spike in spikes:
+        z_note = "∞" if spike.value == float("inf") else f"{spike.value:.1f}"
+        raw = totals[dates.index(spike.target)]
+        note = f"{spike.target} 총 {raw:,.0f}건(robust z {z_note}≥{spike.threshold:g})"
+        if spike.target in change_dates:
+            note += " ※당일 가격/재고 변경 이력 있음 — 정상 설명 후보"
+        parts.append(note)
+    unchecked_note = " (변경 이력 대조 실패 — 겹침 미확인)" if not overlap_checked else ""
+    return (
+        f" 일별 볼륨 스파이크 {len(spikes)}건(봇 유입 신호 후보): "
+        + ", ".join(parts)
+        + f".{unchecked_note}"
+    )
 
 
 # I-14/I-15 기록 규칙 주의 문구 (REALIGN ②-4 — schema.sql D32/D34 확정 반영).
@@ -213,6 +666,7 @@ _PRODUCT_LOG_RULES_NOTE = (
 
 
 @tool
+@_traced_tool("tool.get_order_events")
 async def get_order_events(
     runtime: ToolRuntime[SellerContext],
     from_date: str,
@@ -234,10 +688,37 @@ async def get_order_events(
         to_status: 전이 대상 상태(선택) — 주문: PENDING/PAID/PAYMENT_FAILED/CANCELLED,
             아이템: SHIPPING/DELIVERED/CANCELLED/RETURNED (교환 어휘 없음).
         actor_type: 전이 주체(선택) — USER/SELLER/ADMIN/SYSTEM.
-        group_by: 집계 그룹 기준(선택).
-        stats: 집계 모드로 조회할지 여부(선택, api-spec §4.4 `stats` 쿼리).
+            memberId 집계 시에는 무시된다(아래 group_by 참조).
+        group_by: "memberId" 하나뿐(선택) — 회원별 어뷰징 집계로 전환된다.
+            rows 가 buyerMemberId/orderCount/cancelCount/cancelRatio/
+            maxOrdersPerHour/isSuspicious(코드 판정)로 바뀐다.
+            ※ to_status·actor_type 이 함께 오면 무시한다(코드 강제) —
+            분모(orderCount)까지 필터돼 cancelRatio 가 왜곡되기 때문
+            (예: CANCELLED 만 남기면 전원 1.0, USER 만 남기면 취소 전이만
+            분모에 남음).
+        stats: 집계 모드로 조회할지 여부(선택, api-spec §4.4 `stats` 쿼리) —
+            rows 없이 byStatus·cancelReasonsTop 만 반환된다.
     """
     brand_id = runtime.context.brand_id
+    # [#215 리뷰] memberId 집계에 to_status·actor_type 이 걸리면 Spring 이 분모
+    # (orderCount)까지 필터해 cancelRatio 가 왜곡된다 — BE 쿼리(aggregate·maxPerHour
+    # 양쪽)의 두 필터가 GROUP BY 이전에 적용되기 때문. 예: to_status=CANCELLED 면
+    # 전원 1.0, actor_type=USER 면 취소(USER 전이)만 분모에 남아 정상 회원도 1.0.
+    # 왜곡된 isSuspicious 는 '코드 판정 번복 금지' 규칙 탓에 그대로 보고되므로,
+    # 프롬프트·docstring(소프트 가드)에만 맡기지 않고 코드에서 무시를 강제한다.
+    # [#215 리뷰 2] group_by 는 LLM 이 채우는 자유 문자열(str | None)이라 정확 일치에만
+    # 의존하면 "memberid"·" MemberId " 같은 변형에서 가드가 조용히 무력화된다 — Spring 도
+    # 등호 비교("memberId".equals)라 변형은 회원 집계 대신 목록 조회로 오동작하므로,
+    # 정규화해 가드와 Spring 라우팅을 함께 바로잡는다.
+    if group_by is not None and group_by.strip().lower() == "memberid":
+        group_by = "memberId"
+    ignored_status_note = ""
+    if group_by == "memberId" and (to_status or actor_type):
+        to_status = None
+        actor_type = None
+        ignored_status_note = (
+            " ※ memberId 집계에서 to_status/actor_type 필터는 무시됨(비율 왜곡 방지)."
+        )
     try:
         status_filter = [to_status] if to_status else None
         result = await get_spring_client().get_order_events(
@@ -245,19 +726,41 @@ async def get_order_events(
         )
     except SpringUnavailableError as exc:
         return f"Error: 주문 이벤트 데이터를 불러오지 못했습니다({exc})."
-    # stats 모드 응답(stats dict)이 있으면 함께 노출 — 집계 질의의 주 재료.
-    stats_note = (
-        " 집계: " + ", ".join(f"{k}={v}" for k, v in result.stats.items()) if result.stats else ""
+    # [#194] BE 실측 응답(rows/total/byStatus/cancelReasonsTop) 기준으로 요약한다 —
+    # 구 events/stats 필드는 Spring 에 없어 항상 0건으로 새던 버그의 원인.
+    # stats=true 모드: byStatus + cancelReasonsTop 이 집계 질의의 주 재료.
+    stats_note = ""
+    if result.by_status is not None:
+        stats_note = " 상태별 집계: " + ", ".join(f"{k}={v}" for k, v in result.by_status.items())
+        if result.cancel_reasons_top:
+            reasons = ", ".join(
+                f"{r.get('reason', '?')}({r.get('count', '?')}건)"
+                for r in result.cancel_reasons_top
+            )
+            stats_note += f". 취소 사유 상위: {reasons}"
+        stats_note += "."
+    if not result.rows and not stats_note:
+        # 0건 조기 반환도 무시 고지를 유지한다 — 빠지면 워커가 필터 무시 사실을
+        # 모른 채 재호출하거나, 회귀 테스트(#215)가 이 경로에서 깨진다.
+        return f"주문 상태 전이 0건.{ignored_status_note} {_reference_note(from_date, to_date)}"
+    # rows 는 limit 절단본 — total 이 더 크면 전수를 고지해 표본=전수 오해석을 막는다.
+    total = result.total if result.total is not None else len(result.rows)
+    total_note = (
+        f" (전체 {total}건 중 {len(result.rows)}건 표시)" if total > len(result.rows) else ""
     )
-    if not result.events and not stats_note:
-        return f"주문 상태 전이 0건. {_reference_note(from_date, to_date)}"
+    rows_note = (
+        f"주문 상태 전이 {len(result.rows)}건{total_note}: {_summarize_events(result.rows)}."
+        if result.rows
+        else "주문 상태 전이 목록 없음(집계 모드)."
+    )
     return (
-        f"주문 상태 전이 {len(result.events)}건: {_summarize_events(result.events)}."
-        f"{stats_note} {_ORDER_LOG_RULES_NOTE} {_reference_note(from_date, to_date)}"
+        f"{rows_note}{stats_note}{ignored_status_note} "
+        f"{_ORDER_LOG_RULES_NOTE} {_reference_note(from_date, to_date)}"
     )
 
 
 @tool
+@_traced_tool("tool.get_product_change_logs")
 async def get_product_change_logs(
     runtime: ToolRuntime[SellerContext],
     from_date: str,
@@ -279,47 +782,269 @@ async def get_product_change_logs(
         product_id: 특정 상품으로 좁힐 때(선택, 숫자).
     """
     brand_id = runtime.context.brand_id
+    settings = get_settings()
     try:
         result = await get_spring_client().get_product_changes(
             brand_id, from_date, to_date, change_type, product_id
         )
     except SpringUnavailableError as exc:
         return f"Error: 상품 변경 이력을 불러오지 못했습니다({exc})."
+    # [#194] BE 실측 응답(rows/total) 기준 — 구 logs 필드는 Spring 에 없어 항상 0건으로
+    # 새던 버그의 원인. 건수만 주던 출력도 상세 나열로 바꾼다 — 워커가 "이상 직전
+    # 가격/재고/상태 변경"을 직접 짚을 수 있어야 한다(sales_anomaly 분석 재료).
+    if not result.rows:
+        return (
+            f"상품 변경 이력 0건(가격/재고/상태). "
+            f"{_PRODUCT_LOG_RULES_NOTE} {_reference_note(from_date, to_date)}"
+        )
+    shown = result.rows[: settings.seller_summary_max_events]
+    lines = [
+        f"[{row.product_id}] {row.product_name or '이름없음'} {row.change_type} "
+        f"{row.old_value if row.old_value is not None else '?'}"
+        f"→{row.new_value if row.new_value is not None else '?'}"
+        f" ({row.created_at or '시각불명'})"
+        for row in shown
+    ]
+    total = result.total if result.total is not None else len(result.rows)
+    omitted = total - len(shown)
+    omitted_note = f" 외 {omitted}건" if omitted > 0 else ""
     return (
-        f"상품 변경 이력 {len(result.logs)}건(가격/재고/상태). "
+        f"상품 변경 이력 {total}건(가격/재고/상태): " + "; ".join(lines) + omitted_note + ". "
         f"{_PRODUCT_LOG_RULES_NOTE} {_reference_note(from_date, to_date)}"
     )
 
 
+# I-16 신호 해석 주의 문구 — 상시 부착(#197, _BEHAVIOR_AUTHORITY_NOTE 와 같은 패턴).
+_CHURN_SIGNAL_RULES_NOTE = (
+    "※ 검색 무결과 세션은 현 수집 스키마상 상시 0(미적재) — '검색 불만 없음'의 "
+    "근거로 쓰지 말 것. 이탈률 분모는 기간 내 자사 상품 상호작용 회원(코호트)이다. "
+    "신호 순위는 상관이지 인과가 아니다 — 원인 단정 금지."
+)
+
+
+def _reason_total(reasons: list[dict]) -> int:
+    """ReasonCount 목록의 count 합 — 비정상 값(비수치)은 0 으로 관대 수신."""
+    total = 0
+    for reason in reasons:
+        count = reason.get("count", 0)
+        total += count if isinstance(count, int) else 0
+    return total
+
+
+def _summarize_churn_signals(result, prev_result, *, top_k: int) -> str:
+    """pre_churn_signals 를 코호트 대비 정규화해 원인 후보 순위로 요약한다 (#290).
+
+    Ahn 2020 피처 카탈로그의 신호(취소·반품·가격노출·검색무결과)를 count/cohort_size
+    비중으로 정규화하고 직전 기간 비중과의 변화(%p)를 병기한다 — LLM 이 "많아
+    보이는 것"이 아니라 비중·변화 수치로 원인 후보를 고르게 한다. 원 count 는
+    그대로 유지한다(analysis_judge 검증 가능 — 도구 원출력 수치 보존 규약).
+    prev_result 는 비교 가능할 때만 넘어온다(코호트 0·결측·실패 시 None → "직전 −").
+    """
+    signals = result.pre_churn_signals
+    if signals is None:
+        return " 이탈 전 신호: 미수신."
+    cohort = result.cohort_size or 0
+    prev_signals = prev_result.pre_churn_signals if prev_result is not None else None
+    prev_cohort = prev_result.cohort_size if prev_result is not None else 0
+
+    entries = [
+        ("취소", signals.cancel_count, "건", prev_signals.cancel_count if prev_signals else None),
+        (
+            "반품",
+            _reason_total(signals.return_reasons_top),
+            "건",
+            _reason_total(prev_signals.return_reasons_top) if prev_signals else None,
+        ),
+        (
+            "가격인상 노출",
+            signals.price_increase_exposed,
+            "명",
+            prev_signals.price_increase_exposed if prev_signals else None,
+        ),
+        (
+            "검색 무결과 세션",
+            signals.zero_result_search_sessions,
+            "건",
+            prev_signals.zero_result_search_sessions if prev_signals else None,
+        ),
+    ]
+    # 분모(코호트)가 공통이라 비중 순위 = count 순위 — 동률은 이름순(결정론).
+    ranked = sorted(entries, key=lambda e: (-e[1], e[0]))
+
+    def _entry(rank: int, name: str, count: int, unit: str, prev_count: int | None) -> str:
+        share = f"{count / cohort:.1%}" if cohort else "?"
+        if prev_count is not None and prev_cohort:
+            prev_share = prev_count / prev_cohort
+            change = (count / cohort - prev_share) * 100 if cohort else None
+            prev_note = f"(직전 {prev_share:.1%}, {change:+.1f}%p)" if change is not None else ""
+        else:
+            prev_note = "(직전 −)"
+        return f"{rank}) {name} {count}{unit}·코호트 {share}{prev_note}"
+
+    top = [_entry(i + 1, *e) for i, e in enumerate(ranked[:top_k])]
+    rest = ", ".join(f"{name} {count}{unit}" for name, count, unit, _ in ranked[top_k:])
+    reasons = (
+        ", ".join(
+            f"{r.get('reason', '?')}({r.get('count', '?')}건)" for r in signals.return_reasons_top
+        )
+        or "없음"
+    )
+    rest_note = f" 그 외: {rest}." if rest else ""
+    return (
+        f" 이탈 전 신호(원인 후보 상위 {len(top)}, 코호트 대비 정규화): "
+        + " ".join(top)
+        + f".{rest_note} 반품 사유 상위: {reasons}."
+    )
+
+
 @tool
+@_traced_tool("tool.get_churn_cohort")
 async def get_churn_cohort(
-    runtime: ToolRuntime[SellerContext], inactive_days: int | None = None
+    runtime: ToolRuntime[SellerContext],
+    from_date: str,
+    to_date: str,
+    inactive_days: int | None = None,
 ) -> str:
     """이탈 코호트(무활동 고객) 이탈률·이탈 전 신호를 요약한다(I-16, api-spec §4.4).
 
+    코호트 = from~to 기간에 자사 상품과 상호작용한 회원. 이탈 = 그중 최근
+    inactive_days 동안 무활동인 회원.
+
     Args:
+        from_date: 코호트 기간 시작일(YYYY-MM-DD, 필수).
+        to_date: 코호트 기간 종료일(YYYY-MM-DD, 필수).
         inactive_days: 무활동 판정 기준일(선택, 미지정 시 설정 기본값).
     """
     brand_id = runtime.context.brand_id
+    settings = get_settings()
     # 기본값을 호출 시점에 해석한다 — 임포트 시점 고정 방지(Settings 주입 원칙).
     effective_days = (
-        inactive_days if inactive_days is not None else get_settings().seller_churn_inactive_days
+        inactive_days if inactive_days is not None else settings.seller_churn_inactive_days
     )
     try:
-        result = await get_spring_client().get_churn(brand_id, effective_days)
+        result = await get_spring_client().get_churn(brand_id, from_date, to_date, effective_days)
     except SpringUnavailableError as exc:
         return f"Error: 이탈 코호트 데이터를 불러오지 못했습니다({exc})."
-    return (
-        f"이탈률 {result.churn_rate:.1f}%, 이탈 전 신호 {len(result.pre_churn_signals)}건. "
-        f"(기준: inactiveDays={effective_days})"
+    # 코호트 0명(기간 내 상호작용 회원 없음)은 "이탈률 0%"와 다른 상태 — 구분 표기(#197).
+    # 직전 기간 조회 전에 조기 반환한다 — 비교 대상 자체가 없어 보조 조회 비용을 아낀다.
+    if result.cohort_size == 0:
+        return (
+            f"코호트 0명 — 기간 내 자사 상품과 상호작용한 회원이 없어 이탈 판정 대상이 "
+            f"없습니다. (기준: inactiveDays={effective_days}) "
+            f"{_reference_note(from_date, to_date)}"
+        )
+    # [#290] 직전 인접 동일 길이 기간 추가 조회 — 이탈률 z-검정·신호 변화율의 비교쌍.
+    # 보조 조회라 실패해도 본 요약은 계속한다(§3.4 관용).
+    prev_result = None
+    prev_range = _previous_period(from_date, to_date)
+    if prev_range is not None:
+        try:
+            prev_result = await get_spring_client().get_churn(
+                brand_id, prev_range[0], prev_range[1], effective_days
+            )
+        except SpringUnavailableError as exc:
+            _log.warning("이탈 코호트 직전 기간 조회 실패 — 비교 생략: %s", exc)
+
+    # [PR 리뷰] churnRate 는 스키마가 [0,1] 구간을 강제하지 않는다 — BE 정합 이상으로
+    # 1 초과·음수가 오면 round(rate×cohort)가 wilson_interval 의 successes 범위를 벗어나
+    # ValueError 로 도구가 죽는다(§3.4 위반). fraction 정의역 밖 값은 계산 전에 걸러
+    # 판정 보류로 표기한다 — clamp 로 100% CI 처럼 위장하지 않는다(#197 위장 금지 계승).
+    def _valid_fraction(rate: float | None) -> bool:
+        return rate is not None and 0.0 <= rate <= 1.0
+
+    prev_comparable = (
+        prev_result is not None
+        and prev_result.cohort_size
+        and _valid_fraction(prev_result.churn_rate)
     )
+    cohort_note = f"코호트 {result.cohort_size}명 중 " if result.cohort_size is not None else ""
+    # churn_rate 는 fraction(0.6=60%) — ":.1%" 로만 변환한다(#197 — 구 ":.1f}%" 는
+    # 60% 를 "0.6%" 로 왜곡해 워커가 이탈 미미로 오판하던 수치 버그).
+    # [#197 리뷰] 결측(None)은 0.0% 로 위장하지 않고 미수신으로 명시한다 — 워커가
+    # "이탈 없음"이 아니라 "판정 보류"로 해석하게(silent-mismatch 방어 일관성).
+    if result.churn_rate is not None and not _valid_fraction(result.churn_rate):
+        rate_note = (
+            f"이탈률 값 이상(churnRate={result.churn_rate!r} — fraction [0,1] 밖) "
+            "— 이탈 규모 판정 보류"
+        )
+    elif result.churn_rate is not None and result.cohort_size:
+        # [#290] Wilson CI + 직전 기간 z-검정. I-16 은 이탈 '수'가 아니라 fraction 을
+        # 주므로 churned = round(rate×cohort) 근사로 표본을 복원한다(결정론 —
+        # rate∈[0,1] 가드 통과 후라 churned∈[0,cohort] 가 보장돼 raise 경로가 없다).
+        churned = round(result.churn_rate * result.cohort_size)
+        estimate = proportions.wilson_interval(
+            churned, result.cohort_size, confidence=settings.seller_wilson_confidence
+        )
+        rate_note = (
+            f"이탈률 {result.churn_rate:.1%}"
+            f" [{settings.seller_wilson_confidence:.0%} CI"
+            f" {estimate.ci_low:.1%}~{estimate.ci_high:.1%}]"
+        )
+        if prev_comparable:
+            prev_churned = round(prev_result.churn_rate * prev_result.cohort_size)
+            comparison = proportions.compare_rates(
+                churned,
+                result.cohort_size,
+                prev_churned,
+                prev_result.cohort_size,
+                alpha=settings.seller_rate_test_alpha,
+                confidence=settings.seller_wilson_confidence,
+            )
+            rate_note += (
+                f", 직전 기간({prev_range[0]}~{prev_range[1]},"
+                f" 코호트 {prev_result.cohort_size}명) {prev_result.churn_rate:.1%} 대비"
+                f" p={comparison.p_value:.3f} — {_VERDICT_LABELS[comparison.verdict]}"
+            )
+        else:
+            rate_note += ", 직전 기간 비교 불가(코호트 0명/조회 실패/결측/값 이상)"
+    elif result.churn_rate is not None:
+        # cohortSize 결측 — 비율은 표기하되 표본이 없어 CI·검정은 정의 불가.
+        rate_note = f"이탈률 {result.churn_rate:.1%} (코호트 규모 미수신 — CI·검정 생략)"
+    else:
+        rate_note = "이탈률 미수신(churnRate 결측 — 이탈 규모 판정 보류)"
+    head = f"{cohort_note}{rate_note} (기준: inactiveDays={effective_days})."
+    signals_note = _summarize_churn_signals(
+        result,
+        prev_result if prev_comparable else None,
+        top_k=settings.seller_churn_signal_top_k,
+    )
+    if result.members:
+        # [#197 리뷰] I-16 전용 상한 — I-14 kv 상한(seller_summary_max_events)과 분리.
+        shown = result.members[: settings.seller_churn_member_max]
+        member_lines = "; ".join(
+            f"[{m.member_id if m.member_id is not None else '?'}] "
+            f"마지막 활동 {m.last_activity_at or '?'}"
+            f"·최근30일 세션 {m.sessions_30d if m.sessions_30d is not None else '?'}"
+            f"·이탈 전 이벤트 {m.pre_churn_event or '-'}"
+            for m in shown
+        )
+        omitted = len(result.members) - len(shown)
+        omitted_note = f" 외 {omitted}명" if omitted > 0 else ""
+        # members 는 서버 CHURN_LIST_CAP=50 절단본일 수 있다 — 표본=전수 오해석 방지
+        # 고지(I-14 total_note 와 같은 취지, 전수는 코호트×이탈률로 유추 가능).
+        members_note = (
+            f" 이탈 회원 {len(result.members)}명(서버 상한 50 절단본일 수 있음): "
+            f"{member_lines}{omitted_note}."
+        )
+    else:
+        members_note = ""
+    return (
+        f"{head}{signals_note}{members_note} "
+        f"{_CHURN_SIGNAL_RULES_NOTE} {_reference_note(from_date, to_date)}"
+    )
+
+
+# I-8 groupBy 화이트리스트(BE AccountEventAggregateResponse 실측, api-spec §4.4 v0.19.1)
+# — 그 외 값은 BE 400 INVALID_GROUP_BY. 도구가 호출 전 선검증한다(#197 리뷰 2).
+_ACCOUNT_EVENTS_GROUP_BY = ("eventType", "hour", "ip")
 
 
 @tool
+@_traced_tool("tool.get_account_events")
 async def get_account_events(
+    from_date: str,
+    to_date: str,
     event_type: str | None = None,
-    from_date: str | None = None,
-    to_date: str | None = None,
     group_by: str | None = None,
 ) -> str:
     """계정/보안 이벤트 집계를 조회해 요약한다.
@@ -328,21 +1053,75 @@ async def get_account_events(
     신원 컨텍스트가 필요 없어 runtime 파라미터도 없다.
 
     Args:
-        event_type: 이벤트 종류(선택).
-        from_date: 조회 시작일(선택, YYYY-MM-DD).
-        to_date: 조회 종료일(선택, YYYY-MM-DD).
-        group_by: 집계 그룹 기준(선택).
+        from_date: 조회 시작일(YYYY-MM-DD, 필수).
+        to_date: 조회 종료일(YYYY-MM-DD, 필수).
+        event_type: 이벤트 종류 필터(선택).
+        group_by: eventType(기본, 유형별 합계) | hour(시간대별) | ip(IP별 —
+            무차별 대입 신호: failCount·isSuspicious 등). 이 3종 외 값은 오류다.
     """
+    # [#197 PR 리뷰] I-8 은 전역 데이터·admin 소유 협의 미완(🔴, api-spec §4.4
+    # v0.19.1) — 협의 완료 전까지 판매자 표면에 켜지 않는다(기본 비활성).
+    # 워커 프롬프트의 "보조 소스 Error 관용" 규약에 얹혀 churn/abuse 는 계속 진행한다.
+    if not get_settings().seller_account_events_enabled:
+        return (
+            "Error: 계정/보안 이벤트 집계(I-8)는 전역 데이터 소유 협의 완료 전까지 "
+            "비활성입니다(admin 소유 🔴 — api-spec §4.4)."
+        )
+    # [#197 PR 리뷰 2] groupBy 화이트리스트 선검증 — BE 도 400 INVALID_GROUP_BY 로
+    # 거부하지만(api-spec §4.4), LLM 오타·환각 값 때문에 왕복 1회(3s 타임아웃 예산)를
+    # 쓰고 나서야 degrade 하는 낭비를 막는다. 문구에 유효값을 실어 재시도를 유도한다.
+    if group_by is not None and group_by not in _ACCOUNT_EVENTS_GROUP_BY:
+        return (
+            f"Error: group_by '{group_by}' 는 지원되지 않습니다 — "
+            f"{'/'.join(_ACCOUNT_EVENTS_GROUP_BY)} 중 하나를 사용하세요."
+        )
     try:
         result = await get_spring_client().get_account_events(
-            event_type, from_date, to_date, group_by
+            from_date, to_date, event_type, group_by
         )
     except SpringUnavailableError as exc:
         return f"Error: 계정 이벤트 데이터를 불러오지 못했습니다({exc})."
-    return f"계정/보안 이벤트 {len(result.events)}건 집계됨(전역)."
+    # [#197] BE 실측 응답(rows — groupBy 별 Bucket/IpRow 이형) 기준으로 요약한다 —
+    # 구 events 필드는 Spring 에 없어 항상 "0건 집계됨"으로 새던 버그의 원인.
+    applied = result.group_by or group_by or "eventType"
+    if not result.rows:
+        return (
+            f"계정/보안 이벤트 0건(전역, groupBy={applied}). {_reference_note(from_date, to_date)}"
+        )
+    # [#290] abuse Collective 트랙 — hour: 심야 활동 비중 / ip: failCount 내림차순
+    # 정렬 + isSuspicious(코드 판정 — 번복 금지 규칙은 프롬프트 소관) 건수 요약.
+    rows = result.rows
+    collective_note = ""
+    settings = get_settings()
+    if applied == "hour":
+        share = outliers.night_activity_share(
+            rows,
+            start=settings.seller_night_hours_start,
+            end=settings.seller_night_hours_end,
+        )
+        collective_note = (
+            f" 심야({settings.seller_night_hours_start}~{settings.seller_night_hours_end}시)"
+            f" 활동 비중 {share[0]:.1%}({share[1]}/{share[2]}건)."
+            if share is not None
+            else " 심야 활동 비중 판정 보류(유효 집계 없음)."
+        )
+    elif applied == "ip":
+
+        def _fail_count(row: dict) -> int:
+            count = row.get("failCount", 0)
+            return count if isinstance(count, int) else 0
+
+        rows = sorted(rows, key=_fail_count, reverse=True)  # 무차별 대입 신호 우선 노출
+        suspicious = sum(1 for row in rows if row.get("isSuspicious") is True)
+        collective_note = f" failCount 내림차순 정렬 — isSuspicious(코드 판정) {suspicious}건."
+    return (
+        f"계정/보안 이벤트 {len(rows)}건(전역, groupBy={applied}): "
+        f"{_summarize_events(rows)}.{collective_note} {_reference_note(from_date, to_date)}"
+    )
 
 
 @tool
+@_traced_tool("tool.list_my_products")
 async def list_my_products(
     runtime: ToolRuntime[SellerContext],
     status: str | None = None,
@@ -388,6 +1167,7 @@ async def list_my_products(
 
 
 @tool
+@_traced_tool("tool.calculate")
 async def calculate(expression: str) -> str:
     """사칙연산·round()·비율 등 수치 확인이 필요할 때 사용하는 안전 계산기.
 
@@ -408,6 +1188,7 @@ async def calculate(expression: str) -> str:
 
 
 @tool
+@_traced_tool("tool.search_analysis_guide")
 async def search_analysis_guide(query: str) -> str:
     """판매자 분석 기준서(용어·산식 정의)를 검색한다.
 
@@ -428,6 +1209,7 @@ async def search_analysis_guide(query: str) -> str:
 
 
 @tool
+@_traced_tool("tool.create_product")
 async def create_product(
     runtime: ToolRuntime[SellerContext],
     name: str,
@@ -464,6 +1246,7 @@ async def create_product(
 
 
 @tool
+@_traced_tool("tool.update_product")
 async def update_product(
     runtime: ToolRuntime[SellerContext],
     product_id: int,
@@ -512,6 +1295,7 @@ async def update_product(
 
 
 @tool
+@_traced_tool("tool.delete_product")
 async def delete_product(runtime: ToolRuntime[SellerContext], product_id: int) -> str:
     """상품을 삭제(숨김)한다(I-12, api-spec §4.5). 물리 삭제 없음 — HITL 승인 후 호출.
 

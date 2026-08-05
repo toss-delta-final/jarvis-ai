@@ -1,0 +1,75 @@
+# 구매자 추천 품질 metric runner
+
+`evals.metrics`는 `evals/goldenset`의 **dev split만** 소비해 구매자 추천 품질을
+네트워크·라이브 LLM 없이 결정적으로 계산한다. sealed holdout 라벨은 열거나 import하지 않으며,
+holdout 실행은 `NotImplementedError`로 닫혀 있다(#144).
+
+## 실행
+
+```bash
+uv run python -m evals.metrics --out /tmp/buyer-eval
+uv run pytest -m eval
+```
+
+출력 경로는 반드시 `--out`으로 지정한다. `results.json`, `report.md`, `cases.csv`,
+`aggregates.csv`, `violations.csv`, `failures.csv`, `run_manifest.json`이 생성된다.
+JSON 키와 CSV 헤더는 camelCase이며 JSON은 `sort_keys=True`, UTF-8, LF로 직렬화한다.
+`run_manifest.json`의 `run` 객체에만 실행 인스턴스마다 달라질 수 있는 `runId`, `timestamp`,
+출력 경로를 포함한 `command`를 격리한다.
+OS 환경변수와 `.env`는 평가 설정에 영향을 주지 않으며, 모든 튜너블은 코드 기본값 또는 adapter에
+명시적으로 주입한 설정만 사용한다.
+
+## 기본 adapter
+
+기본 `OfflineBuyerAdapter`는 `decompose()`와 `stream_recommendation()`을 연결하고,
+`httpx.MockTransport`에서 I-1 검색·I-19 구매 이력·I-21 목록 push만 대역한다.
+따라서 URL, `X-Internal-Token`, Spring envelope 파싱, 앱 사후필터, rerank, 노출 보정은
+실제 앱 코드를 지난다. scripted decompose는 케이스의 `expectedFilters`를 반환하므로 기본 실행의
+Filter Accuracy는 구조상 1.0이다. scripted rerank는 fixture 검색 순서를 유지한다. 이 스탠드인은
+#144 실모델 평가와 #145 baseline/ablation에서 교체된다.
+
+## 지표와 분모
+
+시스템 출력의 duplicate id는 **첫 등장만** 순위·제약 지표에 인정하고 중복 건수를 별도 목록 품질
+위반으로 보고한다. 카탈로그에 없는 id는 관련도 0으로 계산하고 `unknownProductIds`에 남긴다.
+
+1. **Precision@K** = 정답과 중복 제거 상위 K의 교집합 크기 / **K**. 결과가 K보다 짧아도 분모는
+   K라서 부족한 결과를 벌점 처리한다.
+2. **Recall@K** = 같은 교집합 크기 / 정답 수.
+3. **MRR** = 첫 정답의 1-base 순위 역수이며 정답이 없으면 0이다.
+4. **nDCG@K**는 `DCG = Σ rel_i / log2(i+1)`의 **linear gain·log2·1-base** 공식이다.
+   IDCG는 `(등급 내림차순, productId 오름차순)`으로 결정론 정렬하며 IDCG=0은 nDCG 분모에서
+   제외한다. binary 0/1과 graded 0~3을 같은 공식으로 처리한다.
+5. **Filter Accuracy**는 기대 필드와 산출 필드의 합집합을 분모로 삼아 값이 정확히 같은 필드 비율을
+   계산한다. 누락과 과잉 산출이 모두 벌점이다.
+6. **Hard Constraint Violation**은 `priceMax`, `priceMin`, `forbiddenCategory`,
+   `forbiddenProductId`, `mustExclude`를 상품별로 모두 보고한다. 전체 위반율은 한 종류라도 위반한
+   케이스 수 / 전체 케이스 수다.
+7. **Coverage** 분모인 eligible catalog는 평가 케이스가 참조한 search fixture의 후보 id 합집합이다.
+   **Diversity**는 케이스별 고유 `categoryName` 수 / 노출 수의 macro 평균이며 임베딩을 쓰지 않는다.
+8. 순위 지표에서는 `audit/leakage_report.json`의 `nonDiscriminativeRankingCases`와 정답이 빈
+   케이스를 제외한다. 제외 수와 모든 `caseId`를 JSON·Markdown·CSV에 명시한다.
+9. 짧은 결과, duplicate, unknown, empty relevance, 동점, binary/graded 관련도는 단위 테스트로
+   고정한다. 모든 유계 지표는 결정론적 seed 생성 루프로 `[0,1]` 범위를 검사한다.
+10. 기본 집계는 **macro**(케이스 평균)이며 전체와 복수 소속 slice별로 각각 계산한다.
+    Precision/Recall에는 보조 **micro**도 함께 낸다. micro Precision의 분모는
+    `순위 평가 케이스 수 × K`, micro Recall의 분모는 순위 평가 케이스들의 정답 수 합계다.
+
+## PR gate 범위
+
+critical subset은 `hardConstraints` 또는 `mustExcludeProductIds`가 있거나 `failure` slice인 케이스의
+합집합이며 입력 순서를 보존한다. 기본 pytest에서 `@pytest.mark.eval` 테스트가 이 부분집합을 실제
+오프라인 adapter로 실행한다.
+
+현재 0을 강제하는 종류는 **`priceMax`, `priceMin`**이다. 이 축은 decompose 필터와 앱 결정론 코드가
+강제하므로 회귀를 PR에서 막을 수 있다. `mustExclude`, `forbiddenCategory`,
+`forbiddenProductId`는 판단 컴포넌트가 필요한데 기본 rerank가 검색순서 passthrough이므로, 라벨을
+SUT에 주입해 거짓 0을 만들지 않고 지표·위반 artifact에 전부 공개한다. 전 종류 0 gate는 실모델을
+연결하는 #144로 이관한다.
+
+## run manifest
+
+manifest는 commit SHA와 dirty flag, `uv.lock`, dataset manifest, 세 fixture, decompose/rerank prompt,
+config의 SHA-256, Python·OS, seed, 실행 명령을 기록한다. 컨테이너/CI 이미지 식별자는
+`JARVIS_EVAL_IMAGE`를 `image`에 기록하며, 설정되지 않은 로컬 실행은 `null`이다. 서로 다른
+`datasetHash` 결과는 직접 비교하지 않는다.

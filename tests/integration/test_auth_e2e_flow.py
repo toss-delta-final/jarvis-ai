@@ -71,7 +71,7 @@ def _bearer(token: str) -> dict[str, str]:
 
 def test_buyer_flow_completes_under_real_jwt(client, spring, llm, jwks_auth, rsa_key) -> None:
     """유효 스트림 티켓(RS256) → 구매자 흐름이 경로 B 까지 완주한다."""
-    token = sign_ticket(rsa_key, KID, ticket_claims(sub="42"))
+    token = sign_ticket(rsa_key, KID, ticket_claims(sub="42", sessionId=BODY["sessionId"]))
 
     resp = client.post("/chat", json=BODY, headers=_bearer(token))
     assert resp.status_code == 200
@@ -79,7 +79,8 @@ def test_buyer_flow_completes_under_real_jwt(client, spring, llm, jwks_auth, rsa
     events = parse_sse(resp.text)
     assert event_types(events)[-1] == "done"
     ready = first_of(events, "products.ready")
-    assert ready is not None and set(ready) == {"sessionId", "listId"}
+    assert ready is not None and set(ready) == {"sessionId", "listIds"}
+    assert len(ready["listIds"]) == 1
 
 
 def test_identity_comes_from_verified_token_not_body(
@@ -89,7 +90,7 @@ def test_identity_comes_from_verified_token_not_body(
 
     본문에는 신원이 없고, I-19 경로의 memberId 는 토큰 sub 와 일치해야 한다.
     """
-    token = sign_ticket(rsa_key, KID, ticket_claims(sub="777"))
+    token = sign_ticket(rsa_key, KID, ticket_claims(sub="777", sessionId=BODY["sessionId"]))
 
     client.post("/chat", json=BODY, headers=_bearer(token))
 
@@ -101,7 +102,11 @@ def test_identity_comes_from_verified_token_not_body(
 def test_guest_ticket_streams_without_profile(client, spring, llm, jwks_auth, rsa_key) -> None:
     """게스트 티켓(sub_type=guest, sub=UUID)도 추천 흐름은 완주하되 이력 조회는 없다."""
     guest_uuid = "3f2b8a54-8f2e-4b1a-9c60-000000000001"
-    token = sign_ticket(rsa_key, KID, ticket_claims(sub=guest_uuid, sub_type="guest"))
+    token = sign_ticket(
+        rsa_key,
+        KID,
+        ticket_claims(sub=guest_uuid, sub_type="guest", sessionId=BODY["sessionId"]),
+    )
 
     resp = client.post("/chat", json=BODY, headers=_bearer(token))
     assert event_types(parse_sse(resp.text))[-1] == "done"

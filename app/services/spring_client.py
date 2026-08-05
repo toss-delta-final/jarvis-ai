@@ -3,6 +3,7 @@
 AI → Spring 질의 시점 역방향 + 배치 (구매자, 모듈 레벨 함수):
   - search_products        : 후보 확보 (I-1, GET /internal/products/search, §4.6, C-15) — [배선 완료]
   - get_recent_purchases   : 구매 이력 조회 (I-19, GET /internal/members/{id}/orders, §4.7, C-6) — dedup·프로필 소스
+  - get_order_status       : 주문 상태 요약 (I-4, GET /internal/members/{id}/orders/status, §4.10)
   - add_to_cart            : 장바구니 담기 (I-2, POST /internal/cart/items, 단건, §4.1)
   - get_cart               : 장바구니 조회 (I-18, GET /internal/cart, §4.9, C-16)
   - push_recommendations   : 최종 랭크 id push (I-21, POST /internal/recommendations, 경로 B, §4.2) — [배선 완료]
@@ -16,7 +17,7 @@ AI 는 커머스 DB 에 직접 write 하지 않는다. 와이어 포맷은 camel
 타임아웃: AI→Spring 전 구간 3s 통일 (api-spec §2.9 c — BE I-2 문서 기준).
 
 [배선 v이슈#2] search_products = **GET**(사용자 확정 "그냥 GET으로") — BE I-1 파라미터
-  keyword/categoryName/minPrice/maxPrice/brandName/size. dedup·평점·정렬은 요청 파라미터가 아니라
+  keyword/categoryName/minPrice/maxPrice/brandName (size 제거 v2026-07-23, top-K 는 AI 쪽). dedup·평점·정렬은 요청 파라미터가 아니라
   AI 사후필터(§4.6 v0.15.5, C-15). push_recommendations = POST I-21(productIds 만, 경로 B).
 
 [변경 DESIGN-SELLER-TOOLS-STAGE1] 판매자 조회 8종 + 쓰기 3종은 아래 `SpringClient` 클래스로
@@ -28,17 +29,26 @@ AI 는 커머스 DB 에 직접 write 하지 않는다. 와이어 포맷은 camel
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from contextvars import ContextVar
 import logging
 import math
-from typing import TypeVar
+import threading
+from types import TracebackType
+from typing import Literal, TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError
 
 from app.core.config import get_settings
+from app.core.tracing import TraceNode, trace_span
 from app.schemas.spring import (
     AccountEventsResult,
     AddToCartRequest,
+    AddWishlistRequest,
     CartOption,
     AddToCartResult,
     BehaviorEventsResult,
@@ -46,6 +56,8 @@ from app.schemas.spring import (
     ChurnResult,
     FunnelResult,
     OrderEventsResult,
+    ORDER_STATUS_RECENT,
+    OrderStatusSummary,
     ProductChangeLogResult,
     ProductChangesPage,
     ProductCreate,
@@ -60,16 +72,291 @@ from app.schemas.spring import (
     SalesResult,
     SellerProductList,
     SpringProduct,
+    WishlistAddResult,
+    WishlistItem,
+    WishlistView,
 )
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
+_SpringOperation = Literal[
+    "search_products",
+    "get_recent_purchases",
+    "get_order_status",
+    "add_to_cart",
+    "get_cart",
+    "delete_cart_item",
+    "add_wishlist",
+    "remove_wishlist",
+    "get_wishlist",
+    "push_recommendations",
+    "fetch_product_changes",
+    "get_sales",
+    "get_funnel",
+    "get_events",
+    "get_order_events",
+    "get_product_changes",
+    "get_churn",
+    "get_account_events",
+    "list_products",
+    "create_product",
+    "update_product",
+    "delete_product",
+]
 
 
 _log = logging.getLogger(__name__)
+_color_synonym_limiters: dict[tuple[str, int], threading.BoundedSemaphore] = {}
+_color_synonym_limiter_lock = threading.Lock()
+_background_synonym_tasks: set[asyncio.Task[dict[str, list[str]]]] = set()
+# ContextVar로 SpringSearchBackend·EmbeddingRerankBackend·VectorSearchBackend와 search_catalog
+# 시그니처를 바꾸지 않고 호출 구간만 표시한다. gather 자식 태스크는 생성 시 컨텍스트를 복사한다.
+_search_retry_suppressed: ContextVar[bool] = ContextVar("search_retry_suppressed", default=False)
+
+
+class SearchBudgetExceeded(TimeoutError):
+    """I-1 검색 총시간 가드가 예산을 넘겨 잘라낸 실패 (#132).
+
+    `TimeoutError` 를 상속해 기존 타임아웃 처리와 호환되면서도, `_transport_status_class` 가
+    **이 타입만** 전송 계층 `timeout` 으로 분류하게 해 다른 Spring 호출의 무관한 `TimeoutError`
+    가 같은 라벨을 얻지 않게 한다(PR #293 리뷰).
+    """
+
+
+# [#132 PR #293 리뷰] I-1 응답 파싱 전용 스레드풀. `asyncio.to_thread` 는 **앱 전역 기본
+# executor** 를 쓰는데, 그 풀은 임베딩·카테고리 매핑·색상 사전·예산 세트 조립이 함께 쓴다.
+# 총시간 가드는 await 만 취소하고 **스레드는 끝까지 돈다** — 가드가 자주 트립하는 부하에서
+# 버려진 파싱 스레드가 공유 풀을 점유하면, 정작 검색과 무관한 요청까지 슬롯을 기다린다.
+# 전용 풀로 격리해 고갈의 파급을 검색 파싱 안에 가둔다(개별 호출 지연은 가드가, 워커 전체
+# 처리량은 이 격리가 맡는다). 크기 기본값은 기존 기본 executor 와 같은 식이라 격리만 바뀌고
+# 동시 처리량 특성은 그대로다.
+_parse_executor: ThreadPoolExecutor | None = None
+_parse_executor_lock = threading.Lock()
+
+
+def _get_parse_executor() -> ThreadPoolExecutor:
+    """파싱 전용 executor 를 지연 생성한다(이중 확인 락 — 스케줄러·이벤트루프 동시 진입 방어).
+
+    **큐는 스스로 빠진다** — 가드가 초과를 잡아 `wait_for` 가 코루틴을 취소하면 그 취소가
+    `run_in_executor` future 로 전파돼, **아직 시작되지 않은** 파싱 작업은 큐에서 제거되고
+    영영 실행되지 않는다(PR #293 리뷰 검증: 실 코드 구조로 재현). 그래서 "버려진 작업이 큐를
+    채워 신규 요청이 파싱을 시작도 못 하고 예산을 태우는" 자기증폭은 성립하지 않는다.
+
+    남는 점유는 **이미 실행 중이던** 작업뿐이고 그 수는 `max_workers` 로 유계다(스레드는 취소가
+    안 되므로 끝까지 돈다). 각 작업은 실측 200ms 안에 끝나므로(13.33MB/7,245건) 포화는 그 시간
+    규모에서 자연히 풀린다. 다만 **파싱 시간이 예산을 넘게 커지면** 이 전제가 깨진다 — 그때는
+    모든 요청이 파싱 도중 버려져 워커가 계속 점유되므로, 그 지점에서는 큐 깊이 기반
+    backpressure(포화 시 즉시 실패)가 필요하다. 현 규모(예산 3~6s vs 파싱 0.2s)에서는 멀다.
+    """
+    global _parse_executor
+    if _parse_executor is None:
+        with _parse_executor_lock:
+            if _parse_executor is None:
+                _parse_executor = ThreadPoolExecutor(
+                    max_workers=get_settings().search_parse_max_workers,
+                    thread_name_prefix="i1-parse",
+                )
+    return _parse_executor
+
+
+async def _run_in_parse_executor(fn, *args):
+    """전용 풀에서 동기 함수를 돌린다 — `asyncio.to_thread` 의 전용 executor 판."""
+    return await asyncio.get_running_loop().run_in_executor(_get_parse_executor(), fn, *args)
+
+
+@contextmanager
+def suppress_search_retry() -> Iterator[None]:
+    """현재 호출 컨텍스트의 I-1 검색 재시도만 일시적으로 끈다."""
+    token = _search_retry_suppressed.set(True)
+    try:
+        yield
+    finally:
+        _search_retry_suppressed.reset(token)
+
+
+def _color_synonym_limiter(dsn: str, max_concurrency: int) -> threading.BoundedSemaphore:
+    key = (dsn, max_concurrency)
+    limiter = _color_synonym_limiters.get(key)
+    if limiter is None:
+        with _color_synonym_limiter_lock:
+            limiter = _color_synonym_limiters.get(key)
+            if limiter is None:
+                limiter = threading.BoundedSemaphore(max_concurrency)
+                _color_synonym_limiters[key] = limiter
+    return limiter
+
+
+def _color_synonym_runtime_max_concurrency(settings) -> int:
+    """배치가 꺼져 있으면 공유 풀 전체를, 켜져 있으면 예약분을 제외한 검색 몫을 반환한다."""
+    if not settings.color_synonym_batch_harvest_enabled:
+        return settings.color_synonym_pool_max_size
+    return settings.color_synonym_pool_max_size - settings.color_synonym_harvest_max_concurrency
+
+
+def _consume_background_synonym_lookup(task: asyncio.Task[dict[str, list[str]]]) -> None:
+    """타임아웃 뒤 승인 사전 조회의 늦은 실패를 기록하고 예외를 회수한다."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        _log.warning(
+            "색상 동의어 백그라운드 조회 실패",
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+
+
+async def _load_color_synonym_map(settings) -> dict[str, list[str]] | None:
+    """배치 예산을 제외한 검색 전용 worker만 허용하고 포화 시 즉시 degrade한다."""
+    from app.pipelines import color_synonyms  # noqa: PLC0415 - lazy DB 경로
+
+    limiter = _color_synonym_limiter(
+        settings.catalog_db_url,
+        _color_synonym_runtime_max_concurrency(settings),
+    )
+    if not limiter.acquire(blocking=False):
+        _log.warning("색상 동의어 조회 동시 실행 상한 — 원문 단수 color로 검색")
+        return None
+
+    def run() -> dict[str, list[str]]:
+        try:
+            return color_synonyms.get_synonym_map(
+                settings.catalog_db_url,
+                ttl_s=settings.color_synonym_cache_ttl_s,
+            )
+        finally:
+            # wait_for가 먼저 끝나도 실제 worker 종료 전에는 풀 크기 슬롯을 반환하지 않는다.
+            limiter.release()
+
+    task = asyncio.create_task(asyncio.to_thread(run))
+    try:
+        return await asyncio.wait_for(
+            asyncio.shield(task),
+            timeout=settings.color_synonym_query_timeout_s,
+        )
+    except (TimeoutError, asyncio.CancelledError):
+        _background_synonym_tasks.add(task)
+        task.add_done_callback(_background_synonym_tasks.discard)
+        task.add_done_callback(_consume_background_synonym_lookup)
+        raise
+
+
+@contextmanager
+def _spring_span(operation: _SpringOperation, method: str) -> Iterator[TraceNode | None]:
+    """Trace one outbound Spring request without retaining request or response data."""
+    # ⚠️ 의도된 stash-and-rethrow — `raise` 로 되돌리지 말 것(f77af25).
+    # `trace_span` 은 본문에서 예외가 전파될 때 `node.error_type = type(exc).__name__` 을 채운다.
+    # Spring 스팬은 예외 클래스명(CartStockInsufficient 등 업스트림 상태 유출)까지 막고 유계
+    # transport 메타데이터만 내보내는 게 계약이라, 예외를 여기 모았다가 `trace_span` 이 정상
+    # 종료한 뒤 밖에서 재던져 error_type 을 비워 둔다. 전역 시리얼라이저에서 errorType 을 막는
+    # 대안은 기각 — 비-Spring 스팬은 자동 예외 분류가 그대로 필요하다.
+    # 실패 표식은 statusClass 로만 남는다: timeout·connection_error(아래) + 4xx/5xx
+    # (`_record_spring_status` 가 raise_for_status 앞에서 기록). 회귀 테스트는
+    # tests/unit/test_buyer_tracing.py::test_buyer_spring_* 4종 + seller 대응.
+    failure: tuple[BaseException, TracebackType | None] | None = None
+    with trace_span(
+        f"spring.{operation}",
+        "tool",
+        {"httpMethod": method, "upstream": "spring"},
+    ) as span:
+        try:
+            yield span
+        except BaseException as exc:
+            # 분류는 `_transport_status_class` 한 곳에만 둔다 — 로그(`_failure_status_class`)와
+            # 어휘가 갈리지 않게 코드로 보장한다(PR #235 리뷰). 전송 계층 실패가 아니면 None 이라
+            # 손대지 않는다(4xx/5xx 는 `_record_spring_status` 가 raise_for_status 앞에서 이미 기록).
+            if span is not None and (label := _transport_status_class(exc)) is not None:
+                span.metadata["statusClass"] = label
+            failure = (exc, exc.__traceback__)
+
+    if failure is not None:
+        exc, traceback = failure
+        raise exc.with_traceback(traceback)
+
+
+def _record_spring_status(span: TraceNode | None, response: httpx.Response) -> None:
+    if span is not None:
+        span.metadata["statusClass"] = f"{response.status_code // 100}xx"
+
+
+# 재시도 대상 4xx (#133, PR #235 리뷰) — "4xx 는 다시 보내도 같은 거절"이라는 일반 규칙의
+# **예외**다. 이 둘은 요청 자체가 유효하고 서버·인프라의 일시 상태일 뿐이라 5xx 와 성격이 같다.
+#   408 Request Timeout   : 서버가 요청 대기 중 끊음
+#   429 Too Many Requests : 레이트 리밋 — **즉시 응답**이라 재시도 비용이 타임아웃과 달리
+#                           밀리초다(턴 예산을 태우지 않는다). 상한 1회라 증폭도 2배를 넘지 않는다.
+# I-1 계약에 두 코드가 명시돼 있지는 않지만 프록시·게이트웨이가 낼 수 있어 방어적으로 받는다.
+# ⚠️ `Retry-After` 는 존중하지 않는다 — backoff 가 없어 즉시 다시 찌른다. 상한 1회라 증폭은
+# 2배로 묶이지만 서버 지시를 따르는 것은 아니다. `spring_max_retries` 를 올릴 때는 backoff 와
+# 함께 이 헤더 처리도 넣어야 한다(현재 상한이 1인 이유).
+_RETRYABLE_4XX = frozenset({408, 429})
+
+
+def _transport_status_class(exc: BaseException) -> str | None:
+    """전송 계층 실패의 유계 라벨 — 없으면 None (#141, PR #235 리뷰).
+
+    **분류를 여기 한 곳에만 둔다.** 로그(`_failure_status_class`)와 trace(`_spring_span`)가
+    각자 isinstance 를 따로 구현하면, 새 예외 타입을 한쪽에만 추가했을 때 라벨이 조용히
+    갈린다 — 이 PR 이 `RemoteProtocolError` 로 그 사고를 실제로 두 번 냈다. 주석으로 "같은
+    어휘를 쓴다"고 약속하는 대신 코드가 보장하게 한다.
+
+    `RemoteProtocolError`(서버가 응답 도중 연결 종료)는 `NetworkError` 의 하위가 아니라
+    **형제**(둘 다 `TransportError` 직계)라 함께 적지 않으면 어느 분기에도 안 걸린다.
+
+    [#132] 검색 총시간 가드의 초과도 `timeout` 으로 분류하되, **가드 전용 타입**
+    (`SearchBudgetExceeded`)으로만 받는다 — 내장 `TimeoutError` 를 그대로 매칭하면 이 함수가
+    쓰이는 **모든** Spring 호출(`get_recent_purchases`·`add_to_cart`·`push_recommendations` …)에서
+    무관한 이유로 난 `TimeoutError` 까지 전송 계층 실패로 둔갑한다(PR #293 리뷰). 나중에 다른
+    경로에 `wait_for` 가 하나 생기면 그때부터 trace 가 조용히 거짓말을 시작하는 종류의 넓이다.
+    """
+    if isinstance(exc, httpx.TimeoutException | SearchBudgetExceeded):
+        return "timeout"
+    if isinstance(exc, httpx.NetworkError | httpx.RemoteProtocolError):
+        return "connection_error"
+    return None
+
+
+def _failure_status_class(exc: BaseException) -> str:
+    """재시도 로그 전용 유계 라벨 — 예외 원문은 싣지 않는다(#141).
+
+    재시도 여부는 `_is_retryable` 이 따로 판단한다. 이 함수는 **관측 전용**이다.
+    전송 계층 분류는 `_transport_status_class` 를 공유해 trace 와 어휘가 갈리지 않게 한다.
+    """
+    if (label := _transport_status_class(exc)) is not None:
+        return label
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"{exc.response.status_code // 100}xx"
+    return "malformed_response"
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    """재시도가 의미 있는 실패만 True (#133).
+
+    타임아웃·연결 오류·응답 중단·5xx 와 `_RETRYABLE_4XX`(408·429)는 일시 장애라 같은 요청이
+    다음엔 성공할 수 있다. 반면 그 밖의 4xx 계약 오류와 응답 파싱 실패(ValueError/
+    ValidationError)는 **같은 응답이 또 온다** — 재시도는 턴 예산만 태우고 결과를 바꾸지 못한다.
+
+    전송 계층 판정은 `_transport_status_class` 를 재사용한다 — 재시도 대상과 관측 라벨이 같은
+    분류에서 나와야 "재시도했다"와 "무엇이 실패했다"가 어긋나지 않는다.
+    `LocalProtocolError`(우리 요청이 잘못됨)는 그 함수에서 None 이라 자연히 제외된다.
+    """
+    if _transport_status_class(exc) is not None:
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        return code >= 500 or code in _RETRYABLE_4XX
+    return False
 
 
 class SpringUnavailableError(Exception):
     """Spring 서버 도달 불가/오류 응답. 상위에서 SEARCH_FAILED 등으로 매핑한다."""
+
+
+class OrderStatusUnavailableError(SpringUnavailableError):
+    """I-4 안전한 실패 분류. 원 예외·경로·응답 데이터는 보존하지 않는다."""
+
+    def __init__(self, category: Literal["upstream_unavailable", "malformed_response"]) -> None:
+        if category not in {"upstream_unavailable", "malformed_response"}:
+            raise ValueError("invalid order status error category")
+        self.category = category
+        super().__init__(f"order status unavailable: {category}")
 
 
 class InvalidCursorError(SpringUnavailableError):
@@ -120,6 +407,37 @@ class CartQuantityExceeded(CartError):
     """
 
 
+class CartItemNotFound(Exception):
+    """I-24 404 CART_ITEM_NOT_FOUND(확정 2026-08-05) — 삭제 대상이 없음. 비멱등: 두 번째 호출도
+    404. **[라운드 23]** `error.code` 가 정확히 이 값일 때만 낸다 — 엔드포인트 미배포로 오는
+    다른/없는 code 의 404 는 `CartError` 다(`delete_cart_item` 참조)."""
+
+
+class WishlistDuplicate(Exception):
+    """I-26 409(확정 2026-08-05) — WISHLIST_DUPLICATE · RESOURCE_CONFLICT(UNIQUE 경합) 둘 다 이
+    예외로 낙성한다("이미 찜함"으로 동일 처리, 정본 SSE 확장안도 두 코드를 구별하지 않는다).
+    **[라운드 23]** `error.code` 가 이 둘 중 하나일 때만 낸다(`add_wishlist` 참조)."""
+
+
+class WishlistProductNotFound(Exception):
+    """I-26 404 PRODUCT_NOT_FOUND(확정 2026-08-05) — 없는 상품만. HIDDEN·품절은 찜 가능이라 이
+    예외가 아니다. **[라운드 23]** `error.code` 가 정확히 이 값일 때만 낸다(`add_wishlist` 참조)."""
+
+
+class WishlistNotFound(Exception):
+    """I-27 404 WISHLIST_NOT_FOUND(확정 2026-08-05) — 찜 안 한 상품 삭제 시도. 없는 상품도 동일
+    코드라 구별 불가(비멱등, 안내 문구는 하나로 통일). **[라운드 23]** `error.code` 가 정확히
+    이 값일 때만 낸다(`remove_wishlist` 참조)."""
+
+
+class WishlistError(Exception):
+    """I-26/I-27/I-28 찜 운영 오류(401·400·도달 불가·미상 코드) → action *_ERROR reason WISHLIST_ERROR.
+
+    403 AUTH_FORBIDDEN 도 여기로 떨어진다 — CartError 의 401 낙성과 같은 규약으로, 전용 예외를
+    두면 "이 상품은 남의 소유"류 소유권 정보가 사용자에게 흘러나갈 수 있어 일부러 두지 않는다.
+    """
+
+
 def _client() -> httpx.AsyncClient:
     """공용 httpx.AsyncClient 팩토리. base_url·서비스 토큰은 설정에서 주입한다.
 
@@ -137,25 +455,40 @@ def _client() -> httpx.AsyncClient:
     )
 
 
-def _search_query_params(filters: ProductSearchFilters) -> dict:
+def _search_query_params(
+    filters: ProductSearchFilters, *, color_values: list[str] | None = None
+) -> dict:
     """decompose 필터 → BE I-1 GET 쿼리 파라미터 (§4.6, C-15).
 
-    BE I-1 파라미터는 keyword/categoryName/minPrice/maxPrice/brandName/size(≤30) 뿐이다.
-    brandName 은 단수 — MVP 는 첫 브랜드만 보내고(복수 브랜드는 후속) 나머지 필터
-    (excludeProductIds·ratingMin·sort)는 여기 싣지 않고 AI 사후필터(search_service)로 처리한다.
+    BE I-1 파라미터는 keyword/categoryName/minPrice/maxPrice/brandName/color 뿐이다(color=#100 P1).
+    [2026-07-23, BE 합의] size 제거 — 라운드1은 고정필터 매칭을 전량 반환하고, 결과 수 제한(top-K)은
+    AI 쪽(search_catalog 가 filters.limit 로 절단)에서 적용한다(api-spec §4.6). brandName 은 다중 —
+    브랜드 전량을 반복 파라미터로 실어 BE IN 필터에 맡긴다(방법 D, #100 P1, BE 배열 수용 협의 대상).
+    나머지 필터(excludeProductIds·ratingMin)는 여기 싣지 않고 AI 사후필터(search_service)로 처리한다.
+    정렬은 rerank(LLM) 소관(#100 P2, sort 필드 제거).
     """
     params: dict[str, object] = {}
-    if filters.keyword:
+    # LLM(decompose) 산출 텍스트 필터는 공백-only('  ') 도 빈 값으로 보고 미전송한다 —
+    # `if filters.X:` 는 ''(falsy)만 막고 ' '(truthy)는 통과시켜 BE 에 빈값이 나갔다(#127 리뷰).
+    if filters.keyword and filters.keyword.strip():
         params["keyword"] = filters.keyword
-    if filters.category:
+    if filters.category and filters.category.strip():
         params["categoryName"] = filters.category
     if filters.price_min is not None:
         params["minPrice"] = filters.price_min
     if filters.price_max is not None:
         params["maxPrice"] = filters.price_max
     if filters.brand:
-        params["brandName"] = filters.brand[0]
-    params["size"] = min(filters.limit, 30)
+        # 다중 브랜드 전량 전송(방법 D) — httpx 가 brandName=A&brandName=B 반복 파라미터로
+        # 직렬화 → BE IN 필터(#100 P1). 조건칩(state)도 전 브랜드를 표시하므로 요청·표시가 일치한다.
+        # 빈/공백 요소는 제거(LLM 이 [""] 등을 낼 수 있음 — brandName= 빈값 전송 방지, #127 리뷰).
+        brands = [b for b in filters.brand if b and b.strip()]
+        if brands:
+            params["brandName"] = brands
+    if filters.color and filters.color.strip():
+        # None은 계약 변경 전 현행 단수 경로다. 리스트는 api-spec §4.6 `color: string[]`
+        # 개정과 BE 배포 뒤 플래그가 켜진 경우에만 httpx 반복 파라미터로 직렬화한다.
+        params["color"] = filters.color if color_values is None else color_values
     return params
 
 
@@ -163,41 +496,112 @@ def _parse_search_response(data: object) -> ProductSearchResult:
     """BE I-1 응답 → ProductSearchResult (§4.6, v0.15.5).
 
     현재 Spring ``ApiResponse<List<...>>`` 는 data 자체가 배열({success, data:[...]})이다.
-    구 계약의 data:{items:[...]} 형태도 브랜치 간 호환을 위해 함께 수용한다. BE 응답엔
-    totalCount 가 없어 total_count 는 수신 items 수로 둔다.
+    구 계약의 data:{items:[...]} 형태도 브랜치 간 호환을 위해 함께 수용한다. total_count 는
+    파싱 성공 후보 수다.
+    [PR#127 리뷰] 항목은 **개별 검증**한다 — 후보 1건의 스키마 위반(누락 필드·타입 이상)이
+    단일 comprehension 이면 리스트 전체 생성을 실패시켜, 멀쩡한 나머지 후보까지 통째로 버려진다.
+    실패분만 WARNING 로그로 남기고 skip 해 나머지를 보존한다. 단 dict 항목이 있었는데 **전부**
+    검증 실패(정상 0건)면 개별 이상이 아니라 systematic 스키마 붕괴이므로 조용한 zero-result 로
+    위장하지 않고 예외를 재발생시켜 SEARCH_FAILED 로 degrade 한다(§7 fail-closed 유지).
+    [PR#127 리뷰] 최상위 envelope 자체가 어긋난 경우도 같은 §7 원칙으로 fail-closed 한다 —
+    (1) `success:false`(200 이어도 실패 envelope, fetch_product_changes 와 동일 규약),
+    (2) data 키 없음·미인식 형태·비 list/dict. 정상 0건과 구분 안 되는 빈 결과로 삼키지 않는다.
+    단 `data:null`·`data:[]` 은 정상 0건이라 예외 없이 빈 결과를 반환한다. 구 wrapped 형태
+    (data:{items:[...]})만 호환 수용하고, data 키 없는 top-level items 레거시 분기는 제거했다.
     """
     items: list = []
     if isinstance(data, list):
         items = data  # 래퍼 없이 바디가 곧 배열인 경우도 수용
     elif isinstance(data, dict):
+        # [PR#127 리뷰] success:false 는 200 이어도 실패 envelope — fetch_product_changes 와 동일
+        # 규약. 정상 0건(빈 결과)으로 삼키지 않고 fail-closed(§7)로 degrade 한다.
+        if data.get("success") is False:
+            _log.warning("검색 응답 success=false — 실패 envelope, SEARCH_FAILED degrade(§7)")
+            raise ValueError("검색 응답 success=false(실패 envelope)")
         payload = data.get("data")
         if isinstance(payload, list):
             items = payload
         elif isinstance(payload, dict) and isinstance(payload.get("items"), list):
+            # 구 계약 wrapped 형태(data:{items:[...]}) 만 호환 수용. top-level items(data 키 없이)는
+            # data 키 부재 drift 로 아래 fail-closed 가 잡는다(#127 리뷰, 레거시 분기 제거).
             items = payload["items"]
-        elif isinstance(data.get("items"), list):
-            items = data["items"]
         elif payload is not None:
-            # data 키는 있으나 알려진 형태(list · {items})와 안 맞음 — silent 0 오인 방지 경고(§7).
+            # data 키는 있으나 알려진 형태(list · {items})와 안 맞음 — envelope drift.
+            # [PR#127 리뷰] 정상 0건과 구분 안 되는 빈 결과 대신 fail-closed(§7) — 항목 단위와 일관.
             _log.warning(
-                "검색 응답 data 형태 미인식(silent 0 아님) — data 타입=%s", type(payload).__name__
+                "검색 응답 data 형태 미인식 — envelope drift, SEARCH_FAILED degrade(§7), 타입=%s",
+                type(payload).__name__,
+            )
+            raise ValueError(
+                f"검색 응답 data 형태 미인식(envelope drift): {type(payload).__name__}"
             )
         elif "data" not in data:
-            # data 키 자체가 없음(= data:null 과 구분) — 더 의심스러운 drift.
-            _log.warning("검색 응답에 data 키가 없음(silent 0 아님) — envelope drift 의심")
+            # data 키 자체가 없음(= data:null 과 구분) — 더 의심스러운 drift → fail-closed(§7).
+            _log.warning("검색 응답에 data 키가 없음 — envelope drift, SEARCH_FAILED degrade(§7)")
+            raise ValueError("검색 응답에 data 키가 없음(envelope drift)")
+        # (payload is None 이고 data 키는 있음 = data:null → 정상 0건, 예외 아님)
     else:
-        _log.warning("검색 응답 최상위 형태 미인식(silent 0 아님) — type=%s", type(data).__name__)
-    products = [SpringProduct.model_validate(it) for it in items if isinstance(it, dict)]
+        _log.warning(
+            "검색 응답 최상위 형태 미인식 — envelope drift, SEARCH_FAILED degrade(§7), type=%s",
+            type(data).__name__,
+        )
+        raise ValueError(f"검색 응답 최상위 형태 미인식(envelope drift): {type(data).__name__}")
+    products: list[SpringProduct] = []
+    invalid = 0  # 검증 실패로 skip 된 항목 수(비-object 포함)
+    last_err: ValidationError | None = None
+    for it in items:
+        if not isinstance(it, dict):
+            # 항목이 object 조차 아님 — 개별 필드 결측보다 심각한 최상위 타입 붕괴다. skip 하되
+            # invalid 로 세어 아래 fail-closed 가드가 이 케이스도 잡게 한다(PR#127 리뷰).
+            invalid += 1
+            _log.warning("검색 후보가 object 아님(skip) — type=%s", type(it).__name__)
+            continue
+        try:
+            products.append(SpringProduct.model_validate(it))
+        except ValidationError as exc:
+            # 후보 1건의 스키마 이상은 그 항목만 skip — 나머지 정상 후보 보존(PR#127 리뷰).
+            invalid += 1
+            last_err = exc
+            _log.warning("검색 후보 파싱 실패로 skip(전체 실패 아님) — %s", exc)
+    # §7 fail-closed: 항목이 있었는데 **전부** 무효(정상 0건)면 개별 이상이 아니라 systematic
+    # 스키마 붕괴다 → 조용한 zero-result 로 위장하지 않고 SEARCH_FAILED 로 degrade. dict 항목의
+    # ValidationError 는 그대로 재발생, 전부 비-object 등 재발생할 예외가 없으면 ValueError 로.
+    if invalid and not products:
+        _log.warning("검색 후보 전량 무효(%d건) — SEARCH_FAILED degrade(§7)", invalid)
+        raise last_err or ValueError("검색 응답 항목이 전부 유효하지 않음(스키마 붕괴, §7)")
+    if invalid:
+        _log.warning("검색 후보 %d건 skip(스키마 이상) / 정상 %d건", invalid, len(products))
     return ProductSearchResult(products=products, total_count=len(products))
+
+
+def _parse_error_code(resp: httpx.Response) -> str | None:
+    """실패 응답에서 error.code(|code) 만 뽑는다 — 옵션·재고 파싱이 필요 없는 호출용.
+
+    I-24(삭제)·I-26/I-27(찜)은 CART_OPTION_REQUIRED 류 옵션 동반 응답이 없어 `_parse_cart_error`
+    의 옵션·재고 파싱까지 돌릴 필요가 없다. code 추출 로직을 두 함수가 각자 구현하면 새 실패
+    코드가 추가될 때 한쪽만 고쳐지는 드리프트가 생기므로, 이 헬퍼를 단일 출처로 두고
+    `_parse_cart_error` 도 내부에서 이걸 쓴다(중복 파서 금지).
+    """
+    try:
+        body = resp.json()
+    except ValueError:
+        return None
+    if not isinstance(body, dict):
+        return None
+    err = body.get("error") if isinstance(body.get("error"), dict) else None
+    code = (err or {}).get("code") or body.get("code")
+    return code if isinstance(code, str) else None
 
 
 def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption], int | None]:
     """I-2 실패 응답에서 code·options 를 방어적으로 파싱한다(§4.1, BE 스키마 🔴).
 
-    code 는 error.code | code. options 는 [BE 확정 2026-07-18] **error.detail.options**
-    ([{optionId, name, extraPrice}]) 를 우선하고, 구버전 위치(error.options·options·data.options)도
-    방어적으로 본다. name 은 name|optionName, extraPrice(추가금)까지 읽는다.
+    code 는 `_parse_error_code` 공유(error.code | code). options 는 [BE 확정 2026-07-18]
+    **error.detail.options**([{optionId, name, extraPrice}])를 우선하고, 구버전 위치
+    (error.options·options·data.options)도 방어적으로 본다. name 은 name|optionName,
+    extraPrice(추가금)까지 읽는다.
     """
+    code = _parse_error_code(resp)
     try:
         body = resp.json()
     except ValueError:
@@ -205,7 +609,6 @@ def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption
     if not isinstance(body, dict):
         return None, [], None
     err = body.get("error") if isinstance(body.get("error"), dict) else None
-    code = (err or {}).get("code") or body.get("code")
     detail = (err or {}).get("detail") if isinstance((err or {}).get("detail"), dict) else None
     # BE 확정 위치(error.detail.options)는 '키 존재'로 우선한다 — 빈 배열이어도 그 값을 신뢰하고
     # 구버전 위치로 조용히 폴백하지 않는다(잔재 options 오선택 방지).
@@ -277,17 +680,89 @@ async def search_products(filters: ProductSearchFilters) -> ProductSearchResult:
     유일·영구 후보 확보 경로. 사용자 확정에 따라 **GET** 으로 호출한다. dedup·평점·정렬은
     응답 후 AI 사후필터(search_service.search_catalog)에서 적용한다. 도달 불가/오류 응답은
     SpringUnavailableError 로 전파 — 상위(추천 그래프)가 SEARCH_FAILED 로 낸다.
+
+    [#133] 재시도 가능한 실패(`_is_retryable`)는 config 상한만큼 재시도한다. 검색은 GET·멱등이라
+    안전하며, 후보가 없으면 추천 자체가 성립하지 않아 한 번의 일시 지연이 곧 턴 종료였다.
+    **재시도 루프는 span 안쪽**이다 — 호출당 span 1개라는 계약(테스트가 고정)을 지키고,
+    `statusClass` 는 마지막 시도의 결과를 남긴다. 재시도 사실은 구조화 로그로만 관측한다.
     """
-    params = _search_query_params(filters)
-    try:
-        async with _client() as client:
-            resp = await client.get("/internal/products/search", params=params)
-            resp.raise_for_status()
-            data = resp.json()
+    settings = get_settings()
+    color_values: list[str] | None = None
+    # 계약 게이트: api-spec §4.6 color가 string→string[]으로 개정되고 BE가 배포된 뒤에만 on.
+    # off면 색상 사전 캐시/DB를 아예 건드리지 않아 기존 와이어를 바이트 단위로 보존한다.
+    if settings.color_synonym_expansion_enabled and filters.color and filters.color.strip():
+        try:
+            from app.pipelines import color_synonyms  # noqa: PLC0415 - lazy DB 경로
+
+            mapping = await _load_color_synonym_map(settings)
+            if mapping is not None:
+                color_values = color_synonyms.expand_color(filters.color, mapping)
+        except Exception:
+            # 색상 확장은 보조 품질 경로다. DB 장애가 본 검색을 죽이지 않게 기존 단수로 degrade.
+            _log.warning("색상 동의어 확장 실패 — 원문 단수 color로 검색", exc_info=True)
+    params = _search_query_params(filters, color_values=color_values)
+    attempts = 1 if _search_retry_suppressed.get() else settings.spring_max_retries + 1
+    # [#132] 검색 1회의 **총시간** 상한. `spring_timeout_s` 는 httpx 에 스칼라로 주입돼
+    # connect/read/write/pool 네 시계가 되는데 `read` 는 **청크 사이 간격** 상한이라, 바디가
+    # 끊기지 않고 계속 오면 한 번도 물리지 않는다 — `size` 제거(전량 반환, §4.6)로 바디가 커진
+    # 뒤로는 "3s 안에 끝난다"가 보장이 아니다. config 는 이미 `spring_timeout_s × (재시도+1)` 을
+    # 검색 예산으로 **가정**하고 스트림 상한을 기동 검증하는데, 그 가정을 집행하는 코드가
+    # 없었다. 새 튜너블을 만들지 않고 같은 식을 쓴다 — 검증과 집행이 갈라지면 한쪽만 고쳐
+    # 놓고 지켜진다고 믿게 된다.
+    # [#277 병합] 곱하는 값은 상수가 아니라 **실제 시도 수**(`attempts`)다 — 재시도를 끈 턴
+    # (`suppress_search_retry`, 미룬 conditions 가 first-token 예산을 쓰는 경로)은 예산도 1회분으로
+    # 함께 좁아져야 한다. `spring_max_retries + 1` 을 그대로 쓰면 억제한 턴이 억제 안 한 턴과
+    # 같은 상한을 갖게 돼 #277 이 아낀 예산을 이 가드가 도로 늘려 준다.
+    budget_s = settings.spring_timeout_s * attempts
+
+    async def _fetch_and_parse(span: TraceNode | None) -> ProductSearchResult:
+        for attempt in range(1, attempts + 1):
+            try:
+                async with _client() as client:
+                    resp = await client.get("/internal/products/search", params=params)
+                    _record_spring_status(span, resp)
+                    resp.raise_for_status()
+                    # [#132] 역직렬화를 이벤트루프 밖으로 — 전량 반환이라 바디 크기에 상한이
+                    # 없고, 루프 위에서 돌면 그 시간만큼 **같은 워커의 다른 SSE 스트림이 전부
+                    # 멈춘다**(실 응답 13.33MB/7,245건 실측: 5 동시 992ms 정지 → 424ms,
+                    # MEASURE-I1-RESPONSE-132 §4). 전용 풀인 이유는 `_get_parse_executor` 참조.
+                    data = await _run_in_parse_executor(resp.json)
+                break
+            except (httpx.HTTPError, ValueError) as exc:
+                if attempt >= attempts or not _is_retryable(exc):
+                    raise
+                # 예외 원문은 남기지 않는다 — 업스트림 상태 유출 방지(#141), 유계 라벨만.
+                _log.warning(
+                    "spring_search_retry",
+                    extra={
+                        "attempt": attempt,
+                        "maxAttempts": attempts,
+                        "statusClass": _failure_status_class(exc),
+                    },
+                )
         # 응답 파싱·검증도 같은 경계 안 — 200 이지만 스키마 불일치인 malformed 응답도
         # SEARCH_FAILED degrade(§7)로 흐르게 한다(ValidationError 가 그대로 새어 500 되지 않게).
-        return _parse_search_response(data)
-    except (httpx.HTTPError, ValueError, ValidationError) as exc:
+        # 역직렬화와 같은 이유로 스레드에 넘긴다 — N× model_validate 가 파싱 비용의 본체다.
+        return await _run_in_parse_executor(_parse_search_response, data)
+
+    try:
+        with _spring_span("search_products", "GET") as span:
+            try:
+                # ⚠️ `wait_for` 는 **await 를 취소할 뿐 스레드를 죽이지 못한다** — 초과 시 파싱
+                # 스레드는 전용 풀에서 끝까지 돈다. 그래도 턴은 즉시 degrade 로 풀려나 사용자
+                # 지연과 스트림 예산은 유계가 된다(스레드는 곧 스스로 끝난다).
+                return await asyncio.wait_for(_fetch_and_parse(span), timeout=budget_s)
+            except TimeoutError as exc:
+                # 가드 전용 타입으로 좁혀 던진다 — 분류(`_transport_status_class`)가 이 경로만
+                # timeout 으로 보게 하려는 것이다(PR #293 리뷰).
+                # **조용히 자르지 않는다**: 이 가드가 자주 트립하면 전용 풀에 버려진 파싱
+                # 스레드가 쌓인다는 신호라, 트립 자체가 운영 관측 대상이다.
+                _log.warning(
+                    "spring_search_budget_exceeded",
+                    extra={"budgetS": budget_s, "attempts": attempts},
+                )
+                raise SearchBudgetExceeded(f"검색 총시간 예산 초과({budget_s}s)") from exc
+    except (httpx.HTTPError, ValueError, ValidationError, TimeoutError) as exc:
         raise SpringUnavailableError(f"search_products 실패: {exc}") from exc
 
 
@@ -305,15 +780,52 @@ async def get_recent_purchases(user_id: int, status: str | None = None) -> Recen
     if status is not None:
         params["status"] = status
     try:
-        async with _client() as client:
-            resp = await client.get(f"/internal/members/{user_id}/orders", params=params)
-            resp.raise_for_status()
-            data = resp.json()
+        with _spring_span("get_recent_purchases", "GET") as span:
+            async with _client() as client:
+                resp = await client.get(f"/internal/members/{user_id}/orders", params=params)
+                _record_spring_status(span, resp)
+                resp.raise_for_status()
+                data = resp.json()
         payload = data.get("data") if isinstance(data, dict) else None
         orders = payload.get("orders") if isinstance(payload, dict) else None
         return RecentPurchases.model_validate({"orders": orders or []})
     except (httpx.HTTPError, ValueError, ValidationError) as exc:
         raise SpringUnavailableError(f"get_recent_purchases 실패: {exc}") from exc
+
+
+async def get_order_status(user_id: int) -> OrderStatusSummary:
+    """회원의 최근 I-4 주문 상태를 strict envelope/schema로 검증한다."""
+    try:
+        with _spring_span("get_order_status", "GET") as span:
+            async with _client() as client:
+                response = await client.get(
+                    f"/internal/members/{user_id}/orders/status",
+                    params={"recent": ORDER_STATUS_RECENT},
+                )
+                _record_spring_status(span, response)
+                response.raise_for_status()
+    except httpx.HTTPError:
+        raise OrderStatusUnavailableError("upstream_unavailable") from None
+
+    try:
+        body = response.json()
+    except ValueError:
+        raise OrderStatusUnavailableError("malformed_response") from None
+
+    if (
+        type(body) is not dict
+        or body.get("success") is not True
+        or "data" not in body
+        or type(body["data"]) is not dict
+        or "orders" not in body["data"]
+        or type(body["data"]["orders"]) is not list
+    ):
+        raise OrderStatusUnavailableError("malformed_response") from None
+
+    try:
+        return OrderStatusSummary.model_validate({"orders": body["data"]["orders"]})
+    except ValidationError:
+        raise OrderStatusUnavailableError("malformed_response") from None
 
 
 async def add_to_cart(request: AddToCartRequest) -> AddToCartResult:
@@ -327,8 +839,12 @@ async def add_to_cart(request: AddToCartRequest) -> AddToCartResult:
     CartQuantityExceeded, 404→CartProductNotFound, 그 외→CartError.
     """
     try:
-        async with _client() as client:
-            resp = await client.post("/internal/cart/items", json=request.model_dump(by_alias=True))
+        with _spring_span("add_to_cart", "POST") as span:
+            async with _client() as client:
+                resp = await client.post(
+                    "/internal/cart/items", json=request.model_dump(by_alias=True)
+                )
+                _record_spring_status(span, resp)
     except httpx.HTTPError as exc:
         raise CartError(f"add_to_cart 도달 실패: {exc}") from exc
 
@@ -357,7 +873,9 @@ async def add_to_cart(request: AddToCartRequest) -> AddToCartResult:
             body = None
         err = body.get("error") if isinstance(body, dict) else None
         be_message = err.get("message") if isinstance(err, dict) else None
-        _log.warning("cart VALIDATION_ERROR → 수량초과로 매핑(드리프트 관측): message=%r", be_message)
+        _log.warning(
+            "cart VALIDATION_ERROR → 수량초과로 매핑(드리프트 관측): message=%r", be_message
+        )
         raise CartQuantityExceeded(f"add_to_cart 수량 상한 초과: {code}")
     if resp.status_code == 404:
         raise CartProductNotFound()
@@ -378,10 +896,12 @@ async def get_cart(user_id: int | None = None, guest_id: str | None = None) -> C
     if guest_id is not None:
         params["guestId"] = guest_id
     try:
-        async with _client() as client:
-            resp = await client.get("/internal/cart", params=params)
-            resp.raise_for_status()
-            data = resp.json()
+        with _spring_span("get_cart", "GET") as span:
+            async with _client() as client:
+                resp = await client.get("/internal/cart", params=params)
+                _record_spring_status(span, resp)
+                resp.raise_for_status()
+                data = resp.json()
         payload = data.get("data") if isinstance(data, dict) else None
         items = payload.get("items") if isinstance(payload, dict) else None
         return CartView.model_validate({"items": items or []})
@@ -389,21 +909,285 @@ async def get_cart(user_id: int | None = None, guest_id: str | None = None) -> C
         raise SpringUnavailableError(f"get_cart 실패: {exc}") from exc
 
 
+# ── 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현 진행 중) ──
+
+
+def _envelope_success_false(resp: httpx.Response) -> bool:
+    """200 이지만 공통 실패 봉투(`{success:false, ...}`)로 왔는지만 본다(2차 리뷰 지적 5).
+
+    신설한 delete_cart_item·add_wishlist·remove_wishlist·get_wishlist 는 HTTP 상태만 보고
+    200 이면 성공으로 처리했다 — 정본 공통 봉투는 성공이 `{success:true, …}` 인데, Spring 이
+    200 + `{success:false}` 를 낼 가능성을 놓치고 있었다.
+
+    `success` 키가 **없으면** false 로 간주하지 않는다 — "명시 안 됨"과 "명시적 false"는 다른
+    사실이다(`app/agents/buyer/graph.py::_relaxed_filters_from_offer` 근방의 "없음"과 "null 로
+    해제"를 가르는 것과 같은 구분). 이 함수는 이번에 신설한 4개 함수에만 쓴다 — `add_to_cart`·
+    `get_cart` 는 같은 성질의 선행 구멍이 있지만 이 PR 범위가 아니고 다른 레인이 그 경로에
+    의존해 별도 이슈로 남긴다.
+    """
+    try:
+        body = resp.json()
+    except ValueError:
+        return False
+    return isinstance(body, dict) and body.get("success") is False
+
+
+async def delete_cart_item(
+    cart_item_id: int, *, user_id: int | None = None, guest_id: str | None = None
+) -> None:
+    """장바구니 삭제 — I-24(확정 2026-08-05) DELETE /internal/cart/items/{cartItemId}.
+
+    게스트 허용. 신원 query 는 userId 또는 guestId 정확히 하나만 싣는다 — 호출부(cart 그래프)가
+    이미 신원을 확인하지만 어댑터도 방어한다. 둘 다 None/둘 다 not None 이면 호출 자체를 하지
+    않고 CartError 로 낙성한다(ValueError 가 아니라 이 계열 오류 예외로 — 호출부가 typed 예외
+    하나만 캐치하면 되게 하기 위해).
+    삭제는 재고·상품 상태를 보지 않는다 — HIDDEN·품절도 성공한다(PRODUCT_NOT_FOUND 없음).
+    복수 삭제는 항목별 반복 호출(bulk 없음, 호출부 책임).
+    실패 매핑: 404 이고 `error.code == "CART_ITEM_NOT_FOUND"` 일 때만 → CartItemNotFound(비멱등,
+    두 번째 호출도 404). **[라운드 23]** code 가 다르거나 본문을 못 읽는 404(엔드포인트 미배포로
+    나는 라우트 없음 404 포함)는 CartItemNotFound 가 아니라 CartError 다 — 그렇지 않으면 상위가
+    "이미 빠져 있어요"(성공 안내)로 오인해 거짓 성공을 낸다.
+    400(path 숫자 아님·신원 query 오류)·403 AUTH_FORBIDDEN(소유자 불일치, 전용 예외 없음)·500·
+    도달 불가·미상 코드 → CartError(기존 담기와 같은 낙성처).
+    """
+    if (user_id is None) == (guest_id is None):
+        # [확정 2026-08-05] 신원 query 0개/2개일 때 BE 응답 code 는 자원별 신규 code 를 신설하지
+        # 않고 기존 VALIDATION_ERROR 를 재사용한다 — 어느 쪽이든 이 어댑터는 CartError 로 수렴시킨다.
+        raise CartError("delete_cart_item 신원 query 는 정확히 하나여야 함")
+
+    params: dict[str, object] = {}
+    if user_id is not None:
+        params["userId"] = user_id
+    if guest_id is not None:
+        params["guestId"] = guest_id
+
+    try:
+        with _spring_span("delete_cart_item", "DELETE") as span:
+            async with _client() as client:
+                resp = await client.delete(f"/internal/cart/items/{cart_item_id}", params=params)
+                _record_spring_status(span, resp)
+    except httpx.HTTPError as exc:
+        raise CartError(f"delete_cart_item 도달 실패: {exc}") from exc
+
+    if resp.status_code == 200:
+        if _envelope_success_false(resp):
+            # 🔶 I-24 협의 대상: 200 + success:false 의 실제 사유(code) 위치가 미확정.
+            raise CartError("delete_cart_item 실패: 200 success=false")
+        return
+    if resp.status_code == 404:
+        code = _parse_error_code(resp)
+        if code == "CART_ITEM_NOT_FOUND":
+            raise CartItemNotFound()
+        # [라운드 23] Spring 에 엔드포인트가 아직 없어서 나는 404(라우트 없음, code 없음/다름)를
+        # CartItemNotFound 로 낙성하면 상위가 "이미 빠져 있어요"(성공 안내)로 끝낸다 — 배포 전
+        # 호출이 조용히 거짓 성공을 낸다. code 가 계약과 정확히 일치할 때만 비멱등 낙성이다.
+        raise CartError(f"delete_cart_item 실패: 404 {code}")
+    code = _parse_error_code(resp)
+    raise CartError(f"delete_cart_item 실패: {resp.status_code} {code}")
+
+
+async def add_wishlist(request: AddWishlistRequest) -> WishlistAddResult:
+    """찜 추가 — I-26(확정 2026-08-05) POST /internal/wishlist.
+
+    회원 전용(USER). 게스트 찜은 없다 — 호출부가 게스트를 걸러 이 함수 자체를 부르지 않는다
+    (internal 호출 없이 degrade, 이 어댑터는 그 판단을 하지 않는다).
+    성공 200 {success, data:{productId}}(wishlistId 없음).
+    실패: 404 이고 code 가 정확히 PRODUCT_NOT_FOUND(없는 상품만 — HIDDEN·품절은 찜 가능)일 때만
+    → WishlistProductNotFound. 409 이고 code 가 정확히 WISHLIST_DUPLICATE·RESOURCE_CONFLICT
+    (UNIQUE 경합, 둘 다 동일 취급) 중 하나일 때만 → WishlistDuplicate. **[라운드 23]** code 가
+    다르거나 본문을 못 읽는 404/409(엔드포인트 미배포 포함)는 WishlistError 다.
+    400·403(SELLER·ADMIN, 전용 예외 없음)·500·도달 불가·미상 코드 → WishlistError.
+    """
+    try:
+        with _spring_span("add_wishlist", "POST") as span:
+            async with _client() as client:
+                resp = await client.post(
+                    "/internal/wishlist", json=request.model_dump(by_alias=True)
+                )
+                _record_spring_status(span, resp)
+    except httpx.HTTPError as exc:
+        raise WishlistError(f"add_wishlist 도달 실패: {exc}") from exc
+
+    if resp.status_code == 200:
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise WishlistError(f"add_wishlist 응답 파싱 실패: {exc}") from exc
+        if isinstance(data, dict) and data.get("success") is False:
+            # 🔶 I-26 협의 대상: 200 + success:false 의 실제 사유(code) 위치가 미확정.
+            raise WishlistError("add_wishlist 실패: 200 success=false")
+        payload = data.get("data") if isinstance(data, dict) else None
+        product_id = payload.get("productId") if isinstance(payload, dict) else None
+        try:
+            return WishlistAddResult(success=True, product_id=product_id)
+        except ValidationError as exc:
+            # productId 가 dict·문자열 등 변환 불가 값이면(스키마 이상) 다른 어댑터와 같은 규약으로
+            # WishlistError 로 낙성한다(라운드 15 — get_wishlist 는 이미 이렇게 하는데 이 함수만
+            # 빠져 있었다. ValidationError 가 그대로 새면 stream_wishlist_add 의 `except
+            # WishlistError` 에 안 걸려 우아한 degrade 가 무너지고 상위 스트림의 범용 오류로 샌다).
+            raise WishlistError(f"add_wishlist 응답 스키마 이상: {exc}") from exc
+
+    if resp.status_code == 404:
+        code = _parse_error_code(resp)
+        if code == "PRODUCT_NOT_FOUND":
+            raise WishlistProductNotFound()
+        # [라운드 23] 엔드포인트 미배포로 오는 빈/다른 code 의 404 를 "없는 상품"으로 오인하면
+        # 상위가 그 조건에 맞는 안내로 잘못 종료한다 — code 가 계약과 일치할 때만 typed 예외다.
+        raise WishlistError(f"add_wishlist 실패: 404 {code}")
+    if resp.status_code == 409:
+        code = _parse_error_code(resp)
+        if code in ("WISHLIST_DUPLICATE", "RESOURCE_CONFLICT"):
+            # WISHLIST_DUPLICATE·RESOURCE_CONFLICT(UNIQUE 경합) 둘 다 "이미 찜함"으로 동일 처리.
+            raise WishlistDuplicate()
+        raise WishlistError(f"add_wishlist 실패: 409 {code}")
+    code = _parse_error_code(resp)
+    raise WishlistError(f"add_wishlist 실패: {resp.status_code} {code}")
+
+
+async def remove_wishlist(product_id: int, *, user_id: int) -> None:
+    """찜 해제 — I-27(확정 2026-08-05) DELETE /internal/wishlist/{productId}.
+
+    회원 전용(USER). path 는 productId(wishlistId 아님), query 는 userId 하나뿐(guestId 없음).
+    실패: 404 이고 code 가 정확히 WISHLIST_NOT_FOUND(찜 안 한 상품 = 이미 해제 = 없는 상품도
+    동일 코드, 구별 불가)일 때만 → WishlistNotFound(비멱등). **[라운드 23]** code 가 다르거나
+    본문을 못 읽는 404(엔드포인트 미배포 포함)는 WishlistError 다. 400·403(전용 예외 없음)·500·
+    도달 불가·미상 코드 → WishlistError.
+    """
+    try:
+        with _spring_span("remove_wishlist", "DELETE") as span:
+            async with _client() as client:
+                resp = await client.delete(
+                    f"/internal/wishlist/{product_id}", params={"userId": user_id}
+                )
+                _record_spring_status(span, resp)
+    except httpx.HTTPError as exc:
+        raise WishlistError(f"remove_wishlist 도달 실패: {exc}") from exc
+
+    if resp.status_code == 200:
+        if _envelope_success_false(resp):
+            # 🔶 I-27 협의 대상: 200 + success:false 의 실제 사유(code) 위치가 미확정.
+            raise WishlistError("remove_wishlist 실패: 200 success=false")
+        return
+    if resp.status_code == 404:
+        code = _parse_error_code(resp)
+        if code == "WISHLIST_NOT_FOUND":
+            raise WishlistNotFound()
+        # [라운드 23] 엔드포인트 미배포로 오는 빈/다른 code 의 404 를 "이미 해제됨"으로 오인하면
+        # 상위가 거짓 성공 안내로 끝낸다 — code 가 계약과 일치할 때만 비멱등 낙성이다.
+        raise WishlistError(f"remove_wishlist 실패: 404 {code}")
+    code = _parse_error_code(resp)
+    raise WishlistError(f"remove_wishlist 실패: {resp.status_code} {code}")
+
+
+def _parse_wishlist_items(raw: list) -> list[WishlistItem]:
+    """I-28 응답 `items` 를 **항목 단위로** 파싱한다.
+
+    배열 전체를 `WishlistView.model_validate({"items": raw})` 로 한 번에 검증하면, BE 가
+    `purchaseState` enum 에 새 값 하나만 추가해도 그 값을 가진 항목 1건 때문에 `ValidationError`
+    가 배열 전체를 죽여 `get_wishlist` 가 `SpringUnavailableError` 로 낙성하고, 그 사용자의 찜
+    해제(#116·#117)가 통째로 막힌다 — 한 항목의 검증 실패가 전체를 죽이는 구조 자체가 문제다.
+
+    이 저장소의 기존 관행을 따른다 — `_parse_cart_error` 가 "형식 이상 옵션은 건너뜀 — 되물음
+    흐름 전체가 죽지 않게" 로 옵션 배열을 항목 단위로 방어하는 것과 같은 처리다. **`PurchaseState`
+    Literal·기본값(`"AVAILABLE"`)은 바꾸지 않는다**(#310 지시서의 결정 유지) — 여기서 바꾸는 것은
+    파싱 견고성뿐이다. 검증에 실패한 항목만 건너뛰고 나머지는 살리며, 건너뛴 수는 BE 계약
+    드리프트 관측을 위해 warning 으로 남긴다(조용히 사라지면 드리프트를 알 방법이 없다).
+
+    응답 구조 자체가 깨진 경우(`items` 가 list 가 아님)는 이 함수가 보지 않는다 — 호출부가 그
+    형태 붕괴는 종전대로 fail-closed(`SpringUnavailableError`)로 처리한다. **원본이 비어 있지
+    않은데 이 함수의 반환이 빈 리스트인 경우(전 항목 스키마 붕괴)도 이 함수는 판단하지 않는다**
+    — "항목 하나의 이상"과 "계약 전면 드리프트"는 다른 문제라 그 구분은 호출부(`get_wishlist`)
+    책임이다. 여기서 다루는 건 순수하게 "배열은 정상인데 그 안의 항목 하나가 이상한" 경우뿐이다.
+    """
+    parsed: list[WishlistItem] = []
+    invalid = 0
+    for it in raw:
+        if not isinstance(it, dict):
+            invalid += 1
+            _log.warning("찜 목록 항목이 object 아님(skip) — type=%s", type(it).__name__)
+            continue
+        try:
+            parsed.append(WishlistItem.model_validate(it))
+        except ValidationError as exc:
+            # 항목 1건의 스키마 이상(예: 미지의 purchaseState 값)은 그 항목만 skip — 전체 실패로
+            # 번지지 않게. BE 계약 드리프트 관측을 위해 남긴다.
+            invalid += 1
+            _log.warning("찜 목록 항목 파싱 실패로 skip(전체 실패 아님) — %s", exc)
+    if invalid:
+        _log.warning("찜 목록 항목 %d건 skip(스키마 이상) / 정상 %d건", invalid, len(parsed))
+    return parsed
+
+
+async def get_wishlist(user_id: int) -> WishlistView:
+    """찜 목록 조회 — I-28(확정 2026-08-05) GET /internal/wishlist?userId=.
+
+    페이징 없음, MVP 전량 반환. 찜 0건도 200 + items:[](404 아님). get_cart 와 같은 degrade
+    규약 — 도달 불가/오류/응답 최상위 구조 불일치는 SpringUnavailableError. 항목 단위 스키마
+    이상(BE `purchaseState` enum 드리프트 등)은 `_parse_wishlist_items` 가 그 항목만 skip
+    한다 — 한 항목이 찜 목록 전체를, 나아가 찜 해제 기능 전체를 죽이지 않는다.
+
+    **원본 `items` 가 비어 있지 않은데 파싱 결과가 0건이면 SpringUnavailableError 로
+    fail-closed 한다** — "항목 하나의 이상"이 아니라 BE 가 값 체계를 통째로 바꾼 계약 전면
+    드리프트로 본다. 이 구분이 없으면 찜을 여러 개 해 둔 사용자가 파싱 실패로 빈 목록을
+    받고 "찜한 상품이 없어요."(`app/agents/buyer/cart/wishlist.py` 의 빈 목록 분기)라는
+    안내를 듣는다 — 실제로는 데이터가 있는데 없다고 확언하는 것이라, 조회 실패를 정직하게
+    알리는 쪽(`SpringUnavailableError` → "찜 목록을 확인하지 못했어요")보다 나쁘다. 원본이
+    애초에 빈 배열(`items: []`, 찜 0건)인 경우는 이 판정 대상이 아니다 — 그건 I-28 의 정상
+    응답이라 그대로 빈 `WishlistView` 를 돌려준다.
+    """
+    # 🔶 I-28 협의 대상: 전량 반환 응답의 크기 상한이 미확정 — 클라 측 절단은 두지 않는다.
+    try:
+        with _spring_span("get_wishlist", "GET") as span:
+            async with _client() as client:
+                resp = await client.get("/internal/wishlist", params={"userId": user_id})
+                _record_spring_status(span, resp)
+                resp.raise_for_status()
+                data = resp.json()
+        if isinstance(data, dict) and data.get("success") is False:
+            # 200 + success:false 를 "찜 0건"으로 위장시키지 않는다 — 이 ValueError 는 아래
+            # except 가 잡아 SpringUnavailableError 로 낙성한다(get_cart 와 같은 degrade 규약).
+            raise ValueError("get_wishlist 응답 success=false")
+        payload = data.get("data") if isinstance(data, dict) else None
+        items = payload.get("items") if isinstance(payload, dict) else None
+        if items is not None and not isinstance(items, list):
+            # items 자체가 list 가 아니다 — 항목 단위로 볼 수조차 없는 최상위 envelope drift 라
+            # 종전대로 fail-closed 한다(§7 과 같은 구분 — 개별 항목 이상과는 다른 문제).
+            raise ValueError(f"get_wishlist items 형태 미인식: {type(items).__name__}")
+        raw_items = items or []
+        parsed = _parse_wishlist_items(raw_items)
+        if raw_items and not parsed:
+            # 원본은 비어 있지 않은데 파싱 결과가 0건 — 개별 항목 이상이 아니라 계약 전면
+            # 드리프트다(위 docstring 참조). 빈 목록으로 위장하면 실제 데이터를 가진 사용자에게
+            # "찜한 상품이 없어요."라는 확신에 찬 거짓 안내가 나간다.
+            raise ValueError(
+                f"get_wishlist 원본 {len(raw_items)}건이 전부 파싱 실패(계약 드리프트 의심)"
+            )
+        return WishlistView(items=parsed)
+    except (httpx.HTTPError, ValueError, ValidationError) as exc:
+        raise SpringUnavailableError(f"get_wishlist 실패: {exc}") from exc
+
+
 async def push_recommendations(push: RecommendationPush) -> bool:
     """최종 랭크 id 를 Spring 에 push — I-21 (경로 B, api-spec §4.2 / C-9). [배선 완료]
 
-    POST {spring_base_url}/internal/recommendations 로 {sessionId, listId, productIds[숫자]} 를
-    보낸다(표시 필드 없음 — Spring enrich·CH-5 조회, §4.3). listId 는 FastAPI 가 생성.
+    POST {spring_base_url}/internal/recommendations 로 {sessionId, recommendationRequestId,
+    listType, totalBudget?, lists[{listId, label?, productIds[숫자], reasons}]} 를 보낸다
+    (표시 필드 없음 — Spring enrich·CH-5 조회, §4.3). listId 는 FastAPI 가 생성.
+    [v0.17.1, 이슈 #209] 최상위는 lists 배열이며 구 평평 3필드는 보내지 않는다.
+    미지정 선택 필드(totalBudget·label)는 exclude_none 으로 생략한다 — 계약상 "…일 때만" 싣는
+    필드라 null 을 실어 보내지 않는다. reasons 는 빈 배열로 남는다(선택이되 존재하는 필드).
     콜백 성공 시에만 상위가 SSE products.ready 를 emit 한다 — 실패 시 미emit·done 종료(§3.3).
     도달 불가/오류 응답은 SpringUnavailableError 로 전파(상위가 products.ready 스킵).
     """
     try:
-        async with _client() as client:
-            resp = await client.post(
-                "/internal/recommendations",
-                json=push.model_dump(by_alias=True),
-            )
-            resp.raise_for_status()
+        with _spring_span("push_recommendations", "POST") as span:
+            async with _client() as client:
+                resp = await client.post(
+                    "/internal/recommendations",
+                    json=push.model_dump(by_alias=True, exclude_none=True),
+                )
+                _record_spring_status(span, resp)
+                resp.raise_for_status()
     except httpx.HTTPError as exc:
         raise SpringUnavailableError(f"push_recommendations 실패: {exc}") from exc
     return True
@@ -419,20 +1203,24 @@ async def fetch_product_changes(cursor: str | None, limit: int = 500) -> Product
     """
     params: dict[str, object] = {"since": cursor or "0", "limit": limit}
     try:
-        async with _client() as client:
-            resp = await client.get("/internal/products/changes", params=params)
-            if resp.status_code == 400:
-                try:
-                    error_body = resp.json()
-                except ValueError:
-                    error_body = None
-                if isinstance(error_body, dict):
-                    error = error_body.get("error")
-                    code = error.get("code") if isinstance(error, dict) else error_body.get("code")
-                    if code == "INVALID_CURSOR":
-                        raise InvalidCursorError("fetch_product_changes: INVALID_CURSOR")
-            resp.raise_for_status()
-            data = resp.json()
+        with _spring_span("fetch_product_changes", "GET") as span:
+            async with _client() as client:
+                resp = await client.get("/internal/products/changes", params=params)
+                _record_spring_status(span, resp)
+                if resp.status_code == 400:
+                    try:
+                        error_body = resp.json()
+                    except ValueError:
+                        error_body = None
+                    if isinstance(error_body, dict):
+                        error = error_body.get("error")
+                        code = (
+                            error.get("code") if isinstance(error, dict) else error_body.get("code")
+                        )
+                        if code == "INVALID_CURSOR":
+                            raise InvalidCursorError("fetch_product_changes: INVALID_CURSOR")
+                resp.raise_for_status()
+                data = resp.json()
         # 200 이어도 success=false / data=null 은 실패 envelope — 빈 페이지로 오인해 배치가
         # 조기 종료(정합성 손상)되지 않게 명시 검증한다(리뷰 반영).
         if (
@@ -481,6 +1269,7 @@ class SpringClient:
         method: str,
         path: str,
         *,
+        operation: _SpringOperation,
         params: dict | None = None,
         json_body: dict | None = None,
     ) -> dict:
@@ -488,24 +1277,26 @@ class SpringClient:
         예외를 SpringUnavailableError 로 통일 변환한다."""
         headers = {"X-Internal-Token": self._internal_token} if self._internal_token else {}
         try:
-            async with httpx.AsyncClient(
-                base_url=self._base_url, transport=self._transport, timeout=self._timeout
-            ) as client:
-                response = await client.request(
-                    method, path, params=params, json=json_body, headers=headers
-                )
-                response.raise_for_status()
-                payload = response.json()
-                # [변경 2026-07-19, REALIGN ②-3] BE 확정 명세(I-13 실측)가
-                # {success, data:{...}} 봉투를 쓴다 — data 만 벗겨 모델에 넘긴다.
-                # 봉투 없는 응답(과도기·타 API)은 그대로 통과(하위 호환).
-                if (
-                    isinstance(payload, dict)
-                    and "success" in payload
-                    and isinstance(payload.get("data"), dict)
-                ):
-                    return payload["data"]
-                return payload
+            with _spring_span(operation, method) as span:
+                async with httpx.AsyncClient(
+                    base_url=self._base_url, transport=self._transport, timeout=self._timeout
+                ) as client:
+                    response = await client.request(
+                        method, path, params=params, json=json_body, headers=headers
+                    )
+                    _record_spring_status(span, response)
+                    response.raise_for_status()
+                    payload = response.json()
+                    # [변경 2026-07-19, REALIGN ②-3] BE 확정 명세(I-13 실측)가
+                    # {success, data:{...}} 봉투를 쓴다 — data 만 벗겨 모델에 넘긴다.
+                    # 봉투 없는 응답(과도기·타 API)은 그대로 통과(하위 호환).
+                    if (
+                        isinstance(payload, dict)
+                        and "success" in payload
+                        and isinstance(payload.get("data"), dict)
+                    ):
+                        return payload["data"]
+                    return payload
         except httpx.TimeoutException as exc:
             raise SpringUnavailableError(
                 f"Spring 콜백 타임아웃({self._timeout}s): {method} {path}"
@@ -542,6 +1333,7 @@ class SpringClient:
         data = await self._request(
             "GET",
             f"/internal/seller/{brand_id}/sales",
+            operation="get_sales",
             params={"from": from_, "to": to, "granularity": granularity},
         )
         return self._validate(SalesResult, data)
@@ -549,7 +1341,10 @@ class SpringClient:
     async def get_funnel(self, brand_id: int, from_: str, to: str) -> FunnelResult:
         """I-7 구매전환 퍼널 조회 (§4.4). view→cart→checkout→purchase 4단."""
         data = await self._request(
-            "GET", f"/internal/seller/{brand_id}/funnel", params={"from": from_, "to": to}
+            "GET",
+            f"/internal/seller/{brand_id}/funnel",
+            operation="get_funnel",
+            params={"from": from_, "to": to},
         )
         return self._validate(FunnelResult, data)
 
@@ -569,12 +1364,20 @@ class SpringClient:
         """
         params: dict = {"from": from_, "to": to}
         if event_type:
-            params["eventType"] = event_type  # httpx 가 리스트를 반복 쿼리로 직렬화
+            # [#196] CSV 명시 직렬화 — 구 반복 쿼리(eventType=a&eventType=b)는
+            # Spring 의 암묵 변환(반복 파라미터→콤마 문자열)에 의존했다. BE 계약은
+            # String eventType + comma split(api-spec §4.4 I-13) — CSV 로 명시한다.
+            params["eventType"] = ",".join(event_type)
         if product_id is not None:
             params["productId"] = product_id
         if group_by:
             params["groupBy"] = group_by
-        data = await self._request("GET", f"/internal/seller/{brand_id}/events", params=params)
+        data = await self._request(
+            "GET",
+            f"/internal/seller/{brand_id}/events",
+            operation="get_events",
+            params=params,
+        )
         return self._validate(BehaviorEventsResult, data)
 
     async def get_order_events(
@@ -601,7 +1404,10 @@ class SpringClient:
         if stats is not None:
             params["stats"] = stats
         data = await self._request(
-            "GET", f"/internal/seller/{brand_id}/order-events", params=params
+            "GET",
+            f"/internal/seller/{brand_id}/order-events",
+            operation="get_order_events",
+            params=params,
         )
         return self._validate(OrderEventsResult, data)
 
@@ -623,37 +1429,55 @@ class SpringClient:
         if product_id:
             params["productId"] = product_id
         data = await self._request(
-            "GET", f"/internal/seller/{brand_id}/product-changes", params=params
+            "GET",
+            f"/internal/seller/{brand_id}/product-changes",
+            operation="get_product_changes",
+            params=params,
         )
         return self._validate(ProductChangeLogResult, data)
 
-    async def get_churn(self, brand_id: int, inactive_days: int) -> ChurnResult:
-        """I-16 이탈 코호트 조회 (§4.4). inactiveDays 무활동 기준일."""
+    async def get_churn(
+        self, brand_id: int, from_: str, to: str, inactive_days: int
+    ) -> ChurnResult:
+        """I-16 이탈 코호트 조회 (§4.4). 코호트 = from~to 에 자사 상품과 상호작용한
+        회원, 이탈 = 최근 inactiveDays 무활동(BE SellerAnalyticsService.churn 실측).
+
+        [#197] from/to 는 필수다 — Spring AnalysisPeriod.of 가 누락·형식 오류·역전을
+        400 INVALID_PERIOD 로 거부한다. 종전에는 inactiveDays 만 보내 이 조회가
+        무조건 400 → degrade 로 새던 버그(주 소스 전면 불능)의 원인이었다.
+        """
         data = await self._request(
             "GET",
             f"/internal/seller/{brand_id}/churn",
-            params={"inactiveDays": inactive_days},
+            operation="get_churn",
+            params={"from": from_, "to": to, "inactiveDays": inactive_days},
         )
         return self._validate(ChurnResult, data)
 
     async def get_account_events(
         self,
+        from_: str,
+        to: str,
         event_type: str | None = None,
-        from_: str | None = None,
-        to: str | None = None,
         group_by: str | None = None,
     ) -> AccountEventsResult:
-        """I-8 계정/보안 이벤트 집계 조회 (§4.4). ⚠️ brandId path 없음 — 전역·admin 소유 🔴."""
-        params: dict = {}
+        """I-8 계정/보안 이벤트 집계 조회 (§4.4). ⚠️ brandId path 없음 — 전역·admin 소유 🔴.
+
+        [#197] from/to 는 필수다(AnalysisPeriod.of — 누락 시 400 INVALID_PERIOD).
+        groupBy 는 BE 화이트리스트 eventType(기본)|hour|ip 만 허용 — 그 외 400
+        INVALID_GROUP_BY (AccountEventAggregateResponse 실측).
+        """
+        params: dict = {"from": from_, "to": to}
         if event_type:
             params["eventType"] = event_type
-        if from_:
-            params["from"] = from_
-        if to:
-            params["to"] = to
         if group_by:
             params["groupBy"] = group_by
-        data = await self._request("GET", "/internal/account-events", params=params)
+        data = await self._request(
+            "GET",
+            "/internal/account-events",
+            operation="get_account_events",
+            params=params,
+        )
         return self._validate(AccountEventsResult, data)
 
     async def list_products(
@@ -674,7 +1498,12 @@ class SpringClient:
             params["limit"] = limit
         if offset is not None:
             params["offset"] = offset
-        data = await self._request("GET", f"/internal/seller/{brand_id}/products", params=params)
+        data = await self._request(
+            "GET",
+            f"/internal/seller/{brand_id}/products",
+            operation="list_products",
+            params=params,
+        )
         return self._validate(SellerProductList, data)
 
     # ── 쓰기 3종 (product_agent 전용, HITL 승인 후에만 호출, api-spec §4.5) ──
@@ -688,6 +1517,7 @@ class SpringClient:
         data = await self._request(
             "POST",
             f"/internal/seller/{brand_id}/products",
+            operation="create_product",
             json_body=payload.model_dump(by_alias=True, exclude_none=True),
         )
         return self._validate(ProductCreateResult, data)
@@ -699,13 +1529,18 @@ class SpringClient:
         data = await self._request(
             "PATCH",
             f"/internal/seller/{brand_id}/products/{product_id}",
+            operation="update_product",
             json_body=patch.model_dump(by_alias=True, exclude_none=True),
         )
         return self._validate(ProductUpdateResult, data)
 
     async def delete_product(self, brand_id: int, product_id: int) -> ProductDeleteResult:
         """I-12 상품 삭제(soft) (§4.5). 물리 삭제 없음 — status=HIDDEN 전환."""
-        data = await self._request("DELETE", f"/internal/seller/{brand_id}/products/{product_id}")
+        data = await self._request(
+            "DELETE",
+            f"/internal/seller/{brand_id}/products/{product_id}",
+            operation="delete_product",
+        )
         return self._validate(ProductDeleteResult, data)
 
 

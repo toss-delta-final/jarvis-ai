@@ -5,7 +5,9 @@
 | 문서 상태 | draft |
 | 작성일 | 2026-07-17 (2026-07-17 카탈로그 데이터 구축을 별도 문서로 분리) |
 | 담당 범위 | 상품 추천 에이전트(추천 서브그래프) + 프로필 구축/개인화 에이전트(프로필 파이프라인) + 장바구니 에이전트(cart 서브그래프) |
-| 관계 정본 | 계약: [api-spec.md](api-spec.md) v0.15.8 · 기술 명세: [SPEC-RECOMMEND-001](specs/SPEC-RECOMMEND-001.md) v0.8.0 / [SPEC-PROFILE-001](specs/SPEC-PROFILE-001.md) v0.2.0 |
+| 관계 정본 | 계약: [api-spec.md](api-spec.md) v0.15.8 · 기술 명세: [SPEC-RECOMMEND-001](specs/SPEC-RECOMMEND-001.md) v0.9.0 / [SPEC-PROFILE-001](specs/SPEC-PROFILE-001.md) v0.2.0 |
+
+> **[#101 정합 노트]** 본 PRD가 §3.1/§6.2에서 기술한 "1차 Spring 위임 + 2차 AI 압축(attribute 매칭 + 임베딩 유사도)" = api-spec §4.8 **방식2**를 #101이 채택·구현했다(hot path 기본 `EmbeddingRerankBackend`, config `search_backend`). attribute 유연 매칭은 #101 PR②(`attr_conditions` 하드 매칭)로 구현. PRD 설계와 코드가 일치한다.
 
 ## 0. 이 문서를 읽는 법 — 문서 간 관계
 
@@ -133,7 +135,7 @@
 | UC-15 | 담기 전 보유 안내 | 이미 같은 상품 1개 보유 | "이거 하나 더 담아줘" | Spring이 수량 합산(2개) 처리, AI는 조회 결과로 "이미 담겨 있어 2개로 늘렸어요" 안내 문구 생성 |
 | UC-16 | 장바구니 조회 실패 시 degrade | I-18 호출이 타임아웃 | 담기 시도 중 조회 실패 | 보유 안내 없이도 담기(I-2)는 정상 진행 — 조회 실패가 담기를 막지 않음 |
 | UC-17 | 장바구니 질의 응답 | 담긴 상품 있음 | "장바구니에 뭐 있어?" | 별도 이벤트 없이 `token` 텍스트로 담긴 목록을 자연어로 답변 |
-| UC-18 | 유연 조건 매칭(2차 압축) | "방수 되는 여행용 파우치" | Spring이 1차 후보 30개 + attributes 반환 | AI가 `attributes.방수 == true`로 매칭·정렬 후, catalog DB 임베딩으로 "여행용" 시맨틱 유사도까지 반영해 rerank 입력을 압축 |
+| UC-18 | 유연 조건 매칭(2차 압축) | "방수 되는 여행용 파우치" | Spring이 1차 후보 전량 + attributes 반환(size 제거 2026-07-23, §4.6) | AI가 `attributes.방수 == true`로 매칭·정렬 후, catalog DB 임베딩으로 "여행용" 시맨틱 유사도까지 반영해 rerank 입력을 `limit`(AI top-K)로 압축 |
 
 ---
 
@@ -265,9 +267,9 @@ repo-local 정본 api-spec.md v0.15.19를 상위 외부 계약으로 참조한�
 
 ### 7.1 FE 대면 (AI 서버 소유)
 
-**`POST /ai/chat`** — SSE, 요청 `{sessionId, threadId, message}`. 이벤트: `token`(근거 토큰, 0회+) → `conditions`(0~1회, 필터 칩) → `action`(장바구니 결과, 0회+) → `suggestions`/`budget`(해당 시) → `products.ready`(성공 시 정확히 1회, `{sessionId, listId}`) → `done`(`finishReason: stop|zero_result`) / `error`(`LLM_TIMEOUT`|`LLM_UNAVAILABLE`|`SEARCH_FAILED`|`INTERNAL`). 상품 카드는 SSE에 실리지 않는다(경로 B). — api-spec §3.1, §3.3
+**`POST /ai/chat`** — SSE, 요청 `{sessionId, threadId, message}`. 이벤트: `token`(근거 토큰, 0회+) → `conditions`(0~1회, 필터 칩) → `action`(장바구니 결과, 0회+) → `suggestions`/`budget`(해당 시) → `products.ready`(성공 시 정확히 1회, `{sessionId, listIds}`) → `done`(`finishReason: stop|zero_result`) / `error`(`{code,message,requestId,retryable}`)이다. `code`는 `LLM_TIMEOUT`|`LLM_UNAVAILABLE`|`SEARCH_FAILED`|`INTERNAL` 중 하나다. 상품 카드는 SSE에 실리지 않는다(경로 B). — api-spec §3.1, §3.3
 
-**`action`** 이벤트(장바구니 전용): `{ type: "CART_ADDED", cartItemId }` 또는 `{ type: "CART_ADD_FAILED", reason }`(`reason` ∈ `PRODUCT_NOT_FOUND`/`CART_ERROR`, `OUT_OF_STOCK`은 v0.15.5로 폐기). 옵션 되물음은 `action` 실패가 아니라 `token` 텍스트 재질문으로 처리되고, 장바구니 조회 응답도 별도 이벤트 없이 `token`으로 온다 — api-spec §3.1 (3)
+**`action`** 이벤트(장바구니 전용): `{ type: "CART_ADDED", cartItemId }` 또는 `{ type: "CART_ADD_FAILED", reason }`(`reason` ∈ `PRODUCT_NOT_FOUND`/`CART_ERROR`, `OUT_OF_STOCK`은 v0.15.5로 폐기). 옵션 되물음은 `action` 실패가 아니라 `token` 텍스트 재질문으로 처리되고, 장바구니 조회 응답도 별도 이벤트 없이 `token`으로 온다 — api-spec §3.1 (4)
 
 **`GET /profile/me`** — 경로 파라미터 없음(IDOR 방지, 결정 19). 응답 `{userId, exists, markdown, generatedAt}`. 게스트/미보유는 `exists:false`가 정상 200. — api-spec §3.4
 
@@ -285,7 +287,7 @@ Notion "📡 API 명세서" DB(팀 결정 원장, 2026-07-16 확인)를 기준�
 | `POST /events/session-end`(I-20, 서비스 토큰) | 명시적 세션 종료 통지(Spring→AI) | **확정(이슈 #62/#79, Spring PR #24)**. 알려진 reason=`logout`/`newConversation`; `{sessionId,userId(number BIGINT),reason?}` + `X-Internal-Token`; UUID를 포함한 불투명 `sessionId` 수용. 신규/중복 모두 202(`accepted`/`duplicate`). 비활동 종료는 AI 내부에서 처리 |
 | `POST /internal/cart/items`(I-2, 서비스 토큰) | 장바구니 담기(단건, 묶음은 반복 호출) | 경로·메서드·인증 확정(BE 문서 채택). **[v0.15.5 확정]** 담기(I-2) 시점 재고 검증은 없음 — 재고 차감·품절 판정은 주문(O-1) 시점에만 발생. 실패 사유는 `PRODUCT_NOT_FOUND`/`CART_ERROR` 2종으로 확정(`SPEC-CART-001` OPEN-CART-1 해소) |
 | `GET /internal/cart`(I-18, 서비스 토큰) | 장바구니 조회(질의 응답 + 담기 전 보유 확인) | 경로·메서드·인증 확정. **`productName`/`optionName` 필수 포함 확정**(BE 문서, 2026-07-18) |
-| `POST /internal/recommendations`(I-21, 서비스 토큰) | 추천 목록 콜백(AI→Spring, "경로 B" push) | 경로·메서드·인증 레인 확정. **[2026-07-18] 스키마 확정 책임이 LLM팀(우리)에 있다고 BE가 명시** — 확정할 것: ① `listId` 형식·유효시간(SSE로 FE 전달되는 키) ② 추천 이유(`reason`)는 SSE가 아니라 I-21 콜백(`reasons[{productId, reason}]`)에 실어 Spring이 Redis 저장 → CH-5 카드에 echo(SSE는 채팅용 자연어 설명만 담당) — 확정 |
+| `POST /internal/recommendations`(I-21, 서비스 토큰) | 추천 목록 콜백(AI→Spring, "경로 B" push) | 경로·메서드·인증 레인 확정. **[v0.16.1] `listId` 형식은 UUID급 무작위(≥128bit)로 확정**, 순번·타임스탬프 등 추측 가능한 형식 금지. 잔여: `listId` 유효시간. 추천 이유(`reason`)는 SSE가 아니라 I-21 콜백(`reasons[{productId, reason}]`)에 실어 Spring이 Redis 저장 → CH-5 카드에 echo(SSE는 채팅용 자연어 설명만 담당) — 확정 |
 | `GET /api/chat/lists/{listId}`(CH-5, 인증 불필요) | 추천 목록 조회(FE↔Spring, "경로 B" GET) | 경로·메서드·인증 레인 확정. **[2026-07-18] 응답 스키마는 FE와 Spring이 정함 — LLM팀 사안 아니라고 BE가 명시**(우리 리스크 아님) |
 
 **참고**: catalog DB(pgvector) 조회 자체는 Spring API가 아니다 — AI가 자기 소유 DB를 직접 읽는 **내부 쿼리**다(§5 데이터모델 vs API 논의 참조). §4.6/§4.7/§4.9/I-2/I-20만 실제 "API"(시스템 경계를 넘는 호출)이고, catalog DB 2차 압축은 그 경계 안쪽에서 일어난다. catalog DB를 채우는 pull 배치(I-17)는 별도 담당.
@@ -407,7 +409,7 @@ MVP는 모두 config 기본값으로 동작 — 아래는 그 기본값의 정�
 
 ### (D) 외부 의존 리스크
 
-- `/api/chat/lists/{listId}`(CH-5, 인증 불필요)로 경로·메서드·인증 레인은 확정. **I-21 스키마는 "우리(LLM팀)가 확정할 책임"이라고 BE가 명시** — 즉 Spring을 기다리는 게 아니라 우리가 제안해서 확정해야 하는 액션 아이템이다(`listId` 형식·유효시간). `reason`은 I-21 콜백에 포함해 CH-5로 echo하는 방식으로 확정됐다. 반대로 **CH-5 응답 스키마는 FE·Spring 소관으로 명시**돼 우리 리스크에서 빠진다.
+- `/api/chat/lists/{listId}`(CH-5, 인증 불필요)로 경로·메서드·인증 레인은 확정. **I-21 `listId` 형식은 v0.16.1에서 UUID급 무작위(≥128bit)로 확정**했고, 남은 액션 아이템은 유효시간이다. `reason`은 I-21 콜백에 포함해 CH-5로 echo하는 방식으로 확정됐다. 반대로 **CH-5 응답 스키마는 FE·Spring 소관으로 명시**돼 우리 리스크에서 빠진다.
 - `GET /internal/members/{id}/orders`(I-19) 응답 본문이 BE 기준(상태이름 통일·배송비 항상 0원·숫자 id)으로 재작성됐다 — dedup(REQ-REC-100~103)·프로필 구매 소스가 이 응답을 쓰므로 "이대로 가도 되는지" 우리 쪽 확인이 필요하다(BE가 명시적으로 요청).
 - 검색 품질이 Spring DB의 텍스트 검색 능력에 사실상 전적으로 의존한다(AI 벡터 인덱스가 질의 흐름에 아직 안 붙어 있어서) — (A)의 결합 방식 미정과 직결되는 품질 리스크.
 

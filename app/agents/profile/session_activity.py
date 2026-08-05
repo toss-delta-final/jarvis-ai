@@ -80,7 +80,8 @@ def reset() -> None:
         _pending_cleanup.append(old_pool)
 
 
-async def _drain_pending_cleanup() -> None:
+async def _drain_pending_cleanup(*, propagate_errors: bool = False) -> None:
+    first_error: Exception | None = None
     while _pending_cleanup:
         pool = _pending_cleanup.pop()
         try:
@@ -89,8 +90,23 @@ async def _drain_pending_cleanup() -> None:
             task = asyncio.current_task()
             if task is not None and task.cancelling() > 0:
                 raise
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("profile session activity pool cleanup failed", exc_info=True)
+            if first_error is None:
+                first_error = exc
+    if propagate_errors and first_error is not None:
+        raise first_error
+
+
+async def close_pool() -> None:
+    """지금 열려 있는 풀을 **이 이벤트 루프에서** 닫는다 (이슈 #208).
+
+    sync 리셋터가 미룬 close 는 보통 다른 루프에서 실행된다. 살아 있는 풀을 남긴 채 루프가
+    닫히면 teardown 의 `_cancel_all_tasks()` 가 취소를 삼키는 psycopg 워커와 교착한다
+    (processed_events.close_pool 과 동일 근거).
+    """
+    set_pool(None)
+    await _drain_pending_cleanup(propagate_errors=True)
 
 
 async def ensure_schema_on_connection(conn) -> None:  # noqa: ANN001 - psycopg AsyncConnection

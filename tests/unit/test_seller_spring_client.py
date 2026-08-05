@@ -76,19 +76,263 @@ async def test_get_sales_parses_camel_response() -> None:
     assert point.deviation_pct == 1.2
 
 
-async def test_account_events_has_no_brand_in_path() -> None:
-    """I-8은 /internal/account-events (brandId 없음)."""
+async def test_get_sales_accepts_null_deviation_pct() -> None:
+    """[회귀 2026-07-30] 실 Spring(SellerSalesService)은 이동평균 구간 미달 포인트에
+    deviationPct=null 을 내려보낸다 — float 고정 스키마가 ValidationError 를 내며
+    매출 조회 전체가 '응답 형식 오류' degrade 로 실패하던 버그."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "brandId": 93,
+                    "granularity": "daily",
+                    "series": [
+                        {
+                            "date": "2026-06-01",
+                            "sales": 120000,
+                            "orderCount": 4,
+                            "salesCount": 5,
+                            "isAnomaly": False,
+                            "deviationPct": None,
+                        },
+                        {
+                            "date": "2026-06-08",
+                            "sales": 30000,
+                            "orderCount": 1,
+                            "salesCount": 1,
+                            "isAnomaly": True,
+                            "deviationPct": -71.4,
+                        },
+                    ],
+                    "config": {"windowDays": 7, "deviationPct": 30.0},
+                },
+            },
+        )
+
+    client = _client(handler)
+    result = await client.get_sales("93", "2026-06-01", "2026-06-30")
+
+    assert [p.deviation_pct for p in result.series] == [None, -71.4]
+    assert result.series[0].sales == 120000
+
+
+async def test_get_funnel_flattens_stages_response() -> None:
+    """[회귀 2026-07-30] 실 Spring(SellerFunnelResponse)은 stages[] 형태 — 종전 평면
+    스키마는 기본값 0 으로 조용히 통과해 전 단계 0 퍼널로 오분석되던 문제.
+    checkout v1 미계산 구간(count=null)은 0 으로 수렴한다."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "brandId": 93,
+                    "from": "2026-06-01",
+                    "to": "2026-06-30",
+                    "stages": [
+                        {"stage": "product_view", "count": 5000, "source": "events"},
+                        {"stage": "add_to_cart", "count": 800, "source": "events"},
+                        {
+                            "stage": "checkout_start",
+                            "count": None,
+                            "source": "events",
+                            "computable": False,
+                        },
+                        {"stage": "purchase_complete", "count": 120, "source": "orders"},
+                    ],
+                    "conversionRates": {"viewToCart": 0.16, "overall": 0.024},
+                },
+            },
+        )
+
+    client = _client(handler)
+    result = await client.get_funnel("93", "2026-06-01", "2026-06-30")
+
+    assert (result.view, result.cart, result.checkout, result.purchase) == (5000, 800, 0, 120)
+
+
+async def test_account_events_has_no_brand_in_path_and_sends_period() -> None:
+    """I-8은 /internal/account-events (brandId 없음) + from/to 필수 전송(#197).
+
+    from/to 는 Spring AnalysisPeriod.of 필수 — 종전 optional 미전달 호출은 400 이었다.
+    """
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["url"] = str(request.url)
-        return httpx.Response(200, json={"events": []})
+        captured["params"] = dict(request.url.params)
+        return httpx.Response(200, json={"groupBy": "eventType", "rows": []})
 
     client = _client(handler)
-    await client.get_account_events(event_type="LOGIN_FAIL")
+    await client.get_account_events("2026-07-01", "2026-07-31", event_type="LOGIN_FAIL")
 
     assert captured["url"].startswith(f"{BASE_URL}/internal/account-events")
     assert "brand" not in captured["url"].lower().split("?")[0]
+    assert captured["params"]["from"] == "2026-07-01"
+    assert captured["params"]["to"] == "2026-07-31"
+    assert captured["params"]["eventType"] == "LOGIN_FAIL"
+
+
+async def test_account_events_parses_rows_and_group_by_echo() -> None:
+    """I-8 실측 응답(rows — groupBy 별 이형) 파싱(#197 — 구 events 스키마는 상시 0건).
+
+    groupBy=ip 의 IpRow(무차별 대입 신호)도 dict 로 보존돼 요약에 쓸 수 있어야 한다.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "groupBy": "ip",
+                    "eventType": "LOGIN_FAIL",
+                    "from": "2026-07-01",
+                    "to": "2026-07-31",
+                    "rows": [
+                        {
+                            "ipMasked": "121.140.xxx.xxx",
+                            "failCount": 42,
+                            "distinctMembers": 3,
+                            "nullMemberRatio": 0.5,
+                            "isSuspicious": True,
+                            "firstSeen": "2026-07-30T01:00:00+09:00",
+                            "lastSeen": "2026-07-30T02:00:00+09:00",
+                        }
+                    ],
+                },
+            },
+        )
+
+    client = _client(handler)
+    result = await client.get_account_events("2026-07-01", "2026-07-31", group_by="ip")
+
+    assert result.group_by == "ip"
+    assert len(result.rows) == 1
+    assert result.rows[0]["failCount"] == 42
+    assert result.rows[0]["isSuspicious"] is True
+
+
+async def test_get_churn_sends_period_and_inactive_days() -> None:
+    """I-16 쿼리에 from/to/inactiveDays 3종이 실린다(#197 회귀 방지).
+
+    구 코드는 inactiveDays 만 보내 AnalysisPeriod.of 가 400 INVALID_PERIOD 로
+    거부 — 이탈 코호트 조회가 무조건 실패(주 소스 전면 불능)하던 원인.
+    """
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["params"] = dict(request.url.params)
+        return httpx.Response(
+            200,
+            json={"cohortSize": 0, "churnRate": 0.0,
+                  "preChurnSignals": {"cancelCount": 0, "returnReasonsTop": [],
+                                      "zeroResultSearchSessions": 0, "priceIncreaseExposed": 0},
+                  "members": []},
+        )
+
+    client = _client(handler)
+    await client.get_churn("93", "2026-06-01", "2026-07-31", 45)
+
+    assert captured["params"] == {
+        "from": "2026-06-01", "to": "2026-07-31", "inactiveDays": "45"
+    }
+
+
+async def test_get_churn_parses_measured_response_shape() -> None:
+    """I-16 실측 응답(SellerChurnResponse) 파싱(#197 — 구 list[dict] 스키마는
+    preChurnSignals 객체에 ValidationError → degrade 로 새던 원인).
+
+    churnRate 는 fraction 그대로 보존(0.6 — % 변환은 도구 표시 계층 소관),
+    sessions30d 카멜 alias 매핑까지 고정한다.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "brandId": 93,
+                    "from": "2026-06-01",
+                    "to": "2026-07-31",
+                    "inactiveDays": 30,
+                    "cohortSize": 5,
+                    "churnRate": 0.6,
+                    "preChurnSignals": {
+                        "cancelCount": 3,
+                        "returnReasonsTop": [{"reason": "사이즈 불만", "count": 2}],
+                        "zeroResultSearchSessions": 0,
+                        "priceIncreaseExposed": 2,
+                    },
+                    "members": [
+                        {
+                            "memberId": 103,
+                            "lastActivityAt": "2026-06-15T10:00:00+09:00",
+                            "lastLoginAt": None,
+                            "sessions30d": 0,
+                            "preChurnEvent": "RETURNED(상품불량)",
+                        }
+                    ],
+                },
+            },
+        )
+
+    client = _client(handler)
+    result = await client.get_churn("93", "2026-06-01", "2026-07-31", 30)
+
+    assert result.churn_rate == 0.6  # fraction 보존 — 스키마에서 ×100 하지 않는다
+    assert result.cohort_size == 5
+    assert result.pre_churn_signals is not None
+    assert result.pre_churn_signals.cancel_count == 3
+    assert result.pre_churn_signals.return_reasons_top == [{"reason": "사이즈 불만", "count": 2}]
+    assert result.pre_churn_signals.price_increase_exposed == 2
+    assert len(result.members) == 1
+    member = result.members[0]
+    assert member.member_id == 103
+    assert member.sessions_30d == 0  # camel alias "sessions30d" 매핑 고정
+    assert member.last_login_at is None
+    assert member.pre_churn_event == "RETURNED(상품불량)"
+
+
+async def test_get_churn_missing_rate_parses_as_none_not_zero() -> None:
+    """[#197 PR 리뷰] churnRate 키 결측은 0.0 이 아니라 None 으로 남는다.
+
+    기본값 0.0 이면 BE 필드 누락이 조용히 "이탈률 0.0%"로 렌더링된다 — 이 PR 이
+    제거한 silent-mismatch 패턴을 이 필드만 재도입하지 않게 스키마 기본값을 막는다.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"cohortSize": 5,
+                  "preChurnSignals": {"cancelCount": 0, "returnReasonsTop": [],
+                                      "zeroResultSearchSessions": 0, "priceIncreaseExposed": 0},
+                  "members": []},
+        )
+
+    client = _client(handler)
+    result = await client.get_churn("93", "2026-06-01", "2026-07-31", 30)
+
+    assert result.churn_rate is None  # 0.0 위장 금지 — 표시 계층이 미수신으로 처리
+
+
+async def test_get_churn_signals_shape_drift_maps_to_spring_unavailable() -> None:
+    """preChurnSignals 가 다시 배열 등으로 drift 하면 조용한 통과가 아니라
+    SpringUnavailableError 로 관측된다(_validate 단일 지점, #197)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"cohortSize": 5, "churnRate": 0.6, "preChurnSignals": [{"x": 1}]}
+        )
+
+    client = _client(handler)
+    with pytest.raises(SpringUnavailableError):
+        await client.get_churn("93", "2026-06-01", "2026-07-31", 30)
 
 
 async def test_create_product_posts_body_by_alias() -> None:
@@ -217,13 +461,110 @@ async def test_invalid_response_schema_maps_to_spring_unavailable() -> None:
         await client.get_sales("brand-1", "2026-07-01", "2026-07-01")
 
 
+async def test_get_funnel_parses_spring_stages_payload() -> None:
+    """[#194 리뷰] I-7 BE 실측 페이로드(stages[] snake_case)를 평면 4필드로 정확히 변환한다.
+
+    stage 어휘는 snake_case — BE SellerAnalyticsService.funnel 실측
+    ("product_view"/"add_to_cart"/"checkout_start"/"purchase_complete", I-13 counts 의
+    camelCase 와 다름). 이 casing 을 와이어 형태로 검증하는 테스트가 없어 매핑이
+    어긋나도 전 단계 0 으로 새는 것을 잡지 못했다(회귀 방지)."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "brandId": 42,
+                "stages": [
+                    {"stage": "product_view", "count": 1000, "source": "events"},
+                    {"stage": "add_to_cart", "count": 100, "source": "events"},
+                    {
+                        "stage": "checkout_start",
+                        "count": 50,
+                        "source": "events",
+                        "computable": True,
+                    },
+                    {"stage": "purchase_complete", "count": 40, "source": "orders"},
+                ],
+                "conversionRates": {"viewToCart": 0.1},
+            },
+        )
+
+    client = _client(handler)
+    result = await client.get_funnel("brand-1", "2026-07-01", "2026-07-14")
+
+    assert (result.view, result.cart, result.checkout, result.purchase) == (1000, 100, 50, 40)
+    assert result.uncomputable_stages == []
+
+
+async def test_get_funnel_unknown_stage_vocabulary_surfaces_as_uncomputable() -> None:
+    """[#194 리뷰] 매핑에 없는 stage 어휘(casing 변경·오탈자 등)는 조용히 0 으로 새지 않고
+    해당 단계를 미집계로 편입한다 — I-14/I-15 와 동일한 '조용한 빈 값' 은폐 패턴 차단."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        # BE 가 어휘를 camelCase 로 바꿨다고 가정한 오염 페이로드.
+        return httpx.Response(
+            200,
+            json={
+                "stages": [
+                    {"stage": "productView", "count": 1000},
+                    {"stage": "addToCart", "count": 100},
+                    {"stage": "checkout_start", "count": 50},
+                    {"stage": "purchaseComplete", "count": 40},
+                ]
+            },
+        )
+
+    client = _client(handler)
+    result = await client.get_funnel("brand-1", "2026-07-01", "2026-07-14")
+
+    # 매핑된 단계(checkout)만 값이 실리고, 나머지는 0 이 아니라 "미집계"다.
+    assert result.checkout == 50
+    assert set(result.uncomputable_stages) == {"view", "cart", "purchase"}
+    # 하류 전환율도 0% 가 아니라 판정 불가(None)여야 한다.
+    from app.agents.seller import calc
+
+    rates = calc.conversion_rates(result)
+    assert rates["view_to_cart"] is None
+    assert rates["cart_to_checkout"] is None
+
+
+async def test_get_funnel_duplicate_stage_last_entry_wins() -> None:
+    """[#194 리뷰 2] 동일 stage 중복(BE 이상 응답) 시 값·미집계 판정 모두 마지막 항목
+    기준 — 값은 덮이는데 앞 항목의 미집계 판정만 남아 '값은 정상인데 미집계 표시'가
+    되는 불일치 방지."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "stages": [
+                    {"stage": "product_view", "count": 1000},
+                    {"stage": "add_to_cart", "count": 100},
+                    # checkout 중복: 앞 항목은 미집계(count null) → 뒤 유효 항목이 승리해야 함.
+                    {"stage": "checkout_start", "count": None, "computable": False},
+                    {"stage": "checkout_start", "count": 50, "computable": True},
+                    # purchase 중복(역순): 유효 → 미집계. 마지막 기준이므로 미집계로 남아야 함.
+                    {"stage": "purchase_complete", "count": 40},
+                    {"stage": "purchase_complete", "count": None},
+                ]
+            },
+        )
+
+    client = _client(handler)
+    result = await client.get_funnel("brand-1", "2026-07-01", "2026-07-14")
+
+    assert result.checkout == 50
+    assert "checkout" not in result.uncomputable_stages  # 유효값으로 확정 — 미집계 아님
+    assert "purchase" in result.uncomputable_stages  # 마지막 항목이 미집계
+
+
 async def test_get_order_events_passes_stats_param() -> None:
     """stats 플래그가 쿼리 파라미터로 전달된다(opus 리뷰 m6, api-spec §4.4 stats)."""
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["url"] = str(request.url)
-        return httpx.Response(200, json={"events": []})
+        return httpx.Response(200, json={"byStatus": {"PAID": 1}, "cancelReasonsTop": []})
 
     client = _client(handler)
     await client.get_order_events("brand-1", "2026-07-01", "2026-07-14", stats=True)
@@ -231,11 +572,96 @@ async def test_get_order_events_passes_stats_param() -> None:
     assert "stats=true" in captured["url"]
 
 
+async def test_get_order_events_parses_rows_total_and_stats_shape() -> None:
+    """[#194] I-14 BE 실측 응답(rows/total·byStatus/cancelReasonsTop)을 필드 유실 없이
+    파싱한다 — 구 스키마(events/stats)는 extra="allow" 탓에 rows 가 통째로 버려져
+    도구가 항상 '주문 상태 전이 0건'을 반환했다(회귀 방지)."""
+
+    def list_handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "brandId": 42,
+                "rows": [
+                    {
+                        "orderId": 5001,
+                        "fromStatus": "PAID",
+                        "toStatus": "CANCELLED",
+                        "actorType": "USER",
+                        "reason": "단순변심",
+                        "buyerMemberId": 7,
+                        "createdAt": "2026-07-10T09:00:00+09:00",
+                    }
+                ],
+                "total": 130,
+            },
+        )
+
+    client = _client(list_handler)
+    result = await client.get_order_events("brand-1", "2026-07-01", "2026-07-14")
+    assert len(result.rows) == 1
+    assert result.rows[0]["toStatus"] == "CANCELLED"
+    assert result.total == 130
+    assert result.by_status is None  # 목록 모드에선 byStatus 부재(NON_NULL)
+
+    def stats_handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "byStatus": {"PAID": 120, "CANCELLED": 7},
+                "cancelReasonsTop": [{"reason": "단순변심", "count": 4}],
+            },
+        )
+
+    client = _client(stats_handler)
+    result = await client.get_order_events("brand-1", "2026-07-01", "2026-07-14", stats=True)
+    assert result.by_status == {"PAID": 120, "CANCELLED": 7}
+    assert result.cancel_reasons_top == [{"reason": "단순변심", "count": 4}]
+    assert result.rows == []  # stats 모드에선 rows 부재
+
+
+async def test_get_product_changes_parses_rows_and_total() -> None:
+    """[#194] I-15 BE 실측 응답(rows/total)을 타입 모델로 파싱한다 — 구 스키마(logs)는
+    rows 를 통째로 버려 항상 0건이었다. oldValue/newValue 는 문자열(숫자도 문자열)."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "brandId": 42,
+                "rows": [
+                    {
+                        "productId": 101,
+                        "productName": "린넨 셔츠",
+                        "changeType": "STOCK",
+                        "oldValue": "10",
+                        "newValue": "0",
+                        "createdAt": "2026-07-10T09:00:00+09:00",
+                    }
+                ],
+                "total": 8,
+            },
+        )
+
+    client = _client(handler)
+    result = await client.get_product_changes("brand-1", "2026-07-01", "2026-07-14")
+
+    assert result.total == 8
+    row = result.rows[0]
+    assert row.product_id == 101
+    assert row.change_type == "STOCK"
+    assert row.new_value == "0"  # 품절 신호 = STOCK newValue "0" (문자열)
+
+
 # ── I-13 행동 이벤트 (REALIGN ②-3 — 07/17 확정 명세) ──
 
 
 async def test_get_events_serializes_filters_as_query() -> None:
-    """eventType 복수 반복 쿼리·productId 숫자·groupBy 가 URL 에 실린다."""
+    """[#196] eventType 복수는 CSV 1개 파라미터로 직렬화 — 반복 쿼리 금지.
+
+    BE 계약은 String eventType + comma split(api-spec §4.4 I-13 v0.17.4) —
+    구 반복 쿼리(eventType=a&eventType=b)는 Spring 암묵 변환 의존이었다.
+    """
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -256,7 +682,8 @@ async def test_get_events_serializes_filters_as_query() -> None:
 
     url = captured["url"]
     assert "/internal/seller/brand-1/events" in url
-    assert "eventType=product_view" in url and "eventType=add_to_cart" in url
+    assert "eventType=product_view%2Cadd_to_cart" in url  # CSV(콤마 URL 인코딩) 1회
+    assert url.count("eventType=") == 1  # 반복 쿼리로 새지 않는다
     assert "productId=101" in url
     assert "groupBy=date" in url
 
