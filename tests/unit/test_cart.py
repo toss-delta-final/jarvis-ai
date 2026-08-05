@@ -672,6 +672,72 @@ async def test_route_cart_view(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "action" not in _types(events)
 
 
+async def test_route_cart_remove(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[라운드 24] decompose 가 직접 cart_remove 를 산출하면 stream_cart_remove 로 위임된다."""
+    from tests._fakes import FakeLLM
+    import app.services.spring_client as sc
+
+    async def fake_get(*, user_id=None, guest_id=None):
+        return CartView(
+            items=[CartViewItem(cart_item_id=1, product_id=1, product_name="키보드", quantity=1)]
+        )
+
+    async def fake_delete(cart_item_id, *, user_id=None, guest_id=None):
+        assert cart_item_id == 1
+        return None
+
+    monkeypatch.setattr(sc, "get_cart", fake_get)
+    monkeypatch.setattr(sc, "delete_cart_item", fake_delete)
+    llm = FakeLLM(decompose={"intent": "cart_remove", "cart": {}})
+    events = await _collect(run_buyer_turn(_req(message="키보드 빼줘"), _member(), llm=llm))
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_REMOVED"
+
+
+async def test_route_wishlist_add(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[라운드 24] decompose 가 직접 wishlist_add 를 산출하면 stream_wishlist_add 로 위임된다.
+
+    찜 추가는 경로 B 가드(`allowed`)가 반드시 필요하다 — last_reco 시드가 그 가드를 통과시킨다.
+    """
+    from app.agents.buyer.cart.state import get_cart_store
+    from tests._fakes import FakeLLM
+    import app.services.spring_client as sc
+
+    async def fake_add_wishlist(req):
+        assert req.product_id == 101
+        return None
+
+    monkeypatch.setattr(sc, "add_wishlist", fake_add_wishlist)
+    seed_store = await get_cart_store()
+    request = _req(message="이거 찜해줘")
+    await seed_store.set_last_reco(await _thread_key(request, _member()), [(101, "이어폰")])
+    llm = FakeLLM(decompose={"intent": "wishlist_add", "cart": {"productId": 101}})
+    events = await _collect(run_buyer_turn(request, _member(), llm=llm))
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "WISHLIST_ADDED"
+
+
+async def test_route_wishlist_remove(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[라운드 24] decompose 가 직접 wishlist_remove 를 산출하면 stream_wishlist_remove 로 위임된다."""
+    from tests._fakes import FakeLLM
+    import app.services.spring_client as sc
+    from app.schemas.spring import WishlistItem, WishlistView
+
+    async def fake_get_wishlist(user_id):
+        return WishlistView(items=[WishlistItem(product_id=1, name="키보드")])
+
+    async def fake_remove_wishlist(product_id, *, user_id=None):
+        assert product_id == 1
+        return None
+
+    monkeypatch.setattr(sc, "get_wishlist", fake_get_wishlist)
+    monkeypatch.setattr(sc, "remove_wishlist", fake_remove_wishlist)
+    llm = FakeLLM(decompose={"intent": "wishlist_remove", "cart": {}})
+    events = await _collect(run_buyer_turn(_req(message="키보드 찜 빼줘"), _member(), llm=llm))
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "WISHLIST_REMOVED"
+
+
 async def test_last_reco_stored_after_recommendation() -> None:
     """추천 턴이 후보를 last_reco 로 저장해 이후 담기의 productId 해소 소스가 된다."""
     from app.agents.buyer.cart.state import get_cart_store

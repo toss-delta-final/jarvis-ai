@@ -26,7 +26,9 @@ from pydantic import ValidationError
 from app.agents.buyer._frames import progress as progress_frame
 from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.graph import stream_cart_add, stream_cart_view
+from app.agents.buyer.cart.remove import stream_cart_remove
 from app.agents.buyer.cart.state import get_cart_store
+from app.agents.buyer.cart.wishlist import stream_wishlist_add, stream_wishlist_remove
 from app.agents.buyer.fallback import stream_fallback
 from app.agents.buyer.order_status import stream_order_status
 from app.agents.buyer.recommendation.category_mapping import CategoryMapping, dedup_truncate
@@ -869,6 +871,18 @@ async def run_buyer_turn(
     if decision.intent != "cart_add" and pending is not None:
         await cart_store.clear_pending(thread_key)
 
+    # [라운드 24, #116·#117] 담기 허용 목록(경로 B 가드) — cart_add 뿐 아니라 wishlist_add 도
+    # LLM 이 문맥 밖 productId 를 오추출해 찜하는 것을 막으려면 이 값이 **반드시** 필요하다
+    # (api-spec §3.1 [보안]). intent 분기 전에 한 번만 계산해 cart_add·wishlist_add 가 같은
+    # 값을 재사용한다 — 아래 cart_add 분기 docstring 에 있던 근거는 그대로 유효하다.
+    screen = getattr(request, "screen", None)
+    screen_product_ids = (
+        {p.product_id for p in screen.products}
+        if screen is not None and screen_context_active
+        else set()
+    )
+    allowed = {pid for pid, _ in last_reco} | screen_product_ids
+
     if decision.intent == "order_status":
         if trace := current_request_trace():
             trace.set_lane("fallback")
@@ -925,13 +939,7 @@ async def run_buyer_turn(
         #      않으므로(테스트로 고정) LLM 은 screen 상품의 id 도 이름도 알 경로가 없고, id 는
         #      화면에 표시되지 않아 사용자가 말할 수도 없다. screen 상품이 동시에 직전 추천이면
         #      `last_reco` 쪽으로 그대로 allowed 에 남는다 — 정상 경로는 하나도 닫히지 않는다.
-        screen = getattr(request, "screen", None)
-        screen_product_ids = (
-            {p.product_id for p in screen.products}
-            if screen is not None and screen_context_active
-            else set()
-        )
-        allowed = {pid for pid, _ in last_reco} | screen_product_ids
+        # (`screen`·`allowed` 는 위에서 intent 분기보다 먼저 계산해 둔 값을 그대로 쓴다.)
         cart_intent = decision.cart or CartIntent()
         screen_reason: str | None = None
         # [#118] 화면 지시어는 **코드가 해소**한다 — 순번·좌표·"후보 1건" 은 결정적인 규칙이라
@@ -972,6 +980,56 @@ async def run_buyer_turn(
                 message=request.message,
                 allowed_product_ids=allowed,
                 screen_reason=screen_reason,
+                observer=observer,
+            ):
+                yield frame
+        return
+
+    # [라운드 24, #116·#117] decompose 가 cart_remove/wishlist_add/wishlist_remove 를 직접
+    # 산출하면 여기서 바로 각 서브그래프로 위임한다. `cart/graph.py::stream_cart_add` 안의
+    # `classify_cart_utterance`(2선 방어, intent_guard.py)는 그대로 둔다 — decompose 가 이
+    # 발화를 여전히 `cart_add` 로 오분류하면(예: 위 판정 순서 1-1)~1-3) 밖의 표현) 그 안에서
+    # 다시 갈라내 같은 세 서브그래프로 보낸다. 즉 같은 발화가 ① 여기(위 분기) ② 저기(2선 방어)
+    # 두 경로 중 하나로 올 수 있지만 **도착지가 항상 같은 서브그래프**라 중복 판정이 동작을
+    # 바꾸지 않는다 — 결과가 다르면 그건 두 판별기가 이견을 낸 것이지 이 라우팅의 결함이 아니다.
+    if decision.intent == "cart_remove":
+        if trace := current_request_trace():
+            trace.set_lane("cart")
+        with trace_span("buyer.graph.cart", "chain"):
+            async for frame in stream_cart_remove(
+                identity=identity,
+                message=request.message,
+                cart_store=cart_store,
+                thread_key=thread_key,
+                settings=settings,
+                observer=observer,
+            ):
+                yield frame
+        return
+
+    if decision.intent == "wishlist_add":
+        if trace := current_request_trace():
+            trace.set_lane("cart")
+        with trace_span("buyer.graph.cart", "chain"):
+            async for frame in stream_wishlist_add(
+                identity=identity,
+                cart=decision.cart or CartIntent(),
+                settings=settings,
+                allowed_product_ids=allowed,
+                observer=observer,
+            ):
+                yield frame
+        return
+
+    if decision.intent == "wishlist_remove":
+        if trace := current_request_trace():
+            trace.set_lane("cart")
+        with trace_span("buyer.graph.cart", "chain"):
+            async for frame in stream_wishlist_remove(
+                identity=identity,
+                cart=decision.cart or CartIntent(),
+                message=request.message,
+                settings=settings,
                 observer=observer,
             ):
                 yield frame

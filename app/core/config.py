@@ -43,7 +43,18 @@ ProfileRerankInfluence = Literal["tiebreak", "legacy"]
 # decompose 가 산출하는 intent 집합 — 세션 버퍼 제외 intent 검증의 정의역.
 # 정본은 RouteDecision.intent Literal(app/agents/buyer/recommendation/state.py)이며, 런타임
 # import 는 순환이라 여기 복제하고 드리프트는 테스트로 고정한다(test_config_profile.py).
-ROUTE_INTENTS = frozenset({"recommend", "cart_add", "cart_view", "order_status", "general"})
+ROUTE_INTENTS = frozenset(
+    {
+        "recommend",
+        "cart_add",
+        "cart_view",
+        "order_status",
+        "general",
+        "cart_remove",
+        "wishlist_add",
+        "wishlist_remove",
+    }
+)
 
 
 def _deferred_first_event_i1_calls(
