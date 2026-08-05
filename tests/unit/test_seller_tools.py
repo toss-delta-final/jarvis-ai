@@ -66,6 +66,8 @@ class FakeSpringClient:
             churn_rate=0.05, cohort_size=20, pre_churn_signals=PreChurnSignals(), members=[]
         )
         self.recorded_churn_args: tuple | None = None
+        self.churn_calls: list[tuple] = []  # [#290] 현재+직전 기간 2회 호출 기록
+        self.funnel_calls: list[tuple] = []  # [#290] 현재+직전 기간 2회 호출 기록
         self.account_events_result = AccountEventsResult()  # I-8 기본 빈 응답(rows, #197)
         self.recorded_account_args: tuple | None = None
         self._fail = fail or set()
@@ -91,6 +93,7 @@ class FakeSpringClient:
 
     async def get_funnel(self, brand_id, from_, to):
         self.recorded_brand_id = brand_id
+        self.funnel_calls.append((from_, to))  # [#290] 직전 기간 자동 비교 조회 검증용
         self._maybe_fail("get_funnel")
         return FunnelResult(view=100, cart=10, checkout=5, purchase=3)
 
@@ -117,7 +120,11 @@ class FakeSpringClient:
 
     async def get_churn(self, brand_id, from_, to, inactive_days):
         self.recorded_brand_id = brand_id
-        self.recorded_churn_args = (from_, to, inactive_days)
+        # [#290] 직전 기간 자동 비교로 호출이 2회가 됐다 — recorded_churn_args 는
+        # 첫 호출(현재 기간) 유지, 전체 호출은 churn_calls 로 검증한다.
+        if self.recorded_churn_args is None:
+            self.recorded_churn_args = (from_, to, inactive_days)
+        self.churn_calls.append((from_, to, inactive_days))
         self._maybe_fail("get_churn")
         return self.churn_result
 
@@ -401,15 +408,15 @@ async def test_sales_tool_skips_anomaly_detection_for_non_daily_granularity() ->
 
 
 async def test_sales_tool_degrades_when_anomaly_config_invalid(monkeypatch) -> None:
-    """[#194 리뷰 3] detect_sales_anomalies 의 ValueError 가 도구 밖으로 전파되지 않는다
-    (§3.4 degrade 규약) — 기동 시점 검증(config)이 우회·회귀로 뚫려도 매출 요약은
-    살리고 이상 감지만 생략한다."""
-    from app.agents.seller import calc as calc_module
+    """[#194 리뷰 3 계승, #290] detect_seasonal_anomalies 의 ValueError 가 도구 밖으로
+    전파되지 않는다(§3.4 degrade 규약) — 기동 시점 검증(config)이 우회·회귀로 뚫려도
+    매출 요약은 살리고 이상 감지만 생략한다."""
+    from app.agents.seller.analysis import timeseries as timeseries_module
 
     def _boom(*_args, **_kwargs):
-        raise ValueError("window(2)/min_window(3) 설정이 유효하지 않다")
+        raise ValueError("dates(1)/values(2) 길이가 다르다")
 
-    monkeypatch.setattr(calc_module, "detect_sales_anomalies", _boom)
+    monkeypatch.setattr(timeseries_module, "detect_seasonal_anomalies", _boom)
 
     result = await _call_runtime_tool(
         get_sales_timeseries,
@@ -420,6 +427,277 @@ async def test_sales_tool_degrades_when_anomaly_config_invalid(monkeypatch) -> N
     assert "총매출" in result  # 매출 요약은 유지된다
     assert "이상 감지 판정 불가" in result
     assert not result.startswith("Error:")  # 전체 실패로 격하하지 않는다
+
+
+class RecordingSalesClient(FakeSpringClient):
+    """조회 인자·시계열을 기록/주입하는 이중 — lookback 확장 검증용(#290)."""
+
+    def __init__(self, series=None) -> None:
+        super().__init__()
+        self.recorded_sales_args: tuple | None = None
+        self._series = series or []
+
+    async def get_sales(self, brand_id, from_, to, granularity="daily"):
+        self.recorded_brand_id = brand_id
+        self.recorded_sales_args = (from_, to, granularity)
+        from app.schemas.spring import SalesResult
+
+        return SalesResult(series=self._series)
+
+
+async def test_sales_tool_extends_daily_fetch_by_lookback_but_reports_requested_window() -> None:
+    """[#290] daily 는 STL 학습용으로 lookback(28일)만큼 앞당겨 조회하되, 총매출·상세
+    나열·이상 보고는 요청 기간 내로 한정한다 — 판매자가 묻지 않은 기간의 수치·이상을
+    노출하지 않는다(질문 범위 준수)."""
+    series = [
+        # lookback 구간(요청 밖) — 여기 급증(9만원)은 보고되면 안 된다.
+        SalesSeriesPoint(date="2026-06-20", sales=1000, order_count=1),
+        SalesSeriesPoint(date="2026-06-21", sales=90000, order_count=9),
+        SalesSeriesPoint(date="2026-06-22", sales=1000, order_count=1),
+        # 요청 기간.
+        SalesSeriesPoint(date="2026-07-01", sales=1000, order_count=1),
+        SalesSeriesPoint(date="2026-07-02", sales=2000, order_count=2),
+    ]
+    fake = RecordingSalesClient(series)
+
+    result = await _call_runtime_tool(
+        get_sales_timeseries,
+        {"from_date": "2026-07-01", "to_date": "2026-07-02", "granularity": "daily"},
+        fake,
+    )
+
+    # 조회는 28일 앞당긴 2026-06-03 부터(설정 기본값 seller_analysis_lookback_days=28).
+    assert fake.recorded_sales_args == ("2026-06-03", "2026-07-02", "daily")
+    # 총매출·상세는 요청 기간(3,000원/3건)만 — lookback 의 9만원이 섞이면 안 된다.
+    assert "총매출 3,000원" in result
+    assert "주문 3건" in result
+    assert "2026-06-21" not in result  # lookback 구간 수치·이상 미노출
+    assert "기간 2026-07-01~2026-07-02" in result
+
+
+async def test_sales_tool_non_daily_keeps_bucket_starting_before_from_date() -> None:
+    """[PR 리뷰] weekly/monthly 버킷 date 가 버킷 시작일이라 요청 from 보다 이르더라도
+    합계·상세에서 제외하지 않는다 — 요청 기간 필터는 lookback 확장을 한 daily 전용이다
+    (I-6 계약에 버킷 date 의미 정의가 없어 검증 안 된 전제로 정상 버킷을 버리지 않는다)."""
+    series = [
+        # ISO 주 시작(월요일)이 요청 from(수요일)보다 이른 첫 버킷 — 정상 데이터다.
+        SalesSeriesPoint(date="2026-06-29", sales=7000, order_count=7),
+        SalesSeriesPoint(date="2026-07-06", sales=5000, order_count=5),
+    ]
+    fake = RecordingSalesClient(series)
+
+    result = await _call_runtime_tool(
+        get_sales_timeseries,
+        {"from_date": "2026-07-01", "to_date": "2026-07-12", "granularity": "weekly"},
+        fake,
+    )
+
+    assert "총매출 12,000원" in result  # 첫 버킷(7,000원) 포함 — 조용한 축소 없음
+    assert "주문 12건" in result
+    assert "2026-06-29" in result  # 상세 나열에서도 제외되지 않는다
+
+
+async def test_sales_tool_non_daily_fetch_is_not_extended() -> None:
+    """[#290] weekly/monthly 는 이상 감지를 안 하므로 lookback 확장도 없다 — 요청
+    기간 그대로 조회한다(불필요한 집계 비용·구간 왜곡 방지)."""
+    fake = RecordingSalesClient([SalesSeriesPoint(date="2026-07-01", sales=1000, order_count=1)])
+
+    await _call_runtime_tool(
+        get_sales_timeseries,
+        {"from_date": "2026-07-01", "to_date": "2026-07-31", "granularity": "weekly"},
+        fake,
+    )
+
+    assert fake.recorded_sales_args == ("2026-07-01", "2026-07-31", "weekly")
+
+
+async def test_funnel_tool_fetches_previous_adjacent_period_and_reports_significance() -> None:
+    """[#290] 퍼널은 직전 인접 동일 길이 기간을 자동 추가 조회하고, 단계별 Wilson CI 와
+    z-검정 판정(유의한 하락/상승/변화없음)을 붙인다 — drop_pct 단순 임계 대체."""
+    fake = FakeSpringClient()
+
+    result = await _call_runtime_tool(
+        get_funnel, {"from_date": "2026-07-08", "to_date": "2026-07-14"}, fake
+    )
+
+    # 7일 요청 → 직전 7일(2026-07-01~2026-07-07)을 추가 조회한다.
+    assert fake.funnel_calls == [("2026-07-08", "2026-07-14"), ("2026-07-01", "2026-07-07")]
+    # 동일 fixture 를 두 번 받으므로 모든 단계는 "유의한 변화 없음"이다.
+    assert "CI" in result
+    assert "유의한 변화 없음" in result
+    assert "유의한 하락" not in result
+    assert "직전 기간 2026-07-01~2026-07-07 대비" in result
+
+
+async def test_funnel_tool_survives_previous_period_failure() -> None:
+    """[#290] 직전 기간 조회 실패는 보조 조회 실패 — 본 요약·CI 는 유지하고 비교만
+    생략한다(§3.4 관용). 전체를 Error 로 격하하지 않는다."""
+
+    class SecondCallFails(FakeSpringClient):
+        async def get_funnel(self, brand_id, from_, to):
+            self.funnel_calls.append((from_, to))
+            if len(self.funnel_calls) > 1:
+                raise SpringUnavailableError("Spring 콜백 타임아웃(3.0s): get_funnel")
+            return FunnelResult(view=100, cart=10, checkout=5, purchase=3)
+
+    result = await _call_runtime_tool(
+        get_funnel, {"from_date": "2026-07-08", "to_date": "2026-07-14"}, SecondCallFails()
+    )
+
+    assert not result.startswith("Error:")
+    assert "전환율" in result and "CI" in result
+    assert "기간 비교 생략" in result
+
+
+async def test_funnel_tool_excludes_uncomputable_stage_from_test() -> None:
+    """[#290+#184] 미집계 단계(checkout 등)는 CI·검정 대상에서 빠지고 '미집계'로
+    표기된다 — 0% 로 위장해 유의성 검정에 들어가면 안 된다."""
+
+    class UncomputableCheckout(FakeSpringClient):
+        async def get_funnel(self, brand_id, from_, to):
+            self.funnel_calls.append((from_, to))
+            return FunnelResult(
+                view=100, cart=10, checkout=0, purchase=3, uncomputable_stages=["checkout"]
+            )
+
+    result = await _call_runtime_tool(
+        get_funnel, {"from_date": "2026-07-08", "to_date": "2026-07-14"}, UncomputableCheckout()
+    )
+
+    assert "cart→checkout 미집계" in result
+    assert "checkout→purchase 미집계" in result
+    assert "view→cart 10.0%" in result  # 집계 가능한 단계는 정상 판정
+    assert "판단 제외" in result  # 미집계 주의 문구 유지
+
+
+async def test_churn_tool_fetches_previous_period_and_reports_significance() -> None:
+    """[#290] 이탈률에 Wilson CI 가 붙고, 직전 인접 동일 길이 기간과의 z-검정 판정이
+    보고된다. 신호는 코호트 대비 정규화 + 직전 대비 변화(%p)로 순위화된다."""
+    fake = FakeSpringClient()
+    fake.churn_result = ChurnResult(
+        churn_rate=0.6,
+        cohort_size=20,
+        pre_churn_signals=PreChurnSignals(
+            cancel_count=12,
+            return_reasons_top=[{"reason": "사이즈 불만", "count": 5}],
+            price_increase_exposed=8,
+        ),
+        members=[],
+    )
+
+    result = await _call_runtime_tool(
+        get_churn_cohort, {"from_date": "2026-07-08", "to_date": "2026-07-14"}, fake
+    )
+
+    assert fake.churn_calls[0][:2] == ("2026-07-08", "2026-07-14")
+    assert fake.churn_calls[1][:2] == ("2026-07-01", "2026-07-07")
+    assert fake.churn_calls[0][2] == fake.churn_calls[1][2]  # inactiveDays 동일 적용
+    assert "이탈률 60.0%" in result and "CI" in result
+    assert "유의한 변화 없음" in result  # 동일 fixture 2회 → 변화 없음
+    # 신호 순위화: 취소(12) > 가격인상(8) > 반품(5) — 정규화 비중·직전 대비 병기.
+    assert "1) 취소 12건·코호트 60.0%" in result
+    assert "+0.0%p" in result  # 동일 fixture → 변화 0
+    assert "상관이지 인과가 아니다" in result  # 주의 문구 상시 부착
+
+
+async def test_funnel_tool_degrades_stage_with_inconsistent_counts() -> None:
+    """[PR 리뷰] cart>view 같은 단계 역전 카운트(이벤트 유실로 실데이터 가능)가 와도
+    도구는 raise 하지 않고(§3.4) 해당 단계만 판정 생략한다 — 나머지 단계·요약 유지."""
+
+    class InvertedFunnel(FakeSpringClient):
+        async def get_funnel(self, brand_id, from_, to):
+            self.funnel_calls.append((from_, to))
+            return FunnelResult(view=10, cart=25, checkout=5, purchase=3)  # cart > view
+
+    result = await _call_runtime_tool(
+        get_funnel, {"from_date": "2026-07-08", "to_date": "2026-07-14"}, InvertedFunnel()
+    )
+
+    assert not result.startswith("Error:")  # raise 도 전체 Error 격하도 아니다
+    assert "단계 카운트 정합 이상" in result  # view→cart 는 판정 생략 + 사유 표기
+    assert "cart→checkout 20.0%" in result and "CI" in result  # 정합한 단계는 정상 판정
+    assert "조회 10→장바구니 25" in result  # 원 카운트 요약은 유지(위장 없음)
+
+
+async def test_funnel_tool_keeps_current_ci_when_previous_counts_inconsistent() -> None:
+    """[PR 리뷰] 직전 기간 쪽만 카운트 정합 이상이면 현재 기간 CI 는 유지하고
+    기간 비교만 생략한다(부분 degrade)."""
+
+    class PrevInverted(FakeSpringClient):
+        async def get_funnel(self, brand_id, from_, to):
+            self.funnel_calls.append((from_, to))
+            if len(self.funnel_calls) > 1:  # 직전 기간 응답만 역전
+                return FunnelResult(view=10, cart=25, checkout=5, purchase=3)
+            return FunnelResult(view=100, cart=10, checkout=5, purchase=3)
+
+    result = await _call_runtime_tool(
+        get_funnel, {"from_date": "2026-07-08", "to_date": "2026-07-14"}, PrevInverted()
+    )
+
+    assert not result.startswith("Error:")
+    assert "view→cart 10.0% [95% CI" in result  # 현재 기간 CI 유지
+    assert "직전 기간 검정 불가 — 카운트 정합 이상" in result
+
+
+async def test_churn_tool_holds_judgment_on_out_of_range_rate() -> None:
+    """[PR 리뷰] churnRate 가 fraction [0,1] 밖(BE 정합 이상)이면 raise 없이 판정
+    보류로 표기한다 — clamp 로 정상 CI 위장하지 않는다."""
+    fake = FakeSpringClient()
+    fake.churn_result = ChurnResult(
+        churn_rate=1.2, cohort_size=10, pre_churn_signals=PreChurnSignals(), members=[]
+    )
+
+    result = await _call_runtime_tool(
+        get_churn_cohort, {"from_date": "2026-07-08", "to_date": "2026-07-14"}, fake
+    )
+
+    assert not result.startswith("Error:")
+    assert "이탈률 값 이상" in result and "판정 보류" in result
+    assert "CI" not in result  # 정합 깨진 값으로 CI 를 만들지 않는다
+
+
+async def test_churn_tool_skips_comparison_on_out_of_range_previous_rate() -> None:
+    """[PR 리뷰] 직전 기간 churnRate 가 구간 밖이면 비교만 생략한다(현재 판정 유지)."""
+
+    class PrevBadRate(FakeSpringClient):
+        async def get_churn(self, brand_id, from_, to, inactive_days):
+            self.churn_calls.append((from_, to, inactive_days))
+            if len(self.churn_calls) > 1:
+                return ChurnResult(churn_rate=-0.3, cohort_size=10)
+            return ChurnResult(
+                churn_rate=0.5, cohort_size=10, pre_churn_signals=PreChurnSignals(), members=[]
+            )
+
+    result = await _call_runtime_tool(
+        get_churn_cohort, {"from_date": "2026-07-08", "to_date": "2026-07-14"}, PrevBadRate()
+    )
+
+    assert not result.startswith("Error:")
+    assert "이탈률 50.0%" in result and "CI" in result  # 현재 기간 판정 유지
+    assert "직전 기간 비교 불가" in result
+
+
+async def test_churn_tool_skips_comparison_when_previous_cohort_empty() -> None:
+    """[#290] 직전 코호트 0명이면 비교 불가로 표기하고 현재 기간 판정은 유지한다."""
+
+    class EmptyPreviousCohort(FakeSpringClient):
+        async def get_churn(self, brand_id, from_, to, inactive_days):
+            self.churn_calls.append((from_, to, inactive_days))
+            if len(self.churn_calls) > 1:
+                return ChurnResult(churn_rate=0.0, cohort_size=0)
+            return ChurnResult(
+                churn_rate=0.5, cohort_size=10, pre_churn_signals=PreChurnSignals(), members=[]
+            )
+
+    result = await _call_runtime_tool(
+        get_churn_cohort,
+        {"from_date": "2026-07-08", "to_date": "2026-07-14"},
+        EmptyPreviousCohort(),
+    )
+
+    assert "이탈률 50.0%" in result and "CI" in result
+    assert "직전 기간 비교 불가" in result
+    assert "직전 −" in result  # 신호 변화율도 비교 불가 표기
 
 
 async def test_get_order_events_tool_passes_stats_through() -> None:
@@ -678,6 +956,211 @@ async def test_behavior_tool_summarizes_product_rows_with_authority_note() -> No
     assert "권위는 매출 조회(I-6)" in result  # 이벤트≠주문 권위(명세 집계 규칙)
     # [#196] purchaseComplete 미귀속 경고 — 0 을 '구매 전무'로 오해석 금지 문구.
     assert "구매 전무" in result and "0 집계될 수 있다" in result
+
+
+def _behavior_row(pid: int, view: int, cart: int, checkout: int, purchase: int):
+    """군집화 테스트용 I-13 상품 행 헬퍼(#290)."""
+    return BehaviorProductRow(
+        product_id=pid,
+        product_name=f"상품{pid}",
+        counts={
+            "productView": view,
+            "addToCart": cart,
+            "checkoutStart": checkout,
+            "purchaseComplete": purchase,
+        },
+        view_to_cart_rate=(cart / view) if view else None,
+        unique_visitors=max(1, view // 2),
+    )
+
+
+async def test_behavior_tool_appends_cluster_labels_for_product_rows() -> None:
+    """[#290] 상품 수가 충분하면 k-means 군집 요약(규칙 라벨·중심 비율)이 붙는다 —
+    LLM 이 상품 나열이 아니라 군집 단위로 해석·액션 연결하게."""
+    rows = []
+    for i in range(6):  # 전환직결형 패턴
+        rows.append(_behavior_row(100 + i, 200 + 10 * i, 80 + 4 * i, 60 + 3 * i, 50 + 2 * i))
+    for i in range(6):  # 카트이탈형 패턴(담기율 높고 결제 진입 급락)
+        rows.append(_behavior_row(200 + i, 220 + 10 * i, 90 + 4 * i, 5 + i, 2))
+    fake = FakeSpringClient()
+    fake.behavior_result = BehaviorEventsResult(group_by="product", rows=rows, total=len(rows))
+
+    result = await _call_runtime_tool(
+        get_behavior_events, {"from_date": "2026-07-01", "to_date": "2026-07-14"}, fake
+    )
+
+    assert "행동 군집" in result and "실루엣" in result
+    assert "카트이탈형" in result
+    assert "담기율" in result and "결제진입률" in result
+    assert "권위는 매출 조회(I-6)" in result  # 기존 노트 유지
+
+
+async def test_behavior_tool_skips_clustering_for_few_products_with_reason() -> None:
+    """[#290] 상품 수 미달이면 군집을 생략하되 사유를 명시한다 — '군집 없음 = 패턴
+    없음' 오해석 방지."""
+    fake = FakeSpringClient()
+    fake.behavior_result = BehaviorEventsResult(
+        group_by="product",
+        rows=[_behavior_row(100 + i, 100, 10, 5, 2) for i in range(3)],
+        total=3,
+    )
+
+    result = await _call_runtime_tool(
+        get_behavior_events, {"from_date": "2026-07-01", "to_date": "2026-07-14"}, fake
+    )
+
+    assert "군집 생략" in result
+    assert "상품 3개" in result
+    assert "행동 군집" not in result
+
+
+async def test_behavior_tool_date_series_flags_spike_with_price_change_overlap() -> None:
+    """[#290 abuse Point 트랙] date-groupBy 일별 총량의 MAD 스파이크를 표기하고,
+    스파이크일이 가격/재고 변경일과 겹치면 '정상 설명 후보'를 동봉한다(오탐 통제)."""
+
+    class SpikyWithPriceChange(FakeSpringClient):
+        async def get_events(
+            self, brand_id, from_, to, event_type=None, product_id=None, group_by=None
+        ):
+            self.recorded_brand_id = brand_id
+            series = [
+                {"date": f"2026-07-{d:02d}", "productView": 100, "addToCart": 10}
+                for d in range(1, 10)
+            ]
+            series.append({"date": "2026-07-10", "productView": 5000, "addToCart": 400})
+            return BehaviorEventsResult(group_by="date", series=series)
+
+        async def get_product_changes(self, brand_id, from_, to, change_type=None, product_id=None):
+            return ProductChangeLogResult(
+                rows=[
+                    ProductChangeLogRow(
+                        product_id=7,
+                        change_type="PRICE",
+                        old_value="20000",
+                        new_value="9900",
+                        created_at="2026-07-10T09:00:00+09:00",
+                    )
+                ],
+                total=1,
+            )
+
+    result = await _call_runtime_tool(
+        get_behavior_events,
+        {"from_date": "2026-07-01", "to_date": "2026-07-10", "group_by": "date"},
+        SpikyWithPriceChange(),
+    )
+
+    assert "일별 볼륨 스파이크 1건" in result
+    assert "2026-07-10" in result and "robust z" in result
+    assert "정상 설명 후보" in result  # 가격 인하와 겹침 — 봇 단정 오탐 통제
+
+
+async def test_behavior_tool_date_series_survives_change_log_failure() -> None:
+    """[#290] I-15 대조 실패는 보조 실패 — 스파이크 보고는 유지, 겹침 미확인만 고지."""
+
+    class SpikyChangeLogFails(FakeSpringClient):
+        async def get_events(
+            self, brand_id, from_, to, event_type=None, product_id=None, group_by=None
+        ):
+            series = [{"date": f"2026-07-{d:02d}", "productView": 100} for d in range(1, 10)]
+            series.append({"date": "2026-07-10", "productView": 5000})
+            return BehaviorEventsResult(group_by="date", series=series)
+
+        async def get_product_changes(self, brand_id, from_, to, change_type=None, product_id=None):
+            raise SpringUnavailableError("Spring 콜백 타임아웃(3.0s): get_product_changes")
+
+    result = await _call_runtime_tool(
+        get_behavior_events,
+        {"from_date": "2026-07-01", "to_date": "2026-07-10", "group_by": "date"},
+        SpikyChangeLogFails(),
+    )
+
+    assert not result.startswith("Error:")
+    assert "일별 볼륨 스파이크 1건" in result
+    assert "겹침 미확인" in result
+
+
+async def test_behavior_tool_product_rows_flag_ratio_outliers() -> None:
+    """[#290 abuse Contextual 트랙] 브랜드 내 비율 분포의 Tukey 상위 fence 초과 상품을
+    표기한다 — '조회 폭증+구매 0' 패턴은 패턴명을 병기한다."""
+    rows = [_behavior_row(100 + i, 100, 10, 5, 4) for i in range(6)]
+    rows.append(_behavior_row(999, 5000, 12, 1, 0))  # 조회 폭증 + 구매 0
+    fake = FakeSpringClient()
+    fake.behavior_result = BehaviorEventsResult(group_by="product", rows=rows, total=len(rows))
+
+    result = await _call_runtime_tool(
+        get_behavior_events, {"from_date": "2026-07-01", "to_date": "2026-07-14"}, fake
+    )
+
+    assert "상품 비율 이상치" in result
+    assert "[999]" in result
+    assert "구매 0 — 조회 폭증 패턴" in result
+
+
+async def test_behavior_tool_ratio_outlier_not_masked_by_zero_purchase_volume() -> None:
+    """[PR 리뷰] 구매 0 대량 조회 상품이 '조회/구매' 분포를 부풀려 진짜 비율 이상치를
+    가리던 오미탐 회귀 — 비율 트랙(purchase>0 전용)과 구매 0 조회 폭증 트랙(브랜드
+    조회량 분포)을 분리해 둘 다 잡는다."""
+    rows = [_behavior_row(100 + i, 500, 50, 25, 5) for i in range(6)]  # 조회/구매 = 100
+    rows.append(_behavior_row(777, 5000, 60, 30, 10))  # 조회/구매 = 500 — 진짜 비율 이상치
+    rows.append(_behavior_row(999, 4000, 10, 1, 0))  # 구매 0 + 대량 조회 — 별도 트랙
+    fake = FakeSpringClient()
+    fake.behavior_result = BehaviorEventsResult(group_by="product", rows=rows, total=len(rows))
+
+    result = await _call_runtime_tool(
+        get_behavior_events, {"from_date": "2026-07-01", "to_date": "2026-07-14"}, fake
+    )
+
+    # 구 방식이면 [999]의 4,000(원시 조회수)이 분포에 섞여 [777](500)이 fence 아래 숨었다.
+    assert "[777] 조회/구매 500.0" in result
+    assert "[999]" in result and "구매 0 — 조회 폭증 패턴" in result
+
+
+def test_abuse_prompt_mandates_date_group_by_for_point_track() -> None:
+    """[PR 리뷰] Point 트랙(일별 볼륨 스파이크)은 group_by="date" 호출에만 붙는다 —
+    abuse 프롬프트가 그 호출을 명시하지 않으면 트랙이 확률적으로 통째로 빠진다."""
+    from app.agents.seller.prompts import ABUSE_PROMPT
+
+    assert 'group_by="date"' in ABUSE_PROMPT
+    assert "Point 트랙" in ABUSE_PROMPT
+
+
+async def test_account_events_hour_group_reports_night_share(monkeypatch) -> None:
+    """[#290 abuse Collective 트랙] hour-groupBy 는 심야(0~6시) 활동 비중을 계산해
+    붙인다 — 심야 편중은 봇 신호(Tan & Kumar)다."""
+    _enable_account_events(monkeypatch)
+    fake = FakeSpringClient()
+    fake.account_events_result = AccountEventsResult(
+        group_by="hour",
+        rows=[{"key": 2, "count": 300}, {"key": 4, "count": 200}, {"key": 15, "count": 500}],
+    )
+
+    result = await _call_account_events(
+        {"from_date": "2026-07-01", "to_date": "2026-07-31", "group_by": "hour"}, fake
+    )
+
+    assert "심야(0~6시) 활동 비중 50.0%(500/1000건)" in result
+
+
+async def test_account_events_ip_group_sorts_by_fail_count(monkeypatch) -> None:
+    """[#290 abuse Collective 트랙] ip-groupBy 는 failCount 내림차순으로 정렬해 무차별
+    대입 신호를 상단에 노출하고 isSuspicious 건수를 요약한다."""
+    _enable_account_events(monkeypatch)
+    fake = FakeSpringClient()
+    fake.account_events_result = AccountEventsResult(
+        group_by="ip",
+        rows=[
+            {"ipMasked": "1.2.3.*", "failCount": 2, "isSuspicious": False},
+            {"ipMasked": "9.9.9.*", "failCount": 42, "isSuspicious": True},
+        ],
+    )
+
+    result = await _call_account_events(
+        {"from_date": "2026-07-01", "to_date": "2026-07-31", "group_by": "ip"}, fake
+    )
+
+    assert result.index("9.9.9.*") < result.index("1.2.3.*")  # failCount 상위 우선
+    assert "isSuspicious(코드 판정) 1건" in result
 
 
 async def test_behavior_tool_shows_all_seed_products_within_cap() -> None:
@@ -964,7 +1447,9 @@ async def test_churn_tool_reports_missing_rate_as_unreceived_not_zero() -> None:
 
     assert "이탈률 미수신" in result
     assert "판정 보류" in result
-    assert "0.0%" not in result  # 결측의 0% 위장 금지
+    # 결측의 0% 위장 금지 — 단, [#290] 신호 정규화 비중("취소 0건·코호트 0.0%")은
+    # 실측 0 이라 정당하다. 금지 대상은 이탈률 표기뿐이므로 단언을 그 구간으로 좁힌다.
+    assert "이탈률 0.0%" not in result
 
 
 async def test_churn_tool_distinguishes_empty_cohort_from_zero_churn() -> None:
@@ -1051,9 +1536,7 @@ async def test_account_events_tool_disabled_by_default() -> None:
     """
     fake = FakeSpringClient()
 
-    result = await _call_account_events(
-        {"from_date": "2026-07-01", "to_date": "2026-07-31"}, fake
-    )
+    result = await _call_account_events({"from_date": "2026-07-01", "to_date": "2026-07-31"}, fake)
 
     assert result.startswith("Error:")
     assert "비활성" in result
@@ -1128,9 +1611,7 @@ async def test_account_events_tool_degrades_on_spring_failure(monkeypatch) -> No
     _enable_account_events(monkeypatch)
     fake = FakeSpringClient(fail={"get_account_events"})
 
-    result = await _call_account_events(
-        {"from_date": "2026-07-01", "to_date": "2026-07-31"}, fake
-    )
+    result = await _call_account_events({"from_date": "2026-07-01", "to_date": "2026-07-31"}, fake)
 
     assert result.startswith("Error: 계정 이벤트")
 
