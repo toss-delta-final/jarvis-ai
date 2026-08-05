@@ -1238,6 +1238,22 @@ class Settings(BaseSettings):
     # 늘린, 애초에 악성으로 설계된 구간뿐이다.
     request_body_max_bytes: int = Field(default=1_048_576, gt=0)
 
+    # ── 니즈 priority 분류기 (이슈 #281, #60 후속) ──
+    # BUY_ALL 총액 예산이 모든 니즈를 못 담을 때 어떤 니즈부터 뺄지의 근거 신호(REQ-REC-076).
+    # `budget_sets.build_budget_sets` 는 이 신호가 없거나 신뢰할 수 없으면 "최저가가 비싼 leg
+    # 부터"라는 기존 결정론적 순서로 폴백한다(REQ-REC-075) — 즉 이 롤백 스위치를 꺼도 BUY_ALL
+    # 예산 제외 자체는 오늘처럼 계속 동작한다.
+    need_priority_classifier_enabled: bool = True  # 롤백 스위치(끄면 호출 0회 = 오늘 동작)
+    # Literal 로 좁힌다 — `category_scope_tier` 와 같은 이유다. 이 값은 `resolve_model_id` 에
+    # 들어가고 그것은 미지 tier 에 LLMError 를 던지므로, 오타가 퇴화가 아니라 예외가 된다
+    # (분류기는 그 예외를 삼켜 None 으로 떨어뜨리지만, 그러면 기능이 조용히 죽는다).
+    need_priority_tier: Literal["fast", "smart"] = "fast"
+    # 산출은 `{"priorities": [1, 2, 3, ...]}` 다 — 니즈 5개(계약 상한 category_fanout_max ≤
+    # MAX_LISTS=10 근방)면 `[1,2,3,2,1]` 수준의 소출력이다. `category_scope_max_tokens`(32,
+    # `{"scopeFree": true|false}` 한 줄 기준)보다 배열이라 여유를 더 둔다 — 항목당 콤마·공백
+    # 포함 약 3토큰이면 10개도 약 30~40토큰이라 64면 넉넉하다.
+    need_priority_max_tokens: int = Field(default=64, ge=8)
+
     @field_validator("llm_provider", mode="before")
     @classmethod
     def _normalize_llm_provider(cls, value: object) -> object:

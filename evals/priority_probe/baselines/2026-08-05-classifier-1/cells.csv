@@ -1,0 +1,13 @@
+cellId,sampleCount,attempts,failureCount,filled
+camping,8,8,0,True
+cycling,8,8,0,True
+gimbap,8,8,0,True
+gym_start,8,8,0,True
+hiking,8,8,0,True
+home_cafe,8,8,0,True
+kitten,8,8,0,True
+moving,8,8,0,True
+newborn,8,8,0,True
+ramen,8,8,0,True
+study_room,8,8,0,True
+wedding_guest,8,8,0,True
