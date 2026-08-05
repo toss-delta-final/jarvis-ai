@@ -9,6 +9,9 @@
 
 ## [Unreleased]
 
+### Added
+- **#222 — 매핑이 전량 실패한 턴(canonical 을 하나도 못 낸 발화)을 의미 기반 top-N leaf 로 fan-out 검색** — 이슈 원안(top-k 공통 조상[LCA]으로 광역/협소를 판정)은 오케스트레이터의 라이브 카탈로그 실측에서 정확도 0.50(우연 수준)으로 기각했다. 대신 새 판정기를 만들지 않고 #217 이 이미 만든 신호(`CategoryMapping.unresolved` — 거리컷 드롭·택일 null로 canonical 을 못 낸 leg)를 트리거로, 그 앵커의 의미 기반 top-N leaf(`expansion_leaves`)를 그대로 fan-out leg 으로 쓴다. 협소 발화는 canonical 을 내므로 이 경로에 애초에 진입하지 않아 협소 회귀가 구조적으로 0이다. `"화장품 추천해줘"`처럼 #217 LLM 전개가 먼저 legs 를 채우는 case-3 턴은 이 폴백을 타지 않고, #217 도 매핑도 모두 실패하는 턴(비-case3 또는 전개 후에도 전량 실패)에만 보충한다. 확장 fan-out 이 전부 0건이면 카테고리를 지운 무필터 검색으로 1회 되돌려 "결과 있음"이 "0건"으로 바뀌는 회귀를 막고, 확장 턴은 조건 칩에 카테고리를 내지 않는 대신 실제로 훑은 중분류를 고지 token 으로 알린다. `category_expand_enabled` 롤백 스위치 포함. 계약(api-spec) 무변경.
+
 ### Removed
 - **#300 — #118(PR #292)이 만든 이관 전 별도 프로브 스크립트 삭제, screen 지시어 해소 6셀을 `evals/intent_probe`로 흡수** — 그 프로브가 #260이 정본으로 고정한 하네스와 측정 대상이 겹쳐 「프로브 중복 제작 3회차」였다(`docs/lessons.md`). `AnchorSet`에 `screens`·`screenLastRecommendations`를 추가하고 `ProbeContext.includeScreen`/`screenRef`/`lastRecommendationsRef`로 화면 컨텍스트 5종을 표현했으며, 러너가 `decompose` 다음 `resolve_screen_reference`를 배포 경로(`graph.py` cart_add 분기)와 같은 조건·인자로 불러 축 4종(`screenExactPick`/`screenReask`/`screenNoHallucination`/`screenResolution`)과 진단 3종(`screenPromptLayerHitCount`/`screenResolverOverrideCount`/`screenOutOfListConfirmCount`)을 신설했다. 이관 표본이 원본과 문자 단위로 동일함을 JSON diff로 증명했고, 흡수 후 기준선(`baselines/fast-2026-08-05-300-screen/`)이 #118 채택 근거(48/48·안전 셀 8/8·오담기 0)를 47/48·8/8·오담기 0으로 재현했다. `decompose._SYSTEM` 등 프로덕션 로직·프롬프트는 한 글자도 바꾸지 않았다(픽스처 v1.2.0/v4). 계약(api-spec) 무변경.
 

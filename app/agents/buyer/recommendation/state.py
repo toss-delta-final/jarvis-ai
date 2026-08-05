@@ -123,6 +123,10 @@ class RouteDecision:
     # #22) — fan-out 검색 leg 단위(§6).
     # query 는 그 카테고리 전용 검색 키워드. 대표 카테고리 = category_legs[0][0](칩·멀티턴 승계).
     category_legs: list[tuple[str, str | None]] = field(default_factory=list)
+    # [#222] 이번 턴이 광역 발화 → leaf fan-out 폴백으로 category_legs 를 채웠는가. 참이면
+    # 조건 칩에서 카테고리를 뺀다(칩 하나로 8개 leg 을 대표할 수 없다, #51 표시=실제) — 대신
+    # 확장 고지 token 으로 검색한 중분류를 알린다.
+    category_expanded: bool = False
 
 
 @dataclass

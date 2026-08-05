@@ -25,6 +25,7 @@ def _settings(
     override_margin: float = 0.035,
     select_margin_max: float = 0.02,
     select_max_calls: int = 2,
+    expand_legs: int = 8,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         catalog_db_url="postgresql://x",
@@ -35,6 +36,7 @@ def _settings(
         category_select_margin_max=select_margin_max,
         category_select_max_calls=select_max_calls,
         embedding_task_query="RETRIEVAL_QUERY",
+        category_expand_legs=expand_legs,  # [#222] 광역 fan-out 후보 수
     )
 
 
@@ -1382,3 +1384,137 @@ async def test_assembly_failure_keeps_confirmed_legs(caplog) -> None:
         out = await m.run_full([CategoryQuery("가전1", "티비"), CategoryQuery("가전2", "냉장고")])
     assert out.legs == [("가전 > TV", "티비")]  # 터지기 전에 확정된 leg 은 살아남는다
     assert _record(caplog, "category_assembly_failed").error_type == "RuntimeError"
+
+
+# ── expansion_leaves — 광역 발화 fan-out 후보 (#222) ──────────────────────────
+#
+# 이슈 원안(top-k 공통 조상으로 광역/협소 판정)은 오케스트레이터 실측으로 기각(정확도 0.50,
+# 우연 수준). 대신 canonical 을 못 낸 leg(unresolved, #217 이 이미 만든 신호)의 앵커 top-N leaf 를
+# 그대로 fan-out 후보로 낸다. `unresolved` 와 같은 조건(거리컷 드롭·택일 null)에서만 채우고,
+# 조회 예외·히트 0건은 담지 않는다(후보 자체가 없다).
+
+
+async def test_select_candidates_stay_at_top_k_even_when_expand_legs_is_larger() -> None:
+    """[#222 필수 안전장치] `category_expand_legs` 를 올려도 택일(§4.4) 후보 수는 `category_top_k`
+    그대로다.
+
+    조회 k 는 `max(category_top_k, category_expand_legs)` 로 늘어 pg 왕복 없이 더 많은 히트를
+    받아오지만, `select_category` 로 넘기는 후보는 여전히 앞 `category_top_k` 개만 슬라이스한다.
+    여기를 빠뜨리면 택일 후보가 5개에서 8개로 늘어 #115 가 튜닝한 동작이 조용히 바뀐다.
+    """
+    hits = [
+        ("취미 > 수집용품", 0.2000),
+        ("취미 > 종교용품", 0.2010),  # margin 0.001 ≤ select_margin_max(0.02) → 택일 트리거
+        ("도서/음반 > 독서용품", 0.2050),
+        ("생활잡화 > 정리소품", 0.2080),
+        ("문구/사무용품 > 학용품", 0.2090),
+        ("패션잡화 > 모자", 0.2100),  # top_k(5) 밖 — 후보에 들어오면 안 됨
+        ("스포츠 > 캠핑용품", 0.2110),
+        ("주방용품 > 잔/컵", 0.2120),
+    ]
+    sel = _FakeSelector(answer="취미 > 종교용품")
+    m = _FakeMapper(exact=set(), nearest={}, hits={"선물용품": hits})
+    out = await m.run_full(
+        [CategoryQuery(None, "선물용품")],
+        settings=_settings(expand_legs=8),  # top_k(기본 5) < expand_legs(8)
+        select=sel,
+        llm=object(),
+    )
+    assert len(sel.calls) == 1
+    _query, candidates = sel.calls[0]
+    assert len(candidates) == 5  # category_top_k — 8 이 아니다
+    assert candidates == tuple(c for c, _ in hits[:5])
+    assert out.legs == [("취미 > 종교용품", "선물용품")]
+
+
+async def test_expansion_leaves_filled_from_distance_rejected_leg() -> None:
+    """§4 ① 거리컷 드롭 leg → `expansion_leaves` 가 그 앵커의 top-N leaf 로 채워진다.
+
+    `unresolved` 를 채우는 바로 그 조건이다 — 광역 발화("김밥 재료")가 leaf 하나로 못 접히고
+    카테고리가 통째로 사라지는 문제를 이 후보로 메운다.
+    """
+    hits = [
+        ("채소 > 파/마늘/양념채소", 0.3027),
+        ("냉장/냉동식품 > 밥류", 0.3081),
+        ("수산 > 어묵/맛살", 0.3120),
+    ]
+    m = _FakeMapper(exact=set(), nearest={}, hits={"김밥 재료": hits})
+    out = await m.run_full([CategoryQuery(None, "김밥 재료")], settings=_settings(expand_legs=3))
+    assert out.legs == []
+    assert out.unresolved == ["김밥 재료"]
+    assert out.expansion_leaves == [(c, "김밥 재료") for c, _ in hits]
+
+
+async def test_expansion_leaves_filled_from_select_null_leg() -> None:
+    """§4 ② 택일이 "맞는 후보 없음" → `expansion_leaves` 도 채워진다(①과 같은 뜻).
+
+    `nearest[i]` 는 택일이 None 을 골라도 원래 임베딩 top-1 로 남아 있으므로, 그 앵커의 top-k
+    (택일 이전에 조회된 원본 히트)를 그대로 fan-out 후보로 쓸 수 있다.
+    """
+    m = _FakeMapper(exact=set(), nearest={}, hits=_AMBIGUOUS)
+    out = await m.run_full(
+        [CategoryQuery(None, "선물용품")],
+        settings=_settings(expand_legs=3),
+        select=_FakeSelector(answer=None),
+        llm=object(),
+    )
+    assert out.legs == []
+    assert out.unresolved == ["선물용품"]
+    assert out.expansion_leaves == [(c, "선물용품") for c, _ in _AMBIGUOUS["선물용품"]]
+
+
+async def test_expansion_leaves_empty_on_search_failure() -> None:
+    """§4 ③ 조회 예외 leg 은 `expansion_leaves` 에 담지 않는다 — 후보 자체가 없다.
+
+    `unresolved` 도 비지만(기존 계약), 여기서는 후보 리스트가 별도 필드라 **둘 다** 비어야 한다.
+    """
+    m = _FakeMapper(exact=set(), nearest={}, search_raises_for={"청바지"})
+    out = await m.run_full([CategoryQuery(None, "청바지")], settings=_settings(expand_legs=3))
+    assert out.unresolved == []
+    assert out.expansion_leaves == []
+
+
+async def test_expansion_leaves_empty_on_zero_hits() -> None:
+    """§4 ④ 히트 0건 leg 도 `expansion_leaves` 에 담지 않는다 — 담을 후보 자체가 없다."""
+    m = _FakeMapper(exact=set(), nearest={}, hits={"디퓨저": []})
+    out = await m.run_full([CategoryQuery(None, "디퓨저")], settings=_settings(expand_legs=3))
+    assert out.unresolved == []
+    assert out.expansion_leaves == []
+
+
+async def test_expansion_leaves_capped_at_expand_legs() -> None:
+    """확장 leg 수는 `category_expand_legs` 를 넘지 않는다(`dedup_truncate` 절단)."""
+    hits = [(f"카테고리{i} > 소분류{i}", 0.30 + i * 0.001) for i in range(8)]
+    m = _FakeMapper(exact=set(), nearest={}, hits={"애매한 발화": hits})
+    out = await m.run_full([CategoryQuery(None, "애매한 발화")], settings=_settings(expand_legs=3))
+    assert out.expansion_leaves == [(c, "애매한 발화") for c, _ in hits[:3]]
+
+
+async def test_expansion_leaves_dedup_across_legs() -> None:
+    """멀티 leg 에서 같은 canonical 이 겹치면 dedup_truncate 가 첫 등장만 남긴다(기존 legs 규약과 동일)."""
+    hits_a = [("채소 > 파/마늘/양념채소", 0.30), ("수산 > 어묵/맛살", 0.31)]
+    hits_b = [("채소 > 파/마늘/양념채소", 0.29), ("냉장식품 > 밥류", 0.32)]
+    m = _FakeMapper(exact=set(), nearest={}, hits={"김밥 재료": hits_a, "떡볶이 재료": hits_b})
+    out = await m.run_full(
+        [CategoryQuery(None, "김밥 재료"), CategoryQuery(None, "떡볶이 재료")],
+        settings=_settings(expand_legs=4),
+    )
+    canonicals = [c for c, _ in out.expansion_leaves]
+    assert canonicals.count("채소 > 파/마늘/양념채소") == 1  # 중복 제거
+
+
+async def test_expansion_leaves_log_carries_anchor_kind_count_and_mids(caplog) -> None:
+    """관측 로그 `category_expansion_leaves` 가 anchor_kind·count·중복 제거된 중분류를 싣는다."""
+    hits = [
+        ("메이크업 > 페이스메이크업", 0.30),
+        ("스킨케어 > 스킨/토너", 0.31),
+        ("스킨케어 > 에센스/세럼", 0.32),
+    ]
+    m = _FakeMapper(exact=set(), nearest={}, hits={"화장품": hits})
+    with caplog.at_level("INFO"):
+        out = await m.run_full([CategoryQuery(None, "화장품")], settings=_settings(expand_legs=3))
+    assert out.expansion_leaves  # 전제
+    record = _record(caplog, "category_expansion_leaves")
+    assert record.anchor_kind == "query"
+    assert record.count == 3
+    assert record.mids == ["메이크업", "스킨케어"]  # 중복 제거(순서 보존)

@@ -458,6 +458,29 @@ async def _prepare_recommendation(
                     # 그대로 둔다(재전개 금지, 위 주석).
                     mapping = replace(mapping, legs=merged, select_calls=select_used)
         decision.category_legs = mapping.legs
+        # [#222] 매핑이 leg 를 하나도 못 냈고 확장 후보가 있으면 그것으로 fan-out 한다.
+        # **legs 가 비었을 때만** 발동한다 — 하나라도 canonical 이 나온 턴은 종전 경로 그대로다
+        # (협소 회귀 0). 멀티 니즈 중 일부만 unresolved 인 턴의 부분 확장은 v1 범위 밖이다.
+        # [#222 F-3] #217 이 위 needs_expansion 블록에서 먼저 legs 를 채우면(예: "화장품 추천해줘"
+        # → case 3 게이트 통과 → LLM 전개로 재매핑 성공) 이 경로는 타지 않는다 — 이 폴백이 새로
+        # 여는 것은 #217 도 실패하는 턴(비-case3, 또는 전개 후에도 매핑이 전량 실패한 턴)뿐이다.
+        if (
+            not decision.category_legs
+            and mapping.expansion_leaves
+            and settings.category_expand_enabled
+        ):
+            decision.category_legs = mapping.expansion_leaves[: settings.category_expand_legs]
+            decision.category_expanded = True
+            # filters.category 는 여기서 건드리지 않는다(§3, 아래 공유 if 가 category_legs[0][0] 을
+            # 그대로 대표값으로 쓴다) — v1 은 확장 leaf 8개가 여러 중분류에 걸쳐도 대표 하나만
+            # 승계하는 기존 함정을 고치지 않는다(§3 이슈 ④ 비범위). carry_leaf 로 관측만 남긴다.
+            logger.info(
+                "category_expanded",
+                extra={
+                    "legs": len(decision.category_legs),
+                    "carry_leaf": decision.category_legs[0][0],
+                },
+            )
     if decision.category_legs:
         # 대표 canonical — 단일 filters.category 필드·조건 칩·멀티턴 승계 호환(§7).
         decision.filters.category = decision.category_legs[0][0]

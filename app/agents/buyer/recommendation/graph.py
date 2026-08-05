@@ -380,7 +380,13 @@ async def stream_recommendation(
     def _condition_chips(filters: ProductSearchFilters):
         """확정 필터에서 conditions 칩을 만든다(자동 완화 후 재파생할 수 있게 함수로 뽑음)."""
         source = filters.model_copy(update={"keyword": None}) if drop_keyword else filters
-        return build_condition_chips(source, categories=[c for c, _ in decision.category_legs])
+        # [#222] 확장 턴은 카테고리 칩을 내지 않는다 — leg 이 최대 8개라 build_condition_chips 가
+        # 칩을 8개 뱉는데, 칩 하나를 지웠을 때 무엇이 빠지는지 사용자가 알 수 없으면 "표시=실제"
+        # (#51)가 깨진다. 확장 여부는 확장 고지 token(아래)이 전담한다.
+        chip_categories = (
+            [] if decision.category_expanded else [c for c, _ in decision.category_legs]
+        )
+        return build_condition_chips(source, categories=chip_categories)
 
     # [#113 PR #248 리뷰 A] 자동 완화가 **일어날 수 있는 턴이면** conditions 를 검색 뒤로 미룬다.
     # 조건 칩은 원래 검색 **전에** 내보내 화면이 빨리 뜨게 하는데, 자동 완화는 검색 **후에**
@@ -587,6 +593,42 @@ async def stream_recommendation(
         return
 
     search_result, leg_of = search_bundle
+
+    # [#222 F-1] 확장 fan-out 이 0건이면 카테고리 없이 1회만 재검색한다. 확장 leg 은 거리컷이
+    # "맞는 칸이 없다"고 이미 판정해 버린 후보라, 8개가 전부 빗나가면 Spring 이 leg 마다 0건을
+    # 내고 `_merge_fanout_results` 도 정상적으로 빈 결과를 병합해 낸다(위 `search_bundle is None`
+    # 분기는 **전량 leg 실패** 만 잡으므로 여기서는 걸리지 않는다). 확장 이전엔 같은 발화가
+    # `legs=[]` → 카테고리 무필터 검색으로 결과가 나왔으므로, 이대로 두면 이 PR 이 "결과 있음"을
+    # "0건"으로 바꾸는 회귀가 된다(이슈 #222 ⑤). `relaxation` 은 category 를 완화 대상으로 다루지
+    # 않아(`RELAXATION_FIELD_TO_ATTR` 에 없음, relaxation.py:87) 이 경로를 구제하지 못한다.
+    # **확장 턴에만** 적용한다 — 일반 fan-out(사용자가 명시한 카테고리)의 0건은 종전대로 둔다.
+    # 조용히 카테고리를 풀면 "표시=실제"(#51)가 깨지고 이 PR 의 범위 밖이다.
+    category_expand_notice_suppressed = False
+    if decision.category_expanded and search_result.total_count == 0:
+
+        async def _run_search_unfiltered() -> tuple[ProductSearchResult, dict[int, int]] | None:
+            """카테고리를 빼고 1회만 재검색한다 — 비-fan-out 단일검색과 같은 계약(§6 `_run_search`
+            의 `if not legs` 분기와 동일 처리, leg_of 는 leg 개념이 없으니 빈 dict)."""
+            unfiltered = decision.filters.model_copy(update={"category": None})
+            try:
+                found = await search(unfiltered, exclude_product_ids=None)
+                return (found, {}) if found is not None else None
+            except SpringUnavailableError:
+                return None
+            except Exception as exc:  # noqa: BLE001 - 재검색 실패는 원래(0건) 결과를 유지
+                logger.warning("category_expand_zero_fallback_failed", extra={"reason": str(exc)})
+                return None
+
+        fallback_bundle = await _run_search_unfiltered()
+        if fallback_bundle is not None:
+            search_result, leg_of = fallback_bundle
+            # 무필터로 실제 되돌아갔으니 "중분류를 훑었다"는 확장 고지는 이제 거짓 고지다 —
+            # `decision.category_expanded` 자체는 건드리지 않는다(칩 억제는 그대로 유지해야
+            # 한다 — 실제로 안 쓴 확장 leg 8개를 카테고리 칩으로 보여주면 더 큰 거짓말이 된다).
+            category_expand_notice_suppressed = True
+            logger.info(
+                "category_expand_zero_fallback", extra={"legs": len(decision.category_legs)}
+            )
 
     # 최근 구매(윈도우·취소반품 필터) → exact 제외 + 소모품 카테고리 억제(결정 14-F).
     exclude_ids: set[int] = set()
@@ -1170,6 +1212,34 @@ async def stream_recommendation(
 
     if comment:
         yield sse("token", TokenData(text=comment).model_dump(by_alias=True))
+
+    # [#222] 광역 fan-out 확장 고지 — **질문이 아니라 고지**다("더 좁혀 드릴까요?" 같은 되물음은
+    # 넣지 않는다, 그 판정 게이트가 실측으로 없다). 문구는 LLM 이 짓지 않는다 — 확장 leaf 이름의
+    # " > " 앞부분(중분류)을 중복 제거해 그대로 쓴다. DB 값이라 존재하지 않는 카테고리를 말할 수
+    # 없다(#59 재발 방지). 템플릿은 config 주입(rerank_fallback_notice 와 동일 패턴).
+    # [#222 F-1] `category_expand_notice_suppressed` 면 위에서 무필터로 되돌아간 것이다 — 중분류를
+    # 훑었다고 고지해 놓고 실제로는 무필터로 찾은 것이 되면 거짓 고지라 여기서 막는다.
+    if (
+        decision.category_expanded
+        and not category_expand_notice_suppressed
+        and settings.category_expand_notice_enabled
+        and (template := _strip_unsafe(settings.category_expand_notice))
+    ):
+        mids: list[str] = []
+        seen_mid: set[str] = set()
+        for cat, _query in decision.category_legs:
+            mid = cat.split(" > ", 1)[0]
+            if mid not in seen_mid:
+                seen_mid.add(mid)
+                mids.append(mid)
+        if mids:
+            try:
+                expand_notice = template.format(items=" · ".join(mids))
+            except (KeyError, IndexError, ValueError):
+                logger.warning("category_expand_notice_invalid")
+            else:
+                if expand_notice := _strip_unsafe(expand_notice):
+                    yield sse("token", TokenData(text=expand_notice).model_dump(by_alias=True))
 
     # [#133] 최근 구매 제외(I-19) 실패 고지 — **기본 미고지**(config 기본값 "")다. 조회 실패는
     # "중복이 노출됐다"가 아니라 "걸러내지 못했다"라 실제 중복 여부를 알 수 없어 매 턴 노이즈가

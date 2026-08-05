@@ -1813,3 +1813,321 @@ async def test_union_keeps_select_budget_accounting(caplog) -> None:
     assert union.select_calls == 2  # 1(원 매핑) + 1(전개 매핑) — 어느 쪽도 잃지 않는다
     assert union.base_legs == 0
     assert union.expanded_legs == 3
+
+
+# ── 광역 발화 → leaf fan-out 폴백 (#222) ──────────────────────────────────
+#
+# 이슈 원안(top-k 공통 조상으로 광역/협소 판정)은 오케스트레이터 실측으로 기각됐다(정확도 0.50,
+# 우연 수준). 대신 매핑이 canonical 을 하나도 못 낸 turn(`category_legs == []`)에서
+# `CategoryMapping.expansion_leaves`(§4 거리컷·택일 null 로 이미 조회된 의미 기반 top-N leaf)를
+# 그대로 fan-out leg 으로 쓴다. 협소 발화는 canonical 이 나오므로 이 경로에 애초에 진입하지 않아
+# 협소 회귀가 구조적으로 0 이다(테스트 1이 그 불변식을 고정한다).
+
+_BROAD_LEAVES = [  # 실측 "화장품 추천해줘" → 8 leaf / 3~4 중분류(§6 오케스트레이터 데이터)
+    ("메이크업 > 페이스메이크업", "화장품"),
+    ("스킨케어 > 스킨/토너", "화장품"),
+    ("뷰티소품 > 메이크업소품", "화장품"),
+    ("스킨케어 > 에센스/세럼", "화장품"),
+    ("메이크업 > 립메이크업", "화장품"),
+    ("스킨케어 > 클렌징", "화장품"),
+    ("뷰티소품 > 화장솜/면봉", "화장품"),
+    ("메이크업 > 아이메이크업", "화장품"),
+]
+_BROAD_MIDS = ["메이크업", "스킨케어", "뷰티소품"]  # 중복 제거·첫 등장 순서
+
+
+def _broad_decompose(query: str = "화장품") -> dict:
+    """광역 발화 decompose 산출 — case != 3(needs_expansion 게이트 밖, #198 과 직교)."""
+    return {
+        "intent": "recommend",
+        "reply": "",
+        "case": 2,
+        "filters": {},
+        "categoryQueries": [{"category": None, "query": query}],
+    }
+
+
+def _broad_mapper(leaves=_BROAD_LEAVES, unresolved=("화장품",)):
+    """매핑이 canonical 을 하나도 못 내고 확장 후보만 낸 상황을 흉내 낸다(§4 ①·② 트리거)."""
+
+    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
+        return CategoryMapping(legs=[], unresolved=list(unresolved), expansion_leaves=list(leaves))
+
+    return _map
+
+
+def _narrow_mapper_with_expansion_noise(leaves=_BROAD_LEAVES):
+    """협소 발화(canonical 1개 이상)인데 매퍼가 expansion_leaves 도 함께 낸 경우 — 실제로는 안
+    나오지만, "legs 가 하나라도 있으면 확장이 절대 발동하지 않는다"는 불변식을 매퍼 구현 디테일과
+    무관하게 고정하려고 일부러 채워 넣는다."""
+
+    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
+        return CategoryMapping(
+            legs=[("뷰티 > 립스틱", "립스틱")], unresolved=[], expansion_leaves=list(leaves)
+        )
+
+    return _map
+
+
+async def test_narrow_turn_with_any_canonical_leg_is_never_expanded() -> None:
+    """[테스트 1 — 협소 회귀 고정] canonical leg 이 하나라도 있으면 category_legs 는 종전과
+    완전히 동일하고 확장이 발동하지 않는다. 이 PR 의 핵심 안전장치다.
+    """
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters.category)
+        return _res(101, 102)
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="립스틱 추천해줘"),
+            _member(),
+            llm=FakeLLM(decompose=_broad_decompose("립스틱")),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_narrow_mapper_with_expansion_noise(),
+        )
+    )
+    assert calls == ["뷰티 > 립스틱"]  # 확장 leaf 로 fan-out 하지 않음 — 단일 leg 그대로
+    conditions = next(e for e in events if e["type"] == "conditions")["data"]
+    cat_chips = [c for c in conditions["chips"] if c["field"] == "category"]
+    assert len(cat_chips) == 1 and cat_chips[0]["value"] == "뷰티 > 립스틱"  # 칩도 억제 안 됨
+    assert not any("메이크업" in e["data"].get("text", "") for e in events if e["type"] == "token")
+
+
+async def test_broad_turn_fans_out_to_expansion_leaves() -> None:
+    """[테스트 6] legs=[] + expansion_leaves 있음 → category_legs 가 확장 leaf 로 채워져 그
+    카테고리마다 fan-out 검색이 나간다."""
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters.category)
+        return _res(101, 102)
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="화장품 추천해줘"),
+            _member(),
+            llm=FakeLLM(decompose=_broad_decompose()),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_broad_mapper(),
+        )
+    )
+    assert set(calls) == {c for c, _ in _BROAD_LEAVES}  # 8 leaf 전부 검색 leg 이 됐다
+
+
+async def test_expand_disabled_flag_keeps_legacy_degrade(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[테스트 7] `category_expand_enabled=False` 면 확장이 발동하지 않고 종전 무필터 degrade 그대로다."""
+    monkeypatch.setattr(get_settings(), "category_expand_enabled", False)
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters.category)
+        return _res(101)
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="화장품 추천해줘"),
+            _member(),
+            llm=FakeLLM(decompose=_broad_decompose()),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_broad_mapper(),
+        )
+    )
+    assert calls == [None]  # fan-out 없이 단일 무필터 검색(종전 canonical-or-null degrade)
+
+
+async def test_expand_zero_leaves_degrades_to_no_category_filter() -> None:
+    """[테스트 11 — degrade] 확장 leaf 가 0개면 category_legs=[] → filters.category is None
+    (중분류·도메인 이름이 categoryName 으로 Spring 에 나가지 않는다)."""
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters.category)
+        return _res(101)
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="애매한 발화"),
+            _member(),
+            llm=FakeLLM(decompose=_broad_decompose("애매한 발화")),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_broad_mapper(leaves=[]),
+        )
+    )
+    assert calls == [None]
+
+
+async def test_expanded_turn_omits_category_condition_chip() -> None:
+    """[테스트 9] 확장 턴은 카테고리 조건 칩을 내지 않는다 — leg 이 최대 8개라 칩 하나를 지웠을 때
+    무엇이 빠지는지 사용자가 알 수 없으면 "표시=실제"(#51)가 깨진다."""
+
+    async def _search(filters, exclude_product_ids=None):
+        return _res(101)
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="화장품 추천해줘"),
+            _member(),
+            llm=FakeLLM(decompose=_broad_decompose()),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_broad_mapper(),
+        )
+    )
+    conditions = next(e for e in events if e["type"] == "conditions")["data"]
+    assert not any(c["field"] == "category" for c in conditions["chips"])
+
+
+async def test_expand_notice_lists_deduped_mids_and_toggle(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[테스트 10] 고지 문구가 확장 leaf 의 중복 제거된 중분류로 조립되고,
+    `category_expand_notice_enabled=False` 면 종전 문구 그대로다(고지 미발신)."""
+
+    async def _search(filters, exclude_product_ids=None):
+        return _res(101)
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="화장품 추천해줘"),
+            _member(),
+            llm=FakeLLM(decompose=_broad_decompose()),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_broad_mapper(),
+        )
+    )
+    tokens = [e["data"]["text"] for e in events if e["type"] == "token"]
+    expected = get_settings().category_expand_notice.format(items=" · ".join(_BROAD_MIDS))
+    assert expected in tokens
+    # 종전 rerank comment token 은 그대로 별도로 남는다(새 이벤트 아님, 기존 token 을 대체하지 않음).
+    assert "요청 조건에 맞는 추천이에요" in tokens
+
+    monkeypatch.setattr(get_settings(), "category_expand_notice_enabled", False)
+    events2 = await _collect(
+        run_buyer_turn(
+            _req(message="화장품 추천해줘", thread_id="t2"),
+            _member(),
+            llm=FakeLLM(decompose=_broad_decompose()),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_broad_mapper(),
+        )
+    )
+    tokens2 = [e["data"]["text"] for e in events2 if e["type"] == "token"]
+    assert expected not in tokens2
+    assert "요청 조건에 맞는 추천이에요" in tokens2  # 종전 문구는 그대로 남는다
+
+
+async def test_default_settings_combination_expands_broad_turn() -> None:
+    """[기본값 조합 시뮬레이션] `category_expand_*` 를 아무것도 오버라이드하지 않은 기본값
+    조합에서도 확장이 정상 동작한다 — 모든 테스트가 값을 오버라이드하면 배포되는 기본값 조합이
+    깨져도 아무도 모른다(과거 실제 사례)."""
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters.category)
+        return _res(101)
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="화장품 추천해줘"),
+            _member(),
+            llm=FakeLLM(decompose=_broad_decompose()),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_broad_mapper(),
+        )
+    )
+    assert set(calls) == {c for c, _ in _BROAD_LEAVES}
+    conditions = next(e for e in events if e["type"] == "conditions")["data"]
+    assert not any(c["field"] == "category" for c in conditions["chips"])
+    tokens = [e["data"]["text"] for e in events if e["type"] == "token"]
+    assert any("메이크업" in t and "스킨케어" in t and "뷰티소품" in t for t in tokens)
+
+
+# ── F-1 (라운드 2) — 확장 fan-out 전량 0건 → 무필터 1회 재검색 ─────────────────
+#
+# 확장 leg 은 거리컷이 "맞는 칸이 없다"고 이미 판정해 버린 후보다. 8개가 전부 빗나가면 Spring 은
+# leg 마다 0건을 내고, `_merge_fanout_results` 도 정상적으로 빈 결과를 병합한다 — `search_bundle`
+# 은 None 이 아니므로(leg 자체는 살아있다) `SEARCH_FAILED` 로도 안 걸린다. 확장 이전엔 같은 발화가
+# `legs=[]` → 카테고리 무필터 검색으로 결과가 나왔으므로, 손대지 않으면 이 PR 이 "결과 있음"을
+# "0건"으로 바꾸는 회귀가 된다(이슈 #222 ⑤). `relaxation` 은 category 를 완화 대상으로 다루지
+# 않아 이 경로를 구제하지 못한다.
+
+
+async def test_zero_result_expansion_falls_back_to_unfiltered_search_once() -> None:
+    """[F-1] 확장 leg 이 전부 0건 → 카테고리 없이 1회 재검색해 결과를 노출하고, 확장 고지
+    token 은 내지 않는다(무필터로 찾았는데 "중분류를 훑었다"고 하면 거짓 고지가 된다)."""
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters.category)
+        return _res(101, 102) if filters.category is None else _res()  # 확장 leg 은 전부 0건
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="화장품 추천해줘"),
+            _member(),
+            llm=FakeLLM(decompose=_broad_decompose()),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_broad_mapper(),
+        )
+    )
+    # 확장 leg 8개 검색 + 무필터 재검색 정확히 1회 — 무한 폴백이 아니다.
+    assert calls.count(None) == 1
+    assert {c for c in calls if c is not None} == {c for c, _ in _BROAD_LEAVES}
+    done = next(e for e in events if e["type"] == "done")["data"]
+    assert done["finishReason"] != "zero_result"  # 결과가 노출됐다
+    tokens = [e["data"]["text"] for e in events if e["type"] == "token"]
+    assert not any("메이크업" in t for t in tokens)  # 확장 고지 미발신
+
+
+async def test_zero_result_expansion_fallback_still_empty_degrades_to_zero_result() -> None:
+    """[F-1] 무필터 재검색도 0건이면 종전과 같은 zero_result 로 정상 종료한다(SEARCH_FAILED 아님) —
+    재검색 자체가 실패한 게 아니라 정말 맞는 상품이 없는 경우다."""
+
+    async def _search(filters, exclude_product_ids=None):
+        return _res()  # 확장 leg 도 무필터 재검색도 전부 0건
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="화장품 추천해줘"),
+            _member(),
+            llm=FakeLLM(decompose=_broad_decompose()),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_broad_mapper(),
+        )
+    )
+    assert not any(e["type"] == "error" for e in events)
+    done = next(e for e in events if e["type"] == "done")["data"]
+    assert done["finishReason"] == "zero_result"
+
+
+async def test_normal_fanout_zero_result_is_not_rescued_by_unfiltered_fallback() -> None:
+    """[F-1 경계] 확장 턴이 **아닌** 일반 fan-out(사용자가 명시한 카테고리)의 0건은 종전대로
+    무필터로 되돌리지 않는다 — 명시 카테고리를 조용히 풀면 "표시=실제"(#51)가 깨진다."""
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters.category)
+        return _res()  # 명시 카테고리 leg 도 0건
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(),  # DEFAULT_DECOMPOSE — categoryQueries 로 명시 매핑(확장 아님)
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_two_leg_mapper(),  # legs=[...] 로 바로 채워짐 → category_expanded=False
+        )
+    )
+    assert None not in calls  # 무필터 재검색이 붙지 않았다
+    done = next(e for e in events if e["type"] == "done")["data"]
+    assert done["finishReason"] == "zero_result"
