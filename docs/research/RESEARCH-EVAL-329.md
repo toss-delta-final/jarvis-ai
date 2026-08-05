@@ -2,7 +2,7 @@
 
 ## 요약
 
-**판정: `조건부 go`.** 판정 대상은 [#333](https://github.com/toss-delta-final/jarvis-ai/issues/333)이 계획하는 골든셋 v2 설계(후보 깊이 30·하드 네거티브 주입·슬라이스 쿼터·cutoff 유지·다중 비교 통제)다 — 문헌이 이 설계 방향을 지지하되, 전제와 재평가 트리거(§9)가 붙는다.
+**판정: `조건부 go`.** 판정 대상은 [#333](https://github.com/toss-delta-final/jarvis-ai/issues/333)이 계획하는 골든셋 v2 설계(후보 깊이 30·하드 네거티브 주입·슬라이스 쿼터·cutoff 유지·다중 비교 통제)다 — 문헌이 이 설계 방향을 지지하되, 전제와 재평가 트리거(§10)가 붙는다.
 
 - **no-op이 튜닝된 현행 student를 이긴 사건(#275, teacher−no-op은 `inconclusive`)은 이 분야 전반의 현상과 동형이다** — Ferrari Dacrema, Cremonesi, Jannach(2019)가 보고한 "잘 튜닝된 고전 기법이 신경망 기법 대부분을 이긴다"는 재현성 위기와 같은 유형이다.
 - **후보 ≤10인 9/18 케이스에서는 nDCG@10의 벌점이 구조적으로 발생할 수 없다** — Wang et al.(2013)의 NDCG 판별가능성 이론(할인함수 감쇠 속도·컷오프 의존)이 이 관측을 설명하며, Valcarce et al.(2018)의 실험은 컷오프를 낮추는 방향이 아니라 후보 깊이를 컷오프보다 깊게 만드는 방향이 문헌 정합임을 보인다.
@@ -141,15 +141,35 @@ Hayes, Krippendorff(2007)는 Krippendorff's alpha를 평가자 수·척도 수�
 
 오프라인-인간 맞물림 처방: #153 pairwise 승패와 오프라인 primary metric의 시스템 쌍 부호 일치를 보고한다(LLM judge를 쓰면 confusion matrix — #153 acceptance 그대로). 인간 평가는 exploratory(#153이 스스로 명시)이며, confirmatory는 오프라인 CI 규약을 유지한다.
 
-Voorhees(2000)가 주는 안전망은 "검수 불일치가 있어도 비교는 안정적"이라는 것이지만, 그것은 **시스템 비교**에 한한 안정성이다. 케이스 단위 라벨 오류는 분산(sd 0.402)을 키우므로, adjudicator 검수는 그 자체로 분산 축소 수단으로 정당화된다(§8-8).
+Voorhees(2000)가 주는 안전망은 "검수 불일치가 있어도 비교는 안정적"이라는 것이지만, 그것은 **시스템 비교**에 한한 안정성이다. 케이스 단위 라벨 오류는 분산(sd 0.402)을 키우므로, adjudicator 검수는 그 자체로 분산 축소 수단으로 정당화된다(§9-8).
 
-## 8. 골든셋 v2 권고안 — #333 v2 설계에 주는 시사점
+## 8. 최신 동향(2022~2026) — 정초 문헌 이후의 전개
+
+§2~§7의 정초 문헌 이후 2022~2026년 문헌이 같은 결론을 강화하는지 뒤집는지 점검한다.
+
+Castells, Moffat(2022)는 오프라인 실험이 온라인 성과 예측을 지향하지만 상관이 약한 경우가 많고, 실험 구성의 선택지 자체가 결과를 바꾼다는 open challenge를 정리한 서베이를 냈다 — §4의 결론(오프라인 골든셋은 필요조건 게이트일 뿐 충분조건이 아니다)을 재확인하는 최신 서베이다.
+
+Hidasi, Czapp(2023)는 오프라인 평가에 만연한 결함 4가지를 지적했다(구체 내용은 미확인 — "만연한 결함 4가지를 지적" 수준까지만 인용한다). 우리 리포의 "dev fixture 32/32건 오름차순 → passthrough 오독" 사건(§5)과 같은 "평가 파이프라인의 숨은 가정" 계열이 분야 전반에서 계속 보고되고 있음을 보여준다.
+
+Liu, Medlar, Glowacka(2023)는 표본추출 지표 논쟁이 여전히 진행형임을 보였다 — 52개 알고리즘×3개 데이터셋 벤치마크에서 표본 수·전략이 표본추출 지표의 일관성·판별력을 바꾼다. **정직하게 밝힌다**: "표본추출이 판별력을 높인다"는 반론도 존재하지만, 표본 수·전략에 따라 결과가 크게 흔들린다는 사실 자체가 사전 등록 없는 표본추출을 위험하게 만든다 — §9-7(전수 평가 유지) 권고는 이 논쟁의 존재로도 바뀌지 않는다.
+
+Jeunen, Potapov, Ustimenko(2024)는 nDCG가 온라인 보상의 무편향 추정량이 되는 가정을 형식화하고, 대규모 추천 플랫폼의 온·오프라인 상관 분석에서 가정 일부가 위반돼도 무편향 DCG 추정치가 온라인 보상과 강한 상관을 보였다고 보고했다 — primary `nDCG@10` 유지(§9-1)에 최신 근거를 더하고, [#140](https://github.com/toss-delta-final/jarvis-ai/issues/140) 이후 상관 검증 설계(§10 재평가 트리거 ①)에서 쓸 문헌이다.
+
+Wilm, Normann(2025)은 OTTO 이커머스의 대규모 온라인 실험에서 오프라인 지표와 실측 CTR·전환율·판매량 사이의 유의한 정렬을 식별했다 — §4의 오프라인-온라인 괴리 보고들이 "오프라인 무용론"이 아니라 "정렬은 검증 대상"임을 보여주는 반례이자, [#140](https://github.com/toss-delta-final/jarvis-ai/issues/140) 이후 우리가 할 일의 선례다.
+
+Sato(2025)는 "미관측 = 오답"이라는 가정이 평가·학습을 왜곡하며, 표본추출 없이도 negative가 누락될 수 있음을 지적하고 inverse probability weighting 보정을 제안했다 — 하드 네거티브 주입(§9-3) 시 미관측 후보를 자동으로 등급 0 취급하지 말라는 경고다. 우리 골든셋은 `GUIDE.md` 절차상 사람이 등급을 명시 판정하므로 이 함정을 라벨링 절차로 이미 회피하지만, v2에서 자동 채굴한 하드 네거티브 후보도 **반드시 사람 판정을 거쳐 등급 0을 확정**해야 한다는 조건을 명시한다(자동 채굴은 후보 제안까지만 담당).
+
+Parajuli, Vaez Barenji, Ekstrand(2026, **미심사 프리프린트**)는 데이터 필터링 임계·후보 집합 구성 등 오프라인 평가 설계 선택이 모델 비교 순위를 바꾼다고 보고했다 — Cañamares, Castells(2020, §6) 계열의 최신 확장이며, 풀 구성 규칙 고정(§9-7)의 근거를 보강한다.
+
+최신 문헌은 §9 권고안·§10 판정을 뒤집지 않고 강화한다. 다만 Sato(2025)로 §9-3(하드 네거티브)에 라벨 확정 조건이 추가된다.
+
+## 9. 골든셋 v2 권고안 — #333 v2 설계에 주는 시사점
 
 | # | 권고 | 문헌 근거 | #328 규약 정합 | 관측 가능한 판정 |
 |---|---|---|---|---|
 | 1 | **cutoff**: primary `overall.ndcgAtK.10` 1개 유지. 후보 깊이가 채워지기 전까지 nDCG@5 병기는 exploratory 라벨로만 | Valcarce et al. 2018(컷오프를 낮추는 게 아니라 깊이를 올리는 것이 정방향) | #146·#328 공통 규약 "다중 비교 통제" 정합 | 산출물에 primary 1개 + exploratory 라벨 자동 표기 |
 | 2 | **후보 깊이 목표**: 순위 평가 케이스 후보 수를 서빙 상한 30으로(중앙값 30, 후보 ≤10 케이스 0건) | Wang et al. 2013(컷오프 대비 깊이), Valcarce et al. 2018, #275 실측(9/18 무벌점 구조) | #328 공통 규약 "슬라이스 쿼터와 표본 산정" 정합 | 산출물이 후보 깊이 분포 히스토그램·≤10 비율을 인쇄 |
-| 3 | **하드 네거티브 비율·채굴 규칙**: 케이스당 등급≥1 후보 비율 ≤ 1/4(현재 평균 0.389). 부족분은 3채널로 채운다 — ① 임베딩 최근접 오답(ANCE 유추) ≥ 50%, ② 제약 위반 근접 후보(가격 초과·금지 속성) 명시 비율, ③ 무작위 카탈로그 ≤ 25% | Karpukhin et al. 2020·Xiong et al. 2021(채굴 채널 유추), Bellogín et al. 2017(인기 편향 주입 금지), Cañamares&Castells 2020(풀 구성이 판정을 바꿈) | #333 acceptance 그대로 | 주입 규칙이 문서화·재현 가능 |
+| 3 | **하드 네거티브 비율·채굴 규칙**: 케이스당 등급≥1 후보 비율 ≤ 1/4(현재 평균 0.389). 부족분은 3채널로 채운다 — ① 임베딩 최근접 오답(ANCE 유추) ≥ 50%, ② 제약 위반 근접 후보(가격 초과·금지 속성) 명시 비율, ③ 무작위 카탈로그 ≤ 25% | Karpukhin et al. 2020·Xiong et al. 2021(채굴 채널 유추), Bellogín et al. 2017(인기 편향 주입 금지), Cañamares&Castells 2020(풀 구성이 판정을 바꿈), Sato 2025(미관측을 자동 오답 취급 금지) | #333 acceptance 그대로 | 주입 규칙이 문서화·재현 가능, 채굴 후보는 사람 등급 판정 후에만 등급 0 확정(Sato 2025) |
 | 4 | **슬라이스 쿼터 산정식**: `N_s = ⌈((z_{1−α_c/2}+z_{1−β})·sd_s/δ_s)²⌉`, α_c는 사전 등록 confirmatory 슬라이스 m개에 Holm–Bonferroni 보정, sd_s는 v2 재실측(그 전까지 pooled 0.402를 상한 가정). 1차 쿼터는 슬라이스당 30건(≈±0.14)에서 시작 | Sakai 2018, Carterette 2012 | #328 공통 규약 "슬라이스 쿼터와 표본 산정" 정합 | 슬라이스별 N이 산출물에 인쇄 |
 | 5 | **다중 비교 통제**: confirmatory 슬라이스 2~3개 사전 등록 + Holm 보정, 나머지는 산출물이 스스로 exploratory 라벨 | Sakai 2018, Carterette 2012, Fuhr 2017 | #328 공통 규약 "다중 비교 통제" 그대로 — 충돌 없음 | exploratory/confirmatory 라벨 자동 분리 |
 | 6 | **no-op 상설 등록**: 모든 랭킹 비교 산출물에 no-op 자동 병기 | Ferrari Dacrema et al. 2019 | #328 공통 규약 "trivial baseline 의무" | no-op 행이 모든 비교표에 자동 포함 |
@@ -158,7 +178,7 @@ Voorhees(2000)가 주는 안전망은 "검수 불일치가 있어도 비교는 �
 
 각 항목은 #328 규약과 충돌 없이 정합·구체화한다 — 조사 과정에서 충돌은 발견되지 않았다.
 
-## 9. 판정: `조건부 go`
+## 10. 판정: `조건부 go`
 
 - 전제: ① v2 재구축 시 `datasetVersion`/`datasetHash` 상향 + 전 baseline 재실행(#328 공통 규약 "데이터셋 변경 시 datasetVersion·datasetHash 상향 + 전 baseline 재실행"·GUIDE.md), ② adjudicator 검수 완료 후에만 confirmatory 사용, ③ 성공 판정은 `teacher − no-op` paired bootstrap 95% CI의 0 배제(#333 acceptance = #275 재평가 조건 1), ④ 슬라이스 confirmatory 판정은 사전 등록 + 보정 후에만.
 - 재평가 트리거: ① 실사용 행동 로그([#140](https://github.com/toss-delta-final/jarvis-ai/issues/140)) 축적 시 오프라인-온라인 상관 검증 설계(§4 문헌 승계), ② v2 슬라이스별 sd 실측이 0.402와 크게 다르면 쿼터 재산정, ③ 서빙 후보 상한(30)이 계약에서 바뀌면 깊이 목표·cutoff 재검토, ④ holdout 슬라이스화(#333)가 release 게이트 요건을 바꾸면 봉인 규약(GUIDE.md) 재확인.
@@ -184,6 +204,9 @@ Voorhees(2000)가 주는 안전망은 "검수 불일치가 있어도 비교는 �
 - Gomez-Uribe·Hunt(2016)의 Netflix 세부 프로세스 수치.
 - Jeunen(2019)의 세부 실험 수치(초록 수준만 확인).
 - 슬라이스별 sd 실측 부재 — pooled 0.402를 상한으로 가정했다.
+- Hidasi&Czapp(2023)이 지적한 "만연한 결함 4가지"의 구체 내용(제목 수준만 확인).
+- Sato(2025)의 inverse probability weighting 보정 세부 수식·실험 수치(제안 존재만 확인).
+- Parajuli, Vaez Barenji, Ekstrand(2026)은 **미심사 프리프린트**(arXiv 제출뿐 — peer review 미완, 결과 세부는 인용하지 않고 설계 선택이 순위를 바꾼다는 주장 수준까지만 인용).
 
 ## 참고 문헌
 
@@ -209,3 +232,10 @@ Voorhees(2000)가 주는 안전망은 "검수 불일치가 있어도 비교는 �
 - Lee Xiong, Chenyan Xiong, Ye Li, Kwok-Fung Tang, Jialin Liu, Paul Bennett, Junaid Ahmed, Arnold Overwijk, "Approximate Nearest Neighbor Negative Contrastive Learning for Dense Text Retrieval", ICLR 2021 (arXiv:2007.00808).
 - Ben Carterette, Paul N. Bennett, David Maxwell Chickering, Susan T. Dumais, "Here or There: Preference Judgments for Relevance", ECIR 2008, LNCS 4956, pp. 16–27.
 - Andrew F. Hayes, Klaus Krippendorff, "Answering the Call for a Standard Reliability Measure for Coding Data", Communication Methods and Measures 1(1), pp. 77–89, 2007, DOI `10.1080/19312450709336664`.
+- Pablo Castells, Alistair Moffat, "Offline recommender system evaluation: Challenges and new directions", AI Magazine 43(2), pp. 225–238, 2022, DOI `10.1002/aaai.12051`.
+- Balázs Hidasi, Ádám Tibor Czapp, "Widespread Flaws in Offline Evaluation of Recommender Systems", RecSys 2023, DOI `10.1145/3604915.3608839` (arXiv:2307.14951).
+- Yang Liu, Alan Medlar, Dorota Glowacka, "On the Consistency, Discriminative Power and Robustness of Sampled Metrics in Offline Top-N Recommender System Evaluation", RecSys 2023, pp. 1152–1157, DOI `10.1145/3604915.3610651`.
+- Olivier Jeunen, Ivan Potapov, Aleksei Ustimenko, "On (Normalised) Discounted Cumulative Gain as an Off-Policy Evaluation Metric for Top-n Recommendation", KDD 2024, DOI `10.1145/3637528.3671687` (arXiv:2307.15053).
+- Timo Wilm, Philipp Normann, "Identifying Offline Metrics that Predict Online Impact: A Pragmatic Strategy for Real-World Recommender Systems", RecSys 2025, DOI `10.1145/3705328.3748111` (arXiv:2507.09566).
+- Masahiro Sato, "Unobserved Negative Items in Recommender Systems: Challenges and Solutions for Evaluation and Learning", RecSys 2025, pp. 1317–1321, DOI `10.1145/3705328.3759315`.
+- Sushobhan Parajuli, Samira Vaez Barenji, Michael D. Ekstrand, "On the Convergent Validity of Offline Evaluation Designs for Recommender Systems", arXiv:2607.25097, 2026(미심사 프리프린트).
