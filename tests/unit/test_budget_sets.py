@@ -228,3 +228,126 @@ def test_budget_sets_limit_ten_legs_to_contract_max_in_expensive_first_order() -
     assert plan.limited_legs == (9,)
     assert plan.unavailable_legs == ()
     assert all(len(item.product_ids) <= 9 for item in plan.sets)
+
+
+def test_budget_sets_priority_beats_price_when_dropping() -> None:
+    # leg 0(priority 3·선택)은 최저가가 가장 싸다(1,000). 가격만 보면 leg 1(30,000)이
+    # 먼저 빠져야 하지만, priority 가 이겨서 가장 싼 leg 0 이 먼저 빠진다.
+    pools = [[(1, 1_000)], [(2, 30_000)], [(3, 10_000)]]
+
+    plan = build_budget_sets(
+        pools=pools,
+        total_budget=40_000,
+        max_sets=3,
+        max_combinations=20_000,
+        max_items=9,
+        priorities=[3, 1, 2],
+    )
+
+    assert plan is not None
+    assert plan.dropped_legs == (0,)
+    assert plan.sets[0].legs == (1, 2)
+
+
+def test_budget_sets_priority_one_dropped_last() -> None:
+    # leg 2·3 은 둘 다 priority 1(필수)이라 예산이 아주 빡빡하면 결국 하나는 빠져야 하지만,
+    # priority 3(leg 0) → priority 2(leg 1) 이 먼저 전부 빠진 뒤에야 그 차례가 온다.
+    pools = [[(1, 10_000)], [(2, 10_000)], [(3, 10_000)], [(4, 5_000)]]
+
+    plan = build_budget_sets(
+        pools=pools,
+        total_budget=12_000,
+        max_sets=3,
+        max_combinations=20_000,
+        max_items=9,
+        priorities=[3, 2, 1, 1],
+    )
+
+    assert plan is not None
+    assert plan.dropped_legs == (0, 1, 2)
+    assert plan.sets[0].legs == (3,)
+
+
+def test_budget_sets_priority_tie_preserves_price_tie_break() -> None:
+    pools = [[(1, 30_000)], [(2, 20_000)], [(3, 10_000)]]
+
+    with_uniform_priority = build_budget_sets(
+        pools=pools,
+        total_budget=25_000,
+        max_sets=3,
+        max_combinations=20_000,
+        max_items=9,
+        priorities=[2, 2, 2],
+    )
+    without_priority = build_budget_sets(
+        pools=pools,
+        total_budget=25_000,
+        max_sets=3,
+        max_combinations=20_000,
+        max_items=9,
+    )
+
+    assert with_uniform_priority is not None and without_priority is not None
+    assert with_uniform_priority.dropped_legs == without_priority.dropped_legs
+    assert with_uniform_priority == without_priority
+
+
+def test_budget_sets_max_items_limit_respects_priority_reverse_order() -> None:
+    # 전 leg 가격이 같으므로 가격 tie-break 는 무력화된다 — priority 만으로 순서가 갈린다.
+    pools = [[(leg + 1, 1_000)] for leg in range(10)]
+    priorities = [1] * 9 + [3]
+
+    plan = build_budget_sets(
+        pools=pools,
+        total_budget=None,
+        max_sets=3,
+        max_combinations=20_000,
+        max_items=9,
+        priorities=priorities,
+    )
+
+    assert plan is not None
+    assert plan.limited_legs == (9,)
+
+
+def test_budget_sets_priority_fallback_on_untrusted_signal() -> None:
+    pools = [[(1, 30_000)], [(2, 20_000)], [(3, 10_000)]]
+    baseline = build_budget_sets(
+        pools=pools,
+        total_budget=25_000,
+        max_sets=3,
+        max_combinations=20_000,
+        max_items=9,
+    )
+
+    untrusted_inputs = [
+        [1, 2],  # 길이 불일치
+        [1, None, 2],  # None 원소
+        [1, 0, 2],  # 범위 밖(0)
+        [1, 4, 2],  # 범위 밖(4)
+        [1, True, 2],  # bool 은 int 서브클래스지만 priority 로 인정하지 않는다
+    ]
+    for priorities in untrusted_inputs:
+        plan = build_budget_sets(
+            pools=pools,
+            total_budget=25_000,
+            max_sets=3,
+            max_combinations=20_000,
+            max_items=9,
+            priorities=priorities,
+        )
+        assert plan == baseline, priorities
+
+
+def test_budget_sets_priority_does_not_change_single_leg_over_budget_contract() -> None:
+    assert (
+        build_budget_sets(
+            pools=[[(1, 30_000)]],
+            total_budget=25_000,
+            max_sets=3,
+            max_combinations=20_000,
+            max_items=9,
+            priorities=[1],
+        )
+        is None
+    )
