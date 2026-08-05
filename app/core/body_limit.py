@@ -87,12 +87,14 @@ async def _reject(
     # errorType 은 와이어 코드가 아니라 §6.3 내부 집계 라벨이다 — 와이어 error.code 는 위와 같이
     # 항상 BAD_REQUEST (2-a). emit_rejection 은 path 를 알려진 값(allowlist, observability.py
     # safe_text_values)만 기록하고 그 밖은 폐기한다 — 이 저장소의 로그 정책이다.
+    # [리뷰 3차 C-2] content_length·received_bytes 는 여기 넘기지 않는다: emit_rejection 의
+    # allowlist(safe_text_values/retryable/식별자 fingerprint)에 정수 바이트 수 자리가 없어
+    # 넘겨도 조용히 버려진다(실측: 구조화 로그 chat_request JSON 에 두 필드가 전혀 안 찍힘) —
+    # 바이트 수는 아래 평문 logger.info 가 담당한다(역할 분담).
     emit_rejection(
         request_id,
         "BODY_TOO_LARGE",
         path=path,
-        content_length=content_length,
-        received_bytes=received_bytes,
     )
     # [리뷰 2차 R-3] 요청 본문 원문은 절대 로깅하지 않는다(§6.3 b) — 아래는 rid/바이트 수만.
     # `path` 는 여기 넣지 않는다: 이 미들웨어는 전 경로에 적용돼 scope["path"] 가 공격자가 통제
@@ -188,10 +190,15 @@ class BodySizeLimitMiddleware:
             # 완전 무음으로 삼키면 그 자리에 섞여 들어온 진짜 버그도 함께 증발한다(응답은 이미
             # 나갔으니 증상도 안 보인다) — 타입 이름만 남긴다. exc_info·str(exc) 는 쓰지 않는다:
             # 예외 메시지에 요청 본문 일부가 실릴 수 있어(§6.3 b 본문 로깅 금지) 위반 소지가
-            # 있다. debug 레벨을 고른 이유는 대부분이 예상된 disconnect 계열이라 warning 이상으로
-            # 올리면 운영 로그가 매 거절마다 잡음을 낸다 — 원인 분석이 필요하면 타입 이름으로
-            # 코드를 찾아가면 된다.
-            logger.debug(
+            # 있다. [리뷰 3차 C-1] warning 을 쓴다: 이 앱은 configure_logging() 을 인자 없이
+            # 불러 루트 로거가 INFO 라(app/core/logging.py, app/main.py create_app()) debug 는
+            # 운영에서 한 줄도 안 나온다. 실측(raw ASGI 흉내가 아니라 TestClient 로 실제
+            # FastAPI 스택에 오버사이즈 /chat 요청을 쏨): 이 except 분기는 발동하지 않았다 —
+            # FastAPI 가 `await request.body()` 를 자체 try/except 로 감싸 disconnect 를
+            # HTTPException(400) 으로 바꾸고, 그 400 은 guarded_send 가 삼켜 예외가 이
+            # 미들웨어까지 올라오지 않는다. 즉 여기 걸리는 예외는 정상 거절 경로가 아닌
+            # 예상 밖 사건이라 warning 이 맞고, 운영 잡음도 나지 않는다.
+            logger.warning(
                 "downstream exception swallowed after body-limit rejection type=%s",
                 type(exc).__name__,
             )

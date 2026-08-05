@@ -220,13 +220,19 @@ async def test_reject_skips_envelope_when_downstream_already_started_response(
     assert starts[0]["status"] == 200
 
 
-# ─────────── 2c. 리뷰 1차 F-2 · 거절 후 다운스트림 예외를 무음이 아니라 debug 로 남긴다 ───────────
+# ─────────── 2c. 리뷰 1차 F-2/3차 C-1 · 거절 후 다운스트림 예외를 무음이 아니라 warning 으로 남긴다 ───────────
 
 
 async def test_downstream_exception_after_reject_is_logged_not_silent(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """거절(rejected=True) 후 다운스트림이 던지는 예외는 삼키되, 타입 이름을 debug 로 남긴다."""
+    """거절(rejected=True) 후 다운스트림이 던지는 예외는 삼키되, 타입 이름을 warning 으로 남긴다.
+
+    [리뷰 3차 C-1] 앱의 실제 루트 로거 레벨은 INFO 다(configure_logging() 기본값, debug 는
+    운영에서 한 줄도 안 나온다) — caplog 를 INFO 로 잡아 이 레코드가 그 레벨에서도 실제로
+    남는지 증명한다. DEBUG 로 억지로 낮춰 놓고 통과시키던 이전 판은 이 결함(운영 완전 무음)을
+    못 잡았다.
+    """
     settings = get_settings()
     monkeypatch.setattr(settings, "request_body_max_bytes", 10)
 
@@ -245,11 +251,13 @@ async def test_downstream_exception_after_reject_is_logged_not_silent(
 
     import logging
 
-    with caplog.at_level(logging.DEBUG, logger="app.core.body_limit"):
+    with caplog.at_level(logging.INFO, logger="app.core.body_limit"):
         await middleware(scope, fake_raw_receive, fake_send)  # 예외를 전파하지 않아야 한다(삼킴)
 
     assert any(
-        "RuntimeError" in record.message and "swallowed" in record.message
+        "RuntimeError" in record.message
+        and "swallowed" in record.message
+        and record.levelno == logging.WARNING
         for record in caplog.records
     )
     # 본문 원문("x"*100)이나 예외 메시지 문자열은 로그에 실리지 않는다(§6.3 b) — 타입 이름만.
