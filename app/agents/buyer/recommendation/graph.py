@@ -845,22 +845,35 @@ async def stream_recommendation(
             logger.warning("popular_products_failed", extra={"reason": str(exc)})
             found = None
         if found is not None:
-            # [#311 리뷰] 총액 예산을 말한 턴은 **예산 안의 후보만** 남긴다. 세트로 묶지 않고
-            # 대안으로 보여주므로 상품 하나가 예산 이하이면 된다 — 무엇을 몇 개 살지 사용자가
-            # 말하지 않은 턴에 조합을 지어내면 근거 없는 세트가 된다(`has_total_budget` 참조).
-            products = found.products
-            if decision.total_budget is not None:
-                products = within_budget(products, decision.total_budget)
-            # [#336] 상품당 가격 제약(priceMin/priceMax) — 총액 예산과 별개 축이라 함께 적용될
-            # 수 있다. 둘 다 없으면 `within_price_range` 는 사본만 돌려줘 순서·내용이 그대로다.
-            products = within_price_range(
-                products, decision.filters.price_min, decision.filters.price_max
-            )
-            if len(products) != len(found.products):
-                found = ProductSearchResult(products=products, total_count=len(products))
-            # **0건도 성공이다**(§4.17) — 빈 배열이면 하류 zero-result 경로가 카드 없이 답한다.
-            # 여기서 degrade 로 처리하면 이 이슈가 없애려는 무필터 I-1 을 도로 부른다.
-            return (found, {})
+            # [리뷰 R1] 필터링~재조립 전체를 try 로 감싼다 — 이 구간은 `asyncio.gather`(위
+            # 호출부)를 타는 코루틴 안이라, 여기서 예외가 새면 제너레이터가 done 도 error 도
+            # 없이 그대로 죽는다(`no_condition.rank_by_profile` [PR #311 리뷰] 주석이 같은
+            # 파일에서 재현 확인한 바로 그 실패 모양). §7 원칙("실패해도 턴을 죽이지 않는다")
+            # 에 맞춰 실패 시 `found = None` 으로 떨궈 아래 popular_degraded 폴백(무필터
+            # `_run_search`)으로 합류시킨다 — I-3 자체 실패와 같은 처치다.
+            try:
+                # [#311 리뷰] 총액 예산을 말한 턴은 **예산 안의 후보만** 남긴다. 세트로 묶지
+                # 않고 대안으로 보여주므로 상품 하나가 예산 이하이면 된다 — 무엇을 몇 개 살지
+                # 사용자가 말하지 않은 턴에 조합을 지어내면 근거 없는 세트가 된다
+                # (`has_total_budget` 참조).
+                products = found.products
+                if decision.total_budget is not None:
+                    products = within_budget(products, decision.total_budget)
+                # [#336] 상품당 가격 제약(priceMin/priceMax) — 총액 예산과 별개 축이라 함께
+                # 적용될 수 있다. 둘 다 없으면 `within_price_range` 는 사본만 돌려줘
+                # 순서·내용이 그대로다.
+                products = within_price_range(
+                    products, decision.filters.price_min, decision.filters.price_max
+                )
+                if len(products) != len(found.products):
+                    found = ProductSearchResult(products=products, total_count=len(products))
+                # **0건도 성공이다**(§4.17) — 빈 배열이면 하류 zero-result 경로가 카드 없이
+                # 답한다. 여기서 degrade 로 처리하면 이 이슈가 없애려는 무필터 I-1 을 도로
+                # 부른다.
+                return (found, {})
+            except Exception as exc:  # noqa: BLE001 - 필터링 실패로 스트림을 죽이지 않는다
+                logger.warning("popular_candidate_filter_failed", extra={"reason": str(exc)})
+                found = None
         popular_degraded = True
         if trace := current_request_trace():
             trace.mark_degraded("popular_fallback")

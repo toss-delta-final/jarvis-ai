@@ -35,9 +35,17 @@ _BLOCKING_FILTER_AXES = ("rating_min",)
 
 # 드리프트 방지 — 새 하드필터가 생기면 위 세 그룹 중 정확히 하나에 배정해야 한다
 # (`test_underspecified_axes_partition_filter_axes`, decompose._FILTER_AXES 와 대조).
-assert set(_WHAT_FILTER_AXES) | set(_CONSTRAINT_FILTER_AXES) | set(_BLOCKING_FILTER_AXES) == set(
-    _FILTER_AXES
+# [리뷰 R2] `assert` 가 아니라 `if`+`raise` 다 — `python -O`(최적화 모드)는 모듈 최상위를
+# 포함한 모든 `assert` 문을 제거하므로, 이 축 분류가 그 모드에서는 조용히 검증 없이 통과한다.
+_configured_filter_axes = (
+    set(_WHAT_FILTER_AXES) | set(_CONSTRAINT_FILTER_AXES) | set(_BLOCKING_FILTER_AXES)
 )
+if _configured_filter_axes != set(_FILTER_AXES):
+    raise RuntimeError(
+        "underspecified 축 분류가 decompose._FILTER_AXES 와 어긋난다 — 새 하드필터 축은 "
+        "_WHAT_FILTER_AXES/_CONSTRAINT_FILTER_AXES/_BLOCKING_FILTER_AXES 세 그룹 중 "
+        "하나에 배정하라."
+    )
 
 
 def is_underspecified_turn(

@@ -472,6 +472,49 @@ async def test_popular_failure_still_asks_without_false_popular_claim(flag_on) -
     assert any(get_settings().underspecified_reask_question in t or "이어폰" in t for t in texts)
 
 
+async def test_price_filter_exception_degrades_to_search_instead_of_killing_stream(
+    flag_on, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """[리뷰 R1] `within_price_range` 가 예외를 던져도 스트림은 done 으로 끝난다(§7).
+
+    이 예외가 방어 밖(`asyncio.gather` 코루틴 안, try 밖)에 있으면 제너레이터가 done 도
+    error 도 없이 그대로 죽는다 — `no_condition.rank_by_profile` [PR #311 리뷰] 와 같은
+    실패 모양. I-3 자체 실패(`test_popular_failure_still_asks_without_false_popular_claim`)
+    와 동일하게 검색 폴백 + 되물음으로 degrade 해야 한다.
+    """
+    from app.agents.buyer.recommendation import graph as recommendation_graph
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("price filter boom")
+
+    monkeypatch.setattr(recommendation_graph, "within_price_range", _boom)
+
+    search, search_calls = _counting_search_calls()
+    popular, popular_calls = _recording_popular()
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="5만원 이하로 아무거나 추천해줘", thread_id="us-filter-boom"),
+            _guest(),
+            llm=FakeLLM(decompose=_PRICE_MAX_DECOMPOSE),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    assert popular_calls  # I-3 는 시도했다(실패는 그 이후 필터링에서 났다)
+    assert search_calls  # 무필터 검색으로 degrade 했다
+    types = _types(events)
+    assert types  # 제너레이터가 통째로 죽지 않았다 — 이벤트가 나왔다
+    assert types[-1] == "done"  # error 가 아니라 정상 종료
+    assert "error" not in types
+    # 인기 주장은 스킵되지만(§7 정직성 규약과 동형), 되물음은 그대로 나간다.
+    texts = _reask_tokens(events)
+    assert not any(get_settings().underspecified_notice in t for t in texts)
+    assert any(get_settings().underspecified_reask_question in t or "이어폰" in t for t in texts)
+
+
 # ─────────── 6) popular 필터 후 0건 → zero-result + generic 되물음 ───────────
 
 
