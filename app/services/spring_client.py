@@ -80,6 +80,7 @@ from app.schemas.spring import (
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 _SpringOperation = Literal[
     "search_products",
+    "get_popular_products",
     "get_recent_purchases",
     "get_order_status",
     "add_to_cart",
@@ -773,6 +774,39 @@ async def search_products(filters: ProductSearchFilters) -> ProductSearchResult:
                 raise SearchBudgetExceeded(f"검색 총시간 예산 초과({budget_s}s)") from exc
     except (httpx.HTTPError, ValueError, ValidationError, TimeoutError) as exc:
         raise SpringUnavailableError(f"search_products 실패: {exc}") from exc
+
+
+async def get_popular_products(size: int) -> ProductSearchResult:
+    """인기 상품 후보 조회 — I-3 (api-spec §4.17, 이슈 #162).
+
+    GET {spring_base_url}/internal/products/popular?size= + X-Internal-Token.
+    조건이 하나도 없는 발화("아무거나 추천해줘")의 후보 소스다 — I-1 은 필터가 전부 비면
+    매칭 전량(실측 7,245건·13.33MB)을 돌려주고 그 상위가 사용자 의도와 무관하다.
+
+    **응답이 I-1 과 동일 DTO** 라 `_parse_search_response` 를 그대로 재사용한다(정본 I-1:
+    "같은 DTO 를 쓰는 I-3 도 동일하게 나간다"). 하류(dedup·rerank·I-21 push)도 그대로다.
+
+    **0건은 성공이다** — 정본 §4.17: "빈 배열도 정상 결과다. 카드 없이 텍스트만 답하면 된다".
+    여기서 예외를 던지면 상위가 degrade 로 오인해 무필터 I-1 폴백을 태우는데, 그게 바로 이
+    함수가 없애려는 호출이다.
+
+    **재시도하지 않는다** — §2.9(c) 의 재시도 1회는 `search_products`(I-1) 전용 예외이고 그
+    예산은 이미 first-token 상한을 압박한다(#277 실측: 재시도가 이벤트 0건·504 를 8/8 재현,
+    #288). 일관성 명목으로 `attempts` 루프를 옮겨 오지 말 것.
+
+    `size` 는 호출부가 config(`popular_candidate_size`)에서 주입한다 — BE 에 범위 검증이 없어
+    음수·0 이 400 이 아니라 빈 배열로 오므로 양수 보장은 AI 쪽 책임이다(Settings 가 `gt=0`).
+    """
+    try:
+        with _spring_span("get_popular_products", "GET") as span:
+            async with _client() as client:
+                resp = await client.get("/internal/products/popular", params={"size": size})
+                _record_spring_status(span, resp)
+                resp.raise_for_status()
+                data = resp.json()
+        return _parse_search_response(data)
+    except (httpx.HTTPError, ValueError, ValidationError, TimeoutError) as exc:
+        raise SpringUnavailableError(f"get_popular_products 실패: {exc}") from exc
 
 
 async def get_recent_purchases(user_id: int, status: str | None = None) -> RecentPurchases:
