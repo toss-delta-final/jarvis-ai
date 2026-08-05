@@ -524,7 +524,8 @@ def test_analysis_request_through_open_stream_finishes_done_with_intact_tree(
 
     assert response.status_code == 200
     events = _response_events(response)
-    assert [event["type"] for event in events] == ["meta", "progress", "token", "done"]
+    # report 는 kind=="report" 최종 산출에 1회 동반된다(이슈 #296, api-spec §3.2 v0.24.0).
+    assert [event["type"] for event in events] == ["meta", "progress", "token", "report", "done"]
     assert not any(
         event["type"] == "error" and event["data"]["code"] == "INTERNAL" for event in events
     )
@@ -1408,7 +1409,7 @@ async def test_seller_spring_connect_failure_exports_fixed_code_without_exceptio
 async def test_all_seller_spring_operations_trace_timeout_without_changing_mapping() -> None:
     import httpx
 
-    from app.schemas.spring import ProductCreate, ProductUpdate
+    from app.schemas.spring import OrderItemStatusUpdate, ProductCreate, ProductUpdate
     from app.services.spring_client import SpringClient, SpringUnavailableError
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1498,6 +1499,31 @@ async def test_all_seller_spring_operations_trace_timeout_without_changing_mappi
             "spring.delete_product",
             "DELETE",
             lambda: client.delete_product(71727374757677, 81828384858687),
+        ),
+        # [#297] I-29~I-31 주문·리뷰 4종 — 신설 op 도 payload-free 규약을 지킨다.
+        (
+            "spring.get_orders",
+            "GET",
+            lambda: client.get_orders(71727374757677, status="ORDERED"),
+        ),
+        (
+            "spring.update_order_status",
+            "PATCH",
+            lambda: client.update_order_item_status(
+                71727374757677,
+                81828384858687,
+                OrderItemStatusUpdate(to_status="SHIPPING"),
+            ),
+        ),
+        (
+            "spring.get_reviews",
+            "GET",
+            lambda: client.get_reviews(71727374757677, rating="1,2"),
+        ),
+        (
+            "spring.get_review_stats",
+            "GET",
+            lambda: client.get_review_stats(71727374757677, from_="private-from"),
         ),
     )
 

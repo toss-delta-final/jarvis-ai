@@ -284,6 +284,10 @@ class Settings(BaseSettings):
     # _summarize_behavior 가 꼬리 합계로 남긴다(정보 소실 없음).
     seller_summary_max_products: int = 10  # I-13 상품별 rows 상세 나열 상한(건)
     seller_list_default_limit: int = 20  # I-9 상품 목록 기본 limit(미지정 시)
+    # [#297] I-29 주문·I-31 리뷰 나열 상한 — 기존 상한들과 분리 신설(결합 방지, #197 취지).
+    # 서버 페이지 상한(limit≤100)과 별개인 "도구 응답 상세도" 상한이다.
+    seller_summary_max_orders: int = 10  # I-29 주문 rows 상세 나열 상한(건)
+    seller_summary_max_reviews: int = 10  # I-31 리뷰 rows 상세 나열 상한(건)
 
     # ── 판매자 분석 계산 층 (이슈 #290, app/agents/seller/analysis/ 주입) ──
     # 근거 논문·산식은 docs/worker-papers.md — 아래 기본값은 논문 권장값이다.
@@ -658,6 +662,40 @@ class Settings(BaseSettings):
     # (`graph._map_or_empty(select_max_calls=...)` ← `CategoryMapping.select_calls`).
     # 매핑을 부르는 새 경로를 만들 때 이 배선을 빠뜨리면 상한이 조용히 배수로 깨진다.
     category_select_max_calls: int = Field(default=2, ge=0)
+
+    # ── 광역 발화 → leaf fan-out (이슈 #222) ──
+    # 이슈 원안(top-k 의 공통 조상으로 광역/협소 판정)은 오케스트레이터 실측으로 기각(정확도 0.50,
+    # 우연 수준). 채택안은 판정기를 만들지 않는다 — 매핑이 canonical 을 못 낸 leg
+    # (`CategoryMapping.unresolved`, #217 이 이미 만든 신호)을 트리거로, 그 앵커의 의미 기반
+    # top-N leaf 를 그대로 fan-out leg 으로 쓴다(`CategoryMapping.expansion_leaves`). 협소 발화는
+    # canonical 을 내므로 이 경로에 애초에 진입하지 않는다 — 그 자체는 구조적이다.
+    # [PR #318 리뷰 R14-2] 단 이 "진입하지 않는다"는 **거리 임계가 정상 튜닝돼 있을 때만**
+    # 성립한다 — 현 임계는 stale(#344)이라 협소 발화 일부(실측 10/20)가 canonical 을 못 내고
+    # 이 경로로 들어온다. 그 경우에도 확장 top-N 은 의미 최근접이라 정답 leaf 가 대체로 상위에
+    # 포함되고(실측: "무선 이어폰" top-1 = 음향가전 > 이어폰) leg 마다 keyword·semantic_query 가
+    # 유지되므로, 무필터 degrade(종전 동작) 대비 악화는 아니다 — 임계 재측정은 #344.
+    category_expand_enabled: bool = True  # 광역 fan-out 롤백 스위치
+    # [PR #318 리뷰 R5-1] **턴 전체 상한**이다 — unresolved leg 당 상한이 아니다. unresolved leg
+    # 이 여럿이면 `category_mapping._collect_expansion_leaves` 가 leg 마다 모은 후보를 라운드로빈
+    # 인터리브(`recommendation/graph._merge_fanout_results` 와 같은 규약)로 평탄화한 뒤 이 값으로
+    # 한 번만 자른다 — leg 별로 이 값을 각각 적용하면 먼저 처리된 leg 이 예산을 통째로 가져가고
+    # 뒤 leg 은 0개가 된다(사용자가 명시한 두 번째 니즈가 검색조차 안 되는 조용한 손실).
+    # 확장 leg 수 상한. category_fanout_max 와 같은 이유로 le=MAX_LISTS — 확장 턴이 case 3 과
+    # 겹치면 leg 마다 목록이 생겨 계약 상한(§4.2 lists ≤ 10)을 넘긴다.
+    category_expand_legs: int = Field(default=8, ge=0, le=MAX_LISTS)
+    category_expand_notice_enabled: bool = True  # 확장 고지 문구 on/off
+    # 확장 leaf 의 중분류(leaf 이름의 " > " 앞부분, 중복 제거) 목록을 끼울 자리 하나({items}).
+    # 문구는 LLM 이 짓지 않는다 — DB 값 그대로 조립해 존재하지 않는 카테고리를 말하지 않는다(#59 재발 방지).
+    category_expand_notice: str = "{items} 에서 관련 상품을 찾아봤어요."
+
+    # ── Case 3 니즈별 그룹 출력 (이슈 #168) ──
+    # split 턴의 니즈당 rerank 입력 후보 quota. 실측(실 카탈로그 leaf 폭 9~17): merge_cap=30 은
+    # 5니즈 턴에서 니즈당 6개로 자연 공급량보다 아래를 절단해 per-need expose_max(9) 도달 불가.
+    category_group_per_need_candidates: int = Field(default=10, ge=1)
+    group_notice_enabled: bool = True  # 니즈별 그룹 서술 on/off
+    # 니즈 그룹 서술 자리 하나({items}) — "라벨1 N개 · 라벨2 M개" 형태로 결정론 조립한다
+    # (#222 확장 고지와 같은 패턴, LLM 이 짓지 않는다).
+    group_notice: str = "니즈별로 나눠 담았어요 — {items}"
 
     # ── 목적·상황형 발화의 상품 전개 (이슈 #198·#217, DESIGN-NEEDS-EXPANSION-198) ──
     # "집들이 선물" 처럼 무엇을 살지 사용자가 말하지 않은 발화를 구체 상품 목록으로 전개한다
@@ -1256,6 +1294,22 @@ class Settings(BaseSettings):
     # 늘린, 애초에 악성으로 설계된 구간뿐이다.
     request_body_max_bytes: int = Field(default=1_048_576, gt=0)
 
+    # ── 니즈 priority 분류기 (이슈 #281, #60 후속) ──
+    # BUY_ALL 총액 예산이 모든 니즈를 못 담을 때 어떤 니즈부터 뺄지의 근거 신호(REQ-REC-076).
+    # `budget_sets.build_budget_sets` 는 이 신호가 없거나 신뢰할 수 없으면 "최저가가 비싼 leg
+    # 부터"라는 기존 결정론적 순서로 폴백한다(REQ-REC-075) — 즉 이 롤백 스위치를 꺼도 BUY_ALL
+    # 예산 제외 자체는 오늘처럼 계속 동작한다.
+    need_priority_classifier_enabled: bool = True  # 롤백 스위치(끄면 호출 0회 = 오늘 동작)
+    # Literal 로 좁힌다 — `category_scope_tier` 와 같은 이유다. 이 값은 `resolve_model_id` 에
+    # 들어가고 그것은 미지 tier 에 LLMError 를 던지므로, 오타가 퇴화가 아니라 예외가 된다
+    # (분류기는 그 예외를 삼켜 None 으로 떨어뜨리지만, 그러면 기능이 조용히 죽는다).
+    need_priority_tier: Literal["fast", "smart"] = "fast"
+    # 산출은 `{"priorities": [1, 2, 3, ...]}` 다 — 니즈 5개(계약 상한 category_fanout_max ≤
+    # MAX_LISTS=10 근방)면 `[1,2,3,2,1]` 수준의 소출력이다. `category_scope_max_tokens`(32,
+    # `{"scopeFree": true|false}` 한 줄 기준)보다 배열이라 여유를 더 둔다 — 항목당 콤마·공백
+    # 포함 약 3토큰이면 10개도 약 30~40토큰이라 64면 넉넉하다.
+    need_priority_max_tokens: int = Field(default=64, ge=8)
+
     @field_validator("llm_provider", mode="before")
     @classmethod
     def _normalize_llm_provider(cls, value: object) -> object:
@@ -1420,6 +1474,10 @@ class Settings(BaseSettings):
         스스로 보장한다(PR #188 리뷰) — 호출부(`decompose._parse_category_queries`·`expand_needs`)의
         절단에만 기대면 새 호출부 하나가 풀을 넘기고, 증상이 다른 요청의 PoolTimeout 이라 원인
         추적이 어렵다. 절단이 실제로 발생하면 `category_legs_truncated` 로 관측된다.
+
+        [#222] 확장 leg(`category_expand_legs`)은 이 전제와 무관하다 — 광역 fan-out 후보는
+        `expansion_leaves`(이미 조회된 히트를 슬라이스)로 채우고 pg 앵커 조회를 새로 하지 않으므로
+        `2 × category_fanout_max` 동시 조회 전제가 그대로 성립한다.
         """
         need = 2 * self.category_fanout_max
         if self.category_search_pool_max_size < need:

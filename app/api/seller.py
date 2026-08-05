@@ -5,11 +5,13 @@ FE 가 Spring 발급 판매자 JWT(role=seller)로 직접 호출한다. 인증 =
 검증된 JWT 클레임에서만 도출한다 — 요청 본문 신원은 신뢰하지 않는다(IDOR 방지).
 
 MVP 범위(api-spec v0.14.0 §3.2, 결정 20 개정): 통계 Q&A + 상세 수정 draft 흐름.
-이벤트: meta / token / progress / draft / chart / done / error — done.finishReason 은 "stop" 단일.
+이벤트: meta / token / progress / draft / report / done / error — done.finishReason 은 "stop" 단일.
   · meta(lane)  : 매 스트림 첫 프레임(FE 화면 전환 레인, 2026-07-22 B).
   · progress    : 분석 진행 상태(로딩 표시, 최종 답변 아님).
-  · chart       : 분석 레인 전용, wants_chart 요청 + 차트 1개 이상 통과 시 0~1회
-                  (이슈 #242 — DESIGN-ANALYSIS-V31-242 §4.5). token(보고서) 뒤·done 앞.
+  · report      : 분석 레인 전용, kind=="report" 일 때 정확히 1회 — 우측 패널용
+                  구조화 보고서(기간·요약·findings·한계·차트·추천 내장). token(산문)
+                  뒤·done 앞. 구 chart 이벤트(v0.20.0, #242)는 legacy 폐기
+                  (이슈 #296, api-spec §3.2 v0.24.0 — FE 미구현 실증으로 안전 대체).
   · done(panel) : 우측 패널 조치(replace/keep/refresh) — FE 요구 1~3.
 
 [4-1b 3분기 배선 + 4-2 HITL 실행] 입구 판정 순서(REALIGN §4 확정):
@@ -33,7 +35,7 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from time import perf_counter
 from typing import Literal
 
@@ -49,9 +51,9 @@ from app.agents.seller.history import apply_recommendation
 from app.agents.seller.hitl import DraftRecord, confirm_draft, start_draft, validate_draft
 from app.agents.seller.middleware import StreamingOutputGuard, check_scope, mask_output
 from app.agents.seller.models import SellerRole, seller_trace_model_metadata
-from app.agents.seller.orchestrator import route_question, run_analysis_pipeline
-from app.agents.seller.pipeline import parse_apply_message
-from app.agents.seller.schemas import ChartSet, DraftProposal
+from app.agents.seller.orchestrator import PipelineResult, route_question, run_analysis_pipeline
+from app.agents.seller.pipeline import APPLY_GUIDE, parse_apply_message, split_report_summary
+from app.agents.seller.schemas import DraftProposal
 from app.agents.seller.workers import build_general_agent, build_product_agent
 from app.api.deps import require_seller
 from app.core.auth import Identity
@@ -91,6 +93,9 @@ _ANALYSIS_APOLOGY_TOKEN = (
 
 # 진행 token 큐 종료 신호 — 파이프라인 완료(정상/예외 공통)를 스트림 루프에 알린다.
 _PIPELINE_DONE = object()
+
+# report.generatedAt 타임존 — KST 고정(이슈 #296, api-spec §3.2 v0.24.0 계약).
+_KST = timezone(timedelta(hours=9))
 
 
 def _seller_log(
@@ -459,8 +464,9 @@ async def _analysis_stream(
     """분석 레인 (4-1b) — 파이프라인 emit(진행)을 progress 로, 최종 답변을 token 으로 중계.
 
     - 진행 상태는 최종 답변이 아니므로 `progress` 이벤트로 분리한다(FE: 로딩 표시).
-      최종 산출은 단일 `token`(보고서/되묻기/사과 공통) → 이 token 이 우측 패널
-      대상인지(replace)·대화인지(keep)는 kind 로 갈린다(아래 panel).
+      최종 산출은 단일 `token`(보고서/되묻기/사과 공통) + kind=="report" 일 때만
+      구조화 `report` 이벤트 1회(우측 패널 재료, 이슈 #296) → 패널 교체 여부는
+      kind 로 갈린다(아래 panel).
     - 패널: kind=="report" 만 우측 교체(replace) — 되묻기(clarification)·사과(apology)·
       거절(refused)은 대화이므로 유지(keep). (FE 요구 2·3 — "화면 바뀔 질문만" 교체.)
     - **예외 2경우**(planner 장애·1차 report 실패)만 여기로 전파 — 사과 token 후
@@ -537,10 +543,11 @@ async def _analysis_stream(
         # 대화 스레드 기록(best-effort) — 되묻기 포함 최종 문안이 후속 발화의 맥락이 된다.
         await seller_thread.record_turn(context, request.thread_id, request.message, result.text)
         yield _token(result.text)
-        # chart 는 report·차트 1개 이상 통과 시에만 0~1회(§4.5 미발행 규약 — 빈
-        # 배열도 보내지 않는다). token(보고서) 뒤·done 앞 순서를 지킨다.
-        if result.kind == "report" and result.charts and result.charts.charts:
-            yield _chart_event(result.charts)
+        # report 는 kind=="report" 일 때 정확히 1회 — token(산문) 뒤·done 앞
+        # (이슈 #296, api-spec §3.2 v0.24.0). 보고서±차트 분기는 charts 배열
+        # 유무로만 표현한다(구 chart 이벤트의 조건 3중 검사·미발행 규약 폐기).
+        if result.kind == "report":
+            yield _report_event(result)
         # 보고서만 우측 패널 교체, 되묻기·사과·거절은 대화로 유지.
         yield _done("replace" if result.kind == "report" else "keep")
     finally:
@@ -665,9 +672,10 @@ async def _product_stream(
 
 def _draft_recorded_text(record: DraftRecord) -> str:
     """draft 성립 턴의 스레드 기록 문안 — diff 전문이 아니라 후속 발화 이해용 요약."""
+    base = "주문 발송 초안" if record.op == "ship" else "상품 변경 초안"
     if record.summary:
-        return f"상품 변경 초안을 생성했습니다: {record.summary}"
-    return f"상품 변경 초안을 생성했습니다 (op={record.op})."
+        return f"{base}을 생성했습니다: {record.summary}"
+    return f"{base}을 생성했습니다 (op={record.op})."
 
 
 def _draft_event(record: DraftRecord) -> str:
@@ -678,6 +686,9 @@ def _draft_event(record: DraftRecord) -> str:
     나갈 때만 to_camel 로 변환한다 — original_price→originalPrice, image_url→imageUrl,
     stock_quantity→stockQuantity(그 외는 동일). 이 필드는 FE 표시 전용이라 confirm 은
     draftId 만 되보낸다(역변환 불필요).
+
+    [#297] op="ship"(주문 발송, I-30)은 orderItemId 를 함께 싣는다(§3.2 추가 전용) —
+    상품 op 3종의 와이어는 불변이다(orderItemId 키는 ship 에만 존재).
     """
     return _sse(
         "draft",
@@ -685,6 +696,8 @@ def _draft_event(record: DraftRecord) -> str:
             "draftId": record.draft_id,
             "op": record.op,
             "productId": record.product_id,  # int | None(create) — F2 숫자 확정
+            # ship 전용 키 — 추가 전용(기존 op 와이어 불변).
+            **({"orderItemId": record.order_item_id} if record.op == "ship" else {}),
             "changes": [
                 {
                     "field": to_camel(c.field),
@@ -706,18 +719,52 @@ def _draft_event(record: DraftRecord) -> str:
     )
 
 
-def _chart_event(charts: ChartSet) -> str:
-    """ChartSet → SSE chart 이벤트 (판매자 7종째, 이슈 #242, DESIGN-ANALYSIS-V31-242 §4.5).
+def _report_event(result: PipelineResult) -> str:
+    """PipelineResult → SSE report 이벤트 (이슈 #296, api-spec §3.2 v0.24.0 — 구 chart 대체).
 
-    `_draft_event` 와 같은 패턴(camelCase 변환 + 필드별 마스킹) — chart_type 만
-    to_camel 이 필요하고(→ chartType) unit·points[].y 는 Literal·숫자라 그대로
-    나간다. 호출부(_analysis_stream)가 "charts 가 1개 이상일 때만" 호출을
-    보장한다 — 빈 배열도 보내지 않는 계약(§4.5 미발행 규약)은 여기서 강제하지
-    않고 호출부 조건으로 지킨다(이 함수는 항상 charts.charts 를 그대로 직렬화).
+    `_draft_event` 와 같은 패턴(camelCase 변환 + 필드별 마스킹). 호출부(_analysis_stream)
+    가 kind=="report" 일 때만 정확히 1회 호출한다 — 되묻기·사과·거절·error 종료에는
+    나가지 않는다. compose_response 가 token 산문으로 눌러 펴며 버리던 구조
+    (findings·기간·추천·차트)를 우측 패널 재료로 그대로 싣는다.
+
+    - charts 직렬화는 구 `_chart_event`(v0.20.0) 본문을 그대로 이관 — 형식 불변이라
+      FE `AnalysisChart.tsx` 를 재사용한다. 빈 charts 는 [] 로 나간다(구 "빈 배열도
+      보내지 않는다" 미발행 규약은 chart 이벤트와 함께 폐기).
+    - limitations 는 degrade finding(evidence 빈 목록)의 summary 모음 — D3 탐지
+      문자열("확보 실패") 매칭이 아니라 구조 판정이다(verifier 의 degrade 규약과 동일).
+    - recommendations[].index 는 목록 순서(1-base) 명시 — "N번 적용해줘"(§6.3)가
+      조회하는 그 순서다(FE 정렬 사고 방지).
     """
+    report_text = result.verified.report if result.verified else ""
+    findings = result.findings or []
+    recommendations = result.recommendations.recommendations if result.recommendations else []
+    charts = result.charts.charts if result.charts else []
     return _sse(
-        "chart",
+        "report",
         {
+            "title": "판매 분석 보고서",
+            "period": (
+                {"from": result.period[0].isoformat(), "to": result.period[1].isoformat()}
+                if result.period
+                else None
+            ),
+            "generatedAt": datetime.now(_KST).isoformat(timespec="seconds"),
+            "summary": mask_output(_strip_unsafe_multiline(split_report_summary(report_text))),
+            "body": mask_output(_strip_unsafe_multiline(report_text)),
+            "findings": [
+                {
+                    "analysisType": f.analysis_type,
+                    "severity": f.severity,
+                    "summary": mask_output(_strip_unsafe_multiline(f.summary)),
+                    "evidence": [mask_output(_strip_unsafe_multiline(e)) for e in f.evidence],
+                    "recommendation": mask_output(_strip_unsafe_multiline(f.recommendation)),
+                }
+                for f in findings
+            ],
+            "limitations": [
+                mask_output(_strip_unsafe_multiline(f.summary)) for f in findings if not f.evidence
+            ],
+            "chartRequested": result.chart_requested,
             "charts": [
                 {
                     "title": mask_output(_strip_unsafe(c.title)),
@@ -734,8 +781,19 @@ def _chart_event(charts: ChartSet) -> str:
                     ],
                     "summary": mask_output(_strip_unsafe_multiline(c.summary)),
                 }
-                for c in charts.charts
-            ]
+                for c in charts
+            ],
+            "recommendations": [
+                {
+                    "index": i,
+                    "title": mask_output(_strip_unsafe(rec.title)),
+                    "expectedEffect": mask_output(_strip_unsafe(rec.expected_effect)),
+                    "actionType": rec.action_type,
+                    "productId": rec.product_id,
+                }
+                for i, rec in enumerate(recommendations, start=1)
+            ],
+            "applyGuide": APPLY_GUIDE if recommendations else "",
         },
     )
 

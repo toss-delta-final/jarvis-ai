@@ -13,6 +13,184 @@
 
 ---
 
+## [2026-08-05] 임의 순서 기준선을 두지 않으면 랭커가 개선인지 손해인지 모른다
+- 증상: #275 조사에서 student(현행 6성분 스코어러) 오라클 상한을 탐색했더니(E2) "상한
+  0.738210"이 나와 teacher(0.782943)에 근접하는 듯 보였다. 재현·반증(E4)하니 이 값은
+  `recency` 성분에만 값을 몰아주고 나머지 실질 신호를 전부 0으로 만든 **축퇴 해**였다 —
+  `ScoringBuyerAdapter` 가 `recency_by_product=None` 을 주입해 이 축이 항상 0(무주입 무력
+  축)인데, `EvaluationSettings` 검증자는 "5개 양의 신호 가중치 중 하나 이상 양수"만 요구해
+  이 축에 값을 몰아주는 시도를 걸러내지 못했다. 그 해의 순위는 dev search fixture 32/32 건이
+  이미 productId 오름차순으로 기록돼 있어(`search_responses.json`) 커밋된 `passthrough`
+  baseline 0.738210(`evals/scoring/baselines/dev-v1/comparison.md`)과 완전히 같았다 —
+  즉 **"아무 순서나 그대로 둔 것"과 같은 값이었다.** 현행 튜닝된 스코어러(0.616852)는 그
+  0.738210 보다 **0.121358 낮다**(paired bootstrap 95% CI [0.039814, 0.206934]).
+- 원인: 오라클 탐색·teacher-fit 탐색 어느 쪽도 "탐색이 no-op 으로 수렴할 수 있는가"를
+  자체적으로 배제하지 않았다. `passthrough` 를 "검색 순위 기준선"으로 잘못 해석해, 실제로는
+  **임의 순서 기준선**인 그 값과 튜닝된 가중치를 직접 비교하지 않은 채 진행했다 — 그 결과
+  현행 스코어러가 "아무것도 하지 않는 것보다 나쁘다"는 사실이 여러 리포에서 한 번도
+  표면화되지 않았다.
+- 규칙: 랭킹/스코어링 튜닝을 평가할 때는 **"아무 순서나 그대로 두는" no-op 기준선을 항상
+  1급 baseline 으로 사전 등록**하고, 튜닝된 결과·오라클 상한·teacher 모두를 이 기준선과
+  paired bootstrap CI 로 대조한다. 오라클 탐색 코드에는 "결과 순위가 no-op 과 최소 1케이스
+  달라야 한다"는 축퇴 배제 제약을 항상 넣는다(무력한 축이 있다면 탐색 공간에서도 뺀다).
+  fixture/골든셋이 productId 오름차순 같은 결정론적 순서로 저장돼 있다면 그 자체가 숨은
+  no-op 후보임을 의심한다.
+- 관련: #275, `docs/research/RESEARCH-TEACHER-275.md` §3, `docs/research/research-275-harness/e4_analyze.py`,
+  `evals/scoring/baselines/dev-v1/comparison.md`, `evals/goldenset/fixtures/search_responses.json`
+
+---
+
+## [2026-08-05] 유닛 테스트가 로컬에 떠 있는 실 Spring 을 잡아 결과가 뒤집힌다 — 주입하지 않은 기본값은 하네스 경계 밖이다
+- 증상: #330 문서 작업 중 **코드 무변경** 상태에서 `uv run pytest` 가 3건 실패로 뒤집혔다 —
+  `tests/unit/test_fanout.py::test_empty_legs_clears_unvalidated_filters_category`,
+  `tests/unit/test_recommendation.py::test_recommendation_without_repurchase_keeps_exact_exclusion[decompose0]`·
+  `[decompose1]`. 같은 트리·같은 명령이 같은 날 오전에는 3376 passed 였고, clean base(6cec23a)에서도
+  실패가 재현됐다(워커 stash 실측).
+- 원인: `app/agents/buyer/graph.py:545` 의 `popular_fn = popular_fn or spring_client.get_popular_products`
+  (#162 I-3)에서, `run_buyer_turn` 유닛 테스트들이 `search=`·`push_fn=`·`map_categories=` 는 fake 로
+  주입하면서 **`popular_fn` 은 주입하지 않는다.** 문제의 턴은 decompose 산출이 조건 없음으로 판정돼
+  (`is_no_condition_turn`) 인기 상품(I-3) 경로로 가는데, **localhost:8080 에 실 Spring(BE 개발 서버)이
+  떠 있으면** I-3 이 실제로 성공해 조건 없는 턴이 검색을 생략한다 → 테스트의 `calls` 가 빈 배열 →
+  `IndexError`. Spring 이 죽어 있으면 `popular_degraded` 로 검색 폴백을 타서 통과한다. 2026-08-05 오후
+  다른 작업 레인이 BE 스택(jarvis-mariadb 컨테이너 + Spring 8080, health 200 확인)을 띄우면서 결과가
+  뒤집혔다. CI(GitHub Actions)에는 Spring 이 없어 항상 통과한다 — **로컬에서만, BE 를 띄운 순간부터
+  깨진다.** 검증: `SPRING_BASE_URL=http://localhost:59999 uv run pytest <3건>` → 3 passed, 전체
+  스위트 → 3376 passed(2026-08-05 실측).
+- 규칙:
+  - **그래프 하네스 유닛 테스트는 네트워크로 나가는 콜러블 전부를 주입한다** — `search`·`push_fn` 만
+    fake 고 `popular_fn` 이 기본값이면 그 테스트는 유닛이 아니라 로컬 환경(8080 에 뭐가 떠 있는가)
+    의존이다.
+  - **그래프에 외부 호출 파라미터를 새로 추가하면 기존 테스트 헬퍼에 그 fake 를 같이 추가한다** —
+    #162 가 `popular_fn` 을 추가할 때 기존 fanout/recommendation 테스트는 그대로 뒀고, 그 결함은
+    Spring 이 실제로 떠 있는 날에만 드러난다(잠복 flaky).
+  - **로컬 pytest 가 코드 무변경으로 뒤집히면 코드 diff 가 아니라 환경부터 본다** — `docker ps` 와
+    8080 health 확인이 첫 수순이다. 임시 우회는 `SPRING_BASE_URL` 을 죽은 포트로 돌려 CI 동등 조건을
+    만드는 것.
+  - 테스트 자체의 수정(`popular_fn` fake 주입)은 코드 변경이라 이 문서 레인(#330) 범위 밖 — 별도
+    이슈로 처리한다.
+- 관련: #162, PR #311, `app/agents/buyer/graph.py`(`popular_fn` 기본값), `tests/unit/test_fanout.py`,
+  `tests/unit/test_recommendation.py`
+
+---
+## [2026-08-05] 거리 임계는 사전에 종속된다 — taxonomy·임베딩 모델·task_type 이 바뀌면 재측정 없이는 무효
+- 증상: #222 라이브 실측(라이브 pg-catalog, leaf 1,007행)에서 `category_distance_max=0.22` 가
+  협소 발화 20건 중 10건, 상품명 150건 골든셋 기준 90%를 드롭했다. `DESIGN-CATEGORY-HYBRID-59.md`
+  §10 이 이미 "이 값은 임베딩 모델·task_type·사전(2,056 leaf)에 종속되며 재측정 없이는 무효"라고
+  경고해 뒀는데, 사전이 구 taxonomy(2,056행)에서 현 라이브 taxonomy(leaf 1,007행)로 바뀐 뒤
+  그 재측정이 아직 이뤄지지 않은 채로 남아 있었다.
+- 원인: 임계값(코사인 거리)은 절대 상수가 아니라 "이 사전 + 이 임베딩 구성에서 정답과 오답이
+  갈리는 경계"를 실측으로 고정한 값이다. 사전 행 수·표기 체계가 바뀌면 문서·앵커 분포 자체가
+  달라져 종전 경계가 더 이상 유효하지 않다 — 코드는 아무 에러도 내지 않고 조용히 더 많은 leg 을
+  드롭할 뿐이라(canonical-or-null degrade) 증상이 "품질 저하"로만 나타나 원인 추적이 늦어진다.
+- 규칙: 카테고리·임베딩 사전(taxonomy)이 재시드되거나 임베딩 모델·task_type 이 바뀌면 거리·마진
+  임계(`category_distance_max`·`category_distance_override_margin`·`category_select_margin_max`)
+  를 **재측정 없이 그대로 쓰지 않는다.** 재측정은 이 PR 처럼 급한 기능 PR에 끼워 넣지 말고 **별도
+  이슈로 분리**한다 — 임계 튜닝은 앵커 수십~수백 건의 실측을 요구해 기능 구현과 섞으면 두 변경의
+  회귀 원인이 뒤섞인다.
+- 관련: #222, `app/core/config.py` `category_distance_max` 근처 주석,
+  `docs/specs/DESIGN-CATEGORY-HYBRID-59.md` §10 "튜너블 불변식"
+
+## [2026-08-05] 카테고리 사전이 비어 있으면 매핑이 "조용히" 무필터로 degrade 한다 — 사전 의존 기능은 행 수부터 확인한다
+- 증상: #222 작업 착수 시점에 로컬 `pg-catalog.categories` 가 **0행**이었다. 매핑
+  (`map_categories`)은 canonical-or-null 불변식대로 히트 0건을 정상적으로 빈 legs 로 처리해
+  에러 없이 무필터 검색으로 넘어갔으므로, 카탈로그가 비어 있다는 사실이 로그나 예외 어디에도
+  드러나지 않았다. 오케스트레이터가 라이브 트리(leaf 1,007행)를 별도로 시드한 뒤에야 이 결함이
+  드러났다.
+- 원인: canonical-or-null degrade(#20·#115)는 "매핑이 실패해도 검색은 계속돼야 한다"는 설계
+  의도대로 정확히 동작한 것이라 **버그가 아니다.** 문제는 그 정상 degrade 가 "카테고리 사전이
+  통째로 비어 있다"는 훨씬 심각한 상태와 "이 발화는 매핑하기 어렵다"는 정상적인 개별 실패를
+  **구분 없이 같은 신호**로 취급한다는 데 있다 — 전자는 이 기능 자체가 사실상 항상 무필터로만
+  동작한다는 뜻인데, 증상은 후자와 똑같이 "품질이 낮다"로만 보인다.
+- 규칙: `categories`·`category_search_pool` 처럼 사전(seed) 데이터에 의존하는 기능을 다루기
+  전에는 **행 수를 먼저 확인**한다(`SELECT count(*) FROM categories`). 0행이거나 비정상적으로
+  적으면 착수 전에 `~/inte-final/_sql`(정본 시드 소스) 등에서 먼저 시드하거나, 그 사실을 실측
+  보고서에 명시해 "결과가 전부 무필터 degrade 였다"는 착각을 방지한다.
+- 관련: #222, `app/agents/buyer/recommendation/category_mapping.py` canonical-or-null 불변식
+## [2026-08-05] 병합 충돌 마커가 dev 에 커밋된 채 3커밋을 살아남았다 — 병합 커밋도 diff 검토 대상이다
+- 증상: `CHANGELOG.md` 의 `[Unreleased] > Added` 절에 `<<<<<<< HEAD`/`=======`/`>>>>>>> origin/dev`
+  충돌 마커가 그대로 커밋돼(89e13fd, #302 로 dev 병합) 이후 dev 병합 커밋들에도 계속 남아 있었다.
+  #297 작업 중 CHANGELOG 항목을 추가하려다 발견 — 릴리스 노트 정본이 깨진 채 배포 라인에 있었다.
+- 원인: 병합 충돌 해결 중 CHANGELOG 충돌을 마커째 저장하고 커밋했다. 커밋 워크플로 1번(`git diff`
+  전체 검토)이 병합 커밋에는 적용되지 않았고, ruff·pytest 도 마크다운 파일은 보지 않아 어떤
+  자동 검사에도 걸리지 않았다.
+- 규칙:
+  - **병합 커밋도 커밋이다** — 충돌을 해결한 병합은 커밋 전 `git diff --check` 와
+    `git grep -nE '^(<{7}|={7}|>{7})' -- .` 로 잔여 마커를 확인한다(코드가 아닌 md·설정 파일 포함).
+  - 충돌 마커는 발견 즉시 **별도 fix 커밋**으로 정리한다 — 기능 커밋에 섞으면 리뷰에서 묻힌다.
+- 관련: `CHANGELOG.md`, 커밋 89e13fd(#302), 정리 커밋은 #297 브랜치.
+
+---
+
+
+## [2026-08-05] `pre-commit run --all-files` 는 `ruff format`(인수 없이)과 같은 뿌리의 드리프트를 좁은 스코프 브랜치 전체에 드러낸다
+- 증상: #281 작업에서 커밋 전 훅 호환성을 확인하려고 `uv run pre-commit run --all-files` 를
+  돌렸더니 `ruff-format` 이 **내가 건드리지 않은 31개 파일을 재포맷**했다 —
+  `app/services/spring_client.py` · `evals/intent_probe/runner.py` 처럼 **다른 레인이 작업
+  중이라 이 브랜치에서 편집이 금지된 파일**까지 포함됐다. `git checkout --` 로 전부 되돌렸다.
+- 원인: `.pre-commit-config.yaml` 이 `ruff-pre-commit` **v0.8.6** 에 고정돼 있는데 개발
+  의존성 ruff 는 0.15.x 라, 두 버전의 포맷 규칙 차이만큼 저장소 전체에 **드리프트**가 깔려
+  있다. `--all-files` 는 그 드리프트를 전부 드러내 diff 로 만든다. (기존 lessons 2026-08-05
+  「`ruff format`(인수 없이)…」와 **같은 뿌리, 다른 입구**다 — 그 항목은 `ruff format` 을
+  경고할 뿐 `pre-commit --all-files` 를 언급하지 않아 이번에 그대로 밟았다.)
+- 규칙: 좁은 스코프 브랜치에서 훅 호환성을 확인할 때 `pre-commit run --all-files` 를 쓰지
+  말고 **`pre-commit run --files <내 파일들>`** 로 대상을 좁혀라. 실제 커밋 훅은 **스테이징된
+  파일에만** 돌므로 그것이 커밋 시점의 동작과도 일치한다. 실수로 `--all-files` 를 돌렸으면
+  `git status --porcelain | grep '^.M'` 으로 **미스테이징 변경만** 골라 `git checkout --` 로
+  되돌린 뒤 진행하라(내 변경은 스테이징돼 있어 안전하다).
+- 관련: #281, `.pre-commit-config.yaml`(ruff-pre-commit v0.8.6), 기존 lessons 2026-08-05
+  「`ruff format`(인수 없이) 은 diff 밖 파일까지 재포맷한다」
+
+---
+
+## [2026-08-05] 실측 프로브에서 "표본 0" 은 근거가 아니라 질문이다 — 원시 응답을 남기지 않으면 원인을 가를 수 없다
+- 증상: #281 TASK 3(`evals/priority_probe/`) 초판이 인라인 팔(`decompose()` 후보 프롬프트)을
+  실측했더니 축이 **전부 0** 이고 진단 카운터 셋(`lengthMismatch`·`emptySignal`·당시의
+  `legMismatch`)이 **전부 정확히 96**(=모든 표본)으로 나왔다. "인라인이 완전히 무능하다"는
+  결론을 그대로 쓸 뻔했다 — 오케스트레이터가 `samples.csv` 를 직접 읽어보니 모델이 **실제로
+  무엇을 냈는지**가 한 칸도 기록돼 있지 않아, "모델이 정말 priority 를 안 냈다"(역량 한계)와
+  "채점기의 매칭 규칙이 개수가 다르면 이름이 맞아도 전부 버렸다"(하네스 결함)를 구분할 수
+  없었다. 실제로는 후자였다 — `decompose()` 는 픽스처 `needs` 를 입력으로 받지 않고 자기 leg
+  이름을 스스로 만드는데, "leg 개수가 needs 개수와 같을 때만" 채점하는 조건이 이름이 일부
+  맞는 표본까지 통째로 0점 처리했다.
+- 원인: 채점 함수가 **중간 산출(모델이 실제로 낸 것)** 을 버리고 최종 판정(0/None)만 남겼다.
+  같은 원인이 서로 다른 이름의 카운터 세 개에 동시에 찍히면(이 경우 lengthMismatch=
+  emptySignal=legMismatch=96) "원인이 하나이고 세 번 세어졌다"는 신호인데, 초판은 그 신호를
+  읽을 수 있는 자리(원시 응답 칸)를 애초에 안 만들었다.
+- 규칙: 실측 프로브에서 **"거의 0/전부 0" 같은 극단값이 나오면 채택 판정을 내리기 전에
+  원시 응답을 남겨 재현하라.** `samples.csv`(또는 동급 산출물)에 (1) 모델이 실제로 낸 원문,
+  (2) 최종 채점 값, (3) 그 사이의 판정 근거(왜 그 값이 나왔는지)를 **전부 다른 칸**으로
+  남겨야 런을 다시 돌리지 않고 원인을 가를 수 있다(#240 이 이미 세운 규약 — 이번엔 그 규약
+  자체가 없어서 밟았다). 진단 카운터가 여러 개인데 같은 사건에서 동시에 오르면 그 카운터들이
+  뭉개져 있다는 뜻이니 **상호 배타적으로 다시 정의**하거나 겹침을 명시하라. "모델이 못 한다"는
+  결론은 데이터가 그것을 **구분해서** 보여줄 때만 쓴다 — 표본이 0이라는 사실만으로는 원인을
+  주장할 수 없다.
+- 관련: #281, `evals/priority_probe/runner.py::_match_inline_legs_by_name`,
+  `evals/priority_probe/README.md` §「초판 결함과 정정」, TASK-3-CORRECTION-2
+
+## [2026-08-05] 보조 신호 함수가 실패를 전부 `None` 으로 삼키면, 그 함수를 실측 하네스로 감쌀 때 **전송 실패**와 **모델 출력 실패**를 관측 래퍼로 갈라야 한다
+- 증상: #281 TASK 3 의 분류기 실측 초판은 `classify_need_priorities` 가 돌려주는 `None` 을
+  전부 "표본"으로 셌다. 그 함수는 정본 계약상 **어떤 예외도 밖으로 내보내지 않는다**(429·
+  타임아웃도 삼켜 `None`) — 그래서 페이서가 조금이라도 어긋나 429 가 나면 그 시도도 "분류기가
+  판정에 실패한 표본"으로 집계돼, #240 이 이미 "빈 칸을 오답으로 세면 분포가 거짓이 된다"고
+  경고한 실패 양식을 다른 이름으로 재현할 뻔했다.
+- 원인: 프로덕션 함수의 degrade 설계(보조 신호 실패 → 조용히 `None`, 턴을 안 죽인다)는
+  **운영에서는 옳다.** 그런데 실측 하네스가 그 함수를 블랙박스로 호출만 하면, "진짜 전송이
+  실패했다"와 "모델이 이상한 출력을 냈다"가 함수 경계에서 이미 뭉개진 뒤라 하네스도 구분할
+  수 없다 — 정본 계약(자기 예외를 삼킨다)을 재현하려고 그 함수를 그대로 부르는 것은 맞지만
+  (규칙을 재구현하면 측정과 배포가 갈라진다는 원칙, lessons 다른 항목 참조), 그 안쪽에서
+  무슨 일이 있었는지까지 통째로 잃으면 안 된다.
+- 규칙: 자기 예외를 삼키는 보조 함수를 실측 하네스에서 반복 호출할 때는, 그 함수가 받는
+  `llm` 을 **한 겹 더 감싸(관측 전용 래퍼) 래퍼 사슬의 맨 안쪽**(delegate 바로 앞)에 두고
+  `complete()` 자체의 성공/실패를 별도로 기록한다. 함수가 삼킨 값(`None`)만 보고 재시도
+  여부를 정하면 안 된다 — 래퍼가 기록한 "이번 시도가 전송 실패였는가"를 근거로, 전송 실패는
+  재시도(표본 아님)로, 함수가 정상 응답을 받고도 `None` 을 낸 경우만 표본으로 가른다. 예산
+  가드(`BudgetExceeded`)도 이 경로에서 삼켜질 수 있으니 래퍼에서 별도로 식별해 재시도하지
+  말고 그대로 던져야 한다(안 그러면 예산 상한이 무력화된다).
+- 관련: #281, `evals/priority_probe/client.py::RawCapture`,
+  `evals/priority_probe/runner.py::run_cell_classifier`, TASK-3-CORRECTION
+
+---
+
 ## [2026-08-05] 코드가 런타임에 읽는 repo 파일은 배포 이미지에 들어 있는지 실측한다
 - 증상: dev→main 승격(#316) 사전 점검에서, 운영 이미지로 앱을 띄우면 부팅이 실패하는 결함을
   발견했다. `session_context.initialize()`(#187)가 `db/profile/init/03_chat_session_contexts.sql`

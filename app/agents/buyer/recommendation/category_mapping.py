@@ -69,6 +69,11 @@ class CategoryMapping:
     # 넘겨야 상한이 지켜진다(§6.1). 실패한 호출도 비용이 발생하므로 **시도 수**를 센다 —
     # `observer.record_model_call` 도 같은 이유로 호출 전에 기록한다.
     select_calls: int = 0
+    # 매핑이 canonical 을 못 낸 leg 의 **의미 기반 top-N leaf** — 광역 발화 fan-out 후보(#222).
+    # `unresolved` 와 같은 leg 에서 나오지만 용도가 다르다: unresolved 는 "왜 실패했나"(전개 트리거),
+    # 이 값은 "그래도 어디를 볼 것인가"(검색 leg). 조회 예외·히트 0건 leg 은 담지 않는다 —
+    # 후보 자체가 없어서 담을 것이 없다.
+    expansion_leaves: list[tuple[str, str | None]] = field(default_factory=list)
 
 
 def _top1_with_margin(hits: list[tuple[str, float]]) -> _Picked | None:
@@ -101,6 +106,31 @@ def dedup_truncate(
             seen.add(cat)
             out.append((cat, query))
     return out[:fanout_max]
+
+
+def _interleave_by_leg(
+    by_leg: dict[int, list[tuple[str, str | None]]],
+) -> list[tuple[str, str | None]]:
+    """[#222 PR #318 리뷰 R5-1] leg 마다 모은 후보를 leg 순서대로 한 개씩 번갈아 뽑아 평탄화한다.
+
+    unresolved leg 이 여럿인데 `expansion_leaves` 를 leg 순서대로 이어 붙이기만 하면, 그 뒤
+    `dedup_truncate(..., category_expand_legs)` 가 **턴 전체 상한**을 앞쪽부터 잘라 먼저 처리된
+    leg 이 예산을 통째로 가져가고 뒤 leg 은 0개가 된다("캠핑용품이랑 낚시용품" 이 둘 다 매핑
+    실패하면 캠핑 8개만 검색되고 낚시는 조용히 사라지는 식). `recommendation/graph.py` 의
+    `_merge_fanout_results` 가 "한 카테고리가 rerank 입력을 독점하지 않게" 쓰는 것과 같은
+    round-robin 규약을 여기서도 쓴다 — leg 별 상한이 아니라 **인터리브 뒤 한 번만** 전체
+    상한을 적용해야 leg 간 형평이 산다. 후보가 적은 leg 은 그 라운드에서 건너뛰고 후보가
+    남은 leg 이 계속 순서를 채운다(예산 누수 없음).
+    """
+    ordered = sorted(by_leg)  # leg 인덱스 순서 보존
+    lists = [by_leg[i] for i in ordered]
+    depth = max((len(pl) for pl in lists), default=0)
+    out: list[tuple[str, str | None]] = []
+    for d in range(depth):
+        for pl in lists:
+            if d < len(pl):
+                out.append(pl[d])
+    return out
 
 
 async def map_categories(
@@ -147,7 +177,21 @@ async def map_categories(
     (utterance 는 매퍼 인터페이스 파라미터로 유지하되, 현재 앵커는 leg 별 raw·query 만 쓴다.)
     """
     dsn = settings.catalog_db_url
-    k = settings.category_top_k
+    # [#222] 조회 k 는 택일 후보(category_top_k)와 광역 fan-out 후보(category_expand_legs) 중 큰
+    # 쪽으로 늘린다 — 같은 쿼리의 LIMIT 만 커질 뿐 pg 왕복 횟수는 그대로다. 늘어난 히트는
+    # `candidates_by_leg`(§4.4 택일)·`_top1_with_margin`(top1/margin)에 **그대로 넘기지 않는다** —
+    # 아래에서 앞 category_top_k 개만 슬라이스해 종전 #115 동작(택일 후보 5개)을 고정한다.
+    # [PR #318 리뷰 R6-2] `category_expand_enabled` 를 여기서 직접 읽는다 — 소비 지점(`buyer/graph.py`)
+    # 검사만으로는 이 플래그가 "롤백 스위치"로 동작하지 않는다. 꺼도 ① k 확대로 pgvector LIMIT 이
+    # 그대로 늘어난 채 나가고 ② `_collect_expansion_leaves` 가 계속 돌아
+    # `category_expansion_leaves` 로그가 계속 쌓인다 — 부하·로그 노이즈 때문에 롤백하는
+    # 인시던트에서 롤백이 안 되는 롤백 스위치가 된다. 꺼져 있으면 k 를 category_top_k 로 고정해
+    # 조회 폭 자체를 늘리지 않는다(소비 지점의 기존 검사는 이중 방어로 그대로 둔다).
+    k = (
+        max(settings.category_top_k, settings.category_expand_legs)
+        if settings.category_expand_enabled
+        else settings.category_top_k
+    )
     fanout_max = settings.category_fanout_max
     distance_max = settings.category_distance_max  # 초과 시 leg 드롭(§4 #115)
     # 거리컷 마진 예외(§4.5 #115) — 튜너블은 **여기서 한 번에** 읽는다. 결과 루프 안에서 읽으면
@@ -192,7 +236,12 @@ async def map_categories(
         if (raws[i] and raws[i] not in exact) or (not raws[i] and qtexts[i])
     ]
     nearest: dict[int, _Winner] = {}
-    candidates_by_leg: dict[int, list[tuple[str, float]]] = {}  # 택일 후보(§4.4)
+    candidates_by_leg: dict[
+        int, list[tuple[str, float]]
+    ] = {}  # 택일 후보(§4.4) — category_top_k 로 슬라이스
+    # [#222] 슬라이스 전 원본 히트(최대 k=category_expand_legs) — 광역 fan-out leaf 후보용.
+    # candidates_by_leg 를 그대로 쓰면 택일 후보 수가 늘어 #115 가 튜닝한 동작이 조용히 바뀐다.
+    full_hits_by_leg: dict[int, list[tuple[str, float]]] = {}
     anchor_by_leg: dict[int, str] = {}  # 이긴 앵커 텍스트(택일 질의 조립용, §4.4)
     failed_idx: set[int] = set()  # 조회가 예외로 실패한 leg — category_unmapped(품질) 오염 방지
     try:
@@ -240,8 +289,11 @@ async def map_categories(
             kind = "query" if "query" in by_kind else "raw"
             picked, hit_list, anchor_text = by_kind[kind]
             nearest[leg_i] = (*picked, kind)
-            # 택일(§4.4)에 넘길 후보·앵커 — 이긴 앵커의 top-k 전체를 그대로 쓴다.
-            candidates_by_leg[leg_i] = hit_list
+            # 택일(§4.4)에 넘길 후보·앵커 — 이긴 앵커의 top-k **중 category_top_k 개**만 쓴다(#222).
+            # hit_list 는 k=max(category_top_k, category_expand_legs) 로 조회돼 늘어나 있을 수 있으므로,
+            # 여기서 슬라이스하지 않으면 택일 후보 수가 조용히 늘어 #115 튜닝이 깨진다.
+            candidates_by_leg[leg_i] = hit_list[: settings.category_top_k]
+            full_hits_by_leg[leg_i] = hit_list  # [#222] 광역 fan-out leaf 후보용 — 슬라이스 안 함
             anchor_by_leg[leg_i] = anchor_text
         # 실패 격리 단위가 leg→앵커로 내려갔다: 앵커 하나가 죽어도 다른 앵커가 canonical 을 냈으면
         # 그 leg 는 드롭하지 않는다(부분 성공 보존, §5). 전부 실패한 leg 만 failed 로 표시한다.
@@ -412,10 +464,62 @@ async def map_categories(
     result: list[tuple[str, str | None]] = []
     # 전개 트리거 입력(#217 §4) — canonical 을 못 낸 leg 만. 조회 예외·히트 0건은 담지 않는다.
     unresolved: list[str] = []
+    # [#222] 광역 발화 fan-out 후보 — unresolved 와 같은 조건(거리컷 드롭·택일 null)에서만 채운다.
+    # [PR #318 리뷰 R5-1] leg **별로** 모은다(합쳐서 하나의 flat list 에 바로 넣지 않는다) —
+    # unresolved leg 이 여럿이면 아래에서 leg 순서대로 라운드로빈 인터리브한 뒤에야
+    # `category_expand_legs`(턴 전체 상한)를 적용해야, 먼저 처리된 leg 이 예산을 통째로
+    # 가져가고 뒤 leg 이 0개가 되는 예산 독식을 막는다.
+    expansion_by_leg: dict[int, list[tuple[str, str | None]]] = {}
 
     def _anchor_text(i: int) -> str:
         """실패 leg 을 식별할 텍스트 — 이긴 앵커(query 우선 §4.3.1), 없으면 원 신호로 폴백."""
         return anchor_by_leg.get(i) or qtexts[i] or raws[i] or ""
+
+    def _collect_expansion_leaves(i: int, anchor_kind: str) -> None:
+        """canonical 을 못 낸 leg 의 이긴 앵커 top-k 앞 category_expand_legs 개를 fan-out 후보로 담는다.
+
+        `full_hits_by_leg` 는 need_idx 조회가 성공한 leg 에만 있다 — 조회 예외·히트 0건 leg 은
+        여기 도달하지 않으므로(호출부가 `unresolved` 를 채우는 두 분기에서만 부른다) 자연히
+        빈 채로 남는다(#222 계약: 후보 자체가 없어서 담을 것이 없다).
+
+        [#222 R2 F-2] **잔여 위험 — 조건 전용 앵커가 새면 노이즈 8개가 나온다.** 이 앵커는
+        leg 의 raw/query 텍스트를 그대로 임베딩한 것이라, "평점 높은 거"·"가성비 좋은 거"처럼
+        카테고리 신호가 아니라 조건·수식어뿐인 텍스트가 여기까지 들어오면 top-k 가 서로 무관한
+        카테고리 8개(게임/도서/화장품/향수 …)로 흩어진다(오케스트레이터 라이브 pg 실측 6/6).
+        지금은 라이브 decompose 가 순수 조건 발화에서 `categoryQueries` 를 비워 내
+        (`raws[i]`·`qtexts[i]` 모두 없음, §4 "신호 없음" 스킵)이 코드 경로 자체에 도달하지 않아
+        **재현되지 않는다** — 다만 이는 decompose 프롬프트가 우연히 지켜주는 전제이지 이 함수가
+        스스로 강제하는 불변식이 아니다. `case`(§3 이슈 원안이 쓰려던 신호)로 새 게이트를 걸지
+        않는다 — 실측상 `case` 는 이 축에서 신뢰할 수 없다(`청바지 보여줘`=case 2, `가전
+        추천해줘`=case 3/2/2 로 발화마다 흔들림) — case!=N 게이트는 협소 발화까지 함께 막는다.
+        `graph.py` 의 무필터 폴백(§4.6 F-1, `category_expand_zero_fallback`)이 이 피해의
+        **하한**을 잡는다 — 노이즈 leg 8개가 전부 0건이면 무필터로 되돌아가 최소한 "엉뚱한
+        카테고리로 좁혀진 0건"은 막는다. 그러나 노이즈 leg 이 0건이 아니라 *그 엉뚱한 카테고리의
+        진짜 상품*을 돌려주는 경우는 폴백이 못 막는다(검색 결과가 비어 있지 않아 트리거되지
+        않음) — 사후 감시는 이 함수가 매 호출 남기는 `category_expansion_leaves` 로그의 `mids`
+        필드로 한다(조건 전용 발화가 새면 그 발화의 mids 가 서로 무관한 대분류로 흩어져 보인다).
+        """
+        # [PR #318 리뷰 R6-2] 킬스위치가 꺼져 있으면 아예 돌지 않는다 — 계속 돌면 로그
+        # (`category_expansion_leaves`)가 계속 쌓여 "롤백이 안 되는 롤백 스위치"가 된다.
+        if not settings.category_expand_enabled:
+            return
+        hits = full_hits_by_leg.get(i)
+        if not hits:
+            return
+        leaves = hits[: settings.category_expand_legs]
+        mids: list[str] = []
+        seen_mid: set[str] = set()
+        for canonical, _distance in leaves:
+            mid = canonical.split(" > ", 1)[0]
+            if mid not in seen_mid:
+                seen_mid.add(mid)
+                mids.append(mid)
+        # 이 leg 의 후보만 담는다 — 다른 leg 과 섞지 않는다(R5-1, 아래 인터리브가 leg 경계를 쓴다).
+        expansion_by_leg[i] = [(canonical, qtexts[i]) for canonical, _distance in leaves]
+        logger.info(
+            "category_expansion_leaves",
+            extra={"anchor_kind": anchor_kind, "count": len(leaves), "mids": mids},
+        )
 
     # 조립 루프도 격리한다(PR 리뷰) — 여기서 예외가 나면 `map_categories` 가 통째로 던지고 호출부가
     # 빈 legs 로 degrade 해 **이미 DB 검증된 exact 매치와 채택 canonical 까지 버린다.** PR #188 이
@@ -475,6 +579,7 @@ async def map_categories(
                 )
                 # #217 §4 ① — "맞는 칸이 taxonomy 에 없다"는 판정이라 전개 대상이다.
                 unresolved.append(_anchor_text(i))
+                _collect_expansion_leaves(i, picked[3])  # [#222] 광역 fan-out 후보
                 continue
             if i in select_dropped:
                 # §4.4 택일이 "맞는 후보 없음" → 이미 category_select_null 로 관측됨. 이 leg 은 위
@@ -482,6 +587,8 @@ async def map_categories(
                 # 하므로 nearest[i] 의 거리는 임계 이하다(테스트로 고정).
                 # #217 §4 ② — ① 과 같은 뜻("후보 중 맞는 것이 없다")이라 함께 전개 대상이다.
                 unresolved.append(_anchor_text(i))
+                if picked:  # nearest[i] 는 택일 null 이어도 원 top-1 을 그대로 들고 있다
+                    _collect_expansion_leaves(i, picked[3])  # [#222] 광역 fan-out 후보
                 continue
             if picked:
                 canonical, distance, margin, anchor_kind = picked
@@ -523,4 +630,9 @@ async def map_categories(
         legs=dedup_truncate(result, fanout_max),
         unresolved=unresolved,
         select_calls=select_calls,
+        # R5-1: 인터리브가 **먼저**, 절단(dedup_truncate)이 **나중**이어야 leg 간 형평이 산다 —
+        # 순서를 바꾸면 leg 0 이 이미 상한을 다 채운 뒤라 인터리브가 의미 없어진다.
+        expansion_leaves=dedup_truncate(
+            _interleave_by_leg(expansion_by_leg), settings.category_expand_legs
+        ),
     )
