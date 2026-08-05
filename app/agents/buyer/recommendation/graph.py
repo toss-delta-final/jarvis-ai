@@ -1316,14 +1316,24 @@ async def stream_recommendation(
     if no_condition and not popular_degraded:
         if decision.total_budget is not None:
             # 예산을 말한 턴에는 그 금액을 되짚어 준다 — "조건을 안 주셨다"고 하면 거짓이 된다.
-            # format 실패는 문구를 통째로 잃지 않게 원문으로 떨군다(`_set_label` 과 같은 관용구).
-            try:
-                raw_notice = settings.no_condition_notice_budget.format(
-                    budget=f"{decision.total_budget:,}원"
-                )
-            except (KeyError, IndexError, ValueError):
-                logger.warning("no_condition_budget_notice_invalid")
-                raw_notice = settings.no_condition_notice_budget
+            # [PR #311 리뷰] **자리표시자 존재를 먼저 검사한다** — `str.format` 은 쓰지 않는
+            # 키워드를 조용히 무시하므로(`"금액 없이".format(budget=...)` 는 예외 없이 그대로),
+            # `{budget}` 이 통째로 빠진 오설정은 아래 except 로 잡히지 않고 금액만 소리 없이
+            # 사라진다. 오타(`{budgt}`)만 KeyError 로 잡힌다. `_set_label` 이 `"{need}" not in`
+            # 으로 같은 검사를 하는 것과 맞춘다.
+            # 폴백은 인기 상품 문구다 — 이 경로의 후보는 실제로 인기 상품이라 참이고,
+            # 금액을 주장하지 않으므로 거짓 고지가 되지 않는다.
+            if "{budget}" not in settings.no_condition_notice_budget:
+                logger.warning("no_condition_budget_notice_missing_placeholder")
+                raw_notice = settings.no_condition_notice_popular
+            else:
+                try:
+                    raw_notice = settings.no_condition_notice_budget.format(
+                        budget=f"{decision.total_budget:,}원"
+                    )
+                except (KeyError, IndexError, ValueError):
+                    logger.warning("no_condition_budget_notice_invalid")
+                    raw_notice = settings.no_condition_notice_popular
         else:
             raw_notice = settings.no_condition_notice_popular
         if notice := _strip_unsafe(raw_notice):

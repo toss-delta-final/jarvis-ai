@@ -6215,3 +6215,76 @@ async def test_profile_path_discloses_dedup_failure_like_the_other_paths(
     assert popular_calls == []  # 취향 경로를 탄 턴이다
     texts = [e["data"]["text"] for e in events if e["type"] == "token"]
     assert any("최근 구매 내역을 확인하지 못했어요." in t for t in texts)
+
+
+async def _failed_mapping(*args, **kwargs):
+    """canonical 매핑이 아무것도 못 찾은 상태 — legs 가 빈 CategoryMapping."""
+    from app.agents.buyer.recommendation.category_mapping import CategoryMapping
+
+    return CategoryMapping()
+
+async def test_multi_item_utterance_with_failed_mapping_keeps_normal_search() -> None:
+    """"이어폰이랑 노트북 추천해줘" — 매핑이 실패해도 인기 상품으로 새면 안 된다(PR #311 리뷰).
+
+    상품 2개 지목은 `cat_signal` 승격 조건(leg 1개)에 안 걸려 출처 검사를 통과하고, 매핑까지
+    실패하면 `category_legs` 도 빈다. `category_queries` 를 안 보면 사용자가 명시적으로 말한
+    상품군을 버리고 인기 상품이 나간다.
+    """
+    search, search_calls = _counting_search_calls()
+    popular, popular_calls = _recording_popular()
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="이어폰이랑 노트북 추천해줘", thread_id="nc-multi-item"),
+            _guest(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "reply": "",
+                    "case": 3,
+                    "filters": {},
+                    "categoryQueries": [
+                        {"category": None, "query": "무선 이어폰"},
+                        {"category": None, "query": "노트북"},
+                    ],
+                }
+            ),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+            map_categories=_failed_mapping,  # 매핑 실패 재현
+        )
+    )
+
+    assert popular_calls == []  # 인기 상품으로 새지 않는다
+    assert search_calls  # 종전 검색 경로를 그대로 탄다
+
+
+async def test_budget_notice_without_placeholder_falls_back_to_popular_notice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`{budget}` 자리표시자가 빠진 오설정은 **금액 없는 문구를 조용히 내보내지 않는다**.
+
+    `str.format` 은 쓰지 않는 키워드를 예외 없이 무시하므로 except 로는 못 잡는다(PR #311 리뷰).
+    금액을 되짚지 못할 바에는 금액을 주장하지 않는 인기 상품 문구로 떨어뜨린다.
+    """
+    settings = get_settings()
+    monkeypatch.setattr(settings, "no_condition_notice_budget", "금액 없이 골라봤어요.")
+    _inject_profile(monkeypatch, vector=None, store=_catalog_store([]))
+    search, _ = _counting_search_calls()
+    popular, _ = _recording_popular(_PRICED_POPULAR)
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="총 5만원 있어 아무거나 추천해줘", thread_id="nc-budget-badcfg"),
+            _guest(),
+            llm=FakeLLM(decompose=_BUDGET_ONLY_DECOMPOSE),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    texts = [e["data"]["text"] for e in events if e["type"] == "token"]
+    assert not any("금액 없이 골라봤어요." in t for t in texts)  # 오설정 문구는 안 나간다
+    assert any(settings.no_condition_notice_popular in t for t in texts)  # 안전한 문구로 폴백

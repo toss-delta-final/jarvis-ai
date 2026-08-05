@@ -39,6 +39,14 @@ _DECISION_CONDITION_AXES = (
     # decompose 가 `semanticQuery` 를 채워 ③에서도 걸리지만, 그건 우연이라 여기서 못박는다.
     "repurchase_products",
     "revert_categories",
+    # [PR #311 리뷰] **매핑 전 원시 카테고리 신호.** `category_legs`(매핑 후)가 대표한다고
+    # 봤던 것이 틀렸다 — 매핑이 실패하면 legs 는 비지만 **사용자가 지목한 상품은 여기 남아
+    # 있다.** "이어폰이랑 노트북 추천해줘"처럼 상품을 2개 이상 지목한 턴은 `cat_signal` 승격이
+    # leg 1개 조건에 걸려(`decompose.py`: `len(category_queries) == 1`) ③도 통과하므로,
+    # 두 카테고리가 모두 매핑에 실패하면 "조건 없음"으로 오판정돼 사용자가 말한 상품군을
+    # 통째로 버리고 인기 상품이 나간다(재현 확인). 매핑 성공 여부와 무관하게 **신호의 유무**로
+    # 본다 — 종전 동작(무필터 검색 + 원문 rerank)이 그 케이스에서는 더 안전했다.
+    "category_queries",
 )
 
 

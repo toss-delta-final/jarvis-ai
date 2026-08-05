@@ -16,7 +16,7 @@ from app.agents.buyer.recommendation.no_condition import (
     is_no_condition_turn,
     within_budget,
 )
-from app.agents.buyer.recommendation.state import RouteDecision
+from app.agents.buyer.recommendation.state import CategoryQuery, RouteDecision
 from app.schemas.spring import ProductSearchFilters, SpringProduct
 
 
@@ -299,7 +299,6 @@ def test_route_decision_axes_are_all_classified() -> None:
         "reply",  # intent=general 전용 답변
         "cart",  # 담기 의도 — 추천 레인 밖
         "scoped_to_previous",  # 직전 결과 지칭 = 멀티턴이라 prior 가 막는다
-        "category_queries",  # 매핑 **전** 추측 — 결과인 category_legs 가 대표한다
         # "다 사줘" — 세트 의도이지만 leg 없는 턴에서는 어느 경로도 세트를 만들지 못하고
         # (`buy_all_mode` 가 `split_by_need` 를 요구한다) 둘 다 PICK_ONE 으로 끝난다.
         # 확인할 가격도 없어 취향 경로를 막을 근거가 없다.
@@ -312,3 +311,47 @@ def test_route_decision_axes_are_all_classified() -> None:
     assert not (blocking & selects_source)
     assert not (blocking & no_effect_on_sourcing)
     assert not (selects_source & no_effect_on_sourcing)
+
+
+# ─────────── 매핑 전 카테고리 신호 (PR #311 3차 리뷰) ───────────
+
+
+def test_raw_category_queries_block_trigger_even_when_mapping_failed() -> None:
+    """**매핑에 실패해도 사용자가 지목한 상품은 조건이다** — `category_legs` 만으로는 부족하다.
+
+    `category_legs` 는 canonical 매핑 **결과**라 매핑이 실패하면 빈다. 그런데 사용자가 말한
+    상품은 `category_queries`(매핑 전 LLM 산출)에 그대로 남아 있다. 이걸 안 보면 "이어폰이랑
+    노트북 추천해줘"가 조건 없음으로 판정돼 그 상품군을 통째로 버리고 인기 상품이 나간다.
+    """
+    decision = _decision()
+    decision.category_queries = [
+        CategoryQuery(raw_category=None, query="무선 이어폰"),
+        CategoryQuery(raw_category=None, query="노트북"),
+    ]
+    assert decision.category_legs == []  # 매핑 실패 상태
+    assert is_no_condition_turn(decision, prior=None) is False
+
+
+async def test_multi_item_utterance_is_not_a_no_condition_turn() -> None:
+    """**실제 decompose 경로** — 상품 2개 지목 + 매핑 실패 조합이 트리거되지 않는다.
+
+    `cat_signal` 승격이 leg 1개 조건(`len(category_queries) == 1`)에 걸려 이 턴은
+    `semantic_query_is_fallback=True` 로 나온다 — 출처 검사(③)만으로는 못 막는 경로다.
+    """
+    decision = await _decompose_raw(
+        {
+            "intent": "recommend",
+            "reply": "",
+            "case": 3,
+            "filters": {},
+            "categoryQueries": [
+                {"category": None, "query": "무선 이어폰"},
+                {"category": None, "query": "노트북"},
+            ],
+        },
+        "이어폰이랑 노트북 추천해줘",
+    )
+
+    assert decision.semantic_query_is_fallback is True  # ③ 은 통과한다
+    assert decision.category_legs == []  # 매핑 전이라 legs 도 비어 있다
+    assert is_no_condition_turn(decision, prior=None) is False  # 그래도 트리거되면 안 된다
