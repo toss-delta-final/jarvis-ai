@@ -16,7 +16,9 @@ from types import SimpleNamespace
 import pytest
 
 from app.agents.buyer.graph import run_buyer_turn as _production_run_buyer_turn
+from app.agents.buyer.recommendation.budget_sets import BudgetSetPlan
 from app.agents.buyer.recommendation.category_mapping import CategoryMapping
+from app.agents.buyer.recommendation.graph import _need_priority_required_dropped
 from app.agents.buyer.recommendation.need_priority import _SYSTEM as _PRIORITY_SYSTEM
 from app.api.deps import buyer_owner_id
 from app.core import session_context
@@ -390,3 +392,64 @@ async def test_blank_label_leg_disables_the_classifier_but_keeps_the_budget_set(
     assert "error" not in types
     assert types[-1] == "done"
     assert push.pushes and push.pushes[0].list_type == "BUY_ALL"  # 폴백으로도 세트는 만들어진다
+
+
+# ─────────── [PR #314 리뷰] need_priority_required_dropped 는 범위 밖 leg 에도 죽지 않는다 ───
+
+
+def _plan(dropped_legs: tuple[int, ...]) -> BudgetSetPlan:
+    return BudgetSetPlan(
+        sets=(),
+        dropped_legs=dropped_legs,
+        unavailable_legs=(),
+        limited_legs=(),
+        total_budget=27_000,
+        combinations_truncated=False,
+    )
+
+
+def test_need_priority_required_dropped_true_when_a_required_need_was_dropped() -> None:
+    assert _need_priority_required_dropped((1, 2, 3), _plan((2,))) is False
+    assert _need_priority_required_dropped((1, 2, 3), _plan((0,))) is True
+
+
+def test_need_priority_required_dropped_false_when_dropped_needs_are_not_required() -> None:
+    assert _need_priority_required_dropped((3, 2, 1), _plan((0, 1))) is False
+
+
+def test_need_priority_required_dropped_false_when_priorities_or_plan_missing() -> None:
+    assert _need_priority_required_dropped(None, _plan((0,))) is False
+    assert _need_priority_required_dropped((1, 2, 3), None) is False
+
+
+def test_need_priority_required_dropped_ignores_out_of_range_leg_indices() -> None:
+    """[PR #314 리뷰 회귀] `plan.dropped_legs` 가 `priorities` 범위 밖 인덱스를 담고 있어도
+    `IndexError` 없이 그 leg 만 건너뛴다 — 오늘은 게이트가 이 상황 자체를 안 만들지만, 그
+    보장은 `graph.py`(게이트)와 `need_priority.py`(길이 검증) 두 파일에 걸친 암묵적
+    불변식이라 관측 필드 하나가 그것에 기대면 안 된다(리뷰어 지적 그대로).
+
+    ⚠️ 이 테스트는 `_need_priority_required_dropped` 의 `leg < len(priorities)` 방어를
+    지우면(즉 `any(priorities[leg] == 1 for leg in plan.dropped_legs)` 로 되돌리면) 아래
+    `IndexError` 로 실패한다 — 확인 후 결과를 보고에 남긴다. 범위 밖 leg(`2`)를 **먼저** 두어
+    `any()` 의 단락 평가(왼쪽부터 평가하다 첫 True 에서 멈춤)가 우연히 이 회귀를 가려 테스트를
+    무의미하게 만드는 것을 막는다 — 범위 밖 인덱스가 뒤에 있으면 앞쪽 유효 leg 에서 이미
+    `True` 로 단락돼 방어가 없어도 이 테스트만으로는 통과해 버린다.
+    """
+    short_priorities = (1, 2)  # leg 2 는 범위 밖(길이 2, 유효 인덱스는 0·1뿐)
+    plan_with_out_of_range_leg = _plan((2, 0))  # 범위 밖 leg 을 먼저 평가하게 둔다
+
+    result = _need_priority_required_dropped(short_priorities, plan_with_out_of_range_leg)
+
+    assert result is True  # leg 0(범위 안, priority 1)만으로 이미 True — leg 2 는 조용히 무시된다
+
+
+def test_need_priority_required_dropped_ignores_out_of_range_leg_when_no_other_leg_qualifies() -> (
+    None
+):
+    """범위 밖 leg 하나뿐이고 범위 안에는 필수 니즈가 없으면 예외 없이 False 로 떨어진다."""
+    short_priorities = (2, 3)  # 필수(1)가 하나도 없다
+    plan_with_only_out_of_range_leg = _plan((5,))  # 이 leg 은 범위 밖이라 무시돼야 한다
+
+    result = _need_priority_required_dropped(short_priorities, plan_with_only_out_of_range_leg)
+
+    assert result is False

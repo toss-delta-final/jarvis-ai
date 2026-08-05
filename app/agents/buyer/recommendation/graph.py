@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from app.agents.buyer._frames import sse
-from app.agents.buyer.recommendation.budget_sets import BudgetSet, build_budget_sets
+from app.agents.buyer.recommendation.budget_sets import BudgetSet, BudgetSetPlan, build_budget_sets
 from app.agents.buyer.recommendation.need_priority import classify_need_priorities
 from app.agents.buyer.recommendation.rerank import rerank
 from app.agents.buyer.recommendation.relaxation import (
@@ -248,6 +248,25 @@ def _cancel_priority_task(task) -> None:  # noqa: ANN001
     """
     if task is not None and not task.done():
         task.cancel()
+
+
+def _need_priority_required_dropped(
+    priorities: tuple[int, ...] | None, plan: BudgetSetPlan | None
+) -> bool:
+    """필수(priority 1) 니즈가 예산 때문에 빠진 턴인가 — `recommend_pipeline` 관측 전용 (#281).
+
+    [PR #314 리뷰] `plan.dropped_legs` 의 leg 인덱스는 `priorities` 범위 안에 있다는 것이
+    오늘은 항상 참이지만(게이트가 라벨 `None` 인 leg 이 있으면 태스크 자체를 안 만들어
+    `len(priorities) == len(need_legs) == len(pools)` 가 성립한다), 그 정합은
+    `graph.py`(게이트)와 `need_priority.py`(`_validate_priorities` 길이 검증) **두 파일에
+    걸친 암묵적 불변식**이다. 관측 필드 하나가 그 불변식에 기대 `IndexError` 를 내면 이미
+    계산이 끝난 추천 턴 전체가 죽는다 — 이 파일이 고지 문구 생성부(`if leg < len(need_legs)`,
+    아래 `_split_by_need` 이후 dropped/unavailable/limited 알림 블록 참조)에서 이미 쓰는
+    관용구와 같은 모양으로 범위 밖 leg 을 조용히 건너뛴다.
+    """
+    if priorities is None or plan is None:
+        return False
+    return any(leg < len(priorities) and priorities[leg] == 1 for leg in plan.dropped_legs)
 
 
 def _split_by_need(
@@ -1258,11 +1277,9 @@ async def stream_recommendation(
             # 적용됐는지(분류기 성공)와, REQ-REC-075 가 요구하는 "조용히 누락하지 않는다"의 빈도를
             # 운영에서 볼 수 있어야 하므로 필수(priority 1) 니즈가 예산 때문에 빠진 턴을 표시한다.
             "need_priority_applied": priorities is not None,
-            "need_priority_required_dropped": bool(
-                priorities is not None
-                and plan is not None
-                and any(priorities[leg] == 1 for leg in plan.dropped_legs)
-            ),
+            # [PR #314 리뷰] 범위 밖 leg 방어는 순수 헬퍼로 뽑았다(_need_priority_required_dropped
+            # 참조) — 근거·불변식 설명도 그쪽 docstring 에 있다.
+            "need_priority_required_dropped": _need_priority_required_dropped(priorities, plan),
         },
     )
 
