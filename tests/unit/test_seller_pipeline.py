@@ -87,7 +87,10 @@ def test_resolve_plan_wants_chart_from_question_keyword() -> None:
 def test_resolve_plan_wants_chart_false_by_default() -> None:
     """신호가 전혀 없으면 wants_chart=False — 억지 차트 생성 방지."""
     resolved = pipeline.resolve_plan(
-        _plan(), today=dt.date(2026, 7, 18), recent_default_days=7, question="지난달 매출이 왜 떨어졌어?"
+        _plan(),
+        today=dt.date(2026, 7, 18),
+        recent_default_days=7,
+        question="지난달 매출이 왜 떨어졌어?",
     )
     assert resolved.wants_chart is False
 
@@ -323,3 +326,43 @@ def test_progress_token_stages() -> None:
         "graph",
     }
     assert pipeline.ALL_WORKERS_FAILED_TOKEN.startswith("죄송합니다")
+
+
+# ── split_report_summary (이슈 #296 — report SSE summary 분리, §5.1 규칙) ────────
+
+
+def test_split_report_summary_takes_first_paragraph() -> None:
+    """정상 케이스 — 첫 빈 줄 전까지(핵심 요약 문단)를 그대로 반환한다."""
+    report = (
+        "지난달 매출이 12% 감소했습니다. 주말 급락이 원인입니다.\n\n상세 내용은 다음과 같습니다."
+    )
+    assert (
+        pipeline.split_report_summary(report)
+        == "지난달 매출이 12% 감소했습니다. 주말 급락이 원인입니다."
+    )
+
+
+def test_split_report_summary_no_blank_line_falls_back_to_truncation() -> None:
+    """빈 줄 없는 통짜 장문 — 첫 문단 분리 실패로 보고 200자 절단 + 말줄임."""
+    report = "가" * 500
+    summary = pipeline.split_report_summary(report)
+    assert summary == "가" * pipeline.SUMMARY_FALLBACK_CHARS + "…"
+
+
+def test_split_report_summary_oversized_first_paragraph_falls_back() -> None:
+    """첫 문단이 상한(300자) 초과 — 핵심 요약 가정이 깨진 것으로 보고 절단 fallback."""
+    report = "나" * (pipeline.SUMMARY_FIRST_PARAGRAPH_MAX + 1) + "\n\n둘째 문단."
+    summary = pipeline.split_report_summary(report)
+    assert summary.startswith("나" * pipeline.SUMMARY_FALLBACK_CHARS)
+    assert summary.endswith("…")
+
+
+def test_split_report_summary_short_report_returns_whole() -> None:
+    """빈 줄 없지만 200자 이하 — 전문 그대로(말줄임 없음)."""
+    assert pipeline.split_report_summary("짧은 보고서.") == "짧은 보고서."
+
+
+def test_split_report_summary_empty_report_returns_empty() -> None:
+    """빈/공백 문자열 — ""(검증 루프 소진 degrade, FE 는 body fallback)."""
+    assert pipeline.split_report_summary("") == ""
+    assert pipeline.split_report_summary("   \n\n  ") == ""
