@@ -913,10 +913,10 @@ class WishlistItem(CamelModel):
 
     교체 근거: 2026-08-05 M-4 개정으로 구 boolean 필드(기본값 참, 지금은 사라짐)를
     `purchaseState`(enum)로 대체했다 — 🔶 I-28 (확정 2026-08-05) — Spring 구현 진행 중.
-    기본값 재검토는 #310.
-    잔여 위험 — BE 가 나중에 이 세 값 밖의 네 번째 상태를 추가하면 `ValidationError` 가 나고,
-    `get_wishlist` 가 그걸 `SpringUnavailableError` 로 낙성하므로 찜 해제 흐름 전체가 죽는다
-    (키 미수신은 기본값이 막아주지만 미지의 값은 못 막는다) — 이 사실도 #310 재검토 항목이다.
+    기본값(`"AVAILABLE"`)은 그 구 boolean 필드와 같은 의미를 유지한다 — 재검토는 #310.
+    BE 가 이 세 값 밖의 상태를 추가했을 때의 파싱 견고성은 이 클래스가 아니라
+    `app/services/spring_client.py::_parse_wishlist_items`(항목 단위 skip)가 책임진다 —
+    상세 근거는 그쪽 docstring 하나에만 둔다.
     """
 
     product_id: int

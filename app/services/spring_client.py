@@ -73,6 +73,7 @@ from app.schemas.spring import (
     SellerProductList,
     SpringProduct,
     WishlistAddResult,
+    WishlistItem,
     WishlistView,
 )
 
@@ -109,9 +110,7 @@ _color_synonym_limiter_lock = threading.Lock()
 _background_synonym_tasks: set[asyncio.Task[dict[str, list[str]]]] = set()
 # ContextVar로 SpringSearchBackend·EmbeddingRerankBackend·VectorSearchBackend와 search_catalog
 # 시그니처를 바꾸지 않고 호출 구간만 표시한다. gather 자식 태스크는 생성 시 컨텍스트를 복사한다.
-_search_retry_suppressed: ContextVar[bool] = ContextVar(
-    "search_retry_suppressed", default=False
-)
+_search_retry_suppressed: ContextVar[bool] = ContextVar("search_retry_suppressed", default=False)
 
 
 class SearchBudgetExceeded(TimeoutError):
@@ -190,10 +189,7 @@ def _color_synonym_runtime_max_concurrency(settings) -> int:
     """배치가 꺼져 있으면 공유 풀 전체를, 켜져 있으면 예약분을 제외한 검색 몫을 반환한다."""
     if not settings.color_synonym_batch_harvest_enabled:
         return settings.color_synonym_pool_max_size
-    return (
-        settings.color_synonym_pool_max_size
-        - settings.color_synonym_harvest_max_concurrency
-    )
+    return settings.color_synonym_pool_max_size - settings.color_synonym_harvest_max_concurrency
 
 
 def _consume_background_synonym_lookup(task: asyncio.Task[dict[str, list[str]]]) -> None:
@@ -1083,11 +1079,61 @@ async def remove_wishlist(product_id: int, *, user_id: int) -> None:
     raise WishlistError(f"remove_wishlist 실패: {resp.status_code} {code}")
 
 
+def _parse_wishlist_items(raw: list) -> list[WishlistItem]:
+    """I-28 응답 `items` 를 **항목 단위로** 파싱한다.
+
+    배열 전체를 `WishlistView.model_validate({"items": raw})` 로 한 번에 검증하면, BE 가
+    `purchaseState` enum 에 새 값 하나만 추가해도 그 값을 가진 항목 1건 때문에 `ValidationError`
+    가 배열 전체를 죽여 `get_wishlist` 가 `SpringUnavailableError` 로 낙성하고, 그 사용자의 찜
+    해제(#116·#117)가 통째로 막힌다 — 한 항목의 검증 실패가 전체를 죽이는 구조 자체가 문제다.
+
+    이 저장소의 기존 관행을 따른다 — `_parse_cart_error` 가 "형식 이상 옵션은 건너뜀 — 되물음
+    흐름 전체가 죽지 않게" 로 옵션 배열을 항목 단위로 방어하는 것과 같은 처리다. **`PurchaseState`
+    Literal·기본값(`"AVAILABLE"`)은 바꾸지 않는다**(#310 지시서의 결정 유지) — 여기서 바꾸는 것은
+    파싱 견고성뿐이다. 검증에 실패한 항목만 건너뛰고 나머지는 살리며, 건너뛴 수는 BE 계약
+    드리프트 관측을 위해 warning 으로 남긴다(조용히 사라지면 드리프트를 알 방법이 없다).
+
+    응답 구조 자체가 깨진 경우(`items` 가 list 가 아님)는 이 함수가 보지 않는다 — 호출부가 그
+    형태 붕괴는 종전대로 fail-closed(`SpringUnavailableError`)로 처리한다. **원본이 비어 있지
+    않은데 이 함수의 반환이 빈 리스트인 경우(전 항목 스키마 붕괴)도 이 함수는 판단하지 않는다**
+    — "항목 하나의 이상"과 "계약 전면 드리프트"는 다른 문제라 그 구분은 호출부(`get_wishlist`)
+    책임이다. 여기서 다루는 건 순수하게 "배열은 정상인데 그 안의 항목 하나가 이상한" 경우뿐이다.
+    """
+    parsed: list[WishlistItem] = []
+    invalid = 0
+    for it in raw:
+        if not isinstance(it, dict):
+            invalid += 1
+            _log.warning("찜 목록 항목이 object 아님(skip) — type=%s", type(it).__name__)
+            continue
+        try:
+            parsed.append(WishlistItem.model_validate(it))
+        except ValidationError as exc:
+            # 항목 1건의 스키마 이상(예: 미지의 purchaseState 값)은 그 항목만 skip — 전체 실패로
+            # 번지지 않게. BE 계약 드리프트 관측을 위해 남긴다.
+            invalid += 1
+            _log.warning("찜 목록 항목 파싱 실패로 skip(전체 실패 아님) — %s", exc)
+    if invalid:
+        _log.warning("찜 목록 항목 %d건 skip(스키마 이상) / 정상 %d건", invalid, len(parsed))
+    return parsed
+
+
 async def get_wishlist(user_id: int) -> WishlistView:
     """찜 목록 조회 — I-28(확정 2026-08-05) GET /internal/wishlist?userId=.
 
     페이징 없음, MVP 전량 반환. 찜 0건도 200 + items:[](404 아님). get_cart 와 같은 degrade
-    규약 — 도달 불가/오류/스키마 불일치는 SpringUnavailableError.
+    규약 — 도달 불가/오류/응답 최상위 구조 불일치는 SpringUnavailableError. 항목 단위 스키마
+    이상(BE `purchaseState` enum 드리프트 등)은 `_parse_wishlist_items` 가 그 항목만 skip
+    한다 — 한 항목이 찜 목록 전체를, 나아가 찜 해제 기능 전체를 죽이지 않는다.
+
+    **원본 `items` 가 비어 있지 않은데 파싱 결과가 0건이면 SpringUnavailableError 로
+    fail-closed 한다** — "항목 하나의 이상"이 아니라 BE 가 값 체계를 통째로 바꾼 계약 전면
+    드리프트로 본다. 이 구분이 없으면 찜을 여러 개 해 둔 사용자가 파싱 실패로 빈 목록을
+    받고 "찜한 상품이 없어요."(`app/agents/buyer/cart/wishlist.py` 의 빈 목록 분기)라는
+    안내를 듣는다 — 실제로는 데이터가 있는데 없다고 확언하는 것이라, 조회 실패를 정직하게
+    알리는 쪽(`SpringUnavailableError` → "찜 목록을 확인하지 못했어요")보다 나쁘다. 원본이
+    애초에 빈 배열(`items: []`, 찜 0건)인 경우는 이 판정 대상이 아니다 — 그건 I-28 의 정상
+    응답이라 그대로 빈 `WishlistView` 를 돌려준다.
     """
     # 🔶 I-28 협의 대상: 전량 반환 응답의 크기 상한이 미확정 — 클라 측 절단은 두지 않는다.
     try:
@@ -1103,7 +1149,20 @@ async def get_wishlist(user_id: int) -> WishlistView:
             raise ValueError("get_wishlist 응답 success=false")
         payload = data.get("data") if isinstance(data, dict) else None
         items = payload.get("items") if isinstance(payload, dict) else None
-        return WishlistView.model_validate({"items": items or []})
+        if items is not None and not isinstance(items, list):
+            # items 자체가 list 가 아니다 — 항목 단위로 볼 수조차 없는 최상위 envelope drift 라
+            # 종전대로 fail-closed 한다(§7 과 같은 구분 — 개별 항목 이상과는 다른 문제).
+            raise ValueError(f"get_wishlist items 형태 미인식: {type(items).__name__}")
+        raw_items = items or []
+        parsed = _parse_wishlist_items(raw_items)
+        if raw_items and not parsed:
+            # 원본은 비어 있지 않은데 파싱 결과가 0건 — 개별 항목 이상이 아니라 계약 전면
+            # 드리프트다(위 docstring 참조). 빈 목록으로 위장하면 실제 데이터를 가진 사용자에게
+            # "찜한 상품이 없어요."라는 확신에 찬 거짓 안내가 나간다.
+            raise ValueError(
+                f"get_wishlist 원본 {len(raw_items)}건이 전부 파싱 실패(계약 드리프트 의심)"
+            )
+        return WishlistView(items=parsed)
     except (httpx.HTTPError, ValueError, ValidationError) as exc:
         raise SpringUnavailableError(f"get_wishlist 실패: {exc}") from exc
 

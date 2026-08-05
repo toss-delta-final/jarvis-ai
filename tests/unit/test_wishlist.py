@@ -350,6 +350,85 @@ async def test_get_wishlist_parses_non_default_purchase_states(
     assert view.items[0].purchase_state == purchase_state
 
 
+async def test_get_wishlist_unknown_purchase_state_skips_only_that_item(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """재현·수정 확인 — BE 가 `purchaseState` 에 계약 밖 값을 하나 추가해도 그 항목만 skip
+    되고 나머지 정상 항목은 살아남아야 한다(전체 `ValidationError` 로 죽지 않는다).
+    `PurchaseState` Literal·기본값은 바뀌지 않는다 — 미지의 값을 관대 수용하는 게 아니라
+    그 항목만 걸러내는 파싱 견고성 수정이다."""
+    import app.services.spring_client as sc
+
+    body = {
+        "success": True,
+        "data": {
+            "items": [
+                {"productId": 1, "name": "이어폰", "purchaseState": "AVAILABLE"},
+                {"productId": 2, "name": "케이스", "purchaseState": "DISCONTINUED"},
+            ]
+        },
+    }
+    client = _WishlistClient(_WishlistResp(200, body))
+    monkeypatch.setattr(sc, "_client", lambda: client)
+    view = await sc.get_wishlist(1)
+    assert len(view.items) == 1
+    assert view.items[0].product_id == 1
+    assert view.items[0].purchase_state == "AVAILABLE"
+
+
+async def test_get_wishlist_all_items_unknown_purchase_state_fails_closed_not_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """전 항목 드리프트는 빈 목록으로 위장하지 않고 degrade 한다 — 원본 `items` 가 비어 있지
+    않은데 전부 파싱 실패면, 이건 항목 하나의 이상이 아니라 BE 가 값 체계를 통째로 바꾼
+    계약 전면 드리프트다. 이걸 빈 목록으로 돌려주면 찜을 여러 개 해 둔 사용자가 "찜한 상품이
+    없어요."라는 확신에 찬 거짓 안내를 듣는다 — 조회 실패를 정직하게 알리는 편이 낫다."""
+    import app.services.spring_client as sc
+
+    body = {
+        "success": True,
+        "data": {
+            "items": [
+                {"productId": 1, "name": "이어폰", "purchaseState": "DISCONTINUED"},
+                {"productId": 2, "name": "케이스", "purchaseState": "RETIRED"},
+            ]
+        },
+    }
+    client = _WishlistClient(_WishlistResp(200, body))
+    monkeypatch.setattr(sc, "_client", lambda: client)
+    with pytest.raises(sc.SpringUnavailableError):
+        await sc.get_wishlist(1)
+
+
+async def test_get_wishlist_non_object_item_is_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """항목 자체가 object 가 아닌(최상위 타입 붕괴) 경우도 그 항목만 skip한다."""
+    import app.services.spring_client as sc
+
+    body = {
+        "success": True,
+        "data": {"items": ["not-an-object", {"productId": 1, "name": "이어폰"}]},
+    }
+    client = _WishlistClient(_WishlistResp(200, body))
+    monkeypatch.setattr(sc, "_client", lambda: client)
+    view = await sc.get_wishlist(1)
+    assert len(view.items) == 1
+    assert view.items[0].product_id == 1
+
+
+async def test_get_wishlist_items_not_a_list_still_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`items` 자체가 list 가 아닌 최상위 envelope drift 는 항목 단위 skip 대상이 아니라
+    종전대로 fail-closed 다(개별 항목 이상과는 다른 문제)."""
+    import app.services.spring_client as sc
+
+    body = {"success": True, "data": {"items": {"not": "a-list"}}}
+    client = _WishlistClient(_WishlistResp(200, body))
+    monkeypatch.setattr(sc, "_client", lambda: client)
+    with pytest.raises(sc.SpringUnavailableError):
+        await sc.get_wishlist(1)
+
+
 async def test_get_wishlist_empty_is_not_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """찜 0건도 200 + items:[] 정상(404 아님)."""
     import app.services.spring_client as sc

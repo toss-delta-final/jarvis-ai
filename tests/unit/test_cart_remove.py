@@ -52,8 +52,12 @@ def _cart(*items: CartViewItem):
     return _get
 
 
-def _item(cart_item_id: int, product_id: int, name: str) -> CartViewItem:
-    return CartViewItem(cart_item_id=cart_item_id, product_id=product_id, product_name=name)
+def _item(
+    cart_item_id: int, product_id: int, name: str, option_name: str | None = None
+) -> CartViewItem:
+    return CartViewItem(
+        cart_item_id=cart_item_id, product_id=product_id, product_name=name, option_name=option_name
+    )
 
 
 # ─────────── 대상 해소 ───────────
@@ -953,6 +957,89 @@ async def test_remove_ambiguous_asks_with_action_marker_guidance_via_stream() ->
     token_text = next(e for e in events if e["type"] == "token")["data"]["text"]
     assert "이어폰" in token_text and "케이스" in token_text
     assert "빼줘" in token_text
+
+
+# ─── 옵션만 다른 동명 상품에서 되물음이 막다른 루프가 되지 않는다 ───
+
+
+def test_unresolved_notice_disambiguates_same_name_different_option() -> None:
+    """재현 — product_name 이 같고 option_name 만 다르면(이어폰(블랙)·이어폰(화이트))
+    `_display_name` 만으로는 문구가 "이어폰, 이어폰"으로 나와 사용자가 어느 쪽인지 구분할 수
+    없다. 옵션 구분자가 목록·예시 둘 다에 보여야 한다."""
+    from app.agents.buyer.cart.remove import _unresolved_notice
+
+    text = _unresolved_notice([_item(1, 10, "이어폰", "블랙"), _item(2, 10, "이어폰", "화이트")])
+    assert "블랙" in text
+    assert "화이트" in text
+
+
+def test_resolve_remove_targets_same_name_bare_repeat_still_ambiguous() -> None:
+    """`_unresolved_notice` 가 예시로 준 맨이름을 그대로 반복하면(옵션 없이) 여전히 모호하다 —
+    이건 회귀가 아니라 의도된 동작이다(단건으로 임의로 좁히면 사용자가 답하지 않은 옵션이
+    삭제된다)."""
+    from app.agents.buyer.cart.remove import _resolve_remove_targets
+
+    items = [_item(1, 10, "이어폰", "블랙"), _item(2, 10, "이어폰", "화이트")]
+    result = _resolve_remove_targets("이어폰 빼줘", items, get_settings(), None)
+    assert result is None
+
+
+def test_resolve_remove_targets_option_qualified_name_breaks_the_loop() -> None:
+    """루프 탈출이 실제로 되는지가 이 테스트의 요점 — 되물음 문구가 예시로 든 구분자 형태
+    ("이어폰 (블랙)")로 답하면 1건으로 좁혀져야 한다."""
+    from app.agents.buyer.cart.remove import _resolve_remove_targets
+
+    items = [_item(1, 10, "이어폰", "블랙"), _item(2, 10, "이어폰", "화이트")]
+    result = _resolve_remove_targets("이어폰 (블랙) 빼줘", items, get_settings(), None)
+    assert result is not None
+    assert [item.cart_item_id for item in result] == [1]
+
+
+def test_resolve_remove_targets_option_name_without_parens_also_breaks_the_loop() -> None:
+    """괄호 없이 자연스럽게 답해도("이어폰 블랙 빼줘") 좁혀져야 한다 — 안내가 제시하는 형식
+    그대로가 아니어도 흔한 답변 형태는 받아준다."""
+    from app.agents.buyer.cart.remove import _resolve_remove_targets
+
+    items = [_item(1, 10, "이어폰", "블랙"), _item(2, 10, "이어폰", "화이트")]
+    result = _resolve_remove_targets("이어폰 블랙 빼줘", items, get_settings(), None)
+    assert result is not None
+    assert [item.cart_item_id for item in result] == [1]
+
+
+async def test_remove_option_qualified_answer_resolves_via_stream() -> None:
+    """`stream_cart_remove` 수준의 end-to-end 루프 탈출 재현 — 1턴째 모호 → 2턴째(옵션 구분자
+    포함 답) 실제 삭제까지 완료된다."""
+    store = CartStateStore()
+    deleted: list[int] = []
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        deleted.append(cart_item_id)
+
+    events = await _collect(
+        stream_cart_remove(
+            identity=_member(),
+            message="이어폰 (블랙) 빼줘",
+            cart_store=store,
+            thread_key="m:t-remove-option-loop-break",
+            settings=get_settings(),
+            get_cart_fn=_cart(_item(1, 10, "이어폰", "블랙"), _item(2, 10, "이어폰", "화이트")),
+            delete_fn=delete_fn,
+        )
+    )
+    assert deleted == [1]
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_REMOVED" and action["cartItemId"] == 1
+
+
+def test_resolve_remove_targets_option_present_but_unmentioned_item_unaffected() -> None:
+    """옵션이 있는 항목이라도 사용자가 옵션을 말하지 않았고 이름이 유일하면(다른 항목과 겹치지
+    않으면) 기존처럼 맨이름만으로 매칭된다 — 회귀 없음."""
+    from app.agents.buyer.cart.remove import _resolve_remove_targets
+
+    items = [_item(1, 10, "이어폰", "블랙"), _item(2, 20, "케이스")]
+    result = _resolve_remove_targets("케이스 빼줘", items, get_settings(), None)
+    assert result is not None
+    assert [item.cart_item_id for item in result] == [2]
 
 
 # ─── 라운드 20(head `5772021` 리뷰): 조사 소비가 리스트 순서가 아니라 최장 일치를 따른다 ───

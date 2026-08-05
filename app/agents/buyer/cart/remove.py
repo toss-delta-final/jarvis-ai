@@ -32,6 +32,21 @@ def _display_name(item: CartViewItem) -> str:
     return _strip_unsafe(item.product_name or "") or "상품"
 
 
+def _display_name_with_option(item: CartViewItem) -> str:
+    """되물음 문구용 상품명 — 옵션이 있으면 구분자를 붙인다.
+
+    `product_name` 이 같고 `option_name` 만 다른 항목이 섞이면 `_display_name` 만으로는 되물음
+    문구가 "이어폰, 이어폰"처럼 똑같이 나와 사용자가 어느 쪽을 가리켜도 구분할 방법이 없다.
+    `app/agents/buyer/cart/graph.py::stream_cart_view` 가 이미 쓰는 `f"{product_name}
+    ({option_name})"` 표기를 그대로 따른다 — 새 형식을 발명하지 않는다. `_resolve_remove_targets`
+    가 이름 매칭 후보에 더하는 구분자 형태(공백·괄호 유무 변형)와 짝을 이뤄, 이 문구가 예시로
+    든 대로 사용자가 답하면 실제로 좁혀진다.
+    """
+    name = _display_name(item)
+    option = _strip_unsafe(item.option_name) if item.option_name else ""
+    return f"{name} ({option})" if option else name
+
+
 def _resolve_remove_targets(
     message: str,
     items: list[CartViewItem],
@@ -148,22 +163,51 @@ def _resolve_remove_targets(
         return list(items)
 
     all_names = [name for item in items if (name := _strip_unsafe(item.product_name or ""))]
-    name_matches = [
-        item
-        for item in items
-        if (name := _strip_unsafe(item.product_name or ""))
-        and matches_name_unnegated(
-            message,
-            name,
-            settings.utterance_negation_markers,
-            settings.utterance_negation_window,
-            settings.utterance_prefix_negation_markers,
-            settings.utterance_name_boundary_particles,
-            settings.utterance_name_trailing_filler_words,
-            settings.cart_remove_markers,
-            all_names,
+
+    def _matches_any(candidates: list[str]) -> bool:
+        return any(
+            matches_name_unnegated(
+                message,
+                candidate,
+                settings.utterance_negation_markers,
+                settings.utterance_negation_window,
+                settings.utterance_prefix_negation_markers,
+                settings.utterance_name_boundary_particles,
+                settings.utterance_name_trailing_filler_words,
+                settings.cart_remove_markers,
+                all_names,
+            )
+            for candidate in candidates
         )
+
+    # product_name 이 같고 option_name 만 다른 항목(예: 이어폰(블랙)·이어폰(화이트))은
+    # 맨이름만으로 영원히 모호하다 — "이어폰 빼줘" → 되물음 → 되물음 문구가 예시로 든 맨이름을
+    # 사용자가 그대로 반복해도 다시 2건이라 되물음이 끝나지 않는다(되물음이 상태를 저장하지
+    # 않으므로 "다시 말해 달라"가 유일한 탈출구인데, 맨이름으로는 그 탈출구 자체가 막다른
+    # 길이 된다). `option_name` 을 담은 구분자 형태(`_unresolved_notice` 가 예시로 드는 표기와
+    # 같다)를 이름 매칭 후보에 추가한다 — 경계·부정 판정은 기존 `matches_name_unnegated` 를
+    # 그대로 재사용하고 후보 문자열만 늘린다(새 판정 로직을 만들지 않는다).
+    # 구분자 형태로 **유일하게** 좁혀지면 그 강한 신호를 맨이름의 모호한 매칭보다 우선한다 —
+    # 그러지 않으면 "이어폰(블랙) 빼줘"도 여전히 "이어폰"이 두 항목 모두에 걸려 모호 판정으로
+    # 되돌아가 루프가 안 끊긴다.
+    candidates_by_item: list[tuple[CartViewItem, list[str], list[str]]] = []
+    for item in items:
+        base = _strip_unsafe(item.product_name or "")
+        if not base:
+            continue
+        option = _strip_unsafe(item.option_name) if item.option_name else ""
+        qualified = (
+            [f"{base} ({option})", f"{base}({option})", f"{base} {option}"] if option else []
+        )
+        candidates_by_item.append((item, [base, *qualified], qualified))
+
+    qualified_matches = [
+        item for item, _, qualified in candidates_by_item if qualified and _matches_any(qualified)
     ]
+    if len(qualified_matches) == 1:
+        return qualified_matches
+
+    name_matches = [item for item, candidates, _ in candidates_by_item if _matches_any(candidates)]
     if name_matches:
         return name_matches if len(name_matches) == 1 else None
 
@@ -200,9 +244,15 @@ def _unresolved_notice(items: list[CartViewItem]) -> str:
     잡을 수 있는 형태**(동작 표지 포함)로 유도한다: "OO 빼줘"처럼 답하면 다음 턴이 삭제로
     정확히 라우팅되지만, 상품명만 답하면 여전히 담기로 샌다(알려진 한계 — 문구로 유도할 뿐 강제
     하지 않는다).
+
+    상품명을 그대로 예시로 주는 것도 `product_name` 이 같고 `option_name` 만 다른 항목이 섞이면
+    막다른 길이 된다 — "이어폰 빼줘" → 이 문구가 "이어폰"을 예시로 줌 → 사용자가 그대로 반복
+    → 다시 2건 모호. `_display_name_with_option` 으로 옵션 구분자를 붙여(예: "이어폰 (블랙)")
+    목록·예시 둘 다에 실으면, `_resolve_remove_targets` 가 그 구분자 형태를 이름 매칭 후보로
+    인식하므로 예시대로 답한 다음 턴이 실제로 1건까지 좁혀진다.
     """
-    names = ", ".join(_display_name(item) for item in items)
-    example = _display_name(items[0])
+    names = ", ".join(_display_name_with_option(item) for item in items)
+    example = _display_name_with_option(items[0])
     return (
         f"지금 장바구니에 있는 상품: {names}. 예) '{example} 빼줘'처럼 상품명과 함께 말씀해 주세요."
     )
