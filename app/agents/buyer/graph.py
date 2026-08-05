@@ -731,11 +731,100 @@ async def run_buyer_turn(
             )
             return
 
-        # [#84·2차 리뷰 F-2] 회수는 **intent 를 보고 가른다** — 위치는 여전히 모든 조기 return 보다
-        # 앞이다(정리 누락 방지). 추천 턴만 값을 쓰고, 그 밖(cart_*·general·order_status)은 값을
-        # 쓰지 않으므로 **취소하고** 회수한다: 취소된 태스크의 await 는 즉시 돌아오므로 무관한 턴이
-        # 분류기 완료를 기다리지 않는다(초판은 전부 기다려, 분류기가 느려지면 그만큼 무관한 턴의
-        # 첫 SSE 이벤트가 밀렸다 — 이 설계가 지키려던 "직렬 지연 0"이 그 경로에서 깨졌다).
+        # [#113] 완화 칩 클릭 되받기 — 직전 턴에 제안한 칩 label 과 **정확히 일치**하면 LLM 해석을
+        # 건너뛰고 그때 계산해 둔 값을 그대로 적용한다. FE 는 칩을 누르면 label 을 그대로 message 로
+        # 보내는데(jarvis-frontend `applySuggestion`), label 은 "65,000원까지 볼까요?" 같은 **의문문**이라
+        # decompose 가 조건 추출에 실패하거나 되물음으로 흘릴 수 있다 — 그러면 칩이 무동작이 된다.
+        # intent 도 recommend 로 고정한다: 정확 일치는 "사용자가 우리가 만든 버튼을 눌렀다"는 명확한
+        # 신호라 일반 대화로 라우팅될 여지가 없다.
+        # 조회는 **추천/일반 턴에서만** 한다 — 담기·장바구니·주문조회 발화는 칩 label 과 겹칠 수
+        # 없는데 매 턴 pg 왕복을 얹으면 완화와 무관한 흐름이 느려진다.
+        relax_store = await get_relaxation_offer_store()
+        if decision.intent in ("recommend", "general"):
+            # 칩 제안(`offers`)과 적용된 완화(`applied`)를 **한 번에** 읽는다(PR #248 리뷰) —
+            # 둘은 한 스냅샷이라, 따로 두 번 읽으면 그 사이에 다른 턴의 `put` 이 끼었을 때
+            # 옛 offers + 새 applied 라는 찢어진 조합을 볼 수 있다(쓰기 쪽에서 없앤 바로 그 상태).
+            # 승계 경로의 pg 왕복도 2회 → 1회로 준다. 읽기가 통째로 실패하면 아래 승계 분기가
+            # `applied=None` 을 보고 조용히 건너뛴다.
+            applied: dict | None = None
+            # **해석까지 통째로 감싼다**(PR #248 리뷰) — 읽기만 감싸면 저장 값이 기대한
+            # `{"field":…, "value":…}` 형태가 아닐 때(스키마 변경·롤링 배포 중 신구 혼재·손상)
+            # `AttributeError` 가 올라가 턴이 죽는다. 아래 주석이 약속하는 "무해하게 폴백"이
+            # 실제로 성립하려면 파싱·검증도 같은 범위 안에 있어야 한다.
+            try:
+                offers, applied = await relax_store.get_snapshot(thread_key)
+                relaxed = _relaxed_filters_from_offer(
+                    offers.get(request.message.strip()), prior or decision.filters
+                )
+            except Exception as exc:  # noqa: BLE001 - 상태 저장소 장애가 턴을 죽이지 않게(degrade)
+                # 이 경로는 **편의 기능**이다 — 실패하면 칩 클릭이 종전처럼 decompose 해석으로
+                # 처리될 뿐이다. 여기서 예외를 올리면 pg 한 번 흔들릴 때 완화와 무관한 일반 대화
+                # 턴까지 깨진다(§7 degrade 원칙). CancelledError(BaseException)는 전파된다.
+                # 읽기가 성공한 뒤 **해석만** 터진 경우 `applied` 는 이미 채워져 승계 경로가 살아
+                # 있다 — 칩 하나가 손상돼도 무관한 승계까지 같이 죽이지 않는다(종전 동작 유지).
+                logger.warning("relaxation_offer_read_failed", extra={"reason": str(exc)})
+                relaxed = None
+            if relaxed is not None:
+                # 정확 일치는 "사용자가 우리가 만든 버튼을 눌렀다"는 명확한 신호라 일반 대화로
+                # 라우팅될 여지가 없다 — decompose 가 의문문을 general 로 봤어도 추천으로 고정한다.
+                decision.intent = "recommend"
+                decision.filters = relaxed
+            elif decision.scoped_to_previous and decision.intent == "recommend":
+                # [#113] "그 중에 더 저렴한 걸로" — 직전 턴에 **자동 적용**된 완화를 이어받는다.
+                # 사용자가 완화된 결과를 자기 후보로 인정한 것이라 칩 클릭과 같은 **동의 신호**로
+                # 본다(팀 합의). 승계값은 `decision.filters` 에 녹아 아래 `_prepare_recommendation`
+                # 의 `thread_store.put` 으로 영속된다 — 칩 클릭 경로와 같은 취급이다.
+                #
+                # **`intent == "recommend"` 일 때만 한다**(PR #248 리뷰). general 턴은 이 아래에서
+                # `stream_fallback` 으로 바로 빠져 `decision.filters` 를 아무도 안 쓰므로, 승계를
+                # 계산해 봐야 조용히 버려지고 위 주석만 거짓이 된다.
+                # 칩 클릭 분기처럼 intent 를 **강제하지는 않는다** — 저쪽은 메시지가 우리가 만든 칩
+                # label 과 정확히 일치해 오해의 여지가 없지만, `scopedToPrevious` 는 LLM 판정이라
+                # "그 중에 뭐가 제일 인기 많아?" 같은 정보성 질문까지 추천으로 납치할 수 있다.
+                # 리파인을 general 로 오분류한 턴은 승계 이전에 턴 전체가 어긋난 것이라, 그 증상
+                # 하나만 덮기보다 라우팅 문제로 두는 편이 정직하다.
+                # 참조가 **없는** 리파인("더 저렴한 걸로")은 여기 오지 않아 원래 조건으로 되돌아가고,
+                # 그 턴에 다시 완화가 필요하면 다시 고지된다(SPEC "매 완화 알림" 유지).
+                try:
+                    # `applied` 는 위에서 `offers` 와 **같은 스냅샷으로 이미 읽었다**(PR #248 리뷰).
+                    # 기준은 **이번 턴 filters** 다(칩 클릭 경로와 다르다) — 칩 클릭은 메시지가 칩
+                    # 문구뿐이라 새 의도가 없어 prior 를 그대로 재현하지만, 여기서는 사용자가
+                    # "그 중에 **더 저렴한** 걸로"처럼 새 조건을 함께 말한다. prior 를 기준으로 삼으면
+                    # 이번 턴에 말한 조건이 통째로 버려진다. 완화 축 하나만 덮어쓴다.
+                    #
+                    # **단, 그 축을 이번 턴에 사용자가 다시 말했으면 승계하지 않는다**(PR #248 리뷰).
+                    # "그 중에 평점 3.0 이상도 볼래" 처럼 같은 축의 새 값을 말했는데 저장된 완화값(4.0)
+                    # 으로 덮으면 **방금 말한 조건이 흔적도 없이 사라진다.** 판정은 이번 턴 값이
+                    # prior(직전 확정 필터)와 **다른가** 로 한다 — 다르면 이번 턴에 새로 언급한 것이다.
+                    # prior 가 없으면(스레드 상태 유실) 비교할 근거가 없으므로 승계하지 않는다(엄격한 쪽).
+                    carried = None
+                    if _carry_axis_untouched_this_turn(applied, prior, decision.filters):
+                        carried = _relaxed_filters_from_offer(applied, decision.filters)
+                except Exception as exc:  # noqa: BLE001 - 손상된 저장 값이 턴을 죽이지 않게(degrade)
+                    # 읽기는 위로 합쳐졌으니 여기 남은 실패는 **해석**뿐이다(저장 값 손상·스키마 혼재).
+                    # 그래도 감싼 채로 둔다 — 승계는 편의 기능이라, 실패하면 사용자가 말한 조건만으로
+                    # 검색하면 될 뿐 턴을 죽일 이유가 없다(§7 degrade 원칙).
+                    logger.warning("relaxation_carry_failed", extra={"reason": str(exc)})
+                    carried = None
+                if carried is not None:
+                    decision.filters = carried
+                    # [#113] 승계 턴은 `recommend_pipeline` 의 `relax_field` 에 안 잡힌다(그건 "이번 턴에
+                    # 채택된" 완화만 센다). 그런데 이 턴도 **사용자가 처음 말한 조건이 아닌 상태**로
+                    # 결과를 받으므로 품질 지표에 그냥 섞으면 안 된다 — 여기서 따로 남긴다.
+                    logger.info("relaxation_carried", extra={"field": applied.get("field")})
+
+        # [#84·라운드 5] 회수/취소는 **`decision.intent` 가 확정된 뒤**에 가른다. 그 판단을
+        # decompose 직후에 두면 순서 의존성이 생긴다 — 바로 위 완화 칩 정확 일치 분기가
+        # `decision.intent = "recommend"` 로 **사후 재분류**하기 때문이다. 칩 label 은
+        # `"65,000원까지 볼까요?"` 같은 의문문이라 decompose 가 `general` 로 볼 수 있고, 그러면
+        # 옛 위치에서는 "취소해 놓고 나중에 추천이 되는" 조합이 나온다 — 그 턴은 분류기 판정이
+        # 전혀 반영되지 않은 채(`scope_free=None`) 추천 경로를 탄다. **취소된 태스크의 산출은
+        # 되살릴 수 없다**는 점이 이 순서를 강제한다.
+        #
+        # 옮긴 뒤에도 지키는 불변식: ① 아래 **모든 조기 return 보다 앞**이다(정리 누락 없음),
+        # ② `try/finally` 가 이 지점을 포함한다(그 사이 완화 칩 pg 조회 `await` 에서 바깥 취소가
+        # 와도 `finally` 가 정리한다), ③ 취소는 **동기**다(라운드 4 — `await` 하면 바깥 취소를
+        # 삼킬 수 있다), ④ 비추천 턴은 분류기를 기다리지 않는다(동기 취소라 그 자체로 대기 0).
         #
         # **이미 나간 호출의 비용은 취소로 돌아오지 않는다.** 그것은 "intent 를 알기 전에 띄운다"는
         # 병렬 설계의 의도된 대가다 — 알고 나서 띄우면 추천 턴마다 한 호출이 직렬로 붙는다(#277 이
@@ -752,88 +841,6 @@ async def run_buyer_turn(
         # `except LLMError` 에 걸리지 않아 본문 정리 지점을 전부 건너뛴다.
         if not scope_settled:
             _cancel_scope_task(scope_task)
-
-    # [#113] 완화 칩 클릭 되받기 — 직전 턴에 제안한 칩 label 과 **정확히 일치**하면 LLM 해석을
-    # 건너뛰고 그때 계산해 둔 값을 그대로 적용한다. FE 는 칩을 누르면 label 을 그대로 message 로
-    # 보내는데(jarvis-frontend `applySuggestion`), label 은 "65,000원까지 볼까요?" 같은 **의문문**이라
-    # decompose 가 조건 추출에 실패하거나 되물음으로 흘릴 수 있다 — 그러면 칩이 무동작이 된다.
-    # intent 도 recommend 로 고정한다: 정확 일치는 "사용자가 우리가 만든 버튼을 눌렀다"는 명확한
-    # 신호라 일반 대화로 라우팅될 여지가 없다.
-    # 조회는 **추천/일반 턴에서만** 한다 — 담기·장바구니·주문조회 발화는 칩 label 과 겹칠 수
-    # 없는데 매 턴 pg 왕복을 얹으면 완화와 무관한 흐름이 느려진다.
-    relax_store = await get_relaxation_offer_store()
-    if decision.intent in ("recommend", "general"):
-        # 칩 제안(`offers`)과 적용된 완화(`applied`)를 **한 번에** 읽는다(PR #248 리뷰) —
-        # 둘은 한 스냅샷이라, 따로 두 번 읽으면 그 사이에 다른 턴의 `put` 이 끼었을 때
-        # 옛 offers + 새 applied 라는 찢어진 조합을 볼 수 있다(쓰기 쪽에서 없앤 바로 그 상태).
-        # 승계 경로의 pg 왕복도 2회 → 1회로 준다. 읽기가 통째로 실패하면 아래 승계 분기가
-        # `applied=None` 을 보고 조용히 건너뛴다.
-        applied: dict | None = None
-        # **해석까지 통째로 감싼다**(PR #248 리뷰) — 읽기만 감싸면 저장 값이 기대한
-        # `{"field":…, "value":…}` 형태가 아닐 때(스키마 변경·롤링 배포 중 신구 혼재·손상)
-        # `AttributeError` 가 올라가 턴이 죽는다. 아래 주석이 약속하는 "무해하게 폴백"이
-        # 실제로 성립하려면 파싱·검증도 같은 범위 안에 있어야 한다.
-        try:
-            offers, applied = await relax_store.get_snapshot(thread_key)
-            relaxed = _relaxed_filters_from_offer(
-                offers.get(request.message.strip()), prior or decision.filters
-            )
-        except Exception as exc:  # noqa: BLE001 - 상태 저장소 장애가 턴을 죽이지 않게(degrade)
-            # 이 경로는 **편의 기능**이다 — 실패하면 칩 클릭이 종전처럼 decompose 해석으로
-            # 처리될 뿐이다. 여기서 예외를 올리면 pg 한 번 흔들릴 때 완화와 무관한 일반 대화
-            # 턴까지 깨진다(§7 degrade 원칙). CancelledError(BaseException)는 전파된다.
-            # 읽기가 성공한 뒤 **해석만** 터진 경우 `applied` 는 이미 채워져 승계 경로가 살아
-            # 있다 — 칩 하나가 손상돼도 무관한 승계까지 같이 죽이지 않는다(종전 동작 유지).
-            logger.warning("relaxation_offer_read_failed", extra={"reason": str(exc)})
-            relaxed = None
-        if relaxed is not None:
-            # 정확 일치는 "사용자가 우리가 만든 버튼을 눌렀다"는 명확한 신호라 일반 대화로
-            # 라우팅될 여지가 없다 — decompose 가 의문문을 general 로 봤어도 추천으로 고정한다.
-            decision.intent = "recommend"
-            decision.filters = relaxed
-        elif decision.scoped_to_previous and decision.intent == "recommend":
-            # [#113] "그 중에 더 저렴한 걸로" — 직전 턴에 **자동 적용**된 완화를 이어받는다.
-            # 사용자가 완화된 결과를 자기 후보로 인정한 것이라 칩 클릭과 같은 **동의 신호**로
-            # 본다(팀 합의). 승계값은 `decision.filters` 에 녹아 아래 `_prepare_recommendation`
-            # 의 `thread_store.put` 으로 영속된다 — 칩 클릭 경로와 같은 취급이다.
-            #
-            # **`intent == "recommend"` 일 때만 한다**(PR #248 리뷰). general 턴은 이 아래에서
-            # `stream_fallback` 으로 바로 빠져 `decision.filters` 를 아무도 안 쓰므로, 승계를
-            # 계산해 봐야 조용히 버려지고 위 주석만 거짓이 된다.
-            # 칩 클릭 분기처럼 intent 를 **강제하지는 않는다** — 저쪽은 메시지가 우리가 만든 칩
-            # label 과 정확히 일치해 오해의 여지가 없지만, `scopedToPrevious` 는 LLM 판정이라
-            # "그 중에 뭐가 제일 인기 많아?" 같은 정보성 질문까지 추천으로 납치할 수 있다.
-            # 리파인을 general 로 오분류한 턴은 승계 이전에 턴 전체가 어긋난 것이라, 그 증상
-            # 하나만 덮기보다 라우팅 문제로 두는 편이 정직하다.
-            # 참조가 **없는** 리파인("더 저렴한 걸로")은 여기 오지 않아 원래 조건으로 되돌아가고,
-            # 그 턴에 다시 완화가 필요하면 다시 고지된다(SPEC "매 완화 알림" 유지).
-            try:
-                # `applied` 는 위에서 `offers` 와 **같은 스냅샷으로 이미 읽었다**(PR #248 리뷰).
-                # 기준은 **이번 턴 filters** 다(칩 클릭 경로와 다르다) — 칩 클릭은 메시지가 칩
-                # 문구뿐이라 새 의도가 없어 prior 를 그대로 재현하지만, 여기서는 사용자가
-                # "그 중에 **더 저렴한** 걸로"처럼 새 조건을 함께 말한다. prior 를 기준으로 삼으면
-                # 이번 턴에 말한 조건이 통째로 버려진다. 완화 축 하나만 덮어쓴다.
-                #
-                # **단, 그 축을 이번 턴에 사용자가 다시 말했으면 승계하지 않는다**(PR #248 리뷰).
-                # "그 중에 평점 3.0 이상도 볼래" 처럼 같은 축의 새 값을 말했는데 저장된 완화값(4.0)
-                # 으로 덮으면 **방금 말한 조건이 흔적도 없이 사라진다.** 판정은 이번 턴 값이
-                # prior(직전 확정 필터)와 **다른가** 로 한다 — 다르면 이번 턴에 새로 언급한 것이다.
-                # prior 가 없으면(스레드 상태 유실) 비교할 근거가 없으므로 승계하지 않는다(엄격한 쪽).
-                carried = None
-                if _carry_axis_untouched_this_turn(applied, prior, decision.filters):
-                    carried = _relaxed_filters_from_offer(applied, decision.filters)
-            except Exception as exc:  # noqa: BLE001 - 손상된 저장 값이 턴을 죽이지 않게(degrade)
-                # 읽기는 위로 합쳐졌으니 여기 남은 실패는 **해석**뿐이다(저장 값 손상·스키마 혼재).
-                # 그래도 감싼 채로 둔다 — 승계는 편의 기능이라, 실패하면 사용자가 말한 조건만으로
-                # 검색하면 될 뿐 턴을 죽일 이유가 없다(§7 degrade 원칙).
-                logger.warning("relaxation_carry_failed", extra={"reason": str(exc)})
-                carried = None
-            if carried is not None:
-                decision.filters = carried
-                # [#113] 승계 턴은 `recommend_pipeline` 의 `relax_field` 에 안 잡힌다(그건 "이번 턴에
-                # 채택된" 완화만 센다). 그런데 이 턴도 **사용자가 처음 말한 조건이 아닌 상태**로
-                # 결과를 받으므로 품질 지표에 그냥 섞으면 안 된다 — 여기서 따로 남긴다.
-                logger.info("relaxation_carried", extra={"field": applied.get("field")})
 
     # transient 세션 버퍼에 발화 누적(승격 전 격리, SPEC-PROFILE-001) — 세션 종료 델타 소스.
     # [#119 REQ-PROF-026] intent 판정 **뒤에** 둔다: 주문조회·장바구니 조회 발화는 취향 신호가

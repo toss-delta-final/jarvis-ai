@@ -767,3 +767,57 @@ async def test_outer_cancel_survives_the_non_recommend_cleanup() -> None:
 
     assert llm.scope_started
     assert cancelled, "바깥 취소가 정리 지점에서 삼켜졌다 — 끊긴 요청이 정상 턴으로 이어진다"
+
+
+# ─────────── 라운드 5 — intent 사후 재분류와 회수 순서 ───────────
+
+
+async def test_chip_click_turn_that_becomes_recommend_still_gets_the_classifier_value(
+    monkeypatch,
+) -> None:
+    """[라운드 5 F-1] **완화 칩 정확 일치로 intent 가 사후에 `recommend` 가 되는 턴**에서도
+    분류기 판정이 살아 있어야 한다.
+
+    칩 label 은 `"65,000원까지 볼까요?"` 같은 의문문이라 decompose 가 `general` 로 볼 수 있다.
+    회수/취소를 decompose 직후에 가르면 그 턴은 `general` 로 판단돼 태스크가 **취소**되고,
+    곧이어 칩 분기가 `intent = "recommend"` 로 강제해 추천 경로를 타면서 `scope_free` 는
+    `None` 으로 고정된다 — 분류기 판정이 통째로 사라진다. **취소된 태스크의 산출은 되살릴 수
+    없으므로** 판단을 intent 확정 뒤로 옮겨야 한다.
+
+    판별력: 분류기 True + prior 카테고리가 있으므로, 값이 살아 있으면 최종 `category is None`
+    (해제)이고 죽었으면 carry 로 `무선이어폰` 이 남는다.
+    """
+    label = "65,000원까지 볼까요?"
+
+    class _Offers:
+        async def get_snapshot(self, key):  # noqa: ANN001
+            return {label: {"field": "priceMax", "value": 65000}}, None
+
+        async def put(self, key, offers, applied):  # noqa: ANN001
+            return None
+
+    async def _factory():
+        return _Offers()
+
+    identity = _member()
+    await _seed_prior_category(identity)
+    monkeypatch.setattr("app.agents.buyer.graph.get_relaxation_offer_store", _factory, raising=True)
+
+    search = _RecordingSearch()
+    await _collect(
+        _run_buyer_turn(
+            _request(message=label),
+            identity,
+            llm=_ScopeAwareLLM(
+                scope_free=True,
+                # decompose 는 이 의문문을 general 로 본다 — 칩 분기가 recommend 로 되돌린다.
+                decompose={"intent": "general", "reply": "네", "case": 2, "filters": {}},
+            ),
+            search=search,
+            push_fn=_push_ok,
+        )
+    )
+
+    assert search.filters, "칩 분기가 추천 경로로 되돌리지 못했다 — 테스트 전제가 깨졌다"
+    assert search.filters[-1].price_max == 65000  # 칩이 실제로 적용된 턴이다
+    assert search.filters[-1].category is None  # 분류기 판정(해제)이 살아 있다
