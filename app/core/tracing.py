@@ -444,11 +444,17 @@ class RequestTrace:
         system: str | None = None,
         user: str | None = None,
         output: str | None = None,
+        transcript: str | None = None,
     ) -> None:
         """[#326] 활성 LLM span 에 prompt·응답 원문을 싣는다(콘텐츠 모드에서만).
 
         `record_llm_usage` 와 같은 활성 span 탐색을 쓴다 — llm.py 초크포인트 한 곳에서 부르면
         모든 `llm.*` span 이 원문을 얻는다.
+
+        `user` 는 **사용자가 직접 타이핑한 발화에서 파생된 prompt 전용**이다(lenient —
+        숫자열 카나리아 면제). agent 대화 히스토리처럼 tool 결과(백엔드 데이터)가 섞이는
+        텍스트는 `transcript` 로 넘겨라 — `_LLM_CONTENT_KEYS` 에 없는 키라 strict(전체
+        카나리아)로 검증된다(PR #327 리뷰).
         """
         if not self.captures_content:
             return
@@ -464,6 +470,8 @@ class RequestTrace:
             node.inputs["system"] = self._clip(system)
         if user is not None:
             node.inputs["user"] = self._clip(user)
+        if transcript is not None:
+            node.inputs["transcript"] = self._clip(transcript)
         if output is not None:
             node.outputs["content"] = self._clip(output)
 
@@ -657,8 +665,9 @@ class NoopRequestTrace(RequestTrace):
         system: str | None = None,
         user: str | None = None,
         output: str | None = None,
+        transcript: str | None = None,
     ) -> None:
-        del system, user, output
+        del system, user, output, transcript
 
     def record_span_content(
         self,

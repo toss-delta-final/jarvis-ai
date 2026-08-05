@@ -1607,7 +1607,9 @@ async def test_content_callback_records_seller_llm_span_content() -> None:
                 LLMResult(generations=[[Generation(text="분석 결과")]])
             )
             assert node is not None
-            assert "7월 매출 분석해줘" in node.inputs["user"]
+            # tool 결과가 섞이는 히스토리라 lenient `user` 가 아니라 strict `transcript` 다.
+            assert "7월 매출 분석해줘" in node.inputs["transcript"]
+            assert "user" not in node.inputs
             assert node.outputs["content"] == "분석 결과"
     await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
 

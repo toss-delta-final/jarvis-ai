@@ -47,6 +47,11 @@ class _ContentTraceCallback(AsyncCallbackHandler):
     같은 span 안에서 agent 가 모델을 여러 번 부르면 마지막 호출이 이전 기록을 덮는다 —
     react agent 의 마지막 모델 호출 입력에는 이전 턴·툴 결과가 모두 포함되므로 마지막
     호출이 곧 가장 완전한 기록이다. 모드 off 면 전 훅이 no-op 이다.
+
+    입력은 `user` 가 아니라 **`transcript`(strict 키)** 로 싣는다 — 이 히스토리에는 tool
+    결과(Spring 이 반환한 주문·회원 데이터)가 섞여 있어 "사용자가 직접 타이핑한 텍스트"라는
+    lenient 면제 근거가 성립하지 않고, outputs 를 strict 로 둔 것과 같은 위협 모델이라
+    숫자열 카나리아(휴대폰·주민번호)를 유지해야 한다(PR #327 리뷰).
     """
 
     async def on_chat_model_start(  # type: ignore[override]
@@ -57,7 +62,7 @@ class _ContentTraceCallback(AsyncCallbackHandler):
             rendered = "\n".join(
                 f"{message.type}: {message.content}" for batch in messages for message in batch
             )
-            trace.record_llm_content(user=rendered)
+            trace.record_llm_content(transcript=rendered)
 
     async def on_llm_end(self, response: Any, **kwargs: Any) -> None:  # type: ignore[override]
         del kwargs

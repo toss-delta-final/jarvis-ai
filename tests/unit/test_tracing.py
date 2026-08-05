@@ -978,3 +978,16 @@ def test_unknown_content_key_defaults_to_strict() -> None:
     ]
     with pytest.raises(UnsafeTelemetryError):
         validate_export_payload(payload, allow_content=True)
+
+
+def test_agent_transcript_keeps_numeric_canaries() -> None:
+    """[#326] agent 히스토리(transcript)는 tool 결과가 섞여 strict — 전화번호 형태가 잡힌다."""
+    payload = [
+        {
+            "inputs": {"transcript": 'tool: {"receiverPhone": "010-1234-5678"}'},
+            "outputs": {},
+            "extra": {"metadata": {}},
+        }
+    ]
+    with pytest.raises(UnsafeTelemetryError):
+        validate_export_payload(payload, allow_content=True)

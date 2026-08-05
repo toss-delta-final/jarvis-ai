@@ -112,9 +112,9 @@ class Settings(BaseSettings):
         # 실패 교훈). max_chars 는 아직 deploy.yml 에 배선되지 않았지만 나란한 필드라 같은
         # 방식으로 배선되기 쉬워 선제 적용한다(PR #327 리뷰).
         if isinstance(value, str) and value.strip() == "":
-            return {"langsmith_trace_content": False, "langsmith_trace_content_max_chars": 20000}[
-                info.field_name
-            ]
+            # Field 선언의 기본값을 그대로 참조한다 — 여기 값을 복제하면 선언만 바꿨을 때
+            # "미설정 → 빈 문자열" 경로가 조용히 어긋난다(PR #327 리뷰).
+            return cls.model_fields[info.field_name].default
         return value
 
     # ── LLM provider 토글 (이슈 #40) ──
