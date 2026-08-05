@@ -44,6 +44,7 @@ from app.agents.buyer.recommendation.decompose import (
 )
 from app.agents.buyer.recommendation.needs_expansion import detect_expansion_need
 from app.agents.buyer.recommendation.needs_expansion import expand_needs as _expand_needs
+from app.agents.buyer.recommendation.no_condition import is_no_condition_turn
 from app.agents.buyer.recommendation.relaxation import FIELD_TO_ATTR as RELAXATION_FIELD_TO_ATTR
 from app.agents.buyer.recommendation.state import get_relaxation_offer_store, get_revert_store
 from app.agents.buyer.recommendation.graph import stream_recommendation
@@ -549,6 +550,7 @@ async def run_buyer_turn(
     map_categories=None,
     order_status_fn=None,
     expand_needs=None,
+    popular_fn=None,
     observer=None,
     request_id: str | None = None,
 ) -> AsyncIterator[str]:
@@ -588,6 +590,7 @@ async def run_buyer_turn(
         return
     search = search or search_service.search_catalog
     push_fn = push_fn or spring_client.push_recommendations
+    popular_fn = popular_fn or spring_client.get_popular_products  # [#162] I-3
     thread_store = await get_thread_store()
     prior = await thread_store.get(thread_key)
     condition_actions = getattr(request, "condition_actions", None) or []
@@ -599,10 +602,15 @@ async def run_buyer_turn(
 
     # 프로필 주입 (회원만, read-only) — 게스트/신규는 None(개인화 스킵, 결정 8)
     profile = None
+    profile_vec = None
     profile_eligible = bool(not identity.is_guest and identity.user_id and not identity.seller_id)
     if profile_eligible:
         summary = await read_profile_summary(identity.user_id)
         profile = summary.get("markdown") if summary else None
+        # [#162] 요약 생성 시점에 미리 만들어 둔 취향 벡터(#148 `store._embed_summary`).
+        # 종전에는 markdown 만 꺼내 쓰고 이 값을 버렸다 — 조건 없는 발화의 회원 경로가 이걸로
+        # 홈과 같은 벡터 랭킹을 돌린다. 구 요약·임베딩 실패분은 None 이라 인기 상품으로 간다.
+        profile_vec = summary.get("embedding") if summary else None
         # "기억해"류 명시 명령은 게이트 없이 즉시 승격(hot-path, REQ-PROF). intent 와 무관한
         # 명시 명령이라 라우팅 앞에 둔다 — decompose 가 실패한 턴에도 기록돼야 한다.
         if is_remember_command(request.message):
@@ -1114,6 +1122,9 @@ async def run_buyer_turn(
             # 오해하고, 그 오해 위에서 프롬프트를 고치게 된다.
             scope_free=scope_free,
         )
+        # [#162] 조건 없음 판정은 **여기서** 한다 — `prior`(첫 턴 여부)가 이 스코프에만 있고,
+        # `_prepare_recommendation` 이 카테고리 매핑·승계를 끝낸 뒤라야 `category_legs` 가 확정된다.
+        no_condition = is_no_condition_turn(decision, prior)
         async for frame in stream_recommendation(
             request=request,
             decision=decision,
@@ -1132,5 +1143,10 @@ async def run_buyer_turn(
             thread_key=thread_key,
             observer=observer,
             request_id=resolved_request_id,
+            no_condition=no_condition,
+            popular_fn=popular_fn,
+            # [#119] 개인화 off(A/B baseline arm)면 취향 랭킹도 함께 끈다 — rerank 주입과 같은
+            # 스위치를 따라야 arm 이 "개인화 없음"으로 일관된다.
+            profile_vec=(None if settings.profile_injection_scope == "off" else profile_vec),
         ):
             yield frame
