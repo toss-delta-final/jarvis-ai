@@ -104,12 +104,28 @@ def _is_boundary_char(ch: str) -> bool:
 
 
 def _consume_prefix(message: str, pos: int, options: list[str]) -> int:
-    """`pos` 에서 `options` 중 하나가 리터럴로 시작하면 그만큼 소비한 새 위치를 돌려준다(못
-    찾으면 `pos` 그대로)."""
+    """`pos` 에서 `options` 중 리터럴로 일치하는 것이 있으면 **가장 긴 매칭**을 소비한 새 위치를
+    돌려준다(못 찾으면 `pos` 그대로) — **옵션 목록의 순서에 의존하지 않는다**(최장 일치).
+
+    **[라운드 20, head `5772021` 리뷰]** 이전에는 `options` 를 리스트 순서대로 훑어 **첫
+    매칭**을 소비했다 — `utterance_name_boundary_particles` 에서 `"이"` 가 `"이랑"`·`"이나"`
+    보다 앞에 있어, 받침 있는 상품명 뒤의 `"이랑"`에서 `"이"` 만 1글자 소비되고 `"랑"`이 남아
+    `_has_valid_name_trailing` 의 오른쪽 경계 검사가 실패했다("이어폰이랑 케이스 빼줘"가
+    사용자가 지목한 "이어폰"을 조용히 누락하고 "케이스"만 삭제, 재현 — 받침 없는 "파우치랑
+    세제 빼줘"는 우연히 정상 동작해 **받침 유무로 결과가 갈리는** 데이터 의존적 결함이었다).
+    `config.py` 목록의 순서를 바꾸는 것은 같은 함정("다음 옵션을 접두 충돌 순서 몰래 추가하면
+    재발")을 다음 사람에게 그대로 남기는 미봉책이라, 이 함수 자체를 최장 일치로 고쳤다 —
+    호출부(`_skip_trailing_filler`·`_has_valid_name_trailing`)가 넘기는 옵션 목록을 어떤
+    순서로 나열해도 항상 같은(가장 긴 매칭) 결과를 낸다.
+    """
+    best = pos
     for option in options:
-        if option and message[pos : pos + len(option)] == option:
-            return pos + len(option)
-    return pos
+        if not option:
+            continue
+        end = pos + len(option)
+        if end > best and message[pos:end] == option:
+            best = end
+    return best
 
 
 def _skip_trailing_filler(message: str, pos: int, filler_words: list[str]) -> int:

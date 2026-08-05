@@ -926,6 +926,61 @@ async def test_remove_ambiguous_asks_with_action_marker_guidance_via_stream() ->
     assert "빼줘" in token_text
 
 
+# ─── 라운드 20(head `5772021` 리뷰): 조사 소비가 리스트 순서가 아니라 최장 일치를 따른다 ───
+
+
+def test_resolve_remove_targets_listed_names_with_batchim_ask_like_without_batchim() -> None:
+    """재현(라운드 20 패킷) — `_consume_prefix` 가 첫 매칭("이")만 소비하면 받침 있는 이름
+    ("이어폰") 뒤 "이랑"에서 "랑"이 남아 오른쪽 경계 검사가 깨지고, 사용자가 지목한 "이어폰"이
+    조용히 빠진 채 "케이스"만 단독 매칭된다. 최장 일치로 고치면 "이랑"이 통째로 소비되어
+    "이어폰"도 유효 매칭이 되고, 둘 다 매칭돼 모호(되물음)로 떨어진다 — 받침 없는 "파우치랑
+    세제 빼줘"와 **같은 결과**여야 한다(받침 유무로 갈리지 않는다)."""
+    from app.agents.buyer.cart.remove import _resolve_remove_targets
+
+    with_batchim = [_item(1, 10, "이어폰"), _item(2, 20, "케이스")]
+    result_with_batchim = _resolve_remove_targets(
+        "이어폰이랑 케이스 빼줘", with_batchim, get_settings(), None
+    )
+    assert result_with_batchim is None
+
+    without_batchim = [_item(1, 10, "파우치"), _item(2, 20, "세제")]
+    result_without_batchim = _resolve_remove_targets(
+        "파우치랑 세제 빼줘", without_batchim, get_settings(), None
+    )
+    assert result_without_batchim is None
+
+
+def test_resolve_remove_targets_ina_particle_with_batchim_also_asks() -> None:
+    """ "이나"(선택 접속조사)도 "이"와 접두 관계라 같은 결함 클래스 — 최장 일치로 같은 결과."""
+    from app.agents.buyer.cart.remove import _resolve_remove_targets
+
+    items = [_item(1, 10, "이어폰"), _item(2, 20, "케이스")]
+    result = _resolve_remove_targets("이어폰이나 케이스 빼줘", items, get_settings(), None)
+    assert result is None
+
+
+async def test_remove_listed_names_with_batchim_ask_via_stream() -> None:
+    """`stream_cart_remove` 수준에서도 같은 사실 — "이어폰"이 조용히 빠진 채 "케이스"만
+    삭제되는 사고가 재현되지 않는다(delete_fn 이 한 번도 안 불린다)."""
+    store = CartStateStore()
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        raise AssertionError("모호한 목록 삭제인데 delete_fn 이 호출됐다")
+
+    events = await _collect(
+        stream_cart_remove(
+            identity=_member(),
+            message="이어폰이랑 케이스 빼줘",
+            cart_store=store,
+            thread_key="m:t-remove-listed-batchim",
+            settings=get_settings(),
+            get_cart_fn=_cart(_item(1, 10, "이어폰"), _item(2, 20, "케이스")),
+            delete_fn=delete_fn,
+        )
+    )
+    assert _types(events) == ["token", "done"]
+
+
 # ─────────── stream_cart_add 배선 (플래그·last_add) ───────────
 
 

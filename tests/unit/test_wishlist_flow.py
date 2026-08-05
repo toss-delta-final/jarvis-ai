@@ -903,6 +903,22 @@ def test_resolve_wishlist_remove_target_ambiguous_listing_with_particle_still_as
     assert result is None
 
 
+def test_resolve_wishlist_remove_target_listed_names_with_batchim_ask_like_without_batchim() -> (
+    None
+):
+    """찜 동형(라운드 20 패킷, `remove.py` 와 같은 원인) — `_consume_prefix` 가 첫 매칭("이")만
+    소비하면 받침 있는 "이어폰" 뒤 "이랑"에서 "랑"이 남아 오른쪽 경계 검사가 깨지고, 지목된
+    "이어폰"이 조용히 빠진다. 최장 일치로 고치면 둘 다 매칭돼 모호(되물음) — 받침 없는 "파우치
+    랑 세제 찜 빼줘"와 같은 결과여야 한다."""
+    from app.agents.buyer.cart.wishlist import _resolve_wishlist_remove_target
+
+    items = [_wishlist_item(10, "이어폰"), _wishlist_item(20, "케이스")]
+    result = _resolve_wishlist_remove_target(
+        CartIntent(product_id=None), "이어폰이랑 케이스 찜 빼줘", items, get_settings()
+    )
+    assert result is None
+
+
 def test_resolve_wishlist_remove_target_negated_name_with_valid_trailing_still_matches_other() -> (
     None
 ):

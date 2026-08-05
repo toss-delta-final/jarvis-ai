@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from app.agents.buyer.cart.negation import (
+    _consume_prefix,
     _spans,
     has_any_negation,
     has_prefix_negation,
@@ -88,6 +89,40 @@ def test_matches_unnegated_requires_at_least_one_unnegated_occurrence() -> None:
         )
         is True
     )
+
+
+# ─── 라운드 20(head `5772021` 리뷰): `_consume_prefix` 는 옵션 순서가 아니라 최장 일치를 쓴다 ───
+
+
+def test_consume_prefix_picks_longest_match_regardless_of_option_order() -> None:
+    """재현·고정(라운드 20 패킷) — "이"가 "이랑"의 접두사인 목록에서, 이전에는 리스트 순서상
+    먼저 나온 옵션(첫 매칭)만 소비해 받침 있는 이름 뒤 "이랑"에서 "이"만 소비되고 "랑"이
+    남았다(`_has_valid_name_trailing` 의 오른쪽 경계 검사를 깨뜨린 원인). 옵션을 어떤 순서로
+    나열해도(짧은 것이 먼저든 긴 것이 먼저든) 항상 가장 긴 매칭이 선택돼야 한다."""
+    message = "이어폰이랑 케이스"
+    pos = message.index("이랑")
+    short_first = ["이", "이랑", "이나"]
+    long_first = ["이랑", "이나", "이"]
+    assert _consume_prefix(message, pos, short_first) == pos + len("이랑")
+    assert _consume_prefix(message, pos, long_first) == pos + len("이랑")
+
+    # "이나"(선택 접속조사)도 "이"와 같은 접두 관계.
+    message2 = "이어폰이나 케이스"
+    pos2 = message2.index("이나")
+    assert _consume_prefix(message2, pos2, short_first) == pos2 + len("이나")
+    assert _consume_prefix(message2, pos2, long_first) == pos2 + len("이나")
+
+
+def test_consume_prefix_no_match_returns_pos_unchanged() -> None:
+    assert _consume_prefix("빼줘", 0, ["이", "이랑", "이나"]) == 0
+
+
+def test_consume_prefix_single_char_option_still_matches_when_no_longer_option_fits() -> None:
+    """접두 관계가 있는 옵션 목록이어도, 실제로 긴 쪽이 이어지지 않는 위치에서는 짧은 쪽이
+    그대로 매칭돼야 한다(회귀 방지 — 최장 일치가 "무조건 실패"로 오작동하지 않는다)."""
+    message = "세제이 빼줘"
+    pos = message.index("이")
+    assert _consume_prefix(message, pos, ["이", "이랑", "이나"]) == pos + len("이")
 
 
 def test_has_any_negation_checks_suffix_and_prefix() -> None:
