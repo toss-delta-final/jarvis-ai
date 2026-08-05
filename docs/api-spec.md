@@ -6,8 +6,8 @@
 
 | 항목 | 값 |
 |---|---|
-| 문서 버전 | v0.23.0 |
-| 작성일 | 2026-07-14 (v0.23.0 개정 2026-08-05 — **[#116·#117] I-24~I-28 계약 등재(정본 확정 2026-08-05) + CH-2 `action` 2종 → 10종 + §3.1 `cartItemId` 표기 정정(사본 드리프트) — 기존 엔드포인트·SSE 이벤트 이름·필드 계약 불변, 추가 전용**) (v0.22.0 개정 2026-08-05 — **[#149] 개인화 관계 Graph 계약 초안 등재 — 조회 §3.8(FE 직접, 기존 `chat:stream` 티켓 재사용) + 제어 5종 §3.9(Spring→AI internal, I-29~I-33), 🔴 제안(초안)·Post-MVP. 오류 코드 4종·감사 로그(§6.3 c) 신설, 기존 엔드포인트·SSE 이벤트·필드 계약 불변**) (v0.21.0 개정 2026-08-05 — **[#289] 구매자 `progress` SSE 이벤트 신설(정본 Notion CH-2 2026-08-05 합의·등재 반영) — §2.2·§3.1(본 사본 §3.1 번호는 6→7종, `progress`가 (1)번 — 정본은 `suggestions`를 목록에 포함해 8종으로 세지만 본 사본은 「MVP 추가 페이로드」 절에서 별도로 다뤄 번호가 하나 적다, 기존 6종 이름·페이로드·상대 순서 불변)·§2.9(c) I-1 원복 전제 갱신** — **AI 구현은 완료됐으나 `progress_events_enabled` 기본 false + 운영·스테이징 기동 가드로 잠겨 있어 실 와이어는 아직 종전 7종뿐**) (v0.20.4 개정 2026-08-05 — **[#118] 되물음(`PENDING_CART`) 예외 정본 반영 — 사본의 🔴 미반영 표시 해제(§3.1 [보안], 계약 동작 불변, 표시만 갱신)**) (v0.20.3 개정 2026-08-04 — **[#118] §3.1 v0.15.26 등재 계약인 `screen`(화면 맥락) 수신 구현 — 관대 유효성(400 없음)·담기 허용 목록 합집합·지시어 해소, §3.2 판매자 레인은 `pageType`·`filters`를 입력 메시지에만 주입** — **와이어 계약(엔드포인트·요청 필드·SSE 이벤트·오류 코드) 불변, 수신 구현**) (v0.20.2 개정 2026-08-04 — **[#277] §2.9(c) 미룬 턴 I-1 재시도 스킵 + 복구 가드 — 와이어 계약 불변**) (v0.20.1 개정 2026-08-04 — **[#278] §4.6 `categoryName` 정본 동기화 + §3.1 `conditionActions` 수신 구현 + I-1 `options`/`optionCount` 추가 전용 응답 계약**) (v0.20.0 개정 2026-08-03 — **[#242] 판매자 분석 파이프라인 v3.1: 브랜치 분석 검증(F1~F3+analysis_judge) 신설 + `chart` SSE 이벤트 신설(§2.2·§3.2, 이벤트 6→7종, 추가 전용)** — 기존 이벤트 5종 계약 불변) (v0.19.5 개정 2026-08-04 — **[#232] §4.7 결정 14-F 재구매 지목을 "현재 턴 한정"에서 "스레드 범위(유계 누적·매 턴 재검증)"로 정정 — 와이어 계약 불변**) (v0.19.4 개정 2026-08-03 — **[#32] 골든셋 실측으로 방식2 확정·방식1 및 C-17 기각 — 와이어 계약 불변**) (v0.19.3 개정 2026-08-03 — **[#138 후속] §2.9(c) 구매자 스트림 전체 상한 30s·판매자 90s 역할별 분리 — 와이어 계약 불변**) (v0.19.2 개정 2026-08-03 — **[#133] 구매자 degrade 고지(§3.3)·I-1 검색 재시도(§2.9 c) 명문화** — 와이어 계약 불변, BE 관측 포인트만 추가) (v0.19.1 개정 2026-08-02 — **[#197] I-16 이탈 코호트 응답 실측 확정(from/to 필수·cohortSize·members·churnRate=fraction) + I-8 실측 명문화(from/to 필수·groupBy 화이트리스트·rows), I-8 admin 소유 🔴 유지 — 협의 전 판매자 노출은 설정 플래그(기본 false)로 보류**) (v0.19.0 개정 2026-07-31 — **[#148] C-18: I-22 `catalogVersion`을 선택으로 완화하고 계약 폐기 제안** — 재현·캐시 어느 명분도 성립하지 않음) (v0.18.0 개정 2026-07-31 — **[#148] 홈 추천 계약 등재: I-22 §3.7(Spring→AI 위임, `outcome` 3종 전부 200, provenance 비노출) · P-5 §4.11(FE↔Spring 전제), 🔴 C-18 `catalogVersion` 주체 미해결**) (v0.17.4 개정 2026-07-31 — **[#196] I-13 계약 명문화 3건** — `eventType` CSV 직렬화 확정·rows 활동량 내림차순 정렬 명문화·purchaseComplete 미귀속(0 집계 가능) 경고, 근본 수정 jarvis-backend#62 연계) (v0.17.3 개정 2026-07-31 — **[#209 후속] 노출 상한 목록당 8→9(§3.3), 니즈별 추천(`PICK_ONE`×N)이 실제 발신 경로로 — §4.2 계약 자체는 불변**) (v0.17.2 개정 2026-07-31 — **[#114] 옵션 후보가 1개면 되묻지 않고 자동 선택해 담기** — §4.1 AI 동작·§3.1 되물음 서술 명확화, **와이어 계약(엔드포인트·SSE 이벤트·필드·오류 코드) 불변**) (v0.17.1 개정 2026-07-31 — **[#209] I-21 다중 목록(`lists[]`) 정본 정합** — `recommendationRequestId`·`listType`·`totalBudget`·`label` 신설, 목록당 상품 9개, 멱등 키·400 조건 등재) (v0.17.0 개정 2026-07-31 — **[#187] signed `sessionId` 기반 stable `context_id`, guest→member claim, D6/I-20 lifecycle 계약 반영**) (v0.16.3 개정 2026-07-30 — **[#164] I-4 주문 상태 요약 계약·구매자 `order_status` 라우트 구현 정합**, §4.10 신설) (v0.16.2 개정 2026-07-30 — **[#194] I-14/I-15 응답 스키마 BE 실측 확정 + I-6 이상 감지 규칙 명문화**) (v0.16.1 개정 2026-07-30 — **I-21 `listId`를 UUID급 무작위(≥128bit)로 확정**, 순번·타임스탬프 등 추측 가능한 형식 금지) (v0.16.0 개정 2026-07-30 — **`sessionId`(접속)·`threadId`(방) 축 분리**: 동시 스트림 락을 방 단위로, I-20 사유 `logout` 1종, CH-1 멱등(D5), 맥락 TTL 접속 단위(D6)) (v0.15.27 개정 2026-07-30 — 사본 drift 정정: 담기 이벤트 적재 주체(BE→FE)·`budget` 이벤트 제외·`search.query` PII 기준) (v0.15.26 개정 2026-07-28 — 사본 동기화: §3.1 `conditionActions`(칩 제거, #84)·`screen`(화면 맥락, #118) 신설, `conditions` 칩 `field` 6종 확정, in-stream `error`에 `requestId`·`retryable` 추가) (v0.15.25 개정 2026-07-28 — #171: I-1 응답에 reviewCount 추가(AI 계산용·비표시), rating=0 의미 판별(리뷰 부재 vs 저평점). #100 "reviewCount 표시전용·미반환" 부분 개정. / v0.15.24 개정 2026-07-27 — 사본 동기화: S-5 폐기 반영, 상품 수정은 챗봇 HITL(I-11) 유일 경로) |
+| 문서 버전 | v0.24.0 |
+| 작성일 | 2026-07-14 (v0.24.0 개정 2026-08-05 — **[#297] 판매자 주문·리뷰 internal 3종 계약 등재(🔶 초안 — BE 협의 전): I-29 자사 주문 조회 §4.17 · I-30 발송 처리(HITL) §4.18 · I-31 리뷰 조회 §4.19 + S-4 `draft.op`에 `ship` 추가·`orderItemId` 필드(§3.2, 추가 전용 — 기존 op 3종 와이어 불변, 기존 `product` 레인 재사용·레인 신설 없음) + I-30 409 코드 `ALREADY_SHIPPED`→`ORDER_ALREADY_SHIPPED` 개명(공통 규약 형식) + ⚠️ §3.9(개인화 그래프)와의 I-29~I-31 번호 충돌 명시·§3.9 재채번(I-34~38) 제안(🔴 C-26)**) (v0.23.0 개정 2026-08-05 — **[#116·#117] I-24~I-28 계약 등재(정본 확정 2026-08-05) + CH-2 `action` 2종 → 10종 + §3.1 `cartItemId` 표기 정정(사본 드리프트) — 기존 엔드포인트·SSE 이벤트 이름·필드 계약 불변, 추가 전용**) (v0.22.0 개정 2026-08-05 — **[#149] 개인화 관계 Graph 계약 초안 등재 — 조회 §3.8(FE 직접, 기존 `chat:stream` 티켓 재사용) + 제어 5종 §3.9(Spring→AI internal, I-29~I-33), 🔴 제안(초안)·Post-MVP. 오류 코드 4종·감사 로그(§6.3 c) 신설, 기존 엔드포인트·SSE 이벤트·필드 계약 불변**) (v0.21.0 개정 2026-08-05 — **[#289] 구매자 `progress` SSE 이벤트 신설(정본 Notion CH-2 2026-08-05 합의·등재 반영) — §2.2·§3.1(본 사본 §3.1 번호는 6→7종, `progress`가 (1)번 — 정본은 `suggestions`를 목록에 포함해 8종으로 세지만 본 사본은 「MVP 추가 페이로드」 절에서 별도로 다뤄 번호가 하나 적다, 기존 6종 이름·페이로드·상대 순서 불변)·§2.9(c) I-1 원복 전제 갱신** — **AI 구현은 완료됐으나 `progress_events_enabled` 기본 false + 운영·스테이징 기동 가드로 잠겨 있어 실 와이어는 아직 종전 7종뿐**) (v0.20.4 개정 2026-08-05 — **[#118] 되물음(`PENDING_CART`) 예외 정본 반영 — 사본의 🔴 미반영 표시 해제(§3.1 [보안], 계약 동작 불변, 표시만 갱신)**) (v0.20.3 개정 2026-08-04 — **[#118] §3.1 v0.15.26 등재 계약인 `screen`(화면 맥락) 수신 구현 — 관대 유효성(400 없음)·담기 허용 목록 합집합·지시어 해소, §3.2 판매자 레인은 `pageType`·`filters`를 입력 메시지에만 주입** — **와이어 계약(엔드포인트·요청 필드·SSE 이벤트·오류 코드) 불변, 수신 구현**) (v0.20.2 개정 2026-08-04 — **[#277] §2.9(c) 미룬 턴 I-1 재시도 스킵 + 복구 가드 — 와이어 계약 불변**) (v0.20.1 개정 2026-08-04 — **[#278] §4.6 `categoryName` 정본 동기화 + §3.1 `conditionActions` 수신 구현 + I-1 `options`/`optionCount` 추가 전용 응답 계약**) (v0.20.0 개정 2026-08-03 — **[#242] 판매자 분석 파이프라인 v3.1: 브랜치 분석 검증(F1~F3+analysis_judge) 신설 + `chart` SSE 이벤트 신설(§2.2·§3.2, 이벤트 6→7종, 추가 전용)** — 기존 이벤트 5종 계약 불변) (v0.19.5 개정 2026-08-04 — **[#232] §4.7 결정 14-F 재구매 지목을 "현재 턴 한정"에서 "스레드 범위(유계 누적·매 턴 재검증)"로 정정 — 와이어 계약 불변**) (v0.19.4 개정 2026-08-03 — **[#32] 골든셋 실측으로 방식2 확정·방식1 및 C-17 기각 — 와이어 계약 불변**) (v0.19.3 개정 2026-08-03 — **[#138 후속] §2.9(c) 구매자 스트림 전체 상한 30s·판매자 90s 역할별 분리 — 와이어 계약 불변**) (v0.19.2 개정 2026-08-03 — **[#133] 구매자 degrade 고지(§3.3)·I-1 검색 재시도(§2.9 c) 명문화** — 와이어 계약 불변, BE 관측 포인트만 추가) (v0.19.1 개정 2026-08-02 — **[#197] I-16 이탈 코호트 응답 실측 확정(from/to 필수·cohortSize·members·churnRate=fraction) + I-8 실측 명문화(from/to 필수·groupBy 화이트리스트·rows), I-8 admin 소유 🔴 유지 — 협의 전 판매자 노출은 설정 플래그(기본 false)로 보류**) (v0.19.0 개정 2026-07-31 — **[#148] C-18: I-22 `catalogVersion`을 선택으로 완화하고 계약 폐기 제안** — 재현·캐시 어느 명분도 성립하지 않음) (v0.18.0 개정 2026-07-31 — **[#148] 홈 추천 계약 등재: I-22 §3.7(Spring→AI 위임, `outcome` 3종 전부 200, provenance 비노출) · P-5 §4.11(FE↔Spring 전제), 🔴 C-18 `catalogVersion` 주체 미해결**) (v0.17.4 개정 2026-07-31 — **[#196] I-13 계약 명문화 3건** — `eventType` CSV 직렬화 확정·rows 활동량 내림차순 정렬 명문화·purchaseComplete 미귀속(0 집계 가능) 경고, 근본 수정 jarvis-backend#62 연계) (v0.17.3 개정 2026-07-31 — **[#209 후속] 노출 상한 목록당 8→9(§3.3), 니즈별 추천(`PICK_ONE`×N)이 실제 발신 경로로 — §4.2 계약 자체는 불변**) (v0.17.2 개정 2026-07-31 — **[#114] 옵션 후보가 1개면 되묻지 않고 자동 선택해 담기** — §4.1 AI 동작·§3.1 되물음 서술 명확화, **와이어 계약(엔드포인트·SSE 이벤트·필드·오류 코드) 불변**) (v0.17.1 개정 2026-07-31 — **[#209] I-21 다중 목록(`lists[]`) 정본 정합** — `recommendationRequestId`·`listType`·`totalBudget`·`label` 신설, 목록당 상품 9개, 멱등 키·400 조건 등재) (v0.17.0 개정 2026-07-31 — **[#187] signed `sessionId` 기반 stable `context_id`, guest→member claim, D6/I-20 lifecycle 계약 반영**) (v0.16.3 개정 2026-07-30 — **[#164] I-4 주문 상태 요약 계약·구매자 `order_status` 라우트 구현 정합**, §4.10 신설) (v0.16.2 개정 2026-07-30 — **[#194] I-14/I-15 응답 스키마 BE 실측 확정 + I-6 이상 감지 규칙 명문화**) (v0.16.1 개정 2026-07-30 — **I-21 `listId`를 UUID급 무작위(≥128bit)로 확정**, 순번·타임스탬프 등 추측 가능한 형식 금지) (v0.16.0 개정 2026-07-30 — **`sessionId`(접속)·`threadId`(방) 축 분리**: 동시 스트림 락을 방 단위로, I-20 사유 `logout` 1종, CH-1 멱등(D5), 맥락 TTL 접속 단위(D6)) (v0.15.27 개정 2026-07-30 — 사본 drift 정정: 담기 이벤트 적재 주체(BE→FE)·`budget` 이벤트 제외·`search.query` PII 기준) (v0.15.26 개정 2026-07-28 — 사본 동기화: §3.1 `conditionActions`(칩 제거, #84)·`screen`(화면 맥락, #118) 신설, `conditions` 칩 `field` 6종 확정, in-stream `error`에 `requestId`·`retryable` 추가) (v0.15.25 개정 2026-07-28 — #171: I-1 응답에 reviewCount 추가(AI 계산용·비표시), rating=0 의미 판별(리뷰 부재 vs 저평점). #100 "reviewCount 표시전용·미반환" 부분 개정. / v0.15.24 개정 2026-07-27 — 사본 동기화: S-5 폐기 반영, 상품 수정은 챗봇 HITL(I-11) 유일 경로) |
 | 상태 | draft |
 | 대상 독자 | Spring 백엔드 팀, React 프론트엔드(FE) 팀 |
 | 소유 | AI 에이전트 서버 팀 |
@@ -810,17 +810,19 @@ FE/BE 문서에 없으나 MVP에 필요한 아래 3종은 **모두 구매자 SSE
 | 필드 | 타입 | 설명 |
 |---|---|---|
 | `draftId` | string | 이 제안의 식별자. 승인(confirm)이 이 값을 참조해 **보여준 것 == 실행하는 것**을 보장하고 다중 draft·중복 승인을 구분한다(아래 HITL). 서버 발급 UUID |
-| `op` | `"update"` \| `"create"` \| `"delete"` | 실행할 쓰기 종류(I-11/I-10/I-12 매핑) |
-| `productId` | number | 대상 상품 식별자(숫자 BIGINT, §2.6). `create`는 없을 수 있음(`null`) |
-| `changes` | array | 필드별 변경 제안 배열 |
+| `op` | `"update"` \| `"create"` \| `"delete"` \| `"ship"` | 실행할 쓰기 종류(I-11/I-10/I-12/**I-30** 매핑). **[v0.24.0, #297] `ship`(주문 발송 처리) 추가 — 🔶 초안, BE 협의 전. 정본(노션 CH-2/S-4) 개정은 후속(확정 2026-08-04)** |
+| `productId` | number | 대상 상품 식별자(숫자 BIGINT, §2.6). `create`는 없을 수 있음(`null`), **`ship`은 항상 `null`** |
+| `orderItemId` | number | **[v0.24.0, #297] `ship` 전용 키(그 외 op 에는 키 자체가 없다 — 추가 전용)** — 발송 대상 주문 아이템(숫자 BIGINT). I-29(§4.17) 조회 결과에서 해소한 값 |
+| `changes` | array | 필드별 변경 제안 배열. **`ship`은 빈 배열** — 전이는 ORDERED→SHIPPING 고정이라 diff 가 없고, 카드 내용은 `summary`가 담당한다 |
 | `changes[].field` | string | 수정 대상 필드 — **camelCase** 8종: `name`·`price`·`originalPrice`·`description`·`category`·`imageUrl`·`status`·`stockQuantity` (와이어 규약 §2.2, [C-1 2026-07-22]) |
 | `changes[].before` | string | I-9(목록)로 읽은 현재 값. `create`는 `""` |
 | `changes[].after` | string | LLM 생성 개정안 |
-| `summary` | string | diff 카드 부제용 한 줄 요약 |
+| `summary` | string | diff 카드 부제용 한 줄 요약(`ship`은 주문번호·상품명·옵션 등 발송 대상 서술) |
 
 - **FE 렌더링**: FE는 `draft`를 **diff 카드**로 렌더하고 `[적용]`/`[취소]` 버튼을 노출한다(승인 UI).
 - **[HARD, 개정 v0.9.0] 반영은 AI가 Spring internal API로 직접 수행** — 판매자 승인(HITL) 후 AI가 **I-11 PATCH(수정)/I-10 POST(등록)/I-12 DELETE(삭제)**(§4.5, `X-Internal-Token`+`{brandId}`)를 호출한다. **구 "FE가 본인 JWT로 S-3 PATCH" 모델은 폐기** — [BE 실측 정정 v0.13.0] **S-3 = `GET /api/seller/products`(SELLER, FE→Spring)** 로 **판매자 본인 FE 대시보드용** 목록이고, AI가 쓰는 목록은 **I-9 `GET /internal/seller/{brandId}/products`(서비스 토큰, AI→Spring)** 로 **별개**다(둘 다 조회, 레인만 다름). 즉 S-3는 PATCH가 아니며 I-9와 동일 엔드포인트도 아니다. 채팅 경로의 쓰기는 AI가 internal API(I-11 등)로 수행한다. (판매자가 **FE에서 직접** 상품을 편집하는 경로는 FE↔Spring 별개, AI 표면 밖.) 반영 결과는 `token`으로 안내.
 - **[HARD] 대화 발화는 동의로 취급하지 않는다** — 채팅의 모호한 발화("응 바꿔")는 승인이 아니다. 반영의 유일한 경로는 **HITL 명시 승인**(아래).
+- **[v0.24.0, #297] `op="ship"`(주문 발송, 🔶 초안)**: 흐름은 상품 쓰기와 동일하게 **기존 `product` 레인을 재사용**한다(확정 2026-08-04 — meta.lane 신설 없음). `meta(lane:"product")` → `draft{op:"ship", orderItemId}` → interrupt → confirm → **I-30 PATCH**(§4.18) → `done(panel:"refresh")`. confirm 의 실패적 결과(만료·이미 발송 409·전이 불가 400·소유 불일치 404)는 S-4 확정 규칙 그대로 **HTTP 200 + 안내 `token` + `done(panel:"keep")`** 이며, HITL 5대 안전장치(draftId 바인딩·명시 액션만·멱등성·Spring 하드게이트·TTL)가 동일하게 적용된다. 발송 대상 해소는 `screen`(pageType=`seller_orders`) 맥락 우선, 부족하면 I-29(§4.17) 조회.
 
 **`chart`** — 분석 차트(0~1회) — **[신설 v0.20.0, 이슈 #242]**
 
@@ -1326,6 +1328,8 @@ Authorization: Bearer {STREAM_TICKET}   ← 기존 chat:stream 스트림 티켓 
 사용자가 잘못 학습된 취향을 **수정·삭제·복구**하고, **전체 초기화**와 **개인화 중지·재개**를 수행하는 5종이다. FE는 Spring의 마이페이지 엔드포인트를 호출하고, **Spring이 이 internal 계약으로 AI에 위임**한다.
 
 > **🔴 제안(초안) · Post-MVP** — §5 C-20~C-28 미합의. I-번호 채번은 🔴 C-26.
+>
+> **[v0.24.0, #297] ⚠️ I-번호 충돌 — 본 절의 I-29~I-33 재채번 제안.** 정본(노션 "📡 API 명세서" DB)에는 **I-29~I-31 이 판매자 주문·리뷰 API**(§4.17~§4.19, 2026-08-04 등재)로 배정돼 있다. 본 절의 채번은 등재 당시부터 미확정(🔴 C-26)이었으므로, **본 절을 I-34~I-38 로 재채번**하는 것을 제안한다(판매자 3종은 정본 유지). 확정 전까지 문서 내 상호 참조 시 "§3.9의 I-29(그래프)"와 "§4.17의 I-29(주문)"를 절 번호로 구분할 것. 개인화 파트 합의 후 본 절 번호를 일괄 치환한다.
 
 ```
 X-Internal-Token: {서비스 토큰}          ← internal 그룹(레인 b)
@@ -2361,6 +2365,89 @@ X-Internal-Token: {서비스 토큰}
 - **AI 동작**: "내가 뭐 찜했지?" 질의는 별도 SSE 이벤트 없이 `token` 텍스트로 답한다(I-18 동형, §3.1) — 조회라 새 `action`을 내지 않는다.
 - 실패: `400 VALIDATION_ERROR`(신원 이상, 자원별 신규 code 미채택) · `401 INTERNAL_TOKEN_INVALID` · `403 AUTH_FORBIDDEN`(회원 전용) · `500 INTERNAL_ERROR`.
 
+### 4.17 자사 주문 조회 API (I-29 `GET /internal/seller/{brandId}/orders`) — 🔶 초안, BE 협의 전 [v0.24.0 신설, #297]
+
+> **🔶 제안(초안) — BE 협의 전. 확정 계약 아님.** 정본은 노션 "📡 API 명세서" DB의 I-29 행(2026-08-04 등재·협의사항 확정 반영)이며, 본 절은 그 사본이다. I-24~I-28과 동일 절차(이슈 협의 → 본 문서 개정 → 확정). ⚠️ §3.9(개인화 그래프)의 I-29와 번호가 충돌한다 — §3.9 쪽 재채번 제안(🔴 C-26, §3.9 노트 참조).
+
+판매자 에이전트(order Q&A)의 **현재 상태 스냅샷** 조회다 — "신규 주문 뭐 있어?" 응답과 I-30 발송 대상(`orderItemId`) 해소 경로. **역할 분리: I-29 = 현재 상태, I-14(§4.4) = 전이 이력·집계.** S-2(FE 전용, SELLER JWT — AI 호출 불가)의 internal 판으로, S-2의 주문 단위 파생 규칙(대표 상태·자사 금액만 집계·`orderNo` 파생·수령인명 전문)을 상속하되 발송 대상 확정용 **자사 `items[]` 배열을 추가**한다.
+
+```
+GET /internal/seller/{brandId}/orders?status=ORDERED&limit=20
+X-Internal-Token: {서비스 토큰}          ← internal 공통 인증(§2.3 b) · 타임아웃 3s(§2.9 c)
+```
+
+| 파라미터 | 필수 | 설명 |
+|---|---|---|
+| `status` | — | S-2 탭 어휘: `ORDERED` \| `SHIPPING` \| `DELIVERED` \| `CLAIM` (생략 = 전체). 삭제된 `PREPARING`은 어휘 밖(2026-07-21 탭 삭제 확정) |
+| `orderId` | — | 단건 직조회 |
+| `from`·`to` | — (선택) | `YYYY-MM-DD`, 주문일 기준. **생략 시 전체 주문**(기간 무관, 현재 상태 기준 — 확정 2026-08-04) |
+| `limit`·`offset` | — | 기본 `limit=20`, 최대 100 (I-9 어휘 — page/size 아님) |
+
+**성공 200** — `data`: `tabCounts{ALL/ORDERED/SHIPPING/DELIVERED/CLAIM}`(전량 기준) + `rows[]` + `total`. `rows[]`: `orderId`(number)·`orderNo`·`orderedAt`·`recipientName`·`paymentMethod`·`myItemsAmount`(자사 금액만)·`status`(대표 상태, 파생)·`claimStatus`(null 가능)·**`items[]`**(자사 아이템만 — `orderItemId`(number)·`productId`·`name`·`optionName`·`quantity`·`price`·`status`(아이템 상태기계 어휘)·`activeClaimStatus`). **타사 아이템의 이름·금액 미노출, 자사 아이템 없는 주문 미노출**(S-2 정보 누출 방지 규칙 상속).
+
+**실패**: `400 VALIDATION_ERROR`(`fields` 없음 — 숫자 아님/`status` 어휘 밖/`limit` 1~100 밖) · `400 INVALID_PERIOD`(형식·역전 — I-6/I-13/I-14 공통 code) · `401 INTERNAL_TOKEN_INVALID` · `404 BRAND_NOT_FOUND` · `500 INTERNAL_ERROR`. **403 없음**(2026-07-28 정리 상속).
+
+- **자사 주문 0건도 200 + 빈 `rows`·`total: 0`·`tabCounts` 전부 0** — "주문 없음"은 정상 결과(I-14 규칙).
+- **`orderId` 직조회에서 타사·미존재는 404가 아니라 200 + 빈 `rows`** 로 존재 은닉(확정 2026-08-04) — 에이전트는 "해당 주문이 없습니다"로 안내.
+- AI 구현: `SpringClient.get_orders` + 툴 `get_orders`(general 레인 조회 + product 레인 ship 대상 해소).
+
+### 4.18 주문 아이템 발송 처리 API (I-30 `PATCH /internal/seller/{brandId}/order-items/{orderItemId}/status`) — 🔶 초안, BE 협의 전 [v0.24.0 신설, #297]
+
+> **🔶 제안(초안) — BE 협의 전.** 정본은 노션 I-30 행. **쓰기 — 그래프 HITL `interrupt` 승인 후에만 실행**(I-12와 동일 등급). S-4 연동은 §3.2 `draft` op=`ship` 참조.
+
+**아이템 단위** 상태 전이다 — 상태는 `order_item.status`에 있고(S-2 대표 상태는 파생값) 한 주문에 타사 아이템이 혼재한다. bulk 없음(복수 발송은 반복 호출, C-4·I-24 방식). **MVP 허용 전이는 `ORDERED→SHIPPING` 하나뿐** — `DELIVERED`·`CONFIRMED`는 시스템 모의 전이(I-14), 취소·반품 전이는 자동 승인 스케줄러(AD-5) 소관. `PREPARING`·`SHIPPED`는 상태기계 어휘가 아니다(2026-07-18 정정). **발송 후 취소·역전이 불가(확정 2026-08-04)** — `SHIPPING` 이후 이 API로 어떤 역전이도 불가(`400 ORDER_INVALID_TRANSITION`), 구매자 구제는 반품(O-5)만.
+
+```
+PATCH /internal/seller/12/order-items/5551/status
+X-Internal-Token: {서비스 토큰}
+Content-Type: application/json
+
+{ "toStatus": "SHIPPING", "reason": null }
+```
+
+- Body: `toStatus`(필수 — MVP 유효값 `SHIPPING`뿐, 확장 시 값만 추가) / `reason`(선택 — `order_status_logs.reason` 기록).
+- `brandId`는 티켓 claim에서 오지만 신뢰하지 않는다 — **실행 시점 소유권 재검증**(I-11 규칙). 타임아웃 3s.
+
+**성공 200** — `data`: `{orderItemId, fromStatus: "ORDERED", toStatus: "SHIPPING", changedAt}`. Spring은 `order_status_logs(ORDERED→SHIPPING, actorType=SELLER, reason)` 1행을 기록해 **I-14 분석 데이터에 자동 합류**시킨다. 주문 대표 상태는 파생값이라 건드릴 것이 없다 — FE 갱신은 S-4 `done(panel:"refresh")`.
+
+| HTTP | code | 조건 |
+|---|---|---|
+| 400 | `VALIDATION_ERROR`(`fields` 없음) | 숫자 아님 / body JSON 오류 / `toStatus` 어휘 밖(**`PREPARING`·`SHIPPED` 포함**) |
+| 400 | `ORDER_INVALID_TRANSITION` | 허용 전이 아님 — 현재 상태가 `ORDERED` 아님(**활성 클레임 `CANCEL_REQUESTED` 포함**), MVP 미허용 전이, **발송 후 역전이·취소 일체(확정 2026-08-04)** |
+| 401 | `INTERNAL_TOKEN_INVALID` | 토큰 없음·불일치·서버 미설정(fail-closed) |
+| 404 | `ORDER_ITEM_NOT_FOUND` | 없는 `orderItemId` **또는 타 브랜드 아이템** — 403이 아니라 404 존재 은닉(I-11 규칙) |
+| 409 | `ORDER_ALREADY_SHIPPED` | 이미 `SHIPPING` — **멱등 200 금지**(I-12 `ALREADY_HIDDEN` 논리: "이미 된 일"과 "방금 한 일" 구분). **2026-08-05 개명 — 구 `ALREADY_SHIPPED`(공통 규약 `<도메인>_<사유>` 형식 준수). AI는 과도기 양쪽 코드를 수용** |
+| 500 | `INTERNAL_ERROR` | 전이 미반영 — **에이전트 성공 보고 금지**(I-11·I-12 규칙), draft 유지·재confirm 가능 |
+
+- 신규 코드 `ORDER_ALREADY_SHIPPED`·`ORDER_ITEM_NOT_FOUND`는 BE 확정 후 공통 규약(레포 `04-api-spec.md` §10 → 노션 규약 페이지) 등재 필요(규약 §4 절차).
+- AI 구현: `SpringClient.update_order_item_status`(코드별 전용 예외 매핑) + HITL `op="ship"`(`hitl._execute_draft`) + 툴 `update_order_status`(ORDER_WRITE_TOOLS — 어떤 에이전트에도 미바인딩, 구조적 HITL 보장).
+
+### 4.19 자사 상품 리뷰 조회 API (I-31 `GET /internal/seller/{brandId}/reviews`) — 🔶 초안, BE 협의 전 [v0.24.0 신설, #297]
+
+> **🔶 제안(초안) — BE 협의 전.** 정본은 노션 I-31 행. 읽기 전용 — HITL 불필요, S-4 analysis 레인(review 워커) + general 레인 단순 조회.
+
+**`status=VISIBLE` 리뷰만 반환**한다 — 구매자 노출(P-3)과 동일한 진실. 신고로 숨겨진 리뷰를 에이전트가 인용하면 사고다(숨김 리뷰 열람은 admin AD-3 소관, 숨김 카운트도 미노출). **AI DB에 리뷰 원문을 저장하지 않는다** — 질의 시점 조회(I-19 원칙). 리뷰 답글은 스코프 제외(확정 2026-08-04).
+
+```
+GET /internal/seller/12/reviews?from=2026-07-01&to=2026-07-31&productId=3&rating=1,2&sort=latest&limit=20&offset=0
+X-Internal-Token: {서비스 토큰}          ← 타임아웃 3s
+```
+
+| 파라미터 | 필수 | 설명 |
+|---|---|---|
+| `from`·`to` | — (선택) | `YYYY-MM-DD`, `review.created_at` 기준. **생략 시 기본 최근 7일**(`to`=오늘, `from`=6일 전 — 확정 2026-08-04, **누락은 `INVALID_PERIOD` 아님**) |
+| `productId` | — | 자사 상품으로 한정. 타사/미존재 → 404(존재 은닉) |
+| `rating` | — | 1~5 복수 선택(콤마 CSV) — "별점 1~2점만" 대응 |
+| `sort` | — | `latest`(기본) \| `rating`(**낮은 순 고정** — 문제 파악용, 확정 2026-08-04. asc/desc 분리 없음 — 높은 별점은 `rating=4,5` 필터로) |
+| `limit`·`offset` | — | 기본 `limit=20`, 최대 100 |
+| `stats` | — | `true`면 목록 대신 집계만 |
+
+**성공 200(목록)** — `data`: `rows[]`(`reviewId`·`productId`·`productName`·`rating`·`content`·`authorNickname`(P-3 공개 정보)·`createdAt`) + `total`. **성공 200(`stats=true`)** — `data`: `totalCount` / `averageRating`(**0건이면 `null` — 0 아님**, I-16 `churnRate` 규칙) / `distribution`(P-3 형태) / `byProduct[]`(`productId`·`productName`·`count`(내림차순)·`averageRating`(소수 1자리 🔶)).
+
+**실패**: `400 INVALID_PERIOD`(형식·역전만 — 누락 아님) · `400 VALIDATION_ERROR`(`fields` 없음) · `401 INTERNAL_TOKEN_INVALID` · `404 BRAND_NOT_FOUND` · `404 PRODUCT_NOT_FOUND`(타사·미존재 존재 은닉) · `500 INTERNAL_ERROR`. **403 없음.** **리뷰 0건(전부 숨김 포함)도 200 + 빈 `rows`·`total: 0`** — 정상 결과.
+
+- AI 구현: `SpringClient.get_reviews`/`get_review_stats` + 툴 `get_reviews`(stats 파라미터 통합) — general 레인(단순 조회) + analysis `review` 워커(요약·진단, 워커 6종째).
+
 ---
 
 ## 5. 협의 필요 항목 요약표 (🔴 Consolidated Open Items)
@@ -2457,6 +2544,7 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 
 | 버전 | 날짜 | 변경 |
 |---|---|---|
+| v0.24.0 | 2026-08-05 | **[#297] 판매자 주문·리뷰 internal 3종(I-29~I-31) 계약 등재 — 🔶 초안, BE 협의 전.** (1) **§4.17~4.19 신설** — I-29 자사 주문 조회(현재 상태 스냅샷, I-14 전이 이력과 역할 분리 · 기간 선택/생략 시 전체 · `orderId` 미존재·타사 = 200+빈 rows 존재 은닉 · 자사 `items[]`에 `orderItemId` 포함) · I-30 주문 아이템 발송 처리(HITL 필수 쓰기, MVP 전이 `ORDERED→SHIPPING` 뿐 · 발송 후 역전이 불가 · 409 `ORDER_ALREADY_SHIPPED` 멱등 200 금지 · 404 존재 은닉) · I-31 자사 리뷰 조회(VISIBLE만 · 기간 생략 시 최근 7일 기본 · `sort=rating` 낮은 순 고정 · `stats=true` 집계 — 0건 `averageRating: null`). 전부 2026-08-04 확정사항 반영, 정본은 노션 DB. (2) **§3.2 `draft.op`에 `ship` 추가 + `orderItemId` 필드(추가 전용)** — 기존 op 3종 와이어 불변, **기존 `product` 레인 재사용(meta.lane 신설 없음, 확정 2026-08-04)**, HITL 5대 안전장치 동일 적용. 정본(노션 CH-2/S-4) 개정은 후속. (3) **I-30 409 코드 개명** — `ALREADY_SHIPPED` → `ORDER_ALREADY_SHIPPED`(공통 규약 `<도메인>_<사유>` 형식, 2026-08-05 승인 — 노션 I-30 반영 완료, AI는 과도기 양쪽 수용). 신규 코드 2종(`ORDER_ALREADY_SHIPPED`·`ORDER_ITEM_NOT_FOUND`)은 BE 확정 후 규약 등재 필요. (4) **⚠️ §3.9(개인화 그래프, #149)와 I-29~I-31 번호 충돌 명시** — §3.9 채번은 미확정(🔴 C-26)이므로 §3.9 를 I-34~38 로 재채번 제안, 판매자 3종은 정본 번호 유지. **AI 구현 동반**: `SpringClient` 4메서드(+ I-30 코드별 전용 예외) · 툴 3종(`get_orders`/`update_order_status`/`get_reviews`) · HITL `op="ship"` · analysis `review` 워커(6종째) — **Spring 미구현이라 실 와이어는 아직 없다**(BE 협의·구현 후 활성). |
 | v0.23.0 | 2026-08-05 | **[#116·#117] I-24~I-28 계약 등재(정본 확정 2026-08-05) + CH-2 `action` 2종 → 10종 + §3.1 `cartItemId` 표기 정정.** (1) **§4.12~4.16 신설** — I-24 장바구니 삭제·I-25 수량 변경(🔶 AI 미구현)·I-26 찜 추가·I-27 찜 해제·I-28 찜 목록 조회를 §4.1(I-2)·§4.9(I-18)와 같은 형식(요청·성공 응답·실패 표·AI 동작)으로 등재했다. 신원 query/body 검증 오류 code는 자원별 신규 code를 신설하지 않고 기존 `VALIDATION_ERROR`를 재사용한다(I-24~I-28 공통, 확정 — 1차 초안의 `CART_QUERY_INVALID` 등 신설안은 채택되지 않았다). (2) **§3.1 `action` type 2종 → 10종** — `CART_REMOVED`/`CART_REMOVE_FAILED`/`WISHLIST_ADDED`/`WISHLIST_ADD_FAILED`/`WISHLIST_REMOVED`/`WISHLIST_REMOVE_FAILED`/`CART_QUANTITY_CHANGED`/`CART_QUANTITY_CHANGE_FAILED` 8종을 추가하고 `reason`에 `WISHLIST_ERROR`를 추가했다(기존 3종 유지, 4종). 404/409 정상 종료 규약(`CART_ITEM_NOT_FOUND`→`CART_REMOVED`, `WISHLIST_DUPLICATE`/`RESOURCE_CONFLICT`→`WISHLIST_ADDED`, `WISHLIST_NOT_FOUND`→`WISHLIST_REMOVED`)과 찜 이벤트 `productId` 미탑재(경로 B)를 명문화했다. (3) **§3.1 `cartItemId` 표기 정정(string → number)** — 예시 `"cartItemId": "55"`와 필드표 `string`은 **사본 드리프트였다**. 정본 CH-2·FE 타입(`jarvis-frontend` `src/shared/types/chat.ts`의 `ChatAction`)·서버가 실제로 내보내는 프레임(`app/schemas/chat.py`의 `ActionData.cart_item_id: int`) 셋 다 number(BIGINT)다. (4) **I-28 응답 필드 `purchasable`(boolean) → `purchaseState`(string enum: `AVAILABLE`/`SOLD_OUT`/`HIDDEN`, 겹치면 `HIDDEN` 우선)** — 2026-08-05 M-4 개정 반영, 코드는 이미 이 이름으로 등재됐다(커밋 `70247d0`). **Spring 미구현·FE 미수신이라 실 와이어는 아직 종전 그대로다** — I-24~I-28은 BE가 구현 진행 중이고(🔶 확정 2026-08-05, 배포 전 호출 무응답), AI 구현은 완료됐으며(플래그 없이 항상 활성, 삭제·찜 6종 #116·#117 — 수량 변경 2종은 미구현), `jarvis-frontend`의 `ChatAction` 유니온에는 신규 8종이 아직 없다. |
 | v0.22.0 | 2026-08-05 | **[#149] 개인화 관계 Graph 계약을 초안으로 등재했다** — 조회 §3.8 `GET /profile/me/graph`(FE 직접) + 제어 5종 §3.9 I-29~I-33(Spring→AI internal: 수정·삭제·복구·초기화·개인화 중지). 취향이 지금은 편집 불가능한 마크다운 한 덩어리라 오염돼도 사용자가 고칠 수 없는데, 오염된 프로필이 추천 품질을 실제로 깎는다는 것이 측정돼 있다(#147 커밋 baseline: 깨끗한 프로필 +0.20, 노이즈 −0.053, 반복 부풀림 −0.117 nDCG@10). **선택의 근거**: (1) **조회는 레인 (a) 기존 티켓 재사용, 변경은 레인 (b) Spring 경유** — 전용 `profile:*` scope는 `/chat`·`/seller/chat`이 함께 지나가는 검증 경로를 개편해야 해 프로필 기능을 위해 채팅에 회귀 위험을 만든다(C-20). (2) **충돌은 `409 PROFILE_VERSION_CONFLICT`, `412` 미채택** — 409에 상태 인식 불일치 3형제가 이미 있고 412는 상태→코드 매핑에 없어 기본값이 일반 코드로 나간다(C-22). (3) **개별 삭제 = tombstone(복구 가능), 전체 초기화만 물리 삭제** — 억제를 만들면 되돌리기도 만든다는 규칙이며 `SPEC-PROFILE-001` REQ-PROF-034를 약화하지 않고 적용 범위를 기계 경로로 한정했다. (4) **개인화 중지 = 사용·수집 동시 중지, 데이터 보존** — 중지 중에도 그래프는 200으로 보이고 모든 정리 동작이 허용되며, I-22는 기존 `NO_PROFILE`로 답해 **Spring 무변경**이다. (5) **`confidence`는 3버킷만 노출** — 수치 미노출 불변식을 깨지 않는다. **불변**: 기존 엔드포인트·SSE 이벤트·기존 오류 코드·AI→Spring 역방향 17건 집합(신규 5종은 inbound). 신설분은 전부 🔴 **제안(초안)·Post-MVP**이며 미합의 8건을 C-20~C-28로 등재했다(C-20·C-21·C-27·C-28은 #150 차단). 예산 2s/3s는 **제안이며 실측이 아니라** §2.9 (c) 기준표에 넣지 않았다. |
 | v0.21.0 | 2026-08-05 | **[#289] 구매자 SSE `progress` 이벤트 신설 — 정본(Notion "📡 API 명세서" CH-2) 2026-08-05 합의·등재 반영.** 본 사본 §3.1의 번호가 **6종 → 7종**으로 늘고 `progress`가 **(1)번**이다(§2.2·§3.1: `progress` 1 · `token` 2 · `conditions` 3 · `action` 4 · `products.ready` 5 · `done` 6 · `error` 7). **기존 6종의 이름·페이로드·상대 순서는 불변**(추가 전용) — `conditions`는 여전히 검색·자동 완화 뒤다. **[번호 체계 참고]** 정본(CH-2)은 `suggestions`를 이벤트 목록에 번호로 포함해 8종으로 세지만, 본 사본은 `suggestions`를 「MVP 추가 페이로드」 절에서 별도로 다루므로 §3.1 번호 목록이 하나 적다 — 번호는 표기 순서일 뿐 와이어 계약이 아니며, 이 차이는 `progress` 신설 이전부터 있던 것이다. 페이로드는 `{"stage","message"?}`이며 확정 어휘는 **`analyzing` 1종**뿐이다(`searching`/`relaxing`/`reranking`은 후속 확장 후보·미구현) — 이 프레임을 낼 수 있는 지점(decompose 앞)에서는 아직 intent(추천/담기/주문조회/일반 대화)가 확정되지 않아 `searching`을 그 자리에서 내면 비추천 턴을 검색 중이라고 오라벨링하게 되기 때문이다. **0~1회다 — FE는 도착을 전제하면 안 된다**: 나가면 스트림 첫 프레임이지만, 그 앞에서 턴이 끝나는 경우(LLM 미구성 → `error{LLM_UNAVAILABLE}`, 세션 상태 저장소 장애 → §2.5 스트림 전 오류 봉투)는 0회다. 실측(`evals/first_event_budget/`, #277 하네스 재사용)은 대표 6개 시나리오 전부에서 flag-on 첫 이벤트 p50이 ~12~15ms로 수렴했다(`D3_deferred_worst_no_retry` 6869.8ms → 11.6ms) — 그 뒤 이벤트 순서·총 소요는 불변이며, 하네스가 `ScriptedLLM`이라 LLM head 절감(#151)은 수치에 잡히지 않는다. **다만 관문 통과를 보장하지는 않는다** — 이 프레임 앞의 상태 저장소 프렐류드가 각 `state_store_query_timeout_s`(3.0s) × 4회 직렬 최악 12.0s로 first-token 상한(10.0s)을 넘을 수 있다. §2.9(c) I-1 행의 `progress` 등재 전제 문장을 "등재 완료, 남은 전제는 플래그 on + 배포"로 갱신했다. **AI 구현은 완료됐으나 `progress_events_enabled` 기본 `false` + 운영(jwks 인증 또는 staging/production 환경) 기동 가드로 잠겨 있어, 실제 와이어는 아직 종전 7종뿐이다** — 이 가드 제거와 플래그 on, #277 재시도 스킵 원복은 이번 개정에 포함되지 않는다. |
