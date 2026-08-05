@@ -9,6 +9,9 @@
 
 ## [Unreleased]
 
+### Security
+- **#299 — 요청 바디 크기 상한** — 필드별 상한(`chat_message_max_chars`·`screen_products_raw_scan_max` 등)은 흩어져 있고 상한 없는 필드(`conditionActions` 등)도 계속 생기는데, 레이트 리밋(§2.8)은 요청 **건수**만 세 임의 크기 바디를 반복 전송할 수 있었다. `app/core/body_limit.py`에 `BodySizeLimitMiddleware`(순수 ASGI)를 신설해 `Content-Length` 초과는 바디를 읽기 전에, 헤더가 없는(chunked) 경우는 `receive`를 감싼 실수신 바이트 누적으로 상한(`request_body_max_bytes`, 기본 1MiB — 필드 상한이 절단 없이 받아들이는 최대 정상 페이로드의 약 4.8배)을 넘기면 거절한다. 초과 응답은 새 코드를 내지 않고 기존 `400 BAD_REQUEST` 봉투를 그대로 쓴다(§2.5에 413/`PAYLOAD_TOO_LARGE`가 없어 신설은 별도 명세 개정 대상) — 와이어 계약 변경 0. 미들웨어는 레이트 리밋 **바깥**(거대 바디가 JWT 서명 검증 비용·레이트 리밋 슬롯을 소모하지 않게)·CORS **안쪽**(400 응답에도 CORS 헤더가 실리게)에 등록한다.
+
 ### Docs
 - **#285 — 챗봇 장바구니 삭제·수량 변경·찜 추가·해제·목록 internal 계약 초안을 정본에 등재** — Notion 「📡 API 명세서」에 I-24~I-28로 등재했다. 발명이 아니라 FE↔BE 정본 실측(C-4 삭제·C-3 수량 변경·M-5 찜 추가·M-6 찜 해제·M-4 찜 목록)의 의미론과 I-2/I-18의 internal 규약(`X-Internal-Token`, AI가 검증한 JWT `sub` 유래 신원, 3초 타임아웃, 응답 envelope)을 이식한 제안이며, I-25 수량 변경은 이슈 본문에 없던 신규 편입이다. 아직 BE 협의 전으로 각 정본 페이지에 초안 배너가 있고 잔여 안건은 이슈 #285 코멘트에 남겼으며, 사본 `docs/api-spec.md` 동기화와 CH-2 `action` 8종 확장은 협의 후 진행한다.
 

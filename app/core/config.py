@@ -952,6 +952,47 @@ class Settings(BaseSettings):
     # 빈 문자열이면 프레임 `data`에 `message` 키 자체를 싣지 않는다(app/agents/buyer/_frames.py).
     progress_analyzing_message: str = "요청을 확인하고 있어요"
 
+    # ── 요청 바디 크기 상한 (이슈 #299, api-spec §2.5·§2.8) ──
+    # 레이트 리밋(§2.8)은 요청 **건수**만 세므로 10회로도 임의 크기 바디를 보낼 수 있다.
+    # 필드별 상한(chat_message_max_chars·screen_products_raw_scan_max 등)은 흩어져 있고 상한 없는
+    # 필드(conditionActions 등)도 계속 생기므로, 그 앞단에 요청 전체를 유계로 만드는 층을 둔다
+    # (app/core/body_limit.py, BodySizeLimitMiddleware).
+    #
+    # 기본값은 현행 필드별 상한이 **절단 없이** 받아들이는 최대 정상 페이로드 크기의 약 4.8배로
+    # 잡는다(한국어 UTF-8 3B/자 가정):
+    #   message              chat_message_max_chars(4,000자)                      ≈  12,000B
+    #   sessionId+threadId   chat_key_max_chars(200자) × 2                         ≈   1,200B
+    #   screen.products      screen_products_raw_scan_max(500건) ×
+    #                        (screen_text_max_chars(120자) name + productId
+    #                         + JSON 구두점 ≈ 400B/건)                             ≈ 200,000B
+    #   screen.filters       표시값 10건 × 120자                                    ≈   4,000B
+    #   conditionActions + 봉투 키                                                 ≈     500B
+    #   합계                                                                      ≈ 218,000B(≈218KB)
+    # 1 MiB(1,048,576B)는 그 약 4.8배다 — 실제 FE 페이로드(상품 20건 규모)는 30KB 를 넘기 어려워
+    # 정상 요청 회귀는 0이고, 무제한이던 공격 표면은 1MiB 로 유계가 된다.
+    # `/internal/recommendations/home`(I-22) 최대 바디도 id 200×3 배열 ≈ 12KB 로 여유가 크다.
+    # 추가로 nginx 기본 client_max_body_size 가 1MB 라 같은 자리에 두면 프록시가 먼저 자르는
+    # 배포에서도 임계가 어긋나지 않는다 — 프록시가 앞서면 이 층의 목표는 "방어"가 아니라
+    # "일관된 §2.5 봉투 응답"이 된다. 운영에서 env 로 낮춰 잡을 수 있다.
+    #
+    # [리뷰 1차 F-4] **#118 의 raw-scan 상한과 만나는 지점에서 동작이 바뀐다.** #118 은
+    # `screen_products_raw_scan_max`(500)·`screen_text_raw_scan_max`(2,400자)를 "정제 비용을
+    # 유계로 만드는 사전 절단 상한"으로 설계했고, 그 상한까지 채운 페이로드도 400 이 아니라
+    # **절단**해서 받아준다는 것이 §3.1 관대 유효성의 전제였다. 이 층이 생긴 뒤로는 그 전제가
+    # 더 이상 전 구간에서 성립하지 않는다 — 두 상한을 **원문 길이까지 가득 채운** 페이로드
+    # (products 500건 × name/filters 값 2,400자)는 실측 **≈3,650,100B(기본 상한의 약 348%)**
+    # 라 그 요청은 스키마 검증·절단 로직에 도달하기도 전에 이 층에서 400 이 된다. 이것이
+    # #118 이 비용을 들여 절단해 주던 바로 그 악성 극단 페이로드다 — 정본을 건드리는 변경이
+    # 아니라(§3.1 관대 유효성 자체는 "정상 요청은 절단만 받고 거부되지 않는다"는 뜻이었지,
+    # 무제한 극단값까지 보장한 적은 없다) 그 극단값의 처리 계층이 스키마 절단에서 이 미들웨어의
+    # 사전 거절로 옮겨 왔을 뿐이다.
+    # **현실적인 상한(개수 500건, name/filters 값은 표시 상한인 `screen_text_max_chars`=120자)은
+    # 그대로 통과한다** — 실측 **≈209,580B(기본 상한의 약 20.0%)**. 즉 #118 이 "정상 FE
+    # 페이로드는 절대 자르지 않는다"고 보장한 구간(건수는 raw_scan_max 까지, 항목 길이는 표시
+    # 상한까지)은 이 층도 자르지 않는다 — 어긋나는 것은 항목 길이를 raw-scan 사전절단 상한까지
+    # 늘린, 애초에 악성으로 설계된 구간뿐이다.
+    request_body_max_bytes: int = Field(default=1_048_576, gt=0)
+
     @field_validator("llm_provider", mode="before")
     @classmethod
     def _normalize_llm_provider(cls, value: object) -> object:
