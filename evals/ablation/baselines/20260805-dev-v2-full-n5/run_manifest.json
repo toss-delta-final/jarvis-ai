@@ -1,0 +1,239 @@
+{
+  "ablation": {
+    "arms": [
+      "pipeline",
+      "scoring",
+      "single_call"
+    ],
+    "caseTestTypeFilter": "MFT",
+    "datasetHash": "904f90e93a1dbff797c7e8bc48f2a795f006d1e6b5405e753207c76adb8de273",
+    "datasetVersion": "2.1.0",
+    "inconclusiveRule": "ciIncludesZero",
+    "missingRunPolicy": "excludePairReportCount",
+    "primaryLabel": "confirmatory",
+    "primaryMetric": "overall.ndcgAtK.10",
+    "rankingExclusionPolicy": "nonDiscriminativeRanking",
+    "scoringConfound": "scripted expectedFilters decompose; pipeline과 rerank 축만 다른 비교가 아님",
+    "scoringRepeatedForPairedCondition": true,
+    "secondaryLabel": "exploratory",
+    "singleCallPurchaseHistoryIncluded": false,
+    "totalLatencyDefinition": "adapter 전체 벽시계 latencyMs",
+    "ttft": {
+      "reason": "오프라인 하네스는 server_first_text_token_ms를 직접 관측하지 않음",
+      "status": "unknown",
+      "value": null
+    }
+  },
+  "commitSha": "e9be8ab055ddf5c29f0c4824aa2106e659daa24f",
+  "dirty": true,
+  "hashes": {
+    "ablationModules": {
+      "__init__.py": "92550784ec380543d2c71d8c2a5ad9d548d3f59d04055478e7a222feffc61384",
+      "__main__.py": "0091eab92906c0d331da125e83797e719fbea4049d8d483beaf34950f381bbc5",
+      "adapters.py": "32939aa730d42e3ff41c2add5ac59aee68c23bd0e222a322e370e2aaf6430841",
+      "budget.py": "82bc0829eed01f8c2d3f9752933965bdae1e625cc9504761b1c7c09b4da2bfc2",
+      "cli.py": "33e00ee9e9175b2600a614d2ad7fb668af702bbb06183cd08a3c4ac664028691",
+      "config.py": "72d94905c74a740e7c4da3d5aedc885656d6088a5523115904bb8312edecc2c1",
+      "report.py": "64026a72d1b74f8371b8b2be5ccaef258c63b7f62dc89c1547d8685d189ea813",
+      "single_call.py": "40baa7f0ffe066b28a8f0e966f08288eac2436a8346723902ca868f8c1551676",
+      "stats.py": "51e710e67737b24c1bb112e96697ef340524f05f0ef57e885483884e4066cc0f"
+    },
+    "config": "460a2bd9b4920ae6f2805dd1166f9d28407621891ffc680b42187dbb86dab9be",
+    "datasetManifest": "323962f3aac9dd87ae8f7dd1dd549f80afb89aa0484b60155ab45f25324dc531",
+    "evalConfig": "8d76fb309d26886b6dbf54cf4f97a436d4502625bdbb6d862dff2f4b4c1d5401",
+    "fixtures": {
+      "catalog_snapshot.json": "f98539b2d8d2fea60c586cf31499ecf9187ae815d389dd3f1312f05f3fec840d",
+      "purchase_history.json": "d4203b8d31ef2bbc4c46d5bff6e1eb672c189ffc449299a898eaeb9adf687e3b",
+      "search_responses.json": "5e6694b2ff52f40888da72f61e3a379c24de484a0437f0acd645a37ef53f0014"
+    },
+    "graph": "4e9b2dbf759a6483baee70c02d5b763987768fc09b1e60cf59de49c170c5e77b",
+    "modelEvalModules": {
+      "__init__.py": "99a955c32f5770f5194276195f4fa9dd2778cde579c2477547f8177438949fd8",
+      "__main__.py": "c86340f0f9e20e88f56c2fd39c6be2544e9336bfb348eea9d360b2ffcd1a3902",
+      "adapter.py": "4fbc68136ba926039c71ddf9161c1d7df8babb0a874d5c138b2513965a017a85",
+      "budget.py": "82bb811dc3ed17928d578c6d25cc81fc733b263c08bdd8db5416bc08f2b209c2",
+      "cli.py": "4c52dc69acef71c659cbddd8007ff489e89a82021a9acbe83aa815dfdc0034ac",
+      "manifest.py": "788c1c88cee427ba765069e3963cd0dccba503838ff6364c61bca1dbbd26e0c4",
+      "pricing.py": "51c543554be090d77b692f3bf2c455385efa55aec916c96a20209d4270dbead8",
+      "recording.py": "fb6046e431d7247edc329138abfaab378b05bdd041cdee64d6f19278895affd7",
+      "repeats.py": "863de4bfb35999a8d265478154ede8e32313cd97e35bc28243bedbd2971597bc",
+      "report.py": "a6da607795693c2db6cd0c2945d0b9a40220168988fc4170f6affbacb32420c5",
+      "stats.py": "4930aca85b2721ed95ef7970ade88ac0699ea544fbef6b967f1a95340972ceb8"
+    },
+    "pricingManifest": "4c776eac8030f4158d470868742504be30db33024c1cce98df45c884cad01531",
+    "prompts": {
+      "decompose": "eb8f273161857b2017ce62685eb1b80735b013a9bb09abd8ea09373521c9b10c",
+      "rerank": "ae3b549237b354f718fc08966a383613e5fec8d200c8d07daed038cda552ea7c"
+    },
+    "singleCallPrompt": "6cd96436f7a4fc22ab1f5e0d4948c033e3b2748fd2675045bbd96546aa4336a9",
+    "uvLock": "bc79d52c10d7cefba24d91d30408e0777ed75ae64d738e047d74bb325437ec9c"
+  },
+  "image": null,
+  "modelEval": {
+    "budget": {
+      "actual": {
+        "budgetExceeded": false,
+        "budgetExceededReason": null,
+        "callCount": 985,
+        "costGateStatus": "passed",
+        "limits": {
+          "maxCalls": 1500,
+          "maxCostUsd": 5.0,
+          "maxTotalTokens": 30000000
+        },
+        "tokenGateStatus": "passed",
+        "totalCostUsd": 1.0113362000000004,
+        "totalTokens": 4180955,
+        "unknownCostCallCount": 0,
+        "unknownTokenCallCount": 0
+      },
+      "limits": {
+        "maxCalls": 1500,
+        "maxCostUsd": 5.0,
+        "maxTotalTokens": 30000000
+      },
+      "preflight": {
+        "allowed": true,
+        "caseCount": 67,
+        "expectedCalls": 1340,
+        "maxCalls": 1500,
+        "maxCostUsd": 5.0,
+        "maxTotalTokens": 30000000,
+        "pipelineCallsPerCase": 3,
+        "pipelineExpectedCalls": 1005,
+        "repeats": 5,
+        "singleCallCallsPerCase": 1,
+        "singleCallExpectedCalls": 335
+      }
+    },
+    "caseIds": [
+      "buy-budg-0001",
+      "buy-budg-0002",
+      "buy-budg-0003",
+      "buy-budg-0004",
+      "buy-budg-0005",
+      "buy-budg-0006",
+      "buy-budg-0007",
+      "buy-budg-0008",
+      "buy-budg-0009",
+      "buy-budg-0010",
+      "buy-cmap-0001",
+      "buy-cmap-0002",
+      "buy-cmap-0003",
+      "buy-cmap-0004",
+      "buy-cmap-0005",
+      "buy-cmap-0006",
+      "buy-cold-0001",
+      "buy-cold-0002",
+      "buy-fail-0001",
+      "buy-fail-0002",
+      "buy-fail-0003",
+      "buy-gust-0001",
+      "buy-gust-0002",
+      "buy-mult-0001",
+      "buy-mult-0002",
+      "buy-mult-0003",
+      "buy-mult-0004",
+      "buy-mult-0005",
+      "buy-mult-0006",
+      "buy-mult-0007",
+      "buy-mult-0008",
+      "buy-mult-0009",
+      "buy-mult-0010",
+      "buy-over-0001",
+      "buy-over-0002",
+      "buy-over-0003",
+      "buy-pers-0001",
+      "buy-pers-0002",
+      "buy-pers-0003",
+      "buy-pers-0004",
+      "buy-pers-0005",
+      "buy-pers-0006",
+      "buy-pers-0007",
+      "buy-pers-0008",
+      "buy-pers-0009",
+      "buy-repu-0001",
+      "buy-repu-0002",
+      "buy-repu-0003",
+      "buy-repu-0004",
+      "buy-repu-0005",
+      "buy-repu-0006",
+      "buy-repu-0007",
+      "buy-repu-0008",
+      "buy-srch-0001",
+      "buy-srch-0002",
+      "buy-srch-0003",
+      "buy-srch-0004",
+      "buy-srch-0005",
+      "buy-srch-0006",
+      "buy-srch-0007",
+      "buy-srch-0008",
+      "buy-srch-0009",
+      "buy-srch-0010",
+      "buy-srch-0011",
+      "buy-srch-0012",
+      "buy-srch-0013",
+      "buy-srch-0014"
+    ],
+    "caseOrder": "caseId-asc",
+    "configVersion": "ablation-config-v3",
+    "declaredRepeats": 5,
+    "executedRepeats": 5,
+    "modelConfig": {
+      "pipeline": {
+        "llmTimeoutS": 30.0,
+        "maxRetries": 1,
+        "maxTokens": {
+          "decompose": 800,
+          "rerank": 1500
+        },
+        "provider": "openai",
+        "rerankMaxTokensBase": 960,
+        "rerankMaxTokensPerItem": 60,
+        "searchBackend": "spring",
+        "tiers": {
+          "fast": {
+            "model": "gpt-5-nano",
+            "reasoningEffort": "minimal"
+          },
+          "smart": {
+            "model": "gpt-5.6-luna",
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "scoring": {
+        "decompose": "expectedFilters",
+        "provider": "scripted",
+        "recentPurchaseWindowDays": 90,
+        "referenceDate": "2026-08-02",
+        "rerank": "deterministicScoringBaseline",
+        "weights": {
+          "diversity_bonus": 0.1,
+          "popularity": 0.15,
+          "profile_match": 0.15,
+          "recency": 0.05,
+          "recent_purchase_penalty": 0.2,
+          "semantic": 0.55
+        }
+      },
+      "single_call": {
+        "maxTokens": 1500,
+        "model": "gpt-5.6-luna",
+        "provider": "openai",
+        "purchaseHistoryIncluded": false,
+        "reasoningEffort": "medium",
+        "tier": "smart"
+      }
+    },
+    "split": "dev"
+  },
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "pythonVersion": "3.12.3",
+  "run": {
+    "command": "uv run python -m evals.ablation --out evals/ablation/baselines/20260805-dev-v2-full-n5",
+    "runId": "f6fab8f4-f155-4acf-885a-7e37ec107bac",
+    "timestamp": "2026-08-05T17:21:43.424325+00:00"
+  },
+  "seed": 20260805
+}

@@ -29,6 +29,29 @@
     보존한다 — 어느 쪽도 버리지 않는다.
 - 관련: 커밋 `fdc4af0`, 이슈 #333 Part 3, `CHANGELOG.md`
 
+## [2026-08-06] Google GenAI 배치 임베딩은 100건/요청 상한이 있다 — 청크 없이 부르면 데이터셋이 커지는 순간 깨진다
+- 증상: `evals/scoring/snapshot_embeddings.py`가 골든셋 dev 질의 임베딩을 재생성하다가
+  `google.genai.errors.ClientError: 400 INVALID_ARGUMENT ... at most 100 requests can be in
+  one batch`로 실패했다. v1(31건)에서는 100 미만이라 한 번도 드러나지 않다가, v2.1(103건)로
+  dev 케이스가 늘어나며 처음 노출됐다.
+- 원인: `app/pipelines/embedding.py`의 `embed_texts()`가 `texts` 전체를 한 번의
+  `embed_content(contents=list(texts), ...)` 호출로 보냈다 — Google `BatchEmbedContentsRequest`가
+  요청당 100건까지만 허용하는 것을 코드가 몰랐다. 이 함수는 eval 스크립트뿐 아니라 §4.8 I-17
+  운영 배치 경로도 공유하므로, search_doc 배치가 100건을 넘기면 프로덕션에서도 같은 방식으로
+  깨질 수 있었다. **이 결함은 이번 이슈(#333 Part 3)의 소관인 `evals/**` 밖 — 발견·보고만 하고
+  `app/pipelines/embedding.py` 자체는 원복했다**(오케스트레이터가 후속 GitHub 이슈로 이관 예정).
+  이번 PR은 eval 전용 호출부(`evals/scoring/snapshot_embeddings.py`)에서만 청크로 대응했다.
+- 규칙:
+  - **외부 API에 리스트를 통째로 넘기는 코드를 새로 짜거나 건드릴 때는 그 API의 배치 상한을
+    공식 문서에서 확인하고, 상한이 있으면 처음부터 청크 분할로 짠다** — "지금 입력이 작아서
+    안 걸린다"는 근거가 되지 않는다(데이터가 자라면 반드시 걸린다).
+  - **핸드오버가 소관 범위 밖(app/**)이라 지정한 파일에서 진짜 결함을 발견해도, 그 자리에서
+    고치지 말고 발견·보고만 한다** — 소관 밖 수정은 다른 레인(#318 등)과 충돌 위험을 만든다.
+    이 PR의 소관인 eval 경로에서 같은 문제를 우회 대응(청크 호출부 이동)하고, 원인 파일 수정은
+    별도 이슈로 넘긴다.
+- 관련: 이슈 #333 Part 3, `app/pipelines/embedding.py` `embed_texts()`(원복, 미수정),
+  `evals/scoring/snapshot_embeddings.py`(청크 호출부 신설)
+
 ## [2026-08-05] 코드가 런타임에 읽는 repo 파일은 배포 이미지에 들어 있는지 실측한다
 - 증상: dev→main 승격(#316) 사전 점검에서, 운영 이미지로 앱을 띄우면 부팅이 실패하는 결함을
   발견했다. `session_context.initialize()`(#187)가 `db/profile/init/03_chat_session_contexts.sql`
