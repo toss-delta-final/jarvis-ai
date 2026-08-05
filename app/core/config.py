@@ -687,6 +687,13 @@ class Settings(BaseSettings):
     # 확장 leaf 의 중분류(leaf 이름의 " > " 앞부분, 중복 제거) 목록을 끼울 자리 하나({items}).
     # 문구는 LLM 이 짓지 않는다 — DB 값 그대로 조립해 존재하지 않는 카테고리를 말하지 않는다(#59 재발 방지).
     category_expand_notice: str = "{items} 에서 관련 상품을 찾아봤어요."
+    # [#343] 확장 턴에서 검색은 히트를 냈는데 `_post_filter`(최근구매 exact 제외 + 소모품 카테고리
+    # 억제)가 전량을 지워 candidates 가 0이 되는 갭을 무필터 재검색으로 구제한다. 결함을 고치는
+    # 플래그는 기본 on(팀 방침) — 하방이 유계(추가 왕복은 상호배타 가드로 턴당 최대 1회분)라
+    # off 로 안전하게 시작할 근거가 없다. "재검색 상한" 수치 config 는 따로 두지 않는다 — 재검색은
+    # 결정론적(같은 쿼리 = 같은 결과)이라 2회 이상 시도가 무의미하고, 턴당 무필터 재검색 1회는
+    # `category_expand_notice_suppressed` 상호배타 가드로 구조적으로 강제된다.
+    category_expand_post_suppress_fallback_enabled: bool = True
 
     # ── Case 3 니즈별 그룹 출력 (이슈 #168) ──
     # split 턴의 니즈당 rerank 입력 후보 quota. 실측(실 카탈로그 leaf 폭 9~17): merge_cap=30 은
