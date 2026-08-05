@@ -1,0 +1,130 @@
+{
+  "commitSha": "d4cc7ada2efbc29e7a4032d88422cf90f39f63f7",
+  "dirty": true,
+  "hashes": {
+    "classifierSystemPrompt": "5a80ffbdb2f83c86ce8fe0e400e2a82a68a0b702d56463b85ba05a0b337e6eac",
+    "config": "26be65a96f7428751164f784e22c6ec21bb8eb613a457da92947983a1aa76efa",
+    "datasetManifest": "0f3b91efa922a56d5c053ae26203dc3aaaef0fb0213df744c9dcc48fc8331af7",
+    "fixtures": {
+      "catalog_snapshot.json": "db16232a30b1dad49dc9102c25988842cb7878ee522bd2c92c60bed68caf8301",
+      "purchase_history.json": "d9068b703e5ade93df6ab642dc9259b997fc891b6261d64d47968244921b6f74",
+      "search_responses.json": "88eeb27452236d0a9779de3ecb8ab3258503f1d5528f3b832ea2df1488754cf0"
+    },
+    "inlineSystemPrompt": "5a80ffbdb2f83c86ce8fe0e400e2a82a68a0b702d56463b85ba05a0b337e6eac",
+    "priorityFixture": "99fd3b5f83b4a23eadfbf1b69706a11c00b10f2f850b464b0dd55d469eb1e268",
+    "priorityProbeModules": {
+      "__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "__main__.py": "704cf6e4c916d6b133e8816815ecc431958dd89db6fb83df3db41bad4945796b",
+      "cli.py": "4aef2835449c8f8a3b33422455e4adb1fcee529e73ae7cfda445850fadf07290",
+      "client.py": "97d3b6adb14f418bd3492489d727eb1c983d0e508cd468a5bfe527169e5ae408",
+      "fakes.py": "d03c2963d23b7e1bbac102e8bf82749d35c6944a1dc8376b03caf869f19435cb",
+      "loader.py": "d2f40540d7493077c79286803e7a78b5f679d34eb11a3d02d674a1fbf5f77e39",
+      "manifest.py": "160ac69ca11f7e6185a17bf7c2ed24bd6f3c6442392b036c892fa83c69b67a5c",
+      "metrics.py": "fa2bfafec21450968f8f6ac87f88065222dd7f38d74a3fd3883b83fb21721d80",
+      "report.py": "35d14763eaad907f55b508015adaef755bbbc85ad69217649ff3410b45b66ec7",
+      "runner.py": "ec5024c48848c15c5cd31f3ffff90bb2e3b087bf9e77d6b4da77f70562b4f75a",
+      "schema.py": "eadcb30737376e6408b024a4a14d9931ce5b1925c6ffb39278f0b13a350665c2"
+    },
+    "prompts": {
+      "decompose": "3519c2666242489a7263b1dce1fd6f2e926425618a0c15383edb49d83027eaf1",
+      "needPriority": "4ddd7436be9316c99ef446f3f1a31f10d47b937541a7553b8fe23baf476d2727",
+      "rerank": "ae3b549237b354f718fc08966a383613e5fec8d200c8d07daed038cda552ea7c"
+    },
+    "uvLock": "85f41455b55376fe54790ccfe407aa56d477301c579e71b940038aec3631742a"
+  },
+  "image": null,
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "priorityProbe": {
+    "arm": "classifier",
+    "attemptMultiplier": 3,
+    "budget": {
+      "budgetExceeded": false,
+      "budgetExceededReason": null,
+      "callCount": 96,
+      "costGateStatus": "unknown",
+      "limits": {
+        "maxCalls": 288,
+        "maxCostUsd": 20.0,
+        "maxTotalTokens": 30000000
+      },
+      "tokenGateStatus": "unknown",
+      "totalCostUsd": 0.0019324499999999996,
+      "totalTokens": 26476,
+      "unknownCostCallCount": 16,
+      "unknownTokenCallCount": 16
+    },
+    "cellIds": [
+      "camping",
+      "cycling",
+      "gimbap",
+      "gym_start",
+      "hiking",
+      "home_cafe",
+      "kitten",
+      "moving",
+      "newborn",
+      "ramen",
+      "study_room",
+      "wedding_guest"
+    ],
+    "concurrency": 4,
+    "dryRun": false,
+    "fixtureName": "priority_fixture.json",
+    "fixtureVersion": "priority-probe-v1",
+    "metricDefinitions": {
+      "essentialProtected": {
+        "denominator": "기대 1 니즈 수 × N",
+        "numerator": "기대 1 인 니즈가 산출에서 최소값 집합에 든다"
+      },
+      "priorityExact": {
+        "denominator": "니즈 수 × 셀 × N (prioritySignalPresent 와 같은 분모)",
+        "numerator": "값이 기대와 정확히 일치"
+      },
+      "priorityOrderPairs": {
+        "denominator": "그런 쌍의 수 × N",
+        "numerator": "기대 priority 가 다른 니즈 쌍에서 산출이 같은 대소 관계"
+      },
+      "prioritySignalPresent": {
+        "denominator": "니즈 수 × 셀 × N",
+        "numerator": "그 니즈에 유효한 1/2/3 값이 나왔다"
+      }
+    },
+    "modelConfig": {
+      "fastModel": "gpt-5-nano",
+      "fastReasoningEffort": "minimal",
+      "maxRetries": 0,
+      "provider": "openai",
+      "smartModel": "gpt-5.6-luna",
+      "smartReasoningEffort": "medium",
+      "timeoutS": 30.0
+    },
+    "n": 8,
+    "pacer": {
+      "acquireCount": 96,
+      "estimatedTokensPerCall": 3900,
+      "maxRpm": 45,
+      "maxTpm": 200000,
+      "maxWaitS": 48.959,
+      "totalWaitS": 103.426,
+      "waitCount": 32,
+      "windowS": 60.0
+    },
+    "prompt": {
+      "charCount": 353,
+      "sha12": "5a80ffbdb2f8",
+      "sha256": "5a80ffbdb2f83c86ce8fe0e400e2a82a68a0b702d56463b85ba05a0b337e6eac",
+      "source": "repo:need_priority._SYSTEM"
+    },
+    "seedScope": "셀 순서에만 쓴다. provider 샘플링 seed 는 강제할 수 없다.",
+    "singleRunNotAVerdict": "단일 실행은 채택 판정이 아니다 — 독립 2회 이상 분포로 판정한다.",
+    "specDeviationNotice": "전용 분류기를 채택하면 SPEC-RECOMMEND-001 결정 14-H/REQ-REC-004(LLM 추가 호출 없음)와 AC-REC-37(별도 분류 LLM 호출 금지)에서 이탈한다 — #84(PR #307)가 category_scope 로 같은 이탈을 선례로 남겼다. 정본 반영은 후속 과제다.",
+    "tier": "fast"
+  },
+  "pythonVersion": "3.12.3",
+  "run": {
+    "command": "uv run python -m evals.priority_probe --arm classifier --out artifacts/prio/classifier-1",
+    "runId": "f7b65faa-a87a-4ae7-915d-3526d7787c82",
+    "timestamp": "2026-08-05T05:07:24.795298+00:00"
+  },
+  "seed": 20260805
+}
