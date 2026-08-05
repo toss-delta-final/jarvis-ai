@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from app.agents.seller import models as seller_models
-from app.agents.seller.models import ROLE_TIER, init_seller_model
+from app.agents.seller.models import _CONTENT_TRACE_CALLBACK, ROLE_TIER, init_seller_model
 from app.core import llm as llm_mod
 from app.core.config import Settings
 
@@ -73,6 +73,8 @@ def test_openai_all_seller_roles_share_smart_model(
             "api_key": "openai-key",
             "timeout": settings.llm_timeout_s,
             "max_retries": settings.llm_max_retries,
+            # [#326] 콘텐츠 추적 콜백 — 무상태 싱글턴이라 캐시 동일성 판정을 깨지 않는다.
+            "callbacks": [_CONTENT_TRACE_CALLBACK],
             # 판매자 레인은 with_tools=True — luna 는 tools 와 effort 를 함께 못 받는다(#178).
             "reasoning_effort": settings.openai_tool_reasoning_effort_override,
         }
@@ -133,6 +135,8 @@ def test_anthropic_seller_roles_keep_sonnet_temperature(
             "api_key": "anthropic-key",
             "timeout": settings.llm_timeout_s,
             "max_retries": settings.llm_max_retries,
+            # [#326] 콘텐츠 추적 콜백 — 무상태 싱글턴이라 캐시 동일성 판정을 깨지 않는다.
+            "callbacks": [_CONTENT_TRACE_CALLBACK],
             "temperature": 0.3,
         },
     ]
