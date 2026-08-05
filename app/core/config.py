@@ -1204,9 +1204,9 @@ class Settings(BaseSettings):
     benchmark_request_timeout_s: float = 120.0
 
     # ── 구매자 골든셋(#142, evals/goldenset) ──
-    # 초기 데이터셋은 30~50건으로 작게 시작해 사람이 전수 검수할 수 있게 한다.
+    # v2(#333)는 서빙 후보 상한(30)까지 후보를 채우는 슬라이스 쿼터 확장을 담아 160으로 올린다.
     goldenset_min_cases: int = 30
-    goldenset_max_cases: int = 50
+    goldenset_max_cases: int = 160
     # 문자 3-gram Jaccard가 이 값을 넘는 split 간 query는 leakage로 본다.
     goldenset_near_dup_jaccard_max: float = 0.6
     # split 간 정답 집합이 절반보다 많이 겹치면 동일 시나리오 누출로 본다.
@@ -1215,6 +1215,15 @@ class Settings(BaseSettings):
     goldenset_snapshot_per_query_max: int = 30
     # 43건 중 12건을 봉인하는 v1 목표 비중이며 감사 보고에 사용한다.
     goldenset_holdout_ratio: float = 0.3
+    # #333: 순위 평가 대상 케이스의 후보 하한. nDCG@10 컷오프가 구조적으로 발동하려면
+    # 최소 이 개수는 있어야 한다(narrow-domain 케이스는 notes 접두 문구로 예외).
+    goldenset_min_ranking_candidates: int = 20
+    # #333: 후보 깊이 목표 — 서빙 상한(30)과 동일하게 맞춘다.
+    goldenset_target_candidates: int = 30
+    # #333 리뷰 F-5-1(#329 권고 3): 순위 평가 대상 케이스의 등급≥1 후보 비율 상한. v1 평균이
+    # 0.389로 이 값을 넘어 하드 네거티브가 사실상 없었다 — 초과 케이스는 notes 접두 문구
+    # relevant-ratio-exempt: 로만 예외를 허용한다.
+    goldenset_max_relevant_ratio: float = 0.25
 
     # ── 구매자 추천 평가 지표(#143, evals/metrics) ──
     eval_buyer_k_list: tuple[int, ...] = (5, 10, 20)
@@ -1355,6 +1364,10 @@ class Settings(BaseSettings):
             raise ValueError("골든셋 질의별 스냅샷 상한은 0보다 커야 합니다")
         if not 0 < self.goldenset_holdout_ratio < 1:
             raise ValueError("골든셋 holdout 비율은 0과 1 사이여야 합니다")
+        if not 0 < self.goldenset_min_ranking_candidates <= self.goldenset_target_candidates:
+            raise ValueError("골든셋 순위 평가 후보 하한은 0보다 크고 목표 후보 수 이하여야 합니다")
+        if not 0 < self.goldenset_max_relevant_ratio < 1:
+            raise ValueError("골든셋 등급≥1 후보 비율 상한은 0과 1 사이여야 합니다")
         return self
 
     @model_validator(mode="after")

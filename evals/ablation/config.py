@@ -18,7 +18,8 @@ SECONDARY_METRICS = (
     "overall.precisionAtK.10",
     "overall.mrr",
 )
-CONFIG_VERSION = "ablation-config-v2"
+CONFIG_VERSION = "ablation-config-v3"
+CASE_TEST_TYPE_FILTER = "MFT"
 
 
 def load_ablation_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
@@ -57,7 +58,9 @@ def validate_ablation_config(config: dict[str, Any]) -> None:
         raise ValueError("bootstrap 선언이 필요합니다")
     if bootstrap.get("resamples") != 2000 or bootstrap.get("confidence") != 0.95:
         raise ValueError("bootstrap은 resamples=2000, confidence=0.95만 지원합니다")
-    if config.get("seed") != 20260803:
-        raise ValueError("사전 등록 seed는 20260803입니다")
+    if config.get("seed") != 20260805:
+        raise ValueError("사전 등록 seed는 20260805입니다")
     if config.get("repeats") != 5:
         raise ValueError("사전 등록 repeats는 5입니다")
+    if config.get("caseTestTypeFilter") != CASE_TEST_TYPE_FILTER:
+        raise ValueError(f"지원하는 caseTestTypeFilter는 {CASE_TEST_TYPE_FILTER}뿐입니다")

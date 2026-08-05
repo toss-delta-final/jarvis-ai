@@ -67,6 +67,40 @@ critical subset은 `hardConstraints` 또는 `mustExcludeProductIds`가 있거나
 SUT에 주입해 거짓 0을 만들지 않고 지표·위반 artifact에 전부 공개한다. 전 종류 0 gate는 실모델을
 연결하는 #144로 이관한다.
 
+## no-op 기준선(#333)
+
+모든 실행이 no-op 기준선(시스템이 실제로 노출한 상품 집합을 productId 오름차순으로 재정렬했다고
+가정 — F-4b 리뷰 반영)의 순위 지표를 시스템 출력과 나란히 `results.json`의 `noopBaseline`
+블록(`definition` 필드에 규약 문자열 포함), `report.md`의 비교 표, `aggregates.csv`의
+`arm`(`system`/`noop`) 컬럼으로 함께 낸다. 정의는 `evals/goldenset/README.md`의 no-op 절을
+본다.
+
+## cutoff·슬라이스 N·confirmatory/exploratory(#333)
+
+`ndcgAtK`는 3·5·10을 항상 함께 계산한다(전 슬라이스). **primary confirmatory metric은
+`overall.ndcgAtK.10` 1개뿐이다** — 나머지 cutoff와 슬라이스별 수치는 exploratory다. 슬라이스
+집계마다 N(`rankingCaseCount`)을 JSON·`report.md`·`aggregates.csv`에 인쇄하고,
+`evals/goldenset/manifest.json`의 `confirmatory.confirmatorySlices`에 있고 N≥30이면
+`confirmatory`, 아니면 `exploratory`를 `confirmatoryLabel`로 자동 라벨링한다(#328 다중비교
+통제 공통 규약). 슬라이스 집계 함수(`aggregate_by_slice`)는 split과 무관하게 케이스 행
+목록만으로 동작해 #144 holdout 러너가 재사용할 수 있다 — holdout 실행 자체의
+`NotImplementedError` 게이트는 그대로다.
+
+## behaviorChecks(#333)
+
+`evaluate()`는 순위 지표와 분리된 `behaviorChecks` 섹션도 낸다. `evals/metrics/behavior.py`가
+`behaviorGroupId`로 묶인 INV/DIR 케이스(`testType`)를 라벨 없이 검사한다 — 상세는
+`evals/goldenset/GUIDE.md`의 INV/DIR 작성법 절을 본다.
+
+**한계(#333 리뷰 F-3)**: 기본 `OfflineBuyerAdapter`는 scripted decompose(케이스의
+`expectedFilters`를 그대로 반환)를 쓴다. 같은 `searchFixtureId`를 공유하는 `color_synonym`/
+`word_order` INV 쌍은 발화 문구가 달라도 decompose 출력이 항상 같은 필터로 수렴하므로, 노출이
+구조적으로 동일해 INV 검사가 **항상 통과**한다 — 이는 배선(파이프라인이 같은 필터를 같은
+노출로 잇는지)만 검증하며, "모델이 색상 동의어·어순 변화를 실제로 같은 의미로 이해하는가"는
+검증하지 못한다(위 "Filter Accuracy 1.0이 구조적으로 기대됩니다"와 같은 성격의 한계). INV 판정의
+정본은 실모델 어댑터 실행(#144 계열, decompose가 발화를 실제로 파싱하는 경로)이다 — 기본
+scripted 실행의 INV 통과를 모델 검증 근거로 인용하지 않는다.
+
 ## run manifest
 
 manifest는 commit SHA와 dirty flag, `uv.lock`, dataset manifest, 세 fixture, decompose/rerank prompt,
