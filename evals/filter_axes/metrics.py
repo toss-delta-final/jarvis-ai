@@ -78,7 +78,15 @@ def _keyword_axis_outcome(
     expected: Mapping[str, object],
     actual: Mapping[str, object],
 ) -> Outcome:
-    """keyword 특칙 — keyword↔semanticQuery 는 존재만 서로 흡수하고, 값 일치는 keyword↔keyword 뿐."""
+    """keyword 특칙 — keyword↔semanticQuery 는 존재만 서로 흡수하고, 값 일치는 **같은 필드끼리만**
+    본다(keyword↔keyword 또는 semanticQuery↔semanticQuery). 교차 필드(정답 keyword vs 예측
+    semanticQuery 등)는 문자열이 같아도 valueMismatch다 — 존재 흡수와 값 일치는 별개 질문이다.
+
+    semanticQuery만 비교하는 조건이 없으면 `axis_outcome("keyword", X, X)`가 X에 keyword가
+    없고 semanticQuery만 있을 때 자기 자신과도 match가 아닌 비반사성 버그가 된다(#334 리뷰 R3-1)
+    — decompose의 semantic_query 폴백(절대 비지 않음, `decompose.py` 참조)이 실제로 이 경로를
+    자주 태운다.
+    """
     keyword_field, semantic_field = axis_def["fields"]
     expected_present = _is_set(expected.get(keyword_field)) or _is_set(expected.get(semantic_field))
     actual_present = _is_set(actual.get(keyword_field)) or _is_set(actual.get(semantic_field))
@@ -88,10 +96,17 @@ def _keyword_axis_outcome(
         return "missing"
     if not expected_present and actual_present:
         return "spurious"
-    if _is_set(expected.get(keyword_field)) and _is_set(actual.get(keyword_field)):
-        if _normalize_string(expected[keyword_field]) == _normalize_string(actual[keyword_field]):
-            return "match"
-    return "valueMismatch"
+    keyword_match = (
+        _is_set(expected.get(keyword_field))
+        and _is_set(actual.get(keyword_field))
+        and _normalize_string(expected[keyword_field]) == _normalize_string(actual[keyword_field])
+    )
+    semantic_match = (
+        _is_set(expected.get(semantic_field))
+        and _is_set(actual.get(semantic_field))
+        and _normalize_string(expected[semantic_field]) == _normalize_string(actual[semantic_field])
+    )
+    return "match" if keyword_match or semantic_match else "valueMismatch"
 
 
 def axis_outcome(

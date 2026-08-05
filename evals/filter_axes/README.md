@@ -63,8 +63,12 @@ evaluated=false 축(`exclude_product_ids`·`total_budget`·`buy_all`)은 `evals/
 
 `keyword`(상품명 LIKE)와 `semanticQuery`(의미검색 자연어)는 서로 다른 필드지만 **어휘
 차이를 흡수**한다 — 정답에 `keyword`만 있고 예측에 `semanticQuery`만 있어도(또는 그
-역) **축 존재로 인정**한다(소추출 아님). 다만 **값 일치는 `keyword`↔`keyword` 정규화
-동등일 때만 `match`** — 그 외 "존재하지만 값이 안 맞는" 조합은 전부 `valueMismatch`다.
+역) **축 존재로 인정**한다(소추출 아님). 값 일치는 **같은 필드끼리만** 본다 —
+`keyword`↔`keyword` 정규화 동등 **또는** `semanticQuery`↔`semanticQuery` 정규화 동등이면
+`match`다(리뷰 R3-1: `keyword`만 비교하면 semanticQuery만 있는 필터가 자기 자신과도
+match가 안 되는 비반사성 버그가 된다 — 아래 함정과 맞물려 실무에서 흔히 발생). **교차
+필드**(정답 `keyword` vs 예측 `semanticQuery` 등)는 리터럴 문자열이 같아도 여전히
+`valueMismatch`다 — 존재 흡수와 값 일치는 별개 질문이다.
 
 **중요한 함정**: `app/agents/buyer/recommendation/decompose.py`의 `semantic_query`는
 `llm_sq or cat_signal or prior_sq or query`로 **절대 비지 않는 폴백**을 갖는다(디자인

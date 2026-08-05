@@ -42,6 +42,41 @@ def test_keyword_axis_missing_when_expected_has_no_keyword_or_semantic() -> None
     assert axis_outcome("keyword", {}, {"semanticQuery": "이어폰"}, SPEC) == "spurious"
 
 
+@pytest.mark.parametrize(
+    "filters",
+    [
+        {"keyword": "이어폰"},
+        {"semanticQuery": "이어폰"},
+        {"keyword": "이어폰", "semanticQuery": "무선 이어폰"},
+    ],
+    ids=["keyword_only", "semantic_only", "both"],
+)
+def test_keyword_axis_is_reflexive_against_itself(filters: dict) -> None:
+    """리뷰 R3-1 — decompose의 semantic_query 폴백 때문에 semanticQuery만 있는 필터가
+    흔한데, 옛 구현은 keyword↔keyword만 봐서 자기 자신과 비교해도 match가 아니었다
+    (`axis_outcome("keyword", X, X) != "match"`, 비반사성 버그)."""
+    assert axis_outcome("keyword", filters, filters, SPEC) == "match"
+
+
+def test_keyword_axis_matches_via_semantic_query_equality_even_when_keyword_differs() -> None:
+    expected = {"keyword": "이어폰", "semanticQuery": "무선 음향기기"}
+    actual = {"keyword": "다른값", "semanticQuery": "무선 음향기기"}
+    assert axis_outcome("keyword", expected, actual, SPEC) == "match"
+
+
+def test_keyword_axis_cross_field_stays_value_mismatch_even_when_text_equal() -> None:
+    """존재 흡수 규칙은 유지 — 정답 keyword vs 예측 semanticQuery처럼 필드가 다르면
+    문자열이 같아도(리터럴 동일) valueMismatch다."""
+    assert (
+        axis_outcome("keyword", {"keyword": "이어폰"}, {"semanticQuery": "이어폰"}, SPEC)
+        == "valueMismatch"
+    )
+    assert (
+        axis_outcome("keyword", {"keyword": "이어폰"}, {"semanticQuery": "다른값"}, SPEC)
+        == "valueMismatch"
+    )
+
+
 def test_string_normalization_is_case_and_whitespace_insensitive() -> None:
     assert axis_outcome("color", {"color": " Red "}, {"color": "red"}, SPEC) == "match"
 
