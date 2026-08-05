@@ -5901,3 +5901,141 @@ async def test_popular_zero_results_is_not_a_degrade() -> None:
     types = _types(events)
     assert "products.ready" not in types  # 실을 카드가 없다
     assert types[-1] == "done"
+
+
+# ─────────── [#162] 조건 없는 발화 + 프로필 → 취향 벡터 랭킹 ───────────
+
+
+def _catalog_store(pids: list[int]):
+    """3차원 임베딩 카탈로그 — 앞 번호일수록 [1,0,0] 축에 가깝다(순서를 눈으로 검증)."""
+    from app.pipelines.artifact_store import CatalogArtifact, CatalogArtifactStore
+
+    store = CatalogArtifactStore()
+    for i, pid in enumerate(pids):
+        store.upsert(
+            CatalogArtifact(
+                product_id=pid,
+                search_doc=f"상품 {pid}",
+                embedding=[1.0 - (i + 1) * 0.05, (i + 1) * 0.05, 0.0],
+                extras={"review_pros": [f"{pid} 리뷰 장점"]},
+            )
+        )
+    return store
+
+
+def _inject_profile(monkeypatch: pytest.MonkeyPatch, *, vector, store) -> None:
+    """프로필 요약(취향 벡터 포함)과 카탈로그 인덱스를 인메모리로 대체한다."""
+    import app.agents.buyer.graph as buyer_graph
+    import app.pipelines.artifact_store as artifact_store
+
+    async def _summary(user_id):  # noqa: ANN001
+        return {"markdown": "취향 요약", "generatedAt": "2026-08-05", "embedding": vector}
+
+    monkeypatch.setattr(buyer_graph, "read_profile_summary", _summary)
+    monkeypatch.setattr(artifact_store, "get_catalog_store", lambda: store)
+
+
+async def test_profile_member_ranks_by_taste_vector_without_search_or_popular(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """취향 벡터가 있는 회원은 I-1·I-3 **둘 다 부르지 않고** 자체 인덱스에서 뽑는다.
+
+    이 이슈가 노린 개인화의 본체다 — 무작위 후보를 받아 rerank 로 고르는 게 아니라, 후보
+    단계부터 취향에 가까운 상품이 온다(홈 화면과 같은 엔진·같은 인덱스).
+    """
+    _inject_profile(monkeypatch, vector=[1.0, 0.0, 0.0], store=_catalog_store([201, 202, 203]))
+    search, search_calls = _counting_search_calls()
+    popular, popular_calls = _recording_popular()
+    push = _RecordingPush()
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="아무거나 추천해줘", thread_id="nc-profile"),
+            _member(),
+            llm=FakeLLM(decompose=_NO_CONDITION_DECOMPOSE),
+            search=search,
+            push_fn=push,
+            popular_fn=popular,
+        )
+    )
+
+    assert search_calls == []
+    assert popular_calls == []
+    assert _types(events)[-1] == "done"
+    assert "products.ready" in _types(events)
+    entry = _only_list(push.pushes[0])
+    assert entry.product_ids[0] == 201  # 취향 벡터에 가장 가까운 상품이 앞
+
+
+async def test_profile_member_discloses_taste_based_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """회원 경로는 인기 상품이 아니라 취향 기반이므로 안내 문구도 다르다."""
+    _inject_profile(monkeypatch, vector=[1.0, 0.0, 0.0], store=_catalog_store([201, 202]))
+    search, _ = _counting_search_calls()
+    popular, _ = _recording_popular()
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="아무거나 추천해줘", thread_id="nc-profile-notice"),
+            _member(),
+            llm=FakeLLM(decompose=_NO_CONDITION_DECOMPOSE),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    texts = [e["data"]["text"] for e in events if e["type"] == "token"]
+    settings = get_settings()
+    assert any(settings.no_condition_notice_profile in t for t in texts)
+    assert not any(settings.no_condition_notice_popular in t for t in texts)
+
+
+async def test_member_without_taste_vector_falls_back_to_popular(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """프로필은 있는데 **벡터가 없는** 회원(구 요약·임베딩 실패)은 인기 상품으로 간다.
+
+    None 벡터를 그대로 랭킹에 넣으면 빈 결과가 나오고 그게 "추천할 게 없다"로 오독된다.
+    """
+    _inject_profile(monkeypatch, vector=None, store=_catalog_store([201, 202]))
+    search, search_calls = _counting_search_calls()
+    popular, popular_calls = _recording_popular()
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="아무거나 추천해줘", thread_id="nc-no-vector"),
+            _member(),
+            llm=FakeLLM(decompose=_NO_CONDITION_DECOMPOSE),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    assert popular_calls  # I-3 로 떨어진다
+    assert search_calls == []  # 무필터 I-1 은 여전히 부르지 않는다
+
+
+async def test_empty_catalog_index_falls_back_to_popular(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """카탈로그 인덱스가 비었으면(동기화 전·장애) 인기 상품으로 폴백하고 스트림은 산다."""
+    _inject_profile(monkeypatch, vector=[1.0, 0.0, 0.0], store=_catalog_store([]))
+    search, _ = _counting_search_calls()
+    popular, popular_calls = _recording_popular()
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="아무거나 추천해줘", thread_id="nc-empty-index"),
+            _member(),
+            llm=FakeLLM(decompose=_NO_CONDITION_DECOMPOSE),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    assert popular_calls
+    assert _types(events)[-1] == "done"

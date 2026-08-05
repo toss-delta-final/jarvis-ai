@@ -18,6 +18,7 @@ from uuid import uuid4
 
 from app.agents.buyer._frames import sse
 from app.agents.buyer.recommendation.budget_sets import BudgetSet, build_budget_sets
+from app.agents.buyer.recommendation.no_condition import rank_by_profile
 from app.agents.buyer.recommendation.rerank import rerank
 from app.agents.buyer.recommendation.relaxation import (
     FIELD_TO_ATTR as RELAXATION_FIELD_TO_ATTR,
@@ -359,6 +360,9 @@ async def stream_recommendation(
     # 판정은 호출부(buyer/graph.py)에서 한다 — 그쪽에만 `prior`(첫 턴 여부)가 있다.
     no_condition: bool = False,
     popular_fn=None,  # I-3 조회. 미지정 시 라이브 기본값(테스트는 fake 주입)
+    # [#162] 미리 만들어 둔 취향 벡터(`read_profile_summary()["embedding"]`). 회원이면서 벡터가
+    # 있을 때만 취향 랭킹 경로를 탄다 — 게스트·신규회원·구 요약(벡터 없음)은 인기 상품으로 간다.
+    profile_vec: list[float] | None = None,
 ) -> AsyncIterator[str]:
     """추천 서브그래프 스트림. 프레임(SSE str)을 순서대로 산출한다."""
     popular_fn = popular_fn or spring_client.get_popular_products
@@ -560,6 +564,74 @@ async def stream_recommendation(
             if trace := current_request_trace():
                 trace.mark_degraded("dedup_skipped")
             return None
+
+    # [#162] 조건 없는 턴 + 프로필 벡터 → **취향 벡터 랭킹**(홈 I-22 와 같은 엔진·같은 인덱스).
+    # 이 경로는 검색도 rerank 도 타지 않아 아래 파이프라인과 갈라지므로 여기서 끝내고 return 한다.
+    # `conditions` 는 위에서 이미 나갔다(조건 없는 턴은 `may_auto_relax` 가 False 라 미루지 않는다).
+    if no_condition and profile_vec:
+        profile_purchases = await _fetch_purchases()
+        profile_exclude: set[int] = set()
+        if profile_purchases is not None:
+            profile_recent = profile_purchases.recent_items(
+                since=_now() - timedelta(days=settings.dedup_recent_days),
+                exclude_statuses=_INACTIVE_STATUSES,
+            )
+            profile_exclude = {item.product_id for item in profile_recent}
+        profile_ranked = await rank_by_profile(
+            profile_vec, exclude=profile_exclude, settings=settings
+        )
+        if profile_ranked is not None:
+            ranked_by_profile, profile_reason_by_id = profile_ranked
+            exposed = ranked_by_profile[: settings.expose_max]
+            profile_entry = RecommendationListEntry(
+                list_id=uuid4().hex,
+                product_ids=exposed,
+                # 근거는 선택 필드다(§4.2) — `build_reasons` 가 못 고른 상품은 항목을 만들지 않는다.
+                reasons=[
+                    RecoReason(product_id=pid, reason=text)
+                    for pid in exposed
+                    if (text := profile_reason_by_id.get(pid))
+                ],
+            )
+            profile_push = RecommendationPush(
+                session_id=request.session_id,
+                recommendation_request_id=str(uuid4()),  # 정규 UUID 36자 — BE CHAR(36)
+                list_type="PICK_ONE",
+                lists=[profile_entry],
+            )
+            if notice := _strip_unsafe(settings.no_condition_notice_profile):
+                yield sse("token", TokenData(text=notice).model_dump(by_alias=True))
+            try:
+                profile_pushed = bool(await push_fn(profile_push))
+            except SpringUnavailableError:
+                profile_pushed = False
+            logger.info(
+                "chat_recommendation_profile_ranked",
+                extra={"exposed": len(exposed), "pushed": profile_pushed},
+            )
+            if profile_pushed:
+                yield sse(
+                    "products.ready",
+                    ProductsReadyData(
+                        session_id=request.session_id,
+                        list_ids=[profile_entry.list_id],
+                    ).model_dump(by_alias=True),
+                )
+                # 담기 해소용 보관 — 이 경로는 **상품명을 모른다**(AI 인덱스에 원본 컬럼 없음).
+                # 빈 이름으로 넣어 id 기반 담기 가드(#118)는 살리고, 이름 지칭("그 이어폰")만
+                # 이 턴에서 해소되지 않는다.
+                if cart_store is not None and thread_key is not None:
+                    await cart_store.set_last_reco(thread_key, [(pid, "") for pid in exposed])
+            else:
+                if trace := current_request_trace():
+                    trace.mark_degraded("push_skipped")
+                if push_notice := _strip_unsafe(settings.push_skipped_notice):
+                    yield sse("token", TokenData(text=push_notice).model_dump(by_alias=True))
+            yield sse("done", DoneData(finish_reason="stop").model_dump(by_alias=True))
+            return
+        # 랭킹 실패·0건 → 아래 인기 상품(I-3) 경로로 폴백한다(스트림은 계속된다).
+        if trace := current_request_trace():
+            trace.mark_degraded("profile_ranking_fallback")
 
     # [#162] 조건이 하나도 없는 턴은 후보 소스를 I-3(인기 상품, §4.12)로 바꾼다.
     popular_degraded = False

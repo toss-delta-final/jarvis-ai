@@ -15,9 +15,13 @@ zero-result 분기도 degrade 고지도 타지 않는다.
 
 from __future__ import annotations
 
+import logging
+
 from app.agents.buyer.recommendation.decompose import _FILTER_AXES
 from app.agents.buyer.recommendation.state import RouteDecision
 from app.schemas.spring import ProductSearchFilters
+
+logger = logging.getLogger(__name__)
 
 # 하드필터 축 목록은 **decompose 의 `_FILTER_AXES` 를 그대로 쓴다** — 사본을 두면 새 필터가
 # 생겼을 때 한쪽만 늘어나 조건 있는 턴이 조용히 "조건 없음"으로 새어 들어온다. 그 목록은
@@ -75,3 +79,86 @@ def is_no_condition_turn(
     if not decision.semantic_query_is_fallback:
         return False
     return all(_is_blank(getattr(decision.filters, field, None)) for field in _FILTER_AXES)
+
+
+async def rank_by_profile(
+    profile_vec: list[float], *, exclude: set[int], settings
+) -> tuple[list[int], dict[int, str]] | None:
+    """취향 벡터에 가까운 상품 top-k 와 그 근거 문장 — **홈 추천(I-22)과 같은 엔진·같은 인덱스**.
+
+    조건이 하나도 없는 턴의 회원 경로다. 발화에 검색어가 될 조건이 없다는 점이 홈과 같아
+    (`home_recommendation` 모듈 docstring: "홈은 발화가 없어 검색어를 만들 수 없다"), 자체
+    카탈로그 인덱스(I-17 로 동기화된 임베딩)에서 벡터 근접으로 뽑는다. 프로필 벡터는 요약 생성
+    시점에 미리 만들어 둔 것이라(`profile/store._embed_summary`) 여기서 임베딩 왕복이 없다.
+
+    **검색(I-1)도 rerank 도 타지 않는다** — 이 경로가 얻는 건 `productId` 뿐이고 상품 원본을
+    채울 방법이 없다: AI 인덱스에는 원본 컬럼을 두지 않고(CLAUDE.md), id 로 Spring 에 상세를
+    되묻는 API 는 C-17 로 요청했다가 #32 에서 기각됐다. 그래서 홈과 똑같이 `extras` 재료로
+    근거를 **고른다**(LLM 호출 0회).
+
+    이 경로가 포기하는 것(홈도 동일):
+      · 소모품 카테고리 억제 — `extras` 에 `categoryName` 이 없다. 최근구매 **exact 제외**는
+        `exclude` 로 적용된다.
+      · 개인화된 근거 문장 — `build_reasons` 의 맞춤 문구는 장바구니·조회 시그널이 있어야
+        나오고, 채팅 경로엔 그 시그널을 넘기지 않아 상품 고유 폴백(리뷰 장점)이 된다.
+        **개인화는 랭킹(벡터)에 있고 문장에 있지 않다.**
+
+    실패·타임아웃·0건이면 `None` — 호출부가 인기 상품(I-3)으로 폴백한다.
+    """
+    # 홈 랭킹 함수를 그대로 쓴다(지연 import — 이 모듈은 그래프 hot path 에 있고 홈 서비스는
+    # 카탈로그 스토어·pgvector 를 끌고 온다). 사본을 만들면 랭킹이 두 벌이 되어 "메인 화면과
+    # 채팅이 같은 소스"라는 이 이슈의 전제가 조용히 깨진다.
+    from app.pipelines.artifact_store import get_catalog_store
+    from app.services.home_recommendation import (
+        _call_store,
+        build_query_vector,
+        build_reasons,
+        rank_candidates,
+    )
+
+    store = get_catalog_store()
+    # 시그널(cart·viewed)은 넘기지 않는다 — 채팅 턴에는 그 맥락이 없다. `build_query_vector` 는
+    # "시그널이 비어도 프로필만으로 질의 벡터가 선다"고 계약돼 있고, 시그널이 없으면 스토어를
+    # 조회하지 않으므로 여기서는 순수 계산이라 스레드 오프로드가 필요 없다.
+    query_vec = build_query_vector(
+        cart_ids=[], viewed_ids=[], store=store, settings=settings, profile_vec=profile_vec
+    )
+    if not query_vec:  # 0 벡터 = 개인화 근거 없음(홈의 NO_PROFILE 과 같은 판정)
+        return None
+
+    # 스토어 호출만 오프로드한다 — 동기 psycopg 질의라 이벤트루프를 막고, 취소도 안 된다.
+    # 홈이 쓰는 `_call_store` 를 그대로 재사용해 "요청 벽시계 상한 / DB 커넥션 상한" 2층
+    # 분담을 같이 가져간다. 상한도 홈 값을 쓴다 — 같은 스토어에 같은 형태의 질의라 별도
+    # 튜너블을 만들 근거가 없다.
+    timeout = settings.home_reco_store_timeout_s
+    try:
+        ranked = await _call_store(
+            rank_candidates,
+            timeout=timeout,
+            query_vec=query_vec,
+            store=store,
+            exclude=exclude,
+            settings=settings,
+            # 하류 예산은 인기 상품 경로와 같다 — 노출(expose_max)에 dedup 여유를 더한 값.
+            k=settings.popular_candidate_size,
+        )
+    except Exception as exc:  # noqa: BLE001 - 랭킹 실패가 스트림을 죽이지 않는다(→ I-3 폴백)
+        logger.warning("profile_ranking_failed", extra={"reason": str(exc)})
+        return None
+    if not ranked:
+        return None
+
+    try:
+        reasons = await _call_store(
+            build_reasons,
+            timeout=timeout,
+            product_ids=ranked,
+            store=store,
+            cart_ids=[],
+            viewed_ids=[],
+            settings=settings,
+        )
+    except Exception as exc:  # noqa: BLE001 - 근거는 선택 필드다(§4.2). 없어도 목록은 나간다
+        logger.warning("profile_reasons_failed", extra={"reason": str(exc)})
+        reasons = {}
+    return ranked, reasons

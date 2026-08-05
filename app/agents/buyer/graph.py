@@ -460,10 +460,15 @@ async def run_buyer_turn(
 
     # 프로필 주입 (회원만, read-only) — 게스트/신규는 None(개인화 스킵, 결정 8)
     profile = None
+    profile_vec = None
     profile_eligible = bool(not identity.is_guest and identity.user_id and not identity.seller_id)
     if profile_eligible:
         summary = await read_profile_summary(identity.user_id)
         profile = summary.get("markdown") if summary else None
+        # [#162] 요약 생성 시점에 미리 만들어 둔 취향 벡터(#148 `store._embed_summary`).
+        # 종전에는 markdown 만 꺼내 쓰고 이 값을 버렸다 — 조건 없는 발화의 회원 경로가 이걸로
+        # 홈과 같은 벡터 랭킹을 돌린다. 구 요약·임베딩 실패분은 None 이라 인기 상품으로 간다.
+        profile_vec = summary.get("embedding") if summary else None
         # "기억해"류 명시 명령은 게이트 없이 즉시 승격(hot-path, REQ-PROF). intent 와 무관한
         # 명시 명령이라 라우팅 앞에 둔다 — decompose 가 실패한 턴에도 기록돼야 한다.
         if is_remember_command(request.message):
@@ -829,5 +834,8 @@ async def run_buyer_turn(
             request_id=resolved_request_id,
             no_condition=no_condition,
             popular_fn=popular_fn,
+            # [#119] 개인화 off(A/B baseline arm)면 취향 랭킹도 함께 끈다 — rerank 주입과 같은
+            # 스위치를 따라야 arm 이 "개인화 없음"으로 일관된다.
+            profile_vec=(None if settings.profile_injection_scope == "off" else profile_vec),
         ):
             yield frame
