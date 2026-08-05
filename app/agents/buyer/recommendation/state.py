@@ -84,7 +84,19 @@ class CategoryQuery:
 class RouteDecision:
     """decompose(Haiku) 1회 산출 — intent 라우팅 + 병합 필터/의미쿼리/case + 폴백 답변 + 장바구니 의도."""
 
-    intent: Literal["recommend", "cart_add", "cart_view", "order_status", "general"]
+    intent: Literal[
+        "recommend",
+        "cart_add",
+        "cart_view",
+        "order_status",
+        "general",
+        # [라운드 24, #116·#117] decompose 가 직접 산출하는 삭제·찜 intent. cart/graph.py 의
+        # classify_cart_utterance(cart_add 로 들어온 발화의 2선 방어)와 값 집합이 겹친다 —
+        # buyer/graph.py 의 라우팅 docstring 참조.
+        "cart_remove",
+        "wishlist_add",
+        "wishlist_remove",
+    ]
     filters: ProductSearchFilters
     # [#101] 의미쿼리는 검색 입력이라 filters.semantic_query 로 이관(decompose 가 세팅). 하류가
     # 그 필드를 읽으므로 RouteDecision 에는 더 두지 않는다.
