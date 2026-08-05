@@ -21,6 +21,12 @@ axisId 가 제외판·포함판에서 충돌하던 표)은 이 표로 교체됐�
 
 ## Primary confirmatory 지표
 
+> ⚠️ **[R4-1] 아래 94.0% 는 decompose 단계(2단계 전개 파이프라인 중 1단계, needs_expansion
+> #217 보정 전) 형상의 측정이다 — 사용자 체감 실패율이 아니다.** 프로덕션 전개는 decompose
+> 뒤에 needs_expansion 이 매핑 실패 leg 를 보정해 더한다(§0). 이 표 하나만으로 "사용자가
+> 실제로 겪는 전개 실패율이 94%" 라고 읽으면 오독이다 — 상세는 아래 §「측정 범위와 한계」
+> (하네스 README) 참조.
+
 `case3UnderExpansionRate`(promptExample 5건 제외) = **142/151 (94.0%)**, CI95 [89.1%, 96.8%].
 
 슬라이스별(사전 등록):
@@ -76,18 +82,27 @@ raw_category 로 걸리면 뒤 그룹이 query(head-token)로 더 정확히 맞�
 
 | 슬라이스 | LLM legCoverage(promptExample 제외) | baseline legCoverage(promptExample 제외) |
 |---|---|---|
+| **전체** | 37.1% | 37.4% |
 | single | 84.7% | 100.0% |
 | conditions | N/A | N/A |
 | situational | 0.0% | 0.0% |
 | purpose | 0.0% | 0.0% |
 | multi | 75.0% | 45.8% |
 
+[R4-2] **전체 기준으로 LLM 이 trivial baseline 을 넘지 못한다**(37.1% < 37.4%) — 슬라이스만
+보면 `single`·`multi` 에서 LLM 이 이겨 놓쳤을 사실이다(#275 가 랭킹 축에서 밟은 것과 같은
+과소 보고 모양: 슬라이스·부분 표만으로는 "전체적으로 아무것도 안 하는 것보다 못하다"는
+결론이 표에서 빠진다). `legCoverage`(축 전체, results.json 의 confirmatory-secondary 값)
+대 `baseline.legCoverageOverall` 대조이며 WithPromptExamples 판은 쓰지 않았다(정의가 다른
+분모를 대조하면 #234/#240 사고가 재발한다).
+
 baseline `legCoverage` 는 저자 라벨(`baselineGroupsHit`) 기반이다 — 발화 원문 하나를 그대로
 검색어로 썼을 때 몇 개 그룹을 짚는지의 근사치이며, LLM 호출 없이 결정론으로 계산된다. baseline
 도 `legCoverage`(confirmatory-secondary)와 같은 규칙으로 promptExample 을 제외해 대조가
 사과-사과다. **situational·purpose 는 LLM 과 baseline 이 완전히 같다(둘 다 0.0%)** — 이 두
 슬라이스에서는 fast 티어가 "아무것도 안 하는 것"과 구별되지 않는다. `single`·`multi` 는 LLM
-이 여전히 baseline 보다 앞선다. baseline `case3UnderExpansionRate` = 1.0(구조적) ·
+이 여전히 baseline 보다 앞서지만, **전체 가중 평균으로는 그 우위가 situational·purpose 의
+완전 무승부에 묻혀 baseline 을 못 넘는다.** baseline `case3UnderExpansionRate` = 1.0(구조적) ·
 `overExpansionRate` = 0.0(정의상).
 
 ## pair 진단 (exploratory, 합불 아님)

@@ -55,6 +55,13 @@ def _fmt_numerator(value: float) -> str:
     return f"{value:.2f}" if isinstance(value, float) and not value.is_integer() else f"{value:g}"
 
 
+def _exploratory_badge(axis: dict[str, Any]) -> str:
+    """[R4-3] 슬라이스 표본이 임계(`SLICE_SAMPLE_THRESHOLD`=40) 미만이면 점수 뒤에 붙인다 —
+    "## 축 전체" 표는 `_axis_row` 가 성격(nature) 칸에 이미 표시하지만, 슬라이스별 쪼갠 표는
+    분모가 훨씬 작아지는데도 지금까지 아무 표시가 없었다."""
+    return " (exploratory: N<40)" if axis.get("belowSampleThreshold") else ""
+
+
 def header_line(results: dict[str, Any]) -> str:
     prompt = results["prompt"]
     model = results["modelConfig"]
@@ -157,6 +164,9 @@ def render_report(results: dict[str, Any]) -> str:
         "",
         "## Primary confirmatory 지표",
         "",
+        "> ⚠️ decompose 단계(2단계 전개 파이프라인 중 **1단계, needs_expansion #217 보정 전**) "
+        "형상의 측정이다 — 사용자 체감 실패율이 아니다.",
+        "",
         f"`case3UnderExpansionRate` (promptExample 제외): "
         f"{_fmt_numerator(axes['case3UnderExpansionRate']['numerator'])}/"
         f"{axes['case3UnderExpansionRate']['denominator']} "
@@ -177,6 +187,7 @@ def render_report(results: dict[str, Any]) -> str:
         score = f"{_fmt_numerator(axis['numerator'])}/{axis['denominator']}"
         if ratio is not None:
             score += f" ({ratio * 100:.1f}%)"
+        score += _exploratory_badge(axis)
         ci = axis["ci95"]
         ci_text = f"[{ci[0] * 100:.1f}%, {ci[1] * 100:.1f}%]" if ci else "N/A"
         lines.append(f"| {slice_name} | {score} | {ci_text} |")
@@ -202,6 +213,7 @@ def render_report(results: dict[str, Any]) -> str:
             score = f"{_fmt_numerator(axis['numerator'])}/{axis['denominator']}"
             if ratio is not None:
                 score += f" ({ratio * 100:.1f}%)"
+            score += _exploratory_badge(axis)
             ci = axis["ci95"]
             ci_text = f"[{ci[0] * 100:.1f}%, {ci[1] * 100:.1f}%]" if ci else "N/A"
             lines.append(f"| {slice_name} | {score} | {ci_text} |")
@@ -222,6 +234,18 @@ def render_report(results: dict[str, Any]) -> str:
         "| 슬라이스 | LLM legCoverage | baseline legCoverage |",
         "|---|---|---|",
     ]
+    # [R4-2] 슬라이스만 보면 "전체적으로 LLM 이 trivial baseline 을 넘지 못한다"는 #275 형
+    # 핵심 사실이 표에서 빠진다(과소 보고) — overall 행을 맨 위에 추가한다. WithPromptExamples
+    # 판(exploratory)은 쓰지 않는다 — confirmatory `legCoverage` 와 정의가 다른 분모를 대조하면
+    # #234/#240 이 밟은 "다른 정의, 같은 이름" 사고가 재발한다(evals/README.md 규약 8).
+    overall_llm_axis = axes["legCoverage"]
+    overall_llm_ratio = overall_llm_axis["ratio"]
+    overall_llm_text = f"{overall_llm_ratio * 100:.1f}%" if overall_llm_ratio is not None else "N/A"
+    overall_baseline_value = baseline.get("legCoverageOverall")
+    overall_baseline_text = (
+        f"{overall_baseline_value * 100:.1f}%" if overall_baseline_value is not None else "N/A"
+    )
+    lines.append(f"| **전체** | {overall_llm_text} | {overall_baseline_text} |")
     llm_leg_coverage = results["slices"]["legCoverage"]
     for slice_name in SLICES:
         llm_axis = llm_leg_coverage.get(slice_name)
@@ -230,9 +254,23 @@ def render_report(results: dict[str, Any]) -> str:
             if llm_axis and llm_axis["ratio"] is not None
             else "N/A"
         )
+        if llm_axis is not None:
+            llm_text += _exploratory_badge(llm_axis)
         baseline_value = baseline["legCoveragePerSlice"].get(slice_name)
         baseline_text = f"{baseline_value * 100:.1f}%" if baseline_value is not None else "N/A"
         lines.append(f"| {slice_name} | {llm_text} | {baseline_text} |")
+    lines.append("")
+    if overall_llm_ratio is not None and overall_baseline_value is not None:
+        if overall_llm_ratio <= overall_baseline_value:
+            lines.append(
+                "**전체 기준으로 LLM 이 trivial baseline 을 넘지 못한다** — 단일 런이라 확정은 "
+                "아니다(위 「단일 실행은 채택 판정이 아니다」 참조), 하지만 #275 가 랭킹에서 밟은 "
+                "같은 형태의 결과다: 임의 순서 기준선 대조 없이는 몰랐을 사실이다."
+            )
+        else:
+            lines.append(
+                "전체 기준으로 LLM 이 trivial baseline 을 앞선다 — 단일 런이라 확정은 아니다."
+            )
 
     lines += ["", "## pair 진단 (exploratory, 합불 아님)", ""]
     if results["pairDiagnostics"]:

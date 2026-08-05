@@ -6,6 +6,8 @@ prompt=11c6fe3bfa0c (repo:_SYSTEM) · tier=fast · model=gpt-5-nano · fixture=l
 
 ## Primary confirmatory 지표
 
+> ⚠️ decompose 단계(2단계 전개 파이프라인 중 **1단계, needs_expansion #217 보정 전**) 형상의 측정이다 — 사용자 체감 실패율이 아니다.
+
 `case3UnderExpansionRate` (promptExample 제외): 142/151 (94.0%)
 CI95 [89.1%, 96.8%]
 
@@ -13,8 +15,8 @@ CI95 [89.1%, 96.8%]
 
 | 슬라이스 | 점수 | CI95 |
 |---|---|---|
-| situational | 66/67 (98.5%) | [92.0%, 99.7%] |
 | purpose | 50/50 (100.0%) | [92.9%, 100.0%] |
+| situational | 66/67 (98.5%) | [92.0%, 99.7%] |
 
 ## 축 전체
 
@@ -33,6 +35,13 @@ CI95 [89.1%, 96.8%]
 
 ## 슬라이스별 병기
 
+### `case3UnderExpansionRate`
+
+| 슬라이스 | 점수 | CI95 |
+|---|---|---|
+| situational | 66/67 (98.5%) | [92.0%, 99.7%] |
+| purpose | 50/50 (100.0%) | [92.9%, 100.0%] |
+
 ### `caseAccuracy`
 
 | 슬라이스 | 점수 | CI95 |
@@ -50,14 +59,7 @@ CI95 [89.1%, 96.8%]
 | single | 61/72 (84.7%) | [74.7%, 91.2%] |
 | situational | 0/69 (0.0%) | [0.0%, 5.3%] |
 | purpose | 0/56 (0.0%) | [0.0%, 6.4%] |
-| multi | 24/32 (75.0%) | [57.9%, 86.7%] |
-
-### `case3UnderExpansionRate`
-
-| 슬라이스 | 점수 | CI95 |
-|---|---|---|
-| situational | 66/67 (98.5%) | [92.0%, 99.7%] |
-| purpose | 50/50 (100.0%) | [92.9%, 100.0%] |
+| multi | 24/32 (75.0%) (exploratory: N<40) | [57.9%, 86.7%] |
 
 ## LLM vs baseline (trivial baseline: 항상 leg 1개)
 
@@ -67,11 +69,14 @@ baseline `case3UnderExpansionRate` = 1.0 (구조적 — leg 이 항상 1개이�
 
 | 슬라이스 | LLM legCoverage | baseline legCoverage |
 |---|---|---|
+| **전체** | 37.1% | 37.4% |
 | single | 84.7% | 100.0% |
 | conditions | N/A | N/A |
 | situational | 0.0% | 0.0% |
 | purpose | 0.0% | 0.0% |
-| multi | 75.0% | 45.8% |
+| multi | 75.0% (exploratory: N<40) | 45.8% |
+
+**전체 기준으로 LLM 이 trivial baseline 을 넘지 못한다** — 단일 런이라 확정은 아니다(위 「단일 실행은 채택 판정이 아니다」 참조), 하지만 #275 가 랭킹에서 밟은 같은 형태의 결과다: 임의 순서 기준선 대조 없이는 몰랐을 사실이다.
 
 ## pair 진단 (exploratory, 합불 아님)
 
