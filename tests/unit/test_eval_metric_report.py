@@ -43,7 +43,7 @@ def _report() -> dict:
         "precisionAtK": {"5": 0.0},
         "recallAtK": {"5": 0.0},
         "mrr": 0.0,
-        "ndcgAtK": {"5": None},
+        "ndcgAtK": {"3": None, "5": None, "10": None},
         "microPrecisionAtK": {"5": 0.0},
         "microRecallAtK": {"5": 0.0},
         "filterAccuracy": 1.0,
@@ -54,9 +54,18 @@ def _report() -> dict:
         "duplicateCount": 0,
         "duplicateCaseIds": [],
         "unknownProductIds": [],
+        "confirmatoryLabel": "exploratory",
+        "candidateDepth": {
+            "min": None,
+            "median": None,
+            "max": None,
+            "shallowCount": 0,
+            "shallowRatio": 0.0,
+        },
     }
+    noop_aggregate = {**aggregate, "hardConstraintViolationRate": 0.0}
     return {
-        "datasetVersion": "1.0.0",
+        "datasetVersion": "2.0.0",
         "datasetHash": "abc",
         "algorithmVersion": "buyer-metrics-v1",
         "configVersion": "buyer-eval-config-v1",
@@ -67,6 +76,7 @@ def _report() -> dict:
         },
         "prGateConstraints": ["priceMax", "priceMin"],
         "kList": [5],
+        "ndcgKList": [3, 5, 10],
         "cases": [
             {
                 "caseId": "buy-fail-0001",
@@ -79,7 +89,7 @@ def _report() -> dict:
                     "precisionAtK": {"5": 0.0},
                     "recallAtK": {"5": 0.0},
                     "mrr": 0.0,
-                    "ndcgAtK": {"5": None},
+                    "ndcgAtK": {"3": None, "5": None, "10": None},
                 },
                 "filterAccuracy": 1.0,
                 "filterAxes": {"category": "bothEmpty"},
@@ -99,6 +109,11 @@ def _report() -> dict:
             "version": "filter-axes-v1",
             "sha256": "b" * 64,
             "emptyAxisRule": "bothAbsentExcluded",
+        },
+        "noopBaseline": {
+            "cases": [],
+            "slices": {"failure": noop_aggregate},
+            "overall": noop_aggregate,
         },
     }
 

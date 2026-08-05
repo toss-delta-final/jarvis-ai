@@ -46,7 +46,7 @@ def test_case_ids_selection_is_always_case_id_ascending() -> None:
 
     cases = sorted(load_cases("dev"), key=lambda case: case.case_id)[:2]
     args = Namespace(case_ids=f"{cases[1].case_id},{cases[0].case_id}", case_limit=None)
-    selected = _select_cases(cases, args)
+    selected = _select_cases(cases, args, test_type_filter=None)
     assert [case.case_id for case in selected] == [case.case_id for case in cases]
 
 

@@ -130,9 +130,14 @@ def _filter_axes_csv(report: dict[str, Any]) -> list[dict[str, object]]:
     return rows
 
 
-def _aggregate_csv(name: str, aggregate: dict[str, Any]) -> dict[str, object]:
+def _aggregate_csv(
+    name: str, aggregate: dict[str, Any], *, arm: str = "system"
+) -> dict[str, object]:
     return {
+        "arm": arm,
         "scope": name,
+        "n": aggregate["rankingCaseCount"],
+        "confirmatoryLabel": aggregate.get("confirmatoryLabel", ""),
         "caseCount": aggregate["caseCount"],
         "rankingCaseCount": aggregate["rankingCaseCount"],
         "rankingExcludedCount": aggregate["rankingExcludedCount"],
@@ -152,11 +157,31 @@ def _aggregate_csv(name: str, aggregate: dict[str, Any]) -> dict[str, object]:
     }
 
 
+def _ndcg10(aggregate: dict[str, Any]) -> float | None:
+    return aggregate.get("ndcgAtK", {}).get("10")
+
+
+def _fmt(value: float | None) -> str:
+    return f"{value:.6f}" if value is not None else "N/A"
+
+
+def _delta(system: float | None, noop: float | None) -> float | None:
+    return None if system is None or noop is None else system - noop
+
+
+def _depth_triplet(candidate_depth: dict[str, Any]) -> str:
+    values = (candidate_depth.get("min"), candidate_depth.get("median"), candidate_depth.get("max"))
+    if any(value is None for value in values):
+        return "N/A"
+    return "/".join(str(value) for value in values)
+
+
 def _markdown(report: dict[str, Any]) -> str:
     overall = report["overall"]
     excluded = ", ".join(overall["rankingExcludedCaseIds"]) or "(없음)"
     gate = ", ".join(report["prGateConstraints"])
     violations = report["violations"]
+    noop = report.get("noopBaseline")
     lines = [
         "# 구매자 추천 품질 평가",
         "",
@@ -167,6 +192,8 @@ def _markdown(report: dict[str, Any]) -> str:
         "Filter Accuracy 1.0이 구조적으로 기대됩니다(#144에서 실모델로 교체).",
         f"- PR gate constraints: {gate}; 판단 의존 mustExclude·forbiddenCategory·"
         "forbiddenProductId는 전부 보고하되 #144 전까지 gate하지 않습니다.",
+        "- primary confirmatory metric은 `overall.ndcgAtK.10` 1개뿐이다 — 나머지 cutoff(3·5)와 "
+        "슬라이스별 수치는 exploratory다(#328 다중비교 통제 규약).",
         "",
         "## 전체",
         "",
@@ -174,11 +201,17 @@ def _markdown(report: dict[str, Any]) -> str:
         "|---|---:|",
         f"| cases | {overall['caseCount']} |",
         f"| ranking cases | {overall['rankingCaseCount']} |",
+        f"| nDCG@10 (primary) | {_fmt(_ndcg10(overall))} |",
         f"| filter accuracy | {overall['filterAccuracy']:.6f} |",
         f"| hard constraint violation rate | {overall['hardConstraintViolationRate']:.6f} |",
         f"| coverage | {overall['coverage']:.6f} |",
         f"| diversity | {overall['diversity']:.6f} |",
         f"| MRR | {overall['mrr']:.6f} |",
+        f"| candidate depth (min/median/max) | {_depth_triplet(overall['candidateDepth'])} |",
+        (
+            f"| candidates ≤10 (count/ratio) | {overall['candidateDepth']['shallowCount']}/"
+            f"{overall['candidateDepth']['shallowRatio']:.4f} |"
+        ),
         "",
         "## 순위 지표 분모 제외",
         "",
@@ -201,9 +234,46 @@ def _markdown(report: dict[str, Any]) -> str:
         )
     else:
         lines.append("- 없음")
-    lines.extend(["", "## Slice", "", "| slice | cases | HCV |", "|---|---:|---:|"])
+    if noop is not None:
+        noop_overall = noop["overall"]
+        lines.extend(
+            [
+                "",
+                "## no-op 기준선 비교",
+                "",
+                f"- {noop.get('definition', 'README `no-op 기준선` 절 참조.')}",
+                "- 서로 다른 `datasetHash` 점수와는 비교하지 않는다.",
+                "",
+                "| metric | system | no-op | delta(system-noop) |",
+                "|---|---:|---:|---:|",
+                (
+                    f"| nDCG@10 | {_fmt(_ndcg10(overall))} | {_fmt(_ndcg10(noop_overall))} | "
+                    f"{_fmt(_delta(_ndcg10(overall), _ndcg10(noop_overall)))} |"
+                ),
+                (
+                    f"| MRR | {overall['mrr']:.6f} | {noop_overall['mrr']:.6f} | "
+                    f"{_fmt(overall['mrr'] - noop_overall['mrr'])} |"
+                ),
+                (
+                    f"| hard constraint violation rate | {overall['hardConstraintViolationRate']:.6f} | "
+                    f"{noop_overall['hardConstraintViolationRate']:.6f} | "
+                    f"{_fmt(overall['hardConstraintViolationRate'] - noop_overall['hardConstraintViolationRate'])} |"
+                ),
+            ]
+        )
     lines.extend(
-        f"| {name} | {aggregate['caseCount']} | {aggregate['hardConstraintViolationRate']:.6f} |"
+        [
+            "",
+            "## Slice",
+            "",
+            "| slice | N(ranking) | cases | HCV | label |",
+            "|---|---:|---:|---:|---|",
+        ]
+    )
+    lines.extend(
+        f"| {name} | {aggregate['rankingCaseCount']} | {aggregate['caseCount']} | "
+        f"{aggregate['hardConstraintViolationRate']:.6f} | "
+        f"{aggregate.get('confirmatoryLabel', '')} |"
         for name, aggregate in report["slices"].items()
     )
     lines.extend(
@@ -234,10 +304,6 @@ def _markdown(report: dict[str, Any]) -> str:
             f"{_fmt(presence['recall'])} |"
         )
     return "\n".join(lines) + "\n"
-
-
-def _fmt(value: float | None) -> str:
-    return "n/a" if value is None else f"{value:.6f}"
 
 
 def write_artifacts(
@@ -274,10 +340,18 @@ def write_artifacts(
     # 동봉해 `filterAxesSpec.sha256`이 이 파일의 SHA-256과 항상 일치하게 한다(같은
     # AXES_SPEC_PATH를 evaluate()와 이 writer가 같은 프로세스에서 읽으므로 보장된다).
     (output_dir / "filter_axes_spec.json").write_bytes(AXES_SPEC_PATH.read_bytes())
-    aggregate_rows = [_aggregate_csv("overall", report["overall"])]
+    aggregate_rows = [_aggregate_csv("overall", report["overall"], arm="system")]
     aggregate_rows.extend(
-        _aggregate_csv(name, aggregate) for name, aggregate in report["slices"].items()
+        _aggregate_csv(name, aggregate, arm="system")
+        for name, aggregate in report["slices"].items()
     )
+    noop = report.get("noopBaseline")
+    if noop is not None:
+        aggregate_rows.append(_aggregate_csv("overall", noop["overall"], arm="noop"))
+        aggregate_rows.extend(
+            _aggregate_csv(name, aggregate, arm="noop")
+            for name, aggregate in noop["slices"].items()
+        )
     _write_csv(
         output_dir / "aggregates.csv",
         list(aggregate_rows[0]),

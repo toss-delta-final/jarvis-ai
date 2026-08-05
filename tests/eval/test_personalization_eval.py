@@ -11,7 +11,7 @@ from evals.metrics.settings import EvaluationSettings
 from evals.personalization import cli as personalization_cli
 from evals.personalization.cli import main, normalize_paired_artifacts
 
-BASELINE = Path("evals/personalization/baselines/dev-v1")
+BASELINE = Path("evals/personalization/baselines/dev-v2")
 
 
 @pytest.mark.eval
