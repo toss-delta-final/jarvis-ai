@@ -55,6 +55,24 @@ Filter Accuracy는 구조상 1.0이다. scripted rerank는 fixture 검색 순서
     Precision/Recall에는 보조 **micro**도 함께 낸다. micro Precision의 분모는
     `순위 평가 케이스 수 × K`, micro Recall의 분모는 순위 평가 케이스들의 정답 수 합계다.
 
+## 축별 필터 지표(#334)
+
+`results.json`의 `filterAxes`(케이스·slice·overall)·`filterAxesSpec`은 `evals/filter_axes`
+패키지가 계산한 축별 분해 지표다 — 기존 `filterAccuracy`(합집합 분모 단일값)를 대체하지
+않고 병행한다. 정의·정규화 규칙·기존 지표와의 관계는 `evals/filter_axes/README.md`가
+정본이다. `report.md`에 축별 표 섹션이, `filter_axes.csv`에 케이스×축 outcome과
+slice/overall 집계가 추가된다.
+
+`results.json`의 케이스별 `filterAxes`는 축→outcome 문자열 map 형태를 그대로 유지한다 —
+케이스 수준 P/R/F1 수치는 그 outcome과 **동치**다(`match`→precision·recall·F1 전부 1.0,
+`valueMismatch`/`spurious`/`missing`→0.0, `bothEmpty`→분모 0이라 전부 None). 케이스 수준의
+실제 수치(counts·support·valueStrict/presence P/R/F1)는 `filter_axes.csv`의 `scope=case`
+행이 담당한다 — JSON을 다시 계산하지 않고 이 CSV로 필터링·집계하면 된다.
+
+기본 scripted adapter(`OfflineBuyerAdapter`)는 `expectedFilters`를 decompose 출력으로
+그대로 내므로 축별 지표도 Filter Accuracy와 마찬가지로 구조상 전부 1.0이 기대된다 — 의미
+있는 값은 model_eval/ablation처럼 실제로 필터를 추출하는 adapter에서 나온다.
+
 ## PR gate 범위
 
 critical subset은 `hardConstraints` 또는 `mustExcludeProductIds`가 있거나 `failure` slice인 케이스의
