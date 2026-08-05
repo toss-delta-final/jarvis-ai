@@ -13,6 +13,26 @@
 
 ---
 
+## [2026-08-05] 상류가 채워 주는 필드는 "비어 있음"으로 판정할 수 없다 — 값이 아니라 **출처**를 본다
+- 증상: #162 "조건 없는 발화" 판정을 `filters` 축 + `semantic_query` 가 전부 비었는지로 짜고
+  단위 테스트 13건이 전부 통과했다. 그런데 그 판정은 **프로덕션에서 한 번도 발동할 수 없었다** —
+  `decompose` 가 `semantic_query = llm_sq or cat_signal or prior_sq or query` 로 채워
+  아무 의미 신호가 없어도 **이번 턴 발화 원문**이 들어가기 때문이다("아무거나 추천해줘" →
+  `semantic_query="아무거나 추천해줘"`). 값 검사는 항상 참이었다.
+- 원인: 테스트가 `ProductSearchFilters(...)` 를 **직접 생성**해 상류(decompose)를 우회했다.
+  그래서 "실제로 그 필드에 무엇이 들어오는가"라는 전제를 한 번도 검증하지 않았다. 심지어 그
+  폴백을 고정하는 기존 테스트(`test_semantic_query_falls_back_to_user_query_when_missing`)가
+  이미 있었는데도 새 판정이 그 전제를 보지 않았다.
+- 규칙: 상류가 폴백으로 채우는 필드는 **유무로 판정하지 말고 출처 플래그를 상류에서 받아온다**
+  (`RouteDecision.semantic_query_is_fallback`). 그리고 판정 로직 테스트에는 **상류 산출에서
+  출발하는 회귀 1건**을 반드시 끼운다 — 입력을 손으로 만든 테스트만 있으면 "초록인데 실제로는
+  안 도는" 상태를 못 잡는다. 축 목록도 사본을 만들지 말고 정본(`decompose._FILTER_AXES`)을
+  import 해 드리프트 테스트에 얹는다.
+- 관련: #162, `app/agents/buyer/recommendation/no_condition.py`,
+  `decompose.py`(semantic_query 폴백 체인), `tests/unit/test_no_condition.py`
+
+---
+
 ## [2026-08-05] 이슈 본문의 결함 서술은 그 이슈를 낳은 PR 의 후속 리뷰에서 이미 고쳐졌을 수 있다
 - 증상: #288 은 "검증기가 단일 I-1 호출 예산만 본다"는 결함으로 열렸다. 그런데 착수 시점 `dev`
   에는 그 이슈를 낳은 #277(PR #287) 의 리뷰 4차에서 이미 첫 이벤트 앞 **직렬 합** 검증이
