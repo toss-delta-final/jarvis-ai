@@ -877,3 +877,54 @@ class ProductDeleteResult(SellerAggregateModel):
 
     product_id: int
     status: str = "HIDDEN"
+
+
+# ── 7. 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현 진행 중) ──
+
+
+class AddWishlistRequest(CamelModel):
+    """I-26 POST /internal/wishlist 요청 본문(확정 2026-08-05).
+
+    회원 전용(USER) — guestId 없음(게스트 찜은 없다). userId 는 AI-검증 JWT sub 유래
+    (요청 본문 불신, §2.3과 동일 규약).
+    """
+
+    user_id: int
+    product_id: int
+
+
+class WishlistAddResult(CamelModel):
+    """I-26 200 성공 응답(확정 2026-08-05) — {success, data:{productId}}, wishlistId 없음."""
+
+    success: bool
+    product_id: int | None = None
+
+
+PurchaseState = Literal["AVAILABLE", "SOLD_OUT", "HIDDEN"]
+
+
+class WishlistItem(CamelModel):
+    """I-28 GET /internal/wishlist 응답 항목(확정 2026-08-05).
+
+    AI 가 실제로 쓰는 필드는 productId·name·purchaseState 세 개뿐이다(경로 B — SSE 에는 상품 카드를
+    싣지 않는다). brandName·price·originalPrice·imageUrl·rating·reviewCount 같은 표시 필드는
+    BE 응답에는 있어도 이 스키마에는 두지 않는다 — AI 가 쓰지 않는 필드까지 파싱·보존하면
+    사용처 없는 결합만 늘어난다.
+
+    교체 근거: 2026-08-05 M-4 개정으로 구 boolean 필드(기본값 참, 지금은 사라짐)를
+    `purchaseState`(enum)로 대체했다 — 🔶 I-28 (확정 2026-08-05) — Spring 구현 진행 중.
+    기본값(`"AVAILABLE"`)은 그 구 boolean 필드와 같은 의미를 유지한다 — 재검토는 #310.
+    BE 가 이 세 값 밖의 상태를 추가했을 때의 파싱 견고성은 이 클래스가 아니라
+    `app/services/spring_client.py::_parse_wishlist_items`(항목 단위 skip)가 책임진다 —
+    상세 근거는 그쪽 docstring 하나에만 둔다.
+    """
+
+    product_id: int
+    name: str | None = None  # BE 필드명은 name(productName 아님)
+    purchase_state: PurchaseState = "AVAILABLE"
+
+
+class WishlistView(CamelModel):
+    """I-28 응답(확정 2026-08-05). 찜 0건도 200 + items:[](404 아님, get_cart 와 같은 규약)."""
+
+    items: list[WishlistItem] = Field(default_factory=list)

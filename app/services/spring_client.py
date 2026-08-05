@@ -48,6 +48,7 @@ from app.core.tracing import TraceNode, trace_span
 from app.schemas.spring import (
     AccountEventsResult,
     AddToCartRequest,
+    AddWishlistRequest,
     CartOption,
     AddToCartResult,
     BehaviorEventsResult,
@@ -71,6 +72,9 @@ from app.schemas.spring import (
     SalesResult,
     SellerProductList,
     SpringProduct,
+    WishlistAddResult,
+    WishlistItem,
+    WishlistView,
 )
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
@@ -80,6 +84,10 @@ _SpringOperation = Literal[
     "get_order_status",
     "add_to_cart",
     "get_cart",
+    "delete_cart_item",
+    "add_wishlist",
+    "remove_wishlist",
+    "get_wishlist",
     "push_recommendations",
     "fetch_product_changes",
     "get_sales",
@@ -102,9 +110,7 @@ _color_synonym_limiter_lock = threading.Lock()
 _background_synonym_tasks: set[asyncio.Task[dict[str, list[str]]]] = set()
 # ContextVar로 SpringSearchBackend·EmbeddingRerankBackend·VectorSearchBackend와 search_catalog
 # 시그니처를 바꾸지 않고 호출 구간만 표시한다. gather 자식 태스크는 생성 시 컨텍스트를 복사한다.
-_search_retry_suppressed: ContextVar[bool] = ContextVar(
-    "search_retry_suppressed", default=False
-)
+_search_retry_suppressed: ContextVar[bool] = ContextVar("search_retry_suppressed", default=False)
 
 
 class SearchBudgetExceeded(TimeoutError):
@@ -183,10 +189,7 @@ def _color_synonym_runtime_max_concurrency(settings) -> int:
     """배치가 꺼져 있으면 공유 풀 전체를, 켜져 있으면 예약분을 제외한 검색 몫을 반환한다."""
     if not settings.color_synonym_batch_harvest_enabled:
         return settings.color_synonym_pool_max_size
-    return (
-        settings.color_synonym_pool_max_size
-        - settings.color_synonym_harvest_max_concurrency
-    )
+    return settings.color_synonym_pool_max_size - settings.color_synonym_harvest_max_concurrency
 
 
 def _consume_background_synonym_lookup(task: asyncio.Task[dict[str, list[str]]]) -> None:
@@ -404,6 +407,37 @@ class CartQuantityExceeded(CartError):
     """
 
 
+class CartItemNotFound(Exception):
+    """I-24 404 CART_ITEM_NOT_FOUND(확정 2026-08-05) — 삭제 대상이 없음. 비멱등: 두 번째 호출도
+    404. **[라운드 23]** `error.code` 가 정확히 이 값일 때만 낸다 — 엔드포인트 미배포로 오는
+    다른/없는 code 의 404 는 `CartError` 다(`delete_cart_item` 참조)."""
+
+
+class WishlistDuplicate(Exception):
+    """I-26 409(확정 2026-08-05) — WISHLIST_DUPLICATE · RESOURCE_CONFLICT(UNIQUE 경합) 둘 다 이
+    예외로 낙성한다("이미 찜함"으로 동일 처리, 정본 SSE 확장안도 두 코드를 구별하지 않는다).
+    **[라운드 23]** `error.code` 가 이 둘 중 하나일 때만 낸다(`add_wishlist` 참조)."""
+
+
+class WishlistProductNotFound(Exception):
+    """I-26 404 PRODUCT_NOT_FOUND(확정 2026-08-05) — 없는 상품만. HIDDEN·품절은 찜 가능이라 이
+    예외가 아니다. **[라운드 23]** `error.code` 가 정확히 이 값일 때만 낸다(`add_wishlist` 참조)."""
+
+
+class WishlistNotFound(Exception):
+    """I-27 404 WISHLIST_NOT_FOUND(확정 2026-08-05) — 찜 안 한 상품 삭제 시도. 없는 상품도 동일
+    코드라 구별 불가(비멱등, 안내 문구는 하나로 통일). **[라운드 23]** `error.code` 가 정확히
+    이 값일 때만 낸다(`remove_wishlist` 참조)."""
+
+
+class WishlistError(Exception):
+    """I-26/I-27/I-28 찜 운영 오류(401·400·도달 불가·미상 코드) → action *_ERROR reason WISHLIST_ERROR.
+
+    403 AUTH_FORBIDDEN 도 여기로 떨어진다 — CartError 의 401 낙성과 같은 규약으로, 전용 예외를
+    두면 "이 상품은 남의 소유"류 소유권 정보가 사용자에게 흘러나갈 수 있어 일부러 두지 않는다.
+    """
+
+
 def _client() -> httpx.AsyncClient:
     """공용 httpx.AsyncClient 팩토리. base_url·서비스 토큰은 설정에서 주입한다.
 
@@ -540,13 +574,34 @@ def _parse_search_response(data: object) -> ProductSearchResult:
     return ProductSearchResult(products=products, total_count=len(products))
 
 
+def _parse_error_code(resp: httpx.Response) -> str | None:
+    """실패 응답에서 error.code(|code) 만 뽑는다 — 옵션·재고 파싱이 필요 없는 호출용.
+
+    I-24(삭제)·I-26/I-27(찜)은 CART_OPTION_REQUIRED 류 옵션 동반 응답이 없어 `_parse_cart_error`
+    의 옵션·재고 파싱까지 돌릴 필요가 없다. code 추출 로직을 두 함수가 각자 구현하면 새 실패
+    코드가 추가될 때 한쪽만 고쳐지는 드리프트가 생기므로, 이 헬퍼를 단일 출처로 두고
+    `_parse_cart_error` 도 내부에서 이걸 쓴다(중복 파서 금지).
+    """
+    try:
+        body = resp.json()
+    except ValueError:
+        return None
+    if not isinstance(body, dict):
+        return None
+    err = body.get("error") if isinstance(body.get("error"), dict) else None
+    code = (err or {}).get("code") or body.get("code")
+    return code if isinstance(code, str) else None
+
+
 def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption], int | None]:
     """I-2 실패 응답에서 code·options 를 방어적으로 파싱한다(§4.1, BE 스키마 🔴).
 
-    code 는 error.code | code. options 는 [BE 확정 2026-07-18] **error.detail.options**
-    ([{optionId, name, extraPrice}]) 를 우선하고, 구버전 위치(error.options·options·data.options)도
-    방어적으로 본다. name 은 name|optionName, extraPrice(추가금)까지 읽는다.
+    code 는 `_parse_error_code` 공유(error.code | code). options 는 [BE 확정 2026-07-18]
+    **error.detail.options**([{optionId, name, extraPrice}])를 우선하고, 구버전 위치
+    (error.options·options·data.options)도 방어적으로 본다. name 은 name|optionName,
+    extraPrice(추가금)까지 읽는다.
     """
+    code = _parse_error_code(resp)
     try:
         body = resp.json()
     except ValueError:
@@ -554,7 +609,6 @@ def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption
     if not isinstance(body, dict):
         return None, [], None
     err = body.get("error") if isinstance(body.get("error"), dict) else None
-    code = (err or {}).get("code") or body.get("code")
     detail = (err or {}).get("detail") if isinstance((err or {}).get("detail"), dict) else None
     # BE 확정 위치(error.detail.options)는 '키 존재'로 우선한다 — 빈 배열이어도 그 값을 신뢰하고
     # 구버전 위치로 조용히 폴백하지 않는다(잔재 options 오선택 방지).
@@ -853,6 +907,264 @@ async def get_cart(user_id: int | None = None, guest_id: str | None = None) -> C
         return CartView.model_validate({"items": items or []})
     except (httpx.HTTPError, ValueError, ValidationError) as exc:
         raise SpringUnavailableError(f"get_cart 실패: {exc}") from exc
+
+
+# ── 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현 진행 중) ──
+
+
+def _envelope_success_false(resp: httpx.Response) -> bool:
+    """200 이지만 공통 실패 봉투(`{success:false, ...}`)로 왔는지만 본다(2차 리뷰 지적 5).
+
+    신설한 delete_cart_item·add_wishlist·remove_wishlist·get_wishlist 는 HTTP 상태만 보고
+    200 이면 성공으로 처리했다 — 정본 공통 봉투는 성공이 `{success:true, …}` 인데, Spring 이
+    200 + `{success:false}` 를 낼 가능성을 놓치고 있었다.
+
+    `success` 키가 **없으면** false 로 간주하지 않는다 — "명시 안 됨"과 "명시적 false"는 다른
+    사실이다(`app/agents/buyer/graph.py::_relaxed_filters_from_offer` 근방의 "없음"과 "null 로
+    해제"를 가르는 것과 같은 구분). 이 함수는 이번에 신설한 4개 함수에만 쓴다 — `add_to_cart`·
+    `get_cart` 는 같은 성질의 선행 구멍이 있지만 이 PR 범위가 아니고 다른 레인이 그 경로에
+    의존해 별도 이슈로 남긴다.
+    """
+    try:
+        body = resp.json()
+    except ValueError:
+        return False
+    return isinstance(body, dict) and body.get("success") is False
+
+
+async def delete_cart_item(
+    cart_item_id: int, *, user_id: int | None = None, guest_id: str | None = None
+) -> None:
+    """장바구니 삭제 — I-24(확정 2026-08-05) DELETE /internal/cart/items/{cartItemId}.
+
+    게스트 허용. 신원 query 는 userId 또는 guestId 정확히 하나만 싣는다 — 호출부(cart 그래프)가
+    이미 신원을 확인하지만 어댑터도 방어한다. 둘 다 None/둘 다 not None 이면 호출 자체를 하지
+    않고 CartError 로 낙성한다(ValueError 가 아니라 이 계열 오류 예외로 — 호출부가 typed 예외
+    하나만 캐치하면 되게 하기 위해).
+    삭제는 재고·상품 상태를 보지 않는다 — HIDDEN·품절도 성공한다(PRODUCT_NOT_FOUND 없음).
+    복수 삭제는 항목별 반복 호출(bulk 없음, 호출부 책임).
+    실패 매핑: 404 이고 `error.code == "CART_ITEM_NOT_FOUND"` 일 때만 → CartItemNotFound(비멱등,
+    두 번째 호출도 404). **[라운드 23]** code 가 다르거나 본문을 못 읽는 404(엔드포인트 미배포로
+    나는 라우트 없음 404 포함)는 CartItemNotFound 가 아니라 CartError 다 — 그렇지 않으면 상위가
+    "이미 빠져 있어요"(성공 안내)로 오인해 거짓 성공을 낸다.
+    400(path 숫자 아님·신원 query 오류)·403 AUTH_FORBIDDEN(소유자 불일치, 전용 예외 없음)·500·
+    도달 불가·미상 코드 → CartError(기존 담기와 같은 낙성처).
+    """
+    if (user_id is None) == (guest_id is None):
+        # [확정 2026-08-05] 신원 query 0개/2개일 때 BE 응답 code 는 자원별 신규 code 를 신설하지
+        # 않고 기존 VALIDATION_ERROR 를 재사용한다 — 어느 쪽이든 이 어댑터는 CartError 로 수렴시킨다.
+        raise CartError("delete_cart_item 신원 query 는 정확히 하나여야 함")
+
+    params: dict[str, object] = {}
+    if user_id is not None:
+        params["userId"] = user_id
+    if guest_id is not None:
+        params["guestId"] = guest_id
+
+    try:
+        with _spring_span("delete_cart_item", "DELETE") as span:
+            async with _client() as client:
+                resp = await client.delete(f"/internal/cart/items/{cart_item_id}", params=params)
+                _record_spring_status(span, resp)
+    except httpx.HTTPError as exc:
+        raise CartError(f"delete_cart_item 도달 실패: {exc}") from exc
+
+    if resp.status_code == 200:
+        if _envelope_success_false(resp):
+            # 🔶 I-24 협의 대상: 200 + success:false 의 실제 사유(code) 위치가 미확정.
+            raise CartError("delete_cart_item 실패: 200 success=false")
+        return
+    if resp.status_code == 404:
+        code = _parse_error_code(resp)
+        if code == "CART_ITEM_NOT_FOUND":
+            raise CartItemNotFound()
+        # [라운드 23] Spring 에 엔드포인트가 아직 없어서 나는 404(라우트 없음, code 없음/다름)를
+        # CartItemNotFound 로 낙성하면 상위가 "이미 빠져 있어요"(성공 안내)로 끝낸다 — 배포 전
+        # 호출이 조용히 거짓 성공을 낸다. code 가 계약과 정확히 일치할 때만 비멱등 낙성이다.
+        raise CartError(f"delete_cart_item 실패: 404 {code}")
+    code = _parse_error_code(resp)
+    raise CartError(f"delete_cart_item 실패: {resp.status_code} {code}")
+
+
+async def add_wishlist(request: AddWishlistRequest) -> WishlistAddResult:
+    """찜 추가 — I-26(확정 2026-08-05) POST /internal/wishlist.
+
+    회원 전용(USER). 게스트 찜은 없다 — 호출부가 게스트를 걸러 이 함수 자체를 부르지 않는다
+    (internal 호출 없이 degrade, 이 어댑터는 그 판단을 하지 않는다).
+    성공 200 {success, data:{productId}}(wishlistId 없음).
+    실패: 404 이고 code 가 정확히 PRODUCT_NOT_FOUND(없는 상품만 — HIDDEN·품절은 찜 가능)일 때만
+    → WishlistProductNotFound. 409 이고 code 가 정확히 WISHLIST_DUPLICATE·RESOURCE_CONFLICT
+    (UNIQUE 경합, 둘 다 동일 취급) 중 하나일 때만 → WishlistDuplicate. **[라운드 23]** code 가
+    다르거나 본문을 못 읽는 404/409(엔드포인트 미배포 포함)는 WishlistError 다.
+    400·403(SELLER·ADMIN, 전용 예외 없음)·500·도달 불가·미상 코드 → WishlistError.
+    """
+    try:
+        with _spring_span("add_wishlist", "POST") as span:
+            async with _client() as client:
+                resp = await client.post(
+                    "/internal/wishlist", json=request.model_dump(by_alias=True)
+                )
+                _record_spring_status(span, resp)
+    except httpx.HTTPError as exc:
+        raise WishlistError(f"add_wishlist 도달 실패: {exc}") from exc
+
+    if resp.status_code == 200:
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise WishlistError(f"add_wishlist 응답 파싱 실패: {exc}") from exc
+        if isinstance(data, dict) and data.get("success") is False:
+            # 🔶 I-26 협의 대상: 200 + success:false 의 실제 사유(code) 위치가 미확정.
+            raise WishlistError("add_wishlist 실패: 200 success=false")
+        payload = data.get("data") if isinstance(data, dict) else None
+        product_id = payload.get("productId") if isinstance(payload, dict) else None
+        try:
+            return WishlistAddResult(success=True, product_id=product_id)
+        except ValidationError as exc:
+            # productId 가 dict·문자열 등 변환 불가 값이면(스키마 이상) 다른 어댑터와 같은 규약으로
+            # WishlistError 로 낙성한다(라운드 15 — get_wishlist 는 이미 이렇게 하는데 이 함수만
+            # 빠져 있었다. ValidationError 가 그대로 새면 stream_wishlist_add 의 `except
+            # WishlistError` 에 안 걸려 우아한 degrade 가 무너지고 상위 스트림의 범용 오류로 샌다).
+            raise WishlistError(f"add_wishlist 응답 스키마 이상: {exc}") from exc
+
+    if resp.status_code == 404:
+        code = _parse_error_code(resp)
+        if code == "PRODUCT_NOT_FOUND":
+            raise WishlistProductNotFound()
+        # [라운드 23] 엔드포인트 미배포로 오는 빈/다른 code 의 404 를 "없는 상품"으로 오인하면
+        # 상위가 그 조건에 맞는 안내로 잘못 종료한다 — code 가 계약과 일치할 때만 typed 예외다.
+        raise WishlistError(f"add_wishlist 실패: 404 {code}")
+    if resp.status_code == 409:
+        code = _parse_error_code(resp)
+        if code in ("WISHLIST_DUPLICATE", "RESOURCE_CONFLICT"):
+            # WISHLIST_DUPLICATE·RESOURCE_CONFLICT(UNIQUE 경합) 둘 다 "이미 찜함"으로 동일 처리.
+            raise WishlistDuplicate()
+        raise WishlistError(f"add_wishlist 실패: 409 {code}")
+    code = _parse_error_code(resp)
+    raise WishlistError(f"add_wishlist 실패: {resp.status_code} {code}")
+
+
+async def remove_wishlist(product_id: int, *, user_id: int) -> None:
+    """찜 해제 — I-27(확정 2026-08-05) DELETE /internal/wishlist/{productId}.
+
+    회원 전용(USER). path 는 productId(wishlistId 아님), query 는 userId 하나뿐(guestId 없음).
+    실패: 404 이고 code 가 정확히 WISHLIST_NOT_FOUND(찜 안 한 상품 = 이미 해제 = 없는 상품도
+    동일 코드, 구별 불가)일 때만 → WishlistNotFound(비멱등). **[라운드 23]** code 가 다르거나
+    본문을 못 읽는 404(엔드포인트 미배포 포함)는 WishlistError 다. 400·403(전용 예외 없음)·500·
+    도달 불가·미상 코드 → WishlistError.
+    """
+    try:
+        with _spring_span("remove_wishlist", "DELETE") as span:
+            async with _client() as client:
+                resp = await client.delete(
+                    f"/internal/wishlist/{product_id}", params={"userId": user_id}
+                )
+                _record_spring_status(span, resp)
+    except httpx.HTTPError as exc:
+        raise WishlistError(f"remove_wishlist 도달 실패: {exc}") from exc
+
+    if resp.status_code == 200:
+        if _envelope_success_false(resp):
+            # 🔶 I-27 협의 대상: 200 + success:false 의 실제 사유(code) 위치가 미확정.
+            raise WishlistError("remove_wishlist 실패: 200 success=false")
+        return
+    if resp.status_code == 404:
+        code = _parse_error_code(resp)
+        if code == "WISHLIST_NOT_FOUND":
+            raise WishlistNotFound()
+        # [라운드 23] 엔드포인트 미배포로 오는 빈/다른 code 의 404 를 "이미 해제됨"으로 오인하면
+        # 상위가 거짓 성공 안내로 끝낸다 — code 가 계약과 일치할 때만 비멱등 낙성이다.
+        raise WishlistError(f"remove_wishlist 실패: 404 {code}")
+    code = _parse_error_code(resp)
+    raise WishlistError(f"remove_wishlist 실패: {resp.status_code} {code}")
+
+
+def _parse_wishlist_items(raw: list) -> list[WishlistItem]:
+    """I-28 응답 `items` 를 **항목 단위로** 파싱한다.
+
+    배열 전체를 `WishlistView.model_validate({"items": raw})` 로 한 번에 검증하면, BE 가
+    `purchaseState` enum 에 새 값 하나만 추가해도 그 값을 가진 항목 1건 때문에 `ValidationError`
+    가 배열 전체를 죽여 `get_wishlist` 가 `SpringUnavailableError` 로 낙성하고, 그 사용자의 찜
+    해제(#116·#117)가 통째로 막힌다 — 한 항목의 검증 실패가 전체를 죽이는 구조 자체가 문제다.
+
+    이 저장소의 기존 관행을 따른다 — `_parse_cart_error` 가 "형식 이상 옵션은 건너뜀 — 되물음
+    흐름 전체가 죽지 않게" 로 옵션 배열을 항목 단위로 방어하는 것과 같은 처리다. **`PurchaseState`
+    Literal·기본값(`"AVAILABLE"`)은 바꾸지 않는다**(#310 지시서의 결정 유지) — 여기서 바꾸는 것은
+    파싱 견고성뿐이다. 검증에 실패한 항목만 건너뛰고 나머지는 살리며, 건너뛴 수는 BE 계약
+    드리프트 관측을 위해 warning 으로 남긴다(조용히 사라지면 드리프트를 알 방법이 없다).
+
+    응답 구조 자체가 깨진 경우(`items` 가 list 가 아님)는 이 함수가 보지 않는다 — 호출부가 그
+    형태 붕괴는 종전대로 fail-closed(`SpringUnavailableError`)로 처리한다. **원본이 비어 있지
+    않은데 이 함수의 반환이 빈 리스트인 경우(전 항목 스키마 붕괴)도 이 함수는 판단하지 않는다**
+    — "항목 하나의 이상"과 "계약 전면 드리프트"는 다른 문제라 그 구분은 호출부(`get_wishlist`)
+    책임이다. 여기서 다루는 건 순수하게 "배열은 정상인데 그 안의 항목 하나가 이상한" 경우뿐이다.
+    """
+    parsed: list[WishlistItem] = []
+    invalid = 0
+    for it in raw:
+        if not isinstance(it, dict):
+            invalid += 1
+            _log.warning("찜 목록 항목이 object 아님(skip) — type=%s", type(it).__name__)
+            continue
+        try:
+            parsed.append(WishlistItem.model_validate(it))
+        except ValidationError as exc:
+            # 항목 1건의 스키마 이상(예: 미지의 purchaseState 값)은 그 항목만 skip — 전체 실패로
+            # 번지지 않게. BE 계약 드리프트 관측을 위해 남긴다.
+            invalid += 1
+            _log.warning("찜 목록 항목 파싱 실패로 skip(전체 실패 아님) — %s", exc)
+    if invalid:
+        _log.warning("찜 목록 항목 %d건 skip(스키마 이상) / 정상 %d건", invalid, len(parsed))
+    return parsed
+
+
+async def get_wishlist(user_id: int) -> WishlistView:
+    """찜 목록 조회 — I-28(확정 2026-08-05) GET /internal/wishlist?userId=.
+
+    페이징 없음, MVP 전량 반환. 찜 0건도 200 + items:[](404 아님). get_cart 와 같은 degrade
+    규약 — 도달 불가/오류/응답 최상위 구조 불일치는 SpringUnavailableError. 항목 단위 스키마
+    이상(BE `purchaseState` enum 드리프트 등)은 `_parse_wishlist_items` 가 그 항목만 skip
+    한다 — 한 항목이 찜 목록 전체를, 나아가 찜 해제 기능 전체를 죽이지 않는다.
+
+    **원본 `items` 가 비어 있지 않은데 파싱 결과가 0건이면 SpringUnavailableError 로
+    fail-closed 한다** — "항목 하나의 이상"이 아니라 BE 가 값 체계를 통째로 바꾼 계약 전면
+    드리프트로 본다. 이 구분이 없으면 찜을 여러 개 해 둔 사용자가 파싱 실패로 빈 목록을
+    받고 "찜한 상품이 없어요."(`app/agents/buyer/cart/wishlist.py` 의 빈 목록 분기)라는
+    안내를 듣는다 — 실제로는 데이터가 있는데 없다고 확언하는 것이라, 조회 실패를 정직하게
+    알리는 쪽(`SpringUnavailableError` → "찜 목록을 확인하지 못했어요")보다 나쁘다. 원본이
+    애초에 빈 배열(`items: []`, 찜 0건)인 경우는 이 판정 대상이 아니다 — 그건 I-28 의 정상
+    응답이라 그대로 빈 `WishlistView` 를 돌려준다.
+    """
+    # 🔶 I-28 협의 대상: 전량 반환 응답의 크기 상한이 미확정 — 클라 측 절단은 두지 않는다.
+    try:
+        with _spring_span("get_wishlist", "GET") as span:
+            async with _client() as client:
+                resp = await client.get("/internal/wishlist", params={"userId": user_id})
+                _record_spring_status(span, resp)
+                resp.raise_for_status()
+                data = resp.json()
+        if isinstance(data, dict) and data.get("success") is False:
+            # 200 + success:false 를 "찜 0건"으로 위장시키지 않는다 — 이 ValueError 는 아래
+            # except 가 잡아 SpringUnavailableError 로 낙성한다(get_cart 와 같은 degrade 규약).
+            raise ValueError("get_wishlist 응답 success=false")
+        payload = data.get("data") if isinstance(data, dict) else None
+        items = payload.get("items") if isinstance(payload, dict) else None
+        if items is not None and not isinstance(items, list):
+            # items 자체가 list 가 아니다 — 항목 단위로 볼 수조차 없는 최상위 envelope drift 라
+            # 종전대로 fail-closed 한다(§7 과 같은 구분 — 개별 항목 이상과는 다른 문제).
+            raise ValueError(f"get_wishlist items 형태 미인식: {type(items).__name__}")
+        raw_items = items or []
+        parsed = _parse_wishlist_items(raw_items)
+        if raw_items and not parsed:
+            # 원본은 비어 있지 않은데 파싱 결과가 0건 — 개별 항목 이상이 아니라 계약 전면
+            # 드리프트다(위 docstring 참조). 빈 목록으로 위장하면 실제 데이터를 가진 사용자에게
+            # "찜한 상품이 없어요."라는 확신에 찬 거짓 안내가 나간다.
+            raise ValueError(
+                f"get_wishlist 원본 {len(raw_items)}건이 전부 파싱 실패(계약 드리프트 의심)"
+            )
+        return WishlistView(items=parsed)
+    except (httpx.HTTPError, ValueError, ValidationError) as exc:
+        raise SpringUnavailableError(f"get_wishlist 실패: {exc}") from exc
 
 
 async def push_recommendations(push: RecommendationPush) -> bool:

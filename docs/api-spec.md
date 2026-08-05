@@ -6,8 +6,8 @@
 
 | 항목 | 값 |
 |---|---|
-| 문서 버전 | v0.22.0 |
-| 작성일 | 2026-07-14 (v0.22.0 개정 2026-08-05 — **[#149] 개인화 관계 Graph 계약 초안 등재 — 조회 §3.8(FE 직접, 기존 `chat:stream` 티켓 재사용) + 제어 5종 §3.9(Spring→AI internal, I-29~I-33), 🔴 제안(초안)·Post-MVP. 오류 코드 4종·감사 로그(§6.3 c) 신설, 기존 엔드포인트·SSE 이벤트·필드 계약 불변**) (v0.21.0 개정 2026-08-05 — **[#289] 구매자 `progress` SSE 이벤트 신설(정본 Notion CH-2 2026-08-05 합의·등재 반영) — §2.2·§3.1(본 사본 §3.1 번호는 6→7종, `progress`가 (1)번 — 정본은 `suggestions`를 목록에 포함해 8종으로 세지만 본 사본은 「MVP 추가 페이로드」 절에서 별도로 다뤄 번호가 하나 적다, 기존 6종 이름·페이로드·상대 순서 불변)·§2.9(c) I-1 원복 전제 갱신** — **AI 구현은 완료됐으나 `progress_events_enabled` 기본 false + 운영·스테이징 기동 가드로 잠겨 있어 실 와이어는 아직 종전 7종뿐**) (v0.20.4 개정 2026-08-05 — **[#118] 되물음(`PENDING_CART`) 예외 정본 반영 — 사본의 🔴 미반영 표시 해제(§3.1 [보안], 계약 동작 불변, 표시만 갱신)**) (v0.20.3 개정 2026-08-04 — **[#118] §3.1 v0.15.26 등재 계약인 `screen`(화면 맥락) 수신 구현 — 관대 유효성(400 없음)·담기 허용 목록 합집합·지시어 해소, §3.2 판매자 레인은 `pageType`·`filters`를 입력 메시지에만 주입** — **와이어 계약(엔드포인트·요청 필드·SSE 이벤트·오류 코드) 불변, 수신 구현**) (v0.20.2 개정 2026-08-04 — **[#277] §2.9(c) 미룬 턴 I-1 재시도 스킵 + 복구 가드 — 와이어 계약 불변**) (v0.20.1 개정 2026-08-04 — **[#278] §4.6 `categoryName` 정본 동기화 + §3.1 `conditionActions` 수신 구현 + I-1 `options`/`optionCount` 추가 전용 응답 계약**) (v0.20.0 개정 2026-08-03 — **[#242] 판매자 분석 파이프라인 v3.1: 브랜치 분석 검증(F1~F3+analysis_judge) 신설 + `chart` SSE 이벤트 신설(§2.2·§3.2, 이벤트 6→7종, 추가 전용)** — 기존 이벤트 5종 계약 불변) (v0.19.5 개정 2026-08-04 — **[#232] §4.7 결정 14-F 재구매 지목을 "현재 턴 한정"에서 "스레드 범위(유계 누적·매 턴 재검증)"로 정정 — 와이어 계약 불변**) (v0.19.4 개정 2026-08-03 — **[#32] 골든셋 실측으로 방식2 확정·방식1 및 C-17 기각 — 와이어 계약 불변**) (v0.19.3 개정 2026-08-03 — **[#138 후속] §2.9(c) 구매자 스트림 전체 상한 30s·판매자 90s 역할별 분리 — 와이어 계약 불변**) (v0.19.2 개정 2026-08-03 — **[#133] 구매자 degrade 고지(§3.3)·I-1 검색 재시도(§2.9 c) 명문화** — 와이어 계약 불변, BE 관측 포인트만 추가) (v0.19.1 개정 2026-08-02 — **[#197] I-16 이탈 코호트 응답 실측 확정(from/to 필수·cohortSize·members·churnRate=fraction) + I-8 실측 명문화(from/to 필수·groupBy 화이트리스트·rows), I-8 admin 소유 🔴 유지 — 협의 전 판매자 노출은 설정 플래그(기본 false)로 보류**) (v0.19.0 개정 2026-07-31 — **[#148] C-18: I-22 `catalogVersion`을 선택으로 완화하고 계약 폐기 제안** — 재현·캐시 어느 명분도 성립하지 않음) (v0.18.0 개정 2026-07-31 — **[#148] 홈 추천 계약 등재: I-22 §3.7(Spring→AI 위임, `outcome` 3종 전부 200, provenance 비노출) · P-5 §4.11(FE↔Spring 전제), 🔴 C-18 `catalogVersion` 주체 미해결**) (v0.17.4 개정 2026-07-31 — **[#196] I-13 계약 명문화 3건** — `eventType` CSV 직렬화 확정·rows 활동량 내림차순 정렬 명문화·purchaseComplete 미귀속(0 집계 가능) 경고, 근본 수정 jarvis-backend#62 연계) (v0.17.3 개정 2026-07-31 — **[#209 후속] 노출 상한 목록당 8→9(§3.3), 니즈별 추천(`PICK_ONE`×N)이 실제 발신 경로로 — §4.2 계약 자체는 불변**) (v0.17.2 개정 2026-07-31 — **[#114] 옵션 후보가 1개면 되묻지 않고 자동 선택해 담기** — §4.1 AI 동작·§3.1 되물음 서술 명확화, **와이어 계약(엔드포인트·SSE 이벤트·필드·오류 코드) 불변**) (v0.17.1 개정 2026-07-31 — **[#209] I-21 다중 목록(`lists[]`) 정본 정합** — `recommendationRequestId`·`listType`·`totalBudget`·`label` 신설, 목록당 상품 9개, 멱등 키·400 조건 등재) (v0.17.0 개정 2026-07-31 — **[#187] signed `sessionId` 기반 stable `context_id`, guest→member claim, D6/I-20 lifecycle 계약 반영**) (v0.16.3 개정 2026-07-30 — **[#164] I-4 주문 상태 요약 계약·구매자 `order_status` 라우트 구현 정합**, §4.10 신설) (v0.16.2 개정 2026-07-30 — **[#194] I-14/I-15 응답 스키마 BE 실측 확정 + I-6 이상 감지 규칙 명문화**) (v0.16.1 개정 2026-07-30 — **I-21 `listId`를 UUID급 무작위(≥128bit)로 확정**, 순번·타임스탬프 등 추측 가능한 형식 금지) (v0.16.0 개정 2026-07-30 — **`sessionId`(접속)·`threadId`(방) 축 분리**: 동시 스트림 락을 방 단위로, I-20 사유 `logout` 1종, CH-1 멱등(D5), 맥락 TTL 접속 단위(D6)) (v0.15.27 개정 2026-07-30 — 사본 drift 정정: 담기 이벤트 적재 주체(BE→FE)·`budget` 이벤트 제외·`search.query` PII 기준) (v0.15.26 개정 2026-07-28 — 사본 동기화: §3.1 `conditionActions`(칩 제거, #84)·`screen`(화면 맥락, #118) 신설, `conditions` 칩 `field` 6종 확정, in-stream `error`에 `requestId`·`retryable` 추가) (v0.15.25 개정 2026-07-28 — #171: I-1 응답에 reviewCount 추가(AI 계산용·비표시), rating=0 의미 판별(리뷰 부재 vs 저평점). #100 "reviewCount 표시전용·미반환" 부분 개정. / v0.15.24 개정 2026-07-27 — 사본 동기화: S-5 폐기 반영, 상품 수정은 챗봇 HITL(I-11) 유일 경로) |
+| 문서 버전 | v0.23.0 |
+| 작성일 | 2026-07-14 (v0.23.0 개정 2026-08-05 — **[#116·#117] I-24~I-28 계약 등재(정본 확정 2026-08-05) + CH-2 `action` 2종 → 10종 + §3.1 `cartItemId` 표기 정정(사본 드리프트) — 기존 엔드포인트·SSE 이벤트 이름·필드 계약 불변, 추가 전용**) (v0.22.0 개정 2026-08-05 — **[#149] 개인화 관계 Graph 계약 초안 등재 — 조회 §3.8(FE 직접, 기존 `chat:stream` 티켓 재사용) + 제어 5종 §3.9(Spring→AI internal, I-29~I-33), 🔴 제안(초안)·Post-MVP. 오류 코드 4종·감사 로그(§6.3 c) 신설, 기존 엔드포인트·SSE 이벤트·필드 계약 불변**) (v0.21.0 개정 2026-08-05 — **[#289] 구매자 `progress` SSE 이벤트 신설(정본 Notion CH-2 2026-08-05 합의·등재 반영) — §2.2·§3.1(본 사본 §3.1 번호는 6→7종, `progress`가 (1)번 — 정본은 `suggestions`를 목록에 포함해 8종으로 세지만 본 사본은 「MVP 추가 페이로드」 절에서 별도로 다뤄 번호가 하나 적다, 기존 6종 이름·페이로드·상대 순서 불변)·§2.9(c) I-1 원복 전제 갱신** — **AI 구현은 완료됐으나 `progress_events_enabled` 기본 false + 운영·스테이징 기동 가드로 잠겨 있어 실 와이어는 아직 종전 7종뿐**) (v0.20.4 개정 2026-08-05 — **[#118] 되물음(`PENDING_CART`) 예외 정본 반영 — 사본의 🔴 미반영 표시 해제(§3.1 [보안], 계약 동작 불변, 표시만 갱신)**) (v0.20.3 개정 2026-08-04 — **[#118] §3.1 v0.15.26 등재 계약인 `screen`(화면 맥락) 수신 구현 — 관대 유효성(400 없음)·담기 허용 목록 합집합·지시어 해소, §3.2 판매자 레인은 `pageType`·`filters`를 입력 메시지에만 주입** — **와이어 계약(엔드포인트·요청 필드·SSE 이벤트·오류 코드) 불변, 수신 구현**) (v0.20.2 개정 2026-08-04 — **[#277] §2.9(c) 미룬 턴 I-1 재시도 스킵 + 복구 가드 — 와이어 계약 불변**) (v0.20.1 개정 2026-08-04 — **[#278] §4.6 `categoryName` 정본 동기화 + §3.1 `conditionActions` 수신 구현 + I-1 `options`/`optionCount` 추가 전용 응답 계약**) (v0.20.0 개정 2026-08-03 — **[#242] 판매자 분석 파이프라인 v3.1: 브랜치 분석 검증(F1~F3+analysis_judge) 신설 + `chart` SSE 이벤트 신설(§2.2·§3.2, 이벤트 6→7종, 추가 전용)** — 기존 이벤트 5종 계약 불변) (v0.19.5 개정 2026-08-04 — **[#232] §4.7 결정 14-F 재구매 지목을 "현재 턴 한정"에서 "스레드 범위(유계 누적·매 턴 재검증)"로 정정 — 와이어 계약 불변**) (v0.19.4 개정 2026-08-03 — **[#32] 골든셋 실측으로 방식2 확정·방식1 및 C-17 기각 — 와이어 계약 불변**) (v0.19.3 개정 2026-08-03 — **[#138 후속] §2.9(c) 구매자 스트림 전체 상한 30s·판매자 90s 역할별 분리 — 와이어 계약 불변**) (v0.19.2 개정 2026-08-03 — **[#133] 구매자 degrade 고지(§3.3)·I-1 검색 재시도(§2.9 c) 명문화** — 와이어 계약 불변, BE 관측 포인트만 추가) (v0.19.1 개정 2026-08-02 — **[#197] I-16 이탈 코호트 응답 실측 확정(from/to 필수·cohortSize·members·churnRate=fraction) + I-8 실측 명문화(from/to 필수·groupBy 화이트리스트·rows), I-8 admin 소유 🔴 유지 — 협의 전 판매자 노출은 설정 플래그(기본 false)로 보류**) (v0.19.0 개정 2026-07-31 — **[#148] C-18: I-22 `catalogVersion`을 선택으로 완화하고 계약 폐기 제안** — 재현·캐시 어느 명분도 성립하지 않음) (v0.18.0 개정 2026-07-31 — **[#148] 홈 추천 계약 등재: I-22 §3.7(Spring→AI 위임, `outcome` 3종 전부 200, provenance 비노출) · P-5 §4.11(FE↔Spring 전제), 🔴 C-18 `catalogVersion` 주체 미해결**) (v0.17.4 개정 2026-07-31 — **[#196] I-13 계약 명문화 3건** — `eventType` CSV 직렬화 확정·rows 활동량 내림차순 정렬 명문화·purchaseComplete 미귀속(0 집계 가능) 경고, 근본 수정 jarvis-backend#62 연계) (v0.17.3 개정 2026-07-31 — **[#209 후속] 노출 상한 목록당 8→9(§3.3), 니즈별 추천(`PICK_ONE`×N)이 실제 발신 경로로 — §4.2 계약 자체는 불변**) (v0.17.2 개정 2026-07-31 — **[#114] 옵션 후보가 1개면 되묻지 않고 자동 선택해 담기** — §4.1 AI 동작·§3.1 되물음 서술 명확화, **와이어 계약(엔드포인트·SSE 이벤트·필드·오류 코드) 불변**) (v0.17.1 개정 2026-07-31 — **[#209] I-21 다중 목록(`lists[]`) 정본 정합** — `recommendationRequestId`·`listType`·`totalBudget`·`label` 신설, 목록당 상품 9개, 멱등 키·400 조건 등재) (v0.17.0 개정 2026-07-31 — **[#187] signed `sessionId` 기반 stable `context_id`, guest→member claim, D6/I-20 lifecycle 계약 반영**) (v0.16.3 개정 2026-07-30 — **[#164] I-4 주문 상태 요약 계약·구매자 `order_status` 라우트 구현 정합**, §4.10 신설) (v0.16.2 개정 2026-07-30 — **[#194] I-14/I-15 응답 스키마 BE 실측 확정 + I-6 이상 감지 규칙 명문화**) (v0.16.1 개정 2026-07-30 — **I-21 `listId`를 UUID급 무작위(≥128bit)로 확정**, 순번·타임스탬프 등 추측 가능한 형식 금지) (v0.16.0 개정 2026-07-30 — **`sessionId`(접속)·`threadId`(방) 축 분리**: 동시 스트림 락을 방 단위로, I-20 사유 `logout` 1종, CH-1 멱등(D5), 맥락 TTL 접속 단위(D6)) (v0.15.27 개정 2026-07-30 — 사본 drift 정정: 담기 이벤트 적재 주체(BE→FE)·`budget` 이벤트 제외·`search.query` PII 기준) (v0.15.26 개정 2026-07-28 — 사본 동기화: §3.1 `conditionActions`(칩 제거, #84)·`screen`(화면 맥락, #118) 신설, `conditions` 칩 `field` 6종 확정, in-stream `error`에 `requestId`·`retryable` 추가) (v0.15.25 개정 2026-07-28 — #171: I-1 응답에 reviewCount 추가(AI 계산용·비표시), rating=0 의미 판별(리뷰 부재 vs 저평점). #100 "reviewCount 표시전용·미반환" 부분 개정. / v0.15.24 개정 2026-07-27 — 사본 동기화: S-5 폐기 반영, 상품 수정은 챗봇 HITL(I-11) 유일 경로) |
 | 상태 | draft |
 | 대상 독자 | Spring 백엔드 팀, React 프론트엔드(FE) 팀 |
 | 소유 | AI 에이전트 서버 팀 |
@@ -500,14 +500,16 @@ SSE로 스트리밍한다. 표준 `EventSource`는 GET 전용이므로 FE는 **f
 - **[v0.15.26] `field` 허용값 6종** — `category`(카테고리 · 이어폰) / `priceMax`(50,000원 이하) / `priceMin`(30,000원 이상) / `brand`(삼성 · LG) / `ratingMin`(평점 4.5+) / `keyword`(방수). **`conditions`가 내보내는 집합과 `conditionActions`가 지우는 집합은 동일하다.** 종전에는 예시 둘만 있어 허용 집합이 계약에 없었다.
 - 칩은 LLM 출력이 아니라 **확정된 병합 필터에서 결정론적으로 파생**된다(`build_condition_chips`) — 같은 필터면 항상 같은 칩이 나온다.
 
-**(4) `action`** — 장바구니 담기 결과 (0회 이상). §4.1(I-2)과 연동.
+**(4) `action`** — 장바구니 담기·삭제·수량 변경·찜 추가·찜 해제 결과 (0회 이상). §4.1(I-2)·§4.12~4.16(I-24~I-28)과 연동.
 
 ```json
 {
   "type": "action",
-  "data": { "type": "CART_ADDED", "message": "여행용 방수 파우치를 장바구니에 담았어요.", "cartItemId": "55" }
+  "data": { "type": "CART_ADDED", "message": "여행용 방수 파우치를 장바구니에 담았어요.", "cartItemId": 55 }
 }
 ```
+
+> **[v0.22.0 정정] `cartItemId`는 number(BIGINT)다** — 이전 사본 예시가 `"55"`(문자열)로 표기돼 있었고 필드표도 `string`이었다. 정본 CH-2·FE 타입(`jarvis-frontend` `src/shared/types/chat.ts`의 `ChatAction`)·서버가 실제로 내보내는 프레임 셋 다 number이며, 이 사본만 낡은 드리프트였다.
 
 실패 예:
 
@@ -527,16 +529,75 @@ SSE로 스트리밍한다. 표준 `EventSource`는 GET 전용이므로 FE는 **f
 }
 ```
 
+**삭제(I-24, §4.12, 🔶 확정 2026-08-05 — Spring 구현 진행 중, AI 구현됨 #116)**:
+
+```json
+{ "type": "action", "data": { "type": "CART_REMOVED", "message": "장바구니에서 뺐어요: 여행용 방수 파우치", "cartItemId": 55 } }
+```
+
+- `CART_REMOVED` — I-24 성공. **404 `CART_ITEM_NOT_FOUND`도 이 이벤트로 정상 종료**("이미 빠져 있어요: {상품명}") — 실패 `action`을 내지 않는다.
+
+```json
+{ "type": "action", "data": { "type": "CART_REMOVE_FAILED", "message": "빼지 못했어요: 여행용 방수 파우치. 잠시 후 다시 시도해 주세요.", "cartItemId": 55, "reason": "CART_ERROR" } }
+```
+
+- `CART_REMOVE_FAILED` — 그 밖의 실패. `reason: "CART_ERROR"`.
+
+**찜 추가(I-26, §4.14, 🔶 확정 2026-08-05 — Spring 구현 진행 중, AI 구현됨 #117)**:
+
+```json
+{ "type": "action", "data": { "type": "WISHLIST_ADDED", "message": "찜해 뒀어요." } }
+```
+
+- `WISHLIST_ADDED` — I-26 성공. **409 `WISHLIST_DUPLICATE`·`RESOURCE_CONFLICT`도 이 이벤트로 정상 종료**("이미 찜해 두셨어요."). **찜 이벤트에는 `productId`를 싣지 않는다(경로 B)** — FE는 `type`만 보고 찜 목록을 재조회한다.
+
+```json
+{ "type": "action", "data": { "type": "WISHLIST_ADD_FAILED", "message": "해당 상품을 찾지 못했어요.", "reason": "PRODUCT_NOT_FOUND" } }
+```
+
+- `WISHLIST_ADD_FAILED` — 404는 `reason: "PRODUCT_NOT_FOUND"`, 그 밖은 `reason: "WISHLIST_ERROR"`.
+
+**찜 해제(I-27, §4.15, 🔶 확정 2026-08-05 — Spring 구현 진행 중, AI 구현됨 #117)**:
+
+```json
+{ "type": "action", "data": { "type": "WISHLIST_REMOVED", "message": "찜 목록에서 뺐어요: 여행용 방수 파우치" } }
+```
+
+- `WISHLIST_REMOVED` — I-27 성공. **404 `WISHLIST_NOT_FOUND`도 이 이벤트로 정상 종료**("이미 찜 목록에 없어요: {상품명}") — I-27은 상품 존재를 보지 않아 "없는 상품"과 "안 찜한 상품"을 구별할 수 없다(§4.15).
+
+```json
+{ "type": "action", "data": { "type": "WISHLIST_REMOVE_FAILED", "message": "빼지 못했어요: 여행용 방수 파우치. 잠시 후 다시 시도해 주세요.", "reason": "WISHLIST_ERROR" } }
+```
+
+- `WISHLIST_REMOVE_FAILED` — 그 밖의 실패. `reason: "WISHLIST_ERROR"`.
+
+**수량 변경(I-25, §4.13, 🔶 확정 2026-08-05 — Spring 구현 진행 중, **AI 미구현** — 대응 이슈 없음)**:
+
+```json
+{ "type": "action", "data": { "type": "CART_QUANTITY_CHANGED", "message": "수량을 3개로 바꿨어요.", "cartItemId": 55, "quantity": 3 } }
+```
+
+```json
+{ "type": "action", "data": { "type": "CART_QUANTITY_CHANGE_FAILED", "message": "재고가 3개뿐이에요.", "cartItemId": 55, "reason": "STOCK_INSUFFICIENT" } }
+```
+
+- `CART_QUANTITY_CHANGED` / `CART_QUANTITY_CHANGE_FAILED` — I-25. `cartItemId`(number)·`quantity`(number, 성공 시 최종 수량). 재고 부족은 담기와 같은 `reason: "STOCK_INSUFFICIENT"`를 재사용한다(신규 코드 없음).
+
 | 필드 | 타입 | 설명 |
 |---|---|---|
-| `type` | `"CART_ADDED"` \| `"CART_ADD_FAILED"` | 담기 성공/실패 |
+| `type` | `"CART_ADDED"` \| `"CART_ADD_FAILED"` \| `"CART_REMOVED"` \| `"CART_REMOVE_FAILED"` \| `"WISHLIST_ADDED"` \| `"WISHLIST_ADD_FAILED"` \| `"WISHLIST_REMOVED"` \| `"WISHLIST_REMOVE_FAILED"` \| `"CART_QUANTITY_CHANGED"` \| `"CART_QUANTITY_CHANGE_FAILED"` | 담기·삭제·수량 변경·찜 추가·찜 해제 결과 **10종**(v0.15.16 이전은 2종) |
 | `message` | string | 사용자 노출 안전 문구 |
-| `cartItemId` | string \| 없음 | 성공 시 담긴 항목 식별자(I-2 응답 `data.cartItemId`) |
-| `reason` | string \| 없음 | 실패 시 사유 코드(§4.1) |
+| `cartItemId` | **number(BIGINT)** \| 없음 | 성공/실패 시 대상 장바구니 항목 식별자(I-2·I-24·I-25 응답 체계와 동일, §2.6) — 찜 이벤트(`WISHLIST_*`)에는 없음 |
+| `quantity` | number \| 없음 | `CART_QUANTITY_CHANGED`/`CART_QUANTITY_CHANGE_FAILED` 전용(I-25, 🔶 AI 미구현) |
+| `reason` | string \| 없음 | 실패 시 사유 코드 |
 
-- **`reason` 허용값(v0.15.16 재편)**: `PRODUCT_NOT_FOUND` / `STOCK_INSUFFICIENT` / `CART_ERROR` **3종**. `STOCK_INSUFFICIENT` = 합산 수량 > 재고(BE `400 CART_STOCK_INSUFFICIENT` + `error.detail.availableStock`, 2026-07-22 신설, 재고는 상품 단위) → AI가 message에 남은 재고 수를 실어 안내("재고가 N개뿐이에요"; **재고 0=품절이면 "품절된 상품이에요"**, §4.1). ~~`OUT_OF_STOCK`~~은 **폐기 유지** — 품절(stock 0)도 `STOCK_INSUFFICIENT`(availableStock:0)로 통합. 수량 상한(합산 > 99)은 BE `VALIDATION_ERROR`로 별개 — AI는 `CART_ERROR` + BE 동일 문구 "수량은 최대 99개까지 담을 수 있습니다."로 안내. ~~`GUEST_NOT_ALLOWED`~~는 **폐기** — 게스트도 담기 허용(v0.6.0, 결정 8 개정 필요 §8 항목 7).
+- **`reason` 허용값(v0.22.0 확장)**: `PRODUCT_NOT_FOUND` / `STOCK_INSUFFICIENT` / `CART_ERROR` / **`WISHLIST_ERROR`**(신규) **4종**. `STOCK_INSUFFICIENT` = 합산 수량 > 재고(BE `400 CART_STOCK_INSUFFICIENT` + `error.detail.availableStock`, 2026-07-22 신설, 재고는 상품 단위) → AI가 message에 남은 재고 수를 실어 안내("재고가 N개뿐이에요"; **재고 0=품절이면 "품절된 상품이에요"**, §4.1). ~~`OUT_OF_STOCK`~~은 **폐기 유지** — 품절(stock 0)도 `STOCK_INSUFFICIENT`(availableStock:0)로 통합. 수량 상한(합산 > 99)은 BE `VALIDATION_ERROR`로 별개 — AI는 `CART_ERROR` + BE 동일 문구 "수량은 최대 99개까지 담을 수 있습니다."로 안내. ~~`GUEST_NOT_ALLOWED`~~는 **폐기** — 게스트도 담기 허용(v0.6.0, 결정 8 개정 필요 §8 항목 7). `WISHLIST_ERROR`는 찜 추가/해제 실패 중 (찜 추가의) 404 `PRODUCT_NOT_FOUND` 이외 전부를 포괄한다.
 - **옵션 되물음은 `action` 실패가 아니다** — I-2가 `400 CART_OPTION_REQUIRED`(options 목록 포함)를 반환하면 AI는 실패 `action`을 emit하지 않고 **`token` 텍스트로 옵션을 되묻는 멀티턴**으로 이어간다(§4.1). 사용자가 옵션을 답하면 `optionId`를 해석해 재담기한다. **옵션 후보가 1개면 되묻지 않고 자동 선택해 같은 턴에 담기까지 마친다**(v0.17.2 #114) — 이 턴은 `token` 되물음이 아니라 `action`(`CART_ADDED`)으로 끝난다. FE 관점의 이벤트 문법은 그대로다(담기 턴은 원래 되물음 `token` 또는 결과 `action` 중 하나로 끝난다) — 새 이벤트·필드·순서 규칙은 없다.
-- **장바구니 조회 응답("장바구니에 뭐 있어?")도 별도 이벤트 없이 `token` 텍스트**로 답한다(§4.9).
+- **장바구니 조회 응답("장바구니에 뭐 있어?")도 별도 이벤트 없이 `token` 텍스트**로 답한다(§4.9). **찜 목록 조회도 동형**("내가 뭐 찜했지?") — 별도 이벤트 없이 `token` 텍스트로 답한다(§4.16).
+- **게스트 찜 발화는 `action`을 내지 않는다** — 찜은 회원 전용(I-26/I-27, M-4)이라 게스트 발화는 internal 호출 없이 `token` 로그인 안내로 degrade한다.
+- **AI 구현 상태**: 삭제(`CART_REMOVED`/`CART_REMOVE_FAILED`)·찜 추가/해제(`WISHLIST_*`) **6종은 구현됨**(#116·#117, **라운드 23부터 기능 플래그 없이 항상 emit** — 이전에 있던 두 개의 온/오프 설정 필드는 삭제됐다). **수량 변경(`CART_QUANTITY_CHANGED`/`CART_QUANTITY_CHANGE_FAILED`) 2종은 미구현**(대응 이슈 없음, I-25는 이 레인 범위 밖).
+- **Spring 구현 상태**: I-24~I-28 **모두 구현 진행 중**이다(🔶 확정 2026-08-05, BE 협의 완료·초안 그대로 채택) — 배포 전에는 호출해도 응답하지 않는다.
+- **FE 반영 상태**: `jarvis-frontend`의 `ChatAction` 유니온에 신규 8종(`CART_REMOVED`~`WISHLIST_REMOVE_FAILED`)이 **아직 없다** — FE 수신부 추가가 선행되어야 신규 `action`이 화면에 반영된다.
 
 **(5) `products.ready`** — AI가 추천 목록을 Spring에 push한 뒤 emit (정확히 1회, 성공 시).
 
@@ -2115,6 +2176,191 @@ Authorization: Bearer {AT}   ← 로그인 필요. 파라미터 없음(사용자
 
 > ※ §3.7 I-22 정본 페이지에는 아직 *"홈 목록의 TTL·캐시 정책은 … BE 결정 필요"* 로 남아 있으나, **P-5 정본이 2026-07-30에 10분/24시간으로 확정**했다. 본 사본은 확정본을 따르며 정본 I-22 페이지의 stale 문구는 BE 통보 대상이다.
 
+### 4.12 장바구니 삭제 API (I-24 `DELETE /internal/cart/items/{cartItemId}`) — 🔶 확정 2026-08-05 — Spring 구현 진행 중 [v0.22.0 신설]
+
+담기(I-2, §4.1)·조회(I-18, §4.9)의 짝이 되는 삭제 계약. AI 구현은 완료됐고(#116) **기능 플래그 없이 항상 활성**이다(§3.1, 라운드 23에 온/오프 설정 필드를 제거했다). **Spring은 구현 진행 중**이라 배포 전에는 호출해도 응답하지 않는다. 게스트 허용.
+
+#### AI → Spring 요청 (I-24)
+
+```
+DELETE {SPRING_BASE_URL}/internal/cart/items/{cartItemId}?userId={id}   또는 ?guestId={id}
+X-Internal-Token: {서비스 토큰}   ← I-2·I-18과 동일 인증 레인, 타임아웃 3s
+```
+
+- 신원은 쿼리 `userId`(숫자) 또는 `guestId`(UUID) **정확히 하나** — AI가 신원을 만들지 않고 **AI-검증 JWT `sub`에서 도출**해 전달한다(발화/본문 신원 금지, §2.3).
+- 삭제 대상 해소는 I-18(§4.9) 조회 결과에서 결정론적으로 고른다 — 모호하면 실패 `action` 없이 `token`으로 되묻는다(§3.1).
+- **복수 삭제는 항목별 반복 호출**이다(bulk 없음, I-2·C-4 계승) — 결과 `action`도 항목별로 emit한다(§3.1).
+
+#### 성공 응답 — 200
+
+```json
+{ "success": true, "data": null }
+```
+
+응답에 `cartItemId`가 없다 — AI는 **요청에 쓴 `cartItemId`**를 그대로 SSE `action`(`CART_REMOVED`)에 싣는다(§3.1).
+
+#### 실패 응답
+
+| HTTP | I-24 `code` | 조건 | AI 동작 |
+|---|---|---|---|
+| 400 | `VALIDATION_ERROR` | path `cartItemId`가 숫자가 아님 | `action` `CART_REMOVE_FAILED` + `reason: "CART_ERROR"` |
+| 400 | `VALIDATION_ERROR` | 신원 query 0개 또는 2개 | `action` `CART_REMOVE_FAILED` + `reason: "CART_ERROR"` |
+| 403 | `AUTH_FORBIDDEN` | 소유자 불일치 — **BE가 실행 시점 재검증**한다. AI가 I-18로 해소한 `cartItemId`는 인가 근거가 아니다 | `action` `CART_REMOVE_FAILED` + `reason: "CART_ERROR"` |
+| 404 | `CART_ITEM_NOT_FOUND` | 대상 항목 없음(**비멱등** — 두 번째 호출도 404) | **`action` `CART_REMOVED`**(실패 아님) + "이미 빠져 있어요"(§3.1) |
+| 500 | `INTERNAL_ERROR` | 서버 오류 | `action` `CART_REMOVE_FAILED` + `reason: "CART_ERROR"` |
+
+- **삭제는 재고·상품 상태를 보지 않는다** — HIDDEN·품절 상품도 삭제 성공. `PRODUCT_NOT_FOUND` 없음(이미 담긴 항목을 지우는 것이라 상품 존재 여부는 무관).
+- **신원 query 검증 오류 code는 자원별 신규 code(`CART_QUERY_INVALID` 등)를 신설하지 않고 기존 `VALIDATION_ERROR`를 재사용한다**(I-24~I-28 공통, 확정).
+
+### 4.13 장바구니 수량 변경 API (I-25 `PATCH /internal/cart/items/{cartItemId}`) — 🔶 확정 2026-08-05 — Spring 구현 진행 중, **AI 미구현** [v0.22.0 신설]
+
+I-24(삭제, §4.12)와 같은 리소스를 다루는 인접 계약이지만 **이 레인 범위 밖**이다(대응 이슈 없음) — AI 쪽 소비 로직이 없다. I-2(담기, §4.1)와의 혼동을 막기 위해 인접 규약만 등재한다.
+
+#### AI → Spring 요청 (I-25, 🔶 미구현)
+
+```
+PATCH {SPRING_BASE_URL}/internal/cart/items/{cartItemId}?userId={id}   또는 ?guestId={id}
+X-Internal-Token: {서비스 토큰}
+```
+
+```json
+{ "quantity": 3 }
+```
+
+| 요청 필드 | 타입 | 설명 |
+|---|---|---|
+| `quantity` | int | **1~99, 치환값**(합산 아님) — "3개로 바꿔줘"류 발화가 이 계약을 쓴다. "하나 더 담아줘"류(합산)는 I-2(§4.1) 재호출이다 — **두 발화를 섞지 않는다** |
+
+#### 성공 응답 — 200
+
+```json
+{ "success": true, "data": { "cartItemId": 55, "quantity": 3 } }
+```
+
+#### 실패 응답
+
+| HTTP | I-25 `code` | 조건 | AI 동작(🔶 미구현) |
+|---|---|---|---|
+| 400 | `CART_STOCK_INSUFFICIENT` | 치환 수량 > 재고 — `error.detail.availableStock` 포함 | `action` `CART_QUANTITY_CHANGE_FAILED` + `reason: "STOCK_INSUFFICIENT"`(§3.1) |
+| 400 | `VALIDATION_ERROR` | 신원 query 이상 / `quantity` 범위 밖 | `action` `CART_QUANTITY_CHANGE_FAILED` + `reason: "CART_ERROR"` |
+| 404 | `CART_ITEM_NOT_FOUND` | 대상 항목 없음 | `action` `CART_QUANTITY_CHANGE_FAILED` + `reason: "CART_ERROR"` |
+
+- **AI 미구현** — 대응 이슈가 없어 이 계약을 소비하는 발화 로직이 아직 없다. §3.1의 `CART_QUANTITY_CHANGED`/`CART_QUANTITY_CHANGE_FAILED`는 구현될 때를 위한 사전 등재다.
+
+### 4.14 찜 추가 API (I-26 `POST /internal/wishlist`) — 🔶 확정 2026-08-05 — Spring 구현 진행 중 [v0.22.0 신설]
+
+회원 전용(USER) — 게스트 찜은 없다(M-4). AI 구현은 완료됐고(#117) **기능 플래그 없이 항상 활성**이다(§3.1, 라운드 23에 온/오프 설정 필드를 제거했다).
+
+#### AI → Spring 요청 (I-26)
+
+```
+POST {SPRING_BASE_URL}/internal/wishlist
+X-Internal-Token: {서비스 토큰}
+```
+
+```json
+{ "userId": 123, "productId": 1 }
+```
+
+| 요청 필드 | 타입 | 설명 |
+|---|---|---|
+| `userId` | number | 회원 식별자 — **AI-검증 JWT `sub`에서 도출**(§2.3). `guestId`는 없다 — 게스트 발화는 internal 호출 없이 `token` 로그인 안내로 degrade한다(§3.1) |
+| `productId` | number | 찜할 상품 식별자(숫자 BIGINT, §2.6) — 추천 목록·대화 문맥에서 해소, 별도 Spring 조회 불필요 |
+
+#### 성공 응답 — 200
+
+```json
+{ "success": true, "data": { "productId": 1 } }
+```
+
+`wishlistId`는 없다 — 해제(I-27, §4.15)의 키는 `productId`다.
+
+#### 실패 응답
+
+| HTTP | I-26 `code` | 조건 | AI 동작 |
+|---|---|---|---|
+| 400 | `VALIDATION_ERROR` | `productId` 누락(`error.fields` 포함) / 타입·JSON 오류(`fields` 없음) / 신원 이상 | `action` `WISHLIST_ADD_FAILED` + `reason: "WISHLIST_ERROR"` |
+| 403 | `AUTH_FORBIDDEN` | `SELLER`·`ADMIN` 계정(회원 전용 API) | `action` `WISHLIST_ADD_FAILED` + `reason: "WISHLIST_ERROR"` |
+| 404 | `PRODUCT_NOT_FOUND` | 없는 상품 — **HIDDEN·품절은 찜 가능**(대상 아님) | `action` `WISHLIST_ADD_FAILED` + `reason: "PRODUCT_NOT_FOUND"` |
+| 409 | `WISHLIST_DUPLICATE` | 이미 찜한 상품 | **`action` `WISHLIST_ADDED`**(실패 아님) + "이미 찜해 두셨어요"(§3.1) |
+| 409 | `RESOURCE_CONFLICT` | UNIQUE 제약 경합(동시 요청) — 처리는 `WISHLIST_DUPLICATE`와 동일 | **`action` `WISHLIST_ADDED`**(실패 아님) |
+| 500 | `INTERNAL_ERROR` | 서버 오류 | `action` `WISHLIST_ADD_FAILED` + `reason: "WISHLIST_ERROR"` |
+
+- **이벤트에 `productId`를 싣지 않는다(경로 B, §3.1)** — FE는 `type`만 보고 찜 목록을 재조회한다.
+- 신원/본문 검증 오류 code는 §4.12와 동일하게 `VALIDATION_ERROR`를 재사용한다(자원별 신규 code 미채택).
+
+### 4.15 찜 해제 API (I-27 `DELETE /internal/wishlist/{productId}`) — 🔶 확정 2026-08-05 — Spring 구현 진행 중 [v0.22.0 신설]
+
+회원 전용(USER). path가 **`productId`**다(`wishlistId`가 아니다, M-6) — 해제 키는 상품이지 찜 레코드가 아니다. AI 구현은 완료됐다(#117).
+
+#### AI → Spring 요청 (I-27)
+
+```
+DELETE {SPRING_BASE_URL}/internal/wishlist/{productId}?userId={id}
+X-Internal-Token: {서비스 토큰}
+```
+
+- `userId`는 **AI-검증 JWT `sub`에서 도출**(§2.3). `guestId`는 없다 — 회원 전용.
+- "어제 찜한 이어폰" 같은 이름 해소는 I-28(§4.16) 선행 조회로 한다 — 모호하면 `token`으로 되묻는다(§3.1).
+
+#### 성공 응답 — 200
+
+```json
+{ "success": true, "data": null }
+```
+
+#### 실패 응답
+
+| HTTP | I-27 `code` | 조건 | AI 동작 |
+|---|---|---|---|
+| 400 | `VALIDATION_ERROR` | path `productId`가 숫자가 아님 / 신원 이상 | `action` `WISHLIST_REMOVE_FAILED` + `reason: "WISHLIST_ERROR"` |
+| 403 | `AUTH_FORBIDDEN` | 소유자 불일치 | `action` `WISHLIST_REMOVE_FAILED` + `reason: "WISHLIST_ERROR"` |
+| 404 | `WISHLIST_NOT_FOUND` | 찜 안 한 상품(이미 해제됨) **또는 없는 상품** — I-27은 상품 존재를 보지 않아 **둘을 구별하지 않는다**(비멱등 — 두 번째 호출도 404) | **`action` `WISHLIST_REMOVED`**(실패 아님) + "이미 찜 목록에 없어요"(§3.1) |
+| 500 | `INTERNAL_ERROR` | 서버 오류 | `action` `WISHLIST_REMOVE_FAILED` + `reason: "WISHLIST_ERROR"` |
+
+- **추가(I-26)와 해제는 비대칭이다** — 추가는 상품 존재를 조회해 `404 PRODUCT_NOT_FOUND`를 낼 수 있지만, 해제는 상품 조회를 하지 않는다.
+- **[확정 2026-08-05] HIDDEN·품절 상품도 찜 행(찜한 이력)만 있으면 해제 성공**으로 취급한다 — 찜 행 존재로 판정된다.
+
+### 4.16 찜 목록 조회 API (I-28 `GET /internal/wishlist?userId=`) — 🔶 확정 2026-08-05 — Spring 구현 진행 중 [v0.22.0 신설]
+
+추가(I-26, §4.14)·해제(I-27, §4.15)의 짝이 되는 조회 계약. "내가 뭐 찜했지?" 질의 응답과 I-27의 이름 해소(선행 조회)에 쓰인다(I-18과 같은 이중 용도, §4.9). 회원 전용.
+
+#### AI → Spring 요청 (I-28)
+
+```
+GET {SPRING_BASE_URL}/internal/wishlist?userId={id}
+X-Internal-Token: {서비스 토큰}
+```
+
+#### 성공 응답 — 200
+
+```json
+{
+  "success": true,
+  "data": {
+    "items": [
+      {
+        "productId": 1, "name": "여행용 방수 파우치", "brandName": "브랜드",
+        "price": 12900, "originalPrice": 15900, "imageUrl": "https://.../1.jpg",
+        "rating": 4.5, "reviewCount": 10, "purchaseState": "AVAILABLE"
+      }
+    ]
+  }
+}
+```
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `items[].productId` | number | 상품 식별자(숫자 BIGINT, §2.6) |
+| `items[].name` | string | 상품명 — **`productName`이 아니다**(I-18 `items[].productName`과 필드명이 다르다) |
+| `items[].brandName`/`price`/`originalPrice`/`imageUrl`/`rating`/`reviewCount` | — | 표시 필드. **AI는 이 필드들을 쓰지 않는다** — SSE로 내보내지 않는다(경로 B) |
+| `items[].purchaseState` | `"AVAILABLE"` \| `"SOLD_OUT"` \| `"HIDDEN"` | 구매 가능 상태(2026-08-05 M-4 개정, 구 boolean `purchasable` 대체 — `app/schemas/spring.py` `WishlistItem`, 커밋 `70247d0`). 둘이 겹치면 `HIDDEN` 우선(서버가 정해서 내린다) |
+
+- **AI 실사용 필드는 `productId`·`name`·`purchaseState` 뿐**이다 — 나머지 표시 필드는 파싱하지 않는다(`app/schemas/spring.py`의 `WishlistItem`이 이 서브셋만 선언).
+- **페이징 없음 — MVP 전량 반환**(I-18 전례). **찜 0건도 200 + `items: []`**(404 아님).
+- **AI 동작**: "내가 뭐 찜했지?" 질의는 별도 SSE 이벤트 없이 `token` 텍스트로 답한다(I-18 동형, §3.1) — 조회라 새 `action`을 내지 않는다.
+- 실패: `400 VALIDATION_ERROR`(신원 이상, 자원별 신규 code 미채택) · `401 INTERNAL_TOKEN_INVALID` · `403 AUTH_FORBIDDEN`(회원 전용) · `500 INTERNAL_ERROR`.
+
 ---
 
 ## 5. 협의 필요 항목 요약표 (🔴 Consolidated Open Items)
@@ -2211,6 +2457,7 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 
 | 버전 | 날짜 | 변경 |
 |---|---|---|
+| v0.23.0 | 2026-08-05 | **[#116·#117] I-24~I-28 계약 등재(정본 확정 2026-08-05) + CH-2 `action` 2종 → 10종 + §3.1 `cartItemId` 표기 정정.** (1) **§4.12~4.16 신설** — I-24 장바구니 삭제·I-25 수량 변경(🔶 AI 미구현)·I-26 찜 추가·I-27 찜 해제·I-28 찜 목록 조회를 §4.1(I-2)·§4.9(I-18)와 같은 형식(요청·성공 응답·실패 표·AI 동작)으로 등재했다. 신원 query/body 검증 오류 code는 자원별 신규 code를 신설하지 않고 기존 `VALIDATION_ERROR`를 재사용한다(I-24~I-28 공통, 확정 — 1차 초안의 `CART_QUERY_INVALID` 등 신설안은 채택되지 않았다). (2) **§3.1 `action` type 2종 → 10종** — `CART_REMOVED`/`CART_REMOVE_FAILED`/`WISHLIST_ADDED`/`WISHLIST_ADD_FAILED`/`WISHLIST_REMOVED`/`WISHLIST_REMOVE_FAILED`/`CART_QUANTITY_CHANGED`/`CART_QUANTITY_CHANGE_FAILED` 8종을 추가하고 `reason`에 `WISHLIST_ERROR`를 추가했다(기존 3종 유지, 4종). 404/409 정상 종료 규약(`CART_ITEM_NOT_FOUND`→`CART_REMOVED`, `WISHLIST_DUPLICATE`/`RESOURCE_CONFLICT`→`WISHLIST_ADDED`, `WISHLIST_NOT_FOUND`→`WISHLIST_REMOVED`)과 찜 이벤트 `productId` 미탑재(경로 B)를 명문화했다. (3) **§3.1 `cartItemId` 표기 정정(string → number)** — 예시 `"cartItemId": "55"`와 필드표 `string`은 **사본 드리프트였다**. 정본 CH-2·FE 타입(`jarvis-frontend` `src/shared/types/chat.ts`의 `ChatAction`)·서버가 실제로 내보내는 프레임(`app/schemas/chat.py`의 `ActionData.cart_item_id: int`) 셋 다 number(BIGINT)다. (4) **I-28 응답 필드 `purchasable`(boolean) → `purchaseState`(string enum: `AVAILABLE`/`SOLD_OUT`/`HIDDEN`, 겹치면 `HIDDEN` 우선)** — 2026-08-05 M-4 개정 반영, 코드는 이미 이 이름으로 등재됐다(커밋 `70247d0`). **Spring 미구현·FE 미수신이라 실 와이어는 아직 종전 그대로다** — I-24~I-28은 BE가 구현 진행 중이고(🔶 확정 2026-08-05, 배포 전 호출 무응답), AI 구현은 완료됐으며(플래그 없이 항상 활성, 삭제·찜 6종 #116·#117 — 수량 변경 2종은 미구현), `jarvis-frontend`의 `ChatAction` 유니온에는 신규 8종이 아직 없다. |
 | v0.22.0 | 2026-08-05 | **[#149] 개인화 관계 Graph 계약을 초안으로 등재했다** — 조회 §3.8 `GET /profile/me/graph`(FE 직접) + 제어 5종 §3.9 I-29~I-33(Spring→AI internal: 수정·삭제·복구·초기화·개인화 중지). 취향이 지금은 편집 불가능한 마크다운 한 덩어리라 오염돼도 사용자가 고칠 수 없는데, 오염된 프로필이 추천 품질을 실제로 깎는다는 것이 측정돼 있다(#147 커밋 baseline: 깨끗한 프로필 +0.20, 노이즈 −0.053, 반복 부풀림 −0.117 nDCG@10). **선택의 근거**: (1) **조회는 레인 (a) 기존 티켓 재사용, 변경은 레인 (b) Spring 경유** — 전용 `profile:*` scope는 `/chat`·`/seller/chat`이 함께 지나가는 검증 경로를 개편해야 해 프로필 기능을 위해 채팅에 회귀 위험을 만든다(C-20). (2) **충돌은 `409 PROFILE_VERSION_CONFLICT`, `412` 미채택** — 409에 상태 인식 불일치 3형제가 이미 있고 412는 상태→코드 매핑에 없어 기본값이 일반 코드로 나간다(C-22). (3) **개별 삭제 = tombstone(복구 가능), 전체 초기화만 물리 삭제** — 억제를 만들면 되돌리기도 만든다는 규칙이며 `SPEC-PROFILE-001` REQ-PROF-034를 약화하지 않고 적용 범위를 기계 경로로 한정했다. (4) **개인화 중지 = 사용·수집 동시 중지, 데이터 보존** — 중지 중에도 그래프는 200으로 보이고 모든 정리 동작이 허용되며, I-22는 기존 `NO_PROFILE`로 답해 **Spring 무변경**이다. (5) **`confidence`는 3버킷만 노출** — 수치 미노출 불변식을 깨지 않는다. **불변**: 기존 엔드포인트·SSE 이벤트·기존 오류 코드·AI→Spring 역방향 17건 집합(신규 5종은 inbound). 신설분은 전부 🔴 **제안(초안)·Post-MVP**이며 미합의 8건을 C-20~C-28로 등재했다(C-20·C-21·C-27·C-28은 #150 차단). 예산 2s/3s는 **제안이며 실측이 아니라** §2.9 (c) 기준표에 넣지 않았다. |
 | v0.21.0 | 2026-08-05 | **[#289] 구매자 SSE `progress` 이벤트 신설 — 정본(Notion "📡 API 명세서" CH-2) 2026-08-05 합의·등재 반영.** 본 사본 §3.1의 번호가 **6종 → 7종**으로 늘고 `progress`가 **(1)번**이다(§2.2·§3.1: `progress` 1 · `token` 2 · `conditions` 3 · `action` 4 · `products.ready` 5 · `done` 6 · `error` 7). **기존 6종의 이름·페이로드·상대 순서는 불변**(추가 전용) — `conditions`는 여전히 검색·자동 완화 뒤다. **[번호 체계 참고]** 정본(CH-2)은 `suggestions`를 이벤트 목록에 번호로 포함해 8종으로 세지만, 본 사본은 `suggestions`를 「MVP 추가 페이로드」 절에서 별도로 다루므로 §3.1 번호 목록이 하나 적다 — 번호는 표기 순서일 뿐 와이어 계약이 아니며, 이 차이는 `progress` 신설 이전부터 있던 것이다. 페이로드는 `{"stage","message"?}`이며 확정 어휘는 **`analyzing` 1종**뿐이다(`searching`/`relaxing`/`reranking`은 후속 확장 후보·미구현) — 이 프레임을 낼 수 있는 지점(decompose 앞)에서는 아직 intent(추천/담기/주문조회/일반 대화)가 확정되지 않아 `searching`을 그 자리에서 내면 비추천 턴을 검색 중이라고 오라벨링하게 되기 때문이다. **0~1회다 — FE는 도착을 전제하면 안 된다**: 나가면 스트림 첫 프레임이지만, 그 앞에서 턴이 끝나는 경우(LLM 미구성 → `error{LLM_UNAVAILABLE}`, 세션 상태 저장소 장애 → §2.5 스트림 전 오류 봉투)는 0회다. 실측(`evals/first_event_budget/`, #277 하네스 재사용)은 대표 6개 시나리오 전부에서 flag-on 첫 이벤트 p50이 ~12~15ms로 수렴했다(`D3_deferred_worst_no_retry` 6869.8ms → 11.6ms) — 그 뒤 이벤트 순서·총 소요는 불변이며, 하네스가 `ScriptedLLM`이라 LLM head 절감(#151)은 수치에 잡히지 않는다. **다만 관문 통과를 보장하지는 않는다** — 이 프레임 앞의 상태 저장소 프렐류드가 각 `state_store_query_timeout_s`(3.0s) × 4회 직렬 최악 12.0s로 first-token 상한(10.0s)을 넘을 수 있다. §2.9(c) I-1 행의 `progress` 등재 전제 문장을 "등재 완료, 남은 전제는 플래그 on + 배포"로 갱신했다. **AI 구현은 완료됐으나 `progress_events_enabled` 기본 `false` + 운영(jwks 인증 또는 staging/production 환경) 기동 가드로 잠겨 있어, 실제 와이어는 아직 종전 7종뿐이다** — 이 가드 제거와 플래그 on, #277 재시도 스킵 원복은 이번 개정에 포함되지 않는다. |
 | v0.20.4 | 2026-08-05 | **[#118] 되물음 예외 정본 반영** — §3.1 [보안] 문단 바로 아래 병기해 둔 옵션 되물음(`PENDING_CART`) 중 `screen.products` 제외 예외를, 사용자가 승인한 정본(Notion CH-2) 담기 가드 문단 바로 아래 '되물음 예외 (2026-08-05 신설)' 문단 반영에 맞춰 사본의 🔴 정본 미반영 표시를 해제했다. **계약 동작은 이미 정본과 일치했고 이번 개정은 표시만 갱신한다.** |
