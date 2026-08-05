@@ -255,22 +255,41 @@ SUMMARY_FIRST_PARAGRAPH_MAX = 300
 SUMMARY_FALLBACK_CHARS = 200
 
 
+def _strip_heading_lines(text: str) -> str:
+    """마크다운 헤딩 줄("## 핵심 요약" 등)을 제거한다 — 요약 후보에서 제외.
+
+    REPORT_PROMPT 은 산문을 강제하지만 LLM 이 마크다운 구성으로 쓰는 사례가
+    실측됐다(2026-08-05 화면 캡처 — "## 핵심 요약" 단독 블록). 헤딩 줄을 요약으로
+    잡으면 summary 가 제목 한 줄("## 핵심 요약")이 되므로 걸러낸다.
+    """
+    return "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    ).strip()
+
+
 def split_report_summary(report: str) -> str:
-    """보고서 산문에서 핵심 요약(첫 문단)을 분리한다 — `report` 이벤트 summary 의 원천.
+    """보고서 산문에서 핵심 요약(첫 실제 문단)을 분리한다 — `report` 이벤트 summary 원천.
 
     REPORT_PROMPT 이 "1. 핵심 요약(2~3문장) 먼저"를 강제하지만 LLM 산출이라 어길 수
-    있다 — 첫 문단이 비었거나 과장(> SUMMARY_FIRST_PARAGRAPH_MAX)이면 앞
+    있다 — 마크다운 헤딩만 있는 블록은 건너뛰고 **첫 실제 내용 문단**을 요약으로
+    잡는다. 그 문단이 없거나 과장(> SUMMARY_FIRST_PARAGRAPH_MAX)이면 헤딩 제거본 앞
     SUMMARY_FALLBACK_CHARS 자 절단 + 말줄임으로 degrade 한다(보고서를 죽이지 않는다).
     report 가 빈/공백 문자열이면 ""(검증 루프 소진 degrade 케이스 — FE 는 body 로
     fallback). 순수 함수 — LLM·IO 없음(이 모듈 원칙).
     """
     stripped = report.strip()
-    first = stripped.split("\n\n", 1)[0].strip()
+    first = ""
+    for block in stripped.split("\n\n"):
+        candidate = _strip_heading_lines(block)
+        if candidate:
+            first = candidate
+            break
     if first and len(first) <= SUMMARY_FIRST_PARAGRAPH_MAX:
         return first
-    if len(stripped) > SUMMARY_FALLBACK_CHARS:
-        return f"{stripped[:SUMMARY_FALLBACK_CHARS]}…"
-    return stripped
+    plain = _strip_heading_lines(stripped)
+    if len(plain) > SUMMARY_FALLBACK_CHARS:
+        return f"{plain[:SUMMARY_FALLBACK_CHARS]}…"
+    return plain
 
 
 # ── 진행 token 문구 (SPEC §2 — first-token 10s·체감 대기 완화, 2026-07-18 확정) ──

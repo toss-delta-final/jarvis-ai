@@ -366,3 +366,28 @@ def test_split_report_summary_empty_report_returns_empty() -> None:
     """빈/공백 문자열 — ""(검증 루프 소진 degrade, FE 는 body fallback)."""
     assert pipeline.split_report_summary("") == ""
     assert pipeline.split_report_summary("   \n\n  ") == ""
+
+
+def test_split_report_summary_skips_markdown_heading_blocks() -> None:
+    """실측 사례(2026-08-05) — LLM 이 마크다운 구성으로 쓰면 "## 핵심 요약" 헤딩
+    블록이 첫 문단이 된다. 헤딩은 요약이 아니므로 건너뛰고 첫 실제 문단을 잡는다."""
+    report = (
+        "## 핵심 요약\n\n"
+        "매출 데이터 응답 형식 오류로 최근 7일 매출을 분석하지 못했습니다.\n\n"
+        "## 발견 상세\n\n상세 내용입니다."
+    )
+    assert (
+        pipeline.split_report_summary(report)
+        == "매출 데이터 응답 형식 오류로 최근 7일 매출을 분석하지 못했습니다."
+    )
+
+
+def test_split_report_summary_heading_and_text_in_same_block() -> None:
+    """헤딩과 본문이 빈 줄 없이 한 블록이어도 헤딩 줄만 제거하고 본문을 잡는다."""
+    report = "## 핵심 요약\n지난달 매출이 12% 감소했습니다.\n\n다음 문단."
+    assert pipeline.split_report_summary(report) == "지난달 매출이 12% 감소했습니다."
+
+
+def test_split_report_summary_headings_only_returns_empty() -> None:
+    """전부 헤딩뿐인 비정상 산출 — ""(FE 는 body fallback)."""
+    assert pipeline.split_report_summary("## 제목\n\n### 소제목") == ""
