@@ -24,6 +24,10 @@ from app.agents.buyer.recommendation.no_condition import (
     rank_by_profile,
     within_budget,
 )
+from app.agents.buyer.recommendation.underspecified import (
+    build_reask_question,
+    within_price_range,
+)
 from app.agents.buyer.recommendation.rerank import rerank
 from app.agents.buyer.recommendation.relaxation import (
     FIELD_TO_ATTR as RELAXATION_FIELD_TO_ATTR,
@@ -447,6 +451,10 @@ async def stream_recommendation(
     # [#162] 조건이 하나도 없는 발화인가(`no_condition.is_no_condition_turn` 판정 결과).
     # 판정은 호출부(buyer/graph.py)에서 한다 — 그쪽에만 `prior`(첫 턴 여부)가 있다.
     no_condition: bool = False,
+    # [#336] 과소지정 발화인가(`underspecified.is_underspecified_turn` 판정 결과). no_condition
+    # 은 이 집합의 부분집합이다 — 판정은 호출부에서 한다(그쪽에만 `prior` 가 있다, no_condition
+    # 과 같은 근거). 기본 False 라 미주입 호출·기존 테스트는 그대로 통과한다.
+    underspecified: bool = False,
     popular_fn=None,  # I-3 조회. 미지정 시 라이브 기본값(테스트는 fake 주입)
     # [#162] 미리 만들어 둔 취향 벡터(`read_profile_summary()["embedding"]`). 회원이면서 벡터가
     # 있을 때만 취향 랭킹 경로를 탄다 — 게스트·신규회원·구 요약(벡터 없음)은 인기 상품으로 간다.
@@ -513,9 +521,15 @@ async def stream_recommendation(
     # 후보는 안 나오는" 경우(올림 단위 때문에 못 넓히는 priceMax 등)가 생겨 헛되이 미루게 된다.
     # 완화 가능 여부의 정의를 두 곳에 두지 않는다. 순수 함수라 검색 왕복도 늘지 않는다.
     try:
-        may_auto_relax = settings.relaxation_max_rounds > 0 and any(
-            candidate.field in settings.relaxation_auto_fields
-            for candidate in build_relaxation_candidates(decision.filters, settings)
+        # [#336] 과소지정 턴은 자동완화·완화칩을 타지 않는다 — 자동완화 probe 는 0건 재검색을
+        # 카테고리 없이 부르는데, 그건 이 턴이 되묻기로 처리하려는 바로 그 무필터 검색이다.
+        may_auto_relax = (
+            not underspecified
+            and settings.relaxation_max_rounds > 0
+            and any(
+                candidate.field in settings.relaxation_auto_fields
+                for candidate in build_relaxation_candidates(decision.filters, settings)
+            )
         )
     except Exception as exc:  # noqa: BLE001 - 판정 실패가 conditions 를 통째로 막지 않게
         # 이 호출은 conditions 발신 **이전** 경로라, 터지면 이벤트가 하나도 안 나간 채 스트림이
@@ -781,6 +795,15 @@ async def stream_recommendation(
                     trace.mark_degraded("push_skipped")
                 if push_notice := _strip_unsafe(settings.push_skipped_notice):
                     yield sse("token", TokenData(text=push_notice).model_dump(by_alias=True))
+            # [리뷰 F2] 되물음은 **여기**(push 성공/실패 분기 뒤)로 옮겼다 — push 앞에서 내면
+            # products.ready 도 카드도 없는데 질문이 먼저 나가 "표시=실제"(#51)가 깨진다. 이
+            # 경로는 categoryName 이 없어(AI 카탈로그 인덱스) 성공·실패 둘 다 generic 질문뿐이라
+            # (D3 emit 지점 1) 분기마다 다른 문구를 만들 필요는 없다 — 성공 시엔 위 products.ready
+            # 뒤, 실패 시엔 위 push_skipped_notice 뒤로 자연히 온다.
+            if underspecified and (
+                question := _strip_unsafe(settings.underspecified_reask_question)
+            ):
+                yield sse("token", TokenData(text=question).model_dump(by_alias=True))
             # [#311 리뷰] 하류의 dedup 실패 고지 지점(아래 `if dedup_degraded ...`)에 이 경로는
             # 도달하지 못한다 — 여기서 `done` 을 내고 return 하기 때문이다. 같은 검사를 넣어
             # 경로 간 비대칭을 없앤다. 기본값이 빈 값(미고지)이라 오늘은 아무것도 안 나가지만,
@@ -794,7 +817,9 @@ async def stream_recommendation(
         if trace := current_request_trace():
             trace.mark_degraded("profile_ranking_fallback")
 
-    # [#162] 조건이 하나도 없는 턴은 후보 소스를 I-3(인기 상품, §4.17)로 바꾼다.
+    # [#162/#336] 조건이 하나도 없는 턴(no_condition) + 제약만 있는 턴(underspecified)은
+    # 후보 소스를 I-3(인기 상품, §4.17)로 바꾼다. `no_condition ⊂ underspecified` 라 후자만
+    # 검사하면 되지만, 조건식을 읽는 사람이 두 판정의 관계를 다시 추론하지 않도록 명시한다.
     popular_degraded = False
 
     async def _run_candidate_source():
@@ -804,10 +829,15 @@ async def stream_recommendation(
         (실측 7,245건·13.33MB)을 받는데, 그 상위는 사용자 의도와 무관하다. I-1 정본이
         "정형조건 없는 요청 차단은 LLM 단 책임"으로 규정한 자리다(§4.6·§4.17).
 
+        [#336] 가격 제약만 있는 턴(예: "5만원 이하로 아무거나")도 같은 이유로 여기로 온다 —
+        price 파라미터만 실린 I-1 은 여전히 매칭 수천 건을 돌려주고(무필터 실측의 아류),
+        semantic 정렬 입력이 발화 원문 폴백이라 상위가 의도와 무관하다. I-3 는 price 가 있어
+        예산·가격 준수를 입증할 수 있다(#162 와 같은 논리, SPEC-UNDERSPECIFIED-336 §3).
+
         leg 맵은 빈 dict 다 — 인기 목록은 카테고리 fan-out 이 아니라 단일 목록이다.
         """
         nonlocal popular_degraded
-        if not no_condition:
+        if not (no_condition or underspecified):
             return await _run_search()
         try:
             found = await popular_fn(settings.popular_candidate_size)
@@ -818,9 +848,16 @@ async def stream_recommendation(
             # [#311 리뷰] 총액 예산을 말한 턴은 **예산 안의 후보만** 남긴다. 세트로 묶지 않고
             # 대안으로 보여주므로 상품 하나가 예산 이하이면 된다 — 무엇을 몇 개 살지 사용자가
             # 말하지 않은 턴에 조합을 지어내면 근거 없는 세트가 된다(`has_total_budget` 참조).
+            products = found.products
             if decision.total_budget is not None:
-                affordable = within_budget(found.products, decision.total_budget)
-                found = ProductSearchResult(products=affordable, total_count=len(affordable))
+                products = within_budget(products, decision.total_budget)
+            # [#336] 상품당 가격 제약(priceMin/priceMax) — 총액 예산과 별개 축이라 함께 적용될
+            # 수 있다. 둘 다 없으면 `within_price_range` 는 사본만 돌려줘 순서·내용이 그대로다.
+            products = within_price_range(
+                products, decision.filters.price_min, decision.filters.price_max
+            )
+            if len(products) != len(found.products):
+                found = ProductSearchResult(products=products, total_count=len(products))
             # **0건도 성공이다**(§4.17) — 빈 배열이면 하류 zero-result 경로가 카드 없이 답한다.
             # 여기서 degrade 로 처리하면 이 이슈가 없애려는 무필터 I-1 을 도로 부른다.
             return (found, {})
@@ -1071,7 +1108,11 @@ async def stream_recommendation(
             )
             return None
 
-    if not candidates:
+    # [#336] 과소지정 턴은 자동완화 루프 자체를 태우지 않는다 — `may_auto_relax`(위 §)는 이
+    # 턴에서 이미 False 로 잠겨 있지만, 이 루프는 `may_auto_relax` 를 보지 않고 `not candidates`
+    # 만으로 도는 별개 게이트라 명시적으로 한 번 더 막는다(안 막으면 가격 폭을 넓힌 재검색이
+    # I-1 로 나가 "카테고리 없이 되묻는다"는 이 이슈의 취지를 어긴다).
+    if not candidates and not underspecified:
         # [PR #248 2차 리뷰] 루프 전체를 감싼다 — `_probe` 안쪽은 이미 방어하지만 후보 생성
         # (`build_relaxation_candidates`)과 루프 자체는 밖이었다. 여기서 터지면 아래 conditions
         # 발신까지 못 가 조건 칩이 사라진다. 자동 완화는 **선택 기능**이라 실패는 삼키고
@@ -1143,8 +1184,11 @@ async def stream_recommendation(
         )
 
     # 완화 칩 — 0건이거나 소량(config 임계 미만)일 때 남은 예산만큼 후보를 probe 한다.
+    # [#336] 과소지정 턴은 이 probe 도 태우지 않는다(위 자동완화 루프와 같은 이유) — 완화 칩은
+    # `may_auto_relax`(auto_fields 화이트리스트)와 무관하게 filters 에 설정된 모든 축(가격 포함)
+    # 에서 후보를 만들어 실제로 I-1 을 부른다.
     relaxation_chips: list[SuggestionChip] = []
-    if not candidates or len(candidates) < settings.relaxation_min_results:
+    if not underspecified and (not candidates or len(candidates) < settings.relaxation_min_results):
         # 자동 완화 루프와 같은 이유로 전체를 감싼다(PR #248 2차 리뷰) — 후보 생성·칩 조립은
         # `_probe` 바깥이라 방어가 없었다. 완화 칩은 **부가 제안**이라 실패하면 칩 없이 계속한다.
         try:
@@ -1247,6 +1291,10 @@ async def stream_recommendation(
         else:
             text = "찾은 상품이 모두 최근에 구매하신 것들이에요. 다른 상품을 추천해 드릴까요?"
         yield sse("token", TokenData(text=text).model_dump(by_alias=True))
+        # [#336] 과소지정 턴의 0건 경로 — 카드가 없으니 노출 후보가 없다(D3 emit 지점 3,
+        # generic 질문만). "카드 없는 답 + 되물음"으로 다음 턴에 카테고리를 지목할 실마리를 준다.
+        if underspecified and (question := _strip_unsafe(settings.underspecified_reask_question)):
+            yield sse("token", TokenData(text=question).model_dump(by_alias=True))
         # 전부 억제됐어도 되돌리기 칩은 준다(사용자가 복원 가능) + 0건 완화 칩(#113).
         if zero_chips := revert_chips + relaxation_chips:
             yield sse("suggestions", SuggestionsData(chips=zero_chips).model_dump(by_alias=True))
@@ -1743,6 +1791,19 @@ async def stream_recommendation(
         if notice := _strip_unsafe(raw_notice):
             yield sse("token", TokenData(text=notice).model_dump(by_alias=True))
 
+    # [#336] 제약만 있는 턴(과소지정 ∧ not no_condition)의 인기 상품 고지 — 위 no_condition
+    # 블록과 상호배타다(no_condition 은 이미 자기 고지를 냈다). 실제로 가격 필터를 통과한 인기
+    # 상품이라 참인 문구다(SPEC-UNDERSPECIFIED-336 §4). `popular_degraded` 면 인기 주장 고지는
+    # 스킵한다 — 그 턴은 무필터 검색으로 떨어진 결과라 "인기 상품"이 거짓이 된다(#162 와 같은
+    # 정직성 규약). 되물음은 아래에서 no_condition 여부와 무관하게 낸다.
+    if underspecified and not no_condition and not popular_degraded:
+        if underspecified_notice := _strip_unsafe(settings.underspecified_notice):
+            yield sse("token", TokenData(text=underspecified_notice).model_dump(by_alias=True))
+
+    # [리뷰 F2] 카테고리 되물음(D3 emit 지점 2) 은 여기서 내지 않는다 — push 가 성공했는지가
+    # 아직 정해지지 않아, "무선이어폰 중에…" 라고 예시를 들며 되물으면서 정작 그 상품이 화면에
+    # 뜨지도 않을 수 있다(표시=실제 #51 위반). push 결과가 정해진 뒤(아래, done 직전)로 옮겼다.
+
     # [#133] 최근 구매 제외(I-19) 실패 고지 — **기본 미고지**(config 기본값 "")다. 조회 실패는
     # "중복이 노출됐다"가 아니라 "걸러내지 못했다"라 실제 중복 여부를 알 수 없어 매 턴 노이즈가
     # 되고, rerank 폴백과 달리 거짓 주장을 하고 있지도 않다. 판단을 되돌릴 여지만 남긴다.
@@ -1927,6 +1988,21 @@ async def stream_recommendation(
             trace.mark_degraded("push_skipped")
         if push_notice := _strip_unsafe(settings.push_skipped_notice):
             yield sse("token", TokenData(text=push_notice).model_dump(by_alias=True))
+
+    # [리뷰 F2] 카테고리 되물음(D3 emit 지점 2, no_condition ⊂ underspecified 라 두 턴 모두
+    # 여기서 낸다) — push 결과가 정해진 **뒤**라 표시=실제(#51)를 지킨다.
+    #   - push 성공: 노출 후보(실제로 push 된 상품, `ranked_ids`) 기반 예시 질문.
+    #   - push 실패: 보여준 게 없으니 예시 없이 generic 질문만(되묻기 자체는 유지 — 다음 턴을
+    #     위한 질문이라 카드 유무와 무관하게 유효하다).
+    if underspecified:
+        if pushed:
+            id_to_product = {p.product_id: p for p in candidates}
+            exposed_products = [id_to_product[pid] for pid in ranked_ids if pid in id_to_product]
+            reask_question = build_reask_question(exposed_products, settings)
+        else:
+            reask_question = _strip_unsafe(settings.underspecified_reask_question)
+        if reask_question:
+            yield sse("token", TokenData(text=reask_question).model_dump(by_alias=True))
 
     yield sse(
         "done",

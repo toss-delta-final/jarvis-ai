@@ -45,6 +45,7 @@ from app.agents.buyer.recommendation.decompose import (
 from app.agents.buyer.recommendation.needs_expansion import detect_expansion_need
 from app.agents.buyer.recommendation.needs_expansion import expand_needs as _expand_needs
 from app.agents.buyer.recommendation.no_condition import is_no_condition_turn
+from app.agents.buyer.recommendation.underspecified import is_underspecified_turn
 from app.agents.buyer.recommendation.relaxation import FIELD_TO_ATTR as RELAXATION_FIELD_TO_ATTR
 from app.agents.buyer.recommendation.state import get_relaxation_offer_store, get_revert_store
 from app.agents.buyer.recommendation.graph import stream_recommendation
@@ -1142,6 +1143,9 @@ async def run_buyer_turn(
         # [#162] 조건 없음 판정은 **여기서** 한다 — `prior`(첫 턴 여부)가 이 스코프에만 있고,
         # `_prepare_recommendation` 이 카테고리 매핑·승계를 끝낸 뒤라야 `category_legs` 가 확정된다.
         no_condition = is_no_condition_turn(decision, prior)
+        # [#336] 과소지정(no_condition 의 상위 집합) 판정 — 같은 이유로 여기서 한다(`prior`·
+        # 확정된 `category_legs` 가 이 스코프에만 있다).
+        underspecified = is_underspecified_turn(decision, prior, settings)
         async for frame in stream_recommendation(
             request=request,
             decision=decision,
@@ -1161,6 +1165,7 @@ async def run_buyer_turn(
             observer=observer,
             request_id=resolved_request_id,
             no_condition=no_condition,
+            underspecified=underspecified,
             popular_fn=popular_fn,
             # [#119] 개인화 off(A/B baseline arm)면 취향 랭킹도 함께 끈다 — rerank 주입과 같은
             # 스위치를 따라야 arm 이 "개인화 없음"으로 일관된다.
