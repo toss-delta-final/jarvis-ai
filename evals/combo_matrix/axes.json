@@ -1,0 +1,298 @@
+{
+  "datasetVersion": "1.0.0",
+  "seed": 335335,
+  "axes": [
+    {
+      "id": "intent",
+      "description": "decompose(Haiku) 가 산출하는 라우팅 intent — 코드 정본 8종(이슈 본문의 5종은 구버전 드리프트).",
+      "values": [
+        {"value": "recommend", "source": "app/agents/buyer/recommendation/state.py:87-99"},
+        {"value": "cart_add", "source": "app/agents/buyer/recommendation/state.py:87-99"},
+        {"value": "cart_view", "source": "app/agents/buyer/recommendation/state.py:87-99"},
+        {"value": "order_status", "source": "app/agents/buyer/recommendation/state.py:87-99"},
+        {"value": "general", "source": "app/agents/buyer/recommendation/state.py:87-99"},
+        {
+          "value": "cart_remove",
+          "source": "app/agents/buyer/recommendation/state.py:87-99",
+          "note": "[라운드 24, #116·#117] decompose 직접 산출. cart/graph.py classify_cart_utterance 와 값 집합이 겹친다."
+        },
+        {"value": "wishlist_add", "source": "app/agents/buyer/recommendation/state.py:87-99"},
+        {"value": "wishlist_remove", "source": "app/agents/buyer/recommendation/state.py:87-99"},
+        {
+          "value": "n/a",
+          "source": "app/api/internal.py:20",
+          "note": "surface=HOME 제약 — 홈은 발화가 없어 intent 라우팅 자체가 없다"
+        }
+      ]
+    },
+    {
+      "id": "case",
+      "description": "recommend 전용 — 상품명/구조화조건/상황목적 판정(REQ-REC-002). intent != recommend 이면 n/a(제약).",
+      "values": [
+        {"value": "1", "source": "app/agents/buyer/recommendation/decompose.py:99", "note": "상품명이 발화에 있음"},
+        {"value": "2", "source": "app/agents/buyer/recommendation/decompose.py:100", "note": "상품명 없이 구조화 조건만"},
+        {"value": "3", "source": "app/agents/buyer/recommendation/decompose.py:101", "note": "상황·목적만 있고 무엇을 살지 미지정, 또는 상품 2개 이상"},
+        {"value": "n/a", "source": "app/agents/buyer/recommendation/state.py:107", "note": "intent != recommend 제약"}
+      ]
+    },
+    {
+      "id": "buy_all",
+      "description": "목록 전체구매(BUY_ALL) 의도 — recommend 전용, 예산과 독립(api-spec §4.2).",
+      "values": [
+        {"value": "false", "source": "app/agents/buyer/recommendation/state.py:127"},
+        {"value": "true", "source": "app/agents/buyer/recommendation/state.py:127"},
+        {"value": "n/a", "source": "app/agents/buyer/recommendation/state.py:127", "note": "intent != recommend 또는 surface=HOME 제약"}
+      ]
+    },
+    {
+      "id": "total_budget",
+      "description": "총액 예산 — filters.price_max(개별 상한)와 별개 축(api-spec §4.2).",
+      "values": [
+        {"value": "absent", "source": "app/agents/buyer/recommendation/state.py:128-131"},
+        {"value": "present", "source": "app/agents/buyer/recommendation/state.py:128-131"},
+        {"value": "n/a", "source": "app/agents/buyer/recommendation/state.py:128-131", "note": "intent != recommend 또는 surface=HOME 제약"}
+      ]
+    },
+    {
+      "id": "constraint_strength",
+      "description": "무지정(조건없음)/일반/과지정-0건 — recommend 전용.",
+      "values": [
+        {"value": "unspecified", "source": "app/agents/buyer/recommendation/no_condition.py:107-149", "note": "5조건 AND — prior is None 요구"},
+        {"value": "normal", "source": "app/agents/buyer/recommendation/decompose.py:299-312", "note": "필터 1개 이상 present, 정상 검색"},
+        {
+          "value": "overspecified_zero",
+          "source": "app/agents/buyer/recommendation/graph.py:1075-1115",
+          "note": "필터 ≥1 present + 검색 0건 → 자동 완화(:1075-1115)·완화 칩(:1146)"
+        },
+        {"value": "n/a", "source": "app/agents/buyer/recommendation/no_condition.py:107-149", "note": "intent != recommend 또는 surface=HOME 제약"}
+      ]
+    },
+    {
+      "id": "identity",
+      "description": "구매자 신원 — 게스트/회원(JWT sub_type).",
+      "values": [
+        {"value": "guest", "source": "app/core/auth.py:43,151-154"},
+        {"value": "member", "source": "app/core/auth.py:42,159-174"}
+      ]
+    },
+    {
+      "id": "context",
+      "description": "멀티턴 되물음 컨텍스트 — 런타임 app/agents/buyer/cart/state.py, eval 축 정본 evals/intent_probe/schema.py:31-38. screen 5종은 v1 제외(exclusions 참조).",
+      "values": [
+        {"value": "none", "source": "evals/intent_probe/schema.py:31-38"},
+        {"value": "lastRecommendations", "source": "evals/intent_probe/schema.py:31-38", "note": "app/agents/buyer/cart/state.py:45-189 LastReco 누적 목록"},
+        {"value": "pendingCart", "source": "evals/intent_probe/schema.py:31-38", "note": "app/agents/buyer/cart/state.py PendingAdd 되물음 진행"},
+        {"value": "categoryPrior", "source": "evals/intent_probe/schema.py:31-38", "note": "멀티턴 카테고리 승계(#84)"},
+        {"value": "n/a", "source": "evals/intent_probe/schema.py:31-38", "note": "surface=HOME 제약 — 홈은 발화가 없어 컨텍스트가 없다"}
+      ]
+    },
+    {
+      "id": "surface",
+      "description": "지면 — AI 코드엔 enum 없음(docs/api-spec.md:1156, 지면은 요청/응답에 안 실림). 두 지면이 랭킹 엔진을 공유(no_condition.py:176-186).",
+      "values": [
+        {"value": "CHAT", "source": "app/api/chat.py:35"},
+        {"value": "HOME", "source": "app/api/internal.py:20"}
+      ]
+    },
+    {
+      "id": "degrade",
+      "description": "정상 외 경로 — 임베딩 누락(조용)/rerank 실패(폴백+고지)/Spring 타임아웃(SEARCH_FAILED, 유일하게 턴을 죽임).",
+      "values": [
+        {"value": "none", "source": "app/agents/buyer/recommendation/graph.py:839-858"},
+        {"value": "embedding_missing", "source": "app/services/search_service.py:126-137", "note": "재정렬만 격리 실패 — Spring 순서로 조용히 degrade"},
+        {"value": "rerank_failed", "source": "app/agents/buyer/recommendation/graph.py:1431-1440", "note": "LLMError → 검색순서 top-N + 고지 comment"},
+        {"value": "spring_timeout", "source": "app/agents/buyer/recommendation/graph.py:592-596,839-858", "note": "검색 실패 → SEARCH_FAILED(error, 유일하게 턴 종료)"}
+      ]
+    },
+    {
+      "id": "category",
+      "description": "필터 축(하드필터 정본 decompose._FILTER_AXES) — recommend 전용.",
+      "values": [
+        {"value": "absent", "source": "app/agents/buyer/recommendation/decompose.py:300"},
+        {"value": "present", "source": "app/agents/buyer/recommendation/decompose.py:300"},
+        {"value": "n/a", "source": "app/agents/buyer/recommendation/decompose.py:300", "note": "intent != recommend 또는 surface=HOME 또는 constraint_strength=unspecified 제약"}
+      ]
+    },
+    {
+      "id": "price_min",
+      "description": "필터 축 — ProductSearchFilters.price_min.",
+      "values": [
+        {"value": "absent", "source": "app/agents/buyer/recommendation/decompose.py:301"},
+        {"value": "present", "source": "app/agents/buyer/recommendation/decompose.py:301"},
+        {"value": "n/a", "source": "app/agents/buyer/recommendation/decompose.py:301"}
+      ]
+    },
+    {
+      "id": "price_max",
+      "description": "필터 축 — ProductSearchFilters.price_max(개별 상품 상한, total_budget 과 별개).",
+      "values": [
+        {"value": "absent", "source": "app/agents/buyer/recommendation/decompose.py:302"},
+        {"value": "present", "source": "app/agents/buyer/recommendation/decompose.py:302"},
+        {"value": "n/a", "source": "app/agents/buyer/recommendation/decompose.py:302"}
+      ]
+    },
+    {
+      "id": "brand",
+      "description": "필터 축 — ProductSearchFilters.brand.",
+      "values": [
+        {"value": "absent", "source": "app/agents/buyer/recommendation/decompose.py:303"},
+        {"value": "present", "source": "app/agents/buyer/recommendation/decompose.py:303"},
+        {"value": "n/a", "source": "app/agents/buyer/recommendation/decompose.py:303"}
+      ]
+    },
+    {
+      "id": "rating_min",
+      "description": "필터 축 — ProductSearchFilters.rating_min.",
+      "values": [
+        {"value": "absent", "source": "app/agents/buyer/recommendation/decompose.py:304"},
+        {"value": "present", "source": "app/agents/buyer/recommendation/decompose.py:304"},
+        {"value": "n/a", "source": "app/agents/buyer/recommendation/decompose.py:304"}
+      ]
+    },
+    {
+      "id": "keyword",
+      "description": "필터 축 — ProductSearchFilters.keyword.",
+      "values": [
+        {"value": "absent", "source": "app/agents/buyer/recommendation/decompose.py:305"},
+        {"value": "present", "source": "app/agents/buyer/recommendation/decompose.py:305"},
+        {"value": "n/a", "source": "app/agents/buyer/recommendation/decompose.py:305"}
+      ]
+    },
+    {
+      "id": "color",
+      "description": "필터 축 — ProductSearchFilters.color.",
+      "values": [
+        {"value": "absent", "source": "app/agents/buyer/recommendation/decompose.py:306"},
+        {"value": "present", "source": "app/agents/buyer/recommendation/decompose.py:306"},
+        {"value": "n/a", "source": "app/agents/buyer/recommendation/decompose.py:306"}
+      ]
+    },
+    {
+      "id": "attr_conditions",
+      "description": "필터 축 — ProductSearchFilters.attr_conditions(PR #223 편입).",
+      "values": [
+        {"value": "absent", "source": "app/agents/buyer/recommendation/decompose.py:307-309"},
+        {"value": "present", "source": "app/agents/buyer/recommendation/decompose.py:307-309"},
+        {"value": "n/a", "source": "app/agents/buyer/recommendation/decompose.py:307-309"}
+      ]
+    }
+  ],
+  "constraints": [
+    {
+      "type": "forces",
+      "id": "non_recommend_na",
+      "description": "intent != recommend ⇒ case/필터8축/buy_all/total_budget/constraint_strength = n/a (order_status 등엔 이 축들이 없다).",
+      "if": {"intent": ["cart_add", "cart_view", "order_status", "general", "cart_remove", "wishlist_add", "wishlist_remove"]},
+      "then": {
+        "case": "n/a",
+        "buy_all": "n/a",
+        "total_budget": "n/a",
+        "constraint_strength": "n/a",
+        "category": "n/a",
+        "price_min": "n/a",
+        "price_max": "n/a",
+        "brand": "n/a",
+        "rating_min": "n/a",
+        "keyword": "n/a",
+        "color": "n/a",
+        "attr_conditions": "n/a"
+      }
+    },
+    {
+      "type": "excludes",
+      "id": "non_recommend_degrade_subset",
+      "description": "intent != recommend ⇒ degrade 는 rerank_failed·embedding_missing 을 못 낸다(그 경로가 recommend 전용 검색/rerank 파이프라인에서만 발생).",
+      "if": {"intent": ["cart_add", "cart_view", "order_status", "general", "cart_remove", "wishlist_add", "wishlist_remove"]},
+      "forbid": {"degrade": ["rerank_failed", "embedding_missing"]}
+    },
+    {
+      "type": "forces",
+      "id": "surface_home_plane",
+      "description": "surface=HOME ⇒ 발화·intent·case·context·필터·예산·구매의도 없음 + identity=member 고정 — I-22 요청 스키마(app/schemas/recommendations.py:62-70 HomeRecommendationRequest)는 sessionId 가 없고 memberId(필수, 기본값 없음)만으로 신원을 정하며, 그 docstring(:67)이 '게스트는 이 API 를 호출하지 않는다(Spring 이 P-4 로 처리) — 그래서 memberId 는 필수다'라고 명시한다(§3.7). HOME 은 degrade 축과만 자유 조합되는 부분 평면.",
+      "if": {"surface": ["HOME"]},
+      "then": {
+        "identity": "member",
+        "intent": "n/a",
+        "case": "n/a",
+        "context": "n/a",
+        "buy_all": "n/a",
+        "total_budget": "n/a",
+        "constraint_strength": "n/a",
+        "category": "n/a",
+        "price_min": "n/a",
+        "price_max": "n/a",
+        "brand": "n/a",
+        "rating_min": "n/a",
+        "keyword": "n/a",
+        "color": "n/a",
+        "attr_conditions": "n/a"
+      }
+    },
+    {
+      "type": "forces",
+      "id": "unspecified_shape",
+      "description": "constraint_strength=unspecified ⇒ 필터 8축 전부 absent + context=none (무지정 판정은 prior is None 요구, no_condition.py:141-149). buy_all/total_budget 은 자유(no_condition.py:128-131) — #336 셀이 존재하는 이유.",
+      "if": {"constraint_strength": ["unspecified"]},
+      "then": {
+        "category": "absent",
+        "price_min": "absent",
+        "price_max": "absent",
+        "brand": "absent",
+        "rating_min": "absent",
+        "keyword": "absent",
+        "color": "absent",
+        "attr_conditions": "absent",
+        "context": "none"
+      }
+    },
+    {
+      "type": "requires_any_present",
+      "id": "specified_needs_a_filter",
+      "description": "constraint_strength in {normal, overspecified_zero} ⇒ 필터 8축 중 최소 1개는 present(그렇지 않으면 unspecified 와 구분되지 않는다).",
+      "if": {"constraint_strength": ["normal", "overspecified_zero"]},
+      "axes": ["category", "price_min", "price_max", "brand", "rating_min", "keyword", "color", "attr_conditions"]
+    },
+    {
+      "type": "excludes",
+      "id": "rerank_failed_needs_candidates",
+      "description": "degrade=rerank_failed ⇒ 후보가 있어야 함(0건이면 rerank 미도달) ⇒ constraint_strength != overspecified_zero.",
+      "if": {"degrade": ["rerank_failed"]},
+      "forbid": {"constraint_strength": ["overspecified_zero"]}
+    }
+  ],
+  "riskTriples": [
+    {
+      "id": "budget_buyall_strength",
+      "axes": ["total_budget", "buy_all", "constraint_strength"],
+      "note": "#336 계열 — 무지정+예산+세트(no_condition.py:128-131 이 total_budget/buy_all을 안 보는 이유가 이 조합을 만든다)."
+    },
+    {
+      "id": "unspecified_identity_surface",
+      "axes": ["constraint_strength", "identity", "surface"],
+      "note": "무지정 × 개인화(profile_vec 경로, app/agents/buyer/recommendation/graph.py:725) × 지면."
+    },
+    {
+      "id": "context_intent_case",
+      "axes": ["context", "intent", "case"],
+      "note": "되물음 컨텍스트 × 전환 발화 — 멀티턴 카테고리/장바구니 승계가 intent·case 판정에 미치는 영향."
+    }
+  ],
+  "exclusions": [
+    {
+      "id": "screen_context_5",
+      "reason": "screen 컨텍스트 5종(screenSingle/Triple/Five/Nine/Named)은 cart_add productId 확정 전용 화면 컨텍스트라 evals/intent_probe 소관 — v1 매트릭스에서 제외한다(패킷 #335 §2)."
+    }
+  ],
+  "directedCases": [
+    {
+      "id": "wishlist_add_member_spring_timeout",
+      "axes": {"intent": "wishlist_add", "identity": "member", "degrade": "spring_timeout", "surface": "CHAT", "context": "none"},
+      "reason": "greedy pairwise 는 wishlist_add×member×spring_timeout 조합을 뽑지 않는다(intent×identity·intent×degrade 쌍은 이미 다른 케이스가 덮어 2-wise 목표상 불필요) — 그런데 guest 조합(다른 케이스가 커버)은 로그인 게이트가 Spring 호출보다 먼저 걸려 SpringUnavailableError 미처리 갭(발견 3번, UNDEFINED_CELLS.md)을 실제로는 밟지 않는다. 이 셀을 직접 실측하려면 identity=member 조합이 케이스로 있어야 한다(리뷰 R1 라운드 R3)."
+    },
+    {
+      "id": "order_status_member_spring_timeout",
+      "axes": {"intent": "order_status", "identity": "member", "degrade": "spring_timeout", "surface": "CHAT", "context": "none"},
+      "reason": "greedy pairwise 가 뽑은 유일한 ci order_status×spring_timeout 조합(intent×degrade 쌍 커버용)은 identity=guest 라 member_order_identity 가 로그인 게이트로 먼저 걸러 fetch_order_status 호출 자체에 안 닿는다(실측 확인, 리뷰 R2 R8 대응 중 발견 — wishlist_add 와 같은 유형). order_status.py:130-136 의 OrderStatusUnavailableError 처리를 직접 관측하려면 identity=member 조합이 필요하다."
+    }
+  ]
+}
