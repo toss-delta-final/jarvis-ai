@@ -6288,3 +6288,45 @@ async def test_budget_notice_without_placeholder_falls_back_to_popular_notice(
     texts = [e["data"]["text"] for e in events if e["type"] == "token"]
     assert not any("금액 없이 골라봤어요." in t for t in texts)  # 오설정 문구는 안 나간다
     assert any(settings.no_condition_notice_popular in t for t in texts)  # 안전한 문구로 폴백
+
+
+async def test_catalog_store_failure_keeps_stream_alive_and_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """카탈로그 스토어 확보가 **실패해도** 스트림이 죽지 않고 인기 상품으로 폴백한다.
+
+    `get_catalog_store()` 는 pg 커넥션 풀을 만드는 지점이라 실패하기 쉬운데, 종전에는
+    `_call_store(rank_candidates)` 만 try 로 감싸 그 앞 두 줄이 무방비였다. 거기서 예외가 나면
+    `stream_recommendation` 제너레이터가 그대로 죽어 **`done` 도 `error` 도 없이 SSE 가
+    끊긴다**(PR #311 리뷰, 재현 확인). §7 "실패해도 턴을 죽이지 않는다"에 어긋난다.
+    """
+    import app.pipelines.artifact_store as artifact_store
+
+    def _boom():
+        raise RuntimeError("catalog store init failed (pg down)")
+
+    async def _summary(user_id):  # noqa: ANN001
+        return {"markdown": "취향 요약", "embedding": [1.0, 0.0, 0.0]}
+
+    import app.agents.buyer.graph as buyer_graph
+
+    monkeypatch.setattr(buyer_graph, "read_profile_summary", _summary)
+    monkeypatch.setattr(artifact_store, "get_catalog_store", _boom)
+    search, _ = _counting_search_calls()
+    popular, popular_calls = _recording_popular()
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="아무거나 추천해줘", thread_id="nc-store-down"),
+            _member(),
+            llm=FakeLLM(decompose=_NO_CONDITION_DECOMPOSE),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    types = _types(events)
+    assert types[-1] == "done"  # 스트림이 정상 종료된다
+    assert "error" not in types
+    assert popular_calls  # 인기 상품 폴백을 실제로 탄다

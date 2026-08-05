@@ -184,22 +184,30 @@ async def rank_by_profile(
         rank_candidates,
     )
 
-    store = get_catalog_store()
-    # 시그널(cart·viewed)은 넘기지 않는다 — 채팅 턴에는 그 맥락이 없다. `build_query_vector` 는
-    # "시그널이 비어도 프로필만으로 질의 벡터가 선다"고 계약돼 있고, 시그널이 없으면 스토어를
-    # 조회하지 않으므로 여기서는 순수 계산이라 스레드 오프로드가 필요 없다.
-    query_vec = build_query_vector(
-        cart_ids=[], viewed_ids=[], store=store, settings=settings, profile_vec=profile_vec
-    )
-    if not query_vec:  # 0 벡터 = 개인화 근거 없음(홈의 NO_PROFILE 과 같은 판정)
-        return None
-
     # 스토어 호출만 오프로드한다 — 동기 psycopg 질의라 이벤트루프를 막고, 취소도 안 된다.
     # 홈이 쓰는 `_call_store` 를 그대로 재사용해 "요청 벽시계 상한 / DB 커넥션 상한" 2층
     # 분담을 같이 가져간다. 상한도 홈 값을 쓴다 — 같은 스토어에 같은 형태의 질의라 별도
     # 튜너블을 만들 근거가 없다.
     timeout = settings.home_reco_store_timeout_s
+    # [PR #311 리뷰] **스토어 확보·질의 벡터 생성까지 같은 방어 안에 둔다.** 종전에는
+    # `_call_store(rank_candidates)` 만 감쌌는데, `get_catalog_store()` 는 pg 커넥션 풀을
+    # 만드는 지점이라 오히려 실패하기 쉽다 — 거기서 예외가 나면 `stream_recommendation`
+    # 제너레이터가 그대로 죽어 **`done` 도 `error` 도 없이 SSE 스트림이 끊긴다**(재현 확인).
+    # "시그널이 없으면 스토어를 조회하지 않아 순수 계산"이라는 판단은 **오프로드 불필요**의
+    # 근거일 뿐 예외가 안 난다는 뜻이 아니었다. 홈(`home_recommendation`)도 같은 두 호출을
+    # try 로 감싸는데, 홈은 폴백 소스가 없어 503/504 로 올려 보내는 반면 여기는 **인기 상품
+    # (I-3) 폴백이 이미 있으므로 `None` 으로 떨궈 그쪽을 태운다**(§7 "실패해도 턴을 죽이지
+    # 않는다").
     try:
+        store = get_catalog_store()
+        # 시그널(cart·viewed)은 넘기지 않는다 — 채팅 턴에는 그 맥락이 없다. `build_query_vector`
+        # 는 "시그널이 비어도 프로필만으로 질의 벡터가 선다"고 계약돼 있고, 시그널이 없으면
+        # 스토어를 조회하지 않으므로 스레드 오프로드는 필요 없다(예외 방어와는 별개 축이다).
+        query_vec = build_query_vector(
+            cart_ids=[], viewed_ids=[], store=store, settings=settings, profile_vec=profile_vec
+        )
+        if not query_vec:  # 0 벡터 = 개인화 근거 없음(홈의 NO_PROFILE 과 같은 판정)
+            return None
         ranked = await _call_store(
             rank_candidates,
             timeout=timeout,
