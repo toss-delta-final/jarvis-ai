@@ -71,3 +71,10 @@ ranking은 그 후보의 부분집합일 수 있으며, raw score 파일을 그�
 
 초기 가중치는 다양성은 개선하지만 순위 relevance는 passthrough보다 낮다. 이 결과는 baseline의
 우월성 주장이 아니라 후속 #146 ablation과 튜닝이 비교할 고정 출발점이다.
+
+**해석 정정(#333)**: 위 `passthrough`는 검색엔진이 매긴 순위 기준선이 **아니다**. v1 dev
+search fixture 32/32건이 우연히 productId 오름차순으로 기록돼 있었을 뿐이라, `passthrough`는
+사실상 **임의 순서 기준선**(=`evals/goldenset` README의 no-op 정의)이었다. 위 표의 수치 자체는
+이 커밋된 baseline 산출물을 바꾸지 않지만, "검색 순위 대비 -0.121"이 아니라 "임의 순서 대비
+-0.121"로 읽어야 한다. `evals/metrics`는 v2부터 이 기준선을 `noopBaseline`으로 모든 실행에
+상설 등록한다.

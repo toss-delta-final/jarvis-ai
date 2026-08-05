@@ -7,8 +7,15 @@ from copy import deepcopy
 import pytest
 
 from app.core.config import Settings
-from evals.goldenset.schema import GoldenCase
-from evals.metrics.runner import EvaluationFixtures, assert_pr_gate, critical_cases, evaluate
+from evals.goldenset.schema import NEEDS_SLICES, GoldenCase
+from evals.metrics.runner import (
+    EvaluationFixtures,
+    _candidate_depth_stats,
+    _ndcg_cutoff_labels,
+    assert_pr_gate,
+    critical_cases,
+    evaluate,
+)
 
 
 def _case(
@@ -21,17 +28,22 @@ def _case(
     hard: dict | None = None,
     must_exclude: list[int] | None = None,
 ) -> GoldenCase:
-    resolved_slices = slices or ["search", "guest"]
+    resolved_slices = list(slices or ["search", "guest"])
+    if not NEEDS_SLICES & set(resolved_slices):
+        resolved_slices.append("single_need")
+    if "guest" not in resolved_slices and "member" not in resolved_slices:
+        resolved_slices.append("member")
+    identity_kind = "guest" if "guest" in resolved_slices else "member"
     return GoldenCase.model_validate(
         {
             "caseId": case_id,
-            "schemaVersion": "1.0.0",
-            "datasetVersion": "1.0.0",
+            "schemaVersion": "2.0.0",
+            "datasetVersion": "2.0.0",
             "split": "dev",
             "slices": resolved_slices,
             "query": "테스트 추천",
             "queryType": "simple",
-            "identity": {"kind": "guest" if "guest" in resolved_slices else "member"},
+            "identity": {"kind": identity_kind},
             "expectedRoute": "recommend",
             "expectedFilters": {"keyword": "테스트"},
             "searchFixtureId": f"fixture-{case_id}",
@@ -62,7 +74,7 @@ def _fixtures(cases: list[GoldenCase]) -> EvaluationFixtures:
         catalog=catalog,
         search_responses=searches,
         purchase_history={},
-        manifest={"datasetVersion": "1.0.0", "datasetHash": "abc"},
+        manifest={"datasetVersion": "2.0.0", "datasetHash": "abc"},
         non_discriminative_case_ids=frozenset(),
     )
 
@@ -229,3 +241,122 @@ def test_pr_gate_fails_when_adapter_injects_price_violation() -> None:
 
     with pytest.raises(AssertionError, match="priceMax"):
         assert_pr_gate(report)
+
+
+def test_noop_baseline_exposure_is_truncated_to_system_exposure_length() -> None:
+    # F-4(#333 리뷰): 후보(fixture productIds) [1,2,3] 3개인데 시스템은 1개만 노출한다 —
+    # no-op도 같은 1개(선두, productId 오름차순)로 잘려야 노출 길이 효과가 섞이지 않는다.
+    case = _case("buy-srch-9001", relevant=[3], grades={3: 3})
+
+    report = evaluate(
+        cases=[case],
+        fixtures=_fixtures([case]),
+        adapter=lambda case, fixtures: {
+            "rankedProductIds": [3],
+            "extractedFilters": case.expected_filters,
+        },
+        k_list=(1,),
+    )
+
+    noop_row = report["noopBaseline"]["cases"][0]
+    assert noop_row["rankedProductIds"] == [1]
+    assert report["noopBaseline"]["definition"]
+
+
+def test_noop_baseline_exposure_truncation_uses_deduplicated_system_length() -> None:
+    # 시스템이 중복 포함 3개를 냈지만 중복 제거 후 2개뿐이면 no-op도 2개로 잘린다.
+    case = _case("buy-srch-9001", relevant=[3], grades={3: 3})
+
+    report = evaluate(
+        cases=[case],
+        fixtures=_fixtures([case]),
+        adapter=lambda case, fixtures: {
+            "rankedProductIds": [1, 1, 3],
+            "extractedFilters": case.expected_filters,
+        },
+        k_list=(1,),
+    )
+
+    noop_row = report["noopBaseline"]["cases"][0]
+    assert noop_row["rankedProductIds"] == [1, 2]
+
+
+def test_noop_baseline_matches_system_when_system_echoes_full_candidate_order() -> None:
+    # 시스템이 fixture 순서를 그대로 내면(예: 결정론 passthrough) no-op과 nDCG@1이 같아야 한다.
+    case = _case("buy-srch-9001", relevant=[2], grades={2: 3})
+
+    report = evaluate(
+        cases=[case],
+        fixtures=_fixtures([case]),
+        adapter=lambda case, fixtures: {
+            "rankedProductIds": [1, 2, 3],
+            "extractedFilters": case.expected_filters,
+        },
+        k_list=(1,),
+    )
+
+    assert report["overall"]["ndcgAtK"]["1"] == report["noopBaseline"]["overall"]["ndcgAtK"]["1"]
+
+
+def test_candidate_depth_stats_reports_min_median_max_and_shallow_ratio() -> None:
+    stats = _candidate_depth_stats([2, 9, 10, 15, 30])
+
+    assert stats["min"] == 2
+    assert stats["median"] == 10
+    assert stats["max"] == 30
+    assert stats["shallowCount"] == 3  # 2, 9, 10 <= 10
+    assert stats["shallowRatio"] == pytest.approx(3 / 5)
+
+
+def test_candidate_depth_stats_handles_even_count_median() -> None:
+    stats = _candidate_depth_stats([10, 20])
+    assert stats["median"] == 15
+
+
+def test_candidate_depth_stats_empty_input() -> None:
+    stats = _candidate_depth_stats([])
+    assert stats == {
+        "min": None,
+        "median": None,
+        "max": None,
+        "shallowCount": 0,
+        "shallowRatio": 0.0,
+    }
+
+
+def test_ndcg_cutoff_labels_marks_only_ten_as_primary() -> None:
+    assert _ndcg_cutoff_labels((3, 5, 10, 20)) == {
+        "3": "exploratory",
+        "5": "exploratory",
+        "10": "primary",
+        "20": "exploratory",
+    }
+
+
+def test_evaluate_reports_candidate_depth_and_ndcg_cutoff_labels() -> None:
+    case_a = _case("buy-srch-9001", relevant=[1], grades={1: 3})
+    case_b = _case("buy-srch-9002", relevant=[2], grades={2: 3})
+    fixtures = _fixtures([case_a, case_b])
+    fixtures.search_responses[case_a.search_fixture_id]["productIds"] = [1, 2]
+    fixtures.search_responses[case_b.search_fixture_id]["productIds"] = [1, 2, 3]
+
+    report = evaluate(
+        cases=[case_a, case_b],
+        fixtures=fixtures,
+        adapter=lambda case, fixtures: {
+            "rankedProductIds": [1],
+            "extractedFilters": case.expected_filters,
+        },
+        k_list=(1,),
+    )
+
+    assert report["ndcgCutoffLabels"] == {
+        "1": "exploratory",
+        "3": "exploratory",
+        "5": "exploratory",
+        "10": "primary",
+    }
+    depth = report["overall"]["candidateDepth"]
+    assert depth["min"] == 2
+    assert depth["max"] == 3
+    assert depth["shallowCount"] == 2

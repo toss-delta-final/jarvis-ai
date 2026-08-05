@@ -1,5 +1,13 @@
 {
   "dev-001": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 1268795,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       1268795
     ],
@@ -12,6 +20,188 @@
     "totalCount": 1
   },
   "dev-002": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 1085982197,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 1403303149,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 1536882634,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 1677693211,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 2374915876,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 2378024650,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 2627452444,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 2730310079,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 2749402080,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 2829539071,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 3445851710,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 3745840628,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 4523196896,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 4744632097,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5346989313,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5367233175,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5588888475,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5650482992,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5710396474,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5807301560,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5887023359,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6318746061,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6460971321,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6523501950,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6989049238,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 7510891587,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 7591624431,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 7791911136,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8050319029,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8372308572,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       1085982197,
       1403303149,
@@ -52,6 +242,20 @@
     "totalCount": 89
   },
   "dev-003": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 9205089754,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9406282766,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       9205089754,
       9406282766
@@ -64,6 +268,14 @@
     "totalCount": 2
   },
   "dev-004": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 9214523774,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       9214523774
     ],
@@ -75,6 +287,32 @@
     "totalCount": 1
   },
   "dev-005": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 6842529832,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9454308079,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9478002020,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9478986118,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       6842529832,
       9454308079,
@@ -89,6 +327,44 @@
     "totalCount": 4
   },
   "dev-006": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 2374915876,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 2378024650,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 4523196896,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5367233175,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5807301560,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8418144778,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       2374915876,
       2378024650,
@@ -106,6 +382,104 @@
     "totalCount": 6
   },
   "dev-007": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 7510891587,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8050319029,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8372308572,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8432807582,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8460595946,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8783110754,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8789688417,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8808747885,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9188383733,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9188383734,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9397815149,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9397819432,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9431130647,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9459906684,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9466448368,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9468725424,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       7510891587,
       8050319029,
@@ -133,6 +507,20 @@
     "totalCount": 16
   },
   "dev-008": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 9205089754,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9406282766,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       9205089754,
       9406282766
@@ -148,6 +536,20 @@
     "totalCount": 2
   },
   "dev-009": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 9205089754,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9406282766,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       9205089754,
       9406282766
@@ -160,6 +562,188 @@
     "totalCount": 2
   },
   "dev-010": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 1670827228,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 2664196774,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 3018587338,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 4288271796,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 4315852617,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5324430409,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5356722618,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5597978044,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6914535179,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6989992319,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 7205023265,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8394534637,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9035270365,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9061564932,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9178106390,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9192224243,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9205089754,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9205740434,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9244102304,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9269659922,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9309760122,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9310520615,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9350044414,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9383288942,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9406202396,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9406282766,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9422392127,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9436885763,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9447516649,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9454271189,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       1670827228,
       2664196774,
@@ -203,6 +787,98 @@
     "totalCount": 38
   },
   "dev-011": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 1592748007,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6566974267,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8294300715,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8655630774,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8811061014,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8822328310,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9004931407,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9016632513,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9241259314,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9301766879,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9344325307,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9405845716,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9424901383,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9433232120,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9474702025,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       1592748007,
       6566974267,
@@ -228,6 +904,38 @@
     "totalCount": 15
   },
   "dev-012": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 7566420600,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 7566500914,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8481970686,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9478829600,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9479369692,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       7566420600,
       7566500914,
@@ -243,6 +951,62 @@
     "totalCount": 5
   },
   "dev-013": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 4288557084,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 7972526163,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8280119093,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8333869685,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8628730674,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9283627831,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9310126912,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9371969848,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9381792657,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       4288557084,
       7972526163,
@@ -262,6 +1026,104 @@
     "totalCount": 9
   },
   "dev-014": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 1679183612,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 7794089168,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8466941708,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8481799754,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8775411564,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8864611198,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8921599557,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9057575338,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9066206233,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9268823473,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9277179411,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9277776847,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9365157030,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9412436250,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9412588999,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9450206475,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       1679183612,
       7794089168,
@@ -288,6 +1150,7 @@
     "totalCount": 16
   },
   "dev-015": {
+    "candidates": [],
     "productIds": [],
     "recordedAt": "2026-08-03T00:20:00+09:00",
     "request": {
@@ -297,6 +1160,38 @@
     "totalCount": 0
   },
   "dev-016": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 2888196506,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8386782901,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9380527610,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9409881208,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9474734087,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       2888196506,
       8386782901,
@@ -313,6 +1208,164 @@
     "totalCount": 5
   },
   "dev-017": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 1403303149,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 1677693211,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 2374915876,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 2378024650,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 2730310079,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 2829539071,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 4523196896,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 4744632097,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5346989313,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5367233175,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5588888475,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5807301560,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6318746061,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6989049238,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 7591624431,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 7791911136,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8418144778,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8819988122,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9205558347,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9280160690,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9406060285,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9406065305,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9451394813,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9468979902,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9468989256,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9473470615,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       1403303149,
       1677693211,
@@ -354,6 +1407,38 @@
     "totalCount": 26
   },
   "dev-018": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 1852393263,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 3313197989,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 3477489470,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5741790221,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6511512452,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       1852393263,
       3313197989,
@@ -374,6 +1459,7 @@
     "totalCount": 5
   },
   "dev-019": {
+    "candidates": [],
     "productIds": [],
     "recordedAt": "2026-08-03T00:20:00+09:00",
     "request": {
@@ -387,6 +1473,7 @@
     "totalCount": 0
   },
   "dev-020": {
+    "candidates": [],
     "productIds": [],
     "recordedAt": "2026-08-03T00:20:00+09:00",
     "request": {
@@ -396,6 +1483,7 @@
     "totalCount": 0
   },
   "dev-021": {
+    "candidates": [],
     "productIds": [],
     "recordedAt": "2026-08-03T00:20:00+09:00",
     "request": {
@@ -406,6 +1494,188 @@
     "totalCount": 0
   },
   "dev-022": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 16202915,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 1217557184,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 1375397293,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 2137780125,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 2829539071,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 3282637064,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 3830007460,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 3834938566,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 3914310658,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 4136679809,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 4347909601,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 4361832730,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5233499372,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5630149146,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5810615310,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5972920366,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6190106791,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6316290980,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6577554236,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6780043279,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 7242259104,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 7265440136,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 7517896801,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 7659487121,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8146889136,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8428294107,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8431336657,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8660504353,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8680764845,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8745726355,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       16202915,
       1217557184,
@@ -446,6 +1716,62 @@
     "totalCount": 71
   },
   "dev-023": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 8390877834,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9125108289,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9203265703,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9209697516,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9218886535,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9311951784,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9315015520,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9315015522,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9475239098,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       8390877834,
       9125108289,
@@ -465,6 +1791,98 @@
     "totalCount": 9
   },
   "dev-024": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 2281995417,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 2888196506,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 3177983773,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 3178012032,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5134004640,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 7298492903,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8386782901,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8629221115,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9181094162,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9203442779,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9262843155,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9339005338,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9462777060,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9466686793,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9470241680,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       2281995417,
       2888196506,
@@ -490,6 +1908,14 @@
     "totalCount": 15
   },
   "dev-025": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 9462497279,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       9462497279
     ],
@@ -502,6 +1928,14 @@
     "totalCount": 1
   },
   "dev-026": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 9381985666,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       9381985666
     ],
@@ -513,6 +1947,38 @@
     "totalCount": 1
   },
   "dev-027": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 9342917796,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9356761664,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9445707691,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9456600583,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9470543964,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       9342917796,
       9356761664,
@@ -528,6 +1994,14 @@
     "totalCount": 5
   },
   "dev-028": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 9380527610,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       9380527610
     ],
@@ -539,6 +2013,98 @@
     "totalCount": 1
   },
   "dev-029": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 1592748007,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6566974267,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8294300715,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8655630774,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8811061014,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8822328310,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9004931407,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9016632513,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9241259314,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9301766879,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9344325307,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9405845716,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9424901383,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9433232120,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9474702025,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       1592748007,
       6566974267,
@@ -564,6 +2130,32 @@
     "totalCount": 15
   },
   "dev-030": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 9178106390,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9205740434,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9447516649,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9467570175,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       9178106390,
       9205740434,
@@ -581,6 +2173,182 @@
     "totalCount": 4
   },
   "dev-031": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 1714227328,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 2803258637,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 3294263680,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 3610879964,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 3772427130,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5784310647,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6108080498,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 7961701252,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8427903232,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9029965731,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9083199962,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9154071030,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9200973936,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9203951415,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9211989671,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9258786690,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9281865026,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9282577680,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9282669848,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9404566511,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9425215731,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9426693533,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9440517467,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9453530463,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9454394181,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9468048697,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9470852962,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9471567439,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9476138918,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       1714227328,
       2803258637,
@@ -620,6 +2388,20 @@
     "totalCount": 29
   },
   "hold-001": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 7248177508,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8814558554,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       7248177508,
       8814558554
@@ -632,6 +2414,188 @@
     "totalCount": 2
   },
   "hold-002": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 1528498349,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 2848444180,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 3354419006,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 3628552683,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 3709020096,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 3937477758,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 4171407999,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 4336382652,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5588025100,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5604306860,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5654207239,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5719067670,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 7064769255,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 7065145515,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 7252788191,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 7319642141,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8102464275,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8126538689,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8136413333,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8174635108,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8483470371,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8518194590,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8537589184,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8539517719,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8652330758,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8678618184,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8700782493,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8709256693,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8786148432,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8786191962,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       1528498349,
       2848444180,
@@ -672,6 +2636,98 @@
     "totalCount": 147
   },
   "hold-003": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 1592748007,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6566974267,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8294300715,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8655630774,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8811061014,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8822328310,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9004931407,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9016632513,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9241259314,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9301766879,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9344325307,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9405845716,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9424901383,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9433232120,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9474702025,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       1592748007,
       6566974267,
@@ -697,6 +2753,7 @@
     "totalCount": 15
   },
   "hold-004": {
+    "candidates": [],
     "productIds": [],
     "recordedAt": "2026-08-03T00:20:00+09:00",
     "request": {
@@ -706,6 +2763,188 @@
     "totalCount": 0
   },
   "hold-005": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 1670827228,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 2664196774,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 3018587338,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 4288271796,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 4315852617,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5324430409,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5356722618,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5597978044,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6914535179,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6989992319,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 7205023265,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8394534637,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9035270365,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9061564932,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9178106390,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9192224243,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9205089754,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9205740434,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9244102304,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9269659922,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9309760122,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9310520615,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9350044414,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9383288942,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9406202396,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9406282766,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9422392127,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9436885763,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9447516649,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9454271189,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       1670827228,
       2664196774,
@@ -746,6 +2985,50 @@
     "totalCount": 38
   },
   "hold-006": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 2408561969,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 2875571339,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 7856812498,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9397921554,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9397965516,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9416963181,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9456852729,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       2408561969,
       2875571339,
@@ -764,6 +3047,56 @@
     "totalCount": 7
   },
   "hold-007": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 5194627522,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 8531059267,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9370461625,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9389685001,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9399026613,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9434238638,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9472840073,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9475529503,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       5194627522,
       8531059267,
@@ -782,6 +3115,188 @@
     "totalCount": 8
   },
   "hold-008": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 1162332060,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 1280954924,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 1875296471,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 2350490722,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 2697382337,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 3052506667,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 3434171261,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 3473821596,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 3674644033,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 3824970895,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 4018085798,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 4018093978,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 4151330708,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5079774476,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5794285350,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5957632092,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5977530960,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6099073793,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6169013531,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6199783118,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6370344075,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6384220477,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6776993182,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6917467993,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6955189811,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6999175063,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 7251019697,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 7252788191,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 7278203768,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 7448412763,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       1162332060,
       1280954924,
@@ -822,6 +3337,188 @@
     "totalCount": 129
   },
   "hold-009": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 110494166,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 437839562,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 990928631,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 1398327038,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 1690898135,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 1852393263,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 2177297765,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 2289512503,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 2664196774,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 3313197989,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 3477489470,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 3687970252,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 4055652618,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 4122730013,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 4288271796,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 4569953816,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 4799176566,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 4886654987,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5324430409,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5449555076,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5741790221,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5772716509,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5807946857,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 5974786741,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6001774482,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6107784414,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6229512475,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6339222075,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6511512452,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 6597203815,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       110494166,
       437839562,
@@ -862,6 +3559,44 @@
     "totalCount": 187
   },
   "hold-010": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 7856386468,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9456805858,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9462497279,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9466064094,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9466205403,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9475376971,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       7856386468,
       9456805858,
@@ -878,6 +3613,7 @@
     "totalCount": 6
   },
   "hold-011": {
+    "candidates": [],
     "productIds": [],
     "recordedAt": "2026-08-03T00:20:00+09:00",
     "request": {
@@ -887,6 +3623,62 @@
     "totalCount": 0
   },
   "hold-012": {
+    "candidates": [
+      {
+        "from": "primary",
+        "productId": 8390877834,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9125108289,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9203265703,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9209697516,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9218886535,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9311951784,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9315015520,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9315015522,
+        "rule": null,
+        "source": "golden_filter"
+      },
+      {
+        "from": "primary",
+        "productId": 9475239098,
+        "rule": null,
+        "source": "golden_filter"
+      }
+    ],
     "productIds": [
       8390877834,
       9125108289,

@@ -16,26 +16,32 @@
 ```json
 {
   "dev": {
+    "budget": 2,
     "category_mapping_failure": 9,
     "cold_start": 2,
     "failure": 5,
     "guest": 20,
+    "member": 11,
     "multi_constraint": 4,
     "personalization": 8,
     "personalization_overreach": 3,
     "repurchase": 3,
-    "search": 26
+    "search": 26,
+    "single_need": 22
   },
   "holdout": {
+    "budget": 0,
     "category_mapping_failure": 2,
     "cold_start": 0,
     "failure": 2,
     "guest": 10,
+    "member": 2,
     "multi_constraint": 0,
     "personalization": 2,
     "personalization_overreach": 0,
     "repurchase": 1,
-    "search": 10
+    "search": 10,
+    "single_need": 11
   }
 }
 ```

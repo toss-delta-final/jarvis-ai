@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Literal
 
@@ -13,18 +14,23 @@ from pydantic.alias_generators import to_camel
 from app.core.config import Settings, get_settings
 from app.schemas.spring import ProductSearchFilters
 
-SCHEMA_VERSION = "1.0.0"
-DATASET_VERSION = "1.0.0"
+SCHEMA_VERSION = "2.0.0"
+DATASET_VERSION = "2.0.0"
 CASE_ID_RE = re.compile(r"^buy-[a-z][a-z0-9_]*-\d{4}$")
+# 니즈 축(신원 아님) — 케이스당 정확히 1개(disjoint, §2.1). guest/member 신원 슬라이스와는 별도 축이다.
+NEEDS_SLICES = frozenset({"single_need", "multi_constraint", "budget", "repurchase"})
 ALLOWED_SLICES = frozenset(
     {
         "search",
         "guest",
+        "member",
         "cold_start",
         "personalization",
         "personalization_overreach",
         "multi_constraint",
         "repurchase",
+        "single_need",
+        "budget",
         "category_mapping_failure",
         "failure",
     }
@@ -39,6 +45,24 @@ LABEL_FIELDS = frozenset(
         "mustExcludeProductIds",
     }
 )
+CANDIDATE_SOURCES = frozenset({"golden_filter", "injected"})
+CANDIDATE_RULES = frozenset(
+    {
+        "semantic_near",
+        "price_violation",
+        "attr_violation",
+        "other_brand",
+        "broadened_search",
+        "random_catalog",
+    }
+)
+NARROW_DOMAIN_NOTE_PREFIX = "narrow-domain:"
+INJECTED_RELEVANT_APPROVED_NOTE_PREFIX = "injected-relevant-approved:"
+RELEVANT_RATIO_EXEMPT_NOTE_PREFIX = "relevant-ratio-exempt:"
+# notes 접두부에 여러 마커를 이어붙일 수 있다(예: "narrow-domain: relevant-ratio-exempt: ...").
+# 마커는 소문자·하이픈으로만 구성되고 ":"로 끝나는 토큰이 연속으로 나오는 구간까지만 접두부로 본다.
+_NOTE_PREFIX_MARKERS_RE = re.compile(r"^(?:[a-z][a-z-]*:\s*)+")
+_NOTE_MARKER_TOKEN_RE = re.compile(r"([a-z][a-z-]*):\s*")
 
 
 class CamelModel(BaseModel):
@@ -92,8 +116,8 @@ class CaseCore(CamelModel):
     """dev와 봉인 holdout이 공유하는 비라벨 필드."""
 
     case_id: str
-    schema_version: Literal["1.0.0"]
-    dataset_version: Literal["1.0.0"]
+    schema_version: Literal["2.0.0"]
+    dataset_version: Literal["2.0.0"]
     split: Literal["dev", "holdout"]
     slices: list[str]
     query: str = Field(min_length=1)
@@ -107,6 +131,13 @@ class CaseCore(CamelModel):
     adjudicator: str | None = None
     created_at: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     notes: str = Field(min_length=1)
+    # CheckList 형식(#328 공통 규약): MFT는 라벨 필요, INV/DIR은 라벨 없이 규모를 늘리는 축이다.
+    test_type: Literal["MFT", "INV", "DIR"] = "MFT"
+    # INV/DIR 케이스를 묶는 검사 단위. 같은 group의 케이스들을 evals.metrics.behavior가 비교한다.
+    behavior_group_id: str | None = None
+    behavior_kind: (
+        Literal["color_synonym", "word_order", "constraint_subset", "member_recall_ge_guest"] | None
+    ) = None
 
     @field_validator("case_id")
     @classmethod
@@ -150,6 +181,24 @@ class CaseCore(CamelModel):
         has_guest_slice = "guest" in self.slices
         if is_guest != has_guest_slice:
             raise ValueError("guest identity와 guest slice는 항상 함께 있어야 합니다")
+        return self
+
+    @model_validator(mode="after")
+    def _member_slice_matches_identity(self) -> "CaseCore":
+        is_member = self.identity.kind == "member"
+        has_member_slice = "member" in self.slices
+        if is_member != has_member_slice:
+            raise ValueError("member identity와 member slice는 항상 함께 있어야 합니다")
+        return self
+
+    @model_validator(mode="after")
+    def _needs_slice_is_exactly_one(self) -> "CaseCore":
+        present = NEEDS_SLICES & set(self.slices)
+        if len(present) != 1:
+            raise ValueError(
+                "니즈 슬라이스(single_need/multi_constraint/budget/repurchase)는 "
+                f"케이스당 정확히 1개여야 합니다: {sorted(present)}"
+            )
         return self
 
 
@@ -206,7 +255,9 @@ class GoldenCase(CaseCore):
     @model_validator(mode="after")
     def _labels_are_consistent(self) -> "GoldenCase":
         _validate_labels(self)
-        if "search" in self.slices and not self.relevant_product_ids:
+        # INV/DIR은 라벨 없이 규모를 늘리는 축(#328 공통 규약)이라 MFT의 "search면 정답 필수"
+        # 규칙에서 제외한다 — evals.metrics.behavior가 라벨과 무관하게 별도로 검사한다.
+        if self.test_type == "MFT" and "search" in self.slices and not self.relevant_product_ids:
             raise ValueError("search slice의 relevantProductIds는 비어 있을 수 없습니다")
         return self
 
@@ -228,6 +279,76 @@ def _validate_labels(case: GoldenCase | HoldoutLabels) -> None:
             raise ValueError("relevanceGrades 값은 3 이하이어야 합니다")
     if any(grade < 0 or grade > 3 for grade in grades.values()):
         raise ValueError("relevanceGrades 값은 0 이상 3 이하이어야 합니다")
+
+
+class Candidate(CamelModel):
+    """search fixture 후보 한 건의 provenance(§2.1 v2 포맷)."""
+
+    product_id: int
+    source: Literal["golden_filter", "injected"]
+    rule: (
+        Literal[
+            "semantic_near", "price_violation", "attr_violation", "other_brand", "broadened_search"
+        ]
+        | None
+    ) = None
+    # 원문 "from" 은 파이썬 예약어라 origin으로 받고 별칭만 "from"으로 고정한다.
+    origin: str = Field(alias="from", min_length=1)
+
+
+class SearchFixture(CamelModel):
+    """fixtures/search_responses.json 항목 하나(v2, candidates provenance 필수)."""
+
+    request: dict[str, object]
+    product_ids: list[int]
+    total_count: int
+    recorded_at: str
+    source: str
+    candidates: list[Candidate]
+
+    @model_validator(mode="after")
+    def _product_ids_match_candidate_union(self) -> "SearchFixture":
+        expected = sorted({candidate.product_id for candidate in self.candidates})
+        if self.product_ids != expected:
+            raise ValueError(
+                "productIds는 candidates를 productId 오름차순으로 중복 제거한 목록과 같아야 합니다"
+                "(no-op 기준선의 정의)"
+            )
+        return self
+
+
+def validate_search_fixture(fixture_id: str, payload: dict) -> SearchFixture:
+    """fixture 항목 하나를 v2 candidates provenance 포맷으로 검증한다."""
+    try:
+        return SearchFixture.model_validate(payload)
+    except Exception as exc:
+        raise ValueError(f"{fixture_id}: 검색 fixture 검증 실패: {exc}") from exc
+
+
+def all_candidates_are_correct(
+    candidate_product_ids: Iterable[int], relevant_product_ids: Iterable[int]
+) -> bool:
+    """후보 집합이 정답 집합에 완전히 포함될 때만 '전부 정답'(비판별)이다.
+
+    개수 비교(candidateCount<=relevantCount)만으로는 후보에 오답이 섞여 있어도 후보 수가
+    우연히 정답 수 이하이면 비판별로 오분류한다 — 반드시 집합 포함 관계로 판정해야 한다
+    (#333 리뷰 라운드1 F-1). `schema.validate_cases`·`migrate_v1_to_v2.py`·`audit.py`가 모두
+    이 함수 하나를 호출한다.
+    """
+    return set(candidate_product_ids) <= set(relevant_product_ids)
+
+
+def has_note_marker(notes: str, marker: str) -> bool:
+    """notes 접두부에 marker(콜론 없이)가 있는지 확인한다.
+
+    여러 마커를 이어붙일 수 있다(예: ``"narrow-domain: relevant-ratio-exempt: 근거..."``).
+    접두부는 ``"<마커>: "`` 토큰이 문자열 시작부터 연속으로 나오는 구간까지다.
+    """
+    name = marker.rstrip(":").strip()
+    match = _NOTE_PREFIX_MARKERS_RE.match(notes)
+    if not match:
+        return False
+    return name in _NOTE_MARKER_TOKEN_RE.findall(match.group(0))
 
 
 def load_jsonl(path: Path, model: type[BaseModel]) -> list[BaseModel]:
@@ -261,16 +382,80 @@ def validate_cases(
             f"케이스 수 {len(cases)}가 허용 범위 "
             f"{settings.goldenset_min_cases}~{settings.goldenset_max_cases} 밖입니다"
         )
+    parsed_fixtures = {
+        fixture_id: validate_search_fixture(fixture_id, payload)
+        for fixture_id, payload in search_responses.items()
+    }
+    catalog_ids = {int(key) for key in catalog}
     catalog_categories = {
         product.get("categoryName") for product in catalog.values() if product.get("categoryName")
     }
+    # F-2(#333 리뷰): fixture candidate는 라벨된 id뿐 아니라 전원 catalog_snapshot에 실존해야
+    # 한다 — 존재하지 않으면 가격 HCV·diversity·라벨 워크시트 계산이 그 후보에서 전부 불가능해진다.
+    for fixture_id, fixture in parsed_fixtures.items():
+        missing_candidates = sorted(
+            {candidate.product_id for candidate in fixture.candidates} - catalog_ids
+        )
+        if missing_candidates:
+            raise ValueError(
+                f"{fixture_id}: catalog에 없는 candidate productId {missing_candidates}"
+            )
     for case in cases:
         labeled_ids = set(case.relevant_product_ids) | set(case.must_exclude_product_ids)
-        missing = labeled_ids - {int(key) for key in catalog}
+        missing = labeled_ids - catalog_ids
         if missing:
             raise ValueError(f"{case.case_id}: 카탈로그에 없는 productId {sorted(missing)}")
         if case.search_fixture_id and case.search_fixture_id not in search_responses:
             raise ValueError(f"{case.case_id}: 검색 fixture가 없습니다")
+        fixture = parsed_fixtures.get(case.search_fixture_id) if case.search_fixture_id else None
+        if fixture is not None:
+            injected_ids = {
+                candidate.product_id
+                for candidate in fixture.candidates
+                if candidate.source == "injected"
+            }
+            offending = sorted(set(case.relevant_product_ids) & injected_ids)
+            if offending and not has_note_marker(case.notes, "injected-relevant-approved"):
+                raise ValueError(
+                    f"{case.case_id}: injected 후보가 relevantProductIds에 있습니다 {offending} "
+                    f"— notes에 '{INJECTED_RELEVANT_APPROVED_NOTE_PREFIX}' 승인 문구가 필요합니다"
+                )
+            candidate_count = len(fixture.product_ids)
+            # F-1(#333 리뷰): 개수 비교가 아니라 집합 포함으로 "전부 정답"을 판정한다 — 오답
+            # 후보가 섞여 있는데 후보 수가 우연히 정답 수 이하면 개수 비교는 이를 놓친다.
+            all_candidates_correct = all_candidates_are_correct(
+                fixture.product_ids, case.relevant_product_ids
+            )
+            ranking_eligible = (
+                case.test_type == "MFT"
+                and "search" in case.slices
+                and bool(case.relevant_product_ids)
+                and not all_candidates_correct
+            )
+            if (
+                ranking_eligible
+                and candidate_count < settings.goldenset_min_ranking_candidates
+                and not has_note_marker(case.notes, "narrow-domain")
+            ):
+                raise ValueError(
+                    f"{case.case_id}: 순위 평가 후보 수 {candidate_count}가 "
+                    f"goldenset_min_ranking_candidates({settings.goldenset_min_ranking_candidates}) "
+                    f"미만입니다 — notes에 '{NARROW_DOMAIN_NOTE_PREFIX}' 예외 문구가 필요합니다"
+                )
+            if ranking_eligible:
+                # F-5-1(#333 리뷰, #329 권고 3): 등급≥1(정답) 후보 비율이 너무 높으면 랭커가
+                # 실제로 틀릴 여지(하드 네거티브)가 없다 — v1 평균 0.389로 이 상한을 넘었다.
+                graded_count = len(set(fixture.product_ids) & set(case.relevant_product_ids))
+                relevant_ratio = graded_count / candidate_count if candidate_count else 0.0
+                if relevant_ratio > settings.goldenset_max_relevant_ratio and not has_note_marker(
+                    case.notes, "relevant-ratio-exempt"
+                ):
+                    raise ValueError(
+                        f"{case.case_id}: 등급≥1 후보 비율 {relevant_ratio:.4f}가 "
+                        f"goldenset_max_relevant_ratio({settings.goldenset_max_relevant_ratio}) "
+                        f"초과입니다 — notes에 '{RELEVANT_RATIO_EXEMPT_NOTE_PREFIX}' 예외 문구가 "
+                        "필요합니다"
+                    )
         persona = case.identity.persona_id
         if persona and persona not in purchase_history:
             raise ValueError(f"{case.case_id}: 구매 이력 페르소나가 없습니다")
@@ -295,7 +480,7 @@ def validate_cases(
                 raise ValueError(f"{case.case_id}: 정답 상품 가격이 priceMin을 위반합니다")
 
 
-def dump_jsonl(path: Path, rows: list[BaseModel | dict]) -> None:
+def dump_jsonl(path: Path, rows: Sequence[BaseModel | dict]) -> None:
     """모델/사전을 결정론적 camelCase JSONL로 기록한다."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="\n") as handle:

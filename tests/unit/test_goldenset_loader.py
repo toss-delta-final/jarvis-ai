@@ -12,7 +12,7 @@ import evals.goldenset.snapshot as goldenset_snapshot
 from app.pipelines.compare import recall_at_k
 from app.schemas.spring import RecentPurchases, SpringProduct
 from evals.goldenset.loader import load_cases, to_compare_golden_cases, unseal_holdout_labels
-from evals.goldenset.snapshot import record_snapshots
+from evals.goldenset.snapshot import record_snapshots, record_snapshots_v2
 from tests.integration._stubs import SpringStub
 
 ROOT = Path("evals/goldenset")
@@ -261,3 +261,106 @@ async def test_snapshot_default_limit_reads_config(
         recorded_at="2026-08-02T00:00:00+09:00",
     )
     assert responses["fixture-z"]["productIds"] == [1]
+
+
+@pytest.mark.asyncio
+async def test_snapshot_v2_records_candidates_provenance_without_broadening(tmp_path: Path) -> None:
+    async def fake_search(filters):
+        from app.schemas.spring import ProductSearchResult
+
+        return ProductSearchResult(
+            products=[
+                SpringProduct(productId=pid, name=f"상품{pid}", price=1000) for pid in range(1, 31)
+            ],
+            totalCount=30,
+        )
+
+    _, responses = await record_snapshots_v2(
+        {"fixture-z": {"keyword": "테스트", "category": "카테고리"}},
+        search=fake_search,
+        catalog_path=tmp_path / "catalog.json",
+        responses_path=tmp_path / "responses.json",
+        recorded_at="2026-08-02T00:00:00+09:00",
+        target_candidates=30,
+        per_query_max=30,
+    )
+
+    fixture = responses["fixture-z"]
+    assert fixture["productIds"] == list(range(1, 31))
+    assert len(fixture["candidates"]) == 30
+    assert all(c["source"] == "golden_filter" and c["rule"] is None for c in fixture["candidates"])
+    assert {c["from"] for c in fixture["candidates"]} == {"primary"}
+
+
+@pytest.mark.asyncio
+async def test_snapshot_v2_broadens_search_when_primary_candidates_are_thin(tmp_path: Path) -> None:
+    calls = []
+
+    async def fake_search(filters):
+        calls.append(dict(filters.model_dump(exclude_none=True, by_alias=True)))
+        from app.schemas.spring import ProductSearchResult
+
+        if filters.category and filters.keyword:
+            products = [SpringProduct(productId=1, name="상품1", price=1000)]
+        elif filters.keyword and not filters.category:
+            products = [
+                SpringProduct(productId=1, name="상품1", price=1000),
+                SpringProduct(productId=2, name="상품2", price=1000),
+            ]
+        else:
+            products = [
+                SpringProduct(productId=1, name="상품1", price=1000),
+                SpringProduct(productId=3, name="상품3", price=1000),
+            ]
+        return ProductSearchResult(products=products, totalCount=len(products))
+
+    _, responses = await record_snapshots_v2(
+        {"fixture-z": {"keyword": "테스트", "category": "카테고리"}},
+        search=fake_search,
+        catalog_path=tmp_path / "catalog.json",
+        responses_path=tmp_path / "responses.json",
+        recorded_at="2026-08-02T00:00:00+09:00",
+        target_candidates=3,
+        per_query_max=30,
+    )
+
+    fixture = responses["fixture-z"]
+    assert fixture["productIds"] == [1, 2, 3]
+    by_id = {c["productId"]: c for c in fixture["candidates"]}
+    assert by_id[1] == {"productId": 1, "source": "golden_filter", "rule": None, "from": "primary"}
+    assert by_id[2]["rule"] == "broadened_search"
+    assert by_id[2]["from"] == "keyword-only"
+    assert by_id[3]["rule"] == "broadened_search"
+    assert by_id[3]["from"] == "category-only"
+    assert len(calls) == 3  # primary + keyword-only + category-only
+
+
+@pytest.mark.asyncio
+async def test_snapshot_v2_stops_broadening_once_target_is_reached(tmp_path: Path) -> None:
+    calls = []
+
+    async def fake_search(filters):
+        calls.append(1)
+        from app.schemas.spring import ProductSearchResult
+
+        if filters.category and filters.keyword:
+            products = [SpringProduct(productId=1, name="상품1", price=1000)]
+        else:
+            products = [
+                SpringProduct(productId=1, name="상품1", price=1000),
+                SpringProduct(productId=2, name="상품2", price=1000),
+            ]
+        return ProductSearchResult(products=products, totalCount=len(products))
+
+    _, responses = await record_snapshots_v2(
+        {"fixture-z": {"keyword": "테스트", "category": "카테고리"}},
+        search=fake_search,
+        catalog_path=tmp_path / "catalog.json",
+        responses_path=tmp_path / "responses.json",
+        recorded_at="2026-08-02T00:00:00+09:00",
+        target_candidates=2,
+        per_query_max=30,
+    )
+
+    assert responses["fixture-z"]["productIds"] == [1, 2]
+    assert len(calls) == 2  # primary(1건) + keyword-only(목표 도달, category-only는 스킵)
