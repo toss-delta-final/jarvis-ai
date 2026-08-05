@@ -1,0 +1,7 @@
+cellId,utteranceId,contextId,group,sampleCount,attempts,failureCount,filled
+screen-001|screenSingle,screen-001,screenSingle,screen,8,8,0,True
+screen-002|screenTriple,screen-002,screenTriple,screen,8,8,0,True
+screen-003|screenFive,screen-003,screenFive,screen,8,8,0,True
+screen-004|screenNine,screen-004,screenNine,screen,8,8,0,True
+screen-005|screenNamed,screen-005,screenNamed,screen,8,8,0,True
+screen-006|screenTriple,screen-006,screenTriple,screen,8,8,0,True

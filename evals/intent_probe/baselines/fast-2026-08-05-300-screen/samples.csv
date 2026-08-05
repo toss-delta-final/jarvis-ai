@@ -1,0 +1,49 @@
+cellId,utteranceId,contextId,group,sampleIndex,intent,productId,optionId,quantity,case,scopedToPrevious,hasCategorySignal,scopeFree,categoryLegs,categoryLegsEchoPrior,resolvedCategoryAction,resolvedProductId,screenResolverFired,screenResolutionReason,latencyMs
+screen-001|screenSingle,screen-001,screenSingle,screen,0,cart_add,2001,,1,2,False,True,,|리필 세탁 세제 2L,False,replace,3101,True,sole_screen_candidate,2690
+screen-001|screenSingle,screen-001,screenSingle,screen,1,cart_add,2002,,1,1,False,True,,|드럼용 세탁 세제,False,replace,3101,True,sole_screen_candidate,2228
+screen-001|screenSingle,screen-001,screenSingle,screen,2,cart_add,3101,,1,2,False,True,,|코튼 워셔블 러그 150x200,False,replace,3101,True,sole_screen_candidate,2067
+screen-001|screenSingle,screen-001,screenSingle,screen,3,cart_add,2001,,1,2,False,True,,|리필 세탁 세제 2L,False,replace,3101,True,sole_screen_candidate,1875
+screen-001|screenSingle,screen-001,screenSingle,screen,4,cart_add,2001,,1,2,False,True,,|리필 세탁 세제 2L,False,replace,3101,True,sole_screen_candidate,1922
+screen-001|screenSingle,screen-001,screenSingle,screen,5,cart_add,2001,,1,2,False,True,,|리필 세탁 세제 2L,False,replace,3101,True,sole_screen_candidate,1761
+screen-001|screenSingle,screen-001,screenSingle,screen,6,cart_add,3101,,1,1,False,True,,세탁용품|세탁 세제,False,replace,3101,True,sole_screen_candidate,1739
+screen-001|screenSingle,screen-001,screenSingle,screen,7,cart_add,3101,,1,1,False,True,,|코튼 워셔블 러그 150x200,False,replace,3101,True,sole_screen_candidate,1902
+screen-002|screenTriple,screen-002,screenTriple,screen,0,cart_add,2001,,1,1,False,False,,,False,carry,,True,ambiguous_screen_candidates,2144
+screen-002|screenTriple,screen-002,screenTriple,screen,1,cart_add,2001,,1,2,False,False,,,False,carry,,True,ambiguous_screen_candidates,1508
+screen-002|screenTriple,screen-002,screenTriple,screen,2,cart_add,2001,,1,1,False,True,,|섬유세제 대체 품목,False,replace,,True,ambiguous_screen_candidates,2229
+screen-002|screenTriple,screen-002,screenTriple,screen,3,cart_add,2001,,1,1,False,False,,,False,carry,,True,ambiguous_screen_candidates,1561
+screen-002|screenTriple,screen-002,screenTriple,screen,4,cart_add,2001,,1,1,False,True,,|세탁 세제,False,replace,,True,ambiguous_screen_candidates,1533
+screen-002|screenTriple,screen-002,screenTriple,screen,5,cart_add,2001,,1,2,False,False,,,False,carry,,True,ambiguous_screen_candidates,2134
+screen-002|screenTriple,screen-002,screenTriple,screen,6,cart_add,2001,,1,1,False,True,,|세탁 세제,False,replace,,True,ambiguous_screen_candidates,1579
+screen-002|screenTriple,screen-002,screenTriple,screen,7,cart_add,3101,,1,1,False,True,,|세탁 세제,False,replace,,True,ambiguous_screen_candidates,1970
+screen-003|screenFive,screen-003,screenFive,screen,0,cart_add,3103,,1,3,False,True,,|무드등 겸용 가습기,False,replace,3103,True,ordinal,1914
+screen-003|screenFive,screen-003,screenFive,screen,1,cart_add,3103,,1,3,True,False,,,False,carry,3103,True,ordinal,1577
+screen-003|screenFive,screen-003,screenFive,screen,2,cart_add,3103,,1,1,True,False,,,False,carry,3103,True,ordinal,1927
+screen-003|screenFive,screen-003,screenFive,screen,3,recommend,,,1,3,True,True,,|세탁 세제,False,replace,,False,,1984
+screen-003|screenFive,screen-003,screenFive,screen,4,cart_add,3103,,1,1,False,False,,,False,carry,3103,True,ordinal,1686
+screen-003|screenFive,screen-003,screenFive,screen,5,cart_add,3103,,1,1,False,False,,,False,carry,3103,True,ordinal,2589
+screen-003|screenFive,screen-003,screenFive,screen,6,cart_add,3103,,1,3,False,False,,,False,carry,3103,True,ordinal,1857
+screen-003|screenFive,screen-003,screenFive,screen,7,cart_add,2003,,1,1,True,False,,,False,carry,3103,True,ordinal,1797
+screen-004|screenNine,screen-004,screenNine,screen,0,cart_add,3107,,1,1,False,True,,|무선 블루투스 이어폰;|탁상 선풍기;|코튼 워셔블 러그 150x200;|라탄 수납 바구니 3종;|린넨 커튼 2p,False,replace,3108,True,coordinate,2449
+screen-004|screenNine,screen-004,screenNine,screen,1,cart_add,3108,,1,1,False,True,,|무선 블루투스 이어폰,False,replace,3108,True,coordinate,1917
+screen-004|screenNine,screen-004,screenNine,screen,2,cart_add,3108,,2,1,False,True,,|무선 블루투스 이어폰,False,replace,3108,True,coordinate,2067
+screen-004|screenNine,screen-004,screenNine,screen,3,cart_add,3108,,1,1,False,True,,|무선 블루투스 이어폰,False,replace,3108,True,coordinate,1886
+screen-004|screenNine,screen-004,screenNine,screen,4,cart_add,3108,,1,1,False,False,,,False,carry,3108,True,coordinate,1883
+screen-004|screenNine,screen-004,screenNine,screen,5,cart_add,3108,,1,1,False,True,,|무선 블루투스 이어폰,False,replace,3108,True,coordinate,1847
+screen-004|screenNine,screen-004,screenNine,screen,6,cart_add,2002,,1,1,False,True,,|드럼용 세탁 세제,False,replace,3108,True,coordinate,1809
+screen-004|screenNine,screen-004,screenNine,screen,7,cart_add,3108,,2,1,False,True,,|무선 블루투스 이어폰,False,replace,3108,True,coordinate,1863
+screen-005|screenNamed,screen-005,screenNamed,screen,0,cart_add,3110,,1,1,False,True,,|무선 이어폰,False,replace,3110,False,,1821
+screen-005|screenNamed,screen-005,screenNamed,screen,1,cart_add,3110,,1,1,False,True,,|무선 블루투스 이어폰,False,replace,3110,False,,1879
+screen-005|screenNamed,screen-005,screenNamed,screen,2,cart_add,3110,,1,1,False,True,,|무선 블루투스 이어폰,False,replace,3110,False,,1798
+screen-005|screenNamed,screen-005,screenNamed,screen,3,cart_add,3110,,1,1,False,True,,|무선 이어폰,False,replace,3110,False,,2016
+screen-005|screenNamed,screen-005,screenNamed,screen,4,cart_add,3110,,1,1,False,False,,,False,carry,3110,False,,2029
+screen-005|screenNamed,screen-005,screenNamed,screen,5,cart_add,3110,,1,1,False,False,,,False,carry,3110,False,,1555
+screen-005|screenNamed,screen-005,screenNamed,screen,6,cart_add,3110,,1,1,False,False,,,False,carry,3110,False,,1571
+screen-005|screenNamed,screen-005,screenNamed,screen,7,cart_add,3110,,1,1,False,False,,,False,carry,3110,False,,34329
+screen-006|screenTriple,screen-006,screenTriple,screen,0,cart_add,3101,,1,1,False,False,,,False,carry,,True,unknown_product_id_spoken,2266
+screen-006|screenTriple,screen-006,screenTriple,screen,1,cart_add,3101,,1,1,False,True,,|리필 세탁 세제 2L;|드럼용 세탁 세제;|섬유유연제,False,replace,,True,unknown_product_id_spoken,1979
+screen-006|screenTriple,screen-006,screenTriple,screen,2,cart_add,3101,,1,1,False,True,,세제/세탁용품|세탁 세제,False,replace,,True,unknown_product_id_spoken,2112
+screen-006|screenTriple,screen-006,screenTriple,screen,3,cart_add,2001,,1,1,False,False,,,False,carry,,True,unknown_product_id_spoken,1589
+screen-006|screenTriple,screen-006,screenTriple,screen,4,cart_add,2002,,1,1,False,False,,,False,carry,,True,unknown_product_id_spoken,1918
+screen-006|screenTriple,screen-006,screenTriple,screen,5,cart_add,3103,,1,1,False,True,,|리필 세탁 세제,False,replace,,True,unknown_product_id_spoken,1838
+screen-006|screenTriple,screen-006,screenTriple,screen,6,cart_add,3101,,1,1,False,False,,,False,carry,,True,unknown_product_id_spoken,34041
+screen-006|screenTriple,screen-006,screenTriple,screen,7,cart_add,3101,,1,1,False,True,,|리필 세탁 세제,False,replace,,True,unknown_product_id_spoken,1783

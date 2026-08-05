@@ -84,7 +84,19 @@ class CategoryQuery:
 class RouteDecision:
     """decompose(Haiku) 1회 산출 — intent 라우팅 + 병합 필터/의미쿼리/case + 폴백 답변 + 장바구니 의도."""
 
-    intent: Literal["recommend", "cart_add", "cart_view", "order_status", "general"]
+    intent: Literal[
+        "recommend",
+        "cart_add",
+        "cart_view",
+        "order_status",
+        "general",
+        # [라운드 24, #116·#117] decompose 가 직접 산출하는 삭제·찜 intent. cart/graph.py 의
+        # classify_cart_utterance(cart_add 로 들어온 발화의 2선 방어)와 값 집합이 겹친다 —
+        # buyer/graph.py 의 라우팅 docstring 참조.
+        "cart_remove",
+        "wishlist_add",
+        "wishlist_remove",
+    ]
     filters: ProductSearchFilters
     # [#101] 의미쿼리는 검색 입력이라 filters.semantic_query 로 이관(decompose 가 세팅). 하류가
     # 그 필드를 읽으므로 RouteDecision 에는 더 두지 않는다.
@@ -123,6 +135,13 @@ class RouteDecision:
     # #22) — fan-out 검색 leg 단위(§6).
     # query 는 그 카테고리 전용 검색 키워드. 대표 카테고리 = category_legs[0][0](칩·멀티턴 승계).
     category_legs: list[tuple[str, str | None]] = field(default_factory=list)
+    # [#162] `filters.semantic_query` 가 **이번 턴 원문으로 폴백**된 값인가.
+    # decompose 는 `llm_sq or cat_signal or prior_sq or query` 순으로 채우므로(decompose.py)
+    # 이 필드는 **절대 비지 않는다** — 사용자가 아무 의미 신호를 주지 않아도 발화 원문이 들어온다.
+    # 따라서 "조건 없는 발화"(#162)는 값의 유무로 판정할 수 없고 **출처**로 갈라야 한다.
+    # 기본 False(= 진짜 신호가 있다)가 보수적이다 — 판정을 놓치면 종전 동작이지만, 반대로
+    # 오탐하면 사용자가 말한 의미를 버리고 인기상품을 준다.
+    semantic_query_is_fallback: bool = False
 
 
 @dataclass

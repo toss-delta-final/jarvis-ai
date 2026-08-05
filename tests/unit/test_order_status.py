@@ -590,15 +590,17 @@ async def test_stream_empty_is_not_failure(caplog: pytest.LogCaptureFixture) -> 
 # ── Lane 4 bounded documentation contract ──
 
 
-def test_lane_c_documents_exact_seventeen_call_contract_and_i4_section() -> None:
+def test_lane_c_documents_exact_eighteen_call_contract_and_i4_section() -> None:
+    """[#162] I-3(§4.17) 등재로 레인 (c)는 17→18건이다."""
     text = Path("docs/api-spec.md").read_text(encoding="utf-8")
     lane = re.search(r"^- 레인 \(c\):[^\n]*", text, re.MULTILINE)
     assert lane is not None
     paragraph = lane.group(0)
-    assert "17건" in paragraph
-    assert re.search(r"(?<!\d)7건", paragraph) is None
+    assert "18건" in paragraph
+    assert re.search(r"(?<!\d)8건", paragraph) is None
     assert set(re.findall(r"I-\d+", paragraph)) == {
         "I-1",
+        "I-3",
         "I-19",
         "I-4",
         "I-2",

@@ -26,7 +26,9 @@ from pydantic import ValidationError
 from app.agents.buyer._frames import progress as progress_frame
 from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.graph import stream_cart_add, stream_cart_view
+from app.agents.buyer.cart.remove import stream_cart_remove
 from app.agents.buyer.cart.state import get_cart_store
+from app.agents.buyer.cart.wishlist import stream_wishlist_add, stream_wishlist_remove
 from app.agents.buyer.fallback import stream_fallback
 from app.agents.buyer.order_status import stream_order_status
 from app.agents.buyer.recommendation.category_mapping import CategoryMapping, dedup_truncate
@@ -42,6 +44,7 @@ from app.agents.buyer.recommendation.decompose import (
 )
 from app.agents.buyer.recommendation.needs_expansion import detect_expansion_need
 from app.agents.buyer.recommendation.needs_expansion import expand_needs as _expand_needs
+from app.agents.buyer.recommendation.no_condition import is_no_condition_turn
 from app.agents.buyer.recommendation.relaxation import FIELD_TO_ATTR as RELAXATION_FIELD_TO_ATTR
 from app.agents.buyer.recommendation.state import get_relaxation_offer_store, get_revert_store
 from app.agents.buyer.recommendation.graph import stream_recommendation
@@ -499,6 +502,7 @@ async def run_buyer_turn(
     map_categories=None,
     order_status_fn=None,
     expand_needs=None,
+    popular_fn=None,
     observer=None,
     request_id: str | None = None,
 ) -> AsyncIterator[str]:
@@ -538,6 +542,7 @@ async def run_buyer_turn(
         return
     search = search or search_service.search_catalog
     push_fn = push_fn or spring_client.push_recommendations
+    popular_fn = popular_fn or spring_client.get_popular_products  # [#162] I-3
     thread_store = await get_thread_store()
     prior = await thread_store.get(thread_key)
     condition_actions = getattr(request, "condition_actions", None) or []
@@ -549,10 +554,15 @@ async def run_buyer_turn(
 
     # 프로필 주입 (회원만, read-only) — 게스트/신규는 None(개인화 스킵, 결정 8)
     profile = None
+    profile_vec = None
     profile_eligible = bool(not identity.is_guest and identity.user_id and not identity.seller_id)
     if profile_eligible:
         summary = await read_profile_summary(identity.user_id)
         profile = summary.get("markdown") if summary else None
+        # [#162] 요약 생성 시점에 미리 만들어 둔 취향 벡터(#148 `store._embed_summary`).
+        # 종전에는 markdown 만 꺼내 쓰고 이 값을 버렸다 — 조건 없는 발화의 회원 경로가 이걸로
+        # 홈과 같은 벡터 랭킹을 돌린다. 구 요약·임베딩 실패분은 None 이라 인기 상품으로 간다.
+        profile_vec = summary.get("embedding") if summary else None
         # "기억해"류 명시 명령은 게이트 없이 즉시 승격(hot-path, REQ-PROF). intent 와 무관한
         # 명시 명령이라 라우팅 앞에 둔다 — decompose 가 실패한 턴에도 기록돼야 한다.
         if is_remember_command(request.message):
@@ -649,7 +659,8 @@ async def run_buyer_turn(
         # `allowed`(가드)이고, 프롬프트 LAST_RECOMMENDATIONS 에 무엇을 싣는지는 계약이 아니다.
         #
         # 옵션 되물음(PENDING_CART) 중에는 **승계분을 싣지 않는다.** 실 LLM N=8 프로브
-        # (scripts/verify_screen_context_118.py) 에서 "PENDING_CART 중 상품 전환"(`이어폰으로 할래`)이
+        # (#118, 이관 전 별도 프로브 — 지금은 `evals/intent_probe` 가 흡수했다) 에서
+        # "PENDING_CART 중 상품 전환"(`이어폰으로 할래`)이
         #   승계 없음 6/8(=오늘) · 승계 없음+screen 주입 7/8 · 승계 11건 1/8 · 승계 상한 6건 2/8
         # 로, 승계분이 **2건만 붙어도** #240 이 "낮추지 말 것"으로 못박은 상품 전환 경로가 무너졌다.
         # 되물음 중에는 사용자가 특정 상품 하나를 놓고 답하는 중이라, 긴 과거 목록이 그 초점을 흩는다.
@@ -673,8 +684,8 @@ async def run_buyer_turn(
         # 번호"). 해소기는 안 도는데 프롬프트만 화면 순번을 가르치고 있었던 것이 비대칭이었다.
         #
         # 프로브 커버리지도 이쪽이 맞다: 옵션 답변 셀은 전부 `screen=None` 로 측정됐으므로
-        # (scripts/verify_screen_context_118.py 의 `_CTX_PENDING` 에 screen 없음), 이렇게 빼야
-        # 배포 경로가 실제로 잰 조건과 일치한다.
+        # (`evals/intent_probe` 의 `pendingCart` 컨텍스트에 screen 없음 — #300 이 흡수하며
+        # 확인한 규약이다), 이렇게 빼야 배포 경로가 실제로 잰 조건과 일치한다.
         prompt_screen = (
             build_screen_prompt(
                 getattr(request, "screen", None), labels=settings.screen_page_type_labels
@@ -869,6 +880,18 @@ async def run_buyer_turn(
     if decision.intent != "cart_add" and pending is not None:
         await cart_store.clear_pending(thread_key)
 
+    # [라운드 24, #116·#117] 담기 허용 목록(경로 B 가드) — cart_add 뿐 아니라 wishlist_add 도
+    # LLM 이 문맥 밖 productId 를 오추출해 찜하는 것을 막으려면 이 값이 **반드시** 필요하다
+    # (api-spec §3.1 [보안]). intent 분기 전에 한 번만 계산해 cart_add·wishlist_add 가 같은
+    # 값을 재사용한다 — 아래 cart_add 분기 docstring 에 있던 근거는 그대로 유효하다.
+    screen = getattr(request, "screen", None)
+    screen_product_ids = (
+        {p.product_id for p in screen.products}
+        if screen is not None and screen_context_active
+        else set()
+    )
+    allowed = {pid for pid, _ in last_reco} | screen_product_ids
+
     if decision.intent == "order_status":
         if trace := current_request_trace():
             trace.set_lane("fallback")
@@ -903,37 +926,35 @@ async def run_buyer_turn(
                 yield frame
         return
 
-    if decision.intent == "cart_add":
-        if trace := current_request_trace():
-            trace.set_lane("cart")
-        # 담기 허용 목록 = 직전 추천 ∪ screen.products 의 productId(api-spec §3.1 [보안] 문단,
-        # 이슈 #118). screen 이 없거나 무시된 요청은 last_reco 만으로 판정해 기존 동작과 동일하다.
-        # 프리패스가 아니다 — 두 목록 밖 id 차단은 cart/graph.py 의 unresolved 판정이 그대로 맡는다.
-        #
-        # **되물음 턴에는 screen 합류를 끈다**(`screen_context_active`, 위 정의). 정본 문면은
-        # "(누적 추천 ∪ `screen.products`) 를 allowed 로 취급"이라 이 게이트는 문면과 어긋난다 —
-        # 그럼에도 그렇게 하는 근거:
-        #   ① 같은 문단이 **강제**하는 것은 "두 목록 **밖**의 id 는 여전히 차단"이고, 빼는 것은
-        #      **더 차단하는** 방향이라 그 보증을 깨지 않는다.
-        #   ② 같은 문단이 스스로 밝힌 목적이 *"LLM 이 발화 속 임의 숫자를 오추출해 담는 것을 막는
-        #      기존 가드는 유지된다"* 인데, 되물음 턴에서 screen id 를 allowed 에 두면 바로 그
-        #      오추출이 **우연히 screen id 와 일치할 때** 가드를 통과한다. 실제로 재현했다 —
-        #      `"502 그램짜리로 할게"` → 오추출 502 가 allowed 에 있어 stream_cart_add 의 전환
-        #      조건을 통과, 되물음이 폐기되고 502 가 담겼다. 즉 게이트는 문면과 어긋나지만
-        #      **그 문단의 목적을 지키는** 방향이다.
-        #   ③ 잃는 실익이 없다. 4차 수정으로 되물음 턴에는 SCREEN 블록이 프롬프트에 실리지
-        #      않으므로(테스트로 고정) LLM 은 screen 상품의 id 도 이름도 알 경로가 없고, id 는
-        #      화면에 표시되지 않아 사용자가 말할 수도 없다. screen 상품이 동시에 직전 추천이면
-        #      `last_reco` 쪽으로 그대로 allowed 에 남는다 — 정상 경로는 하나도 닫히지 않는다.
-        screen = getattr(request, "screen", None)
-        screen_product_ids = (
-            {p.product_id for p in screen.products}
-            if screen is not None and screen_context_active
-            else set()
-        )
-        allowed = {pid for pid, _ in last_reco} | screen_product_ids
-        cart_intent = decision.cart or CartIntent()
-        screen_reason: str | None = None
+    # 화면 지시어("2번"·"이거") 해소 — cart_add·wishlist_add·wishlist_remove 세 분기가 공유한다
+    # (api-spec §3.1 [보안] 문단, 이슈 #118·#116·#117). 여기서 **한 번만** 계산해 세 분기가 같은
+    # `cart_intent` 를 쓴다(분기마다 같은 호출을 복붙하지 않는다) — 이 하나로 뽑아 두지 않으면
+    # 분기 하나가 화면 해소를 빠뜨리는 결함이 재발한다("2번 찜해줘"가 어느 판별 경로로 오는지에
+    # 따라 되고 안 되고가 갈리던 것이 바로 그 결함이었다). `screen`·`allowed` 는 위에서 intent
+    # 분기보다 먼저 계산해 둔 값을 그대로 쓴다.
+    #
+    # 담기 허용 목록(`allowed`) = 직전 추천 ∪ screen.products 의 productId. screen 이 없거나
+    # 무시된 요청은 last_reco 만으로 판정해 기존 동작과 동일하다. 프리패스가 아니다 — 두 목록
+    # 밖 id 차단은 cart/graph.py 의 unresolved 판정이 그대로 맡는다.
+    #
+    # **되물음 턴에는 screen 합류를 끈다**(`screen_context_active`, 위 정의). 정본 문면은
+    # "(누적 추천 ∪ `screen.products`) 를 allowed 로 취급"이라 이 게이트는 문면과 어긋난다 —
+    # 그럼에도 그렇게 하는 근거:
+    #   ① 같은 문단이 **강제**하는 것은 "두 목록 **밖**의 id 는 여전히 차단"이고, 빼는 것은
+    #      **더 차단하는** 방향이라 그 보증을 깨지 않는다.
+    #   ② 같은 문단이 스스로 밝힌 목적이 *"LLM 이 발화 속 임의 숫자를 오추출해 담는 것을 막는
+    #      기존 가드는 유지된다"* 인데, 되물음 턴에서 screen id 를 allowed 에 두면 바로 그
+    #      오추출이 **우연히 screen id 와 일치할 때** 가드를 통과한다. 실제로 재현했다 —
+    #      `"502 그램짜리로 할게"` → 오추출 502 가 allowed 에 있어 stream_cart_add 의 전환
+    #      조건을 통과, 되물음이 폐기되고 502 가 담겼다. 즉 게이트는 문면과 어긋나지만
+    #      **그 문단의 목적을 지키는** 방향이다.
+    #   ③ 잃는 실익이 없다. 4차 수정으로 되물음 턴에는 SCREEN 블록이 프롬프트에 실리지
+    #      않으므로(테스트로 고정) LLM 은 screen 상품의 id 도 이름도 알 경로가 없고, id 는
+    #      화면에 표시되지 않아 사용자가 말할 수도 없다. screen 상품이 동시에 직전 추천이면
+    #      `last_reco` 쪽으로 그대로 allowed 에 남는다 — 정상 경로는 하나도 닫히지 않는다.
+    cart_intent = decision.cart or CartIntent()
+    screen_reason: str | None = None
+    if decision.intent in ("cart_add", "wishlist_add", "wishlist_remove"):
         # [#118] 화면 지시어는 **코드가 해소**한다 — 순번·좌표·"후보 1건" 은 결정적인 규칙이라
         # 확률적 계층에 맡길 이유가 없고, 맡겼더니 사용자가 말하지 않은 상품을 확정하는 일이
         # 잦았다(실측표는 screen_reference 모듈 docstring). `screen.products` 가 있는 턴에만
@@ -959,9 +980,15 @@ async def run_buyer_turn(
                     extra={"reason": resolved.reason, "forced_null": resolved.product_id is None},
                 )
                 cart_intent = replace(cart_intent, product_id=resolved.product_id)
-                # 되물음 문구를 가르는 신호로만 넘긴다 — 확정된 사유는 문구와 무관하다.
+                # 되물음 문구를 가르는 신호로만 넘긴다 — 확정된 사유는 문구와 무관하다. 찜
+                # 스트림은 이 사유를 받지 않는다(아래 wishlist_add·wishlist_remove 참조) —
+                # 해소된 product_id 만 전달되면 화면 지시어 자체는 해소된다.
                 if resolved.product_id is None:
                     screen_reason = resolved.reason
+
+    if decision.intent == "cart_add":
+        if trace := current_request_trace():
+            trace.set_lane("cart")
         with trace_span("buyer.graph.cart", "chain"):
             async for frame in stream_cart_add(
                 identity=identity,
@@ -972,6 +999,57 @@ async def run_buyer_turn(
                 message=request.message,
                 allowed_product_ids=allowed,
                 screen_reason=screen_reason,
+                observer=observer,
+            ):
+                yield frame
+        return
+
+    # decompose 가 cart_remove/wishlist_add/wishlist_remove 를 직접 산출하면 여기서 바로 각
+    # 서브그래프로 위임한다. `cart/graph.py::stream_cart_add` 안의 `classify_cart_utterance`
+    # (2선 방어, intent_guard.py)는 그대로 둔다 — decompose 가 이 발화를 여전히 `cart_add` 로
+    # 오분류하면(예: 위 판정 순서 1-1)~1-3) 밖의 표현) 그 안에서 다시 갈라내 같은 세 서브그래프로
+    # 보낸다. 즉 같은 발화가 ① 여기(위 분기) ② 저기(2선 방어) 두 경로 중 하나로 올 수 있는데,
+    # **도착지도 입력도 같아졌기 때문에**(화면 해소를 위에서 한 번만 수행해 `cart_intent` 를
+    # 공유한다) 중복 판정이 동작을 바꾸지 않는다 — 결과가 다르면 그건 두 판별기가 이견을 낸
+    # 것이지 이 라우팅의 결함이 아니다.
+    if decision.intent == "cart_remove":
+        if trace := current_request_trace():
+            trace.set_lane("cart")
+        with trace_span("buyer.graph.cart", "chain"):
+            async for frame in stream_cart_remove(
+                identity=identity,
+                message=request.message,
+                cart_store=cart_store,
+                thread_key=thread_key,
+                settings=settings,
+                observer=observer,
+            ):
+                yield frame
+        return
+
+    if decision.intent == "wishlist_add":
+        if trace := current_request_trace():
+            trace.set_lane("cart")
+        with trace_span("buyer.graph.cart", "chain"):
+            async for frame in stream_wishlist_add(
+                identity=identity,
+                cart=cart_intent,
+                settings=settings,
+                allowed_product_ids=allowed,
+                observer=observer,
+            ):
+                yield frame
+        return
+
+    if decision.intent == "wishlist_remove":
+        if trace := current_request_trace():
+            trace.set_lane("cart")
+        with trace_span("buyer.graph.cart", "chain"):
+            async for frame in stream_wishlist_remove(
+                identity=identity,
+                cart=cart_intent,
+                message=request.message,
+                settings=settings,
                 observer=observer,
             ):
                 yield frame
@@ -996,6 +1074,9 @@ async def run_buyer_turn(
             # 오해하고, 그 오해 위에서 프롬프트를 고치게 된다.
             scope_free=scope_free,
         )
+        # [#162] 조건 없음 판정은 **여기서** 한다 — `prior`(첫 턴 여부)가 이 스코프에만 있고,
+        # `_prepare_recommendation` 이 카테고리 매핑·승계를 끝낸 뒤라야 `category_legs` 가 확정된다.
+        no_condition = is_no_condition_turn(decision, prior)
         async for frame in stream_recommendation(
             request=request,
             decision=decision,
@@ -1014,5 +1095,10 @@ async def run_buyer_turn(
             thread_key=thread_key,
             observer=observer,
             request_id=resolved_request_id,
+            no_condition=no_condition,
+            popular_fn=popular_fn,
+            # [#119] 개인화 off(A/B baseline arm)면 취향 랭킹도 함께 끈다 — rerank 주입과 같은
+            # 스위치를 따라야 arm 이 "개인화 없음"으로 일관된다.
+            profile_vec=(None if settings.profile_injection_scope == "off" else profile_vec),
         ):
             yield frame

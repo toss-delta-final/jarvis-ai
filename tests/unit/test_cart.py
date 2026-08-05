@@ -672,6 +672,72 @@ async def test_route_cart_view(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "action" not in _types(events)
 
 
+async def test_route_cart_remove(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[라운드 24] decompose 가 직접 cart_remove 를 산출하면 stream_cart_remove 로 위임된다."""
+    from tests._fakes import FakeLLM
+    import app.services.spring_client as sc
+
+    async def fake_get(*, user_id=None, guest_id=None):
+        return CartView(
+            items=[CartViewItem(cart_item_id=1, product_id=1, product_name="키보드", quantity=1)]
+        )
+
+    async def fake_delete(cart_item_id, *, user_id=None, guest_id=None):
+        assert cart_item_id == 1
+        return None
+
+    monkeypatch.setattr(sc, "get_cart", fake_get)
+    monkeypatch.setattr(sc, "delete_cart_item", fake_delete)
+    llm = FakeLLM(decompose={"intent": "cart_remove", "cart": {}})
+    events = await _collect(run_buyer_turn(_req(message="키보드 빼줘"), _member(), llm=llm))
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_REMOVED"
+
+
+async def test_route_wishlist_add(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[라운드 24] decompose 가 직접 wishlist_add 를 산출하면 stream_wishlist_add 로 위임된다.
+
+    찜 추가는 경로 B 가드(`allowed`)가 반드시 필요하다 — last_reco 시드가 그 가드를 통과시킨다.
+    """
+    from app.agents.buyer.cart.state import get_cart_store
+    from tests._fakes import FakeLLM
+    import app.services.spring_client as sc
+
+    async def fake_add_wishlist(req):
+        assert req.product_id == 101
+        return None
+
+    monkeypatch.setattr(sc, "add_wishlist", fake_add_wishlist)
+    seed_store = await get_cart_store()
+    request = _req(message="이거 찜해줘")
+    await seed_store.set_last_reco(await _thread_key(request, _member()), [(101, "이어폰")])
+    llm = FakeLLM(decompose={"intent": "wishlist_add", "cart": {"productId": 101}})
+    events = await _collect(run_buyer_turn(request, _member(), llm=llm))
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "WISHLIST_ADDED"
+
+
+async def test_route_wishlist_remove(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[라운드 24] decompose 가 직접 wishlist_remove 를 산출하면 stream_wishlist_remove 로 위임된다."""
+    from tests._fakes import FakeLLM
+    import app.services.spring_client as sc
+    from app.schemas.spring import WishlistItem, WishlistView
+
+    async def fake_get_wishlist(user_id):
+        return WishlistView(items=[WishlistItem(product_id=1, name="키보드")])
+
+    async def fake_remove_wishlist(product_id, *, user_id=None):
+        assert product_id == 1
+        return None
+
+    monkeypatch.setattr(sc, "get_wishlist", fake_get_wishlist)
+    monkeypatch.setattr(sc, "remove_wishlist", fake_remove_wishlist)
+    llm = FakeLLM(decompose={"intent": "wishlist_remove", "cart": {}})
+    events = await _collect(run_buyer_turn(_req(message="키보드 찜 빼줘"), _member(), llm=llm))
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "WISHLIST_REMOVED"
+
+
 async def test_last_reco_stored_after_recommendation() -> None:
     """추천 턴이 후보를 last_reco 로 저장해 이후 담기의 productId 해소 소스가 된다."""
     from app.agents.buyer.cart.state import get_cart_store
@@ -720,6 +786,7 @@ class _CartResp:
 class _CartClient:
     def __init__(self, resp) -> None:
         self._resp = resp
+        self.calls: list[tuple[str, str, dict | None]] = []
 
     async def __aenter__(self):
         return self
@@ -728,9 +795,15 @@ class _CartClient:
         return False
 
     async def post(self, url, json=None):
+        self.calls.append(("POST", url, json))
         return self._resp
 
     async def get(self, url, params=None):
+        self.calls.append(("GET", url, params))
+        return self._resp
+
+    async def delete(self, url, params=None):
+        self.calls.append(("DELETE", url, params))
         return self._resp
 
 
@@ -892,6 +965,137 @@ async def test_get_cart_parses_items(monkeypatch: pytest.MonkeyPatch) -> None:
         and view.items[0].option_name == "블루"
         and view.items[0].quantity == 2
     )
+
+
+# ─────────── spring_client 배선 (I-24 삭제, 이슈 #116, 🔶 초안) ───────────
+
+
+async def test_delete_cart_item_success_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.services.spring_client as sc
+
+    client = _CartClient(_CartResp(200, {"success": True, "data": None}))
+    monkeypatch.setattr(sc, "_client", lambda: client)
+    result = await sc.delete_cart_item(55, user_id=1)
+    assert result is None
+    assert client.calls == [("DELETE", "/internal/cart/items/55", {"userId": 1})]
+
+
+async def test_delete_cart_item_uses_guest_id_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.services.spring_client as sc
+
+    client = _CartClient(_CartResp(200, {"success": True, "data": None}))
+    monkeypatch.setattr(sc, "_client", lambda: client)
+    await sc.delete_cart_item(55, guest_id="guest-uuid-1")
+    assert client.calls == [("DELETE", "/internal/cart/items/55", {"guestId": "guest-uuid-1"})]
+
+
+async def test_delete_cart_item_200_success_false_raises_cart_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """200 이지만 공통 봉투 success:false 면 성공으로 처리하지 않는다(2차 리뷰 지적 5)."""
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(
+        sc, "_client", lambda: _CartClient(_CartResp(200, {"success": False, "data": None}))
+    )
+    with pytest.raises(sc.CartError):
+        await sc.delete_cart_item(55, user_id=1)
+
+
+async def test_delete_cart_item_200_missing_success_key_is_not_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """success 키가 없는 것과 명시적 false 는 다른 사실이다 — 없으면 실패로 보지 않는다."""
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(200, {"data": None})))
+    result = await sc.delete_cart_item(55, user_id=1)
+    assert result is None
+
+
+async def test_delete_cart_item_not_found_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """I-24 는 비멱등 — 이미 지워진 항목을 다시 지워도(두 번째 호출) 404 그대로다."""
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(
+        sc,
+        "_client",
+        lambda: _CartClient(_CartResp(404, {"error": {"code": "CART_ITEM_NOT_FOUND"}})),
+    )
+    with pytest.raises(sc.CartItemNotFound):
+        await sc.delete_cart_item(999, user_id=1)
+
+
+async def test_delete_cart_item_404_with_wrong_code_raises_cart_error_not_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[라운드 23] Spring 에 엔드포인트가 아직 없어서 나는 404(라우트 없음)도 body 만 보면
+    똑같은 404 다 — code 가 계약(`CART_ITEM_NOT_FOUND`)과 다르면 `CartItemNotFound` 로 낙성하지
+    않는다. 이걸 성공(`CartItemNotFound` → "이미 빠져 있어요")으로 오인하면 배포 전 호출이
+    거짓 성공 안내를 낸다."""
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(
+        sc,
+        "_client",
+        lambda: _CartClient(_CartResp(404, {"error": {"code": "NOT_FOUND"}})),
+    )
+    with pytest.raises(sc.CartError):
+        await sc.delete_cart_item(999, user_id=1)
+
+
+async def test_delete_cart_item_404_empty_body_raises_cart_error_not_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[라운드 23] 라우트 자체가 없어 본문이 아예 비거나 계약 봉투가 아닌 404(code 를 못
+    읽음)도 같은 이유로 `CartError` 여야 한다."""
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(404, {})))
+    with pytest.raises(sc.CartError):
+        await sc.delete_cart_item(999, user_id=1)
+
+
+async def test_delete_cart_item_forbidden_maps_to_cart_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """403 AUTH_FORBIDDEN(소유자 불일치) 은 전용 예외 없이 CartError 로 낙성한다."""
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(
+        sc, "_client", lambda: _CartClient(_CartResp(403, {"error": {"code": "AUTH_FORBIDDEN"}}))
+    )
+    with pytest.raises(sc.CartError):
+        await sc.delete_cart_item(55, user_id=1)
+
+
+async def test_delete_cart_item_500_maps_to_cart_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(
+        sc, "_client", lambda: _CartClient(_CartResp(500, {"error": {"code": "INTERNAL_ERROR"}}))
+    )
+    with pytest.raises(sc.CartError):
+        await sc.delete_cart_item(55, user_id=1)
+
+
+async def test_delete_cart_item_rejects_zero_identity_queries() -> None:
+    """신원 query 0개(둘 다 None) — 어댑터가 방어적으로 호출 자체를 막는다."""
+    import app.services.spring_client as sc
+
+    with pytest.raises(sc.CartError):
+        await sc.delete_cart_item(55)
+
+
+async def test_delete_cart_item_rejects_two_identity_queries() -> None:
+    """신원 query 2개(둘 다 not None) — "정확히 하나" 계약을 어댑터가 방어한다."""
+    import app.services.spring_client as sc
+
+    with pytest.raises(sc.CartError):
+        await sc.delete_cart_item(55, user_id=1, guest_id="guest-uuid-1")
+
+
+# ─────────── spring_client 배선 (I-26/I-27/I-28 찜, 이슈 #117, 🔶 초안) 은 tests/unit/test_wishlist.py ───────────
 
 
 # ─────────── 리뷰 수정 회귀 (Fix 1~4) ───────────
