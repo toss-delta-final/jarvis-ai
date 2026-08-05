@@ -13,8 +13,8 @@
       },
       "denominator": 16,
       "expectedDenominator": 16,
-      "numerator": 16,
-      "ratio": 1.0,
+      "numerator": 14,
+      "ratio": 0.875,
       "title": "cart_add productId(#234 정의)",
       "unfilledSampleCount": 0
     },
@@ -39,18 +39,20 @@
         "components": [
           "categoryCarry",
           "categoryClear",
-          "categoryReplace"
+          "categoryReplace",
+          "categoryMixedReplace"
         ],
-        "denominator": "카테고리 11발화 × categoryPrior 컨텍스트 × N (N=8 이면 88)",
+        "denominator": "카테고리 15발화 × categoryPrior 컨텍스트 × N (N=8 이면 120) — 라운드 3 이 혼합 4발화를 더해 88 → 120 이 됐다",
         "notComparableWith": [
-          "baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)"
+          "baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)",
+          "baselines/fast-2026-08-05-84 (분모 88 — 혼합 4발화 추가 전)"
         ],
         "numerator": "확정값(resolvedCategoryAction)이 기대 carry·clear·replace 와 일치한 표본 수 (carry 기대는 확정값이 replace 라도 그 leg 이 **전부** 직전 카테고리 에코면 정답으로 센다 — 프롬프트가 리파인 턴에 PRIOR_FILTERS.category 를 categoryQueries 로 복사하라고 지시해서 나오는 모양이고, 결과적으로 카테고리가 유지되므로 사용자가 겪는 동작이 carry 와 같다. 에코 판정은 앵커 categoryPriorFilters(카테고리 전체·각 조각·semanticQuery)와 **정규화 후 정확 일치**다 — 부분 문자열이면 `이어폰 케이스` 같은 새 상품도 에코로 세어 카테고리가 바뀐 턴을 '유지됐다'로 읽는다)"
       },
-      "denominator": 88,
-      "expectedDenominator": 88,
-      "numerator": 25,
-      "ratio": 0.2840909090909091,
+      "denominator": 120,
+      "expectedDenominator": 120,
+      "numerator": 54,
+      "ratio": 0.45,
       "title": "카테고리 승계 3분기",
       "unfilledSampleCount": 0
     },
@@ -66,8 +68,8 @@
       },
       "denominator": 32,
       "expectedDenominator": 32,
-      "numerator": 1,
-      "ratio": 0.03125,
+      "numerator": 0,
+      "ratio": 0.0,
       "title": "리파인(직전 카테고리 유지)",
       "unfilledSampleCount": 0
     },
@@ -88,6 +90,23 @@
       "title": "카테고리-무관 리셋",
       "unfilledSampleCount": 0
     },
+    "categoryMixedReplace": {
+      "axisId": "categoryMixedReplace",
+      "definition": {
+        "components": [],
+        "denominator": "혼합 4발화 × categoryPrior 컨텍스트 × N (N=8 이면 32)",
+        "notComparableWith": [
+          "baselines/fast-2026-08-05-84 (이 축이 존재하지 않던 런)"
+        ],
+        "numerator": "resolvedCategoryAction 이 replace 인 표본 수 — 새 카테고리를 지목하면서 동시에 '아무거나'류 표현을 쓴 발화다. 초판(scopeFree 우선)에서는 사용자가 말한 카테고리가 통째로 버려져 무필터가 됐다(실 LLM 실측 32건 중 19건 clear)"
+      },
+      "denominator": 32,
+      "expectedDenominator": 32,
+      "numerator": 32,
+      "ratio": 1.0,
+      "title": "혼합 발화(새 카테고리 + 아무거나)",
+      "unfilledSampleCount": 0
+    },
     "categoryReplace": {
       "axisId": "categoryReplace",
       "definition": {
@@ -100,8 +119,8 @@
       },
       "denominator": 24,
       "expectedDenominator": 24,
-      "numerator": 24,
-      "ratio": 1.0,
+      "numerator": 22,
+      "ratio": 0.9166666666666666,
       "title": "카테고리 교체",
       "unfilledSampleCount": 0
     },
@@ -115,8 +134,8 @@
       },
       "denominator": 96,
       "expectedDenominator": 96,
-      "numerator": 95,
-      "ratio": 0.9895833333333334,
+      "numerator": 93,
+      "ratio": 0.96875,
       "title": "지시대명사",
       "unfilledSampleCount": 0
     },
@@ -130,8 +149,8 @@
       },
       "denominator": 48,
       "expectedDenominator": 48,
-      "numerator": 31,
-      "ratio": 0.6458333333333334,
+      "numerator": 34,
+      "ratio": 0.7083333333333334,
       "title": "general",
       "unfilledSampleCount": 0
     },
@@ -148,8 +167,8 @@
       },
       "denominator": 240,
       "expectedDenominator": 240,
-      "numerator": 239,
-      "ratio": 0.9958333333333333,
+      "numerator": 237,
+      "ratio": 0.9875,
       "title": "본 표 intent",
       "unfilledSampleCount": 0
     },
@@ -163,8 +182,8 @@
       },
       "denominator": 32,
       "expectedDenominator": 32,
-      "numerator": 25,
-      "ratio": 0.78125,
+      "numerator": 27,
+      "ratio": 0.84375,
       "title": "옵션 답변",
       "unfilledSampleCount": 0
     },
@@ -196,8 +215,8 @@
       },
       "denominator": 56,
       "expectedDenominator": 56,
-      "numerator": 42,
-      "ratio": 0.75,
+      "numerator": 36,
+      "ratio": 0.6428571428571429,
       "title": "전환(#260 7발화)",
       "unfilledSampleCount": 0
     },
@@ -224,22 +243,22 @@
   "budget": {
     "budgetExceeded": false,
     "budgetExceededReason": null,
-    "callCount": 512,
+    "callCount": 544,
     "costGateStatus": "unknown",
     "limits": {
-      "maxCalls": 1536,
+      "maxCalls": 1632,
       "maxCostUsd": 20.0,
       "maxTotalTokens": 30000000
     },
     "tokenGateStatus": "unknown",
-    "totalCostUsd": 0.10103235000000005,
-    "totalTokens": 1484405,
-    "unknownCostCallCount": 101,
-    "unknownTokenCallCount": 101
+    "totalCostUsd": 0.10691899999999999,
+    "totalTokens": 1569602,
+    "unknownCostCallCount": 109,
+    "unknownTokenCallCount": 109
   },
   "categoryScopeEnabled": false,
   "categoryScopePrompt": null,
-  "cellCount": 64,
+  "cellCount": 68,
   "cells": [
     {
       "attempts": 8,
@@ -581,6 +600,58 @@
     },
     {
       "attempts": 8,
+      "cellId": "category-mixed-001|categoryPrior",
+      "contextId": "categoryPrior",
+      "failureCount": 0,
+      "filled": true,
+      "group": "category_action",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "category-mixed-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "category-mixed-002|categoryPrior",
+      "contextId": "categoryPrior",
+      "failureCount": 0,
+      "filled": true,
+      "group": "category_action",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "category-mixed-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "category-mixed-003|categoryPrior",
+      "contextId": "categoryPrior",
+      "failureCount": 0,
+      "filled": true,
+      "group": "category_action",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "category-mixed-003"
+    },
+    {
+      "attempts": 8,
+      "cellId": "category-mixed-004|categoryPrior",
+      "contextId": "categoryPrior",
+      "failureCount": 0,
+      "filled": true,
+      "group": "category_action",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "category-mixed-004"
+    },
+    {
+      "attempts": 8,
       "cellId": "category-replace-001|categoryPrior",
       "contextId": "categoryPrior",
       "failureCount": 0,
@@ -639,7 +710,8 @@
       "filled": true,
       "group": "demonstrative",
       "intentCounts": {
-        "recommend": 8
+        "general": 1,
+        "recommend": 7
       },
       "sampleCount": 8,
       "utteranceId": "demonstrative-001"
@@ -665,7 +737,8 @@
       "filled": true,
       "group": "demonstrative",
       "intentCounts": {
-        "recommend": 8
+        "general": 1,
+        "recommend": 7
       },
       "sampleCount": 8,
       "utteranceId": "demonstrative-002"
@@ -717,7 +790,8 @@
       "filled": true,
       "group": "demonstrative",
       "intentCounts": {
-        "recommend": 8
+        "general": 1,
+        "recommend": 7
       },
       "sampleCount": 8,
       "utteranceId": "demonstrative-003"
@@ -756,8 +830,7 @@
       "filled": true,
       "group": "demonstrative",
       "intentCounts": {
-        "general": 1,
-        "recommend": 7
+        "recommend": 8
       },
       "sampleCount": 8,
       "utteranceId": "demonstrative-004"
@@ -783,7 +856,8 @@
       "filled": true,
       "group": "general",
       "intentCounts": {
-        "general": 8
+        "general": 7,
+        "order_status": 1
       },
       "sampleCount": 8,
       "utteranceId": "general-001"
@@ -796,8 +870,7 @@
       "filled": true,
       "group": "general",
       "intentCounts": {
-        "general": 6,
-        "order_status": 2
+        "general": 8
       },
       "sampleCount": 8,
       "utteranceId": "general-001"
@@ -823,7 +896,8 @@
       "filled": true,
       "group": "general",
       "intentCounts": {
-        "recommend": 8
+        "general": 1,
+        "recommend": 7
       },
       "sampleCount": 8,
       "utteranceId": "general-002"
@@ -836,7 +910,8 @@
       "filled": true,
       "group": "general",
       "intentCounts": {
-        "general": 8
+        "general": 7,
+        "recommend": 1
       },
       "sampleCount": 8,
       "utteranceId": "general-002"
@@ -849,8 +924,8 @@
       "filled": true,
       "group": "general",
       "intentCounts": {
-        "general": 1,
-        "recommend": 7
+        "general": 3,
+        "recommend": 5
       },
       "sampleCount": 8,
       "utteranceId": "general-002"
@@ -1006,7 +1081,9 @@
       "filled": true,
       "group": "switch",
       "intentCounts": {
-        "cart_add": 8
+        "cart_add": 6,
+        "cart_view": 1,
+        "recommend": 1
       },
       "sampleCount": 8,
       "utteranceId": "switch-002"
@@ -1019,9 +1096,8 @@
       "filled": true,
       "group": "switch",
       "intentCounts": {
-        "cart_add": 5,
-        "cart_view": 2,
-        "recommend": 1
+        "cart_add": 6,
+        "cart_view": 2
       },
       "sampleCount": 8,
       "utteranceId": "switch-003"
@@ -1047,8 +1123,8 @@
       "filled": true,
       "group": "switch",
       "intentCounts": {
-        "cart_add": 7,
-        "cart_view": 1
+        "cart_add": 3,
+        "recommend": 5
       },
       "sampleCount": 8,
       "utteranceId": "switch-005"
@@ -1082,14 +1158,14 @@
   ],
   "diagnostics": {
     "categoryClearOnRefineCount": 0,
-    "categoryScopeUnresolvedCount": 88,
+    "categoryScopeUnresolvedCount": 120,
     "definition": {
       "categoryClearOnRefineCount": "리파인 기대 셀에서 확정값이 clear 로 나온 표본 수 — 사용자가 좁혀 둔 카테고리가 풀리는 이 변경의 유일한 새 회귀 모양",
       "categoryScopeUnresolvedCount": "전용 분류기가 판정하지 못한(None) 표본 수 — 호출 실패·비 JSON·비불리언 산출을 합친 침묵률",
       "productIdNullCount": "전환 셀에서 cart_add 인데 productId 가 null 인 표본 수 — 되물음이 유지되는 안전한 퇴화",
       "reaskProductEchoCount": "전환 셀에서 cart.productId 가 되물음 상품과 같은 표본 수 — 사용자가 고르지 않은 옵션으로 옛 상품이 담기는 위험한 실패"
     },
-    "productIdNullCount": 0,
+    "productIdNullCount": 1,
     "reaskProductEchoCount": 10
   },
   "dryRun": false,
@@ -1097,8 +1173,8 @@
     "name": "anchors_b.json",
     "reaskProductId": 102,
     "reaskProductListPosition": 2,
-    "sha256": "4d47bf66e825edf6031213e97844affdec4a2eeed69a5f926d1aeae6d3b43870",
-    "version": "intent-probe-anchors-b-v2"
+    "sha256": "7ea9cc95b44a40c28d12a232f66465f14973a751dc06a94f6c743ded522a3bac",
+    "version": "intent-probe-anchors-b-v3"
   },
   "issue240AxisOrder": [
     "mainIntent",
@@ -1110,7 +1186,7 @@
     "general",
     "cartAddProductIdLegacy2"
   ],
-  "issue240Line": "239/144/95/25/9/48/31/16",
+  "issue240Line": "237/144/93/27/9/48/34/14",
   "modelConfig": {
     "fastModel": "gpt-5-nano",
     "fastReasoningEffort": "minimal",
@@ -1122,13 +1198,13 @@
   },
   "n": 8,
   "pacer": {
-    "acquireCount": 512,
+    "acquireCount": 544,
     "estimatedTokensPerCall": 3900,
     "maxRpm": 45,
     "maxTpm": 200000,
-    "maxWaitS": 35.858,
-    "totalWaitS": 490.522,
-    "waitCount": 328,
+    "maxWaitS": 37.911,
+    "totalWaitS": 553.497,
+    "waitCount": 334,
     "windowS": 60.0
   },
   "prompt": {
