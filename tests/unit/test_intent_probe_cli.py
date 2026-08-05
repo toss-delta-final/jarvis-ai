@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
 
@@ -32,7 +33,7 @@ def test_dry_run_writes_every_artifact(tmp_path: Path) -> None:
     assert _run(out) == 0
     assert {path.name for path in out.iterdir()} == ARTIFACT_NAMES
     results = _results(out)
-    assert results["cellCount"] == 53
+    assert results["cellCount"] == 68
     assert results["unfilledCells"] == []
     assert results["dryRun"] is True
 
@@ -86,7 +87,7 @@ def test_report_header_carries_prompt_tier_fixture(tmp_path: Path) -> None:
     results = _results(out)
     assert results["prompt"]["sha12"] in report
     assert "tier=fast" in report
-    assert "intent-probe-anchors-b-v1" in report
+    assert "intent-probe-anchors-b-v3" in report
     assert "이건 골든셋이 아니다" in report
 
 
@@ -152,7 +153,9 @@ def test_pacer_snapshot_is_recorded(tmp_path: Path) -> None:
     assert _run(out, "--rpm", "5") == 0
     pacer = _results(out)["pacer"]
     assert pacer["maxRpm"] == 5
-    assert pacer["acquireCount"] == 53 * 2
+    # 셀 68 × N=2 (decompose) + 카테고리 15셀 × 2 (범위 해제 분류기) = 166.
+    # [#84] 분류기도 **페이서를 지난다** — 레이트 예산에 빠지면 실 런에서 429 가 난다.
+    assert pacer["acquireCount"] == 68 * 2 + 15 * 2
     assert pacer["waitCount"] > 0
 
 
@@ -199,3 +202,71 @@ def test_probe_is_not_wired_into_ci(tmp_path: Path) -> None:
     workflows = Path(__file__).resolve().parents[2] / ".github" / "workflows"
     for path in workflows.glob("*.y*ml"):
         assert "intent_probe" not in path.read_text(encoding="utf-8")
+
+
+# ─────────── #84 2차 리뷰 F-5·G-1 ───────────
+
+
+def test_manifest_records_both_prompt_hashes(tmp_path: Path) -> None:
+    """[F-5] 표를 결정하는 프롬프트가 **둘**이므로 해시도 둘이어야 한다.
+
+    분류기 문면만 바꾸고 같은 프로브를 돌리면 manifest 가 똑같아 보이는데 표는 달라진다 —
+    manifest 를 둔 이유(#260: 어떤 프롬프트로 잰 표인지 특정)가 그 축에서만 무너진다.
+    """
+    from app.agents.buyer.recommendation.category_scope import _SYSTEM as SCOPE_SYSTEM
+    from evals.intent_probe.manifest import category_scope_prompt_sha256
+
+    out = tmp_path / "run"
+    assert _run(out) == 0
+    manifest = json.loads((out / "run_manifest.json").read_text(encoding="utf-8"))
+    hashes = manifest["hashes"]
+    assert hashes["systemPrompt"] != hashes["categoryScopePrompt"]
+    assert hashes["categoryScopePrompt"] == category_scope_prompt_sha256()
+    assert len(SCOPE_SYSTEM) > 0 and "categoryScope" in hashes["prompts"]
+    # 리포트 헤더만 봐도 두 프롬프트가 구분돼야 한다(표는 복사돼 돌아다닌다).
+    report = (out / "report.md").read_text(encoding="utf-8")
+    assert f"scope={hashes['categoryScopePrompt'][:12]}" in report
+
+
+def test_no_classifier_flag_reproduces_the_defect_arm(tmp_path: Path) -> None:
+    """[G-1] `--no-classifier` 로 분류기를 끈 런이 재현 가능해야 한다.
+
+    커밋된 기준선 README 가 `before1`(분류기 off) 열을 **#84 결함의 재현**으로 쓰는데, 그 팔을
+    끄는 스위치가 없으면 재현 명령을 적을 수 없다. 앱 설정을 읽지 않고 **인자**로 고정한다 —
+    환경으로 조건을 정하면 재현되지 않는다.
+    """
+    on, off = tmp_path / "on", tmp_path / "off"
+    assert _run(on) == 0
+    assert _run(off, "--no-classifier") == 0
+
+    on_results, off_results = _results(on), _results(off)
+    assert on_results["categoryScopeEnabled"] is True
+    assert off_results["categoryScopeEnabled"] is False
+    # 분류기를 끄면 해제 축이 무너진다 — 그것이 #84 결함의 모양이다.
+    assert off_results["axes"]["categoryClear"]["numerator"] == 0
+    assert on_results["axes"]["categoryClear"]["numerator"] > 0
+    # 표본에도 그 사실이 남는다(전부 판정 없음).
+    rows = list(csv.DictReader((off / "samples.csv").read_text(encoding="utf-8").splitlines()))
+    assert {row["scopeFree"] for row in rows} == {""}
+
+
+def test_disabled_classifier_arm_is_marked_in_the_artifacts(tmp_path: Path) -> None:
+    """끈 런과 켠 런을 **나중에 구분할 수 있어야** 한다 — 안 남기면 표만 보고는 알 수 없다."""
+    out = tmp_path / "off"
+    assert _run(out, "--no-classifier") == 0
+    manifest = json.loads((out / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["intentProbe"]["categoryScopeClassifier"] == "off"
+    # 관여하지 않은 문면의 해시를 남기면 "이 문면으로 쟀다"는 거짓 신호가 된다.
+    assert manifest["hashes"]["categoryScopePrompt"] is None
+    assert "categoryScope" not in manifest["hashes"]["prompts"]
+    assert "scope=off" in (out / "report.md").read_text(encoding="utf-8")
+
+
+def test_samples_csv_carries_the_raw_legs_for_recounting(tmp_path: Path) -> None:
+    """[F-4] leg 원문 열이 있어야 판정 규칙을 바꿔도 **런을 다시 돌리지 않고** 재집계한다."""
+    out = tmp_path / "run"
+    assert _run(out) == 0
+    rows = list(csv.DictReader((out / "samples.csv").read_text(encoding="utf-8").splitlines()))
+    assert "categoryLegs" in rows[0]
+    category_rows = [row for row in rows if row["group"] == "category_action"]
+    assert category_rows and any(row["categoryLegs"] for row in category_rows)

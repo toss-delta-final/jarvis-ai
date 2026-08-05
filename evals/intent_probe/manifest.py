@@ -6,10 +6,12 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
-from evals.intent_probe.client import PromptIdentity
+from app.agents.buyer.recommendation import category_scope as category_scope_module
+from evals.intent_probe.client import CATEGORY_SCOPE_SYSTEM, PromptIdentity
 from evals.metrics.run_manifest import build_run_manifest
 
 MODULE_ROOT = Path(__file__).parent
+CATEGORY_SCOPE_MODULE = Path(category_scope_module.__file__)
 
 
 def _sha256(path: Path) -> str:
@@ -33,12 +35,18 @@ def build_intent_probe_manifest(
     cell_ids: list[str],
     axis_definitions: dict[str, Any],
     dry_run: bool,
+    classifier_enabled: bool = True,
 ) -> dict[str, Any]:
     """`build_run_manifest` 위에 이 프로브 고유의 지문을 얹는다.
 
     `hashes.prompts.decompose` 는 **파일 전체** 해시라 무관한 편집에도 바뀐다.
     `hashes.systemPrompt` 는 **실제로 provider 에 보낸 텍스트**의 해시다 — #260 이 요구하는 쪽은
     후자이며, 둘 다 남겨 사후에 구분할 수 있게 한다.
+
+    [#84·2차 리뷰 F-5] 표를 결정하는 프롬프트가 이제 **둘**이다(decompose `_SYSTEM` + 카테고리
+    범위 해제 분류기 `_SYSTEM`). 분류기 문면만 바꾸고 같은 프로브를 돌리면 manifest 가 똑같아
+    보이는데 표는 달라지므로, 분류기도 **같은 방식으로** 두 해시를 남긴다:
+    `hashes.categoryScopePrompt`(문면) · `hashes.prompts.categoryScope`(모듈 파일 전체).
     """
     manifest = build_run_manifest(command=command, seed=seed)
     manifest["intentProbe"] = {
@@ -49,6 +57,8 @@ def build_intent_probe_manifest(
         "attemptMultiplier": attempt_multiplier,
         "concurrency": concurrency,
         "dryRun": dry_run,
+        # [#84·G-1] 분류기 팔의 on/off — 이 값이 없으면 같은 프롬프트 해시의 두 표를 구분할 수 없다.
+        "categoryScopeClassifier": "on" if classifier_enabled else "off",
         "fixtureName": anchor_path.name,
         "fixtureVersion": fixture_version,
         "pacer": pacer,
@@ -65,7 +75,18 @@ def build_intent_probe_manifest(
     assert isinstance(hashes, dict)
     hashes["anchorFixture"] = _sha256(anchor_path)
     hashes["systemPrompt"] = prompt.sha256
+    # 분류기를 끈 런은 그 문면이 표에 관여하지 않았으므로 해시를 남기지 않는다(None) — 남기면
+    # "이 문면으로 쟀다"는 거짓 신호가 된다.
+    hashes["categoryScopePrompt"] = category_scope_prompt_sha256() if classifier_enabled else None
+    prompts = hashes.get("prompts")
+    if isinstance(prompts, dict) and classifier_enabled:
+        prompts["categoryScope"] = _sha256(CATEGORY_SCOPE_MODULE)
     hashes["intentProbeModules"] = {
         path.name: _sha256(path) for path in sorted(MODULE_ROOT.glob("*.py"))
     }
     return manifest
+
+
+def category_scope_prompt_sha256() -> str:
+    """분류기 `_SYSTEM` 문면의 sha256 — decompose 프롬프트와 **같은 방식**(문면 바이트)이다."""
+    return hashlib.sha256(CATEGORY_SCOPE_SYSTEM.encode("utf-8")).hexdigest()

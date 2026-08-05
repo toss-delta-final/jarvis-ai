@@ -596,6 +596,20 @@ class Settings(BaseSettings):
     # 이 개수 미만이면 전개 실패로 본다 — 1개면 발화 복사로 되돌아가므로 최소 2개.
     needs_expansion_min_items: int = Field(default=2, ge=1)
 
+    # ── 카테고리 범위 해제 분류기 (이슈 #84) ──
+    # "5만원 이하 아무거나" 처럼 **직전 카테고리를 놓겠다**는 발화를 판정하는 전용 호출.
+    # decompose 프롬프트 안의 필드(`categoryAction`)로 받는 안은 **실측으로 기각**됐다 — fast
+    # 티어에서 리셋 기대 32건 중 clear 산출이 0~6건이었고(문면 후보 6종), 같은 프롬프트를 smart 로
+    # 재면 32/32 였다. 짧은 전용 호출은 fast 에서도 32/32 · 오탐 0/56(독립 3회)이다. 즉
+    # needs_expansion 과 같은 구조의 문제이고 같은 처방을 쓴다(app/.../category_scope.py 표 참조).
+    category_scope_classifier_enabled: bool = True  # 롤백 스위치(끄면 호출 0회 = 오늘 동작)
+    # Literal 로 좁힌다 — 위 `needs_expansion_tier` 와 같은 이유다. 이 값은 `resolve_model_id` 에
+    # 들어가고 그것은 미지 tier 에 LLMError 를 던지므로, 오타가 퇴화가 아니라 예외가 된다
+    # (분류기는 그 예외를 삼켜 None 으로 떨어뜨리지만, 그러면 기능이 조용히 죽는다).
+    category_scope_tier: Literal["fast", "smart"] = "fast"
+    # 산출이 `{"scopeFree": true|false}` 한 줄이라 32 토큰이면 충분하다.
+    category_scope_max_tokens: int = Field(default=32, ge=8)
+
     # ── 장바구니 (이슈 #3, api-spec §4.1) ──
     # CART_OPTION_INVALID 재질문 상한 — 초과 시 action CART_ERROR(§4.1). 하드코딩 금지.
     cart_option_reask_max: int = 1
