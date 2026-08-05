@@ -1,6 +1,6 @@
 ---
 id: SPEC-RECOMMEND-001
-version: 0.13.2
+version: 0.13.3
 status: draft
 created: 2026-07-07
 updated: 2026-08-05
@@ -29,6 +29,17 @@ issue_number: null
 
 ## HISTORY
 
+- **v0.13.3 (2026-08-05, 이슈 #168)** — **서술 동기화만 — REQ-REC/AC-REC 신설·개정 없음.**
+  §6.3·§6.4 에 Case 3 니즈별 그룹 출력(#209/#212 가 이미 구현한 REQ-REC-021/024/096)의 잔여 갭
+  3개를 문단으로 동기화했다: (1) §6.4 — rerank 입력 예산(REQ-REC-096)을 니즈 수에 비례시킨
+  `effective_cap` 도입(실측: merge_cap=30 이 5니즈 턴에서 니즈당 6개로 자연 leaf 공급량[9~17]
+  보다 아래를 절단해 목록당 노출 상한[REQ-REC-021, 9]에 도달 불가능했다), 3니즈 이하는 종전과
+  동일. (2) §6.4 — split 턴(REQ-REC-024)에 그룹 구조("라벨1 N개 · 라벨2 M개")를 결정론 조립해
+  안내하는 token 을 추가(LLM 호출 증가 없음, BUY_ALL 세트 턴은 제외). (3) §6.3 — #222 확장
+  fan-out 이 unresolved leg 을 여럿(서로 다른 원 query) 냈을 때 leaf 인덱스가 아니라 니즈 단위로
+  재편성해 REQ-REC-024 그룹 분할이 니즈 단위로 돌게 함(단일 query 확장 턴은 종전대로 목록
+  1건). **와이어 계약(SSE 이벤트·필드·오류 코드) 무변경 · api-spec 무개정.** ⚠️ 본 문서는
+  mirror 이므로 기획 저장소 정본 동기화 필요.
 - **v0.13.2 (2026-08-05, 이슈 #222)** — **서술 동기화만 — REQ-REC/AC-REC 신설·개정 없음.** §6.3(검색)에
   카테고리 매핑이 canonical 을 하나도 못 낸 턴(매핑 전량 실패)의 fan-out 동작을 문단으로
   동기화했다: 이슈 원안(top-10 의 공통 조상[LCA]으로 광역/협소를 판정)은 라이브 카탈로그
@@ -395,6 +406,17 @@ class SearchToolOutput(BaseModel):
 먼저 성공해 leg 를 채우면 이 폴백은 발동하지 않는다 — 매핑도 #217 전개도 모두 실패한 턴에만
 보충한다. 계약(api-spec) 무변경.)*
 
+*(**[#168 서술 동기화]** 위 #222 확장 fan-out 이 unresolved leg 을 **여럿**(서로 다른 원
+query, 예: "캠핑용품이랑 낚시용품") 냈을 때는, leaf 인덱스가 아니라 **니즈(원 query) 단위**로
+검색 결과를 재편성해 아래 §6.4 REQ-REC-024 그룹 분할이 니즈 단위로 돌게 한다(#168) — leaf
+인덱스 그대로 나누면 확장 leaf 하나마다 목록이 생겨(라벨 중복) REQ-REC-024 가 지키려던
+"니즈=목록" 대응이 깨진다. unresolved leg 이 1개(leaf 전부가 같은 query 를 공유)면 종전대로
+목록 1건이다. **[PR #351 리뷰 R3-1 정밀화]** 이 니즈 단위 재편성은 **query 가 전부 실재할
+때만** 한다 — `query=None` 인 leaf(raw 만 있던 unresolved leg 파생)가 서로 다른 니즈 2개
+이상에서 나오면 `None` 하나로 뭉쳐 무관한 leg 의 상품이 한 그룹에 섞이므로, None 이 하나라도
+섞이면 재편성을 하지 않고 목록 1건으로 안전 후퇴한다(니즈 정체성을 확신할 수 없을 때 틀리게
+가르느니 안 가른다, #51). 계약(api-spec) 무변경.)*
+
 ### 6.4 재랭킹 (rerank)
 
 - **REQ-REC-020** (Event-Driven): **When** `search`가 후보를 반환하면, the `rerank` 노드 **shall** Claude Sonnet 5를 **정확히 1회** 호출하여 최대 30개 후보와 `profile_summary`로 재랭킹하고 `ranked`(상품별 근거 포함)를 산출한다.
@@ -406,6 +428,18 @@ class SearchToolOutput(BaseModel):
 - **REQ-REC-024** (State-Driven, **[v0.11.0 신설]**, #209): **While** `case`가 3이고 니즈 leg 이 2개 이상인 동안, the `respond` 단계 **shall** REQ-REC-012 가 만든 니즈 그룹을 I-21(`api-spec §4.2`) `lists[]` 항목에 **1:1 대응**시켜 push하고, `listType`을 `PICK_ONE`으로, 각 `lists[].label`을 그 니즈 이름으로 싣는다. **shall not** 이를 위해 LLM 호출을 늘리지 않는다 — 전역 rerank **1회**를 유지하고 그 결과를 leg 로 그룹핑한다(REQ-REC-020·023 의 호출 상한 불변). 니즈가 1개거나 `case`가 3이 아니면 종전대로 **목록 1건**(길이 1 배열)을 보낸다.
 - **REQ-REC-097** (Ubiquitous, 결정 14-E): The 랭킹·선택 단계 **shall** 랭킹·선택 방식을 config로 선택 가능하게 하되 **기본값은 방식1(코드 per-item 결정론 점수 top-1/few 선택 + LLM 전체 코멘트 1회)**로 하고, 방식2(LLM 묶음 병렬 — 작은 묶음별 병렬 LLM, config 상한 예: 3~4콜)와 방식3(단일 LLM 콜 — 그룹 전체 1회)을 config 옵션으로 제공한다. **shall not** 니즈 수만큼 LLM을 무제한 fan-out하지 않으며(방식2도 config 상한 내 소수 콜), 스테이플·커머디티 다수 상황에서는 방식1이 기본이다(단일 물품 선택에 LLM 불필요). 어느 방식이 우세한지는 골든셋/시뮬레이터(§6.12)로 측정 후 확정한다.
 - **REQ-REC-098** (State-Driven, 결정 14-E/14-H): **While** 니즈 수가 config 임계를 초과하는 극단적 상황인 동안, the 랭킹·선택 단계 **shall** `ShoppingItem.priority` 오름차순(1 필수 먼저, 2 권장, 3 선택 순)으로 니즈를 우선 노출하며, 니즈(레시피 재료)를 하드 절단하지 **않는다** — priority는 극단적 과부하 시 노출 우선순위 신호일 뿐 아이템 목록에서 제거하는 근거가 아니다.
+
+*(**[#168 서술 동기화]** REQ-REC-096 의 "니즈당 후보를 니즈 수에 반비례로 축소" 는 오케스트레이터
+실측(실 Spring I-1, 실 카탈로그 leaf 폭 9~17개)으로 하한이 너무 낮았다 — `category_fanout_
+merge_cap`(기본 30) 을 니즈 수로 그대로 나누면 5니즈 턴은 니즈당 6개까지만 남아 REQ-REC-021 의
+목록당 노출 상한(9)에 애초에 도달할 수 없었다. `case`가 3이고 니즈 leg 이 2개 이상인 fan-out
+검색은 rerank 입력 상한을 `max(merge_cap, min(니즈 수, MAX_LISTS) × config 니즈당 quota)`(니즈당
+quota 기본 10)로 넓힌다 — 3니즈 이하(3×10=30=merge_cap)는 기존과 동일하고 4~5니즈만 40~50 으로
+커진다. rerank 호출은 여전히 **1회**(REQ-REC-020·023 불변). 아울러 REQ-REC-024 로 니즈별 목록이
+나가는 턴에는, 그 그룹 구조("라벨1 N개 · 라벨2 M개")를 `rerank`(LLM)가 아니라 결정론 조립으로
+안내 문구에 싣는다(#222 확장 고지와 동일 패턴, LLM 호출 증가 없음) — BUY_ALL 세트로 실제 push
+되는 턴은 그 세트가 이미 자기 라벨(REQ-REC-073 소관)을 가지므로 이 안내를 내지 않는다. 계약
+(api-spec) 무변경.)*
 
 ### 6.5 응답 (respond)
 

@@ -539,6 +539,38 @@ async def stream_recommendation(
     # 검색) 아직 기록되지 않은 것 — 그 경우 고지는 종전대로 `decision.category_legs` 전체를 쓴다.
     expansion_searched_legs: list[int] | None = None
 
+    # [이슈 #168 T1] case 3 다중 leg 턴은 rerank 입력 예산(fan-out 절단 상한)을 니즈 수에
+    # 비례시킨다 — 실측(실 카탈로그 leaf 폭 9~17): merge_cap=30 은 5니즈 턴에서 니즈당 6개로
+    # 자연 공급량보다 아래를 절단해 per-need expose_max(9)에 도달할 수 없다. 판정 축은 아래
+    # `split_by_need`(검색 **후** 확정)와 **동일**해야 한다 — 여기는 검색 전이라 같은 조건식
+    # (`case==3 and len(legs)>1`)을 미리 한 번 더 쓴다. 어긋나면 안 되므로 바뀌면 같이 고칠 것.
+    # 확장 턴(category_expanded)의 need_count 는 leaf 개수가 아니라 distinct query(원 니즈) 개수다
+    # (T3) — leaf 단위로 세면 8-leaf 확장 턴이 실제 니즈(대개 1~2개)보다 훨씬 큰 예산을 받는다.
+    # [PR #351 리뷰 R4-1] 이 need_count 계산은 아래 T3(`expansion_grouped_by_need`) 판정과
+    # **문자 그대로 같은 식**이어야 한다 — R3-1 이 T3 를 "distinct query 2개 이상 **이고 None 이
+    # 안 섞였을 때만** 니즈 단위로 그룹핑"으로 강화했는데, 여기 need_count 는 그 None 예외를
+    # 반영하지 않아 두 축이 어긋났었다: query {"A","B",None} 확장 턴은 T3 가 그룹핑을 포기해
+    # 목록 1개로 나가는데 T1 은 여전히 need_count=3 으로 예산을 넓혀, 분할되지 않을 턴에 Spring
+    # 페이로드·rerank 입력만 낭비했다. **폴백은 `len(legs_preview)`(리뷰어 제안)가 아니라
+    # need_count=1 이다** — 확장 턴의 `legs_preview` 는 leaf(최대 8개)라 그걸로 떨어뜨리면
+    # 그룹핑을 포기한 턴을 오히려 더 넓히는 반대 방향 오류가 난다. 두 축은 어긋나면 안 되므로
+    # 한쪽을 고치면 반드시 같이 고칠 것.
+    # **회귀 0의 핵심**: 이 축에 안 걸리는 턴(비-case3·단일 leg)과 3니즈 이하(3×10=30=merge_cap)
+    # 턴은 effective_cap 이 정확히 merge_cap — 기존과 동일. 4~5니즈 턴만 40~50 으로 커진다.
+    legs_preview = decision.category_legs
+    if decision.case == 3 and len(legs_preview) > 1:
+        if decision.category_expanded:
+            queries = {query for _, query in legs_preview}
+            need_count = len(queries) if (len(queries) > 1 and None not in queries) else 1
+        else:
+            need_count = len(legs_preview)
+        effective_cap = max(
+            settings.category_fanout_merge_cap,
+            min(need_count, MAX_LISTS) * settings.category_group_per_need_candidates,
+        )
+    else:
+        effective_cap = settings.category_fanout_merge_cap
+
     # dedup 소스(I-19)와 검색(§4.6)을 **병렬 실행** — §4.7 지연 가드(순차 시 최악 6s, first-token 예산 잠식).
     # dedup 은 검색 응답 뒤 사후필터라 두 호출은 독립적이다. 각 호출이 자체 실패를 삼켜 gather 는 안 깨진다.
     async def _run_search(
@@ -578,7 +610,9 @@ async def stream_recommendation(
         # 담당한다. 재조회(2차 왕복) 없이 해결되는 이유: `filters.limit` 은 Spring 요청
         # 파라미터가 아니라 AI 쪽 절단 knob 이라(§4.6 size 제거, 2026-07-23) 값을 키워도
         # 왕복·페이로드는 그대로다.
-        leg_limit = settings.category_fanout_merge_cap
+        # [이슈 #168 T1] 니즈 수 비례 effective_cap(위 선언) — case3 다중 leg 턴만 merge_cap 을
+        # 넘어설 수 있고, 그 외 턴은 effective_cap == merge_cap 이라 종전과 동일하다.
+        leg_limit = effective_cap
 
         async def _leg(canonical: str, query: str | None) -> ProductSearchResult | None:
             # leg 전체를 try 로 감싼다 — model_copy·search 어디서 실패해도 그 leg 만 드롭한다.
@@ -632,7 +666,7 @@ async def stream_recommendation(
             if trace := current_request_trace():
                 trace.mark_degraded("fanout_partial")
         try:
-            return _merge_fanout_results(survived, settings.category_fanout_merge_cap)
+            return _merge_fanout_results(survived, effective_cap)
         except Exception as exc:  # noqa: BLE001 - leg 격리와 같은 원칙으로 병합도 감싼다
             # [PR #248 리뷰] `_leg` 는 leg 별 실패를 잡는데 그 결과를 합치는 이 호출만 밖에 있었다.
             # 여기서 터지면 `search_bundle is None` 분기(→ SEARCH_FAILED)에 **도달하지 못해**
@@ -934,9 +968,23 @@ async def stream_recommendation(
         # 그대로고, 지목이 없으면(기본 경로) 정렬 자체를 건너뛰어 종전과 동일하다.
         if repurchase_ids:
             survivors.sort(key=lambda p: p.product_id not in repurchase_ids)
+        # [이슈 #168 T1 리뷰 R2-1] ①②(leg_limit·merge cap)가 effective_cap 으로 넓힌 폭이
+        # 여기서 도로 embedding_rerank_limit 으로 잘리면 T1 이 무의미해진다 — 단 **effective_cap
+        # 이 실제로 merge_cap 을 넘어선 턴(=4니즈 이상 case3 분할 턴)에만** 그 넓힌 값을 하한으로
+        # 쓴다. 조건 없이 `max` 를 걸면 이 슬라이스 자체의 하한이 조용히 merge_cap 으로 올라가,
+        # 운영자가 `embedding_rerank_limit` 을 merge_cap 미만(토큰 절감 튜닝)으로 낮춘 배포에서
+        # T1 과 무관한 비분할·3니즈 이하 턴까지 rerank 입력이 커진다(#222 패킷이 경고한 유형의
+        # 설정 조합 회귀, PR #168 리뷰 R2-1). `merged` 는 round-robin 인터리브(①②)라 넓어졌을
+        # 때의 flat 슬라이스([:N])도 니즈별 공평성이 보존된다(한 니즈가 앞을 독점해 잘리는 게
+        # 아니다).
+        rerank_input_limit = (
+            max(settings.embedding_rerank_limit, effective_cap)
+            if effective_cap > settings.category_fanout_merge_cap
+            else settings.embedding_rerank_limit
+        )
         return (
             ProductSearchResult(
-                products=survivors[: settings.embedding_rerank_limit], total_count=matched
+                products=survivors[:rerank_input_limit], total_count=matched
             ),
             suppressed,
             seen,
@@ -1229,23 +1277,55 @@ async def stream_recommendation(
     # case 3 이 아닌 멀티 leg(예: 리파인 승계)은 종전대로 목록 1건 — 전개가 일어난 턴만 분할한다.
     # leg_of 가 비면(단일 filters 검색 경로) 나눌 근거 자체가 없다.
     need_legs = decision.category_legs
-    # [#222 PR #318 리뷰] 확장 턴(category_expanded)은 니즈 경계로 쪼개지 않는다. unresolved
-    # leg 이 1개인 턴은 확장 leaf 8개가 전부 그 하나의 원 query 텍스트를 공유하지만(§4·
-    # `category_mapping._collect_expansion_leaves`), unresolved leg 이 여럿인 턴("캠핑용품이랑
-    # 낚시용품")은 `_interleave_by_leg` 가 서로 다른 query 의 leaf 를 섞어 내므로 "leaf 가 전부
-    # 같은 query" 전제가 깨진다(PR #318 리뷰 R12-2). 그렇다고 leg 인덱스 단위 분할을 그대로
-    # 켜면 되는 것도 아니다 — `_split_by_need` 는 leg(=leaf 개별) 단위로 쪼개므로 leaf 하나당
-    # 목록 하나(최대 8개, 라벨은 `_need_label` 이 leaf query 를 그대로 써 "캠핑용품"×4·
-    # "낚시용품"×4 로 **중복**)가 되어 R4-1 이 그대로 재발한다. 올바른 분할은 leg 이 아니라
-    # **니즈(원 query) 단위 그룹핑**인데, 이는 #168(카테고리별 그룹 출력)의 본체 설계라 이
-    # PR 에서는 하지 않고 확장 턴은 (leg 이 하나든 여럿이든) 통째로 목록 1건으로 둔다. 조건
-    # 칩을 category_expanded 로 억제한 것과 같은 원칙(#51 표시=실제)이고, `buy_all_mode`(아래)
-    # 도 이 값을 참조하므로 가짜 니즈 단위 예산 세트(BUY_ALL)까지 함께 막힌다.
+    # [이슈 #168 T3] 확장 턴이면서 unresolved leg 이 여럿(distinct query 2개 이상, "캠핑용품이랑
+    # 낚시용품")이면 leaf 단위가 아니라 니즈(원 query) 단위로 분할 판정을 하도록 leg_of·need_legs
+    # 를 번역한다 — `_interleave_by_leg` 가 서로 다른 query 의 leaf 를 섞어 내므로(PR #318 R12-2)
+    # leaf 인덱스 그대로 `_split_by_need` 를 돌리면 leaf 하나당 목록 하나(최대 8개, 라벨은
+    # `_need_label` 이 leaf query 를 그대로 써 "캠핑용품"×4·"낚시용품"×4 로 **중복**)가 되어
+    # R4-1 이 재발한다. `first_leaf_for_query` 의 canonical(그 니즈 첫 leaf 것)을 대표로 쓴다 —
+    # 니즈 단위 검색 자체가 없으니 대표 canonical 을 새로 만들 수는 없고, 하류(`_need_label` 등)는
+    # 어차피 `query` 를 우선하므로 canonical 선택은 라벨에 드러나지 않는다.
+    # distinct query 가 1개(대다수 확장 턴 — leaf 8개가 전부 같은 원 query 를 공유)면 번역할 게
+    # 없다 — leaf 리스트를 그대로 두고, 아래 `split_by_need` 가드가 분할 자체를 막는다(기존 동작).
+    # [PR #351 리뷰 R3-1] **query 가 전부 실재할 때만** 번역한다 — `query=None` 인 확장 leaf(raw
+    # 만 있던 unresolved leg 파생)가 서로 다른 니즈 2개 이상에서 나오면 `None` 하나의 키로
+    # 뭉쳐 서로 다른 니즈의 상품이 한 그룹에 섞이고, 그 혼합 그룹이 canonical 폴백 라벨로
+    # 나간다 — 니즈 정체성을 확신할 수 없을 때 틀리게 가르느니 안 가른다(#51). `None` 이 하나라도
+    # 섞이면 번역하지 않아 아래 가드가 분할을 막고 단일 목록(T3 이전 동작)으로 안전 후퇴한다.
+    # 원본 leg 인덱스를 키로 쓰는 대안(리뷰어 제안)은 채택하지 않는다 — ① 동일 텍스트 query 인
+    # leg 2개를 인덱스로 가르면 **라벨이 같은 목록 2개**가 나온다(R4-1[PR #318]이 결함으로 규정한
+    # 바로 그 출력 — 라벨이 같으면 사용자 관점에선 같은 니즈라 병합이 옳다). ② 원본 leg 인덱스는
+    # `expansion_leaves`(2-튜플) 평탄화에서 이미 소실됐고, 실으려면 `category_legs` 의
+    # `list[tuple[str, str|None]]` 계약을 3-튜플로 넓혀 `_leg` 언패킹 등 소비부 전체가 흔들린다
+    # — None 엣지 하나에 비례하지 않는 변경이다.
+    expansion_grouped_by_need = False
+    if decision.category_expanded and leg_of:
+        seen_queries: set[str | None] = set()
+        distinct_queries: list[str | None] = []
+        first_leaf_for_query: dict[str | None, int] = {}
+        for i, (_canonical, query) in enumerate(need_legs):
+            if query not in seen_queries:
+                seen_queries.add(query)
+                distinct_queries.append(query)
+                first_leaf_for_query[query] = i
+        if len(distinct_queries) > 1 and None not in seen_queries:
+            query_to_need_idx = {q: idx for idx, q in enumerate(distinct_queries)}
+            leaf_query = [query for _, query in need_legs]
+            leg_of = {pid: query_to_need_idx[leaf_query[leaf]] for pid, leaf in leg_of.items()}
+            need_legs = [
+                (need_legs[first_leaf_for_query[q]][0], q) for q in distinct_queries
+            ]
+            expansion_grouped_by_need = True
+    # [#222 PR #318 리뷰] 확장 턴(category_expanded)은 **기본적으로** 니즈 경계로 쪼개지 않는다
+    # (조건 칩을 category_expanded 로 억제한 것과 같은 원칙, #51 표시=실제) — 단 위에서 니즈
+    # 단위로 이미 번역된 턴(`expansion_grouped_by_need`)은 leaf 단위가 아니라 니즈 단위이므로
+    # 이 가드에서 예외로 둔다(#168 이 의도적으로 바꾼 지점, PR #318 R12-2 고정 테스트가 예고).
+    # `buy_all_mode`(아래)도 이 값을 참조하므로 니즈 단위 예산 세트(BUY_ALL)도 같이 열린다.
     split_by_need = (
         decision.case == 3
         and len(need_legs) > 1
         and bool(leg_of)
-        and not decision.category_expanded
+        and (not decision.category_expanded or expansion_grouped_by_need)
     )
     buy_all_mode = settings.budget_set_enabled and decision.buy_all and split_by_need
 
@@ -1598,6 +1678,40 @@ async def stream_recommendation(
             else:
                 if expand_notice := _strip_unsafe(expand_notice):
                     yield sse("token", TokenData(text=expand_notice).model_dump(by_alias=True))
+
+    # [이슈 #168 T2] split 턴(니즈별 그룹 출력)에 그룹 구조를 결정론적으로 서술한다 — #222 확장
+    # 고지와 같은 패턴으로 LLM 이 짓지 않고 여기서 조립한다(`rerank.py` 는 이 레인 금지 파일).
+    # 순서는 위 확장 고지(mids) **뒤** — 확장 턴에서도 두 고지가 공존한다(니즈 그룹핑은 "어디를
+    # 찾았는지"가 아니라 "몇 개씩 나눴는지"라 서로 다른 정보다). 라벨은 push 에 실릴 것과 같은
+    # `_need_label` 산출을 재사용해 표시=실제(#51)를 지키고 길이 캡도 그대로 물려받는다. 라벨
+    # 없는 그룹은 "니즈 k" 같은 의미 없는 폴백 대신 **건너뛴다** — 사용자에게 무의미한 텍스트를
+    # 보여주는 것보다 그 그룹만 서술에서 조용히 빠지는 편이 낫다. 전부 없으면 미발신한다.
+    # **`plan is None` 도 함께 요구한다** — `plan is not None`(BUY_ALL 세트가 실제로 만들어진
+    # 턴)이면 실제 push 되는 lists 는 `exposed_groups` 가 아니라 budget set 조합이라(아래 push
+    # 조립부의 `if plan is not None: ... else: lists = [_entry(leg, group) for leg, group in
+    # exposed_groups]` 와 동일 조건), "니즈별로 나눠 담았어요"가 실제로 나간 목록과 어긋나
+    # 표시=실제(#51)가 깨진다. BUY_ALL 세트는 `budget_set_label_focus`(라벨에 니즈 이름 포함)로
+    # 이미 자기 서술을 갖고 있다.
+    if (
+        split_by_need
+        and plan is None
+        and settings.group_notice_enabled
+        and (group_template := _strip_unsafe(settings.group_notice))
+    ):
+        group_items = [
+            item
+            for leg, group in exposed_groups
+            if (label := _need_label(need_legs[leg]))
+            and (item := _strip_unsafe(f"{label} {len(group)}개"))
+        ]
+        if group_items:
+            try:
+                group_notice = group_template.format(items=" · ".join(group_items))
+            except (KeyError, IndexError, ValueError):
+                logger.warning("group_notice_invalid")
+            else:
+                if group_notice := _strip_unsafe(group_notice):
+                    yield sse("token", TokenData(text=group_notice).model_dump(by_alias=True))
 
     # [#162] 조건 없음 안내 — 없으면 사용자가 인기 상품을 **자기 조건이 반영된 결과**로 오해한다.
     # `popular_degraded` 턴에는 내지 않는다: I-3 가 죽어 무필터 검색으로 떨어진 결과에
