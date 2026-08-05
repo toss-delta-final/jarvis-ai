@@ -59,9 +59,13 @@ def header_line(results: dict[str, Any]) -> str:
     fixture = results["fixture"]
     tier = results["tier"]
     model_id = model.get("fastModel") if tier == "fast" else model.get("smartModel")
+    # [#84·F-5] 분류기 문면도 표를 결정하므로 헤더에 sha12 를 한 칸 넣는다 — 표만 복사돼 돌아다닐 때
+    # decompose 해시만 보고 "같은 조건"이라고 오해하지 않게. 분류기를 끈 런은 `off` 로 나간다.
+    scope = results.get("categoryScopePrompt") or {}
+    scope_label = scope.get("sha12") or "off"
     return (
-        f"prompt={prompt['sha12']} ({prompt['source']}) · tier={tier} · model={model_id} · "
-        f"fixture={fixture['version']} · N={results['n']}"
+        f"prompt={prompt['sha12']} ({prompt['source']}) · scope={scope_label} · tier={tier} · "
+        f"model={model_id} · fixture={fixture['version']} · N={results['n']}"
     )
 
 
@@ -79,6 +83,7 @@ def build_results(
     pacer: dict[str, Any],
     budget: dict[str, Any],
     dry_run: bool,
+    category_scope_prompt: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "prompt": prompt,
@@ -88,6 +93,10 @@ def build_results(
         "n": n,
         "cellCount": len(cells),
         "dryRun": dry_run,
+        # [#84] 분류기 팔의 상태 — 문면 해시(끈 런이면 None)와 on/off. 두 표를 나중에 구분할
+        # 유일한 근거라 산출물 본문에 남긴다(F-5·G-1).
+        "categoryScopePrompt": category_scope_prompt,
+        "categoryScopeEnabled": category_scope_prompt is not None,
         "issue240Line": issue240_line(axes),
         "issue240AxisOrder": list(ISSUE_240_AXIS_ORDER),
         "axes": {axis_id: axis.as_dict() for axis_id, axis in axes.items()},
@@ -139,14 +148,15 @@ def render_report(results: dict[str, Any]) -> str:
         if axis["unfilledSampleCount"]:
             score += f" ⚠ 미충족 {axis['unfilledSampleCount']}"
         definition = axis["definition"]
+        # 정의 문장도 `md_cell` 을 태운다 — 축 정의에 파이프가 한 번이라도 섞이면 표가 통째로
+        # 어긋나는데, 그 사고는 cellId 뿐 아니라 여기서도 날 수 있다(#84 에서 실제로 밟았다).
         lines.append(
-            f"| `{axis_id}` {axis['title']} | {score} | {definition['numerator']} | "
-            f"{definition['denominator']} |"
+            f"| `{axis_id}` {axis['title']} | {score} | {md_cell(definition['numerator'])} | "
+            f"{md_cell(definition['denominator'])} |"
         )
         if definition["notComparableWith"]:
-            lines.append(
-                f"| | | ⚠ 직접 비교 금지: {', '.join(definition['notComparableWith'])} | |"
-            )
+            joined = md_cell(", ".join(definition["notComparableWith"]))
+            lines.append(f"| | | ⚠ 직접 비교 금지: {joined} | |")
 
     lines += [
         "",
@@ -154,6 +164,10 @@ def render_report(results: dict[str, Any]) -> str:
         "",
         f"- 되물음 상품 에코(위험한 실패): {results['diagnostics']['reaskProductEchoCount']}",
         f"- productId null(안전한 퇴화): {results['diagnostics']['productIdNullCount']}",
+        f"- 범위 해제 분류기 무판정(None): "
+        f"{results['diagnostics']['categoryScopeUnresolvedCount']}",
+        f"- 리파인이 clear 로 풀림(이 변경의 새 회귀 모양): "
+        f"{results['diagnostics']['categoryClearOnRefineCount']}",
         "",
         "## 셀별 intent 분포",
         "",
@@ -211,6 +225,14 @@ def write_artifacts(
             "quantity",
             "case",
             "scopedToPrevious",
+            # [#84] 원 산출·신호 유무·확정값을 함께 남긴다 — 축 숫자만 보고는 "LLM 이 clear 라
+            # 했는데 leg 때문에 replace 로 확정됐다" 같은 모순 조합을 사후에 갈라볼 수 없다.
+            "hasCategorySignal",
+            "scopeFree",
+            # [F-4] leg 원문 — 에코 판정 규칙을 바꿔도 이 열이 있으면 재집계로 끝난다.
+            "categoryLegs",
+            "categoryLegsEchoPrior",
+            "resolvedCategoryAction",
             "latencyMs",
         ],
         [
@@ -226,6 +248,11 @@ def write_artifacts(
                 "quantity": sample.quantity,
                 "case": sample.case,
                 "scopedToPrevious": sample.scoped_to_previous,
+                "hasCategorySignal": sample.has_category_signal,
+                "scopeFree": sample.scope_free,
+                "categoryLegs": sample.category_legs,
+                "categoryLegsEchoPrior": sample.category_legs_echo_prior,
+                "resolvedCategoryAction": sample.resolved_category_action,
                 "latencyMs": sample.latency_ms,
             }
             for cell in cells
