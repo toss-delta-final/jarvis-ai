@@ -43,7 +43,42 @@ ProfileRerankInfluence = Literal["tiebreak", "legacy"]
 # decompose 가 산출하는 intent 집합 — 세션 버퍼 제외 intent 검증의 정의역.
 # 정본은 RouteDecision.intent Literal(app/agents/buyer/recommendation/state.py)이며, 런타임
 # import 는 순환이라 여기 복제하고 드리프트는 테스트로 고정한다(test_config_profile.py).
-ROUTE_INTENTS = frozenset({"recommend", "cart_add", "cart_view", "order_status", "general"})
+ROUTE_INTENTS = frozenset(
+    {
+        "recommend",
+        "cart_add",
+        "cart_view",
+        "order_status",
+        "general",
+        "cart_remove",
+        "wishlist_add",
+        "wishlist_remove",
+    }
+)
+
+
+def _deferred_first_event_i1_calls(
+    *,
+    relaxation_max_rounds: int,
+    auto_fields: list[str],
+    chip_fields: list[str],
+) -> int:
+    """미룬 턴의 첫 이벤트(`conditions`) 앞에 직렬로 놓이는 I-1 호출 수 (#288).
+
+    순수 함수 + 모듈 수준으로 둔 이유는 `_require_search_retry_within_stream_budget` 를
+    테스트가 실제 config 조합(교집합 ≥ 2)으로 부를 유일한 표면이기 때문이다 — `Settings` 는
+    `relaxation_auto_fields` 를 `{"ratingMin"}` 부분집합으로 잠그므로(`_forbid_auto_relaxing_
+    explicit_constraints`) 인스턴스 경로만으로는 이 식의 `min`/교집합 분기를 실측할 수 없다.
+
+    `graph.py` 의 `may_auto_relax` 판정·자동 완화 루프와 **같은 식**이어야 어긋나지 않는다:
+    후보 생성기(`build_relaxation_candidates`)는 `chip_fields` 를 순회하므로 `auto_fields` 에만
+    있고 `chip_fields` 에 없는 필드는 후보 자체가 안 생긴다 → 교집합으로 센다. 루프는
+    `rounds >= relaxation_max_rounds` 에서 break 하므로 `min` 으로 상한을 씌운다.
+    """
+    intersection_size = len(set(auto_fields) & set(chip_fields))
+    if relaxation_max_rounds <= 0 or intersection_size == 0:
+        return 0  # may_auto_relax가 False — conditions가 검색 앞에 나가 직렬 검증 대상이 아니다
+    return 1 + min(relaxation_max_rounds, intersection_size)
 
 
 class Settings(BaseSettings):
@@ -598,6 +633,20 @@ class Settings(BaseSettings):
     # 이 개수 미만이면 전개 실패로 본다 — 1개면 발화 복사로 되돌아가므로 최소 2개.
     needs_expansion_min_items: int = Field(default=2, ge=1)
 
+    # ── 카테고리 범위 해제 분류기 (이슈 #84) ──
+    # "5만원 이하 아무거나" 처럼 **직전 카테고리를 놓겠다**는 발화를 판정하는 전용 호출.
+    # decompose 프롬프트 안의 필드(`categoryAction`)로 받는 안은 **실측으로 기각**됐다 — fast
+    # 티어에서 리셋 기대 32건 중 clear 산출이 0~6건이었고(문면 후보 6종), 같은 프롬프트를 smart 로
+    # 재면 32/32 였다. 짧은 전용 호출은 fast 에서도 32/32 · 오탐 0/56(독립 3회)이다. 즉
+    # needs_expansion 과 같은 구조의 문제이고 같은 처방을 쓴다(app/.../category_scope.py 표 참조).
+    category_scope_classifier_enabled: bool = True  # 롤백 스위치(끄면 호출 0회 = 오늘 동작)
+    # Literal 로 좁힌다 — 위 `needs_expansion_tier` 와 같은 이유다. 이 값은 `resolve_model_id` 에
+    # 들어가고 그것은 미지 tier 에 LLMError 를 던지므로, 오타가 퇴화가 아니라 예외가 된다
+    # (분류기는 그 예외를 삼켜 None 으로 떨어뜨리지만, 그러면 기능이 조용히 죽는다).
+    category_scope_tier: Literal["fast", "smart"] = "fast"
+    # 산출이 `{"scopeFree": true|false}` 한 줄이라 32 토큰이면 충분하다.
+    category_scope_max_tokens: int = Field(default=32, ge=8)
+
     # ── 장바구니 (이슈 #3, api-spec §4.1) ──
     # CART_OPTION_INVALID 재질문 상한 — 초과 시 action CART_ERROR(§4.1). 하드코딩 금지.
     cart_option_reask_max: int = 1
@@ -614,6 +663,166 @@ class Settings(BaseSettings):
     # 기준선을 잰 규모 근처로 유지한다. 90 으로 잡으면 목록이 3배가 되어 "LLM 오추출 표면을
     # 넓히지 않는다"(2026-07-30 계약 코멘트)와 어긋난다. screen_products_max(20)와도 같은 자릿수다.
     last_reco_max: int = Field(default=30, ge=1)
+
+    # ── 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현 진행 중) ──
+    # [라운드 23] 삭제·찜 흐름의 온/오프를 가리던 두 설정 필드(기본 False)를 삭제했다(사용자
+    # 지시 — 플래그를 두지 말고 항상 켜라) — 계약이 확정됐으니 판정이 나오면 항상 해당 흐름으로
+    # 위임한다. Spring 이 아직 배포 전이라 실호출은 실패로 degrade하지만(§4.12~4.16), 그 실패는
+    # AI 쪽 설정이 아니라 상대 서버 상태의 문제라 AI 코드에 게이트를 둘 이유가 없다.
+    # 삭제 발화 표지 — "빼" 같은 짧은 조각은 오탐(빼곡·빼고·뺴빼로)이 흔해 쓰지 않는다. 어미까지
+    # 포함한 동작 구만 잡는다("하나 빼고 담아줘"의 "빼고"는 여기 없음 — 삭제 지시가 아니다).
+    # [라운드 2 리뷰] 제거해줘·빼 주세요·지워 주세요 추가 — 흔한 변형이면서 전부 어미까지 갖춘
+    # 동작 구라 부분 문자열 오탐 위험이 없다.
+    cart_remove_markers: list[str] = [
+        "빼줘",
+        "빼주세요",
+        "빼 줘",
+        "지워줘",
+        "삭제해줘",
+        "제거해줘",
+        "빼 주세요",
+        "지워 주세요",
+    ]
+    # 담기 표지 — 삭제/찜 표지와 같은 발화에 함께 있으면 담기가 강한 신호로 우선한다(§4.1
+    # "찜한 거 담아줘"·"하나 빼고 담아줘" — 강한 신호는 약한 신호로 덮지 않는다, docs/lessons.md).
+    cart_add_markers: list[str] = ["담아", "장바구니에 넣"]
+    # 담기 표지의 과거 참조 꼬리(2차 리뷰 N-1) — "담아"는 "담아뒀던"·"담아둔"처럼 과거 참조형에도
+    # 부분 문자열로 걸린다("전부" ⊂ "전부터"와 같은 사고, docs/lessons.md 재발). `intent_guard.py`
+    # 가 이 표지 뒤 짧은 창(부정 표지와 같은 창)에 이 목록 중 하나가 오면 그 출현을 동작 요청이
+    # 아닌 것으로 친다(`wishlist_reference_markers` 가 "찜한"을 지시 수식어로 다루는 것과 같은
+    # 개념). **한 글자여도 되는 이유**: 이 목록은 발화 전체에서 부분 문자열 검색을 하지 않고
+    # 표지 직후의 좁은 창 안에서만 본다 — "전부"⊂"전부터"류처럼 발화 어딘가의 다른 단어에
+    # 우연히 묻히는 오탐 구조가 아니다.
+    cart_add_reference_markers: list[str] = ["뒀", "둔", "두었", "놨", "놓"]
+    # 찜 추가 표지 — "찜해줘"는 "이거 찜해줘" 처럼 앞에 다른 말이 붙어도 부분 문자열로 잡힌다.
+    # "찜 해주세요"는 띄어쓰기 변형이라 별도 표지로 둔다. 위시리스트는 동의 표현.
+    # [라운드 2 리뷰] 찜해주세요(붙여쓰기)·찜해 줘·찜 목록에 추가·위시리스트에 넣어 추가 — 전부
+    # 어미까지 갖춘 동작 구라 오탐 위험이 없다.
+    wishlist_add_markers: list[str] = [
+        "찜해줘",
+        "찜 해주세요",
+        "찜해주세요",
+        "찜해 줘",
+        "찜 목록에 넣어줘",
+        "찜 목록에 추가",
+        "위시리스트에 추가해줘",
+        "위시리스트에 넣어",
+    ]
+    # 찜 해제 표지. [라운드 2 리뷰] 찜 취소·찜에서 지워 추가.
+    # ⚠️ "찜 빼줘"는 cart_remove_markers 의 "빼줘"도 부분 문자열로 동시에 매칭한다 —
+    # classify_cart_utterance 의 판정 순서(찜 해제 → 찜 추가 → 삭제 → 담기)가 이 충돌을
+    # 해소한다(찜 해제를 삭제보다 먼저 본다). 표지 목록 자체는 겹침을 허용하고 순서로 정리한다.
+    wishlist_remove_markers: list[str] = [
+        "찜 빼줘",
+        "찜 해제해줘",
+        "찜에서 빼줘",
+        "찜 취소",
+        "찜에서 지워",
+    ]
+    # 찜 지시 표지 — "찜한 거 담아줘"·"찜해둔 이어폰 담아줘"류에서 찜은 지시 대상을 수식할 뿐
+    # 동작이 아니다. 이 표지가 있으면 찜 판정에 개입하지 않는다(그 발화의 동사는 담기다).
+    wishlist_reference_markers: list[str] = ["찜한", "찜해둔", "찜해 놓은", "찜했던"]
+    # 부정·유보 표지(2차 리뷰 지적 1·2·3, `intent_guard.py::_matches_unnegated`) — 표지 출현
+    # 바로 뒤 짧은 창 안에 이 표지 중 하나가 오면 그 표지 출현은 없는 것으로 친다("장바구니에
+    # 넣지는 마" 의 담기 표지 무효화, "빼줘야 할까"의 삭제 표지 무효화). 이 규칙은 **개입을
+    # 줄이는 방향**이라 오탐해도 오늘 동작(담기)으로 되돌아갈 뿐이라 넓게 잡아도 안전하지만,
+    # "않"처럼 짧은 조각은 다른 단어에 묻히므로(라운드 3 F-1 과 같은 이유) 어절 단위로 온전한
+    # 것만 담는다 — 지 마/지는 마/지마: "~하지 마"류 금지(종결형, "빼지 마"). 지 말: "~하지
+    # 말고"·"~하지 말아"·"~하지 말라"·"~하지 말자"류 활용형 전체를 어간("말")에서 잡는다
+    # (라운드 12 — "지 마" 만으로는 "지 말고"를 못 잡아, 이름과 부정 사이에 다른 낱말이 끼어
+    # "말고"가 창 밖으로 밀리면 "지 말"만 남은 창에서도 놓쳤다: "이어폰은 찜 빼지 말고 케이스
+    # 찜 빼줘"에서 "이어폰" 뒤 8자 창 "은 찜 빼지 말"에 "말고"는 안 들어와도 "지 말"은 들어온다).
+    # 하지 마: 위 표지가 못 잡는 "동사 없이 하지 마"류 보강. 말고: "A 말고 B" 대조·배제(표지가
+    # 이름 바로 뒤에 오는 경우). 야 할/야 될: "~해야 할까?" 류 의문·유보.
+    utterance_negation_markers: list[str] = [
+        "지 마",
+        "지는 마",
+        "지마",
+        "지 말",
+        "하지 마",
+        "말고",
+        "야 할",
+        "야 될",
+    ]
+    # 부정·유보 표지를 찾는 창 크기(문자 수) — 표지 출현 끝 위치부터 이 길이만큼만 본다.
+    # "장바구니에 넣지는 마"(담기 표지 뒤 "지는 마"까지 4자)·"빼줘야 할까"(삭제 표지 뒤 "야
+    # 할"까지 3자)를 모두 덮으면서, 창을 과하게 넓히면 표지와 무관한 뒷문장의 부정이 잘못
+    # 끌려오므로 6~8자 범위 중 여유를 둔 8로 잡았다.
+    utterance_negation_window: int = 8
+    # 접두 부정 표지(라운드 9, `intent_guard.py::_has_prefix_negation`) — 한국어 부정은 어미
+    # (위 `utterance_negation_markers`, 표지 **뒤**)뿐 아니라 부사 **접두**(안·못)로도 온다
+    # ("안 빼줘도 돼"). `utterance_negation_markers` 와 **합치지 않는다** — 검사 방향이
+    # 반대(하나는 표지 뒤를 보고, 하나는 표지 앞을 보는)라 한 목록에 두면 코드가 어느 방향으로
+    # 검사할지 표지 문자열만으로는 알 수 없다. "안"은 한국어에서 극히 흔한 조각이라("안경"·
+    # "안쪽"·"가방 안에") 부분 문자열 검색을 그대로 쓰면 정상 발화를 대량으로 삼킨다 —
+    # `_has_prefix_negation` 이 어절 경계(앞이 문자열 시작/공백, 표지와의 사이 공백 0~1개)로만
+    # 판정해 "안경 빼줘"·"가방 안에 있는 거 빼줘" 같은 정상 삭제 요청은 죽이지 않는다.
+    utterance_prefix_negation_markers: list[str] = ["안", "못"]
+    # 상품명 매칭 경계 — 오른쪽 조사 허용(이슈 #116·#117, 라운드 15, head `0b33e06` 리뷰 B).
+    # `remove.py`/`wishlist.py` 의 이름 매칭은 부분 문자열이라 "이어폰케이스"의 "이어폰"처럼
+    # 다른 낱말에 파묻힌 이름까지 오탐했다. 순진하게 "뒤가 공백/문장부호가 아니면 무효"로만
+    # 자르면 "그 세제를 빼줘"(목적격 조사 "를"이 이름 바로 뒤에 붙는 정상 발화)가 깨진다 —
+    # 그래서 오른쪽 경계에 조사도 허용한다. 최소 집합만 담는다(주격·목적격·보조사·접속·관형격·
+    # 처격·방향격·나열 각 1~2개) — 모든 조사를 망라하려 하지 않는다(그 시도 자체가 새 오탐
+    # 표면). "나"/"이나"(나열·선택 접속조사)는 패킷 최소 집합엔 없었지만 기존 회귀 테스트
+    # ("파우치 블루나 파우치 레드 찜 빼줘")가 이 조사 뒤 이름까지 매칭돼야 모호 판정(2건)이
+    # 유지되므로 추가했다 — 빠지면 "블루"만 boundary 를 통과해 단일 매칭으로 오판된다.
+    utterance_name_boundary_particles: list[str] = [
+        "은",
+        "는",
+        "이",
+        "가",
+        "을",
+        "를",
+        "도",
+        "만",
+        "과",
+        "와",
+        "랑",
+        "이랑",
+        "나",
+        "이나",
+        "의",
+        "에서",
+        "에",
+        "으로",
+        "로",
+    ]
+    # 이름 뒤 filler 낱말(이슈 #116·#117, 라운드 17, head `6ab47c9` 리뷰) — "이름 매칭 뒤 검사"
+    # (§ `negation.matches_name_unnegated` docstring)에서 조사 소비 후에도 표지가 바로 오지
+    # 않고 이 낱말들이 끼어 있으면 건너뛴다("이어폰 좀 빼줘"가 여전히 매칭돼야 한다). 뜻 없이
+    # 발화를 채우는 부사·수량사류로만 좁힌다 — 명사(상품명이 될 수 있는 말)는 절대 넣지 않는다
+    # (그러면 "이어폰 케이스 빼줘"의 "케이스"가 filler로 삼켜져 라운드 17 이 고치려는 바로 그
+    # 버그가 되살아난다).
+    utterance_name_trailing_filler_words: list[str] = [
+        "좀",
+        "지금",
+        "다시",
+        "그냥",
+        "일단",
+        "빨리",
+        "하나",
+    ]
+    # 삭제 대상 해소 — 전체 삭제 표지(이슈 #116, 패킷 §5.3). 결과가 이 판별기에서 가장
+    # 파괴적인 규칙(장바구니 전체 삭제)이라 표지도 가장 엄격하게 잡는다 — **명사 하나만
+    # 있는 표지는 금지**한다. "전부"는 온전한 단어처럼 보여도 "전부터"의 부분 문자열이라
+    # ("전부터 쓰던 거 빼줘" 오탐, 라운드 3 리뷰 F-1 재현) 동작 구로만 구성한다. "다" 한
+    # 글자도 "다른"·"다시"류와 겹쳐 같은 이유로 쓰지 않는다.
+    cart_remove_all_markers: list[str] = [
+        "전부 빼",
+        "전부 지워",
+        "전부 삭제",
+        "다 빼",
+        "다 지워",
+        "모두 빼",
+        "모두 지워",
+    ]
+    # 삭제 대상 해소 — "방금 담은 거" 표지. `CartStateStore.get_last_add` 의 cartItemId 로
+    # 이어진다(이슈 #116, 패킷 §5.3). [라운드 3 리뷰 F-1] 위 전체 삭제 표지와 달리 동작 구로
+    # 좁히지 않는다 — 이쪽은 결과가 "마지막에 담은 1건"뿐이라 파괴력이 훨씬 낮고, "방금"은
+    # 부사라 한국어에서 다른 단어의 앞부분으로 잘 묻히지 않는다(전부→전부터 같은 오탐 형태가
+    # 없다).
+    cart_remove_recent_markers: list[str] = ["방금", "아까 담은", "마지막에 담은"]
 
     # ── dedup (#4, api-spec §4.7 결정 14-F) ──
     # 최근 구매 제외 윈도우(일) — 이보다 오래된 구매는 제외 목록에서 뺀다(영구 제외 방지).
@@ -684,7 +893,25 @@ class Settings(BaseSettings):
     # 방법이 없는 반면, 노이즈("그거 담아줘")를 넣으면 델타 추출 LLM 이 걸러내고(_DELTA_SYSTEM
     # "일회성 잡담·잡음은 제외") 게이트가 한 번 더 막으며 버퍼 상한·반복 상한이 방어한다.
     # 되돌릴 수 없는 실수를 되돌릴 수 있는 실수보다 무겁게 본다(#119 전체와 같은 논리).
-    profile_buffer_excluded_intents: list[str] = ["order_status", "cart_view"]
+    #
+    # cart_remove·wishlist_remove(이슈 #116·#117)는 **버퍼에서 제외한다** — 다만
+    # order_status·cart_view 와는 제외 이유 자체가 다르다. 저 둘은 취향 신호가 **0(노이즈)**인
+    # 상태 조회지만, 삭제·찜 해제는 신호가 0 이 아니라 **부호가 반대인 신호**다. "이어폰 빼줘"에는
+    # "이어폰"이라는 상품명이 멀쩡히 들어 있어 델타 추출 LLM 이 "일회성 잡담·잡음"으로 걸러낼
+    # 근거가 오히려 약하고, 걸러지지 않으면 **사용자가 방금 치운 상품이 선호로 학습된다.** 위
+    # "실수의 비대칭"(애매하면 넣는다)은 "노이즈를 넣는 실수 vs 신호를 놓치는 실수" 구도를
+    # 전제하는데, 역신호가 새는 것은 그 저울에 올릴 문제가 아니라서 이 판단을 그대로 적용하지
+    # 않는다(방어선 세 겹은 노이즈를 걸러내도록 만들어진 것이지 반대 부호 신호를 걸러내리라는
+    # 보장이 없다).
+    # `wishlist_add` 는 **버퍼에 남긴다(목록에 넣지 않는다)** — `cart_add` 와 같은 긍정 행동
+    # 신호이고 바로 위 문단의 이유(REQ-PROF-024/044, 발화 자체가 취향을 실어 나름)가 그대로
+    # 적용된다.
+    profile_buffer_excluded_intents: list[str] = [
+        "order_status",
+        "cart_view",
+        "cart_remove",
+        "wishlist_remove",
+    ]
     # I-20 처리 중 claim lease. delta+consolidation LLM 2단계의 기본 최악시간(약 120s)보다
     # 길게 두되, 프로세스 crash 잔재가 영구 duplicate가 되지 않도록 유한하게 유지한다.
     session_end_claim_ttl_s: float = 180.0
@@ -932,6 +1159,54 @@ class Settings(BaseSettings):
     personalization_eval_clean_noisy_drop_margin: float = 0.03
     # 현행 0.15를 중심으로 0~4배 범위를 대칭적이지 않은 실용 구간으로 탐색한다.
     personalization_eval_weight_sweep: tuple[float, ...] = (0.0, 0.075, 0.15, 0.30, 0.60)
+
+    # ── 구매자 progress 이벤트 (이슈 #289, 계약 미등재 — 정본 등재 전까지 기본 off) ──
+    # 정본(Notion CH-2)·api-spec §3.1 등재 전에는 켜지 않는다. 켜면 구매자 스트림에 신규
+    # 이벤트 타입(`progress`)이 나가므로 와이어 계약 변경이다 — 이 PR 은 절대 켜지 않은 채 끝난다.
+    progress_events_enabled: bool = False
+    # 빈 문자열이면 프레임 `data`에 `message` 키 자체를 싣지 않는다(app/agents/buyer/_frames.py).
+    progress_analyzing_message: str = "요청을 확인하고 있어요"
+
+    # ── 요청 바디 크기 상한 (이슈 #299, api-spec §2.5·§2.8) ──
+    # 레이트 리밋(§2.8)은 요청 **건수**만 세므로 10회로도 임의 크기 바디를 보낼 수 있다.
+    # 필드별 상한(chat_message_max_chars·screen_products_raw_scan_max 등)은 흩어져 있고 상한 없는
+    # 필드(conditionActions 등)도 계속 생기므로, 그 앞단에 요청 전체를 유계로 만드는 층을 둔다
+    # (app/core/body_limit.py, BodySizeLimitMiddleware).
+    #
+    # 기본값은 현행 필드별 상한이 **절단 없이** 받아들이는 최대 정상 페이로드 크기의 약 4.8배로
+    # 잡는다(한국어 UTF-8 3B/자 가정):
+    #   message              chat_message_max_chars(4,000자)                      ≈  12,000B
+    #   sessionId+threadId   chat_key_max_chars(200자) × 2                         ≈   1,200B
+    #   screen.products      screen_products_raw_scan_max(500건) ×
+    #                        (screen_text_max_chars(120자) name + productId
+    #                         + JSON 구두점 ≈ 400B/건)                             ≈ 200,000B
+    #   screen.filters       표시값 10건 × 120자                                    ≈   4,000B
+    #   conditionActions + 봉투 키                                                 ≈     500B
+    #   합계                                                                      ≈ 218,000B(≈218KB)
+    # 1 MiB(1,048,576B)는 그 약 4.8배다 — 실제 FE 페이로드(상품 20건 규모)는 30KB 를 넘기 어려워
+    # 정상 요청 회귀는 0이고, 무제한이던 공격 표면은 1MiB 로 유계가 된다.
+    # `/internal/recommendations/home`(I-22) 최대 바디도 id 200×3 배열 ≈ 12KB 로 여유가 크다.
+    # 추가로 nginx 기본 client_max_body_size 가 1MB 라 같은 자리에 두면 프록시가 먼저 자르는
+    # 배포에서도 임계가 어긋나지 않는다 — 프록시가 앞서면 이 층의 목표는 "방어"가 아니라
+    # "일관된 §2.5 봉투 응답"이 된다. 운영에서 env 로 낮춰 잡을 수 있다.
+    #
+    # [리뷰 1차 F-4] **#118 의 raw-scan 상한과 만나는 지점에서 동작이 바뀐다.** #118 은
+    # `screen_products_raw_scan_max`(500)·`screen_text_raw_scan_max`(2,400자)를 "정제 비용을
+    # 유계로 만드는 사전 절단 상한"으로 설계했고, 그 상한까지 채운 페이로드도 400 이 아니라
+    # **절단**해서 받아준다는 것이 §3.1 관대 유효성의 전제였다. 이 층이 생긴 뒤로는 그 전제가
+    # 더 이상 전 구간에서 성립하지 않는다 — 두 상한을 **원문 길이까지 가득 채운** 페이로드
+    # (products 500건 × name/filters 값 2,400자)는 실측 **≈3,650,100B(기본 상한의 약 348%)**
+    # 라 그 요청은 스키마 검증·절단 로직에 도달하기도 전에 이 층에서 400 이 된다. 이것이
+    # #118 이 비용을 들여 절단해 주던 바로 그 악성 극단 페이로드다 — 정본을 건드리는 변경이
+    # 아니라(§3.1 관대 유효성 자체는 "정상 요청은 절단만 받고 거부되지 않는다"는 뜻이었지,
+    # 무제한 극단값까지 보장한 적은 없다) 그 극단값의 처리 계층이 스키마 절단에서 이 미들웨어의
+    # 사전 거절로 옮겨 왔을 뿐이다.
+    # **현실적인 상한(개수 500건, name/filters 값은 표시 상한인 `screen_text_max_chars`=120자)은
+    # 그대로 통과한다** — 실측 **≈209,580B(기본 상한의 약 20.0%)**. 즉 #118 이 "정상 FE
+    # 페이로드는 절대 자르지 않는다"고 보장한 구간(건수는 raw_scan_max 까지, 항목 길이는 표시
+    # 상한까지)은 이 층도 자르지 않는다 — 어긋나는 것은 항목 길이를 raw-scan 사전절단 상한까지
+    # 늘린, 애초에 악성으로 설계된 구간뿐이다.
+    request_body_max_bytes: int = Field(default=1_048_576, gt=0)
 
     @field_validator("llm_provider", mode="before")
     @classmethod
@@ -1282,10 +1557,46 @@ class Settings(BaseSettings):
         종전 동작을 되살리면 두 호출이 각각 재시도해 최대 12s가 되고, #277의 이벤트 0건·504
         조합도 다시 열린다.
 
-        가드 ON/OFF 설정은 각각 직렬 합 `2 * budget`/`2 * spring_timeout_s`로 검증한다.
-        게이트는 `graph.py`의 `may_auto_relax`처럼 rounds가 양수이고 자동 완화 필드가 있을 때만
-        열어, 실제로 미루지 않는 설정을 일어나지 않는 직렬 호출 때문에 막지 않는다(#277 4차).
-        이 식을 첫 이벤트 앞 호출 수 일반형으로 확장하고 타임아웃을 재배분하는 일은 #288 소관이다.
+        **직렬 합의 일반형**(#288) — 상수 `2` 는 `_deferred_first_event_i1_calls` 가 계산하는
+        `1 + min(relaxation_max_rounds, |relaxation_auto_fields ∩ relaxation_chip_fields|)` 로
+        바뀐다. 각 항의 출처:
+        - `1`: 본 검색 1회(`asyncio.gather(_run_search(), _fetch_purchases())` — I-19 는 병렬이라
+          합산 대상이 아니고, fan-out leg 도 병렬이라 1회분).
+        - **교집합**(합집합·`auto_fields` 단독이 아니라): 후보 생성기 `build_relaxation_candidates`
+          가 `relaxation_chip_fields` 를 **순회**하며 후보를 만들고, 자동 완화 루프는 그중
+          `relaxation_auto_fields` 에 든 것만 쓴다. 칩 목록에 없는 자동 필드는 후보 자체가 안
+          생겨 probe 가 돌지 않는다. `_forbid_auto_relaxing_explicit_constraints` 가 자동 목록을
+          칩 목록의 부분집합으로 이미 강제하지만, 그 검증기는 **이 검증기보다 아래에 선언**돼
+          있고 pydantic 의 `mode="after"` 검증기는 선언 순으로 돈다 — 이 검증기가 도는 시점에는
+          그 조합이 아직 거절되지 않았을 수 있어 자기 입력만으로 정확해야 한다. 교집합이 비어
+          이 검증을 건너뛰어도 그 조합은 아래 검증기가 결국 거절하므로 조용히 통과하는 설정이
+          생기지는 않는다.
+        - `min(relaxation_max_rounds, ...)`: 자동 완화 루프가 `rounds >= relaxation_max_rounds`
+          에서 break 하므로, probe 횟수는 교집합 크기와 라운드 상한 중 작은 쪽으로 잡힌다.
+        - 1 회 호출의 벽시계 예산(`budget`/`spring_timeout_s`)은 아래 가드 ON/OFF 분기 그대로다.
+
+        **오늘 이 식의 값은 항상 2 다** — `_forbid_auto_relaxing_explicit_constraints` 가
+        `relaxation_auto_fields ⊆ {ratingMin}` 로 잠가 교집합이 항상 ≤ 1 이기 때문이다. 그래도
+        상수 `2` 대신 일반형을 쓰는 이유는, 그 허용 목록이 넓어지는 순간(`graph.py` 의
+        `may_auto_relax` 주석이 "목록이 넓어지면"을 명시적으로 예상한다) 상수는 **조용히
+        과소평가**되어 #277 이 없앤 이벤트 0건·504 조합이 되살아나기 때문이다. 계수를 다른
+        검증기의 허용 목록에 암묵적으로 의존시키지 않는다(lessons 2026-08-04
+        "상한이 안전한지는 단일 호출 예산이 아니라 첫 이벤트 앞 직렬 합으로 잰다").
+
+        가드 ON/OFF 설정은 각각 직렬 합 `calls * budget`/`calls * spring_timeout_s`로 검증한다.
+        게이트는 `calls == 0`(= `graph.py`의 `may_auto_relax`가 False)일 때만 검증을 건너뛰어,
+        실제로 미루지 않는 설정을 일어나지 않는 직렬 호출 때문에 막지 않는다(#277 4차 원칙을
+        일반형으로 그대로 유지).
+
+        **커버하지 않는 것**(누락이 아니라 판단): LLM head(#151 baseline p95 ≈3.0s)와 pg 왕복은
+        이 식에 없고, `conditions` 뒤에 도는 완화 칩 probe(`relaxation_max_probes`)도 첫 이벤트
+        예산 밖이다(그 probe는 이미 첫 이벤트가 나간 뒤라 first-token 상한과 무관하다). head 를
+        포함한 타임아웃 재배분은 #288 의 잔여 후보로 남는다. 구매자 `progress` 이벤트(#289)가
+        계약에 등재되면 미룸 자체가 사라져 이 검증기는 보험 계층이 된다.
+
+        **계약 무변경**: 이 검증은 내부 기동 로직이고 AI→Spring 3s 규약과 미룬 턴 재시도
+        스킵은 api-spec §2.9(c)(v0.20.2)에 이미 등재돼 있다 — 이 변경으로 와이어·명세를
+        건드리지 않는다.
         """
         budget = self.spring_timeout_s * (self.spring_max_retries + 1)
         if budget >= self.stream_total_timeout_buyer_s:
@@ -1296,7 +1607,7 @@ class Settings(BaseSettings):
                 "search retries alone would exhaust the buyer turn budget"
             )
         # 단일 I-1 예산은 가드와 무관하게 비교하고, 아래 검증은 graph.py의 may_auto_relax 전제
-        # (rounds > 0 && 자동 완화 필드 존재)에서만 ON/OFF 각각의 실제 직렬 합을 비교한다.
+        # (calls > 0, 즉 rounds > 0 && 교집합 존재)에서만 ON/OFF 각각의 실제 직렬 합을 비교한다.
         if budget >= self.stream_first_token_timeout_s:
             raise ValueError(
                 "SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1) must be < "
@@ -1305,32 +1616,35 @@ class Settings(BaseSettings):
                 "conditions is deferred past the search on auto-relaxable turns (#113), "
                 "so search retries consume the first-token budget and would 504"
             )
+        deferred_calls = _deferred_first_event_i1_calls(
+            relaxation_max_rounds=self.relaxation_max_rounds,
+            auto_fields=self.relaxation_auto_fields,
+            chip_fields=self.relaxation_chip_fields,
+        )
+        if deferred_calls == 0:
+            return self
         if self.search_retry_on_deferred_conditions:
-            serial_budget = 2 * budget
-            serial_formula = "2 * SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1)"
+            serial_budget = deferred_calls * budget
+            serial_formula = f"{deferred_calls} * SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1)"
             recovery = (
                 "disable SEARCH_RETRY_ON_DEFERRED_CONDITIONS, lower SPRING_TIMEOUT_S, "
                 "or disable deferral with RELAXATION_MAX_ROUNDS=0 or "
                 "RELAXATION_AUTO_FIELDS=[]"
             )
         else:
-            serial_budget = 2 * self.spring_timeout_s
-            serial_formula = "2 * SPRING_TIMEOUT_S"
+            serial_budget = deferred_calls * self.spring_timeout_s
+            serial_formula = f"{deferred_calls} * SPRING_TIMEOUT_S"
             recovery = (
                 "lower SPRING_TIMEOUT_S or disable deferral with "
                 "RELAXATION_MAX_ROUNDS=0 or RELAXATION_AUTO_FIELDS=[]"
             )
-        if (
-            self.relaxation_max_rounds > 0
-            and self.relaxation_auto_fields
-            and serial_budget >= self.stream_first_token_timeout_s
-        ):
+        if serial_budget >= self.stream_first_token_timeout_s:
             raise ValueError(
                 f"{serial_formula} must be < STREAM_FIRST_TOKEN_TIMEOUT_S "
                 f"(got {serial_budget} >= "
                 f"{self.stream_first_token_timeout_s}): "
-                "deferred conditions put two serial I-1 calls before the first event; "
-                f"{recovery}"
+                f"deferred conditions put {deferred_calls} serial I-1 calls before the first "
+                f"event; {recovery}"
             )
         return self
 
@@ -1478,6 +1792,23 @@ class Settings(BaseSettings):
         # 반복한다(PR #42 리뷰, 이슈 #31). 런타임 무한 no-op 대신 기동 시점에 fail-fast.
         if self.auth_mode == "jwks" and not self.google_api_key:
             raise ValueError("GOOGLE_API_KEY must be set when auth_mode=jwks")
+        # [#289] 계약 미등재 이벤트가 운영 와이어에 나가는 사고 방지 — 이 플래그는 정본
+        # (Notion CH-2)·api-spec §3.1 등재와 FE 미지 type 무시 확인이 **둘 다** 끝난 뒤에만
+        # 켤 수 있다. bool 필드라 .env 한 줄로 뒤집히는데, 지금 그걸 막는 게 사람의 규율뿐이라
+        # 운영 레인에서는 기동으로 막는다(위 pepper/토큰 가드와 같은 fail-closed 규약).
+        # **판정 축은 auth_mode == "jwks" 와 app_environment in staging/production 의 합집합이다**
+        # — auth_mode 는 인증 "방식" 선택이라 실트래픽을 보장하지 않고(dev 인증으로 도는
+        # staging 도 있다), app_environment 는 실트래픽 축이지만 운영이 dev 인증으로 도는
+        # 조합을 놓칠 수 있다. 둘 중 하나만 해당해도 막는다(fail-closed 는 넓게 잡는다).
+        # **이 가드 제거가 플래그를 켜는 절차의 일부다** — 등재·FE 확인이 끝나면 이 분기를
+        # 지운다(scratchpad/draft-progress-contract.md §9 체크리스트).
+        if (
+            self.auth_mode == "jwks" or self.app_environment in ("staging", "production")
+        ) and self.progress_events_enabled:
+            raise ValueError(
+                "PROGRESS_EVENTS_ENABLED must stay false until the progress event "
+                "is registered in the API contract (#289)"
+            )
         if self.state_store_pool_max_size < 1:
             raise ValueError("STATE_STORE_POOL_MAX_SIZE must be at least 1")
         if self.state_store_migration_timeout_s <= 0:

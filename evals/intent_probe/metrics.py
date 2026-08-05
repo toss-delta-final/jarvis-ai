@@ -11,8 +11,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from dataclasses import replace
+
 from evals.intent_probe.runner import CellResult, Sample
-from evals.intent_probe.schema import AnchorSet, Utterance
+from evals.intent_probe.schema import AnchorSet, CATEGORY_ACTION_GROUP, SCREEN_GROUP, Utterance
 
 # #240 코멘트가 쓴 8축 한 줄 요약(237/144/93/27/8/48/32/15)의 순서를 그대로 보존한다.
 ISSUE_240_AXIS_ORDER = (
@@ -50,6 +52,68 @@ def _switched_away_from_reask(sample: Sample, _: Utterance, anchors: AnchorSet) 
 def _product_in_last_recommendations(sample: Sample, _: Utterance, anchors: AnchorSet) -> bool:
     known = {product.product_id for product in anchors.last_recommendations}
     return sample.intent == "cart_add" and sample.product_id in known
+
+
+def _category_action_matches(sample: Sample, utterance: Utterance, _: AnchorSet) -> bool:
+    """[#84] **확정값**(`resolve_category_action` 산출)이 기대와 같은가.
+
+    **확정값**을 보는 이유: 사용자가 겪는 동작은 가드가 고른 쪽이다. 기대치
+    (`expected.categoryAction`)는 LLM 필드 이름이 아니라 **가드 확정값의 기대치**다 — 인라인
+    `categoryAction` 필드는 실측으로 기각돼 프롬프트에서 제거됐지만(이득 0 · 전환 축 손해),
+    carry|clear|replace 라는 **판정 이름 자체는 그대로 유효**하다.
+
+    **carry 기대에는 예외가 하나 있다**(2차 리뷰 P2): `_SYSTEM` 의 categoryQueries 불릿이
+    리파인 턴에 직전 카테고리를 leg 로 복사하라고 지시하므로 확정값이 `replace` 로 나오는데,
+    그 leg 는 prior 에코라 **결과적으로 카테고리가 유지된다.** 사용자가 겪는 동작이 carry 와
+    같으므로 정답으로 센다 — 그러지 않으면 축이 정상 동작을 실패로 읽는다(실측 1/32).
+    """
+    expected = utterance.expected.category_action
+    if expected is None:
+        return False
+    if expected == "carry":
+        return sample.resolved_category_action == "carry" or (
+            sample.resolved_category_action == "replace" and sample.category_legs_echo_prior
+        )
+    return sample.resolved_category_action == expected
+
+
+# [#300, §4.4] 세 술어는 #118(PR #292)이 이관 전 별도 프로브에서 쓰던 `_product`/`_no_product`/
+# `_not_hallucinated` 를 **원본과 한 글자도 다르지 않게** 옮긴 것이다 — 다르게 세면 #118 이 채택
+# 근거로 쓴 48/48 수치와 비교가 끊긴다(그 프로브는 #300 이 이 하네스로 흡수하며 삭제했다).
+# `_product` 만 intent 를 함께 본다(`cart_add` 가 아니면 cart 가 채워져 있어도 확정으로 세지
+# 않는다); 나머지 둘은 intent 와 무관하게 productId 값만 본다.
+
+
+def _screen_exact_matches(sample: Sample, utterance: Utterance, _: AnchorSet) -> bool:
+    return (
+        sample.intent == "cart_add" and sample.resolved_product_id == utterance.expected.product_id
+    )
+
+
+def _screen_reask_matches(sample: Sample, _: Utterance, __: AnchorSet) -> bool:
+    return sample.resolved_product_id is None
+
+
+def _screen_not_hallucinated_matches(sample: Sample, utterance: Utterance, _: AnchorSet) -> bool:
+    return sample.resolved_product_id != utterance.expected.forbidden_product_id
+
+
+_SCREEN_RULE_PREDICATES: dict[str, Predicate] = {
+    "screenExact": _screen_exact_matches,
+    "screenReask": _screen_reask_matches,
+    "screenNotHallucinated": _screen_not_hallucinated_matches,
+}
+
+
+def _screen_resolution_matches(sample: Sample, utterance: Utterance, anchors: AnchorSet) -> bool:
+    """[#300] `screenResolution` — 셋 중 **그 셀이 선언한 규칙**을 그 셀에 적용한다.
+
+    `screenExact`/`screenReask`/`screenNotHallucinated` 는 서로 다른 셀 집합을 재는 축이라
+    한 표본에 세 술어를 동시에 적용할 수 없다 — 그 표본의 `expected.productIdRule` 이 가리키는
+    술어 하나만 쓴다(합계 축이 컴포넌트 축들의 표본을 그대로 이어 붙인 것과 같다).
+    """
+    predicate = _SCREEN_RULE_PREDICATES.get(utterance.expected.product_id_rule)
+    return predicate(sample, utterance, anchors) if predicate is not None else False
 
 
 @dataclass(frozen=True)
@@ -137,6 +201,124 @@ AXES: tuple[AxisSpec, ...] = (
         denominator="general 2발화 × 컨텍스트 3종 × N",
         predicate=_intent_matches,
     ),
+    # [#84] 카테고리 승계 3분기 — 기준선에 없는 신규 축이다. 기존 축과 표본을 섞지 않는다
+    # (스키마가 강제): 새 셀이 기존 축의 분모를 늘리면 회귀 0 을 증명할 대조가 사라진다.
+    AxisSpec(
+        axis_id="categoryAction3Way",
+        title="카테고리 승계 3분기",
+        numerator="확정값(resolvedCategoryAction)이 기대 carry·clear·replace 와 일치한 표본 수 "
+        "(carry 기대는 확정값이 replace 라도 그 leg 이 **전부** 직전 카테고리 에코면 정답으로 센다 "
+        "— 프롬프트가 리파인 턴에 PRIOR_FILTERS.category 를 categoryQueries 로 복사하라고 지시해서 "
+        "나오는 모양이고, 결과적으로 카테고리가 유지되므로 사용자가 겪는 동작이 carry 와 같다. "
+        "에코 판정은 앵커 categoryPriorFilters(카테고리 전체·각 조각·semanticQuery)와 "
+        "**정규화 후 정확 일치**다 — 부분 문자열이면 `이어폰 케이스` 같은 새 상품도 에코로 세어 "
+        "카테고리가 바뀐 턴을 '유지됐다'로 읽는다)",
+        denominator="카테고리 15발화 × categoryPrior 컨텍스트 × N (N=8 이면 120) "
+        "— 라운드 3 이 혼합 4발화를 더해 88 → 120 이 됐다",
+        predicate=_category_action_matches,
+        components=("categoryCarry", "categoryClear", "categoryReplace", "categoryMixedReplace"),
+        not_comparable_with=(
+            "baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)",
+            "baselines/fast-2026-08-05-84 (분모 88 — 혼합 4발화 추가 전)",
+        ),
+    ),
+    AxisSpec(
+        axis_id="categoryCarry",
+        title="리파인(직전 카테고리 유지)",
+        numerator="resolvedCategoryAction 이 carry 인 표본 수 "
+        "(**또는** replace 이면서 leg 이 **전부** 직전 카테고리 에코인 표본 — 프롬프트가 리파인 "
+        "턴에 직전 카테고리를 leg 로 복사하라고 지시해서 나오는 모양이고, 카테고리는 유지된다. "
+        "에코는 앵커 categoryPriorFilters 와 정규화 후 **정확 일치**일 때만 인정한다)",
+        denominator="리파인 4발화 × categoryPrior 컨텍스트 × N (N=8 이면 32)",
+        predicate=_category_action_matches,
+        not_comparable_with=("baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)",),
+    ),
+    AxisSpec(
+        axis_id="categoryClear",
+        title="카테고리-무관 리셋",
+        numerator="resolvedCategoryAction 이 clear 인 표본 수",
+        denominator="리셋 4발화 × categoryPrior 컨텍스트 × N (N=8 이면 32)",
+        predicate=_category_action_matches,
+        not_comparable_with=("baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)",),
+    ),
+    AxisSpec(
+        axis_id="categoryMixedReplace",
+        title="혼합 발화(새 카테고리 + 아무거나)",
+        numerator="resolvedCategoryAction 이 replace 인 표본 수 — 새 카테고리를 지목하면서 동시에 "
+        "'아무거나'류 표현을 쓴 발화다. 초판(scopeFree 우선)에서는 사용자가 말한 카테고리가 통째로 "
+        "버려져 무필터가 됐다(실 LLM 실측 32건 중 19건 clear)",
+        denominator="혼합 4발화 × categoryPrior 컨텍스트 × N (N=8 이면 32)",
+        predicate=_category_action_matches,
+        not_comparable_with=("baselines/fast-2026-08-05-84 (이 축이 존재하지 않던 런)",),
+    ),
+    AxisSpec(
+        axis_id="categoryReplace",
+        title="카테고리 교체",
+        numerator="resolvedCategoryAction 이 replace 인 표본 수",
+        denominator="교체 3발화 × categoryPrior 컨텍스트 × N (N=8 이면 24)",
+        predicate=_category_action_matches,
+        not_comparable_with=("baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)",),
+    ),
+    # [#300] screen 지시어 해소(#118 이관) — 기존 커밋 기준선 3종에 이 축이 없다. 채점은
+    # **출고 배선의 최종값**(`resolvedProductId` = decompose 다음 `resolve_screen_reference` 를
+    # 거친 값)으로 한다 — 사용자가 겪는 동작이 그것이고, #118 이 채택 근거로 쓴 48/48 도 같은
+    # 정의(해소기 통과 후 값)로 잰 수치다.
+    AxisSpec(
+        axis_id="screenExactPick",
+        title="화면 지시어 확정",
+        numerator="resolvedProductId(해소기 통과 후 최종값) 가 expected.productId 와 일치한 표본 수",
+        denominator="확정 4발화(screen-001·003·004·005) × 1 컨텍스트 × N (N=8 이면 32)",
+        predicate=_screen_exact_matches,
+        components=(),
+        not_comparable_with=(
+            "baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)",
+            "baselines/fast-2026-08-04-prompt-e5e19582 (이 축이 존재하지 않던 런)",
+            "baselines/fast-2026-08-05-84 (이 축이 존재하지 않던 런)",
+            "#118 원 프로브(이관 전, #300 흡수 후 삭제됨)의 adopted 변형 표 — 해소기 통과 후 48/48, 프롬프트 층(SCREEN 블록 채택안·해소기 전) 27/48. screen 을 아예 안 실은 `before` 9/48 은 설계 자체가 달라 어느 쪽과도 비교하지 않는다",
+        ),
+    ),
+    AxisSpec(
+        axis_id="screenReask",
+        title="화면 지시어 되물음(안전 셀)",
+        numerator="resolvedProductId(해소기 통과 후 최종값) 가 None 인 표본 수(임의 확정하지 않고 "
+        "되물음으로 흐른다)",
+        denominator="되물음 1발화(screen-002) × 1 컨텍스트 × N (N=8 이면 8)",
+        predicate=_screen_reask_matches,
+        not_comparable_with=(
+            "baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)",
+            "baselines/fast-2026-08-04-prompt-e5e19582 (이 축이 존재하지 않던 런)",
+            "baselines/fast-2026-08-05-84 (이 축이 존재하지 않던 런)",
+            "#118 원 프로브(이관 전, #300 흡수 후 삭제됨)의 adopted 변형 표 — 해소기 통과 후 48/48, 프롬프트 층(SCREEN 블록 채택안·해소기 전) 27/48. screen 을 아예 안 실은 `before` 9/48 은 설계 자체가 달라 어느 쪽과도 비교하지 않는다",
+        ),
+    ),
+    AxisSpec(
+        axis_id="screenNoHallucination",
+        title="화면 밖 id 확정 금지",
+        numerator="resolvedProductId(해소기 통과 후 최종값) 가 expected.forbiddenProductId 와 다른 표본 수",
+        denominator="확정금지 1발화(screen-006) × 1 컨텍스트 × N (N=8 이면 8)",
+        predicate=_screen_not_hallucinated_matches,
+        not_comparable_with=(
+            "baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)",
+            "baselines/fast-2026-08-04-prompt-e5e19582 (이 축이 존재하지 않던 런)",
+            "baselines/fast-2026-08-05-84 (이 축이 존재하지 않던 런)",
+            "#118 원 프로브(이관 전, #300 흡수 후 삭제됨)의 adopted 변형 표 — 해소기 통과 후 48/48, 프롬프트 층(SCREEN 블록 채택안·해소기 전) 27/48. screen 을 아예 안 실은 `before` 9/48 은 설계 자체가 달라 어느 쪽과도 비교하지 않는다",
+        ),
+    ),
+    AxisSpec(
+        axis_id="screenResolution",
+        title="화면 지시어 해소 종합",
+        numerator="screenExactPick·screenReask·screenNoHallucination 셋의 합 — 각 표본은 자신의 "
+        "productIdRule(screenExact|screenReask|screenNotHallucinated)이 가리키는 술어 하나로만 채점된다",
+        denominator="screen 6발화 × 1 컨텍스트 × N (N=8 이면 48) — #118 의 48/48 과 같은 분모",
+        predicate=_screen_resolution_matches,
+        components=("screenExactPick", "screenReask", "screenNoHallucination"),
+        not_comparable_with=(
+            "baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)",
+            "baselines/fast-2026-08-04-prompt-e5e19582 (이 축이 존재하지 않던 런)",
+            "baselines/fast-2026-08-05-84 (이 축이 존재하지 않던 런)",
+            "#118 원 프로브(이관 전, #300 흡수 후 삭제됨)의 adopted 변형 표 — 해소기 통과 후 48/48, 프롬프트 층(SCREEN 블록 채택안·해소기 전) 27/48. screen 을 아예 안 실은 `before` 9/48 은 설계 자체가 달라 어느 쪽과도 비교하지 않는다",
+        ),
+    ),
 )
 
 AXES_BY_ID = {spec.axis_id: spec for spec in AXES}
@@ -181,6 +363,27 @@ class AxisResult:
 
 def _utterances_by_id(anchors: AnchorSet) -> dict[str, Utterance]:
     return {utterance.utterance_id: utterance for utterance in anchors.utterances}
+
+
+def _screen_ids_for_context(anchors: AnchorSet, context_id: str) -> tuple[set[int], set[int]]:
+    """(그 컨텍스트가 가리키는 screen 픽스처의 productId 집합, screenLastRecommendations 집합).
+
+    `screenOutOfListConfirmCount` 의 "두 목록"이 이것이다 — screen 은 셀마다 다르지만
+    screenLastRecommendations 는 D-4 규약상 모든 screen 컨텍스트가 같은 목록을 공유한다.
+    """
+    context_by_id = {context.context_id: context for context in anchors.contexts}
+    screen_by_id = {screen.screen_id: screen for screen in anchors.screens}
+    reco_ids = {product.product_id for product in anchors.screen_last_recommendations}
+    context = context_by_id.get(context_id)
+    screen = (
+        screen_by_id.get(context.screen_ref)
+        if context is not None and context.screen_ref is not None
+        else None
+    )
+    screen_ids = (
+        {product.product_id for product in screen.products} if screen is not None else set()
+    )
+    return screen_ids, reco_ids
 
 
 def score_axis(
@@ -228,10 +431,61 @@ def diagnostics(results: list[CellResult], anchors: AnchorSet) -> dict[str, Any]
     - `reaskProductEchoCount` — 되물음 상품을 그대로 담았다. **위험한 실패**: 사용자가 고르지
       않은 옵션으로 옛 상품이 장바구니에 들어간다.
     - `productIdNullCount` — 못 고르고 null 을 냈다. 되물음이 유지되는 **안전한 퇴화**다.
+    - `categoryScopeUnresolvedCount` (#84) — 전용 분류기가 판정하지 못한(None) 표본 수.
+      분류기의 침묵률이며, 이 프로브가 3분기 축을 신뢰할 수 있는지의 근거다.
+    - `categoryClearOnRefineCount` (#84) — 리파인 발화가 `clear` 로 확정됐다. 이 변경이 만들 수
+      있는 **유일한 새 회귀 모양**(리파인 턴의 카테고리가 풀림)이라 정확도와 따로 센다
+      (lessons 「정확도 지표만 보지 말고 실패의 모양을 갈라 센다」).
+
+    카테고리 카운터 둘(`categoryScopeUnresolvedCount`·`categoryClearOnRefineCount`)은
+    `category_action` 그룹 표본만 본다 — `reaskProductEchoCount` 가 전환 셀만 보는 것과 같은
+    규약이다. 다른 그룹(장바구니·general)은 승계 가드에 닿지도 않아 섞으면 분모가 뜻을 잃는다.
+
+    [#300] screen 카운터 셋(`screenPromptLayerHitCount`·`screenResolverOverrideCount`·
+    `screenOutOfListConfirmCount`)도 같은 규약으로 `screen` 그룹 표본만 본다.
     """
     echo = 0
     nulls = 0
+    scope_unresolved = 0
+    clear_on_refine = 0
+    screen_prompt_layer_hit = 0
+    screen_resolver_override = 0
+    screen_out_of_list_confirm = 0
+    by_id = _utterances_by_id(anchors)
     for result in results:
+        if result.group == CATEGORY_ACTION_GROUP:
+            utterance = by_id.get(result.utterance_id)
+            expected = utterance.expected.category_action if utterance else None
+            for sample in result.samples:
+                if sample.scope_free is None:
+                    scope_unresolved += 1
+                if expected == "carry" and sample.resolved_category_action == "clear":
+                    clear_on_refine += 1
+            continue
+        if result.group == SCREEN_GROUP:
+            utterance = by_id.get(result.utterance_id)
+            predicate = (
+                _SCREEN_RULE_PREDICATES.get(utterance.expected.product_id_rule)
+                if utterance is not None
+                else None
+            )
+            screen_ids, reco_ids = _screen_ids_for_context(anchors, result.context_id)
+            for sample in result.samples:
+                if sample.screen_resolver_fired:
+                    screen_resolver_override += 1
+                # [D-5] 해소기 전 원본 decompose 산출(`sample.product_id`)만으로 같은 규칙을
+                # 만족했는가 — #118 이 잰 "코드 해소기 도입 전 9/48" 과 대조하는 값이다.
+                if utterance is not None and predicate is not None:
+                    prompt_layer_sample = replace(sample, resolved_product_id=sample.product_id)
+                    if predicate(prompt_layer_sample, utterance, anchors):
+                        screen_prompt_layer_hit += 1
+                if (
+                    sample.resolved_product_id is not None
+                    and sample.resolved_product_id not in screen_ids
+                    and sample.resolved_product_id not in reco_ids
+                ):
+                    screen_out_of_list_confirm += 1
+            continue
         if result.group != "switch":
             continue
         for sample in result.samples:
@@ -244,11 +498,26 @@ def diagnostics(results: list[CellResult], anchors: AnchorSet) -> dict[str, Any]
     return {
         "reaskProductEchoCount": echo,
         "productIdNullCount": nulls,
+        "categoryScopeUnresolvedCount": scope_unresolved,
+        "categoryClearOnRefineCount": clear_on_refine,
+        "screenPromptLayerHitCount": screen_prompt_layer_hit,
+        "screenResolverOverrideCount": screen_resolver_override,
+        "screenOutOfListConfirmCount": screen_out_of_list_confirm,
         "definition": {
             "reaskProductEchoCount": "전환 셀에서 cart.productId 가 되물음 상품과 같은 표본 수 "
             "— 사용자가 고르지 않은 옵션으로 옛 상품이 담기는 위험한 실패",
             "productIdNullCount": "전환 셀에서 cart_add 인데 productId 가 null 인 표본 수 "
             "— 되물음이 유지되는 안전한 퇴화",
+            "categoryScopeUnresolvedCount": "전용 분류기가 판정하지 못한(None) 표본 수 "
+            "— 호출 실패·비 JSON·비불리언 산출을 합친 침묵률",
+            "categoryClearOnRefineCount": "리파인 기대 셀에서 확정값이 clear 로 나온 표본 수 "
+            "— 사용자가 좁혀 둔 카테고리가 풀리는 이 변경의 유일한 새 회귀 모양",
+            "screenPromptLayerHitCount": "해소기 전 원본 decompose 산출만으로 셀 규칙을 만족한 "
+            "표본 수 — #118 이 잰 '코드 해소기 도입 전 9/48' 과 대조하는 값",
+            "screenResolverOverrideCount": "해소기(resolve_screen_reference)가 발동해 productId "
+            "를 확정한 표본 수(None 강제 되물음도 포함)",
+            "screenOutOfListConfirmCount": "최종 productId 가 None 도 아니고 두 목록(screen ∪ "
+            "screenLastRecommendations) 안에도 없는 표본 수 — 위험한 실패, 0 이어야 한다",
         },
     }
 

@@ -17,7 +17,7 @@ from app.core.config import get_settings
 from app.core.session_context import BuyerSessionInput
 from app.schemas.chat import SCREEN_PAGE_TYPES, BuyerChatRequest
 from app.schemas.seller import SellerChatRequest
-from app.schemas.spring import AddToCartResult, CartView
+from app.schemas.spring import AddToCartResult, CartView, WishlistAddResult
 from tests._fakes import FakeLLM
 
 
@@ -473,7 +473,9 @@ def test_a_flood_of_huge_screen_text_does_not_error_and_stays_fast(
     )
     elapsed = time.perf_counter() - started
     assert parsed.screen is not None  # 400 이 아니다 — screen 자체는 살아 있다(관대 유효성)
-    assert elapsed < 5.0, f"극단적으로 느려짐(하드 캡이 빠졌을 가능성 — 수정 전 실측 25.02s) — {elapsed:.3f}s"
+    assert elapsed < 5.0, (
+        f"극단적으로 느려짐(하드 캡이 빠졌을 가능성 — 수정 전 실측 25.02s) — {elapsed:.3f}s"
+    )
 
 
 def test_filters_lookup_never_iterates_the_raw_mapping() -> None:
@@ -935,6 +937,38 @@ async def test_ordinal_and_coordinate_references_are_resolved_by_code(
         llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 509, "quantity": 1}})
         await _collect(_run_buyer_turn(request, _member(), llm=llm))
     assert added == [503, 508]
+
+
+async def test_wishlist_add_ordinal_reference_is_resolved_by_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """재현·수정 확인 — 화면 순번 해소(`resolve_screen_reference`)는 `cart_add` 분기에만
+    연결돼 있었다. decompose 가 발화를 곧바로 `wishlist_add` 로 분류하면(2선 방어를 거치지
+    않는 경로) 해소를 못 받아 `cart.productId` 가 LLM 의 원시 산출(엉뚱한 이웃 상품)로 그대로
+    새는 문제가 있었다 — cart_add 분기가 쓰는 것과 같은 해소 결과를 wishlist_add 도 받아야
+    한다."""
+    import app.services.spring_client as sc
+
+    added: list[int] = []
+
+    async def fake_add_wishlist(req):  # noqa: ANN001
+        added.append(req.product_id)
+        return WishlistAddResult(success=True, product_id=req.product_id)
+
+    monkeypatch.setattr(sc, "add_wishlist", fake_add_wishlist)
+
+    products = [{"productId": 500 + i, "name": f"상품{i}"} for i in range(1, 10)]
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(
+            message="3번째 거 찜해줘",
+            threadId="t-screen-wishlist-ordinal",
+            screen={"pageType": "chat", "columns": 3, "products": products},
+        )
+    )
+    # LLM 은 엉뚱한 이웃(509)을 골랐다고 가정 — 코드가 화면 순번(3번째 = 503)으로 덮어써야 한다.
+    llm = FakeLLM(decompose={"intent": "wishlist_add", "cart": {"productId": 509, "quantity": 1}})
+    await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    assert added == [503]
 
 
 async def test_spoken_product_id_outside_both_lists_forces_a_reask(

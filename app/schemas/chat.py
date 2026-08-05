@@ -404,7 +404,19 @@ class BuyerChatRequest(ChatRequest):
         return self
 
 
-# ── SSE 이벤트 data 페이로드 모델 (api-spec §3.1, 6종) ──
+# ── SSE 이벤트 data 페이로드 모델 (api-spec §3.1 번호 이벤트 7종 — suggestions 는 §3.1 「MVP 추가 페이로드」 절이라 별도) ──
+
+
+class ProgressData(CamelModel):
+    """`progress` 이벤트 페이로드 (api-spec §3.1 (1), 이슈 #289 — 계약 등재 2026-08-05).
+
+    stage 확정 어휘는 `analyzing` 1종이며 `Literal` 로 강제한다(searching/relaxing/reranking 은
+    후속 확장 후보·미구현) — 어휘를 넓히려면 계약(§3.1) 개정과 이 `Literal` 을 함께 고친다.
+    message 는 선택 — 서버가 비우면 와이어에서 키 자체가 빠진다(`app/agents/buyer/_frames.py`).
+    """
+
+    stage: Literal["analyzing"]
+    message: str | None = None
 
 
 class TokenData(CamelModel):
@@ -414,7 +426,7 @@ class TokenData(CamelModel):
 
 
 class ConditionChip(CamelModel):
-    """`conditions` 칩 1건 — FE 제거 가능한 추출 조건 (api-spec §3.1 (2))."""
+    """`conditions` 칩 1건 — FE 제거 가능한 추출 조건 (api-spec §3.1 (3))."""
 
     field: str
     label: str
@@ -465,7 +477,7 @@ class SuggestionsData(CamelModel):
 
 
 class ActionData(CamelModel):
-    """`action` 이벤트 — 장바구니 담기 결과 (api-spec §3.1 (3)).
+    """`action` 이벤트 — 장바구니 담기 결과 (api-spec §3.1 (4)).
 
     type: CART_ADDED | CART_ADD_FAILED.
     reason(실패 시): PRODUCT_NOT_FOUND | STOCK_INSUFFICIENT | CART_ERROR (STOCK_INSUFFICIENT는
@@ -473,12 +485,32 @@ class ActionData(CamelModel):
     OUT_OF_STOCK 폐기: 품절=0 표현이라 'N개 남음'과 불일치, CH-2).
     GUEST_NOT_ALLOWED 폐기 — 게스트 담기 허용(결정 8 개정). 옵션 되물음(CART_OPTION_REQUIRED)은
     실패 action 이 아니라 token 재질문 멀티턴으로 처리한다(api-spec §3.1·§4.1).
+
+    [이슈 #116·#117] `CART_REMOVED`·`CART_REMOVE_FAILED`·`WISHLIST_ADDED`·`WISHLIST_ADD_FAILED`·
+    `WISHLIST_REMOVED`·`WISHLIST_REMOVE_FAILED`, reason `WISHLIST_ERROR` 는 **확정 2026-08-05**
+    (정본 CH-2 등재 완료, I-24~I-28 — `docs/api-spec.md` §3.1 v0.22.0에 반영됨). **[라운드 23]**
+    삭제·찜 흐름의 온/오프를 가리던 두 설정 필드를 제거했다 — 이제 항상 emit 된다.
     """
 
-    type: Literal["CART_ADDED", "CART_ADD_FAILED"]
+    type: Literal[
+        "CART_ADDED",
+        "CART_ADD_FAILED",
+        "CART_REMOVED",
+        "CART_REMOVE_FAILED",
+        "WISHLIST_ADDED",
+        "WISHLIST_ADD_FAILED",
+        "WISHLIST_REMOVED",
+        "WISHLIST_REMOVE_FAILED",
+    ]
     message: str
+    # [확정 2026-08-05] cartItemId 는 number(BIGINT) — 삭제 확장안이 제안했던 문자열 표기는
+    # 채택되지 않았다. 정본 CH-2·FE 타입(`ChatAction`)·이 필드(CART_ADDED 가 이미 쓰는 int, FE
+    # 사용 중) 셋 다 number 로 확정돼, CART_REMOVED 도 이 필드를 그대로 재사용한다(§2.6·
+    # docs/api-spec.md §3.1).
     cart_item_id: int | None = None  # 숫자(BIGINT, cart_item.id)
-    reason: Literal["STOCK_INSUFFICIENT", "PRODUCT_NOT_FOUND", "CART_ERROR"] | None = None
+    reason: (
+        Literal["STOCK_INSUFFICIENT", "PRODUCT_NOT_FOUND", "CART_ERROR", "WISHLIST_ERROR"] | None
+    ) = None
 
 
 class ProductsReadyData(CamelModel):
@@ -493,7 +525,7 @@ class ProductsReadyData(CamelModel):
 
 
 class DoneData(CamelModel):
-    """`done` 이벤트 — 정상 종료. finishReason: stop | zero_result (api-spec §3.1 (5)).
+    """`done` 이벤트 — 정상 종료. finishReason: stop | zero_result (api-spec §3.1 (6)).
 
     [#113] `relaxationNotice` 는 **싣지 않는다.** 정본(Notion CH-2)이 `done` 을 `finishReason` 만으로
     확정했고("구 명세 대비 정정 요약: done — relaxationNotice 제거"), FE 타입도 그 필드를 갖고 있지
@@ -506,7 +538,7 @@ class DoneData(CamelModel):
 
 
 class ErrorData(CamelModel):
-    """`error` 이벤트 — 스트림 내부 오류 (api-spec §3.1 (6)).
+    """`error` 이벤트 — 스트림 내부 오류 (api-spec §3.1 (7)).
 
     code 4종: LLM_TIMEOUT | LLM_UNAVAILABLE | SEARCH_FAILED | INTERNAL.
     스테이지 상세(decompose/rerank)는 서버 로그 전용 — 사용자 스트림 미노출.

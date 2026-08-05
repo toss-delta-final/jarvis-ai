@@ -12,11 +12,16 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+import logging
 
 from pydantic import ValidationError
 
 from app.agents.buyer._frames import sse
+from app.agents.buyer.cart.identity import cart_identity
+from app.agents.buyer.cart.intent_guard import classify_cart_utterance
+from app.agents.buyer.cart.remove import stream_cart_remove
 from app.agents.buyer.cart.state import CartStateStore, PendingAdd
+from app.agents.buyer.cart.wishlist import stream_wishlist_add, stream_wishlist_remove
 from app.agents.buyer.recommendation.state import CartIntent
 from app.core.text import _strip_unsafe
 from app.core.tracing import current_request_trace
@@ -33,21 +38,9 @@ from app.services.spring_client import (
     SpringUnavailableError,
 )
 
+__all__ = ["cart_identity", "stream_cart_add", "stream_cart_view"]
 
-def cart_identity(identity) -> tuple[int | None, str | None]:
-    """신원 → (userId, guestId). 회원=userId(숫자), 게스트=guestId(UUID), 익명(dev 무토큰)=둘 다 None.
-
-    user_id 는 JWT sub 원문 문자열이라 숫자 보장이 없다 — 비숫자면 익명 취급((None, None))해
-    상위가 CART_ERROR 로 우아하게 처리하게 한다(미처리 ValueError 로 스트림이 죽지 않게).
-    """
-    if not identity.is_guest and identity.user_id:
-        try:
-            return int(identity.user_id), None
-        except (ValueError, TypeError):
-            return None, None
-    if identity.is_guest and identity.subject:
-        return None, identity.subject
-    return None, None
+_log = logging.getLogger(__name__)
 
 
 def _option_label(option: CartOption) -> str:
@@ -211,6 +204,10 @@ async def stream_cart_add(
     screen_reason: str | None = None,
     add_fn=None,
     get_cart_fn=None,
+    delete_fn=None,
+    add_wishlist_fn=None,
+    get_wishlist_fn=None,
+    remove_wishlist_fn=None,
     observer=None,
 ) -> AsyncIterator[str]:
     """담기 서브그래프. action(CART_ADDED/CART_ADD_FAILED) 또는 옵션 되물음 token 을 낸다.
@@ -218,7 +215,63 @@ async def stream_cart_add(
     `screen_reason` 은 화면 지시어 해소기(`screen_reference`)가 담기 대상을 **일부러 비운** 사유다
     (#118). 되물음 문구를 상황에 맞게 가르는 데만 쓰고 판정에는 관여하지 않는다 — `None` 이면
     (= FE 가 `screen` 을 안 보냈거나 해소기가 개입하지 않은 절대다수 경로) 문구는 오늘과 같다.
+
+    **[라운드 14, head `0a53ffc` 리뷰]** 아래 삭제·찜 세 위임 분기(`stream_cart_remove`/
+    `stream_wishlist_add`/`stream_wishlist_remove`)는 이 `screen_reason` 을 넘기지 않는다 —
+    누락이 아니라 **의도적 축소**다. 그 세 흐름은 화면 해소 사유별 문구(`_UNRESOLVED_SCREEN_POSITION`·
+    `_UNRESOLVED_SCREEN_NOT_FOUND`) 대신 각자의 범용 되물음 문구를 쓴다. 잘못된 동작이 아니라
+    "덜 친절한 문구"일 뿐이고(되물음 자체는 정상 발생), #118 의 세 문구는 실 LLM 프로브(N=8)와
+    여러 라운드 리뷰로 고른 것이라 이 레인에 측정 없이 같은 급의 찜·삭제용 화면 문구를 지어내
+    끼워 넣지 않는다. 화면 맥락(#118)과 삭제·찜(#116·#117)의 통합은 이 레인 범위 밖(핸드오버의
+    찜 해소는 "추천 목록·문맥에서 productId 해소"까지)이며, **[라운드 23]** 플래그 제거로 이제
+    이 흐름은 항상 사용자에게 도달한다 — 통합은 여전히 후속 항목이다.
     """
+    # 삭제·찜 위임(이슈 #116·#117, 패킷 §4) — 신원 도출·pending 조회보다 앞에서 판별한다. LLM 을
+    # 새로 부르지 않는 결정론적 판정이라 순서가 앞이어도 비용이 없다. **[라운드 23]** 이 둘의
+    # 온/오프 여부를 가리던 설정 필드를 제거했다(사용자 지시) — 판정이 나오면 항상 해당 흐름으로
+    # 위임한다. 이 턴은 담기 대기와 무관한 흐름으로 위임하므로, `graph.py` 665~668행과 같은
+    # 취지로 stale pending 을 정리한다(다음 턴이 옛 상품의 옵션 답변으로 오해석되지 않게).
+    intent = classify_cart_utterance(message, settings)
+    if intent == "wishlist_add":
+        await cart_store.clear_pending(thread_key)
+        async for frame in stream_wishlist_add(
+            identity=identity,
+            cart=cart,
+            settings=settings,
+            allowed_product_ids=allowed_product_ids,
+            add_wishlist_fn=add_wishlist_fn,
+            observer=observer,
+        ):
+            yield frame
+        return
+    if intent == "wishlist_remove":
+        await cart_store.clear_pending(thread_key)
+        async for frame in stream_wishlist_remove(
+            identity=identity,
+            cart=cart,
+            message=message,
+            settings=settings,
+            get_wishlist_fn=get_wishlist_fn,
+            remove_wishlist_fn=remove_wishlist_fn,
+            observer=observer,
+        ):
+            yield frame
+        return
+    if intent == "cart_remove":
+        await cart_store.clear_pending(thread_key)
+        async for frame in stream_cart_remove(
+            identity=identity,
+            message=message,
+            cart_store=cart_store,
+            thread_key=thread_key,
+            settings=settings,
+            get_cart_fn=get_cart_fn,
+            delete_fn=delete_fn,
+            observer=observer,
+        ):
+            yield frame
+        return
+
     add_fn = add_fn or spring_client.add_to_cart
     get_cart_fn = get_cart_fn or spring_client.get_cart
 
@@ -412,6 +465,21 @@ async def stream_cart_add(
 
     # 성공 — 되물음 상태 정리 + 합산 안내.
     await cart_store.clear_pending(thread_key)
+    # "방금 담은 거" 삭제 해소 소스(이슈 #116) — 담기 **성공** 경로에서만 기록한다(실패·되물음은
+    # 갱신하지 않음). cart_item_id 가 없으면(계약상 있어야 하지만 방어) 해소에 쓸 수 없어 저장하지
+    # 않는다.
+    # [라운드 3 리뷰 F-2, 라운드 23] 이 값을 읽는 곳은 삭제 흐름뿐이다. 이전엔 삭제 흐름의 온/오프
+    # 설정 필드로 이 쓰기까지 가뒀지만, 그 필드가 삭제돼(사용자 지시) 이제 항상 기록한다 — 삭제
+    # 흐름이 늘 활성이라 "쓰지도 않을 값"이 아니다.
+    if result.cart_item_id is not None:
+        try:
+            await cart_store.set_last_add(thread_key, result.cart_item_id, product_id)
+        except Exception as exc:  # noqa: BLE001 - Spring 담기가 이미 성공한 뒤라 이 쓰기 실패로
+            # CART_ADDED/done 을 죽이면 안 된다(2차 리뷰 지적 6·1번) — 상품은 담겼는데 사용자는
+            # 실패를 보는 게 더 나쁘다. "방금 담은 거" 해소만 다음 턴에 모르는 상태로 degrade될
+            # 뿐이라 로그만 남기고 성공 흐름은 그대로 진행한다(`ThreadFilterStore.get` 과 같은
+            # 취지). CancelledError 는 BaseException 이라 전파된다.
+            _log.warning("last_add_write_failed", extra={"reason": str(exc)})
     if auto_option is not None:
         # 담길 옵션이 확정됐으니 그 옵션 기준으로 다시 센다 — 담기 전 계산은 optionId 미상이라
         # 지금 후보에 없는 옛 옵션(단종·품절)의 보유까지 합산할 수 있고, 그러면 Spring 은 새 줄로

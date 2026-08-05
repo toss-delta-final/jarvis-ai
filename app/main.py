@@ -36,6 +36,7 @@ from app.agents.profile.store import close_store as close_profile_store
 from app.agents.seller.checkpoint import close_checkpointer as close_seller_checkpointer
 from app.agents.seller.history import close_store as close_seller_history_store
 from app.api import chat, events, internal, profile, seller
+from app.core.body_limit import BodySizeLimitMiddleware
 from app.core.conversation import close_store as close_conversation_store
 from app.core.config import get_settings
 from app.core.errors import install_error_handling
@@ -161,8 +162,19 @@ def create_app() -> FastAPI:
     # 레이트 리밋(§2.8, 채팅 전송 경로) — requestId 미들웨어보다 안쪽에 둔다.
     app.middleware("http")(rate_limit_middleware)
 
-    # CORS 는 최외곽(가장 마지막 등록)에 둬 오류·429 응답에도 헤더가 실리게 한다 (api-spec §2.7).
-    # Authorization 헤더 사용 → 브라우저 preflight(OPTIONS) 발생.
+    # 요청 바디 크기 상한(이슈 #299) — 레이트 리밋보다 **바깥**에 둔다. rate_limit_middleware 는
+    # _verified_sub_scope() 에서 JWT 서명 검증(필요 시 JWKS HTTP)을 돌리는데, 거대 바디를 그
+    # 비용 뒤에 거절하면 방어 목적이 반감된다. 또 거대 바디 요청이 레이트 리밋 슬롯을 소모하지
+    # 않게 한다. Starlette 은 add_middleware 가 user_middleware.insert(0, ...) 이고 스택을
+    # reversed() 로 감싸므로 **나중에 등록한 것이 바깥**이다 — 아래 CORSMiddleware(이미 이
+    # 규약으로 최외곽에 등록돼 있던 것) 보다 먼저 등록해 그 안쪽(= rate_limit_middleware 바깥)에
+    # 둔다. 실측: app.user_middleware 등록 순서와 TestClient 왕복(순서 증명 테스트,
+    # tests/unit/test_body_limit.py) 로 확인 — 바디 초과 요청은 레이트 리밋 상한 횟수를 넘겨
+    # 보내도 슬롯을 소모하지 않는다.
+    app.add_middleware(BodySizeLimitMiddleware)
+
+    # CORS 는 최외곽(가장 마지막 등록)에 둬 오류·429·바디초과 400 응답에도 헤더가 실리게 한다
+    # (api-spec §2.7, 기존 429 와 같은 이유). Authorization 헤더 사용 → 브라우저 preflight(OPTIONS) 발생.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

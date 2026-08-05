@@ -84,7 +84,19 @@ class CategoryQuery:
 class RouteDecision:
     """decompose(Haiku) 1회 산출 — intent 라우팅 + 병합 필터/의미쿼리/case + 폴백 답변 + 장바구니 의도."""
 
-    intent: Literal["recommend", "cart_add", "cart_view", "order_status", "general"]
+    intent: Literal[
+        "recommend",
+        "cart_add",
+        "cart_view",
+        "order_status",
+        "general",
+        # [라운드 24, #116·#117] decompose 가 직접 산출하는 삭제·찜 intent. cart/graph.py 의
+        # classify_cart_utterance(cart_add 로 들어온 발화의 2선 방어)와 값 집합이 겹친다 —
+        # buyer/graph.py 의 라우팅 docstring 참조.
+        "cart_remove",
+        "wishlist_add",
+        "wishlist_remove",
+    ]
     filters: ProductSearchFilters
     # [#101] 의미쿼리는 검색 입력이라 filters.semantic_query 로 이관(decompose 가 세팅). 하류가
     # 그 필드를 읽으므로 RouteDecision 에는 더 두지 않는다.
@@ -157,7 +169,7 @@ def build_condition_chips(
     """병합 필터에서 conditions 칩을 결정론적으로 파생한다(FE 제거 가능, 카드 아님).
 
     LLM 의 임의 conditions 출력에 의존하지 않고 확정된 필터에서 파생 — 테스트 가능·일관.
-    카테고리 칩을 먼저 둔다(api-spec §3.1 (2) 예시 순).
+    카테고리 칩을 먼저 둔다(api-spec §3.1 (3) 예시 순).
 
     categories 가 주어지면(fan-out 매핑 결과 canonical 전체)로 카테고리 칩을 만든다 — 멀티면
     검색한 카테고리 전부를 조인 문자열 하나로 표시한다(api-spec §3.1 예시가 value 를 스칼라

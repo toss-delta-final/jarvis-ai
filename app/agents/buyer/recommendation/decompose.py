@@ -34,7 +34,8 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
 사용자 발화를 분석해 intent 를 정하고, 추천이면 구조화 필터/의미쿼리를, 장바구니면 상품/옵션/수량을 산출합니다.
 반드시 아래 JSON 만 출력하세요(설명·코드펜스 금지):
 {
-  "intent": "recommend" | "cart_add" | "cart_view" | "order_status" | "general",
+  "intent": "recommend" | "cart_add" | "cart_view" | "order_status" | "general" |
+    "cart_remove" | "wishlist_add" | "wishlist_remove",
   "reply": "intent가 general일 때만 줄 짧은 한국어 답변, 아니면 빈 문자열",
   "case": 1 | 2 | 3,
   "semanticQuery": "정형 제약을 제외한 벡터 검색용 자연어",
@@ -58,6 +59,8 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
   명시적으로 담기를 요청하면 cart_add, USER_MESSAGE에 **장바구니를 직접 명시하고 그 내용 조회를
   요청할 때만** cart_view, 회원 본인의 최근 주문·배송 진행 상태를 묻는 요청이면 order_status,
   그 외 잡담·무관 질문이면 general.
+  담은 상품을 빼거나 삭제해 달라는 요청이면 cart_remove, 상품을 찜/위시리스트에 추가해 달라는
+  요청이면 wishlist_add, 찜한 상품을 해제·취소해 달라는 요청이면 wishlist_remove입니다.
 - order_status 긍정 예: "내 주문 어디까지 왔어?", "배송 상태 알려줘", "최근 주문 진행 상황".
 - order_status로 분류하지 않는 예: "배송 빠른 상품 추천해줘"는 recommend,
   "이 상품 주문하고 싶어"는 기존 상품 추천/장바구니 의미, "주문 취소 방법"은 general,
@@ -66,6 +69,9 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
   0) PENDING_CART가 있고 USER_MESSAGE가 options의 이름·번호·순번("드럼형", "2번", "2번으로",
      "두 번째")을 고르면 먼저 cart_add로 분류하고 그 optionId를 고르세요.
   1) "담아줘"·"장바구니에 넣어" 같은 **명시적 담기 동사**가 있으면 cart_add.
+  1-1) "찜 빼줘"·"찜 해제해줘" 같은 **명시적 찜 해제 동사**가 있으면 wishlist_remove.
+  1-2) "찜해줘"·"위시리스트에 추가해줘" 같은 **명시적 찜 추가 동사**가 있으면 wishlist_add.
+  1-3) "빼줘"·"삭제해줘" 같은 **명시적 삭제 동사**가 있으면 cart_remove.
   2) 그 외에는 USER_MESSAGE에 "장바구니"가 직접 나오면서 그 내용을 조회할 때만 cart_view.
   3) 그 외에 "그거"·"저번에 그거" 같은 상품 지시대명사가 있으면 항상 recommend.
 - PENDING_CART가 있다는 사실만으로 이번 발화를 옵션 답변으로 보지 마세요. USER_MESSAGE가 options의
@@ -126,6 +132,8 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
   유지**하세요(카테고리를 비우면 직전 맥락이 사라집니다).
 - cart_add: LAST_RECOMMENDATIONS(직전 추천 목록: productId+이름)에서 사용자가 가리킨 상품의
   productId 를 고르세요. 못 고르면 productId=null. quantity 기본 1.
+- wishlist_add: cart_add 와 같은 방식으로 LAST_RECOMMENDATIONS에서 사용자가 가리킨 상품의
+  productId 를 cart.productId 에 고르세요. 못 고르면 productId=null.
 - PENDING_CART(옵션 되물음 대기)가 있고 USER_MESSAGE가 options의 이름·번호·순번을 실제로 고른
   경우에만 옵션 답변입니다 — 사용자 답에 맞는 optionId 를 골라 intent=cart_add,
   cart.optionId 로 주세요. 단,
@@ -232,7 +240,8 @@ def _screen_payload(screen: ScreenPrompt) -> dict[str, object]:
 
 
 # 화면 상품을 **별도 SCREEN 블록**으로 싣고 cart_add 규칙에 한 문장을 **덧붙인다**(기존 문면을
-# 재작성하지 않는다). 실 LLM N=8 프로브(scripts/verify_screen_context_118.py)에서 대안 —
+# 재작성하지 않는다). 실 LLM N=8 프로브(#118, 지금은 `evals/intent_probe` group="screen" 이
+# #300 으로 흡수했다)에서 대안 —
 # 화면 상품을 LAST_RECOMMENDATIONS 에 합류시켜 `_SYSTEM` 을 아예 건드리지 않는 안 — 을 함께
 # 재고 이쪽을 채택했다: 신규 지시어 해소 27/48 대 13/48 이고, 회귀 대조군은 두 안이 동률이거나
 # 이쪽이 나았다(옵션 답변 26/32 대 24/32, general 22/24 대 20/24). 합류안은 "직전 추천"과 "지금
@@ -352,6 +361,126 @@ def _resolve_contradictory_price_range(
     return filters.model_copy(update={drop: None})
 
 
+def normalize_category_token(value: str | None) -> str:
+    """카테고리 어휘 비교용 정규화 — 공백 접기 + 소문자 (#84).
+
+    비교는 **정규화 후 정확 일치**다. 부분 문자열이면 `"이어폰 케이스"` 같은 **새 상품**이
+    `"이어폰"` 을 포함한다는 이유로 에코가 되고, 그러면 카테고리가 바뀐 턴을 "유지됐다"로 읽는다
+    (lessons 2026-08-02 「부분 문자열 매칭은 포함 방향마다 의미가 다르다」).
+    """
+    return " ".join((value or "").split()).lower()
+
+
+def prior_echo_tokens(*, category: str | None, semantic_query: str | None) -> frozenset[str]:
+    """직전 카테고리를 가리키는 어휘 집합 (#84).
+
+    담는 것: canonical **전체**(`"음향가전 > 이어폰"`) · `>` 로 나눈 **각 조각**(잎 `"이어폰"` 과
+    상위 `"음향가전"`) · `semantic_query`(`"무선 이어폰"`). 실측에서 리셋 발화가 함께 낸 leg 가
+    `("음향가전 > 이어폰","무선 이어폰")` · `("음향가전","무선 이어폰")` · `(None,"무선 이어폰")`
+    세 모양이라 이 집합이면 전부 잡힌다.
+
+    **한 글자 토큰은 담지 않는다** — 정확 일치라도 한 글자는 우연히 겹칠 여지가 크다.
+    """
+    raw = category or ""
+    candidates = [raw, *raw.split(">"), semantic_query or ""]
+    return frozenset(
+        token for token in (normalize_category_token(c) for c in candidates) if len(token) >= 2
+    )
+
+
+def is_prior_echo_leg(query: CategoryQuery, tokens: frozenset[str]) -> bool:
+    """이 leg 이 **직전 카테고리를 되풀이한 것뿐**인가 (#84).
+
+    `_SYSTEM` 의 `categoryQueries` 불릿이 "조건 다듬기면 PRIOR_FILTERS.category 를 그대로 실어라"
+    라고 지시하므로, 리파인·리셋 턴에도 leg 가 딸려 온다. 그 leg 는 사용자가 지목한 상품이 아니라
+    **프롬프트가 시킨 에코**다.
+
+    **채워진 필드가 전부** 토큰 집합에 있어야 에코다(`or` 가 아니라 `and`). 실측에서
+    `("음향가전","스피커")` 처럼 raw 는 상위 조각이고 query 는 **새 상품**인 leg 가 나오는데,
+    `or` 로 보면 그것이 에코로 접혀 사용자가 말한 "스피커"가 통째로 사라진다(라운드 3 F-1).
+    """
+    fields = [field for field in (query.raw_category, query.query) if (field or "").strip()]
+    return bool(fields) and all(normalize_category_token(field) in tokens for field in fields)
+
+
+def has_new_category_signal(queries: Sequence[CategoryQuery], tokens: frozenset[str]) -> bool:
+    """유효 leg 중 **prior 에코가 아닌 것**이 하나라도 있는가 — 즉 새 카테고리를 지목했는가 (#84).
+
+    `resolve_category_action` 의 최우선 규칙이 읽는 값이고, 프로브도 같은 함수를 쓴다
+    (`evals/intent_probe/runner.py` — 규칙이 두 벌이면 측정과 배포가 갈라진다).
+    """
+    return any(
+        ((query.raw_category or "").strip() or (query.query or "").strip())
+        and not is_prior_echo_leg(query, tokens)
+        for query in queries
+    )
+
+
+def resolve_category_action(
+    *,
+    has_category_signal: bool,
+    scope_free: bool | None,
+    has_new_category_signal: bool,
+) -> str:
+    """이번 턴에 직전 카테고리를 어떻게 할지 확정한다 — carry|clear|replace (#84).
+
+    - **clear** = 직전 카테고리를 푼다(무필터 복원, #22). 신호는 전용 분류기
+      `category_scope.classify_category_scope` 의 `scope_free` 하나다.
+    - **replace** = 새 카테고리로 간다. 이번 턴 `categoryQueries` 에 유효 leg 이 있을 때다.
+    - **carry** = 둘 다 아니면 직전 카테고리를 승계한다(#59 규약 = 오늘 동작).
+
+    그래프 가드와 프로브가 **같은 규칙**을 쓰도록 순수 함수로 뽑아 둔다(호출부에 흩어 두면
+    다음 규칙을 더할 때 한쪽만 고쳐진다 — lessons 2026-08-04 「양보를 함수 앞단에」).
+
+    **판정 순서는 네 단계다**(라운드 3 F-1 로 맨 앞에 한 단계가 붙었다):
+
+    1. `has_new_category_signal` — 사용자가 **다른 카테고리를 지목**했으면 replace. 가장 강한
+       신호다. 없으면 **혼합 발화**("스피커 아무거나 보여줘")에서 사용자가 말한 카테고리가
+       통째로 버려진다 — 실 LLM 실측에서 혼합 발화 4종 32건 중 **19건이 clear** 로 확정됐고,
+       `"스피커 아무거나 보여줘"` 는 **8/8** 이었다(그때 버려진 leg: `(None,"스피커")` ·
+       `("음향가전","스피커")`).
+    2. `scope_free is True` — 종류를 놓겠다는 말. prior 에코 leg 는 이 판정을 막지 못한다.
+    3. `has_category_signal` — 에코 leg 뿐이면 오늘 동작(매핑 경로)을 그대로 탄다.
+    4. 그 밖은 carry.
+
+    **1이 2보다 앞이어도 `clear` 가 죽지 않는 근거(실측).** 리셋 발화가 함께 내는 leg 는 **전부
+    prior 에코**였다(`("음향가전 > 이어폰","무선 이어폰")` · `("음향가전","무선 이어폰")` ·
+    `(None,"무선 이어폰")` — `prior_echo_tokens` 집합에 정확히 들어간다). 그래서 1은 리셋 턴에서
+    발동하지 않는다. 잔여 위험의 **방향**도 바뀐다: 이제 오탐은 "카테고리가 안 풀림"(사용자가 한 번
+    더 말하면 된다)이고, 종전은 "사용자가 말한 카테고리가 사라짐"이었다 — 후자가 더 나쁘다.
+
+    **`scope_free` 가 (에코) leg 보다 우선인 근거(실측).** 리셋 발화("5만원 이하 아무거나")의
+    **30~31/32 가 직전 카테고리를 그대로 복사한 leg 를 함께 낸다** — 위 `_SYSTEM` 의
+    `categoryQueries` 불릿이 "조건 다듬기면 PRIOR_FILTERS.category 를 그대로 실어라"라고
+    지시하기 때문이다. 그 leg 는 사용자가 지목한 상품이 아니라 프롬프트가 시킨 **prior 에코**라
+    강한 신호가 아니었고, leg 를 앞에 두면 clear 는 **구조적으로 도달 불가능**했다(실측
+    `categoryClear 0/32`). 뒤집었을 때의 오탐은 **0/56 × 독립 3회**로 측정됐으며, 잔여 위험의
+    성격도 "카테고리가 넓어짐"(#22 무필터)이지 **엉뚱한 카테고리로 좁혀짐이 아니다.**
+
+    **인라인 신호(`decompose` 의 `categoryAction` 필드)는 두지 않는다 — 이미 재봤고 기각됐다.**
+    64셀 전 축 런을 전/후 각 2회 짝지어 잰 결과(fast·N=8·픽스처 v2 앵커 b): 불릿이 **없는**
+    런에서도 `categoryClear` 가 이미 32/32 였고(= 3분기 해소는 전적으로 전용 분류기의 성과,
+    인라인 원 산출은 `clear` 0/32), 불릿을 넣은 런에서는 `PENDING_CART` 중 **상품 전환** 경로가
+    두 런 모두 깎였다(`switchAll7` 37·38 → 32·32, 전환 발화가 `recommend` 로 새는 표본 4~5 →
+    16~17). 즉 **이득 0 · 보호 축 손해**다. smart 티어에서는 인라인 필드가 32/32 였지만 배포
+    티어는 fast 다. 다시 시도하려면 `evals/intent_probe` 로 **전 축을 전/후 각 2회** 재고
+    "내 축이 좋아졌다"가 아니라 **"다른 축이 안 깎였다"** 를 채택 조건으로 삼을 것.
+
+    **직전 카테고리(prior)는 인자로 받지 않는다**(라운드 1 리뷰 F-1). 어떤 규칙에도 prior 가
+    관여하지 않아 인자로 두면 "prior 가 판정에 관여한다"는 거짓 신호가 되고, 이 시그니처는
+    그래프·프로브가 공유하는 계약이라 헛된 배관을 부른다. "승계할 prior 가 있는가"는 호출부
+    책임이다 — `graph.py` 가 `prior is not None and prior.category` 로 이미 판정하고, 거기서
+    carry 는 "승계할 것이 없음"과 같은 뜻이 된다.
+    """
+    if has_new_category_signal:
+        return "replace"
+    if scope_free is True:
+        return "clear"
+    if has_category_signal:
+        return "replace"
+    return "carry"
+
+
 async def decompose(
     llm: LLMClient,
     *,
@@ -408,7 +537,17 @@ async def decompose(
     intent_raw = data.get("intent")
     intent = (
         intent_raw
-        if intent_raw in ("recommend", "cart_add", "cart_view", "order_status", "general")
+        if intent_raw
+        in (
+            "recommend",
+            "cart_add",
+            "cart_view",
+            "order_status",
+            "general",
+            "cart_remove",
+            "wishlist_add",
+            "wishlist_remove",
+        )
         else "recommend"
     )
     # JSON 파싱은 됐지만 필드 값이 스키마와 안 맞을 수 있다 → extract_json 처럼 LLMError 로 통일해

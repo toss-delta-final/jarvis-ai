@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from app.core.config import get_settings
 from evals.intent_probe.loader import (
     FIXTURE_DIR,
     build_cells,
@@ -16,6 +17,8 @@ from evals.intent_probe.loader import (
     resolve_fixture_path,
 )
 from evals.intent_probe.schema import AnchorSet
+
+SETTINGS = get_settings()
 
 # 이슈 #260이 문자로 지정한 전환 발화 7종 — 이 목록 자체가 요구사항이라 테스트로 고정한다.
 SWITCH_TEXTS = (
@@ -34,7 +37,22 @@ GROUP_COUNTS = {
     "switch": 7,
     "order_status": 2,
     "general": 2,
+    # [#84] 카테고리 승계 3분기 — 리파인 4 · 리셋 4 · 교체 3 · **혼합 4**(라운드 3).
+    "category_action": 15,
+    # [#300] #118 이관 — 확정 4(단일/순번/좌표/이름) · 되물음 1(안전 셀) · 확정금지 1.
+    "screen": 6,
 }
+# [#300, D-4] #118 원본(PR #292, 이관 전 별도 프로브의 신규(screen) 그룹 — #300 이 흡수하며
+# 삭제했다)에서 **문자 단위로 옮긴** 발화 6종 — 이 목록 자체가 표본 동일성 요구사항이라
+# 테스트로 고정한다.
+SCREEN_TEXTS = (
+    "이거 담아줘",
+    "이거 담아줘",
+    "3번째 거 담아줘",
+    "3번째 줄 2번째 담아줘",
+    "무선 이어폰 담아줘",
+    "301 담아줘",
+)
 
 
 def _raw(name: str = "b") -> dict:
@@ -44,7 +62,7 @@ def _raw(name: str = "b") -> dict:
 @pytest.mark.parametrize("name", ["a", "b"])
 def test_committed_anchor_sets_load_and_match_manifest_hash(name: str) -> None:
     anchors = load_anchor_set(name)
-    assert anchors.fixture_version == f"intent-probe-anchors-{name}-v1"
+    assert anchors.fixture_version == f"intent-probe-anchors-{name}-v4"
 
 
 @pytest.mark.parametrize("name", ["a", "b"])
@@ -62,11 +80,18 @@ def test_switch_utterances_are_verbatim_from_issue_260() -> None:
     assert texts == SWITCH_TEXTS
 
 
-def test_cell_count_is_53_and_matches_group_context_product() -> None:
+def test_screen_utterances_are_verbatim_from_issue_118() -> None:
+    anchors = load_anchor_set("b")
+    texts = tuple(u.text for u in anchors.utterances if u.group == "screen")
+    assert texts == SCREEN_TEXTS
+
+
+def test_cell_count_is_74_and_matches_group_context_product() -> None:
     anchors = load_anchor_set("b")
     cells = build_cells(anchors)
     # 발화 × 컨텍스트: 대조군 18 + 지시대명사 12 + 옵션 4 + 전환 7 + 주문 6 + 일반 6
-    assert len(cells) == 53
+    # + [#84] 카테고리 15(단일 컨텍스트) + [#300] screen 6(단일 컨텍스트) = 74
+    assert len(cells) == 74
     per_group: dict[str, int] = {}
     for cell in cells:
         per_group[cell.utterance.group] = per_group.get(cell.utterance.group, 0) + 1
@@ -77,6 +102,8 @@ def test_cell_count_is_53_and_matches_group_context_product() -> None:
         "switch": 7,
         "order_status": 6,
         "general": 6,
+        "category_action": 15,
+        "screen": 6,
     }
 
 
@@ -175,14 +202,19 @@ def test_tampered_fixture_file_is_rejected(tmp_path: Path) -> None:
 def test_build_context_kwargs_none_context_is_empty() -> None:
     anchors = load_anchor_set("b")
     context = next(c for c in anchors.contexts if c.context_id == "none")
-    kwargs = build_context_kwargs(anchors, context)
-    assert kwargs == {"prior_filters": None, "last_recommendations": None, "pending_cart": None}
+    kwargs = build_context_kwargs(anchors, context, settings=SETTINGS)
+    assert kwargs == {
+        "prior_filters": None,
+        "last_recommendations": None,
+        "pending_cart": None,
+        "screen": None,
+    }
 
 
 def test_build_context_kwargs_last_recommendations_shape() -> None:
     anchors = load_anchor_set("b")
     context = next(c for c in anchors.contexts if c.context_id == "lastRecommendations")
-    kwargs = build_context_kwargs(anchors, context)
+    kwargs = build_context_kwargs(anchors, context, settings=SETTINGS)
     assert kwargs["last_recommendations"] == [
         (product.product_id, product.name) for product in anchors.last_recommendations
     ]
@@ -195,10 +227,420 @@ def test_build_context_kwargs_pending_cart_shape_matches_graph() -> None:
     # app/agents/buyer/graph.py 가 decompose 에 넘기는 dict 모양과 같아야 한다.
     anchors = load_anchor_set("b")
     context = next(c for c in anchors.contexts if c.context_id == "pendingCart")
-    kwargs = build_context_kwargs(anchors, context)
+    kwargs = build_context_kwargs(anchors, context, settings=SETTINGS)
     assert kwargs["pending_cart"] == {
         "productId": anchors.reask_product_id,
         "options": [
             {"optionId": option.option_id, "name": option.name} for option in anchors.options
         ],
     }
+
+
+# ─────────── #84 카테고리 승계 3분기 축 ───────────
+
+
+def _category_utterance(data: dict) -> dict:
+    return next(u for u in data["utterances"] if u["group"] == "category_action")
+
+
+def test_category_utterance_without_expected_action_is_rejected() -> None:
+    data = _raw("b")
+    _category_utterance(data)["expected"].pop("categoryAction")
+    with pytest.raises(ValidationError, match="categoryAction"):
+        AnchorSet.model_validate(data)
+
+
+def test_category_utterance_declaring_a_legacy_axis_is_rejected() -> None:
+    """새 셀이 기존 축의 분모를 늘리면 커밋된 기준선과 그 축을 비교할 수 없다 — 그 사유가
+    에러 메시지에 들어 있어야 다음 사람이 '축 하나쯤' 하고 붙이지 않는다."""
+    data = _raw("b")
+    _category_utterance(data)["axes"].append("mainIntent")
+    with pytest.raises(ValidationError) as excinfo:
+        AnchorSet.model_validate(data)
+    message = str(excinfo.value)
+    assert "mainIntent" in message
+    assert "baselines/fast-2026-08-04" in message
+    assert "비교할 수 없" in message
+
+
+def test_non_category_utterance_declaring_a_new_axis_is_rejected() -> None:
+    data = _raw("b")
+    next(u for u in data["utterances"] if u["group"] == "general")["axes"].append("categoryClear")
+    with pytest.raises(ValidationError, match="categoryClear"):
+        AnchorSet.model_validate(data)
+
+
+def test_category_utterance_must_use_only_the_category_prior_context() -> None:
+    data = _raw("b")
+    _category_utterance(data)["contexts"] = ["categoryPrior", "none"]
+    with pytest.raises(ValidationError, match="categoryPrior"):
+        AnchorSet.model_validate(data)
+
+
+def test_category_prior_filters_without_a_category_is_rejected() -> None:
+    data = _raw("b")
+    data["categoryPriorFilters"] = {"semanticQuery": "무선 이어폰"}
+    with pytest.raises(ValidationError, match="category"):
+        AnchorSet.model_validate(data)
+
+
+def test_category_utterance_repeating_the_prior_category_leaf_is_rejected() -> None:
+    # 발화가 직전 카테고리 어휘를 쓰면 carry/replace 어느 쪽으로도 읽혀 정답이 자명하지 않다.
+    data = _raw("b")
+    _category_utterance(data)["text"] = "이어폰 말고 더 싼 걸로"
+    with pytest.raises(ValidationError, match="이어폰"):
+        AnchorSet.model_validate(data)
+
+
+def test_category_prior_context_carries_the_category_filters() -> None:
+    anchors = load_anchor_set("b")
+    context = next(c for c in anchors.contexts if c.context_id == "categoryPrior")
+    kwargs = build_context_kwargs(anchors, context, settings=SETTINGS)
+    assert kwargs["prior_filters"] is not None
+    assert kwargs["prior_filters"].category == anchors.category_prior_filters["category"]
+    # 이 축은 PRIOR_FILTERS.category 단독의 효과를 잰다 — 직전 추천 목록이 섞이면 오염된다.
+    assert kwargs["last_recommendations"] is None
+    assert kwargs["pending_cart"] is None
+
+
+@pytest.mark.parametrize("context_id", ["lastRecommendations", "pendingCart"])
+def test_existing_contexts_still_carry_the_default_prior_filters(context_id: str) -> None:
+    # 회귀 — 기본 `priorFiltersRef` 가 붙었다고 기존 컨텍스트가 다른 필터를 싣기 시작하면
+    # 기존 축이 통째로 다른 조건에서 측정된다(기준선과 비교 불가).
+    anchors = load_anchor_set("b")
+    context = next(c for c in anchors.contexts if c.context_id == context_id)
+    assert context.prior_filters_ref == "default"
+    kwargs = build_context_kwargs(anchors, context, settings=SETTINGS)
+    assert kwargs["prior_filters"].semantic_query == anchors.prior_filters["semanticQuery"]
+    assert kwargs["prior_filters"].category is None
+
+
+# ─────────── [#300] screen 지시어 해소(#118 이관) ───────────
+
+# (utteranceId, screenId, columns, screen 상품 (productId, name) 목록, productIdRule, productId,
+# forbiddenProductId) — #118 원본(PR #292, 이관 전 별도 프로브의 `SCREEN_1/3/5/9/NAME`·
+# screen_cells — #300 이 흡수하며 삭제했다)에서 **문자 단위로 옮긴** 모양. 상품 **이름 문자열**도
+# 못박는다 — 이름 매칭 셀(`무선 이어폰 담아줘` → 3110)의 정답은 오로지 그 이름 문자열로
+# 성립하므로, id·규칙만 고정하면 이름이 바뀌어도(예: `무선 블루투스 이어폰` → `유선 헤드폰`) 이
+# 회귀 가드가 잡지 못한다(리뷰 1차 F-3 재현).
+_R = "코튼 워셔블 러그 150x200"
+_B = "라탄 수납 바구니 3종"
+_H = "무드등 겸용 가습기"
+_T = "우드 사이드테이블"
+_C = "린넨 커튼 2p"
+_F = "저상형 프레임 침대"
+_M = "메모리폼 방석"
+_E = "무선 블루투스 이어폰"
+_S = "탁상 선풍기"
+SCREEN_CELL_SHAPES = (
+    ("screen-001", "screen-single", 1, ((3101, _R),), "screenExact", 3101, None),
+    (
+        "screen-002",
+        "screen-triple",
+        3,
+        ((3101, _R), (3102, _B), (3103, _H)),
+        "screenReask",
+        None,
+        None,
+    ),
+    (
+        "screen-003",
+        "screen-five",
+        3,
+        ((3101, _R), (3102, _B), (3103, _H), (3104, _T), (3105, _C)),
+        "screenExact",
+        3103,
+        None,
+    ),
+    (
+        "screen-004",
+        "screen-nine",
+        3,
+        (
+            (3101, _R),
+            (3102, _B),
+            (3103, _H),
+            (3104, _T),
+            (3105, _C),
+            (3106, _F),
+            (3107, _M),
+            (3108, _E),
+            (3109, _S),
+        ),
+        "screenExact",
+        3108,
+        None,
+    ),
+    (
+        "screen-005",
+        "screen-named",
+        2,
+        ((3101, _R), (3102, _B), (3103, _H), (3110, _E)),
+        "screenExact",
+        3110,
+        None,
+    ),
+    (
+        "screen-006",
+        "screen-triple",
+        3,
+        ((3101, _R), (3102, _B), (3103, _H)),
+        "screenNotHallucinated",
+        None,
+        301,
+    ),
+)
+# 5개 screen 픽스처 전부 D-4 규약대로 `pageType="chat"` · `filters={"page": "1"}` 이다 — 라벨
+# 문자열(`인기 상품`)은 프롬프트에 직접 쓰지 않고 프로덕션 투영으로 붙으므로 픽스처에는 없다.
+SCREEN_PAGE_TYPE = "chat"
+SCREEN_FILTERS = {"page": "1"}
+# 원본 `RECO_BASE` — screen 컨텍스트 전용 LAST_RECOMMENDATIONS.
+SCREEN_LAST_RECOMMENDATIONS = (
+    (2001, "리필 세탁 세제 2L"),
+    (2002, "드럼용 세탁 세제"),
+    (2003, "섬유유연제"),
+)
+
+
+def test_screen_cell_shapes_are_pinned_literally() -> None:
+    """[§5.2, 리뷰 1차 F-3] 표본 동일성 회귀 가드 — 픽스처가 조용히 흔들리면 이 테스트가
+    실패해야 한다. id·columns·규칙뿐 아니라 **상품명·pageType·filters** 까지 못박는다."""
+    anchors = load_anchor_set("b")
+    context_by_id = {context.context_id: context for context in anchors.contexts}
+    screen_by_id = {screen.screen_id: screen for screen in anchors.screens}
+    utterance_by_id = {utterance.utterance_id: utterance for utterance in anchors.utterances}
+    for (
+        utterance_id,
+        screen_id,
+        columns,
+        products,
+        rule,
+        product_id,
+        forbidden_product_id,
+    ) in SCREEN_CELL_SHAPES:
+        utterance = utterance_by_id[utterance_id]
+        context = context_by_id[utterance.contexts[0]]
+        assert context.screen_ref == screen_id
+        assert context.last_recommendations_ref == "screen"
+        assert context.include_pending_cart is False
+        screen = screen_by_id[screen_id]
+        assert screen.columns == columns
+        assert screen.page_type == SCREEN_PAGE_TYPE
+        assert screen.filters == SCREEN_FILTERS
+        assert tuple((product.product_id, product.name) for product in screen.products) == products
+        assert utterance.expected.product_id_rule == rule
+        assert utterance.expected.product_id == product_id
+        assert utterance.expected.forbidden_product_id == forbidden_product_id
+
+
+def test_screen_last_recommendations_are_pinned_literally() -> None:
+    anchors = load_anchor_set("b")
+    assert (
+        tuple((product.product_id, product.name) for product in anchors.screen_last_recommendations)
+        == SCREEN_LAST_RECOMMENDATIONS
+    )
+
+
+def test_build_context_kwargs_screen_context_projects_the_production_label() -> None:
+    """screen 라벨은 픽스처가 아니라 프로덕션 투영 경로(`build_screen_prompt`)로 붙는다."""
+    anchors = load_anchor_set("b")
+    context = next(c for c in anchors.contexts if c.context_id == "screenSingle")
+    kwargs = build_context_kwargs(anchors, context, settings=SETTINGS)
+    screen = kwargs["screen"]
+    assert screen is not None
+    assert screen.label == "인기 상품"  # settings.screen_page_type_labels["chat"]
+    assert screen.columns == 1
+    assert screen.products == [(3101, "코튼 워셔블 러그 150x200")]
+    # screen 컨텍스트는 screenLastRecommendations 를 싣는다 — 기본 lastRecommendations 가 아니다.
+    assert kwargs["last_recommendations"] == list(SCREEN_LAST_RECOMMENDATIONS)
+
+
+@pytest.mark.parametrize(
+    "context_id", ["none", "lastRecommendations", "pendingCart", "categoryPrior"]
+)
+def test_existing_contexts_do_not_carry_screen(context_id: str) -> None:
+    anchors = load_anchor_set("b")
+    context = next(c for c in anchors.contexts if c.context_id == context_id)
+    kwargs = build_context_kwargs(anchors, context, settings=SETTINGS)
+    assert kwargs["screen"] is None
+
+
+def test_pending_cart_and_screen_together_is_rejected() -> None:
+    """[이슈 완료조건] 되물음 턴에는 화면 맥락을 프롬프트에 싣지 않는다(graph.py 배선과 동일)."""
+    data = _raw("b")
+    for context in data["contexts"]:
+        if context["contextId"] == "screenSingle":
+            context["includePendingCart"] = True
+            break
+    with pytest.raises(ValidationError, match="pendingCart"):
+        AnchorSet.model_validate(data)
+
+
+def test_non_screen_utterance_declaring_a_screen_context_is_rejected() -> None:
+    """[리뷰 1차 F-1] 비-screen 발화가 screen 컨텍스트를 contexts 에 끼워 넣으면 안 된다.
+
+    이걸 막지 않으면 `cartControl` 같은 기존 축의 분모가 셀 수와 함께 조용히 불어나 커밋된
+    기준선과 비교할 수 없게 된다(재현: cart-control-001 이 screenTriple 을 추가로 선언).
+    """
+    data = _raw("b")
+    for utterance in data["utterances"]:
+        if utterance["utteranceId"] == "cart-control-001":
+            utterance["contexts"].append("screenTriple")
+            break
+    with pytest.raises(ValidationError, match="screen 컨텍스트"):
+        AnchorSet.model_validate(data)
+
+
+def test_general_utterance_declaring_a_screen_context_is_rejected() -> None:
+    """[리뷰 1차 F-1] 읽기 전용 리뷰어가 독립 재현한 두 번째 사례 — general 그룹도 막혀야 한다."""
+    data = _raw("b")
+    for utterance in data["utterances"]:
+        if utterance["utteranceId"] == "general-001":
+            utterance["contexts"].append("screenSingle")
+            break
+    with pytest.raises(ValidationError, match="screen 컨텍스트"):
+        AnchorSet.model_validate(data)
+
+
+def test_screen_utterance_with_a_mismatched_rule_axis_is_rejected() -> None:
+    """[리뷰 1차 F-2] screenExact 발화가 screenReask 축을 선언해도 거부해야 한다.
+
+    이걸 막지 않으면 축 정의 문장이 말하는 분모(32/8/8/48)와 실제 채점 표본이 조용히 어긋난다.
+    """
+    data = _raw("b")
+    for utterance in data["utterances"]:
+        if utterance["utteranceId"] == "screen-001":
+            utterance["axes"] = ["screenReask", "screenResolution"]
+            break
+    with pytest.raises(ValidationError, match="axes"):
+        AnchorSet.model_validate(data)
+
+
+def test_screen_utterance_missing_screen_resolution_axis_is_rejected() -> None:
+    """[리뷰 1차 F-2] `screenResolution` 은 합계 축이라 모든 screen 발화가 함께 선언해야 한다."""
+    data = _raw("b")
+    for utterance in data["utterances"]:
+        if utterance["utteranceId"] == "screen-002":
+            utterance["axes"] = ["screenReask"]
+            break
+    with pytest.raises(ValidationError, match="axes"):
+        AnchorSet.model_validate(data)
+
+
+def test_screen_utterance_declaring_an_extra_screen_axis_is_rejected() -> None:
+    """[리뷰 1차 F-2] 규칙에 맞는 축이어도 다른 screen 축을 추가로 선언하면 거부한다."""
+    data = _raw("b")
+    for utterance in data["utterances"]:
+        if utterance["utteranceId"] == "screen-006":
+            utterance["axes"] = ["screenNoHallucination", "screenResolution", "screenReask"]
+            break
+    with pytest.raises(ValidationError, match="axes"):
+        AnchorSet.model_validate(data)
+
+
+def test_include_screen_without_screen_ref_is_rejected() -> None:
+    data = _raw("b")
+    for context in data["contexts"]:
+        if context["contextId"] == "screenSingle":
+            del context["screenRef"]
+            break
+    with pytest.raises(ValidationError, match="screenRef"):
+        AnchorSet.model_validate(data)
+
+
+def test_screen_ref_without_include_screen_is_rejected() -> None:
+    data = _raw("b")
+    for context in data["contexts"]:
+        if context["contextId"] == "lastRecommendations":
+            context["screenRef"] = "screen-single"
+            break
+    with pytest.raises(ValidationError, match="screenRef"):
+        AnchorSet.model_validate(data)
+
+
+def test_screen_ref_pointing_to_a_missing_screen_is_rejected() -> None:
+    data = _raw("b")
+    for context in data["contexts"]:
+        if context["contextId"] == "screenSingle":
+            context["screenRef"] = "screen-does-not-exist"
+            break
+    with pytest.raises(ValidationError, match="screenId"):
+        AnchorSet.model_validate(data)
+
+
+def test_duplicate_screen_id_is_rejected() -> None:
+    data = _raw("b")
+    data["screens"][1]["screenId"] = data["screens"][0]["screenId"]
+    with pytest.raises(ValidationError, match="screenId"):
+        AnchorSet.model_validate(data)
+
+
+def _screen_utterance(data: dict, utterance_id: str) -> dict:
+    return next(u for u in data["utterances"] if u["utteranceId"] == utterance_id)
+
+
+def test_screen_utterance_without_a_screen_rule_is_rejected() -> None:
+    data = _raw("b")
+    utterance = _screen_utterance(data, "screen-001")
+    utterance["expected"]["productIdRule"] = "none"
+    del utterance["expected"]["productId"]
+    with pytest.raises(ValidationError, match="productIdRule"):
+        AnchorSet.model_validate(data)
+
+
+def test_screen_utterance_with_two_contexts_is_rejected() -> None:
+    data = _raw("b")
+    _screen_utterance(data, "screen-001")["contexts"] = ["screenSingle", "screenTriple"]
+    with pytest.raises(ValidationError, match="screen 컨텍스트 1개"):
+        AnchorSet.model_validate(data)
+
+
+def test_screen_utterance_declaring_a_legacy_axis_is_rejected() -> None:
+    data = _raw("b")
+    _screen_utterance(data, "screen-001")["axes"].append("mainIntent")
+    with pytest.raises(ValidationError, match="mainIntent"):
+        AnchorSet.model_validate(data)
+
+
+def test_non_screen_utterance_declaring_a_screen_axis_is_rejected() -> None:
+    data = _raw("b")
+    next(u for u in data["utterances"] if u["group"] == "general")["axes"].append("screenExactPick")
+    with pytest.raises(ValidationError, match="screenExactPick"):
+        AnchorSet.model_validate(data)
+
+
+def test_screen_exact_product_id_outside_its_screen_is_rejected() -> None:
+    data = _raw("b")
+    _screen_utterance(data, "screen-001")["expected"]["productId"] = 9999
+    with pytest.raises(ValidationError, match="products 안에 없습니다"):
+        AnchorSet.model_validate(data)
+
+
+def test_screen_reask_with_a_product_id_is_rejected() -> None:
+    data = _raw("b")
+    _screen_utterance(data, "screen-002")["expected"]["productId"] = 3101
+    with pytest.raises(ValidationError, match="screenReask"):
+        AnchorSet.model_validate(data)
+
+
+def test_screen_not_hallucinated_without_forbidden_id_is_rejected() -> None:
+    data = _raw("b")
+    del _screen_utterance(data, "screen-006")["expected"]["forbiddenProductId"]
+    with pytest.raises(ValidationError, match="forbiddenProductId"):
+        AnchorSet.model_validate(data)
+
+
+def test_screen_not_hallucinated_forbidding_an_in_list_id_is_rejected() -> None:
+    data = _raw("b")
+    # 3101 은 screen-triple(screen-006 이 가리키는 픽스처) 의 products 안이다.
+    _screen_utterance(data, "screen-006")["expected"]["forbiddenProductId"] = 3101
+    with pytest.raises(ValidationError, match="목록 안에 있습니다"):
+        AnchorSet.model_validate(data)
+
+
+def test_screen_product_name_overlapping_screen_last_recommendations_is_rejected() -> None:
+    data = _raw("b")
+    # screenLastRecommendations[0] 과 같은 이름을 screen-single 상품에 심는다.
+    data["screens"][0]["products"][0]["name"] = "리필 세탁 세제 2L"
+    with pytest.raises(ValidationError, match="screenLastRecommendations"):
+        AnchorSet.model_validate(data)

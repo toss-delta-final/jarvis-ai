@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from app.agents.buyer.recommendation import decompose as decompose_module
+from app.agents.buyer.recommendation.category_scope import _SYSTEM as CATEGORY_SCOPE_SYSTEM
 from app.core.config import Settings
 from app.core.llm import AnthropicLLM, LLMClient, OpenAILLM, resolve_provider_model
 from evals.intent_probe.pacer import GlobalPacer
@@ -120,12 +121,20 @@ def resolve_system_prompt(
     return None, prompt_identity(repo_system_prompt(), source=REPO_PROMPT_SOURCE)
 
 
+# [#84] 후보 프롬프트로 **갈아끼우면 안 되는** system 문면. 이 프로브는 더 이상 decompose 만
+# 부르지 않는다 — 카테고리 범위 해제 분류기(`category_scope`)를 같은 클라이언트로 함께 부른다.
+# 아래 래퍼의 초판 docstring 이 스스로 경고한 자리다("다른 노드를 함께 재게 되면 호출부 라벨로
+# 분기해야 한다"). 그대로 뒀다면 `--prompt`/`--prompt-rev` 런에서 분류기가 **decompose 후보
+# 프롬프트**를 받아 판정이 무의미해지고, 그 사실이 표에는 "분류기가 갑자기 무동작"으로만 보인다.
+PASSTHROUGH_SYSTEMS = frozenset({CATEGORY_SCOPE_SYSTEM})
+
+
 class SystemPromptOverrideLLM:
     """통과하는 `complete` 의 system 을 후보 텍스트로 갈아끼운다.
 
-    **모든** 호출의 system 을 바꾼다 — 이 프로브가 `decompose` 만 호출하기 때문에 안전한 것이지
-    일반적으로 안전한 래퍼가 아니다. rerank 등 다른 노드를 함께 재게 되면 호출부 라벨로
-    분기해야 한다.
+    **`PASSTHROUGH_SYSTEMS` 에 있는 문면은 건드리지 않는다** — 그 문면은 decompose 가 아니라
+    보조 노드(전용 분류기)의 것이라, 후보 프롬프트로 덮으면 그 노드가 통째로 망가진다.
+    새 보조 노드를 프로브에 태울 때마다 그 목록을 함께 늘려야 한다.
     """
 
     def __init__(self, delegate: LLMClient, *, system: str | None) -> None:
@@ -141,8 +150,9 @@ class SystemPromptOverrideLLM:
         max_tokens: int = 1024,
         json_output: bool = True,
     ) -> str:
+        override = self.system is not None and system not in PASSTHROUGH_SYSTEMS
         return await self.delegate.complete(
-            system=self.system if self.system is not None else system,
+            system=self.system if override else system,
             user=user,
             tier=tier,
             max_tokens=max_tokens,

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -198,3 +199,239 @@ def test_extract_system_prompt_reads_the_literal() -> None:
 def test_extract_system_prompt_rejects_source_without_the_constant() -> None:
     with pytest.raises(ValueError, match="_SYSTEM"):
         extract_system_prompt("X = 1\n")
+
+
+# ─────────── #84 카테고리 승계 3분기 ───────────
+
+
+async def test_sample_carries_the_raw_signal_and_the_resolved_action() -> None:
+    """확정값은 **배포 경로와 같은 함수**로 낸다 — 프로브가 규칙을 재구현하면 이 테스트가 잡는다.
+
+    재현이 틀리면 그 위의 모든 측정과 인과가 함께 틀린다(lessons 2026-08-04). 그래서
+    `resolve_category_action` 을 여기서 직접 부른 값과 표본을 대조한다.
+    """
+    from app.agents.buyer.recommendation.decompose import (
+        has_new_category_signal,
+        resolve_category_action,
+    )
+    from app.agents.buyer.recommendation.state import CategoryQuery
+    from evals.intent_probe.runner import _prior_echo_tokens
+
+    tokens = _prior_echo_tokens(ANCHORS)
+    cells = [cell for cell in CELLS if cell.utterance.group == "category_action"]
+    assert cells, "카테고리 셀이 없다 — 픽스처가 어긋났다"
+    for cell in cells:
+        result = await _run_one(ScriptedDecomposeLLM(ANCHORS), cell=cell, n=8)
+        for sample in result.samples:
+            # `samples.csv` 의 leg 원문에서 leg 를 되살려 같은 함수로 재판정한다 — 규칙이 한 벌뿐이면
+            # 이 대조가 항상 성립한다(두 벌이 되는 순간 이 테스트가 깨진다).
+            legs = [
+                CategoryQuery(raw or None, query or None)
+                for raw, _, query in (
+                    part.partition("|") for part in sample.category_legs.split(";") if part
+                )
+            ]
+            assert sample.resolved_category_action == resolve_category_action(
+                has_category_signal=sample.has_category_signal,
+                scope_free=sample.scope_free,
+                has_new_category_signal=has_new_category_signal(legs, tokens),
+            )
+
+
+async def test_scope_classifier_runs_on_category_cells() -> None:
+    """[#84] 프로브도 배포처럼 **두 호출**을 한다 — 분류기가 빠지면 측정이 배포와 갈라진다."""
+    cell = next(cell for cell in CELLS if cell.utterance.utterance_id.startswith("category-clear"))
+    result = await _run_one(ScriptedDecomposeLLM(ANCHORS, wrong_every=1000), cell=cell, n=2)
+    assert all(sample.scope_free is True for sample in result.samples)
+    assert all(sample.resolved_category_action == "clear" for sample in result.samples)
+
+
+async def test_scope_classifier_is_skipped_without_a_prior_category() -> None:
+    """직전 카테고리가 없는 컨텍스트는 호출하지 않는다 — `graph.py` 게이트와 같은 조건."""
+    cell = next(cell for cell in CELLS if cell.context.context_id == "none")
+    result = await _run_one(ScriptedDecomposeLLM(ANCHORS), cell=cell, n=2)
+    assert all(sample.scope_free is None for sample in result.samples)
+
+
+async def test_carry_cells_are_recognised_as_prior_echo() -> None:
+    """[2차 리뷰 P2] carry 턴의 leg 은 prior 에코라 확정값이 replace 여도 카테고리가 유지된다."""
+    cell = next(cell for cell in CELLS if cell.utterance.utterance_id.startswith("category-carry"))
+    result = await _run_one(ScriptedDecomposeLLM(ANCHORS, wrong_every=1000), cell=cell, n=2)
+    assert all(sample.category_legs_echo_prior for sample in result.samples)
+
+
+async def test_replace_needs_a_leg_to_resolve_as_replace() -> None:
+    """신호 없는 `replace` 는 carry 로 확정된다(규칙 3) — 가짜 LLM 도 실 LLM 처럼 leg 를 싣는다."""
+    cell = next(
+        cell for cell in CELLS if cell.utterance.utterance_id.startswith("category-replace")
+    )
+    result = await _run_one(ScriptedDecomposeLLM(ANCHORS, wrong_every=1000), cell=cell, n=4)
+    assert {sample.resolved_category_action for sample in result.samples} == {"replace"}
+    assert all(sample.has_category_signal for sample in result.samples)
+
+
+async def test_non_category_cells_report_the_carry_fallback() -> None:
+    """카테고리 신호도 산출도 없는 턴은 carry(=오늘 동작)로 떨어진다 — 폴백이 관측된다."""
+    cell = next(cell for cell in CELLS if cell.utterance.group == "cart_control")
+    result = await _run_one(ScriptedDecomposeLLM(ANCHORS), cell=cell, n=2)
+    for sample in result.samples:
+        assert sample.scope_free is None  # 분류기 게이트가 닫힌 셀이다
+        assert sample.has_category_signal is False
+        assert sample.resolved_category_action == "carry"
+
+
+def test_candidate_prompt_override_does_not_reach_the_classifier() -> None:
+    """[#84] `--prompt` 는 decompose 후보만 갈아끼운다 — 보조 노드 문면은 통과시킨다.
+
+    이 래퍼는 원래 **모든** 호출의 system 을 덮었고 그 docstring 이 "다른 노드를 함께 재게 되면
+    분기하라"고 스스로 경고했다. 프로브가 분류기를 함께 부르게 된 지금 그 경고가 실제 결함이
+    된다 — 분류기가 decompose 후보 프롬프트를 받으면 판정이 무의미해지고, 표에는 "분류기가
+    갑자기 무동작"으로만 보인다.
+    """
+    from app.agents.buyer.recommendation.category_scope import _SYSTEM as SCOPE_SYSTEM
+    from evals.intent_probe.client import PASSTHROUGH_SYSTEMS, SystemPromptOverrideLLM
+
+    seen: list[str] = []
+
+    class _Echo:
+        async def complete(self, *, system, user, tier, max_tokens=1024, json_output=True):  # noqa: ANN001
+            seen.append(system)
+            return "{}"
+
+    wrapper = SystemPromptOverrideLLM(_Echo(), system="후보 프롬프트")
+    assert SCOPE_SYSTEM in PASSTHROUGH_SYSTEMS
+
+    async def _drive() -> None:
+        await wrapper.complete(system="원래 decompose", user="u", tier="fast")
+        await wrapper.complete(system=SCOPE_SYSTEM, user="u", tier="fast")
+
+    asyncio.run(_drive())
+    assert seen == ["후보 프롬프트", SCOPE_SYSTEM]
+
+
+# ─────────── #84 2차 리뷰 F-4 — prior 에코 판정은 정확 일치다 ───────────
+
+
+def _echo(raw, query):  # noqa: ANN001
+    """앵커 B 의 `categoryPriorFilters` 로 leg 하나를 판정한다."""
+    from app.agents.buyer.recommendation.state import CategoryQuery
+    from evals.intent_probe.runner import _legs_echo_prior, _prior_echo_tokens
+
+    return _legs_echo_prior([CategoryQuery(raw, query)], _prior_echo_tokens(ANCHORS))
+
+
+def test_substring_of_the_prior_category_is_not_an_echo() -> None:
+    """[F-4] `"이어폰 케이스"` 는 **새 상품**이다 — 부분 문자열이면 카테고리가 바뀐 턴을
+    "유지됐다"로 세게 된다(배포 매퍼는 그것을 액세서리 카테고리로 바꾼다).
+
+    `docs/lessons.md` [2026-08-02] 「부분 문자열 매칭은 포함 방향마다 의미가 다르다」가 가리키는
+    함정이라 정규화 후 정확 일치로 좁혔다.
+    """
+    assert _echo(None, "이어폰 케이스") is False
+    assert _echo("음향가전 > 이어폰 액세서리", "이어폰 케이스") is False
+
+
+@pytest.mark.parametrize(
+    ("raw", "query"),
+    [
+        ("음향가전 > 이어폰", "무선 이어폰"),  # 실측 표본 ①
+        ("음향가전", "무선 이어폰"),  # 실측 표본 ②
+        ("이어폰", None),  # 잎만 되풀이
+        (None, "무선 이어폰"),  # semanticQuery 만
+        ("  음향가전   >   이어폰  ", None),  # 공백 정규화
+        ("음향가전 > 이어폰".upper(), None),  # 대소문자(라틴 문자가 섞여도 안전)
+    ],
+)
+def test_prior_vocabulary_is_recognised_as_an_echo(raw, query) -> None:
+    assert _echo(raw, query) is True
+
+
+def test_echo_needs_every_leg_to_be_an_echo() -> None:
+    """하나라도 새 상품이면 카테고리가 유지된 것이 아니다."""
+    from app.agents.buyer.recommendation.state import CategoryQuery
+    from evals.intent_probe.runner import _legs_echo_prior, _prior_echo_tokens
+
+    tokens = _prior_echo_tokens(ANCHORS)
+    legs = [CategoryQuery("음향가전 > 이어폰", "무선 이어폰"), CategoryQuery(None, "노트북")]
+    assert _legs_echo_prior(legs, tokens) is False
+    assert _legs_echo_prior([], tokens) is False  # 신호 없음은 에코가 아니다
+
+
+# ─────────── [#300] screen 지시어 해소(#118 이관) — 러너가 해소기를 부른다 ───────────
+
+
+async def test_screen_deictic_cell_fires_the_resolver_and_confirms_the_sole_candidate() -> None:
+    """`이거 담아줘` × 화면 1건 — 해소기가 항상 개입해(단일 후보) productId 를 확정한다."""
+    cell = next(cell for cell in CELLS if cell.utterance.utterance_id == "screen-001")
+    result = await _run_one(ScriptedDecomposeLLM(ANCHORS, wrong_every=1000), cell=cell, n=4)
+    for sample in result.samples:
+        assert sample.screen_resolver_fired is True
+        assert sample.resolved_product_id == 3101
+        assert sample.screen_resolution_reason == "sole_screen_candidate"
+
+
+async def test_screen_reask_cell_forces_resolved_product_id_to_none() -> None:
+    """`이거 담아줘` × 화면 3건(안전 셀) — 후보가 여럿이면 해소기가 되물음을 강제한다."""
+    cell = next(cell for cell in CELLS if cell.utterance.utterance_id == "screen-002")
+    result = await _run_one(ScriptedDecomposeLLM(ANCHORS, wrong_every=1000), cell=cell, n=4)
+    for sample in result.samples:
+        assert sample.screen_resolver_fired is True
+        assert sample.resolved_product_id is None
+        assert sample.screen_resolution_reason == "ambiguous_screen_candidates"
+
+
+async def test_screen_ordinal_and_coordinate_cells_fire_deterministically() -> None:
+    """ "3번째 거"·"3번째 줄 2번째" — 순번·좌표 규칙도 결정적으로 발동한다."""
+    ordinal_cell = next(cell for cell in CELLS if cell.utterance.utterance_id == "screen-003")
+    coord_cell = next(cell for cell in CELLS if cell.utterance.utterance_id == "screen-004")
+    ordinal_result = await _run_one(
+        ScriptedDecomposeLLM(ANCHORS, wrong_every=1000), cell=ordinal_cell, n=2
+    )
+    coord_result = await _run_one(
+        ScriptedDecomposeLLM(ANCHORS, wrong_every=1000), cell=coord_cell, n=2
+    )
+    assert all(sample.resolved_product_id == 3103 for sample in ordinal_result.samples)
+    assert all(sample.resolved_product_id == 3108 for sample in coord_result.samples)
+
+
+async def test_screen_name_match_cell_defers_to_the_llm_output() -> None:
+    """ "무선 이어폰 담아줘" — 이름 매칭은 해소기의 양보(B) 대상이라 발동하지 않는다."""
+    cell = next(cell for cell in CELLS if cell.utterance.utterance_id == "screen-005")
+    result = await _run_one(ScriptedDecomposeLLM(ANCHORS, wrong_every=1000), cell=cell, n=4)
+    for sample in result.samples:
+        assert sample.screen_resolver_fired is False
+        assert sample.resolved_product_id == sample.product_id == 3110
+
+
+async def test_screen_not_hallucinated_cell_blocks_the_out_of_list_id() -> None:
+    """ "301 담아줘" — 두 목록 밖 id 를 발화해도 해소기가 확정을 막는다(되물음으로 강제)."""
+    cell = next(cell for cell in CELLS if cell.utterance.utterance_id == "screen-006")
+    result = await _run_one(ScriptedDecomposeLLM(ANCHORS, wrong_every=1000), cell=cell, n=4)
+    for sample in result.samples:
+        assert sample.screen_resolver_fired is True
+        assert sample.resolved_product_id is None
+        assert sample.screen_resolution_reason == "unknown_product_id_spoken"
+
+
+async def test_non_screen_cells_leave_resolved_product_id_untouched() -> None:
+    """screen 이 없는 셀은 해소기가 발동하지 않는다 — resolved == 원본, fired False."""
+    cell = next(cell for cell in CELLS if cell.utterance.group != "screen")
+    result = await _run_one(ScriptedDecomposeLLM(ANCHORS), cell=cell, n=3)
+    for sample in result.samples:
+        assert sample.screen_resolver_fired is False
+        assert sample.screen_resolution_reason is None
+        assert sample.resolved_product_id == sample.product_id
+
+
+def test_category_legs_are_serialised_for_recounting() -> None:
+    """[F-4] leg 원문을 남겨야 판정 규칙이 바뀌어도 **런을 다시 돌리지 않고** 재집계할 수 있다."""
+    from app.agents.buyer.recommendation.state import CategoryQuery
+    from evals.intent_probe.runner import serialize_category_legs
+
+    assert serialize_category_legs([]) == ""
+    assert (
+        serialize_category_legs(
+            [CategoryQuery("음향가전 > 이어폰", "무선 이어폰"), CategoryQuery(None, "노트북")]
+        )
+        == "음향가전 > 이어폰|무선 이어폰;|노트북"
+    )
