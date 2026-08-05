@@ -57,6 +57,8 @@ from app.schemas.spring import (
     FunnelResult,
     OrderEventsResult,
     ORDER_STATUS_RECENT,
+    OrderItemStatusResult,
+    OrderItemStatusUpdate,
     OrderStatusSummary,
     ProductChangeLogResult,
     ProductChangesPage,
@@ -70,7 +72,10 @@ from app.schemas.spring import (
     RecentPurchases,
     RecommendationPush,
     SalesResult,
+    SellerOrderList,
     SellerProductList,
+    SellerReviewList,
+    SellerReviewStats,
     SpringProduct,
     WishlistAddResult,
     WishlistItem,
@@ -102,6 +107,10 @@ _SpringOperation = Literal[
     "create_product",
     "update_product",
     "delete_product",
+    "get_orders",
+    "update_order_status",
+    "get_reviews",
+    "get_review_stats",
 ]
 
 
@@ -437,6 +446,30 @@ class WishlistError(Exception):
     403 AUTH_FORBIDDEN 도 여기로 떨어진다 — CartError 의 401 낙성과 같은 규약으로, 전용 예외를
     두면 "이 상품은 남의 소유"류 소유권 정보가 사용자에게 흘러나갈 수 있어 일부러 두지 않는다.
     """
+
+
+# ── I-30 발송 처리 예외 (이슈 #297, §4.19 — 🔶 초안, BE 협의 전) ──────────────────
+#
+# HITL 쓰기(발송)는 "이미 된 일"과 "방금 한 일"과 "안 되는 일"을 구분해야 거짓 성공
+# 보고를 막는다(I-12 ALREADY_HIDDEN 논리) — SpringUnavailableError 로 뭉개면 셋 다
+# "재시도 가능한 장애"가 되므로 error.code 기반 전용 예외로 분리한다. 이 예외들은
+# SpringUnavailableError 하위가 아니다 — 도구/HITL 의 catch-all 에 삼켜지지 않는다.
+
+
+class OrderItemNotFound(Exception):
+    """I-30 404 ORDER_ITEM_NOT_FOUND — 없는 orderItemId 또는 타 브랜드 아이템(존재 은닉,
+    403 없음 — 2026-07-28 정리 상속). `error.code` 가 정확히 이 값일 때만 낸다."""
+
+
+class OrderAlreadyShipped(Exception):
+    """I-30 409 ORDER_ALREADY_SHIPPED — 이미 SHIPPING(멱등 200 금지, I-12 논리).
+    2026-08-05 개명(구 ALREADY_SHIPPED — 공통 규약 `<도메인>_<사유>` 형식). 과도기
+    호환으로 구 코드도 이 예외로 낙성한다."""
+
+
+class OrderInvalidTransition(Exception):
+    """I-30 400 ORDER_INVALID_TRANSITION — 허용 전이 아님(현재 상태가 ORDERED 가 아님,
+    활성 클레임 포함) · 발송 후 역전이 일체 · MVP 미허용 전이."""
 
 
 def _client() -> httpx.AsyncClient:
@@ -1306,9 +1339,15 @@ class SpringClient:
         operation: _SpringOperation,
         params: dict | None = None,
         json_body: dict | None = None,
+        error_code_map: dict[str, type[Exception]] | None = None,
     ) -> dict:
         """공용 요청 헬퍼. X-Internal-Token 헤더 부착 + raise_for_status +
-        예외를 SpringUnavailableError 로 통일 변환한다."""
+        예외를 SpringUnavailableError 로 통일 변환한다.
+
+        error_code_map 이 주어지면 4xx/5xx 응답 본문의 `error.code`(§2.5 봉투)를
+        `_parse_error_code` 로 뽑아, 매핑된 코드는 전용 예외로 낸다(I-30 등 코드 구분이
+        계약인 쓰기용) — 매핑에 없는 코드·본문 없는 오류는 종전대로
+        SpringUnavailableError 다(추가 전용, 기존 호출 경로 불변)."""
         headers = {"X-Internal-Token": self._internal_token} if self._internal_token else {}
         try:
             with _spring_span(operation, method) as span:
@@ -1336,6 +1375,11 @@ class SpringClient:
                 f"Spring 콜백 타임아웃({self._timeout}s): {method} {path}"
             ) from exc
         except httpx.HTTPStatusError as exc:
+            if error_code_map:
+                code = _parse_error_code(exc.response)
+                mapped = error_code_map.get(code) if code else None
+                if mapped is not None:
+                    raise mapped(f"{code}: {method} {path}") from exc
             raise SpringUnavailableError(
                 f"Spring 콜백 오류 응답({exc.response.status_code}): {method} {path}"
             ) from exc
@@ -1576,6 +1620,140 @@ class SpringClient:
             operation="delete_product",
         )
         return self._validate(ProductDeleteResult, data)
+
+    # ── 주문·리뷰 3종 (이슈 #297, I-29~I-31 — api-spec §4.18~§4.20, 🔶 초안 BE 협의 전) ──
+
+    async def get_orders(
+        self,
+        brand_id: int,
+        *,
+        status: str | None = None,
+        order_id: int | None = None,
+        from_: str | None = None,
+        to: str | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> SellerOrderList:
+        """I-29 자사 주문 조회 — 현재 상태 스냅샷 (§4.18). S-2 의 internal 판.
+
+        기간(from/to)은 선택 — 생략 시 전체 주문(확정 2026-08-04). status 는 S-2 탭
+        어휘(ORDERED/SHIPPING/DELIVERED/CLAIM). orderId 미존재·타사는 404 가 아니라
+        200 + 빈 rows(존재 은닉) — 예외 매핑이 필요 없다.
+        """
+        params: dict = {}
+        if status:
+            params["status"] = status
+        if order_id is not None:
+            params["orderId"] = order_id
+        if from_:
+            params["from"] = from_
+        if to:
+            params["to"] = to
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        data = await self._request(
+            "GET",
+            f"/internal/seller/{brand_id}/orders",
+            operation="get_orders",
+            params=params,
+        )
+        return self._validate(SellerOrderList, data)
+
+    async def update_order_item_status(
+        self, brand_id: int, order_item_id: int, payload: OrderItemStatusUpdate
+    ) -> OrderItemStatusResult:
+        """I-30 주문 아이템 상태 전이 — 발송 처리 (§4.19). HITL 승인 후에만 호출.
+
+        MVP 허용 전이는 ORDERED→SHIPPING 하나뿐. 실패 코드 구분이 계약이다:
+        404 ORDER_ITEM_NOT_FOUND(타사 포함 존재 은닉) / 409 ORDER_ALREADY_SHIPPED
+        (멱등 200 금지 — 구 ALREADY_SHIPPED 도 과도기 낙성) / 400
+        ORDER_INVALID_TRANSITION(클레임·역전이 포함). 그 외(401·500·타임아웃)는
+        SpringUnavailableError — 호출부는 성공 보고 금지 + 재시도 안내(§4.19).
+        """
+        data = await self._request(
+            "PATCH",
+            f"/internal/seller/{brand_id}/order-items/{order_item_id}/status",
+            operation="update_order_status",
+            json_body=payload.model_dump(by_alias=True),
+            error_code_map={
+                "ORDER_ITEM_NOT_FOUND": OrderItemNotFound,
+                "ORDER_ALREADY_SHIPPED": OrderAlreadyShipped,
+                "ALREADY_SHIPPED": OrderAlreadyShipped,  # 과도기 — 2026-08-05 개명 전 코드
+                "ORDER_INVALID_TRANSITION": OrderInvalidTransition,
+            },
+        )
+        return self._validate(OrderItemStatusResult, data)
+
+    async def get_reviews(
+        self,
+        brand_id: int,
+        *,
+        from_: str | None = None,
+        to: str | None = None,
+        product_id: int | None = None,
+        rating: str | None = None,
+        sort: str | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> SellerReviewList:
+        """I-31 자사 상품 리뷰 목록 조회 — VISIBLE 만 (§4.20).
+
+        기간 생략 시 서버가 최근 7일 기본 적용(확정 2026-08-04 — 누락은
+        INVALID_PERIOD 아님). rating 은 "1,2" 콤마 CSV, sort 는 latest|rating(낮은 순
+        고정). 리뷰 원문은 AI DB에 저장하지 않는다 — 질의 시점 조회(I-19 원칙).
+        """
+        params: dict = {}
+        if from_:
+            params["from"] = from_
+        if to:
+            params["to"] = to
+        if product_id is not None:
+            params["productId"] = product_id
+        if rating:
+            params["rating"] = rating
+        if sort:
+            params["sort"] = sort
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        data = await self._request(
+            "GET",
+            f"/internal/seller/{brand_id}/reviews",
+            operation="get_reviews",
+            params=params,
+        )
+        return self._validate(SellerReviewList, data)
+
+    async def get_review_stats(
+        self,
+        brand_id: int,
+        *,
+        from_: str | None = None,
+        to: str | None = None,
+        product_id: int | None = None,
+    ) -> SellerReviewStats:
+        """I-31 리뷰 집계 조회 — stats=true 모드 (§4.20).
+
+        totalCount/averageRating/distribution(P-3 형태)/byProduct. 0건이면
+        averageRating 은 null(I-16 churnRate 규칙과 동일 — 평점 0점 오독 금지).
+        """
+        params: dict = {"stats": "true"}
+        if from_:
+            params["from"] = from_
+        if to:
+            params["to"] = to
+        if product_id is not None:
+            params["productId"] = product_id
+        data = await self._request(
+            "GET",
+            f"/internal/seller/{brand_id}/reviews",
+            operation="get_review_stats",
+            params=params,
+        )
+        return self._validate(SellerReviewStats, data)
 
 
 # ── 싱글턴 (2026-07-18 ToolRuntime 전환 — 신원은 SellerContext, 클라이언트는 앱 소유) ──

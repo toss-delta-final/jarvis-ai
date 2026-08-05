@@ -19,10 +19,14 @@ on:
 jobs:
   review:
     runs-on: ubuntu-latest
-    # draft·fork PR 스킵 (fork 는 시크릿 접근 불가)
+    # draft·fork PR 스킵 (fork 는 시크릿 접근 불가).
+    # `skip-claude-review` 라벨이 붙은 PR 도 스킵 (#347) — 리뷰가 불필요한 PR(대량 병합 정합,
+    # 실험 브랜치 등)을 PR 단위로 끈다. 라벨 부착/제거는 다음 push(synchronize)부터 적용된다.
+    # 기본(라벨 없음)은 종전과 동일하게 리뷰 실행.
     if: >
       github.event.pull_request.draft == false &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !contains(github.event.pull_request.labels.*.name, 'skip-claude-review')
     steps:
       - uses: actions/checkout@v4
         with:
