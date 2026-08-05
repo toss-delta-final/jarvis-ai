@@ -13,6 +13,33 @@
 
 ---
 
+## [2026-08-05] 임의 순서 기준선을 두지 않으면 랭커가 개선인지 손해인지 모른다
+- 증상: #275 조사에서 student(현행 6성분 스코어러) 오라클 상한을 탐색했더니(E2) "상한
+  0.738210"이 나와 teacher(0.782943)에 근접하는 듯 보였다. 재현·반증(E4)하니 이 값은
+  `recency` 성분에만 값을 몰아주고 나머지 실질 신호를 전부 0으로 만든 **축퇴 해**였다 —
+  `ScoringBuyerAdapter` 가 `recency_by_product=None` 을 주입해 이 축이 항상 0(무주입 무력
+  축)인데, `EvaluationSettings` 검증자는 "5개 양의 신호 가중치 중 하나 이상 양수"만 요구해
+  이 축에 값을 몰아주는 시도를 걸러내지 못했다. 그 해의 순위는 dev search fixture 32/32 건이
+  이미 productId 오름차순으로 기록돼 있어(`search_responses.json`) 커밋된 `passthrough`
+  baseline 0.738210(`evals/scoring/baselines/dev-v1/comparison.md`)과 완전히 같았다 —
+  즉 **"아무 순서나 그대로 둔 것"과 같은 값이었다.** 현행 튜닝된 스코어러(0.616852)는 그
+  0.738210 보다 **0.121358 낮다**(paired bootstrap 95% CI [0.039814, 0.206934]).
+- 원인: 오라클 탐색·teacher-fit 탐색 어느 쪽도 "탐색이 no-op 으로 수렴할 수 있는가"를
+  자체적으로 배제하지 않았다. `passthrough` 를 "검색 순위 기준선"으로 잘못 해석해, 실제로는
+  **임의 순서 기준선**인 그 값과 튜닝된 가중치를 직접 비교하지 않은 채 진행했다 — 그 결과
+  현행 스코어러가 "아무것도 하지 않는 것보다 나쁘다"는 사실이 여러 리포에서 한 번도
+  표면화되지 않았다.
+- 규칙: 랭킹/스코어링 튜닝을 평가할 때는 **"아무 순서나 그대로 두는" no-op 기준선을 항상
+  1급 baseline 으로 사전 등록**하고, 튜닝된 결과·오라클 상한·teacher 모두를 이 기준선과
+  paired bootstrap CI 로 대조한다. 오라클 탐색 코드에는 "결과 순위가 no-op 과 최소 1케이스
+  달라야 한다"는 축퇴 배제 제약을 항상 넣는다(무력한 축이 있다면 탐색 공간에서도 뺀다).
+  fixture/골든셋이 productId 오름차순 같은 결정론적 순서로 저장돼 있다면 그 자체가 숨은
+  no-op 후보임을 의심한다.
+- 관련: #275, `docs/research/RESEARCH-TEACHER-275.md` §3, `docs/research/research-275-harness/e4_analyze.py`,
+  `evals/scoring/baselines/dev-v1/comparison.md`, `evals/goldenset/fixtures/search_responses.json`
+
+---
+
 ## [2026-08-05] 이슈 본문의 결함 서술은 그 이슈를 낳은 PR 의 후속 리뷰에서 이미 고쳐졌을 수 있다
 - 증상: #288 은 "검증기가 단일 I-1 호출 예산만 본다"는 결함으로 열렸다. 그런데 착수 시점 `dev`
   에는 그 이슈를 낳은 #277(PR #287) 의 리뷰 4차에서 이미 첫 이벤트 앞 **직렬 합** 검증이
