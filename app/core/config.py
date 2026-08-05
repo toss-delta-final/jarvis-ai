@@ -645,6 +645,31 @@ class Settings(BaseSettings):
     # 매핑을 부르는 새 경로를 만들 때 이 배선을 빠뜨리면 상한이 조용히 배수로 깨진다.
     category_select_max_calls: int = Field(default=2, ge=0)
 
+    # ── 광역 발화 → leaf fan-out (이슈 #222) ──
+    # 이슈 원안(top-k 의 공통 조상으로 광역/협소 판정)은 오케스트레이터 실측으로 기각(정확도 0.50,
+    # 우연 수준). 채택안은 판정기를 만들지 않는다 — 매핑이 canonical 을 못 낸 leg
+    # (`CategoryMapping.unresolved`, #217 이 이미 만든 신호)을 트리거로, 그 앵커의 의미 기반
+    # top-N leaf 를 그대로 fan-out leg 으로 쓴다(`CategoryMapping.expansion_leaves`). 협소 발화는
+    # canonical 을 내므로 이 경로에 애초에 진입하지 않는다 — 그 자체는 구조적이다.
+    # [PR #318 리뷰 R14-2] 단 이 "진입하지 않는다"는 **거리 임계가 정상 튜닝돼 있을 때만**
+    # 성립한다 — 현 임계는 stale(#344)이라 협소 발화 일부(실측 10/20)가 canonical 을 못 내고
+    # 이 경로로 들어온다. 그 경우에도 확장 top-N 은 의미 최근접이라 정답 leaf 가 대체로 상위에
+    # 포함되고(실측: "무선 이어폰" top-1 = 음향가전 > 이어폰) leg 마다 keyword·semantic_query 가
+    # 유지되므로, 무필터 degrade(종전 동작) 대비 악화는 아니다 — 임계 재측정은 #344.
+    category_expand_enabled: bool = True  # 광역 fan-out 롤백 스위치
+    # [PR #318 리뷰 R5-1] **턴 전체 상한**이다 — unresolved leg 당 상한이 아니다. unresolved leg
+    # 이 여럿이면 `category_mapping._collect_expansion_leaves` 가 leg 마다 모은 후보를 라운드로빈
+    # 인터리브(`recommendation/graph._merge_fanout_results` 와 같은 규약)로 평탄화한 뒤 이 값으로
+    # 한 번만 자른다 — leg 별로 이 값을 각각 적용하면 먼저 처리된 leg 이 예산을 통째로 가져가고
+    # 뒤 leg 은 0개가 된다(사용자가 명시한 두 번째 니즈가 검색조차 안 되는 조용한 손실).
+    # 확장 leg 수 상한. category_fanout_max 와 같은 이유로 le=MAX_LISTS — 확장 턴이 case 3 과
+    # 겹치면 leg 마다 목록이 생겨 계약 상한(§4.2 lists ≤ 10)을 넘긴다.
+    category_expand_legs: int = Field(default=8, ge=0, le=MAX_LISTS)
+    category_expand_notice_enabled: bool = True  # 확장 고지 문구 on/off
+    # 확장 leaf 의 중분류(leaf 이름의 " > " 앞부분, 중복 제거) 목록을 끼울 자리 하나({items}).
+    # 문구는 LLM 이 짓지 않는다 — DB 값 그대로 조립해 존재하지 않는 카테고리를 말하지 않는다(#59 재발 방지).
+    category_expand_notice: str = "{items} 에서 관련 상품을 찾아봤어요."
+
     # ── 목적·상황형 발화의 상품 전개 (이슈 #198·#217, DESIGN-NEEDS-EXPANSION-198) ──
     # "집들이 선물" 처럼 무엇을 살지 사용자가 말하지 않은 발화를 구체 상품 목록으로 전개한다
     # (정본 SPEC-RECOMMEND-001 §5.1 shopping_list 분해, EX-7 v0.10.0 개정으로 전용 호출 허용).
@@ -1422,6 +1447,10 @@ class Settings(BaseSettings):
         스스로 보장한다(PR #188 리뷰) — 호출부(`decompose._parse_category_queries`·`expand_needs`)의
         절단에만 기대면 새 호출부 하나가 풀을 넘기고, 증상이 다른 요청의 PoolTimeout 이라 원인
         추적이 어렵다. 절단이 실제로 발생하면 `category_legs_truncated` 로 관측된다.
+
+        [#222] 확장 leg(`category_expand_legs`)은 이 전제와 무관하다 — 광역 fan-out 후보는
+        `expansion_leaves`(이미 조회된 히트를 슬라이스)로 채우고 pg 앵커 조회를 새로 하지 않으므로
+        `2 × category_fanout_max` 동시 조회 전제가 그대로 성립한다.
         """
         need = 2 * self.category_fanout_max
         if self.category_search_pool_max_size < need:

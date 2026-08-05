@@ -477,7 +477,13 @@ async def stream_recommendation(
     def _condition_chips(filters: ProductSearchFilters):
         """확정 필터에서 conditions 칩을 만든다(자동 완화 후 재파생할 수 있게 함수로 뽑음)."""
         source = filters.model_copy(update={"keyword": None}) if drop_keyword else filters
-        return build_condition_chips(source, categories=[c for c, _ in decision.category_legs])
+        # [#222] 확장 턴은 카테고리 칩을 내지 않는다 — leg 이 최대 8개라 build_condition_chips 가
+        # 칩을 8개 뱉는데, 칩 하나를 지웠을 때 무엇이 빠지는지 사용자가 알 수 없으면 "표시=실제"
+        # (#51)가 깨진다. 확장 여부는 확장 고지 token(아래)이 전담한다.
+        chip_categories = (
+            [] if decision.category_expanded else [c for c, _ in decision.category_legs]
+        )
+        return build_condition_chips(source, categories=chip_categories)
 
     # [#113 PR #248 리뷰 A] 자동 완화가 **일어날 수 있는 턴이면** conditions 를 검색 뒤로 미룬다.
     # 조건 칩은 원래 검색 **전에** 내보내 화면이 빨리 뜨게 하는데, 자동 완화는 검색 **후에**
@@ -526,6 +532,12 @@ async def stream_recommendation(
             "conditions",
             ConditionsData(chips=_condition_chips(decision.filters)).model_dump(by_alias=True),
         )
+
+    # [PR #318 리뷰 R14-1] 확장 고지(§ 아래 category_expand_notice 블록)가 mids 를 조립할 때 쓸
+    # "실제로 검색한 leg" 인덱스 — `_run_search` 가 이 클로저 변수에 본 검색(§ 아래 nonlocal
+    # 대입 조건 참조)의 생존 leg 만 기록한다. None 이면 확장 fan-out 이 아니었거나(단일 filters
+    # 검색) 아직 기록되지 않은 것 — 그 경우 고지는 종전대로 `decision.category_legs` 전체를 쓴다.
+    expansion_searched_legs: list[int] | None = None
 
     # dedup 소스(I-19)와 검색(§4.6)을 **병렬 실행** — §4.7 지연 가드(순차 시 최악 6s, first-token 예산 잠식).
     # dedup 은 검색 응답 뒤 사후필터라 두 호출은 독립적이다. 각 호출이 자체 실패를 삼켜 gather 는 안 깨진다.
@@ -607,6 +619,13 @@ async def stream_recommendation(
         # 원본 leg 인덱스를 함께 들고 간다 — 실패한 leg 이 빠져 인덱스가 밀리면 하류 니즈 라벨이
         # 한 칸씩 어긋난다(category_legs[i] 와의 대응이 깨진다).
         survived = [(i, r) for i, r in enumerate(leg_results) if r is not None]
+        if base_filters is None:
+            # [PR #318 리뷰 R14-1] **본 검색일 때만** 기록한다 — `base_filters is not None` 은
+            # #113 자동완화 probe 가 같은 fan-out 의미로 이 함수를 재호출하는 경우인데, 조건 없이
+            # 덮어쓰면 probe 재검색의 생존 leg 이 본 검색 결과를 가려 확장 고지가 probe 기준으로
+            # 어긋난다(고지는 사용자가 실제로 받은 본 검색 결과를 설명해야 한다).
+            nonlocal expansion_searched_legs
+            expansion_searched_legs = [i for i, _ in survived]
         if not survived:  # 전량 leg 실패 → SEARCH_FAILED(§6)
             return None
         if len(survived) < len(leg_results):
@@ -779,11 +798,7 @@ async def stream_recommendation(
     # 미룬 턴은 첫 이벤트 앞 본 검색·자동 완화 probe만 재시도를 끈다(#277). conditions 뒤의
     # 완화 칩 probe는 첫 이벤트 예산 밖이라 제외하며, 이 with는 await 뒤 즉시 닫아 yield·다음
     # 턴으로 ContextVar가 새지 않게 한다. progress 이벤트가 계약에 생기면 이 스킵은 원복 가능하다.
-    with (
-        spring_client.suppress_search_retry()
-        if suppress_deferred_search_retry
-        else nullcontext()
-    ):
+    with spring_client.suppress_search_retry() if suppress_deferred_search_retry else nullcontext():
         search_bundle, purchases = await asyncio.gather(
             _run_candidate_source(), _fetch_purchases_once()
         )
@@ -809,6 +824,53 @@ async def stream_recommendation(
         return
 
     search_result, leg_of = search_bundle
+
+    # [#222 F-1] 확장 fan-out 이 0건이면 카테고리 없이 1회만 재검색한다. 확장 leg 은 거리컷이
+    # "맞는 칸이 없다"고 이미 판정해 버린 후보라, 8개가 전부 빗나가면 Spring 이 leg 마다 0건을
+    # 내고 `_merge_fanout_results` 도 정상적으로 빈 결과를 병합해 낸다(위 `search_bundle is None`
+    # 분기는 **전량 leg 실패** 만 잡으므로 여기서는 걸리지 않는다). 확장 이전엔 같은 발화가
+    # `legs=[]` → 카테고리 무필터 검색으로 결과가 나왔으므로, 이대로 두면 이 PR 이 "결과 있음"을
+    # "0건"으로 바꾸는 회귀가 된다(이슈 #222 ⑤). `relaxation` 은 category 를 완화 대상으로 다루지
+    # 않아(`RELAXATION_FIELD_TO_ATTR` 에 없음, relaxation.py:87) 이 경로를 구제하지 못한다.
+    # **확장 턴에만** 적용한다 — 일반 fan-out(사용자가 명시한 카테고리)의 0건은 종전대로 둔다.
+    # 조용히 카테고리를 풀면 "표시=실제"(#51)가 깨지고 이 PR 의 범위 밖이다.
+    # [PR #318 리뷰 R6-4] `search_result.total_count` 는 **최근구매 억제(exact 제외·소모품
+    # 카테고리 억제) 이전** 값이다(그 억제는 이 지점 아래 `_post_filter` 가 한다). 검색이 결과를
+    # 냈는데 그 전량이 억제돼 `candidates` 가 0이 되는 턴은 이 폴백이 트리거되지 않는다. 이
+    # 실패 모드 자체는 이 PR 이전부터 있던 기존 갭이지만, **이 PR 이 그 발생 확률을 구조적으로
+    # 높인다** — 후보 풀을 무필터에서 앵커 근방 leaf 8개로 좁히면 최근구매·소모품 억제와 겹칠
+    # 사전 확률이 올라간다("기존 갭이라 무관"이 아니라 "기존 갭인데 이 PR 이 노출 확률을 올린다").
+    # 그래서 후속 이슈는 이 PR 이 확률을 올린 갭의 후속으로 우선순위를 매겨야 한다. 억제 이후
+    # 기준으로 다시 판정하려면 폴백 재검색 뒤 억제를 다시 돌려야 해서(순서·중복 억제 문제가
+    # 새로 생긴다) 여기서 처리하지 않고 별도 이슈 #343 으로 분리한다(착수 전 아래
+    # `recommend_zero_result` 로그의 had_candidates=True & category_expanded=True 빈도를 먼저
+    # 확인).
+    category_expand_notice_suppressed = False
+    if decision.category_expanded and search_result.total_count == 0:
+
+        async def _run_search_unfiltered() -> tuple[ProductSearchResult, dict[int, int]] | None:
+            """카테고리를 빼고 1회만 재검색한다 — 비-fan-out 단일검색과 같은 계약(§6 `_run_search`
+            의 `if not legs` 분기와 동일 처리, leg_of 는 leg 개념이 없으니 빈 dict)."""
+            unfiltered = decision.filters.model_copy(update={"category": None})
+            try:
+                found = await search(unfiltered, exclude_product_ids=None)
+                return (found, {}) if found is not None else None
+            except SpringUnavailableError:
+                return None
+            except Exception as exc:  # noqa: BLE001 - 재검색 실패는 원래(0건) 결과를 유지
+                logger.warning("category_expand_zero_fallback_failed", extra={"reason": str(exc)})
+                return None
+
+        fallback_bundle = await _run_search_unfiltered()
+        if fallback_bundle is not None:
+            search_result, leg_of = fallback_bundle
+            # 무필터로 실제 되돌아갔으니 "중분류를 훑었다"는 확장 고지는 이제 거짓 고지다 —
+            # `decision.category_expanded` 자체는 건드리지 않는다(칩 억제는 그대로 유지해야
+            # 한다 — 실제로 안 쓴 확장 leg 8개를 카테고리 칩으로 보여주면 더 큰 거짓말이 된다).
+            category_expand_notice_suppressed = True
+            logger.info(
+                "category_expand_zero_fallback", extra={"legs": len(decision.category_legs)}
+            )
 
     # 최근 구매(윈도우·취소반품 필터) → exact 제외 + 소모품 카테고리 억제(결정 14-F).
     exclude_ids: set[int] = set()
@@ -1144,6 +1206,21 @@ async def stream_recommendation(
             "done",
             DoneData(finish_reason="zero_result").model_dump(by_alias=True),
         )
+        # [PR #318 리뷰 R11-1] 0건 턴은 위 zero_result 분기가 곧장 return 해 아래
+        # `recommend_pipeline` 구조화 로그(§)까지 못 간다 — 원인별 빈도(특히 검색은 히트가
+        # 있었는데 하류 억제가 전량을 지운 케이스, #343 갭)를 잴 수단이 없어 여기 별도로 남긴다.
+        # PII 금지: 카테고리 문자열·상품 id 는 싣지 않고 개수만 싣는다.
+        logger.info(
+            "recommend_zero_result",
+            extra={
+                # False = 검색 자체 0건 / True = 히트는 있었는데 하류 억제가 전량을 지움
+                "had_candidates": had_candidates,
+                "suppressed_categories": len(suppressed_by_cat),
+                # 확장 턴 여부 — #222 가 발생 확률을 높인 갭(F-1 미구제)의 빈도를 이 조합
+                # (had_candidates=True & category_expanded=True)으로 관측한다(PR #318 리뷰).
+                "category_expanded": decision.category_expanded,
+            },
+        )
         return
 
     # 니즈별 목록 분할 판정(REQ-REC-024, api-spec §4.2 PICK_ONE×N) — case 3(목적·상황형 발화)이
@@ -1152,7 +1229,24 @@ async def stream_recommendation(
     # case 3 이 아닌 멀티 leg(예: 리파인 승계)은 종전대로 목록 1건 — 전개가 일어난 턴만 분할한다.
     # leg_of 가 비면(단일 filters 검색 경로) 나눌 근거 자체가 없다.
     need_legs = decision.category_legs
-    split_by_need = decision.case == 3 and len(need_legs) > 1 and bool(leg_of)
+    # [#222 PR #318 리뷰] 확장 턴(category_expanded)은 니즈 경계로 쪼개지 않는다. unresolved
+    # leg 이 1개인 턴은 확장 leaf 8개가 전부 그 하나의 원 query 텍스트를 공유하지만(§4·
+    # `category_mapping._collect_expansion_leaves`), unresolved leg 이 여럿인 턴("캠핑용품이랑
+    # 낚시용품")은 `_interleave_by_leg` 가 서로 다른 query 의 leaf 를 섞어 내므로 "leaf 가 전부
+    # 같은 query" 전제가 깨진다(PR #318 리뷰 R12-2). 그렇다고 leg 인덱스 단위 분할을 그대로
+    # 켜면 되는 것도 아니다 — `_split_by_need` 는 leg(=leaf 개별) 단위로 쪼개므로 leaf 하나당
+    # 목록 하나(최대 8개, 라벨은 `_need_label` 이 leaf query 를 그대로 써 "캠핑용품"×4·
+    # "낚시용품"×4 로 **중복**)가 되어 R4-1 이 그대로 재발한다. 올바른 분할은 leg 이 아니라
+    # **니즈(원 query) 단위 그룹핑**인데, 이는 #168(카테고리별 그룹 출력)의 본체 설계라 이
+    # PR 에서는 하지 않고 확장 턴은 (leg 이 하나든 여럿이든) 통째로 목록 1건으로 둔다. 조건
+    # 칩을 category_expanded 로 억제한 것과 같은 원칙(#51 표시=실제)이고, `buy_all_mode`(아래)
+    # 도 이 값을 참조하므로 가짜 니즈 단위 예산 세트(BUY_ALL)까지 함께 막힌다.
+    split_by_need = (
+        decision.case == 3
+        and len(need_legs) > 1
+        and bool(leg_of)
+        and not decision.category_expanded
+    )
     buy_all_mode = settings.budget_set_enabled and decision.buy_all and split_by_need
 
     # [#281] 니즈 priority 분류기 — 첫 이벤트 앞 직렬 지연을 0 으로 두려고 게이트 입력이 확정되는
@@ -1463,6 +1557,47 @@ async def stream_recommendation(
 
     if comment:
         yield sse("token", TokenData(text=comment).model_dump(by_alias=True))
+
+    # [#222] 광역 fan-out 확장 고지 — **질문이 아니라 고지**다("더 좁혀 드릴까요?" 같은 되물음은
+    # 넣지 않는다, 그 판정 게이트가 실측으로 없다). 문구는 LLM 이 짓지 않는다 — 확장 leaf 이름의
+    # " > " 앞부분(중분류)을 중복 제거해 그대로 쓴다. DB 값이라 존재하지 않는 카테고리를 말할 수
+    # 없다(#59 재발 방지). 템플릿은 config 주입(rerank_fallback_notice 와 동일 패턴).
+    # [#222 F-1] `category_expand_notice_suppressed` 면 위에서 무필터로 되돌아간 것이다 — 중분류를
+    # 훑었다고 고지해 놓고 실제로는 무필터로 찾은 것이 되면 거짓 고지라 여기서 막는다.
+    # 전 leg 실패(전량 SpringUnavailableError 등)는 이 지점에 아예 도달하지 않는다 —
+    # `_run_search` 가 `survived` 가 비면 None 을 돌려주고 그건 `search_bundle is None` 분기로
+    # 가 SEARCH_FAILED 로 끝나기 때문이다(§6, 고지 블록은 그 아래에서만 실행된다).
+    if (
+        decision.category_expanded
+        and not category_expand_notice_suppressed
+        and settings.category_expand_notice_enabled
+        and (template := _strip_unsafe(settings.category_expand_notice))
+    ):
+        mids: list[str] = []
+        seen_mid: set[str] = set()
+        # [PR #318 리뷰 R14-1] fan-out 은 leg 별로 부분 실패할 수 있다(`survived`, `fanout_
+        # partial`) — 실패한 leg 의 카테고리는 실제로 검색하지 못했는데 전체 `category_legs` 로
+        # mids 를 조립하면 "찾아봤어요"라고 거짓 고지된다(#51 표시=실제). `expansion_searched_legs`
+        # 가 있으면(확장 fan-out 이 실제로 돈 턴) 그 생존 leg 인덱스만 쓰고, None 이면(단일
+        # filters 검색 등 fan-out 자체가 없던 경로) 종전대로 전체를 쓴다.
+        notice_legs = (
+            [decision.category_legs[i] for i in expansion_searched_legs]
+            if expansion_searched_legs is not None
+            else decision.category_legs
+        )
+        for cat, _query in notice_legs:
+            mid = cat.split(" > ", 1)[0]
+            if mid not in seen_mid:
+                seen_mid.add(mid)
+                mids.append(mid)
+        if mids:
+            try:
+                expand_notice = template.format(items=" · ".join(mids))
+            except (KeyError, IndexError, ValueError):
+                logger.warning("category_expand_notice_invalid")
+            else:
+                if expand_notice := _strip_unsafe(expand_notice):
+                    yield sse("token", TokenData(text=expand_notice).model_dump(by_alias=True))
 
     # [#162] 조건 없음 안내 — 없으면 사용자가 인기 상품을 **자기 조건이 반영된 결과**로 오해한다.
     # `popular_degraded` 턴에는 내지 않는다: I-3 가 죽어 무필터 검색으로 떨어진 결과에
