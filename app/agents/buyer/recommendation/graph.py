@@ -644,6 +644,13 @@ async def stream_recommendation(
                     trace.mark_degraded("push_skipped")
                 if push_notice := _strip_unsafe(settings.push_skipped_notice):
                     yield sse("token", TokenData(text=push_notice).model_dump(by_alias=True))
+            # [#311 리뷰] 하류의 dedup 실패 고지 지점(아래 `if dedup_degraded ...`)에 이 경로는
+            # 도달하지 못한다 — 여기서 `done` 을 내고 return 하기 때문이다. 같은 검사를 넣어
+            # 경로 간 비대칭을 없앤다. 기본값이 빈 값(미고지)이라 오늘은 아무것도 안 나가지만,
+            # 그 값은 **판단을 코드 재배포 없이 되돌리기 위한 스위치**라(#133) 한쪽 경로만
+            # 무시하면 켜는 순간 계약이 갈린다.
+            if dedup_degraded and (dedup_notice := _strip_unsafe(settings.dedup_skipped_notice)):
+                yield sse("token", TokenData(text=dedup_notice).model_dump(by_alias=True))
             yield sse("done", DoneData(finish_reason="stop").model_dump(by_alias=True))
             return
         # 랭킹 실패·0건 → 아래 인기 상품(I-3) 경로로 폴백한다(스트림은 계속된다).

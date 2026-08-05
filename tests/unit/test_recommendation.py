@@ -6178,3 +6178,40 @@ async def test_budget_only_turn_discloses_amount_and_asks_back(
     settings = get_settings()
     assert any("50,000원" in t for t in texts)  # 금액을 되짚는다
     assert not any(settings.no_condition_notice_popular in t for t in texts)  # 일반 문구 아님
+
+
+async def test_profile_path_discloses_dedup_failure_like_the_other_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """취향 경로도 I-19 실패 고지를 낸다 — 이 경로만 건너뛰면 config 스위치가 반쪽이 된다.
+
+    `dedup_skipped_notice` 는 기본이 빈 값(미고지)이지만, **판단을 코드 재배포 없이 되돌리기
+    위한 여지**로 남겨 둔 스위치다(#133). 취향 경로는 `done` 을 내고 곧바로 return 해서 하류의
+    고지 지점에 도달하지 못했다 — 운영자가 값을 채우는 순간 "인기 경로에서는 고지되는데 취향
+    경로에서만 조용히 묻히는" 비대칭이 드러난다(PR #311 리뷰).
+    """
+    _fix_now(monkeypatch)
+
+    async def _boom(user_id, status=None):  # noqa: ANN001
+        raise SpringUnavailableError("orders down")
+
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _boom)
+    monkeypatch.setattr(get_settings(), "dedup_skipped_notice", "최근 구매 내역을 확인하지 못했어요.")
+    _inject_profile(monkeypatch, vector=[1.0, 0.0, 0.0], store=_catalog_store([201, 202]))
+    search, _ = _counting_search_calls()
+    popular, popular_calls = _recording_popular()
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="아무거나 추천해줘", thread_id="nc-profile-dedup"),
+            _member_num(),
+            llm=FakeLLM(decompose=_NO_CONDITION_DECOMPOSE),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    assert popular_calls == []  # 취향 경로를 탄 턴이다
+    texts = [e["data"]["text"] for e in events if e["type"] == "token"]
+    assert any("최근 구매 내역을 확인하지 못했어요." in t for t in texts)
