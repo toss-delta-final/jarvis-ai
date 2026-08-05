@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import Settings
+from evals.filter_axes.metrics import aggregate_axis_metrics, case_axis_outcomes
+from evals.filter_axes.spec import AXES_SPEC_PATH, axes_spec_sha256, load_axes_spec
 from evals.goldenset.loader import ROOT as GOLDENSET_ROOT
 from evals.goldenset.loader import load_cases
 from evals.goldenset.schema import GoldenCase
@@ -145,6 +147,7 @@ def _case_result(
     fixtures: EvaluationFixtures,
     k_list: tuple[int, ...],
     ndcg_k_list: tuple[int, ...],
+    axes_spec: Mapping[str, Any],
 ) -> dict[str, Any]:
     raw_ranked = [int(product_id) for product_id in output.get("rankedProductIds", [])]
     ranked, duplicate_count = unique_ranked_ids(raw_ranked)
@@ -187,6 +190,7 @@ def _case_result(
         "rankingExclusionReason": excluded_reason,
         "metrics": ranking_metrics,
         "filterAccuracy": filter_accuracy(case.expected_filters, actual_filters),
+        "filterAxes": case_axis_outcomes(case.expected_filters, actual_filters, axes_spec),
         "hardConstraintViolated": bool(violations),
         "violations": violations,
         "diversity": diversity(ranked, fixtures.catalog),
@@ -267,6 +271,7 @@ def _aggregate(
         "microPrecisionAtK": micro_precision,
         "microRecallAtK": micro_recall,
         "filterAccuracy": _mean([row["filterAccuracy"] for row in rows]),
+        "filterAxes": aggregate_axis_metrics([row["filterAxes"] for row in rows]),
         "hardConstraintViolationRate": (
             sum(row["hardConstraintViolated"] for row in rows) / len(rows) if rows else 0.0
         ),
@@ -342,10 +347,16 @@ def evaluate(
         from evals.metrics.harness import OfflineBuyerAdapter
 
         adapter = OfflineBuyerAdapter()
+    axes_spec = load_axes_spec()
 
     case_rows = [
         _case_result(
-            case, adapter(case, resolved_fixtures), resolved_fixtures, resolved_k, resolved_ndcg_k
+            case,
+            adapter(case, resolved_fixtures),
+            resolved_fixtures,
+            resolved_k,
+            resolved_ndcg_k,
+            axes_spec,
         )
         for case in resolved_cases
     ]
@@ -370,6 +381,7 @@ def evaluate(
             resolved_fixtures,
             resolved_k,
             resolved_ndcg_k,
+            axes_spec,
         )
         for case in resolved_cases
     ]
@@ -392,6 +404,11 @@ def evaluate(
         "slices": slice_reports,
         "overall": _aggregate(case_rows, resolved_k, resolved_ndcg_k),
         "violations": violations,
+        "filterAxesSpec": {
+            "version": axes_spec["version"],
+            "sha256": axes_spec_sha256(AXES_SPEC_PATH),
+            "emptyAxisRule": axes_spec["emptyAxisRule"],
+        },
         "noopBaseline": {
             "definition": NOOP_BASELINE_DEFINITION,
             "cases": noop_case_rows,

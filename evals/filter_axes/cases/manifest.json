@@ -1,0 +1,12 @@
+{
+  "datasetHash": "e9d07a2e114bf092efcf0676b217bf8b1be9663f51cdfee7c99b951dd796741f",
+  "datasetName": "filter-axes-probe-cases",
+  "datasetVersion": "fax-1.0.0",
+  "kindCounts": {
+    "dir": 6,
+    "inv": 9,
+    "pair": 4
+  },
+  "recordCount": 19,
+  "sourceFile": "probe_cases.jsonl"
+}
