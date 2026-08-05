@@ -829,7 +829,9 @@ async def stream_recommendation(
     # 사전 확률이 올라간다("기존 갭이라 무관"이 아니라 "기존 갭인데 이 PR 이 노출 확률을 올린다").
     # 그래서 후속 이슈는 이 PR 이 확률을 올린 갭의 후속으로 우선순위를 매겨야 한다. 억제 이후
     # 기준으로 다시 판정하려면 폴백 재검색 뒤 억제를 다시 돌려야 해서(순서·중복 억제 문제가
-    # 새로 생긴다) 여기서 처리하지 않고 별도 이슈로 분리한다.
+    # 새로 생긴다) 여기서 처리하지 않고 별도 이슈 #343 으로 분리한다(착수 전 아래
+    # `recommend_zero_result` 로그의 had_candidates=True & category_expanded=True 빈도를 먼저
+    # 확인).
     category_expand_notice_suppressed = False
     if decision.category_expanded and search_result.total_count == 0:
 
@@ -1193,7 +1195,7 @@ async def stream_recommendation(
         )
         # [PR #318 리뷰 R11-1] 0건 턴은 위 zero_result 분기가 곧장 return 해 아래
         # `recommend_pipeline` 구조화 로그(§)까지 못 간다 — 원인별 빈도(특히 검색은 히트가
-        # 있었는데 하류 억제가 전량을 지운 케이스, R10 갭)를 잴 수단이 없어 여기 별도로 남긴다.
+        # 있었는데 하류 억제가 전량을 지운 케이스, #343 갭)를 잴 수단이 없어 여기 별도로 남긴다.
         # PII 금지: 카테고리 문자열·상품 id 는 싣지 않고 개수만 싣는다.
         logger.info(
             "recommend_zero_result",
