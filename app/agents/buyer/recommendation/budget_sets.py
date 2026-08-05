@@ -7,6 +7,22 @@ from dataclasses import dataclass
 
 _MIN_DFS_WORK_LIMIT = 64
 
+# priority 신호가 없거나(None) 신뢰할 수 없을 때 전 leg 에 균일하게 주는 값.
+# 제외 키의 첫 성분으로만 쓰이므로 전 leg 가 같은 값이면 정렬에 아무 영향이 없다
+# (= 기존 "최저가가 비싼 leg 부터" tie-break 로 정확히 되돌아간다). 어떤 정수를 골라도
+# 결과가 같으므로 config 로 노출할 튜너블이 아니다.
+_UNIFORM_PRIORITY = 0
+
+# [PR #314 리뷰 F-7] "무엇이 유효한 priority 인가"의 **정본**. 이 값을 소비하는 쪽(knapsack)이
+# 계약을 정하므로 여기가 정의처이고, `need_priority.py`(LLM 미검증 산출을 거르는 1차 방어)가
+# 여기서 import 한다 — 반대 방향으로 두면 이 순수 알고리즘 모듈이 `app.core.llm`/`tracing` 을
+# 아는 LLM 호출 모듈에 의존하게 돼 방향이 뒤집힌다. 밑줄 없는 이름으로 공개 export 한다.
+# 두 곳에서 각각 검증하는 것은 정의 중복이 아니라 **의도된 방어 심층화**다 — `need_priority.py`
+# 쪽은 미검증 LLM 산출을 거르고, 여기(`_normalize_priorities`)는 호출자가 누구든 성립해야 하는
+# 공개 API 경계 방어다. 검증 호출은 두 곳, 유효값 정의는 한 곳 — 다음 사람이 "중복이네" 하고
+# 한쪽을 지우지 않도록 남긴다.
+VALID_PRIORITIES = (1, 2, 3)
+
 
 @dataclass(frozen=True)
 class BudgetSet:
@@ -40,6 +56,21 @@ class _Combination:
         return sum(self.prices)
 
 
+def _normalize_priorities(priorities: Sequence[int] | None, pool_count: int) -> list[int]:
+    """priority 신호를 정규화한다. 신뢰할 수 없으면 전 leg 균일값으로 엄격 폴백한다.
+
+    ``None`` · 길이 불일치 · 원소 중 하나라도 ``int`` 가 아니거나(``bool`` 은 ``int`` 의
+    서브클래스라 명시적으로 배제) ``{1, 2, 3}`` 밖이면 전체를 버리고 균일값을 돌려준다
+    (REQ-REC-075 — 부분 수용은 어긋난 정렬을 만들 뿐이라 손해가 더 크다).
+    """
+    if priorities is None or len(priorities) != pool_count:
+        return [_UNIFORM_PRIORITY] * pool_count
+    for value in priorities:
+        if isinstance(value, bool) or not isinstance(value, int) or value not in VALID_PRIORITIES:
+            return [_UNIFORM_PRIORITY] * pool_count
+    return list(priorities)
+
+
 def build_budget_sets(
     *,
     pools: Sequence[Sequence[tuple[int, int | None]]],
@@ -47,12 +78,18 @@ def build_budget_sets(
     max_sets: int,
     max_combinations: int,
     max_items: int,
+    priorities: Sequence[int] | None = None,
 ) -> BudgetSetPlan | None:
     """예산을 지키는 top-K 세트를 만든다.
 
-    SPEC 의 ``priority`` 신호는 현재 구현돼 있지 않으므로, 예산이 부족하면 각 니즈의 최저가가
-    비싼 순서만을 결정 근거로 사용한다.
+    총액(``total_budget``)·개수(``max_items``) 상한 때문에 니즈(leg)를 제외해야 하면
+    ``priorities`` 를 최우선 근거로 삼아 priority 역순(3 선택 → 2 권장, 1 필수는 최후)으로
+    뺀다(REQ-REC-076). ``priorities`` 가 없거나(``None``) 길이·값을 신뢰할 수 없으면 전
+    leg 를 균일값으로 취급해, 기존처럼 "각 니즈의 최저가가 비싼 순서" 만을 결정 근거로
+    쓴다(REQ-REC-075 — 신호가 불확실할 때는 조용히 잘못 정렬하기보다 결정론적 폴백으로
+    되돌아간다).
     """
+    priority_by_leg = _normalize_priorities(priorities, len(pools))
     cleaned: dict[int, tuple[tuple[int, int], ...]] = {}
     unavailable: list[int] = []
     for leg, pool in enumerate(pools):
@@ -75,7 +112,11 @@ def build_budget_sets(
     while len(active) > max_items:
         remove_leg = max(
             active,
-            key=lambda leg: (min(price for _, price in cleaned[leg]), -leg),
+            key=lambda leg: (
+                priority_by_leg[leg],
+                min(price for _, price in cleaned[leg]),
+                -leg,
+            ),
         )
         active.remove(remove_leg)
         limited.append(remove_leg)
@@ -89,7 +130,11 @@ def build_budget_sets(
                 return None
             remove_leg = max(
                 active,
-                key=lambda leg: (min(price for _, price in cleaned[leg]), -leg),
+                key=lambda leg: (
+                    priority_by_leg[leg],
+                    min(price for _, price in cleaned[leg]),
+                    -leg,
+                ),
             )
             active.remove(remove_leg)
             dropped.append(remove_leg)
