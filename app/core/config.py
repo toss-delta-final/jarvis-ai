@@ -867,7 +867,25 @@ class Settings(BaseSettings):
     # 방법이 없는 반면, 노이즈("그거 담아줘")를 넣으면 델타 추출 LLM 이 걸러내고(_DELTA_SYSTEM
     # "일회성 잡담·잡음은 제외") 게이트가 한 번 더 막으며 버퍼 상한·반복 상한이 방어한다.
     # 되돌릴 수 없는 실수를 되돌릴 수 있는 실수보다 무겁게 본다(#119 전체와 같은 논리).
-    profile_buffer_excluded_intents: list[str] = ["order_status", "cart_view"]
+    #
+    # cart_remove·wishlist_remove(이슈 #116·#117)는 **버퍼에서 제외한다** — 다만
+    # order_status·cart_view 와는 제외 이유 자체가 다르다. 저 둘은 취향 신호가 **0(노이즈)**인
+    # 상태 조회지만, 삭제·찜 해제는 신호가 0 이 아니라 **부호가 반대인 신호**다. "이어폰 빼줘"에는
+    # "이어폰"이라는 상품명이 멀쩡히 들어 있어 델타 추출 LLM 이 "일회성 잡담·잡음"으로 걸러낼
+    # 근거가 오히려 약하고, 걸러지지 않으면 **사용자가 방금 치운 상품이 선호로 학습된다.** 위
+    # "실수의 비대칭"(애매하면 넣는다)은 "노이즈를 넣는 실수 vs 신호를 놓치는 실수" 구도를
+    # 전제하는데, 역신호가 새는 것은 그 저울에 올릴 문제가 아니라서 이 판단을 그대로 적용하지
+    # 않는다(방어선 세 겹은 노이즈를 걸러내도록 만들어진 것이지 반대 부호 신호를 걸러내리라는
+    # 보장이 없다).
+    # `wishlist_add` 는 **버퍼에 남긴다(목록에 넣지 않는다)** — `cart_add` 와 같은 긍정 행동
+    # 신호이고 바로 위 문단의 이유(REQ-PROF-024/044, 발화 자체가 취향을 실어 나름)가 그대로
+    # 적용된다.
+    profile_buffer_excluded_intents: list[str] = [
+        "order_status",
+        "cart_view",
+        "cart_remove",
+        "wishlist_remove",
+    ]
     # I-20 처리 중 claim lease. delta+consolidation LLM 2단계의 기본 최악시간(약 120s)보다
     # 길게 두되, 프로세스 crash 잔재가 영구 duplicate가 되지 않도록 유한하게 유지한다.
     session_end_claim_ttl_s: float = 180.0
