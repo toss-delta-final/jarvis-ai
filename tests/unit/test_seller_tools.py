@@ -475,6 +475,28 @@ async def test_sales_tool_extends_daily_fetch_by_lookback_but_reports_requested_
     assert "기간 2026-07-01~2026-07-02" in result
 
 
+async def test_sales_tool_non_daily_keeps_bucket_starting_before_from_date() -> None:
+    """[PR 리뷰] weekly/monthly 버킷 date 가 버킷 시작일이라 요청 from 보다 이르더라도
+    합계·상세에서 제외하지 않는다 — 요청 기간 필터는 lookback 확장을 한 daily 전용이다
+    (I-6 계약에 버킷 date 의미 정의가 없어 검증 안 된 전제로 정상 버킷을 버리지 않는다)."""
+    series = [
+        # ISO 주 시작(월요일)이 요청 from(수요일)보다 이른 첫 버킷 — 정상 데이터다.
+        SalesSeriesPoint(date="2026-06-29", sales=7000, order_count=7),
+        SalesSeriesPoint(date="2026-07-06", sales=5000, order_count=5),
+    ]
+    fake = RecordingSalesClient(series)
+
+    result = await _call_runtime_tool(
+        get_sales_timeseries,
+        {"from_date": "2026-07-01", "to_date": "2026-07-12", "granularity": "weekly"},
+        fake,
+    )
+
+    assert "총매출 12,000원" in result  # 첫 버킷(7,000원) 포함 — 조용한 축소 없음
+    assert "주문 12건" in result
+    assert "2026-06-29" in result  # 상세 나열에서도 제외되지 않는다
+
+
 async def test_sales_tool_non_daily_fetch_is_not_extended() -> None:
     """[#290] weekly/monthly 는 이상 감지를 안 하므로 lookback 확장도 없다 — 요청
     기간 그대로 조회한다(불필요한 집계 비용·구간 왜곡 방지)."""

@@ -141,7 +141,16 @@ async def get_sales_timeseries(
             "다른 기간으로 다시 시도하거나 없이 진행하세요."
         )
     # 요청 기간 내 포인트(ISO 날짜라 문자열 비교 = 날짜 비교). lookback 은 학습 전용.
-    window_points = [p for p in result.series if p.date >= from_date]
+    # [PR 리뷰] 이 필터는 **daily 전용**이다 — lookback 확장 조회를 한 유일한 경로라
+    # 요청 밖 구간을 걷어낼 필요가 있다. weekly/monthly 는 확장 조회가 없고, 버킷
+    # date 가 버킷 시작일(요청 from 이전일 수 있음)인지 계약(I-6)에 정의가 없어
+    # 무조건 필터하면 정상 첫 버킷이 조용히 빠져 합계가 축소될 수 있다 — 검증 안 된
+    # 전제에 기대지 않고 종전(PR 이전) 동작대로 전체 series 를 합산한다.
+    window_points = (
+        [p for p in result.series if p.date >= from_date]
+        if granularity == "daily"
+        else list(result.series)
+    )
     total_sales = sum(point.sales for point in window_points)
     total_orders = sum(point.order_count for point in window_points)
     # 상세 포함+상한(안 1, 2026-07-17 확정): 워커가 추이를 직접 서술할 수 있도록
