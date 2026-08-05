@@ -109,7 +109,7 @@ def test_price_group_min_size_default_and_lower_bound() -> None:
 def test_popular_candidate_size_default_and_positive_bound() -> None:
     """[#162] I-3 요청 개수는 config 주입이며 0 이하는 기동 fail-fast.
 
-    BE I-3 에는 **범위 검증이 없다**(api-spec §4.12, 정본 명시) — 음수·0 을 보내면 400 이
+    BE I-3 에는 **범위 검증이 없다**(api-spec §4.17, 정본 명시) — 음수·0 을 보내면 400 이
     아니라 `200 + 빈 배열`이 온다. 즉 잘못된 설정이 오류가 아니라 "인기 상품이 없음"으로
     위장되므로, 양수 보장을 AI 쪽 기동 시점에서 막는다.
 

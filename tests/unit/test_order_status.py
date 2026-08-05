@@ -591,7 +591,7 @@ async def test_stream_empty_is_not_failure(caplog: pytest.LogCaptureFixture) -> 
 
 
 def test_lane_c_documents_exact_eighteen_call_contract_and_i4_section() -> None:
-    """[#162] I-3(§4.12) 등재로 레인 (c)는 17→18건이다."""
+    """[#162] I-3(§4.17) 등재로 레인 (c)는 17→18건이다."""
     text = Path("docs/api-spec.md").read_text(encoding="utf-8")
     lane = re.search(r"^- 레인 \(c\):[^\n]*", text, re.MULTILINE)
     assert lane is not None

@@ -5878,7 +5878,7 @@ async def test_popular_failure_degrades_to_search_without_false_claim() -> None:
 
 
 async def test_popular_zero_results_is_not_a_degrade() -> None:
-    """I-3 0건은 성공이다(§4.12) — 카드 없이 텍스트로 답하고 무필터 I-1 로 떨어지지 않는다.
+    """I-3 0건은 성공이다(§4.17) — 카드 없이 텍스트로 답하고 무필터 I-1 로 떨어지지 않는다.
 
     여기서 degrade 로 처리하면 이 이슈가 없애려는 13.33MB 호출을 도로 부른다.
     """

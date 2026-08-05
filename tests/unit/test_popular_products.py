@@ -1,4 +1,4 @@
-"""I-3 인기 상품 후보 조회(`get_popular_products`) 단위 테스트 — api-spec §4.12, 이슈 #162.
+"""I-3 인기 상품 후보 조회(`get_popular_products`) 단위 테스트 — api-spec §4.17, 이슈 #162.
 
 실 네트워크 없이 httpx.MockTransport 로 AI→Spring 경계를 태운다(저장소 관례 — respx 미설치).
 검증 대상은 계약이 규정한 네 가지다:
@@ -54,7 +54,7 @@ def _mock_client(monkeypatch: pytest.MonkeyPatch, *responses) -> list[httpx.Requ
 async def test_requests_popular_path_with_size_and_internal_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """경로·쿼리·인증 레인 — `size` 는 BE 기본값에 맡기지 않고 항상 명시 전송한다(§4.12)."""
+    """경로·쿼리·인증 레인 — `size` 는 BE 기본값에 맡기지 않고 항상 명시 전송한다(§4.17)."""
     seen = _mock_client(monkeypatch, httpx.Response(200, json=_POPULAR_OK))
 
     await get_popular_products(size=30)
@@ -76,7 +76,7 @@ async def test_parses_i1_shaped_response(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 async def test_empty_data_is_success_not_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    """**0건은 성공이다** — 정본 §4.12: "빈 배열도 정상 결과다. 카드 없이 텍스트만 답하면 된다".
+    """**0건은 성공이다** — 정본 §4.17: "빈 배열도 정상 결과다. 카드 없이 텍스트만 답하면 된다".
 
     여기서 예외를 던지면 상위가 degrade 로 오인해 무필터 I-1 폴백을 태우고, 그건 이 이슈가
     없애려는 바로 그 13.33MB 호출이다.

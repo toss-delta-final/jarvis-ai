@@ -657,7 +657,7 @@ async def stream_recommendation(
         if trace := current_request_trace():
             trace.mark_degraded("profile_ranking_fallback")
 
-    # [#162] 조건이 하나도 없는 턴은 후보 소스를 I-3(인기 상품, §4.12)로 바꾼다.
+    # [#162] 조건이 하나도 없는 턴은 후보 소스를 I-3(인기 상품, §4.17)로 바꾼다.
     popular_degraded = False
 
     async def _run_candidate_source():
@@ -665,7 +665,7 @@ async def stream_recommendation(
 
         조건 없는 턴에 종전 경로를 그대로 태우면 파라미터 0개의 I-1 이 나가 매칭 전량
         (실측 7,245건·13.33MB)을 받는데, 그 상위는 사용자 의도와 무관하다. I-1 정본이
-        "정형조건 없는 요청 차단은 LLM 단 책임"으로 규정한 자리다(§4.6·§4.12).
+        "정형조건 없는 요청 차단은 LLM 단 책임"으로 규정한 자리다(§4.6·§4.17).
 
         leg 맵은 빈 dict 다 — 인기 목록은 카테고리 fan-out 이 아니라 단일 목록이다.
         """
@@ -684,7 +684,7 @@ async def stream_recommendation(
             if decision.total_budget is not None:
                 affordable = within_budget(found.products, decision.total_budget)
                 found = ProductSearchResult(products=affordable, total_count=len(affordable))
-            # **0건도 성공이다**(§4.12) — 빈 배열이면 하류 zero-result 경로가 카드 없이 답한다.
+            # **0건도 성공이다**(§4.17) — 빈 배열이면 하류 zero-result 경로가 카드 없이 답한다.
             # 여기서 degrade 로 처리하면 이 이슈가 없애려는 무필터 I-1 을 도로 부른다.
             return (found, {})
         popular_degraded = True
