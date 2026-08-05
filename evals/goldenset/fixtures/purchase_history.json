@@ -1,4 +1,31 @@
 {
+  "persona-bag-dev-01": {
+    "orders": [
+      {
+        "items": [
+          {
+            "categoryName": "크로스백",
+            "optionName": null,
+            "orderItemId": 1430001,
+            "price": 22500,
+            "productId": 2304324372,
+            "productName": "미나티 여행가방 보스턴백 여행용 가방 여성 크로스백",
+            "quantity": 1,
+            "status": "DELIVERED"
+          }
+        ],
+        "itemsTotal": 22500,
+        "orderId": 14300,
+        "orderedAt": "2026-07-20T10:00:00+09:00",
+        "shippingFee": 0,
+        "status": "DELIVERED",
+        "totalAmount": 22500
+      }
+    ]
+  },
+  "persona-belt-dev-01": {
+    "orders": []
+  },
   "persona-brand-dev-01": {
     "orders": [
       {
@@ -46,6 +73,9 @@
         "totalAmount": 7200
       }
     ]
+  },
+  "persona-carrier-dev-01": {
+    "orders": []
   },
   "persona-category-dev-01": {
     "orders": [
@@ -95,10 +125,43 @@
       }
     ]
   },
+  "persona-cleanse-dev-01": {
+    "orders": []
+  },
   "persona-cold-dev-01": {
     "orders": []
   },
   "persona-cold-dev-02": {
+    "orders": []
+  },
+  "persona-dress-dev-01": {
+    "orders": []
+  },
+  "persona-dress-hold-01": {
+    "orders": [
+      {
+        "items": [
+          {
+            "categoryName": "가디건",
+            "optionName": null,
+            "orderItemId": 1430002,
+            "price": 80910,
+            "productId": 9205164030,
+            "productName": "메종키츠네 볼드 폭스헤드 여성 가디건 MW00508KT1036",
+            "quantity": 1,
+            "status": "DELIVERED"
+          }
+        ],
+        "itemsTotal": 80910,
+        "orderId": 14301,
+        "orderedAt": "2026-07-23T10:00:00+09:00",
+        "shippingFee": 0,
+        "status": "DELIVERED",
+        "totalAmount": 80910
+      }
+    ]
+  },
+  "persona-dress-hold-02": {
     "orders": []
   },
   "persona-earbuds-dev-01": {
@@ -146,6 +209,39 @@
         "shippingFee": 0,
         "status": "DELIVERED",
         "totalAmount": 337410
+      }
+    ]
+  },
+  "persona-eyemake-dev-01": {
+    "orders": []
+  },
+  "persona-fail-hold-01": {
+    "orders": []
+  },
+  "persona-fail-hold-02": {
+    "orders": []
+  },
+  "persona-handbag-hold-01": {
+    "orders": [
+      {
+        "items": [
+          {
+            "categoryName": "숄더백",
+            "optionName": null,
+            "orderItemId": 1430003,
+            "price": 29250,
+            "productId": 5969656826,
+            "productName": "여성 숄더백 핸드백 명품 미니백 쇼퍼백 데일리백 캐주얼 체인백 크로스백 토트백 클러치백 기저귀가방",
+            "quantity": 1,
+            "status": "DELIVERED"
+          }
+        ],
+        "itemsTotal": 29250,
+        "orderId": 14302,
+        "orderedAt": "2026-07-24T10:00:00+09:00",
+        "shippingFee": 0,
+        "status": "DELIVERED",
+        "totalAmount": 29250
       }
     ]
   },
@@ -197,6 +293,18 @@
       }
     ]
   },
+  "persona-jeans-dev-01": {
+    "orders": []
+  },
+  "persona-knit-dev-01": {
+    "orders": []
+  },
+  "persona-knit-dev-02": {
+    "orders": []
+  },
+  "persona-knit-hold-01": {
+    "orders": []
+  },
   "persona-lip-hold-01": {
     "orders": [
       {
@@ -218,6 +326,273 @@
         "shippingFee": 0,
         "status": "DELIVERED",
         "totalAmount": 17100
+      }
+    ]
+  },
+  "persona-lotion-hold-01": {
+    "orders": [
+      {
+        "items": [
+          {
+            "categoryName": "스킨로션",
+            "optionName": null,
+            "orderItemId": 1430004,
+            "price": 70690,
+            "productId": 6531469470,
+            "productName": "헤라옴므 2종세트 에센스인 기초 스킨로션 올인원 에멀젼 남자친구 선물 쇼핑백",
+            "quantity": 1,
+            "status": "DELIVERED"
+          }
+        ],
+        "itemsTotal": 70690,
+        "orderId": 14303,
+        "orderedAt": "2026-07-25T10:00:00+09:00",
+        "shippingFee": 0,
+        "status": "DELIVERED",
+        "totalAmount": 70690
+      }
+    ]
+  },
+  "persona-muffler-hold-01": {
+    "orders": [
+      {
+        "items": [
+          {
+            "categoryName": "머플러",
+            "optionName": null,
+            "orderItemId": 1430005,
+            "price": 9900,
+            "productId": 8817095200,
+            "productName": "허글렌 소프트체크 머플러 부드럽고 따뜻한 데일리머플러 겨울선물",
+            "quantity": 1,
+            "status": "DELIVERED"
+          }
+        ],
+        "itemsTotal": 9900,
+        "orderId": 14304,
+        "orderedAt": "2026-07-27T10:00:00+09:00",
+        "shippingFee": 0,
+        "status": "DELIVERED",
+        "totalAmount": 9900
+      }
+    ]
+  },
+  "persona-necklace-dev-01": {
+    "orders": []
+  },
+  "persona-nuts-hold-01": {
+    "orders": []
+  },
+  "persona-parent-dev-01": {
+    "orders": []
+  },
+  "persona-perfume-dev-01": {
+    "orders": [
+      {
+        "items": [
+          {
+            "categoryName": "향수",
+            "optionName": null,
+            "orderItemId": 1430006,
+            "price": 18800,
+            "productId": 2554757460,
+            "productName": "더페이스샵 소울 시크릿 블라썸 30ml 향수",
+            "quantity": 1,
+            "status": "DELIVERED"
+          }
+        ],
+        "itemsTotal": 18800,
+        "orderId": 14305,
+        "orderedAt": "2026-07-18T10:00:00+09:00",
+        "shippingFee": 0,
+        "status": "DELIVERED",
+        "totalAmount": 18800
+      }
+    ]
+  },
+  "persona-perfume-dev-02": {
+    "orders": [
+      {
+        "items": [
+          {
+            "categoryName": "향수",
+            "optionName": null,
+            "orderItemId": 1430007,
+            "price": 29500,
+            "productId": 7834464863,
+            "productName": "다비도프 쿨워터 맨 EDT 125ml",
+            "quantity": 1,
+            "status": "DELIVERED"
+          }
+        ],
+        "itemsTotal": 29500,
+        "orderId": 14306,
+        "orderedAt": "2026-07-11T10:00:00+09:00",
+        "shippingFee": 0,
+        "status": "DELIVERED",
+        "totalAmount": 29500
+      }
+    ]
+  },
+  "persona-recall-dev-01": {
+    "orders": []
+  },
+  "persona-recall-dev-02": {
+    "orders": []
+  },
+  "persona-recall-dev-03": {
+    "orders": []
+  },
+  "persona-serum-dev-01": {
+    "orders": [
+      {
+        "items": [
+          {
+            "categoryName": "에센스/세럼",
+            "optionName": null,
+            "orderItemId": 1430008,
+            "price": 35000,
+            "productId": 86288970,
+            "productName": "안나홀츠 주름개선 모공 탄력 바이오 셀 에센스 세럼 300ml",
+            "quantity": 1,
+            "status": "DELIVERED"
+          }
+        ],
+        "itemsTotal": 35000,
+        "orderId": 14307,
+        "orderedAt": "2026-07-21T10:00:00+09:00",
+        "shippingFee": 0,
+        "status": "DELIVERED",
+        "totalAmount": 35000
+      }
+    ]
+  },
+  "persona-shirt-dev-01": {
+    "orders": [
+      {
+        "items": [
+          {
+            "categoryName": "셔츠/남방",
+            "optionName": null,
+            "orderItemId": 1430009,
+            "price": 22910,
+            "productId": 2844129236,
+            "productName": "[레노마](센텀시티점)시원한 여름 반소매/긴소매  링클프리 스판 와이셔츠 남성셔츠  모음전",
+            "quantity": 1,
+            "status": "DELIVERED"
+          }
+        ],
+        "itemsTotal": 22910,
+        "orderId": 14308,
+        "orderedAt": "2026-07-19T10:00:00+09:00",
+        "shippingFee": 0,
+        "status": "DELIVERED",
+        "totalAmount": 22910
+      }
+    ]
+  },
+  "persona-shoes-hold-01": {
+    "orders": [
+      {
+        "items": [
+          {
+            "categoryName": "워킹화",
+            "optionName": null,
+            "orderItemId": 1430010,
+            "price": 77800,
+            "productId": 9189650509,
+            "productName": "네파 149,000원 남여공용 브레보 워킹화 7MG7615",
+            "quantity": 1,
+            "status": "DELIVERED"
+          }
+        ],
+        "itemsTotal": 77800,
+        "orderId": 14309,
+        "orderedAt": "2026-07-26T10:00:00+09:00",
+        "shippingFee": 0,
+        "status": "DELIVERED",
+        "totalAmount": 77800
+      }
+    ]
+  },
+  "persona-skincare-dev-01": {
+    "orders": [
+      {
+        "items": [
+          {
+            "categoryName": "스킨/토너",
+            "optionName": null,
+            "orderItemId": 1430011,
+            "price": 25000,
+            "productId": 61481555,
+            "productName": "안나홀츠 대용량 지성 문제성 피부 피지잡는 스킨 클리어 토너 300ml",
+            "quantity": 1,
+            "status": "DELIVERED"
+          }
+        ],
+        "itemsTotal": 25000,
+        "orderId": 14310,
+        "orderedAt": "2026-07-10T10:00:00+09:00",
+        "shippingFee": 0,
+        "status": "DELIVERED",
+        "totalAmount": 25000
+      }
+    ]
+  },
+  "persona-skincare-dev-02": {
+    "orders": [
+      {
+        "items": [
+          {
+            "categoryName": "스킨/토너",
+            "optionName": null,
+            "orderItemId": 1430012,
+            "price": 19300,
+            "productId": 9090699634,
+            "productName": "스킨푸드 캐롯 카로틴 수딩 촉촉 토너 기획세트(토너+미스트)",
+            "quantity": 1,
+            "status": "DELIVERED"
+          }
+        ],
+        "itemsTotal": 19300,
+        "orderId": 14311,
+        "orderedAt": "2026-07-12T10:00:00+09:00",
+        "shippingFee": 0,
+        "status": "DELIVERED",
+        "totalAmount": 19300
+      }
+    ]
+  },
+  "persona-travel-dev-01": {
+    "orders": []
+  },
+  "persona-under-dev-01": {
+    "orders": []
+  },
+  "persona-wallet-dev-01": {
+    "orders": []
+  },
+  "persona-watch-dev-01": {
+    "orders": [
+      {
+        "items": [
+          {
+            "categoryName": "남성시계",
+            "optionName": null,
+            "orderItemId": 1430013,
+            "price": 129600,
+            "productId": 2135033708,
+            "productName": "G-9000-1DR",
+            "quantity": 1,
+            "status": "DELIVERED"
+          }
+        ],
+        "itemsTotal": 129600,
+        "orderId": 14312,
+        "orderedAt": "2026-07-22T10:00:00+09:00",
+        "shippingFee": 0,
+        "status": "DELIVERED",
+        "totalAmount": 129600
       }
     ]
   }

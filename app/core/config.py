@@ -534,6 +534,29 @@ class Settings(BaseSettings):
         '"무선 이어폰"처럼 어떤 상품을 찾으시는지 알려주시면 더 잘 추천해드릴 수 있어요.'
     )
 
+    # ── 과소지정 발화 되묻기 (#336, `docs/specs/SPEC-UNDERSPECIFIED-336.md`) ──
+    # 마스터 스위치 — off 면 `underspecified.is_underspecified_turn` 이 항상 False 다(AC: 한
+    # 번에 전체 롤백). 기본 off — 이 기능은 no_condition(#162) 위에 얹는 확장이라, 검증 전
+    # 기본 배포에 영향을 주지 않는다.
+    underspecified_reask_enabled: bool = False
+    # 제약(가격)만 있는 턴의 인기 상품 고지 — no_condition_notice_popular 와 같은 톤이되, 실제로
+    # 가격 필터를 통과한 후보라는 사실만 말한다(거짓 주장 금지, #132). no_condition 턴에는 내지
+    # 않는다(그 턴은 no_condition_notice_* 가 이미 담당 — 중복 고지 방지).
+    underspecified_notice: str = "조건에 맞는 인기 상품으로 골라봤어요."
+    # generic 되물음 — 노출 후보에서 예시를 뽑을 수 없을 때(취향 랭킹 경로·0건·예시 cap=0) 쓴다.
+    # [리뷰 F3] 기동 검증 없음 — 이 리포의 고지 config 들은 "빈 값 = 그 고지만 끄는 스위치"
+    # 관례다(`dedup_skipped_notice` 와 동일 판단). **빈 값(`_strip_unsafe` 정제 후 포함)이면
+    # 되물음 token 만 꺼진다** — 후보 소스 스왑(I-3 + 가격 필터)·자동완화 억제·조건 칩 등 다른
+    # 동작은 그대로 유지된다. 문구 하나로 기동을 막을 만큼 이 필드가 계약을 진 것은 아니다.
+    underspecified_reask_question: str = "어떤 상품을 찾으시는지 조금 더 알려주시겠어요?"
+    # 노출 후보 기반 예시 되물음 — `{categories}` 자리표시자 필수(없거나 포맷 실패 시 위 generic
+    # 으로 폴백, `underspecified.build_reask_question` 참조).
+    underspecified_reask_question_examples: str = (
+        "{categories} 중에 찾으시는 게 있을까요? 아니면 다른 상품을 알려주셔도 좋아요."
+    )
+    # 예시로 뽑을 카테고리 최대 개수 — 0 이면 예시 없이 항상 generic 질문.
+    underspecified_reask_examples_max: int = Field(default=3, ge=0)
+
     # ── 홈 추천 랭킹 (I-22, api-spec §3.7 · 이슈 #148) ──
     # 질의 벡터 = 시그널 상품 임베딩의 가중 평균. cart 는 "담기까지 갔다"는 강한 신호라 조회보다 높게,
     # 조회는 최신일수록 높게(recency decay 를 인덱스 거듭제곱으로 적용) — §3.7 signals 표.
@@ -687,6 +710,13 @@ class Settings(BaseSettings):
     # 확장 leaf 의 중분류(leaf 이름의 " > " 앞부분, 중복 제거) 목록을 끼울 자리 하나({items}).
     # 문구는 LLM 이 짓지 않는다 — DB 값 그대로 조립해 존재하지 않는 카테고리를 말하지 않는다(#59 재발 방지).
     category_expand_notice: str = "{items} 에서 관련 상품을 찾아봤어요."
+    # [#343] 확장 턴에서 검색은 히트를 냈는데 `_post_filter`(최근구매 exact 제외 + 소모품 카테고리
+    # 억제)가 전량을 지워 candidates 가 0이 되는 갭을 무필터 재검색으로 구제한다. 결함을 고치는
+    # 플래그는 기본 on(팀 방침) — 하방이 유계(추가 왕복은 상호배타 가드로 턴당 최대 1회분)라
+    # off 로 안전하게 시작할 근거가 없다. "재검색 상한" 수치 config 는 따로 두지 않는다 — 재검색은
+    # 결정론적(같은 쿼리 = 같은 결과)이라 2회 이상 시도가 무의미하고, 턴당 무필터 재검색 1회는
+    # `category_expand_notice_suppressed` 상호배타 가드로 구조적으로 강제된다.
+    category_expand_post_suppress_fallback_enabled: bool = True
 
     # ── Case 3 니즈별 그룹 출력 (이슈 #168) ──
     # split 턴의 니즈당 rerank 입력 후보 quota. 실측(실 카탈로그 leaf 폭 9~17): merge_cap=30 은
@@ -1204,9 +1234,9 @@ class Settings(BaseSettings):
     benchmark_request_timeout_s: float = 120.0
 
     # ── 구매자 골든셋(#142, evals/goldenset) ──
-    # 초기 데이터셋은 30~50건으로 작게 시작해 사람이 전수 검수할 수 있게 한다.
+    # v2(#333)는 서빙 후보 상한(30)까지 후보를 채우는 슬라이스 쿼터 확장을 담아 160으로 올린다.
     goldenset_min_cases: int = 30
-    goldenset_max_cases: int = 50
+    goldenset_max_cases: int = 160
     # 문자 3-gram Jaccard가 이 값을 넘는 split 간 query는 leakage로 본다.
     goldenset_near_dup_jaccard_max: float = 0.6
     # split 간 정답 집합이 절반보다 많이 겹치면 동일 시나리오 누출로 본다.
@@ -1215,6 +1245,15 @@ class Settings(BaseSettings):
     goldenset_snapshot_per_query_max: int = 30
     # 43건 중 12건을 봉인하는 v1 목표 비중이며 감사 보고에 사용한다.
     goldenset_holdout_ratio: float = 0.3
+    # #333: 순위 평가 대상 케이스의 후보 하한. nDCG@10 컷오프가 구조적으로 발동하려면
+    # 최소 이 개수는 있어야 한다(narrow-domain 케이스는 notes 접두 문구로 예외).
+    goldenset_min_ranking_candidates: int = 20
+    # #333: 후보 깊이 목표 — 서빙 상한(30)과 동일하게 맞춘다.
+    goldenset_target_candidates: int = 30
+    # #333 리뷰 F-5-1(#329 권고 3): 순위 평가 대상 케이스의 등급≥1 후보 비율 상한. v1 평균이
+    # 0.389로 이 값을 넘어 하드 네거티브가 사실상 없었다 — 초과 케이스는 notes 접두 문구
+    # relevant-ratio-exempt: 로만 예외를 허용한다.
+    goldenset_max_relevant_ratio: float = 0.25
 
     # ── 구매자 추천 평가 지표(#143, evals/metrics) ──
     eval_buyer_k_list: tuple[int, ...] = (5, 10, 20)
@@ -1355,6 +1394,10 @@ class Settings(BaseSettings):
             raise ValueError("골든셋 질의별 스냅샷 상한은 0보다 커야 합니다")
         if not 0 < self.goldenset_holdout_ratio < 1:
             raise ValueError("골든셋 holdout 비율은 0과 1 사이여야 합니다")
+        if not 0 < self.goldenset_min_ranking_candidates <= self.goldenset_target_candidates:
+            raise ValueError("골든셋 순위 평가 후보 하한은 0보다 크고 목표 후보 수 이하여야 합니다")
+        if not 0 < self.goldenset_max_relevant_ratio < 1:
+            raise ValueError("골든셋 등급≥1 후보 비율 상한은 0과 1 사이여야 합니다")
         return self
 
     @model_validator(mode="after")

@@ -1,0 +1,91 @@
+[
+  {
+    "caseId": "buy-under-0001",
+    "utterance": "5만원 이내로 아무거나 세트로 추천해줘",
+    "decomposeFixture": {
+      "semantic_query_is_fallback": true,
+      "buy_all": true,
+      "total_budget": 50000
+    },
+    "expected": { "reask": true },
+    "testType": "MFT",
+    "note": "이슈 #336 의 셀 — 총액 예산 + 전부구매, what-축 미지정. total_budget·buy_all 은 제약(비차단)."
+  },
+  {
+    "caseId": "buy-under-0002",
+    "utterance": "아무거나 추천해줘",
+    "decomposeFixture": {
+      "semantic_query_is_fallback": true
+    },
+    "expected": { "reask": true },
+    "testType": "MFT",
+    "note": "무조건(#162 no_condition 셀) — 축이 전부 비면 트리거된다."
+  },
+  {
+    "caseId": "buy-under-0003",
+    "utterance": "5만원 이하로 아무거나 추천해줘",
+    "decomposeFixture": {
+      "semantic_query_is_fallback": true,
+      "filters": { "price_max": 50000 }
+    },
+    "expected": { "reask": true },
+    "testType": "MFT",
+    "note": "제약-축(price_max)만 있는 턴 — no_condition 은 아니지만 underspecified 는 트리거된다."
+  },
+  {
+    "caseId": "buy-under-0004",
+    "utterance": "이어폰 추천해줘",
+    "decomposeFixture": {
+      "semantic_query_is_fallback": false,
+      "category_queries": [{ "raw_category": "이어폰", "query": "이어폰" }]
+    },
+    "expected": { "reask": false },
+    "testType": "INV",
+    "note": "매핑 전 원시 카테고리 신호(category_queries)도 지목이다 — 매핑 성공 여부와 무관하게 차단."
+  },
+  {
+    "caseId": "buy-under-0005",
+    "utterance": "삼성 제품 아무거나",
+    "decomposeFixture": {
+      "semantic_query_is_fallback": true,
+      "filters": { "brand": ["삼성"] }
+    },
+    "expected": { "reask": false },
+    "testType": "INV",
+    "note": "what-축(brand)이 있으면 지목이다."
+  },
+  {
+    "caseId": "buy-under-0006",
+    "utterance": "그중에 5만원 이하",
+    "decomposeFixture": {
+      "semantic_query_is_fallback": true
+    },
+    "priorExists": true,
+    "expected": { "reask": false },
+    "testType": "INV",
+    "note": "멀티턴(prior 존재) — 첫 턴 한정이라 트리거하지 않는다(#84 소관 외 3의도 판정)."
+  },
+  {
+    "caseId": "buy-under-0007",
+    "utterance": "평점 4 이상 아무거나",
+    "decomposeFixture": {
+      "semantic_query_is_fallback": true,
+      "filters": { "rating_min": 4.0 }
+    },
+    "expected": { "reask": false },
+    "testType": "INV",
+    "note": "보수 경계 — rating_min 은 차단-축이다(I-3 인기 후보가 평점 사후필터를 타지 않아서, SPEC §5 참조)."
+  },
+  {
+    "caseId": "buy-under-0008",
+    "utterance": "5만원 이하로 아무거나 추천해줘",
+    "decomposeFixture": {
+      "semantic_query_is_fallback": true,
+      "filters": { "price_max": 50000 }
+    },
+    "flagEnabled": false,
+    "expected": { "reask": false },
+    "testType": "INV",
+    "note": "flag off 롤백 경로 — buy-under-0003 과 같은 발화·필터라도 마스터 스위치가 꺼지면 트리거되지 않는다."
+  }
+]
