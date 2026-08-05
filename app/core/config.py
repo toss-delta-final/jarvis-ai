@@ -98,6 +98,20 @@ class Settings(BaseSettings):
     langsmith_project: str = "jarvis-ai-local"
     langsmith_tracing_sampling_rate: float = Field(default=1.0, ge=0.0, le=1.0)
     langsmith_export_timeout_s: float = Field(default=0.5, gt=0.0, le=5.0)
+    # [#326] 콘텐츠 추적 모드 — 켜면 발화·LLM prompt/응답 원문·Spring 페이로드가 트레이스에
+    # 실린다(기본 off = #141 비유출 동작 유지). **실사용자 오픈 전 디버깅 구간 전용** —
+    # 규약·kill switch 절차는 DEPLOY.md §8. per-value 절단 상한은 max_chars.
+    langsmith_trace_content: bool = False
+    langsmith_trace_content_max_chars: int = Field(default=20000, gt=0)
+
+    @field_validator("langsmith_trace_content", mode="before")
+    @classmethod
+    def _empty_trace_content_is_off(cls, value: object) -> object:
+        # 배포 워크플로가 미설정 vars 를 빈 문자열로 기록한다 — bool 파싱 실패로 기동이 죽지
+        # 않게 빈 값은 기본(off)으로 해석한다(2026-08-05 APP_ENVIRONMENT 빈 값 부팅 실패 교훈).
+        if isinstance(value, str) and value.strip() == "":
+            return False
+        return value
 
     # ── LLM provider 토글 (이슈 #40) ──
     # "openai"(기본) | "anthropic". 호출부는 tier("fast"|"smart")로 부르고 provider 가 모델을 해석한다.

@@ -798,3 +798,104 @@ async def test_real_export_payload_is_recognized_as_opaque() -> None:
         metadata = payload["extra"]["metadata"]
         for key in ("requestId", "sessionFp", "threadFp"):
             assert _is_opaque_identifier(key, metadata[key], metadata=True), (key, metadata[key])
+
+
+# ── [#326] 콘텐츠 추적 모드 ─────────────────────────────────────────────────────
+
+
+async def test_content_mode_off_keeps_inputs_outputs_empty_even_if_record_called() -> None:
+    """기본(off)에서는 기록 API 가 no-op — 기존 #141 비유출 동작을 문자 그대로 고정한다."""
+    exporter = FakeTraceExporter()
+    factory = TraceFactory(exporter=exporter, enabled=True, sampling_rate=1.0)
+    trace = _start_trace(factory)
+
+    assert trace.captures_content is False
+    trace.record_request_content(input_text=PRIVACY_CANARIES["buyer_message"])
+    with bind_request_trace(trace):
+        with trace_span("llm.decompose", "llm") as node:
+            trace.record_llm_content(
+                system="sys", user=PRIVACY_CANARIES["buyer_message"], output="out"
+            )
+            assert node is not None
+            trace.record_span_content(node, inputs={"url": "http://spring/internal"})
+    await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+
+    payloads = _build_export_payloads(exporter.exported[0], project_name=None)
+    assert all(p["inputs"] == {} and p["outputs"] == {} for p in payloads)
+    _assert_canaries_absent(payloads)
+
+
+async def test_content_mode_records_root_llm_and_span_content_with_clipping() -> None:
+    exporter = FakeTraceExporter()
+    factory = TraceFactory(
+        exporter=exporter,
+        enabled=True,
+        sampling_rate=1.0,
+        payload_validator=lambda p: validate_export_payload(p, allow_content=True),
+        capture_content=True,
+        content_max_chars=10,
+    )
+    trace = _start_trace(factory)
+
+    assert trace.captures_content is True
+    trace.record_request_content(input_text="파란 바지 추천해줘 예산은 오만원")
+    with bind_request_trace(trace):
+        with trace_span("spring.search_products", "tool") as spring_node:
+            assert spring_node is not None
+            trace.record_span_content(
+                spring_node,
+                inputs={"url": "http://spring/internal/products/search?keyword=바지"},
+                outputs={"responseBody": '{"rows": []}'},
+            )
+        with trace_span("llm.rerank", "llm"):
+            trace.record_llm_content(system="시스템 프롬프트", user="유저 프롬프트", output="응답")
+    await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+
+    nodes = exporter.exported[0]
+    by_name = {node.name: node for node in nodes}
+    # 루트 발화 — max_chars=10 절단 표식 확인.
+    root_message = by_name["buyer_chat_turn"].inputs["message"]
+    assert root_message.startswith("파란 바지 추천해줘")
+    assert "truncated" in root_message
+    # LLM span 원문.
+    assert by_name["llm.rerank"].inputs == {"system": "시스템 프롬프트", "user": "유저 프롬프트"}
+    assert by_name["llm.rerank"].outputs == {"content": "응답"}
+    # Spring span 페이로드 (절단 적용).
+    assert "url" in by_name["spring.search_products"].inputs
+    assert "responseBody" in by_name["spring.search_products"].outputs
+    # export payload 에 실리고, allow_content 검증을 통과한다.
+    payloads = _build_export_payloads(nodes, project_name=None)
+    validate_export_payload(payloads, allow_content=True)
+    assert any(p["inputs"] for p in payloads)
+
+
+def test_content_payload_is_rejected_without_allow_content() -> None:
+    """allow_content 없이 콘텐츠가 실린 payload 는 기존 fail-closed 검증이 그대로 막는다."""
+    payload = [{"inputs": {"message": "원문"}, "outputs": {}, "extra": {"metadata": {}}}]
+    with pytest.raises(UnsafeTelemetryError):
+        validate_export_payload(payload)
+
+
+def test_allow_content_keeps_metadata_allowlist_enforced() -> None:
+    payload = [
+        {
+            "inputs": {"message": PRIVACY_CANARIES["buyer_message"]},
+            "outputs": {},
+            "extra": {"metadata": {"rawCustomerField": "leak"}},
+        }
+    ]
+    with pytest.raises(UnsafeTelemetryError):
+        validate_export_payload(payload, allow_content=True)
+
+
+def test_allow_content_still_rejects_canary_outside_content_fields() -> None:
+    payload = [
+        {
+            "inputs": {},
+            "outputs": {},
+            "name": PRIVACY_CANARIES["customer_email"],
+            "extra": {"metadata": {}},
+        }
+    ]
+    with pytest.raises(UnsafeTelemetryError):
+        validate_export_payload(payload, allow_content=True)

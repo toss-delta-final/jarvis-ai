@@ -1007,6 +1007,8 @@ async def seller_chat(
         lane="seller",
         environment=get_settings().app_environment,
     )
+    # [#326] 콘텐츠 추적 모드에서만 발화 원문이 루트 span 에 실린다(off 면 no-op).
+    trace.record_request_content(input_text=request.message)
     try:
         store = await get_conversation_store()
     except asyncio.CancelledError:
