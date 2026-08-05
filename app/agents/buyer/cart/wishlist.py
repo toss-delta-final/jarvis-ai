@@ -1,9 +1,9 @@
-"""찜 추가·해제 서브그래프 (이슈 #117, 🔶 I-26/I-27 초안 — BE 협의 전, `wishlist_enabled` on 경로).
+"""찜 추가·해제 서브그래프 (이슈 #117, I-26/I-27 — 확정 2026-08-05, Spring 구현 진행 중).
 
-`stream_cart_add` 가 `classify_cart_utterance` 로 "wishlist_add"/"wishlist_remove" 로 판정하고
-플래그가 켜져 있을 때만 위임받는다(패킷 §5.4). 게스트 찜은 없다(I-26) — 회원이 아니면 internal
-호출 없이 degrade한다. 이벤트에 productId 를 싣지 않는다(경로 B) — `remove.py` 와 구조·어조를
-맞춘 형제 모듈이다.
+`stream_cart_add` 가 `classify_cart_utterance` 로 "wishlist_add"/"wishlist_remove" 로 판정하면
+항상 위임받는다(패킷 §5.4, 라운드 23 — 온/오프를 가리던 설정 필드 제거). 게스트 찜은 없다(I-26)
+— 회원이 아니면 internal 호출 없이 degrade한다. 이벤트에 productId 를 싣지 않는다(확정, 경로 B)
+— `remove.py` 와 구조·어조를 맞춘 형제 모듈이다.
 """
 
 from __future__ import annotations
@@ -173,8 +173,8 @@ async def stream_wishlist_add(
     add_wishlist_fn=None,
     observer=None,
 ) -> AsyncIterator[str]:
-    """찜 추가 서브그래프(I-26, 🔶 초안). `action`(WISHLIST_ADDED/WISHLIST_ADD_FAILED) 또는
-    되물음 token 을 내고 `done` 으로 끝난다."""
+    """찜 추가 서브그래프(I-26, 확정 2026-08-05). `action`(WISHLIST_ADDED/WISHLIST_ADD_FAILED)
+    또는 되물음 token 을 내고 `done` 으로 끝난다."""
     add_wishlist_fn = add_wishlist_fn or spring_client.add_wishlist
 
     user_id, _guest_id = cart_identity(identity)
@@ -205,7 +205,7 @@ async def stream_wishlist_add(
     try:
         await add_wishlist_fn(AddWishlistRequest(user_id=user_id, product_id=product_id))
     except WishlistDuplicate:
-        # 🔶 I-26 협의 대상: 409 를 성공 안내로 종료하는 것은 정본 권고안 — 사용자가 보기엔
+        # [확정 2026-08-05] 409 를 성공 안내로 종료하는 것은 정본 권고안 — 사용자가 보기엔
         # "찜하려던 게 이미 찜해 있다"는 실패가 아니라 원하는 상태에 도달한 것이다.
         yield sse(
             "action",
@@ -252,7 +252,7 @@ async def stream_wishlist_remove(
     remove_wishlist_fn=None,
     observer=None,
 ) -> AsyncIterator[str]:
-    """찜 해제 서브그래프(I-27, 🔶 초안). 회원 아니면 `stream_wishlist_add` 와 같은 degrade."""
+    """찜 해제 서브그래프(I-27, 확정 2026-08-05). 회원 아니면 `stream_wishlist_add` 와 같은 degrade."""
     get_wishlist_fn = get_wishlist_fn or spring_client.get_wishlist
     remove_wishlist_fn = remove_wishlist_fn or spring_client.remove_wishlist
 
@@ -299,7 +299,7 @@ async def stream_wishlist_remove(
     try:
         await remove_wishlist_fn(target.product_id, user_id=user_id)
     except WishlistNotFound:
-        # 🔶 I-27 협의 대상: 404 를 성공 안내로 종료하는 것은 정본 권고안.
+        # [확정 2026-08-05] 404 를 성공 안내로 종료하는 것은 정본 권고안.
         yield sse(
             "action",
             ActionData(

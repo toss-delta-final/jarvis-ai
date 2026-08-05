@@ -182,16 +182,6 @@ _SCREEN_POSITION_REASONS = frozenset(
     }
 )
 
-# 찜 오담기 방어(이슈 #117, 패킷 §4) — wishlist_enabled=False 인 동안 찜 판정이 나오면 이 문구로
-# degrade 한다. 실패 action(WISHLIST_ADD_FAILED 등)이 아니라 token 인 이유: 이건 오류가 아니라
-# "아직 지원 안 하는 기능"에 대한 안내라 되물음(옵션 되물음 등)과 같은 취급이 맞다 — 사용자가
-# 다시 말할 대상도, 재시도할 오류도 아니다.
-# intent 별로 문구를 가른다(2차 리뷰 N-3) — 찜 추가 요청에는 담기를 대안으로 제안해도 자연스럽지만
-# ("찜 대신 담아 드릴까요?"), 찜 해제 요청에 같은 제안을 하면 빼 달라는 사용자에게 담아 주겠다고
-# 답하는 꼴이 된다. 해제 쪽은 대안 제안 없이 상태만 안내한다.
-_WISHLIST_ADD_DISABLED_NOTICE = "찜 기능은 아직 준비 중이에요. 장바구니에 담아 드릴까요?"
-_WISHLIST_REMOVE_DISABLED_NOTICE = "찜 기능은 아직 준비 중이에요."
-
 
 def _unresolved_notice(screen_reason: str | None) -> str:
     """되물음 문구를 화면 해소 사유로 가른다. 사유가 없으면 오늘 문구 그대로."""
@@ -233,28 +223,16 @@ async def stream_cart_add(
     "덜 친절한 문구"일 뿐이고(되물음 자체는 정상 발생), #118 의 세 문구는 실 LLM 프로브(N=8)와
     여러 라운드 리뷰로 고른 것이라 이 레인에 측정 없이 같은 급의 찜·삭제용 화면 문구를 지어내
     끼워 넣지 않는다. 화면 맥락(#118)과 삭제·찜(#116·#117)의 통합은 이 레인 범위 밖(핸드오버의
-    찜 해소는 "추천 목록·문맥에서 productId 해소"까지)이며, 플래그가 꺼진 지금은 사용자에게
-    도달하지도 않는다 — 플래그를 켜기 전에 다시 볼 항목이다.
+    찜 해소는 "추천 목록·문맥에서 productId 해소"까지)이며, **[라운드 23]** 플래그 제거로 이제
+    이 흐름은 항상 사용자에게 도달한다 — 통합은 여전히 후속 항목이다.
     """
-    # 찜 오담기 방어(이슈 #117, 패킷 §4) — 신원 도출·pending 조회보다 앞에서 판별한다. LLM 을
-    # 새로 부르지 않는 결정론적 판정이라 순서가 앞이어도 비용이 없고, wishlist_enabled=False 인
-    # 동안은 이 턴이 어차피 담기로 흘러가면 안 되므로 다른 상태를 건드리기 전에 빠져야 한다.
+    # 삭제·찜 위임(이슈 #116·#117, 패킷 §4) — 신원 도출·pending 조회보다 앞에서 판별한다. LLM 을
+    # 새로 부르지 않는 결정론적 판정이라 순서가 앞이어도 비용이 없다. **[라운드 23]** 이 둘의
+    # 온/오프 여부를 가리던 설정 필드를 제거했다(사용자 지시) — 판정이 나오면 항상 해당 흐름으로
+    # 위임한다. 이 턴은 담기 대기와 무관한 흐름으로 위임하므로, `graph.py` 665~668행과 같은
+    # 취지로 stale pending 을 정리한다(다음 턴이 옛 상품의 옵션 답변으로 오해석되지 않게).
     intent = classify_cart_utterance(message, settings)
-    if intent in ("wishlist_add", "wishlist_remove") and not settings.wishlist_enabled:
-        # pending 은 지우지 않는다 — 이 턴은 담기 흐름에 개입하지 않고 그냥 빠지는 것이라, 옵션
-        # 되물음 중이던 사용자가 "찜해줘"를 말했다고 진행 중이던 담기를 버릴 이유가 없다.
-        notice = (
-            _WISHLIST_ADD_DISABLED_NOTICE
-            if intent == "wishlist_add"
-            else _WISHLIST_REMOVE_DISABLED_NOTICE
-        )
-        yield sse("token", TokenData(text=notice).model_dump(by_alias=True))
-        yield _done()
-        return
-    if intent == "wishlist_add" and settings.wishlist_enabled:
-        # 위 flag-off 분기와 반대로 이 턴은 **실제로 다른 동작을 수행하고 빠진다** — 담기 대기와
-        # 무관한 흐름으로 위임하므로, `graph.py` 665~668행과 같은 취지로 stale pending 을 정리한다
-        # (다음 턴이 옛 상품의 옵션 답변으로 오해석되지 않게).
+    if intent == "wishlist_add":
         await cart_store.clear_pending(thread_key)
         async for frame in stream_wishlist_add(
             identity=identity,
@@ -266,7 +244,7 @@ async def stream_cart_add(
         ):
             yield frame
         return
-    if intent == "wishlist_remove" and settings.wishlist_enabled:
+    if intent == "wishlist_remove":
         await cart_store.clear_pending(thread_key)
         async for frame in stream_wishlist_remove(
             identity=identity,
@@ -279,7 +257,7 @@ async def stream_cart_add(
         ):
             yield frame
         return
-    if intent == "cart_remove" and settings.cart_remove_enabled:
+    if intent == "cart_remove":
         await cart_store.clear_pending(thread_key)
         async for frame in stream_cart_remove(
             identity=identity,
@@ -293,10 +271,6 @@ async def stream_cart_add(
         ):
             yield frame
         return
-    # cart_remove_enabled=False 면 cart_remove 판정이어도 **오늘 동작 그대로**(담기로 흘러간다) —
-    # 안내를 내지 않는다. 찜과 다르게 취급하는 이유: 찜은 "담지 말아야 할" 오담기라 개입해야
-    # 안전하지만, 삭제 발화가 담기로 잘못 오는 경우는 드물고 여기서 안내를 내면 정상 담기가 더
-    # 자주 깨질 위험이 있다(패킷 §5 라운드 3).
 
     add_fn = add_fn or spring_client.add_to_cart
     get_cart_fn = get_cart_fn or spring_client.get_cart
@@ -494,12 +468,10 @@ async def stream_cart_add(
     # "방금 담은 거" 삭제 해소 소스(이슈 #116) — 담기 **성공** 경로에서만 기록한다(실패·되물음은
     # 갱신하지 않음). cart_item_id 가 없으면(계약상 있어야 하지만 방어) 해소에 쓸 수 없어 저장하지
     # 않는다.
-    # [라운드 3 리뷰 F-2] 이 값을 읽는 곳은 삭제 흐름뿐이라 cart_remove_enabled=False 인 기본
-    # 배포에서는 아무도 읽지 않는 쓰기다 — 플래그로 가두지 않으면 (1) "플래그 off 면 기존 동작과
-    # 동일"이라는 이 레인의 수용 기준에 저장소 부작용이 하나 더 생기고, (2) 이 자리는 Spring 담기가
-    # 이미 성공한 뒤 CART_ADDED 를 내기 전이라, 쓰지도 않을 값 때문에 스토어 실패가 "상품은 담겼는데
-    # 사용자는 깨진 턴을 본다"는 새 실패 모드를 성공 경로에 얹게 된다.
-    if settings.cart_remove_enabled and result.cart_item_id is not None:
+    # [라운드 3 리뷰 F-2, 라운드 23] 이 값을 읽는 곳은 삭제 흐름뿐이다. 이전엔 삭제 흐름의 온/오프
+    # 설정 필드로 이 쓰기까지 가뒀지만, 그 필드가 삭제돼(사용자 지시) 이제 항상 기록한다 — 삭제
+    # 흐름이 늘 활성이라 "쓰지도 않을 값"이 아니다.
+    if result.cart_item_id is not None:
         try:
             await cart_store.set_last_add(thread_key, result.cart_item_id, product_id)
         except Exception as exc:  # noqa: BLE001 - Spring 담기가 이미 성공한 뒤라 이 쓰기 실패로

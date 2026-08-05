@@ -412,21 +412,26 @@ class CartQuantityExceeded(CartError):
 
 
 class CartItemNotFound(Exception):
-    """I-24 404 CART_ITEM_NOT_FOUND(🔶 초안) — 삭제 대상이 없음. 비멱등: 두 번째 호출도 404."""
+    """I-24 404 CART_ITEM_NOT_FOUND(확정 2026-08-05) — 삭제 대상이 없음. 비멱등: 두 번째 호출도
+    404. **[라운드 23]** `error.code` 가 정확히 이 값일 때만 낸다 — 엔드포인트 미배포로 오는
+    다른/없는 code 의 404 는 `CartError` 다(`delete_cart_item` 참조)."""
 
 
 class WishlistDuplicate(Exception):
-    """I-26 409(🔶 초안) — WISHLIST_DUPLICATE · RESOURCE_CONFLICT(UNIQUE 경합) 둘 다 이 예외로
-    낙성한다("이미 찜함"으로 동일 처리, 정본 SSE 확장안도 두 코드를 구별하지 않는다)."""
+    """I-26 409(확정 2026-08-05) — WISHLIST_DUPLICATE · RESOURCE_CONFLICT(UNIQUE 경합) 둘 다 이
+    예외로 낙성한다("이미 찜함"으로 동일 처리, 정본 SSE 확장안도 두 코드를 구별하지 않는다).
+    **[라운드 23]** `error.code` 가 이 둘 중 하나일 때만 낸다(`add_wishlist` 참조)."""
 
 
 class WishlistProductNotFound(Exception):
-    """I-26 404 PRODUCT_NOT_FOUND(🔶 초안) — 없는 상품만. HIDDEN·품절은 찜 가능이라 이 예외가 아니다."""
+    """I-26 404 PRODUCT_NOT_FOUND(확정 2026-08-05) — 없는 상품만. HIDDEN·품절은 찜 가능이라 이
+    예외가 아니다. **[라운드 23]** `error.code` 가 정확히 이 값일 때만 낸다(`add_wishlist` 참조)."""
 
 
 class WishlistNotFound(Exception):
-    """I-27 404 WISHLIST_NOT_FOUND(🔶 초안) — 찜 안 한 상품 삭제 시도. 없는 상품도 동일 코드라
-    구별 불가(비멱등, 안내 문구는 하나로 통일)."""
+    """I-27 404 WISHLIST_NOT_FOUND(확정 2026-08-05) — 찜 안 한 상품 삭제 시도. 없는 상품도 동일
+    코드라 구별 불가(비멱등, 안내 문구는 하나로 통일). **[라운드 23]** `error.code` 가 정확히
+    이 값일 때만 낸다(`remove_wishlist` 참조)."""
 
 
 class WishlistError(Exception):
@@ -908,7 +913,7 @@ async def get_cart(user_id: int | None = None, guest_id: str | None = None) -> C
         raise SpringUnavailableError(f"get_cart 실패: {exc}") from exc
 
 
-# ── 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28, 🔶 초안 — BE 협의 전) ──
+# ── 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현 진행 중) ──
 
 
 def _envelope_success_false(resp: httpx.Response) -> bool:
@@ -934,7 +939,7 @@ def _envelope_success_false(resp: httpx.Response) -> bool:
 async def delete_cart_item(
     cart_item_id: int, *, user_id: int | None = None, guest_id: str | None = None
 ) -> None:
-    """장바구니 삭제 — I-24(🔶 초안, BE 협의 전) DELETE /internal/cart/items/{cartItemId}.
+    """장바구니 삭제 — I-24(확정 2026-08-05) DELETE /internal/cart/items/{cartItemId}.
 
     게스트 허용. 신원 query 는 userId 또는 guestId 정확히 하나만 싣는다 — 호출부(cart 그래프)가
     이미 신원을 확인하지만 어댑터도 방어한다. 둘 다 None/둘 다 not None 이면 호출 자체를 하지
@@ -942,13 +947,16 @@ async def delete_cart_item(
     하나만 캐치하면 되게 하기 위해).
     삭제는 재고·상품 상태를 보지 않는다 — HIDDEN·품절도 성공한다(PRODUCT_NOT_FOUND 없음).
     복수 삭제는 항목별 반복 호출(bulk 없음, 호출부 책임).
-    실패 매핑: 404 CART_ITEM_NOT_FOUND → CartItemNotFound(비멱등, 두 번째 호출도 404).
+    실패 매핑: 404 이고 `error.code == "CART_ITEM_NOT_FOUND"` 일 때만 → CartItemNotFound(비멱등,
+    두 번째 호출도 404). **[라운드 23]** code 가 다르거나 본문을 못 읽는 404(엔드포인트 미배포로
+    나는 라우트 없음 404 포함)는 CartItemNotFound 가 아니라 CartError 다 — 그렇지 않으면 상위가
+    "이미 빠져 있어요"(성공 안내)로 오인해 거짓 성공을 낸다.
     400(path 숫자 아님·신원 query 오류)·403 AUTH_FORBIDDEN(소유자 불일치, 전용 예외 없음)·500·
     도달 불가·미상 코드 → CartError(기존 담기와 같은 낙성처).
     """
     if (user_id is None) == (guest_id is None):
-        # 🔶 I-24 협의 대상: 신원 query 0개/2개일 때 실제 BE 응답 code(VALIDATION_ERROR 인지
-        # CART_QUERY_INVALID 인지)가 미확정 — 호출 자체를 막아 어느 쪽이든 CartError 로 수렴시킨다.
+        # [확정 2026-08-05] 신원 query 0개/2개일 때 BE 응답 code 는 자원별 신규 code 를 신설하지
+        # 않고 기존 VALIDATION_ERROR 를 재사용한다 — 어느 쪽이든 이 어댑터는 CartError 로 수렴시킨다.
         raise CartError("delete_cart_item 신원 query 는 정확히 하나여야 함")
 
     params: dict[str, object] = {}
@@ -971,19 +979,27 @@ async def delete_cart_item(
             raise CartError("delete_cart_item 실패: 200 success=false")
         return
     if resp.status_code == 404:
-        raise CartItemNotFound()
+        code = _parse_error_code(resp)
+        if code == "CART_ITEM_NOT_FOUND":
+            raise CartItemNotFound()
+        # [라운드 23] Spring 에 엔드포인트가 아직 없어서 나는 404(라우트 없음, code 없음/다름)를
+        # CartItemNotFound 로 낙성하면 상위가 "이미 빠져 있어요"(성공 안내)로 끝낸다 — 배포 전
+        # 호출이 조용히 거짓 성공을 낸다. code 가 계약과 정확히 일치할 때만 비멱등 낙성이다.
+        raise CartError(f"delete_cart_item 실패: 404 {code}")
     code = _parse_error_code(resp)
     raise CartError(f"delete_cart_item 실패: {resp.status_code} {code}")
 
 
 async def add_wishlist(request: AddWishlistRequest) -> WishlistAddResult:
-    """찜 추가 — I-26(🔶 초안, BE 협의 전) POST /internal/wishlist.
+    """찜 추가 — I-26(확정 2026-08-05) POST /internal/wishlist.
 
     회원 전용(USER). 게스트 찜은 없다 — 호출부가 게스트를 걸러 이 함수 자체를 부르지 않는다
     (internal 호출 없이 degrade, 이 어댑터는 그 판단을 하지 않는다).
     성공 200 {success, data:{productId}}(wishlistId 없음).
-    실패: 404 PRODUCT_NOT_FOUND(없는 상품만 — HIDDEN·품절은 찜 가능) → WishlistProductNotFound.
-    409 WISHLIST_DUPLICATE·RESOURCE_CONFLICT(UNIQUE 경합, 둘 다 동일 취급) → WishlistDuplicate.
+    실패: 404 이고 code 가 정확히 PRODUCT_NOT_FOUND(없는 상품만 — HIDDEN·품절은 찜 가능)일 때만
+    → WishlistProductNotFound. 409 이고 code 가 정확히 WISHLIST_DUPLICATE·RESOURCE_CONFLICT
+    (UNIQUE 경합, 둘 다 동일 취급) 중 하나일 때만 → WishlistDuplicate. **[라운드 23]** code 가
+    다르거나 본문을 못 읽는 404/409(엔드포인트 미배포 포함)는 WishlistError 다.
     400·403(SELLER·ADMIN, 전용 예외 없음)·500·도달 불가·미상 코드 → WishlistError.
     """
     try:
@@ -1016,20 +1032,30 @@ async def add_wishlist(request: AddWishlistRequest) -> WishlistAddResult:
             raise WishlistError(f"add_wishlist 응답 스키마 이상: {exc}") from exc
 
     if resp.status_code == 404:
-        raise WishlistProductNotFound()
+        code = _parse_error_code(resp)
+        if code == "PRODUCT_NOT_FOUND":
+            raise WishlistProductNotFound()
+        # [라운드 23] 엔드포인트 미배포로 오는 빈/다른 code 의 404 를 "없는 상품"으로 오인하면
+        # 상위가 그 조건에 맞는 안내로 잘못 종료한다 — code 가 계약과 일치할 때만 typed 예외다.
+        raise WishlistError(f"add_wishlist 실패: 404 {code}")
     if resp.status_code == 409:
-        # 🔶 I-26 협의 대상: WISHLIST_DUPLICATE·RESOURCE_CONFLICT 둘 다 "이미 찜함"으로 동일 처리.
-        raise WishlistDuplicate()
+        code = _parse_error_code(resp)
+        if code in ("WISHLIST_DUPLICATE", "RESOURCE_CONFLICT"):
+            # WISHLIST_DUPLICATE·RESOURCE_CONFLICT(UNIQUE 경합) 둘 다 "이미 찜함"으로 동일 처리.
+            raise WishlistDuplicate()
+        raise WishlistError(f"add_wishlist 실패: 409 {code}")
     code = _parse_error_code(resp)
     raise WishlistError(f"add_wishlist 실패: {resp.status_code} {code}")
 
 
 async def remove_wishlist(product_id: int, *, user_id: int) -> None:
-    """찜 해제 — I-27(🔶 초안, BE 협의 전) DELETE /internal/wishlist/{productId}.
+    """찜 해제 — I-27(확정 2026-08-05) DELETE /internal/wishlist/{productId}.
 
     회원 전용(USER). path 는 productId(wishlistId 아님), query 는 userId 하나뿐(guestId 없음).
-    실패: 404 WISHLIST_NOT_FOUND(찜 안 한 상품 = 이미 해제 = 없는 상품도 동일 코드, 구별 불가) →
-    WishlistNotFound(비멱등). 400·403(전용 예외 없음)·500·도달 불가·미상 코드 → WishlistError.
+    실패: 404 이고 code 가 정확히 WISHLIST_NOT_FOUND(찜 안 한 상품 = 이미 해제 = 없는 상품도
+    동일 코드, 구별 불가)일 때만 → WishlistNotFound(비멱등). **[라운드 23]** code 가 다르거나
+    본문을 못 읽는 404(엔드포인트 미배포 포함)는 WishlistError 다. 400·403(전용 예외 없음)·500·
+    도달 불가·미상 코드 → WishlistError.
     """
     try:
         with _spring_span("remove_wishlist", "DELETE") as span:
@@ -1047,13 +1073,18 @@ async def remove_wishlist(product_id: int, *, user_id: int) -> None:
             raise WishlistError("remove_wishlist 실패: 200 success=false")
         return
     if resp.status_code == 404:
-        raise WishlistNotFound()
+        code = _parse_error_code(resp)
+        if code == "WISHLIST_NOT_FOUND":
+            raise WishlistNotFound()
+        # [라운드 23] 엔드포인트 미배포로 오는 빈/다른 code 의 404 를 "이미 해제됨"으로 오인하면
+        # 상위가 거짓 성공 안내로 끝낸다 — code 가 계약과 일치할 때만 비멱등 낙성이다.
+        raise WishlistError(f"remove_wishlist 실패: 404 {code}")
     code = _parse_error_code(resp)
     raise WishlistError(f"remove_wishlist 실패: {resp.status_code} {code}")
 
 
 async def get_wishlist(user_id: int) -> WishlistView:
-    """찜 목록 조회 — I-28(🔶 초안, BE 협의 전) GET /internal/wishlist?userId=.
+    """찜 목록 조회 — I-28(확정 2026-08-05) GET /internal/wishlist?userId=.
 
     페이징 없음, MVP 전량 반환. 찜 0건도 200 + items:[](404 아님). get_cart 와 같은 degrade
     규약 — 도달 불가/오류/스키마 불일치는 SpringUnavailableError.

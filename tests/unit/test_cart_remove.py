@@ -493,6 +493,35 @@ async def test_remove_cart_error_maps_to_remove_failed() -> None:
     assert action["reason"] == "CART_ERROR"
 
 
+async def test_remove_endpoint_not_deployed_404_does_not_yield_false_success() -> None:
+    """[라운드 23] Spring 에 I-24 엔드포인트가 아직 없어서 나는 404(라우트 없음, `error.code`
+    가 계약(`CART_ITEM_NOT_FOUND`)과 다르거나 없음)를 `CartItemNotFound` 로 낙성하면 이 그래프가
+    `CART_REMOVED` + "이미 빠져 있어요"(성공 안내)로 끝낸다 — 배포 전 호출이 조용히 거짓 성공을
+    낸다. `spring_client.delete_cart_item` 이 code 를 확인해 이 경우 `CartError` 로 낙성하도록
+    고쳤으니, 이 그래프도 성공 안내가 아니라 `CART_REMOVE_FAILED` 로 끝나야 한다."""
+    store = CartStateStore()
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        # spring_client.delete_cart_item 이 code 불일치 404 에서 실제로 내는 예외
+        # (CartItemNotFound 가 아니라 CartError, 위 delete_cart_item 구현 참조).
+        raise CartError("delete_cart_item 실패: 404 None")
+
+    events = await _collect(
+        stream_cart_remove(
+            identity=_member(),
+            message="이어폰 빼줘",
+            cart_store=store,
+            thread_key="m:t-remove-endpoint-not-deployed",
+            settings=get_settings(),
+            get_cart_fn=_cart(_item(1, 10, "이어폰")),
+            delete_fn=delete_fn,
+        )
+    )
+    action = _actions(events)[0]
+    assert action["type"] == "CART_REMOVE_FAILED"
+    assert "이미 빠져" not in action["message"]
+
+
 async def test_remove_get_cart_failure_maps_to_remove_failed() -> None:
     store = CartStateStore()
 
@@ -981,13 +1010,12 @@ async def test_remove_listed_names_with_batchim_ask_via_stream() -> None:
     assert _types(events) == ["token", "done"]
 
 
-# ─────────── stream_cart_add 배선 (플래그·last_add) ───────────
+# ─────────── stream_cart_add 배선 (last_add) ───────────
+# [라운드 23] 삭제 흐름의 온/오프를 가리던 설정 필드를 삭제했다(사용자 지시) — 판정이 나오면
+# 항상 위임한다. "플래그 off" 류 테스트는 삭제하고, 아래는 전부 "항상 위임" 동작을 검증한다.
 
 
-async def test_stream_cart_add_delegates_to_remove_when_flag_on(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(get_settings(), "cart_remove_enabled", True)
+async def test_stream_cart_add_delegates_to_remove() -> None:
     store = CartStateStore()
     deleted: list[int] = []
 
@@ -1014,13 +1042,10 @@ async def test_stream_cart_add_delegates_to_remove_when_flag_on(
     assert _actions(events)[0]["type"] == "CART_REMOVED"
 
 
-async def test_stream_cart_add_delegates_to_remove_clears_stale_pending(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_stream_cart_add_delegates_to_remove_clears_stale_pending() -> None:
     """라운드 13(head `14aa26b` 리뷰) — 옵션 되물음(pending) 진행 중에 삭제 판정 턴이 끼면
     `stream_cart_remove` 로 위임하기 전에 stale pending 을 지워야 한다. 안 지우면 다음 턴 발화가
     옛 상품의 옵션 답변으로 오해석될 수 있다(`graph.py` 665~668행과 같은 취지)."""
-    monkeypatch.setattr(get_settings(), "cart_remove_enabled", True)
     store = CartStateStore()
     thread_key = "m:t-remove-clears-pending"
     await store.set_pending(
@@ -1052,42 +1077,10 @@ async def test_stream_cart_add_delegates_to_remove_clears_stale_pending(
     assert await store.get_pending(thread_key) is None
 
 
-async def test_stream_cart_add_does_not_delegate_when_flag_off() -> None:
-    """cart_remove_enabled=False(기본) 면 cart_remove 판정이어도 이 경로가 절대 안 돈다 —
-    delete_fn 이 안 불리고 오늘 동작(담기)이 그대로 실행된다."""
-    store = CartStateStore()
-
-    async def add_fn(req):
-        return AddToCartResult(success=True, cart_item_id=55)
-
-    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
-        raise AssertionError("플래그 off 인데 delete_fn 이 호출됐다")
-
-    events = await _collect(
-        stream_cart_add(
-            identity=_member(),
-            cart=CartIntent(product_id=1, quantity=1),
-            cart_store=store,
-            thread_key="m:t-add-no-delegate",
-            settings=get_settings(),
-            message="장바구니에서 빼줘",
-            add_fn=add_fn,
-            get_cart_fn=_cart(),
-            delete_fn=delete_fn,
-        )
-    )
-    action = _actions(events)[0]
-    assert action["type"] == "CART_ADDED"
-
-
-async def test_last_add_stored_only_on_add_success_when_flag_on(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """cart_remove_enabled=True 이면 담기 성공에서만 last_add 가 저장된다 — 실패·되물음 턴에서는
-    바뀌지 않는다."""
+async def test_last_add_stored_only_on_add_success() -> None:
+    """담기 성공에서만 last_add 가 저장된다 — 실패·되물음 턴에서는 바뀌지 않는다."""
     from app.services.spring_client import CartProductNotFound
 
-    monkeypatch.setattr(get_settings(), "cart_remove_enabled", True)
     store = CartStateStore()
     thread_key = "m:t-last-add"
 
@@ -1124,30 +1117,6 @@ async def test_last_add_stored_only_on_add_success_when_flag_on(
     last_add = await store.get_last_add(thread_key)
     assert last_add is not None
     assert last_add.cart_item_id == 321 and last_add.product_id == 1
-
-
-async def test_last_add_not_written_when_flag_off() -> None:
-    """cart_remove_enabled=False(기본) 이면 담기 성공에도 last_add 저장소 쓰기가 아예 안 일어난다
-    (라운드 3 리뷰 F-2) — 이 값을 읽는 곳은 삭제 흐름뿐이라 기본 배포에서는 아무도 읽지 않는
-    쓰기이고, 플래그 off 경로의 저장소 쓰기 횟수는 오늘(이 필드가 없던 시절)과 같아야 한다."""
-    store = CartStateStore()
-    thread_key = "m:t-last-add-flag-off"
-
-    async def succeeding_add_fn(req):
-        return AddToCartResult(success=True, cart_item_id=321)
-
-    await _collect(
-        stream_cart_add(
-            identity=_member(),
-            cart=CartIntent(product_id=1, quantity=1),
-            cart_store=store,
-            thread_key=thread_key,
-            settings=get_settings(),
-            add_fn=succeeding_add_fn,
-            get_cart_fn=_cart(),
-        )
-    )
-    assert await store.get_last_add(thread_key) is None
 
 
 # ─────────── 예외 격리 — 2차 리뷰(Codex) 지적 6: 선택적 상태 저장소 장애가 스트림을 죽이면 안 된다 ───────────
@@ -1209,14 +1178,9 @@ async def test_remove_get_last_add_failure_with_recent_marker_asks_instead_of_gu
     assert _types(events) == ["token", "done"]
 
 
-async def test_add_success_survives_set_last_add_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_add_success_survives_set_last_add_failure() -> None:
     """Spring 담기가 이미 성공한 뒤 `set_last_add` 쓰기가 죽어도 CART_ADDED/done 은 그대로
-    나가야 한다(2차 리뷰 지적 6-1, 재현: 고치기 전엔 상품은 담겼는데 사용자는 실패를 본다).
-    이 경로가 실제로 도는 걸 보려면 `cart_remove_enabled=True` 여야 한다(off 면 애초에
-    `set_last_add` 를 안 부른다, 라운드 3 F-2)."""
-    monkeypatch.setattr(get_settings(), "cart_remove_enabled", True)
+    나가야 한다(2차 리뷰 지적 6-1, 재현: 고치기 전엔 상품은 담겼는데 사용자는 실패를 본다)."""
     store = _FailingSetLastAddStore()
 
     async def add_fn(req):

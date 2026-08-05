@@ -77,6 +77,22 @@ async def test_add_wishlist_product_not_found_raises(monkeypatch: pytest.MonkeyP
         await sc.add_wishlist(AddWishlistRequest(user_id=1, product_id=999))
 
 
+async def test_add_wishlist_404_with_wrong_code_raises_wishlist_error_not_product_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[라운드 23] 엔드포인트 미배포로 오는 404(code 가 계약과 다르거나 없음)를 "없는 상품"
+    으로 오인하면 안 된다 — code 가 정확히 `PRODUCT_NOT_FOUND` 일 때만 typed 예외다."""
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(
+        sc,
+        "_client",
+        lambda: _WishlistClient(_WishlistResp(404, {"error": {"code": "NOT_FOUND"}})),
+    )
+    with pytest.raises(sc.WishlistError):
+        await sc.add_wishlist(AddWishlistRequest(user_id=1, product_id=999))
+
+
 async def test_add_wishlist_duplicate_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     """409 WISHLIST_DUPLICATE → WishlistDuplicate."""
     import app.services.spring_client as sc
@@ -102,6 +118,22 @@ async def test_add_wishlist_resource_conflict_also_raises_duplicate(
         lambda: _WishlistClient(_WishlistResp(409, {"error": {"code": "RESOURCE_CONFLICT"}})),
     )
     with pytest.raises(sc.WishlistDuplicate):
+        await sc.add_wishlist(AddWishlistRequest(user_id=1, product_id=42))
+
+
+async def test_add_wishlist_409_with_wrong_code_raises_wishlist_error_not_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[라운드 23] 409 여도 code 가 `WISHLIST_DUPLICATE`/`RESOURCE_CONFLICT` 어느 쪽도 아니면
+    "이미 찜함"으로 오인해 성공 안내로 종료하지 않는다."""
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(
+        sc,
+        "_client",
+        lambda: _WishlistClient(_WishlistResp(409, {"error": {"code": "CONFLICT"}})),
+    )
+    with pytest.raises(sc.WishlistError):
         await sc.add_wishlist(AddWishlistRequest(user_id=1, product_id=42))
 
 
@@ -191,6 +223,34 @@ async def test_remove_wishlist_not_found_raises(monkeypatch: pytest.MonkeyPatch)
         lambda: _WishlistClient(_WishlistResp(404, {"error": {"code": "WISHLIST_NOT_FOUND"}})),
     )
     with pytest.raises(sc.WishlistNotFound):
+        await sc.remove_wishlist(42, user_id=1)
+
+
+async def test_remove_wishlist_404_with_wrong_code_raises_wishlist_error_not_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[라운드 23] 엔드포인트 미배포로 오는 404(code 가 계약과 다르거나 없음)를 "이미 해제됨"
+    으로 오인하면 안 된다 — code 가 정확히 `WISHLIST_NOT_FOUND` 일 때만 typed 예외다."""
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(
+        sc,
+        "_client",
+        lambda: _WishlistClient(_WishlistResp(404, {"error": {"code": "NOT_FOUND"}})),
+    )
+    with pytest.raises(sc.WishlistError):
+        await sc.remove_wishlist(42, user_id=1)
+
+
+async def test_remove_wishlist_404_empty_body_raises_wishlist_error_not_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[라운드 23] 라우트 자체가 없어 본문이 아예 비는 404(code 를 못 읽음)도 같은 이유로
+    `WishlistError` 여야 한다."""
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(sc, "_client", lambda: _WishlistClient(_WishlistResp(404, {})))
+    with pytest.raises(sc.WishlistError):
         await sc.remove_wishlist(42, user_id=1)
 
 
@@ -331,15 +391,3 @@ async def test_get_wishlist_unavailable_on_failure(monkeypatch: pytest.MonkeyPat
     )
     with pytest.raises(sc.SpringUnavailableError):
         await sc.get_wishlist(1)
-
-
-# ─────────── config 플래그 기본값 ───────────
-
-
-def test_cart_remove_and_wishlist_flags_default_off() -> None:
-    """Spring 미구현이라 기본은 off — 켜지 않으면 오늘 동작이 바이트 동일해야 한다."""
-    from app.core.config import Settings
-
-    settings = Settings(_env_file=None)
-    assert settings.cart_remove_enabled is False
-    assert settings.wishlist_enabled is False

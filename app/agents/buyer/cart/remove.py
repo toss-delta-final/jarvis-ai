@@ -1,8 +1,8 @@
-"""장바구니 삭제 서브그래프 (이슈 #116, 🔶 I-24 초안 — BE 협의 전, `cart_remove_enabled` on 경로).
+"""장바구니 삭제 서브그래프 (이슈 #116, I-24 — 확정 2026-08-05, Spring 구현 진행 중).
 
-`stream_cart_add` 가 `classify_cart_utterance` 로 "cart_remove" 로 판정하고 플래그가 켜져 있을
-때만 위임받는다(패킷 §5.3·§5.4). 대상 해소는 결정론적이다 — LLM 을 새로 부르지 않는다.
-복수 삭제는 항목별 반복 호출이다(I-24 에 bulk 가 없다).
+`stream_cart_add` 가 `classify_cart_utterance` 로 "cart_remove" 로 판정하면 항상 위임받는다
+(패킷 §5.3·§5.4, 라운드 23 — 온/오프를 가리던 설정 필드 제거). 대상 해소는 결정론적이다 —
+LLM 을 새로 부르지 않는다. 복수 삭제는 항목별 반복 호출이다(I-24 에 bulk 가 없다).
 """
 
 from __future__ import annotations
@@ -273,7 +273,7 @@ async def stream_cart_remove(
         try:
             await delete_fn(item.cart_item_id, user_id=user_id, guest_id=guest_id)
         except CartItemNotFound:
-            # 🔶 I-24 협의 대상: 404 를 성공 안내로 종료하는 것은 정본 권고안 — 사용자가 보기엔
+            # [확정 2026-08-05] 404 를 성공 안내로 종료하는 것은 정본 권고안 — 사용자가 보기엔
             # "빼려던 게 이미 빠져 있다"는 실패가 아니라 원하는 상태에 도달한 것이다.
             yield sse(
                 "action",

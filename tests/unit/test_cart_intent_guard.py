@@ -1,7 +1,8 @@
 """찜 오담기 방어 (이슈 #116·#117, 패킷 §4) — `classify_cart_utterance` 단위 + `stream_cart_add` 배선.
 
-전부 **기본 설정**(`get_settings()`, override 없음)으로 돈다 — 배포되는 기본 조합(표지 목록·
-플래그 off)이 실제로 이 테이블을 통과하는지가 이 테스트들의 존재 이유다.
+전부 **기본 설정**(`get_settings()`, override 없음)으로 돈다 — 배포되는 기본 조합(표지 목록)이
+실제로 이 테이블을 통과하는지가 이 테스트들의 존재 이유다. **[라운드 23]** 삭제·찜 흐름의
+온/오프를 가리던 설정 필드는 삭제됐다 — 판정이 나오면 항상 해당 흐름으로 위임한다.
 """
 
 from __future__ import annotations
@@ -14,7 +15,14 @@ from app.agents.buyer.cart.state import CartStateStore
 from app.agents.buyer.recommendation.state import CartIntent
 from app.core.auth import Identity
 from app.core.config import get_settings
-from app.schemas.spring import AddToCartResult, CartView
+from app.schemas.spring import (
+    AddToCartResult,
+    CartView,
+    CartViewItem,
+    WishlistAddResult,
+    WishlistItem,
+    WishlistView,
+)
 
 
 def _member() -> Identity:
@@ -30,10 +38,6 @@ async def _collect(gen) -> list[dict]:
         if line.startswith("data:"):
             events.append(json.loads(line[len("data:") :].strip()))
     return events
-
-
-def _types(events) -> list[str]:
-    return [e["type"] for e in events]
 
 
 async def _empty_cart(*, user_id=None, guest_id=None):
@@ -285,15 +289,18 @@ def test_has_prefix_negation_word_boundary_rules() -> None:
 # ─────────── stream_cart_add 배선 — 찜 오담기 방어 ───────────
 
 
-async def test_stream_cart_add_wishlist_intent_degrades_without_calling_add_fn() -> None:
-    """찜 추가 판정 + wishlist_enabled=False(기본) → token 안내 + done 만. add_fn 은 한 번도
-    안 불린다. 찜 추가 요청이니 담기를 대안으로 제안하는 문구가 나가야 한다(2차 리뷰 N-3)."""
-    from app.agents.buyer.cart.graph import _WISHLIST_ADD_DISABLED_NOTICE
+async def test_stream_cart_add_wishlist_add_intent_delegates_to_wishlist_flow() -> None:
+    """찜 추가 판정 → `stream_wishlist_add` 로 위임돼 실제로 찜이 담긴다(라운드 23 — 이전엔
+    온/오프 설정 필드가 꺼져 있으면 "찜 기능은 아직 준비 중이에요" 로 degrade 했지만, 그 필드가
+    삭제돼 이제 항상 위임한다). `add_fn`(담기)은 한 번도 안 불린다."""
 
     store = CartStateStore()
 
     async def add_fn(req):
-        raise AssertionError("wishlist 판정인데 add_fn 이 호출됐다")
+        raise AssertionError("wishlist 판정인데 add_fn(담기) 이 호출됐다")
+
+    async def add_wishlist_fn(req):
+        return WishlistAddResult(success=True, product_id=req.product_id)
 
     events = await _collect(
         stream_cart_add(
@@ -305,42 +312,46 @@ async def test_stream_cart_add_wishlist_intent_degrades_without_calling_add_fn()
             message="이거 찜해줘",
             add_fn=add_fn,
             get_cart_fn=_empty_cart,
+            add_wishlist_fn=add_wishlist_fn,
         )
     )
-    assert _types(events) == ["token", "done"]
-    token_text = next(e for e in events if e["type"] == "token")["data"]["text"]
-    assert token_text == _WISHLIST_ADD_DISABLED_NOTICE
-    assert not any(e["type"] == "action" for e in events)
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "WISHLIST_ADDED"
 
 
-async def test_stream_cart_add_wishlist_remove_intent_also_degrades() -> None:
-    """찜 해제 판정 + wishlist_enabled=False(기본) → 담기를 대안으로 제안하지 않는 문구가
-    나가야 한다(2차 리뷰 N-3 — "찜 빼줘"에 "장바구니에 담아 드릴까요?" 라고 답하면 빼 달라는
-    사용자에게 담아 주겠다고 제안하는 꼴이 된다)."""
-    from app.agents.buyer.cart.graph import _WISHLIST_REMOVE_DISABLED_NOTICE
+async def test_stream_cart_add_wishlist_remove_intent_delegates_to_wishlist_flow() -> None:
+    """찜 해제 판정 → `stream_wishlist_remove` 로 위임된다(라운드 23, 위 함수와 같은 사실).
+    `add_fn`(담기)은 한 번도 안 불린다."""
 
     store = CartStateStore()
 
     async def add_fn(req):
-        raise AssertionError("wishlist 판정인데 add_fn 이 호출됐다")
+        raise AssertionError("wishlist 판정인데 add_fn(담기) 이 호출됐다")
+
+    async def get_wishlist_fn(user_id):
+        return WishlistView(
+            items=[WishlistItem(product_id=1, name="이어폰", purchase_state="AVAILABLE")]
+        )
+
+    async def remove_wishlist_fn(product_id, *, user_id):
+        return None
 
     events = await _collect(
         stream_cart_add(
             identity=_member(),
-            cart=CartIntent(product_id=1, quantity=1),
+            cart=CartIntent(product_id=None),
             cart_store=store,
             thread_key="m:t-wishlist-remove",
             settings=get_settings(),
-            message="찜 빼줘",
+            message="이어폰 찜 빼줘",
             add_fn=add_fn,
             get_cart_fn=_empty_cart,
+            get_wishlist_fn=get_wishlist_fn,
+            remove_wishlist_fn=remove_wishlist_fn,
         )
     )
-    assert _types(events) == ["token", "done"]
-    token_text = next(e for e in events if e["type"] == "token")["data"]["text"]
-    assert token_text == _WISHLIST_REMOVE_DISABLED_NOTICE
-    assert "담아" not in token_text
-    assert not any(e["type"] == "action" for e in events)
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "WISHLIST_REMOVED"
 
 
 async def test_stream_cart_add_wishlist_reference_marker_still_adds() -> None:
@@ -391,36 +402,51 @@ async def test_stream_cart_add_remove_phrase_with_add_marker_still_adds() -> Non
     assert action["cartItemId"] == 78
 
 
-async def test_stream_cart_add_remove_intent_is_noop_this_round() -> None:
-    """cart_remove 판정은 이번 라운드에서 아무 것도 하지 않는다 — 오늘 동작(담기)이 그대로 돈다."""
+async def test_stream_cart_add_remove_intent_delegates_to_remove_flow() -> None:
+    """cart_remove 판정 → `stream_cart_remove` 로 위임된다(라운드 23 — 이전엔 온/오프 설정
+    필드가 꺼져 있으면 이 판정을 무시하고 오늘 동작(담기)이 그대로 돌았지만, 그 필드가 삭제돼
+    이제 항상 위임한다). `add_fn`(담기)은 한 번도 안 불린다."""
     store = CartStateStore()
 
     async def add_fn(req):
-        return AddToCartResult(success=True, cart_item_id=79)
+        raise AssertionError("cart_remove 판정인데 add_fn(담기) 이 호출됐다")
+
+    deleted: list[int] = []
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        deleted.append(cart_item_id)
+
+    async def get_cart_fn(*, user_id=None, guest_id=None):
+        return CartView(items=[CartViewItem(cart_item_id=55, product_id=1, product_name="이어폰")])
 
     events = await _collect(
         stream_cart_add(
             identity=_member(),
             cart=CartIntent(product_id=1, quantity=1),
             cart_store=store,
-            thread_key="m:t-remove-noop",
+            thread_key="m:t-remove-delegates",
             settings=get_settings(),
-            message="장바구니에서 빼줘",
+            message="이어폰 빼줘",
             add_fn=add_fn,
-            get_cart_fn=_empty_cart,
+            get_cart_fn=get_cart_fn,
+            delete_fn=delete_fn,
         )
     )
+    assert deleted == [55]
     action = next(e for e in events if e["type"] == "action")["data"]
-    assert action["type"] == "CART_ADDED"
+    assert action["type"] == "CART_REMOVED"
 
 
-async def test_stream_cart_add_wishlist_intent_does_not_clear_pending() -> None:
-    """옵션 되물음 진행 중(pending) 이 사용자가 "찜해줘"를 말해도 pending 은 지워지지 않는다."""
+async def test_stream_cart_add_wishlist_intent_clears_pending() -> None:
+    """옵션 되물음 진행 중(pending) 이 사용자가 "찜해줘"를 말하면 pending 이 정리된다(라운드 23
+    — 이전엔 온/오프 설정 필드가 꺼져 있어 이 턴이 담기 흐름에 개입하지 않고 그냥 빠졌으므로
+    pending 을 건드리지 않았지만, 이제 실제로 찜 흐름으로 위임하므로 다음 턴이 옛 상품의 옵션
+    답변으로 오해석되지 않게 정리해야 한다)."""
     from app.agents.buyer.cart.state import PendingAdd
     from app.schemas.spring import CartOption
 
     store = CartStateStore()
-    thread_key = "m:t-wishlist-keeps-pending"
+    thread_key = "m:t-wishlist-clears-pending"
     await store.set_pending(
         thread_key,
         PendingAdd(
@@ -432,18 +458,22 @@ async def test_stream_cart_add_wishlist_intent_does_not_clear_pending() -> None:
     )
 
     async def add_fn(req):
-        raise AssertionError("wishlist 판정인데 add_fn 이 호출됐다")
+        raise AssertionError("wishlist 판정인데 add_fn(담기) 이 호출됐다")
+
+    async def add_wishlist_fn(req):
+        return WishlistAddResult(success=True, product_id=req.product_id)
 
     await _collect(
         stream_cart_add(
             identity=_member(),
-            cart=CartIntent(product_id=None, quantity=1),
+            cart=CartIntent(product_id=1, quantity=1),
             cart_store=store,
             thread_key=thread_key,
             settings=get_settings(),
             message="이거 찜해줘",
             add_fn=add_fn,
             get_cart_fn=_empty_cart,
+            add_wishlist_fn=add_wishlist_fn,
         )
     )
-    assert await store.get_pending(thread_key) is not None
+    assert await store.get_pending(thread_key) is None

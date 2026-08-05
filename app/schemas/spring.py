@@ -879,11 +879,11 @@ class ProductDeleteResult(SellerAggregateModel):
     status: str = "HIDDEN"
 
 
-# ── 7. 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28, 🔶 초안 — BE 협의 전) ──
+# ── 7. 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현 진행 중) ──
 
 
 class AddWishlistRequest(CamelModel):
-    """I-26 POST /internal/wishlist 요청 본문(🔶 초안, BE 협의 전).
+    """I-26 POST /internal/wishlist 요청 본문(확정 2026-08-05).
 
     회원 전용(USER) — guestId 없음(게스트 찜은 없다). userId 는 AI-검증 JWT sub 유래
     (요청 본문 불신, §2.3과 동일 규약).
@@ -894,7 +894,7 @@ class AddWishlistRequest(CamelModel):
 
 
 class WishlistAddResult(CamelModel):
-    """I-26 200 성공 응답(🔶 초안) — {success, data:{productId}}, wishlistId 없음."""
+    """I-26 200 성공 응답(확정 2026-08-05) — {success, data:{productId}}, wishlistId 없음."""
 
     success: bool
     product_id: int | None = None
@@ -904,7 +904,7 @@ PurchaseState = Literal["AVAILABLE", "SOLD_OUT", "HIDDEN"]
 
 
 class WishlistItem(CamelModel):
-    """I-28 GET /internal/wishlist 응답 항목(🔶 초안, BE 협의 전).
+    """I-28 GET /internal/wishlist 응답 항목(확정 2026-08-05).
 
     AI 가 실제로 쓰는 필드는 productId·name·purchaseState 세 개뿐이다(경로 B — SSE 에는 상품 카드를
     싣지 않는다). brandName·price·originalPrice·imageUrl·rating·reviewCount 같은 표시 필드는
@@ -925,6 +925,6 @@ class WishlistItem(CamelModel):
 
 
 class WishlistView(CamelModel):
-    """I-28 응답(🔶 초안). 찜 0건도 200 + items:[](404 아님, get_cart 와 같은 규약)."""
+    """I-28 응답(확정 2026-08-05). 찜 0건도 200 + items:[](404 아님, get_cart 와 같은 규약)."""
 
     items: list[WishlistItem] = Field(default_factory=list)

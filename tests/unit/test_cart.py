@@ -960,6 +960,36 @@ async def test_delete_cart_item_not_found_raises(monkeypatch: pytest.MonkeyPatch
         await sc.delete_cart_item(999, user_id=1)
 
 
+async def test_delete_cart_item_404_with_wrong_code_raises_cart_error_not_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[라운드 23] Spring 에 엔드포인트가 아직 없어서 나는 404(라우트 없음)도 body 만 보면
+    똑같은 404 다 — code 가 계약(`CART_ITEM_NOT_FOUND`)과 다르면 `CartItemNotFound` 로 낙성하지
+    않는다. 이걸 성공(`CartItemNotFound` → "이미 빠져 있어요")으로 오인하면 배포 전 호출이
+    거짓 성공 안내를 낸다."""
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(
+        sc,
+        "_client",
+        lambda: _CartClient(_CartResp(404, {"error": {"code": "NOT_FOUND"}})),
+    )
+    with pytest.raises(sc.CartError):
+        await sc.delete_cart_item(999, user_id=1)
+
+
+async def test_delete_cart_item_404_empty_body_raises_cart_error_not_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[라운드 23] 라우트 자체가 없어 본문이 아예 비거나 계약 봉투가 아닌 404(code 를 못
+    읽음)도 같은 이유로 `CartError` 여야 한다."""
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(404, {})))
+    with pytest.raises(sc.CartError):
+        await sc.delete_cart_item(999, user_id=1)
+
+
 async def test_delete_cart_item_forbidden_maps_to_cart_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

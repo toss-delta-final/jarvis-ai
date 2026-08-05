@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from app.agents.buyer.cart.graph import stream_cart_add
 from app.agents.buyer.cart.state import CartStateStore, PendingAdd
 from app.agents.buyer.cart.wishlist import stream_wishlist_add, stream_wishlist_remove
@@ -954,12 +952,11 @@ async def test_wishlist_remove_spaced_name_followed_by_other_word_asks_via_strea
 
 
 # ─────────── stream_cart_add 배선 ───────────
+# [라운드 23] 찜 흐름의 온/오프를 가리던 설정 필드를 삭제했다(사용자 지시) — 판정이 나오면 항상 위임한다.
+# "플래그 off" 류 테스트는 삭제하고, 아래는 전부 "항상 위임" 동작을 검증한다.
 
 
-async def test_stream_cart_add_delegates_to_wishlist_add_when_flag_on(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(get_settings(), "wishlist_enabled", True)
+async def test_stream_cart_add_delegates_to_wishlist_add() -> None:
     store = CartStateStore()
 
     async def add_fn(req):
@@ -983,10 +980,7 @@ async def test_stream_cart_add_delegates_to_wishlist_add_when_flag_on(
     assert _actions(events)[0]["type"] == "WISHLIST_ADDED"
 
 
-async def test_stream_cart_add_delegates_to_wishlist_remove_when_flag_on(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(get_settings(), "wishlist_enabled", True)
+async def test_stream_cart_add_delegates_to_wishlist_remove() -> None:
     store = CartStateStore()
 
     async def add_fn(req):
@@ -1011,37 +1005,6 @@ async def test_stream_cart_add_delegates_to_wishlist_remove_when_flag_on(
     assert _actions(events)[0]["type"] == "WISHLIST_REMOVED"
 
 
-async def test_stream_cart_add_wishlist_degrade_notice_unchanged_when_flag_off() -> None:
-    """wishlist_enabled=False(기본) 면 여전히 라운드 2 의 degrade 안내(찜 추가 문구)가 그대로
-    나간다(2차 리뷰 N-3 이후에도 찜 추가는 담기 대안 제안 문구를 유지한다)."""
-    from app.agents.buyer.cart.graph import _WISHLIST_ADD_DISABLED_NOTICE
-
-    store = CartStateStore()
-
-    async def add_fn(req):
-        raise AssertionError("degrade 인데 add_fn 이 호출됐다")
-
-    async def add_wishlist_fn(request):
-        raise AssertionError("플래그 off 인데 add_wishlist_fn 이 호출됐다")
-
-    events = await _collect(
-        stream_cart_add(
-            identity=_member(),
-            cart=CartIntent(product_id=1, quantity=1),
-            cart_store=store,
-            thread_key="m:t-add-wishlist-degrade",
-            settings=get_settings(),
-            message="이거 찜해줘",
-            add_fn=add_fn,
-            add_wishlist_fn=add_wishlist_fn,
-        )
-    )
-    assert _types(events) == ["token", "done"]
-    token_text = next(e for e in events if e["type"] == "token")["data"]["text"]
-    assert token_text == _WISHLIST_ADD_DISABLED_NOTICE
-    assert not _actions(events)
-
-
 # ─── stream_cart_add 배선 — 라운드 13(head `14aa26b` 리뷰): 위임 시 stale pending 정리 ───
 
 
@@ -1049,13 +1012,10 @@ def _pending_options() -> list[CartOption]:
     return [CartOption(option_id=1, name="레드", extra_price=0)]
 
 
-async def test_stream_cart_add_delegates_to_wishlist_add_clears_stale_pending(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_stream_cart_add_delegates_to_wishlist_add_clears_stale_pending() -> None:
     """옵션 되물음(pending) 진행 중에 찜 추가 판정 턴이 끼면 `stream_wishlist_add` 로 위임하기
     전에 stale pending 을 지워야 한다(`graph.py` 665~668행과 같은 취지 — 담기가 아닌 의도로
     전환되면 옛 상품 되물음에 갇히지 않게)."""
-    monkeypatch.setattr(get_settings(), "wishlist_enabled", True)
     store = CartStateStore()
     thread_key = "m:t-wishlist-add-clears-pending"
     await store.set_pending(
@@ -1083,11 +1043,8 @@ async def test_stream_cart_add_delegates_to_wishlist_add_clears_stale_pending(
     assert await store.get_pending(thread_key) is None
 
 
-async def test_stream_cart_add_delegates_to_wishlist_remove_clears_stale_pending(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_stream_cart_add_delegates_to_wishlist_remove_clears_stale_pending() -> None:
     """찜 해제 위임도 동일 — pending 이 지워진다."""
-    monkeypatch.setattr(get_settings(), "wishlist_enabled", True)
     store = CartStateStore()
     thread_key = "m:t-wishlist-remove-clears-pending"
     await store.set_pending(
@@ -1114,34 +1071,3 @@ async def test_stream_cart_add_delegates_to_wishlist_remove_clears_stale_pending
         )
     )
     assert await store.get_pending(thread_key) is None
-
-
-async def test_stream_cart_add_wishlist_disabled_notice_keeps_pending() -> None:
-    """플래그 off(라운드 2 결정, 회귀 고정) — 안내만 하고 빠지는 턴은 아무 동작도 수행하지
-    않으므로 진행 중이던 담기 pending 을 버릴 이유가 없다. 위 "위임해서 실제로 다른 동작을
-    수행하는" 세 테스트와 대비되는 경우다."""
-    store = CartStateStore()
-    thread_key = "m:t-wishlist-flag-off-keeps-pending"
-    await store.set_pending(
-        thread_key, PendingAdd(product_id=99, quantity=1, options=_pending_options())
-    )
-
-    async def add_fn(req):
-        raise AssertionError("degrade 인데 add_fn 이 호출됐다")
-
-    async def add_wishlist_fn(request):
-        raise AssertionError("플래그 off 인데 add_wishlist_fn 이 호출됐다")
-
-    await _collect(
-        stream_cart_add(
-            identity=_member(),
-            cart=CartIntent(product_id=1, quantity=1),
-            cart_store=store,
-            thread_key=thread_key,
-            settings=get_settings(),
-            message="이거 찜해줘",
-            add_fn=add_fn,
-            add_wishlist_fn=add_wishlist_fn,
-        )
-    )
-    assert await store.get_pending(thread_key) is not None
