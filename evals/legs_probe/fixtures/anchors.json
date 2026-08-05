@@ -1,0 +1,2042 @@
+{
+  "schemaVersion": "1.0.0",
+  "fixtureVersion": "legs-anchors-v1",
+  "utterances": [
+    {
+      "caseId": "buy-srch-0003",
+      "slice": "single",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "무선 이어폰 추천",
+      "expected": {
+        "case": 1,
+        "legsMin": 1,
+        "legsMax": 1,
+        "coverageTarget": 1,
+        "coverageGroups": [
+          {
+            "groupId": "earphone",
+            "synonyms": [
+              "이어폰"
+            ]
+          }
+        ],
+        "acceptableGroups": [],
+        "buyAll": false,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 1,
+      "note": null
+    },
+    {
+      "caseId": "buy-srch-0002",
+      "slice": "single",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "출근용 선크림 추천",
+      "expected": {
+        "case": 1,
+        "legsMin": 1,
+        "legsMax": 1,
+        "coverageTarget": 1,
+        "coverageGroups": [
+          {
+            "groupId": "suncream",
+            "synonyms": [
+              "선크림",
+              "선블록",
+              "자외선차단제",
+              "자외선 차단제"
+            ]
+          }
+        ],
+        "acceptableGroups": [],
+        "buyAll": false,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 1,
+      "note": null
+    },
+    {
+      "caseId": "buy-srch-0004",
+      "slice": "single",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "스테인리스 냄비 세트 추천",
+      "expected": {
+        "case": 1,
+        "legsMin": 1,
+        "legsMax": 1,
+        "coverageTarget": 1,
+        "coverageGroups": [
+          {
+            "groupId": "pot",
+            "synonyms": [
+              "냄비"
+            ]
+          }
+        ],
+        "acceptableGroups": [],
+        "buyAll": false,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 1,
+      "note": null
+    },
+    {
+      "caseId": "buy-cold-0002",
+      "slice": "single",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "커피믹스 추천해줘",
+      "expected": {
+        "case": 1,
+        "legsMin": 1,
+        "legsMax": 1,
+        "coverageTarget": 1,
+        "coverageGroups": [
+          {
+            "groupId": "coffeemix",
+            "synonyms": [
+              "커피믹스",
+              "커피 믹스",
+              "믹스커피"
+            ]
+          }
+        ],
+        "acceptableGroups": [],
+        "buyAll": false,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 1,
+      "note": null
+    },
+    {
+      "caseId": "buy-gust-0001",
+      "slice": "single",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "아기 여름 기저귀 추천",
+      "expected": {
+        "case": 1,
+        "legsMin": 1,
+        "legsMax": 1,
+        "coverageTarget": 1,
+        "coverageGroups": [
+          {
+            "groupId": "diaper",
+            "synonyms": [
+              "기저귀"
+            ]
+          }
+        ],
+        "acceptableGroups": [],
+        "buyAll": false,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 1,
+      "note": null
+    },
+    {
+      "caseId": "buy-fail-0003",
+      "slice": "single",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "만원 이하 무선 이어폰",
+      "expected": {
+        "case": 1,
+        "legsMin": 1,
+        "legsMax": 1,
+        "coverageTarget": 1,
+        "coverageGroups": [
+          {
+            "groupId": "earphone",
+            "synonyms": [
+              "이어폰"
+            ]
+          }
+        ],
+        "acceptableGroups": [],
+        "buyAll": false,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 1,
+      "note": "상품당 상한 발화 — totalBudget null 채점이 buyAll·totalBudget 독립 축 검증이다."
+    },
+    {
+      "caseId": "buy-mult-0002",
+      "slice": "single",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "4만원 이하 15인치 노트북 파우치",
+      "expected": {
+        "case": 1,
+        "legsMin": 1,
+        "legsMax": 1,
+        "coverageTarget": 1,
+        "coverageGroups": [
+          {
+            "groupId": "pouch",
+            "synonyms": [
+              "파우치"
+            ]
+          }
+        ],
+        "acceptableGroups": [],
+        "buyAll": false,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 1,
+      "note": "상품당 상한 발화 — totalBudget null 채점이 buyAll·totalBudget 독립 축 검증이다."
+    },
+    {
+      "caseId": "legs-single-0001",
+      "slice": "single",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "청바지 보여줘",
+      "expected": {
+        "case": 1,
+        "legsMin": 1,
+        "legsMax": 1,
+        "coverageTarget": 1,
+        "coverageGroups": [
+          {
+            "groupId": "jeans",
+            "synonyms": [
+              "청바지",
+              "데님"
+            ]
+          }
+        ],
+        "acceptableGroups": [],
+        "buyAll": false,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 1,
+      "note": null
+    },
+    {
+      "caseId": "legs-single-0002",
+      "slice": "single",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "나이키 운동화 추천해줘",
+      "expected": {
+        "case": 1,
+        "legsMin": 1,
+        "legsMax": 1,
+        "coverageTarget": 1,
+        "coverageGroups": [
+          {
+            "groupId": "sneakers",
+            "synonyms": [
+              "운동화",
+              "스니커즈",
+              "러닝화"
+            ]
+          }
+        ],
+        "acceptableGroups": [],
+        "buyAll": false,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 1,
+      "note": null
+    },
+    {
+      "caseId": "legs-cond-0001",
+      "slice": "conditions",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "5만원 이하 아무거나 추천해줘",
+      "expected": {
+        "case": 2,
+        "legsMin": 0,
+        "legsMax": 0,
+        "coverageTarget": null,
+        "coverageGroups": [],
+        "acceptableGroups": [],
+        "buyAll": false,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 0,
+      "note": null
+    },
+    {
+      "caseId": "legs-cond-0002",
+      "slice": "conditions",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "평점 높은 걸로 보여줘",
+      "expected": {
+        "case": 2,
+        "legsMin": 0,
+        "legsMax": 0,
+        "coverageTarget": null,
+        "coverageGroups": [],
+        "acceptableGroups": [],
+        "buyAll": false,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 0,
+      "note": null
+    },
+    {
+      "caseId": "legs-cond-0003",
+      "slice": "conditions",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "제일 싼 걸로 보여줘",
+      "expected": {
+        "case": 2,
+        "legsMin": 0,
+        "legsMax": 0,
+        "coverageTarget": null,
+        "coverageGroups": [],
+        "acceptableGroups": [],
+        "buyAll": false,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 0,
+      "note": null
+    },
+    {
+      "caseId": "legs-cond-0004",
+      "slice": "conditions",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "만원 이하로 살 만한 거 있어?",
+      "expected": {
+        "case": 2,
+        "legsMin": 0,
+        "legsMax": 0,
+        "coverageTarget": null,
+        "coverageGroups": [],
+        "acceptableGroups": [],
+        "buyAll": false,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 0,
+      "note": null
+    },
+    {
+      "caseId": "legs-cond-0005",
+      "slice": "conditions",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "리뷰 좋은 거 아무거나 골라줘",
+      "expected": {
+        "case": 2,
+        "legsMin": 0,
+        "legsMax": 0,
+        "coverageTarget": null,
+        "coverageGroups": [],
+        "acceptableGroups": [],
+        "buyAll": false,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 0,
+      "note": null
+    },
+    {
+      "caseId": "buy-srch-0001",
+      "slice": "situational",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "감자탕 재료 추천",
+      "expected": {
+        "case": 3,
+        "legsMin": 2,
+        "legsMax": 5,
+        "coverageTarget": 3,
+        "coverageGroups": [
+          {
+            "groupId": "pork",
+            "synonyms": [
+              "돼지고기",
+              "등뼈",
+              "목살",
+              "돼지 등뼈"
+            ]
+          },
+          {
+            "groupId": "potato",
+            "synonyms": [
+              "감자"
+            ]
+          },
+          {
+            "groupId": "greens",
+            "synonyms": [
+              "우거지",
+              "시래기"
+            ]
+          },
+          {
+            "groupId": "seasoning",
+            "synonyms": [
+              "양념",
+              "고추장",
+              "된장",
+              "고춧가루",
+              "다진마늘",
+              "다진 마늘"
+            ]
+          },
+          {
+            "groupId": "perilla",
+            "synonyms": [
+              "들깨가루",
+              "들깨"
+            ]
+          },
+          {
+            "groupId": "scallion",
+            "synonyms": [
+              "대파"
+            ]
+          }
+        ],
+        "acceptableGroups": [
+          {
+            "groupId": "noodle",
+            "synonyms": [
+              "수제비",
+              "라면사리",
+              "사리"
+            ]
+          },
+          {
+            "groupId": "etc",
+            "synonyms": [
+              "깻잎"
+            ]
+          }
+        ],
+        "buyAll": true,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 0,
+      "note": "골든셋 척추(evals/goldenset/cases/buyer_dev.jsonl 과 발화 동일)."
+    },
+    {
+      "caseId": "legs-situ-0001",
+      "slice": "situational",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": "camp-paraphrase",
+      "pairKind": "INV-paraphrase",
+      "utterance": "캠핑 갈 건데 준비물 추천해줘",
+      "expected": {
+        "case": 3,
+        "legsMin": 2,
+        "legsMax": 5,
+        "coverageTarget": 3,
+        "coverageGroups": [
+          {
+            "groupId": "tent",
+            "synonyms": [
+              "텐트"
+            ]
+          },
+          {
+            "groupId": "sleeping",
+            "synonyms": [
+              "침낭"
+            ]
+          },
+          {
+            "groupId": "lantern",
+            "synonyms": [
+              "랜턴"
+            ]
+          },
+          {
+            "groupId": "burner",
+            "synonyms": [
+              "버너",
+              "코펠",
+              "스토브"
+            ]
+          },
+          {
+            "groupId": "chair",
+            "synonyms": [
+              "캠핑의자",
+              "캠핑 의자",
+              "의자"
+            ]
+          },
+          {
+            "groupId": "mat",
+            "synonyms": [
+              "매트",
+              "돗자리"
+            ]
+          }
+        ],
+        "acceptableGroups": [
+          {
+            "groupId": "table",
+            "synonyms": [
+              "테이블"
+            ]
+          },
+          {
+            "groupId": "cooler",
+            "synonyms": [
+              "아이스박스",
+              "쿨러"
+            ]
+          },
+          {
+            "groupId": "grill",
+            "synonyms": [
+              "그릴",
+              "화로"
+            ]
+          }
+        ],
+        "buyAll": true,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 0,
+      "note": null
+    },
+    {
+      "caseId": "legs-situ-0002",
+      "slice": "situational",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": "camp-paraphrase",
+      "pairKind": "INV-paraphrase",
+      "utterance": "캠핑 처음 시작하는데 장비 뭐 사야 해?",
+      "expected": {
+        "case": 3,
+        "legsMin": 2,
+        "legsMax": 5,
+        "coverageTarget": 3,
+        "coverageGroups": [
+          {
+            "groupId": "tent",
+            "synonyms": [
+              "텐트"
+            ]
+          },
+          {
+            "groupId": "sleeping",
+            "synonyms": [
+              "침낭"
+            ]
+          },
+          {
+            "groupId": "lantern",
+            "synonyms": [
+              "랜턴"
+            ]
+          },
+          {
+            "groupId": "burner",
+            "synonyms": [
+              "버너",
+              "코펠",
+              "스토브"
+            ]
+          },
+          {
+            "groupId": "chair",
+            "synonyms": [
+              "캠핑의자",
+              "캠핑 의자",
+              "의자"
+            ]
+          },
+          {
+            "groupId": "mat",
+            "synonyms": [
+              "매트",
+              "돗자리"
+            ]
+          }
+        ],
+        "acceptableGroups": [
+          {
+            "groupId": "table",
+            "synonyms": [
+              "테이블"
+            ]
+          },
+          {
+            "groupId": "cooler",
+            "synonyms": [
+              "아이스박스",
+              "쿨러"
+            ]
+          },
+          {
+            "groupId": "grill",
+            "synonyms": [
+              "그릴",
+              "화로"
+            ]
+          }
+        ],
+        "buyAll": true,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 0,
+      "note": null
+    },
+    {
+      "caseId": "legs-situ-0003",
+      "slice": "situational",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": "camp-budget",
+      "pairKind": "DIR-budget",
+      "utterance": "10만원으로 캠핑 준비물 다 사고 싶어",
+      "expected": {
+        "case": 3,
+        "legsMin": 2,
+        "legsMax": 5,
+        "coverageTarget": 3,
+        "coverageGroups": [
+          {
+            "groupId": "tent",
+            "synonyms": [
+              "텐트"
+            ]
+          },
+          {
+            "groupId": "sleeping",
+            "synonyms": [
+              "침낭"
+            ]
+          },
+          {
+            "groupId": "lantern",
+            "synonyms": [
+              "랜턴"
+            ]
+          },
+          {
+            "groupId": "burner",
+            "synonyms": [
+              "버너",
+              "코펠",
+              "스토브"
+            ]
+          },
+          {
+            "groupId": "chair",
+            "synonyms": [
+              "캠핑의자",
+              "캠핑 의자",
+              "의자"
+            ]
+          },
+          {
+            "groupId": "mat",
+            "synonyms": [
+              "매트",
+              "돗자리"
+            ]
+          }
+        ],
+        "acceptableGroups": [
+          {
+            "groupId": "table",
+            "synonyms": [
+              "테이블"
+            ]
+          },
+          {
+            "groupId": "cooler",
+            "synonyms": [
+              "아이스박스",
+              "쿨러"
+            ]
+          },
+          {
+            "groupId": "grill",
+            "synonyms": [
+              "그릴",
+              "화로"
+            ]
+          }
+        ],
+        "buyAll": true,
+        "totalBudget": 100000
+      },
+      "baselineGroupsHit": 0,
+      "note": "DIR-budget 비교 대상은 legs-situ-0001(같은 그룹, 예산 없음) — 예산 추가가 legs 를 줄이면 안 된다."
+    },
+    {
+      "caseId": "legs-situ-0004",
+      "slice": "situational",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "김장 재료 추천해줘",
+      "expected": {
+        "case": 3,
+        "legsMin": 2,
+        "legsMax": 5,
+        "coverageTarget": 3,
+        "coverageGroups": [
+          {
+            "groupId": "cabbage",
+            "synonyms": [
+              "배추",
+              "절임배추",
+              "절임 배추"
+            ]
+          },
+          {
+            "groupId": "pepper",
+            "synonyms": [
+              "고춧가루"
+            ]
+          },
+          {
+            "groupId": "jeotgal",
+            "synonyms": [
+              "젓갈",
+              "액젓",
+              "새우젓"
+            ]
+          },
+          {
+            "groupId": "garlic",
+            "synonyms": [
+              "마늘",
+              "다진마늘",
+              "다진 마늘"
+            ]
+          },
+          {
+            "groupId": "radish",
+            "synonyms": [
+              "무"
+            ]
+          },
+          {
+            "groupId": "salt",
+            "synonyms": [
+              "소금",
+              "천일염"
+            ]
+          },
+          {
+            "groupId": "ginger",
+            "synonyms": [
+              "생강"
+            ]
+          }
+        ],
+        "acceptableGroups": [
+          {
+            "groupId": "extra",
+            "synonyms": [
+              "쪽파",
+              "갓",
+              "매실액",
+              "찹쌀풀",
+              "찹쌀"
+            ]
+          }
+        ],
+        "buyAll": true,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 0,
+      "note": null
+    },
+    {
+      "caseId": "legs-situ-0005",
+      "slice": "situational",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "신혼집에 필요한 살림살이 추천해줘",
+      "expected": {
+        "case": 3,
+        "legsMin": 2,
+        "legsMax": 5,
+        "coverageTarget": 3,
+        "coverageGroups": [
+          {
+            "groupId": "cookware",
+            "synonyms": [
+              "냄비",
+              "프라이팬"
+            ]
+          },
+          {
+            "groupId": "bedding",
+            "synonyms": [
+              "이불",
+              "침구"
+            ]
+          },
+          {
+            "groupId": "appliance",
+            "synonyms": [
+              "전자레인지",
+              "밥솥",
+              "청소기",
+              "세탁기"
+            ]
+          },
+          {
+            "groupId": "tableware",
+            "synonyms": [
+              "그릇",
+              "식기",
+              "수저"
+            ]
+          },
+          {
+            "groupId": "curtain",
+            "synonyms": [
+              "커튼"
+            ]
+          },
+          {
+            "groupId": "storage",
+            "synonyms": [
+              "수납장",
+              "수납박스",
+              "수납 박스",
+              "행거"
+            ]
+          }
+        ],
+        "acceptableGroups": [
+          {
+            "groupId": "etc",
+            "synonyms": [
+              "토스터",
+              "전기포트",
+              "도마",
+              "칼"
+            ]
+          }
+        ],
+        "buyAll": true,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 0,
+      "note": null
+    },
+    {
+      "caseId": "legs-situ-0006",
+      "slice": "situational",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "장마철 대비해서 뭐 사둘까?",
+      "expected": {
+        "case": 3,
+        "legsMin": 2,
+        "legsMax": 5,
+        "coverageTarget": 2,
+        "coverageGroups": [
+          {
+            "groupId": "umbrella",
+            "synonyms": [
+              "우산"
+            ]
+          },
+          {
+            "groupId": "dehumid",
+            "synonyms": [
+              "제습기",
+              "제습제"
+            ]
+          },
+          {
+            "groupId": "boots",
+            "synonyms": [
+              "장화",
+              "레인부츠"
+            ]
+          },
+          {
+            "groupId": "raincoat",
+            "synonyms": [
+              "우비",
+              "레인코트"
+            ]
+          },
+          {
+            "groupId": "mold",
+            "synonyms": [
+              "곰팡이제거제",
+              "곰팡이 제거제"
+            ]
+          },
+          {
+            "groupId": "rack",
+            "synonyms": [
+              "건조대"
+            ]
+          }
+        ],
+        "acceptableGroups": [
+          {
+            "groupId": "etc",
+            "synonyms": [
+              "방수 스프레이",
+              "습기제거제"
+            ]
+          }
+        ],
+        "buyAll": true,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 0,
+      "note": null
+    },
+    {
+      "caseId": "legs-situ-0007",
+      "slice": "situational",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "홈트 시작하려는데 뭐 필요해?",
+      "expected": {
+        "case": 3,
+        "legsMin": 2,
+        "legsMax": 5,
+        "coverageTarget": 3,
+        "coverageGroups": [
+          {
+            "groupId": "mat",
+            "synonyms": [
+              "요가매트",
+              "요가 매트",
+              "매트"
+            ]
+          },
+          {
+            "groupId": "dumbbell",
+            "synonyms": [
+              "덤벨",
+              "아령"
+            ]
+          },
+          {
+            "groupId": "roller",
+            "synonyms": [
+              "폼롤러",
+              "폼 롤러"
+            ]
+          },
+          {
+            "groupId": "band",
+            "synonyms": [
+              "밴드",
+              "튜빙"
+            ]
+          },
+          {
+            "groupId": "wear",
+            "synonyms": [
+              "운동복",
+              "레깅스",
+              "트레이닝복"
+            ]
+          }
+        ],
+        "acceptableGroups": [
+          {
+            "groupId": "etc",
+            "synonyms": [
+              "물병",
+              "텀블러",
+              "줄넘기",
+              "케틀벨",
+              "철봉",
+              "풀업바"
+            ]
+          }
+        ],
+        "buyAll": true,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 0,
+      "note": null
+    },
+    {
+      "caseId": "legs-situ-0008",
+      "slice": "situational",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "주말에 바베큐 파티 하려는데 뭐 사야 돼?",
+      "expected": {
+        "case": 3,
+        "legsMin": 2,
+        "legsMax": 5,
+        "coverageTarget": 3,
+        "coverageGroups": [
+          {
+            "groupId": "meat",
+            "synonyms": [
+              "삼겹살",
+              "목살",
+              "소고기",
+              "고기"
+            ]
+          },
+          {
+            "groupId": "grill",
+            "synonyms": [
+              "그릴",
+              "석쇠",
+              "화로",
+              "숯불"
+            ]
+          },
+          {
+            "groupId": "charcoal",
+            "synonyms": [
+              "숯",
+              "착화탄",
+              "착화제"
+            ]
+          },
+          {
+            "groupId": "veg",
+            "synonyms": [
+              "상추",
+              "쌈채소",
+              "쌈 채소",
+              "깻잎"
+            ]
+          },
+          {
+            "groupId": "sauce",
+            "synonyms": [
+              "쌈장",
+              "소스"
+            ]
+          },
+          {
+            "groupId": "tongs",
+            "synonyms": [
+              "집게"
+            ]
+          }
+        ],
+        "acceptableGroups": [
+          {
+            "groupId": "etc",
+            "synonyms": [
+              "종이컵",
+              "일회용",
+              "앞치마",
+              "콜라",
+              "맥주",
+              "음료",
+              "꼬치",
+              "마시멜로"
+            ]
+          }
+        ],
+        "buyAll": true,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 0,
+      "note": null
+    },
+    {
+      "caseId": "legs-situ-0009",
+      "slice": "situational",
+      "checkType": "MFT",
+      "promptExample": true,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "발이 시려워",
+      "expected": {
+        "case": 3,
+        "legsMin": 2,
+        "legsMax": 5,
+        "coverageTarget": 2,
+        "coverageGroups": [
+          {
+            "groupId": "socks",
+            "synonyms": [
+              "수면양말",
+              "양말"
+            ]
+          },
+          {
+            "groupId": "boots",
+            "synonyms": [
+              "방한부츠",
+              "방한 부츠",
+              "부츠",
+              "방한화"
+            ]
+          },
+          {
+            "groupId": "slippers",
+            "synonyms": [
+              "슬리퍼",
+              "실내화"
+            ]
+          },
+          {
+            "groupId": "heater",
+            "synonyms": [
+              "전기장판",
+              "발난로",
+              "발열",
+              "히터"
+            ]
+          },
+          {
+            "groupId": "hotpack",
+            "synonyms": [
+              "핫팩"
+            ]
+          }
+        ],
+        "acceptableGroups": [],
+        "buyAll": null,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 0,
+      "note": "_SYSTEM case 예문(발이 시려워 → case 3)."
+    },
+    {
+      "caseId": "legs-situ-0010",
+      "slice": "situational",
+      "checkType": "MFT",
+      "promptExample": true,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "자취 시작할 때 필요한 거 추천해줘",
+      "expected": {
+        "case": 3,
+        "legsMin": 2,
+        "legsMax": 5,
+        "coverageTarget": 3,
+        "coverageGroups": [
+          {
+            "groupId": "microwave",
+            "synonyms": [
+              "전자레인지"
+            ]
+          },
+          {
+            "groupId": "bedding",
+            "synonyms": [
+              "이불",
+              "침구"
+            ]
+          },
+          {
+            "groupId": "pot",
+            "synonyms": [
+              "냄비",
+              "프라이팬"
+            ]
+          },
+          {
+            "groupId": "laundry",
+            "synonyms": [
+              "빨래바구니",
+              "빨래 바구니",
+              "건조대"
+            ]
+          },
+          {
+            "groupId": "hanger",
+            "synonyms": [
+              "행거",
+              "옷걸이"
+            ]
+          }
+        ],
+        "acceptableGroups": [
+          {
+            "groupId": "etc",
+            "synonyms": [
+              "밥솥",
+              "청소기",
+              "수납",
+              "커튼",
+              "휴지",
+              "세제",
+              "수건"
+            ]
+          }
+        ],
+        "buyAll": true,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 0,
+      "note": "_SYSTEM fan-out 예문(자취 시작할 때 필요한거 → 전자레인지/이불/냄비/빨래바구니/행거)."
+    },
+    {
+      "caseId": "legs-purp-0001",
+      "slice": "purpose",
+      "checkType": "MFT",
+      "promptExample": true,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "집들이 선물 뭐가 좋을까?",
+      "expected": {
+        "case": 3,
+        "legsMin": 2,
+        "legsMax": 5,
+        "coverageTarget": 3,
+        "coverageGroups": [
+          {
+            "groupId": "candle",
+            "synonyms": [
+              "캔들",
+              "디퓨저",
+              "방향제"
+            ]
+          },
+          {
+            "groupId": "towel",
+            "synonyms": [
+              "수건",
+              "타월"
+            ]
+          },
+          {
+            "groupId": "tissue",
+            "synonyms": [
+              "휴지",
+              "티슈",
+              "키친타월"
+            ]
+          },
+          {
+            "groupId": "detergent",
+            "synonyms": [
+              "세제",
+              "섬유유연제",
+              "핸드워시"
+            ]
+          },
+          {
+            "groupId": "wine",
+            "synonyms": [
+              "와인",
+              "샴페인"
+            ]
+          },
+          {
+            "groupId": "plant",
+            "synonyms": [
+              "화분",
+              "식물"
+            ]
+          },
+          {
+            "groupId": "tableware",
+            "synonyms": [
+              "그릇",
+              "식기",
+              "컵",
+              "머그"
+            ]
+          }
+        ],
+        "acceptableGroups": [],
+        "buyAll": false,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 0,
+      "note": "_SYSTEM case 예문(집들이 선물 → case 3)."
+    },
+    {
+      "caseId": "legs-purp-0002",
+      "slice": "purpose",
+      "checkType": "MFT",
+      "promptExample": true,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "부모님 환갑 선물 추천해줘",
+      "expected": {
+        "case": 3,
+        "legsMin": 2,
+        "legsMax": 5,
+        "coverageTarget": 2,
+        "coverageGroups": [
+          {
+            "groupId": "ginseng",
+            "synonyms": [
+              "홍삼"
+            ]
+          },
+          {
+            "groupId": "massage",
+            "synonyms": [
+              "안마의자",
+              "안마기",
+              "마사지"
+            ]
+          },
+          {
+            "groupId": "hanwoo",
+            "synonyms": [
+              "한우"
+            ]
+          },
+          {
+            "groupId": "supplement",
+            "synonyms": [
+              "영양제",
+              "비타민",
+              "오메가"
+            ]
+          }
+        ],
+        "acceptableGroups": [
+          {
+            "groupId": "flower",
+            "synonyms": [
+              "꽃",
+              "꽃다발"
+            ]
+          }
+        ],
+        "buyAll": false,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 0,
+      "note": "_SYSTEM fan-out 예문(부모님 환갑 선물 → 홍삼/안마의자/한우/영양제)."
+    },
+    {
+      "caseId": "legs-purp-0003",
+      "slice": "purpose",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": "gift-budget",
+      "pairKind": "DIR-budget",
+      "utterance": "여자친구 생일선물 추천해줘",
+      "expected": {
+        "case": 3,
+        "legsMin": 2,
+        "legsMax": 5,
+        "coverageTarget": 2,
+        "coverageGroups": [
+          {
+            "groupId": "perfume",
+            "synonyms": [
+              "향수"
+            ]
+          },
+          {
+            "groupId": "jewelry",
+            "synonyms": [
+              "목걸이",
+              "반지",
+              "팔찌",
+              "귀걸이",
+              "주얼리"
+            ]
+          },
+          {
+            "groupId": "bag",
+            "synonyms": [
+              "가방",
+              "핸드백",
+              "지갑"
+            ]
+          },
+          {
+            "groupId": "cosmetics",
+            "synonyms": [
+              "화장품",
+              "립스틱",
+              "쿠션",
+              "틴트"
+            ]
+          },
+          {
+            "groupId": "flower",
+            "synonyms": [
+              "꽃",
+              "꽃다발"
+            ]
+          }
+        ],
+        "acceptableGroups": [
+          {
+            "groupId": "etc",
+            "synonyms": [
+              "케이크",
+              "무드등",
+              "인형",
+              "텀블러"
+            ]
+          }
+        ],
+        "buyAll": false,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 0,
+      "note": null
+    },
+    {
+      "caseId": "legs-purp-0004",
+      "slice": "purpose",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": "gift-budget",
+      "pairKind": "DIR-budget",
+      "utterance": "3만원 이하로 여자친구 생일선물 추천해줘",
+      "expected": {
+        "case": 3,
+        "legsMin": 2,
+        "legsMax": 5,
+        "coverageTarget": 2,
+        "coverageGroups": [
+          {
+            "groupId": "perfume",
+            "synonyms": [
+              "향수"
+            ]
+          },
+          {
+            "groupId": "jewelry",
+            "synonyms": [
+              "목걸이",
+              "반지",
+              "팔찌",
+              "귀걸이",
+              "주얼리"
+            ]
+          },
+          {
+            "groupId": "bag",
+            "synonyms": [
+              "가방",
+              "핸드백",
+              "지갑"
+            ]
+          },
+          {
+            "groupId": "cosmetics",
+            "synonyms": [
+              "화장품",
+              "립스틱",
+              "쿠션",
+              "틴트"
+            ]
+          },
+          {
+            "groupId": "flower",
+            "synonyms": [
+              "꽃",
+              "꽃다발"
+            ]
+          }
+        ],
+        "acceptableGroups": [
+          {
+            "groupId": "etc",
+            "synonyms": [
+              "케이크",
+              "무드등",
+              "인형",
+              "텀블러"
+            ]
+          }
+        ],
+        "buyAll": false,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 0,
+      "note": "상품당 상한(선물 하나) — totalBudget 은 null. pairId gift-budget 상대는 legs-purp-0003."
+    },
+    {
+      "caseId": "legs-purp-0005",
+      "slice": "purpose",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": "school-budget",
+      "pairKind": "DIR-budget",
+      "utterance": "초등학생 조카 신학기 준비물 추천해줘",
+      "expected": {
+        "case": 3,
+        "legsMin": 2,
+        "legsMax": 5,
+        "coverageTarget": 3,
+        "coverageGroups": [
+          {
+            "groupId": "bag",
+            "synonyms": [
+              "책가방",
+              "가방"
+            ]
+          },
+          {
+            "groupId": "pencilcase",
+            "synonyms": [
+              "필통"
+            ]
+          },
+          {
+            "groupId": "stationery",
+            "synonyms": [
+              "연필",
+              "샤프",
+              "볼펜",
+              "색연필",
+              "크레파스",
+              "문구"
+            ]
+          },
+          {
+            "groupId": "notebook",
+            "synonyms": [
+              "공책",
+              "노트"
+            ]
+          },
+          {
+            "groupId": "shoes",
+            "synonyms": [
+              "실내화"
+            ]
+          },
+          {
+            "groupId": "bottle",
+            "synonyms": [
+              "물통",
+              "물병"
+            ]
+          }
+        ],
+        "acceptableGroups": [
+          {
+            "groupId": "etc",
+            "synonyms": [
+              "지우개",
+              "알림장",
+              "파일",
+              "크로스백"
+            ]
+          }
+        ],
+        "buyAll": true,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 0,
+      "note": "buyAll true(일습 구매). pairId school-budget 상대는 legs-purp-0006."
+    },
+    {
+      "caseId": "legs-purp-0006",
+      "slice": "purpose",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": "school-budget",
+      "pairKind": "DIR-budget",
+      "utterance": "예산 10만원으로 신학기 준비물 전부 챙겨줘",
+      "expected": {
+        "case": 3,
+        "legsMin": 2,
+        "legsMax": 5,
+        "coverageTarget": 3,
+        "coverageGroups": [
+          {
+            "groupId": "bag",
+            "synonyms": [
+              "책가방",
+              "가방"
+            ]
+          },
+          {
+            "groupId": "pencilcase",
+            "synonyms": [
+              "필통"
+            ]
+          },
+          {
+            "groupId": "stationery",
+            "synonyms": [
+              "연필",
+              "샤프",
+              "볼펜",
+              "색연필",
+              "크레파스",
+              "문구"
+            ]
+          },
+          {
+            "groupId": "notebook",
+            "synonyms": [
+              "공책",
+              "노트"
+            ]
+          },
+          {
+            "groupId": "shoes",
+            "synonyms": [
+              "실내화"
+            ]
+          },
+          {
+            "groupId": "bottle",
+            "synonyms": [
+              "물통",
+              "물병"
+            ]
+          }
+        ],
+        "acceptableGroups": [
+          {
+            "groupId": "etc",
+            "synonyms": [
+              "지우개",
+              "알림장",
+              "파일",
+              "크로스백"
+            ]
+          }
+        ],
+        "buyAll": true,
+        "totalBudget": 100000
+      },
+      "baselineGroupsHit": 0,
+      "note": null
+    },
+    {
+      "caseId": "legs-purp-0007",
+      "slice": "purpose",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "어버이날 선물 뭐 사지?",
+      "expected": {
+        "case": 3,
+        "legsMin": 2,
+        "legsMax": 5,
+        "coverageTarget": 2,
+        "coverageGroups": [
+          {
+            "groupId": "carnation",
+            "synonyms": [
+              "카네이션",
+              "꽃"
+            ]
+          },
+          {
+            "groupId": "health",
+            "synonyms": [
+              "홍삼",
+              "영양제",
+              "비타민"
+            ]
+          },
+          {
+            "groupId": "massage",
+            "synonyms": [
+              "안마기",
+              "안마의자",
+              "마사지"
+            ]
+          },
+          {
+            "groupId": "food",
+            "synonyms": [
+              "한우",
+              "과일",
+              "선물세트"
+            ]
+          }
+        ],
+        "acceptableGroups": [],
+        "buyAll": false,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 0,
+      "note": null
+    },
+    {
+      "caseId": "legs-purp-0008",
+      "slice": "purpose",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "회사 동료 결혼 선물 추천해줘",
+      "expected": {
+        "case": 3,
+        "legsMin": 2,
+        "legsMax": 5,
+        "coverageTarget": 2,
+        "coverageGroups": [
+          {
+            "groupId": "tableware",
+            "synonyms": [
+              "그릇",
+              "식기",
+              "접시"
+            ]
+          },
+          {
+            "groupId": "appliance",
+            "synonyms": [
+              "토스터",
+              "전기포트",
+              "커피머신",
+              "에어프라이어"
+            ]
+          },
+          {
+            "groupId": "towel",
+            "synonyms": [
+              "수건",
+              "타월"
+            ]
+          },
+          {
+            "groupId": "glass",
+            "synonyms": [
+              "와인잔",
+              "잔",
+              "컵"
+            ]
+          }
+        ],
+        "acceptableGroups": [
+          {
+            "groupId": "etc",
+            "synonyms": [
+              "액자",
+              "꽃",
+              "무드등",
+              "캔들",
+              "디퓨저",
+              "상품권"
+            ]
+          }
+        ],
+        "buyAll": false,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 0,
+      "note": null
+    },
+    {
+      "caseId": "legs-purp-0009",
+      "slice": "purpose",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "신생아 출산 선물 추천해줘",
+      "expected": {
+        "case": 3,
+        "legsMin": 2,
+        "legsMax": 5,
+        "coverageTarget": 2,
+        "coverageGroups": [
+          {
+            "groupId": "clothes",
+            "synonyms": [
+              "아기옷",
+              "바디수트",
+              "우주복",
+              "배냇저고리"
+            ]
+          },
+          {
+            "groupId": "diaper",
+            "synonyms": [
+              "기저귀"
+            ]
+          },
+          {
+            "groupId": "bottle",
+            "synonyms": [
+              "젖병"
+            ]
+          },
+          {
+            "groupId": "skincare",
+            "synonyms": [
+              "로션",
+              "크림"
+            ]
+          },
+          {
+            "groupId": "toy",
+            "synonyms": [
+              "장난감",
+              "딸랑이",
+              "모빌",
+              "인형"
+            ]
+          },
+          {
+            "groupId": "gauze",
+            "synonyms": [
+              "손수건",
+              "가제"
+            ]
+          }
+        ],
+        "acceptableGroups": [
+          {
+            "groupId": "etc",
+            "synonyms": [
+              "턱받이",
+              "양말",
+              "유모차"
+            ]
+          }
+        ],
+        "buyAll": false,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 0,
+      "note": null
+    },
+    {
+      "caseId": "legs-mult-0001",
+      "slice": "multi",
+      "checkType": "MFT",
+      "promptExample": true,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "이어폰이랑 노트북 추천해줘",
+      "expected": {
+        "case": 3,
+        "legsMin": 2,
+        "legsMax": 2,
+        "coverageTarget": 2,
+        "coverageGroups": [
+          {
+            "groupId": "earphone",
+            "synonyms": [
+              "이어폰"
+            ]
+          },
+          {
+            "groupId": "laptop",
+            "synonyms": [
+              "노트북"
+            ]
+          }
+        ],
+        "acceptableGroups": [],
+        "buyAll": null,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 1,
+      "note": "_SYSTEM case 예문(서로 다른 상품 2개 이상 → case 3)."
+    },
+    {
+      "caseId": "legs-mult-0002",
+      "slice": "multi",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "노트북 살 건데 마우스랑 파우치도 같이 추천해줘",
+      "expected": {
+        "case": 3,
+        "legsMin": 2,
+        "legsMax": 3,
+        "coverageTarget": 2,
+        "coverageGroups": [
+          {
+            "groupId": "laptop",
+            "synonyms": [
+              "노트북"
+            ]
+          },
+          {
+            "groupId": "mouse",
+            "synonyms": [
+              "마우스"
+            ]
+          },
+          {
+            "groupId": "pouch",
+            "synonyms": [
+              "파우치"
+            ]
+          }
+        ],
+        "acceptableGroups": [],
+        "buyAll": true,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 1,
+      "note": null
+    },
+    {
+      "caseId": "legs-mult-0003",
+      "slice": "multi",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "휴지랑 물티슈랑 세제 같이 사려고 해",
+      "expected": {
+        "case": 3,
+        "legsMin": 3,
+        "legsMax": 3,
+        "coverageTarget": 3,
+        "coverageGroups": [
+          {
+            "groupId": "tissue",
+            "synonyms": [
+              "휴지",
+              "화장지"
+            ]
+          },
+          {
+            "groupId": "wettissue",
+            "synonyms": [
+              "물티슈"
+            ]
+          },
+          {
+            "groupId": "detergent",
+            "synonyms": [
+              "세제"
+            ]
+          }
+        ],
+        "acceptableGroups": [],
+        "buyAll": true,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 1,
+      "note": null
+    },
+    {
+      "caseId": "legs-mult-0004",
+      "slice": "multi",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "김치찌개 끓이려는데 김치랑 돼지고기 추천해줘",
+      "expected": {
+        "case": 3,
+        "legsMin": 2,
+        "legsMax": 2,
+        "coverageTarget": 2,
+        "coverageGroups": [
+          {
+            "groupId": "kimchi",
+            "synonyms": [
+              "김치"
+            ]
+          },
+          {
+            "groupId": "pork",
+            "synonyms": [
+              "돼지고기",
+              "목살",
+              "삼겹살"
+            ]
+          }
+        ],
+        "acceptableGroups": [
+          {
+            "groupId": "etc",
+            "synonyms": [
+              "두부",
+              "대파",
+              "양파",
+              "고춧가루"
+            ]
+          }
+        ],
+        "buyAll": true,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 1,
+      "note": null
+    },
+    {
+      "caseId": "legs-mult-0005",
+      "slice": "multi",
+      "checkType": "MFT",
+      "promptExample": false,
+      "pairId": null,
+      "pairKind": null,
+      "utterance": "커피머신이랑 원두 추천해줘",
+      "expected": {
+        "case": 3,
+        "legsMin": 2,
+        "legsMax": 2,
+        "coverageTarget": 2,
+        "coverageGroups": [
+          {
+            "groupId": "machine",
+            "synonyms": [
+              "커피머신",
+              "커피 머신",
+              "머신"
+            ]
+          },
+          {
+            "groupId": "beans",
+            "synonyms": [
+              "원두"
+            ]
+          }
+        ],
+        "acceptableGroups": [],
+        "buyAll": null,
+        "totalBudget": null
+      },
+      "baselineGroupsHit": 1,
+      "note": null
+    }
+  ]
+}
