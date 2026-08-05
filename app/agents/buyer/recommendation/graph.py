@@ -603,6 +603,12 @@ async def stream_recommendation(
     # 않아(`RELAXATION_FIELD_TO_ATTR` 에 없음, relaxation.py:87) 이 경로를 구제하지 못한다.
     # **확장 턴에만** 적용한다 — 일반 fan-out(사용자가 명시한 카테고리)의 0건은 종전대로 둔다.
     # 조용히 카테고리를 풀면 "표시=실제"(#51)가 깨지고 이 PR 의 범위 밖이다.
+    # [PR #318 리뷰 R6-4] `search_result.total_count` 는 **최근구매 억제(exact 제외·소모품
+    # 카테고리 억제) 이전** 값이다(그 억제는 이 지점 아래 `_post_filter` 가 한다). 검색이 결과를
+    # 냈는데 그 전량이 억제돼 `candidates` 가 0이 되는 턴은 이 폴백이 트리거되지 않는다 — 그
+    # 경로는 확장 이전에도 동일하게 "억제로 0건"이었으므로 이 PR 이 만든 회귀가 아니다. 억제
+    # 이후 기준으로 다시 판정하려면 폴백 재검색 뒤 억제를 다시 돌려야 해서(순서·중복 억제 문제가
+    # 새로 생긴다) 여기서 처리하지 않고 별도 이슈로 분리한다.
     category_expand_notice_suppressed = False
     if decision.category_expanded and search_result.total_count == 0:
 

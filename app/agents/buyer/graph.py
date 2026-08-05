@@ -446,6 +446,15 @@ async def _prepare_recommendation(
                     # 택일 소비는 **두 호출의 합**이다 — 상한이 턴당이므로 사후 검증도 턴 단위여야
                     # 한다. 로그에 실어 "상한이 실제로 지켜졌나"를 운영에서 확인할 수 있게 한다.
                     select_used = mapping.select_calls + expanded.select_calls
+                    # [PR #318 리뷰 R6-3] expansion_leaves 도 **합친다** — legs 와 같은 이유·같은
+                    # 규약(원 매핑 것을 앞에, dedup_truncate 로 정리)이다. 안 합치면 원 발화가
+                    # D1(신호 없음)로 expansion_leaves 가 비어 있고 #217 전개 아이템들만 거리컷에
+                    # 드롭돼 expanded.expansion_leaves 가 채워진 턴에서 그 후보가 조용히 버려져
+                    # #222 폴백이 아예 발동하지 않는다 — 쓸 수 있는 후보가 있는데 놓치는 셈이다.
+                    merged_expansion_leaves = dedup_truncate(
+                        mapping.expansion_leaves + expanded.expansion_leaves,
+                        settings.category_expand_legs,
+                    )
                     logger.info(
                         "needs_expansion_union",
                         extra={
@@ -458,7 +467,12 @@ async def _prepare_recommendation(
                     # `replace` 로 합친다 — 필드를 나열해 새로 만들면 이번처럼 새 필드
                     # (`select_calls`)가 조용히 기본값으로 리셋된다. `unresolved` 는 첫 매핑 것을
                     # 그대로 둔다(재전개 금지, 위 주석).
-                    mapping = replace(mapping, legs=merged, select_calls=select_used)
+                    mapping = replace(
+                        mapping,
+                        legs=merged,
+                        select_calls=select_used,
+                        expansion_leaves=merged_expansion_leaves,
+                    )
         decision.category_legs = mapping.legs
         # [#222] 매핑이 leg 를 하나도 못 냈고 확장 후보가 있으면 그것으로 fan-out 한다.
         # **legs 가 비었을 때만** 발동한다 — 하나라도 canonical 이 나온 턴은 종전 경로 그대로다
@@ -473,9 +487,10 @@ async def _prepare_recommendation(
         ):
             decision.category_legs = mapping.expansion_leaves[: settings.category_expand_legs]
             decision.category_expanded = True
-            # filters.category 는 여기서 건드리지 않는다(§3, 아래 공유 if 가 category_legs[0][0] 을
-            # 그대로 대표값으로 쓴다) — v1 은 확장 leaf 8개가 여러 중분류에 걸쳐도 대표 하나만
-            # 승계하는 기존 함정을 고치지 않는다(§3 이슈 ④ 비범위). carry_leaf 로 관측만 남긴다.
+            # carry_leaf 로 관측만 남긴다 — filters.category 자체는 아래 공유 if 가
+            # category_expanded 를 보고 None 으로 비운다(PR #318 리뷰 R6-1, §3 이슈 ④ 비범위는
+            # 그대로다: 8개 확장 leaf 를 대표하는 단일 LCA 값을 만드는 게 아니라, **틀린 값을
+            # 저장하지 않는 것**만 한다).
             logger.info(
                 "category_expanded",
                 extra={
@@ -483,13 +498,23 @@ async def _prepare_recommendation(
                     "carry_leaf": decision.category_legs[0][0],
                 },
             )
-    if decision.category_legs:
+    if decision.category_legs and not decision.category_expanded:
         # 대표 canonical — 단일 filters.category 필드·조건 칩·멀티턴 승계 호환(§7).
         decision.filters.category = decision.category_legs[0][0]
     else:
-        # 매핑 결과 없음 → LLM 이 echo 했을 수 있는 미검증 filters.category 를 비운다. category 는
-        # 이제 전적으로 category_legs(canonical) 경유로만 흐른다 — 미시드·매핑 실패 시에도 보정 안 된
-        # 원문이 Spring 검색·조건 칩으로 새지 않게(PR #73 리뷰 #13/#15).
+        # [PR #318 리뷰 R6-1] 확장 턴은 대표값을 저장하지 않는다 — category_legs[0][0] 은 8개
+        # 확장 leaf 중 임의의 하나일 뿐이라(§3 이슈 ④), 이걸 그대로 영속하면 (a) F-1 무필터
+        # 폴백이 걸린 턴은 **실제로 쓰이지 않은** 카테고리가 저장되고, (b) 폴백이 안 걸려도
+        # 다음 리파인 턴("더 저렴한 걸로")이 그 leaf 하나로 조용히 좁혀진다(action=="carry").
+        # 칩·고지에서 지킨 "표시=실제"(#51)가 멀티턴 영속 경로에서 깨지는 것을 막는다.
+        # **검색에는 영향이 없다** — fan-out(`_run_search`)은 `decision.category_legs` 로 돌고
+        # `_leg` 가 leg 마다 `category` 를 override 하므로(`base.category` 를 읽지 않음)
+        # 여기서 None 을 둬도 이번 턴의 8-leg 검색 자체는 그대로다.
+        #
+        # 매핑 결과 없음(비-확장 degrade) → LLM 이 echo 했을 수 있는 미검증 filters.category 를
+        # 비운다. category 는 이제 전적으로 category_legs(canonical) 경유로만 흐른다 —
+        # 미시드·매핑 실패 시에도 보정 안 된 원문이 Spring 검색·조건 칩으로 새지 않게
+        # (PR #73 리뷰 #13/#15).
         decision.filters.category = None
 
     # 멀티턴 병합 필터는 추천 intent 에서만 저장(담기/조회가 덮어쓰지 않게).

@@ -11,10 +11,12 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.agents.buyer.graph import get_thread_store
 from app.agents.buyer.graph import run_buyer_turn as _production_run_buyer_turn
 from app.agents.buyer.recommendation.category_mapping import CategoryMapping
 from app.agents.buyer.recommendation.graph import _merge_fanout_results
 from app.agents.buyer.recommendation.state import build_condition_chips
+from app.agents.buyer.session_state import context_thread_key
 from app.api.deps import buyer_owner_id
 from app.core import session_context
 from app.core.auth import Identity
@@ -133,6 +135,17 @@ async def _committed_observer(request, identity, observer=None):  # noqa: ANN001
         )
     observer.context_id = context.context_id
     return observer
+
+
+async def _thread_key(request, identity) -> str:  # noqa: ANN001
+    """R6-1 검증용 — `run_buyer_turn` 이 내부에서 만드는 것과 같은 thread_key 를 재계산한다.
+
+    `touch` 는 같은 세션·스레드에 다시 불러도 같은 `context_id` 를 낸다(멱등) — `test_multiturn_
+    category_intent_84.py` 와 같은 패턴으로, 실행이 끝난 뒤 `get_thread_store().get(key)` 로
+    영속된 `filters` 를 직접 읽는다.
+    """
+    observer = await _committed_observer(request, identity)
+    return context_thread_key(observer.context_id, request.thread_id)
 
 
 async def run_buyer_turn(request, identity, **kwargs):  # noqa: ANN001
@@ -2226,3 +2239,141 @@ async def test_non_expanded_case3_multi_need_still_splits_after_fix() -> None:
     assert len(push.pushes[0].lists) == 2
     assert [entry.label for entry in push.pushes[0].lists] == ["파우치", "어댑터"]
     assert push.pushes[0].list_type == "PICK_ONE"
+
+
+# ── R6-1 (PR #318 리뷰 3차) — 확장 턴은 filters.category 를 영속하지 않는다 ────────────
+#
+# `category_legs[0][0]` 은 확장 leaf 8개 중 임의의 하나일 뿐이다. 그걸 그대로
+# `thread_store` 에 영속하면 (a) F-1 무필터 폴백이 걸린 턴은 실제로 안 쓰인 카테고리가 저장되고,
+# (b) 폴백이 안 걸려도 다음 리파인 턴("더 저렴한 걸로")이 그 leaf 하나로 조용히 좁혀진다
+# (`action=="carry"`) — 칩·고지에서 지킨 "표시=실제"(#51)가 멀티턴 영속 경로에서 깨졌었다.
+
+
+async def test_expanded_turn_does_not_persist_representative_category() -> None:
+    """[R6-1] 확장 턴 후 `thread_store` 에 저장된 category 는 None 이다(8개 중 임의의 leaf 아님)."""
+
+    async def _search(filters, exclude_product_ids=None):
+        return _res(101, 102)
+
+    req = _req(message="화장품 추천해줘")
+    identity = _member()
+    await _collect(
+        run_buyer_turn(
+            req,
+            identity,
+            llm=FakeLLM(decompose=_broad_decompose()),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_broad_mapper(),
+        )
+    )
+    stored = await (await get_thread_store()).get(await _thread_key(req, identity))
+    assert stored is not None
+    assert stored.category is None
+
+
+async def test_non_expanded_turn_still_persists_representative_category() -> None:
+    """[R6-1 회귀 고정] 확장이 **아닌** 일반 턴은 종전대로 `category_legs[0][0]` 이 저장된다."""
+
+    async def _search(filters, exclude_product_ids=None):
+        return _res(101, 102)
+
+    req = _req()
+    identity = _member()
+    await _collect(
+        run_buyer_turn(
+            req,
+            identity,
+            llm=FakeLLM(),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_two_leg_mapper(),
+        )
+    )
+    stored = await (await get_thread_store()).get(await _thread_key(req, identity))
+    assert stored is not None
+    assert stored.category == "여행/캠핑 > 여행용품"  # _two_leg_mapper 의 첫 leg(대표 canonical)
+
+
+async def test_expanded_turn_search_still_uses_all_expansion_legs() -> None:
+    """[R6-1] `filters.category` 를 비워도 이번 턴의 fan-out 검색 자체는 8개 leg 그대로 나간다 —
+    fan-out(`_run_search`)은 `decision.category_legs` 로 돌고 `_leg` 가 leg 마다 `category` 를
+    override 하므로 `base.category` 를 읽지 않는다(검색은 안 망가진다는 근거)."""
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters.category)
+        return _res(101, 102)
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="화장품 추천해줘"),
+            _member(),
+            llm=FakeLLM(decompose=_broad_decompose()),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_broad_mapper(),
+        )
+    )
+    assert set(calls) == {c for c, _ in _BROAD_LEAVES}
+
+
+# ── R6-3 (PR #318 리뷰 3차) — needs_expansion 합집합이 `expansion_leaves` 를 버리지 않는다 ──
+#
+# 원 매핑이 D1(신호 자체 없음)로 `expansion_leaves` 가 비어 있고, #217 전개 아이템들이 전부
+# 거리컷에 드롭돼 `expanded.expansion_leaves` 만 채워진 턴은, `replace(mapping, legs=..., ...)`
+# 가 `expansion_leaves` 를 같이 넘기지 않으면 #222 폴백이 아예 발동하지 않는다 — 쓸 수 있는
+# 후보가 있는데 조용히 버려진다.
+
+
+async def test_expansion_leaves_survive_needs_expansion_union() -> None:
+    """[R6-3] 원 매핑 expansion_leaves 비어 있음 + 전개 매핑 expansion_leaves 채워짐 → 폴백이
+    발동해 category_legs 가 전개 쪽 확장 후보로 채워진다."""
+    seen, expand = _expansion_probe()
+
+    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
+        # 원 발화("집들이 선물로 뭐 사갈까")는 D1(신호 없음) → 매핑 자체가 없어 expansion_leaves 도
+        # 없다. 전개 아이템(디퓨저·식기 세트·핸드워시 세트)에만 매핑을 태워 전부 거리컷 드롭시키고
+        # 그 앵커의 top-N 을 expansion_leaves 로 채운다.
+        if any(q.query for q in category_queries):
+            return CategoryMapping(
+                legs=[],
+                unresolved=[q.query for q in category_queries if q.query],
+                expansion_leaves=[
+                    (f"{q.query} 관련 카테고리 > 종류1", q.query)
+                    for q in category_queries
+                    if q.query
+                ],
+            )
+        return CategoryMapping()  # 원 발화 — D1, expansion_leaves 없음
+
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters.category)
+        return _res(101)
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="집들이 선물로 뭐 사갈까"),
+            _member(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "reply": "",
+                    "case": 3,
+                    "filters": {},
+                    "categoryQueries": [],  # D1(no_legs) — 신호 있는 leg 자체가 없다
+                }
+            ),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_map,
+            expand_needs=expand,
+        )
+    )
+    assert seen == ["집들이 선물로 뭐 사갈까"]  # 전개가 발동했다
+    # 전개 아이템(디퓨저·식기 세트·핸드워시 세트) 각각의 확장 후보가 검색까지 도달했다 —
+    # replace() 가 expansion_leaves 를 버렸다면 calls 는 전부 None(무필터 degrade)이었을 것이다.
+    assert calls  # 최소 하나는 확장 leaf 로 검색됐다
+    assert any(c is not None for c in calls)

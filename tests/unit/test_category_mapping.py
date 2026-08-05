@@ -26,6 +26,7 @@ def _settings(
     select_margin_max: float = 0.02,
     select_max_calls: int = 2,
     expand_legs: int = 8,
+    expand_enabled: bool = True,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         catalog_db_url="postgresql://x",
@@ -37,6 +38,7 @@ def _settings(
         category_select_max_calls=select_max_calls,
         embedding_task_query="RETRIEVAL_QUERY",
         category_expand_legs=expand_legs,  # [#222] 광역 fan-out 후보 수
+        category_expand_enabled=expand_enabled,  # [PR #318 R6-2] map_categories 가 직접 읽는 킬스위치
     )
 
 
@@ -1573,6 +1575,65 @@ async def test_expansion_leaves_single_leg_unaffected_by_interleave() -> None:
     m = _FakeMapper(exact=set(), nearest={}, hits={"애매한 발화": hits})
     out = await m.run_full([CategoryQuery(None, "애매한 발화")], settings=_settings(expand_legs=3))
     assert out.expansion_leaves == [(c, "애매한 발화") for c, _ in hits[:3]]
+
+
+# ── R6-2 (PR #318 리뷰 3차) — `category_expand_enabled` 킬스위치가 `map_categories` 까지 닿는다 ──
+#
+# 종전엔 이 플래그를 검사하는 곳이 `buyer/graph.py` 의 소비 지점뿐이라, 꺼도 조회 k 가 그대로
+# 늘어난 채 나가고 `_collect_expansion_leaves` 가 계속 돌아 로그가 계속 쌓였다 — 부하·로그
+# 노이즈 때문에 롤백하는 인시던트에서 "롤백이 안 되는 롤백 스위치"였다.
+
+
+async def test_expand_disabled_keeps_search_k_at_top_k() -> None:
+    """[R6-2] `category_expand_enabled=False` 면 조회 k 가 `category_top_k` 로 고정된다
+    (`max(top_k, expand_legs)` 로 늘지 않는다)."""
+    calls: list = []
+
+    def _search(vec, dsn, *, k):
+        calls.append(k)
+        return [("아무 카테고리 > 소분류", 0.30)]
+
+    await map_categories(
+        category_queries=[CategoryQuery(None, "화장품")],
+        utterance="화장품 추천해줘",
+        settings=_settings(top_k=5, expand_legs=8, expand_enabled=False),
+        embed=lambda texts: [[0.0] for _ in texts],
+        search_top_k=_search,
+        exact_lookup=lambda values, dsn: set(),
+    )
+    assert calls and all(k == 5 for k in calls)  # category_top_k — expand_legs(8) 아님
+
+
+async def test_expand_disabled_yields_no_expansion_leaves() -> None:
+    """[R6-2] 킬스위치가 꺼져 있으면 거리컷 드롭 leg 이 있어도 `expansion_leaves` 는 비어 있다 —
+    `_collect_expansion_leaves` 자체가 호출되지 않는다."""
+    hits = [("채소 > 파/마늘/양념채소", 0.30), ("냉장/냉동식품 > 밥류", 0.31)]
+    m = _FakeMapper(exact=set(), nearest={}, hits={"김밥 재료": hits})
+    out = await m.run_full(
+        [CategoryQuery(None, "김밥 재료")],
+        settings=_settings(expand_legs=8, expand_enabled=False),
+    )
+    assert out.unresolved == ["김밥 재료"]  # #217 전개 트리거는 그대로 살아있다
+    assert out.expansion_leaves == []
+
+
+async def test_expand_disabled_does_not_change_normal_mapping_result() -> None:
+    """[R6-2 회귀 고정] 킬스위치를 꺼도 매핑 본체 결과(legs·unresolved)는 켰을 때와 동일하다 —
+    이 플래그는 확장 후보 수집에만 영향을 준다."""
+    hits = {
+        "김밥 재료": [
+            ("채소 > 파/마늘/양념채소", 0.3027),
+            ("냉장/냉동식품 > 밥류", 0.3081),
+        ]
+    }
+    out_on = await _FakeMapper(exact=set(), nearest={}, hits=hits).run_full(
+        [CategoryQuery(None, "김밥 재료")], settings=_settings(expand_enabled=True)
+    )
+    out_off = await _FakeMapper(exact=set(), nearest={}, hits=hits).run_full(
+        [CategoryQuery(None, "김밥 재료")], settings=_settings(expand_enabled=False)
+    )
+    assert out_on.legs == out_off.legs == []
+    assert out_on.unresolved == out_off.unresolved == ["김밥 재료"]
 
 
 async def test_expansion_leaves_log_carries_anchor_kind_count_and_mids(caplog) -> None:

@@ -181,7 +181,17 @@ async def map_categories(
     # 쪽으로 늘린다 — 같은 쿼리의 LIMIT 만 커질 뿐 pg 왕복 횟수는 그대로다. 늘어난 히트는
     # `candidates_by_leg`(§4.4 택일)·`_top1_with_margin`(top1/margin)에 **그대로 넘기지 않는다** —
     # 아래에서 앞 category_top_k 개만 슬라이스해 종전 #115 동작(택일 후보 5개)을 고정한다.
-    k = max(settings.category_top_k, settings.category_expand_legs)
+    # [PR #318 리뷰 R6-2] `category_expand_enabled` 를 여기서 직접 읽는다 — 소비 지점(`buyer/graph.py`)
+    # 검사만으로는 이 플래그가 "롤백 스위치"로 동작하지 않는다. 꺼도 ① k 확대로 pgvector LIMIT 이
+    # 그대로 늘어난 채 나가고 ② `_collect_expansion_leaves` 가 계속 돌아
+    # `category_expansion_leaves` 로그가 계속 쌓인다 — 부하·로그 노이즈 때문에 롤백하는
+    # 인시던트에서 롤백이 안 되는 롤백 스위치가 된다. 꺼져 있으면 k 를 category_top_k 로 고정해
+    # 조회 폭 자체를 늘리지 않는다(소비 지점의 기존 검사는 이중 방어로 그대로 둔다).
+    k = (
+        max(settings.category_top_k, settings.category_expand_legs)
+        if settings.category_expand_enabled
+        else settings.category_top_k
+    )
     fanout_max = settings.category_fanout_max
     distance_max = settings.category_distance_max  # 초과 시 leg 드롭(§4 #115)
     # 거리컷 마진 예외(§4.5 #115) — 튜너블은 **여기서 한 번에** 읽는다. 결과 루프 안에서 읽으면
@@ -489,6 +499,10 @@ async def map_categories(
         않음) — 사후 감시는 이 함수가 매 호출 남기는 `category_expansion_leaves` 로그의 `mids`
         필드로 한다(조건 전용 발화가 새면 그 발화의 mids 가 서로 무관한 대분류로 흩어져 보인다).
         """
+        # [PR #318 리뷰 R6-2] 킬스위치가 꺼져 있으면 아예 돌지 않는다 — 계속 돌면 로그
+        # (`category_expansion_leaves`)가 계속 쌓여 "롤백이 안 되는 롤백 스위치"가 된다.
+        if not settings.category_expand_enabled:
+            return
         hits = full_hits_by_leg.get(i)
         if not hits:
             return
