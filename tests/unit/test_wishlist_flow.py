@@ -316,6 +316,21 @@ def test_resolve_wishlist_remove_target_context_id_still_works_without_negation(
     assert result.product_id == 20
 
 
+def test_resolve_wishlist_remove_target_unmatched_name_does_not_fall_back_to_context_id() -> None:
+    """재현·수정 확인 — "이어폰케이스 찜 빼줘"는 사용자가 이름을 대려는 시도를 했지만(경계
+    검사로 어느 항목과도 정확히 일치하지 않는다), 문맥 id(`cart.product_id`)가 그 시도와
+    무관한 항목을 대신 확정해선 안 된다. 사용자가 입으로 말한 이름은 LLM 이 문맥에서 고른 id
+    보다 강한 신호라는 이 파일의 원칙이 지금은 1번(이름 매칭)에만 적용되고 2번(문맥 id)에는
+    안 걸려 있었다 — 이름 매칭이 실패로 끝나면 곧장 문맥 id 로 폴백해 무관한 항목이 해제됐다."""
+    from app.agents.buyer.cart.wishlist import _resolve_wishlist_remove_target
+
+    items = [_wishlist_item(10, "이어폰"), _wishlist_item(20, "케이스")]
+    result = _resolve_wishlist_remove_target(
+        CartIntent(product_id=20), "이어폰케이스 찜 빼줘", items, get_settings()
+    )
+    assert result is None
+
+
 async def test_wishlist_remove_negated_context_id_asks_via_stream() -> None:
     """`stream_wishlist_remove` 수준에서도 같은 사실 — remove_wishlist_fn 이 한 번도 안 불린다."""
 

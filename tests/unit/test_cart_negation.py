@@ -133,3 +133,42 @@ def test_has_any_negation_checks_suffix_and_prefix() -> None:
     assert has_any_negation("전부 빼줘", _NEGATION_MARKERS, _PREFIX_MARKERS) is False
     # 거짓 억제 방지 — "안경"의 "안"은 독립 어절이 아니다.
     assert has_any_negation("안경 다 빼줘", _NEGATION_MARKERS, _PREFIX_MARKERS) is False
+
+
+def _matches_name(message: str, name: str, other_names: list[str]) -> bool:
+    from app.agents.buyer.cart.negation import matches_name_unnegated
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    return matches_name_unnegated(
+        message,
+        name,
+        settings.utterance_negation_markers,
+        settings.utterance_negation_window,
+        settings.utterance_prefix_negation_markers,
+        settings.utterance_name_boundary_particles,
+        settings.utterance_name_trailing_filler_words,
+        settings.cart_remove_markers,
+        other_names,
+    )
+
+
+def test_matches_name_unnegated_glued_other_name_is_not_a_valid_trailing() -> None:
+    """재현 — "이어폰케이스"는 "이어폰" 바로 뒤에 조사도 공백도 없이 "케이스"가 그대로 붙은
+    합성 낱말이다. `other_names` 종결은 다른 상품명이 조사·filler 로 실제로 **이어질 때만**
+    유효해야 하는데, 소비된 글자가 하나도 없어도 통과시키면 이런 합성어까지 "다른 이름으로
+    이어진다"로 오인해 매칭시킨다 — 장바구니에 우연히 "케이스"가 같이 있으면 "이어폰"이
+    사용자가 말하지 않은 상품인데도 삭제 대상으로 잡히는 데이터 의존적 결함이 된다."""
+    assert _matches_name("이어폰케이스 빼줘", "이어폰", ["이어폰", "케이스"]) is False
+
+
+def test_matches_name_unnegated_particle_separated_other_name_still_valid() -> None:
+    """회귀 방지 — 조사로 실제로 이어지는 다른 상품명("파우치 블루랑 파우치 레드")은 조사가
+    소비되므로 여전히 유효 종결이어야 한다. 이게 무효가 되면 "파우치 블루"가 매칭에서 빠지고
+    "파우치 레드"만 단독 매칭돼, 둘 다 있어야 할 모호 판정(되물음)이 단일 확정으로 오판된다."""
+    assert (
+        _matches_name(
+            "파우치 블루랑 파우치 레드 빼줘", "파우치 블루", ["파우치 블루", "파우치 레드"]
+        )
+        is True
+    )

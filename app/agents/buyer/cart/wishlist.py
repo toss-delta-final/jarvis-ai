@@ -64,10 +64,16 @@ def _resolve_wishlist_remove_target(
          (`has_any_negation`)가 아니라 `negation.matches_unnegated` 의 **출현 단위** 판정을
          쓴다 — 문장 전체 가드를 이름 매칭에 쓰면 "이어폰은 찜 빼지 말고 케이스 찜 빼줘"에서
          정상 해제 대상인 "케이스"까지 함께 죽어 되물음이 된다.
-      2. 발화에 부정·대조 신호(`negation.has_any_negation`, 문장 전체 검사)가 **없을 때만**
-         `cart.product_id`(decompose 가 문맥에서 이미 골라 온 값)가 목록 안에 있으면 그것.
-         **[라운드 16]** 문맥 id 는 이름이 없어도 쓰이는 신호라 "출현 단위"로 볼 대상 자체가
-         없다 — 그래서 1번(이름 매칭)처럼 출현 단위가 아니라 3번과 같은 문장 전체 판정을 쓴다.
+      2. 발화에 부정·대조 신호(`negation.has_any_negation`, 문장 전체 검사)가 **없고 이름을
+         대려는 시도도 없을 때만**(3번과 같은 `name_mentioned` 가드) `cart.product_id`
+         (decompose 가 문맥에서 이미 골라 온 값)가 목록 안에 있으면 그것. **[라운드 16]** 문맥
+         id 는 이름이 없어도 쓰이는 신호라 "출현 단위"로 볼 대상 자체가 없다 — 그래서 1번(이름
+         매칭)처럼 출현 단위가 아니라 3번과 같은 문장 전체 판정을 쓴다. 이름을 대려는 시도가
+         있었는데 1번(부분 문자열·경계·부정 판정)이 못 잡았다면(예: 발화의 이름이 목록 어느
+         항목과도 정확히 일치하지 않는 변형), 문맥 id 로 대신 확정하지 않고 되물음으로 내려간다
+         — 문맥 id 는 사용자가 입으로 말한 이름보다 약한 신호이므로, 이름이 있었는데 못 맞춘
+         경우까지 문맥 id 가 대신 나서면 안 된다("이어폰케이스 찜 빼줘"에서 이름 매칭이 실패해도
+         `cart.product_id` 가 가리키는 무관한 항목이 해제되던 결함, 재현·수정 확인).
       3. 발화에 부정·대조 신호가 **없고**, 목록 어느 항목의 이름도 (경계와 무관하게) 발화에
          아예 등장하지 않을 때만 위 두 규칙이 모두 안 잡히고 목록이 정확히 1건이면 그 1건.
       4. 그 외 → `None`.
@@ -150,15 +156,17 @@ def _resolve_wishlist_remove_target(
     has_negation = has_any_negation(
         message, settings.utterance_negation_markers, settings.utterance_prefix_negation_markers
     )
+    # 2·3번이 공유하는 계산이라 여기서 한 번만 한다(라운드 10 교훈 — 같은 판정을 두 곳에
+    # 구현하면 한쪽만 고쳐지는 재발이 난다).
+    name_mentioned = any(
+        (name := _strip_unsafe(item.name or "")) and name in message for item in items
+    )
 
-    if cart.product_id is not None and not has_negation:
+    if cart.product_id is not None and not has_negation and not name_mentioned:
         direct = [item for item in items if item.product_id == cart.product_id]
         if direct:
             return direct[0]
 
-    name_mentioned = any(
-        (name := _strip_unsafe(item.name or "")) and name in message for item in items
-    )
     if not has_negation and not name_mentioned and len(items) == 1:
         return items[0]
     return None

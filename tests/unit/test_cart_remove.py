@@ -228,6 +228,24 @@ def test_resolve_remove_targets_recent_marker_still_works_without_negation() -> 
     assert [item.cart_item_id for item in result] == [2]
 
 
+def test_resolve_remove_targets_recent_marker_yields_to_unrelated_named_product() -> None:
+    """재현·수정 확인 — "이어폰케이스 방금 담은 거 빼줘"에서 "방금"이 매칭돼도, 사용자가 댄
+    이름("이어폰케이스")과 무관한 최근 담은 항목(파우치)을 대신 지우면 안 된다. 1번(전체
+    삭제)·4번(단건 자동)이 이미 받는 `name_mentioned` 가드를 3번("방금 담은 거")도 받아야
+    한다 — 빠져 있으면 사용자가 말하지 않은 상품이 삭제된다(재현 확인)."""
+    from app.agents.buyer.cart.remove import _resolve_remove_targets
+    from app.agents.buyer.cart.state import LastAdd
+
+    items = [_item(1, 10, "이어폰"), _item(2, 20, "파우치")]
+    result = _resolve_remove_targets(
+        "이어폰케이스 방금 담은 거 빼줘",
+        items,
+        get_settings(),
+        LastAdd(cart_item_id=2, product_id=20),
+    )
+    assert result is None
+
+
 # ─────────── 대상 해소 — 라운드 10: 접두 부정("안"/"못")이 remove.py 안전장치에도 적용된다 ───────────
 
 
@@ -696,6 +714,30 @@ def test_resolve_remove_targets_name_inside_word_does_not_match() -> None:
     from app.agents.buyer.cart.remove import _resolve_remove_targets
 
     items = [_item(1, 10, "이어폰")]
+    result = _resolve_remove_targets("이어폰케이스 빼줘", items, get_settings(), None)
+    assert result is None
+
+
+def test_resolve_remove_targets_glued_name_still_none_with_unrelated_second_item() -> None:
+    """장바구니에 무관한 2번째 항목이 있어도(경계 위반은 항목 수와 무관) 결과는 여전히
+    None 이어야 한다."""
+    from app.agents.buyer.cart.remove import _resolve_remove_targets
+
+    items = [_item(1, 10, "이어폰"), _item(2, 20, "파우치")]
+    result = _resolve_remove_targets("이어폰케이스 빼줘", items, get_settings(), None)
+    assert result is None
+
+
+def test_resolve_remove_targets_glued_name_does_not_leak_via_other_item_name() -> None:
+    """재현·수정 확인 — 장바구니에 "이어폰"과 우연히 "케이스"가 **같이** 있으면, 이전에는
+    `_has_valid_name_trailing` 의 `other_names` 종결(조사 없이도 다른 항목 이름으로 시작하면
+    유효)이 "이어폰케이스"의 "케이스" 부분까지 다른 상품명의 시작으로 오인해 "이어폰"이
+    사용자가 말하지 않은 상품인데도 삭제됐다(장바구니 구성에 따라 결과가 갈리는 데이터 의존적
+    오삭제). 조사·filler 를 실제로 소비하지 않은 종결은 무효로 처리해 이 경로를 막는다 —
+    결과는 다른 조합과 마찬가지로 되물음(None)이어야 한다."""
+    from app.agents.buyer.cart.remove import _resolve_remove_targets
+
+    items = [_item(1, 10, "이어폰"), _item(2, 20, "케이스")]
     result = _resolve_remove_targets("이어폰케이스 빼줘", items, get_settings(), None)
     assert result is None
 

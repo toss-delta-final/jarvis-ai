@@ -165,6 +165,15 @@ def _has_valid_name_trailing(
     종결로 인정한다 — 이건 임의의 명사를 허용하는 추측이 아니라, 지금 이 해소에 실제로 후보로
     올라 있는 **닫힌 목록**(장바구니/찜 목록의 실제 항목명) 검사라 "뒤에 명사가 오면 무효"류
     휴리스틱과 다르다(그 명사가 이 목록에 없으면 여전히 무효).
+
+    `other_names` 종결은 **조사·filler 를 실제로 하나 이상 소비했을 때만** 인정한다 —
+    "이어폰케이스 빼줘"(장바구니에 "이어폰"·"케이스"가 각각 있음)에서 "이어폰" 바로 뒤에
+    조사도 공백도 없이 "케이스"가 그대로 붙어 있으면, 그건 서로 다른 두 상품명이 조사로 이어진
+    것이 아니라 **하나의 합성 낱말**이다. `end` 와 조사·filler 소비 뒤 위치(`pos`)가 같다면(=
+    한 글자도 소비되지 않았다면) `other_names` 로 시작해도 무효로 처리한다 — 위 "파우치
+    블루랑…" 예시는 "랑"이 실제로 소비되므로(`pos > end`) 이 조건에서 걸러지지 않는다.
+    `trailing_markers`(표지)로 시작하는 경우와 "남는 텍스트가 빈 문자열"인 경우는 조사 소비
+    여부와 무관하게 그대로 유효다 — "이어폰빼줘"처럼 표지가 곧바로 붙는 것은 정상 발화다.
     """
     pos = _consume_prefix(message, end, boundary_particles)
     pos = _skip_trailing_filler(message, pos, filler_words)
@@ -173,6 +182,8 @@ def _has_valid_name_trailing(
         return True
     if any(marker and remainder.startswith(marker) for marker in trailing_markers):
         return True
+    if pos == end:
+        return False
     return any(other and remainder.startswith(other) for other in other_names)
 
 
