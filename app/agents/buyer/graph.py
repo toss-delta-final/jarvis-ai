@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator
-from contextlib import suppress
 from dataclasses import replace
 from typing import cast
 
@@ -146,8 +145,13 @@ async def _collect_scope_task(task) -> bool | None:  # noqa: ANN001
     """병렬 분류기 태스크를 회수한다 — 실패는 전부 None(=신호 없음) (#84).
 
     `classify_category_scope` 가 이미 자기 예외를 삼키지만 여기서 한 겹 더 감싼다: 태스크 레벨
-    실패(취소·이벤트루프 종료 등)는 그 함수 안에서 잡히지 않는데, 그것 때문에 무관한 추천 턴이
+    실패(이벤트루프 종료 등)는 그 함수 안에서 잡히지 않는데, 그것 때문에 무관한 추천 턴이
     죽으면 안 된다. 폴백은 오늘 동작(carry)이라 손해가 없다.
+
+    **`except Exception` 을 `BaseException` 으로 넓히지 말 것.** `CancelledError` 는
+    `BaseException` 이라 여기 걸리지 않고 **그대로 전파된다** — 값을 기다리는 이 자리에서 바깥
+    취소가 오면 턴은 거기서 끝나야 한다(넓히면 끊긴 요청이 정상 턴처럼 계속 진행한다. 라운드 4 가
+    `_discard_scope_task` 를 없앤 이유와 같은 함정이다).
     """
     if task is None:
         return None
@@ -158,37 +162,31 @@ async def _collect_scope_task(task) -> bool | None:  # noqa: ANN001
         return None
 
 
-async def _discard_scope_task(task) -> None:  # noqa: ANN001
-    """분류기 태스크를 취소하고 회수한다 — 값을 쓰지 않는 경로용 (#84).
-
-    취소만 하고 await 하지 않으면 이벤트루프가 "Task exception was never retrieved" 를 남기고,
-    실제 취소가 반영되기 전에 스트림이 끝난다. `CancelledError` 는 여기서 **삼킨다** — 우리가
-    직접 건 취소이지 바깥에서 온 취소가 아니다.
-
-    **이미 끝난 태스크면 즉시 반환한다**(2차 리뷰 F-3) — 정리 지점이 여럿이라 같은 태스크에
-    두 번 불릴 수 있고, 그때 `cancel()` 이 완료된 태스크를 건드리거나 결과를 두 번 기다리는 일이
-    없어야 한다. 취소는 **대기를 없애는** 수단이기도 하다: 취소된 태스크의 `await` 는 즉시
-    돌아오므로, 값을 안 쓰는 턴이 분류기 완료를 기다리지 않는다(F-2).
-    """
-    if task is None or task.done():
-        return
-    task.cancel()
-    with suppress(asyncio.CancelledError, Exception):
-        await task
-
-
 def _cancel_scope_task(task) -> None:  # noqa: ANN001
-    """분류기 태스크를 **동기적으로만** 취소한다 — teardown(`finally`) 전용 (#84, F-3).
+    """분류기 태스크를 **동기적으로만** 취소한다 — 값을 쓰지 않는 **모든** 정리 지점의 정본 (#84).
 
-    바깥에서 취소가 들어오면(클라이언트가 첫 이벤트 전에 끊어 요청 태스크가 취소되거나 SSE
-    제너레이터가 조기 종료돼 `GeneratorExit` 가 오는 경우) `CancelledError` 는 `except LLMError`
-    에 걸리지 않아 정상 정리 지점을 **전부 건너뛴다.** 그래서 `finally` 에서 한 번 더 막는다.
+    `await` 하지 않는다. 초판은 정리 경로가 둘이었고(본문 `await` 회수 + `finally` 동기 취소)
+    본문 쪽이 `task.cancel()` 뒤 `with suppress(CancelledError, Exception): await task` 를 했는데,
+    그 `await` 지점에서 **바깥에서 온 취소**(클라이언트 연결 종료 등)가 배달되면:
 
-    여기서 **`await` 하지 않는 이유**: 이 `finally` 는 우리 자신이 취소되는 중에도 돈다. 그 상태로
-    `await` 하면 그 취소가 이 지점에 배달되고, `_discard_scope_task` 의 `suppress` 가 그것을
-    삼켜 **바깥 취소를 잃을** 수 있다. `cancel()` 은 동기 호출이라 그 위험 없이 취소를 확정하고,
-    회수는 이벤트루프가 태스크를 끝낼 때 이뤄진다(`classify_category_scope` 는 자기 예외를
-    삼키므로 "never retrieved" 경고도 남지 않는다).
+    - asyncio 는 대기 중 future 로 취소를 위임하고(`Task.cancel()` → `_fut_waiter.cancel()`),
+      위임이 성공하면 바깥 태스크의 `_must_cancel` 이 **세팅되지 않는다.**
+    - 그 `CancelledError` 는 "우리가 건 취소"와 구분되지 않은 채 `suppress` 에 **삼켜지고**,
+      `_must_cancel` 이 없으니 다음 체크포인트에서 **재전파도 되지 않는다** → 이미 끊긴 요청인데
+      `run_buyer_turn` 이 정상 턴처럼 계속 진행한다(추가 LLM·Spring 호출·`thread_store.put`).
+
+    그래서 정리는 전부 이 동기 취소로 통일한다(라운드 4). 근거 셋:
+
+    - **`await` 할 이유가 없다.** 이 태스크의 산출은 추천 경로에서만 쓰이고(`_collect_scope_task`),
+      나머지 경로는 값을 버린다. 버릴 값을 기다리는 것은 이득이 0인데 위 구멍을 연다.
+    - **"Task exception was never retrieved" 는 나지 않는다.** 취소된 태스크는 asyncio 의 그 경고
+      대상이 아니고, `classify_category_scope` 는 자기 예외를 전부 삼켜 **값으로** 돌려주므로
+      미회수 예외 자체가 없다.
+    - **대기 0**(라운드 2 F-2 의 목적)도 그대로 달성된다 — 오히려 더 확실하다. 취소된 태스크를
+      `await` 하는 것보다 아예 기다리지 않는 쪽이 짧다.
+
+    **이미 끝난 태스크면 아무 것도 하지 않는다** — 정리 지점이 여럿(오류 경로·비추천 분기·
+    `finally`)이라 같은 태스크에 두 번 불릴 수 있고, 그때 완료된 태스크를 건드리지 않아야 한다.
     """
     if task is not None and not task.done():
         task.cancel()
@@ -715,10 +713,11 @@ async def run_buyer_turn(
                         repurchase_max=settings.dedup_repurchase_max,
                     )
         except LLMError as exc:
-            # [#84] 이 경로에서 나가기 전에 병렬 태스크를 반드시 정리한다 — 안 하면 태스크가 고아로
-            # 남아 "Task exception was never retrieved" 가 뜨고, 취소되지 않은 LLM 호출이 스트림이
-            # 끝난 뒤까지 예산을 먹는다.
-            await _discard_scope_task(scope_task)
+            # [#84] 이 경로에서 나가기 전에 병렬 태스크를 반드시 정리한다 — 안 하면 취소되지 않은
+            # LLM 호출이 스트림이 끝난 뒤까지 예산을 먹는다. **동기 취소만 한다**(라운드 4) —
+            # 여기서 `await` 하면 바깥에서 온 취소가 그 지점에 배달돼 삼켜질 수 있다
+            # (`_cancel_scope_task` docstring 참조).
+            _cancel_scope_task(scope_task)
             scope_settled = True
             code = "LLM_TIMEOUT" if _is_timeout(exc) else "LLM_UNAVAILABLE"
             yield sse(
@@ -744,12 +743,13 @@ async def run_buyer_turn(
         if decision.intent == "recommend":
             scope_free = await _collect_scope_task(scope_task)
         else:
-            await _discard_scope_task(scope_task)
+            _cancel_scope_task(scope_task)
         scope_settled = True
     finally:
-        # 어느 경로로 나가든 **정확히 한 번** 정리된다 — 정상/오류 경로는 위에서 await 로 회수하고
-        # (`scope_settled`), 그 밖(취소·teardown)은 여기서 동기 취소만 한다
-        # (`_cancel_scope_task` docstring 이 await 하지 않는 이유를 설명한다).
+        # 어느 경로로 나가든 **정확히 한 번** 정리된다 — 추천 턴은 위에서 값을 회수하고
+        # (`scope_settled`), 그 밖은 위·아래 어느 쪽이든 `_cancel_scope_task` 로 끝난다.
+        # 이 `finally` 가 맡는 것은 **바깥에서 온 취소·teardown** 이다: `CancelledError` 는
+        # `except LLMError` 에 걸리지 않아 본문 정리 지점을 전부 건너뛴다.
         if not scope_settled:
             _cancel_scope_task(scope_task)
 

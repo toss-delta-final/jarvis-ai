@@ -389,6 +389,8 @@ async def test_decompose_failure_cancels_the_classifier_task() -> None:
     )
 
     assert [event["type"] for event in events] == ["error"]
+    for _ in range(5):  # [라운드 4] 동기 취소 — 배달은 이벤트루프가 한다
+        await asyncio.sleep(0)
     assert llm.started == 1 and llm.cancelled == 1 and llm.finished == 0
     leftover = {task for task in asyncio.all_tasks() if task not in before and not task.done()}
     assert not leftover, f"정리되지 않은 태스크: {leftover}"
@@ -517,6 +519,10 @@ async def test_non_recommend_turns_cancel_instead_of_waiting(intent: str) -> Non
     order_status·cart_*·general 턴이 쓰지도 않을 값을 기다렸다 — 분류기가 느려지면 그만큼
     무관한 턴의 첫 SSE 이벤트가 밀린다(이 설계가 지키려던 "직렬 지연 0"이 그 경로에서 깨진다).
     분류기를 5초 재우는 가짜로 그것을 잰다: 기다렸다면 이 테스트가 5초 걸린다.
+
+    [라운드 4] 정리가 **동기 취소**가 되면서 취소는 그 자리에서 요청되고 **배달은 이벤트루프가
+    한다.** 그래서 스트림이 끝난 뒤 틱을 몇 번 돌려 `cancelled` 를 확인한다 — 이것이 "취소를
+    걸었다"가 아니라 "진행 중이던 호출이 실제로 끊겼다"의 증거다.
     """
     identity = _member()
     await _seed_prior_category(identity)
@@ -536,8 +542,10 @@ async def test_non_recommend_turns_cancel_instead_of_waiting(intent: str) -> Non
     elapsed = perf_counter() - started
 
     assert "error" not in {event["type"] for event in events}
-    assert llm.started == 1 and llm.cancelled == 1 and llm.finished == 0
     assert elapsed < 1.0, f"분류기 완료를 기다렸다({elapsed:.2f}s)"
+    for _ in range(5):  # 취소가 배달될 틱을 준다(동기 취소라 스트림은 이미 끝났다)
+        await asyncio.sleep(0)
+    assert llm.started == 1 and llm.cancelled == 1 and llm.finished == 0
     leftover = {task for task in asyncio.all_tasks() if task not in before and not task.done()}
     assert not leftover, f"정리되지 않은 태스크: {leftover}"
 
@@ -661,3 +669,101 @@ async def test_outside_cancellation_does_not_leave_the_task_running() -> None:
     assert all(task.cancelled() or task.done() for task in scope_tasks), (
         f"살아 있는 태스크: {[t for t in scope_tasks if not t.done()]}"
     )
+
+
+# ─────────── 라운드 4 — 정리 지점이 바깥 취소를 삼키지 않는다 ───────────
+
+
+class _CancelAtDecomposeLLM(_ScopeAwareLLM):
+    """decompose 를 마치기 **직전에 자기 턴을 취소**시키는 가짜.
+
+    그러면 그래프가 정리 지점(`except LLMError` 또는 비추천 분기)에 도달할 때 이미 취소가
+    걸려 있다. 정리가 `await` 였다면 그 취소가 **거기서 배달돼 `suppress` 에 삼켜지고**
+    턴이 계속 진행됐다(라운드 4 지적). 동기 취소면 삼킬 자리가 없어 다음 체크포인트에서
+    그대로 전파된다.
+    """
+
+    def __init__(self, *, fail_decompose: bool, decompose: dict | None = None) -> None:
+        super().__init__(scope_free=True, decompose=decompose)
+        self._fail_decompose = fail_decompose
+        self.scope_started = False
+
+    async def complete(self, *, system, user, tier, max_tokens=1024, json_output=True):  # noqa: ANN001
+        if system == _SYSTEM:
+            self.scope_started = True
+            await asyncio.sleep(5)  # 취소되기 전에는 끝나지 않는다
+            return json.dumps({"scopeFree": True})
+        await asyncio.sleep(0)  # 분류기 태스크가 실제로 시작하도록 한 틱 양보
+        task = asyncio.current_task()
+        assert task is not None
+        task.cancel()  # 정리 지점에 닿기 전에 바깥 취소가 걸린 상태를 만든다
+        if self._fail_decompose:
+            raise LLMError("decompose boom")
+        return await super().complete(
+            system=system, user=user, tier=tier, max_tokens=max_tokens, json_output=json_output
+        )
+
+
+async def _drive_and_report_cancelled(identity, llm, message: str) -> bool:  # noqa: ANN001
+    """스트림을 끝까지 소비하고 **바깥 취소가 살아남았는지**(CancelledError 로 끝났는지) 돌려준다.
+
+    이것이 이 라운드의 판별 축이다 — 정리 지점이 `await` 였을 때는 그 취소가 거기서 삼켜져
+    소비 태스크가 **정상 종료**했다(`_must_cancel` 이 세팅되지 않아 재전파도 없다).
+    """
+
+    async def _run() -> None:
+        async for _ in _run_buyer_turn(
+            _request(message=message),
+            identity,
+            llm=llm,
+            search=_RecordingSearch(),
+            push_fn=_push_ok,
+        ):
+            pass
+
+    task = asyncio.create_task(_run())
+    try:
+        await task
+    except asyncio.CancelledError:
+        return True
+    return False
+
+
+async def test_outer_cancel_survives_the_error_path_cleanup() -> None:
+    """[라운드 4 F-1] `except LLMError` 경로의 정리가 **바깥 취소를 삼키지 않는다.**
+
+    정리가 `await` 였을 때는 그 지점에서 취소가 배달돼 `suppress` 가 삼켰고, `_must_cancel` 도
+    세팅되지 않아 **재전파되지 않았다** — 이미 끊긴 요청인데 error 이벤트가 그대로 나갔다.
+    지금은 동기 취소라 삼킬 자리가 없어 취소가 그대로 전파된다.
+    """
+    identity = _member()
+    await _seed_prior_category(identity)
+    llm = _CancelAtDecomposeLLM(fail_decompose=True)
+
+    cancelled = await _drive_and_report_cancelled(identity, llm, "더 저렴한 걸로")
+
+    assert llm.scope_started  # 분류기는 실제로 떠 있었다(정리 대상이 있었다)
+    assert cancelled, "바깥 취소가 정리 지점에서 삼켜졌다 — 끊긴 요청이 정상 턴으로 이어진다"
+
+
+async def test_outer_cancel_survives_the_non_recommend_cleanup() -> None:
+    """[라운드 4 F-1] 비추천 분기의 정리도 마찬가지다 — 취소가 살아 있어야 한다.
+
+    이쪽은 정리 뒤에 프로필 버퍼 적재·`stream_fallback` 같은 **후속 단계**가 이어지므로,
+    취소가 삼켜지면 끊긴 요청이 그 단계들을 끝까지 실행하고 **정상 종료**한다.
+
+    (가짜 저장소·가짜 LLM 은 실제로 suspend 하지 않아 취소가 배달될 체크포인트가 뒤로 밀린다 —
+    그래서 "이벤트가 몇 개 나왔나"가 아니라 **"취소로 끝났나"** 를 본다. 그것이 삼켜졌는지 여부를
+    직접 가르는 축이다.)
+    """
+    identity = _member()
+    await _seed_prior_category(identity)
+    llm = _CancelAtDecomposeLLM(
+        fail_decompose=False,
+        decompose={"intent": "general", "reply": "네", "case": 2, "filters": {}},
+    )
+
+    cancelled = await _drive_and_report_cancelled(identity, llm, "안녕")
+
+    assert llm.scope_started
+    assert cancelled, "바깥 취소가 정리 지점에서 삼켜졌다 — 끊긴 요청이 정상 턴으로 이어진다"
