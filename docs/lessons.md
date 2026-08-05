@@ -26,6 +26,90 @@
   - 충돌 마커는 발견 즉시 **별도 fix 커밋**으로 정리한다 — 기능 커밋에 섞으면 리뷰에서 묻힌다.
 - 관련: `CHANGELOG.md`, 커밋 89e13fd(#302), 정리 커밋은 #297 브랜치.
 
+## [2026-08-05] `pre-commit run --all-files` 는 `ruff format`(인수 없이)과 같은 뿌리의 드리프트를 좁은 스코프 브랜치 전체에 드러낸다
+- 증상: #281 작업에서 커밋 전 훅 호환성을 확인하려고 `uv run pre-commit run --all-files` 를
+  돌렸더니 `ruff-format` 이 **내가 건드리지 않은 31개 파일을 재포맷**했다 —
+  `app/services/spring_client.py` · `evals/intent_probe/runner.py` 처럼 **다른 레인이 작업
+  중이라 이 브랜치에서 편집이 금지된 파일**까지 포함됐다. `git checkout --` 로 전부 되돌렸다.
+- 원인: `.pre-commit-config.yaml` 이 `ruff-pre-commit` **v0.8.6** 에 고정돼 있는데 개발
+  의존성 ruff 는 0.15.x 라, 두 버전의 포맷 규칙 차이만큼 저장소 전체에 **드리프트**가 깔려
+  있다. `--all-files` 는 그 드리프트를 전부 드러내 diff 로 만든다. (기존 lessons 2026-08-05
+  「`ruff format`(인수 없이)…」와 **같은 뿌리, 다른 입구**다 — 그 항목은 `ruff format` 을
+  경고할 뿐 `pre-commit --all-files` 를 언급하지 않아 이번에 그대로 밟았다.)
+- 규칙: 좁은 스코프 브랜치에서 훅 호환성을 확인할 때 `pre-commit run --all-files` 를 쓰지
+  말고 **`pre-commit run --files <내 파일들>`** 로 대상을 좁혀라. 실제 커밋 훅은 **스테이징된
+  파일에만** 돌므로 그것이 커밋 시점의 동작과도 일치한다. 실수로 `--all-files` 를 돌렸으면
+  `git status --porcelain | grep '^.M'` 으로 **미스테이징 변경만** 골라 `git checkout --` 로
+  되돌린 뒤 진행하라(내 변경은 스테이징돼 있어 안전하다).
+- 관련: #281, `.pre-commit-config.yaml`(ruff-pre-commit v0.8.6), 기존 lessons 2026-08-05
+  「`ruff format`(인수 없이) 은 diff 밖 파일까지 재포맷한다」
+
+---
+
+## [2026-08-05] 실측 프로브에서 "표본 0" 은 근거가 아니라 질문이다 — 원시 응답을 남기지 않으면 원인을 가를 수 없다
+- 증상: #281 TASK 3(`evals/priority_probe/`) 초판이 인라인 팔(`decompose()` 후보 프롬프트)을
+  실측했더니 축이 **전부 0** 이고 진단 카운터 셋(`lengthMismatch`·`emptySignal`·당시의
+  `legMismatch`)이 **전부 정확히 96**(=모든 표본)으로 나왔다. "인라인이 완전히 무능하다"는
+  결론을 그대로 쓸 뻔했다 — 오케스트레이터가 `samples.csv` 를 직접 읽어보니 모델이 **실제로
+  무엇을 냈는지**가 한 칸도 기록돼 있지 않아, "모델이 정말 priority 를 안 냈다"(역량 한계)와
+  "채점기의 매칭 규칙이 개수가 다르면 이름이 맞아도 전부 버렸다"(하네스 결함)를 구분할 수
+  없었다. 실제로는 후자였다 — `decompose()` 는 픽스처 `needs` 를 입력으로 받지 않고 자기 leg
+  이름을 스스로 만드는데, "leg 개수가 needs 개수와 같을 때만" 채점하는 조건이 이름이 일부
+  맞는 표본까지 통째로 0점 처리했다.
+- 원인: 채점 함수가 **중간 산출(모델이 실제로 낸 것)** 을 버리고 최종 판정(0/None)만 남겼다.
+  같은 원인이 서로 다른 이름의 카운터 세 개에 동시에 찍히면(이 경우 lengthMismatch=
+  emptySignal=legMismatch=96) "원인이 하나이고 세 번 세어졌다"는 신호인데, 초판은 그 신호를
+  읽을 수 있는 자리(원시 응답 칸)를 애초에 안 만들었다.
+- 규칙: 실측 프로브에서 **"거의 0/전부 0" 같은 극단값이 나오면 채택 판정을 내리기 전에
+  원시 응답을 남겨 재현하라.** `samples.csv`(또는 동급 산출물)에 (1) 모델이 실제로 낸 원문,
+  (2) 최종 채점 값, (3) 그 사이의 판정 근거(왜 그 값이 나왔는지)를 **전부 다른 칸**으로
+  남겨야 런을 다시 돌리지 않고 원인을 가를 수 있다(#240 이 이미 세운 규약 — 이번엔 그 규약
+  자체가 없어서 밟았다). 진단 카운터가 여러 개인데 같은 사건에서 동시에 오르면 그 카운터들이
+  뭉개져 있다는 뜻이니 **상호 배타적으로 다시 정의**하거나 겹침을 명시하라. "모델이 못 한다"는
+  결론은 데이터가 그것을 **구분해서** 보여줄 때만 쓴다 — 표본이 0이라는 사실만으로는 원인을
+  주장할 수 없다.
+- 관련: #281, `evals/priority_probe/runner.py::_match_inline_legs_by_name`,
+  `evals/priority_probe/README.md` §「초판 결함과 정정」, TASK-3-CORRECTION-2
+
+## [2026-08-05] 보조 신호 함수가 실패를 전부 `None` 으로 삼키면, 그 함수를 실측 하네스로 감쌀 때 **전송 실패**와 **모델 출력 실패**를 관측 래퍼로 갈라야 한다
+- 증상: #281 TASK 3 의 분류기 실측 초판은 `classify_need_priorities` 가 돌려주는 `None` 을
+  전부 "표본"으로 셌다. 그 함수는 정본 계약상 **어떤 예외도 밖으로 내보내지 않는다**(429·
+  타임아웃도 삼켜 `None`) — 그래서 페이서가 조금이라도 어긋나 429 가 나면 그 시도도 "분류기가
+  판정에 실패한 표본"으로 집계돼, #240 이 이미 "빈 칸을 오답으로 세면 분포가 거짓이 된다"고
+  경고한 실패 양식을 다른 이름으로 재현할 뻔했다.
+- 원인: 프로덕션 함수의 degrade 설계(보조 신호 실패 → 조용히 `None`, 턴을 안 죽인다)는
+  **운영에서는 옳다.** 그런데 실측 하네스가 그 함수를 블랙박스로 호출만 하면, "진짜 전송이
+  실패했다"와 "모델이 이상한 출력을 냈다"가 함수 경계에서 이미 뭉개진 뒤라 하네스도 구분할
+  수 없다 — 정본 계약(자기 예외를 삼킨다)을 재현하려고 그 함수를 그대로 부르는 것은 맞지만
+  (규칙을 재구현하면 측정과 배포가 갈라진다는 원칙, lessons 다른 항목 참조), 그 안쪽에서
+  무슨 일이 있었는지까지 통째로 잃으면 안 된다.
+- 규칙: 자기 예외를 삼키는 보조 함수를 실측 하네스에서 반복 호출할 때는, 그 함수가 받는
+  `llm` 을 **한 겹 더 감싸(관측 전용 래퍼) 래퍼 사슬의 맨 안쪽**(delegate 바로 앞)에 두고
+  `complete()` 자체의 성공/실패를 별도로 기록한다. 함수가 삼킨 값(`None`)만 보고 재시도
+  여부를 정하면 안 된다 — 래퍼가 기록한 "이번 시도가 전송 실패였는가"를 근거로, 전송 실패는
+  재시도(표본 아님)로, 함수가 정상 응답을 받고도 `None` 을 낸 경우만 표본으로 가른다. 예산
+  가드(`BudgetExceeded`)도 이 경로에서 삼켜질 수 있으니 래퍼에서 별도로 식별해 재시도하지
+  말고 그대로 던져야 한다(안 그러면 예산 상한이 무력화된다).
+- 관련: #281, `evals/priority_probe/client.py::RawCapture`,
+  `evals/priority_probe/runner.py::run_cell_classifier`, TASK-3-CORRECTION
+## [2026-08-05] 코드가 런타임에 읽는 repo 파일은 배포 이미지에 들어 있는지 실측한다
+- 증상: dev→main 승격(#316) 사전 점검에서, 운영 이미지로 앱을 띄우면 부팅이 실패하는 결함을
+  발견했다. `session_context.initialize()`(#187)가 `db/profile/init/03_chat_session_contexts.sql`
+  을 런타임에 `read_text()`로 읽는데, `Dockerfile`은 `app/`만 COPY 하고 `.dockerignore`는
+  `db/`를 "볼륨 마운트용, 이미지 불필요"라며 명시 제외하고 있었다 → 컨테이너 안에서
+  `FileNotFoundError` → lifespan re-raise → 헬스체크 실패 → 자동 롤백.
+- 원인: #187이 `db/`의 성격을 "init 스크립트(컨테이너 밖 볼륨 마운트 전용)"에서 "앱 런타임
+  의존"으로 바꿨는데, 그 가정을 적어 둔 `.dockerignore`·`Dockerfile`은 갱신되지 않았다.
+  로컬(`uv run uvicorn`)·CI(pytest)는 repo 루트에서 실행돼 파일이 항상 존재하므로 어떤
+  테스트도 이 결함을 잡을 수 없었다 — 이미지 경계는 이미지에서만 드러난다.
+- 규칙:
+  - **코드에 `Path(__file__)…read_text()`류 런타임 파일 의존을 추가하면, 같은 PR에서
+    Dockerfile/.dockerignore 반입 여부를 확인하고 컨테이너 안 존재를 실측한다**
+    (`docker build` 후 `docker run --rm --entrypoint sh <img> -c 'ls <경로>'`).
+  - `.dockerignore` 의 제외 항목에는 이유(가정)가 주석으로 적혀 있다 — 그 가정을 깨는 변경을
+    할 때 함께 갱신한다. 반대로 제외를 풀 때도 왜 런타임 의존이 됐는지 주석으로 남긴다.
+- 관련: 이슈 #319, `Dockerfile`, `.dockerignore`, `app/core/session_context.py` `initialize()`
+
 ## [2026-08-05] 부분 문자열 표지의 파괴력이 크면, 명사 하나만으로는 절대 표지를 만들지 않는다
 - 증상: #116 삭제 흐름의 "전체 삭제" 표지에 `"전부"`를 그대로 넣었다. `"전부"`는 `"전부터 쓰던 거
   빼줘"`의 부분 문자열이라, 사용자가 상품 1개만 빼 달라고 말했는데 장바구니 전체가 삭제됐다
@@ -154,6 +238,32 @@
 
 ---
 
+## [2026-08-05] 정본 목록을 재사용하기 전에 **그 목록이 답하는 질문**이 내 질문과 같은지 본다
+- 증상: #162 "조건 없는 발화" 판정이 조건 축으로 `decompose._FILTER_AXES` 를 재사용했다.
+  사본을 만들지 않았으니 드리프트가 없다고 판단했는데, `RouteDecision` 에 직접 달린 축
+  (`total_budget`·`buy_all`·`repurchase_products`·`revert_categories`)이 **통째로 검사에서
+  빠져 있었다**(PR #311 리뷰).
+- 원인: `_FILTER_AXES` 가 답하는 질문은 **"Spring WHERE 로 나가는 하드필터는 무엇인가"** 이고,
+  판정이 물어야 하는 질문은 **"사용자가 조건을 하나라도 줬는가"** 였다. 그 축들은 `filters` 가
+  아니라 `RouteDecision` 필드라 그 목록에 **있을 수가 없다** — 재사용이 드리프트는 막았지만
+  **범위가 애초에 달랐다**. 두 질문이 겹치는 구간이 넓어 한동안 맞아 보였을 뿐이다.
+- 규칙: 정본 목록을 재사용할 때는 **그 목록의 docstring 이 규정하는 질문**을 먼저 읽고 내
+  질문과 대조한다. 다르면 재사용하되 **모자란 축을 별도 목록으로 명시**하고, 그 자료구조
+  **전체 필드를 분류하는 드리프트 테스트**를 붙여 다음 필드가 조용히 새지 않게 한다
+  (`_FILTER_AXES` 가 `ProductSearchFilters` 전체와 대조되는 것과 같은 방식).
+- 곁가지 교훈: **리뷰가 제안한 수정을 그대로 넣기 전에 그 전제를 검산한다.** 리뷰는 "예산 턴이
+  취향 경로로 새서 `BudgetSet` 로직을 우회한다"며 판정에서 막으라고 했는데, `buy_all_mode` 는
+  `split_by_need`(니즈 2개 이상)를 요구하고 조건 없는 턴은 정의상 leg 가 비어 있어 **어느
+  경로로 가도 예산 세트는 만들어지지 않았다**. 제안대로 막았으면 그 턴이 무필터 I-1
+  (7,245건·13.33MB)로 되돌아가면서 예산은 여전히 반영되지 않는, 비용만 늘고 얻는 것 없는
+  변경이 됐다. 실제 채택안은 **판정은 통과시키고 후보 확보 방식을 가르는 것**이다 — 가격이
+  없는 취향 경로를 막고, 가격이 오는 인기 상품(I-3)을 예산으로 거른다.
+- 관련: #162, PR #311 리뷰, `app/agents/buyer/recommendation/no_condition.py`
+  (`_DECISION_CONDITION_AXES`·`has_total_budget`·`within_budget`),
+  `tests/unit/test_no_condition.py::test_route_decision_axes_are_all_classified`
+
+---
+
 ## [2026-08-05] `monkeypatch.setenv` + `get_settings.cache_clear()` 는 전역 autouse 픽스처와 경합해 다음 테스트로 샌다
 - 증상: #299 의 `test_limit_configurable_via_env` 가 `REQUEST_BODY_MAX_BYTES=20` 을
   `monkeypatch.setenv` + `get_settings.cache_clear()` 로 주입했는데, 이 테스트 **하나만** 파일
@@ -191,6 +301,26 @@
   명시**해 실행한다. 전체 대상 실행은 `git status --short` 로 의도치 않은 파일이 없는지 반드시
   확인하고, 있으면 `git checkout --`  으로 되돌린 뒤 좁힌 대상으로 재실행한다.
 - 관련: #299, `app/core/body_limit.py`
+
+---
+
+## [2026-08-05] 상류가 채워 주는 필드는 "비어 있음"으로 판정할 수 없다 — 값이 아니라 **출처**를 본다
+- 증상: #162 "조건 없는 발화" 판정을 `filters` 축 + `semantic_query` 가 전부 비었는지로 짜고
+  단위 테스트 13건이 전부 통과했다. 그런데 그 판정은 **프로덕션에서 한 번도 발동할 수 없었다** —
+  `decompose` 가 `semantic_query = llm_sq or cat_signal or prior_sq or query` 로 채워
+  아무 의미 신호가 없어도 **이번 턴 발화 원문**이 들어가기 때문이다("아무거나 추천해줘" →
+  `semantic_query="아무거나 추천해줘"`). 값 검사는 항상 참이었다.
+- 원인: 테스트가 `ProductSearchFilters(...)` 를 **직접 생성**해 상류(decompose)를 우회했다.
+  그래서 "실제로 그 필드에 무엇이 들어오는가"라는 전제를 한 번도 검증하지 않았다. 심지어 그
+  폴백을 고정하는 기존 테스트(`test_semantic_query_falls_back_to_user_query_when_missing`)가
+  이미 있었는데도 새 판정이 그 전제를 보지 않았다.
+- 규칙: 상류가 폴백으로 채우는 필드는 **유무로 판정하지 말고 출처 플래그를 상류에서 받아온다**
+  (`RouteDecision.semantic_query_is_fallback`). 그리고 판정 로직 테스트에는 **상류 산출에서
+  출발하는 회귀 1건**을 반드시 끼운다 — 입력을 손으로 만든 테스트만 있으면 "초록인데 실제로는
+  안 도는" 상태를 못 잡는다. 축 목록도 사본을 만들지 말고 정본(`decompose._FILTER_AXES`)을
+  import 해 드리프트 테스트에 얹는다.
+- 관련: #162, `app/agents/buyer/recommendation/no_condition.py`,
+  `decompose.py`(semantic_query 폴백 체인), `tests/unit/test_no_condition.py`
 
 ---
 

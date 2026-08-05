@@ -1704,7 +1704,7 @@ def test_worker_prompts_contain_log_interpretation_rules() -> None:
     assert "'구매 0'" in ABUSE_PROMPT  # 금지 문구 자체의 존치도 함께 고정
 
 
-# ── [#297] get_orders (I-29 자사 주문 조회, §4.17) ────────────────────────────────
+# ── [#297] get_orders (I-29 자사 주문 조회, §4.18) ────────────────────────────────
 
 
 def _order_fixture() -> SellerOrderList:
@@ -1807,7 +1807,7 @@ async def test_get_orders_caps_rows_by_settings() -> None:
     assert "외 3건" in result
 
 
-# ── [#297] get_reviews (I-31 리뷰 조회, §4.19) ────────────────────────────────────
+# ── [#297] get_reviews (I-31 리뷰 조회, §4.20) ────────────────────────────────────
 
 
 async def test_get_reviews_list_formats_rows() -> None:
@@ -1881,7 +1881,7 @@ async def test_get_reviews_degrades_on_spring_failure() -> None:
     assert result.startswith("Error:")
 
 
-# ── [#297] update_order_status (I-30 발송 처리, §4.18 — ORDER_WRITE_TOOLS 전용) ──
+# ── [#297] update_order_status (I-30 발송 처리, §4.19 — ORDER_WRITE_TOOLS 전용) ──
 
 
 async def test_update_order_status_executes_and_reports_transition() -> None:
@@ -1910,7 +1910,7 @@ async def test_update_order_status_already_shipped_is_distinct_error() -> None:
 
 
 async def test_update_order_status_spring_failure_never_claims_success() -> None:
-    """500·타임아웃은 '반영 여부 미확인'으로 — 성공 보고 금지(§4.18)."""
+    """500·타임아웃은 '반영 여부 미확인'으로 — 성공 보고 금지(§4.19)."""
     fake = FakeSpringClient(fail={"update_order_item_status"})
 
     result = await _call_runtime_tool(update_order_status, {"order_item_id": 5551}, fake)

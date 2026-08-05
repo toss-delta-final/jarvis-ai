@@ -70,7 +70,7 @@ _INT_SUFFIXES = ("원", "건", "개")
 _CREATE_FORBIDDEN_FIELDS = frozenset({"image_url", "status"})
 # I-10 필수 본문(api-spec §4.5) — 누락 draft 는 등록 자체가 불가하므로 되묻기.
 _CREATE_REQUIRED_FIELDS = frozenset({"name", "price", "stock_quantity"})
-# [#297] I-30 MVP 허용 전이는 ORDERED→SHIPPING 하나뿐(§4.18) — toStatus 를 코드가
+# [#297] I-30 MVP 허용 전이는 ORDERED→SHIPPING 하나뿐(§4.19) — toStatus 를 코드가
 # 고정한다(LLM 산물 아님). 전이 어휘가 늘면 여기와 validate_draft 만 확장한다.
 _SHIP_TO_STATUS = "SHIPPING"
 
@@ -279,7 +279,7 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
     """
     client = get_spring_client()
 
-    # [#297] ship — I-30 발송 처리(§4.18). 상품 재조회(stale 검증) 대상이 아니다:
+    # [#297] ship — I-30 발송 처리(§4.19). 상품 재조회(stale 검증) 대상이 아니다:
     # 소유권·현재 상태 검증은 Spring 이 실행 시점에 재수행한다(타사=404 존재 은닉).
     # 4xx 는 코드별 결과로 정규화해 스레드에 기록한다(멱등 안내 가능) — 500·타임아웃만
     # 예외 전파로 재confirm 여지를 남긴다(성공 보고 금지, I-11·I-12 규칙).

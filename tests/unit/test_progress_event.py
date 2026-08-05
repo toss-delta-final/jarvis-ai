@@ -429,7 +429,8 @@ def test_seller_analysis_progress_unaffected_by_buyer_progress_flag(
         on_lines = _run()
         assert on_lines == off_lines
         off_types = [json.loads(line[len("data: ") :].strip())["type"] for line in off_lines]
-        assert off_types == ["meta", "progress", "token", "done"]
+        # report 는 kind=="report" 최종 산출에 1회 동반된다(이슈 #296, api-spec §3.2 v0.24.0).
+        assert off_types == ["meta", "progress", "token", "report", "done"]
         progress_payload = json.loads(off_lines[1][len("data: ") :].strip())
         assert progress_payload["data"] == {"text": "매출 이상 분석 중…"}
     finally:

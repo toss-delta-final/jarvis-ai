@@ -1188,7 +1188,7 @@ async def get_orders(
     limit: int | None = None,
     offset: int | None = None,
 ) -> str:
-    """자사 주문의 현재 상태 스냅샷을 조회한다(I-29, api-spec §4.17).
+    """자사 주문의 현재 상태 스냅샷을 조회한다(I-29, api-spec §4.18).
 
     "신규 주문 뭐 있어?" 같은 현재 상태 질문과 발송 처리 대상(orderItemId) 확인에
     쓴다 — 전이 이력·집계는 get_order_events(I-14) 소관이다(역할 분리). 아이템별
@@ -1267,7 +1267,7 @@ async def get_reviews(
     limit: int | None = None,
     offset: int | None = None,
 ) -> str:
-    """자사 상품 리뷰(VISIBLE 만)를 조회한다(I-31, api-spec §4.19).
+    """자사 상품 리뷰(VISIBLE 만)를 조회한다(I-31, api-spec §4.20).
 
     기간을 생략하면 최근 7일이 기본 적용된다(서버 규칙). stats=True 면 목록 대신
     집계(총건수·평균·별점 분포·상품별)만 반환한다 — 전반 요약은 집계를 먼저 보고,
@@ -1494,7 +1494,7 @@ async def update_order_status(
     to_status: str = "SHIPPING",
     reason: str | None = None,
 ) -> str:
-    """주문 아이템을 발송 처리한다(I-30, api-spec §4.18). HITL 승인 후에만 호출한다.
+    """주문 아이템을 발송 처리한다(I-30, api-spec §4.19). HITL 승인 후에만 호출한다.
 
     MVP 허용 전이는 ORDERED→SHIPPING 하나뿐 — 발송 이후의 취소·역전이는 불가
     (구매자 구제는 반품 경로만). 아이템 단위이며 bulk 가 없어 복수 발송은 반복 호출한다.

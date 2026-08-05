@@ -85,6 +85,7 @@ from app.schemas.spring import (
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 _SpringOperation = Literal[
     "search_products",
+    "get_popular_products",
     "get_recent_purchases",
     "get_order_status",
     "add_to_cart",
@@ -447,7 +448,7 @@ class WishlistError(Exception):
     """
 
 
-# ── I-30 발송 처리 예외 (이슈 #297, §4.18 — 🔶 초안, BE 협의 전) ──────────────────
+# ── I-30 발송 처리 예외 (이슈 #297, §4.19 — 🔶 초안, BE 협의 전) ──────────────────
 #
 # HITL 쓰기(발송)는 "이미 된 일"과 "방금 한 일"과 "안 되는 일"을 구분해야 거짓 성공
 # 보고를 막는다(I-12 ALREADY_HIDDEN 논리) — SpringUnavailableError 로 뭉개면 셋 다
@@ -797,6 +798,39 @@ async def search_products(filters: ProductSearchFilters) -> ProductSearchResult:
                 raise SearchBudgetExceeded(f"검색 총시간 예산 초과({budget_s}s)") from exc
     except (httpx.HTTPError, ValueError, ValidationError, TimeoutError) as exc:
         raise SpringUnavailableError(f"search_products 실패: {exc}") from exc
+
+
+async def get_popular_products(size: int) -> ProductSearchResult:
+    """인기 상품 후보 조회 — I-3 (api-spec §4.17, 이슈 #162).
+
+    GET {spring_base_url}/internal/products/popular?size= + X-Internal-Token.
+    조건이 하나도 없는 발화("아무거나 추천해줘")의 후보 소스다 — I-1 은 필터가 전부 비면
+    매칭 전량(실측 7,245건·13.33MB)을 돌려주고 그 상위가 사용자 의도와 무관하다.
+
+    **응답이 I-1 과 동일 DTO** 라 `_parse_search_response` 를 그대로 재사용한다(정본 I-1:
+    "같은 DTO 를 쓰는 I-3 도 동일하게 나간다"). 하류(dedup·rerank·I-21 push)도 그대로다.
+
+    **0건은 성공이다** — 정본 §4.17: "빈 배열도 정상 결과다. 카드 없이 텍스트만 답하면 된다".
+    여기서 예외를 던지면 상위가 degrade 로 오인해 무필터 I-1 폴백을 태우는데, 그게 바로 이
+    함수가 없애려는 호출이다.
+
+    **재시도하지 않는다** — §2.9(c) 의 재시도 1회는 `search_products`(I-1) 전용 예외이고 그
+    예산은 이미 first-token 상한을 압박한다(#277 실측: 재시도가 이벤트 0건·504 를 8/8 재현,
+    #288). 일관성 명목으로 `attempts` 루프를 옮겨 오지 말 것.
+
+    `size` 는 호출부가 config(`popular_candidate_size`)에서 주입한다 — BE 에 범위 검증이 없어
+    음수·0 이 400 이 아니라 빈 배열로 오므로 양수 보장은 AI 쪽 책임이다(Settings 가 `gt=0`).
+    """
+    try:
+        with _spring_span("get_popular_products", "GET") as span:
+            async with _client() as client:
+                resp = await client.get("/internal/products/popular", params={"size": size})
+                _record_spring_status(span, resp)
+                resp.raise_for_status()
+                data = resp.json()
+        return _parse_search_response(data)
+    except (httpx.HTTPError, ValueError, ValidationError, TimeoutError) as exc:
+        raise SpringUnavailableError(f"get_popular_products 실패: {exc}") from exc
 
 
 async def get_recent_purchases(user_id: int, status: str | None = None) -> RecentPurchases:
@@ -1587,7 +1621,7 @@ class SpringClient:
         )
         return self._validate(ProductDeleteResult, data)
 
-    # ── 주문·리뷰 3종 (이슈 #297, I-29~I-31 — api-spec §4.17~§4.19, 🔶 초안 BE 협의 전) ──
+    # ── 주문·리뷰 3종 (이슈 #297, I-29~I-31 — api-spec §4.18~§4.20, 🔶 초안 BE 협의 전) ──
 
     async def get_orders(
         self,
@@ -1600,7 +1634,7 @@ class SpringClient:
         limit: int | None = None,
         offset: int | None = None,
     ) -> SellerOrderList:
-        """I-29 자사 주문 조회 — 현재 상태 스냅샷 (§4.17). S-2 의 internal 판.
+        """I-29 자사 주문 조회 — 현재 상태 스냅샷 (§4.18). S-2 의 internal 판.
 
         기간(from/to)은 선택 — 생략 시 전체 주문(확정 2026-08-04). status 는 S-2 탭
         어휘(ORDERED/SHIPPING/DELIVERED/CLAIM). orderId 미존재·타사는 404 가 아니라
@@ -1630,13 +1664,13 @@ class SpringClient:
     async def update_order_item_status(
         self, brand_id: int, order_item_id: int, payload: OrderItemStatusUpdate
     ) -> OrderItemStatusResult:
-        """I-30 주문 아이템 상태 전이 — 발송 처리 (§4.18). HITL 승인 후에만 호출.
+        """I-30 주문 아이템 상태 전이 — 발송 처리 (§4.19). HITL 승인 후에만 호출.
 
         MVP 허용 전이는 ORDERED→SHIPPING 하나뿐. 실패 코드 구분이 계약이다:
         404 ORDER_ITEM_NOT_FOUND(타사 포함 존재 은닉) / 409 ORDER_ALREADY_SHIPPED
         (멱등 200 금지 — 구 ALREADY_SHIPPED 도 과도기 낙성) / 400
         ORDER_INVALID_TRANSITION(클레임·역전이 포함). 그 외(401·500·타임아웃)는
-        SpringUnavailableError — 호출부는 성공 보고 금지 + 재시도 안내(§4.18).
+        SpringUnavailableError — 호출부는 성공 보고 금지 + 재시도 안내(§4.19).
         """
         data = await self._request(
             "PATCH",
@@ -1664,7 +1698,7 @@ class SpringClient:
         limit: int | None = None,
         offset: int | None = None,
     ) -> SellerReviewList:
-        """I-31 자사 상품 리뷰 목록 조회 — VISIBLE 만 (§4.19).
+        """I-31 자사 상품 리뷰 목록 조회 — VISIBLE 만 (§4.20).
 
         기간 생략 시 서버가 최근 7일 기본 적용(확정 2026-08-04 — 누락은
         INVALID_PERIOD 아님). rating 은 "1,2" 콤마 CSV, sort 는 latest|rating(낮은 순
@@ -1701,7 +1735,7 @@ class SpringClient:
         to: str | None = None,
         product_id: int | None = None,
     ) -> SellerReviewStats:
-        """I-31 리뷰 집계 조회 — stats=true 모드 (§4.19).
+        """I-31 리뷰 집계 조회 — stats=true 모드 (§4.20).
 
         totalCount/averageRating/distribution(P-3 형태)/byProduct. 0건이면
         averageRating 은 null(I-16 churnRate 규칙과 동일 — 평점 0점 오독 금지).

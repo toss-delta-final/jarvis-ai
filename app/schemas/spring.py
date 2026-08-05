@@ -879,7 +879,7 @@ class ProductDeleteResult(SellerAggregateModel):
     status: str = "HIDDEN"
 
 
-# ── I-29/I-30/I-31 판매자 주문·리뷰 (§4.17~§4.19, 이슈 #297 — 🔶 초안, BE 협의 전) ──
+# ── I-29/I-30/I-31 판매자 주문·리뷰 (§4.18~§4.20, 이슈 #297 — 🔶 초안, BE 협의 전) ──
 #
 # 전부 초안 — Spring 실측 전이라 응답 모델은 SellerAggregateModel(extra="allow")로
 # 필드 유동을 흡수한다(파싱 실패로 도구가 죽지 않도록). 확정 시 이 섹션만 조인다.
@@ -888,7 +888,7 @@ class ProductDeleteResult(SellerAggregateModel):
 class SellerOrderItemRow(SellerAggregateModel):
     """I-29 rows[].items[] 항목 — 자사 아이템만(타사 이름·금액 미노출, S-2 규칙 상속).
 
-    orderItemId·현재 status 가 I-30 발송 대상 해소의 키다(§4.17)."""
+    orderItemId·현재 status 가 I-30 발송 대상 해소의 키다(§4.18)."""
 
     order_item_id: int
     product_id: int | None = None
@@ -915,7 +915,7 @@ class SellerOrderRow(SellerAggregateModel):
 
 
 class SellerOrderList(SellerAggregateModel):
-    """I-29 GET /internal/seller/{brandId}/orders 응답 (§4.17).
+    """I-29 GET /internal/seller/{brandId}/orders 응답 (§4.18).
 
     0건이어도 200 + 빈 rows·tabCounts 전부 0 — "주문 없음"은 정상 결과(I-14 규칙).
     orderId 직조회의 타사/미존재도 200 + 빈 rows(존재 은닉, 확정 2026-08-04)."""
@@ -926,7 +926,7 @@ class SellerOrderList(SellerAggregateModel):
 
 
 class OrderItemStatusUpdate(CamelModel):
-    """I-30 PATCH 요청 본문 — MVP 유효 toStatus 는 SHIPPING 뿐(§4.18)."""
+    """I-30 PATCH 요청 본문 — MVP 유효 toStatus 는 SHIPPING 뿐(§4.19)."""
 
     to_status: str
     reason: str | None = None
@@ -954,7 +954,7 @@ class SellerReviewRow(SellerAggregateModel):
 
 
 class SellerReviewList(SellerAggregateModel):
-    """I-31 GET /internal/seller/{brandId}/reviews 응답 (§4.19, stats 미지정)."""
+    """I-31 GET /internal/seller/{brandId}/reviews 응답 (§4.20, stats 미지정)."""
 
     rows: list[SellerReviewRow] = Field(default_factory=list)
     total: int = 0

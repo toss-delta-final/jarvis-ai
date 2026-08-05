@@ -517,7 +517,7 @@ def test_find_product_paginates_until_found() -> None:
     assert len([c for c in spring.calls if c[0] == "list"]) == 3  # 20건 × 3페이지
 
 
-# ── [#297] op="ship" — I-30 발송 처리 HITL (§4.18) ───────────────────────────────
+# ── [#297] op="ship" — I-30 발송 처리 HITL (§4.19) ───────────────────────────────
 
 
 def _ship_proposal(**kwargs) -> DraftProposal:

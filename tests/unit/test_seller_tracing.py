@@ -524,7 +524,8 @@ def test_analysis_request_through_open_stream_finishes_done_with_intact_tree(
 
     assert response.status_code == 200
     events = _response_events(response)
-    assert [event["type"] for event in events] == ["meta", "progress", "token", "done"]
+    # report 는 kind=="report" 최종 산출에 1회 동반된다(이슈 #296, api-spec §3.2 v0.24.0).
+    assert [event["type"] for event in events] == ["meta", "progress", "token", "report", "done"]
     assert not any(
         event["type"] == "error" and event["data"]["code"] == "INTERNAL" for event in events
     )

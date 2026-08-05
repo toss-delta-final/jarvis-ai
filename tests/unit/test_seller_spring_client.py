@@ -771,7 +771,7 @@ async def test_non_envelope_response_passes_through() -> None:
     assert result.total == 0
 
 
-# ── I-29 자사 주문 조회 (§4.17, 이슈 #297 — 🔶 초안) ──────────────────────────────
+# ── I-29 자사 주문 조회 (§4.18, 이슈 #297 — 🔶 초안) ──────────────────────────────
 
 
 async def test_get_orders_url_params_and_parsing() -> None:
@@ -847,7 +847,7 @@ async def test_get_orders_empty_rows_is_normal() -> None:
     assert result.rows == [] and result.total == 0
 
 
-# ── I-30 발송 처리 (§4.18, 이슈 #297 — 🔶 초안) ──────────────────────────────────
+# ── I-30 발송 처리 (§4.19, 이슈 #297 — 🔶 초안) ──────────────────────────────────
 
 
 async def test_update_order_item_status_sends_camel_body() -> None:
@@ -921,7 +921,7 @@ async def test_update_order_item_status_unknown_code_falls_back() -> None:
         await client.update_order_item_status(12, 5551, OrderItemStatusUpdate(to_status="SHIPPING"))
 
 
-# ── I-31 리뷰 조회 (§4.19, 이슈 #297 — 🔶 초안) ──────────────────────────────────
+# ── I-31 리뷰 조회 (§4.20, 이슈 #297 — 🔶 초안) ──────────────────────────────────
 
 
 async def test_get_reviews_url_params_and_parsing() -> None:
