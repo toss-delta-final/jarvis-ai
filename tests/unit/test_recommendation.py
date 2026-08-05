@@ -2376,7 +2376,12 @@ async def test_recommendation_deferred_conditions_suppresses_search_retry(
 async def test_recommendation_nondeferred_conditions_keeps_search_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """conditions를 먼저 내는 턴은 첫 이벤트 예산 밖이므로 I-1 재시도 1회를 유지한다(#277)."""
+    """conditions를 먼저 내는 턴은 첫 이벤트 예산 밖이므로 I-1 재시도 1회를 유지한다(#277).
+
+    [#162] `semanticQuery` 를 준다 — 종전에는 `filters: {}` 만으로 이 턴을 만들었는데, 그건 이제
+    **조건 없는 발화**로 판정돼 I-1 이 아니라 I-3(인기 상품) 경로를 탄다. 이 테스트의 주제는
+    I-1 재시도지 후보 소스 선택이 아니므로, 의미 신호를 줘서 종전 경로를 유지시킨다.
+    """
     import httpx
 
     calls = _counting_client(monkeypatch, httpx.Response(503))
@@ -2387,6 +2392,7 @@ async def test_recommendation_nondeferred_conditions_keeps_search_retry(
             llm=FakeLLM(
                 decompose={
                     "intent": "recommend",
+                    "semanticQuery": "무선 이어폰",
                     "filters": {},
                     "case": 2,
                 }
@@ -5746,3 +5752,152 @@ async def test_total_budget_output_controls_push_independently_of_price_max(
         totals.append(push.pushes[0].total_budget)
 
     assert totals == [50_000, None]
+
+
+# ─────────── [#162] 조건 없는 발화 → 인기 상품(I-3) ───────────
+
+_NO_CONDITION_DECOMPOSE = {"intent": "recommend", "filters": {}, "case": 2}
+
+
+def _counting_search_calls(products=DEFAULT_PRODUCTS):
+    """I-1 호출을 기록하는 검색 — "호출되지 않았다"를 검증하려면 셀 수 있어야 한다."""
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters)
+        return ProductSearchResult(products=list(products), total_count=len(products))
+
+    return _search, calls
+
+
+def _recording_popular(products=DEFAULT_PRODUCTS, *, error: Exception | None = None):
+    """I-3 호출을 기록하는 fake. `error` 를 주면 그 예외를 던진다(장애 재현)."""
+    calls: list = []
+
+    async def _popular(size):
+        calls.append(size)
+        if error is not None:
+            raise error
+        return ProductSearchResult(products=list(products), total_count=len(products))
+
+    return _popular, calls
+
+
+async def test_no_condition_turn_uses_popular_instead_of_unfiltered_search() -> None:
+    """조건 0개 발화는 I-1 을 부르지 않고 I-3 후보로 답한다 — 이 이슈의 본체.
+
+    종전에는 파라미터 0개의 I-1 이 나가 매칭 전량(실측 7,245건·13.33MB)을 받았다.
+    """
+    search, search_calls = _counting_search_calls()
+    popular, popular_calls = _recording_popular()
+    push = _RecordingPush()
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="아무거나 추천해줘", thread_id="nc-popular"),
+            _guest(),
+            llm=FakeLLM(decompose=_NO_CONDITION_DECOMPOSE),
+            search=search,
+            push_fn=push,
+            popular_fn=popular,
+        )
+    )
+
+    assert search_calls == []  # 무필터 I-1 이 나가지 않는다
+    assert popular_calls == [get_settings().popular_candidate_size]  # config 값을 명시 전송
+    assert "products.ready" in _types(events)
+    assert _types(events)[-1] == "done"
+
+
+async def test_no_condition_turn_discloses_popular_source() -> None:
+    """안내를 함께 낸다 — 없으면 사용자가 인기 상품을 자기 조건이 반영된 결과로 오해한다."""
+    search, _ = _counting_search_calls()
+    popular, _ = _recording_popular()
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="아무거나 추천해줘", thread_id="nc-notice"),
+            _guest(),
+            llm=FakeLLM(decompose=_NO_CONDITION_DECOMPOSE),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    texts = [e["data"]["text"] for e in events if e["type"] == "token"]
+    assert any(get_settings().no_condition_notice_popular in t for t in texts)
+
+
+async def test_condition_turn_never_calls_popular() -> None:
+    """조건이 있는 턴은 종전 경로 그대로 — I-3 로 새면 사용자가 말한 조건이 버려진다."""
+    search, search_calls = _counting_search_calls()
+    popular, popular_calls = _recording_popular()
+
+    await _collect(
+        run_buyer_turn(
+            _req(thread_id="nc-conditioned"),
+            _guest(),
+            llm=FakeLLM(),  # DEFAULT_DECOMPOSE — priceMax·keyword·categoryQueries 있음
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    assert popular_calls == []
+    assert search_calls  # I-1 은 정상 호출된다
+
+
+async def test_popular_failure_degrades_to_search_without_false_claim() -> None:
+    """I-3 장애면 종전 검색으로 degrade 하고 스트림은 살아 있다.
+
+    이때 "인기 상품으로 보여드릴게요" 는 **내지 않는다** — 그 결과는 인기 상품이 아니라
+    무필터 검색이라 거짓 주장이 된다(#133 정직성 규약).
+    """
+    search, search_calls = _counting_search_calls()
+    popular, popular_calls = _recording_popular(error=SpringUnavailableError("popular down"))
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="아무거나 추천해줘", thread_id="nc-degrade"),
+            _guest(),
+            llm=FakeLLM(decompose=_NO_CONDITION_DECOMPOSE),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    assert popular_calls  # 시도는 했다
+    assert search_calls  # 종전 검색으로 떨어졌다
+    types = _types(events)
+    assert types[-1] == "done"  # 스트림이 죽지 않는다
+    texts = [e["data"]["text"] for e in events if e["type"] == "token"]
+    assert not any(get_settings().no_condition_notice_popular in t for t in texts)
+
+
+async def test_popular_zero_results_is_not_a_degrade() -> None:
+    """I-3 0건은 성공이다(§4.12) — 카드 없이 텍스트로 답하고 무필터 I-1 로 떨어지지 않는다.
+
+    여기서 degrade 로 처리하면 이 이슈가 없애려는 13.33MB 호출을 도로 부른다.
+    """
+    search, search_calls = _counting_search_calls()
+    popular, popular_calls = _recording_popular(products=[])
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="아무거나 추천해줘", thread_id="nc-zero"),
+            _guest(),
+            llm=FakeLLM(decompose=_NO_CONDITION_DECOMPOSE),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    assert popular_calls
+    assert search_calls == []  # 폴백하지 않는다
+    types = _types(events)
+    assert "products.ready" not in types  # 실을 카드가 없다
+    assert types[-1] == "done"

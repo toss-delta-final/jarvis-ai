@@ -355,8 +355,13 @@ async def stream_recommendation(
     thread_key: str | None = None,
     observer=None,
     request_id: str,
+    # [#162] 조건이 하나도 없는 발화인가(`no_condition.is_no_condition_turn` 판정 결과).
+    # 판정은 호출부(buyer/graph.py)에서 한다 — 그쪽에만 `prior`(첫 턴 여부)가 있다.
+    no_condition: bool = False,
+    popular_fn=None,  # I-3 조회. 미지정 시 라이브 기본값(테스트는 fake 주입)
 ) -> AsyncIterator[str]:
     """추천 서브그래프 스트림. 프레임(SSE str)을 순서대로 산출한다."""
+    popular_fn = popular_fn or spring_client.get_popular_products
     # [#51] keyword 드롭 판단은 **한 곳에서** 계산해 칩 표시(아래)와 leg 검색(_leg)이 같은 flag 를
     # 공유하게 한다 — 두 지점이 독립 판단하면 전제(leg 엔 항상 canonical)가 미래 리팩터에서 깨질 때
     # 표시-실제가 어긋날 수 있다(리뷰 반영). canonical category(= category_legs 존재) + config on 이면
@@ -556,6 +561,35 @@ async def stream_recommendation(
                 trace.mark_degraded("dedup_skipped")
             return None
 
+    # [#162] 조건이 하나도 없는 턴은 후보 소스를 I-3(인기 상품, §4.12)로 바꾼다.
+    popular_degraded = False
+
+    async def _run_candidate_source():
+        """이번 턴의 후보를 확보한다 — `_run_search` 와 같은 `(결과, leg맵)` 형태로 돌려준다.
+
+        조건 없는 턴에 종전 경로를 그대로 태우면 파라미터 0개의 I-1 이 나가 매칭 전량
+        (실측 7,245건·13.33MB)을 받는데, 그 상위는 사용자 의도와 무관하다. I-1 정본이
+        "정형조건 없는 요청 차단은 LLM 단 책임"으로 규정한 자리다(§4.6·§4.12).
+
+        leg 맵은 빈 dict 다 — 인기 목록은 카테고리 fan-out 이 아니라 단일 목록이다.
+        """
+        nonlocal popular_degraded
+        if not no_condition:
+            return await _run_search()
+        try:
+            found = await popular_fn(settings.popular_candidate_size)
+        except Exception as exc:  # noqa: BLE001 - 폴백 소스 실패로 스트림을 죽이지 않는다
+            logger.warning("popular_products_failed", extra={"reason": str(exc)})
+            found = None
+        if found is not None:
+            # **0건도 성공이다**(§4.12) — 빈 배열이면 하류 zero-result 경로가 카드 없이 답한다.
+            # 여기서 degrade 로 처리하면 이 이슈가 없애려는 무필터 I-1 을 도로 부른다.
+            return (found, {})
+        popular_degraded = True
+        if trace := current_request_trace():
+            trace.mark_degraded("popular_fallback")
+        return await _run_search()
+
     # 미룬 턴은 첫 이벤트 앞 본 검색·자동 완화 probe만 재시도를 끈다(#277). conditions 뒤의
     # 완화 칩 probe는 첫 이벤트 예산 밖이라 제외하며, 이 with는 await 뒤 즉시 닫아 yield·다음
     # 턴으로 ContextVar가 새지 않게 한다. progress 이벤트가 계약에 생기면 이 스킵은 원복 가능하다.
@@ -564,7 +598,9 @@ async def stream_recommendation(
         if suppress_deferred_search_retry
         else nullcontext()
     ):
-        search_bundle, purchases = await asyncio.gather(_run_search(), _fetch_purchases())
+        search_bundle, purchases = await asyncio.gather(
+            _run_candidate_source(), _fetch_purchases()
+        )
     if search_bundle is None:  # 검색 실패 → SEARCH_FAILED(종료)
         if trace := current_request_trace():
             trace.mark_degraded("search_failed")
@@ -1170,6 +1206,14 @@ async def stream_recommendation(
 
     if comment:
         yield sse("token", TokenData(text=comment).model_dump(by_alias=True))
+
+    # [#162] 조건 없음 안내 — 없으면 사용자가 인기 상품을 **자기 조건이 반영된 결과**로 오해한다.
+    # `popular_degraded` 턴에는 내지 않는다: I-3 가 죽어 무필터 검색으로 떨어진 결과에
+    # "인기 상품으로 보여드릴게요" 라고 말하면 거짓이 된다(#133 정직성 규약 — 그 턴은
+    # `mark_degraded("popular_fallback")` 로 관측에 남는다).
+    if no_condition and not popular_degraded:
+        if notice := _strip_unsafe(settings.no_condition_notice_popular):
+            yield sse("token", TokenData(text=notice).model_dump(by_alias=True))
 
     # [#133] 최근 구매 제외(I-19) 실패 고지 — **기본 미고지**(config 기본값 "")다. 조회 실패는
     # "중복이 노출됐다"가 아니라 "걸러내지 못했다"라 실제 중복 여부를 알 수 없어 매 턴 노이즈가

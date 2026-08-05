@@ -36,6 +36,7 @@ from app.agents.buyer.recommendation.decompose import (
     decompose,
 )
 from app.agents.buyer.recommendation.needs_expansion import detect_expansion_need
+from app.agents.buyer.recommendation.no_condition import is_no_condition_turn
 from app.agents.buyer.recommendation.needs_expansion import expand_needs as _expand_needs
 from app.agents.buyer.recommendation.relaxation import FIELD_TO_ATTR as RELAXATION_FIELD_TO_ATTR
 from app.agents.buyer.recommendation.state import get_relaxation_offer_store, get_revert_store
@@ -407,6 +408,7 @@ async def run_buyer_turn(
     map_categories=None,
     order_status_fn=None,
     expand_needs=None,
+    popular_fn=None,
     observer=None,
     request_id: str | None = None,
 ) -> AsyncIterator[str]:
@@ -446,6 +448,7 @@ async def run_buyer_turn(
         return
     search = search or search_service.search_catalog
     push_fn = push_fn or spring_client.push_recommendations
+    popular_fn = popular_fn or spring_client.get_popular_products  # [#162] I-3
     thread_store = await get_thread_store()
     prior = await thread_store.get(thread_key)
     condition_actions = getattr(request, "condition_actions", None) or []
@@ -803,6 +806,9 @@ async def run_buyer_turn(
             thread_store=thread_store,
             thread_key=thread_key,
         )
+        # [#162] 조건 없음 판정은 **여기서** 한다 — `prior`(첫 턴 여부)가 이 스코프에만 있고,
+        # `_prepare_recommendation` 이 카테고리 매핑·승계를 끝낸 뒤라야 `category_legs` 가 확정된다.
+        no_condition = is_no_condition_turn(decision, prior)
         async for frame in stream_recommendation(
             request=request,
             decision=decision,
@@ -821,5 +827,7 @@ async def run_buyer_turn(
             thread_key=thread_key,
             observer=observer,
             request_id=resolved_request_id,
+            no_condition=no_condition,
+            popular_fn=popular_fn,
         ):
             yield frame
