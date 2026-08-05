@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 
@@ -91,10 +92,16 @@ async def test_expansion_timeout_degrades_to_single_original_color(monkeypatch, 
     monkeypatch.setattr(sc, "get_settings", lambda: settings)
     monkeypatch.setattr(sc, "_client", lambda: _Client(seen))
 
-    async def never_finishes(*args, **kwargs):
-        await asyncio.sleep(1)
+    # 멈춰 세울 대상은 **색상 맵 조회 하나**다. 종전엔 `asyncio.to_thread` 를 모듈 전역으로
+    # 스텁했는데, 검색 경로도 `to_thread` 를 쓰게 되면서(#132 파싱 이관) 그 스텁이 검색까지
+    # 붙잡아 이 테스트가 2초를 쟀다. 진짜 느린 것은 DB 조회이므로 거기만 막는다 —
+    # `_load_color_synonym_map` 의 shield·백그라운드 회수 경로도 실제 스레드로 함께 검증된다.
+    from app.pipelines import color_synonyms
 
-    monkeypatch.setattr(sc.asyncio, "to_thread", never_finishes)
+    def never_finishes(*args, **kwargs):
+        time.sleep(0.2)  # wait_for(0.001s) 를 확실히 넘기는 동기 블로킹
+
+    monkeypatch.setattr(color_synonyms, "get_synonym_map", never_finishes)
     started = asyncio.get_running_loop().time()
     with caplog.at_level("WARNING"):
         await sc.search_products(ProductSearchFilters(color="남색"))

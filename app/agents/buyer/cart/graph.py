@@ -160,6 +160,45 @@ def _done() -> str:
     return sse("done", DoneData(finish_reason="stop").model_dump(by_alias=True))
 
 
+# 담기 대상을 확정하지 못했을 때의 되물음 문구 (#118).
+#
+# 기본 문구는 **한 글자도 바꾸지 않는다** — 화면 맥락이 없는 경로(FE 가 `screen` 을 보내지 않는
+# 현재의 절대다수)는 오늘과 바이트 동일해야 한다. 화면 후보가 있는데 "추천을 먼저 받아보시면"
+# 이라고 답하면 사용자는 눈앞의 상품을 두고 엉뚱한 안내를 받는다 — 정본 §3.1 의 "여러 건이면
+# 되물음"은 되묻는 것만이 아니라 **무엇을 물어야 할지 알려주는 것**까지다.
+_UNRESOLVED_DEFAULT = "어떤 상품을 담을까요? 추천을 먼저 받아보시면 담아드릴게요."
+# 화면을 가리켰지만 **어느 것인지** 특정되지 않은 경우. 후보 다건(`ambiguous_screen_candidates`)과
+# 순번·좌표가 화면 범위를 벗어난 경우(`*_out_of_range`), 좌표를 풀 `columns` 가 없는 경우를 **한
+# 문구로 묶는다** — 사유는 다르지만 사용자가 취해야 할 다음 행동이 "위치를 다시 말한다"로 같기
+# 때문이다. 범위 밖에 "N개까지만 있어요"처럼 개수를 알려주는 안내는 화면에 이미 보이는 정보를
+# 되읊는 것이라 이득이 없다고 판단했다.
+_UNRESOLVED_SCREEN_POSITION = (
+    "화면에 보이는 상품 중 어떤 걸 담을까요? 왼쪽부터 몇 번째인지 말씀해 주시면 담아드릴게요."
+)
+# 사용자가 말한 상품 id 를 두 목록 어디에서도 찾지 못한 경우. 위와 **묶지 않는다** — 여기서
+# "몇 번째인지 말해 달라"고 하면 못 찾았다는 사실 자체가 전달되지 않아 같은 말을 반복하게 된다.
+_UNRESOLVED_SCREEN_NOT_FOUND = (
+    "말씀하신 상품을 화면에서 찾지 못했어요. 화면에 보이는 상품 중에서 골라 주시겠어요?"
+)
+_SCREEN_POSITION_REASONS = frozenset(
+    {
+        "ambiguous_screen_candidates",
+        "ordinal_out_of_range",
+        "coordinate_out_of_range",
+        "coordinate_without_columns",
+    }
+)
+
+
+def _unresolved_notice(screen_reason: str | None) -> str:
+    """되물음 문구를 화면 해소 사유로 가른다. 사유가 없으면 오늘 문구 그대로."""
+    if screen_reason in _SCREEN_POSITION_REASONS:
+        return _UNRESOLVED_SCREEN_POSITION
+    if screen_reason == "unknown_product_id_spoken":
+        return _UNRESOLVED_SCREEN_NOT_FOUND
+    return _UNRESOLVED_DEFAULT
+
+
 async def stream_cart_add(
     *,
     identity,
@@ -169,11 +208,17 @@ async def stream_cart_add(
     settings,
     message: str = "",
     allowed_product_ids: set[int] | None = None,
+    screen_reason: str | None = None,
     add_fn=None,
     get_cart_fn=None,
     observer=None,
 ) -> AsyncIterator[str]:
-    """담기 서브그래프. action(CART_ADDED/CART_ADD_FAILED) 또는 옵션 되물음 token 을 낸다."""
+    """담기 서브그래프. action(CART_ADDED/CART_ADD_FAILED) 또는 옵션 되물음 token 을 낸다.
+
+    `screen_reason` 은 화면 지시어 해소기(`screen_reference`)가 담기 대상을 **일부러 비운** 사유다
+    (#118). 되물음 문구를 상황에 맞게 가르는 데만 쓰고 판정에는 관여하지 않는다 — `None` 이면
+    (= FE 가 `screen` 을 안 보냈거나 해소기가 개입하지 않은 절대다수 경로) 문구는 오늘과 같다.
+    """
     add_fn = add_fn or spring_client.add_to_cart
     get_cart_fn = get_cart_fn or spring_client.get_cart
 
@@ -233,9 +278,7 @@ async def stream_cart_add(
     if unresolved:
         yield sse(
             "token",
-            TokenData(text="어떤 상품을 담을까요? 추천을 먼저 받아보시면 담아드릴게요.").model_dump(
-                by_alias=True
-            ),
+            TokenData(text=_unresolved_notice(screen_reason)).model_dump(by_alias=True),
         )
         yield _done()
         return

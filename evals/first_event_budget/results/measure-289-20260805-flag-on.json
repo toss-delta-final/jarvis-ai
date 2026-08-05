@@ -1,0 +1,2538 @@
+{
+  "metric": "client_first_event_ms (FE→AI 경계, 요청 송신 ~ 첫 data: 프레임)",
+  "config": {
+    "spring_timeout_s": 3.0,
+    "spring_max_retries": 1,
+    "stream_first_token_timeout_s": 10.0,
+    "stream_total_timeout_buyer_s": 30.0,
+    "relaxation_max_rounds": 3,
+    "relaxation_auto_fields": [
+      "ratingMin"
+    ],
+    "state_store_query_timeout_s": 3.0,
+    "search_backend": "embedding_rerank",
+    "progress_events_enabled": true
+  },
+  "bootstrap": {
+    "resamples": 2000,
+    "confidence": 0.95,
+    "seed": 277
+  },
+  "scenarios": [
+    {
+      "scenario": "A_nondeferred_fast",
+      "note": "미룸 없음(ratingMin 부재) — 검색 전 conditions",
+      "rating_min": null,
+      "plan": [
+        "hit"
+      ],
+      "n": 20,
+      "runs": [
+        {
+          "first_event_ms": 20.41878900035954,
+          "total_ms": 760.062764000395,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            0.001277438000215625
+          ],
+          "repurchase_store_s": [
+            0.000801014999524341
+          ]
+        },
+        {
+          "first_event_ms": 11.577217999729328,
+          "total_ms": 768.388600000435,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            0.0011184479999428731
+          ],
+          "repurchase_store_s": [
+            0.0007068310005706735
+          ]
+        },
+        {
+          "first_event_ms": 14.535577000060584,
+          "total_ms": 727.9539060000388,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            0.0012775639997926191
+          ],
+          "repurchase_store_s": [
+            0.0013092290000713547
+          ]
+        },
+        {
+          "first_event_ms": 12.657964000027278,
+          "total_ms": 731.1626010005057,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            0.0012377430002743495
+          ],
+          "repurchase_store_s": [
+            0.0011437470002420014
+          ]
+        },
+        {
+          "first_event_ms": 14.530825999827357,
+          "total_ms": 765.8634110002822,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            0.0013512619998437003
+          ],
+          "repurchase_store_s": [
+            0.001339985000413435
+          ]
+        },
+        {
+          "first_event_ms": 13.231234999693697,
+          "total_ms": 813.2497400001739,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            0.0013932290003140224
+          ],
+          "repurchase_store_s": [
+            0.0009540549999655923
+          ]
+        },
+        {
+          "first_event_ms": 12.87046899960842,
+          "total_ms": 735.0166440000976,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            0.0014984849995016702
+          ],
+          "repurchase_store_s": [
+            0.001189399999930174
+          ]
+        },
+        {
+          "first_event_ms": 14.10367700009374,
+          "total_ms": 733.949890999611,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            0.001274905000173021
+          ],
+          "repurchase_store_s": [
+            0.0007903810001153033
+          ]
+        },
+        {
+          "first_event_ms": 12.89929500035214,
+          "total_ms": 808.567893000145,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            0.0012414500006343587
+          ],
+          "repurchase_store_s": [
+            0.001070285999958287
+          ]
+        },
+        {
+          "first_event_ms": 12.662932999774057,
+          "total_ms": 734.6646240002883,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            0.0012318809995122137
+          ],
+          "repurchase_store_s": [
+            0.0007679660002395394
+          ]
+        },
+        {
+          "first_event_ms": 11.706792999575555,
+          "total_ms": 719.4673429994509,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            0.0013691860003746115
+          ],
+          "repurchase_store_s": [
+            0.0011810010000772309
+          ]
+        },
+        {
+          "first_event_ms": 14.959969999836176,
+          "total_ms": 720.5870589996266,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            0.0016371909996450995
+          ],
+          "repurchase_store_s": [
+            0.0009674610000729444
+          ]
+        },
+        {
+          "first_event_ms": 13.504075999662746,
+          "total_ms": 726.910902999407,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            0.0013275530000100844
+          ],
+          "repurchase_store_s": [
+            0.0009077810000235331
+          ]
+        },
+        {
+          "first_event_ms": 10.77804099986679,
+          "total_ms": 744.4231330000548,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            0.0010373420000178157
+          ],
+          "repurchase_store_s": [
+            0.0008532840001862496
+          ]
+        },
+        {
+          "first_event_ms": 10.515998999835574,
+          "total_ms": 740.5739790001462,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            0.0011998880008832202
+          ],
+          "repurchase_store_s": [
+            0.0008352759996341774
+          ]
+        },
+        {
+          "first_event_ms": 11.104799000349885,
+          "total_ms": 774.7163470003215,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            0.0011091259993918356
+          ],
+          "repurchase_store_s": [
+            0.0008179730002666474
+          ]
+        },
+        {
+          "first_event_ms": 11.70114399974409,
+          "total_ms": 701.7595110000912,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            0.0011549889995876583
+          ],
+          "repurchase_store_s": [
+            0.0007983890000105021
+          ]
+        },
+        {
+          "first_event_ms": 15.921457999866107,
+          "total_ms": 737.1897000002718,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            0.0012327479998930357
+          ],
+          "repurchase_store_s": [
+            0.0007770390002406202
+          ]
+        },
+        {
+          "first_event_ms": 10.847325999748136,
+          "total_ms": 715.1991299997462,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            0.001312128999416018
+          ],
+          "repurchase_store_s": [
+            0.0007002470001680194
+          ]
+        },
+        {
+          "first_event_ms": 11.026061999473313,
+          "total_ms": 748.259027000131,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            0.0011663949999274337
+          ],
+          "repurchase_store_s": [
+            0.0008553260004191543
+          ]
+        }
+      ],
+      "first_event": {
+        "n": 20,
+        "min_ms": 10.515998999835574,
+        "p50_ms": 12.766700999691238,
+        "max_ms": 20.41878900035954,
+        "mean_ms": 13.077682549874226,
+        "p95_ci": {
+          "low": 14.530825999827357,
+          "high": 20.41878900035954,
+          "unknown_reason": null
+        }
+      }
+    },
+    {
+      "scenario": "B_deferred_hit",
+      "note": "미룬 턴, 검색 즉답·후보 있음 — probe 없음",
+      "rating_min": 4.5,
+      "plan": [
+        "hit"
+      ],
+      "n": 20,
+      "runs": [
+        {
+          "first_event_ms": 11.223036000046704,
+          "total_ms": 1317.4823250001282,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "suggestions",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 3,
+          "i1_search_products_s": [
+            0.0010001829996326705,
+            0.001333942999735882,
+            0.0009628980005800258
+          ],
+          "repurchase_store_s": [
+            0.0007013560007180786
+          ]
+        },
+        {
+          "first_event_ms": 11.501440999381884,
+          "total_ms": 1196.9218909998744,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "suggestions",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 3,
+          "i1_search_products_s": [
+            0.0010405209995951736,
+            0.001632106999750249,
+            0.0011022709995813784
+          ],
+          "repurchase_store_s": [
+            0.0008130870000968571
+          ]
+        },
+        {
+          "first_event_ms": 10.568857999714965,
+          "total_ms": 1063.7261649999346,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "suggestions",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 3,
+          "i1_search_products_s": [
+            0.0010066730001199176,
+            0.0014413779999813414,
+            0.00104203899991262
+          ],
+          "repurchase_store_s": [
+            0.0008261169996330864
+          ]
+        },
+        {
+          "first_event_ms": 12.189383000077214,
+          "total_ms": 1088.2321720000618,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "suggestions",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 3,
+          "i1_search_products_s": [
+            0.00099183299971628,
+            0.001425039000423567,
+            0.0010110780003742548
+          ],
+          "repurchase_store_s": [
+            0.0008015670000531827
+          ]
+        },
+        {
+          "first_event_ms": 71.34234200020728,
+          "total_ms": 1111.104191000777,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "suggestions",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 3,
+          "i1_search_products_s": [
+            0.000977824000074179,
+            0.0015683309993619332,
+            0.001073719000487472
+          ],
+          "repurchase_store_s": [
+            0.0008382750002056127
+          ]
+        },
+        {
+          "first_event_ms": 11.227431999941473,
+          "total_ms": 1166.403070999877,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "suggestions",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 3,
+          "i1_search_products_s": [
+            0.0009330799994131667,
+            0.0014795070001127897,
+            0.00108258299951558
+          ],
+          "repurchase_store_s": [
+            0.0008724469998924178
+          ]
+        },
+        {
+          "first_event_ms": 14.268201000049885,
+          "total_ms": 1075.0865890004206,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "suggestions",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 3,
+          "i1_search_products_s": [
+            0.001125463999414933,
+            0.001449538999622746,
+            0.0010413059999336838
+          ],
+          "repurchase_store_s": [
+            0.0011959779994867858
+          ]
+        },
+        {
+          "first_event_ms": 10.960010000417242,
+          "total_ms": 1072.0294060001834,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "suggestions",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 3,
+          "i1_search_products_s": [
+            0.001006910000796779,
+            0.0014978749995862017,
+            0.0010724260000642971
+          ],
+          "repurchase_store_s": [
+            0.0007991880002009566
+          ]
+        },
+        {
+          "first_event_ms": 13.002662999497261,
+          "total_ms": 1038.8265669998873,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "suggestions",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 3,
+          "i1_search_products_s": [
+            0.001008473000183585,
+            0.0015295160001187469,
+            0.001165448999927321
+          ],
+          "repurchase_store_s": [
+            0.0007177070001489483
+          ]
+        },
+        {
+          "first_event_ms": 10.926380999990215,
+          "total_ms": 1074.3592250000802,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "suggestions",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 3,
+          "i1_search_products_s": [
+            0.0010206669994659023,
+            0.001608565000424278,
+            0.0011434250000093016
+          ],
+          "repurchase_store_s": [
+            0.0009073880000869394
+          ]
+        },
+        {
+          "first_event_ms": 11.699470000166912,
+          "total_ms": 1060.8325419998437,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "suggestions",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 3,
+          "i1_search_products_s": [
+            0.0009808180002437439,
+            0.0014434579998123809,
+            0.0010440470005050884
+          ],
+          "repurchase_store_s": [
+            0.0007724790002612281
+          ]
+        },
+        {
+          "first_event_ms": 10.801086999890686,
+          "total_ms": 1075.226675000522,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "suggestions",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 3,
+          "i1_search_products_s": [
+            0.000964731999374635,
+            0.001330138000412262,
+            0.0015390059998026118
+          ],
+          "repurchase_store_s": [
+            0.0007751050006845617
+          ]
+        },
+        {
+          "first_event_ms": 14.667786999780219,
+          "total_ms": 1099.9683519994505,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "suggestions",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 3,
+          "i1_search_products_s": [
+            0.0009824670005400549,
+            0.0015123740004128194,
+            0.0010567910003373981
+          ],
+          "repurchase_store_s": [
+            0.0007421720001730137
+          ]
+        },
+        {
+          "first_event_ms": 12.51110700013669,
+          "total_ms": 1042.3642109999491,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "suggestions",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 3,
+          "i1_search_products_s": [
+            0.0011248849996263743,
+            0.0016271099993900862,
+            0.0011858289999508997
+          ],
+          "repurchase_store_s": [
+            0.0009052559998963261
+          ]
+        },
+        {
+          "first_event_ms": 14.52223399974173,
+          "total_ms": 1058.4074520002105,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "suggestions",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 3,
+          "i1_search_products_s": [
+            0.0010072450004372513,
+            0.0018207859993708553,
+            0.0013678790000994923
+          ],
+          "repurchase_store_s": [
+            0.0008990399992399034
+          ]
+        },
+        {
+          "first_event_ms": 12.164815000687668,
+          "total_ms": 1074.7885370001313,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "suggestions",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 3,
+          "i1_search_products_s": [
+            0.0011362599998392398,
+            0.0014157010000417358,
+            0.0010215050006081583
+          ],
+          "repurchase_store_s": [
+            0.0008230880002884078
+          ]
+        },
+        {
+          "first_event_ms": 12.202429000353732,
+          "total_ms": 1079.5162109998273,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "suggestions",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 3,
+          "i1_search_products_s": [
+            0.0010583080002106726,
+            0.0015239940003084484,
+            0.0010545110008024494
+          ],
+          "repurchase_store_s": [
+            0.0007747600002403487
+          ]
+        },
+        {
+          "first_event_ms": 12.264967000191973,
+          "total_ms": 1055.2637319997302,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "suggestions",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 3,
+          "i1_search_products_s": [
+            0.000946992000535829,
+            0.0015360500001406763,
+            0.0010877689992412343
+          ],
+          "repurchase_store_s": [
+            0.0008193559997380362
+          ]
+        },
+        {
+          "first_event_ms": 12.178596000012476,
+          "total_ms": 1061.5581780002685,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "suggestions",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 3,
+          "i1_search_products_s": [
+            0.0010015320003731176,
+            0.0015014720002000104,
+            0.001121921000049042
+          ],
+          "repurchase_store_s": [
+            0.0007844239999030833
+          ]
+        },
+        {
+          "first_event_ms": 12.429542999598198,
+          "total_ms": 1029.4927429995369,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "suggestions",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 3,
+          "i1_search_products_s": [
+            0.0013886209999327548,
+            0.0013548940005421173,
+            0.000976344000264362
+          ],
+          "repurchase_store_s": [
+            0.0007262399994942825
+          ]
+        }
+      ],
+      "first_event": {
+        "n": 20,
+        "min_ms": 10.568857999714965,
+        "p50_ms": 12.183989500044845,
+        "max_ms": 71.34234200020728,
+        "mean_ms": 15.13258909999422,
+        "p95_ci": {
+          "low": 12.51110700013669,
+          "high": 71.34234200020728,
+          "unknown_reason": null
+        }
+      }
+    },
+    {
+      "scenario": "C_deferred_probe",
+      "note": "미룬 턴, 0건 → 자동 완화 probe 1회",
+      "rating_min": 4.5,
+      "plan": [
+        "zero",
+        "zero"
+      ],
+      "n": 20,
+      "runs": [
+        {
+          "first_event_ms": 12.269322999600263,
+          "total_ms": 1025.9972690000723,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            0.001030614999763202,
+            0.0007998829996722634
+          ],
+          "repurchase_store_s": [
+            0.0007695399999647634
+          ]
+        },
+        {
+          "first_event_ms": 11.95126699985849,
+          "total_ms": 1020.8305129999644,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            0.0011408450000089942,
+            0.0006876280003780266
+          ],
+          "repurchase_store_s": [
+            0.0007668429998375359
+          ]
+        },
+        {
+          "first_event_ms": 11.251115999584727,
+          "total_ms": 1048.0324459995245,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            0.0010976080002365052,
+            0.0007265410004038131
+          ],
+          "repurchase_store_s": [
+            0.0011163240005771513
+          ]
+        },
+        {
+          "first_event_ms": 11.204829000234895,
+          "total_ms": 1049.0919040003064,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            0.0010872089997064904,
+            0.0010851740007638
+          ],
+          "repurchase_store_s": [
+            0.001181378000183031
+          ]
+        },
+        {
+          "first_event_ms": 11.38807299957989,
+          "total_ms": 1049.1458719998263,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            0.0011428339994381531,
+            0.0006887210001877975
+          ],
+          "repurchase_store_s": [
+            0.000989900999229576
+          ]
+        },
+        {
+          "first_event_ms": 11.75721900017379,
+          "total_ms": 1037.1477030003007,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            0.0011788290003096336,
+            0.0006954479995329166
+          ],
+          "repurchase_store_s": [
+            0.0009884080000119866
+          ]
+        },
+        {
+          "first_event_ms": 11.705443000209925,
+          "total_ms": 1055.543661000229,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            0.001382845000080124,
+            0.000719425000170304
+          ],
+          "repurchase_store_s": [
+            0.0007299750004676753
+          ]
+        },
+        {
+          "first_event_ms": 12.200932999803626,
+          "total_ms": 1062.9522449999058,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            0.0009344879999844125,
+            0.0006840989999545855
+          ],
+          "repurchase_store_s": [
+            0.0009424179997949977
+          ]
+        },
+        {
+          "first_event_ms": 11.37649100019189,
+          "total_ms": 1048.1755320006414,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            0.001005735999569879,
+            0.0007854830000724178
+          ],
+          "repurchase_store_s": [
+            0.0012617230004252633
+          ]
+        },
+        {
+          "first_event_ms": 11.518398000589514,
+          "total_ms": 1013.4134250001807,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            0.002184832999773789,
+            0.0006453220003095339
+          ],
+          "repurchase_store_s": [
+            0.0010001889995692181
+          ]
+        },
+        {
+          "first_event_ms": 13.150353999662912,
+          "total_ms": 1040.4309730001842,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            0.00097767900024337,
+            0.0008688640000400483
+          ],
+          "repurchase_store_s": [
+            0.0011200080007256474
+          ]
+        },
+        {
+          "first_event_ms": 13.44076799978211,
+          "total_ms": 1160.6590909996157,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            0.0010650960002749343,
+            0.0009256499997718493
+          ],
+          "repurchase_store_s": [
+            0.001502303000052052
+          ]
+        },
+        {
+          "first_event_ms": 13.318930999957956,
+          "total_ms": 1042.1429660000285,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            0.0011869429999933345,
+            0.0006719249995512655
+          ],
+          "repurchase_store_s": [
+            0.0007832890005374793
+          ]
+        },
+        {
+          "first_event_ms": 11.389750000489585,
+          "total_ms": 1052.1076790000734,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            0.00100183599988668,
+            0.0006830960001025232
+          ],
+          "repurchase_store_s": [
+            0.0007691599994359422
+          ]
+        },
+        {
+          "first_event_ms": 12.47486200009007,
+          "total_ms": 1196.7520759999388,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            0.0012375890000839718,
+            0.0008378749998882995
+          ],
+          "repurchase_store_s": [
+            0.0010053269998024916
+          ]
+        },
+        {
+          "first_event_ms": 11.384039999938977,
+          "total_ms": 1012.9728730007628,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            0.0012160670003140694,
+            0.0014939069997126353
+          ],
+          "repurchase_store_s": [
+            0.0017386979998263996
+          ]
+        },
+        {
+          "first_event_ms": 12.19199600018328,
+          "total_ms": 1364.9405630003457,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            0.0012407340000208933,
+            0.000732702999812318
+          ],
+          "repurchase_store_s": [
+            0.001083586000277137
+          ]
+        },
+        {
+          "first_event_ms": 15.893689000222366,
+          "total_ms": 1051.595427000393,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            0.001200642999720003,
+            0.0007234790000438807
+          ],
+          "repurchase_store_s": [
+            0.0012852439995185705
+          ]
+        },
+        {
+          "first_event_ms": 14.001731000462314,
+          "total_ms": 1016.6055360004975,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            0.0009664179997344036,
+            0.000951674000134517
+          ],
+          "repurchase_store_s": [
+            0.0012132090005252394
+          ]
+        },
+        {
+          "first_event_ms": 14.9792839993097,
+          "total_ms": 1035.0094309997075,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            0.0009783040004549548,
+            0.000738651000574464
+          ],
+          "repurchase_store_s": [
+            0.0008115560003716382
+          ]
+        }
+      ],
+      "first_event": {
+        "n": 20,
+        "min_ms": 11.204829000234895,
+        "p50_ms": 12.071631500020885,
+        "max_ms": 15.893689000222366,
+        "mean_ms": 12.442424849996314,
+        "p95_ci": {
+          "low": 13.318930999957956,
+          "high": 15.893689000222366,
+          "unknown_reason": null
+        }
+      }
+    },
+    {
+      "scenario": "D_deferred_worst",
+      "note": "최악: 검색 1차 타임아웃→2차 0건, probe 1차 타임아웃→2차 성공",
+      "rating_min": 4.5,
+      "plan": [
+        "timeout",
+        "zero",
+        "timeout",
+        "zero"
+      ],
+      "n": 8,
+      "runs": [
+        {
+          "first_event_ms": 12.880889999905776,
+          "total_ms": 3370.6237090000286,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            3.001318597000136
+          ],
+          "repurchase_store_s": []
+        },
+        {
+          "first_event_ms": 15.024303999780386,
+          "total_ms": 3368.9253169995936,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            2.9996782999996867
+          ],
+          "repurchase_store_s": []
+        },
+        {
+          "first_event_ms": 13.288529000419658,
+          "total_ms": 3361.5114360000007,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            3.000230941999689
+          ],
+          "repurchase_store_s": []
+        },
+        {
+          "first_event_ms": 12.975636000192026,
+          "total_ms": 3362.058943000193,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            2.999922604999483
+          ],
+          "repurchase_store_s": []
+        },
+        {
+          "first_event_ms": 13.222959999438899,
+          "total_ms": 3396.567292999862,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            3.00000695000017
+          ],
+          "repurchase_store_s": []
+        },
+        {
+          "first_event_ms": 14.94448699941131,
+          "total_ms": 3367.673136999656,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            3.00030795100065
+          ],
+          "repurchase_store_s": []
+        },
+        {
+          "first_event_ms": 11.893195000084233,
+          "total_ms": 3362.166359999719,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            3.000892996999937
+          ],
+          "repurchase_store_s": []
+        },
+        {
+          "first_event_ms": 12.29751299979398,
+          "total_ms": 3401.9118010000966,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            3.00014225599989
+          ],
+          "repurchase_store_s": []
+        }
+      ],
+      "first_event": {
+        "n": 8,
+        "min_ms": 11.893195000084233,
+        "p50_ms": 13.099297999815462,
+        "max_ms": 15.024303999780386,
+        "mean_ms": 13.315939249878284,
+        "p95_ci": {
+          "low": 13.288529000419658,
+          "high": 15.024303999780386,
+          "unknown_reason": null
+        }
+      }
+    },
+    {
+      "scenario": "E_deferred_search_fail",
+      "note": "검색 2회 모두 타임아웃 → conditions + SEARCH_FAILED",
+      "rating_min": 4.5,
+      "plan": [
+        "timeout",
+        "timeout"
+      ],
+      "n": 8,
+      "runs": [
+        {
+          "first_event_ms": 11.393858999326767,
+          "total_ms": 3386.055533999752,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            3.000353573999746
+          ],
+          "repurchase_store_s": []
+        },
+        {
+          "first_event_ms": 17.17242399990937,
+          "total_ms": 3367.969816999903,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            3.0000852779994602
+          ],
+          "repurchase_store_s": []
+        },
+        {
+          "first_event_ms": 11.263408000559139,
+          "total_ms": 3362.998171000072,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            3.000361004000297
+          ],
+          "repurchase_store_s": []
+        },
+        {
+          "first_event_ms": 11.218788999940443,
+          "total_ms": 3382.372559000032,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            3.0008220749996326
+          ],
+          "repurchase_store_s": []
+        },
+        {
+          "first_event_ms": 11.570351000045775,
+          "total_ms": 3387.2739210000873,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            3.0003242550001232
+          ],
+          "repurchase_store_s": []
+        },
+        {
+          "first_event_ms": 13.009858999794233,
+          "total_ms": 3368.3412519994818,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            3.000404011999308
+          ],
+          "repurchase_store_s": []
+        },
+        {
+          "first_event_ms": 12.856440000177827,
+          "total_ms": 3495.8427170004143,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            2.9994787360001283
+          ],
+          "repurchase_store_s": []
+        },
+        {
+          "first_event_ms": 13.297737000357301,
+          "total_ms": 3361.1874090001947,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            3.0008759479997025
+          ],
+          "repurchase_store_s": []
+        }
+      ],
+      "first_event": {
+        "n": 8,
+        "min_ms": 11.218788999940443,
+        "p50_ms": 12.213395500111801,
+        "max_ms": 17.17242399990937,
+        "mean_ms": 12.722858375013857,
+        "p95_ci": {
+          "low": 13.009858999794233,
+          "high": 17.17242399990937,
+          "unknown_reason": null
+        }
+      }
+    },
+    {
+      "scenario": "F_deferred_probe_retry",
+      "note": "검색 즉답 0건, probe 1차 타임아웃→2차 성공(검증기 docstring 이 상정한 최악)",
+      "rating_min": 4.5,
+      "plan": [
+        "zero",
+        "timeout",
+        "zero"
+      ],
+      "n": 8,
+      "runs": [
+        {
+          "first_event_ms": 14.373384000464284,
+          "total_ms": 4305.403637999916,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "suggestions",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 4,
+          "i1_search_products_s": [
+            0.0009944670000550104,
+            2.999908685000264,
+            0.0016780810001364443,
+            0.00126091499987524
+          ],
+          "repurchase_store_s": [
+            0.0007431639996866579
+          ]
+        },
+        {
+          "first_event_ms": 14.121737999630568,
+          "total_ms": 4077.8366129998176,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "suggestions",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 4,
+          "i1_search_products_s": [
+            0.0010029630002463819,
+            3.0001226690001204,
+            0.0013798640002278262,
+            0.0009858009998424677
+          ],
+          "repurchase_store_s": [
+            0.0011958730001424556
+          ]
+        },
+        {
+          "first_event_ms": 10.367461999521765,
+          "total_ms": 4056.897067999671,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "suggestions",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 4,
+          "i1_search_products_s": [
+            0.0010094600002048537,
+            3.0002906970003096,
+            0.0014138289998300024,
+            0.0009986499999286025
+          ],
+          "repurchase_store_s": [
+            0.0010182810001424514
+          ]
+        },
+        {
+          "first_event_ms": 12.318860999585013,
+          "total_ms": 4067.7291269994384,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "suggestions",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 4,
+          "i1_search_products_s": [
+            0.0011252009999225265,
+            3.000782380000601,
+            0.0013996560001032776,
+            0.0010045260005426826
+          ],
+          "repurchase_store_s": [
+            0.0010992589996021707
+          ]
+        },
+        {
+          "first_event_ms": 11.205321000488766,
+          "total_ms": 4216.766698000356,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "suggestions",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 4,
+          "i1_search_products_s": [
+            0.001045461000103387,
+            3.0005733580001106,
+            0.0013354209995668498,
+            0.0009441869997317553
+          ],
+          "repurchase_store_s": [
+            0.0009760530001585721
+          ]
+        },
+        {
+          "first_event_ms": 12.386374000016076,
+          "total_ms": 4090.865723999741,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "suggestions",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 4,
+          "i1_search_products_s": [
+            0.0011377910004739533,
+            2.9998572449994754,
+            0.001691241000116861,
+            0.001333141000031901
+          ],
+          "repurchase_store_s": [
+            0.0012348350001047947
+          ]
+        },
+        {
+          "first_event_ms": 12.040956999953778,
+          "total_ms": 4055.6022549999398,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "suggestions",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 4,
+          "i1_search_products_s": [
+            0.0009953310000128113,
+            3.000367479000488,
+            0.001447467000616598,
+            0.0010161110003537033
+          ],
+          "repurchase_store_s": [
+            0.0010121279992745258
+          ]
+        },
+        {
+          "first_event_ms": 11.867744000483071,
+          "total_ms": 4062.407493000137,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "suggestions",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 4,
+          "i1_search_products_s": [
+            0.001080631999684556,
+            2.999544780999713,
+            0.0013921680001658387,
+            0.000993073999779881
+          ],
+          "repurchase_store_s": [
+            0.0011275789993305807
+          ]
+        }
+      ],
+      "first_event": {
+        "n": 8,
+        "min_ms": 10.367461999521765,
+        "p50_ms": 12.179908999769395,
+        "max_ms": 14.373384000464284,
+        "mean_ms": 12.335230125017915,
+        "p95_ci": {
+          "low": 12.386374000016076,
+          "high": 14.373384000464284,
+          "unknown_reason": null
+        }
+      }
+    },
+    {
+      "scenario": "G_nondeferred_slow_search",
+      "note": "대조군: 미루지 않는 턴은 검색이 느려도 첫 이벤트가 즉시",
+      "rating_min": null,
+      "plan": [
+        "timeout",
+        "hit"
+      ],
+      "n": 5,
+      "runs": [
+        {
+          "first_event_ms": 12.857196999902953,
+          "total_ms": 3686.457591999897,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            3.0014978290000727
+          ],
+          "repurchase_store_s": [
+            0.0007148360000428511
+          ]
+        },
+        {
+          "first_event_ms": 13.859752999451302,
+          "total_ms": 3738.363169999502,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            3.0006575760007763
+          ],
+          "repurchase_store_s": [
+            0.000823870999738574
+          ]
+        },
+        {
+          "first_event_ms": 11.304640999696858,
+          "total_ms": 3718.2837400005155,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            3.001954405000106
+          ],
+          "repurchase_store_s": [
+            0.0007672530000490951
+          ]
+        },
+        {
+          "first_event_ms": 11.115142000562628,
+          "total_ms": 3761.080745000072,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            3.001768271000401
+          ],
+          "repurchase_store_s": [
+            0.0009103700003834092
+          ]
+        },
+        {
+          "first_event_ms": 14.450839999881282,
+          "total_ms": 3875.7615800004714,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            3.0023620539996045
+          ],
+          "repurchase_store_s": [
+            0.0008494829999108333
+          ]
+        }
+      ],
+      "first_event": {
+        "n": 5,
+        "min_ms": 11.115142000562628,
+        "p50_ms": 12.857196999902953,
+        "max_ms": 14.450839999881282,
+        "mean_ms": 12.717514599899005,
+        "p95_ci": {
+          "low": 12.857196999902953,
+          "high": 14.450839999881282,
+          "unknown_reason": null
+        }
+      }
+    },
+    {
+      "scenario": "H_deferred_search_retry_hit",
+      "note": "미룬 턴: 검색 1차 타임아웃→2차 타임아웃 직전 성공(후보 있음, probe 없음)",
+      "rating_min": 4.5,
+      "plan": [
+        "timeout",
+        "slow_hit"
+      ],
+      "n": 8,
+      "runs": [
+        {
+          "first_event_ms": 14.259752999350894,
+          "total_ms": 3389.420790999793,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            2.9999819040003786
+          ],
+          "repurchase_store_s": []
+        },
+        {
+          "first_event_ms": 11.560201999600395,
+          "total_ms": 3383.6027460001787,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            3.0002631710003698
+          ],
+          "repurchase_store_s": []
+        },
+        {
+          "first_event_ms": 12.236994999511808,
+          "total_ms": 3436.8459199995414,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            2.999970757000483
+          ],
+          "repurchase_store_s": []
+        },
+        {
+          "first_event_ms": 17.21503400040092,
+          "total_ms": 3385.371961000601,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            3.000254646999565
+          ],
+          "repurchase_store_s": []
+        },
+        {
+          "first_event_ms": 11.708703999829595,
+          "total_ms": 3361.9386549999035,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            3.000403514000027
+          ],
+          "repurchase_store_s": []
+        },
+        {
+          "first_event_ms": 11.560167999959958,
+          "total_ms": 3364.882130999831,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            3.000577554999836
+          ],
+          "repurchase_store_s": []
+        },
+        {
+          "first_event_ms": 10.95223199990869,
+          "total_ms": 3379.8433510000905,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            3.0003781270006584
+          ],
+          "repurchase_store_s": []
+        },
+        {
+          "first_event_ms": 12.846277999415179,
+          "total_ms": 3369.571929999438,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            3.0005963470002825
+          ],
+          "repurchase_store_s": []
+        }
+      ],
+      "first_event": {
+        "n": 8,
+        "min_ms": 10.95223199990869,
+        "p50_ms": 11.972849499670701,
+        "max_ms": 17.21503400040092,
+        "mean_ms": 12.79242074974718,
+        "p95_ci": {
+          "low": 12.846277999415179,
+          "high": 17.21503400040092,
+          "unknown_reason": null
+        }
+      }
+    },
+    {
+      "scenario": "D2_deferred_worst_slow_ok",
+      "note": "실최악: 검색·probe 각각 1차 타임아웃→2차 타임아웃 직전 성공(재시도 예산 전량 소진)",
+      "rating_min": 4.5,
+      "plan": [
+        "timeout",
+        "slow_zero",
+        "timeout",
+        "slow_hit"
+      ],
+      "n": 8,
+      "runs": [
+        {
+          "first_event_ms": 11.225573000047007,
+          "total_ms": 3389.34763799989,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            3.00067334600044
+          ],
+          "repurchase_store_s": []
+        },
+        {
+          "first_event_ms": 12.154534000728745,
+          "total_ms": 3386.3144850001845,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            3.0002783599993563
+          ],
+          "repurchase_store_s": []
+        },
+        {
+          "first_event_ms": 12.112004999835335,
+          "total_ms": 3400.760686000467,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            2.9999791310001456
+          ],
+          "repurchase_store_s": []
+        },
+        {
+          "first_event_ms": 11.414917999900354,
+          "total_ms": 3402.268124999864,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            2.9997694499998033
+          ],
+          "repurchase_store_s": []
+        },
+        {
+          "first_event_ms": 11.571883999749843,
+          "total_ms": 3374.051984000289,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            3.000157012999807
+          ],
+          "repurchase_store_s": []
+        },
+        {
+          "first_event_ms": 11.881670000548183,
+          "total_ms": 3385.996671000612,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            3.0001840320001065
+          ],
+          "repurchase_store_s": []
+        },
+        {
+          "first_event_ms": 12.022553999486263,
+          "total_ms": 3371.5172140000504,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            3.000283352999759
+          ],
+          "repurchase_store_s": []
+        },
+        {
+          "first_event_ms": 13.824899000610458,
+          "total_ms": 3377.2494680006275,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "error"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 1,
+          "i1_search_products_s": [
+            2.999778417000016
+          ],
+          "repurchase_store_s": []
+        }
+      ],
+      "first_event": {
+        "n": 8,
+        "min_ms": 11.225573000047007,
+        "p50_ms": 11.952112000017223,
+        "max_ms": 13.824899000610458,
+        "mean_ms": 12.026004625113274,
+        "p95_ci": {
+          "low": 12.022553999486263,
+          "high": 13.824899000610458,
+          "unknown_reason": null
+        }
+      }
+    },
+    {
+      "scenario": "D3_deferred_worst_no_retry",
+      "note": "재시도를 끈 뒤의 최악 — 본 검색·자동 완화 probe가 재시도 없이 각각 상한 직전(2.9s)에 성공하는 조합",
+      "rating_min": 4.5,
+      "plan": [
+        "slow_zero",
+        "slow_hit"
+      ],
+      "n": 8,
+      "runs": [
+        {
+          "first_event_ms": 12.057756999638514,
+          "total_ms": 6969.658250000066,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            2.9001631709998037,
+            2.9007232060002934
+          ],
+          "repurchase_store_s": [
+            0.0007781499998600339
+          ]
+        },
+        {
+          "first_event_ms": 14.16989300014393,
+          "total_ms": 7548.507927000173,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            2.9010986579996825,
+            2.901060516999678
+          ],
+          "repurchase_store_s": [
+            0.0007651389996681246
+          ]
+        },
+        {
+          "first_event_ms": 11.26911499977723,
+          "total_ms": 6951.017929000045,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            2.900752687000022,
+            2.900956296000004
+          ],
+          "repurchase_store_s": [
+            0.0009824019998632139
+          ]
+        },
+        {
+          "first_event_ms": 11.831916999653913,
+          "total_ms": 6861.339016999409,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            2.9001866189992143,
+            2.900300810999397
+          ],
+          "repurchase_store_s": [
+            0.0010759659999166615
+          ]
+        },
+        {
+          "first_event_ms": 11.373714999535878,
+          "total_ms": 6809.562559999904,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            2.9010795789999975,
+            2.9008754600008615
+          ],
+          "repurchase_store_s": [
+            0.0011769080001613474
+          ]
+        },
+        {
+          "first_event_ms": 9.641671999816026,
+          "total_ms": 6884.225464999872,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            2.900896639000166,
+            2.9015546789996733
+          ],
+          "repurchase_store_s": [
+            0.0008192079994842061
+          ]
+        },
+        {
+          "first_event_ms": 11.135826000099769,
+          "total_ms": 6933.78346100053,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            2.9013368079995416,
+            2.901361965000433
+          ],
+          "repurchase_store_s": [
+            0.0007735059998594807
+          ]
+        },
+        {
+          "first_event_ms": 13.575449999734701,
+          "total_ms": 7003.542176999872,
+          "http_status": 200,
+          "events": [
+            "progress",
+            "conditions",
+            "token",
+            "token",
+            "products.ready",
+            "done"
+          ],
+          "first_event_type": "progress",
+          "search_attempts": 2,
+          "i1_search_products_s": [
+            2.901768689999699,
+            2.9013592929995866
+          ],
+          "repurchase_store_s": [
+            0.0007285290002982947
+          ]
+        }
+      ],
+      "first_event": {
+        "n": 8,
+        "min_ms": 9.641671999816026,
+        "p50_ms": 11.602815999594895,
+        "max_ms": 14.16989300014393,
+        "mean_ms": 11.881918124799995,
+        "p95_ci": {
+          "low": 12.057756999638514,
+          "high": 14.16989300014393,
+          "unknown_reason": null
+        }
+      }
+    }
+  ]
+}

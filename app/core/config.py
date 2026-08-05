@@ -13,6 +13,7 @@ SearchBackend로 구현해 골든셋 비교. [2026-08-03 #32] 방식2를 확정�
 from __future__ import annotations
 
 import math
+import os
 from functools import lru_cache
 from typing import Literal
 
@@ -43,6 +44,30 @@ ProfileRerankInfluence = Literal["tiebreak", "legacy"]
 # 정본은 RouteDecision.intent Literal(app/agents/buyer/recommendation/state.py)이며, 런타임
 # import 는 순환이라 여기 복제하고 드리프트는 테스트로 고정한다(test_config_profile.py).
 ROUTE_INTENTS = frozenset({"recommend", "cart_add", "cart_view", "order_status", "general"})
+
+
+def _deferred_first_event_i1_calls(
+    *,
+    relaxation_max_rounds: int,
+    auto_fields: list[str],
+    chip_fields: list[str],
+) -> int:
+    """미룬 턴의 첫 이벤트(`conditions`) 앞에 직렬로 놓이는 I-1 호출 수 (#288).
+
+    순수 함수 + 모듈 수준으로 둔 이유는 `_require_search_retry_within_stream_budget` 를
+    테스트가 실제 config 조합(교집합 ≥ 2)으로 부를 유일한 표면이기 때문이다 — `Settings` 는
+    `relaxation_auto_fields` 를 `{"ratingMin"}` 부분집합으로 잠그므로(`_forbid_auto_relaxing_
+    explicit_constraints`) 인스턴스 경로만으로는 이 식의 `min`/교집합 분기를 실측할 수 없다.
+
+    `graph.py` 의 `may_auto_relax` 판정·자동 완화 루프와 **같은 식**이어야 어긋나지 않는다:
+    후보 생성기(`build_relaxation_candidates`)는 `chip_fields` 를 순회하므로 `auto_fields` 에만
+    있고 `chip_fields` 에 없는 필드는 후보 자체가 안 생긴다 → 교집합으로 센다. 루프는
+    `rounds >= relaxation_max_rounds` 에서 break 하므로 `min` 으로 상한을 씌운다.
+    """
+    intersection_size = len(set(auto_fields) & set(chip_fields))
+    if relaxation_max_rounds <= 0 or intersection_size == 0:
+        return 0  # may_auto_relax가 False — conditions가 검색 앞에 나가 직렬 검증 대상이 아니다
+    return 1 + min(relaxation_max_rounds, intersection_size)
 
 
 class Settings(BaseSettings):
@@ -459,6 +484,13 @@ class Settings(BaseSettings):
     rating_tier_excellent: float = 4.5  # ≥ → 매우높음
     rating_tier_good: float = 4.0  # ≥ → 높음
     rating_tier_fair: float = 3.0  # ≥ → 보통 (그 미만 낮음)
+    # [#132] 사용자가 평점을 **명시**한 턴에서 무평점 상품이 노출될 때 근거문에 덧붙는 고지.
+    # #100 P0 의 rating 사후필터는 '반증된 것만' 제거하므로(무평점 보존, #171) "평점 4.5 이상"이라
+    # 말한 사용자에게도 리뷰 없는 신상품이 올라온다 — 그 사실을 카드마다 드러내지 않으면 사용자는
+    # 4.5↑ 라 믿고 본다. 자동 완화(`relaxation_notice`)는 이미 고지되는데 이쪽만 조용했다.
+    # 빈 값은 "고지하지 않는다"는 정상적인 의사표현이다(`dedup_skipped_notice` 와 같은 규약) —
+    # 계약이 요구하는 degrade 고지가 아니라 UX 정책이라 `_require_*_notice` 검증 대상이 아니다.
+    rating_unrated_disclosure_notice: str = "평점 정보 없음"
     review_tier_many: int = 100  # ≥ → 매우많음
     review_tier_some: int = 20  # ≥ → 많음
     review_tier_few: int = 5  # ≥ → 보통 (그 미만 적음)
@@ -564,6 +596,20 @@ class Settings(BaseSettings):
     # 이 개수 미만이면 전개 실패로 본다 — 1개면 발화 복사로 되돌아가므로 최소 2개.
     needs_expansion_min_items: int = Field(default=2, ge=1)
 
+    # ── 카테고리 범위 해제 분류기 (이슈 #84) ──
+    # "5만원 이하 아무거나" 처럼 **직전 카테고리를 놓겠다**는 발화를 판정하는 전용 호출.
+    # decompose 프롬프트 안의 필드(`categoryAction`)로 받는 안은 **실측으로 기각**됐다 — fast
+    # 티어에서 리셋 기대 32건 중 clear 산출이 0~6건이었고(문면 후보 6종), 같은 프롬프트를 smart 로
+    # 재면 32/32 였다. 짧은 전용 호출은 fast 에서도 32/32 · 오탐 0/56(독립 3회)이다. 즉
+    # needs_expansion 과 같은 구조의 문제이고 같은 처방을 쓴다(app/.../category_scope.py 표 참조).
+    category_scope_classifier_enabled: bool = True  # 롤백 스위치(끄면 호출 0회 = 오늘 동작)
+    # Literal 로 좁힌다 — 위 `needs_expansion_tier` 와 같은 이유다. 이 값은 `resolve_model_id` 에
+    # 들어가고 그것은 미지 tier 에 LLMError 를 던지므로, 오타가 퇴화가 아니라 예외가 된다
+    # (분류기는 그 예외를 삼켜 None 으로 떨어뜨리지만, 그러면 기능이 조용히 죽는다).
+    category_scope_tier: Literal["fast", "smart"] = "fast"
+    # 산출이 `{"scopeFree": true|false}` 한 줄이라 32 토큰이면 충분하다.
+    category_scope_max_tokens: int = Field(default=32, ge=8)
+
     # ── 장바구니 (이슈 #3, api-spec §4.1) ──
     # CART_OPTION_INVALID 재질문 상한 — 초과 시 action CART_ERROR(§4.1). 하드코딩 금지.
     cart_option_reask_max: int = 1
@@ -571,6 +617,15 @@ class Settings(BaseSettings):
     # 포함되는 한 방향만 비교한다. "아니"는 간투사 오탐이 흔하고 에코 보완 이득은 1/8뿐이라
     # 기본값에서 제외한다(운영 설정으로 재추가 가능).
     cart_pending_switch_markers: list[str] = ["다른", "말고", "대신", "바꿔", "바꿀"]
+    # [#118] last_reco 누적 상한 — 담기 허용 목록(정본 §3.1 [보안] "누적 추천 목록 ∪
+    # screen.products")의 시간 축을 보존하되 무한 증가를 막는다. **상한은 승계분에만 실효적으로
+    # 걸린다** — 이번 턴 항목은 잘리지 않는다(CartStateStore.set_last_reco 주석 참조).
+    # 값 근거: 한 턴 최대는 I-21 의 MAX_LISTS(10) × LIST_MAX_PRODUCTS(9) = 90 이지만, 통상
+    # 추천 턴은 category_fanout_max(5) 이하 × 9 = ≤45, 실측 대다수는 1~3 leg(9~27건)다.
+    # 30 이면 통상 한 턴 전체 + 직전 턴 승계분을 담으면서 LAST_RECOMMENDATIONS 길이를 #234/#240
+    # 기준선을 잰 규모 근처로 유지한다. 90 으로 잡으면 목록이 3배가 되어 "LLM 오추출 표면을
+    # 넓히지 않는다"(2026-07-30 계약 코멘트)와 어긋난다. screen_products_max(20)와도 같은 자릿수다.
+    last_reco_max: int = Field(default=30, ge=1)
 
     # ── dedup (#4, api-spec §4.7 결정 14-F) ──
     # 최근 구매 제외 윈도우(일) — 이보다 오래된 구매는 제외 목록에서 뺀다(영구 제외 방지).
@@ -694,6 +749,73 @@ class Settings(BaseSettings):
     # sessionId/threadId 길이 상한 — 불투명 키가 registry·저장소·로그에 쌓이는 남용 방어.
     chat_key_max_chars: int = 200
 
+    # ── 화면 맥락 screen (이슈 #118, api-spec §3.1) ──
+    # screen.products 상한(정본 명시 기본값) — 초과분은 화면 순서 앞쪽만 취하고 버린다.
+    screen_products_max: int = Field(default=20, ge=1)
+    # [13차 리뷰] `screen.products` **원본 배열** 길이 하드 상한 — `screen_products_max` 와는
+    # 별개다. 스키마 정규화(`app.schemas.chat._normalize_screen`)가 불량 항목을 걸러 유효
+    # `screen_products_max` 건을 채울 때까지 원본 배열을 순회하므로(12차 리뷰 이후 규약), 이
+    # 상한이 없으면 무효 항목(빈 dict 등)을 수만~수십만 건 채운 요청이 매번 원본 전체를
+    # 스캔한다 — `message` 는 `chat_message_max_chars` 로 길이 상한이 있는데 `products` 원본
+    # 크기에는 상한이 없던 비대칭이었고, 요청 바디 크기를 자르는 미들웨어도 없어(레이트리밋은
+    # §2.8 요청 "건수"만 제한) 이 경로가 열려 있었다(실제 재현). 기본 500은
+    # `screen_products_max`(20)의 25배 — 정상 FE 페이로드(한 응답에 화면이 보여줄 수 있는 상품은
+    # 무한 스크롤이어도 수십 건을 넘기 어렵다)는 절대 자르지 않으면서, 악성 페이로드의 스캔량을
+    # 유계로 만드는 값이다. 원본 배열 슬라이스도 400 이 아니라 절단이다(관대 유효성 유지).
+    screen_products_raw_scan_max: int = Field(default=500, ge=1)
+    # screen 문자열(products[].name · filters 값) 항목당 길이 상한 — **FE 가 보낸 문자열이 그대로
+    # LLM 프롬프트에 실리는** 신뢰경계라 절단이 필요하다(초과는 400 이 아니라 절단 — 관대 유효성).
+    # 값 근거: 같은 카탈로그 상품명의 와이어 상한 선례가 200 자이므로(`OrderStatusOrder.product_name`
+    # max_length=200) 그보다 긴 문자열은 실제 상품명일 수 없다. 그런데 200 을 그대로 쓰면 최악
+    # 20건 × 200 = 4,000 자로 사용자 발화 상한(chat_message_max_chars=4000) 전체와 맞먹는 분량이
+    # 프롬프트에 얹힌다. 120 이면 최악 2,400 자로 묶이면서 실제 한국어 커머스 상품명(브랜드+모델+
+    # 옵션 수식, 통상 60~80 자)은 절단 없이 다 들어간다. filters 표시값("배송중"·"최신순")에는
+    # 넉넉하다.
+    screen_text_max_chars: int = Field(default=120, ge=1)
+    # [14차 리뷰, F-17] screen 문자열(products[].name · filters 값) **원문** 길이 하드 상한 —
+    # `screen_text_max_chars`(정제 후 절단 상한)와는 별개다. `app.schemas.chat._clean_screen_text`
+    # 가 `_strip_unsafe`(제어·zero-width·bidi 검사, 문자 단위 순회)를 원문 **전체**에 먼저 돌린
+    # 뒤에야 `screen_text_max_chars` 로 잘랐으므로, 원문 길이 자체에는 사전 상한이 없었다 —
+    # `screen_products_raw_scan_max` 가 "원본 배열 길이"는 유계로 만들었지만 그 배열의 각 항목
+    # **문자열 길이**는 열려 있던 비대칭이다. 실측: name 200만자 × 50건이 25.02초 걸렸고,
+    # `screen_products_raw_scan_max`(500)까지 채우면 더 나쁠 수 있다 — 구매자 스트림 전체 상한
+    # 30s(§2.9 c)를 넘겨 사실상 서비스 거부다. `screen_text_max_chars`(120)의 20배로 잡는다 —
+    # 실제 상품명·필터 표시값은 정제 전 원문이라도 수백 자를 넘기 어렵고(위 200자 선례의 12배
+    # 여유), 20배(2,400)면 정상 페이로드는 자르지 않으면서 악성 원문의 정제 비용을 유계로
+    # 만든다. 관대 유효성은 유지한다 — 이 슬라이스도 400 이 아니라 절단이다.
+    screen_text_raw_scan_max: int = Field(default=2400, ge=1)
+    # 화면을 가리키는 **맨 지시대명사** 표지 — 이것만 있고 이름·순번·좌표가 없으면 정본 §3.1 의
+    # "후보가 1건일 때만 확정, 여러 건이면 되물음"을 코드가 강제한다
+    # (app/agents/buyer/screen_reference.py). 조사·활용을 흡수하도록 포함 관계로만 비교한다
+    # (cart_pending_switch_markers 와 같은 규약). 운영에서 표지를 늘릴 수 있게 config 로 둔다.
+    # **근칭만 둔다.** `"그거"`·`"그것"` 은 이 저장소에서 **대화 지시어**로 확립돼 있어(decompose
+    # `_SYSTEM` 의 하중 문구가 `"그거 보여줘"`·`"그거 또 사고 싶어"` 를 직전 추천 맥락으로 다루고
+    # #234 프로브가 그 경로를 측정했다) 화면 지시로 보면 직전 추천을 가리킨 발화가 화면 상품으로
+    # 확정된다 — 리뷰 F-1 에서 실제 오담기로 재현됐다. 정본 §3.1 지시어 해소 표가 든 예도 `"이거"`다.
+    # `"저거"` 는 화면에 보이는 것을 가리키는 원칭이고 대화 지시어 선례가 없어 남긴다.
+    # [8차 리뷰, F-12] `"얘"` 는 뺐다 — 매칭이 포함 관계(부분 문자열)인데 이 표지만 1글자라
+    # `"얘기했던 걸로 담아줘"`·`"얘들아 담아줘"` 처럼 무관한 단어(얘기·얘들아)에 걸린다. 그 발화들은
+    # 대화 맥락 지시("얘기했던 것")이지 화면 지시가 아닌데, `context_reference_markers` 에도 안
+    # 걸려 화면 후보가 1건이면 되물음 없이 **그대로 확정**됐다(실제 재현, 오담기). 목록의 나머지
+    # 표지는 전부 2글자 이상이라 이런 우연 부분일치가 나지 않는다 — 포함 관계 비교 자체는 조사·
+    # 활용을 흡수하려는 의도된 설계라 바꾸지 않고(위 주석), 이 표지만 뺐다.
+    screen_deictic_markers: list[str] = ["이거", "이것", "요거", "요것", "저거", "저것"]
+    # 발화가 **대화 맥락**을 명시적으로 참조하는 표지 — 있으면 화면 해소를 통째로 건너뛰고 LLM 에
+    # 맡긴다(`"아까 추천해준 그거 담아줘"` 가 화면 상품으로 확정되던 리뷰 F-1). 좁게 유지한다:
+    # 넓히면 정상적인 화면 지시까지 LLM 으로 넘어가 라운드 2가 되찾은 정확도를 잃는다.
+    screen_context_reference_markers: list[str] = ["아까", "저번", "지난번", "이전에", "방금 전"]
+    # pageType → 한글 표시명 매핑(정본: "AI 가 pageType→표시명 매핑을 config 로 갖는다").
+    # decompose 프롬프트의 SCREEN 블록에 이 표시명이 실린다. **매핑에 없는 pageType 은 화면명을
+    # 생략**한다 — 원시 pageType 문자열을 프롬프트에 흘리지 않는 것이 정본이 매핑을 AI 에 둔 이유다.
+    # 실제 오는 3종만 채운다(나머지 11종은 E-1 page_view 전용).
+    screen_page_type_labels: dict[str, str] = Field(
+        default_factory=lambda: {
+            "chat": "인기 상품",
+            "seller_orders": "주문 관리",
+            "seller_products": "상품 관리",
+        }
+    )
+
     # ── SSE 스트림 수명주기 (api-spec §2.9, 값은 config 기본값·운영 조정 가능) ──
     # first-token: 첫 이벤트까지 상한. 초과 시 스트림 시작 전이면 504, 후면 in-stream error.
     stream_first_token_timeout_s: float = 10.0
@@ -724,6 +846,14 @@ class Settings(BaseSettings):
     # 지연을 살리는 대가가 턴 전체의 침묵이므로 기본값은 그 턴만 재시도를 끈다.
     # 구매자 progress 이벤트가 계약에 등재돼 검색 전에 첫 프레임을 낼 수 있으면 원복 가능하다.
     search_retry_on_deferred_conditions: bool = False
+    # [#132 PR #293 리뷰] I-1 응답 파싱 **전용** 스레드풀 크기. `asyncio.to_thread` 의 앱 전역
+    # 기본 executor 를 쓰면, 총시간 가드가 버린(=await 는 취소됐지만 계속 도는) 파싱 스레드가
+    # 임베딩·카테고리 매핑·색상 사전과 같은 풀을 놓고 경쟁해 무관한 요청까지 대기시킨다.
+    # 기본값은 CPython 기본 executor 와 같은 식(min(32, cpu+4))이라 **격리만 바뀌고 동시 처리량
+    # 특성은 그대로**다 — 이 값을 줄이는 것은 파싱을 직렬화해 다른 작업 몫을 늘리는 트레이드다.
+    search_parse_max_workers: int = Field(
+        default_factory=lambda: min(32, (os.cpu_count() or 1) + 4), ge=1
+    )
     # AI→LLM 단일 호출 타임아웃 + 재시도 횟수 (§2.9 c).
     # 현행 30s×(1+1)=60s 최악 예산은 구매자 전체 상한 30s(stream_total_timeout_buyer_s, #138)를 넘는다.
     # timeout 뒤 재시도는 buyer done(stop) 절단 전에 끝날 수 없지만 빠른 오류 재시도는 여전히 유효하다.
@@ -814,6 +944,54 @@ class Settings(BaseSettings):
     personalization_eval_clean_noisy_drop_margin: float = 0.03
     # 현행 0.15를 중심으로 0~4배 범위를 대칭적이지 않은 실용 구간으로 탐색한다.
     personalization_eval_weight_sweep: tuple[float, ...] = (0.0, 0.075, 0.15, 0.30, 0.60)
+
+    # ── 구매자 progress 이벤트 (이슈 #289, 계약 미등재 — 정본 등재 전까지 기본 off) ──
+    # 정본(Notion CH-2)·api-spec §3.1 등재 전에는 켜지 않는다. 켜면 구매자 스트림에 신규
+    # 이벤트 타입(`progress`)이 나가므로 와이어 계약 변경이다 — 이 PR 은 절대 켜지 않은 채 끝난다.
+    progress_events_enabled: bool = False
+    # 빈 문자열이면 프레임 `data`에 `message` 키 자체를 싣지 않는다(app/agents/buyer/_frames.py).
+    progress_analyzing_message: str = "요청을 확인하고 있어요"
+
+    # ── 요청 바디 크기 상한 (이슈 #299, api-spec §2.5·§2.8) ──
+    # 레이트 리밋(§2.8)은 요청 **건수**만 세므로 10회로도 임의 크기 바디를 보낼 수 있다.
+    # 필드별 상한(chat_message_max_chars·screen_products_raw_scan_max 등)은 흩어져 있고 상한 없는
+    # 필드(conditionActions 등)도 계속 생기므로, 그 앞단에 요청 전체를 유계로 만드는 층을 둔다
+    # (app/core/body_limit.py, BodySizeLimitMiddleware).
+    #
+    # 기본값은 현행 필드별 상한이 **절단 없이** 받아들이는 최대 정상 페이로드 크기의 약 4.8배로
+    # 잡는다(한국어 UTF-8 3B/자 가정):
+    #   message              chat_message_max_chars(4,000자)                      ≈  12,000B
+    #   sessionId+threadId   chat_key_max_chars(200자) × 2                         ≈   1,200B
+    #   screen.products      screen_products_raw_scan_max(500건) ×
+    #                        (screen_text_max_chars(120자) name + productId
+    #                         + JSON 구두점 ≈ 400B/건)                             ≈ 200,000B
+    #   screen.filters       표시값 10건 × 120자                                    ≈   4,000B
+    #   conditionActions + 봉투 키                                                 ≈     500B
+    #   합계                                                                      ≈ 218,000B(≈218KB)
+    # 1 MiB(1,048,576B)는 그 약 4.8배다 — 실제 FE 페이로드(상품 20건 규모)는 30KB 를 넘기 어려워
+    # 정상 요청 회귀는 0이고, 무제한이던 공격 표면은 1MiB 로 유계가 된다.
+    # `/internal/recommendations/home`(I-22) 최대 바디도 id 200×3 배열 ≈ 12KB 로 여유가 크다.
+    # 추가로 nginx 기본 client_max_body_size 가 1MB 라 같은 자리에 두면 프록시가 먼저 자르는
+    # 배포에서도 임계가 어긋나지 않는다 — 프록시가 앞서면 이 층의 목표는 "방어"가 아니라
+    # "일관된 §2.5 봉투 응답"이 된다. 운영에서 env 로 낮춰 잡을 수 있다.
+    #
+    # [리뷰 1차 F-4] **#118 의 raw-scan 상한과 만나는 지점에서 동작이 바뀐다.** #118 은
+    # `screen_products_raw_scan_max`(500)·`screen_text_raw_scan_max`(2,400자)를 "정제 비용을
+    # 유계로 만드는 사전 절단 상한"으로 설계했고, 그 상한까지 채운 페이로드도 400 이 아니라
+    # **절단**해서 받아준다는 것이 §3.1 관대 유효성의 전제였다. 이 층이 생긴 뒤로는 그 전제가
+    # 더 이상 전 구간에서 성립하지 않는다 — 두 상한을 **원문 길이까지 가득 채운** 페이로드
+    # (products 500건 × name/filters 값 2,400자)는 실측 **≈3,650,100B(기본 상한의 약 348%)**
+    # 라 그 요청은 스키마 검증·절단 로직에 도달하기도 전에 이 층에서 400 이 된다. 이것이
+    # #118 이 비용을 들여 절단해 주던 바로 그 악성 극단 페이로드다 — 정본을 건드리는 변경이
+    # 아니라(§3.1 관대 유효성 자체는 "정상 요청은 절단만 받고 거부되지 않는다"는 뜻이었지,
+    # 무제한 극단값까지 보장한 적은 없다) 그 극단값의 처리 계층이 스키마 절단에서 이 미들웨어의
+    # 사전 거절로 옮겨 왔을 뿐이다.
+    # **현실적인 상한(개수 500건, name/filters 값은 표시 상한인 `screen_text_max_chars`=120자)은
+    # 그대로 통과한다** — 실측 **≈209,580B(기본 상한의 약 20.0%)**. 즉 #118 이 "정상 FE
+    # 페이로드는 절대 자르지 않는다"고 보장한 구간(건수는 raw_scan_max 까지, 항목 길이는 표시
+    # 상한까지)은 이 층도 자르지 않는다 — 어긋나는 것은 항목 길이를 raw-scan 사전절단 상한까지
+    # 늘린, 애초에 악성으로 설계된 구간뿐이다.
+    request_body_max_bytes: int = Field(default=1_048_576, gt=0)
 
     @field_validator("llm_provider", mode="before")
     @classmethod
@@ -1036,8 +1214,7 @@ class Settings(BaseSettings):
         """배치 수확을 켰을 때만 공유 풀에 사용자 대면 검색 슬롯을 하나 이상 남긴다."""
         if (
             self.color_synonym_batch_harvest_enabled
-            and self.color_synonym_harvest_max_concurrency
-            >= self.color_synonym_pool_max_size
+            and self.color_synonym_harvest_max_concurrency >= self.color_synonym_pool_max_size
         ):
             raise ValueError(
                 "COLOR_SYNONYM_HARVEST_MAX_CONCURRENCY must be less than "
@@ -1165,10 +1342,46 @@ class Settings(BaseSettings):
         종전 동작을 되살리면 두 호출이 각각 재시도해 최대 12s가 되고, #277의 이벤트 0건·504
         조합도 다시 열린다.
 
-        가드 ON/OFF 설정은 각각 직렬 합 `2 * budget`/`2 * spring_timeout_s`로 검증한다.
-        게이트는 `graph.py`의 `may_auto_relax`처럼 rounds가 양수이고 자동 완화 필드가 있을 때만
-        열어, 실제로 미루지 않는 설정을 일어나지 않는 직렬 호출 때문에 막지 않는다(#277 4차).
-        이 식을 첫 이벤트 앞 호출 수 일반형으로 확장하고 타임아웃을 재배분하는 일은 #288 소관이다.
+        **직렬 합의 일반형**(#288) — 상수 `2` 는 `_deferred_first_event_i1_calls` 가 계산하는
+        `1 + min(relaxation_max_rounds, |relaxation_auto_fields ∩ relaxation_chip_fields|)` 로
+        바뀐다. 각 항의 출처:
+        - `1`: 본 검색 1회(`asyncio.gather(_run_search(), _fetch_purchases())` — I-19 는 병렬이라
+          합산 대상이 아니고, fan-out leg 도 병렬이라 1회분).
+        - **교집합**(합집합·`auto_fields` 단독이 아니라): 후보 생성기 `build_relaxation_candidates`
+          가 `relaxation_chip_fields` 를 **순회**하며 후보를 만들고, 자동 완화 루프는 그중
+          `relaxation_auto_fields` 에 든 것만 쓴다. 칩 목록에 없는 자동 필드는 후보 자체가 안
+          생겨 probe 가 돌지 않는다. `_forbid_auto_relaxing_explicit_constraints` 가 자동 목록을
+          칩 목록의 부분집합으로 이미 강제하지만, 그 검증기는 **이 검증기보다 아래에 선언**돼
+          있고 pydantic 의 `mode="after"` 검증기는 선언 순으로 돈다 — 이 검증기가 도는 시점에는
+          그 조합이 아직 거절되지 않았을 수 있어 자기 입력만으로 정확해야 한다. 교집합이 비어
+          이 검증을 건너뛰어도 그 조합은 아래 검증기가 결국 거절하므로 조용히 통과하는 설정이
+          생기지는 않는다.
+        - `min(relaxation_max_rounds, ...)`: 자동 완화 루프가 `rounds >= relaxation_max_rounds`
+          에서 break 하므로, probe 횟수는 교집합 크기와 라운드 상한 중 작은 쪽으로 잡힌다.
+        - 1 회 호출의 벽시계 예산(`budget`/`spring_timeout_s`)은 아래 가드 ON/OFF 분기 그대로다.
+
+        **오늘 이 식의 값은 항상 2 다** — `_forbid_auto_relaxing_explicit_constraints` 가
+        `relaxation_auto_fields ⊆ {ratingMin}` 로 잠가 교집합이 항상 ≤ 1 이기 때문이다. 그래도
+        상수 `2` 대신 일반형을 쓰는 이유는, 그 허용 목록이 넓어지는 순간(`graph.py` 의
+        `may_auto_relax` 주석이 "목록이 넓어지면"을 명시적으로 예상한다) 상수는 **조용히
+        과소평가**되어 #277 이 없앤 이벤트 0건·504 조합이 되살아나기 때문이다. 계수를 다른
+        검증기의 허용 목록에 암묵적으로 의존시키지 않는다(lessons 2026-08-04
+        "상한이 안전한지는 단일 호출 예산이 아니라 첫 이벤트 앞 직렬 합으로 잰다").
+
+        가드 ON/OFF 설정은 각각 직렬 합 `calls * budget`/`calls * spring_timeout_s`로 검증한다.
+        게이트는 `calls == 0`(= `graph.py`의 `may_auto_relax`가 False)일 때만 검증을 건너뛰어,
+        실제로 미루지 않는 설정을 일어나지 않는 직렬 호출 때문에 막지 않는다(#277 4차 원칙을
+        일반형으로 그대로 유지).
+
+        **커버하지 않는 것**(누락이 아니라 판단): LLM head(#151 baseline p95 ≈3.0s)와 pg 왕복은
+        이 식에 없고, `conditions` 뒤에 도는 완화 칩 probe(`relaxation_max_probes`)도 첫 이벤트
+        예산 밖이다(그 probe는 이미 첫 이벤트가 나간 뒤라 first-token 상한과 무관하다). head 를
+        포함한 타임아웃 재배분은 #288 의 잔여 후보로 남는다. 구매자 `progress` 이벤트(#289)가
+        계약에 등재되면 미룸 자체가 사라져 이 검증기는 보험 계층이 된다.
+
+        **계약 무변경**: 이 검증은 내부 기동 로직이고 AI→Spring 3s 규약과 미룬 턴 재시도
+        스킵은 api-spec §2.9(c)(v0.20.2)에 이미 등재돼 있다 — 이 변경으로 와이어·명세를
+        건드리지 않는다.
         """
         budget = self.spring_timeout_s * (self.spring_max_retries + 1)
         if budget >= self.stream_total_timeout_buyer_s:
@@ -1179,7 +1392,7 @@ class Settings(BaseSettings):
                 "search retries alone would exhaust the buyer turn budget"
             )
         # 단일 I-1 예산은 가드와 무관하게 비교하고, 아래 검증은 graph.py의 may_auto_relax 전제
-        # (rounds > 0 && 자동 완화 필드 존재)에서만 ON/OFF 각각의 실제 직렬 합을 비교한다.
+        # (calls > 0, 즉 rounds > 0 && 교집합 존재)에서만 ON/OFF 각각의 실제 직렬 합을 비교한다.
         if budget >= self.stream_first_token_timeout_s:
             raise ValueError(
                 "SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1) must be < "
@@ -1188,32 +1401,35 @@ class Settings(BaseSettings):
                 "conditions is deferred past the search on auto-relaxable turns (#113), "
                 "so search retries consume the first-token budget and would 504"
             )
+        deferred_calls = _deferred_first_event_i1_calls(
+            relaxation_max_rounds=self.relaxation_max_rounds,
+            auto_fields=self.relaxation_auto_fields,
+            chip_fields=self.relaxation_chip_fields,
+        )
+        if deferred_calls == 0:
+            return self
         if self.search_retry_on_deferred_conditions:
-            serial_budget = 2 * budget
-            serial_formula = "2 * SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1)"
+            serial_budget = deferred_calls * budget
+            serial_formula = f"{deferred_calls} * SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1)"
             recovery = (
                 "disable SEARCH_RETRY_ON_DEFERRED_CONDITIONS, lower SPRING_TIMEOUT_S, "
                 "or disable deferral with RELAXATION_MAX_ROUNDS=0 or "
                 "RELAXATION_AUTO_FIELDS=[]"
             )
         else:
-            serial_budget = 2 * self.spring_timeout_s
-            serial_formula = "2 * SPRING_TIMEOUT_S"
+            serial_budget = deferred_calls * self.spring_timeout_s
+            serial_formula = f"{deferred_calls} * SPRING_TIMEOUT_S"
             recovery = (
                 "lower SPRING_TIMEOUT_S or disable deferral with "
                 "RELAXATION_MAX_ROUNDS=0 or RELAXATION_AUTO_FIELDS=[]"
             )
-        if (
-            self.relaxation_max_rounds > 0
-            and self.relaxation_auto_fields
-            and serial_budget >= self.stream_first_token_timeout_s
-        ):
+        if serial_budget >= self.stream_first_token_timeout_s:
             raise ValueError(
                 f"{serial_formula} must be < STREAM_FIRST_TOKEN_TIMEOUT_S "
                 f"(got {serial_budget} >= "
                 f"{self.stream_first_token_timeout_s}): "
-                "deferred conditions put two serial I-1 calls before the first event; "
-                f"{recovery}"
+                f"deferred conditions put {deferred_calls} serial I-1 calls before the first "
+                f"event; {recovery}"
             )
         return self
 
@@ -1361,6 +1577,23 @@ class Settings(BaseSettings):
         # 반복한다(PR #42 리뷰, 이슈 #31). 런타임 무한 no-op 대신 기동 시점에 fail-fast.
         if self.auth_mode == "jwks" and not self.google_api_key:
             raise ValueError("GOOGLE_API_KEY must be set when auth_mode=jwks")
+        # [#289] 계약 미등재 이벤트가 운영 와이어에 나가는 사고 방지 — 이 플래그는 정본
+        # (Notion CH-2)·api-spec §3.1 등재와 FE 미지 type 무시 확인이 **둘 다** 끝난 뒤에만
+        # 켤 수 있다. bool 필드라 .env 한 줄로 뒤집히는데, 지금 그걸 막는 게 사람의 규율뿐이라
+        # 운영 레인에서는 기동으로 막는다(위 pepper/토큰 가드와 같은 fail-closed 규약).
+        # **판정 축은 auth_mode == "jwks" 와 app_environment in staging/production 의 합집합이다**
+        # — auth_mode 는 인증 "방식" 선택이라 실트래픽을 보장하지 않고(dev 인증으로 도는
+        # staging 도 있다), app_environment 는 실트래픽 축이지만 운영이 dev 인증으로 도는
+        # 조합을 놓칠 수 있다. 둘 중 하나만 해당해도 막는다(fail-closed 는 넓게 잡는다).
+        # **이 가드 제거가 플래그를 켜는 절차의 일부다** — 등재·FE 확인이 끝나면 이 분기를
+        # 지운다(scratchpad/draft-progress-contract.md §9 체크리스트).
+        if (
+            self.auth_mode == "jwks" or self.app_environment in ("staging", "production")
+        ) and self.progress_events_enabled:
+            raise ValueError(
+                "PROGRESS_EVENTS_ENABLED must stay false until the progress event "
+                "is registered in the API contract (#289)"
+            )
         if self.state_store_pool_max_size < 1:
             raise ValueError("STATE_STORE_POOL_MAX_SIZE must be at least 1")
         if self.state_store_migration_timeout_s <= 0:

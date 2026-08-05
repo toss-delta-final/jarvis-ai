@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from evals.intent_probe.runner import CellResult, Sample
-from evals.intent_probe.schema import AnchorSet, Utterance
+from evals.intent_probe.schema import AnchorSet, CATEGORY_ACTION_GROUP, Utterance
 
 # #240 코멘트가 쓴 8축 한 줄 요약(237/144/93/27/8/48/32/15)의 순서를 그대로 보존한다.
 ISSUE_240_AXIS_ORDER = (
@@ -50,6 +50,29 @@ def _switched_away_from_reask(sample: Sample, _: Utterance, anchors: AnchorSet) 
 def _product_in_last_recommendations(sample: Sample, _: Utterance, anchors: AnchorSet) -> bool:
     known = {product.product_id for product in anchors.last_recommendations}
     return sample.intent == "cart_add" and sample.product_id in known
+
+
+def _category_action_matches(sample: Sample, utterance: Utterance, _: AnchorSet) -> bool:
+    """[#84] **확정값**(`resolve_category_action` 산출)이 기대와 같은가.
+
+    **확정값**을 보는 이유: 사용자가 겪는 동작은 가드가 고른 쪽이다. 기대치
+    (`expected.categoryAction`)는 LLM 필드 이름이 아니라 **가드 확정값의 기대치**다 — 인라인
+    `categoryAction` 필드는 실측으로 기각돼 프롬프트에서 제거됐지만(이득 0 · 전환 축 손해),
+    carry|clear|replace 라는 **판정 이름 자체는 그대로 유효**하다.
+
+    **carry 기대에는 예외가 하나 있다**(2차 리뷰 P2): `_SYSTEM` 의 categoryQueries 불릿이
+    리파인 턴에 직전 카테고리를 leg 로 복사하라고 지시하므로 확정값이 `replace` 로 나오는데,
+    그 leg 는 prior 에코라 **결과적으로 카테고리가 유지된다.** 사용자가 겪는 동작이 carry 와
+    같으므로 정답으로 센다 — 그러지 않으면 축이 정상 동작을 실패로 읽는다(실측 1/32).
+    """
+    expected = utterance.expected.category_action
+    if expected is None:
+        return False
+    if expected == "carry":
+        return sample.resolved_category_action == "carry" or (
+            sample.resolved_category_action == "replace" and sample.category_legs_echo_prior
+        )
+    return sample.resolved_category_action == expected
 
 
 @dataclass(frozen=True)
@@ -136,6 +159,64 @@ AXES: tuple[AxisSpec, ...] = (
         numerator="intent 가 general 인 표본 수",
         denominator="general 2발화 × 컨텍스트 3종 × N",
         predicate=_intent_matches,
+    ),
+    # [#84] 카테고리 승계 3분기 — 기준선에 없는 신규 축이다. 기존 축과 표본을 섞지 않는다
+    # (스키마가 강제): 새 셀이 기존 축의 분모를 늘리면 회귀 0 을 증명할 대조가 사라진다.
+    AxisSpec(
+        axis_id="categoryAction3Way",
+        title="카테고리 승계 3분기",
+        numerator="확정값(resolvedCategoryAction)이 기대 carry·clear·replace 와 일치한 표본 수 "
+        "(carry 기대는 확정값이 replace 라도 그 leg 이 **전부** 직전 카테고리 에코면 정답으로 센다 "
+        "— 프롬프트가 리파인 턴에 PRIOR_FILTERS.category 를 categoryQueries 로 복사하라고 지시해서 "
+        "나오는 모양이고, 결과적으로 카테고리가 유지되므로 사용자가 겪는 동작이 carry 와 같다. "
+        "에코 판정은 앵커 categoryPriorFilters(카테고리 전체·각 조각·semanticQuery)와 "
+        "**정규화 후 정확 일치**다 — 부분 문자열이면 `이어폰 케이스` 같은 새 상품도 에코로 세어 "
+        "카테고리가 바뀐 턴을 '유지됐다'로 읽는다)",
+        denominator="카테고리 15발화 × categoryPrior 컨텍스트 × N (N=8 이면 120) "
+        "— 라운드 3 이 혼합 4발화를 더해 88 → 120 이 됐다",
+        predicate=_category_action_matches,
+        components=("categoryCarry", "categoryClear", "categoryReplace", "categoryMixedReplace"),
+        not_comparable_with=(
+            "baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)",
+            "baselines/fast-2026-08-05-84 (분모 88 — 혼합 4발화 추가 전)",
+        ),
+    ),
+    AxisSpec(
+        axis_id="categoryCarry",
+        title="리파인(직전 카테고리 유지)",
+        numerator="resolvedCategoryAction 이 carry 인 표본 수 "
+        "(**또는** replace 이면서 leg 이 **전부** 직전 카테고리 에코인 표본 — 프롬프트가 리파인 "
+        "턴에 직전 카테고리를 leg 로 복사하라고 지시해서 나오는 모양이고, 카테고리는 유지된다. "
+        "에코는 앵커 categoryPriorFilters 와 정규화 후 **정확 일치**일 때만 인정한다)",
+        denominator="리파인 4발화 × categoryPrior 컨텍스트 × N (N=8 이면 32)",
+        predicate=_category_action_matches,
+        not_comparable_with=("baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)",),
+    ),
+    AxisSpec(
+        axis_id="categoryClear",
+        title="카테고리-무관 리셋",
+        numerator="resolvedCategoryAction 이 clear 인 표본 수",
+        denominator="리셋 4발화 × categoryPrior 컨텍스트 × N (N=8 이면 32)",
+        predicate=_category_action_matches,
+        not_comparable_with=("baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)",),
+    ),
+    AxisSpec(
+        axis_id="categoryMixedReplace",
+        title="혼합 발화(새 카테고리 + 아무거나)",
+        numerator="resolvedCategoryAction 이 replace 인 표본 수 — 새 카테고리를 지목하면서 동시에 "
+        "'아무거나'류 표현을 쓴 발화다. 초판(scopeFree 우선)에서는 사용자가 말한 카테고리가 통째로 "
+        "버려져 무필터가 됐다(실 LLM 실측 32건 중 19건 clear)",
+        denominator="혼합 4발화 × categoryPrior 컨텍스트 × N (N=8 이면 32)",
+        predicate=_category_action_matches,
+        not_comparable_with=("baselines/fast-2026-08-05-84 (이 축이 존재하지 않던 런)",),
+    ),
+    AxisSpec(
+        axis_id="categoryReplace",
+        title="카테고리 교체",
+        numerator="resolvedCategoryAction 이 replace 인 표본 수",
+        denominator="교체 3발화 × categoryPrior 컨텍스트 × N (N=8 이면 24)",
+        predicate=_category_action_matches,
+        not_comparable_with=("baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)",),
     ),
 )
 
@@ -228,10 +309,31 @@ def diagnostics(results: list[CellResult], anchors: AnchorSet) -> dict[str, Any]
     - `reaskProductEchoCount` — 되물음 상품을 그대로 담았다. **위험한 실패**: 사용자가 고르지
       않은 옵션으로 옛 상품이 장바구니에 들어간다.
     - `productIdNullCount` — 못 고르고 null 을 냈다. 되물음이 유지되는 **안전한 퇴화**다.
+    - `categoryScopeUnresolvedCount` (#84) — 전용 분류기가 판정하지 못한(None) 표본 수.
+      분류기의 침묵률이며, 이 프로브가 3분기 축을 신뢰할 수 있는지의 근거다.
+    - `categoryClearOnRefineCount` (#84) — 리파인 발화가 `clear` 로 확정됐다. 이 변경이 만들 수
+      있는 **유일한 새 회귀 모양**(리파인 턴의 카테고리가 풀림)이라 정확도와 따로 센다
+      (lessons 「정확도 지표만 보지 말고 실패의 모양을 갈라 센다」).
+
+    카테고리 카운터 둘(`categoryScopeUnresolvedCount`·`categoryClearOnRefineCount`)은
+    `category_action` 그룹 표본만 본다 — `reaskProductEchoCount` 가 전환 셀만 보는 것과 같은
+    규약이다. 다른 그룹(장바구니·general)은 승계 가드에 닿지도 않아 섞으면 분모가 뜻을 잃는다.
     """
     echo = 0
     nulls = 0
+    scope_unresolved = 0
+    clear_on_refine = 0
+    by_id = _utterances_by_id(anchors)
     for result in results:
+        if result.group == CATEGORY_ACTION_GROUP:
+            utterance = by_id.get(result.utterance_id)
+            expected = utterance.expected.category_action if utterance else None
+            for sample in result.samples:
+                if sample.scope_free is None:
+                    scope_unresolved += 1
+                if expected == "carry" and sample.resolved_category_action == "clear":
+                    clear_on_refine += 1
+            continue
         if result.group != "switch":
             continue
         for sample in result.samples:
@@ -244,11 +346,17 @@ def diagnostics(results: list[CellResult], anchors: AnchorSet) -> dict[str, Any]
     return {
         "reaskProductEchoCount": echo,
         "productIdNullCount": nulls,
+        "categoryScopeUnresolvedCount": scope_unresolved,
+        "categoryClearOnRefineCount": clear_on_refine,
         "definition": {
             "reaskProductEchoCount": "전환 셀에서 cart.productId 가 되물음 상품과 같은 표본 수 "
             "— 사용자가 고르지 않은 옵션으로 옛 상품이 담기는 위험한 실패",
             "productIdNullCount": "전환 셀에서 cart_add 인데 productId 가 null 인 표본 수 "
             "— 되물음이 유지되는 안전한 퇴화",
+            "categoryScopeUnresolvedCount": "전용 분류기가 판정하지 못한(None) 표본 수 "
+            "— 호출 실패·비 JSON·비불리언 산출을 합친 침묵률",
+            "categoryClearOnRefineCount": "리파인 기대 셀에서 확정값이 clear 로 나온 표본 수 "
+            "— 사용자가 좁혀 둔 카테고리가 풀리는 이 변경의 유일한 새 회귀 모양",
         },
     }
 

@@ -484,6 +484,7 @@ async def _analysis_stream(
                 today=date.today(),
                 emit=emit,
                 recent_turns=recent_turns,
+                screen=request.screen,
             )
 
     pipeline_task = asyncio.create_task(run_pipeline())
@@ -944,7 +945,9 @@ async def _seller_stream(
     recent_turns = await seller_thread.load_recent_turns(context, request.thread_id)
     try:
         with trace_span("seller.routing", "chain"):
-            decision = await route_question(request.message, context, recent_turns=recent_turns)
+            decision = await route_question(
+                request.message, context, recent_turns=recent_turns, screen=request.screen
+            )
     except LLMNotConfigured:
         _set_trace_lane("general")
         yield _meta("general")
