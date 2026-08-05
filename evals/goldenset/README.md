@@ -16,7 +16,7 @@
 - 작성·검수·변경 규칙(v2 절 포함): `GUIDE.md`
 - 데이터 버전·해시·슬라이스 쿼터·confirmatory 규약: `manifest.json`
 
-120건(dev 96 / sealed holdout 24)이며, 상품 라벨은 로컬 catalog(pg-catalog 6,559건 —
+127건(dev 103 / sealed holdout 24)이며, 상품 라벨은 로컬 catalog(pg-catalog 6,559건 —
 v1 시드 7,220건에서 축소)와 라이브 Spring I-1 응답에서만 가져왔다. 구매 이력 페르소나는
 합성이지만 그 안의 상품 ID·이름·카테고리는 동일 스냅샷의 실제 상품이다. Part 1(#333)은
 v1을 구조·규약만 v2로 이관했고, Part 2가 `evals/goldenset/campaign_v2.py` 라이브 캠페인으로

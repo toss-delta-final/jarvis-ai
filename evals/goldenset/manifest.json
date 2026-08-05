@@ -1,5 +1,25 @@
 {
-  "adjudicators": [],
+  "adjudicationSummary": {
+    "agreementRate": 0.8912,
+    "agreementRateFormula": "(340 - gradeErrorLabelCount) / 340",
+    "appliedDisputes": 44,
+    "gradeErrorLabelCount": 37,
+    "note": "#329 권고 8(agreement 인쇄) 1차 이행 — adjudicator-omx-01의 dispute 45건 재검증·반영 결과.",
+    "partiallyRejectedDisputes": 1,
+    "partiallyRejectedNote": "buy-pers-0004: 인용 2건 중 productId 3700228373는 이미 relevant(grade2)로 라벨되어 있어 '암묵 0' 주장이 사실과 다름(반려) — 나머지 1건(8108120723)은 사실 확인되어 반영.",
+    "reviewScope": {
+      "explicitLabelsReviewed": 340,
+      "implicitZeroSampleReviewed": 820,
+      "invDirCasesReviewed": 36
+    },
+    "totalDisputes": 45
+  },
+  "adjudicators": [
+    {
+      "id": "adjudicator-omx-01",
+      "role": "adjudicator"
+    }
+  ],
   "auditReport": "audit/leakage_report.json",
   "confirmatory": {
     "alphaCorrection": "holm-bonferroni-3",
@@ -43,27 +63,27 @@
     "total": 127
   },
   "createdAt": "2026-08-02",
-  "datasetHash": "ad6c8a1eb93b946b1012832a08becd3684c62e05b4393e3358d997d2825af364",
+  "datasetHash": "904f90e93a1dbff797c7e8bc48f2a795f006d1e6b5405e753207c76adb8de273",
   "datasetName": "buyer-goldenset",
   "datasetVersion": "2.1.0",
   "files": [
     {
-      "bytes": 10982,
+      "bytes": 13505,
       "path": "CHANGELOG.md",
       "records": 0,
-      "sha256": "24695485ad40baad278a13a077fc875ee721c33042f471762532075be606390a"
+      "sha256": "85fb1c3b95dfa34889d1a06811d55cb446c3358e83c06ce4ab73ff0011d458b6"
     },
     {
-      "bytes": 16382,
+      "bytes": 19061,
       "path": "GUIDE.md",
       "records": 0,
-      "sha256": "353062ff48d562e9802976751c00c279e54a5f31e36dfe451041d3044ab52570"
+      "sha256": "7dd04f965b1a26738e7d62728c8389a0bb1186e13ea137a1f10bf8de76758dd0"
     },
     {
-      "bytes": 5015,
+      "bytes": 5016,
       "path": "README.md",
       "records": 0,
-      "sha256": "2da4fce5100949db05138e5b810a24fce7796cd2363344375025e7c802d187fb"
+      "sha256": "988e788236a551455d8a8af1f387197dc99dd2735b851a41086de65ea929383a"
     },
     {
       "bytes": 110,
@@ -96,22 +116,22 @@
       "sha256": "e359a4b795df6187512d66af05a084af934ef7174ac926ba6ebcb0640a719129"
     },
     {
-      "bytes": 105104,
+      "bytes": 112525,
       "path": "cases/buyer_dev.jsonl",
       "records": 103,
-      "sha256": "1a3e7e8b58cbba6839f5a2c6a7cb8eb234d7e746f2ee8744611bbf39069886c1"
+      "sha256": "dc98f6f21b0461c5a562033442324f4d54d0e13d5bdbc9769169f7a3ff945df3"
     },
     {
-      "bytes": 15471,
+      "bytes": 15855,
       "path": "cases/buyer_holdout.jsonl",
       "records": 24,
-      "sha256": "ab1fa77a7c253bcdc1228a978e8ff2051bb591e1a520421234122c774d28e000"
+      "sha256": "3a7f678196b5b031d3f7d572b39768fe2428255e58bd7629cfc0bd50abbf0a65"
     },
     {
-      "bytes": 10303,
+      "bytes": 11195,
       "path": "cases/buyer_holdout_labels.jsonl",
       "records": 24,
-      "sha256": "60595715fd17dbdba599dfb40314bfb1202ef6691b14bbea4f20764b568faebc"
+      "sha256": "21de9801fc9111d33c8fe3e7b84a6b7e142afc02af33a92de7116e397461993f"
     },
     {
       "bytes": 14037834,

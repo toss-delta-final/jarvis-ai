@@ -105,7 +105,10 @@ v1은 순위를 판별하지 못했다(#333 배경 — 판별 유효 18건 중 9
   평균 0.389)도 순위 평가 대상 케이스에 적용한다. 초과하면 오류이며, `notes`에
   `relevant-ratio-exempt:` 마커로 예외 처리한다. 두 예외 마커는 이어붙일 수 있다(예:
   `"narrow-domain: relevant-ratio-exempt: 근거..."`) — `schema.has_note_marker`가 접두부의
-  마커 나열을 파싱한다(startswith가 아니다).
+  마커 나열을 파싱한다(startswith가 아니다). **상한은 후보 구성 규약이지 명백한 정답을
+  0으로 만드는 허가가 아니다** — 실제 정답인 후보(암묵 0으로 방치된 injected 포함)를 비율을
+  맞추려고 0으로 남겨두지 말고, 정직하게 등급을 매긴 뒤 초과분은 exempt 마커로 예외 처리한다
+  (#333 adjudication 라운드, adjudicator-omx-01 관찰).
 - 채우는 절차: `snapshot.record_snapshots_v2()`로 골든 검색(limit 30) + 완화 검색
   (keyword-only/category-only, 후보<30일 때만) → `inject.build_case_candidates()`로 하드
   네거티브를 채운다(이때 catalog는 완화 검색으로 넓힌 뒤의 catalog_snapshot이다 — 주입 풀은
@@ -217,3 +220,28 @@ manifest `confirmatory.confirmatorySlices`(`guest`/`member`/`budget`, α 보정
 현재 production-derived 케이스는 0건이다. 향후 추가할 때는 비식별 여부를 사람이 수동
 검수하고, raw prompt·raw profile·고객 원문·상품 원문을 저장하지 않는다. 필요한 신호는 유계
 범주와 가명 식별자로 환원하며 개인을 재식별할 수 있는 조합도 금지한다.
+
+## 알려진 한계(후속 이슈, #333 adjudication 라운드 관찰)
+
+독립 검수자 adjudicator-omx-01의 127건 전수 검수(비차단 관찰)에서 나온, 이번 라운드에서는
+데이터를 바꾸지 않고 문서화만 하는 3가지 한계다.
+
+- **`member_recall_ge_guest` 검사의 자명성**: 구매 이력이 비어 있는 합성 페르소나가 많고
+  guest/member 거울 케이스의 fixture·라벨이 사실상 동일해, member 재현율이 guest 이상이라는
+  검사가 상당수 케이스에서 거의 항상 참이 되는 동어반복에 가깝다. 후속 이슈에서 구매 이력이
+  실제로 개인화 신호로 작용하는 페르소나 비중을 늘려야 검사가 실효를 갖는다.
+- **신라면/커피믹스 키워드의 cross-split 재사용 패턴**: 카탈로그에 존재하는 실제 신라면·
+  커피믹스 상품 수가 제한적이라, dev와 holdout에 걸쳐 유사한 의도(예: "신라면 봉지라면"과
+  "카테고리가 이상한 신라면", "커피믹스 추천"과 "카테고리가 이상한 커피믹스")로 케이스를
+  구성하면 relevant 집합이 자연히 겹친다. 이번 라운드에서는 `audit.run_audit`의
+  `relevantSetOverlap`(상한 0.5)을 넘지 않도록 각 케이스의 실제 취지(일반 추천 vs 카테고리
+  오분류 견고성 테스트)에 맞춰 정답 부분집합을 분리했다(예: buy-cmap-1002는 명백히
+  오분류된 후보로만 한정). 후속 이슈로 이 카테고리들의 catalog 표본을 늘려 구조적으로
+  분리 여지를 넓히는 편이 낫다.
+- **`price=null` injected 후보의 가격 게이팅 모호성**: 하드 네거티브 주입 풀 일부 상품은
+  catalog_snapshot에 가격이 없다(`price: null`). `priceMax`/`priceMin` 하드제약이 있는
+  케이스에서 이런 후보를 relevant로 승격할지 판단할 근거가 없어, 이번 라운드에서는 가격
+  하드제약이 없는 케이스에서만 `price: null` injected 후보를 relevant로 승격했다(예:
+  buy-cold-0001의 5578895099/8124432652). 후속 이슈로 injected 풀의 가격 결측을 채우거나,
+  가격 하드제약이 있는 케이스에서는 `price: null` 후보를 자동으로 grade 판정 보류(수동 확인
+  필요)로 표시하는 규약을 검토한다.
