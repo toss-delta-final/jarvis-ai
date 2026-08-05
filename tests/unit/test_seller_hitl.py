@@ -16,13 +16,20 @@ from langgraph.checkpoint.memory import InMemorySaver
 from app.agents.seller import hitl
 from app.agents.seller.schemas import DraftChange, DraftProposal
 from app.schemas.spring import (
+    OrderItemStatusResult,
     ProductCreateResult,
     ProductDeleteResult,
     ProductUpdateResult,
     SellerProductList,
     SellerProductRow,
 )
-from app.services.spring_client import SpringUnavailableError, set_spring_client
+from app.services.spring_client import (
+    OrderAlreadyShipped,
+    OrderInvalidTransition,
+    OrderItemNotFound,
+    SpringUnavailableError,
+    set_spring_client,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -72,8 +79,22 @@ class _StubSpring:
         self.calls.append(("delete", brand_id, product_id))
         return ProductDeleteResult(productId=product_id, status="HIDDEN")
 
+    # [#297] I-30 발송 — ship_error 로 코드별 실패(409/400/404)를 주입한다.
+    ship_error: Exception | None = None
+
+    async def update_order_item_status(self, brand_id, order_item_id, payload):
+        self.calls.append(("ship", brand_id, order_item_id, payload))
+        if self.ship_error is not None:
+            raise self.ship_error
+        return OrderItemStatusResult(
+            orderItemId=order_item_id,
+            fromStatus="ORDERED",
+            toStatus=payload.to_status,
+            changedAt="2026-08-05T10:00:00+09:00",
+        )
+
     def write_calls(self) -> list[tuple]:
-        return [c for c in self.calls if c[0] in ("create", "update", "delete")]
+        return [c for c in self.calls if c[0] in ("create", "update", "delete", "ship")]
 
 
 def _proposal(**kwargs) -> DraftProposal:
@@ -494,3 +515,170 @@ def test_find_product_paginates_until_found() -> None:
 
     assert row is not None and row.product_id == 500
     assert len([c for c in spring.calls if c[0] == "list"]) == 3  # 20건 × 3페이지
+
+
+# ── [#297] op="ship" — I-30 발송 처리 HITL (§4.19) ───────────────────────────────
+
+
+def _ship_proposal(**kwargs) -> DraftProposal:
+    base = dict(
+        op="ship",
+        product_id=None,
+        order_item_id=5551,
+        changes=[],
+        summary="주문 342 벨티드 린넨 원피스(블루/M) 발송 처리",
+    )
+    base.update(kwargs)
+    return DraftProposal(**base)
+
+
+def test_validate_ship_draft_requires_order_item_id() -> None:
+    """대상 orderItemId 없는 ship 은 불성립 — 되묻기(임의 추측 금지)."""
+    record, problem = hitl.validate_draft(
+        _ship_proposal(order_item_id=None), seller_id=7, brand_id=3
+    )
+    assert record is None
+    assert problem is not None and "주문" in problem
+
+
+def test_validate_ship_draft_normalizes_changes_to_empty() -> None:
+    """ship 의 changes 는 LLM 산물을 버리고 빈 목록으로 정규화 — 실행 인자는
+    order_item_id 뿐이다(보여준 것==실행하는 것). 상품 필드 캐스팅도 적용되지 않는다."""
+    record, problem = hitl.validate_draft(
+        _ship_proposal(changes=[DraftChange(field="status", before="ORDERED", after="SHIPPING")]),
+        seller_id=7,
+        brand_id=3,
+    )
+    assert problem is None and record is not None
+    assert record.op == "ship"
+    assert record.order_item_id == 5551
+    assert record.product_id is None
+    assert record.changes == []
+
+
+def test_confirm_ship_executes_i30_after_approval() -> None:
+    """draft 저장 시 쓰기 0회 → confirm resume 시에만 I-30 1회 호출(ORDERED→SHIPPING)."""
+    spring = _StubSpring()
+    set_spring_client(spring)
+    record, _ = hitl.validate_draft(_ship_proposal(), seller_id=7, brand_id=3)
+    assert record is not None
+
+    async def run():
+        await hitl.start_draft(record)
+        assert spring.write_calls() == []  # 승인 전 쓰기 0회(발화 ≠ 동의)
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+
+    outcome = asyncio.run(run())
+
+    assert outcome.status == "executed"
+    op, brand_id, order_item_id, payload = spring.write_calls()[0]
+    assert (op, brand_id, order_item_id) == ("ship", 3, 5551)
+    assert payload.to_status == "SHIPPING"
+    assert "발송 처리했습니다" in outcome.text
+    assert "반품" in outcome.text  # 발송 후 역전이 불가·구매자 구제 고지
+
+
+def test_confirm_ship_already_shipped_is_already_done_not_success() -> None:
+    """409 ORDER_ALREADY_SHIPPED — 멱등 성공으로 보고하지 않는다(I-12 논리)."""
+    spring = _StubSpring()
+    spring.ship_error = OrderAlreadyShipped("ORDER_ALREADY_SHIPPED")
+    set_spring_client(spring)
+    record, _ = hitl.validate_draft(_ship_proposal(), seller_id=7, brand_id=3)
+
+    async def run():
+        await hitl.start_draft(record)
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+
+    outcome = asyncio.run(run())
+
+    assert outcome.status == "already_done"
+    assert "이미 발송 처리된" in outcome.text
+
+
+def test_confirm_ship_invalid_transition_reports_stale() -> None:
+    """400 ORDER_INVALID_TRANSITION(클레임 포함) — 실행 중단·현황 재확인 안내."""
+    spring = _StubSpring()
+    spring.ship_error = OrderInvalidTransition("ORDER_INVALID_TRANSITION")
+    set_spring_client(spring)
+    record, _ = hitl.validate_draft(_ship_proposal(), seller_id=7, brand_id=3)
+
+    async def run():
+        await hitl.start_draft(record)
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+
+    outcome = asyncio.run(run())
+
+    assert outcome.status == "stale"
+    assert "발송 처리할 수 없는 상태" in outcome.text
+
+
+def test_confirm_ship_not_found_hides_existence() -> None:
+    """404 ORDER_ITEM_NOT_FOUND — 타사 아이템 포함 존재 은닉(사유 미구분 안내)."""
+    spring = _StubSpring()
+    spring.ship_error = OrderItemNotFound("ORDER_ITEM_NOT_FOUND")
+    set_spring_client(spring)
+    record, _ = hitl.validate_draft(_ship_proposal(), seller_id=7, brand_id=3)
+
+    async def run():
+        await hitl.start_draft(record)
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+
+    outcome = asyncio.run(run())
+
+    assert outcome.status == "stale"
+    assert "찾을 수 없어" in outcome.text
+
+
+def test_confirm_ship_spring_down_raises_and_allows_retry() -> None:
+    """500·타임아웃은 예외 전파(성공 보고 금지) — draft 는 남아 재confirm 가능."""
+    spring = _StubSpring()
+    spring.ship_error = SpringUnavailableError("timeout")
+    set_spring_client(spring)
+    record, _ = hitl.validate_draft(_ship_proposal(), seller_id=7, brand_id=3)
+
+    async def run():
+        await hitl.start_draft(record)
+        with pytest.raises(SpringUnavailableError):
+            await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+        spring.ship_error = None  # 복구 후 재시도
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+
+    outcome = asyncio.run(run())
+
+    assert outcome.status == "executed"
+    assert len(spring.write_calls()) == 2  # 실패 1회 + 성공 1회(중복 반영 아님 — 첫 호출은 미반영)
+
+
+def test_confirm_ship_second_confirm_is_idempotent() -> None:
+    """실행 완료 후 재confirm 은 재실행 없이 멱등 안내(안전장치 ③)."""
+    spring = _StubSpring()
+    set_spring_client(spring)
+    record, _ = hitl.validate_draft(_ship_proposal(), seller_id=7, brand_id=3)
+
+    async def run():
+        await hitl.start_draft(record)
+        first = await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+        second = await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+        return first, second
+
+    first, second = asyncio.run(run())
+
+    assert first.status == "executed"
+    assert second.status == "already_done"
+    assert len(spring.write_calls()) == 1  # 쓰기는 1회뿐
+
+
+def test_confirm_ship_ownership_mismatch_blocked() -> None:
+    """타 판매자·타 브랜드의 draftId 추측 confirm 차단(안전장치 ④) — 실행 0회."""
+    spring = _StubSpring()
+    set_spring_client(spring)
+    record, _ = hitl.validate_draft(_ship_proposal(), seller_id=7, brand_id=3)
+
+    async def run():
+        await hitl.start_draft(record)
+        return await hitl.confirm_draft(record.draft_id, seller_id=8, brand_id=3)
+
+    outcome = asyncio.run(run())
+
+    assert outcome.status == "not_found"
+    assert spring.write_calls() == []

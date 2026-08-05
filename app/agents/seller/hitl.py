@@ -43,8 +43,18 @@ from app.agents.seller.schemas import DraftChange, DraftProposal
 from app.core.config import get_settings
 from app.core.text import _strip_unsafe, _strip_unsafe_multiline
 from app.core.tracing import trace_span
-from app.schemas.spring import ProductCreate, ProductUpdate, SellerProductRow
-from app.services.spring_client import get_spring_client
+from app.schemas.spring import (
+    OrderItemStatusUpdate,
+    ProductCreate,
+    ProductUpdate,
+    SellerProductRow,
+)
+from app.services.spring_client import (
+    OrderAlreadyShipped,
+    OrderInvalidTransition,
+    OrderItemNotFound,
+    get_spring_client,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +70,9 @@ _INT_SUFFIXES = ("원", "건", "개")
 _CREATE_FORBIDDEN_FIELDS = frozenset({"image_url", "status"})
 # I-10 필수 본문(api-spec §4.5) — 누락 draft 는 등록 자체가 불가하므로 되묻기.
 _CREATE_REQUIRED_FIELDS = frozenset({"name", "price", "stock_quantity"})
+# [#297] I-30 MVP 허용 전이는 ORDERED→SHIPPING 하나뿐(§4.19) — toStatus 를 코드가
+# 고정한다(LLM 산물 아님). 전이 어휘가 늘면 여기와 validate_draft 만 확장한다.
+_SHIP_TO_STATUS = "SHIPPING"
 
 
 class DraftRecord(BaseModel):
@@ -71,8 +84,10 @@ class DraftRecord(BaseModel):
     """
 
     draft_id: str
-    op: Literal["create", "update", "delete"]
+    op: Literal["create", "update", "delete", "ship"]
     product_id: int | None = None
+    # [#297] ship(I-30 발송) 전용 — 대상 주문 아이템. 그 외 op 는 None.
+    order_item_id: int | None = None
     changes: list[DraftChange] = Field(default_factory=list)
     summary: str = ""
     seller_id: int  # JWT sub — 숫자 계약(api-spec §2.6), SellerContext 와 동일 타입
@@ -112,6 +127,29 @@ def validate_draft(
     받은 뒤에야 실패하는 것보다, 스트림 1에서 되묻는 쪽이 계약(보여준 것==실행)에
     부합한다. 여기서 통과한 draft 는 confirm 시점에 캐스팅이 실패하지 않는다.
     """
+    # [#297] ship(I-30 발송): 대상은 orderItemId 하나뿐이고 전이는 코드 고정
+    # (ORDERED→SHIPPING)이라 상품 필드 검증·changes 캐스팅이 적용되지 않는다.
+    # changes 는 LLM 산물을 버리고 빈 목록으로 정규화한다 — 카드 표시는 summary 가,
+    # 실행 인자는 order_item_id 가 전부다(보여준 것==실행하는 것).
+    if proposal.op == "ship":
+        if proposal.order_item_id is None:
+            return None, (
+                "발송할 주문 아이템을 특정하지 못했습니다. 주문 번호나 상품명을 "
+                "알려주시면 주문을 조회해 대상을 확정하겠습니다."
+            )
+        record = DraftRecord(
+            draft_id=str(uuid.uuid4()),
+            op="ship",
+            product_id=None,
+            order_item_id=proposal.order_item_id,
+            changes=[],
+            summary=_strip_unsafe(proposal.summary),
+            seller_id=seller_id,
+            brand_id=brand_id,
+            created_at=datetime.now(UTC).isoformat(),
+        )
+        return record, None
+
     # after 는 승인 후 Spring 쓰기의 실행 정본이므로 위험 문자만 제거한다.
     # 시크릿 마스킹은 표시 계층 전용이며 여기에 적용하면 정상 상품 데이터가 오염된다.
     changes = [
@@ -234,11 +272,50 @@ _STALE_RETRY_GUIDE = (
 async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
     """draft 를 op 별 Spring 쓰기에 매핑 — (outcome, 사용자 안내 text) 반환.
 
-    outcome: "executed"(반영 완료) | "stale"(불일치/미발견 — 실행 중단, 되묻기).
-    Spring 장애(SpringUnavailableError)는 잡지 않는다 — 노드 예외로 전파되면
-    checkpoint 가 interrupt 지점에 남아 동일 draftId 로 재confirm 이 가능하다.
+    outcome: "executed"(반영 완료) | "stale"(불일치/미발견 — 실행 중단, 되묻기)
+    | "already_done"(ship 409 — 이미 발송됨, 재실행 없음). Spring 장애
+    (SpringUnavailableError)는 잡지 않는다 — 노드 예외로 전파되면 checkpoint 가
+    interrupt 지점에 남아 동일 draftId 로 재confirm 이 가능하다.
     """
     client = get_spring_client()
+
+    # [#297] ship — I-30 발송 처리(§4.19). 상품 재조회(stale 검증) 대상이 아니다:
+    # 소유권·현재 상태 검증은 Spring 이 실행 시점에 재수행한다(타사=404 존재 은닉).
+    # 4xx 는 코드별 결과로 정규화해 스레드에 기록한다(멱등 안내 가능) — 500·타임아웃만
+    # 예외 전파로 재confirm 여지를 남긴다(성공 보고 금지, I-11·I-12 규칙).
+    if record.op == "ship":
+        assert record.order_item_id is not None  # validate_draft 가 보장
+        try:
+            shipped = await client.update_order_item_status(
+                record.brand_id,
+                record.order_item_id,
+                OrderItemStatusUpdate(to_status=_SHIP_TO_STATUS, reason=None),
+            )
+        except OrderAlreadyShipped:
+            return (
+                "already_done",
+                f"이미 발송 처리된 주문 아이템입니다 (orderItemId={record.order_item_id}) "
+                "— 중복 실행하지 않았습니다.",
+            )
+        except OrderInvalidTransition:
+            return (
+                "stale",
+                f"지금은 발송 처리할 수 없는 상태입니다 (orderItemId={record.order_item_id}) "
+                "— 이미 배송 단계로 넘어갔거나 취소 요청 등 클레임이 진행 중입니다. "
+                "주문 현황을 다시 확인해 주세요.",
+            )
+        except OrderItemNotFound:
+            return (
+                "stale",
+                f"대상 주문 아이템(orderItemId={record.order_item_id})을 찾을 수 없어 "
+                "반영을 중단했습니다. 주문 현황을 다시 확인해 주세요.",
+            )
+        return (
+            "executed",
+            f"발송 처리했습니다 (orderItemId={shipped.order_item_id}, "
+            f"{shipped.from_status}→{shipped.to_status}). 발송 후에는 취소·되돌리기가 "
+            "불가하며, 구매자 구제는 반품 절차로만 진행됩니다.",
+        )
 
     if record.op == "create":
         values = {c.field: _typed_after(c) for c in record.changes}

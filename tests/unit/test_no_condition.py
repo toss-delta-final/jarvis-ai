@@ -35,7 +35,7 @@ def _decision(*, semantic_query_is_fallback: bool = True, **filter_kwargs) -> Ro
 
 
 def test_bare_recommend_utterance_triggers() -> None:
-    """"아무거나 추천해줘" — 조건 축이 전부 비고 첫 턴이면 트리거된다."""
+    """ "아무거나 추천해줘" — 조건 축이 전부 비고 첫 턴이면 트리거된다."""
     assert is_no_condition_turn(_decision(), prior=None) is True
 
 
@@ -303,6 +303,11 @@ def test_route_decision_axes_are_all_classified() -> None:
         # (`buy_all_mode` 가 `split_by_need` 를 요구한다) 둘 다 PICK_ONE 으로 끝난다.
         # 확인할 가격도 없어 취향 경로를 막을 근거가 없다.
         "buy_all",
+        # [#222] category_expanded 가 True 면 정의상 category_legs 가 비어 있지 않다(#222 폴백이
+        # category_legs 를 채우면서 함께 세운다, buyer/graph.py) — category_legs 가 이미
+        # blocking 에 있으므로 그 턴은 이 필드와 무관하게 이미 트리거가 막힌다. blocking 에
+        # 넣으면 같은 사실을 두 번 세는 중복이라 여기가 맞다.
+        "category_expanded",
     }
 
     assert {f.name for f in fields(RouteDecision)} == (

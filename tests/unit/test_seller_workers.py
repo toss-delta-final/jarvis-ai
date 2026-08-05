@@ -22,6 +22,7 @@ from app.agents.seller.prompts import (
     PRODUCT_PROMPT,
     RECOMMEND_PROMPT,
     REPORT_PROMPT,
+    REVIEW_PROMPT,
     SALES_ANOMALY_PROMPT,
     WORKER_COMMON_RULES,
 )
@@ -34,6 +35,7 @@ from app.agents.seller.workers import (
     GENERAL_TOOLS,
     PRODUCT_DRAFT_TOOLS,
     RECOMMEND_TOOLS,
+    REVIEW_TOOLS,
     SALES_ANOMALY_TOOLS,
     build_abuse_agent,
     build_analysis_judge,
@@ -47,6 +49,7 @@ from app.agents.seller.workers import (
     build_recommend_agent,
     build_report_agent,
     build_report_judge,
+    build_review_agent,
     build_sales_anomaly_agent,
 )
 from app.core.config import Settings
@@ -107,6 +110,13 @@ WORKERS = [
         ABUSE_PROMPT,
         build_abuse_agent,
         {"get_behavior_events", "get_order_events", "get_account_events", "search_analysis_guide"},
+    ),
+    (
+        "review",
+        REVIEW_TOOLS,
+        REVIEW_PROMPT,
+        build_review_agent,
+        {"get_reviews", "search_analysis_guide"},
     ),
 ]
 
@@ -177,16 +187,20 @@ def test_builder_compiles(analysis_type, tools, prompt, builder, expected) -> No
 
 
 def test_general_tool_assignment() -> None:
-    """배정표(HANDOFF §3) — 조회 3종 + calculate + 기준서, 쓰기 0."""
+    """배정표(HANDOFF §3, #297 확장) — 조회 5종 + calculate + 기준서, 쓰기 0."""
     assert {t.name for t in GENERAL_TOOLS} == {
         "get_sales_timeseries",
         "get_order_events",
+        "get_orders",  # [#297] I-29 현재 상태 스냅샷
+        "get_reviews",  # [#297] I-31 리뷰 단순 조회
         "list_my_products",
         "calculate",
         "search_analysis_guide",
     }
     write_names = {t.name for t in PRODUCT_TOOLS} - {"list_my_products"}
     assert {t.name for t in GENERAL_TOOLS}.isdisjoint(write_names)
+    # [#297] 주문 쓰기(발송)도 general 에 절대 없다.
+    assert "update_order_status" not in {t.name for t in GENERAL_TOOLS}
     for t in GENERAL_TOOLS:
         for hidden in ("runtime", "brand_id", "seller_id"):
             assert hidden not in t.args
@@ -213,10 +227,17 @@ def test_build_general_agent_compiles() -> None:
 
 
 def test_product_agent_binds_read_only() -> None:
-    """A안 + calculate(2-9 리뷰 반영) — 조회·계산만, 쓰기 3종은 볼 수 없다."""
-    assert {t.name for t in PRODUCT_DRAFT_TOOLS} == {"list_my_products", "calculate"}
+    """A안 + calculate(2-9) + get_orders(#297 ship 대상 해소) — 조회·계산만, 쓰기는 볼 수 없다."""
+    assert {t.name for t in PRODUCT_DRAFT_TOOLS} == {
+        "list_my_products",
+        "calculate",
+        "get_orders",  # [#297] ship draft 의 orderItemId·현재 상태 확인(조회 전용)
+    }
     write_names = {t.name for t in PRODUCT_TOOLS} - {"list_my_products"}
     assert {t.name for t in PRODUCT_DRAFT_TOOLS}.isdisjoint(write_names)
+    # [#297] 주문 쓰기(발송, update_order_status)도 draft 에이전트가 볼 수 없다 —
+    # HITL(발화 ≠ 동의)이 프롬프트가 아니라 구조로 보장된다.
+    assert "update_order_status" not in {t.name for t in PRODUCT_DRAFT_TOOLS}
     for t in PRODUCT_DRAFT_TOOLS:
         for hidden in ("runtime", "brand_id", "seller_id"):
             assert hidden not in t.args
@@ -242,8 +263,8 @@ def test_build_product_agent_compiles() -> None:
 
 
 def test_planner_prompt_covers_all_workers() -> None:
-    """워커 5종 전부가 선택 기준으로 설명된다 — 누락 시 해당 분석이 계획에서 실종."""
-    for analysis_type in ("sales_anomaly", "conversion", "behavior", "churn", "abuse"):
+    """워커 6종 전부가 선택 기준으로 설명된다 — 누락 시 해당 분석이 계획에서 실종."""
+    for analysis_type in ("sales_anomaly", "conversion", "behavior", "churn", "abuse", "review"):
         assert analysis_type in PLANNER_PROMPT
 
 

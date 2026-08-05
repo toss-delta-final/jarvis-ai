@@ -198,7 +198,8 @@ def format_graph_input(findings: list[AnalysisFinding], report: str, question: s
 # ── compose_response (3-5) — 최종 응답 조립 (순수 함수, SPEC §2 COMP) ──────────
 
 # "N번 적용해줘" 안내 — §6.3 조회 계약(목록 순서=N번)의 사용자측 표면.
-_APPLY_GUIDE = '적용을 원하시면 "N번 적용해줘"라고 말씀해 주세요.'
+# [이슈 #296] SSE 계층(_report_event)도 report.data.applyGuide 로 내보내므로 공개 상수다.
+APPLY_GUIDE = '적용을 원하시면 "N번 적용해줘"라고 말씀해 주세요.'
 
 
 def compose_response(
@@ -237,12 +238,58 @@ def compose_response(
             if rec.expected_effect:
                 lines.append(f"   기대 효과: {rec.expected_effect}")
         lines.append("")
-        lines.append(_APPLY_GUIDE)
+        lines.append(APPLY_GUIDE)
         text = "\n".join(lines)
 
     if chart_requested and (charts is None or not charts.charts):
         text = f"{text}\n\n[차트 안내]\n요청하신 차트를 만들지 못했습니다 — 데이터 부족으로 생략합니다."
     return text
+
+
+# ── report SSE summary 분리 (이슈 #296 — api-spec §3.2 v0.24.0 `report.data.summary`) ──
+
+# 첫 문단이 이 길이를 넘으면 "첫 문단 = 핵심 요약"(REPORT_PROMPT 구성 1) 가정이 깨진
+# 것으로 보고 절단 fallback 으로 전환한다. 와이어 직렬화 규칙(계약 상수)이라 Settings
+# 가 아닌 상수다 — schemas.MAX_RECOMMENDATIONS·CHART_MAX 와 동일 원칙.
+SUMMARY_FIRST_PARAGRAPH_MAX = 300
+SUMMARY_FALLBACK_CHARS = 200
+
+
+def _strip_heading_lines(text: str) -> str:
+    """마크다운 헤딩 줄("## 핵심 요약" 등)을 제거한다 — 요약 후보에서 제외.
+
+    REPORT_PROMPT 은 산문을 강제하지만 LLM 이 마크다운 구성으로 쓰는 사례가
+    실측됐다(2026-08-05 화면 캡처 — "## 핵심 요약" 단독 블록). 헤딩 줄을 요약으로
+    잡으면 summary 가 제목 한 줄("## 핵심 요약")이 되므로 걸러낸다.
+    """
+    return "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    ).strip()
+
+
+def split_report_summary(report: str) -> str:
+    """보고서 산문에서 핵심 요약(첫 실제 문단)을 분리한다 — `report` 이벤트 summary 원천.
+
+    REPORT_PROMPT 이 "1. 핵심 요약(2~3문장) 먼저"를 강제하지만 LLM 산출이라 어길 수
+    있다 — 마크다운 헤딩만 있는 블록은 건너뛰고 **첫 실제 내용 문단**을 요약으로
+    잡는다. 그 문단이 없거나 과장(> SUMMARY_FIRST_PARAGRAPH_MAX)이면 헤딩 제거본 앞
+    SUMMARY_FALLBACK_CHARS 자 절단 + 말줄임으로 degrade 한다(보고서를 죽이지 않는다).
+    report 가 빈/공백 문자열이면 ""(검증 루프 소진 degrade 케이스 — FE 는 body 로
+    fallback). 순수 함수 — LLM·IO 없음(이 모듈 원칙).
+    """
+    stripped = report.strip()
+    first = ""
+    for block in stripped.split("\n\n"):
+        candidate = _strip_heading_lines(block)
+        if candidate:
+            first = candidate
+            break
+    if first and len(first) <= SUMMARY_FIRST_PARAGRAPH_MAX:
+        return first
+    plain = _strip_heading_lines(stripped)
+    if len(plain) > SUMMARY_FALLBACK_CHARS:
+        return f"{plain[:SUMMARY_FALLBACK_CHARS]}…"
+    return plain
 
 
 # ── 진행 token 문구 (SPEC §2 — first-token 10s·체감 대기 완화, 2026-07-18 확정) ──
@@ -265,6 +312,7 @@ WORKER_PROGRESS_TOKENS: dict[AnalysisType, str] = {
     "behavior": "고객 행동 분석 중…",
     "churn": "고객 이탈 분석 중…",
     "abuse": "어뷰징 점검 중…",
+    "review": "리뷰 분석 중…",  # [#297] I-31
 }
 
 # 전 워커 실패(집계 전부 실패) 시 사과 후 done 종료(SPEC §4·§7 degrade).
@@ -294,7 +342,7 @@ _assert_worker_tokens_cover_all_types()
 
 # 문장 **전체**가 적용 발화일 때만 매칭 — "2번 상품에 할인 적용해줘" 같은 일반 수정
 # 요청(여분 토큰 존재)은 통과시켜 supervisor 라우팅으로 흘린다(오매칭 방지).
-# _APPLY_GUIDE("N번 적용해줘")가 안내하는 정형 발화 + 가벼운 변형(추천/조사/존대)만.
+# APPLY_GUIDE("N번 적용해줘")가 안내하는 정형 발화 + 가벼운 변형(추천/조사/존대)만.
 _APPLY_RE = re.compile(
     r"^\s*(\d{1,3})\s*번(?:\s*추천)?(?:\s*[을를])?\s*적용"
     r"\s*(?:해\s*(?:줘|주세요|줘요)?|부탁해요?|하기)?\s*[.!?~]*\s*$"
