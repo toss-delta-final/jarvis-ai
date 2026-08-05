@@ -42,6 +42,10 @@ def _sample(cell_id: str, index: int, **overrides: object) -> Sample:
         "category_legs_echo_prior": False,
         "category_legs": "",
         "resolved_category_action": "carry",
+        # [#300] screen 셀이 아니면 해소기는 발동하지 않는다 — resolved == 원본(None), fired False.
+        "resolved_product_id": None,
+        "screen_resolver_fired": False,
+        "screen_resolution_reason": None,
     }
     base.update(overrides)
     return Sample(**base)  # type: ignore[arg-type]
@@ -63,6 +67,12 @@ def _perfect_results(n: int = N) -> list[CellResult]:
             overrides["has_category_signal"] = action == "replace"
             overrides["scope_free"] = action == "clear"
             overrides["resolved_category_action"] = action
+        if cell.utterance.group == "screen":
+            # [#300] 채점은 해소기 통과 후 최종값을 본다 — screenExact 는 그 값이 productId 와
+            # 일치, screenReask/screenNotHallucinated 는 None(비어 있음)이면 만점이다.
+            overrides["resolved_product_id"] = (
+                expected.product_id if expected.product_id_rule == "screenExact" else None
+            )
         results.append(
             CellResult(
                 cell_id=cell.cell_id,
@@ -99,6 +109,11 @@ def test_expected_denominators_match_issue_240_shape() -> None:
         "categoryClear": 32,
         "categoryReplace": 24,
         "categoryMixedReplace": 32,
+        # [#300] screen 6발화 — 확정 4(32) · 되물음 1(8) · 확정금지 1(8) = 48.
+        "screenExactPick": 32,
+        "screenReask": 8,
+        "screenNoHallucination": 8,
+        "screenResolution": 48,
     }
 
 
@@ -461,3 +476,221 @@ def test_scope_free_unresolved_is_counted() -> None:
         )
     ]
     assert diagnostics(results, ANCHORS)["categoryScopeUnresolvedCount"] == 3
+
+
+# ─────────── [#300] screen 지시어 해소(#118 이관) 축과 진단 ───────────
+
+SCREEN_CELLS = [cell for cell in CELLS if cell.utterance.group == "screen"]
+
+
+def _screen_result(
+    cell, resolved_product_id: int | None, *, intent: str = "cart_add"
+) -> CellResult:  # noqa: ANN001
+    return CellResult(
+        cell_id=cell.cell_id,
+        utterance_id=cell.utterance.utterance_id,
+        context_id=cell.context.context_id,
+        group="screen",
+        samples=[
+            _sample(
+                cell.cell_id,
+                index,
+                intent=intent,
+                product_id=resolved_product_id,
+                resolved_product_id=resolved_product_id,
+            )
+            for index in range(N)
+        ],
+        attempts=N,
+        filled=True,
+    )
+
+
+def test_screen_axes_count_only_their_own_bucket() -> None:
+    """새 셀이 기존 축의 분모를 늘리면 안 된다 — screen 셀만 채점해도 기존 축은 0이어야 한다."""
+    results = [
+        _screen_result(
+            cell, cell.utterance.expected.product_id or cell.utterance.expected.forbidden_product_id
+        )
+        for cell in SCREEN_CELLS
+    ]
+    axes = score_all(results, ANCHORS, n=N)
+    assert axes["mainIntent"].expected_denominator == 0
+    assert axes["general"].expected_denominator == 0
+    assert axes["categoryAction3Way"].expected_denominator == 0
+    assert axes["screenExactPick"].expected_denominator == 32
+    assert axes["screenReask"].expected_denominator == 8
+    assert axes["screenNoHallucination"].expected_denominator == 8
+    assert axes["screenResolution"].expected_denominator == 48
+
+
+def test_screen_resolution_is_the_sum_of_its_components() -> None:
+    results = [
+        _screen_result(
+            cell,
+            cell.utterance.expected.product_id
+            if cell.utterance.expected.product_id_rule == "screenExact"
+            else None,
+        )
+        for cell in SCREEN_CELLS
+    ]
+    axes = score_all(results, ANCHORS, n=N)
+    assert axes["screenResolution"].numerator == (
+        axes["screenExactPick"].numerator
+        + axes["screenReask"].numerator
+        + axes["screenNoHallucination"].numerator
+    )
+    assert axes["screenResolution"].numerator == 48
+    assert axes["screenResolution"].components == (
+        "screenExactPick",
+        "screenReask",
+        "screenNoHallucination",
+    )
+
+
+def test_screen_exact_requires_cart_add_intent() -> None:
+    """[§4.4] 원본 `_product()` 술어와 같다 — productId 만 맞고 intent 가 cart_add 가 아니면 오답."""
+    cell = next(c for c in SCREEN_CELLS if c.utterance.expected.product_id_rule == "screenExact")
+    result = _screen_result(cell, cell.utterance.expected.product_id, intent="recommend")
+    axes = score_all([result], ANCHORS, n=N)
+    assert axes["screenExactPick"].numerator == 0
+
+
+def test_screen_reask_ignores_intent() -> None:
+    """[§4.4] 원본 `_no_product()` 와 같다 — resolvedProductId 가 None 이면 intent 와 무관하게 정답."""
+    cell = next(c for c in SCREEN_CELLS if c.utterance.expected.product_id_rule == "screenReask")
+    result = _screen_result(cell, None, intent="general")
+    axes = score_all([result], ANCHORS, n=N)
+    assert axes["screenReask"].numerator == N
+
+
+def test_screen_not_hallucinated_ignores_intent() -> None:
+    """[§4.4] 원본 `_not_hallucinated()` 와 같다 — forbidden 과 다르면 intent 와 무관하게 정답."""
+    cell = next(
+        c for c in SCREEN_CELLS if c.utterance.expected.product_id_rule == "screenNotHallucinated"
+    )
+    result = _screen_result(cell, None, intent="recommend")
+    axes = score_all([result], ANCHORS, n=N)
+    assert axes["screenNoHallucination"].numerator == N
+
+
+def test_screen_axes_declare_absence_from_the_committed_baselines() -> None:
+    axes = score_all(
+        [
+            _screen_result(
+                cell,
+                cell.utterance.expected.product_id
+                if cell.utterance.expected.product_id_rule == "screenExact"
+                else None,
+            )
+            for cell in SCREEN_CELLS
+        ],
+        ANCHORS,
+        n=N,
+    )
+    for axis_id in (
+        "screenExactPick",
+        "screenReask",
+        "screenNoHallucination",
+        "screenResolution",
+    ):
+        assert any(
+            "baselines/fast-2026-08-04" in note for note in axes[axis_id].not_comparable_with
+        )
+        assert any("#118 원 프로브" in note for note in axes[axis_id].not_comparable_with)
+
+
+def test_existing_axis_denominators_are_unaffected_by_screen_cells() -> None:
+    """[§5.6] 기존 축 회귀 0 — screen 셀을 넣은 픽스처로 채점해도 기존 축의 기대 분모는 그대로다."""
+    axes = score_all(_perfect_results(), ANCHORS, n=N)
+    assert axes["mainIntent"].expected_denominator == 240
+    assert axes["cartControl"].expected_denominator == 144
+    assert axes["demonstrative"].expected_denominator == 96
+    assert axes["optionAnswer"].expected_denominator == 32
+    assert axes["switchAll7"].expected_denominator == 56
+    assert axes["orderStatus"].expected_denominator == 48
+    assert axes["general"].expected_denominator == 48
+    assert axes["categoryAction3Way"].expected_denominator == 120
+
+
+def test_diagnostics_count_prompt_layer_hits_resolver_overrides_and_out_of_list_confirms() -> None:
+    results = []
+    for cell in SCREEN_CELLS:
+        expected = cell.utterance.expected
+        if expected.product_id_rule == "screenExact":
+            # 원본(해소기 전) 산출도 맞았고, 최종값도 해소기가 발동해 같은 값으로 나온 표본.
+            results.append(
+                CellResult(
+                    cell_id=cell.cell_id,
+                    utterance_id=cell.utterance.utterance_id,
+                    context_id=cell.context.context_id,
+                    group="screen",
+                    samples=[
+                        _sample(
+                            cell.cell_id,
+                            index,
+                            intent="cart_add",
+                            product_id=expected.product_id,
+                            resolved_product_id=expected.product_id,
+                            screen_resolver_fired=True,
+                        )
+                        for index in range(N)
+                    ],
+                    attempts=N,
+                    filled=True,
+                )
+            )
+        elif expected.product_id_rule == "screenNotHallucinated":
+            # 원본은 두 목록 밖 id 를 확정(위험한 실패)했지만 해소기가 None 으로 되돌린 표본.
+            results.append(
+                CellResult(
+                    cell_id=cell.cell_id,
+                    utterance_id=cell.utterance.utterance_id,
+                    context_id=cell.context.context_id,
+                    group="screen",
+                    samples=[
+                        _sample(
+                            cell.cell_id,
+                            index,
+                            intent="cart_add",
+                            product_id=expected.forbidden_product_id,
+                            resolved_product_id=None,
+                            screen_resolver_fired=True,
+                        )
+                        for index in range(N)
+                    ],
+                    attempts=N,
+                    filled=True,
+                )
+            )
+        else:
+            # screenReask: 해소기가 발동하지 않았고(fired False) 최종값이 두 목록 밖이라
+            # screenOutOfListConfirmCount 가 잡아야 하는 위험한 실패.
+            results.append(
+                CellResult(
+                    cell_id=cell.cell_id,
+                    utterance_id=cell.utterance.utterance_id,
+                    context_id=cell.context.context_id,
+                    group="screen",
+                    samples=[
+                        _sample(
+                            cell.cell_id,
+                            index,
+                            intent="cart_add",
+                            product_id=999999,
+                            resolved_product_id=999999,
+                            screen_resolver_fired=False,
+                        )
+                        for index in range(N)
+                    ],
+                    attempts=N,
+                    filled=True,
+                )
+            )
+    counts = diagnostics(results, ANCHORS)
+    # screenExact 4발화 전부 원본 산출만으로도 규칙을 만족했다.
+    assert counts["screenPromptLayerHitCount"] == 4 * N
+    # screenExact 4발화 + screenNotHallucinated 1발화 = 5발화가 해소기 발동으로 표시됐다.
+    assert counts["screenResolverOverrideCount"] == 5 * N
+    # screenReask 1발화가 두 목록 밖 id 를 확정한 채로 남았다 — 위험한 실패.
+    assert counts["screenOutOfListConfirmCount"] == 1 * N

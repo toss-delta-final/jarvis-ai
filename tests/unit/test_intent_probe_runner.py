@@ -357,6 +357,72 @@ def test_echo_needs_every_leg_to_be_an_echo() -> None:
     assert _legs_echo_prior([], tokens) is False  # 신호 없음은 에코가 아니다
 
 
+# ─────────── [#300] screen 지시어 해소(#118 이관) — 러너가 해소기를 부른다 ───────────
+
+
+async def test_screen_deictic_cell_fires_the_resolver_and_confirms_the_sole_candidate() -> None:
+    """`이거 담아줘` × 화면 1건 — 해소기가 항상 개입해(단일 후보) productId 를 확정한다."""
+    cell = next(cell for cell in CELLS if cell.utterance.utterance_id == "screen-001")
+    result = await _run_one(ScriptedDecomposeLLM(ANCHORS, wrong_every=1000), cell=cell, n=4)
+    for sample in result.samples:
+        assert sample.screen_resolver_fired is True
+        assert sample.resolved_product_id == 3101
+        assert sample.screen_resolution_reason == "sole_screen_candidate"
+
+
+async def test_screen_reask_cell_forces_resolved_product_id_to_none() -> None:
+    """`이거 담아줘` × 화면 3건(안전 셀) — 후보가 여럿이면 해소기가 되물음을 강제한다."""
+    cell = next(cell for cell in CELLS if cell.utterance.utterance_id == "screen-002")
+    result = await _run_one(ScriptedDecomposeLLM(ANCHORS, wrong_every=1000), cell=cell, n=4)
+    for sample in result.samples:
+        assert sample.screen_resolver_fired is True
+        assert sample.resolved_product_id is None
+        assert sample.screen_resolution_reason == "ambiguous_screen_candidates"
+
+
+async def test_screen_ordinal_and_coordinate_cells_fire_deterministically() -> None:
+    """ "3번째 거"·"3번째 줄 2번째" — 순번·좌표 규칙도 결정적으로 발동한다."""
+    ordinal_cell = next(cell for cell in CELLS if cell.utterance.utterance_id == "screen-003")
+    coord_cell = next(cell for cell in CELLS if cell.utterance.utterance_id == "screen-004")
+    ordinal_result = await _run_one(
+        ScriptedDecomposeLLM(ANCHORS, wrong_every=1000), cell=ordinal_cell, n=2
+    )
+    coord_result = await _run_one(
+        ScriptedDecomposeLLM(ANCHORS, wrong_every=1000), cell=coord_cell, n=2
+    )
+    assert all(sample.resolved_product_id == 3103 for sample in ordinal_result.samples)
+    assert all(sample.resolved_product_id == 3108 for sample in coord_result.samples)
+
+
+async def test_screen_name_match_cell_defers_to_the_llm_output() -> None:
+    """ "무선 이어폰 담아줘" — 이름 매칭은 해소기의 양보(B) 대상이라 발동하지 않는다."""
+    cell = next(cell for cell in CELLS if cell.utterance.utterance_id == "screen-005")
+    result = await _run_one(ScriptedDecomposeLLM(ANCHORS, wrong_every=1000), cell=cell, n=4)
+    for sample in result.samples:
+        assert sample.screen_resolver_fired is False
+        assert sample.resolved_product_id == sample.product_id == 3110
+
+
+async def test_screen_not_hallucinated_cell_blocks_the_out_of_list_id() -> None:
+    """ "301 담아줘" — 두 목록 밖 id 를 발화해도 해소기가 확정을 막는다(되물음으로 강제)."""
+    cell = next(cell for cell in CELLS if cell.utterance.utterance_id == "screen-006")
+    result = await _run_one(ScriptedDecomposeLLM(ANCHORS, wrong_every=1000), cell=cell, n=4)
+    for sample in result.samples:
+        assert sample.screen_resolver_fired is True
+        assert sample.resolved_product_id is None
+        assert sample.screen_resolution_reason == "unknown_product_id_spoken"
+
+
+async def test_non_screen_cells_leave_resolved_product_id_untouched() -> None:
+    """screen 이 없는 셀은 해소기가 발동하지 않는다 — resolved == 원본, fired False."""
+    cell = next(cell for cell in CELLS if cell.utterance.group != "screen")
+    result = await _run_one(ScriptedDecomposeLLM(ANCHORS), cell=cell, n=3)
+    for sample in result.samples:
+        assert sample.screen_resolver_fired is False
+        assert sample.screen_resolution_reason is None
+        assert sample.resolved_product_id == sample.product_id
+
+
 def test_category_legs_are_serialised_for_recounting() -> None:
     """[F-4] leg 원문을 남겨야 판정 규칙이 바뀌어도 **런을 다시 돌리지 않고** 재집계할 수 있다."""
     from app.agents.buyer.recommendation.state import CategoryQuery
