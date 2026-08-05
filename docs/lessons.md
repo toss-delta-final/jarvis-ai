@@ -56,6 +56,48 @@
   이슈 #116 라운드 3 리뷰 F-1. 접두 부정: `app/core/config.py`(`utterance_prefix_negation_markers`),
   `app/agents/buyer/cart/negation.py`(`has_prefix_negation`), 라운드 9·10.
 
+---
+
+## [2026-08-05] `monkeypatch.setenv` + `get_settings.cache_clear()` 는 전역 autouse 픽스처와 경합해 다음 테스트로 샌다
+- 증상: #299 의 `test_limit_configurable_via_env` 가 `REQUEST_BODY_MAX_BYTES=20` 을
+  `monkeypatch.setenv` + `get_settings.cache_clear()` 로 주입했는데, 이 테스트 **하나만** 파일
+  안에서 통과해도 그 뒤에 실행되는 무관한 테스트 파일(`test_buyer_tracing.py`)의 `/chat`
+  요청이 실제 바디 크기와 무관하게 전부 400 으로 깨졌다 — 값이 20 인 채로 굳어 있었다.
+- 원인: `tests/conftest.py` 의 전역 autouse `_reset_infra_state` 가 teardown 에서
+  `reset_cart_store()` → `get_settings()` 를 다시 부른다. 이 프로젝트 conftest 픽스처는 테스트
+  모듈 자체의 autouse 픽스처보다 **먼저 set up** 되므로 LIFO 로 **더 늦게 teardown** 된다 —
+  즉 파일 안에서 `get_settings.cache_clear()` 를 `yield` 뒤에 불러도, 그보다 늦게 도는
+  `_reset_infra_state` 의 `get_settings()` 호출이 **monkeypatch 가 env 를 복원하기 전에** 캐시를
+  재구성해 버려 낮춰진 값이 그대로 굳는다(monkeypatch 는 자신이 건드린 attr/env 만 복원할 뿐,
+  그 사이 재구성된 lru_cache 싱글턴은 모른다). 파일 로컬 autouse 픽스처의 teardown 타이밍만
+  보고 "여기서 지웠으니 안전하다"고 판단한 것이 오판이었다 — 실제 순서는 다른 conftest 계층과
+  얽혀 있어 실측(디버그 프린트/트레이스백) 없이는 알 수 없었다.
+- 규칙: `monkeypatch.setenv` 로 config 값을 바꾸는 테스트는 픽스처 teardown 타이밍에 기대지
+  말고, **테스트 본문 안에서 `monkeypatch.undo()` 를 직접 호출해 env 복원을 먼저 강제한 뒤**
+  `get_settings.cache_clear()` 를 부른다(`try/finally`). 이렇게 하면 그 뒤에 도는 어떤 픽스처의
+  `get_settings()` 재호출도 항상 이미 복원된 env 로 재구성된다. 이 레포처럼 전역 conftest 가
+  많은 곳에서는 "내 픽스처가 마지막에 돈다"를 가정하지 말 것 — 의심되면 `pytest_runtest_setup`
+  훅 플러그인으로 다음 테스트 시작 시점의 실제 값을 직접 찍어 확인한다.
+- 관련: #299, `tests/conftest.py::_reset_infra_state`, `tests/unit/test_body_limit.py::test_limit_configurable_via_env`
+
+---
+
+## [2026-08-05] `ruff format`(인수 없이) 은 diff 밖 파일까지 재포맷한다 — 항상 대상 파일을 명시한다
+- 증상: #299 작업에서 검증 절차대로 `uv run ruff check --fix && uv run ruff format` 을 인수 없이
+  돌렸더니, 내가 건드리지 않은 32개 파일(`app/services/spring_client.py` 등)이 재포맷되어
+  `git status` 에 잡혔다 — 로컬 ruff(0.15.21) 의 포맷 규칙이 저장소에 마지막으로 적용된
+  시점의 규칙과 미묘하게 달라 드러난 기존 드리프트였다.
+- 원인: `ruff format`(대상 미지정)은 `pyproject.toml` 의 `[tool.ruff]` 설정을 프로젝트 전체
+  파일에 적용한다 — 워크트리에 반영되지 않은 채 남아 있던 포맷 드리프트가 있으면 내 작업과
+  무관한 파일까지 diff 에 섞인다. "허용 편집 파일" 이 좁게 지정된 작업에서 이 diff 는 그대로
+  범위 위반이 된다.
+- 규칙: 좁은 스코프 작업에서는 `ruff check`/`ruff format` 에 **내가 만든/수정한 파일 경로를
+  명시**해 실행한다. 전체 대상 실행은 `git status --short` 로 의도치 않은 파일이 없는지 반드시
+  확인하고, 있으면 `git checkout --`  으로 되돌린 뒤 좁힌 대상으로 재실행한다.
+- 관련: #299, `app/core/body_limit.py`
+
+---
+
 ## [2026-08-05] 이슈 본문의 결함 서술은 그 이슈를 낳은 PR 의 후속 리뷰에서 이미 고쳐졌을 수 있다
 - 증상: #288 은 "검증기가 단일 I-1 호출 예산만 본다"는 결함으로 열렸다. 그런데 착수 시점 `dev`
   에는 그 이슈를 낳은 #277(PR #287) 의 리뷰 4차에서 이미 첫 이벤트 앞 **직렬 합** 검증이
@@ -68,6 +110,75 @@
 - 관련: #288, #277(PR #287), `app/core/config.py` `_require_search_retry_within_stream_budget`
 
 ---
+## [2026-08-05] 판정을 **짧은 전용 호출로 떼는 것**과 긴 프롬프트에 **필드를 하나 더 얹는 것**은 같은 "LLM 에 맡긴다"가 아니다 — 그리고 **이득 0인 프롬프트 추가도 공짜가 아니다**
+
+- 증상 ①: #84 의 "이번 발화가 직전 카테고리를 놓겠다는 말인가"를 `decompose`(133줄 `_SYSTEM`)의
+  `categoryAction` 필드로 받으려 했다. fast(gpt-5-nano) 실측에서 리셋 기대 32건 중 `clear` 산출이
+  **0건**이었고, 문면을 6종으로 바꿔도 나아지지 않았다:
+
+  | 후보 | 바꾼 것 | clear/32 | 부작용 |
+  |---|---|---|---|
+  | 인라인 필드(초판) | — | 0 | — |
+  | 불릿·스켈레톤을 이웃 불릿 앞으로 | 위치 | 0 | — |
+  | + 이웃 불릿에 예외 문장 | 충돌 제거 | 0 | — |
+  | + "먼저 clear 부터 판정" 강화 문면 | 문면 | 1 | 교체 기대가 clear 로 6/24 오염 |
+  | 이분 boolean 으로 교체 | 필드 모양 | 6 | 오탐 0 |
+  | 스켈레톤 최상단 + 맨 끝 검산 불릿 | 최신성 | 21 | 리파인 3/32 · 교체 10/24 붕괴 |
+
+  같은 프롬프트를 `--tier smart` 로 재면 **32/32 · 32/32 · 24/24 로 완벽**했고, 문면을 그대로
+  **짧은 전용 호출**로 떼어내자 fast 에서도 **32/32 · 오탐 0/56**(독립 3회 동일)이었다.
+- 증상 ②(더 비쌌던 쪽): 전용 분류기를 넣은 **뒤에도** 인라인 필드를 "smart 에서 32/32 니 놔두면
+  티어 올릴 때 이득"이라며 남겨 뒀다. 전 축 회귀를 **전/후 각 2회** 짝지어 재고서야 그것이
+  **이득 0 · 손해 확정**임이 드러났다 — 불릿이 없는 런에서도 `categoryClear` 는 이미 32/32(=
+  해소는 전적으로 분류기의 성과)였고, 불릿이 있는 런은 `PENDING_CART` 중 상품 전환 경로가
+  두 런 모두 깎였다(`switchAll7` 37·38 → 32·32, 전환 발화가 `recommend` 로 새는 표본
+  4~5 → **16~17**). **그 손해는 내가 만든 신규 축(카테고리 4종)에는 전혀 보이지 않았다** —
+  카테고리 4축은 **분류기를 켠 런 모두** 88/88 로 만점이었다(분류기를 끈 런만 24~25/88). 불릿을
+  지운 뒤 전환 축이 **32/56 → 37/56** 으로 **되돌아온 것**이 인과를 닫는다(한쪽 방향만 보고
+  "노이즈겠지" 하지 않으려면 되돌렸을 때 복귀하는지까지 봐야 한다 — 최종 출고 구성의 v3 대조쌍
+  에서는 양쪽 36/56 으로 같다).
+  개발 과정 런들의 전 축 표와 최종 대조쌍은
+  `evals/intent_probe/baselines/fast-2026-08-05-84/README.md` 에 있다.
+- 원인:
+  - ①은 실패 원인이 **문면이 아니라 그 프롬프트가 이미 지고 있는 작업량**이었다. 한 호출에
+    intent 5-way·filters·cart·attributes·categoryQueries 가 얹혀 있으면 fast 모델에는 새 판정을
+    더 할 여력이 없다. 그래서 문면 후보가 전부 0~1 로 수렴하고, 억지로 최신성을 끌어올린
+    후보(21/32)는 **다른 축을 무너뜨리며** 총합이 나빠졌다. #198 `needs_expansion` 이 같은
+    이유로 전용 호출이 됐다는 기록이 이미 있었는데 같은 함정을 한 번 더 밟았다.
+  - ②는 "무동작이면 무해하다"는 암묵 가정이 틀렸기 때문이다. 프롬프트에 줄을 더하면 그 자체가
+    **모델의 주의 배분을 바꾼다.** 잠들어 있는 필드도 토큰을 쓰고 다른 규칙과 경쟁한다.
+- 규칙:
+  - **긴 프롬프트에 판정 필드를 더할 때는 "문면 후보"와 "전용 호출"을 같은 실측 표에서 비교한다.**
+    문면 후보만 여러 개 재면 0/0/0/1/6 같은 표가 나오고 "더 좋은 문면을 찾자"로 읽히기 쉽다.
+  - **티어 대조군을 함께 잰다.** 같은 프롬프트가 smart 에서 완벽하면 문면 결함이 아니라
+    **역량 한계**이고, 처방이 "문면 수정"이 아니라 "작업 분리 또는 티어 승격"으로 바뀐다.
+  - **프롬프트를 한 줄이라도 바꾸면 전 축 회귀 런을 전/후 각 2회 돌린다.** 1회는 노이즈와
+    구분되지 않는다(축당 ±2). 그리고 채택 조건은 "내 축이 좋아졌다"가 아니라
+    **"다른 축이 안 깎였다"** 다 — 신규 축만 보면 남의 축이 조용히 깎인 것을 볼 수 없다.
+  - **이득이 0이면 지운다.** "언젠가 티어를 올리면 이득"은 오늘의 회귀를 사는 근거가 못 된다.
+    그 사실은 코드가 아니라 **기록**(이 항목·CHANGELOG·docstring)으로 남겨 다음 사람이 같은
+    시도를 반복하기 전에 읽게 한다.
+- 관련: #84, `app/agents/buyer/recommendation/category_scope.py`,
+  `decompose.resolve_category_action` docstring, `evals/intent_probe/`, #198 `needs_expansion` §2
+
+## [2026-08-05] `ruff format` 은 이 리포에서 **무관 파일 29개**를 함께 고친다 — 변경 파일만 지정해 돌린다
+
+- 증상: #84 구현 후 CLAUDE.md 커밋 워크플로 2단계대로 `uv run ruff check --fix && uv run ruff format`
+  을 돌렸더니 `30 files reformatted` 가 나왔다. 내가 만진 파일은 4개인데 `app/services/spring_client.py`
+  (#116/117 레인)·`app/agents/buyer/recommendation/graph.py`·`evals/**`·다른 레인 테스트까지 커밋
+  후보로 들어왔다. `git status --short` 로 확인하지 않았다면 **동시 진행 레인의 파일을 조용히 덮어쓴**
+  PR 이 됐다.
+- 원인: 베이스(`dev` @ c2aa2eb)가 현재 pin 된 ruff(0.15.21) 기준으로 format-clean 이 아니다
+  (`uv run ruff format --check` → `29 files would be reformatted`). 전역 `ruff format` 은 "내 변경을
+  정리한다"가 아니라 **리포 전체를 현재 ruff 판으로 재포맷한다** — 내 diff 와 무관한 드리프트까지
+  내 PR 이 떠안는다.
+- 규칙:
+  - 포맷은 **변경한 파일만 인자로 지정**해 돌린다: `uv run ruff format <내가 만진 파일들>`.
+    전역으로 돌렸다면 `git checkout --` 로 무관 파일을 되돌리고 `git status --short` 로 확인한다.
+  - 커밋 전에 `git status --short` 를 **반드시 눈으로 본다**(패킷·CLAUDE.md 1단계). 린터가 만든
+    변경은 diff 검토를 건너뛰기 쉬운 부류라 레인 경계를 깨는 경로가 된다.
+  - 베이스의 포맷 드리프트를 고치고 싶다면 **기능 PR 이 아니라 별도 chore PR** 로 낸다.
+- 관련: #84, `CLAUDE.md` 커밋 워크플로 2단계, ruff 0.15.21
 
 ## [2026-08-04] ORM 이 만드는 SQL 은 **생성물을 봐야** 안다 — JPQL 을 읽고 재현한 SQL 로 성능을 진단하지 않는다
 - 증상: #132 에서 BE `ProductRepository.searchCandidates` 의 JPQL `group by p` 를 "엔티티 전체 컬럼이 그룹 키"로 읽고, 그대로 손으로 옮긴 SQL 을 실측해 **4.15s(PK 그룹 대비 33배)** 라는 병목을 보고했다. `EXPLAIN` 까지 붙여 "TEXT 컬럼 때문에 임시테이블+filesort" 라는 그럴듯한 인과도 만들었다. BE 를 실제로 띄워 재니 같은 질의가 **1.11s** 였다.

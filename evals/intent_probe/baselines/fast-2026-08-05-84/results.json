@@ -1,0 +1,1217 @@
+{
+  "axes": {
+    "cartAddProductIdLegacy2": {
+      "axisId": "cartAddProductIdLegacy2",
+      "definition": {
+        "components": [],
+        "denominator": "switchLegacy2 와 동일 표본(전환 2발화 × PENDING_CART × N)",
+        "notComparableWith": [
+          "switchLegacy2",
+          "#240 전환 축"
+        ],
+        "numerator": "intent 가 cart_add 이고 cart.productId 가 LAST_RECOMMENDATIONS 안에 있는 표본 수 — **되물음 상품을 그대로 에코해도 정답으로 센다**. #234 정의이며 switchLegacy2 와 같은 표본을 다른 정의로 다시 센 값이다"
+      },
+      "denominator": 16,
+      "expectedDenominator": 16,
+      "numerator": 14,
+      "ratio": 0.875,
+      "title": "cart_add productId(#234 정의)",
+      "unfilledSampleCount": 0
+    },
+    "cartControl": {
+      "axisId": "cartControl",
+      "definition": {
+        "components": [],
+        "denominator": "장바구니 대조군 6발화 × 컨텍스트 3종 × N",
+        "notComparableWith": [],
+        "numerator": "intent 가 기대 intent(cart_view 또는 cart_add)와 일치한 표본 수"
+      },
+      "denominator": 144,
+      "expectedDenominator": 144,
+      "numerator": 144,
+      "ratio": 1.0,
+      "title": "장바구니 대조군",
+      "unfilledSampleCount": 0
+    },
+    "categoryAction3Way": {
+      "axisId": "categoryAction3Way",
+      "definition": {
+        "components": [
+          "categoryCarry",
+          "categoryClear",
+          "categoryReplace",
+          "categoryMixedReplace"
+        ],
+        "denominator": "카테고리 15발화 × categoryPrior 컨텍스트 × N (N=8 이면 120) — 라운드 3 이 혼합 4발화를 더해 88 → 120 이 됐다",
+        "notComparableWith": [
+          "baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)",
+          "baselines/fast-2026-08-05-84 (분모 88 — 혼합 4발화 추가 전)"
+        ],
+        "numerator": "확정값(resolvedCategoryAction)이 기대 carry·clear·replace 와 일치한 표본 수 (carry 기대는 확정값이 replace 라도 그 leg 이 **전부** 직전 카테고리 에코면 정답으로 센다 — 프롬프트가 리파인 턴에 PRIOR_FILTERS.category 를 categoryQueries 로 복사하라고 지시해서 나오는 모양이고, 결과적으로 카테고리가 유지되므로 사용자가 겪는 동작이 carry 와 같다. 에코 판정은 앵커 categoryPriorFilters(카테고리 전체·각 조각·semanticQuery)와 **정규화 후 정확 일치**다 — 부분 문자열이면 `이어폰 케이스` 같은 새 상품도 에코로 세어 카테고리가 바뀐 턴을 '유지됐다'로 읽는다)"
+      },
+      "denominator": 120,
+      "expectedDenominator": 120,
+      "numerator": 109,
+      "ratio": 0.9083333333333333,
+      "title": "카테고리 승계 3분기",
+      "unfilledSampleCount": 0
+    },
+    "categoryCarry": {
+      "axisId": "categoryCarry",
+      "definition": {
+        "components": [],
+        "denominator": "리파인 4발화 × categoryPrior 컨텍스트 × N (N=8 이면 32)",
+        "notComparableWith": [
+          "baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)"
+        ],
+        "numerator": "resolvedCategoryAction 이 carry 인 표본 수 (**또는** replace 이면서 leg 이 **전부** 직전 카테고리 에코인 표본 — 프롬프트가 리파인 턴에 직전 카테고리를 leg 로 복사하라고 지시해서 나오는 모양이고, 카테고리는 유지된다. 에코는 앵커 categoryPriorFilters 와 정규화 후 **정확 일치**일 때만 인정한다)"
+      },
+      "denominator": 32,
+      "expectedDenominator": 32,
+      "numerator": 32,
+      "ratio": 1.0,
+      "title": "리파인(직전 카테고리 유지)",
+      "unfilledSampleCount": 0
+    },
+    "categoryClear": {
+      "axisId": "categoryClear",
+      "definition": {
+        "components": [],
+        "denominator": "리셋 4발화 × categoryPrior 컨텍스트 × N (N=8 이면 32)",
+        "notComparableWith": [
+          "baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)"
+        ],
+        "numerator": "resolvedCategoryAction 이 clear 인 표본 수"
+      },
+      "denominator": 32,
+      "expectedDenominator": 32,
+      "numerator": 32,
+      "ratio": 1.0,
+      "title": "카테고리-무관 리셋",
+      "unfilledSampleCount": 0
+    },
+    "categoryMixedReplace": {
+      "axisId": "categoryMixedReplace",
+      "definition": {
+        "components": [],
+        "denominator": "혼합 4발화 × categoryPrior 컨텍스트 × N (N=8 이면 32)",
+        "notComparableWith": [
+          "baselines/fast-2026-08-05-84 (이 축이 존재하지 않던 런)"
+        ],
+        "numerator": "resolvedCategoryAction 이 replace 인 표본 수 — 새 카테고리를 지목하면서 동시에 '아무거나'류 표현을 쓴 발화다. 초판(scopeFree 우선)에서는 사용자가 말한 카테고리가 통째로 버려져 무필터가 됐다(실 LLM 실측 32건 중 19건 clear)"
+      },
+      "denominator": 32,
+      "expectedDenominator": 32,
+      "numerator": 21,
+      "ratio": 0.65625,
+      "title": "혼합 발화(새 카테고리 + 아무거나)",
+      "unfilledSampleCount": 0
+    },
+    "categoryReplace": {
+      "axisId": "categoryReplace",
+      "definition": {
+        "components": [],
+        "denominator": "교체 3발화 × categoryPrior 컨텍스트 × N (N=8 이면 24)",
+        "notComparableWith": [
+          "baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)"
+        ],
+        "numerator": "resolvedCategoryAction 이 replace 인 표본 수"
+      },
+      "denominator": 24,
+      "expectedDenominator": 24,
+      "numerator": 24,
+      "ratio": 1.0,
+      "title": "카테고리 교체",
+      "unfilledSampleCount": 0
+    },
+    "demonstrative": {
+      "axisId": "demonstrative",
+      "definition": {
+        "components": [],
+        "denominator": "지시대명사 4발화 × 컨텍스트 3종 × N",
+        "notComparableWith": [],
+        "numerator": "intent 가 recommend 인 표본 수"
+      },
+      "denominator": 96,
+      "expectedDenominator": 96,
+      "numerator": 93,
+      "ratio": 0.96875,
+      "title": "지시대명사",
+      "unfilledSampleCount": 0
+    },
+    "general": {
+      "axisId": "general",
+      "definition": {
+        "components": [],
+        "denominator": "general 2발화 × 컨텍스트 3종 × N",
+        "notComparableWith": [],
+        "numerator": "intent 가 general 인 표본 수"
+      },
+      "denominator": 48,
+      "expectedDenominator": 48,
+      "numerator": 31,
+      "ratio": 0.6458333333333334,
+      "title": "general",
+      "unfilledSampleCount": 0
+    },
+    "mainIntent": {
+      "axisId": "mainIntent",
+      "definition": {
+        "components": [
+          "cartControl",
+          "demonstrative"
+        ],
+        "denominator": "장바구니 대조군 6발화 + 지시대명사 4발화 × 컨텍스트 3종 × N",
+        "notComparableWith": [],
+        "numerator": "intent 가 기대 intent 와 일치한 표본 수 (장바구니 대조군 + 지시대명사)"
+      },
+      "denominator": 240,
+      "expectedDenominator": 240,
+      "numerator": 237,
+      "ratio": 0.9875,
+      "title": "본 표 intent",
+      "unfilledSampleCount": 0
+    },
+    "optionAnswer": {
+      "axisId": "optionAnswer",
+      "definition": {
+        "components": [],
+        "denominator": "옵션 답변 4발화 × PENDING_CART 컨텍스트 × N",
+        "notComparableWith": [],
+        "numerator": "intent 가 cart_add 이고 cart.optionId 까지 기대값과 일치한 표본 수 (하나만 맞으면 오답 — 옵션을 잘못 담는 것은 실패다)"
+      },
+      "denominator": 32,
+      "expectedDenominator": 32,
+      "numerator": 27,
+      "ratio": 0.84375,
+      "title": "옵션 답변",
+      "unfilledSampleCount": 0
+    },
+    "orderStatus": {
+      "axisId": "orderStatus",
+      "definition": {
+        "components": [],
+        "denominator": "order_status 2발화 × 컨텍스트 3종 × N",
+        "notComparableWith": [],
+        "numerator": "intent 가 order_status 인 표본 수"
+      },
+      "denominator": 48,
+      "expectedDenominator": 48,
+      "numerator": 48,
+      "ratio": 1.0,
+      "title": "order_status",
+      "unfilledSampleCount": 0
+    },
+    "switchAll7": {
+      "axisId": "switchAll7",
+      "definition": {
+        "components": [],
+        "denominator": "전환 7발화 × PENDING_CART 컨텍스트 × N",
+        "notComparableWith": [
+          "switchLegacy2",
+          "#240 전환 축(분모 16)"
+        ],
+        "numerator": "switchLegacy2 와 같은 술어를 전환 7발화 전부에 적용한 표본 수"
+      },
+      "denominator": 56,
+      "expectedDenominator": 56,
+      "numerator": 36,
+      "ratio": 0.6428571428571429,
+      "title": "전환(#260 7발화)",
+      "unfilledSampleCount": 0
+    },
+    "switchLegacy2": {
+      "axisId": "switchLegacy2",
+      "definition": {
+        "components": [],
+        "denominator": "#240 이 쓴 전환 2발화(`이어폰으로 할래`·`다른 거 담아줘`) × PENDING_CART × N",
+        "notComparableWith": [
+          "cartAddProductIdLegacy2",
+          "switchAll7",
+          "#234 productId 표"
+        ],
+        "numerator": "intent 가 cart_add 이고 cart.productId 가 **되물음 상품이 아닌** LAST_RECOMMENDATIONS 안의 상품인 표본 수 — #240 정의"
+      },
+      "denominator": 16,
+      "expectedDenominator": 16,
+      "numerator": 9,
+      "ratio": 0.5625,
+      "title": "전환(#240 2발화)",
+      "unfilledSampleCount": 0
+    }
+  },
+  "budget": {
+    "budgetExceeded": false,
+    "budgetExceededReason": null,
+    "callCount": 664,
+    "costGateStatus": "unknown",
+    "limits": {
+      "maxCalls": 1632,
+      "maxCostUsd": 20.0,
+      "maxTotalTokens": 30000000
+    },
+    "tokenGateStatus": "unknown",
+    "totalCostUsd": 0.10780929999999993,
+    "totalTokens": 1584398,
+    "unknownCostCallCount": 143,
+    "unknownTokenCallCount": 143
+  },
+  "categoryScopeEnabled": true,
+  "categoryScopePrompt": {
+    "sha12": "6c54c2656063",
+    "sha256": "6c54c2656063e8de7d635c957e77a559ab90b754da574a20f229e0bff5347613"
+  },
+  "cellCount": 68,
+  "cells": [
+    {
+      "attempts": 8,
+      "cellId": "cart-control-001|lastRecommendations",
+      "contextId": "lastRecommendations",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_view": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-001|none",
+      "contextId": "none",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_view": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-001|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_view": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-002|lastRecommendations",
+      "contextId": "lastRecommendations",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_view": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-002|none",
+      "contextId": "none",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_view": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-002|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_view": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-003|lastRecommendations",
+      "contextId": "lastRecommendations",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_view": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-003"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-003|none",
+      "contextId": "none",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_view": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-003"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-003|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_view": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-003"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-004|lastRecommendations",
+      "contextId": "lastRecommendations",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-004"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-004|none",
+      "contextId": "none",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-004"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-004|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-004"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-005|lastRecommendations",
+      "contextId": "lastRecommendations",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-005"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-005|none",
+      "contextId": "none",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-005"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-005|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-005"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-006|lastRecommendations",
+      "contextId": "lastRecommendations",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-006"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-006|none",
+      "contextId": "none",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-006"
+    },
+    {
+      "attempts": 8,
+      "cellId": "cart-control-006|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "cart_control",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "cart-control-006"
+    },
+    {
+      "attempts": 8,
+      "cellId": "category-carry-001|categoryPrior",
+      "contextId": "categoryPrior",
+      "failureCount": 0,
+      "filled": true,
+      "group": "category_action",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "category-carry-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "category-carry-002|categoryPrior",
+      "contextId": "categoryPrior",
+      "failureCount": 0,
+      "filled": true,
+      "group": "category_action",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "category-carry-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "category-carry-003|categoryPrior",
+      "contextId": "categoryPrior",
+      "failureCount": 0,
+      "filled": true,
+      "group": "category_action",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "category-carry-003"
+    },
+    {
+      "attempts": 8,
+      "cellId": "category-carry-004|categoryPrior",
+      "contextId": "categoryPrior",
+      "failureCount": 0,
+      "filled": true,
+      "group": "category_action",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "category-carry-004"
+    },
+    {
+      "attempts": 8,
+      "cellId": "category-clear-001|categoryPrior",
+      "contextId": "categoryPrior",
+      "failureCount": 0,
+      "filled": true,
+      "group": "category_action",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "category-clear-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "category-clear-002|categoryPrior",
+      "contextId": "categoryPrior",
+      "failureCount": 0,
+      "filled": true,
+      "group": "category_action",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "category-clear-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "category-clear-003|categoryPrior",
+      "contextId": "categoryPrior",
+      "failureCount": 0,
+      "filled": true,
+      "group": "category_action",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "category-clear-003"
+    },
+    {
+      "attempts": 8,
+      "cellId": "category-clear-004|categoryPrior",
+      "contextId": "categoryPrior",
+      "failureCount": 0,
+      "filled": true,
+      "group": "category_action",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "category-clear-004"
+    },
+    {
+      "attempts": 8,
+      "cellId": "category-mixed-001|categoryPrior",
+      "contextId": "categoryPrior",
+      "failureCount": 0,
+      "filled": true,
+      "group": "category_action",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "category-mixed-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "category-mixed-002|categoryPrior",
+      "contextId": "categoryPrior",
+      "failureCount": 0,
+      "filled": true,
+      "group": "category_action",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "category-mixed-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "category-mixed-003|categoryPrior",
+      "contextId": "categoryPrior",
+      "failureCount": 0,
+      "filled": true,
+      "group": "category_action",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "category-mixed-003"
+    },
+    {
+      "attempts": 8,
+      "cellId": "category-mixed-004|categoryPrior",
+      "contextId": "categoryPrior",
+      "failureCount": 0,
+      "filled": true,
+      "group": "category_action",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "category-mixed-004"
+    },
+    {
+      "attempts": 8,
+      "cellId": "category-replace-001|categoryPrior",
+      "contextId": "categoryPrior",
+      "failureCount": 0,
+      "filled": true,
+      "group": "category_action",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "category-replace-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "category-replace-002|categoryPrior",
+      "contextId": "categoryPrior",
+      "failureCount": 0,
+      "filled": true,
+      "group": "category_action",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "category-replace-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "category-replace-003|categoryPrior",
+      "contextId": "categoryPrior",
+      "failureCount": 0,
+      "filled": true,
+      "group": "category_action",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "category-replace-003"
+    },
+    {
+      "attempts": 8,
+      "cellId": "demonstrative-001|lastRecommendations",
+      "contextId": "lastRecommendations",
+      "failureCount": 0,
+      "filled": true,
+      "group": "demonstrative",
+      "intentCounts": {
+        "general": 1,
+        "recommend": 7
+      },
+      "sampleCount": 8,
+      "utteranceId": "demonstrative-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "demonstrative-001|none",
+      "contextId": "none",
+      "failureCount": 0,
+      "filled": true,
+      "group": "demonstrative",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "demonstrative-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "demonstrative-001|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "demonstrative",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "demonstrative-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "demonstrative-002|lastRecommendations",
+      "contextId": "lastRecommendations",
+      "failureCount": 0,
+      "filled": true,
+      "group": "demonstrative",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "demonstrative-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "demonstrative-002|none",
+      "contextId": "none",
+      "failureCount": 0,
+      "filled": true,
+      "group": "demonstrative",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "demonstrative-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "demonstrative-002|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "demonstrative",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "demonstrative-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "demonstrative-003|lastRecommendations",
+      "contextId": "lastRecommendations",
+      "failureCount": 0,
+      "filled": true,
+      "group": "demonstrative",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "demonstrative-003"
+    },
+    {
+      "attempts": 8,
+      "cellId": "demonstrative-003|none",
+      "contextId": "none",
+      "failureCount": 0,
+      "filled": true,
+      "group": "demonstrative",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "demonstrative-003"
+    },
+    {
+      "attempts": 8,
+      "cellId": "demonstrative-003|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "demonstrative",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "demonstrative-003"
+    },
+    {
+      "attempts": 8,
+      "cellId": "demonstrative-004|lastRecommendations",
+      "contextId": "lastRecommendations",
+      "failureCount": 0,
+      "filled": true,
+      "group": "demonstrative",
+      "intentCounts": {
+        "general": 1,
+        "recommend": 7
+      },
+      "sampleCount": 8,
+      "utteranceId": "demonstrative-004"
+    },
+    {
+      "attempts": 8,
+      "cellId": "demonstrative-004|none",
+      "contextId": "none",
+      "failureCount": 0,
+      "filled": true,
+      "group": "demonstrative",
+      "intentCounts": {
+        "general": 1,
+        "recommend": 7
+      },
+      "sampleCount": 8,
+      "utteranceId": "demonstrative-004"
+    },
+    {
+      "attempts": 8,
+      "cellId": "demonstrative-004|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "demonstrative",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "demonstrative-004"
+    },
+    {
+      "attempts": 8,
+      "cellId": "general-001|lastRecommendations",
+      "contextId": "lastRecommendations",
+      "failureCount": 0,
+      "filled": true,
+      "group": "general",
+      "intentCounts": {
+        "general": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "general-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "general-001|none",
+      "contextId": "none",
+      "failureCount": 0,
+      "filled": true,
+      "group": "general",
+      "intentCounts": {
+        "general": 7,
+        "order_status": 1
+      },
+      "sampleCount": 8,
+      "utteranceId": "general-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "general-001|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "general",
+      "intentCounts": {
+        "general": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "general-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "general-002|lastRecommendations",
+      "contextId": "lastRecommendations",
+      "failureCount": 0,
+      "filled": true,
+      "group": "general",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "general-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "general-002|none",
+      "contextId": "none",
+      "failureCount": 0,
+      "filled": true,
+      "group": "general",
+      "intentCounts": {
+        "general": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "general-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "general-002|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "general",
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "general-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "option-answer-001|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "option_answer",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "option-answer-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "option-answer-002|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "option_answer",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "option-answer-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "option-answer-003|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "option_answer",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "option-answer-003"
+    },
+    {
+      "attempts": 8,
+      "cellId": "option-answer-004|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "option_answer",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "option-answer-004"
+    },
+    {
+      "attempts": 8,
+      "cellId": "order-status-001|lastRecommendations",
+      "contextId": "lastRecommendations",
+      "failureCount": 0,
+      "filled": true,
+      "group": "order_status",
+      "intentCounts": {
+        "order_status": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "order-status-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "order-status-001|none",
+      "contextId": "none",
+      "failureCount": 0,
+      "filled": true,
+      "group": "order_status",
+      "intentCounts": {
+        "order_status": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "order-status-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "order-status-001|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "order_status",
+      "intentCounts": {
+        "order_status": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "order-status-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "order-status-002|lastRecommendations",
+      "contextId": "lastRecommendations",
+      "failureCount": 0,
+      "filled": true,
+      "group": "order_status",
+      "intentCounts": {
+        "order_status": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "order-status-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "order-status-002|none",
+      "contextId": "none",
+      "failureCount": 0,
+      "filled": true,
+      "group": "order_status",
+      "intentCounts": {
+        "order_status": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "order-status-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "order-status-002|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "order_status",
+      "intentCounts": {
+        "order_status": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "order-status-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "switch-001|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "switch",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "switch-001"
+    },
+    {
+      "attempts": 8,
+      "cellId": "switch-002|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "switch",
+      "intentCounts": {
+        "cart_add": 6,
+        "cart_view": 2
+      },
+      "sampleCount": 8,
+      "utteranceId": "switch-002"
+    },
+    {
+      "attempts": 8,
+      "cellId": "switch-003|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "switch",
+      "intentCounts": {
+        "cart_add": 5,
+        "cart_view": 3
+      },
+      "sampleCount": 8,
+      "utteranceId": "switch-003"
+    },
+    {
+      "attempts": 8,
+      "cellId": "switch-004|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "switch",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "switch-004"
+    },
+    {
+      "attempts": 8,
+      "cellId": "switch-005|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "switch",
+      "intentCounts": {
+        "cart_add": 3,
+        "recommend": 5
+      },
+      "sampleCount": 8,
+      "utteranceId": "switch-005"
+    },
+    {
+      "attempts": 8,
+      "cellId": "switch-006|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "switch",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "switch-006"
+    },
+    {
+      "attempts": 8,
+      "cellId": "switch-007|pendingCart",
+      "contextId": "pendingCart",
+      "failureCount": 0,
+      "filled": true,
+      "group": "switch",
+      "intentCounts": {
+        "cart_add": 8
+      },
+      "sampleCount": 8,
+      "utteranceId": "switch-007"
+    }
+  ],
+  "diagnostics": {
+    "categoryClearOnRefineCount": 0,
+    "categoryScopeUnresolvedCount": 0,
+    "definition": {
+      "categoryClearOnRefineCount": "리파인 기대 셀에서 확정값이 clear 로 나온 표본 수 — 사용자가 좁혀 둔 카테고리가 풀리는 이 변경의 유일한 새 회귀 모양",
+      "categoryScopeUnresolvedCount": "전용 분류기가 판정하지 못한(None) 표본 수 — 호출 실패·비 JSON·비불리언 산출을 합친 침묵률",
+      "productIdNullCount": "전환 셀에서 cart_add 인데 productId 가 null 인 표본 수 — 되물음이 유지되는 안전한 퇴화",
+      "reaskProductEchoCount": "전환 셀에서 cart.productId 가 되물음 상품과 같은 표본 수 — 사용자가 고르지 않은 옵션으로 옛 상품이 담기는 위험한 실패"
+    },
+    "productIdNullCount": 0,
+    "reaskProductEchoCount": 10
+  },
+  "dryRun": false,
+  "fixture": {
+    "name": "anchors_b.json",
+    "reaskProductId": 102,
+    "reaskProductListPosition": 2,
+    "sha256": "7ea9cc95b44a40c28d12a232f66465f14973a751dc06a94f6c743ded522a3bac",
+    "version": "intent-probe-anchors-b-v3"
+  },
+  "issue240AxisOrder": [
+    "mainIntent",
+    "cartControl",
+    "demonstrative",
+    "optionAnswer",
+    "switchLegacy2",
+    "orderStatus",
+    "general",
+    "cartAddProductIdLegacy2"
+  ],
+  "issue240Line": "237/144/93/27/9/48/31/14",
+  "modelConfig": {
+    "fastModel": "gpt-5-nano",
+    "fastReasoningEffort": "minimal",
+    "maxRetries": 0,
+    "provider": "openai",
+    "smartModel": "gpt-5.6-luna",
+    "smartReasoningEffort": "medium",
+    "timeoutS": 30.0
+  },
+  "n": 8,
+  "pacer": {
+    "acquireCount": 664,
+    "estimatedTokensPerCall": 3900,
+    "maxRpm": 45,
+    "maxTpm": 200000,
+    "maxWaitS": 34.661,
+    "totalWaitS": 659.543,
+    "waitCount": 434,
+    "windowS": 60.0
+  },
+  "prompt": {
+    "charCount": 6643,
+    "sha12": "e5e7f9b8d844",
+    "sha256": "e5e7f9b8d8440937fe717c02ea1b80c14b21e9c2a0fde69c826ec5cb41d2d8ba",
+    "source": "repo:_SYSTEM"
+  },
+  "tier": "fast",
+  "unfilledCells": []
+}
