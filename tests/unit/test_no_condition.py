@@ -6,15 +6,28 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
+from app.agents.buyer.recommendation.decompose import decompose
 from app.agents.buyer.recommendation.no_condition import is_no_condition_turn
 from app.agents.buyer.recommendation.state import RouteDecision
 from app.schemas.spring import ProductSearchFilters
 
 
-def _decision(**filter_kwargs) -> RouteDecision:
-    return RouteDecision(intent="recommend", filters=ProductSearchFilters(**filter_kwargs))
+def _decision(*, semantic_query_is_fallback: bool = True, **filter_kwargs) -> RouteDecision:
+    """조건 없는 턴의 기본형 — 필요한 축만 채워 "조건 있음"으로 만든다.
+
+    `semantic_query_is_fallback=True` 가 기본인 이유: 실제 decompose 는 신호가 없을 때
+    `semantic_query` 에 **발화 원문**을 넣으므로(값은 항상 참) 이 플래그가 "의미 신호 없음"의
+    유일한 표현이다. 아래 `test_decompose_marks_...` 가 그 실제 경로를 따로 검증한다.
+    """
+    return RouteDecision(
+        intent="recommend",
+        filters=ProductSearchFilters(**filter_kwargs),
+        semantic_query_is_fallback=semantic_query_is_fallback,
+    )
 
 
 def test_bare_recommend_utterance_triggers() -> None:
@@ -22,14 +35,26 @@ def test_bare_recommend_utterance_triggers() -> None:
     assert is_no_condition_turn(_decision(), prior=None) is True
 
 
-def test_semantic_query_blocks_trigger() -> None:
+def test_real_semantic_signal_blocks_trigger() -> None:
     """**"여름에 시원한 거 추천해줘"** — filters 가 전부 null 이어도 트리거되면 안 된다.
 
     이슈 완료 조건에 명시된 회귀 항목이다. `semanticQuery` 는 "정형 제약을 제외한 벡터 검색용
     자연어"라 필터로 떨어지지 않는 의미가 여기 남는다. 카테고리 추측이 실패해도 이 값은 살아
     있으므로, 이걸 무시하면 **사용자 의도를 통째로 버리고** 인기상품을 주게 된다.
     """
-    assert is_no_condition_turn(_decision(semantic_query="여름에 시원한"), prior=None) is False
+    decision = _decision(semantic_query="여름에 시원한", semantic_query_is_fallback=False)
+    assert is_no_condition_turn(decision, prior=None) is False
+
+
+def test_utterance_fallback_semantic_query_does_not_block_trigger() -> None:
+    """원문 폴백으로 채워진 `semantic_query` 는 조건이 아니다 — **이 판정의 핵심**.
+
+    `is_no_condition_turn` 을 "semantic_query 가 비었는가"로 짜면 **영영 트리거되지 않는다.**
+    decompose 가 `llm_sq or cat_signal or prior_sq or query` 로 채워(decompose.py) 아무 신호가
+    없어도 발화 원문이 들어가기 때문이다. 값이 아니라 출처로 판정해야 한다.
+    """
+    decision = _decision(semantic_query="아무거나 추천해줘", semantic_query_is_fallback=True)
+    assert is_no_condition_turn(decision, prior=None) is True
 
 
 def test_category_legs_block_trigger() -> None:
@@ -77,5 +102,77 @@ def test_whitespace_only_values_are_treated_as_empty() -> None:
     LLM 산출값이라 신뢰 경계 밖이고, 같은 함정을 `_search_query_params` 가 이미 밟았다
     (#127 리뷰 — 공백-only 가 Spring 에 빈값으로 나갔다).
     """
-    decision = _decision(category="  ", keyword="\t", semantic_query="\n", color=" ")
+    decision = _decision(category="  ", keyword="\t", color=" ")
     assert is_no_condition_turn(decision, prior=None) is True
+
+
+def test_condition_axes_track_decompose_filter_axes() -> None:
+    """판정이 쓰는 축 목록은 decompose 의 `_FILTER_AXES` **그 자체**여야 한다.
+
+    사본을 두면 새 하드필터가 생겼을 때 한쪽만 늘어나 조건 있는 턴이 조용히 "조건 없음"으로
+    새어 들어온다. `_FILTER_AXES` 는 `ProductSearchFilters` 전체와 대조하는 드리프트 테스트가
+    이미 지키고 있으므로(tests/unit/test_decompose.py) 거기 얹는다.
+    """
+    from app.agents.buyer.recommendation import no_condition
+    from app.agents.buyer.recommendation.decompose import _FILTER_AXES
+
+    assert no_condition._FILTER_AXES is _FILTER_AXES
+
+
+class _RawLLM:
+    """지정 raw JSON 을 fast tier 에서 돌려주는 최소 LLM (tests/unit/test_decompose.py 와 동형)."""
+
+    def __init__(self, raw: str) -> None:
+        self._raw = raw
+
+    async def complete(
+        self, *, system: str, user: str, tier: str, max_tokens: int = 1024, json_output: bool = True
+    ) -> str:
+        return self._raw
+
+    async def stream(self, *, system: str, user: str, tier: str, max_tokens: int = 1024):
+        yield "x"
+
+
+async def _decompose_raw(payload: dict, utterance: str):
+    return await decompose(
+        _RawLLM(json.dumps(payload, ensure_ascii=False)),
+        query=utterance,
+        prior_filters=None,
+        profile_summary=None,
+        tier="fast",
+    )
+
+
+async def test_decompose_marks_utterance_fallback_for_bare_request() -> None:
+    """**실제 decompose 경로** — 신호 없는 발화는 `semantic_query_is_fallback=True` 로 나온다.
+
+    이 테스트가 없으면 판정 함수가 단위 테스트에서만 통과하고 프로덕션에서는 한 번도 발동하지
+    않는 상태를 못 잡는다(구현 중 실제로 그 상태였다). 필터를 직접 만들지 않고 LLM 산출
+    JSON 에서 출발하는 것이 요점이다.
+    """
+    decision = await _decompose_raw(
+        {"intent": "recommend", "reply": "", "categoryQueries": [], "filters": {}},
+        "아무거나 추천해줘",
+    )
+
+    assert decision.semantic_query_is_fallback is True
+    assert decision.filters.semantic_query == "아무거나 추천해줘"  # 원문 폴백이 실제로 들어간다
+    assert is_no_condition_turn(decision, prior=None) is True
+
+
+async def test_decompose_does_not_mark_fallback_when_llm_gives_semantic_query() -> None:
+    """LLM 이 의미를 냈으면 폴백이 아니다 — "여름에 시원한 거"가 트리거되지 않는 실제 경로."""
+    decision = await _decompose_raw(
+        {
+            "intent": "recommend",
+            "reply": "",
+            "semanticQuery": "여름에 시원한 옷",
+            "categoryQueries": [],
+            "filters": {},
+        },
+        "여름에 시원한 거 추천해줘",
+    )
+
+    assert decision.semantic_query_is_fallback is False
+    assert is_no_condition_turn(decision, prior=None) is False

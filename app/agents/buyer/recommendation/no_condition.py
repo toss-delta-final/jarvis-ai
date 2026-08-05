@@ -15,27 +15,15 @@ zero-result 분기도 degrade 고지도 타지 않는다.
 
 from __future__ import annotations
 
+from app.agents.buyer.recommendation.decompose import _FILTER_AXES
 from app.agents.buyer.recommendation.state import RouteDecision
 from app.schemas.spring import ProductSearchFilters
 
-# 사용자가 준 **조건**으로 볼 축. `exclude_product_ids`(최근구매 dedup)·`limit`(AI 후보 상한)은
-# 여기 없다 — 발화에서 온 것이 아니라 AI 가 내부에서 채우는 값이라, 포함시키면 조건 없는 턴이
-# 영영 트리거되지 않는다.
-_CONDITION_FIELDS = (
-    "category",
-    "price_min",
-    "price_max",
-    "brand",
-    "rating_min",
-    "keyword",
-    "color",
-    "attr_conditions",
-    # `semantic_query` 는 Spring 에 나가지 않는 AI 내부 필드지만 **사용자 의도의 담지자**라
-    # 반드시 조건으로 센다. "여름에 시원한 거 추천해줘"는 filters 가 전부 null 이고 카테고리
-    # 추측이 실패해도 semanticQuery="여름에 시원한" 이 남는다 — 이걸 빠뜨리면 사용자가 말한
-    # 의미를 통째로 버리고 인기상품을 주게 된다(이슈 완료 조건의 회귀 항목).
-    "semantic_query",
-)
+# 하드필터 축 목록은 **decompose 의 `_FILTER_AXES` 를 그대로 쓴다** — 사본을 두면 새 필터가
+# 생겼을 때 한쪽만 늘어나 조건 있는 턴이 조용히 "조건 없음"으로 새어 들어온다. 그 목록은
+# `ProductSearchFilters` 전체 필드와 대조하는 드리프트 테스트가 지키고 있다
+# (`tests/unit/test_decompose.py`). `semantic_query` 는 이 목록에 **의도적으로 없고**
+# 아래에서 출처(`semantic_query_is_fallback`)로 따로 판정한다.
 
 
 def _is_blank(value: object) -> bool:
@@ -61,13 +49,19 @@ def is_no_condition_turn(
 ) -> bool:
     """이번 턴이 "조건이 하나도 없는 추천 발화"인가.
 
-    셋을 **모두** 만족해야 한다:
-      ① `filters` 의 사용자 조건 축이 전부 빔 (`_CONDITION_FIELDS`)
+    넷을 **모두** 만족해야 한다:
+      ① 첫 턴 (`prior is None`)
       ② `category_legs` 가 빔 — 카테고리가 매핑됐으면 조건이 있는 턴이다
-      ③ 첫 턴 (`prior is None`)
+      ③ **의미 신호가 없음** (`semantic_query_is_fallback`)
+      ④ `filters` 의 하드필터 축이 전부 빔 (`_FILTER_AXES`)
+
+    ③을 값의 유무로 판정하면 **영영 트리거되지 않는다.** decompose 는 `semantic_query` 를
+    `llm_sq or cat_signal or prior_sq or query` 로 채워(decompose.py) 아무 신호가 없어도
+    **이번 턴 원문**이 들어가기 때문이다 — "아무거나 추천해줘"에서도 값은 "아무거나 추천해줘"다.
+    그래서 값이 아니라 **출처**를 본다.
 
     ②가 멀티턴 리파인도 함께 막는다 — `_carry_prior_category`(buyer/graph.py)가 직전 턴
-    카테고리를 `category_legs` 로 승계하기 때문이다. ③은 그 승계가 없는 경우까지 막는
+    카테고리를 `category_legs` 로 승계하기 때문이다. ①은 그 승계가 없는 경우까지 막는
     이중 방어다: 멀티턴의 "리파인 / 칩 제거 / 카테고리-무관 리셋" 세 의도는 아직 구분되지
     않으므로(#84) 이 경로는 **첫 턴에 한정**한다. #84 해소 후 확장 대상이다.
 
@@ -78,4 +72,6 @@ def is_no_condition_turn(
         return False
     if decision.category_legs:
         return False
-    return all(_is_blank(getattr(decision.filters, field, None)) for field in _CONDITION_FIELDS)
+    if not decision.semantic_query_is_fallback:
+        return False
+    return all(_is_blank(getattr(decision.filters, field, None)) for field in _FILTER_AXES)
