@@ -10,6 +10,7 @@ from langchain_core.tools import BaseTool
 
 from app.agents.seller.context import SellerContext
 from app.agents.seller.tools import (
+    ORDER_WRITE_TOOLS,
     PRODUCT_TOOLS,
     READ_TOOLS,
     get_account_events,
@@ -17,8 +18,11 @@ from app.agents.seller.tools import (
     get_churn_cohort,
     get_funnel,
     get_order_events,
+    get_orders,
+    get_reviews,
     get_sales_timeseries,
     list_my_products,
+    update_order_status,
     update_product,
 )
 from app.services import spring_client as spring_client_module
@@ -33,14 +37,25 @@ from app.schemas.spring import (
     OrderEventsResult,
     ProductChangeLogResult,
     ProductChangeLogRow,
+    OrderItemStatusResult,
     ProductCreateResult,
     ProductDeleteResult,
     ProductUpdateResult,
     SalesResult,
     SalesSeriesPoint,
+    SellerOrderItemRow,
+    SellerOrderList,
+    SellerOrderRow,
     SellerProductList,
+    SellerReviewList,
+    SellerReviewProductStat,
+    SellerReviewRow,
+    SellerReviewStats,
 )
-from app.services.spring_client import SpringUnavailableError
+from app.services.spring_client import (
+    OrderAlreadyShipped,
+    SpringUnavailableError,
+)
 from app.core.tracing import (
     FakeTraceExporter,
     LangSmithTraceExporter,
@@ -155,6 +170,52 @@ class FakeSpringClient:
         self._maybe_fail("delete_product")
         return ProductDeleteResult(product_id=product_id, status="HIDDEN")
 
+    # ── [#297] I-29/I-30/I-31 주문·리뷰 ──
+
+    async def get_orders(
+        self, brand_id, *, status=None, order_id=None, from_=None, to=None, limit=None, offset=None
+    ):
+        self.recorded_brand_id = brand_id
+        self.recorded_orders_args = (status, order_id, from_, to, limit, offset)
+        self._maybe_fail("get_orders")
+        return getattr(self, "orders_result", SellerOrderList())
+
+    async def update_order_item_status(self, brand_id, order_item_id, payload):
+        self.recorded_brand_id = brand_id
+        self.recorded_order_status_args = (order_item_id, payload)
+        self._maybe_fail("update_order_item_status")
+        if getattr(self, "order_status_error", None) is not None:
+            raise self.order_status_error
+        return OrderItemStatusResult(
+            order_item_id=order_item_id,
+            from_status="ORDERED",
+            to_status=payload.to_status,
+            changed_at="2026-08-05T10:00:00+09:00",
+        )
+
+    async def get_reviews(
+        self,
+        brand_id,
+        *,
+        from_=None,
+        to=None,
+        product_id=None,
+        rating=None,
+        sort=None,
+        limit=None,
+        offset=None,
+    ):
+        self.recorded_brand_id = brand_id
+        self.recorded_reviews_args = (from_, to, product_id, rating, sort, limit, offset)
+        self._maybe_fail("get_reviews")
+        return getattr(self, "reviews_result", SellerReviewList())
+
+    async def get_review_stats(self, brand_id, *, from_=None, to=None, product_id=None):
+        self.recorded_brand_id = brand_id
+        self.recorded_review_stats_args = (from_, to, product_id)
+        self._maybe_fail("get_review_stats")
+        return getattr(self, "review_stats_result", SellerReviewStats())
+
 
 class FakeRuntime:
     """ToolRuntime 이중 — 도구 본문은 runtime.context 만 읽으므로 덕 타이핑으로 충분하다."""
@@ -177,18 +238,24 @@ async def _call_runtime_tool(tool: BaseTool, args: dict, fake, brand_id: int = 4
 
 
 def test_write_tools_isolated_from_read() -> None:
-    """read_tools 에는 create/update/delete 가 없고 product_tools 에만 존재한다."""
+    """read_tools 에는 쓰기 도구가 없고, 쓰기는 전용 레지스트리에만 존재한다."""
     read_names = {t.name for t in READ_TOOLS}
     product_names = {t.name for t in PRODUCT_TOOLS}
+    order_write_names = {t.name for t in ORDER_WRITE_TOOLS}
 
     for write_name in ("create_product", "update_product", "delete_product"):
         assert write_name not in read_names
         assert write_name in product_names
+    # [#297] 주문 쓰기(발송)도 read 에 없고 ORDER_WRITE_TOOLS 에만 있다.
+    assert "update_order_status" not in read_names
+    assert "update_order_status" in order_write_names
+    # 신설 조회 2종은 read 에 있다.
+    assert {"get_orders", "get_reviews"} <= read_names
 
 
 def test_no_identity_params_in_any_tool() -> None:
     """모든 도구의 args_schema 에 sellerId/brandId 류 키가 없다(IDOR — 신원 미노출)."""
-    all_tools = {t.name: t for t in (*READ_TOOLS, *PRODUCT_TOOLS)}.values()
+    all_tools = {t.name: t for t in (*READ_TOOLS, *PRODUCT_TOOLS, *ORDER_WRITE_TOOLS)}.values()
     for t in all_tools:
         arg_keys = set(t.args.keys())
         assert not (arg_keys & FORBIDDEN_IDENTITY_KEYS), (
@@ -1635,3 +1702,218 @@ def test_worker_prompts_contain_log_interpretation_rules() -> None:
     assert "\n   구매·주문 수치의 권위는 get_order_events" in ABUSE_PROMPT
     assert "\n구매·주문 수치의 권위는" not in ABUSE_PROMPT
     assert "'구매 0'" in ABUSE_PROMPT  # 금지 문구 자체의 존치도 함께 고정
+
+
+# ── [#297] get_orders (I-29 자사 주문 조회, §4.18) ────────────────────────────────
+
+
+def _order_fixture() -> SellerOrderList:
+    return SellerOrderList(
+        tab_counts={"ALL": 2, "ORDERED": 1, "SHIPPING": 1, "DELIVERED": 0, "CLAIM": 0},
+        rows=[
+            SellerOrderRow(
+                order_id=342,
+                order_no="ORD-20260716-0342",
+                ordered_at="2026-07-16T09:42:00+09:00",
+                recipient_name="김서연",
+                payment_method="MOCK_CARD",
+                my_items_amount=89000,
+                status="ORDERED",
+                claim_status=None,
+                items=[
+                    SellerOrderItemRow(
+                        order_item_id=5551,
+                        product_id=1,
+                        name="벨티드 린넨 원피스",
+                        option_name="블루/M",
+                        quantity=2,
+                        price=44500,
+                        status="ORDERED",
+                    )
+                ],
+            )
+        ],
+        total=2,
+    )
+
+
+async def test_get_orders_injects_brand_and_passes_args() -> None:
+    """brand_id 는 runtime.context 에서만 주입되고 조회 인자가 client 에 전달된다."""
+    fake = FakeSpringClient()
+    fake.orders_result = _order_fixture()
+
+    await _call_runtime_tool(
+        get_orders, {"status": "ORDERED", "order_id": 342, "limit": 5}, fake, brand_id=777
+    )
+
+    assert fake.recorded_brand_id == 777
+    assert fake.recorded_orders_args == ("ORDERED", 342, None, None, 5, None)
+
+
+async def test_get_orders_formats_items_with_order_item_id() -> None:
+    """응답에 orderItemId·아이템 상태가 노출된다 — 발송 대상 해소(I-30 선행) 재료."""
+    fake = FakeSpringClient()
+    fake.orders_result = _order_fixture()
+
+    result = await _call_runtime_tool(get_orders, {}, fake)
+
+    assert "orderItemId=5551" in result
+    assert "ORD-20260716-0342" in result
+    assert "89,000원" in result
+    assert "ORDERED 1" in result  # 탭별 건수
+
+
+async def test_get_orders_empty_without_order_id() -> None:
+    """빈 rows 는 정상 결과 — 주문 없음 안내(오류 아님)."""
+    fake = FakeSpringClient()
+
+    result = await _call_runtime_tool(get_orders, {}, fake)
+
+    assert not result.startswith("Error:")
+    assert "주문이 없습니다" in result
+
+
+async def test_get_orders_hidden_existence_for_order_id() -> None:
+    """orderId 직조회 빈 rows → '해당 주문이 없습니다'(존재 은닉, 확정 2026-08-04)."""
+    fake = FakeSpringClient()
+
+    result = await _call_runtime_tool(get_orders, {"order_id": 999}, fake)
+
+    assert "해당 주문(orderId=999)이 없습니다" in result
+
+
+async def test_get_orders_degrades_on_spring_failure() -> None:
+    fake = FakeSpringClient(fail={"get_orders"})
+
+    result = await _call_runtime_tool(get_orders, {}, fake)
+
+    assert result.startswith("Error:")
+
+
+async def test_get_orders_caps_rows_by_settings() -> None:
+    """seller_summary_max_orders 상한 초과분은 '외 N건' 꼬리로 남는다(정보 소실 없음)."""
+    from app.core.config import get_settings
+
+    cap = get_settings().seller_summary_max_orders
+    fixture = _order_fixture()
+    row = fixture.rows[0]
+    fixture.rows = [row.model_copy(update={"order_id": 1000 + i}) for i in range(cap + 3)]
+    fixture.total = cap + 3
+    fake = FakeSpringClient()
+    fake.orders_result = fixture
+
+    result = await _call_runtime_tool(get_orders, {}, fake)
+
+    assert "외 3건" in result
+
+
+# ── [#297] get_reviews (I-31 리뷰 조회, §4.20) ────────────────────────────────────
+
+
+async def test_get_reviews_list_formats_rows() -> None:
+    fake = FakeSpringClient()
+    fake.reviews_result = SellerReviewList(
+        rows=[
+            SellerReviewRow(
+                review_id=7,
+                product_id=3,
+                product_name="여행용 파우치",
+                rating=2,
+                content="지퍼가 일주일 만에 고장났어요",
+                author_nickname="자비스",
+                created_at="2026-07-21T12:00:00+09:00",
+            )
+        ],
+        total=47,
+    )
+
+    result = await _call_runtime_tool(
+        get_reviews, {"rating": "1,2", "sort": "rating"}, fake, brand_id=12
+    )
+
+    assert fake.recorded_brand_id == 12
+    assert fake.recorded_reviews_args == (None, None, None, "1,2", "rating", None, None)
+    assert "★2" in result and "여행용 파우치" in result
+    assert "지퍼가 일주일 만에 고장났어요" in result
+    assert "리뷰 47건" in result
+    assert "최근 7일 기본 적용" in result  # 기간 생략 시 기본 고지
+
+
+async def test_get_reviews_stats_mode_null_average() -> None:
+    """stats=True 는 집계 경로 — 0건이면 '평점 0점'이 아니라 리뷰 없음으로 안내."""
+    fake = FakeSpringClient()
+
+    result = await _call_runtime_tool(get_reviews, {"stats": True}, fake)
+
+    assert fake.recorded_review_stats_args == (None, None, None)
+    assert "리뷰가 없습니다" in result
+    assert "0점" not in result
+
+
+async def test_get_reviews_stats_mode_formats_distribution() -> None:
+    fake = FakeSpringClient()
+    fake.review_stats_result = SellerReviewStats(
+        total_count=47,
+        average_rating=3.8,
+        distribution={"5": 12, "4": 15, "3": 8, "2": 7, "1": 5},
+        by_product=[
+            SellerReviewProductStat(
+                product_id=3, product_name="여행용 파우치", count=21, average_rating=3.1
+            )
+        ],
+    )
+
+    result = await _call_runtime_tool(
+        get_reviews, {"stats": True, "from_date": "2026-07-01", "to_date": "2026-07-31"}, fake
+    )
+
+    assert "총 47건" in result and "평균 3.8점" in result
+    assert "1점 5건" in result
+    assert "여행용 파우치" in result and "평균 3.1점" in result
+    assert "2026-07-01~2026-07-31" in result
+
+
+async def test_get_reviews_degrades_on_spring_failure() -> None:
+    fake = FakeSpringClient(fail={"get_reviews"})
+
+    result = await _call_runtime_tool(get_reviews, {}, fake)
+
+    assert result.startswith("Error:")
+
+
+# ── [#297] update_order_status (I-30 발송 처리, §4.19 — ORDER_WRITE_TOOLS 전용) ──
+
+
+async def test_update_order_status_executes_and_reports_transition() -> None:
+    fake = FakeSpringClient()
+
+    result = await _call_runtime_tool(
+        update_order_status, {"order_item_id": 5551}, fake, brand_id=12
+    )
+
+    assert fake.recorded_brand_id == 12
+    order_item_id, payload = fake.recorded_order_status_args
+    assert order_item_id == 5551
+    assert payload.to_status == "SHIPPING"
+    assert "발송 처리됨" in result and "ORDERED→SHIPPING" in result
+
+
+async def test_update_order_status_already_shipped_is_distinct_error() -> None:
+    """409 는 '이미 발송'으로 구분 안내 — 멱등 성공으로 뭉개지 않는다(I-12 논리)."""
+    fake = FakeSpringClient()
+    fake.order_status_error = OrderAlreadyShipped("ORDER_ALREADY_SHIPPED")
+
+    result = await _call_runtime_tool(update_order_status, {"order_item_id": 5551}, fake)
+
+    assert result.startswith("Error:")
+    assert "이미 발송" in result
+
+
+async def test_update_order_status_spring_failure_never_claims_success() -> None:
+    """500·타임아웃은 '반영 여부 미확인'으로 — 성공 보고 금지(§4.19)."""
+    fake = FakeSpringClient(fail={"update_order_item_status"})
+
+    result = await _call_runtime_tool(update_order_status, {"order_item_id": 5551}, fake)
+
+    assert result.startswith("Error:")
+    assert "반영 여부가 확인되지 않았습니다" in result

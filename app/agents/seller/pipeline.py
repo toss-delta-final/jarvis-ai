@@ -312,6 +312,7 @@ WORKER_PROGRESS_TOKENS: dict[AnalysisType, str] = {
     "behavior": "고객 행동 분석 중…",
     "churn": "고객 이탈 분석 중…",
     "abuse": "어뷰징 점검 중…",
+    "review": "리뷰 분석 중…",  # [#297] I-31
 }
 
 # 전 워커 실패(집계 전부 실패) 시 사과 후 done 종료(SPEC §4·§7 degrade).
