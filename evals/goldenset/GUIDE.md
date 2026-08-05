@@ -19,6 +19,15 @@
 `product_document.category`의 `대분류 > 소분류` 표기(예: `축산 > 돼지고기`)를 옮기지 않는다.
 금지 카테고리는 `catalog_snapshot.json`의 실제 `categoryName`에 존재해야 한다.
 
+**관측(2026-08-05, #333 Part 2 라운드2 §7-1)**: 라이브 Spring I-1의 `categoryName`이 일부
+카테고리에서 `대분류 > 소분류` 계층 표기로 돌아온다(예: `"당뇨관리용품 > 침/바늘"`,
+`"구기/라켓/스포츠 > 축구"`) — 이 절이 문서화한 "평탄 표기만" 전제와 다르다. `schema.py`의
+`_categories_use_i1_notation` validator는 여전히 `" > "`를 포함한 `forbiddenCategories`를
+거부하므로(이번 PR에서 바꾸지 않는다 — 계약 판단은 후속 이슈), 이런 카테고리는
+`forbiddenCategories`로 지정할 수 없다. 영향받는 케이스는 `forbiddenCategories`를 비우고
+`mustExcludeProductIds`로 개별 상품을 금지하는 워크어라운드를 쓴다(예:
+`buy-cmap-0005`/`buy-cmap-0006`/`buy-over-0002`, `CHANGELOG.md` 2026-08-05 항목 참조).
+
 I-19가 없는 현재 구매 이력은 합성 페르소나다. 다만 상품 필드는
 `catalog_snapshot.json`에서 그대로 복사한다. `orderedAt`은 실행 시각으로 만들지 않고 기준일
 `2026-08-02`에 대한 절대 ISO-8601 문자열로 고정한다. 그래야 90일 윈도우가 재실행마다
@@ -121,6 +130,16 @@ v1은 순위를 판별하지 못했다(#333 배경 — 판별 유효 18건 중 9
 candidates provenance(`source`/`rule`/`from`)에 실제 수가 정본으로 남는다 — 목표는 목표일
 뿐이다.
 
+**실측(2026-08-05, #333 Part 2 라운드2 §7-4)**: `semantic_near` 90.07% / `random_catalog`
+9.93%, `attr_violation`/`price_violation`/`other_brand`는 0%에 가깝다 — 목표 대역(25%/25%)에
+크게 못 미친다. 사유: 이 세 채널은 전부 `category`가 있어야 트리거되는데(`_same_category_products`
+전제), 대다수 케이스가 `keyword` 검색만으로 충분해 `category`를 명시하지 않는다. 또한
+`fetch_full_catalog_via_i17` 전량 스캔으로 F-2 catalog 커버리지가 크게 늘면서 `semantic_near`
+채굴 수율이 다른 채널을 압도한다(v1 43건 재기록·신규 84건 전부 같은 경향). **데이터가
+정본이므로 조작하지 않고 그대로 둔다** — 목표 혼합비에 맞추려 억지로 `category`를 넣거나
+가짜 attr/brand 제약을 지어내지 않는다. 후속 이슈로 `attrConditions`/`targetBrands`를 쓰는
+케이스를 더 늘리면 개선될 수 있다.
+
 **injected 후보는 기본 0등급이다.** `relevantProductIds`에 넣으려면(라벨러가 실제로 관련
 있다고 판단한 경우) `notes`에 `injected-relevant-approved:` 마커를 붙여 adjudicator 확인을
 남겨야 한다 — 그렇지 않으면 `schema.validate_cases()`가 오류를 낸다.
@@ -137,8 +156,17 @@ candidates provenance(`source`/`rule`/`from`)에 실제 수가 정본으로 남�
 
 신원(guest/member)과 니즈(single_need/multi_constraint/budget/repurchase)는 서로 다른
 축이다 — 니즈 슬라이스는 케이스당 정확히 1개(disjoint), `member`는 `identity.kind==member`와
-거울(양방향 필수), `guest`도 마찬가지다. holdout은 24건(guest 12/member 12, confirmatory
-슬라이스별 ≥6)이 1차 목표다. 수치 근거는 issue-333(sd 0.402, 슬라이스당 30 ≈ ±0.14)이다.
+거울(양방향 필수), `guest`도 마찬가지다. holdout은 24건(guest 12/member 12, 필수 슬라이스별
+≥6)이 1차 목표다. 수치 근거는 issue-333(sd 0.402, 슬라이스당 30 ≈ ±0.14)이다.
+
+**명확화(#333 라운드2 §7-2)**: 위 "필수 슬라이스별 ≥6"은 아래 confirmatory/exploratory
+절의 dev 쪽 `confirmatory.confirmatorySlices`(guest/member/budget, N≥30 라벨링)와 **다른
+개념**이다 — `audit.py`의 `required_holdout`(search/personalization/repurchase/
+category_mapping_failure/failure) 각 슬라이스가 holdout에 최소 몇 건 있어야 하는지의 목표치
+다. `manifest.sliceQuotas.holdout.requiredSlicesMinEach`(옛 이름 `confirmatorySlicesMin` —
+혼동을 피하려 개명)가 이 값이다. `failure`는 이 `required_holdout` 집합에는 있지만 dev의
+`confirmatorySlices`에는 없다 — 그래서 holdout `failure` 5/6 미달은 dev N≥30 confirmatory
+사전 등록 위반이 **아니다**(#333 라운드2 판정 §7-2 승인, 조정 불필요).
 
 ### confirmatory/exploratory
 

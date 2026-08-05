@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from evals.goldenset.inject import (
     build_case_candidates,
+    derive_constraint_subset_candidates,
     find_attr_violation,
     find_other_brand,
     find_price_violation,
@@ -252,6 +253,79 @@ def test_build_case_candidates_combines_all_rules_deterministically() -> None:
     assert by_id[2]["rule"] == "price_violation"
     assert by_id[3]["rule"] == "other_brand"
     assert by_id[4]["rule"] == "semantic_near"
+
+
+def test_build_case_candidates_keeps_non_price_violation_channels_within_price_bounds() -> None:
+    # 라이브 실측(#333 Part 2): 가격은 Spring 서버 사이드에서만 걸러지고 AI 앱은 로컬
+    # 재검증을 하지 않는다 — semantic_near/other_brand/random_catalog가 우연히 가격 위반
+    # 상품을 주입하면 evals.metrics의 hard_filter가 걸러내지 못해 HCV로 그대로 샌다. 오직
+    # price_violation 채널만 의도적으로 위반 상품을 찾아야 한다.
+    golden = [{"productId": 1, "source": "golden_filter", "rule": None, "from": "primary"}]
+    catalog = {
+        "1": _product(1, category="A", price=5_000, brand="나이키"),
+        "2": _product(2, category="A", price=50_000, brand="나이키"),  # 가격 위반, other_brand 아님
+        "3": _product(3, category="A", price=50_000, brand="아디다스"),  # 가격도 위반 + 다른 브랜드
+        "4": _product(4, category="A", price=5_000, brand="아디다스"),  # 가격은 OK, 다른 브랜드
+    }
+    embeddings = _fake_embeddings({1: [1.0, 0.0]})
+    nearest = _fake_nearest(
+        [(2, 0.1), (3, 0.2)]
+    )  # 둘 다 가격 위반이라 semantic_near에서 걸러져야 함
+
+    result = build_case_candidates(
+        golden,
+        case_id="buy-test-0001",
+        category="A",
+        hard_constraints={"priceMax": 10_000},
+        attr_conditions={},
+        target_brands=["나이키"],
+        golden_product_ids=[1],
+        catalog=catalog,
+        embedding_lookup=embeddings,
+        nearest_neighbors=nearest,
+        target=4,
+    )
+
+    by_id = {c["productId"]: c for c in result}
+    # 2·3은 semantic_near 이웃이자 가격 위반 상품이다 — semantic_near 채널에서는 걸러지고,
+    # price_violation 채널이 의도한 대로 이 둘을 찾아 채운다.
+    assert by_id[2]["rule"] == "price_violation"
+    assert by_id[3]["rule"] == "price_violation"
+    assert 4 in by_id
+    assert by_id[4]["rule"] == "other_brand"  # other_brand는 가격 내 상품만 채택
+
+
+def test_derive_constraint_subset_candidates_is_subset_of_relaxed_by_construction() -> None:
+    # #333 라운드2 F-R6 — constraint_subset DIR 쌍은 라이브 검색·독립 주입이 노출 집합을
+    # 우연히 어긋나게 할 수 있다(dir-subset-03 실측 실패). 강화 fixture 후보를 완화 fixture의
+    # candidates만 걸러 만들면 set(strict) ⊆ set(relaxed)가 항상 성립한다.
+    relaxed_candidates = [
+        {"productId": 1, "source": "golden_filter", "rule": None, "from": "primary"},
+        {"productId": 2, "source": "golden_filter", "rule": None, "from": "primary"},
+        {"productId": 3, "source": "injected", "rule": "semantic_near", "from": "semantic_near:1"},
+        {"productId": 4, "source": "injected", "rule": "random_catalog", "from": "random_catalog"},
+    ]
+    catalog = {
+        "1": _product(1, price=5_000),
+        "2": _product(2, price=50_000),  # priceMax=10_000 위반 — 강화 쪽에서 빠져야 한다
+        "3": _product(3, price=8_000),
+        "4": {**_product(4), "price": None},  # 가격 미상 — 안전하게 제외
+    }
+
+    strict_candidates = derive_constraint_subset_candidates(
+        relaxed_candidates,
+        catalog=catalog,
+        stricter_hard_constraints={"priceMax": 10_000},
+    )
+
+    strict_ids = {c["productId"] for c in strict_candidates}
+    relaxed_ids = {c["productId"] for c in relaxed_candidates}
+    assert strict_ids <= relaxed_ids
+    assert strict_ids == {1, 3}
+    # provenance(source/rule/from)는 완화 쪽 것을 그대로 물려받는다.
+    by_id = {c["productId"]: c for c in strict_candidates}
+    assert by_id[3]["rule"] == "semantic_near"
+    assert by_id[3]["source"] == "injected"
 
 
 def test_build_case_candidates_fills_remainder_from_random_catalog() -> None:

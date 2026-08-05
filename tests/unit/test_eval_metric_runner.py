@@ -7,7 +7,7 @@ from copy import deepcopy
 import pytest
 
 from app.core.config import Settings
-from evals.goldenset.schema import NEEDS_SLICES, GoldenCase
+from evals.goldenset.schema import DATASET_VERSION, NEEDS_SLICES, SCHEMA_VERSION, GoldenCase
 from evals.metrics.runner import (
     EvaluationFixtures,
     _candidate_depth_stats,
@@ -27,6 +27,9 @@ def _case(
     slices: list[str] | None = None,
     hard: dict | None = None,
     must_exclude: list[int] | None = None,
+    test_type: str = "MFT",
+    behavior_group_id: str | None = None,
+    behavior_kind: str | None = None,
 ) -> GoldenCase:
     resolved_slices = list(slices or ["search", "guest"])
     if not NEEDS_SLICES & set(resolved_slices):
@@ -37,8 +40,8 @@ def _case(
     return GoldenCase.model_validate(
         {
             "caseId": case_id,
-            "schemaVersion": "2.0.0",
-            "datasetVersion": "2.0.0",
+            "schemaVersion": SCHEMA_VERSION,
+            "datasetVersion": DATASET_VERSION,
             "split": "dev",
             "slices": resolved_slices,
             "query": "테스트 추천",
@@ -56,6 +59,9 @@ def _case(
             "idealOrder": relevant if ideal is None else ideal,
             "hardConstraints": hard or {},
             "mustExcludeProductIds": must_exclude or [],
+            "testType": test_type,
+            "behaviorGroupId": behavior_group_id,
+            "behaviorKind": behavior_kind,
         }
     )
 
@@ -156,6 +162,37 @@ def test_runner_excludes_non_discriminative_and_empty_relevance_explicitly() -> 
     assert report["overall"]["filterAccuracy"] == 1.0
 
 
+def test_runner_excludes_non_mft_cases_even_when_labeled() -> None:
+    # 실측 회귀(#333 Part 2): member_recall_ge_guest(DIR)는 recall 계산에 라벨이 필요해
+    # relevantProductIds가 비어있지 않다 — emptyRelevance만으로는 걸러지지 않으므로
+    # testType이 MFT가 아니면 명시적으로 순위 지표에서 제외해야 한다.
+    cases = [
+        _case("buy-srch-9001", relevant=[1], grades={1: 3}),
+        _case(
+            "buy-dirm-9002",
+            relevant=[2],
+            grades={2: 3},
+            test_type="DIR",
+            behavior_group_id="dir-recall-01",
+            behavior_kind="member_recall_ge_guest",
+        ),
+    ]
+    fixtures = _fixtures(cases)
+
+    report = evaluate(
+        cases=cases,
+        fixtures=fixtures,
+        adapter=lambda case, fixtures: {
+            "rankedProductIds": [1, 2],
+            "extractedFilters": case.expected_filters,
+        },
+        k_list=(1,),
+    )
+
+    assert report["overall"]["rankingCaseCount"] == 1
+    assert report["overall"]["rankingExcludedCaseIds"] == ["buy-dirm-9002"]
+
+
 def test_micro_recall_counts_each_relevant_product_once() -> None:
     case = _case("buy-srch-9001", relevant=[1, 1], grades={1: 3}, ideal=[1])
 
@@ -243,46 +280,70 @@ def test_pr_gate_fails_when_adapter_injects_price_violation() -> None:
         assert_pr_gate(report)
 
 
-def test_noop_baseline_exposure_is_truncated_to_system_exposure_length() -> None:
-    # F-4(#333 리뷰): 후보(fixture productIds) [1,2,3] 3개인데 시스템은 1개만 노출한다 —
-    # no-op도 같은 1개(선두, productId 오름차순)로 잘려야 노출 길이 효과가 섞이지 않는다.
+def test_noop_baseline_exposure_is_system_set_reordered_ascending() -> None:
+    # F-4b(#333 리뷰): no-op은 fixture 후보가 아니라 "시스템이 실제로 낸 노출 집합"을
+    # productId 오름차순으로 재정렬한 것이다. 시스템이 후보([1,2,3]) 중 2개만, 순서를 바꿔
+    # ([3,1]) 냈다면 no-op은 그 두 개를 오름차순으로만 재배열한 [1,3]이어야 한다.
     case = _case("buy-srch-9001", relevant=[3], grades={3: 3})
 
     report = evaluate(
         cases=[case],
         fixtures=_fixtures([case]),
         adapter=lambda case, fixtures: {
-            "rankedProductIds": [3],
+            "rankedProductIds": [3, 1],
             "extractedFilters": case.expected_filters,
         },
         k_list=(1,),
     )
 
     noop_row = report["noopBaseline"]["cases"][0]
-    assert noop_row["rankedProductIds"] == [1]
+    assert noop_row["rankedProductIds"] == [1, 3]
     assert report["noopBaseline"]["definition"]
 
 
-def test_noop_baseline_exposure_truncation_uses_deduplicated_system_length() -> None:
-    # 시스템이 중복 포함 3개를 냈지만 중복 제거 후 2개뿐이면 no-op도 2개로 잘린다.
-    case = _case("buy-srch-9001", relevant=[3], grades={3: 3})
+def test_noop_baseline_matches_system_exposure_set_even_when_dedup_drops_early_candidates() -> None:
+    # F-4b가 대체하는 F-4의 실측 결함: 앱 dedup/필터가 후보 앞쪽(productId 1)을 걷어내고 뒤쪽
+    # 상품(4)을 대신 노출하면, fixture 앞부분을 자르는 절단 정의는 no-op에 1을 넣어 시스템과
+    # 다른 집합이 된다. F-4b는 시스템이 실제로 낸 집합([2,4])만 오름차순으로 재배열해야 한다.
+    case = _case("buy-srch-9001", relevant=[4], grades={4: 3})
+    fixtures = _fixtures([case])
+    fixtures.search_responses[case.search_fixture_id]["productIds"] = [1, 2, 3, 4]
 
     report = evaluate(
         cases=[case],
-        fixtures=_fixtures([case]),
+        fixtures=fixtures,
         adapter=lambda case, fixtures: {
-            "rankedProductIds": [1, 1, 3],
+            "rankedProductIds": [4, 2],  # 1(dedup 제외)·3 은 노출되지 않음
             "extractedFilters": case.expected_filters,
         },
         k_list=(1,),
     )
 
     noop_row = report["noopBaseline"]["cases"][0]
-    assert noop_row["rankedProductIds"] == [1, 2]
+    assert noop_row["rankedProductIds"] == [2, 4]
+    assert 1 not in noop_row["rankedProductIds"]
 
 
-def test_noop_baseline_matches_system_when_system_echoes_full_candidate_order() -> None:
-    # 시스템이 fixture 순서를 그대로 내면(예: 결정론 passthrough) no-op과 nDCG@1이 같아야 한다.
+def test_noop_baseline_deduplicates_system_output() -> None:
+    case = _case("buy-srch-9001", relevant=[3], grades={3: 3})
+
+    report = evaluate(
+        cases=[case],
+        fixtures=_fixtures([case]),
+        adapter=lambda case, fixtures: {
+            "rankedProductIds": [3, 1, 1],
+            "extractedFilters": case.expected_filters,
+        },
+        k_list=(1,),
+    )
+
+    noop_row = report["noopBaseline"]["cases"][0]
+    assert noop_row["rankedProductIds"] == [1, 3]
+
+
+def test_noop_baseline_matches_system_exactly_when_system_echoes_ascending_order() -> None:
+    # 시스템이 fixture 순서(오름차순)를 그대로 내면(기본 scripted adapter) no-op이 정확히
+    # 같은 집합·같은 순서가 되어 모든 K의 nDCG가 완전히 같아야 한다.
     case = _case("buy-srch-9001", relevant=[2], grades={2: 3})
 
     report = evaluate(
@@ -295,7 +356,11 @@ def test_noop_baseline_matches_system_when_system_echoes_full_candidate_order() 
         k_list=(1,),
     )
 
-    assert report["overall"]["ndcgAtK"]["1"] == report["noopBaseline"]["overall"]["ndcgAtK"]["1"]
+    assert report["overall"]["ndcgAtK"] == report["noopBaseline"]["overall"]["ndcgAtK"]
+    assert (
+        report["cases"][0]["rankedProductIds"]
+        == report["noopBaseline"]["cases"][0]["rankedProductIds"]
+    )
 
 
 def test_candidate_depth_stats_reports_min_median_max_and_shallow_ratio() -> None:

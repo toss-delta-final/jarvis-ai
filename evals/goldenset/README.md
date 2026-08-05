@@ -16,10 +16,12 @@
 - 작성·검수·변경 규칙(v2 절 포함): `GUIDE.md`
 - 데이터 버전·해시·슬라이스 쿼터·confirmatory 규약: `manifest.json`
 
-43건(dev 31 / sealed holdout 12)이며, 상품 라벨은 로컬 catalog 7,220건과 라이브 Spring
-I-1 응답에서만 가져왔다. 구매 이력 페르소나는 합성이지만 그 안의 상품 ID·이름·카테고리는
-동일 스냅샷의 실제 상품이다. Part 1(#333)은 v1을 구조·규약만 v2로 이관했다 — 후보를 실제로
-30까지 채우고 하드 네거티브를 라벨링하는 작업은 Part 2다.
+120건(dev 96 / sealed holdout 24)이며, 상품 라벨은 로컬 catalog(pg-catalog 6,559건 —
+v1 시드 7,220건에서 축소)와 라이브 Spring I-1 응답에서만 가져왔다. 구매 이력 페르소나는
+합성이지만 그 안의 상품 ID·이름·카테고리는 동일 스냅샷의 실제 상품이다. Part 1(#333)은
+v1을 구조·규약만 v2로 이관했고, Part 2가 `evals/goldenset/campaign_v2.py` 라이브 캠페인으로
+후보를 30까지 채우고 하드 네거티브를 라벨링하며 슬라이스 쿼터·INV/DIR 그룹을 채웠다
+(datasetVersion 2.1.0).
 
 **#32 검색 비교는 이 데이터셋의 `search` slice와
 `to_compare_golden_cases()`를 유일한 골든셋 원천으로 쓴다. 별도 골든셋 파일을 만들지 않는다.**
@@ -30,18 +32,23 @@ nDCG·MRR·Precision@k 분모에서 제외해야 한다.
 
 ## no-op 기준선
 
-**no-op = fixture candidates를 productId 오름차순으로, 같은 케이스의 시스템 노출 길이(중복
-제거 후)로 자른 목록을 노출했다고 가정한 기준선이다.** `fixtures/search_responses.json`의 각
-항목은 `candidates`(v2 provenance)를 productId 오름차순으로 중복 제거한 목록이 `productIds`와
-같아야 한다는 스키마 불변식을 가지므로(`schema.SearchFixture`), 그 평탄 목록의 선두 N개(N=그
-케이스의 시스템 노출 수)가 no-op의 정의다(`evals/metrics/runner.py`
-`NOOP_BASELINE_DEFINITION`). `evals/metrics`는 모든 실행에서 이 기준선의 순위 지표를 시스템
-출력과 나란히 `noopBaseline` 블록으로 함께 낸다.
+**no-op = 시스템이 실제로 노출한 상품 집합(중복 제거 후)을 productId 오름차순으로 재정렬한
+것을 노출했다고 가정한 기준선이다(#333 리뷰 F-4b).** fixture candidates를 별도로 참조하지
+않는다 — 시스템이 이미 hard_filter·dedup을 포함한 실제 앱 경로를 거쳐 낸 노출 집합 그 자체가
+"같은 후보"의 정의이고, 거기에 임의 순서(오름차순)를 적용한 것이 no-op이다. fixture 후보
+자체가 이미 productId 오름차순으로 기록되므로(`schema.SearchFixture` 불변식), 이는 "시스템
+노출 집합에 fixture 순서를 적용한 것"과 동치다. `evals/metrics`는 모든 실행에서 이 기준선의
+순위 지표를 시스템 출력과 나란히 `noopBaseline` 블록(`definition` 필드에 이 규약을 그대로
+실음, `evals/metrics/runner.py` `NOOP_BASELINE_DEFINITION`)으로 함께 낸다.
 
-**노출 길이로 자르는 이유(#333 리뷰 F-4)**: 후보 전체(≤30)를 그대로 no-op 노출로 쓰면, 시스템이
-후보보다 짧게 노출할 때 그 차이가 "순서 효과"가 아니라 "노출 길이 효과"로 nDCG 델타에 섞인다.
-no-op 기준선의 목적은 "같은 후보·같은 길이에서 순서만 임의"를 재는 것이다(#275의 no-op도 같은
-노출 집합 위 순서 비교였다) — 노출 길이 자체는 두 arm이 공유해야 순서만의 효과를 분리해서 잰다.
+**정의를 두 번 바꾼 이유**: no-op 기준선의 목적은 "같은 후보·같은 노출에서 순서만 임의"를
+재는 것이다(#275의 no-op도 동일 eligible 집합 위 순서 비교였다). 최초 구현(F-2 이전)은
+fixture 후보 전체를 그대로 no-op으로 썼는데, 시스템이 후보보다 짧게 노출하면 그 차이가
+"노출 길이 효과"로 nDCG 델타에 섞였다(F-4). 이를 fixture 후보를 시스템 노출 길이로 자르는
+방식으로 고쳤더니(F-4), 실측 스모크에서 4/31 케이스가 여전히 달랐다 — 앱의 실제 dedup/필터가
+후보 앞쪽(낮은 productId) 상품을 제외하고 뒤쪽 상품으로 대체하는데, "앞에서 N개 자르기"는 이
+대체를 반영하지 못해 no-op 노출 집합이 시스템의 실제 노출 집합과 달라졌다(F-4b). 최종 정의는
+시스템의 실제 노출 집합 자체를 재정렬하므로 이 문제가 구조적으로 발생하지 않는다.
 
 **`passthrough`는 검색 순위 기준선이 아니라 임의 순서 기준선이다.** v1 dev search fixture
 32/32건이 이미 productId 오름차순으로 기록돼 있었기 때문에 `evals/scoring`의 `passthrough`

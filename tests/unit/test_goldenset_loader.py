@@ -21,8 +21,8 @@ ROOT = Path("evals/goldenset")
 def test_committed_dev_and_holdout_are_separate() -> None:
     dev = load_cases("dev")
     holdout = load_cases("holdout")
-    assert len(dev) == 31
-    assert len(holdout) == 12
+    assert len(dev) == 103
+    assert len(holdout) == 24
     assert {case.split for case in dev} == {"dev"}
     assert {case.split for case in holdout} == {"holdout"}
     assert not hasattr(holdout[0], "relevant_product_ids")
@@ -333,6 +333,106 @@ async def test_snapshot_v2_broadens_search_when_primary_candidates_are_thin(tmp_
     assert by_id[3]["rule"] == "broadened_search"
     assert by_id[3]["from"] == "category-only"
     assert len(calls) == 3  # primary + keyword-only + category-only
+
+
+@pytest.mark.asyncio
+async def test_snapshot_v2_broadened_search_preserves_price_bounds(tmp_path: Path) -> None:
+    # 실측 회귀(#333 Part 2): keyword-only/category-only 완화 요청이 priceMax/priceMin을
+    # 빼면 원래 케이스의 가격 범위를 벗어난 실제 상품이 golden_filter 후보로 섞여 들어와
+    # HCV로 샌다(buy-mult-0001 등). 완화는 keyword/category만 느슨하게 하고 가격 하드
+    # 제약은 유지해야 한다.
+    requests = []
+
+    async def fake_search(filters):
+        requests.append(dict(filters.model_dump(exclude_none=True, by_alias=True)))
+        from app.schemas.spring import ProductSearchResult
+
+        if filters.category:
+            products = [SpringProduct(productId=1, name="상품1", price=1000)]
+        else:
+            products = [
+                SpringProduct(productId=1, name="상품1", price=1000),
+                SpringProduct(productId=2, name="상품2", price=999999),
+            ]
+        return ProductSearchResult(products=products, totalCount=len(products))
+
+    await record_snapshots_v2(
+        {"fixture-z": {"keyword": "테스트", "category": "카테고리", "priceMax": 20000}},
+        search=fake_search,
+        catalog_path=tmp_path / "catalog.json",
+        responses_path=tmp_path / "responses.json",
+        recorded_at="2026-08-02T00:00:00+09:00",
+        target_candidates=3,
+        per_query_max=30,
+    )
+
+    broadened_requests = [
+        request for request in requests if not ("keyword" in request and "category" in request)
+    ]
+    assert broadened_requests  # keyword-only/category-only 요청이 실제로 발생했다
+    for request in broadened_requests:
+        assert request.get("priceMax") == 20000
+
+
+@pytest.mark.asyncio
+async def test_snapshot_v2_relaxed_limit_applies_only_to_broadened_requests(
+    tmp_path: Path,
+) -> None:
+    # Part 2 §3-2: 골든 검색은 작은 limit(30)을, 완화 검색은 더 큰 --relaxed-limit을 쓴다.
+    limits = []
+
+    async def fake_search(filters):
+        limits.append(filters.limit)
+        from app.schemas.spring import ProductSearchResult
+
+        products = [SpringProduct(productId=1, name="상품1", price=1000)]
+        return ProductSearchResult(products=products, totalCount=1)
+
+    await record_snapshots_v2(
+        {"fixture-z": {"keyword": "테스트"}},
+        search=fake_search,
+        catalog_path=tmp_path / "catalog.json",
+        responses_path=tmp_path / "responses.json",
+        recorded_at="2026-08-02T00:00:00+09:00",
+        target_candidates=5,
+        per_query_max=30,
+        relaxed_limit=120,
+    )
+
+    assert limits == [30, 120]  # primary(골든) 30, 완화(keyword-only) 120
+
+
+@pytest.mark.asyncio
+async def test_snapshot_v2_relaxed_results_are_capped_at_target(tmp_path: Path) -> None:
+    # 실측 회귀(Part 2 라이브 실행): relaxed_limit=120인 완화 요청이 120건을 그대로 돌려주면
+    # 후보 수가 target(예: 30)을 훌쩍 넘겨서는 안 된다 — catalog는 전량 넓히되 후보 목록만
+    # target까지 채운다.
+    async def fake_search(filters):
+        from app.schemas.spring import ProductSearchResult
+
+        if filters.category and filters.keyword:
+            products = [SpringProduct(productId=1, name="상품1", price=1000)]
+        else:
+            products = [
+                SpringProduct(productId=pid, name=f"상품{pid}", price=1000) for pid in range(1, 91)
+            ]
+        return ProductSearchResult(products=products, totalCount=len(products))
+
+    catalog, responses = await record_snapshots_v2(
+        {"fixture-z": {"keyword": "테스트", "category": "카테고리"}},
+        search=fake_search,
+        catalog_path=tmp_path / "catalog.json",
+        responses_path=tmp_path / "responses.json",
+        recorded_at="2026-08-02T00:00:00+09:00",
+        target_candidates=30,
+        per_query_max=30,
+        relaxed_limit=120,
+    )
+
+    fixture = responses["fixture-z"]
+    assert len(fixture["productIds"]) == 30
+    # catalog는 완화 요청이 실제로 돌려준 응답 전체(최대 90건)를 그대로 반영한다.
+    assert len(catalog) == 90
 
 
 @pytest.mark.asyncio

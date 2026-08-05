@@ -14,74 +14,56 @@
   "counts": {
     "bySlice": {
       "dev": {
-        "budget": 2,
+        "budget": 12,
         "category_mapping_failure": 9,
         "cold_start": 2,
         "failure": 5,
-        "guest": 20,
-        "member": 11,
-        "multi_constraint": 4,
-        "personalization": 8,
-        "personalization_overreach": 3,
-        "repurchase": 3,
-        "search": 26,
-        "single_need": 22
+        "guest": 68,
+        "member": 35,
+        "multi_constraint": 12,
+        "personalization": 11,
+        "personalization_overreach": 6,
+        "repurchase": 8,
+        "search": 62,
+        "single_need": 71
       },
       "holdout": {
-        "budget": 0,
-        "category_mapping_failure": 2,
-        "cold_start": 0,
-        "failure": 2,
-        "guest": 10,
-        "member": 2,
-        "multi_constraint": 0,
-        "personalization": 2,
-        "personalization_overreach": 0,
-        "repurchase": 1,
-        "search": 10,
-        "single_need": 11
-      },
-      "total": {
-        "budget": 2,
-        "category_mapping_failure": 11,
-        "cold_start": 2,
-        "failure": 7,
-        "guest": 30,
-        "member": 13,
-        "multi_constraint": 4,
-        "personalization": 10,
-        "personalization_overreach": 3,
-        "repurchase": 4,
-        "search": 36,
-        "single_need": 33
+        "category_mapping_failure": 6,
+        "failure": 5,
+        "guest": 12,
+        "member": 12,
+        "personalization": 7,
+        "repurchase": 6,
+        "search": 19,
+        "single_need": 18
       }
     },
-    "dev": 31,
-    "holdout": 12,
-    "total": 43
+    "dev": 103,
+    "holdout": 24,
+    "total": 127
   },
   "createdAt": "2026-08-02",
-  "datasetHash": "07ca20b0d316d8f1196cf47bb1c14d1b8a78113b16cb216315e02255574e9afe",
+  "datasetHash": "ad6c8a1eb93b946b1012832a08becd3684c62e05b4393e3358d997d2825af364",
   "datasetName": "buyer-goldenset",
-  "datasetVersion": "2.0.0",
+  "datasetVersion": "2.1.0",
   "files": [
     {
-      "bytes": 3744,
+      "bytes": 10982,
       "path": "CHANGELOG.md",
       "records": 0,
-      "sha256": "92565578b2067a4b568211417dd195cc53273895f2f365537abfa022a497de25"
+      "sha256": "24695485ad40baad278a13a077fc875ee721c33042f471762532075be606390a"
     },
     {
-      "bytes": 13782,
+      "bytes": 16382,
       "path": "GUIDE.md",
       "records": 0,
-      "sha256": "e937bfb9f49d443d724e11400fb9f3683b99f64f7362eb2a35b060b9a72dc56b"
+      "sha256": "353062ff48d562e9802976751c00c279e54a5f31e36dfe451041d3044ab52570"
     },
     {
-      "bytes": 4213,
+      "bytes": 5015,
       "path": "README.md",
       "records": 0,
-      "sha256": "bcf17a5111ddaa624920bb772d09d8783969e833d8c9e4761c23f1db057296ea"
+      "sha256": "2da4fce5100949db05138e5b810a24fce7796cd2363344375025e7c802d187fb"
     },
     {
       "bytes": 110,
@@ -90,64 +72,70 @@
       "sha256": "f3752f48ee915e79685ff539e71941fb3a6a37853ffd063cd10b8b4ee8289e2b"
     },
     {
-      "bytes": 3291,
-      "path": "audit/leakage_report.json",
-      "records": 8,
-      "sha256": "483cda755ff355252b8757b93a318b47c9134b879f4e8170fb0f3584f1d215f4"
-    },
-    {
-      "bytes": 1451,
-      "path": "audit/leakage_report.md",
-      "records": 0,
-      "sha256": "833d5f36047f5a23426527fee9c365fd92d1ad2583f5ba9d14fec7c5a36d04f4"
-    },
-    {
       "bytes": 9963,
       "path": "audit.py",
       "records": 0,
       "sha256": "105f9d2e5837bb9aafafe466c7c5c983437a5b77b1c5a5fd480615d183944e82"
     },
     {
-      "bytes": 32123,
+      "bytes": 5370,
+      "path": "audit/leakage_report.json",
+      "records": 0,
+      "sha256": "37ce89dd34dd5d6887ab44ab713a1873a2d16452e5908257c8fa5b9fcf9681c8"
+    },
+    {
+      "bytes": 2834,
+      "path": "audit/leakage_report.md",
+      "records": 0,
+      "sha256": "b2b8ea834e34c998c28652f1d11f2b28a312ef82d0c4aac0c7bafa27fbad93dd"
+    },
+    {
+      "bytes": 16080,
+      "path": "campaign_v2.py",
+      "records": 0,
+      "sha256": "e359a4b795df6187512d66af05a084af934ef7174ac926ba6ebcb0640a719129"
+    },
+    {
+      "bytes": 105104,
       "path": "cases/buyer_dev.jsonl",
-      "records": 31,
-      "sha256": "4e86b8b90d865e439c3c238c0a8a4c35acf6d78012fe71f844747d121b1fbe6f"
+      "records": 103,
+      "sha256": "1a3e7e8b58cbba6839f5a2c6a7cb8eb234d7e746f2ee8744611bbf39069886c1"
     },
     {
-      "bytes": 7669,
+      "bytes": 15471,
       "path": "cases/buyer_holdout.jsonl",
-      "records": 12,
-      "sha256": "5887ec82183c88123acb700055882a624869b3658efcb5c38bbf337123df1c1e"
+      "records": 24,
+      "sha256": "ab1fa77a7c253bcdc1228a978e8ff2051bb591e1a520421234122c774d28e000"
     },
     {
-      "bytes": 4793,
+      "bytes": 10303,
       "path": "cases/buyer_holdout_labels.jsonl",
-      "records": 12,
-      "sha256": "7a372099d9d938d8c0168030a11d5ffdbe2f2eb1a80f5288be0e378f9e5ad8eb"
+      "records": 24,
+      "sha256": "60595715fd17dbdba599dfb40314bfb1202ef6691b14bbea4f20764b568faebc"
     },
     {
-      "bytes": 855830,
+      "bytes": 14037834,
       "path": "fixtures/catalog_snapshot.json",
-      "records": 335,
-      "sha256": "db16232a30b1dad49dc9102c25988842cb7878ee522bd2c92c60bed68caf8301"
+      "records": 0,
+      "sha256": "f98539b2d8d2fea60c586cf31499ecf9187ae815d389dd3f1312f05f3fec840d"
     },
     {
-      "bytes": 6075,
+      "bytes": 15738,
       "path": "fixtures/purchase_history.json",
-      "records": 11,
-      "sha256": "d9068b703e5ade93df6ab642dc9259b997fc891b6261d64d47968244921b6f74"
+      "records": 0,
+      "sha256": "d4203b8d31ef2bbc4c46d5bff6e1eb672c189ffc449299a898eaeb9adf687e3b"
     },
     {
-      "bytes": 78718,
+      "bytes": 527919,
       "path": "fixtures/search_responses.json",
-      "records": 43,
-      "sha256": "b90206a56a8562eee473cc8efa8b604ca395d3457b831e3cd39abb4236800c1b"
+      "records": 0,
+      "sha256": "5e6694b2ff52f40888da72f61e3a379c24de484a0437f0acd645a37ef53f0014"
     },
     {
-      "bytes": 14053,
+      "bytes": 18965,
       "path": "inject.py",
       "records": 0,
-      "sha256": "892c79867fd4e05e8d69a4d6bbc8b8c81d22863e893ee01ea1593f09594f106d"
+      "sha256": "b6d5e1ba6a53881b8a93bddfd503ee47d09b44157af5565ff6822b79c79c65a8"
     },
     {
       "bytes": 4109,
@@ -162,16 +150,16 @@
       "sha256": "1073256fe6495f4113940581952cdbb0017f33d15c1ab069c8abdafb9b02d390"
     },
     {
-      "bytes": 21497,
+      "bytes": 23734,
       "path": "schema.py",
       "records": 0,
-      "sha256": "7fbda0b1dfc7ef143882461f2aa7a83cc4ddef1adcbe81584f29b9438fcb77eb"
+      "sha256": "0ef5ae90673203ae2316874f8c8fcd31ee7652b8136506247bd97bece72162bf"
     },
     {
-      "bytes": 6852,
+      "bytes": 8507,
       "path": "snapshot.py",
       "records": 0,
-      "sha256": "dfb6ce6081a483c4a5f531e1bd392346375dba9ba13a8c93a30550c7761f0e84"
+      "sha256": "f68782e7350fc23a8c068182eb1f2f6bfafbb5349d2667c39359791dc8332cbd"
     }
   ],
   "hardNegativeInjection": {
@@ -194,14 +182,18 @@
     {
       "id": "labeler-01",
       "role": "labeler"
+    },
+    {
+      "id": "labeler-02",
+      "role": "labeler"
     }
   ],
   "provenance": {
-    "catalogSnapshotRecordedAt": "2026-08-03T00:20:00+09:00",
-    "catalogSource": "pg-catalog(local dev) 7220 products + live Spring I-1 @ localhost:8080",
+    "catalogSnapshotRecordedAt": "2026-08-05T00:00:00+09:00",
+    "catalogSource": "pg-catalog(local dev) 6,559 products + live Spring I-1 @ localhost:8080",
     "curated": 30,
     "productionDerived": 0,
-    "synthetic": 13
+    "synthetic": 97
   },
   "schemaVersion": "2.0.0",
   "sliceQuotas": {
@@ -209,9 +201,9 @@
     "category_mapping_failure": 8,
     "guest": 30,
     "holdout": {
-      "confirmatorySlicesMin": 6,
       "guest": 12,
       "member": 12,
+      "requiredSlicesMinEach": 6,
       "total": 24
     },
     "invDirGroupsMin": 18,

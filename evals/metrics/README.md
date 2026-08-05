@@ -69,11 +69,11 @@ SUT에 주입해 거짓 0을 만들지 않고 지표·위반 artifact에 전부 
 
 ## no-op 기준선(#333)
 
-모든 실행이 no-op 기준선(fixture candidates를 productId 오름차순으로, 같은 케이스의 시스템
-노출 길이로 자른 목록을 노출했다고 가정 — F-4 리뷰 반영)의 순위 지표를 시스템 출력과 나란히
-`results.json`의 `noopBaseline` 블록(`definition` 필드에 규약 문자열 포함), `report.md`의
-비교 표, `aggregates.csv`의 `arm`(`system`/`noop`) 컬럼으로 함께 낸다. 정의는
-`evals/goldenset/README.md`의 no-op 절을 본다.
+모든 실행이 no-op 기준선(시스템이 실제로 노출한 상품 집합을 productId 오름차순으로 재정렬했다고
+가정 — F-4b 리뷰 반영)의 순위 지표를 시스템 출력과 나란히 `results.json`의 `noopBaseline`
+블록(`definition` 필드에 규약 문자열 포함), `report.md`의 비교 표, `aggregates.csv`의
+`arm`(`system`/`noop`) 컬럼으로 함께 낸다. 정의는 `evals/goldenset/README.md`의 no-op 절을
+본다.
 
 ## cutoff·슬라이스 N·confirmatory/exploratory(#333)
 

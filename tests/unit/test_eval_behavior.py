@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from evals.goldenset.schema import GoldenCase
+from evals.goldenset.schema import DATASET_VERSION, SCHEMA_VERSION, GoldenCase
 from evals.metrics.behavior import evaluate_behavior_checks
 
 
@@ -25,8 +25,8 @@ def _case(
         identity["personaId"] = "persona-1"
     raw = {
         "caseId": case_id,
-        "schemaVersion": "2.0.0",
-        "datasetVersion": "2.0.0",
+        "schemaVersion": SCHEMA_VERSION,
+        "datasetVersion": DATASET_VERSION,
         "split": "dev",
         "slices": slices,
         "query": "테스트 발화",

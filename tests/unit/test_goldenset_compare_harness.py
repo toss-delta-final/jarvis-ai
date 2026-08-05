@@ -6,6 +6,7 @@ import pytest
 
 from app.pipelines.artifact_store import CatalogArtifact, CatalogArtifactStore
 from app.pipelines.compare import compare_backends
+from evals.goldenset.campaign_v2 import DEFAULT_TARGET
 from evals.goldenset.loader import to_compare_golden_cases
 from tests._goldenset_compare import candidates_provider, search_slice_cases
 
@@ -14,7 +15,7 @@ def test_committed_search_slice_matches_compare_adapter() -> None:
     cases = search_slice_cases()
     adapted = to_compare_golden_cases("dev")
 
-    assert len(cases) == 26
+    assert len(cases) == 62
     assert len({case.query for case in cases}) == len(cases)
     assert [case.query for case in adapted] == [case.query for case in cases]
     assert [case.relevant_ids for case in adapted] == [
@@ -45,8 +46,9 @@ def test_provider_wires_real_cases_into_compare_backends() -> None:
     candidates = candidates_provider()
     target = cases[0]
     target_candidates = candidates(target.query)
-    assert target.case_id == "buy-srch-0001"
-    assert len(target_candidates) <= 10
+    assert target.case_id == "buy-budg-0001"
+    # v2 라이브 캠페인의 후보 depth 목표는 target(#333 Part 2, DEFAULT_TARGET=30)이다.
+    assert len(target_candidates) <= DEFAULT_TARGET
     assert set(target.relevant_product_ids) <= set(target_candidates)
 
     product_ids = {product_id for case in cases for product_id in candidates(case.query)}
@@ -76,4 +78,6 @@ def test_provider_wires_real_cases_into_compare_backends() -> None:
     assert report.k == 10
     assert len(report.method1.per_case) == len(cases)
     assert len(report.method2.per_case) == len(cases)
-    assert report.method2.per_case[0] == 1.0
+    # v2 데이터는 후보 depth가 30(하드 네거티브 포함)이라 v1(얕은 후보)처럼 recall@10이
+    # 자명하게 1.0이 되지 않는다 — 순위 판별력을 회복한 의도된 결과(#333 Part 2).
+    assert report.method2.per_case[0] == pytest.approx(1 / 3)

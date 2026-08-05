@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.config import Settings
-from evals.goldenset.schema import GoldenCase, validate_cases
+from evals.goldenset.schema import DATASET_VERSION, SCHEMA_VERSION, GoldenCase, validate_cases
 
 
 def _config(
@@ -65,8 +65,8 @@ def _fixture(product_ids: list[int], *, injected_ids: list[int] | None = None) -
 def _raw(case_id: str = "buy-srch-0001") -> dict:
     return {
         "caseId": case_id,
-        "schemaVersion": "2.0.0",
-        "datasetVersion": "2.0.0",
+        "schemaVersion": SCHEMA_VERSION,
+        "datasetVersion": DATASET_VERSION,
         "split": "dev",
         "slices": ["search", "guest", "single_need"],
         "query": "테스트 상품",
@@ -513,3 +513,98 @@ def test_narrow_domain_and_relevant_ratio_exempt_notes_can_be_combined() -> None
         purchase_history={},
         config=_config(min_ranking_candidates=20, max_relevant_ratio=0.2),
     )
+
+
+def _dir_raw(case_id: str, *, fixture_id: str, expected_filters: dict, group_id: str) -> dict:
+    """DIR constraint_subset 케이스 — 라벨 필드는 비워도 된다(GUIDE v2)."""
+    return {
+        "caseId": case_id,
+        "schemaVersion": SCHEMA_VERSION,
+        "datasetVersion": DATASET_VERSION,
+        "split": "dev",
+        "slices": ["guest", "single_need"],
+        "query": "테스트 발화",
+        "queryType": "simple",
+        "identity": {"kind": "guest", "personaId": None},
+        "expectedRoute": "recommend",
+        "expectedFilters": expected_filters,
+        "searchFixtureId": fixture_id,
+        "relevantProductIds": [],
+        "relevanceGrades": {},
+        "idealOrder": [],
+        "hardConstraints": {
+            "priceMax": None,
+            "priceMin": None,
+            "forbiddenCategories": [],
+            "forbiddenProductIds": [],
+        },
+        "mustExcludeProductIds": [],
+        "provenance": "synthetic",
+        "labeler": "labeler-02",
+        "adjudicator": None,
+        "createdAt": "2026-08-05",
+        "notes": "DIR constraint_subset 테스트.",
+        "testType": "DIR",
+        "behaviorGroupId": group_id,
+        "behaviorKind": "constraint_subset",
+    }
+
+
+def test_constraint_subset_group_passes_when_stricter_is_subset_of_relaxed() -> None:
+    # #333 라운드2 F-R6 — validate_cases가 로드 시점에 부분집합 관계를 검증한다.
+    relaxed = GoldenCase.model_validate(
+        _dir_raw(
+            "buy-dirc-0001",
+            fixture_id="fixture-relaxed",
+            expected_filters={"keyword": "테스트"},
+            group_id="dir-subset-01",
+        )
+    )
+    stricter = GoldenCase.model_validate(
+        _dir_raw(
+            "buy-dirc-0002",
+            fixture_id="fixture-stricter",
+            expected_filters={"keyword": "테스트", "priceMax": 10_000},
+            group_id="dir-subset-01",
+        )
+    )
+    validate_cases(
+        [relaxed, stricter],
+        catalog={str(i): _product(i) for i in range(1, 4)},
+        search_responses={
+            "fixture-relaxed": _fixture([1, 2, 3]),
+            "fixture-stricter": _fixture([1, 2]),
+        },
+        purchase_history={},
+        config=_config(),
+    )
+
+
+def test_constraint_subset_group_fails_when_stricter_exposure_is_not_subset() -> None:
+    relaxed = GoldenCase.model_validate(
+        _dir_raw(
+            "buy-dirc-0001",
+            fixture_id="fixture-relaxed",
+            expected_filters={"keyword": "테스트"},
+            group_id="dir-subset-01",
+        )
+    )
+    stricter = GoldenCase.model_validate(
+        _dir_raw(
+            "buy-dirc-0002",
+            fixture_id="fixture-stricter",
+            expected_filters={"keyword": "테스트", "priceMax": 10_000},
+            group_id="dir-subset-01",
+        )
+    )
+    with pytest.raises(ValueError, match="부분집합이 아닙니다"):
+        validate_cases(
+            [relaxed, stricter],
+            catalog={str(i): _product(i) for i in range(1, 5)},
+            search_responses={
+                "fixture-relaxed": _fixture([1, 2]),
+                "fixture-stricter": _fixture([1, 4]),  # 4는 완화 쪽에 없다
+            },
+            purchase_history={},
+            config=_config(),
+        )

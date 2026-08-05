@@ -15,7 +15,7 @@ from app.core.config import Settings, get_settings
 from app.schemas.spring import ProductSearchFilters
 
 SCHEMA_VERSION = "2.0.0"
-DATASET_VERSION = "2.0.0"
+DATASET_VERSION = "2.1.0"
 CASE_ID_RE = re.compile(r"^buy-[a-z][a-z0-9_]*-\d{4}$")
 # 니즈 축(신원 아님) — 케이스당 정확히 1개(disjoint, §2.1). guest/member 신원 슬라이스와는 별도 축이다.
 NEEDS_SLICES = frozenset({"single_need", "multi_constraint", "budget", "repurchase"})
@@ -117,7 +117,7 @@ class CaseCore(CamelModel):
 
     case_id: str
     schema_version: Literal["2.0.0"]
-    dataset_version: Literal["2.0.0"]
+    dataset_version: Literal["2.1.0"]
     split: Literal["dev", "holdout"]
     slices: list[str]
     query: str = Field(min_length=1)
@@ -288,7 +288,12 @@ class Candidate(CamelModel):
     source: Literal["golden_filter", "injected"]
     rule: (
         Literal[
-            "semantic_near", "price_violation", "attr_violation", "other_brand", "broadened_search"
+            "semantic_near",
+            "price_violation",
+            "attr_violation",
+            "other_brand",
+            "broadened_search",
+            "random_catalog",
         ]
         | None
     ) = None
@@ -478,6 +483,39 @@ def validate_cases(
                 and price < case.hard_constraints.price_min
             ):
                 raise ValueError(f"{case.case_id}: 정답 상품 가격이 priceMin을 위반합니다")
+
+    # #333 라운드2 F-R6 — constraint_subset DIR 그룹은 강화(stricter) 노출이 완화(relaxed)
+    # 노출의 부분집합이어야 한다(evals.metrics.behavior._check_constraint_subset과 같은 판정
+    # 로직). 데이터가 다시 어긋나면 평가 스모크가 아니라 로드 시점(validate_cases)에 잡는다.
+    constraint_subset_groups: dict[str, list[GoldenCase]] = {}
+    for case in cases:
+        if case.behavior_kind == "constraint_subset" and case.behavior_group_id:
+            constraint_subset_groups.setdefault(case.behavior_group_id, []).append(case)
+    for group_id, group_cases in constraint_subset_groups.items():
+        if len(group_cases) != 2:
+            raise ValueError(
+                f"{group_id}: constraint_subset 그룹은 정확히 2케이스(강화/완화)여야 합니다: "
+                f"{len(group_cases)}건"
+            )
+        left, right = group_cases
+        left_filters, right_filters = dict(left.expected_filters), dict(right.expected_filters)
+        left_is_stricter = left_filters.items() > right_filters.items()
+        right_is_stricter = right_filters.items() > left_filters.items()
+        if left_is_stricter == right_is_stricter:
+            raise ValueError(
+                f"{group_id}: expectedFilters의 포함 관계로 강화/완화 케이스를 판별할 수 없습니다"
+            )
+        stricter, relaxed = (left, right) if left_is_stricter else (right, left)
+        stricter_fixture = parsed_fixtures.get(stricter.search_fixture_id or "")
+        relaxed_fixture = parsed_fixtures.get(relaxed.search_fixture_id or "")
+        if stricter_fixture is None or relaxed_fixture is None:
+            raise ValueError(f"{group_id}: constraint_subset 케이스의 검색 fixture가 없습니다")
+        offending = sorted(set(stricter_fixture.product_ids) - set(relaxed_fixture.product_ids))
+        if offending:
+            raise ValueError(
+                f"{group_id}: 강화 케이스({stricter.case_id}) 노출이 완화 케이스"
+                f"({relaxed.case_id}) 노출의 부분집합이 아닙니다 — 여집합 {offending}"
+            )
 
 
 def dump_jsonl(path: Path, rows: Sequence[BaseModel | dict]) -> None:

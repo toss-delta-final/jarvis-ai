@@ -118,28 +118,25 @@ def _catalog_has(catalog: Mapping[object, object], product_id: int) -> bool:
 
 
 NOOP_BASELINE_DEFINITION = (
-    "fixture candidates를 productId 오름차순으로 나열하되, 같은 케이스의 시스템 노출 길이"
-    "(중복 제거 후)로 자른 목록을 노출했다고 가정하는 기준선이다. 같은 후보 집합·같은 노출"
-    "길이에서 순서만 임의라는 것을 재는 것이 목적이며(#333 리뷰 F-4), 후보 전체(≤30)를 그대로"
-    " 쓰면 노출 길이 차이가 순서 효과에 섞여 비교 가능성이 깨진다."
+    "시스템이 실제로 노출한 상품 집합(중복 제거 후)을 productId 오름차순으로 재정렬한 것을 "
+    "노출했다고 가정하는 기준선이다(#333 리뷰 F-4b — F-4의 fixture 후보 절단 정의를 대체). "
+    "목적은 순수 순서 효과 격리다: 같은 노출 집합 위에서 '시스템이 고른 순서' 대 '임의(오름차순) "
+    "순서'만 비교한다(#275의 no-op도 arm 간 동일 eligible 집합 위 순서 비교였다). fixture 후보 "
+    "자체가 이미 productId 오름차순으로 기록되므로, 이는 '시스템 노출 집합에 fixture 순서를 "
+    "적용한 것'과 동치다. 앱의 hard_filter·dedup을 거친 뒤의 실제 노출 집합을 그대로 쓰므로, "
+    "F-4가 남겼던 '노출 집합 자체가 fixture 앞부분과 달라지는' 문제(#333 리뷰 F-4 스모크 실측)가 "
+    "생기지 않는다."
 )
 
 
-def _noop_output(
-    case: GoldenCase, fixtures: EvaluationFixtures, *, exposure_length: int | None = None
-) -> Mapping[str, object]:
-    """no-op 기준선 — fixture 후보를 productId 오름차순으로, 시스템과 같은 노출 길이로 자른다.
+def _noop_output(system_ranked_ids: Sequence[int]) -> Mapping[str, object]:
+    """no-op 기준선(F-4b) — 시스템 노출 집합을 productId 오름차순으로 재정렬한다.
 
-    ``SearchFixture.product_ids``(v2)는 candidates를 productId 오름차순으로 중복 제거한
-    목록이라는 불변식을 스키마가 강제하므로, 이 목록의 선두 ``exposure_length``개가 no-op
-    기준선의 정의다(README §no-op 기준선, `NOOP_BASELINE_DEFINITION`). ``exposure_length``를
-    주지 않으면(단독 호출 등) 전체 후보를 그대로 쓴다. 필터 추출은 하지 않는다고 간주해
-    extractedFilters는 빈 값이다.
+    fixture candidates를 별도로 참조하지 않는다 — 시스템이 이미 실제 앱 경로(hard_filter·
+    dedup 포함)를 거쳐 낸 노출 집합 그 자체가 "같은 후보"의 정의이고, 거기에 임의 순서(오름차순)
+    를 적용한 것이 no-op이다. 필터 추출은 하지 않는다고 간주해 extractedFilters는 빈 값이다.
     """
-    fixture = fixtures.search_responses.get(case.search_fixture_id or "", {})
-    candidates = list(fixture.get("productIds", []))
-    ranked = candidates if exposure_length is None else candidates[:exposure_length]
-    return {"rankedProductIds": ranked, "extractedFilters": {}}
+    return {"rankedProductIds": sorted(set(system_ranked_ids)), "extractedFilters": {}}
 
 
 def _case_result(
@@ -154,7 +151,12 @@ def _case_result(
     actual_filters = dict(output.get("extractedFilters", {}))
     relevant = set(case.relevant_product_ids)
     excluded_reason = None
-    if not relevant:
+    if case.test_type != "MFT":
+        # INV/DIR은 라벨 없이 규모를 늘리는 축(GUIDE §v2)이다 — member_recall_ge_guest처럼
+        # 검사 자체에 라벨이 필요한 DIR도 있어(#333 Part 2) relevantProductIds가 비어있지
+        # 않을 수 있다. 순위 품질 지표(nDCG 등)는 MFT 케이스로만 계산해야 한다.
+        excluded_reason = "notMft"
+    elif not relevant:
         excluded_reason = "emptyRelevance"
     elif case.case_id in fixtures.non_discriminative_case_ids:
         excluded_reason = "nonDiscriminativeRanking"
@@ -357,18 +359,14 @@ def evaluate(
         for violation in row["violations"]
     ]
 
-    # no-op 기준선(#333 §2.2, F-4 개정) — fixture 후보를 productId 오름차순으로, 같은 케이스의
-    # 시스템 노출 길이(중복 제거 후)로 잘라 노출했다고 가정한 순위 지표를 시스템 출력과
-    # 나란히 낸다. 같은 k_list/ndcg_k_list 규약을 그대로 쓴다.
-    system_exposure_length = {row["caseId"]: len(row["rankedProductIds"]) for row in case_rows}
+    # no-op 기준선(#333 §2.2, F-4b 개정) — 시스템이 실제로 낸 노출 집합을 productId 오름차순
+    # 으로 재정렬했다고 가정한 순위 지표를 시스템 출력과 나란히 낸다. 같은 k_list/ndcg_k_list
+    # 규약을 그대로 쓴다.
+    system_rows_by_id = {row["caseId"]: row for row in case_rows}
     noop_case_rows = [
         _case_result(
             case,
-            _noop_output(
-                case,
-                resolved_fixtures,
-                exposure_length=system_exposure_length.get(case.case_id),
-            ),
+            _noop_output(system_rows_by_id[case.case_id]["rankedProductIds"]),
             resolved_fixtures,
             resolved_k,
             resolved_ndcg_k,

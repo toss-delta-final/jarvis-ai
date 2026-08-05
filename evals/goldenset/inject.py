@@ -214,6 +214,77 @@ def merge_candidates(
     return [merged[product_id] for product_id in sorted(merged)]
 
 
+def within_price_bounds(record: Mapping[str, Any], hard_constraints: Mapping[str, Any]) -> bool:
+    price_max = hard_constraints.get("priceMax")
+    price_min = hard_constraints.get("priceMin")
+    if price_max is None and price_min is None:
+        return True
+    price = record.get("price")
+    if price is None:
+        return False  # 가격을 모르면 위반 여부도 확인 불가 — 안전하게 제외한다.
+    if price_max is not None and price > price_max:
+        return False
+    return not (price_min is not None and price < price_min)
+
+
+def derive_constraint_subset_candidates(
+    relaxed_candidates: Sequence[Mapping[str, Any]],
+    *,
+    catalog: Mapping[str, Mapping[str, Any]],
+    stricter_hard_constraints: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """완화(relaxed) fixture의 candidates만 걸러 강화(stricter) fixture 후보를 만든다.
+
+    fixture ``productIds`` 집합 수준의 부분집합은 보장하지만, 평가 시점 push 절단
+    (``LIST_MAX_PRODUCTS``, ascending productId 상위 K)까지는 보장하지 못한다 — 실측(#333
+    라운드2)에서 강화 쪽이 완화 쪽 중간 항목을 걸러내면 뒤 항목들이 앞으로 밀려 강화 쪽 top-K에
+    완화 쪽 top-K 밖의 상품이 섞여 들어왔다(behaviorChecks 18/18 미달). 노출(exposure) 수준
+    보장에는 ``merge_relaxed_with_stricter_floor``를 쓴다 — 이 함수는 그 전 단계 실험으로
+    남겨둔다(단위 테스트로 성질만 고정).
+    """
+    return [
+        dict(candidate)
+        for candidate in relaxed_candidates
+        if within_price_bounds(
+            catalog.get(str(candidate["productId"]), {}), stricter_hard_constraints
+        )
+    ]
+
+
+def merge_relaxed_with_stricter_floor(
+    relaxed_candidates: Sequence[Mapping[str, Any]],
+    stricter_candidates: Sequence[Mapping[str, Any]],
+    *,
+    target: int,
+) -> list[dict[str, Any]]:
+    """완화(relaxed) fixture 후보를 강화(stricter) fixture 후보 위에 병합한다.
+
+    #333 라운드2 F-R6 — constraint_subset DIR 쌍은 평가 시점 push가 항상 productId 오름차순
+    상위 K(``LIST_MAX_PRODUCTS``)로 절단한다(F-4b no-op 정의와 같은 관례). fixture
+    ``productIds`` 집합 수준의 부분집합만으로는 이 절단을 통과하지 못한다 — 강화 쪽에서 중간
+    항목이 빠지면 그 뒤 항목들이 한 칸씩 당겨져 강화 쪽 top-K에 완화 쪽 top-K 밖의 상품이 섞여
+    들어온다(실측: dir-subset-02/03, behaviorChecks 18/18 미달).
+
+    강화 쪽 candidates 전원을 완화 쪽에 그대로 포함시키고, 나머지(완화 쪽 자체 검색·주입
+    결과)는 강화 쪽 최대 productId보다 **큰** 것만 채운다. 이러면 완화 쪽을 오름차순 정렬했을
+    때 강화 쪽 항목이 전부 앞쪽에 몰리고, 그 뒤로만 완화 전용 항목이 온다 — push가 어떤 K로
+    자르든(상위 9든 30 전부든) 강화 쪽 노출이 항상 완화 쪽 노출의 부분집합이 되도록 구성적으로
+    보장한다. 강화 쪽 candidates는 이 함수 호출 전에 이미 확정돼 있어야 한다(라이브 검색 순서와
+    무관하게 always-included).
+    """
+    merged: dict[int, dict[str, Any]] = {
+        int(candidate["productId"]): dict(candidate) for candidate in stricter_candidates
+    }
+    floor = max(merged) if merged else -1
+    for candidate in relaxed_candidates:
+        if len(merged) >= target:
+            break
+        product_id = int(candidate["productId"])
+        if product_id > floor and product_id not in merged:
+            merged[product_id] = dict(candidate)
+    return list(merged.values())
+
+
 def build_case_candidates(
     golden_candidates: Sequence[Mapping[str, Any]],
     *,
@@ -228,27 +299,42 @@ def build_case_candidates(
     nearest_neighbors: NearestNeighborFn,
     target: int,
 ) -> list[dict[str, Any]]:
-    """케이스 하나의 최종 후보 30개(목표)를 만드는 오케스트레이션 — Part 2가 케이스별로 호출한다."""
+    """케이스 하나의 최종 후보 30개(목표)를 만드는 오케스트레이션 — Part 2가 케이스별로 호출한다.
+
+    가격 하드제약이 있으면 ``price_violation`` 채널을 뺀 나머지 채널(semantic_near·
+    attr_violation·other_brand·random_catalog)의 주입 풀을 가격 제약 내 상품으로 좁힌다
+    (#333 Part 2 라이브 실행 실측 — 가격은 Spring 서버 사이드에서만 걸러지고 AI 앱은 로컬
+    재검증을 하지 않아, 가격 위반 의도가 없는 채널이 우연히 가격 위반 상품을 주입하면
+    evals.metrics의 hard_filter가 걸러내지 못해 HCV로 그대로 샌다). price_violation은
+    의도적으로 위반 상품을 찾아야 하므로 전체 catalog를 그대로 쓴다.
+    """
     existing_ids = frozenset(int(candidate["productId"]) for candidate in golden_candidates)
+    safe_catalog = catalog
+    if hard_constraints.get("priceMax") is not None or hard_constraints.get("priceMin") is not None:
+        safe_catalog = {
+            product_id: record
+            for product_id, record in catalog.items()
+            if within_price_bounds(record, hard_constraints)
+        }
     pools = {
         "semantic_near": find_semantic_near(
             golden_product_ids,
             existing_ids,
             embedding_lookup=embedding_lookup,
             nearest_neighbors=nearest_neighbors,
-            catalog=catalog,
+            catalog=safe_catalog,
             limit=target,
         ),
         "price_violation": find_price_violation(
             category, hard_constraints, catalog, existing_ids, limit=target
         ),
         "attr_violation": find_attr_violation(
-            category, attr_conditions, catalog, existing_ids, limit=target
+            category, attr_conditions, safe_catalog, existing_ids, limit=target
         ),
         "other_brand": find_other_brand(
-            category, target_brands, catalog, existing_ids, limit=target
+            category, target_brands, safe_catalog, existing_ids, limit=target
         ),
-        "random_catalog": find_random_catalog(case_id, catalog, existing_ids, limit=target),
+        "random_catalog": find_random_catalog(case_id, safe_catalog, existing_ids, limit=target),
     }
     return merge_candidates(golden_candidates, pools, target=target)
 
@@ -288,8 +374,10 @@ def pg_catalog_nearest_neighbors(settings: Settings) -> NearestNeighborFn:
             register_vector(connection)
             with connection.cursor() as cursor:
                 excluded = list(exclude_ids) or [-1]
+                # psycopg가 파이썬 list를 postgres double precision[]로 직렬화해 <=> 연산자와
+                # 타입이 안 맞는다(#333 Part 2 라이브 실행에서 실측) — ::vector로 명시 캐스팅한다.
                 cursor.execute(
-                    "SELECT product_id, embedding <=> %s AS distance FROM products "
+                    "SELECT product_id, embedding <=> %s::vector AS distance FROM products "
                     "WHERE NOT (product_id = ANY(%s)) ORDER BY distance ASC, product_id ASC LIMIT %s",
                     (list(vector), excluded, limit),
                 )
