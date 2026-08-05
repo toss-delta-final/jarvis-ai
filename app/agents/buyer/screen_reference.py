@@ -10,8 +10,9 @@
     | "무선 이어폰 담아줘" | `name` 매칭 |
 
 이 중 **순번·좌표·"후보 1건" 규칙은 결정적(deterministic)** 이라 LLM 에게 맡길 이유가 없다.
-실제로 맡겨 봤더니 나빴다 — 실 LLM N=8 프로브(scripts/verify_screen_context_118.py, 채택안
-`SCREEN` 블록 기준)에서:
+실제로 맡겨 봤더니 나빴다 — 실 LLM N=8 프로브(#118, 채택안 `SCREEN` 블록 기준. 지금은
+`evals/intent_probe` group="screen" 이 #300 으로 흡수했다 —
+`evals/intent_probe/baselines/fast-2026-08-05-300-screen/`)에서:
 
     | 셀 | 목표 | 성공 | **다른 상품을 확정**(=오담기) |
     |---|---|---|---|

@@ -1,0 +1,270 @@
+{
+  "commitSha": "d4cc7ada2efbc29e7a4032d88422cf90f39f63f7",
+  "dirty": true,
+  "hashes": {
+    "anchorFixture": "63b2bc92324fe0d883c129974a705517ebf2056f2593b4a6f7e00c477ce24dea",
+    "categoryScopePrompt": "6c54c2656063e8de7d635c957e77a559ab90b754da574a20f229e0bff5347613",
+    "config": "a32f1b26e16b6fd866972f7a9adcfcf06eedbe6b418ae76e3d6aab4ab8b7a0bc",
+    "datasetManifest": "0f3b91efa922a56d5c053ae26203dc3aaaef0fb0213df744c9dcc48fc8331af7",
+    "fixtures": {
+      "catalog_snapshot.json": "db16232a30b1dad49dc9102c25988842cb7878ee522bd2c92c60bed68caf8301",
+      "purchase_history.json": "d9068b703e5ade93df6ab642dc9259b997fc891b6261d64d47968244921b6f74",
+      "search_responses.json": "88eeb27452236d0a9779de3ecb8ab3258503f1d5528f3b832ea2df1488754cf0"
+    },
+    "intentProbeModules": {
+      "__init__.py": "e11a9e613c8b4ec21a60b4780ca3588e5675532f5d10e7a81bf7debe6019d8ab",
+      "__main__.py": "c660464354120c4a507dd49c27e613e2e01d658f6ebb05d2e54902de0974b9b8",
+      "cli.py": "35de3024299c84a33870f83959a8970a7b57a5c1ab55abdd38aa7649236c36e1",
+      "client.py": "e911018ab46751f3c92e682aec831691aa7aedeb753cf8b86e6cc81a562a427e",
+      "fakes.py": "cd8984bb31a869dcaf497203ba8b6caad6bc510338e16034f32fc17a96e2b95f",
+      "loader.py": "c6cacd34399a3378d11cd329fa876d517e4bfd14ab7f742ffd093f98fd44044b",
+      "manifest.py": "55925abce9f8b3813a150aa5c47f692ac9bfdbacd3ddfe7c627d87b62bd7e7f0",
+      "metrics.py": "561a1fca1e2fb6bfdc7a4fbb4ca97a4b89d7accd301f8e683bbe975e428db174",
+      "pacer.py": "1776b6130b3dd7c06a9b7bf57904a6ae3a12f05cee65ef46ab6aac097e3b56b3",
+      "report.py": "ab498d4854febe2c4974e17f6fe39ba698756a0e23c7f1c4bf576bca7f1f0813",
+      "runner.py": "cefffef2f622917b9837f5c2fcb8519abfa9a0c530cfb57e5ded84b1d294addd",
+      "schema.py": "7d7f0ae9cdb862af9529cd72fd06380511af4edf9e2b0592bad3ef9288958623"
+    },
+    "prompts": {
+      "categoryScope": "0210c7114a756bd5de0ab75861ff24c10c33ce8bfcf755c322e09f88434f4819",
+      "decompose": "16da30e45575f5d16a22544ee83d3ba41ff554b59f452e498f1390cc4f07ad20",
+      "rerank": "ae3b549237b354f718fc08966a383613e5fec8d200c8d07daed038cda552ea7c"
+    },
+    "systemPrompt": "e5e7f9b8d8440937fe717c02ea1b80c14b21e9c2a0fde69c826ec5cb41d2d8ba",
+    "uvLock": "85f41455b55376fe54790ccfe407aa56d477301c579e71b940038aec3631742a"
+  },
+  "image": null,
+  "intentProbe": {
+    "attemptMultiplier": 3,
+    "axisDefinitions": {
+      "cartAddProductIdLegacy2": {
+        "components": [],
+        "denominator": "switchLegacy2 와 동일 표본(전환 2발화 × PENDING_CART × N)",
+        "notComparableWith": [
+          "switchLegacy2",
+          "#240 전환 축"
+        ],
+        "numerator": "intent 가 cart_add 이고 cart.productId 가 LAST_RECOMMENDATIONS 안에 있는 표본 수 — **되물음 상품을 그대로 에코해도 정답으로 센다**. #234 정의이며 switchLegacy2 와 같은 표본을 다른 정의로 다시 센 값이다"
+      },
+      "cartControl": {
+        "components": [],
+        "denominator": "장바구니 대조군 6발화 × 컨텍스트 3종 × N",
+        "notComparableWith": [],
+        "numerator": "intent 가 기대 intent(cart_view 또는 cart_add)와 일치한 표본 수"
+      },
+      "categoryAction3Way": {
+        "components": [
+          "categoryCarry",
+          "categoryClear",
+          "categoryReplace",
+          "categoryMixedReplace"
+        ],
+        "denominator": "카테고리 15발화 × categoryPrior 컨텍스트 × N (N=8 이면 120) — 라운드 3 이 혼합 4발화를 더해 88 → 120 이 됐다",
+        "notComparableWith": [
+          "baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)",
+          "baselines/fast-2026-08-05-84 (분모 88 — 혼합 4발화 추가 전)"
+        ],
+        "numerator": "확정값(resolvedCategoryAction)이 기대 carry·clear·replace 와 일치한 표본 수 (carry 기대는 확정값이 replace 라도 그 leg 이 **전부** 직전 카테고리 에코면 정답으로 센다 — 프롬프트가 리파인 턴에 PRIOR_FILTERS.category 를 categoryQueries 로 복사하라고 지시해서 나오는 모양이고, 결과적으로 카테고리가 유지되므로 사용자가 겪는 동작이 carry 와 같다. 에코 판정은 앵커 categoryPriorFilters(카테고리 전체·각 조각·semanticQuery)와 **정규화 후 정확 일치**다 — 부분 문자열이면 `이어폰 케이스` 같은 새 상품도 에코로 세어 카테고리가 바뀐 턴을 '유지됐다'로 읽는다)"
+      },
+      "categoryCarry": {
+        "components": [],
+        "denominator": "리파인 4발화 × categoryPrior 컨텍스트 × N (N=8 이면 32)",
+        "notComparableWith": [
+          "baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)"
+        ],
+        "numerator": "resolvedCategoryAction 이 carry 인 표본 수 (**또는** replace 이면서 leg 이 **전부** 직전 카테고리 에코인 표본 — 프롬프트가 리파인 턴에 직전 카테고리를 leg 로 복사하라고 지시해서 나오는 모양이고, 카테고리는 유지된다. 에코는 앵커 categoryPriorFilters 와 정규화 후 **정확 일치**일 때만 인정한다)"
+      },
+      "categoryClear": {
+        "components": [],
+        "denominator": "리셋 4발화 × categoryPrior 컨텍스트 × N (N=8 이면 32)",
+        "notComparableWith": [
+          "baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)"
+        ],
+        "numerator": "resolvedCategoryAction 이 clear 인 표본 수"
+      },
+      "categoryMixedReplace": {
+        "components": [],
+        "denominator": "혼합 4발화 × categoryPrior 컨텍스트 × N (N=8 이면 32)",
+        "notComparableWith": [
+          "baselines/fast-2026-08-05-84 (이 축이 존재하지 않던 런)"
+        ],
+        "numerator": "resolvedCategoryAction 이 replace 인 표본 수 — 새 카테고리를 지목하면서 동시에 '아무거나'류 표현을 쓴 발화다. 초판(scopeFree 우선)에서는 사용자가 말한 카테고리가 통째로 버려져 무필터가 됐다(실 LLM 실측 32건 중 19건 clear)"
+      },
+      "categoryReplace": {
+        "components": [],
+        "denominator": "교체 3발화 × categoryPrior 컨텍스트 × N (N=8 이면 24)",
+        "notComparableWith": [
+          "baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)"
+        ],
+        "numerator": "resolvedCategoryAction 이 replace 인 표본 수"
+      },
+      "demonstrative": {
+        "components": [],
+        "denominator": "지시대명사 4발화 × 컨텍스트 3종 × N",
+        "notComparableWith": [],
+        "numerator": "intent 가 recommend 인 표본 수"
+      },
+      "general": {
+        "components": [],
+        "denominator": "general 2발화 × 컨텍스트 3종 × N",
+        "notComparableWith": [],
+        "numerator": "intent 가 general 인 표본 수"
+      },
+      "mainIntent": {
+        "components": [
+          "cartControl",
+          "demonstrative"
+        ],
+        "denominator": "장바구니 대조군 6발화 + 지시대명사 4발화 × 컨텍스트 3종 × N",
+        "notComparableWith": [],
+        "numerator": "intent 가 기대 intent 와 일치한 표본 수 (장바구니 대조군 + 지시대명사)"
+      },
+      "optionAnswer": {
+        "components": [],
+        "denominator": "옵션 답변 4발화 × PENDING_CART 컨텍스트 × N",
+        "notComparableWith": [],
+        "numerator": "intent 가 cart_add 이고 cart.optionId 까지 기대값과 일치한 표본 수 (하나만 맞으면 오답 — 옵션을 잘못 담는 것은 실패다)"
+      },
+      "orderStatus": {
+        "components": [],
+        "denominator": "order_status 2발화 × 컨텍스트 3종 × N",
+        "notComparableWith": [],
+        "numerator": "intent 가 order_status 인 표본 수"
+      },
+      "screenExactPick": {
+        "components": [],
+        "denominator": "확정 4발화(screen-001·003·004·005) × 1 컨텍스트 × N (N=8 이면 32)",
+        "notComparableWith": [
+          "baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)",
+          "baselines/fast-2026-08-04-prompt-e5e19582 (이 축이 존재하지 않던 런)",
+          "baselines/fast-2026-08-05-84 (이 축이 존재하지 않던 런)",
+          "#118 원 프로브(이관 전, #300 흡수 후 삭제됨)의 adopted 변형 표(48/48 · 프롬프트 층만 9/48)"
+        ],
+        "numerator": "resolvedProductId(해소기 통과 후 최종값) 가 expected.productId 와 일치한 표본 수"
+      },
+      "screenNoHallucination": {
+        "components": [],
+        "denominator": "확정금지 1발화(screen-006) × 1 컨텍스트 × N (N=8 이면 8)",
+        "notComparableWith": [
+          "baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)",
+          "baselines/fast-2026-08-04-prompt-e5e19582 (이 축이 존재하지 않던 런)",
+          "baselines/fast-2026-08-05-84 (이 축이 존재하지 않던 런)",
+          "#118 원 프로브(이관 전, #300 흡수 후 삭제됨)의 adopted 변형 표(48/48 · 프롬프트 층만 9/48)"
+        ],
+        "numerator": "resolvedProductId(해소기 통과 후 최종값) 가 expected.forbiddenProductId 와 다른 표본 수"
+      },
+      "screenReask": {
+        "components": [],
+        "denominator": "되물음 1발화(screen-002) × 1 컨텍스트 × N (N=8 이면 8)",
+        "notComparableWith": [
+          "baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)",
+          "baselines/fast-2026-08-04-prompt-e5e19582 (이 축이 존재하지 않던 런)",
+          "baselines/fast-2026-08-05-84 (이 축이 존재하지 않던 런)",
+          "#118 원 프로브(이관 전, #300 흡수 후 삭제됨)의 adopted 변형 표(48/48 · 프롬프트 층만 9/48)"
+        ],
+        "numerator": "resolvedProductId(해소기 통과 후 최종값) 가 None 인 표본 수(임의 확정하지 않고 되물음으로 흐른다)"
+      },
+      "screenResolution": {
+        "components": [
+          "screenExactPick",
+          "screenReask",
+          "screenNoHallucination"
+        ],
+        "denominator": "screen 6발화 × 1 컨텍스트 × N (N=8 이면 48) — #118 의 48/48 과 같은 분모",
+        "notComparableWith": [
+          "baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)",
+          "baselines/fast-2026-08-04-prompt-e5e19582 (이 축이 존재하지 않던 런)",
+          "baselines/fast-2026-08-05-84 (이 축이 존재하지 않던 런)",
+          "#118 원 프로브(이관 전, #300 흡수 후 삭제됨)의 adopted 변형 표(48/48 · 프롬프트 층만 9/48)"
+        ],
+        "numerator": "screenExactPick·screenReask·screenNoHallucination 셋의 합 — 각 표본은 자신의 productIdRule(screenExact|screenReask|screenNotHallucinated)이 가리키는 술어 하나로만 채점된다"
+      },
+      "switchAll7": {
+        "components": [],
+        "denominator": "전환 7발화 × PENDING_CART 컨텍스트 × N",
+        "notComparableWith": [
+          "switchLegacy2",
+          "#240 전환 축(분모 16)"
+        ],
+        "numerator": "switchLegacy2 와 같은 술어를 전환 7발화 전부에 적용한 표본 수"
+      },
+      "switchLegacy2": {
+        "components": [],
+        "denominator": "#240 이 쓴 전환 2발화(`이어폰으로 할래`·`다른 거 담아줘`) × PENDING_CART × N",
+        "notComparableWith": [
+          "cartAddProductIdLegacy2",
+          "switchAll7",
+          "#234 productId 표"
+        ],
+        "numerator": "intent 가 cart_add 이고 cart.productId 가 **되물음 상품이 아닌** LAST_RECOMMENDATIONS 안의 상품인 표본 수 — #240 정의"
+      }
+    },
+    "budget": {
+      "budgetExceeded": false,
+      "budgetExceededReason": null,
+      "callCount": 48,
+      "costGateStatus": "unknown",
+      "limits": {
+        "maxCalls": 144,
+        "maxCostUsd": 20.0,
+        "maxTotalTokens": 30000000
+      },
+      "tokenGateStatus": "unknown",
+      "totalCostUsd": 0.0116231,
+      "totalTokens": 173207,
+      "unknownCostCallCount": 4,
+      "unknownTokenCallCount": 4
+    },
+    "categoryScopeClassifier": "on",
+    "cellIds": [
+      "screen-001|screenSingle",
+      "screen-002|screenTriple",
+      "screen-003|screenFive",
+      "screen-004|screenNine",
+      "screen-005|screenNamed",
+      "screen-006|screenTriple"
+    ],
+    "concurrency": 4,
+    "dryRun": false,
+    "fixtureName": "anchors_b.json",
+    "fixtureVersion": "intent-probe-anchors-b-v4",
+    "modelConfig": {
+      "fastModel": "gpt-5-nano",
+      "fastReasoningEffort": "minimal",
+      "maxRetries": 0,
+      "provider": "openai",
+      "smartModel": "gpt-5.6-luna",
+      "smartReasoningEffort": "medium",
+      "timeoutS": 30.0
+    },
+    "n": 8,
+    "notGoldenset": "추천 품질(nDCG·MRR)이 아니라 intent 라우팅 분포다. evals/goldenset 과 숫자를 섞지 말 것.",
+    "pacer": {
+      "acquireCount": 48,
+      "estimatedTokensPerCall": 3900,
+      "maxRpm": 45,
+      "maxTpm": 200000,
+      "maxWaitS": 32.252,
+      "totalWaitS": 32.935,
+      "waitCount": 2,
+      "windowS": 60.0
+    },
+    "prompt": {
+      "charCount": 6643,
+      "sha12": "e5e7f9b8d844",
+      "sha256": "e5e7f9b8d8440937fe717c02ea1b80c14b21e9c2a0fde69c826ec5cb41d2d8ba",
+      "source": "repo:_SYSTEM"
+    },
+    "seedScope": "셀 순서에만 쓴다. provider 샘플링 seed 는 강제할 수 없다.",
+    "singleRunNotAVerdict": "단일 실행은 채택 판정이 아니다 — 축당 ±2 흔들린다. 독립 2~3회 분포로 판정한다 (#240 §6).",
+    "tier": "fast"
+  },
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "pythonVersion": "3.12.3",
+  "run": {
+    "command": "uv run python -m evals.intent_probe --out /tmp/screen300-tmp/run --tier fast --repeats 8 --case-ids screen-001,screen-002,screen-003,screen-004,screen-005,screen-006",
+    "runId": "8bbe4b7e-a7a3-4f7a-b3a0-ac7c080ea857",
+    "timestamp": "2026-08-05T04:41:53.533143+00:00"
+  },
+  "seed": 20260803
+}
