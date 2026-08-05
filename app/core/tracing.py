@@ -193,13 +193,16 @@ class UnsafeTelemetryError(ValueError):
     """Raised when a trace payload may contain raw or sensitive data."""
 
 
-# [#326] 콘텐츠 서브트리에서 숫자열 카나리아까지 면제되는 키 — 발화·LLM 원문 전용.
-# `record_request_content`/`record_llm_content` 가 쓰는 키와 정확히 일치한다. 사용자가 직접
-# 타이핑한 텍스트라 가격·수량 등 숫자 오탐이 잦은 자리다. 여기 없는 키(예: Spring 페이로드의
-# `requestBody`/`responseBody`)는 콘텐츠여도 숫자열 카나리아가 **그대로 적용**된다 — 업스트림
-# API 원본에 실린 실제 회원 전화번호·주민번호는 오탐이 아니라 정탐이기 때문이다(PR #327 리뷰).
-# 기본이 strict 라서 새 콘텐츠 작성자가 키를 추가해도 조용히 면제를 얻지 못한다.
-_LLM_CONTENT_KEYS = frozenset({"message", "system", "user", "content"})
+# [#326] 콘텐츠 서브트리에서 숫자열 카나리아까지 면제되는 키 — **입력 방향(inputs) 전용**.
+# `record_request_content(input_text=…)`/`record_llm_content(system=…, user=…)` 가 쓰는 키와
+# 정확히 일치한다. 사용자가 직접 타이핑한 텍스트라 가격·수량 등 숫자 오탐이 잦은 자리다.
+# **출력 방향(outputs)은 키와 무관하게 전부 strict** — LLM 응답은 사용자 입력이 아니라 모델
+# 생성물이라 도구가 가져온 백엔드 데이터(회원 전화번호·주민번호)를 그대로 옮겨 적을 수 있고
+# (seller 레인이 SSE 직전 `mask_output` 을 두는 것과 같은 위협 모델), 캡처 시점은 그 마스킹
+# **이전**이기 때문이다(PR #327 리뷰). Spring `requestBody`/`responseBody` 도 inputs 안에
+# 있지만 이 목록에 없어 strict 다. 기본이 strict 라서 새 콘텐츠 작성자가 키를 추가해도
+# 조용히 면제를 얻지 못한다.
+_LLM_CONTENT_KEYS = frozenset({"message", "system", "user"})
 
 
 def validate_export_payload(payload: object, *, allow_content: bool = False) -> None:
@@ -209,9 +212,10 @@ def validate_export_payload(payload: object, *, allow_content: bool = False) -> 
     서브트리에서 **구조 검증(키 allowlist·raw-data 키 금지)만** 면제한다(발화·prompt·응답·
     Spring 페이로드가 실리는 자리라 이 면제가 곧 기능이다). 텍스트 카나리아
     (`_TEXT_CANARY_PATTERNS`: bearer 토큰·`sk-`/`lsv2_` API 키·이메일)는 콘텐츠 안에서도
-    **계속 적용**되고, 숫자열 카나리아(휴대폰·주민번호)는 발화·LLM 원문 키
-    (`_LLM_CONTENT_KEYS`)에서만 면제된다 — Spring 페이로드 등 업스트림 원본은 전체 카나리아
-    대상이다. 걸리면 기존 fail-closed 대로 trace 전체가 버려진다 — 콘텐츠 모드에서 이메일·
+    **계속 적용**되고, 숫자열 카나리아(휴대폰·주민번호)는 **입력 방향의 발화·prompt 키**
+    (`_LLM_CONTENT_KEYS`)에서만 면제된다 — Spring 페이로드와 **모든 출력(outputs)** 은 전체
+    카나리아 대상이다(LLM 응답은 모델 생성물이라 업스트림 데이터와 같은 위협 모델).
+    걸리면 기존 fail-closed 대로 trace 전체가 버려진다 — 콘텐츠 모드에서 이메일·
     토큰·업스트림 PII 가 섞인 요청의 트레이스가 사라지는 것은 의도된 트레이드오프다.
     metadata allowlist 와 나머지 필드의 검증은 그대로 유지된다.
     """
@@ -238,8 +242,13 @@ def _validate_value(
         for raw_key, nested in value.items():
             key = str(raw_key)
             if content is None and allow_content and not metadata and key in ("inputs", "outputs"):
-                # 콘텐츠 컨테이너 진입 — 강도는 컨테이너가 아니라 그 안의 키가 결정한다("auto").
-                _validate_value(nested, allow_content=allow_content, content="auto")
+                # 콘텐츠 컨테이너 진입 — inputs 는 안의 키가 강도를 결정하고("auto"),
+                # outputs 는 전부 strict 다(모델 생성물 = 업스트림 데이터와 같은 위협 모델).
+                _validate_value(
+                    nested,
+                    allow_content=allow_content,
+                    content="auto" if key == "inputs" else "strict",
+                )
                 continue
             if content is not None:
                 # 콘텐츠 서브트리 — 키 검사 없이 카나리아만 본다. 강도는 발화·LLM 원문 키만

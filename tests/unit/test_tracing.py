@@ -942,16 +942,29 @@ def test_spring_payload_content_keeps_numeric_canaries() -> None:
         validate_export_payload(payload, allow_content=True)
 
 
-def test_llm_content_keys_stay_lenient_for_numeric_shapes() -> None:
-    """발화·LLM 원문 키는 숫자열 카나리아 면제 — 전화번호 형태를 직접 말한 발화는 통과한다."""
+def test_llm_input_keys_stay_lenient_for_numeric_shapes() -> None:
+    """입력 방향 발화·prompt 키는 숫자열 카나리아 면제 — 전화번호를 직접 말한 발화는 통과한다."""
     payload = [
         {
             "inputs": {"message": "010-1234-5678 로 배송 문자 줘"},
-            "outputs": {"content": "네, 010-1234-5678 로 안내드릴게요"},
+            "outputs": {},
             "extra": {"metadata": {}},
         }
     ]
     validate_export_payload(payload, allow_content=True)
+
+
+def test_llm_output_content_keeps_numeric_canaries() -> None:
+    """출력은 모델 생성물 — 백엔드 데이터를 옮겨 적을 수 있어 숫자열 카나리아를 유지한다."""
+    payload = [
+        {
+            "inputs": {},
+            "outputs": {"content": "고객 연락처는 010-1234-5678 입니다"},
+            "extra": {"metadata": {}},
+        }
+    ]
+    with pytest.raises(UnsafeTelemetryError):
+        validate_export_payload(payload, allow_content=True)
 
 
 def test_unknown_content_key_defaults_to_strict() -> None:
