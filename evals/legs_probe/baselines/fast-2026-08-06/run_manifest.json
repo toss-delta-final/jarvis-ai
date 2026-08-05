@@ -1,0 +1,180 @@
+{
+  "commitSha": "7a9ca1f3cc8bef5f9077ebf29d2919afaec62047",
+  "dirty": true,
+  "hashes": {
+    "anchorFixture": "09a320e44d0cd78f768af6730687eeaeeeb47bbbf7de1881455d578c84a061f6",
+    "config": "3a57ca78e4b43b41e1356fdffc8ee74f27c7258aeac1c398b1a9625c9743a68b",
+    "datasetManifest": "0f3b91efa922a56d5c053ae26203dc3aaaef0fb0213df744c9dcc48fc8331af7",
+    "fixtures": {
+      "catalog_snapshot.json": "db16232a30b1dad49dc9102c25988842cb7878ee522bd2c92c60bed68caf8301",
+      "purchase_history.json": "d9068b703e5ade93df6ab642dc9259b997fc891b6261d64d47968244921b6f74",
+      "search_responses.json": "88eeb27452236d0a9779de3ecb8ab3258503f1d5528f3b832ea2df1488754cf0"
+    },
+    "legsProbeModules": {
+      "__init__.py": "812160babdf4908d4873d37bd42333e06a5fe7b36df4e864ada633ef8723dcb3",
+      "__main__.py": "3ce3160f964ab454716d92d44611c6c6edeff51e33d078dd42a9f9ec74dd73e6",
+      "cli.py": "71753fcef5b39dda66cce3c4630db5af8f88e29dfc276b969a6ff62d1190178f",
+      "fakes.py": "9db25562ebdc0e641cd52ec707322a234456490de52a1d359efdaf4a41522571",
+      "loader.py": "54fb7086b12fca46f5f57d67ead4d8c2e73df98ce128899337629ad81692cd34",
+      "manifest.py": "e278d61053a0c2a427ef13f14cf7dfd5078c51b3ddf5c5843dd8fb1a6d44bb8f",
+      "metrics.py": "5b18cdf3b982d191182aa81ed42631cfb0167d0b7496f76362b24766c8b0875f",
+      "report.py": "3ec58d365bb6d78ece6d65c013371386afa5da28b78f816b80594e65f8ce0d51",
+      "runner.py": "1c5906c20ad56078174acaa9efc5af6185aa3d42c9cd14fe1ad500f48233af88",
+      "schema.py": "d298ac29559a62d001dcf86fcc1fcf741ead39fc01bb26310128628e1b578859"
+    },
+    "prompts": {
+      "decompose": "eb8f273161857b2017ce62685eb1b80735b013a9bb09abd8ea09373521c9b10c",
+      "rerank": "ae3b549237b354f718fc08966a383613e5fec8d200c8d07daed038cda552ea7c"
+    },
+    "systemPrompt": "11c6fe3bfa0c938b83c78297c9678b4ae50bae630e727ec542c968c5a9c41cbb",
+    "uvLock": "bc79d52c10d7cefba24d91d30408e0777ed75ae64d738e047d74bb325437ec9c"
+  },
+  "image": null,
+  "legsProbe": {
+    "attemptMultiplier": 3,
+    "axisDefinitions": {
+      "buyAllAccuracy": {
+        "denominator": "expected.buyAll≠null 앵커의 recommend 표본",
+        "numerator": "산출 buy_all == expected.buyAll"
+      },
+      "case3UnderExpansionRate": {
+        "denominator": "산출 case==3 인 recommend 표본(promptExample 제외)",
+        "numerator": "산출 case==3 ∧ len(legs)<=1"
+      },
+      "case3UnderExpansionRateWithPromptExamples": {
+        "denominator": "산출 case==3 인 recommend 표본(promptExample 포함)",
+        "numerator": "산출 case==3 ∧ len(legs)<=1"
+      },
+      "caseAccuracy": {
+        "denominator": "recommend 표본 전부",
+        "numerator": "산출 case == expected.case"
+      },
+      "expectedCase3UnderExpansion": {
+        "denominator": "expected.case==3 앵커의 recommend 표본",
+        "numerator": "len(legs)<=1"
+      },
+      "legCoverage": {
+        "denominator": "coverageGroups 있는 앵커의 recommend 표본 수(promptExample 제외)",
+        "numerator": "Σ min(1, 커버리지그룹 distinct 매칭 수 / coverageTarget)"
+      },
+      "legCoverageWithPromptExamples": {
+        "denominator": "coverageGroups 있는 앵커의 recommend 표본 수(promptExample 포함)",
+        "numerator": "Σ min(1, 커버리지그룹 distinct 매칭 수 / coverageTarget)"
+      },
+      "legsInRangeRate": {
+        "denominator": "recommend 표본 전부",
+        "numerator": "legsMin<=len(legs)<=legsMax"
+      },
+      "overExpansionRate": {
+        "denominator": "산출 leg 총수(그룹 있는 앵커)",
+        "numerator": "커버리지∪acceptable 어느 그룹에도 안 맞는 leg 수"
+      },
+      "totalBudgetAccuracy": {
+        "denominator": "recommend 표본 전부",
+        "numerator": "산출 total_budget == expected.totalBudget(null 포함 정확 일치)"
+      }
+    },
+    "budget": {
+      "budgetExceeded": false,
+      "budgetExceededReason": null,
+      "callCount": 312,
+      "costGateStatus": "unknown",
+      "limits": {
+        "maxCalls": 936,
+        "maxCostUsd": 5.0,
+        "maxTotalTokens": 30000000
+      },
+      "tokenGateStatus": "unknown",
+      "totalCostUsd": 0.07113189999999996,
+      "totalTokens": 1043413,
+      "unknownCostCallCount": 35,
+      "unknownTokenCallCount": 35
+    },
+    "categoryFanoutMax": 5,
+    "cellIds": [
+      "buy-cold-0002",
+      "buy-fail-0003",
+      "buy-gust-0001",
+      "buy-mult-0002",
+      "buy-srch-0001",
+      "buy-srch-0002",
+      "buy-srch-0003",
+      "buy-srch-0004",
+      "legs-cond-0001",
+      "legs-cond-0002",
+      "legs-cond-0003",
+      "legs-cond-0004",
+      "legs-cond-0005",
+      "legs-mult-0001",
+      "legs-mult-0002",
+      "legs-mult-0003",
+      "legs-mult-0004",
+      "legs-mult-0005",
+      "legs-purp-0001",
+      "legs-purp-0002",
+      "legs-purp-0003",
+      "legs-purp-0004",
+      "legs-purp-0005",
+      "legs-purp-0006",
+      "legs-purp-0007",
+      "legs-purp-0008",
+      "legs-purp-0009",
+      "legs-single-0001",
+      "legs-single-0002",
+      "legs-situ-0001",
+      "legs-situ-0002",
+      "legs-situ-0003",
+      "legs-situ-0004",
+      "legs-situ-0005",
+      "legs-situ-0006",
+      "legs-situ-0007",
+      "legs-situ-0008",
+      "legs-situ-0009",
+      "legs-situ-0010"
+    ],
+    "concurrency": 4,
+    "dryRun": false,
+    "fixtureName": "anchors.json",
+    "fixtureVersion": "legs-anchors-v1",
+    "measurementScope": "decompose 단계만 잰다 — needs_expansion(#217)은 부르지 않는다. 단일 턴만 잰다(컨텍스트 행렬 없음).",
+    "modelConfig": {
+      "fastModel": "gpt-5-nano",
+      "fastReasoningEffort": "minimal",
+      "maxRetries": 0,
+      "provider": "openai",
+      "smartModel": "gpt-5.6-luna",
+      "smartReasoningEffort": "medium",
+      "timeoutS": 30.0
+    },
+    "n": 8,
+    "notGoldenset": "이건 골든셋이 아니다 — 추천 품질(nDCG·MRR)이 아니라 decompose 단계의 case·legs 산출 분포다. evals/goldenset·evals/intent_probe 와 숫자를 섞지 말 것.",
+    "pacer": {
+      "acquireCount": 312,
+      "estimatedTokensPerCall": 3900,
+      "maxRpm": 45,
+      "maxTpm": 200000,
+      "maxWaitS": 35.818,
+      "totalWaitS": 242.353,
+      "waitCount": 96,
+      "windowS": 60.0
+    },
+    "prompt": {
+      "charCount": 7137,
+      "sha12": "11c6fe3bfa0c",
+      "sha256": "11c6fe3bfa0c938b83c78297c9678b4ae50bae630e727ec542c968c5a9c41cbb",
+      "source": "repo:_SYSTEM"
+    },
+    "repurchaseMax": 5,
+    "seedScope": "셀 순서에만 쓴다. provider 샘플링 seed 는 강제할 수 없다.",
+    "singleRunNotAVerdict": "단일 실행은 채택 판정이 아니다 — 독립 2~3회 분포로 판정한다.",
+    "tier": "fast"
+  },
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "pythonVersion": "3.12.3",
+  "run": {
+    "command": "uv run python -m evals.legs_probe --out evals/legs_probe/baselines/fast-2026-08-06 --tier fast",
+    "runId": "0e750aad-a791-4163-87bb-e15e997d5c03",
+    "timestamp": "2026-08-05T20:04:59.990571+00:00"
+  },
+  "seed": 20260806
+}

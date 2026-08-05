@@ -1,0 +1,1070 @@
+{
+  "axes": {
+    "buyAllAccuracy": {
+      "axisId": "buyAllAccuracy",
+      "belowSampleThreshold": false,
+      "ci95": [
+        0.6015105069674245,
+        0.71116161597392
+      ],
+      "definition": {
+        "denominator": "expected.buyAll≠null 앵커의 recommend 표본",
+        "numerator": "산출 buy_all == expected.buyAll"
+      },
+      "denominator": 284,
+      "nature": "exploratory",
+      "numerator": 187,
+      "ratio": 0.6584507042253521,
+      "title": "buyAll 정확도"
+    },
+    "case3UnderExpansionRate": {
+      "axisId": "case3UnderExpansionRate",
+      "belowSampleThreshold": false,
+      "ci95": [
+        0.8906138394971831,
+        0.9683292434016519
+      ],
+      "definition": {
+        "denominator": "산출 case==3 인 recommend 표본(promptExample 제외)",
+        "numerator": "산출 case==3 ∧ len(legs)<=1"
+      },
+      "denominator": 151,
+      "nature": "confirmatory-primary",
+      "numerator": 142,
+      "ratio": 0.9403973509933775,
+      "title": "case3 과소전개율"
+    },
+    "case3UnderExpansionRateWithPromptExamples": {
+      "axisId": "case3UnderExpansionRateWithPromptExamples",
+      "belowSampleThreshold": false,
+      "ci95": [
+        0.845973284535004,
+        0.9336246016137032
+      ],
+      "definition": {
+        "denominator": "산출 case==3 인 recommend 표본(promptExample 포함)",
+        "numerator": "산출 case==3 ∧ len(legs)<=1"
+      },
+      "denominator": 186,
+      "nature": "exploratory",
+      "numerator": 167,
+      "ratio": 0.8978494623655914,
+      "title": "case3 과소전개율"
+    },
+    "caseAccuracy": {
+      "axisId": "caseAccuracy",
+      "belowSampleThreshold": false,
+      "ci95": [
+        0.6605877699767003,
+        0.7617075261085486
+      ],
+      "definition": {
+        "denominator": "recommend 표본 전부",
+        "numerator": "산출 case == expected.case"
+      },
+      "denominator": 304,
+      "nature": "exploratory",
+      "numerator": 217,
+      "ratio": 0.7138157894736842,
+      "title": "case 판정 정확도"
+    },
+    "expectedCase3UnderExpansion": {
+      "axisId": "expectedCase3UnderExpansion",
+      "belowSampleThreshold": false,
+      "ci95": [
+        0.768459776644899,
+        0.8749177837487937
+      ],
+      "definition": {
+        "denominator": "expected.case==3 앵커의 recommend 표본",
+        "numerator": "len(legs)<=1"
+      },
+      "denominator": 192,
+      "nature": "exploratory",
+      "numerator": 159,
+      "ratio": 0.828125,
+      "title": "기대 case3 과소전개율(보조 시야)"
+    },
+    "legCoverage": {
+      "axisId": "legCoverage",
+      "belowSampleThreshold": false,
+      "ci95": [
+        0.3112134825402782,
+        0.4353952172212425
+      ],
+      "definition": {
+        "denominator": "coverageGroups 있는 앵커의 recommend 표본 수(promptExample 제외)",
+        "numerator": "Σ min(1, 커버리지그룹 distinct 매칭 수 / coverageTarget)"
+      },
+      "denominator": 229,
+      "nature": "confirmatory-secondary",
+      "numerator": 85.0,
+      "ratio": 0.37117903930131,
+      "title": "니즈 커버리지"
+    },
+    "legCoverageWithPromptExamples": {
+      "axisId": "legCoverageWithPromptExamples",
+      "belowSampleThreshold": false,
+      "ci95": [
+        0.29774511044887936,
+        0.4122823550203091
+      ],
+      "definition": {
+        "denominator": "coverageGroups 있는 앵커의 recommend 표본 수(promptExample 포함)",
+        "numerator": "Σ min(1, 커버리지그룹 distinct 매칭 수 / coverageTarget)"
+      },
+      "denominator": 264,
+      "nature": "exploratory",
+      "numerator": 93.16666666666667,
+      "ratio": 0.35290404040404044,
+      "title": "니즈 커버리지"
+    },
+    "legsInRangeRate": {
+      "axisId": "legsInRangeRate",
+      "belowSampleThreshold": false,
+      "ci95": [
+        0.3860624071451334,
+        0.4969942800927977
+      ],
+      "definition": {
+        "denominator": "recommend 표본 전부",
+        "numerator": "legsMin<=len(legs)<=legsMax"
+      },
+      "denominator": 304,
+      "nature": "exploratory",
+      "numerator": 134,
+      "ratio": 0.4407894736842105,
+      "title": "leg 수 범위 준수율"
+    },
+    "overExpansionRate": {
+      "axisId": "overExpansionRate",
+      "belowSampleThreshold": false,
+      "ci95": [
+        0.4491920288763868,
+        0.5647045099210063
+      ],
+      "definition": {
+        "denominator": "산출 leg 총수(그룹 있는 앵커)",
+        "numerator": "커버리지∪acceptable 어느 그룹에도 안 맞는 leg 수"
+      },
+      "denominator": 284,
+      "nature": "exploratory",
+      "numerator": 144,
+      "ratio": 0.5070422535211268,
+      "title": "과전개율"
+    },
+    "totalBudgetAccuracy": {
+      "axisId": "totalBudgetAccuracy",
+      "belowSampleThreshold": false,
+      "ci95": [
+        0.9666623304602139,
+        0.994871574472353
+      ],
+      "definition": {
+        "denominator": "recommend 표본 전부",
+        "numerator": "산출 total_budget == expected.totalBudget(null 포함 정확 일치)"
+      },
+      "denominator": 304,
+      "nature": "exploratory",
+      "numerator": 300,
+      "ratio": 0.9868421052631579,
+      "title": "totalBudget 정확도"
+    }
+  },
+  "baseline": {
+    "case3UnderExpansionRate": 1.0,
+    "legCoverageOverall": 0.37356321839080464,
+    "legCoverageOverallWithPromptExamples": 0.33333333333333337,
+    "legCoveragePerAnchor": {
+      "buy-cold-0002": 1.0,
+      "buy-fail-0003": 1.0,
+      "buy-gust-0001": 1.0,
+      "buy-mult-0002": 1.0,
+      "buy-srch-0001": 0.0,
+      "buy-srch-0002": 1.0,
+      "buy-srch-0003": 1.0,
+      "buy-srch-0004": 1.0,
+      "legs-cond-0001": null,
+      "legs-cond-0002": null,
+      "legs-cond-0003": null,
+      "legs-cond-0004": null,
+      "legs-cond-0005": null,
+      "legs-mult-0001": 0.5,
+      "legs-mult-0002": 0.5,
+      "legs-mult-0003": 0.3333333333333333,
+      "legs-mult-0004": 0.5,
+      "legs-mult-0005": 0.5,
+      "legs-purp-0001": 0.0,
+      "legs-purp-0002": 0.0,
+      "legs-purp-0003": 0.0,
+      "legs-purp-0004": 0.0,
+      "legs-purp-0005": 0.0,
+      "legs-purp-0006": 0.0,
+      "legs-purp-0007": 0.0,
+      "legs-purp-0008": 0.0,
+      "legs-purp-0009": 0.0,
+      "legs-single-0001": 1.0,
+      "legs-single-0002": 1.0,
+      "legs-situ-0001": 0.0,
+      "legs-situ-0002": 0.0,
+      "legs-situ-0003": 0.0,
+      "legs-situ-0004": 0.0,
+      "legs-situ-0005": 0.0,
+      "legs-situ-0006": 0.0,
+      "legs-situ-0007": 0.0,
+      "legs-situ-0008": 0.0,
+      "legs-situ-0009": 0.0,
+      "legs-situ-0010": 0.0
+    },
+    "legCoveragePerSlice": {
+      "conditions": null,
+      "multi": 0.4583333333333333,
+      "purpose": 0.0,
+      "single": 1.0,
+      "situational": 0.0
+    },
+    "legCoveragePerSliceWithPromptExamples": {
+      "conditions": null,
+      "multi": 0.4666666666666667,
+      "purpose": 0.0,
+      "single": 1.0,
+      "situational": 0.0
+    },
+    "overExpansionRate": 0.0,
+    "policy": "항상 leg 1개(전개 없음)"
+  },
+  "budget": {
+    "budgetExceeded": false,
+    "budgetExceededReason": null,
+    "callCount": 312,
+    "costGateStatus": "unknown",
+    "limits": {
+      "maxCalls": 936,
+      "maxCostUsd": 5.0,
+      "maxTotalTokens": 30000000
+    },
+    "tokenGateStatus": "unknown",
+    "totalCostUsd": 0.07113189999999996,
+    "totalTokens": 1043413,
+    "unknownCostCallCount": 35,
+    "unknownTokenCallCount": 35
+  },
+  "categoryFanoutMax": 5,
+  "cellCount": 39,
+  "cells": [
+    {
+      "attempts": 8,
+      "caseId": "buy-cold-0002",
+      "cellId": "buy-cold-0002",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "single"
+    },
+    {
+      "attempts": 8,
+      "caseId": "buy-fail-0003",
+      "cellId": "buy-fail-0003",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "single"
+    },
+    {
+      "attempts": 8,
+      "caseId": "buy-gust-0001",
+      "cellId": "buy-gust-0001",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "single"
+    },
+    {
+      "attempts": 8,
+      "caseId": "buy-mult-0002",
+      "cellId": "buy-mult-0002",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "single"
+    },
+    {
+      "attempts": 8,
+      "caseId": "buy-srch-0001",
+      "cellId": "buy-srch-0001",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "situational"
+    },
+    {
+      "attempts": 8,
+      "caseId": "buy-srch-0002",
+      "cellId": "buy-srch-0002",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "single"
+    },
+    {
+      "attempts": 8,
+      "caseId": "buy-srch-0003",
+      "cellId": "buy-srch-0003",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "single"
+    },
+    {
+      "attempts": 8,
+      "caseId": "buy-srch-0004",
+      "cellId": "buy-srch-0004",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "single"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-cond-0001",
+      "cellId": "legs-cond-0001",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "conditions"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-cond-0002",
+      "cellId": "legs-cond-0002",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "conditions"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-cond-0003",
+      "cellId": "legs-cond-0003",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "conditions"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-cond-0004",
+      "cellId": "legs-cond-0004",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "conditions"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-cond-0005",
+      "cellId": "legs-cond-0005",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "conditions"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-mult-0001",
+      "cellId": "legs-mult-0001",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "multi"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-mult-0002",
+      "cellId": "legs-mult-0002",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "multi"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-mult-0003",
+      "cellId": "legs-mult-0003",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "multi"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-mult-0004",
+      "cellId": "legs-mult-0004",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "multi"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-mult-0005",
+      "cellId": "legs-mult-0005",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "multi"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-purp-0001",
+      "cellId": "legs-purp-0001",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "purpose"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-purp-0002",
+      "cellId": "legs-purp-0002",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "general": 1,
+        "recommend": 7
+      },
+      "sampleCount": 8,
+      "slice": "purpose"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-purp-0003",
+      "cellId": "legs-purp-0003",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "purpose"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-purp-0004",
+      "cellId": "legs-purp-0004",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "purpose"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-purp-0005",
+      "cellId": "legs-purp-0005",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "purpose"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-purp-0006",
+      "cellId": "legs-purp-0006",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "purpose"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-purp-0007",
+      "cellId": "legs-purp-0007",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "purpose"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-purp-0008",
+      "cellId": "legs-purp-0008",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "purpose"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-purp-0009",
+      "cellId": "legs-purp-0009",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "purpose"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-single-0001",
+      "cellId": "legs-single-0001",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "single"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-single-0002",
+      "cellId": "legs-single-0002",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "single"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-situ-0001",
+      "cellId": "legs-situ-0001",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "situational"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-situ-0002",
+      "cellId": "legs-situ-0002",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "situational"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-situ-0003",
+      "cellId": "legs-situ-0003",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "situational"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-situ-0004",
+      "cellId": "legs-situ-0004",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "situational"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-situ-0005",
+      "cellId": "legs-situ-0005",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "general": 1,
+        "recommend": 7
+      },
+      "sampleCount": 8,
+      "slice": "situational"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-situ-0006",
+      "cellId": "legs-situ-0006",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "general": 1,
+        "recommend": 7
+      },
+      "sampleCount": 8,
+      "slice": "situational"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-situ-0007",
+      "cellId": "legs-situ-0007",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "situational"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-situ-0008",
+      "cellId": "legs-situ-0008",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "general": 1,
+        "recommend": 7
+      },
+      "sampleCount": 8,
+      "slice": "situational"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-situ-0009",
+      "cellId": "legs-situ-0009",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "general": 4,
+        "recommend": 4
+      },
+      "sampleCount": 8,
+      "slice": "situational"
+    },
+    {
+      "attempts": 8,
+      "caseId": "legs-situ-0010",
+      "cellId": "legs-situ-0010",
+      "failureCount": 0,
+      "filled": true,
+      "intentCounts": {
+        "recommend": 8
+      },
+      "sampleCount": 8,
+      "slice": "situational"
+    }
+  ],
+  "diagnostics": {
+    "definition": {
+      "emptyLegsOnCase3Count": "산출 case==3 ∧ legs==0 인 표본 수",
+      "nonRecommendIntentCount": "intent!=recommend 표본 수(앵커별) — decompose_case 로그가 recommend 만 남기는 것과 같은 취지, 되도록 0 이어야 한다",
+      "utteranceEchoLegCount": "과전개 leg 중 공백 제거한 leg query 가 공백 제거한 발화의 부분 문자열인 것 — '발화 복사' 실패, #198 D3 marker 입력"
+    },
+    "emptyLegsOnCase3Count": 35,
+    "nonRecommendIntentCount": {
+      "legs-purp-0002": 1,
+      "legs-situ-0005": 1,
+      "legs-situ-0006": 1,
+      "legs-situ-0008": 1,
+      "legs-situ-0009": 4
+    },
+    "utteranceEchoLegCount": 68
+  },
+  "dryRun": false,
+  "fixture": {
+    "name": "anchors.json",
+    "sha256": "09a320e44d0cd78f768af6730687eeaeeeb47bbbf7de1881455d578c84a061f6",
+    "version": "legs-anchors-v1"
+  },
+  "modelConfig": {
+    "fastModel": "gpt-5-nano",
+    "fastReasoningEffort": "minimal",
+    "maxRetries": 0,
+    "provider": "openai",
+    "smartModel": "gpt-5.6-luna",
+    "smartReasoningEffort": "medium",
+    "timeoutS": 30.0
+  },
+  "n": 8,
+  "pacer": {
+    "acquireCount": 312,
+    "estimatedTokensPerCall": 3900,
+    "maxRpm": 45,
+    "maxTpm": 200000,
+    "maxWaitS": 35.818,
+    "totalWaitS": 242.353,
+    "waitCount": 96,
+    "windowS": 60.0
+  },
+  "pairDiagnostics": [
+    {
+      "avgLegCoverage": 0.0,
+      "avgLegs": 1.0,
+      "caseId": "legs-situ-0003",
+      "pairId": "camp-budget",
+      "pairKind": "DIR-budget",
+      "sampleCount": 8
+    },
+    {
+      "avgLegCoverage": 0.0,
+      "avgLegs": 1.0,
+      "caseId": "legs-situ-0001",
+      "pairId": "camp-paraphrase",
+      "pairKind": "INV-paraphrase",
+      "sampleCount": 8
+    },
+    {
+      "avgLegCoverage": 0.0,
+      "avgLegs": 0.875,
+      "caseId": "legs-situ-0002",
+      "pairId": "camp-paraphrase",
+      "pairKind": "INV-paraphrase",
+      "sampleCount": 8
+    },
+    {
+      "avgLegCoverage": 0.0,
+      "avgLegs": 0.5,
+      "caseId": "legs-purp-0003",
+      "pairId": "gift-budget",
+      "pairKind": "DIR-budget",
+      "sampleCount": 8
+    },
+    {
+      "avgLegCoverage": 0.0,
+      "avgLegs": 1.0,
+      "caseId": "legs-purp-0004",
+      "pairId": "gift-budget",
+      "pairKind": "DIR-budget",
+      "sampleCount": 8
+    },
+    {
+      "avgLegCoverage": 0.0,
+      "avgLegs": 0.875,
+      "caseId": "legs-purp-0005",
+      "pairId": "school-budget",
+      "pairKind": "DIR-budget",
+      "sampleCount": 8
+    },
+    {
+      "avgLegCoverage": 0.0,
+      "avgLegs": 0.375,
+      "caseId": "legs-purp-0006",
+      "pairId": "school-budget",
+      "pairKind": "DIR-budget",
+      "sampleCount": 8
+    }
+  ],
+  "prompt": {
+    "charCount": 7137,
+    "sha12": "11c6fe3bfa0c",
+    "sha256": "11c6fe3bfa0c938b83c78297c9678b4ae50bae630e727ec542c968c5a9c41cbb",
+    "source": "repo:_SYSTEM"
+  },
+  "promptExampleDiagnostics": [
+    {
+      "avgLegCoverage": 0.125,
+      "case3UnderExpansionCount": 4,
+      "caseId": "legs-situ-0009",
+      "recommendSampleCount": 4,
+      "slice": "situational"
+    },
+    {
+      "avgLegCoverage": 0.20833333333333331,
+      "case3UnderExpansionCount": 5,
+      "caseId": "legs-situ-0010",
+      "recommendSampleCount": 8,
+      "slice": "situational"
+    },
+    {
+      "avgLegCoverage": 0.0,
+      "case3UnderExpansionCount": 7,
+      "caseId": "legs-purp-0001",
+      "recommendSampleCount": 8,
+      "slice": "purpose"
+    },
+    {
+      "avgLegCoverage": 0.0,
+      "case3UnderExpansionCount": 7,
+      "caseId": "legs-purp-0002",
+      "recommendSampleCount": 7,
+      "slice": "purpose"
+    },
+    {
+      "avgLegCoverage": 0.75,
+      "case3UnderExpansionCount": 2,
+      "caseId": "legs-mult-0001",
+      "recommendSampleCount": 8,
+      "slice": "multi"
+    }
+  ],
+  "repurchaseMax": 5,
+  "slices": {
+    "case3UnderExpansionRate": {
+      "purpose": {
+        "axisId": "case3UnderExpansionRate",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.9286524008666414,
+          1.0
+        ],
+        "definition": {
+          "denominator": "산출 case==3 인 recommend 표본(promptExample 제외)",
+          "numerator": "산출 case==3 ∧ len(legs)<=1"
+        },
+        "denominator": 50,
+        "nature": "confirmatory-primary",
+        "numerator": 50,
+        "ratio": 1.0,
+        "title": "case3 과소전개율"
+      },
+      "situational": {
+        "axisId": "case3UnderExpansionRate",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.9201813768022188,
+          0.997360428265921
+        ],
+        "definition": {
+          "denominator": "산출 case==3 인 recommend 표본(promptExample 제외)",
+          "numerator": "산출 case==3 ∧ len(legs)<=1"
+        },
+        "denominator": 67,
+        "nature": "confirmatory-primary",
+        "numerator": 66,
+        "ratio": 0.9850746268656716,
+        "title": "case3 과소전개율"
+      }
+    },
+    "caseAccuracy": {
+      "conditions": {
+        "axisId": "caseAccuracy",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.769482247724777,
+          0.9604204713173937
+        ],
+        "definition": {
+          "denominator": "recommend 표본 전부",
+          "numerator": "산출 case == expected.case"
+        },
+        "denominator": 40,
+        "nature": "exploratory",
+        "numerator": 36,
+        "ratio": 0.9,
+        "title": "case 판정 정확도"
+      },
+      "multi": {
+        "axisId": "caseAccuracy",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.3749736210669247,
+          0.670645298873211
+        ],
+        "definition": {
+          "denominator": "recommend 표본 전부",
+          "numerator": "산출 case == expected.case"
+        },
+        "denominator": 40,
+        "nature": "exploratory",
+        "numerator": 21,
+        "ratio": 0.525,
+        "title": "case 판정 정확도"
+      },
+      "purpose": {
+        "axisId": "caseAccuracy",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.8276396178569572,
+          0.9606934922892888
+        ],
+        "definition": {
+          "denominator": "recommend 표본 전부",
+          "numerator": "산출 case == expected.case"
+        },
+        "denominator": 71,
+        "nature": "exploratory",
+        "numerator": 65,
+        "ratio": 0.9154929577464789,
+        "title": "case 판정 정확도"
+      },
+      "single": {
+        "axisId": "caseAccuracy",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.14167443539575805,
+          0.3309095493800518
+        ],
+        "definition": {
+          "denominator": "recommend 표본 전부",
+          "numerator": "산출 case == expected.case"
+        },
+        "denominator": 72,
+        "nature": "exploratory",
+        "numerator": 16,
+        "ratio": 0.2222222222222222,
+        "title": "case 판정 정확도"
+      },
+      "situational": {
+        "axisId": "caseAccuracy",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.9143727407780347,
+          0.9932024125763359
+        ],
+        "definition": {
+          "denominator": "recommend 표본 전부",
+          "numerator": "산출 case == expected.case"
+        },
+        "denominator": 81,
+        "nature": "exploratory",
+        "numerator": 79,
+        "ratio": 0.9753086419753086,
+        "title": "case 판정 정확도"
+      }
+    },
+    "legCoverage": {
+      "multi": {
+        "axisId": "legCoverage",
+        "belowSampleThreshold": true,
+        "ci95": [
+          0.5789344100575552,
+          0.8674759908149094
+        ],
+        "definition": {
+          "denominator": "coverageGroups 있는 앵커의 recommend 표본 수(promptExample 제외)",
+          "numerator": "Σ min(1, 커버리지그룹 distinct 매칭 수 / coverageTarget)"
+        },
+        "denominator": 32,
+        "nature": "confirmatory-secondary",
+        "numerator": 24.0,
+        "ratio": 0.75,
+        "title": "니즈 커버리지"
+      },
+      "purpose": {
+        "axisId": "legCoverage",
+        "belowSampleThreshold": false,
+        "ci95": [
+          6.493458987741595e-18,
+          0.0641939367187634
+        ],
+        "definition": {
+          "denominator": "coverageGroups 있는 앵커의 recommend 표본 수(promptExample 제외)",
+          "numerator": "Σ min(1, 커버리지그룹 distinct 매칭 수 / coverageTarget)"
+        },
+        "denominator": 56,
+        "nature": "confirmatory-secondary",
+        "numerator": 0.0,
+        "ratio": 0.0,
+        "title": "니즈 커버리지"
+      },
+      "single": {
+        "axisId": "legCoverage",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.7467771063249945,
+          0.9124929127052431
+        ],
+        "definition": {
+          "denominator": "coverageGroups 있는 앵커의 recommend 표본 수(promptExample 제외)",
+          "numerator": "Σ min(1, 커버리지그룹 distinct 매칭 수 / coverageTarget)"
+        },
+        "denominator": 72,
+        "nature": "confirmatory-secondary",
+        "numerator": 61.0,
+        "ratio": 0.8472222222222222,
+        "title": "니즈 커버리지"
+      },
+      "situational": {
+        "axisId": "legCoverage",
+        "belowSampleThreshold": false,
+        "ci95": [
+          3.286477832275218e-18,
+          0.05273725818905172
+        ],
+        "definition": {
+          "denominator": "coverageGroups 있는 앵커의 recommend 표본 수(promptExample 제외)",
+          "numerator": "Σ min(1, 커버리지그룹 distinct 매칭 수 / coverageTarget)"
+        },
+        "denominator": 69,
+        "nature": "confirmatory-secondary",
+        "numerator": 0.0,
+        "ratio": 0.0,
+        "title": "니즈 커버리지"
+      }
+    }
+  },
+  "tier": "fast",
+  "unfilledCells": []
+}

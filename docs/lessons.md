@@ -13,6 +13,111 @@
 
 ---
 
+## [2026-08-06] "성공 fake" 가 실 스키마와 다른 모양이어도 게스트 게이트 뒤에 있으면 영원히 안 드러난다
+- 증상: #335 리뷰 R8(order_status×spring_timeout 실측 추가) 작업 중, 기존
+  `evals/combo_matrix/fakes.py::make_order_status_ok` 가 `{"orderId": ..., "status": ...}` 같은
+  무관한 dict 를 돌려주고 있었다 — 실제 소비 코드(`app/agents/buyer/order_status.py`
+  `format_order_status`)는 `summary.orders`(리스트 속성)를 읽는다. `AttributeError` 가 나야
+  정상인데, 커밋된 order_status 케이스는 전부 `identity=guest` 라 `member_order_identity` 가
+  `fetch_order_status` 호출 자체를 게이트로 막아 이 fake 가 실제로는 **단 한 번도 실행되지
+  않았다** — 그래서 몇 라운드의 리뷰·테스트를 거치는 동안 아무도 이 결함을 못 봤다.
+- 원인: "성공 경로 fake"를 실 반환 스키마(Pydantic 모델 등) 검증 없이 손으로 지어낸 dict 로
+  때웠고, 그 fake 가 게스트/미인증처럼 **더 이른 게이트가 걸리는 조합에서만** 커버리지가
+  있었다 — 실행이 "안 죽었다"는 사실이 "fake 가 맞다"를 보증하지 않는다.
+- 규칙: 콜러블을 fake 로 주입할 때는 그 반환값을 **소비하는 코드가 실제로 읽는 속성**을 실
+  스키마(가능하면 실제 Pydantic 모델 인스턴스)로 만족시켜라 — 임시 dict 는 "일단 안 죽으면
+  맞다"는 착시를 준다. 그리고 그 fake 가 **성공 경로까지 실제로 도달하는 identity/조건** 조합의
+  케이스가 최소 1건 있는지 확인하라(게스트·미인증 전용 케이스만 있으면 성공 fake 자체가
+  검증된 적이 없다) — #335 의 cart/wishlist 계열에서 이미 같은 패턴(웜업·숫자 user_id 누락)을
+  겪었으니, 이 부류의 fixture 는 항상 "실 스키마 + 실제로 그 경로에 도달하는 identity" 둘 다
+  갖췄는지 짝지어 점검한다.
+- 관련: #335, `evals/combo_matrix/fakes.py::make_order_status_ok`,
+  `app/agents/buyer/order_status.py::format_order_status`, `app/schemas/spring.py::OrderStatusSummary`
+
+---
+
+## [2026-08-06] cart/wishlist fake identity 는 숫자 문자열이어야 한다 + 담기 fake 는 직전 추천을 먼저 채워야 한다
+- 증상: #335 리뷰 R3(`wishlist_add×member×spring_timeout` 직접 관측 케이스 추가) 작업 중, 회원
+  identity 로 wishlist_add 를 실행해도 매번 "찜에는 로그인이 필요해요"만 나왔다 —
+  `identity.is_guest=False` 로 만들었는데도 게스트와 똑같이 처리됐다. 그다음엔 "어떤 상품을
+  찜할까요?" 되물음만 나왔다 — degrade(SpringUnavailableError) 를 주입해도 그 코드에 전혀
+  안 닿았다.
+- 원인: ① `app/agents/buyer/cart/identity.py::cart_identity` 는 `int(identity.user_id)` 파싱에
+  실패하면(예: `"combo-0057"` 같은 비숫자 문자열) `ValueError` 를 흡수하고 (None, None) 을
+  돌려줘 **회원을 게스트/익명과 구분 없이** 취급한다 — 회원 fake identity 의 `user_id` 는
+  **숫자 문자열**이어야 한다. ② `app/agents/buyer/graph.py:994-1019` 의 담기 허용목록
+  (`allowed_product_ids` = 직전 추천 ∪ screen.products)은 그 안에 없는 상품을 조용히 되물음으로
+  돌린다 — cart_add/wishlist_add 를 fake 로 구동하려면 **같은 thread_id 로 먼저 recommend 턴을
+  1회 태워 대상 productId 를 직전 추천에 올려야** Spring 호출부(add_to_cart_fn/add_wishlist_fn)
+  에 실제로 도달한다.
+- 규칙: cart/wishlist 계열을 fake 로 단위 테스트할 때 ① `Identity.user_id` 는 회원이면 숫자
+  문자열(`str(int)`)로 채운다(비숫자면 `cart_identity` 가 조용히 익명 취급 — 예외도 안 던진다).
+  ② cart_add/wishlist_add 관측 전에는 같은 identity·thread_id 로 정상 recommend 웜업 턴을 먼저
+  실행해 last_reco 를 채운다 — 웜업 없이 degrade 를 주입하면 그 축은 절대 그 코드에 도달하지
+  못한 채 매번 같은 되물음만 관측된다(관측이 "항상 똑같다"면 이 두 가지부터 의심).
+- 관련: #335, `evals/combo_matrix/runner.py::_identity_for`·`_warm_up_last_reco`,
+  `app/agents/buyer/cart/identity.py`, `app/agents/buyer/graph.py:994-1019`
+
+---
+
+## [2026-08-06] 결정론 생성기에서 `hash(str)`을 seed 파생에 쓰면 PYTHONHASHSEED 랜덤화로 재현성이 깨진다
+- 증상: #335 pairwise 케이스 생성기(`evals/combo_matrix/generator.py`)를 같은 `axes.json`+같은
+  seed 로 연속 두 번 돌렸는데 `combo_cases.jsonl` 의 sha256 이 매번 달랐다 — 케이스 순서·내용
+  자체가 프로세스마다 달라지는 재현성 결함이었다.
+- 원인: 위험 3-wise 축쌍마다 별도 `random.Random` 시드를 파생시키며 `doc.seed ^ hash(rt.id)`
+  (`rt.id` 는 문자열)를 썼다. Python 은 문자열 `hash()` 를 **프로세스마다 무작위 솔트**로 계산한다
+  (해시 충돌 기반 DoS 방지, PYTHONHASHSEED 미고정 시 기본 동작) — 그래서 같은 문자열도 프로세스마다
+  다른 정수를 내고, 그 값으로 만든 `random.Random` 시드가 매번 달라 그 라운드의 탐욕 선택 결과가
+  갈렸다. `random.Random(int)` 자체는 결정론이지만 **입력이 이미 비결정론**이었던 것.
+- 규칙: **결정론이 요구되는 코드(생성기 seed 파생·캐시 키·해시 기반 정렬 등)에서 문자열을
+  다이제스트할 때는 절대 내장 `hash()` 를 쓰지 않는다** — `hashlib.sha256(text.encode()).digest()`
+  처럼 프로세스 불변인 안정 해시만 쓴다. `PYTHONHASHSEED=0` 로 환경을 고정하는 우회도 있지만,
+  코드가 그 환경변수에 의존한다는 사실 자체를 감추므로 안정 해시가 근본 해결이다. 재현성을
+  주장하는 코드를 작성/리뷰할 때는 `PYTHONHASHSEED=random uv run <재현 명령>` 을 최소 2회 돌려
+  출력이 바이트 동일한지 실측하라 — 기본 랜덤 시드 그대로면 이런 버그가 세션 내내 숨는다.
+- 관련: #335, `evals/combo_matrix/generator.py` `_stable_hash`(수정 후),
+  `tests/eval/test_combo_matrix_eval.py::test_regeneration_matches_committed_cases_byte_identical`
+
+---
+
+## [2026-08-06] 머지 커밋 전에 conflict marker 잔존 여부를 grep으로 확인한다
+- 증상: #333 Part 3 작업 중 repo 루트 `CHANGELOG.md`에서 `<<<<<<< HEAD`/`=======`/
+  `>>>>>>> origin/dev` 충돌 표지 3줄이 그대로 커밋돼 있는 것을 발견했다(`git log -1 -- CHANGELOG.md`
+  기준 `fdc4af0 Merge branch 'dev' into ...`에서 유입). 두 브랜치가 각자 `### Added`에 다른
+  항목(#290, #116·#117)을 추가했을 뿐 실제로 내용이 충돌하지 않는 순수 additive 변경이었는데도,
+  머지 시 표지를 지우지 않고 그대로 커밋해 `dev`/`main` 이력에 깨진 마크다운이 남았다.
+- 원인: 이 프로젝트에 커밋 전 `<<<<<<<`/`=======`/`>>>>>>>` 리터럴을 잡는 pre-commit/CI 검사가
+  없다(`conventional-pre-commit`은 메시지 형식만 본다). 사람이 머지 후 diff를 훑지 않으면
+  마크다운 렌더링이 깨져도 아무 도구도 막지 않는다.
+- 규칙:
+  - **머지 커밋(특히 `--no-verify`로 훅을 건너뛴 경우) 직후 `git grep -n "^<<<<<<<\\|^=======\\|^>>>>>>>" -- '*.md'`
+    로 잔존 표지를 확인한다** — 특히 `CHANGELOG.md`처럼 여러 브랜치가 동시에 append하는 파일.
+  - 발견 시 내용이 additive(서로 다른 섹션/항목 추가)라면 표지만 제거하고 양쪽 내용을 모두
+    보존한다 — 어느 쪽도 버리지 않는다.
+- 관련: 커밋 `fdc4af0`, 이슈 #333 Part 3, `CHANGELOG.md`
+
+## [2026-08-06] Google GenAI 배치 임베딩은 100건/요청 상한이 있다 — 청크 없이 부르면 데이터셋이 커지는 순간 깨진다
+- 증상: `evals/scoring/snapshot_embeddings.py`가 골든셋 dev 질의 임베딩을 재생성하다가
+  `google.genai.errors.ClientError: 400 INVALID_ARGUMENT ... at most 100 requests can be in
+  one batch`로 실패했다. v1(31건)에서는 100 미만이라 한 번도 드러나지 않다가, v2.1(103건)로
+  dev 케이스가 늘어나며 처음 노출됐다.
+- 원인: `app/pipelines/embedding.py`의 `embed_texts()`가 `texts` 전체를 한 번의
+  `embed_content(contents=list(texts), ...)` 호출로 보냈다 — Google `BatchEmbedContentsRequest`가
+  요청당 100건까지만 허용하는 것을 코드가 몰랐다. 이 함수는 eval 스크립트뿐 아니라 §4.8 I-17
+  운영 배치 경로도 공유하므로, search_doc 배치가 100건을 넘기면 프로덕션에서도 같은 방식으로
+  깨질 수 있었다. **이 결함은 이번 이슈(#333 Part 3)의 소관인 `evals/**` 밖 — 발견·보고만 하고
+  `app/pipelines/embedding.py` 자체는 원복했다**(오케스트레이터가 후속 GitHub 이슈로 이관 예정).
+  이번 PR은 eval 전용 호출부(`evals/scoring/snapshot_embeddings.py`)에서만 청크로 대응했다.
+- 규칙:
+  - **외부 API에 리스트를 통째로 넘기는 코드를 새로 짜거나 건드릴 때는 그 API의 배치 상한을
+    공식 문서에서 확인하고, 상한이 있으면 처음부터 청크 분할로 짠다** — "지금 입력이 작아서
+    안 걸린다"는 근거가 되지 않는다(데이터가 자라면 반드시 걸린다).
+  - **핸드오버가 소관 범위 밖(app/**)이라 지정한 파일에서 진짜 결함을 발견해도, 그 자리에서
+    고치지 말고 발견·보고만 한다** — 소관 밖 수정은 다른 레인(#318 등)과 충돌 위험을 만든다.
+    이 PR의 소관인 eval 경로에서 같은 문제를 우회 대응(청크 호출부 이동)하고, 원인 파일 수정은
+    별도 이슈로 넘긴다.
+- 관련: 이슈 #333 Part 3, `app/pipelines/embedding.py` `embed_texts()`(원복, 미수정),
+  `evals/scoring/snapshot_embeddings.py`(청크 호출부 신설)
 ## [2026-08-05] 임의 순서 기준선을 두지 않으면 랭커가 개선인지 손해인지 모른다
 - 증상: #275 조사에서 student(현행 6성분 스코어러) 오라클 상한을 탐색했더니(E2) "상한
   0.738210"이 나와 teacher(0.782943)에 근접하는 듯 보였다. 재현·반증(E4)하니 이 값은

@@ -5,7 +5,8 @@
     "resamples": 2000
   },
   "caseOrder": "caseId-asc",
-  "configVersion": "ablation-config-v2",
+  "caseTestTypeFilter": "MFT",
+  "configVersion": "ablation-config-v3",
   "inconclusiveRule": "ciIncludesZero",
   "missingRunPolicy": "excludePairReportCount",
   "multiplicity": "primaryConfirmatoryOthersExploratory",
@@ -19,6 +20,6 @@
     "overall.precisionAtK.10",
     "overall.mrr"
   ],
-  "seed": 20260803,
+  "seed": 20260805,
   "split": "dev"
 }
