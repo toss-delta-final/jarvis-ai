@@ -172,10 +172,14 @@ AXES: tuple[AxisSpec, ...] = (
         "에코 판정은 앵커 categoryPriorFilters(카테고리 전체·각 조각·semanticQuery)와 "
         "**정규화 후 정확 일치**다 — 부분 문자열이면 `이어폰 케이스` 같은 새 상품도 에코로 세어 "
         "카테고리가 바뀐 턴을 '유지됐다'로 읽는다)",
-        denominator="카테고리 11발화 × categoryPrior 컨텍스트 × N (N=8 이면 88)",
+        denominator="카테고리 15발화 × categoryPrior 컨텍스트 × N (N=8 이면 120) "
+        "— 라운드 3 이 혼합 4발화를 더해 88 → 120 이 됐다",
         predicate=_category_action_matches,
-        components=("categoryCarry", "categoryClear", "categoryReplace"),
-        not_comparable_with=("baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)",),
+        components=("categoryCarry", "categoryClear", "categoryReplace", "categoryMixedReplace"),
+        not_comparable_with=(
+            "baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)",
+            "baselines/fast-2026-08-05-84 (분모 88 — 혼합 4발화 추가 전)",
+        ),
     ),
     AxisSpec(
         axis_id="categoryCarry",
@@ -195,6 +199,16 @@ AXES: tuple[AxisSpec, ...] = (
         denominator="리셋 4발화 × categoryPrior 컨텍스트 × N (N=8 이면 32)",
         predicate=_category_action_matches,
         not_comparable_with=("baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)",),
+    ),
+    AxisSpec(
+        axis_id="categoryMixedReplace",
+        title="혼합 발화(새 카테고리 + 아무거나)",
+        numerator="resolvedCategoryAction 이 replace 인 표본 수 — 새 카테고리를 지목하면서 동시에 "
+        "'아무거나'류 표현을 쓴 발화다. 초판(scopeFree 우선)에서는 사용자가 말한 카테고리가 통째로 "
+        "버려져 무필터가 됐다(실 LLM 실측 32건 중 19건 clear)",
+        denominator="혼합 4발화 × categoryPrior 컨텍스트 × N (N=8 이면 32)",
+        predicate=_category_action_matches,
+        not_comparable_with=("baselines/fast-2026-08-05-84 (이 축이 존재하지 않던 런)",),
     ),
     AxisSpec(
         axis_id="categoryReplace",

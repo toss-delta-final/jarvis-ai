@@ -34,8 +34,8 @@ GROUP_COUNTS = {
     "switch": 7,
     "order_status": 2,
     "general": 2,
-    # [#84] 카테고리 승계 3분기 — 리파인 4 · 리셋 4 · 교체 3.
-    "category_action": 11,
+    # [#84] 카테고리 승계 3분기 — 리파인 4 · 리셋 4 · 교체 3 · **혼합 4**(라운드 3).
+    "category_action": 15,
 }
 
 
@@ -46,7 +46,7 @@ def _raw(name: str = "b") -> dict:
 @pytest.mark.parametrize("name", ["a", "b"])
 def test_committed_anchor_sets_load_and_match_manifest_hash(name: str) -> None:
     anchors = load_anchor_set(name)
-    assert anchors.fixture_version == f"intent-probe-anchors-{name}-v2"
+    assert anchors.fixture_version == f"intent-probe-anchors-{name}-v3"
 
 
 @pytest.mark.parametrize("name", ["a", "b"])
@@ -64,12 +64,12 @@ def test_switch_utterances_are_verbatim_from_issue_260() -> None:
     assert texts == SWITCH_TEXTS
 
 
-def test_cell_count_is_64_and_matches_group_context_product() -> None:
+def test_cell_count_is_68_and_matches_group_context_product() -> None:
     anchors = load_anchor_set("b")
     cells = build_cells(anchors)
     # 발화 × 컨텍스트: 대조군 18 + 지시대명사 12 + 옵션 4 + 전환 7 + 주문 6 + 일반 6
-    # + [#84] 카테고리 11(단일 컨텍스트) = 64
-    assert len(cells) == 64
+    # + [#84] 카테고리 15(단일 컨텍스트 — 라운드 3 이 혼합 4발화를 더했다) = 68
+    assert len(cells) == 68
     per_group: dict[str, int] = {}
     for cell in cells:
         per_group[cell.utterance.group] = per_group.get(cell.utterance.group, 0) + 1
@@ -80,7 +80,7 @@ def test_cell_count_is_64_and_matches_group_context_product() -> None:
         "switch": 7,
         "order_status": 6,
         "general": 6,
-        "category_action": 11,
+        "category_action": 15,
     }
 
 

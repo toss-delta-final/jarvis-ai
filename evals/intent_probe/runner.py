@@ -15,7 +15,13 @@ from time import perf_counter
 from typing import Any
 
 from app.agents.buyer.recommendation.category_scope import classify_category_scope
-from app.agents.buyer.recommendation.decompose import decompose, resolve_category_action
+from app.agents.buyer.recommendation.decompose import (
+    decompose,
+    has_new_category_signal,
+    is_prior_echo_leg,
+    prior_echo_tokens,
+    resolve_category_action,
+)
 from app.agents.buyer.recommendation.state import RouteDecision
 from app.core.config import get_settings
 from app.core.llm import LLMClient
@@ -72,7 +78,7 @@ class Sample:
         sample_index: int,
         latency_ms: int,
         scope_free: bool | None = None,
-        prior_echo_tokens: frozenset[str] = frozenset(),
+        echo_tokens: frozenset[str] = frozenset(),
     ) -> "Sample":
         cart = decision.cart
         # 판정 규칙을 **여기서 재구현하지 않는다** — 배포 경로(`graph.py` 승계 가드)와 같은 함수를
@@ -95,29 +101,24 @@ class Sample:
             resolved_category_action=resolve_category_action(
                 has_category_signal=has_category_signal,
                 scope_free=scope_free,
+                has_new_category_signal=has_new_category_signal(
+                    decision.category_queries, echo_tokens
+                ),
             ),
-            category_legs_echo_prior=_legs_echo_prior(decision.category_queries, prior_echo_tokens),
+            category_legs_echo_prior=_legs_echo_prior(
+                decision.category_queries, echo_tokens
+            ),
             category_legs=serialize_category_legs(decision.category_queries),
         )
-
-
-def _normalize_echo_token(value: str | None) -> str:
-    """에코 비교용 정규화 — 공백 접기 + 소문자 (#84, 2차 리뷰 F-4)."""
-    return " ".join((value or "").split()).lower()
 
 
 def _legs_echo_prior(queries, tokens: frozenset[str]) -> bool:  # noqa: ANN001
     """이번 턴 leg 이 **전부** 직전 카테고리를 되풀이하는가 (#84).
 
-    **부분 문자열이 아니라 정규화 후 정확 일치**로 본다(2차 리뷰 F-4). 초판은 `"이어폰"` 이
-    들어 있기만 하면 에코로 셌는데, 그러면 leg query 가 `"이어폰 케이스"` 여도 에코가 돼
-    **카테고리가 바뀐 턴을 "유지됐다"로 세는** 축이 된다(배포 매퍼는 그것을 액세서리 카테고리로
-    바꿀 수 있다). `docs/lessons.md` [2026-08-02] 「부분 문자열 매칭은 포함 방향마다 의미가
-    다르다」가 가리키는 함정이라 정확 일치로 좁혔다.
-
-    비교 집합은 앵커의 `categoryPriorFilters` 에서 만든다(`_prior_echo_tokens`) — 카테고리 전체·
-    각 조각(잎 포함)·`semanticQuery`. 실측 표본이 `("음향가전 > 이어폰", "무선 이어폰")` 과
-    `("음향가전", "무선 이어폰")` 두 모양이라 이 집합이면 전부 잡힌다.
+    판정 자체는 **배포 경로와 같은 함수**(`decompose.is_prior_echo_leg`)를 부른다 — 규칙을 여기서
+    다시 쓰면 측정과 배포가 갈라진다(lessons 「재현이 틀리면 그 위의 모든 측정과 인과가 함께
+    틀린다」). 그 함수가 정규화 후 **정확 일치**로 보는 이유와 채워진 필드를 **전부** 요구하는
+    이유는 그쪽 docstring 에 있다.
 
     **모든** leg 가 에코일 때만 에코다 — 하나라도 새 상품이면 카테고리가 유지된 것이 아니다.
     leg 이 하나도 없으면 False("에코했다"가 아니라 "신호가 없다"이고, 그 경우는 확정값이 이미
@@ -125,11 +126,7 @@ def _legs_echo_prior(queries, tokens: frozenset[str]) -> bool:  # noqa: ANN001
     """
     if not tokens or not queries:
         return False
-    return all(
-        _normalize_echo_token(query.raw_category) in tokens
-        or _normalize_echo_token(query.query) in tokens
-        for query in queries
-    )
+    return all(is_prior_echo_leg(query, tokens) for query in queries)
 
 
 def serialize_category_legs(queries) -> str:  # noqa: ANN001
@@ -172,20 +169,16 @@ class CellResult:
 
 
 def _prior_echo_tokens(anchors: AnchorSet) -> frozenset[str]:
-    """에코 판정 비교 집합 — 앵커 `categoryPriorFilters` 에서만 만든다 (#84, F-4).
+    """에코 판정 비교 집합 — 앵커 `categoryPriorFilters` 를 배포 함수에 그대로 넘긴다 (#84).
 
-    담는 것: `category` **전체**(`"음향가전 > 이어폰"`) · `>` 로 나눈 **각 조각**(잎 `"이어폰"` 과
-    상위 `"음향가전"`) · `semanticQuery`(`"무선 이어폰"`). 전부 `_normalize_echo_token` 으로
-    정규화해 담고, 비교도 정규화 후 **정확 일치**다.
-
-    앵커 밖의 문자열을 쓰지 않으므로 정답지를 바꾸면 판정도 함께 따라온다(픽스처가 유일한
-    입력이라는 이 하네스의 규약).
+    집합을 만드는 규칙은 `decompose.prior_echo_tokens` 한 곳에만 있다. 여기서는 **앵커에서
+    입력을 뽑는 일**만 한다 — 앵커 밖의 문자열을 쓰지 않으므로 정답지를 바꾸면 판정도 함께
+    따라온다(픽스처가 유일한 입력이라는 이 하네스의 규약).
     """
     prior = anchors.category_prior_filters
-    category = str(prior.get("category") or "")
-    candidates = [category, *category.split(">"), str(prior.get("semanticQuery") or "")]
-    return frozenset(
-        token for token in (_normalize_echo_token(c) for c in candidates) if len(token) >= 2
+    return prior_echo_tokens(
+        category=str(prior.get("category") or ""),
+        semantic_query=str(prior.get("semanticQuery") or ""),
     )
 
 
@@ -226,7 +219,7 @@ async def run_cell(
     # 환경이 아니라 **인자**로 조건을 고정해야 재현된다. 기준선 README 의 `before1`(결함 재현) 열이
     # 이 플래그로 다시 만들어진다.
     prior_category = (getattr(prior_filters, "category", None) or "") if classifier_enabled else ""
-    prior_echo_tokens = _prior_echo_tokens(anchors) if prior_category else frozenset()
+    echo_tokens = _prior_echo_tokens(anchors) if prior_category else frozenset()
     max_attempts = n * attempt_multiplier
     while len(result.samples) < n and result.attempts < max_attempts:
         result.attempts += 1
@@ -272,7 +265,7 @@ async def run_cell(
                 sample_index=len(result.samples),
                 latency_ms=int(round((perf_counter() - started) * 1000)),
                 scope_free=scope_free,
-                prior_echo_tokens=prior_echo_tokens,
+                echo_tokens=echo_tokens,
             )
         )
     result.filled = len(result.samples) == n

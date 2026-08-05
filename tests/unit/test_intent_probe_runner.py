@@ -210,16 +210,31 @@ async def test_sample_carries_the_raw_signal_and_the_resolved_action() -> None:
     재현이 틀리면 그 위의 모든 측정과 인과가 함께 틀린다(lessons 2026-08-04). 그래서
     `resolve_category_action` 을 여기서 직접 부른 값과 표본을 대조한다.
     """
-    from app.agents.buyer.recommendation.decompose import resolve_category_action
+    from app.agents.buyer.recommendation.decompose import (
+        has_new_category_signal,
+        resolve_category_action,
+    )
+    from app.agents.buyer.recommendation.state import CategoryQuery
+    from evals.intent_probe.runner import _prior_echo_tokens
 
+    tokens = _prior_echo_tokens(ANCHORS)
     cells = [cell for cell in CELLS if cell.utterance.group == "category_action"]
     assert cells, "카테고리 셀이 없다 — 픽스처가 어긋났다"
     for cell in cells:
         result = await _run_one(ScriptedDecomposeLLM(ANCHORS), cell=cell, n=8)
         for sample in result.samples:
+            # `samples.csv` 의 leg 원문에서 leg 를 되살려 같은 함수로 재판정한다 — 규칙이 한 벌뿐이면
+            # 이 대조가 항상 성립한다(두 벌이 되는 순간 이 테스트가 깨진다).
+            legs = [
+                CategoryQuery(raw or None, query or None)
+                for raw, _, query in (
+                    part.partition("|") for part in sample.category_legs.split(";") if part
+                )
+            ]
             assert sample.resolved_category_action == resolve_category_action(
                 has_category_signal=sample.has_category_signal,
                 scope_free=sample.scope_free,
+                has_new_category_signal=has_new_category_signal(legs, tokens),
             )
 
 

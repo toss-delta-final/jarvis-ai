@@ -33,7 +33,7 @@ def test_dry_run_writes_every_artifact(tmp_path: Path) -> None:
     assert _run(out) == 0
     assert {path.name for path in out.iterdir()} == ARTIFACT_NAMES
     results = _results(out)
-    assert results["cellCount"] == 64
+    assert results["cellCount"] == 68
     assert results["unfilledCells"] == []
     assert results["dryRun"] is True
 
@@ -87,7 +87,7 @@ def test_report_header_carries_prompt_tier_fixture(tmp_path: Path) -> None:
     results = _results(out)
     assert results["prompt"]["sha12"] in report
     assert "tier=fast" in report
-    assert "intent-probe-anchors-b-v2" in report
+    assert "intent-probe-anchors-b-v3" in report
     assert "이건 골든셋이 아니다" in report
 
 
@@ -153,9 +153,9 @@ def test_pacer_snapshot_is_recorded(tmp_path: Path) -> None:
     assert _run(out, "--rpm", "5") == 0
     pacer = _results(out)["pacer"]
     assert pacer["maxRpm"] == 5
-    # 셀 64 × N=2 (decompose) + 카테고리 11셀 × 2 (범위 해제 분류기) = 150.
+    # 셀 68 × N=2 (decompose) + 카테고리 15셀 × 2 (범위 해제 분류기) = 166.
     # [#84] 분류기도 **페이서를 지난다** — 레이트 예산에 빠지면 실 런에서 429 가 난다.
-    assert pacer["acquireCount"] == 64 * 2 + 11 * 2
+    assert pacer["acquireCount"] == 68 * 2 + 15 * 2
     assert pacer["waitCount"] > 0
 
 

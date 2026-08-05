@@ -271,23 +271,29 @@ async def test_first_turn_without_prior_category_is_a_no_op() -> None:
 
 
 @pytest.mark.parametrize(
-    ("has_category_signal", "scope_free", "expected"),
+    ("has_category_signal", "scope_free", "has_new_category_signal", "expected"),
     [
-        # ── 해제가 최우선 ── leg 가 있어도 `scopeFree is True` 가 이긴다. 리셋 발화의 30~31/32 가
-        # 프롬프트 지시대로 직전 카테고리를 복사한 leg 를 함께 내므로(실측), leg 를 앞에 두면
-        # clear 는 구조적으로 도달 불가능해진다(`categoryClear 0/32`).
-        (False, True, "clear"),
-        (True, True, "clear"),
-        # ── 그 다음이 leg ──
-        (True, False, "replace"),
-        (True, None, "replace"),
-        # ── 신호가 하나도 없으면 carry(=오늘 동작) ──
-        (False, False, "carry"),
-        (False, None, "carry"),
+        # ── ① 새 카테고리 지목이 최우선 ── 혼합 발화("스피커 아무거나")에서 사용자가 말한
+        # 카테고리가 버려지지 않게(라운드 3 F-1, 실측 32건 중 19건이 clear 였다).
+        # `has_new` 가 참이면 유효 leg 이 있다는 뜻이라 `has_signal` 도 항상 참이다.
+        (True, True, True, "replace"),
+        (True, False, True, "replace"),
+        (True, None, True, "replace"),
+        # ── ② 그 다음이 해제 ── leg 가 있어도 **전부 prior 에코**면 clear 가 이긴다.
+        (False, True, False, "clear"),
+        (True, True, False, "clear"),
+        # ── ③ 에코 leg 뿐이면 매핑 경로(오늘 동작) ──
+        (True, False, False, "replace"),
+        (True, None, False, "replace"),
+        # ── ④ 신호가 하나도 없으면 carry(=오늘 동작) ──
+        (False, False, False, "carry"),
+        (False, None, False, "carry"),
     ],
 )
-def test_resolve_category_action_table(has_category_signal, scope_free, expected) -> None:
-    """판정은 (신호 유무 × scopeFree) 두 축으로 완결된다.
+def test_resolve_category_action_table(
+    has_category_signal, scope_free, has_new_category_signal, expected
+) -> None:
+    """판정은 (신호 유무 × scopeFree × 새 카테고리 지목) 세 축으로 완결된다.
 
     인라인 `categoryAction` 축은 실측 기각으로 사라졌고(이득 0 · 전환 축 손해), prior 는 여전히
     인자가 아니다 — "승계할 것이 있는가"는 호출부(`graph.py`) 책임이다.
@@ -296,6 +302,7 @@ def test_resolve_category_action_table(has_category_signal, scope_free, expected
         resolve_category_action(
             has_category_signal=has_category_signal,
             scope_free=scope_free,
+            has_new_category_signal=has_new_category_signal,
         )
         == expected
     )
@@ -304,7 +311,24 @@ def test_resolve_category_action_table(has_category_signal, scope_free, expected
 def test_scope_free_only_fires_on_exact_true() -> None:
     """`None`(판정 실패)과 `False` 는 해제 신호가 아니다 — 애매한 산출을 강한 쪽으로 읽지 않는다."""
     for scope_free in (None, False):
-        assert resolve_category_action(has_category_signal=False, scope_free=scope_free) == "carry"
+        assert (
+            resolve_category_action(
+                has_category_signal=False,
+                scope_free=scope_free,
+                has_new_category_signal=False,
+            )
+            == "carry"
+        )
+
+
+def test_new_category_signal_outranks_scope_free_in_the_pure_function() -> None:
+    """[라운드 3 F-1] 순수 함수 층에서도 새 카테고리 지목이 해제를 이긴다."""
+    assert (
+        resolve_category_action(
+            has_category_signal=True, scope_free=True, has_new_category_signal=True
+        )
+        == "replace"
+    )
 
 
 # ─────────── §4.3 칩 제거(②)와의 결합 ───────────
@@ -497,9 +521,18 @@ async def test_classifier_false_keeps_the_prior_category_on_the_same_output() ->
     assert search.filters[-1].category == PRIOR_CATEGORY
 
 
-async def test_classifier_true_still_wins_when_the_new_category_is_a_real_switch() -> None:
-    """잔여 위험의 **성격**을 고정한다 — 오탐하면 카테고리가 넓어질 뿐(#22 무필터) 엉뚱한
-    카테고리로 좁혀지지 않는다. 실측 오탐은 0/56(독립 3회)이다."""
+async def test_new_category_beats_scope_free_on_a_mixed_utterance() -> None:
+    """[라운드 3 F-1] **혼합 발화**에서 사용자가 말한 카테고리가 버려지면 안 된다.
+
+    `"스피커 아무거나 보여줘"` 는 분류기가 True 를 내면서 decompose 가 `(None,"스피커")` leg 를
+    함께 내는 턴이다. 초판 순서(`scope_free` 우선)에서는 그 leg 가 통째로 버려져 **무필터**가
+    됐다 — 실 LLM 실측에서 이 발화는 **8/8 이 clear** 였다(혼합 발화 4종 32건 중 19건).
+
+    새 카테고리 지목이 가장 강한 신호다: 리셋 발화가 함께 내는 leg 는 실측상 **전부 prior
+    에코**라 `clear` 는 그대로 살아나고, 새 카테고리를 말한 leg 만 이 규칙에 걸린다.
+    잔여 위험의 방향도 바뀐다 — 오탐하면 "카테고리가 안 풀림"(사용자가 한 번 더 말하면 된다)이고,
+    종전은 "사용자가 말한 카테고리가 사라짐"이었다.
+    """
     identity = _member()
     await _seed_prior_category(identity)
 
@@ -508,10 +541,27 @@ async def test_classifier_true_still_wins_when_the_new_category_is_a_real_switch
         _ScopeAwareLLM(
             scope_free=True,
             decompose=_prior_echo_decompose(
-                categoryQueries=[{"category": "노트북", "query": "노트북"}]
+                categoryQueries=[{"category": None, "query": "스피커"}]
             ),
         ),
-        request=_turn2_request("이번엔 노트북 보여줘"),
+        request=_turn2_request("스피커 아무거나 보여줘"),
     )
 
-    assert search.filters[-1].category is None  # 넓어짐 — 이어폰으로도 노트북으로도 좁히지 않는다
+    assert search.filters[-1].category == LAPTOP_CANONICAL  # 새 카테고리로 매핑(에코가 아니다)
+
+
+async def test_scope_free_still_wins_when_every_leg_is_a_prior_echo() -> None:
+    """대조군 — leg 가 전부 prior 에코면 `clear` 가 그대로 이긴다(#84 본 결함의 모양).
+
+    이 짝이 없으면 위 테스트는 "leg 만 있으면 무조건 replace"와 구분되지 않는다.
+    """
+    identity = _member()
+    await _seed_prior_category(identity)
+
+    search, _, _ = await _second_turn(
+        identity,
+        _ScopeAwareLLM(scope_free=True, decompose=_prior_echo_decompose()),
+        request=_turn2_request("5만원 이하 아무거나 있어?"),
+    )
+
+    assert search.filters[-1].category is None

@@ -36,6 +36,8 @@ from app.agents.buyer.recommendation.decompose import (
     _resolve_contradictory_price_range,
     build_screen_prompt,
     decompose,
+    has_new_category_signal,
+    prior_echo_tokens,
     resolve_category_action,
 )
 from app.agents.buyer.recommendation.needs_expansion import detect_expansion_need
@@ -333,9 +335,17 @@ async def _prepare_recommendation(
     # (정본은 `resolve_category_action` — 그래프와 프로브가 같은 규칙을 쓴다). decompose 프롬프트
     # 안의 인라인 필드로 받는 안은 실측으로 기각됐다(이득 0 · 전환 축 손해, 그 함수 docstring 참조).
     # 승계할 prior 가 있는지는 **호출부인 여기서** 본다(아래 if) — 판정 함수는 prior 를 받지 않는다.
+    # [라운드 3 F-1] "새 카테고리를 지목했는가"는 **prior 에코 leg 를 제외한** 유효 leg 유무다.
+    # 판정 규칙은 `decompose` 에 한 벌만 두고 프로브(`evals/intent_probe/runner.py`)도 같은 함수를
+    # 부른다 — 규칙이 두 벌이면 측정과 배포가 갈라진다.
+    echo_tokens = prior_echo_tokens(
+        category=prior.category if prior is not None else None,
+        semantic_query=prior.semantic_query if prior is not None else None,
+    )
     action = resolve_category_action(
         has_category_signal=any(q.raw_category or q.query for q in decision.category_queries),
         scope_free=scope_free,
+        has_new_category_signal=has_new_category_signal(decision.category_queries, echo_tokens),
     )
     # 값(카테고리 문자열)은 싣지 않는다 — 이 파일의 기존 규약(#119 PII).
     logger.info(

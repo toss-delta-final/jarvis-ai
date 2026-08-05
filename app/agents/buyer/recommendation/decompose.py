@@ -352,22 +352,95 @@ def _resolve_contradictory_price_range(
     return filters.model_copy(update={drop: None})
 
 
+def normalize_category_token(value: str | None) -> str:
+    """카테고리 어휘 비교용 정규화 — 공백 접기 + 소문자 (#84).
+
+    비교는 **정규화 후 정확 일치**다. 부분 문자열이면 `"이어폰 케이스"` 같은 **새 상품**이
+    `"이어폰"` 을 포함한다는 이유로 에코가 되고, 그러면 카테고리가 바뀐 턴을 "유지됐다"로 읽는다
+    (lessons 2026-08-02 「부분 문자열 매칭은 포함 방향마다 의미가 다르다」).
+    """
+    return " ".join((value or "").split()).lower()
+
+
+def prior_echo_tokens(*, category: str | None, semantic_query: str | None) -> frozenset[str]:
+    """직전 카테고리를 가리키는 어휘 집합 (#84).
+
+    담는 것: canonical **전체**(`"음향가전 > 이어폰"`) · `>` 로 나눈 **각 조각**(잎 `"이어폰"` 과
+    상위 `"음향가전"`) · `semantic_query`(`"무선 이어폰"`). 실측에서 리셋 발화가 함께 낸 leg 가
+    `("음향가전 > 이어폰","무선 이어폰")` · `("음향가전","무선 이어폰")` · `(None,"무선 이어폰")`
+    세 모양이라 이 집합이면 전부 잡힌다.
+
+    **한 글자 토큰은 담지 않는다** — 정확 일치라도 한 글자는 우연히 겹칠 여지가 크다.
+    """
+    raw = category or ""
+    candidates = [raw, *raw.split(">"), semantic_query or ""]
+    return frozenset(
+        token for token in (normalize_category_token(c) for c in candidates) if len(token) >= 2
+    )
+
+
+def is_prior_echo_leg(query: CategoryQuery, tokens: frozenset[str]) -> bool:
+    """이 leg 이 **직전 카테고리를 되풀이한 것뿐**인가 (#84).
+
+    `_SYSTEM` 의 `categoryQueries` 불릿이 "조건 다듬기면 PRIOR_FILTERS.category 를 그대로 실어라"
+    라고 지시하므로, 리파인·리셋 턴에도 leg 가 딸려 온다. 그 leg 는 사용자가 지목한 상품이 아니라
+    **프롬프트가 시킨 에코**다.
+
+    **채워진 필드가 전부** 토큰 집합에 있어야 에코다(`or` 가 아니라 `and`). 실측에서
+    `("음향가전","스피커")` 처럼 raw 는 상위 조각이고 query 는 **새 상품**인 leg 가 나오는데,
+    `or` 로 보면 그것이 에코로 접혀 사용자가 말한 "스피커"가 통째로 사라진다(라운드 3 F-1).
+    """
+    fields = [field for field in (query.raw_category, query.query) if (field or "").strip()]
+    return bool(fields) and all(normalize_category_token(field) in tokens for field in fields)
+
+
+def has_new_category_signal(queries: Sequence[CategoryQuery], tokens: frozenset[str]) -> bool:
+    """유효 leg 중 **prior 에코가 아닌 것**이 하나라도 있는가 — 즉 새 카테고리를 지목했는가 (#84).
+
+    `resolve_category_action` 의 최우선 규칙이 읽는 값이고, 프로브도 같은 함수를 쓴다
+    (`evals/intent_probe/runner.py` — 규칙이 두 벌이면 측정과 배포가 갈라진다).
+    """
+    return any(
+        ((query.raw_category or "").strip() or (query.query or "").strip())
+        and not is_prior_echo_leg(query, tokens)
+        for query in queries
+    )
+
+
 def resolve_category_action(
     *,
     has_category_signal: bool,
     scope_free: bool | None,
+    has_new_category_signal: bool,
 ) -> str:
     """이번 턴에 직전 카테고리를 어떻게 할지 확정한다 — carry|clear|replace (#84).
 
     - **clear** = 직전 카테고리를 푼다(무필터 복원, #22). 신호는 전용 분류기
       `category_scope.classify_category_scope` 의 `scope_free` 하나다.
-    - **replace** = 이번 턴 `categoryQueries` 에 유효 leg 이 있어 새 카테고리로 간다.
+    - **replace** = 새 카테고리로 간다. 이번 턴 `categoryQueries` 에 유효 leg 이 있을 때다.
     - **carry** = 둘 다 아니면 직전 카테고리를 승계한다(#59 규약 = 오늘 동작).
 
     그래프 가드와 프로브가 **같은 규칙**을 쓰도록 순수 함수로 뽑아 둔다(호출부에 흩어 두면
     다음 규칙을 더할 때 한쪽만 고쳐진다 — lessons 2026-08-04 「양보를 함수 앞단에」).
 
-    **`scope_free` 가 leg 보다 우선인 근거(실측).** 리셋 발화("5만원 이하 아무거나")의
+    **판정 순서는 네 단계다**(라운드 3 F-1 로 맨 앞에 한 단계가 붙었다):
+
+    1. `has_new_category_signal` — 사용자가 **다른 카테고리를 지목**했으면 replace. 가장 강한
+       신호다. 없으면 **혼합 발화**("스피커 아무거나 보여줘")에서 사용자가 말한 카테고리가
+       통째로 버려진다 — 실 LLM 실측에서 혼합 발화 4종 32건 중 **19건이 clear** 로 확정됐고,
+       `"스피커 아무거나 보여줘"` 는 **8/8** 이었다(그때 버려진 leg: `(None,"스피커")` ·
+       `("음향가전","스피커")`).
+    2. `scope_free is True` — 종류를 놓겠다는 말. prior 에코 leg 는 이 판정을 막지 못한다.
+    3. `has_category_signal` — 에코 leg 뿐이면 오늘 동작(매핑 경로)을 그대로 탄다.
+    4. 그 밖은 carry.
+
+    **1이 2보다 앞이어도 `clear` 가 죽지 않는 근거(실측).** 리셋 발화가 함께 내는 leg 는 **전부
+    prior 에코**였다(`("음향가전 > 이어폰","무선 이어폰")` · `("음향가전","무선 이어폰")` ·
+    `(None,"무선 이어폰")` — `prior_echo_tokens` 집합에 정확히 들어간다). 그래서 1은 리셋 턴에서
+    발동하지 않는다. 잔여 위험의 **방향**도 바뀐다: 이제 오탐은 "카테고리가 안 풀림"(사용자가 한 번
+    더 말하면 된다)이고, 종전은 "사용자가 말한 카테고리가 사라짐"이었다 — 후자가 더 나쁘다.
+
+    **`scope_free` 가 (에코) leg 보다 우선인 근거(실측).** 리셋 발화("5만원 이하 아무거나")의
     **30~31/32 가 직전 카테고리를 그대로 복사한 leg 를 함께 낸다** — 위 `_SYSTEM` 의
     `categoryQueries` 불릿이 "조건 다듬기면 PRIOR_FILTERS.category 를 그대로 실어라"라고
     지시하기 때문이다. 그 leg 는 사용자가 지목한 상품이 아니라 프롬프트가 시킨 **prior 에코**라
@@ -390,6 +463,8 @@ def resolve_category_action(
     책임이다 — `graph.py` 가 `prior is not None and prior.category` 로 이미 판정하고, 거기서
     carry 는 "승계할 것이 없음"과 같은 뜻이 된다.
     """
+    if has_new_category_signal:
+        return "replace"
     if scope_free is True:
         return "clear"
     if has_category_signal:

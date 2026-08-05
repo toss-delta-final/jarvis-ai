@@ -1,8 +1,8 @@
 {
-  "provenance": "reconstructed-from-issue-240-and-pr-239; category_action group added by #84",
+  "provenance": "reconstructed-from-issue-240-and-pr-239; category_action group added by #84 (mixed utterances in round 3)",
   "sha256": {
-    "anchors_a.json": "7810f4196d0f33f0bd94c2dfa295c0a67572d67cbee20af277ddaf349028f6b8",
-    "anchors_b.json": "4d47bf66e825edf6031213e97844affdec4a2eeed69a5f926d1aeae6d3b43870"
+    "anchors_a.json": "f16bece22fef869410d120ee6940b75816f1263ee7bb6d9e3efbba6bc18dacd8",
+    "anchors_b.json": "7ea9cc95b44a40c28d12a232f66465f14973a751dc06a94f6c743ded522a3bac"
   },
-  "version": "intent-probe-anchors-manifest-v2"
+  "version": "intent-probe-anchors-manifest-v3"
 }

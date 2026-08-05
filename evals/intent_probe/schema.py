@@ -48,8 +48,16 @@ LEGACY_AXIS_IDS = frozenset(
     }
 )
 # [#84] 신규 축 — 커밋된 기준선(`baselines/fast-2026-08-04/`)에는 **존재하지 않는다.**
+# `categoryMixedReplace`(라운드 3)는 **혼합 발화** 전용이라 `categoryReplace` 와 따로 센다 —
+# 그 축의 분모(24)를 유지해야 방금 커밋한 v2 기준선과 비교가 된다(실패의 모양을 갈라 세는 규약).
 CATEGORY_ACTION_AXIS_IDS = frozenset(
-    {"categoryAction3Way", "categoryCarry", "categoryClear", "categoryReplace"}
+    {
+        "categoryAction3Way",
+        "categoryCarry",
+        "categoryClear",
+        "categoryReplace",
+        "categoryMixedReplace",
+    }
 )
 AXIS_IDS = LEGACY_AXIS_IDS | CATEGORY_ACTION_AXIS_IDS
 

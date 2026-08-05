@@ -1201,3 +1201,71 @@ def test_load_bearing_rules_survive_in_both_prompt_variants() -> None:
     for prompt in (_SYSTEM, _SYSTEM_WITH_SCREEN):
         for phrase in load_bearing:
             assert phrase in prompt, phrase
+
+
+# ─────────── #84 라운드 3 — prior 에코 판정(그래프·프로브 공용 규칙) ───────────
+
+
+def _tokens():
+    from app.agents.buyer.recommendation.decompose import prior_echo_tokens
+
+    return prior_echo_tokens(category="음향가전 > 이어폰", semantic_query="무선 이어폰")
+
+
+@pytest.mark.parametrize(
+    ("raw", "query"),
+    [
+        ("음향가전 > 이어폰", "무선 이어폰"),  # 실측 표본 ①
+        ("음향가전", "무선 이어폰"),  # 실측 표본 ②
+        (None, "무선 이어폰"),  # 실측 표본 ③
+        ("이어폰", None),  # 잎만
+        ("  음향가전  >  이어폰  ", None),  # 공백 정규화
+    ],
+)
+def test_prior_vocabulary_legs_are_echoes(raw, query) -> None:
+    """리셋·리파인 턴이 함께 내는 leg 는 전부 이 모양이라 `clear` 가 살아난다."""
+    from app.agents.buyer.recommendation.decompose import is_prior_echo_leg
+    from app.agents.buyer.recommendation.state import CategoryQuery
+
+    assert is_prior_echo_leg(CategoryQuery(raw, query), _tokens()) is True
+
+
+@pytest.mark.parametrize(
+    ("raw", "query"),
+    [
+        (None, "스피커"),  # 혼합 발화가 낸 새 카테고리(실측)
+        ("음향가전", "스피커"),  # raw 는 상위 조각인데 query 가 **새 상품**(실측)
+        (None, "이어폰 케이스"),  # 부분 문자열이면 에코로 접히던 함정
+        ("음향가전 > 이어폰 액세서리", None),
+    ],
+)
+def test_new_category_legs_are_not_echoes(raw, query) -> None:
+    """[라운드 3 F-1] 채워진 필드가 **전부** 토큰이어야 에코다 — `or` 면 `("음향가전","스피커")`
+    가 에코로 접혀 사용자가 말한 스피커가 통째로 사라진다."""
+    from app.agents.buyer.recommendation.decompose import is_prior_echo_leg
+    from app.agents.buyer.recommendation.state import CategoryQuery
+
+    assert is_prior_echo_leg(CategoryQuery(raw, query), _tokens()) is False
+
+
+def test_has_new_category_signal_needs_one_non_echo_leg() -> None:
+    from app.agents.buyer.recommendation.decompose import has_new_category_signal
+    from app.agents.buyer.recommendation.state import CategoryQuery
+
+    tokens = _tokens()
+    echo = CategoryQuery("음향가전 > 이어폰", "무선 이어폰")
+    fresh = CategoryQuery(None, "스피커")
+    assert has_new_category_signal([], tokens) is False
+    assert has_new_category_signal([echo], tokens) is False
+    assert has_new_category_signal([echo, fresh], tokens) is True
+    assert has_new_category_signal([fresh], tokens) is True
+
+
+def test_prior_echo_tokens_drop_one_character_fragments() -> None:
+    """한 글자 **조각**은 정확 일치라도 우연히 겹칠 여지가 커서 담지 않는다(전체 문자열은 남는다)."""
+    from app.agents.buyer.recommendation.decompose import prior_echo_tokens
+
+    assert prior_echo_tokens(category="가 > 이어폰", semantic_query=None) == frozenset(
+        {"가 > 이어폰", "이어폰"}
+    )
+    assert prior_echo_tokens(category=None, semantic_query=None) == frozenset()

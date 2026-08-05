@@ -43,8 +43,8 @@ uv run python -m evals.intent_probe --out artifacts/no-scope --no-classifier
 uv run python -m evals.intent_probe --dump-prompt system.txt
 ```
 
-기본 규모: 64셀 × N=8 = 512콜(decompose) **+ 88콜**(카테고리 11셀 × N — 범위 해제 분류기)
-= **600콜**, 45rpm 페이서라 런당 약 14~16분.
+기본 규모: 68셀 × N=8 = 544콜(decompose) **+ 120콜**(카테고리 15셀 × N — 범위 해제 분류기)
+= **664콜**, 45rpm 페이서라 런당 약 15~17분.
 `fast`(gpt-5-nano) 기준 런당 대략 USD 0.10 — 2026-08-04 실측($0.086 / 1.27M tokens, 424콜)을
 콜 수 비례로 환산한 추정이다(#84 이 카테고리 11셀을 더해 424 → 512). 분류기 88콜은 프롬프트가
 짧고(`max_tokens=32`) 콜당 ≈0.35k 라 비용·TPM 영향이 작지만 **페이서는 지나므로**(rpm 예산에
@@ -94,8 +94,8 @@ README 에 있다.
 
 `fixtures/anchors_b.json`(기본) / `fixtures/anchors_a.json`. 스크립트는 이 파일만 읽는다.
 
-- 발화 36개 — 장바구니 대조군 6 · 지시대명사 4 · 옵션 답변 4 · 전환 7 · order_status 2 · general 2
-  · **카테고리 승계 11**(리파인 4 · 리셋 4 · 교체 3, #84)
+- 발화 40개 — 장바구니 대조군 6 · 지시대명사 4 · 옵션 답변 4 · 전환 7 · order_status 2 · general 2
+  · **카테고리 승계 15**(리파인 4 · 리셋 4 · 교체 3 · **혼합 4**, #84)
 - 컨텍스트 4종 — `none` / `lastRecommendations` / `pendingCart` / **`categoryPrior`**
 - `categoryPrior`(#84) 는 `categoryPriorFilters`(직전 카테고리가 있는 스레드 —
   `음향가전 > 이어폰`)를 PRIOR_FILTERS 로 싣고 **LAST_RECOMMENDATIONS 는 싣지 않는다.** 직전 추천
@@ -125,12 +125,21 @@ README 에 있다.
 | `cartAddProductIdLegacy2` | `cart_add` ∧ productId ∈ 목록 (**#234 정의** — 에코도 정답) | 같은 표본 16 |
 | `switchAll7` | `switchLegacy2` 술어를 전환 7발화 전부에 | 7×1×8 = 56 |
 | `orderStatus` / `general` | intent 일치 | 각 48 |
-| `categoryAction3Way` | **확정값**(`resolve_category_action` 산출)이 기대 carry·clear·replace 와 일치 | 11×1×8 = 88 |
+| `categoryAction3Way` | **확정값**(`resolve_category_action` 산출)이 기대 carry·clear·replace 와 일치 | 15×1×8 = 120 |
 | `categoryCarry` | 같은 술어, 리파인 4발화 | 32 |
 | `categoryClear` | 같은 술어, 리셋 4발화 | 32 |
 | `categoryReplace` | 같은 술어, 교체 3발화 | 24 |
+| `categoryMixedReplace` | 같은 술어, **혼합 4발화**(새 카테고리 + "아무거나") | 32 |
 
-카테고리 4축(#84)은 **커밋된 기준선에 없다** — `notComparableWith` 에 그 사실이 실린다. 채점은
+**혼합 발화 축(`categoryMixedReplace`)을 `categoryReplace` 와 섞지 않는다**(라운드 3). 새 카테고리를
+지목하면서 동시에 "아무거나"류 표현을 쓰는 발화는 초판 판정 순서에서 사용자가 말한 카테고리가
+통째로 버려졌는데(실 LLM 실측 32건 중 **19건 clear**), 그 실패를 `categoryReplace` 에 합치면
+그 축의 분모(24)가 바뀌어 방금 커밋한 v2 기준선과 비교가 끊긴다 — **실패의 모양을 갈라 센다.**
+대신 `categoryAction3Way` 의 분모가 88 → **120** 으로 늘었으므로 그 축은 v2 표와 직접 비교하지
+않는다(`notComparableWith` 에 적혀 있다).
+
+카테고리 축(#84)은 **커밋된 기준선(`fast-2026-08-04*`)에 없다** — `notComparableWith` 에 그 사실이
+실린다. 채점은
 **그래프 가드가 실제로 쓰는 확정값**과 대조한다: 프로브는
 `app.agents.buyer.recommendation.decompose.resolve_category_action` 을 그대로 부르고 규칙을
 재구현하지 않는다(재현이 틀리면 그 위의 모든 측정과 인과가 함께 틀린다).

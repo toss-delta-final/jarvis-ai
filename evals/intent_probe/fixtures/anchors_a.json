@@ -1,5 +1,5 @@
 {
-  "fixtureVersion": "intent-probe-anchors-a-v2",
+  "fixtureVersion": "intent-probe-anchors-a-v3",
   "schemaVersion": "1.1.0",
   "reaskProductId": 101,
   "reaskProductListPosition": 1,
@@ -660,6 +660,71 @@
       "axes": [
         "categoryAction3Way",
         "categoryReplace"
+      ]
+    },
+    {
+      "utteranceId": "category-mixed-001",
+      "group": "category_action",
+      "text": "스피커 아무거나 보여줘",
+      "contexts": [
+        "categoryPrior"
+      ],
+      "expected": {
+        "intent": "recommend",
+        "categoryAction": "replace"
+      },
+      "axes": [
+        "categoryAction3Way",
+        "categoryMixedReplace"
+      ],
+      "note": "[라운드 3] **혼합 발화** — 새 카테고리를 지목하면서 동시에 '아무거나'류 표현을 쓴다. 실 LLM 실측에서 이 4발화 32건 중 19건이 clear 로 확정돼 사용자가 말한 카테고리가 버려졌다(이 발화는 8/8). 기대는 replace 이고, 축은 categoryMixedReplace 로 따로 센다 — categoryReplace 의 분모(24)를 유지해야 v2 기준선과 비교가 된다."
+    },
+    {
+      "utteranceId": "category-mixed-002",
+      "group": "category_action",
+      "text": "이번엔 노트북 아무거나",
+      "contexts": [
+        "categoryPrior"
+      ],
+      "expected": {
+        "intent": "recommend",
+        "categoryAction": "replace"
+      },
+      "axes": [
+        "categoryAction3Way",
+        "categoryMixedReplace"
+      ]
+    },
+    {
+      "utteranceId": "category-mixed-003",
+      "group": "category_action",
+      "text": "운동화 아무거나 추천해줘",
+      "contexts": [
+        "categoryPrior"
+      ],
+      "expected": {
+        "intent": "recommend",
+        "categoryAction": "replace"
+      },
+      "axes": [
+        "categoryAction3Way",
+        "categoryMixedReplace"
+      ]
+    },
+    {
+      "utteranceId": "category-mixed-004",
+      "group": "category_action",
+      "text": "종류 상관없이 청바지로 보여줘",
+      "contexts": [
+        "categoryPrior"
+      ],
+      "expected": {
+        "intent": "recommend",
+        "categoryAction": "replace"
+      },
+      "axes": [
+        "categoryAction3Way",
+        "categoryMixedReplace"
       ]
     }
   ]

@@ -93,11 +93,12 @@ def test_expected_denominators_match_issue_240_shape() -> None:
         "cartAddProductIdLegacy2": 16,
         "orderStatus": 48,
         "general": 48,
-        # [#84] 카테고리 11발화 × categoryPrior 1종 × N=8.
-        "categoryAction3Way": 88,
+        # [#84] 카테고리 15발화 × categoryPrior 1종 × N=8(라운드 3 이 혼합 4발화를 더했다).
+        "categoryAction3Way": 120,
         "categoryCarry": 32,
         "categoryClear": 32,
         "categoryReplace": 24,
+        "categoryMixedReplace": 32,
     }
 
 
@@ -284,10 +285,13 @@ def _category_results(resolved_for) -> list[CellResult]:  # noqa: ANN001
 
 def test_category_axes_count_only_their_own_bucket() -> None:
     axes = score_all(_category_results(lambda expected: expected), ANCHORS, n=N)
-    assert axes["categoryAction3Way"].numerator == 88
+    assert axes["categoryAction3Way"].numerator == 120
     assert axes["categoryCarry"].numerator == 32
     assert axes["categoryClear"].numerator == 32
     assert axes["categoryReplace"].numerator == 24
+    # [라운드 3] 혼합 발화는 **따로** 센다 — categoryReplace 의 분모(24)를 유지해야 v2 기준선과
+    # 비교가 되기 때문이다(실패의 모양을 갈라 세는 규약).
+    assert axes["categoryMixedReplace"].numerator == 32
     # 기존 축은 카테고리 표본을 한 개도 세지 않는다 — 기준선과 비교 가능성이 이 격리에 달렸다.
     assert axes["mainIntent"].expected_denominator == 0
     assert axes["general"].expected_denominator == 0
@@ -305,11 +309,13 @@ def test_three_way_axis_is_the_sum_of_its_components() -> None:
         axes["categoryCarry"].numerator
         + axes["categoryClear"].numerator
         + axes["categoryReplace"].numerator
+        + axes["categoryMixedReplace"].numerator
     )
     assert axes["categoryAction3Way"].components == (
         "categoryCarry",
         "categoryClear",
         "categoryReplace",
+        "categoryMixedReplace",
     )
 
 
