@@ -590,6 +590,10 @@ async def decompose(
         raw_sq = data.get("semanticQuery")
         llm_sq = raw_sq.strip() if isinstance(raw_sq, str) else ""
         filters.semantic_query = llm_sq or cat_signal or prior_sq or query
+        # [#162] 위 셋이 전부 없어 **원문으로 폴백**했는가 — 조건 없는 발화 판정의 근거다.
+        # semantic_query 는 이 폴백 때문에 절대 비지 않아서, 값의 유무로는 "사용자가 의미 신호를
+        # 줬는가"를 알 수 없다. 여기서만 알 수 있으므로 결과에 실어 보낸다.
+        semantic_query_is_fallback = not (llm_sq or cat_signal or prior_sq)
         # 명시 속성 하드조건(PR②) — search_catalog 가 SpringProduct.attributes 와 관대 매칭한다.
         # 멀티턴 모델(PR#169 리뷰): 기본은 **merge**(prior ∪ 이번 턴 설정값). 제거는 사용자가
         # 명시한 경우("핏 빼줘")만 attrRemovals 신호로 처리한다. 이렇게 하면 LLM 이 정제발화에서
@@ -645,6 +649,7 @@ async def decompose(
         scoped_to_previous=data.get("scopedToPrevious") is True,
         buy_all=buy_all,
         total_budget=total_budget,
+        semantic_query_is_fallback=semantic_query_is_fallback,
     )
 
 

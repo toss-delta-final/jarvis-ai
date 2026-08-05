@@ -2376,7 +2376,12 @@ async def test_recommendation_deferred_conditions_suppresses_search_retry(
 async def test_recommendation_nondeferred_conditions_keeps_search_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """conditions를 먼저 내는 턴은 첫 이벤트 예산 밖이므로 I-1 재시도 1회를 유지한다(#277)."""
+    """conditions를 먼저 내는 턴은 첫 이벤트 예산 밖이므로 I-1 재시도 1회를 유지한다(#277).
+
+    [#162] `semanticQuery` 를 준다 — 종전에는 `filters: {}` 만으로 이 턴을 만들었는데, 그건 이제
+    **조건 없는 발화**로 판정돼 I-1 이 아니라 I-3(인기 상품) 경로를 탄다. 이 테스트의 주제는
+    I-1 재시도지 후보 소스 선택이 아니므로, 의미 신호를 줘서 종전 경로를 유지시킨다.
+    """
     import httpx
 
     calls = _counting_client(monkeypatch, httpx.Response(503))
@@ -2387,6 +2392,7 @@ async def test_recommendation_nondeferred_conditions_keeps_search_retry(
             llm=FakeLLM(
                 decompose={
                     "intent": "recommend",
+                    "semanticQuery": "무선 이어폰",
                     "filters": {},
                     "case": 2,
                 }
@@ -5746,3 +5752,581 @@ async def test_total_budget_output_controls_push_independently_of_price_max(
         totals.append(push.pushes[0].total_budget)
 
     assert totals == [50_000, None]
+
+
+# ─────────── [#162] 조건 없는 발화 → 인기 상품(I-3) ───────────
+
+_NO_CONDITION_DECOMPOSE = {"intent": "recommend", "filters": {}, "case": 2}
+
+
+def _counting_search_calls(products=DEFAULT_PRODUCTS):
+    """I-1 호출을 기록하는 검색 — "호출되지 않았다"를 검증하려면 셀 수 있어야 한다."""
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters)
+        return ProductSearchResult(products=list(products), total_count=len(products))
+
+    return _search, calls
+
+
+def _recording_popular(products=DEFAULT_PRODUCTS, *, error: Exception | None = None):
+    """I-3 호출을 기록하는 fake. `error` 를 주면 그 예외를 던진다(장애 재현)."""
+    calls: list = []
+
+    async def _popular(size):
+        calls.append(size)
+        if error is not None:
+            raise error
+        return ProductSearchResult(products=list(products), total_count=len(products))
+
+    return _popular, calls
+
+
+async def test_no_condition_turn_uses_popular_instead_of_unfiltered_search() -> None:
+    """조건 0개 발화는 I-1 을 부르지 않고 I-3 후보로 답한다 — 이 이슈의 본체.
+
+    종전에는 파라미터 0개의 I-1 이 나가 매칭 전량(실측 7,245건·13.33MB)을 받았다.
+    """
+    search, search_calls = _counting_search_calls()
+    popular, popular_calls = _recording_popular()
+    push = _RecordingPush()
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="아무거나 추천해줘", thread_id="nc-popular"),
+            _guest(),
+            llm=FakeLLM(decompose=_NO_CONDITION_DECOMPOSE),
+            search=search,
+            push_fn=push,
+            popular_fn=popular,
+        )
+    )
+
+    assert search_calls == []  # 무필터 I-1 이 나가지 않는다
+    assert popular_calls == [get_settings().popular_candidate_size]  # config 값을 명시 전송
+    assert "products.ready" in _types(events)
+    assert _types(events)[-1] == "done"
+
+
+async def test_no_condition_turn_discloses_popular_source() -> None:
+    """안내를 함께 낸다 — 없으면 사용자가 인기 상품을 자기 조건이 반영된 결과로 오해한다."""
+    search, _ = _counting_search_calls()
+    popular, _ = _recording_popular()
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="아무거나 추천해줘", thread_id="nc-notice"),
+            _guest(),
+            llm=FakeLLM(decompose=_NO_CONDITION_DECOMPOSE),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    texts = [e["data"]["text"] for e in events if e["type"] == "token"]
+    assert any(get_settings().no_condition_notice_popular in t for t in texts)
+
+
+async def test_condition_turn_never_calls_popular() -> None:
+    """조건이 있는 턴은 종전 경로 그대로 — I-3 로 새면 사용자가 말한 조건이 버려진다."""
+    search, search_calls = _counting_search_calls()
+    popular, popular_calls = _recording_popular()
+
+    await _collect(
+        run_buyer_turn(
+            _req(thread_id="nc-conditioned"),
+            _guest(),
+            llm=FakeLLM(),  # DEFAULT_DECOMPOSE — priceMax·keyword·categoryQueries 있음
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    assert popular_calls == []
+    assert search_calls  # I-1 은 정상 호출된다
+
+
+async def test_popular_failure_degrades_to_search_without_false_claim() -> None:
+    """I-3 장애면 종전 검색으로 degrade 하고 스트림은 살아 있다.
+
+    이때 "인기 상품으로 보여드릴게요" 는 **내지 않는다** — 그 결과는 인기 상품이 아니라
+    무필터 검색이라 거짓 주장이 된다(#133 정직성 규약).
+    """
+    search, search_calls = _counting_search_calls()
+    popular, popular_calls = _recording_popular(error=SpringUnavailableError("popular down"))
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="아무거나 추천해줘", thread_id="nc-degrade"),
+            _guest(),
+            llm=FakeLLM(decompose=_NO_CONDITION_DECOMPOSE),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    assert popular_calls  # 시도는 했다
+    assert search_calls  # 종전 검색으로 떨어졌다
+    types = _types(events)
+    assert types[-1] == "done"  # 스트림이 죽지 않는다
+    texts = [e["data"]["text"] for e in events if e["type"] == "token"]
+    assert not any(get_settings().no_condition_notice_popular in t for t in texts)
+
+
+async def test_popular_zero_results_is_not_a_degrade() -> None:
+    """I-3 0건은 성공이다(§4.17) — 카드 없이 텍스트로 답하고 무필터 I-1 로 떨어지지 않는다.
+
+    여기서 degrade 로 처리하면 이 이슈가 없애려는 13.33MB 호출을 도로 부른다.
+    """
+    search, search_calls = _counting_search_calls()
+    popular, popular_calls = _recording_popular(products=[])
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="아무거나 추천해줘", thread_id="nc-zero"),
+            _guest(),
+            llm=FakeLLM(decompose=_NO_CONDITION_DECOMPOSE),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    assert popular_calls
+    assert search_calls == []  # 폴백하지 않는다
+    types = _types(events)
+    assert "products.ready" not in types  # 실을 카드가 없다
+    assert types[-1] == "done"
+
+
+# ─────────── [#162] 조건 없는 발화 + 프로필 → 취향 벡터 랭킹 ───────────
+
+
+def _catalog_store(pids: list[int]):
+    """3차원 임베딩 카탈로그 — 앞 번호일수록 [1,0,0] 축에 가깝다(순서를 눈으로 검증)."""
+    from app.pipelines.artifact_store import CatalogArtifact, CatalogArtifactStore
+
+    store = CatalogArtifactStore()
+    for i, pid in enumerate(pids):
+        store.upsert(
+            CatalogArtifact(
+                product_id=pid,
+                search_doc=f"상품 {pid}",
+                embedding=[1.0 - (i + 1) * 0.05, (i + 1) * 0.05, 0.0],
+                extras={"review_pros": [f"{pid} 리뷰 장점"]},
+            )
+        )
+    return store
+
+
+def _inject_profile(monkeypatch: pytest.MonkeyPatch, *, vector, store) -> None:
+    """프로필 요약(취향 벡터 포함)과 카탈로그 인덱스를 인메모리로 대체한다."""
+    import app.agents.buyer.graph as buyer_graph
+    import app.pipelines.artifact_store as artifact_store
+
+    async def _summary(user_id):  # noqa: ANN001
+        return {"markdown": "취향 요약", "generatedAt": "2026-08-05", "embedding": vector}
+
+    monkeypatch.setattr(buyer_graph, "read_profile_summary", _summary)
+    monkeypatch.setattr(artifact_store, "get_catalog_store", lambda: store)
+
+
+async def test_profile_member_ranks_by_taste_vector_without_search_or_popular(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """취향 벡터가 있는 회원은 I-1·I-3 **둘 다 부르지 않고** 자체 인덱스에서 뽑는다.
+
+    이 이슈가 노린 개인화의 본체다 — 무작위 후보를 받아 rerank 로 고르는 게 아니라, 후보
+    단계부터 취향에 가까운 상품이 온다(홈 화면과 같은 엔진·같은 인덱스).
+    """
+    _inject_profile(monkeypatch, vector=[1.0, 0.0, 0.0], store=_catalog_store([201, 202, 203]))
+    search, search_calls = _counting_search_calls()
+    popular, popular_calls = _recording_popular()
+    push = _RecordingPush()
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="아무거나 추천해줘", thread_id="nc-profile"),
+            _member(),
+            llm=FakeLLM(decompose=_NO_CONDITION_DECOMPOSE),
+            search=search,
+            push_fn=push,
+            popular_fn=popular,
+        )
+    )
+
+    assert search_calls == []
+    assert popular_calls == []
+    assert _types(events)[-1] == "done"
+    assert "products.ready" in _types(events)
+    entry = _only_list(push.pushes[0])
+    assert entry.product_ids[0] == 201  # 취향 벡터에 가장 가까운 상품이 앞
+
+
+async def test_profile_member_discloses_taste_based_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """회원 경로는 인기 상품이 아니라 취향 기반이므로 안내 문구도 다르다."""
+    _inject_profile(monkeypatch, vector=[1.0, 0.0, 0.0], store=_catalog_store([201, 202]))
+    search, _ = _counting_search_calls()
+    popular, _ = _recording_popular()
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="아무거나 추천해줘", thread_id="nc-profile-notice"),
+            _member(),
+            llm=FakeLLM(decompose=_NO_CONDITION_DECOMPOSE),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    texts = [e["data"]["text"] for e in events if e["type"] == "token"]
+    settings = get_settings()
+    assert any(settings.no_condition_notice_profile in t for t in texts)
+    assert not any(settings.no_condition_notice_popular in t for t in texts)
+
+
+async def test_member_without_taste_vector_falls_back_to_popular(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """프로필은 있는데 **벡터가 없는** 회원(구 요약·임베딩 실패)은 인기 상품으로 간다.
+
+    None 벡터를 그대로 랭킹에 넣으면 빈 결과가 나오고 그게 "추천할 게 없다"로 오독된다.
+    """
+    _inject_profile(monkeypatch, vector=None, store=_catalog_store([201, 202]))
+    search, search_calls = _counting_search_calls()
+    popular, popular_calls = _recording_popular()
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="아무거나 추천해줘", thread_id="nc-no-vector"),
+            _member(),
+            llm=FakeLLM(decompose=_NO_CONDITION_DECOMPOSE),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    assert popular_calls  # I-3 로 떨어진다
+    assert search_calls == []  # 무필터 I-1 은 여전히 부르지 않는다
+
+
+async def test_empty_catalog_index_falls_back_to_popular(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """카탈로그 인덱스가 비었으면(동기화 전·장애) 인기 상품으로 폴백하고 스트림은 산다."""
+    _inject_profile(monkeypatch, vector=[1.0, 0.0, 0.0], store=_catalog_store([]))
+    search, _ = _counting_search_calls()
+    popular, popular_calls = _recording_popular()
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="아무거나 추천해줘", thread_id="nc-empty-index"),
+            _member(),
+            llm=FakeLLM(decompose=_NO_CONDITION_DECOMPOSE),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    assert popular_calls
+    assert _types(events)[-1] == "done"
+
+
+async def test_profile_fallback_does_not_refetch_purchases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """취향 랭킹이 폴백해도 I-19 는 **한 번만** 부른다.
+
+    취향 경로가 dedup 재료로 I-19 를 먼저 부르는데, 랭킹이 실패해 인기 상품 경로로 떨어지면
+    그쪽 gather 가 또 부른다 — 같은 턴에 3s 짜리 Spring 호출이 두 번 나가는 셈이다.
+    """
+    _fix_now(monkeypatch)
+    calls: list[int] = []
+    real = _purchases(101)
+
+    async def _spy(user_id, status=None):  # noqa: ANN001
+        calls.append(user_id)
+        return await real(user_id, status)
+
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _spy)
+    _inject_profile(monkeypatch, vector=[1.0, 0.0, 0.0], store=_catalog_store([]))  # 랭킹 0건
+    search, _ = _counting_search_calls()
+    popular, popular_calls = _recording_popular()
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="아무거나 추천해줘", thread_id="nc-purchases-once"),
+            _member_num(),
+            llm=FakeLLM(decompose=_NO_CONDITION_DECOMPOSE),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    assert popular_calls  # 인기 상품으로 폴백했다
+    assert len(calls) == 1  # 그런데 I-19 는 한 번뿐
+
+
+# ─────────── [#162 / PR #311 리뷰] 총액 예산만 말한 턴 ───────────
+
+_BUDGET_ONLY_DECOMPOSE = {
+    "intent": "recommend",
+    "filters": {},
+    "case": 2,
+    "buyAll": True,
+    "totalBudget": 50000,
+}
+
+_PRICED_POPULAR = [
+    SpringProduct(product_id=101, name="싼 것", price=30000, category="c", brand="b"),
+    SpringProduct(product_id=102, name="비싼 것", price=80000, category="c", brand="b"),
+    SpringProduct(product_id=103, name="딱 맞는 것", price=50000, category="c", brand="b"),
+]
+
+
+async def test_budget_only_turn_filters_popular_by_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """"총 5만원 있어 아무거나" — 인기 상품 중 **예산 이하만** 후보로 남는다.
+
+    세트로 묶지 않는다: 무엇을 몇 개 살지 사용자가 말하지 않아 조합 기준이 없다. 대신 예산 안의
+    대안을 보여주고 대화로 되묻는다.
+    """
+    _inject_profile(monkeypatch, vector=[1.0, 0.0, 0.0], store=_catalog_store([201, 202]))
+    search, search_calls = _counting_search_calls()
+    popular, popular_calls = _recording_popular(_PRICED_POPULAR)
+    push = _RecordingPush()
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="총 5만원 있어 아무거나 추천해줘", thread_id="nc-budget"),
+            _member(),
+            llm=FakeLLM(decompose=_BUDGET_ONLY_DECOMPOSE),
+            search=search,
+            push_fn=push,
+            popular_fn=popular,
+        )
+    )
+
+    assert popular_calls  # 인기 상품 경로를 탄다
+    assert search_calls == []  # 무필터 I-1 로 되돌아가지 않는다
+    entry = _only_list(push.pushes[0])
+    assert 102 not in entry.product_ids  # 8만원짜리는 빠진다
+    assert set(entry.product_ids) <= {101, 103}
+    assert push.pushes[0].list_type == "PICK_ONE"  # 세트가 아니라 대안이다
+    assert push.pushes[0].total_budget is None
+
+
+async def test_budget_only_turn_skips_taste_vector_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """취향 벡터가 있어도 예산 턴은 그 경로를 타지 않는다.
+
+    AI 카탈로그 인덱스(`CatalogArtifact`)에 **가격이 없어** 예산을 확인할 방법이 없다.
+    그 경로로 보내면 5만원이라 말한 사용자에게 8만원짜리가 나갈 수 있다.
+    """
+    _inject_profile(monkeypatch, vector=[1.0, 0.0, 0.0], store=_catalog_store([201, 202]))
+    search, _ = _counting_search_calls()
+    popular, popular_calls = _recording_popular(_PRICED_POPULAR)
+    push = _RecordingPush()
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="총 5만원 있어 아무거나 추천해줘", thread_id="nc-budget-taste"),
+            _member(),
+            llm=FakeLLM(decompose=_BUDGET_ONLY_DECOMPOSE),
+            search=search,
+            push_fn=push,
+            popular_fn=popular,
+        )
+    )
+
+    assert popular_calls  # 취향 랭킹(201·202)이 아니라 인기 상품으로 갔다
+    assert not set(_only_list(push.pushes[0]).product_ids) & {201, 202}
+
+
+async def test_budget_only_turn_discloses_amount_and_asks_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """안내에 **금액을 되짚고 예시로 되묻는다** — "조건을 안 주셨다"고 단정하지 않는다."""
+    _inject_profile(monkeypatch, vector=None, store=_catalog_store([]))
+    search, _ = _counting_search_calls()
+    popular, _ = _recording_popular(_PRICED_POPULAR)
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="총 5만원 있어 아무거나 추천해줘", thread_id="nc-budget-notice"),
+            _guest(),
+            llm=FakeLLM(decompose=_BUDGET_ONLY_DECOMPOSE),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    texts = [e["data"]["text"] for e in events if e["type"] == "token"]
+    settings = get_settings()
+    assert any("50,000원" in t for t in texts)  # 금액을 되짚는다
+    assert not any(settings.no_condition_notice_popular in t for t in texts)  # 일반 문구 아님
+
+
+async def test_profile_path_discloses_dedup_failure_like_the_other_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """취향 경로도 I-19 실패 고지를 낸다 — 이 경로만 건너뛰면 config 스위치가 반쪽이 된다.
+
+    `dedup_skipped_notice` 는 기본이 빈 값(미고지)이지만, **판단을 코드 재배포 없이 되돌리기
+    위한 여지**로 남겨 둔 스위치다(#133). 취향 경로는 `done` 을 내고 곧바로 return 해서 하류의
+    고지 지점에 도달하지 못했다 — 운영자가 값을 채우는 순간 "인기 경로에서는 고지되는데 취향
+    경로에서만 조용히 묻히는" 비대칭이 드러난다(PR #311 리뷰).
+    """
+    _fix_now(monkeypatch)
+
+    async def _boom(user_id, status=None):  # noqa: ANN001
+        raise SpringUnavailableError("orders down")
+
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _boom)
+    monkeypatch.setattr(get_settings(), "dedup_skipped_notice", "최근 구매 내역을 확인하지 못했어요.")
+    _inject_profile(monkeypatch, vector=[1.0, 0.0, 0.0], store=_catalog_store([201, 202]))
+    search, _ = _counting_search_calls()
+    popular, popular_calls = _recording_popular()
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="아무거나 추천해줘", thread_id="nc-profile-dedup"),
+            _member_num(),
+            llm=FakeLLM(decompose=_NO_CONDITION_DECOMPOSE),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    assert popular_calls == []  # 취향 경로를 탄 턴이다
+    texts = [e["data"]["text"] for e in events if e["type"] == "token"]
+    assert any("최근 구매 내역을 확인하지 못했어요." in t for t in texts)
+
+
+async def _failed_mapping(*args, **kwargs):
+    """canonical 매핑이 아무것도 못 찾은 상태 — legs 가 빈 CategoryMapping."""
+    from app.agents.buyer.recommendation.category_mapping import CategoryMapping
+
+    return CategoryMapping()
+
+async def test_multi_item_utterance_with_failed_mapping_keeps_normal_search() -> None:
+    """"이어폰이랑 노트북 추천해줘" — 매핑이 실패해도 인기 상품으로 새면 안 된다(PR #311 리뷰).
+
+    상품 2개 지목은 `cat_signal` 승격 조건(leg 1개)에 안 걸려 출처 검사를 통과하고, 매핑까지
+    실패하면 `category_legs` 도 빈다. `category_queries` 를 안 보면 사용자가 명시적으로 말한
+    상품군을 버리고 인기 상품이 나간다.
+    """
+    search, search_calls = _counting_search_calls()
+    popular, popular_calls = _recording_popular()
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="이어폰이랑 노트북 추천해줘", thread_id="nc-multi-item"),
+            _guest(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "reply": "",
+                    "case": 3,
+                    "filters": {},
+                    "categoryQueries": [
+                        {"category": None, "query": "무선 이어폰"},
+                        {"category": None, "query": "노트북"},
+                    ],
+                }
+            ),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+            map_categories=_failed_mapping,  # 매핑 실패 재현
+        )
+    )
+
+    assert popular_calls == []  # 인기 상품으로 새지 않는다
+    assert search_calls  # 종전 검색 경로를 그대로 탄다
+
+
+async def test_budget_notice_without_placeholder_falls_back_to_popular_notice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`{budget}` 자리표시자가 빠진 오설정은 **금액 없는 문구를 조용히 내보내지 않는다**.
+
+    `str.format` 은 쓰지 않는 키워드를 예외 없이 무시하므로 except 로는 못 잡는다(PR #311 리뷰).
+    금액을 되짚지 못할 바에는 금액을 주장하지 않는 인기 상품 문구로 떨어뜨린다.
+    """
+    settings = get_settings()
+    monkeypatch.setattr(settings, "no_condition_notice_budget", "금액 없이 골라봤어요.")
+    _inject_profile(monkeypatch, vector=None, store=_catalog_store([]))
+    search, _ = _counting_search_calls()
+    popular, _ = _recording_popular(_PRICED_POPULAR)
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="총 5만원 있어 아무거나 추천해줘", thread_id="nc-budget-badcfg"),
+            _guest(),
+            llm=FakeLLM(decompose=_BUDGET_ONLY_DECOMPOSE),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    texts = [e["data"]["text"] for e in events if e["type"] == "token"]
+    assert not any("금액 없이 골라봤어요." in t for t in texts)  # 오설정 문구는 안 나간다
+    assert any(settings.no_condition_notice_popular in t for t in texts)  # 안전한 문구로 폴백
+
+
+async def test_catalog_store_failure_keeps_stream_alive_and_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """카탈로그 스토어 확보가 **실패해도** 스트림이 죽지 않고 인기 상품으로 폴백한다.
+
+    `get_catalog_store()` 는 pg 커넥션 풀을 만드는 지점이라 실패하기 쉬운데, 종전에는
+    `_call_store(rank_candidates)` 만 try 로 감싸 그 앞 두 줄이 무방비였다. 거기서 예외가 나면
+    `stream_recommendation` 제너레이터가 그대로 죽어 **`done` 도 `error` 도 없이 SSE 가
+    끊긴다**(PR #311 리뷰, 재현 확인). §7 "실패해도 턴을 죽이지 않는다"에 어긋난다.
+    """
+    import app.pipelines.artifact_store as artifact_store
+
+    def _boom():
+        raise RuntimeError("catalog store init failed (pg down)")
+
+    async def _summary(user_id):  # noqa: ANN001
+        return {"markdown": "취향 요약", "embedding": [1.0, 0.0, 0.0]}
+
+    import app.agents.buyer.graph as buyer_graph
+
+    monkeypatch.setattr(buyer_graph, "read_profile_summary", _summary)
+    monkeypatch.setattr(artifact_store, "get_catalog_store", _boom)
+    search, _ = _counting_search_calls()
+    popular, popular_calls = _recording_popular()
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="아무거나 추천해줘", thread_id="nc-store-down"),
+            _member(),
+            llm=FakeLLM(decompose=_NO_CONDITION_DECOMPOSE),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    types = _types(events)
+    assert types[-1] == "done"  # 스트림이 정상 종료된다
+    assert "error" not in types
+    assert popular_calls  # 인기 상품 폴백을 실제로 탄다

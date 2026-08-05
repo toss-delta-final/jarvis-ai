@@ -374,6 +374,16 @@ class Settings(BaseSettings):
     embedding_rerank_limit: int = Field(default=30, ge=0)
     search_default_limit: int = 30
     top_k: int = 30
+    # [#162] 조건 없는 발화의 인기 상품(I-3, §4.17) 요청 개수.
+    # **`gt=0` 이 방어다** — BE I-3 에는 범위 검증이 없어(정본 명시) 음수·0 을 보내면 400 이
+    # 아니라 `200 + 빈 배열`이 온다. 잘못된 설정이 오류가 아니라 "인기 상품이 없음"으로 위장돼
+    # 조용히 카드 없는 답변이 나가므로, 기동 시점에 막는다.
+    # 기본값 30 의 근거는 양쪽 경계다 — 하한은 노출(`expose_max` 9) + 최근구매 dedup·소모품
+    # 억제로 빠질 몫(BE 기본 12 는 여유가 3뿐이라 `expose_min` 5 까지 떨어질 수 있다), 상한은
+    # `embedding_rerank_limit`(30)으로 그보다 많이 받아도 압축 단계에서 버려진다.
+    # **dedup 손실은 아직 실측하지 못했다** — `orders` 0행이라 최근구매 제외가 현재 아무것도
+    # 걸러내지 않는다. 구매 이력이 쌓이면 그 손실만큼 상향 후보다.
+    popular_candidate_size: int = Field(default=30, gt=0)
     # 노출 개수(REQ-REC-021, api-spec §3.3) — **목록 하나 기준**이다. 니즈별 추천처럼 목록이
     # 여럿이면 목록마다 이 상한이 걸린다(REQ-REC-024).
     # 상한이 LIST_MAX_PRODUCTS 로 묶여 있는 이유: 이 값을 넘기면 push 페이로드 생성
@@ -481,6 +491,26 @@ class Settings(BaseSettings):
     # 못했다"라 실제 중복 발생 여부를 알 수 없고, rerank 폴백과 달리 거짓 주장을 하고 있지도
     # 않다(#133 판단). 값을 채우면 켜진다 — 판단을 코드 재배포 없이 되돌리기 위한 여지다.
     dedup_skipped_notice: str = ""
+    # [#162] 조건이 하나도 없는 발화의 안내. **문안은 튜너블이지만 발신은 아니다**
+    # (rerank_fallback_notice 와 같은 규약) — 없으면 사용자가 인기상품·취향 기반 결과를
+    # **자기 조건이 반영된 결과로 오해**한다. 후보 소스가 다르므로 문구를 둘로 나눈다.
+    # **무엇을 했는지 말하고 예시로 되묻는다** — "조건을 안 주셨다"고 단정하지 않는다. 예산만
+    # 말한 턴("총 5만원 있어 아무거나")처럼 사용자가 무언가는 준 경우가 있어 단정이 거짓이 된다.
+    # 예시를 넣는 이유는 "조건을 알려달라"만으로는 무엇을 어떻게 말해야 할지 모르기 때문이다.
+    no_condition_notice_popular: str = (
+        "지금 인기 있는 상품으로 골라봤어요. "
+        '"5만원 이하 무선 이어폰"처럼 알려주시면 더 잘 추천해드릴 수 있어요.'
+    )
+    no_condition_notice_profile: str = (
+        "취향에 맞을 만한 상품으로 골라봤어요. "
+        '"5만원 이하 무선 이어폰"처럼 알려주시면 더 잘 추천해드릴 수 있어요.'
+    )
+    # 총액 예산만 말한 턴 전용 — `{budget}` 은 천단위 구분 금액이 들어간다(예: "50,000원").
+    # 세트로 묶지 않고 **예산 안의 대안**을 보여주는 턴이라 문구도 "골라봤어요 + 되묻기"다.
+    no_condition_notice_budget: str = (
+        "{budget} 안에서 인기 있는 상품으로 골라봤어요. "
+        '"무선 이어폰"처럼 어떤 상품을 찾으시는지 알려주시면 더 잘 추천해드릴 수 있어요.'
+    )
 
     # ── 홈 추천 랭킹 (I-22, api-spec §3.7 · 이슈 #148) ──
     # 질의 벡터 = 시그널 상품 임베딩의 가중 평균. cart 는 "담기까지 갔다"는 강한 신호라 조회보다 높게,
@@ -1681,14 +1711,20 @@ class Settings(BaseSettings):
         """
         from app.core.text import _strip_unsafe  # 지연 import — config 는 최하위 모듈이다
 
+        # 값과 함께 **근거 §** 를 든다 — 어느 계약이 이 발신을 요구하는지가 항목마다 다르다.
         required = {
-            "RERANK_FALLBACK_NOTICE": self.rerank_fallback_notice,
-            "PUSH_SKIPPED_NOTICE": self.push_skipped_notice,
+            "RERANK_FALLBACK_NOTICE": (self.rerank_fallback_notice, "§3.3"),
+            "PUSH_SKIPPED_NOTICE": (self.push_skipped_notice, "§3.3"),
+            # [#162] 조건 없음 안내도 같은 이유로 필수다 — 빠지면 사용자가 인기상품·취향 기반
+            # 결과를 자기 조건이 반영된 결과로 오해하고, 서버는 멀쩡히 돌아 드러나지 않는다.
+            "NO_CONDITION_NOTICE_POPULAR": (self.no_condition_notice_popular, "§4.17"),
+            "NO_CONDITION_NOTICE_PROFILE": (self.no_condition_notice_profile, "§4.17"),
+            "NO_CONDITION_NOTICE_BUDGET": (self.no_condition_notice_budget, "§4.17"),
         }
-        for name, value in required.items():
+        for name, (value, section) in required.items():
             if not _strip_unsafe(value):
                 raise ValueError(
-                    f"{name} must not be empty: api-spec §3.3 requires the degrade disclosure "
+                    f"{name} must not be empty: api-spec {section} requires the disclosure "
                     "to be sent (the wording is tunable, sending it is not)"
                 )
         return self

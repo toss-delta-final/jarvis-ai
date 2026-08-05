@@ -19,6 +19,11 @@ from uuid import uuid4
 from app.agents.buyer._frames import sse
 from app.agents.buyer.recommendation.budget_sets import BudgetSet, BudgetSetPlan, build_budget_sets
 from app.agents.buyer.recommendation.need_priority import classify_need_priorities
+from app.agents.buyer.recommendation.no_condition import (
+    has_total_budget,
+    rank_by_profile,
+    within_budget,
+)
 from app.agents.buyer.recommendation.rerank import rerank
 from app.agents.buyer.recommendation.relaxation import (
     FIELD_TO_ATTR as RELAXATION_FIELD_TO_ATTR,
@@ -439,8 +444,16 @@ async def stream_recommendation(
     thread_key: str | None = None,
     observer=None,
     request_id: str,
+    # [#162] 조건이 하나도 없는 발화인가(`no_condition.is_no_condition_turn` 판정 결과).
+    # 판정은 호출부(buyer/graph.py)에서 한다 — 그쪽에만 `prior`(첫 턴 여부)가 있다.
+    no_condition: bool = False,
+    popular_fn=None,  # I-3 조회. 미지정 시 라이브 기본값(테스트는 fake 주입)
+    # [#162] 미리 만들어 둔 취향 벡터(`read_profile_summary()["embedding"]`). 회원이면서 벡터가
+    # 있을 때만 취향 랭킹 경로를 탄다 — 게스트·신규회원·구 요약(벡터 없음)은 인기 상품으로 간다.
+    profile_vec: list[float] | None = None,
 ) -> AsyncIterator[str]:
     """추천 서브그래프 스트림. 프레임(SSE str)을 순서대로 산출한다."""
+    popular_fn = popular_fn or spring_client.get_popular_products
     # [#51] keyword 드롭 판단은 **한 곳에서** 계산해 칩 표시(아래)와 leg 검색(_leg)이 같은 flag 를
     # 공유하게 한다 — 두 지점이 독립 판단하면 전제(leg 엔 항상 canonical)가 미래 리팩터에서 깨질 때
     # 표시-실제가 어긋날 수 있다(리뷰 반영). canonical category(= category_legs 존재) + config on 이면
@@ -640,11 +653,140 @@ async def stream_recommendation(
                 trace.mark_degraded("dedup_skipped")
             return None
 
+    # [#162] 취향 랭킹이 먼저 I-19 를 부르고 실패해 아래 인기 상품 경로로 폴백하면, 같은 턴에
+    # I-19 가 **두 번** 나간다(각 3s). 한 번만 부르고 결과를 재사용한다 — 리스트를 쓰는 이유는
+    # 중첩 함수에서 `nonlocal` 없이 "아직 안 불렀음"과 "불렀는데 None"(게스트·조회 실패)을
+    # 구분하기 위해서다. 그 둘을 뭉개면 게스트 턴마다 헛호출이 반복된다.
+    _purchases_memo: list = []
+
+    async def _fetch_purchases_once():
+        if not _purchases_memo:
+            _purchases_memo.append(await _fetch_purchases())
+        return _purchases_memo[0]
+
+    # 조건 없는 턴 + 프로필 벡터 → **취향 벡터 랭킹**(홈 I-22 와 같은 엔진·같은 인덱스).
+    # 이 경로는 검색도 rerank 도 타지 않아 아래 파이프라인과 갈라지므로 여기서 끝내고 return 한다.
+    # `conditions` 는 위에서 이미 나갔다(조건 없는 턴은 `may_auto_relax` 가 False 라 미루지 않는다).
+    # [#311 리뷰] 예산·전부구매 의도가 있으면 취향 경로를 타지 않는다 — AI 인덱스에 가격이 없어
+    # 예산을 확인할 수 없다. 그 턴은 아래 인기 상품 경로에서 예산으로 걸러진다.
+    if no_condition and profile_vec and not has_total_budget(decision):
+        profile_purchases = await _fetch_purchases_once()
+        profile_exclude: set[int] = set()
+        if profile_purchases is not None:
+            profile_recent = profile_purchases.recent_items(
+                since=_now() - timedelta(days=settings.dedup_recent_days),
+                exclude_statuses=_INACTIVE_STATUSES,
+            )
+            profile_exclude = {item.product_id for item in profile_recent}
+        profile_ranked = await rank_by_profile(
+            profile_vec, exclude=profile_exclude, settings=settings
+        )
+        if profile_ranked is not None:
+            ranked_by_profile, profile_reason_by_id = profile_ranked
+            exposed = ranked_by_profile[: settings.expose_max]
+            profile_entry = RecommendationListEntry(
+                list_id=uuid4().hex,
+                product_ids=exposed,
+                # 근거는 선택 필드다(§4.2) — `build_reasons` 가 못 고른 상품은 항목을 만들지 않는다.
+                reasons=[
+                    RecoReason(product_id=pid, reason=text)
+                    for pid in exposed
+                    if (text := profile_reason_by_id.get(pid))
+                ],
+            )
+            profile_push = RecommendationPush(
+                session_id=request.session_id,
+                recommendation_request_id=str(uuid4()),  # 정규 UUID 36자 — BE CHAR(36)
+                list_type="PICK_ONE",
+                lists=[profile_entry],
+            )
+            if notice := _strip_unsafe(settings.no_condition_notice_profile):
+                yield sse("token", TokenData(text=notice).model_dump(by_alias=True))
+            try:
+                profile_pushed = bool(await push_fn(profile_push))
+            except SpringUnavailableError:
+                profile_pushed = False
+            logger.info(
+                "chat_recommendation_profile_ranked",
+                extra={"exposed": len(exposed), "pushed": profile_pushed},
+            )
+            if profile_pushed:
+                yield sse(
+                    "products.ready",
+                    ProductsReadyData(
+                        session_id=request.session_id,
+                        list_ids=[profile_entry.list_id],
+                    ).model_dump(by_alias=True),
+                )
+                # 담기 해소용 보관 — 이 경로는 **상품명을 모른다**(AI 인덱스에 원본 컬럼 없음).
+                # 빈 이름으로 넣어 id 기반 담기 가드(#118)는 살리고, 이름 지칭("그 이어폰")만
+                # 이 턴에서 해소되지 않는다.
+                if cart_store is not None and thread_key is not None:
+                    await cart_store.set_last_reco(thread_key, [(pid, "") for pid in exposed])
+            else:
+                if trace := current_request_trace():
+                    trace.mark_degraded("push_skipped")
+                if push_notice := _strip_unsafe(settings.push_skipped_notice):
+                    yield sse("token", TokenData(text=push_notice).model_dump(by_alias=True))
+            # [#311 리뷰] 하류의 dedup 실패 고지 지점(아래 `if dedup_degraded ...`)에 이 경로는
+            # 도달하지 못한다 — 여기서 `done` 을 내고 return 하기 때문이다. 같은 검사를 넣어
+            # 경로 간 비대칭을 없앤다. 기본값이 빈 값(미고지)이라 오늘은 아무것도 안 나가지만,
+            # 그 값은 **판단을 코드 재배포 없이 되돌리기 위한 스위치**라(#133) 한쪽 경로만
+            # 무시하면 켜는 순간 계약이 갈린다.
+            if dedup_degraded and (dedup_notice := _strip_unsafe(settings.dedup_skipped_notice)):
+                yield sse("token", TokenData(text=dedup_notice).model_dump(by_alias=True))
+            yield sse("done", DoneData(finish_reason="stop").model_dump(by_alias=True))
+            return
+        # 랭킹 실패·0건 → 아래 인기 상품(I-3) 경로로 폴백한다(스트림은 계속된다).
+        if trace := current_request_trace():
+            trace.mark_degraded("profile_ranking_fallback")
+
+    # [#162] 조건이 하나도 없는 턴은 후보 소스를 I-3(인기 상품, §4.17)로 바꾼다.
+    popular_degraded = False
+
+    async def _run_candidate_source():
+        """이번 턴의 후보를 확보한다 — `_run_search` 와 같은 `(결과, leg맵)` 형태로 돌려준다.
+
+        조건 없는 턴에 종전 경로를 그대로 태우면 파라미터 0개의 I-1 이 나가 매칭 전량
+        (실측 7,245건·13.33MB)을 받는데, 그 상위는 사용자 의도와 무관하다. I-1 정본이
+        "정형조건 없는 요청 차단은 LLM 단 책임"으로 규정한 자리다(§4.6·§4.17).
+
+        leg 맵은 빈 dict 다 — 인기 목록은 카테고리 fan-out 이 아니라 단일 목록이다.
+        """
+        nonlocal popular_degraded
+        if not no_condition:
+            return await _run_search()
+        try:
+            found = await popular_fn(settings.popular_candidate_size)
+        except Exception as exc:  # noqa: BLE001 - 폴백 소스 실패로 스트림을 죽이지 않는다
+            logger.warning("popular_products_failed", extra={"reason": str(exc)})
+            found = None
+        if found is not None:
+            # [#311 리뷰] 총액 예산을 말한 턴은 **예산 안의 후보만** 남긴다. 세트로 묶지 않고
+            # 대안으로 보여주므로 상품 하나가 예산 이하이면 된다 — 무엇을 몇 개 살지 사용자가
+            # 말하지 않은 턴에 조합을 지어내면 근거 없는 세트가 된다(`has_total_budget` 참조).
+            if decision.total_budget is not None:
+                affordable = within_budget(found.products, decision.total_budget)
+                found = ProductSearchResult(products=affordable, total_count=len(affordable))
+            # **0건도 성공이다**(§4.17) — 빈 배열이면 하류 zero-result 경로가 카드 없이 답한다.
+            # 여기서 degrade 로 처리하면 이 이슈가 없애려는 무필터 I-1 을 도로 부른다.
+            return (found, {})
+        popular_degraded = True
+        if trace := current_request_trace():
+            trace.mark_degraded("popular_fallback")
+        return await _run_search()
+
     # 미룬 턴은 첫 이벤트 앞 본 검색·자동 완화 probe만 재시도를 끈다(#277). conditions 뒤의
     # 완화 칩 probe는 첫 이벤트 예산 밖이라 제외하며, 이 with는 await 뒤 즉시 닫아 yield·다음
     # 턴으로 ContextVar가 새지 않게 한다. progress 이벤트가 계약에 생기면 이 스킵은 원복 가능하다.
-    with spring_client.suppress_search_retry() if suppress_deferred_search_retry else nullcontext():
-        search_bundle, purchases = await asyncio.gather(_run_search(), _fetch_purchases())
+    with (
+        spring_client.suppress_search_retry()
+        if suppress_deferred_search_retry
+        else nullcontext()
+    ):
+        search_bundle, purchases = await asyncio.gather(
+            _run_candidate_source(), _fetch_purchases_once()
+        )
     if search_bundle is None:  # 검색 실패 → SEARCH_FAILED(종료)
         if trace := current_request_trace():
             trace.mark_degraded("search_failed")
@@ -1321,6 +1463,36 @@ async def stream_recommendation(
 
     if comment:
         yield sse("token", TokenData(text=comment).model_dump(by_alias=True))
+
+    # [#162] 조건 없음 안내 — 없으면 사용자가 인기 상품을 **자기 조건이 반영된 결과**로 오해한다.
+    # `popular_degraded` 턴에는 내지 않는다: I-3 가 죽어 무필터 검색으로 떨어진 결과에
+    # "인기 상품으로 보여드릴게요" 라고 말하면 거짓이 된다(#133 정직성 규약 — 그 턴은
+    # `mark_degraded("popular_fallback")` 로 관측에 남는다).
+    if no_condition and not popular_degraded:
+        if decision.total_budget is not None:
+            # 예산을 말한 턴에는 그 금액을 되짚어 준다 — "조건을 안 주셨다"고 하면 거짓이 된다.
+            # [PR #311 리뷰] **자리표시자 존재를 먼저 검사한다** — `str.format` 은 쓰지 않는
+            # 키워드를 조용히 무시하므로(`"금액 없이".format(budget=...)` 는 예외 없이 그대로),
+            # `{budget}` 이 통째로 빠진 오설정은 아래 except 로 잡히지 않고 금액만 소리 없이
+            # 사라진다. 오타(`{budgt}`)만 KeyError 로 잡힌다. `_set_label` 이 `"{need}" not in`
+            # 으로 같은 검사를 하는 것과 맞춘다.
+            # 폴백은 인기 상품 문구다 — 이 경로의 후보는 실제로 인기 상품이라 참이고,
+            # 금액을 주장하지 않으므로 거짓 고지가 되지 않는다.
+            if "{budget}" not in settings.no_condition_notice_budget:
+                logger.warning("no_condition_budget_notice_missing_placeholder")
+                raw_notice = settings.no_condition_notice_popular
+            else:
+                try:
+                    raw_notice = settings.no_condition_notice_budget.format(
+                        budget=f"{decision.total_budget:,}원"
+                    )
+                except (KeyError, IndexError, ValueError):
+                    logger.warning("no_condition_budget_notice_invalid")
+                    raw_notice = settings.no_condition_notice_popular
+        else:
+            raw_notice = settings.no_condition_notice_popular
+        if notice := _strip_unsafe(raw_notice):
+            yield sse("token", TokenData(text=notice).model_dump(by_alias=True))
 
     # [#133] 최근 구매 제외(I-19) 실패 고지 — **기본 미고지**(config 기본값 "")다. 조회 실패는
     # "중복이 노출됐다"가 아니라 "걸러내지 못했다"라 실제 중복 여부를 알 수 없어 매 턴 노이즈가

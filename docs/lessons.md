@@ -225,6 +225,32 @@
 
 ---
 
+## [2026-08-05] 정본 목록을 재사용하기 전에 **그 목록이 답하는 질문**이 내 질문과 같은지 본다
+- 증상: #162 "조건 없는 발화" 판정이 조건 축으로 `decompose._FILTER_AXES` 를 재사용했다.
+  사본을 만들지 않았으니 드리프트가 없다고 판단했는데, `RouteDecision` 에 직접 달린 축
+  (`total_budget`·`buy_all`·`repurchase_products`·`revert_categories`)이 **통째로 검사에서
+  빠져 있었다**(PR #311 리뷰).
+- 원인: `_FILTER_AXES` 가 답하는 질문은 **"Spring WHERE 로 나가는 하드필터는 무엇인가"** 이고,
+  판정이 물어야 하는 질문은 **"사용자가 조건을 하나라도 줬는가"** 였다. 그 축들은 `filters` 가
+  아니라 `RouteDecision` 필드라 그 목록에 **있을 수가 없다** — 재사용이 드리프트는 막았지만
+  **범위가 애초에 달랐다**. 두 질문이 겹치는 구간이 넓어 한동안 맞아 보였을 뿐이다.
+- 규칙: 정본 목록을 재사용할 때는 **그 목록의 docstring 이 규정하는 질문**을 먼저 읽고 내
+  질문과 대조한다. 다르면 재사용하되 **모자란 축을 별도 목록으로 명시**하고, 그 자료구조
+  **전체 필드를 분류하는 드리프트 테스트**를 붙여 다음 필드가 조용히 새지 않게 한다
+  (`_FILTER_AXES` 가 `ProductSearchFilters` 전체와 대조되는 것과 같은 방식).
+- 곁가지 교훈: **리뷰가 제안한 수정을 그대로 넣기 전에 그 전제를 검산한다.** 리뷰는 "예산 턴이
+  취향 경로로 새서 `BudgetSet` 로직을 우회한다"며 판정에서 막으라고 했는데, `buy_all_mode` 는
+  `split_by_need`(니즈 2개 이상)를 요구하고 조건 없는 턴은 정의상 leg 가 비어 있어 **어느
+  경로로 가도 예산 세트는 만들어지지 않았다**. 제안대로 막았으면 그 턴이 무필터 I-1
+  (7,245건·13.33MB)로 되돌아가면서 예산은 여전히 반영되지 않는, 비용만 늘고 얻는 것 없는
+  변경이 됐다. 실제 채택안은 **판정은 통과시키고 후보 확보 방식을 가르는 것**이다 — 가격이
+  없는 취향 경로를 막고, 가격이 오는 인기 상품(I-3)을 예산으로 거른다.
+- 관련: #162, PR #311 리뷰, `app/agents/buyer/recommendation/no_condition.py`
+  (`_DECISION_CONDITION_AXES`·`has_total_budget`·`within_budget`),
+  `tests/unit/test_no_condition.py::test_route_decision_axes_are_all_classified`
+
+---
+
 ## [2026-08-05] `monkeypatch.setenv` + `get_settings.cache_clear()` 는 전역 autouse 픽스처와 경합해 다음 테스트로 샌다
 - 증상: #299 의 `test_limit_configurable_via_env` 가 `REQUEST_BODY_MAX_BYTES=20` 을
   `monkeypatch.setenv` + `get_settings.cache_clear()` 로 주입했는데, 이 테스트 **하나만** 파일
@@ -262,6 +288,26 @@
   명시**해 실행한다. 전체 대상 실행은 `git status --short` 로 의도치 않은 파일이 없는지 반드시
   확인하고, 있으면 `git checkout --`  으로 되돌린 뒤 좁힌 대상으로 재실행한다.
 - 관련: #299, `app/core/body_limit.py`
+
+---
+
+## [2026-08-05] 상류가 채워 주는 필드는 "비어 있음"으로 판정할 수 없다 — 값이 아니라 **출처**를 본다
+- 증상: #162 "조건 없는 발화" 판정을 `filters` 축 + `semantic_query` 가 전부 비었는지로 짜고
+  단위 테스트 13건이 전부 통과했다. 그런데 그 판정은 **프로덕션에서 한 번도 발동할 수 없었다** —
+  `decompose` 가 `semantic_query = llm_sq or cat_signal or prior_sq or query` 로 채워
+  아무 의미 신호가 없어도 **이번 턴 발화 원문**이 들어가기 때문이다("아무거나 추천해줘" →
+  `semantic_query="아무거나 추천해줘"`). 값 검사는 항상 참이었다.
+- 원인: 테스트가 `ProductSearchFilters(...)` 를 **직접 생성**해 상류(decompose)를 우회했다.
+  그래서 "실제로 그 필드에 무엇이 들어오는가"라는 전제를 한 번도 검증하지 않았다. 심지어 그
+  폴백을 고정하는 기존 테스트(`test_semantic_query_falls_back_to_user_query_when_missing`)가
+  이미 있었는데도 새 판정이 그 전제를 보지 않았다.
+- 규칙: 상류가 폴백으로 채우는 필드는 **유무로 판정하지 말고 출처 플래그를 상류에서 받아온다**
+  (`RouteDecision.semantic_query_is_fallback`). 그리고 판정 로직 테스트에는 **상류 산출에서
+  출발하는 회귀 1건**을 반드시 끼운다 — 입력을 손으로 만든 테스트만 있으면 "초록인데 실제로는
+  안 도는" 상태를 못 잡는다. 축 목록도 사본을 만들지 말고 정본(`decompose._FILTER_AXES`)을
+  import 해 드리프트 테스트에 얹는다.
+- 관련: #162, `app/agents/buyer/recommendation/no_condition.py`,
+  `decompose.py`(semantic_query 폴백 체인), `tests/unit/test_no_condition.py`
 
 ---
 
