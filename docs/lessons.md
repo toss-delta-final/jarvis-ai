@@ -13,6 +13,38 @@
 
 ---
 
+## [2026-08-05] 유닛 테스트가 로컬에 떠 있는 실 Spring 을 잡아 결과가 뒤집힌다 — 주입하지 않은 기본값은 하네스 경계 밖이다
+- 증상: #330 문서 작업 중 **코드 무변경** 상태에서 `uv run pytest` 가 3건 실패로 뒤집혔다 —
+  `tests/unit/test_fanout.py::test_empty_legs_clears_unvalidated_filters_category`,
+  `tests/unit/test_recommendation.py::test_recommendation_without_repurchase_keeps_exact_exclusion[decompose0]`·
+  `[decompose1]`. 같은 트리·같은 명령이 같은 날 오전에는 3376 passed 였고, clean base(6cec23a)에서도
+  실패가 재현됐다(워커 stash 실측).
+- 원인: `app/agents/buyer/graph.py:545` 의 `popular_fn = popular_fn or spring_client.get_popular_products`
+  (#162 I-3)에서, `run_buyer_turn` 유닛 테스트들이 `search=`·`push_fn=`·`map_categories=` 는 fake 로
+  주입하면서 **`popular_fn` 은 주입하지 않는다.** 문제의 턴은 decompose 산출이 조건 없음으로 판정돼
+  (`is_no_condition_turn`) 인기 상품(I-3) 경로로 가는데, **localhost:8080 에 실 Spring(BE 개발 서버)이
+  떠 있으면** I-3 이 실제로 성공해 조건 없는 턴이 검색을 생략한다 → 테스트의 `calls` 가 빈 배열 →
+  `IndexError`. Spring 이 죽어 있으면 `popular_degraded` 로 검색 폴백을 타서 통과한다. 2026-08-05 오후
+  다른 작업 레인이 BE 스택(jarvis-mariadb 컨테이너 + Spring 8080, health 200 확인)을 띄우면서 결과가
+  뒤집혔다. CI(GitHub Actions)에는 Spring 이 없어 항상 통과한다 — **로컬에서만, BE 를 띄운 순간부터
+  깨진다.** 검증: `SPRING_BASE_URL=http://localhost:59999 uv run pytest <3건>` → 3 passed, 전체
+  스위트 → 3376 passed(2026-08-05 실측).
+- 규칙:
+  - **그래프 하네스 유닛 테스트는 네트워크로 나가는 콜러블 전부를 주입한다** — `search`·`push_fn` 만
+    fake 고 `popular_fn` 이 기본값이면 그 테스트는 유닛이 아니라 로컬 환경(8080 에 뭐가 떠 있는가)
+    의존이다.
+  - **그래프에 외부 호출 파라미터를 새로 추가하면 기존 테스트 헬퍼에 그 fake 를 같이 추가한다** —
+    #162 가 `popular_fn` 을 추가할 때 기존 fanout/recommendation 테스트는 그대로 뒀고, 그 결함은
+    Spring 이 실제로 떠 있는 날에만 드러난다(잠복 flaky).
+  - **로컬 pytest 가 코드 무변경으로 뒤집히면 코드 diff 가 아니라 환경부터 본다** — `docker ps` 와
+    8080 health 확인이 첫 수순이다. 임시 우회는 `SPRING_BASE_URL` 을 죽은 포트로 돌려 CI 동등 조건을
+    만드는 것.
+  - 테스트 자체의 수정(`popular_fn` fake 주입)은 코드 변경이라 이 문서 레인(#330) 범위 밖 — 별도
+    이슈로 처리한다.
+- 관련: #162, PR #311, `app/agents/buyer/graph.py`(`popular_fn` 기본값), `tests/unit/test_fanout.py`,
+  `tests/unit/test_recommendation.py`
+
+---
 ## [2026-08-05] 거리 임계는 사전에 종속된다 — taxonomy·임베딩 모델·task_type 이 바뀌면 재측정 없이는 무효
 - 증상: #222 라이브 실측(라이브 pg-catalog, leaf 1,007행)에서 `category_distance_max=0.22` 가
   협소 발화 20건 중 10건, 상품명 150건 골든셋 기준 90%를 드롭했다. `DESIGN-CATEGORY-HYBRID-59.md`
@@ -59,6 +91,9 @@
     `git grep -nE '^(<{7}|={7}|>{7})' -- .` 로 잔여 마커를 확인한다(코드가 아닌 md·설정 파일 포함).
   - 충돌 마커는 발견 즉시 **별도 fix 커밋**으로 정리한다 — 기능 커밋에 섞으면 리뷰에서 묻힌다.
 - 관련: `CHANGELOG.md`, 커밋 89e13fd(#302), 정리 커밋은 #297 브랜치.
+
+---
+
 
 ## [2026-08-05] `pre-commit run --all-files` 는 `ruff format`(인수 없이)과 같은 뿌리의 드리프트를 좁은 스코프 브랜치 전체에 드러낸다
 - 증상: #281 작업에서 커밋 전 훅 호환성을 확인하려고 `uv run pre-commit run --all-files` 를
@@ -126,6 +161,9 @@
   말고 그대로 던져야 한다(안 그러면 예산 상한이 무력화된다).
 - 관련: #281, `evals/priority_probe/client.py::RawCapture`,
   `evals/priority_probe/runner.py::run_cell_classifier`, TASK-3-CORRECTION
+
+---
+
 ## [2026-08-05] 코드가 런타임에 읽는 repo 파일은 배포 이미지에 들어 있는지 실측한다
 - 증상: dev→main 승격(#316) 사전 점검에서, 운영 이미지로 앱을 띄우면 부팅이 실패하는 결함을
   발견했다. `session_context.initialize()`(#187)가 `db/profile/init/03_chat_session_contexts.sql`
