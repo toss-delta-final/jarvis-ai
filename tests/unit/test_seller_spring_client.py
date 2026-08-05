@@ -229,18 +229,23 @@ async def test_get_churn_sends_period_and_inactive_days() -> None:
         captured["params"] = dict(request.url.params)
         return httpx.Response(
             200,
-            json={"cohortSize": 0, "churnRate": 0.0,
-                  "preChurnSignals": {"cancelCount": 0, "returnReasonsTop": [],
-                                      "zeroResultSearchSessions": 0, "priceIncreaseExposed": 0},
-                  "members": []},
+            json={
+                "cohortSize": 0,
+                "churnRate": 0.0,
+                "preChurnSignals": {
+                    "cancelCount": 0,
+                    "returnReasonsTop": [],
+                    "zeroResultSearchSessions": 0,
+                    "priceIncreaseExposed": 0,
+                },
+                "members": [],
+            },
         )
 
     client = _client(handler)
     await client.get_churn("93", "2026-06-01", "2026-07-31", 45)
 
-    assert captured["params"] == {
-        "from": "2026-06-01", "to": "2026-07-31", "inactiveDays": "45"
-    }
+    assert captured["params"] == {"from": "2026-06-01", "to": "2026-07-31", "inactiveDays": "45"}
 
 
 async def test_get_churn_parses_measured_response_shape() -> None:
@@ -309,10 +314,16 @@ async def test_get_churn_missing_rate_parses_as_none_not_zero() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            json={"cohortSize": 5,
-                  "preChurnSignals": {"cancelCount": 0, "returnReasonsTop": [],
-                                      "zeroResultSearchSessions": 0, "priceIncreaseExposed": 0},
-                  "members": []},
+            json={
+                "cohortSize": 5,
+                "preChurnSignals": {
+                    "cancelCount": 0,
+                    "returnReasonsTop": [],
+                    "zeroResultSearchSessions": 0,
+                    "priceIncreaseExposed": 0,
+                },
+                "members": [],
+            },
         )
 
     client = _client(handler)
@@ -758,3 +769,223 @@ async def test_non_envelope_response_passes_through() -> None:
     result = await client.get_events("brand-1", "2026-07-01", "2026-07-14")
 
     assert result.total == 0
+
+
+# ── I-29 자사 주문 조회 (§4.18, 이슈 #297 — 🔶 초안) ──────────────────────────────
+
+
+async def test_get_orders_url_params_and_parsing() -> None:
+    """URL /internal/seller/{brandId}/orders + 선택 쿼리 조건부 전송 + 응답 파싱."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["headers"] = request.headers
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "tabCounts": {"ALL": 9, "ORDERED": 3},
+                    "rows": [
+                        {
+                            "orderId": 342,
+                            "orderNo": "ORD-20260716-0342",
+                            "orderedAt": "2026-07-16T09:42:00+09:00",
+                            "recipientName": "김서연",
+                            "paymentMethod": "MOCK_CARD",
+                            "myItemsAmount": 89000,
+                            "status": "ORDERED",
+                            "claimStatus": None,
+                            "items": [
+                                {
+                                    "orderItemId": 5551,
+                                    "productId": 1,
+                                    "name": "벨티드 린넨 원피스",
+                                    "optionName": "블루/M",
+                                    "quantity": 2,
+                                    "price": 44500,
+                                    "status": "ORDERED",
+                                    "activeClaimStatus": None,
+                                }
+                            ],
+                        }
+                    ],
+                    "total": 9,
+                },
+            },
+        )
+
+    client = _client(handler)
+    result = await client.get_orders(12, status="ORDERED", limit=20)
+
+    assert "/internal/seller/12/orders" in captured["url"]
+    assert captured["headers"]["X-Internal-Token"] == TOKEN
+    assert "status=ORDERED" in captured["url"]
+    assert "limit=20" in captured["url"]
+    # 미지정 선택 쿼리는 전송하지 않는다(None 미전송 규약).
+    assert "orderId" not in captured["url"]
+    assert "from" not in captured["url"]
+    assert result.total == 9
+    assert result.tab_counts["ORDERED"] == 3
+    item = result.rows[0].items[0]
+    assert (item.order_item_id, item.status) == (5551, "ORDERED")
+
+
+async def test_get_orders_empty_rows_is_normal() -> None:
+    """orderId 직조회 미존재·타사 = 200 + 빈 rows(존재 은닉) — 예외가 아니다."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "orderId=999" in str(request.url)
+        return httpx.Response(
+            200, json={"success": True, "data": {"tabCounts": {}, "rows": [], "total": 0}}
+        )
+
+    client = _client(handler)
+    result = await client.get_orders(12, order_id=999)
+
+    assert result.rows == [] and result.total == 0
+
+
+# ── I-30 발송 처리 (§4.19, 이슈 #297 — 🔶 초안) ──────────────────────────────────
+
+
+async def test_update_order_item_status_sends_camel_body() -> None:
+    """PATCH /internal/seller/{brandId}/order-items/{id}/status + camelCase 본문 + 응답 파싱."""
+    from app.schemas.spring import OrderItemStatusUpdate
+
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "orderItemId": 5551,
+                    "fromStatus": "ORDERED",
+                    "toStatus": "SHIPPING",
+                    "changedAt": "2026-08-04T14:30:00+09:00",
+                },
+            },
+        )
+
+    client = _client(handler)
+    result = await client.update_order_item_status(
+        12, 5551, OrderItemStatusUpdate(to_status="SHIPPING", reason=None)
+    )
+
+    assert captured["method"] == "PATCH"
+    assert "/internal/seller/12/order-items/5551/status" in captured["url"]
+    assert captured["body"] == {"toStatus": "SHIPPING", "reason": None}
+    assert (result.from_status, result.to_status) == ("ORDERED", "SHIPPING")
+
+
+@pytest.mark.parametrize(
+    ("status_code", "error_code", "expected_exc"),
+    [
+        (409, "ORDER_ALREADY_SHIPPED", "OrderAlreadyShipped"),
+        (409, "ALREADY_SHIPPED", "OrderAlreadyShipped"),  # 과도기 — 개명 전 코드 낙성
+        (404, "ORDER_ITEM_NOT_FOUND", "OrderItemNotFound"),
+        (400, "ORDER_INVALID_TRANSITION", "OrderInvalidTransition"),
+    ],
+)
+async def test_update_order_item_status_maps_error_codes(
+    status_code: int, error_code: str, expected_exc: str
+) -> None:
+    """I-30 실패 코드는 전용 예외로 — HITL 이 '이미 된 일/안 되는 일'을 구분한다."""
+    from app.schemas.spring import OrderItemStatusUpdate
+    from app.services import spring_client as spring_module
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code, json={"success": False, "error": {"code": error_code}})
+
+    client = _client(handler)
+    with pytest.raises(getattr(spring_module, expected_exc)):
+        await client.update_order_item_status(12, 5551, OrderItemStatusUpdate(to_status="SHIPPING"))
+
+
+async def test_update_order_item_status_unknown_code_falls_back() -> None:
+    """매핑에 없는 코드(401 INTERNAL_TOKEN_INVALID 등)·본문 없는 500 은 종전대로
+    SpringUnavailableError — 호출부는 성공 보고 금지 + 재시도 안내."""
+    from app.schemas.spring import OrderItemStatusUpdate
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="Internal Server Error")
+
+    client = _client(handler)
+    with pytest.raises(SpringUnavailableError):
+        await client.update_order_item_status(12, 5551, OrderItemStatusUpdate(to_status="SHIPPING"))
+
+
+# ── I-31 리뷰 조회 (§4.20, 이슈 #297 — 🔶 초안) ──────────────────────────────────
+
+
+async def test_get_reviews_url_params_and_parsing() -> None:
+    """URL /internal/seller/{brandId}/reviews + rating CSV·sort 쿼리 + 응답 파싱."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "rows": [
+                        {
+                            "reviewId": 7,
+                            "productId": 3,
+                            "productName": "여행용 파우치",
+                            "rating": 2,
+                            "content": "지퍼가 일주일 만에 고장났어요",
+                            "authorNickname": "자비스",
+                            "createdAt": "2026-07-21T12:00:00+09:00",
+                        }
+                    ],
+                    "total": 47,
+                },
+            },
+        )
+
+    client = _client(handler)
+    result = await client.get_reviews(
+        12, from_="2026-07-01", to="2026-07-31", rating="1,2", sort="rating"
+    )
+
+    assert "/internal/seller/12/reviews" in captured["url"]
+    assert "rating=1%2C2" in captured["url"] or "rating=1,2" in captured["url"]
+    assert "sort=rating" in captured["url"]
+    assert result.total == 47
+    assert result.rows[0].rating == 2
+    assert result.rows[0].product_name == "여행용 파우치"
+
+
+async def test_get_review_stats_parses_null_average() -> None:
+    """stats=true 쿼리 강제 + 리뷰 0건이면 averageRating null(0 아님, I-16 규칙) 보존."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "totalCount": 0,
+                    "averageRating": None,
+                    "distribution": {"5": 0, "4": 0, "3": 0, "2": 0, "1": 0},
+                    "byProduct": [],
+                },
+            },
+        )
+
+    client = _client(handler)
+    result = await client.get_review_stats(12)
+
+    assert "stats=true" in captured["url"]
+    assert result.total_count == 0
+    assert result.average_rating is None
