@@ -168,6 +168,12 @@ def render_report(results: dict[str, Any]) -> str:
         f"{results['diagnostics']['categoryScopeUnresolvedCount']}",
         f"- 리파인이 clear 로 풀림(이 변경의 새 회귀 모양): "
         f"{results['diagnostics']['categoryClearOnRefineCount']}",
+        f"- 화면 지시어: 해소기 전 프롬프트 층만으로 규칙 충족: "
+        f"{results['diagnostics']['screenPromptLayerHitCount']}",
+        f"- 화면 지시어: 해소기 발동(override) 표본 수: "
+        f"{results['diagnostics']['screenResolverOverrideCount']}",
+        f"- 화면 지시어: 두 목록 밖 productId 확정(위험한 실패, 0 이어야 함): "
+        f"{results['diagnostics']['screenOutOfListConfirmCount']}",
         "",
         "## 셀별 intent 분포",
         "",
@@ -233,6 +239,11 @@ def write_artifacts(
             "categoryLegs",
             "categoryLegsEchoPrior",
             "resolvedCategoryAction",
+            # [#300] screen 지시어 해소 — 원본 decompose 산출(위 productId)은 F-4 규약대로 그대로
+            # 두고, 해소기 통과 후 최종값·발동 여부·사유를 별도 칸으로 남긴다.
+            "resolvedProductId",
+            "screenResolverFired",
+            "screenResolutionReason",
             "latencyMs",
         ],
         [
@@ -253,6 +264,9 @@ def write_artifacts(
                 "categoryLegs": sample.category_legs,
                 "categoryLegsEchoPrior": sample.category_legs_echo_prior,
                 "resolvedCategoryAction": sample.resolved_category_action,
+                "resolvedProductId": sample.resolved_product_id,
+                "screenResolverFired": sample.screen_resolver_fired,
+                "screenResolutionReason": sample.screen_resolution_reason,
                 "latencyMs": sample.latency_ms,
             }
             for cell in cells

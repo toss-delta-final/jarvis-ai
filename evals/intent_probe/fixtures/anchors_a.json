@@ -1,6 +1,6 @@
 {
-  "fixtureVersion": "intent-probe-anchors-a-v3",
-  "schemaVersion": "1.1.0",
+  "fixtureVersion": "intent-probe-anchors-a-v4",
+  "schemaVersion": "1.2.0",
   "reaskProductId": 101,
   "reaskProductListPosition": 1,
   "reaskPositionRationale": "되물음 상품이 LAST_RECOMMENDATIONS 의 몇 번째인지를 명시적으로 고정한다. #240 에서 이 위치가 1번이냐 2번이냐만으로 `일반형`(1번 옵션) 정답률이 fast 기준 8/8 ↔ 3/8 로 갈렸고(smart 는 양쪽 8/8), 그 차이 때문에 cand11 채택 판정이 뒤집혔다. 위치가 옵션 선택에 샌다는 것이 실측된 이상 이 값을 고정하지 않으면 어떤 표도 재현되지 않는다. anchors_a.json(1번)과 anchors_b.json(2번)의 차이는 이 축 하나뿐이며, 앵커를 바꾸면 결과가 달라진다는 사실 자체를 두 판본으로 시연한다.",
@@ -43,6 +43,160 @@
       "name": "드럼형"
     }
   ],
+  "screens": [
+    {
+      "screenId": "screen-single",
+      "pageType": "chat",
+      "filters": {
+        "page": "1"
+      },
+      "columns": 1,
+      "products": [
+        {
+          "productId": 3101,
+          "name": "코튼 워셔블 러그 150x200"
+        }
+      ]
+    },
+    {
+      "screenId": "screen-triple",
+      "pageType": "chat",
+      "filters": {
+        "page": "1"
+      },
+      "columns": 3,
+      "products": [
+        {
+          "productId": 3101,
+          "name": "코튼 워셔블 러그 150x200"
+        },
+        {
+          "productId": 3102,
+          "name": "라탄 수납 바구니 3종"
+        },
+        {
+          "productId": 3103,
+          "name": "무드등 겸용 가습기"
+        }
+      ]
+    },
+    {
+      "screenId": "screen-five",
+      "pageType": "chat",
+      "filters": {
+        "page": "1"
+      },
+      "columns": 3,
+      "products": [
+        {
+          "productId": 3101,
+          "name": "코튼 워셔블 러그 150x200"
+        },
+        {
+          "productId": 3102,
+          "name": "라탄 수납 바구니 3종"
+        },
+        {
+          "productId": 3103,
+          "name": "무드등 겸용 가습기"
+        },
+        {
+          "productId": 3104,
+          "name": "우드 사이드테이블"
+        },
+        {
+          "productId": 3105,
+          "name": "린넨 커튼 2p"
+        }
+      ]
+    },
+    {
+      "screenId": "screen-nine",
+      "pageType": "chat",
+      "filters": {
+        "page": "1"
+      },
+      "columns": 3,
+      "products": [
+        {
+          "productId": 3101,
+          "name": "코튼 워셔블 러그 150x200"
+        },
+        {
+          "productId": 3102,
+          "name": "라탄 수납 바구니 3종"
+        },
+        {
+          "productId": 3103,
+          "name": "무드등 겸용 가습기"
+        },
+        {
+          "productId": 3104,
+          "name": "우드 사이드테이블"
+        },
+        {
+          "productId": 3105,
+          "name": "린넨 커튼 2p"
+        },
+        {
+          "productId": 3106,
+          "name": "저상형 프레임 침대"
+        },
+        {
+          "productId": 3107,
+          "name": "메모리폼 방석"
+        },
+        {
+          "productId": 3108,
+          "name": "무선 블루투스 이어폰"
+        },
+        {
+          "productId": 3109,
+          "name": "탁상 선풍기"
+        }
+      ]
+    },
+    {
+      "screenId": "screen-named",
+      "pageType": "chat",
+      "filters": {
+        "page": "1"
+      },
+      "columns": 2,
+      "products": [
+        {
+          "productId": 3101,
+          "name": "코튼 워셔블 러그 150x200"
+        },
+        {
+          "productId": 3102,
+          "name": "라탄 수납 바구니 3종"
+        },
+        {
+          "productId": 3103,
+          "name": "무드등 겸용 가습기"
+        },
+        {
+          "productId": 3110,
+          "name": "무선 블루투스 이어폰"
+        }
+      ]
+    }
+  ],
+  "screenLastRecommendations": [
+    {
+      "productId": 2001,
+      "name": "리필 세탁 세제 2L"
+    },
+    {
+      "productId": 2002,
+      "name": "드럼용 세탁 세제"
+    },
+    {
+      "productId": 2003,
+      "name": "섬유유연제"
+    }
+  ],
   "contexts": [
     {
       "contextId": "none",
@@ -68,6 +222,51 @@
       "includeLastRecommendations": false,
       "includePendingCart": false,
       "priorFiltersRef": "category"
+    },
+    {
+      "contextId": "screenSingle",
+      "includePriorFilters": true,
+      "includeLastRecommendations": true,
+      "includePendingCart": false,
+      "lastRecommendationsRef": "screen",
+      "includeScreen": true,
+      "screenRef": "screen-single"
+    },
+    {
+      "contextId": "screenTriple",
+      "includePriorFilters": true,
+      "includeLastRecommendations": true,
+      "includePendingCart": false,
+      "lastRecommendationsRef": "screen",
+      "includeScreen": true,
+      "screenRef": "screen-triple"
+    },
+    {
+      "contextId": "screenFive",
+      "includePriorFilters": true,
+      "includeLastRecommendations": true,
+      "includePendingCart": false,
+      "lastRecommendationsRef": "screen",
+      "includeScreen": true,
+      "screenRef": "screen-five"
+    },
+    {
+      "contextId": "screenNine",
+      "includePriorFilters": true,
+      "includeLastRecommendations": true,
+      "includePendingCart": false,
+      "lastRecommendationsRef": "screen",
+      "includeScreen": true,
+      "screenRef": "screen-nine"
+    },
+    {
+      "contextId": "screenNamed",
+      "includePriorFilters": true,
+      "includeLastRecommendations": true,
+      "includePendingCart": false,
+      "lastRecommendationsRef": "screen",
+      "includeScreen": true,
+      "screenRef": "screen-named"
     }
   ],
   "utterances": [
@@ -726,6 +925,113 @@
         "categoryAction3Way",
         "categoryMixedReplace"
       ]
+    },
+    {
+      "utteranceId": "screen-001",
+      "group": "screen",
+      "text": "이거 담아줘",
+      "contexts": [
+        "screenSingle"
+      ],
+      "expected": {
+        "intent": "cart_add",
+        "productIdRule": "screenExact",
+        "productId": 3101
+      },
+      "axes": [
+        "screenExactPick",
+        "screenResolution"
+      ],
+      "note": "#118 원본 라벨: productId=3101 확정 (화면 1건 — 지시대명사 단일 후보)."
+    },
+    {
+      "utteranceId": "screen-002",
+      "group": "screen",
+      "text": "이거 담아줘",
+      "contexts": [
+        "screenTriple"
+      ],
+      "expected": {
+        "intent": "cart_add",
+        "productIdRule": "screenReask"
+      },
+      "axes": [
+        "screenReask",
+        "screenResolution"
+      ],
+      "note": "#118 원본 라벨: 되물음(productId 비움) — 화면 3건, 안전 셀. screen-001 과 텍스트가 같다(fakes.py 는 SCREEN: 줄로 가른다)."
+    },
+    {
+      "utteranceId": "screen-003",
+      "group": "screen",
+      "text": "3번째 거 담아줘",
+      "contexts": [
+        "screenFive"
+      ],
+      "expected": {
+        "intent": "cart_add",
+        "productIdRule": "screenExact",
+        "productId": 3103
+      },
+      "axes": [
+        "screenExactPick",
+        "screenResolution"
+      ],
+      "note": "#118 원본 라벨: productId=3103 (3번째) — 배열 순번 해소."
+    },
+    {
+      "utteranceId": "screen-004",
+      "group": "screen",
+      "text": "3번째 줄 2번째 담아줘",
+      "contexts": [
+        "screenNine"
+      ],
+      "expected": {
+        "intent": "cart_add",
+        "productIdRule": "screenExact",
+        "productId": 3108
+      },
+      "axes": [
+        "screenExactPick",
+        "screenResolution"
+      ],
+      "note": "#118 원본 라벨: productId=3108 (index 7) — columns=3 좌표 해소."
+    },
+    {
+      "utteranceId": "screen-005",
+      "group": "screen",
+      "text": "무선 이어폰 담아줘",
+      "contexts": [
+        "screenNamed"
+      ],
+      "expected": {
+        "intent": "cart_add",
+        "productIdRule": "screenExact",
+        "productId": 3110
+      },
+      "axes": [
+        "screenExactPick",
+        "screenResolution"
+      ],
+      "note": "#118 원본 라벨: productId=3110 (이름 매칭) — 화면 이름 지목."
+    },
+    {
+      "utteranceId": "screen-006",
+      "group": "screen",
+      "text": "301 담아줘",
+      "contexts": [
+        "screenTriple"
+      ],
+      "expected": {
+        "intent": "cart_add",
+        "productIdRule": "screenNotHallucinated",
+        "forbiddenProductId": 301
+      },
+      "axes": [
+        "screenNoHallucination",
+        "screenResolution"
+      ],
+      "note": "#118 원본 라벨: 301 확정 금지 — 두 목록 밖 id 를 확정하지 않는다."
     }
   ]
 }

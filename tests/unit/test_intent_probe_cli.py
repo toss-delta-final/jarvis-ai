@@ -33,7 +33,7 @@ def test_dry_run_writes_every_artifact(tmp_path: Path) -> None:
     assert _run(out) == 0
     assert {path.name for path in out.iterdir()} == ARTIFACT_NAMES
     results = _results(out)
-    assert results["cellCount"] == 68
+    assert results["cellCount"] == 74
     assert results["unfilledCells"] == []
     assert results["dryRun"] is True
 
@@ -87,7 +87,7 @@ def test_report_header_carries_prompt_tier_fixture(tmp_path: Path) -> None:
     results = _results(out)
     assert results["prompt"]["sha12"] in report
     assert "tier=fast" in report
-    assert "intent-probe-anchors-b-v3" in report
+    assert "intent-probe-anchors-b-v4" in report
     assert "이건 골든셋이 아니다" in report
 
 
@@ -153,9 +153,10 @@ def test_pacer_snapshot_is_recorded(tmp_path: Path) -> None:
     assert _run(out, "--rpm", "5") == 0
     pacer = _results(out)["pacer"]
     assert pacer["maxRpm"] == 5
-    # 셀 68 × N=2 (decompose) + 카테고리 15셀 × 2 (범위 해제 분류기) = 166.
+    # 셀 74 × N=2 (decompose) + 카테고리 15셀 × 2 (범위 해제 분류기) = 178.
     # [#84] 분류기도 **페이서를 지난다** — 레이트 예산에 빠지면 실 런에서 429 가 난다.
-    assert pacer["acquireCount"] == 68 * 2 + 15 * 2
+    # [#300] screen 6셀은 분류기를 태우지 않는다(직전 카테고리가 없다) — 셀 수만 늘어난다.
+    assert pacer["acquireCount"] == 74 * 2 + 15 * 2
     assert pacer["waitCount"] > 0
 
 
@@ -270,3 +271,47 @@ def test_samples_csv_carries_the_raw_legs_for_recounting(tmp_path: Path) -> None
     assert "categoryLegs" in rows[0]
     category_rows = [row for row in rows if row["group"] == "category_action"]
     assert category_rows and any(row["categoryLegs"] for row in category_rows)
+
+
+# ─────────── [#300] screen 지시어 해소(#118 이관) ───────────
+
+
+def test_samples_csv_carries_screen_resolution_columns(tmp_path: Path) -> None:
+    out = tmp_path / "run"
+    assert _run(out) == 0
+    rows = list(csv.DictReader((out / "samples.csv").read_text(encoding="utf-8").splitlines()))
+    assert {"resolvedProductId", "screenResolverFired", "screenResolutionReason"} <= set(rows[0])
+    screen_rows = [row for row in rows if row["group"] == "screen"]
+    assert screen_rows
+    assert any(row["screenResolverFired"] == "True" for row in screen_rows)
+    # 이름 매칭 셀(screen-005)은 해소기가 개입하지 않는다.
+    named = [row for row in screen_rows if row["utteranceId"] == "screen-005"]
+    assert named and all(row["screenResolverFired"] == "False" for row in named)
+
+
+def test_report_exposes_screen_axes_and_diagnostics(tmp_path: Path) -> None:
+    out = tmp_path / "run"
+    assert _run(out) == 0
+    report = (out / "report.md").read_text(encoding="utf-8")
+    results = _results(out)
+    for axis_id in (
+        "screenExactPick",
+        "screenReask",
+        "screenNoHallucination",
+        "screenResolution",
+    ):
+        assert axis_id in results["axes"]
+        assert f"`{axis_id}`" in report
+    assert "screenPromptLayerHitCount" in results["diagnostics"]
+    assert "screenResolverOverrideCount" in results["diagnostics"]
+    assert "screenOutOfListConfirmCount" in results["diagnostics"]
+    assert "화면 지시어" in report
+
+
+def test_screen_cells_do_not_call_the_category_scope_classifier(tmp_path: Path) -> None:
+    """screen 컨텍스트는 직전 카테고리를 싣지 않는다 — 분류기가 호출되지 않는다(D-6 실측 근거)."""
+    out = tmp_path / "run"
+    assert _run(out, "--case-ids", "screen-001,screen-002") == 0
+    pacer = _results(out)["pacer"]
+    # decompose 2셀 × N=2 만 페이서를 지난다 — 분류기 호출이 없다.
+    assert pacer["acquireCount"] == 2 * 2

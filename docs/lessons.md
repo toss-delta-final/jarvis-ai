@@ -13,6 +13,35 @@
 
 ---
 
+## [2026-08-05] 프로브 중복 제작 3회차 — 새 측정 도구를 만들기 전에 기존 하네스에 축을 더할 수 있는지 먼저 본다
+- 증상: #118(PR #292)이 screen 지시어 해소를 재려고 별도 스크립트 파일(이관 후 #300 이 삭제했다)
+  로 **두 번째 프로브**를 새로 만들었다. 그런데 리포에는 이미 #260 이 고정한 `evals/intent_probe/`
+  가 있었고, 측정 대상(`decompose` intent 라우팅·담기 productId 확정)이 사실상 같았다 — 컨텍스트
+  종류·표본 조립·페이서·산출물 포맷을 전부 새로 설계·구현해야 했고, 결국 #300 이 그 screen 셀
+  6종만 `evals/intent_probe`로 흡수하고 스크립트를 삭제해야 했다. `evals/model_eval` 이
+  `_prior_echo_tokens` 류 판정 함수를 재구현하지 않고 배포 함수를 그대로 부르는 것처럼,
+  "새 하네스를 만들기"와 "기존 하네스에 컨텍스트·축을 추가하기"는 전혀 다른 비용 곡선인데
+  그 비교를 하지 않고 후자를 골랐다.
+- 원인: 이슈가 요구하는 것이 "screen 이라는 새 세션 상태 하나 + 판정 규칙 3종 + 축 4개"였는데,
+  이것을 `evals/intent_probe`의 `ProbeContext`(#84 가 `prior_filters_ref` 로 이미 컨텍스트별
+  분기 패턴을 증명해 뒀다)에 필드를 추가하는 문제로 보지 않고 "screen 전용 측정"이라는 새
+  범주로 봤다. 기존 하네스의 확장 지점(컨텍스트 종류·축 정의·픽스처 검증자)을 먼저 읽지 않으면
+  "이 측정은 특별해서 새로 만들어야 한다"는 착각이 쉽게 든다.
+- 규칙:
+  - **새 실 LLM 측정 도구를 만들기 전에 `evals/` 아래 기존 하네스가 있는지 먼저 찾는다.**
+    있으면 "컨텍스트/축/픽스처를 추가할 수 있는가"를 먼저 검토하고, 정말 안 되는 이유(예: 완전히
+    다른 세션 상태 모델, 다른 성공 판정 방식)를 코드 주석이나 이슈 코멘트로 남긴 뒤에만 새 도구를
+    만든다.
+  - **판정 규칙은 배포 경로의 함수를 그대로 부른다** — 프로브가 재구현하면 그 자체가 두 번째
+    소스가 되어 다음 사람이 또 "이 프로브는 못 믿겠다"며 세 번째를 만들 동기가 된다(이번이
+    3회차였다 — `evals/intent_probe/README.md` 「재현 함정」 참조).
+  - **흡수·삭제 PR은 표본 동일성을 diff로 증명한다.** 이관 전/후 픽스처를 각각 JSON 덤프해
+    `diff` 가 빈 출력임을 보이고 그 명령·출력을 PR에 남긴다 — "같은 값을 옮겼다"는 주장을
+    사람이 눈으로 대조하지 않고 기계로 확인할 수 있게 한다.
+- 관련: #118, #260, #300, `evals/intent_probe/`, `evals/intent_probe/schema.py`(`ProbeContext`)
+
+---
+
 ## [2026-08-05] `monkeypatch.setenv` + `get_settings.cache_clear()` 는 전역 autouse 픽스처와 경합해 다음 테스트로 샌다
 - 증상: #299 의 `test_limit_configurable_via_env` 가 `REQUEST_BODY_MAX_BYTES=20` 을
   `monkeypatch.setenv` + `get_settings.cache_clear()` 로 주입했는데, 이 테스트 **하나만** 파일
@@ -199,7 +228,7 @@
     같은 셀을 **똑같이** 깎은 것이 "원인은 설계안이 아니라 목록 길이"라는 가설의 출발점이었고,
     승계분만 뺀 변형이 그것을 확정했다.
 - 관련: #118 라운드 2, `app/agents/buyer/graph.py`(`prompt_reco`), `app/agents/buyer/cart/state.py`
-  (`LastReco.turn_count`), `scripts/verify_screen_context_118.py`, #240 기준선
+  (`LastReco.turn_count`), `evals/intent_probe`(#300 이 흡수하기 전 별도 프로브였다), #240 기준선
 
 ## [2026-08-04] 결정적으로 풀리는 규칙을 확률적 계층에 맡기면, 가드가 못 막는 오답이 나온다
 
@@ -220,7 +249,7 @@
     `screen.products` 가 있는 턴에만 도는데, 기존 회귀 대조군은 전부 `screen` 이 없어 **구조적으로**
     닿지 않는다. 그 사실을 테스트로 고정해 두면 다음 사람이 다시 재보지 않아도 된다.
 - 관련: #118 라운드 2, `app/agents/buyer/screen_reference.py`, api-spec §3.1 "지시어 해소",
-  `scripts/verify_screen_context_118.py`
+  `evals/intent_probe`(#300 이 흡수하기 전 별도 프로브였다)
 
 ## [2026-08-04] 튜너블을 근거로 결함을 판단하기 전에 그 값이 **실제로 소비되는지** grep 으로 먼저 본다
 - 증상: #89 는 "fan-out 부분 실패 후 생존 leg 가 `category_fanout_per_cat_limit`(10)에 계속

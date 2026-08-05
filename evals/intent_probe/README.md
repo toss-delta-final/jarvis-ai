@@ -43,12 +43,14 @@ uv run python -m evals.intent_probe --out artifacts/no-scope --no-classifier
 uv run python -m evals.intent_probe --dump-prompt system.txt
 ```
 
-기본 규모: 68셀 × N=8 = 544콜(decompose) **+ 120콜**(카테고리 15셀 × N — 범위 해제 분류기)
-= **664콜**, 45rpm 페이서라 런당 약 15~17분.
-`fast`(gpt-5-nano) 기준 런당 대략 USD 0.10 — 2026-08-04 실측($0.086 / 1.27M tokens, 424콜)을
-콜 수 비례로 환산한 추정이다(#84 이 카테고리 11셀을 더해 424 → 512). 분류기 88콜은 프롬프트가
-짧고(`max_tokens=32`) 콜당 ≈0.35k 라 비용·TPM 영향이 작지만 **페이서는 지나므로**(rpm 예산에
-포함) 위 소요 추정에는 넣었다.
+기본 규모: 74셀 × N=8 = 592콜(decompose) **+ 120콜**(카테고리 15셀 × N — 범위 해제 분류기)
+= **712콜**, 45rpm 페이서라 런당 약 16~18분.
+`fast`(gpt-5-nano) 기준 런당 대략 USD 0.11 — 2026-08-04 실측($0.086 / 1.27M tokens, 424콜)을
+콜 수 비례로 환산한 추정이다(#84 이 카테고리 11셀을 더해 424 → 512, #300 이 screen 6셀을 더해
+512 → 592). 분류기 88콜은 프롬프트가 짧고(`max_tokens=32`) 콜당 ≈0.35k 라 비용·TPM 영향이
+작지만 **페이서는 지나므로**(rpm 예산에 포함) 위 소요 추정에는 넣었다. **screen 6셀은 분류기를
+태우지 않는다** — screen 컨텍스트의 `priorFilters` 에 `category` 가 없어 게이트(`prior_category`
+가 있어야 호출)가 열리지 않는다(D-6 실측 확인, `baselines/fast-2026-08-05-300-screen/`).
 
 ## 기준선
 
@@ -68,6 +70,12 @@ README 에 있다.
 replace, 남은 11건은 `decompose` 추출 실패) · 인라인 `categoryAction` 필드를 기각한 근거(전환 축
 37·38 → 32·32)가 있다 — **프롬프트를 고치기 전에 그 표를 볼 것.**
 위 두 기준선은 픽스처 v1 이라 이 표와 직접 비교하지 않는다.
+
+`baselines/fast-2026-08-05-300-screen/` — **#300 이 흡수한 screen 6셀만** 잰 실측(전량
+재실행이 아니다). 픽스처 **v4**(46발화·9컨텍스트) × `fast` × N=8 × 6셀 = 48콜. 이관 전
+별도 프로브(#118, PR #292 — #300 이 흡수하며 삭제했다)의 채택 근거(48/48 · 안전 셀 8/8 ·
+오담기 0)를 `screenResolution` 47/48 · `screenReask` 8/8 · `screenNoHallucination` 8/8 로
+재현한다. 그 디렉터리 README 에 셀별 원본(해소기 전) vs 최종값 대조표가 있다.
 
 ## CI 에서 돌리지 않는다
 
@@ -95,9 +103,11 @@ replace, 남은 11건은 `decompose` 추출 실패) · 인라인 `categoryAction
 
 `fixtures/anchors_b.json`(기본) / `fixtures/anchors_a.json`. 스크립트는 이 파일만 읽는다.
 
-- 발화 40개 — 장바구니 대조군 6 · 지시대명사 4 · 옵션 답변 4 · 전환 7 · order_status 2 · general 2
-  · **카테고리 승계 15**(리파인 4 · 리셋 4 · 교체 3 · **혼합 4**, #84)
-- 컨텍스트 4종 — `none` / `lastRecommendations` / `pendingCart` / **`categoryPrior`**
+- 발화 46개 — 장바구니 대조군 6 · 지시대명사 4 · 옵션 답변 4 · 전환 7 · order_status 2 · general 2
+  · **카테고리 승계 15**(리파인 4 · 리셋 4 · 교체 3 · **혼합 4**, #84) · **screen 지시어 해소 6**
+  (확정 4 · 되물음 1 · 확정금지 1, #300 — #118 이관)
+- 컨텍스트 9종 — `none` / `lastRecommendations` / `pendingCart` / `categoryPrior` /
+  **`screenSingle`/`screenTriple`/`screenFive`/`screenNine`/`screenNamed`**(#300)
 - `categoryPrior`(#84) 는 `categoryPriorFilters`(직전 카테고리가 있는 스레드 —
   `음향가전 > 이어폰`)를 PRIOR_FILTERS 로 싣고 **LAST_RECOMMENDATIONS 는 싣지 않는다.** 직전 추천
   목록이 붙으면 그 상품명이 카테고리 판정에 섞여(#118 라운드 2 실측) 재려는 축이 오염되기 때문이며,
@@ -108,6 +118,11 @@ replace, 남은 11건은 `decompose` 추출 실패) · 인라인 `categoryAction
 - **되물음 상품의 목록 위치를 명시적으로 고정**한다(`reaskProductListPosition` + 이유 산문).
   #240 에서 이 위치가 1번이냐 2번이냐만으로 `일반형` 정답률이 8/8 ↔ 3/8 로 갈렸다.
   두 판본의 차이는 이 축 하나뿐이라 `--fixture a|b` 로 그 사실을 시연할 수 있다.
+- **screen 지시어 해소(#300)** — `screens`(5종 화면 픽스처) · `screenLastRecommendations`
+  (screen 컨텍스트 전용 LAST_RECOMMENDATIONS, 기본 `lastRecommendations` 와 이름이 겹치지 않게
+  분리했다 — 겹치면 이름 매칭 셀의 정답 신호가 샌다). `pendingCart` 와 `screen` 은 같은
+  컨텍스트에 함께 실릴 수 없다(스키마가 거부 — `graph.py` 의 `screen_context_active = pending_dict
+  is None` 배선과 같다). 자세한 설계 근거는 아래 「screen 지시어 해소」 절.
 
 `fixtures/manifest.json` 의 sha256 과 대조해 읽는다(불일치 → 종료 코드 2).
 외부 경로(`--fixture <path>`)는 대조를 건너뛰되 해시를 산출물에 기록한다.
@@ -131,6 +146,10 @@ replace, 남은 11건은 `decompose` 추출 실패) · 인라인 `categoryAction
 | `categoryClear` | 같은 술어, 리셋 4발화 | 32 |
 | `categoryReplace` | 같은 술어, 교체 3발화 | 24 |
 | `categoryMixedReplace` | 같은 술어, **혼합 4발화**(새 카테고리 + "아무거나") | 32 |
+| `screenExactPick` | **해소기 통과 후 최종** productId == expected.productId (`cart_add` 도 함께 봄) | 4×1×8 = 32 |
+| `screenReask` | 최종 productId 가 None(임의 확정하지 않고 되물음) | 1×1×8 = 8 |
+| `screenNoHallucination` | 최종 productId != expected.forbiddenProductId | 1×1×8 = 8 |
+| `screenResolution` | 위 셋의 합(각 셀은 자신의 규칙으로만 채점) | 6×1×8 = 48 |
 
 **혼합 발화 축(`categoryMixedReplace`)을 `categoryReplace` 와 섞지 않는다**(라운드 3). 새 카테고리를
 지목하면서 동시에 "아무거나"류 표현을 쓰는 발화는 초판 판정 순서에서 사용자가 말한 카테고리가
@@ -183,13 +202,59 @@ replace, 남은 11건은 `decompose` 추출 실패) · 인라인 `categoryAction
 "되물음 상품이 아닌 상품" 이었다 — **두 표의 숫자를 직접 비교하면 안 된다.** 축마다
 `notComparableWith` 를 달아 산출물에도 그 경고가 실린다.
 
-진단 카운터 4개(합불 아님): `reaskProductEchoCount`(되물음 상품을 그대로 담음 — 사용자가 고르지
+진단 카운터 7개(합불 아님): `reaskProductEchoCount`(되물음 상품을 그대로 담음 — 사용자가 고르지
 않은 옵션으로 옛 상품이 담기는 **위험한 실패**), `productIdNullCount`(못 고르고 null — 되물음이
-유지되는 **안전한 퇴화**), 그리고 #84 의 둘 — `categoryScopeUnresolvedCount`(전용 분류기가
+유지되는 **안전한 퇴화**), #84 의 둘 — `categoryScopeUnresolvedCount`(전용 분류기가
 판정하지 못한 표본 = 분류기의 침묵률. 3분기 축을 신뢰할 수 있는지의 근거다),
 `categoryClearOnRefineCount`(리파인 발화가 `clear` 로 확정됐다 — 이 변경이 만들 수 있는 **유일한
-새 회귀 모양**이라 정확도와 따로 센다). 뒤의 둘은 카테고리 셀만 본다(전환 카운터가 전환 셀만 보는
-것과 같은 규약 — 다른 그룹은 승계 가드에 닿지도 않는다).
+새 회귀 모양**이라 정확도와 따로 센다), 그리고 #300 의 셋 — `screenPromptLayerHitCount`·
+`screenResolverOverrideCount`·`screenOutOfListConfirmCount`(아래 「screen 지시어 해소」 절).
+카테고리 둘은 카테고리 셀만, screen 셋은 screen 셀만 본다(전환 카운터가 전환 셀만 보는 것과 같은
+규약 — 다른 그룹은 그 가드에 닿지도 않는다).
+
+## screen 지시어 해소(#118 이관, #300)
+
+`app/agents/buyer/screen_reference.py::resolve_screen_reference` 가 화면 지시어("이거"·"3번째
+거"·"3번째 줄 2번째"·이름 지목)를 해소한다 — 순번·좌표·"후보 1건이면 확정, 여러 건이면 되물음"은
+입력만으로 답이 하나로 정해지는 **결정적 규칙**이라 LLM 에 맡길 이유가 없다(#118 라운드 2 가 실측
+한 이유, `screen_reference.py` docstring 참조). 이 **6셀**은 #118(PR #292)이 별도 스크립트로
+쟀었는데, #300 이 **판정 규칙을 프로브가 재구현하지 않고 배포 경로와 같은 함수를 같은 순서로
+부른다**는 이 하네스의 확립된 규약(#84 가 `resolve_category_action` 으로 이미 그렇게 한다)에 따라
+흡수했다 — 해소기의 규칙(맨 지시대명사·순번·좌표·목록 밖 id 차단)이 텍스트만으로 결정적으로
+풀리는 것은 그중 **4셀**(001·002 는 맨 지시대명사, 004 는 좌표, 006 은 목록 밖 id 차단). 나머지
+둘은 다르다 — **005(이름 매칭)는 해소기가 아예 개입하지 않는다**(양보 B, LLM 산출을 그대로
+쓴다). **003(순번 "3번째 거")도 규칙 자체는 결정적이지만**, 모든 규칙이 공유하는 공통 게이트
+(intent 가 이미 `cart_add` 여야 발동 — 다른 4셀도 마찬가지다)가 D-6 실측에서 그 셀 1회만
+`decompose` 의 intent 라우팅이 미끄러져 해소기 호출 대상 자체가 아니었던 사례로 드러났다(아래
+「screen 지시어 해소」절과 `baselines/fast-2026-08-05-300-screen/README.md` 참조).
+
+**러너가 해소기를 부른다** — `decompose` 호출 뒤 `graph.py` 의 cart_add 분기와 **같은 조건·같은
+인자**로 `resolve_screen_reference` 를 부른다: `screen` 이 있고 `screen.products` 가 비지
+않고 intent 가 이미 `cart_add` 이고 `pending_cart is None` 일 때만. `Sample.productId` (원본
+decompose 산출)는 F-4 규약대로 그대로 두고, `Sample.resolvedProductId`(해소기 통과 후 최종값)
+를 새로 남긴다 — 판정 규칙이 바뀌어도 **런을 다시 돌리지 않고** 재집계할 수 있다. screen 축
+채점은 최종값을 본다(사용자가 겪는 동작이 그것이고, #118 의 48/48 도 같은 정의다).
+
+**pendingCart 와 screen 은 같은 컨텍스트에 공존할 수 없다**(스키마가 거부) — #118 이 확정한
+규약("되물음 턴에는 화면 맥락을 프롬프트에 싣지 않는다")이고 `graph.py` 의
+`screen_context_active = pending_dict is None` 이 그 배선이다. 성립하지 않는 컨텍스트를
+픽스처가 표현할 수 있으면 배포에 없는 조건을 재게 된다.
+
+**productIdRule 은 3종이다** — `screenExact`(확정, `expected.productId` 필수) ·
+`screenReask`(비움·되물음, `productId`/`forbiddenProductId` 둘 다 비어야 함) ·
+`screenNotHallucinated`(특정 id 확정 금지, `expected.forbiddenProductId` 필수 — 그 id 는
+screen ∪ `screenLastRecommendations` 어디에도 없어야 "확정 금지" 술어가 무의미해지지 않는다).
+채점 술어는 #118 원본(`_product`/`_no_product`/`_not_hallucinated`)과 **한 글자도 다르지
+않다** — `screenExact` 만 intent 도 함께 본다(그 밖은 intent 무관).
+
+진단 카운터 3종은 screen 셀만 본다: `screenPromptLayerHitCount`(해소기 전 원본 decompose
+산출만으로 셀 규칙을 만족한 표본 수 — #118 이 잰 "코드 해소기 도입 전 9/48" 과 대조하는 값),
+`screenResolverOverrideCount`(해소기가 발동해 productId 를 확정/되물음으로 바꾼 표본 수),
+`screenOutOfListConfirmCount`(최종 productId 가 None 도 아니고 두 목록 안에도 없는 표본 수 =
+**위험한 실패**, 0 이어야 한다).
+
+**screen 컨텍스트는 범위 해제 분류기를 태우지 않는다** — `priorFilters` 에 `category` 가 없어
+게이트가 열리지 않는다(D-6 실측 확인). 기준선은 `baselines/fast-2026-08-05-300-screen/`.
 
 ## 산출물과 종료 코드
 
@@ -246,3 +311,15 @@ replace, 남은 11건은 `decompose` 추출 실패) · 인라인 `categoryAction
   전에 이 문단과 `decompose.resolve_category_action` docstring 을 읽을 것 — 채택 조건은 "내 축이
   좋아졌다"가 아니라 **"다른 축이 안 깎였다"** 다.
 - `--seed` 는 셀 순서에만 쓴다. provider 샘플링 seed 는 강제할 수 없다.
+- **#300 이 픽스처를 v4 로 올렸다**(`schemaVersion` 1.1.0 → 1.2.0, `fixtureVersion` `-v3` →
+  `-v4`). v4 는 v3 의 **기존 셀을 한 글자도 바꾸지 않고 screen 6셀만 추가**했으므로 기존 축의
+  분자·분모 구성은 그대로다(screen 발화는 기존 축을 선언할 수 없다 — 스키마가 강제한다). 그래도
+  **다른 픽스처 버전의 표라 v3 이하 기준선과 직접 비교하지 말 것** — v3 기준선(`fast-2026-08-05-84/`
+  등)에는 screen 4축 자체가 없다(`notComparableWith` 에 그 사실이 실린다).
+- **`schemaVersion` 은 `Literal` 이라 버전 게이트다.** `AnchorSet.schema_version:
+  Literal["1.2.0"]` 이므로 v3 이하 스키마로 쓰인 외부 앵커(`--fixture <경로>`)는 **자동으로
+  거부된다**(종료 코드 2, `pydantic.ValidationError`) — 픽스처 필드를 완화해서 되살릴 수 있는
+  문제가 아니다(`screens`/`screenLastRecommendations` 를 선택 필드로 바꿔도 `schemaVersion`
+  게이트가 먼저 막는다). 의도된 동작이며 이번이 처음도 아니다 — #260 이 `1.0.0` 으로 시작했고
+  `#84` 가 카테고리 컨텍스트를 더하며 `1.1.0` 으로, 이번 `#300` 이 screen 을 더하며 `1.2.0` 으로
+  올렸다. 오래된 외부 앵커로 막혔다면 그 앵커를 현재 스키마로 다시 만들어야 한다.
