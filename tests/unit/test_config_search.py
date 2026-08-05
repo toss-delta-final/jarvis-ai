@@ -9,6 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.config import Settings
+from app.core.text import _strip_unsafe
 
 
 def test_search_backend_and_rerank_limit_defaults() -> None:
@@ -103,3 +104,38 @@ def test_price_group_min_size_default_and_lower_bound() -> None:
     assert Settings(_env_file=None, price_group_min_size=1).price_group_min_size == 1
     with pytest.raises(ValidationError):
         Settings(_env_file=None, price_group_min_size=0)
+
+
+def test_popular_candidate_size_default_and_positive_bound() -> None:
+    """[#162] I-3 요청 개수는 config 주입이며 0 이하는 기동 fail-fast.
+
+    BE I-3 에는 **범위 검증이 없다**(api-spec §4.12, 정본 명시) — 음수·0 을 보내면 400 이
+    아니라 `200 + 빈 배열`이 온다. 즉 잘못된 설정이 오류가 아니라 "인기 상품이 없음"으로
+    위장되므로, 양수 보장을 AI 쪽 기동 시점에서 막는다.
+
+    기본값 30 의 근거: 하한은 노출 `expose_max`(9) + 최근구매 dedup·소모품 억제로 빠질 몫
+    (BE 기본 12 는 여유가 3뿐이라 `expose_min`(5)까지 떨어질 수 있다), 상한은
+    `embedding_rerank_limit`(30) — 그보다 많이 받아도 압축 단계에서 버려진다.
+    """
+    assert Settings(_env_file=None).popular_candidate_size == 30
+    assert Settings(_env_file=None, popular_candidate_size=1).popular_candidate_size == 1
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, popular_candidate_size=0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, popular_candidate_size=-1)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["no_condition_notice_popular", "no_condition_notice_profile"],
+)
+def test_no_condition_notices_must_not_be_empty(field: str) -> None:
+    """[#162] 조건 없음 안내는 **발신 자체가 계약**이라 빈 값이면 기동 실패.
+
+    `rerank_fallback_notice`·`push_skipped_notice` 와 같은 규약(#133
+    `_require_degrade_notices_present`). 안내가 사라지면 사용자는 인기상품·취향 기반 결과를
+    **자기 조건이 반영된 결과로 오해**하는데, 서버는 멀쩡히 돌아 아무도 모른다.
+    """
+    assert _strip_unsafe(getattr(Settings(_env_file=None), field))
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **{field: "   "})
