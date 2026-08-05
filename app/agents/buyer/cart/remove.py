@@ -118,12 +118,33 @@ def _resolve_remove_targets(
     문자열 겹침을 그대로 재사용한다). "이어폰케이스 빼줘"(장바구니 `[이어폰]`)는 "이어폰"이
     원문에 나타나므로 4번을 건너뛰어 되물음이 된다. "그거 지워줘"처럼 어느 이름도 원문에 없으면
     그대로 4번이 동작한다(회귀 없음).
+
+    **[라운드 18, head `f87eb5b` 리뷰 F1]** 라운드 17 은 `name_mentioned` 가드를 4번(단건 자동)
+    에만 달았는데, 정작 이 함수에서 가장 파괴적인 규칙은 1번(전체 삭제)이다 — "이어폰 전부
+    빼줘"(장바구니 `[이어폰, 파우치]`)에서 "전부 빼"만 보고 1번이 확정하면, 사용자가 이름을
+    댔는데도 이름을 대지 않은 "파우치"까지 함께 지워진다. 새 판정을 만들지 않고 `name_mentioned`
+    계산을 함수 앞부분(1번보다 먼저)으로 끌어올려 1번에도 재사용한다: 발화에 어느 항목 이름이든
+    (경계·부정과 무관하게) 원문 부분 문자열로 나타나면 1번을 건너뛰고 2번(이름 매칭)으로
+    내려간다. "이어폰 전부 빼줘"는 2번에서 "이어폰" 뒤가 "전부"라 라운드 17 경계 규칙상 유효
+    매칭이 아니므로 모호로 떨어져 되물음이 된다(전체 삭제가 아니면 충분 — 되물음 문구 자체를
+    개선하는 것은 이 라운드의 범위가 아니다). "전부 빼줘"·"다 빼줘"·"모두 빼줘"처럼 어느 이름도
+    원문에 없으면 `name_mentioned` 가 거짓이라 1번이 그대로 동작한다(회귀 없음).
     """
     has_negation = has_any_negation(
         message, settings.utterance_negation_markers, settings.utterance_prefix_negation_markers
     )
 
-    if not has_negation and any(marker in message for marker in settings.cart_remove_all_markers):
+    # 라운드 18 — 4번(단건 자동)만 쓰던 계산을 앞으로 끌어올려 1번(전체 삭제)에도 재사용한다
+    # (새 신호 아님, 라운드 17 그대로).
+    name_mentioned = any(
+        (name := _strip_unsafe(item.product_name or "")) and name in message for item in items
+    )
+
+    if (
+        not has_negation
+        and not name_mentioned
+        and any(marker in message for marker in settings.cart_remove_all_markers)
+    ):
         return list(items)
 
     all_names = [name for item in items if (name := _strip_unsafe(item.product_name or ""))]
@@ -157,12 +178,8 @@ def _resolve_remove_targets(
 
     # 라운드 15 — 2번의 경계 검사가 이름 매칭을 정확히 만들어도, 장바구니 1건뿐이면 아래 단건
     # 자동이 표지 없이도 그 1건을 자동 선택해 같은 결과가 나올 수 있다("이어폰케이스 빼줘"가
-    # "이어폰"에 boundary 로 안 걸려도 단건 자동으로 새 버린다). 그래서 이름을 대려는 시도가
-    # 있었는지(경계·부정과 무관한 원문 부분 문자열 겹침, 새 신호 아님)도 확인해 있으면 단건
-    # 자동을 건너뛴다.
-    name_mentioned = any(
-        (name := _strip_unsafe(item.product_name or "")) and name in message for item in items
-    )
+    # "이어폰"에 boundary 로 안 걸려도 단건 자동으로 새 버린다). `name_mentioned` 는 함수 앞부분
+    # (라운드 18, 1번과 공용)에서 이미 계산됐다 — 여기서 다시 계산하지 않는다.
     if not has_negation and not name_mentioned and len(items) == 1:
         return items
     return None

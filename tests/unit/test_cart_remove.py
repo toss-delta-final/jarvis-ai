@@ -830,6 +830,60 @@ async def test_remove_spaced_name_followed_by_other_word_asks_via_stream() -> No
     assert _types(events) == ["token", "done"]
 
 
+# ─── 라운드 18(head `f87eb5b` 리뷰 F1): 1번(전체 삭제)에도 name_mentioned 가드 ───
+
+
+def test_resolve_remove_targets_all_marker_with_named_item_does_not_delete_everything() -> None:
+    """재현(라운드 18 패킷 F1) — 장바구니 [이어폰, 파우치]에서 "이어폰 전부 빼줘"는 사용자가
+    이름을 댔는데도 라운드 17 이전엔 1번(전체 삭제)이 "전부 빼"만 보고 확정해 이름을 대지 않은
+    "파우치"까지 함께 지웠다. `name_mentioned`(라운드 17, 4번과 공용) 가드를 1번에도 적용하면
+    2번(이름 매칭)으로 내려가고, "이어폰" 뒤가 "전부"라 라운드 17 오른쪽 경계 규칙상 유효
+    매칭이 아니므로(조사·filler·표지·다른 항목 이름 어느 것도 아님) 매칭 0건 → 되물음이다.
+    핵심 단언은 "전체 삭제가 아니다"이지, 되물음 문구 자체를 개선하는 것이 아니다."""
+    from app.agents.buyer.cart.remove import _resolve_remove_targets
+
+    items = [_item(1, 10, "이어폰"), _item(2, 20, "파우치")]
+    result = _resolve_remove_targets("이어폰 전부 빼줘", items, get_settings(), None)
+    assert result != items
+    assert result is None
+
+
+async def test_remove_all_marker_with_named_item_asks_via_stream() -> None:
+    """`stream_cart_remove` 수준에서도 같은 사실 — delete_fn 이 한 번도 안 불린다(파우치가
+    조용히 함께 삭제되는 사고가 재현되지 않는다)."""
+    store = CartStateStore()
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        raise AssertionError("이름을 댄 전체 삭제인데 delete_fn 이 호출됐다")
+
+    events = await _collect(
+        stream_cart_remove(
+            identity=_member(),
+            message="이어폰 전부 빼줘",
+            cart_store=store,
+            thread_key="m:t-remove-all-with-name",
+            settings=get_settings(),
+            get_cart_fn=_cart(_item(1, 10, "이어폰"), _item(2, 20, "파우치")),
+            delete_fn=delete_fn,
+        )
+    )
+    assert _types(events) == ["token", "done"]
+
+
+@pytest.mark.parametrize("message", ["전부 빼줘", "다 빼줘", "모두 빼줘"])
+def test_resolve_remove_targets_all_marker_without_any_name_still_deletes_everything(
+    message: str,
+) -> None:
+    """회귀(라운드 18) — 어느 항목 이름도 언급되지 않은 "전부 빼줘"·"다 빼줘"·"모두 빼줘"는
+    `name_mentioned` 가 거짓이라 1번(전체 삭제)이 그대로 동작해야 한다."""
+    from app.agents.buyer.cart.remove import _resolve_remove_targets
+
+    items = [_item(1, 10, "이어폰"), _item(2, 20, "파우치")]
+    result = _resolve_remove_targets(message, items, get_settings(), None)
+    assert result is not None
+    assert sorted(item.cart_item_id for item in result) == [1, 2]
+
+
 # ─────────── stream_cart_add 배선 (플래그·last_add) ───────────
 
 

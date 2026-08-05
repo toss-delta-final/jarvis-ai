@@ -202,6 +202,30 @@ def test_classify_cart_add_marker_excludes_past_reference_tail(message: str, exp
     assert classify_cart_utterance(message, get_settings()) == expected
 
 
+# ─────────── classify_cart_utterance — 라운드 18 F2: 찜 추가 표지의 과거 참조형 ───────────
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        # 재현 — "위시리스트에 넣어"가 과거 참조형("넣어놓은")에 부분 문자열로 걸려 질문/과거
+        # 참조가 찜 추가로 오분류됐다. 라운드 8 의 `_matches_cart_add_marker` 창 기계를
+        # `wishlist_add_markers` 에도 재사용해(`cart_add_reference_markers` 그대로) 배제한다.
+        ("위시리스트에 넣어놓은 거 있어요?", "cart_add"),
+        # 대조군 — 담기 쪽은 이미 고쳐진 같은 클래스 문제(참조용, 회귀 방지).
+        ("담아뒀던 거 다 빼줘", "cart_remove"),
+        # ⚠️ 회귀 금지 — 참조 꼬리가 없는 정상 찜 추가 요청은 전부 wishlist_add 그대로.
+        ("위시리스트에 넣어줘", "wishlist_add"),
+        ("찜해줘", "wishlist_add"),
+        ("찜 목록에 추가해줘", "wishlist_add"),
+    ],
+)
+def test_classify_wishlist_add_marker_excludes_past_reference_tail(
+    message: str, expected: str
+) -> None:
+    assert classify_cart_utterance(message, get_settings()) == expected
+
+
 # ─────────── classify_cart_utterance — 라운드 9: 접두 부정("안"/"못") ───────────
 
 

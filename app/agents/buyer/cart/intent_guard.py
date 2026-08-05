@@ -19,22 +19,29 @@ from app.agents.buyer.cart.negation import _spans, has_prefix_negation, matches_
 _matches_unnegated = matches_unnegated
 
 
-def _matches_cart_add_marker(message: str, settings) -> bool:
-    """`cart_add_markers` 매칭 — 부정(뒤쪽 어미·앞쪽 접두, `_matches_unnegated` 와 같은 원리)에
-    더해 과거 참조형(2차 리뷰 N-1)도 배제한다.
+def _matches_marker_excluding_reference(
+    message: str, markers: list[str], reference_markers: list[str], settings
+) -> bool:
+    """`markers` 매칭 — 부정(뒤쪽 어미·앞쪽 접두, `_matches_unnegated` 와 같은 원리)에 더해 과거
+    참조형(2차 리뷰 N-1)도 배제하는 공용 창 기계.
 
-    "담아"는 "담아뒀던"·"담아둔"처럼 과거 참조형에도 부분 문자열로 걸린다 — 이 PR 에서
-    `docs/lessons.md` 에 적은 "전부" ⊂ "전부터" 실수의 재발이다. `wishlist_reference_markers`
-    가 "찜한"을 지시 수식어로 다루는 것과 같은 개념으로, 표지 바로 뒤 짧은 창에 과거 참조 꼬리
-    (`cart_add_reference_markers`)가 오면 그 출현은 동작 요청이 아니므로 세지 않는다. 부정
-    검사와 같은 창 기계(`negation._spans` + 창 슬라이스)를 재사용하되, 부정·과거 참조는 서로
-    다른 개념이라 한 목록으로 합치지 않고 별도 배제로 둔다(표지가 왜 안 걸렸는지 진단하기 쉽다).
+    표지 하나가 "담아"·"위시리스트에 넣어"처럼 어간만 있으면 "담아뒀던"·"넣어놓은"류 과거
+    참조형에도 부분 문자열로 걸린다 — 이 PR 에서 `docs/lessons.md` 에 적은 "전부" ⊂ "전부터"
+    실수의 재발이다. `wishlist_reference_markers` 가 "찜한"을 지시 수식어로 다루는 것과 같은
+    개념으로, 표지 바로 뒤 짧은 창에 과거 참조 꼬리(`reference_markers`)가 오면 그 출현은 동작
+    요청이 아니므로 세지 않는다. 부정 검사와 같은 창 기계(`negation._spans` + 창 슬라이스)를
+    재사용하되, 부정·과거 참조는 서로 다른 개념이라 한 목록으로 합치지 않고 별도 배제로 둔다
+    (표지가 왜 안 걸렸는지 진단하기 쉽다).
+
+    **[라운드 18, F2]** 원래 `cart_add_markers` 전용(`_matches_cart_add_marker`, 라운드 8)이던
+    이 창 기계를 `markers`/`reference_markers` 를 인자로 받도록 일반화했다 — `wishlist_add_markers`
+    의 "위시리스트에 넣어"도 같은 어간형이라 "위시리스트에 넣어놓은 거 있어요?"(질문·과거 참조)가
+    찜 추가로 오분류됐다. 새 판정을 만들지 않고 이 창 기계를 그대로 재사용한다(호출부 참조).
     """
     negation_markers = settings.utterance_negation_markers
     prefix_negation_markers = settings.utterance_prefix_negation_markers
-    reference_markers = settings.cart_add_reference_markers
     window = settings.utterance_negation_window
-    for marker in settings.cart_add_markers:
+    for marker in markers:
         for start, end in _spans(message, marker):
             following = message[end : end + window]
             if any(neg in following for neg in negation_markers):
@@ -45,6 +52,15 @@ def _matches_cart_add_marker(message: str, settings) -> bool:
                 continue
             return True
     return False
+
+
+def _matches_cart_add_marker(message: str, settings) -> bool:
+    """`cart_add_markers` 매칭 — `_matches_marker_excluding_reference` 를 `cart_add_markers`/
+    `cart_add_reference_markers` 로 인스턴스화한다(라운드 8 원안, 라운드 18 에서 창 기계를
+    공용화하며 이 함수는 얇은 래퍼로 남는다 — 테스트를 포함해 기존 호출부와의 이름 호환 유지)."""
+    return _matches_marker_excluding_reference(
+        message, settings.cart_add_markers, settings.cart_add_reference_markers, settings
+    )
 
 
 def classify_cart_utterance(message: str, settings) -> str:
@@ -83,6 +99,15 @@ def classify_cart_utterance(message: str, settings) -> str:
     "담아뒀던"·"담아둔"처럼 과거 참조형에도 부분 문자열로 걸려("담아뒀던 거 다 빼줘"가 삭제
     대신 담기로 오담기), 그 출현은 지금 담아 달라는 요청이 아니므로 표지로 세지 않는다.
 
+    **찜 추가 표지의 과거 참조형(라운드 18, F2)**: `wishlist_add_markers` 중 "위시리스트에 넣어"도
+    "담아"와 같은 어간형이라 "위시리스트에 넣어놓은 거 있어요?"(질문·과거 참조)에 부분 문자열로
+    걸려 찜 추가로 오분류됐다("담아" ⊂ "담아뒀던"과 같은 사고, `docs/lessons.md` 재발). 새 목록을
+    만들지 않고 `cart_add_reference_markers` 를 그대로 재사용한다 — 꼬리 형태(뒀·둔·두었·놨·놓)는
+    "담다"·"넣다" 어느 어간에도 똑같이 붙는 활용 어미라 표지별로 다시 정의할 이유가 없다. 2번
+    (`wishlist_add_markers`) 도 `_matches_unnegated` 대신 이 창 기계(`_matches_marker_excluding_reference`)
+    를 쓴다 — "찜해줘"류 나머지 표지는 전부 어미까지 갖춘 동작 구라 참조 꼬리와 겹칠 부분
+    문자열이 없으므로(예: "찜해줘"는 "찜해뒀던"과 "줘"/"뒀" 지점에서 이미 갈린다) 회귀가 없다.
+
     판정 순서:
       0-a. `cart_add_markers`(담아·장바구니에 넣)가 있으면 즉시 `"cart_add"`. 담기는 이 판별기가
            다루는 신호 중 가장 강하다 — "찜한 거 장바구니에 담아줘"·"하나 빼고 담아줘"처럼 찜/삭제
@@ -102,10 +127,11 @@ def classify_cart_utterance(message: str, settings) -> str:
          요구한 동작(동사)이 대상을 가리키기만 하는 수식어보다 강한 신호다("강한 신호는 약한
          신호로 덮지 않는다", docs/lessons.md) — 이전 순서(수식어 양보가 먼저)는 이 발화를
          `cart_add` 로 떨어뜨려 명시적 찜 해제 요청이 장바구니에 담기는 결과를 냈다.
-      2. `wishlist_add_markers` 매칭 → `"wishlist_add"`. 단 발화에 `"장바구니"`가 있으면 찜으로
-         가르지 않는다(계약상 찜·장바구니는 다른 자원이라 혼동 방지). 이 억제는 **여기(찜 추가)
-         에만** 걸린다 — 1번(찜 해제)·4번(삭제)에는 영향 없다. 이 단계도 3번(`wishlist_reference_markers`)
-         보다 먼저 본다 — 같은 "동사가 수식어보다 강하다" 원칙("찜한 거 찜해줘"류에도 동일 적용).
+      2. `wishlist_add_markers` 매칭(과거 참조 꼬리 배제 포함, 라운드 18) → `"wishlist_add"`. 단
+         발화에 `"장바구니"`가 있으면 찜으로 가르지 않는다(계약상 찜·장바구니는 다른 자원이라
+         혼동 방지). 이 억제는 **여기(찜 추가)에만** 걸린다 — 1번(찜 해제)·4번(삭제)에는 영향
+         없다. 이 단계도 3번(`wishlist_reference_markers`) 보다 먼저 본다 — 같은 "동사가 수식어
+         보다 강하다" 원칙("찜한 거 찜해줘"류에도 동일 적용).
       3. `wishlist_reference_markers`(찜한·찜해둔·찜해 놓은·찜했던)가 있으면 `"cart_add"`.
            이 표지가 있는 발화의 동사는 (1·2번에서 명시적 찜 동작 표지가 안 걸렸다면) 담기다 —
            찜은 지시 대상을 수식할 뿐이다("찜해둔 이어폰 담아줘"는 0-a 가 이미 잡는다. 담기
@@ -143,12 +169,8 @@ def classify_cart_utterance(message: str, settings) -> str:
     suppress_wishlist_add = _matches_unnegated(
         message, ["장바구니"], negation_markers, window, prefix_negation_markers
     )
-    if not suppress_wishlist_add and _matches_unnegated(
-        message,
-        settings.wishlist_add_markers,
-        negation_markers,
-        window,
-        prefix_negation_markers,
+    if not suppress_wishlist_add and _matches_marker_excluding_reference(
+        message, settings.wishlist_add_markers, settings.cart_add_reference_markers, settings
     ):
         return "wishlist_add"
 
