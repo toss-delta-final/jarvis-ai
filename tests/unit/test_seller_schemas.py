@@ -52,14 +52,22 @@ def test_analysis_plan_dedupes_preserving_order() -> None:
 
 
 def test_analysis_plan_rejects_unknown_type_and_overflow() -> None:
-    """AnalysisType 밖 값·5종 초과(중복 아닌 6개는 불가능하지만 Literal 위반 우선)는 거부."""
+    """AnalysisType 밖 값·6종 초과([#297] review 추가로 5→6)는 거부."""
     with pytest.raises(ValidationError):
         AnalysisPlan(analyses=["revenue"], reason="r")
     with pytest.raises(ValidationError):
         AnalysisPlan(
-            analyses=["sales_anomaly", "conversion", "behavior", "churn", "abuse", "sales_anomaly"],
+            analyses=[
+                "sales_anomaly",
+                "conversion",
+                "behavior",
+                "churn",
+                "abuse",
+                "review",
+                "sales_anomaly",
+            ],
             reason="r",
-        )  # max_length=5 는 validator(dedupe) 이전에 걸린다
+        )  # max_length=6 은 validator(dedupe) 이전에 걸린다
 
 
 def test_route_decision_accepts_valid_categories() -> None:

@@ -423,8 +423,7 @@ def test_color_synonym_pool_reserves_runtime_search_slot_only_when_harvest_enabl
 
     with pytest.raises(
         ValidationError,
-        match="COLOR_SYNONYM_HARVEST_MAX_CONCURRENCY must be less than "
-        "COLOR_SYNONYM_POOL_MAX_SIZE",
+        match="COLOR_SYNONYM_HARVEST_MAX_CONCURRENCY must be less than COLOR_SYNONYM_POOL_MAX_SIZE",
     ):
         Settings(
             _env_file=None,
@@ -448,3 +447,22 @@ def test_color_synonym_scan_budget_must_exceed_accepted_term_budget() -> None:
             color_synonym_harvest_max_terms_per_product=40,
             color_synonym_harvest_scan_max_values_per_product=40,
         )
+
+
+def test_trace_content_defaults_off_and_tolerates_empty_string():
+    """[#326] 기본 off + 배포 vars 미설정(빈 문자열)도 off 로 해석돼 기동이 죽지 않는다."""
+    assert Settings(_env_file=None).langsmith_trace_content is False
+    assert Settings(_env_file=None, langsmith_trace_content="").langsmith_trace_content is False
+    assert Settings(_env_file=None, langsmith_trace_content=" ").langsmith_trace_content is False
+    assert Settings(_env_file=None, langsmith_trace_content="true").langsmith_trace_content is True
+    assert Settings(_env_file=None).langsmith_trace_content_max_chars == 20000
+
+
+def test_trace_content_max_chars_tolerates_empty_string():
+    """[#326] max_chars 도 빈 문자열 vars 내성 — int("") 부팅 실패 재발 방지(PR #327 리뷰)."""
+    assert (
+        Settings(
+            _env_file=None, langsmith_trace_content_max_chars=""
+        ).langsmith_trace_content_max_chars
+        == 20000
+    )

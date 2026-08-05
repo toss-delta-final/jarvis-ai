@@ -196,6 +196,12 @@ def _as_text(content: Any) -> str:
     return str(content)
 
 
+def _record_content(system: str, user: str, output: str | None) -> None:
+    """[#326] 콘텐츠 추적 모드에서 활성 LLM span 에 prompt·응답 원문을 싣는다(모드 off 면 no-op)."""
+    if (trace := current_request_trace()) and trace.captures_content:
+        trace.record_llm_content(system=system, user=user, output=output)
+
+
 def _record_usage(message: Any, model: str) -> None:
     """Record only normalized model/token facts on the active explicit LLM span."""
     usage = getattr(message, "usage_metadata", None)
@@ -265,7 +271,9 @@ class AnthropicLLM:
         except Exception as exc:  # noqa: BLE001 - SDK 예외를 LLMError 로 통일 매핑
             raise LLMError(str(exc)) from exc
         _record_usage(resp, model)
-        return _as_text(resp.content)
+        text = _as_text(resp.content)
+        _record_content(system, user, text)
+        return text
 
     async def stream(
         self, *, system: str, user: str, tier: str, max_tokens: int = 1024
@@ -275,6 +283,10 @@ class AnthropicLLM:
         model = self._resolve(tier)
         started = perf_counter()
         first_text = True
+        # [#326] 콘텐츠 추적 모드에서만 응답 원문을 누적한다(off 면 메모리 비용 0).
+        collected: list[str] | None = None
+        if (t := current_request_trace()) and t.captures_content:
+            collected = []
         try:
             with tracing_context(enabled=False):
                 async for chunk in self._chat(model, max_tokens).astream(
@@ -289,11 +301,17 @@ class AnthropicLLM:
                                 trace.record_provider_ttft(
                                     int(round((perf_counter() - started) * 1000))
                                 )
+                        if collected is not None:
+                            collected.append(text)
                         yield text
         except LLMError:
             raise
         except Exception as exc:  # noqa: BLE001
             raise LLMError(str(exc)) from exc
+        finally:
+            # [#326] 부분 소비·중단 시에도 그때까지 모인 응답을 콘텐츠로 남긴다(모드 off 면 None).
+            if collected is not None:
+                _record_content(system, user, "".join(collected))
 
 
 class OpenAILLM:
@@ -368,7 +386,9 @@ class OpenAILLM:
         except Exception as exc:  # noqa: BLE001
             raise LLMError(str(exc)) from exc
         _record_usage(resp, model)
-        return _as_text(resp.content)
+        text = _as_text(resp.content)
+        _record_content(system, user, text)
+        return text
 
     async def stream(
         self, *, system: str, user: str, tier: str, max_tokens: int = 1024
@@ -378,6 +398,10 @@ class OpenAILLM:
         model, _ = self._resolve(tier)
         started = perf_counter()
         first_text = True
+        # [#326] 콘텐츠 추적 모드에서만 응답 원문을 누적한다(off 면 메모리 비용 0).
+        collected: list[str] | None = None
+        if (t := current_request_trace()) and t.captures_content:
+            collected = []
         try:
             with tracing_context(enabled=False):
                 async for chunk in self._chat(tier, max_tokens, json_mode=False).astream(
@@ -392,11 +416,17 @@ class OpenAILLM:
                                 trace.record_provider_ttft(
                                     int(round((perf_counter() - started) * 1000))
                                 )
+                        if collected is not None:
+                            collected.append(text)
                         yield text
         except LLMError:
             raise
         except Exception as exc:  # noqa: BLE001
             raise LLMError(str(exc)) from exc
+        finally:
+            # [#326] 부분 소비·중단 시에도 그때까지 모인 응답을 콘텐츠로 남긴다(모드 off 면 None).
+            if collected is not None:
+                _record_content(system, user, "".join(collected))
 
 
 def get_llm() -> LLMClient | None:

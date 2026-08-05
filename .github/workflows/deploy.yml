@@ -96,6 +96,8 @@ jobs:
             LANGSMITH_PROJECT=${{ vars.LANGSMITH_PROJECT }}
             LANGSMITH_TRACING_SAMPLING_RATE=${{ vars.LANGSMITH_TRACING_SAMPLING_RATE }}
             LANGSMITH_EXPORT_TIMEOUT_S=${{ vars.LANGSMITH_EXPORT_TIMEOUT_S }}
+            # [#326] 콘텐츠 추적 모드 — 미설정(빈 값)은 앱이 off 로 해석한다(빈 문자열 내성 validator).
+            LANGSMITH_TRACE_CONTENT=${{ vars.LANGSMITH_TRACE_CONTENT }}
             GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}
             PII_HASH_PEPPER=${{ secrets.PII_HASH_PEPPER }}
             EMBEDDING_MODEL_ID=${{ vars.EMBEDDING_MODEL_ID }}

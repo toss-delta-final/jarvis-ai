@@ -17,7 +17,13 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from app.agents.buyer._frames import sse
-from app.agents.buyer.recommendation.budget_sets import BudgetSet, build_budget_sets
+from app.agents.buyer.recommendation.budget_sets import BudgetSet, BudgetSetPlan, build_budget_sets
+from app.agents.buyer.recommendation.need_priority import classify_need_priorities
+from app.agents.buyer.recommendation.no_condition import (
+    has_total_budget,
+    rank_by_profile,
+    within_budget,
+)
 from app.agents.buyer.recommendation.rerank import rerank
 from app.agents.buyer.recommendation.relaxation import (
     FIELD_TO_ATTR as RELAXATION_FIELD_TO_ATTR,
@@ -176,6 +182,24 @@ def _need_label(leg: tuple[str, str | None]) -> str | None:
     return label[:LIST_LABEL_MAX_LEN] or None
 
 
+def _need_priority_labels(need_legs: list[tuple[str, str | None]]) -> list[str] | None:
+    """priority 분류기에 넘길 니즈 이름 목록 — 라벨 없는 leg 이 하나라도 있으면 `None`.
+
+    [PR #314 리뷰 F-8] 반환 타입 자체(`list[str] | None`)가 all-or-nothing 을 강제한다 — 라벨을
+    만나는 즉시 담고, `None` 을 만나면 그 자리에서 포기하고 돌아간다. 부분적으로 걸러낸
+    `list[str]` 을 만들 길이 코드 모양에 없으므로 "None 인 leg 만 개별 스킵"으로 리팩터하려면
+    이 함수의 조기 반환 자체를 고쳐야 한다(= 실수로 못 미끄러진다). 호출부는 `is None` 분기
+    이후 `list[str]` 로 자연히 좁혀지므로 `cast` 가 필요 없다.
+    """
+    labels: list[str] = []
+    for leg in need_legs:
+        label = _need_label(leg)
+        if label is None:
+            return None
+        labels.append(label)
+    return labels
+
+
 def _need_names(
     need_legs: list[tuple[str, str | None]],
     *,
@@ -211,6 +235,71 @@ def _need_names(
             label_by_leg[leg] = f"{label} (니즈 {leg + 1})"
 
     return {pid: label_by_leg[leg] for pid in product_ids if (leg := leg_of.get(pid)) is not None}
+
+
+async def _collect_priority_task(task) -> tuple[int, ...] | None:  # noqa: ANN001
+    """니즈 priority 분류기 태스크를 회수한다 — 실패는 전부 None(=신호 없음) (#281).
+
+    `classify_need_priorities` 가 이미 자기 예외를 삼키지만 여기서 한 겹 더 감싼다: 태스크
+    레벨 실패(이벤트루프 종료 등)는 그 함수 안에서 잡히지 않는데, 그것 때문에 무관한 BUY_ALL
+    턴이 죽으면 안 된다. 폴백은 오늘 동작(`budget_sets` 의 균일 priority 처리)이라 손해가 없다.
+
+    **`except Exception` 을 `BaseException` 으로 넓히지 말 것.** `CancelledError` 는
+    `BaseException` 이라 여기 걸리지 않고 그대로 전파된다 — 값을 기다리는 이 자리에서 바깥
+    취소가 오면 턴은 거기서 끝나야 한다(`app/agents/buyer/graph.py::_collect_scope_task` 와
+    같은 함정, #84 — 그 파일은 편집 금지라 같은 패턴을 여기 지역 헬퍼로 다시 둔다).
+    """
+    if task is None:
+        return None
+    try:
+        return await task
+    except Exception as exc:  # noqa: BLE001 - 보조 신호 회수 실패가 턴을 죽이지 않게(degrade)
+        logger.warning("need_priority_task_failed", extra={"reason": str(exc)})
+        return None
+
+
+def _cancel_priority_task(task) -> None:  # noqa: ANN001
+    """니즈 priority 분류기 태스크를 **동기적으로만** 취소한다 (#281).
+
+    `await` 하지 않는다 — 취소된 태스크를 `await` 하면 바깥에서 온 취소(클라이언트 연결 종료
+    등)가 삼켜져, 이미 끊긴 요청인데 스트림이 정상처럼 계속 진행하는 함정이 있다(근거 전문은
+    `app/agents/buyer/graph.py::_cancel_scope_task` docstring 참조 — 그 파일은 편집 금지라
+    같은 패턴을 여기 지역 헬퍼로 다시 둔다).
+
+    이미 끝난 태스크면 아무 것도 하지 않는다 — 정리 지점이 정상 회수(try 본문)와 `finally`
+    둘이라 같은 태스크에 두 번 불릴 수 있다.
+    """
+    if task is not None and not task.done():
+        task.cancel()
+
+
+def _need_priority_required_dropped(
+    priorities: tuple[int, ...] | None, plan: BudgetSetPlan | None
+) -> bool:
+    """필수(priority 1) 니즈가 예산 **또는** 목록 상한 때문에 빠진 턴인가 — `recommend_pipeline`
+    관측 전용 (#281).
+
+    [PR #314 리뷰] 이름·필드 키는 `_dropped`(예산 제외 전용)로 남기지만 **의미는 `dropped_legs`
+    (총액 예산 초과 제외)와 `limited_legs`(계약 상한 `max_items` 초과 제외) 둘 다**를 덮는다 —
+    게이트가 이제 이 둘 중 어느 경로든 열릴 수 있는 턴에서 분류기를 부르므로(위
+    `need_priority_gate` 참조), 관측이 한쪽만 보면 `limited_legs` 로 필수 니즈가 빠져도
+    조용히 안 잡힌다. 이름을 안 바꾼 이유: 이 필드는 아직 출고된 적이 없어 개명 자체는
+    자유롭지만, "예산 초과로 제외"라는 원래 취지가 "목록 상한 초과"에도 그대로 대응돼(둘 다
+    "이 니즈를 포기해야 했다") 새 이름을 짓기보다 이 docstring 으로 범위를 넓히는 쪽을 택했다.
+
+    `plan.dropped_legs`/`plan.limited_legs` 의 leg 인덱스는 `priorities` 범위 안에 있다는 것이
+    오늘은 항상 참이지만(게이트가 라벨 `None` 인 leg 이 있으면 태스크 자체를 안 만들어
+    `len(priorities) == len(need_legs) == len(pools)` 가 성립한다), 그 정합은
+    `graph.py`(게이트)와 `need_priority.py`(`_validate_priorities` 길이 검증) **두 파일에
+    걸친 암묵적 불변식**이다. 관측 필드 하나가 그 불변식에 기대 `IndexError` 를 내면 이미
+    계산이 끝난 추천 턴 전체가 죽는다 — 이 파일이 고지 문구 생성부(`if leg < len(need_legs)`,
+    아래 `_split_by_need` 이후 dropped/unavailable/limited 알림 블록 참조)에서 이미 쓰는
+    관용구와 같은 모양으로 범위 밖 leg 을 **두 경로 모두에서** 조용히 건너뛴다.
+    """
+    if priorities is None or plan is None:
+        return False
+    excluded_legs = (*plan.dropped_legs, *plan.limited_legs)
+    return any(leg < len(priorities) and priorities[leg] == 1 for leg in excluded_legs)
 
 
 def _split_by_need(
@@ -355,8 +444,16 @@ async def stream_recommendation(
     thread_key: str | None = None,
     observer=None,
     request_id: str,
+    # [#162] 조건이 하나도 없는 발화인가(`no_condition.is_no_condition_turn` 판정 결과).
+    # 판정은 호출부(buyer/graph.py)에서 한다 — 그쪽에만 `prior`(첫 턴 여부)가 있다.
+    no_condition: bool = False,
+    popular_fn=None,  # I-3 조회. 미지정 시 라이브 기본값(테스트는 fake 주입)
+    # [#162] 미리 만들어 둔 취향 벡터(`read_profile_summary()["embedding"]`). 회원이면서 벡터가
+    # 있을 때만 취향 랭킹 경로를 탄다 — 게스트·신규회원·구 요약(벡터 없음)은 인기 상품으로 간다.
+    profile_vec: list[float] | None = None,
 ) -> AsyncIterator[str]:
     """추천 서브그래프 스트림. 프레임(SSE str)을 순서대로 산출한다."""
+    popular_fn = popular_fn or spring_client.get_popular_products
     # [#51] keyword 드롭 판단은 **한 곳에서** 계산해 칩 표시(아래)와 leg 검색(_leg)이 같은 flag 를
     # 공유하게 한다 — 두 지점이 독립 판단하면 전제(leg 엔 항상 canonical)가 미래 리팩터에서 깨질 때
     # 표시-실제가 어긋날 수 있다(리뷰 반영). canonical category(= category_legs 존재) + config on 이면
@@ -380,7 +477,13 @@ async def stream_recommendation(
     def _condition_chips(filters: ProductSearchFilters):
         """확정 필터에서 conditions 칩을 만든다(자동 완화 후 재파생할 수 있게 함수로 뽑음)."""
         source = filters.model_copy(update={"keyword": None}) if drop_keyword else filters
-        return build_condition_chips(source, categories=[c for c, _ in decision.category_legs])
+        # [#222] 확장 턴은 카테고리 칩을 내지 않는다 — leg 이 최대 8개라 build_condition_chips 가
+        # 칩을 8개 뱉는데, 칩 하나를 지웠을 때 무엇이 빠지는지 사용자가 알 수 없으면 "표시=실제"
+        # (#51)가 깨진다. 확장 여부는 확장 고지 token(아래)이 전담한다.
+        chip_categories = (
+            [] if decision.category_expanded else [c for c, _ in decision.category_legs]
+        )
+        return build_condition_chips(source, categories=chip_categories)
 
     # [#113 PR #248 리뷰 A] 자동 완화가 **일어날 수 있는 턴이면** conditions 를 검색 뒤로 미룬다.
     # 조건 칩은 원래 검색 **전에** 내보내 화면이 빨리 뜨게 하는데, 자동 완화는 검색 **후에**
@@ -430,6 +533,44 @@ async def stream_recommendation(
             ConditionsData(chips=_condition_chips(decision.filters)).model_dump(by_alias=True),
         )
 
+    # [PR #318 리뷰 R14-1] 확장 고지(§ 아래 category_expand_notice 블록)가 mids 를 조립할 때 쓸
+    # "실제로 검색한 leg" 인덱스 — `_run_search` 가 이 클로저 변수에 본 검색(§ 아래 nonlocal
+    # 대입 조건 참조)의 생존 leg 만 기록한다. None 이면 확장 fan-out 이 아니었거나(단일 filters
+    # 검색) 아직 기록되지 않은 것 — 그 경우 고지는 종전대로 `decision.category_legs` 전체를 쓴다.
+    expansion_searched_legs: list[int] | None = None
+
+    # [이슈 #168 T1] case 3 다중 leg 턴은 rerank 입력 예산(fan-out 절단 상한)을 니즈 수에
+    # 비례시킨다 — 실측(실 카탈로그 leaf 폭 9~17): merge_cap=30 은 5니즈 턴에서 니즈당 6개로
+    # 자연 공급량보다 아래를 절단해 per-need expose_max(9)에 도달할 수 없다. 판정 축은 아래
+    # `split_by_need`(검색 **후** 확정)와 **동일**해야 한다 — 여기는 검색 전이라 같은 조건식
+    # (`case==3 and len(legs)>1`)을 미리 한 번 더 쓴다. 어긋나면 안 되므로 바뀌면 같이 고칠 것.
+    # 확장 턴(category_expanded)의 need_count 는 leaf 개수가 아니라 distinct query(원 니즈) 개수다
+    # (T3) — leaf 단위로 세면 8-leaf 확장 턴이 실제 니즈(대개 1~2개)보다 훨씬 큰 예산을 받는다.
+    # [PR #351 리뷰 R4-1] 이 need_count 계산은 아래 T3(`expansion_grouped_by_need`) 판정과
+    # **문자 그대로 같은 식**이어야 한다 — R3-1 이 T3 를 "distinct query 2개 이상 **이고 None 이
+    # 안 섞였을 때만** 니즈 단위로 그룹핑"으로 강화했는데, 여기 need_count 는 그 None 예외를
+    # 반영하지 않아 두 축이 어긋났었다: query {"A","B",None} 확장 턴은 T3 가 그룹핑을 포기해
+    # 목록 1개로 나가는데 T1 은 여전히 need_count=3 으로 예산을 넓혀, 분할되지 않을 턴에 Spring
+    # 페이로드·rerank 입력만 낭비했다. **폴백은 `len(legs_preview)`(리뷰어 제안)가 아니라
+    # need_count=1 이다** — 확장 턴의 `legs_preview` 는 leaf(최대 8개)라 그걸로 떨어뜨리면
+    # 그룹핑을 포기한 턴을 오히려 더 넓히는 반대 방향 오류가 난다. 두 축은 어긋나면 안 되므로
+    # 한쪽을 고치면 반드시 같이 고칠 것.
+    # **회귀 0의 핵심**: 이 축에 안 걸리는 턴(비-case3·단일 leg)과 3니즈 이하(3×10=30=merge_cap)
+    # 턴은 effective_cap 이 정확히 merge_cap — 기존과 동일. 4~5니즈 턴만 40~50 으로 커진다.
+    legs_preview = decision.category_legs
+    if decision.case == 3 and len(legs_preview) > 1:
+        if decision.category_expanded:
+            queries = {query for _, query in legs_preview}
+            need_count = len(queries) if (len(queries) > 1 and None not in queries) else 1
+        else:
+            need_count = len(legs_preview)
+        effective_cap = max(
+            settings.category_fanout_merge_cap,
+            min(need_count, MAX_LISTS) * settings.category_group_per_need_candidates,
+        )
+    else:
+        effective_cap = settings.category_fanout_merge_cap
+
     # dedup 소스(I-19)와 검색(§4.6)을 **병렬 실행** — §4.7 지연 가드(순차 시 최악 6s, first-token 예산 잠식).
     # dedup 은 검색 응답 뒤 사후필터라 두 호출은 독립적이다. 각 호출이 자체 실패를 삼켜 gather 는 안 깨진다.
     async def _run_search(
@@ -469,7 +610,9 @@ async def stream_recommendation(
         # 담당한다. 재조회(2차 왕복) 없이 해결되는 이유: `filters.limit` 은 Spring 요청
         # 파라미터가 아니라 AI 쪽 절단 knob 이라(§4.6 size 제거, 2026-07-23) 값을 키워도
         # 왕복·페이로드는 그대로다.
-        leg_limit = settings.category_fanout_merge_cap
+        # [이슈 #168 T1] 니즈 수 비례 effective_cap(위 선언) — case3 다중 leg 턴만 merge_cap 을
+        # 넘어설 수 있고, 그 외 턴은 effective_cap == merge_cap 이라 종전과 동일하다.
+        leg_limit = effective_cap
 
         async def _leg(canonical: str, query: str | None) -> ProductSearchResult | None:
             # leg 전체를 try 로 감싼다 — model_copy·search 어디서 실패해도 그 leg 만 드롭한다.
@@ -510,13 +653,20 @@ async def stream_recommendation(
         # 원본 leg 인덱스를 함께 들고 간다 — 실패한 leg 이 빠져 인덱스가 밀리면 하류 니즈 라벨이
         # 한 칸씩 어긋난다(category_legs[i] 와의 대응이 깨진다).
         survived = [(i, r) for i, r in enumerate(leg_results) if r is not None]
+        if base_filters is None:
+            # [PR #318 리뷰 R14-1] **본 검색일 때만** 기록한다 — `base_filters is not None` 은
+            # #113 자동완화 probe 가 같은 fan-out 의미로 이 함수를 재호출하는 경우인데, 조건 없이
+            # 덮어쓰면 probe 재검색의 생존 leg 이 본 검색 결과를 가려 확장 고지가 probe 기준으로
+            # 어긋난다(고지는 사용자가 실제로 받은 본 검색 결과를 설명해야 한다).
+            nonlocal expansion_searched_legs
+            expansion_searched_legs = [i for i, _ in survived]
         if not survived:  # 전량 leg 실패 → SEARCH_FAILED(§6)
             return None
         if len(survived) < len(leg_results):
             if trace := current_request_trace():
                 trace.mark_degraded("fanout_partial")
         try:
-            return _merge_fanout_results(survived, settings.category_fanout_merge_cap)
+            return _merge_fanout_results(survived, effective_cap)
         except Exception as exc:  # noqa: BLE001 - leg 격리와 같은 원칙으로 병합도 감싼다
             # [PR #248 리뷰] `_leg` 는 leg 별 실패를 잡는데 그 결과를 합치는 이 호출만 밖에 있었다.
             # 여기서 터지면 `search_bundle is None` 분기(→ SEARCH_FAILED)에 **도달하지 못해**
@@ -556,15 +706,136 @@ async def stream_recommendation(
                 trace.mark_degraded("dedup_skipped")
             return None
 
+    # [#162] 취향 랭킹이 먼저 I-19 를 부르고 실패해 아래 인기 상품 경로로 폴백하면, 같은 턴에
+    # I-19 가 **두 번** 나간다(각 3s). 한 번만 부르고 결과를 재사용한다 — 리스트를 쓰는 이유는
+    # 중첩 함수에서 `nonlocal` 없이 "아직 안 불렀음"과 "불렀는데 None"(게스트·조회 실패)을
+    # 구분하기 위해서다. 그 둘을 뭉개면 게스트 턴마다 헛호출이 반복된다.
+    _purchases_memo: list = []
+
+    async def _fetch_purchases_once():
+        if not _purchases_memo:
+            _purchases_memo.append(await _fetch_purchases())
+        return _purchases_memo[0]
+
+    # 조건 없는 턴 + 프로필 벡터 → **취향 벡터 랭킹**(홈 I-22 와 같은 엔진·같은 인덱스).
+    # 이 경로는 검색도 rerank 도 타지 않아 아래 파이프라인과 갈라지므로 여기서 끝내고 return 한다.
+    # `conditions` 는 위에서 이미 나갔다(조건 없는 턴은 `may_auto_relax` 가 False 라 미루지 않는다).
+    # [#311 리뷰] 예산·전부구매 의도가 있으면 취향 경로를 타지 않는다 — AI 인덱스에 가격이 없어
+    # 예산을 확인할 수 없다. 그 턴은 아래 인기 상품 경로에서 예산으로 걸러진다.
+    if no_condition and profile_vec and not has_total_budget(decision):
+        profile_purchases = await _fetch_purchases_once()
+        profile_exclude: set[int] = set()
+        if profile_purchases is not None:
+            profile_recent = profile_purchases.recent_items(
+                since=_now() - timedelta(days=settings.dedup_recent_days),
+                exclude_statuses=_INACTIVE_STATUSES,
+            )
+            profile_exclude = {item.product_id for item in profile_recent}
+        profile_ranked = await rank_by_profile(
+            profile_vec, exclude=profile_exclude, settings=settings
+        )
+        if profile_ranked is not None:
+            ranked_by_profile, profile_reason_by_id = profile_ranked
+            exposed = ranked_by_profile[: settings.expose_max]
+            profile_entry = RecommendationListEntry(
+                list_id=uuid4().hex,
+                product_ids=exposed,
+                # 근거는 선택 필드다(§4.2) — `build_reasons` 가 못 고른 상품은 항목을 만들지 않는다.
+                reasons=[
+                    RecoReason(product_id=pid, reason=text)
+                    for pid in exposed
+                    if (text := profile_reason_by_id.get(pid))
+                ],
+            )
+            profile_push = RecommendationPush(
+                session_id=request.session_id,
+                recommendation_request_id=str(uuid4()),  # 정규 UUID 36자 — BE CHAR(36)
+                list_type="PICK_ONE",
+                lists=[profile_entry],
+            )
+            if notice := _strip_unsafe(settings.no_condition_notice_profile):
+                yield sse("token", TokenData(text=notice).model_dump(by_alias=True))
+            try:
+                profile_pushed = bool(await push_fn(profile_push))
+            except SpringUnavailableError:
+                profile_pushed = False
+            logger.info(
+                "chat_recommendation_profile_ranked",
+                extra={"exposed": len(exposed), "pushed": profile_pushed},
+            )
+            if profile_pushed:
+                yield sse(
+                    "products.ready",
+                    ProductsReadyData(
+                        session_id=request.session_id,
+                        list_ids=[profile_entry.list_id],
+                    ).model_dump(by_alias=True),
+                )
+                # 담기 해소용 보관 — 이 경로는 **상품명을 모른다**(AI 인덱스에 원본 컬럼 없음).
+                # 빈 이름으로 넣어 id 기반 담기 가드(#118)는 살리고, 이름 지칭("그 이어폰")만
+                # 이 턴에서 해소되지 않는다.
+                if cart_store is not None and thread_key is not None:
+                    await cart_store.set_last_reco(thread_key, [(pid, "") for pid in exposed])
+            else:
+                if trace := current_request_trace():
+                    trace.mark_degraded("push_skipped")
+                if push_notice := _strip_unsafe(settings.push_skipped_notice):
+                    yield sse("token", TokenData(text=push_notice).model_dump(by_alias=True))
+            # [#311 리뷰] 하류의 dedup 실패 고지 지점(아래 `if dedup_degraded ...`)에 이 경로는
+            # 도달하지 못한다 — 여기서 `done` 을 내고 return 하기 때문이다. 같은 검사를 넣어
+            # 경로 간 비대칭을 없앤다. 기본값이 빈 값(미고지)이라 오늘은 아무것도 안 나가지만,
+            # 그 값은 **판단을 코드 재배포 없이 되돌리기 위한 스위치**라(#133) 한쪽 경로만
+            # 무시하면 켜는 순간 계약이 갈린다.
+            if dedup_degraded and (dedup_notice := _strip_unsafe(settings.dedup_skipped_notice)):
+                yield sse("token", TokenData(text=dedup_notice).model_dump(by_alias=True))
+            yield sse("done", DoneData(finish_reason="stop").model_dump(by_alias=True))
+            return
+        # 랭킹 실패·0건 → 아래 인기 상품(I-3) 경로로 폴백한다(스트림은 계속된다).
+        if trace := current_request_trace():
+            trace.mark_degraded("profile_ranking_fallback")
+
+    # [#162] 조건이 하나도 없는 턴은 후보 소스를 I-3(인기 상품, §4.17)로 바꾼다.
+    popular_degraded = False
+
+    async def _run_candidate_source():
+        """이번 턴의 후보를 확보한다 — `_run_search` 와 같은 `(결과, leg맵)` 형태로 돌려준다.
+
+        조건 없는 턴에 종전 경로를 그대로 태우면 파라미터 0개의 I-1 이 나가 매칭 전량
+        (실측 7,245건·13.33MB)을 받는데, 그 상위는 사용자 의도와 무관하다. I-1 정본이
+        "정형조건 없는 요청 차단은 LLM 단 책임"으로 규정한 자리다(§4.6·§4.17).
+
+        leg 맵은 빈 dict 다 — 인기 목록은 카테고리 fan-out 이 아니라 단일 목록이다.
+        """
+        nonlocal popular_degraded
+        if not no_condition:
+            return await _run_search()
+        try:
+            found = await popular_fn(settings.popular_candidate_size)
+        except Exception as exc:  # noqa: BLE001 - 폴백 소스 실패로 스트림을 죽이지 않는다
+            logger.warning("popular_products_failed", extra={"reason": str(exc)})
+            found = None
+        if found is not None:
+            # [#311 리뷰] 총액 예산을 말한 턴은 **예산 안의 후보만** 남긴다. 세트로 묶지 않고
+            # 대안으로 보여주므로 상품 하나가 예산 이하이면 된다 — 무엇을 몇 개 살지 사용자가
+            # 말하지 않은 턴에 조합을 지어내면 근거 없는 세트가 된다(`has_total_budget` 참조).
+            if decision.total_budget is not None:
+                affordable = within_budget(found.products, decision.total_budget)
+                found = ProductSearchResult(products=affordable, total_count=len(affordable))
+            # **0건도 성공이다**(§4.17) — 빈 배열이면 하류 zero-result 경로가 카드 없이 답한다.
+            # 여기서 degrade 로 처리하면 이 이슈가 없애려는 무필터 I-1 을 도로 부른다.
+            return (found, {})
+        popular_degraded = True
+        if trace := current_request_trace():
+            trace.mark_degraded("popular_fallback")
+        return await _run_search()
+
     # 미룬 턴은 첫 이벤트 앞 본 검색·자동 완화 probe만 재시도를 끈다(#277). conditions 뒤의
     # 완화 칩 probe는 첫 이벤트 예산 밖이라 제외하며, 이 with는 await 뒤 즉시 닫아 yield·다음
     # 턴으로 ContextVar가 새지 않게 한다. progress 이벤트가 계약에 생기면 이 스킵은 원복 가능하다.
-    with (
-        spring_client.suppress_search_retry()
-        if suppress_deferred_search_retry
-        else nullcontext()
-    ):
-        search_bundle, purchases = await asyncio.gather(_run_search(), _fetch_purchases())
+    with spring_client.suppress_search_retry() if suppress_deferred_search_retry else nullcontext():
+        search_bundle, purchases = await asyncio.gather(
+            _run_candidate_source(), _fetch_purchases_once()
+        )
     if search_bundle is None:  # 검색 실패 → SEARCH_FAILED(종료)
         if trace := current_request_trace():
             trace.mark_degraded("search_failed")
@@ -587,6 +858,53 @@ async def stream_recommendation(
         return
 
     search_result, leg_of = search_bundle
+
+    # [#222 F-1] 확장 fan-out 이 0건이면 카테고리 없이 1회만 재검색한다. 확장 leg 은 거리컷이
+    # "맞는 칸이 없다"고 이미 판정해 버린 후보라, 8개가 전부 빗나가면 Spring 이 leg 마다 0건을
+    # 내고 `_merge_fanout_results` 도 정상적으로 빈 결과를 병합해 낸다(위 `search_bundle is None`
+    # 분기는 **전량 leg 실패** 만 잡으므로 여기서는 걸리지 않는다). 확장 이전엔 같은 발화가
+    # `legs=[]` → 카테고리 무필터 검색으로 결과가 나왔으므로, 이대로 두면 이 PR 이 "결과 있음"을
+    # "0건"으로 바꾸는 회귀가 된다(이슈 #222 ⑤). `relaxation` 은 category 를 완화 대상으로 다루지
+    # 않아(`RELAXATION_FIELD_TO_ATTR` 에 없음, relaxation.py:87) 이 경로를 구제하지 못한다.
+    # **확장 턴에만** 적용한다 — 일반 fan-out(사용자가 명시한 카테고리)의 0건은 종전대로 둔다.
+    # 조용히 카테고리를 풀면 "표시=실제"(#51)가 깨지고 이 PR 의 범위 밖이다.
+    # [PR #318 리뷰 R6-4] `search_result.total_count` 는 **최근구매 억제(exact 제외·소모품
+    # 카테고리 억제) 이전** 값이다(그 억제는 이 지점 아래 `_post_filter` 가 한다). 검색이 결과를
+    # 냈는데 그 전량이 억제돼 `candidates` 가 0이 되는 턴은 이 폴백이 트리거되지 않는다. 이
+    # 실패 모드 자체는 이 PR 이전부터 있던 기존 갭이지만, **이 PR 이 그 발생 확률을 구조적으로
+    # 높인다** — 후보 풀을 무필터에서 앵커 근방 leaf 8개로 좁히면 최근구매·소모품 억제와 겹칠
+    # 사전 확률이 올라간다("기존 갭이라 무관"이 아니라 "기존 갭인데 이 PR 이 노출 확률을 올린다").
+    # 그래서 후속 이슈는 이 PR 이 확률을 올린 갭의 후속으로 우선순위를 매겨야 한다. 억제 이후
+    # 기준으로 다시 판정하려면 폴백 재검색 뒤 억제를 다시 돌려야 해서(순서·중복 억제 문제가
+    # 새로 생긴다) 여기서 처리하지 않고 별도 이슈 #343 으로 분리한다(착수 전 아래
+    # `recommend_zero_result` 로그의 had_candidates=True & category_expanded=True 빈도를 먼저
+    # 확인).
+    category_expand_notice_suppressed = False
+    if decision.category_expanded and search_result.total_count == 0:
+
+        async def _run_search_unfiltered() -> tuple[ProductSearchResult, dict[int, int]] | None:
+            """카테고리를 빼고 1회만 재검색한다 — 비-fan-out 단일검색과 같은 계약(§6 `_run_search`
+            의 `if not legs` 분기와 동일 처리, leg_of 는 leg 개념이 없으니 빈 dict)."""
+            unfiltered = decision.filters.model_copy(update={"category": None})
+            try:
+                found = await search(unfiltered, exclude_product_ids=None)
+                return (found, {}) if found is not None else None
+            except SpringUnavailableError:
+                return None
+            except Exception as exc:  # noqa: BLE001 - 재검색 실패는 원래(0건) 결과를 유지
+                logger.warning("category_expand_zero_fallback_failed", extra={"reason": str(exc)})
+                return None
+
+        fallback_bundle = await _run_search_unfiltered()
+        if fallback_bundle is not None:
+            search_result, leg_of = fallback_bundle
+            # 무필터로 실제 되돌아갔으니 "중분류를 훑었다"는 확장 고지는 이제 거짓 고지다 —
+            # `decision.category_expanded` 자체는 건드리지 않는다(칩 억제는 그대로 유지해야
+            # 한다 — 실제로 안 쓴 확장 leg 8개를 카테고리 칩으로 보여주면 더 큰 거짓말이 된다).
+            category_expand_notice_suppressed = True
+            logger.info(
+                "category_expand_zero_fallback", extra={"legs": len(decision.category_legs)}
+            )
 
     # 최근 구매(윈도우·취소반품 필터) → exact 제외 + 소모품 카테고리 억제(결정 14-F).
     exclude_ids: set[int] = set()
@@ -650,9 +968,23 @@ async def stream_recommendation(
         # 그대로고, 지목이 없으면(기본 경로) 정렬 자체를 건너뛰어 종전과 동일하다.
         if repurchase_ids:
             survivors.sort(key=lambda p: p.product_id not in repurchase_ids)
+        # [이슈 #168 T1 리뷰 R2-1] ①②(leg_limit·merge cap)가 effective_cap 으로 넓힌 폭이
+        # 여기서 도로 embedding_rerank_limit 으로 잘리면 T1 이 무의미해진다 — 단 **effective_cap
+        # 이 실제로 merge_cap 을 넘어선 턴(=4니즈 이상 case3 분할 턴)에만** 그 넓힌 값을 하한으로
+        # 쓴다. 조건 없이 `max` 를 걸면 이 슬라이스 자체의 하한이 조용히 merge_cap 으로 올라가,
+        # 운영자가 `embedding_rerank_limit` 을 merge_cap 미만(토큰 절감 튜닝)으로 낮춘 배포에서
+        # T1 과 무관한 비분할·3니즈 이하 턴까지 rerank 입력이 커진다(#222 패킷이 경고한 유형의
+        # 설정 조합 회귀, PR #168 리뷰 R2-1). `merged` 는 round-robin 인터리브(①②)라 넓어졌을
+        # 때의 flat 슬라이스([:N])도 니즈별 공평성이 보존된다(한 니즈가 앞을 독점해 잘리는 게
+        # 아니다).
+        rerank_input_limit = (
+            max(settings.embedding_rerank_limit, effective_cap)
+            if effective_cap > settings.category_fanout_merge_cap
+            else settings.embedding_rerank_limit
+        )
         return (
             ProductSearchResult(
-                products=survivors[: settings.embedding_rerank_limit], total_count=matched
+                products=survivors[:rerank_input_limit], total_count=matched
             ),
             suppressed,
             seen,
@@ -922,6 +1254,21 @@ async def stream_recommendation(
             "done",
             DoneData(finish_reason="zero_result").model_dump(by_alias=True),
         )
+        # [PR #318 리뷰 R11-1] 0건 턴은 위 zero_result 분기가 곧장 return 해 아래
+        # `recommend_pipeline` 구조화 로그(§)까지 못 간다 — 원인별 빈도(특히 검색은 히트가
+        # 있었는데 하류 억제가 전량을 지운 케이스, #343 갭)를 잴 수단이 없어 여기 별도로 남긴다.
+        # PII 금지: 카테고리 문자열·상품 id 는 싣지 않고 개수만 싣는다.
+        logger.info(
+            "recommend_zero_result",
+            extra={
+                # False = 검색 자체 0건 / True = 히트는 있었는데 하류 억제가 전량을 지움
+                "had_candidates": had_candidates,
+                "suppressed_categories": len(suppressed_by_cat),
+                # 확장 턴 여부 — #222 가 발생 확률을 높인 갭(F-1 미구제)의 빈도를 이 조합
+                # (had_candidates=True & category_expanded=True)으로 관측한다(PR #318 리뷰).
+                "category_expanded": decision.category_expanded,
+            },
+        )
         return
 
     # 니즈별 목록 분할 판정(REQ-REC-024, api-spec §4.2 PICK_ONE×N) — case 3(목적·상황형 발화)이
@@ -930,202 +1277,314 @@ async def stream_recommendation(
     # case 3 이 아닌 멀티 leg(예: 리파인 승계)은 종전대로 목록 1건 — 전개가 일어난 턴만 분할한다.
     # leg_of 가 비면(단일 filters 검색 경로) 나눌 근거 자체가 없다.
     need_legs = decision.category_legs
-    split_by_need = decision.case == 3 and len(need_legs) > 1 and bool(leg_of)
-    # 분할 시 rerank 예산은 목록 수만큼 늘린다 — 전역 expose_max 로 자르면 니즈 하나가 예산을
-    # 독식해 나머지 니즈 목록이 비어버린다.
-    # 세는 단위는 **후보가 실제로 남은 니즈**다(PR #212 리뷰) — 검색 0건·최근구매 dedup 으로
-    # 비워진 니즈까지 세면 rerank 가 쓰지도 못할 항목 수를 요구하고 출력 예산만 부푼다.
-    # 후보 수를 넘겨도 의미가 없어 함께 상한한다.
-    # MAX_LISTS 로 클램프 — 계약상 그 이상은 push 되지 않으므로(아래 절단) 잘려나갈 니즈까지
-    # 예산에 세면 rerank 가 쓰지도 못할 항목을 요구한다. config 가 category_fanout_max ≤
-    # MAX_LISTS 를 이미 강제하지만, 두 경로가 나중에 갈라져도 예산은 틀리지 않게 여기서도 막는다.
-    populated_needs = min(
-        len({leg_of[p.product_id] for p in candidates if p.product_id in leg_of}), MAX_LISTS
+    # [이슈 #168 T3] 확장 턴이면서 unresolved leg 이 여럿(distinct query 2개 이상, "캠핑용품이랑
+    # 낚시용품")이면 leaf 단위가 아니라 니즈(원 query) 단위로 분할 판정을 하도록 leg_of·need_legs
+    # 를 번역한다 — `_interleave_by_leg` 가 서로 다른 query 의 leaf 를 섞어 내므로(PR #318 R12-2)
+    # leaf 인덱스 그대로 `_split_by_need` 를 돌리면 leaf 하나당 목록 하나(최대 8개, 라벨은
+    # `_need_label` 이 leaf query 를 그대로 써 "캠핑용품"×4·"낚시용품"×4 로 **중복**)가 되어
+    # R4-1 이 재발한다. `first_leaf_for_query` 의 canonical(그 니즈 첫 leaf 것)을 대표로 쓴다 —
+    # 니즈 단위 검색 자체가 없으니 대표 canonical 을 새로 만들 수는 없고, 하류(`_need_label` 등)는
+    # 어차피 `query` 를 우선하므로 canonical 선택은 라벨에 드러나지 않는다.
+    # distinct query 가 1개(대다수 확장 턴 — leaf 8개가 전부 같은 원 query 를 공유)면 번역할 게
+    # 없다 — leaf 리스트를 그대로 두고, 아래 `split_by_need` 가드가 분할 자체를 막는다(기존 동작).
+    # [PR #351 리뷰 R3-1] **query 가 전부 실재할 때만** 번역한다 — `query=None` 인 확장 leaf(raw
+    # 만 있던 unresolved leg 파생)가 서로 다른 니즈 2개 이상에서 나오면 `None` 하나의 키로
+    # 뭉쳐 서로 다른 니즈의 상품이 한 그룹에 섞이고, 그 혼합 그룹이 canonical 폴백 라벨로
+    # 나간다 — 니즈 정체성을 확신할 수 없을 때 틀리게 가르느니 안 가른다(#51). `None` 이 하나라도
+    # 섞이면 번역하지 않아 아래 가드가 분할을 막고 단일 목록(T3 이전 동작)으로 안전 후퇴한다.
+    # 원본 leg 인덱스를 키로 쓰는 대안(리뷰어 제안)은 채택하지 않는다 — ① 동일 텍스트 query 인
+    # leg 2개를 인덱스로 가르면 **라벨이 같은 목록 2개**가 나온다(R4-1[PR #318]이 결함으로 규정한
+    # 바로 그 출력 — 라벨이 같으면 사용자 관점에선 같은 니즈라 병합이 옳다). ② 원본 leg 인덱스는
+    # `expansion_leaves`(2-튜플) 평탄화에서 이미 소실됐고, 실으려면 `category_legs` 의
+    # `list[tuple[str, str|None]]` 계약을 3-튜플로 넓혀 `_leg` 언패킹 등 소비부 전체가 흔들린다
+    # — None 엣지 하나에 비례하지 않는 변경이다.
+    expansion_grouped_by_need = False
+    if decision.category_expanded and leg_of:
+        seen_queries: set[str | None] = set()
+        distinct_queries: list[str | None] = []
+        first_leaf_for_query: dict[str | None, int] = {}
+        for i, (_canonical, query) in enumerate(need_legs):
+            if query not in seen_queries:
+                seen_queries.add(query)
+                distinct_queries.append(query)
+                first_leaf_for_query[query] = i
+        if len(distinct_queries) > 1 and None not in seen_queries:
+            query_to_need_idx = {q: idx for idx, q in enumerate(distinct_queries)}
+            leaf_query = [query for _, query in need_legs]
+            leg_of = {pid: query_to_need_idx[leaf_query[leaf]] for pid, leaf in leg_of.items()}
+            need_legs = [
+                (need_legs[first_leaf_for_query[q]][0], q) for q in distinct_queries
+            ]
+            expansion_grouped_by_need = True
+    # [#222 PR #318 리뷰] 확장 턴(category_expanded)은 **기본적으로** 니즈 경계로 쪼개지 않는다
+    # (조건 칩을 category_expanded 로 억제한 것과 같은 원칙, #51 표시=실제) — 단 위에서 니즈
+    # 단위로 이미 번역된 턴(`expansion_grouped_by_need`)은 leaf 단위가 아니라 니즈 단위이므로
+    # 이 가드에서 예외로 둔다(#168 이 의도적으로 바꾼 지점, PR #318 R12-2 고정 테스트가 예고).
+    # `buy_all_mode`(아래)도 이 값을 참조하므로 니즈 단위 예산 세트(BUY_ALL)도 같이 열린다.
+    split_by_need = (
+        decision.case == 3
+        and len(need_legs) > 1
+        and bool(leg_of)
+        and (not decision.category_expanded or expansion_grouped_by_need)
     )
-    expose_budget = (
-        min(settings.expose_max * populated_needs, len(candidates))
-        if split_by_need
-        else settings.expose_max
-    )
-    # 니즈 경계를 rerank 에도 알린다(PR #212 리뷰) — 안 알리면 LLM 이 전역 관련도로만 정렬해
-    # 한 니즈가 상위권을 쓸고, 굶은 니즈는 아래 _split_by_need 가 검색순서로 보충한다.
-    # 그 보충분엔 rationale 이 없어 근거 없는 카드가 나가는데 rerank 는 "정상 성공"이라
-    # rerank_degraded 로 드러나지 않는다. 단일 목록 경로에는 None 을 넘겨 프롬프트를 그대로 둔다.
-    need_of = (
-        _need_names(need_legs, leg_of=leg_of, product_ids=[p.product_id for p in candidates])
-        if split_by_need
-        else None
-    )
-
-    # rerank — smart tier 1회. 실패/타임아웃/유효후보 0건 시 검색순서 상위 N 으로 degrade(하드 제약 유지).
-    if observer is not None:
-        observer.record_model_call(resolve_model_id(settings, "smart"))
-    rerank_degraded = False
-    try:
-        with trace_span(
-            "llm.rerank",
-            "llm",
-            {"model": resolve_model_id(settings, "smart")},
-        ):
-            rr = await rerank(
-                llm,
-                query=request.message,
-                candidates=candidates,
-                profile_summary=profile,
-                tier="smart",
-                expose_max=expose_budget,
-                need_of=need_of,
-                per_need=settings.expose_max if split_by_need else None,
-                # [#132] 사용자가 평점을 명시했는지 — 무평점 후보의 근거문 고지 지시를 켠다.
-                # 완화가 적용됐으면 `effective_filters` 가 그 결과라 표시-실제가 어긋나지 않는다.
-                rating_min_requested=effective_filters.rating_min is not None,
-            )
-        ranked_ids = [pid for pid, _ in rr.ranked]
-        reason_by_id = dict(rr.ranked)  # 상품별 근거(§4.2) — (productId, rationale) 튜플 → 맵
-        comment = _strip_unsafe(rr.overall_comment)
-    except LLMError:
-        rerank_degraded = True
-        if trace := current_request_trace():
-            trace.mark_degraded("rerank_fallback")
-        ranked_ids = [p.product_id for p in candidates[:expose_budget]]
-        reason_by_id = {}  # degrade 경로엔 rerank 근거 없음 — reasons 는 빈 배열(계약상 선택)
-        # [#133] 품질 저하를 **고지한다**. 종전 문구("요청하신 조건으로 찾은 상품들이에요")는
-        # 평상시와 구분되지 않아 개인화·근거가 통째로 사라진 사실이 사용자에게 가려졌다.
-        # config 값은 운영자 주입이라 소스 리터럴이 아니다 — 정상 경로(rr.overall_comment)와
-        # 같은 _strip_unsafe 정제를 받는다.
-        comment = _strip_unsafe(settings.rerank_fallback_notice)
-
-    # [#120 PR#230 리뷰] 지목 상품 고정 — rerank 는 relevance 로 expose_max 개만 고르고 "이건 반드시"
-    # 라는 고정 수단이 없어(need_of/per_need 는 니즈 분할용), exact 제외·상한 절단을 다 통과한
-    # 지목 상품이 여기서 조용히 빠질 수 있다. 쿼리에 상품명이 있으니 보통은 뽑히지만 그건
-    # 휴리스틱이지 보장이 아니다. **후보에 남아 있는데 rerank 가 빠뜨린 것만** 앞에 얹어
-    # "지목하면 다시 추천된다"를 강제한다 — rerank 가 이미 골랐으면 순서를 건드리지 않는다.
-    # 근거(reason)는 없지만 §4.2 상 reasons 는 선택이고 degrade 경로도 같은 형태다.
-    if repurchase_ids:
-        already = set(ranked_ids)
-        pinned = [
-            p.product_id
-            for p in candidates
-            if p.product_id in repurchase_ids and p.product_id not in already
-        ]
-        ranked_ids = pinned + ranked_ids
-    # 노출 개수 보정 + 목록 분할 — 보정·상한은 **목록 하나 기준**이다(REQ-REC-021 5~9개, v0.11.0).
-    # 분할하지 않으면 목록이 하나뿐이라 종전과 같은 전역 보정·절단이다.
-    exposed_groups = _split_by_need(
-        ranked_ids,
-        candidates,
-        leg_of=leg_of if split_by_need else {},
-        leg_count=len(need_legs) if split_by_need else 1,
-        expose_min=settings.expose_min,
-        expose_max=settings.expose_max,
-    )
-    # 계약 상한(§4.2 lists ≤10)을 **여기서** 자른다 — 아래 ranked_ids 는 "실제로 push 되는 상품"
-    # 이어야 last_reco("그거 담아줘")와 관측 로그가 노출과 어긋나지 않는다.
-    # config 가 category_fanout_max ≤ MAX_LISTS 를 강제하므로 도달하지 않는 방어선이지만,
-    # 도달하면 니즈가 조용히 사라지는 것이라 로그를 남긴다(silent cap 금지).
-    if len(exposed_groups) > MAX_LISTS:
-        logger.warning(
-            "reco_lists_truncated",
-            extra={"groups": len(exposed_groups), "cap": MAX_LISTS},
-        )
-        exposed_groups = exposed_groups[:MAX_LISTS]
-    ranked_ids = [pid for _, group in exposed_groups for pid in group]
     buy_all_mode = settings.budget_set_enabled and decision.buy_all and split_by_need
-    plan = None
-    budget_sets_failed = False
-    infeasible_due_to_budget = False
-    if buy_all_mode:
-        ranked_priority = {product_id: rank for rank, product_id in enumerate(ranked_ids)}
-        candidate_order: dict[int, int] = {}
-        for index, product in enumerate(candidates):
-            candidate_order.setdefault(product.product_id, index)
-        pools: list[list[tuple[int, int | None]]] = []
-        for leg in range(len(need_legs)):
-            # 동일 productId 는 최초 후보 하나만 권위로 삼는다. relevance 순서와 저가 순서를
-            # 교대로 병합해야 cap 안에서도 상위 품질 신호와 예산 가능 대안을 함께 보존한다.
-            unique_candidates = {}
-            for product in candidates:
-                if (
-                    leg_of.get(product.product_id) == leg
-                    and product.product_id not in unique_candidates
-                ):
-                    unique_candidates[product.product_id] = product
-            relevance_order = sorted(
-                unique_candidates.values(),
-                key=lambda product: (
-                    ranked_priority.get(product.product_id, len(ranked_priority)),
-                    candidate_order[product.product_id],
-                    product.product_id,
-                ),
-            )
-            price_order = sorted(
-                unique_candidates.values(),
-                key=lambda product: (
-                    product.price is None,
-                    product.price if product.price is not None else 0,
-                    ranked_priority.get(product.product_id, len(ranked_priority)),
-                    candidate_order[product.product_id],
-                    product.product_id,
-                ),
-            )
-            merged: list[tuple[int, int | None]] = []
-            selected: set[int] = set()
-            positions = [0, 0]
-            while len(merged) < settings.budget_set_alt_pool:
-                added = False
-                for source, ordered in enumerate((relevance_order, price_order)):
-                    while (
-                        positions[source] < len(ordered)
-                        and ordered[positions[source]].product_id in selected
-                    ):
-                        positions[source] += 1
-                    if positions[source] >= len(ordered):
-                        continue
-                    product = ordered[positions[source]]
-                    positions[source] += 1
-                    selected.add(product.product_id)
-                    merged.append((product.product_id, product.price))
-                    added = True
-                    if len(merged) >= settings.budget_set_alt_pool:
-                        break
-                if not added:
-                    break
-            pools.append(merged)
-        try:
-            plan = await asyncio.to_thread(
-                build_budget_sets,
-                pools=pools,
-                total_budget=decision.total_budget,
-                max_sets=settings.budget_set_max_count,
-                max_combinations=settings.budget_set_max_combinations,
-                max_items=LIST_MAX_PRODUCTS,
-            )
-        except Exception as exc:  # noqa: BLE001 - 세트 실패는 종전 PICK_ONE으로 degrade
-            logger.warning("budget_sets_failed", extra={"reason": str(exc)})
-            budget_sets_failed = True
-            plan = None
-        if plan is None and not budget_sets_failed and decision.total_budget is not None:
-            try:
-                # 총액 제한만 제거했을 때 조합이 생기는 경우에만 예산을 실패 원인으로 고지한다.
-                # 후보/가격 자체가 부족한 경우는 같은 입력으로도 None 이라 별도 문구로 분리된다.
-                infeasible_due_to_budget = (
-                    await asyncio.to_thread(
-                        build_budget_sets,
-                        pools=pools,
-                        total_budget=None,
-                        max_sets=settings.budget_set_max_count,
-                        max_combinations=settings.budget_set_max_combinations,
-                        max_items=LIST_MAX_PRODUCTS,
-                    )
-                    is not None
+
+    # [#281] 니즈 priority 분류기 — 첫 이벤트 앞 직렬 지연을 0 으로 두려고 게이트 입력이 확정되는
+    # 가장 이른 지점(split_by_need·buy_all_mode 확정 직후)에서 띄운다. 아래 rerank(smart tier)
+    # 호출이 이 짧은 fast 호출을 완전히 가려 실질 추가 지연이 0 이다(lessons 2026-08-04
+    # 「상한이 안전한지는 단일 호출 예산이 아니라 첫 이벤트 앞 직렬 합으로 잰다」).
+    #
+    # 게이트가 거짓이면 태스크를 아예 만들지 않는다 → LLM 호출 0회, 오늘과 완전히 동일(비용도 0).
+    # [PR #314 리뷰] 이전 판은 "`limited_legs`(계약 상한 max_items)는 config 가
+    # `category_fanout_max ≤ MAX_LISTS` 를 강제해 실무상 도달하지 않는다"고 적었는데 **틀렸다**
+    # — `MAX_LISTS`(10)와 `max_items`로 넘기는 `LIST_MAX_PRODUCTS`(9)를 혼동한 주석이었다.
+    # `category_fanout_max` 는 `MAX_LISTS` 까지(즉 10까지) 설정 가능한데 `max_items` 는 9라,
+    # `category_fanout_max` 를 10으로 운영하면 leg 10개 > max_items 9 로 `limited_legs` 가
+    # **설정에 따라 실제로 발동한다.** 그래서 게이트를 두 조건의 OR 로 연다:
+    #   - `total_budget is not None` — `dropped_legs`(예산 제외)는 total_budget 이 있을 때만 발생.
+    #   - `len(need_legs) > LIST_MAX_PRODUCTS` — `limited_legs` 가 발동할 수 있는 유일한 조건과
+    #     정확히 같은 임계다(값을 따로 적지 않고 `build_budget_sets(max_items=...)` 에 넘기는
+    #     것과 **같은 상수**에서 파생시킨다 — 숫자를 두 곳에 따로 적으면 이번처럼 갈라진다).
+    # 예산도 없고 leg 수도 임계 이하인 BUY_ALL 턴은 여전히 호출 0회다(과하게 넓히지 않는다).
+    need_priority_gate = (
+        settings.need_priority_classifier_enabled
+        and buy_all_mode
+        and (decision.total_budget is not None or len(need_legs) > LIST_MAX_PRODUCTS)
+    )
+    priority_task = None
+    if need_priority_gate:
+        need_priority_labels = _need_priority_labels(need_legs)
+        if need_priority_labels is None:
+            # 라벨 없는 leg 이 섞이면 분류기 프롬프트의 니즈 이름 목록에 빈 자리가 생겨 LLM 이
+            # 보는 인덱스와 need_legs 인덱스의 정합을 장담할 수 없다 — 그 leg 하나 때문에 신호
+            # 전체를 못 믿느니 분류기를 아예 돌리지 않는다(폴백은 오늘 동작이라 손해가 없다).
+            pass
+        else:
+            priority_task = asyncio.create_task(
+                classify_need_priorities(
+                    llm,
+                    message=request.message,
+                    needs=need_priority_labels,
+                    settings=settings,
+                    observer=observer,
                 )
-            except Exception as exc:  # noqa: BLE001 - 진단 실패도 PICK_ONE 스트림은 살린다
-                logger.warning("budget_sets_failure_diagnosis_failed", extra={"reason": str(exc)})
-                budget_sets_failed = True
-        if plan is not None:
-            ranked_ids = list(
-                dict.fromkeys(product_id for item in plan.sets for product_id in item.product_ids)
             )
+
+    # [#281] 태스크 생성부터 회수까지를 `try/finally` 로 감싼다 — 정리 지점이 정상 회수(아래
+    # `_collect_priority_task`) 하나뿐이면 **바깥에서 온 취소**(클라이언트가 끊거나 SSE
+    # 제너레이터가 조기 종료되는 GeneratorExit)가 이 try 안의 어느 `await`(rerank 등)에서 오든
+    # 분류기 태스크가 정리되지 않고 고아로 남는다(`app/agents/buyer/graph.py::_cancel_scope_task`
+    # docstring 의 함정과 같다, #84).
+    try:
+        # 분할 시 rerank 예산은 목록 수만큼 늘린다 — 전역 expose_max 로 자르면 니즈 하나가 예산을
+        # 독식해 나머지 니즈 목록이 비어버린다.
+        # 세는 단위는 **후보가 실제로 남은 니즈**다(PR #212 리뷰) — 검색 0건·최근구매 dedup 으로
+        # 비워진 니즈까지 세면 rerank 가 쓰지도 못할 항목 수를 요구하고 출력 예산만 부푼다.
+        # 후보 수를 넘겨도 의미가 없어 함께 상한한다.
+        # MAX_LISTS 로 클램프 — 계약상 그 이상은 push 되지 않으므로(아래 절단) 잘려나갈 니즈까지
+        # 예산에 세면 rerank 가 쓰지도 못할 항목을 요구한다. config 가 category_fanout_max ≤
+        # MAX_LISTS 를 이미 강제하지만, 두 경로가 나중에 갈라져도 예산은 틀리지 않게 여기서도 막는다.
+        populated_needs = min(
+            len({leg_of[p.product_id] for p in candidates if p.product_id in leg_of}), MAX_LISTS
+        )
+        expose_budget = (
+            min(settings.expose_max * populated_needs, len(candidates))
+            if split_by_need
+            else settings.expose_max
+        )
+        # 니즈 경계를 rerank 에도 알린다(PR #212 리뷰) — 안 알리면 LLM 이 전역 관련도로만 정렬해
+        # 한 니즈가 상위권을 쓸고, 굶은 니즈는 아래 _split_by_need 가 검색순서로 보충한다.
+        # 그 보충분엔 rationale 이 없어 근거 없는 카드가 나가는데 rerank 는 "정상 성공"이라
+        # rerank_degraded 로 드러나지 않는다. 단일 목록 경로에는 None 을 넘겨 프롬프트를 그대로 둔다.
+        need_of = (
+            _need_names(need_legs, leg_of=leg_of, product_ids=[p.product_id for p in candidates])
+            if split_by_need
+            else None
+        )
+
+        # rerank — smart tier 1회. 실패/타임아웃/유효후보 0건 시 검색순서 상위 N 으로 degrade(하드 제약 유지).
+        if observer is not None:
+            observer.record_model_call(resolve_model_id(settings, "smart"))
+        rerank_degraded = False
+        try:
+            with trace_span(
+                "llm.rerank",
+                "llm",
+                {"model": resolve_model_id(settings, "smart")},
+            ):
+                rr = await rerank(
+                    llm,
+                    query=request.message,
+                    candidates=candidates,
+                    profile_summary=profile,
+                    tier="smart",
+                    expose_max=expose_budget,
+                    need_of=need_of,
+                    per_need=settings.expose_max if split_by_need else None,
+                    # [#132] 사용자가 평점을 명시했는지 — 무평점 후보의 근거문 고지 지시를 켠다.
+                    # 완화가 적용됐으면 `effective_filters` 가 그 결과라 표시-실제가 어긋나지 않는다.
+                    rating_min_requested=effective_filters.rating_min is not None,
+                )
+            ranked_ids = [pid for pid, _ in rr.ranked]
+            reason_by_id = dict(rr.ranked)  # 상품별 근거(§4.2) — (productId, rationale) 튜플 → 맵
+            comment = _strip_unsafe(rr.overall_comment)
+        except LLMError:
+            rerank_degraded = True
+            if trace := current_request_trace():
+                trace.mark_degraded("rerank_fallback")
+            ranked_ids = [p.product_id for p in candidates[:expose_budget]]
+            reason_by_id = {}  # degrade 경로엔 rerank 근거 없음 — reasons 는 빈 배열(계약상 선택)
+            # [#133] 품질 저하를 **고지한다**. 종전 문구("요청하신 조건으로 찾은 상품들이에요")는
+            # 평상시와 구분되지 않아 개인화·근거가 통째로 사라진 사실이 사용자에게 가려졌다.
+            # config 값은 운영자 주입이라 소스 리터럴이 아니다 — 정상 경로(rr.overall_comment)와
+            # 같은 _strip_unsafe 정제를 받는다.
+            comment = _strip_unsafe(settings.rerank_fallback_notice)
+
+        # [#120 PR#230 리뷰] 지목 상품 고정 — rerank 는 relevance 로 expose_max 개만 고르고 "이건 반드시"
+        # 라는 고정 수단이 없어(need_of/per_need 는 니즈 분할용), exact 제외·상한 절단을 다 통과한
+        # 지목 상품이 여기서 조용히 빠질 수 있다. 쿼리에 상품명이 있으니 보통은 뽑히지만 그건
+        # 휴리스틱이지 보장이 아니다. **후보에 남아 있는데 rerank 가 빠뜨린 것만** 앞에 얹어
+        # "지목하면 다시 추천된다"를 강제한다 — rerank 가 이미 골랐으면 순서를 건드리지 않는다.
+        # 근거(reason)는 없지만 §4.2 상 reasons 는 선택이고 degrade 경로도 같은 형태다.
+        if repurchase_ids:
+            already = set(ranked_ids)
+            pinned = [
+                p.product_id
+                for p in candidates
+                if p.product_id in repurchase_ids and p.product_id not in already
+            ]
+            ranked_ids = pinned + ranked_ids
+        # 노출 개수 보정 + 목록 분할 — 보정·상한은 **목록 하나 기준**이다(REQ-REC-021 5~9개, v0.11.0).
+        # 분할하지 않으면 목록이 하나뿐이라 종전과 같은 전역 보정·절단이다.
+        exposed_groups = _split_by_need(
+            ranked_ids,
+            candidates,
+            leg_of=leg_of if split_by_need else {},
+            leg_count=len(need_legs) if split_by_need else 1,
+            expose_min=settings.expose_min,
+            expose_max=settings.expose_max,
+        )
+        # 계약 상한(§4.2 lists ≤10)을 **여기서** 자른다 — 아래 ranked_ids 는 "실제로 push 되는 상품"
+        # 이어야 last_reco("그거 담아줘")와 관측 로그가 노출과 어긋나지 않는다.
+        # config 가 category_fanout_max ≤ MAX_LISTS 를 강제하므로 도달하지 않는 방어선이지만,
+        # 도달하면 니즈가 조용히 사라지는 것이라 로그를 남긴다(silent cap 금지).
+        if len(exposed_groups) > MAX_LISTS:
+            logger.warning(
+                "reco_lists_truncated",
+                extra={"groups": len(exposed_groups), "cap": MAX_LISTS},
+            )
+            exposed_groups = exposed_groups[:MAX_LISTS]
+        ranked_ids = [pid for _, group in exposed_groups for pid in group]
+        plan = None
+        budget_sets_failed = False
+        infeasible_due_to_budget = False
+        priorities: tuple[int, ...] | None = None  # buy_all_mode 가 아니면 회수 자체가 없다
+        if buy_all_mode:
+            ranked_priority = {product_id: rank for rank, product_id in enumerate(ranked_ids)}
+            candidate_order: dict[int, int] = {}
+            for index, product in enumerate(candidates):
+                candidate_order.setdefault(product.product_id, index)
+            pools: list[list[tuple[int, int | None]]] = []
+            for leg in range(len(need_legs)):
+                # 동일 productId 는 최초 후보 하나만 권위로 삼는다. relevance 순서와 저가 순서를
+                # 교대로 병합해야 cap 안에서도 상위 품질 신호와 예산 가능 대안을 함께 보존한다.
+                unique_candidates = {}
+                for product in candidates:
+                    if (
+                        leg_of.get(product.product_id) == leg
+                        and product.product_id not in unique_candidates
+                    ):
+                        unique_candidates[product.product_id] = product
+                relevance_order = sorted(
+                    unique_candidates.values(),
+                    key=lambda product: (
+                        ranked_priority.get(product.product_id, len(ranked_priority)),
+                        candidate_order[product.product_id],
+                        product.product_id,
+                    ),
+                )
+                price_order = sorted(
+                    unique_candidates.values(),
+                    key=lambda product: (
+                        product.price is None,
+                        product.price if product.price is not None else 0,
+                        ranked_priority.get(product.product_id, len(ranked_priority)),
+                        candidate_order[product.product_id],
+                        product.product_id,
+                    ),
+                )
+                merged: list[tuple[int, int | None]] = []
+                selected: set[int] = set()
+                positions = [0, 0]
+                while len(merged) < settings.budget_set_alt_pool:
+                    added = False
+                    for source, ordered in enumerate((relevance_order, price_order)):
+                        while (
+                            positions[source] < len(ordered)
+                            and ordered[positions[source]].product_id in selected
+                        ):
+                            positions[source] += 1
+                        if positions[source] >= len(ordered):
+                            continue
+                        product = ordered[positions[source]]
+                        positions[source] += 1
+                        selected.add(product.product_id)
+                        merged.append((product.product_id, product.price))
+                        added = True
+                        if len(merged) >= settings.budget_set_alt_pool:
+                            break
+                    if not added:
+                        break
+                pools.append(merged)
+            # priority 회수 — build_budget_sets 호출 직전(PACKET §5(c)). 분류기가 없거나
+            # (priority_task None) 실패해도 `_collect_priority_task` 가 None 을 돌려주므로
+            # build_budget_sets 의 엄격 폴백(전 leg 균일값)이 2차 방어로 남는다.
+            priorities = await _collect_priority_task(priority_task)
+            try:
+                plan = await asyncio.to_thread(
+                    build_budget_sets,
+                    pools=pools,
+                    total_budget=decision.total_budget,
+                    max_sets=settings.budget_set_max_count,
+                    max_combinations=settings.budget_set_max_combinations,
+                    max_items=LIST_MAX_PRODUCTS,
+                    priorities=priorities,
+                )
+            except Exception as exc:  # noqa: BLE001 - 세트 실패는 종전 PICK_ONE으로 degrade
+                logger.warning("budget_sets_failed", extra={"reason": str(exc)})
+                budget_sets_failed = True
+                plan = None
+            if plan is None and not budget_sets_failed and decision.total_budget is not None:
+                try:
+                    # 총액 제한만 제거했을 때 조합이 생기는 경우에만 예산을 실패 원인으로 고지한다.
+                    # 후보/가격 자체가 부족한 경우는 같은 입력으로도 None 이라 별도 문구로 분리된다.
+                    # [#281] 두 호출이 다른 priority 근거를 쓰면 진단이 실제 실패 원인을 가리키지
+                    # 않으므로 같은 priorities 를 넘긴다.
+                    infeasible_due_to_budget = (
+                        await asyncio.to_thread(
+                            build_budget_sets,
+                            pools=pools,
+                            total_budget=None,
+                            max_sets=settings.budget_set_max_count,
+                            max_combinations=settings.budget_set_max_combinations,
+                            max_items=LIST_MAX_PRODUCTS,
+                            priorities=priorities,
+                        )
+                        is not None
+                    )
+                except Exception as exc:  # noqa: BLE001 - 진단 실패도 PICK_ONE 스트림은 살린다
+                    logger.warning(
+                        "budget_sets_failure_diagnosis_failed", extra={"reason": str(exc)}
+                    )
+                    budget_sets_failed = True
+            if plan is not None:
+                ranked_ids = list(
+                    dict.fromkeys(
+                        product_id for item in plan.sets for product_id in item.product_ids
+                    )
+                )
+    finally:
+        _cancel_priority_task(priority_task)
 
     # [#101 #8] 관측성 — 파이프라인 후보 깔때기를 한 줄 구조화 로그로 남긴다(recall 손실·자원 진단).
     # received(수신) → after_dedup(최근구매 제외 후) → compressed(embedding_rerank_limit 절단 후)
@@ -1165,11 +1624,124 @@ async def stream_recommendation(
             "budget_limited_legs": len(plan.limited_legs) if plan else 0,
             "budget_mode": buy_all_mode,
             "budget_truncated": bool(plan and plan.combinations_truncated),
+            # [#281] priority 신호 관측 — 값(니즈 이름)은 싣지 않는다(#119 PII). 신호가 실제로
+            # 적용됐는지(분류기 성공)와, REQ-REC-075 가 요구하는 "조용히 누락하지 않는다"의 빈도를
+            # 운영에서 볼 수 있어야 하므로 필수(priority 1) 니즈가 예산 또는 목록 상한 때문에
+            # 빠진 턴을 표시한다(둘 다 덮는 이유는 아래 헬퍼 docstring 참조, PR #314 리뷰).
+            "need_priority_applied": priorities is not None,
+            # 범위 밖 leg 방어·두 제외 경로(dropped_legs·limited_legs)를 순수 헬퍼로 뽑았다
+            # (_need_priority_required_dropped 참조) — 근거·불변식 설명도 그쪽 docstring 에 있다.
+            "need_priority_required_dropped": _need_priority_required_dropped(priorities, plan),
         },
     )
 
     if comment:
         yield sse("token", TokenData(text=comment).model_dump(by_alias=True))
+
+    # [#222] 광역 fan-out 확장 고지 — **질문이 아니라 고지**다("더 좁혀 드릴까요?" 같은 되물음은
+    # 넣지 않는다, 그 판정 게이트가 실측으로 없다). 문구는 LLM 이 짓지 않는다 — 확장 leaf 이름의
+    # " > " 앞부분(중분류)을 중복 제거해 그대로 쓴다. DB 값이라 존재하지 않는 카테고리를 말할 수
+    # 없다(#59 재발 방지). 템플릿은 config 주입(rerank_fallback_notice 와 동일 패턴).
+    # [#222 F-1] `category_expand_notice_suppressed` 면 위에서 무필터로 되돌아간 것이다 — 중분류를
+    # 훑었다고 고지해 놓고 실제로는 무필터로 찾은 것이 되면 거짓 고지라 여기서 막는다.
+    # 전 leg 실패(전량 SpringUnavailableError 등)는 이 지점에 아예 도달하지 않는다 —
+    # `_run_search` 가 `survived` 가 비면 None 을 돌려주고 그건 `search_bundle is None` 분기로
+    # 가 SEARCH_FAILED 로 끝나기 때문이다(§6, 고지 블록은 그 아래에서만 실행된다).
+    if (
+        decision.category_expanded
+        and not category_expand_notice_suppressed
+        and settings.category_expand_notice_enabled
+        and (template := _strip_unsafe(settings.category_expand_notice))
+    ):
+        mids: list[str] = []
+        seen_mid: set[str] = set()
+        # [PR #318 리뷰 R14-1] fan-out 은 leg 별로 부분 실패할 수 있다(`survived`, `fanout_
+        # partial`) — 실패한 leg 의 카테고리는 실제로 검색하지 못했는데 전체 `category_legs` 로
+        # mids 를 조립하면 "찾아봤어요"라고 거짓 고지된다(#51 표시=실제). `expansion_searched_legs`
+        # 가 있으면(확장 fan-out 이 실제로 돈 턴) 그 생존 leg 인덱스만 쓰고, None 이면(단일
+        # filters 검색 등 fan-out 자체가 없던 경로) 종전대로 전체를 쓴다.
+        notice_legs = (
+            [decision.category_legs[i] for i in expansion_searched_legs]
+            if expansion_searched_legs is not None
+            else decision.category_legs
+        )
+        for cat, _query in notice_legs:
+            mid = cat.split(" > ", 1)[0]
+            if mid not in seen_mid:
+                seen_mid.add(mid)
+                mids.append(mid)
+        if mids:
+            try:
+                expand_notice = template.format(items=" · ".join(mids))
+            except (KeyError, IndexError, ValueError):
+                logger.warning("category_expand_notice_invalid")
+            else:
+                if expand_notice := _strip_unsafe(expand_notice):
+                    yield sse("token", TokenData(text=expand_notice).model_dump(by_alias=True))
+
+    # [이슈 #168 T2] split 턴(니즈별 그룹 출력)에 그룹 구조를 결정론적으로 서술한다 — #222 확장
+    # 고지와 같은 패턴으로 LLM 이 짓지 않고 여기서 조립한다(`rerank.py` 는 이 레인 금지 파일).
+    # 순서는 위 확장 고지(mids) **뒤** — 확장 턴에서도 두 고지가 공존한다(니즈 그룹핑은 "어디를
+    # 찾았는지"가 아니라 "몇 개씩 나눴는지"라 서로 다른 정보다). 라벨은 push 에 실릴 것과 같은
+    # `_need_label` 산출을 재사용해 표시=실제(#51)를 지키고 길이 캡도 그대로 물려받는다. 라벨
+    # 없는 그룹은 "니즈 k" 같은 의미 없는 폴백 대신 **건너뛴다** — 사용자에게 무의미한 텍스트를
+    # 보여주는 것보다 그 그룹만 서술에서 조용히 빠지는 편이 낫다. 전부 없으면 미발신한다.
+    # **`plan is None` 도 함께 요구한다** — `plan is not None`(BUY_ALL 세트가 실제로 만들어진
+    # 턴)이면 실제 push 되는 lists 는 `exposed_groups` 가 아니라 budget set 조합이라(아래 push
+    # 조립부의 `if plan is not None: ... else: lists = [_entry(leg, group) for leg, group in
+    # exposed_groups]` 와 동일 조건), "니즈별로 나눠 담았어요"가 실제로 나간 목록과 어긋나
+    # 표시=실제(#51)가 깨진다. BUY_ALL 세트는 `budget_set_label_focus`(라벨에 니즈 이름 포함)로
+    # 이미 자기 서술을 갖고 있다.
+    if (
+        split_by_need
+        and plan is None
+        and settings.group_notice_enabled
+        and (group_template := _strip_unsafe(settings.group_notice))
+    ):
+        group_items = [
+            item
+            for leg, group in exposed_groups
+            if (label := _need_label(need_legs[leg]))
+            and (item := _strip_unsafe(f"{label} {len(group)}개"))
+        ]
+        if group_items:
+            try:
+                group_notice = group_template.format(items=" · ".join(group_items))
+            except (KeyError, IndexError, ValueError):
+                logger.warning("group_notice_invalid")
+            else:
+                if group_notice := _strip_unsafe(group_notice):
+                    yield sse("token", TokenData(text=group_notice).model_dump(by_alias=True))
+
+    # [#162] 조건 없음 안내 — 없으면 사용자가 인기 상품을 **자기 조건이 반영된 결과**로 오해한다.
+    # `popular_degraded` 턴에는 내지 않는다: I-3 가 죽어 무필터 검색으로 떨어진 결과에
+    # "인기 상품으로 보여드릴게요" 라고 말하면 거짓이 된다(#133 정직성 규약 — 그 턴은
+    # `mark_degraded("popular_fallback")` 로 관측에 남는다).
+    if no_condition and not popular_degraded:
+        if decision.total_budget is not None:
+            # 예산을 말한 턴에는 그 금액을 되짚어 준다 — "조건을 안 주셨다"고 하면 거짓이 된다.
+            # [PR #311 리뷰] **자리표시자 존재를 먼저 검사한다** — `str.format` 은 쓰지 않는
+            # 키워드를 조용히 무시하므로(`"금액 없이".format(budget=...)` 는 예외 없이 그대로),
+            # `{budget}` 이 통째로 빠진 오설정은 아래 except 로 잡히지 않고 금액만 소리 없이
+            # 사라진다. 오타(`{budgt}`)만 KeyError 로 잡힌다. `_set_label` 이 `"{need}" not in`
+            # 으로 같은 검사를 하는 것과 맞춘다.
+            # 폴백은 인기 상품 문구다 — 이 경로의 후보는 실제로 인기 상품이라 참이고,
+            # 금액을 주장하지 않으므로 거짓 고지가 되지 않는다.
+            if "{budget}" not in settings.no_condition_notice_budget:
+                logger.warning("no_condition_budget_notice_missing_placeholder")
+                raw_notice = settings.no_condition_notice_popular
+            else:
+                try:
+                    raw_notice = settings.no_condition_notice_budget.format(
+                        budget=f"{decision.total_budget:,}원"
+                    )
+                except (KeyError, IndexError, ValueError):
+                    logger.warning("no_condition_budget_notice_invalid")
+                    raw_notice = settings.no_condition_notice_popular
+        else:
+            raw_notice = settings.no_condition_notice_popular
+        if notice := _strip_unsafe(raw_notice):
+            yield sse("token", TokenData(text=notice).model_dump(by_alias=True))
 
     # [#133] 최근 구매 제외(I-19) 실패 고지 — **기본 미고지**(config 기본값 "")다. 조회 실패는
     # "중복이 노출됐다"가 아니라 "걸러내지 못했다"라 실제 중복 여부를 알 수 없어 매 턴 노이즈가

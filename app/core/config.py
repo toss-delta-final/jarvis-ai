@@ -98,6 +98,24 @@ class Settings(BaseSettings):
     langsmith_project: str = "jarvis-ai-local"
     langsmith_tracing_sampling_rate: float = Field(default=1.0, ge=0.0, le=1.0)
     langsmith_export_timeout_s: float = Field(default=0.5, gt=0.0, le=5.0)
+    # [#326] 콘텐츠 추적 모드 — 켜면 발화·LLM prompt/응답 원문·Spring 페이로드가 트레이스에
+    # 실린다(기본 off = #141 비유출 동작 유지). **실사용자 오픈 전 디버깅 구간 전용** —
+    # 규약·kill switch 절차는 DEPLOY.md §8. per-value 절단 상한은 max_chars.
+    langsmith_trace_content: bool = False
+    langsmith_trace_content_max_chars: int = Field(default=20000, gt=0)
+
+    @field_validator("langsmith_trace_content", "langsmith_trace_content_max_chars", mode="before")
+    @classmethod
+    def _empty_trace_content_settings_use_default(cls, value: object, info) -> object:
+        # 배포 워크플로가 미설정 vars 를 빈 문자열로 기록한다 — bool/int 파싱 실패로 기동이
+        # 죽지 않게 빈 값은 필드 기본값으로 해석한다(2026-08-05 APP_ENVIRONMENT 빈 값 부팅
+        # 실패 교훈). max_chars 는 아직 deploy.yml 에 배선되지 않았지만 나란한 필드라 같은
+        # 방식으로 배선되기 쉬워 선제 적용한다(PR #327 리뷰).
+        if isinstance(value, str) and value.strip() == "":
+            # Field 선언의 기본값을 그대로 참조한다 — 여기 값을 복제하면 선언만 바꿨을 때
+            # "미설정 → 빈 문자열" 경로가 조용히 어긋난다(PR #327 리뷰).
+            return cls.model_fields[info.field_name].default
+        return value
 
     # ── LLM provider 토글 (이슈 #40) ──
     # "openai"(기본) | "anthropic". 호출부는 tier("fast"|"smart")로 부르고 provider 가 모델을 해석한다.
@@ -266,6 +284,10 @@ class Settings(BaseSettings):
     # _summarize_behavior 가 꼬리 합계로 남긴다(정보 소실 없음).
     seller_summary_max_products: int = 10  # I-13 상품별 rows 상세 나열 상한(건)
     seller_list_default_limit: int = 20  # I-9 상품 목록 기본 limit(미지정 시)
+    # [#297] I-29 주문·I-31 리뷰 나열 상한 — 기존 상한들과 분리 신설(결합 방지, #197 취지).
+    # 서버 페이지 상한(limit≤100)과 별개인 "도구 응답 상세도" 상한이다.
+    seller_summary_max_orders: int = 10  # I-29 주문 rows 상세 나열 상한(건)
+    seller_summary_max_reviews: int = 10  # I-31 리뷰 rows 상세 나열 상한(건)
 
     # ── 판매자 분석 계산 층 (이슈 #290, app/agents/seller/analysis/ 주입) ──
     # 근거 논문·산식은 docs/worker-papers.md — 아래 기본값은 논문 권장값이다.
@@ -374,6 +396,16 @@ class Settings(BaseSettings):
     embedding_rerank_limit: int = Field(default=30, ge=0)
     search_default_limit: int = 30
     top_k: int = 30
+    # [#162] 조건 없는 발화의 인기 상품(I-3, §4.17) 요청 개수.
+    # **`gt=0` 이 방어다** — BE I-3 에는 범위 검증이 없어(정본 명시) 음수·0 을 보내면 400 이
+    # 아니라 `200 + 빈 배열`이 온다. 잘못된 설정이 오류가 아니라 "인기 상품이 없음"으로 위장돼
+    # 조용히 카드 없는 답변이 나가므로, 기동 시점에 막는다.
+    # 기본값 30 의 근거는 양쪽 경계다 — 하한은 노출(`expose_max` 9) + 최근구매 dedup·소모품
+    # 억제로 빠질 몫(BE 기본 12 는 여유가 3뿐이라 `expose_min` 5 까지 떨어질 수 있다), 상한은
+    # `embedding_rerank_limit`(30)으로 그보다 많이 받아도 압축 단계에서 버려진다.
+    # **dedup 손실은 아직 실측하지 못했다** — `orders` 0행이라 최근구매 제외가 현재 아무것도
+    # 걸러내지 않는다. 구매 이력이 쌓이면 그 손실만큼 상향 후보다.
+    popular_candidate_size: int = Field(default=30, gt=0)
     # 노출 개수(REQ-REC-021, api-spec §3.3) — **목록 하나 기준**이다. 니즈별 추천처럼 목록이
     # 여럿이면 목록마다 이 상한이 걸린다(REQ-REC-024).
     # 상한이 LIST_MAX_PRODUCTS 로 묶여 있는 이유: 이 값을 넘기면 push 페이로드 생성
@@ -481,6 +513,26 @@ class Settings(BaseSettings):
     # 못했다"라 실제 중복 발생 여부를 알 수 없고, rerank 폴백과 달리 거짓 주장을 하고 있지도
     # 않다(#133 판단). 값을 채우면 켜진다 — 판단을 코드 재배포 없이 되돌리기 위한 여지다.
     dedup_skipped_notice: str = ""
+    # [#162] 조건이 하나도 없는 발화의 안내. **문안은 튜너블이지만 발신은 아니다**
+    # (rerank_fallback_notice 와 같은 규약) — 없으면 사용자가 인기상품·취향 기반 결과를
+    # **자기 조건이 반영된 결과로 오해**한다. 후보 소스가 다르므로 문구를 둘로 나눈다.
+    # **무엇을 했는지 말하고 예시로 되묻는다** — "조건을 안 주셨다"고 단정하지 않는다. 예산만
+    # 말한 턴("총 5만원 있어 아무거나")처럼 사용자가 무언가는 준 경우가 있어 단정이 거짓이 된다.
+    # 예시를 넣는 이유는 "조건을 알려달라"만으로는 무엇을 어떻게 말해야 할지 모르기 때문이다.
+    no_condition_notice_popular: str = (
+        "지금 인기 있는 상품으로 골라봤어요. "
+        '"5만원 이하 무선 이어폰"처럼 알려주시면 더 잘 추천해드릴 수 있어요.'
+    )
+    no_condition_notice_profile: str = (
+        "취향에 맞을 만한 상품으로 골라봤어요. "
+        '"5만원 이하 무선 이어폰"처럼 알려주시면 더 잘 추천해드릴 수 있어요.'
+    )
+    # 총액 예산만 말한 턴 전용 — `{budget}` 은 천단위 구분 금액이 들어간다(예: "50,000원").
+    # 세트로 묶지 않고 **예산 안의 대안**을 보여주는 턴이라 문구도 "골라봤어요 + 되묻기"다.
+    no_condition_notice_budget: str = (
+        "{budget} 안에서 인기 있는 상품으로 골라봤어요. "
+        '"무선 이어폰"처럼 어떤 상품을 찾으시는지 알려주시면 더 잘 추천해드릴 수 있어요.'
+    )
 
     # ── 홈 추천 랭킹 (I-22, api-spec §3.7 · 이슈 #148) ──
     # 질의 벡터 = 시그널 상품 임베딩의 가중 평균. cart 는 "담기까지 갔다"는 강한 신호라 조회보다 높게,
@@ -610,6 +662,40 @@ class Settings(BaseSettings):
     # (`graph._map_or_empty(select_max_calls=...)` ← `CategoryMapping.select_calls`).
     # 매핑을 부르는 새 경로를 만들 때 이 배선을 빠뜨리면 상한이 조용히 배수로 깨진다.
     category_select_max_calls: int = Field(default=2, ge=0)
+
+    # ── 광역 발화 → leaf fan-out (이슈 #222) ──
+    # 이슈 원안(top-k 의 공통 조상으로 광역/협소 판정)은 오케스트레이터 실측으로 기각(정확도 0.50,
+    # 우연 수준). 채택안은 판정기를 만들지 않는다 — 매핑이 canonical 을 못 낸 leg
+    # (`CategoryMapping.unresolved`, #217 이 이미 만든 신호)을 트리거로, 그 앵커의 의미 기반
+    # top-N leaf 를 그대로 fan-out leg 으로 쓴다(`CategoryMapping.expansion_leaves`). 협소 발화는
+    # canonical 을 내므로 이 경로에 애초에 진입하지 않는다 — 그 자체는 구조적이다.
+    # [PR #318 리뷰 R14-2] 단 이 "진입하지 않는다"는 **거리 임계가 정상 튜닝돼 있을 때만**
+    # 성립한다 — 현 임계는 stale(#344)이라 협소 발화 일부(실측 10/20)가 canonical 을 못 내고
+    # 이 경로로 들어온다. 그 경우에도 확장 top-N 은 의미 최근접이라 정답 leaf 가 대체로 상위에
+    # 포함되고(실측: "무선 이어폰" top-1 = 음향가전 > 이어폰) leg 마다 keyword·semantic_query 가
+    # 유지되므로, 무필터 degrade(종전 동작) 대비 악화는 아니다 — 임계 재측정은 #344.
+    category_expand_enabled: bool = True  # 광역 fan-out 롤백 스위치
+    # [PR #318 리뷰 R5-1] **턴 전체 상한**이다 — unresolved leg 당 상한이 아니다. unresolved leg
+    # 이 여럿이면 `category_mapping._collect_expansion_leaves` 가 leg 마다 모은 후보를 라운드로빈
+    # 인터리브(`recommendation/graph._merge_fanout_results` 와 같은 규약)로 평탄화한 뒤 이 값으로
+    # 한 번만 자른다 — leg 별로 이 값을 각각 적용하면 먼저 처리된 leg 이 예산을 통째로 가져가고
+    # 뒤 leg 은 0개가 된다(사용자가 명시한 두 번째 니즈가 검색조차 안 되는 조용한 손실).
+    # 확장 leg 수 상한. category_fanout_max 와 같은 이유로 le=MAX_LISTS — 확장 턴이 case 3 과
+    # 겹치면 leg 마다 목록이 생겨 계약 상한(§4.2 lists ≤ 10)을 넘긴다.
+    category_expand_legs: int = Field(default=8, ge=0, le=MAX_LISTS)
+    category_expand_notice_enabled: bool = True  # 확장 고지 문구 on/off
+    # 확장 leaf 의 중분류(leaf 이름의 " > " 앞부분, 중복 제거) 목록을 끼울 자리 하나({items}).
+    # 문구는 LLM 이 짓지 않는다 — DB 값 그대로 조립해 존재하지 않는 카테고리를 말하지 않는다(#59 재발 방지).
+    category_expand_notice: str = "{items} 에서 관련 상품을 찾아봤어요."
+
+    # ── Case 3 니즈별 그룹 출력 (이슈 #168) ──
+    # split 턴의 니즈당 rerank 입력 후보 quota. 실측(실 카탈로그 leaf 폭 9~17): merge_cap=30 은
+    # 5니즈 턴에서 니즈당 6개로 자연 공급량보다 아래를 절단해 per-need expose_max(9) 도달 불가.
+    category_group_per_need_candidates: int = Field(default=10, ge=1)
+    group_notice_enabled: bool = True  # 니즈별 그룹 서술 on/off
+    # 니즈 그룹 서술 자리 하나({items}) — "라벨1 N개 · 라벨2 M개" 형태로 결정론 조립한다
+    # (#222 확장 고지와 같은 패턴, LLM 이 짓지 않는다).
+    group_notice: str = "니즈별로 나눠 담았어요 — {items}"
 
     # ── 목적·상황형 발화의 상품 전개 (이슈 #198·#217, DESIGN-NEEDS-EXPANSION-198) ──
     # "집들이 선물" 처럼 무엇을 살지 사용자가 말하지 않은 발화를 구체 상품 목록으로 전개한다
@@ -1208,6 +1294,22 @@ class Settings(BaseSettings):
     # 늘린, 애초에 악성으로 설계된 구간뿐이다.
     request_body_max_bytes: int = Field(default=1_048_576, gt=0)
 
+    # ── 니즈 priority 분류기 (이슈 #281, #60 후속) ──
+    # BUY_ALL 총액 예산이 모든 니즈를 못 담을 때 어떤 니즈부터 뺄지의 근거 신호(REQ-REC-076).
+    # `budget_sets.build_budget_sets` 는 이 신호가 없거나 신뢰할 수 없으면 "최저가가 비싼 leg
+    # 부터"라는 기존 결정론적 순서로 폴백한다(REQ-REC-075) — 즉 이 롤백 스위치를 꺼도 BUY_ALL
+    # 예산 제외 자체는 오늘처럼 계속 동작한다.
+    need_priority_classifier_enabled: bool = True  # 롤백 스위치(끄면 호출 0회 = 오늘 동작)
+    # Literal 로 좁힌다 — `category_scope_tier` 와 같은 이유다. 이 값은 `resolve_model_id` 에
+    # 들어가고 그것은 미지 tier 에 LLMError 를 던지므로, 오타가 퇴화가 아니라 예외가 된다
+    # (분류기는 그 예외를 삼켜 None 으로 떨어뜨리지만, 그러면 기능이 조용히 죽는다).
+    need_priority_tier: Literal["fast", "smart"] = "fast"
+    # 산출은 `{"priorities": [1, 2, 3, ...]}` 다 — 니즈 5개(계약 상한 category_fanout_max ≤
+    # MAX_LISTS=10 근방)면 `[1,2,3,2,1]` 수준의 소출력이다. `category_scope_max_tokens`(32,
+    # `{"scopeFree": true|false}` 한 줄 기준)보다 배열이라 여유를 더 둔다 — 항목당 콤마·공백
+    # 포함 약 3토큰이면 10개도 약 30~40토큰이라 64면 넉넉하다.
+    need_priority_max_tokens: int = Field(default=64, ge=8)
+
     @field_validator("llm_provider", mode="before")
     @classmethod
     def _normalize_llm_provider(cls, value: object) -> object:
@@ -1372,6 +1474,10 @@ class Settings(BaseSettings):
         스스로 보장한다(PR #188 리뷰) — 호출부(`decompose._parse_category_queries`·`expand_needs`)의
         절단에만 기대면 새 호출부 하나가 풀을 넘기고, 증상이 다른 요청의 PoolTimeout 이라 원인
         추적이 어렵다. 절단이 실제로 발생하면 `category_legs_truncated` 로 관측된다.
+
+        [#222] 확장 leg(`category_expand_legs`)은 이 전제와 무관하다 — 광역 fan-out 후보는
+        `expansion_leaves`(이미 조회된 히트를 슬라이스)로 채우고 pg 앵커 조회를 새로 하지 않으므로
+        `2 × category_fanout_max` 동시 조회 전제가 그대로 성립한다.
         """
         need = 2 * self.category_fanout_max
         if self.category_search_pool_max_size < need:
@@ -1665,14 +1771,20 @@ class Settings(BaseSettings):
         """
         from app.core.text import _strip_unsafe  # 지연 import — config 는 최하위 모듈이다
 
+        # 값과 함께 **근거 §** 를 든다 — 어느 계약이 이 발신을 요구하는지가 항목마다 다르다.
         required = {
-            "RERANK_FALLBACK_NOTICE": self.rerank_fallback_notice,
-            "PUSH_SKIPPED_NOTICE": self.push_skipped_notice,
+            "RERANK_FALLBACK_NOTICE": (self.rerank_fallback_notice, "§3.3"),
+            "PUSH_SKIPPED_NOTICE": (self.push_skipped_notice, "§3.3"),
+            # [#162] 조건 없음 안내도 같은 이유로 필수다 — 빠지면 사용자가 인기상품·취향 기반
+            # 결과를 자기 조건이 반영된 결과로 오해하고, 서버는 멀쩡히 돌아 드러나지 않는다.
+            "NO_CONDITION_NOTICE_POPULAR": (self.no_condition_notice_popular, "§4.17"),
+            "NO_CONDITION_NOTICE_PROFILE": (self.no_condition_notice_profile, "§4.17"),
+            "NO_CONDITION_NOTICE_BUDGET": (self.no_condition_notice_budget, "§4.17"),
         }
-        for name, value in required.items():
+        for name, (value, section) in required.items():
             if not _strip_unsafe(value):
                 raise ValueError(
-                    f"{name} must not be empty: api-spec §3.3 requires the degrade disclosure "
+                    f"{name} must not be empty: api-spec {section} requires the disclosure "
                     "to be sent (the wording is tunable, sending it is not)"
                 )
         return self

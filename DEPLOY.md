@@ -122,6 +122,23 @@ LangSmith tracing은 선택 기능이며 기본값은 꺼짐(`LANGSMITH_TRACING=
 metadata만 내보낸다. redaction 검증이 실패하면 trace 전체를 버리고 요청 결과에는 영향을 주지
 않는다.
 
+**[#326] 콘텐츠 추적 모드(`LANGSMITH_TRACE_CONTENT`, 기본 `false`)** — 위 비유출 원칙의
+**명시적 디버깅 예외**다. 켜면 트레이스에 다음 원문이 실린다: 루트 span의 사용자 발화,
+`llm.*` span의 system/user prompt·응답 전문, `spring.*` span의 요청 URL·본문·응답 페이로드
+(HTTP 헤더는 모드와 무관하게 싣지 않는다 — `X-Internal-Token` 유출 방지). per-value 절단
+상한은 `LANGSMITH_TRACE_CONTENT_MAX_CHARS`(기본 20000자).
+
+- **실사용자 트래픽 오픈 전 디버깅 구간 전용이며, 오픈 시점에 반드시 `false`로 되돌린다.**
+  이 전환은 릴리스 체크리스트 항목이다(§7 게이트와 같은 강제 수준으로 취급).
+- 모드가 켜지면 metadata allowlist 검증은 유지되지만 `inputs`/`outputs` 서브트리는 redaction
+  검증에서 면제된다(면제가 곧 기능). 즉 **켜는 순간 발화에 포함된 어떤 개인정보든 LangSmith에
+  도달할 수 있다** — 워크스페이스 접근권한(§8.3)이 유일한 방벽이다.
+- 기동 로그에 `LangSmith content tracing ON` WARNING이 찍힌다 — 배포 검증 시 이 로그로 모드
+  상태를 확인한다. 미설정(빈 문자열) vars는 앱이 off로 해석한다(기동 실패 없음).
+- 콘텐츠 페이로드는 커서 export가 무거워지므로 켤 때 `LANGSMITH_EXPORT_TIMEOUT_S`를 3.0 이상으로
+  함께 올린다(0.5 기본값이면 대형 트레이스가 timeout으로 조용히 버려진다).
+- 사고 시 kill switch 절차(아래)는 `LANGSMITH_TRACE_CONTENT=false` 전환에도 동일하게 적용된다.
+
 ### 8.1 환경별 프로젝트와 배포 기록
 
 | 환경 | `LANGSMITH_PROJECT` |

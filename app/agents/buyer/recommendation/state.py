@@ -135,6 +135,17 @@ class RouteDecision:
     # #22) — fan-out 검색 leg 단위(§6).
     # query 는 그 카테고리 전용 검색 키워드. 대표 카테고리 = category_legs[0][0](칩·멀티턴 승계).
     category_legs: list[tuple[str, str | None]] = field(default_factory=list)
+    # [#222] 이번 턴이 광역 발화 → leaf fan-out 폴백으로 category_legs 를 채웠는가. 참이면
+    # 조건 칩에서 카테고리를 뺀다(칩 하나로 8개 leg 을 대표할 수 없다, #51 표시=실제) — 대신
+    # 확장 고지 token 으로 검색한 중분류를 알린다.
+    category_expanded: bool = False
+    # [#162] `filters.semantic_query` 가 **이번 턴 원문으로 폴백**된 값인가.
+    # decompose 는 `llm_sq or cat_signal or prior_sq or query` 순으로 채우므로(decompose.py)
+    # 이 필드는 **절대 비지 않는다** — 사용자가 아무 의미 신호를 주지 않아도 발화 원문이 들어온다.
+    # 따라서 "조건 없는 발화"(#162)는 값의 유무로 판정할 수 없고 **출처**로 갈라야 한다.
+    # 기본 False(= 진짜 신호가 있다)가 보수적이다 — 판정을 놓치면 종전 동작이지만, 반대로
+    # 오탐하면 사용자가 말한 의미를 버리고 인기상품을 준다.
+    semantic_query_is_fallback: bool = False
 
 
 @dataclass

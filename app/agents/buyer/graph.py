@@ -44,6 +44,7 @@ from app.agents.buyer.recommendation.decompose import (
 )
 from app.agents.buyer.recommendation.needs_expansion import detect_expansion_need
 from app.agents.buyer.recommendation.needs_expansion import expand_needs as _expand_needs
+from app.agents.buyer.recommendation.no_condition import is_no_condition_turn
 from app.agents.buyer.recommendation.relaxation import FIELD_TO_ATTR as RELAXATION_FIELD_TO_ATTR
 from app.agents.buyer.recommendation.state import get_relaxation_offer_store, get_revert_store
 from app.agents.buyer.recommendation.graph import stream_recommendation
@@ -446,6 +447,26 @@ async def _prepare_recommendation(
                     # 택일 소비는 **두 호출의 합**이다 — 상한이 턴당이므로 사후 검증도 턴 단위여야
                     # 한다. 로그에 실어 "상한이 실제로 지켜졌나"를 운영에서 확인할 수 있게 한다.
                     select_used = mapping.select_calls + expanded.select_calls
+                    # [PR #318 리뷰 R6-3] expansion_leaves 도 **합친다** — legs 와 같은 이유·같은
+                    # 규약(원 매핑 것을 앞에, dedup_truncate 로 정리)이다. 안 합치면 원 발화가
+                    # D1(신호 없음)로 expansion_leaves 가 비어 있고 #217 전개 아이템들만 거리컷에
+                    # 드롭돼 expanded.expansion_leaves 가 채워진 턴에서 그 후보가 조용히 버려져
+                    # #222 폴백이 아예 발동하지 않는다 — 쓸 수 있는 후보가 있는데 놓치는 셈이다.
+                    # [PR #318 리뷰 R9-1 캐비엇] "합친다"는 표현이 두 소스가 실제로 섞인다는
+                    # 인상을 주지만, dedup_truncate 는 앞에서부터 자르므로 mapping.expansion_leaves
+                    # 가 이미 상한(category_expand_legs)을 채우는 흔한 경우 expanded.expansion_leaves
+                    # 는 전부 잘려나간다. 이는 `merged`(위)와 **동일한 의도된 우선순위**다 — 원
+                    # 매핑 쪽은 사용자가 실제로 말한 앵커의 top-N leaf 이고 expanded 쪽은 LLM 이
+                    # 지어낸 아이템이 다시 실패해서 나온 leaf 라, 인터리브하면 LLM 창작 아이템의
+                    # 후보가 사용자 발화의 후보를 밀어낸다(legs 규약과 반대 방향). R6-3 이 풀려던
+                    # 문제는 원 쪽이 **비었을 때** 전개 쪽이 통째로 버려지는 것이었고, 그 경우는
+                    # (원이 비면 전개 후보가 상한까지 그대로 채워지므로) 지금도 정확히 해결된다.
+                    # `_interleave_by_leg`(R5-1)는 **같은 서열의 leg 들 사이** 형평을 맞추는
+                    # 것이라 여기(서로 다른 서열의 두 소스)와는 상황이 다르다.
+                    merged_expansion_leaves = dedup_truncate(
+                        mapping.expansion_leaves + expanded.expansion_leaves,
+                        settings.category_expand_legs,
+                    )
                     logger.info(
                         "needs_expansion_union",
                         extra={
@@ -458,15 +479,60 @@ async def _prepare_recommendation(
                     # `replace` 로 합친다 — 필드를 나열해 새로 만들면 이번처럼 새 필드
                     # (`select_calls`)가 조용히 기본값으로 리셋된다. `unresolved` 는 첫 매핑 것을
                     # 그대로 둔다(재전개 금지, 위 주석).
-                    mapping = replace(mapping, legs=merged, select_calls=select_used)
+                    mapping = replace(
+                        mapping,
+                        legs=merged,
+                        select_calls=select_used,
+                        expansion_leaves=merged_expansion_leaves,
+                    )
         decision.category_legs = mapping.legs
-    if decision.category_legs:
+        # [#222] 매핑이 leg 를 하나도 못 냈고 확장 후보가 있으면 그것으로 fan-out 한다.
+        # **legs 가 비었을 때만** 발동한다 — canonical 을 낸 발화는 이 분기에 진입하지 않는다,
+        # 그 자체는 구조적이다. [PR #318 리뷰 R14-2] 단, "협소 발화는 canonical 을 내므로 이
+        # 경로에 안 들어온다"는 **거리 임계가 정상 튜닝돼 있을 때만** 성립한다 — 현 임계는
+        # stale(#344)이라 협소 발화도 canonical 을 못 내 이 경로로 들어올 수 있다(lessons.md
+        # 실측). 그 경우에도 확장 top-N 은 의미 최근접이라 정답 leaf 가 대체로 상위에 포함되고
+        # (실측: "무선 이어폰" top-1 = 음향가전 > 이어폰) leg 마다 keyword·semantic_query 가
+        # 유지되므로, 무필터 degrade(종전 동작) 대비 악화는 아니다 — 임계 재측정은 #344.
+        # 멀티 니즈 중 일부만 unresolved 인 턴의 부분 확장은 v1 범위 밖이다.
+        # [#222 F-3] #217 이 위 needs_expansion 블록에서 먼저 legs 를 채우면(예: "화장품 추천해줘"
+        # → case 3 게이트 통과 → LLM 전개로 재매핑 성공) 이 경로는 타지 않는다 — 이 폴백이 새로
+        # 여는 것은 #217 도 실패하는 턴(비-case3, 또는 전개 후에도 매핑이 전량 실패한 턴)뿐이다.
+        if (
+            not decision.category_legs
+            and mapping.expansion_leaves
+            and settings.category_expand_enabled
+        ):
+            decision.category_legs = mapping.expansion_leaves[: settings.category_expand_legs]
+            decision.category_expanded = True
+            # filters.category 자체는 아래 공유 if 가 category_expanded 를 보고 None 으로 비운다
+            # (PR #318 리뷰 R6-1, §3 이슈 ④ 비범위는 그대로다: 8개 확장 leaf 를 대표하는 단일
+            # LCA 값을 만드는 게 아니라, **틀린 값을 저장하지 않는 것**만 한다).
+            # [PR #318 리뷰 R12-1] `extra` 에는 개수·불리언만 싣는다(#119 PII 규약, 위
+            # category_carry_resolved 와 동일 규약) — 예전엔 `carry_leaf` 로 대표 leaf 카테고리
+            # 문자열을 그대로 실었는데, 그건 R6-1 이전 "대표값이 filters.category 로 승계되는
+            # 함정"을 관측하려던 것이었고 R6-1 이 그 승계 자체를 없애 관측 대상이 사라졌다.
+            logger.info(
+                "category_expanded",
+                extra={"legs": len(decision.category_legs)},
+            )
+    if decision.category_legs and not decision.category_expanded:
         # 대표 canonical — 단일 filters.category 필드·조건 칩·멀티턴 승계 호환(§7).
         decision.filters.category = decision.category_legs[0][0]
     else:
-        # 매핑 결과 없음 → LLM 이 echo 했을 수 있는 미검증 filters.category 를 비운다. category 는
-        # 이제 전적으로 category_legs(canonical) 경유로만 흐른다 — 미시드·매핑 실패 시에도 보정 안 된
-        # 원문이 Spring 검색·조건 칩으로 새지 않게(PR #73 리뷰 #13/#15).
+        # [PR #318 리뷰 R6-1] 확장 턴은 대표값을 저장하지 않는다 — category_legs[0][0] 은 8개
+        # 확장 leaf 중 임의의 하나일 뿐이라(§3 이슈 ④), 이걸 그대로 영속하면 (a) F-1 무필터
+        # 폴백이 걸린 턴은 **실제로 쓰이지 않은** 카테고리가 저장되고, (b) 폴백이 안 걸려도
+        # 다음 리파인 턴("더 저렴한 걸로")이 그 leaf 하나로 조용히 좁혀진다(action=="carry").
+        # 칩·고지에서 지킨 "표시=실제"(#51)가 멀티턴 영속 경로에서 깨지는 것을 막는다.
+        # **검색에는 영향이 없다** — fan-out(`_run_search`)은 `decision.category_legs` 로 돌고
+        # `_leg` 가 leg 마다 `category` 를 override 하므로(`base.category` 를 읽지 않음)
+        # 여기서 None 을 둬도 이번 턴의 8-leg 검색 자체는 그대로다.
+        #
+        # 매핑 결과 없음(비-확장 degrade) → LLM 이 echo 했을 수 있는 미검증 filters.category 를
+        # 비운다. category 는 이제 전적으로 category_legs(canonical) 경유로만 흐른다 —
+        # 미시드·매핑 실패 시에도 보정 안 된 원문이 Spring 검색·조건 칩으로 새지 않게
+        # (PR #73 리뷰 #13/#15).
         decision.filters.category = None
 
     # 멀티턴 병합 필터는 추천 intent 에서만 저장(담기/조회가 덮어쓰지 않게).
@@ -501,6 +567,7 @@ async def run_buyer_turn(
     map_categories=None,
     order_status_fn=None,
     expand_needs=None,
+    popular_fn=None,
     observer=None,
     request_id: str | None = None,
 ) -> AsyncIterator[str]:
@@ -540,6 +607,7 @@ async def run_buyer_turn(
         return
     search = search or search_service.search_catalog
     push_fn = push_fn or spring_client.push_recommendations
+    popular_fn = popular_fn or spring_client.get_popular_products  # [#162] I-3
     thread_store = await get_thread_store()
     prior = await thread_store.get(thread_key)
     condition_actions = getattr(request, "condition_actions", None) or []
@@ -551,10 +619,15 @@ async def run_buyer_turn(
 
     # 프로필 주입 (회원만, read-only) — 게스트/신규는 None(개인화 스킵, 결정 8)
     profile = None
+    profile_vec = None
     profile_eligible = bool(not identity.is_guest and identity.user_id and not identity.seller_id)
     if profile_eligible:
         summary = await read_profile_summary(identity.user_id)
         profile = summary.get("markdown") if summary else None
+        # [#162] 요약 생성 시점에 미리 만들어 둔 취향 벡터(#148 `store._embed_summary`).
+        # 종전에는 markdown 만 꺼내 쓰고 이 값을 버렸다 — 조건 없는 발화의 회원 경로가 이걸로
+        # 홈과 같은 벡터 랭킹을 돌린다. 구 요약·임베딩 실패분은 None 이라 인기 상품으로 간다.
+        profile_vec = summary.get("embedding") if summary else None
         # "기억해"류 명시 명령은 게이트 없이 즉시 승격(hot-path, REQ-PROF). intent 와 무관한
         # 명시 명령이라 라우팅 앞에 둔다 — decompose 가 실패한 턴에도 기록돼야 한다.
         if is_remember_command(request.message):
@@ -1066,6 +1139,9 @@ async def run_buyer_turn(
             # 오해하고, 그 오해 위에서 프롬프트를 고치게 된다.
             scope_free=scope_free,
         )
+        # [#162] 조건 없음 판정은 **여기서** 한다 — `prior`(첫 턴 여부)가 이 스코프에만 있고,
+        # `_prepare_recommendation` 이 카테고리 매핑·승계를 끝낸 뒤라야 `category_legs` 가 확정된다.
+        no_condition = is_no_condition_turn(decision, prior)
         async for frame in stream_recommendation(
             request=request,
             decision=decision,
@@ -1084,5 +1160,10 @@ async def run_buyer_turn(
             thread_key=thread_key,
             observer=observer,
             request_id=resolved_request_id,
+            no_condition=no_condition,
+            popular_fn=popular_fn,
+            # [#119] 개인화 off(A/B baseline arm)면 취향 랭킹도 함께 끈다 — rerank 주입과 같은
+            # 스위치를 따라야 arm 이 "개인화 없음"으로 일관된다.
+            profile_vec=(None if settings.profile_injection_scope == "off" else profile_vec),
         ):
             yield frame
