@@ -6039,3 +6039,39 @@ async def test_empty_catalog_index_falls_back_to_popular(
 
     assert popular_calls
     assert _types(events)[-1] == "done"
+
+
+async def test_profile_fallback_does_not_refetch_purchases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """취향 랭킹이 폴백해도 I-19 는 **한 번만** 부른다.
+
+    취향 경로가 dedup 재료로 I-19 를 먼저 부르는데, 랭킹이 실패해 인기 상품 경로로 떨어지면
+    그쪽 gather 가 또 부른다 — 같은 턴에 3s 짜리 Spring 호출이 두 번 나가는 셈이다.
+    """
+    _fix_now(monkeypatch)
+    calls: list[int] = []
+    real = _purchases(101)
+
+    async def _spy(user_id, status=None):  # noqa: ANN001
+        calls.append(user_id)
+        return await real(user_id, status)
+
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _spy)
+    _inject_profile(monkeypatch, vector=[1.0, 0.0, 0.0], store=_catalog_store([]))  # 랭킹 0건
+    search, _ = _counting_search_calls()
+    popular, popular_calls = _recording_popular()
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="아무거나 추천해줘", thread_id="nc-purchases-once"),
+            _member_num(),
+            llm=FakeLLM(decompose=_NO_CONDITION_DECOMPOSE),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    assert popular_calls  # 인기 상품으로 폴백했다
+    assert len(calls) == 1  # 그런데 I-19 는 한 번뿐

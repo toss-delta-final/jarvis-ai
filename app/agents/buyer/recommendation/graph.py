@@ -565,11 +565,22 @@ async def stream_recommendation(
                 trace.mark_degraded("dedup_skipped")
             return None
 
-    # [#162] 조건 없는 턴 + 프로필 벡터 → **취향 벡터 랭킹**(홈 I-22 와 같은 엔진·같은 인덱스).
+    # [#162] 취향 랭킹이 먼저 I-19 를 부르고 실패해 아래 인기 상품 경로로 폴백하면, 같은 턴에
+    # I-19 가 **두 번** 나간다(각 3s). 한 번만 부르고 결과를 재사용한다 — 리스트를 쓰는 이유는
+    # 중첩 함수에서 `nonlocal` 없이 "아직 안 불렀음"과 "불렀는데 None"(게스트·조회 실패)을
+    # 구분하기 위해서다. 그 둘을 뭉개면 게스트 턴마다 헛호출이 반복된다.
+    _purchases_memo: list = []
+
+    async def _fetch_purchases_once():
+        if not _purchases_memo:
+            _purchases_memo.append(await _fetch_purchases())
+        return _purchases_memo[0]
+
+    # 조건 없는 턴 + 프로필 벡터 → **취향 벡터 랭킹**(홈 I-22 와 같은 엔진·같은 인덱스).
     # 이 경로는 검색도 rerank 도 타지 않아 아래 파이프라인과 갈라지므로 여기서 끝내고 return 한다.
     # `conditions` 는 위에서 이미 나갔다(조건 없는 턴은 `may_auto_relax` 가 False 라 미루지 않는다).
     if no_condition and profile_vec:
-        profile_purchases = await _fetch_purchases()
+        profile_purchases = await _fetch_purchases_once()
         profile_exclude: set[int] = set()
         if profile_purchases is not None:
             profile_recent = profile_purchases.recent_items(
@@ -671,7 +682,7 @@ async def stream_recommendation(
         else nullcontext()
     ):
         search_bundle, purchases = await asyncio.gather(
-            _run_candidate_source(), _fetch_purchases()
+            _run_candidate_source(), _fetch_purchases_once()
         )
     if search_bundle is None:  # 검색 실패 → SEARCH_FAILED(종료)
         if trace := current_request_trace():

@@ -36,8 +36,8 @@ from app.agents.buyer.recommendation.decompose import (
     decompose,
 )
 from app.agents.buyer.recommendation.needs_expansion import detect_expansion_need
-from app.agents.buyer.recommendation.no_condition import is_no_condition_turn
 from app.agents.buyer.recommendation.needs_expansion import expand_needs as _expand_needs
+from app.agents.buyer.recommendation.no_condition import is_no_condition_turn
 from app.agents.buyer.recommendation.relaxation import FIELD_TO_ATTR as RELAXATION_FIELD_TO_ATTR
 from app.agents.buyer.recommendation.state import get_relaxation_offer_store, get_revert_store
 from app.agents.buyer.recommendation.graph import stream_recommendation
