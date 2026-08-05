@@ -1,6 +1,9 @@
 """app/agents/seller/calc.py 순수 함수 테스트 (DESIGN-SELLER-TOOLS-STAGE1 §6).
 
 전부 stdlib 만으로 실행 가능 — 결정론(같은 입력 = 같은 출력)과 임계값 주입을 검증한다.
+[#290] 구 SMA 계열(moving_average·is_anomaly·detect_sales_anomalies) 테스트는
+S-H-ESD 교체로 test_seller_analysis_timeseries.py 로 이관됐다 — 무매출 규칙 3종
+(0원 미판정·무매출 이력 직후 발생=이상·Spring 플래그 무시)도 그쪽이 계승 검증한다.
 """
 
 from __future__ import annotations
@@ -10,135 +13,16 @@ import datetime as dt
 import pytest
 
 from app.agents.seller import calc
-from app.schemas.spring import FunnelResult, SalesSeriesPoint
+from app.schemas.spring import FunnelResult
 
 
-def test_moving_average_window_boundary() -> None:
-    """len < window 구간은 None, 이후는 정확한 평균값."""
-    values = [10.0, 20.0, 30.0, 40.0, 50.0]
-    result = calc.moving_average(values, window=3)
-    assert result[0] is None
-    assert result[1] is None
-    assert result[2] == 20.0  # (10+20+30)/3
-    assert result[3] == 30.0  # (20+30+40)/3
-    assert result[4] == 40.0  # (30+40+50)/3
-
-
-def test_deviation_pct_sign_and_zero_baseline() -> None:
-    """양/음 부호가 실측-기준 방향과 일치하고, baseline==0 이면 0.0."""
-    assert calc.deviation_pct(120.0, 100.0) == 20.0
-    assert calc.deviation_pct(80.0, 100.0) == -20.0
-    assert calc.deviation_pct(50.0, 0.0) == 0.0
-
-
-def test_is_anomaly_threshold_boundary() -> None:
-    """편차 절대값이 임계값과 같으면 이상(True), 미만이면 False."""
-    assert calc.is_anomaly(30.0, threshold_pct=30.0) is True
-    assert calc.is_anomaly(-30.0, threshold_pct=30.0) is True
-    assert calc.is_anomaly(29.9, threshold_pct=30.0) is False
-
-
-def test_detect_sales_anomalies_ignores_spring_flags() -> None:
-    """Spring 이 준 isAnomaly 가 반대여도 원시 sales 로 재판정한다(§0.1 D)."""
-    series = [
-        SalesSeriesPoint(
-            date="2026-07-01", sales=100, order_count=10, is_anomaly=True, deviation_pct=999.0
-        ),
-        SalesSeriesPoint(
-            date="2026-07-02", sales=100, order_count=10, is_anomaly=True, deviation_pct=999.0
-        ),
-        SalesSeriesPoint(
-            date="2026-07-03", sales=100, order_count=10, is_anomaly=True, deviation_pct=999.0
-        ),
-        # 이동평균(100) 대비 300% 급증 — 실제로 이상이어야 함.
-        SalesSeriesPoint(
-            date="2026-07-04", sales=400, order_count=40, is_anomaly=False, deviation_pct=0.0
-        ),
-    ]
-    results = calc.detect_sales_anomalies(series, window=3, min_window=3, threshold_pct=30.0)
-    dates = [r[0] for r in results]
-    assert dates == ["2026-07-01", "2026-07-02", "2026-07-03", "2026-07-04"]
-    # 경계 구간(직전 min_window 미만)은 판정 보류 — deviation 도 None(#194, 구 0.0 과 구분).
-    assert results[0] == ("2026-07-01", None, False)
-    assert results[1] == ("2026-07-02", None, False)
-    assert results[2] == ("2026-07-03", None, False)
-    # 4번째: 직전 3일(100,100,100) 평균=100 대비 actual=400 → deviation=300% → 이상.
-    assert results[3][1] == 300.0
-    assert results[3][2] is True
-
-
-def _point(day: int, sales: int) -> SalesSeriesPoint:
-    """detect_sales_anomalies 테스트용 시계열 포인트 헬퍼(#194)."""
-    return SalesSeriesPoint(date=f"2026-07-{day:02d}", sales=sales, order_count=1)
-
-
-def test_detect_sales_anomalies_adaptive_min_window() -> None:
-    """[#194] 직전 3점부터 판정한다(Spring MIN_WINDOW=3 정렬) — 구 로직(직전 7점 필수)은
-    최근 기간 질의에서 window 미달로 이상을 통째로 놓쳤다(회귀 방지)."""
-    series = [_point(1, 100), _point(2, 100), _point(3, 100), _point(4, 200)]
-    results = calc.detect_sales_anomalies(series, window=7, min_window=3, threshold_pct=30.0)
-    # 4번째: 직전 이력 3점(window 7 미달)이어도 평균 100 대비 +100% → 이상.
-    assert results[3][1] == 100.0
-    assert results[3][2] is True
-
-
-def test_detect_sales_anomalies_zero_baseline_sales_is_anomaly() -> None:
-    """[#194] 무매출 구간 직후 매출 발생 = 이상(Spring 정렬) — 기준선 0 이라 편차는
-    정의 불가(None)지만 발생 자체가 이상이다. 구 로직은 deviation 0.0 → 정상으로 놓쳤다."""
-    series = [_point(1, 0), _point(2, 0), _point(3, 0), _point(4, 50000)]
-    results = calc.detect_sales_anomalies(series, window=7, min_window=3, threshold_pct=30.0)
-    assert results[3] == ("2026-07-04", None, True)
-    # 기준선 0 + 매출도 0 이면 정상.
-    all_zero = [_point(d, 0) for d in range(1, 5)]
-    calm = calc.detect_sales_anomalies(all_zero, window=7, min_window=3, threshold_pct=30.0)
-    assert calm[3] == ("2026-07-04", None, False)
-
-
-def test_detect_sales_anomalies_zero_sales_never_anomaly() -> None:
-    """[#194] 매출 0원 포인트는 편차 -100% 여도 이상 아님(Spring `sales > 0` 가드 정렬) —
-    저볼륨 브랜드의 무판매일이 전부 이상으로 판정되는 노이즈 방지."""
-    series = [_point(1, 100), _point(2, 100), _point(3, 100), _point(4, 0)]
-    results = calc.detect_sales_anomalies(series, window=7, min_window=3, threshold_pct=30.0)
-    assert results[3][1] == -100.0  # 편차는 계산되지만
-    assert results[3][2] is False  # 이상은 아니다
-
-
-def test_detect_sales_anomalies_rejects_invalid_window_config() -> None:
-    """[#194] min_window ≤ 0 이거나 window < min_window 면 설정 오류로 ValueError."""
-    series = [_point(1, 100)]
-    with pytest.raises(ValueError):
-        calc.detect_sales_anomalies(series, window=7, min_window=0, threshold_pct=30.0)
-    with pytest.raises(ValueError):
-        calc.detect_sales_anomalies(series, window=2, min_window=3, threshold_pct=30.0)
-
-
-def test_conversion_rates_and_drop() -> None:
-    """단계 전환율 계산과 baseline 대비 하락 임계 판정."""
+def test_conversion_rates() -> None:
+    """단계 전환율 계산 — 기간 비교 판정은 analysis.proportions(z-검정)로 이관됐다(#290)."""
     current = FunnelResult(view=1000, cart=100, checkout=50, purchase=40)
     rates = calc.conversion_rates(current)
     assert rates["view_to_cart"] == 10.0
     assert rates["cart_to_checkout"] == 50.0
     assert rates["checkout_to_purchase"] == 80.0
-
-    baseline = FunnelResult(view=1000, cart=200, checkout=100, purchase=90)
-    drop = calc.compare_conversion(current, baseline, drop_pct=20.0)
-    # view_to_cart: baseline 20% → current 10% → -50% 하락 → 이상.
-    assert drop["view_to_cart"] is True
-    # cart_to_checkout: baseline 50% → current 50% → 하락 없음.
-    assert drop["cart_to_checkout"] is False
-
-
-def test_compare_conversion_baseline_zero_no_drop() -> None:
-    """baseline 전환율이 0(분모 0)이면 비교 기준이 없어 하락으로 판정하지 않는다(opus 리뷰 m6)."""
-    # baseline.cart == 0 → cart_to_checkout 의 baseline 전환율(=checkout/cart)이 0.
-    baseline = FunnelResult(view=1000, cart=0, checkout=0, purchase=0)
-    current = FunnelResult(view=1000, cart=100, checkout=50, purchase=40)
-
-    drop = calc.compare_conversion(current, baseline, drop_pct=20.0)
-
-    assert drop["view_to_cart"] is False
-    assert drop["cart_to_checkout"] is False
-    assert drop["checkout_to_purchase"] is False
 
 
 def test_normalize_period_last_month_year_rollover() -> None:
@@ -377,20 +261,6 @@ def test_safe_eval_blocks_import_attribute_and_names() -> None:
         calc.safe_eval("(1).__class__")
     with pytest.raises(ValueError):
         calc.safe_eval("x + 1")
-
-
-def test_calc_uses_injected_thresholds() -> None:
-    """다른 임계값을 주입하면 결과가 달라진다(하드코딩 부재 확인)."""
-    series = [
-        SalesSeriesPoint(date="2026-07-01", sales=100, order_count=10),
-        SalesSeriesPoint(date="2026-07-02", sales=100, order_count=10),
-        SalesSeriesPoint(date="2026-07-03", sales=115, order_count=11),
-    ]
-    strict = calc.detect_sales_anomalies(series, window=2, min_window=2, threshold_pct=10.0)
-    lenient = calc.detect_sales_anomalies(series, window=2, min_window=2, threshold_pct=50.0)
-    # 동일 데이터, 다른 threshold_pct → 이상 판정이 달라져야 한다.
-    assert strict[2][2] is True
-    assert lenient[2][2] is False
 
 
 def test_safe_eval_rejects_giant_power_dos() -> None:

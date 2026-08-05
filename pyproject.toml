@@ -26,6 +26,14 @@ dependencies = [
     "apscheduler>=3.10,<4",
     # OpenAI provider (이슈 #40, LLM_PROVIDER=openai). ChatOpenAI 래퍼.
     "langchain-openai>=1.3.5",
+    # ── 판매자 분석 계산 층 (이슈 #290, 논문 기반 워커 — §0.1 C stdlib-only 제약 해제) ──
+    # pandas: 시계열/집계 공통 기반. scipy: GESD t-분위수·two-proportion z-검정.
+    # statsmodels: STL 분해(Cleveland 1990). scikit-learn: k-means(Chen 2012).
+    # GPU·딥러닝 의존 없음(CPU-only) — Prophet 은 cmdstan 무게로 제외(docs/worker-papers.md).
+    "pandas>=2.2",
+    "scipy>=1.14",
+    "statsmodels>=0.14",
+    "scikit-learn>=1.5",
 ]
 
 [dependency-groups]
