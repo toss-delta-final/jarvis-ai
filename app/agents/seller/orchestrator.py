@@ -664,6 +664,12 @@ class PipelineResult:
 
     kind: report(정상 보고서) / clarification(되묻기 — 파이프라인 미실행) /
     apology(전 워커 실패 사과). text 는 세 경우 모두 사용자에게 보낼 최종 문안.
+
+    findings·period·chart_requested 는 `report` SSE 이벤트(이슈 #296, api-spec §3.2
+    v0.24.0)의 직렬화 재료다 — kind=="report" 일 때만 채워지고 그 외에는 기본값
+    (None·False)이다. compose_response 가 텍스트로 눌러 펴며 버리던 구조를 와이어에
+    그대로 실어 보내기 위한 확장이라, 신규 필드는 전부 default 있는 keyword 로만
+    추가한다(frozen dataclass — 기존 생성부·픽스처의 positional 호환 유지).
     """
 
     kind: Literal["report", "clarification", "apology", "refused"]
@@ -671,6 +677,9 @@ class PipelineResult:
     verified: VerifiedReport | None = None
     recommendations: RecommendationSet | None = None
     charts: ChartSet | None = None
+    findings: list[AnalysisFinding] | None = None
+    period: tuple[date, date] | None = None
+    chart_requested: bool = False
 
 
 async def run_analysis_pipeline(
@@ -793,4 +802,7 @@ async def run_analysis_pipeline(
         verified=verified,
         recommendations=recommendations,
         charts=charts,
+        findings=findings,
+        period=(resolved.date_from, resolved.date_to),
+        chart_requested=resolved.wants_chart,
     )
