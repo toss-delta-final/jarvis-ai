@@ -65,13 +65,13 @@ Yehudai et al.(arXiv:2503.16416)의 5관점(핵심 역량/응용별 벤치마크
 
 ### 사고 대응
 
-#119(프로필 주입이 하드필터로 승격되며 단계 간 의도치 않은 결합, 9/9 유출)는 e2e 평가만으로는 이 결합이 어느 단계에서 났는지 귀속되지 않았던 사례다 — 결국 `personalization` 5-arm 이 rerank 단계만 분리한 뒤에야 "프로필 유출이 아니라 확률적 LLM 지터"로 재해석됐다(clean_rerank_only, 단건 CI 0 포함). 단계별+e2e 병행 평가와 척추 `caseId` 공유(에픽 공통 규약 ②)는 이 실패 모드에 대한 정확한 처방이다.
+#119(프로필 주입이 하드필터로 승격되며 단계 간 의도치 않은 결합, 9/9 유출)는 e2e 평가만으로는 이 결합이 어느 단계에서 났는지 귀속되지 않았던 사례다 — 결국 `personalization` 5-arm 이 rerank 단계만 분리한 뒤에야 "프로필 유출이 아니라 확률적 LLM 지터"로 재해석됐다(clean_rerank_only, 단건 CI 0 포함). 단계별+e2e 병행 평가와 척추 `caseId` 공유(에픽 공통 규약 ②)는 이 실패 모드에 대한 정확한 처방이다 — §5 가 인용하는 2026 년 layer-isolated 사례 연구(Zhang et al., arXiv:2606.11686)의 "집계 지표가 계층 결함을 가린다"는 관측과 같은 실패 형태다.
 
 ## 3. LLM-as-judge 신뢰성 (범위 ②)
 
 ### 문헌
 
-Zheng et al.(NeurIPS 2023, arXiv:2306.05685)은 강한 judge(GPT-4)가 인간 선호와 80% 이상 일치("인간 간 일치와 같은 수준")한다고 보고하면서도, position bias·verbosity bias·self-enhancement bias·제한된 추론 능력을 편향으로 꼽는다. Wang et al.(ACL 2024, arXiv:2305.17926)은 제시 순서만 바꿔도 80개 질의 중 66개에서 LLM 심판의 품질 순위가 역전됨을 보인다. Tang et al.(NAACL 2024, arXiv:2310.07712)은 순열 자기일관성(여러 번 순서를 섞어 중심 순위를 취함)으로 GPT-3.5 7~18% 개선을 보고한다. Panickssery et al.(arXiv:2404.13076)은 LLM 평가자가 자기 출력에 높은 점수를 주고(인간 평가자는 동등 평가), 자기인식과 자기선호가 선형 상관을 보인다고 밝힌다. G-Eval(Liu et al., arXiv:2303.16634, 게재처 미확인)은 요약 과제에서 인간 Spearman 0.514 를 보고하면서 "LLM 기반 평가기가 LLM 생성 텍스트를 선호할 수 있다"는 문제도 예비 분석한다. Gu et al.(arXiv:2411.15594)의 서베이는 신뢰성 전략을 일관성 개선·편향 완화·시나리오 적응으로 정리한다. Shankar et al.(arXiv:2404.12272, 게재처 미확인)은 **criteria drift**를 발견한다 — "출력을 채점하려면 기준이 필요하지만, 채점하는 과정에서 기준을 정의하게 된다."
+Zheng et al.(NeurIPS 2023, arXiv:2306.05685)은 강한 judge(GPT-4)가 인간 선호와 80% 이상 일치("인간 간 일치와 같은 수준")한다고 보고하면서도, position bias·verbosity bias·self-enhancement bias·제한된 추론 능력을 편향으로 꼽는다. Wang et al.(ACL 2024, arXiv:2305.17926)은 제시 순서만 바꿔도 80개 질의 중 66개에서 LLM 심판의 품질 순위가 역전됨을 보인다. Tang et al.(NAACL 2024, arXiv:2310.07712)은 순열 자기일관성(여러 번 순서를 섞어 중심 순위를 취함)으로 GPT-3.5 7~18% 개선을 보고한다. Panickssery et al.(arXiv:2404.13076)은 LLM 평가자가 자기 출력에 높은 점수를 주고(인간 평가자는 동등 평가), 자기인식과 자기선호가 선형 상관을 보인다고 밝힌다. G-Eval(Liu et al., arXiv:2303.16634, 게재처 미확인)은 요약 과제에서 인간 Spearman 0.514 를 보고하면서 "LLM 기반 평가기가 LLM 생성 텍스트를 선호할 수 있다"는 문제도 예비 분석한다. Gu et al.(arXiv:2411.15594)의 서베이는 신뢰성 전략을 일관성 개선·편향 완화·시나리오 적응으로 정리한다. Shankar et al.(arXiv:2404.12272, 게재처 미확인)은 **criteria drift**를 발견한다 — "출력을 채점하려면 기준이 필요하지만, 채점하는 과정에서 기준을 정의하게 된다." 2026 년의 체계 평가(Soumik, arXiv:2604.23178, 게재처 미확인)는 완화 전략 9종을 비교하며 **그들 셋업에서는 style 편향(마크다운 선호 0.10–0.76)이 지배적이고 position 편향은 미미(≤0.04)**였다고 보고한다 — 편향의 크기·순위는 셋업 의존이라는 뜻이며, 그래서 이 문서가 문헌 일반론이 아니라 **우리 실측(#275 tau 0.3654)**을 구속력 있는 증거로 삼는다(이 논문을 position 편향 반박 근거로 쓰지 않는다).
 
 ### 우리 실측과의 대조가 핵심
 
@@ -89,7 +89,7 @@ Shankar 의 criteria drift 발견은 "judge 기준을 사전 확정하고 끝"�
 
 ## 4. 자동 프롬프트 최적화 (범위 ③) — 판정 `no-go`(현시점)
 
-### 문헌: 네 계열의 공통 구조
+### 문헌: 다섯 계열의 공통 구조
 
 | 기법 | 핵심 | 전제 |
 |---|---|---|
@@ -98,8 +98,11 @@ Shankar 의 criteria drift 발견은 "judge 기준을 사전 확정하고 끝"�
 | MIPRO(Opsahl-Ong et al., EMNLP 2024, arXiv:2406.11695) | 모듈 라벨·그래디언트 없이 다운스트림 metric 을 surrogate 기반으로 최대화 | **다운스트림 metric 평가 반복** |
 | OPRO(Yang et al., ICLR 2024, arXiv:2309.03409) | 이전 해+점수를 프롬프트에 넣어 매 스텝 후보를 채점·제안 | **매 스텝 채점** |
 | APE(Zhou et al., arXiv:2211.01910, 게재처 미확인) | 지시문 후보 풀을 score function 으로 채점·선택 | **score function** |
+| GEPA(Agrawal et al., ICLR 2026 Oral, arXiv:2507.19457) | 궤적을 자연어로 반성해 프롬프트 진화 + Pareto 선택 | 후보 궤적의 반복 평가 |
 
-네 계열 전부 **"프로그램적 metric + 반복 평가"가 전제**다. 이 전제가 성립하지 않으면 최적화 대상이 없다.
+다섯 계열 전부 **"프로그램적 metric + 반복 평가"가 전제**다. 이 전제가 성립하지 않으면 최적화 대상이 없다.
+
+GEPA 는 GRPO(RL) 대비 평균 +6%·최대 +20%, **롤아웃 35배 감소**, MIPROv2 대비 +10% 이상을 보고한다 — 롤아웃을 35배 줄여 이 절의 "실비용은 평가 캠페인" 논증의 비용 항을 크게 낮추는 방향의 최신 발전이다. 그러나 낮아지는 것은 평가 **횟수**이지 평가 **품질 요구**가 아니다. GEPA 초록에 "프로그램적 metric 필수"라는 명시 문구는 없지만, 후보 궤적을 제안·테스트하는 반복 구조인 이상 후보별 평가 신호는 여전히 전제이며, 판별력 없는 metric(CI 가 0 을 포함) 위에서는 반성(reflection)이 읽는 성공/실패 신호 자체가 노이즈라 같은 함정이 남는다 — 판정(`no-go`(현시점))은 불변이다. `dspy.GEPA` 로 DSPy 에 통합된다는 사실은 §9.1 조건 ④(신규 의존성 사람 승인)와 같은 게이트를 통과해야 한다.
 
 ### 핵심 논증 — "계측기 먼저"의 문헌 확인
 
@@ -129,7 +132,7 @@ Ouyang et al.(arXiv:2308.02828)은 동일 요청 반복 간 test-output 완전 �
 
 ### 우리 자산과의 대조
 
-provider seed 는 강제할 수 없다(`model_eval`·`intent_probe` README 명시), 판매자 `temperature 0.0` 도 `app/core/config.py` 주석에서 "일관성 장치"라고만 부를 뿐 결정론이라 하지 않는다 — **문헌과 정확히 같은 결론을 리포가 이미 채택**하고 있다.
+provider seed 는 강제할 수 없다(`model_eval`·`intent_probe` README 명시), 판매자 `temperature 0.0` 도 `app/core/config.py` 주석에서 "일관성 장치"라고만 부를 뿐 결정론이라 하지 않는다 — **문헌과 정확히 같은 결론을 리포가 이미 채택**하고 있다. 2026 년 production 에이전트 사례 연구(Zhang et al., arXiv:2606.11686, 게재처 미확인)는 **LLM 없는 결정론 하네스**(238케이스·23슬라이스, 2.39초)만 CI 회귀 게이트로 두는 같은 구조를 보고하고, 회귀 주입 실험에서 전체 지표는 −1.7~−5.9% 로 마스킹되지만 해당 계층 슬라이스는 −25~−91% 급락함을 보였다 — 에픽 공통 규약 ③(결정론 CI/확률 수동)과 ②(단계별 귀속, e2e 집계가 계층 결함을 가림)의 2026 년 독립 실증이다.
 
 ### 구체 권고
 
@@ -173,7 +176,7 @@ provider seed 는 강제할 수 없다(`model_eval`·`intent_probe` README 명�
 
 1. **계측기 먼저** — #333 골든셋 v2 로 `teacher−no-op` 급 비교의 paired bootstrap 95% CI 가 0 을 배제할 것.
 2. **목적함수 존재** — 단계별 결정론 metric(에픽 자식 #331/#332/#334) 중 최소 2축이 커밋되어 APO 의 목적함수로 쓸 수 있을 것.
-3. **예산 사전 등록** — 후보 수×반복 수×런 비용의 평가 예산을 시작 전에 사전 등록.
+3. **예산 사전 등록** — 후보 수×반복 수×런 비용의 평가 예산을 시작 전에 사전 등록. 예산 산정 시 GEPA(35배 저롤아웃)류를 우선 검토한다.
 4. **의존성 승인** — DSPy 등 신규 의존성은 사람 승인 게이트(이슈 비범위 재확인).
 
 **도입 금지 조건**(하나라도 참이면 시작하지 않는다):
@@ -212,6 +215,8 @@ provider seed 는 강제할 수 없다(`model_eval`·`intent_probe` README 명�
 - KDD 서베이(Mohammadi et al.)의 "4단계 프레임·4대 결함" 명명은 이슈 서술과 달리 본문에 없다 — §2 에서 정정으로 처리했다.
 - Yehudai et al.(arXiv:2503.16416)은 arXiv 로만 확인됐고 게재처는 미확인이다.
 - 이 조사 과정에서 확인한 "CLAUDE.md 의 'Anthropic 2-tier' 서술과 구매자 경로 실측(OpenAI 2-tier)의 불일치"는 이 조사의 범위(평가·개선 방법론) 밖이라 다루지 않았다 — 별도 이슈 대상일 수 있다.
+- GEPA 초록에는 프로그램적 metric 요구가 명시돼 있지 않다 — 후보 궤적을 제안·테스트하는 반복 구조라는 사실로부터 평가 신호 전제를 서술했다. Soumik(arXiv:2604.23178)·Zhang et al.(arXiv:2606.11686)의 게재처는 미확인이다(arXiv 로만 인용).
+- 2025–2026 신간 스윕(GEPA·judge 편향 완화 체계 평가·layer-isolated CI 게이트)을 2026-08-05 같은 날 추가 수행했다(라운드 3, recency 보강).
 
 ## 참고 문헌
 
@@ -238,3 +243,6 @@ provider seed 는 강제할 수 없다(`model_eval`·`intent_probe` README 명�
 - Matthias Gerstgrasser et al., "Is Model Collapse Inevitable? Breaking the Curse of Recursion by Accumulating Real and Synthetic Data", arXiv:2404.01413 (2024).
 - Marco Tulio Ribeiro, Tongshuang Wu, Carlos Guestrin, Sameer Singh, "Beyond Accuracy: Behavioral Testing of NLP Models with CheckList", ACL 2020 (arXiv:2005.04118).
 - Moran Mizrahi, Guy Kaplan, Dan Malkin, Rotem Dror, Dafna Shahaf, Gabriel Stanovsky, "State of What Art? A Call for Multi-Prompt LLM Evaluation", TACL (arXiv:2401.00595).
+- Lakshya A Agrawal et al., "GEPA: Reflective Prompt Evolution Can Outperform Reinforcement Learning", ICLR 2026 Oral (arXiv:2507.19457).
+- Sadman Kabir Soumik, "Judging the Judges: A Systematic Evaluation of Bias Mitigation Strategies in LLM-as-a-Judge Pipelines", arXiv:2604.23178 (2026, 게재처 미확인).
+- Sawyer Zhang, Alexander Wang, Sophie Lei, "Layer-Isolated Evaluation: Gating the Deterministic Scaffold of a Production LLM Agent with a No-LLM, Regression-Locked Test Harness", arXiv:2606.11686 (2026, 게재처 미확인).
