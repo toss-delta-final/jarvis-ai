@@ -13,6 +13,32 @@
 
 ---
 
+## [2026-08-05] 정본 목록을 재사용하기 전에 **그 목록이 답하는 질문**이 내 질문과 같은지 본다
+- 증상: #162 "조건 없는 발화" 판정이 조건 축으로 `decompose._FILTER_AXES` 를 재사용했다.
+  사본을 만들지 않았으니 드리프트가 없다고 판단했는데, `RouteDecision` 에 직접 달린 축
+  (`total_budget`·`buy_all`·`repurchase_products`·`revert_categories`)이 **통째로 검사에서
+  빠져 있었다**(PR #311 리뷰).
+- 원인: `_FILTER_AXES` 가 답하는 질문은 **"Spring WHERE 로 나가는 하드필터는 무엇인가"** 이고,
+  판정이 물어야 하는 질문은 **"사용자가 조건을 하나라도 줬는가"** 였다. 그 축들은 `filters` 가
+  아니라 `RouteDecision` 필드라 그 목록에 **있을 수가 없다** — 재사용이 드리프트는 막았지만
+  **범위가 애초에 달랐다**. 두 질문이 겹치는 구간이 넓어 한동안 맞아 보였을 뿐이다.
+- 규칙: 정본 목록을 재사용할 때는 **그 목록의 docstring 이 규정하는 질문**을 먼저 읽고 내
+  질문과 대조한다. 다르면 재사용하되 **모자란 축을 별도 목록으로 명시**하고, 그 자료구조
+  **전체 필드를 분류하는 드리프트 테스트**를 붙여 다음 필드가 조용히 새지 않게 한다
+  (`_FILTER_AXES` 가 `ProductSearchFilters` 전체와 대조되는 것과 같은 방식).
+- 곁가지 교훈: **리뷰가 제안한 수정을 그대로 넣기 전에 그 전제를 검산한다.** 리뷰는 "예산 턴이
+  취향 경로로 새서 `BudgetSet` 로직을 우회한다"며 판정에서 막으라고 했는데, `buy_all_mode` 는
+  `split_by_need`(니즈 2개 이상)를 요구하고 조건 없는 턴은 정의상 leg 가 비어 있어 **어느
+  경로로 가도 예산 세트는 만들어지지 않았다**. 제안대로 막았으면 그 턴이 무필터 I-1
+  (7,245건·13.33MB)로 되돌아가면서 예산은 여전히 반영되지 않는, 비용만 늘고 얻는 것 없는
+  변경이 됐다. 실제 채택안은 **판정은 통과시키고 후보 확보 방식을 가르는 것**이다 — 가격이
+  없는 취향 경로를 막고, 가격이 오는 인기 상품(I-3)을 예산으로 거른다.
+- 관련: #162, PR #311 리뷰, `app/agents/buyer/recommendation/no_condition.py`
+  (`_DECISION_CONDITION_AXES`·`has_total_budget`·`within_budget`),
+  `tests/unit/test_no_condition.py::test_route_decision_axes_are_all_classified`
+
+---
+
 ## [2026-08-05] `monkeypatch.setenv` + `get_settings.cache_clear()` 는 전역 autouse 픽스처와 경합해 다음 테스트로 샌다
 - 증상: #299 의 `test_limit_configurable_via_env` 가 `REQUEST_BODY_MAX_BYTES=20` 을
   `monkeypatch.setenv` + `get_settings.cache_clear()` 로 주입했는데, 이 테스트 **하나만** 파일

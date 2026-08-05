@@ -18,7 +18,11 @@ from uuid import uuid4
 
 from app.agents.buyer._frames import sse
 from app.agents.buyer.recommendation.budget_sets import BudgetSet, build_budget_sets
-from app.agents.buyer.recommendation.no_condition import rank_by_profile
+from app.agents.buyer.recommendation.no_condition import (
+    has_total_budget,
+    rank_by_profile,
+    within_budget,
+)
 from app.agents.buyer.recommendation.rerank import rerank
 from app.agents.buyer.recommendation.relaxation import (
     FIELD_TO_ATTR as RELAXATION_FIELD_TO_ATTR,
@@ -579,7 +583,9 @@ async def stream_recommendation(
     # 조건 없는 턴 + 프로필 벡터 → **취향 벡터 랭킹**(홈 I-22 와 같은 엔진·같은 인덱스).
     # 이 경로는 검색도 rerank 도 타지 않아 아래 파이프라인과 갈라지므로 여기서 끝내고 return 한다.
     # `conditions` 는 위에서 이미 나갔다(조건 없는 턴은 `may_auto_relax` 가 False 라 미루지 않는다).
-    if no_condition and profile_vec:
+    # [#311 리뷰] 예산·전부구매 의도가 있으면 취향 경로를 타지 않는다 — AI 인덱스에 가격이 없어
+    # 예산을 확인할 수 없다. 그 턴은 아래 인기 상품 경로에서 예산으로 걸러진다.
+    if no_condition and profile_vec and not has_total_budget(decision):
         profile_purchases = await _fetch_purchases_once()
         profile_exclude: set[int] = set()
         if profile_purchases is not None:
@@ -665,6 +671,12 @@ async def stream_recommendation(
             logger.warning("popular_products_failed", extra={"reason": str(exc)})
             found = None
         if found is not None:
+            # [#311 리뷰] 총액 예산을 말한 턴은 **예산 안의 후보만** 남긴다. 세트로 묶지 않고
+            # 대안으로 보여주므로 상품 하나가 예산 이하이면 된다 — 무엇을 몇 개 살지 사용자가
+            # 말하지 않은 턴에 조합을 지어내면 근거 없는 세트가 된다(`has_total_budget` 참조).
+            if decision.total_budget is not None:
+                affordable = within_budget(found.products, decision.total_budget)
+                found = ProductSearchResult(products=affordable, total_count=len(affordable))
             # **0건도 성공이다**(§4.12) — 빈 배열이면 하류 zero-result 경로가 카드 없이 답한다.
             # 여기서 degrade 로 처리하면 이 이슈가 없애려는 무필터 I-1 을 도로 부른다.
             return (found, {})
@@ -1295,7 +1307,19 @@ async def stream_recommendation(
     # "인기 상품으로 보여드릴게요" 라고 말하면 거짓이 된다(#133 정직성 규약 — 그 턴은
     # `mark_degraded("popular_fallback")` 로 관측에 남는다).
     if no_condition and not popular_degraded:
-        if notice := _strip_unsafe(settings.no_condition_notice_popular):
+        if decision.total_budget is not None:
+            # 예산을 말한 턴에는 그 금액을 되짚어 준다 — "조건을 안 주셨다"고 하면 거짓이 된다.
+            # format 실패는 문구를 통째로 잃지 않게 원문으로 떨군다(`_set_label` 과 같은 관용구).
+            try:
+                raw_notice = settings.no_condition_notice_budget.format(
+                    budget=f"{decision.total_budget:,}원"
+                )
+            except (KeyError, IndexError, ValueError):
+                logger.warning("no_condition_budget_notice_invalid")
+                raw_notice = settings.no_condition_notice_budget
+        else:
+            raw_notice = settings.no_condition_notice_popular
+        if notice := _strip_unsafe(raw_notice):
             yield sse("token", TokenData(text=notice).model_dump(by_alias=True))
 
     # [#133] 최근 구매 제외(I-19) 실패 고지 — **기본 미고지**(config 기본값 "")다. 조회 실패는

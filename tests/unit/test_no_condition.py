@@ -11,9 +11,13 @@ import json
 import pytest
 
 from app.agents.buyer.recommendation.decompose import decompose
-from app.agents.buyer.recommendation.no_condition import is_no_condition_turn
+from app.agents.buyer.recommendation.no_condition import (
+    has_total_budget,
+    is_no_condition_turn,
+    within_budget,
+)
 from app.agents.buyer.recommendation.state import RouteDecision
-from app.schemas.spring import ProductSearchFilters
+from app.schemas.spring import ProductSearchFilters, SpringProduct
 
 
 def _decision(*, semantic_query_is_fallback: bool = True, **filter_kwargs) -> RouteDecision:
@@ -176,3 +180,135 @@ async def test_decompose_does_not_mark_fallback_when_llm_gives_semantic_query() 
 
     assert decision.semantic_query_is_fallback is False
     assert is_no_condition_turn(decision, prior=None) is False
+
+
+# ─────────── RouteDecision 에 직접 실리는 축 (PR #311 리뷰) ───────────
+
+
+def _decision_with(**decision_kwargs) -> RouteDecision:
+    return RouteDecision(
+        intent="recommend",
+        filters=ProductSearchFilters(),
+        semantic_query_is_fallback=True,
+        **decision_kwargs,
+    )
+
+
+@pytest.mark.parametrize(
+    "decision_kwargs",
+    [
+        {"repurchase_products": ["무선 이어폰"]},
+        {"revert_categories": ["조미료"]},
+    ],
+)
+def test_recent_purchase_pointers_block_trigger(decision_kwargs: dict) -> None:
+    """재구매 지목·되돌리기는 사용자가 **무언가를 명시적으로 지목한** 발화라 조건이다.
+
+    오늘은 그런 발화면 decompose 가 `semanticQuery` 를 채워 출처 검사에서도 걸리지만,
+    그건 우연이라 여기서 못박는다.
+    """
+    assert is_no_condition_turn(_decision_with(**decision_kwargs), prior=None) is False
+
+
+# ─────────── 총액 예산 — 판정은 통과시키고 **후보 확보 방식**을 가른다 ───────────
+
+
+@pytest.mark.parametrize(
+    "decision_kwargs",
+    [
+        {"total_budget": 50000},
+        {"buy_all": True},
+        {"buy_all": True, "total_budget": 50000},
+    ],
+)
+def test_budget_intent_does_not_block_trigger(decision_kwargs: dict) -> None:
+    """**"총 5만원 있어 아무거나 추천해줘"는 여전히 조건 없는 턴으로 본다.**
+
+    여기서 막으면 그 턴이 무필터 I-1(실측 7,245건·13.33MB)로 되돌아가는데, 그래 봐야 예산이
+    반영되지 않는다 — `build_budget_sets`(#60)는 니즈(leg) 2개 이상일 때만 돌고
+    (`split_by_need`), 조건 없는 턴은 정의상 leg 가 비어 있다. 비용만 늘고 얻는 게 없다.
+    """
+    assert is_no_condition_turn(_decision_with(**decision_kwargs), prior=None) is True
+
+
+@pytest.mark.parametrize(
+    ("decision_kwargs", "expected"),
+    [
+        ({}, False),
+        ({"total_budget": 50000}, True),
+        ({"buy_all": True, "total_budget": 50000}, True),
+        # 예산 없는 "다 사줘" 는 **취향 경로를 막지 않는다** — 확인할 가격이 애초에 없고,
+        # leg 가 없어 어느 경로로 가도 PICK_ONE 이라 결과도 같다. 평소대로 취향·인기 최적
+        # 상품을 추천한다.
+        ({"buy_all": True}, False),
+    ],
+)
+def test_has_total_budget(decision_kwargs: dict, expected: bool) -> None:
+    """총액 예산 신호 — 취향 경로 차단과 예산 필터의 스위치다."""
+    assert has_total_budget(_decision_with(**decision_kwargs)) is expected
+
+
+def test_within_budget_drops_priceless_products() -> None:
+    """가격을 **확인할 수 없는** 후보는 뺀다 — 예산은 반증이 아니라 입증이 필요하다.
+
+    남겨 두면 "5만원이라 했는데 8만원짜리를 줬다"가 된다. `build_budget_sets` 가 가격 없는
+    후보를 `unavailable_legs` 로 빼는 것과 같은 규약이다.
+    """
+    products = [
+        SpringProduct(product_id=1, name="싼 것", price=30000),
+        SpringProduct(product_id=2, name="비싼 것", price=80000),
+        SpringProduct(product_id=3, name="가격 모름", price=None),
+        SpringProduct(product_id=4, name="딱 맞는 것", price=50000),  # 경계 포함
+    ]
+    assert [p.product_id for p in within_budget(products, 50000)] == [1, 4]
+
+
+def test_per_item_price_cap_still_blocks_trigger() -> None:
+    """대조군 — "5만원 이하 아무거나"(상품당 상한)는 종전대로 `_FILTER_AXES` 가 잡는다."""
+    decision = RouteDecision(
+        intent="recommend",
+        filters=ProductSearchFilters(price_max=50000),
+        semantic_query_is_fallback=True,
+    )
+    assert is_no_condition_turn(decision, prior=None) is False
+
+
+def test_route_decision_axes_are_all_classified() -> None:
+    """`RouteDecision` 에 필드가 늘면 **분류를 강제한다**.
+
+    PR #311 리뷰가 잡은 갭(`total_budget`·`buy_all` 이 판정에서 통째로 빠짐)은 "새 축이 생겼는데
+    아무도 모른다"는 구조적 문제였다. `_FILTER_AXES` 가 `ProductSearchFilters` 전체와
+    대조되듯(tests/unit/test_decompose.py), 여기서는 `RouteDecision` 전체를 세 집합으로 못박는다.
+    """
+    from dataclasses import fields
+
+    from app.agents.buyer.recommendation import no_condition
+
+    blocking = {  # 있으면 조건 있는 턴 — 트리거를 막는다
+        "filters",  # _FILTER_AXES 로 축별 검사
+        "category_legs",  # 매핑된 카테고리
+        "semantic_query_is_fallback",  # 의미 신호의 출처
+        *no_condition._DECISION_CONDITION_AXES,  # 재구매·되돌리기 지목
+    }
+    selects_source = {  # 트리거는 통과시키되 **후보 확보 방식**을 가른다(has_total_budget)
+        "total_budget",
+    }
+    no_effect_on_sourcing = {  # 후보 소스 선택에 영향이 없다
+        "intent",  # 레인 선택(recommend/cart_add/...)
+        "case",  # 발화 유형(1/2/3)
+        "reply",  # intent=general 전용 답변
+        "cart",  # 담기 의도 — 추천 레인 밖
+        "scoped_to_previous",  # 직전 결과 지칭 = 멀티턴이라 prior 가 막는다
+        "category_queries",  # 매핑 **전** 추측 — 결과인 category_legs 가 대표한다
+        # "다 사줘" — 세트 의도이지만 leg 없는 턴에서는 어느 경로도 세트를 만들지 못하고
+        # (`buy_all_mode` 가 `split_by_need` 를 요구한다) 둘 다 PICK_ONE 으로 끝난다.
+        # 확인할 가격도 없어 취향 경로를 막을 근거가 없다.
+        "buy_all",
+    }
+
+    assert {f.name for f in fields(RouteDecision)} == (
+        blocking | selects_source | no_effect_on_sourcing
+    )
+    assert not (blocking & selects_source)
+    assert not (blocking & no_effect_on_sourcing)
+    assert not (selects_source & no_effect_on_sourcing)

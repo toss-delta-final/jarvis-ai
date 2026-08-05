@@ -457,11 +457,22 @@ class Settings(BaseSettings):
     # [#162] 조건이 하나도 없는 발화의 안내. **문안은 튜너블이지만 발신은 아니다**
     # (rerank_fallback_notice 와 같은 규약) — 없으면 사용자가 인기상품·취향 기반 결과를
     # **자기 조건이 반영된 결과로 오해**한다. 후보 소스가 다르므로 문구를 둘로 나눈다.
+    # **무엇을 했는지 말하고 예시로 되묻는다** — "조건을 안 주셨다"고 단정하지 않는다. 예산만
+    # 말한 턴("총 5만원 있어 아무거나")처럼 사용자가 무언가는 준 경우가 있어 단정이 거짓이 된다.
+    # 예시를 넣는 이유는 "조건을 알려달라"만으로는 무엇을 어떻게 말해야 할지 모르기 때문이다.
     no_condition_notice_popular: str = (
-        "찾으시는 조건을 알려주시면 더 잘 찾아드릴 수 있어요. 지금은 인기 상품으로 보여드릴게요."
+        "지금 인기 있는 상품으로 골라봤어요. "
+        '"5만원 이하 무선 이어폰"처럼 알려주시면 더 잘 추천해드릴 수 있어요.'
     )
     no_condition_notice_profile: str = (
-        "찾으시는 조건을 알려주시면 더 잘 찾아드릴 수 있어요. 지금은 취향을 반영해 보여드릴게요."
+        "취향에 맞을 만한 상품으로 골라봤어요. "
+        '"5만원 이하 무선 이어폰"처럼 알려주시면 더 잘 추천해드릴 수 있어요.'
+    )
+    # 총액 예산만 말한 턴 전용 — `{budget}` 은 천단위 구분 금액이 들어간다(예: "50,000원").
+    # 세트로 묶지 않고 **예산 안의 대안**을 보여주는 턴이라 문구도 "골라봤어요 + 되묻기"다.
+    no_condition_notice_budget: str = (
+        "{budget} 안에서 인기 있는 상품으로 골라봤어요. "
+        '"무선 이어폰"처럼 어떤 상품을 찾으시는지 알려주시면 더 잘 추천해드릴 수 있어요.'
     )
 
     # ── 홈 추천 랭킹 (I-22, api-spec §3.7 · 이슈 #148) ──
@@ -1477,6 +1488,7 @@ class Settings(BaseSettings):
             # 결과를 자기 조건이 반영된 결과로 오해하고, 서버는 멀쩡히 돌아 드러나지 않는다.
             "NO_CONDITION_NOTICE_POPULAR": (self.no_condition_notice_popular, "§4.12"),
             "NO_CONDITION_NOTICE_PROFILE": (self.no_condition_notice_profile, "§4.12"),
+            "NO_CONDITION_NOTICE_BUDGET": (self.no_condition_notice_budget, "§4.12"),
         }
         for name, (value, section) in required.items():
             if not _strip_unsafe(value):

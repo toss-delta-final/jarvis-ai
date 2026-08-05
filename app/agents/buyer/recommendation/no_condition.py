@@ -28,6 +28,54 @@ logger = logging.getLogger(__name__)
 # `ProductSearchFilters` 전체 필드와 대조하는 드리프트 테스트가 지키고 있다
 # (`tests/unit/test_decompose.py`). `semantic_query` 는 이 목록에 **의도적으로 없고**
 # 아래에서 출처(`semantic_query_is_fallback`)로 따로 판정한다.
+#
+# **`_FILTER_AXES` 만으로는 부족하다** — 그 목록이 답하는 질문은 "Spring WHERE 로 나가는
+# 하드필터는 무엇인가"이고, 이 모듈이 물어야 하는 질문은 "사용자가 조건을 하나라도 줬는가"다.
+# 두 질문이 다르다는 걸 놓쳐 `RouteDecision` 쪽 축이 통째로 빠져 있었다(PR #311 리뷰).
+# 아래는 `filters` 밖, **`RouteDecision` 에 직접 실리는 사용자 의도 축**이다.
+_DECISION_CONDITION_AXES = (
+    # 최근 구매로 가려진 것을 다시 보겠다는 지목 — 상품 단위(repurchase)·카테고리 단위(revert).
+    # 사용자가 **무언가를 명시적으로 지목한** 발화이므로 조건이다. 오늘은 그런 발화면
+    # decompose 가 `semanticQuery` 를 채워 ③에서도 걸리지만, 그건 우연이라 여기서 못박는다.
+    "repurchase_products",
+    "revert_categories",
+)
+
+
+def has_total_budget(decision: RouteDecision) -> bool:
+    """이번 턴에 **총액 예산**이 실렸는가(`total_budget`).
+
+    `filters.price_max`(상품 하나당 상한)와 **다른 축**이라(state.py) `_FILTER_AXES` 에 없다.
+    그렇다고 `is_no_condition_turn` 을 막는 축으로 두지도 **않는다** — 막으면 그 턴이 무필터
+    I-1(실측 7,245건·13.33MB)로 되돌아가는데, 그래 봐야 예산이 반영되지 않는다.
+    `build_budget_sets`(#60)는 **니즈(leg)가 2개 이상**일 때만 도는데(`split_by_need`), 조건 없는
+    턴은 정의상 leg 가 비어 있어 어느 경로로 가도 예산 세트가 만들어지지 않기 때문이다.
+
+    대신 **후보 확보 방식**을 가르는 데 쓴다:
+      · 취향 벡터 랭킹을 **막는다** — AI 카탈로그 인덱스(`CatalogArtifact`)에 **가격이 없어**
+        예산 준수를 확인할 방법이 없다. 5만원이라 말한 사용자에게 8만원짜리가 나갈 수 있다.
+      · 인기 상품(I-3)은 응답에 `price` 가 있어 **예산 안의 후보만 남길 수 있다**.
+
+    그래서 "총 5만원 있어 아무거나"는 **세트 조합이 아니라 예산 안의 대안 + 되묻기**로 처리한다.
+    무엇을 몇 개 살지 사용자가 말하지 않은 턴에 조합을 지어내면 "이어폰+샴푸+등산화 합쳐 5만원"
+    같은 근거 없는 묶음이 나온다 — 고를 기준이 없기 때문이다.
+
+    **`buy_all` 은 보지 않는다.** 예산 없는 "다 사줘"에는 확인할 가격이 애초에 없어 취향 경로를
+    막을 근거가 없고, leg 가 없어 어느 경로로 가도 `PICK_ONE` 으로 끝나 결과도 같다. 그런 턴은
+    평소대로 취향(회원)·인기(게스트) 최적 상품을 추천한다.
+    """
+    return decision.total_budget is not None
+
+
+def within_budget(products: list, budget: int) -> list:
+    """가격이 예산 이하인 상품만 남긴다.
+
+    **가격이 없는 상품(`price is None`)은 뺀다** — 예산 준수를 확인할 수 없는 후보를 남기면
+    "5만원이라 했는데 8만원짜리를 줬다"가 된다. `build_budget_sets` 도 가격 없는 후보를
+    `unavailable_legs` 로 빼는 같은 규약이다(평점 사후필터의 "데이터 부재는 보존"과 반대인 이유:
+    평점은 **반증**이 필요하지만 예산은 **입증**이 필요하다).
+    """
+    return [p for p in products if p.price is not None and p.price <= budget]
 
 
 def _is_blank(value: object) -> bool:
@@ -53,21 +101,31 @@ def is_no_condition_turn(
 ) -> bool:
     """이번 턴이 "조건이 하나도 없는 추천 발화"인가.
 
-    넷을 **모두** 만족해야 한다:
+    다섯을 **모두** 만족해야 한다:
       ① 첫 턴 (`prior is None`)
       ② `category_legs` 가 빔 — 카테고리가 매핑됐으면 조건이 있는 턴이다
       ③ **의미 신호가 없음** (`semantic_query_is_fallback`)
       ④ `filters` 의 하드필터 축이 전부 빔 (`_FILTER_AXES`)
+      ⑤ **`RouteDecision` 에 실린 지목 축이 전부 빔** (`_DECISION_CONDITION_AXES`)
 
     ③을 값의 유무로 판정하면 **영영 트리거되지 않는다.** decompose 는 `semantic_query` 를
     `llm_sq or cat_signal or prior_sq or query` 로 채워(decompose.py) 아무 신호가 없어도
     **이번 턴 원문**이 들어가기 때문이다 — "아무거나 추천해줘"에서도 값은 "아무거나 추천해줘"다.
     그래서 값이 아니라 **출처**를 본다.
 
+    ⑤는 `filters` 밖의 축이다 — `_FILTER_AXES` 는 "Spring WHERE 로 나가는 하드필터"의 정본이지
+    "사용자가 조건을 줬는가"의 정본이 아니라, 재사용할 때 두 질문이 같은지 확인했어야 했다
+    (PR #311 리뷰, `docs/lessons.md`).
+
+    **총액 예산(`total_budget`)·전부구매(`buy_all`)는 여기서 막지 않는다** — 막으면 그 턴이
+    무필터 I-1(13.33MB)로 되돌아가는데 예산이 반영되지도 않는다. `total_budget` 은 대신
+    **후보 확보 방식**을 가르고(취향 경로 차단 + 인기 상품을 예산으로 거름), `buy_all` 단독은
+    아무것도 바꾸지 않는다 — 자세한 근거는 `has_total_budget` docstring 에 있다.
+
     ②가 멀티턴 리파인도 함께 막는다 — `_carry_prior_category`(buyer/graph.py)가 직전 턴
     카테고리를 `category_legs` 로 승계하기 때문이다. ①은 그 승계가 없는 경우까지 막는
-    이중 방어다: 멀티턴의 "리파인 / 칩 제거 / 카테고리-무관 리셋" 세 의도는 아직 구분되지
-    않으므로(#84) 이 경로는 **첫 턴에 한정**한다. #84 해소 후 확장 대상이다.
+    이중 방어다: 멀티턴의 "리파인 / 칩 제거 / 카테고리-무관 리셋" 세 의도 구분은 #84 소관이라
+    이 경로는 **첫 턴에 한정**한다.
 
     **애매하면 False 로 기운다** — 오탐(조건 있는 턴을 조건 없음으로 봄)은 사용자가 말한
     조건을 버리는 반면, 미탐은 종전 동작(무필터 검색)이라 새로 나빠지지 않는다.
@@ -77,6 +135,8 @@ def is_no_condition_turn(
     if decision.category_legs:
         return False
     if not decision.semantic_query_is_fallback:
+        return False
+    if any(not _is_blank(getattr(decision, axis, None)) for axis in _DECISION_CONDITION_AXES):
         return False
     return all(_is_blank(getattr(decision.filters, field, None)) for field in _FILTER_AXES)
 

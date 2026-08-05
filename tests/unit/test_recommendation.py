@@ -6075,3 +6075,106 @@ async def test_profile_fallback_does_not_refetch_purchases(
 
     assert popular_calls  # 인기 상품으로 폴백했다
     assert len(calls) == 1  # 그런데 I-19 는 한 번뿐
+
+
+# ─────────── [#162 / PR #311 리뷰] 총액 예산만 말한 턴 ───────────
+
+_BUDGET_ONLY_DECOMPOSE = {
+    "intent": "recommend",
+    "filters": {},
+    "case": 2,
+    "buyAll": True,
+    "totalBudget": 50000,
+}
+
+_PRICED_POPULAR = [
+    SpringProduct(product_id=101, name="싼 것", price=30000, category="c", brand="b"),
+    SpringProduct(product_id=102, name="비싼 것", price=80000, category="c", brand="b"),
+    SpringProduct(product_id=103, name="딱 맞는 것", price=50000, category="c", brand="b"),
+]
+
+
+async def test_budget_only_turn_filters_popular_by_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """"총 5만원 있어 아무거나" — 인기 상품 중 **예산 이하만** 후보로 남는다.
+
+    세트로 묶지 않는다: 무엇을 몇 개 살지 사용자가 말하지 않아 조합 기준이 없다. 대신 예산 안의
+    대안을 보여주고 대화로 되묻는다.
+    """
+    _inject_profile(monkeypatch, vector=[1.0, 0.0, 0.0], store=_catalog_store([201, 202]))
+    search, search_calls = _counting_search_calls()
+    popular, popular_calls = _recording_popular(_PRICED_POPULAR)
+    push = _RecordingPush()
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="총 5만원 있어 아무거나 추천해줘", thread_id="nc-budget"),
+            _member(),
+            llm=FakeLLM(decompose=_BUDGET_ONLY_DECOMPOSE),
+            search=search,
+            push_fn=push,
+            popular_fn=popular,
+        )
+    )
+
+    assert popular_calls  # 인기 상품 경로를 탄다
+    assert search_calls == []  # 무필터 I-1 로 되돌아가지 않는다
+    entry = _only_list(push.pushes[0])
+    assert 102 not in entry.product_ids  # 8만원짜리는 빠진다
+    assert set(entry.product_ids) <= {101, 103}
+    assert push.pushes[0].list_type == "PICK_ONE"  # 세트가 아니라 대안이다
+    assert push.pushes[0].total_budget is None
+
+
+async def test_budget_only_turn_skips_taste_vector_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """취향 벡터가 있어도 예산 턴은 그 경로를 타지 않는다.
+
+    AI 카탈로그 인덱스(`CatalogArtifact`)에 **가격이 없어** 예산을 확인할 방법이 없다.
+    그 경로로 보내면 5만원이라 말한 사용자에게 8만원짜리가 나갈 수 있다.
+    """
+    _inject_profile(monkeypatch, vector=[1.0, 0.0, 0.0], store=_catalog_store([201, 202]))
+    search, _ = _counting_search_calls()
+    popular, popular_calls = _recording_popular(_PRICED_POPULAR)
+    push = _RecordingPush()
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="총 5만원 있어 아무거나 추천해줘", thread_id="nc-budget-taste"),
+            _member(),
+            llm=FakeLLM(decompose=_BUDGET_ONLY_DECOMPOSE),
+            search=search,
+            push_fn=push,
+            popular_fn=popular,
+        )
+    )
+
+    assert popular_calls  # 취향 랭킹(201·202)이 아니라 인기 상품으로 갔다
+    assert not set(_only_list(push.pushes[0]).product_ids) & {201, 202}
+
+
+async def test_budget_only_turn_discloses_amount_and_asks_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """안내에 **금액을 되짚고 예시로 되묻는다** — "조건을 안 주셨다"고 단정하지 않는다."""
+    _inject_profile(monkeypatch, vector=None, store=_catalog_store([]))
+    search, _ = _counting_search_calls()
+    popular, _ = _recording_popular(_PRICED_POPULAR)
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="총 5만원 있어 아무거나 추천해줘", thread_id="nc-budget-notice"),
+            _guest(),
+            llm=FakeLLM(decompose=_BUDGET_ONLY_DECOMPOSE),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    texts = [e["data"]["text"] for e in events if e["type"] == "token"]
+    settings = get_settings()
+    assert any("50,000원" in t for t in texts)  # 금액을 되짚는다
+    assert not any(settings.no_condition_notice_popular in t for t in texts)  # 일반 문구 아님
