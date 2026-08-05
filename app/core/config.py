@@ -650,7 +650,12 @@ class Settings(BaseSettings):
     # 우연 수준). 채택안은 판정기를 만들지 않는다 — 매핑이 canonical 을 못 낸 leg
     # (`CategoryMapping.unresolved`, #217 이 이미 만든 신호)을 트리거로, 그 앵커의 의미 기반
     # top-N leaf 를 그대로 fan-out leg 으로 쓴다(`CategoryMapping.expansion_leaves`). 협소 발화는
-    # canonical 을 내므로 이 경로에 애초에 진입하지 않아 협소 회귀가 구조적으로 0 이다.
+    # canonical 을 내므로 이 경로에 애초에 진입하지 않는다 — 그 자체는 구조적이다.
+    # [PR #318 리뷰 R14-2] 단 이 "진입하지 않는다"는 **거리 임계가 정상 튜닝돼 있을 때만**
+    # 성립한다 — 현 임계는 stale(#344)이라 협소 발화 일부(실측 10/20)가 canonical 을 못 내고
+    # 이 경로로 들어온다. 그 경우에도 확장 top-N 은 의미 최근접이라 정답 leaf 가 대체로 상위에
+    # 포함되고(실측: "무선 이어폰" top-1 = 음향가전 > 이어폰) leg 마다 keyword·semantic_query 가
+    # 유지되므로, 무필터 degrade(종전 동작) 대비 악화는 아니다 — 임계 재측정은 #344.
     category_expand_enabled: bool = True  # 광역 fan-out 롤백 스위치
     # [PR #318 리뷰 R5-1] **턴 전체 상한**이다 — unresolved leg 당 상한이 아니다. unresolved leg
     # 이 여럿이면 `category_mapping._collect_expansion_leaves` 가 leg 마다 모은 후보를 라운드로빈

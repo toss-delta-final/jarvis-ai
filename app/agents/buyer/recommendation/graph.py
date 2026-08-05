@@ -533,6 +533,12 @@ async def stream_recommendation(
             ConditionsData(chips=_condition_chips(decision.filters)).model_dump(by_alias=True),
         )
 
+    # [PR #318 리뷰 R14-1] 확장 고지(§ 아래 category_expand_notice 블록)가 mids 를 조립할 때 쓸
+    # "실제로 검색한 leg" 인덱스 — `_run_search` 가 이 클로저 변수에 본 검색(§ 아래 nonlocal
+    # 대입 조건 참조)의 생존 leg 만 기록한다. None 이면 확장 fan-out 이 아니었거나(단일 filters
+    # 검색) 아직 기록되지 않은 것 — 그 경우 고지는 종전대로 `decision.category_legs` 전체를 쓴다.
+    expansion_searched_legs: list[int] | None = None
+
     # dedup 소스(I-19)와 검색(§4.6)을 **병렬 실행** — §4.7 지연 가드(순차 시 최악 6s, first-token 예산 잠식).
     # dedup 은 검색 응답 뒤 사후필터라 두 호출은 독립적이다. 각 호출이 자체 실패를 삼켜 gather 는 안 깨진다.
     async def _run_search(
@@ -613,6 +619,13 @@ async def stream_recommendation(
         # 원본 leg 인덱스를 함께 들고 간다 — 실패한 leg 이 빠져 인덱스가 밀리면 하류 니즈 라벨이
         # 한 칸씩 어긋난다(category_legs[i] 와의 대응이 깨진다).
         survived = [(i, r) for i, r in enumerate(leg_results) if r is not None]
+        if base_filters is None:
+            # [PR #318 리뷰 R14-1] **본 검색일 때만** 기록한다 — `base_filters is not None` 은
+            # #113 자동완화 probe 가 같은 fan-out 의미로 이 함수를 재호출하는 경우인데, 조건 없이
+            # 덮어쓰면 probe 재검색의 생존 leg 이 본 검색 결과를 가려 확장 고지가 probe 기준으로
+            # 어긋난다(고지는 사용자가 실제로 받은 본 검색 결과를 설명해야 한다).
+            nonlocal expansion_searched_legs
+            expansion_searched_legs = [i for i, _ in survived]
         if not survived:  # 전량 leg 실패 → SEARCH_FAILED(§6)
             return None
         if len(survived) < len(leg_results):
@@ -1551,6 +1564,9 @@ async def stream_recommendation(
     # 없다(#59 재발 방지). 템플릿은 config 주입(rerank_fallback_notice 와 동일 패턴).
     # [#222 F-1] `category_expand_notice_suppressed` 면 위에서 무필터로 되돌아간 것이다 — 중분류를
     # 훑었다고 고지해 놓고 실제로는 무필터로 찾은 것이 되면 거짓 고지라 여기서 막는다.
+    # 전 leg 실패(전량 SpringUnavailableError 등)는 이 지점에 아예 도달하지 않는다 —
+    # `_run_search` 가 `survived` 가 비면 None 을 돌려주고 그건 `search_bundle is None` 분기로
+    # 가 SEARCH_FAILED 로 끝나기 때문이다(§6, 고지 블록은 그 아래에서만 실행된다).
     if (
         decision.category_expanded
         and not category_expand_notice_suppressed
@@ -1559,7 +1575,17 @@ async def stream_recommendation(
     ):
         mids: list[str] = []
         seen_mid: set[str] = set()
-        for cat, _query in decision.category_legs:
+        # [PR #318 리뷰 R14-1] fan-out 은 leg 별로 부분 실패할 수 있다(`survived`, `fanout_
+        # partial`) — 실패한 leg 의 카테고리는 실제로 검색하지 못했는데 전체 `category_legs` 로
+        # mids 를 조립하면 "찾아봤어요"라고 거짓 고지된다(#51 표시=실제). `expansion_searched_legs`
+        # 가 있으면(확장 fan-out 이 실제로 돈 턴) 그 생존 leg 인덱스만 쓰고, None 이면(단일
+        # filters 검색 등 fan-out 자체가 없던 경로) 종전대로 전체를 쓴다.
+        notice_legs = (
+            [decision.category_legs[i] for i in expansion_searched_legs]
+            if expansion_searched_legs is not None
+            else decision.category_legs
+        )
+        for cat, _query in notice_legs:
             mid = cat.split(" > ", 1)[0]
             if mid not in seen_mid:
                 seen_mid.add(mid)

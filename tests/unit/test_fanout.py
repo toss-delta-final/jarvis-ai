@@ -2039,6 +2039,36 @@ async def test_expand_notice_lists_deduped_mids_and_toggle(monkeypatch: pytest.M
     assert "요청 조건에 맞는 추천이에요" in tokens2  # 종전 문구는 그대로 남는다
 
 
+async def test_expand_notice_excludes_mids_of_failed_legs() -> None:
+    """[R14-1] 확장 fan-out 의 leg 하나(뷰티소품 계열)가 `SpringUnavailableError` 로 부분
+    실패하면, 확장 고지 mids 에는 그 leg 의 mid("뷰티소품")가 **빠지고** 생존 leg 의 mid
+    (메이크업·스킨케어)만 남는다 — 실패한 leg 는 실제로 검색하지 못했는데 "찾아봤어요"라고
+    고지하면 #51 표시=실제가 깨진다."""
+    failing_mid = "뷰티소품"
+
+    async def _search(filters, exclude_product_ids=None):
+        if filters.category.split(" > ", 1)[0] == failing_mid:
+            raise SpringUnavailableError("leg down")
+        return _res(101)
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="화장품 추천해줘"),
+            _member(),
+            llm=FakeLLM(decompose=_broad_decompose()),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_broad_mapper(),
+        )
+    )
+    tokens = [e["data"]["text"] for e in events if e["type"] == "token"]
+    survived_mids = [m for m in _BROAD_MIDS if m != failing_mid]
+    expected = get_settings().category_expand_notice.format(items=" · ".join(survived_mids))
+    assert expected in tokens
+    failed_notice = get_settings().category_expand_notice.format(items=" · ".join(_BROAD_MIDS))
+    assert failed_notice not in tokens  # 실패한 뷰티소품 leg 이 섞여 들어가지 않았다
+
+
 async def test_default_settings_combination_expands_broad_turn() -> None:
     """[기본값 조합 시뮬레이션] `category_expand_*` 를 아무것도 오버라이드하지 않은 기본값
     조합에서도 확장이 정상 동작한다 — 모든 테스트가 값을 오버라이드하면 배포되는 기본값 조합이

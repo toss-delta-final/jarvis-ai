@@ -487,8 +487,14 @@ async def _prepare_recommendation(
                     )
         decision.category_legs = mapping.legs
         # [#222] 매핑이 leg 를 하나도 못 냈고 확장 후보가 있으면 그것으로 fan-out 한다.
-        # **legs 가 비었을 때만** 발동한다 — 하나라도 canonical 이 나온 턴은 종전 경로 그대로다
-        # (협소 회귀 0). 멀티 니즈 중 일부만 unresolved 인 턴의 부분 확장은 v1 범위 밖이다.
+        # **legs 가 비었을 때만** 발동한다 — canonical 을 낸 발화는 이 분기에 진입하지 않는다,
+        # 그 자체는 구조적이다. [PR #318 리뷰 R14-2] 단, "협소 발화는 canonical 을 내므로 이
+        # 경로에 안 들어온다"는 **거리 임계가 정상 튜닝돼 있을 때만** 성립한다 — 현 임계는
+        # stale(#344)이라 협소 발화도 canonical 을 못 내 이 경로로 들어올 수 있다(lessons.md
+        # 실측). 그 경우에도 확장 top-N 은 의미 최근접이라 정답 leaf 가 대체로 상위에 포함되고
+        # (실측: "무선 이어폰" top-1 = 음향가전 > 이어폰) leg 마다 keyword·semantic_query 가
+        # 유지되므로, 무필터 degrade(종전 동작) 대비 악화는 아니다 — 임계 재측정은 #344.
+        # 멀티 니즈 중 일부만 unresolved 인 턴의 부분 확장은 v1 범위 밖이다.
         # [#222 F-3] #217 이 위 needs_expansion 블록에서 먼저 legs 를 채우면(예: "화장품 추천해줘"
         # → case 3 게이트 통과 → LLM 전개로 재매핑 성공) 이 경로는 타지 않는다 — 이 폴백이 새로
         # 여는 것은 #217 도 실패하는 턴(비-case3, 또는 전개 후에도 매핑이 전량 실패한 턴)뿐이다.
