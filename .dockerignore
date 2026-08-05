@@ -32,8 +32,9 @@ docs/
 *.md
 !README.md
 
-# ── 로컬 DB init(컨테이너 볼륨 마운트용, 이미지 불필요) ──
-db/
+# ── db/ 는 제외하지 않는다(이슈 #319) ──
+# session_context.initialize() 가 부팅 시 db/profile/init/03_chat_session_contexts.sql 을
+# 파일로 읽으므로 런타임 의존이다. 여기서 제외하면 Dockerfile 의 COPY db 가 실패한다.
 
 # ── 에디터/OS/에이전트 ──
 .vscode/

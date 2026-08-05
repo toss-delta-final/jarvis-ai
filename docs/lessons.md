@@ -79,6 +79,24 @@
   말고 그대로 던져야 한다(안 그러면 예산 상한이 무력화된다).
 - 관련: #281, `evals/priority_probe/client.py::RawCapture`,
   `evals/priority_probe/runner.py::run_cell_classifier`, TASK-3-CORRECTION
+## [2026-08-05] 코드가 런타임에 읽는 repo 파일은 배포 이미지에 들어 있는지 실측한다
+- 증상: dev→main 승격(#316) 사전 점검에서, 운영 이미지로 앱을 띄우면 부팅이 실패하는 결함을
+  발견했다. `session_context.initialize()`(#187)가 `db/profile/init/03_chat_session_contexts.sql`
+  을 런타임에 `read_text()`로 읽는데, `Dockerfile`은 `app/`만 COPY 하고 `.dockerignore`는
+  `db/`를 "볼륨 마운트용, 이미지 불필요"라며 명시 제외하고 있었다 → 컨테이너 안에서
+  `FileNotFoundError` → lifespan re-raise → 헬스체크 실패 → 자동 롤백.
+- 원인: #187이 `db/`의 성격을 "init 스크립트(컨테이너 밖 볼륨 마운트 전용)"에서 "앱 런타임
+  의존"으로 바꿨는데, 그 가정을 적어 둔 `.dockerignore`·`Dockerfile`은 갱신되지 않았다.
+  로컬(`uv run uvicorn`)·CI(pytest)는 repo 루트에서 실행돼 파일이 항상 존재하므로 어떤
+  테스트도 이 결함을 잡을 수 없었다 — 이미지 경계는 이미지에서만 드러난다.
+- 규칙:
+  - **코드에 `Path(__file__)…read_text()`류 런타임 파일 의존을 추가하면, 같은 PR에서
+    Dockerfile/.dockerignore 반입 여부를 확인하고 컨테이너 안 존재를 실측한다**
+    (`docker build` 후 `docker run --rm --entrypoint sh <img> -c 'ls <경로>'`).
+  - `.dockerignore` 의 제외 항목에는 이유(가정)가 주석으로 적혀 있다 — 그 가정을 깨는 변경을
+    할 때 함께 갱신한다. 반대로 제외를 풀 때도 왜 런타임 의존이 됐는지 주석으로 남긴다.
+- 관련: 이슈 #319, `Dockerfile`, `.dockerignore`, `app/core/session_context.py` `initialize()`
+
 ## [2026-08-05] 부분 문자열 표지의 파괴력이 크면, 명사 하나만으로는 절대 표지를 만들지 않는다
 - 증상: #116 삭제 흐름의 "전체 삭제" 표지에 `"전부"`를 그대로 넣었다. `"전부"`는 `"전부터 쓰던 거
   빼줘"`의 부분 문자열이라, 사용자가 상품 1개만 빼 달라고 말했는데 장바구니 전체가 삭제됐다
