@@ -23,6 +23,7 @@ from app.agents.buyer.recommendation.decompose import (
     resolve_category_action,
 )
 from app.agents.buyer.recommendation.state import RouteDecision
+from app.agents.buyer.screen_reference import resolve_screen_reference
 from app.core.config import get_settings
 from app.core.llm import LLMClient
 from evals.intent_probe.loader import Cell, build_context_kwargs
@@ -68,6 +69,14 @@ class Sample:
     # leg 원문(`raw|query` 를 `;` 로 이어 붙인 것) — 판정 규칙이 바뀌어도 **런을 다시 돌리지 않고**
     # 재집계할 수 있게 남긴다(F-4). 이번 라운드가 그게 없어서 재측정이 필요해진 사례다.
     category_legs: str
+    # [#300] screen 지시어 해소(#118) — **출고 배선의 최종값**. `product_id` 는 위에서 원본
+    # decompose 산출 그대로 두고(F-4 규약 — 판정 규칙이 바뀌어도 런을 다시 돌리지 않고 재집계할
+    # 수 있어야 한다), 이 필드가 `resolve_screen_reference` 를 통과한 뒤의 값이다. 사용자가 겪는
+    # 동작은 이쪽이라 screen 축은 이 필드로 채점한다(§4.4).
+    resolved_product_id: int | None
+    # 해소기가 실제로 발동했는가(반환값이 `None` 이 아니었는가) — `None` 발동은 강제 되물음이다.
+    screen_resolver_fired: bool
+    screen_resolution_reason: str | None
 
     @classmethod
     def from_decision(
@@ -79,6 +88,9 @@ class Sample:
         latency_ms: int,
         scope_free: bool | None = None,
         echo_tokens: frozenset[str] = frozenset(),
+        resolved_product_id: int | None,
+        screen_resolver_fired: bool,
+        screen_resolution_reason: str | None,
     ) -> "Sample":
         cart = decision.cart
         # 판정 규칙을 **여기서 재구현하지 않는다** — 배포 경로(`graph.py` 승계 가드)와 같은 함수를
@@ -105,10 +117,11 @@ class Sample:
                     decision.category_queries, echo_tokens
                 ),
             ),
-            category_legs_echo_prior=_legs_echo_prior(
-                decision.category_queries, echo_tokens
-            ),
+            category_legs_echo_prior=_legs_echo_prior(decision.category_queries, echo_tokens),
             category_legs=serialize_category_legs(decision.category_queries),
+            resolved_product_id=resolved_product_id,
+            screen_resolver_fired=screen_resolver_fired,
+            screen_resolution_reason=screen_resolution_reason,
         )
 
 
@@ -187,6 +200,46 @@ def backoff_seconds(failure_count: int) -> float:
     return min(BACKOFF_BASE_S * (2 ** max(failure_count - 1, 0)), BACKOFF_MAX_S)
 
 
+def _resolve_screen(
+    *,
+    utterance_text: str,
+    intent: str,
+    context_kwargs: dict[str, Any],
+    settings: Any,
+    decompose_product_id: int | None,
+) -> tuple[int | None, bool, str | None]:
+    """screen 지시어를 **러너가** 해소한다 — `graph.py` 의 cart_add 분기와 같은 조건·같은 인자다(§4.3).
+
+    D-1: 이 하네스의 확립된 규약은 "판정 규칙을 프로브가 재구현하지 않고 배포 경로와 같은 함수를
+    같은 순서로 부른다"다(#84 가 `resolve_category_action` 으로 이미 그렇게 한다). #118 의 채택
+    근거 수치(48/48)도 `decompose` 다음 `resolve_screen_reference` 로 잰 값이라, 별도 채점 경로를
+    두면 그 수치와 비교 자체가 불가능해진다.
+
+    발동 조건은 `graph.py` 와 같다: **intent 가 이미 cart_add** 이고(전체 해소기 호출이 그
+    분기 안에서만 일어난다, `graph.py:906` 참조), `screen` 이 있고 `screen.products` 가 비지 않고
+    `pending_cart is None` 일 때만. 조건 미성립이면 `(decompose_product_id, False, None)` —
+    resolved == 원본, 발동 안 함.
+    """
+    screen = context_kwargs.get("screen")
+    pending_cart = context_kwargs.get("pending_cart")
+    if intent != "cart_add" or screen is None or not screen.products or pending_cart is not None:
+        return decompose_product_id, False, None
+    last_recommendations = context_kwargs.get("last_recommendations") or []
+    allowed = {pid for pid, _ in last_recommendations} | {pid for pid, _ in screen.products}
+    resolved = resolve_screen_reference(
+        utterance_text,
+        products=list(screen.products),
+        columns=screen.columns,
+        allowed_product_ids=allowed,
+        deictic_markers=settings.screen_deictic_markers,
+        context_reference_markers=settings.screen_context_reference_markers,
+        last_recommendation_products=last_recommendations,
+    )
+    if resolved is None:
+        return decompose_product_id, False, None
+    return resolved.product_id, True, resolved.reason
+
+
 async def run_cell(
     *,
     llm: LLMClient,
@@ -209,7 +262,7 @@ async def run_cell(
         context_id=cell.context.context_id,
         group=cell.utterance.group,
     )
-    context_kwargs = build_context_kwargs(anchors, cell.context)
+    context_kwargs = build_context_kwargs(anchors, cell.context, settings=settings)
     # [#84] 배포 경로는 decompose 와 **전용 분류기**를 함께 부른다 — 프로브가 decompose 만 부르면
     # 측정이 배포와 갈라진다(lessons 「재현이 틀리면 그 위의 모든 측정과 인과가 함께 틀린다」).
     # 발동 조건도 `graph.py` 의 게이트와 같다: 직전 카테고리가 있는 컨텍스트일 때만.
@@ -258,6 +311,15 @@ async def run_cell(
                 prior_category=prior_category,
                 settings=settings,
             )
+        # [#300, D-1/§4.3] screen 지시어는 러너가 해소한다 — decompose 다음 `graph.py` cart_add
+        # 분기와 같은 조건·같은 인자로 `resolve_screen_reference` 를 부른다.
+        resolved_product_id, screen_resolver_fired, screen_resolution_reason = _resolve_screen(
+            utterance_text=cell.utterance.text,
+            intent=decision.intent,
+            context_kwargs=context_kwargs,
+            settings=settings,
+            decompose_product_id=decision.cart.product_id if decision.cart else None,
+        )
         result.samples.append(
             Sample.from_decision(
                 decision,
@@ -266,6 +328,9 @@ async def run_cell(
                 latency_ms=int(round((perf_counter() - started) * 1000)),
                 scope_free=scope_free,
                 echo_tokens=echo_tokens,
+                resolved_product_id=resolved_product_id,
+                screen_resolver_fired=screen_resolver_fired,
+                screen_resolution_reason=screen_resolution_reason,
             )
         )
     result.filled = len(result.samples) == n

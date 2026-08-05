@@ -7,16 +7,26 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from collections.abc import AsyncIterator
 from typing import Any
 
 from app.agents.buyer.recommendation.category_scope import _SYSTEM as _SCOPE_SYSTEM
 from app.core.llm import LLMError
-from evals.intent_probe.schema import AnchorSet, CATEGORY_ACTION_GROUP, CATEGORY_ACTIONS
+from evals.intent_probe.schema import (
+    AnchorSet,
+    CATEGORY_ACTION_GROUP,
+    CATEGORY_ACTIONS,
+    ScreenFixture,
+    SCREEN_GROUP,
+    Utterance,
+)
 
 _USER_MESSAGE_PREFIX = "USER_MESSAGE: "
 _PENDING_PREFIX = "PENDING_CART: "
+_SCREEN_PREFIX = "SCREEN: "
+_SCREEN_PRODUCT_ID_RE = re.compile(r'"productId":\s*(\d+)')
 # 오답 주기가 고를 다음 값 — carry→clear→replace→carry 로 순환한다(결정론).
 _NEXT_CATEGORY_ACTION = {
     action: CATEGORY_ACTIONS[(index + 1) % len(CATEGORY_ACTIONS)]
@@ -54,7 +64,28 @@ class ScriptedDecomposeLLM:
         self._attempts = 0
         self._per_cell: Counter[str] = Counter()
         self._per_scope_cell: Counter[str] = Counter()
-        self._by_text = {utterance.text: utterance for utterance in anchors.utterances}
+        # [#300, §4.5] `screen-001`/`screen-002` 는 텍스트가 같다("이거 담아줘") — 텍스트 하나로
+        # 발화를 특정할 수 없는 경우를 **유일한 매핑**과 **모호한 매핑**으로 갈라 둔다. 텍스트가
+        # 유일하면 기존과 같은 O(1) 조회, 겹치면 user 메시지의 `SCREEN:` 줄(productId 신호)로
+        # 가른다(`_resolve_ambiguous_text`). 새 중복 텍스트가 또 생기면(그리고 SCREEN 신호로도
+        # 못 가르면) 조용히 깨지지 않도록 `AssertionError` 로 드러낸다.
+        text_counts = Counter(utterance.text for utterance in anchors.utterances)
+        self._by_text: dict[str, Utterance] = {}
+        self._ambiguous_by_text: dict[str, list[Utterance]] = {}
+        for utterance in anchors.utterances:
+            if text_counts[utterance.text] == 1:
+                self._by_text[utterance.text] = utterance
+            else:
+                self._ambiguous_by_text.setdefault(utterance.text, []).append(utterance)
+        context_by_id = {context.context_id: context for context in anchors.contexts}
+        screen_by_id = {screen.screen_id: screen for screen in anchors.screens}
+        self._screen_by_utterance_id: dict[str, ScreenFixture] = {}
+        for utterance in anchors.utterances:
+            if utterance.group != SCREEN_GROUP:
+                continue
+            screen_ref = context_by_id[utterance.contexts[0]].screen_ref
+            assert screen_ref is not None  # 스키마 검증자가 이미 보장한다
+            self._screen_by_utterance_id[utterance.utterance_id] = screen_by_id[screen_ref]
         prior = anchors.category_prior_filters
         self._prior_category = str(prior.get("category") or "")
         self._prior_semantic = str(prior.get("semanticQuery") or "")
@@ -100,6 +131,57 @@ class ScriptedDecomposeLLM:
     ) -> AsyncIterator[str]:
         yield await self.complete(system=system, user=user, tier=tier, max_tokens=max_tokens)
 
+    def _resolve_ambiguous_text(self, text: str, user: str) -> Utterance:
+        """[#300, §4.5] 텍스트가 여러 발화와 겹칠 때 `SCREEN:` 줄(productId 신호)로 가른다.
+
+        `_by_text` 는 텍스트로만 찾으므로 `screen-001`/`screen-002` 처럼 텍스트가 같은 두 발화가
+        있으면 나중 것이 앞엣것을 조용히 덮는다 — dry-run 이 조용히 틀린 값을 낸다. 후보들의
+        screen 픽스처(productId 집합)와 user 메시지의 `SCREEN.상품[].productId` 집합을 대조해
+        가른다. 새 중복 텍스트가 생기고 이 신호로도 못 가르면(SCREEN 이 없거나 두 후보의 id
+        집합이 같으면) **조용히 깨지지 않도록** 여기서 드러낸다.
+        """
+        candidates = self._ambiguous_by_text[text]
+        screen_line = _field(user, _SCREEN_PREFIX)
+        ids_in_line = frozenset(int(m) for m in _SCREEN_PRODUCT_ID_RE.findall(screen_line))
+        for candidate in candidates:
+            screen = self._screen_by_utterance_id.get(candidate.utterance_id)
+            if screen is not None and {p.product_id for p in screen.products} == ids_in_line:
+                return candidate
+        raise AssertionError(
+            f"ScriptedDecomposeLLM: 텍스트 {text!r} 가 여러 발화와 겹치는데 SCREEN 신호로도 "
+            f"특정하지 못했습니다 — candidates={[c.utterance_id for c in candidates]}, "
+            f"idsInLine={sorted(ids_in_line)}"
+        )
+
+    def _screen_answer(self, utterance: Utterance, *, wrong: bool) -> dict[str, Any]:
+        """[#300, §4.5] screen 셀에서 **원본 decompose 산출**(해소기 통과 전)을 흉내낸다.
+
+        해소기(`resolve_screen_reference`)는 러너가 태우므로 여기서는 재구현하지 않는다.
+        `screenExact`(001·003·004·005)와 `screenReask`/`screenNotHallucinated`(002·006)는
+        고정 주기 오답을 유지한다 — 그래야 dry-run 이 `screenPromptLayerHitCount`(해소기 전
+        원본 산출만으로 규칙을 만족한 표본)와 override 경로를 실제로 태운다. screen-001·002·
+        003·004·006 은 해소기가 텍스트만으로 항상 결정적으로 개입하므로(이거=단일 후보 확정/
+        여러 후보 되물음, 순번·좌표, 두 목록 밖 id 차단) 여기서 낸 원본 값과 무관하게 최종
+        `resolvedProductId` 는 같아진다 — screen-005(이름 매칭)만 해소기가 개입하지 않아
+        (`resolve_screen_reference` 의 양보 (B)) 이 원본 산출이 곧 최종값이다.
+        """
+        screen = self._screen_by_utterance_id[utterance.utterance_id]
+        screen_ids = [product.product_id for product in screen.products]
+        rule = utterance.expected.product_id_rule
+        if rule == "screenExact":
+            correct = utterance.expected.product_id
+            if not wrong:
+                return self._envelope("cart_add", product_id=correct)
+            alt = next((pid for pid in screen_ids if pid != correct), correct)
+            return self._envelope("cart_add", product_id=alt)
+        # screenReask · screenNotHallucinated — 정답은 "확정하지 않는다"(productId=null).
+        # 원본 스크립트가 실측한 실패 모양(임의 확정)을 흉내내려고, 주기적으로 화면의 첫 상품을
+        # 잘못 확정하는 오답을 섞는다.
+        if not wrong:
+            return self._envelope("cart_add", product_id=None)
+        guess = screen_ids[0] if screen_ids else None
+        return self._envelope("cart_add", product_id=guess)
+
     def _answer(self, user: str) -> dict[str, Any]:
         text = _field(user, _USER_MESSAGE_PREFIX)
         # 카운터는 **user 메시지 전체**로 나눈다 — 컨텍스트별로 실려 나가는 줄이 다르므로 셀마다
@@ -109,10 +191,15 @@ class ScriptedDecomposeLLM:
         index = self._per_cell[user]
         self._per_cell[user] += 1
         utterance = self._by_text.get(text)
+        if utterance is None and text in self._ambiguous_by_text:
+            utterance = self._resolve_ambiguous_text(text, user)
         if utterance is None:
             return self._envelope("general")
         wrong = index % self.wrong_every == self.wrong_every - 1
         expected = utterance.expected
+
+        if utterance.group == SCREEN_GROUP:
+            return self._screen_answer(utterance, wrong=wrong)
 
         if utterance.group == "option_answer":
             option_id = expected.option_id
