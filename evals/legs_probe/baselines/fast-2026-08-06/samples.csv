@@ -1,0 +1,313 @@
+caseId,n,slice,intent,case,legsCount,legQueries,legRawCategories,matchedGroups,coverage,overExpandedLegCount,echoLegCount,buyAll,totalBudget,latencyMs
+buy-cold-0002,0,single,recommend,2,1,"[""커피믹스""]",[null],coffeemix,1.0,0,0,False,,3298
+buy-cold-0002,1,single,recommend,3,1,"[""커피믹스""]",[null],coffeemix,1.0,0,0,False,,2228
+buy-cold-0002,2,single,recommend,3,1,"[""커피믹스""]",[null],coffeemix,1.0,0,0,False,,2303
+buy-cold-0002,3,single,recommend,3,1,"[""커피믹스""]",[null],coffeemix,1.0,0,0,False,,2067
+buy-cold-0002,4,single,recommend,2,1,"[""커피믹스""]",[null],coffeemix,1.0,0,0,False,,1748
+buy-cold-0002,5,single,recommend,2,1,"[""커피믹스""]",[null],coffeemix,1.0,0,0,False,,2154
+buy-cold-0002,6,single,recommend,3,1,"[""커피믹스""]",[null],coffeemix,1.0,0,0,False,,3897
+buy-cold-0002,7,single,recommend,2,1,"[""커피믹스""]",[null],coffeemix,1.0,0,0,False,,1688
+buy-fail-0003,0,single,recommend,2,1,"[""무선 이어폰""]",[null],earphone,1.0,0,0,False,,2073
+buy-fail-0003,1,single,recommend,2,1,"[""무선 이어폰""]","[""음향가전""]",earphone,1.0,0,0,False,,3373
+buy-fail-0003,2,single,recommend,2,1,"[""무선 이어폰""]",[null],earphone,1.0,0,0,False,,1699
+buy-fail-0003,3,single,recommend,2,1,"[""무선 이어폰""]","[""음향가전""]",earphone,1.0,0,0,False,,2031
+buy-fail-0003,4,single,recommend,2,1,"[""무선 이어폰""]",[null],earphone,1.0,0,0,False,,2022
+buy-fail-0003,5,single,recommend,2,1,"[""무선 이어폰""]",[null],earphone,1.0,0,0,False,,1986
+buy-fail-0003,6,single,recommend,2,1,"[""무선 이어폰""]","[""음향가전""]",earphone,1.0,0,0,False,,2281
+buy-fail-0003,7,single,recommend,2,1,"[""무선 이어폰""]","[""음향가전""]",earphone,1.0,0,0,False,,1732
+buy-gust-0001,0,single,recommend,3,1,"[""아기 여름 기저귀""]",[null],diaper,1.0,0,0,False,,2644
+buy-gust-0001,1,single,recommend,3,1,"[""아기 여름 기저귀""]",[null],diaper,1.0,0,0,False,,1965
+buy-gust-0001,2,single,recommend,3,1,"[""아기 여름 기저귀""]",[null],diaper,1.0,0,0,False,,2072
+buy-gust-0001,3,single,recommend,3,1,"[""아기 여름 기저귀""]",[null],diaper,1.0,0,0,False,,1766
+buy-gust-0001,4,single,recommend,3,1,"[""아기 여름 기저귀""]",[null],diaper,1.0,0,0,False,,2107
+buy-gust-0001,5,single,recommend,3,1,"[""아기 여름 기저귀""]",[null],diaper,1.0,0,0,False,,2267
+buy-gust-0001,6,single,recommend,2,1,"[""아기 여름 기저귀""]","[""육아용품""]",diaper,1.0,0,0,False,,1939
+buy-gust-0001,7,single,recommend,2,1,"[""아기 여름 기저귀""]",[null],diaper,1.0,0,0,False,,1927
+buy-mult-0002,0,single,recommend,2,0,[],[],,0.0,0,0,False,,2224
+buy-mult-0002,1,single,recommend,2,1,"[""15인치 노트북 파우치""]",[null],pouch,1.0,0,0,False,,2419
+buy-mult-0002,2,single,recommend,2,1,"[""15인치 노트북 파우치""]",[null],pouch,1.0,0,0,False,,1999
+buy-mult-0002,3,single,recommend,2,1,"[""15인치 노트북 파우치""]",[null],pouch,1.0,0,0,False,,2395
+buy-mult-0002,4,single,recommend,2,1,"[""15인치 노트북 파우치""]",[null],pouch,1.0,0,0,False,,2013
+buy-mult-0002,5,single,recommend,2,1,"[""15인치 노트북 파우치""]",[null],pouch,1.0,0,0,False,,2071
+buy-mult-0002,6,single,recommend,2,1,"[""15인치 노트북 파우치""]",[null],pouch,1.0,0,0,False,,2431
+buy-mult-0002,7,single,recommend,2,1,"[""파우치""]",[null],pouch,1.0,0,0,False,,2071
+buy-srch-0001,0,situational,recommend,3,1,"[""감자탕 재료""]",[null],,0.0,1,1,False,,1809
+buy-srch-0001,1,situational,recommend,3,0,[],[],,0.0,0,0,False,,1943
+buy-srch-0001,2,situational,recommend,3,1,"[""감자탕 재료""]",[null],,0.0,1,1,False,,2441
+buy-srch-0001,3,situational,recommend,3,1,"[""\""감자탕 재료\""""]",[null],,0.0,1,0,False,,3190
+buy-srch-0001,4,situational,recommend,3,0,[],[],,0.0,0,0,False,,35762
+buy-srch-0001,5,situational,recommend,3,1,"[""감자탕 재료""]",[null],,0.0,1,1,False,,2423
+buy-srch-0001,6,situational,recommend,3,0,[],[],,0.0,0,0,False,,2235
+buy-srch-0001,7,situational,recommend,3,1,"[""감자탕 재료""]",[null],,0.0,1,1,False,,2139
+buy-srch-0002,0,single,recommend,2,1,"[""출근용 선크림""]",[null],suncream,1.0,0,0,False,,2097
+buy-srch-0002,1,single,recommend,2,1,"[""출근용 선크림""]",[null],suncream,1.0,0,0,False,,3554
+buy-srch-0002,2,single,recommend,3,1,"[""출근용 선크림""]",[null],suncream,1.0,0,0,False,,2026
+buy-srch-0002,3,single,recommend,3,1,"[""출근용 선크림""]",[null],suncream,1.0,0,0,False,,37181
+buy-srch-0002,4,single,recommend,2,1,"[""출근용 선크림""]",[null],suncream,1.0,0,0,False,,2210
+buy-srch-0002,5,single,recommend,2,1,"[""출근용 선크림""]",[null],suncream,1.0,0,0,False,,2491
+buy-srch-0002,6,single,recommend,3,1,"[""출근용 선크림""]",[null],suncream,1.0,0,0,False,,1902
+buy-srch-0002,7,single,recommend,2,1,"[""출근용 선크림""]",[null],suncream,1.0,0,0,False,,1974
+buy-srch-0003,0,single,recommend,1,1,"[""무선 이어폰""]",[null],earphone,1.0,0,0,False,,1801
+buy-srch-0003,1,single,recommend,1,1,"[""무선 이어폰""]","[""음향가전""]",earphone,1.0,0,0,False,,1874
+buy-srch-0003,2,single,recommend,1,0,[],[],,0.0,0,0,False,,1774
+buy-srch-0003,3,single,recommend,1,1,"[""무선 이어폰""]",[null],earphone,1.0,0,0,False,,40984
+buy-srch-0003,4,single,recommend,1,1,"[""무선 이어폰""]",[null],earphone,1.0,0,0,False,,1918
+buy-srch-0003,5,single,recommend,1,0,[],[],,0.0,0,0,False,,2053
+buy-srch-0003,6,single,recommend,1,1,"[""무선 이어폰""]",[null],earphone,1.0,0,0,False,,1672
+buy-srch-0003,7,single,recommend,1,1,"[""무선 이어폰""]",[null],earphone,1.0,0,0,False,,1769
+buy-srch-0004,0,single,recommend,2,1,"[""스테인리스 냄비 세트""]",[null],,0.0,1,1,False,,2145
+buy-srch-0004,1,single,recommend,2,1,"[""스테인리스 냄비 세트""]",[null],,0.0,1,1,False,,2064
+buy-srch-0004,2,single,recommend,2,1,"[""스테인리스 냄비 세트""]","[""주방용품""]",,0.0,1,1,False,,1964
+buy-srch-0004,3,single,recommend,2,1,"[""스테인리스 냄비 세트""]",[null],,0.0,1,1,False,,37587
+buy-srch-0004,4,single,recommend,3,1,"[""스테인리스 냄비 세트""]",[null],,0.0,1,1,False,,2135
+buy-srch-0004,5,single,recommend,2,1,"[""스테인리스 냄비 세트""]",[null],,0.0,1,1,False,,2166
+buy-srch-0004,6,single,recommend,3,1,"[""스테인리스 냄비 세트""]",[null],,0.0,1,1,False,,2492
+buy-srch-0004,7,single,recommend,2,1,"[""스테인리스 냄비 세트""]",[null],,0.0,1,1,False,,2342
+legs-cond-0001,0,conditions,recommend,2,1,"[""5만원 이하 아무거나""]",[null],,,1,1,False,,2368
+legs-cond-0001,1,conditions,recommend,2,0,[],[],,,0,0,False,,2120
+legs-cond-0001,2,conditions,recommend,2,1,"[""5만원 이하 아무거나""]",[null],,,1,1,False,,1864
+legs-cond-0001,3,conditions,recommend,2,0,[],[],,,0,0,False,,2666
+legs-cond-0001,4,conditions,recommend,2,0,[],[],,,0,0,False,,1935
+legs-cond-0001,5,conditions,recommend,2,0,[],[],,,0,0,False,,1948
+legs-cond-0001,6,conditions,recommend,2,1,"[""5만원 이하 아무거나""]",[null],,,1,1,False,,2024
+legs-cond-0001,7,conditions,recommend,2,0,[],[],,,0,0,False,,37327
+legs-cond-0002,0,conditions,recommend,2,0,[],[],,,0,0,False,,1918
+legs-cond-0002,1,conditions,recommend,2,0,[],[],,,0,0,False,,2422
+legs-cond-0002,2,conditions,recommend,2,0,[],[],,,0,0,False,,1866
+legs-cond-0002,3,conditions,recommend,2,1,"[""높은 평점 상품""]",[null],,,1,0,False,,2442
+legs-cond-0002,4,conditions,recommend,2,0,[],[],,,0,0,False,,2092
+legs-cond-0002,5,conditions,recommend,2,0,[],[],,,0,0,False,,2140
+legs-cond-0002,6,conditions,recommend,2,0,[],[],,,0,0,False,,2123
+legs-cond-0002,7,conditions,recommend,2,0,[],[],,,0,0,False,,36926
+legs-cond-0003,0,conditions,recommend,2,0,[],[],,,0,0,False,,2056
+legs-cond-0003,1,conditions,recommend,2,0,[],[],,,0,0,False,,2264
+legs-cond-0003,2,conditions,recommend,2,0,[],[],,,0,0,False,,1901
+legs-cond-0003,3,conditions,recommend,3,0,[],[],,,0,0,False,,2199
+legs-cond-0003,4,conditions,recommend,2,1,"[""가성비 무선 이어폰""]",[null],,,1,0,False,,2247
+legs-cond-0003,5,conditions,recommend,2,0,[],[],,,0,0,False,,2901
+legs-cond-0003,6,conditions,recommend,2,0,[],[],,,0,0,False,,37680
+legs-cond-0003,7,conditions,recommend,2,0,[],[],,,0,0,False,,2949
+legs-cond-0004,0,conditions,recommend,2,1,"[""만원 이하 상품""]",[null],,,1,0,False,,2493
+legs-cond-0004,1,conditions,recommend,2,0,[],[],,,0,0,False,,1913
+legs-cond-0004,2,conditions,recommend,2,0,[],[],,,0,0,False,,2600
+legs-cond-0004,3,conditions,recommend,2,0,[],[],,,0,0,False,,2091
+legs-cond-0004,4,conditions,recommend,2,0,[],[],,,0,0,False,,2104
+legs-cond-0004,5,conditions,recommend,2,0,[],[],,,0,0,False,,1989
+legs-cond-0004,6,conditions,recommend,2,1,"[""만원 이하 상품""]",[null],,,1,0,False,,38080
+legs-cond-0004,7,conditions,recommend,2,0,[],[],,,0,0,False,,3479
+legs-cond-0005,0,conditions,recommend,3,0,[],[],,,0,0,False,,3446
+legs-cond-0005,1,conditions,recommend,2,0,[],[],,,0,0,False,,2086
+legs-cond-0005,2,conditions,recommend,3,0,[],[],,,0,0,False,,2241
+legs-cond-0005,3,conditions,recommend,2,0,[],[],,,0,0,False,,1711
+legs-cond-0005,4,conditions,recommend,2,0,[],[],,,0,0,False,,2363
+legs-cond-0005,5,conditions,recommend,2,1,"[""리뷰 좋은 무선 이어폰""]",[null],,,1,0,False,,1986
+legs-cond-0005,6,conditions,recommend,3,0,[],[],,,0,0,False,,2085
+legs-cond-0005,7,conditions,recommend,2,0,[],[],,,0,0,False,,4498
+legs-mult-0001,0,multi,recommend,3,2,"[""무선 이어폰"", ""노트북""]","[""음향가전"", ""전기/전자기기""]",earphone;laptop,1.0,0,0,False,,2312
+legs-mult-0001,1,multi,recommend,3,2,"[""이어폰"", ""노트북""]","[""음향가전"", ""컴퓨터/노트북""]",earphone;laptop,1.0,0,0,False,,2167
+legs-mult-0001,2,multi,recommend,3,0,[],[],,0.0,0,0,False,,1934
+legs-mult-0001,3,multi,recommend,3,0,[],[],,0.0,0,0,False,,2106
+legs-mult-0001,4,multi,recommend,3,2,"[""무선 이어폰"", ""노트북""]","[null, null]",earphone;laptop,1.0,0,0,False,,2609
+legs-mult-0001,5,multi,recommend,3,2,"[""무선 이어폰"", ""노트북""]","[null, null]",earphone;laptop,1.0,0,0,False,,1923
+legs-mult-0001,6,multi,recommend,3,2,"[""무선 이어폰"", ""노트북""]","[""음향가전"", ""전산/노트북""]",earphone;laptop,1.0,0,0,False,,2904
+legs-mult-0001,7,multi,recommend,3,2,"[""무선 이어폰"", ""노트북""]","[""음향가전"", ""노트북""]",earphone;laptop,1.0,0,0,False,,2375
+legs-mult-0002,0,multi,recommend,2,1,"[""노트북 과 함께 쓸 마우스 파우치 추천""]",[null],,0.0,1,0,False,,2068
+legs-mult-0002,1,multi,recommend,3,1,"[""노트북 마우스 파우치""]",[null],pouch,0.5,0,0,False,,1877
+legs-mult-0002,2,multi,recommend,2,3,"[""노트북"", ""마우스"", ""파우치""]","[null, null, null]",laptop;mouse;pouch,1.0,0,0,False,,2114
+legs-mult-0002,3,multi,recommend,2,3,"[""노트북"", ""마우스"", ""노트북 파우치""]","[null, null, null]",laptop;mouse;pouch,1.0,0,0,False,,2020
+legs-mult-0002,4,multi,recommend,2,2,"[""마우스"", ""노트북 파우치""]","[""컴퓨터 주변기기"", ""컴퓨터 가방/케이스""]",mouse;pouch,1.0,0,0,False,,2245
+legs-mult-0002,5,multi,recommend,1,1,"[""노트북""]",[null],laptop,0.5,0,0,False,,2386
+legs-mult-0002,6,multi,recommend,2,1,"[""노트북 마우스 파우치""]",[null],pouch,0.5,0,0,False,,2160
+legs-mult-0002,7,multi,recommend,3,1,"[""노트북""]",[null],laptop,0.5,0,0,False,,1962
+legs-mult-0003,0,multi,recommend,3,3,"[""휴지"", ""물티슈"", ""세제""]","[null, null, null]",detergent;tissue;wettissue,1.0,0,0,True,,2351
+legs-mult-0003,1,multi,recommend,2,3,"[""휴지"", ""물티슈"", ""세제""]","[null, null, null]",detergent;tissue;wettissue,1.0,0,0,False,,2112
+legs-mult-0003,2,multi,recommend,3,3,"[""휴지"", ""물티슈"", ""세제""]","[null, null, null]",detergent;tissue;wettissue,1.0,0,0,False,,2066
+legs-mult-0003,3,multi,recommend,3,3,"[""휴지"", ""물티슈"", ""세제""]","[null, null, null]",detergent;tissue;wettissue,1.0,0,0,False,,1912
+legs-mult-0003,4,multi,recommend,3,3,"[""휴지"", ""물티슈"", ""세제""]","[null, null, null]",detergent;tissue;wettissue,1.0,0,0,True,,1848
+legs-mult-0003,5,multi,recommend,3,3,"[""휴지"", ""물티슈"", ""세제""]","[null, null, null]",detergent;tissue;wettissue,1.0,0,0,True,,2354
+legs-mult-0003,6,multi,recommend,3,3,"[""휴지"", ""물티슈"", ""세제""]","[null, null, null]",detergent;tissue;wettissue,1.0,0,0,True,,2398
+legs-mult-0003,7,multi,recommend,3,0,[],[],,0.0,0,0,False,,1932
+legs-mult-0004,0,multi,recommend,2,2,"[""김치"", ""돼지고기""]","[""식재료"", ""식재료""]",kimchi;pork,1.0,0,0,False,,2219
+legs-mult-0004,1,multi,recommend,2,2,"[""김치"", ""돼지고기""]","[null, null]",kimchi;pork,1.0,0,0,False,,2334
+legs-mult-0004,2,multi,recommend,3,1,"[""김치 돼지고기 찌개 재료""]",[null],,0.0,1,0,False,,36802
+legs-mult-0004,3,multi,recommend,3,1,"[""김치찌개 재료""]",[null],,0.0,1,0,False,,2214
+legs-mult-0004,4,multi,recommend,3,2,"[""김치"", ""돼지고기""]","[null, null]",kimchi;pork,1.0,0,0,False,,2392
+legs-mult-0004,5,multi,recommend,2,1,"[""김치찌개 재료""]",[null],,0.0,1,0,False,,2370
+legs-mult-0004,6,multi,recommend,2,2,"[""김치"", ""돼지고기""]","[null, null]",kimchi;pork,1.0,0,0,False,,2010
+legs-mult-0004,7,multi,recommend,2,1,"[""김치찌개 재료""]",[null],,0.0,1,0,False,,2272
+legs-mult-0005,0,multi,recommend,2,2,"[""커피머신"", ""원두""]","[null, null]",beans;machine,1.0,0,0,False,,1870
+legs-mult-0005,1,multi,recommend,2,2,"[""커피 머신"", ""원두""]","[null, null]",beans;machine,1.0,0,0,False,,1920
+legs-mult-0005,2,multi,recommend,3,2,"[""커피머신"", ""원두""]","[null, null]",beans;machine,1.0,0,0,False,,36308
+legs-mult-0005,3,multi,recommend,2,2,"[""커피 머신"", ""커피 원두""]","[null, null]",beans;machine,1.0,0,0,False,,3048
+legs-mult-0005,4,multi,recommend,2,2,"[""커피 머신"", ""원두""]","[null, null]",beans;machine,1.0,0,0,False,,2443
+legs-mult-0005,5,multi,recommend,2,2,"[""커피머신"", ""원두""]","[null, null]",beans;machine,1.0,0,0,False,,1855
+legs-mult-0005,6,multi,recommend,2,2,"[""커피머신"", ""원두""]","[null, null]",beans;machine,1.0,0,0,False,,1964
+legs-mult-0005,7,multi,recommend,2,2,"[""커피머신"", ""원두""]","[null, null]",beans;machine,1.0,0,0,False,,2132
+legs-purp-0001,0,purpose,recommend,3,1,"[""집들이 선물""]",[null],,0.0,1,1,False,,2336
+legs-purp-0001,1,purpose,recommend,3,1,"[""집들이 선물""]",[null],,0.0,1,1,False,,2051
+legs-purp-0001,2,purpose,recommend,3,5,"[""집들이 선물 세트"", ""집들이 선물용 생활용품"", ""집들이 선물 인테리어 소품"", ""집들이 선물 식품"", ""집들이 선물 추천""]","[""선물세트"", ""생활용품"", ""홈데코"", ""식품"", null]",,0.0,5,0,False,,36269
+legs-purp-0001,3,purpose,recommend,3,1,"[""집들이 선물""]",[null],,0.0,1,1,False,,2010
+legs-purp-0001,4,purpose,recommend,3,1,"[""집들이 선물""]",[null],,0.0,1,1,False,,2865
+legs-purp-0001,5,purpose,recommend,3,1,"[""집들이 선물""]",[null],,0.0,1,1,False,,2066
+legs-purp-0001,6,purpose,recommend,3,1,"[""집들이 선물""]",[null],,0.0,1,1,False,,1747
+legs-purp-0001,7,purpose,recommend,3,1,"[""집들이 선물""]",[null],,0.0,1,1,False,,2135
+legs-purp-0002,0,purpose,recommend,3,1,"[""부모님 환갑 선물""]",[null],,0.0,1,1,False,,1919
+legs-purp-0002,1,purpose,recommend,3,1,"[""부모님 환갑 선물""]",[null],,0.0,1,1,False,,39611
+legs-purp-0002,2,purpose,recommend,3,1,"[""부모님 환갑 선물""]",[null],,0.0,1,1,False,,2289
+legs-purp-0002,3,purpose,recommend,3,1,"[""부모님 환갑 선물""]",[null],,0.0,1,1,False,,2331
+legs-purp-0002,4,purpose,recommend,3,1,"[""부모님 환갑 선물""]",[null],,0.0,1,1,False,,1883
+legs-purp-0002,5,purpose,general,3,1,"[""부모님 환갑 선물""]",[null],,0.0,1,1,False,,2493
+legs-purp-0002,6,purpose,recommend,3,1,"[""부모님 환갑 선물""]",[null],,0.0,1,1,False,,2656
+legs-purp-0002,7,purpose,recommend,3,1,"[""부모님 환갑 선물""]",[null],,0.0,1,1,False,,1813
+legs-purp-0003,0,purpose,recommend,3,0,[],[],,0.0,0,0,False,,1823
+legs-purp-0003,1,purpose,recommend,3,1,"[""여자 친구 생일 선물""]",[null],,0.0,1,1,False,,2337
+legs-purp-0003,2,purpose,recommend,3,0,[],[],,0.0,0,0,False,,2362
+legs-purp-0003,3,purpose,recommend,3,1,"[""여자친구 생일선물""]",[null],,0.0,1,1,False,,2939
+legs-purp-0003,4,purpose,recommend,3,1,"[""여자친구 생일 선물""]",[null],,0.0,1,1,False,,2054
+legs-purp-0003,5,purpose,recommend,3,0,[],[],,0.0,0,0,False,,1732
+legs-purp-0003,6,purpose,recommend,3,1,"[""여자친구 생일선물""]",[null],,0.0,1,1,False,,35798
+legs-purp-0003,7,purpose,recommend,3,0,[],[],,0.0,0,0,False,,2765
+legs-purp-0004,0,purpose,recommend,2,1,"[""여자친구 생일선물""]",[null],,0.0,1,1,False,,1892
+legs-purp-0004,1,purpose,recommend,2,1,"[""여자친구 생일선물""]",[null],,0.0,1,1,False,,1919
+legs-purp-0004,2,purpose,recommend,3,1,"[""여자친구 생일선물""]",[null],,0.0,1,1,False,,1796
+legs-purp-0004,3,purpose,recommend,2,1,"[""여자친구 생일선물""]",[null],,0.0,1,1,False,,1954
+legs-purp-0004,4,purpose,recommend,3,1,"[""여자친구 생일선물""]",[null],,0.0,1,1,False,,2399
+legs-purp-0004,5,purpose,recommend,2,1,"[""여자친구 생일선물""]",[null],,0.0,1,1,False,,2376
+legs-purp-0004,6,purpose,recommend,2,1,"[""여자친구 생일선물""]",[null],,0.0,1,1,False,,35924
+legs-purp-0004,7,purpose,recommend,2,1,"[""생일 선물 여자친구""]",[null],,0.0,1,0,False,,3049
+legs-purp-0005,0,purpose,recommend,3,1,"[""초등학생 신학기 준비물""]",[null],,0.0,1,0,False,,1911
+legs-purp-0005,1,purpose,recommend,3,1,"[""초등학생 신학기 준비물""]",[null],,0.0,1,0,False,,1844
+legs-purp-0005,2,purpose,recommend,3,0,[],[],,0.0,0,0,False,,2943
+legs-purp-0005,3,purpose,recommend,3,1,"[""초등학생 신학기 준비물""]",[null],,0.0,1,0,False,,2254
+legs-purp-0005,4,purpose,recommend,3,1,"[""초등학생 신학기 준비물""]",[null],,0.0,1,0,False,,2661
+legs-purp-0005,5,purpose,recommend,3,1,"[""초등학생 신학기 준비물""]",[null],,0.0,1,0,False,,35417
+legs-purp-0005,6,purpose,recommend,3,1,"[""초등학생 신학기 준비물""]",[null],,0.0,1,0,False,,3301
+legs-purp-0005,7,purpose,recommend,3,1,"[""초등학생 신학기 준비물""]",[null],,0.0,1,0,False,,2491
+legs-purp-0006,0,purpose,recommend,3,0,[],[],,0.0,0,0,True,100000,3267
+legs-purp-0006,1,purpose,recommend,3,0,[],[],,0.0,0,0,True,100000,2110
+legs-purp-0006,2,purpose,recommend,3,1,"[""신학기 준비물""]",[null],,0.0,1,1,True,100000,2601
+legs-purp-0006,3,purpose,recommend,3,0,[],[],,0.0,0,0,True,,35926
+legs-purp-0006,4,purpose,recommend,3,1,"[""신학기 준비물""]",[null],,0.0,1,1,True,100000,4384
+legs-purp-0006,5,purpose,recommend,3,0,[],[],,0.0,0,0,True,100000,2158
+legs-purp-0006,6,purpose,recommend,3,0,[],[],,0.0,0,0,True,100000,1913
+legs-purp-0006,7,purpose,recommend,3,1,"[""신학기 준비물""]",[null],,0.0,1,1,True,,2249
+legs-purp-0007,0,purpose,recommend,3,1,"[""어버이날 선물""]",[null],,0.0,1,1,False,,2191
+legs-purp-0007,1,purpose,recommend,3,0,[],[],,0.0,0,0,False,,2128
+legs-purp-0007,2,purpose,recommend,3,1,"[""부모님 선물""]",[null],,0.0,1,0,False,,2542
+legs-purp-0007,3,purpose,recommend,3,1,"[""어버이날 선물""]",[null],,0.0,1,1,False,,1805
+legs-purp-0007,4,purpose,recommend,3,1,"[""부모님 선물""]",[null],,0.0,1,0,False,,2169
+legs-purp-0007,5,purpose,recommend,3,1,"[""부모님 선물""]",[null],,0.0,1,0,False,,1941
+legs-purp-0007,6,purpose,recommend,3,1,"[""부모님 선물""]",[null],,0.0,1,0,False,,2368
+legs-purp-0007,7,purpose,recommend,3,1,"[""부모님 선물""]",[null],,0.0,1,0,False,,2042
+legs-purp-0008,0,purpose,recommend,3,1,"[""회사 동료 결혼 선물""]",[null],,0.0,1,1,False,,2644
+legs-purp-0008,1,purpose,recommend,3,1,"[""회사 동료 결혼 선물""]",[null],,0.0,1,1,False,,2002
+legs-purp-0008,2,purpose,recommend,3,1,"[""결혼 선물""]",[null],,0.0,1,1,False,,3096
+legs-purp-0008,3,purpose,recommend,3,0,[],[],,0.0,0,0,False,,1865
+legs-purp-0008,4,purpose,recommend,3,1,"[""직장인 선물 추천""]",[null],,0.0,1,0,False,,5864
+legs-purp-0008,5,purpose,recommend,3,1,"[""회사 동료 결혼 선물""]",[null],,0.0,1,1,False,,3847
+legs-purp-0008,6,purpose,recommend,3,1,"[""결혼 선물""]",[null],,0.0,1,1,False,,2193
+legs-purp-0008,7,purpose,recommend,3,1,"[""회사 동료 결혼 선물""]",[null],,0.0,1,1,False,,35846
+legs-purp-0009,0,purpose,recommend,3,1,"[""신생아 선물""]",[null],,0.0,1,0,False,,2779
+legs-purp-0009,1,purpose,recommend,3,1,"[""신생아 선물""]",[null],,0.0,1,0,False,,2013
+legs-purp-0009,2,purpose,recommend,3,1,"[""신생아 선물""]",[null],,0.0,1,0,False,,2576
+legs-purp-0009,3,purpose,recommend,3,1,"[""신생아 선물""]",[null],,0.0,1,0,False,,1948
+legs-purp-0009,4,purpose,recommend,3,1,"[""신생아 선물""]",[null],,0.0,1,0,False,,1989
+legs-purp-0009,5,purpose,recommend,3,1,"[""신생아 선물""]",[null],,0.0,1,0,False,,2088
+legs-purp-0009,6,purpose,recommend,3,1,"[""신생아 선물""]",[null],,0.0,1,0,False,,1974
+legs-purp-0009,7,purpose,recommend,3,0,[],[],,0.0,0,0,False,,1973
+legs-single-0001,0,single,recommend,2,1,"[""청바지""]",[null],jeans,1.0,0,0,False,,1975
+legs-single-0001,1,single,recommend,3,1,"[""청바지""]",[null],jeans,1.0,0,0,False,,1837
+legs-single-0001,2,single,recommend,3,1,"[""청바지""]",[null],jeans,1.0,0,0,False,,1864
+legs-single-0001,3,single,recommend,2,1,"[""청바지""]",[null],jeans,1.0,0,0,False,,1933
+legs-single-0001,4,single,recommend,2,1,"[""청바지""]",[null],jeans,1.0,0,0,False,,2188
+legs-single-0001,5,single,recommend,2,1,"[""청바지""]",[null],jeans,1.0,0,0,False,,2552
+legs-single-0001,6,single,recommend,2,1,"[""청바지""]",[null],jeans,1.0,0,0,False,,2115
+legs-single-0001,7,single,recommend,2,1,"[""청바지""]",[null],jeans,1.0,0,0,False,,34881
+legs-single-0002,0,single,recommend,1,1,"[""나이키 운동화""]",[null],sneakers,1.0,0,0,False,,2026
+legs-single-0002,1,single,recommend,1,1,"[""나이키 운동화""]","[""신발""]",sneakers,1.0,0,0,False,,1951
+legs-single-0002,2,single,recommend,1,1,"[""나이키 운동화""]","[""신발""]",sneakers,1.0,0,0,False,,35431
+legs-single-0002,3,single,recommend,1,1,"[""나이키 운동화""]",[null],sneakers,1.0,0,0,False,,4685
+legs-single-0002,4,single,recommend,1,1,"[""나이키 운동화""]",[null],sneakers,1.0,0,0,False,,1878
+legs-single-0002,5,single,recommend,1,1,"[""나이키 운동화""]",[null],sneakers,1.0,0,0,False,,2381
+legs-single-0002,6,single,recommend,1,1,"[""나이키 운동화""]",[null],sneakers,1.0,0,0,False,,2213
+legs-single-0002,7,single,recommend,1,1,"[""나이키 운동화""]",[null],sneakers,1.0,0,0,False,,2001
+legs-situ-0001,0,situational,recommend,3,1,"[""캠핑 준비물""]",[null],,0.0,1,0,False,,2421
+legs-situ-0001,1,situational,recommend,3,1,"[""캠핑 준비물""]",[null],,0.0,1,0,False,,37170
+legs-situ-0001,2,situational,recommend,3,1,"[""캠핑 준비물""]",[null],,0.0,1,0,False,,3344
+legs-situ-0001,3,situational,recommend,3,1,"[""캠핑 준비물""]",[null],,0.0,1,0,False,,2694
+legs-situ-0001,4,situational,recommend,3,1,"[""캠핑 준비물""]",[null],,0.0,1,0,False,,2210
+legs-situ-0001,5,situational,recommend,3,1,"[""캠핑 준비물""]",[null],,0.0,1,0,False,,2387
+legs-situ-0001,6,situational,recommend,3,1,"[""캠핑 준비물""]",[null],,0.0,1,0,False,,2139
+legs-situ-0001,7,situational,recommend,3,1,"[""캠핑 준비물""]",[null],,0.0,1,0,False,,2017
+legs-situ-0002,0,situational,recommend,3,1,"[""캠핑 beginner 장비""]",[null],,0.0,1,0,False,,2168
+legs-situ-0002,1,situational,recommend,3,0,[],[],,0.0,0,0,False,,2284
+legs-situ-0002,2,situational,recommend,3,1,"[""초보 캠핑용 기본 장비""]",[null],,0.0,1,0,False,,2478
+legs-situ-0002,3,situational,recommend,3,1,"[""캠핑 초보 필수 장비""]",[null],,0.0,1,0,False,,1974
+legs-situ-0002,4,situational,recommend,3,1,"[""캠핑 기본 장비""]",[null],,0.0,1,0,False,,2147
+legs-situ-0002,5,situational,recommend,3,1,"[""캠핑 기본 장비""]",[null],,0.0,1,0,False,,1965
+legs-situ-0002,6,situational,recommend,3,1,"[""캠핑 용품""]",[null],,0.0,1,0,False,,2531
+legs-situ-0002,7,situational,recommend,3,1,"[""초보 캠핑 용품""]",[null],,0.0,1,0,False,,2353
+legs-situ-0003,0,situational,recommend,2,1,"[""캠핑 용품 준비물""]",[null],,0.0,1,0,True,100000,2533
+legs-situ-0003,1,situational,recommend,3,1,"[""캠핑 준비물""]",[null],,0.0,1,1,True,100000,2256
+legs-situ-0003,2,situational,recommend,3,1,"[""캠핑 준비물""]",[null],,0.0,1,1,True,100000,5865
+legs-situ-0003,3,situational,recommend,3,1,"[""캠핑 준비물""]",[null],,0.0,1,1,True,100000,1839
+legs-situ-0003,4,situational,recommend,3,1,"[""캠핑 준비물""]",[null],,0.0,1,1,True,100000,1876
+legs-situ-0003,5,situational,recommend,3,1,"[""캠핑 준비물""]",[null],,0.0,1,1,True,,2396
+legs-situ-0003,6,situational,recommend,3,1,"[""캠핑 준비물""]",[null],,0.0,1,1,True,100000,1974
+legs-situ-0003,7,situational,recommend,2,1,"[""캠핑 준비물""]",[null],,0.0,1,1,True,,2024
+legs-situ-0004,0,situational,recommend,3,1,"[""김장 재료""]",[null],,0.0,1,1,False,,2390
+legs-situ-0004,1,situational,recommend,3,0,[],[],,0.0,0,0,False,,2703
+legs-situ-0004,2,situational,recommend,3,1,"[""김장 재료""]",[null],,0.0,1,1,False,,2270
+legs-situ-0004,3,situational,recommend,3,1,"[""김장 재료""]",[null],,0.0,1,1,False,,1973
+legs-situ-0004,4,situational,recommend,3,1,"[""김장 재료""]",[null],,0.0,1,1,False,,2035
+legs-situ-0004,5,situational,recommend,3,1,"[""김장 재료""]",[null],,0.0,1,1,False,,35362
+legs-situ-0004,6,situational,recommend,3,0,[],[],,0.0,0,0,False,,3065
+legs-situ-0004,7,situational,recommend,3,1,"[""김장 재료""]",[null],,0.0,1,1,False,,2553
+legs-situ-0005,0,situational,recommend,3,1,"[""신혼집 살림살이""]",[null],,0.0,1,0,False,,3066
+legs-situ-0005,1,situational,recommend,3,1,"[""살림살이""]",[null],,0.0,1,1,False,,2293
+legs-situ-0005,2,situational,recommend,3,1,"[""살림살이""]",[null],,0.0,1,1,False,,2050
+legs-situ-0005,3,situational,recommend,3,2,"[""자취 생활 살림살이"", ""신혼집 살림살이 추천""]","[null, null]",,0.0,2,0,False,,2049
+legs-situ-0005,4,situational,recommend,3,1,"[""신혼집 살림살이""]",[null],,0.0,1,0,False,,34949
+legs-situ-0005,5,situational,general,3,1,"[""신혼집 살림살이""]",[null],,0.0,1,0,False,,3837
+legs-situ-0005,6,situational,recommend,3,1,"[""신혼집 살림살이""]",[null],,0.0,1,0,False,,2448
+legs-situ-0005,7,situational,recommend,3,0,[],[],,0.0,0,0,False,,1839
+legs-situ-0006,0,situational,recommend,3,1,"[""비 오는 계절 대비 아이템""]",[null],,0.0,1,0,False,,1945
+legs-situ-0006,1,situational,recommend,3,0,[],[],,0.0,0,0,False,,1822
+legs-situ-0006,2,situational,recommend,3,0,[],[],,0.0,0,0,False,,2102
+legs-situ-0006,3,situational,recommend,3,0,[],[],,0.0,0,0,False,,36110
+legs-situ-0006,4,situational,general,3,0,[],[],,0.0,0,0,False,,2986
+legs-situ-0006,5,situational,recommend,3,0,[],[],,0.0,0,0,False,,2974
+legs-situ-0006,6,situational,recommend,3,1,"[""장마철 대비 물건""]",[null],,0.0,1,0,False,,2019
+legs-situ-0006,7,situational,recommend,3,0,[],[],,0.0,0,0,False,,3119
+legs-situ-0007,0,situational,recommend,3,1,"[""홈트레이닝 기본 용품""]","[""피트니스/홈트레이닝""]",,0.0,1,0,False,,2135
+legs-situ-0007,1,situational,recommend,3,1,"[""홈트레이닝 시작품""]",[null],,0.0,1,0,False,,2496
+legs-situ-0007,2,situational,recommend,3,1,"[""홈트 시작 물품""]",[null],,0.0,1,0,False,,34385
+legs-situ-0007,3,situational,recommend,3,1,"[""홈트레이닝 기초 용품""]",[null],,0.0,1,0,False,,2485
+legs-situ-0007,4,situational,recommend,3,0,[],[],,0.0,0,0,False,,2595
+legs-situ-0007,5,situational,recommend,3,1,"[""홈트 시작 물품""]",[null],,0.0,1,0,False,,2057
+legs-situ-0007,6,situational,recommend,3,1,"[""홈트레이닝 시작 아이템""]",[null],,0.0,1,0,False,,3255
+legs-situ-0007,7,situational,recommend,3,1,"[""홈트 용품""]",[null],,0.0,1,0,False,,2509
+legs-situ-0008,0,situational,recommend,3,1,"[""바베큐 파티 준비물""]",[null],,0.0,1,0,False,,2317
+legs-situ-0008,1,situational,recommend,3,1,"[""바베큐 파티용 기본 용품""]",[null],,0.0,1,0,False,,2702
+legs-situ-0008,2,situational,recommend,3,1,"[""바베큐 용품""]",[null],,0.0,1,0,False,,2742
+legs-situ-0008,3,situational,recommend,3,1,"[""바베큐 파티 용품""]",[null],,0.0,1,0,False,,2334
+legs-situ-0008,4,situational,recommend,3,1,"[""바베큐 파티 추천 아이템""]",[null],,0.0,1,0,False,,2235
+legs-situ-0008,5,situational,recommend,3,1,"[""바베큐 파티 준비물""]",[null],,0.0,1,0,False,,2271
+legs-situ-0008,6,situational,general,3,1,"[""바베큐 파티 필요한 아이템""]","[""주방/야외용품""]",,0.0,1,0,False,,2624
+legs-situ-0008,7,situational,recommend,3,1,"[""바베큐 파티 준비물""]",[null],,0.0,1,0,False,,2442
+legs-situ-0009,0,situational,recommend,3,0,[],[],,0.0,0,0,False,,3440
+legs-situ-0009,1,situational,recommend,3,1,"[""발 시려울 때 신을 수 있는 신발""]",[null],,0.0,1,0,False,,2736
+legs-situ-0009,2,situational,general,3,0,[],[],,0.0,0,0,False,,2064
+legs-situ-0009,3,situational,general,3,1,"[""발 시려워 보온 신발""]",[null],,0.0,1,0,False,,2386
+legs-situ-0009,4,situational,recommend,3,1,"[""발 시려울 때 신을 수 있는 신발""]",[null],,0.0,1,0,False,,2322
+legs-situ-0009,5,situational,general,3,0,[],[],,0.0,0,0,False,,2404
+legs-situ-0009,6,situational,recommend,3,1,"[""방한 부츠""]",[null],boots,0.5,0,0,False,,2118
+legs-situ-0009,7,situational,general,3,0,[],[],,0.0,0,0,False,,2386
+legs-situ-0010,0,situational,recommend,3,1,"[""자취 시작할 때 필요한거""]",[null],,0.0,1,1,False,,2227
+legs-situ-0010,1,situational,recommend,3,1,"[""자취 시작할 때 필요한거""]",[null],,0.0,1,1,False,,3084
+legs-situ-0010,2,situational,recommend,3,5,"[""전자레인지"", ""이불"", ""냄비"", ""빨래바구니"", ""행거""]","[null, null, null, null, null]",bedding;hanger;laundry;microwave;pot,1.0,0,0,False,,2434
+legs-situ-0010,3,situational,recommend,3,1,"[""자취 시작할 때 필요한 물건""]",[null],,0.0,1,0,False,,2167
+legs-situ-0010,4,situational,recommend,3,0,[],[],,0.0,0,0,False,,1780
+legs-situ-0010,5,situational,recommend,3,1,"[""자취 시작할 때 필요한 물건""]",[null],,0.0,1,0,False,,2096
+legs-situ-0010,6,situational,recommend,3,5,"[""전기밥솥"", ""전자레인지"", ""냄비 세트"", ""주방 수납 바구니"", ""세탁 바구니""]","[null, null, null, null, null]",microwave,0.3333333333333333,3,0,False,,2421
+legs-situ-0010,7,situational,recommend,3,5,"[""전자레인지"", ""냄비 세트"", ""세제/청소용품"", ""전기주전자"", ""수납 바구니""]","[""주방용품"", ""주방용품"", ""생활용품"", ""가전/전자제품"", ""생활가구""]",microwave,0.3333333333333333,3,0,False,,2667
