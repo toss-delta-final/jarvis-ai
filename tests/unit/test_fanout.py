@@ -1836,12 +1836,16 @@ _BROAD_LEAVES = [  # 실측 "화장품 추천해줘" → 8 leaf / 3~4 중분류(
 _BROAD_MIDS = ["메이크업", "스킨케어", "뷰티소품"]  # 중복 제거·첫 등장 순서
 
 
-def _broad_decompose(query: str = "화장품") -> dict:
-    """광역 발화 decompose 산출 — case != 3(needs_expansion 게이트 밖, #198 과 직교)."""
+def _broad_decompose(query: str = "화장품", *, case: int = 2) -> dict:
+    """광역 발화 decompose 산출 — 기본은 case != 3(needs_expansion 게이트 밖, #198 과 직교).
+
+    `case=3` 로 호출하면 R4-1(PR #318 리뷰) 재현용 — case 3 + 매핑 전량 실패 + 확장 폴백이
+    `split_by_need` 를 잘못 통과하지 않는지 검증하는 테스트가 쓴다.
+    """
     return {
         "intent": "recommend",
         "reply": "",
-        "case": 2,
+        "case": case,
         "filters": {},
         "categoryQueries": [{"category": None, "query": query}],
     }
@@ -2131,3 +2135,94 @@ async def test_normal_fanout_zero_result_is_not_rescued_by_unfiltered_fallback()
     assert None not in calls  # 무필터 재검색이 붙지 않았다
     done = next(e for e in events if e["type"] == "done")["data"]
     assert done["finishReason"] == "zero_result"
+
+
+# ── R4-1 (PR #318 리뷰) — 확장 턴은 split_by_need 를 통과하면 안 된다 ──────────────
+#
+# 확장 leaf(§4·`_collect_expansion_leaves`)는 **한 실패 leg 에서 파생된 같은 의도의 후보들**이지,
+# 사용자가 말한 서로 다른 니즈가 아니다 — 8개가 전부 같은 query 텍스트를 공유한다
+# (`category_mapping.py` 의 `(canonical, qtexts[i])` 규약). `split_by_need` 가 이를 모르고
+# `case==3 and len(need_legs)>1 and bool(leg_of)` 만 보면, case 3 턴에서 원 매핑도 #217 전개도
+# 전부 실패해 #222 확장 폴백이 발동한 경우 **이름이 같은 목록 8개**로 쪼개진다(`_need_label` 이
+# 공유 query 를 그대로 라벨로 씀) — 조건 칩을 `category_expanded` 로 억제한 것과 같은 원칙
+# (#51 표시=실제)이 목록 분할에는 빠져 있었다. `buy_all_mode` 도 `split_by_need` 를 참조하므로
+# 가짜 니즈 단위 BUY_ALL 예산 세트까지 함께 새어 나갈 수 있었다.
+
+
+async def test_expanded_case3_turn_pushes_single_list_not_split_by_expansion_leaves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[R4-1] case 3 + 매핑 전량 실패 + 확장 폴백 발동 → 목록이 1개다(확장 leaf 8개로 안 쪼개진다)."""
+    # #217 을 끄고 더 쉬운 경로로 간다(리뷰가 지적한 재현 경로 ①) — 매핑이 바로 빈 legs 를 내고
+    # #222 확장 폴백만 발동한다.
+    monkeypatch.setattr(get_settings(), "needs_expansion_enabled", False)
+    leaf_order = [c for c, _ in _BROAD_LEAVES]
+
+    async def _search(filters, exclude_product_ids=None):
+        # leg 마다 **서로 다른** productId 를 내야 round-robin 병합이 leg 마다 다른 leg_of 를
+        # 배정한다 — 모든 leg 가 같은 productId 를 내면 병합 dedup 이 전부 leg 0 로 흡수해
+        # split_by_need 값과 무관하게 목록이 우연히 1개가 되므로(가짜 통과), 결함을 재현하지 못한다.
+        idx = leaf_order.index(filters.category)
+        return _res(100 + idx)
+
+    push = _RecordingPush()
+    await _collect(
+        run_buyer_turn(
+            _req(message="화장품 추천해줘"),
+            _member(),
+            llm=FakeLLM(decompose=_broad_decompose(case=3)),
+            search=_search,
+            push_fn=push,
+            map_categories=_broad_mapper(),
+        )
+    )
+    assert len(push.pushes[0].lists) == 1
+    assert push.pushes[0].list_type == "PICK_ONE"
+
+
+async def test_expanded_case3_turn_does_not_trigger_buy_all_budget_sets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[R4-1] 확장 폴백 + `buyAll=True` + `budget_set_enabled=True`(기본값) 여도 BUY_ALL 예산
+    세트가 발동하지 않는다 — `buy_all_mode` 가 `split_by_need` 를 참조하므로 975행만 고치면
+    자동으로 함께 막힌다(1075행 `buy_all_mode` 줄 자체는 건드리지 않았다)."""
+    monkeypatch.setattr(get_settings(), "needs_expansion_enabled", False)
+    assert get_settings().budget_set_enabled is True  # 전제 확인 — off 라 안 막힌 게 아니다
+
+    async def _search(filters, exclude_product_ids=None):
+        return _res(101, 102)
+
+    decompose = _broad_decompose(case=3)
+    decompose["buyAll"] = True
+    decompose["totalBudget"] = 50_000
+
+    push = _RecordingPush()
+    await _collect(
+        run_buyer_turn(
+            _req(message="화장품 추천해줘"),
+            _member(),
+            llm=FakeLLM(decompose=decompose),
+            search=_search,
+            push_fn=push,
+            map_categories=_broad_mapper(),
+        )
+    )
+    assert push.pushes[0].list_type == "PICK_ONE"  # BUY_ALL 아님
+
+
+async def test_non_expanded_case3_multi_need_still_splits_after_fix() -> None:
+    """[R4-1 회귀 고정] 확장이 **아닌** 진짜 case-3 멀티 니즈(매핑 성공, `category_expanded=False`)
+    는 종전대로 니즈별로 쪼개진다 — 이 수정이 #209/#168 니즈 분할 경로를 죽이지 않았다는 증거."""
+    push = _RecordingPush()
+    llm = _needs_llm(
+        [
+            {"productId": 101, "rationale": "수납이 좋아요"},
+            {"productId": 201, "rationale": "220V 지원이에요"},
+        ]
+    )
+
+    await _run_case3(llm, push)  # map_categories=_two_leg_mapper() → legs 바로 채움(확장 아님)
+
+    assert len(push.pushes[0].lists) == 2
+    assert [entry.label for entry in push.pushes[0].lists] == ["파우치", "어댑터"]
+    assert push.pushes[0].list_type == "PICK_ONE"
