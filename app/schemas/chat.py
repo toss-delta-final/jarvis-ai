@@ -404,7 +404,19 @@ class BuyerChatRequest(ChatRequest):
         return self
 
 
-# ── SSE 이벤트 data 페이로드 모델 (api-spec §3.1, 6종) ──
+# ── SSE 이벤트 data 페이로드 모델 (api-spec §3.1 번호 이벤트 7종 — suggestions 는 §3.1 「MVP 추가 페이로드」 절이라 별도) ──
+
+
+class ProgressData(CamelModel):
+    """`progress` 이벤트 페이로드 (api-spec §3.1 (1), 이슈 #289 — 계약 등재 2026-08-05).
+
+    stage 확정 어휘는 `analyzing` 1종이며 `Literal` 로 강제한다(searching/relaxing/reranking 은
+    후속 확장 후보·미구현) — 어휘를 넓히려면 계약(§3.1) 개정과 이 `Literal` 을 함께 고친다.
+    message 는 선택 — 서버가 비우면 와이어에서 키 자체가 빠진다(`app/agents/buyer/_frames.py`).
+    """
+
+    stage: Literal["analyzing"]
+    message: str | None = None
 
 
 class TokenData(CamelModel):
@@ -414,7 +426,7 @@ class TokenData(CamelModel):
 
 
 class ConditionChip(CamelModel):
-    """`conditions` 칩 1건 — FE 제거 가능한 추출 조건 (api-spec §3.1 (2))."""
+    """`conditions` 칩 1건 — FE 제거 가능한 추출 조건 (api-spec §3.1 (3))."""
 
     field: str
     label: str
@@ -465,7 +477,7 @@ class SuggestionsData(CamelModel):
 
 
 class ActionData(CamelModel):
-    """`action` 이벤트 — 장바구니 담기 결과 (api-spec §3.1 (3)).
+    """`action` 이벤트 — 장바구니 담기 결과 (api-spec §3.1 (4)).
 
     type: CART_ADDED | CART_ADD_FAILED.
     reason(실패 시): PRODUCT_NOT_FOUND | STOCK_INSUFFICIENT | CART_ERROR (STOCK_INSUFFICIENT는
@@ -514,7 +526,7 @@ class ProductsReadyData(CamelModel):
 
 
 class DoneData(CamelModel):
-    """`done` 이벤트 — 정상 종료. finishReason: stop | zero_result (api-spec §3.1 (5)).
+    """`done` 이벤트 — 정상 종료. finishReason: stop | zero_result (api-spec §3.1 (6)).
 
     [#113] `relaxationNotice` 는 **싣지 않는다.** 정본(Notion CH-2)이 `done` 을 `finishReason` 만으로
     확정했고("구 명세 대비 정정 요약: done — relaxationNotice 제거"), FE 타입도 그 필드를 갖고 있지
@@ -527,7 +539,7 @@ class DoneData(CamelModel):
 
 
 class ErrorData(CamelModel):
-    """`error` 이벤트 — 스트림 내부 오류 (api-spec §3.1 (6)).
+    """`error` 이벤트 — 스트림 내부 오류 (api-spec §3.1 (7)).
 
     code 4종: LLM_TIMEOUT | LLM_UNAVAILABLE | SEARCH_FAILED | INTERNAL.
     스테이지 상세(decompose/rerank)는 서버 로그 전용 — 사용자 스트림 미노출.
