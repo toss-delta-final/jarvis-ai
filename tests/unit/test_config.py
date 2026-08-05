@@ -456,3 +456,13 @@ def test_trace_content_defaults_off_and_tolerates_empty_string():
     assert Settings(_env_file=None, langsmith_trace_content=" ").langsmith_trace_content is False
     assert Settings(_env_file=None, langsmith_trace_content="true").langsmith_trace_content is True
     assert Settings(_env_file=None).langsmith_trace_content_max_chars == 20000
+
+
+def test_trace_content_max_chars_tolerates_empty_string():
+    """[#326] max_chars 도 빈 문자열 vars 내성 — int("") 부팅 실패 재발 방지(PR #327 리뷰)."""
+    assert (
+        Settings(
+            _env_file=None, langsmith_trace_content_max_chars=""
+        ).langsmith_trace_content_max_chars
+        == 20000
+    )

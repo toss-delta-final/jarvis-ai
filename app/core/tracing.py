@@ -197,8 +197,13 @@ def validate_export_payload(payload: object, *, allow_content: bool = False) -> 
     """Fail closed when an export payload contains unsafe keys or canary values.
 
     [#326] `allow_content=True` 는 콘텐츠 추적 모드 전용이다 — run payload 의 `inputs`/`outputs`
-    서브트리만 검증에서 면제한다(발화·prompt·응답·Spring 페이로드가 실리는 자리라 면제가 곧
-    기능이다). metadata allowlist 와 나머지 필드의 카나리아 검증은 그대로 유지된다.
+    서브트리에서 **구조 검증(키 allowlist·raw-data 키 금지)만** 면제한다(발화·prompt·응답·
+    Spring 페이로드가 실리는 자리라 이 면제가 곧 기능이다). 텍스트 카나리아
+    (`_TEXT_CANARY_PATTERNS`: bearer 토큰·`sk-`/`lsv2_` API 키·이메일)는 콘텐츠 안에서도
+    **계속 적용**된다 — 발화에 붙여넣은 credential 이나 응답에 노출된 시크릿이 모드와 무관하게
+    나가지 않도록(PR #327 리뷰). 걸리면 기존 fail-closed 대로 trace 전체가 버려진다 — 콘텐츠
+    모드에서 이메일·토큰이 섞인 요청의 트레이스가 사라지는 것은 의도된 트레이드오프다.
+    metadata allowlist 와 나머지 필드의 검증은 그대로 유지된다.
     """
 
     _validate_value(payload, allow_content=allow_content)
@@ -210,17 +215,21 @@ def _validate_value(
     metadata: bool = False,
     opaque: bool = False,
     allow_content: bool = False,
+    content: bool = False,
 ) -> None:
     """`opaque` 는 이 값이 서버 생성 불투명 식별자로 **확인됐다**는 뜻이다(`_is_opaque_identifier`).
 
-    면제는 `_NUMERIC_CANARY_PATTERNS` 에만 적용된다 — 토큰·키·이메일 카나리아는 어떤 필드에서도
-    끄지 않는다(`_OPAQUE_METADATA_SHAPES` 주석 참조).
+    `_NUMERIC_CANARY_PATTERNS` 는 `opaque`(서버 생성 식별자)에서 면제된다. 토큰·키·이메일
+    카나리아(`_TEXT_CANARY_PATTERNS`)는 **어떤 필드에서도 끄지 않는다** — [#326] 콘텐츠
+    모드의 `inputs`/`outputs` 서브트리(`content=True`)에서도 구조 검증만 면제되고 이 텍스트
+    카나리아는 그대로 적용된다(`validate_export_payload` docstring 참조).
     """
     if isinstance(value, Mapping):
         for raw_key, nested in value.items():
             key = str(raw_key)
-            if allow_content and not metadata and key in ("inputs", "outputs"):
-                # 콘텐츠 모드에서 의도적으로 실은 원문 — 이 서브트리만 면제(위 docstring).
+            if content or (allow_content and not metadata and key in ("inputs", "outputs")):
+                # 콘텐츠 서브트리 — 키 검사 없이 값의 텍스트 카나리아만 계속 본다.
+                _validate_value(nested, allow_content=allow_content, content=True)
                 continue
             normalized_key = re.sub(r"[^a-z0-9]", "", key.lower())
             if metadata and key not in SAFE_METADATA_KEYS:
@@ -240,14 +249,22 @@ def _validate_value(
         return
     if isinstance(value, (list, tuple)):
         for nested in value:
-            _validate_value(nested, metadata=metadata, opaque=opaque, allow_content=allow_content)
+            _validate_value(
+                nested,
+                metadata=metadata,
+                opaque=opaque,
+                allow_content=allow_content,
+                content=content,
+            )
         return
     if isinstance(value, BaseException):
-        _validate_value(value.args, allow_content=allow_content)
-        _validate_value(vars(value), allow_content=allow_content)
+        _validate_value(value.args, allow_content=allow_content, content=content)
+        _validate_value(vars(value), allow_content=allow_content, content=content)
         return
     if isinstance(value, str):
-        patterns = _TEXT_CANARY_PATTERNS if opaque else _CANARY_PATTERNS
+        # 콘텐츠 서브트리는 원문(가격·전화번호 형태 숫자 포함)이 정상이라 숫자열 카나리아를
+        # 끄고 텍스트 카나리아만 본다 — credential 차단은 유지, 정상 발화 오탐은 회피.
+        patterns = _TEXT_CANARY_PATTERNS if (opaque or content) else _CANARY_PATTERNS
         if any(pattern.search(value) for pattern in patterns):
             raise UnsafeTelemetryError("sensitive value canary detected")
 

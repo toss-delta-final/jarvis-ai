@@ -899,3 +899,31 @@ def test_allow_content_still_rejects_canary_outside_content_fields() -> None:
     ]
     with pytest.raises(UnsafeTelemetryError):
         validate_export_payload(payload, allow_content=True)
+
+
+@pytest.mark.parametrize(
+    "leaked",
+    [
+        "여기 제 토큰이요 Bearer abc.def.ghi",
+        "키는 sk-proj-abcdefghijklmn 입니다",
+        "lsv2_pt_0123456789abcdef 로 접속하세요",
+        "제 메일은 customer-326@example.com 이에요",
+    ],
+)
+def test_allow_content_still_applies_text_canaries_inside_content(leaked: str) -> None:
+    """콘텐츠 모드여도 credential·이메일 카나리아는 inputs/outputs 안에서 계속 잡는다."""
+    payload = [{"inputs": {"message": leaked}, "outputs": {}, "extra": {"metadata": {}}}]
+    with pytest.raises(UnsafeTelemetryError):
+        validate_export_payload(payload, allow_content=True)
+
+
+def test_allow_content_permits_normal_utterance_with_numbers() -> None:
+    """정상 발화(가격 등 숫자 포함)는 콘텐츠 서브트리에서 숫자열 카나리아에 걸리지 않는다."""
+    payload = [
+        {
+            "inputs": {"message": "5만원 이하 파란 바지 추천해줘, productId 1006987247"},
+            "outputs": {"content": '{"rows": [{"price": 49900}]}'},
+            "extra": {"metadata": {}},
+        }
+    ]
+    validate_export_payload(payload, allow_content=True)

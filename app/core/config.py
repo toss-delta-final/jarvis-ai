@@ -104,13 +104,17 @@ class Settings(BaseSettings):
     langsmith_trace_content: bool = False
     langsmith_trace_content_max_chars: int = Field(default=20000, gt=0)
 
-    @field_validator("langsmith_trace_content", mode="before")
+    @field_validator("langsmith_trace_content", "langsmith_trace_content_max_chars", mode="before")
     @classmethod
-    def _empty_trace_content_is_off(cls, value: object) -> object:
-        # 배포 워크플로가 미설정 vars 를 빈 문자열로 기록한다 — bool 파싱 실패로 기동이 죽지
-        # 않게 빈 값은 기본(off)으로 해석한다(2026-08-05 APP_ENVIRONMENT 빈 값 부팅 실패 교훈).
+    def _empty_trace_content_settings_use_default(cls, value: object, info) -> object:
+        # 배포 워크플로가 미설정 vars 를 빈 문자열로 기록한다 — bool/int 파싱 실패로 기동이
+        # 죽지 않게 빈 값은 필드 기본값으로 해석한다(2026-08-05 APP_ENVIRONMENT 빈 값 부팅
+        # 실패 교훈). max_chars 는 아직 deploy.yml 에 배선되지 않았지만 나란한 필드라 같은
+        # 방식으로 배선되기 쉬워 선제 적용한다(PR #327 리뷰).
         if isinstance(value, str) and value.strip() == "":
-            return False
+            return {"langsmith_trace_content": False, "langsmith_trace_content_max_chars": 20000}[
+                info.field_name
+            ]
         return value
 
     # ── LLM provider 토글 (이슈 #40) ──
