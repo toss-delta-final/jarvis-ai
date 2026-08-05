@@ -2451,6 +2451,98 @@ async def test_expanded_turn_same_text_query_legs_merge_into_one_group() -> None
     assert set(lists[1].product_ids) == {102}
 
 
+# ── PR #351 리뷰 R4-1 — T1(effective_cap)·T3(그룹핑) 판정 축 정합 ──────────────────────
+#
+# R3-1 이 T3 를 "distinct query 2개 이상이고 None 이 안 섞였을 때만 니즈 단위 그룹핑"으로
+# 강화했는데, T1(검색 전 need_count 계산)은 그 None 예외를 반영하지 않아 두 축이 어긋났다 —
+# None 이 섞여 T3 가 그룹핑을 포기(목록 1개)해도 T1 은 여전히 넓은 need_count 로 예산을
+# 넓혀, 분할되지 않을 턴에 Spring 페이로드·rerank 입력만 낭비했다.
+
+
+async def test_expanded_turn_with_none_query_does_not_widen_effective_cap() -> None:
+    """[PR #351 R4-1 fail-first] 확장 턴의 query 가 {"A","B","C",None} 이면(None 혼재) T3 는
+    그룹핑을 포기해 목록 1개로 나가는데, T1 은 **need_count=1**(→ effective_cap == merge_cap)
+    로 떨어져야 한다 — 수정 전엔 need_count 를 distinct 값 그대로 4로 세어 effective_cap 이
+    40 으로 넓혀졌고(분할되지 않을 턴에 불필요한 예산 확장), 이 테스트는 그 상태에서
+    `c.limit == 40`으로 실패해야 한다."""
+    leaves = [
+        ("카테고리A > leafA", "A"),
+        ("카테고리B > leafB", "B"),
+        ("카테고리C > leafC", "C"),
+        ("카테고리D > leafD", None),
+    ]
+    leaf_order = [c for c, _ in leaves]
+    calls: list = []
+
+    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
+        return CategoryMapping(
+            legs=[],
+            unresolved=["카테고리A", "카테고리B", "카테고리C", "카테고리D"],
+            expansion_leaves=list(leaves),
+        )
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters)
+        idx = leaf_order.index(filters.category)
+        return _res(100 + idx)
+
+    push = _RecordingPush()
+    await _collect(
+        run_buyer_turn(
+            _req(message="이것저것 다 추천해줘"),
+            _member(),
+            llm=FakeLLM(decompose=_broad_decompose(case=3)),
+            search=_search,
+            push_fn=push,
+            map_categories=_map,
+        )
+    )
+    assert len(calls) == 4
+    assert all(c.limit == 30 for c in calls)  # merge_cap 그대로 — None 혼재로 넓히지 않는다
+    assert len(push.pushes[0].lists) == 1  # T3 도 그룹핑을 포기해 목록 1개(R3-1 과 일관)
+
+
+async def test_expanded_turn_all_real_queries_still_widens_effective_cap() -> None:
+    """[PR #351 R4-1 회귀 고정] query 가 전부 실재({"A","B","C","D"}, None 없음)면 R4-1 수정
+    이후에도 need_count=4 로 종전대로 예산이 넓혀지고(effective_cap=40) T3 그룹핑도 니즈
+    4개로 정상 분할된다 — None 예외 처리가 all-real 경로를 건드리면 안 된다."""
+    leaves = [
+        ("카테고리A > leafA", "A"),
+        ("카테고리B > leafB", "B"),
+        ("카테고리C > leafC", "C"),
+        ("카테고리D > leafD", "D"),
+    ]
+    leaf_order = [c for c, _ in leaves]
+    calls: list = []
+
+    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
+        return CategoryMapping(
+            legs=[],
+            unresolved=["카테고리A", "카테고리B", "카테고리C", "카테고리D"],
+            expansion_leaves=list(leaves),
+        )
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters)
+        idx = leaf_order.index(filters.category)
+        return _res(100 + idx)
+
+    push = _RecordingPush()
+    await _collect(
+        run_buyer_turn(
+            _req(message="이것저것 다 추천해줘"),
+            _member(),
+            llm=FakeLLM(decompose=_broad_decompose(case=3)),
+            search=_search,
+            push_fn=push,
+            map_categories=_map,
+        )
+    )
+    assert len(calls) == 4
+    assert all(c.limit == 40 for c in calls)  # 4니즈 × 10 = 40 > merge_cap(30) 이라 넓어진다
+    assert len(push.pushes[0].lists) == 4  # T3 도 None 없이 니즈 4개로 정상 분할된다
+
+
 # ── R6-1 (PR #318 리뷰 3차) — 확장 턴은 filters.category 를 영속하지 않는다 ────────────
 #
 # `category_legs[0][0]` 은 확장 leaf 8개 중 임의의 하나일 뿐이다. 그걸 그대로

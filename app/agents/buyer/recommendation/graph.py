@@ -546,15 +546,24 @@ async def stream_recommendation(
     # (`case==3 and len(legs)>1`)을 미리 한 번 더 쓴다. 어긋나면 안 되므로 바뀌면 같이 고칠 것.
     # 확장 턴(category_expanded)의 need_count 는 leaf 개수가 아니라 distinct query(원 니즈) 개수다
     # (T3) — leaf 단위로 세면 8-leaf 확장 턴이 실제 니즈(대개 1~2개)보다 훨씬 큰 예산을 받는다.
+    # [PR #351 리뷰 R4-1] 이 need_count 계산은 아래 T3(`expansion_grouped_by_need`) 판정과
+    # **문자 그대로 같은 식**이어야 한다 — R3-1 이 T3 를 "distinct query 2개 이상 **이고 None 이
+    # 안 섞였을 때만** 니즈 단위로 그룹핑"으로 강화했는데, 여기 need_count 는 그 None 예외를
+    # 반영하지 않아 두 축이 어긋났었다: query {"A","B",None} 확장 턴은 T3 가 그룹핑을 포기해
+    # 목록 1개로 나가는데 T1 은 여전히 need_count=3 으로 예산을 넓혀, 분할되지 않을 턴에 Spring
+    # 페이로드·rerank 입력만 낭비했다. **폴백은 `len(legs_preview)`(리뷰어 제안)가 아니라
+    # need_count=1 이다** — 확장 턴의 `legs_preview` 는 leaf(최대 8개)라 그걸로 떨어뜨리면
+    # 그룹핑을 포기한 턴을 오히려 더 넓히는 반대 방향 오류가 난다. 두 축은 어긋나면 안 되므로
+    # 한쪽을 고치면 반드시 같이 고칠 것.
     # **회귀 0의 핵심**: 이 축에 안 걸리는 턴(비-case3·단일 leg)과 3니즈 이하(3×10=30=merge_cap)
     # 턴은 effective_cap 이 정확히 merge_cap — 기존과 동일. 4~5니즈 턴만 40~50 으로 커진다.
     legs_preview = decision.category_legs
     if decision.case == 3 and len(legs_preview) > 1:
-        need_count = (
-            len({query for _, query in legs_preview})
-            if decision.category_expanded
-            else len(legs_preview)
-        )
+        if decision.category_expanded:
+            queries = {query for _, query in legs_preview}
+            need_count = len(queries) if (len(queries) > 1 and None not in queries) else 1
+        else:
+            need_count = len(legs_preview)
         effective_cap = max(
             settings.category_fanout_merge_cap,
             min(need_count, MAX_LISTS) * settings.category_group_per_need_candidates,
