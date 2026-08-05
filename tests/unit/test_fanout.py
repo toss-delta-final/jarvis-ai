@@ -2271,15 +2271,17 @@ async def test_non_expanded_case3_multi_need_still_splits_after_fix() -> None:
     assert push.pushes[0].list_type == "PICK_ONE"
 
 
-async def test_expanded_turn_with_two_unresolved_legs_still_pushes_single_list() -> None:
-    """[R12-2 현행 고정] unresolved leg 이 2개(서로 다른 query "캠핑용품"·"낚시용품")이고 둘 다
-    확장 leaf 로 대체된 턴도 목록은 1개다 — leaf 들이 서로 다른 query 를 갖고 있어도(단일
-    unresolved 턴과 달리 "leaf 전부 같은 query" 전제가 깨져도) `split_by_need` 는 `category_
-    expanded` 만 보고 여전히 분할을 끈다(leg 단위 분할을 켜면 leaf 당 목록 8개·라벨 중복
-    "캠핑용품"×N·"낚시용품"×N 으로 R4-1 이 재발하기 때문, 위 split_by_need 주석 참조).
+async def test_expanded_turn_with_two_unresolved_legs_splits_by_need() -> None:
+    """[이슈 #168 T3] unresolved leg 이 2개(서로 다른 query "캠핑용품"·"낚시용품")이고 둘 다
+    확장 leaf 로 대체된 턴은 목록이 **니즈(query) 단위로 2개**로 쪼개진다 — leaf 인덱스 그대로
+    분할하면(leaf 4개, 니즈 2개) leaf 당 목록(라벨 중복 "캠핑용품"×2·"낚시용품"×2)이 되어 R4-1
+    이 재발하므로, `leg_of`/`need_legs` 를 leaf→니즈 인덱스로 번역해 니즈 단위로 나눈다.
 
-    **#168 이 니즈(query) 단위 그룹핑을 구현하면 이 고정은 의도적으로 바뀐다** — 그때는 이
-    턴이 "캠핑용품"·"낚시용품" 두 목록으로 쪼개지는 게 맞는 동작이라 이 assert 를 갱신해야 한다.
+    이전(R12-2)에는 이 케이스가 "목록 1개(분할 안 함)"로 고정돼 있었고, 그 테스트 docstring 이
+    "#168 이 니즈 단위 그룹핑을 구현하면 의도적으로 바뀐다"고 예고한 바로 그 지점이다 — #168
+    구현으로 이 테스트가 그 예고대로 갱신됐다. 단일 query 확장 턴(leaf 8개가 전부 같은 query
+    공유)은 여전히 목록 1개로 남는다(아래
+    `test_expanded_case3_turn_pushes_single_list_not_split_by_expansion_leaves` 참조).
     """
     leaves = [
         ("캠핑 > 텐트", "캠핑용품"),
@@ -2323,7 +2325,13 @@ async def test_expanded_turn_with_two_unresolved_legs_still_pushes_single_list()
             map_categories=_map,
         )
     )
-    assert len(push.pushes[0].lists) == 1
+    lists = push.pushes[0].lists
+    assert len(lists) == 2
+    assert [entry.label for entry in lists] == ["캠핑용품", "낚시용품"]
+    # leaf 100·102 는 "캠핑용품" 니즈, leaf 101·103 은 "낚시용품" 니즈 — 니즈 간 상품이 섞이지
+    # 않는다(#168 T3 의 핵심 불변식, R4-1 재발 방지의 반대편 증거).
+    assert set(lists[0].product_ids) == {100, 102}
+    assert set(lists[1].product_ids) == {101, 103}
     assert push.pushes[0].list_type == "PICK_ONE"
 
 
@@ -2561,3 +2569,370 @@ async def test_search_itself_zero_result_logs_had_candidates_false(
     record = zero_result_logs[0]
     assert record.had_candidates is False
     assert record.category_expanded is False
+
+
+# ── 이슈 #168 T1 — rerank 입력 예산을 니즈 수에 비례시킨다(effective_cap) ────────────────
+#
+# 실측(실 카탈로그 leaf 폭 9~17): merge_cap=30 은 case3 5니즈 턴에서 니즈당 6개로 자연
+# 공급량보다 아래를 절단해 per-need expose_max(9) 도달이 원천 불가능했다. `effective_cap` 은
+# case3 다중 leg 턴에만 `max(merge_cap, min(need_count, MAX_LISTS) * category_group_per_need_
+# candidates)` 로 넓히고, 그 외 턴(비-case3·단일 leg·3니즈 이하)은 정확히 merge_cap(30) 그대로다.
+
+
+def _n_leg_mapper(n: int):
+    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
+        return _mapping([(f"카테고리{i} > 세부{i}", f"니즈{i}") for i in range(n)])
+
+    return _map
+
+
+def _n_leg_case3_decompose(n: int) -> dict:
+    return {
+        "intent": "recommend",
+        "reply": "",
+        "case": 3,
+        "semanticQuery": "다목적 쇼핑",
+        "categoryQueries": [{"category": None, "query": f"니즈{i}"} for i in range(n)],
+        "filters": {},
+    }
+
+
+async def test_case3_three_needs_effective_cap_stays_at_merge_cap() -> None:
+    """[T1 회귀 0] case3 + 3니즈(경계, 3×10=30=merge_cap)는 effective_cap 이 정확히 30 이다 —
+    이 축에 걸리는 턴이라도 니즈 수가 임계 이하면 기존과 동일해야 한다."""
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters)
+        return _res(1)
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="세 가지 다 필요해"),
+            _member(),
+            llm=FakeLLM(decompose=_n_leg_case3_decompose(3)),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_n_leg_mapper(3),
+        )
+    )
+    assert len(calls) == 3
+    assert all(c.limit == 30 for c in calls)
+
+
+async def test_case3_five_needs_effective_cap_widens_to_fifty() -> None:
+    """[T1] case3 + 5니즈는 effective_cap 이 max(30, 5*10)=50 으로 넓어진다 — leg_limit(①)·
+    merge cap(②)·embedding_rerank_limit 압축(③) 세 지점 모두 이 값을 쓴다."""
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters)
+        return _res(*range(1, 3))  # leg 마다 후보 2개 — cap 자체 확인이 목적이라 폭은 작게
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="다섯 가지 다 필요해"),
+            _member(),
+            llm=FakeLLM(decompose=_n_leg_case3_decompose(5)),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_n_leg_mapper(5),
+        )
+    )
+    assert len(calls) == 5
+    assert all(c.limit == 50 for c in calls)
+
+
+async def test_non_widened_turn_still_respects_lowered_embedding_rerank_limit(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """[PR #168 리뷰 R2-1] `embedding_rerank_limit` 을 merge_cap 미만(예: 20, rerank 토큰 절감
+    튜닝)으로 낮춘 배포에서, effective_cap 이 안 넓어진 턴(3니즈 이하 case3)은 그 낮춘 값을
+    그대로 존중해야 한다 — `rerank_input_limit = max(embedding_rerank_limit, effective_cap)` 을
+    조건 없이 걸면 이 턴까지 30(merge_cap)으로 조용히 커진다(T1 이 의도한 "넓힌 턴만 하한을
+    올린다"가 아니라 "이 슬라이스 자체의 하한을 올린다"가 돼버리는 설정 조합 회귀)."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "embedding_rerank_limit", 20)
+
+    async def _search(filters, exclude_product_ids=None):
+        idx = int(filters.category.removeprefix("카테고리").split(" ", 1)[0])
+        base = idx * 100
+        return _res(*range(base + 1, base + 11))  # leg 당 10개 × 3leg = merge_cap(30) 정확히 채움
+
+    with caplog.at_level(logging.INFO):
+        await _collect(
+            run_buyer_turn(
+                _req(message="세 가지 다 필요해"),
+                _member(),
+                llm=FakeLLM(decompose=_n_leg_case3_decompose(3)),
+                search=_search,
+                push_fn=_RecordingPush(),
+                map_categories=_n_leg_mapper(3),
+            )
+        )
+    pipeline_logs = [r for r in caplog.records if r.msg == "recommend_pipeline"]
+    assert pipeline_logs, "recommend_pipeline 로그가 없다"
+    assert pipeline_logs[0].compressed == 20  # embedding_rerank_limit 이 그대로 존중된다(30 아님)
+
+
+async def test_widened_split_turn_keeps_effective_cap_despite_lowered_embedding_rerank_limit(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """[PR #168 리뷰 R2-1 고정] `embedding_rerank_limit=20` 이어도 effective_cap 이 실제로
+    넓어진 턴(5니즈 split, 50)은 그 넓힌 값을 유지한다 — R2-1 수정이 T1 의 원래 의도(넓힌 턴은
+    안 잘림)까지 되돌리면 안 된다."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "embedding_rerank_limit", 20)
+
+    async def _search(filters, exclude_product_ids=None):
+        idx = int(filters.category.removeprefix("카테고리").split(" ", 1)[0])
+        base = idx * 100
+        return _res(*range(base + 1, base + 13))  # leg 당 12개 — 실측 leaf 폭 하한대
+
+    with caplog.at_level(logging.INFO):
+        await _collect(
+            run_buyer_turn(
+                _req(message="다섯 가지 다 필요해"),
+                _member(),
+                llm=FakeLLM(decompose=_n_leg_case3_decompose(5)),
+                search=_search,
+                push_fn=_RecordingPush(),
+                map_categories=_n_leg_mapper(5),
+            )
+        )
+    pipeline_logs = [r for r in caplog.records if r.msg == "recommend_pipeline"]
+    assert pipeline_logs, "recommend_pipeline 로그가 없다"
+    assert pipeline_logs[0].compressed == 50  # effective_cap(5*10) 이 유지된다(20 아님)
+
+
+async def test_non_case3_multi_leg_effective_cap_unaffected() -> None:
+    """[T1 회귀 0] case3 이 아닌 멀티 leg(예: 종전 §6 fan-out) 턴은 니즈 수와 무관하게
+    effective_cap 이 merge_cap(30) 그대로다 — 판정 축은 `case==3 and len(legs)>1` 뿐이다."""
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters)
+        # leg 마다 서로 다른 productId 를 내야 병합 후보가 relaxation_min_results 이상 남는다 —
+        # 전부 같은 id(1)를 내면 dedup 으로 후보가 1개가 되어 완화 칩 probe(§113)가 별도로
+        # `_run_search` 를 다시 불러 호출 수가 이 테스트의 관심사(effective_cap)와 무관하게
+        # 두 배로 뛴다.
+        idx = int(filters.category.removeprefix("카테고리").split(" ", 1)[0])
+        return _res(100 + idx)
+
+    await _collect(
+        run_buyer_turn(
+            _req(),  # DEFAULT_DECOMPOSE — case 2
+            _member(),
+            llm=FakeLLM(),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_n_leg_mapper(5),
+        )
+    )
+    assert len(calls) == 5
+    assert all(c.limit == 30 for c in calls)
+
+
+async def test_case3_five_needs_groups_fill_to_expose_max_with_ample_supply() -> None:
+    """[T4-2] 5니즈 split 턴에서 니즈마다 공급이 충분하면(merge cap 50 안에서) 그룹이
+    expose_max 까지 채워진다 — 니즈당 rerank 입력이 6개(구 merge_cap=30/5)로 절단되던 종전엔
+    도달 불가능했다."""
+    settings = get_settings()
+
+    async def _search(filters, exclude_product_ids=None):
+        idx = int(filters.category.removeprefix("카테고리").split(" ", 1)[0])
+        base = idx * 100
+        return _res(*range(base + 1, base + 13))  # leg 당 12개 — 실측 leaf 폭(9~17)의 하한대
+
+    # rerank 는 니즈별 균형을 프롬프트로만 지시할 뿐 코드로 강제하지 않는다(`rerank.py` 의
+    # `len(ranked) >= expose_max` 는 니즈 구분 없는 **전역** 컷이다) — 니즈 순서대로 몰아 랭킹을
+    # 주면 전역 예산(expose_max*니즈수)이 마지막 니즈 도달 전에 바닥나 그 니즈만 굶는다. 라운드
+    # 로빈(니즈마다 1개씩 순서대로)으로 줘야 각 니즈가 정확히 `expose_max` 개씩 받는다.
+    ranked = [
+        {"productId": i * 100 + (k + 1), "rationale": "그룹 채우기용"}
+        for k in range(settings.expose_max)
+        for i in range(5)
+    ]
+    push = _RecordingPush()
+    await _collect(
+        run_buyer_turn(
+            _req(message="다섯 가지 다 필요해"),
+            _member(),
+            llm=FakeLLM(
+                decompose=_n_leg_case3_decompose(5),
+                rerank={"ranked": ranked, "overallComment": "다 골라봤어요"},
+            ),
+            search=_search,
+            push_fn=push,
+            map_categories=_n_leg_mapper(5),
+        )
+    )
+    lists = push.pushes[0].lists
+    assert len(lists) == 5
+    assert all(len(entry.product_ids) == settings.expose_max for entry in lists)
+
+
+# ── 이슈 #168 T3 — BUY_ALL 은 buyAll=True 일 때만 니즈 단위로 발동한다 ─────────────────
+
+
+async def test_expanded_turn_multi_query_buy_all_triggers_need_level_budget_sets() -> None:
+    """[T3] distinct query 2개 확장 턴 + buyAll=True 는 leaf(4개) 단위가 아니라 니즈(2개)
+    단위로 BUY_ALL 예산 세트를 만든다 — split_by_need 가 이제 True 이므로 buy_all_mode 도
+    함께 열린다(단일 query 확장 턴은 여전히 막힌다,
+    `test_expanded_case3_turn_does_not_trigger_buy_all_budget_sets` 참조). focus 라벨이 있다면
+    "{니즈} 중심" 형태인데, 니즈 이름만 나올 뿐 leaf 4개의 canonical 은 등장하지 않는다 —
+    leaf 단위로 새면 라벨이 "캠핑 > 텐트 중심" 같은 값이 돼 버린다."""
+    leaves = [
+        ("캠핑 > 텐트", "캠핑용품"),
+        ("낚시 > 릴", "낚시용품"),
+        ("캠핑 > 침낭", "캠핑용품"),
+        ("낚시 > 낚싯대", "낚시용품"),
+    ]
+    leaf_order = [c for c, _ in leaves]
+
+    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
+        return CategoryMapping(
+            legs=[], unresolved=["캠핑용품", "낚시용품"], expansion_leaves=list(leaves)
+        )
+
+    async def _search(filters, exclude_product_ids=None):
+        idx = leaf_order.index(filters.category)
+        return ProductSearchResult(
+            products=[
+                SpringProduct(
+                    product_id=100 + idx * 10 + j,
+                    name=f"P{idx}{j}",
+                    price=10_000 * (j + 1),
+                    rating=4.0,
+                    category=leaf_order[idx],
+                    brand="b",
+                )
+                for j in range(2)
+            ],
+            total_count=2,
+        )
+
+    push = _RecordingPush()
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="캠핑용품이랑 낚시용품 예산 안에서 다 사줘"),
+            _member(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "reply": "",
+                    "case": 3,
+                    "filters": {},
+                    "buyAll": True,
+                    "totalBudget": 100_000,
+                    "categoryQueries": [
+                        {"category": None, "query": "캠핑용품"},
+                        {"category": None, "query": "낚시용품"},
+                    ],
+                }
+            ),
+            search=_search,
+            push_fn=push,
+            map_categories=_map,
+        )
+    )
+    assert not any(e["type"] == "error" for e in events)
+    assert push.pushes[0].list_type == "BUY_ALL"
+    focus_labels = {e.label for e in push.pushes[0].lists if e.label and "중심" in e.label}
+    assert focus_labels <= {"캠핑용품 중심", "낚시용품 중심"}
+    for leaf_canonical, _query in leaves:
+        assert not any(leaf_canonical in (e.label or "") for e in push.pushes[0].lists)
+
+
+# ── 이슈 #168 T2 — split 턴 그룹 서술 token ────────────────────────────────────────
+
+
+async def test_split_turn_emits_group_notice_with_need_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[T2] split 턴은 니즈 라벨과 노출 개수를 담은 그룹 서술 token 을 낸다."""
+    settings = get_settings()
+    # expose_min 을 1로 낮춘다 — 기본값이면 `_split_by_need` 가 각 니즈를 fallback(검색순서)으로
+    # expose_min 까지 채워 그룹 개수가 랭킹 1건이 아니라 그 이상이 돼(가용 후보가 있는 한)
+    # "1개"라는 이 테스트의 기대와 어긋난다(개수 자체는 T1/T2 관심사가 아니라 여기선 고정한다).
+    monkeypatch.setattr(settings, "expose_min", 1)
+    push = _RecordingPush()
+    llm = _needs_llm(
+        [
+            {"productId": 101, "rationale": "수납이 좋아요"},
+            {"productId": 201, "rationale": "220V 지원이에요"},
+        ]
+    )
+    events = await _run_case3(llm, push)
+    tokens = [e["data"]["text"] for e in events if e["type"] == "token"]
+    expected = settings.group_notice.format(items="파우치 1개 · 어댑터 1개")
+    assert expected in tokens
+
+
+async def test_group_notice_disabled_flag_suppresses_token() -> None:
+    """[T2 회귀] `group_notice_enabled=False` 면 그룹 서술 token 이 없다(다른 token 은 그대로)."""
+    settings = get_settings()
+    original = settings.group_notice_enabled
+    settings.group_notice_enabled = False
+    try:
+        push = _RecordingPush()
+        llm = _needs_llm(
+            [
+                {"productId": 101, "rationale": "수납이 좋아요"},
+                {"productId": 201, "rationale": "220V 지원이에요"},
+            ]
+        )
+        events = await _run_case3(llm, push)
+    finally:
+        settings.group_notice_enabled = original
+    tokens = [e["data"]["text"] for e in events if e["type"] == "token"]
+    assert not any("니즈별로 나눠 담았어요" in t for t in tokens)
+
+
+async def test_non_split_turn_does_not_emit_group_notice() -> None:
+    """[T2 회귀] split 되지 않는 턴(단일 leg)은 그룹 서술 token 이 없다."""
+
+    async def _search(filters, exclude_product_ids=None):
+        return _res(101, 102)
+
+    push = _RecordingPush()
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(),
+            search=_search,
+            push_fn=push,
+        )
+    )
+    tokens = [e["data"]["text"] for e in events if e["type"] == "token"]
+    assert not any("니즈별로 나눠 담았어요" in t for t in tokens)
+
+
+async def test_default_settings_combination_splits_and_groups_case3_turn() -> None:
+    """[기본값 조합 시뮬레이션] `category_group_per_need_candidates`·`group_notice_*` 를
+    아무것도 오버라이드하지 않은 기본값 조합에서도 T1(effective_cap)·T2(그룹 서술)가 함께
+    정상 동작한다 — #222 테스트가 지킨 것과 같은 회귀 방지 관례(모든 테스트가 값을
+    오버라이드하면 배포되는 기본값 조합이 깨져도 아무도 모른다)."""
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters)
+        idx = int(filters.category.removeprefix("카테고리").split(" ", 1)[0])
+        return _res(*range(idx * 100 + 1, idx * 100 + 4))
+
+    push = _RecordingPush()
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="네 가지 다 필요해"),
+            _member(),
+            llm=FakeLLM(decompose=_n_leg_case3_decompose(4)),
+            search=_search,
+            push_fn=push,
+            map_categories=_n_leg_mapper(4),
+        )
+    )
+    assert all(c.limit == 40 for c in calls)  # 4니즈 × 10 = 40 > merge_cap(30) 이라 넓어진다
+    assert len(push.pushes[0].lists) == 4
+    tokens = [e["data"]["text"] for e in events if e["type"] == "token"]
+    assert any("니즈별로 나눠 담았어요" in t for t in tokens)

@@ -670,6 +670,15 @@ class Settings(BaseSettings):
     # 문구는 LLM 이 짓지 않는다 — DB 값 그대로 조립해 존재하지 않는 카테고리를 말하지 않는다(#59 재발 방지).
     category_expand_notice: str = "{items} 에서 관련 상품을 찾아봤어요."
 
+    # ── Case 3 니즈별 그룹 출력 (이슈 #168) ──
+    # split 턴의 니즈당 rerank 입력 후보 quota. 실측(실 카탈로그 leaf 폭 9~17): merge_cap=30 은
+    # 5니즈 턴에서 니즈당 6개로 자연 공급량보다 아래를 절단해 per-need expose_max(9) 도달 불가.
+    category_group_per_need_candidates: int = Field(default=10, ge=1)
+    group_notice_enabled: bool = True  # 니즈별 그룹 서술 on/off
+    # 니즈 그룹 서술 자리 하나({items}) — "라벨1 N개 · 라벨2 M개" 형태로 결정론 조립한다
+    # (#222 확장 고지와 같은 패턴, LLM 이 짓지 않는다).
+    group_notice: str = "니즈별로 나눠 담았어요 — {items}"
+
     # ── 목적·상황형 발화의 상품 전개 (이슈 #198·#217, DESIGN-NEEDS-EXPANSION-198) ──
     # "집들이 선물" 처럼 무엇을 살지 사용자가 말하지 않은 발화를 구체 상품 목록으로 전개한다
     # (정본 SPEC-RECOMMEND-001 §5.1 shopping_list 분해, EX-7 v0.10.0 개정으로 전용 호출 허용).
