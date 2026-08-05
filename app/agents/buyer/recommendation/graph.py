@@ -926,25 +926,29 @@ async def stream_recommendation(
     # 사전 확률이 올라간다("기존 갭이라 무관"이 아니라 "기존 갭인데 이 PR 이 노출 확률을 올린다").
     # 그래서 후속 이슈는 이 PR 이 확률을 올린 갭의 후속으로 우선순위를 매겨야 한다. 억제 이후
     # 기준으로 다시 판정하려면 폴백 재검색 뒤 억제를 다시 돌려야 해서(순서·중복 억제 문제가
-    # 새로 생긴다) 여기서 처리하지 않고 별도 이슈 #343 으로 분리한다(착수 전 아래
-    # `recommend_zero_result` 로그의 had_candidates=True & category_expanded=True 빈도를 먼저
-    # 확인).
+    # 새로 생긴다) — 억제-후 재판정은 아래 [#343] 블록(`candidates = result.products` 직후)이
+    # 담당한다(갭 실재는 PR #318 리뷰에서 재현·확정했고, 운영 실빈도는 아직 미확인이다 — 아래
+    # `recommend_zero_result` 로그의 had_candidates=True & category_expanded=True 조합으로
+    # 배포 후 후속 관측한다).
     category_expand_notice_suppressed = False
+
+    async def _run_search_unfiltered() -> tuple[ProductSearchResult, dict[int, int]] | None:
+        """카테고리를 빼고 1회만 재검색한다 — 비-fan-out 단일검색과 같은 계약(§6 `_run_search`
+        의 `if not legs` 분기와 동일 처리, leg_of 는 leg 개념이 없으니 빈 dict).
+
+        [#343] 억제-이전 F-1 폴백과 억제-이후 재판정이 함께 쓴다 — 지역 함수를 두 곳에 각자
+        정의하면 같은 판정 개념이 한쪽만 고쳐지는 드리프트가 생긴다(lessons)."""
+        unfiltered = decision.filters.model_copy(update={"category": None})
+        try:
+            found = await search(unfiltered, exclude_product_ids=None)
+            return (found, {}) if found is not None else None
+        except SpringUnavailableError:
+            return None
+        except Exception as exc:  # noqa: BLE001 - 재검색 실패는 원래(0건) 결과를 유지
+            logger.warning("category_expand_zero_fallback_failed", extra={"reason": str(exc)})
+            return None
+
     if decision.category_expanded and search_result.total_count == 0:
-
-        async def _run_search_unfiltered() -> tuple[ProductSearchResult, dict[int, int]] | None:
-            """카테고리를 빼고 1회만 재검색한다 — 비-fan-out 단일검색과 같은 계약(§6 `_run_search`
-            의 `if not legs` 분기와 동일 처리, leg_of 는 leg 개념이 없으니 빈 dict)."""
-            unfiltered = decision.filters.model_copy(update={"category": None})
-            try:
-                found = await search(unfiltered, exclude_product_ids=None)
-                return (found, {}) if found is not None else None
-            except SpringUnavailableError:
-                return None
-            except Exception as exc:  # noqa: BLE001 - 재검색 실패는 원래(0건) 결과를 유지
-                logger.warning("category_expand_zero_fallback_failed", extra={"reason": str(exc)})
-                return None
-
         fallback_bundle = await _run_search_unfiltered()
         if fallback_bundle is not None:
             search_result, leg_of = fallback_bundle
@@ -1033,9 +1037,7 @@ async def stream_recommendation(
             else settings.embedding_rerank_limit
         )
         return (
-            ProductSearchResult(
-                products=survivors[:rerank_input_limit], total_count=matched
-            ),
+            ProductSearchResult(products=survivors[:rerank_input_limit], total_count=matched),
             suppressed,
             seen,
             bool(found.products),
@@ -1060,6 +1062,64 @@ async def stream_recommendation(
             )
         raise
     candidates = result.products
+
+    # [#343] 억제-후 재판정 — 검색은 히트를 냈는데 위 `_post_filter`(최근구매 exact 제외 + 소모품
+    # 카테고리 억제)가 전량을 지워 candidates 가 0이 된 확장 턴을 무필터 재검색으로 구제한다.
+    # 위 F-1(883행)은 억제 **이전** `search_result.total_count` 만 보므로 이 갭을 못 잡는다
+    # (PR #318 리뷰 R6-4, #222 가 후보 풀을 앵커 근방 leaf 8개로 좁혀 이 사전 확률을 구조적으로
+    # 높였다). `not category_expand_notice_suppressed` 는 상호배타 가드다 — 억제-이전 F-1 이 이미
+    # 무필터 재검색 1회를 써서 채택했으면 여기서 또 돌지 않는다(재검색은 결정론적이라 같은 쿼리를
+    # 두 번 돌려도 결과가 같으므로 2회 이상 시도는 무의미하고, 이 가드로 턴당 무필터 재검색
+    # 왕복은 최대 1회로 고정된다 — Spring 3s 타임아웃 1회분, 구매자 스트림 30s 예산 §2.9 안).
+    post_suppress_fallback_attempted = False
+    if (
+        settings.category_expand_post_suppress_fallback_enabled
+        and decision.category_expanded
+        and not candidates
+        and had_candidates
+        and not category_expand_notice_suppressed
+    ):
+        post_suppress_fallback_attempted = True
+        fallback_bundle = await _run_search_unfiltered()
+        if fallback_bundle is not None:
+            refetched, _ = fallback_bundle  # leg_of 는 이 함수 계약상 항상 빈 dict
+            # 후보는 이미 0건으로 확정돼 있고 이 재판정은 구제라는 **부가 기능**이다 — 첫 번째
+            # `_post_filter(search_result)`(994행)와 달리 여기서 예외가 나도 후보 확정 자체는
+            # 이미 끝나 있어 raise 할 이유가 없다. 감싸지 않으면 재적용(`_post_filter` 자체는
+            # 이미 자기 예외를 삼키는 `_run_search_unfiltered` 와 달리 무방어라 이 try 의 주 보호
+            # 대상이다)이 실패한 순간 conditions 도 zero_result 안내도 없이 스트림이 죽는다 —
+            # `_probe`·relaxation 루프와 같은 "부가 기능 실패가 턴을 죽이지 않는다"(§7) 원칙.
+            try:
+                (
+                    refiltered,
+                    refiltered_suppressed_by_cat,
+                    refiltered_received,
+                    refiltered_had_candidates,
+                ) = _post_filter(refetched)
+                if refiltered.products:
+                    result = refiltered
+                    suppressed_by_cat = refiltered_suppressed_by_cat
+                    received = refiltered_received
+                    had_candidates = refiltered_had_candidates
+                    candidates = result.products
+                    leg_of = {}  # leg 개념 없음 — 기존 F-1 과 동일 규약, split_by_need 자연 차단
+                    # 무필터로 실제 찾았으니 "중분류를 훑었다"는 확장 고지는 이제 거짓 고지다
+                    # (F-1 과 같은 원칙, 883행 참조). `decision.category_expanded` 자체는
+                    # 건드리지 않는다.
+                    category_expand_notice_suppressed = True
+                    logger.info(
+                        "category_expand_post_suppress_fallback",
+                        extra={"legs": len(decision.category_legs)},
+                    )
+                # 재적용 후에도 0건이면 위에서 result·suppressed_by_cat·candidates 를 갱신하지
+                # 않았으므로 원래(억제된) 상태가 그대로 유지된다 — 되돌리기 칩·안내 문구는 원래
+                # 억제 기준으로 조립돼야 한다(재검색분으로 교체하면 안 된다).
+            except Exception as exc:  # noqa: BLE001 - 재판정 실패는 원래(억제된) 상태를 유지
+                # CancelledError(BaseException)는 전파돼 협조적 취소가 보존된다.
+                logger.warning(
+                    "category_expand_post_suppress_fallback_failed", extra={"reason": str(exc)}
+                )
+        # fallback_bundle 이 None(재검색 실패)이어도 같은 이유로 원래 상태를 그대로 둔다.
 
     # ── 0건/소량 조건 완화 (#113, api-spec §3.1 · SPEC-RECOMMEND-001 §6.6) ──
     # estCount 는 page-local 로 못 구한다 — priceMax·brand·color 는 Spring I-1 쿼리 파라미터라 탈락
@@ -1328,6 +1388,9 @@ async def stream_recommendation(
                 # 확장 턴 여부 — #222 가 발생 확률을 높인 갭(F-1 미구제)의 빈도를 이 조합
                 # (had_candidates=True & category_expanded=True)으로 관측한다(PR #318 리뷰).
                 "category_expanded": decision.category_expanded,
+                # [#343] 위 억제-후 재판정을 시도했는지 — 수정 후에도 이 조합이 남을 때 "폴백을
+                # 시도했는데도 정말 0건"인지 "플래그 off 로 갭이 그대로"인지 로그로 갈라야 한다.
+                "post_suppress_fallback_attempted": post_suppress_fallback_attempted,
             },
         )
         return
@@ -1373,9 +1436,7 @@ async def stream_recommendation(
             query_to_need_idx = {q: idx for idx, q in enumerate(distinct_queries)}
             leaf_query = [query for _, query in need_legs]
             leg_of = {pid: query_to_need_idx[leaf_query[leaf]] for pid, leaf in leg_of.items()}
-            need_legs = [
-                (need_legs[first_leaf_for_query[q]][0], q) for q in distinct_queries
-            ]
+            need_legs = [(need_legs[first_leaf_for_query[q]][0], q) for q in distinct_queries]
             expansion_grouped_by_need = True
     # [#222 PR #318 리뷰] 확장 턴(category_expanded)은 **기본적으로** 니즈 경계로 쪼개지 않는다
     # (조건 칩을 category_expanded 로 억제한 것과 같은 원칙, #51 표시=실제) — 단 위에서 니즈
