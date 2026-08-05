@@ -20,6 +20,7 @@
   Wilson CI·pair(INV-paraphrase/DIR-budget) 진단을 1급 산출물로 동반한다(`evals/README.md`
   공통 규약 준수). CI 는 가짜 LLM(`ScriptedDecomposeLLM`)만 돌려 API 콜 0. 계약(api-spec)
   무변경.
+- **#336 — 과소지정 발화("5만원 이내로 아무거나 세트로") 처리: 인기 후보 + 카테고리 되묻기(기본 off)** — 신규 `underspecified_reask_enabled` 플래그 뒤, `no_condition.py`(#162)를 "제약(가격)만 있는 턴"까지 넓히는 `app/agents/buyer/recommendation/underspecified.py`를 추가했다. `is_underspecified_turn`(no_condition 의 상위 집합 — 불변식 테스트로 고정)이 트리거되면 후보를 I-3(인기 상품) + 가격 클라이언트 필터(`within_price_range`, 입증 필요 규약)로 확보하고, 자동완화·완화칩 probe(카테고리 없는 I-1 재검색을 부르던 별도 게이트 2곳)를 끈다. 되물음은 새 SSE 이벤트·필드 없이 **`token` 산문으로만** 나간다 — `SuggestionChip`은 여전히 relaxation/revert 중 정확히 하나만 강제하는 계약이라 카테고리 되물음 칩은 명세 개정 없이 만들지 않았다(노출 후보 카테고리 예시 dedup, config 문구·개수 상한 튜너블). 예산 세트(#60)·평점(rating_min, I-3 가 사후필터를 타지 않아 보수적으로 제외)·멀티턴 상태(신규 저장소 없음 — `ThreadFilterStore.put`이 빈 필터도 저장해 되물음이 반복되지 않음을 실측)는 그대로 두거나 알려진 한계로 문서화했다. 계약(api-spec) 무변경. (`docs/specs/SPEC-UNDERSPECIFIED-336.md`, `evals/underspecified_cases/`)
 - **#333 Part 3 — 골든셋 v2.1.0(adjudication 반영본) 기준 scoring·3-arm ablation baseline 전면
   재실행** — `evals/scoring/baselines/dev-v2/`(passthrough=no-op 기준선 해석 유지)와
   `evals/ablation/baselines/20260805-dev-v2-full-n5/`(dev MFT-only 67건, N=5, seed
