@@ -16,10 +16,9 @@ def test_seller_settings_defaults() -> None:
     settings = Settings(_env_file=None)
     # [통일 2026-07-20] 서비스 토큰은 팀 규약 internal_api_token 단일 키(기본 미설정).
     assert settings.internal_api_token == ""
-    assert settings.seller_ma_window == 7
-    assert settings.seller_ma_min_window == 3  # Spring MIN_WINDOW 정렬(#194)
-    assert settings.seller_anomaly_deviation_pct == 30.0
-    assert settings.seller_conversion_drop_pct == 20.0
+    # [#290] 구 임계 튜너블(seller_ma_*·seller_anomaly_deviation_pct·
+    # seller_conversion_drop_pct)은 논문 기반 교체로 폐기 — 대체 튜너블은
+    # test_seller_analysis_defaults 가 검증한다.
     assert settings.seller_churn_inactive_days == 30
     assert settings.seller_recent_days_default == 7
     assert settings.seller_calc_max_result_digits == 100
@@ -40,18 +39,6 @@ def test_seller_settings_defaults() -> None:
     assert settings.seller_analysis_score_threshold == 21
     assert settings.seller_analysis_judge_timeout_s == 20.0
     assert settings.seller_branch_deadline_s == 160.0
-
-
-def test_seller_ma_window_invalid_config_fails_fast() -> None:
-    """[#194 PR 리뷰] 이상 감지 window 오설정은 기동 시점에 실패한다 — 런타임에
-    daily 매출 조회가 매 요청 ValueError 로 죽는 것 방지(설정값은 요청마다 안 변함)."""
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None, seller_ma_min_window=0)
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None, seller_ma_window=2, seller_ma_min_window=3)
-    # 경계(min_window == window)는 유효하다.
-    ok = Settings(_env_file=None, seller_ma_window=3, seller_ma_min_window=3)
-    assert ok.seller_ma_min_window == 3
 
 
 def test_seller_period_max_days_bounds_fail_fast() -> None:
@@ -83,6 +70,94 @@ def test_seller_recent_default_within_period_max() -> None:
     # 경계(default == max)는 유효하다.
     ok = Settings(_env_file=None, seller_recent_days_default=7, seller_period_max_days=7)
     assert ok.seller_recent_days_default == 7
+
+
+def test_seller_analysis_defaults() -> None:
+    """[#290] 분석 계산 층 튜너블 기본값 — 근거는 docs/worker-papers.md 논문 권장값."""
+    settings = Settings(_env_file=None)
+    assert settings.seller_stl_period == 7
+    assert settings.seller_gesd_alpha == 0.05
+    assert settings.seller_gesd_max_anomalies_ratio == 0.2
+    assert settings.seller_analysis_lookback_days == 28
+    assert settings.seller_min_history_for_stl == 14
+    assert settings.seller_rate_test_alpha == 0.05
+    assert settings.seller_wilson_confidence == 0.95
+    assert settings.seller_mad_threshold == 3.5
+    assert settings.seller_tukey_k == 1.5
+    assert settings.seller_night_hours_start == 0
+    assert settings.seller_night_hours_end == 6
+    assert settings.seller_behavior_kmeans_k_min == 2
+    assert settings.seller_behavior_kmeans_k_max == 5
+    assert settings.seller_kmeans_random_state == 42
+    assert settings.seller_churn_signal_top_k == 3
+
+
+def test_seller_analysis_stl_relations_fail_fast() -> None:
+    """[#290] STL 관계 오설정은 기동 시점에 실패한다.
+
+    min_history < 2×period 면 폴백 경계를 통과한 입력이 STL 내부에서 죽고,
+    lookback < min_history 면 확장 조회 비용만 내고 STL 은 영영 폴백이다(무음 무효화).
+    """
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_stl_period=1)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_min_history_for_stl=13)  # < 2×7
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_analysis_lookback_days=10)  # < min_history 14
+    # 경계(2×period == min_history == lookback)는 유효하다.
+    ok = Settings(
+        _env_file=None,
+        seller_stl_period=7,
+        seller_min_history_for_stl=14,
+        seller_analysis_lookback_days=14,
+    )
+    assert ok.seller_analysis_lookback_days == 14
+
+
+def test_seller_analysis_statistical_params_fail_fast() -> None:
+    """[#290] 통계 파라미터 구간 오설정은 기동 시점에 실패한다."""
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_gesd_alpha=0.0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_rate_test_alpha=1.0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_wilson_confidence=1.0)
+    # GESD 는 이상점 수 < 표본 절반 전제 — 0.49 초과는 검정 전제 붕괴(S-H-ESD §3).
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_gesd_max_anomalies_ratio=0.5)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_mad_threshold=0.0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_tukey_k=-1.0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_night_hours_start=6, seller_night_hours_end=6)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_behavior_kmeans_k_min=6)  # > k_max 5
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_behavior_kmeans_k_min=1)  # 군집 최소 2
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_churn_signal_top_k=0)
+    # 경계 유효값 — ratio 상한 0.49, 심야 [0, 24).
+    ok = Settings(
+        _env_file=None,
+        seller_gesd_max_anomalies_ratio=0.49,
+        seller_night_hours_start=22,
+        seller_night_hours_end=24,
+    )
+    assert ok.seller_gesd_max_anomalies_ratio == 0.49
+
+
+def test_seller_analysis_types_proxy_basis() -> None:
+    """[#290] 프록시 근사 규약 — basis 필드가 원천을 지목하고 결과는 불변(frozen)이다."""
+    from app.agents.seller.analysis.types import ProxyValue, RateEstimate
+
+    proxy = ProxyValue(name="recency_days", value=12.0, basis="proxy:last_activity_at")
+    assert proxy.basis.startswith("proxy:")
+    estimate = RateEstimate(
+        successes=3, trials=10, rate=0.3, ci_low=0.11, ci_high=0.6, confidence=0.95
+    )
+    with pytest.raises(AttributeError):  # frozen dataclass — 계산 결과 사후 변조 금지
+        estimate.rate = 0.9  # type: ignore[misc]
 
 
 def test_seller_model_temperatures() -> None:

@@ -471,6 +471,32 @@
 
 ---
 
+## [2026-08-05] raise 하는 계산 함수를 도구에 배선하면 **호출부 전수**를 같은 degrade 로 감싼다
+- 증상: #290 PR 리뷰 4건 — `proportions.wilson_interval` 은 `successes > trials` 를
+  ValueError 로 거부하는데, 같은 PR 의 신규 호출부 6곳 중 4곳(timeseries·segmentation·
+  outliers·spike)만 `except ValueError` degrade 를 갖췄고 `get_funnel`(_stage_summary)·
+  `get_churn_cohort` 2곳이 빠졌다. I-7 은 이벤트 기반 카운트라 단계 역전(cart>view —
+  view 이벤트 유실·목록 직행 담기)이 실데이터에서 가능하고, 스키마(FunnelResult 평범한
+  int·ChurnResult churn_rate 무구간)는 관계를 강제하지 않는다. 실증 결과 create_agent
+  의 도구 실행은 예외를 ToolMessage 로 바꿔주지 않아 워커 그래프 밖까지 전파됐고,
+  orchestrator 가 브랜치를 "내부 오류" degrade 로 강등 — §3.4(도구는 raise 하지 않는다)
+  위반이자, 그 데이터 상태의 브랜드는 해당 분석이 상시 전면 실패한다(부분 degrade 불가).
+- 원인: 같은 함수를 여러 도구에 배선하면서 예외 계약 처리를 호출부마다 개별 판단했다 —
+  먼저 만든 호출부(단계 2·4·5)에는 붙였지만 나중에 만든 단계 3 호출부에서 빠뜨렸고,
+  "입력이 Spring 집계라 정합할 것"이라는 검증 안 된 전제에 기댔다.
+- 규칙:
+  - **raise 가 계약인 함수(ValueError 등)를 도구 층에 배선할 때는 호출부 전수를 같은
+    degrade 패턴으로 감싼다** — 배선 커밋마다 `grep` 로 호출부를 세고 except 유무를
+    대조한다. 하나라도 다르면 그 차이가 곧 리뷰 지적이다.
+  - **외부 집계의 필드 간 관계(단계 단조성·비율 구간)는 스키마가 강제하지 않는 한
+    성립하지 않는 것으로 취급한다** — 위반 입력은 clamp 로 정상처럼 위장하지 말고
+    "판정 보류 + 사유"로 표기한다(0 위장 금지와 같은 취지).
+  - **도구 예외의 실제 전파 경로를 프레임워크 가정 없이 실증한다** — create_agent
+    (langchain 1.x)는 도구 예외를 잡아주지 않는다(ToolMessage 변환 없음).
+- 관련: #290 PR 리뷰, `app/agents/seller/tools.py`(_stage_summary·get_churn_cohort),
+  `app/agents/seller/analysis/proportions.py`, `tests/unit/test_seller_tools.py`
+  (역전 카운트·구간 밖 rate 회귀 4건)
+
 ## [2026-08-04] "자체 상한이 있다"고 인용하기 전에 그 `wait_for` 가 **어디까지** 감싸는지 본다
 - 증상: #266 에서 `get_checkpointer()` 를 레인 상한 밖으로 빼며 근거를 *"자체 상한
   (`seller_checkpoint_connect_timeout_s`, 5s)이 있어 무한 대기가 아니다"* 로 적고, 그 값을
