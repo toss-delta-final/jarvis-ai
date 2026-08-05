@@ -10,7 +10,7 @@ from pathlib import Path
 
 from app.core.config import get_settings
 from evals.goldenset.loader import ROOT, _load_labeled_holdout_for_audit
-from evals.goldenset.schema import ALLOWED_SLICES, GoldenCase
+from evals.goldenset.schema import ALLOWED_SLICES, GoldenCase, all_candidates_are_correct
 
 
 def dataset_hash(files: list[dict]) -> str:
@@ -147,14 +147,14 @@ def run_audit(
     for case in all_cases:
         if "failure" in case.slices:
             continue
-        candidate_count = len(responses[case.search_fixture_id]["productIds"])
-        relevant_count = len(case.relevant_product_ids)
-        if candidate_count <= relevant_count:
+        candidate_ids = responses[case.search_fixture_id]["productIds"]
+        # F-1(#333 리뷰): 개수 비교가 아니라 집합 포함으로 "전부 정답"(비판별)을 판정한다.
+        if all_candidates_are_correct(candidate_ids, case.relevant_product_ids):
             non_discriminative_ranking_cases.append(
                 {
                     "caseId": case.case_id,
-                    "candidateCount": candidate_count,
-                    "relevantCount": relevant_count,
+                    "candidateCount": len(candidate_ids),
+                    "relevantCount": len(case.relevant_product_ids),
                 }
             )
     if non_discriminative_ranking_cases:
