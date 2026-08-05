@@ -657,7 +657,8 @@ async def run_buyer_turn(
         # `allowed`(가드)이고, 프롬프트 LAST_RECOMMENDATIONS 에 무엇을 싣는지는 계약이 아니다.
         #
         # 옵션 되물음(PENDING_CART) 중에는 **승계분을 싣지 않는다.** 실 LLM N=8 프로브
-        # (scripts/verify_screen_context_118.py) 에서 "PENDING_CART 중 상품 전환"(`이어폰으로 할래`)이
+        # (#118, 이관 전 별도 프로브 — 지금은 `evals/intent_probe` 가 흡수했다) 에서
+        # "PENDING_CART 중 상품 전환"(`이어폰으로 할래`)이
         #   승계 없음 6/8(=오늘) · 승계 없음+screen 주입 7/8 · 승계 11건 1/8 · 승계 상한 6건 2/8
         # 로, 승계분이 **2건만 붙어도** #240 이 "낮추지 말 것"으로 못박은 상품 전환 경로가 무너졌다.
         # 되물음 중에는 사용자가 특정 상품 하나를 놓고 답하는 중이라, 긴 과거 목록이 그 초점을 흩는다.
@@ -681,8 +682,8 @@ async def run_buyer_turn(
         # 번호"). 해소기는 안 도는데 프롬프트만 화면 순번을 가르치고 있었던 것이 비대칭이었다.
         #
         # 프로브 커버리지도 이쪽이 맞다: 옵션 답변 셀은 전부 `screen=None` 로 측정됐으므로
-        # (scripts/verify_screen_context_118.py 의 `_CTX_PENDING` 에 screen 없음), 이렇게 빼야
-        # 배포 경로가 실제로 잰 조건과 일치한다.
+        # (`evals/intent_probe` 의 `pendingCart` 컨텍스트에 screen 없음 — #300 이 흡수하며
+        # 확인한 규약이다), 이렇게 빼야 배포 경로가 실제로 잰 조건과 일치한다.
         prompt_screen = (
             build_screen_prompt(
                 getattr(request, "screen", None), labels=settings.screen_page_type_labels

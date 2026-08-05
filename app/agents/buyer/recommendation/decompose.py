@@ -232,7 +232,8 @@ def _screen_payload(screen: ScreenPrompt) -> dict[str, object]:
 
 
 # 화면 상품을 **별도 SCREEN 블록**으로 싣고 cart_add 규칙에 한 문장을 **덧붙인다**(기존 문면을
-# 재작성하지 않는다). 실 LLM N=8 프로브(scripts/verify_screen_context_118.py)에서 대안 —
+# 재작성하지 않는다). 실 LLM N=8 프로브(#118, 지금은 `evals/intent_probe` group="screen" 이
+# #300 으로 흡수했다)에서 대안 —
 # 화면 상품을 LAST_RECOMMENDATIONS 에 합류시켜 `_SYSTEM` 을 아예 건드리지 않는 안 — 을 함께
 # 재고 이쪽을 채택했다: 신규 지시어 해소 27/48 대 13/48 이고, 회귀 대조군은 두 안이 동률이거나
 # 이쪽이 나았다(옵션 답변 26/32 대 24/32, general 22/24 대 20/24). 합류안은 "직전 추천"과 "지금
