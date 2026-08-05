@@ -2241,6 +2241,62 @@ async def test_non_expanded_case3_multi_need_still_splits_after_fix() -> None:
     assert push.pushes[0].list_type == "PICK_ONE"
 
 
+async def test_expanded_turn_with_two_unresolved_legs_still_pushes_single_list() -> None:
+    """[R12-2 현행 고정] unresolved leg 이 2개(서로 다른 query "캠핑용품"·"낚시용품")이고 둘 다
+    확장 leaf 로 대체된 턴도 목록은 1개다 — leaf 들이 서로 다른 query 를 갖고 있어도(단일
+    unresolved 턴과 달리 "leaf 전부 같은 query" 전제가 깨져도) `split_by_need` 는 `category_
+    expanded` 만 보고 여전히 분할을 끈다(leg 단위 분할을 켜면 leaf 당 목록 8개·라벨 중복
+    "캠핑용품"×N·"낚시용품"×N 으로 R4-1 이 재발하기 때문, 위 split_by_need 주석 참조).
+
+    **#168 이 니즈(query) 단위 그룹핑을 구현하면 이 고정은 의도적으로 바뀐다** — 그때는 이
+    턴이 "캠핑용품"·"낚시용품" 두 목록으로 쪼개지는 게 맞는 동작이라 이 assert 를 갱신해야 한다.
+    """
+    leaves = [
+        ("캠핑 > 텐트", "캠핑용품"),
+        ("낚시 > 릴", "낚시용품"),
+        ("캠핑 > 침낭", "캠핑용품"),
+        ("낚시 > 낚싯대", "낚시용품"),
+    ]
+    leaf_order = [c for c, _ in leaves]
+
+    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **_):
+        return CategoryMapping(
+            legs=[], unresolved=["캠핑용품", "낚시용품"], expansion_leaves=list(leaves)
+        )
+
+    async def _search(filters, exclude_product_ids=None):
+        # leg 마다 다른 productId 를 내야 병합이 leg 마다 다른 leg_of 를 배정한다(위 R4-1
+        # 테스트와 같은 이유 — 같은 id 면 dedup 이 흡수해 분할 여부와 무관하게 목록이 1개가
+        # 되는 가짜 통과가 나온다).
+        idx = leaf_order.index(filters.category)
+        return _res(100 + idx)
+
+    push = _RecordingPush()
+    await _collect(
+        run_buyer_turn(
+            _req(message="캠핑용품이랑 낚시용품 추천해줘"),
+            _member(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "reply": "",
+                    "case": 3,
+                    "filters": {},
+                    "categoryQueries": [
+                        {"category": None, "query": "캠핑용품"},
+                        {"category": None, "query": "낚시용품"},
+                    ],
+                }
+            ),
+            search=_search,
+            push_fn=push,
+            map_categories=_map,
+        )
+    )
+    assert len(push.pushes[0].lists) == 1
+    assert push.pushes[0].list_type == "PICK_ONE"
+
+
 # ── R6-1 (PR #318 리뷰 3차) — 확장 턴은 filters.category 를 영속하지 않는다 ────────────
 #
 # `category_legs[0][0]` 은 확장 leaf 8개 중 임의의 하나일 뿐이다. 그걸 그대로

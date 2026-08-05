@@ -1214,11 +1214,17 @@ async def stream_recommendation(
     # case 3 이 아닌 멀티 leg(예: 리파인 승계)은 종전대로 목록 1건 — 전개가 일어난 턴만 분할한다.
     # leg_of 가 비면(단일 filters 검색 경로) 나눌 근거 자체가 없다.
     need_legs = decision.category_legs
-    # [#222 PR #318 리뷰] 확장 턴(category_expanded)은 니즈 경계로 쪼개지 않는다 — 확장 leaf 는
-    # 사용자가 말한 서로 다른 니즈가 아니라 **한 실패 leg 에서 파생된 같은 의도의 후보들**이다
-    # (모두 같은 원 query 텍스트를 공유, `category_mapping._collect_expansion_leaves`). 조건
-    # 칩을 category_expanded 로 억제한 것과 같은 원칙(#51 표시=실제) — 쪼개면 이름이 같은 목록
-    # 여럿(`_need_label` 이 같은 query 를 그대로 라벨로 씀)이 push 되고, `buy_all_mode`(아래)
+    # [#222 PR #318 리뷰] 확장 턴(category_expanded)은 니즈 경계로 쪼개지 않는다. unresolved
+    # leg 이 1개인 턴은 확장 leaf 8개가 전부 그 하나의 원 query 텍스트를 공유하지만(§4·
+    # `category_mapping._collect_expansion_leaves`), unresolved leg 이 여럿인 턴("캠핑용품이랑
+    # 낚시용품")은 `_interleave_by_leg` 가 서로 다른 query 의 leaf 를 섞어 내므로 "leaf 가 전부
+    # 같은 query" 전제가 깨진다(PR #318 리뷰 R12-2). 그렇다고 leg 인덱스 단위 분할을 그대로
+    # 켜면 되는 것도 아니다 — `_split_by_need` 는 leg(=leaf 개별) 단위로 쪼개므로 leaf 하나당
+    # 목록 하나(최대 8개, 라벨은 `_need_label` 이 leaf query 를 그대로 써 "캠핑용품"×4·
+    # "낚시용품"×4 로 **중복**)가 되어 R4-1 이 그대로 재발한다. 올바른 분할은 leg 이 아니라
+    # **니즈(원 query) 단위 그룹핑**인데, 이는 #168(카테고리별 그룹 출력)의 본체 설계라 이
+    # PR 에서는 하지 않고 확장 턴은 (leg 이 하나든 여럿이든) 통째로 목록 1건으로 둔다. 조건
+    # 칩을 category_expanded 로 억제한 것과 같은 원칙(#51 표시=실제)이고, `buy_all_mode`(아래)
     # 도 이 값을 참조하므로 가짜 니즈 단위 예산 세트(BUY_ALL)까지 함께 막힌다.
     split_by_need = (
         decision.case == 3

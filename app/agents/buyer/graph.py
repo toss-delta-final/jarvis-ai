@@ -499,16 +499,16 @@ async def _prepare_recommendation(
         ):
             decision.category_legs = mapping.expansion_leaves[: settings.category_expand_legs]
             decision.category_expanded = True
-            # carry_leaf 로 관측만 남긴다 — filters.category 자체는 아래 공유 if 가
-            # category_expanded 를 보고 None 으로 비운다(PR #318 리뷰 R6-1, §3 이슈 ④ 비범위는
-            # 그대로다: 8개 확장 leaf 를 대표하는 단일 LCA 값을 만드는 게 아니라, **틀린 값을
-            # 저장하지 않는 것**만 한다).
+            # filters.category 자체는 아래 공유 if 가 category_expanded 를 보고 None 으로 비운다
+            # (PR #318 리뷰 R6-1, §3 이슈 ④ 비범위는 그대로다: 8개 확장 leaf 를 대표하는 단일
+            # LCA 값을 만드는 게 아니라, **틀린 값을 저장하지 않는 것**만 한다).
+            # [PR #318 리뷰 R12-1] `extra` 에는 개수·불리언만 싣는다(#119 PII 규약, 위
+            # category_carry_resolved 와 동일 규약) — 예전엔 `carry_leaf` 로 대표 leaf 카테고리
+            # 문자열을 그대로 실었는데, 그건 R6-1 이전 "대표값이 filters.category 로 승계되는
+            # 함정"을 관측하려던 것이었고 R6-1 이 그 승계 자체를 없애 관측 대상이 사라졌다.
             logger.info(
                 "category_expanded",
-                extra={
-                    "legs": len(decision.category_legs),
-                    "carry_leaf": decision.category_legs[0][0],
-                },
+                extra={"legs": len(decision.category_legs)},
             )
     if decision.category_legs and not decision.category_expanded:
         # 대표 canonical — 단일 filters.category 필드·조건 칩·멀티턴 승계 호환(§7).
