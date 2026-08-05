@@ -2377,3 +2377,101 @@ async def test_expansion_leaves_survive_needs_expansion_union() -> None:
     # replace() 가 expansion_leaves 를 버렸다면 calls 는 전부 None(무필터 degrade)이었을 것이다.
     assert calls  # 최소 하나는 확장 leaf 로 검색됐다
     assert any(c is not None for c in calls)
+
+
+# ── R11-1 (PR #318 리뷰 6차) — zero-result 턴 구조화 로그 ──────────────────────────
+#
+# `if not candidates:` 분기는 곧장 `return` 해 `recommend_pipeline` 구조화 로그(하류)까지 못
+# 간다 — 특히 "검색은 히트가 있었는데 최근구매·소모품 억제가 전량을 지운" 턴(F-1 폴백이 못
+# 잡는 R10 갭, 이 PR 이 발생 확률을 높인다고 인정한 케이스)의 빈도를 잴 수단이 없었다.
+
+import logging  # noqa: E402
+from datetime import datetime  # noqa: E402
+
+import app.services.spring_client as _sc_mod  # noqa: E402
+from app.schemas.spring import OrderHistory, OrderHistoryItem, RecentPurchases  # noqa: E402
+
+
+def _member_num() -> Identity:
+    """숫자 sub 회원(실제 JWT sub 는 숫자 BIGINT, §2.6) — 최근구매 조회 경로 검증용."""
+    return Identity(user_id="123", is_guest=False, seller_id=None, subject="123")
+
+
+def _recent_purchases(*product_ids: int):
+    async def _fn(user_id, status=None):
+        return RecentPurchases(
+            orders=[
+                OrderHistory(
+                    order_id=1,
+                    ordered_at="2026-07-10T00:00:00",
+                    items=[
+                        OrderHistoryItem(order_item_id=i, product_id=pid)
+                        for i, pid in enumerate(product_ids, 1)
+                    ],
+                )
+            ]
+        )
+
+    return _fn
+
+
+async def test_expanded_turn_zero_result_after_exact_exclusion_logs_had_candidates(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """[R11-1] 확장 턴 + 검색은 히트가 있었으나 최근구매 exact 제외가 전량을 지운 턴 →
+    `recommend_zero_result` 가 `had_candidates=True, category_expanded=True` 로 남는다."""
+    monkeypatch.setattr(
+        "app.agents.buyer.recommendation.graph._now", lambda: datetime(2026, 7, 19)
+    )
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _recent_purchases(101, 102))
+
+    async def _search(filters, exclude_product_ids=None):
+        return _res(101, 102)  # 확장 leg 8개 전부 같은 두 상품 히트 — 전량 최근구매와 겹친다
+
+    with caplog.at_level(logging.INFO):
+        events = await _collect(
+            run_buyer_turn(
+                _req(message="화장품 추천해줘"),
+                _member_num(),
+                llm=FakeLLM(decompose=_broad_decompose()),
+                search=_search,
+                push_fn=_RecordingPush(),
+                map_categories=_broad_mapper(),
+            )
+        )
+    done = next(e for e in events if e["type"] == "done")["data"]
+    assert done["finishReason"] == "zero_result"  # 전량 억제로 후보가 남지 않았다
+    zero_result_logs = [r for r in caplog.records if r.msg == "recommend_zero_result"]
+    assert zero_result_logs, "recommend_zero_result 로그가 없다"
+    record = zero_result_logs[0]
+    assert record.had_candidates is True  # 검색 자체는 히트가 있었다
+    assert record.category_expanded is True  # #222 확장 턴 — R10 갭 빈도 관측 대상
+
+
+async def test_search_itself_zero_result_logs_had_candidates_false(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """[R11-1] 검색 자체가 0건(비-확장 턴, fan-out leg 도 0건)이면 `recommend_zero_result` 가
+    `had_candidates=False` 로 남는다 — 억제가 아니라 애초에 매칭이 없던 턴과 구분한다."""
+
+    async def _search(filters, exclude_product_ids=None):
+        return _res()  # 명시 카테고리 leg 도 0건
+
+    with caplog.at_level(logging.INFO):
+        events = await _collect(
+            run_buyer_turn(
+                _req(),
+                _member(),
+                llm=FakeLLM(),  # DEFAULT_DECOMPOSE — 명시 매핑(확장 아님)
+                search=_search,
+                push_fn=_RecordingPush(),
+                map_categories=_two_leg_mapper(),
+            )
+        )
+    done = next(e for e in events if e["type"] == "done")["data"]
+    assert done["finishReason"] == "zero_result"
+    zero_result_logs = [r for r in caplog.records if r.msg == "recommend_zero_result"]
+    assert zero_result_logs, "recommend_zero_result 로그가 없다"
+    record = zero_result_logs[0]
+    assert record.had_candidates is False
+    assert record.category_expanded is False

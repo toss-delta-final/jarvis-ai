@@ -1191,6 +1191,21 @@ async def stream_recommendation(
             "done",
             DoneData(finish_reason="zero_result").model_dump(by_alias=True),
         )
+        # [PR #318 리뷰 R11-1] 0건 턴은 위 zero_result 분기가 곧장 return 해 아래
+        # `recommend_pipeline` 구조화 로그(§)까지 못 간다 — 원인별 빈도(특히 검색은 히트가
+        # 있었는데 하류 억제가 전량을 지운 케이스, R10 갭)를 잴 수단이 없어 여기 별도로 남긴다.
+        # PII 금지: 카테고리 문자열·상품 id 는 싣지 않고 개수만 싣는다.
+        logger.info(
+            "recommend_zero_result",
+            extra={
+                # False = 검색 자체 0건 / True = 히트는 있었는데 하류 억제가 전량을 지움
+                "had_candidates": had_candidates,
+                "suppressed_categories": len(suppressed_by_cat),
+                # 확장 턴 여부 — #222 가 발생 확률을 높인 갭(F-1 미구제)의 빈도를 이 조합
+                # (had_candidates=True & category_expanded=True)으로 관측한다(PR #318 리뷰).
+                "category_expanded": decision.category_expanded,
+            },
+        )
         return
 
     # 니즈별 목록 분할 판정(REQ-REC-024, api-spec §4.2 PICK_ONE×N) — case 3(목적·상황형 발화)이
