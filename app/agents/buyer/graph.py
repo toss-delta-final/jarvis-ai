@@ -452,6 +452,17 @@ async def _prepare_recommendation(
                     # D1(신호 없음)로 expansion_leaves 가 비어 있고 #217 전개 아이템들만 거리컷에
                     # 드롭돼 expanded.expansion_leaves 가 채워진 턴에서 그 후보가 조용히 버려져
                     # #222 폴백이 아예 발동하지 않는다 — 쓸 수 있는 후보가 있는데 놓치는 셈이다.
+                    # [PR #318 리뷰 R9-1 캐비엇] "합친다"는 표현이 두 소스가 실제로 섞인다는
+                    # 인상을 주지만, dedup_truncate 는 앞에서부터 자르므로 mapping.expansion_leaves
+                    # 가 이미 상한(category_expand_legs)을 채우는 흔한 경우 expanded.expansion_leaves
+                    # 는 전부 잘려나간다. 이는 `merged`(위)와 **동일한 의도된 우선순위**다 — 원
+                    # 매핑 쪽은 사용자가 실제로 말한 앵커의 top-N leaf 이고 expanded 쪽은 LLM 이
+                    # 지어낸 아이템이 다시 실패해서 나온 leaf 라, 인터리브하면 LLM 창작 아이템의
+                    # 후보가 사용자 발화의 후보를 밀어낸다(legs 규약과 반대 방향). R6-3 이 풀려던
+                    # 문제는 원 쪽이 **비었을 때** 전개 쪽이 통째로 버려지는 것이었고, 그 경우는
+                    # (원이 비면 전개 후보가 상한까지 그대로 채워지므로) 지금도 정확히 해결된다.
+                    # `_interleave_by_leg`(R5-1)는 **같은 서열의 leg 들 사이** 형평을 맞추는
+                    # 것이라 여기(서로 다른 서열의 두 소스)와는 상황이 다르다.
                     merged_expansion_leaves = dedup_truncate(
                         mapping.expansion_leaves + expanded.expansion_leaves,
                         settings.category_expand_legs,
