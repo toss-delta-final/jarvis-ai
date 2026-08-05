@@ -6,8 +6,8 @@
 
 | 항목 | 값 |
 |---|---|
-| 문서 버전 | v0.21.1 |
-| 작성일 | 2026-07-14 (v0.21.1 개정 2026-08-05 — **[#162] I-3 `GET /internal/products/popular` 사본 등재(§4.12 신설) — 정본에는 있고 본 사본에만 누락돼 있던 것으로 신설 협의가 아니다. 레인 (c) 17→18건(§1.2). 와이어 계약 불변**) (v0.21.0 개정 2026-08-05 — **[#289] 구매자 `progress` SSE 이벤트 신설(정본 Notion CH-2 2026-08-05 합의·등재 반영) — §2.2·§3.1(본 사본 §3.1 번호는 6→7종, `progress`가 (1)번 — 정본은 `suggestions`를 목록에 포함해 8종으로 세지만 본 사본은 「MVP 추가 페이로드」 절에서 별도로 다뤄 번호가 하나 적다, 기존 6종 이름·페이로드·상대 순서 불변)·§2.9(c) I-1 원복 전제 갱신** — **AI 구현은 완료됐으나 `progress_events_enabled` 기본 false + 운영·스테이징 기동 가드로 잠겨 있어 실 와이어는 아직 종전 7종뿐**) (v0.20.4 개정 2026-08-05 — **[#118] 되물음(`PENDING_CART`) 예외 정본 반영 — 사본의 🔴 미반영 표시 해제(§3.1 [보안], 계약 동작 불변, 표시만 갱신)**) (v0.20.3 개정 2026-08-04 — **[#118] §3.1 v0.15.26 등재 계약인 `screen`(화면 맥락) 수신 구현 — 관대 유효성(400 없음)·담기 허용 목록 합집합·지시어 해소, §3.2 판매자 레인은 `pageType`·`filters`를 입력 메시지에만 주입** — **와이어 계약(엔드포인트·요청 필드·SSE 이벤트·오류 코드) 불변, 수신 구현**) (v0.20.2 개정 2026-08-04 — **[#277] §2.9(c) 미룬 턴 I-1 재시도 스킵 + 복구 가드 — 와이어 계약 불변**) (v0.20.1 개정 2026-08-04 — **[#278] §4.6 `categoryName` 정본 동기화 + §3.1 `conditionActions` 수신 구현 + I-1 `options`/`optionCount` 추가 전용 응답 계약**) (v0.20.0 개정 2026-08-03 — **[#242] 판매자 분석 파이프라인 v3.1: 브랜치 분석 검증(F1~F3+analysis_judge) 신설 + `chart` SSE 이벤트 신설(§2.2·§3.2, 이벤트 6→7종, 추가 전용)** — 기존 이벤트 5종 계약 불변) (v0.19.5 개정 2026-08-04 — **[#232] §4.7 결정 14-F 재구매 지목을 "현재 턴 한정"에서 "스레드 범위(유계 누적·매 턴 재검증)"로 정정 — 와이어 계약 불변**) (v0.19.4 개정 2026-08-03 — **[#32] 골든셋 실측으로 방식2 확정·방식1 및 C-17 기각 — 와이어 계약 불변**) (v0.19.3 개정 2026-08-03 — **[#138 후속] §2.9(c) 구매자 스트림 전체 상한 30s·판매자 90s 역할별 분리 — 와이어 계약 불변**) (v0.19.2 개정 2026-08-03 — **[#133] 구매자 degrade 고지(§3.3)·I-1 검색 재시도(§2.9 c) 명문화** — 와이어 계약 불변, BE 관측 포인트만 추가) (v0.19.1 개정 2026-08-02 — **[#197] I-16 이탈 코호트 응답 실측 확정(from/to 필수·cohortSize·members·churnRate=fraction) + I-8 실측 명문화(from/to 필수·groupBy 화이트리스트·rows), I-8 admin 소유 🔴 유지 — 협의 전 판매자 노출은 설정 플래그(기본 false)로 보류**) (v0.19.0 개정 2026-07-31 — **[#148] C-18: I-22 `catalogVersion`을 선택으로 완화하고 계약 폐기 제안** — 재현·캐시 어느 명분도 성립하지 않음) (v0.18.0 개정 2026-07-31 — **[#148] 홈 추천 계약 등재: I-22 §3.7(Spring→AI 위임, `outcome` 3종 전부 200, provenance 비노출) · P-5 §4.11(FE↔Spring 전제), 🔴 C-18 `catalogVersion` 주체 미해결**) (v0.17.4 개정 2026-07-31 — **[#196] I-13 계약 명문화 3건** — `eventType` CSV 직렬화 확정·rows 활동량 내림차순 정렬 명문화·purchaseComplete 미귀속(0 집계 가능) 경고, 근본 수정 jarvis-backend#62 연계) (v0.17.3 개정 2026-07-31 — **[#209 후속] 노출 상한 목록당 8→9(§3.3), 니즈별 추천(`PICK_ONE`×N)이 실제 발신 경로로 — §4.2 계약 자체는 불변**) (v0.17.2 개정 2026-07-31 — **[#114] 옵션 후보가 1개면 되묻지 않고 자동 선택해 담기** — §4.1 AI 동작·§3.1 되물음 서술 명확화, **와이어 계약(엔드포인트·SSE 이벤트·필드·오류 코드) 불변**) (v0.17.1 개정 2026-07-31 — **[#209] I-21 다중 목록(`lists[]`) 정본 정합** — `recommendationRequestId`·`listType`·`totalBudget`·`label` 신설, 목록당 상품 9개, 멱등 키·400 조건 등재) (v0.17.0 개정 2026-07-31 — **[#187] signed `sessionId` 기반 stable `context_id`, guest→member claim, D6/I-20 lifecycle 계약 반영**) (v0.16.3 개정 2026-07-30 — **[#164] I-4 주문 상태 요약 계약·구매자 `order_status` 라우트 구현 정합**, §4.10 신설) (v0.16.2 개정 2026-07-30 — **[#194] I-14/I-15 응답 스키마 BE 실측 확정 + I-6 이상 감지 규칙 명문화**) (v0.16.1 개정 2026-07-30 — **I-21 `listId`를 UUID급 무작위(≥128bit)로 확정**, 순번·타임스탬프 등 추측 가능한 형식 금지) (v0.16.0 개정 2026-07-30 — **`sessionId`(접속)·`threadId`(방) 축 분리**: 동시 스트림 락을 방 단위로, I-20 사유 `logout` 1종, CH-1 멱등(D5), 맥락 TTL 접속 단위(D6)) (v0.15.27 개정 2026-07-30 — 사본 drift 정정: 담기 이벤트 적재 주체(BE→FE)·`budget` 이벤트 제외·`search.query` PII 기준) (v0.15.26 개정 2026-07-28 — 사본 동기화: §3.1 `conditionActions`(칩 제거, #84)·`screen`(화면 맥락, #118) 신설, `conditions` 칩 `field` 6종 확정, in-stream `error`에 `requestId`·`retryable` 추가) (v0.15.25 개정 2026-07-28 — #171: I-1 응답에 reviewCount 추가(AI 계산용·비표시), rating=0 의미 판별(리뷰 부재 vs 저평점). #100 "reviewCount 표시전용·미반환" 부분 개정. / v0.15.24 개정 2026-07-27 — 사본 동기화: S-5 폐기 반영, 상품 수정은 챗봇 HITL(I-11) 유일 경로) |
+| 문서 버전 | v0.22.1 |
+| 작성일 | 2026-07-14 (v0.22.1 개정 2026-08-05 — **[#162] I-3 `GET /internal/products/popular` 사본 등재(§4.12 신설) — 정본에는 있고 본 사본에만 누락돼 있던 것으로 신설 협의가 아니다. 레인 (c) 17→18건(§1.2). 와이어 계약 불변**) (v0.22.0 개정 2026-08-05 — **[#149] 개인화 관계 Graph 계약 초안 등재 — 조회 §3.8(FE 직접, 기존 `chat:stream` 티켓 재사용) + 제어 5종 §3.9(Spring→AI internal, I-29~I-33), 🔴 제안(초안)·Post-MVP. 오류 코드 4종·감사 로그(§6.3 c) 신설, 기존 엔드포인트·SSE 이벤트·필드 계약 불변**) (v0.21.0 개정 2026-08-05 — **[#289] 구매자 `progress` SSE 이벤트 신설(정본 Notion CH-2 2026-08-05 합의·등재 반영) — §2.2·§3.1(본 사본 §3.1 번호는 6→7종, `progress`가 (1)번 — 정본은 `suggestions`를 목록에 포함해 8종으로 세지만 본 사본은 「MVP 추가 페이로드」 절에서 별도로 다뤄 번호가 하나 적다, 기존 6종 이름·페이로드·상대 순서 불변)·§2.9(c) I-1 원복 전제 갱신** — **AI 구현은 완료됐으나 `progress_events_enabled` 기본 false + 운영·스테이징 기동 가드로 잠겨 있어 실 와이어는 아직 종전 7종뿐**) (v0.20.4 개정 2026-08-05 — **[#118] 되물음(`PENDING_CART`) 예외 정본 반영 — 사본의 🔴 미반영 표시 해제(§3.1 [보안], 계약 동작 불변, 표시만 갱신)**) (v0.20.3 개정 2026-08-04 — **[#118] §3.1 v0.15.26 등재 계약인 `screen`(화면 맥락) 수신 구현 — 관대 유효성(400 없음)·담기 허용 목록 합집합·지시어 해소, §3.2 판매자 레인은 `pageType`·`filters`를 입력 메시지에만 주입** — **와이어 계약(엔드포인트·요청 필드·SSE 이벤트·오류 코드) 불변, 수신 구현**) (v0.20.2 개정 2026-08-04 — **[#277] §2.9(c) 미룬 턴 I-1 재시도 스킵 + 복구 가드 — 와이어 계약 불변**) (v0.20.1 개정 2026-08-04 — **[#278] §4.6 `categoryName` 정본 동기화 + §3.1 `conditionActions` 수신 구현 + I-1 `options`/`optionCount` 추가 전용 응답 계약**) (v0.20.0 개정 2026-08-03 — **[#242] 판매자 분석 파이프라인 v3.1: 브랜치 분석 검증(F1~F3+analysis_judge) 신설 + `chart` SSE 이벤트 신설(§2.2·§3.2, 이벤트 6→7종, 추가 전용)** — 기존 이벤트 5종 계약 불변) (v0.19.5 개정 2026-08-04 — **[#232] §4.7 결정 14-F 재구매 지목을 "현재 턴 한정"에서 "스레드 범위(유계 누적·매 턴 재검증)"로 정정 — 와이어 계약 불변**) (v0.19.4 개정 2026-08-03 — **[#32] 골든셋 실측으로 방식2 확정·방식1 및 C-17 기각 — 와이어 계약 불변**) (v0.19.3 개정 2026-08-03 — **[#138 후속] §2.9(c) 구매자 스트림 전체 상한 30s·판매자 90s 역할별 분리 — 와이어 계약 불변**) (v0.19.2 개정 2026-08-03 — **[#133] 구매자 degrade 고지(§3.3)·I-1 검색 재시도(§2.9 c) 명문화** — 와이어 계약 불변, BE 관측 포인트만 추가) (v0.19.1 개정 2026-08-02 — **[#197] I-16 이탈 코호트 응답 실측 확정(from/to 필수·cohortSize·members·churnRate=fraction) + I-8 실측 명문화(from/to 필수·groupBy 화이트리스트·rows), I-8 admin 소유 🔴 유지 — 협의 전 판매자 노출은 설정 플래그(기본 false)로 보류**) (v0.19.0 개정 2026-07-31 — **[#148] C-18: I-22 `catalogVersion`을 선택으로 완화하고 계약 폐기 제안** — 재현·캐시 어느 명분도 성립하지 않음) (v0.18.0 개정 2026-07-31 — **[#148] 홈 추천 계약 등재: I-22 §3.7(Spring→AI 위임, `outcome` 3종 전부 200, provenance 비노출) · P-5 §4.11(FE↔Spring 전제), 🔴 C-18 `catalogVersion` 주체 미해결**) (v0.17.4 개정 2026-07-31 — **[#196] I-13 계약 명문화 3건** — `eventType` CSV 직렬화 확정·rows 활동량 내림차순 정렬 명문화·purchaseComplete 미귀속(0 집계 가능) 경고, 근본 수정 jarvis-backend#62 연계) (v0.17.3 개정 2026-07-31 — **[#209 후속] 노출 상한 목록당 8→9(§3.3), 니즈별 추천(`PICK_ONE`×N)이 실제 발신 경로로 — §4.2 계약 자체는 불변**) (v0.17.2 개정 2026-07-31 — **[#114] 옵션 후보가 1개면 되묻지 않고 자동 선택해 담기** — §4.1 AI 동작·§3.1 되물음 서술 명확화, **와이어 계약(엔드포인트·SSE 이벤트·필드·오류 코드) 불변**) (v0.17.1 개정 2026-07-31 — **[#209] I-21 다중 목록(`lists[]`) 정본 정합** — `recommendationRequestId`·`listType`·`totalBudget`·`label` 신설, 목록당 상품 9개, 멱등 키·400 조건 등재) (v0.17.0 개정 2026-07-31 — **[#187] signed `sessionId` 기반 stable `context_id`, guest→member claim, D6/I-20 lifecycle 계약 반영**) (v0.16.3 개정 2026-07-30 — **[#164] I-4 주문 상태 요약 계약·구매자 `order_status` 라우트 구현 정합**, §4.10 신설) (v0.16.2 개정 2026-07-30 — **[#194] I-14/I-15 응답 스키마 BE 실측 확정 + I-6 이상 감지 규칙 명문화**) (v0.16.1 개정 2026-07-30 — **I-21 `listId`를 UUID급 무작위(≥128bit)로 확정**, 순번·타임스탬프 등 추측 가능한 형식 금지) (v0.16.0 개정 2026-07-30 — **`sessionId`(접속)·`threadId`(방) 축 분리**: 동시 스트림 락을 방 단위로, I-20 사유 `logout` 1종, CH-1 멱등(D5), 맥락 TTL 접속 단위(D6)) (v0.15.27 개정 2026-07-30 — 사본 drift 정정: 담기 이벤트 적재 주체(BE→FE)·`budget` 이벤트 제외·`search.query` PII 기준) (v0.15.26 개정 2026-07-28 — 사본 동기화: §3.1 `conditionActions`(칩 제거, #84)·`screen`(화면 맥락, #118) 신설, `conditions` 칩 `field` 6종 확정, in-stream `error`에 `requestId`·`retryable` 추가) (v0.15.25 개정 2026-07-28 — #171: I-1 응답에 reviewCount 추가(AI 계산용·비표시), rating=0 의미 판별(리뷰 부재 vs 저평점). #100 "reviewCount 표시전용·미반환" 부분 개정. / v0.15.24 개정 2026-07-27 — 사본 동기화: S-5 폐기 반영, 상품 수정은 챗봇 HITL(I-11) 유일 경로) |
 | 상태 | draft |
 | 대상 독자 | Spring 백엔드 팀, React 프론트엔드(FE) 팀 |
 | 소유 | AI 에이전트 서버 팀 |
@@ -44,14 +44,14 @@ FE가 사용자 대면 API에 대해 **AI 서버를 직접 호출**하고(결정
 
 | 레인 | 방향 | 호출 | 인증 | 근거 |
 |---|---|---|---|---|
-| (a) 사용자 대면 | **FE → AI (직접)** | `POST /chat`, `POST /seller/chat`, `GET /profile/me` | 사용자 JWT (§2.3 a) | 결정 19 |
-| (b) Spring → AI | **Spring → AI** | 이벤트 `POST /events/session-end`·`POST /events/session-claim`(§3.5) + **위임 호출 I-22 `POST /internal/recommendations/home`**(§3.7) | 서비스 간 토큰 (§2.3 b) | 결정 12/16/21, #187, I-22(2026-07-28) |
+| (a) 사용자 대면 | **FE → AI (직접)** | `POST /chat`, `POST /seller/chat`, `GET /profile/me`, **`GET /profile/me/graph`**(§3.8, 🔴 초안·Post-MVP) | 사용자 JWT (§2.3 a) | 결정 19 |
+| (b) Spring → AI | **Spring → AI** | 이벤트 `POST /events/session-end`·`POST /events/session-claim`(§3.5) + **위임 호출 I-22 `POST /internal/recommendations/home`**(§3.7) + **사용자 제어 위임 5종 I-29~I-33**(§3.9 개인화 그래프 수정·삭제·복구·초기화·중지, 🔴 초안·Post-MVP) | 서비스 간 토큰 (§2.3 b) | 결정 12/16/21, #187, I-22(2026-07-28), #149 |
 | (c) 역방향 | **AI → Spring** | **18건** `{I-1,I-3,I-19,I-4,I-2,I-18,I-21,I-6,I-7,I-13,I-14,I-15,I-16,I-9,I-10,I-11,I-12,I-17}` — 후보 검색(§4.6), **인기 상품 후보(§4.12)**, 구매 이력(§4.7), 주문 상태 요약(§4.10), 장바구니 담기/조회(§4.1/§4.9), 추천 목록 push(§4.2), 판매자 집계·이력(§4.4), 판매자 상품 CRUD(§4.5), AI 생성물 변경분 pull(§4.8) | **전부 서비스 토큰(internal, `X-Internal-Token`)**. 사용자/판매자 스코프 신원은 AI가 검증 JWT 클레임에서만 도출 | 결정 7 / 경로 B / BE DB 정합 |
 | (d) 전제 계약 | **FE → Spring** | 세션+스트림 티켓 발급(CH-1)·티켓 재발급(CH-1b)·판매자 세션(CH-6), 채팅 추천 목록 GET(CH-5, §4.3), **홈 추천 목록 GET(P-5, §4.11)**, (판매자 FE 직접 상품편집 — AI 표면 밖) | Spring 소관 | 결정 19 / 경로 B / v0.15.20 / P-5(2026-07-28) |
 
 - 레인 (a): 사용자(회원·게스트·판매자)의 요청. 신원은 **토큰 클레임**에서 추출한다(§2.3, §2.6). AI는 사용자 요청 본문의 식별자를 신뢰하지 않는다.
-- 레인 (b): Spring → AI는 **(1) 이벤트 2건** — 세션 종료 통지(`/events/session-end`)와 로그인 소유권 승격(`/events/session-claim`) — **과 (2) 위임 호출 1건 I-22**(홈 추천 랭킹, §3.7)다. 주문 알림은 채택하지 않는다 — 구매 이력은 질의 시점 조회(§4.7)로 확보하며, 카탈로그 변경 이벤트도 존재하지 않는다(사본 없음). **[v0.18.0] 이 레인은 더 이상 "이벤트 채널"만이 아니다** — I-22는 통지가 아니라 응답 본문에 결과가 실려 오는 **동기 요청/응답**이고, 따라서 §2.7의 `/events/*` 멱등 규약이 적용되지 않는다(재시도 = 새 추천 실행).
-- 레인 (c): AI → Spring 역방향은 **정확히 18건**이다 — `{I-1,I-3,I-19,I-4,I-2,I-18,I-21,I-6,I-7,I-13,I-14,I-15,I-16,I-9,I-10,I-11,I-12,I-17}`. 이름과 순서는 **후보 검색**, **인기 상품 후보 조회(I-3, §4.12)**, **구매 이력 조회**, **주문 상태 요약(I-4, §4.10)**, **장바구니 담기**, **장바구니 조회**, **추천 목록 push**, **매출 시계열**, **구매전환 퍼널**, **행동 이벤트 집계**, **주문 상태 전이/조회**, **상품 변경 이력**, **이탈 코호트**, **자사 상품 목록 조회**, **상품 등록**, **상품 수정**, **상품 삭제**, **AI 생성물 변경분 pull**이다. I-1/I-3/I-19/I-4/I-2/I-18/I-21과 판매자 API는 요청 시점 호출이고, I-17은 배치 pull이다. **[v0.21.1] I-3 는 신설이 아니라 정본에 있던 것의 사본 등재다**(#162).
+- 레인 (b): Spring → AI는 **(1) 이벤트 2건** — 세션 종료 통지(`/events/session-end`)와 로그인 소유권 승격(`/events/session-claim`) — **과 (2) 위임 호출 1건 I-22**(홈 추천 랭킹, §3.7), **그리고 (3) 사용자 제어 위임 5건 I-29~I-33**(§3.9, 🔴 초안·Post-MVP)이다. (3)은 FE가 Spring의 마이페이지 엔드포인트를 호출하고 Spring이 자기 로그인 세션에서 도출한 `{userId}`로 AI에 위임하는 구조다 — **조회(§3.8)만 레인 (a) FE 직접이고 변경은 이 레인이며, 이 비대칭은 의도된 것이다**(§3.9 preamble의 [HARD]). §2.7의 `/events/*` 멱등 규약은 (2)·(3) 어디에도 적용되지 않는다. 주문 알림은 채택하지 않는다 — 구매 이력은 질의 시점 조회(§4.7)로 확보하며, 카탈로그 변경 이벤트도 존재하지 않는다(사본 없음). **[v0.18.0] 이 레인은 더 이상 "이벤트 채널"만이 아니다** — I-22는 통지가 아니라 응답 본문에 결과가 실려 오는 **동기 요청/응답**이고, 따라서 §2.7의 `/events/*` 멱등 규약이 적용되지 않는다(재시도 = 새 추천 실행).
+- 레인 (c): AI → Spring 역방향은 **정확히 18건**이다 — `{I-1,I-3,I-19,I-4,I-2,I-18,I-21,I-6,I-7,I-13,I-14,I-15,I-16,I-9,I-10,I-11,I-12,I-17}`. 이름과 순서는 **후보 검색**, **인기 상품 후보 조회(I-3, §4.12)**, **구매 이력 조회**, **주문 상태 요약(I-4, §4.10)**, **장바구니 담기**, **장바구니 조회**, **추천 목록 push**, **매출 시계열**, **구매전환 퍼널**, **행동 이벤트 집계**, **주문 상태 전이/조회**, **상품 변경 이력**, **이탈 코호트**, **자사 상품 목록 조회**, **상품 등록**, **상품 수정**, **상품 삭제**, **AI 생성물 변경분 pull**이다. I-1/I-3/I-19/I-4/I-2/I-18/I-21과 판매자 API는 요청 시점 호출이고, I-17은 배치 pull이다. **[v0.22.1] I-3 는 신설이 아니라 정본에 있던 것의 사본 등재다**(#162).
 - 레인 (d): FE ↔ Spring 전제 계약(Spring 소유). **[v0.18.0] P-5 `GET /api/products/recommended`(§4.11) 등재** — 홈 "OO님을 위한 추천". Spring이 이를 서빙하려고 내부에서 I-22(§3.7)를 호출하므로 **P-5 ↔ I-22가 서브 관계**다. 게스트는 P-5 대신 P-4(인기 상품)를 직접 호출한다. **[v0.15.20] BE 구현 실측으로 경로·응답 확정.** (1) **세션+스트림 티켓 발급(CH-1, `POST /api/chat/sessions`)** — 응답 `{sessionId, ttlSeconds, streamTicket, ticketTtlSeconds, llmSseUrl}`. 세션 TTL 10분 sliding, 티켓 TTL 60s(RS256). `llmSseUrl`은 FE가 AI 서버에 직결할 SSE 주소로, Spring이 내려준다. (2) **스트림 티켓 재발급(CH-1b, `POST /api/chat/tickets`)** — 요청 `{sessionId}`, 응답은 CH-1과 동일 DTO. 세션 유지한 채 새 티켓만 발급(2번째 메시지·`401` 시)하며 세션 TTL도 함께 갱신한다. **CH-1 재호출은 새 세션(맥락 단절)이라 티켓 재발급에 쓸 수 없다.** (3) **판매자 세션 발급(CH-6, `POST /api/chat/seller/sessions`)** — 판매자 챗 입구. `brandId`는 **BE가 JWT 검증 후 DB에서 도출해** 티켓 클레임에 박는다(클라이언트·LLM 주장 무시). (4) 추천 목록 GET(§4.3). (5) 판매자가 FE에서 직접 상품을 편집하는 경로(AI 표면 밖). ※ 구 "draft 적용 = FE가 S-3 PATCH"는 **폐기** — 채팅 경로 쓰기는 AI 직접(§3.2), `S-3`은 자사 상품 목록 조회(=I-9)다.
 
 > **[HARD] 후보 확보 = 질의 시점 Spring 검색(v0.5.0, 유일·영구)**: 구매자 추천 후보는 **질의 시점에 Spring `POST /products/search`(§4.6)를 위임 호출**하여 확보한다. 상품 원본 컬럼의 AI측 사본은 두지 않는다. **[v0.5.1]** AI 생성물(extras·search_doc·임베딩)은 AI Postgres에 저장하며(§4.8), 질의 시점에 AI 임베딩과 Spring 검색을 어떻게 결합할지는 OPEN(§4.8 말미)이다. rerank(profile_summary 반영)는 여전히 AI 경계에서 수행한다.
@@ -69,6 +69,8 @@ MVP(개발 가동 목표 2026-07-19)에 포함되는 API 표면:
 - **프로필 조회** — `GET /profile/me`(마이페이지, 토큰 소유자 본인). 소유: `SPEC-PROFILE-001`.
 - **판매자 agent** — `POST /seller/chat`. (a) **매출/판매 통계 Q&A**(원천 = Spring 집계 I-6 콜백, C-7 해소) **+ (b) 상세 수정 draft 흐름**(I-7 읽기 → `draft` 이벤트 → FE 반영). 리뷰 인사이트는 **비범위(MVP 제외)**.
 - **이벤트 채널** — `POST /events/session-end`(세션 종료)와 `POST /events/session-claim`(guest→member 승격)을 유지. 주문 알림은 채택하지 않음 — 구매 이력은 **질의 시점 조회(`GET /internal/members/{id}/orders`, §4.7)** 로 대체(사용자 명시 결정 — 병행 PRD 라인과는 session-end 유지 지점에서 갈라짐, §8 항목 6).
+
+> **[v0.22.0] MVP 범위 아님 — 개인화 그래프(§3.8·§3.9)**: 취향 그래프 조회와 사용자 제어 5종은 **Post-MVP**(milestone `Post-MVP Buyer Quality`)이며 위 목록에 포함되지 않는다. 계약은 이슈 #149, 구현은 #150이다. MVP 프로필 표면은 `GET /profile/me` 조회 하나뿐이다.
 
 > **판매자 agent 범위(Batch 1)**: 판매자 agent는 원래 고도화(~7/31) 범위였으나 2026-07-14 세션에서 최소 범위(통계 Q&A)로 MVP에 편입되었고(product.md 결정 20), 2026-07-15 세션에서 **상세 수정 draft 흐름까지 MVP로 확대**되었다(§8 결정 20 개정 항목). 리뷰 인사이트(측면별 감성)는 계속 고도화.
 >
@@ -104,11 +106,13 @@ MVP(개발 가동 목표 2026-07-19)에 포함되는 API 표면:
 
 #### (a) 사용자 대면 API — 사용자 JWT (레인 a)
 
-`POST /chat`, `POST /seller/chat`, `GET /profile/me`에 적용한다.
+`POST /chat`, `POST /seller/chat`, `GET /profile/me`, **`GET /profile/me/graph`(§3.8)** 에 적용한다.
 
 ```
 Authorization: Bearer {STREAM_TICKET}   ← Spring이 스트림 단위로 발급한 단명 JWT (로그인 AT가 아님)
 ```
+
+> **[v0.22.0] 프로필 그래프 조회는 이 레인, 변경은 레인 (b)다.** `GET /profile/me/graph`는 기존 티켓(`scope == "chat:stream"`)을 그대로 재사용해 이 검증 경로를 **바꾸지 않는다.** 반면 §3.9의 변경 5종은 레인 (b) 서비스 토큰이다 — 60초 스트림 티켓은 전체 초기화 같은 파괴적 동작의 근거로 부적절하고, 전용 `profile:*` scope를 도입하면 `/chat`·`/seller/chat`이 함께 지나가는 이 경로를 개편해야 하므로 **채팅에 회귀 위험을 만드는 대가**를 치른다. 이 비대칭은 의도된 것이며 통일하면 안 된다(§3.9 preamble [HARD], 🔴 C-20).
 
 - **[개정 v0.10.0] SSE에 쓰는 토큰 = 스트림 단명 티켓** — 로그인 AT(전권 토큰)를 SSE에 직접 싣지 않는다. Spring이 **채팅 진입 시 신원을 확인하고 스트림 단위로 단명 JWT(RS256, TTL 30~60초)를 발급**하며, FE는 이 티켓으로 AI 서버에 SSE 연결한다. ("JWKS 검토 후 제안" 최종안 채택.)
   - **발급 흐름**: `FE → Spring`(회원=AT / 게스트=`guest_id` 쿠키) → `Spring`(신원 확인 후 스트림 티켓 발급, RS256) → `FE → AI`(티켓으로 SSE) → `AI`(JWKS 검증 후 스트리밍). **첫 티켓**은 **CH-1**(세션 발급, `POST /api/chat/sessions`) 응답에 얹어 추가 왕복이 없다(응답에 `sessionId` + `streamTicket`).
@@ -140,7 +144,7 @@ Authorization: Bearer {STREAM_TICKET}   ← Spring이 스트림 단위로 발급
 
 #### (b) Spring → AI — 서비스 간 토큰 (레인 b)
 
-`POST /events/session-end`와 `POST /events/session-claim`(Spring → AI, §3.5), **그리고 I-22 `POST /internal/recommendations/home`(§3.7)** 에 적용한다. (v0.5.0에서 주문 알림·카탈로그 배치는 채택하지 않으므로 해당 인증 항목은 없다.) I-22의 토큰 불일치 오류 코드는 `INTERNAL_TOKEN_INVALID`(401)다.
+`POST /events/session-end`와 `POST /events/session-claim`(Spring → AI, §3.5), **I-22 `POST /internal/recommendations/home`(§3.7)**, **그리고 개인화 그래프 제어 5종 I-29~I-33(§3.9, 🔴 초안·Post-MVP)** 에 적용한다. (v0.5.0에서 주문 알림·카탈로그 배치는 채택하지 않으므로 해당 인증 항목은 없다.) I-22와 §3.9의 토큰 불일치 오류 코드는 `INTERNAL_TOKEN_INVALID`(401)다.
 
 ```
 X-Internal-Token: {SERVICE_TOKEN}
@@ -149,6 +153,7 @@ X-Internal-Token: {SERVICE_TOKEN}
 - **[v0.15.17 확정]** Spring PR #24와 AI 수신 구현이 사용하는 서비스 토큰 헤더는 `X-Internal-Token`이다. 발급·회전 주체, 만료 정책, mTLS 병용 여부는 🔴 협의(§5 C-1).
 - 사용자 JWT와 **별개의 자격 증명**이다 — 이벤트 채널은 사용자 신원이 아니라 서비스 신원을 검증한다.
 - **[개정 v0.13.0] AI → Spring 역호출은 전 구간 동일 레인** — BE DB 실측(`internal` 그룹 전부 `서비스 토큰`)에 맞춰 **`X-Internal-Token` 서비스 토큰 + 본문/쿼리에 신원**(AI가 검증한 JWT `sub`에서 도출)으로 통일한다. 구 "사용자/판매자 JWT 포워딩" 제안(후보 검색·판매자·구매 이력)은 **폐기** — 장바구니 I-2 패턴이 표준. **IDOR 안전**: 본문 신원은 사용자 입력이 아니라 AI가 검증 토큰에서 도출한 값이다(§2.6).
+- **[v0.22.0] inbound 방향의 대칭 규칙 — §3.9 개인화 그래프 제어**: Spring → AI inbound에서 경로·본문에 실리는 `{userId}`는 **Spring이 자기 로그인 세션에서 도출한 값**이어야 하며 FE 입력을 그대로 중계해서는 안 된다. AI는 이 경로들에서 `Authorization` 헤더를 인증 수단으로 인정하지 않는다 — `X-Internal-Token`이 유일한 자격 증명이고, 신원 도출 책임은 Spring에 있다(§3.5.1 session-claim과 동일 규칙). 🔴 C-20.
 
 ### 2.4 Content-Type
 
@@ -195,8 +200,15 @@ X-Internal-Token: {SERVICE_TOKEN}
 | `409` | `STREAM_IN_PROGRESS` | **[v0.7.0 · 개정 v0.16.0]** 동일 **`threadId`** 에 활성 스트림 존재(§2.9 a) — FE는 진행 중 스트림 종료 후 재시도. 같은 `sessionId`의 **다른 방은 막지 않는다** |
 | `429` | `RATE_LIMITED` | 레이트 리밋 초과(§2.8) |
 | `504` | `UPSTREAM_TIMEOUT` | **[v0.7.0]** 스트림 시작 전 상류(LLM/Spring) 타임아웃(§2.9 기준표) |
+| `401` | `INTERNAL_TOKEN_INVALID` | **[v0.22.0 drift 정정]** 레인 (b) 서비스 토큰 누락/불일치(§3.5.1·§3.7·§3.9). 이 표가 "통합 목록"이라고 선언(아래)한 시점부터 이미 쓰이고 있었는데 등재가 빠져 있었다 |
+| `503` | `UPSTREAM_UNAVAILABLE` | **[v0.22.0 drift 정정]** 내부 의존성(프로필 저장소·인덱스) 일시 장애(§3.7·§3.8·§3.9). 위와 같은 누락 |
+| `404` | `NOT_FOUND` | **[v0.22.0]** 대상 리소스 부재 일반 코드 |
+| `404` | `PROFILE_EDGE_NOT_FOUND` | **[v0.22.0]** §3.9 대상 edge가 해당 회원 그래프에 없음. **남의 edge와 미존재를 구분하지 않는다**(열거 방지 — §3.9 공통 실패) |
+| `409` | `PROFILE_VERSION_CONFLICT` | **[v0.22.0]** §3.9 `If-Match` 불일치. 응답 본문에 최신 `graphVersion`을 병기한다(봉투 확장) |
+| `409` | `PROFILE_EDGE_NOT_EDITABLE` | **[v0.22.0]** `editable: false`(구매 파생) edge에 대한 §3.9.1 수정 시도 |
 
 - `404`/`503`/`500` 등 그 외 상태는 필요 시 동일 봉투로 확장한다(제안). 정확한 코드 목록은 Spring 협의로 조정될 수 있다. 🔴
+- **[v0.22.0] `412`는 채택하지 않는다** — §3.9는 조건부 요청에 `If-Match`를 쓰지만 실패 응답은 `409 PROFILE_VERSION_CONFLICT`다. 이유는 (1) `409`에 이미 상태 인식 불일치 계열이 3종 있어 소비자가 한 분기로 처리하고, (2) `412`는 AI 서버의 상태→코드 매핑에 없어 기본값이 일반 코드로 나가 이 표의 "기계 판독용 코드" 규약을 기본적으로 위반한다. 🔴 C-22.
 - 이 표가 **스트림 전 오류 코드의 통합 목록**이다(v0.7.0 — 4번 항목). 스트림 **내부** 오류는 §3.1 in-stream `error` 4종(+타임아웃, §2.9)으로 별도.
 
 #### 공통 헤더 규약 — `X-Request-Id` · `traceparent` **[v0.15.27]**
@@ -264,6 +276,7 @@ X-Internal-Token: {SERVICE_TOKEN}
 - **[v0.15.19, 이슈 #79]** session-end(§3.5)은 별도 `eventId` 필드가 없다 — Spring I-20 멱등은 **`(userId, sessionId)` 고정 파생키**(`session-end:{userId}:{sessionId}`)로 판정한다. AI 내부 비활동 처리는 같은 키의 `PROCESSING` claim으로 I-20과 경합을 직렬화하되, 성공 뒤 claim을 영구 완료하지 않고 해제하는 **재개 가능한 checkpoint**다. 같은 `sessionId`의 새 회원 발화가 실제 저장되면 이전 `PROCESSING`/`COMPLETED` 키를 activity 갱신과 같은 transaction에서 무효화하므로 새 버퍼를 다음 timeout/I-20이 처리할 수 있다.
 - 통지는 **best-effort** 이며, 유실되어도 AI 서버의 정합성은 통지에 의존하지 않는다(세션 종료: AI 내부 비활동 sweep이 저장 버퍼를 회수). 상세는 각 엔드포인트 항목 참고.
 - **[v0.15.17 확정]** 정상 신규·중복 통지는 처리 완료 여부와 무관하게 `202 Accepted`로 수신 확인한다(§3.5).
+- **[v0.22.0] 적용 범위는 `/events/*` 전용이다.** 같은 레인 (b)라도 §3.7(I-22)과 §3.9(개인화 그래프 제어)는 통지가 아니라 동기 요청/응답이므로 이 절의 규약(202 `accepted`/`duplicate`)이 적용되지 않고 **각 절이 자기 멱등 규약을 소유한다** — I-22는 비멱등(§3.7 규약), §3.9는 파생 키 + `replayed` 플래그(§3.9 preamble). 어느 경우에도 **클라이언트 지정 `Idempotency-Key` 헤더는 도입하지 않는다**(파생 키 원칙 유지).
 
 ### 2.8 CORS 및 레이트 리밋 (CORS & Rate Limiting) — 🔴 협의 필요
 
@@ -272,7 +285,7 @@ FE가 AI 서버(FastAPI)를 **다른 오리진에서 직접 호출**하므로 �
 - **CORS**: AI 서버는 FE 오리진에 대해 CORS 헤더를 서빙해야 한다. 허용 오리진 목록은 🔴 협의(§5 C-11). `Authorization` 헤더를 사용하므로 브라우저 **preflight(OPTIONS)** 가 발생한다 — AI 서버는 preflight에 `Access-Control-Allow-Headers: Authorization` 등으로 응답해야 한다.
 - **레이트 리밋(레인 a)**: 게스트도 토큰(익명 JWT)을 지참하므로 **토큰 스코프 기반 레이트 리밋**이 가능하다(§2.5). 초과 시 `429 RATE_LIMITED`(§2.5).
 - **[v0.7.0 확정] 목적·소유·값**: 목적은 정밀 과금 통제가 아니라 **무분별한 남용 차단**(2026-07-15 사용자). **MVP 소유 = FastAPI 미들웨어 + in-memory 카운터**(단일 인스턴스 전제 — 다중 인스턴스 확장 시 Redis 이관, §2.9 동시 스트림 레지스트리와 동일 단서). 상한은 **config 기본값 제안**: 채팅 메시지(POST /chat·/seller/chat) **분당 10회 / 시간당 100회**(토큰 `sub` 스코프, 게스트 동일). 값 자체는 운영 조정 대상이며 계약 사항은 "429 + 토큰 스코프"뿐이다.
-- **잔여 🔴(C-11)**: 허용 오리진 목록만 남음.
+- **잔여 🔴(C-11)**: 허용 오리진 목록 + **[v0.22.0] `Access-Control-Expose-Headers: ETag`** — §3.8이 `ETag`를 응답 헤더로 내지만 `ETag`는 CORS safelist가 아니라 이 헤더 없이는 브라우저 JS가 읽을 수 없다. 다만 §3.8의 **정규 버전 출처는 본문 `graphVersion`** 이라 이 항목이 미해결이어도 기능은 성립한다 — 헤더는 편의 사본이다.
 
 ### 2.9 SSE 스트림 수명주기 — 동시 스트림·취소·타임아웃 [v0.7.0 신설]
 
@@ -308,7 +321,7 @@ FE가 AI 서버(FastAPI)를 **다른 오리진에서 직접 호출**하므로 �
 
 ## 3. AI 서버 제공 API
 
-> **호출자 구분**: §3.1~3.4(사용자 대면)은 **FE → AI 직접 호출**(사용자 JWT, 레인 a). §3.5~3.6(`/events/*`)과 **§3.7(I-22 홈 추천 랭킹)** 은 **Spring → AI 서버 간 호출**(서비스 토큰, 레인 b). §1.2 참고.
+> **호출자 구분**: §3.1~3.4와 **§3.8(개인화 그래프 조회)** 은 **FE → AI 직접 호출**(사용자 JWT, 레인 a). §3.5~3.6(`/events/*`), **§3.7(I-22 홈 추천 랭킹)**, **§3.9(개인화 그래프 제어 I-29~I-33)** 은 **Spring → AI 서버 간 호출**(서비스 토큰, 레인 b). 프로필 표면이 §3.4/§3.8(조회, 레인 a)과 §3.9(변경, 레인 b)로 갈리는 것은 의도된 설계다 — §3.9 preamble 참고. §1.2 참고.
 
 ### 3.1 `POST /ai/chat` — 구매자 챗봇 (SSE 스트리밍, FE 직접)
 
@@ -817,7 +830,7 @@ FE/BE 문서에 없으나 MVP에 필요한 아래 3종은 **모두 구매자 SSE
 
 ### 3.4 `GET /profile/me` — 마이페이지 프로필 조회 (FE 직접)
 
-마이페이지 표시용으로 **토큰 소유자 본인의** 사람이 읽는 프로필 마크다운을 반환한다(자연어 마크다운 passthrough). 소유: `SPEC-PROFILE-001` §5.4/§6.9. MVP는 **조회(GET)만** 제공하며 편집(PUT)은 고도화 범위다.
+마이페이지 표시용으로 **토큰 소유자 본인의** 사람이 읽는 프로필 마크다운을 반환한다(자연어 마크다운 passthrough). 소유: `SPEC-PROFILE-001` §5.4/§6.9. MVP는 **조회(GET)만** 제공하며 마크다운 전문 편집(`PUT /profile/me`)은 계속 미제공이다. **[v0.22.0]** 항목 단위 편집·삭제·초기화·개인화 중지는 그래프 표면으로 제안한다 — 조회 §3.8, 제어 §3.9(🔴 초안·Post-MVP).
 
 > **[보안] 경로에서 `{userId}` 제거 — `GET /profile/me`**: `GET /profile/{userId}`는 **IDOR** 위험이 있어, 조회 대상 신원을 **토큰 클레임(`sub`)에서 도출**하는 `GET /profile/me`를 채택한다(결정 19).
 > - **SPEC 동기화 필요 🔴**: `SPEC-PROFILE-001` §5.4/§6.9는 `GET /profile/{user_id}`로 정의되어 있으므로 `/me` 채택 및 camelCase 정렬(§2.2)에 맞춘 **동기화 개정**이 필요하다(§7).
@@ -850,7 +863,8 @@ GET /profile/me
 | `generatedAt` | string \| null | 요약 생성 시각(ISO-8601). 미존재 시 `null` |
 
 - 게스트/프로필 미보유: `exists = false`, `markdown = null`을 **오류가 아닌 정상 응답(200)** 으로 반환한다(SPEC-PROFILE-001 REQ-PROF-081).
-- **PUT 미제공**: 프로필 편집은 고도화 범위(SPEC-PROFILE-001 EX-P3).
+- **`PUT /profile/me` 미제공(유지)**: 마크다운 **전문 편집**은 제공하지 않는다(SPEC-PROFILE-001 EX-P3). **[개정 v0.22.0]** EX-P3의 배제 범위는 이 전문 편집으로 **한정**되며, 항목(edge) 단위 수정·삭제·복구·전체 초기화·개인화 중지는 §3.9로 제안된다. LLM이 쓴 산문을 사용자가 부분 수정할 수 있는 형태가 아니라는 것이 전문 편집을 계속 배제하는 이유이고, 그래프는 같은 취향을 **주소 지정 가능한 항목**으로 쪼개 그 문제를 우회한다.
+- **[v0.22.0] 개인화 중지 중 동작**: `personalization.enabled == false`(§3.9.5)면 `markdown`은 `null`이다 — 저장된 요약을 살아 있는 개인화로 보여주지 않는다. 보존된 내용의 검토·삭제는 §3.8/§3.9에서 한다.
 
 ### 3.5 `POST {AI_SERVER}/events/session-end` (I-20) — 세션 종료 통지 (Spring → AI, best-effort, 멱등, 본 문서 소유)
 
@@ -1034,6 +1048,7 @@ X-Internal-Token: {서비스 토큰}   ← internal 그룹 (레인 b)
 - **[HARD] 프로필 원문·prompt·모델 식별자는 응답·로그·trace에 포함하지 않는다.** 알고리즘·모델 버전은 **AI가 자체 테이블에 보관**하며 **와이어에 싣지 않는다**(평가 산출물 전용). → `algorithmVersion`·`modelVersion`을 응답에 넣는 구현은 계약 위반이다. §6.3 관측 경계와 동일한 기준이다.
 - **후보 확보 경로가 채팅과 다르다** — AI는 **자체 카탈로그 인덱스(I-17로 동기화된 임베딩, §4.8)** 로 순위를 매긴다. Spring이 후보 목록을 요청에 싣지 않으며, **재고·판매상태 반영은 Spring이 카드 조립 시점**에 한다(CH-5와 동일 패턴). ※ §1.2의 "[HARD] 후보 확보 = 질의 시점 Spring 검색(I-1)"은 **채팅 경로의 규약**이고, 홈은 이 절이 정한 자체 인덱스 경로를 쓴다.
 - **캐시·TTL은 P-5 소관**(§4.11) — 개인화 결과 캐시 10분, `listId` 귀속 유효기간 24시간(2026-07-30 확정). 채팅 CH-5의 10분(조회 만료)과는 성격이 다르다.
+- **[v0.22.0] 개인화를 중지한 회원(§3.9.5)은 `outcome: "NO_PROFILE"`** 로 답한다 — 프로필 벡터 항을 빼면 개인화 근거가 남지 않으므로 기존 판정 기준(질의 벡터를 만들 수 없음)에 그대로 걸린다. **새 `outcome` 값을 만들지 않으며 Spring은 무변경**으로 기존 P-4 대체 분기를 그대로 쓴다. 단 **P-5 캐시(10분)는 Spring 소유라 AI가 비울 수 없어**, Spring이 중지 시점에 해당 회원 캐시를 무효화하지 않으면 최대 10분간 개인화 홈이 계속 보인다 — 🔴 C-27.
 
 #### 구현 노트 (v0.18.0, #148) — 계약과 다른 지점
 
@@ -1045,6 +1060,448 @@ X-Internal-Token: {서비스 토큰}   ← internal 그룹 (레인 b)
 - **`catalogVersion`을 받지만 쓰지도, 만들지도 않는다**(C-18 폐기 제안, v0.19.0) — 한때 AI가 인덱스 지문을 만들어 응답에 실었으나 되돌렸다. **버전 라벨만으로는 재현이 성립하지 않는다**: `products`는 I-17이 제자리 upsert하므로 그 시점의 임베딩이 남지 않아, 지문을 들고 와도 가리키는 인덱스 상태가 이미 사라져 있다. 버전마다 벡터를 스냅샷하려면 7,220×1536 기준 **버전당 약 44MB**를 5분 주기로 쌓아야 해 성립하지 않는다. 애초에 재현이 필요하지도 않다 — 산출물(목록·`reason`)은 Spring이 `recommendation_generated`로 이미 저장한다. 캐시 무효화 명분도 TTL 10분과 중복이고, 오히려 `max(updated_at)` 기반 지문은 **상품 1건 갱신으로 전 회원 캐시를 동시에 무효화**해 캐시를 죽인다.
 - **`reason`을 요청 경로에서 생성하지 않는다 — 미리 만들어 두고 고른다.** 초기 구현은 fast tier LLM 배치 1회로 문장을 만들었으나 **실측에서 예산을 넘겼다**(2026-07-31, gpt-5-nano, 카탈로그 7,220건): 후보 20개 7,970ms · 12개 3,852ms · 6개 2,102ms로 **항목 수에 선형**(출력 토큰 지배, 프롬프트는 2.3k자로 입력 탓이 아님)이라, 5개로 줄여도 2.0s 타임아웃을 5회 중 5회 넘겨 **reason이 한 건도 나오지 않았다.** 지금은 I-17 배치가 **상품당 1회** 만들어 `extras`에 넣어 둔 재료(`situation_tags`·`review_pros`, §4.8)에서 사용자 맥락에 맞는 것을 고른다 — 우선순위는 담기 > 조회 > 상품 고유 폴백(프로필 문자열 분기는 선호/회피 극성 파싱 불가로 제거 — 장기 취향은 프로필 벡터가 랭킹에 반영)이고, 매칭이 없으면 `null`이다(계약상 정상). 결과: **요청 경로 LLM 0회 · 결정적 · 종단 p50 45ms · reason 22/24건**. 문장 재료는 LLM 산출물이고 틀만 규칙이다.
 - **✅ 성능 실측 완료**(2026-07-31, 실카탈로그 7,220건) — 초기 구현은 `store.all()` 전량을 파이썬으로 코사인 계산해 **p50 3,321ms로 예산 3s를 그 자체로 초과**했다. `ArtifactStore.top_k_by_vector`를 신설해 pg 경로를 HNSW 인덱스(`vector_ip_ops`, `<#>`)로 밀어 **p50 39ms**가 됐다. 벡터가 L2 정규화돼 있어 내적 순위 = 코사인 순위이며, **정규화는 이 경로의 전제**다(`normalized` 컬럼이 그 사실을 기록한다).
+
+### 3.8 `GET {AI_SERVER}/profile/me/graph` — 개인화 관계 그래프 조회 (FE 직접) [v0.22.0 신설, 🔴 제안(초안)]
+
+마이페이지 "AI가 이해한 내 취향" 화면용으로 **토큰 소유자 본인의** 취향을 node·edge 구조로 반환한다. §3.4의 마크다운이 사람이 읽는 **한 덩어리**인 데 반해, 이 절은 같은 취향을 **항목 단위로 쪼개** 사용자가 무엇이 왜 저장됐는지 보고 §3.9로 고칠 수 있게 한다. 소유: `SPEC-PROFILE-GRAPH-149`(모델·규칙·인수 기준), 본 절(외부 HTTP 계약).
+
+> **🔴 제안(초안) · Post-MVP** — 본 절과 §3.9는 FE/BE 수용 전 초안이며 MVP 범위가 아니다(milestone `Post-MVP Buyer Quality`, 이슈 #149 계약 / #150 구현). 미합의 항목은 §5 C-20~C-28.
+
+> **[보안] 경로에서 `{userId}` 제거 — `/profile/me/graph`**: §3.4와 **동일한 IDOR 규칙**을 적용한다. 조회 대상 신원은 **토큰 클레임(`sub`)에서 도출**하며 경로·쿼리·본문에서 받지 않는다(결정 19).
+
+```
+GET {AI_SERVER}/profile/me/graph?includeSuppressed=false
+Authorization: Bearer {STREAM_TICKET}   ← 기존 chat:stream 스트림 티켓 재사용(§2.3 a)
+```
+
+- **인증**: §2.3 (a) 스트림 티켓. `scope`는 exact `"chat:stream"`(§2.3 a) — **조회는 새 scope를 도입하지 않는다.** 변경(§3.9)만 레인 b로 분리한다(그 이유는 §3.9 preamble).
+- **예산(제안, 실측 아님)**: 응답 **2s**. **[HARD] 요청 경로 LLM 0회** — 프로젝션은 저장된 구조화 트리플의 결정론적 파생이다.
+- 게스트 티켓(`sub_type == "guest"`): 프로필이 없으므로 `exists = false` + 빈 배열을 **오류가 아닌 정상 200**으로 반환한다(§3.4 / REQ-PROF-081과 동일).
+- 판매자 티켓(`role == "seller"`): 구매자 프로필 표면이라 **`403 FORBIDDEN`**(§2.3 a의 "판매자 티켓은 구매자 표면에서 거부"와 동일 규칙).
+
+#### 요청 쿼리 파라미터
+
+| 파라미터 | 타입 | 필수 | 설명 |
+|---|---|---|---|
+| `includeSuppressed` | bool | 아니오 | 기본 `false`. `true`면 사용자가 삭제(suppress)한 edge를 `suppressed: true`로 함께 반환한다(되돌리기 UI 전용). **민감 카테고리 제외분은 이 플래그와 무관하게 절대 반환하지 않는다**(아래 규약) |
+
+#### 성공 응답 — 200
+
+```json
+{
+  "userId": "123",
+  "exists": true,
+  "graphVersion": "g42",
+  "generatedAt": "2026-08-04T21:10:00Z",
+  "personalization": { "enabled": true, "disabledAt": null },
+  "usagePolicy": { "orderOnly": true, "filterSafe": false },
+  "nodes": [
+    { "nodeId": "priceBand:30000-50000", "type": "priceBand", "label": "3~5만원대" },
+    { "nodeId": "brand:소니", "type": "brand", "label": "소니", "verified": true },
+    { "nodeId": "category:음향가전 > 블루투스 이어폰", "type": "category", "label": "블루투스 이어폰", "verified": true },
+    { "nodeId": "attribute:노이즈캔슬링", "type": "attribute", "label": "노이즈캔슬링", "verified": false }
+  ],
+  "edges": [
+    {
+      "edgeId": "e_7b1c9a04e5f2438d",
+      "to": "priceBand:30000-50000",
+      "predicate": "prefers",
+      "source": "conversation",
+      "origin": "machine",
+      "confidence": "HIGH",
+      "evidenceCount": 6,
+      "firstSeenAt": "2026-07-02T11:20:00Z",
+      "lastConfirmedAt": "2026-07-29T09:05:00Z",
+      "editable": true,
+      "suppressed": false,
+      "suppressedAt": null,
+      "challenged": false,
+      "derivedFromSensitive": false
+    },
+    {
+      "edgeId": "e_2f80d1aa63b74c19",
+      "to": "brand:소니",
+      "predicate": "avoids",
+      "source": "user",
+      "origin": "user",
+      "confidence": "HIGH",
+      "evidenceCount": 3,
+      "firstSeenAt": "2026-07-11T08:00:00Z",
+      "lastConfirmedAt": "2026-08-04T13:40:00Z",
+      "editable": true,
+      "suppressed": false,
+      "suppressedAt": null,
+      "challenged": true,
+      "derivedFromSensitive": false
+    },
+    {
+      "edgeId": "e_c40a8e1b7d92f603",
+      "to": "category:음향가전 > 블루투스 이어폰",
+      "predicate": "purchased",
+      "source": "purchase",
+      "origin": "machine",
+      "confidence": "HIGH",
+      "evidenceCount": 2,
+      "firstSeenAt": "2026-07-18T04:00:00Z",
+      "lastConfirmedAt": "2026-07-18T04:00:00Z",
+      "editable": false,
+      "suppressed": false,
+      "suppressedAt": null,
+      "challenged": false,
+      "derivedFromSensitive": false
+    }
+  ],
+  "suppressedCount": 0,
+  "unprojectedCount": 0,
+  "truncated": false
+}
+```
+
+프로필 미보유·게스트:
+
+```json
+{
+  "userId": "guest-8f14e45f-ea01-4c2b-9a3d-77b5f1c0e2aa",
+  "exists": false,
+  "graphVersion": "g0",
+  "generatedAt": null,
+  "personalization": { "enabled": true, "disabledAt": null },
+  "usagePolicy": { "orderOnly": true, "filterSafe": false },
+  "nodes": [],
+  "edges": [],
+  "suppressedCount": 0,
+  "unprojectedCount": 0,
+  "truncated": false
+}
+```
+
+응답 헤더: `ETag: "g42"` — **편의 사본이며 정규 출처는 본문 `graphVersion`이다**(아래 규약).
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `userId` | string | 토큰 `sub` 그대로(§3.4 선례 — 회원은 숫자의 문자열, 게스트는 UUID). **§3.9의 경로 `{userId}`는 숫자 BIGINT라 표기가 다르다** — 아래 규약의 타입 비대칭 항목 |
+| `exists` | bool | 승격된 프로필 존재 여부. 게스트·신규 회원 `false` |
+| `graphVersion` | string | **[HARD] 불투명 토큰.** `[A-Za-z0-9._-]{1,64}`. **파싱·크기 비교·순서 추론 금지.** §3.9 `If-Match`에 그대로 실어 보낸다 |
+| `generatedAt` | string \| null | 프로젝션 원천(sleep-time consolidation) 시각(ISO-8601). 미존재 시 `null` |
+| `personalization.enabled` | bool | `false`면 추천 경로가 프로필을 쓰지 않고 새 취향도 수집하지 않는다(§3.9.5). **데이터는 보존되며 그래프는 계속 보인다** |
+| `personalization.disabledAt` | string \| null | 개인화 중지 시각. `enabled == true`면 `null` |
+| `usagePolicy.orderOnly` | bool | 항상 `true` — 그래프는 **순서(랭킹)에만** 쓰인다 |
+| `usagePolicy.filterSafe` | bool | 항상 `false` — **이 데이터를 검색 필터로 변환하면 안 된다**(아래 규약, #119) |
+| `nodes[].nodeId` | string | 안정 식별자 `{type}:{정규화 라벨}`. 같은 대상은 항상 같은 값(아래 규약) |
+| `nodes[].type` | string | `brand` \| `category` \| `attribute` \| `priceBand` \| `ratingBand` \| `product` \| `situation` |
+| `nodes[].label` | string | 사람이 읽는 이름. 최대 길이 = config `profile_graph_label_max_chars` |
+| `nodes[].verified` | bool | `true`면 통제 어휘(카탈로그 카테고리·브랜드 사전)에 스냅된 노드. `false`(미검증)는 랭킹에서 제외될 수 있다 |
+| `edges[].edgeId` | string | `e_` + 16자 hex. `(predicate, nodeId)` 파생이라 **수정하면 값이 바뀐다**(§3.9.1) |
+| `edges[].to` | string | `nodes[].nodeId` 참조. **`from`은 싣지 않는다** — MVP 그래프는 전부 "사용자 → 대상" 1-hop이라 항상 같은 값이고, 있으면 다홉 순회가 가능하다는 거짓 신호가 된다 |
+| `edges[].predicate` | string | `prefers` \| `likes` \| `avoids` \| `interestedIn` \| `purchased` — 아래 관계 표 |
+| `edges[].source` | string | 최신 근거의 출처: `conversation` \| `purchase` \| `user` |
+| `edges[].origin` | string | `machine` \| `user`. `user`는 사용자가 직접 단정·수정한 것이며 기계 파이프라인이 덮지 못한다 |
+| `edges[].confidence` | string | **`LOW` \| `MEDIUM` \| `HIGH` 3버킷.** 수치와 경계는 와이어에 싣지 않는다(아래 규약) |
+| `edges[].evidenceCount` | number | 관측 횟수(≥1). **근거 원문은 싣지 않는다**(아래 규약) |
+| `edges[].firstSeenAt` | string | 최초 관측 시각(ISO-8601) |
+| `edges[].lastConfirmedAt` | string | 최근 재확인 시각(ISO-8601). 정렬 키 |
+| `edges[].editable` | bool | `false`면 §3.9.1 수정 불가(`purchased`). 삭제(suppress)는 가능 |
+| `edges[].suppressed` | bool | 사용자가 삭제한 tombstone. **기본 응답에는 `true`가 없다**(`includeSuppressed=true`에서만) |
+| `edges[].suppressedAt` | string \| null | 삭제 시각 |
+| `edges[].challenged` | bool | `origin == "user"` 이후 반대 관측이 config 임계 이상 쌓임. **상태는 바뀌지 않으며** FE가 "다시 반영할까요?"를 물을 수 있는 힌트다 |
+| `edges[].derivedFromSensitive` | bool | 민감 주제에서 **원인을 버리고 파생된** 커머스 취향. `true`면 근거·라벨 원문이 일절 제공되지 않는다 |
+| `suppressedCount` | number | 사용자가 삭제한 edge 수. **민감 제외분은 포함하지 않는다**(아래 규약) |
+| `unprojectedCount` | number | 구조화 트리플이 없어 아직 그래프로 변환되지 않은 fact 수. 정상값은 `0`(관측용) |
+| `truncated` | bool | `edges`가 config `profile_graph_max_edges`에서 절단됨 |
+
+#### 관계(`predicate`) 정의 — `source`·`confidence` 의미
+
+| `predicate` | 뜻 | 원천 | 허용 `source` | `confidence` 의미 | `editable` |
+|---|---|---|---|---|---|
+| `prefers` | **비교 선호** — 다른 것 대신 이것(가격대·평점 성향·선호 브랜드) | 승격된 semantic fact 중 구조화 블록 매핑분(`SPEC-PROFILE-001` §5.1) | `conversation`, `user` | 반복·명시성 누적의 버킷 | 예 |
+| `likes` | **단순 긍정** — 비교 없이 표명(색·소재·스타일) | 승격된 semantic fact 중 산문 취향 | `conversation`, `user` | 동일 | 예 |
+| `avoids` | 명시 회피·부정 선호 | 부정 극성 semantic fact | `conversation`, `user` | 동일 | 예 |
+| `interestedIn` | **최근 관심**(시간 경과로 감쇠) | episodic·최근 맥락 | `conversation` | 최근성+현저성 선택(반복 게이트 예외 — `SPEC-PROFILE-001` OPEN-P8) | 예 |
+| `purchased` | 구매 사실 | I-19 구매 이력(§4.7) 파생 | `purchase` | 항상 `HIGH`(추정이 아니라 사실) | **아니오** |
+
+- **`source == "user"`** 는 위 4종 어디에도 붙을 수 있고 항상 `confidence: "HIGH"` · `origin: "user"` 다 — 사용자 단정이 기계 추정보다 우선한다.
+- **FE 표현 계약은 별도 협의다(🔴 C-25)** — 버킷 라벨 문구, `evidenceCount` 표시 여부, 삭제 항목 노출 방식은 FE 소유다. 특히 "왜 이 취향이 있나요" 같은 설명 문장을 요구하면 **근거 원문 금지 [HARD]** 때문에 생성·redaction된 문장이 되어야 하므로 별도 계약이 필요하다.
+- **[생산자 부재 명시] `avoids`는 현재 생산자가 없다.** 선호/회피 극성을 산문에서 파싱할 앵커가 없어 관련 분기가 제거된 이력이 있다(§3.7 구현 노트의 `reason` 항목). 본 계약은 두 생산자를 **신설 대상으로 규정**한다: (1) 델타 추출이 극성을 **구조화 필드로 발신**(산문 파싱이 아니다), (2) 사용자가 §3.9.1로 직접 단정. 둘 중 어느 것도 구현되기 전에는 `avoids` 배열이 비어 있는 것이 **정상**이며, FE는 빈 회피 목록을 오류로 취급해서는 안 된다.
+- **[신규 연동 명시] `purchased`도 현재 생산자가 없다.** 프로필 파이프라인은 구매 이력을 조회하지 않는다(`SPEC-PROFILE-001` REQ-PROF-054 미구현). 또한 I-19의 `categoryName`은 **단일 레벨 이름**(`"키보드"`)이고 카탈로그 정본은 `"대분류 > 잎"`(§4.6)이며 I-19에는 **`brandName`이 없다** — 따라서 구매 파생 카테고리도 대화 파생과 **같은 정규화 경로**를 통과해야 하고, **브랜드 노드는 구매에서 생성될 수 없다**.
+
+#### 실패 응답
+
+| HTTP | `code` | 조건 |
+|---|---|---|
+| `400` | `BAD_REQUEST` | `includeSuppressed`가 bool로 파싱되지 않음 |
+| `401` | `TOKEN_EXPIRED` / `TOKEN_INVALID` | §2.3 a |
+| `403` | `FORBIDDEN` | 판매자 스코프 티켓의 호출 |
+| `429` | `RATE_LIMITED` | §2.8(레인 a) |
+| `503` | `UPSTREAM_UNAVAILABLE` | 프로필 저장소 일시 장애 |
+| `504` | `UPSTREAM_TIMEOUT` | 예산 초과 |
+
+#### 규약
+
+- **[HARD] 요청 경로 LLM 0회.** 프로젝션 원천은 저장된 **구조화 트리플**이며 **프로필 마크다운 본문이 아니다**. 마크다운을 LLM으로 트리플화하는 구현은 비결정적이라 아래 결정론 규약을 만족할 수 없고, 계약 위반이다.
+- **[HARD] 근거 원문·프로필 마크다운 본문·prompt·모델 식별자를 응답·로그·trace에 싣지 않는다.** `algorithmVersion`·`modelVersion`을 넣는 구현은 계약 위반이다(§3.7 [HARD]와 동일 기준, §6.3 관측 경계). "왜 이 취향이 있나"는 `source` + `evidenceCount` + `lastConfirmedAt`로 답한다 — 사용자 발화를 되돌려 보여주지 않는다.
+- **[HARD] 민감 카테고리는 존재 자체를 노출하지 않는다.** 질병·임신·종교·정치·성적지향·인종·범죄경력·생체·미성년 지표·정밀위치·금융수단에서 유래한 항목은 node·edge에 포함하지 않고, **어떤 카운트에도 세지 않으며**(placeholder도 두지 않는다) 파생 커머스 취향만 `derivedFromSensitive: true`로 남는다. **주제 라벨 자체는 절대 와이어에 싣지 않는다** — "이 취향은 건강 정보에서 파생됨"은 그 자체로 건강 정보 공개다. 목록 소유는 🔴 C-24.
+  - **[HARD] `suppressedCount`와 민감 제외분을 섞지 않는다.** 사용자가 지운 개수에 민감 제외분을 더하면 **그 카운트가 곧 유출**이다. 두 억제는 이름·집계·복구 가능성이 모두 다르다(사용자 삭제 = 복구 가능, 민감 제외 = 복구 불가·비가시).
+  - **판정의 한계를 계약이 인정한다** — 하드 PII(주민번호·전화·이메일·카드번호)는 형식 고정이라 결정론적으로 탐지하지만, **민감 *주제* 판정은 완전하지 않다**(`"당뇨"`는 잡아도 `"혈당 관리 중"`은 놓칠 수 있다). 그래서 이 계약이 보장하는 것은 "민감정보를 모두 골라낸다"가 아니라 **"골라내기에 실패해도 근거 원문은 응답·로그·trace에 나가지 않는다"** 이며, 방어선을 판정 정확도에 걸지 않는다.
+- **[HARD] 결정론적 프로젝션** — 같은 저장 상태는 항상 같은 응답을 만든다.
+  - **중복 불가**: `nodeId`는 `{type}:{정규화 라벨}`, `edgeId`는 `(predicate, nodeId)`에서 파생된다. 같은 대상은 항상 같은 id라 **동일 취향이 두 개의 node·edge로 나타나는 것이 구조적으로 불가능**하다. 같은 키로 수렴한 관측은 병합되며(`evidenceCount` 합산, `lastConfirmedAt`은 최댓값, `confidence`는 상위 버킷) 이 병합은 **코드가 결정론적으로** 수행한다 — LLM에 위임하지 않는다(`SPEC-PROFILE-001` REQ-PROF-032/033).
+  - **정렬 고정**: `edges`는 `predicate`(`prefers` → `likes` → `avoids` → `interestedIn` → `purchased` 고정 순서) → `lastConfirmedAt` 내림차순 → `edgeId` 오름차순. `nodes`는 `nodeId` 오름차순. 마지막 키가 전순서를 보장한다.
+- **[HARD] 순서 전용(order-only)** — 그래프 데이터는 (i) rerank 프롬프트의 **순서 지시**와 (ii) 랭킹 **점수 항**(§3.7 프로필 벡터)에만 들어간다. **검색 필터(§4.6 I-1 쿼리 파라미터)·저장되는 이전 턴 필터로 변환하면 안 된다.** 과거에 프로필을 필터 생성 단계에 주입해 **회원 추천이 게스트보다 부정확해진 실측 회귀**가 있었고(31턴 중 29턴에서 가격·브랜드·평점 축이 오염, 게스트 대비 nDCG@10 −0.288), 필터가 멀티턴 저장소에 영속돼 세션 전체로 증폭된 것이 그 메커니즘이었다. `usagePolicy.filterSafe: false`는 이 규약을 **와이어에 박아** FE·BE가 계약 변경 없이 "필터로 적용"을 만들 수 없게 한다. `avoids`도 **순위 강등까지만**이며 후보 배제로 승격되지 않는다.
+- **개인화 중지 중에도 200 + 전체 그래프를 반환한다.** 중지는 "쓰지 않는다"이지 "숨긴다"가 아니다 — 보존된 데이터를 검토하고 지우려면 볼 수 있어야 한다.
+- **`graphVersion`은 사용자 편집뿐 아니라 sleep-time consolidation으로도 바뀐다.** 화면을 열어둔 채 밤을 넘긴 사용자의 다음 변경은 정당하게 `409`(§3.9)이며, FE 복구는 재조회 후 재표시다.
+- **타입 비대칭(의도적, 기록용)**: 본 절 응답의 `userId`는 **string**(토큰 `sub` 그대로, §3.4 선례)이고 §3.9 경로의 `{userId}`는 **숫자 BIGINT**(§2.6 / I-20 / I-22 선례)다. 조회는 토큰 신원을 그대로 되돌려주고 변경은 Spring이 도출한 회원 id를 받으므로 출처가 다르다. 통일은 `SPEC-PROFILE-001` 동기화 항목(§7.2)에서 다루며 **조용히 다르게 두지 않는다**.
+
+#### 구현 노트 (v0.22.0, #149) — 계약이 아직 코드에 없는 지점
+
+본 절과 §3.9는 **구현이 없다**(#150). 아래는 착수자가 먼저 알아야 하는 사실이다.
+
+1. **선결(blocking) — 결정론적 트리플이 없다.** 현재 fact store item 값은 `{"fact": str}` 자유형 한국어 한 필드이고 dedup은 문자열 완전 일치뿐이다(`SPEC-PROFILE-001` OPEN-P12). 위 "중복 불가" 규약은 **consolidation이 구조화 트리플을 함께 산출하도록 만든 뒤에야** 달성 가능하다. 그때까지 변환되지 않은 fact는 `unprojectedCount`로만 관측된다.
+2. **기존 데이터로 과거 그래프를 복원할 수 없다.** 델타 추출이 산출한 `salience`·`explicit`·`repetitionEma`는 승격 판정 직후 버려지고 store에는 fact 문자열과 `created_at`만 남는다. 부트스트랩은 `source`를 보존하지 못하는 **정의된 best-effort 투영**이며 "그 그래프"가 아니다. 그래프는 **다음 배치부터 누적**된다.
+3. **억제가 실효하려면 consolidation이 그래프를 읽어야 한다.** 현재 consolidation은 fact 목록을 그대로 읽으므로, 그래프에서만 suppress하면 **다음 배치가 삭제한 취향을 마크다운에 다시 써넣는다.** 이 변경이 없으면 삭제 기능은 겉모습만 남는다.
+4. **살아 있는 레이스**: 요약 쓰기 경로는 잠금 없이 갱신하는데 fact 추가 경로는 per-user 잠금을 잡는다. 그래프 변경이 요약 측 플래그를 쓰면 동시 consolidation에 덮일 수 있다 — 요약 쓰기를 같은 잠금 아래로 옮기고 compare-and-set으로 만들어야 한다.
+5. 예산(2s / §3.9 3s)은 **제안이며 실측이 아니다**. §2.9 (c) 기준표에 행을 추가하지 않은 이유가 이것이다.
+
+### 3.9 개인화 그래프 제어 API (I-29~I-33, Spring → AI) [v0.22.0 신설, 🔴 제안(초안)]
+
+사용자가 잘못 학습된 취향을 **수정·삭제·복구**하고, **전체 초기화**와 **개인화 중지·재개**를 수행하는 5종이다. FE는 Spring의 마이페이지 엔드포인트를 호출하고, **Spring이 이 internal 계약으로 AI에 위임**한다.
+
+> **🔴 제안(초안) · Post-MVP** — §5 C-20~C-28 미합의. I-번호 채번은 🔴 C-26.
+
+```
+X-Internal-Token: {서비스 토큰}          ← internal 그룹(레인 b)
+If-Match: "g42"                          ← §3.8 응답의 graphVersion (§3.9.5만 선택)
+```
+
+> **[HARD·보안] 경로의 `{userId}`는 Spring이 자기 로그인 세션에서 도출한 값이다** — FE 입력(본문·쿼리·헤더)에서 온 값을 그대로 실어서는 안 된다. `X-Internal-Token`이 필수이며 **사용자 JWT나 body의 임의 신원을 대신 신뢰하지 않는다**(§3.5.1과 동일 규칙). AI는 이 경로들에서 `Authorization` 헤더를 **인증 수단으로 인정하지 않는다.**
+>
+> **[HARD] 조회는 FE 직접(§3.8), 변경은 Spring 경유(본 절) — 이 비대칭은 의도된 것이며 "통일"하면 안 된다.** 조회는 이미 배포·검증된 `chat:stream` 티켓 경로(§3.4)를 그대로 재사용해 **공유 인증 경로의 회귀 반경을 0으로 유지**한다. 변경은 (1) 로그인 세션에서 도출된 신원과 (2) 감사 actor가 필요하며, 60초짜리 스트림 티켓은 둘 다 제공하지 못한다 — 전체 초기화 같은 파괴적 동작의 근거로도 부적절하다. 전용 `profile:read`/`profile:write` 티켓 신설안은 **기각**했다: `scope`는 exact `chat:stream`으로 하드 고정돼 있고 그 검증 경로를 `/chat`·`/seller/chat`이 함께 지나가므로, 프로필 편집 기능을 위해 **채팅 인증에 회귀 위험을 만드는 대가**를 치른다(§2.3 a). 이 결정은 🔴 C-20.
+>
+> **[HARD] Spring은 `If-Match`를 verbatim 통과시키고, `409` 응답 본문(`error.code`·`graphVersion`)을 변형 없이 FE에 전달한다.** 재따옴표·재인용·자체 생성 금지. 🔴 C-21.
+
+- **예산(제안, 실측 아님)**: 응답 **3s**. **[HARD] 요청 경로 LLM 0회.**
+- **멱등** — **§2.7의 `/events/*` 멱등 규약은 본 절에 적용되지 않는다**(202 `accepted`/`duplicate` 없음, 동기 200 + 새 상태). 대신 **파생 키**로 판정한다: `profile-graph-{action}:{userId}:{scopeId}:{ifMatch}`. `If-Match`가 곧 멱등 키를 겸하므로(네트워크 재시도는 같은 precondition을 지참한다) 재전송은 **최초 응답 본문을 그대로** + `"replayed": true`로 반환한다. 클라이언트 지정 `Idempotency-Key` 헤더는 **도입하지 않는다** — 저장소 전역에 그 개념이 없고, §2.7의 취지가 "파생 키, 클라이언트 지정 금지"다.
+- **`If-Match` 형식**: `If-Match: "g42"`와 `If-Match: g42`는 동등하다. `*`·약한 태그(`W/"g42"`)·누락·빈 값은 **`400 BAD_REQUEST`** 다(428은 §2.5에 없는 상태라 도입하지 않는다).
+- inbound 본문은 **camelCase alias만** 허용한다. unknown field·snake_case field·camelCase+snake_case collision은 `400 BAD_REQUEST`(§3.5.1과 동일).
+- **노드는 변경 대상이 아니다** — 노드는 edge의 파생물이라 자신을 참조하는 edge가 사라지면 함께 사라진다. 노드 편집을 허용하면 같은 상태로 가는 쓰기 경로가 둘이 된다.
+
+#### 3.9.1 `PATCH {AI_SERVER}/internal/profile/{userId}/graph/edges/{edgeId}` (I-29) — 취향 수정
+
+```json
+{ "predicate": "avoids", "object": { "type": "brand", "label": "소니" } }
+```
+
+| 필드 | 타입 | 필수 | 설명 |
+|---|---|---|---|
+| `predicate` | string | 아니오 | `prefers` \| `likes` \| `avoids` \| `interestedIn`. **`purchased` 지정은 `400`** — 구매는 의견이 아니라 사실이라 사용자가 만들 수 없다 |
+| `object.type` | string | `object` 지정 시 예 | §3.8 node type. `user`류 자기 노드는 없다 |
+| `object.label` | string | `object` 지정 시 예 | 1 ~ config `profile_graph_label_max_chars`자. 정규화 후 `nodeId`가 된다 |
+
+`predicate`·`object` 중 **최소 하나**는 있어야 한다(둘 다 없으면 `400`).
+
+**성공 응답 — 200**
+
+```json
+{
+  "userId": 123,
+  "graphVersion": "g43",
+  "edge": {
+    "edgeId": "e_9d41c7b0e8a2f356",
+    "to": "brand:소니",
+    "predicate": "avoids",
+    "source": "user",
+    "origin": "user",
+    "confidence": "HIGH",
+    "evidenceCount": 6,
+    "firstSeenAt": "2026-07-02T11:20:00Z",
+    "lastConfirmedAt": "2026-08-05T02:31:44Z",
+    "editable": true,
+    "suppressed": false,
+    "suppressedAt": null,
+    "challenged": false,
+    "derivedFromSensitive": false
+  },
+  "merged": false,
+  "replayed": false
+}
+```
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `userId` | number(BIGINT) | 경로 값 echo(Spring 도출 신원) |
+| `graphVersion` | string | 변경 후 버전. 다음 변경의 `If-Match` 값 |
+| `edge` | object | 변경 후 edge. 필드 의미는 §3.8과 동일 |
+| `merged` | bool | 새 `(predicate, object)`가 기존 edge와 겹쳐 **병합**됐는지 |
+| `replayed` | bool | 같은 파생 키의 재전송이라 최초 응답을 되돌려준 것 |
+
+**규약**
+
+- 사용자 수정은 항상 `source: "user"` · `origin: "user"` · `confidence: "HIGH"` 로 승격된다.
+- **`edgeId`가 바뀐다** — `edgeId`는 `(predicate, nodeId)` 파생이므로 관계나 대상을 바꾸면 새 값이다. 응답의 `edge.edgeId`로 클라이언트 키를 교체해야 하며, 그러지 않으면 다음 변경이 `404`다.
+- 새 트리플이 기존 edge와 충돌하면 **병합**하고 `merged: true`를 반환한다(`evidenceCount` 합산, `lastConfirmedAt` 최댓값).
+- **[HARD] 사용자 수정은 기계 재파생에 덮이지 않는다.** 수정 이후 sleep-time 배치가 같은 취향을 다시 추출해도 관측 횟수·최근 시각만 갱신되고 **관계·상태·확신도는 변경되지 않는다.** 이 보장은 만료되지 않는다 — 만료를 두면 사용자의 수정이 조용히 되돌려진다. 취향이 실제로 바뀐 경우의 탈출구는 **보이는 방식**뿐이다: 반대 관측이 config 임계 이상 쌓이면 `challenged: true`가 뜨고 **상태는 그대로**이며, 명시적 사용자 변경만 고정을 푼다.
+
+#### 3.9.2 `DELETE {AI_SERVER}/internal/profile/{userId}/graph/edges/{edgeId}` (I-30) — 개별 삭제(suppress)
+
+Body 없음(I-12 삭제 선례와 동일 — 신원·대상이 전부 경로에 있다).
+
+**성공 응답 — 200**
+
+```json
+{
+  "userId": 123,
+  "graphVersion": "g44",
+  "edgeId": "e_7b1c9a04e5f2438d",
+  "suppressed": true,
+  "suppressedAt": "2026-08-05T02:33:10Z",
+  "restorable": true,
+  "replayed": false
+}
+```
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `userId` | number(BIGINT) | 경로 값 echo |
+| `graphVersion` | string | 변경 후 버전 |
+| `edgeId` | string | 삭제한 edge |
+| `suppressed` | bool | 항상 `true` |
+| `suppressedAt` | string | 삭제 시각 |
+| `restorable` | bool | §3.9.3으로 되돌릴 수 있는지(항상 `true`, 초기화 전까지) |
+| `replayed` | bool | 재전송 판정 |
+
+**규약**
+
+- **삭제는 tombstone(suppress)이다** — 프로젝션·요약·추천에서 **즉시 제외**되지만 이력은 보존되고 복구 가능하다. 억제 경로를 만들면 되돌리기 경로도 함께 만든다는 규칙을 따른다.
+- 이미 suppress된 edge에 같은 `If-Match`로 재전송하면 `replayed: true`(상태·버전 불변).
+- **`purchased` edge도 숨길 수 있다.** 단 **이것이 재구매 dedup(결정 14-F, §4.7)에 영향을 주지 않는다** — dedup은 프로필이 아니라 질의 시점 I-19를 읽는다. "구매 기록을 지웠으니 다시 추천되겠지"는 성립하지 않는다.
+
+#### 3.9.3 `POST {AI_SERVER}/internal/profile/{userId}/graph/edges/{edgeId}/restore` (I-31) — 삭제 되돌리기
+
+요청 본문 `{}`(빈 객체).
+
+**성공 응답 — 200**
+
+```json
+{
+  "userId": 123,
+  "graphVersion": "g45",
+  "edgeId": "e_7b1c9a04e5f2438d",
+  "suppressed": false,
+  "suppressedAt": null,
+  "replayed": false
+}
+```
+
+필드 의미는 §3.9.2와 같다(`restorable` 없음).
+
+**규약** — suppress 상태가 아닌 edge에 대한 restore는 **no-op 200**(`replayed: true`, 버전 불변). 전체 초기화(§3.9.4)로 물리 삭제된 뒤에는 `404 PROFILE_EDGE_NOT_FOUND`다.
+
+#### 3.9.4 `POST {AI_SERVER}/internal/profile/{userId}/graph/reset` (I-32) — 전체 초기화(물리 삭제)
+
+```json
+{ "scope": "ALL" }
+```
+
+| 필드 | 타입 | 필수 | 설명 |
+|---|---|---|---|
+| `scope` | string | 예 | 현재 `"ALL"` 하나만 허용. 미지 값은 `400`. **파괴 범위를 호출자가 명시적으로 이름 붙이게** 하는 판별자다 |
+
+**성공 응답 — 200**
+
+```json
+{
+  "userId": 123,
+  "graphVersion": "g46",
+  "purged": { "edges": 12, "nodes": 9, "facts": 12, "suppressed": 2 },
+  "personalization": { "enabled": true, "disabledAt": null },
+  "replayed": false
+}
+```
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `userId` | number(BIGINT) | 경로 값 echo |
+| `graphVersion` | string | 초기화 후 버전. **단조 증가하며 초기화로 되돌아가지 않는다**(재사용하면 `If-Match`가 모호해진다) |
+| `purged` | object | **개수만.** 라벨·원문은 싣지 않는다 |
+| `personalization` | object | **초기화는 이 값을 바꾸지 않는다**(아래 규약) |
+| `replayed` | bool | 재전송 판정 |
+
+**규약**
+
+- **파괴적·비가역이다.** 대상: 그래프 node·edge, fact 항목, 요약(마크다운 **및** 요약 임베딩), suppress tombstone, 미처리 세션 버퍼, 누적 게이트 상태.
+- **보존 대상: 변경 감사 로그(§6.3 c)와 대화 전사록(`conversation_turns`).** 감사 로그는 *초기화가 일어났다는 기록 자체*라 함께 지우면 파괴 동작이 추적 불가가 된다. 전사록은 별도 저장소·별도 보존 정책(§3.5 "transcript는 삭제하지 않는다", `SPEC-PROFILE-001` OPEN-P5)이며 "프로필 초기화" ≠ "대화 기록 삭제"다.
+  - **[FE 문구 주의]** 따라서 이 동작을 **"모든 데이터 삭제"로 표시하면 사실과 다르다.** "개인화 데이터 초기화"가 정확한 표현이다. 전사록까지 지워야 하는지는 정책 판단이며 🔴 C-23.
+- **`personalization.enabled`를 바꾸지 않는다** — 초기화와 개인화 중지는 별개 제어다. 지우고도 계속 쓰거나, 끄고도 데이터를 남길 수 있어야 한다.
+
+#### 3.9.5 `PUT {AI_SERVER}/internal/profile/{userId}/personalization` (I-33) — 개인화 중지·재개
+
+```json
+{ "enabled": false }
+```
+
+| 필드 | 타입 | 필수 | 설명 |
+|---|---|---|---|
+| `enabled` | bool | 예 | `false` = 중지, `true` = 재개 |
+
+**성공 응답 — 200**
+
+```json
+{
+  "userId": 123,
+  "graphVersion": "g47",
+  "personalization": { "enabled": false, "disabledAt": "2026-08-05T02:40:00Z" },
+  "replayed": false
+}
+```
+
+필드 의미는 §3.8 `personalization` + 위 공통 필드와 같다.
+
+**규약**
+
+- **`If-Match`는 선택이다**(주면 반드시 존중한다). 상태 *단정*이라 lost update가 없고, 프라이버시 스위치가 백그라운드 consolidation 때문에 막히면 안 된다 — 안전장치가 기계가 바쁠 때 잠기는 설계는 틀렸다.
+- **중지 = 사용 중지 + 수집 중지, 데이터는 보존.** 재개하면 보존된 취향이 그대로 복원된다.
+  - **사용 중지**: rerank 프롬프트 주입 없음(회원 프롬프트가 게스트와 바이트 동일해진다), §3.7 홈 랭킹의 프로필 벡터 항 제거, §3.4 마크다운은 `null`.
+  - **수집 중지**: 세션 버퍼 적재·델타 추출·요약 재생성이 모두 중단된다. **명시적 "기억해" 요청도 저장하지 않는다** — 전역 중지가 개별 요청보다 우선이며, FE는 그 사실을 사용자에게 알려야 한다.
+  - **중지 기간의 발화는 영구히 반영되지 않는다.** 전사록에서 소급 추출하지 않는다 — 그것은 "수집 중지"를 사후에 위반하는 일이다. 이는 누락이 아니라 규칙이다.
+- **와이어 관측 결과**: 중지 중 §3.7 I-22는 `outcome: "NO_PROFILE"` 을 반환하고 Spring은 기존대로 P-4로 대체한다 — **Spring 무변경**(새 `outcome` 값을 만들지 않는다).
+- **중지 상태에서도 §3.8 조회와 §3.9.1~§3.9.4가 모두 허용된다** — 보존된 데이터를 정리하려고 개인화를 다시 켜야 하는 상황을 만들지 않는다. 따라서 **중지 여부가 어떤 요청의 실패로도 추론되지 않으며**, 별도의 "중지됨" 오류 코드는 존재하지 않는다.
+- 이미 요청 상태와 같으면 **no-op**: 감사 행을 남기지 않고 버전도 바뀌지 않으며 `replayed: true`다.
+- 🔴 **Spring 측 캐시 무효화가 필요하다** — P-5 개인화 결과 캐시(10분, §4.11)는 **Spring 소유라 AI가 비울 수 없다.** Spring이 중지 시점에 해당 회원 캐시를 무효화하지 않으면 최대 10분간 개인화 홈이 계속 보인다. 🔴 C-27.
+
+#### 공통 실패 응답 (§3.9.1~§3.9.5)
+
+| HTTP | `code` | 조건 |
+|---|---|---|
+| `400` | `BAD_REQUEST` | strict 스키마 위반(unknown·snake_case·collision), 필수 필드 누락, `predicate`/`object` 둘 다 누락, `predicate: "purchased"` 지정, 라벨 길이 초과, `scope` 미지 값, `If-Match` 누락·빈 값·`*`·약한 태그, `{userId}`가 `1..2^63-1` 밖이거나 bool |
+| `401` | `INTERNAL_TOKEN_INVALID` | 서비스 토큰 누락/불일치 |
+| `404` | `PROFILE_EDGE_NOT_FOUND` | `{edgeId}`가 **해당 `{userId}`의** 그래프에 없음 — 남의 edge든 존재하지 않든 **동일 응답** |
+| `409` | `PROFILE_VERSION_CONFLICT` | `If-Match` ≠ 현재 `graphVersion` |
+| `409` | `PROFILE_EDGE_NOT_EDITABLE` | `editable: false`(=`purchased`) edge에 대한 §3.9.1 수정 |
+| `503` | `UPSTREAM_UNAVAILABLE` | 프로필 저장소 일시 장애 |
+| `504` | `UPSTREAM_TIMEOUT` | 예산 초과 |
+
+`409 PROFILE_VERSION_CONFLICT` 본문:
+
+```json
+{
+  "error": {
+    "code": "PROFILE_VERSION_CONFLICT",
+    "message": "프로필이 그 사이에 변경되었습니다. 다시 조회한 뒤 시도해 주세요.",
+    "requestId": "b31d0c7f9a2e4f18"
+  },
+  "graphVersion": "g43"
+}
+```
+
+- 최신 `graphVersion`을 **`error` 봉투 밖에** 병기한다 — §2.5는 `error`의 필드를 3개로 고정하고 `message`를 "PII 미포함 사람이 읽는 문자열"로 규정하므로 기계 판독 값을 그 안에 섞지 않는다. 봉투 확장은 §2.5가 허용한다.
+- **교차 사용자 접근이 `403`이 아니라 `404`인 이유**: edge 조회는 `(userId, edgeId)`로 스코프되므로 "남의 것"과 "없음"은 **같은 질의 결과**다. 403을 요구하면 남의 데이터 존재를 확인하기 위한 **비스코프 조회를 의무화**하게 되고, 그것은 막으려는 열거 오라클을 스스로 만드는 일이다. `403 FORBIDDEN`은 **주체 클래스** 위반(판매자 티켓의 §3.8 조회)에만 쓴다.
+- **충돌이 `409`이고 `412`가 아닌 이유**: (1) `409`에는 이미 "내 상태 인식이 서버와 어긋남" 3형제(`SESSION_ACTIVE`·`SESSION_FINALIZING`·`SESSION_CLAIM_CONFLICT`)가 있어 FE·Spring이 한 분기로 처리한다. (2) **`412`는 AI 서버의 상태→코드 매핑에 없어 기본값이 일반 코드로 나간다** — §2.5가 요구하는 기계 판독용 코드를 기본적으로 위반한다. `If-Match`는 요청 측 메커니즘으로 그대로 유지하므로 조건부 요청 규약 자체는 지킨다. 🔴 C-22.
+
+#### 구현 노트 — §3.9 오류 매핑 함정 (v0.22.0, #149)
+
+§3.8 구현 노트 1~5가 그대로 적용된다. 추가로 오류 매핑 함정 2건:
+
+1. **⚠️ `409`의 기본 코드는 `STREAM_IN_PROGRESS`다.** `409`를 코드 지정 없이 던지면 FE에 "스트림 진행 중"이 표시된다 — `PROFILE_VERSION_CONFLICT`·`PROFILE_EDGE_NOT_EDITABLE`은 **반드시 응답 detail로 코드를 덮어써야** 한다. 정상 경로 테스트로는 잡히지 않는 결함이다.
+2. **⚠️ `404`는 상태→코드 매핑에 아예 없다** — 덮어쓰지 않으면 일반 코드가 나간다. §2.5에 `404 NOT_FOUND`를 등재했으니 매핑에 기본 항목을 추가하고, edge 케이스는 detail로 `PROFILE_EDGE_NOT_FOUND`를 지정한다. **`412`를 채택하지 않았으므로 그쪽 매핑 추가는 불필요하다.**
+3. **낙관적 동시성 기계장치가 저장소에 전혀 없다** — `ETag`/`If-Match`/precondition 처리도, `412`도 없다. 있는 자산은 세션 lifecycle의 generation 카운터·advisory lock·claim/lease이며, `graphVersion`은 그 위에 얹는다.
 
 ---
 
@@ -1658,7 +2115,7 @@ Authorization: Bearer {AT}   ← 로그인 필요. 파라미터 없음(사용자
 
 > ※ §3.7 I-22 정본 페이지에는 아직 *"홈 목록의 TTL·캐시 정책은 … BE 결정 필요"* 로 남아 있으나, **P-5 정본이 2026-07-30에 10분/24시간으로 확정**했다. 본 사본은 확정본을 따르며 정본 I-22 페이지의 stale 문구는 BE 통보 대상이다.
 
-### 4.12 인기 상품 후보 조회 API (I-3 `GET /internal/products/popular`, query-time) — [사본 등재 v0.21.1, #162]
+### 4.12 인기 상품 후보 조회 API (I-3 `GET /internal/products/popular`, query-time) — [사본 등재 v0.22.1, #162]
 
 **[등재 경위 — 신설 협의가 아니다]** 이 엔드포인트는 **정본(Notion API 명세서 I-3)에 이미 등재돼 있고 BE 구현도 완료**(`InternalProductController#popular`)인데 **본 사본에만 누락**돼 있었다. 새 계약을 제안하는 절이 아니라 누락분을 정본에 맞추는 등재다.
 
@@ -1739,6 +2196,15 @@ Spring/FE 팀과 확정이 필요한 항목을 통합한다. 각 항목은 본 �
 | C-17 | **[신규 2026-07-20, 기각 2026-08-03] 방식1용 id 제약 조회** | 원 요청: §4.8 방식1(AI 벡터→Spring hydrate)용 I-1 `productIds` 필터 또는 by-id 조회. #32에서 방식2를 확정했고, C-17은 방식1의 가격 하한·부정어 등 구조적 제약 실패를 고치지 못해 요청을 철회한다. BE 구현 불필요, 방식1은 오프라인 비교 전용으로 존치 | I-1 / #32 사용자 결정 | ❌ **기각** — 방식1 0/26, 와이어 계약 불변; BE에 철회 통보 |
 | C-18 | **[신규 v0.18.0] I-22 `catalogVersion` 값 생성 주체** | 정본 I-22(§3.7)는 `catalogVersion`을 **Spring이 요청에 실어 보내는** 필수 필드로 규정하는데, 같은 문서가 *"FastAPI는 **자체** 카탈로그 인덱스(I-17로 동기화된 임베딩)로 순위를 매긴다"* 고 한다. **Spring은 AI의 인덱스 버전을 알 수 없다** — 보낼 수 있는 건 Spring 자기 카탈로그의 버전뿐이라, 그 값으로 캐시를 키잉하면 **AI 인덱스가 갱신돼도 캐시가 무효화되지 않는다**(P-5 캐시 키가 "회원 id + 카탈로그 버전 + 알고리즘 버전"이라 직격, §4.11). **[v0.19.0 결론 — 이관이 아니라 폐기]** AI 생성으로 옮겨 구현해봤으나 되돌렸다. **어느 주체가 만들어도 이 필드는 약속을 지킬 수 없다.** ① *재현* — `products`는 I-17이 제자리 upsert하므로 그 시점 임베딩이 남지 않고, 버전 라벨이 가리키는 인덱스 상태가 이미 사라져 있다. 스냅샷을 남기려면 7,220×1536 기준 버전당 약 44MB를 5분 주기로 쌓아야 해 성립하지 않는다. ② *재현이 필요하지도 않다* — 산출물(목록·`reason`)은 Spring이 `recommendation_generated`로 이미 저장한다(§3.7). ③ *캐시 무효화* — TTL 10분과 중복이고, `max(updated_at)` 기반 지문은 상품 1건 갱신으로 **전 회원 캐시를 동시에 날려** 오히려 캐시를 죽인다. → **계약에서 제거 제안.** AI는 선택 필드로 받아만 두고 버린다(Spring 무변경) | I-22 / 이슈 #148 | 🔴 **BE 협의 — 필드 폐기 제안.** 함께 확정할 것: (1) 정본 예시 `catalog-20260728T0300Z`가 암시하는 "Spring 야간 스냅샷" 해석이 맞는지, (2) `recommendation_generated`에 이 값이 저장되는지(저장 안 되면 폐기가 확정적) |
 | C-19 | **[신규 v0.19.0] I-22 요청 상한 2건 — BE 통보·합의** | AI측 방어로 넣은 상한이 계약에 없던 것을 v0.19.0에 등재했다. (1) **`limit` ≤ 60** — overfetch가 응답 크기·조회 비용을 함께 부풀리는 것을 막고, config `home_reco_max_items`와 단일 출처로 묶어 `want < limit`이 성립할 수 없게 했다. (2) **`signals` 각 배열 길이 ≤ 200, 항목은 양의 BIGINT** — 상한이 없으면 요청당 AI 인덱스 조회 비용에 상한이 없고, BIGINT 밖 값은 DB 경계에서 터진다. 둘 다 초과 시 `400 BAD_REQUEST`다 | I-22 / 이슈 #148 | 🔴 **BE 통보 필요** — (1) Spring이 실제로 보내는 `limit`·신호 배열 크기가 이 상한 안인지, (2) **`recentlyViewedProductIds`가 최신순(index 0 = 가장 최근)으로 정렬돼 오는지** 확인해야 한다. AI는 배열 인덱스로 recency decay를 걸므로 순서 보장이 없으면 가중치가 조용히 뒤집힌다. 상한을 넘는다면 올리거나(설계상 여유 있음) BE가 잘라 보내야 한다 |
+| C-20 | **[신규 v0.22.0] 개인화 그래프 변경 인증 레인 = Spring proxy** | 조회(§3.8)는 FE→AI 직접으로 기존 `chat:stream` 티켓을 재사용하고, 변경(§3.9)은 FE→Spring→AI internal(`X-Internal-Token`)로 분리한다. 전용 `profile:read`/`profile:write` 티켓 신설안은 **기각** — `scope`가 exact `chat:stream`으로 하드 고정된 검증 경로를 `/chat`·`/seller/chat`이 함께 지나가므로, 프로필 편집을 위해 채팅 인증에 회귀 위험을 만드는 대가를 치른다(§2.3 a) | §3.9 / 이슈 #149 | 🔴 **착수 전 필수(#150 최우선 차단)** — (1) Spring이 FE 대면 편집 엔드포인트를 **호스팅할 것인지**, (2) 경로 `{userId}`를 **자기 로그인 세션에서만** 도출한다는 확약, (3) 이 5개 경로에 사용자 JWT를 포워딩하지 않는다는 확약 |
+| C-21 | **[신규 v0.22.0] `If-Match`/`graphVersion` 통과 규약** | 요청은 `If-Match` 헤더(정규), 응답은 본문 `graphVersion`(정규) + §3.8 `ETag`(편의 사본). 값은 **불투명**이며 파싱·순서 비교 금지 | §3.8·§3.9 / 이슈 #149 | 🔴 **차단** — (1) Spring이 FE→Spring 요청의 값을 **변형 없이**(재따옴표·재인용·자체 생성 금지) AI에 전달하는지, (2) `409` 본문(`error.code` + `graphVersion`)을 **그대로** FE에 전달하는지, (3) FE가 `Access-Control-Expose-Headers: ETag` 없이 본문 필드만으로 동작하는지(C-11 연계) |
+| C-22 | **[신규 v0.22.0] 충돌 상태코드 `409` 수용(`412` 미채택)** | `409 PROFILE_VERSION_CONFLICT`. 근거는 §2.5 말미 — 409에 이미 상태 인식 불일치 3형제가 있고, 412는 상태→코드 매핑에 없어 기본값이 일반 코드로 나간다 | §2.5·§3.9 / 이슈 #149 | 🔴 — (1) BE/FE가 RFC 관례상의 412 대신 409 수용에 동의, (2) 게이트웨이·프록시가 409를 재작성하지 않음 확인 |
+| C-23 | **[신규 v0.22.0] 전체 초기화(§3.9.4)의 파괴 범위** | 그래프·fact·요약(임베딩 포함)·tombstone·미처리 버퍼·게이트 상태를 물리 삭제하고, **변경 감사 로그와 `conversation_turns`는 보존**한다. 따라서 FE 문구는 "모든 데이터 삭제"가 아니라 **"개인화 데이터 초기화"** 여야 한다 | §3.9.4·§6.3 (c) / 이슈 #149 | 🔴 **정책(기획·법무)** — (1) "프로필 초기화"가 대화 전사록 삭제까지 포함해야 하는지, (2) 감사 로그 보존 기간, (3) 개인정보 삭제 요청 경로와의 관계. 리포에 대화 보존 기간 설정이 아직 없다는 점(`SPEC-PROFILE-001` OPEN-P5)과 함께 결정해야 한다 |
+| C-24 | **[신규 v0.22.0] 민감 카테고리 목록 소유·억제 단계** | 계약은 **불변식만** 규정한다(node·edge 미포함, 어떤 카운트에도 미포함, placeholder 없음, 주제 라벨 와이어 금지 — §3.8 규약). 목록 자체는 AI 측 상수/설정으로 주입 | §3.8 / 이슈 #149 | 🔴 — (1) 목록 확정 주체(기획·법무), (2) 억제가 **노출 단계만**인지 **수집 단계까지**인지 — 후자면 `SPEC-PROFILE-001` 추출 절 개정이 추가로 필요하다. **주제 판정은 완전하지 않다는 점을 전제로 합의해야 한다**(하드 PII는 결정론적, 주제는 best-effort) |
+| C-25 | **[신규 v0.22.0] 그래프 FE 표현 계약** | `confidence` 3버킷(`LOW`/`MEDIUM`/`HIGH`), `evidenceCount` 정수, 삭제 항목은 `?includeSuppressed=true`, `challenged`는 상태 변경 없는 힌트 | §3.8 / 이슈 #149 | 🟡 **FE 소유**(C-12류) — (1) 버킷 라벨 문구, (2) `evidenceCount` 표시 여부, (3) "왜 이 취향이 있나요" 문장을 요구할지 — 요구하면 근거 원문 금지 [HARD] 때문에 **생성·redaction된 문장**이 되어 별도 계약이 필요하다 |
+| C-26 | **[신규 v0.22.0] I-번호 채번 I-29~I-33** | I-29 수정 / I-30 삭제 / I-31 복구 / I-32 초기화 / I-33 개인화 중지 | §3.9 / 이슈 #149 | 🟡 — I-23~I-28 사용 현황 확인 후 확정. 최근 계약(#285)이 본 문서에 등재되지 않은 I-번호를 쓴 이력이 있어 낮은 번호를 추측하면 충돌 위험이 있다 |
+| C-27 | **[신규 v0.22.0] 개인화 중지 시 Spring 캐시 무효화** | AI는 자기 투영·요약·랭킹 경로를 즉시 반영하고 I-22를 `NO_PROFILE`로 전환한다(§3.7 규약) | §3.9.5·§4.11 / 이슈 #149 | 🔴 **차단** — **P-5 개인화 결과 캐시(10분)는 Spring 소유라 AI가 비울 수 없다.** Spring이 중지 시점에 해당 회원 캐시를 무효화해야 "즉시"가 성립하며, 하지 않으면 최대 10분간 개인화 홈이 유지된다. AI 단독으로 달성 불가한 유일한 항목이다 |
+| C-28 | **[신규 v0.22.0] 브랜드 통제 어휘 부재** | `brand` 노드는 통제 어휘에 스냅돼야 `verified: true`가 된다(§3.8). 카테고리는 카탈로그 잎 이름(§4.6)이 어휘 역할을 하지만 **브랜드는 그에 상응하는 목록이 없다** — I-19(§4.7)에도 `brandName`이 없다 | §3.8 / 이슈 #149 | 🔴 **차단** — BE가 브랜드 목록을 노출할지(신규 계약), 아니면 AI가 I-1 응답에서 관찰 사전을 축적할지 확정해야 한다. 후자는 요청 경로를 쓰기 주체로 만드는 부작용이 있다. **사용자가 가장 통제하고 싶어하는 축이라(“이 브랜드 싫어”) 미해결 시 그래프의 실효성이 크게 줄어든다** |
 
 > 참고(v0.5.0): **C-15 신설**(후보 검색 — 유일 경로·최우선). **C-4 폐기**(카탈로그 동기화 자체 없음). **C-6 재정의**(주문 알림/미러 → 질의 시점 구매 이력 조회 §4.7). **C-7 해소**(I-6 콜백, 세부는 C-13). C-1/C-2/C-3은 확정안 반영이나 Spring 수용 전까지 🔴 잔여를 유지한다.
 > 참고(v0.6.0): **C-3 재작성**(BE I-2 문서 채택 — 구 JWT 포워딩/`items[]` 제안 폐기, 게스트 담기 허용). **C-16 신설**(장바구니 조회).
@@ -1797,7 +2263,8 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 
 | 버전 | 날짜 | 변경 |
 |---|---|---|
-| v0.21.1 | 2026-08-05 | **[#162] I-3 `GET /internal/products/popular` 를 사본에 등재했다(§4.12 신설).** **신설 협의가 아니다** — 정본(Notion API 명세서 I-3)에 이미 있고 BE 구현(`InternalProductController#popular`)도 완료인데 본 사본에만 누락돼 있었다. 등재 계기는 #162 다: I-1 정본이 2026-07-27 후보 수 상한을 폐지하며 **"정형조건이 하나도 없는 요청은 LLM 단에서 차단하므로 BE 는 별도 가드를 두지 않는다"** 를 전제로 걸고 0건 시 폴백 대상으로 I-3 를 지목했는데, **AI 가 그 차단을 구현하지 않아** 조건 없는 발화가 파라미터 0개로 I-1 에 나가 매칭 전량(실측 7,245건·13.33MB·1.112s)을 받고 있었다. 등재 내용은 요청(`size`, **BE 에 범위 검증이 없어 음수·0 이 400 이 아니라 빈 배열로 오므로 양수 보장은 AI config 책임**)·응답(§4.6 과 동일 DTO — 정본 I-1 의 *"같은 DTO 를 쓰는 I-3 도 동일하게 나간다"*)·실패 3종(400·401·500, *"그 외엔 실패하지 않는다"*)·**0건은 성공**(빈 배열이면 카드 없이 텍스트만 — degrade 아님)·타임아웃 3s·**재시도 없음**(§2.9(c) 재시도 1회는 I-1 전용 예외이며 first-token 예산을 이미 압박한다, #277·#288)이다. **`size` 는 I-1 의 전량 반환 원칙과 무관하다** — "인기 상위 N"이라는 목록의 정의이지 후보를 자르는 상한이 아니며, 조건이 있는 턴은 종전대로 I-1 로 가고 상한이 없다. 레인 (c) 는 17→18건(§1.2 표·서술·§4 도입부 3곳). BE 내부 구현 세부(인기 집계 규칙·캐시 크기·TTL)는 AI 동작이 의존하지 않고 BE 가 바꾸면 사본이 거짓이 되므로 **의도적으로 싣지 않는다.** **와이어 계약(엔드포인트·SSE 이벤트·필드·오류 코드) 불변.** |
+| v0.22.1 | 2026-08-05 | **[#162] I-3 `GET /internal/products/popular` 를 사본에 등재했다(§4.12 신설).** **신설 협의가 아니다** — 정본(Notion API 명세서 I-3)에 이미 있고 BE 구현(`InternalProductController#popular`)도 완료인데 본 사본에만 누락돼 있었다. 등재 계기는 #162 다: I-1 정본이 2026-07-27 후보 수 상한을 폐지하며 **"정형조건이 하나도 없는 요청은 LLM 단에서 차단하므로 BE 는 별도 가드를 두지 않는다"** 를 전제로 걸고 0건 시 폴백 대상으로 I-3 를 지목했는데, **AI 가 그 차단을 구현하지 않아** 조건 없는 발화가 파라미터 0개로 I-1 에 나가 매칭 전량(실측 7,245건·13.33MB·1.112s)을 받고 있었다. 등재 내용은 요청(`size`, **BE 에 범위 검증이 없어 음수·0 이 400 이 아니라 빈 배열로 오므로 양수 보장은 AI config 책임**)·응답(§4.6 과 동일 DTO — 정본 I-1 의 *"같은 DTO 를 쓰는 I-3 도 동일하게 나간다"*)·실패 3종(400·401·500, *"그 외엔 실패하지 않는다"*)·**0건은 성공**(빈 배열이면 카드 없이 텍스트만 — degrade 아님)·타임아웃 3s·**재시도 없음**(§2.9(c) 재시도 1회는 I-1 전용 예외이며 first-token 예산을 이미 압박한다, #277·#288)이다. **`size` 는 I-1 의 전량 반환 원칙과 무관하다** — "인기 상위 N"이라는 목록의 정의이지 후보를 자르는 상한이 아니며, 조건이 있는 턴은 종전대로 I-1 로 가고 상한이 없다. 레인 (c) 는 17→18건(§1.2 표·서술·§4 도입부 3곳). BE 내부 구현 세부(인기 집계 규칙·캐시 크기·TTL)는 AI 동작이 의존하지 않고 BE 가 바꾸면 사본이 거짓이 되므로 **의도적으로 싣지 않는다.** **와이어 계약(엔드포인트·SSE 이벤트·필드·오류 코드) 불변.** |
+| v0.22.0 | 2026-08-05 | **[#149] 개인화 관계 Graph 계약을 초안으로 등재했다** — 조회 §3.8 `GET /profile/me/graph`(FE 직접) + 제어 5종 §3.9 I-29~I-33(Spring→AI internal: 수정·삭제·복구·초기화·개인화 중지). 취향이 지금은 편집 불가능한 마크다운 한 덩어리라 오염돼도 사용자가 고칠 수 없는데, 오염된 프로필이 추천 품질을 실제로 깎는다는 것이 측정돼 있다(#147 커밋 baseline: 깨끗한 프로필 +0.20, 노이즈 −0.053, 반복 부풀림 −0.117 nDCG@10). **선택의 근거**: (1) **조회는 레인 (a) 기존 티켓 재사용, 변경은 레인 (b) Spring 경유** — 전용 `profile:*` scope는 `/chat`·`/seller/chat`이 함께 지나가는 검증 경로를 개편해야 해 프로필 기능을 위해 채팅에 회귀 위험을 만든다(C-20). (2) **충돌은 `409 PROFILE_VERSION_CONFLICT`, `412` 미채택** — 409에 상태 인식 불일치 3형제가 이미 있고 412는 상태→코드 매핑에 없어 기본값이 일반 코드로 나간다(C-22). (3) **개별 삭제 = tombstone(복구 가능), 전체 초기화만 물리 삭제** — 억제를 만들면 되돌리기도 만든다는 규칙이며 `SPEC-PROFILE-001` REQ-PROF-034를 약화하지 않고 적용 범위를 기계 경로로 한정했다. (4) **개인화 중지 = 사용·수집 동시 중지, 데이터 보존** — 중지 중에도 그래프는 200으로 보이고 모든 정리 동작이 허용되며, I-22는 기존 `NO_PROFILE`로 답해 **Spring 무변경**이다. (5) **`confidence`는 3버킷만 노출** — 수치 미노출 불변식을 깨지 않는다. **불변**: 기존 엔드포인트·SSE 이벤트·기존 오류 코드·AI→Spring 역방향 17건 집합(신규 5종은 inbound). 신설분은 전부 🔴 **제안(초안)·Post-MVP**이며 미합의 8건을 C-20~C-28로 등재했다(C-20·C-21·C-27·C-28은 #150 차단). 예산 2s/3s는 **제안이며 실측이 아니라** §2.9 (c) 기준표에 넣지 않았다. |
 | v0.21.0 | 2026-08-05 | **[#289] 구매자 SSE `progress` 이벤트 신설 — 정본(Notion "📡 API 명세서" CH-2) 2026-08-05 합의·등재 반영.** 본 사본 §3.1의 번호가 **6종 → 7종**으로 늘고 `progress`가 **(1)번**이다(§2.2·§3.1: `progress` 1 · `token` 2 · `conditions` 3 · `action` 4 · `products.ready` 5 · `done` 6 · `error` 7). **기존 6종의 이름·페이로드·상대 순서는 불변**(추가 전용) — `conditions`는 여전히 검색·자동 완화 뒤다. **[번호 체계 참고]** 정본(CH-2)은 `suggestions`를 이벤트 목록에 번호로 포함해 8종으로 세지만, 본 사본은 `suggestions`를 「MVP 추가 페이로드」 절에서 별도로 다루므로 §3.1 번호 목록이 하나 적다 — 번호는 표기 순서일 뿐 와이어 계약이 아니며, 이 차이는 `progress` 신설 이전부터 있던 것이다. 페이로드는 `{"stage","message"?}`이며 확정 어휘는 **`analyzing` 1종**뿐이다(`searching`/`relaxing`/`reranking`은 후속 확장 후보·미구현) — 이 프레임을 낼 수 있는 지점(decompose 앞)에서는 아직 intent(추천/담기/주문조회/일반 대화)가 확정되지 않아 `searching`을 그 자리에서 내면 비추천 턴을 검색 중이라고 오라벨링하게 되기 때문이다. **0~1회다 — FE는 도착을 전제하면 안 된다**: 나가면 스트림 첫 프레임이지만, 그 앞에서 턴이 끝나는 경우(LLM 미구성 → `error{LLM_UNAVAILABLE}`, 세션 상태 저장소 장애 → §2.5 스트림 전 오류 봉투)는 0회다. 실측(`evals/first_event_budget/`, #277 하네스 재사용)은 대표 6개 시나리오 전부에서 flag-on 첫 이벤트 p50이 ~12~15ms로 수렴했다(`D3_deferred_worst_no_retry` 6869.8ms → 11.6ms) — 그 뒤 이벤트 순서·총 소요는 불변이며, 하네스가 `ScriptedLLM`이라 LLM head 절감(#151)은 수치에 잡히지 않는다. **다만 관문 통과를 보장하지는 않는다** — 이 프레임 앞의 상태 저장소 프렐류드가 각 `state_store_query_timeout_s`(3.0s) × 4회 직렬 최악 12.0s로 first-token 상한(10.0s)을 넘을 수 있다. §2.9(c) I-1 행의 `progress` 등재 전제 문장을 "등재 완료, 남은 전제는 플래그 on + 배포"로 갱신했다. **AI 구현은 완료됐으나 `progress_events_enabled` 기본 `false` + 운영(jwks 인증 또는 staging/production 환경) 기동 가드로 잠겨 있어, 실제 와이어는 아직 종전 7종뿐이다** — 이 가드 제거와 플래그 on, #277 재시도 스킵 원복은 이번 개정에 포함되지 않는다. |
 | v0.20.4 | 2026-08-05 | **[#118] 되물음 예외 정본 반영** — §3.1 [보안] 문단 바로 아래 병기해 둔 옵션 되물음(`PENDING_CART`) 중 `screen.products` 제외 예외를, 사용자가 승인한 정본(Notion CH-2) 담기 가드 문단 바로 아래 '되물음 예외 (2026-08-05 신설)' 문단 반영에 맞춰 사본의 🔴 정본 미반영 표시를 해제했다. **계약 동작은 이미 정본과 일치했고 이번 개정은 표시만 갱신한다.** |
 | v0.20.3 | 2026-08-04 | **[#118] §3.1 v0.15.26 등재 계약인 `screen`(화면 맥락) 수신을 구현했다.** 유효성은 관대하게 — `pageType` 누락·14종 밖이면 `screen` 전체를 무시하고 200으로 진행하며 **어떤 경우에도 400을 내지 않는다**(`conditionActions`의 엄격함과 대비된다). 담기 허용 목록은 **(누적 추천 목록 ∪ `screen.products`의 productId)** 로 넓히되 **프리패스가 아니다** — 두 목록 밖 id는 여전히 차단하고 모호하면 되물음하며, 실제 담기는 I-2가 재고·판매상태를 다시 검증한다. 지시어 해소("이거"·순번·좌표·이름)와 §3.2 판매자 레인의 `pageType`·`filters` 맥락 주입을 포함하며, 판매자 쪽 `screen.products` 소비는 범위 밖으로 남긴다. **와이어 계약(엔드포인트·요청 필드·SSE 이벤트·오류 코드) 불변 — 수신 구현이다.** |
@@ -1905,6 +2372,26 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
   사용자 입력 원문은 폐기한다. 원문은 (a) 대화 저장소에만 존재한다.
 - 레이트 리밋(§2.8)·409(§2.9 a) 발동도 `errorType`으로 집계해 상한값 튜닝 근거로 쓴다.
 
+#### (c) 개인화 그래프 변경 감사 로그 (§3.9) **[v0.22.0 신설, 🔴 제안(초안)]**
+
+사용자가 자기 취향을 고치고 지운 기록이다. **파괴적 동작이 추적 가능해야** 하고, 동시에 그 기록 자체가 개인정보 저장소가 되어서는 안 된다.
+
+| 필드 | 비고 |
+|---|---|
+| `requestId` | §2.5 오류 봉투·(b) 로그와 동일 키 |
+| `actorFp` | 변경 주체(회원 id)의 peppered HMAC 지문. **raw `userId` 금지**((b)와 동일 기준) |
+| `action` | `edgeUpdate` \| `edgeSuppress` \| `edgeRestore` \| `graphReset` \| `personalizationToggle` |
+| `edgeIdBefore` / `edgeIdAfter` | 수정으로 `edgeId`가 바뀌는 경우 양쪽을 남긴다(§3.9.1). 삭제·복구는 한쪽만 |
+| `predicate` | 변경 후 관계(§3.8 enum). **고정 enum이라 그대로 기록한다** |
+| `objectFp` | 대상 노드 라벨의 peppered HMAC 지문 |
+| `graphVersionBefore` / `graphVersionAfter` | 변경 전후 버전. 재전송 판정·순서 재구성용 |
+| `createdAt` | 변경 시각 |
+
+- **[HARD] 노드 라벨·fact 원문·근거 원문을 저장하지 않는다.** 취향 대상 라벨 자체가 민감할 수 있어(예: 특정 질환 관련 상품군) 변경 전후 값을 텍스트로 남기면 (b)의 peppered-지문 원칙과 §3.8의 원문 미노출 [HARD]를 감사 로그가 우회하는 구멍이 된다. 판매자 상품 변경 이력(I-15)이 `oldValue`/`newValue`를 텍스트로 갖는 것과 **의도적으로 다르다** — 그쪽은 상품 데이터고 이쪽은 개인 취향이다.
+- **[HARD] 감사 로그는 와이어에 노출하지 않는다.** 사용자에게 편집 이력을 보여주는 API는 라벨 원문을 요구하므로 위 원칙과 충돌한다 — 필요해지면 **별도 계약**으로 다루며 §3.8/§3.9 범위 밖이다.
+- **전체 초기화(§3.9.4)는 감사 로그를 지우지 않는다** — 초기화가 일어났다는 기록이 사라지면 파괴 동작이 추적 불가가 된다. 보존 기간은 config 주입이며 **재전송 판정 원장(§3.9 파생 키)의 보존 기간보다 짧지 않아야 한다**(재전송이 항상 최초 응답을 찾을 수 있어야 한다). 정확한 기간은 🔴 C-23.
+- 개인화 중지·재개가 **상태를 바꾸지 않는 경우(no-op)에는 감사 행을 남기지 않는다**(§3.9.5) — 같은 값 반복 전송이 이력을 오염시키지 않게 한다.
+
 ---
 
 ## 7. 후속 SPEC 동기화 개정 목록 (Follow-up SPEC Amendments)
@@ -1928,6 +2415,17 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 - **구매 소스 개정 [v0.5.0]**: write 소스 "주문 이벤트 미러 스캔"(결정 16) → **질의 시점 구매 이력 조회(`GET /internal/members/{id}/orders`, §4.7)** 호출로 교체(sleep-time 배치). 게이트·델타 동작은 불변.
 - **응답 구조·동작 불변**: 위 항목 외 스키마·REQ(PROF-081 등) 변경 없음.
 
+**[v0.22.0 추가 — #149 개인화 그래프]** `SPEC-PROFILE-001`(v0.6.0 → v0.7.0)에 아래 개정이 필요하다. 모델·규칙·인수 기준의 소유는 신규 `SPEC-PROFILE-GRAPH-149`이며, `SPEC-PROFILE-001`은 기존 조항과의 정합만 맞춘다.
+
+- **EX-P3 배제 범위 한정**: "프로필 편집은 고도화 범위" → **`PUT /profile/me` 마크다운 전문 편집**으로 한정. 항목(edge) 단위 제어는 §3.9로 제안됨(전문 편집은 계속 배제).
+- **EX-P6 충돌 아님 명문화**: EX-P6이 v2로 미룬 것은 **temporal knowledge graph 백엔드·그래프 추론·파라메트릭 편집**이다. §3.8은 저장 모델을 바꾸지 않는 **1-hop 읽기 투영**이며 **graph DB는 도입하지 않는다**(#149 비범위와 동일). 다홉 순회·추론이 없다는 잔여를 명시적으로 남긴다.
+- **REQ-PROF-034 적용 범위 한정**: "fact 폐기 대신 supersede, 삭제 금지"는 **기계(파이프라인) 경로**를 구속한다. 사용자 개별 삭제는 tombstone(suppress)이라 삭제가 아니고, **사용자가 명시적으로 요구한 전체 초기화는 기계 자동 처리가 아니어서 이 금지의 대상이 아니다**(§3.9.4, 감사 §6.3 c로 추적). 금지되는 것은 *기계가 사용자 데이터를 조용히 지우는 것*이다. 대응 AC도 "기계 경로 한정"으로 좁히고 suppress·reset 인수 기준을 신설한다.
+- **REQ-PROF-012 스코프 한정**: confidence **수치** 미노출 규정은 `profile_summary`(프롬프트 입력) 대상이다. §3.8은 **3버킷 라벨만** 노출하므로 수치 불변식은 유지된다 — 축소된 번복으로 기록한다.
+- **요약 반영 조건**: 요약·랭킹은 게이트 통과·미폐기 fact 중 **suppress되지 않은 것**만 반영한다. **consolidation이 그래프를 읽어야** 이 조건이 실효한다(§3.8 구현 노트 3).
+- **개인화 중지 전파**: reader는 중지 회원에게 프로필을 반환하지 않고, 수집(버퍼 적재·델타 추출·"기억해" hot-path·consolidation)도 중단한다. 단 세션 finalizer는 버퍼 정리·완료 처리를 계속해 라이프사이클이 멈추지 않게 한다.
+- **저장 모델**: 그래프 투영 원천을 위한 구조화 트리플 산출을 consolidation의 책임으로 추가하고, store item 값에 tombstone 시각·트리플 필드를 더한다. **OPEN-P12는 해소가 아니라 우선순위 상향** — #149 계약이 이를 #150의 **선결 조건**으로 만들었음을 기록한다.
+- **OPEN-P10 부분 해소**: "GET 노출 범위"의 넓은 투명성 뷰는 §3.8 그래프가 답하고 §3.4 마크다운은 현행 유지다. 마크다운 조립 범위 자체는 계속 TBD.
+
 ### 7.3 이벤트 채널 SPEC 정합
 
 - `/events/session-end` HTTP 계약은 본 문서 소유(결정 21). 개정 시 소비 SPEC의 필드명(camelCase) 전제와 정합을 확인한다. **수신 후 동작**은 소비 SPEC 소관 불변. (주문 알림은 v0.5.0에서 미채택 — §3.6·§4.7.)
@@ -1937,7 +2435,7 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 
 ## 8. product.md §12-A 결정과의 정합 — 사용자 확인 필요 항목 (결정 개정 필요 목록)
 
-본 개정은 product.md의 여러 binding 결정과 긴장/상충한다. **product.md는 편집하지 않으며**, 아래를 **결정 개정 필요 항목(신규/개정 결정 레코드 대상)** 으로 등록한다. product.md 결정 로그는 현재 **결정 21**까지 있으며, 본 문서가 한때 참조한 결정 22/23/24는 **미비준 병렬 초안 소산으로 폐기**되었다(§6.2). 아래 8항목이 실제 필요한 개정이다.
+본 개정은 product.md의 여러 binding 결정과 긴장/상충한다. **product.md는 편집하지 않으며**, 아래를 **결정 개정 필요 항목(신규/개정 결정 레코드 대상)** 으로 등록한다. product.md 결정 로그는 현재 **결정 21**까지 있으며, 본 문서가 한때 참조한 결정 22/23/24는 **미비준 병렬 초안 소산으로 폐기**되었다(§6.2). 아래 9항목이 실제 필요한 개정이다.
 
 ### 항목 1 (상충 — 신규 결정 레코드 필요) — 경로 B: point 조회 폐기 + AI→Spring 역방향 예외 증가
 
@@ -1971,7 +2469,13 @@ BudgetSummary `verifiedSum`은 §4.6 검색 응답 가격 기준 결정론 합�
 
 BE internal API 배치(11종 PDF, 2026-07-16) 반영으로 결정 20(판매자 MVP = 통계 Q&A + draft)이 크게 확대된다. **개정 범위**: (1) 판매자 그래프가 **서브에이전트 다수**(sales_anomaly·conversion·behavior·churn·abuse·general·recommend·chart·`product_agent`)로 구성되고 조회/집계 7종 + 상품 CRUD 4종을 소비. (2) **쓰기 모델 전환** — 구 "AI는 제안만, 반영은 FE S-3 PATCH(AI 표면 밖)"에서 **"AI가 Spring internal API로 직접 쓰기(등록/수정/삭제) + 파괴적 작업은 HITL interrupt/resume 승인"**. "대화 발화 ≠ 동의" 원칙은 HITL로 유지. (3) `brandId`=JWT 클레임(항목 없던 신규). (4) 전역 I-8(account-events)은 admin 소유 협의. **결정 20 개정 + 신규 결정 레코드(판매자 쓰기·HITL) 필요**. 판매자 SPEC 신규 작성 필요.
 
-> 위 8항목 외 인증(결정 19)·식별자(결정 19)는 결정과 정합하며 별도 사용자 확인 불필요. ~~장바구니 JWT 포워딩(결정 7·19) 정합~~은 v0.6.0에서 I-2 서비스 토큰 방식으로 대체되었다(항목 7 말미).
+### 항목 9 (개정 — 결정 16) — 마이페이지 프로필 "GET only" → 항목 단위 사용자 제어 편입 [v0.22.0]
+
+결정 16(binding)은 마이페이지 프로필을 **조회 전용**으로 한정한다. 본 개정은 §3.8(그래프 조회)과 §3.9(수정·삭제·복구·초기화·개인화 중지 5종)를 제안하므로 그 한정을 넘는다. **개정 범위**: (1) 프로필 표면에 **쓰기 동작이 존재**하게 되고, 신원 도출은 조회는 토큰 `sub`, 변경은 Spring 로그인 세션으로 갈린다(C-20). (2) **사용자 개시 물리 삭제**(전체 초기화)가 도입되어 "폐기 대신 supersede" 원칙의 적용 범위가 기계 경로로 좁혀진다(§7.2). (3) **개인화 중지(opt-out)** 라는 사용자 제어가 신설되어, 개인화 강도가 전역 설정만이 아니라 회원별 상태로도 결정된다. (4) confidence를 3버킷으로 **노출**한다(수치는 계속 미노출 — §7.2).
+
+근거는 결정 4-A 보강 6이 마이페이지를 **투명성 표면**으로 규정한다는 점이다 — "AI가 나를 이렇게 이해했다"를 보여주면서 틀린 것을 고칠 수 없게 두는 것은 그 취지와 어긋난다. 다만 **binding 결정을 문서 하나로 뒤집지 않으며**, 결정 16 개정 레코드(또는 신규 결정 레코드)가 필요하다. 계약은 그 전까지 🔴 **제안(초안)** 이다. 관련 미합의: C-20~C-28.
+
+> 위 9항목 외 인증(결정 19)·식별자(결정 19)는 결정과 정합하며 별도 사용자 확인 불필요. ~~장바구니 JWT 포워딩(결정 7·19) 정합~~은 v0.6.0에서 I-2 서비스 토큰 방식으로 대체되었다(항목 7 말미).
 
 ---
 
