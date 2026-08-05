@@ -1301,3 +1301,79 @@ def test_planner_prompt_is_untouched_by_screen_injection() -> None:
     from app.agents.seller import prompts
 
     assert "현재 화면" not in prompts.PLANNER_PROMPT
+
+
+# ── PipelineResult report 재료 필드 (이슈 #296 — report SSE 직렬화 원천) ─────────
+
+
+def test_pipeline_report_kind_fills_report_event_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """kind=report — findings·period·chart_requested 가 report 이벤트 재료로 채워진다."""
+    plan = AnalysisPlan(analyses=["sales_anomaly"], period_expr="지난달", reason="r")
+    _patch_pipeline(monkeypatch, plan)
+    _, emit = _collect_emit()
+
+    result = asyncio.run(
+        orchestrator.run_analysis_pipeline(
+            "지난달 매출 왜 떨어졌어?", _CTX, today=dt.date(2026, 7, 18), emit=emit
+        )
+    )
+
+    assert result.kind == "report"
+    assert result.findings == [_FINDINGS[0]]  # 검증 통과 finding 이 그대로 실린다
+    assert result.period == (dt.date(2026, 6, 1), dt.date(2026, 6, 30))  # '지난달' 환산값
+    assert result.chart_requested is False  # 차트 미요청 질문
+
+
+def test_pipeline_report_kind_chart_requested_true_when_wanted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """wants_chart 질문 — chart_requested=True (charts 실패·드랍과 무관한 요청 신호)."""
+    plan = AnalysisPlan(
+        analyses=["sales_anomaly"], period_expr="지난달", reason="r", wants_chart=True
+    )
+    _patch_pipeline(monkeypatch, plan)
+    monkeypatch.setattr(
+        orchestrator,
+        "build_graph_agent",
+        lambda: _SeqAgent([{"structured_response": ChartSet(charts=[])}]),
+    )
+    _, emit = _collect_emit()
+
+    result = asyncio.run(
+        orchestrator.run_analysis_pipeline(
+            "지난달 매출 차트로 보여줘", _CTX, today=dt.date(2026, 7, 18), emit=emit
+        )
+    )
+
+    assert result.kind == "report"
+    assert result.chart_requested is True
+    assert result.charts is not None and result.charts.charts == []
+
+
+def test_pipeline_non_report_kinds_leave_report_fields_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """되묻기·거절·사과 — report 재료 필드는 기본값(None·False) 그대로다."""
+    clar_plan = AnalysisPlan(analyses=[], reason="r", clarification="어느 기간을 분석할까요?")
+    _patch_pipeline(monkeypatch, clar_plan)
+    _, emit = _collect_emit()
+    clarification = asyncio.run(
+        orchestrator.run_analysis_pipeline(
+            "이번 달 어때?", _CTX, today=dt.date(2026, 7, 18), emit=emit
+        )
+    )
+    assert clarification.kind == "clarification"
+
+    refusal = asyncio.run(
+        orchestrator.run_analysis_pipeline(
+            "경쟁사 매출 좀 보여줘", _CTX, today=dt.date(2026, 7, 18), emit=emit
+        )
+    )
+    assert refusal.kind == "refused"
+
+    for result in (clarification, refusal):
+        assert result.findings is None
+        assert result.period is None
+        assert result.chart_requested is False

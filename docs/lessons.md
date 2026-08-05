@@ -40,6 +40,88 @@
 
 ---
 
+## [2026-08-05] 유닛 테스트가 로컬에 떠 있는 실 Spring 을 잡아 결과가 뒤집힌다 — 주입하지 않은 기본값은 하네스 경계 밖이다
+- 증상: #330 문서 작업 중 **코드 무변경** 상태에서 `uv run pytest` 가 3건 실패로 뒤집혔다 —
+  `tests/unit/test_fanout.py::test_empty_legs_clears_unvalidated_filters_category`,
+  `tests/unit/test_recommendation.py::test_recommendation_without_repurchase_keeps_exact_exclusion[decompose0]`·
+  `[decompose1]`. 같은 트리·같은 명령이 같은 날 오전에는 3376 passed 였고, clean base(6cec23a)에서도
+  실패가 재현됐다(워커 stash 실측).
+- 원인: `app/agents/buyer/graph.py:545` 의 `popular_fn = popular_fn or spring_client.get_popular_products`
+  (#162 I-3)에서, `run_buyer_turn` 유닛 테스트들이 `search=`·`push_fn=`·`map_categories=` 는 fake 로
+  주입하면서 **`popular_fn` 은 주입하지 않는다.** 문제의 턴은 decompose 산출이 조건 없음으로 판정돼
+  (`is_no_condition_turn`) 인기 상품(I-3) 경로로 가는데, **localhost:8080 에 실 Spring(BE 개발 서버)이
+  떠 있으면** I-3 이 실제로 성공해 조건 없는 턴이 검색을 생략한다 → 테스트의 `calls` 가 빈 배열 →
+  `IndexError`. Spring 이 죽어 있으면 `popular_degraded` 로 검색 폴백을 타서 통과한다. 2026-08-05 오후
+  다른 작업 레인이 BE 스택(jarvis-mariadb 컨테이너 + Spring 8080, health 200 확인)을 띄우면서 결과가
+  뒤집혔다. CI(GitHub Actions)에는 Spring 이 없어 항상 통과한다 — **로컬에서만, BE 를 띄운 순간부터
+  깨진다.** 검증: `SPRING_BASE_URL=http://localhost:59999 uv run pytest <3건>` → 3 passed, 전체
+  스위트 → 3376 passed(2026-08-05 실측).
+- 규칙:
+  - **그래프 하네스 유닛 테스트는 네트워크로 나가는 콜러블 전부를 주입한다** — `search`·`push_fn` 만
+    fake 고 `popular_fn` 이 기본값이면 그 테스트는 유닛이 아니라 로컬 환경(8080 에 뭐가 떠 있는가)
+    의존이다.
+  - **그래프에 외부 호출 파라미터를 새로 추가하면 기존 테스트 헬퍼에 그 fake 를 같이 추가한다** —
+    #162 가 `popular_fn` 을 추가할 때 기존 fanout/recommendation 테스트는 그대로 뒀고, 그 결함은
+    Spring 이 실제로 떠 있는 날에만 드러난다(잠복 flaky).
+  - **로컬 pytest 가 코드 무변경으로 뒤집히면 코드 diff 가 아니라 환경부터 본다** — `docker ps` 와
+    8080 health 확인이 첫 수순이다. 임시 우회는 `SPRING_BASE_URL` 을 죽은 포트로 돌려 CI 동등 조건을
+    만드는 것.
+  - 테스트 자체의 수정(`popular_fn` fake 주입)은 코드 변경이라 이 문서 레인(#330) 범위 밖 — 별도
+    이슈로 처리한다.
+- 관련: #162, PR #311, `app/agents/buyer/graph.py`(`popular_fn` 기본값), `tests/unit/test_fanout.py`,
+  `tests/unit/test_recommendation.py`
+
+---
+## [2026-08-05] 거리 임계는 사전에 종속된다 — taxonomy·임베딩 모델·task_type 이 바뀌면 재측정 없이는 무효
+- 증상: #222 라이브 실측(라이브 pg-catalog, leaf 1,007행)에서 `category_distance_max=0.22` 가
+  협소 발화 20건 중 10건, 상품명 150건 골든셋 기준 90%를 드롭했다. `DESIGN-CATEGORY-HYBRID-59.md`
+  §10 이 이미 "이 값은 임베딩 모델·task_type·사전(2,056 leaf)에 종속되며 재측정 없이는 무효"라고
+  경고해 뒀는데, 사전이 구 taxonomy(2,056행)에서 현 라이브 taxonomy(leaf 1,007행)로 바뀐 뒤
+  그 재측정이 아직 이뤄지지 않은 채로 남아 있었다.
+- 원인: 임계값(코사인 거리)은 절대 상수가 아니라 "이 사전 + 이 임베딩 구성에서 정답과 오답이
+  갈리는 경계"를 실측으로 고정한 값이다. 사전 행 수·표기 체계가 바뀌면 문서·앵커 분포 자체가
+  달라져 종전 경계가 더 이상 유효하지 않다 — 코드는 아무 에러도 내지 않고 조용히 더 많은 leg 을
+  드롭할 뿐이라(canonical-or-null degrade) 증상이 "품질 저하"로만 나타나 원인 추적이 늦어진다.
+- 규칙: 카테고리·임베딩 사전(taxonomy)이 재시드되거나 임베딩 모델·task_type 이 바뀌면 거리·마진
+  임계(`category_distance_max`·`category_distance_override_margin`·`category_select_margin_max`)
+  를 **재측정 없이 그대로 쓰지 않는다.** 재측정은 이 PR 처럼 급한 기능 PR에 끼워 넣지 말고 **별도
+  이슈로 분리**한다 — 임계 튜닝은 앵커 수십~수백 건의 실측을 요구해 기능 구현과 섞으면 두 변경의
+  회귀 원인이 뒤섞인다.
+- 관련: #222, `app/core/config.py` `category_distance_max` 근처 주석,
+  `docs/specs/DESIGN-CATEGORY-HYBRID-59.md` §10 "튜너블 불변식"
+
+## [2026-08-05] 카테고리 사전이 비어 있으면 매핑이 "조용히" 무필터로 degrade 한다 — 사전 의존 기능은 행 수부터 확인한다
+- 증상: #222 작업 착수 시점에 로컬 `pg-catalog.categories` 가 **0행**이었다. 매핑
+  (`map_categories`)은 canonical-or-null 불변식대로 히트 0건을 정상적으로 빈 legs 로 처리해
+  에러 없이 무필터 검색으로 넘어갔으므로, 카탈로그가 비어 있다는 사실이 로그나 예외 어디에도
+  드러나지 않았다. 오케스트레이터가 라이브 트리(leaf 1,007행)를 별도로 시드한 뒤에야 이 결함이
+  드러났다.
+- 원인: canonical-or-null degrade(#20·#115)는 "매핑이 실패해도 검색은 계속돼야 한다"는 설계
+  의도대로 정확히 동작한 것이라 **버그가 아니다.** 문제는 그 정상 degrade 가 "카테고리 사전이
+  통째로 비어 있다"는 훨씬 심각한 상태와 "이 발화는 매핑하기 어렵다"는 정상적인 개별 실패를
+  **구분 없이 같은 신호**로 취급한다는 데 있다 — 전자는 이 기능 자체가 사실상 항상 무필터로만
+  동작한다는 뜻인데, 증상은 후자와 똑같이 "품질이 낮다"로만 보인다.
+- 규칙: `categories`·`category_search_pool` 처럼 사전(seed) 데이터에 의존하는 기능을 다루기
+  전에는 **행 수를 먼저 확인**한다(`SELECT count(*) FROM categories`). 0행이거나 비정상적으로
+  적으면 착수 전에 `~/inte-final/_sql`(정본 시드 소스) 등에서 먼저 시드하거나, 그 사실을 실측
+  보고서에 명시해 "결과가 전부 무필터 degrade 였다"는 착각을 방지한다.
+- 관련: #222, `app/agents/buyer/recommendation/category_mapping.py` canonical-or-null 불변식
+## [2026-08-05] 병합 충돌 마커가 dev 에 커밋된 채 3커밋을 살아남았다 — 병합 커밋도 diff 검토 대상이다
+- 증상: `CHANGELOG.md` 의 `[Unreleased] > Added` 절에 `<<<<<<< HEAD`/`=======`/`>>>>>>> origin/dev`
+  충돌 마커가 그대로 커밋돼(89e13fd, #302 로 dev 병합) 이후 dev 병합 커밋들에도 계속 남아 있었다.
+  #297 작업 중 CHANGELOG 항목을 추가하려다 발견 — 릴리스 노트 정본이 깨진 채 배포 라인에 있었다.
+- 원인: 병합 충돌 해결 중 CHANGELOG 충돌을 마커째 저장하고 커밋했다. 커밋 워크플로 1번(`git diff`
+  전체 검토)이 병합 커밋에는 적용되지 않았고, ruff·pytest 도 마크다운 파일은 보지 않아 어떤
+  자동 검사에도 걸리지 않았다.
+- 규칙:
+  - **병합 커밋도 커밋이다** — 충돌을 해결한 병합은 커밋 전 `git diff --check` 와
+    `git grep -nE '^(<{7}|={7}|>{7})' -- .` 로 잔여 마커를 확인한다(코드가 아닌 md·설정 파일 포함).
+  - 충돌 마커는 발견 즉시 **별도 fix 커밋**으로 정리한다 — 기능 커밋에 섞으면 리뷰에서 묻힌다.
+- 관련: `CHANGELOG.md`, 커밋 89e13fd(#302), 정리 커밋은 #297 브랜치.
+
+---
+
+
 ## [2026-08-05] `pre-commit run --all-files` 는 `ruff format`(인수 없이)과 같은 뿌리의 드리프트를 좁은 스코프 브랜치 전체에 드러낸다
 - 증상: #281 작업에서 커밋 전 훅 호환성을 확인하려고 `uv run pre-commit run --all-files` 를
   돌렸더니 `ruff-format` 이 **내가 건드리지 않은 31개 파일을 재포맷**했다 —

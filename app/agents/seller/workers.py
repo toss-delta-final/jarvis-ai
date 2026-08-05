@@ -42,6 +42,7 @@ from app.agents.seller.prompts import (
     PRODUCT_PROMPT,
     RECOMMEND_PROMPT,
     REPORT_PROMPT,
+    REVIEW_PROMPT,
     SALES_ANOMALY_PROMPT,
     SUPERVISOR_PROMPT,
 )
@@ -89,6 +90,13 @@ ABUSE_TOOLS = [
     seller_tools.get_behavior_events,
     seller_tools.get_order_events,
     seller_tools.get_account_events,
+    seller_tools.search_analysis_guide,
+]
+
+# [#297] 리뷰 분석 워커 — I-31(질의 시점 조회, 원문 저장 금지). 매출 급락일과 리뷰를
+# 교차하는 질문은 planner 가 sales_anomaly 와 함께 선택한다(워커 간 도구 공유 없음).
+REVIEW_TOOLS = [
+    seller_tools.get_reviews,
     seller_tools.search_analysis_guide,
 ]
 
@@ -146,11 +154,20 @@ def build_abuse_agent() -> CompiledStateGraph:
     return _build_worker(ABUSE_PROMPT, ABUSE_TOOLS)
 
 
+def build_review_agent() -> CompiledStateGraph:
+    """리뷰 분석 워커 (I-31 — 집계 먼저, 저평점 원문 인용. VISIBLE 리뷰만, #297)."""
+    return _build_worker(REVIEW_PROMPT, REVIEW_TOOLS)
+
+
 # ── general_agent (2-6) — 분석 워커가 아닌 일반 질문 레인 ──────────────────────
 
 GENERAL_TOOLS = [
     seller_tools.get_sales_timeseries,
     seller_tools.get_order_events,
+    # [#297] I-29 현재 상태 스냅샷("신규 주문 뭐 있어?") — 전이 이력(I-14)과 역할 분리.
+    seller_tools.get_orders,
+    # [#297] I-31 리뷰 단순 조회("최근 리뷰 보여줘") — 해석·진단은 analysis(review 워커).
+    seller_tools.get_reviews,
     seller_tools.list_my_products,
     seller_tools.calculate,
     seller_tools.search_analysis_guide,
@@ -203,6 +220,9 @@ def build_general_agent(
 PRODUCT_DRAFT_TOOLS = [
     seller_tools.list_my_products,
     seller_tools.calculate,
+    # [#297] 발송 draft(op=ship)의 대상 orderItemId·현재 상태 확인용(I-29, 조회 전용).
+    # 쓰기(update_order_status)는 여기 바인딩하지 않는다 — HITL 구조 보장 유지.
+    seller_tools.get_orders,
 ]
 
 
