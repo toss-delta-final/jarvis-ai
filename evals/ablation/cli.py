@@ -44,7 +44,11 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _select_cases(cases: list[GoldenCase], args: argparse.Namespace) -> list[GoldenCase]:
+def _select_cases(
+    cases: list[GoldenCase], args: argparse.Namespace, *, test_type_filter: str | None
+) -> list[GoldenCase]:
+    if test_type_filter is not None:
+        cases = [case for case in cases if case.test_type == test_type_filter]
     ordered = sorted(cases, key=lambda case: case.case_id)
     if args.case_ids:
         requested = [value.strip() for value in args.case_ids.split(",") if value.strip()]
@@ -373,7 +377,9 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("--repeats는 1 이상이어야 합니다")
         if args.out.exists():
             raise ValueError(f"출력 디렉터리가 이미 존재합니다: {args.out}")
-        cases = _select_cases(list(load_cases("dev")), args)
+        cases = _select_cases(
+            list(load_cases("dev")), args, test_type_filter=config.get("caseTestTypeFilter")
+        )
     except ValueError as exc:
         print(str(exc))
         return 2
@@ -449,6 +455,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     manifest["ablation"] = {
         "arms": list(config["arms"]),
+        "caseTestTypeFilter": config.get("caseTestTypeFilter"),
         "primaryMetric": config["primaryMetric"],
         "primaryLabel": "confirmatory",
         "secondaryLabel": "exploratory",

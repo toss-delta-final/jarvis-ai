@@ -13,6 +13,44 @@
 
 ---
 
+## [2026-08-06] 머지 커밋 전에 conflict marker 잔존 여부를 grep으로 확인한다
+- 증상: #333 Part 3 작업 중 repo 루트 `CHANGELOG.md`에서 `<<<<<<< HEAD`/`=======`/
+  `>>>>>>> origin/dev` 충돌 표지 3줄이 그대로 커밋돼 있는 것을 발견했다(`git log -1 -- CHANGELOG.md`
+  기준 `fdc4af0 Merge branch 'dev' into ...`에서 유입). 두 브랜치가 각자 `### Added`에 다른
+  항목(#290, #116·#117)을 추가했을 뿐 실제로 내용이 충돌하지 않는 순수 additive 변경이었는데도,
+  머지 시 표지를 지우지 않고 그대로 커밋해 `dev`/`main` 이력에 깨진 마크다운이 남았다.
+- 원인: 이 프로젝트에 커밋 전 `<<<<<<<`/`=======`/`>>>>>>>` 리터럴을 잡는 pre-commit/CI 검사가
+  없다(`conventional-pre-commit`은 메시지 형식만 본다). 사람이 머지 후 diff를 훑지 않으면
+  마크다운 렌더링이 깨져도 아무 도구도 막지 않는다.
+- 규칙:
+  - **머지 커밋(특히 `--no-verify`로 훅을 건너뛴 경우) 직후 `git grep -n "^<<<<<<<\\|^=======\\|^>>>>>>>" -- '*.md'`
+    로 잔존 표지를 확인한다** — 특히 `CHANGELOG.md`처럼 여러 브랜치가 동시에 append하는 파일.
+  - 발견 시 내용이 additive(서로 다른 섹션/항목 추가)라면 표지만 제거하고 양쪽 내용을 모두
+    보존한다 — 어느 쪽도 버리지 않는다.
+- 관련: 커밋 `fdc4af0`, 이슈 #333 Part 3, `CHANGELOG.md`
+
+## [2026-08-06] Google GenAI 배치 임베딩은 100건/요청 상한이 있다 — 청크 없이 부르면 데이터셋이 커지는 순간 깨진다
+- 증상: `evals/scoring/snapshot_embeddings.py`가 골든셋 dev 질의 임베딩을 재생성하다가
+  `google.genai.errors.ClientError: 400 INVALID_ARGUMENT ... at most 100 requests can be in
+  one batch`로 실패했다. v1(31건)에서는 100 미만이라 한 번도 드러나지 않다가, v2.1(103건)로
+  dev 케이스가 늘어나며 처음 노출됐다.
+- 원인: `app/pipelines/embedding.py`의 `embed_texts()`가 `texts` 전체를 한 번의
+  `embed_content(contents=list(texts), ...)` 호출로 보냈다 — Google `BatchEmbedContentsRequest`가
+  요청당 100건까지만 허용하는 것을 코드가 몰랐다. 이 함수는 eval 스크립트뿐 아니라 §4.8 I-17
+  운영 배치 경로도 공유하므로, search_doc 배치가 100건을 넘기면 프로덕션에서도 같은 방식으로
+  깨질 수 있었다. **이 결함은 이번 이슈(#333 Part 3)의 소관인 `evals/**` 밖 — 발견·보고만 하고
+  `app/pipelines/embedding.py` 자체는 원복했다**(오케스트레이터가 후속 GitHub 이슈로 이관 예정).
+  이번 PR은 eval 전용 호출부(`evals/scoring/snapshot_embeddings.py`)에서만 청크로 대응했다.
+- 규칙:
+  - **외부 API에 리스트를 통째로 넘기는 코드를 새로 짜거나 건드릴 때는 그 API의 배치 상한을
+    공식 문서에서 확인하고, 상한이 있으면 처음부터 청크 분할로 짠다** — "지금 입력이 작아서
+    안 걸린다"는 근거가 되지 않는다(데이터가 자라면 반드시 걸린다).
+  - **핸드오버가 소관 범위 밖(app/**)이라 지정한 파일에서 진짜 결함을 발견해도, 그 자리에서
+    고치지 말고 발견·보고만 한다** — 소관 밖 수정은 다른 레인(#318 등)과 충돌 위험을 만든다.
+    이 PR의 소관인 eval 경로에서 같은 문제를 우회 대응(청크 호출부 이동)하고, 원인 파일 수정은
+    별도 이슈로 넘긴다.
+- 관련: 이슈 #333 Part 3, `app/pipelines/embedding.py` `embed_texts()`(원복, 미수정),
+  `evals/scoring/snapshot_embeddings.py`(청크 호출부 신설)
 ## [2026-08-05] 임의 순서 기준선을 두지 않으면 랭커가 개선인지 손해인지 모른다
 - 증상: #275 조사에서 student(현행 6성분 스코어러) 오라클 상한을 탐색했더니(E2) "상한
   0.738210"이 나와 teacher(0.782943)에 근접하는 듯 보였다. 재현·반증(E4)하니 이 값은

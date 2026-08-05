@@ -8,13 +8,22 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.config import Settings
-from evals.goldenset.schema import GoldenCase, validate_cases
+from evals.goldenset.schema import DATASET_VERSION, SCHEMA_VERSION, GoldenCase, validate_cases
 
 
-def _config(min_cases: int = 1, max_cases: int = 50) -> SimpleNamespace:
+def _config(
+    min_cases: int = 1,
+    max_cases: int = 50,
+    min_ranking_candidates: int = 1,
+    target_candidates: int = 30,
+    max_relevant_ratio: float = 1.0,
+) -> SimpleNamespace:
     return SimpleNamespace(
         goldenset_min_cases=min_cases,
         goldenset_max_cases=max_cases,
+        goldenset_min_ranking_candidates=min_ranking_candidates,
+        goldenset_target_candidates=target_candidates,
+        goldenset_max_relevant_ratio=max_relevant_ratio,
     )
 
 
@@ -32,13 +41,34 @@ def _product(product_id: int, price: int = 10_000) -> dict:
     }
 
 
+def _fixture(product_ids: list[int], *, injected_ids: list[int] | None = None) -> dict:
+    """v2 candidates provenance를 갖춘 search fixture 페이로드(#333 §2.1)."""
+    injected = set(injected_ids or [])
+    return {
+        "request": {"keyword": "테스트"},
+        "productIds": sorted(set(product_ids)),
+        "totalCount": len(set(product_ids)),
+        "recordedAt": "2026-08-02T00:00:00+09:00",
+        "source": "live-spring-i1",
+        "candidates": [
+            {
+                "productId": product_id,
+                "source": "injected" if product_id in injected else "golden_filter",
+                "rule": "semantic_near" if product_id in injected else None,
+                "from": "primary",
+            }
+            for product_id in sorted(set(product_ids))
+        ],
+    }
+
+
 def _raw(case_id: str = "buy-srch-0001") -> dict:
     return {
         "caseId": case_id,
-        "schemaVersion": "1.0.0",
-        "datasetVersion": "1.0.0",
+        "schemaVersion": SCHEMA_VERSION,
+        "datasetVersion": DATASET_VERSION,
         "split": "dev",
-        "slices": ["search", "guest"],
+        "slices": ["search", "guest", "single_need"],
         "query": "테스트 상품",
         "queryType": "simple",
         "identity": {"kind": "guest", "personaId": None},
@@ -60,6 +90,7 @@ def _raw(case_id: str = "buy-srch-0001") -> dict:
         "adjudicator": None,
         "createdAt": "2026-08-02",
         "notes": "상품명과 설명을 읽고 명확한 정답으로 판정했다.",
+        "testType": "MFT",
     }
 
 
@@ -68,7 +99,7 @@ def _validate(raws: list[dict]) -> list[GoldenCase]:
     validate_cases(
         cases,
         catalog={"1": _product(1), "2": _product(2)},
-        search_responses={"fixture-1": {}},
+        search_responses={"fixture-1": _fixture([1, 2])},
         purchase_history={},
         config=_config(),
     )
@@ -107,8 +138,8 @@ def test_all_labeled_product_ids_must_exist_in_catalog() -> None:
     with pytest.raises(ValueError, match="카탈로그"):
         validate_cases(
             [case],
-            catalog={"1": _product(1)},
-            search_responses={"fixture-1": {}},
+            catalog={"1": _product(1), "2": _product(2)},
+            search_responses={"fixture-1": _fixture([1, 2])},
             purchase_history={},
             config=_config(),
         )
@@ -152,13 +183,13 @@ def test_unknown_search_fixture_is_rejected() -> None:
 def test_unknown_persona_is_rejected() -> None:
     raw = _raw()
     raw["identity"] = {"kind": "member", "personaId": "missing"}
-    raw["slices"].remove("guest")
+    raw["slices"] = ["search", "member", "single_need"]
     case = GoldenCase.model_validate(raw)
     with pytest.raises(ValueError, match="페르소나"):
         validate_cases(
             [case],
             catalog={"1": _product(1), "2": _product(2)},
-            search_responses={"fixture-1": {}},
+            search_responses={"fixture-1": _fixture([1, 2])},
             purchase_history={},
             config=_config(),
         )
@@ -202,7 +233,7 @@ def test_forbidden_category_must_exist_in_catalog_snapshot() -> None:
         validate_cases(
             [case],
             catalog={"1": _product(1), "2": _product(2)},
-            search_responses={"fixture-1": {}},
+            search_responses={"fixture-1": _fixture([1, 2])},
             purchase_history={},
             config=_config(),
         )
@@ -219,7 +250,7 @@ def test_relevant_products_must_obey_price_constraints(field: str, value: int, p
         validate_cases(
             [case],
             catalog={"1": _product(1, price), "2": _product(2)},
-            search_responses={"fixture-1": {}},
+            search_responses={"fixture-1": _fixture([1, 2])},
             purchase_history={},
             config=_config(),
         )
@@ -231,14 +262,14 @@ def test_case_count_changes_when_configured_range_changes() -> None:
         validate_cases(
             [case],
             catalog={"1": _product(1), "2": _product(2)},
-            search_responses={"fixture-1": {}},
+            search_responses={"fixture-1": _fixture([1, 2])},
             purchase_history={},
             config=_config(min_cases=2),
         )
     validate_cases(
         [case],
         catalog={"1": _product(1), "2": _product(2)},
-        search_responses={"fixture-1": {}},
+        search_responses={"fixture-1": _fixture([1, 2])},
         purchase_history={},
         config=_config(min_cases=1),
     )
@@ -253,8 +284,327 @@ def test_case_count_changes_when_configured_range_changes() -> None:
         {"goldenset_near_dup_relevant_overlap_max": 0.0},
         {"goldenset_snapshot_per_query_max": 0},
         {"goldenset_holdout_ratio": 1.0},
+        {"goldenset_min_ranking_candidates": 0},
+        {"goldenset_min_ranking_candidates": 31, "goldenset_target_candidates": 30},
     ],
 )
 def test_goldenset_config_rejects_invalid_tunables(overrides: dict) -> None:
     with pytest.raises(ValueError, match="골든셋"):
         Settings(**overrides)
+
+
+def test_needs_slice_must_be_exactly_one() -> None:
+    for slices in (
+        ["search", "guest"],  # 니즈 슬라이스 0개
+        ["search", "guest", "single_need", "budget"],  # 니즈 슬라이스 2개
+    ):
+        raw = _raw()
+        raw["slices"] = slices
+        with pytest.raises(ValidationError, match="니즈 슬라이스"):
+            GoldenCase.model_validate(raw)
+
+
+def test_member_slice_must_match_member_identity() -> None:
+    raw = _raw()
+    raw["identity"] = {"kind": "member", "personaId": "persona-1"}
+    raw["slices"] = ["search", "single_need"]  # member 슬라이스 누락
+    with pytest.raises(ValidationError, match="member"):
+        GoldenCase.model_validate(raw)
+
+    raw = _raw()
+    raw["slices"] = ["search", "guest", "single_need", "member"]  # guest인데 member도 있음
+    with pytest.raises(ValidationError, match="member"):
+        GoldenCase.model_validate(raw)
+
+
+def test_inv_dir_cases_are_exempt_from_search_relevant_not_empty() -> None:
+    raw = _raw()
+    raw["testType"] = "INV"
+    raw["behaviorGroupId"] = "color-synonym-0001"
+    raw["behaviorKind"] = "color_synonym"
+    raw["relevantProductIds"] = []
+    raw["relevanceGrades"] = {}
+    raw["idealOrder"] = []
+    raw["mustExcludeProductIds"] = []
+    case = GoldenCase.model_validate(raw)
+    assert case.test_type == "INV"
+    assert case.behavior_kind == "color_synonym"
+
+
+def test_mft_search_case_still_requires_relevant_ids() -> None:
+    raw = _raw()
+    raw["relevantProductIds"] = []
+    raw["relevanceGrades"] = {}
+    raw["idealOrder"] = []
+    with pytest.raises(ValidationError, match="relevantProductIds"):
+        GoldenCase.model_validate(raw)
+
+
+def test_injected_candidate_in_relevant_ids_requires_approval_note() -> None:
+    raw = _raw()
+    raw["relevantProductIds"] = [1, 2]
+    raw["relevanceGrades"] = {"1": 3, "2": 2}
+    raw["idealOrder"] = [1, 2]
+    raw["mustExcludeProductIds"] = []
+    case = GoldenCase.model_validate(raw)
+    fixture = _fixture([1, 2], injected_ids=[2])
+    with pytest.raises(ValueError, match="injected-relevant-approved"):
+        validate_cases(
+            [case],
+            catalog={"1": _product(1), "2": _product(2)},
+            search_responses={"fixture-1": fixture},
+            purchase_history={},
+            config=_config(),
+        )
+
+
+def test_injected_candidate_in_relevant_ids_is_allowed_with_approval_note() -> None:
+    raw = _raw()
+    raw["relevantProductIds"] = [1, 2]
+    raw["relevanceGrades"] = {"1": 3, "2": 2}
+    raw["idealOrder"] = [1, 2]
+    raw["mustExcludeProductIds"] = []
+    raw["notes"] = "injected-relevant-approved: adjudicator-02가 관련 있다고 판단."
+    case = GoldenCase.model_validate(raw)
+    fixture = _fixture([1, 2], injected_ids=[2])
+    validate_cases(
+        [case],
+        catalog={"1": _product(1), "2": _product(2)},
+        search_responses={"fixture-1": fixture},
+        purchase_history={},
+        config=_config(),
+    )
+
+
+def test_ranking_eligible_case_below_min_candidates_requires_narrow_domain_note() -> None:
+    raw = _raw()
+    case = GoldenCase.model_validate(raw)
+    fixture = _fixture([1, 2, 3])  # relevant={1}, candidates=3 < min_ranking_candidates=20
+    with pytest.raises(ValueError, match="narrow-domain"):
+        validate_cases(
+            [case],
+            catalog={"1": _product(1), "2": _product(2), "3": _product(3)},
+            search_responses={"fixture-1": fixture},
+            purchase_history={},
+            config=_config(min_ranking_candidates=20),
+        )
+
+
+def test_ranking_eligible_case_below_min_candidates_is_allowed_with_narrow_domain_note() -> None:
+    raw = _raw()
+    raw["notes"] = "narrow-domain: 실제로 후보가 이만큼뿐이다."
+    case = GoldenCase.model_validate(raw)
+    fixture = _fixture([1, 2, 3])
+    validate_cases(
+        [case],
+        catalog={"1": _product(1), "2": _product(2), "3": _product(3)},
+        search_responses={"fixture-1": fixture},
+        purchase_history={},
+        config=_config(min_ranking_candidates=20),
+    )
+
+
+def test_all_correct_candidates_are_exempt_from_min_ranking_candidates() -> None:
+    # candidateCount(1) <= relevantCount(1)이면 순위 판별력이 없어 하한 검사 대상이 아니다.
+    raw = _raw()
+    case = GoldenCase.model_validate(raw)
+    fixture = _fixture([1])
+    validate_cases(
+        [case],
+        catalog={"1": _product(1), "2": _product(2)},
+        search_responses={"fixture-1": fixture},
+        purchase_history={},
+        config=_config(min_ranking_candidates=20),
+    )
+
+
+def test_search_fixture_product_ids_must_match_candidate_union() -> None:
+    fixture = _fixture([1, 2])
+    fixture["productIds"] = [1]  # candidates는 여전히 {1,2}
+    raw = _raw()
+    case = GoldenCase.model_validate(raw)
+    with pytest.raises(ValueError, match="검색 fixture 검증 실패"):
+        validate_cases(
+            [case],
+            catalog={"1": _product(1), "2": _product(2)},
+            search_responses={"fixture-1": fixture},
+            purchase_history={},
+            config=_config(),
+        )
+
+
+def test_fewer_candidates_than_relevant_but_with_a_wrong_candidate_is_not_all_correct() -> None:
+    # F-1(#333 리뷰): 후보 수(2) < 정답 수(3)라도 후보에 오답(product 2)이 섞여 있으면
+    # "전부 정답"이 아니다 — 개수 비교였다면 이 케이스를 비판별로 잘못 넘겼을 것이다.
+    raw = _raw()
+    raw["relevantProductIds"] = [1, 3, 4]
+    raw["relevanceGrades"] = {"1": 3, "3": 2, "4": 1}
+    raw["idealOrder"] = [1, 3, 4]
+    raw["mustExcludeProductIds"] = []
+    case = GoldenCase.model_validate(raw)
+    fixture = _fixture([1, 2])  # 2는 relevant가 아닌 오답 후보
+    with pytest.raises(ValueError, match="narrow-domain"):
+        validate_cases(
+            [case],
+            catalog={"1": _product(1), "2": _product(2), "3": _product(3), "4": _product(4)},
+            search_responses={"fixture-1": fixture},
+            purchase_history={},
+            config=_config(min_ranking_candidates=20),
+        )
+
+
+def test_fixture_candidate_not_in_catalog_is_rejected() -> None:
+    # F-2(#333 리뷰): 라벨된 id만이 아니라 fixture candidate 전원이 catalog에 있어야 한다.
+    raw = _raw()
+    case = GoldenCase.model_validate(raw)
+    fixture = _fixture([1, 2])
+    with pytest.raises(ValueError, match="catalog에 없는 candidate productId"):
+        validate_cases(
+            [case],
+            catalog={"1": _product(1)},  # 2가 없음(라벨되지 않은 후보라도 걸려야 한다)
+            search_responses={"fixture-1": fixture},
+            purchase_history={},
+            config=_config(),
+        )
+
+
+def test_relevant_ratio_above_cap_requires_exempt_note() -> None:
+    raw = _raw()
+    raw["relevantProductIds"] = [1]
+    case = GoldenCase.model_validate(raw)
+    fixture = _fixture([1, 2, 3, 4])  # 등급≥1 비율 1/4 = 0.25, 상한 0.2보다 큼
+    with pytest.raises(ValueError, match="relevant-ratio-exempt"):
+        validate_cases(
+            [case],
+            catalog={str(i): _product(i) for i in range(1, 5)},
+            search_responses={"fixture-1": fixture},
+            purchase_history={},
+            config=_config(min_ranking_candidates=1, max_relevant_ratio=0.2),
+        )
+
+
+def test_relevant_ratio_above_cap_is_allowed_with_exempt_note() -> None:
+    raw = _raw()
+    raw["relevantProductIds"] = [1]
+    raw["notes"] = "relevant-ratio-exempt: 도메인이 좁아 비율을 낮출 수 없다."
+    case = GoldenCase.model_validate(raw)
+    fixture = _fixture([1, 2, 3, 4])
+    validate_cases(
+        [case],
+        catalog={str(i): _product(i) for i in range(1, 5)},
+        search_responses={"fixture-1": fixture},
+        purchase_history={},
+        config=_config(min_ranking_candidates=1, max_relevant_ratio=0.2),
+    )
+
+
+def test_narrow_domain_and_relevant_ratio_exempt_notes_can_be_combined() -> None:
+    raw = _raw()
+    raw["relevantProductIds"] = [1]
+    raw["notes"] = "narrow-domain: relevant-ratio-exempt: 도메인이 좁고 후보도 적다."
+    case = GoldenCase.model_validate(raw)
+    fixture = _fixture(
+        [1, 2]
+    )  # 후보 2개(<20, narrow-domain 필요) + 비율 0.5(>0.2, ratio-exempt 필요)
+    validate_cases(
+        [case],
+        catalog={"1": _product(1), "2": _product(2)},
+        search_responses={"fixture-1": fixture},
+        purchase_history={},
+        config=_config(min_ranking_candidates=20, max_relevant_ratio=0.2),
+    )
+
+
+def _dir_raw(case_id: str, *, fixture_id: str, expected_filters: dict, group_id: str) -> dict:
+    """DIR constraint_subset 케이스 — 라벨 필드는 비워도 된다(GUIDE v2)."""
+    return {
+        "caseId": case_id,
+        "schemaVersion": SCHEMA_VERSION,
+        "datasetVersion": DATASET_VERSION,
+        "split": "dev",
+        "slices": ["guest", "single_need"],
+        "query": "테스트 발화",
+        "queryType": "simple",
+        "identity": {"kind": "guest", "personaId": None},
+        "expectedRoute": "recommend",
+        "expectedFilters": expected_filters,
+        "searchFixtureId": fixture_id,
+        "relevantProductIds": [],
+        "relevanceGrades": {},
+        "idealOrder": [],
+        "hardConstraints": {
+            "priceMax": None,
+            "priceMin": None,
+            "forbiddenCategories": [],
+            "forbiddenProductIds": [],
+        },
+        "mustExcludeProductIds": [],
+        "provenance": "synthetic",
+        "labeler": "labeler-02",
+        "adjudicator": None,
+        "createdAt": "2026-08-05",
+        "notes": "DIR constraint_subset 테스트.",
+        "testType": "DIR",
+        "behaviorGroupId": group_id,
+        "behaviorKind": "constraint_subset",
+    }
+
+
+def test_constraint_subset_group_passes_when_stricter_is_subset_of_relaxed() -> None:
+    # #333 라운드2 F-R6 — validate_cases가 로드 시점에 부분집합 관계를 검증한다.
+    relaxed = GoldenCase.model_validate(
+        _dir_raw(
+            "buy-dirc-0001",
+            fixture_id="fixture-relaxed",
+            expected_filters={"keyword": "테스트"},
+            group_id="dir-subset-01",
+        )
+    )
+    stricter = GoldenCase.model_validate(
+        _dir_raw(
+            "buy-dirc-0002",
+            fixture_id="fixture-stricter",
+            expected_filters={"keyword": "테스트", "priceMax": 10_000},
+            group_id="dir-subset-01",
+        )
+    )
+    validate_cases(
+        [relaxed, stricter],
+        catalog={str(i): _product(i) for i in range(1, 4)},
+        search_responses={
+            "fixture-relaxed": _fixture([1, 2, 3]),
+            "fixture-stricter": _fixture([1, 2]),
+        },
+        purchase_history={},
+        config=_config(),
+    )
+
+
+def test_constraint_subset_group_fails_when_stricter_exposure_is_not_subset() -> None:
+    relaxed = GoldenCase.model_validate(
+        _dir_raw(
+            "buy-dirc-0001",
+            fixture_id="fixture-relaxed",
+            expected_filters={"keyword": "테스트"},
+            group_id="dir-subset-01",
+        )
+    )
+    stricter = GoldenCase.model_validate(
+        _dir_raw(
+            "buy-dirc-0002",
+            fixture_id="fixture-stricter",
+            expected_filters={"keyword": "테스트", "priceMax": 10_000},
+            group_id="dir-subset-01",
+        )
+    )
+    with pytest.raises(ValueError, match="부분집합이 아닙니다"):
+        validate_cases(
+            [relaxed, stricter],
+            catalog={str(i): _product(i) for i in range(1, 5)},
+            search_responses={
+                "fixture-relaxed": _fixture([1, 2]),
+                "fixture-stricter": _fixture([1, 4]),  # 4는 완화 쪽에 없다
+            },
+            purchase_history={},
+            config=_config(),
+        )

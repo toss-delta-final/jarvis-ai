@@ -22,9 +22,24 @@ from evals.metrics.runner import load_evaluation_fixtures
 from evals.scoring.embeddings import FIXTURE_PATH
 
 
+_EMBED_BATCH_MAX = 100  # Google BatchEmbedContentsRequest 상한(초과 시 400 INVALID_ARGUMENT) —
+# app/pipelines/embedding.py의 embed_texts는 청크 분할이 없다(app/** 변경은 이 이슈 소관 밖,
+# 결함은 발견·보고만 하고 후속 이슈로 이관 — #333 리뷰 라운드3 FR-1). 이 eval 전용 호출부에서만
+# 청크로 나눠 순차 호출하고 입력 순서대로 이어붙인다.
+
+
 def _truncate(vector: list[float]) -> list[float]:
     factor = 100_000_000
     return [math.trunc(value * factor) / factor for value in vector]
+
+
+def _embed_texts_chunked(texts: list[str], *, task_type: str | None) -> list[list[float]]:
+    """embed_texts를 100건 이하 청크로 나눠 순차 호출하고 입력 순서대로 이어붙인다."""
+    out: list[list[float]] = []
+    for start in range(0, len(texts), _EMBED_BATCH_MAX):
+        chunk = texts[start : start + _EMBED_BATCH_MAX]
+        out.extend(embed_texts(chunk, task_type=task_type))
+    return out
 
 
 def _source_commit() -> str:
@@ -58,7 +73,7 @@ def build_snapshot(output: Path = FIXTURE_PATH) -> dict[str, object]:
                 )
                 for product_id, embedding in cursor.fetchall()
             }
-    query_vectors = embed_texts(
+    query_vectors = _embed_texts_chunked(
         [case.query for case in cases], task_type=settings.embedding_task_query
     )
     queries = {

@@ -3,6 +3,7 @@
 import pytest
 
 from app.core.config import get_settings
+from app.schemas.spring import LIST_MAX_PRODUCTS
 from evals.goldenset.loader import load_cases
 from evals.metrics.harness import OfflineBuyerAdapter
 from evals.metrics.runner import evaluate, load_evaluation_fixtures
@@ -15,8 +16,11 @@ def test_offline_adapter_runs_real_search_and_push_boundaries() -> None:
 
     output = adapter(case, fixtures)
 
+    # v2 후보 depth(30)는 실제 push 경계(LIST_MAX_PRODUCTS=9, I-21)보다 깊다 — 스크립트
+    # rerank가 검색 순서를 보존하므로 push된 목록은 fixture 순서의 접두(prefix)여야 한다.
     fixture = fixtures.search_responses[case.search_fixture_id]
-    assert output["rankedProductIds"] == fixture["productIds"]
+    assert len(output["rankedProductIds"]) <= LIST_MAX_PRODUCTS
+    assert output["rankedProductIds"] == fixture["productIds"][: len(output["rankedProductIds"])]
     assert output["extractedFilters"] == case.expected_filters
     assert [request["path"] for request in adapter.last_requests] == [
         "/internal/products/search",

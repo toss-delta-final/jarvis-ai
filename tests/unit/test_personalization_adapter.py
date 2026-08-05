@@ -56,7 +56,7 @@ def test_eval_config_rejects_arm_order_drift(tmp_path) -> None:
 def test_primary_metric_k_and_repurchase_slice_are_consumed() -> None:
     assert _primary_k({"primaryMetric": "overall.ndcgAtK.5"}) == 5
     cases = list(load_cases("dev"))
-    assert sum("repurchase" in case.slices for case in cases) == 3
+    assert sum("repurchase" in case.slices for case in cases) == 8
     repurchase = next(case for case in cases if "repurchase" in case.slices)
     ordinary = next(case for case in cases if "repurchase" not in case.slices)
     assert case_has_repurchase_intent(repurchase)
