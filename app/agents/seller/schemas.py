@@ -14,8 +14,10 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-# 분석 워커 5종 식별자 — supervisor 라우팅·planner 분류·finding 이 공유하는 단일 출처.
-AnalysisType = Literal["sales_anomaly", "conversion", "behavior", "churn", "abuse"]
+# 분석 워커 6종 식별자 — supervisor 라우팅·planner 분류·finding 이 공유하는 단일 출처.
+# [#297] "review"(리뷰 분석, I-31) 추가 — WORKER_BUILDERS·WORKER_PROGRESS_TOKENS·
+# PLANNER_PROMPT 와 동시 갱신이 계약이다(pipeline 모듈 로드 자기검증이 누락을 잡는다).
+AnalysisType = Literal["sales_anomaly", "conversion", "behavior", "churn", "abuse", "review"]
 
 
 class RouteDecision(BaseModel):
@@ -73,8 +75,8 @@ class AnalysisPlan(BaseModel):
 
     analyses: list[AnalysisType] = Field(
         default_factory=list,
-        max_length=5,
-        description="실행할 분석 워커 선택(1~5종) — clarification 시에는 빈 목록",
+        max_length=6,
+        description="실행할 분석 워커 선택(1~6종) — clarification 시에는 빈 목록",
     )
     period_expr: str = Field(
         default="최근",
@@ -267,11 +269,18 @@ class DraftProposal(BaseModel):
     token 으로 전환한다(§6.3-4 패턴). 2026-07-18 잠정 확정 — 4단계에서 조정 가능.
     """
 
-    op: Literal["create", "update", "delete"] = Field(description="작업 종류(api-spec §3.2)")
+    op: Literal["create", "update", "delete", "ship"] = Field(
+        description="작업 종류(api-spec §3.2) — ship 은 주문 아이템 발송 처리(I-30, #297)"
+    )
     # [변경 2026-07-19, REALIGN F2/D2] productId 숫자 확정 — create 는 null(구 "" 폐기).
     product_id: int | None = Field(
         default=None,
-        description="대상 상품(숫자) — update/delete 필수, create 는 null(코드가 검증)",
+        description="대상 상품(숫자) — update/delete 필수, create/ship 은 null(코드가 검증)",
+    )
+    # [#297] ship 전용 — I-30 발송 대상. get_orders(I-29) 조회 결과의 orderItemId 만 쓴다.
+    order_item_id: int | None = Field(
+        default=None,
+        description="발송 대상 주문 아이템(숫자) — ship 필수, 그 외 op 는 null(코드가 검증)",
     )
     changes: list[DraftChange] = Field(
         default_factory=list,
@@ -312,7 +321,9 @@ class RecommendationSet(BaseModel):
 
 # ChartSet 상한 — 스키마 계약(와이어 아님)이라 Settings 가 아닌 상수(MAX_RECOMMENDATIONS 와 동일 원칙).
 CHART_MAX = 3
-CHART_POINTS_MAX = 60  # 시계열 과다 방지(일별 약 2개월) — 도구 상한(seller_summary_max_points)과 별개
+CHART_POINTS_MAX = (
+    60  # 시계열 과다 방지(일별 약 2개월) — 도구 상한(seller_summary_max_points)과 별개
+)
 
 
 class ChartPoint(BaseModel):
