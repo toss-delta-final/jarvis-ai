@@ -37,9 +37,19 @@ def _display_wishlist_name(item: WishlistItem) -> str:
 
 
 def _wishlist_unresolved_notice(items: list[WishlistItem]) -> str:
-    """되물음 문구 — 지금 찜한 상품명을 나열해 무엇을 물어야 할지 알려준다(`remove.py` 와 같은 철학)."""
+    """되물음 문구 — 지금 찜한 상품명을 나열해 무엇을 물어야 할지 알려준다(`remove.py` 와 같은 철학).
+
+    **[라운드 19, head `26f5596` 리뷰]** `remove.py::_unresolved_notice` 와 같은 사안·같은
+    해법 — 이 되물음도 **상태를 저장하지 않는다**(옵션 되물음 `PendingAdd` 와 다르다). 사용자가
+    다음 턴에 상품명만 답하면 `classify_cart_utterance` 가 찜 해제 표지 없는 발화를 기본값
+    `"cart_add"` 로 떨어뜨려 이 흐름으로 돌아오지 못한다. 다중 턴 pending 상태 신설은 이 레인의
+    범위 밖(후속 이슈)이라, 대신 문구가 다음 답을 판별기가 다시 잡을 수 있는 형태(찜 해제 동작
+    표지 포함)로 유도한다 — 상품명만 답하면 여전히 담기로 새는 것은 문구로 유도할 뿐 강제하지
+    않는 알려진 한계다(`remove.py` 참조).
+    """
     names = ", ".join(_display_wishlist_name(item) for item in items)
-    return f"찜한 상품: {names}. 어떤 걸 뺄까요?"
+    example = _display_wishlist_name(items[0])
+    return f"찜한 상품: {names}. 예) '{example} 찜 빼줘'처럼 상품명과 함께 말씀해 주세요."
 
 
 def _resolve_wishlist_remove_target(

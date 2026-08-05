@@ -187,9 +187,25 @@ def _resolve_remove_targets(
 
 def _unresolved_notice(items: list[CartViewItem]) -> str:
     """되물음 문구 — 지금 담긴 상품명을 나열해 무엇을 물어야 할지 알려준다
-    (`_UNRESOLVED_SCREEN_POSITION` 의 철학과 같음, graph.py 참조)."""
+    (`_UNRESOLVED_SCREEN_POSITION` 의 철학과 같음, graph.py 참조).
+
+    **[라운드 19, head `26f5596` 리뷰]** 이 되물음은 **상태를 저장하지 않는다** — 옵션 되물음
+    (`PendingAdd`, `CartStateStore`)과 달리 "삭제 대상을 되묻는 중"이라는 사실을 어디에도 남기지
+    않는다. 사용자가 다음 턴에 상품명만("이어폰") 답하면 `classify_cart_utterance` 는 삭제
+    표지가 없는 발화를 보고 기본값 `"cart_add"` 로 떨어져 이 흐름으로 돌아오지 못한다(직전
+    추천에 그 상품이 있으면 오히려 담기로 새는 막다른 길이 된다). 다중 턴 pending-remove 상태를
+    새로 도입하는 것은 이 레인의 범위 밖이다(패킷은 모호하면 "token 되물음"까지로 규정, 새
+    저장소 키·`PendingAdd` 확장·`buyer/graph.py` 수정은 `PendingAdd` pending 정리 규칙과
+    얽혀 새 결함 표면을 낳는 후속 이슈감이다) — 대신 문구가 사용자의 다음 답을 **판별기가 다시
+    잡을 수 있는 형태**(동작 표지 포함)로 유도한다: "OO 빼줘"처럼 답하면 다음 턴이 삭제로
+    정확히 라우팅되지만, 상품명만 답하면 여전히 담기로 샌다(알려진 한계 — 문구로 유도할 뿐 강제
+    하지 않는다).
+    """
     names = ", ".join(_display_name(item) for item in items)
-    return f"지금 장바구니에 있는 상품: {names}. 어떤 걸 뺄까요?"
+    example = _display_name(items[0])
+    return (
+        f"지금 장바구니에 있는 상품: {names}. 예) '{example} 빼줘'처럼 상품명과 함께 말씀해 주세요."
+    )
 
 
 async def stream_cart_remove(

@@ -453,6 +453,47 @@ async def test_wishlist_remove_no_name_match_with_multiple_items_asks() -> None:
     assert _types(events) == ["token", "done"]
 
 
+# ─── 라운드 19(head `26f5596` 리뷰): 되물음 문구가 동작 표지를 유도한다 ───
+
+
+def test_wishlist_unresolved_notice_lists_names_and_guides_action_marker() -> None:
+    """`remove.py::_unresolved_notice` 와 같은 사안·같은 해법(라운드 19 패킷) — 찜한 상품명을
+    모두 나열하면서(기존 단언 유지) 찜 해제 동작 표지를 포함한 예시로 다음 답을 유도해야 한다."""
+    from app.agents.buyer.cart.wishlist import _wishlist_unresolved_notice
+
+    text = _wishlist_unresolved_notice(
+        [_wishlist_item(10, "파우치 블루"), _wishlist_item(20, "파우치 레드")]
+    )
+    assert "파우치 블루" in text
+    assert "파우치 레드" in text
+    assert "찜 빼줘" in text
+
+
+async def test_wishlist_remove_no_name_match_asks_with_action_marker_guidance_via_stream() -> None:
+    """`stream_wishlist_remove` 수준에서도 같은 사실 — 무신호 되물음 문구가 두 상품명과 찜 해제
+    동작 표지 예시를 모두 담는다."""
+
+    async def remove_wishlist_fn(product_id, *, user_id):
+        raise AssertionError("무신호인데 remove_wishlist_fn 이 호출됐다")
+
+    events = await _collect(
+        stream_wishlist_remove(
+            identity=_member(),
+            cart=CartIntent(product_id=None),
+            message="파우치 찜 빼줘",
+            settings=get_settings(),
+            get_wishlist_fn=_wishlist(
+                _wishlist_item(10, "파우치 블루"), _wishlist_item(20, "파우치 레드")
+            ),
+            remove_wishlist_fn=remove_wishlist_fn,
+        )
+    )
+    assert _types(events) == ["token", "done"]
+    token_text = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert "파우치 블루" in token_text and "파우치 레드" in token_text
+    assert "찜 빼줘" in token_text
+
+
 async def test_wishlist_remove_single_item_auto_resolves() -> None:
     remove_calls: list[int] = []
 

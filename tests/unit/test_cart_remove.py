@@ -884,6 +884,48 @@ def test_resolve_remove_targets_all_marker_without_any_name_still_deletes_everyt
     assert sorted(item.cart_item_id for item in result) == [1, 2]
 
 
+# ─── 라운드 19(head `26f5596` 리뷰): 되물음 문구가 동작 표지를 유도한다 ───
+
+
+def test_unresolved_notice_lists_names_and_guides_action_marker() -> None:
+    """재현(라운드 19 패킷) — 기존 문구("어떤 걸 뺄까요?")는 사용자가 상품명만("이어폰") 답해도
+    괜찮다고 오인시킨다. 새 문구는 여전히 담긴 상품명을 모두 나열하면서(기존 단언 유지), 동작
+    표지("빼줘")를 포함한 예시로 다음 답을 유도해야 한다 — 그래야 다음 턴에
+    `classify_cart_utterance` 가 그 답을 다시 `cart_remove` 로 잡을 수 있다."""
+    from app.agents.buyer.cart.remove import _unresolved_notice
+
+    text = _unresolved_notice([_item(1, 10, "이어폰"), _item(2, 20, "케이스")])
+    assert "이어폰" in text
+    assert "케이스" in text
+    assert "빼줘" in text
+
+
+async def test_remove_ambiguous_asks_with_action_marker_guidance_via_stream() -> None:
+    """`stream_cart_remove` 수준에서도 같은 사실 — 장바구니 [이어폰, 케이스]에서 표지 없는
+    "빼줘"는 되물음이고, 그 문구가 두 상품명과 동작 표지 예시를 모두 담는다(라운드 19 패킷
+    재현 1)."""
+    store = CartStateStore()
+
+    async def delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        raise AssertionError("미해소인데 delete_fn 이 호출됐다")
+
+    events = await _collect(
+        stream_cart_remove(
+            identity=_member(),
+            message="빼줘",
+            cart_store=store,
+            thread_key="m:t-remove-dead-end-guidance",
+            settings=get_settings(),
+            get_cart_fn=_cart(_item(1, 10, "이어폰"), _item(2, 20, "케이스")),
+            delete_fn=delete_fn,
+        )
+    )
+    assert _types(events) == ["token", "done"]
+    token_text = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert "이어폰" in token_text and "케이스" in token_text
+    assert "빼줘" in token_text
+
+
 # ─────────── stream_cart_add 배선 (플래그·last_add) ───────────
 
 
