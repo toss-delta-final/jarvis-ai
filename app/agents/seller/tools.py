@@ -27,8 +27,19 @@ from app.agents.seller.analysis import outliers, proportions, segmentation, time
 from app.agents.seller.context import SellerContext
 from app.core.config import get_settings
 from app.core.tracing import trace_span
-from app.schemas.spring import BehaviorEventsResult, ProductCreate, ProductUpdate
-from app.services.spring_client import SpringUnavailableError, get_spring_client
+from app.schemas.spring import (
+    BehaviorEventsResult,
+    OrderItemStatusUpdate,
+    ProductCreate,
+    ProductUpdate,
+)
+from app.services.spring_client import (
+    OrderAlreadyShipped,
+    OrderInvalidTransition,
+    OrderItemNotFound,
+    SpringUnavailableError,
+    get_spring_client,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -1167,6 +1178,171 @@ async def list_my_products(
 
 
 @tool
+@_traced_tool("tool.get_orders")
+async def get_orders(
+    runtime: ToolRuntime[SellerContext],
+    status: str | None = None,
+    order_id: int | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    limit: int | None = None,
+    offset: int | None = None,
+) -> str:
+    """자사 주문의 현재 상태 스냅샷을 조회한다(I-29, api-spec §4.17).
+
+    "신규 주문 뭐 있어?" 같은 현재 상태 질문과 발송 처리 대상(orderItemId) 확인에
+    쓴다 — 전이 이력·집계는 get_order_events(I-14) 소관이다(역할 분리). 아이템별
+    orderItemId·현재 status 가 함께 반환되므로 발송 처리는 이 조회 결과의
+    orderItemId 로 특정한다.
+
+    Args:
+        status: 탭 어휘 ORDERED/SHIPPING/DELIVERED/CLAIM 중 하나로 좁힐 때(선택, 생략=전체).
+        order_id: 특정 주문 번호 단건 직조회(선택).
+        from_date: 조회 시작일 YYYY-MM-DD(선택 — 생략 시 기간 무관 전체 주문).
+        to_date: 조회 종료일 YYYY-MM-DD(선택).
+        limit: 반환 상한(선택, 서버 기본 20·최대 100).
+        offset: 페이지 오프셋(선택).
+    """
+    brand_id = runtime.context.brand_id
+    settings = get_settings()
+    try:
+        result = await get_spring_client().get_orders(
+            brand_id,
+            status=status,
+            order_id=order_id,
+            from_=from_date,
+            to=to_date,
+            limit=limit,
+            offset=offset,
+        )
+    except SpringUnavailableError as exc:
+        return f"Error: 주문 조회에 실패했습니다({exc})."
+    if not result.rows:
+        # orderId 직조회의 미존재·타사 주문은 200 + 빈 rows(존재 은닉, 확정 2026-08-04)
+        # — "해당 주문이 없습니다"로 안내하고 존재 여부를 구분해 말하지 않는다.
+        if order_id is not None:
+            return f"해당 주문(orderId={order_id})이 없습니다."
+        return "조회 조건에 해당하는 주문이 없습니다."
+    tab_note = ""
+    if result.tab_counts:
+        tab_note = (
+            " [탭별 건수: " + ", ".join(f"{k} {v}" for k, v in result.tab_counts.items()) + "]"
+        )
+    shown = result.rows[: settings.seller_summary_max_orders]
+    lines = []
+    for row in shown:
+        claim_note = f" 클레임 {row.claim_status}" if row.claim_status else ""
+        items = ", ".join(
+            f"[orderItemId={item.order_item_id}] {item.name}"
+            + (f"({item.option_name})" if item.option_name else "")
+            + f" ×{item.quantity} {item.status}"
+            + (f"(클레임 {item.active_claim_status})" if item.active_claim_status else "")
+            for item in row.items
+        )
+        lines.append(
+            f"[주문 {row.order_id} | {row.order_no}] {row.status}{claim_note} "
+            f"주문일 {row.ordered_at[:10]} 수령인 {row.recipient_name} "
+            f"자사금액 {row.my_items_amount:,}원 — 아이템: {items}"
+        )
+    omitted = len(result.rows) - len(shown)
+    omitted_note = f" 외 {omitted}건(offset 으로 이어서 조회 가능)" if omitted > 0 else ""
+    period_note = (
+        f" {_reference_note(from_date, to_date)}"
+        if from_date and to_date
+        else " (기준: 전체 기간, 현재 상태 스냅샷)"
+    )
+    return f"주문 {result.total}건{tab_note}: " + "; ".join(lines) + omitted_note + period_note
+
+
+@tool
+@_traced_tool("tool.get_reviews")
+async def get_reviews(
+    runtime: ToolRuntime[SellerContext],
+    from_date: str | None = None,
+    to_date: str | None = None,
+    product_id: int | None = None,
+    rating: str | None = None,
+    sort: str | None = None,
+    stats: bool = False,
+    limit: int | None = None,
+    offset: int | None = None,
+) -> str:
+    """자사 상품 리뷰(VISIBLE 만)를 조회한다(I-31, api-spec §4.19).
+
+    기간을 생략하면 최근 7일이 기본 적용된다(서버 규칙). stats=True 면 목록 대신
+    집계(총건수·평균·별점 분포·상품별)만 반환한다 — 전반 요약은 집계를 먼저 보고,
+    문제 리뷰 원문이 필요할 때 rating 필터로 목록을 조회하는 순서를 권장한다.
+
+    Args:
+        from_date: 조회 시작일 YYYY-MM-DD(선택 — 생략 시 최근 7일).
+        to_date: 조회 종료일 YYYY-MM-DD(선택).
+        product_id: 특정 상품으로 한정(선택, 자사 상품만).
+        rating: 별점 필터, 1~5 콤마 나열(선택, 예: "1,2" — 낮은 별점만).
+        sort: latest(기본)/rating — rating 은 낮은 별점부터 고정(선택).
+        stats: True 면 집계 모드(총건수/평균/분포/상품별) — 목록 대신 통계만.
+        limit: 반환 상한(선택, 서버 기본 20·최대 100).
+        offset: 페이지 오프셋(선택).
+    """
+    brand_id = runtime.context.brand_id
+    settings = get_settings()
+    period_note = (
+        _reference_note(from_date, to_date)
+        if from_date and to_date
+        else "(기준: 최근 7일 기본 적용)"
+    )
+    if stats:
+        try:
+            agg = await get_spring_client().get_review_stats(
+                brand_id, from_=from_date, to=to_date, product_id=product_id
+            )
+        except SpringUnavailableError as exc:
+            return f"Error: 리뷰 집계 조회에 실패했습니다({exc})."
+        if agg.total_count == 0:
+            return f"조회 기간에 리뷰가 없습니다. {period_note}"
+        # averageRating null 은 "평점 0점"이 아니라 "산정 불가"다(I-16 규칙).
+        avg_note = (
+            f"평균 {agg.average_rating}점" if agg.average_rating is not None else "평균 산정 불가"
+        )
+        dist_note = ", ".join(
+            f"{star}점 {agg.distribution.get(star, 0)}건" for star in ("5", "4", "3", "2", "1")
+        )
+        by_product = "; ".join(
+            f"{p.product_name}(productId={p.product_id}) {p.count}건"
+            + (f" 평균 {p.average_rating}점" if p.average_rating is not None else "")
+            for p in agg.by_product
+        )
+        by_product_note = f" 상품별: {by_product}." if by_product else ""
+        return (
+            f"리뷰 집계: 총 {agg.total_count}건, {avg_note}. 분포: {dist_note}."
+            f"{by_product_note} {period_note}"
+        )
+    try:
+        result = await get_spring_client().get_reviews(
+            brand_id,
+            from_=from_date,
+            to=to_date,
+            product_id=product_id,
+            rating=rating,
+            sort=sort,
+            limit=limit,
+            offset=offset,
+        )
+    except SpringUnavailableError as exc:
+        return f"Error: 리뷰 조회에 실패했습니다({exc})."
+    if not result.rows:
+        return f"조회 조건에 해당하는 리뷰가 없습니다. {period_note}"
+    shown = result.rows[: settings.seller_summary_max_reviews]
+    lines = [
+        f"[리뷰 {row.review_id}] {row.product_name}(productId={row.product_id}) "
+        f"★{row.rating} {row.created_at[:10]} {row.author_nickname}: {row.content}"
+        for row in shown
+    ]
+    omitted = len(result.rows) - len(shown)
+    omitted_note = f" 외 {omitted}건(offset 으로 이어서 조회 가능)" if omitted > 0 else ""
+    return f"리뷰 {result.total}건: " + "; ".join(lines) + omitted_note + f" {period_note}"
+
+
+@tool
 @_traced_tool("tool.calculate")
 async def calculate(expression: str) -> str:
     """사칙연산·round()·비율 등 수치 확인이 필요할 때 사용하는 안전 계산기.
@@ -1310,6 +1486,48 @@ async def delete_product(runtime: ToolRuntime[SellerContext], product_id: int) -
     return f"삭제(숨김)됨: productId={result.product_id} (status={result.status})"
 
 
+@tool
+@_traced_tool("tool.update_order_status")
+async def update_order_status(
+    runtime: ToolRuntime[SellerContext],
+    order_item_id: int,
+    to_status: str = "SHIPPING",
+    reason: str | None = None,
+) -> str:
+    """주문 아이템을 발송 처리한다(I-30, api-spec §4.18). HITL 승인 후에만 호출한다.
+
+    MVP 허용 전이는 ORDERED→SHIPPING 하나뿐 — 발송 이후의 취소·역전이는 불가
+    (구매자 구제는 반품 경로만). 아이템 단위이며 bulk 가 없어 복수 발송은 반복 호출한다.
+
+    Args:
+        order_item_id: 발송 대상 주문 아이템 식별자(get_orders 조회 결과의 orderItemId).
+        to_status: 전이 목표 상태 — MVP 유효값은 SHIPPING 뿐.
+        reason: 전이 사유(선택) — order_status_logs.reason 에 기록.
+    """
+    brand_id = runtime.context.brand_id
+    try:
+        result = await get_spring_client().update_order_item_status(
+            brand_id,
+            order_item_id,
+            OrderItemStatusUpdate(to_status=to_status, reason=reason),
+        )
+    except OrderAlreadyShipped:
+        return f"Error: 이미 발송 처리된 주문 아이템입니다(orderItemId={order_item_id})."
+    except OrderInvalidTransition:
+        return (
+            f"Error: 발송 처리할 수 없는 상태입니다(orderItemId={order_item_id}) — "
+            "이미 배송 단계로 넘어갔거나 취소 요청 등 클레임이 걸려 있습니다."
+        )
+    except OrderItemNotFound:
+        return f"Error: 해당 주문 아이템을 찾을 수 없습니다(orderItemId={order_item_id})."
+    except SpringUnavailableError as exc:
+        return f"Error: 발송 처리에 실패했습니다({exc}). 반영 여부가 확인되지 않았습니다."
+    return (
+        f"발송 처리됨: orderItemId={result.order_item_id} "
+        f"{result.from_status}→{result.to_status} ({result.changed_at})"
+    )
+
+
 # ── 도구 배정 상수 (SPEC-SELLER-001 §4 소비 노드 — 에이전트 팩토리가 그대로 사용) ──
 
 # 분석 워커·general·recommend 용(조회만) — 쓰기 도구가 구조적으로 없다(§3.1).
@@ -1318,9 +1536,11 @@ READ_TOOLS: list[BaseTool] = [
     get_funnel,
     get_behavior_events,
     get_order_events,
+    get_orders,
     get_product_change_logs,
     get_churn_cohort,
     get_account_events,
+    get_reviews,
     list_my_products,
     calculate,
     search_analysis_guide,
@@ -1332,4 +1552,11 @@ PRODUCT_TOOLS: list[BaseTool] = [
     create_product,
     update_product,
     delete_product,
+]
+
+# [#297] 주문 쓰기(발송, I-30) — HITL 실행 레인용. 상품 쓰기(PRODUCT_TOOLS)와 분리해
+# 배정 실수를 타입 수준에서 드러낸다. 어떤 draft 생성 에이전트에도 바인딩하지 않는다
+# — 실행은 hitl._execute_draft 코드 경로가 SpringClient 를 직접 호출한다(안전장치 ①).
+ORDER_WRITE_TOOLS: list[BaseTool] = [
+    update_order_status,
 ]

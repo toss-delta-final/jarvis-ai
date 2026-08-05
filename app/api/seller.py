@@ -665,9 +665,10 @@ async def _product_stream(
 
 def _draft_recorded_text(record: DraftRecord) -> str:
     """draft 성립 턴의 스레드 기록 문안 — diff 전문이 아니라 후속 발화 이해용 요약."""
+    base = "주문 발송 초안" if record.op == "ship" else "상품 변경 초안"
     if record.summary:
-        return f"상품 변경 초안을 생성했습니다: {record.summary}"
-    return f"상품 변경 초안을 생성했습니다 (op={record.op})."
+        return f"{base}을 생성했습니다: {record.summary}"
+    return f"{base}을 생성했습니다 (op={record.op})."
 
 
 def _draft_event(record: DraftRecord) -> str:
@@ -678,6 +679,9 @@ def _draft_event(record: DraftRecord) -> str:
     나갈 때만 to_camel 로 변환한다 — original_price→originalPrice, image_url→imageUrl,
     stock_quantity→stockQuantity(그 외는 동일). 이 필드는 FE 표시 전용이라 confirm 은
     draftId 만 되보낸다(역변환 불필요).
+
+    [#297] op="ship"(주문 발송, I-30)은 orderItemId 를 함께 싣는다(§3.2 추가 전용) —
+    상품 op 3종의 와이어는 불변이다(orderItemId 키는 ship 에만 존재).
     """
     return _sse(
         "draft",
@@ -685,6 +689,8 @@ def _draft_event(record: DraftRecord) -> str:
             "draftId": record.draft_id,
             "op": record.op,
             "productId": record.product_id,  # int | None(create) — F2 숫자 확정
+            # ship 전용 키 — 추가 전용(기존 op 와이어 불변).
+            **({"orderItemId": record.order_item_id} if record.op == "ship" else {}),
             "changes": [
                 {
                     "field": to_camel(c.field),

@@ -879,6 +879,105 @@ class ProductDeleteResult(SellerAggregateModel):
     status: str = "HIDDEN"
 
 
+# ── I-29/I-30/I-31 판매자 주문·리뷰 (§4.17~§4.19, 이슈 #297 — 🔶 초안, BE 협의 전) ──
+#
+# 전부 초안 — Spring 실측 전이라 응답 모델은 SellerAggregateModel(extra="allow")로
+# 필드 유동을 흡수한다(파싱 실패로 도구가 죽지 않도록). 확정 시 이 섹션만 조인다.
+
+
+class SellerOrderItemRow(SellerAggregateModel):
+    """I-29 rows[].items[] 항목 — 자사 아이템만(타사 이름·금액 미노출, S-2 규칙 상속).
+
+    orderItemId·현재 status 가 I-30 발송 대상 해소의 키다(§4.17)."""
+
+    order_item_id: int
+    product_id: int | None = None
+    name: str = ""
+    option_name: str | None = None
+    quantity: int = 0
+    price: int = 0
+    status: str = ""  # 아이템 상태기계 어휘(ORDERED/SHIPPING/…)
+    active_claim_status: str | None = None
+
+
+class SellerOrderRow(SellerAggregateModel):
+    """I-29 rows[] 항목 — S-2 주문 단위 파생 규칙 상속(대표 상태·자사 금액·orderNo 파생)."""
+
+    order_id: int
+    order_no: str = ""
+    ordered_at: str = ""
+    recipient_name: str = ""
+    payment_method: str | None = None
+    my_items_amount: int = 0
+    status: str = ""  # 대표 상태(파생) — S-2 탭 어휘
+    claim_status: str | None = None
+    items: list[SellerOrderItemRow] = Field(default_factory=list)
+
+
+class SellerOrderList(SellerAggregateModel):
+    """I-29 GET /internal/seller/{brandId}/orders 응답 (§4.17).
+
+    0건이어도 200 + 빈 rows·tabCounts 전부 0 — "주문 없음"은 정상 결과(I-14 규칙).
+    orderId 직조회의 타사/미존재도 200 + 빈 rows(존재 은닉, 확정 2026-08-04)."""
+
+    tab_counts: dict[str, int] = Field(default_factory=dict)
+    rows: list[SellerOrderRow] = Field(default_factory=list)
+    total: int = 0
+
+
+class OrderItemStatusUpdate(CamelModel):
+    """I-30 PATCH 요청 본문 — MVP 유효 toStatus 는 SHIPPING 뿐(§4.18)."""
+
+    to_status: str
+    reason: str | None = None
+
+
+class OrderItemStatusResult(SellerAggregateModel):
+    """I-30 200 응답 — {orderItemId, fromStatus, toStatus, changedAt}."""
+
+    order_item_id: int
+    from_status: str = ""
+    to_status: str = ""
+    changed_at: str = ""
+
+
+class SellerReviewRow(SellerAggregateModel):
+    """I-31 rows[] 항목 — VISIBLE 리뷰만(P-3 와 동일한 진실). authorNickname 은 공개 정보."""
+
+    review_id: int
+    product_id: int | None = None
+    product_name: str = ""
+    rating: int = 0
+    content: str = ""
+    author_nickname: str = ""
+    created_at: str = ""
+
+
+class SellerReviewList(SellerAggregateModel):
+    """I-31 GET /internal/seller/{brandId}/reviews 응답 (§4.19, stats 미지정)."""
+
+    rows: list[SellerReviewRow] = Field(default_factory=list)
+    total: int = 0
+
+
+class SellerReviewProductStat(SellerAggregateModel):
+    """I-31 stats=true 의 byProduct[] 항목 — count 내림차순, 평균 소수 1자리."""
+
+    product_id: int | None = None
+    product_name: str = ""
+    count: int = 0
+    average_rating: float | None = None
+
+
+class SellerReviewStats(SellerAggregateModel):
+    """I-31 stats=true 응답 — 리뷰 0건이면 averageRating 은 0 이 아니라 null(I-16 규칙)."""
+
+    total_count: int = 0
+    average_rating: float | None = None
+    distribution: dict[str, int] = Field(default_factory=dict)
+    by_product: list[SellerReviewProductStat] = Field(default_factory=list)
+
+
 # ── 7. 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현 진행 중) ──
 
 

@@ -266,6 +266,10 @@ class Settings(BaseSettings):
     # _summarize_behavior 가 꼬리 합계로 남긴다(정보 소실 없음).
     seller_summary_max_products: int = 10  # I-13 상품별 rows 상세 나열 상한(건)
     seller_list_default_limit: int = 20  # I-9 상품 목록 기본 limit(미지정 시)
+    # [#297] I-29 주문·I-31 리뷰 나열 상한 — 기존 상한들과 분리 신설(결합 방지, #197 취지).
+    # 서버 페이지 상한(limit≤100)과 별개인 "도구 응답 상세도" 상한이다.
+    seller_summary_max_orders: int = 10  # I-29 주문 rows 상세 나열 상한(건)
+    seller_summary_max_reviews: int = 10  # I-31 리뷰 rows 상세 나열 상한(건)
 
     # ── 판매자 분석 계산 층 (이슈 #290, app/agents/seller/analysis/ 주입) ──
     # 근거 논문·산식은 docs/worker-papers.md — 아래 기본값은 논문 권장값이다.

@@ -998,6 +998,35 @@ def test_draft_changes_field_is_camelcase(monkeypatch: pytest.MonkeyPatch) -> No
     draft = next(e for e in events if e["type"] == "draft")["data"]
     wire_fields = [c["field"] for c in draft["changes"]]
     assert wire_fields == ["stockQuantity", "originalPrice", "imageUrl", "price"]
+    # [#297] orderItemId 는 ship 전용 키 — 상품 op 와이어는 불변(추가 전용 계약).
+    assert "orderItemId" not in draft
+
+
+def test_ship_draft_event_carries_order_item_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[#297] op="ship"(I-30 발송) draft — orderItemId 탑재·changes 빈 목록·panel=replace."""
+    from app.agents.seller.schemas import DraftProposal
+
+    proposal = DraftProposal(
+        op="ship",
+        product_id=None,
+        order_item_id=5551,
+        changes=[],
+        summary="주문 342 벨티드 린넨 원피스(블루/M) 발송 처리",
+    )
+    monkeypatch.setattr(seller_api, "route_question", _route_stub("product"))
+    monkeypatch.setattr(seller_api, "build_product_agent", lambda: _StubProductAgent(proposal))
+
+    events = _collect_seller(_request("342번 주문 발송 처리해줘"))
+
+    assert [e["type"] for e in events] == ["meta", "draft", "done"]
+    assert events[0]["data"] == {"lane": "product"}  # 레인 신설 없음(확정 2026-08-04)
+    draft = events[1]["data"]
+    assert draft["op"] == "ship"
+    assert draft["orderItemId"] == 5551
+    assert draft["productId"] is None
+    assert draft["changes"] == []
+    assert "발송" in draft["summary"]
+    assert events[2]["data"]["panel"] == "replace"  # diff 카드 = 우측 패널 교체
 
 
 def test_product_route_clarification_is_token_done(monkeypatch: pytest.MonkeyPatch) -> None:

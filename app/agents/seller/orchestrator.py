@@ -81,6 +81,7 @@ from app.agents.seller.workers import (
     build_recommend_agent,
     build_report_agent,
     build_report_judge,
+    build_review_agent,
     build_sales_anomaly_agent,
     build_supervisor,
 )
@@ -104,6 +105,7 @@ WORKER_BUILDERS: dict[AnalysisType, Callable[[], CompiledStateGraph]] = {
     "behavior": build_behavior_agent,
     "churn": build_churn_agent,
     "abuse": build_abuse_agent,
+    "review": build_review_agent,  # [#297] I-31 리뷰 분석
 }
 
 
