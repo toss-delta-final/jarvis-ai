@@ -13,6 +13,73 @@
 
 ---
 
+## [2026-08-06] "성공 fake" 가 실 스키마와 다른 모양이어도 게스트 게이트 뒤에 있으면 영원히 안 드러난다
+- 증상: #335 리뷰 R8(order_status×spring_timeout 실측 추가) 작업 중, 기존
+  `evals/combo_matrix/fakes.py::make_order_status_ok` 가 `{"orderId": ..., "status": ...}` 같은
+  무관한 dict 를 돌려주고 있었다 — 실제 소비 코드(`app/agents/buyer/order_status.py`
+  `format_order_status`)는 `summary.orders`(리스트 속성)를 읽는다. `AttributeError` 가 나야
+  정상인데, 커밋된 order_status 케이스는 전부 `identity=guest` 라 `member_order_identity` 가
+  `fetch_order_status` 호출 자체를 게이트로 막아 이 fake 가 실제로는 **단 한 번도 실행되지
+  않았다** — 그래서 몇 라운드의 리뷰·테스트를 거치는 동안 아무도 이 결함을 못 봤다.
+- 원인: "성공 경로 fake"를 실 반환 스키마(Pydantic 모델 등) 검증 없이 손으로 지어낸 dict 로
+  때웠고, 그 fake 가 게스트/미인증처럼 **더 이른 게이트가 걸리는 조합에서만** 커버리지가
+  있었다 — 실행이 "안 죽었다"는 사실이 "fake 가 맞다"를 보증하지 않는다.
+- 규칙: 콜러블을 fake 로 주입할 때는 그 반환값을 **소비하는 코드가 실제로 읽는 속성**을 실
+  스키마(가능하면 실제 Pydantic 모델 인스턴스)로 만족시켜라 — 임시 dict 는 "일단 안 죽으면
+  맞다"는 착시를 준다. 그리고 그 fake 가 **성공 경로까지 실제로 도달하는 identity/조건** 조합의
+  케이스가 최소 1건 있는지 확인하라(게스트·미인증 전용 케이스만 있으면 성공 fake 자체가
+  검증된 적이 없다) — #335 의 cart/wishlist 계열에서 이미 같은 패턴(웜업·숫자 user_id 누락)을
+  겪었으니, 이 부류의 fixture 는 항상 "실 스키마 + 실제로 그 경로에 도달하는 identity" 둘 다
+  갖췄는지 짝지어 점검한다.
+- 관련: #335, `evals/combo_matrix/fakes.py::make_order_status_ok`,
+  `app/agents/buyer/order_status.py::format_order_status`, `app/schemas/spring.py::OrderStatusSummary`
+
+---
+
+## [2026-08-06] cart/wishlist fake identity 는 숫자 문자열이어야 한다 + 담기 fake 는 직전 추천을 먼저 채워야 한다
+- 증상: #335 리뷰 R3(`wishlist_add×member×spring_timeout` 직접 관측 케이스 추가) 작업 중, 회원
+  identity 로 wishlist_add 를 실행해도 매번 "찜에는 로그인이 필요해요"만 나왔다 —
+  `identity.is_guest=False` 로 만들었는데도 게스트와 똑같이 처리됐다. 그다음엔 "어떤 상품을
+  찜할까요?" 되물음만 나왔다 — degrade(SpringUnavailableError) 를 주입해도 그 코드에 전혀
+  안 닿았다.
+- 원인: ① `app/agents/buyer/cart/identity.py::cart_identity` 는 `int(identity.user_id)` 파싱에
+  실패하면(예: `"combo-0057"` 같은 비숫자 문자열) `ValueError` 를 흡수하고 (None, None) 을
+  돌려줘 **회원을 게스트/익명과 구분 없이** 취급한다 — 회원 fake identity 의 `user_id` 는
+  **숫자 문자열**이어야 한다. ② `app/agents/buyer/graph.py:994-1019` 의 담기 허용목록
+  (`allowed_product_ids` = 직전 추천 ∪ screen.products)은 그 안에 없는 상품을 조용히 되물음으로
+  돌린다 — cart_add/wishlist_add 를 fake 로 구동하려면 **같은 thread_id 로 먼저 recommend 턴을
+  1회 태워 대상 productId 를 직전 추천에 올려야** Spring 호출부(add_to_cart_fn/add_wishlist_fn)
+  에 실제로 도달한다.
+- 규칙: cart/wishlist 계열을 fake 로 단위 테스트할 때 ① `Identity.user_id` 는 회원이면 숫자
+  문자열(`str(int)`)로 채운다(비숫자면 `cart_identity` 가 조용히 익명 취급 — 예외도 안 던진다).
+  ② cart_add/wishlist_add 관측 전에는 같은 identity·thread_id 로 정상 recommend 웜업 턴을 먼저
+  실행해 last_reco 를 채운다 — 웜업 없이 degrade 를 주입하면 그 축은 절대 그 코드에 도달하지
+  못한 채 매번 같은 되물음만 관측된다(관측이 "항상 똑같다"면 이 두 가지부터 의심).
+- 관련: #335, `evals/combo_matrix/runner.py::_identity_for`·`_warm_up_last_reco`,
+  `app/agents/buyer/cart/identity.py`, `app/agents/buyer/graph.py:994-1019`
+
+---
+
+## [2026-08-06] 결정론 생성기에서 `hash(str)`을 seed 파생에 쓰면 PYTHONHASHSEED 랜덤화로 재현성이 깨진다
+- 증상: #335 pairwise 케이스 생성기(`evals/combo_matrix/generator.py`)를 같은 `axes.json`+같은
+  seed 로 연속 두 번 돌렸는데 `combo_cases.jsonl` 의 sha256 이 매번 달랐다 — 케이스 순서·내용
+  자체가 프로세스마다 달라지는 재현성 결함이었다.
+- 원인: 위험 3-wise 축쌍마다 별도 `random.Random` 시드를 파생시키며 `doc.seed ^ hash(rt.id)`
+  (`rt.id` 는 문자열)를 썼다. Python 은 문자열 `hash()` 를 **프로세스마다 무작위 솔트**로 계산한다
+  (해시 충돌 기반 DoS 방지, PYTHONHASHSEED 미고정 시 기본 동작) — 그래서 같은 문자열도 프로세스마다
+  다른 정수를 내고, 그 값으로 만든 `random.Random` 시드가 매번 달라 그 라운드의 탐욕 선택 결과가
+  갈렸다. `random.Random(int)` 자체는 결정론이지만 **입력이 이미 비결정론**이었던 것.
+- 규칙: **결정론이 요구되는 코드(생성기 seed 파생·캐시 키·해시 기반 정렬 등)에서 문자열을
+  다이제스트할 때는 절대 내장 `hash()` 를 쓰지 않는다** — `hashlib.sha256(text.encode()).digest()`
+  처럼 프로세스 불변인 안정 해시만 쓴다. `PYTHONHASHSEED=0` 로 환경을 고정하는 우회도 있지만,
+  코드가 그 환경변수에 의존한다는 사실 자체를 감추므로 안정 해시가 근본 해결이다. 재현성을
+  주장하는 코드를 작성/리뷰할 때는 `PYTHONHASHSEED=random uv run <재현 명령>` 을 최소 2회 돌려
+  출력이 바이트 동일한지 실측하라 — 기본 랜덤 시드 그대로면 이런 버그가 세션 내내 숨는다.
+- 관련: #335, `evals/combo_matrix/generator.py` `_stable_hash`(수정 후),
+  `tests/eval/test_combo_matrix_eval.py::test_regeneration_matches_committed_cases_byte_identical`
+
+---
+
 ## [2026-08-06] 머지 커밋 전에 conflict marker 잔존 여부를 grep으로 확인한다
 - 증상: #333 Part 3 작업 중 repo 루트 `CHANGELOG.md`에서 `<<<<<<< HEAD`/`=======`/
   `>>>>>>> origin/dev` 충돌 표지 3줄이 그대로 커밋돼 있는 것을 발견했다(`git log -1 -- CHANGELOG.md`

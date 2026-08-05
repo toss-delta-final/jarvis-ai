@@ -37,16 +37,17 @@ baseline(`evals/scoring`, `evals/model_eval` 기존 리포트)과의 연속성�
 | `keyword` | `keyword`, `semanticQuery` | ✅ | 특칙 — 아래 참조 |
 | `attr_conditions` | `attrConditions` | ✅ | 키·값 각각 문자열 정규화한 dict 동등 |
 | `exclude_product_ids` | `excludeProductIds` | ❌ | 발화 추출이 아니라 구매이력(I-19) 파생 — P/R 부적합, presence만 관측 |
-| `total_budget` | `totalBudget` | ❌ | RouteDecision 레벨 필드, goldenset v1 `expectedFilters`에 라벨 없음 — probe 관측 전용 |
+| `total_budget` | `totalBudget` | ❌ | RouteDecision 레벨 필드, `expectedFilters`에 라벨 없음(v1·v2 공통 — `ProductSearchFilters`에 애초에 없는 필드라서다) — probe 관측 전용 |
 | `buy_all` | `buyAll` | ❌ | 위와 동일 |
 
 `limit`은 축이 아니다(기계적 기본값, `evals/model_eval` 선례) — `axes.json`의
 `excludedFields`에 명시한다.
 
 evaluated=false 축(`exclude_product_ids`·`total_budget`·`buy_all`)은 `evals/metrics`
-러너의 케이스별 P/R 집계(`case_axis_outcomes`)에서 제외된다 — dev goldenset v1
+러너의 케이스별 P/R 집계(`case_axis_outcomes`)에서 제외된다 — dev goldenset의
 `expectedFilters`(`ProductSearchFilters` 검증)가 애초에 이 값을 라벨하지 않으므로 분모가
-성립하지 않는다. `axis_presence_set`(INV/DIR/leak 판정)에서는 evaluated 여부와 무관하게
+성립하지 않는다(v1·v2 공통 — 골든셋 버전과 무관하게 `ProductSearchFilters` 스키마 자체에
+없는 필드라서다). `axis_presence_set`(INV/DIR/leak 판정)에서는 evaluated 여부와 무관하게
 전부 포함한다 — "이 축에 값이 실렸는가"는 P/R과 별개 질문이라서다.
 
 ## 정규화 규칙
@@ -130,8 +131,14 @@ exit code 1.
 ## datasetVersion 정책
 
 `cases/manifest.json`의 `datasetVersion`(`fax-1.0.0`)은 probe 케이스 파일 자체의 버전이다
-— goldenset(`buyer-goldenset`, dev v1.0.0)과는 **별개 버전 계보**다(규약2, "하나의 거대
-골든셋으로 합치지 않는다"). goldenset이 v2로 전환되면: ① `baseCaseId`로 연결된 probe
-케이스의 `baseQuery`가 여전히 유효한지 확인, ② 깨졌으면 새 goldenset 발화로 교체하고
+— goldenset(`buyer-goldenset`, dev 현재 `datasetVersion 2.1.0`)과는 **별개 버전 계보**다
+(규약2, "하나의 거대 골든셋으로 합치지 않는다"). goldenset 버전이 바뀌면: ① `baseCaseId`로
+연결된 probe 케이스의 `baseQuery`가 여전히 유효한지 확인(`tests/unit/test_filter_axes_cases.py`
+의 참조 무결성 테스트가 자동 확인), ② 깨졌으면 새 goldenset 발화로 교체하고
 `cases/manifest.json`의 `datasetHash`를 재계산, ③ `fax-1.1.0`으로 버전을 올린다(케이스
-내용이 바뀌므로 datasetHash도 함께 바뀐다 — 규약8, 다른 해시 점수는 직접 비교 금지).
+**내용이 바뀔 때만** — 검증만 통과하고 내용이 그대로면 파일·버전을 그대로 둔다).
+
+**실측(#334 r4)**: goldenset이 v1(`1.0.0`)에서 v2(`2.1.0`, #333)로 전환된 뒤 위 절차를
+실제로 밟았다 — probe 케이스가 참조하는 12개 `baseCaseId` 전부가 v2 dev에 그대로 남아 있고
+`baseQuery`도 전부 일치해(v1의 31개 caseId·query가 v2에 보존됨) **내용 변경이 없었으므로
+`probe_cases.jsonl`·`cases/manifest.json`·`fax-1.0.0`을 그대로 뒀다.**

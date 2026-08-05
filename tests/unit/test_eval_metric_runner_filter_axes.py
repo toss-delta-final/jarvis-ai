@@ -21,12 +21,15 @@ SPEC = load_axes_spec()
 
 
 def _case(case_id: str, *, expected_filters: dict, slices: list[str] | None = None) -> GoldenCase:
-    resolved_slices = slices or ["search", "guest"]
+    # v2(#333)는 니즈 슬라이스(single_need/multi_constraint/budget/repurchase)를 케이스당
+    # 정확히 1개 요구한다 — 기본값에 single_need를 넣어 이 배선 테스트가 니즈 분류와 무관하게
+    # 최소 조건만 만족하게 한다.
+    resolved_slices = slices or ["search", "guest", "single_need"]
     return GoldenCase.model_validate(
         {
             "caseId": case_id,
-            "schemaVersion": "1.0.0",
-            "datasetVersion": "1.0.0",
+            "schemaVersion": "2.0.0",
+            "datasetVersion": "2.1.0",
             "split": "dev",
             "slices": resolved_slices,
             "query": "테스트 추천",
@@ -58,7 +61,7 @@ def _fixtures(cases: list[GoldenCase]) -> EvaluationFixtures:
         catalog=catalog,
         search_responses=searches,
         purchase_history={},
-        manifest={"datasetVersion": "1.0.0", "datasetHash": "abc"},
+        manifest={"datasetVersion": "2.1.0", "datasetHash": "abc"},
         non_discriminative_case_ids=frozenset(),
     )
 
@@ -111,6 +114,12 @@ def test_filter_axes_appears_in_case_slice_and_overall_with_nonvacuous_values() 
     assert report["filterAxesSpec"]["version"] == SPEC["version"]
     assert report["filterAxesSpec"]["emptyAxisRule"] == SPEC["emptyAxisRule"]
     assert len(report["filterAxesSpec"]["sha256"]) == 64
+
+    # 골든셋 v2(#333) 머지로 evaluate() 반환에 noopBaseline·behaviorChecks 가 추가됐다 —
+    # filterAxesSpec 이 그와 공존하며 밀려나지 않았는지 확인(R4-1).
+    assert "noopBaseline" in report
+    assert "overall" in report["noopBaseline"]
+    assert "behaviorChecks" in report
 
 
 def test_existing_filter_accuracy_and_keys_are_unchanged_by_filter_axes_wiring() -> None:
