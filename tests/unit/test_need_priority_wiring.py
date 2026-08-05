@@ -181,6 +181,131 @@ async def test_gate_open_calls_the_classifier_exactly_once(monkeypatch: pytest.M
     assert llm.priority_calls == 1
 
 
+# ─────────── [PR #314 리뷰] 게이트가 limited_legs 경로도 연다 ───────────
+
+
+def _many_legs(count: int) -> list[tuple[str, str]]:
+    return [(f"C{i}", f"니즈{i}") for i in range(count)]
+
+
+def _map_many(legs):  # noqa: ANN001
+    async def _map(**kwargs):  # noqa: ANN001
+        return CategoryMapping(legs=list(legs))
+
+    return _map
+
+
+def _search_many(legs):  # noqa: ANN001
+    # 가격을 전부 동일하게 둔다 — priority 가 유일한 판별 축이 되도록 가격 tie-break 을 무력화한다.
+    prices = {canonical: 1_000 for canonical, _ in legs}
+    product_id = {canonical: 100 + index for index, (canonical, _) in enumerate(legs)}
+
+    async def _search(filters, exclude_product_ids=None):  # noqa: ANN001
+        category = filters.category
+        return ProductSearchResult(
+            products=[
+                SpringProduct(
+                    product_id=product_id[category],
+                    name="상품",
+                    price=prices[category],
+                    rating=4.0,
+                    category=category,
+                    brand="b",
+                )
+            ],
+            total_count=1,
+        )
+
+    return _search
+
+
+def _req_many(legs, *, message: str, total_budget: int | None):
+    decompose = {
+        "intent": "recommend",
+        "case": 3,
+        "buyAll": True,
+        "categoryQueries": [{"category": c, "query": q} for c, q in legs],
+        "filters": {},
+    }
+    if total_budget is not None:
+        decompose["totalBudget"] = total_budget
+    return SimpleNamespace(session_id="s1", thread_id="t1", message=message), decompose
+
+
+async def _run_buyer_turn_with(legs, request, identity, **kwargs):  # noqa: ANN001
+    observer = await _committed_observer(request, identity)
+    async for frame in _production_run_buyer_turn(
+        request,
+        identity,
+        observer=observer,
+        map_categories=_map_many(legs),
+        search=_search_many(legs),
+        **kwargs,
+    ):
+        yield frame
+
+
+async def test_gate_opens_for_limited_legs_path_without_a_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[PR #314 리뷰 B] 예산이 없어도 leg 수가 LIST_MAX_PRODUCTS(9) 를 넘으면(=limited_legs 가
+    발동할 수 있는 턴) 분류기가 호출되고, 그 priority 가 limited_legs 제외 순서를 실제로
+    바꾼다 — 같은 픽스처로 두 산출이 달라야 vacuous 하지 않다."""
+    monkeypatch.setattr(get_settings(), "expose_min", 1)
+    monkeypatch.setattr(get_settings(), "expose_max", 1)
+    legs = _many_legs(10)  # LIST_MAX_PRODUCTS(9) 초과 — limited_legs 가 반드시 하나는 뺀다
+    request, decompose = _req_many(legs, message="열 가지 다 사려고", total_budget=None)
+
+    # priority 없음(폴백): 가격이 전부 같으므로 leg 인덱스가 가장 작은 것부터 빠진다(오늘 동작).
+    baseline_llm = _PriorityAwareLLM(decompose=decompose, priorities=None)
+    baseline_events = await _collect(
+        _run_buyer_turn_with(legs, request, _member(), llm=baseline_llm, push_fn=_RecordingPush())
+    )
+    baseline_notice = next(
+        event["data"]["text"]
+        for event in baseline_events
+        if event["type"] == "token" and "니즈" in event["data"]["text"]
+    )
+    assert "니즈0" in baseline_notice
+    assert baseline_llm.priority_calls == 1  # (B) 신호 사각지대 회귀 — 예산 없어도 호출된다
+
+    # priority 적용: leg0 은 필수(1)로 지켜지고, 선택(3)인 leg5 가 대신 빠진다.
+    priorities = [2] * 10
+    priorities[0] = 1
+    priorities[5] = 3
+    priority_llm = _PriorityAwareLLM(decompose=decompose, priorities=priorities)
+    priority_events = await _collect(
+        _run_buyer_turn_with(legs, request, _member(), llm=priority_llm, push_fn=_RecordingPush())
+    )
+    priority_notice = next(
+        event["data"]["text"]
+        for event in priority_events
+        if event["type"] == "token" and "니즈" in event["data"]["text"]
+    )
+    assert "니즈5" in priority_notice
+    assert "니즈0" not in priority_notice  # 필수 니즈는 살아남는다
+    assert priority_llm.priority_calls == 1
+
+
+async def test_gate_stays_closed_without_a_budget_when_leg_count_is_at_the_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """비용 회귀 — 예산 없고 leg 수가 LIST_MAX_PRODUCTS(9) **이하**면 여전히 호출 0회다.
+    이 테스트가 없으면 위 테스트를 통과시키려고 게이트를 통째로 열어도(예: `total_budget` 요구를
+    그냥 지워도) 걸러지지 않는다 — 정확히 임계에서 막히는지를 본다."""
+    monkeypatch.setattr(get_settings(), "expose_min", 1)
+    monkeypatch.setattr(get_settings(), "expose_max", 1)
+    legs = _many_legs(9)  # LIST_MAX_PRODUCTS(9) — limited_legs 가 발동할 수 없는 경계
+    request, decompose = _req_many(legs, message="아홉 가지 다 사려고", total_budget=None)
+    llm = _PriorityAwareLLM(decompose=decompose, priorities=[2] * 9)
+
+    await _collect(
+        _run_buyer_turn_with(legs, request, _member(), llm=llm, push_fn=_RecordingPush())
+    )
+
+    assert llm.priority_calls == 0
+
+
 # ─────────── priority 가 실제로 제외 순서를 바꾼다 ───────────
 
 
@@ -397,12 +522,12 @@ async def test_blank_label_leg_disables_the_classifier_but_keeps_the_budget_set(
 # ─────────── [PR #314 리뷰] need_priority_required_dropped 는 범위 밖 leg 에도 죽지 않는다 ───
 
 
-def _plan(dropped_legs: tuple[int, ...]) -> BudgetSetPlan:
+def _plan(dropped_legs: tuple[int, ...], *, limited_legs: tuple[int, ...] = ()) -> BudgetSetPlan:
     return BudgetSetPlan(
         sets=(),
         dropped_legs=dropped_legs,
         unavailable_legs=(),
-        limited_legs=(),
+        limited_legs=limited_legs,
         total_budget=27_000,
         combinations_truncated=False,
     )
@@ -453,3 +578,32 @@ def test_need_priority_required_dropped_ignores_out_of_range_leg_when_no_other_l
     result = _need_priority_required_dropped(short_priorities, plan_with_only_out_of_range_leg)
 
     assert result is False
+
+
+# ─── [PR #314 리뷰 A] need_priority_required_dropped 는 limited_legs 경로도 관측한다 ───
+
+
+def test_need_priority_required_dropped_true_when_a_required_need_was_limited() -> None:
+    """예산 초과(`dropped_legs`)가 아니라 계약 상한 초과(`limited_legs`)로 필수 니즈가 빠져도
+    관측 필드가 참이 된다 — 두 제외 경로 모두를 봐야 한다는 PR #314 리뷰 지적."""
+    assert _need_priority_required_dropped((1, 2, 3), _plan((), limited_legs=(0,))) is True
+    assert _need_priority_required_dropped((1, 2, 3), _plan((), limited_legs=(2,))) is False
+
+
+def test_need_priority_required_dropped_true_when_dropped_and_limited_both_contribute() -> None:
+    """예산 초과로 하나, 계약 상한으로 다른 하나가 빠져도 합쳐서 본다(둘 다 진짜 제외다)."""
+    assert (
+        _need_priority_required_dropped((3, 2, 1), _plan((0,), limited_legs=(2,))) is True
+    )  # limited_legs 의 leg 2(priority 1)가 필수 보호를 깬다
+
+
+def test_need_priority_required_dropped_ignores_out_of_range_leg_in_limited_legs() -> None:
+    """[PR #314 리뷰 회귀] 범위 밖 leg 방어는 `dropped_legs` 뿐 아니라 `limited_legs` 에도
+    적용돼야 한다 — 방어를 `dropped_legs` 쪽에만 넣으면 이 테스트가 `IndexError` 로 실패한다.
+    """
+    short_priorities = (1, 2)  # 유효 인덱스는 0·1뿐
+    plan_with_out_of_range_limited_leg = _plan((), limited_legs=(5,))
+
+    result = _need_priority_required_dropped(short_priorities, plan_with_out_of_range_limited_leg)
+
+    assert result is False  # 범위 밖 leg 하나뿐이라 예외 없이 False 로 떨어진다

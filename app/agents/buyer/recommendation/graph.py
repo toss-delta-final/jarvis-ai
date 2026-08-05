@@ -253,20 +253,30 @@ def _cancel_priority_task(task) -> None:  # noqa: ANN001
 def _need_priority_required_dropped(
     priorities: tuple[int, ...] | None, plan: BudgetSetPlan | None
 ) -> bool:
-    """필수(priority 1) 니즈가 예산 때문에 빠진 턴인가 — `recommend_pipeline` 관측 전용 (#281).
+    """필수(priority 1) 니즈가 예산 **또는** 목록 상한 때문에 빠진 턴인가 — `recommend_pipeline`
+    관측 전용 (#281).
 
-    [PR #314 리뷰] `plan.dropped_legs` 의 leg 인덱스는 `priorities` 범위 안에 있다는 것이
+    [PR #314 리뷰] 이름·필드 키는 `_dropped`(예산 제외 전용)로 남기지만 **의미는 `dropped_legs`
+    (총액 예산 초과 제외)와 `limited_legs`(계약 상한 `max_items` 초과 제외) 둘 다**를 덮는다 —
+    게이트가 이제 이 둘 중 어느 경로든 열릴 수 있는 턴에서 분류기를 부르므로(위
+    `need_priority_gate` 참조), 관측이 한쪽만 보면 `limited_legs` 로 필수 니즈가 빠져도
+    조용히 안 잡힌다. 이름을 안 바꾼 이유: 이 필드는 아직 출고된 적이 없어 개명 자체는
+    자유롭지만, "예산 초과로 제외"라는 원래 취지가 "목록 상한 초과"에도 그대로 대응돼(둘 다
+    "이 니즈를 포기해야 했다") 새 이름을 짓기보다 이 docstring 으로 범위를 넓히는 쪽을 택했다.
+
+    `plan.dropped_legs`/`plan.limited_legs` 의 leg 인덱스는 `priorities` 범위 안에 있다는 것이
     오늘은 항상 참이지만(게이트가 라벨 `None` 인 leg 이 있으면 태스크 자체를 안 만들어
     `len(priorities) == len(need_legs) == len(pools)` 가 성립한다), 그 정합은
     `graph.py`(게이트)와 `need_priority.py`(`_validate_priorities` 길이 검증) **두 파일에
     걸친 암묵적 불변식**이다. 관측 필드 하나가 그 불변식에 기대 `IndexError` 를 내면 이미
     계산이 끝난 추천 턴 전체가 죽는다 — 이 파일이 고지 문구 생성부(`if leg < len(need_legs)`,
     아래 `_split_by_need` 이후 dropped/unavailable/limited 알림 블록 참조)에서 이미 쓰는
-    관용구와 같은 모양으로 범위 밖 leg 을 조용히 건너뛴다.
+    관용구와 같은 모양으로 범위 밖 leg 을 **두 경로 모두에서** 조용히 건너뛴다.
     """
     if priorities is None or plan is None:
         return False
-    return any(leg < len(priorities) and priorities[leg] == 1 for leg in plan.dropped_legs)
+    excluded_legs = (*plan.dropped_legs, *plan.limited_legs)
+    return any(leg < len(priorities) and priorities[leg] == 1 for leg in excluded_legs)
 
 
 def _split_by_need(
@@ -991,14 +1001,21 @@ async def stream_recommendation(
     # 「상한이 안전한지는 단일 호출 예산이 아니라 첫 이벤트 앞 직렬 합으로 잰다」).
     #
     # 게이트가 거짓이면 태스크를 아예 만들지 않는다 → LLM 호출 0회, 오늘과 완전히 동일(비용도 0).
-    # `total_budget is not None` 을 넣는 이유: `dropped_legs`(예산 제외)는 total_budget 이 있을
-    # 때만 발생하고, `limited_legs`(계약 상한 max_items)는 config 가 category_fanout_max ≤
-    # MAX_LISTS 를 강제해 실무상 도달하지 않는 방어선이다 — 즉 예산 없는 BUY_ALL 턴에 이 호출을
-    # 붙여도 바꾸는 것이 없다.
+    # [PR #314 리뷰] 이전 판은 "`limited_legs`(계약 상한 max_items)는 config 가
+    # `category_fanout_max ≤ MAX_LISTS` 를 강제해 실무상 도달하지 않는다"고 적었는데 **틀렸다**
+    # — `MAX_LISTS`(10)와 `max_items`로 넘기는 `LIST_MAX_PRODUCTS`(9)를 혼동한 주석이었다.
+    # `category_fanout_max` 는 `MAX_LISTS` 까지(즉 10까지) 설정 가능한데 `max_items` 는 9라,
+    # `category_fanout_max` 를 10으로 운영하면 leg 10개 > max_items 9 로 `limited_legs` 가
+    # **설정에 따라 실제로 발동한다.** 그래서 게이트를 두 조건의 OR 로 연다:
+    #   - `total_budget is not None` — `dropped_legs`(예산 제외)는 total_budget 이 있을 때만 발생.
+    #   - `len(need_legs) > LIST_MAX_PRODUCTS` — `limited_legs` 가 발동할 수 있는 유일한 조건과
+    #     정확히 같은 임계다(값을 따로 적지 않고 `build_budget_sets(max_items=...)` 에 넘기는
+    #     것과 **같은 상수**에서 파생시킨다 — 숫자를 두 곳에 따로 적으면 이번처럼 갈라진다).
+    # 예산도 없고 leg 수도 임계 이하인 BUY_ALL 턴은 여전히 호출 0회다(과하게 넓히지 않는다).
     need_priority_gate = (
         settings.need_priority_classifier_enabled
         and buy_all_mode
-        and decision.total_budget is not None
+        and (decision.total_budget is not None or len(need_legs) > LIST_MAX_PRODUCTS)
     )
     priority_task = None
     if need_priority_gate:
@@ -1275,10 +1292,11 @@ async def stream_recommendation(
             "budget_truncated": bool(plan and plan.combinations_truncated),
             # [#281] priority 신호 관측 — 값(니즈 이름)은 싣지 않는다(#119 PII). 신호가 실제로
             # 적용됐는지(분류기 성공)와, REQ-REC-075 가 요구하는 "조용히 누락하지 않는다"의 빈도를
-            # 운영에서 볼 수 있어야 하므로 필수(priority 1) 니즈가 예산 때문에 빠진 턴을 표시한다.
+            # 운영에서 볼 수 있어야 하므로 필수(priority 1) 니즈가 예산 또는 목록 상한 때문에
+            # 빠진 턴을 표시한다(둘 다 덮는 이유는 아래 헬퍼 docstring 참조, PR #314 리뷰).
             "need_priority_applied": priorities is not None,
-            # [PR #314 리뷰] 범위 밖 leg 방어는 순수 헬퍼로 뽑았다(_need_priority_required_dropped
-            # 참조) — 근거·불변식 설명도 그쪽 docstring 에 있다.
+            # 범위 밖 leg 방어·두 제외 경로(dropped_legs·limited_legs)를 순수 헬퍼로 뽑았다
+            # (_need_priority_required_dropped 참조) — 근거·불변식 설명도 그쪽 docstring 에 있다.
             "need_priority_required_dropped": _need_priority_required_dropped(priorities, plan),
         },
     )
