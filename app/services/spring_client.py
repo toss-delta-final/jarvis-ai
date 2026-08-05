@@ -44,7 +44,7 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from app.core.config import get_settings
-from app.core.tracing import TraceNode, trace_span
+from app.core.tracing import TraceNode, current_request_trace, trace_span
 from app.schemas.spring import (
     AccountEventsResult,
     AddToCartRequest,
@@ -285,6 +285,15 @@ def _spring_span(operation: _SpringOperation, method: str) -> Iterator[TraceNode
 def _record_spring_status(span: TraceNode | None, response: httpx.Response) -> None:
     if span is not None:
         span.metadata["statusClass"] = f"{response.status_code // 100}xx"
+        # [#326] 콘텐츠 추적 모드에서만 요청 URL·본문과 응답 페이로드를 싣는다. 위 "유계
+        # transport 메타데이터만" 계약의 **명시적 디버깅 예외**이며(기본 off), 헤더는 싣지
+        # 않는다(X-Internal-Token 유출 방지).
+        if (trace := current_request_trace()) and trace.captures_content:
+            request = response.request
+            inputs: dict[str, object] = {"url": str(request.url)}
+            if request.content:
+                inputs["requestBody"] = request.content.decode("utf-8", errors="replace")
+            trace.record_span_content(span, inputs=inputs, outputs={"responseBody": response.text})
 
 
 # 재시도 대상 4xx (#133, PR #235 리뷰) — "4xx 는 다시 보내도 같은 거절"이라는 일반 규칙의

@@ -1562,3 +1562,83 @@ async def test_all_seller_spring_operations_trace_timeout_without_changing_mappi
         "private-token-904",
     ):
         assert secret not in serialized
+
+
+# ── [#326] 콘텐츠 추적 모드 — seller 레인 콜백 커버리지 ──────────────────────────
+
+
+async def test_content_callback_records_seller_llm_span_content() -> None:
+    """seller 는 app/core/llm.py 를 거치지 않으므로 모델 콜백이 원문 초크포인트다."""
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from langchain_core.outputs import Generation, LLMResult
+
+    from app.agents.seller.models import _CONTENT_TRACE_CALLBACK
+    from app.core.tracing import (
+        FakeTraceExporter,
+        TraceFactory,
+        bind_request_trace,
+        trace_span,
+        validate_export_payload,
+    )
+
+    exporter = FakeTraceExporter()
+    factory = TraceFactory(
+        exporter=exporter,
+        enabled=True,
+        sampling_rate=1.0,
+        payload_validator=lambda p: validate_export_payload(p, allow_content=True),
+        capture_content=True,
+        content_max_chars=20000,
+    )
+    trace = factory.start_request(
+        name="seller_chat_turn",
+        request_id="req-seller-326",
+        conversation_id="session-1",
+        thread_id="thread-1",
+        lane="seller",
+        environment="test",
+    )
+    with bind_request_trace(trace):
+        with trace_span("llm.seller.worker", "llm") as node:
+            await _CONTENT_TRACE_CALLBACK.on_chat_model_start(
+                {}, [[SystemMessage(content="지시"), HumanMessage(content="7월 매출 분석해줘")]]
+            )
+            await _CONTENT_TRACE_CALLBACK.on_llm_end(
+                LLMResult(generations=[[Generation(text="분석 결과")]])
+            )
+            assert node is not None
+            # tool 결과가 섞이는 히스토리라 lenient `user` 가 아니라 strict `transcript` 다.
+            assert "7월 매출 분석해줘" in node.inputs["transcript"]
+            assert "user" not in node.inputs
+            assert node.outputs["content"] == "분석 결과"
+    await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+
+
+async def test_content_callback_is_noop_when_mode_off() -> None:
+    from langchain_core.messages import HumanMessage
+    from langchain_core.outputs import Generation, LLMResult
+
+    from app.agents.seller.models import _CONTENT_TRACE_CALLBACK
+    from app.core.tracing import FakeTraceExporter, TraceFactory, bind_request_trace, trace_span
+
+    exporter = FakeTraceExporter()
+    factory = TraceFactory(exporter=exporter, enabled=True, sampling_rate=1.0)
+    trace = factory.start_request(
+        name="seller_chat_turn",
+        request_id="req-seller-326-off",
+        conversation_id="session-1",
+        thread_id="thread-1",
+        lane="seller",
+        environment="test",
+    )
+    with bind_request_trace(trace):
+        with trace_span("llm.seller.worker", "llm") as node:
+            await _CONTENT_TRACE_CALLBACK.on_chat_model_start(
+                {}, [[HumanMessage(content="발화 원문")]]
+            )
+            await _CONTENT_TRACE_CALLBACK.on_llm_end(
+                LLMResult(generations=[[Generation(text="응답")]])
+            )
+            assert node is not None
+            assert node.inputs == {} and node.outputs == {}
+    await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
