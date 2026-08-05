@@ -43,7 +43,18 @@ ProfileRerankInfluence = Literal["tiebreak", "legacy"]
 # decompose 가 산출하는 intent 집합 — 세션 버퍼 제외 intent 검증의 정의역.
 # 정본은 RouteDecision.intent Literal(app/agents/buyer/recommendation/state.py)이며, 런타임
 # import 는 순환이라 여기 복제하고 드리프트는 테스트로 고정한다(test_config_profile.py).
-ROUTE_INTENTS = frozenset({"recommend", "cart_add", "cart_view", "order_status", "general"})
+ROUTE_INTENTS = frozenset(
+    {
+        "recommend",
+        "cart_add",
+        "cart_view",
+        "order_status",
+        "general",
+        "cart_remove",
+        "wishlist_add",
+        "wishlist_remove",
+    }
+)
 
 
 def _deferred_first_event_i1_calls(
@@ -222,12 +233,10 @@ class Settings(BaseSettings):
     # 구 seller 전용 키 service_token(인바운드)·internal_token(아웃바운드)은 폐기.
     # spring_timeout_s 도 팀 정의(아래 공통 블록)를 재사용한다 — 중복 정의 금지.
 
-    # ── 판매자 분석 임계값 (app/agents/seller/calc.py 주입, 하드코딩 금지) ──
-    seller_ma_window: int = 7  # 매출 이동평균 window(일) — Spring MOVING_WINDOW 정렬
-    # 이상판정 최소 표본 수(직전 포인트 수) — Spring(SellerSalesService) MIN_WINDOW 정렬(#194).
-    seller_ma_min_window: int = 3
-    seller_anomaly_deviation_pct: float = 30.0  # 매출 이상판정 편차 임계(%)
-    seller_conversion_drop_pct: float = 20.0  # 전환율 하락 이상 임계(%)
+    # ── 판매자 분석 임계값 (app/agents/seller 주입, 하드코딩 금지) ──
+    # [#290] 구 임계 튜너블(seller_ma_window·seller_ma_min_window·
+    # seller_anomaly_deviation_pct·seller_conversion_drop_pct)은 논문 기반 교체로
+    # 폐기 — 아래 "분석 계산 층" 블록(S-H-ESD·Wilson/z-검정)이 대체한다.
     seller_churn_inactive_days: int = 30  # 이탈 코호트 무활동 일수(I-16 inactiveDays 기본)
     # [#197 PR 리뷰] I-8 계정/보안 이벤트는 전역 데이터(브랜드 스코프 아님)이고
     # admin 소유 협의가 미완(🔴, api-spec §4.4 v0.19.1)이다. 종전엔 코드 결함(쿼리
@@ -257,6 +266,34 @@ class Settings(BaseSettings):
     # _summarize_behavior 가 꼬리 합계로 남긴다(정보 소실 없음).
     seller_summary_max_products: int = 10  # I-13 상품별 rows 상세 나열 상한(건)
     seller_list_default_limit: int = 20  # I-9 상품 목록 기본 limit(미지정 시)
+
+    # ── 판매자 분석 계산 층 (이슈 #290, app/agents/seller/analysis/ 주입) ──
+    # 근거 논문·산식은 docs/worker-papers.md — 아래 기본값은 논문 권장값이다.
+    # [timeseries — S-H-ESD (Hochenbaum 2017) + STL (Cleveland 1990)]
+    seller_stl_period: int = 7  # STL 계절 주기(일) — 요일 효과. Spring 주간 리듬 전제
+    seller_gesd_alpha: float = 0.05  # GESD 검정 유의수준
+    # GESD 최대 이상점 수 = ceil(기간 길이 × 이 비율) — S-H-ESD 권장 상한(≤0.49).
+    seller_gesd_max_anomalies_ratio: float = 0.2
+    # 도구가 요청 기간 앞에 붙여 조회하는 lookback(일) — STL 은 period 의 2주기 이상
+    # 이력이 있어야 계절 성분을 추정한다(2×7=14 에 여유 2주기 = 28).
+    seller_analysis_lookback_days: int = 28
+    # STL 적용 최소 이력(일) — 미만이면 STL 생략, robust z-score 폴백(분해 자체가 불능).
+    seller_min_history_for_stl: int = 14
+    # [proportions — Wilson CI + two-proportion z-검정 (conversion·churn 공용)]
+    seller_rate_test_alpha: float = 0.05  # 기간 비교 z-검정 유의수준
+    seller_wilson_confidence: float = 0.95  # Wilson 신뢰구간 수준
+    # [outliers — abuse 3-트랙 (Tan&Kumar 2002 피처, Chandola 2009 유형)]
+    seller_mad_threshold: float = 3.5  # robust z(MAD) 스파이크 임계 — Iglewicz-Hoaglin 권장
+    seller_tukey_k: float = 1.5  # Tukey fence 계수(Q3 + k×IQR)
+    # 심야 활동 판정 시간대 [start, end) — I-8 hour-groupBy Collective 트랙.
+    seller_night_hours_start: int = 0
+    seller_night_hours_end: int = 6
+    # [segmentation — k-means (Chen 2012), k 는 실루엣 최대 선택]
+    seller_behavior_kmeans_k_min: int = 2
+    seller_behavior_kmeans_k_max: int = 5
+    seller_kmeans_random_state: int = 42  # 결정론(§10-②) — 같은 입력 = 같은 군집
+    # [churn — 신호 순위화] pre_churn_signals 정규화 후 보고할 원인 후보 상위 k.
+    seller_churn_signal_top_k: int = 3
 
     # ── 판매자 후속 단계 대비 선등록 (1단계 미소비, 하드코딩 재발 방지) ──
     seller_report_score_threshold: int = 21  # 보고서 검증 통과 점수(21/30)
@@ -642,6 +679,166 @@ class Settings(BaseSettings):
     # 넓히지 않는다"(2026-07-30 계약 코멘트)와 어긋난다. screen_products_max(20)와도 같은 자릿수다.
     last_reco_max: int = Field(default=30, ge=1)
 
+    # ── 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현 진행 중) ──
+    # [라운드 23] 삭제·찜 흐름의 온/오프를 가리던 두 설정 필드(기본 False)를 삭제했다(사용자
+    # 지시 — 플래그를 두지 말고 항상 켜라) — 계약이 확정됐으니 판정이 나오면 항상 해당 흐름으로
+    # 위임한다. Spring 이 아직 배포 전이라 실호출은 실패로 degrade하지만(§4.12~4.16), 그 실패는
+    # AI 쪽 설정이 아니라 상대 서버 상태의 문제라 AI 코드에 게이트를 둘 이유가 없다.
+    # 삭제 발화 표지 — "빼" 같은 짧은 조각은 오탐(빼곡·빼고·뺴빼로)이 흔해 쓰지 않는다. 어미까지
+    # 포함한 동작 구만 잡는다("하나 빼고 담아줘"의 "빼고"는 여기 없음 — 삭제 지시가 아니다).
+    # [라운드 2 리뷰] 제거해줘·빼 주세요·지워 주세요 추가 — 흔한 변형이면서 전부 어미까지 갖춘
+    # 동작 구라 부분 문자열 오탐 위험이 없다.
+    cart_remove_markers: list[str] = [
+        "빼줘",
+        "빼주세요",
+        "빼 줘",
+        "지워줘",
+        "삭제해줘",
+        "제거해줘",
+        "빼 주세요",
+        "지워 주세요",
+    ]
+    # 담기 표지 — 삭제/찜 표지와 같은 발화에 함께 있으면 담기가 강한 신호로 우선한다(§4.1
+    # "찜한 거 담아줘"·"하나 빼고 담아줘" — 강한 신호는 약한 신호로 덮지 않는다, docs/lessons.md).
+    cart_add_markers: list[str] = ["담아", "장바구니에 넣"]
+    # 담기 표지의 과거 참조 꼬리(2차 리뷰 N-1) — "담아"는 "담아뒀던"·"담아둔"처럼 과거 참조형에도
+    # 부분 문자열로 걸린다("전부" ⊂ "전부터"와 같은 사고, docs/lessons.md 재발). `intent_guard.py`
+    # 가 이 표지 뒤 짧은 창(부정 표지와 같은 창)에 이 목록 중 하나가 오면 그 출현을 동작 요청이
+    # 아닌 것으로 친다(`wishlist_reference_markers` 가 "찜한"을 지시 수식어로 다루는 것과 같은
+    # 개념). **한 글자여도 되는 이유**: 이 목록은 발화 전체에서 부분 문자열 검색을 하지 않고
+    # 표지 직후의 좁은 창 안에서만 본다 — "전부"⊂"전부터"류처럼 발화 어딘가의 다른 단어에
+    # 우연히 묻히는 오탐 구조가 아니다.
+    cart_add_reference_markers: list[str] = ["뒀", "둔", "두었", "놨", "놓"]
+    # 찜 추가 표지 — "찜해줘"는 "이거 찜해줘" 처럼 앞에 다른 말이 붙어도 부분 문자열로 잡힌다.
+    # "찜 해주세요"는 띄어쓰기 변형이라 별도 표지로 둔다. 위시리스트는 동의 표현.
+    # [라운드 2 리뷰] 찜해주세요(붙여쓰기)·찜해 줘·찜 목록에 추가·위시리스트에 넣어 추가 — 전부
+    # 어미까지 갖춘 동작 구라 오탐 위험이 없다.
+    wishlist_add_markers: list[str] = [
+        "찜해줘",
+        "찜 해주세요",
+        "찜해주세요",
+        "찜해 줘",
+        "찜 목록에 넣어줘",
+        "찜 목록에 추가",
+        "위시리스트에 추가해줘",
+        "위시리스트에 넣어",
+    ]
+    # 찜 해제 표지. [라운드 2 리뷰] 찜 취소·찜에서 지워 추가.
+    # ⚠️ "찜 빼줘"는 cart_remove_markers 의 "빼줘"도 부분 문자열로 동시에 매칭한다 —
+    # classify_cart_utterance 의 판정 순서(찜 해제 → 찜 추가 → 삭제 → 담기)가 이 충돌을
+    # 해소한다(찜 해제를 삭제보다 먼저 본다). 표지 목록 자체는 겹침을 허용하고 순서로 정리한다.
+    wishlist_remove_markers: list[str] = [
+        "찜 빼줘",
+        "찜 해제해줘",
+        "찜에서 빼줘",
+        "찜 취소",
+        "찜에서 지워",
+    ]
+    # 찜 지시 표지 — "찜한 거 담아줘"·"찜해둔 이어폰 담아줘"류에서 찜은 지시 대상을 수식할 뿐
+    # 동작이 아니다. 이 표지가 있으면 찜 판정에 개입하지 않는다(그 발화의 동사는 담기다).
+    wishlist_reference_markers: list[str] = ["찜한", "찜해둔", "찜해 놓은", "찜했던"]
+    # 부정·유보 표지(2차 리뷰 지적 1·2·3, `intent_guard.py::_matches_unnegated`) — 표지 출현
+    # 바로 뒤 짧은 창 안에 이 표지 중 하나가 오면 그 표지 출현은 없는 것으로 친다("장바구니에
+    # 넣지는 마" 의 담기 표지 무효화, "빼줘야 할까"의 삭제 표지 무효화). 이 규칙은 **개입을
+    # 줄이는 방향**이라 오탐해도 오늘 동작(담기)으로 되돌아갈 뿐이라 넓게 잡아도 안전하지만,
+    # "않"처럼 짧은 조각은 다른 단어에 묻히므로(라운드 3 F-1 과 같은 이유) 어절 단위로 온전한
+    # 것만 담는다 — 지 마/지는 마/지마: "~하지 마"류 금지(종결형, "빼지 마"). 지 말: "~하지
+    # 말고"·"~하지 말아"·"~하지 말라"·"~하지 말자"류 활용형 전체를 어간("말")에서 잡는다
+    # (라운드 12 — "지 마" 만으로는 "지 말고"를 못 잡아, 이름과 부정 사이에 다른 낱말이 끼어
+    # "말고"가 창 밖으로 밀리면 "지 말"만 남은 창에서도 놓쳤다: "이어폰은 찜 빼지 말고 케이스
+    # 찜 빼줘"에서 "이어폰" 뒤 8자 창 "은 찜 빼지 말"에 "말고"는 안 들어와도 "지 말"은 들어온다).
+    # 하지 마: 위 표지가 못 잡는 "동사 없이 하지 마"류 보강. 말고: "A 말고 B" 대조·배제(표지가
+    # 이름 바로 뒤에 오는 경우). 야 할/야 될: "~해야 할까?" 류 의문·유보.
+    utterance_negation_markers: list[str] = [
+        "지 마",
+        "지는 마",
+        "지마",
+        "지 말",
+        "하지 마",
+        "말고",
+        "야 할",
+        "야 될",
+    ]
+    # 부정·유보 표지를 찾는 창 크기(문자 수) — 표지 출현 끝 위치부터 이 길이만큼만 본다.
+    # "장바구니에 넣지는 마"(담기 표지 뒤 "지는 마"까지 4자)·"빼줘야 할까"(삭제 표지 뒤 "야
+    # 할"까지 3자)를 모두 덮으면서, 창을 과하게 넓히면 표지와 무관한 뒷문장의 부정이 잘못
+    # 끌려오므로 6~8자 범위 중 여유를 둔 8로 잡았다.
+    utterance_negation_window: int = 8
+    # 접두 부정 표지(라운드 9, `intent_guard.py::_has_prefix_negation`) — 한국어 부정은 어미
+    # (위 `utterance_negation_markers`, 표지 **뒤**)뿐 아니라 부사 **접두**(안·못)로도 온다
+    # ("안 빼줘도 돼"). `utterance_negation_markers` 와 **합치지 않는다** — 검사 방향이
+    # 반대(하나는 표지 뒤를 보고, 하나는 표지 앞을 보는)라 한 목록에 두면 코드가 어느 방향으로
+    # 검사할지 표지 문자열만으로는 알 수 없다. "안"은 한국어에서 극히 흔한 조각이라("안경"·
+    # "안쪽"·"가방 안에") 부분 문자열 검색을 그대로 쓰면 정상 발화를 대량으로 삼킨다 —
+    # `_has_prefix_negation` 이 어절 경계(앞이 문자열 시작/공백, 표지와의 사이 공백 0~1개)로만
+    # 판정해 "안경 빼줘"·"가방 안에 있는 거 빼줘" 같은 정상 삭제 요청은 죽이지 않는다.
+    utterance_prefix_negation_markers: list[str] = ["안", "못"]
+    # 상품명 매칭 경계 — 오른쪽 조사 허용(이슈 #116·#117, 라운드 15, head `0b33e06` 리뷰 B).
+    # `remove.py`/`wishlist.py` 의 이름 매칭은 부분 문자열이라 "이어폰케이스"의 "이어폰"처럼
+    # 다른 낱말에 파묻힌 이름까지 오탐했다. 순진하게 "뒤가 공백/문장부호가 아니면 무효"로만
+    # 자르면 "그 세제를 빼줘"(목적격 조사 "를"이 이름 바로 뒤에 붙는 정상 발화)가 깨진다 —
+    # 그래서 오른쪽 경계에 조사도 허용한다. 최소 집합만 담는다(주격·목적격·보조사·접속·관형격·
+    # 처격·방향격·나열 각 1~2개) — 모든 조사를 망라하려 하지 않는다(그 시도 자체가 새 오탐
+    # 표면). "나"/"이나"(나열·선택 접속조사)는 패킷 최소 집합엔 없었지만 기존 회귀 테스트
+    # ("파우치 블루나 파우치 레드 찜 빼줘")가 이 조사 뒤 이름까지 매칭돼야 모호 판정(2건)이
+    # 유지되므로 추가했다 — 빠지면 "블루"만 boundary 를 통과해 단일 매칭으로 오판된다.
+    utterance_name_boundary_particles: list[str] = [
+        "은",
+        "는",
+        "이",
+        "가",
+        "을",
+        "를",
+        "도",
+        "만",
+        "과",
+        "와",
+        "랑",
+        "이랑",
+        "나",
+        "이나",
+        "의",
+        "에서",
+        "에",
+        "으로",
+        "로",
+    ]
+    # 이름 뒤 filler 낱말(이슈 #116·#117, 라운드 17, head `6ab47c9` 리뷰) — "이름 매칭 뒤 검사"
+    # (§ `negation.matches_name_unnegated` docstring)에서 조사 소비 후에도 표지가 바로 오지
+    # 않고 이 낱말들이 끼어 있으면 건너뛴다("이어폰 좀 빼줘"가 여전히 매칭돼야 한다). 뜻 없이
+    # 발화를 채우는 부사·수량사류로만 좁힌다 — 명사(상품명이 될 수 있는 말)는 절대 넣지 않는다
+    # (그러면 "이어폰 케이스 빼줘"의 "케이스"가 filler로 삼켜져 라운드 17 이 고치려는 바로 그
+    # 버그가 되살아난다).
+    utterance_name_trailing_filler_words: list[str] = [
+        "좀",
+        "지금",
+        "다시",
+        "그냥",
+        "일단",
+        "빨리",
+        "하나",
+    ]
+    # 삭제 대상 해소 — 전체 삭제 표지(이슈 #116, 패킷 §5.3). 결과가 이 판별기에서 가장
+    # 파괴적인 규칙(장바구니 전체 삭제)이라 표지도 가장 엄격하게 잡는다 — **명사 하나만
+    # 있는 표지는 금지**한다. "전부"는 온전한 단어처럼 보여도 "전부터"의 부분 문자열이라
+    # ("전부터 쓰던 거 빼줘" 오탐, 라운드 3 리뷰 F-1 재현) 동작 구로만 구성한다. "다" 한
+    # 글자도 "다른"·"다시"류와 겹쳐 같은 이유로 쓰지 않는다.
+    cart_remove_all_markers: list[str] = [
+        "전부 빼",
+        "전부 지워",
+        "전부 삭제",
+        "다 빼",
+        "다 지워",
+        "모두 빼",
+        "모두 지워",
+    ]
+    # 삭제 대상 해소 — "방금 담은 거" 표지. `CartStateStore.get_last_add` 의 cartItemId 로
+    # 이어진다(이슈 #116, 패킷 §5.3). [라운드 3 리뷰 F-1] 위 전체 삭제 표지와 달리 동작 구로
+    # 좁히지 않는다 — 이쪽은 결과가 "마지막에 담은 1건"뿐이라 파괴력이 훨씬 낮고, "방금"은
+    # 부사라 한국어에서 다른 단어의 앞부분으로 잘 묻히지 않는다(전부→전부터 같은 오탐 형태가
+    # 없다).
+    cart_remove_recent_markers: list[str] = ["방금", "아까 담은", "마지막에 담은"]
+
     # ── dedup (#4, api-spec §4.7 결정 14-F) ──
     # 최근 구매 제외 윈도우(일) — 이보다 오래된 구매는 제외 목록에서 뺀다(영구 제외 방지).
     dedup_recent_days: int = 90
@@ -711,7 +908,25 @@ class Settings(BaseSettings):
     # 방법이 없는 반면, 노이즈("그거 담아줘")를 넣으면 델타 추출 LLM 이 걸러내고(_DELTA_SYSTEM
     # "일회성 잡담·잡음은 제외") 게이트가 한 번 더 막으며 버퍼 상한·반복 상한이 방어한다.
     # 되돌릴 수 없는 실수를 되돌릴 수 있는 실수보다 무겁게 본다(#119 전체와 같은 논리).
-    profile_buffer_excluded_intents: list[str] = ["order_status", "cart_view"]
+    #
+    # cart_remove·wishlist_remove(이슈 #116·#117)는 **버퍼에서 제외한다** — 다만
+    # order_status·cart_view 와는 제외 이유 자체가 다르다. 저 둘은 취향 신호가 **0(노이즈)**인
+    # 상태 조회지만, 삭제·찜 해제는 신호가 0 이 아니라 **부호가 반대인 신호**다. "이어폰 빼줘"에는
+    # "이어폰"이라는 상품명이 멀쩡히 들어 있어 델타 추출 LLM 이 "일회성 잡담·잡음"으로 걸러낼
+    # 근거가 오히려 약하고, 걸러지지 않으면 **사용자가 방금 치운 상품이 선호로 학습된다.** 위
+    # "실수의 비대칭"(애매하면 넣는다)은 "노이즈를 넣는 실수 vs 신호를 놓치는 실수" 구도를
+    # 전제하는데, 역신호가 새는 것은 그 저울에 올릴 문제가 아니라서 이 판단을 그대로 적용하지
+    # 않는다(방어선 세 겹은 노이즈를 걸러내도록 만들어진 것이지 반대 부호 신호를 걸러내리라는
+    # 보장이 없다).
+    # `wishlist_add` 는 **버퍼에 남긴다(목록에 넣지 않는다)** — `cart_add` 와 같은 긍정 행동
+    # 신호이고 바로 위 문단의 이유(REQ-PROF-024/044, 발화 자체가 취향을 실어 나름)가 그대로
+    # 적용된다.
+    profile_buffer_excluded_intents: list[str] = [
+        "order_status",
+        "cart_view",
+        "cart_remove",
+        "wishlist_remove",
+    ]
     # I-20 처리 중 claim lease. delta+consolidation LLM 2단계의 기본 최악시간(약 120s)보다
     # 길게 두되, 프로세스 crash 잔재가 영구 duplicate가 되지 않도록 유한하게 유지한다.
     session_end_claim_ttl_s: float = 180.0
@@ -1661,15 +1876,6 @@ class Settings(BaseSettings):
                 "RATING_TIER 경계는 excellent >= good >= fair 여야 합니다"
                 f" ({self.rating_tier_excellent}/{self.rating_tier_good}/{self.rating_tier_fair})"
             )
-        # 이상 감지 window 정합(#194 PR 리뷰) — env 오설정(min_window ≤ 0 또는
-        # min_window > window)이면 calc.detect_sales_anomalies 가 daily 매출 조회
-        # 매 요청마다 ValueError 로 죽는다. 설정값은 요청마다 변하지 않으므로
-        # 런타임 반복 실패 대신 기동 시점에 fail-fast 한다.
-        if self.seller_ma_min_window < 1 or self.seller_ma_window < self.seller_ma_min_window:
-            raise ValueError(
-                "SELLER_MA_MIN_WINDOW 는 1 이상, SELLER_MA_WINDOW 이하여야 합니다"
-                f" (min_window={self.seller_ma_min_window}, window={self.seller_ma_window})"
-            )
         # 기간 기본값·상한 정합(#269 리뷰) — calc.normalize_period 는 기간 미지정("최근")일
         # 때 n=recent_default_days 로 두고 곧바로 n>max_days 상한 검사를 통과시킨다.
         # 상한을 기본값보다 낮게 내리면 가장 흔한 발화("최근 매출 어때?")조차 매번
@@ -1684,6 +1890,67 @@ class Settings(BaseSettings):
             raise ValueError(
                 "SELLER_RECENT_DAYS_DEFAULT 는 1 이상이어야 합니다"
                 f" (got {self.seller_recent_days_default})"
+            )
+        # ── 분석 계산 층 정합(#290) — env 오설정이면 조회 도구가 매 요청 실패하므로
+        # 기동 시점 fail-fast(#194 seller_ma window 검증과 같은 취지). ──
+        if self.seller_stl_period < 2:
+            # statsmodels STL 은 period>=2 요구 — 1 이면 계절 성분 정의 불가.
+            raise ValueError(
+                f"SELLER_STL_PERIOD 는 2 이상이어야 합니다 (got {self.seller_stl_period})"
+            )
+        if self.seller_min_history_for_stl < 2 * self.seller_stl_period:
+            # STL 은 최소 2 주기 이력이 필요하다(Cleveland 1990) — 미만 설정이면 폴백
+            # 경계(min_history_for_stl)를 통과한 입력이 STL 내부에서 죽는다.
+            raise ValueError(
+                "SELLER_MIN_HISTORY_FOR_STL 은 SELLER_STL_PERIOD 의 2배 이상이어야 합니다"
+                f" (min_history={self.seller_min_history_for_stl}, period={self.seller_stl_period})"
+            )
+        if self.seller_analysis_lookback_days < self.seller_min_history_for_stl:
+            # lookback 이 STL 최소 이력보다 짧으면 확장 조회를 하고도 상시 폴백이라
+            # lookback 비용만 내고 STL 은 영영 못 쓴다(무음 무효화 방지).
+            raise ValueError(
+                "SELLER_ANALYSIS_LOOKBACK_DAYS 는 SELLER_MIN_HISTORY_FOR_STL 이상이어야 합니다"
+                f" (lookback={self.seller_analysis_lookback_days},"
+                f" min_history={self.seller_min_history_for_stl})"
+            )
+        for alpha_name, alpha_value in (
+            ("SELLER_GESD_ALPHA", self.seller_gesd_alpha),
+            ("SELLER_RATE_TEST_ALPHA", self.seller_rate_test_alpha),
+        ):
+            if not 0.0 < alpha_value < 1.0:
+                raise ValueError(f"{alpha_name} 는 (0, 1) 구간이어야 합니다 (got {alpha_value})")
+        if not 0.0 < self.seller_wilson_confidence < 1.0:
+            raise ValueError(
+                f"SELLER_WILSON_CONFIDENCE 는 (0, 1) 구간이어야 합니다"
+                f" (got {self.seller_wilson_confidence})"
+            )
+        if not 0.0 < self.seller_gesd_max_anomalies_ratio <= 0.49:
+            # GESD 는 이상점 수 < 표본의 절반 전제 — 0.49 초과는 검정 전제 붕괴(S-H-ESD §3).
+            raise ValueError(
+                "SELLER_GESD_MAX_ANOMALIES_RATIO 는 (0, 0.49] 구간이어야 합니다"
+                f" (got {self.seller_gesd_max_anomalies_ratio})"
+            )
+        if self.seller_mad_threshold <= 0 or self.seller_tukey_k <= 0:
+            raise ValueError(
+                "SELLER_MAD_THRESHOLD·SELLER_TUKEY_K 는 양수여야 합니다"
+                f" (mad={self.seller_mad_threshold}, tukey={self.seller_tukey_k})"
+            )
+        if not (0 <= self.seller_night_hours_start < self.seller_night_hours_end <= 24):
+            raise ValueError(
+                "심야 시간대는 0 <= start < end <= 24 여야 합니다"
+                f" (start={self.seller_night_hours_start}, end={self.seller_night_hours_end})"
+            )
+        if not 2 <= self.seller_behavior_kmeans_k_min <= self.seller_behavior_kmeans_k_max:
+            # k<2 는 군집이 아니라 전체 1군집이라 무의미 — sklearn 도 n_clusters>=2 를 요구.
+            raise ValueError(
+                "SELLER_BEHAVIOR_KMEANS_K 범위는 2 <= k_min <= k_max 여야 합니다"
+                f" (k_min={self.seller_behavior_kmeans_k_min},"
+                f" k_max={self.seller_behavior_kmeans_k_max})"
+            )
+        if self.seller_churn_signal_top_k < 1:
+            raise ValueError(
+                f"SELLER_CHURN_SIGNAL_TOP_K 는 1 이상이어야 합니다"
+                f" (got {self.seller_churn_signal_top_k})"
             )
         if not (self.review_tier_many >= self.review_tier_some >= self.review_tier_few):
             raise ValueError(

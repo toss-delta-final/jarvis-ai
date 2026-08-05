@@ -65,7 +65,12 @@ def test_profile_injection_defaults() -> None:
     assert settings.profile_injection_scope == "rerank_only"
     assert settings.profile_rerank_influence == "tiebreak"
     assert settings.profile_buffer_repeat_cap == 2
-    assert settings.profile_buffer_excluded_intents == ["order_status", "cart_view"]
+    assert settings.profile_buffer_excluded_intents == [
+        "order_status",
+        "cart_view",
+        "cart_remove",
+        "wishlist_remove",
+    ]
 
 
 @pytest.mark.parametrize("value", [0, 1])

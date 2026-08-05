@@ -485,12 +485,32 @@ class ActionData(CamelModel):
     OUT_OF_STOCK 폐기: 품절=0 표현이라 'N개 남음'과 불일치, CH-2).
     GUEST_NOT_ALLOWED 폐기 — 게스트 담기 허용(결정 8 개정). 옵션 되물음(CART_OPTION_REQUIRED)은
     실패 action 이 아니라 token 재질문 멀티턴으로 처리한다(api-spec §3.1·§4.1).
+
+    [이슈 #116·#117] `CART_REMOVED`·`CART_REMOVE_FAILED`·`WISHLIST_ADDED`·`WISHLIST_ADD_FAILED`·
+    `WISHLIST_REMOVED`·`WISHLIST_REMOVE_FAILED`, reason `WISHLIST_ERROR` 는 **확정 2026-08-05**
+    (정본 CH-2 등재 완료, I-24~I-28 — `docs/api-spec.md` §3.1 v0.22.0에 반영됨). **[라운드 23]**
+    삭제·찜 흐름의 온/오프를 가리던 두 설정 필드를 제거했다 — 이제 항상 emit 된다.
     """
 
-    type: Literal["CART_ADDED", "CART_ADD_FAILED"]
+    type: Literal[
+        "CART_ADDED",
+        "CART_ADD_FAILED",
+        "CART_REMOVED",
+        "CART_REMOVE_FAILED",
+        "WISHLIST_ADDED",
+        "WISHLIST_ADD_FAILED",
+        "WISHLIST_REMOVED",
+        "WISHLIST_REMOVE_FAILED",
+    ]
     message: str
+    # [확정 2026-08-05] cartItemId 는 number(BIGINT) — 삭제 확장안이 제안했던 문자열 표기는
+    # 채택되지 않았다. 정본 CH-2·FE 타입(`ChatAction`)·이 필드(CART_ADDED 가 이미 쓰는 int, FE
+    # 사용 중) 셋 다 number 로 확정돼, CART_REMOVED 도 이 필드를 그대로 재사용한다(§2.6·
+    # docs/api-spec.md §3.1).
     cart_item_id: int | None = None  # 숫자(BIGINT, cart_item.id)
-    reason: Literal["STOCK_INSUFFICIENT", "PRODUCT_NOT_FOUND", "CART_ERROR"] | None = None
+    reason: (
+        Literal["STOCK_INSUFFICIENT", "PRODUCT_NOT_FOUND", "CART_ERROR", "WISHLIST_ERROR"] | None
+    ) = None
 
 
 class ProductsReadyData(CamelModel):
