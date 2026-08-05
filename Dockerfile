@@ -36,6 +36,10 @@ WORKDIR /app
 # 가상환경과 소스만 반입.
 COPY --from=builder --chown=jarvis:jarvis /app/.venv /app/.venv
 COPY --from=builder --chown=jarvis:jarvis /app/app /app/app
+# db/ 는 런타임 의존이다 — session_context.initialize() 가 부팅 시
+# db/profile/init/03_chat_session_contexts.sql 을 파일로 읽어 실행한다(이슈 #319).
+# 빠뜨리면 컨테이너에서 FileNotFoundError 로 부팅이 실패한다.
+COPY --chown=jarvis:jarvis db /app/db
 
 ENV PATH="/app/.venv/bin:$PATH"
 
