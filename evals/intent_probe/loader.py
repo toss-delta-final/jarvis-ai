@@ -75,6 +75,9 @@ def build_context_kwargs(anchors: AnchorSet, context: ProbeContext) -> dict[str,
 
     PENDING_CART 모양은 app/agents/buyer/graph.py 가 실제로 넘기는 dict 와 같아야 한다
     (quantity·attempts 는 프롬프트에 싣지 않는다).
+
+    [#84] 어느 PRIOR_FILTERS 를 싣는지는 `context.prior_filters_ref` 가 고른다 — 기본값
+    `default` 는 기존 컨텍스트가 쓰던 `anchors.prior_filters` 그대로다.
     """
     pending = None
     if context.include_pending_cart:
@@ -84,9 +87,14 @@ def build_context_kwargs(anchors: AnchorSet, context: ProbeContext) -> dict[str,
                 {"optionId": option.option_id, "name": option.name} for option in anchors.options
             ],
         }
+    prior_source = (
+        anchors.category_prior_filters
+        if context.prior_filters_ref == "category"
+        else anchors.prior_filters
+    )
     return {
         "prior_filters": (
-            ProductSearchFilters.model_validate(anchors.prior_filters)
+            ProductSearchFilters.model_validate(prior_source)
             if context.include_prior_filters
             else None
         ),

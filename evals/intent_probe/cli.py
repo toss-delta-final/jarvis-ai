@@ -29,7 +29,7 @@ from evals.intent_probe.loader import (
     load_anchor_set,
     resolve_fixture_path,
 )
-from evals.intent_probe.manifest import build_intent_probe_manifest
+from evals.intent_probe.manifest import build_intent_probe_manifest, category_scope_prompt_sha256
 from evals.intent_probe.metrics import diagnostics, score_all
 from evals.intent_probe.pacer import GlobalPacer, PacerLimits
 from evals.intent_probe.report import build_results, write_artifacts
@@ -72,6 +72,11 @@ def _parser() -> argparse.ArgumentParser:
     selection.add_argument("--case-ids", help="utteranceId 쉼표 목록")
     selection.add_argument("--case-limit", type=int)
     parser.add_argument("--dry-run", action="store_true", help="가짜 LLM — API 를 부르지 않는다")
+    parser.add_argument(
+        "--no-classifier",
+        action="store_true",
+        help="카테고리 범위 해제 분류기를 호출하지 않는다(#84 결함 재현용 — scopeFree 는 전부 None)",
+    )
     parser.add_argument("--seed", type=int, default=20260803)
     return parser
 
@@ -190,6 +195,10 @@ def main(argv: list[str] | None = None) -> int:
                 concurrency=args.concurrency,
                 category_fanout_max=settings.category_fanout_max,
                 repurchase_max=settings.dedup_repurchase_max,
+                # [#84] 분류기 tier·max_tokens 는 배포 설정 그대로 쓴다 — `--tier` 는 decompose
+                # 축의 스윕이고, 보조 분류기까지 함께 흔들면 두 변수를 한 표에서 재게 된다.
+                settings=settings,
+                classifier_enabled=not args.no_classifier,
                 sleep=sleep,
                 on_cell_done=collected.append,
             )
@@ -223,6 +232,16 @@ def main(argv: list[str] | None = None) -> int:
         pacer=pacer.snapshot(),
         budget=budget.snapshot(),
         dry_run=args.dry_run,
+        # [#84·G-1] 분류기 팔이 켜졌는지를 산출물에 남긴다 — 안 남기면 두 표를 나중에 구분할 수
+        # 없다(같은 프롬프트 해시·같은 픽스처인데 카테고리 축만 무너진 표가 된다).
+        category_scope_prompt=(
+            None
+            if args.no_classifier
+            else {
+                "sha256": category_scope_prompt_sha256(),
+                "sha12": category_scope_prompt_sha256()[:12],
+            }
+        ),
     )
     manifest = build_intent_probe_manifest(
         command=_command(argv),
@@ -240,6 +259,7 @@ def main(argv: list[str] | None = None) -> int:
         cell_ids=[cell.cell_id for cell in results_cells],
         axis_definitions={axis_id: axis.as_dict()["definition"] for axis_id, axis in axes.items()},
         dry_run=args.dry_run,
+        classifier_enabled=not args.no_classifier,
     )
     write_artifacts(args.out, results=results, manifest=manifest, cells=results_cells)
 

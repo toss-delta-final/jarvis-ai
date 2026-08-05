@@ -1,11 +1,12 @@
 {
-  "fixtureVersion": "intent-probe-anchors-b-v1",
-  "schemaVersion": "1.0.0",
+  "fixtureVersion": "intent-probe-anchors-b-v3",
+  "schemaVersion": "1.1.0",
   "reaskProductId": 102,
   "reaskProductListPosition": 2,
   "reaskPositionRationale": "되물음 상품이 LAST_RECOMMENDATIONS 의 몇 번째인지를 명시적으로 고정한다. #240 에서 이 위치가 1번이냐 2번이냐만으로 `일반형`(1번 옵션) 정답률이 fast 기준 8/8 ↔ 3/8 로 갈렸고(smart 는 양쪽 8/8), 그 차이 때문에 cand11 채택 판정이 뒤집혔다. 위치가 옵션 선택에 샌다는 것이 실측된 이상 이 값을 고정하지 않으면 어떤 표도 재현되지 않는다. anchors_a.json(1번)과 anchors_b.json(2번)의 차이는 이 축 하나뿐이며, 앵커를 바꾸면 결과가 달라진다는 사실 자체를 두 판본으로 시연한다.",
   "switchTargets": ["이어폰", "섬유유연제"],
   "priorFilters": { "semanticQuery": "세탁 세제" },
+  "categoryPriorFilters": { "category": "음향가전 > 이어폰", "semanticQuery": "무선 이어폰" },
   "lastRecommendations": [
     { "productId": 101, "name": "리필 세탁 세제 2L" },
     { "productId": 102, "name": "고농축 액상 세탁 세제" },
@@ -34,6 +35,13 @@
       "includePriorFilters": true,
       "includeLastRecommendations": true,
       "includePendingCart": true
+    },
+    {
+      "contextId": "categoryPrior",
+      "includePriorFilters": true,
+      "includeLastRecommendations": false,
+      "includePendingCart": false,
+      "priorFiltersRef": "category"
     }
   ],
   "utterances": [
@@ -245,6 +253,130 @@
       "expected": { "intent": "general" },
       "axes": ["general"],
       "note": "#240 §3: 맥락 없음 100% / 직전추천 45% / PENDING_CART 30%. 맥락 주입이 원인임을 가장 크게 드러내는 셀."
+    },
+    {
+      "utteranceId": "category-carry-001",
+      "group": "category_action",
+      "text": "더 저렴한 걸로",
+      "contexts": ["categoryPrior"],
+      "expected": { "intent": "recommend", "categoryAction": "carry" },
+      "axes": ["categoryAction3Way", "categoryCarry"],
+      "note": "[#84] 이 컨텍스트는 LAST_RECOMMENDATIONS 를 싣지 않는다 — 직전 추천 목록이 붙으면 그 상품명이 카테고리 판정에 섞여(#118 라운드 2 실측) 재려는 축이 오염된다. 이 축은 PRIOR_FILTERS.category 단독의 효과를 잰다."
+    },
+    {
+      "utteranceId": "category-carry-002",
+      "group": "category_action",
+      "text": "다른 브랜드로 보여줘",
+      "contexts": ["categoryPrior"],
+      "expected": { "intent": "recommend", "categoryAction": "carry" },
+      "axes": ["categoryAction3Way", "categoryCarry"]
+    },
+    {
+      "utteranceId": "category-carry-003",
+      "group": "category_action",
+      "text": "평점 4.5 이상인 걸로",
+      "contexts": ["categoryPrior"],
+      "expected": { "intent": "recommend", "categoryAction": "carry" },
+      "axes": ["categoryAction3Way", "categoryCarry"]
+    },
+    {
+      "utteranceId": "category-carry-004",
+      "group": "category_action",
+      "text": "그 중에 배송 빠른 거",
+      "contexts": ["categoryPrior"],
+      "expected": { "intent": "recommend", "categoryAction": "carry" },
+      "axes": ["categoryAction3Way", "categoryCarry"]
+    },
+    {
+      "utteranceId": "category-clear-001",
+      "group": "category_action",
+      "text": "5만원 이하 아무거나 있어?",
+      "contexts": ["categoryPrior"],
+      "expected": { "intent": "recommend", "categoryAction": "clear" },
+      "axes": ["categoryAction3Way", "categoryClear"],
+      "note": "발화에 직전 카테고리 어휘를 넣지 않는다 — 넣으면 carry/replace 어느 쪽으로도 읽혀 정답이 자명하지 않다(#240 픽스처 함정과 같은 부류이며 스키마가 막는다)."
+    },
+    {
+      "utteranceId": "category-clear-002",
+      "group": "category_action",
+      "text": "종류 상관없이 인기 있는 거 추천해줘",
+      "contexts": ["categoryPrior"],
+      "expected": { "intent": "recommend", "categoryAction": "clear" },
+      "axes": ["categoryAction3Way", "categoryClear"]
+    },
+    {
+      "utteranceId": "category-clear-003",
+      "group": "category_action",
+      "text": "그냥 아무거나 보여줘",
+      "contexts": ["categoryPrior"],
+      "expected": { "intent": "recommend", "categoryAction": "clear" },
+      "axes": ["categoryAction3Way", "categoryClear"]
+    },
+    {
+      "utteranceId": "category-clear-004",
+      "group": "category_action",
+      "text": "카테고리 상관없이 3만원대로 골라줘",
+      "contexts": ["categoryPrior"],
+      "expected": { "intent": "recommend", "categoryAction": "clear" },
+      "axes": ["categoryAction3Way", "categoryClear"]
+    },
+    {
+      "utteranceId": "category-replace-001",
+      "group": "category_action",
+      "text": "이번엔 노트북 보여줘",
+      "contexts": ["categoryPrior"],
+      "expected": { "intent": "recommend", "categoryAction": "replace" },
+      "axes": ["categoryAction3Way", "categoryReplace"],
+      "note": "새 상품을 말한 턴 — categoryQueries 에 leg 가 실려야 확정값이 replace 가 된다."
+    },
+    {
+      "utteranceId": "category-replace-002",
+      "group": "category_action",
+      "text": "청바지 추천해줘",
+      "contexts": ["categoryPrior"],
+      "expected": { "intent": "recommend", "categoryAction": "replace" },
+      "axes": ["categoryAction3Way", "categoryReplace"]
+    },
+    {
+      "utteranceId": "category-replace-003",
+      "group": "category_action",
+      "text": "운동화로 바꿔줘",
+      "contexts": ["categoryPrior"],
+      "expected": { "intent": "recommend", "categoryAction": "replace" },
+      "axes": ["categoryAction3Way", "categoryReplace"]
+    },
+    {
+      "utteranceId": "category-mixed-001",
+      "group": "category_action",
+      "text": "스피커 아무거나 보여줘",
+      "contexts": ["categoryPrior"],
+      "expected": { "intent": "recommend", "categoryAction": "replace" },
+      "axes": ["categoryAction3Way", "categoryMixedReplace"],
+      "note": "[라운드 3] **혼합 발화** — 새 카테고리를 지목하면서 동시에 '아무거나'류 표현을 쓴다. 실 LLM 실측에서 이 4발화 32건 중 19건이 clear 로 확정돼 사용자가 말한 카테고리가 버려졌다(이 발화는 8/8). 기대는 replace 이고, 축은 categoryMixedReplace 로 따로 센다 — categoryReplace 의 분모(24)를 유지해야 v2 기준선과 비교가 된다."
+    },
+    {
+      "utteranceId": "category-mixed-002",
+      "group": "category_action",
+      "text": "이번엔 노트북 아무거나",
+      "contexts": ["categoryPrior"],
+      "expected": { "intent": "recommend", "categoryAction": "replace" },
+      "axes": ["categoryAction3Way", "categoryMixedReplace"]
+    },
+    {
+      "utteranceId": "category-mixed-003",
+      "group": "category_action",
+      "text": "운동화 아무거나 추천해줘",
+      "contexts": ["categoryPrior"],
+      "expected": { "intent": "recommend", "categoryAction": "replace" },
+      "axes": ["categoryAction3Way", "categoryMixedReplace"]
+    },
+    {
+      "utteranceId": "category-mixed-004",
+      "group": "category_action",
+      "text": "종류 상관없이 청바지로 보여줘",
+      "contexts": ["categoryPrior"],
+      "expected": { "intent": "recommend", "categoryAction": "replace" },
+      "axes": ["categoryAction3Way", "categoryMixedReplace"]
     }
   ]
 }
