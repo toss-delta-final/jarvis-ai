@@ -16,7 +16,7 @@ from evals.intent_probe.loader import (
     load_anchor_set,
     resolve_fixture_path,
 )
-from evals.intent_probe.schema import AnchorSet
+from evals.intent_probe.schema import GROUP_ALLOWED_CONTEXTS, GROUPS, AnchorSet
 
 SETTINGS = get_settings()
 
@@ -273,7 +273,7 @@ def test_non_category_utterance_declaring_a_new_axis_is_rejected() -> None:
 def test_category_utterance_must_use_only_the_category_prior_context() -> None:
     data = _raw("b")
     _category_utterance(data)["contexts"] = ["categoryPrior", "none"]
-    with pytest.raises(ValidationError, match="categoryPrior"):
+    with pytest.raises(ValidationError, match="만 선언할 수 있는데"):
         AnchorSet.model_validate(data)
 
 
@@ -477,28 +477,31 @@ def test_pending_cart_and_screen_together_is_rejected() -> None:
 
 
 def test_non_screen_utterance_declaring_a_screen_context_is_rejected() -> None:
-    """[리뷰 1차 F-1] 비-screen 발화가 screen 컨텍스트를 contexts 에 끼워 넣으면 안 된다.
+    """[리뷰 1차 F-1 → #313] 비-screen 발화가 screen 컨텍스트를 contexts 에 끼워 넣으면 안 된다.
 
     이걸 막지 않으면 `cartControl` 같은 기존 축의 분모가 셀 수와 함께 조용히 불어나 커밋된
-    기준선과 비교할 수 없게 된다(재현: cart-control-001 이 screenTriple 을 추가로 선언).
+    기준선과 비교할 수 없게 된다(재현: cart-control-001 이 screenTriple 을 추가로 선언). [#313]
+    전용 검증자(`_non_screen_utterances_cannot_reference_screen_contexts`)를
+    `GROUP_ALLOWED_CONTEXTS` 일반형 매핑이 흡수했다 — `cart_control` 의 허용 컨텍스트에
+    `screenTriple` 이 없어 여전히 거부된다.
     """
     data = _raw("b")
     for utterance in data["utterances"]:
         if utterance["utteranceId"] == "cart-control-001":
             utterance["contexts"].append("screenTriple")
             break
-    with pytest.raises(ValidationError, match="screen 컨텍스트"):
+    with pytest.raises(ValidationError, match="만 선언할 수 있는데"):
         AnchorSet.model_validate(data)
 
 
 def test_general_utterance_declaring_a_screen_context_is_rejected() -> None:
-    """[리뷰 1차 F-1] 읽기 전용 리뷰어가 독립 재현한 두 번째 사례 — general 그룹도 막혀야 한다."""
+    """[리뷰 1차 F-1 → #313] 읽기 전용 리뷰어가 독립 재현한 두 번째 사례 — general 그룹도 막혀야 한다."""
     data = _raw("b")
     for utterance in data["utterances"]:
         if utterance["utteranceId"] == "general-001":
             utterance["contexts"].append("screenSingle")
             break
-    with pytest.raises(ValidationError, match="screen 컨텍스트"):
+    with pytest.raises(ValidationError, match="만 선언할 수 있는데"):
         AnchorSet.model_validate(data)
 
 
@@ -643,4 +646,103 @@ def test_screen_product_name_overlapping_screen_last_recommendations_is_rejected
     # screenLastRecommendations[0] 과 같은 이름을 screen-single 상품에 심는다.
     data["screens"][0]["products"][0]["name"] = "리필 세탁 세제 2L"
     with pytest.raises(ValidationError, match="screenLastRecommendations"):
+        AnchorSet.model_validate(data)
+
+
+# ─────────── [#313] group → 허용 컨텍스트 매핑 ───────────
+
+
+def _utterance(data: dict, utterance_id: str) -> dict:
+    return next(u for u in data["utterances"] if u["utteranceId"] == utterance_id)
+
+
+def test_group_allowed_contexts_covers_every_group() -> None:
+    # group 을 추가하면서 매핑을 안 채우면 이 테스트가 어긋난다 — 매핑에 한 줄을 넣지 않으면
+    # 그 group 은 어떤 컨텍스트도 선언할 수 없다는 안전 기본값이 이슈의 요구다.
+    assert GROUP_ALLOWED_CONTEXTS.keys() == GROUPS
+
+
+@pytest.mark.parametrize(
+    "utterance_id",
+    ["cart-control-001", "order-status-001", "demonstrative-001"],
+)
+def test_denominator_changing_context_addition_is_rejected(utterance_id: str) -> None:
+    """[#313 재현 1/3] categoryPrior 를 추가로 선언하면 셀 수(분모)가 조용히 늘어난다 — 기존 수치
+    가드(`test_existing_axis_denominators_are_unaffected_by_screen_cells`)가 잡던 경로지만,
+    이번엔 group→컨텍스트 매핑이 애초에 선언 자체를 막는다."""
+    data = _raw("b")
+    _utterance(data, utterance_id)["contexts"].append("categoryPrior")
+    with pytest.raises(ValidationError, match="만 선언할 수 있는데"):
+        AnchorSet.model_validate(data)
+
+
+def test_option_answer_context_swap_to_none_is_rejected() -> None:
+    """[#313 재현 — 분모 불변 케이스] `option_answer` 의 contexts 를 `pendingCart`→`none` 으로
+    치환하면 셀 수·분모는 그대로라 기존 수치 가드를 통과하지만, 프롬프트에 PENDING_CART(옵션
+    목록)가 실리지 않아 LLM 이 고를 대상 자체가 없어져 `optionAnswer` 가 조용히 ~0/32 로
+    떨어진다. 매핑이 이 치환 자체를 거부해야 한다."""
+    data = _raw("b")
+    _utterance(data, "option-answer-001")["contexts"] = ["none"]
+    with pytest.raises(ValidationError, match="만 선언할 수 있는데"):
+        AnchorSet.model_validate(data)
+
+
+def test_switch_context_swap_to_last_recommendations_is_rejected() -> None:
+    """[#313 재현 — 분모 불변 케이스] `switch` 의 contexts 를 `pendingCart`→`lastRecommendations`
+    로 치환하면 셀 수·분모는 그대로지만, 되물음이 없어 "되물음 상품이 아닌 목록 내 상품" 술어가
+    성립하지 않는다."""
+    data = _raw("b")
+    _utterance(data, "switch-001")["contexts"] = ["lastRecommendations"]
+    with pytest.raises(ValidationError, match="만 선언할 수 있는데"):
+        AnchorSet.model_validate(data)
+
+
+def test_cart_control_declaring_a_screen_context_is_still_rejected_after_mapping() -> None:
+    """[#313, 대조] #300 전용 검증자를 삭제한 뒤에도 매핑이 같은 위반을 막는지 확인한다."""
+    data = _raw("b")
+    _utterance(data, "cart-control-001")["contexts"].append("screenTriple")
+    with pytest.raises(ValidationError, match="만 선언할 수 있는데"):
+        AnchorSet.model_validate(data)
+
+
+def test_duplicate_context_in_contexts_is_rejected() -> None:
+    data = _raw("b")
+    _category_utterance(data)["contexts"] = ["categoryPrior", "categoryPrior"]
+    with pytest.raises(ValidationError, match="중복이 있습니다"):
+        AnchorSet.model_validate(data)
+
+
+def test_include_screen_true_on_non_screen_context_id_is_rejected() -> None:
+    """[리뷰 1차 F-1] contextId 가 screen 이 아닌데 includeScreen 을 켜면 거부해야 한다.
+
+    `GROUP_ALLOWED_CONTEXTS`(contextId 문자열 기준)와 `_screen_utterances_reference_a_screen_context`
+    (AnchorSet, includeScreen 플래그 기준)는 같은 뜻이라는 전제로 서 있다 — 이 전제가 깨지면
+    (contextId="none" 인데 includeScreen=true) group→컨텍스트 매핑을 우회해 screen 맥락이
+    비-screen 발화에 실릴 수 있다. `screenRef` 를 함께 채우는 이유: 비워두면
+    `_screen_ref_presence_matches_include_screen` 이 먼저 발화해 대상 검증자에 도달하지 못한다.
+    """
+    data = _raw("b")
+    screen_id = data["screens"][0]["screenId"]
+    for context in data["contexts"]:
+        if context["contextId"] == "none":
+            context["includeScreen"] = True
+            context["screenRef"] = screen_id
+            break
+    with pytest.raises(ValidationError, match="screen 여부"):
+        AnchorSet.model_validate(data)
+
+
+def test_include_screen_false_on_screen_context_id_is_rejected() -> None:
+    """[리뷰 1차 F-1] contextId 가 screen 인데 includeScreen 을 끄면 거부해야 한다(역방향).
+
+    `screenRef` 도 함께 비우는 이유: 남겨두면 `_screen_ref_presence_matches_include_screen`
+    이 먼저 발화해 대상 검증자에 도달하지 못한다.
+    """
+    data = _raw("b")
+    for context in data["contexts"]:
+        if context["contextId"] == "screenSingle":
+            context["includeScreen"] = False
+            context["screenRef"] = None
+            break
+    with pytest.raises(ValidationError, match="screen 여부"):
         AnchorSet.model_validate(data)

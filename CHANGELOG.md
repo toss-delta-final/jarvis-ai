@@ -114,6 +114,25 @@
   - **아직 안 되는 것 3가지 — 릴리스 노트만 보고 "이제 다 된다"로 읽지 말 것.** (1) **Spring 이 I-24~I-28 을 아직 구현 진행 중**이라 배포 전에는 이 발화들이 호출은 나가도 응답을 못 받아 실패 안내로 끝난다. (2) **FE `ChatAction` 유니온에 신규 8종이 아직 없다** — FE 수신부가 붙기 전에는 성공해도 화면에 반영되지 않는다. (3) **수량 변경(I-25)은 계약만 등재됐고 AI 는 미구현**이다(대응 이슈 없음, §4.13) — "3개로 바꿔줘"류 발화는 아직 아무 동작도 하지 않는다.
 
 ### Changed
+- **#313 — group→컨텍스트 매핑을 데이터(`GROUP_ALLOWED_CONTEXTS`)로 강제, #300·#84 전용 검증자를 일반형으로 흡수** —
+  `evals/intent_probe/schema.py` 에 group → 허용 컨텍스트 매핑을 데이터로 두고 `Utterance`
+  검증자(`_contexts_are_within_the_group_allowlist`)가 강제한다. 매핑에 없는 group 은 어떤
+  컨텍스트도 선언할 수 없는 안전한 기본값이다. `AnchorSet._non_screen_utterances_cannot_reference_screen_contexts`
+  (#300)를 삭제하고 `Utterance._category_action_group_is_isolated`(#84)의 컨텍스트 분기도
+  제거했다 — **축 격리 규칙 자체는 유지**된다. #300 이 남긴 categoryPrior 관련 ⚠️ 범위 밖
+  주석도 이 일반형 매핑이 흡수하며 해소됐다. 기존 수치 가드는 **분모가 변하는** 오염만
+  잡았는데, `option_answer` 의 컨텍스트를 `pendingCart`→`none` 으로, `switch` 를 `pendingCart`
+  →`lastRecommendations` 로 **맞바꾸는** 조작은 셀 수·분모가 그대로라 커밋된 모든 가드를
+  통과했다 — 전자는 프롬프트에 PENDING_CART(옵션 목록)가 실리지 않아 `optionAnswer` 가
+  조용히 ~0/32 로 떨어지고, 후자는 되물음이 없어 "되물음 상품이 아닌 목록 내 상품" 술어가
+  성립하지 않는다(그 표를 받아 든 사람은 #240 처럼 픽스처 결함을 프롬프트 회귀로 오독한다).
+  contextId 문자열 기준의 새 매핑과 `includeScreen` 플래그 기준의 기존 검증자가 어긋나면
+  매핑을 우회할 수 있어 이음매 검증자 `ProbeContext._include_screen_matches_context_id` 를
+  신설해 양방향으로 강제했다. 테스트는 이슈 재현표의 조작 6건(분모 불변 2건 포함) 거부 +
+  매핑 키 == `GROUPS` 고정 + 중복 컨텍스트 거부 + 이음매 검증자 양방향 2건을 추가로 고정했고,
+  전체 `uv run pytest` **4038 passed**. 커밋된 앵커 2종(`anchors_a`/`anchors_b`)은 내용 한
+  글자 바꾸지 않고 새 규칙을 그대로 통과한다 — `schemaVersion`/`fixtureVersion` 상승 없음
+  (픽스처 내용 불변). 프로덕션 코드·프롬프트 무접촉. 계약(api-spec) 무변경.
 - **#347 — Claude PR Review 에 `skip-claude-review` 라벨 게이트 추가** — 워크플로 job `if:` 에 라벨 조건을 더해, 리뷰가 불필요한 PR(대량 병합 정합·실험 브랜치)을 PR 단위로 끌 수 있게 했다. 기본 동작(라벨 없음 = 리뷰 실행)은 불변이며, 라벨 부착/제거는 다음 push 부터 적용된다. 계약(api-spec) 무변경.
 
 ### Removed
