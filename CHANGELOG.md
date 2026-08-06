@@ -9,19 +9,6 @@
 
 ## [Unreleased]
 
-### Docs
-- **#384 — #363 후속: 구제~자동완화를 아우르는 공유 왕복 예산/first-token 데드라인 가드 설계** —
-  #363의 전제("첫 SSE=`conditions`, 예산=first-token 10s")가 #396(구매자 `progress` 상시화,
-  api-spec v0.26.2)으로 깨져 재기준선했다. 구속 예산은 이제 `stream_total_timeout_buyer_s`(30s)
-  + 체감 지연이고, 오늘 기본값(`spring_max_retries=0`)에서는 여유(40%)가 있으나 재시도 억제
-  스코프 비대칭(이 문서가 새로 발견) 때문에 **#394 원복(재시도 1로 복귀) 단독으로도 여유가
-  즉시 50%로 줄고, #394+#306(미룬 턴 재시도 스킵)을 함께 원복하면 70%까지** 깎인다 — 공유
-  예산은 "지금 필요한 가드"가 아니라 "#394/#306 원복의 선행 조건"으로 판정하고, 원복 시 사람
-  판단 없이 등급이 정해지도록 3단 등급(관측/좁히기/좁히기+건너뛰기)의 진입 임계값(1급 지표
-  자체의 이론 최댓값 대비 비율로 정의 — 30s 대비 고정 비율은 그 지표의 도달 가능 범위 밖이라
-  기각)을 사전 결속했다. 코드·계약 변경 없음(개정안은 문서 안에 diff로만 제시).
-  (`docs/specs/DESIGN-SHARED-BUDGET-384.md`)
-
 ### Added
 - **#396 — 구매자 `progress` 다회 emit + `stage` 어휘 확장(1종 → 7종, 개방형)** —
   `analyzing` 1종·턴당 최대 1회이던 진행 표시를 파이프라인의 실제 경계마다 stage 를 바꿔
@@ -218,6 +205,17 @@
 - **#299 — 요청 바디 크기 상한** — 필드별 상한(`chat_message_max_chars`·`screen_products_raw_scan_max` 등)은 흩어져 있고 상한 없는 필드(`conditionActions` 등)도 계속 생기는데, 레이트 리밋(§2.8)은 요청 **건수**만 세 임의 크기 바디를 반복 전송할 수 있었다. `app/core/body_limit.py`에 `BodySizeLimitMiddleware`(순수 ASGI)를 신설해 `Content-Length` 초과는 바디를 읽기 전에, 헤더가 없는(chunked) 경우는 `receive`를 감싼 실수신 바이트 누적으로 상한(`request_body_max_bytes`, 기본 1MiB — 필드 상한이 절단 없이 받아들이는 최대 정상 페이로드의 약 4.8배)을 넘기면 거절한다. 초과 응답은 새 코드를 내지 않고 기존 `400 BAD_REQUEST` 봉투를 그대로 쓴다(§2.5에 413/`PAYLOAD_TOO_LARGE`가 없어 신설은 별도 명세 개정 대상) — 와이어 계약 변경 0. 미들웨어는 레이트 리밋 **바깥**(거대 바디가 JWT 서명 검증 비용·레이트 리밋 슬롯을 소모하지 않게)·CORS **안쪽**(400 응답에도 CORS 헤더가 실리게)에 등록한다.
 
 ### Docs
+- **#384 — #363 후속: 구제~자동완화를 아우르는 공유 왕복 예산/first-token 데드라인 가드 설계** —
+  #363의 전제("첫 SSE=`conditions`, 예산=first-token 10s")가 #396(구매자 `progress` 상시화,
+  api-spec v0.26.2)으로 깨져 재기준선했다. 구속 예산은 이제 `stream_total_timeout_buyer_s`(30s)
+  + 체감 지연이고, 오늘 기본값(`spring_max_retries=0`)에서는 여유(40%)가 있으나 재시도 억제
+  스코프 비대칭(이 문서가 새로 발견) 때문에 **#394 원복(재시도 1로 복귀) 단독으로도 여유가
+  즉시 50%로 줄고, #394+#306(미룬 턴 재시도 스킵)을 함께 원복하면 70%까지** 깎인다 — 공유
+  예산은 "지금 필요한 가드"가 아니라 "#394/#306 원복의 선행 조건"으로 판정하고, 원복 시 사람
+  판단 없이 등급이 정해지도록 3단 등급(관측/좁히기/좁히기+건너뛰기)의 진입 임계값(1급 지표
+  자체의 이론 최댓값 대비 비율로 정의 — 30s 대비 고정 비율은 그 지표의 도달 가능 범위 밖이라
+  기각)을 사전 결속했다. 코드·계약 변경 없음(개정안은 문서 안에 diff로만 제시).
+  (`docs/specs/DESIGN-SHARED-BUDGET-384.md`)
 - **#367 — HOME(I-22) 실패 모드 어휘 4종을 api-spec §3.7 에 현행 추인으로 규범화(v0.26.1, 와이어 불변) + combo_matrix degrade 축을 지면별 어휘로 갱신(HOME 미정의 셀 3건 해소)** — #335 매트릭스가 발견한 `surface=HOME × degrade∈{embedding_missing,rerank_failed,spring_timeout}` 미정의 셀(CHAT 검색/rerank 실패 어휘가 HOME엔 대응 경로가 없음)을 승인된 A안(현행 추인, 코드 무변경)으로 해소한다. `docs/api-spec.md` §3.7에 「HOME 실패 모드(degrade) 어휘」 소절을 신설해 `profile_unavailable`(200 degrade)·`catalog_unavailable`(503)·`catalog_timeout`(504)·`reason_degraded`(200+reason null) 4종을 규범화하고, 실패 응답표 503/504 행의 조건 서술 드리프트를 정정했다. `evals/combo_matrix/axes.json`의 `degrade` 축을 지면별 어휘로 갱신하고(`datasetVersion` 2.0.0) excludes 제약 2건으로 지면 밖 조합을 금지, `runner.py::_observe_home`에 신규 4종 관측 주입을 추가했다. 재생성 결과 케이스 58→57건, pairwise 2-wise 100%(1092/1092) 유지, UNDEFINED_CELLS.md는 미정의 셀 5→1건(잔존 #336)으로 줄었다 — #368(94f0fb2)이 이미 고친 `wishlist_add` SpringUnavailableError 갭도 재관측으로 defined 전환됐다.
 - **#322 — #149 개인화 그래프 계약 개정: 개별 삭제 undo 창·원문 물리 삭제, 전체 초기화 범위에 대화 전사록 포함** — 구현(#150) 착수 전에 계약이 서로 모순 없이 한 방향을 가리키게 정리했다. **[HARD] 조항 2건이 뒤집힌다.** 계약만이며 코드 변경은 없다. (api-spec §2.5·§3.8·§3.9·§5, v0.26.0 / `docs/specs/SPEC-PROFILE-GRAPH-149.md` v0.2.0 / `SPEC-PROFILE-001` v0.8.0)
   - **개별 삭제 = 즉시 억제 → undo 창(기본 5분, config) → 원문 물리 삭제, tombstone 만 잔존.** 구 계약은 억제만 하고 원문을 무기한 보관했는데, 사용자가 "지웠다"고 믿는 문장의 원문을 들고 있을 이유가 없다(데이터 최소화). tombstone 에 시간 만료를 두지 않는 근거는 실측이다 — 세션 버퍼 flush 가 `profile_idle_sweep_interval_s`(60초) 주기로 돌아, 만료시키면 창이 닫힌 직후 같은 발화가 재승격돼 방금 지운 취향이 부활한다. **REQ-PGRAPH-032(pin 만료 없음)와의 구분 문장**을 SPEC 에 박았다 — 만료되는 것은 *원문 보관 기간*이지 *사용자 의도*가 아니다.
