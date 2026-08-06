@@ -13,6 +13,25 @@
 
 ---
 
+## [2026-08-06] degrade 주입 fake 가 실제 어댑터의 실패 규약과 다른 예외 타입을 던지면 관측·이슈가 인공물을 잰다
+- 증상: #335 매트릭스가 `wishlist_add × spring_timeout` 셀에서 "`SpringUnavailableError` 미처리로
+  INTERNAL 로 샌다"를 관측했고 이슈 #368 이 그 관측을 근거로 열렸는데, PR #374 리뷰에서 실제
+  `add_wishlist` 어댑터(I-26)는 그 예외를 **한 번도 내지 않는다**는 것이 드러났다. 관측된 예외는
+  러너가 주입한 fake(`evals/combo_matrix/runner.py:177-184`)가 던진 것이었다.
+- 원인: degrade 주입 fake 가 **그 어댑터의 실제 실패 규약과 다른 예외 타입**을 던졌다. 조회 계열
+  (`get_cart`/`get_wishlist`)은 `SpringUnavailableError`, 변경 계열(`add_to_cart`/`add_wishlist`)은
+  `CartError`/`WishlistError` 로 규약이 **갈리는데** 주입은 한 타입으로 통일돼 있었다. 그래서 그 축의
+  관측은 실제 프로덕션 경로가 아니라 fake 의 인공물을 쟀다.
+- 규칙: degrade·실패 주입 fake 를 만들 때는 **그 함수의 실제 실패 규약(어댑터 docstring·raise 문)을
+  먼저 확인**하고 같은 예외 타입으로 던져라 — 성공 fake 의 반환 스키마를 맞추는 것(아래 2026-08-06
+  항목)과 같은 규칙의 실패 경로 버전이다. 그리고 그런 관측에서 유도한 이슈는 **본문의 근거 문장을
+  어댑터 실측으로 재검증한 뒤** 코드 주석에 옮겨라 — 주석은 다음 사람이 계약을 배우는 자리라 틀린
+  근거가 그대로 학습된다(PR #374 에서 실제로 주석·docstring·CHANGELOG 3곳에 오기재로 퍼졌다).
+- 관련: #368, PR #374, `app/services/spring_client.py::add_wishlist`(I-26)·`::get_wishlist`(I-28),
+  `evals/combo_matrix/runner.py:177-190`, `app/agents/buyer/cart/graph.py:453`
+
+---
+
 ## [2026-08-06] "성공 fake" 가 실 스키마와 다른 모양이어도 게스트 게이트 뒤에 있으면 영원히 안 드러난다
 - 증상: #335 리뷰 R8(order_status×spring_timeout 실측 추가) 작업 중, 기존
   `evals/combo_matrix/fakes.py::make_order_status_ok` 가 `{"orderId": ..., "status": ...}` 같은

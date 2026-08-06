@@ -231,9 +231,11 @@ async def stream_wishlist_add(
             ).model_dump(by_alias=True),
         )
     except (WishlistError, SpringUnavailableError):
-        # I-28 어댑터는 add_wishlist 의 4xx/5xx·도달 불가·스키마 불일치도 전부
-        # SpringUnavailableError 로 낸다(:277 get_wishlist 와 같은 degrade 규약) — WishlistError 만
-        # 잡으면 이 실패가 상위 스트림 pump 의 범용 catch-all(INTERNAL)로 샌다(이슈 #368).
+        # 기본 어댑터 add_wishlist(I-26)는 실패를 전부 WishlistError 로 낸다 — SpringUnavailableError
+        # 는 get_wishlist(I-28 조회, :280)의 규약이지 이 경로의 규약은 아니다. 그래도 함께 잡는 이유는
+        # add_wishlist_fn 이 주입 가능한 인자라서다 — 주입 구현이 그 예외를 내면(평가 하네스 degrade
+        # 주입이 그렇다) 이 except 없이는 상위 스트림 pump 의 범용 catch-all(INTERNAL)로 샌다. 형제
+        # cart_add(graph.py:453)도 어댑터가 내지 않는 이 예외를 같은 이유로 튜플에 방어해 둔다.
         yield sse(
             "action",
             ActionData(

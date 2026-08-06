@@ -167,7 +167,10 @@ async def test_wishlist_add_error_maps_to_wishlist_error() -> None:
 
 
 async def test_wishlist_add_spring_unavailable_maps_to_wishlist_error() -> None:
-    """I-28 어댑터는 4xx/5xx/도달 불가/스키마 불일치를 전부 SpringUnavailableError 로 낸다(이슈 #368).
+    """주입된 add_wishlist_fn 이 SpringUnavailableError 를 내도 INTERNAL 로 죽지 않고 형제와 같은
+    WISHLIST_ADD_FAILED/WISHLIST_ERROR degrade 로 끝난다(이슈 #368). 기본 어댑터
+    spring_client.add_wishlist(I-26)는 이 예외를 내지 않는다 — 이 테스트는 "어댑터가 이 예외를
+    낸다"는 증거가 아니라 주입 fn 이 낼 때의 방어를 검증한다.
 
     게스트는 로그인 게이트(user_id is None)가 Spring 호출 자체를 선행 차단하므로 이 갭은
     member 경로에서만 밟힌다(이슈 #368 실측, combo-0057 member×spring_timeout) — 그래서
