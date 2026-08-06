@@ -247,7 +247,7 @@ async def stream_wishlist_add(
         # 같은 파일 stream_wishlist_remove 의 get_wishlist(I-28 조회) 처리 규약이지 이 경로의 규약은
         # 아니다. 그래도 함께 잡는 이유는 add_wishlist_fn 이 주입 가능한 인자라서다 — 주입 구현이 그
         # 예외를 내면(평가 하네스 degrade 주입이 그렇다) 이 except 없이는 상위 스트림 pump 의 범용
-        # catch-all(INTERNAL)로 샌다. 형제 cart_add(graph.py:453)도 어댑터가 내지 않는 이 예외를 같은
+        # catch-all(INTERNAL)로 샌다. 형제 cart_add(graph.py::stream_cart_add)도 어댑터가 내지 않는 이 예외를 같은
         # 이유로 튜플에 방어해 둔다.
         yield sse(
             "action",
