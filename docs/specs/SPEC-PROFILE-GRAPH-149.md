@@ -51,7 +51,11 @@ issue_number: 149
   (5) **REQ-PGRAPH-080 예외** — 자동 purge 는 별도 감사 행을 남기지 않는다(actor 없는 시스템 동작이라
   `actor_fp` 를 만들 대상이 없고, `edgeSuppress` 행 + 시각 + config 로 결정론적 재구성된다).
   신설: 튜너블 `graph_undo_window_s`, AC-PGRAPH-13~15, §12 선결조건 7(`conversation_turns.user_id`
-  인덱스 부재 — 사용자별 삭제가 풀스캔). **api-spec v0.26.0**·**`SPEC-PROFILE-001` v0.8.0** 동반.
+  인덱스 부재 — 사용자별 삭제가 풀스캔). (6) **§7.4 살아 있는 결함 2건 → 1건** — 요약 쓰기 잠금이
+  **#323(2026-08-06)에서 해소**됐다(`set_summary` 에 `profile:summary:{user_id}` per-user 잠금).
+  남은 것은 "기억해" 경로 스캔뿐이다. 다만 잠금이 닫은 것은 *동시 쓰기 덮어쓰기*이고 *fact 읽기~
+  요약 쓰기 사이의 fact 변경* 정합성은 본 SPEC 의 `revision` CAS 로 여전히 신설 대상이다(#358).
+  **api-spec v0.26.0**·**`SPEC-PROFILE-001` v0.8.0** 동반.
 - **v0.1.0 (2026-08-05, 이슈 #149)** — 최초 작성. node·edge 투영 모델, 결정론적 식별·병합 규칙
   (`SPEC-PROFILE-001` OPEN-P12의 `preference_key` 부재를 정면으로 다룬다), suppress/superseded/purge
   상태 기계, 사용자 편집 고정(pin)과 기계 재파생의 우선순위, 개인화 중지 전파 범위, 민감정보 3층
@@ -602,9 +606,16 @@ class GraphAuditRecord(BaseModel):
 
 ### 7.4 살아 있는 결함 (선결 조건)
 
-- **요약 쓰기 경로가 잠금 없이 갱신한다** — fact 추가 경로는 잠금을 잡는다. 그래프 변경이 요약 측
-  표식을 쓰면 동시 consolidation에 덮일 수 있다. 요약 쓰기를 같은 잠금 아래로 옮기고 compare-and-set
-  으로 만들어야 한다.
+- **~~요약 쓰기 경로가 잠금 없이 갱신한다~~ — 🟢 해소 (이슈 #323, 2026-08-06).** v0.1.0 시점에는
+  fact 추가 경로만 per-user 잠금을 잡고 요약 쓰기(`set_summary`)는 잠금 없는 read-then-write
+  (임베딩 carryover 때문에 `get_summary`→`aput`)여서, 그래프 변경이 요약 측 표식을 쓰면 동시
+  consolidation 에 소리 없이 덮일 수 있었다. `profile:summary:{user_id}` 잠금이 추가되어 닫혔다 —
+  **키는 fact 잠금과 분리**한다(RMW 대상 네임스페이스가 겹치지 않고, 공유하면 `record_remember`
+  hot-path 의 `add_fact` 가 요약 쓰기와 불필요하게 직렬화된다).
+  - **남은 부분**: *"fact 읽기 ~ 요약 쓰기 사이에 fact 가 바뀌는"* 정합성은 잠금으로 닫히지 않는다.
+    그것은 본 SPEC 의 **`revision` compare-and-set**(§7.2·REQ-PGRAPH-040~042)과 억제 필터
+    (REQ-PGRAPH-022/023)가 담당하며 #150·#358 축에서 구현된다. **즉 이 항목은 "잠금이 없다"가
+    해소된 것이지 동시성 전체가 해결된 것이 아니다** — 낙관적 동시성은 여전히 신설 대상이다.
 - **"기억해" hot-path의 원문 저장**(REQ-PGRAPH-073).
 - **결정론적 트리플 부재**(§9 OPEN-G0).
 
@@ -751,7 +762,11 @@ v0.7.0 개정 조항과 상충 없음 + 회귀 테스트가 "되돌리면 깨지
 4. **api-spec C-28** — 브랜드 어휘 출처.
 5. **오류 매핑 보강** — `409`의 기본 코드가 스트림 관련 코드이고 `404`는 매핑에 없다. 코드 지정을
    빠뜨리면 사용자에게 무관한 메시지가 나가며 **정상 경로 테스트로 잡히지 않는다**.
-6. **§7.4의 살아 있는 결함 2건** — 요약 쓰기 잠금, "기억해" 경로 스캔.
+6. **§7.4의 살아 있는 결함 — [v0.2.0] 2건 → 1건.** ~~요약 쓰기 잠금~~은 **#323(2026-08-06)에서
+   해소**됐다(`set_summary` 에 `profile:summary:{user_id}` per-user 잠금 추가). 남은 것은
+   **"기억해" 경로 스캔**(REQ-PGRAPH-073)이다. 단 잠금이 닫은 것은 *동시 쓰기 덮어쓰기*뿐이고,
+   *fact 읽기~요약 쓰기 사이의 fact 변경* 정합성은 본 SPEC 의 `revision` CAS 로 여전히 신설해야
+   한다(§7.2·REQ-PGRAPH-040~042, #358).
 7. **[v0.2.0] `conversation_turns.user_id` 인덱스 부재** — 전사록이 초기화 대상이 되면서
    `DELETE ... WHERE user_id = ?` 가 필요해졌는데, 이 테이블의 인덱스는 `(conversation_id,
    sequence_id)`·`(conversation_id, thread_id)` 둘뿐이라 **사용자별 삭제가 풀스캔**이다. 컬럼 타입도

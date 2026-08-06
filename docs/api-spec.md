@@ -1374,7 +1374,7 @@ X-Internal-Token: {서비스 토큰}          ← internal 그룹(레인 b)
 1. **선결(blocking) — 결정론적 트리플이 없다.** 현재 fact store item 값은 `{"fact": str}` 자유형 한국어 한 필드이고 dedup은 문자열 완전 일치뿐이다(`SPEC-PROFILE-001` OPEN-P12). 위 "중복 불가" 규약은 **consolidation이 구조화 트리플을 함께 산출하도록 만든 뒤에야** 달성 가능하다. 그때까지 변환되지 않은 fact는 `unprojectedCount`로만 관측된다.
 2. **기존 데이터로 과거 그래프를 복원할 수 없다.** 델타 추출이 산출한 `salience`·`explicit`·`repetitionEma`는 승격 판정 직후 버려지고 store에는 fact 문자열과 `created_at`만 남는다. 부트스트랩은 `source`를 보존하지 못하는 **정의된 best-effort 투영**이며 "그 그래프"가 아니다. 그래프는 **다음 배치부터 누적**된다.
 3. **억제가 실효하려면 consolidation이 그래프를 읽어야 한다.** 현재 consolidation은 fact 목록을 그대로 읽으므로, 그래프에서만 suppress하면 **다음 배치가 삭제한 취향을 마크다운에 다시 써넣는다.** 이 변경이 없으면 삭제 기능은 겉모습만 남는다.
-4. **살아 있는 레이스**: 요약 쓰기 경로는 잠금 없이 갱신하는데 fact 추가 경로는 per-user 잠금을 잡는다. 그래프 변경이 요약 측 플래그를 쓰면 동시 consolidation에 덮일 수 있다 — 요약 쓰기를 같은 잠금 아래로 옮기고 compare-and-set으로 만들어야 한다.
+4. **~~살아 있는 레이스~~ — 🟢 해소(#323, 2026-08-06).** v0.22.0 시점에는 요약 쓰기 경로가 잠금 없이 갱신하는데 fact 추가 경로만 per-user 잠금을 잡아, 그래프 변경이 요약 측 플래그를 쓰면 동시 consolidation에 덮일 수 있었다. `set_summary`에 `profile:summary:{userId}` per-user 잠금이 추가되어(fact 잠금과 키 분리 — `record_remember` hot-path가 요약 쓰기와 불필요하게 직렬화되지 않게) 이 레이스는 닫혔다. **다만 "fact 읽기 ~ 요약 쓰기 사이의 fact 변경" 정합성은 여전히 미해결이며 #150/#358의 revision CAS·억제 필터 축에서 다룬다** — 이 절의 `graphVersion` 낙관적 동시성이 그 자리다.
 5. 예산(2s / §3.9 3s)은 **제안이며 실측이 아니다**. §2.9 (c) 기준표에 행을 추가하지 않은 이유가 이것이다.
 
 ### 3.9 개인화 그래프 제어 API (I-33~I-37, Spring → AI) [v0.22.0 신설, 재채번 v0.26.0, 🔴 제안(초안)]
