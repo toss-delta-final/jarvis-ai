@@ -31,6 +31,34 @@
 
 ---
 
+## [2026-08-06] fake 가 "표현 불가"를 예외로 던지면, 앱이 그걸 삼켜서 INV 비교가 "둘 다 실패"로 공허 통과할 수 있다
+- 증상: #381 에서 `RecordingFilteringSearch`(combo_matrix eval 하네스)가 keyword·color·
+  attr_conditions 처럼 흉내 낼 수 없는 필터가 present 면 "조용히 무시하지 않겠다"는 의도로
+  `ValueError` 를 던지게 해 뒀다(#371 결정). 그런데 앱은 그 예외를 검색 실패로 삼켜
+  `terminal=error`/`errorCode=SEARCH_FAILED` 로 낙성했고, INV 쌍 검증(base=rerank 성공 ·
+  perturbed=rerank_failed)은 **둘 다 이 상태로 우연히 동일**해 "불변식이 성립한다"고 pass 했다
+  (`combo-0055`, 실측: 두 arm 모두 `productIdsMultiset: []`). `pair_checks.jsonl` 의 커밋된
+  `reason` 문구는 심지어 그 상태의 실측과도 어긋나는 값(`[101,102,103,104]`)을 적고 있었는데도
+  같은 이유로 아무도 못 잡았다 — 비교 대상 자체가 항상 "같은 실패"로 수렴해서다.
+- 원인: "표현 불가 축은 조용히 무시하지 말고 시끄럽게 실패시키자"는 의도 자체는 맞았지만,
+  **누구에게 시끄러운가**를 안 물었다. 예외를 던지면 그 fake 를 부르는 앱 코드의 관점에선 그냥
+  "검색 실패"라는 하나의 알려진 실패 모드로 흡수되고, 그 실패 모드는 서로 다른 두 실행(base·
+  perturbed)에서 **값과 무관하게 항상 같은 결과**를 낸다 — 비교 자체가 무의미해지는데 겉보기엔
+  "성립"으로 보인다. "단언이 상수라 못 깨진다"는 흔한 공허 통과와는 결이 다르다 — 여기서는 단언
+  자체는 정상인데 **비교 대상 두 값이 실행 중에 같은 예외로 수렴**해서 공허해졌다 — 정적
+  분석(상수 리터럴 찾기)으로는 안 잡히고 실행해서 값을 봐야 드러난다.
+- 규칙: fake 가 "이 축은 흉내 못 낸다"를 표시해야 하면, **앱의 정상 실패 경로로 새게 만들지
+  말고 관측 데이터에 별도 필드로 기록**한다(예: `unapplied_calls`/`unappliedSearchFilters`) —
+  실행은 계속하게 둬서 비교 대상이 실제 값으로 갈라질 여지를 남긴다. 예외를 던지는 게 유일한
+  옵션처럼 보이면, 그 예외가 도달하는 곳(catch 블록)이 비교하는 두 실행 모두에서 같은 도착지인지
+  먼저 확인하라 — 같다면 그 예외는 "시끄러운 실패"가 아니라 "조용한 동일화"다.
+- 관련: #371, #381, `evals/combo_matrix/fakes.py::RecordingFilteringSearch`,
+  `evals/combo_matrix/expected/pair_checks.jsonl`(combo-0055),
+  [[2026-08-06] eval 하네스가 "이 축을 잰다"고 문서에 쓰려면 주입값이 아니라 실제 도달값을
+  실측해야 한다] 와 같은 #371/combo_matrix 계열 발견
+
+---
+
 ## [2026-08-06] 함수 시그니처를 바꿀 때 호출부 grep 을 `tests`·`evals` 로만 하면 `scripts/` 가 사각지대다
 - 증상: #396(이슈)/PR #407 에서 `_prepare_recommendation` 을 코루틴 → async generator 로
   바꾸고 키워드 전용 필수 인자 `out` 을 추가했다. 그때 "`tests/`·`evals/` grep 0건"을
