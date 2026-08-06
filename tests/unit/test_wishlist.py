@@ -359,8 +359,12 @@ async def test_get_wishlist_unknown_purchase_state_skips_only_that_item(
 ) -> None:
     """재현·수정 확인 — BE 가 `purchaseState` 에 계약 밖 값을 하나 추가해도 그 항목만 skip
     되고 나머지 정상 항목은 살아남아야 한다(전체 `ValidationError` 로 죽지 않는다).
-    `PurchaseState` Literal·기본값은 바뀌지 않는다 — 미지의 값을 관대 수용하는 게 아니라
-    그 항목만 걸러내는 파싱 견고성 수정이다."""
+    `PurchaseState` Literal 은 바뀌지 않는다 — 미지의 값을 관대 수용하는 게 아니라 그 항목만
+    걸러내는 파싱 견고성 수정이다.
+
+    **찜과 장바구니는 처방이 다르다**(#310): 장바구니(`CartViewItem`)는 미지 값이 와도 항목을
+    skip 하지 않고 필드만 `None` 으로 강등한다 — 항목이 목록에서 사라지면 "전부 빼줘"가 일부만
+    지우고 성공을 보고하기 때문이다. 찜은 그런 파괴적 후속 동작이 없어 skip 이 유효하다."""
     import app.services.spring_client as sc
 
     body = {

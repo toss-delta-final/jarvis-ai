@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from types import MappingProxyType
-from typing import Annotated, Literal, Mapping
+from typing import Annotated, Literal, Mapping, get_args
 
 from pydantic import (
     AwareDatetime,
@@ -381,6 +381,11 @@ PURCHASE_STATE_LABEL: Mapping[PurchaseState, str] = MappingProxyType(
     }
 )
 
+# 유효값 판정은 라벨 매핑이 아니라 **Literal 에서 직접 뽑는다** — 라벨은 표현용이라 누군가
+# 항목을 빼도 이상하지 않지만, 그때 그 상태가 조용히 "모름"으로 강등되면 안 된다. 계약의
+# 단일 진실 원천은 `PurchaseState` 하나다.
+_KNOWN_PURCHASE_STATES: frozenset[str] = frozenset(get_args(PurchaseState))
+
 
 def _degrade_unknown_purchase_state(value: object) -> object:
     """계약 밖 상태값을 `None`(모름)으로 강등한다 — 항목 자체는 살린다(#310).
@@ -392,7 +397,7 @@ def _degrade_unknown_purchase_state(value: object) -> object:
     소유물이자 파괴적 후속 동작의 입력이라 **사라지는 것이 조용히 틀리는 것보다 나쁘다**.
     미지 값은 "모름"과 사실상 같은 처지이므로 `None` 으로 떨어뜨리고 관측용 warning 만 남긴다.
     """
-    if value is None or value in PURCHASE_STATE_LABEL:
+    if value is None or value in _KNOWN_PURCHASE_STATES:
         return value
     _log.warning("계약 밖 purchaseState 값 — None(모름)으로 강등한다: %r", value)
     return None
