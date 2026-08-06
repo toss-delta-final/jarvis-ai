@@ -166,6 +166,31 @@ async def test_wishlist_add_error_maps_to_wishlist_error() -> None:
     assert action["reason"] == "WISHLIST_ERROR"
 
 
+async def test_wishlist_add_spring_unavailable_maps_to_wishlist_error() -> None:
+    """I-28 어댑터는 4xx/5xx/도달 불가/스키마 불일치를 전부 SpringUnavailableError 로 낸다(이슈 #368).
+
+    게스트는 로그인 게이트(user_id is None)가 Spring 호출 자체를 선행 차단하므로 이 갭은
+    member 경로에서만 밟힌다(이슈 #368 실측, combo-0057 member×spring_timeout) — 그래서
+    member identity(_member(), 숫자 user_id "123")로 테스트한다.
+    """
+
+    async def add_wishlist_fn(request):
+        raise SpringUnavailableError("boom")
+
+    events = await _collect(
+        stream_wishlist_add(
+            identity=_member(),
+            cart=CartIntent(product_id=1, quantity=1),
+            settings=get_settings(),
+            add_wishlist_fn=add_wishlist_fn,
+        )
+    )
+    assert _types(events) == ["action", "done"]
+    action = _actions(events)[0]
+    assert action["type"] == "WISHLIST_ADD_FAILED"
+    assert action["reason"] == "WISHLIST_ERROR"
+
+
 async def test_wishlist_add_unresolved_product_id_asks_and_skips_call() -> None:
     async def add_wishlist_fn(request):
         raise AssertionError("productId 미해소인데 add_wishlist_fn 이 호출됐다")

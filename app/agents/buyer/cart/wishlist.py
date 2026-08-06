@@ -230,7 +230,10 @@ async def stream_wishlist_add(
                 reason="PRODUCT_NOT_FOUND",
             ).model_dump(by_alias=True),
         )
-    except WishlistError:
+    except (WishlistError, SpringUnavailableError):
+        # I-28 어댑터는 add_wishlist 의 4xx/5xx·도달 불가·스키마 불일치도 전부
+        # SpringUnavailableError 로 낸다(:277 get_wishlist 와 같은 degrade 규약) — WishlistError 만
+        # 잡으면 이 실패가 상위 스트림 pump 의 범용 catch-all(INTERNAL)로 샌다(이슈 #368).
         yield sse(
             "action",
             ActionData(
