@@ -1000,9 +1000,10 @@ async def stream_recommendation(
             trace.mark_degraded("popular_fallback")
         return await _run_search()
 
-    # [#396] `no_condition`/`underspecified` 턴은 `_run_candidate_source` 가 I-1 이 아니라
-    # I-3(인기 목록)을 타지만, 사용자에게는 어느 쪽이든 "상품을 찾는 중"이라 같은 stage 를
-    # 쓴다 — 후보 소스가 무엇이든 사용자가 기다리는 이유는 하나다.
+    # [#396] `no_condition`/`underspecified`/`unfiltered_bypass`(#393) 턴은
+    # `_run_candidate_source` 가 I-1 이 아니라 I-3(인기 목록)을 타지만, 사용자에게는 어느
+    # 쪽이든 "상품을 찾는 중"이라 같은 stage 를 쓴다 — 후보 소스가 무엇이든 사용자가
+    # 기다리는 이유는 하나다.
     if settings.progress_events_enabled:
         yield progress_frame("searching", settings.progress_searching_message)
     # 미룬 턴은 첫 이벤트 앞 본 검색·자동 완화 probe만 재시도를 끈다(#277). conditions 뒤의
