@@ -16,26 +16,24 @@ v1 실행 지원 범위(명시적으로 좁힌다 — 어휘를 새로 하드코
 산출 프로젝션 정의(README "INV/DIR 쌍 검증" §의 표 참조) — 두 실행 모두에서 계산하고, 비교는
 `PairCheckSpec.invariant_fields`(INV) 또는 `metric`(DIR) 만 본다.
 
-## 카테고리 seam (이슈 #371 R1 결정, pair_runner 한정)
+## 카테고리 seam (이슈 #371 R1 결정 → 이슈 #381 D5 로 `runner.py` 본체에 흡수됨)
 
 `app/agents/buyer/graph.py:520-537` 는 `decision.category_legs` 가 비면 `decision.filters.category`
 를 무조건 `None` 으로 지운다(canonical-or-null degrade — "미검증 원문이 Spring 검색으로 새지
 않게"). `category_legs` 는 오직 `map_categories` 매핑 결과로만 채워지고, 그 매핑은
 `decompose` 산출의 `categoryQueries` 만 본다(`filters.category` 자체는 안 본다) — 즉
 `ProductSearchFilters.category` 하드필터는 **legs 를 거치지 않으면 실제 검색에 절대 도달하지
-않는다.** 기존 `runner.py::build_decompose_json` 은 `categoryQueries` 를 채우지 않고
-`map_categories_noop` 은 항상 빈 legs 를 돌려주므로(§ `evals/combo_matrix/README.md` "category
-축은 filters.category 만 잰다"는 기존 서술은 **실측으로 반증됨** — 정정은 README 참조),
-`category` 필터축은 기존 하네스 전체(#335 의 기존 55건 MFT 케이스 포함)에서 지금까지 한 번도
-실제 검색 경계에 도달한 적이 없다.
+않는다.**
 
-combo-0054(DIR — "필터 추가 → 결과 수 비증가")는 바로 이 축을 검증 대상으로 삼으므로, 이 러너는
-`category == "present"` 인 케이스에 한해 `_pair_decompose_json()` 로 `categoryQueries` 를 함께
-채우고, `fakes.make_exact_match_category_mapping()`(raw exact match 만 대역 — 거리컷·택일·확장은
-`#331` 소관, 재구현하지 않는다)으로 legs 를 실제로 채운다. **`runner.py` 의
-`build_decompose_json`·`map_categories_noop` 자체는 손대지 않는다** — 기존 55건 MFT 케이스의
-`expected_behavior.jsonl` 관측을 그대로 보존하기 위해서다. 기존 하네스의 잔여 맹점(다른 category
-축 케이스들)은 이 PR 범위 밖 — 후속 이슈 소관이다(README 참조).
+#371 R1 결정 당시엔 이 seam 을 `pair_runner` 전용 `_pair_decompose_json()`(`build_decompose_json`
+결과에 `categoryQueries` 만 덧붙이는 래퍼)로 좁혀 뒀다 — 그때는 `runner.py` 본체(일반 관측 러너)가
+`categoryQueries` 를 채우지 않아 `category` 필터축이 하네스 전체(#335 의 기존 55건 MFT 케이스
+포함)에서 한 번도 실제 검색 경계에 도달하지 않았기 때문이다. **#381 D5 로 이 seam 이
+`runner.py::build_decompose_json` 본체에 흡수됐다** — `category == "present"` 이면
+`categoryQueries` 를 채우고(`_FILTER_SAMPLE["category"]` 공유), `_observe_chat` 도
+`fakes.make_exact_match_category_mapping()`(raw exact match 만 대역 — 거리컷·택일·확장은 `#331`
+소관, 재구현하지 않는다)을 쓴다. 이 러너는 이제 `_pair_decompose_json()` 래퍼 없이
+`build_decompose_json()` 을 직접 쓴다 — 두 러너가 같은 seam 을 공유하므로 드리프트 여지가 없다.
 """
 
 from __future__ import annotations
@@ -60,7 +58,11 @@ from evals.combo_matrix.fakes import (  # noqa: E402
     make_recording_filtering_search,
 )
 from evals.combo_matrix.loader import load_cases, load_pair_checks  # noqa: E402
-from evals.combo_matrix.runner import _FILTER_SAMPLE, _identity_for, build_decompose_json  # noqa: E402
+from evals.combo_matrix.runner import (  # noqa: E402
+    _identity_for,
+    build_decompose_json,
+    search_filters_projection,
+)
 from evals.combo_matrix.schema import ComboCase, PairCheckSpec  # noqa: E402
 from tests.integration._stubs import ScriptedLLM  # noqa: E402
 from tests.unit.test_recommendation import _collect, run_buyer_turn  # noqa: E402
@@ -72,19 +74,6 @@ _SUPPORTED_SURFACE = "CHAT"
 _SUPPORTED_INTENT = "recommend"
 _SUPPORTED_CONSTRAINT_STRENGTH = "normal"
 _SUPPORTED_DEGRADE = ("none", "embedding_missing", "rerank_failed")
-
-# `searchFilters` 프로젝션에 담는 8개 하드필터 카멜케이스 키 — decompose._FILTER_AXES 와 같은
-# 축 범위(semanticQuery·excludeProductIds·limit 은 "거르는" 조건이 아니라 후처리/제외 조건이라 뺀다).
-_SEARCH_FILTER_KEYS = (
-    "category",
-    "priceMin",
-    "priceMax",
-    "brand",
-    "ratingMin",
-    "keyword",
-    "color",
-    "attrConditions",
-)
 
 
 class UnsupportedPairAxes(Exception):
@@ -113,19 +102,6 @@ def _check_supported(case: ComboCase) -> None:
             f"{case.case_id}: degrade={axes.get('degrade')!r} 는 v1 pair_runner 미지원"
             f"(지원: {_SUPPORTED_DEGRADE})"
         )
-
-
-def _pair_decompose_json(axes: dict[str, str]) -> dict:
-    """`build_decompose_json` 결과에 `categoryQueries` 를 덧붙인다(§ 모듈 docstring "카테고리 seam").
-
-    `category == "present"` 일 때만 채우고, `filters.category` 와 **같은 샘플 값**을 쓴다
-    (`_FILTER_SAMPLE["category"]` 하나를 공유 — 두 채널이 갈라지면 legs 매핑과 하드필터 값이
-    어긋난다). `build_decompose_json` 자체(`runner.py`)는 건드리지 않는다.
-    """
-    data = build_decompose_json(axes)
-    if axes.get("category") == "present":
-        data["categoryQueries"] = [{"category": _FILTER_SAMPLE["category"], "query": None}]
-    return data
 
 
 def _freeze(value: object) -> object:
@@ -183,6 +159,11 @@ class Projection:
     list_entry_field_keys: list[list[str]] = field(default_factory=list)
     product_ids_multiset: list[int] = field(default_factory=list)
     push_product_count: int = 0
+    # D1(이슈 #381) — `search_filters` 에 값이 실려 있어도 그 축이 실제로 대역에 **적용됐다**는
+    # 뜻은 아니다(keyword·color·attr_conditions 는 흉내 낼 수 없어 present 로 들어와도 미적용
+    # 기록만 한다). 이 필드 없이는 예를 들어 combo-0055 프로젝션이 "색상·방수 조건이 적용돼
+    # 결과가 줄었다"로 잘못 읽힌다 — D1 이 없애려던 "적용된 것처럼 보이는 데이터"와 같은 부류.
+    unapplied_search_filters: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {
@@ -190,6 +171,7 @@ class Projection:
             "finishReason": self.finish_reason,
             "errorCode": self.error_code,
             "searchFilters": self.search_filters,
+            "unappliedSearchFilters": self.unapplied_search_filters,
             "legs": self.legs,
             "listType": self.list_type,
             "listsCount": self.lists_count,
@@ -210,7 +192,7 @@ async def _execute(case: ComboCase) -> Projection:
         message=case.utterance,
     )
     identity = _identity_for(axes, case.case_id)
-    decompose_json = _pair_decompose_json(axes)
+    decompose_json = build_decompose_json(axes)
     degrade = axes["degrade"]
     llm = ScriptedLLM(decompose=decompose_json, rerank_error=(degrade == "rerank_failed"))
     search = make_recording_filtering_search()
@@ -254,11 +236,9 @@ async def _execute(case: ComboCase) -> Projection:
     # 후보 수, constraint_strength=normal)에서는 무필터 보충 재검색(0건일 때만 도는 분기)이 돌지
     # 않아 항상 정확히 1회 호출이지만, 방어적으로 첫 호출을 명시한다.
     first_call_filters = search.calls[0]
-    search_filters = {
-        key: value
-        for key, value in first_call_filters.model_dump(mode="json", by_alias=True).items()
-        if key in _SEARCH_FILTER_KEYS
-    }
+    search_filters = search_filters_projection(first_call_filters)
+    # 러너(runner.py::_observe_chat)와 같은 규약 — 첫 호출(주 검색) 기준, D1(#381).
+    unapplied_search_filters = search.unapplied_calls[0] if search.unapplied_calls else []
 
     terminal = events[-1] if events else None
     lists = push.pushes[0].lists if push.pushes else []
@@ -278,6 +258,7 @@ async def _execute(case: ComboCase) -> Projection:
             terminal["data"].get("code") if terminal and terminal["type"] == "error" else None
         ),
         search_filters=search_filters,
+        unapplied_search_filters=unapplied_search_filters,
         legs=legs,
         list_type=push.pushes[0].list_type if push.pushes else None,
         lists_count=len(lists),

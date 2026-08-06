@@ -107,13 +107,13 @@ def _deferred_first_event_rescue_i1_calls(
     """위 총합 중 **구제 폴백 항(0 또는 1)만** 떼어낸다 (#383 R5, PR #414 Claude 리뷰).
 
     존재 이유는 값 매김이 다르기 때문이다 — `_require_search_retry_within_stream_budget` 의
-    가드 OFF 분기(기본)는 `graph.py:549` 의 `suppress_deferred_search_retry =
-    may_auto_relax and not search_retry_on_deferred_conditions` 로 재시도를 끄는데, 그
-    `with spring_client.suppress_search_retry()` 블록은 저장소 전체에 **딱 두 곳**뿐이다
-    (`graph.py:1012` 본 검색, `graph.py:1413` 자동 완화 probe — 둘 다 `await` 직후 블록을
-    닫는다). F-1(#222) 구제 폴백(`graph.py:1103` `_run_search_unfiltered()`)과 #343
-    억제-후 재판정(`graph.py:1241` 같은 호출)은 그 블록 **밖**에서 돈다 —
-    `spring_client.py:761` 의 `attempts = 1 if _search_retry_suppressed.get() else
+    가드 OFF 분기(기본)는 `graph.py::stream_recommendation` 의 `suppress_deferred_search_
+    retry = may_auto_relax and not search_retry_on_deferred_conditions` 로 재시도를
+    끄는데, 그 `with spring_client.suppress_search_retry()` 블록은 저장소 전체에 **딱 두
+    곳**뿐이다(같은 함수 안에서 본 검색을 감싼 곳, 자동 완화 probe `_probe(cand)` 를 감싼
+    곳 — 둘 다 `await` 직후 블록을 닫는다). F-1(#222) 구제 폴백과 #343 억제-후 재판정
+    (둘 다 같은 함수의 `_run_search_unfiltered()` 호출)은 그 블록 **밖**에서 돈다 —
+    `spring_client.py::search` 의 `attempts = 1 if _search_retry_suppressed.get() else
     settings.spring_max_retries + 1` 을 그대로 타므로 가드 OFF 여도 **항상**
     `SPRING_MAX_RETRIES` 만큼 재시도한다. 그래서 이 항만은 `spring_timeout_s` 가 아니라
     `budget = spring_timeout_s * (spring_max_retries + 1)` 으로 값을 매겨야 한다 — 총합
@@ -1896,14 +1896,16 @@ class Settings(BaseSettings):
         "상한이 안전한지는 단일 호출 예산이 아니라 첫 이벤트 앞 직렬 합으로 잰다").
 
         가드 ON 설정은 직렬 합 `calls * budget`로 검증한다 — `search_retry_on_deferred_
-        conditions=True` 면 `graph.py:549` 의 `suppress_deferred_search_retry` 가 항상
-        False 라 세 항 모두 재시도하기 때문이다. **가드 OFF(기본)는 항이 균질하지 않다**
-        (#383 R5, PR #414 Claude 리뷰) — 본 검색·자동완화 probe 는 `spring_client.
-        suppress_search_retry()` 로 억제돼(그 `with` 블록은 저장소 전체에 `graph.py:1012`·
-        `1413` 딱 두 곳뿐) 1회분(`spring_timeout_s`)이지만, F-1/#343 구제 폴백
-        (`graph.py:1103`·`1241` `_run_search_unfiltered()`)은 그 블록 밖이라 억제되지
-        않고 `spring_client.py:761` 의 `settings.spring_max_retries + 1` 을 그대로 받는다
-        — 세 항을 균질하게 `spring_timeout_s` 로 매기면 이 한 항을 과소평가해 이 이슈가
+        conditions=True` 면 `graph.py::stream_recommendation` 의 `suppress_deferred_
+        search_retry` 산출부가 항상 False 라 세 항 모두 재시도하기 때문이다. **가드
+        OFF(기본)는 항이 균질하지 않다**(#383 R5, PR #414 Claude 리뷰) — 본 검색·
+        자동완화 probe 는 `spring_client.suppress_search_retry()` 로 억제돼(그 `with`
+        블록은 저장소 전체에, 같은 함수 안 본 검색을 감싼 곳과 자동완화 probe
+        `_probe(cand)` 를 감싼 곳 딱 두 곳뿐) 1회분(`spring_timeout_s`)이지만, F-1/#343
+        구제 폴백(같은 함수의 `_run_search_unfiltered()` 호출 두 곳)은 그 블록 밖이라
+        억제되지 않고 `spring_client.py::search` 의 `settings.spring_max_retries + 1`
+        을 그대로 받는다 — 세 항을 균질하게 `spring_timeout_s` 로 매기면 이 한 항을
+        과소평가해 이 이슈가
         고치려던 실패 모드를 되풀이한다(`SPRING_MAX_RETRIES=1` + 기본 타임아웃이면 가드
         계산 9.0 < 10.0 로 통과시키지만 실제 최악은 3.0+3.0+3.0×2=12.0 > 10.0). 그래서
         OFF 분기는 `suppressed_calls * spring_timeout_s + rescue_calls * budget`
@@ -1923,7 +1925,7 @@ class Settings(BaseSettings):
         식에 들어왔다(더 이상 커버 밖이 아니다).
 
         **구매자 `progress` 이벤트(#289)는 #396 이 이미 구현했다 — "미룸 자체가 사라진다"는
-        낡은 서술이다(#383 R3 정정).** `graph.py:1007-1008` 이 본 검색 **직전**에
+        낡은 서술이다(#383 R3 정정).** `graph.py::stream_recommendation` 이 본 검색 **직전**에
         `progress_frame("searching", ...)` 을 내보내고(`progress_events_enabled` 기본
         `True`, 위 필드), 이 스트림의 첫 이벤트는 이제 `conditions` 가 아니라 그 `progress`
         프레임이다. `conditions` 는 여전히 검색 **뒤**로 미뤄진다 — 사라지는 것은 미룸
@@ -1965,7 +1967,8 @@ class Settings(BaseSettings):
         if deferred_calls == 0:
             return self
         if self.search_retry_on_deferred_conditions:
-            # ON 분기: graph.py:549 의 suppress_deferred_search_retry 가 항상 False 라 세 항
+            # ON 분기: graph.py::stream_recommendation 의 suppress_deferred_search_retry
+            # 산출부가 항상 False 라 세 항
             # 전부(본 검색·자동완화 probe·구제 폴백) 재시도한다 — 균질하게 budget 으로 맞는다.
             serial_budget = deferred_calls * budget
             serial_formula = f"{deferred_calls} * SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1)"
