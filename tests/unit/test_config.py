@@ -175,23 +175,27 @@ def test_search_retry_budget_must_also_fit_the_first_token_window():
         )  # 예산 6s > 5s
 
     # 예산을 함께 줄이면 정상 — 검증은 **쌍**을 보지 한쪽 값을 금지하지 않는다.
-    # [#383] 미룸 직렬 합 계수가 기본 설정에서 3이 돼(1 + category_expand 1 + 교집합 min(3,1) 1),
-    # 종전 값(first-token=5.0, spring_timeout_s=2.0)은 3×2.0=6.0 ≥ 5.0 으로 그 자체가 걸린다 —
-    # 이 assert 가 겨누는 것은 단일 호출 예산 vs first-token 쌍이지 미룸 직렬 합이 아니므로,
-    # first-token 상한을 7.0 으로 올려 단일 호출 예산(4.0)도, 미룸 직렬 합(6.0)도 함께 통과하는
-    # 조합으로 조정한다.
+    # [#383 R5] 미룸 직렬 합은 이제 항이 균질하지 않다 — 기본 설정(rescue_calls=1,
+    # suppressed_calls=2)에서 spring_max_retries=1 이면 budget=spring_timeout_s×2, 직렬 합은
+    # suppressed×spring_timeout_s + rescue×budget = 2×spring_timeout_s + 1×(spring_timeout_s×2)
+    # = 4×spring_timeout_s 다(구제 폴백은 억제 밖이라 재시도를 그대로 받으므로 3×가 아니라
+    # 4×). 종전 값(first-token=5.0, spring_timeout_s=2.0)은 4×2.0=8.0 ≥ 5.0 으로 그 자체가
+    # 걸린다 — 이 assert 가 겨누는 것은 단일 호출 예산 vs first-token 쌍이지 미룸 직렬 합이
+    # 아니므로, first-token 상한을 9.0 으로 올려 단일 호출 예산(4.0)도, 미룸 직렬 합(8.0)도
+    # 함께 통과하는 조합으로 조정한다.
     assert Settings(
         _env_file=None,
-        stream_first_token_timeout_s=7.0,
+        stream_first_token_timeout_s=9.0,
         spring_timeout_s=2.0,
         spring_max_retries=1,
     )
-    # [#383] spring_timeout_s=4.0 은 미룸 직렬 합 3×4.0=12.0 ≥ 10.0(기본 first-token)으로 이제
-    # 거절된다 — 단일 호출 예산 검증(8s < 10s)만 겨누도록 spring_timeout_s=2.5 로 낮춘다.
-    # 단일 호출 예산 5.0s(<10s) 는 여전히 여유가 있고, 미룸 직렬 합 3×2.5=7.5 도 10.0 아래다.
+    # [#383 R5] spring_timeout_s=2.5 는 미룸 직렬 합 4×2.5=10.0 ≥ 10.0(기본 first-token)으로
+    # 동률 거절된다 — 단일 호출 예산 검증(5.0s < 10s)만 겨누도록 spring_timeout_s=1.8 로
+    # 낮춘다. 단일 호출 예산 3.6s(<10s) 는 여전히 여유가 있고, 미룸 직렬 합 4×1.8=7.2 도
+    # 10.0 아래다.
     assert Settings(
-        _env_file=None, spring_timeout_s=2.5, spring_max_retries=1
-    )  # 5s < 10s 이고 3×2.5=7.5s < 10s — 여유가 있으면 통과
+        _env_file=None, spring_timeout_s=1.8, spring_max_retries=1
+    )  # 3.6s < 10s 이고 4×1.8=7.2s < 10s — 여유가 있으면 통과
 
 
 def test_deferred_retry_guard_rejects_default_serial_budget():
@@ -354,6 +358,45 @@ def test_deferred_first_event_i1_calls_category_expand_enabled_toggles_rescue_te
     assert _deferred_first_event_i1_calls(**base_kwargs, category_expand_enabled=False) == 2
 
 
+def test_deferred_first_event_rescue_i1_calls_isolates_the_rescue_term():
+    """[#383 R5] 구제 폴백 항만 떼는 헬퍼 — True/False 에서 1/0, 미룸 불성립(rounds=0 /
+    교집합 0)에서는 둘 다 0이다. `rescue ≤ total`·`total == 0 → rescue == 0` 불변식도 고정한다
+    (총합 함수와 조기 return 조건이 어긋나면 이 두 불변식이 깨진다).
+    """
+    from app.core.config import (
+        _deferred_first_event_i1_calls,
+        _deferred_first_event_rescue_i1_calls,
+    )
+
+    base_kwargs = {
+        "relaxation_max_rounds": 3,
+        "auto_fields": ["ratingMin"],
+        "chip_fields": ["priceMax", "ratingMin", "brand", "color"],
+    }
+    rounds_disabled = {**base_kwargs, "relaxation_max_rounds": 0}
+    intersection_disabled = {**base_kwargs, "auto_fields": []}
+
+    assert _deferred_first_event_rescue_i1_calls(**base_kwargs, category_expand_enabled=True) == 1
+    assert _deferred_first_event_rescue_i1_calls(**base_kwargs, category_expand_enabled=False) == 0
+    assert (
+        _deferred_first_event_rescue_i1_calls(**rounds_disabled, category_expand_enabled=True) == 0
+    )
+    assert (
+        _deferred_first_event_rescue_i1_calls(**intersection_disabled, category_expand_enabled=True)
+        == 0
+    )
+
+    for enabled in (True, False):
+        for kwargs in (base_kwargs, rounds_disabled, intersection_disabled):
+            total = _deferred_first_event_i1_calls(**kwargs, category_expand_enabled=enabled)
+            rescue = _deferred_first_event_rescue_i1_calls(
+                **kwargs, category_expand_enabled=enabled
+            )
+            assert rescue <= total
+            if total == 0:
+                assert rescue == 0
+
+
 def test_deferred_first_event_i1_calls_zero_when_relaxation_disabled():
     """rounds=0 이거나 auto 목록이 비면 미룸 자체가 없어 0이다 — 검증 대상 아님.
 
@@ -427,19 +470,59 @@ def test_deferred_first_event_i1_calls_grows_with_intersection_and_caps_at_round
 
 
 def test_default_settings_pass_deferred_serial_budget_by_formula():
-    """기본값은 보정식으로 3 * 3.0 = 9.0 < 10.0 이라 기동이 통과한다(#383)."""
-    from app.core.config import _deferred_first_event_i1_calls
-
-    settings = Settings(_env_file=None)
-    calls = _deferred_first_event_i1_calls(
-        relaxation_max_rounds=settings.relaxation_max_rounds,
-        auto_fields=settings.relaxation_auto_fields,
-        chip_fields=settings.relaxation_chip_fields,
-        category_expand_enabled=settings.category_expand_enabled,
+    """기본값(`spring_max_retries=0`)은 항별 값 매김으로도 9.0 < 10.0 이라 기동이 통과한다
+    (#383 R5). `retries=0` 이면 `budget == spring_timeout_s` 라 억제된 항(본 검색·자동완화
+    probe)과 구제 폴백 항의 값이 갈리지 않는 경계 조건이다 — 이 테스트는 총 호출 수만이
+    아니라 **항별로 나눈 값 매김**을 명시적으로 계산해도 여전히 9.0 임을 고정한다.
+    """
+    from app.core.config import (
+        _deferred_first_event_i1_calls,
+        _deferred_first_event_rescue_i1_calls,
     )
 
+    settings = Settings(_env_file=None)
+    kwargs = {
+        "relaxation_max_rounds": settings.relaxation_max_rounds,
+        "auto_fields": settings.relaxation_auto_fields,
+        "chip_fields": settings.relaxation_chip_fields,
+        "category_expand_enabled": settings.category_expand_enabled,
+    }
+    calls = _deferred_first_event_i1_calls(**kwargs)
+    rescue_calls = _deferred_first_event_rescue_i1_calls(**kwargs)
+    suppressed_calls = calls - rescue_calls
+    budget = settings.spring_timeout_s * (settings.spring_max_retries + 1)
+
     assert calls == 3
-    assert calls * settings.spring_timeout_s == 9.0 < settings.stream_first_token_timeout_s
+    assert rescue_calls == 1
+    assert suppressed_calls == 2
+    serial_budget = suppressed_calls * settings.spring_timeout_s + rescue_calls * budget
+    assert serial_budget == 9.0 < settings.stream_first_token_timeout_s
+
+
+def test_deferred_retry_guard_off_meters_rescue_fallback_at_full_retry_budget():
+    """[#383 R5, PR #414 Claude 리뷰] 가드 OFF 분기에서 구제 폴백 항만은 재시도 억제 밖이라
+    `budget`(=spring_timeout_s×(retries+1))로 매겨야 한다 — 균질하게 spring_timeout_s 로만
+    매기면 이 항을 과소평가해 이 이슈가 원래 고치려던 실패 모드를 되풀이한다.
+
+    기본 타임아웃(spring_timeout_s=3.0, stream_first_token_timeout_s=10.0)에서
+    `spring_max_retries=1` 이면 억제된 두 항(본 검색·자동완화 probe)은 2×3.0=6.0 이지만
+    구제 폴백 한 항은 재시도를 그대로 받아 1×(3.0×2)=6.0 이 되어 합이 12.0 ≥ 10.0 으로
+    거절된다. `category_expand_enabled=False` 로 구제 폴백 항 자체를 빼면 억제된 두 항만
+    남아 2×3.0=6.0 < 10.0 으로 통과한다 — 이 대비가 "구제 항만 budget 으로 매긴다"를
+    실제로 검사하는 유일한 테스트다.
+    """
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="3 serial I-1 calls"):
+        Settings(_env_file=None, spring_max_retries=1)
+
+    assert (
+        Settings(
+            _env_file=None, spring_max_retries=1, category_expand_enabled=False
+        ).category_expand_enabled
+        is False
+    )
 
 
 def test_deferred_first_event_i1_calls_category_expand_enabled_false_lowers_settings_coefficient():

@@ -175,6 +175,21 @@ timeout_s`를 **기동 시점에** 검증한다.
   `STREAM_FIRST_TOKEN_TIMEOUT_S`·`CATEGORY_EXPAND_ENABLED`·`RELAXATION_*` 는 하나도 없다 —
   운영은 코드 기본값(`spring_timeout_s=3.0`)으로 돈다. 오늘 기본값은 보정식으로 `3×3.0=9.0
   <10.0`이라 통과하므로, 이 적용으로 새로 부팅에 실패하는 배포는 없다.
+- **구제 폴백 항은 재시도 억제 대상이 아니다(#383 R5, PR #414 Claude 리뷰 실측 확인)** —
+  `spring_client.suppress_search_retry()` 로 재시도를 끄는 `with` 블록은 저장소 전체에
+  `graph.py:1012`(본 검색)·`1413`(자동완화 probe) 딱 두 곳뿐이고, F-1/#343 구제 재검색
+  (`graph.py:1103`·`1241` `_run_search_unfiltered()`)은 그 블록 밖이라
+  `spring_client.py:761` 의 `settings.spring_max_retries + 1` 을 그대로 받아 항상
+  재시도한다. 그래서 세 항을 균질하게 `spring_timeout_s` 로 값 매기면(`deferred_calls ×
+  spring_timeout_s`) 구제 항 하나를 과소평가한다 — `_require_search_retry_within_stream_
+  budget` 의 가드 OFF 분기는 이제 `suppressed_calls × spring_timeout_s + rescue_calls ×
+  budget`(`budget = spring_timeout_s × (spring_max_retries+1)`)로 항별로 나눠 잰다. **위
+  위험 구간 산술도 `spring_max_retries` 에 따라 달라진다** — `spring_max_retries=0`(오늘
+  기본값, #394)이면 `budget == spring_timeout_s` 라 위 §5 산술이 그대로 성립하지만,
+  `spring_max_retries=1`(허용 상한)이면 실제 직렬 합은 `2t + 1×(t×2) = 4t` 로 늘어나
+  위험 구간이 `t ∈ [2.5, 5.0)`로 넓어진다(`.env.example` 이 한때 `SPRING_MAX_RETRIES=1`
+  을 예시로 실었던 것과 기본 `spring_timeout_s=3.0`이 만나면 실제로 걸렸다 — 예시 값을
+  코드 기본값 0으로 정정했다).
 - **불일치를 일치로 고정** — `tests/unit/test_config.py::
   test_deferred_first_event_i1_calls_matches_actual_rescue_chain_stages`(#383, 종전
   `..._known_undercount_vs_actual_rescue_chain_stages`를 개명·정정)가 이제 "가드 모델(3) ==

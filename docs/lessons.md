@@ -34,6 +34,9 @@
 - 덧: `docs/api-spec.md:320` 의 "Spring 직렬 구간을 `2 × 3s = 6s` 로 묶는다" 서술도 같은
   이유로 실측(3단)과 어긋나 있으나, **정본 개정은 사람 승인 게이트라 이 PR 범위 밖으로
   남겼다** — 후속 이슈 대상.
+- 덧(R5): 새 항을 식에 더할 때는 **그 항이 기존 항과 같은 값 매김을 받는지**(재시도 억제
+  여부 등)까지 확인한다 — 계수를 고치면서 값 매김을 균질하게 가정해 같은 과소평가를 항
+  하나에서 되풀이했고, Claude PR 리뷰가 잡았다.
 - 관련: `app/core/config.py::_deferred_first_event_i1_calls`·
   `::_require_search_retry_within_stream_budget`, `.env.example:81-87`,
   `docs/specs/MEASURE-FIRST-TOKEN-363.md` §5, 이슈 #383(#363 후속), 커밋 `b700e7e`

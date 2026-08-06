@@ -97,6 +97,42 @@ def _deferred_first_event_i1_calls(
     return 1 + (1 if category_expand_enabled else 0) + min(relaxation_max_rounds, intersection_size)
 
 
+def _deferred_first_event_rescue_i1_calls(
+    *,
+    relaxation_max_rounds: int,
+    auto_fields: list[str],
+    chip_fields: list[str],
+    category_expand_enabled: bool,
+) -> int:
+    """위 총합 중 **구제 폴백 항(0 또는 1)만** 떼어낸다 (#383 R5, PR #414 Claude 리뷰).
+
+    존재 이유는 값 매김이 다르기 때문이다 — `_require_search_retry_within_stream_budget` 의
+    가드 OFF 분기(기본)는 `graph.py:549` 의 `suppress_deferred_search_retry =
+    may_auto_relax and not search_retry_on_deferred_conditions` 로 재시도를 끄는데, 그
+    `with spring_client.suppress_search_retry()` 블록은 저장소 전체에 **딱 두 곳**뿐이다
+    (`graph.py:1012` 본 검색, `graph.py:1413` 자동 완화 probe — 둘 다 `await` 직후 블록을
+    닫는다). F-1(#222) 구제 폴백(`graph.py:1103` `_run_search_unfiltered()`)과 #343
+    억제-후 재판정(`graph.py:1241` 같은 호출)은 그 블록 **밖**에서 돈다 —
+    `spring_client.py:761` 의 `attempts = 1 if _search_retry_suppressed.get() else
+    settings.spring_max_retries + 1` 을 그대로 타므로 가드 OFF 여도 **항상**
+    `SPRING_MAX_RETRIES` 만큼 재시도한다. 그래서 이 항만은 `spring_timeout_s` 가 아니라
+    `budget = spring_timeout_s * (spring_max_retries + 1)` 으로 값을 매겨야 한다 — 총합
+    함수와 세 항을 균질하게 `spring_timeout_s` 로 매기면 `SPRING_MAX_RETRIES=1`
+    (`.env.example` 이 한때 싣던 값)에서 이 항을 과소평가한다(이 이슈가 원래 고치려던
+    실패 모드를 항 하나에서 되풀이하는 셈이다).
+
+    구제 경로 자체를 억제하도록 `graph.py` 를 바꾸는 선택지는 **런타임 동작 변경**이라
+    범위 밖이다(#384/#288 소관) — 여기서는 가드가 현실을 정확히 재는 것만 고친다.
+
+    조기 return 0 은 총합 함수와 **같은 조건**(미룸 불성립)을 쓴다 — 그래야
+    `rescue ≤ total` 과 `total == 0 → rescue == 0` 두 불변식이 항상 성립한다.
+    """
+    intersection_size = len(set(auto_fields) & set(chip_fields))
+    if relaxation_max_rounds <= 0 or intersection_size == 0:
+        return 0
+    return 1 if category_expand_enabled else 0
+
+
 class Settings(BaseSettings):
     """환경변수 기반 전역 설정. 접두사 없이 대문자 필드명과 매핑된다."""
 
@@ -1859,7 +1895,23 @@ class Settings(BaseSettings):
         검증기의 허용 목록·플래그에 암묵적으로 의존시키지 않는다(lessons 2026-08-04
         "상한이 안전한지는 단일 호출 예산이 아니라 첫 이벤트 앞 직렬 합으로 잰다").
 
-        가드 ON/OFF 설정은 각각 직렬 합 `calls * budget`/`calls * spring_timeout_s`로 검증한다.
+        가드 ON 설정은 직렬 합 `calls * budget`로 검증한다 — `search_retry_on_deferred_
+        conditions=True` 면 `graph.py:549` 의 `suppress_deferred_search_retry` 가 항상
+        False 라 세 항 모두 재시도하기 때문이다. **가드 OFF(기본)는 항이 균질하지 않다**
+        (#383 R5, PR #414 Claude 리뷰) — 본 검색·자동완화 probe 는 `spring_client.
+        suppress_search_retry()` 로 억제돼(그 `with` 블록은 저장소 전체에 `graph.py:1012`·
+        `1413` 딱 두 곳뿐) 1회분(`spring_timeout_s`)이지만, F-1/#343 구제 폴백
+        (`graph.py:1103`·`1241` `_run_search_unfiltered()`)은 그 블록 밖이라 억제되지
+        않고 `spring_client.py:761` 의 `settings.spring_max_retries + 1` 을 그대로 받는다
+        — 세 항을 균질하게 `spring_timeout_s` 로 매기면 이 한 항을 과소평가해 이 이슈가
+        고치려던 실패 모드를 되풀이한다(`SPRING_MAX_RETRIES=1` + 기본 타임아웃이면 가드
+        계산 9.0 < 10.0 로 통과시키지만 실제 최악은 3.0+3.0+3.0×2=12.0 > 10.0). 그래서
+        OFF 분기는 `suppressed_calls * spring_timeout_s + rescue_calls * budget`
+        (`_deferred_first_event_rescue_i1_calls` 가 `rescue_calls` 를 뗀다, `rescue ≤
+        total`·`total == 0 → rescue == 0` 두 불변식 보장)로 나눠 잰다. **구제 경로를
+        `graph.py` 에서 억제하도록 런타임을 바꾸는 선택지는 범위 밖**이다(#384/#288 소관) —
+        가드가 현실을 정확히 재게만 고친다. 오늘 기본값(`spring_max_retries=0`, #394)에서는
+        `budget == spring_timeout_s` 라 항별 값 매김이 갈리지 않아 영향이 없다(9.0 그대로).
         게이트는 `calls == 0`(= `graph.py`의 `may_auto_relax`가 False)일 때만 검증을 건너뛰어,
         실제로 미루지 않는 설정을 일어나지 않는 직렬 호출 때문에 막지 않는다(#277 4차 원칙을
         일반형으로 그대로 유지).
@@ -1913,6 +1965,8 @@ class Settings(BaseSettings):
         if deferred_calls == 0:
             return self
         if self.search_retry_on_deferred_conditions:
+            # ON 분기: graph.py:549 의 suppress_deferred_search_retry 가 항상 False 라 세 항
+            # 전부(본 검색·자동완화 probe·구제 폴백) 재시도한다 — 균질하게 budget 으로 맞는다.
             serial_budget = deferred_calls * budget
             serial_formula = f"{deferred_calls} * SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1)"
             recovery = (
@@ -1922,8 +1976,22 @@ class Settings(BaseSettings):
                 "CATEGORY_EXPAND_ENABLED=false"
             )
         else:
-            serial_budget = deferred_calls * self.spring_timeout_s
-            serial_formula = f"{deferred_calls} * SPRING_TIMEOUT_S"
+            # OFF 분기(기본, #383 R5): 본 검색·자동완화 probe 는 suppress_search_retry() 로
+            # 억제돼 1회분(spring_timeout_s)이지만, 구제 폴백(F-1/#343)은 그 with 블록 밖이라
+            # 억제되지 않는다 — 균질하게 spring_timeout_s 로 매기면 그 한 항을 과소평가한다
+            # (_deferred_first_event_rescue_i1_calls docstring 근거). 항별로 나눠 값을 매긴다.
+            rescue_calls = _deferred_first_event_rescue_i1_calls(
+                relaxation_max_rounds=self.relaxation_max_rounds,
+                auto_fields=self.relaxation_auto_fields,
+                chip_fields=self.relaxation_chip_fields,
+                category_expand_enabled=self.category_expand_enabled,
+            )
+            suppressed_calls = deferred_calls - rescue_calls
+            serial_budget = suppressed_calls * self.spring_timeout_s + rescue_calls * budget
+            serial_formula = (
+                f"{suppressed_calls} * SPRING_TIMEOUT_S + "
+                f"{rescue_calls} * SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1)"
+            )
             recovery = (
                 "lower SPRING_TIMEOUT_S, disable deferral with "
                 "RELAXATION_MAX_ROUNDS=0 or RELAXATION_AUTO_FIELDS=[], or "
