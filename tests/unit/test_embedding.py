@@ -136,6 +136,96 @@ def test_embed_texts_omits_task_type_by_default(monkeypatch):
     assert getattr(client.models.last_config, "task_type", None) is None
 
 
+class _ChunkCapturingModels:
+    """호출마다 contents/config 를 기록하고, 각 텍스트 "t{i}" 로부터 결정론적 벡터를 만든다.
+
+    벡터는 contents 리스트 내 인덱스가 아니라 텍스트 자체(정수 i)로부터 유도해, 청크 순서가
+    뒤집혀도 우연히 통과하지 않게 한다(순서 보존을 실제 값으로 검증).
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+        self.configs: list[object] = []
+
+    def embed_content(self, *, model, contents, config):
+        self.calls.append(list(contents))
+        self.configs.append(config)
+        vectors = [[float(int(text[1:])), 0.0, 0.0] for text in contents]
+        return _FakeResponse(vectors)
+
+
+class _ChunkCapturingClient:
+    def __init__(self) -> None:
+        self.models = _ChunkCapturingModels()
+
+
+def test_embed_texts_chunks_over_100_and_preserves_order(monkeypatch):
+    settings = Settings(
+        _env_file=None, google_api_key="test-key", embedding_dim=3, embedding_normalized=False
+    )
+    monkeypatch.setattr(emb, "get_settings", lambda: settings)
+    client = _ChunkCapturingClient()
+    monkeypatch.setattr(emb, "_client", lambda api_key: client)
+
+    texts = [f"t{i}" for i in range(103)]
+    out = emb.embed_texts(texts)
+
+    assert len(client.models.calls) == 2
+    assert len(client.models.calls[0]) == 100
+    assert len(client.models.calls[1]) == 3
+    assert len(out) == 103
+    for i, vec in enumerate(out):
+        assert vec == pytest.approx([float(i), 0.0, 0.0])
+    # 청크 순서가 뒤집히면(예: 3건 청크가 먼저) 위 위치별 값 검증이 실패한다 — 공허한 길이 검사 아님.
+    assert client.models.configs[0].output_dimensionality == 3
+    assert client.models.configs[1].output_dimensionality == 3
+
+
+def test_embed_texts_passes_task_type_on_every_chunk(monkeypatch):
+    # 청크화가 "첫 청크에만 task_type 을 싣고 이후 청크는 빠뜨리는" 형태로 회귀해도
+    # 단일 호출(1건) 테스트는 이 갭을 못 덮는다 — 100건 초과 입력으로 모든 청크를 검사한다.
+    settings = Settings(
+        _env_file=None, google_api_key="test-key", embedding_dim=3, embedding_normalized=False
+    )
+    monkeypatch.setattr(emb, "get_settings", lambda: settings)
+    client = _ChunkCapturingClient()
+    monkeypatch.setattr(emb, "_client", lambda api_key: client)
+
+    texts = [f"t{i}" for i in range(103)]
+    emb.embed_texts(texts, task_type="RETRIEVAL_QUERY")
+
+    assert len(client.models.calls) == 2
+    assert [c.task_type for c in client.models.configs] == ["RETRIEVAL_QUERY", "RETRIEVAL_QUERY"]
+
+
+def test_embed_texts_exactly_100_is_one_call(monkeypatch):
+    settings = Settings(
+        _env_file=None, google_api_key="test-key", embedding_dim=3, embedding_normalized=False
+    )
+    monkeypatch.setattr(emb, "get_settings", lambda: settings)
+    client = _ChunkCapturingClient()
+    monkeypatch.setattr(emb, "_client", lambda api_key: client)
+
+    texts = [f"t{i}" for i in range(100)]
+    out = emb.embed_texts(texts)
+
+    assert len(client.models.calls) == 1
+    assert len(client.models.calls[0]) == 100
+    assert len(out) == 100
+
+
+def test_embed_texts_empty_input_makes_no_calls(monkeypatch):
+    settings = Settings(_env_file=None, google_api_key="test-key", embedding_dim=3)
+    monkeypatch.setattr(emb, "get_settings", lambda: settings)
+    client = _ChunkCapturingClient()
+    monkeypatch.setattr(emb, "_client", lambda api_key: client)
+
+    out = emb.embed_texts([])
+
+    assert out == []
+    assert client.models.calls == []
+
+
 def test_client_sets_http_timeout_from_config(monkeypatch):
     """[#101 PR#166 리뷰] genai.Client 에 config embedding_timeout_s(ms) 를 http_options 로 건다.
 
