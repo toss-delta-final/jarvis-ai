@@ -16,8 +16,10 @@ from datetime import datetime, timezone
 from enum import StrEnum
 
 from app.agents.profile.gate import should_promote
+from app.agents.profile.graph_merge import build_graph_document, empty_document
+from app.agents.profile.graph_models import GraphDocument
 from app.agents.profile.resolver import resolve_triple
-from app.agents.profile.store import get_profile_store
+from app.agents.profile.store import FactRecord, get_profile_store
 from app.agents.buyer.recommendation.state import extract_json
 from app.core.config import Settings, get_settings
 from app.core.llm import LLMClient, LLMError
@@ -178,20 +180,41 @@ async def _resolve_delta(delta: dict, *, settings: Settings) -> list[dict]:
 
 
 async def consolidate(user_id: str, *, llm, settings) -> ConsolidationResult:
-    """sleep-time — 승격 fact 를 §5.1 3섹션 요약 마크다운으로 재작성 후 결과 상태 반환.
+    """sleep-time — 그래프를 산출하고, 살아 있는 취향만으로 §5.1 요약을 재작성한다.
 
-    fact 없음은 정상 no-op, LLM 미구성·오류·빈 응답은 재시도 가능한 실패로 구분한다.
+    **[HARD] 요약 입력은 그래프에서 나온다**(REQ-PGRAPH-023). fact 목록을 그대로 읽으면 다음
+    배치가 삭제된 취향을 요약에 다시 써넣어 삭제 기능이 겉모습만 남는다.
+
+    잠금 규약: 그래프 RMW 만 `graph_lock` 안에서 하고 **LLM 왕복은 락 밖**이다. 요약 쓰기는
+    `set_summary` 가 자기 잠금을 잡으므로(#323) 여기서 락을 쥐고 있으면 advisory 풀에서
+    커넥션을 동시에 둘 점유해, 동시 세션 종료 몇 건으로 구매자 턴 경로까지 말라 죽는다.
+
+    반환 계약은 유지한다(finalizer 의 RETRYABLE 분기가 여기 의존한다): 할 일 없음은 NO_WORK,
+    LLM 미구성·오류·빈 응답은 FAILED.
     """
     store = await get_profile_store()
-    facts = await store.get_facts(user_id)
-    if not facts:
+    now = _now_iso()
+
+    async with store.graph_lock(user_id):
+        facts = await store.get_fact_records(user_id)
+        if not facts:
+            return ConsolidationResult.NO_WORK
+        existing = await store.get_graph(user_id) or empty_document(now)
+        document = build_graph_document(facts, existing=existing, settings=settings, now=now)
+        await store.set_graph(user_id, document)
+        summary_input = _summary_input(document, facts)
+
+    if not summary_input:
+        # **기존 요약을 지우지 않는다.** 빈 문자열로 덮으면 마이페이지·rerank 는 취향을 잃는데
+        # 홈 랭킹은 캐리오버된 옛 벡터로 계속 개인화한다(store.set_summary 주석) — 억제의
+        # 정반대 상태다. 쓸 내용이 없으면 아무것도 안 하는 것이 맞다.
         return ConsolidationResult.NO_WORK
     if llm is None:
         return ConsolidationResult.FAILED
     try:
         raw = await llm.complete(
             system=_CONSOLIDATE_SYSTEM,
-            user="\n".join(facts),
+            user="\n".join(summary_input),
             tier="smart",
             max_tokens=1000,
             json_output=False,  # 마크다운 요약 — OpenAI response_format=json 강제 금지(리뷰 #44)
@@ -201,8 +224,35 @@ async def consolidate(user_id: str, *, llm, settings) -> ConsolidationResult:
     markdown = (raw or "").strip()[: settings.profile_summary_max_chars]
     if not markdown:
         return ConsolidationResult.FAILED
-    await store.set_summary(user_id, markdown, _now_iso())
+    await store.set_summary(user_id, markdown, now)
     return ConsolidationResult.UPDATED
+
+
+def _summary_input(document: GraphDocument, facts: list[FactRecord]) -> list[str]:
+    """요약 LLM 입력 = 살아 있는 취향의 근거 fact + 트리플이 없는 fact.
+
+    `suppressed`·`superseded` edge 는 **즉시 제외**한다(REQ-PGRAPH-022). 그 edge 가 근거로 삼은
+    fact 원문도 함께 뺀다 — 원문이 잔여 fact 로 새어 들어가면 edge 만 숨기고 내용은 그대로
+    요약되는 셈이라 억제가 무의미해진다.
+
+    트리플이 없는 fact("기억해" hot-path·resolver 드롭분·전환 이전 fact)는 **남긴다**. 그래프에는
+    안 실리지만(unprojected_count) 개인화에서까지 통째로 사라지면, 사용자가 명시적으로 기억하라고
+    말한 내용이 소리 없이 버려진다.
+    """
+    excluded: set[str] = set()
+    for edge in document.edges:
+        if edge.status != "active":
+            excluded.update(edge.evidence_refs)
+    live: set[str] = set()
+    for edge in document.edges:
+        if edge.status == "active":
+            live.update(ref for ref in edge.evidence_refs if ref not in excluded)
+
+    return [
+        record.fact
+        for record in facts
+        if record.fact_key not in excluded and (record.fact_key in live or not record.graph_triples)
+    ]
 
 
 def _as_float(value: object) -> float:
