@@ -62,6 +62,10 @@ def _reason_chain(exc: BaseException) -> str:
 
     [보안] 메시지에 섞이는 토큰 유래 값(`kid`·`sub_type`)은 **서명 검증 이전** 값이라 공격자
     제어다. 비출력 문자를 이스케이프해 로그 인젝션(CWE-117)을 막는다(_escape_unprintable).
+
+    [보안] `raise ... from None` 으로 억제된 컨텍스트는 따라가지 않는다 — CPython 트레이스백과
+    같은 규칙이다. 억제는 "이 예외는 노출하지 말라"는 명시적 의사표시이므로, 나중에 누가
+    토큰 조각이 섞인 하위 예외를 그렇게 숨겨도 이 경로가 되살리지 않는다(PR #409 리뷰 4R).
     """
     parts: list[str] = []
     seen: set[int] = set()
@@ -70,7 +74,12 @@ def _reason_chain(exc: BaseException) -> str:
         seen.add(id(current))
         message = _escape_unprintable(str(current))[:_REASON_MAX_CHARS]
         parts.append(f"{type(current).__name__}: {message}" if message else type(current).__name__)
-        current = current.__cause__ or current.__context__
+        if current.__cause__ is not None:
+            current = current.__cause__
+        elif current.__suppress_context__:
+            current = None
+        else:
+            current = current.__context__
     return " <- ".join(parts)
 
 

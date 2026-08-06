@@ -263,6 +263,34 @@ def test_401_log_escapes_request_path(caplog: pytest.LogCaptureFixture) -> None:
     assert "path=/seller/x\\u2028\\u0085auth rejected" in message
 
 
+def test_reason_chain_respects_suppressed_context() -> None:
+    """`raise ... from None` 으로 억제된 예외는 사유에 되살아나지 않는다 (PR #409 리뷰 4R).
+
+    억제는 "이 예외는 노출하지 말라"는 명시적 의사표시다 — CPython 트레이스백과 같은 규칙.
+    """
+    try:
+        try:
+            raise ValueError("secret-inner-detail")
+        except ValueError:
+            raise deps.AuthError("invalid token") from None
+    except deps.AuthError as exc:
+        suppressed = deps._reason_chain(exc)
+
+    assert suppressed == "AuthError: invalid token"
+    assert "secret-inner-detail" not in suppressed
+
+    # 억제하지 않으면(암묵 컨텍스트) 종전대로 따라간다 — 진단 능력은 유지된다.
+    try:
+        try:
+            raise ValueError("visible-inner-detail")
+        except ValueError:
+            raise deps.AuthError("invalid token")
+    except deps.AuthError as exc:
+        implicit = deps._reason_chain(exc)
+
+    assert "ValueError: visible-inner-detail" in implicit
+
+
 def test_escape_keeps_printable_text_intact() -> None:
     """이스케이프는 비출력 문자만 건드린다 — 한글·기호는 그대로여야 진단이 읽힌다."""
     assert deps._escape_unprintable("인증 실패: scope 불일치 (a/b) 100%") == (
