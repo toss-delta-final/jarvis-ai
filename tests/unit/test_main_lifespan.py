@@ -260,6 +260,11 @@ async def test_lifespan_times_out_hung_resource_and_continues_cleanup(monkeypatc
                 "lifespan_resource_close_timeout_s": 0.01,
                 "lifespan_resource_close_floor_s": 0.001,
                 "lifespan_cleanup_budget_s": 0.2,
+                # `_lifespan` 이 `_check_category_dictionary_startup` 도 거치므로(이슈 #401)
+                # 이 fake 객체도 그 경로가 읽는 속성을 갖춰야 한다 — 없으면 이 테스트가 검증하려는
+                # 자원 정리 타이밍이 아니라 엉뚱한 AttributeError 로 실패한다.
+                "catalog_db_url": "postgresql://x",
+                "category_dictionary_startup_check": "log",
             },
         )(),
     )
@@ -614,3 +619,110 @@ async def test_category_dictionary_startup_check_runs_in_thread_with_settings_ds
     assert captured["dsn"] == settings.catalog_db_url
     assert captured["mode"] == "fail"
     assert captured["thread"] != "MainThread"
+
+
+# --- 도달 불가 vs 예상 못 한 가드 버그 (이슈 #401 라운드 5 리뷰 F7) ----------------------------
+#
+# 라운드 4 까지는 CategoryDictionaryError 가 아니면 전부 "연결 실패"로 뭉뚱그려, 가드 코드
+# 자체의 버그(TypeError 등)도 조용히 삼켜졌다. 이제 세 갈래(구성 오류·도달 불가·예상 못 한
+# 버그)로 나뉜다 — 도달 불가는 모든 모드에서 WARNING, 예상 못 한 버그는 fail 모드에서만 전파.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["off", "log", "fail"])
+async def test_category_dictionary_startup_check_survives_psycopg_operational_error_in_every_mode(
+    monkeypatch, caplog, mode
+) -> None:
+    """`psycopg.OperationalError` 는 `OSError` 를 상속하지 않는다 — `OSError` 만 잡으면 이
+    타입을 놓친다. 세 모드 모두에서 WARNING 후 계속돼야 한다(도달 불가는 모드 무관).
+    """
+    import psycopg
+
+    def raise_operational_error(dsn: str, *, mode: str) -> None:
+        raise psycopg.OperationalError("connection refused")
+
+    monkeypatch.setattr(main_mod, "check_category_dictionary", raise_operational_error)
+    settings = Settings(_env_file=None, category_dictionary_startup_check=mode)
+    monkeypatch.setattr(main_mod, "get_settings", lambda: settings)
+
+    with caplog.at_level("WARNING"):
+        await main_mod._check_category_dictionary_startup()  # 예외를 던지면 안 됨
+
+    assert "category dictionary startup check could not reach the database" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_category_dictionary_startup_check_unexpected_bug_propagates_in_fail_mode(
+    monkeypatch, caplog
+) -> None:
+    """가드 코드 자체의 버그(예: `TypeError`)는 `fail` 모드에서 전파돼야 `fail` 계약("구성 오류면
+    반드시 기동을 거부한다")이 그 버그 앞에서 무력화되지 않는다. 로그 문구는 "도달 불가"라고
+    오진단하면 안 된다.
+    """
+
+    def raise_type_error(dsn: str, *, mode: str) -> None:
+        raise TypeError("unexpected bug in guard")
+
+    monkeypatch.setattr(main_mod, "check_category_dictionary", raise_type_error)
+    settings = Settings(_env_file=None, category_dictionary_startup_check="fail")
+    monkeypatch.setattr(main_mod, "get_settings", lambda: settings)
+
+    with caplog.at_level("ERROR"):
+        with pytest.raises(TypeError):
+            await main_mod._check_category_dictionary_startup()
+
+    assert "could not reach the database" not in caplog.text
+    assert "failed unexpectedly" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["off", "log"])
+async def test_category_dictionary_startup_check_unexpected_bug_only_logs_outside_fail_mode(
+    monkeypatch, caplog, mode
+) -> None:
+    """같은 버그가 `off`/`log` 에서는 서버를 죽이면 안 된다 — 리뷰어의 "무조건 좁혀 잡기"
+    제안을 그대로 받으면 기본값(`log`)의 회복력이 깨진다(사소한 가드 버그가 전면 중단이 됨).
+    """
+
+    def raise_type_error(dsn: str, *, mode: str) -> None:
+        raise TypeError("unexpected bug in guard")
+
+    monkeypatch.setattr(main_mod, "check_category_dictionary", raise_type_error)
+    settings = Settings(_env_file=None, category_dictionary_startup_check=mode)
+    monkeypatch.setattr(main_mod, "get_settings", lambda: settings)
+
+    with caplog.at_level("ERROR"):
+        await main_mod._check_category_dictionary_startup()  # 예외를 던지면 안 됨
+
+    assert "failed unexpectedly" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_category_dictionary_startup_check_three_branches_take_different_paths(
+    monkeypatch,
+) -> None:
+    """세 갈래(구성 오류·도달 불가·예상 못 한 버그)가 실제로 다른 경로를 타는지 한 곳에서
+    단언한다 — 뭉뚱그리는 회귀(예: 전부 삼킴, 전부 전파)가 나면 이 테스트가 실패해야 한다.
+    """
+    settings = Settings(_env_file=None, category_dictionary_startup_check="fail")
+    monkeypatch.setattr(main_mod, "get_settings", lambda: settings)
+
+    def raise_category_dictionary_error(dsn: str, *, mode: str) -> None:
+        raise CategoryDictionaryError("카테고리 사전 0행")
+
+    def raise_operational_error(dsn: str, *, mode: str) -> None:
+        raise OSError("connection refused")
+
+    def raise_type_error(dsn: str, *, mode: str) -> None:
+        raise TypeError("unexpected bug in guard")
+
+    monkeypatch.setattr(main_mod, "check_category_dictionary", raise_category_dictionary_error)
+    with pytest.raises(CategoryDictionaryError):
+        await main_mod._check_category_dictionary_startup()
+
+    monkeypatch.setattr(main_mod, "check_category_dictionary", raise_operational_error)
+    await main_mod._check_category_dictionary_startup()  # 삼켜져야 함(예외 없음)
+
+    monkeypatch.setattr(main_mod, "check_category_dictionary", raise_type_error)
+    with pytest.raises(TypeError):  # fail 모드라 전파돼야 함(CategoryDictionaryError 로 둔갑 금지)
+        await main_mod._check_category_dictionary_startup()

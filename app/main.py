@@ -49,7 +49,11 @@ from app.core.pg_store import close_store as close_pg_store
 from app.core.pg_resilience import close_advisory_pool
 from app.core.session_context import close_session_lifecycle, initialize_session_lifecycle
 from app.core.ratelimit import rate_limit_middleware
-from app.pipelines.category_seed import CategoryDictionaryError, check_category_dictionary
+from app.pipelines.category_seed import (
+    CategoryDictionaryError,
+    check_category_dictionary,
+    unreachable_db_error_types,
+)
 from app.pipelines.scheduler import start_scheduler, stop_scheduler
 
 logger = get_logger(__name__)
@@ -134,14 +138,22 @@ async def _close_owned_resources() -> None:
 async def _check_category_dictionary_startup() -> None:
     """categories 0행/0임베딩 가드(이슈 #401) — 기동 시 1회.
 
-    DB 연결 실패(`psycopg.OperationalError` — 연결 거부·타임아웃 등)는 기동을 죽이지 않는다
-    (WARNING 후 계속) — CI·유닛테스트는 pg 없이 돌고, 부팅 순간의 DB 흔들림으로 서버 전체를
-    못 뜨게 하는 건 과하다. 반면 구성 오류(0행/0임베딩, 또는 `categories` 테이블 자체가 없는
-    등 연결 실패가 아닌 DB 오류)에서 `category_dictionary_startup_check="fail"` 이면
-    `CategoryDictionaryError` 를 그대로 올려 기동을 거부한다 — "연결 실패" vs "구성 오류"
-    분류는 `check_category_dictionary` 소관이라 여기서는 다시 안 한다(#401 라운드 4 리뷰 F6 —
-    예전에는 `CategoryDictionaryError` 가 아니면 전부 "연결 실패"로 뭉뚱그려 테이블 누락 같은
-    구성 오류가 `fail` 모드에서도 조용히 통과했다).
+    세 갈래로 나눈다(#401 라운드 5 리뷰 F7 — 예전엔 `CategoryDictionaryError` 가 아니면 전부
+    "연결 실패"로 뭉뚱그려, 가드 코드 **자체의** 버그(`TypeError` 등)도 조용히 삼켜
+    `fail` 계약("구성 오류면 반드시 기동을 거부한다")이 무력화됐다):
+
+    1. `CategoryDictionaryError`(구성 오류 — 모드는 `check_category_dictionary` 안에서 이미
+       적용됨) — 그대로 전파해 기동을 거부한다.
+    2. **도달 불가 계열**(`OSError`·`psycopg.OperationalError` —
+       `category_seed.unreachable_db_error_types()` 로 얻는다. `psycopg.OperationalError` 는
+       `OSError` 를 상속하지 않아 `OSError` 만으로는 못 잡는다. `app/main.py` 는 psycopg 를
+       import 하지 않는다는 lazy-import 관례를 지키려고 `category_seed.py` 가 타입을 대신
+       노출한다) — **모든 모드에서** WARNING 후 계속. CI·유닛테스트는 pg 없이 돌고, 부팅
+       순간의 DB 흔들림으로 서버 전체를 못 뜨게 하는 건 과하다.
+    3. **그 밖의 예상 못 한 예외**(가드 코드 자체 버그) — ERROR 로그("도달 불가"가 아니라
+       "예상 못 한 실패"임을 정직하게 남긴다, `exc_info=True`), **`mode == "fail"` 일 때만
+       전파**한다. 리뷰어는 이 갈래도 무조건 좁혀 잡으라 했지만 그러면 **모든 모드**에서 가드의
+       사소한 버그가 기동을 죽인다 — 기본값(`log`)의 회복력을 해치는 교환이라 받지 않는다.
     """
     settings = get_settings()
     try:
@@ -152,10 +164,17 @@ async def _check_category_dictionary_startup() -> None:
         )
     except CategoryDictionaryError:
         raise
-    except Exception:
+    except unreachable_db_error_types():
         logger.warning(
             "category dictionary startup check could not reach the database", exc_info=True
         )
+    except Exception:
+        logger.error(
+            "category dictionary startup check failed unexpectedly (guard bug, not a reachability issue)",
+            exc_info=True,
+        )
+        if settings.category_dictionary_startup_check == "fail":
+            raise
 
 
 @asynccontextmanager

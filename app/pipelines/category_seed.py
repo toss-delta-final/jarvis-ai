@@ -158,6 +158,19 @@ def evaluate_dictionary_counts(counts: DictionaryCounts) -> tuple[Literal["error
     )
 
 
+def unreachable_db_error_types() -> tuple[type[BaseException], ...]:
+    """ "도달 불가"(지금 조회할 수 없음) 계열 예외 타입 — `OSError` + `psycopg.OperationalError`.
+
+    `psycopg.OperationalError` 는 `OSError` 를 상속하지 않는다(psycopg 3 는 독자 예외 계층을
+    쓴다) — 그래서 `OSError` 만으로는 연결 거부·타임아웃을 다 못 잡는다. `app/main.py` 가 이
+    튜플로 `except` 해 모든 모드에서 WARNING 으로 낮춘다 — `app/main.py` 는 psycopg 를 import
+    하지 않아야 하므로(lazy-import 관례) 이 모듈이 대신 노출한다(#401 라운드 5 리뷰 F7).
+    """
+    import psycopg  # noqa: PLC0415 - LAZY import(pg 미설치 환경 유닛테스트 회피)
+
+    return (OSError, psycopg.OperationalError)
+
+
 def check_category_dictionary(dsn: str, *, mode: Literal["off", "log", "fail"]) -> None:
     """카테고리 사전 0행/0임베딩 가드 — 판정 + 로깅.
 

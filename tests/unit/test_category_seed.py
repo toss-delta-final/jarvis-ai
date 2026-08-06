@@ -16,6 +16,7 @@ from app.pipelines.category_seed import (
     check_category_dictionary,
     embed_categories,
     evaluate_dictionary_counts,
+    unreachable_db_error_types,
 )
 
 
@@ -242,3 +243,19 @@ def test_operational_error_and_non_operational_db_error_take_different_paths(mon
     )
     with pytest.raises(CategoryDictionaryError):
         check_category_dictionary("postgresql://x", mode="fail")
+
+
+def test_unreachable_db_error_types_includes_os_error_and_psycopg_operational_error() -> None:
+    """`app/main.py` 가 psycopg 를 import 하지 않고도 두 타입을 함께 잡을 수 있어야 한다 —
+
+    `psycopg.OperationalError` 는 `OSError` 를 상속하지 않으므로(#401 라운드 5 리뷰 F7) 이
+    튜플에 둘 다 명시적으로 들어 있어야 한다.
+    """
+    import psycopg
+
+    types_ = unreachable_db_error_types()
+    assert OSError in types_
+    assert psycopg.OperationalError in types_
+    assert not issubclass(
+        psycopg.OperationalError, OSError
+    )  # 전제 재확인 — 깨지면 이 상수도 재검토
