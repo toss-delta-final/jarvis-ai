@@ -1146,6 +1146,54 @@ async def test_get_cart_unknown_purchase_state_degrades_to_none_keeping_item(
     assert "DISCONTINUED" in caplog.text
 
 
+@pytest.mark.parametrize("bad", [{}, [], {"kind": "SOLD_OUT"}, ["SOLD_OUT"]])
+async def test_get_cart_unhashable_purchase_state_degrades_without_raising(
+    monkeypatch: pytest.MonkeyPatch, bad: object
+) -> None:
+    """unhashable 값(dict·list)이 와도 `TypeError` 가 아니라 `None` 강등이어야 한다(PR #400 리뷰).
+
+    가드가 없으면 `value in frozenset` 이 `hash(value)` 에서 `TypeError` 를 내고, pydantic v2 는
+    `BeforeValidator` 의 `TypeError` 를 `ValidationError` 로 감싸지 않아 그대로 올린다 —
+    `get_cart` 의 `except (httpx.HTTPError, ValueError, ValidationError)` 를 빠져나가
+    **degrade 조차 못 하는** 최악의 실패가 된다. 이 함수의 존재 이유가 드리프트 방어인데
+    특정 드리프트 형태에서 더 크게 터지면 안 만든 것만 못하다."""
+    import app.services.spring_client as sc
+
+    body = {
+        "success": True,
+        "data": {
+            "items": [
+                {"cartItemId": 55, "productId": 1, "productName": "파우치", "purchaseState": bad}
+            ]
+        },
+    }
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(200, body)))
+    view = await sc.get_cart(user_id=1)
+    assert len(view.items) == 1  # 항목이 사라지지 않는다
+    assert view.items[0].purchase_state is None
+    assert view.items[0].product_name == "파우치"  # 나머지 필드는 온전
+
+
+@pytest.mark.parametrize("bad", [123, True, 1.5])
+async def test_get_cart_non_string_scalar_purchase_state_degrades(
+    monkeypatch: pytest.MonkeyPatch, bad: object
+) -> None:
+    """문자열이 아닌 스칼라도 `None` 으로 강등된다 — `purchaseState` 는 문자열 enum 이다."""
+    import app.services.spring_client as sc
+
+    body = {
+        "success": True,
+        "data": {
+            "items": [
+                {"cartItemId": 55, "productId": 1, "productName": "파우치", "purchaseState": bad}
+            ]
+        },
+    }
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(200, body)))
+    view = await sc.get_cart(user_id=1)
+    assert view.items[0].purchase_state is None
+
+
 # ─────────── spring_client 배선 (I-24 삭제, 이슈 #116, 🔶 초안) ───────────
 
 

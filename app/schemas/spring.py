@@ -396,8 +396,17 @@ def _degrade_unknown_purchase_state(value: object) -> object:
     성공을 보고하고, `_existing_quantity` 합산 안내도 어긋난다. 장바구니 항목은 사용자
     소유물이자 파괴적 후속 동작의 입력이라 **사라지는 것이 조용히 틀리는 것보다 나쁘다**.
     미지 값은 "모름"과 사실상 같은 처지이므로 `None` 으로 떨어뜨리고 관측용 warning 만 남긴다.
+
+    **`isinstance(value, str)` 가드가 멤버십 검사보다 먼저다**(PR #400 리뷰). `{}`·`[]` 같은
+    unhashable 값이 오면 `value in frozenset` 이 `hash(value)` 에서 `TypeError` 를 내는데,
+    pydantic v2 는 `BeforeValidator` 가 던진 `TypeError` 를 `ValidationError` 로 감싸지 않고
+    그대로 올린다. 그러면 `spring_client::get_cart` 의
+    `except (httpx.HTTPError, ValueError, ValidationError)` 를 빠져나가 **degrade 조차 못 하고**,
+    이 함수가 막으려던 "드리프트 하나가 장바구니 전체를 죽인다"가 더 나쁜 형태로 재현된다.
+    숫자·bool 은 hashable 이라 가드 없이도 강등됐지만, 타입을 좁히는 편이 의도에도 맞다 —
+    `purchaseState` 는 애초에 문자열 enum 이다.
     """
-    if value is None or value in _KNOWN_PURCHASE_STATES:
+    if value is None or (isinstance(value, str) and value in _KNOWN_PURCHASE_STATES):
         return value
     _log.warning("계약 밖 purchaseState 값 — None(모름)으로 강등한다: %r", value)
     return None
