@@ -570,7 +570,7 @@ async def test_category_dictionary_startup_check_survives_db_connection_failure(
     with caplog.at_level("WARNING"):
         await main_mod._check_category_dictionary_startup()  # 예외를 던지면 안 됨
 
-    assert "category dictionary startup check unavailable" in caplog.text
+    assert "category dictionary startup check could not reach the database" in caplog.text
 
 
 @pytest.mark.asyncio

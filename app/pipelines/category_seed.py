@@ -163,12 +163,32 @@ def check_category_dictionary(dsn: str, *, mode: Literal["off", "log", "fail"]) 
 
     `mode="off"` 는 조회 자체를 생략한다(DB 호출 없음). `mode="fail"` 은 구성 오류에서
     `CategoryDictionaryError` 를 던진다(호출부가 기동 거부로 쓸지는 호출부 소관).
-    DB 연결 실패(예: pg 미기동)는 여기서 잡지 않고 그대로 전파한다 — "연결 실패"와 "구성 오류"는
-    다른 사실이라 호출부(app/main.py `_lifespan`)가 따로 구분해 처리한다.
+
+    DB 오류를 두 갈래로 나눈다(#401 라운드 4 리뷰 F6 — 전부 "연결 실패"로 뭉뚱그리면
+    `categories` 테이블/컬럼 누락 같은 명백한 구성 오류가 `fail` 모드에서도 조용히 통과했다):
+    - `psycopg.OperationalError`(연결 거부·타임아웃·DNS 등) — "지금 조회할 수 없음"이지 구성
+      오류가 아니다. 여기서 잡지 않고 그대로 전파한다 — 호출부(app/main.py `_lifespan`)가
+      **모든 모드에서** WARNING 으로 낮춰 기동을 막지 않는다.
+    - 그 밖의 `psycopg.Error`(`UndefinedTable`·권한 오류·문법 오류 등) — 테이블 자체가 없는
+      것은 사전 결측의 가장 극단적인 형태라 **구성 오류로 취급**한다. 0행/0임베딩과 같은 처방:
+      ERROR 로그(실제 예외 타입·메시지를 실어 오진단을 막는다) + `fail` 이면 기동 거부.
     """
     if mode == "off":
         return
-    counts = dictionary_counts(dsn)
+
+    import psycopg  # noqa: PLC0415 - LAZY import(pg 미설치 환경 유닛테스트 회피)
+
+    try:
+        counts = dictionary_counts(dsn)
+    except psycopg.OperationalError:
+        raise
+    except psycopg.Error as exc:
+        message = f"카테고리 사전 조회 실패({type(exc).__name__}): {exc}"
+        logger.error(message)
+        if mode == "fail":
+            raise CategoryDictionaryError(message) from exc
+        return
+
     level, message = evaluate_dictionary_counts(counts)
     if level == "error":
         logger.error(message)
