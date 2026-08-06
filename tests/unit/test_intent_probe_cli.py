@@ -33,7 +33,7 @@ def test_dry_run_writes_every_artifact(tmp_path: Path) -> None:
     assert _run(out) == 0
     assert {path.name for path in out.iterdir()} == ARTIFACT_NAMES
     results = _results(out)
-    assert results["cellCount"] == 74
+    assert results["cellCount"] == 79
     assert results["unfilledCells"] == []
     assert results["dryRun"] is True
 
@@ -87,7 +87,7 @@ def test_report_header_carries_prompt_tier_fixture(tmp_path: Path) -> None:
     results = _results(out)
     assert results["prompt"]["sha12"] in report
     assert "tier=fast" in report
-    assert "intent-probe-anchors-b-v4" in report
+    assert "intent-probe-anchors-b-v5" in report
     assert "이건 골든셋이 아니다" in report
 
 
@@ -153,10 +153,11 @@ def test_pacer_snapshot_is_recorded(tmp_path: Path) -> None:
     assert _run(out, "--rpm", "5") == 0
     pacer = _results(out)["pacer"]
     assert pacer["maxRpm"] == 5
-    # 셀 74 × N=2 (decompose) + 카테고리 15셀 × 2 (범위 해제 분류기) = 178.
+    # 셀 79 × N=2 (decompose) + 카테고리 15셀 × 2 (범위 해제 분류기) = 188.
     # [#84] 분류기도 **페이서를 지난다** — 레이트 예산에 빠지면 실 런에서 429 가 난다.
     # [#300] screen 6셀은 분류기를 태우지 않는다(직전 카테고리가 없다) — 셀 수만 늘어난다.
-    assert pacer["acquireCount"] == 74 * 2 + 15 * 2
+    # [#344 라운드 2] 조건 전용 5셀도 분류기를 태우지 않는다(직전 카테고리가 없는 none 컨텍스트).
+    assert pacer["acquireCount"] == 79 * 2 + 15 * 2
     assert pacer["waitCount"] > 0
 
 
@@ -306,6 +307,25 @@ def test_report_exposes_screen_axes_and_diagnostics(tmp_path: Path) -> None:
     assert "screenResolverOverrideCount" in results["diagnostics"]
     assert "screenOutOfListConfirmCount" in results["diagnostics"]
     assert "화면 지시어" in report
+
+
+def test_report_exposes_condition_only_axis(tmp_path: Path) -> None:
+    out = tmp_path / "run"
+    assert _run(out) == 0
+    report = (out / "report.md").read_text(encoding="utf-8")
+    results = _results(out)
+    assert "conditionOnlyNoCategoryQuery" in results["axes"]
+    assert "`conditionOnlyNoCategoryQuery`" in report
+    assert results["axes"]["conditionOnlyNoCategoryQuery"]["expectedDenominator"] == 10  # N=2
+
+
+def test_condition_only_cells_do_not_call_the_category_scope_classifier(tmp_path: Path) -> None:
+    """조건 전용 컨텍스트(`none`)는 직전 카테고리를 싣지 않는다 — 분류기가 호출되지 않는다."""
+    out = tmp_path / "run"
+    assert _run(out, "--case-ids", "condition-only-001,condition-only-002") == 0
+    pacer = _results(out)["pacer"]
+    # decompose 2셀 × N=2 만 페이서를 지난다 — 분류기 호출이 없다.
+    assert pacer["acquireCount"] == 2 * 2
 
 
 def test_screen_cells_do_not_call_the_category_scope_classifier(tmp_path: Path) -> None:

@@ -423,6 +423,15 @@ async def test_non_screen_cells_leave_resolved_product_id_untouched() -> None:
         assert sample.resolved_product_id == sample.product_id
 
 
+async def test_condition_only_cell_carries_empty_category_legs() -> None:
+    """[#344 라운드 2] 조건 전용 셀은 가짜 LLM 이 categoryQueries 를 내지 않는다 — 러너가
+    `sample.category_legs` 로 그대로 남긴다(빈 문자열)."""
+    cell = next(cell for cell in CELLS if cell.utterance.group == "condition_only")
+    result = await _run_one(ScriptedDecomposeLLM(ANCHORS), cell=cell, n=2)
+    for sample in result.samples:
+        assert sample.category_legs == ""
+
+
 def test_category_legs_are_serialised_for_recounting() -> None:
     """[F-4] leg 원문을 남겨야 판정 규칙이 바뀌어도 **런을 다시 돌리지 않고** 재집계할 수 있다."""
     from app.agents.buyer.recommendation.state import CategoryQuery

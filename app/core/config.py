@@ -652,14 +652,27 @@ class Settings(BaseSettings):
     # 가 기동 시 강제한다.
     category_search_pool_max_size: int = 20
     # [#115] 최근접 채택 상한 — 채택 거리가 이 값을 **초과**하면 그 leg 를 canonical 없이 드롭한다
-    # (§4 거리 조건부 채택. 종전 never-null "멀어도 억지로 채택"은 폐기). 거리 0.22 초과는 "맞는 칸이
-    # taxonomy 에 없다"의 신호다 — "부모님 환갑 선물"이 출산/돌기념품(0.2971)으로 붕괴하는 식.
-    # ⚠️ 재튜닝 조건: 이 값은 **임베딩 모델·task_type·사전에 종속**된다(gemini-embedding-001 1536-dim
-    # L2 정규화 + 앵커 RETRIEVAL_QUERY / 시드 RETRIEVAL_DOCUMENT, categories 2056 leaf 기준 실측).
-    # 셋 중 하나라도 바뀌면 재측정 없이는 무효다. 실측 경계 여유가 0.005 뿐이므로(정답 최대 0.2168
-    # vs 오분류 최소 0.2221) §11 거리 로그로 분포를 관측하며 조정한다.
+    # (§4 거리 조건부 채택. 종전 never-null "멀어도 억지로 채택"은 폐기). 거리 초과는 "맞는 칸이
+    # taxonomy 에 없다"의 신호다.
+    # [#344 재측정] 사전이 leaf 2,056행 → **1,007행**으로 교체돼 0.22(2056행 기준)가 stale 이었다.
+    # 기준선 `evals/category_probe/baselines/fast-2026-08-06`(hits.csv, 앵커 38셀×N=8) 오프라인
+    # 스윕 결과 **0.26** 으로 올린다 — single 슬라이스 winner top-1 거리가 정답 med 0.2416·q3
+    # 0.2579·max 0.3239 인데 notInCatalog(사전에 칸 없음, 오강제 금지 가드레일) 최소 d1 이
+    # 0.2621(`수예 재료`, margin 0.0275)이라 **0.26 이 nic 무강제(0/40)를 지키는 최대 컷**이다
+    # (0.265 부터 오강제 7건). 0.22→채택 61/176·드롭 107, **0.26→채택 130·오답채택 8·드롭 30·
+    # nic 0/40**, 0.28→채택 147 이지만 nic 7/40 로 붕괴 — 그 사이에서 채택을 최대화하는 값.
+    # ⚠️ 이 상향은 공짜가 아니다 — 오답채택이 0.22 에서 **0** 이던 것이 0.26 에서 **8** 로 생긴다.
+    # 그래도 같은 구간에서 정답 채택이 61→130(+69)이라 손익은 성립한다: 미회수(드롭)는 무필터로
+    # 안전하게 퇴화하지만 오분류 유입은 검색을 틀린 칸으로 좁혀 정답 상품을 후보에서 배제한다는
+    # §4 비대칭(아래 override_margin 주석)에 비춰도, 협소 발화 69건을 살리는 대가로 8건을 틀린
+    # 칸으로 보내는 쪽이 순이득이다.
+    # ⚠️ 재튜닝 조건: 이 값은 **임베딩 모델·task_type·사전**에 종속된다(gemini-embedding-001
+    # 1536-dim L2 정규화 + 앵커 RETRIEVAL_QUERY / 시드 RETRIEVAL_DOCUMENT). 셋 중 하나라도 바뀌면
+    # 재측정 없이는 무효다 — `evals/category_probe/manifest.py` 의 `dictionaryHash`(categories
+    # 행 수 + 정렬된 canonical 전체의 sha256)로 과거 런과 사전 상태가 같은지 대조할 수 있다.
+    # 재측정은 `uv run python -m evals.category_probe.sweep --run <hits.csv 있는 런 디렉터리>`.
     # 절단 튜너블(ge=0)이 아니라 비교 임계라 코사인 거리 정의역 [0,2] 로 범위 검증한다.
-    category_distance_max: float = Field(default=0.22, ge=0.0, le=2.0)
+    category_distance_max: float = Field(default=0.26, ge=0.0, le=2.0)
     # [#115 §4.5] 거리컷 마진 예외 — 거리가 임계를 넘어도 마진이 이 값 **이상**이면 채택한다.
     # 근거(76 앵커 실측): 거리는 도메인 어휘 차이에 오염된다. 식품은 상품명과 leaf 이름이 달라
     # 정답 매핑도 멀고(`돼지 등뼈`→`축산 > 돼지고기` 0.2661, `미역`→`수산 > 해조류` 0.2436),
@@ -672,11 +685,16 @@ class Settings(BaseSettings):
     # **전부 채택**이 되므로(마진 ≥ 0), 끄려면 임계보다 큰 값(예 2.0)을 준다.
     # ⚠️ `category_select_margin_max`(§4.4 애매 판정)보다 **커야** 한다 — 두 구간은 정반대 상태라
     # 겹치면 안 된다(아래 _require_margin_bands_disjoint 가 기동 시 강제).
+    # [#344 재검증] leaf 1,007행 기준선 재측정에서도 이 값을 옮길 근거가 없었다 — 거리 초과 채택
+    # 예외가 정답 6건을 구제하면서 nic 최대 마진 0.0338, 오답 셀(single-mft-009) 마진 0.0341 을
+    # **0.0012 차로** 배제한다(0.26 컷 기준 재확인). 값 유지.
     category_distance_override_margin: float = Field(default=0.035, ge=0.0, le=2.0)
     # [#115] top-k LLM 택일 트리거(§4.4) — 마진(2위−1위 거리차)이 이 값 **이하**면 애매한 판정으로
     # 보고 select_category 로 후보 중 택일한다. 거리컷이 못 잡는 구멍용: 추상 라벨('선물용품')은
     # 거리 0.2074(컷 통과)인데 뜻이 틀리고, 마진은 0.0095 로 얇다. 마진을 드롭 조건으로 쓰면
     # '양말'(1·2위 둘 다 정답, 마진 0.0088)을 오탐하므로 드롭이 아니라 택일 트리거로만 쓴다.
+    # [#344 재검증] leaf 1,007행 기준선 재측정에서도 이동 근거 없음 — 값 유지(override_margin 과의
+    # 밴드 분리 제약은 `_require_margin_bands_disjoint` 가 그대로 강제).
     category_select_margin_max: float = Field(default=0.02, ge=0.0, le=2.0)
     # 턴당 택일 LLM 호출 상한 — fan-out 5 leg 이 모두 애매하면 턴 LLM 이 2→7회로 뛴다. 초과 leg 는
     # 임베딩 top-1 을 그대로 쓴다(종전 동작). ge=0 — 0 이면 택일 기능 off.
@@ -684,6 +702,10 @@ class Settings(BaseSettings):
     # #217 로 매핑이 턴에 2회 불리게 된 뒤로는 **호출부가 남은 예산을 계산해 넘겨야** 상한이 지켜진다
     # (`graph._map_or_empty(select_max_calls=...)` ← `CategoryMapping.select_calls`).
     # 매핑을 부르는 새 경로를 만들 때 이 배선을 빠뜨리면 상한이 조용히 배수로 깨진다.
+    # [#344 관측] 거리컷 상향(0.22→0.26)으로 애매 판정(택일 트리거)이 늘었다 — 같은 기준선
+    # (`fast-2026-08-06`, 304 표본)에서 25 → **88** 회로 3.5배 증가(표본당 0.29회). 턴당 상한 2 는
+    # 여전히 이 트리거율을 덮지만(fan-out 5 leg 전부가 동시에 애매할 확률이 낮다), 이 상한을 다시
+    # 만질 때는 이 관측을 먼저 볼 것 — 거리컷이 더 오르면 트리거율도 함께 오른다. **값은 유지.**
     category_select_max_calls: int = Field(default=2, ge=0)
 
     # ── 광역 발화 → leaf fan-out (이슈 #222) ──
@@ -693,10 +715,10 @@ class Settings(BaseSettings):
     # top-N leaf 를 그대로 fan-out leg 으로 쓴다(`CategoryMapping.expansion_leaves`). 협소 발화는
     # canonical 을 내므로 이 경로에 애초에 진입하지 않는다 — 그 자체는 구조적이다.
     # [PR #318 리뷰 R14-2] 단 이 "진입하지 않는다"는 **거리 임계가 정상 튜닝돼 있을 때만**
-    # 성립한다 — 현 임계는 stale(#344)이라 협소 발화 일부(실측 10/20)가 canonical 을 못 내고
-    # 이 경로로 들어온다. 그 경우에도 확장 top-N 은 의미 최근접이라 정답 leaf 가 대체로 상위에
-    # 포함되고(실측: "무선 이어폰" top-1 = 음향가전 > 이어폰) leg 마다 keyword·semantic_query 가
-    # 유지되므로, 무필터 degrade(종전 동작) 대비 악화는 아니다 — 임계 재측정은 #344.
+    # 성립한다 — 재측정 완료(#344, 0.26). 잔존 드롭(정당: 사전에 칸이 없거나 d1>0.26)이 이
+    # 확장 폴백으로 가는 것은 여전히 정상 동작이다 — 확장 top-N 은 의미 최근접이라 정답 leaf 가
+    # 대체로 상위에 포함되고(실측: "무선 이어폰" top-1 = 음향가전 > 이어폰) leg 마다
+    # keyword·semantic_query 가 유지되므로, 무필터 degrade(종전 동작) 대비 악화는 아니다.
     category_expand_enabled: bool = True  # 광역 fan-out 롤백 스위치
     # [PR #318 리뷰 R5-1] **턴 전체 상한**이다 — unresolved leg 당 상한이 아니다. unresolved leg
     # 이 여럿이면 `category_mapping._collect_expansion_leaves` 가 leg 마다 모은 후보를 라운드로빈
@@ -1205,7 +1227,13 @@ class Settings(BaseSettings):
     # **상한이 1인 이유(PR #235 리뷰)**: backoff 가 구현에 없다. 2·3 을 허용하면 "1 을 넘기려면
     # backoff 가 필요하다"고 적어 둔 위험을 설정 한 줄로 열어 주는 셈이라, **현재 구현이 감당하는
     # 값만** 받는다. 더 올리려면 backoff 를 먼저 만들고 이 상한을 함께 푼다.
-    spring_max_retries: int = Field(default=1, ge=0, le=1)
+    # [#394 한시적 조치] 기본값을 1→0 으로 내린다. 운영 실측(2026-08-06): I-1 이 SEARCH_FAILED 로
+    # 떨어진 두 건 모두 Spring 은 200 을 줬다 — 실패가 아니라 3s 예산을 넘긴 지연이었다. 그 상태에서
+    # 재시도는 성공했을 쿼리를 backoff 없이 즉시 한 번 더 돌려 Spring 부하만 2배로 만들고, 사용자는
+    # 6초 뒤 실패를 받는다. **원복 조건**: BE 검색 쿼리 개선(리뷰 집계 비정규화, BE #395)이 배포되면
+    # 재검토한다. 구매자 progress 이벤트(#289)로 first-token 관문이 풀릴 때도 함께 재검토한다.
+    # `=1` 로 되돌리면 이 필드가 원래 규정하던 재시도 동작(위 주석)으로 완전히 복귀한다.
+    spring_max_retries: int = Field(default=0, ge=0, le=1)
     # [#277] conditions 를 검색 뒤로 미룬 턴은 첫 이벤트 앞에 I-1 이 최대 2회 직렬이라,
     # 재시도까지 얹으면 first-token 상한을 넘어 이벤트 0건·504가 될 수 있다. 한 번의 일시
     # 지연을 살리는 대가가 턴 전체의 침묵이므로 기본값은 그 턴만 재시도를 끈다.
