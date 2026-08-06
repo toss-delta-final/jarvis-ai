@@ -86,12 +86,17 @@ def _log_auth_rejection(
     운영 401 은 응답 본문에 사유를 싣지 않으므로(§2.5 고정 메시지), 진단 근거는 이 로그뿐이다.
     requestId 는 errors.request_context_middleware 가 부여한 값과 동일해 §2.4 오류 봉투·
     응답 헤더(X-Request-Id)와 상관된다.
+
+    [보안] path 도 사유와 같이 이스케이프한다. 지금 이 의존성을 쓰는 라우트는 전부 고정 리터럴
+    경로라 라우팅에서 걸러지지만, path 파라미터가 있는 라우트(§4.4/§4.5 {brandId} 류)에
+    재사용되는 순간 `request.url.path` 는 외부 통제 값이 된다 — 위협 모델을 "로그 한 줄에
+    들어가는 모든 외부 통제 값"으로 일관되게 둔다(PR #409 리뷰 3R).
     """
     logger.warning(
         "auth rejected code=%s dep=%s path=%s rid=%s reason=%s",
         code,
         dependency,
-        request.url.path if request is not None else None,
+        _escape_unprintable(request.url.path) if request is not None else None,
         get_request_id(request) if request is not None else None,
         reason,
     )

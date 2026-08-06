@@ -14,7 +14,7 @@ import logging
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 
 from app.api import deps
@@ -236,6 +236,31 @@ def test_401_log_escapes_attacker_controlled_control_chars(
     # 위조 문자열은 한 줄 안의 reason= 값에 갇힌다 — 새 로그 레코드로 갈라지지 않는다.
     assert message.startswith("auth rejected code=TOKEN_INVALID dep=get_identity path=/chat")
     assert forged in message.split("reason=", 1)[1]
+
+
+def test_401_log_escapes_request_path(caplog: pytest.LogCaptureFixture) -> None:
+    """path 도 사유와 같이 이스케이프된다 — path 파라미터 라우트에 재사용될 때를 대비한다.
+
+    지금 이 의존성을 쓰는 라우트는 전부 고정 리터럴 경로지만, {brandId} 류 라우트에 붙는
+    순간 `request.url.path` 가 외부 통제 값이 된다(PR #409 리뷰 3R). urlsplit 이 걸러주는
+    것은 `\\t\\r\\n` 뿐이라 U+2028·U+0085 같은 줄바꿈 취급 문자는 그대로 통과한다.
+    """
+    forged = "/seller/x\u2028\x85auth rejected code=TOKEN_INVALID rid=deadbeef reason=ok"
+    request = Request(
+        {"type": "http", "method": "GET", "path": forged, "headers": [], "query_string": b""}
+    )
+    assert "\u2028" in request.url.path, "전제: urlsplit 은 이 문자를 지우지 않는다"
+
+    with caplog.at_level(logging.WARNING, logger=DEPS_LOGGER):
+        deps._log_auth_rejection(
+            request, code="TOKEN_INVALID", dependency="get_identity", reason="AuthError: x"
+        )
+
+    records = _auth_records(caplog)
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert "\u2028" not in message and "\x85" not in message
+    assert "path=/seller/x\\u2028\\u0085auth rejected" in message
 
 
 def test_escape_keeps_printable_text_intact() -> None:
