@@ -25,6 +25,14 @@
 
 후보가 전부 정답인 케이스들은 순위 지표(nDCG·MRR·Precision@k)의 분모에서 제외해야 한다. 노출·필터·하드제약 검증에는 계속 사용한다.
 
+## 위반 네거티브 채널 실채움(dev, #370)
+
+manifest.json의 `violationNegatives`가 유형별 최소 케이스·최소 후보 사전 등록치를, 아래는 실제 채운 값을 담는다(둘의 대조는 CI 유닛 테스트가 강제한다).
+
+- `attr_violation`: 케이스 0건 / 후보 0건
+- `category_violation`: 케이스 4건 / 후보 5건
+- `price_violation`: 케이스 13건 / 후보 47건
+
 ## 커버리지
 
 ```json

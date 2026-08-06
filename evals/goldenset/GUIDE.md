@@ -143,6 +143,15 @@ candidates provenance(`source`/`rule`/`from`)에 실제 수가 정본으로 남�
 가짜 attr/brand 제약을 지어내지 않는다. 후속 이슈로 `attrConditions`/`targetBrands`를 쓰는
 케이스를 더 늘리면 개선될 수 있다.
 
+**갱신 실측(2026-08-06, #370 리뷰 라운드2 F-2)**: 위 문단은 #333 시점 관측이라 이 PR(#370
+`inject_violation_negatives.py`의 `price_violation` 축 신설)이 그 수치를 낡게 만들었다 —
+과거 문장은 이력으로 보존하고 여기 갱신치만 덧붙인다. injected 총계 1,435 → **1,482**
+(+47), `semantic_near` 89.97% → **87.11%**, `random_catalog` 10.03% → **9.72%**,
+`price_violation` 0% → **3.17%**(신설 47건 전부). "`price_violation`은 0%에 가깝다"는 문장은
+전체 injected 채널 혼합비 기준으로는 더 이상 참이 아니다 — `manifest.json`의
+`violationNegatives.rules.price_violation`(케이스 13/후보 47, §370 사전 등록 quota 대비
+실채움)이 정본이다. `attr_violation`/`other_brand`는 이 PR 범위 밖이라 여전히 0%에 가깝다.
+
 **injected 후보는 기본 0등급이다.** `relevantProductIds`에 넣으려면(라벨러가 실제로 관련
 있다고 판단한 경우) `notes`에 `injected-relevant-approved:` 마커를 붙여 adjudicator 확인을
 남겨야 한다 — 그렇지 않으면 `schema.validate_cases()`가 오류를 낸다.
@@ -245,3 +254,114 @@ manifest `confirmatory.confirmatorySlices`(`guest`/`member`/`budget`, α 보정
   buy-cold-0001의 5578895099/8124432652). 후속 이슈로 injected 풀의 가격 결측을 채우거나,
   가격 하드제약이 있는 케이스에서는 `price: null` 후보를 자동으로 grade 판정 보류(수동 확인
   필요)로 표시하는 규약을 검토한다.
+
+## v2.2(#370) — 위반 네거티브 채널·라벨 provenance
+
+#333 adjudication 라운드가 남긴 갭 3건(위반 네거티브 0건·라벨 주체 미기록·슬라이스 쿼터 하향
+사유 미문서화) 후속. 새 케이스를 추가하지 않는다(127건 불변) — 기존 fixture candidates
+provenance와 케이스 core 필드만 보강한다.
+
+### 위반 네거티브 채널이란
+
+`semantic_near`/`other_brand`/`broadened_search`/`random_catalog`(§하드 네거티브 주입 규칙)는
+전부 "**유사하지만 오답**"인 후보다 — 정답과 가깝지만 관련도가 낮다는 이유로 오답이다.
+위반 네거티브는 이와 별도 채널로, "**케이스의 하드 제약을 실제로 위반**"하는 후보만 모은다 —
+관련도 판단이 아니라 `hardConstraints`/`forbiddenCategories`/`attrConditions`라는 기계적으로
+검증 가능한 규칙 위반이다. 랭커가 제약을 지키는지(HCV, hard constraint violation) 재는 축이라
+"유사도"가 아니라 "규칙 준수"를 시험한다.
+
+rule 3종:
+
+| rule | 위반 정의 |
+|---|---|
+| `price_violation` | catalog 가격이 케이스 `hardConstraints.priceMax` 초과 또는 `priceMin` 미만(가격 필수 — null이면 태그 불가) |
+| `category_violation` | catalog `categoryName` ∈ `forbiddenCategories` **또는** productId ∈ (`forbiddenProductIds` ∪ `mustExcludeProductIds`) |
+| `attr_violation` | 케이스 `expectedFilters.attrConditions`가 존재하고 후보가 그 조건을 위반함을 catalog `attributes`로 판정 가능(`schema.judge_attr_violation` — 조건 키가 catalog attributes에 정확히 있고 값이 다를 때만 위반. 동의어 매핑을 하지 않는다 — 예를 들어 케이스가 `차단지수`를 조건으로 써도 catalog의 실제 키가 `SPF지수`면 판정 불가로 본다) |
+
+### 태그 검증 규칙(`schema.validate_cases`)
+
+- 위반 태그 후보는 **정답이 될 수 없다** — `relevantProductIds`에 있으면 오류다. 하드 네거티브의
+  `injected-relevant-approved:` 마커로도 우회할 수 없다(위반 네거티브는 그 마커의 적용 대상이
+  아니다 — "관련 있다고 판단해 승격"이라는 그 마커의 취지 자체가 "이 후보는 애초에 위반이다"와
+  모순된다).
+- 위반 태그 후보를 담은 fixture는 **정확히 1개 MFT 케이스가 단독 사용**해야 한다. 같은
+  fixture를 2개 이상의 케이스가 공유하면(INV `color_synonym`/`word_order` 쌍 등) 어느 케이스의
+  하드 제약을 기준으로 위반을 판정해야 할지 모호해지기 때문이다 — 공유 fixture에는 위반 태그
+  후보를 넣을 수 없다.
+- 세 rule 모두 태그된 후보가 실제로 그 위반 정의를 만족하는지 catalog로 재검증한다(위 표) —
+  rule 이름만 붙이고 실제로는 위반이 아닌 후보를 허용하지 않는다.
+
+### 사전 등록 쿼터(dev 기준, §370 패킷 §2)
+
+| 유형 | 최소 케이스 수 | 케이스당 최소 후보 | 케이스당 주입 상한 |
+|---|---:|---:|---:|
+| `price_violation` | 8 | 2 | 4 |
+| `category_violation` | 4 | 1 | 4 |
+| `attr_violation` | 2 | 1 | 4 |
+
+실채움과 미달 사유는 `manifest.json`의 `violationNegatives` 블록, 기계 검증은
+`audit.run_audit()`의 `violationNegativeFill`(산출물 동봉) + CI 유닛 테스트가 강제한다.
+`attr_violation`은 오프라인 실측 결과 대상 3케이스 전부 catalog attribute 키 명이 케이스
+`attrConditions` 키와 달라(위 표 참조) 판정 가능한 후보가 0건이다 — 조작하지 않고 미달로
+남긴다. 가격·카테고리 축은 실측상 채울 수 있어 최소를 넉넉히 초과 달성했다.
+
+**카테고리 축 재태깅이 건드리는 것과 건드리지 않는 것(#370 리뷰 라운드2 F-1)**:
+`inject_violation_negatives.retag_category_violations`는 대상 5건(candidate) 중 `rule`
+필드만 `category_violation`으로 바꾼다 — `from`(채굴 출처)은 항상 보존한다. 5건 중 3건
+(`buy-cmap-0004`의 1679183612, `buy-repu-0001`/`buy-repu-0003`의 9205089754)은 재태깅 전
+`rule=None, from="primary"`였다. 나머지 2건(`buy-over-0003`의 9205089754/9406282766)은
+재태깅 전 이미 `rule="broadened_search", from="keyword-only"`였다 — 이 둘은 `rule`이
+`category_violation`으로 덮어써지지만(위반 채널 소속이 더 정확한 분류다) `from="keyword-only"`
+는 그대로 남아 원래 채굴 경로(완화 검색)를 복구할 수 있다.
+
+**holdout은 이번 이슈 범위 밖이다** — sealed 라벨(`buyer_holdout_labels.jsonl`) 접근 없이는
+holdout 케이스의 `relevantProductIds`/`hardConstraints`를 알 수 없어 위반 판정 자체가
+불가능하다. holdout 위반 네거티브는 sealed 라벨 접근 절차를 설계할 후속 이슈로 남긴다.
+
+### `evals/metrics` 결정론 harness의 Spring mock 가격 필터(#370 결정 01)
+
+`evals/metrics/harness.py`의 `_CaseTransport`(`OfflineBuyerAdapter`가 쓰는 fake Spring)는
+원래 `/internal/products/search` 요청의 쿼리 파라미터를 무시하고 fixture 후보 전체를
+그대로 돌려줬다 — 실 Spring이 `minPrice`/`maxPrice`를 서버사이드로 거르는 것(정상 경로는
+`app/services/spring_client.py`가 필터를 I-1 쿼리에 싣고, `app/agents/buyer/recommendation/
+graph.py`의 `within_price_range`는 인기상품 폴백 경로 전용이라 이 경로를 타지 않는다)과 다른
+mock 충실도 격차였다. #333의 기존 `price_violation` 채널이 실측 0%에 가까워 이 격차가 한
+번도 실제로 후보를 새게 한 적이 없었지만, 이번 이슈가 처음으로 유의미한 수(47건) 후보를
+주입해 `tests/eval/test_goldenset_eval.py`의 critical PR 게이트가 새로 걸렸다(앱 결함이
+아니라 harness 결함으로 확인).
+
+수정은 **"앱이 실제로 보낸 요청 파라미터"**(`minPrice`/`maxPrice`)만 적용한다 — 케이스의
+`hardConstraints`를 직접 읽어 거르지 않는다. 그래야 decompose가 가격 축을 놓치는 상황을 그대로
+계측할 수 있다(§아래 채널 비공허성 테스트). 가격이 없는(`None`) 상품은 판정 불가로 보고 항상
+통과시킨다(`evals/scoring/hard_filter`의 `priceUnknown` 컷과는 다른 계층 — 통일하지 않는다).
+**`keyword`/`categoryName`/`brandName` 충실도는 이번에 올리지 않았다** — 올리면 이 이슈와
+무관한 기존 전 케이스의 노출 집합이 흔들려 baseline이 교란된다. `category_violation`/
+`attr_violation` 후보는 I-1 쿼리 파라미터가 아니라 라벨 수준 제약(mustExclude·forbidden
+category·attrConditions)이라 이 mock이 거르지 않는다 — 랭커가 올리지 않는 것이 정답이며,
+그대로 노출되는 것이 의도다.
+
+채널이 공허해지지 않았음을 3가지로 증명한다: (1) mock 필터 자체의 경계·null-보존 유닛
+테스트(`tests/unit/test_eval_metric_harness.py`), (2) decompose가 가격 축을 놓치는 상황을
+재현해 `assert_pr_gate`가 실제로 실패함을 확인하는 회귀 테스트(`tests/eval/
+test_goldenset_eval.py::test_pr_gate_catches_price_violation_when_decompose_drops_price_axis`
+— 이 채널의 존재 이유 자체를 증명한다), (3) `evals/scoring`의 `apply_hard_filters`가 주입
+47건 중 몇 건을 실제로 컷하는지 `evals/scoring/baselines/dev-v2.2/README.md`에 실측 수치로
+남긴다.
+
+### 라벨 provenance 필드
+
+`CaseCore`(dev·holdout core 파일 공통, sealed holdout 라벨과 무관)에 3필드가 있다:
+
+- `labelSource`: `"human"`(사람이 최종 판정) / `"model"`(LLM·에이전트가 초안 또는 검수) /
+  `"heuristic"`(규칙 기반 자동 생성) / `"unknown"`(문서 근거를 찾을 수 없어 추정하지 않음).
+- `labeledAt`: 라벨이 확정된 날짜(`YYYY-MM-DD`). 케이스별 개별 시점 기록이 없으면 문서화된
+  가장 가까운 사건(예: adjudication 반영일)을 쓰고 소급임을 `labelRationale`에 남긴다.
+- `labelRationale`: 무슨 근거로 이 라벨을 붙였는지 한 줄.
+
+**소급 원칙**: 문서화된 사실만 쓴다. 개별 케이스의 라벨 시점·주체를 정확히 알 수 없으면
+`labelSource="unknown"`으로 정직하게 두고 사후 추정으로 값을 지어내지 않는다. 기존 127건은
+labeler-01/02의 자동 초안 + adjudicator-omx-01(모델)의 127건 전수 검수를 거쳤고 사람 검수
+완료 상태가 아니라는 사실이 `manifest.adjudicationSummary`와 이 문서(§사람 검수)에 이미
+문서화돼 있어 전 127건 `labelSource="model"`이 근거를 갖는다(개별 케이스 단위가 아니라
+데이터셋 전체 단위의 문서 근거다). 이 이슈에서 새로 만드는 라벨 변경(향후 relabel 등)은
+그 판정을 실제로 내린 근거를 `labelRationale`에 적는다 — "소급"이 아니라 "당시 근거"다.

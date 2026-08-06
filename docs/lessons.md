@@ -13,6 +13,28 @@
 
 ---
 
+## [2026-08-06] 데이터가 새 코드 경로를 처음 태우면, 게이트가 깨져도 범인은 앱이 아니라 하네스일 수 있다
+- 증상: #370 이 골든셋에 처음으로 유의미한 수(47건)의 가격 위반 후보를 주입하자
+  `tests/eval/test_goldenset_eval.py` 의 critical PR 게이트가 갑자기 깨졌다. 표면적으로는
+  "앱이 하드 제약을 위반한 상품을 노출한다"로 읽혔다.
+- 원인: 앱 결함이 아니라 eval 하네스의 mock 충실도 격차였다. `evals/metrics/harness.py` 의
+  `_CaseTransport` 가 Spring `/internal/products/search` 를 mock 하면서 요청의
+  `minPrice`/`maxPrice` 를 무시하고 fixture 후보를 전부 돌려줬다. 실 서비스는
+  `app/services/spring_client.py` 가 그 파라미터를 I-1 에 실어 **Spring 이 서버사이드로**
+  거른다(앱의 로컬 `within_price_range` 는 인기상품 폴백 경로 전용이라 이 경로를 타지 않는다).
+  #333 의 기존 `price_violation` 채널이 실측 0% 에 가까워서 이 격차가 한 번도 발현된 적이
+  없었다 — 데이터가 그 코드 경로를 태우지 않는 동안은 하네스가 틀려도 아무도 모른다.
+- 규칙: eval 하네스의 fake 외부 서비스는 "앱이 실제로 보낸 요청 파라미터"를 기준으로 실
+  서비스 동작을 흉내내야 하며, 새로운 실패 모드를 데이터로 넣을 때는 그 실패 모드를 판정하는
+  경로가 하네스에서 실제로 살아 있는지 먼저 확인한다. 통과하던 게이트가 데이터 추가 후
+  깨지면 앱을 고치기 전에 하네스가 실서비스와 다른지부터 확인한다(반대로 고치면 실서비스에
+  없는 로직을 앱에 심게 된다). 케이스의 정답 라벨(`hardConstraints`)로 mock 을 거르면 안
+  된다 — 그러면 decompose 가 필터를 놓치는 진짜 실패 모드를 영원히 못 잡는다.
+- 관련: #370, #333, `evals/metrics/harness.py::_CaseTransport`,
+  `app/services/spring_client.py`, `tests/eval/test_goldenset_eval.py`
+
+---
+
 ## [2026-08-06] eval 하네스가 "이 축을 잰다"고 문서에 쓰려면 주입값이 아니라 실제 도달값을 실측해야 한다
 - 증상: #371(combo_matrix INV/DIR 쌍 실검증 러너) 작업 중, `evals/combo_matrix/README.md` 가
   "category 필터축은 `ProductSearchFilters.category`(하드필터 문자열)만 잰다"고 적어 놨는데,

@@ -57,11 +57,12 @@ dedup window와 scoring penalty window가 모두 90일이므로 exact 최근구�
 ranking은 그 후보의 부분집합일 수 있으며, raw score 파일을 그대로 최종 노출 목록으로 읽으면 안
 된다.
 
-현재 비교 기준선은 [`baselines/dev-v2/`](baselines/dev-v2/)이다(#333 Part 3, 골든셋
-v2.1.0/adjudication 반영본). dataset hash는
-`904f90e93a1dbff797c7e8bc48f2a795f006d1e6b5405e753207c76adb8de273`이며, dev 후보
-1510/1517(injected 7건은 live 카탈로그 이탈로 결측 — 상세는 `baselines/dev-v2/README.md`)과
-질의 103/103의 `gemini-embedding-001` 1536차원 벡터를 포함한다.
+현재 비교 기준선은 [`baselines/dev-v2.2/`](baselines/dev-v2.2/)이다(#370, 골든셋
+v2.2.0/위반 네거티브 채널·라벨 provenance 반영본). dataset hash는
+`ef3a5af8b303041d9f44c156d687e3572feed33d2e85469dce1e0aa49a7ecf37`이며, dev 후보
+1519/1526(injected 7건은 live 카탈로그 이탈로 결측 — dev-v2와 동일 목록, 상세는
+`baselines/dev-v2.2/README.md`)과 질의 103/103의 `gemini-embedding-001` 1536차원 벡터를
+포함한다. [`baselines/dev-v2/`](baselines/dev-v2/)(v2.1.0, #333 Part 3)와
 [`baselines/dev-v1/`](baselines/dev-v1/)(v1, 43건)은 이력으로만 남기며 **다른 datasetHash와
 직접 비교하지 않는다**.
 
@@ -74,6 +75,12 @@ v2.1.0/adjudication 반영본). dataset hash는
 | Diversity | 0.678533 | 0.861920 | +0.183387 |
 
 이 결과는 baseline의 우월성 주장이 아니라 후속 #146 ablation과 튜닝이 비교할 고정 출발점이다.
+`passthrough`·`scoring` 두 arm 전부 위 5개 랭킹 품질 지표는 dev-v2와 소수점까지 동일하다 —
+`scoring` arm은 hard_filter가, `passthrough` arm은 #370 결정 01로 고친
+`evals/metrics/harness.py` mock 가격 필터가 각각 신규 위반 네거티브를 노출 전에 컷하기
+때문이다. **다만 `coverage`·`candidateDepth.max`(후보 풀 통계, 랭킹 품질 지표 아님)는
+후보 풀이 47건 늘어난 만큼 dev-v2와 다르다** — 정확한 수치와 원인은
+`baselines/dev-v2.2/README.md`(#370 리뷰 라운드2 F-3 정정) 참조.
 
 **해석 정정(#333)**: 위 `passthrough`는 검색엔진이 매긴 순위 기준선이 **아니다** — 앱이 실제로
 노출한 상품 집합을 그대로 쓰되 순서만 임의(productId 오름차순)로 두는 **no-op 기준선**이다

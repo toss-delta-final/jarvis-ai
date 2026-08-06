@@ -63,27 +63,27 @@
     "total": 127
   },
   "createdAt": "2026-08-02",
-  "datasetHash": "904f90e93a1dbff797c7e8bc48f2a795f006d1e6b5405e753207c76adb8de273",
+  "datasetHash": "ef3a5af8b303041d9f44c156d687e3572feed33d2e85469dce1e0aa49a7ecf37",
   "datasetName": "buyer-goldenset",
-  "datasetVersion": "2.1.0",
+  "datasetVersion": "2.2.0",
   "files": [
     {
-      "bytes": 13505,
+      "bytes": 21520,
       "path": "CHANGELOG.md",
       "records": 0,
-      "sha256": "85fb1c3b95dfa34889d1a06811d55cb446c3358e83c06ce4ab73ff0011d458b6"
+      "sha256": "50f35d3548982b3aabab7a46e819a029ddde54d9499e349f8fbd5dd562ec1e88"
     },
     {
-      "bytes": 19061,
+      "bytes": 28828,
       "path": "GUIDE.md",
       "records": 0,
-      "sha256": "7dd04f965b1a26738e7d62728c8389a0bb1186e13ea137a1f10bf8de76758dd0"
+      "sha256": "245bf30585594573c720673bfc8ea734317d8dbd3d73ae1ec5e4ac1eff829084"
     },
     {
-      "bytes": 5016,
+      "bytes": 7863,
       "path": "README.md",
       "records": 0,
-      "sha256": "988e788236a551455d8a8af1f387197dc99dd2735b851a41086de65ea929383a"
+      "sha256": "9fca8c65711191d02552e0735fc979fad68d93889d04bd9d4d3724ed94f7b23d"
     },
     {
       "bytes": 110,
@@ -92,22 +92,28 @@
       "sha256": "f3752f48ee915e79685ff539e71941fb3a6a37853ffd063cd10b8b4ee8289e2b"
     },
     {
-      "bytes": 9963,
+      "bytes": 12089,
       "path": "audit.py",
       "records": 0,
-      "sha256": "105f9d2e5837bb9aafafe466c7c5c983437a5b77b1c5a5fd480615d183944e82"
+      "sha256": "bf7b866628694e2a2d27ffb5243b94c6aa6538d2291859e2b84983258b606555"
     },
     {
-      "bytes": 5370,
+      "bytes": 6336,
       "path": "audit/leakage_report.json",
       "records": 0,
-      "sha256": "37ce89dd34dd5d6887ab44ab713a1873a2d16452e5908257c8fa5b9fcf9681c8"
+      "sha256": "e6d6b5301e8c3d2b4920313fa75c4671c816f4d55a457a17110ec593f05b8fbb"
     },
     {
-      "bytes": 2834,
+      "bytes": 3242,
       "path": "audit/leakage_report.md",
       "records": 0,
-      "sha256": "b2b8ea834e34c998c28652f1d11f2b28a312ef82d0c4aac0c7bafa27fbad93dd"
+      "sha256": "40b2a4e05de02fd3a93727b2254b05ae6a3910c4bc393f63940a1c34a9667941"
+    },
+    {
+      "bytes": 3589,
+      "path": "backfill_label_provenance.py",
+      "records": 0,
+      "sha256": "a40e49c27fed00e7d5d45dbfe796caa39c354874143e3de5cbaa754cf265278f"
     },
     {
       "bytes": 16080,
@@ -116,16 +122,16 @@
       "sha256": "e359a4b795df6187512d66af05a084af934ef7174ac926ba6ebcb0640a719129"
     },
     {
-      "bytes": 112525,
+      "bytes": 142395,
       "path": "cases/buyer_dev.jsonl",
       "records": 103,
-      "sha256": "dc98f6f21b0461c5a562033442324f4d54d0e13d5bdbc9769169f7a3ff945df3"
+      "sha256": "c1bab25161324a4248ade092aabb623ef2287a846787fd9390276ac2fe570cf8"
     },
     {
-      "bytes": 15855,
+      "bytes": 22815,
       "path": "cases/buyer_holdout.jsonl",
       "records": 24,
-      "sha256": "3a7f678196b5b031d3f7d572b39768fe2428255e58bd7629cfc0bd50abbf0a65"
+      "sha256": "d1713422c334098f514beb3ca76c2b15263c23587dc33f55cfccc87c0bf9080a"
     },
     {
       "bytes": 11195,
@@ -146,16 +152,22 @@
       "sha256": "d4203b8d31ef2bbc4c46d5bff6e1eb672c189ffc449299a898eaeb9adf687e3b"
     },
     {
-      "bytes": 527919,
+      "bytes": 536944,
       "path": "fixtures/search_responses.json",
       "records": 0,
-      "sha256": "5e6694b2ff52f40888da72f61e3a379c24de484a0437f0acd645a37ef53f0014"
+      "sha256": "9b95d071e0075a8a976bdeabfe1dfc11bf2aa63ca31bc277afa3cc52baf13c1e"
     },
     {
       "bytes": 18965,
       "path": "inject.py",
       "records": 0,
       "sha256": "b6d5e1ba6a53881b8a93bddfd503ee47d09b44157af5565ff6822b79c79c65a8"
+    },
+    {
+      "bytes": 13067,
+      "path": "inject_violation_negatives.py",
+      "records": 0,
+      "sha256": "eda364aa5ff635b4bd330886937ef788f2aba63a3f674bc9a2a173ee2b684f8c"
     },
     {
       "bytes": 4109,
@@ -170,10 +182,10 @@
       "sha256": "1073256fe6495f4113940581952cdbb0017f33d15c1ab069c8abdafb9b02d390"
     },
     {
-      "bytes": 23734,
+      "bytes": 30674,
       "path": "schema.py",
       "records": 0,
-      "sha256": "0ef5ae90673203ae2316874f8c8fcd31ee7652b8136506247bd97bece72162bf"
+      "sha256": "22a6890d313ec69d9a5e724c930c0e475cf27ee5d2d4fa66494b1e6832cf5d46"
     },
     {
       "bytes": 8507,
@@ -188,6 +200,7 @@
       "semantic_near",
       "price_violation",
       "attr_violation",
+      "category_violation",
       "other_brand",
       "broadened_search",
       "random_catalog"
@@ -215,7 +228,87 @@
     "productionDerived": 0,
     "synthetic": 97
   },
-  "schemaVersion": "2.0.0",
+  "schemaVersion": "2.1.0",
+  "sliceQuotaFill": {
+    "dev": {
+      "budget": {
+        "actual": 12,
+        "target": 12
+      },
+      "category_mapping_failure": {
+        "actual": 9,
+        "target": 8
+      },
+      "guest": {
+        "actual": 68,
+        "target": 30
+      },
+      "invDirGroupsMin": {
+        "actual": 18,
+        "target": 18
+      },
+      "member": {
+        "actual": 35,
+        "target": 30
+      },
+      "multi_constraint": {
+        "actual": 12,
+        "target": 12
+      },
+      "nonRankingFailureMftMin": {
+        "actual": 5,
+        "shortfallReason": "당시 하향 사유 기록 없음(소급 불가) — #370 실측에서 처음 발견, evals/README.md 공통 규약 '비순위(0건 failure MFT) ≥ 6' 목표 대비 1건 미달. 조정·재케이스화는 이 이슈 범위 밖.",
+        "target": 6
+      },
+      "personalization_overreach": {
+        "actual": 6,
+        "target": 6
+      },
+      "repurchase": {
+        "actual": 8,
+        "target": 8
+      },
+      "single_need": {
+        "actual": 71,
+        "target": 24
+      }
+    },
+    "holdout": {
+      "category_mapping_failure": {
+        "actual": 6,
+        "target": 6
+      },
+      "failure": {
+        "actual": 5,
+        "shortfallReason": "GUIDE.md v2 절 §7-2(#333 라운드2 판정 승인) — holdout 총량 24건 고정 + category_mapping_failure·failure 상호배타로 두 태그를 동시에 채울 수 없는 수학적 한계. dev confirmatory 사전 등록 위반이 아님을 이미 확정.",
+        "target": 6
+      },
+      "guest": {
+        "actual": 12,
+        "target": 12
+      },
+      "member": {
+        "actual": 12,
+        "target": 12
+      },
+      "personalization": {
+        "actual": 7,
+        "target": 6
+      },
+      "repurchase": {
+        "actual": 6,
+        "target": 6
+      },
+      "search": {
+        "actual": 19,
+        "target": 6
+      },
+      "total": {
+        "actual": 24,
+        "target": 24
+      }
+    }
+  },
   "sliceQuotas": {
     "budget": 12,
     "category_mapping_failure": 8,
@@ -234,5 +327,32 @@
     "repurchase": 8,
     "single_need": 24
   },
-  "usagePermission": "internal-only"
+  "usagePermission": "internal-only",
+  "violationNegatives": {
+    "capPerCase": 4,
+    "holdoutNote": "이번 이슈(#370) 범위 밖 — sealed 라벨(buyer_holdout_labels.jsonl) 접근 없이는 holdout의 relevantProductIds/hardConstraints를 알 수 없어 위반 판정 자체가 불가능하다. sealed 라벨 접근 절차 설계는 후속 이슈.",
+    "rules": {
+      "attr_violation": {
+        "actualCandidates": 0,
+        "actualCases": 0,
+        "minCases": 2,
+        "minPerCase": 1,
+        "shortfallReason": "attrConditions 보유 3케이스(buy-fail-0001/buy-mult-0001/buy-mult-0002) 전부 케이스 조건 키가 catalog attributes의 실제 키와 이름이 달라(예: 차단지수≠SPF지수, 크기≠사이즈, 중량 키 자체가 catalog에 없음) schema.judge_attr_violation(동의어 매핑 없이 정확한 키 일치만 판정)로 위반을 확정할 후보가 0건이다. 조작하지 않고 미달로 기록(패킷 §2 명시적 허용). 상세: evals/goldenset/inject_violation_negatives.py의 ATTR_VIOLATION_CANDIDATE_CASES."
+      },
+      "category_violation": {
+        "actualCandidates": 5,
+        "actualCases": 4,
+        "minCases": 4,
+        "minPerCase": 1,
+        "shortfallReason": null
+      },
+      "price_violation": {
+        "actualCandidates": 47,
+        "actualCases": 13,
+        "minCases": 8,
+        "minPerCase": 2,
+        "shortfallReason": null
+      }
+    }
+  }
 }
