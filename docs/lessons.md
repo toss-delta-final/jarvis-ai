@@ -13,6 +13,32 @@
 
 ---
 
+## [2026-08-06] 워크트리의 `docker compose ps` 가 비어도 컨테이너는 떠 있다 — "DB 없음"을 가정하지 마라
+
+- 증상: `#356` 시드 스크립트를 돌리기 전 `docker compose ps` 로 확인했더니 서비스가 하나도 없어
+  "InMemory 폴백으로 돌겠구나" 하고 실행했는데, 실제로는 **실 pg-profile 에 연결**돼
+  `EmbeddingError: google_api_key 미구성` 으로 죽었다. 스크립트 docstring 에는 그 반대로
+  "GOOGLE_API_KEY 가 없으면 category 노드만 드롭되고 나머지는 정상 생성된다"고 적혀 있었다.
+- 원인 두 가지가 겹쳤다.
+  (1) **compose 프로젝트 이름은 디렉터리마다 다르다.** 메인 체크아웃에서 띄운
+      `jarvis-ai-final-pg-profile-1` 은 워크트리의 `docker compose ps` 목록에 안 잡히지만
+      호스트 포트 5434 는 그대로 열려 있어 `profile_db_url` 이 그냥 붙는다. 워크트리는 코드만
+      격리하고 **호스트 포트는 공유**한다.
+  (2) `add_fact` 는 store 의 semantic 인덱스(`fields: ["fact"]`, REQ-PROF-070/071)를 타므로
+      **fact 를 하나 넣을 때마다 실 임베딩 API 를 부른다.** 실 pg-profile 을 쓰는 한
+      GOOGLE_API_KEY 는 선택이 아니라 필수인데, 임베딩을 "category 어휘 스냅에만 쓴다"고
+      착각해 전제를 잘못 적었다.
+- 규칙:
+  - 워크트리에서 인프라 유무를 판단할 때는 `docker compose ps` 가 아니라 **`docker ps`** 로 본다.
+    폴백 경로를 전제한 스크립트·테스트는 특히 그렇다(로컬에 떠 있는 실 Spring 을 유닛 테스트가
+    잡아 결과가 뒤집힌 2026-08-05 항목과 같은 부류다 — 주입하지 않은 기본값은 하네스 경계 밖이다).
+  - 스크립트 docstring 의 `전제`·`비용` 절은 **한 번 실행해 보고 적는다.** 추측으로 적으면 그
+    문장이 다음 사람에게 그대로 틀린 근거가 된다.
+  - "이 기능은 임베딩을 쓰는가"를 판단할 때 내가 직접 부르는 곳만 보지 말고 **저장소 인덱스
+    설정(`index=`)** 도 확인한다. 쓰기 한 번이 곧 임베딩 한 번인 경로가 있다.
+- 관련: `scripts/seed_profile_graph_356.py`, `app/agents/profile/store.py`(`_pg_index_config`),
+  `app/pipelines/embedding.py:84`, 이슈 #356
+
 ## [2026-08-06] 데이터가 새 코드 경로를 처음 태우면, 게이트가 깨져도 범인은 앱이 아니라 하네스일 수 있다
 - 증상: #370 이 골든셋에 처음으로 유의미한 수(47건)의 가격 위반 후보를 주입하자
   `tests/eval/test_goldenset_eval.py` 의 critical PR 게이트가 갑자기 깨졌다. 표면적으로는
