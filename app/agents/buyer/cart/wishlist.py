@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.identity import cart_identity
 from app.agents.buyer.cart.negation import has_any_negation, matches_name_unnegated
+from app.agents.buyer.cart.purchase_state import state_suffix
 from app.agents.buyer.recommendation.state import CartIntent
 from app.core.text import _strip_unsafe
 from app.schemas.chat import ActionData, DoneData, TokenData
@@ -46,9 +47,20 @@ def _wishlist_unresolved_notice(items: list[WishlistItem]) -> str:
     범위 밖(후속 이슈)이라, 대신 문구가 다음 답을 판별기가 다시 잡을 수 있는 형태(찜 해제 동작
     표지 포함)로 유도한다 — 상품명만 답하면 여전히 담기로 새는 것은 문구로 유도할 뿐 강제하지
     않는 알려진 한계다(`remove.py` 참조).
+
+    **[#310]** 구매 가능 상태 라벨을 함께 싣는다(장바구니 조회·삭제 되물음과 같은 규칙). 찜은
+    "나중에 사려고 담아둔" 목록이라 시간이 지나며 상태가 바뀌기 쉬워 이 안내의 값어치가 크다.
+    다만 안내 **문장**은 더하지 않는다 — 이 문구의 목적은 "어느 걸 뺄지 묻기"라 문장을 얹으면
+    초점이 흐려진다(장바구니 조회는 목적이 달라 문단 끝 안내를 싣는다).
     """
-    names = ", ".join(_display_wishlist_name(item) for item in items)
-    example = _display_wishlist_name(items[0])
+    names = ", ".join(
+        f"{_display_wishlist_name(item)}{state_suffix(item.purchase_state)}" for item in items
+    )
+    # 예시는 살 수 있는 항목을 우선한다 — 전부 못 사면 그대로 첫 항목(`remove.py` 와 같은 규칙).
+    example_item = next(
+        (item for item in items if item.purchase_state in (None, "AVAILABLE")), items[0]
+    )
+    example = _display_wishlist_name(example_item)
     return f"찜한 상품: {names}. 예) '{example} 찜 빼줘'처럼 상품명과 함께 말씀해 주세요."
 
 
