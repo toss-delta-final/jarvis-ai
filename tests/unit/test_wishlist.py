@@ -384,6 +384,41 @@ async def test_get_wishlist_unknown_purchase_state_skips_only_that_item(
     assert view.items[0].purchase_state == "AVAILABLE"
 
 
+@pytest.mark.parametrize("bad", [{}, [], {"kind": "SOLD_OUT"}, ["SOLD_OUT"]])
+async def test_get_wishlist_unhashable_purchase_state_skips_item_without_typeerror(
+    monkeypatch: pytest.MonkeyPatch, bad: object
+) -> None:
+    """unhashable 값(dict·list)이 와도 `TypeError` 가 아니라 **항목 skip** 이어야 한다(PR #400 리뷰).
+
+    `WishlistItem` 은 `CartViewItem` 과 달리 `BeforeValidator` 가 없고 **pydantic 내장 Literal
+    검증에만 의존**한다. 그 검증기는 pydantic-core(Rust) 구현이라 hashable 여부와 무관하게
+    `literal_error` → `ValidationError` 를 내므로 지금은 안전하다 — `_parse_wishlist_items` 의
+    `except ValidationError` 에 정상적으로 걸린다.
+
+    이 테스트는 **그 안전성이 구현 세부에 기대고 있다는 사실을 고정한다.** 카트 쪽이 위험했던
+    이유는 `Literal` 자체가 아니라 거기 붙인 `BeforeValidator` 가 파이썬 `value in frozenset` 을
+    호출했기 때문이다(`hash()` 실패 → `TypeError` → pydantic 이 감싸지 않고 전파). 훗날 여기에도
+    같은 형태의 validator 를 붙이면 그 함정에 그대로 빠지므로, 그때 이 테스트가 잡는다.
+    """
+    import app.services.spring_client as sc
+
+    body = {
+        "success": True,
+        "data": {
+            "items": [
+                {"productId": 1, "name": "정상", "purchaseState": "SOLD_OUT"},
+                {"productId": 2, "name": "깨진값", "purchaseState": bad},
+            ]
+        },
+    }
+    client = _WishlistClient(_WishlistResp(200, body))
+    monkeypatch.setattr(sc, "_client", lambda: client)
+    view = await sc.get_wishlist(1)
+    assert len(view.items) == 1  # 깨진 항목만 빠지고 정상 항목은 살아남는다
+    assert view.items[0].product_id == 1
+    assert view.items[0].purchase_state == "SOLD_OUT"
+
+
 async def test_get_wishlist_all_items_unknown_purchase_state_fails_closed_not_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
