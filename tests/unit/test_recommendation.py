@@ -2380,6 +2380,9 @@ async def test_recommendation_deferred_conditions_suppresses_search_retry(
     """미룬 턴은 첫 이벤트 앞 I-1 직렬 예산을 지키려고 본 검색 재시도를 건너뛴다(#277)."""
     import httpx
 
+    # [#393] `ratingMin` 만 있는 턴은 payload 기준으로 무필터라 새 가드(A)가 인기 상품으로
+    # 돌린다 — 이 테스트의 주제는 I-1 재시도지 후보 소스 선택이 아니므로 새 가드를 끈다.
+    monkeypatch.setattr(get_settings(), "search_filter_guard_enabled", False)
     calls = _counting_client(monkeypatch, httpx.Response(503))
     events = await _collect(
         run_buyer_turn(
@@ -2412,11 +2415,14 @@ async def test_recommendation_nondeferred_conditions_keeps_search_retry(
     [#162] `semanticQuery` 를 준다 — 종전에는 `filters: {}` 만으로 이 턴을 만들었는데, 그건 이제
     **조건 없는 발화**로 판정돼 I-1 이 아니라 I-3(인기 상품) 경로를 탄다. 이 테스트의 주제는
     I-1 재시도지 후보 소스 선택이 아니므로, 의미 신호를 줘서 종전 경로를 유지시킨다.
+    [#393] `semanticQuery` 는 Spring payload 축이 아니라 여전히 payload 기준으로는 무필터다 —
+    새 가드(A)도 함께 끈다.
     """
     import httpx
 
     # [#394] 기본값이 0으로 바뀌어 재시도 루프 자체를 켜서 검증하려면 명시 주입이 필요하다.
     monkeypatch.setattr(get_settings(), "spring_max_retries", 1)
+    monkeypatch.setattr(get_settings(), "search_filter_guard_enabled", False)
     calls = _counting_client(monkeypatch, httpx.Response(503))
     events = await _collect(
         run_buyer_turn(
@@ -2451,6 +2457,9 @@ async def test_recommendation_deferred_conditions_retry_can_be_restored_by_guard
     monkeypatch.setattr(get_settings(), "search_retry_on_deferred_conditions", True)
     # [#394] 기본값이 0으로 바뀌어 재시도 루프 자체를 켜서 검증하려면 명시 주입이 필요하다.
     monkeypatch.setattr(get_settings(), "spring_max_retries", 1)
+    # [#393] `ratingMin` 만 있는 턴은 payload 기준으로 무필터라 새 가드(A)가 인기 상품으로
+    # 돌린다 — 이 테스트의 주제는 I-1 재시도지 후보 소스 선택이 아니므로 새 가드를 끈다.
+    monkeypatch.setattr(get_settings(), "search_filter_guard_enabled", False)
     calls = _counting_client(monkeypatch, httpx.Response(503))
     events = await _collect(
         run_buyer_turn(
@@ -3069,6 +3078,9 @@ async def test_recommendation_repurchase_persists_when_scoped_refine_carries_rel
 ) -> None:
     """완화 승계 턴에서도 직전 재구매 면제와 새 가격 조건을 함께 유지한다."""
     _fix_now(monkeypatch)
+    # [#393] 1턴째는 ratingMin 만 있어 payload 기준 무필터다 — 이 테스트의 주제는 완화 승계지
+    # 후보 소스 선택이 아니므로 새 가드를 끈다.
+    monkeypatch.setattr(get_settings(), "search_filter_guard_enabled", False)
     monkeypatch.setattr(
         _sc_mod, "get_recent_purchases", _purchases_cat((101, "무선이어폰", "무선 이어폰 프로"))
     )
@@ -3142,6 +3154,9 @@ async def test_recommendation_relaxation_probe_applies_persisted_repurchase(
 ) -> None:
     """자동 완화 probe도 지속 재구매 면제를 적용해 count와 실제 노출을 일치시킨다."""
     _fix_now(monkeypatch)
+    # [#393] 2턴째는 ratingMin 만 있어 payload 기준 무필터다 — 이 테스트의 주제는 완화 probe의
+    # 재구매 면제 적용이지 후보 소스 선택이 아니므로 새 가드를 끈다.
+    monkeypatch.setattr(get_settings(), "search_filter_guard_enabled", False)
     monkeypatch.setattr(
         _sc_mod, "get_recent_purchases", _purchases_cat((101, "무선이어폰", "무선 이어폰 프로"))
     )
@@ -3250,8 +3265,13 @@ async def test_recommendation_delayed_conditions_survive_repurchase_store_failur
     assert _types(events)[-1] == "done"
 
 
-async def test_recommendation_delays_conditions_until_search_and_auto_relax_probe_finish() -> None:
+async def test_recommendation_delays_conditions_until_search_and_auto_relax_probe_finish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """자동 완화 가능 턴은 본 검색과 probe 두 I-1 호출이 끝난 뒤 conditions를 낸다(#277)."""
+    # [#393] ratingMin 만 있는 턴은 payload 기준으로 무필터다 — 이 테스트의 주제는 본 검색·
+    # probe 순서지 후보 소스 선택이 아니므로 새 가드를 끈다.
+    monkeypatch.setattr(get_settings(), "search_filter_guard_enabled", False)
     calls = []
     product = SpringProduct(
         product_id=101,
@@ -6284,19 +6304,70 @@ async def _failed_mapping(*args, **kwargs):
     return CategoryMapping()
 
 
-async def test_multi_item_utterance_with_failed_mapping_keeps_normal_search() -> None:
-    """ "이어폰이랑 노트북 추천해줘" — 매핑이 실패해도 인기 상품으로 새면 안 된다(PR #311 리뷰).
+async def test_multi_item_utterance_with_failed_mapping_falls_back_to_popular() -> None:
+    """ "이어폰이랑 노트북 추천해줘" — 매핑이 전부 실패하면 무필터 I-1 대신 인기 상품으로 답한다.
 
-    상품 2개 지목은 `cat_signal` 승격 조건(leg 1개)에 안 걸려 출처 검사를 통과하고, 매핑까지
-    실패하면 `category_legs` 도 빈다. `category_queries` 를 안 보면 사용자가 명시적으로 말한
-    상품군을 버리고 인기 상품이 나간다.
+    상품 2개 지목은 `cat_signal` 승격 조건(`decompose.py:585`, leg 1개)에 안 걸려 `semantic_query`
+    로도 `filters.keyword` 로도 안 실린다. 매핑까지 실패하면 `category_legs` 도 비어, 이 턴의 실제
+    Spring payload 는 **파라미터 0개**다.
+
+    **PR #311 이 지키려던 것과 #393 이 그 경계를 옮긴 이유**: PR #311(리뷰)은 "매핑이 드롭돼도
+    `category_queries` 원시 신호가 있으면 인기 상품으로 새면 안 된다"고 판단해 종전 무필터 검색
+    경로를 지켰다 — 그 판단은 **그 무필터 검색이 실제로 결과를 준다는 전제** 위에 있었다. 상품
+    100→6,559건으로 카탈로그가 커진 지금 그 전제가 깨졌다(운영 실측: 무필터 I-1 은 7.74초·
+    12.3MB → 3초 예산 초과 → **결과가 아니라 에러**). 사용자가 말한 상품군을 지키려다 빈손 대신
+    `SEARCH_FAILED` 를 주는 것은 원래 목적에 반한다 — #393 A(payload 사실 판정)는 매핑 드롭
+    여부와 무관하게 이 턴을 인기 상품 + 정직한 고지로 돌린다("인기 상품 + 정직한 고지 >
+    SEARCH_FAILED"). `search_filter_guard_enabled=False` 로 종전 동작(무필터 I-1)을 되돌릴 수
+    있다 — 아래 롤백 테스트가 그 회귀를 지킨다.
     """
+    search, search_calls = _counting_search_calls()
+    popular, popular_calls = _recording_popular()
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="이어폰이랑 노트북 추천해줘", thread_id="nc-multi-item"),
+            _guest(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "reply": "",
+                    "case": 3,
+                    "filters": {},
+                    "categoryQueries": [
+                        {"category": None, "query": "무선 이어폰"},
+                        {"category": None, "query": "노트북"},
+                    ],
+                }
+            ),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+            map_categories=_failed_mapping,  # 매핑 실패 재현
+        )
+    )
+
+    assert search_calls == []  # 무필터 I-1 이 나가지 않는다 — #393 A 의 핵심
+    assert popular_calls == [get_settings().popular_candidate_size]  # I-3 로 갔다
+    types = _types(events)
+    assert "error" not in types
+    assert types[-1] == "done"
+    texts = [e["data"]["text"] for e in events if e["type"] == "token"]
+    assert any(get_settings().no_condition_notice_popular in t for t in texts)
+
+
+async def test_multi_item_utterance_with_failed_mapping_keeps_normal_search_when_guard_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#393 롤백] `search_filter_guard_enabled=False` 면 PR #311 이 지키던 종전 동작(무필터
+    검색 경로 유지, 인기 상품으로 새지 않음)이 그대로 재현된다."""
+    monkeypatch.setattr(get_settings(), "search_filter_guard_enabled", False)
     search, search_calls = _counting_search_calls()
     popular, popular_calls = _recording_popular()
 
     await _collect(
         run_buyer_turn(
-            _req(message="이어폰이랑 노트북 추천해줘", thread_id="nc-multi-item"),
+            _req(message="이어폰이랑 노트북 추천해줘", thread_id="nc-multi-item-guard-off"),
             _guest(),
             llm=FakeLLM(
                 decompose={
@@ -6391,3 +6462,373 @@ async def test_catalog_store_failure_keeps_stream_alive_and_falls_back(
     assert types[-1] == "done"  # 스트림이 정상 종료된다
     assert "error" not in types
     assert popular_calls  # 인기 상품 폴백을 실제로 탄다
+
+
+# ─────────── #393 검색 필터 가드 (A: 최소 필터 가드, B: 매핑 드롭 0건 폴백, C: 인기 후보 사후필터) ───────────
+
+_RATING_ONLY_DECOMPOSE = {"intent": "recommend", "filters": {"ratingMin": 4.5}, "case": 2}
+
+
+async def test_unfiltered_bypass_turn_skips_search_and_uses_popular() -> None:
+    """[A 회귀] rating_min 만 있는 턴은 payload 기준 무필터다 — I-1 이 나가지 않고 I-3 로 답하며
+    no_condition 과 같은 고지가 나간다(그 턴도 payload 기준으로는 조건이 하나도 안 나갔다)."""
+    search, search_calls = _counting_search_calls()
+    popular, popular_calls = _recording_popular()
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="평점 4 이상 아무거나 추천해줘", thread_id="unfiltered-bypass"),
+            _guest(),
+            llm=FakeLLM(decompose=_RATING_ONLY_DECOMPOSE),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    assert search_calls == []  # 무필터 I-1 이 나가지 않는다
+    assert popular_calls == [get_settings().popular_candidate_size]
+    texts = [e["data"]["text"] for e in events if e["type"] == "token"]
+    assert any(get_settings().no_condition_notice_popular in t for t in texts)
+
+
+async def test_unfiltered_bypass_can_be_rolled_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[A 롤백] `search_filter_guard_enabled=False` 면 종전대로 무필터 I-1 이 나간다."""
+    monkeypatch.setattr(get_settings(), "search_filter_guard_enabled", False)
+    search, search_calls = _counting_search_calls()
+    popular, popular_calls = _recording_popular()
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="평점 4 이상 아무거나 추천해줘", thread_id="unfiltered-bypass-off"),
+            _guest(),
+            llm=FakeLLM(decompose=_RATING_ONLY_DECOMPOSE),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    assert search_calls  # 종전대로 무필터 I-1 이 나간다
+    assert popular_calls == []
+
+
+def _shoe_decompose(*, extra_filters: dict | None = None) -> dict:
+    filters = {"keyword": "신발"}
+    filters.update(extra_filters or {})
+    return {
+        "intent": "recommend",
+        "case": 2,
+        "categoryQueries": [{"category": "신발", "query": None}],
+        "filters": filters,
+    }
+
+
+async def test_category_mapping_dropped_zero_result_falls_back_to_popular() -> None:
+    """[B 회귀 — "신발" 시나리오] 매핑이 드롭돼도 keyword 검색을 **먼저** 시도하고, 그게 0건일
+    때만 인기 상품으로 대체한다 — 사전 우회가 아니라 사후 폴백이다."""
+    search, search_calls = _counting_search_calls(products=[])
+    popular, popular_calls = _recording_popular()
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="신발 추천해줘", thread_id="shoe-mapping-dropped"),
+            _guest(),
+            llm=FakeLLM(decompose=_shoe_decompose()),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+            map_categories=_failed_mapping,
+        )
+    )
+
+    assert len(search_calls) == 1  # keyword 검색을 먼저 시도했다 — 사전 우회가 아니다
+    assert popular_calls == [get_settings().popular_candidate_size]
+    texts = [e["data"]["text"] for e in events if e["type"] == "token"]
+    assert any(get_settings().category_unmapped_notice in t for t in texts)
+
+
+async def test_category_mapping_dropped_with_results_does_not_fall_back() -> None:
+    """[B] keyword 검색이 실제로 결과를 내면 인기 상품으로 대체하지 않는다 — 관련 결과가
+    인기 상품보다 낫다."""
+    search, search_calls = _counting_search_calls()  # DEFAULT_PRODUCTS(비어있지 않음)
+    popular, popular_calls = _recording_popular()
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="신발 추천해줘", thread_id="shoe-mapping-dropped-hit"),
+            _guest(),
+            llm=FakeLLM(decompose=_shoe_decompose()),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+            map_categories=_failed_mapping,
+        )
+    )
+
+    assert len(search_calls) == 1
+    assert popular_calls == []  # 대체하지 않는다
+
+
+async def test_category_mapping_dropped_deferred_turn_does_not_fall_back() -> None:
+    """[B 지연 가드] `may_auto_relax` 턴(ratingMin 도 함께 걸림)은 첫 이벤트 앞 직렬 호출이
+    늘어나지 않게 B 를 발동하지 않는다 — 0건이어도 인기 상품으로 대체하지 않는다(#277)."""
+    search, search_calls = _counting_search_calls(products=[])
+    popular, popular_calls = _recording_popular()
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="신발 평점 4점 이상 추천해줘", thread_id="shoe-mapping-dropped-deferred"),
+            _guest(),
+            llm=FakeLLM(decompose=_shoe_decompose(extra_filters={"ratingMin": 4.5})),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+            map_categories=_failed_mapping,
+        )
+    )
+
+    assert (
+        search_calls
+    )  # 본 검색은 그대로 나간다(+ ratingMin 자동완화 probe 재검색이 더 갈 수 있다)
+    assert popular_calls == []  # 그러나 0건이어도 인기 상품으로 새지 않는다
+
+
+async def test_category_mapping_dropped_with_brand_does_not_fall_back() -> None:
+    """[PR #411 Claude 리뷰 — "나이키 신발" 회귀] payload 에 `brand` 가 남아 있으면 매핑 드롭
+    0건이어도 B 를 발동하지 않는다 — 인기 후보는 브랜드를 걸러주지 않는데 `conditions` 칩엔
+    "나이키"가 그대로 떠 표시-실제가 어긋난다. 종전 동작(0건 응답)을 그대로 유지한다."""
+    search, search_calls = _counting_search_calls(products=[])
+    popular, popular_calls = _recording_popular()
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="나이키 신발 추천해줘", thread_id="shoe-mapping-dropped-brand"),
+            _guest(),
+            llm=FakeLLM(decompose=_shoe_decompose(extra_filters={"brand": ["나이키"]})),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+            map_categories=_failed_mapping,
+        )
+    )
+
+    # 브랜드 검색은 그대로 나갔다(+ 0건이라 브랜드 완화 칩 probe 재검색이 더 갈 수 있다, #113).
+    assert search_calls
+    assert search_calls[0].brand == ["나이키"]
+    assert popular_calls == []  # B 미발동 — 인기 상품으로 새지 않는다
+    types = _types(events)
+    assert "error" not in types
+    assert types[-1] == "done"
+    conditions_event = next(e for e in events if e["type"] == "conditions")
+    chips = conditions_event["data"]["chips"]
+    # 브랜드 칩이 conditions 에 그대로 있다 — 실제로 브랜드 검색이 나갔고 결과가 0건이었으므로
+    # 표시(칩)와 실제(요청)가 일치한다.
+    assert any(c["field"] == "brand" for c in chips)
+
+
+async def test_category_mapping_dropped_with_price_still_falls_back_to_popular() -> None:
+    """[PR #411 Claude 리뷰] `keyword`+가격만 남은 매핑 드롭 0건 턴은 여전히 B 가 발동한다 —
+    가격은 `within_price_range` 로 인기 후보에 실제로 적용되는 안전한 축이다."""
+    over_budget = SpringProduct(
+        product_id=901, name="비싼 신발", price=90000, category="신발", brand="b"
+    )
+    under_budget = SpringProduct(
+        product_id=902, name="싼 신발", price=30000, category="신발", brand="b"
+    )
+    search, search_calls = _counting_search_calls(products=[])
+    popular, popular_calls = _recording_popular(products=[over_budget, under_budget])
+    push = _RecordingPush()
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="5만원 이하 신발 추천해줘", thread_id="shoe-mapping-dropped-price"),
+            _guest(),
+            llm=FakeLLM(decompose=_shoe_decompose(extra_filters={"priceMax": 50000})),
+            search=search,
+            push_fn=push,
+            popular_fn=popular,
+            map_categories=_failed_mapping,
+        )
+    )
+
+    # 본 검색은 그대로 나갔다(+ 0건이라 가격 완화 칩 probe 재검색이 더 갈 수 있다, #113).
+    assert search_calls
+    assert popular_calls == [get_settings().popular_candidate_size]  # B 발동
+    exposed = set(_only_list(push.pushes[0]).product_ids)
+    assert 901 not in exposed  # priceMax 초과 — within_price_range 로 걸러짐
+    assert 902 in exposed
+    texts = [e["data"]["text"] for e in events if e["type"] == "token"]
+    assert any(get_settings().category_unmapped_notice in t for t in texts)
+
+
+async def test_unfiltered_bypass_popular_candidates_drop_rating_below_threshold() -> None:
+    """[C] rating_min 만 있는 턴이 A 로 인기 후보를 받을 때 평점 미달 후보는 제외된다 —
+    조건 칩엔 "평점 4.5 이상"이 떠 있는데 후보가 그 조건을 안 지키는 표시-실제 불일치를 막는다.
+    데이터 부재(`rating=None`·`review_count==0`)는 반증이 아니므로 보존한다.
+
+    [F2-1] `conditions` 칩과 C 의 사후필터는 **같은 `decision.filters` 객체**를 읽는다(칩은
+    `_condition_chips`→`build_condition_chips(decision.filters, ...)`, 사후필터는
+    `apply_ai_side_filters(products, decision.filters)`) — 구조적으로 어긋날 수 없지만, 그 사실
+    자체를 테스트로 고정해 둔다.
+    """
+    products = [
+        SpringProduct(product_id=201, name="A", price=10000, rating=4.8, review_count=10),
+        SpringProduct(product_id=202, name="B", price=10000, rating=3.0, review_count=5),  # 미달
+        SpringProduct(product_id=203, name="C", price=10000, rating=None, review_count=None),
+        SpringProduct(product_id=204, name="D", price=10000, rating=0.0, review_count=0),
+    ]
+    search, search_calls = _counting_search_calls()
+    popular, popular_calls = _recording_popular(products=products)
+    push = _RecordingPush()
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(
+                message="평점 4.5 이상 아무거나 추천해줘", thread_id="unfiltered-rating-postfilter"
+            ),
+            _guest(),
+            llm=FakeLLM(decompose=_RATING_ONLY_DECOMPOSE),
+            search=search,
+            push_fn=push,
+            popular_fn=popular,
+        )
+    )
+
+    assert search_calls == []
+    assert popular_calls
+    exposed = set(_only_list(push.pushes[0]).product_ids)
+    assert 202 not in exposed  # 반증됨(리뷰 있음·미달) — 제외
+    assert {201, 203, 204} <= exposed  # 통과 + 데이터 부재 보존
+
+    conditions_event = next(e for e in events if e["type"] == "conditions")
+    chips = conditions_event["data"]["chips"]
+    assert any(
+        c["field"] == "ratingMin" and c["value"] == 4.5 for c in chips
+    )  # 표시(칩)와 실제(후보)가 일치 — 202 는 위에서 이미 제외됨을 확인했다
+
+
+async def test_unfiltered_bypass_popular_candidates_apply_attr_conditions() -> None:
+    """[C] attr_conditions 만 있는 턴도 인기 후보에 같은 사후필터가 걸린다."""
+    products = [
+        SpringProduct(
+            product_id=301,
+            name="A",
+            price=10000,
+            attributes={"방수": "true"},
+        ),
+        SpringProduct(
+            product_id=302,
+            name="B",
+            price=10000,
+            attributes={"방수": "false"},
+        ),
+    ]
+    search, _ = _counting_search_calls()
+    popular, popular_calls = _recording_popular(products=products)
+    push = _RecordingPush()
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="방수되는 거 아무거나 추천해줘", thread_id="unfiltered-attr-postfilter"),
+            _guest(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "case": 2,
+                    "attrConditions": {"방수": "true"},
+                    "filters": {},
+                }
+            ),
+            search=search,
+            push_fn=push,
+            popular_fn=popular,
+        )
+    )
+
+    assert popular_calls
+    exposed = set(_only_list(push.pushes[0]).product_ids)
+    assert exposed == {301}
+
+
+async def test_category_legs_mapped_turn_never_calls_popular() -> None:
+    """[매핑 성공 턴 무영향] `category_legs` 가 있는 턴은 A/B 어느 쪽에도 걸리지 않는다 —
+    `popular_fn` 이 한 번도 불리지 않는다."""
+    search, search_calls = _counting_search_calls()
+    popular, popular_calls = _recording_popular()
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="신발 추천해줘", thread_id="shoe-mapping-succeeded"),
+            _guest(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "case": 2,
+                    "categoryQueries": [{"category": "신발", "query": None}],
+                    "filters": {},
+                }
+            ),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    assert popular_calls == []
+    assert search_calls  # canonical 매핑 성공 → 종전 fan-out 검색
+
+
+async def test_relaxation_probe_with_empty_filters_skips_spring_call() -> None:
+    """[완화 probe 가드] brand 하나만 걸린 턴에서 완화 칩이 그 축을 제거하면 payload 가
+    비므로, probe 는 Spring 을 부르지 않고 빈 결과로 처리한다(본 검색은 정상적으로 나간다).
+    """
+    main_products = [SpringProduct(product_id=401, name="A", price=10000, brand="나이키")]
+    search, search_calls = _counting_search_calls(products=main_products)
+    popular, popular_calls = _recording_popular()
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="나이키 아무거나 추천해줘", thread_id="brand-only-probe"),
+            _guest(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "case": 2,
+                    "filters": {"brand": ["나이키"]},
+                }
+            ),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    # 본 검색 1회만 나간다 — brand 완화 probe 는 payload 가 비어 Spring 을 부르지 않는다.
+    assert len(search_calls) == 1
+    assert popular_calls == []
+
+
+async def test_underspecified_flag_off_default_unaffected_by_393() -> None:
+    """[기존 판정 불변] `underspecified_reask_enabled` 기본 off 에서, 가격 제약만 있는 턴은
+    (payload 축이라 A 에도 안 걸리고) 종전처럼 무필터 I-1 이 아니라 필터 검색으로 나간다 —
+    #393 이 이 플래그의 dormant 경로를 건드리지 않았음을 고정한다."""
+    assert get_settings().underspecified_reask_enabled is False
+    search, search_calls = _counting_search_calls()
+    popular, popular_calls = _recording_popular()
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="5만원 이하로 아무거나 추천해줘", thread_id="underspecified-flag-off"),
+            _guest(),
+            llm=FakeLLM(
+                decompose={"intent": "recommend", "case": 2, "filters": {"priceMax": 50000}}
+            ),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+
+    assert search_calls  # priceMax 는 payload 축이라 무필터가 아니다 — 필터 검색이 나간다
+    assert popular_calls == []
