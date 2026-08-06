@@ -15,7 +15,14 @@ from pydantic import ValidationError
 
 from app.core import llm as llm_mod
 from app.core.config import Settings
-from app.core.llm import AnthropicLLM, LLMError, OpenAILLM, get_llm, is_timeout_error
+from app.core.llm import (
+    AnthropicLLM,
+    LLMError,
+    OpenAILLM,
+    get_llm,
+    is_output_length_error,
+    is_timeout_error,
+)
 from app.core.tracing import FakeTraceExporter, TraceFactory, bind_request_trace, trace_span
 
 
@@ -83,6 +90,52 @@ def test_is_timeout_error_survives_self_referencing_chain() -> None:
     second.__cause__ = first
 
     assert is_timeout_error(first) is False
+
+
+# ─────────── is_output_length_error — 출력 토큰 예산 소진 판정 (#325 R6) ───────────
+
+
+def test_is_output_length_error_detects_direct_type() -> None:
+    """openai.LengthFinishReasonError 를 직접 타입으로 잡는다(#325 원 사례)."""
+    from types import SimpleNamespace
+
+    openai = pytest.importorskip("openai")
+    exc = openai.LengthFinishReasonError(completion=SimpleNamespace(usage=None))
+    assert is_output_length_error(exc) is True
+
+
+def test_is_output_length_error_follows_cause_chain() -> None:
+    """OpenAILLM.complete 이 ``raise LLMError(str(exc)) from exc`` 로 감싸는 실제 경로처럼
+    원인 체인에만 있어도 잡아야 한다."""
+    from types import SimpleNamespace
+
+    openai = pytest.importorskip("openai")
+    inner = openai.LengthFinishReasonError(completion=SimpleNamespace(usage=None))
+    try:
+        try:
+            raise inner
+        except openai.LengthFinishReasonError:
+            raise LLMError("wrapped") from inner
+    except LLMError as wrapped:
+        assert is_output_length_error(wrapped) is True
+
+
+def test_is_output_length_error_rejects_unrelated() -> None:
+    """무관한 예외·None 은 False — 타임아웃도 출력 예산 소진이 아니다."""
+    assert is_output_length_error(RuntimeError("boom")) is False
+    assert is_output_length_error(LLMError("모델 응답 파싱 실패")) is False
+    assert is_output_length_error(TimeoutError()) is False
+    assert is_output_length_error(None) is False
+
+
+def test_is_output_length_error_survives_self_referencing_chain() -> None:
+    """원인 체인이 순환해도 무한 루프에 빠지지 않는다(is_timeout_error 와 같은 안전장치)."""
+    first = RuntimeError("a")
+    second = RuntimeError("b")
+    first.__cause__ = second
+    second.__cause__ = first
+
+    assert is_output_length_error(first) is False
 
 
 # ─────────── tier 매핑 ───────────
@@ -531,3 +584,66 @@ def test_openai_cache_key_includes_tier_effort() -> None:
     assert c_fast is not c_smart
     assert c_fast.reasoning_effort == "low"
     assert c_smart.reasoning_effort == "medium"
+
+
+# ─────────── #325: per-call reasoning_effort override + 캐시 오염 회귀 ───────────
+
+
+async def test_openai_complete_reasoning_effort_override_reaches_chat_kwargs() -> None:
+    """reasoning_effort override 가 tier 기본 대신 실제 ChatOpenAI kwargs 에 실린다."""
+    llm = _openai(fast_reasoning_effort="minimal")
+    chat = llm._chat("fast", 100, json_mode=True, effort_override="low")
+    assert chat.reasoning_effort == "low"
+
+
+async def test_openai_cache_key_distinguishes_effort_override_from_tier_default() -> None:
+    """같은 (tier, max_tokens, json) 이라도 override 유/무는 다른 클라이언트로 캐시된다(캐시 오염 회귀).
+
+    이 테스트가 없으면 enrichment(override="minimal")가 다른 fast 호출(override=None,
+    tier 기본도 "minimal")과 같은 캐시 키를 공유해도 우연히 통과해 보이므로, 서로 다른
+    tier 기본/override 값 조합으로 실제 분리를 확인한다.
+    """
+    llm = _openai(fast_reasoning_effort="minimal")
+    without_override = llm._chat("fast", 100, json_mode=True)
+    with_override = llm._chat("fast", 100, json_mode=True, effort_override="low")
+    assert without_override is not with_override
+    assert without_override.reasoning_effort == "minimal"
+    assert with_override.reasoning_effort == "low"
+    # 재호출 시 각자의 캐시 항목이 재사용된다(오염되지 않음).
+    assert llm._chat("fast", 100, json_mode=True) is without_override
+    assert llm._chat("fast", 100, json_mode=True, effort_override="low") is with_override
+
+
+async def test_openai_complete_passes_reasoning_effort_through(monkeypatch) -> None:
+    llm = _openai()
+    captured = {}
+
+    class Chat:
+        reasoning_effort = None
+
+        async def ainvoke(self, messages):
+            return SimpleNamespace(content="ok", usage_metadata=None)
+
+    def fake_chat(tier, max_tokens, *, json_mode, effort_override=None):
+        captured["args"] = (tier, max_tokens, json_mode, effort_override)
+        return Chat()
+
+    monkeypatch.setattr(llm, "_chat", fake_chat)
+    result = await llm.complete(
+        system="s", user="u", tier="fast", max_tokens=2048, reasoning_effort="minimal"
+    )
+    assert result == "ok"
+    assert captured["args"] == ("fast", 2048, True, "minimal")
+
+
+async def test_anthropic_complete_ignores_reasoning_effort(monkeypatch) -> None:
+    """Anthropic 은 effort 개념이 없어 kwarg 를 받아도 예외 없이 동작한다(#325)."""
+    llm = _provider("anthropic")
+
+    class Chat:
+        async def ainvoke(self, messages):
+            return SimpleNamespace(content="ok", usage_metadata=None)
+
+    monkeypatch.setattr(llm, "_chat", lambda *a, **kw: Chat())
+    result = await llm.complete(system="s", user="u", tier="fast", reasoning_effort="minimal")
+    assert result == "ok"

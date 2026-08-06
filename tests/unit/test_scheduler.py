@@ -99,6 +99,34 @@ def test_run_incremental_batch_calls_run_artifacts_batch_with_full_rebuild_false
     assert calls == [False]
 
 
+def test_run_incremental_batch_logs_error_and_summary_when_failed(monkeypatch, caplog):
+    """[#325] 부분 실패는 apscheduler 가 삼키지 않도록 error 로 남기고 요약에 failed 를 포함한다."""
+
+    async def fake_run_artifacts_batch(*, full_rebuild):
+        return BatchResult(processed=2, hidden=0, pages=1, cursor="c1", failed=1)
+
+    monkeypatch.setattr(sched_mod, "run_artifacts_batch", fake_run_artifacts_batch)
+
+    with caplog.at_level("INFO"):
+        sched_mod._run_incremental_batch()
+
+    assert "failed=1" in caplog.text
+    assert any(record.levelname == "ERROR" for record in caplog.records)
+
+
+def test_run_incremental_batch_no_error_log_when_no_failures(monkeypatch, caplog):
+    async def fake_run_artifacts_batch(*, full_rebuild):
+        return BatchResult(processed=2, hidden=0, pages=1, cursor="c1", failed=0)
+
+    monkeypatch.setattr(sched_mod, "run_artifacts_batch", fake_run_artifacts_batch)
+
+    with caplog.at_level("INFO"):
+        sched_mod._run_incremental_batch()
+
+    assert "failed=0" in caplog.text
+    assert not any(record.levelname == "ERROR" for record in caplog.records)
+
+
 def test_run_incremental_batch_swallows_exceptions(monkeypatch):
     async def fake_run_artifacts_batch(*, full_rebuild):
         raise RuntimeError("boom")
