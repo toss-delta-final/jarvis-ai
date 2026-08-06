@@ -82,6 +82,9 @@ def embed_texts(texts: list[str], *, task_type: str | None = None) -> list[list[
     task_type 지정 시 비대칭 검색용으로 전달한다(문서=RETRIEVAL_DOCUMENT / 질의=RETRIEVAL_QUERY).
     google_api_key 미구성 시 곧바로 EmbeddingError — 배치·테스트는 embed 콜러블을 주입한다.
     입력이 `_EMBED_BATCH_MAX`(100건)를 넘으면 청크로 나눠 순차 호출하고 순서대로 이어붙인다(#353).
+    `embedding_timeout_s` 는 청크(HTTP 요청) **1건당** 상한이라 청크가 여러 개면 총 소요는
+    청크 수만큼 누적될 수 있다 — hot path(SSE) 호출부는 질의 1건씩만 넘겨 이 누적을 피한다
+    (PR #388 리뷰).
     """
     settings = get_settings()
     if not settings.google_api_key:
