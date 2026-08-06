@@ -45,13 +45,40 @@ PAIR_CHECKS.md         ★★ 1급 산출물(이슈 #371) — pair_checks.jsonl 
 `brand`·`rating_min`·`keyword`·`color`·`attr_conditions` — `decompose._FILTER_AXES` 정본) ·
 `constraint_strength`(unspecified/normal/overspecified_zero) · `identity`(guest/member) ·
 `context`(none/lastRecommendations/pendingCart/categoryPrior — screen 5종은 **v1 제외**,
-`axes.json` `exclusions` 참조) · `surface`(CHAT/HOME) · `degrade`(none/embedding_missing/
-rerank_failed/spring_timeout).
+`axes.json` `exclusions` 참조) · `surface`(CHAT/HOME) · `degrade`(**지면별 어휘, #367** —
+CHAT 3종 `embedding_missing`/`rerank_failed`/`spring_timeout` + HOME 4종
+`profile_unavailable`/`catalog_unavailable`/`catalog_timeout`/`reason_degraded` + 공통 `none`,
+아래 「degrade 축은 지면별 어휘다」 참조).
 
 **제약**(예: `intent != recommend ⇒ case/필터/예산/degrade 일부 = n/a`, `surface=HOME ⇒
 identity=member 고정 + 발화·필터·예산 없음`, `constraint_strength=unspecified ⇒ 필터 전부
-absent+context=none`)은 `axes.json` `constraints` 에 기계 판독 형식으로 있고, `generator.py` 의
-제네릭 인터프리터(`ConstraintIndex`)가 축 이름을 하드코딩하지 않고 해석한다.
+absent+context=none`, **`surface=CHAT ⇒ HOME 전용 degrade 4종 금지` / `surface=HOME ⇒ CHAT
+전용 degrade 3종 금지`(#367)**)은 `axes.json` `constraints` 에 기계 판독 형식으로 있고,
+`generator.py` 의 제네릭 인터프리터(`ConstraintIndex`)가 축 이름을 하드코딩하지 않고 해석한다.
+
+### degrade 축은 지면별 어휘다 (#367)
+
+`degrade` 축은 원래 CHAT 추천 파이프라인(검색/rerank/임베딩 재정렬) 실패 어휘만 있었는데,
+#335 매트릭스가 `surface=HOME × degrade∈{embedding_missing,rerank_failed,spring_timeout}` 를
+미정의 셀로 찾아냈다 — HOME(I-22)은 라이브 임베딩·rerank·Spring 검색(I-1)을 호출하지 않아
+그 어휘에 대응하는 코드 경로 자체가 없기 때문이다. 승인된 결정(현행 추인)은 HOME 의 실제
+실패 모드 4종을 `docs/api-spec.md` §3.7(v0.25.1)에 명문화하고 이 축을 지면별로 갈랐다.
+
+| 값 | 지면 | 계약 | 코드 근거 |
+|---|---|---|---|
+| `none` | 공통 | 정상 | — |
+| `embedding_missing` | CHAT 전용 | 재정렬만 격리 실패 — 조용히 degrade | `app/services/search_service.py:126-137` |
+| `rerank_failed` | CHAT 전용 | LLMError → 검색순서 top-N + 고지 | `app/agents/buyer/recommendation/graph.py:1431-1440` |
+| `spring_timeout` | CHAT 전용 | 검색 실패 → SEARCH_FAILED(턴 종료) | `app/agents/buyer/recommendation/graph.py:592-596,839-858` |
+| `profile_unavailable` | HOME 전용 | 200 degrade — 프로필 항만 빠짐 | `app/services/home_recommendation.py:316-338` |
+| `catalog_unavailable` | HOME 전용 | 503 `UPSTREAM_UNAVAILABLE` | `app/services/home_recommendation.py:340-373,406-408` |
+| `catalog_timeout` | HOME 전용 | 504 `UPSTREAM_TIMEOUT` | `app/services/home_recommendation.py:368-370,390-392,403-405` |
+| `reason_degraded` | HOME 전용 | 200 PERSONALIZED + reason=null | `app/services/home_recommendation.py:431-452` |
+
+지면 밖 조합은 `axes.json` excludes 제약 2건(`surface_chat_forbids_home_degrade`·
+`surface_home_forbids_chat_degrade`)이 생성 단계에서 막는다 — 사후 필터가 아니라 애초에
+케이스가 나오지 않는다. `runner.py::_observe_home`이 HOME 4종의 실제 관측 주입(프로필/스토어
+몽키패치)을 담당한다.
 
 ## 재현 명령
 
@@ -63,51 +90,58 @@ uv run python -m evals.combo_matrix.pair_runner   # INV/DIR 쌍 실행 + PAIR_CH
 uv run pytest tests/eval/test_combo_matrix_pairs.py -v
 ```
 
-같은 `axes.json`(`datasetVersion` 1.0.0) + 같은 `seed`(335335) ⇒ **바이트 동일**
+같은 `axes.json`(`datasetVersion` 2.0.0, #367 로 1.0.0 에서 파괴적 변경 — degrade 축 어휘 갱신으로
+케이스 우주가 바뀐다) + 같은 `seed`(335335) ⇒ **바이트 동일**
 `combo_cases.jsonl`(재현성은 `test_regeneration_matches_committed_cases_byte_identical` 이 지킨다).
 `expected_behavior.jsonl` 은 재생성 명령이 건드리지 않는다 — 사람이 코드를 읽고 고정한 데이터라
 axes.json 이 바뀌면 케이스 구성과 함께 수동으로 갱신해야 한다.
 
-## 커버리지 결과 (2026-08-06 기준, `manifest.json`/`report.py` 실측)
+## 커버리지 결과 (2026-08-06 기준, #367 재생성 후 `manifest.json`/`report.py` 실측)
 
 | 지표 | 분자 | 분모 | 비율 |
 |---|---|---|---|
-| 2-wise(pairwise) | 1061 | 1061 | **100%** |
+| 2-wise(pairwise) | 1092 | 1092 | **100%** |
 | 3-wise `budget_buyall_strength`(#336 계열) | 13 | 13 | 100% |
 | 3-wise `unspecified_identity_surface` | 9 | 9 | 100% |
 | 3-wise `context_intent_case` | 41 | 41 | 100% |
-| 1-wise 비교 참고선(11케이스 스위트) | 700 | 1061 | 66.0% |
+| 1-wise 비교 참고선(14케이스 스위트) | 759 | 1092 | 69.5% |
 
-분모("유효 쌍")는 `axes.json` 제약을 만족하는 모든 완전 할당(leaf, 6,260개)의 축값 쌍 합집합이다
-— 사후 필터가 아니라 생성 단계에서 정의된다. **케이스 58건**(pairwise/3-wise 커버용 MFT 55 ·
-INV/DIR 파생 3 — DIR 2·INV 1)으로 2-wise 전체와 위험 3-wise 전부를 덮는다 — 1-wise 스위트(11건)의
-66.0% 대비 pairwise 가 왜 필요한지의 정량 근거다(규약 1항 정신). 그중 `directedCases` 2건은
-greedy 가 안 뽑는 조합을 직접 관측하려고 결정론으로 덧붙인 것이다: `wishlist_add`×`member`×
-`spring_timeout`(combo-0057) · `order_status`×`member`×`spring_timeout`(combo-0058, 리뷰 R2 R8
-대응 중 추가 — pairwise 가 뽑은 유일한 order_status×spring_timeout 조합도 identity=guest 라
-로그인 게이트가 Spring 호출보다 먼저 걸려 그 축을 실측 못 하는 같은 유형의 공백이었다).
+분모("유효 쌍")는 `axes.json` 제약을 만족하는 모든 완전 할당(leaf, 6,261개)의 축값 쌍 합집합이다
+— 사후 필터가 아니라 생성 단계에서 정의된다. `degrade` 축이 지면별 어휘로 7종(CHAT 3 + HOME 4)
++ `none` 이 되면서(#367) leaf/유효 쌍 분모가 늘었다(6,260→6,261, 1061→1092). **케이스 57건**
+(pairwise/3-wise 커버용 MFT 54 · INV/DIR 파생 3 — DIR 2·INV 1)으로 2-wise 전체와 위험 3-wise
+전부를 덮는다 — 1-wise 스위트(14건)의 69.5% 대비 pairwise 가 왜 필요한지의 정량 근거다
+(규약 1항 정신). `directedCases` 2건(`wishlist_add`×`member`×`spring_timeout`,
+`order_status`×`member`×`spring_timeout`)은 greedy 가 안 뽑는 조합을 직접 관측하려고
+결정론으로 덧붙인 것이다 — pairwise 가 뽑는 유일한 그 조합도 identity=guest 라 로그인 게이트가
+Spring 호출보다 먼저 걸려 그 축을 실측 못 하는 공백이었다.
 
-**기대 동작 라벨**: defined 51 · partial 4 · undefined 3 (합 58).
+**기대 동작 라벨**: defined 56 · partial 1 · undefined 0 (합 57) — #367 로 HOME 미정의 셀 3건이
+해소되고, #368(94f0fb2)로 이미 고쳐진 `wishlist_add` SpringUnavailableError 갭도 재관측에서
+defined 로 전환됐다. 잔존 미정의는 #336(무지정+예산+세트) 1건뿐이다.
 
-## 발견한 미정의 셀 (`UNDEFINED_CELLS.md` 요약, 상세는 그 문서 — 5개 셀·케이스 7건)
+## 발견한 미정의 셀 (`UNDEFINED_CELLS.md` 요약, 상세는 그 문서 — 1개 셀·케이스 1건)
 
 1. **`constraint_strength=unspecified, total_budget=present, buy_all=true`** — tracking
    `in_progress(#336)`. 무지정 판정은 `total_budget`/`buy_all` 을 보지 않고, 예산이 취향경로
    차단+인기상품 필터로만 반영된다(정의됨). 되묻기(clarify) 산출물이 코드에 없고 예산 필터
    0건일 때 relaxation 이 totalBudget 을 완화 축으로 다루지 않는다(미정의) — **재발명 금지**,
    #336 레인 소관.
-2. **`surface=HOME, degrade∈{embedding_missing,rerank_failed,spring_timeout}`** — `degrade` 축은
-   CHAT 추천 파이프라인(검색/rerank/임베딩 재정렬) 실패 어휘라 HOME(I-22, 라이브 임베딩·rerank
-   호출 없음)엔 대응 코드 경로가 없다. HOME 의 실제 실패 모드(프로필/카탈로그 저장소 타임아웃)는
-   이 축과 별개다 — **축 어휘 자체가 두 지면에 안 맞는다**는 발견.
-3. **`intent=wishlist_add, degrade=spring_timeout`** — `stream_wishlist_add`
-   (`app/agents/buyer/cart/wishlist.py:175-233`) 는 `SpringUnavailableError` 를 개별 처리하지
-   않는다(형제 cart_add/cart_remove/cart_view/wishlist_remove 는 처리한다) — 상위 스트림의 범용
-   catch-all(`app/core/stream.py:688-705`)로 새어나가 계약은 지켜지지만(스트림이 안 죽는다)
-   코드가 `INTERNAL` 로 뭉뚱그려져 다른 셋과 비일관. **`identity=member` 조합(`directedCases`,
-   combo-0057)으로 직접 관측** — `add_wishlist_fn` 을 몽키패치해 재현한 실측에서 실제로
-   `SpringUnavailableError` 가 `stream_wishlist_add` 밖으로 그대로 전파됨을 확인했다(unit 경계라
-   프로덕션의 `open_stream` catch-all은 안 거친다 — README 관측 한계 참조).
+
+과거 이 목록에 있던 나머지 두 발견은 후속 이슈로 해소됐다 — 기록만 남긴다:
+
+- **`surface=HOME, degrade∈{embedding_missing,rerank_failed,spring_timeout}`(#367 로 해소)** —
+  `degrade` 축은 원래 CHAT 추천 파이프라인(검색/rerank/임베딩 재정렬) 실패 어휘였는데 HOME(I-22,
+  라이브 임베딩·rerank 호출 없음)엔 대응 코드 경로가 없어 미정의였다. **축 어휘 자체가 두 지면에
+  안 맞는다**는 이 발견을 승인된 A안(현행 추인)으로 반영해 `degrade` 축을 지면별 어휘로 갈랐다
+  (위 「degrade 축은 지면별 어휘다」 절). HOME 의 실제 실패 모드 4종은 이제 defined 다.
+- **`intent=wishlist_add, degrade=spring_timeout`(#368 로 해소)** — `stream_wishlist_add`
+  (`app/agents/buyer/cart/wishlist.py:175-233`) 가 `SpringUnavailableError` 를 개별 처리하지
+  않아(형제 cart_add/cart_remove/cart_view/wishlist_remove 는 처리) 상위 스트림의 범용
+  catch-all(`app/core/stream.py:688-705`)로 새어나갔다. #368(94f0fb2)이
+  `except (WishlistError, SpringUnavailableError)` 를 추가해 형제들과 같은 처리 형태(action
+  `WISHLIST_ADD_FAILED`/`WISHLIST_ERROR`)로 수렴시켰다 — 재관측(`identity=member` 조합)에서
+  `unhandledException` 대신 정상 action 이 나옴을 확인했다.
 
 "회원 recall ≥ 게스트 recall"(#119 선례) DIR 파생 케이스는 **스펙 구멍이 아니라 관측 범위
 한계**(recall 절대 기준은 `evals/goldenset`(#333) 소관)라 `UNDEFINED_CELLS.md` 에서 뺐다
@@ -141,7 +175,7 @@ greedy 가 안 뽑는 조합을 직접 관측하려고 결정론으로 덧붙인
   `spring_client.add_to_cart`/`add_wishlist`) `search` 주입만으로는 이 축이 관측되지 않았다
   (리뷰 R2 R7 — combo-0004 가 계속 "성공"으로만 보이던 공회전). 지금은 HOME 러너와 같은 패턴으로
   해당 모듈 함수를 직접 몽키패치한다 — 실측: `CART_ADD_FAILED`(reason=`CART_ERROR`, cart/graph.py:
-  453-461) · `order_status`(리뷰 R8, combo-0058 directed): "주문 상태를 불러오지 못했어요"
+  453-461) · `order_status`(리뷰 R8, combo-0057 directed): "주문 상태를 불러오지 못했어요"
   (order_status.py:130-136). `make_order_status_ok` fake 도 이 과정에서 실계약(`OrderStatusSummary`)
   대신 무관한 dict 를 돌려주던 결함을 함께 고쳤다 — guest 전용 경로만 exercised 돼 그동안
   안 드러났다.
@@ -151,20 +185,34 @@ greedy 가 안 뽑는 조합을 직접 관측하려고 결정론으로 덧붙인
   비면 `filters.category` 를 무조건 `None` 으로 지운다 — 그리고 `category_legs` 는 오직
   `categoryQueries`→`map_categories` 매핑 결과로만 채워진다. 이 하네스의 `build_decompose_json`
   (`runner.py`)은 `categoryQueries` 를 채우지 않고 `map_categories_noop` 은 항상 빈 legs 를
-  돌려주므로, **`category` 축은 지금까지 이 하네스 어디에서도(기존 55건 MFT 케이스 포함) 실제
+  돌려주므로, **`category` 축은 지금까지 이 하네스 어디에서도(기존 54건 MFT 케이스 포함) 실제
   검색 경계에 도달한 적이 없다** — 채워도 항상 None 으로 지워졌을 뿐이다. `pair_runner.py`
-  (combo-0054, 아래 "INV/DIR 쌍 검증" 절)만 전용 seam(`_pair_decompose_json`+
+  (combo-0053, 아래 "INV/DIR 쌍 검증" 절)만 전용 seam(`_pair_decompose_json`+
   `fakes.make_exact_match_category_mapping`)으로 이 축을 실제로 관측한다 — `runner.py`/
-  `map_categories_noop` 자체는 고치지 않았으므로(기존 55건 관측 보존), **기존 MFT 케이스들의
+  `map_categories_noop` 자체는 고치지 않았으므로(기존 54건 관측 보존), **기존 MFT 케이스들의
   이 맹점은 그대로 남아 있다.** leg 분해·매핑 richness(거리컷·택일·확장) 커버리지는 별도
-  이슈(#331) 소관이고, 기존 55건의 잔여 category 맹점 해소는 이 PR 범위 밖 — 후속 이슈로 이관한다.
+  이슈(#331) 소관이고, 기존 54건의 잔여 category 맹점 해소는 이 PR 범위 밖 — 후속 이슈로 이관한다.
+- **HOME 픽스처는 `home_reco_min_candidates` 이상의 상품을 채워야 관측이 성립한다**(리뷰 F1,
+  #367) — `_observe_home` 의 건강한 스토어가 이 값(기본 5) 미만이면 `rank_home` 이
+  `INSUFFICIENT_CANDIDATES` 로 조기 반환해 `combo-0050`(none)·`combo-0051`
+  (profile_unavailable)·`combo-0052`(reason_degraded) 모두 reason 관측 경로에 닿지 못하고
+  `reasonsNull: True` 는 빈 리스트에 대한 vacuous truth 로 둔갑한다(예전 관측이 이 함정에
+  빠져 있었다). 러너는 후보 수를 코드에 하드코딩하지 않고 `get_settings().home_reco_min_candidates`
+  에서 유도해, 설정값이 바뀌어도 조용히 다시 공허해지지 않고
+  `test_home_healthy_fixture_meets_min_candidates`(`tests/eval/test_combo_matrix_eval.py`)가
+  시끄럽게 깨진다. 픽스처 상품엔 `extras.situation_tags` 를 넣어 cart 시그널(101)과 태그가
+  겹치게 구성했다 — `build_reasons` 가 실제로 문장을 고를 재료가 있어야 "주입 있음(reason_degraded)
+  → 전부 null / 주입 없음(none) → 일부 non-null"의 대비가 성립한다
+  (`test_home_reason_degraded_injection_actually_runs`). `profile_unavailable` 은 outcome 만으로
+  `none` 과 구별되지 않아(계약상 와이어 구별 신호 없음, api-spec §3.7 v0.25.1) 러너 계측
+  (`profileHookInvoked`/`buildReasonsInvoked`)으로 주입이 실제로 실행됐음을 관측 dict 에 남긴다.
 - **관측 러너의 fixture 는 대표 샘플이다** — 검색 결과 3건 고정 카탈로그, 프로필 always-None(HOME).
   실제 카탈로그 분포·프로필 다양성에 따른 랭킹 품질은 `evals/goldenset`(#333) 소관 — 이 하네스는
   "경로가 죽지 않고 계약 형태를 지키는가"만 잰다.
 
 ## 관측 러너가 안 쓰는 것
 
-`observation_mode=manual`(context≠none, 35건)은 실행하지 않는다 — 멀티턴 승계(`categoryPrior`→
+`observation_mode=manual`(context≠none, 32건)은 실행하지 않는다 — 멀티턴 승계(`categoryPrior`→
 `intent_probe:category_action` 등)는 실 LLM 해석이 필요해 `linked` 로 intent_probe 셀만 가리킨다.
 
 ## INV/DIR 쌍 검증 (이슈 #371)
@@ -203,7 +251,7 @@ greedy 가 안 뽑는 조합을 직접 관측하려고 결정론으로 덧붙인
 | `listEntryFieldKeys` | 포함 | 엔트리마다 **값이 실제로 채워진**(`None`/`[]`/`{}`/`""` 가 아닌) 필드 키만 담는다(`_entry_field_keys`, 리뷰 R2 F1) — `model_dump().keys()` 그대로 쓰면 pydantic 이 값과 무관하게 스키마 전 필드를 항상 담아 `['label','listId','productIds','reasons']` 상수가 되고, 그러면 이 필드는 **어떤 회귀에도 깨질 수 없다**(검증하지 않는 검증). `reasons` 는 값이 채워져 있어도 이 집합에서 **명시적으로 뺀다** — 아래 행과 같은 이유(정의된 동작)로, 값 자체를 비교 안 하는 것뿐 아니라 "채워졌는지" 여부도 비교하지 않는다. |
 | `pushProductCount` | 포함 | DIR metric `push_product_count` 의 원천 |
 | token 텍스트·이벤트 개수/순서 | 제외 | 문구는 계약이 아니고, 스트리밍 분할은 비계약 |
-| `reasons` **값**(rationale 문구) | 제외 | rerank 폴백 시 소실이 정의된 동작(단, combo-0056 실측은 productIds 멀티셋 자체는 동일 — 아래 참조). `listEntryFieldKeys` 도 이 필드의 **키 존재 여부조차** 안 본다(위 행) — rerank 성공(2건)·폴백([]) 양쪽 다 이 키를 빼므로 어느 쪽이든 결과가 같다. |
+| `reasons` **값**(rationale 문구) | 제외 | rerank 폴백 시 소실이 정의된 동작(단, combo-0055 실측은 productIds 멀티셋 자체는 동일 — 아래 참조). `listEntryFieldKeys` 도 이 필드의 **키 존재 여부조차** 안 본다(위 행) — rerank 성공(2건)·폴백([]) 양쪽 다 이 키를 빼므로 어느 쪽이든 결과가 같다. |
 | suggestions 칩 상세 | 제외 | 범위 밖 |
 
 ### DIR: metric·guards
@@ -216,20 +264,20 @@ greedy 가 안 뽑는 조합을 직접 관측하려고 결정론으로 덧붙인
   **진상위집합**인지. 아니면 "필터를 늘렸다"는 전제 자체가 거짓이라 방향 부등식이 무의미하다.
 - `base_count_positive` — base 의 metric 값 > 0. 0이면 `non_increase` 가 항상 공허하게 성립한다.
 
-### 카테고리 seam (combo-0054 전용, `pair_runner.py` 한정 — 이슈 #371 R1 결정)
+### 카테고리 seam (combo-0053 전용, `pair_runner.py` 한정 — 이슈 #371 R1 결정)
 
-combo-0054(DIR — "필터 추가 → 결과 수 비증가")는 `category` 필터축을 검증 대상으로 삼는데, 실측
+combo-0053(DIR — "필터 추가 → 결과 수 비증가")는 `category` 필터축을 검증 대상으로 삼는데, 실측
 결과 `category` 축은 이 하네스 전체에서 legs 를 거치지 않으면 검색에 도달한 적이 없었다(위
 "알려진 관측 한계" 절 정정 참조). `pair_runner.py` 는 이 축에 한해 `categoryQueries` 를 채우고
 (`_pair_decompose_json`) `fakes.make_exact_match_category_mapping()`(raw exact match 만 대역 —
 거리컷·택일·확장은 #331 소관, 재구현 아님)으로 legs 를 실제로 채운다. `runner.py`/
-`map_categories_noop` 자체는 손대지 않았다 — 기존 55건 MFT 케이스의 `expected_behavior.jsonl`
+`map_categories_noop` 자체는 손대지 않았다 — 기존 54건 MFT 케이스의 `expected_behavior.jsonl`
 관측을 보존하기 위해서다.
 
 `PAIR_CATALOG`(`fakes.py`) 는 `CATALOG_PRODUCTS` 3건(`무선이어폰`) + 1건(`여행용품`, product_id
 104) — category 필터가 실제로 결과를 줄이도록 카테고리 2종을 보장한다.
 
-**실행 경로 비대칭(리뷰 R2 F3)**: combo-0054 의 base(`legs=[]`)와 perturbed(`legs=[('무선이어폰',
+**실행 경로 비대칭(리뷰 R2 F3)**: combo-0053 의 base(`legs=[]`)와 perturbed(`legs=[('무선이어폰',
 None)]`)는 "필터 한 개 차이"만이 아니라 **코드 경로 자체가 다르다.** base 는
 `_run_search`(`recommendation/graph.py`)의 `if not legs:` 분기 — `decision.filters` 를 그대로
 써 검색을 1회 부르는 단일 경로다. perturbed 는 legs 가 채워져 있어 `else` 분기(fan-out) —
@@ -249,7 +297,7 @@ override 한 뒤 검색을 부른다(`recommendation/graph.py:648-655`). 즉 결
 기록이다 — 감소가 `limit` 절단이 아니라 **category 필터 자체**에 귀속됨을 결과 집합으로 직접
 확인했다.
 
-### manual 분리: combo-0055
+### manual 분리: combo-0054
 
 "회원 recall ≥ 게스트 recall"(#119 선례, DIR)은 `mode=manual` 이다 — recall 은 정답(relevance)
 라벨이 있어야 계산되는데, 고정 fixture 검색 대역은 회원/게스트 산출이 항상 동일해 방향 관측이
@@ -267,8 +315,8 @@ override 한 뒤 검색을 부른다(`recommendation/graph.py:648-655`). 즉 결
 
 ### 결과 (2026-08-06 기준, `pair_runner.py` 실측)
 
-INV 통과 1/1 · DIR(ci) 통과 1/1 · manual 분리 1건 · 분모(전체 쌍 행 수) 3. combo-0054 는
-base=3(101·102·104) → perturbed=2(101·102) 로 엄격 감소가 실제로 관측됐다. combo-0056 은 실측상
+INV 통과 1/1 · DIR(ci) 통과 1/1 · manual 분리 1건 · 분모(전체 쌍 행 수) 3. combo-0053 는
+base=3(101·102·104) → perturbed=2(101·102) 로 엄격 감소가 실제로 관측됐다. combo-0055 은 실측상
 `productIds` 멀티셋 자체가 rerank 성공/폴백 양쪽에서 동일(`[101,102,103,104]`)해
 `invariant_fields` 에 `productIdsMultiset` 도 포함했다(§3-a 각주 — 실측이 예측과 다르면 fixture
 를 늘리기 전에 원인부터). 상세는 `PAIR_CHECKS.md`.

@@ -180,6 +180,14 @@ async def test_ci_cases_execute_and_defined_cases_match_contract() -> None:
         if "note" in observed and ("실행 생략" in observed["note"]):
             continue
         if case.axes["surface"] == "HOME":
+            degrade = case.axes["degrade"]
+            if degrade in ("catalog_unavailable", "catalog_timeout"):
+                # #367 — 카탈로그 인덱스 장애/타임아웃은 outcome 이 아니라 예외(503/504)로 답한다
+                # (api-spec §3.7 v0.25.1 「HOME 실패 모드」 표).
+                assert "exception" in observed, f"{case.case_id}: {degrade} 는 exception 이 있어야"
+                expected_status = 503 if degrade == "catalog_unavailable" else 504
+                assert observed["statusCode"] == expected_status, case.case_id
+                continue
             assert "outcome" in observed, f"{case.case_id}: HOME defined 케이스는 outcome 이 있어야"
             assert observed["outcome"] in ("NO_PROFILE", "INSUFFICIENT_CANDIDATES", "PERSONALIZED")
             continue
@@ -224,6 +232,76 @@ async def test_ci_cases_execute_and_defined_cases_match_contract() -> None:
                 )
         else:
             assert observed["terminal"] == "done", case.case_id
+
+
+# ─────────── 6b. HOME 픽스처 공허 방지 가드 (리뷰 F1) ───────────
+#
+# `_observe_home` 의 건강한 픽스처가 `home_reco_min_candidates` 미만이면 `rank_home` 이
+# INSUFFICIENT_CANDIDATES 로 조기 반환해 reason 관측 경로에 영원히 도달하지 못한다 — 그
+# 상태에서도 `reasonsNull: True` 는 빈 리스트에 대한 vacuous truth(all([]) == True)라 겉으로는
+# 통과해 버린다. 아래 두 테스트가 그 공허를 다시 못 밟게 잠근다.
+
+
+async def test_home_healthy_fixture_meets_min_candidates() -> None:
+    """건강한 스토어 HOME 케이스(degrade=none)가 실제로 `home_reco_min_candidates` 이상의
+    후보를 채워 PERSONALIZED + itemCount>0 로 관측되는지 — 픽스처 상품 수가 설정값 아래로
+    떨어지면 여기서 시끄럽게 깨진다."""
+    from app.core.config import get_settings
+
+    cases = {c.case_id: c for c in load_cases()}
+    home_none = next(
+        c for c in cases.values() if c.axes["surface"] == "HOME" and c.axes["degrade"] == "none"
+    )
+    observed = await observe(home_none)
+    assert observed is not None
+    assert observed["outcome"] == "PERSONALIZED", observed
+    assert observed["itemCount"] > 0
+    assert observed["itemCount"] >= get_settings().home_reco_min_candidates
+
+
+async def test_home_reason_degraded_injection_actually_runs() -> None:
+    """`reason_degraded` 케이스에서 `build_reasons` 주입이 실제로 호출됐고 reason 이 전부
+    null 인 반면, 주입 없는 대응 케이스(degrade=none)는 reason 이 하나 이상 채워지는지 —
+    build_reasons 가 조기 반환에 막혀 영원히 호출되지 않는 공허를 막는다."""
+    cases = {c.case_id: c for c in load_cases()}
+    home_none = next(
+        c for c in cases.values() if c.axes["surface"] == "HOME" and c.axes["degrade"] == "none"
+    )
+    home_reason_degraded = next(
+        c
+        for c in cases.values()
+        if c.axes["surface"] == "HOME" and c.axes["degrade"] == "reason_degraded"
+    )
+    observed_none = await observe(home_none)
+    observed_degraded = await observe(home_reason_degraded)
+    assert observed_none is not None
+    assert observed_degraded is not None
+
+    assert observed_degraded["buildReasonsInvoked"] is True, observed_degraded
+    assert observed_degraded["itemCount"] > 0
+    assert observed_degraded["reasonsNull"] is True, observed_degraded
+    assert observed_degraded["reasonsFilledCount"] == 0
+
+    assert observed_none["reasonsFilledCount"] > 0, (
+        "주입 없는 대응 케이스에서 reason 이 하나도 안 채워지면 위 대비가 성립하지 않는다"
+    )
+    assert observed_none["reasonsNull"] is False
+
+
+async def test_home_profile_unavailable_injection_actually_runs() -> None:
+    """`profile_unavailable` 은 outcome 만으로 degrade=none 과 구별되지 않는다(계약상 와이어
+    구별 신호 없음, api-spec §3.7 v0.25.1) — 러너 계측(profileHookInvoked)이 실패 주입이
+    실제로 실행됐음을 증명해야 이 셀이 "관측됐다"고 말할 수 있다."""
+    cases = {c.case_id: c for c in load_cases()}
+    home_profile_unavailable = next(
+        c
+        for c in cases.values()
+        if c.axes["surface"] == "HOME" and c.axes["degrade"] == "profile_unavailable"
+    )
+    observed = await observe(home_profile_unavailable)
+    assert observed is not None
+    assert observed["profileHookInvoked"] is True, observed
+    assert observed["outcome"] == "PERSONALIZED", observed
 
 
 # ─────────── 7. 미정의 셀 최소 보증 ───────────

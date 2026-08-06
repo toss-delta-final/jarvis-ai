@@ -13,9 +13,10 @@
   보인다). 그래서 `embedding_missing` 케이스는 `degrade=none` 과 동일하게 실행하고, `observed`
   에 이 한계를 명시한다. 임베딩 재정렬 자체의 단위 테스트는 `tests/unit/test_search_service.py`
   (있다면) 소관이다.
-- **HOME(I-22) 의 `embedding_missing`·`rerank_failed` degrade 는 실행하지 않는다** — 대응하는
-  코드 경로가 없다(`expected_behavior.jsonl` status=undefined 근거, README 리스크 참조). `none`·
-  `spring_timeout`(카탈로그 인덱스 조회 타임아웃으로 근사) 만 실행한다.
+- **HOME(I-22) 의 degrade 축은 지면별 어휘를 쓴다(#367)** — CHAT 전용 3종(`embedding_missing`·
+  `rerank_failed`·`spring_timeout`)은 `axes.json` 의 excludes 제약으로 HOME 조합 자체가 생성되지
+  않는다. HOME 은 `none`·`profile_unavailable`·`catalog_unavailable`·`catalog_timeout`·
+  `reason_degraded` 5종만 실행한다(api-spec §3.7 v0.25.1 규범).
 - **카테고리 leg fan-out(`category_queries`/`map_categories`)은 범위 밖** — `category` 필터축은
   `ProductSearchFilters.category`(하드필터 문자열) 만 재며, leg 분해·매핑은 관측하지 않는다.
 """
@@ -287,18 +288,49 @@ async def _observe_chat(case: ComboCase) -> dict:
 async def _observe_home(case: ComboCase) -> dict:
     axes = case.axes
     degrade = axes["degrade"]
-    if degrade in ("embedding_missing", "rerank_failed"):
-        return {
-            "note": "HOME(I-22) 엔 대응 코드 경로 없음 — 실행 생략(expected_behavior.status=undefined)"
-        }
 
+    from app.core.config import get_settings
     from app.pipelines.artifact_store import CatalogArtifact, CatalogArtifactStore
     from app.schemas.recommendations import HomeRecommendationRequest, HomeRecommendationSignals
 
+    profile_hook_calls = 0
+    build_reasons_calls = 0
+
     async def _no_profile(user_id: str | None) -> dict | None:
+        nonlocal profile_hook_calls
+        profile_hook_calls += 1
         return None
 
-    if degrade == "spring_timeout":
+    async def _profile_unavailable(user_id: str | None) -> dict | None:
+        nonlocal profile_hook_calls
+        profile_hook_calls += 1
+        raise RuntimeError("profile store 조회 실패(주입, #367 profile_unavailable)")
+
+    original_build_reasons = home_svc.build_reasons
+
+    def _build_reasons_unavailable(*args, **kwargs):
+        nonlocal build_reasons_calls
+        build_reasons_calls += 1
+        raise RuntimeError("reason 재료 조회 실패(주입, #367 reason_degraded)")
+
+    def _build_reasons_spy(*args, **kwargs):
+        # 주입이 없는 대응 케이스(none/profile_unavailable)에서도 실제 build_reasons 가
+        # 도달했는지 계측해야 reason_degraded 와의 대비가 성립한다(리뷰 F1).
+        nonlocal build_reasons_calls
+        build_reasons_calls += 1
+        return original_build_reasons(*args, **kwargs)
+
+    if degrade == "catalog_unavailable":
+
+        class _UnavailableStore:
+            def get_many(self, product_ids):
+                raise RuntimeError("catalog index 조회 실패(주입)")
+
+            def top_k_by_vector(self, query_vec, *, k, exclude=None, include=None):
+                raise RuntimeError("catalog index 조회 실패(주입)")
+
+        target_store = _UnavailableStore()
+    elif degrade == "catalog_timeout":
 
         class _TimeoutStore:
             def get_many(self, product_ids):
@@ -309,21 +341,54 @@ async def _observe_home(case: ComboCase) -> dict:
 
         target_store = _TimeoutStore()
     else:
+        # `home_reco_min_candidates`(기본 5) 미만이면 rank_home 이 INSUFFICIENT_CANDIDATES 로
+        # 조기 반환해 reason 관측 경로에 영원히 도달하지 못한다(리뷰 F1) — 후보 수를 설정값에서
+        # 유도해 기본값이 바뀌어도 조용히 다시 공허해지지 않게 한다.
+        min_candidates = get_settings().home_reco_min_candidates
         store = CatalogArtifactStore()
         store.upsert(
-            CatalogArtifact(product_id=101, embedding=[1.0, 0.0, 0.0], search_doc="이어폰")
+            CatalogArtifact(
+                product_id=101,
+                embedding=[1.0, 0.0, 0.0],
+                search_doc="이어폰",
+                extras={"situation_tags": ["출퇴근", "운동"]},
+            )
         )
-        store.upsert(CatalogArtifact(product_id=102, embedding=[0.0, 1.0, 0.0], search_doc="가방"))
+        store.upsert(
+            CatalogArtifact(
+                product_id=102,
+                embedding=[0.0, 1.0, 0.0],
+                search_doc="가방",
+                # cart 시그널(101)과 situation_tags 가 겹치게 해 build_reasons 가 실제로 문장을
+                # 고를 재료를 준다 — 그래야 "주입 없음 → reason 채워짐"의 대비가 성립한다.
+                extras={"situation_tags": ["출퇴근"]},
+            )
+        )
+        next_pid = 103
+        while store.count() < min_candidates:
+            store.upsert(
+                CatalogArtifact(
+                    product_id=next_pid,
+                    embedding=[0.0, 0.0, 1.0],
+                    search_doc=f"상품{next_pid}",
+                )
+            )
+            next_pid += 1
         target_store = store
 
     original_get_store = home_svc.get_catalog_store
     original_read_profile = home_svc.read_profile_summary
     home_svc.get_catalog_store = lambda: target_store
-    home_svc.read_profile_summary = _no_profile
+    home_svc.read_profile_summary = (
+        _profile_unavailable if degrade == "profile_unavailable" else _no_profile
+    )
+    home_svc.build_reasons = (
+        _build_reasons_unavailable if degrade == "reason_degraded" else _build_reasons_spy
+    )
     try:
         # cart_product_ids 를 채워야 build_query_vector 가 실제로 store.get_many 를 호출한다 —
         # 신호가 전부 비면 프로필도 없을 때 조회 자체를 생략하고 NO_PROFILE 로 조기 반환해
-        # spring_timeout(카탈로그 조회 타임아웃) 축이 관측되지 않는다.
+        # catalog_timeout/catalog_unavailable(카탈로그 조회 실패) 축이 관측되지 않는다.
         request = HomeRecommendationRequest.model_validate(
             {
                 "memberId": 1,
@@ -335,8 +400,17 @@ async def _observe_home(case: ComboCase) -> dict:
         )
         try:
             response = await home_svc.rank_home(request)
-            return {"outcome": response.outcome, "itemCount": len(response.items)}
-        except Exception as exc:  # noqa: BLE001 - degrade=spring_timeout 기대 경로(Upstream*)
+            observed = {"outcome": response.outcome, "itemCount": len(response.items)}
+            # 주입이 실제로 실행됐는지를 관측에 남긴다 — profile_unavailable 은 outcome 만으로
+            # none 과 구별되지 않는다(계약상 와이어 구별 신호 없음, api-spec §3.7 v0.25.1).
+            observed["profileHookInvoked"] = profile_hook_calls > 0
+            observed["buildReasonsInvoked"] = build_reasons_calls > 0
+            filled = sum(1 for item in response.items if item.reason is not None)
+            observed["reasonsFilledCount"] = filled
+            # items 가 0건이면 vacuous truth(all([]) == True)라 절대 참이 되지 않게 막는다.
+            observed["reasonsNull"] = bool(response.items) and filled == 0
+            return observed
+        except Exception as exc:  # noqa: BLE001 - degrade=catalog_* 기대 경로(Upstream*)
             return {
                 "exception": type(exc).__name__,
                 "statusCode": getattr(exc, "status_code", None),
@@ -344,6 +418,7 @@ async def _observe_home(case: ComboCase) -> dict:
     finally:
         home_svc.get_catalog_store = original_get_store
         home_svc.read_profile_summary = original_read_profile
+        home_svc.build_reasons = original_build_reasons
 
 
 async def observe(case: ComboCase) -> dict | None:
