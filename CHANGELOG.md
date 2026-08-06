@@ -28,7 +28,10 @@
   `test_condition_actions`·`test_fanout`·`test_recommendation` 의 이벤트 인덱스 가정이
   깨져 실제 stage 시퀀스로 갱신했다(단언 약화 없음). **기존 6종의 이름·페이로드·상대 순서는
   불변**(추가 전용) — `conditions`는 여전히 검색·자동 완화 뒤다. `progress`는 `token` 이후
-  (`publishing`)에도 올 수 있다. (api-spec §2.2·§3.1, v0.27.0)
+  (`publishing`)에도 올 수 있다. PR #407 리뷰로 드러난 `_prepare_recommendation` 제너레이터
+  전환의 사각지대(`scripts/capture_i1_wire_132.py`·`scripts/verify_regression6_217.py` 호출부
+  2곳이 `TypeError` 로 깨져 있었다)도 함께 async generator 소비 형태로 갱신했다. (api-spec
+  §2.2·§3.1, v0.27.0)
 - **#370 — 골든셋 v2.2 위반 네거티브 채널 신설 + 라벨 provenance 기록(`evals/goldenset`)** —
   #333 adjudication 라운드가 남긴 갭 3건(위반 네거티브 0건·라벨 주체 미기록·슬라이스 쿼터
   하향 사유 미문서화) 후속. `CaseCore`에 `labelSource`/`labeledAt`/`labelRationale` 신설해
