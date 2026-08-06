@@ -147,6 +147,21 @@
   집계 비정규화, BE #395) 배포 후 원복 검토** — 구매자 `progress` 이벤트(#289)로 first-token
   관문이 풀릴 때도 함께 재검토한다. 상한(`le=1`)·타임아웃 값·재시도 루프 로직은 불변, 계약
   (api-spec) 무변경.
+- **#396 — 구매자 `progress` SSE 이벤트 플래그 기본 on 전환 + 운영 기동 가드 제거** —
+  #289 가 계약 등재(v0.21.0)·FE 확인 완료 뒤에만 켜라고 못박아둔 잠금이 2026-08-06 FE
+  구현 완료 통보로 해제됐다. `progress_events_enabled` 기본값을 `false` → `true` 로
+  뒤집고, `_require_pepper_in_prod` 의 운영(jwks)·스테이징 기동 가드(플래그 on 이면
+  기동 실패)를 삭제했다 — 가드 제거 자체가 해제 절차의 일부였다(다른 fail-closed 가드
+  pepper·internal token·jwks_url·google_api_key·state store·session claim TTL 은
+  무변경). 기본값이 뒤집히며 구매자 스트림을 도는 다른 테스트 다수에서 이벤트 목록
+  맨 앞에 `progress` 프레임이 하나 더 붙어 깨졌고(`test_buyer_tracing.py`·`test_cart.py`·
+  `test_category_scope_84.py`·`test_condition_actions.py`·`test_fanout.py`·
+  `test_recommendation.py`), 기대값을 새 현실에 맞춰 갱신했다(단언 약화·스킵 없음).
+  `test_progress_event.py`는 명시적 off 강제(`monkeypatch`)로 escape hatch 회귀 4건을
+  보존하고, 기본값 자체를 직접 고정하는 테스트와 가드 제거를 고정하는 성공 테스트 2건을
+  추가했다. **와이어 계약(이벤트 이름·페이로드·필드·횟수·상대 순서) 은 이번에 하나도
+  바꾸지 않았다** — 바뀌는 것은 "잠겨 있다"는 구현/배포 상태뿐이며, 되돌리려면
+  `PROGRESS_EVENTS_ENABLED=false` 한 줄. (api-spec §3.1·§2.9 c, v0.26.2)
 - **#313 — group→컨텍스트 매핑을 데이터(`GROUP_ALLOWED_CONTEXTS`)로 강제, #300·#84 전용 검증자를 일반형으로 흡수** —
   `evals/intent_probe/schema.py` 에 group → 허용 컨텍스트 매핑을 데이터로 두고 `Utterance`
   검증자(`_contexts_are_within_the_group_allowlist`)가 강제한다. 매핑에 없는 group 은 어떤
