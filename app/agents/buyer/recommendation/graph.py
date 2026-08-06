@@ -1457,6 +1457,10 @@ async def stream_recommendation(
                 # 이 아직 스트림에 영향 없는 칩 probe 소요까지 끌어와 과대계상된다.
                 "relax_auto_elapsed_ms": relax_auto_elapsed_ms,
                 "relax_chip_elapsed_ms": relax_chip_elapsed_ms,
+                # [#363 R7] False면 conditions가 검색 이전에 이미 나가(545행) 위 소요가
+                # first-token 을 전혀 늦추지 않는다 — `recommend_pipeline`과 같은 근거로 여기도
+                # 싣는다(판정 시 True인 턴만 봐야 한다).
+                "may_auto_relax": may_auto_relax,
             },
         )
         return
@@ -1802,6 +1806,17 @@ async def stream_recommendation(
             "relax_field": adopted_field,  # 자동 완화로 채택된 필드(없으면 null)
             "relax_probes": probes_spent,  # 이 턴에 쓴 완화 재검색 횟수
             "relax_chips": len(relaxation_chips),
+            # [#363 R7] `recommend_zero_result`(0건 종결, 곧장 return)와 이 로그(성공 종결)는
+            # 같은 턴에서 상호 배타다 — 합쳐서 봐야 "구제를 시도한 전체 턴"이 된다. 구제가
+            # 실제로 통해 지연된 첫 토큰이라도 결과를 받은 턴이야말로 이 이슈가 재려는 표본이라,
+            # 0건 로그에만 있으면 그 절반이 관측되지 않는다. 값의 정의는 zero_result 쪽과
+            # 동일한 변수를 그대로 싣는다.
+            "rescue_elapsed_ms": rescue_elapsed_ms,
+            "relax_auto_elapsed_ms": relax_auto_elapsed_ms,
+            "relax_chip_elapsed_ms": relax_chip_elapsed_ms,
+            # [#363 R7] False면 conditions가 검색 이전에 이미 나가(545행) 위 소요가 first-token
+            # 을 전혀 늦추지 않는다 — 이 필드 없이는 로그만으로 지연 여부를 가릴 수 없다.
+            "may_auto_relax": may_auto_relax,
             # [#119] 회원/게스트 턴을 사후 분리해 깔때기(received·after_dedup)를 대조하기 위한
             # 조인 키. 개인화가 후보를 줄이면 회원 쪽 received 가 작게 나온다.
             "profile_present": bool(profile),

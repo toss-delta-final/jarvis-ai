@@ -2632,6 +2632,91 @@ async def test_post_suppress_fallback_unfiltered_search_failure_counts_rescue_el
     assert zero_log.rescue_elapsed_ms < round(delay_s * 1000 * 1.5)
 
 
+async def test_recommend_pipeline_logs_rescue_elapsed_when_fallback_succeeds_may_auto_relax_false(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """[#363 R7] 구제(#343)가 **성공**해 `not candidates` 분기를 안 타는 턴은
+    `recommend_zero_result`가 아니라 `recommend_pipeline`으로 내려간다 — 이 이슈가 재려는
+    "지연을 감수하고 구제된" 표본은 그 로그에만 있다. `_broad_decompose()` 기본값은 비카테고리
+    완화 필드가 하나도 안 걸려 `may_auto_relax=False`다(비교 대상은 아래 `..._true` 테스트).
+    지연을 주입해 `rescue_elapsed_ms > 0`이 우연이 아님을 수치로 보장한다(0 비교만 하면
+    vacuous하게 통과할 수 있다 — 상한도 같이 걸어 다른 값이 새어 들어온 게 아님을 확인)."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases_cat((101, "c", "이전 구매")))
+
+    delay_s = 0.05
+
+    async def _search(filters, exclude_product_ids=None):
+        if filters.category is None:  # 무필터 재검색 — 성공, 201 이 살아남는다
+            await asyncio.sleep(delay_s)
+            return _res(101, 201)
+        return _res(101)  # 확장 leg 전량 최근구매 101 만 낸다 → 사후필터가 전량 제외
+
+    caplog.set_level("INFO", logger="app.agents.buyer.recommendation.graph")
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="화장품 추천해줘"),
+            _member_num(),
+            llm=FakeLLM(decompose=_broad_decompose()),  # filters={} — 완화 후보 없음
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_broad_mapper(),
+        )
+    )
+    done = next(e for e in events if e["type"] == "done")["data"]
+    assert done["finishReason"] != "zero_result"  # 재판정이 구제해 성공 종결로 내려갔다
+
+    pipeline_log = next(r for r in caplog.records if r.msg == "recommend_pipeline")
+    assert not any(r.msg == "recommend_zero_result" for r in caplog.records)  # 상호 배타 확인
+    assert pipeline_log.rescue_elapsed_ms >= round(delay_s * 1000 * 0.5)
+    assert pipeline_log.rescue_elapsed_ms < round(delay_s * 1000 * 1.5)
+    # candidates 가 #343 에서 이미 채워져 자동완화 루프 자체가 안 돈다(게이트가 `not candidates`).
+    assert pipeline_log.relax_auto_elapsed_ms == 0
+    assert pipeline_log.relax_chip_elapsed_ms >= 0
+    assert pipeline_log.may_auto_relax is False
+
+
+async def test_recommend_pipeline_logs_may_auto_relax_true_when_relaxable_field_set(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """[#363 R7] 위 테스트와 짝을 이뤄 `may_auto_relax` 가 상수가 아니라 실제로 True/False 로
+    갈리는지 확인한다(한쪽만 보면 구현이 상수를 실어도 테스트가 통과한다) — `ratingMin` 이
+    설정된 턴은 `may_auto_relax=True`(§3 근거: `build_relaxation_candidates` 가 후보를 내는
+    턴과 conditions 를 검색 뒤로 미루는 턴은 같은 판정을 공유한다). 구제(#343) 자체는 여기서도
+    성공해 `recommend_pipeline` 으로 내려간다."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases_cat((101, "c", "이전 구매")))
+
+    async def _search(filters, exclude_product_ids=None):
+        if filters.category is None:  # 무필터 재검색 — 성공, 201 이 살아남는다
+            return _res(101, 201)
+        return _res(101)  # 확장 leg 전량 최근구매 101 만 낸다 → 사후필터가 전량 제외
+
+    decompose = {
+        "intent": "recommend",
+        "reply": "",
+        "case": 2,
+        "filters": {"ratingMin": 4.5},  # 비카테고리 완화 후보 1개 — may_auto_relax=True 를 만든다
+        "categoryQueries": [{"category": None, "query": "화장품"}],
+    }
+    caplog.set_level("INFO", logger="app.agents.buyer.recommendation.graph")
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="화장품 추천해줘"),
+            _member_num(),
+            llm=FakeLLM(decompose=decompose),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_broad_mapper(),
+        )
+    )
+    done = next(e for e in events if e["type"] == "done")["data"]
+    assert done["finishReason"] != "zero_result"
+
+    pipeline_log = next(r for r in caplog.records if r.msg == "recommend_pipeline")
+    assert pipeline_log.may_auto_relax is True
+
+
 async def test_worst_case_rescue_chain_sequential_stages_before_first_sse(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

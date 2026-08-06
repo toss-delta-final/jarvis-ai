@@ -190,11 +190,19 @@ recommendation/graph.py`, `time.monotonic()` 기반.
 | `recommend_zero_result` | `relax_probes` | 자동완화 + 칩 probe 시도 횟수(기존 `probes_spent`, 실패 포함 카운트) | 개수 |
 | `recommend_zero_result` | `relax_auto_elapsed_ms` | 자동완화 루프(첫 SSE **이전**)가 쓴 소요. 시도 없으면 0 | ms |
 | `recommend_zero_result` | `relax_chip_elapsed_ms` | 완화 칩 probe(첫 SSE **이후**)가 쓴 소요. 시도 없으면 0 | ms |
+| `recommend_zero_result` | `may_auto_relax` | 아래 참조 — 두 로그 공통 | bool |
+| `recommend_pipeline` | `rescue_elapsed_ms`/`relax_auto_elapsed_ms`/`relax_chip_elapsed_ms` | **구제·완화가 성공해 0건이 아닌 채 종결된 턴**의 같은 값(정의는 `recommend_zero_result`와 동일 변수) | ms |
+| `recommend_pipeline` | `may_auto_relax` | `False`면 `conditions`가 검색 **이전**에 이미 나가(graph.py:545) 위 소요가 first-token을 전혀 늦추지 않는다 — 판정 시 `True`인 턴만 봐야 한다(§7) | bool |
 
-`recommend_zero_result`는 0건으로 정상 종료한 턴에서만 나가는 로그이므로(`recommend_pipeline`
-구조화 로그가 못 미치는 지점, graph.py:1410 이하), 위 필드들이 **구제 체인이 시도됐지만 결국
-0건으로 끝난 턴**의 소요를 관측할 수 있는 유일한 창구다. 새 튜너블은 추가하지 않았다 — 계측만
-삽입했고 로직·SSE 계약은 바꾸지 않았다.
+`recommend_zero_result`는 0건으로 정상 종료한 턴에서만 나가는 로그이고(`if not candidates:`
+분기, graph.py:1410, 1462행에서 `return`), `recommend_pipeline`은 그 분기를 타지 않은(=구제나
+완화가 성공해 후보가 채워진) 턴에서만 나간다(graph.py:1781~) — **한 턴은 둘 중 정확히 하나만
+남긴다(상호 배타, 이중 계상 없음). 두 로그의 합집합이 "구제 체인이 관여한 턴 전수"다.** R7 이전
+초판은 계측 필드를 `recommend_zero_result`에만 넣어 "구제를 시도했지만 결국 0건"인 턴만
+관측되고, **구제가 실제로 통해 지연된 첫 토큰이라도 결과를 받은 턴**(이 이슈가 재려는 가장
+중요한 표본)은 값이 계산만 되고 로그로 남지 않는 결함이 있었다 — Claude PR Review(#379)가
+지적해 `recommend_pipeline`에도 같은 세 필드 + `may_auto_relax`를 추가했다. 새 튜너블은
+추가하지 않았다 — 계측만 삽입했고 로직·SSE 계약은 바꾸지 않았다.
 
 **`relax_auto_elapsed_ms`/`relax_chip_elapsed_ms`를 하나로 합치지 않은 이유(R3)** — 자동완화
 루프는 first SSE **이전**, 칩 probe는 **이후**다(§3·§4). 한 필드로 합치면 아직 스트림에 영향
@@ -219,12 +227,20 @@ elapsed_once`·기존 성공 경로 테스트로 각각 지연을 주입해 수�
 
 - `recommend_zero_result` 중 `post_suppress_fallback_attempted=True` 비율 — #343 갭이 실제로
   얼마나 자주 트리거되는지(PR #318 리뷰가 인정한, #222가 발생 확률을 높인 갭).
-- 그 부분집합에서 `rescue_elapsed_ms + relax_auto_elapsed_ms`(칩 probe 몫인 `relax_chip_
-  elapsed_ms`는 first SSE 이후라 제외 — R3)의 p95/p99 — §4가 산출한 9.0s(선행 LLM head 포함
-  시 12.0s)에 실측이 얼마나 근접·도달하는지. p95가 수백 ms대면 "이론상 상한일 뿐 실무 영향은
-  작다"는 뜻이고, 초 단위(특히 9~10s대)에 근접하면 실사용자가 504를 실제로 맞고 있다는 뜻이다.
-- `category_expanded=True & had_candidates=True` 비율 — 구제 체인이 애초에 얼마나 자주
-  진입하는지(체인 진입 자체가 드물면 지연 총합도 작다).
+- **1급 관측 대상(R7)** — `recommend_zero_result`·`recommend_pipeline` 두 로그를 **합쳐서**,
+  `may_auto_relax=True`인 턴만 골라 `rescue_elapsed_ms + relax_auto_elapsed_ms`(칩 probe 몫인
+  `relax_chip_elapsed_ms`는 first SSE 이후라 제외 — R3)의 p95/p99를 본다. `may_auto_relax=
+  False`인 턴은 conditions가 검색 이전에 이미 나가 이 소요가 first-token을 전혀 늦추지 않으므로
+  섞으면 분포가 실제보다 완화돼 보인다. **0건으로 끝난 턴만 보면 이슈가 재려는 절반(구제가
+  실제로 통한 턴)이 빠진다** — `recommend_pipeline`도 반드시 포함한다. §4가 산출한 9.0s(선행
+  LLM head 포함 시 12.0s)에 실측이 얼마나 근접·도달하는지: p95가 수백 ms대면 "이론상 상한일 뿐
+  실무 영향은 작다"는 뜻이고, 초 단위(특히 9~10s대)에 근접하면 실사용자가 504를 실제로 맞거나
+  맞을 뻔했다는 뜻이다.
+- `recommend_zero_result` 중 `category_expanded=True & had_candidates=True` 비율 — 구제 체인이
+  애초에 얼마나 자주 진입하는지(체인 진입 자체가 드물면 지연 총합도 작다). **한계**:
+  `category_expanded`/`had_candidates`는 `recommend_pipeline`에는 없다(R7 범위 밖) — 구제가
+  성공한 턴 쪽 진입 빈도는 이 비율에 잡히지 않으므로, 이 지표는 "0건으로 끝난 진입"의 하한으로
+  읽는다.
 
 실빈도가 무시 못 할 수준으로 확인되면 공유 왕복 예산 또는 first-token 데드라인 가드 설계로
 이어간다 — relaxation(#113)·기동 가드 보정(#288, §5)과 교차하는 영역이라 별도 설계 문서가
