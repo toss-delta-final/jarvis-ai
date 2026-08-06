@@ -124,10 +124,10 @@ def test_degrade_notice_defaults():
 
 
 def test_search_retry_defaults_fit_first_token_budget():
-    """기본값(3s×2=6s)이 first-token 10s 예산 안에 들어온다 (#133)."""
+    """기본값(3s×1=3s, #394 로 재시도 한시적 비활성)이 first-token 10s 예산 안에 들어온다 (#133)."""
     settings = Settings(_env_file=None)
 
-    assert settings.spring_max_retries == 1
+    assert settings.spring_max_retries == 0
     assert settings.spring_timeout_s * (settings.spring_max_retries + 1) < (
         settings.stream_first_token_timeout_s
     )
@@ -161,17 +161,27 @@ def test_search_retry_budget_must_also_fit_the_first_token_window():
     import pytest
     from pydantic import ValidationError
 
+    # [#394] 기본값이 0으로 바뀌어 이 검증기(재시도 1회 가정) 자체를 겨눈 값들은 명시 주입한다.
     # 전체 상한(30s)은 통과하지만 first-token(10s)은 못 넘는 구간 — 종전이면 조용히 통과했다.
     with pytest.raises(ValidationError, match="first-token budget"):
-        Settings(_env_file=None, spring_timeout_s=6.0)  # 6 × 2 = 12s
+        Settings(_env_file=None, spring_timeout_s=6.0, spring_max_retries=1)  # 6 × 2 = 12s
 
     # 반대 방향 — first-token 상한을 낮추는 설정도 같은 쌍으로 잡힌다.
     with pytest.raises(ValidationError, match="first-token budget"):
-        Settings(_env_file=None, stream_first_token_timeout_s=5.0)  # 기본 예산 6s > 5s
+        Settings(
+            _env_file=None, stream_first_token_timeout_s=5.0, spring_max_retries=1
+        )  # 예산 6s > 5s
 
     # 예산을 함께 줄이면 정상 — 검증은 **쌍**을 보지 한쪽 값을 금지하지 않는다.
-    assert Settings(_env_file=None, stream_first_token_timeout_s=5.0, spring_timeout_s=2.0)
-    assert Settings(_env_file=None, spring_timeout_s=4.0)  # 8s < 10s — 여유가 있으면 통과
+    assert Settings(
+        _env_file=None,
+        stream_first_token_timeout_s=5.0,
+        spring_timeout_s=2.0,
+        spring_max_retries=1,
+    )
+    assert Settings(
+        _env_file=None, spring_timeout_s=4.0, spring_max_retries=1
+    )  # 8s < 10s — 여유가 있으면 통과
 
 
 def test_deferred_retry_guard_rejects_default_serial_budget():
@@ -179,8 +189,10 @@ def test_deferred_retry_guard_rejects_default_serial_budget():
     import pytest
     from pydantic import ValidationError
 
+    # [#394] 재시도 자체는 기본 0으로 꺼졌으니, 가드가 재시도 1회를 가정한 직렬 합을 여전히
+    # 올바르게 계산하는지는 명시 주입으로 겨눈다.
     with pytest.raises(ValidationError) as exc_info:
-        Settings(_env_file=None, search_retry_on_deferred_conditions=True)
+        Settings(_env_file=None, search_retry_on_deferred_conditions=True, spring_max_retries=1)
 
     message = str(exc_info.value)
     assert "disable SEARCH_RETRY_ON_DEFERRED_CONDITIONS" in message

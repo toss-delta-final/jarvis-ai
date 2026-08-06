@@ -572,6 +572,9 @@ async def test_buyer_spring_retry_still_exports_one_span(
     """
     from app.services import spring_client
 
+    # [#394] 기본값이 0으로 바뀌어 재시도 루프 자체를 켜서 검증하려면 명시 주입이 필요하다.
+    monkeypatch.setattr(get_settings(), "spring_max_retries", 1)
+
     calls: list[int] = []
 
     def handler(_request: httpx.Request) -> httpx.Response:
