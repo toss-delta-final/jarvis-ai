@@ -315,12 +315,16 @@ async def test_get_wishlist_parses_items(monkeypatch: pytest.MonkeyPatch) -> Non
     assert client.calls == [("GET", "/internal/wishlist", {"userId": 1})]
 
 
-async def test_get_wishlist_missing_purchase_state_key_defaults_to_available(
+async def test_get_wishlist_missing_purchase_state_key_defaults_to_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """I-28 은 BE 미구현 초안이라 `purchaseState` 키가 아예 없는 응답이 올 수 있다 — 예외 없이
-    파싱되고 기본값 `"AVAILABLE"`로 채워져야 한다(구 boolean 필드의 기본값 참과 같은 의미,
-    BE 미구현 구간을 버티는 것이 이 기본값의 존재 이유)."""
+    """`purchaseState` 키가 아예 없는 응답(BE 미배포 구간)은 예외 없이 파싱되고 `None`(모름)이
+    돼야 한다 — **`"AVAILABLE"` 이 아니다**(#310).
+
+    PR #305 시점엔 구 boolean 필드(기본값 참)와 의미를 맞추려 `"AVAILABLE"` 을 뒀지만, 이제
+    이 값을 읽어 안내 문구를 가르므로 기본값이 **주장으로 승격**된다 — 키가 없다는 사실을
+    "구매 가능이 확인됨"으로 바꿔 읽으면 품절 상품을 살 수 있다고 안내하게 된다. 모름은
+    주장이 아니므로 `None` 으로 두고 아무 라벨도 붙이지 않는다."""
     import app.services.spring_client as sc
 
     body = {
@@ -330,7 +334,7 @@ async def test_get_wishlist_missing_purchase_state_key_defaults_to_available(
     client = _WishlistClient(_WishlistResp(200, body))
     monkeypatch.setattr(sc, "_client", lambda: client)
     view = await sc.get_wishlist(1)
-    assert view.items[0].purchase_state == "AVAILABLE"
+    assert view.items[0].purchase_state is None
 
 
 @pytest.mark.parametrize("purchase_state", ["SOLD_OUT", "HIDDEN"])
