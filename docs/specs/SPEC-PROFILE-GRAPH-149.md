@@ -48,8 +48,8 @@ issue_number: 149
 
 ### 1.2 In Scope
 
-- **투영 모델**: node·edge 구조, 관계 5종의 의미와 원천, `source`/`confidence`/`evidenceCount`/시각의
-  소재와 노출 형태.
+- **투영 모델**: node·edge 구조, 관계 5종의 의미와 원천, `source`/`confidence`/`evidence_count`/시각의
+  소재와 노출 형태(**[v0.2.0] `evidence_count`는 내부 전용 — 와이어 미노출**, §6.1).
 - **결정론적 식별·병합**: `nodeId`/`edgeKey`/`edgeId` 도출, 통제 어휘 스냅(resolver), 같은 키로
   수렴한 관측의 병합 규칙, 충돌 관계의 supersede.
 - **상태 기계**: `active`(±`promoted`) / `suppressed` / `superseded` / purged의 가시성·소비 영향·복구 가능성.
@@ -126,7 +126,7 @@ issue_number: 149
 | 결정 4 (OKF 위키 포맷) | 자연어 마크다운 + frontmatter 논리 모델 상속. 투영은 그 위의 읽기 표현이다 |
 | 결정 4-A 보강 6 (마이페이지 = 투명성 표면, 사용자 수정 = confidence 최상급 병합) | 본 계약의 직접 근거. `origin: "user"`가 항상 최상급인 이유 |
 | 결정 16 (마이페이지 GET only) | **개정 필요** — api-spec §8 항목 9. 본 SPEC은 그 개정을 전제로 하며 승인 전까지 🔴 초안이다 |
-| 결정 19 (신원은 토큰 클레임에서만) | 조회 대상은 토큰 `sub`, 변경 대상은 Spring 로그인 세션 도출(api-spec C-20) |
+| 결정 19 (신원은 토큰 클레임에서만) | **[개정 v0.2.0, #322]** 그래프 표면은 조회·변경 **모두** Spring 로그인 세션에서 도출한 `{userId}`를 받는다(api-spec C-20). 결정 19 자체는 레인 (a) 사용자 대면 표면(§3.1~3.4)에 그대로 유효하며, 본 표면이 레인 (b)로 옮겨져 §3.5.1과 같은 규율을 따르게 된 것이다 |
 | 결정 14-F (재구매 dedup) | `purchased` edge를 숨겨도 dedup은 영향받지 않는다(§6.3) — dedup은 질의 시점 I-19를 읽는다 |
 | `SPEC-PROFILE-001` REQ-PROF-032/033 | 병합·최신성은 결정론적 코드, LLM 위임 금지. §6.2가 이를 **처음으로 실제 충족**시킨다 |
 | `SPEC-PROFILE-001` REQ-PROF-034 | 삭제 금지의 적용 범위를 기계 경로로 한정(v0.7.0 개정) |
@@ -171,7 +171,7 @@ class GraphEdge(BaseModel):
     origin: Literal["machine", "user"]
     source_latest: Literal["conversation", "purchase", "user"]
     confidence: float             # 내부 수치 — 와이어에는 3버킷만
-    evidence_count: int
+    evidence_count: int            # 내부 전용 — 와이어 미노출 (v0.2.0, REQ-PGRAPH-006)
     evidence_by_source: dict[str, int]
     evidence_refs: list[str]      # fact key 참조 (상한: graph_evidence_refs_max)
     first_observed_at: str
@@ -254,6 +254,14 @@ class GraphAuditRecord(BaseModel):
 - **REQ-PGRAPH-005** `edges`가 `profile_graph_max_edges`를 넘으면 절단하고 `truncated`를 참으로
   표시해야 한다. **페이지네이션은 도입하지 않는다** — 개인 프로필이 상한을 넘는 것은 정리·초기화
   신호이며 페이지를 넘길 대상이 아니다.
+- **REQ-PGRAPH-006** **[신설 v0.2.0, 이슈 #322]** `evidence_count`는 **내부 전용**이어야 하며 와이어에
+  노출해서는 안 된다. 확신도는 `confidence` 3버킷으로만 표현한다.
+  - **근거**: `profile_buffer_repeat_cap`(기본 2)이 같은 발화를 2회로 잘라 세션 버퍼에 담으므로
+    (`SPEC-PROFILE-001` REQ-PROF-026, 이슈 #119) **정확한 관측 횟수를 셀 수 없다.** 반복 통제가 만든
+    값을 "몇 번 말했는지"로 내보내면 사실이 아닌 수를 보여주는 것이고, 소비자가 그 수로 정렬·강조를
+    만들면 반복 상한이 곧 표시 상한이 된다.
+  - **내부 필드는 유지된다** — REQ-PGRAPH-015 의 병합 시 합산이 계속 이 값을 쓴다. 없앤 것은
+    와이어 노출뿐이며 저장 모델(§5.2)은 무변경이다.
 
 ### 6.2 식별·병합 — OPEN-P12의 종결
 
@@ -484,11 +492,20 @@ class GraphAuditRecord(BaseModel):
 
 ### 6.10 인증 · 신원 결합
 
-- **REQ-PGRAPH-090** 투영 조회 대상은 **토큰 `sub`에서만** 도출해야 하며 경로·쿼리·본문에서 받지
-  않아야 한다(결정 19). 게스트는 빈 그래프로 정상 응답, 판매자 스코프는 `403`이다.
+- **REQ-PGRAPH-090** **[개정 v0.2.0, 이슈 #322]** 투영 조회 대상 `{userId}`는 **Spring이 자기 로그인
+  세션에서 도출한 값**이어야 하며, 시스템은 **서비스 토큰만** 자격 증명으로 인정해야 한다 —
+  즉 REQ-PGRAPH-091과 **동일 규칙**이다. 프로필이 없는 회원은 빈 그래프로 정상 `200`이다.
+  - **v0.1.0 은 "토큰 `sub`에서만 도출, 게스트는 빈 그래프 200, 판매자 스코프는 403"이었다.**
+    조회가 레인 (a) 스트림 티켓을 재사용한다는 전제였는데, **마이페이지에서는 그 티켓을 발급받을
+    수 없다**(api-spec CH-1b 는 `sessionId` 필수). 티켓 클레임(`sub`·`sub_type`·`role`)이 사라지므로
+    게스트·판매자 분기도 함께 사라진다 — 그 주체들은 Spring 회원 로그인 세션이 없어 이 경로에
+    도달하지 않는다. 결정 19("신원은 토큰 클레임에서만")는 **레인 (a) 표면에 대해 그대로 유효**하며,
+    본 표면은 레인 (b)로 옮겨졌으므로 §3.5.1(session-claim)과 같은 규율을 따른다.
+  - 🔴 **확인 필요**: 게스트에게도 그래프 화면을 노출해야 한다면 `guest.id`(UUID 문자열)를 BIGINT
+    `{userId}`로 표현할 수 없어 계약을 다시 열어야 한다(api-spec C-20 (4)).
 - **REQ-PGRAPH-091** 변경 경로에서 시스템은 **서비스 토큰만** 자격 증명으로 인정하고 사용자 JWT를
   대체 수단으로 받아서는 안 된다. 대상 `{userId}`는 Spring이 자기 로그인 세션에서 도출한 값이라는
-  전제를 계약이 [HARD]로 명시한다(api-spec C-20).
+  전제를 계약이 [HARD]로 명시한다(api-spec C-20). **[v0.2.0] 조회(REQ-PGRAPH-090)에도 동일 적용된다.**
 - **REQ-PGRAPH-092** edge 조회는 `(userId, edgeId)`로 **스코프**되어야 하고, 남의 edge와 미존재를
   **구분하지 않고 동일 응답**(`404`)을 반환해야 한다. 403을 반환하려면 남의 데이터 존재를 확인하는
   비스코프 조회가 필요해지고, 그것은 막으려는 열거 오라클을 스스로 만드는 일이다.
@@ -595,7 +612,7 @@ class GraphAuditRecord(BaseModel):
 | # | 인수 기준 | 대응 요구사항 |
 |---|---|---|
 | AC-PGRAPH-01 | 스키마의 **정상·거부 픽스처**가 계약 테스트로 검증된다(camelCase만 허용, unknown·snake_case·collision 400) | api-spec §3.9 |
-| AC-PGRAPH-02 | 인증 주체와 프로필 소유자가 항상 일치하고, 타인 접근은 계약된 `404`(주체 클래스 위반은 `403`)로 거부된다 | REQ-PGRAPH-090~092 |
+| AC-PGRAPH-02 | **[개정 v0.2.0]** 서비스 토큰 없이는 어떤 경로도 통과하지 못하고(`401`), 타인 edge 접근은 계약된 `404`로 거부된다(존재 은닉). 조회·변경 모두 같은 규칙이다 — `403`은 그래프 표면에서 쓰이지 않는다(레인 (b) 전환으로 티켓 `role` 클레임이 사라졌다) | REQ-PGRAPH-090~092 |
 | AC-PGRAPH-03 | 같은 취향이 중복 node·edge로 노출되지 않고, 같은 저장 상태는 항상 동일한 투영을 반환한다 | REQ-PGRAPH-003·010·015 |
 | AC-PGRAPH-04 | 수정·삭제·초기화가 버전 충돌을 감지하고, 재전송에 중복 부작용이 없다 | REQ-PGRAPH-040~044 |
 | AC-PGRAPH-05 | 중지 즉시 추천 경로가 프로필을 쓰지 않고 수집도 멈추며, 투영·요약 경로가 정책대로 무효화된다(홈 캐시는 C-27 한계 기록) | REQ-PGRAPH-050~057·100·101 |
