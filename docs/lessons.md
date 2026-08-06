@@ -57,6 +57,24 @@
   "전체 포맷 실행"은 안전성이 다른 동작이다.
 - 관련: #380, `docs/specs/SPEC-UNDERSPECIFIED-336.md` §7.3, 리뷰 라운드 1 보고 §5
 
+## [2026-08-06] 카테고리 사전은 행 수가 아니라 임베딩 채워진 행 수가 실효 사전이다
+- 증상: #401 실측에서 `categories` 행이 1,007개 있어도 `embedding` 컬럼이 전부 `NULL` 이면
+  `app/pipelines/category_search.py::search_categories_pg` 가 `WHERE embedding IS NOT NULL` 로
+  걸러 매핑이 0행일 때와 똑같이 조용히 죽는다는 걸 확인했다. "행 수만 세는 가드"는 반쪽이다 —
+  시드(행 생성)와 임베딩 구축이 2단계로 분리된 설계(`db/catalog/init/02_categories.sql` 주석)
+  라서, 1단계만 끝난 상태(행 있음·임베딩 없음)를 "정상"으로 오판할 수 있다.
+- 원인: "사전이 비어 있다"를 "행 수 0" 하나로만 정의했다. 실제로는 검색 쿼리가 소비하는
+  조건(`embedding IS NOT NULL`)이 곧 실효 사전의 정의인데, 가드를 만들 때 그 쿼리 조건을
+  다시 확인하지 않고 테이블 스키마(행 존재 여부)만 봤다.
+- 규칙: **"사전이 비었다"를 판정하는 가드는 런타임 조회가 실제로 필터링하는 조건과 같은 조건을
+  세야 한다.** 테이블에 행이 있다는 사실과 그 행이 검색에 쓰인다는 사실은 다르다. 2단계로 분리된
+  파이프라인(행 생성 → 배치가 나머지 컬럼을 채움)에서는 최소 두 카운트(총 행 수, 소비 조건을
+  만족하는 행 수)를 따로 재고 각각을 구성 오류 후보로 다뤄야 한다.
+- 관련: #401, `app/pipelines/category_seed.py::DictionaryCounts`·`evaluate_dictionary_counts`·
+  `check_category_dictionary`, `app/pipelines/category_search.py::search_categories_pg`
+
+---
+
 ## [2026-08-06] 기동 검증식을 좁히면, 그 식을 사람에게 설명하는 문구도 같은 PR 에서 좁힌다
 - 증상: #383 이 기동 가드 계수를 2 → 3 으로 좁혀 `SPRING_TIMEOUT_S ∈ [3.33s, 5.0s)` 를 새로
   기동 거절 구간으로 만들었는데, 같은 규칙을 운영자에게 설명하는 문서 두 곳이 옛 상한 그대로
@@ -84,6 +102,8 @@
 - 관련: `app/core/config.py::_deferred_first_event_i1_calls`·
   `::_require_search_retry_within_stream_budget`, `.env.example` 의 `SPRING_MAX_RETRIES`
   주석 블록, `docs/specs/MEASURE-FIRST-TOKEN-363.md` §5, 이슈 #383(#363 후속), 커밋 `b700e7e`
+
+---
 
 ## [2026-08-06] fake 가 "표현 불가"를 예외로 던지면, 앱이 그걸 삼켜서 INV 비교가 "둘 다 실패"로 공허 통과할 수 있다
 - 증상: #381 에서 `RecordingFilteringSearch`(combo_matrix eval 하네스)가 keyword·color·
@@ -441,6 +461,7 @@
     별도 이슈로 넘긴다.
 - 관련: 이슈 #333 Part 3, `app/pipelines/embedding.py` `embed_texts()`(원복, 미수정),
   `evals/scoring/snapshot_embeddings.py`(청크 호출부 신설)
+
 ## [2026-08-05] 임의 순서 기준선을 두지 않으면 랭커가 개선인지 손해인지 모른다
 - 증상: #275 조사에서 student(현행 6성분 스코어러) 오라클 상한을 탐색했더니(E2) "상한
   0.738210"이 나와 teacher(0.782943)에 근접하는 듯 보였다. 재현·반증(E4)하니 이 값은
@@ -500,6 +521,7 @@
   `tests/unit/test_recommendation.py`
 
 ---
+
 ## [2026-08-05] 거리 임계는 사전에 종속된다 — taxonomy·임베딩 모델·task_type 이 바뀌면 재측정 없이는 무효
 - 증상: #222 라이브 실측(라이브 pg-catalog, leaf 1,007행)에서 `category_distance_max=0.22` 가
   협소 발화 20건 중 10건, 상품명 150건 골든셋 기준 90%를 드롭했다. `DESIGN-CATEGORY-HYBRID-59.md`
@@ -534,6 +556,7 @@
   적으면 착수 전에 `~/inte-final/_sql`(정본 시드 소스) 등에서 먼저 시드하거나, 그 사실을 실측
   보고서에 명시해 "결과가 전부 무필터 degrade 였다"는 착각을 방지한다.
 - 관련: #222, `app/agents/buyer/recommendation/category_mapping.py` canonical-or-null 불변식
+
 ## [2026-08-05] 병합 충돌 마커가 dev 에 커밋된 채 3커밋을 살아남았다 — 병합 커밋도 diff 검토 대상이다
 - 증상: `CHANGELOG.md` 의 `[Unreleased] > Added` 절에 `<<<<<<< HEAD`/`=======`/`>>>>>>> origin/dev`
   충돌 마커가 그대로 커밋돼(89e13fd, #302 로 dev 병합) 이후 dev 병합 커밋들에도 계속 남아 있었다.
@@ -863,6 +886,7 @@
 - 관련: #288, #277(PR #287), `app/core/config.py` `_require_search_retry_within_stream_budget`
 
 ---
+
 ## [2026-08-05] 판정을 **짧은 전용 호출로 떼는 것**과 긴 프롬프트에 **필드를 하나 더 얹는 것**은 같은 "LLM 에 맡긴다"가 아니다 — 그리고 **이득 0인 프롬프트 추가도 공짜가 아니다**
 
 - 증상 ①: #84 의 "이번 발화가 직전 카테고리를 놓겠다는 말인가"를 `decompose`(133줄 `_SYSTEM`)의
@@ -1620,6 +1644,7 @@
   경로에는 첫 텍스트 토큰 기준 SLO를 그대로 적용하지 않는다.
 - 관련: #138, #151, `app/core/stream.py`(`ft_deadline`), api-spec §2.9(c),
   `app/core/config.py`(`slo_first_token_ms`), `evals/benchmark/baselines/README.md`
+
 ## [2026-08-02] 부하 측정 전에 앱 자기 레이트 리밋을 측정 경로에서 분리한다
 - 증상: 로컬 벤치마크의 measured 270건 중 120건(44%)이 429였고, 마지막 시나리오는 113건
   전량이 `RATE_LIMITED`였다. 성능 대신 앱 자기 리밋을 측정한 실행이라 기준선으로 폐기했다.
@@ -1714,6 +1739,7 @@
   - 순수 함수에 "변형되지 않았다"를 거는 단언이 보이면 **구조상 항상 참인지** 먼저 의심한다.
 - 관련: `tests/unit/test_recommendation.py` `test_price_tiering_does_not_mutate_product_or_filter_values`,
   `app/agents/buyer/recommendation/rerank.py` `_price_tier`, 이슈 #173
+
 ## [2026-08-02] 명세가 규정한 동작이 구현되지 않은 채 몇 달 지나갔다 — 이슈가 "새 요구"로 올라올 때까지
 - 증상: #133 이 *"검색 실패에 재시도가 없다"* 를 결함으로 올렸고 신규 기능처럼 읽혔다. 착수해서
   `docs/specs/SPEC-RECOMMEND-001.md` 오류 처리 표를 열어 보니 **이미** *"`search` 실패: 최대 1회
@@ -1909,6 +1935,7 @@
   3. `cancelling() > 0` 인데 `done() == False` 이고 `_fut_waiter` 가 **새 PENDING future** 면, 취소가 전달됐다가 삼켜지고 재대기에 들어갔다는 뜻이다. 라이브러리의 `except` 절이 `CancelledError` 를 포함하는지 먼저 grep 한다.
   4. 죽은 루프에 묶인 풀을 살아 있는 루프에서 닫으려 하면 실패하고 워커 코루틴만 미회수로 GC 돼 `PytestUnraisableExceptionWarning` 이 뜬다. **정리 훅은 "이 루프에 묶인 것"으로 범위를 좁힌다**(`asyncio.all_tasks()` 에 `pool-*` 태스크가 있는지로 판정).
 - 관련: #208, `tests/conftest.py::close_pg_pools_on_loop`, `tests/unit/test_pool_worker_cancellation.py`, `tests/integration/test_pg_pool_loop_teardown.py`
+
 ## [2026-07-31] 계약에 필드가 있다고 필요한 건 아니다 — "누가 만드나" 전에 "왜 있나"를 묻는다
 
 - 증상: I-22 `catalogVersion` 의 미해결 항목(C-18)을 **"값 생성 주체가 잘못됐다"** 로 읽고 Spring→AI 이관을 설계·구현·문서화·커밋까지 했다(지문 생성, Protocol 메서드 추가, 양쪽 구현체 수정, 테스트 5건, 명세 개정). 사용자가 *"이 필드가 왜 필요하냐"* 고 묻자 **명분이 하나도 안 남는다**는 게 드러나 전부 되돌렸다.
@@ -1956,6 +1983,7 @@
 - 원인: `app/core/errors.py::_resolve` 는 **5xx 에서 `detail` 을 의도적으로 무시**한다(내부 오류 메시지·PII 유출 방지). 코드·메시지는 오직 `_STATUS_CODE_MAP`·`_DEFAULT_MESSAGE` 에서 나오는데 503 이 양쪽에 없었다(504 는 있었다). 4xx 습관대로 `detail` 에 코드를 실으면 조용히 무시된다.
 - 규칙: **새 5xx 계약 코드는 `_STATUS_CODE_MAP`·`_DEFAULT_MESSAGE` 에 먼저 등재**한다. `detail` 로 코드를 넘기는 방식은 4xx 에서만 통한다. 등재 후 실제 응답 body 로 코드를 확인한다 — 핸들러가 조용히 덮어쓰므로 라우터 코드만 읽어선 알 수 없다.
 - 관련: #148, `app/core/errors.py:33`, api-spec §3.7 실패 응답표
+
 ## [2026-07-30] 주입 seam 시그니처를 바꾸면 모든 fake 를 함께 고친다 — 방어 except 가 불일치를 삼켜 "조용한 degrade"가 된다
 - 증상: `map_categories` 에 `llm`·`tier` 파라미터를 추가(#115 §4.4)한 뒤 유닛 테스트 20건이
   한꺼번에 실패했다. 실패 메시지는 `assert leg.category` → `None` — "카테고리가 안 붙는다"로만
@@ -2004,6 +2032,7 @@
     라이브 실측으로만 반증된다** — LLM·임베딩이 개입하는 규칙은 반드시 라이브로 재확인한다.
 - 관련: `docs/specs/DESIGN-CATEGORY-HYBRID-59.md` §4.3.1,
   `app/agents/buyer/recommendation/category_mapping.py`, #115 커밋 6c415f2 → c6f4f8f(재개정)
+
 ## [2026-07-31] 무작위 UUID 가 개인정보 카나리 정규식에 걸려 트레이스가 통째로 버려진다 — 그리고 그 flake 를 내 변경 탓으로 오인했다
 
 - 증상: #209 코드 전환 중 전체 스위트가 간헐적으로 1건 실패했다. 실패 테스트가 매번 달랐고(`test_all_buyer_spring_operations_trace_timeout...`, `test_buyer_spring_http_failure_...[503-5xx]`) 모두 `assert len(spring_payloads) == 1` → `0 == 1` 형태였다. 단독 실행은 항상 통과. 로그엔 `trace dropped code=TELEMETRY_REDACTION_FAILED` 가 찍혀 있었다.
