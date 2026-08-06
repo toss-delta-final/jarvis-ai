@@ -62,7 +62,7 @@ absent+context=none`, **`surface=CHAT ⇒ HOME 전용 degrade 4종 금지` / `su
 #335 매트릭스가 `surface=HOME × degrade∈{embedding_missing,rerank_failed,spring_timeout}` 를
 미정의 셀로 찾아냈다 — HOME(I-22)은 라이브 임베딩·rerank·Spring 검색(I-1)을 호출하지 않아
 그 어휘에 대응하는 코드 경로 자체가 없기 때문이다. 승인된 결정(현행 추인)은 HOME 의 실제
-실패 모드 4종을 `docs/api-spec.md` §3.7(v0.25.1)에 명문화하고 이 축을 지면별로 갈랐다.
+실패 모드 4종을 `docs/api-spec.md` §3.7(v0.26.1)에 명문화하고 이 축을 지면별로 갈랐다.
 
 | 값 | 지면 | 계약 | 코드 근거 |
 |---|---|---|---|
@@ -204,7 +204,7 @@ defined 로 전환됐다. 잔존 미정의는 #336(무지정+예산+세트) 1건
   겹치게 구성했다 — `build_reasons` 가 실제로 문장을 고를 재료가 있어야 "주입 있음(reason_degraded)
   → 전부 null / 주입 없음(none) → 일부 non-null"의 대비가 성립한다
   (`test_home_reason_degraded_injection_actually_runs`). `profile_unavailable` 은 outcome 만으로
-  `none` 과 구별되지 않아(계약상 와이어 구별 신호 없음, api-spec §3.7 v0.25.1) 러너 계측
+  `none` 과 구별되지 않아(계약상 와이어 구별 신호 없음, api-spec §3.7 v0.26.1) 러너 계측
   (`profileHookInvoked`/`buildReasonsInvoked`)으로 주입이 실제로 실행됐음을 관측 dict 에 남긴다.
 - **관측 러너의 fixture 는 대표 샘플이다** — 검색 결과 3건 고정 카탈로그, 프로필 always-None(HOME).
   실제 카탈로그 분포·프로필 다양성에 따른 랭킹 품질은 `evals/goldenset`(#333) 소관 — 이 하네스는

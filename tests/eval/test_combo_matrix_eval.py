@@ -183,7 +183,7 @@ async def test_ci_cases_execute_and_defined_cases_match_contract() -> None:
             degrade = case.axes["degrade"]
             if degrade in ("catalog_unavailable", "catalog_timeout"):
                 # #367 — 카탈로그 인덱스 장애/타임아웃은 outcome 이 아니라 예외(503/504)로 답한다
-                # (api-spec §3.7 v0.25.1 「HOME 실패 모드」 표).
+                # (api-spec §3.7 v0.26.1 「HOME 실패 모드」 표).
                 assert "exception" in observed, f"{case.case_id}: {degrade} 는 exception 이 있어야"
                 expected_status = 503 if degrade == "catalog_unavailable" else 504
                 assert observed["statusCode"] == expected_status, case.case_id
@@ -290,7 +290,7 @@ async def test_home_reason_degraded_injection_actually_runs() -> None:
 
 async def test_home_profile_unavailable_injection_actually_runs() -> None:
     """`profile_unavailable` 은 outcome 만으로 degrade=none 과 구별되지 않는다(계약상 와이어
-    구별 신호 없음, api-spec §3.7 v0.25.1) — 러너 계측(profileHookInvoked)이 실패 주입이
+    구별 신호 없음, api-spec §3.7 v0.26.1) — 러너 계측(profileHookInvoked)이 실패 주입이
     실제로 실행됐음을 증명해야 이 셀이 "관측됐다"고 말할 수 있다."""
     cases = {c.case_id: c for c in load_cases()}
     home_profile_unavailable = next(

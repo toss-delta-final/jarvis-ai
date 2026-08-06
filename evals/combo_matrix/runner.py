@@ -16,7 +16,7 @@
 - **HOME(I-22) 의 degrade 축은 지면별 어휘를 쓴다(#367)** — CHAT 전용 3종(`embedding_missing`·
   `rerank_failed`·`spring_timeout`)은 `axes.json` 의 excludes 제약으로 HOME 조합 자체가 생성되지
   않는다. HOME 은 `none`·`profile_unavailable`·`catalog_unavailable`·`catalog_timeout`·
-  `reason_degraded` 5종만 실행한다(api-spec §3.7 v0.25.1 규범).
+  `reason_degraded` 5종만 실행한다(api-spec §3.7 v0.26.1 규범).
 - **카테고리 leg fan-out(`category_queries`/`map_categories`)은 범위 밖** — `category` 필터축은
   `ProductSearchFilters.category`(하드필터 문자열) 만 재며, leg 분해·매핑은 관측하지 않는다.
 """
@@ -402,7 +402,7 @@ async def _observe_home(case: ComboCase) -> dict:
             response = await home_svc.rank_home(request)
             observed = {"outcome": response.outcome, "itemCount": len(response.items)}
             # 주입이 실제로 실행됐는지를 관측에 남긴다 — profile_unavailable 은 outcome 만으로
-            # none 과 구별되지 않는다(계약상 와이어 구별 신호 없음, api-spec §3.7 v0.25.1).
+            # none 과 구별되지 않는다(계약상 와이어 구별 신호 없음, api-spec §3.7 v0.26.1).
             observed["profileHookInvoked"] = profile_hook_calls > 0
             observed["buildReasonsInvoked"] = build_reasons_calls > 0
             filled = sum(1 for item in response.items if item.reason is not None)
