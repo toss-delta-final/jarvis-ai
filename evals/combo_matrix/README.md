@@ -270,12 +270,24 @@ defined 로 전환됐다. 잔존 미정의는 #336(무지정+예산+세트) 1건
 `refresh-observed` 로 ci 25행 전부를 재실행해 `observed` 를 갱신했다(2026-08-06). 값이 바뀐 행은
 20건 — 케이스별 판정(실측 개선/회귀/필드 추가)을 아래 표에 남긴다. **회귀는 0건.**
 
-공통 배경: 모든 20건에 `eventTypes` 맨 앞에 `progress` 이벤트가 새로 등장한다 — 이건 #381 의
-변경이 아니라 **사전 드리프트**다(이 브랜치가 분기한 base 커밋(798f0a9)에서 이미 관측되는 이벤트,
-`git stash` 로 확인 — 다른 커밋이 SSE 에 `progress` 를 추가한 뒤 `expected_behavior.jsonl` 이 한
-번도 재생성되지 않아 여태 안 드러나 있었다). `test_ci_cases_execute_and_defined_cases_match_contract`
-는 `eventTypes` 를 통째로 대조하지 않아(개별 필드만 봄) 이 드리프트로 깨지지 않는다. 이 표에서는
-이 공통 배경을 "필드 추가" 판정에 흡수하고 케이스별로 반복 서술하지 않는다.
+공통 배경: **`eventTypes` 가 이 작업 중 두 차례 조용히 드리프트했다** — 둘 다 #381 이 만든 변경이
+아니라 다른 레인이 SSE 에 이벤트를 추가한 뒤 `expected_behavior.jsonl` 이 재생성되지 않아 뒤늦게
+드러난 사전 드리프트다. `test_ci_cases_execute_and_defined_cases_match_contract` 는 `eventTypes`
+를 통째로 대조하지 않아(개별 필드만 봄) 둘 다 테스트를 깨지 않고 조용히 통과했다.
+
+1. **1차(이 브랜치 분기 시점, base 798f0a9)** — 모든 ci 20건(아래 표)의 `eventTypes` 맨 앞에
+   `progress` 이벤트가 하나 새로 등장했다(`git stash` 로 재실행해 base 커밋에서 이미 나옴을 확인).
+2. **2차(리뷰 라운드 2, `dev` 병합 커밋 `adb9db0` — #396 2단계 "구매자 progress 다회 emit +
+   stage 어휘 7종 확장")** — recommend 파이프라인을 타는 **11건**(`combo-0023·0026·0031·0035·
+   0036·0037·0038·0039·0053·0054·0055`)에서 `eventTypes` 안 `progress` 이벤트가 단일 emit에서
+   **다단계 emit**(호출당 여러 번, stage 어휘도 늘어남)으로 다시 바뀌었다(예: combo-0031
+   `[progress,conditions,token,done]` → `[progress,conditions,progress,token,done]`). 나머지
+   9건(담기/조회/찜/주문조회, 아래 표 첫 행)은 recommend 파이프라인을 안 타 영향이 없었다.
+
+두 차례 다 `refresh_observed(write=False)` 실측으로 **`eventTypes` 하나만** 바뀌고 나머지 필드
+(`terminal`·`finishReason`·`errorCode`·`actionType`·`pushCount`·`listType`·`searchFilters` 등
+핵심 계약 필드)는 전부 불변임을 확인했다 — 판정은 둘 다 **"필드 추가/이벤트 추가 — 회귀 아님"**.
+이 표에서는 두 드리프트를 "필드 추가" 판정에 흡수하고 케이스별로 반복 서술하지 않는다.
 
 | case_id | 무엇이 바뀌었나 | 판정 | 근거 |
 |---|---|---|---|
@@ -285,6 +297,18 @@ defined 로 전환됐다. 잔존 미정의는 #336(무지정+예산+세트) 1건
 | combo-0031 (overspecified_zero) | `progress` 이벤트 + `pushProductCount:0`·`searchCallCount:1`·`searchFilters`(`priceMin:20000`)·`unappliedSearchFilters:[]` 추가 | **필드 추가 + 실측 개선** | 0건 주입(`RecordingFilteringSearch(products=[])`)이 경계 도달 filters 도 함께 기록하게 됐다(D2) — `finishReason=zero_result`·`pushCount=0` 은 불변. |
 | combo-0026·0054·0055 (필터 8축 전부 present, degrade rerank_failed/embedding_missing) | `progress`+`suggestions` 이벤트 추가, `searchCallCount:1→5`(0055 는 신규), `searchFilters`(`keyword:null` — #51 규칙으로 leg 검색어에서 drop, `color`/`attrConditions` 는 present 유지), `unappliedSearchFilters:["color","attrConditions"]`, `pushProductCount`(실측값 1) 추가 | **실측 개선 — #371 잔여 맹점(category 축 미도달) 해소(D5)** | 예전엔 `category` 축이 항상 canonical-or-null degrade 로 `None` 지워져 leg 가 안 생겼다 — D5 로 leg 가 1개 생기면서 자동완화 재검색(축별 순차 완화, 5회 호출)이 처음으로 실제 실행됐다. `terminal=done`·`pushCount=1`·`listType=PICK_ONE` 은 불변(핵심 계약 유지) — combo-0055 는 특히 `pair_runner` 쪽 INV 검증과 짝을 이룬다(아래 참조, D1 로 양쪽 arm 이 `error`→`done` 으로 바뀜). |
 | combo-0053 (category+rating_min, embedding_missing) | `progress`+`suggestions` 이벤트 추가, `searchCallCount:0→2`, `searchFilters`(`category:무선이어폰`·`ratingMin:4.0`) 신규, `pushProductCount:2` | **실측 개선 — #371 잔여 맹점 해소(D5), 처음으로 search 를 탄다** | 배경(패킷 §"이미 실측한 사실") 대로 category 축을 실현하니 비로소 search 경계에 도달했다 — 예전엔 `category` 지워짐 → 하드필터가 `rating_min` 뿐 → `#393` 최소 필터 가드가 이 턴을 I-3(인기)로 돌려 search 자체가 안 불렸다. `terminal=done`·`listType=PICK_ONE` 은 불변. |
+
+위 표의 "progress"/"progress+suggestions 이벤트" 서술은 1차 드리프트(단일 emit) 기준이다 —
+combo-0023·0026·0031·0035~0039·0053~0055(11건)는 리뷰 라운드 2 에서 2차 드리프트(다단계 emit)로
+`eventTypes` 가 한 번 더 갱신됐다(위 공통 배경 참조) — 다른 필드·판정은 그대로다.
+
+**관찰(후속 이슈 후보, 이 PR 에서 구현하지 않는다)**: `observed` 는 다른 레인이 SSE 이벤트를 바꿀
+때마다(이번엔 두 번) 조용히 낡는데, 커밋된 값과 재실행 값을 대조하는 가드가 없어서 아무도 모른다
+— `refresh-observed` 로 손으로 재생성해야만 드러난다. 가드(예: PR CI 에서 `refresh_observed
+(write=False)` 결과와 커밋본을 diff)를 넣으면 이 드리프트를 자동으로 잡을 수 있지만, **SSE 이벤트
+구조를 건드리는 모든 레인의 PR 이 이 eval 데이터 재생성을 강제당한다**(레인 간 결합 — SSE 스트림을
+고치는 팀이 매번 combo_matrix 를 같이 갱신해야 한다). 이 트레이드오프(드리프트 조기 발견 vs. 레인
+결합 비용)의 판단은 후속 이슈로 미룬다 — 이 PR 은 구현하지 않는다.
 
 ## 관측 러너가 안 쓰는 것
 
