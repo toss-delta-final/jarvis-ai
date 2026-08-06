@@ -26,7 +26,9 @@ def test_catalog_artifact_store_satisfies_shared_protocol():
 
 
 class _EnrichLLM:
-    async def complete(self, *, system, user, tier, max_tokens=1024, json_output=True):
+    async def complete(
+        self, *, system, user, tier, max_tokens=1024, json_output=True, reasoning_effort=None
+    ):
         return json.dumps(
             {"tags": ["여행", "방수"], "attributes": {"소재": "나일론"}}, ensure_ascii=False
         )
@@ -105,7 +107,9 @@ async def test_enrich_product_returns_extras():
 class _SituationLLM:
     """situation_tags 를 함께 주는 LLM — 확장된 enrichment 스키마(#148)."""
 
-    async def complete(self, *, system, user, tier, max_tokens=1024, json_output=True):
+    async def complete(
+        self, *, system, user, tier, max_tokens=1024, json_output=True, reasoning_effort=None
+    ):
         return json.dumps(
             {
                 "tags": ["여행"],
@@ -863,6 +867,307 @@ async def test_background_harvest_logs_only_late_failure(caplog):
 
     assert caplog.text.count("백그라운드") == 1
     assert "late harvest failure" in caplog.text
+
+
+# ── 이슈 #325: enrichment 토큰 예산 + _drain 항목 격리(head-of-line blocking 해소) ──
+
+
+class _CapturingLLM:
+    """enrichment 호출 kwargs(max_tokens·reasoning_effort)를 캡처하는 fake(#325 회귀 방지)."""
+
+    def __init__(self):
+        self.calls: list[tuple[int, str | None]] = []
+
+    async def complete(
+        self, *, system, user, tier, max_tokens=1024, json_output=True, reasoning_effort=None
+    ):
+        self.calls.append((max_tokens, reasoning_effort))
+        return json.dumps({"tags": ["여행"], "attributes": {}}, ensure_ascii=False)
+
+
+async def test_enrich_product_sends_configured_max_tokens_and_effort():
+    """#325 회귀 방지 — 600 하드코딩 대신 settings.enrichment_max_tokens/effort 를 싣는다."""
+    settings = get_settings().model_copy(
+        update={"enrichment_max_tokens": 3333, "enrichment_reasoning_effort": "low"}
+    )
+    llm = _CapturingLLM()
+    await enrich_product({"name": "파우치", "category": "여행용품"}, llm=llm, settings=settings)
+    assert llm.calls == [(3333, "low")]
+
+
+class _FlakyLLM:
+    """상품명별 실패 횟수를 지정해 재시도·단건 격리 테스트에 쓴다(#325)."""
+
+    def __init__(self, fail_counts=None, always_fail=None):
+        self._fail_counts = dict(fail_counts or {})
+        self._always_fail = set(always_fail or [])
+        self.calls_by_name: dict[str, int] = {}
+
+    async def complete(
+        self, *, system, user, tier, max_tokens=1024, json_output=True, reasoning_effort=None
+    ):
+        payload = json.loads(user)
+        name = payload.get("name")
+        self.calls_by_name[name] = self.calls_by_name.get(name, 0) + 1
+        if name in self._always_fail:
+            from app.core.llm import LLMError
+
+            raise LLMError(f"boom: {name}")
+        remaining = self._fail_counts.get(name, 0)
+        if remaining > 0:
+            self._fail_counts[name] = remaining - 1
+            from app.core.llm import LLMError
+
+            raise LLMError(f"flaky boom: {name}")
+        return json.dumps({"tags": ["여행"], "attributes": {}}, ensure_ascii=False)
+
+
+async def test_drain_isolates_single_item_failure(caplog):
+    """3건 중 1건 실패 → 나머지 2건 처리·upsert, failed=1, 커서 전진, ERROR 로그에 product_id."""
+    store = CatalogArtifactStore()
+    changes = [
+        _change(1, name="상품A"),
+        _change(2, name="상품B-실패"),
+        _change(3, name="상품C"),
+    ]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _FlakyLLM(always_fail=["상품B-실패"])
+    with caplog.at_level("ERROR"):
+        result = await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=get_settings()
+        )
+
+    assert result.processed == 2
+    assert result.failed == 1
+    assert store.get(1) is not None
+    assert store.get(2) is None
+    assert store.get(3) is not None
+    assert store.get_cursor() == "c1"
+    assert "product_id=2" in caplog.text
+
+
+async def test_drain_retries_then_succeeds():
+    """1차 실패 → 2차 성공이면 processed 에 포함, failed=0."""
+    store = CatalogArtifactStore()
+    changes = [_change(1, name="플레이키")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _FlakyLLM(fail_counts={"플레이키": 1})
+    settings = get_settings().model_copy(update={"enrichment_item_attempts": 2})
+    result = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+    )
+
+    assert result.processed == 1
+    assert result.failed == 0
+    assert llm.calls_by_name["플레이키"] == 2
+    assert store.get(1) is not None
+
+
+async def test_drain_dead_letters_after_attempts_exhausted():
+    """attempts 초과 시 dead-letter(격리) — 재시도 횟수만큼만 호출.
+
+    페이지 표본(3)이 artifacts_batch_failure_min_sample(5) 미만이라 비율 가드는 애초에
+    평가되지 않는다 — 이 테스트는 단건 격리(retry exhaustion) 만 검증하고, 임계 가드는 별도
+    테스트가 담당한다. 성공 항목 2건은 processed 카운트도 함께 확인하기 위한 것이다.
+    """
+    store = CatalogArtifactStore()
+    changes = [_change(1, name="영구실패"), _change(2, name="성공A"), _change(3, name="성공B")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _FlakyLLM(always_fail=["영구실패"])
+    settings = get_settings().model_copy(update={"enrichment_item_attempts": 3})
+    result = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+    )
+
+    assert result.failed == 1
+    assert result.processed == 2
+    assert llm.calls_by_name["영구실패"] == 3
+    assert store.get(1) is None
+
+
+async def test_drain_page_failure_threshold_blocks_cursor_advance():
+    """표본(5) ≥ min_sample(5) 이고 전부 실패(ratio=1.0 ≥ 0.5) → 예외 전파 + 커서 미전진."""
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    names = [f"실패{i}" for i in range(5)]
+    changes = [_change(i + 1, name=name) for i, name in enumerate(names)]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _FlakyLLM(always_fail=names)
+    with pytest.raises(_batch.PageFailureThresholdExceeded):
+        await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=get_settings()
+        )
+
+    assert store.get_cursor() == "checkpoint"
+    for i in range(1, 6):
+        assert store.get(i) is None
+
+
+@pytest.mark.parametrize(
+    ("fail_names", "expect_advance"),
+    [
+        (["A-실패", "B-실패"], True),  # 2/8 = 0.25 < 0.5 → 전진
+        (["A-실패", "B-실패", "C-실패", "D-실패"], False),  # 4/8 = 0.5 ≥ 0.5 → 미전진
+    ],
+)
+async def test_drain_page_failure_threshold_boundary(fail_names, expect_advance):
+    """표본(8) ≥ min_sample(5) 이라 비율 가드 경계(0.5)가 그대로 유효하다."""
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    changes = [
+        _change(1, name="A-실패"),
+        _change(2, name="B-실패"),
+        _change(3, name="C-실패"),
+        _change(4, name="D-실패"),
+        _change(5, name="E"),
+        _change(6, name="F"),
+        _change(7, name="G"),
+        _change(8, name="H"),
+    ]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _FlakyLLM(always_fail=fail_names)
+
+    if expect_advance:
+        result = await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=get_settings()
+        )
+        assert result.failed == len(fail_names)
+        assert store.get_cursor() == "c1"
+    else:
+        with pytest.raises(_batch.PageFailureThresholdExceeded):
+            await run_artifacts_batch(
+                fetch=fetch, llm=llm, embed=_embed, store=store, settings=get_settings()
+            )
+        assert store.get_cursor() == "checkpoint"
+
+
+async def test_drain_single_item_page_isolates_and_advances_default_settings(caplog):
+    """[#325] 핵심 회귀 — 운영 증분 페이지는 대개 1~3건, 성공 패딩 없이 항목 1건짜리 페이지를
+    기본 Settings() 그대로 재현한다(운영 시나리오 그대로).
+
+    수정 전에는 표본=1, ratio=1/1=1.0 ≥ artifacts_batch_failure_ratio_threshold(0.5) 로
+    PageFailureThresholdExceeded 가 던져져 커서가 막혔다 — #325 가 보고한 "문제 상품 1건이
+    매 주기 실패" 그 상황이다. 수정 후에는 표본(1) < artifacts_batch_failure_min_sample(5)
+    이라 비율 가드를 건너뛰고 격리+전진한다.
+    """
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    changes = [_change(1, name="문제상품")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _FlakyLLM(always_fail=["문제상품"])
+    with caplog.at_level("WARNING"):
+        result = await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=get_settings()
+        )
+
+    assert result.failed == 1
+    assert result.processed == 0
+    assert store.get(1) is None
+    assert store.get_cursor() == "c1"
+    assert "product_id=1" in caplog.text  # dead-letter ERROR 로그
+    assert "표본 부족" in caplog.text  # min_sample 미달 WARNING 로그
+    assert "failed=1" in caplog.text
+    assert "min_sample=5" in caplog.text
+
+
+async def test_drain_hidden_delete_failure_is_not_isolated():
+    """HIDDEN 삭제 실패는 격리 대상이 아니다 — 그대로 전파(api-spec §4.8 fail-closed)."""
+
+    class _FailingDeleteStore(CatalogArtifactStore):
+        def delete(self, product_id):
+            raise RuntimeError("delete boom")
+
+    store = _FailingDeleteStore()
+    store.set_cursor("checkpoint")
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(
+            items=[_change(1, status="HIDDEN")], next_cursor="c1", has_more=False
+        )
+
+    with pytest.raises(RuntimeError, match="delete boom"):
+        await run_artifacts_batch(
+            fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store, settings=get_settings()
+        )
+    assert store.get_cursor() == "checkpoint"
+
+
+async def test_drain_isolation_applies_under_full_rebuild_with_atomic_replace():
+    """full_rebuild 경로에서도 단건 격리가 동작 — replace_all 원자성은 불변(#325).
+
+    페이지 표본(3)이 min_sample(5) 미만이라 비율 가드는 평가되지 않는다 — 이 테스트는 격리가
+    full_rebuild 임시 스토어·원자 교체 경로에서도 동작함을 검증한다.
+    """
+    store = CatalogArtifactStore()
+    stale = CatalogArtifact(product_id=99, search_doc="stale", embedding=[0.0, 1.0])
+    store.upsert(stale)
+    changes = [_change(1, name="A"), _change(2, name="B-실패"), _change(3, name="C")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _FlakyLLM(always_fail=["B-실패"])
+    result = await run_artifacts_batch(
+        fetch=fetch,
+        llm=llm,
+        embed=_embed,
+        store=store,
+        settings=get_settings(),
+        full_rebuild=True,
+    )
+
+    assert result.processed == 2
+    assert result.failed == 1
+    assert store.get(99) is None  # 원자 교체로 stale 제거
+    assert store.get(1) is not None
+    assert store.get(2) is None
+    assert store.get(3) is not None
+
+
+async def test_default_settings_batch_isolation_smoke():
+    """[#325] 새 튜너블을 하나도 override 하지 않은 기본 Settings() 조합 스모크 테스트.
+
+    lessons: 과거 모든 테스트가 기본값을 덮어써 기본 조합 결함이 출하된 전례가 있다. 페이지
+    표본(3)이 기본 min_sample(5) 미만이라 비율 가드는 평가되지 않는다 — 1건짜리 페이지 회귀는
+    test_drain_single_item_page_isolates_and_advances_default_settings 가 전담한다.
+    """
+    store = CatalogArtifactStore()
+    changes = [
+        _change(1, name="기본값A"),
+        _change(2, name="기본값B-실패"),
+        _change(3, name="기본값C"),
+    ]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _FlakyLLM(always_fail=["기본값B-실패"])
+    result = await run_artifacts_batch(fetch=fetch, llm=llm, embed=_embed, store=store)
+
+    assert result.processed == 2
+    assert result.failed == 1
+    assert store.get(1) is not None
+    assert store.get(2) is None
+    assert store.get(3) is not None
+    assert store.get_cursor() == "c1"
 
 
 async def test_color_harvest_cancellation_propagates(monkeypatch):

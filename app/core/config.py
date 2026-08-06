@@ -162,6 +162,30 @@ class Settings(BaseSettings):
     # 초과 시 embed_texts 가 예외 → EmbeddingRerankBackend 가 Spring 순서 degrade(#101 #7, PR#166).
     embedding_timeout_s: float = 3.0
     catalog_batch_page_size: int = 500  # I-17 배치 페이지 크기(§4.8, config 주입)
+    # [#325] 운영 fast tier(gpt-5-nano, reasoning 모델)에서 하드코딩 max_tokens=600 전량이
+    # reasoning_tokens 로 소진돼 본문 0자 → openai.LengthFinishReasonError 로 매 5분 주기 정지.
+    # JSON 본문(태그 5~12 + 상황태그 3~7 + 속성 dict, 수백 토큰)이 reasoning 몫을 뺀 뒤에도
+    # 남도록 여유를 둔다 — color_synonym_llm_max_tokens(2048) 전례와 같은 스케일.
+    enrichment_max_tokens: int = Field(default=2048, ge=1)
+    # [#325] enrichment(구조화 추출) 전용 effort — 배포 변수 OPENAI_FAST_REASONING_EFFORT 가
+    # fast tier 기본 effort 를 무엇으로 덮든 이 값으로 고정된다(#178 tool 동반 호출 effort
+    # 강등과 같은 계열: 특정 호출 용도는 tier 기본과 독립적으로 안전값을 강제).
+    enrichment_reasoning_effort: str = "minimal"
+    # [#325] _drain 항목별 재시도 상한 — 일시 플레이크(파싱 실패·비결정 출력) 구제용. LLM
+    # 전송 자체의 재시도는 langchain max_retries 가 이미 담당한다.
+    enrichment_item_attempts: int = Field(default=2, ge=1)
+    # [#325] 페이지 내 ON_SALE 실패 비율이 이 값 이상이면(그리고 failed>0) 커서를 전진시키지
+    # 않고 예외를 던진다 — 임베딩 API 장애 같은 광역 장애는 자연 복구(동일 커서 재개)를 유지하고,
+    # 단건 poison 상품만 격리 대상으로 삼는다.
+    artifacts_batch_failure_ratio_threshold: float = Field(default=0.5, gt=0.0, le=1.0)
+    # [#325] 위 비율 가드가 유효하려면 최소 표본이 필요하다 — 운영 증분 배치는 5분 주기에
+    # 실제 변경분만 담겨 페이지가 대개 1~3건이라(catalog_batch_page_size 는 요청 상한일 뿐),
+    # poison 단건 상품 하나만 있어도 ratio=1/1=1.0 로 광역 장애와 구별이 안 된다. 표본이 이
+    # 값 미만이면 비율 가드를 건너뛰고 격리+전진해 head-of-line blocking 을 확실히 없앤다
+    # (#325). 광역 장애가 소량 페이지와 겹치면 그 주기의 소수 항목이 함께 격리되는데, 이는
+    # dead-letter ERROR 로그와 failed 카운트로 드러나며 run_batch --full(전체 재구축)로
+    # 복구 가능한 유계 하방이다.
+    artifacts_batch_failure_min_sample: int = Field(default=5, ge=1)
     catalog_vector_overfetch: int = 4  # 방식1 hydrate 후 필터·품절 제거 대비 벡터 여유조회 배수
     # 방식2 DB 재정렬 1회 반환 행 가드. 현 카탈로그 7,220건 전량도 p50 49ms라 기본값은
     # 실사용에서 걸리지 않는다. 카탈로그 성장 시 응답 행 수만 제한하며, 실질 지연 상한은

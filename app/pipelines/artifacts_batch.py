@@ -2,7 +2,12 @@
 
 fetch_product_changes 로 변경분을 커서 기반 pull(hasMore 루프) → HIDDEN 은 생성물 삭제 →
 ON_SALE 은 enrich(Haiku) → search_doc 조립 → 임베딩 → artifact_store upsert. 커서는 페이지 처리
-성공 후에만 전진(자연 복구, §4.8).
+성공 후에만 전진한다.
+
+[#325] ON_SALE 단건 실패(예: enrichment 파싱 실패)는 attempts 회 재시도 후 격리(dead-letter
+기록)하고 페이지를 계속 진행한다 — 실패 상품 1개가 그 뒤 모든 변경을 영구 차단하던
+head-of-line blocking 을 없앤다. 페이지 실패 비율이 임계 이상이면(광역 장애로 간주) 그
+페이지는 커서를 전진시키지 않고 예외를 던져 자연 복구(동일 커서 재개)로 되돌아간다.
 
 증분(기본): 대상 스토어에 직접 upsert 하고 페이지마다 커서 전진.
 전체 재구축(full_rebuild): since="0" 부터 **임시 스토어**에 쌓은 뒤, 성공 시 원자 교체(replace_all)한다
@@ -50,6 +55,12 @@ class BatchResult:
     hidden: int
     pages: int
     cursor: str | None
+    # [#325] 격리된 단건 ON_SALE 실패 수(dead-letter 기록됨) — 관측 사각도 해소.
+    failed: int = 0
+
+
+class PageFailureThresholdExceeded(RuntimeError):
+    """페이지 ON_SALE 실패 비율이 임계 이상 — 광역 장애로 보고 커서를 전진시키지 않는다(#325)."""
 
 
 def _harvest_limiter(dsn: str, max_concurrency: int) -> threading.BoundedSemaphore:
@@ -174,31 +185,79 @@ async def _drain(
 ) -> BatchResult:
     """start_cursor 부터 hasMore 소진까지 target 에 반영한다. persist_cursor=True 면 페이지마다 커서 전진.
 
-    페이지 처리 중 예외는 그대로 전파 — 해당 페이지 커서 미전진으로 다음 주기 재개(자연 복구).
+    ON_SALE 단건 실패는 settings.enrichment_item_attempts 회 재시도 후 격리(dead-letter 로그)하고
+    다음 항목으로 진행한다(#325 head-of-line blocking 해소). 페이지의 ON_SALE 표본이
+    settings.artifacts_batch_failure_min_sample 이상이고 실패 비율이
+    settings.artifacts_batch_failure_ratio_threshold 이상이면 광역 장애로 보고
+    PageFailureThresholdExceeded 를 던진다 — 그 페이지는 커서를 전진시키지 않는다(자연 복구).
+    표본이 min_sample 미만이면 비율 판정을 생략하고 격리+전진한다 — 운영 증분 페이지는 대개
+    소수 항목이라(#325) poison 단건과 광역 장애를 비율만으로 구별할 수 없기 때문이다.
+    HIDDEN 삭제 실패·status 파싱 실패(ProductChange 단계)는 격리 대상이 아니라 그대로 전파한다.
     이미 성공한 앞 페이지는 artifact와 커서가 함께 저장된 유효 체크포인트이므로 롤백하지 않는다.
     """
     cursor = start_cursor
-    processed = hidden = pages = 0
+    processed = hidden = pages = failed = 0
     while True:
         page = await fetch(cursor, settings.catalog_batch_page_size)
+        page_failed = page_succeeded = 0
         for change in page.items:
             if change.status == _HIDDEN:
                 target.delete(change.product_id)
                 hidden += 1
                 continue
-            await _process_change(change, llm=llm, embed=embed, store=target, settings=settings)
-            processed += 1
+            last_exc: Exception | None = None
+            for _attempt in range(settings.enrichment_item_attempts):
+                try:
+                    await _process_change(
+                        change, llm=llm, embed=embed, store=target, settings=settings
+                    )
+                except Exception as exc:  # noqa: BLE001 - 항목 격리(#325), 다음 시도/항목으로 계속
+                    last_exc = exc
+                    continue
+                last_exc = None
+                break
+            if last_exc is None:
+                processed += 1
+                page_succeeded += 1
+            else:
+                failed += 1
+                page_failed += 1
+                _log.error(
+                    "I-17 항목 실패 — 격리 기록 후 계속: product_id=%s attempts=%d",
+                    change.product_id,
+                    settings.enrichment_item_attempts,
+                    exc_info=last_exc,
+                )
         pages += 1
+        page_total = page_failed + page_succeeded
+        if page_failed > 0 and page_total > 0:
+            if page_total < settings.artifacts_batch_failure_min_sample:
+                _log.warning(
+                    "I-17 페이지 표본 부족으로 광역장애 판정 생략 — "
+                    "failed=%d total=%d min_sample=%d (격리 후 전진)",
+                    page_failed,
+                    page_total,
+                    settings.artifacts_batch_failure_min_sample,
+                )
+            else:
+                ratio = page_failed / page_total
+                if ratio >= settings.artifacts_batch_failure_ratio_threshold:
+                    raise PageFailureThresholdExceeded(
+                        f"I-17 페이지 실패율 임계 초과: failed={page_failed} total={page_total} "
+                        f"ratio={ratio:.2f}"
+                    )
         if page.next_cursor:
             cursor = page.next_cursor
         if persist_cursor:
-            target.set_cursor(cursor)  # 페이지 처리 성공 후에만 전진(자연 복구)
+            target.set_cursor(cursor)  # 페이지 처리 성공 후에만 전진
         if not page.has_more:
             break
         if not page.next_cursor:
             _log.warning("hasMore=True 이나 nextCursor 없음 — 배치 중단(무한루프 방지)")
             break
-    return BatchResult(processed=processed, hidden=hidden, pages=pages, cursor=cursor)
+    return BatchResult(
+        processed=processed, hidden=hidden, pages=pages, cursor=cursor, failed=failed
+    )
 
 
 async def run_artifacts_batch(
@@ -254,10 +313,11 @@ async def run_artifacts_batch(
             did_rebuild = True
 
     _log.info(
-        "artifacts batch: processed=%d hidden=%d pages=%d rebuild=%s",
+        "artifacts batch: processed=%d hidden=%d pages=%d failed=%d rebuild=%s",
         result.processed,
         result.hidden,
         result.pages,
+        result.failed,
         did_rebuild,
     )
     return result
