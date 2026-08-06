@@ -25,6 +25,10 @@ from app.agents.buyer.recommendation.no_condition import (
     rank_by_profile,
     within_budget,
 )
+from app.agents.buyer.recommendation.search_guard import (
+    is_category_mapping_dropped,
+    is_unfiltered_payload,
+)
 from app.agents.buyer.recommendation.underspecified import (
     build_reask_question,
     within_price_range,
@@ -44,6 +48,7 @@ from app.core.llm import LLMClient, LLMError, resolve_model_id
 from app.core.text import _strip_unsafe
 from app.core.tracing import current_request_trace, trace_span
 from app.services import spring_client
+from app.services.search_service import apply_ai_side_filters
 from app.schemas.chat import (
     ConditionsData,
     DoneData,
@@ -542,6 +547,32 @@ async def stream_recommendation(
     suppress_deferred_search_retry = (
         may_auto_relax and not settings.search_retry_on_deferred_conditions
     )
+    # [#393 A] 최종 payload 기준 최소 필터 가드 — **의도 판정이 아니라 payload 사실 판정**이다
+    # ("이번 턴이 Spring 쿼리 파라미터 0개로 나가는가"만 본다). no_condition/underspecified 처럼
+    # `prior is None`(첫 턴) 에 한정하지 않는다 — 그 둘은 "리파인/칩 제거/카테고리-무관 리셋"
+    # 3의도 구분(#84 소관)을 멀티턴에서 함부로 재해석하지 않으려 첫 턴에 한정하는데, A 는 의도를
+    # 해석하지 않으므로 그 경계가 적용되지 않는다. 답이 참이면 턴 번호와 무관하게 매칭 전량
+    # (운영 실측 7.74초·12.3MB)이 돌아와 SEARCH_FAILED 가 된다 — #393 은 "판정 로직이 또 어긋나도
+    # 12MB 를 안 받는 마지막 방어선"을 요구했고, 첫 턴에 한정하면 2턴째부터 그 방어선이 사라진다
+    # (되묻기 다음 턴이 실사용에서 실제로 밟는 경로다). no_condition/underspecified 가 이미 캐치한
+    # 턴은 제외한다(중복 판정 방지, 아래 로그 사유도 상호배타).
+    #
+    # [#393 F1] **`is_category_mapping_dropped` 는 여기서 보지 않는다** — A 의 판정 축은
+    # "payload 가 비었는가" 하나뿐이고, 매핑 드롭 여부는 무관하다. 매핑 드롭을 A 에서 제외하면
+    # 12MB 경로가 그대로 열린다: `cat_signal` 승격(decompose.py:585)은 `semantic_query` 만
+    # 채우고 `filters.keyword` 는 채우지 않으므로, 멀티 아이템 턴("이어폰이랑 노트북 추천해줘")
+    # 처럼 매핑이 드롭되면서 keyword 도 안 실리는 턴은 payload 가 정확히 0개가 된다. 그 턴을
+    # B(아래, "먼저 검색하고 0건일 때만 대체")로 돌리면 **먼저** 무필터 I-1 이 실제로 나가
+    # 3초 타임아웃 → SEARCH_FAILED 로 끝난다(B 의 0건 폴백 자리에 도달조차 못 한다) — 이 조합에서
+    # #393 이 아무것도 못 고치는 것과 같다. 역할 분담:
+    #   payload 0개(매핑 드롭 여부 무관)              → A: I-1 을 아예 안 보내고 I-3(12.3MB 방어선)
+    #   payload 에 keyword 만 남음 + 매핑 드롭         → B: 먼저 검색(435 bytes, 관련 결과 우선), 0건이면 I-3
+    #   payload 에 실필터(카테고리·브랜드·가격·색) 있음 → 종전 검색 경로 그대로
+    unfiltered_bypass = (
+        settings.search_filter_guard_enabled
+        and not (no_condition or underspecified)
+        and is_unfiltered_payload(decision)
+    )
     if not may_auto_relax:
         yield sse(
             "conditions",
@@ -600,6 +631,19 @@ async def stream_recommendation(
         base = decision.filters if base_filters is None else base_filters
         legs = decision.category_legs
         if not legs:
+            # [#393 A-5] 완화 probe(`base_filters is not None`)가 완화 결과로 payload 를 비우면
+            # 본 검색과 같은 12.3MB 무필터 I-1 을 받는다. **probe 호출일 때만** 하드 가드를
+            # 건다 — 본 검색(`base_filters is None`)에는 걸지 않는다. 그 경로로 무필터 I-1 이
+            # 나가는 경우는 "I-3 가 죽어 폴백한 턴"(`popular_degraded`) 뿐인데, api-spec §4.17
+            # 이 그 degrade("500·타임아웃 → 종전 무필터 I-1 검색으로 degrade")를 계약으로
+            # 명시한다 — 계약 개정은 사람 승인 게이트라 이 PR 은 그 문장을 지킨다.
+            if (
+                base_filters is not None
+                and settings.search_filter_guard_enabled
+                and not spring_client.search_filter_axes(base)
+            ):
+                logger.info("search_probe_unfiltered_skipped")
+                return (ProductSearchResult(products=[], total_count=0), {})
             # 카테고리 매핑 결과 없음(매핑 degrade·비-매핑 경로) → 단일 filters 검색(기존 경로).
             try:
                 found = await search(base, exclude_product_ids=None)
@@ -818,10 +862,59 @@ async def stream_recommendation(
         if trace := current_request_trace():
             trace.mark_degraded("profile_ranking_fallback")
 
-    # [#162/#336] 조건이 하나도 없는 턴(no_condition) + 제약만 있는 턴(underspecified)은
-    # 후보 소스를 I-3(인기 상품, §4.17)로 바꾼다. `no_condition ⊂ underspecified` 라 후자만
-    # 검사하면 되지만, 조건식을 읽는 사람이 두 판정의 관계를 다시 추론하지 않도록 명시한다.
+    # [#162/#336/#393] 조건이 하나도 없는 턴(no_condition) + 제약만 있는 턴(underspecified) +
+    # 최종 payload 가 무필터인 턴(unfiltered_bypass, #393 A)은 후보 소스를 I-3(인기 상품,
+    # §4.17)로 바꾼다. `no_condition ⊂ underspecified` 라 후자만 검사하면 되지만, 조건식을
+    # 읽는 사람이 판정 관계를 다시 추론하지 않도록 명시한다.
     popular_degraded = False
+    # [#393 B] 카테고리 매핑 드롭 턴("신발")이 0건이라 인기 상품으로 대체됐는가 — 고지 분기가
+    # 쓴다. `popular_degraded` 와는 상호배타다(이 대체는 성공한 I-3 조회에서만 True 가 된다).
+    category_unmapped_zero_result = False
+
+    async def _fetch_popular_candidates() -> tuple[ProductSearchResult, dict[int, int]] | None:
+        """I-3 조회 + 가격/평점/속성 사후필터를 적용한다 — no_condition/underspecified/#393
+        A·B 가 공유하는 인기 후보 확보 경로다(중복 구현 금지, PR #311/#336 이 지킨 규약).
+
+        실패·조회 결과 없음·필터링 실패는 모두 `None` — 호출부가 폴백을 판단한다. **0건도
+        성공이다**(§4.17) — 빈 배열이면 하류 zero-result 경로가 카드 없이 답한다.
+        """
+        try:
+            found = await popular_fn(settings.popular_candidate_size)
+        except Exception as exc:  # noqa: BLE001 - 폴백 소스 실패로 스트림을 죽이지 않는다
+            logger.warning("popular_products_failed", extra={"reason": str(exc)})
+            return None
+        if found is None:
+            return None
+        # [리뷰 R1] 필터링~재조립 전체를 try 로 감싼다 — 이 구간은 `asyncio.gather`(위 호출부)를
+        # 타는 코루틴 안이라, 여기서 예외가 새면 제너레이터가 done 도 error 도 없이 그대로
+        # 죽는다(`no_condition.rank_by_profile` [PR #311 리뷰] 주석이 같은 파일에서 재현 확인한
+        # 바로 그 실패 모양). §7 원칙("실패해도 턴을 죽이지 않는다")에 맞춰 실패 시 `None` 을
+        # 돌려줘 호출부가 무필터 `_run_search` 등으로 합류시킨다 — I-3 자체 실패와 같은 처치다.
+        try:
+            # [#311 리뷰] 총액 예산을 말한 턴은 **예산 안의 후보만** 남긴다. 세트로 묶지 않고
+            # 대안으로 보여주므로 상품 하나가 예산 이하이면 된다 — 무엇을 몇 개 살지 사용자가
+            # 말하지 않은 턴에 조합을 지어내면 근거 없는 세트가 된다(`has_total_budget` 참조).
+            products = found.products
+            if decision.total_budget is not None:
+                products = within_budget(products, decision.total_budget)
+            # [#336] 상품당 가격 제약(priceMin/priceMax) — 총액 예산과 별개 축이라 함께 적용될
+            # 수 있다. 둘 다 없으면 `within_price_range` 는 사본만 돌려줘 순서·내용이 그대로다.
+            products = within_price_range(
+                products, decision.filters.price_min, decision.filters.price_max
+            )
+            # [#393 C] rating_min·attr_conditions 는 Spring payload 축이 아니라 AI 사후필터다
+            # (search_service.search_catalog 과 같은 함수 공유) — 인기 후보에 안 걸면 조건
+            # 칩엔 "평점 4.0 이상"이 떠 있는데 후보는 그 조건을 안 지키는 표시-실제 불일치가
+            # 된다. 이 필터가 새로 태우는 턴은 A(unfiltered_bypass)가 인기 상품으로 돌린,
+            # rating_min·attr_conditions 만 있는 턴이다 — 그 외(no_condition/underspecified)
+            # 턴은 이 두 축이 정의상 비어 있어 no-op 이다.
+            products = apply_ai_side_filters(products, decision.filters)
+            if len(products) != len(found.products):
+                found = ProductSearchResult(products=products, total_count=len(products))
+            return (found, {})
+        except Exception as exc:  # noqa: BLE001 - 필터링 실패로 스트림을 죽이지 않는다
+            logger.warning("popular_candidate_filter_failed", extra={"reason": str(exc)})
+            return None
 
     async def _run_candidate_source():
         """이번 턴의 후보를 확보한다 — `_run_search` 와 같은 `(결과, leg맵)` 형태로 돌려준다.
@@ -835,46 +928,58 @@ async def stream_recommendation(
         semantic 정렬 입력이 발화 원문 폴백이라 상위가 의도와 무관하다. I-3 는 price 가 있어
         예산·가격 준수를 입증할 수 있다(#162 와 같은 논리, SPEC-UNDERSPECIFIED-336 §3).
 
+        [#393 A] `rating_min`·`attr_conditions` 만 있는 턴처럼 no_condition/underspecified
+        축엔 안 걸리지만 최종 payload 는 파라미터 0개(운영 실측 12.3MB)인 턴도 여기로 온다
+        (`unfiltered_bypass`). A 는 `may_auto_relax` 게이트가 **없다** — 검색을 대체하는
+        것이지 추가하는 것이 아니라서다(무필터 `_run_search()` 호출 자체가 안 나간다), 그래서
+        first-token 예산이 늘지 않는다. 아래 B 의 `not may_auto_relax` 게이트와 대비된다.
+
+        [#393 B] 사용자가 카테고리를 지목했는데 매핑이 leg 를 하나도 못 낸 턴("신발 추천해줘")은
+        A 에 걸리지 않는다(대개 keyword 는 남는다 — 실측 435 bytes). 이 턴은 **사전 우회가
+        아니라 사후 폴백**이다 — keyword 검색이 실제로 결과를 내면 인기 상품보다 관련성이 높으므로
+        먼저 검색하고, **0건일 때만** 인기 후보로 대체한다. B 는 A 와 달리 검색을 **대체하지
+        않고 추가**한다(0건 확인 후 I-3 를 한 번 더 부른다) — 그래서 `not may_auto_relax` 로
+        제한한다. 이유: `may_auto_relax` 턴은 `conditions` 를 검색 뒤로 미루므로(#113·#277)
+        첫 이벤트 앞에 직렬 Spring 호출이 하나 더 붙으면(decompose head + 검색 + I-3 + 완화 probe)
+        first-token 10s 상한을 넘길 수 있다(#277 이 고친 바로 그 실패 모양) — 미루지 않는
+        턴은 `conditions` 가 이미 나가 관문을 통과한 뒤라 안전하다.
+
         leg 맵은 빈 dict 다 — 인기 목록은 카테고리 fan-out 이 아니라 단일 목록이다.
         """
-        nonlocal popular_degraded
-        if not (no_condition or underspecified):
-            return await _run_search()
-        try:
-            found = await popular_fn(settings.popular_candidate_size)
-        except Exception as exc:  # noqa: BLE001 - 폴백 소스 실패로 스트림을 죽이지 않는다
-            logger.warning("popular_products_failed", extra={"reason": str(exc)})
-            found = None
-        if found is not None:
-            # [리뷰 R1] 필터링~재조립 전체를 try 로 감싼다 — 이 구간은 `asyncio.gather`(위
-            # 호출부)를 타는 코루틴 안이라, 여기서 예외가 새면 제너레이터가 done 도 error 도
-            # 없이 그대로 죽는다(`no_condition.rank_by_profile` [PR #311 리뷰] 주석이 같은
-            # 파일에서 재현 확인한 바로 그 실패 모양). §7 원칙("실패해도 턴을 죽이지 않는다")
-            # 에 맞춰 실패 시 `found = None` 으로 떨궈 아래 popular_degraded 폴백(무필터
-            # `_run_search`)으로 합류시킨다 — I-3 자체 실패와 같은 처치다.
-            try:
-                # [#311 리뷰] 총액 예산을 말한 턴은 **예산 안의 후보만** 남긴다. 세트로 묶지
-                # 않고 대안으로 보여주므로 상품 하나가 예산 이하이면 된다 — 무엇을 몇 개 살지
-                # 사용자가 말하지 않은 턴에 조합을 지어내면 근거 없는 세트가 된다
-                # (`has_total_budget` 참조).
-                products = found.products
-                if decision.total_budget is not None:
-                    products = within_budget(products, decision.total_budget)
-                # [#336] 상품당 가격 제약(priceMin/priceMax) — 총액 예산과 별개 축이라 함께
-                # 적용될 수 있다. 둘 다 없으면 `within_price_range` 는 사본만 돌려줘
-                # 순서·내용이 그대로다.
-                products = within_price_range(
-                    products, decision.filters.price_min, decision.filters.price_max
-                )
-                if len(products) != len(found.products):
-                    found = ProductSearchResult(products=products, total_count=len(products))
-                # **0건도 성공이다**(§4.17) — 빈 배열이면 하류 zero-result 경로가 카드 없이
-                # 답한다. 여기서 degrade 로 처리하면 이 이슈가 없애려는 무필터 I-1 을 도로
-                # 부른다.
-                return (found, {})
-            except Exception as exc:  # noqa: BLE001 - 필터링 실패로 스트림을 죽이지 않는다
-                logger.warning("popular_candidate_filter_failed", extra={"reason": str(exc)})
-                found = None
+        nonlocal popular_degraded, category_unmapped_zero_result
+        if not (no_condition or underspecified or unfiltered_bypass):
+            found = await _run_search()
+            if (
+                settings.search_filter_guard_enabled
+                and not may_auto_relax
+                and is_category_mapping_dropped(decision)
+                and found is not None
+                and not found[0].products
+            ):
+                fallback = await _fetch_popular_candidates()
+                if fallback is not None:
+                    category_unmapped_zero_result = True
+                    # PII 금지(#119) — 카테고리·발화 문자열은 싣지 않는다, 사유 라벨만.
+                    logger.info(
+                        "search_candidate_source_bypass",
+                        extra={"reason": "category_unmapped_zero_result"},
+                    )
+                    return fallback
+                # I-3 도 실패·0건이면 원래의 0건 검색 결과를 그대로 돌려준다(스트림을 죽이지
+                # 않는다 — 재검색으로 무필터 `_run_search` 를 다시 부르지 않는다).
+            return found
+
+        logger.info(
+            "search_candidate_source_bypass",
+            extra={
+                "reason": "no_condition"
+                if no_condition
+                else ("underspecified" if underspecified else "unfiltered_payload")
+            },
+        )
+        fallback = await _fetch_popular_candidates()
+        if fallback is not None:
+            return fallback
         popular_degraded = True
         if trace := current_request_trace():
             trace.mark_degraded("popular_fallback")
@@ -1916,11 +2021,14 @@ async def stream_recommendation(
                 if group_notice := _strip_unsafe(group_notice):
                     yield sse("token", TokenData(text=group_notice).model_dump(by_alias=True))
 
-    # [#162] 조건 없음 안내 — 없으면 사용자가 인기 상품을 **자기 조건이 반영된 결과**로 오해한다.
+    # [#162/#393] 조건 없음 안내 — 없으면 사용자가 인기 상품을 **자기 조건이 반영된 결과**로
+    # 오해한다. `unfiltered_bypass`(A) 도 이 블록을 쓴다 — 그 턴은 payload 기준으로 실제 조건이
+    # 하나도 안 나간 턴이라 #162 고지가 그대로 참이다(rating_min·attr_conditions 만 있는 턴처럼
+    # 사용자가 무언가는 말했어도, Spring 에는 아무 필터도 전달되지 않았다는 사실은 동일하다).
     # `popular_degraded` 턴에는 내지 않는다: I-3 가 죽어 무필터 검색으로 떨어진 결과에
     # "인기 상품으로 보여드릴게요" 라고 말하면 거짓이 된다(#133 정직성 규약 — 그 턴은
     # `mark_degraded("popular_fallback")` 로 관측에 남는다).
-    if no_condition and not popular_degraded:
+    if (no_condition or unfiltered_bypass) and not popular_degraded:
         if decision.total_budget is not None:
             # 예산을 말한 턴에는 그 금액을 되짚어 준다 — "조건을 안 주셨다"고 하면 거짓이 된다.
             # [PR #311 리뷰] **자리표시자 존재를 먼저 검사한다** — `str.format` 은 쓰지 않는
@@ -1954,6 +2062,16 @@ async def stream_recommendation(
     if underspecified and not no_condition and not popular_degraded:
         if underspecified_notice := _strip_unsafe(settings.underspecified_notice):
             yield sse("token", TokenData(text=underspecified_notice).model_dump(by_alias=True))
+
+    # [#393 B] 카테고리 매핑 드롭 + 검색 0건 → 인기 상품 대체 고지. no_condition/underspecified
+    # 블록과 상호배타다(이 턴은 정의상 둘 다 아니다 — `is_category_mapping_dropped` 는
+    # `category_queries` 축이 있어야 참인데 그 축은 두 판정을 이미 False 로 만든다). 없으면
+    # 사용자가 말한 상품군을 못 찾아 인기 상품으로 답한다는 사실이 감춰져 거짓이 된다(#132·#133
+    # 정직성 규약). `popular_degraded` 와는 자연히 배타지만(이 대체는 성공한 I-3 조회에서만
+    # True 가 된다) 다른 고지 블록과 같은 규약으로 방어적으로 검사한다.
+    if category_unmapped_zero_result and not popular_degraded:
+        if category_unmapped_notice := _strip_unsafe(settings.category_unmapped_notice):
+            yield sse("token", TokenData(text=category_unmapped_notice).model_dump(by_alias=True))
 
     # [리뷰 F2] 카테고리 되물음(D3 emit 지점 2) 은 여기서 내지 않는다 — push 가 성공했는지가
     # 아직 정해지지 않아, "무선이어폰 중에…" 라고 예시를 들며 되물으면서 정작 그 상품이 화면에

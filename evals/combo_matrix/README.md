@@ -313,6 +313,24 @@ override 한 뒤 검색을 부른다(`recommendation/graph.py:648-655`). 즉 결
 표현 불가 필터(keyword·color·attr_conditions)가 present 로 들어오면 조용히 무시하지 않고
 `ValueError` 로 즉시 실패시킨다 — 미래 쌍이 "필터가 적용된 것처럼" 공허 통과하는 것을 막는다.
 
+### #393 최소 필터 가드와의 축 분리 (`pair_runner.py` 실행 한정)
+
+이 러너는 *"Spring I-1 WHERE 계약 대역"* 으로 **필터 배관**(하드필터가 실제로 `search` 콜러블에
+도달하는가)을 잰다. #393 의 최소 필터 가드(`search_filter_guard_enabled`, `search_guard.
+is_unfiltered_payload`)는 아예 다른 축이다 — "이번 턴이 Spring 파라미터 0개로 나가는가"를 보고
+그렇다면 **후보 소스 자체를 I-3(인기 상품)로 바꾼다**(운영 실측 7.74초·12.3MB 무필터 응답 방지).
+가드를 켜 두면 category/keyword/brand/color/price 가 전부 absent 인 base arm(예: combo-0022,
+`rating_min`·`total_budget` 만 present)이 `search` 에 아예 도달하지 못해 `_execute` 의 "search
+콜러블이 호출되지 않았다" 로 `UnsupportedPairAxes` 가 나 그 축의 필터 배관을 잴 수 없게 된다 —
+그 turn 은 오늘 실제로 무필터 I-1 을 부르는 turn 이라(#393 이 고치는 바로 그 경우) 이 v1
+하네스가 재려는 "필터가 배관을 타는가"라는 질문 자체가 성립하지 않는다.
+
+그래서 `pair_runner._execute` **실행 한정으로만** `search_filter_guard_enabled=False` 로 둔다 —
+케이스 정의(`combo_cases.jsonl`)·축 할당·기대값(`expected/*.jsonl`)은 건드리지 않았고,
+`runner.py`(기존 55건 MFT 경로)도 무관하다. **가드 자체의 회귀는 이 하네스가 지키지 않는다** —
+#393 전용 단위/통합 테스트(`tests/unit/test_search_guard_393.py`·`tests/unit/test_recommendation.py`
+의 `test_unfiltered_bypass_*`·`test_category_mapping_dropped_*` 계열)가 그 몫을 진다.
+
 ### 결과 (2026-08-06 기준, `pair_runner.py` 실측)
 
 INV 통과 1/1 · DIR(ci) 통과 1/1 · manual 분리 1건 · 분모(전체 쌍 행 수) 3. combo-0053 는
