@@ -368,7 +368,8 @@ def test_embed_texts_first_chunk_always_attempted_despite_tiny_budget(monkeypatc
         google_api_key="test-key",
         embedding_dim=3,
         embedding_normalized=False,
-        embedding_total_timeout_s=0.001,
+        embedding_timeout_s=0.001,
+        embedding_total_timeout_s=0.001,  # #391 PR#412 기동 검증기: total >= request 최소 조합
     )
     monkeypatch.setattr(emb, "get_settings", lambda: settings)
     client = _ChunkCapturingClient()
@@ -388,12 +389,13 @@ def test_embed_texts_first_chunk_always_attempted_then_second_rejected(monkeypat
         google_api_key="test-key",
         embedding_dim=3,
         embedding_normalized=False,
-        embedding_total_timeout_s=0.001,
+        embedding_timeout_s=0.001,
+        embedding_total_timeout_s=0.001,  # #391 PR#412 기동 검증기: total >= request 최소 조합
     )
     monkeypatch.setattr(emb, "get_settings", lambda: settings)
     client = _ChunkCapturingClient()
     monkeypatch.setattr(emb, "_client", lambda api_key: client)
-    monkeypatch.setattr(emb, "_monotonic", _FakeClock([0.0, 0.0]))
+    monkeypatch.setattr(emb, "_monotonic", _FakeClock([0.0, 0.001]))  # 미세하게라도 경과하면 거부
 
     texts = [f"t{i}" for i in range(101)]
     with pytest.raises(emb.EmbeddingError):
@@ -432,7 +434,7 @@ def test_embed_texts_explicit_total_timeout_overrides_config(monkeypatch):
         embedding_dim=3,
         embedding_normalized=False,
         embedding_timeout_s=1.0,
-        embedding_total_timeout_s=0.001,  # config 기본은 두 번째 청크를 거부할 값
+        embedding_total_timeout_s=1.0,  # #391 PR#412 기동 검증기상 최소 조합 — 경과>0 이면 거부된다
     )
     monkeypatch.setattr(emb, "get_settings", lambda: settings)
     client = _ChunkCapturingClient()

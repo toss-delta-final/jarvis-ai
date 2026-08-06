@@ -1626,6 +1626,25 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _require_embedding_total_timeout_covers_request_timeout(self) -> "Settings":
+        """embed_texts 총 예산이 요청 1건당 상한보다 작으면 기동 실패 (#391 PR #412 Claude 리뷰).
+
+        경계(같은 값)는 허용한다 — 기본값 3.0 == 3.0 이 "hot path 는 청크 1개분"이라는 의도된
+        조합이다. 이보다 작게 잡으면 1청크 호출(idx==0, 현재 hot path 전부)은 예산 검사 자체를
+        건너뛰므로 설정을 줄여도 아무 효과가 없고, 2청크 이상 호출은 정상 상황에서도 두 번째
+        청크에서 거의 항상 거부된다 — 설정이 의미하는 바와 실제 동작이 갈린다.
+        """
+        if self.embedding_total_timeout_s < self.embedding_timeout_s:
+            raise ValueError(
+                "EMBEDDING_TOTAL_TIMEOUT_S must be >= EMBEDDING_TIMEOUT_S "
+                f"(got {self.embedding_total_timeout_s} < {self.embedding_timeout_s}): "
+                "a smaller total budget has no effect on single-chunk (hot path) calls "
+                "since idx==0 always skips the budget check, while multi-chunk calls would "
+                "be rejected almost every time even under normal conditions"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _require_color_synonym_array_contract_gate(self) -> "Settings":
         """색상 배열 전송과 외부 계약 준비 선언이 엇갈리면 기동을 막는다."""
         if self.color_synonym_expansion_enabled != self.color_synonym_array_contract_ready:
