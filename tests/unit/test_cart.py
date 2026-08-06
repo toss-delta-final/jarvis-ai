@@ -579,6 +579,110 @@ async def test_cart_view_strips_seller_text() -> None:
     assert all(ch not in token for ch in ("\x1b", "\u200b", "\u202e"))
 
 
+def test_purchase_state_label_covers_every_literal_value() -> None:
+    """`PURCHASE_STATE_LABEL` 은 `PurchaseState` 전 값을 덮어야 한다(PR #400 리뷰).
+
+    **이 테스트가 전사성을 강제하는 유일한 장치다.** 타입 어노테이션
+    (`Mapping[PurchaseState, str]`)은 부분 매핑을 막지 못하고(`TypedDict` 가 아니다), 이 리포 CI 는
+    `ruff check` + `pytest` 만 돌려 타입체커가 없다. 게다가 소비 측이 조용히 넘어간다 —
+    `state_suffix` 는 `.get(state, "")`, `state_advice_lines` 는 `_ADVICE_ORDER` 에 없으면 skip.
+    그래서 BE 가 상태를 추가하고 라벨 갱신을 빠뜨리면 **예외 없이 라벨만 소리 없이 사라진다**.
+    """
+    from typing import get_args
+
+    from app.schemas.spring import PURCHASE_STATE_LABEL, PurchaseState
+
+    assert set(get_args(PurchaseState)) == set(PURCHASE_STATE_LABEL)
+
+
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [
+        ("AVAILABLE", ""),
+        (None, ""),
+        ("SOLD_OUT", " (품절)"),
+        ("HIDDEN", " (판매 종료)"),
+    ],
+)
+def test_state_suffix(state, expected: str) -> None:
+    """상태→라벨은 순수 함수 분기다(REQ-CART-037 — 프롬프트가 아니라 테스트 가능해야 한다).
+
+    `AVAILABLE` 과 미수신(`None`)이 둘 다 빈 문자열인 것이 핵심이다 — 앞은 "살 수 있다"를 굳이
+    말하지 않는 표현 정책이고 뒤는 모름을 주장으로 바꾸지 않겠다는 것이라, 근거는 달라도
+    사용자에게 보이는 결과가 같다."""
+    from app.agents.buyer.cart.purchase_state import state_suffix
+
+    assert state_suffix(state) == expected
+
+
+async def test_cart_view_marks_sold_out_and_hidden_with_advice_once() -> None:
+    """목록 줄에는 짧은 라벨만, 행동 안내는 문단 끝에 상태당 **한 번만** 싣는다(#310).
+
+    같은 상태 항목이 둘이어도 안내 문장이 두 번 나오면 안 된다 — 목록이 문장 덩어리가 된다.
+    판매 종료 안내는 예시 발화(`'가죽 지갑 빼줘'`)로 유도한다: 이슈 예시의 "뺄 상품을
+    추천해드릴까요?"를 그대로 쓰면 이 되물음이 상태를 저장하지 않아 사용자가 "응"이라 답해도
+    삭제로 라우팅되지 않는다(`remove.py::_unresolved_notice` 가 문서화한 함정)."""
+
+    async def get_cart_fn(*, user_id=None, guest_id=None):
+        return CartView(
+            items=[
+                CartViewItem(cart_item_id=1, product_id=1, product_name="방수 파우치", quantity=2),
+                CartViewItem(
+                    cart_item_id=2,
+                    product_id=2,
+                    product_name="린넨 셔츠",
+                    quantity=1,
+                    purchase_state="SOLD_OUT",
+                ),
+                CartViewItem(
+                    cart_item_id=3,
+                    product_id=3,
+                    product_name="가죽 지갑",
+                    quantity=1,
+                    purchase_state="HIDDEN",
+                ),
+                CartViewItem(
+                    cart_item_id=4,
+                    product_id=4,
+                    product_name="양말",
+                    quantity=1,
+                    purchase_state="HIDDEN",
+                ),
+            ]
+        )
+
+    events = await _collect(stream_cart_view(identity=_member(), get_cart_fn=get_cart_fn))
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert "방수 파우치 · 2개" in token  # AVAILABLE 아닌 미수신 — 라벨 없음
+    assert "린넨 셔츠 · 1개 (품절)" in token
+    assert "가죽 지갑 · 1개 (판매 종료)" in token
+    assert token.count("재입고되면") == 1
+    assert token.count("빼는 걸 추천드려요") == 1
+    assert "'가죽 지갑 빼줘'" in token  # 판매 종료 항목 중 첫 번째를 예시로
+
+
+async def test_cart_view_all_available_has_no_advice() -> None:
+    """전부 구매 가능하면 안내 줄이 붙지 않는다 — 오늘 문구와 바이트 동일해야 한다."""
+
+    async def get_cart_fn(*, user_id=None, guest_id=None):
+        return CartView(
+            items=[
+                CartViewItem(
+                    cart_item_id=1,
+                    product_id=1,
+                    product_name="방수 파우치",
+                    option_name="블루",
+                    quantity=2,
+                    purchase_state="AVAILABLE",
+                )
+            ]
+        )
+
+    events = await _collect(stream_cart_view(identity=_member(), get_cart_fn=get_cart_fn))
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token == "장바구니에 담긴 상품이에요:\n방수 파우치 (블루) · 2개"
+
+
 async def test_cart_view_empty() -> None:
     events = await _collect(stream_cart_view(identity=_member(), get_cart_fn=_empty_cart()))
     assert "비어" in next(e for e in events if e["type"] == "token")["data"]["text"]
@@ -652,7 +756,8 @@ async def test_route_cart_add_forwards_message_to_pending_switch_detection(
 
     events = await _collect(run_buyer_turn(request, _member(), llm=llm))
 
-    assert _types(events) == ["token", "done"]
+    # progress_events_enabled 기본 on(#396) — 스트림 맨 앞에 progress 프레임이 추가된다.
+    assert _types(events) == ["progress", "token", "done"]
     assert await store.get_pending(key) is None
 
 
@@ -965,6 +1070,144 @@ async def test_get_cart_parses_items(monkeypatch: pytest.MonkeyPatch) -> None:
         and view.items[0].option_name == "블루"
         and view.items[0].quantity == 2
     )
+
+
+@pytest.mark.parametrize("purchase_state", ["AVAILABLE", "SOLD_OUT", "HIDDEN"])
+async def test_get_cart_parses_purchase_state(
+    monkeypatch: pytest.MonkeyPatch, purchase_state: str
+) -> None:
+    """I-18 superset 의 `purchaseState` 를 파싱한다(#310, api-spec §4.9 v0.25.1).
+
+    BE `InternalCartResponse.Item` 에 실재하는 필드인데 종전엔 선언이 없어 `extra="ignore"` 로
+    조용히 버려졌다 — 그래서 "구매 불가 상태예요"조차 말하지 못했다."""
+    import app.services.spring_client as sc
+
+    body = {
+        "success": True,
+        "data": {
+            "items": [
+                {
+                    "cartItemId": 55,
+                    "productId": 1,
+                    "productName": "파우치",
+                    "quantity": 1,
+                    "purchaseState": purchase_state,
+                }
+            ]
+        },
+    }
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(200, body)))
+    view = await sc.get_cart(user_id=1)
+    assert view.items[0].purchase_state == purchase_state
+
+
+async def test_get_cart_missing_purchase_state_key_defaults_to_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """키가 없으면 `None`(모름) — `"AVAILABLE"` 로 단정하지 않는다(#310, `WishlistItem` 과 대칭).
+
+    BE 배포 시점에 따라 아직 안 내려올 수 있고, 그때 "구매 가능"으로 읽으면 못 사는 상품을
+    살 수 있다고 안내하게 된다. 모름은 주장이 아니다."""
+    import app.services.spring_client as sc
+
+    body = {
+        "success": True,
+        "data": {"items": [{"cartItemId": 55, "productId": 1, "productName": "파우치"}]},
+    }
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(200, body)))
+    view = await sc.get_cart(user_id=1)
+    assert view.items[0].purchase_state is None
+
+
+async def test_get_cart_unknown_purchase_state_degrades_to_none_keeping_item(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """BE 가 계약 밖 상태값을 추가해도 **항목이 사라지지 않고** 그 필드만 `None` 으로 강등된다.
+
+    찜(`_parse_wishlist_items`)은 항목 단위 skip 이지만 장바구니는 같은 처방을 쓰면 안 된다 —
+    스킵된 항목이 목록에서 조용히 사라지면 "전부 빼줘"(`cart_remove_all_markers`)가 일부만
+    지우고 성공을 보고하고, 수량 합산 안내도 어긋난다. 장바구니 항목은 사용자 소유물이고
+    파괴적 후속 동작의 입력이라 **관대 강등**이 맞다. 드리프트 관측용 warning 은 남긴다."""
+    import logging
+
+    import app.services.spring_client as sc
+
+    body = {
+        "success": True,
+        "data": {
+            "items": [
+                {
+                    "cartItemId": 55,
+                    "productId": 1,
+                    "productName": "파우치",
+                    "quantity": 1,
+                    "purchaseState": "DISCONTINUED",
+                },
+                {
+                    "cartItemId": 56,
+                    "productId": 2,
+                    "productName": "지갑",
+                    "quantity": 1,
+                    "purchaseState": "SOLD_OUT",
+                },
+            ]
+        },
+    }
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(200, body)))
+    with caplog.at_level(logging.WARNING, logger="app.schemas.spring"):
+        view = await sc.get_cart(user_id=1)
+    assert len(view.items) == 2  # 항목이 사라지지 않는다 — 이것이 이 테스트의 요지
+    assert view.items[0].purchase_state is None
+    assert view.items[1].purchase_state == "SOLD_OUT"
+    assert "DISCONTINUED" in caplog.text
+
+
+@pytest.mark.parametrize("bad", [{}, [], {"kind": "SOLD_OUT"}, ["SOLD_OUT"]])
+async def test_get_cart_unhashable_purchase_state_degrades_without_raising(
+    monkeypatch: pytest.MonkeyPatch, bad: object
+) -> None:
+    """unhashable 값(dict·list)이 와도 `TypeError` 가 아니라 `None` 강등이어야 한다(PR #400 리뷰).
+
+    가드가 없으면 `value in frozenset` 이 `hash(value)` 에서 `TypeError` 를 내고, pydantic v2 는
+    `BeforeValidator` 의 `TypeError` 를 `ValidationError` 로 감싸지 않아 그대로 올린다 —
+    `get_cart` 의 `except (httpx.HTTPError, ValueError, ValidationError)` 를 빠져나가
+    **degrade 조차 못 하는** 최악의 실패가 된다. 이 함수의 존재 이유가 드리프트 방어인데
+    특정 드리프트 형태에서 더 크게 터지면 안 만든 것만 못하다."""
+    import app.services.spring_client as sc
+
+    body = {
+        "success": True,
+        "data": {
+            "items": [
+                {"cartItemId": 55, "productId": 1, "productName": "파우치", "purchaseState": bad}
+            ]
+        },
+    }
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(200, body)))
+    view = await sc.get_cart(user_id=1)
+    assert len(view.items) == 1  # 항목이 사라지지 않는다
+    assert view.items[0].purchase_state is None
+    assert view.items[0].product_name == "파우치"  # 나머지 필드는 온전
+
+
+@pytest.mark.parametrize("bad", [123, True, 1.5])
+async def test_get_cart_non_string_scalar_purchase_state_degrades(
+    monkeypatch: pytest.MonkeyPatch, bad: object
+) -> None:
+    """문자열이 아닌 스칼라도 `None` 으로 강등된다 — `purchaseState` 는 문자열 enum 이다."""
+    import app.services.spring_client as sc
+
+    body = {
+        "success": True,
+        "data": {
+            "items": [
+                {"cartItemId": 55, "productId": 1, "productName": "파우치", "purchaseState": bad}
+            ]
+        },
+    }
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(200, body)))
+    view = await sc.get_cart(user_id=1)
+    assert view.items[0].purchase_state is None
 
 
 # ─────────── spring_client 배선 (I-24 삭제, 이슈 #116, 🔶 초안) ───────────

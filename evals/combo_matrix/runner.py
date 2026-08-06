@@ -168,7 +168,7 @@ async def _observe_chat(case: ComboCase) -> dict:
     push = RecordingPush()
 
     # `run_buyer_turn` 은 담기 계열 Spring 호출(`add_fn`/`add_wishlist_fn`)을 주입 파라미터로
-    # 노출하지 않는다(`app/agents/buyer/graph.py:1099`·`cart/graph.py:275` 가 항상 기본값
+    # 노출하지 않는다(`app/agents/buyer/graph.py::run_buyer_turn`·`cart/graph.py::stream_cart_add` 가 항상 기본값
     # `spring_client.add_wishlist`/`add_to_cart` 를 씀) — search·order_status_fn 주입과 달리
     # 여기는 모듈 함수를 직접 몽키패치해야 한다(HOME 러너의 `home_svc.get_catalog_store` 패턴과
     # 동일). 패치 없이는 실 네트워크 호출이 나가 환경에 따라 결과가 달라진다(리뷰 R3 관측 중

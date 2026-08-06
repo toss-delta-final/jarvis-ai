@@ -510,6 +510,25 @@ def test_wishlist_unresolved_notice_lists_names_and_guides_action_marker() -> No
     assert "찜 빼줘" in text
 
 
+def test_wishlist_unresolved_notice_marks_purchase_state() -> None:
+    """찜 목록에도 조회·삭제와 **같은 라벨**을 붙인다(#310, AC③).
+
+    찜은 "나중에 사려고 담아둔" 목록이라 시간이 지나며 상태가 바뀌기 쉽고, 그래서 못 사게
+    됐다는 사실을 알려줄 값어치가 가장 큰 자리다. 안내 문장은 더하지 않는다 — 이 문구의 목적은
+    "어느 걸 뺄지 묻기"라 문장을 더 얹으면 초점이 흐려진다."""
+    from app.agents.buyer.cart.wishlist import _wishlist_unresolved_notice
+
+    sold_out = _wishlist_item(20, "린넨 셔츠")
+    sold_out.purchase_state = "SOLD_OUT"
+    hidden = _wishlist_item(30, "가죽 지갑")
+    hidden.purchase_state = "HIDDEN"
+
+    text = _wishlist_unresolved_notice([_wishlist_item(10, "이어폰"), sold_out, hidden])
+    assert "린넨 셔츠 (품절)" in text
+    assert "가죽 지갑 (판매 종료)" in text
+    assert "'이어폰 찜 빼줘'" in text  # 예시는 살 수 있는 항목 우선
+
+
 async def test_wishlist_remove_no_name_match_asks_with_action_marker_guidance_via_stream() -> None:
     """`stream_wishlist_remove` 수준에서도 같은 사실 — 무신호 되물음 문구가 두 상품명과 찜 해제
     동작 표지 예시를 모두 담는다."""

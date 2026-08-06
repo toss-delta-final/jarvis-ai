@@ -20,7 +20,7 @@ LLM은 `ScriptedLLM`이라 라우팅·decompose·카테고리 매핑 head가 제
 **전** 불변 원본이고, `results/measure-277-20260804-after-retry-skip.json`은 스킵 **후**
 결과이며 `D3_deferred_worst_no_retry` 시나리오가 추가된 실행이다. **[#289 추가]**
 `results/measure-289-20260805-flag-off.json`/`…-flag-on.json`은 구매자 `progress` 이벤트
-(계약 미등재, 기본 off — `app/core/config.py::progress_events_enabled`)를 끈/켠 상태에서
+(계약 등재 완료·기본 on, #396 — `app/core/config.py::progress_events_enabled`)를 끈/켠 상태에서
 같은 하네스를 재실행한 결과다. `payload["config"].progress_events_enabled`가 그 실행의
 조건을 스스로 말한다(하네스 로직·시나리오·seed는 #289에서 변경하지 않았다). off는 #277
 이후(재시도 스킵 적용) 상태와 사실상 동일한 기준선이고, on은 모든 시나리오의 첫 이벤트가

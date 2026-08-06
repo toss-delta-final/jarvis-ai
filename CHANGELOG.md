@@ -10,6 +10,25 @@
 ## [Unreleased]
 
 ### Added
+- **#310 — `purchaseState` 로 품절·판매종료를 갈라 안내한다(장바구니·찜)** (api-spec §4.9·§4.16,
+  v0.26.3 / SPEC-CART-001 v0.2.6 REQ-CART-037) — 지금까지는 장바구니·찜에서 상품의 구매 가능
+  여부를 파싱조차 안 해 "구매 불가 상태예요"조차 말하지 못했다. 품절은 기다리면 되고 판매
+  종료는 다른 걸 찾아야 하므로 **사용자가 취할 행동이 다르다**. `CartViewItem` 에
+  `purchaseState` 파싱을 추가하고(BE `InternalCartResponse.Item` 에 실재하는데 선언이 없어
+  `extra="ignore"` 로 버려지고 있었다), 장바구니 조회·삭제 되물음·찜 되물음 **세 지점 모두**에
+  같은 라벨을 붙였다 — 같은 장바구니가 질문 방식에 따라 다르게 보이면 안 된다. 조회는 목록
+  줄에 짧은 라벨(`(품절)`/`(판매 종료)`)만 붙이고 행동 안내는 문단 끝에 상태당 한 번만 싣는다.
+  문구는 프롬프트가 아니라 결정론적 순수 함수(`app/agents/buyer/cart/purchase_state.py`)로
+  생성해 단위 테스트로 고정한다. **미수신 기본값을 `"AVAILABLE"` → `None`(모름)으로
+  바로잡았다** — 소비가 붙은 이상 기본값은 주장이 되고, 키가 없다는 사실을 "구매 가능이
+  확인됨"으로 읽으면 못 사는 상품을 살 수 있다고 안내하게 된다(#305 가 남긴 재검토 항목).
+  계약 밖 상태값은 항목을 살린 채 필드만 `None` 으로 강등한다 — 찜처럼 항목을 skip 하면
+  "전부 빼줘"가 일부만 지우고 성공을 보고한다. `AVAILABLE`·미수신이 모두 무표시라 기존 문구는
+  바이트 단위로 불변이다. **AC③ 부분 충족** — "내가 뭐 찜했지?" 질의를 받는 `wishlist_view`
+  intent 가 아직 없어(api-spec §4.16 이 이미 요구하는 미구현 갭, **#386**) 찜 쪽은 해제
+  되물음에만 라벨이 붙는다. **AC⑤ 는 코드 변경 없이 닫는다** — Spring I-1 이 살 수 없는 상품을 후보에
+  넣지 않고 CH-5 가 카드 조회 시점에 한 번 더 드롭하므로(api-spec §4.6·§4.2) AI 가 추천 단계에서
+  상태를 알 수단도, 낄 자리도 없다.
 - **#370 — 골든셋 v2.2 위반 네거티브 채널 신설 + 라벨 provenance 기록(`evals/goldenset`)** —
   #333 adjudication 라운드가 남긴 갭 3건(위반 네거티브 0건·라벨 주체 미기록·슬라이스 쿼터
   하향 사유 미문서화) 후속. `CaseCore`에 `labelSource`/`labeledAt`/`labelRationale` 신설해
@@ -114,6 +133,28 @@
   - **아직 안 되는 것 3가지 — 릴리스 노트만 보고 "이제 다 된다"로 읽지 말 것.** (1) **Spring 이 I-24~I-28 을 아직 구현 진행 중**이라 배포 전에는 이 발화들이 호출은 나가도 응답을 못 받아 실패 안내로 끝난다. (2) **FE `ChatAction` 유니온에 신규 8종이 아직 없다** — FE 수신부가 붙기 전에는 성공해도 화면에 반영되지 않는다. (3) **수량 변경(I-25)은 계약만 등재됐고 AI 는 미구현**이다(대응 이슈 없음, §4.13) — "3개로 바꿔줘"류 발화는 아직 아무 동작도 하지 않는다.
 
 ### Changed
+- **#394 — I-1 검색 재시도를 한시적으로 끈다(`spring_max_retries` 기본 1→0)** — 운영 실측
+  (2026-08-06): I-1 이 `SEARCH_FAILED` 로 떨어진 요청은 Spring 이 실패한 게 아니라 200 인데
+  3s 예산을 넘긴 지연이었다. 그 상태에서 재시도는 backoff 없이 성공했을 쿼리를 즉시 한 번 더
+  돌려 Spring 부하만 2배로 만들고, 사용자에겐 6초 뒤 실패를 준다. **BE 검색 쿼리 개선(리뷰
+  집계 비정규화, BE #395) 배포 후 원복 검토** — 구매자 `progress` 이벤트(#289)로 first-token
+  관문이 풀릴 때도 함께 재검토한다. 상한(`le=1`)·타임아웃 값·재시도 루프 로직은 불변, 계약
+  (api-spec) 무변경.
+- **#396 — 구매자 `progress` SSE 이벤트 플래그 기본 on 전환 + 운영 기동 가드 제거** —
+  #289 가 계약 등재(v0.21.0)·FE 확인 완료 뒤에만 켜라고 못박아둔 잠금이 2026-08-06 FE
+  구현 완료 통보로 해제됐다. `progress_events_enabled` 기본값을 `false` → `true` 로
+  뒤집고, `_require_pepper_in_prod` 의 운영(jwks)·스테이징 기동 가드(플래그 on 이면
+  기동 실패)를 삭제했다 — 가드 제거 자체가 해제 절차의 일부였다(다른 fail-closed 가드
+  pepper·internal token·jwks_url·google_api_key·state store·session claim TTL 은
+  무변경). 기본값이 뒤집히며 구매자 스트림을 도는 다른 테스트 다수에서 이벤트 목록
+  맨 앞에 `progress` 프레임이 하나 더 붙어 깨졌고(`test_buyer_tracing.py`·`test_cart.py`·
+  `test_category_scope_84.py`·`test_condition_actions.py`·`test_fanout.py`·
+  `test_recommendation.py`), 기대값을 새 현실에 맞춰 갱신했다(단언 약화·스킵 없음).
+  `test_progress_event.py`는 명시적 off 강제(`monkeypatch`)로 escape hatch 회귀 4건을
+  보존하고, 기본값 자체를 직접 고정하는 테스트와 가드 제거를 고정하는 성공 테스트 2건을
+  추가했다. **와이어 계약(이벤트 이름·페이로드·필드·횟수·상대 순서) 은 이번에 하나도
+  바꾸지 않았다** — 바뀌는 것은 "잠겨 있다"는 구현/배포 상태뿐이며, 되돌리려면
+  `PROGRESS_EVENTS_ENABLED=false` 한 줄. (api-spec §3.1·§2.9 c, v0.26.2)
 - **#313 — group→컨텍스트 매핑을 데이터(`GROUP_ALLOWED_CONTEXTS`)로 강제, #300·#84 전용 검증자를 일반형으로 흡수** —
   `evals/intent_probe/schema.py` 에 group → 허용 컨텍스트 매핑을 데이터로 두고 `Utterance`
   검증자(`_contexts_are_within_the_group_allowlist`)가 강제한다. 매핑에 없는 group 은 어떤
@@ -167,6 +208,7 @@
 - **#285 — 챗봇 장바구니 삭제·수량 변경·찜 추가·해제·목록 internal 계약 초안을 정본에 등재** — Notion 「📡 API 명세서」에 I-24~I-28로 등재했다. 발명이 아니라 FE↔BE 정본 실측(C-4 삭제·C-3 수량 변경·M-5 찜 추가·M-6 찜 해제·M-4 찜 목록)의 의미론과 I-2/I-18의 internal 규약(`X-Internal-Token`, AI가 검증한 JWT `sub` 유래 신원, 3초 타임아웃, 응답 envelope)을 이식한 제안이며, I-25 수량 변경은 이슈 본문에 없던 신규 편입이다. 아직 BE 협의 전으로 각 정본 페이지에 초안 배너가 있고 잔여 안건은 이슈 #285 코멘트에 남겼으며, 사본 `docs/api-spec.md` 동기화와 CH-2 `action` 8종 확장은 협의 후 진행한다.
 
 ### Fixed
+- **#344 — `category_distance_max` 등 카테고리 거리·마진 임계가 사전 재시드(2,056행 → leaf 1,007행) 이후로 stale이던 문제** — `evals/category_probe` 기준선(`baselines/fast-2026-08-06`, hits.csv 앵커 38셀×N=8·176표본)을 오프라인 스윕한 결과 `category_distance_max`를 0.22 → **0.26**으로 올렸다(single 정답 med 0.2416·q3 0.2579 vs notInCatalog 최소 d1 0.2621 사이에서 nic 무강제 0/40을 지키는 최대 컷 — 거리컷 드롭이 107/176 → **30/176**으로 줄고 채택 정답이 61/176 → **130/176**으로 늘었다, 오답채택은 0 → 8). 이 측정은 이 프로브 176표본 범위이며, 이슈 본문이 인용한 골든셋 150건 컷 통과 회복(#222 별도 실측)은 이번 재측정으로 확인하지 않았다 — 범위 밖. `category_distance_override_margin`(0.035)·`category_select_margin_max`(0.02)는 재검증만 하고 값은 유지했다. 재측정을 `hits.csv` 원시 top-k 거리만으로 런 재실행 없이 반복할 수 있도록 오프라인 스윕 도구 `evals/category_probe/sweep.py`(API·pg·LLM 콜 0)를 신설했다. 계약(api-spec) 무변경.
 - **#353 — `embed_texts`가 Google 배치 임베딩 100건/요청 상한을 넘으면 400으로 실패하던 문제** — `_EMBED_BATCH_MAX`(100) 청크로 나눠 순차 호출하고 입력 순서대로 이어붙이도록 고쳤다. eval 도구뿐 아니라 §4.8 I-17 운영 배치 경로(search_doc 임베딩)도 공유하는 잠복 결함이었다. 계약(api-spec) 무변경.
 - **#393 (P0) — 카테고리 매핑이 거리컷 등으로 드롭된 턴이 I-3(인기 상품) 우회를 못 타 무필터 I-1(운영 실측 7.74초·12.3MB)을 받아 SEARCH_FAILED 로 떨어지던 문제** — 우회 판정이 decompose 산출(`category_queries` 등 원시 신호)만 보고 매핑 뒤 조립되는 **최종 payload**(실제 Spring 파라미터)는 보지 않아, 매핑이 드롭되면 판정이 어긋났다. 세 조각으로 고쳤다. **A(최소 필터 가드)** — `spring_client.search_filter_axes`(단일 출처, `_search_query_params` 위임)로 이번 턴이 파라미터 0개로 나갈지 판정하고(`search_guard.is_unfiltered_payload`), no_condition(#162)/underspecified(#336) 축에 안 걸리는 `rating_min`·`attr_conditions` 만 있는 턴·매핑이 드롭돼 payload 가 완전히 빈 턴(멀티 카테고리 지목이 모두 실패한 턴 포함)도 인기 상품으로 돌린다 — **의도 판정이 아니라 payload 사실 판정**이라 no_condition/underspecified 와 달리 턴 번호(멀티턴)에도 한정하지 않는다(운영에서 실제로 밟는 되묻기 다음 턴이 바로 이 경로다). 완화 probe 도 payload 가 비면 Spring 을 부르지 않는다. **B(매핑 드롭 0건 폴백, "신발" 시나리오)** — 사용자가 카테고리를 지목했는데 매핑이 leg 를 하나도 못 냈지만 keyword 는 남은 턴(`search_guard.is_category_mapping_dropped`)은 **먼저 keyword 검색을 시도하고, 0건일 때만** 인기 상품으로 대체한다(사전 우회 아님 — 관련 결과가 있으면 그대로 보여준다). `may_auto_relax` 턴(첫 이벤트 앞 직렬 호출 추가)에는 발동하지 않는다(#277 first-token 예산 보존). 신규 `category_unmapped_notice` 고지. **C(인기 후보 사후필터)** — `search_service.search_catalog` 의 rating_min/attr_conditions 필터를 `apply_ai_side_filters` 로 추출해 A/B 가 만드는 인기 후보 경로와 공유, 조건 칩과 실제 후보의 표시-실제 불일치를 막았다. 신규 마스터 스위치 `search_filter_guard_enabled`(기본 on, 롤백 스위치) — 끄면 PR #311·#372 가 지키던 종전 무필터 검색 경로가 그대로 재현된다(회귀 테스트로 고정). 이 범위 확대로 PR #311(멀티 카테고리 매핑 실패 턴)·#372(과소지정 되묻기 거부 응답 턴)가 동결했던 무필터 검색 경로 2건의 기대 동작을 인기 상품 폴백으로 갱신했다(검출력은 유지, 종전 동작은 가드-off 회귀 테스트로 보존). `evals/combo_matrix/pair_runner.py` 는 이 가드가 재는 축(후보 소스 라우팅)과 자신이 재는 축(Spring WHERE 필터 배관)이 달라 실행 한정으로 가드를 끈다(케이스·기대값 파일은 무수정, README 문단 추가). 카테고리 거리·margin 임계값(#344 소유)·타임아웃 값은 건드리지 않았고, 계약(api-spec) 무변경.
 - **#323 — `set_summary` 무잠금 read-then-write 에 per-user `mutation_lock` 추가 — #150 사용자 편집 경로 선결.**
