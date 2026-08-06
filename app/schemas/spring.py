@@ -369,10 +369,14 @@ class AddToCartResult(CamelModel):
 # 공유되므로(product_option 에 재고 컬럼 없음) "옵션 중 하나라도 살 수 있으면 AVAILABLE" 이다.
 PurchaseState = Literal["AVAILABLE", "SOLD_OUT", "HIDDEN"]
 
-# 상태 → 안내용 한국어 라벨. **전사(全射) 매핑**이라 BE 가 상태를 추가하면 여기 누락이 드러난다
-# (ORDER_ITEM_STATUS_TEXT 와 같은 형태). AVAILABLE 이 빈 문자열인 것은 "살 수 있다"를 굳이
-# 말하지 않는다는 표현 정책이며, 매핑의 완전성과는 별개다 — 라벨을 붙일지 말지는 소비 측
-# (app/agents/buyer/cart/purchase_state.py)이 정한다.
+# 상태 → 안내용 한국어 라벨. **전사(全射) 매핑을 의도한다**(ORDER_ITEM_STATUS_TEXT 와 같은 형태).
+# 다만 그 전사성을 강제하는 건 아래 타입 어노테이션이 **아니라**
+# `tests/unit/test_cart.py::test_purchase_state_label_covers_every_literal_value` 다 —
+# `Mapping[PurchaseState, str]` 은 부분 매핑을 막지 못하고(TypedDict 가 아니다) 이 리포 CI 엔
+# 타입체커도 없다. 소비 측이 `.get(state, "")` 로 조용히 넘어가므로, 그 테스트가 없으면 새 상태를
+# 추가하고 라벨을 빠뜨렸을 때 예외 없이 라벨만 사라진다(PR #400 리뷰).
+# AVAILABLE 이 빈 문자열인 것은 "살 수 있다"를 굳이 말하지 않는다는 표현 정책이며, 매핑의
+# 완전성과는 별개다 — 라벨을 붙일지 말지는 소비 측(app/agents/buyer/cart/purchase_state.py)이 정한다.
 PURCHASE_STATE_LABEL: Mapping[PurchaseState, str] = MappingProxyType(
     {
         "AVAILABLE": "",

@@ -22,6 +22,11 @@ from app.schemas.spring import PURCHASE_STATE_LABEL, PurchaseState
 # 상태별 안내 문장 — 사용자가 취해야 할 **다음 행동**을 담는다. 품절과 판매 종료를 가르는 이유가
 # 곧 이것이다(품절은 기다리면 되고, 판매 종료는 돌아오지 않아 빼는 편이 낫다). 목록 줄마다
 # 반복하지 않고 문단 끝에 상태당 한 번만 싣는다 — 항목이 여럿이면 같은 문장이 N번 나온다.
+#
+# `PURCHASE_STATE_LABEL`(전사 매핑, 테스트로 강제)과 달리 **이쪽은 의도적 부분 매핑**이다 —
+# `AVAILABLE` 에는 권할 행동이 없어 항목 자체가 없어야 정상이다. 새 상태가 추가됐을 때 라벨은
+# 반드시 필요하지만(그래서 전사), 안내 문장은 그 상태가 행동을 요구할 때만 넣는다. `_ADVICE_ORDER`
+# 도 같은 이유로 부분 목록이며, 여기 없는 상태는 라벨만 붙고 안내 줄은 생기지 않는다.
 _STATE_ADVICE: Mapping[PurchaseState, str] = MappingProxyType(
     {
         "SOLD_OUT": "품절된 상품은 재입고되면 다시 담을 수 있어요.",

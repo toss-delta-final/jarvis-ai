@@ -579,6 +579,22 @@ async def test_cart_view_strips_seller_text() -> None:
     assert all(ch not in token for ch in ("\x1b", "\u200b", "\u202e"))
 
 
+def test_purchase_state_label_covers_every_literal_value() -> None:
+    """`PURCHASE_STATE_LABEL` 은 `PurchaseState` 전 값을 덮어야 한다(PR #400 리뷰).
+
+    **이 테스트가 전사성을 강제하는 유일한 장치다.** 타입 어노테이션
+    (`Mapping[PurchaseState, str]`)은 부분 매핑을 막지 못하고(`TypedDict` 가 아니다), 이 리포 CI 는
+    `ruff check` + `pytest` 만 돌려 타입체커가 없다. 게다가 소비 측이 조용히 넘어간다 —
+    `state_suffix` 는 `.get(state, "")`, `state_advice_lines` 는 `_ADVICE_ORDER` 에 없으면 skip.
+    그래서 BE 가 상태를 추가하고 라벨 갱신을 빠뜨리면 **예외 없이 라벨만 소리 없이 사라진다**.
+    """
+    from typing import get_args
+
+    from app.schemas.spring import PURCHASE_STATE_LABEL, PurchaseState
+
+    assert set(get_args(PurchaseState)) == set(PURCHASE_STATE_LABEL)
+
+
 @pytest.mark.parametrize(
     ("state", "expected"),
     [
