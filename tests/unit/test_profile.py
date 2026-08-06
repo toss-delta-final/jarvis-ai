@@ -842,6 +842,54 @@ async def test_add_fact_dedup_without_cap() -> None:
     assert (await store.get_facts("nocap")).count("탄산수 좋아함") == 1
 
 
+async def test_set_summary_serializes_concurrent_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """배치 consolidation 과 사용자 편집이 동시에 set_summary 를 부르면(#323), 락이 없으면
+    무잠금 read-then-write(carryover) 경합으로 나중에 aput 하는 쪽이 이긴다 — 순서상 사용자
+    편집(B)이 이겨야 하는데 락이 없으면 먼저 멈춘 배치(A)가 나중에 덮어써 유실될 수 있다.
+
+    유닛 환경은 google_api_key 미구성이라 `_embed_summary` 가 None → set_summary 가 carryover
+    read(get_summary) 경로를 타므로, 그 aget 호출을 계측해 결정론적으로 경합을 재현한다.
+    """
+    store = await get_profile_store()
+    user_id = "323"
+    await store.set_summary(user_id, "initial md", "t0")
+
+    entered = asyncio.Event()
+    proceed = asyncio.Event()
+    original_aget = type(store._store).aget
+    call_count = 0
+
+    async def _blocking_aget(self, namespace, key, **kwargs):
+        nonlocal call_count
+        if self is store._store and namespace == ("profile", user_id) and key == "summary":
+            call_count += 1
+            if call_count == 1:  # 배치(A)의 carryover read만 멈춘다
+                entered.set()
+                await proceed.wait()
+        return await original_aget(self, namespace, key, **kwargs)
+
+    monkeypatch.setattr(type(store._store), "aget", _blocking_aget)
+
+    task_a = asyncio.create_task(store.set_summary(user_id, "batch md", "t1"))
+    await entered.wait()  # A가 carryover read에서 멈춤(락 있으면 락을 쥔 채)
+    task_b = asyncio.create_task(store.set_summary(user_id, "user md", "t2"))
+    try:
+        # 락이 없으면 B는 곧바로 완료된다 — 완료되면 A가 재개되기 전에 B의 쓰기 결과를 관찰할 수
+        # 있게 한다. 락이 있으면 B는 락 획득 대기로 여기서 타임아웃되고(정상), 아래에서 A를
+        # 재개시킨 뒤 정상적으로 완료된다.
+        await asyncio.wait_for(asyncio.shield(task_b), timeout=1.0)
+    except TimeoutError:
+        pass
+    proceed.set()
+    await asyncio.gather(task_a, task_b)
+
+    final = await store.get_summary(user_id)
+    assert final is not None
+    assert final.markdown == "user md"  # 락이 있으면 B(사용자 편집)가 마지막에 쓴다
+
+
 async def test_append_session_ctx_caps_count() -> None:
     """세션 버퍼 개수 상한 — 최신 cap 개만 유지."""
     store = await get_profile_store()
