@@ -360,12 +360,22 @@ class ScriptedLLM:
         self._rerank_error = rerank_error
         self._timeout = timeout
         self.calls: list[tuple[str, str]] = []  # (kind, tier)
+        # (kind, max_tokens, reasoning_effort) — #325 enrichment 토큰 예산 배선 회귀 검증용.
+        self.complete_kwargs: list[tuple[str, int, str | None]] = []
 
     async def complete(
-        self, *, system: str, user: str, tier: str, max_tokens: int = 1024, json_output: bool = True
+        self,
+        *,
+        system: str,
+        user: str,
+        tier: str,
+        max_tokens: int = 1024,
+        json_output: bool = True,
+        reasoning_effort: str | None = None,
     ) -> str:
         kind = self._classify(system, tier)
         self.calls.append((kind, tier))
+        self.complete_kwargs.append((kind, max_tokens, reasoning_effort))
         if kind == "enrich":
             return json.dumps(self._enrich, ensure_ascii=False)
         if kind == "delta":

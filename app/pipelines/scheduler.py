@@ -47,12 +47,17 @@ def _run_incremental_batch() -> None:
     try:
         result = asyncio.run(run_artifacts_batch(full_rebuild=False))
         _log.info(
-            "scheduler 증분 배치 완료: processed=%d hidden=%d pages=%d cursor=%s",
+            "scheduler 증분 배치 완료: processed=%d hidden=%d pages=%d failed=%d cursor=%s",
             result.processed,
             result.hidden,
             result.pages,
+            result.failed,
             result.cursor,
         )
+        if result.failed > 0:
+            # [#325] apscheduler는 예외를 삼켜 ERROR 한 줄 외에 실패가 안 드러난다 — 부분 실패도
+            # 운영 알람 대상이므로 error 로 남긴다(warning 아님).
+            _log.error("증분 배치 부분 실패: failed=%d — dead-letter 로그 확인", result.failed)
     except Exception:  # noqa: BLE001 - 잡 실패 격리(다음 주기 자연 재개)
         _log.exception("scheduler 증분 배치 실패 — 다음 주기 재개")
 
