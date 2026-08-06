@@ -8,12 +8,14 @@ TestClient(app)를 `with`로 감싸야 lifespan 이 실제로 발동한다(경�
 from __future__ import annotations
 
 import asyncio
+import threading
 
 from fastapi.testclient import TestClient
 import pytest
 
 import app.main as main_mod
 from app.core.config import Settings
+from app.pipelines.category_seed import CategoryDictionaryError
 
 
 def _patch_lifespan_dependencies(
@@ -23,6 +25,7 @@ def _patch_lifespan_dependencies(
     failing_resource=None,
     cancelling_resource=None,
     hanging_resource=None,
+    record_category_check=False,
 ):
     async def record(name):
         calls.append(name)
@@ -34,6 +37,14 @@ def _patch_lifespan_dependencies(
         if name == hanging_resource or (hanging_resource == "*" and name != "initialize"):
             await asyncio.Event().wait()
 
+    def category_check(dsn, *, mode):
+        # 실 DB I/O 없는 기본 no-op — `_lifespan` 에 진입하는 유닛 테스트가 진짜 psycopg.connect
+        # 를 하지 않게 한다(#401 라운드 2 리뷰 F2). `record_category_check=True` 면 호출 여부를
+        # `calls` 에 남겨 배선 검증에 쓴다.
+        if record_category_check:
+            calls.append("category_dictionary_check")
+
+    monkeypatch.setattr(main_mod, "check_category_dictionary", category_check)
     monkeypatch.setattr(main_mod, "initialize_session_lifecycle", lambda: record("initialize"))
     monkeypatch.setattr(main_mod, "start_scheduler", lambda: calls.append("start"))
     monkeypatch.setattr(main_mod, "stop_scheduler", lambda: calls.append("stop"))
@@ -82,6 +93,9 @@ def test_lifespan_starts_and_stops_scheduler(monkeypatch):
     calls = []
     monkeypatch.setattr(main_mod, "start_scheduler", lambda: calls.append("start"))
     monkeypatch.setattr(main_mod, "stop_scheduler", lambda: calls.append("stop"))
+    # 실 DB I/O 없이(#401 라운드 2 리뷰 F2) — 이 테스트는 `_patch_lifespan_dependencies` 를 쓰지
+    # 않아 그 헬퍼의 기본 no-op 패치를 못 받으므로 직접 패치한다.
+    monkeypatch.setattr(main_mod, "check_category_dictionary", lambda dsn, *, mode: None)
 
     with TestClient(main_mod.app) as client:
         assert calls == ["start"]
@@ -89,6 +103,26 @@ def test_lifespan_starts_and_stops_scheduler(monkeypatch):
         assert resp.status_code == 200
 
     assert calls == ["start", "stop"]
+
+
+@pytest.mark.asyncio
+async def test_lifespan_entry_calls_category_dictionary_startup_check(monkeypatch):
+    """`_lifespan` 진입이 실제로 카테고리 사전 가드를 부르는지 배선을 검증한다(#401 라운드 2 F2).
+
+    이전 라운드의 3건은 `_check_category_dictionary_startup()` 을 직접 호출해 가드
+    함수 자체의 계약만 검증했다 — `_lifespan` 안의 `await _check_category_dictionary_startup()`
+    한 줄이 지워져도 그 3건은 그대로 통과한다. 이 테스트는 `_lifespan` 을 통해서만 통과할 수
+    있게 `check_category_dictionary` 호출 여부를 `calls` 에 기록해 배선 자체를 검증한다.
+    """
+    calls = []
+    _patch_lifespan_dependencies(monkeypatch, calls, record_category_check=True)
+
+    async with main_mod._lifespan(main_mod.app):
+        pass
+
+    assert "category_dictionary_check" in calls
+    # initialize_session_lifecycle 보다 먼저 불려야 한다(§요구 동작: 기동 초반 가드).
+    assert calls.index("category_dictionary_check") < calls.index("initialize")
 
 
 @pytest.mark.asyncio
@@ -517,3 +551,66 @@ async def test_lifespan_clamps_negative_allowance_and_warns_without_startup_fail
         in caplog.text
     )
     assert "lifespan resource cleanup complete succeeded=0 failed=9" in caplog.text
+
+
+# --- 카테고리 사전 0행/0임베딩 기동 가드 (이슈 #401) ------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_category_dictionary_startup_check_survives_db_connection_failure(
+    monkeypatch, caplog
+) -> None:
+    """DB 연결 실패(예: pg-catalog 미기동)는 기동을 죽이지 않는다 — WARNING 로그 후 계속."""
+
+    def raise_connection_error(dsn: str, *, mode: str) -> None:
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(main_mod, "check_category_dictionary", raise_connection_error)
+
+    with caplog.at_level("WARNING"):
+        await main_mod._check_category_dictionary_startup()  # 예외를 던지면 안 됨
+
+    assert "category dictionary startup check unavailable" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_category_dictionary_startup_check_propagates_config_error_in_fail_mode(
+    monkeypatch,
+) -> None:
+    """구성 오류(0행/0임베딩) + `fail` 모드는 `CategoryDictionaryError` 를 그대로 올린다.
+
+    "연결 실패"와 "구성 오류"는 다른 사실이다 — 앞의 테스트가 전자를 삼키는 걸 확인했으니
+    후자는 삼키지 않는지도 확인해야 회귀를 잡는다(둘 다 Exception 을 뭉뚱그려 잡으면 이 테스트가
+    실패한다).
+    """
+
+    def raise_dictionary_error(dsn: str, *, mode: str) -> None:
+        raise CategoryDictionaryError("카테고리 사전 0행")
+
+    monkeypatch.setattr(main_mod, "check_category_dictionary", raise_dictionary_error)
+
+    with pytest.raises(CategoryDictionaryError):
+        await main_mod._check_category_dictionary_startup()
+
+
+@pytest.mark.asyncio
+async def test_category_dictionary_startup_check_runs_in_thread_with_settings_dsn_and_mode(
+    monkeypatch,
+) -> None:
+    """설정의 dsn·모드를 그대로 전달하는지 — 블로킹 psycopg 호출이므로 스레드 오프로딩도 확인."""
+    captured: dict = {}
+
+    def record(dsn: str, *, mode: str) -> None:
+        captured["dsn"] = dsn
+        captured["mode"] = mode
+        captured["thread"] = threading.current_thread().name
+
+    monkeypatch.setattr(main_mod, "check_category_dictionary", record)
+    settings = Settings(_env_file=None, category_dictionary_startup_check="fail")
+    monkeypatch.setattr(main_mod, "get_settings", lambda: settings)
+
+    await main_mod._check_category_dictionary_startup()
+
+    assert captured["dsn"] == settings.catalog_db_url
+    assert captured["mode"] == "fail"
+    assert captured["thread"] != "MainThread"

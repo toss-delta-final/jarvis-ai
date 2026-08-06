@@ -13,12 +13,17 @@ from __future__ import annotations
 import functools
 import json
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from app.core.config import get_settings
+from app.core.logging import get_logger
 from app.pipelines.embedding import embed_texts as _embed_texts
 
 EmbedFn = Callable[[list[str]], list[list[float]]]
+
+logger = get_logger(__name__)
 
 
 def embed_categories(leaves: Sequence[str], embed: EmbedFn) -> list[tuple[str, list[float]]]:
@@ -83,3 +88,91 @@ def seed_from_file(
     model = model or settings.embedding_model_id
     rows = embed_categories(load_leaves(source_path), embed)
     return upsert_categories(dsn, rows, model)
+
+
+class CategoryDictionaryError(RuntimeError):
+    """카테고리 사전 구성 오류(행 0 또는 embedding 채워진 행 0) — 이슈 #401.
+
+    개별 발화 매핑 실패(canonical-or-null, 정상)와 사전 전체 결측(구성 오류)은 다른 사실이다.
+    """
+
+
+@dataclass(frozen=True)
+class DictionaryCounts:
+    """categories 테이블 상태 — 총 행 수와 embedding 이 채워진 행 수를 따로 본다.
+
+    `search_categories_pg` 는 `WHERE embedding IS NOT NULL` 로 거르므로(app/pipelines/
+    category_search.py), 행이 있어도 embedding 이 전부 NULL 이면 매핑은 0행일 때와 동일하게
+    죽는다 — 행 수만 세는 가드는 반쪽이다(docs/lessons.md 참고).
+    """
+
+    total: int
+    embedded: int
+
+
+def dictionary_counts(dsn: str) -> DictionaryCounts:
+    """categories 테이블의 (총 행 수, embedding IS NOT NULL 행 수)를 1왕복으로 조회한다.
+
+    이 함수는 `app/main.py` lifespan(= `initialize_session_lifecycle()` 보다 먼저)에서 호출돼
+    기동 경로에 있다 — libpq 기본 `connect_timeout=0`(무한 대기)로 그냥 연결하면 catalog 호스트가
+    블랙홀(방화벽·다운된 원격 호스트로 패킷을 그냥 떨굼)일 때 uvicorn 기동이 영원히 끝나지
+    않는다(#401 라운드 2 리뷰 F1 — 연결 거부는 즉시 돌아오지만 블랙홀은 아니다). 이 저장소의
+    다른 기동 경로 pg 연결은 전부 `hardened_pg_conninfo`(app/core/pg_resilience.py, DSN 에
+    connect_timeout·keepalives·statement_timeout 을 병합)로 유한 시간을 보장한다 — 새 설정을
+    신설하지 않고 그 관례·기존 `state_store_*` 설정을 그대로 재사용한다.
+    """
+    import psycopg  # noqa: PLC0415 - LAZY import(pg 미설치 환경 유닛테스트 회피)
+
+    from app.core.pg_resilience import hardened_pg_conninfo  # noqa: PLC0415
+
+    with psycopg.connect(hardened_pg_conninfo(dsn)) as conn, conn.cursor() as cur:
+        cur.execute("SELECT count(*), count(embedding) FROM categories")  # count(col) 은 NULL 제외
+        row = cur.fetchone()
+        assert row is not None  # count(*) 는 항상 정확히 한 행을 돌려준다
+        total, embedded = row
+    return DictionaryCounts(total=total, embedded=embedded)
+
+
+def evaluate_dictionary_counts(counts: DictionaryCounts) -> tuple[Literal["error", "ok"], str]:
+    """순수 판정(카운트 → 상태/메시지) — DB 없이 유닛테스트 가능하게 분리.
+
+    (총 행 0) 과 (총 행>0 이지만 embedding 채워진 행 0) 은 둘 다 구성 오류다 — 후자도
+    `search_categories_pg` 입장에서는 매핑이 죽어 있는 것과 같기 때문이다.
+    """
+    if counts.total == 0:
+        return (
+            "error",
+            "카테고리 사전 0행 — 정본 db/catalog/seed/categories.json 미적재. "
+            "docker exec -i jarvis-ai-pg-catalog-1 psql -U jarvis -d catalog "
+            "< db/catalog/init/04_categories_seed.sql 로 복구하거나 컨테이너를 재생성하라.",
+        )
+    if counts.embedded == 0:
+        return (
+            "error",
+            f"카테고리 사전 {counts.total}행이지만 embedding 채워진 행 0 — 임베딩 배치 미실행. "
+            "app.pipelines.category_seed.seed_from_file 로 복구하라.",
+        )
+    return (
+        "ok",
+        f"카테고리 사전 정상 — 총 {counts.total}행, embedding 채워진 행 {counts.embedded}행",
+    )
+
+
+def check_category_dictionary(dsn: str, *, mode: Literal["off", "log", "fail"]) -> None:
+    """카테고리 사전 0행/0임베딩 가드 — 판정 + 로깅.
+
+    `mode="off"` 는 조회 자체를 생략한다(DB 호출 없음). `mode="fail"` 은 구성 오류에서
+    `CategoryDictionaryError` 를 던진다(호출부가 기동 거부로 쓸지는 호출부 소관).
+    DB 연결 실패(예: pg 미기동)는 여기서 잡지 않고 그대로 전파한다 — "연결 실패"와 "구성 오류"는
+    다른 사실이라 호출부(app/main.py `_lifespan`)가 따로 구분해 처리한다.
+    """
+    if mode == "off":
+        return
+    counts = dictionary_counts(dsn)
+    level, message = evaluate_dictionary_counts(counts)
+    if level == "error":
+        logger.error(message)
+        if mode == "fail":
+            raise CategoryDictionaryError(message)
+    else:
+        logger.info(message)

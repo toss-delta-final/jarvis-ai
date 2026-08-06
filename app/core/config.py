@@ -668,6 +668,16 @@ class Settings(BaseSettings):
     # 20 = 2 × fanout_max(한 턴) × 동시 턴 2. 하한은 아래 _require_pool_covers_anchor_concurrency
     # 가 기동 시 강제한다.
     category_search_pool_max_size: int = 20
+    # [#401] 기동 시 categories 0행/0임베딩 가드(app/pipelines/category_seed.py
+    # check_category_dictionary) 를 어떻게 처리할지. "off"=검사 생략, "log"=ERROR 로그만,
+    # "fail"=CategoryDictionaryError 로 기동 거부.
+    # 기본이 "fail" 이 아닌 이유: 사전 결측은 map_categories 가 canonical-or-null 로 무필터
+    # 퇴화하는 상태다 — 카테고리 매핑만 못 쓸 뿐 서비스는 계속 응답 가능하다. 반면 기동 거부는
+    # 서비스 전면 중단이라 하방이 무계다(§4 거리컷과 같은 "미회수는 안전, 오염이 위험" 비대칭의
+    # 거울상 — 여기서는 "결함을 못 알아채는 것"이 회수 실패고 "서비스가 안 뜨는 것"이 오염 쪽
+    # 위험). 그래서 결함 교정(=시끄럽게 만들기)은 기본 on(`log`) 이고, 기동 거부는 그걸 원하는
+    # 환경(예: 배치 세팅 직후 강한 검증)이 옵트인한다.
+    category_dictionary_startup_check: Literal["off", "log", "fail"] = "log"
     # [#115] 최근접 채택 상한 — 채택 거리가 이 값을 **초과**하면 그 leg 를 canonical 없이 드롭한다
     # (§4 거리 조건부 채택. 종전 never-null "멀어도 억지로 채택"은 폐기). 거리 초과는 "맞는 칸이
     # taxonomy 에 없다"의 신호다.
@@ -688,6 +698,10 @@ class Settings(BaseSettings):
     # 재측정 없이는 무효다 — `evals/category_probe/manifest.py` 의 `dictionaryHash`(categories
     # 행 수 + 정렬된 canonical 전체의 sha256)로 과거 런과 사전 상태가 같은지 대조할 수 있다.
     # 재측정은 `uv run python -m evals.category_probe.sweep --run <hits.csv 있는 런 디렉터리>`.
+    # [#401] 근거 사전은 이제 repo 정본 `db/catalog/seed/categories.json`(leaf 1,007) — codepoint
+    # 정렬 sha256 `db81e849616ec5782f9d1b4ecda1f6eb15f9dbc7a2ec939b40e33fa786d65089`, en_US.utf8
+    # 정렬(현행 `dictionaryHash` 가 재는 순서) sha256 `fb9ca975af1ea86ce013caeb018b7adcefc80a96d529aad0dd0555e464f21fe6`.
+    # 정본이 밖에 있어 이 임계 근거를 재현할 수 없던 문제를 편입으로 없앤다(`db/catalog/seed/README.md`).
     # 절단 튜너블(ge=0)이 아니라 비교 임계라 코사인 거리 정의역 [0,2] 로 범위 검증한다.
     category_distance_max: float = Field(default=0.26, ge=0.0, le=2.0)
     # [#115 §4.5] 거리컷 마진 예외 — 거리가 임계를 넘어도 마진이 이 값 **이상**이면 채택한다.

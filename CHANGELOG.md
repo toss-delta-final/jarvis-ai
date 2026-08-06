@@ -10,6 +10,24 @@
 ## [Unreleased]
 
 ### Added
+- **#401 — 카테고리 사전 시드 정본을 repo 로 편입하고 0행/0임베딩 가드를 둔다** — 발화→카테고리
+  매핑(`category_distance_max=0.26`, #344)의 근거 사전(leaf 1,007행)이 지금까지 repo 밖
+  (`~/inte-final/_sql`)에만 있어 아무도 그 근거를 재현·검증할 수 없었고, `db/catalog/init/
+  02_categories.sql` 은 스키마만 만들어 fresh 환경은 `categories` 0행으로 뜬 채 조용히 무필터로
+  퇴화했다(개별 발화 매핑 실패와 사전 전체 결측이 같은 신호로 보임). MariaDB 카탈로그 덤프에서
+  leaf 1,007개를 codepoint 정렬로 뽑아 `db/catalog/seed/categories.json` 정본을 만들고
+  (`scripts/derive_category_seed.py`, `--check` 모드로 재현 검증 가능, 새 의존성 없음),
+  같은 원천에서 부트스트랩 SQL `db/catalog/init/04_categories_seed.sql`(embedding NULL, 2단계
+  분리 설계 유지)을 생성했다. `app/pipelines/category_seed.py` 에 `check_category_dictionary`
+  가드를 추가해 기동 시(`app/main.py` lifespan) categories 총 행 수와 **embedding 채워진 행
+  수를 따로** 확인한다 — `search_categories_pg` 가 `embedding IS NOT NULL` 로 거르므로 행만
+  있고 임베딩이 없으면 사전이 0행인 것과 동일하게 죽기 때문이다(둘 다 구성 오류로 ERROR 로그,
+  `category_dictionary_startup_check` 설정으로 `off`/`log`(기본)/`fail` 선택 — 기본이 `fail`
+  이 아닌 이유는 사전 결측이 서비스 전면 중단보다 하방이 얕은 상태이기 때문). DB 연결 실패는
+  기동을 막지 않는다. `evals/category_probe/manifest.py::dictionary_fingerprint` 에
+  `canonicalSha256`/`seed`/`matchesSeed` 를 추가해 라이브 DB 상태를 정본과 대조할 수 있게
+  했다(기존 `rowCount`/`sha256` 은 과거 런 비교를 위해 그대로 보존). `category_distance_max`
+  값 자체는 바꾸지 않았다.
 - **#310 — `purchaseState` 로 품절·판매종료를 갈라 안내한다(장바구니·찜)** (api-spec §4.9·§4.16,
   v0.26.3 / SPEC-CART-001 v0.2.6 REQ-CART-037) — 지금까지는 장바구니·찜에서 상품의 구매 가능
   여부를 파싱조차 안 해 "구매 불가 상태예요"조차 말하지 못했다. 품절은 기다리면 되고 판매
