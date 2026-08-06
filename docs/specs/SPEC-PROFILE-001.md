@@ -1,9 +1,9 @@
 ---
 id: SPEC-PROFILE-001
-version: 0.7.0
+version: 0.7.1
 status: draft
 created: 2026-07-10
-updated: 2026-08-05
+updated: 2026-08-06
 author: navis
 priority: high
 issue_number: 79
@@ -21,6 +21,7 @@ issue_number: 79
 
 ## HISTORY
 
+- **v0.7.1 (2026-08-06, 이슈 #356)** — OPEN-G0 착수에 맞춘 **보강**(요구사항 신설·삭제 없음, 계약 무개정). (1) **REQ-PROF-086의 단계 분담 명확화** — 트리플의 *식별자 확정*은 1단계(게이트 통과 직후 결정론적 resolver)이고 2단계는 확정분을 병합해 `("graph", user_id)` 문서로 산출한다. 배치마다 재-resolve 하면 거리 임계·통제 어휘가 바뀔 때 같은 fact 가 다른 `node_id` 로 붙어 **tombstone 을 우회**하므로, 결정론을 기능 요구로 못박은 `SPEC-PROFILE-GRAPH-149` REQ-PGRAPH-010과 충돌한다. (2) **§5.3 `graph_triples` 소유 관계 명시** — 이 필드는 *그 fact 가 낳은* 트리플의 증거 측 기록이고, 정본 집계는 `("graph", user_id)/"v1"` 단일 문서다(신규 SPEC §7.1 "fact 항목은 증거 저장소로 유지하고 값에 필드만 더한다"). 필드명·타입은 v0.7.0 선언 그대로 쓴다 — 새 이름을 만들지 않는다. OPEN-P12는 여전히 **해소가 아니라 진행 중**이다.
 - **v0.7.0 (2026-08-05, 이슈 #149)** — 승격된 취향을 **사용자가 항목 단위로 고칠 수 있게** 하는 계약(api-spec §3.8·§3.9, 신규 `SPEC-PROFILE-GRAPH-149`)과 정합을 맞췄다. **이는 구현 부채 상환이 아니라 설계 결정의 번복이다** — 결정 16의 "마이페이지 GET only"를 넘어서므로 결정 개정 레코드가 필요하고(api-spec §8 항목 9), 승인 전까지 그 계약은 🔴 초안이다. 근거는 이슈 #147의 커밋된 실측이다: 프로필이 깨끗하면 +0.20, 노이즈가 섞이면 −0.053, 반복으로 부풀려지면 −0.117 nDCG@10 — 즉 **오염된 프로필은 측정 가능한 품질 손실을 만드는데 그것을 되돌릴 수 있는 유일한 주체(사용자)에게 권한이 없었다.** 개정 내용: (1) **EX-P3 배제 범위를 `PUT /profile/me` 마크다운 전문 편집으로 한정** — LLM이 쓴 산문의 부분 수정은 여전히 불가능하고, 항목(edge) 단위 제어가 그 문제를 우회한다. (2) **EX-P6과 충돌하지 않음을 명문화** — 기각된 것은 temporal KG 백엔드·그래프 추론·파라메트릭 편집이며 신규 표면은 저장 모델을 바꾸지 않는 1-hop 읽기 투영이다(graph DB 미도입 불변). (3) **REQ-PROF-034 적용 범위를 기계 경로로 한정** — 사용자 개별 삭제는 tombstone이라 삭제가 아니고, 사용자가 명시적으로 요구한 전체 초기화는 기계 자동 처리가 아니어서 금지 대상이 아니다. 금지되는 것은 *기계가 사용자 데이터를 조용히 지우는 것*이다. AC-PROF-13을 기계 경로로 좁히고 AC-PROF-31/32를 신설했다. (4) **REQ-PROF-012의 confidence 수치 미노출을 `profile_summary` 스코프로 한정** — 그래프 표면은 3버킷 라벨만 노출하므로 수치 불변식은 유지된다(축소된 번복). (5) 신규 REQ-PROF-083~086(개인화 중지 전파·억제 제외·초기화 범위·구조화 트리플 산출). (6) **OPEN-P12는 해소가 아니라 우선순위 상향** — 신규 계약이 결정론적 트리플 산출을 이슈 #150의 **선결 조건**으로 만들었고, 후보 방향(consolidation이 구조화 산출물을 함께 낸다)을 확정 방향으로 승격한다. OPEN-P10은 부분 해소. 파이프라인 동작·저장소 구성·게이트 규칙 자체는 무변경이다.
 - **v0.6.0 (2026-07-31, 이슈 #119)** — 프로필 **주입 스코프**를 도입하고 세션 버퍼 적재 규율을 신설했다. 실측 회귀: `profile_summary`를 decompose 프롬프트에 발화와 같은 격으로 주입하면 LLM 이 취향을 `priceMax`/`brand`/`color` 하드 필터로 승격시키고, 그 필터가 스레드 필터 저장소에 영속돼 다음 턴 `PRIOR_FILTERS`로 재주입되며 세션 내내 후보를 좁힌다 — 게스트는 이 입력이 없어 손실이 0이므로 **개인화가 순손실**이 되는 비대칭이 발생했다. 따라서 **이는 구현 부채 상환이 아니라 설계 결정의 번복**이다: §5.1·REQ-PROF-011 이 승인하던 "구조화 블록 → decompose `derived` 필터 파생"을 MVP 에서 유예하고(config `profile_injection_scope` 기본 `rerank_only`), 개인화는 rerank 순서 신호로만 수행한다. REQ-PROF-014 는 입법 의도(소비처별 요약 **생성** 금지)를 유지한 채 "주입하는 경우 동일 문자열"로 자구를 정리했다 — 스코프 선택은 요약을 다르게 만드는 것이 아니다. 신규 REQ-PROF-026(세션 버퍼 intent 배제 + 정규화 동일 발화 **적재 상한**, 결정론 코드)을 추가했다 — 상한은 최소 2 이며, 1로 낮추면 게이트의 반복 승격 경로가 죽는다(반복 신호 제거가 아니라 증폭 차단이 목적). 요구사항 스키마·저장소 구성 무변경. api-spec 무개정(개인화 강도는 와이어 계약에 없음).
 - **v0.5.0 (2026-07-30, api-spec v0.16.0 동기화)** — session/thread 축 분리(SPEC-CHAT-SESSION Option B)를 반영해 **Spring I-20 발화 사유를 `logout` 하나로 축소**했다. 구 `newConversation`은 제거 — 축이 갈린 뒤 "새 대화"는 FE가 `threadId`만 새로 생성하고 세션을 유지하므로 CH-1도 I-20도 호출되지 않아 **사유 자체가 발화되지 않는다**. `reason`은 enum 미강제라 수신해도 400은 아니고 관측용으로 기록만 된다. **프로필 파이프라인은 종전대로 session 축**이며(세션버퍼·`profile_session_activity`·멱등키 모두 `(userId, sessionId)`), 한 접속 아래 여러 방의 발화가 **한 세션 버퍼로 모이는** 구조가 이 축 분리의 전제와 정합한다 — 따라서 REQ/AC의 실질 로직 변경은 없고 사유 목록만 좁혔다(REQ-PROF-051, AC-PROF-28, §1.3 표, 결정 12 행).
@@ -224,6 +225,11 @@ class StoreItemValue(BaseModel):
                                              # (v0.7.0) 개인화 그래프는 3버킷 라벨만 노출 — 수치는 계속 미노출
     suppressed_at: str | None = None         # (v0.7.0, #149) 사용자 개별 삭제 tombstone
     graph_triples: list[dict] = []           # (v0.7.0, #149) 투영 원천 — 마크다운 파싱 금지(REQ-PROF-086)
+                                             # (v0.7.1, #356) 이 fact 가 낳은 트리플이며, 식별자 확정은
+                                             # builder 1단계(게이트 통과 직후 결정론적 resolver)에서 한다.
+                                             # 정본 집계는 ("graph", user_id)/"v1" 문서이고 여기는 증거
+                                             # 측 기록이다 — SPEC-PROFILE-GRAPH-149 §7.1 "fact 항목은
+                                             # 증거 저장소로 유지하고 값에 필드만 더한다"
     derived_from_sensitive: bool = False     # (v0.7.0, #149) 민감 주제 파생 — 보존기간 만료 시 물리 삭제
     valid_from: str | None = None            # 결정 4-A (5)
     last_confirmed: str | None = None
@@ -358,7 +364,7 @@ class ProfileViewResponse(BaseModel):
 - **REQ-PROF-083** (Event-driven): When 회원이 개인화 중지 상태이면, the `reader` **shall** `profile_summary`를 `None`으로 반환하고 요약 markdown 노출도 중단한다 — 랭킹 소비처(rerank 주입·홈 프로필 벡터)도 동일하게 프로필을 쓰지 않는다(신규 SPEC REQ-PGRAPH-051).
 - **REQ-PROF-084** (Event-driven): When 회원이 개인화 중지 상태이면, the `builder` **shall** 세션 버퍼 적재·델타 생성·consolidation·요약 임베딩과 "기억해" hot-path 기록을 **모두 중단**한다. 단 공통 session finalizer는 버퍼 정리와 처리 완료 표시를 계속해 세션 라이프사이클이 멈추지 않게 한다(신규 SPEC REQ-PGRAPH-052/053). 중지 기간의 발화는 **소급 반영하지 않는다**(REQ-PGRAPH-056).
 - **REQ-PROF-085** (Event-driven): When 사용자가 전체 초기화를 요청하면, the 파이프라인 **shall** fact·요약(마크다운 및 임베딩)·억제 표식·미처리 세션 버퍼·누적 게이트 상태를 물리 삭제하고, **변경 감사 로그와 대화 전사록은 보존**한다(신규 SPEC REQ-PGRAPH-061/062). 초기화는 개인화 중지 상태를 변경하지 않는다.
-- **REQ-PROF-086** (Ubiquitous): The `builder` 2단계 **shall** 요약 마크다운과 함께 **기계 판독용 구조화 트리플**을 산출해 저장한다 — 이것이 개인화 그래프 투영의 유일한 원천이며 마크다운 본문 파싱은 금지된다(신규 SPEC REQ-PGRAPH-001). §9 OPEN-P12의 선결과제가 이 조항으로 확정 방향이 된다.
+- **REQ-PROF-086** (Ubiquitous): The `builder` 2단계 **shall** 요약 마크다운과 함께 **기계 판독용 구조화 트리플**을 산출해 저장한다 — 이것이 개인화 그래프 투영의 유일한 원천이며 마크다운 본문 파싱은 금지된다(신규 SPEC REQ-PGRAPH-001). §9 OPEN-P12의 선결과제가 이 조항으로 확정 방향이 된다. **[보강 v0.7.1, 이슈 #356]** 단계 분담을 명확히 한다: 트리플의 **식별자 확정**(`node_id`·`edge_key`·`edge_id`)은 **1단계**에서 게이트 통과 직후 결정론적 resolver가 수행하고, **2단계**는 확정된 트리플을 병합해 `("graph", user_id)` 문서로 산출한다. 배치마다 재-resolve 하면 거리 임계·통제 어휘가 바뀔 때 **같은 fact 가 다른 `node_id` 로 붙어 tombstone 을 우회**하므로, 결정론을 기능 요구로 규정한 신규 SPEC REQ-PGRAPH-010과 충돌한다.
 
 ### 6.10 오류 처리 관련 요구 (see §7)
 

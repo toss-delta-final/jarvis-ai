@@ -1,9 +1,9 @@
 ---
 id: SPEC-PROFILE-GRAPH-149
-version: 0.1.0
+version: 0.1.1
 status: draft
 created: 2026-08-05
-updated: 2026-08-05
+updated: 2026-08-06
 author: navis
 priority: high
 issue_number: 149
@@ -28,6 +28,16 @@ issue_number: 149
 
 ## HISTORY
 
+- **v0.1.1 (2026-08-06, 이슈 #356)** — OPEN-G0 착수에 맞춘 **정정·보강**(계약 변경 없음, 요구사항 무개정).
+  (1) §11 설정 목록에 **`graph_decay_half_life_days` 추가** — §6 공통 규약이 "반감기"를 튜너블로
+  열거하는데 키 목록에서 빠져 있었다. 이 키는 REQ-PGRAPH-016의 전제다: 게이트가 `salience ≥ 임계`인
+  관측만 저장하므로 감쇠가 없으면 `confidence`가 승격 임계 아래로 못 내려가 **강등이 구조적으로
+  도달 불가**해지고 히스테리시스가 형식만 만족된다. (2) **OPEN-G0을 착수 표기**로 갱신.
+  (3) **OPEN-G7** — 감쇠 구현으로 `interestedIn` 흡수가 실제로 실행됐음을 기록하되 `episodes`
+  네임스페이스는 **gap으로 유지**한다(축소를 정당화하지 않는다). (4) **OPEN-G8** — 델타 프롬프트를
+  실제로 바꾸는 것은 #150이 아니라 #356임을 바로잡고, 플래그 + 라벨 없는 분포 비교 프로브로
+  처리하며 "대화 세션 → 기대 트리플" 골든셋 구축은 별도 이슈로 남긴다. **항목은 열린 채로 유지.**
+  `revision` CAS·저널·멱등 원장은 **#358**(`Depends on: #356`) 소관이며 본 개정 범위가 아니다.
 - **v0.1.0 (2026-08-05, 이슈 #149)** — 최초 작성. node·edge 투영 모델, 결정론적 식별·병합 규칙
   (`SPEC-PROFILE-001` OPEN-P12의 `preference_key` 부재를 정면으로 다룬다), suppress/superseded/purge
   상태 기계, 사용자 편집 고정(pin)과 기계 재파생의 우선순위, 개인화 중지 전파 범위, 민감정보 3층
@@ -529,7 +539,7 @@ v0.7.0 개정 조항과 상충 없음 + 회귀 테스트가 "되돌리면 깨지
 
 ## 10. 미해결 / 후속 항목 (OPEN)
 
-- **OPEN-G0 (선결·차단) — 결정론적 트리플 부재**: 현재 fact 값은 자유형 한국어 한 필드이고 dedup은
+- **OPEN-G0 (선결·차단) — 결정론적 트리플 부재** — **[착수 v0.1.1, 이슈 #356]**: 현재 fact 값은 자유형 한국어 한 필드이고 dedup은
   문자열 완전 일치뿐이다(`SPEC-PROFILE-001` OPEN-P12). **§6.1·§6.2는 consolidation이 구조화 트리플을
   함께 산출한 뒤에야 달성 가능하며, 그러므로 이것은 #150의 선결 조건이다.** OPEN-P12를 해소로
   표시하지 않고 **우선순위 상향**으로 기록한다 — 방향(consolidation이 구조화 산출물을 함께 낸다)은
@@ -557,9 +567,17 @@ v0.7.0 개정 조항과 상충 없음 + 회귀 테스트가 "되돌리면 깨지
   이를 `interestedIn`(감쇠 반감기)으로 **흡수**했는데 이는 **명세 축소**이고, 리포 관례는 "명세를
   코드에 맞춰 낮추지 않고 gap으로 남긴다"다. 리뷰어가 gap 유지를 요구할 수 있으므로 **선택을
   드러내 기록한다.**
+  - **[v0.1.1, 이슈 #356]** 흡수 쪽이 **실제로 실행됐다** — `graph_decay_half_life_days` 기반 감쇠를
+    구현했으므로 `interestedIn`은 이제 시간에 따라 내려앉는다. `episodes` 네임스페이스는 여전히
+    코드에 없으며 **gap으로 남긴다**(축소를 정당화하지 않는다).
 - **OPEN-G8 (델타 프롬프트 변경의 품질 리스크)**: 타입 붙은 제안 필드를 추가하는 것은 현재 동작하는
   LLM 계약을 바꾸는 일이고, 프롬프트 변경이 측정 가능한 회귀를 만든 이력이 있다(#115·#119).
   #150은 resolver를 플래그 뒤에 두고 기존 경로를 유지한 채 평가 하니스로 비교한 뒤 전환해야 한다.
+  - **[v0.1.1, 이슈 #356]** 프롬프트를 실제로 바꾸는 것은 #150이 아니라 **#356**이다. 처리:
+    (a) `profile_graph_delta_enabled` 플래그로 구 프롬프트 롤백 경로를 남기고,
+    (b) 정답 라벨 없이 **분포만 비교하는 프로브**(승격률·kind 분포·JSON 위반율)로 전환 전후를 잰다 —
+    `evals/goldenset`은 단발 질의 + 상품 순위 라벨이라 "대화 세션 → 기대 트리플" 골든셋이 없고,
+    그 구축은 별도 이슈로 남긴다. **항목은 열린 채로 유지한다.**
 
 ---
 
@@ -576,10 +594,16 @@ v0.7.0 개정 조항과 상충 없음 + 회귀 테스트가 "되돌리면 깨지
 
 `profile_graph_max_edges` · `profile_graph_label_max_chars` · `profile_graph_confidence_buckets` ·
 `graph_node_distance_max` · `graph_node_override_margin` · `graph_pin_challenge_count` ·
-`graph_demote_margin` · `graph_evidence_refs_max` · `graph_sensitive_retention_days` ·
-`graph_audit_retention_days` · `graph_idempotency_ttl_h` · `graph_require_verified_for_ranking` ·
-`graph_seed_legs_max` · `graph_optout_cache_ttl_s`. 승격 임계는 **기존 게이트 임계를 재사용**한다 —
-두 번째 임계 키를 만들지 않는다.
+`graph_demote_margin` · `graph_decay_half_life_days` · `graph_evidence_refs_max` ·
+`graph_sensitive_retention_days` · `graph_audit_retention_days` · `graph_idempotency_ttl_h` ·
+`graph_require_verified_for_ranking` · `graph_seed_legs_max` · `graph_optout_cache_ttl_s`.
+승격 임계는 **기존 게이트 임계를 재사용**한다 — 두 번째 임계 키를 만들지 않는다.
+
+> **[보강 v0.1.1, 이슈 #356]** `graph_decay_half_life_days`는 §6 공통 규약이 튜너블로 열거한
+> "반감기"에 대응하는 키인데 위 목록에서 누락돼 있었다. 이 키는 장식이 아니라 **REQ-PGRAPH-016의
+> 전제**다 — 게이트가 `salience ≥ profile_gate_threshold`인 관측만 저장하므로, 감쇠가 없으면
+> `confidence`가 승격 임계 아래로 내려갈 수 없고 강등이 **구조적으로 도달 불가**해져 히스테리시스가
+> 형식만 만족된다.
 
 ### 안전·일관성 불변식 (must-hold)
 
