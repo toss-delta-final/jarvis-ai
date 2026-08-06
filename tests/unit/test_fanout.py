@@ -2779,8 +2779,12 @@ async def test_worst_case_rescue_chain_sequential_stages_before_first_sse(
         if line.startswith("data:"):
             events.append((time.monotonic(), json.loads(line[len("data:") :].strip())))
 
-    assert events[0][1]["type"] == "conditions"  # 이 턴의 첫 SSE 이벤트
-    first_sse_at = events[0][0]
+    # progress_events_enabled 기본 on(#396) — progress 는 decompose 직전에 즉시 나가 항상
+    # events[0]. 이 테스트가 재는 "첫 SSE" 는 순차 단(fan-out) 완료 뒤 나가는 첫 실질 이벤트
+    # (conditions)라 events[1] 로 옮긴다.
+    assert events[0][1]["type"] == "progress"
+    assert events[1][1]["type"] == "conditions"  # 이 턴의 첫 실질 SSE 이벤트
+    first_sse_at = events[1][0]
     done = next(e for _, e in events if e["type"] == "done")["data"]
     assert done["finishReason"] == "zero_result"
 

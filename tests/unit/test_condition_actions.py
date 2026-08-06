@@ -341,7 +341,9 @@ async def test_existing_three_field_request_keeps_prior_and_event_sequence() -> 
 
     assert search.filters[-1].category == "무선이어폰"
     assert search.filters[-1].price_max == 50000
+    # progress_events_enabled 기본 on(#396) — 스트림 맨 앞에 progress 프레임이 추가된다.
     assert [event["type"] for event in events] == [
+        "progress",
         "conditions",
         "token",
         "products.ready",

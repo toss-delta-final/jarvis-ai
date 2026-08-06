@@ -652,7 +652,8 @@ async def test_route_cart_add_forwards_message_to_pending_switch_detection(
 
     events = await _collect(run_buyer_turn(request, _member(), llm=llm))
 
-    assert _types(events) == ["token", "done"]
+    # progress_events_enabled 기본 on(#396) — 스트림 맨 앞에 progress 프레임이 추가된다.
+    assert _types(events) == ["progress", "token", "done"]
     assert await store.get_pending(key) is None
 
 

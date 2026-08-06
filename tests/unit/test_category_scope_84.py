@@ -388,7 +388,9 @@ async def test_decompose_failure_cancels_the_classifier_task() -> None:
         )
     )
 
-    assert [event["type"] for event in events] == ["error"]
+    # progress_events_enabled 기본 on(#396) — decompose 오류는 progress emit(decompose 직전)
+    # 이후에 발생하므로 progress 가 error 앞에 먼저 나간다.
+    assert [event["type"] for event in events] == ["progress", "error"]
     for _ in range(5):  # [라운드 4] 동기 취소 — 배달은 이벤트루프가 한다
         await asyncio.sleep(0)
     assert llm.started == 1 and llm.cancelled == 1 and llm.finished == 0
