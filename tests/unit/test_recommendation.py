@@ -2396,8 +2396,11 @@ async def test_recommendation_deferred_conditions_suppresses_search_retry(
     )
 
     assert len(calls) == 1
-    # progress_events_enabled 기본 on(#396) — 스트림 맨 앞에 progress 프레임이 추가된다.
-    assert _types(events) == ["progress", "conditions", "error"]
+    # progress 다회 emit(#396) — 이 decompose 는 categoryQueries 가 없어 카테고리 신호가
+    # 전혀 없다(mapping honesty 회귀, #396 라운드 1). mapping 은 안 나가고 analyzing·searching
+    # 2개만 conditions 앞에 온다(검색이 하드 실패라 relaxing 루프는 안 돈다 — 0건이 아니라
+    # 예외로 끝난다).
+    assert _types(events) == ["progress", "progress", "conditions", "error"]
     assert events[-1]["data"]["code"] == "SEARCH_FAILED"
 
 
@@ -2431,8 +2434,11 @@ async def test_recommendation_nondeferred_conditions_keeps_search_retry(
     )
 
     assert len(calls) == 2
-    # progress_events_enabled 기본 on(#396) — 스트림 맨 앞에 progress 프레임이 추가된다.
-    assert _types(events) == ["progress", "conditions", "error"]
+    # progress 다회 emit(#396) — 이 decompose 는 categoryQueries 가 없어 카테고리 신호가
+    # 전혀 없다(mapping honesty 회귀, #396 라운드 1). mapping 은 안 나간다. analyzing 은
+    # conditions **앞**(이 턴은 non-deferred라 conditions 가 검색 전에 나간다), searching 은
+    # conditions **뒤**(검색 직전 emit 지점).
+    assert _types(events) == ["progress", "conditions", "progress", "error"]
     assert events[-1]["data"]["code"] == "SEARCH_FAILED"
 
 
@@ -2461,8 +2467,11 @@ async def test_recommendation_deferred_conditions_retry_can_be_restored_by_guard
     )
 
     assert len(calls) == 2
-    # progress_events_enabled 기본 on(#396) — 스트림 맨 앞에 progress 프레임이 추가된다.
-    assert _types(events) == ["progress", "conditions", "error"]
+    # progress 다회 emit(#396) — 이 decompose 는 categoryQueries 가 없어 카테고리 신호가
+    # 전혀 없다(mapping honesty 회귀, #396 라운드 1). mapping 은 안 나가고 analyzing·searching
+    # 2개만 conditions 앞에 온다(검색이 하드 실패라 relaxing 루프는 안 돈다 — 0건이 아니라
+    # 예외로 끝난다).
+    assert _types(events) == ["progress", "progress", "conditions", "error"]
     assert events[-1]["data"]["code"] == "SEARCH_FAILED"
 
 
@@ -2497,9 +2506,17 @@ async def test_recommendation_relaxation_chip_probe_keeps_search_retry(
     )
 
     assert len(calls) == 4
-    # progress_events_enabled 기본 on(#396) — 스트림 맨 앞에 progress 프레임이 추가된다.
-    assert _types(events)[0] == "progress"
-    assert _types(events)[1] == "conditions"
+    # progress 다회 emit(#396) — 이 decompose 는 categoryQueries 가 없어 카테고리 신호가
+    # 전혀 없다(mapping honesty 회귀, #396 라운드 1). mapping 은 안 나간다. analyzing·searching·
+    # relaxing 3개가 conditions 앞에 온다(본 검색·ratingMin 자동 완화 probe 모두 0건이라
+    # relaxing 이 실제로 probe 했다).
+    assert _types(events)[:3] == ["progress", "progress", "progress"]
+    assert [e["data"]["stage"] for e in events[:3]] == [
+        "analyzing",
+        "searching",
+        "relaxing",
+    ]
+    assert _types(events)[3] == "conditions"
     assert "suggestions" in _types(events)
     assert _types(events)[-1] == "done"
 

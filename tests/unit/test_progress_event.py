@@ -115,6 +115,32 @@ async def _run_recommend(thread_id: str) -> list[dict]:
     )
 
 
+async def _run_recommend_no_category_signal(thread_id: str) -> list[dict]:
+    """categoryQueries 가 없고 prior 도 없는 — 카테고리 신호가 전혀 없는 추천 턴.
+
+    `resolve_category_action` 의 `carry` 판정은 `prior is not None` 가드가 있어, 이 조건에서는
+    `prior` 없는 첫 턴이 `else` 분기로 떨어진다 — 그 분기가 곧 "매핑을 태운다"는 아니다(#396
+    라운드 1 mapping honesty 회귀).
+    """
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "semanticQuery": "아무거나 괜찮은 걸로",
+            "filters": {"priceMax": 50000},
+            "case": 2,
+        }
+    )
+    return await _collect(
+        run_buyer_turn(
+            _req("아무거나 괜찮은 걸로 추천해줘", thread_id),
+            _member(),
+            llm=llm,
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+        )
+    )
+
+
 async def _run_cart_add(thread_id: str, monkeypatch: pytest.MonkeyPatch) -> list[dict]:
     import app.services.spring_client as sc
 
@@ -148,6 +174,99 @@ async def _run_order_status(thread_id: str) -> list[dict]:
 async def _run_general(thread_id: str) -> list[dict]:
     llm = FakeLLM(decompose={"intent": "general", "reply": "안녕하세요! 무엇을 도와드릴까요?"})
     return await _collect(run_buyer_turn(_req("오늘 날씨 어때?", thread_id), _member(), llm=llm))
+
+
+async def _map_stub(**kwargs):  # noqa: ANN003
+    from app.agents.buyer.recommendation.category_mapping import CategoryMapping
+
+    return CategoryMapping(legs=[("무선이어폰", "무선 이어폰")])
+
+
+async def _run_recommend_with_mapping(thread_id: str) -> list[dict]:
+    """매핑을 실제로 태우고(mapping) 검색·rerank·push 도 성공하는(searching/reranking/publishing)
+    "느린" 추천 턴 — stage 4종(mapping/searching/reranking/publishing)이 한 턴에서 재현된다.
+    """
+    return await _collect(
+        run_buyer_turn(
+            _req("무선 이어폰 추천해줘", thread_id),
+            _member(),
+            llm=FakeLLM(decompose=DEFAULT_DECOMPOSE),
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+            map_categories=_map_stub,
+        )
+    )
+
+
+async def _run_recommend_needs_relaxation(thread_id: str) -> list[dict]:
+    """본 검색이 0건이라 자동 완화 루프가 실제로 probe 하는 턴 — relaxing 이 정직하게 나온다."""
+    from app.schemas.spring import SpringProduct
+
+    product = SpringProduct(
+        product_id=201,
+        name="무선 이어폰 라이트",
+        price=30000,
+        rating=4.2,
+        category="무선이어폰",
+        brand="B",
+    )
+
+    async def _search(filters, exclude_product_ids=None):
+        if filters.rating_min is not None and filters.rating_min >= 4.5:
+            return ProductSearchResult(products=[], total_count=0)
+        return ProductSearchResult(products=[product], total_count=1)
+
+    llm = FakeLLM(decompose={"intent": "recommend", "filters": {"ratingMin": 4.5}, "case": 2})
+    return await _collect(
+        run_buyer_turn(
+            _req("평점 낮아도 되니까 이어폰 추천해줘", thread_id),
+            _member(),
+            llm=llm,
+            search=_search,
+            push_fn=_RecordingPush(),
+        )
+    )
+
+
+async def _run_recommend_needs_expansion(thread_id: str) -> list[dict]:
+    """매핑이 canonical 을 못 내(D2 mapping_failed) 니즈 전개가 실제로 발동하는 턴."""
+    from app.agents.buyer.recommendation.category_mapping import CategoryMapping
+
+    async def _map_unresolved(**kwargs):  # noqa: ANN003
+        return CategoryMapping(legs=[], unresolved=["집들이 선물"])
+
+    async def _expand(message, *, llm, settings, observer=None):
+        return ["캔들", "수납함"]
+
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "case": 3,
+            "categoryQueries": [{"category": None, "query": "집들이 선물"}],
+            "filters": {},
+        }
+    )
+    return await _collect(
+        run_buyer_turn(
+            _req("집들이 선물로 뭐 사갈까", thread_id),
+            _member(),
+            llm=llm,
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+            map_categories=_map_unresolved,
+            expand_needs=_expand,
+        )
+    )
+
+
+_NEW_STAGE_DRIVERS = {
+    "mapping": _run_recommend_with_mapping,
+    "searching": _run_recommend_with_mapping,
+    "reranking": _run_recommend_with_mapping,
+    "publishing": _run_recommend_with_mapping,
+    "relaxing": _run_recommend_needs_relaxation,
+    "expanding": _run_recommend_needs_expansion,
+}
 
 
 # ─────────── AC-4.3 — progress() 프레임 헬퍼: message 생략/포함 ───────────
@@ -197,16 +316,36 @@ def test_progress_data_is_camel_model_and_serializes_like_the_wire() -> None:
     }
 
 
-def test_progress_data_rejects_unregistered_stage() -> None:
-    """R7-1 — `stage` 는 `Literal["analyzing"]`이라 계약(§3.1)에 없는 값은 생성 자체가 거부된다.
+_PROGRESS_STAGES = (
+    "analyzing",
+    "mapping",
+    "expanding",
+    "searching",
+    "relaxing",
+    "reranking",
+    "publishing",
+)
 
-    계약이 확정한 어휘(`analyzing` 1종)를 코드가 강제한다는 이 라운드의 요지를 고정한다 —
-    어휘를 넓히려면 §3.1 개정과 이 `Literal`을 함께 고쳐야 한다.
+
+def test_progress_data_accepts_all_seven_registered_stages() -> None:
+    """#396 — 계약(§3.1 v0.27.0)이 확정한 어휘 7종 전부를 `ProgressData` 가 받아들인다."""
+    for stage in _PROGRESS_STAGES:
+        assert ProgressData(stage=stage).stage == stage
+
+
+def test_progress_data_rejects_unregistered_stage() -> None:
+    """R7-1 — `stage` 는 `Literal`(7종)이라 계약(§3.1)에 없는 값은 생성 자체가 거부된다.
+
+    `retrying`은 비범위로 못박혀(#396) 어휘에 등재되지 않았고, `bogus`는 임의의 미등재 값이다.
+    계약이 확정한 어휘를 코드가 강제한다는 요지를 고정한다 — 어휘를 넓히려면 §3.1 개정과
+    이 `Literal`을 함께 고쳐야 한다.
     """
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError):
-        ProgressData(stage="searching")
+        ProgressData(stage="retrying")
+    with pytest.raises(ValidationError):
+        ProgressData(stage="bogus")
 
 
 def test_progress_events_enabled_defaults_to_true() -> None:
@@ -234,18 +373,24 @@ async def test_progress_flag_off_wire_identical_recommend(monkeypatch: pytest.Mo
 async def test_progress_flag_on_prepends_progress_recommend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """플래그 on — progress 가 정확히 1회·맨 앞, 이후 시퀀스는 off 와 동일(추천 턴)."""
+    """플래그 on — 첫 프레임은 `progress{analyzing}`, progress 를 뺀 나머지는 off 와 동일(추천 턴).
+
+    #396(다회 emit)으로 추천 턴은 `progress` 가 여러 번(analyzing/mapping/searching/
+    reranking/publishing 등) 나갈 수 있으므로, "정확히 1회"·"progress 1개 + off 전체" 단언은
+    더 이상 성립하지 않는다 — 첫 프레임 신원과 "progress 를 뺀 시퀀스는 불변"으로 정확히
+    갱신한다(단언을 느슨하게 하는 게 아니라 다른 사실을 고정하는 것).
+    """
     monkeypatch.setattr(get_settings(), "progress_events_enabled", False)
     off_types = _types(await _run_recommend("reco-289-cmp-off"))
     monkeypatch.setattr(get_settings(), "progress_events_enabled", True)
     on_events = await _run_recommend("reco-289-cmp-on")
     on_types = _types(on_events)
-    assert on_types == ["progress"] + off_types
-    assert on_types.count("progress") == 1
+    assert on_types[0] == "progress"
     assert on_events[0]["data"] == {
         "stage": "analyzing",
         "message": get_settings().progress_analyzing_message,
     }
+    assert [t for t in on_types if t != "progress"] == off_types
 
 
 async def test_progress_flag_off_wire_identical_cart_add(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -406,6 +551,218 @@ async def test_first_event_at_moves_to_progress_first_text_token_unaffected(
     assert first_text_token_at is not None
     assert first_event_at is not None
     assert first_text_token_at > first_event_at
+
+
+# ─────────── #396 — 느린 추천 턴의 stage 시퀀스 (다회 emit·어휘 확장) ───────────
+
+
+async def test_progress_stage_sequence_for_slow_recommend_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """매핑을 태우고 검색·rerank·push 도 성공하는 턴의 stage 시퀀스를 고정한다.
+
+    동시에 **기존 6종의 상대 순서가 불변**임도 같은 턴으로 검증한다 — progress 를 제거한
+    타입 시퀀스가 flag-off 시퀀스와 정확히 동일해야 한다.
+    """
+    monkeypatch.setattr(get_settings(), "progress_events_enabled", False)
+    off_types = _types(await _run_recommend_with_mapping("stage-seq-289-off"))
+    monkeypatch.setattr(get_settings(), "progress_events_enabled", True)
+    on_events = await _run_recommend_with_mapping("stage-seq-289-on")
+    on_types = _types(on_events)
+    stages = [e["data"]["stage"] for e in on_events if e["type"] == "progress"]
+    assert stages == ["analyzing", "mapping", "searching", "reranking", "publishing"]
+    assert [t for t in on_types if t != "progress"] == off_types
+
+
+async def test_progress_mapping_not_repeated_after_expansion_remap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """전개 성공 후의 재매핑은 같은 논리 단계의 연장이라 `mapping` 을 다시 내지 않는다."""
+    monkeypatch.setattr(get_settings(), "progress_events_enabled", True)
+    events = await _run_recommend_needs_expansion("expand-mapping-once-289")
+    stages = [e["data"]["stage"] for e in events if e["type"] == "progress"]
+    assert stages.count("mapping") == 1
+    assert "expanding" in stages
+    assert stages.index("mapping") < stages.index("expanding")
+
+
+# ─────────── #396 — 분기 정직성: relaxing 은 실제로 probe 한 턴에서만 나온다 ───────────
+
+
+async def test_progress_relaxing_absent_when_turn_has_results_without_relaxation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """0건이 아니라 자동 완화 루프가 아예 안 도는 턴에는 `relaxing` 이 없다(거짓 신호 금지)."""
+    monkeypatch.setattr(get_settings(), "progress_events_enabled", True)
+    events = await _run_recommend_with_mapping("relax-honesty-nonzero-289")
+    stages = [e["data"]["stage"] for e in events if e["type"] == "progress"]
+    assert "relaxing" not in stages
+
+
+async def test_progress_relaxing_present_when_auto_relax_actually_probes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """0건이라 자동 완화 루프가 실제로 probe 한 턴에는 `relaxing` 이 나온다."""
+    monkeypatch.setattr(get_settings(), "progress_events_enabled", True)
+    events = await _run_recommend_needs_relaxation("relax-honesty-zero-289")
+    stages = [e["data"]["stage"] for e in events if e["type"] == "progress"]
+    assert "relaxing" in stages
+
+
+# ─────────── #396 라운드 1 — 분기 정직성: mapping 은 카테고리 신호가 있을 때만 나온다 ───────────
+
+
+async def test_progress_mapping_absent_when_turn_has_no_category_signal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """카테고리 신호가 전혀 없는 첫 턴(categoryQueries 없음·prior 없음)에는 `mapping` 이 없다.
+
+    `_prepare_recommendation` 의 `else` 분기는 `carry`(리파인 승계) 판정이 `prior is not None`
+    가드를 요구해서, prior 없는 첫 턴은 신호가 하나도 없어도 이 분기로 떨어진다 — 그 분기에
+    들어왔다는 사실 자체는 "매핑을 태운다"는 뜻이 아니다. 매퍼는 이 턴에서 실제로 아무 일도
+    하지 않는데 예전 구현은 여기서도 `mapping` 을 냈다(#396 라운드 1 결함, 거짓 신호).
+    같은 턴에서 `analyzing`·`searching` 은 여전히 나온다는 것도 함께 단언한다 — 안 그러면
+    "그냥 progress 를 다 껐다"와 구별되지 않는다.
+    """
+    monkeypatch.setattr(get_settings(), "progress_events_enabled", True)
+    events = await _run_recommend_no_category_signal("mapping-honesty-no-signal-289")
+    stages = [e["data"]["stage"] for e in events if e["type"] == "progress"]
+    assert "mapping" not in stages
+    assert "analyzing" in stages
+    assert "searching" in stages
+
+
+# ─────────── #396 — 새 stage 6종의 문구 config 주입: 비우면 message 키가 없다 ───────────
+
+
+@pytest.mark.parametrize(
+    "stage,message_field",
+    [
+        ("mapping", "progress_mapping_message"),
+        ("expanding", "progress_expanding_message"),
+        ("searching", "progress_searching_message"),
+        ("relaxing", "progress_relaxing_message"),
+        ("reranking", "progress_reranking_message"),
+        ("publishing", "progress_publishing_message"),
+    ],
+)
+async def test_progress_message_key_absent_for_new_stage_when_config_empty(
+    stage: str, message_field: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """새 stage 6종 각각 config 문구를 비우면 그 프레임의 `data` 에 `message` 키가 없다.
+
+    (기존 `analyzing` 테스트와 같은 규약 — `test_progress_message_key_absent_when_config_message_empty`.)
+    """
+    monkeypatch.setattr(get_settings(), "progress_events_enabled", True)
+    monkeypatch.setattr(get_settings(), message_field, "")
+    events = await _NEW_STAGE_DRIVERS[stage](f"empty-msg-{stage}-289")
+    frame = next(e for e in events if e["type"] == "progress" and e["data"]["stage"] == stage)
+    assert frame["data"] == {"stage": stage}
+
+
+# ─────────── #396 — 플래그 off: 새 emit 지점도 하나도 안 나간다 ───────────
+
+
+async def test_progress_flag_off_no_new_stage_frames_leak(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """플래그 off 면 mapping/searching/reranking/publishing 등 새 emit 지점도 전부 억제된다."""
+    monkeypatch.setattr(get_settings(), "progress_events_enabled", False)
+    events = await _run_recommend_with_mapping("off-no-leak-289")
+    assert "progress" not in _types(events)
+
+
+async def test_progress_flag_off_no_relaxing_or_expanding_leak(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """플래그 off 면 relaxing·expanding 처럼 조건부 emit 도 안 나간다."""
+    monkeypatch.setattr(get_settings(), "progress_events_enabled", False)
+    relax_events = await _run_recommend_needs_relaxation("off-no-leak-relax-289")
+    expand_events = await _run_recommend_needs_expansion("off-no-leak-expand-289")
+    assert "progress" not in _types(relax_events)
+    assert "progress" not in _types(expand_events)
+
+
+# ─────────── #396 — 관측: stage 별 최초 발생 ms, 판매자 progress 는 섞이지 않는다 ───────────
+
+
+async def test_progress_stages_recorded_with_ms_in_observation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """구매자 progress 프레임의 stage 별 최초 발생 시각이 `started` 기준 ms 로 기록된다."""
+    monkeypatch.setattr(get_settings(), "progress_events_enabled", True)
+    request = _req("무선 이어폰 추천해줘", "thread-observe-stages-289")
+    context = await session_context._default_repository.touch(
+        BuyerSessionInput(
+            request.session_id,
+            request.thread_id,
+            "member",
+            buyer_owner_id(_member(), get_settings()),
+        )
+    )
+    observer = RequestObservation(
+        request_id="req-289-observe-stages",
+        conversation_id=request.session_id,
+        thread_id=request.thread_id,
+        user_id="42",
+        brand_id=None,
+        role="buyer",
+        store=None,  # type: ignore[arg-type]
+        message_length=len(request.message),
+        message_hash="h",
+        started=0.0,
+        pending_message=request.message,
+        pending_key="k",
+    )
+    observer.context_id = context.context_id
+
+    llm = FakeLLM(decompose=DEFAULT_DECOMPOSE)
+    t = 0.0
+    async for frame in _production_run_buyer_turn(
+        request,
+        _member(),
+        llm=llm,
+        search=_make_search(DEFAULT_PRODUCTS),
+        push_fn=_RecordingPush(),
+        map_categories=_map_stub,
+        observer=observer,
+    ):
+        t += 1.0
+        observer.record_frame(frame, t)
+
+    assert set(observer.progress_stages) == {
+        "analyzing",
+        "mapping",
+        "searching",
+        "reranking",
+        "publishing",
+    }
+    assert all(isinstance(ms, int) for ms in observer.progress_stages.values())
+    # 최초 발생 순서는 stage 발생 순서와 같아야 한다(ms 는 started 기준 오름차순).
+    ordered = sorted(observer.progress_stages, key=lambda s: observer.progress_stages[s])
+    assert ordered == ["analyzing", "mapping", "searching", "reranking", "publishing"]
+
+
+def test_seller_progress_text_only_not_recorded_in_progress_stages() -> None:
+    """판매자 `progress`(`{"text": …}`)는 `stage` 가 없어 `progress_stages` 에 섞이지 않는다."""
+    observer = RequestObservation(
+        request_id="req-289-seller-observe",
+        conversation_id="conv",
+        thread_id="thread",
+        user_id="7",
+        brand_id="3",
+        role="seller",
+        store=None,  # type: ignore[arg-type]
+        message_length=0,
+        message_hash="h",
+        started=0.0,
+        pending_message="",
+        pending_key="k",
+    )
+    observer.record_frame(
+        'data: {"type": "progress", "data": {"text": "매출 이상 분석 중…"}}\n\n', 1.0
+    )
+    assert observer.progress_stages == {}
 
 
 # ─────────── AC-4.6 — 판매자 스트림은 플래그 무관 무영향 ───────────

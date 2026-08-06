@@ -17,6 +17,7 @@ from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
+from app.agents.buyer._frames import progress as progress_frame
 from app.agents.buyer._frames import sse
 from app.agents.buyer.recommendation.budget_sets import BudgetSet, BudgetSetPlan, build_budget_sets
 from app.agents.buyer.recommendation.need_priority import classify_need_priorities
@@ -770,6 +771,8 @@ async def stream_recommendation(
             )
             if notice := _strip_unsafe(settings.no_condition_notice_profile):
                 yield sse("token", TokenData(text=notice).model_dump(by_alias=True))
+            if settings.progress_events_enabled:
+                yield progress_frame("publishing", settings.progress_publishing_message)
             try:
                 profile_pushed = bool(await push_fn(profile_push))
             except SpringUnavailableError:
@@ -880,6 +883,11 @@ async def stream_recommendation(
             trace.mark_degraded("popular_fallback")
         return await _run_search()
 
+    # [#396] `no_condition`/`underspecified` 턴은 `_run_candidate_source` 가 I-1 이 아니라
+    # I-3(인기 목록)을 타지만, 사용자에게는 어느 쪽이든 "상품을 찾는 중"이라 같은 stage 를
+    # 쓴다 — 후보 소스가 무엇이든 사용자가 기다리는 이유는 하나다.
+    if settings.progress_events_enabled:
+        yield progress_frame("searching", settings.progress_searching_message)
     # 미룬 턴은 첫 이벤트 앞 본 검색·자동 완화 probe만 재시도를 끈다(#277). conditions 뒤의
     # 완화 칩 probe는 첫 이벤트 예산 밖이라 제외하며, 이 with는 await 뒤 즉시 닫아 yield·다음
     # 턴으로 ContextVar가 새지 않게 한다. progress 이벤트가 계약에 생기면 이 스킵은 원복 가능하다.
@@ -1241,6 +1249,10 @@ async def stream_recommendation(
         # 발신까지 못 가 조건 칩이 사라진다. 자동 완화는 **선택 기능**이라 실패는 삼키고
         # 완화 없이 계속한다(§7) — 0건 안내와 완화 칩 경로는 그대로 살아 있다.
         _auto_relax_started_at = time.monotonic()
+        # [#396] "완화 중" 은 probe 를 **실제로** 부를 때만 정직하다 — 루프 진입만으로 내면
+        # auto_fields 필터에 다 걸려 probe 가 0회인 턴에도 뜬다(거짓 신호). 그래서 진입 시점이
+        # 아니라 첫 probe 직전에, 지역 플래그로 딱 1회만 낸다.
+        relaxing_progress_emitted = False
         try:
             relax_candidates = build_relaxation_candidates(decision.filters, settings)
             auto_fields = set(settings.relaxation_auto_fields)
@@ -1257,6 +1269,9 @@ async def stream_recommendation(
                 if rounds >= settings.relaxation_max_rounds:
                     break
                 rounds += 1
+                if settings.progress_events_enabled and not relaxing_progress_emitted:
+                    relaxing_progress_emitted = True
+                    yield progress_frame("relaxing", settings.progress_relaxing_message)
                 # conditions 전 자동 완화 probe까지만 억제한다. 아래 완화 칩 probe는 감싸지 않는다.
                 with (
                     spring_client.suppress_search_retry()
@@ -1597,6 +1612,8 @@ async def stream_recommendation(
         # rerank — smart tier 1회. 실패/타임아웃/유효후보 0건 시 검색순서 상위 N 으로 degrade(하드 제약 유지).
         if observer is not None:
             observer.record_model_call(resolve_model_id(settings, "smart"))
+        if settings.progress_events_enabled:
+            yield progress_frame("reranking", settings.progress_reranking_message)
         rerank_degraded = False
         try:
             with trace_span(
@@ -2115,6 +2132,8 @@ async def stream_recommendation(
         total_budget=total_budget,
         lists=lists,
     )
+    if settings.progress_events_enabled:
+        yield progress_frame("publishing", settings.progress_publishing_message)
     try:
         pushed = bool(await push_fn(push))
     except SpringUnavailableError:

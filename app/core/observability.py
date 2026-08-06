@@ -117,6 +117,9 @@ class RequestObservation:
     context_id: str | None = None
     first_event_at: float | None = None
     first_text_token_at: float | None = None
+    # 이슈 #396 — 구매자 progress stage 별 최초 발생 시각(started 기준 ms). 판매자
+    # progress(`{"text": …}`)는 stage 가 없어 여기 섞이지 않는다(record_frame 참조).
+    progress_stages: dict[str, int] = field(default_factory=dict)
     assistant_parts: list[str] = field(default_factory=list)
     model_calls: list[ModelCall] = field(default_factory=list)
     lane: str | None = None
@@ -232,6 +235,9 @@ class RequestObservation:
             if self.first_text_token_at is None:
                 self.first_text_token_at = now
             self.assistant_parts.append(text)
+        stage = _extract_progress_stage(frame)
+        if stage and stage not in self.progress_stages:
+            self.progress_stages[stage] = round((now - self.started) * 1000)
 
     async def finish(
         self,
@@ -316,6 +322,8 @@ class RequestObservation:
             "messageLength": self.message_length,
             "messageHash": self.message_hash,
             # [PII] 사용자 message 원문은 여기에 절대 포함하지 않는다(§6.3 b).
+            # 닫힌 어휘(stage 이름)만 담는다 — 이슈 #396, record_frame/_extract_progress_stage.
+            "progressStages": self.progress_stages or None,
         }
         logger.info(json.dumps(record, ensure_ascii=False))
         if self.trace is not None:
@@ -346,6 +354,26 @@ def _extract_token_text(frame: str) -> str | None:
     data = payload.get("data") or {}
     text = data.get("text") if isinstance(data, dict) else None
     return text if isinstance(text, str) else None
+
+
+def _extract_progress_stage(frame: str) -> str | None:
+    """SSE `data:` 프레임에서 구매자 `progress` 이벤트의 `stage` 만 추출한다(이슈 #396).
+
+    판매자 `progress`(`{"text": …}`)는 `stage` 키가 없어 `None` 을 돌려주므로 두 레인이
+    섞이지 않는다 — 닫힌 어휘(stage 이름)만 다루며 사용자 문구·검색어는 절대 싣지 않는다.
+    """
+    try:
+        line = frame.strip()
+        if line.startswith("data:"):
+            line = line[len("data:") :].strip()
+        payload = json.loads(line)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("type") != "progress":
+        return None
+    data = payload.get("data") or {}
+    stage = data.get("stage") if isinstance(data, dict) else None
+    return stage if isinstance(stage, str) else None
 
 
 def start_observation(

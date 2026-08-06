@@ -2779,12 +2779,20 @@ async def test_worst_case_rescue_chain_sequential_stages_before_first_sse(
         if line.startswith("data:"):
             events.append((time.monotonic(), json.loads(line[len("data:") :].strip())))
 
-    # progress_events_enabled 기본 on(#396) — progress 는 decompose 직전에 즉시 나가 항상
-    # events[0]. 이 테스트가 재는 "첫 SSE" 는 순차 단(fan-out) 완료 뒤 나가는 첫 실질 이벤트
-    # (conditions)라 events[1] 로 옮긴다.
-    assert events[0][1]["type"] == "progress"
-    assert events[1][1]["type"] == "conditions"  # 이 턴의 첫 실질 SSE 이벤트
-    first_sse_at = events[1][0]
+    # progress 다회 emit(#396) — analyzing·mapping·searching·relaxing 4개가 conditions 앞에
+    # 온다(이 턴은 may_auto_relax=True 라 conditions 가 자동완화 루프 뒤로 미뤄지고, 그 루프가
+    # 실제로 probe 하므로 relaxing 도 낀다). 이 테스트가 재는 "첫 SSE" 는 순차 단(fan-out) 완료
+    # 뒤 나가는 첫 실질 이벤트(conditions)라 events[4] 로 옮긴다 — progress 프레임 자체는 I/O
+    # 없이 즉시 나가 call_starts 클러스터링에 영향을 주지 않는다.
+    assert [e["type"] for _, e in events[:4]] == ["progress"] * 4
+    assert [e["data"]["stage"] for _, e in events[:4]] == [
+        "analyzing",
+        "mapping",
+        "searching",
+        "relaxing",
+    ]
+    assert events[4][1]["type"] == "conditions"  # 이 턴의 첫 실질 SSE 이벤트
+    first_sse_at = events[4][0]
     done = next(e for _, e in events if e["type"] == "done")["data"]
     assert done["finishReason"] == "zero_result"
 
