@@ -43,14 +43,15 @@ uv run python -m evals.intent_probe --out artifacts/no-scope --no-classifier
 uv run python -m evals.intent_probe --dump-prompt system.txt
 ```
 
-기본 규모: 74셀 × N=8 = 592콜(decompose) **+ 120콜**(카테고리 15셀 × N — 범위 해제 분류기)
-= **712콜**, 45rpm 페이서라 런당 약 16~18분.
+기본 규모: 79셀 × N=8 = 632콜(decompose) **+ 120콜**(카테고리 15셀 × N — 범위 해제 분류기)
+= **752콜**, 45rpm 페이서라 런당 약 17~19분.
 `fast`(gpt-5-nano) 기준 런당 대략 USD 0.11 — 2026-08-04 실측($0.086 / 1.27M tokens, 424콜)을
 콜 수 비례로 환산한 추정이다(#84 이 카테고리 11셀을 더해 424 → 512, #300 이 screen 6셀을 더해
-512 → 592). 분류기 88콜은 프롬프트가 짧고(`max_tokens=32`) 콜당 ≈0.35k 라 비용·TPM 영향이
-작지만 **페이서는 지나므로**(rpm 예산에 포함) 위 소요 추정에는 넣었다. **screen 6셀은 분류기를
-태우지 않는다** — screen 컨텍스트의 `priorFilters` 에 `category` 가 없어 게이트(`prior_category`
-가 있어야 호출)가 열리지 않는다(D-6 실측 확인, `baselines/fast-2026-08-05-300-screen/`).
+512 → 592, #344 라운드 2 가 조건 전용 5셀을 더해 592 → 632). 분류기 88콜은 프롬프트가 짧고
+(`max_tokens=32`) 콜당 ≈0.35k 라 비용·TPM 영향이 작지만 **페이서는 지나므로**(rpm 예산에 포함)
+위 소요 추정에는 넣었다. **screen 6셀·조건 전용 5셀은 분류기를 태우지 않는다** — 둘 다
+`priorFilters` 에 `category` 가 없어 게이트(`prior_category` 가 있어야 호출)가 열리지 않는다
+(D-6 실측 확인, `baselines/fast-2026-08-05-300-screen/`).
 
 ## 기준선
 
@@ -103,9 +104,10 @@ replace, 남은 11건은 `decompose` 추출 실패) · 인라인 `categoryAction
 
 `fixtures/anchors_b.json`(기본) / `fixtures/anchors_a.json`. 스크립트는 이 파일만 읽는다.
 
-- 발화 46개 — 장바구니 대조군 6 · 지시대명사 4 · 옵션 답변 4 · 전환 7 · order_status 2 · general 2
+- 발화 51개 — 장바구니 대조군 6 · 지시대명사 4 · 옵션 답변 4 · 전환 7 · order_status 2 · general 2
   · **카테고리 승계 15**(리파인 4 · 리셋 4 · 교체 3 · **혼합 4**, #84) · **screen 지시어 해소 6**
-  (확정 4 · 되물음 1 · 확정금지 1, #300 — #118 이관)
+  (확정 4 · 되물음 1 · 확정금지 1, #300 — #118 이관) · **조건 전용 5**(#344 라운드 2 — 카테고리
+  어휘 없이 조건만 말하는 턴이 `categoryQueries` 를 비우는지)
 - 컨텍스트 9종 — `none` / `lastRecommendations` / `pendingCart` / `categoryPrior` /
   **`screenSingle`/`screenTriple`/`screenFive`/`screenNine`/`screenNamed`**(#300)
 - **group → 허용 컨텍스트 매핑(#313)** — 어떤 group 이 어떤 컨텍스트를 선언할 수 있는지는
@@ -116,6 +118,7 @@ replace, 남은 11건은 `decompose` 추출 실패) · 인라인 `categoryAction
   | `option_answer` · `switch` | `pendingCart` 만 |
   | `category_action` | `categoryPrior` 만 |
   | `screen` | screen 컨텍스트(`screenSingle`/`screenTriple`/`screenFive`/`screenNine`/`screenNamed`) 중 1개 |
+  | `condition_only` | `none` 만(#344 라운드 2·3) |
   | `cart_control` · `demonstrative` · `order_status` · `general` | `none` / `lastRecommendations` / `pendingCart` — 특수 컨텍스트 선언 불가 |
 
   다음 사람이 컨텍스트를 추가할 때 **이 매핑에 한 줄을 넣지 않으면 아무 발화도 그것을 못 쓴다**
@@ -163,6 +166,7 @@ replace, 남은 11건은 `decompose` 추출 실패) · 인라인 `categoryAction
 | `screenReask` | 최종 productId 가 None(임의 확정하지 않고 되물음) | 1×1×8 = 8 |
 | `screenNoHallucination` | 최종 productId != expected.forbiddenProductId | 1×1×8 = 8 |
 | `screenResolution` | 위 셋의 합(각 셀은 자신의 규칙으로만 채점) | 6×1×8 = 48 |
+| `conditionOnlyNoCategoryQuery` | 조건 전용 발화("평점 좋은 걸로 보여줘" 등)에서 `categoryQueries`(leg)가 하나도 없음(#344 라운드 2) | 5×1×8 = 40 |
 
 **혼합 발화 축(`categoryMixedReplace`)을 `categoryReplace` 와 섞지 않는다**(라운드 3). 새 카테고리를
 지목하면서 동시에 "아무거나"류 표현을 쓰는 발화는 초판 판정 순서에서 사용자가 말한 카테고리가
@@ -224,6 +228,20 @@ replace, 남은 11건은 `decompose` 추출 실패) · 인라인 `categoryAction
 `screenResolverOverrideCount`·`screenOutOfListConfirmCount`(아래 「screen 지시어 해소」 절).
 카테고리 둘은 카테고리 셀만, screen 셋은 screen 셀만 본다(전환 카운터가 전환 셀만 보는 것과 같은
 규약 — 다른 그룹은 그 가드에 닿지도 않는다).
+
+## 조건 전용 발화 categoryQueries 비움(#344 라운드 2)
+
+조건 전용 발화("평점 좋은 걸로 보여줘" 등 카테고리 어휘 없이 조건만 말하는 턴)에서 `decompose`
+가 `categoryQueries` 를 비워 내는 계약은 지금 **프롬프트의 우연한 동작이고 코드가 강제하지
+않는다**(`category_mapping._collect_expansion_leaves` docstring [#222 R2 F-2] 참조). 깨지면 조건
+텍스트가 임베딩 앵커로 흘러 #222 확장이 무관 카테고리로 fan-out 한다. `conditionOnlyNoCategoryQuery`
+축은 이 불변식을 decompose 계약 단계에서 고정한다 — 문구는 `evals/category_probe` 의 `none`
+슬라이스와 동일하게 맞춰, 두 하네스가 같은 현상을 각자 단계(decompose 계약 vs 임베딩 매핑 결과)
+에서 잰다.
+
+**이 셀은 100% 통과를 만들려고 프롬프트를 고치는 것이 목적이 아니다** — 지금 현실(오케스트레이터
+실측, 2026-08-06, category_probe none 슬라이스 40표본: 10건 누출, ~25%)을 회귀 없이 기록하는
+것이 목적이다. 프롬프트 수정은 이 축의 범위 밖(별도 이슈)이다.
 
 ## screen 지시어 해소(#118 이관, #300)
 
