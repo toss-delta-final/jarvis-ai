@@ -10,6 +10,16 @@
 ## [Unreleased]
 
 ### Added
+- **#371 — combo_matrix INV/DIR 쌍 실검증 러너(`evals/combo_matrix/pair_runner.py`)** — #335 매트릭스에
+  라벨만 있고 실행이 없던 INV/DIR 3쌍을 실제로 검증한다. INV(combo-0056, rerank 실패 degrade)는
+  push 계약 형태(listType·lists 길이·필드 존재, 실측상 productIds 멀티셋까지) 동일성을 비교하고,
+  DIR(combo-0054, 카테고리 필터 추가)은 방향(push 상품 수 비증가) + 공허 통과 방지 guard(필터
+  진상위집합·base 결과 수>0)를 함께 강제한다. 분자·분모를 동봉한 `PAIR_CHECKS.md` 를 생성물로
+  남긴다. 실측 불가 축(회원 recall≥게스트 DIR, combo-0055)은 `evals/goldenset`(#333) 소관으로
+  명시 분리(mode=manual). 부수 발견: `category` 필터축이 canonical-or-null degrade(legs 미경유
+  시 무조건 null)로 인해 이 하네스 전체(#335 기존 55건 포함)에서 실제 검색 경계에 도달한 적이
+  없었다 — `pair_runner` 전용 seam(exact-match 카테고리 매핑 fake)으로 combo-0054 만 해소했고,
+  기존 55건의 잔여 맹점은 후속 이슈로 이관(README 정정). 계약(api-spec) 무변경.
 - **#334 — 필터 추출 축별 분해 지표 신설(`evals/filter_axes`)** — 기존 Filter Accuracy(합집합 분모 단일값)로는 어느 축이 과·소추출인지 알 수 없었다. 축별 valueStrict/presence precision·recall(micro, 분모 0은 None)·trivial(빈 필터) baseline·INV/DIR/회원-게스트(#119) 수동 probe를 추가하고, `evals/metrics` 러너·리포트(`filter_axes.csv`)에 병행 배선했다(`filterAccuracy` 등 기존 키·정의는 불변). ablation baseline `20260803-dev-full-n5`을 오프라인 재채점한 `evals/filter_axes/baselines/20260803-dev-full-n5-rescored/`로 합집합 단일값이 감춘 원인 축(keyword 어휘 불일치·category 소/과추출 정반대 방향)을 실측 산출물로 증명했다. 계약(api-spec) 무변경.
 - **#332 — 니즈 전개(legs) 평가 하네스 `evals/legs_probe`** — #198 의 핵심 지표("case==3 인데
   legs<=1")가 로그 관측(`decompose_case`)에만 있어 프롬프트를 바꿔도 실측 없이 판단해야 했다.

@@ -5,13 +5,20 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from evals.combo_matrix.schema import AxesDocument, ComboCase, ExpectedBehaviorRow, Manifest
+from evals.combo_matrix.schema import (
+    AxesDocument,
+    ComboCase,
+    ExpectedBehaviorRow,
+    Manifest,
+    PairCheckSpec,
+)
 
 _HERE = Path(__file__).resolve().parent
 AXES_PATH = _HERE / "axes.json"
 CASES_PATH = _HERE / "cases" / "combo_cases.jsonl"
 MANIFEST_PATH = _HERE / "cases" / "manifest.json"
 EXPECTED_PATH = _HERE / "expected" / "expected_behavior.jsonl"
+PAIR_CHECKS_PATH = _HERE / "expected" / "pair_checks.jsonl"
 
 
 def load_axes(path: Path = AXES_PATH) -> AxesDocument:
@@ -37,6 +44,10 @@ def load_expected(path: Path = EXPECTED_PATH) -> list[ExpectedBehaviorRow]:
 
 def load_manifest(path: Path = MANIFEST_PATH) -> Manifest:
     return Manifest.model_validate(json.loads(path.read_text(encoding="utf-8")))
+
+
+def load_pair_checks(path: Path = PAIR_CHECKS_PATH) -> list[PairCheckSpec]:
+    return [PairCheckSpec.model_validate(row) for row in _read_jsonl(path)]
 
 
 def dump_cases_jsonl(cases: list[ComboCase]) -> str:

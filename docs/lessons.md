@@ -13,6 +13,37 @@
 
 ---
 
+## [2026-08-06] eval 하네스가 "이 축을 잰다"고 문서에 쓰려면 주입값이 아니라 실제 도달값을 실측해야 한다
+- 증상: #371(combo_matrix INV/DIR 쌍 실검증 러너) 작업 중, `evals/combo_matrix/README.md` 가
+  "category 필터축은 `ProductSearchFilters.category`(하드필터 문자열)만 잰다"고 적어 놨는데,
+  `searchFilters` 프로젝션을 처음 실측 캡처해 보니 combo-0054(DIR, category 필터 추가) 의
+  base·perturbed 양쪽 `searchFilters.category` 가 **둘 다 항상 None** 이었다 — decompose 산출
+  JSON 에 `filters.category="무선이어폰"` 을 분명히 채웠는데도 검색 호출에는 한 번도 도달하지
+  않았다.
+- 원인: `app/agents/buyer/graph.py:520-537` 의 canonical-or-null degrade 가
+  `decision.category_legs` 가 비면 `decision.filters.category` 를 무조건 `None` 으로 지운다
+  ("미검증 원문이 Spring 검색으로 새지 않게" — 프로덕션 정상 설계, 버그 아님). `category_legs`
+  는 오직 decompose 의 `categoryQueries`→`map_categories` 매핑으로만 채워지는데,
+  `evals/combo_matrix/runner.py::build_decompose_json` 은 `categoryQueries` 를 한 번도 채우지
+  않고 `fakes.map_categories_noop` 은 항상 빈 legs 를 돌려준다 — 그래서 `filters.category` 를
+  아무리 채워도 항상 지워졌다. `category` 축은 #335 의 기존 55건 MFT 케이스를 포함해 이 하네스
+  전체에서 **처음부터 실제 검색 경계에 도달한 적이 없었는데**, 아무도 `searchFilters` 자체를
+  캡처한 적이 없어(#119 관측 로그는 축 **이름**만 봄, 값이 실제로 필터에 실렸는지는 안 봄) 지금까지
+  드러나지 않았다.
+- 규칙: **eval 하네스 문서에 "이 축을 잰다"고 쓰려면, 그 축이 파이프라인 경계(예: search 콜러블이
+  실제로 받는 인자)까지 도달하는지를 실측 캡처로 확인하고 나서 쓴다** — 주입한 decompose/입력
+  값이 아니라 **경계 도달값**을 봐야 한다. 특히 canonical-or-null 처럼 "원본을 재검증 없이는
+  못 믿어 지운다"는 설계(§20·§115 계열)가 있는 필드는, 상류에서 값이 있어 보여도 하류의 신뢰
+  게이트를 통과하지 못하면 조용히 null 이 된다 — fake/stub 이 그 신뢰 게이트를 만족시키는지
+  (여기서는 legs 매핑) 별도로 확인해야 한다. 이 발견은 `pair_runner.py` 전용 seam(exact-match
+  카테고리 매핑 fake)으로 그 쌍 하나만 고쳤고, 기존 55건의 잔여 맹점은 후속 이슈로 남겼다 —
+  구조 변경이 필요한 발견은 코드를 먼저 고치지 말고 오케스트레이터에게 보고하고 결정을 받았다.
+- 관련: #371, `app/agents/buyer/graph.py:520-537`·`:349`, `evals/combo_matrix/runner.py::build_decompose_json`,
+  `evals/combo_matrix/fakes.py::map_categories_noop`·`make_exact_match_category_mapping`(신규),
+  `evals/combo_matrix/README.md` "알려진 관측 한계" 절 정정
+
+---
+
 ## [2026-08-06] "성공 fake" 가 실 스키마와 다른 모양이어도 게스트 게이트 뒤에 있으면 영원히 안 드러난다
 - 증상: #335 리뷰 R8(order_status×spring_timeout 실측 추가) 작업 중, 기존
   `evals/combo_matrix/fakes.py::make_order_status_ok` 가 `{"orderId": ..., "status": ...}` 같은

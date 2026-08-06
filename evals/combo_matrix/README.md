@@ -25,9 +25,17 @@ generator.py          결정론 leaf 완전열거(DFS, 제약 인지) + greedy 2
 loader.py             axes.json/케이스/기대동작 로드+검증 (스크립트는 데이터 파일만 읽는다)
 runner.py + fakes.py  ScriptedLLM/fake 주입 관측 러너 — ci 케이스만 실행, manual 은 건너뜀
 report.py             커버리지 지표(분자/분모) 계산 + UNDEFINED_CELLS.md 생성
+pair_runner.py         INV/DIR 쌍(원본↔변형) 실검증 러너(이슈 #371) — pair_checks.jsonl 의
+                        mode=ci 쌍만 실행해 PAIR_CHECKS.md 를 생성한다. runner.py/fakes.py 의
+                        실행 스택(build_decompose_json·ScriptedLLM·_collect/run_buyer_turn)을
+                        재사용한다(§ "INV/DIR 쌍 검증" 참조).
 cases/combo_cases.jsonl + manifest.json     ★ 커밋된 케이스 + 재현 지문(sha256·seed)
 expected/expected_behavior.jsonl            ★ 케이스별 기대 동작·근거·미정의 좌표
+expected/pair_checks.jsonl                  ★ INV/DIR 쌍 검증 앵커(이슈 #371, 손으로 작성) —
+                                              쌍 1건당 1행
 UNDEFINED_CELLS.md    ★★ 1급 산출물 — expected_behavior.jsonl 에서 report.py 가 **생성**(손으로 안 씀)
+PAIR_CHECKS.md         ★★ 1급 산출물(이슈 #371) — pair_checks.jsonl 에서 pair_runner.py 가
+                        **생성**(손으로 안 씀)
 ```
 
 ## 축 요약 (17개, 전체 정의는 `axes.json`)
@@ -51,6 +59,8 @@ absent+context=none`)은 `axes.json` `constraints` 에 기계 판독 형식으�
 uv run python -m evals.combo_matrix regenerate   # cases/combo_cases.jsonl + manifest.json 재생성
 uv run python -m evals.combo_matrix.report        # 커버리지 지표 출력 + UNDEFINED_CELLS.md 재생성
 uv run pytest tests/eval/test_combo_matrix_eval.py -v
+uv run python -m evals.combo_matrix.pair_runner   # INV/DIR 쌍 실행 + PAIR_CHECKS.md 재생성(#371)
+uv run pytest tests/eval/test_combo_matrix_pairs.py -v
 ```
 
 같은 `axes.json`(`datasetVersion` 1.0.0) + 같은 `seed`(335335) ⇒ **바이트 동일**
@@ -135,8 +145,19 @@ greedy 가 안 뽑는 조합을 직접 관측하려고 결정론으로 덧붙인
   (order_status.py:130-136). `make_order_status_ok` fake 도 이 과정에서 실계약(`OrderStatusSummary`)
   대신 무관한 dict 를 돌려주던 결함을 함께 고쳤다 — guest 전용 경로만 exercised 돼 그동안
   안 드러났다.
-- **카테고리 leg fan-out(`category_queries`/`map_categories`) 은 범위 밖** — `category` 필터축은
-  `ProductSearchFilters.category`(하드필터 문자열)만 잰다. leg 분해·매핑 커버리지는 별도 이슈(#331) 소관.
+- **카테고리 leg fan-out(`category_queries`/`map_categories`) 은 범위 밖** — 단, "category 필터축은
+  `ProductSearchFilters.category`(하드필터 문자열)만 잰다"는 종전 서술은 **#371 실측으로 반증됐다**:
+  `app/agents/buyer/graph.py:520-537` 의 canonical-or-null degrade 는 `decision.category_legs` 가
+  비면 `filters.category` 를 무조건 `None` 으로 지운다 — 그리고 `category_legs` 는 오직
+  `categoryQueries`→`map_categories` 매핑 결과로만 채워진다. 이 하네스의 `build_decompose_json`
+  (`runner.py`)은 `categoryQueries` 를 채우지 않고 `map_categories_noop` 은 항상 빈 legs 를
+  돌려주므로, **`category` 축은 지금까지 이 하네스 어디에서도(기존 55건 MFT 케이스 포함) 실제
+  검색 경계에 도달한 적이 없다** — 채워도 항상 None 으로 지워졌을 뿐이다. `pair_runner.py`
+  (combo-0054, 아래 "INV/DIR 쌍 검증" 절)만 전용 seam(`_pair_decompose_json`+
+  `fakes.make_exact_match_category_mapping`)으로 이 축을 실제로 관측한다 — `runner.py`/
+  `map_categories_noop` 자체는 고치지 않았으므로(기존 55건 관측 보존), **기존 MFT 케이스들의
+  이 맹점은 그대로 남아 있다.** leg 분해·매핑 richness(거리컷·택일·확장) 커버리지는 별도
+  이슈(#331) 소관이고, 기존 55건의 잔여 category 맹점 해소는 이 PR 범위 밖 — 후속 이슈로 이관한다.
 - **관측 러너의 fixture 는 대표 샘플이다** — 검색 결과 3건 고정 카탈로그, 프로필 always-None(HOME).
   실제 카탈로그 분포·프로필 다양성에 따른 랭킹 품질은 `evals/goldenset`(#333) 소관 — 이 하네스는
   "경로가 죽지 않고 계약 형태를 지키는가"만 잰다.
@@ -145,3 +166,109 @@ greedy 가 안 뽑는 조합을 직접 관측하려고 결정론으로 덧붙인
 
 `observation_mode=manual`(context≠none, 35건)은 실행하지 않는다 — 멀티턴 승계(`categoryPrior`→
 `intent_probe:category_action` 등)는 실 LLM 해석이 필요해 `linked` 로 intent_probe 셀만 가리킨다.
+
+## INV/DIR 쌍 검증 (이슈 #371)
+
+`cases/combo_cases.jsonl` 의 `perturbation_of` 케이스(원본 ↔ 변형 쌍) 3건은 MFT/INV/DIR 라벨은
+있었지만 그 성질(불변·방향)을 실제로 검증하는 실행 코드가 없었다(`evals/README.md` 규약 6항의
+목적 미달). `pair_runner.py` 가 그 실행을 채운다 — 원본·변형 둘 다 `build_decompose_json` 으로
+결정론 decompose 를 실현해 `ScriptedLLM` 에 고정 주입하므로, 원본 3건이 모두
+`observation_mode=manual`(context≠none)이어도 **쌍 실행 자체는 멀티턴 해석과 무관하게 결정론**
+이다(§ `pair_runner.py` 모듈 docstring).
+
+### 앵커: `expected/pair_checks.jsonl`
+
+쌍 1건당 1행, `PairCheckSpec`(`schema.py`) 스키마:
+
+| 필드 | 의미 |
+|---|---|
+| `case_id` | 변형 케이스 id — 원본은 그 케이스의 `perturbation_of` 로 찾는다 |
+| `kind` | `INV`\|`DIR` — 케이스의 `checklist_type` 과 일치해야 한다(테스트로 강제) |
+| `mode` | `ci`\|`manual` — 결정론 실행 가능 여부 |
+| `invariant_fields` | INV 전용 — 산출 프로젝션 중 동일해야 하는 필드 이름 목록 |
+| `metric`/`direction` | DIR 전용(`mode=ci` 면 필수) — v1 은 `metric="push_product_count"` 하나만 |
+| `guards` | DIR 공허 통과 방지 조건 이름 목록(아래 표) |
+| `reason`/`link` | manual 이면 왜 CI 로 검증 불가한지 + 실검증 소관, ci 면 무엇을 재는지 |
+
+### 산출 프로젝션 (INV "산출 동일"의 정의)
+
+쌍 실행 1턴에서 캡처하는 값 — 비교는 spec 의 `invariant_fields`(INV) 또는 `metric`(DIR) 만 본다.
+
+| 필드 | 포함/제외 | 사유 |
+|---|---|---|
+| `terminal`/`finishReason`/`errorCode` | 포함 | 기존 `runner.py` observed 와 동일 정의 |
+| `searchFilters` | 포함 | search 콜러블이 **실제로 받은** `ProductSearchFilters`(8개 하드필터, camelCase) — 주입 decompose 가 아니라 파이프라인 통과 후 경계 도달값(필터 유실 회귀 감지가 요지) |
+| `legs` | 포함(대부분 `[]`) | category 축이 present 인 쌍만 `pair_runner` 전용 seam(아래)으로 1-leg 를 채운다 — 그 외에는 항상 `[]`(leg 분해 커버리지는 #331 소관) |
+| `listType`/`listsCount`/`perListProductCount`/`productIdsMultiset` | 포함 | push 계약 형태(구조) |
+| `listEntryFieldKeys` | 포함 | 엔트리마다 **값이 실제로 채워진**(`None`/`[]`/`{}`/`""` 가 아닌) 필드 키만 담는다(`_entry_field_keys`, 리뷰 R2 F1) — `model_dump().keys()` 그대로 쓰면 pydantic 이 값과 무관하게 스키마 전 필드를 항상 담아 `['label','listId','productIds','reasons']` 상수가 되고, 그러면 이 필드는 **어떤 회귀에도 깨질 수 없다**(검증하지 않는 검증). `reasons` 는 값이 채워져 있어도 이 집합에서 **명시적으로 뺀다** — 아래 행과 같은 이유(정의된 동작)로, 값 자체를 비교 안 하는 것뿐 아니라 "채워졌는지" 여부도 비교하지 않는다. |
+| `pushProductCount` | 포함 | DIR metric `push_product_count` 의 원천 |
+| token 텍스트·이벤트 개수/순서 | 제외 | 문구는 계약이 아니고, 스트리밍 분할은 비계약 |
+| `reasons` **값**(rationale 문구) | 제외 | rerank 폴백 시 소실이 정의된 동작(단, combo-0056 실측은 productIds 멀티셋 자체는 동일 — 아래 참조). `listEntryFieldKeys` 도 이 필드의 **키 존재 여부조차** 안 본다(위 행) — rerank 성공(2건)·폴백([]) 양쪽 다 이 키를 빼므로 어느 쪽이든 결과가 같다. |
+| suggestions 칩 상세 | 제외 | 범위 밖 |
+
+### DIR: metric·guards
+
+`metric="push_product_count"` 는 perturbed/base 각각의 push 총 상품 수. `direction` 은
+`non_increase`\|`non_decrease`. **guard 실패는 방향 부등식이 성립해도 FAIL**(공허 통과 방지,
+이 이슈의 심사 포인트):
+
+- `perturbed_filters_strict_superset` — perturbed 의 `searchFilters`(present 항목만)가 base 의
+  **진상위집합**인지. 아니면 "필터를 늘렸다"는 전제 자체가 거짓이라 방향 부등식이 무의미하다.
+- `base_count_positive` — base 의 metric 값 > 0. 0이면 `non_increase` 가 항상 공허하게 성립한다.
+
+### 카테고리 seam (combo-0054 전용, `pair_runner.py` 한정 — 이슈 #371 R1 결정)
+
+combo-0054(DIR — "필터 추가 → 결과 수 비증가")는 `category` 필터축을 검증 대상으로 삼는데, 실측
+결과 `category` 축은 이 하네스 전체에서 legs 를 거치지 않으면 검색에 도달한 적이 없었다(위
+"알려진 관측 한계" 절 정정 참조). `pair_runner.py` 는 이 축에 한해 `categoryQueries` 를 채우고
+(`_pair_decompose_json`) `fakes.make_exact_match_category_mapping()`(raw exact match 만 대역 —
+거리컷·택일·확장은 #331 소관, 재구현 아님)으로 legs 를 실제로 채운다. `runner.py`/
+`map_categories_noop` 자체는 손대지 않았다 — 기존 55건 MFT 케이스의 `expected_behavior.jsonl`
+관측을 보존하기 위해서다.
+
+`PAIR_CATALOG`(`fakes.py`) 는 `CATALOG_PRODUCTS` 3건(`무선이어폰`) + 1건(`여행용품`, product_id
+104) — category 필터가 실제로 결과를 줄이도록 카테고리 2종을 보장한다.
+
+**실행 경로 비대칭(리뷰 R2 F3)**: combo-0054 의 base(`legs=[]`)와 perturbed(`legs=[('무선이어폰',
+None)]`)는 "필터 한 개 차이"만이 아니라 **코드 경로 자체가 다르다.** base 는
+`_run_search`(`recommendation/graph.py`)의 `if not legs:` 분기 — `decision.filters` 를 그대로
+써 검색을 1회 부르는 단일 경로다. perturbed 는 legs 가 채워져 있어 `else` 분기(fan-out) —
+`_leg(canonical, query)` 가 `base.model_copy(update={"category": canonical, "keyword": ...,
+"semantic_query": ..., "limit": leg_limit})` 로 category·keyword·semantic_query·**limit** 을
+override 한 뒤 검색을 부른다(`recommendation/graph.py:648-655`). 즉 결과 수 감소가 필터 때문인지,
+아니면 leg 경로가 도입하는 `limit` 절단 때문인지 구분해야 근거가 선다.
+
+실측 근거: 두 실행의 `searchFilters` 는 `category` 를 제외한 전 축이 완전히 동일하다
+(`priceMax=50000`, 나머지는 전부 `null`) — leg 경로가 `priceMax` 등 다른 필터를 조용히
+바꾸지 않는다. 그리고 결과 집합은 base `{101,102,104}` ⊃ perturbed `{101,102}` 로, **정확히
+`104`(여행용품, category 가 다른 그 1건)만 빠졌다.** `limit` 절단이 원인이었다면 `leg_limit`
+이 후보 수보다 작아 임의의 뒤쪽 상품(순서상 나중 항목)이 잘려나갔을 것이고, 그건 category 값과
+무관하게 어떤 상품이든 빠질 수 있었다 — 그런데 실제로 빠진 상품은 정확히 "category 가 다른"
+1건이다(`PAIR_CATALOG` 4건 중 leg_limit 이 4 미만으로 작동했다면 무선이어폰 쪽 101/102 중
+하나가 빠졌을 수도 있었는데 그러지 않았다). 이건 관측 한계가 아니라 "이렇게 확인했다"는 근거
+기록이다 — 감소가 `limit` 절단이 아니라 **category 필터 자체**에 귀속됨을 결과 집합으로 직접
+확인했다.
+
+### manual 분리: combo-0055
+
+"회원 recall ≥ 게스트 recall"(#119 선례, DIR)은 `mode=manual` 이다 — recall 은 정답(relevance)
+라벨이 있어야 계산되는데, 고정 fixture 검색 대역은 회원/게스트 산출이 항상 동일해 방향 관측이
+**원리적으로 불가**하다(라벨이 없으니 CI 로 못 재는 게 아니라, 방향 자체가 안 갈린다). 절대
+기준·표본은 `evals/goldenset`(#333) 소관 — `link` 필드가 가리킨다. manual 쌍은 실행 없이
+`status="manual"` 로 결과·`PAIR_CHECKS.md` 분모에 그대로 들어간다(조용한 탈락 금지, 규약 8항).
+
+### 필터링 검색 대역의 성격
+
+`fakes.make_recording_filtering_search`(→ `RecordingFilteringSearch`)는 **Spring I-1 검색(외부
+시스템)의 WHERE 계약 대역**이지 앱 판정 로직 재구현이 아니다 — `SpringProduct` 로 표현 가능한
+하드필터(category 정확 일치·price_min/max 범위·brand 목록 포함·rating_min 이상)만 흉내 낸다.
+표현 불가 필터(keyword·color·attr_conditions)가 present 로 들어오면 조용히 무시하지 않고
+`ValueError` 로 즉시 실패시킨다 — 미래 쌍이 "필터가 적용된 것처럼" 공허 통과하는 것을 막는다.
+
+### 결과 (2026-08-06 기준, `pair_runner.py` 실측)
+
+INV 통과 1/1 · DIR(ci) 통과 1/1 · manual 분리 1건 · 분모(전체 쌍 행 수) 3. combo-0054 는
+base=3(101·102·104) → perturbed=2(101·102) 로 엄격 감소가 실제로 관측됐다. combo-0056 은 실측상
+`productIds` 멀티셋 자체가 rerank 성공/폴백 양쪽에서 동일(`[101,102,103,104]`)해
+`invariant_fields` 에 `productIdsMultiset` 도 포함했다(§3-a 각주 — 실측이 예측과 다르면 fixture
+를 늘리기 전에 원인부터). 상세는 `PAIR_CHECKS.md`.
