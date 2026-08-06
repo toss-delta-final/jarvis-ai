@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
 from app.core.config import Settings
+from evals.goldenset.loader import ROOT, load_cases
 from evals.goldenset.schema import DATASET_VERSION, SCHEMA_VERSION, GoldenCase, validate_cases
 
 
@@ -91,6 +93,9 @@ def _raw(case_id: str = "buy-srch-0001") -> dict:
         "createdAt": "2026-08-02",
         "notes": "상품명과 설명을 읽고 명확한 정답으로 판정했다.",
         "testType": "MFT",
+        "labelSource": "model",
+        "labeledAt": "2026-08-06",
+        "labelRationale": "테스트 라벨 근거.",
     }
 
 
@@ -547,6 +552,9 @@ def _dir_raw(case_id: str, *, fixture_id: str, expected_filters: dict, group_id:
         "testType": "DIR",
         "behaviorGroupId": group_id,
         "behaviorKind": "constraint_subset",
+        "labelSource": "model",
+        "labeledAt": "2026-08-06",
+        "labelRationale": "테스트 라벨 근거.",
     }
 
 
@@ -608,3 +616,25 @@ def test_constraint_subset_group_fails_when_stricter_exposure_is_not_subset() ->
             purchase_history={},
             config=_config(),
         )
+
+
+def test_committed_dev_dataset_passes_validate_cases() -> None:
+    """#370 리뷰 라운드2 F-4 — 위반 태그 검증이 실제로 커밋된 데이터를 태우는지 고정한다.
+
+    기존 단위 테스트는 전부 합성 fixture만 썼다 — "태그된 후보가 실제로 위반한다"는 이번
+    이슈의 핵심 보증이 정작 실제로 싣는 dev 103건 + 실제 catalog/fixture에 대해서는 한 번도
+    실행되지 않았다. 실제 `get_settings()` 기본값으로(합성 완화 config 아님) 커밋된 dev
+    전체를 검증한다 — 이 테스트가 없으면 위반 태그 검증 로직이 리팩터로 깨져도 잡히지 않는다.
+    """
+    dev_cases = load_cases("dev")
+    assert len(dev_cases) == 103
+    catalog = json.loads((ROOT / "fixtures" / "catalog_snapshot.json").read_text())
+    search_responses = json.loads((ROOT / "fixtures" / "search_responses.json").read_text())
+    purchase_history = json.loads((ROOT / "fixtures" / "purchase_history.json").read_text())
+
+    validate_cases(
+        dev_cases,
+        catalog=catalog,
+        search_responses=search_responses,
+        purchase_history=purchase_history,
+    )  # config 미지정 — 실 get_settings() 기본값, 합성 완화 config로 갈아끼우지 않는다

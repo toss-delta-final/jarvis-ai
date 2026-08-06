@@ -10,6 +10,26 @@
 ## [Unreleased]
 
 ### Added
+- **#370 — 골든셋 v2.2 위반 네거티브 채널 신설 + 라벨 provenance 기록(`evals/goldenset`)** —
+  #333 adjudication 라운드가 남긴 갭 3건(위반 네거티브 0건·라벨 주체 미기록·슬라이스 쿼터
+  하향 사유 미문서화) 후속. `CaseCore`에 `labelSource`/`labeledAt`/`labelRationale` 신설해
+  전 127건에 소급 기입(`backfill_label_provenance.py`, 문서화된 사실만·불명은 `unknown`).
+  `category_violation` rule 신설, 오프라인 결정론 스크립트 `inject_violation_negatives.py`로
+  가격 초과(13케이스·47후보, injected)·카테고리 이탈(4케이스·5후보, 기존 candidate 재태깅)
+  주입, 속성 위반은 catalog attribute 키 명 불일치로 미달을 그대로 기록(조작 안 함).
+  `validate_cases()`에 위반 태그 후보 4종 기계 검증(실제 위반 성립·정답 편입 금지·fixture
+  단독 소유) 신설, `audit.run_audit()`에 `violationNegativeFill` 산출. manifest에
+  `violationNegatives`·`sliceQuotaFill`(dev `nonRankingFailureMftMin` 6 목표 대비 실채움 5 —
+  문서 근거 없는 기존 미달로 신규 확인, 정직하게 기록) 블록 신설. `datasetVersion` 2.2.0,
+  scoring/filter_axes baseline 재실행(`evals/scoring/baselines/dev-v2.2` 신설,
+  `evals/filter_axes/baselines/trivial_empty` 제자리 갱신) — ablation 실 LLM n5 baseline은
+  2.1.0 해시 고정 참조로 재실행하지 않는다(비용 결정 대기). 위반 네거티브 후보를 실제로
+  주입해보니 `evals/metrics/harness.py`의 Spring mock이 검색 요청의 가격 필터를 무시하고
+  있었다는 것도 드러나(goldenset 데이터만이 아니라 이 harness를 쓰는 모든 eval 소비자의
+  노출 집합 계산에 영향) mock이 요청의 `minPrice`/`maxPrice`를 실 Spring처럼 적용하도록
+  고쳤다 — 가격 미상(`price: null`)은 그대로 통과시킨다. 기존 커밋 데이터에는 가격 위반
+  후보가 0건이었으므로 이번 수정으로 기존 케이스의 노출·지표는 바뀌지 않았다(실측 확인).
+  계약(api-spec) 무변경.
 - **#334 — 필터 추출 축별 분해 지표 신설(`evals/filter_axes`)** — 기존 Filter Accuracy(합집합 분모 단일값)로는 어느 축이 과·소추출인지 알 수 없었다. 축별 valueStrict/presence precision·recall(micro, 분모 0은 None)·trivial(빈 필터) baseline·INV/DIR/회원-게스트(#119) 수동 probe를 추가하고, `evals/metrics` 러너·리포트(`filter_axes.csv`)에 병행 배선했다(`filterAccuracy` 등 기존 키·정의는 불변). ablation baseline `20260803-dev-full-n5`을 오프라인 재채점한 `evals/filter_axes/baselines/20260803-dev-full-n5-rescored/`로 합집합 단일값이 감춘 원인 축(keyword 어휘 불일치·category 소/과추출 정반대 방향)을 실측 산출물로 증명했다. 계약(api-spec) 무변경.
 - **#332 — 니즈 전개(legs) 평가 하네스 `evals/legs_probe`** — #198 의 핵심 지표("case==3 인데
   legs<=1")가 로그 관측(`decompose_case`)에만 있어 프롬프트를 바꿔도 실측 없이 판단해야 했다.
