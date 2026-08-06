@@ -233,26 +233,31 @@ def _summary_input(document: GraphDocument, facts: list[FactRecord]) -> list[str
 
     `suppressed`·`superseded` edge 는 **즉시 제외**한다(REQ-PGRAPH-022). 그 edge 가 근거로 삼은
     fact 원문도 함께 뺀다 — 원문이 잔여 fact 로 새어 들어가면 edge 만 숨기고 내용은 그대로
-    요약되는 셈이라 억제가 무의미해진다.
+    요약되는 셈이라 억제가 무의미해진다. 한 fact 가 여러 취향을 담고 그중 하나만 지워졌어도
+    **통째로** 뺀다: 그 원문에는 지운 취향이 그대로 적혀 있어 살리면 되살아난다(삭제가 이긴다).
 
     트리플이 없는 fact("기억해" hot-path·resolver 드롭분·전환 이전 fact)는 **남긴다**. 그래프에는
     안 실리지만(unprojected_count) 개인화에서까지 통째로 사라지면, 사용자가 명시적으로 기억하라고
     말한 내용이 소리 없이 버려진다.
-    """
-    excluded: set[str] = set()
-    for edge in document.edges:
-        if edge.status != "active":
-            excluded.update(edge.evidence_refs)
-    live: set[str] = set()
-    for edge in document.edges:
-        if edge.status == "active":
-            live.update(ref for ref in edge.evidence_refs if ref not in excluded)
 
-    return [
-        record.fact
-        for record in facts
-        if record.fact_key not in excluded and (record.fact_key in live or not record.graph_triples)
-    ]
+    **판정은 fact 자신의 트리플로 한다 — edge 의 `evidence_refs` 를 보지 않는다**(PR #410 리뷰).
+    그 목록은 `graph_evidence_refs_max` 로 잘린 *저장용* 참조라, 재사용하면 같은 취향을 상한보다
+    많이 언급한 순간 **지우지도 않은 활성 취향의 오래된 근거가 요약에서 조용히 빠진다**. 저장
+    폭주 방지용 상한이 개인화 내용을 결정해서는 안 된다 — 상한 값을 바꾸면 요약이 함께 바뀐다.
+    """
+    status_by_key = {edge.edge_key: edge.status for edge in document.edges}
+
+    selected: list[str] = []
+    for record in facts:
+        # 문서에 없는 edge_key(절단 등)는 삭제 신호가 아니므로 통과시킨다 — 저장 한계가
+        # 개인화 내용을 줄이지 않게 하는 것이 위 규칙과 같은 취지다.
+        statuses = (
+            status_by_key.get(triple.get("edge_key"), "active") for triple in record.graph_triples
+        )
+        if any(status != "active" for status in statuses):
+            continue
+        selected.append(record.fact)
+    return selected
 
 
 def _as_float(value: object) -> float:

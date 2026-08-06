@@ -291,9 +291,9 @@ async def _resolve_category(
     exact 를 먼저 보는 이유는 #59 와 같다: DB 검증값은 거리 비교 대상이 아니다. exact 조회와
     임베딩 경로를 각각 감싸는 이유도 같다 — 한쪽 장애가 다른 쪽까지 죽이지 않게 격리한다.
     """
-    from app.core.config import get_settings  # noqa: PLC0415 - LAZY(설정 순환 import 회피)
-
-    dsn = get_settings().catalog_db_url
+    # 주입받은 settings 를 그대로 쓴다 — 전역 get_settings() 를 다시 부르면 호출자가 넘긴
+    # Settings 의 catalog_db_url 이 무시된다(`category_mapping.map_categories` 와 같은 규약).
+    dsn = settings.catalog_db_url
 
     if category_exact is None or category_search is None or embed is None:
         from app.pipelines.category_search import (  # noqa: PLC0415 - LAZY(유닛 pg 의존 회피)

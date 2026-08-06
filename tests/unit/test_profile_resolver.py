@@ -216,6 +216,29 @@ async def test_category_anchor_is_the_utterance_phrase_not_the_llm_label(
     assert embed.call_args.args[0] == ["퇴근길에 낄 이어폰 찾고 있어"]
 
 
+async def test_category_uses_injected_settings_dsn(settings: Settings) -> None:
+    """주입받은 `Settings` 의 dsn 을 쓴다 — 전역 설정을 다시 읽지 않는다 (PR #410 리뷰).
+
+    전역 `get_settings()` 를 부르면 호출자가 넘긴 Settings 가 조용히 무시된다. 콜러블만 모킹하면
+    dsn 이 검증되지 않아 이 불일치가 테스트를 통과해버린다 — 인자로 실제로 전달되는지 본다.
+    """
+    injected = Settings(_env_file=None, catalog_db_url="postgresql://injected/catalog")
+    exact = Mock(return_value=set())
+    search = Mock(return_value=[("음향가전 > 블루투스 이어폰", 0.05), ("음향가전 > 헤드폰", 0.30)])
+
+    await _resolve(
+        injected,
+        kind="category",
+        label="블루투스 이어폰",
+        embed=Mock(return_value=[[0.1] * 4]),
+        category_exact=exact,
+        category_search=search,
+    )
+
+    assert exact.call_args.args[1] == "postgresql://injected/catalog"
+    assert search.call_args.args[1] == "postgresql://injected/catalog"
+
+
 async def test_category_beyond_distance_cut_drops(settings: Settings) -> None:
     embed = Mock(return_value=[[0.1] * 4])
     far = settings.graph_node_distance_max + 0.05

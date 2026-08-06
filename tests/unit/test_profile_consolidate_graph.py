@@ -192,6 +192,37 @@ async def test_fact_backing_both_live_and_suppressed_edges_is_excluded() -> None
     assert "삼성도 좋아한다" in prompt  # 무관한 취향은 남는다
 
 
+async def test_evidence_refs_cap_does_not_drop_live_facts_from_summary() -> None:
+    """요약 입력 판정은 **저장 상한과 무관**해야 한다 (PR #410 리뷰).
+
+    `graph_evidence_refs_max`(기본 20)는 edge 당 보관하는 근거 **참조 개수** 상한이고 목적은
+    저장 폭주 방지다. 그 값이 "요약에 넣을 fact" 판정까지 결정하면, 같은 취향을 상한보다 많이
+    언급한 순간 **지우지도 않은 활성 취향의 오래된 근거가 조용히 요약에서 빠진다** —
+    이 PR 의 목표(삭제 안 한 취향이 요약에서 사라지지 않게)와 정반대다.
+
+    fact 상한(`profile_max_facts`, 기본 200)이 참조 상한(20)보다 훨씬 커서 실제로 도달한다.
+    """
+    store = await get_profile_store()
+    settings = get_settings()
+    total = settings.graph_evidence_refs_max + 5
+    for i in range(total):
+        await store.add_fact("7", f"소니 좋다고 {i}번째로 말함", graph_triples=[_triple()])
+    llm = _CapturingLLM()
+
+    await consolidate("7", llm=llm, settings=settings)
+
+    document = await store.get_graph("7")
+    assert document is not None
+    edge = document.edges[0]
+    assert edge.status == "active"
+    assert edge.evidence_count == total  # 카운트는 전부 센다
+    assert len(edge.evidence_refs) == settings.graph_evidence_refs_max  # 참조만 상한
+
+    prompt = llm.summary_inputs[0]
+    for i in range(total):
+        assert f"소니 좋다고 {i}번째로 말함" in prompt, f"{i}번째 근거가 상한 때문에 누락됐다"
+
+
 async def test_active_preference_reaches_summary_input() -> None:
     """제외 규칙이 너무 넓으면 정상 취향까지 사라진다 — 반대 방향도 고정한다."""
     store = await get_profile_store()
