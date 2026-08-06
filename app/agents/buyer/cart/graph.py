@@ -19,6 +19,7 @@ from pydantic import ValidationError
 from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.identity import cart_identity
 from app.agents.buyer.cart.intent_guard import classify_cart_utterance
+from app.agents.buyer.cart.purchase_state import state_advice_lines, state_suffix
 from app.agents.buyer.cart.remove import stream_cart_remove
 from app.agents.buyer.cart.state import CartStateStore, PendingAdd
 from app.agents.buyer.cart.wishlist import stream_wishlist_add, stream_wishlist_remove
@@ -536,12 +537,21 @@ async def stream_cart_view(*, identity, get_cart_fn=None, observer=None) -> Asyn
         yield _done()
         return
 
+    # 못 사는 항목은 사유를 갈라 알린다(#310, REQ-CART-037) — 목록 줄에는 짧은 라벨만 붙이고
+    # 행동 안내는 문단 끝에 상태당 한 번만 싣는다. 항목마다 완결 문장을 붙이면 항목이 여럿일 때
+    # 같은 문장이 반복돼 목록이 문장 덩어리가 된다.
     lines = []
+    hidden_example: str | None = None
     for item in cart_view.items:
         product_name = _strip_unsafe(item.product_name or "상품")
         option_name = _strip_unsafe(item.option_name) if item.option_name else ""
         opt = f" ({option_name})" if option_name else ""
-        lines.append(f"{product_name}{opt} · {item.quantity}개")
+        lines.append(f"{product_name}{opt} · {item.quantity}개{state_suffix(item.purchase_state)}")
+        if item.purchase_state == "HIDDEN" and hidden_example is None:
+            hidden_example = f"{product_name}{opt}"
+    lines.extend(
+        state_advice_lines([item.purchase_state for item in cart_view.items], hidden_example)
+    )
     text = "장바구니에 담긴 상품이에요:\n" + "\n".join(lines)
     yield sse("token", TokenData(text=text).model_dump(by_alias=True))
     yield _done()

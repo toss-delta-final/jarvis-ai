@@ -21,11 +21,12 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from types import MappingProxyType
-from typing import Annotated, Literal, Mapping
+from typing import Annotated, Literal, Mapping, get_args
 
 from pydantic import (
     AwareDatetime,
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     StrictInt,
@@ -360,11 +361,63 @@ class AddToCartResult(CamelModel):
     cart_item_id: int | None = None  # 숫자(BIGINT, cart_item.id)
 
 
-# ── 4. 장바구니 조회 (I-9, §4.9, C-16) ──
+# ── 4. 장바구니 조회 (I-18, §4.9, C-16) ──
+
+# 구매 가능 상태 — I-18(§4.9) · I-28(§4.16) 공용. 겹치면 HIDDEN 우선(서버가 정해서 내린다).
+# 둘 다 상품 단위 판정이되 성격이 다르다: HIDDEN 은 status != ON_SALE 이라 옵션과 무관하게
+# 상품 전체가 판매 종료이고, SOLD_OUT 은 재고가 product.stock_quantity 하나로 옵션 전체에
+# 공유되므로(product_option 에 재고 컬럼 없음) "옵션 중 하나라도 살 수 있으면 AVAILABLE" 이다.
+PurchaseState = Literal["AVAILABLE", "SOLD_OUT", "HIDDEN"]
+
+# 상태 → 안내용 한국어 라벨. **전사(全射) 매핑을 의도한다**(ORDER_ITEM_STATUS_TEXT 와 같은 형태).
+# 다만 그 전사성을 강제하는 건 아래 타입 어노테이션이 **아니라**
+# `tests/unit/test_cart.py::test_purchase_state_label_covers_every_literal_value` 다 —
+# `Mapping[PurchaseState, str]` 은 부분 매핑을 막지 못하고(TypedDict 가 아니다) 이 리포 CI 엔
+# 타입체커도 없다. 소비 측이 `.get(state, "")` 로 조용히 넘어가므로, 그 테스트가 없으면 새 상태를
+# 추가하고 라벨을 빠뜨렸을 때 예외 없이 라벨만 사라진다(PR #400 리뷰).
+# AVAILABLE 이 빈 문자열인 것은 "살 수 있다"를 굳이 말하지 않는다는 표현 정책이며, 매핑의
+# 완전성과는 별개다 — 라벨을 붙일지 말지는 소비 측(app/agents/buyer/cart/purchase_state.py)이 정한다.
+PURCHASE_STATE_LABEL: Mapping[PurchaseState, str] = MappingProxyType(
+    {
+        "AVAILABLE": "",
+        "SOLD_OUT": "품절",
+        "HIDDEN": "판매 종료",
+    }
+)
+
+# 유효값 판정은 라벨 매핑이 아니라 **Literal 에서 직접 뽑는다** — 라벨은 표현용이라 누군가
+# 항목을 빼도 이상하지 않지만, 그때 그 상태가 조용히 "모름"으로 강등되면 안 된다. 계약의
+# 단일 진실 원천은 `PurchaseState` 하나다.
+_KNOWN_PURCHASE_STATES: frozenset[str] = frozenset(get_args(PurchaseState))
+
+
+def _degrade_unknown_purchase_state(value: object) -> object:
+    """계약 밖 상태값을 `None`(모름)으로 강등한다 — 항목 자체는 살린다(#310).
+
+    찜(`spring_client::_parse_wishlist_items`)은 미지 값이 오면 그 **항목을 skip** 하지만
+    장바구니에 같은 처방을 쓰면 안 된다: 스킵된 항목이 목록에서 조용히 사라지면
+    "전부 빼줘"(`cart_remove_all_markers` → 전 항목 삭제)가 일부만 지우고 CART_REMOVED 로
+    성공을 보고하고, `_existing_quantity` 합산 안내도 어긋난다. 장바구니 항목은 사용자
+    소유물이자 파괴적 후속 동작의 입력이라 **사라지는 것이 조용히 틀리는 것보다 나쁘다**.
+    미지 값은 "모름"과 사실상 같은 처지이므로 `None` 으로 떨어뜨리고 관측용 warning 만 남긴다.
+
+    **`isinstance(value, str)` 가드가 멤버십 검사보다 먼저다**(PR #400 리뷰). `{}`·`[]` 같은
+    unhashable 값이 오면 `value in frozenset` 이 `hash(value)` 에서 `TypeError` 를 내는데,
+    pydantic v2 는 `BeforeValidator` 가 던진 `TypeError` 를 `ValidationError` 로 감싸지 않고
+    그대로 올린다. 그러면 `spring_client::get_cart` 의
+    `except (httpx.HTTPError, ValueError, ValidationError)` 를 빠져나가 **degrade 조차 못 하고**,
+    이 함수가 막으려던 "드리프트 하나가 장바구니 전체를 죽인다"가 더 나쁜 형태로 재현된다.
+    숫자·bool 은 hashable 이라 가드 없이도 강등됐지만, 타입을 좁히는 편이 의도에도 맞다 —
+    `purchaseState` 는 애초에 문자열 enum 이다.
+    """
+    if value is None or (isinstance(value, str) and value in _KNOWN_PURCHASE_STATES):
+        return value
+    _log.warning("계약 밖 purchaseState 값 — None(모름)으로 강등한다: %r", value)
+    return None
 
 
 class CartViewItem(CamelModel):
-    """I-9 GET /internal/cart 응답 항목 — productName/optionName 은 챗 답변 생성 필수(🔴)."""
+    """I-18 GET /internal/cart 응답 항목 — productName/optionName 은 챗 답변 생성 필수(🔴)."""
 
     cart_item_id: int  # 숫자(BIGINT, cart_item.id)
     product_id: int  # 숫자(BIGINT, product.id)
@@ -373,6 +426,12 @@ class CartViewItem(CamelModel):
     option_name: str | None = None
     quantity: int = 1
     price: int | None = None  # 표시가(선택, 총액 안내용 — 표시 권위는 Spring)
+    # 미수신은 None(모름) — "AVAILABLE" 로 단정하지 않는다. 소비가 붙은 이상 기본값은 주장이
+    # 되고, 키가 없다는 사실을 "구매 가능이 확인됨"으로 바꿔 읽으면 못 사는 상품을 살 수
+    # 있다고 안내하게 된다(#310, REQ-CART-037).
+    purchase_state: Annotated[
+        PurchaseState | None, BeforeValidator(_degrade_unknown_purchase_state)
+    ] = None
 
 
 class CartOption(CamelModel):
@@ -389,7 +448,7 @@ class CartOption(CamelModel):
 
 
 class CartView(CamelModel):
-    """I-9 응답. 빈 장바구니는 items=[] 정상 200 (오류 아님, §4.9)."""
+    """I-18 응답. 빈 장바구니는 items=[] 정상 200 (오류 아님, §4.9)."""
 
     items: list[CartViewItem] = Field(default_factory=list)
 
@@ -999,9 +1058,6 @@ class WishlistAddResult(CamelModel):
     product_id: int | None = None
 
 
-PurchaseState = Literal["AVAILABLE", "SOLD_OUT", "HIDDEN"]
-
-
 class WishlistItem(CamelModel):
     """I-28 GET /internal/wishlist 응답 항목(확정 2026-08-05).
 
@@ -1010,17 +1066,20 @@ class WishlistItem(CamelModel):
     BE 응답에는 있어도 이 스키마에는 두지 않는다 — AI 가 쓰지 않는 필드까지 파싱·보존하면
     사용처 없는 결합만 늘어난다.
 
-    교체 근거: 2026-08-05 M-4 개정으로 구 boolean 필드(기본값 참, 지금은 사라짐)를
-    `purchaseState`(enum)로 대체했다 — 🔶 I-28 (확정 2026-08-05) — Spring 구현 진행 중.
-    기본값(`"AVAILABLE"`)은 그 구 boolean 필드와 같은 의미를 유지한다 — 재검토는 #310.
+    `PurchaseState` 정의는 장바구니 조회(I-18) 절에 있다 — 두 계약이 같은 enum·같은 규칙을 쓴다.
+
+    기본값 재검토(#310): PR #305 는 구 boolean 필드(기본값 참)와 의미를 맞추려 `"AVAILABLE"` 을
+    뒀지만, 이제 이 값을 읽어 안내 문구를 가르므로 **기본값이 주장으로 승격**된다 — 키가
+    없다는 사실을 "구매 가능이 확인됨"으로 바꿔 읽으면 품절 상품을 살 수 있다고 안내하게 된다.
+    모름은 주장이 아니므로 `None` 으로 두고 소비 측이 아무 라벨도 붙이지 않는다.
     BE 가 이 세 값 밖의 상태를 추가했을 때의 파싱 견고성은 이 클래스가 아니라
     `app/services/spring_client.py::_parse_wishlist_items`(항목 단위 skip)가 책임진다 —
-    상세 근거는 그쪽 docstring 하나에만 둔다.
+    상세 근거는 그쪽 docstring 하나에만 둔다(장바구니는 항목이 사라지면 안 돼 처방이 다르다).
     """
 
     product_id: int
     name: str | None = None  # BE 필드명은 name(productName 아님)
-    purchase_state: PurchaseState = "AVAILABLE"
+    purchase_state: PurchaseState | None = None
 
 
 class WishlistView(CamelModel):
