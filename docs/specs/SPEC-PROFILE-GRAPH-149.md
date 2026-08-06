@@ -1,9 +1,9 @@
 ---
 id: SPEC-PROFILE-GRAPH-149
-version: 0.1.0
+version: 0.2.0
 status: draft
 created: 2026-08-05
-updated: 2026-08-05
+updated: 2026-08-06
 author: navis
 priority: high
 issue_number: 149
@@ -28,6 +28,30 @@ issue_number: 149
 
 ## HISTORY
 
+- **v0.2.0 (2026-08-06, 이슈 #322)** — 구현(#150) 착수 전 계약 개정. **[HARD] 조항 2건을 뒤집는다.**
+  (1) **개별 삭제 = 즉시 억제 → undo 창 → 원문 물리 삭제**(§6.3 REQ-PGRAPH-025~029 신설). v0.1.0 은
+  억제만 하고 원문을 무기한 보관했는데, 사용자가 "지웠다"고 믿는 문장의 원문을 들고 있을 이유가
+  없고(데이터 최소화) 복구 가능성이라는 명분은 undo 창(`graph_undo_window_s`, 기본 5분)이 대신한다.
+  tombstone 은 **시간 만료가 없다** — 만료시키면 `profile_idle_sweep_interval_s`(60초) 주기 flush 가
+  같은 발화를 재승격시켜 방금 지운 취향이 부활한다(실측). 단 "영구"는 *자동 만료 없음*이지
+  *사용자도 못 지움*이 아니다(§6.7 초기화는 tombstone 도 지운다). **REQ-PGRAPH-032(pin 만료 없음)와의
+  구분 문장**을 §6.4 에 박았다 — REQ-PGRAPH-035 가 최신성 불변식에 대해 한 것과 같은 오독 방지
+  패턴이다. 함께 고친 기존 모순 2건: **REQ-PGRAPH-077 의 "유일하고 좁은 예외"** 단정을 2건으로
+  (undo 만료 purge 가 두 번째다), **멱등 원장 TTL(`graph_idempotency_ttl_h`) > undo 창**이라 purge 후
+  restore 재전송이 "복구됨"을 재생하는 구멍(REQ-PGRAPH-028). 집행 메커니즘(주기 스윕/lazy purge)은
+  REQ-PGRAPH-027 이 레이스를 막으므로 **지정하지 않고 #150 에 맡긴다**. (2) **전체 초기화 범위에
+  대화 전사록 포함**(REQ-PGRAPH-061/062, EX-G5 개정) — 근거는 `SPEC-PROFILE-001` REQ-PROF-034 가 이미
+  채택한 논거의 연장(금지 대상은 *기계가 조용히 지우는 것*이고 사용자 자신의 삭제권은 별개 —
+  예외 신설이 아니라 적용 범위 한정)이며, **OPEN-G6 가 해소**된다. 감사 로그는 계속 보존하고,
+  전사록 자연 만료 TTL(`SPEC-PROFILE-001` OPEN-P5)과는 **별개 트리거**다. (3) **인증 레인 통합**
+  (REQ-PGRAPH-090 개정, AC-PGRAPH-02, §4 결정 19 행) — 조회도 Spring 프록시(레인 b)가 되어 게스트·
+  판매자 분기가 소멸했다. 근거는 api-spec §3.8·C-20(마이페이지에서 `chat:stream` 티켓을 발급받을 수
+  없다). (4) **`evidence_count` 와이어 미노출**(REQ-PGRAPH-006 신설) — `profile_buffer_repeat_cap`(=2)이
+  관측 횟수를 자르므로 정확한 수를 셀 수 없다(#119). 내부 필드는 REQ-PGRAPH-015 병합 합산에 유지.
+  (5) **REQ-PGRAPH-080 예외** — 자동 purge 는 별도 감사 행을 남기지 않는다(actor 없는 시스템 동작이라
+  `actor_fp` 를 만들 대상이 없고, `edgeSuppress` 행 + 시각 + config 로 결정론적 재구성된다).
+  신설: 튜너블 `graph_undo_window_s`, AC-PGRAPH-13~15, §12 선결조건 7(`conversation_turns.user_id`
+  인덱스 부재 — 사용자별 삭제가 풀스캔). **api-spec v0.26.0**·**`SPEC-PROFILE-001` v0.8.0** 동반.
 - **v0.1.0 (2026-08-05, 이슈 #149)** — 최초 작성. node·edge 투영 모델, 결정론적 식별·병합 규칙
   (`SPEC-PROFILE-001` OPEN-P12의 `preference_key` 부재를 정면으로 다룬다), suppress/superseded/purge
   상태 기계, 사용자 편집 고정(pin)과 기계 재파생의 우선순위, 개인화 중지 전파 범위, 민감정보 3층
