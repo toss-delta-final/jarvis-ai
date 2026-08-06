@@ -1291,14 +1291,42 @@
         "productId": 9035270365,
         "rule": "random_catalog",
         "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 1085982197,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 2627452444,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 2730310079,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 2749402080,
+        "rule": "price_violation",
+        "source": "injected"
       }
     ],
     "productIds": [
       1268795,
+      1085982197,
       1875296471,
       2350490722,
       2374915876,
       2378024650,
+      2627452444,
+      2730310079,
+      2749402080,
       2803258637,
       2875571339,
       3610879964,
@@ -1621,7 +1649,7 @@
       {
         "from": "primary",
         "productId": 9205089754,
-        "rule": null,
+        "rule": "category_violation",
         "source": "golden_filter"
       },
       {
@@ -2092,7 +2120,7 @@
       {
         "from": "primary",
         "productId": 9205089754,
-        "rule": null,
+        "rule": "category_violation",
         "source": "golden_filter"
       },
       {
@@ -2899,7 +2927,7 @@
       {
         "from": "primary",
         "productId": 1679183612,
-        "rule": null,
+        "rule": "category_violation",
         "source": "golden_filter"
       },
       {
@@ -3530,16 +3558,44 @@
         "productId": 9473470615,
         "rule": null,
         "source": "golden_filter"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 1085982197,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 2627452444,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 2749402080,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 3445851710,
+        "rule": "price_violation",
+        "source": "injected"
       }
     ],
     "productIds": [
+      1085982197,
       1217557184,
       1403303149,
       1677693211,
       2374915876,
       2378024650,
+      2627452444,
       2730310079,
+      2749402080,
       2829539071,
+      3445851710,
       4523196896,
       4744632097,
       5346989313,
@@ -5704,7 +5760,7 @@
       {
         "from": "keyword-only",
         "productId": 9205089754,
-        "rule": "broadened_search",
+        "rule": "category_violation",
         "source": "golden_filter"
       },
       {
@@ -5740,7 +5796,7 @@
       {
         "from": "keyword-only",
         "productId": 9406282766,
-        "rule": "broadened_search",
+        "rule": "category_violation",
         "source": "golden_filter"
       },
       {
@@ -6687,6 +6743,30 @@
         "productId": 9346022183,
         "rule": "semantic_near",
         "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 7593432779,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 7597989279,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 8197158696,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 9043833273,
+        "rule": "price_violation",
+        "source": "injected"
       }
     ],
     "productIds": [
@@ -6699,7 +6779,10 @@
       6925945076,
       7396098473,
       7411078151,
+      7593432779,
+      7597989279,
       8052245116,
+      8197158696,
       8369203960,
       8552128760,
       8556187332,
@@ -6707,6 +6790,7 @@
       8689612318,
       8689613924,
       8775279551,
+      9043833273,
       9191286944,
       9203944771,
       9242508484,
@@ -6911,10 +6995,23 @@
         "productId": 9090699634,
         "rule": null,
         "source": "golden_filter"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 86288970,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 7209115564,
+        "rule": "price_violation",
+        "source": "injected"
       }
     ],
     "productIds": [
       61481555,
+      86288970,
       419531524,
       1023366342,
       1459350505,
@@ -6933,6 +7030,7 @@
       5884007111,
       6657949608,
       6705761268,
+      7209115564,
       8297990171,
       8348283102,
       8458529448,
@@ -7357,12 +7455,32 @@
         "productId": 9477605978,
         "rule": "semantic_near",
         "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 2245579339,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 2287676642,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 8247535198,
+        "rule": "price_violation",
+        "source": "injected"
       }
     ],
     "productIds": [
       71401414,
       110971561,
       1511983565,
+      2245579339,
+      2287676642,
       2777411712,
       4818646816,
       4818679413,
@@ -7373,6 +7491,7 @@
       6989992319,
       7016612023,
       7449999371,
+      8247535198,
       8267571795,
       8443160696,
       8684445142,
@@ -7580,6 +7699,30 @@
         "productId": 9460877300,
         "rule": null,
         "source": "golden_filter"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 7357152914,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 9298687306,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 9387331297,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 9427050293,
+        "rule": "price_violation",
+        "source": "injected"
       }
     ],
     "productIds": [
@@ -7593,6 +7736,7 @@
       6577936345,
       6597203815,
       6914535179,
+      7357152914,
       7856386468,
       8297784018,
       8552128760,
@@ -7604,12 +7748,15 @@
       9203959676,
       9256327189,
       9261599775,
+      9298687306,
       9299673325,
       9317108048,
       9330402673,
       9351055034,
       9355934606,
       9367232545,
+      9387331297,
+      9427050293,
       9454749144,
       9455877738,
       9460877300
@@ -8027,6 +8174,30 @@
         "productId": 9362351249,
         "rule": null,
         "source": "golden_filter"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 2203460772,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 8414488378,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 8960584251,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 8960609843,
+        "rule": "price_violation",
+        "source": "injected"
       }
     ],
     "productIds": [
@@ -8034,6 +8205,7 @@
       2046037563,
       2072865856,
       2097539850,
+      2203460772,
       3444202521,
       5475557701,
       5744186987,
@@ -8048,12 +8220,15 @@
       8096753085,
       8186206405,
       8194040678,
+      8414488378,
       8522825084,
       8558338349,
       8558423323,
       8563758142,
       8563771119,
       8775279551,
+      8960584251,
+      8960609843,
       9164391272,
       9195596201,
       9242490843,
@@ -8250,12 +8425,37 @@
         "productId": 9416963181,
         "rule": null,
         "source": "golden_filter"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 2408561969,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 7856812498,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 9397921554,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 9397965516,
+        "rule": "price_violation",
+        "source": "injected"
       }
     ],
     "productIds": [
       55642190,
       924556086,
       2378024650,
+      2408561969,
       2771811534,
       2848444180,
       2875571339,
@@ -8271,6 +8471,7 @@
       6062492856,
       7252788191,
       7622233513,
+      7856812498,
       8136413333,
       8174438205,
       8174635108,
@@ -8282,6 +8483,8 @@
       9252661547,
       9364758391,
       9389885473,
+      9397921554,
+      9397965516,
       9416963181
     ],
     "recordedAt": "2026-08-05T00:00:00+09:00",
@@ -10476,6 +10679,18 @@
         "productId": 9262001162,
         "rule": null,
         "source": "golden_filter"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 8802822629,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 9431744607,
+        "rule": "price_violation",
+        "source": "injected"
       }
     ],
     "productIds": [
@@ -10506,9 +10721,11 @@
       8327305144,
       8332605900,
       8356483963,
+      8802822629,
       8993061270,
       9035270365,
-      9262001162
+      9262001162,
+      9431744607
     ],
     "recordedAt": "2026-08-05T00:00:00+09:00",
     "request": {
@@ -10699,6 +10916,30 @@
         "productId": 9235788743,
         "rule": null,
         "source": "golden_filter"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 9300003646,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 9300369296,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 9300662054,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 9306501349,
+        "rule": "price_violation",
+        "source": "injected"
       }
     ],
     "productIds": [
@@ -10731,7 +10972,11 @@
       9207520352,
       9232752421,
       9235765373,
-      9235788743
+      9235788743,
+      9300003646,
+      9300369296,
+      9300662054,
+      9306501349
     ],
     "recordedAt": "2026-08-05T00:00:00+09:00",
     "request": {
@@ -11145,6 +11390,30 @@
         "productId": 8578274558,
         "rule": null,
         "source": "golden_filter"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 2203460772,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 8369948592,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 8414488378,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 8960584251,
+        "rule": "price_violation",
+        "source": "injected"
       }
     ],
     "productIds": [
@@ -11152,6 +11421,7 @@
       2046037563,
       2072865856,
       2097539850,
+      2203460772,
       2518955784,
       3444202521,
       5475557701,
@@ -11169,7 +11439,9 @@
       8096753085,
       8186206405,
       8194040678,
+      8369948592,
       8386721850,
+      8414488378,
       8522825084,
       8548521672,
       8558338349,
@@ -11177,7 +11449,8 @@
       8563748884,
       8563758142,
       8563771119,
-      8578274558
+      8578274558,
+      8960584251
     ],
     "recordedAt": "2026-08-05T00:00:00+09:00",
     "request": {
@@ -11368,6 +11641,30 @@
         "productId": 9473866946,
         "rule": null,
         "source": "golden_filter"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 3700228373,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 7614316519,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 8108120723,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 8139225117,
+        "rule": "price_violation",
+        "source": "injected"
       }
     ],
     "productIds": [
@@ -11376,10 +11673,14 @@
       2049383229,
       3118676581,
       3428487713,
+      3700228373,
       4329088111,
       5845321173,
       6566974267,
+      7614316519,
       8041926089,
+      8108120723,
+      8139225117,
       8558423323,
       8592232287,
       8684531747,
@@ -11591,6 +11892,30 @@
         "productId": 9479196117,
         "rule": "semantic_near",
         "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 9109966644,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 9282273155,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 9313367560,
+        "rule": "price_violation",
+        "source": "injected"
+      },
+      {
+        "from": "offline_catalog_snapshot:price>priceMax",
+        "productId": 9325195267,
+        "rule": "price_violation",
+        "source": "injected"
       }
     ],
     "productIds": [
@@ -11609,10 +11934,14 @@
       9019897204,
       9035270365,
       9094126885,
+      9109966644,
+      9282273155,
       9303384381,
       9310018195,
       9310020827,
       9310071687,
+      9313367560,
+      9325195267,
       9341821104,
       9346022183,
       9420037562,

@@ -139,6 +139,44 @@
     "violationCount": 0,
     "warningCount": 16
   },
+  "violationNegativeFill": {
+    "dev": {
+      "attr_violation": {
+        "actualCandidates": 0,
+        "actualCases": 0,
+        "casesCandidateCounts": {}
+      },
+      "category_violation": {
+        "actualCandidates": 5,
+        "actualCases": 4,
+        "casesCandidateCounts": {
+          "buy-cmap-0004": 1,
+          "buy-over-0003": 2,
+          "buy-repu-0001": 1,
+          "buy-repu-0003": 1
+        }
+      },
+      "price_violation": {
+        "actualCandidates": 47,
+        "actualCases": 13,
+        "casesCandidateCounts": {
+          "buy-budg-0002": 4,
+          "buy-budg-0003": 4,
+          "buy-budg-0005": 2,
+          "buy-budg-0006": 4,
+          "buy-budg-0008": 4,
+          "buy-budg-0009": 4,
+          "buy-budg-0010": 4,
+          "buy-mult-0001": 4,
+          "buy-mult-0003": 4,
+          "buy-mult-0004": 2,
+          "buy-mult-0006": 3,
+          "buy-mult-0007": 4,
+          "buy-pers-0001": 4
+        }
+      }
+    }
+  },
   "violations": [],
   "warnings": [
     {

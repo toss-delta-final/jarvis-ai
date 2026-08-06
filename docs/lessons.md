@@ -13,6 +13,59 @@
 
 ---
 
+## [2026-08-06] 데이터가 새 코드 경로를 처음 태우면, 게이트가 깨져도 범인은 앱이 아니라 하네스일 수 있다
+- 증상: #370 이 골든셋에 처음으로 유의미한 수(47건)의 가격 위반 후보를 주입하자
+  `tests/eval/test_goldenset_eval.py` 의 critical PR 게이트가 갑자기 깨졌다. 표면적으로는
+  "앱이 하드 제약을 위반한 상품을 노출한다"로 읽혔다.
+- 원인: 앱 결함이 아니라 eval 하네스의 mock 충실도 격차였다. `evals/metrics/harness.py` 의
+  `_CaseTransport` 가 Spring `/internal/products/search` 를 mock 하면서 요청의
+  `minPrice`/`maxPrice` 를 무시하고 fixture 후보를 전부 돌려줬다. 실 서비스는
+  `app/services/spring_client.py` 가 그 파라미터를 I-1 에 실어 **Spring 이 서버사이드로**
+  거른다(앱의 로컬 `within_price_range` 는 인기상품 폴백 경로 전용이라 이 경로를 타지 않는다).
+  #333 의 기존 `price_violation` 채널이 실측 0% 에 가까워서 이 격차가 한 번도 발현된 적이
+  없었다 — 데이터가 그 코드 경로를 태우지 않는 동안은 하네스가 틀려도 아무도 모른다.
+- 규칙: eval 하네스의 fake 외부 서비스는 "앱이 실제로 보낸 요청 파라미터"를 기준으로 실
+  서비스 동작을 흉내내야 하며, 새로운 실패 모드를 데이터로 넣을 때는 그 실패 모드를 판정하는
+  경로가 하네스에서 실제로 살아 있는지 먼저 확인한다. 통과하던 게이트가 데이터 추가 후
+  깨지면 앱을 고치기 전에 하네스가 실서비스와 다른지부터 확인한다(반대로 고치면 실서비스에
+  없는 로직을 앱에 심게 된다). 케이스의 정답 라벨(`hardConstraints`)로 mock 을 거르면 안
+  된다 — 그러면 decompose 가 필터를 놓치는 진짜 실패 모드를 영원히 못 잡는다.
+- 관련: #370, #333, `evals/metrics/harness.py::_CaseTransport`,
+  `app/services/spring_client.py`, `tests/eval/test_goldenset_eval.py`
+
+---
+
+## [2026-08-06] eval 하네스가 "이 축을 잰다"고 문서에 쓰려면 주입값이 아니라 실제 도달값을 실측해야 한다
+- 증상: #371(combo_matrix INV/DIR 쌍 실검증 러너) 작업 중, `evals/combo_matrix/README.md` 가
+  "category 필터축은 `ProductSearchFilters.category`(하드필터 문자열)만 잰다"고 적어 놨는데,
+  `searchFilters` 프로젝션을 처음 실측 캡처해 보니 combo-0054(DIR, category 필터 추가) 의
+  base·perturbed 양쪽 `searchFilters.category` 가 **둘 다 항상 None** 이었다 — decompose 산출
+  JSON 에 `filters.category="무선이어폰"` 을 분명히 채웠는데도 검색 호출에는 한 번도 도달하지
+  않았다.
+- 원인: `app/agents/buyer/graph.py:520-537` 의 canonical-or-null degrade 가
+  `decision.category_legs` 가 비면 `decision.filters.category` 를 무조건 `None` 으로 지운다
+  ("미검증 원문이 Spring 검색으로 새지 않게" — 프로덕션 정상 설계, 버그 아님). `category_legs`
+  는 오직 decompose 의 `categoryQueries`→`map_categories` 매핑으로만 채워지는데,
+  `evals/combo_matrix/runner.py::build_decompose_json` 은 `categoryQueries` 를 한 번도 채우지
+  않고 `fakes.map_categories_noop` 은 항상 빈 legs 를 돌려준다 — 그래서 `filters.category` 를
+  아무리 채워도 항상 지워졌다. `category` 축은 #335 의 기존 55건 MFT 케이스를 포함해 이 하네스
+  전체에서 **처음부터 실제 검색 경계에 도달한 적이 없었는데**, 아무도 `searchFilters` 자체를
+  캡처한 적이 없어(#119 관측 로그는 축 **이름**만 봄, 값이 실제로 필터에 실렸는지는 안 봄) 지금까지
+  드러나지 않았다.
+- 규칙: **eval 하네스 문서에 "이 축을 잰다"고 쓰려면, 그 축이 파이프라인 경계(예: search 콜러블이
+  실제로 받는 인자)까지 도달하는지를 실측 캡처로 확인하고 나서 쓴다** — 주입한 decompose/입력
+  값이 아니라 **경계 도달값**을 봐야 한다. 특히 canonical-or-null 처럼 "원본을 재검증 없이는
+  못 믿어 지운다"는 설계(§20·§115 계열)가 있는 필드는, 상류에서 값이 있어 보여도 하류의 신뢰
+  게이트를 통과하지 못하면 조용히 null 이 된다 — fake/stub 이 그 신뢰 게이트를 만족시키는지
+  (여기서는 legs 매핑) 별도로 확인해야 한다. 이 발견은 `pair_runner.py` 전용 seam(exact-match
+  카테고리 매핑 fake)으로 그 쌍 하나만 고쳤고, 기존 55건의 잔여 맹점은 후속 이슈로 남겼다 —
+  구조 변경이 필요한 발견은 코드를 먼저 고치지 말고 오케스트레이터에게 보고하고 결정을 받았다.
+- 관련: #371, `app/agents/buyer/graph.py:520-537`·`:349`, `evals/combo_matrix/runner.py::build_decompose_json`,
+  `evals/combo_matrix/fakes.py::map_categories_noop`·`make_exact_match_category_mapping`(신규),
+  `evals/combo_matrix/README.md` "알려진 관측 한계" 절 정정
+
+---
+
 ## [2026-08-06] degrade 주입 fake 가 실제 어댑터의 실패 규약과 다른 예외 타입을 던지면 관측·이슈가 인공물을 잰다
 - 증상: #335 매트릭스가 `wishlist_add × spring_timeout` 셀에서 "`SpringUnavailableError` 미처리로
   INTERNAL 로 샌다"를 관측했고 이슈 #368 이 그 관측을 근거로 열렸는데, PR #374 리뷰에서 실제
@@ -56,6 +109,31 @@
   `_SELECT_UNAVAILABLE_POLICY_REASONS` · `_infra_failure_event`),
   `app/agents/buyer/recommendation/category_mapping.py`(gather `return_exceptions=True` ·
   단계별 try 격리), `evals/README.md` 3항
+
+---
+
+## [2026-08-06] 임시 수정 원복을 문자열 치환("첫 매치")으로 하면 나란히 있는 동형 fixture 를 바꿔친다
+- 증상: #372 리뷰 라운드 1 검증 중, 테스트가 공허 통과가 아닌지 확인하려고
+  `tests/unit/test_underspecified_answer_turn.py` 의 A-1 fixture(`_CATEGORY_ANSWER_DECOMPOSE`)
+  에서 `categoryQueries` 를 임시로 비웠다가, 복원할 때 `str.replace(old, new, 1)` 로 되돌렸다.
+  그런데 되돌릴 패턴(`"categoryQueries": [],\n    "filters": {"priceMax": 50000},\n}`)이 **바로
+  위의 다른 fixture(`_PRICE_MAX_DECOMPOSE`)와 완전히 동일**했다 — 첫 매치가 그쪽이라, 복원이
+  엉뚱한 fixture 에 카테고리를 심고 원래 fixture 는 비운 채로 남겼다. 두 fixture 가 동시에
+  잘못된 상태가 됐는데 **테스트는 그래도 통과**했다(A-1 의 1턴이 과소지정이 아니게 됐는데도
+  되물음 단언이 `or "이어폰" in t` 폴백으로 초록이었다). `git status` 도 신규(untracked) 파일이라
+  `git checkout` 으로 되돌릴 수 없었고, diff 로도 드러나지 않았다. 눈으로 fixture 를 다시 읽고서야
+  발견했다.
+- 원인: 테스트 fixture 파일은 **비슷한 dict 리터럴이 여러 개 나란히 있는 게 정상**이라, 문자열
+  치환의 "첫 매치"가 의도한 그 fixture 라는 보장이 없다. 원복 확인도 "테스트가 다시 초록이다"
+  로만 했는데, 단언에 `or "이어폰" in t` 같은 관대한 폴백이 섞여 있으면 fixture 가 뒤바뀐
+  상태에서도 전체가 초록으로 나온다 — 통과가 "원복이 맞다"를 보증하지 않는다.
+- 규칙: 임시 수정→원복은 **문자열 치환으로 하지 말고** 원본 사본을 떠 두고 파일째 되돌려라
+  (`cp <파일> <파일>.bak` 후 자가 검증 → `cp <파일>.bak <파일>` 로 복원 — `mv`/`cp` 는 신규
+  untracked 파일에도 `git checkout` 과 달리 그대로 통한다). 원복 후에는 **테스트 통과만으로
+  확인하지 말고 해당 지점을 눈으로 다시 읽어 확인하라** — 특히 단언에 `or` 폴백이 섞여 있는
+  테스트는 fixture 가 틀려도 초록일 수 있다.
+- 관련: #372 리뷰 라운드 1, `tests/unit/test_underspecified_answer_turn.py`
+  `_CATEGORY_ANSWER_DECOMPOSE`/`_PRICE_MAX_DECOMPOSE`
 
 ---
 

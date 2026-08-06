@@ -1,0 +1,99 @@
+{
+  "version": "filter-axes-v1",
+  "emptyAxisRule": "bothAbsentExcluded",
+  "excludedFields": [
+    "limit"
+  ],
+  "axes": {
+    "attr_conditions": {
+      "evaluated": true,
+      "fields": [
+        "attrConditions"
+      ],
+      "normalization": "attrConditionsDict",
+      "reason": null
+    },
+    "brand": {
+      "evaluated": true,
+      "fields": [
+        "brand"
+      ],
+      "normalization": "stringListSorted",
+      "reason": null
+    },
+    "buy_all": {
+      "evaluated": false,
+      "fields": [
+        "buyAll"
+      ],
+      "normalization": "boolean",
+      "reason": "RouteDecision 레벨 필드로 goldenset v1 expectedFilters(ProductSearchFilters 검증)에 라벨이 없다 — probe 관측 전용."
+    },
+    "category": {
+      "evaluated": true,
+      "fields": [
+        "category"
+      ],
+      "normalization": "string",
+      "reason": null
+    },
+    "color": {
+      "evaluated": true,
+      "fields": [
+        "color"
+      ],
+      "normalization": "string",
+      "reason": null
+    },
+    "exclude_product_ids": {
+      "evaluated": false,
+      "fields": [
+        "excludeProductIds"
+      ],
+      "normalization": "stringListSorted",
+      "reason": "발화 추출이 아니라 구매이력(I-19) 파생이다 — P/R 부적합, 목록에만 존재."
+    },
+    "keyword": {
+      "evaluated": true,
+      "fields": [
+        "keyword",
+        "semanticQuery"
+      ],
+      "normalization": "string",
+      "reason": null,
+      "special": "keywordSemanticQueryAlias"
+    },
+    "price_max": {
+      "evaluated": true,
+      "fields": [
+        "priceMax"
+      ],
+      "normalization": "numeric",
+      "reason": null
+    },
+    "price_min": {
+      "evaluated": true,
+      "fields": [
+        "priceMin"
+      ],
+      "normalization": "numeric",
+      "reason": null
+    },
+    "rating_min": {
+      "evaluated": true,
+      "fields": [
+        "ratingMin"
+      ],
+      "normalization": "numeric",
+      "reason": null
+    },
+    "total_budget": {
+      "evaluated": false,
+      "fields": [
+        "totalBudget"
+      ],
+      "normalization": "numeric",
+      "reason": "RouteDecision 레벨 필드로 goldenset v1 expectedFilters(ProductSearchFilters 검증)에 라벨이 없다 — probe 관측 전용."
+    }
+  }
+}

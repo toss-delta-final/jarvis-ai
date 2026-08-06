@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Literal
 
@@ -14,8 +14,8 @@ from pydantic.alias_generators import to_camel
 from app.core.config import Settings, get_settings
 from app.schemas.spring import ProductSearchFilters
 
-SCHEMA_VERSION = "2.0.0"
-DATASET_VERSION = "2.1.0"
+SCHEMA_VERSION = "2.1.0"
+DATASET_VERSION = "2.2.0"
 CASE_ID_RE = re.compile(r"^buy-[a-z][a-z0-9_]*-\d{4}$")
 # 니즈 축(신원 아님) — 케이스당 정확히 1개(disjoint, §2.1). guest/member 신원 슬라이스와는 별도 축이다.
 NEEDS_SLICES = frozenset({"single_need", "multi_constraint", "budget", "repurchase"})
@@ -51,11 +51,16 @@ CANDIDATE_RULES = frozenset(
         "semantic_near",
         "price_violation",
         "attr_violation",
+        "category_violation",
         "other_brand",
         "broadened_search",
         "random_catalog",
     }
 )
+# 위반 네거티브 채널(#370) — 하드 네거티브(semantic_near 등, "유사하지만 오답")와 별도로,
+# 케이스의 하드 제약을 실제로 위반하는 후보만 모은 부분집합이다.
+VIOLATION_CANDIDATE_RULES = frozenset({"price_violation", "category_violation", "attr_violation"})
+LABEL_SOURCES = frozenset({"human", "model", "heuristic", "unknown"})
 NARROW_DOMAIN_NOTE_PREFIX = "narrow-domain:"
 INJECTED_RELEVANT_APPROVED_NOTE_PREFIX = "injected-relevant-approved:"
 RELEVANT_RATIO_EXEMPT_NOTE_PREFIX = "relevant-ratio-exempt:"
@@ -116,8 +121,8 @@ class CaseCore(CamelModel):
     """dev와 봉인 holdout이 공유하는 비라벨 필드."""
 
     case_id: str
-    schema_version: Literal["2.0.0"]
-    dataset_version: Literal["2.1.0"]
+    schema_version: Literal["2.1.0"]
+    dataset_version: Literal["2.2.0"]
     split: Literal["dev", "holdout"]
     slices: list[str]
     query: str = Field(min_length=1)
@@ -131,6 +136,12 @@ class CaseCore(CamelModel):
     adjudicator: str | None = None
     created_at: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     notes: str = Field(min_length=1)
+    # 라벨 provenance(#370) — 이 케이스의 relevantProductIds 등 라벨을 누가/언제/무슨 근거로
+    # 붙였는지. dev·holdout core 파일 양쪽에 있어야 하므로(비공개 holdout 라벨과 무관)
+    # GoldenCase가 아니라 CaseCore에 둔다.
+    label_source: Literal["human", "model", "heuristic", "unknown"]
+    labeled_at: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    label_rationale: str = Field(min_length=1)
     # CheckList 형식(#328 공통 규약): MFT는 라벨 필요, INV/DIR은 라벨 없이 규모를 늘리는 축이다.
     test_type: Literal["MFT", "INV", "DIR"] = "MFT"
     # INV/DIR 케이스를 묶는 검사 단위. 같은 group의 케이스들을 evals.metrics.behavior가 비교한다.
@@ -291,6 +302,7 @@ class Candidate(CamelModel):
             "semantic_near",
             "price_violation",
             "attr_violation",
+            "category_violation",
             "other_brand",
             "broadened_search",
             "random_catalog",
@@ -369,6 +381,87 @@ def load_jsonl(path: Path, model: type[BaseModel]) -> list[BaseModel]:
     return rows
 
 
+def judge_attr_violation(
+    attr_conditions: Mapping[str, str], product_attributes: Mapping[str, object]
+) -> bool:
+    """``attrConditions`` 조건을 catalog ``attributes``로 위반 판정한다(#370, 명시적 함수).
+
+    조건 키가 상품 ``attributes``에 그대로(정확히) 있고 값이 다를 때만 위반으로 판정한다.
+    조건 키가 상품에 아예 없으면(예: 케이스의 ``차단지수``가 catalog의 ``SPF지수``처럼 다른
+    이름으로만 존재) 위반 여부를 판정할 근거가 없으므로 False다 — 키 이름을 임의로 동의어
+    매핑하지 않는다(사후 추정 금지, 패킷 §B 소급 원칙과 같은 정신).
+    """
+    if not attr_conditions:
+        return False
+    for key, expected in attr_conditions.items():
+        if key in product_attributes and product_attributes[key] != expected:
+            return True
+    return False
+
+
+def _validate_violation_candidate(
+    case: GoldenCase,
+    candidate: Candidate,
+    *,
+    product: Mapping[str, object],
+) -> None:
+    """rule이 위반 네거티브 채널(가격/카테고리/속성) 중 하나인 candidate 한 건을 검증한다(#370).
+
+    위반 태그 후보는 정답이 될 수 없다 — 기존 ``injected-relevant-approved`` 마커로도
+    우회 불가로 한다(패킷 §A.4). 각 rule은 실제로 그 위반이 성립함을 catalog로 판정한다.
+    """
+    if candidate.product_id in set(case.relevant_product_ids):
+        raise ValueError(
+            f"{case.case_id}: 위반 네거티브 후보 {candidate.product_id}가 "
+            "relevantProductIds에 있습니다 — 위반 후보는 어떤 마커로도 정답이 될 수 없습니다"
+        )
+    hard = case.hard_constraints
+    if candidate.rule == "price_violation":
+        raw_price = product.get("price")
+        if not isinstance(raw_price, (int, float)):
+            raise ValueError(
+                f"{case.case_id}: price_violation 후보 {candidate.product_id}의 catalog 가격이 "
+                "없습니다 — 위반 태그 후보는 가격이 필수입니다"
+            )
+        price = raw_price
+        violates = (hard.price_max is not None and price > hard.price_max) or (
+            hard.price_min is not None and price < hard.price_min
+        )
+        if not violates:
+            raise ValueError(
+                f"{case.case_id}: price_violation 후보 {candidate.product_id}(가격 {price})가 "
+                f"priceMax={hard.price_max}/priceMin={hard.price_min}를 위반하지 않습니다"
+            )
+    elif candidate.rule == "category_violation":
+        category_name = product.get("categoryName")
+        excluded_ids = set(hard.forbidden_product_ids) | set(case.must_exclude_product_ids)
+        violates = category_name in set(hard.forbidden_categories) or (
+            candidate.product_id in excluded_ids
+        )
+        if not violates:
+            raise ValueError(
+                f"{case.case_id}: category_violation 후보 {candidate.product_id}(카테고리 "
+                f"{category_name!r})가 forbiddenCategories에도, forbiddenProductIds ∪ "
+                "mustExcludeProductIds에도 속하지 않습니다"
+            )
+    elif candidate.rule == "attr_violation":
+        attr_conditions = case.expected_filters.get("attrConditions")
+        if not isinstance(attr_conditions, dict) or not attr_conditions:
+            raise ValueError(
+                f"{case.case_id}: attr_violation 후보 {candidate.product_id}가 있지만 "
+                "expectedFilters.attrConditions가 없습니다"
+            )
+        product_attributes = product.get("attributes")
+        if not isinstance(product_attributes, dict) or not judge_attr_violation(
+            attr_conditions, product_attributes
+        ):
+            raise ValueError(
+                f"{case.case_id}: attr_violation 후보 {candidate.product_id}가 "
+                f"attrConditions {attr_conditions}를 위반함을 catalog attributes로 판정할 수 "
+                "없습니다"
+            )
+
+
 def validate_cases(
     cases: list[GoldenCase],
     *,
@@ -395,6 +488,42 @@ def validate_cases(
     catalog_categories = {
         product.get("categoryName") for product in catalog.values() if product.get("categoryName")
     }
+    # #370 — 위반 태그 후보는 하드 제약을 판정할 단일 소유 케이스가 있어야 한다. 같은 fixture를
+    # 2개 이상의 케이스가 공유하면(INV color_synonym/word_order 쌍 등) 어느 케이스 기준으로
+    # 위반을 판정해야 할지 모호해진다(GUIDE 관측 절 참조) — 위반 태그 후보는 그런 fixture에
+    # 넣을 수 없다.
+    cases_by_id = {case.case_id: case for case in cases}
+    fixture_owner_case_ids: dict[str, list[str]] = {}
+    for case in cases:
+        if case.search_fixture_id:
+            fixture_owner_case_ids.setdefault(case.search_fixture_id, []).append(case.case_id)
+    for fixture_id, fixture in parsed_fixtures.items():
+        violation_candidates = [
+            candidate
+            for candidate in fixture.candidates
+            if candidate.rule in VIOLATION_CANDIDATE_RULES
+        ]
+        if not violation_candidates:
+            continue
+        owners = fixture_owner_case_ids.get(fixture_id, [])
+        if len(owners) != 1:
+            raise ValueError(
+                f"{fixture_id}: 위반 네거티브 후보가 있는 fixture는 정확히 1개 케이스가 단독 "
+                f"사용해야 합니다(현재 {len(owners)}개: {owners})"
+            )
+        owner = cases_by_id[owners[0]]
+        if owner.test_type != "MFT":
+            raise ValueError(
+                f"{fixture_id}: 위반 네거티브 후보의 단독 소유 케이스({owner.case_id})는 "
+                f"MFT여야 합니다(현재 {owner.test_type})"
+            )
+        for candidate in violation_candidates:
+            product = catalog.get(str(candidate.product_id))
+            if product is None:
+                # catalog 실존 검증은 위 F-2 루프가 이미 전담하므로 여기서는 건너뛴다
+                # (이중 오류 메시지 방지).
+                continue
+            _validate_violation_candidate(owner, candidate, product=product)
     # F-2(#333 리뷰): fixture candidate는 라벨된 id뿐 아니라 전원 catalog_snapshot에 실존해야
     # 한다 — 존재하지 않으면 가격 HCV·diversity·라벨 워크시트 계산이 그 후보에서 전부 불가능해진다.
     for fixture_id, fixture in parsed_fixtures.items():

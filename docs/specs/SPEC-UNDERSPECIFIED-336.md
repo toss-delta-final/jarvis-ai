@@ -213,7 +213,7 @@ not_repeat_reask`(`tests/unit/test_underspecified_graph.py`)가 이 실측을 �
 4. **완화 칩(relaxation chips)이 과소지정 턴에서 완전히 꺼진다** — §3 의 자동완화·완화칩
    probe 차단은 "카테고리 없는 I-1 재검색"을 막는 부작용으로, 이 턴에서는 사용자가 완화
    칩을 눌러 조건을 넓히는 기존 UX 도 함께 사라진다. 되물음이 그 자리를 대신한다는 게
-   이 설계의 전제다.
+   이 설계의 전제다 — 우선순위 규칙과 범위 경계는 §7.2 참조(#372).
 
 ### 7.1 구현 중 발견한 결함과 조치 (자기 판단 지점)
 
@@ -227,6 +227,90 @@ relax` 를 전혀 참조하지 않는다**는 것을 확인했다(가격 제약�
 I-1 재검색을 막는다")을 달성하려면 이 두 지점에도 `not underspecified` 가드가 필요해
 추가했다 — 설계 자체를 재설계한 것이 아니라, 명시된 한 줄로는 도달하지 못하는 지점을
 같은 원칙(진입 분기 최소, 조건식 한 줄 추가)으로 마저 채운 것이다.
+
+### 7.2 완화칩 우선순위 규칙 — reask > relaxation chips (#372, §7 ④ 승격)
+
+적대적 심사(#372)가 §7 ④를 "알려진 한계"로만 적어 두고 회귀 테스트도 명시적 우선순위 규칙도
+없다고 지적했다. 이 절이 그 규칙을 명문화한다.
+
+**규칙**: 과소지정 턴(flag on ∧ `is_underspecified_turn`=True)에서는 되물음(reask)이 완화칩
+UX 를 대체한다 — 우선순위는 **reask > relaxation chips**다. §3 의 `may_auto_relax`·자동완화
+루프·완화칩 probe 세 지점(`graph.py` 약 527·1188·1264행, `and`/`if not underspecified`)이
+코드상 이 우선순위를 방어한다.
+
+**[리뷰 R1-F2] 다만 이 세 지점의 회귀 커버리지는 균일하지 않다.** 완화칩 probe(1264행)만
+`run_buyer_turn` 기반 행동 테스트(B-1)로 지켜진다. 나머지 둘(527·1188행)은 **유효한 설정에서
+관측 가능한 차이를 만들 수 없다** — `may_auto_relax`·자동완화 루프가 참조하는 자동완화 후보는
+`build_relaxation_candidates` 산출물 중 `settings.relaxation_auto_fields`(기동 검증
+`_forbid_auto_relaxing_explicit_constraints` 가 REQ-REC-043/AC-REC-08 근거로 `{"ratingMin"}`
+부분집합으로 강제)와 교집합이 있어야 하는데, `rating_min` 은 §2.1 의 **차단-축**이라 하나라도
+값이 있으면 그 턴은 애초에 과소지정이 아니다 — "과소지정 턴 + 자동완화 대상 필드" 조합 자체가
+어떤 유효한 설정에서도 존재하지 않는다(오케스트레이터가 두 게이트를 직접 제거하고
+`test_underspecified_graph.py`+`test_underspecified_answer_turn.py` 20건을 돌려 전부 그대로
+통과함을 실증, 2026-08-06). `test_underspecified_turn_can_never_carry_an_auto_relaxable_field`
+(B-4)가 이 불변식(자동완화 허용 목록 ⊆ {ratingMin} ∧ ratingMin 은 항상 과소지정을 배제)을
+고정한다 — 두 값 중 하나가 바뀌어 조합이 가능해지면 B-4 가 먼저 깨져, 그 시점부터 527·1188행의
+`not underspecified` 가 실제로 행동 테스트가 필요한 지점이 됐음을 알린다. 그때까지 두 지점은
+"방어 코드로는 맞지만 오늘 도달 불가능하다"는 상태이지 결함은 아니다 — 삭제하면 미래에 위
+불변식이 깨졌을 때(예: `relaxation_auto_fields` 허용 목록이 넓어짐) 조용히 REQ-REC-043 을
+어기는 회귀가 생기므로 코드는 그대로 둔다(`app/**` 도 이 이슈의 수정 범위 밖).
+
+**차단 범위는 그 턴 한정이다** — 비과소지정 턴(what-축이 하나라도 있는 턴)·답변 턴(prior 가
+있어 `is_underspecified_turn` 이 애초에 False 인 턴)의 완화칩은 flag on 여부와 무관하게
+영향을 받지 않는다. flag on 이 과소지정이 아닌 턴까지 완화칩을 죽이면 그건 이 설계의 의도를
+벗어난 진짜 버그다 — `test_underspecified_answer_turn.py::
+test_non_underspecified_turn_relaxation_chip_unaffected_by_flag`(B-2)가 이 경계를 회귀
+가드로 고정한다.
+
+**되물음 답변 턴엔 한 턴만 쉬고 복원된다** — 되물음(1턴) 다음 카테고리 답변 턴(2턴)은 prior 가
+생겨 `is_underspecified_turn` 이 False 로 떨어지므로, 그 턴부터 완화칩이 정상 동작한다.
+`test_answer_turn_restores_relaxation_chip_after_one_skipped_turn`(B-3)이 고정한다.
+
+**계약 정합** — 이 차단은 SSE 계약을 바꾸지 않는다. api-spec §3.1 의 `suggestions` 이벤트는
+"완화 제안(0건/소량) + 되돌리기" 조건에서 "해당 시" 나가는 조건부 이벤트이지, 매 턴 발신을
+약속하는 이벤트가 아니다 — 특정 턴(과소지정 턴)에서 조건부로 미발신되는 것은 계약 위반이
+아니고 와이어 필드·이벤트 자체는 불변이다. 따라서 이 규칙은 "해소"(과소지정 턴에 카테고리
+되물음 칩을 새로 도입해 차단을 없애는 것)가 아니라 **기존 설계 전제의 문서화 + 경계 검증**이다
+— "해소" 방향은 `SuggestionChip`(relaxation/revert 중 정확히 하나 강제, §4.1)의 계약 의미를
+확장하는 것이라 명세 개정 human gate 를 필요로 하고, 이 이슈의 소관 밖이다.
+
+**핀 테스트**: `test_underspecified_answer_turn.py::
+test_underspecified_turn_zero_result_blocks_relaxation_chip`(B-1) — 과소지정 턴 + 가격 필터
+전멸(0건)에서 `suggestions` 이벤트 자체가 나가지 않고(완화칩·되돌리기 칩 모두 없음) 대신
+되물음 질문만 나감을 고정한다. `test_underspecified_turn_can_never_carry_an_auto_relaxable_
+field`(B-4) — 위 커버리지 정정의 근거 불변식을 고정한다(행동 테스트가 아니라 구조 테스트).
+
+### 7.3 플래그 기본 on 전 필수 게이트 (#372)
+
+#336(PR #364)이 flag 기본값을 False 로 둔 채 병합되며 남긴 갭 두 가지가 이 이슈(#372)의
+범위였다:
+
+1. **되물음 답변 턴 멀티턴 테스트** — `test_underspecified_answer_turn.py` A 절(정상 답변·
+   무관 답변·거부 답변 세 시나리오)이 충족한다.
+2. **완화칩 우선순위 규칙 + 회귀 테스트** — 위 §7.2 문서화 + `test_underspecified_answer_
+   turn.py` B 절(B-1 핀·B-2 회귀 가드·B-3 복원)이 충족한다.
+
+**이 이슈가 게이트를 충족했다고 해서 `underspecified_reask_enabled` 기본값을 True 로
+전환하지는 않는다** — 전환 자체는 별도 사용자 결정이다(§6, 기본값 False 유지는 이 이슈의
+금지 사항이기도 하다). 게이트가 닫혔다고 자동으로 롤아웃되지 않는다.
+
+**게이트 잔여 항목(후속 이슈 후보)**:
+
+1. 실 LLM decompose 가 과소지정 판정 축(§2.1~§2.2)을 실제 발화에서 얼마나 정확히 산출하는지는
+   이 이슈에서도 실측하지 않았다(A 절 fixture 는 전부 "LLM 이 이렇게 낸다"는 가정을 손으로
+   채운 결정론 fixture 다, CI 결정론 규약). 기본 on 전환을 검토할 때는
+   `evals/underspecified_cases`(§8) 같은 실 LLM 기반 골든셋 실측이 먼저 필요하다.
+2. **[리뷰 R1-F4] 되물음에 거부 답변("그냥 아무거나 줘")한 사용자는 인기 상품(I-3)이 아니라
+   무필터 검색(I-1) 결과를 받는다** — `test_refusal_answer_turn_falls_back_to_unfiltered_
+   search`(A-3)의 실측이다. 원인은 `is_underspecified_turn`·`is_no_condition_turn` 둘 다
+   `prior is not None`(2턴+)이면 그 자리에서 False 로 떨어지는 "첫 턴 한정" 설계(§2 조건 ②)라 —
+   이 경계는 #372 가 만든 회귀가 아니라 #162/#84 시절부터 있던 기존 멀티턴 경계이고, 이 이슈의
+   두 완료 조건(A: 답변 턴 테스트, B: 완화칩 우선순위) 어디에도 해당하지 않아 코드는 건드리지
+   않았다. 다만 실사용 관점에서는 값이 있다 — "되물음에 거부한 사용자가 인기 상품이 아니라
+   무필터 검색을 받는다"는 사실은 기본 on 전환을 검토하는 사람이 알아야 한다. 2턴+ 무조건
+   턴에도 popular(I-3) 폴백을 적용할지는 `is_no_condition_turn`/`is_underspecified_turn` 의
+   "첫 턴 한정" 전제(#84 리파인·되돌리기 판단과 얽혀 있다) 자체를 재검토해야 하는 별도 설계
+   결정이라 후속 이슈 후보로 남긴다.
 
 ## 8. caseId 표
 

@@ -10,6 +10,64 @@
 ## [Unreleased]
 
 ### Added
+- **#370 — 골든셋 v2.2 위반 네거티브 채널 신설 + 라벨 provenance 기록(`evals/goldenset`)** —
+  #333 adjudication 라운드가 남긴 갭 3건(위반 네거티브 0건·라벨 주체 미기록·슬라이스 쿼터
+  하향 사유 미문서화) 후속. `CaseCore`에 `labelSource`/`labeledAt`/`labelRationale` 신설해
+  전 127건에 소급 기입(`backfill_label_provenance.py`, 문서화된 사실만·불명은 `unknown`).
+  `category_violation` rule 신설, 오프라인 결정론 스크립트 `inject_violation_negatives.py`로
+  가격 초과(13케이스·47후보, injected)·카테고리 이탈(4케이스·5후보, 기존 candidate 재태깅)
+  주입, 속성 위반은 catalog attribute 키 명 불일치로 미달을 그대로 기록(조작 안 함).
+  `validate_cases()`에 위반 태그 후보 4종 기계 검증(실제 위반 성립·정답 편입 금지·fixture
+  단독 소유) 신설, `audit.run_audit()`에 `violationNegativeFill` 산출. manifest에
+  `violationNegatives`·`sliceQuotaFill`(dev `nonRankingFailureMftMin` 6 목표 대비 실채움 5 —
+  문서 근거 없는 기존 미달로 신규 확인, 정직하게 기록) 블록 신설. `datasetVersion` 2.2.0,
+  scoring/filter_axes baseline 재실행(`evals/scoring/baselines/dev-v2.2` 신설,
+  `evals/filter_axes/baselines/trivial_empty` 제자리 갱신) — ablation 실 LLM n5 baseline은
+  2.1.0 해시 고정 참조로 재실행하지 않는다(비용 결정 대기). 위반 네거티브 후보를 실제로
+  주입해보니 `evals/metrics/harness.py`의 Spring mock이 검색 요청의 가격 필터를 무시하고
+  있었다는 것도 드러나(goldenset 데이터만이 아니라 이 harness를 쓰는 모든 eval 소비자의
+  노출 집합 계산에 영향) mock이 요청의 `minPrice`/`maxPrice`를 실 Spring처럼 적용하도록
+  고쳤다 — 가격 미상(`price: null`)은 그대로 통과시킨다. 기존 커밋 데이터에는 가격 위반
+  후보가 0건이었으므로 이번 수정으로 기존 케이스의 노출·지표는 바뀌지 않았다(실측 확인).
+  계약(api-spec) 무변경.
+- **#363 — 구제 체인(#222 F-1·#343 억제-후 재판정) first-token 지연 계측 + 최악 경로 순차 왕복
+  상한 회귀 테스트 — "예산 내"가 아니라 이미 데드라인 초과, 기동 가드(#288) 과소계상도 발견**
+  — 운영 로그(`recommend_zero_result`·`category_expand_post_suppress_fallback`)는 배포 1일
+  미만이거나 아직 미배포라 실측이 불가해(근거 `docs/specs/MEASURE-FIRST-TOKEN-363.md` §2), 대신
+  `category_expand_zero_fallback`/`category_expand_post_suppress_fallback` 성공 로그에
+  `elapsed_ms`를, `recommend_zero_result`에 `rescue_elapsed_ms`·`relax_probes`·
+  `relax_auto_elapsed_ms`(자동완화, first SSE **이전**)·`relax_chip_elapsed_ms`(칩 probe, first
+  SSE **이후** — 합치면 아직 스트림에 안 나간 소요가 섞여 과대계상되므로 필드를 분리했다)를
+  추가해 다음 배포부터 실측 가능하게 했다. fake 로 재현한 최악 경로(확장 턴 전량 억제 + #343
+  폴백 실패 + 자동완화 probe 실패)로 first SSE(conditions) 이전 순차 Spring 왕복이 **정확히
+  3단**(초기 fan-out + #343 폴백 + 자동완화 probe)임을 회귀 테스트로 고정했다. **최악 상한
+  3단×`spring_timeout_s`(3s)=9.0s를 first-token 을 실제로 끊는 예산과 비교하면 30s
+  (`stream_total_timeout_buyer_s`, 첫 이벤트 이후만 덮는 전체 상한)가 아니라 10s
+  (`stream_first_token_timeout_s`, 첫 이벤트 이전 상한)여야 하고, 그 기준으로는 소모율 90%에
+  선행 decompose LLM head(p95≈3.0s, #151)를 더하면 12.0s>10.0s — 최악 경로는 오늘 설정에서
+  이미 first-token 데드라인을 넘어 504가 된다**(PR #362 리뷰의 "3단 적층 ≈9s" 우려를 수치로
+  확인·정정, 이슈 본문의 "30s 예산 내" 전제는 반증됨). 기동 가드
+  `_deferred_first_event_i1_calls`(#288)도 이 3단 중 구제 폴백 항을 빠뜨려 항상 2로
+  과소계상한다는 것을 발견 — `spring_timeout_s ∈ [10/3, 5.0)` 구간은 가드를 통과하면서 실제로는
+  데드라인을 넘는다. 보정된 일반형(`1 + (1 if category_expand_enabled else 0) + min(...)`)을
+  문서화하고 가드/실측 값의 불일치(2 vs 3)를 `tests/unit/test_config.py`에 회귀 테스트로
+  고정했다 — 런타임 가드 동작은 배포 영향을 고려해 이번 PR에서 바꾸지 않는다(적용은 후속
+  이슈). 공유 왕복 예산/first-token 데드라인 가드 설계도 후속 이슈로 넘긴다(§4·§5가 이미
+  "유의" 판정 근거이므로 후속은 실빈도 실측이 목적). **Claude PR Review(#379) 반영** — 위 계측
+  필드가 `recommend_zero_result`(0건 종결)에만 있어 **구제가 실제로 성공한 턴**(이 이슈가 재려는
+  핵심 표본)은 관측되지 않던 구멍을 발견 — 상호 배타인 `recommend_pipeline`(성공 종결)에도 같은
+  세 소요 필드와 `may_auto_relax`(conditions가 검색 전/후 어느 쪽에 나갔는지, first-token 지연
+  여부 판정에 필수)를 추가해 두 로그의 합집합이 전수가 되게 했다. 계약(api-spec) 무변경.
+- **#371 — combo_matrix INV/DIR 쌍 실검증 러너(`evals/combo_matrix/pair_runner.py`)** — #335 매트릭스에
+  라벨만 있고 실행이 없던 INV/DIR 3쌍을 실제로 검증한다. INV(combo-0056, rerank 실패 degrade)는
+  push 계약 형태(listType·lists 길이·필드 존재, 실측상 productIds 멀티셋까지) 동일성을 비교하고,
+  DIR(combo-0054, 카테고리 필터 추가)은 방향(push 상품 수 비증가) + 공허 통과 방지 guard(필터
+  진상위집합·base 결과 수>0)를 함께 강제한다. 분자·분모를 동봉한 `PAIR_CHECKS.md` 를 생성물로
+  남긴다. 실측 불가 축(회원 recall≥게스트 DIR, combo-0055)은 `evals/goldenset`(#333) 소관으로
+  명시 분리(mode=manual). 부수 발견: `category` 필터축이 canonical-or-null degrade(legs 미경유
+  시 무조건 null)로 인해 이 하네스 전체(#335 기존 55건 포함)에서 실제 검색 경계에 도달한 적이
+  없었다 — `pair_runner` 전용 seam(exact-match 카테고리 매핑 fake)으로 combo-0054 만 해소했고,
+  기존 55건의 잔여 맹점은 후속 이슈로 이관(README 정정). 계약(api-spec) 무변경.
 - **#331 — 카테고리 매핑·선택 평가 하네스(`evals/category_probe/`) 신설** — 발화→카테고리 정확도가
   골든셋 슬라이스 9건에만 얹혀 단독으로 잴 방법이 없었다(`evals/README.md` 공백 표). `evals/intent_probe`
   확립 규약(전역 페이서·실패는 표본이 아님·단일 실행 판정 금지)을 승계해, 배포 파이프라인과 같은 함수
@@ -21,6 +79,7 @@
   키워드는 leaf 수준에서 부재 확인) 2단으로 검증한다. trivial baseline(임베딩 최근접, LLM 0콜)을
   1급 산출물로 동봉(§328 1항). CI 미포함(수동 도구), 유닛테스트는 전부 가짜라 API/pg 콜 0. 계약
   (api-spec) 무변경.
+- **#372 — #336 되물음 답변 턴 멀티턴 테스트 + 완화칩 우선순위 규칙 문서화(플래그 기본 off 유지)** — 적대적 심사가 짚은 두 갭을 메웠다. ① 되묻는 턴까지만 테스트되고 답변 다음 턴이 검증된 적이 없었다 — 신규 `tests/unit/test_underspecified_answer_turn.py` 가 같은 thread_id 2턴을 구동해 정상 카테고리 답변(PRIOR_FILTERS 승계를 `FakeLLM.calls` 로 배관 실측 + 답변한 카테고리·승계 price_max 가 실제 검색 필터에 실림을 직접 단언)·무관 답변(general 폴백, 죽지 않음)·recommend 레인 안에서 카테고리 아닌 축(색상)만 답한 턴·거부 답변("그냥 아무거나" 반복 시 무필터 I-1 로 떨어지는 기존 멀티턴 경계를 관찰로 고정) 네 시나리오를 고정했다. ② flag on 시 완화칩이 과소지정 턴에서 차단되는 동작(SPEC §7-4)이 "알려진 한계"로만 적혀 있어 우선순위 규칙도 회귀 테스트도 없었다 — reask > relaxation chips 우선순위를 `SPEC-UNDERSPECIFIED-336.md` §7.2 에 명문화하고(api-spec §3.1 `suggestions` 는 조건부 이벤트라 미발신이 계약 위반이 아님을 근거로 적시), 차단 재현 핀·비과소지정 턴 회귀 가드·답변 턴 칩 복원·자동완화 두 게이트가 유효 설정에서 관측 불가능함을 고정하는 구조 테스트(SPEC 문구도 실제 커버리지에 맞게 정정)로 그 경계(해당 턴 한정)를 고정했다. `underspecified_reask_enabled` 기본값은 그대로 False — 플래그 전환은 이 이슈 소관 밖(§7.3 에 남은 게이트로 명시, 거부 답변의 무필터 폴백 경계도 후속 이슈 후보로 추가). 계약(api-spec) 무변경.
 - **#334 — 필터 추출 축별 분해 지표 신설(`evals/filter_axes`)** — 기존 Filter Accuracy(합집합 분모 단일값)로는 어느 축이 과·소추출인지 알 수 없었다. 축별 valueStrict/presence precision·recall(micro, 분모 0은 None)·trivial(빈 필터) baseline·INV/DIR/회원-게스트(#119) 수동 probe를 추가하고, `evals/metrics` 러너·리포트(`filter_axes.csv`)에 병행 배선했다(`filterAccuracy` 등 기존 키·정의는 불변). ablation baseline `20260803-dev-full-n5`을 오프라인 재채점한 `evals/filter_axes/baselines/20260803-dev-full-n5-rescored/`로 합집합 단일값이 감춘 원인 축(keyword 어휘 불일치·category 소/과추출 정반대 방향)을 실측 산출물로 증명했다. 계약(api-spec) 무변경.
 - **#332 — 니즈 전개(legs) 평가 하네스 `evals/legs_probe`** — #198 의 핵심 지표("case==3 인데
   legs<=1")가 로그 관측(`decompose_case`)에만 있어 프롬프트를 바꿔도 실측 없이 판단해야 했다.
@@ -88,6 +147,7 @@
 - **#285 — 챗봇 장바구니 삭제·수량 변경·찜 추가·해제·목록 internal 계약 초안을 정본에 등재** — Notion 「📡 API 명세서」에 I-24~I-28로 등재했다. 발명이 아니라 FE↔BE 정본 실측(C-4 삭제·C-3 수량 변경·M-5 찜 추가·M-6 찜 해제·M-4 찜 목록)의 의미론과 I-2/I-18의 internal 규약(`X-Internal-Token`, AI가 검증한 JWT `sub` 유래 신원, 3초 타임아웃, 응답 envelope)을 이식한 제안이며, I-25 수량 변경은 이슈 본문에 없던 신규 편입이다. 아직 BE 협의 전으로 각 정본 페이지에 초안 배너가 있고 잔여 안건은 이슈 #285 코멘트에 남겼으며, 사본 `docs/api-spec.md` 동기화와 CH-2 `action` 8종 확장은 협의 후 진행한다.
 
 ### Fixed
+- **#323 — `set_summary` 무잠금 read-then-write 에 per-user `mutation_lock` 추가 — #150 사용자 편집 경로 선결.**
 - **#368 — `stream_wishlist_add`만 `SpringUnavailableError`를 개별 처리하지 않아 범용 catch-all(INTERNAL)로 새던 문제(#335 매트릭스 미정의 셀 실측 발견)** — 호출부의 예외 처리 범위를 형제 cart_add(`graph.py:453`)와 통일해, `except (WishlistError, SpringUnavailableError):`로 넓혔다. 기본 어댑터 `add_wishlist`(I-26)는 실패를 전부 `WishlistError`로 내므로 그 경로는 종전과 동일하지만, 주입된 `add_wishlist_fn`(평가 하네스 degrade 주입 등)이 `SpringUnavailableError`를 낼 때는 이 except 없이는 INTERNAL로 새던 것을 기존 `WISHLIST_ADD_FAILED`/`WISHLIST_ERROR` degrade로 끝나게 했다(신규 오류 코드·문구 없음, 형제 cart_add도 어댑터가 내지 않는 이 예외를 같은 이유로 방어한다). 계약(api-spec) 무변경.
 - **#343 — 확장 턴에서 검색은 히트를 냈는데 최근구매 exact 제외·소모품 카테고리 억제(`_post_filter`)가 전량을 지워 0건으로 끝나던 문제** — 기존 F-1(#222) 폴백은 억제 **이전** `total_count` 만 봐서 이 갭을 못 잡았다(PR #318 리뷰 R6-4). `candidates` 가 0이 된 확장 턴에 한해 무필터로 1회 재검색하고 그 결과에도 사후필터를 다시 적용(이중 억제)해 채택하며, 억제-이전 F-1 이 이미 재검색을 썼으면 상호배타 가드로 재발동하지 않는다(턴당 무필터 재검색 최대 1회). 신규 `category_expand_post_suppress_fallback_enabled`(기본 on). 계약(api-spec) 무변경.
 - **#319 — 배포 이미지에 `db/`가 없어 운영 컨테이너 부팅이 실패하던 문제** — `session_context.initialize()`(#187)가 부팅 시 `db/profile/init/03_chat_session_contexts.sql`을 파일로 읽는데 `Dockerfile`은 `app/`만 COPY 하고 `.dockerignore`는 `db/`를 명시 제외해, 컨테이너 안에서 `FileNotFoundError` → lifespan 실패 → 헬스체크 실패 → 자동 롤백으로 이어졌다(dev→main 승격 #316 사전 점검에서 발견 — 로컬·CI는 repo 루트에서 실행돼 잡히지 않았다). 최종 스테이지에 `COPY db /app/db`를 추가하고 `.dockerignore` 제외를 해제했으며, 빌드한 이미지 안에서 경로 해석·파일 존재를 실측으로 확인했다. 계약(api-spec) 무변경.

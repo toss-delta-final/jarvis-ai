@@ -55,6 +55,31 @@ fixture 후보 전체를 그대로 no-op으로 썼는데, 시스템이 후보보
 baseline은 우연히 no-op과 같은 순서였다 — "검색엔진이 매긴 순위"가 아니다. #145 baseline
 결과 수치 자체는 바뀌지 않지만 해석은 이렇게 정정한다(`evals/scoring/README.md`도 동일).
 
+## 위반 네거티브 채널·슬라이스 쿼터 실채움(v2.2, #370)
+
+`GUIDE.md`의 "v2.2(#370)" 절이 정의·검증 규칙 정본이다. 여기는 실채움 요약(dev 기준)만 싣는다
+— 정확한 최신 값은 `audit/leakage_report.json`의 `violationNegativeFill`과
+`manifest.json`의 `violationNegatives`/`sliceQuotaFill`을 본다.
+
+| 위반 네거티브 rule | 최소 케이스/후보 | 실채움 케이스/후보 | 비고 |
+|---|---:|---:|---|
+| `price_violation` | 8 / 2(케이스당) | 13 / 47 | 여유 확보 |
+| `category_violation` | 4 / 1(케이스당) | 4 / 5 | 기존 golden_filter candidate 재태깅(신규 주입 없음) |
+| `attr_violation` | 2 / 1(케이스당) | 0 / 0 | 미달 — catalog attribute 키 명이 케이스 조건 키와 불일치(GUIDE 참조), 조작하지 않고 그대로 기록 |
+
+슬라이스 쿼터 하향 사유 요약(문서 근거가 있는 것만 인용, 없으면 정직하게 "사유 기록 없음"):
+
+- holdout `failure` 5/6 미달: #333 라운드2 §7-2에서 승인된 기존 사유(holdout 총량 24건 고정 +
+  `category_mapping_failure`·`failure` 상호배타로 두 태그를 동시에 채울 수 없는 수학적 한계) —
+  dev `confirmatory` 사전 등록 위반이 아님을 이미 확정했다(GUIDE 참조).
+- dev `nonRankingFailureMftMin` 5/6 미달(`evals/README.md` 공통 규약 "비순위(0건 failure MFT)
+  ≥ 6" 목표): 이번 #370 실측에서 처음 발견됐다 — 기존 문서에 이 dev 미달을 설명하는 사유가
+  없어 **"당시 하향 사유 기록 없음(소급 불가)"**로 정직하게 남긴다(조정·재케이스화는 이 이슈
+  범위 밖). 나머지 슬라이스(budget/category_mapping_failure/guest/member/multi_constraint/
+  personalization_overreach/repurchase/single_need/invDirGroupsMin, holdout guest/member/
+  search/personalization/repurchase/category_mapping_failure)는 전부 목표를 충족하거나 초과한다
+  — 전체 표는 `manifest.json`의 `sliceQuotaFill`.
+
 ## 버전·해시
 
 **서로 다른 `datasetHash`에서 나온 점수는 절대 직접 비교하지 않는다.** v1(`1.0.0`,
@@ -62,3 +87,12 @@ hash `764bc148858cb9c04b9da7a210a5479f7f0daa04bec61563c7f94233e9646b04`)과 v2(`
 스키마·슬라이스·candidates provenance가 달라 같은 지표 이름이라도 분자·분모 정의가 다를 수
 있다. `evals/scoring/baselines/dev-v1/`·`evals/ablation/baselines/20260803-dev-full-n5/`는
 v1 hash 기준 참고값으로만 남기고 전 baseline 재실행은 Part 3에서 한다.
+
+v2.2(`2.2.0`, #370)는 v2.1(`2.1.0`)과 스키마(라벨 provenance 3필드 신설)·candidates
+provenance(`category_violation` rule 신설, 위반 네거티브 채널 주입)가 달라 **v2.1의 점수와
+직접 비교하지 않는다**. 케이스 수·relevantProductIds 등 라벨 값 자체는 바뀌지 않았다(카테고리
+축 재태깅은 기존 candidate의 `rule` 필드만 바꿨다). hash는 `manifest.json`의 `datasetHash`가
+정본이다. `evals/scoring/baselines/dev-v2.2/`는 이 해시로 재실행했다(§위 위반 네거티브 절
+참조). **`evals/ablation/baselines/20260805-dev-v2-full-n5`(실 LLM n5) baseline은 2.1.0
+해시 고정 참조다 — 2.2.0 점수와 직접 비교 금지, 재실행은 후속(오케스트레이터 결정 대기)이며
+이 이슈에서 해당 디렉터리를 건드리지 않았다.**

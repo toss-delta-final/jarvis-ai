@@ -14,7 +14,7 @@ import pytest
 
 from app.core.config import Settings
 from evals.filter_axes.spec import load_axes_spec
-from evals.goldenset.schema import GoldenCase
+from evals.goldenset.schema import DATASET_VERSION, SCHEMA_VERSION, GoldenCase
 from evals.metrics.runner import EvaluationFixtures, evaluate
 
 SPEC = load_axes_spec()
@@ -28,8 +28,8 @@ def _case(case_id: str, *, expected_filters: dict, slices: list[str] | None = No
     return GoldenCase.model_validate(
         {
             "caseId": case_id,
-            "schemaVersion": "2.0.0",
-            "datasetVersion": "2.1.0",
+            "schemaVersion": SCHEMA_VERSION,
+            "datasetVersion": DATASET_VERSION,
             "split": "dev",
             "slices": resolved_slices,
             "query": "테스트 추천",
@@ -41,6 +41,9 @@ def _case(case_id: str, *, expected_filters: dict, slices: list[str] | None = No
             "provenance": "synthetic",
             "labeler": "labeler-01",
             "createdAt": "2026-08-02",
+            "labelSource": "model",
+            "labeledAt": "2026-08-06",
+            "labelRationale": "테스트 라벨 근거.",
             "notes": "filterAxes 배선 테스트",
             "relevantProductIds": [1],
             "relevanceGrades": {1: 3},

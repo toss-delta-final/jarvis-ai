@@ -93,6 +93,27 @@ def _fact_lock(key: str) -> asyncio.Lock:
     return lock
 
 
+# user_id 별 asyncio.Lock — set_summary() 의 "임베딩 carryover read(get_summary)→aput" 구간을
+# 직렬화한다. facts 락(_fact_locks)과 키를 분리한 이유(#323):
+#
+# set_summary 의 RMW 대상은 profile 네임스페이스의 summary 아이템뿐이고 add_fact 의 RMW 대상은
+# facts 네임스페이스라 겹치는 상태가 없다 — 필요한 상호 배제는 "요약 쓰기 ↔ 요약 쓰기"(배치
+# consolidation vs #150 사용자 편집)뿐이다. facts 키를 공유하면 record_remember hot-path 의
+# add_fact 가 요약 쓰기와 불필요하게 직렬화된다. 반대로 "fact 를 읽은 시점과 요약을 쓰는 시점
+# 사이의 fact 변경"까지 막으려면 consolidate() 가 LLM 왕복(수 초) 내내 이 락을 쥐어야 하는데,
+# 그건 hot-path 를 초 단위로 막는 트레이드오프라 채택하지 않는다 — 그 정합성은 #150/#358
+# (revision CAS·억제 필터) 축에서 다룬다.
+_summary_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+
+
+def _summary_lock(key: str) -> asyncio.Lock:
+    lock = _summary_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _summary_locks[key] = lock
+    return lock
+
+
 def _fake_embed(texts: list[str]) -> list[list[float]]:
     """InMemoryStore 폴백 전용 — 실 임베딩 API 호출 없는 결정론적 벡터(배선만 유지).
 
@@ -189,29 +210,40 @@ class ProfileStore:
         사용자의 개인화 항이 조용히 사라진다** — 신규 프로필뿐 아니라 기존 사용자에게도 회귀다.
         살려 둔 벡터는 직전 요약 기준이라 새 요약과 약간 어긋나지만, 프로필 취향은 천천히 변하고
         **개인화가 통째로 빠지는 것보다 낫다.** 다음 성공한 consolidation 이 갱신한다.
+
+        **[#323] carryover read(get_summary)~aput 구간은 per-user 락으로 감싼다** — 배치
+        consolidation 과 (#150 이후) 사용자 편집이 동시에 set_summary 를 부르면 무잠금 RMW 라
+        먼저 읽은 쪽의 aput 이 나중에 실행돼 상대 쓰기를 소리 없이 덮어쓸 수 있다. `_embed_summary`
+        (외부 Google API 왕복)는 저장된 상태를 읽지 않으므로 락 범위 밖에 둔다 — 락 안에 넣으면
+        API 왕복(초 단위) 동안 다른 요약 쓰기가 불필요하게 막힌다.
         """
         embedding = await _embed_summary(markdown)
-        if embedding is None:
-            # 폴백 조회 자체도 실패할 수 있다(pg-profile 일시 장애·타임아웃) — 여기서 안 잡으면
-            # 아래 요약 저장까지 통째로 죽어 "임베딩 실패가 요약 저장을 막지 않는다"는 보장이
-            # 깨진다(PR #213 리뷰). 벡터를 못 살리는 건 degrade, 요약 저장은 필수다.
-            try:
-                existing = await self.get_summary(user_id)
-                embedding = existing.embedding if existing else None
-            except Exception:
-                logger.warning("profile_summary_embedding_carryover_failed")
-                embedding = None
-        value: dict = {"markdown": markdown, "generated_at": generated_at}
-        if embedding is not None:
-            value["embedding"] = embedding
-        await run_with_query_timeout(
-            self._store.aput(
-                (_PROFILE_NS_ROOT, user_id),
-                _SUMMARY_KEY,
-                value,
-                index=False,  # 요약 전문은 semantic 인덱스 대상이 아니다(REQ-PROF-071 — facts 전용)
+        async with mutation_lock(
+            self._store,
+            f"profile:summary:{user_id}",
+            _summary_lock(user_id),
+        ):
+            if embedding is None:
+                # 폴백 조회 자체도 실패할 수 있다(pg-profile 일시 장애·타임아웃) — 여기서 안 잡으면
+                # 아래 요약 저장까지 통째로 죽어 "임베딩 실패가 요약 저장을 막지 않는다"는 보장이
+                # 깨진다(PR #213 리뷰). 벡터를 못 살리는 건 degrade, 요약 저장은 필수다.
+                try:
+                    existing = await self.get_summary(user_id)
+                    embedding = existing.embedding if existing else None
+                except Exception:
+                    logger.warning("profile_summary_embedding_carryover_failed")
+                    embedding = None
+            value: dict = {"markdown": markdown, "generated_at": generated_at}
+            if embedding is not None:
+                value["embedding"] = embedding
+            await run_with_query_timeout(
+                self._store.aput(
+                    (_PROFILE_NS_ROOT, user_id),
+                    _SUMMARY_KEY,
+                    value,
+                    index=False,  # 요약 전문은 semantic 인덱스 대상이 아니다(REQ-PROF-071 — facts 전용)
+                )
             )
-        )
 
     # ── 장기 fact (승격 결과·consolidation 입력) — fact 1개 = store item 1개(semantic 인덱스) ──
     async def get_facts(self, user_id: str) -> list[str]:
@@ -507,3 +539,4 @@ def reset_profile_store() -> None:
     _init_lock = asyncio.Lock()
     _session_locks.clear()
     _fact_locks.clear()
+    _summary_locks.clear()

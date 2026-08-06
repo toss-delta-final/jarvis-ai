@@ -66,6 +66,45 @@ class EvalScriptedLLM:
         yield "고정 응답"
 
 
+def _filter_products_by_requested_price(
+    products: list[dict[str, Any]], params: httpx.QueryParams
+) -> list[dict[str, Any]]:
+    """요청 쿼리의 minPrice/maxPrice로만 거른다(#370, 결정 01).
+
+    실 Spring은 가격을 서버사이드로 거른다(`app/services/spring_client.py`가 `minPrice`/
+    `maxPrice`를 I-1 쿼리에 싣는다) — 이 mock은 그 동작만 흉내낸다. 케이스의
+    `hardConstraints`가 아니라 **앱이 실제로 보낸 요청 파라미터**를 기준으로 걸러야 decompose가
+    가격 축을 놓치는 상황(아래 채널 비공허성 테스트)을 그대로 계측할 수 있다. 가격이 없는
+    (`None`) 상품은 판정 불가로 보고 항상 통과시킨다 — `evals/scoring/hard_filter`의
+    `priceUnknown` 컷(scoring arm 정책)과는 다른 계층이라 통일하지 않는다.
+
+    `keyword`/`categoryName`/`brandName` 충실도는 이번에 올리지 않는다(범위 밖 — 올리면 이
+    이슈와 무관한 기존 케이스 전부의 노출 집합이 흔들린다). `evals/goldenset/GUIDE.md` 위반
+    네거티브 절에 이 한계를 명시했다.
+    """
+    min_price = params.get("minPrice")
+    max_price = params.get("maxPrice")
+    if min_price is None and max_price is None:
+        return products
+    min_price_int = int(min_price) if min_price is not None else None
+    max_price_int = int(max_price) if max_price is not None else None
+    filtered = []
+    for product in products:
+        price = product.get("price")
+        if not isinstance(price, (int, float)):
+            # None(가격 미상)과 마찬가지로 판정 불가 — 항상 통과(#370 리뷰 라운드2 F-5, 정책은
+            # 위 docstring 참조). catalog_snapshot.json은 현재 int/None만 쓰지만, 이
+            # mock은 검증 없는 raw dict를 읽으므로 문자열 등도 크래시 없이 같은 규칙을 탄다.
+            filtered.append(product)
+            continue
+        if min_price_int is not None and price < min_price_int:
+            continue
+        if max_price_int is not None and price > max_price_int:
+            continue
+        filtered.append(product)
+    return filtered
+
+
 class _CaseTransport:
     """I-1/I-19/I-21만 제공하고 모든 요청을 감사용으로 기록한다."""
 
@@ -102,6 +141,7 @@ class _CaseTransport:
                 for product_id in fixture["productIds"]
                 if str(product_id) in self.fixtures.catalog
             ]
+            products = _filter_products_by_requested_price(products, request.url.params)
             return httpx.Response(200, json={"success": True, "data": products})
         if request.method == "GET" and request.url.path.startswith("/internal/members/"):
             persona_id = self.case.identity.persona_id

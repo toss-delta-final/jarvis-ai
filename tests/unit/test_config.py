@@ -267,6 +267,37 @@ def test_deferred_first_event_i1_calls_matches_default_config():
     )
 
 
+def test_deferred_first_event_i1_calls_known_undercount_vs_actual_rescue_chain_stages():
+    """[#363 R2] 알려진 불일치 — 가드 모델(2)과 실측 구제 체인 단 수(3)가 다르다.
+
+    `_deferred_first_event_i1_calls`(#288)는 "본 검색 1 + 자동완화 probe"만 세고, #222 F-1 /
+    #343 억제-후 재판정의 무필터 재검색 한 단을 빠뜨린다 — 그 함수 docstring이 스스로 경고한
+    실패 모드(config.py:1727-1733, "상수는 조용히 과소평가된다")를 실측으로 확인한 값이다.
+    실측 3은 `tests/unit/test_fanout.py::
+    test_worst_case_rescue_chain_sequential_stages_before_first_sse`가 first SSE 이전 순차
+    Spring 왕복 수로 직접 센 값(상세 근거는 docs/specs/MEASURE-FIRST-TOKEN-363.md §5)이며,
+    이 테스트는 그 숫자를 상수로 옮겨와 가드 모델과 나란히 둔다.
+
+    **이 테스트가 실패해야 하는 조건**: 가드 식(`_deferred_first_event_i1_calls`)이 #288 일반형
+    을 §5가 제안한 보정식으로 바꿔 기본 설정 값이 3이 되거나, 실측 구제 체인 단 수가 (코드
+    변경으로) 3이 아니게 됐는데 이 테스트가 갱신되지 않은 경우 — 즉 "둘 중 하나만 바뀐" 상태를
+    잡는다. 보정식을 적용하는 후속 이슈에서는 이 테스트도 함께 갱신해 두 값을 다시 맞출 것.
+    """
+    from app.core.config import _deferred_first_event_i1_calls
+
+    guard_model_calls = _deferred_first_event_i1_calls(
+        relaxation_max_rounds=3,
+        auto_fields=["ratingMin"],
+        chip_fields=["priceMax", "ratingMin", "brand", "color"],
+    )
+    actual_rescue_chain_stages = 3  # 출처: test_fanout.py 위 AC2 테스트(§5) — 이 상수를 실측이
+    # 바뀔 때 여기서도 갱신한다.
+
+    assert guard_model_calls == 2  # 가드가 실제로 계산하는 값(오늘 기준)
+    assert actual_rescue_chain_stages == 3  # 실측 값(오늘 기준)
+    assert guard_model_calls != actual_rescue_chain_stages  # [#363] 알려진 불일치 — 고정한다
+
+
 def test_deferred_first_event_i1_calls_zero_when_relaxation_disabled():
     """rounds=0 이거나 auto 목록이 비면 미룸 자체가 없어 0이다 — 검증 대상 아님."""
     from app.core.config import _deferred_first_event_i1_calls
