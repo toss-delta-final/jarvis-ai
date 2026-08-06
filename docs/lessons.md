@@ -38,6 +38,45 @@
     설정(`index=`)** 도 확인한다. 쓰기 한 번이 곧 임베딩 한 번인 경로가 있다.
 - 관련: `scripts/seed_profile_graph_356.py`, `app/agents/profile/store.py`(`_pg_index_config`),
   `app/pipelines/embedding.py:84`, 이슈 #356
+## [2026-08-06] 진단용으로 로그에 싣는 예외 메시지에는 "검증 이전" 값이 섞여 있다
+- 증상: #408 에서 401 사유를 남기려고 `__cause__` 체인의 `str(exc)` 를 그대로 로그 문자열에
+  이어붙였다. 그런데 PyJWT 의 `PyJWKClientError` 메시지는 JWT 헤더의 `kid` 를 그대로 싣는다
+  (`Unable to find a signing key that matches: "<kid>"`). `kid` 는 **서명 검증 이전**에 읽는
+  값이라 공격자가 유효 서명 없이 임의 문자열을 넣을 수 있고, 개행이 그대로 나가면 로그에
+  가짜 `auth rejected ...` 줄을 심을 수 있다(로그 인젝션, CWE-117). dev 모드는 서명을 아예
+  안 보므로 `unknown sub_type: <값>` 도 같다. 길이 상한(`[:200]`)은 개행을 막지 못한다.
+- 원인: "예외 메시지는 라이브러리가 쓴 문장"이라고 전제했다. 실제로는 **입력이 보간된 문장**
+  이고, 그 입력이 신뢰 경계의 어느 쪽인지는 예외마다 다르다. 로그에 싣기로 한 순간
+  PII 검토(무엇을 안 남길까)는 했지만 무결성 검토(누가 이 문자열을 쓸 수 있나)는 빠졌다.
+- 규칙: **인증 실패 경로의 값을 로그에 싣을 때는 비출력 문자를 이스케이프한다.** 특히 서명·서버
+  검증을 통과하기 *전에* 읽히는 값(JWT 헤더 `kid`·`alg`, dev 모드 클레임, 헤더/쿼리 원문)은
+  전부 공격자 제어로 간주한다. 로그 필드의 검토 항목은 두 개다 — ①비밀/PII 를 안 싣는가
+  ②남의 입력이 로그 **구조**를 바꿀 수 있는가.
+- 덧: **이스케이프 대상을 손으로 열거하지 마라.** 1차 수정은 C0(0x00–0x1F)+DEL 표를 직접
+  적었는데, 리뷰 2라운드가 NEL(U+0085)·LINE SEPARATOR(U+2028)·PARAGRAPH SEPARATOR(U+2029)가
+  통과한다고 지적했다 — 뷰어·JS 파서는 이것들도 개행으로 읽는다. 열거는 언제나 부분집합이
+  된다. 표준 판정(`str.isprintable()` = Cc·Cf·Zl·Zp·Zs 를 비출력으로 봄)을 쓰면 양방향
+  재정의(U+202E) 같은 미래의 변종까지 자동으로 걸린다. 한글은 Lo 라 그대로 남는다.
+- 관련: #408, PR #409 Claude 리뷰, `app/api/deps.py::_reason_chain`·`_CONTROL_ESCAPES`,
+  `tests/unit/test_auth_401_reason_log.py::test_401_log_escapes_attacker_controlled_control_chars`
+
+## [2026-08-06] 의존성 함수에 파라미터를 더하면 그게 곧 공개 계약이다 — keyword-only 도 예외가 아니다
+- 증상: #408 에서 401 로그에 어느 의존성을 거쳤는지 싣으려고 `get_identity` 에
+  `*, dependency: str = "get_identity"` 를 붙였다. 내부 표식이라 와이어와 무관하다고 생각했는데,
+  FastAPI 는 `inspect.signature` 로 파라미터를 훑으면서 **KEYWORD_ONLY 를 구분하지 않는다** —
+  그대로 뒀으면 `/chat`·`/seller/chat`·`/profile/me` 에 `?dependency=` 쿼리 파라미터가
+  생기고 OpenAPI 에도 노출됐다(계약 무변경 이슈에서 계약이 바뀔 뻔했다).
+- 원인: "의존성 함수의 시그니처 = 요청 파싱 명세"라는 것을 내부용 인자에는 적용하지 않았다.
+  Python 문법상의 사적임(keyword-only·언더스코어 접두)은 프레임워크에 아무 신호도 주지 않는다.
+- 규칙: **의존성 함수 시그니처에는 요청에서 오는 것만 둔다.** 내부 컨텍스트가 필요하면 파라미터
+  대신 **private 헬퍼로 분리해 호출부에서 넘긴다**(`_identity_or_401(..., dependency=...)`).
+  요청 객체가 필요할 때는 `request: Request = None` 으로 두면 FastAPI 주입은 그대로 받으면서
+  의존성 밖 직접 호출(단위 테스트)도 깨지지 않는다 — `Request` 타입은 필드가 아니라 특수
+  주입으로 처리돼 기본값이 무시되고 쿼리 파라미터로도 새지 않는다. 다만 이건 **추측하지 말고
+  `app.openapi()` 로 실측**할 것(파라미터 목록에 새 항목이 없어야 한다).
+- 관련: #408, `app/api/deps.py::get_identity`·`::require_seller`·`::verify_service_token`,
+  FastAPI 0.139 `analyze_param`
+
 ## [2026-08-06] 소비자 없는 필드의 "안전해 보이는" 기본값은, 소비가 붙는 순간 주장으로 승격된다
 - 증상: PR #305 가 `WishlistItem.purchase_state` 를 선언하며 기본값을 `"AVAILABLE"` 로 뒀다.
   그때는 읽는 코드가 0건이라 아무 해도 없었다. 그런데 #310 이 이 값을 읽어 "품절이에요"를
