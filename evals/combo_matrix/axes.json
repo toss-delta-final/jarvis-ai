@@ -1,5 +1,5 @@
 {
-  "datasetVersion": "1.0.0",
+  "datasetVersion": "2.0.0",
   "seed": 335335,
   "axes": [
     {
@@ -96,12 +96,16 @@
     },
     {
       "id": "degrade",
-      "description": "정상 외 경로 — 임베딩 누락(조용)/rerank 실패(폴백+고지)/Spring 타임아웃(SEARCH_FAILED, 유일하게 턴을 죽임).",
+      "description": "정상 외 경로 — 지면(surface)별 어휘(#367). CHAT은 검색/rerank/임베딩 재정렬 실패 3종(임베딩 누락(조용)/rerank 실패(폴백+고지)/Spring 타임아웃(SEARCH_FAILED, 유일하게 턴을 죽임)), HOME(I-22)은 라이브 임베딩·rerank·Spring 검색을 호출하지 않아 대응 코드 경로가 없고 프로필/카탈로그 저장소 실패 모드 4종을 쓴다(api-spec §3.7 v0.26.1). 두 어휘는 constraints 의 excludes 2건으로 지면 밖 조합을 금지한다.",
       "values": [
         {"value": "none", "source": "app/agents/buyer/recommendation/graph.py:839-858"},
-        {"value": "embedding_missing", "source": "app/services/search_service.py:126-137", "note": "재정렬만 격리 실패 — Spring 순서로 조용히 degrade"},
-        {"value": "rerank_failed", "source": "app/agents/buyer/recommendation/graph.py:1431-1440", "note": "LLMError → 검색순서 top-N + 고지 comment"},
-        {"value": "spring_timeout", "source": "app/agents/buyer/recommendation/graph.py:592-596,839-858", "note": "검색 실패 → SEARCH_FAILED(error, 유일하게 턴 종료)"}
+        {"value": "embedding_missing", "source": "app/services/search_service.py:126-137", "note": "재정렬만 격리 실패 — Spring 순서로 조용히 degrade. CHAT 전용(excludes surface_home_forbids_chat_degrade)"},
+        {"value": "rerank_failed", "source": "app/agents/buyer/recommendation/graph.py:1431-1440", "note": "LLMError → 검색순서 top-N + 고지 comment. CHAT 전용(excludes surface_home_forbids_chat_degrade)"},
+        {"value": "spring_timeout", "source": "app/agents/buyer/recommendation/graph.py:592-596,839-858", "note": "검색 실패 → SEARCH_FAILED(error, 유일하게 턴 종료). CHAT 전용(excludes surface_home_forbids_chat_degrade)"},
+        {"value": "profile_unavailable", "source": "app/services/home_recommendation.py:316-338", "note": "프로필 저장소 실패·지연 — 200, 프로필 항만 빠지고 랭킹 계속, outcome은 남은 근거로 판정(api-spec §3.7 v0.26.1). HOME 전용(excludes surface_chat_forbids_home_degrade)"},
+        {"value": "catalog_unavailable", "source": "app/services/home_recommendation.py:340-373,406-408", "note": "카탈로그 인덱스 비-타임아웃 장애 — 503 UPSTREAM_UNAVAILABLE(api-spec §3.7 v0.26.1). HOME 전용(excludes surface_chat_forbids_home_degrade)"},
+        {"value": "catalog_timeout", "source": "app/services/home_recommendation.py:368-370,390-392,403-405", "note": "카탈로그 조회 타임아웃·잔여 예산 소진 — 504 UPSTREAM_TIMEOUT(api-spec §3.7 v0.26.1, 구 combo-0053 실측 추인 — #335 최초 매트릭스 기준 번호, 본 PR 재채번 이전이라 지금의 combo-0053 은 다른 셀이다). HOME 전용(excludes surface_chat_forbids_home_degrade)"},
+        {"value": "reason_degraded", "source": "app/services/home_recommendation.py:431-452", "note": "부분 실패: reason 재료 조회 실패·잔여 예산 소진 — 200 PERSONALIZED + 해당 reason=null(api-spec §3.7 v0.26.1). HOME 전용(excludes surface_chat_forbids_home_degrade)"}
       ]
     },
     {
@@ -258,6 +262,20 @@
       "description": "degrade=rerank_failed ⇒ 후보가 있어야 함(0건이면 rerank 미도달) ⇒ constraint_strength != overspecified_zero.",
       "if": {"degrade": ["rerank_failed"]},
       "forbid": {"constraint_strength": ["overspecified_zero"]}
+    },
+    {
+      "type": "excludes",
+      "id": "surface_chat_forbids_home_degrade",
+      "description": "surface=CHAT ⇒ HOME(I-22) 전용 degrade 4종을 낼 수 없다 — CHAT 은 home_recommendation.py 경로를 타지 않는다(#367).",
+      "if": {"surface": ["CHAT"]},
+      "forbid": {"degrade": ["profile_unavailable", "catalog_unavailable", "catalog_timeout", "reason_degraded"]}
+    },
+    {
+      "type": "excludes",
+      "id": "surface_home_forbids_chat_degrade",
+      "description": "surface=HOME ⇒ CHAT 추천 파이프라인 전용 degrade 3종(embedding_missing/rerank_failed/spring_timeout)을 낼 수 없다 — HOME(I-22)엔 대응 코드 경로가 없다(#335 매트릭스 발견 구 combo-0050/0052/0053 — #335 최초 매트릭스 기준 번호, 본 PR(#367) 재채번 이전이라 지금의 같은 번호는 다른 셀이다).",
+      "if": {"surface": ["HOME"]},
+      "forbid": {"degrade": ["embedding_missing", "rerank_failed", "spring_timeout"]}
     }
   ],
   "riskTriples": [
