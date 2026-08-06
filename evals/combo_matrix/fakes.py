@@ -62,8 +62,13 @@ PAIR_CATALOG = [
 # `make_recording_filtering_search`(아래)가 표현 가능한 하드필터 — SpringProduct 로 값 비교가
 # 되는 축만이다. keyword(상품명 LIKE)·color(attributes LIKE)·attr_conditions(속성 매칭)는
 # `SpringProduct` 에 대응 필드가 없어(§ fakes.py 모듈 docstring, 판정 로직 재구현 금지) 대역이
-# 흉내 낼 수 없다 — present 로 들어오면 조용히 무시하지 않고 즉시 실패시킨다(아래 참조).
-_UNREPRESENTABLE_FILTER_FIELDS = ("keyword", "color", "attr_conditions")
+# 흉내 낼 수 없다 — present 로 들어오면 **미적용으로 기록**하고(D1, 이슈 #381) 표현 가능한
+# 축만 적용해 계속한다(값 비교는 아래 camelCase 키로 노출).
+_UNREPRESENTABLE_FILTER_CAMEL = {
+    "keyword": "keyword",
+    "color": "color",
+    "attr_conditions": "attrConditions",
+}
 
 
 class RecordingFilteringSearch:
@@ -72,28 +77,28 @@ class RecordingFilteringSearch:
     이것은 Spring I-1 검색(외부 시스템)의 WHERE 계약 대역이지 앱 판정 로직 재구현이 아니다 —
     `SpringProduct` 로 표현 가능한 하드필터(category 정확 일치·price_min/price_max 범위·brand
     목록 포함·rating_min 이상)만 흉내 낸다. 표현 불가 필터(keyword·color·attr_conditions)가
-    present 로 들어오면 그 자리에서 `ValueError` 로 실패한다 — 조용히 무시하면 그 축을 쓰는
-    미래 쌍이 "필터가 적용된 것처럼" 공허 통과할 수 있다(이슈 #371 §3-d).
+    present 로 들어오면 **던지지 않고**(#371 §3-d 의 이전 결정 — ValueError 로 즉시 실패 — 는
+    앱의 검색 실패 처리에 삼켜져 "공허 통과 방지"가 아니라 **공허 통과를 만들었다**, combo-0055
+    실측·이슈 #381 D1) `unapplied_calls` 에 그 호출에서 미적용된 축(camelCase)을 기록한 뒤,
+    표현 가능한 축만 적용해 정상 결과를 돌려준다 — 관측을 살려 두고 미측정 축을 데이터로
+    시끄럽게 드러내는 쪽이 앱 예외 경로에 삼켜지는 것보다 강하다.
     """
 
     def __init__(self, products: list[SpringProduct]) -> None:
         self._products = products
         self.calls: list[ProductSearchFilters] = []
+        self.unapplied_calls: list[list[str]] = []
 
     async def __call__(
         self, filters: ProductSearchFilters, exclude_product_ids: list[int] | None = None
     ) -> ProductSearchResult:
         self.calls.append(filters)
-        unrepresentable = [
-            name
-            for name in _UNREPRESENTABLE_FILTER_FIELDS
+        unapplied = [
+            camel
+            for name, camel in _UNREPRESENTABLE_FILTER_CAMEL.items()
             if getattr(filters, name, None) not in (None, "", {})
         ]
-        if unrepresentable:
-            raise ValueError(
-                "RecordingFilteringSearch 는 표현 불가 필터를 흉내 낼 수 없다: "
-                f"{unrepresentable} (이슈 #371 §3-d — 공허 통과 방지)"
-            )
+        self.unapplied_calls.append(unapplied)
         items = list(self._products)
         if filters.category is not None:
             items = [p for p in items if p.category == filters.category]
@@ -163,8 +168,10 @@ class RecordingExactMatchCategoryMapping:
     이슈 #371 R1 결정 — combo-0054 DIR 검증이 `category` 하드필터를 실제로 관측하려면
     `decision.category_legs` 가 최소 1개 채워져야 한다(canonical-or-null degrade,
     `app/agents/buyer/graph.py:520-537` — legs 가 비면 `filters.category` 는 무조건 None 이 된다).
-    `map_categories_noop`(기존 runner.py 전용, 항상 빈 legs)은 그대로 두고 이 대역은
-    `pair_runner.py` 에서만 쓴다.
+    **#381 D5 로 `runner.py::_observe_chat` 도 이 대역을 쓴다** — `build_decompose_json` 이
+    `category=="present"` 면 `categoryQueries` 를 채우므로(§ 아래 `map_categories_noop`) 일반
+    관측 러너도 이제 이 exact-match 매핑이 실제로 legs 를 채워야 검색 경계에 도달한다. 두 러너
+    (`runner.py`·`pair_runner.py`)가 이 대역 하나를 공유한다 — 갈라 두면 매핑 규칙이 드리프트한다.
     """
 
     def __init__(self, taxonomy: set[str]) -> None:
@@ -197,10 +204,16 @@ def make_exact_match_category_mapping(
 
 
 async def map_categories_noop(*args, **kwargs):
-    """카테고리 leg fan-out 은 이 매트릭스의 범위 밖(§ README 리스크) — 항상 매핑 없음.
+    """항상 빈 매핑(legs·unresolved 둘 다 없음)을 돌려주는 대역.
 
-    이 하네스는 `categoryQueries` 를 채우지 않으므로(§ runner.py `build_decompose_json`) 실제로는
-    호출돼도 legs·unresolved 둘 다 빈 채로 반환하는 것이 맞다 — `CategoryMapping` 실계약을 그대로 쓴다.
+    **#381 D5 이후 유일한 용도는 `runner.py::_warm_up_last_reco` 의 웜업 턴이다** — 그 턴의
+    decompose 는 `{"intent": "recommend", ..., "filters": {"keyword": "무선 이어폰"}}` 하드코딩
+    dict 라 `categoryQueries` 가 애초에 없다(category 축과 무관한 워밍업 목적, cart_add/
+    wishlist_add 관측 전에 last_reco 만 채우면 된다). 그래서 어떤 category 매핑 대역을 써도
+    legs·unresolved 는 항상 빈 채로 나온다 — `RecordingExactMatchCategoryMapping` 을 대신 써도
+    결과가 같지만, "이 턴은 category 축을 관측하지 않는다"는 의도를 이름으로 드러내려고 이
+    전용 noop 을 그대로 둔다. 관측 대상 턴(`_observe_chat` 본체)은 `categoryQueries` 를 채울 수
+    있어(`build_decompose_json`) `RecordingExactMatchCategoryMapping` 을 쓴다(§ 위 클래스 docstring).
     """
     from app.agents.buyer.recommendation.category_mapping import CategoryMapping
 

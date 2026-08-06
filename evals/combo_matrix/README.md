@@ -83,18 +83,23 @@ absent+context=none`, **`surface=CHAT ⇒ HOME 전용 degrade 4종 금지` / `su
 ## 재현 명령
 
 ```bash
-uv run python -m evals.combo_matrix regenerate   # cases/combo_cases.jsonl + manifest.json 재생성
-uv run python -m evals.combo_matrix.report        # 커버리지 지표 출력 + UNDEFINED_CELLS.md 재생성
+uv run python -m evals.combo_matrix regenerate         # cases/combo_cases.jsonl + manifest.json 재생성
+uv run python -m evals.combo_matrix refresh-observed    # expected_behavior.jsonl 의 ci 행 observed 만 재실행 갱신(#381 D6)
+uv run python -m evals.combo_matrix.report               # 커버리지 지표 출력 + UNDEFINED_CELLS.md 재생성
 uv run pytest tests/eval/test_combo_matrix_eval.py -v
-uv run python -m evals.combo_matrix.pair_runner   # INV/DIR 쌍 실행 + PAIR_CHECKS.md 재생성(#371)
+uv run python -m evals.combo_matrix.pair_runner          # INV/DIR 쌍 실행 + PAIR_CHECKS.md 재생성(#371)
 uv run pytest tests/eval/test_combo_matrix_pairs.py -v
 ```
 
 같은 `axes.json`(`datasetVersion` 2.0.0, #367 로 1.0.0 에서 파괴적 변경 — degrade 축 어휘 갱신으로
 케이스 우주가 바뀐다) + 같은 `seed`(335335) ⇒ **바이트 동일**
 `combo_cases.jsonl`(재현성은 `test_regeneration_matches_committed_cases_byte_identical` 이 지킨다).
-`expected_behavior.jsonl` 은 재생성 명령이 건드리지 않는다 — 사람이 코드를 읽고 고정한 데이터라
-axes.json 이 바뀌면 케이스 구성과 함께 수동으로 갱신해야 한다.
+`expected_behavior.jsonl` 의 `expected`·`evidence`·`status`·`undefined_tuple`·`aspect`·`linked`·
+`tracking` 필드는 재생성 명령이 건드리지 않는다 — 사람이 코드를 읽고 고정한 데이터라 axes.json 이
+바뀌면 케이스 구성과 함께 수동으로 갱신해야 한다. **`observed` 필드만은 예외**다 — 이건 러너를
+그대로 재실행한 관측값이라 `refresh-observed`(§ 위)로 기계적으로 덮어쓸 수 있다. 단 이것도
+**덮어쓰기 도구이지 판정 도구가 아니다** — 바뀐 값이 실측 개선인지 회귀인지는 사람이 코드 근거로
+판단해 아래 "관측 재생성 이력" 절에 남겨야 한다.
 
 ## 커버리지 결과 (2026-08-06 기준, #367 재생성 후 `manifest.json`/`report.py` 실측)
 
@@ -153,10 +158,35 @@ defined 로 전환됐다. 잔존 미정의는 #336(무지정+예산+세트) 1건
 - **`embedding_missing` degrade 는 이 하네스가 구별 관측할 수 없다** — `run_buyer_turn` 의
   `search` 주입은 `search_service.py` 임베딩 재정렬보다 상류를 대체해, 재정렬 성공/조용한 degrade
   가 이 경계에서 똑같아 보인다. `degrade=none` 과 동일하게 실행하고 `observed.notes` 에 명시한다.
-- **`constraint_strength=overspecified_zero` 는 검색 0건을 직접 주입한다**(`fakes.make_search([])`)
-  — 정의(필터 과지정→0건→자동완화·완화칩·`zero_result` 종료)가 실제로 실행되고 관측된다
-  (`finishReason=zero_result`·`pushCount=0`). `degrade=spring_timeout` 과 겹치면 검색 실패가
-  우선한다(0건 성공보다 상위 실패).
+- **필터 축의 검색 경계 관측(#381)** — `_observe_chat` 은 이제 `fakes.make_recording_filtering_search()`
+  (대역 카탈로그 `PAIR_CATALOG` 4건, 3건은 `무선이어폰`·1건은 `여행용품`)를 써서 search 콜러블이
+  실제로 받은 `ProductSearchFilters` 를 `observed.searchFilters` 에 담는다(camelCase 8축,
+  `pair_runner._SEARCH_FILTER_KEYS` 와 정의 공유 — `runner.search_filters_projection`). `category`
+  (§ 아래 "카테고리 leg fan-out" 항목)·`price_min`·`price_max`·`brand`·`rating_min` 은
+  `SpringProduct` 로 표현 가능해 실제로 걸러지고, `keyword`·`color`·`attr_conditions` 는 대역이
+  흉내 낼 수 없어(판정 로직 재구현 금지, `fakes.py` 모듈 docstring) present 로 들어와도 **미적용
+  으로만 기록**하고(`observed.unappliedSearchFilters`) 나머지 축만 적용한다(D1 — 예전엔 이 축이
+  present 면 `ValueError` 로 즉시 실패시켰는데, 그 예외가 앱의 검색 실패 처리에 삼켜져 "공허 통과
+  방지"가 아니라 **공허 통과를 만들고 있었다**, combo-0055 INV 실측 — 아래 "관측 재생성 이력" 참조).
+  `search` 가 아예 안 불린 케이스는 `observed.searchCallCount == 0`·`searchFilters == null` 로
+  구별된다(예: `constraint_strength=unspecified` 5건 — popular_fn 우선). ci·CHAT·recommend 케이스
+  11건 중 search 가 실제로 불리는 건 **6건**(combo-0023·0026·0031·0053·0054·0055), 나머지 5건은
+  popular_fn 우선이라 안 불린다(위 「popular_fn 우선」 항목). 검색이 여러 번 불릴 수 있으면(자동완화
+  재검색) **첫 호출(주 검색)** 만 쓴다 — 재검색이 축을 하나씩 완화하며 값이 바뀌므로 마지막 호출을
+  쓰면 "주입에 가장 가까운 값"이라는 의도가 깨진다(`pair_runner.py` 와 같은 규약). `observed` 에
+  `pushProductCount`(push 된 상품 수 합, 기존 `pushCount`=이벤트 수와 혼동 금지)도 추가해 필터가
+  실제로 결과를 줄였다는 가시적 결과를 데이터로 남긴다.
+- **`constraint_strength=overspecified_zero` 는 검색 0건을 직접 주입한다**(D4, #381 재검토 — 결론:
+  유지) — `RecordingFilteringSearch(products=[])`(빈 카탈로그, `degrade=spring_timeout` 이 아닐 때만)
+  로 표현 가능한 필터를 적용해도 항상 0건이 되게 하면서 경계 도달 `searchFilters` 도 함께 기록한다.
+  0건을 **자연 발생**시키지 않고 주입을 유지하는 근거를 실측으로 확인했다: combo-0031 의 표본
+  필터값은 `price_min=20000` 뿐인데, `PAIR_CATALOG` 4건의 가격(39000·48000·89000·30000)이 전부
+  20000 이상이라 **필터를 실제로 적용해도 4/4 건이 그대로 통과한다**(0건이 자연 발생하지 않는다).
+  0건을 자연 발생시키려면 비현실적인 과지정 표본값이 따로 필요한데, 그러면 자동완화가 그 축을 풀고
+  재검색해 종료가 `zero_result` 가 아니라 `stop` 이 될 수 있다 — 그건 "자동완화 실검증"이라는 별개
+  축(후속 이슈 후보, 이 이슈 범위 밖)이다. 정의(필터 과지정→0건→자동완화·완화칩·`zero_result`
+  종료)가 실제로 실행되고 관측된다(`finishReason=zero_result`·`pushCount=0`·`pushProductCount=0`).
+  `degrade=spring_timeout` 과 겹치면 검색 실패가 우선한다(0건 성공보다 상위 실패, `failing_search`).
 - **`constraint_strength=unspecified` + degrade≠none 조합은 `search`/`rerank` degrade 를 실제로
   타지 않는다** — 무지정 턴의 후보 소스는 `popular_fn`(I-3)이 먼저이고(`graph.py:797-830`),
   이 하네스의 `popular_fn` fake 가 항상 성공해 `_run_search()` 폴백(그리고 그 안의 degrade)까지
@@ -175,23 +205,40 @@ defined 로 전환됐다. 잔존 미정의는 #336(무지정+예산+세트) 1건
   `spring_client.add_to_cart`/`add_wishlist`) `search` 주입만으로는 이 축이 관측되지 않았다
   (리뷰 R2 R7 — combo-0004 가 계속 "성공"으로만 보이던 공회전). 지금은 HOME 러너와 같은 패턴으로
   해당 모듈 함수를 직접 몽키패치한다 — 실측: `CART_ADD_FAILED`(reason=`CART_ERROR`, cart/graph.py:
-  453-461) · `order_status`(리뷰 R8, combo-0057 directed): "주문 상태를 불러오지 못했어요"
+  454-462) · `order_status`(리뷰 R8, combo-0057 directed): "주문 상태를 불러오지 못했어요"
   (order_status.py:130-136). `make_order_status_ok` fake 도 이 과정에서 실계약(`OrderStatusSummary`)
   대신 무관한 dict 를 돌려주던 결함을 함께 고쳤다 — guest 전용 경로만 exercised 돼 그동안
   안 드러났다.
-- **카테고리 leg fan-out(`category_queries`/`map_categories`) 은 범위 밖** — 단, "category 필터축은
-  `ProductSearchFilters.category`(하드필터 문자열)만 잰다"는 종전 서술은 **#371 실측으로 반증됐다**:
+- **주입 예외 타입은 실 어댑터 규약을 따른다(#376)** — `spring_timeout` 이 담기 계열에 주입하는
+  예외는 `SpringUnavailableError` 가 아니라 `WishlistError`(add_wishlist)·`CartError`
+  (add_to_cart)다. 실 어댑터(`app/services/spring_client.py::add_wishlist`/`add_to_cart`)는
+  `except httpx.HTTPError`(타임아웃 `httpx.TimeoutException` 포함, `HTTPError` 하위 클래스)를
+  각각 그 타입으로 낙성한다 — `SpringUnavailableError` 는 그 두 어댑터의 실패 규약이 아니다.
+  두 흐름 다 `except (CartError, SpringUnavailableError, ValidationError)`
+  (cart/graph.py:454)·`except (WishlistError, SpringUnavailableError)`(cart/wishlist.py:245)로
+  실제 타입을 개별 처리하므로, 이전에 `SpringUnavailableError` 를 주입해도 겉보기 결과
+  (action `*_FAILED`)는 같았지만 "실제 어댑터가 이 예외를 낸다"는 증거로는 부정확했다
+  (`tests/eval/test_combo_matrix_eval.py::test_add_wishlist_and_add_to_cart_injections_match_adapter_exception_convention`
+  이 이 타입을 잠근다).
+- **카테고리 leg fan-out — #381 D5 로 `category` 축이 이제 실제 검색 경계에 도달한다.**
   `app/agents/buyer/graph.py:520-537` 의 canonical-or-null degrade 는 `decision.category_legs` 가
   비면 `filters.category` 를 무조건 `None` 으로 지운다 — 그리고 `category_legs` 는 오직
-  `categoryQueries`→`map_categories` 매핑 결과로만 채워진다. 이 하네스의 `build_decompose_json`
-  (`runner.py`)은 `categoryQueries` 를 채우지 않고 `map_categories_noop` 은 항상 빈 legs 를
-  돌려주므로, **`category` 축은 지금까지 이 하네스 어디에서도(기존 54건 MFT 케이스 포함) 실제
-  검색 경계에 도달한 적이 없다** — 채워도 항상 None 으로 지워졌을 뿐이다. `pair_runner.py`
-  (combo-0053, 아래 "INV/DIR 쌍 검증" 절)만 전용 seam(`_pair_decompose_json`+
-  `fakes.make_exact_match_category_mapping`)으로 이 축을 실제로 관측한다 — `runner.py`/
-  `map_categories_noop` 자체는 고치지 않았으므로(기존 54건 관측 보존), **기존 MFT 케이스들의
-  이 맹점은 그대로 남아 있다.** leg 분해·매핑 richness(거리컷·택일·확장) 커버리지는 별도
-  이슈(#331) 소관이고, 기존 54건의 잔여 category 맹점 해소는 이 PR 범위 밖 — 후속 이슈로 이관한다.
+  `categoryQueries`→`map_categories` 매핑 결과로만 채워진다. #371 R1 당시엔 `runner.py::
+  build_decompose_json` 이 `categoryQueries` 를 채우지 않고 `map_categories_noop` 이 항상 빈
+  legs 를 돌려줘, `category` 축이 이 하네스 어디에서도(기존 54건 MFT 케이스 포함) 실제 검색
+  경계에 도달한 적이 없었다 — `pair_runner.py` 전용 seam(`_pair_decompose_json`)만 별도로 이 축을
+  관측했다. **#381 D5 로 이 seam 이 `build_decompose_json` 본체에 흡수됐다** — `category ==
+  "present"` 면 `categoryQueries` 를 채우고(`_FILTER_SAMPLE["category"]` 공유), `_observe_chat` 도
+  `map_categories_noop` 대신 `fakes.make_exact_match_category_mapping()`(raw exact match 만 대역 —
+  거리컷·택일·확장은 `#331` 소관, 재구현하지 않는다)을 쓴다. `pair_runner.py` 의 구
+  `_pair_decompose_json()` 래퍼는 제거하고 `build_decompose_json()` 을 직접 쓴다 — 두 러너가 같은
+  seam 을 공유해 드리프트 여지가 없다. `map_categories_noop` 자체는 삭제하지 않았다 — 웜업 턴
+  (`_warm_up_last_reco`)이 여전히 쓴다(그 턴의 decompose 는 categoryQueries 를 절대 채우지 않아
+  거동 차이가 없다). 실측: category 축이 있는 4개 ci 케이스(combo-0026·0053·0054·0055) 모두 leg
+  이 1개 생겨 검색에 실제로 도달한다 — 단 BUY_ALL(세트)은 "니즈 2개 이상"이 조건이라(state.py:
+  128-131) leg 1개로는 여전히 트리거되지 않는다(실측으로 확인, `test_ci_cases_execute_and_
+  defined_cases_match_contract`). leg 분해·매핑 richness(거리컷·택일·확장) 자체의 커버리지는
+  별도 이슈(#331) 소관이다.
 - **HOME 픽스처는 `home_reco_min_candidates` 이상의 상품을 채워야 관측이 성립한다**(리뷰 F1,
   #367) — `_observe_home` 의 건강한 스토어가 이 값(기본 5) 미만이면 `rank_home` 이
   `INSUFFICIENT_CANDIDATES` 로 조기 반환해 `combo-0050`(none)·`combo-0051`
@@ -206,9 +253,38 @@ defined 로 전환됐다. 잔존 미정의는 #336(무지정+예산+세트) 1건
   (`test_home_reason_degraded_injection_actually_runs`). `profile_unavailable` 은 outcome 만으로
   `none` 과 구별되지 않아(계약상 와이어 구별 신호 없음, api-spec §3.7 v0.26.1) 러너 계측
   (`profileHookInvoked`/`buildReasonsInvoked`)으로 주입이 실제로 실행됐음을 관측 dict 에 남긴다.
-- **관측 러너의 fixture 는 대표 샘플이다** — 검색 결과 3건 고정 카탈로그, 프로필 always-None(HOME).
-  실제 카탈로그 분포·프로필 다양성에 따른 랭킹 품질은 `evals/goldenset`(#333) 소관 — 이 하네스는
-  "경로가 죽지 않고 계약 형태를 지키는가"만 잰다.
+- **`#393` 최소 필터 가드는 `runner.py` 에서 끄지 않는다(`pair_runner.py` 만 끈다)** — 이 관측
+  러너(`_observe_chat`)는 **배포 기본값 그대로** 관측해야 그 값이 "실제로 배포되는 동작"을 대표한다
+  (`expected_behavior.jsonl` 의 존재 이유). `pair_runner.py` 는 성격이 다르다 — "Spring I-1 WHERE
+  계약 대역"으로 **필터 배관**(하드필터가 search 콜러블에 실제로 도달하는가)만 재는 게 목적이라,
+  가드를 켜 두면 전 축 absent 인 base arm 이 아예 search 에 못 닿아 그 질문 자체가 성립하지 않는다
+  (§ 아래 "INV/DIR 쌍 검증 > #393 최소 필터 가드와의 축 분리" 절 참조). 두 러너의 목적이 다르므로
+  이 차이는 드리프트가 아니다.
+- **관측 러너의 fixture 는 대표 샘플이다** — 검색 결과는 `PAIR_CATALOG`(4건, category 2종) 고정
+  카탈로그(#381 이전엔 `CATALOG_PRODUCTS` 3건 고정, 필터 미적용), 프로필 always-None(HOME). 실제
+  카탈로그 분포·프로필 다양성에 따른 랭킹 품질은 `evals/goldenset`(#333) 소관 — 이 하네스는
+  "경로가 죽지 않고 계약 형태를 지키며 표현 가능한 필터가 실제로 걸러지는가"만 잰다.
+
+## 관측 재생성 이력 (#381)
+
+`refresh-observed` 로 ci 25행 전부를 재실행해 `observed` 를 갱신했다(2026-08-06). 값이 바뀐 행은
+20건 — 케이스별 판정(실측 개선/회귀/필드 추가)을 아래 표에 남긴다. **회귀는 0건.**
+
+공통 배경: 모든 20건에 `eventTypes` 맨 앞에 `progress` 이벤트가 새로 등장한다 — 이건 #381 의
+변경이 아니라 **사전 드리프트**다(이 브랜치가 분기한 base 커밋(798f0a9)에서 이미 관측되는 이벤트,
+`git stash` 로 확인 — 다른 커밋이 SSE 에 `progress` 를 추가한 뒤 `expected_behavior.jsonl` 이 한
+번도 재생성되지 않아 여태 안 드러나 있었다). `test_ci_cases_execute_and_defined_cases_match_contract`
+는 `eventTypes` 를 통째로 대조하지 않아(개별 필드만 봄) 이 드리프트로 깨지지 않는다. 이 표에서는
+이 공통 배경을 "필드 추가" 판정에 흡수하고 케이스별로 반복 서술하지 않는다.
+
+| case_id | 무엇이 바뀌었나 | 판정 | 근거 |
+|---|---|---|---|
+| combo-0004·0005·0010·0016·0019·0042·0047·0056·0057 (담기/조회/찜/주문조회 9건) | `progress` 이벤트 + 신규 필드(`pushProductCount:0`·`searchCallCount:0`·`searchFilters:null`·`unappliedSearchFilters:[]`) | **필드 추가** | intent 가 recommend 가 아니라 search 콜러블이 애초에 안 불린다 — 핵심 계약 필드(`terminal`·`actionType`·`actionReason`·`lastTokenText`)는 전부 불변. `searchCallCount:0`/`searchFilters:null` 은 "안 불렸다"를 처음으로 데이터에 명시한 것(D3). |
+| combo-0035·0036·0037·0038·0039 (constraint_strength=unspecified 5건) | `progress` 이벤트 + `pushProductCount`(실측값)·`searchCallCount:0`·`searchFilters:null`·`unappliedSearchFilters:[]` 추가 | **필드 추가** | popular_fn(I-3) 우선이라 search 자체가 안 불린다(코드 정의 우선순위, 갭 아님 — 기존 note 그대로). `pushCount`(이벤트 수)는 불변, `pushProductCount` 는 처음 관측된 값. |
+| combo-0023 (price_min, embedding_missing) | `progress` 이벤트 + `pushProductCount:4`·`searchCallCount:1`·`searchFilters`(`priceMin:20000`, 나머지 null)·`unappliedSearchFilters:[]` 추가 | **필드 추가 + 실측 개선(경계값 최초 기록)** | `PAIR_CATALOG` 4건이 `price_min=20000` 을 전부 만족(D4 근거 숫자와 동일 계산) — 필터가 있어도 이 표본에선 안 줄어드는 사례를 데이터로 처음 확인. `terminal`/`pushCount`/`listType` 은 불변. |
+| combo-0031 (overspecified_zero) | `progress` 이벤트 + `pushProductCount:0`·`searchCallCount:1`·`searchFilters`(`priceMin:20000`)·`unappliedSearchFilters:[]` 추가 | **필드 추가 + 실측 개선** | 0건 주입(`RecordingFilteringSearch(products=[])`)이 경계 도달 filters 도 함께 기록하게 됐다(D2) — `finishReason=zero_result`·`pushCount=0` 은 불변. |
+| combo-0026·0054·0055 (필터 8축 전부 present, degrade rerank_failed/embedding_missing) | `progress`+`suggestions` 이벤트 추가, `searchCallCount:1→5`(0055 는 신규), `searchFilters`(`keyword:null` — #51 규칙으로 leg 검색어에서 drop, `color`/`attrConditions` 는 present 유지), `unappliedSearchFilters:["color","attrConditions"]`, `pushProductCount`(실측값 1) 추가 | **실측 개선 — #371 잔여 맹점(category 축 미도달) 해소(D5)** | 예전엔 `category` 축이 항상 canonical-or-null degrade 로 `None` 지워져 leg 가 안 생겼다 — D5 로 leg 가 1개 생기면서 자동완화 재검색(축별 순차 완화, 5회 호출)이 처음으로 실제 실행됐다. `terminal=done`·`pushCount=1`·`listType=PICK_ONE` 은 불변(핵심 계약 유지) — combo-0055 는 특히 `pair_runner` 쪽 INV 검증과 짝을 이룬다(아래 참조, D1 로 양쪽 arm 이 `error`→`done` 으로 바뀜). |
+| combo-0053 (category+rating_min, embedding_missing) | `progress`+`suggestions` 이벤트 추가, `searchCallCount:0→2`, `searchFilters`(`category:무선이어폰`·`ratingMin:4.0`) 신규, `pushProductCount:2` | **실측 개선 — #371 잔여 맹점 해소(D5), 처음으로 search 를 탄다** | 배경(패킷 §"이미 실측한 사실") 대로 category 축을 실현하니 비로소 search 경계에 도달했다 — 예전엔 `category` 지워짐 → 하드필터가 `rating_min` 뿐 → `#393` 최소 필터 가드가 이 턴을 I-3(인기)로 돌려 search 자체가 안 불렸다. `terminal=done`·`listType=PICK_ONE` 은 불변. |
 
 ## 관측 러너가 안 쓰는 것
 
@@ -246,7 +322,8 @@ defined 로 전환됐다. 잔존 미정의는 #336(무지정+예산+세트) 1건
 |---|---|---|
 | `terminal`/`finishReason`/`errorCode` | 포함 | 기존 `runner.py` observed 와 동일 정의 |
 | `searchFilters` | 포함 | search 콜러블이 **실제로 받은** `ProductSearchFilters`(8개 하드필터, camelCase) — 주입 decompose 가 아니라 파이프라인 통과 후 경계 도달값(필터 유실 회귀 감지가 요지) |
-| `legs` | 포함(대부분 `[]`) | category 축이 present 인 쌍만 `pair_runner` 전용 seam(아래)으로 1-leg 를 채운다 — 그 외에는 항상 `[]`(leg 분해 커버리지는 #331 소관) |
+| `unappliedSearchFilters` | 포함(F3, 리뷰 라운드 1) | `searchFilters` 에 값이 실려 있어도 그 축이 실제로 대역에 **적용됐다**는 뜻은 아니다 — `keyword`·`color`·`attr_conditions` 는 `RecordingFilteringSearch` 가 흉내 낼 수 없어(D1, 이슈 #381) present 로 들어와도 미적용으로만 기록한다. 이 필드 없이는 `searchFilters` 에 값이 있다는 사실만 보고 "그 축이 결과를 줄였다"고 잘못 읽을 수 있다(예: combo-0055 는 `color`·`attrConditions` 가 항상 채워져 있지만 실제로 적용된 적은 없다) — `runner.py::_observe_chat` 의 `observed.unappliedSearchFilters` 와 같은 규약(첫 호출 기준) |
+| `legs` | 포함(대부분 `[]`) | category 축이 present 인 쌍만 `runner.py`·`pair_runner.py` 공유 seam(아래, #381 D5 로 흡수)으로 1-leg 를 채운다 — 그 외에는 항상 `[]`(leg 분해 커버리지는 #331 소관) |
 | `listType`/`listsCount`/`perListProductCount`/`productIdsMultiset` | 포함 | push 계약 형태(구조) |
 | `listEntryFieldKeys` | 포함 | 엔트리마다 **값이 실제로 채워진**(`None`/`[]`/`{}`/`""` 가 아닌) 필드 키만 담는다(`_entry_field_keys`, 리뷰 R2 F1) — `model_dump().keys()` 그대로 쓰면 pydantic 이 값과 무관하게 스키마 전 필드를 항상 담아 `['label','listId','productIds','reasons']` 상수가 되고, 그러면 이 필드는 **어떤 회귀에도 깨질 수 없다**(검증하지 않는 검증). `reasons` 는 값이 채워져 있어도 이 집합에서 **명시적으로 뺀다** — 아래 행과 같은 이유(정의된 동작)로, 값 자체를 비교 안 하는 것뿐 아니라 "채워졌는지" 여부도 비교하지 않는다. |
 | `pushProductCount` | 포함 | DIR metric `push_product_count` 의 원천 |
@@ -264,15 +341,18 @@ defined 로 전환됐다. 잔존 미정의는 #336(무지정+예산+세트) 1건
   **진상위집합**인지. 아니면 "필터를 늘렸다"는 전제 자체가 거짓이라 방향 부등식이 무의미하다.
 - `base_count_positive` — base 의 metric 값 > 0. 0이면 `non_increase` 가 항상 공허하게 성립한다.
 
-### 카테고리 seam (combo-0053 전용, `pair_runner.py` 한정 — 이슈 #371 R1 결정)
+### 카테고리 seam (combo-0053, 이슈 #371 R1 결정 → #381 D5 로 `runner.py` 본체에 흡수)
 
-combo-0053(DIR — "필터 추가 → 결과 수 비증가")는 `category` 필터축을 검증 대상으로 삼는데, 실측
-결과 `category` 축은 이 하네스 전체에서 legs 를 거치지 않으면 검색에 도달한 적이 없었다(위
-"알려진 관측 한계" 절 정정 참조). `pair_runner.py` 는 이 축에 한해 `categoryQueries` 를 채우고
-(`_pair_decompose_json`) `fakes.make_exact_match_category_mapping()`(raw exact match 만 대역 —
-거리컷·택일·확장은 #331 소관, 재구현 아님)으로 legs 를 실제로 채운다. `runner.py`/
-`map_categories_noop` 자체는 손대지 않았다 — 기존 54건 MFT 케이스의 `expected_behavior.jsonl`
-관측을 보존하기 위해서다.
+combo-0053(DIR — "필터 추가 → 결과 수 비증가")는 `category` 필터축을 검증 대상으로 삼는데, #371
+R1 실측 당시엔 `category` 축이 이 하네스 전체에서 legs 를 거치지 않으면 검색에 도달한 적이 없었다
+(위 "알려진 관측 한계" 절 참조). 그때는 `pair_runner.py` 전용 `_pair_decompose_json()` 래퍼로
+`categoryQueries` 를 채우고 `fakes.make_exact_match_category_mapping()`(raw exact match 만 대역 —
+거리컷·택일·확장은 #331 소관, 재구현 아님)으로 legs 를 채웠다. **#381 D5 로 이 seam 이
+`runner.py::build_decompose_json` 본체에 흡수됐다** — `pair_runner.py` 는 이제 `_pair_decompose_
+json()` 없이 `build_decompose_json()` 을 직접 쓰고, `_observe_chat` 도 같은
+`make_exact_match_category_mapping()` 을 쓴다(§ "관측 재생성 이력" 절). 두 러너가 같은 seam 을
+공유하므로 이 절의 실측(아래)은 `runner.py` 쪽 관측(combo-0053, combo-0026·0054·0055)과도
+일관된다.
 
 `PAIR_CATALOG`(`fakes.py`) 는 `CATALOG_PRODUCTS` 3건(`무선이어폰`) + 1건(`여행용품`, product_id
 104) — category 필터가 실제로 결과를 줄이도록 카테고리 2종을 보장한다.
@@ -310,8 +390,14 @@ override 한 뒤 검색을 부른다(`recommendation/graph.py:648-655`). 즉 결
 `fakes.make_recording_filtering_search`(→ `RecordingFilteringSearch`)는 **Spring I-1 검색(외부
 시스템)의 WHERE 계약 대역**이지 앱 판정 로직 재구현이 아니다 — `SpringProduct` 로 표현 가능한
 하드필터(category 정확 일치·price_min/max 범위·brand 목록 포함·rating_min 이상)만 흉내 낸다.
-표현 불가 필터(keyword·color·attr_conditions)가 present 로 들어오면 조용히 무시하지 않고
-`ValueError` 로 즉시 실패시킨다 — 미래 쌍이 "필터가 적용된 것처럼" 공허 통과하는 것을 막는다.
+표현 불가 필터(keyword·color·attr_conditions)가 present 로 들어오면 **#381 D1 이전엔** 조용히
+무시하지 않고 `ValueError` 로 즉시 실패시켰다 — 그런데 그 예외가 앱의 검색 실패 처리에 삼켜져
+`terminal=error`/`errorCode=SEARCH_FAILED` 로 낙성했고, combo-0055 INV 쌍은 **base·perturbed
+양쪽 다 이 상태로 우연히 "동일"해 pass 했다**(공허 통과 — "필터가 적용된 것처럼"이 아니라 "둘 다
+실패한 것처럼" 통과하는, 예상 못 한 반대 방향의 공허였다). D1 은 이걸 던지지 않고
+**미적용으로 기록**(`unapplied_calls`)한 뒤 표현 가능한 축만 적용해 계속하도록 고쳤다 — 그 결과
+combo-0055 의 두 arm 은 이제 `terminal=done` 으로 정상 종료해 INV 불변식이 실제 의미로 성립한다
+(§ 결과 절, `pair_checks.jsonl` combo-0055 `reason` 갱신 참조).
 
 ### #393 최소 필터 가드와의 축 분리 (`pair_runner.py` 실행 한정)
 
@@ -331,10 +417,20 @@ is_unfiltered_payload`)는 아예 다른 축이다 — "이번 턴이 Spring 파
 #393 전용 단위/통합 테스트(`tests/unit/test_search_guard_393.py`·`tests/unit/test_recommendation.py`
 의 `test_unfiltered_bypass_*`·`test_category_mapping_dropped_*` 계열)가 그 몫을 진다.
 
-### 결과 (2026-08-06 기준, `pair_runner.py` 실측)
+### 결과 (2026-08-06 기준, #381 D1/D5 반영 후 `pair_runner.py` 재실측)
 
-INV 통과 1/1 · DIR(ci) 통과 1/1 · manual 분리 1건 · 분모(전체 쌍 행 수) 3. combo-0053 는
-base=3(101·102·104) → perturbed=2(101·102) 로 엄격 감소가 실제로 관측됐다. combo-0055 은 실측상
-`productIds` 멀티셋 자체가 rerank 성공/폴백 양쪽에서 동일(`[101,102,103,104]`)해
-`invariant_fields` 에 `productIdsMultiset` 도 포함했다(§3-a 각주 — 실측이 예측과 다르면 fixture
-를 늘리기 전에 원인부터). 상세는 `PAIR_CHECKS.md`.
+INV 통과 1/1 · DIR(ci) 통과 1/1 · manual 분리 1건 · 분모(전체 쌍 행 수) 3(verdict 는 D1/D5 전후로
+유지됨). combo-0053 는 base=3(101·102·104) → perturbed=2(101·102) 로 엄격 감소가 실제로 관측됐다
+(D1/D5 로 값이 바뀌지 않은 케이스 — category 만 present 라 표현 불가 축이 없다).
+
+combo-0055 은 D1 이전엔 base·perturbed 둘 다 `terminal=error`(`errorCode=SEARCH_FAILED`, 표현
+불가 필터 present 로 대역이 `ValueError` 를 던지고 그게 앱의 검색 실패 처리에 삼켜짐)로 **우연히
+동일해 pass 하는 공허 통과**였다(실측, `git stash` 로 D1 이전 상태를 재실행해 확인 — 두 arm 모두
+`productIdsMultiset: []`·`pushProductCount: 0`). 그 상태에서 커밋돼 있던 `pair_checks.jsonl` 의
+`reason` 문구는 `productIds` 멀티셋이 "둘 다 `[101,102,103,104]`"라고 적고 있었는데, 이는 그
+당시 실측과도 어긋나는 드리프트였다(원인은 추적하지 않았다 — 문구 자체가 실측 근거 없이 남아
+있었다는 사실이 이 이슈가 잡으려던 문제의 정확한 예시). D1(표현 불가 필터를 미적용으로 기록하고
+계속) + D5(category leg 실현) 적용 후 재실측하면 base·perturbed 둘 다 `terminal=done`·
+`productIdsMultiset=[101]` 로 **정상 종료 상태에서 진짜로 동일**하다 — INV 불변식이 이제 의미
+있게 성립한다(§ "필터링 검색 대역의 성격" 절). 상세는 `PAIR_CHECKS.md`, `pair_checks.jsonl` 의
+combo-0055 `reason` 문구도 이 실측에 맞게 정정했다.
