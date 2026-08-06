@@ -162,6 +162,54 @@ class Settings(BaseSettings):
     # 초과 시 embed_texts 가 예외 → EmbeddingRerankBackend 가 Spring 순서 degrade(#101 #7, PR#166).
     embedding_timeout_s: float = 3.0
     catalog_batch_page_size: int = 500  # I-17 배치 페이지 크기(§4.8, config 주입)
+    # [#325] 운영 fast tier(gpt-5-nano, reasoning 모델)에서 하드코딩 max_tokens=600 전량이
+    # reasoning_tokens 로 소진돼 본문 0자 → openai.LengthFinishReasonError 로 매 5분 주기 정지.
+    # JSON 본문(태그 5~12 + 상황태그 3~7 + 속성 dict, 수백 토큰)이 reasoning 몫을 뺀 뒤에도
+    # 남도록 여유를 둔다 — color_synonym_llm_max_tokens(2048) 전례와 같은 스케일.
+    enrichment_max_tokens: int = Field(default=2048, ge=1)
+    # [#325] enrichment(구조화 추출) 전용 effort — 배포 변수 OPENAI_FAST_REASONING_EFFORT 가
+    # fast tier 기본 effort 를 무엇으로 덮든 이 값으로 고정된다(#178 tool 동반 호출 effort
+    # 강등과 같은 계열: 특정 호출 용도는 tier 기본과 독립적으로 안전값을 강제).
+    enrichment_reasoning_effort: str = "minimal"
+    # [#325] _drain 항목별 재시도 상한 — 일시 플레이크(파싱 실패·비결정 출력) 구제용. LLM
+    # 전송 자체의 재시도는 langchain max_retries 가 이미 담당한다.
+    enrichment_item_attempts: int = Field(default=2, ge=1)
+    # [#325 R3] 2선 방어(비율 가드) — 1선은 artifacts_batch._drain 의 구조적 판정이다:
+    # embed()·store.upsert() 실패와, enrichment 재시도 소진 후 타임아웃 계열로 판정된 실패는
+    # 격리하지 않고 그대로 전파해 이미 광역 장애로 처리된다. 이 비율 가드는 그 1선을 통과한
+    # 뒤에도 남는 경우 — 인프라는 멀쩡한데 enrichment 결과 자체가 대량으로 깨지는 경우(프롬프트
+    # 회귀, 모델 교체 사고 등) — 를 잡는다. 페이지 내 ON_SALE 실패 비율이 이 값 이상이면
+    # (그리고 failed>0) 커서를 전진시키지 않고 예외를 던져 자연 복구(동일 커서 재개)로 돌아간다.
+    artifacts_batch_failure_ratio_threshold: float = Field(default=0.5, gt=0.0, le=1.0)
+    # [#325 R3] 위 2선 비율 가드가 유효하려면 최소 표본이 필요하다 — 운영 증분 배치는 5분
+    # 주기에 실제 변경분만 담겨 페이지가 대개 1~3건이라(catalog_batch_page_size 는 요청 상한일
+    # 뿐), poison 단건 상품 하나만 있어도 ratio=1/1=1.0 로 대량 결과 회귀와 구별이 안 된다.
+    # 표본이 이 값 미만이면 비율 가드를 건너뛰고 격리+전진한다 — 소량 표본 판정 불능은 1선
+    # (증명된 콘텐츠 실패 화이트리스트 판정)이 이미 광역 장애를 걸러낸 뒤라 안전하다. 남는 소수 항목 격리는
+    # dead-letter ERROR 로그와 failed 카운트로 드러나며 run_batch --full(전체 재구축)로
+    # 복구 가능한 유계 하방이다.
+    artifacts_batch_failure_min_sample: int = Field(default=5, ge=1)
+    # [#325 R4] 광역 장애와 항목 고유 결정적 실패는 한 주기 관측으로는 원리적으로 구별할 수
+    # 없다 — 비율(R2)·단계(R3)·예외 타입(R3) 모두 각각 구멍이 남았다. 실제로 둘을 가르는
+    # 신호는 시간이다: 광역 장애는 언젠가 끝나고, 항목 고유 실패는 몇 번을 다시 해도 같은
+    # 자리에서 실패한다. 전파(자연 복구)는 유지하되, 같은 상품이 이 횟수만큼 "주기를
+    # 가로질러" 연속 실패하면 항목 고유 실패로 확정하고 격리(dead-letter)한다. 기본
+    # 3 × catalog_batch_interval_s(300s) ≈ 15분이 배치가 상품 1건 때문에 막힐 수 있는
+    # 상한이다 — 이 안에서 끝나는 장애는 종전대로 자연 복구되고, 그보다 긴 장애는 그
+    # 페이지의 항목들이 격리되지만 dead-letter ERROR 로그로 드러나며 run_batch --full
+    # (전체 재구축)로 복구 가능하다.
+    artifacts_batch_item_dead_letter_cycles: int = Field(default=3, ge=1)
+    # [#325 R5] 3선(비율 가드) 방어에도 같은 시간 유계 원리를 적용한다 — 1선(항목별 즉시 격리)이
+    # 특정 카테고리 상품들의 프롬프트 회귀로 다건을 매 주기 즉시 격리하면(스트릭을 쌓지 않고
+    # pop 하므로 2선 상한이 걸리지 않는다), 페이지 실패율이 매 주기 똑같이 임계를 넘어
+    # PageFailureThresholdExceeded 가 반복되고 커서가 전진하지 않아 같은 페이지가 무기한
+    # 재조회된다(3선이 스스로 #325 의 무기한 정지를 재현). 같은 커서에서 비율 가드가 이 횟수만큼
+    # 연속 발동하면 대량 파손이 자연 회복되지 않는 것으로 보고 그 페이지를 격리(항목들은 이미
+    # 1선/2선에서 dead-letter 기록됨)하고 커서를 전진시킨다. 기본
+    # 3 × catalog_batch_interval_s(300s) ≈ 15분이 대량 파손으로 배치가 멈춰 있을 수 있는
+    # 상한이다 — 이 상한이 없으면 3선이 잡으려던 바로 그 케이스(대량 내용 파손)에서 #325 증상이
+    # 그대로 재현된다. 상한 도달은 dead-letter ERROR 로 드러나며 복구는 run_batch --full.
+    artifacts_batch_page_failure_max_cycles: int = Field(default=3, ge=1)
     catalog_vector_overfetch: int = 4  # 방식1 hydrate 후 필터·품절 제거 대비 벡터 여유조회 배수
     # 방식2 DB 재정렬 1회 반환 행 가드. 현 카탈로그 7,220건 전량도 p50 49ms라 기본값은
     # 실사용에서 걸리지 않는다. 카탈로그 성장 시 응답 행 수만 제한하며, 실질 지연 상한은

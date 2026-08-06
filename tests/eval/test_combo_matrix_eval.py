@@ -7,6 +7,7 @@ import typing
 
 import pytest
 
+from app.services.spring_client import CartError, WishlistError
 from evals.combo_matrix.generator import (
     FILTER_AXES,
     add_directed_cases,
@@ -26,7 +27,12 @@ from evals.combo_matrix.loader import (
     load_manifest,
 )
 from evals.combo_matrix.report import coverage_report
-from evals.combo_matrix.runner import observe
+from evals.combo_matrix.runner import (
+    _failing_add_to_cart,
+    _failing_add_wishlist,
+    build_decompose_json,
+    observe,
+)
 from evals.combo_matrix.schema import AxesDocument, ComboCase, ExpectedBehaviorRow
 
 pytestmark = pytest.mark.eval
@@ -208,8 +214,10 @@ async def test_ci_cases_execute_and_defined_cases_match_contract() -> None:
             else:
                 assert observed["terminal"] == "done"
                 assert observed["pushCount"] == 1
-                # 이 매트릭스는 categoryQueries 를 채우지 않아 buy_all_mode(세트)가 트리거되지
-                # 않는다 — 표준 검색 경로는 항상 PICK_ONE (state.py:128-131 명시 설계).
+                # #381 D5 — category=="present" 이면 이제 categoryQueries 를 채워 leg 를 1개
+                # 만든다(구 서술 "categoryQueries 를 채우지 않는다"는 실측으로 반증됐다). 그래도
+                # BUY_ALL 은 "니즈 2개 이상"이 조건이라(state.py:128-131) leg 1개로는 여전히
+                # 트리거되지 않는다 — 실측으로 확인(모든 ci recommend 케이스가 PICK_ONE 로 관측됨).
                 assert observed["listType"] == "PICK_ONE"
         elif case.axes["intent"] == "cart_add" and case.axes["degrade"] == "spring_timeout":
             # 리뷰 R7 — add_to_cart 몽키패치가 실제로 CartError 계열 catch 를 태워야 한다.
@@ -232,6 +240,22 @@ async def test_ci_cases_execute_and_defined_cases_match_contract() -> None:
                 )
         else:
             assert observed["terminal"] == "done", case.case_id
+
+
+# ─────────── 6a. 담기 계열 degrade 주입의 예외 타입 (이슈 #376) ───────────
+
+
+async def test_add_wishlist_and_add_to_cart_injections_match_adapter_exception_convention() -> None:
+    """`spring_timeout` 축이 담기 계열에 주입하는 fake 가 실 어댑터 규약(WishlistError/CartError)과
+    같은 예외를 내는지 직접 호출로 잠근다 — `SpringUnavailableError` 로 되돌리면 이 테스트가
+    반드시 깨진다(변이 시험 확인 후 원복, 보고 참조). 실 어댑터 근거는 `app/services/
+    spring_client.py::add_wishlist`/`add_to_cart` 의 `except httpx.HTTPError` 가 각각
+    `WishlistError`/`CartError` 로 낙성하는 것 — `httpx.TimeoutException` 은 `httpx.HTTPError` 의
+    하위 클래스라 타임아웃도 같은 낙성 결과다."""
+    with pytest.raises(WishlistError):
+        await _failing_add_wishlist()
+    with pytest.raises(CartError):
+        await _failing_add_to_cart()
 
 
 # ─────────── 6b. HOME 픽스처 공허 방지 가드 (리뷰 F1) ───────────
@@ -349,3 +373,71 @@ def test_axes_document_is_the_single_source_of_truth() -> None:
         assert isinstance(case, ComboCase)
     for row in load_expected():
         assert isinstance(row, ExpectedBehaviorRow)
+
+
+# ─────────── 8. 검색 필터 경계 관측 (이슈 #381 D8) ───────────
+
+
+async def test_representable_filters_actually_narrow_search_results() -> None:
+    """D8-1 — 표현 가능한 하드필터(category·brand·rating_min)가 present 인 ci 케이스는 결과가
+    필터 없을 때보다 실제로 줄어든다(공허 통과 방지). combo-0026(필터 8축 전부 present)의
+    `PAIR_CATALOG`(4건) 대비 product 101 하나만 category=무선이어폰·brand=나이키·
+    rating_min=4.0·price 20000~50000 을 전부 만족한다."""
+    cases = {c.case_id: c for c in load_cases()}
+    observed = await observe(cases["combo-0026"])
+    assert observed["searchCallCount"] > 0
+    assert observed["pushProductCount"] == 1, (
+        "combo-0026 은 category·brand·rating_min·price 하드필터로 4건 중 1건(product 101)만 "
+        "남아야 한다 — 필터가 실제로 결과를 줄이지 않으면 이 값이 4에 가깝게 나온다"
+    )
+
+
+async def test_search_filters_is_boundary_value_not_injected_value() -> None:
+    """D8-2 — `observed.searchFilters` 는 decompose 주입값이 아니라 search 콜러블이 실제로 받은
+    경계 도달값(첫 호출)이다. combo-0026 은 decompose 산출 filters.keyword="가벼운" 을 주입하지만,
+    category leg 가 있으면(#381 D5) `#51` 규칙(`app/agents/buyer/recommendation/graph.py::_leg` 의
+    `leg_keyword = None if drop_keyword else ...`)이 leg 검색어에서 keyword 를 비운다 — 주입값과
+    경계 도달값이 실제로 갈리는 축이다. 또한 첫 호출은 자동완화 재검색(축별로 하나씩 완화)이 시작되기
+    전 값이라 이후 호출(예: color 완화 재검색)과도 달라야 한다 — "첫 호출" 계약 자체를 잠근다."""
+    cases = {c.case_id: c for c in load_cases()}
+    case = cases["combo-0026"]
+    injected = build_decompose_json(case.axes)["filters"]
+    assert injected["keyword"] == "가벼운"
+
+    observed = await observe(case)
+    search_filters = observed["searchFilters"]
+    assert search_filters is not None
+    assert search_filters["keyword"] is None, (
+        "주입값(가벼운)과 경계 도달값이 같으면 searchFilters 가 여전히 decompose 산출을 그대로 "
+        "싣고 있다는 뜻 — 실제 search 콜러블 호출을 관측한 게 아니다"
+    )
+    # 첫 호출은 색상 완화가 아직 안 일어난 상태라 color 가 살아 있어야 한다(자동완화 재검색이
+    # color 를 지운 이후 호출과 구별) — "첫 호출(주 검색)" 계약을 직접 잠근다.
+    assert search_filters["color"] == "블랙"
+
+
+async def test_unapplied_search_filters_are_loud_for_unrepresentable_axes() -> None:
+    """D8-3(D1 loudness) — keyword·color·attr_conditions 가 present 인 ci 케이스는
+    `unappliedSearchFilters` 에 그 축들이 반드시 나타나고, 표현 가능한 축만 present 인 케이스는
+    비어 있다."""
+    cases = {c.case_id: c for c in load_cases()}
+    with_unrepresentable = await observe(
+        cases["combo-0026"]
+    )  # keyword·color·attr_conditions 전부 present
+    assert set(with_unrepresentable["unappliedSearchFilters"]) == {"color", "attrConditions"}, (
+        with_unrepresentable["unappliedSearchFilters"]
+    )
+
+    representable_only = await observe(cases["combo-0023"])  # price_min 만 present
+    assert representable_only["unappliedSearchFilters"] == []
+
+
+async def test_search_not_called_cases_report_zero_call_count_and_null_filters() -> None:
+    """D8-4 — search 콜러블이 아예 안 불린 케이스(cart_add 등)는 `searchCallCount == 0`·
+    `searchFilters is None` 이다 — "안 불렸다"와 "불렸지만 전부 null 이었다"를 데이터에서
+    구별한다."""
+    cases = {c.case_id: c for c in load_cases()}
+    observed = await observe(cases["combo-0004"])  # cart_add, degrade=spring_timeout
+    assert observed["searchCallCount"] == 0
+    assert observed["searchFilters"] is None
+    assert observed["unappliedSearchFilters"] == []

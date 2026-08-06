@@ -17,8 +17,15 @@
   `rerank_failed`·`spring_timeout`)은 `axes.json` 의 excludes 제약으로 HOME 조합 자체가 생성되지
   않는다. HOME 은 `none`·`profile_unavailable`·`catalog_unavailable`·`catalog_timeout`·
   `reason_degraded` 5종만 실행한다(api-spec §3.7 v0.26.1 규범).
-- **카테고리 leg fan-out(`category_queries`/`map_categories`)은 범위 밖** — `category` 필터축은
-  `ProductSearchFilters.category`(하드필터 문자열) 만 재며, leg 분해·매핑은 관측하지 않는다.
+- **필터 축의 검색 경계 관측(#381)** — 이 러너는 `fakes.make_recording_filtering_search()` 를 써서
+  search 콜러블이 실제로 받은 `ProductSearchFilters`(경계 도달값)를 `observed.searchFilters` 에
+  담는다. `category`(exact-match 매핑, `fakes.make_exact_match_category_mapping()`)·
+  `price_min`·`price_max`·`brand`·`rating_min` 은 `SpringProduct` 로 표현 가능해 실제로 걸러지고,
+  `keyword`·`color`·`attr_conditions` 는 대역이 흉내 낼 수 없어(판정 로직 재구현 금지) present 로
+  들어와도 **미적용으로 기록**만 하고(`observed.unappliedSearchFilters`) 나머지 축만 적용한다.
+  search 가 아예 안 불린 케이스(popular 경로·담기 계열 등)는 `observed.searchCallCount == 0` 이고
+  `searchFilters` 는 `null` 이다 — "안 불렸다"와 "전부 null 이었다"를 데이터에서 구별한다(§ README
+  "알려진 관측 한계"). 상세 근거는 `evals/combo_matrix/README.md` 참조.
 """
 
 from __future__ import annotations
@@ -34,13 +41,16 @@ if str(_REPO_ROOT) not in sys.path:
 from app.core.auth import Identity  # noqa: E402
 from app.services import home_recommendation as home_svc  # noqa: E402
 from app.services import spring_client  # noqa: E402
-from app.services.spring_client import SpringUnavailableError  # noqa: E402
+from app.services.spring_client import CartError, WishlistError  # noqa: E402
 from evals.combo_matrix.fakes import (  # noqa: E402
+    RecordingFilteringSearch,
     RecordingPush,
     failing_order_status,
     failing_search,
+    make_exact_match_category_mapping,
     make_order_status_ok,
     make_popular,
+    make_recording_filtering_search,
     make_search,
     map_categories_noop,
 )
@@ -69,6 +79,30 @@ _FILTER_SAMPLE = {
     "attr_conditions": {"방수": "true"},
 }
 
+# `observed.searchFilters`/`Projection.search_filters` 에 담는 8개 하드필터 camelCase 키 —
+# `pair_runner.py` 와 정의를 공유한다(§ 이슈 #381 D3, 드리프트 방지). 한쪽에 정의하고 다른 쪽이
+# import 한다 — decompose._FILTER_AXES 와 같은 축 범위(semanticQuery·excludeProductIds·limit 은
+# "거르는" 조건이 아니라 후처리/제외 조건이라 뺀다).
+_SEARCH_FILTER_KEYS = (
+    "category",
+    "priceMin",
+    "priceMax",
+    "brand",
+    "ratingMin",
+    "keyword",
+    "color",
+    "attrConditions",
+)
+
+
+def search_filters_projection(filters) -> dict:
+    """search 콜러블이 실제로 받은 `ProductSearchFilters` 를 경계 도달값(camelCase 8축)으로 투영한다."""
+    return {
+        key: value
+        for key, value in filters.model_dump(mode="json", by_alias=True).items()
+        if key in _SEARCH_FILTER_KEYS
+    }
+
 
 def build_decompose_json(axes: dict[str, str]) -> dict:
     """축 할당을 decompose(LLM) 산출 JSON(camelCase) 으로 실현한다 — ScriptedLLM 고정 주입용."""
@@ -89,6 +123,13 @@ def build_decompose_json(axes: dict[str, str]) -> dict:
     data["filters"] = filters
     if axes.get("attr_conditions") == "present":
         data["attrConditions"] = _FILTER_SAMPLE["attr_conditions"]
+    if axes.get("category") == "present":
+        # `decision.category_legs` 가 비면 `filters.category` 는 canonical-or-null degrade 로
+        # 무조건 None 이 된다(app/agents/buyer/graph.py:520-537) — legs 는 오직 `categoryQueries`
+        # 를 map_categories 로 매핑해야 채워진다. pair_runner 의 구 `_pair_decompose_json` 이 하던
+        # 것과 동일한 값(`_FILTER_SAMPLE["category"]`)을 공유해 하드필터 값과 leg 매핑이 어긋나지
+        # 않게 한다(이슈 #381 D5).
+        data["categoryQueries"] = [{"category": _FILTER_SAMPLE["category"], "query": None}]
     if axes.get("buy_all") == "true":
         data["buyAll"] = True
     if axes.get("total_budget") == "present":
@@ -144,6 +185,26 @@ async def _warm_up_last_reco(request, identity) -> None:
     )
 
 
+async def _failing_add_wishlist(*_args, **_kwargs):
+    """`spring_client.add_wishlist` 몽키패치용 타임아웃 근사 — 모듈 레벨로 둬서 테스트가 직접
+    호출해 예외 타입을 잠글 수 있게 한다(§ 회귀 테스트, 이슈 #376).
+
+    실 어댑터는 `httpx.HTTPError`(TimeoutException 포함)를 전부 `WishlistError` 로 낙성한다
+    (app/services/spring_client.py::add_wishlist).
+    """
+    raise WishlistError("wishlist 담기 시간 초과(주입)")
+
+
+async def _failing_add_to_cart(*_args, **_kwargs):
+    """`spring_client.add_to_cart` 몽키패치용 타임아웃 근사 — 모듈 레벨로 둬서 테스트가 직접
+    호출해 예외 타입을 잠글 수 있게 한다(§ 회귀 테스트, 이슈 #376).
+
+    실 어댑터는 `httpx.HTTPError`(TimeoutException 포함)를 전부 `CartError` 로 낙성한다
+    (app/services/spring_client.py::add_to_cart).
+    """
+    raise CartError("장바구니 담기 시간 초과(주입)")
+
+
 async def _observe_chat(case: ComboCase) -> dict:
     axes = case.axes
     degrade = axes["degrade"]
@@ -157,14 +218,30 @@ async def _observe_chat(case: ComboCase) -> dict:
     llm = ScriptedLLM(decompose=decompose_json, rerank_error=(degrade == "rerank_failed"))
     # search 실패(spring_timeout)가 최우선 — 검색 자체가 안 되면 결과 건수는 의미가 없다.
     # 그다음 constraint_strength=overspecified_zero 는 **정의상 검색 0건**이어야 자동완화·
-    # 완화칩·zero_result 종료(recommendation/graph.py:1075-1115·:1146)가 실제로 돈다 — fake 가
-    # 항상 3건을 내면 이 축이 normal 과 구별 없이 실행되는 공회전이었다(리뷰 R1).
+    # 완화칩·zero_result 종료(recommendation/graph.py:1075-1115·:1146)가 실제로 돈다 — 0건을
+    # 돌려주는 recording 대역(`RecordingFilteringSearch(products=[])`)을 써서 표현 가능한
+    # 필터를 적용해도 항상 0건이라는 목적은 만족하면서 경계 도달 filters 도 기록한다
+    # (이슈 #381 D2·D4 — overspecified_zero 재검토: `PAIR_CATALOG` 표본으로는 필터를 실제로
+    # 적용해도 0건이 자연 발생하지 않아 주입을 유지, README "관측 재생성 이력" 참조).
+    # 그 외(normal)는 `fakes.make_recording_filtering_search()`(대역 카탈로그 `PAIR_CATALOG`)를
+    # 써서 search 콜러블이 실제로 받은 필터를 기록한다 — category·price_min/max·brand·rating_min
+    # 은 실제로 걸러지고, keyword·color·attr_conditions 는 대역이 흉내 낼 수 없어 미적용으로
+    # 기록만 한다(D1, `fakes.RecordingFilteringSearch` 참조).
     if degrade == "spring_timeout":
-        search = failing_search
+        raw_search = failing_search
     elif axes.get("constraint_strength") == "overspecified_zero":
-        search = make_search([])
+        raw_search = make_recording_filtering_search(products=[])
     else:
-        search = make_search()
+        raw_search = make_recording_filtering_search()
+    search_calls: list = []
+
+    async def search(filters, exclude_product_ids=None):
+        # search 가 여러 번 불릴 수 있어(무필터 보충 재검색 등) 매 호출을 기록하고 첫 호출(주
+        # 검색)만 관측에 쓴다(pair_runner.py 와 같은 규약) — raw_search 가 실패해도(spring_timeout)
+        # 호출 자체는 일어났다는 사실과 그때 전달된 filters 는 남긴다.
+        search_calls.append(filters)
+        return await raw_search(filters, exclude_product_ids=exclude_product_ids)
+
     push = RecordingPush()
 
     # `run_buyer_turn` 은 담기 계열 Spring 호출(`add_fn`/`add_wishlist_fn`)을 주입 파라미터로
@@ -180,16 +257,8 @@ async def _observe_chat(case: ComboCase) -> dict:
     original_add_wishlist = spring_client.add_wishlist
     original_add_to_cart = spring_client.add_to_cart
     if patch_add_wishlist:
-
-        async def _failing_add_wishlist(*_args, **_kwargs):
-            raise SpringUnavailableError("wishlist 담기 시간 초과(주입)")
-
         spring_client.add_wishlist = _failing_add_wishlist
     if patch_add_to_cart:
-
-        async def _failing_add_to_cart(*_args, **_kwargs):
-            raise SpringUnavailableError("장바구니 담기 시간 초과(주입)")
-
         spring_client.add_to_cart = _failing_add_to_cart
     try:
         events = await _collect(
@@ -205,21 +274,24 @@ async def _observe_chat(case: ComboCase) -> dict:
                     if axes["intent"] == "order_status" and degrade == "spring_timeout"
                     else make_order_status_ok
                 ),
-                map_categories=map_categories_noop,
+                # #331 소관인 임베딩 최근접·거리컷·택일·확장은 재구현하지 않는다 — raw exact
+                # match 만 대역한다(이슈 #381 D5, `fakes.make_exact_match_category_mapping`).
+                map_categories=make_exact_match_category_mapping(),
             )
         )
-    except Exception as exc:  # noqa: BLE001 - stream_wishlist_add 가 SpringUnavailableError 를
-        # 개별 처리하지 않아(발견 3번, cart/wishlist.py:175-233) 여기서 그대로 새어나온다 — 이
-        # 유닛 경계(run_buyer_turn 직접 호출)엔 프로덕션의 open_stream 범용 catch-all
-        # (core/stream.py:688-705)이 없어 진짜로 처리 안 된 예외를 그대로 보여준다. 그 catch-all
-        # 이 error(INTERNAL)로 감싸는 것은 통합(SSE 스트림) 레벨 동작이라 이 하네스 범위 밖이다.
+    except Exception as exc:  # noqa: BLE001 - 안전망: cart_add/wishlist_add 는 CartError/
+        # WishlistError(+ SpringUnavailableError)를 개별 처리한다(#368/PR #374 로 해소, cart/
+        # graph.py:454 · cart/wishlist.py:245) — 정상 경로라면 여기 도달하지 않는다. 그래도
+        # 다른 축·미래 변경이 실제로 처리 안 된 예외를 내면(회귀) 관측 데이터에 조용히 사라지지
+        # 않고 남기려고 이 블록을 유지한다. 프로덕션에서는 core/stream.py 의 open_stream 범용
+        # catch-all(:688-705)이 error(INTERNAL) SSE 로 감싼다(통합 레벨, 이 하네스 범위 밖).
         return {
             "unhandledException": type(exc).__name__,
             "note": (
-                "stream_wishlist_add 가 이 예외를 개별 처리하지 않아 run_buyer_turn 을 직접 호출한 "
-                "이 경계(unit)에서 그대로 전파됐다 — 프로덕션에서는 core/stream.py 의 open_stream "
-                "범용 catch-all이 error(INTERNAL) SSE 로 감싼다(통합 레벨, 이 하네스 범위 밖). "
-                "이 unhandledException 자체가 발견 3번의 직접 증거다."
+                "미처리 예외 안전망 — 정상 경로라면 cart_add/wishlist_add 의 개별 except 가 이미 "
+                "잡아 action(*_FAILED)+done 으로 degrade 한다(#368/PR #374). 여기 도달했다면 그 "
+                "처리 범위 밖의 예외가 run_buyer_turn 을 직접 호출한 이 unit 경계에서 그대로 "
+                "전파된 것이다 — 관측 데이터에 남겨 회귀를 드러낸다."
             ),
         }
     finally:
@@ -251,6 +323,18 @@ async def _observe_chat(case: ComboCase) -> dict:
         "lastTokenText": token_events[-1]["data"].get("text") if token_events else None,
         "pushCount": len(push.pushes),
         "listType": push.pushes[0].list_type if push.pushes else None,
+        # pushCount 는 push **이벤트** 수다 — 필터가 결과를 실제로 줄였다는 가시적 결과를 재려면
+        # push 된 **상품** 수가 필요하다(이슈 #381 D3, pushCount 와 혼동 금지).
+        "pushProductCount": sum(len(entry.product_ids) for p in push.pushes for entry in p.lists),
+        # search 가 아예 안 불린 케이스(popular 경로·담기 계열 등)는 0 — "안 불렸다"와 "전부
+        # null 이었다"를 구별한다(이슈 #381 D3). 첫 호출(주 검색)만 searchFilters 에 싣는다.
+        "searchCallCount": len(search_calls),
+        "searchFilters": (search_filters_projection(search_calls[0]) if search_calls else None),
+        "unappliedSearchFilters": (
+            raw_search.unapplied_calls[0]
+            if isinstance(raw_search, RecordingFilteringSearch) and raw_search.unapplied_calls
+            else []
+        ),
     }
     # 여러 관측 한계가 동시에 해당할 수 있다(예: combo-0038 unspecified+embedding_missing) —
     # 단일 `note` 덮어쓰기는 먼저 붙인 한계를 지운다(리뷰 R4). 리스트로 전부 append.
