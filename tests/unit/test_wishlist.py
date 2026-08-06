@@ -315,12 +315,16 @@ async def test_get_wishlist_parses_items(monkeypatch: pytest.MonkeyPatch) -> Non
     assert client.calls == [("GET", "/internal/wishlist", {"userId": 1})]
 
 
-async def test_get_wishlist_missing_purchase_state_key_defaults_to_available(
+async def test_get_wishlist_missing_purchase_state_key_defaults_to_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """I-28 은 BE 미구현 초안이라 `purchaseState` 키가 아예 없는 응답이 올 수 있다 — 예외 없이
-    파싱되고 기본값 `"AVAILABLE"`로 채워져야 한다(구 boolean 필드의 기본값 참과 같은 의미,
-    BE 미구현 구간을 버티는 것이 이 기본값의 존재 이유)."""
+    """`purchaseState` 키가 아예 없는 응답(BE 미배포 구간)은 예외 없이 파싱되고 `None`(모름)이
+    돼야 한다 — **`"AVAILABLE"` 이 아니다**(#310).
+
+    PR #305 시점엔 구 boolean 필드(기본값 참)와 의미를 맞추려 `"AVAILABLE"` 을 뒀지만, 이제
+    이 값을 읽어 안내 문구를 가르므로 기본값이 **주장으로 승격**된다 — 키가 없다는 사실을
+    "구매 가능이 확인됨"으로 바꿔 읽으면 품절 상품을 살 수 있다고 안내하게 된다. 모름은
+    주장이 아니므로 `None` 으로 두고 아무 라벨도 붙이지 않는다."""
     import app.services.spring_client as sc
 
     body = {
@@ -330,7 +334,7 @@ async def test_get_wishlist_missing_purchase_state_key_defaults_to_available(
     client = _WishlistClient(_WishlistResp(200, body))
     monkeypatch.setattr(sc, "_client", lambda: client)
     view = await sc.get_wishlist(1)
-    assert view.items[0].purchase_state == "AVAILABLE"
+    assert view.items[0].purchase_state is None
 
 
 @pytest.mark.parametrize("purchase_state", ["SOLD_OUT", "HIDDEN"])
@@ -355,8 +359,12 @@ async def test_get_wishlist_unknown_purchase_state_skips_only_that_item(
 ) -> None:
     """재현·수정 확인 — BE 가 `purchaseState` 에 계약 밖 값을 하나 추가해도 그 항목만 skip
     되고 나머지 정상 항목은 살아남아야 한다(전체 `ValidationError` 로 죽지 않는다).
-    `PurchaseState` Literal·기본값은 바뀌지 않는다 — 미지의 값을 관대 수용하는 게 아니라
-    그 항목만 걸러내는 파싱 견고성 수정이다."""
+    `PurchaseState` Literal 은 바뀌지 않는다 — 미지의 값을 관대 수용하는 게 아니라 그 항목만
+    걸러내는 파싱 견고성 수정이다.
+
+    **찜과 장바구니는 처방이 다르다**(#310): 장바구니(`CartViewItem`)는 미지 값이 와도 항목을
+    skip 하지 않고 필드만 `None` 으로 강등한다 — 항목이 목록에서 사라지면 "전부 빼줘"가 일부만
+    지우고 성공을 보고하기 때문이다. 찜은 그런 파괴적 후속 동작이 없어 skip 이 유효하다."""
     import app.services.spring_client as sc
 
     body = {
@@ -374,6 +382,41 @@ async def test_get_wishlist_unknown_purchase_state_skips_only_that_item(
     assert len(view.items) == 1
     assert view.items[0].product_id == 1
     assert view.items[0].purchase_state == "AVAILABLE"
+
+
+@pytest.mark.parametrize("bad", [{}, [], {"kind": "SOLD_OUT"}, ["SOLD_OUT"]])
+async def test_get_wishlist_unhashable_purchase_state_skips_item_without_typeerror(
+    monkeypatch: pytest.MonkeyPatch, bad: object
+) -> None:
+    """unhashable 값(dict·list)이 와도 `TypeError` 가 아니라 **항목 skip** 이어야 한다(PR #400 리뷰).
+
+    `WishlistItem` 은 `CartViewItem` 과 달리 `BeforeValidator` 가 없고 **pydantic 내장 Literal
+    검증에만 의존**한다. 그 검증기는 pydantic-core(Rust) 구현이라 hashable 여부와 무관하게
+    `literal_error` → `ValidationError` 를 내므로 지금은 안전하다 — `_parse_wishlist_items` 의
+    `except ValidationError` 에 정상적으로 걸린다.
+
+    이 테스트는 **그 안전성이 구현 세부에 기대고 있다는 사실을 고정한다.** 카트 쪽이 위험했던
+    이유는 `Literal` 자체가 아니라 거기 붙인 `BeforeValidator` 가 파이썬 `value in frozenset` 을
+    호출했기 때문이다(`hash()` 실패 → `TypeError` → pydantic 이 감싸지 않고 전파). 훗날 여기에도
+    같은 형태의 validator 를 붙이면 그 함정에 그대로 빠지므로, 그때 이 테스트가 잡는다.
+    """
+    import app.services.spring_client as sc
+
+    body = {
+        "success": True,
+        "data": {
+            "items": [
+                {"productId": 1, "name": "정상", "purchaseState": "SOLD_OUT"},
+                {"productId": 2, "name": "깨진값", "purchaseState": bad},
+            ]
+        },
+    }
+    client = _WishlistClient(_WishlistResp(200, body))
+    monkeypatch.setattr(sc, "_client", lambda: client)
+    view = await sc.get_wishlist(1)
+    assert len(view.items) == 1  # 깨진 항목만 빠지고 정상 항목은 살아남는다
+    assert view.items[0].product_id == 1
+    assert view.items[0].purchase_state == "SOLD_OUT"
 
 
 async def test_get_wishlist_all_items_unknown_purchase_state_fails_closed_not_empty(

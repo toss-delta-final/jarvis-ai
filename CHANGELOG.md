@@ -32,6 +32,25 @@
   전환의 사각지대(`scripts/capture_i1_wire_132.py`·`scripts/verify_regression6_217.py` 호출부
   2곳이 `TypeError` 로 깨져 있었다)도 함께 async generator 소비 형태로 갱신했다. (api-spec
   §2.2·§3.1, v0.27.0)
+- **#310 — `purchaseState` 로 품절·판매종료를 갈라 안내한다(장바구니·찜)** (api-spec §4.9·§4.16,
+  v0.26.3 / SPEC-CART-001 v0.2.6 REQ-CART-037) — 지금까지는 장바구니·찜에서 상품의 구매 가능
+  여부를 파싱조차 안 해 "구매 불가 상태예요"조차 말하지 못했다. 품절은 기다리면 되고 판매
+  종료는 다른 걸 찾아야 하므로 **사용자가 취할 행동이 다르다**. `CartViewItem` 에
+  `purchaseState` 파싱을 추가하고(BE `InternalCartResponse.Item` 에 실재하는데 선언이 없어
+  `extra="ignore"` 로 버려지고 있었다), 장바구니 조회·삭제 되물음·찜 되물음 **세 지점 모두**에
+  같은 라벨을 붙였다 — 같은 장바구니가 질문 방식에 따라 다르게 보이면 안 된다. 조회는 목록
+  줄에 짧은 라벨(`(품절)`/`(판매 종료)`)만 붙이고 행동 안내는 문단 끝에 상태당 한 번만 싣는다.
+  문구는 프롬프트가 아니라 결정론적 순수 함수(`app/agents/buyer/cart/purchase_state.py`)로
+  생성해 단위 테스트로 고정한다. **미수신 기본값을 `"AVAILABLE"` → `None`(모름)으로
+  바로잡았다** — 소비가 붙은 이상 기본값은 주장이 되고, 키가 없다는 사실을 "구매 가능이
+  확인됨"으로 읽으면 못 사는 상품을 살 수 있다고 안내하게 된다(#305 가 남긴 재검토 항목).
+  계약 밖 상태값은 항목을 살린 채 필드만 `None` 으로 강등한다 — 찜처럼 항목을 skip 하면
+  "전부 빼줘"가 일부만 지우고 성공을 보고한다. `AVAILABLE`·미수신이 모두 무표시라 기존 문구는
+  바이트 단위로 불변이다. **AC③ 부분 충족** — "내가 뭐 찜했지?" 질의를 받는 `wishlist_view`
+  intent 가 아직 없어(api-spec §4.16 이 이미 요구하는 미구현 갭, **#386**) 찜 쪽은 해제
+  되물음에만 라벨이 붙는다. **AC⑤ 는 코드 변경 없이 닫는다** — Spring I-1 이 살 수 없는 상품을 후보에
+  넣지 않고 CH-5 가 카드 조회 시점에 한 번 더 드롭하므로(api-spec §4.6·§4.2) AI 가 추천 단계에서
+  상태를 알 수단도, 낄 자리도 없다.
 - **#370 — 골든셋 v2.2 위반 네거티브 채널 신설 + 라벨 provenance 기록(`evals/goldenset`)** —
   #333 adjudication 라운드가 남긴 갭 3건(위반 네거티브 0건·라벨 주체 미기록·슬라이스 쿼터
   하향 사유 미문서화) 후속. `CaseCore`에 `labelSource`/`labeledAt`/`labelRationale` 신설해
@@ -211,6 +230,7 @@
 - **#285 — 챗봇 장바구니 삭제·수량 변경·찜 추가·해제·목록 internal 계약 초안을 정본에 등재** — Notion 「📡 API 명세서」에 I-24~I-28로 등재했다. 발명이 아니라 FE↔BE 정본 실측(C-4 삭제·C-3 수량 변경·M-5 찜 추가·M-6 찜 해제·M-4 찜 목록)의 의미론과 I-2/I-18의 internal 규약(`X-Internal-Token`, AI가 검증한 JWT `sub` 유래 신원, 3초 타임아웃, 응답 envelope)을 이식한 제안이며, I-25 수량 변경은 이슈 본문에 없던 신규 편입이다. 아직 BE 협의 전으로 각 정본 페이지에 초안 배너가 있고 잔여 안건은 이슈 #285 코멘트에 남겼으며, 사본 `docs/api-spec.md` 동기화와 CH-2 `action` 8종 확장은 협의 후 진행한다.
 
 ### Fixed
+- **#408 — 401 이 사유 없이 로그에 남아 운영 장애 원인을 분리할 수 없던 문제** — 운영 `POST /chat` 이 게스트·회원 전원 401 `TOKEN_INVALID` 인데 BE 가 인프라(JWKS 200·kid 일치·키 해시 동일·이미지 롤백 무효)를 전부 배제하고도 AI 쪽 사유를 알 수 없었다. `app/api/deps.py` 의 401 매핑 3곳(`get_identity`·`require_seller` 경유·`verify_service_token`)이 예외 타입 + 메시지 + `__cause__` 체인을 WARNING 으로 남긴다 — PyJWT 는 실제 사유(`InvalidSignatureError`·`InvalidAudienceError`·`InvalidIssuerError`·`MissingRequiredClaimError`·`PyJWKClientError`)를 원 예외에만 담고 `core.auth` 가 그것을 `AuthError` 로 감싸므로 종전 로그에는 아무것도 남지 않았다. `requestId` 는 §2.5 오류 봉투·`X-Request-Id` 응답 헤더와 같은 값이라 FE 신고 건과 바로 대조된다. **토큰 원문·서명·클레임 식별자는 싣지 않는다**(회귀 테스트로 고정). 예외 메시지에 섞이는 **서명 검증 이전** 값(`PyJWKClientError` 가 그대로 싣는 JWT 헤더 `kid`, dev 모드 `sub_type`)은 비출력 문자(`str.isprintable()` 기준 — 제어 Cc·형식 Cf·줄/문단 구분자 Zl/Zp)를 이스케이프해 로그 인젝션(CWE-117)을 막는다 — 그 값들은 유효 서명 없이도 공격자가 지정할 수 있어, 개행을 흘리면 가짜 `auth rejected` 줄을 심을 수 있다(PR 리뷰 반영). 같은 줄의 `path` 도 같은 처리를 태운다 — 현재 라우트는 전부 고정 리터럴이라 잠복이지만, path 파라미터 라우트에 이 의존성이 붙는 순간 외부 통제 값이 된다. 검증 로직·계약(api-spec) 무변경 — 관측만 추가.
 - **#344 — `category_distance_max` 등 카테고리 거리·마진 임계가 사전 재시드(2,056행 → leaf 1,007행) 이후로 stale이던 문제** — `evals/category_probe` 기준선(`baselines/fast-2026-08-06`, hits.csv 앵커 38셀×N=8·176표본)을 오프라인 스윕한 결과 `category_distance_max`를 0.22 → **0.26**으로 올렸다(single 정답 med 0.2416·q3 0.2579 vs notInCatalog 최소 d1 0.2621 사이에서 nic 무강제 0/40을 지키는 최대 컷 — 거리컷 드롭이 107/176 → **30/176**으로 줄고 채택 정답이 61/176 → **130/176**으로 늘었다, 오답채택은 0 → 8). 이 측정은 이 프로브 176표본 범위이며, 이슈 본문이 인용한 골든셋 150건 컷 통과 회복(#222 별도 실측)은 이번 재측정으로 확인하지 않았다 — 범위 밖. `category_distance_override_margin`(0.035)·`category_select_margin_max`(0.02)는 재검증만 하고 값은 유지했다. 재측정을 `hits.csv` 원시 top-k 거리만으로 런 재실행 없이 반복할 수 있도록 오프라인 스윕 도구 `evals/category_probe/sweep.py`(API·pg·LLM 콜 0)를 신설했다. 계약(api-spec) 무변경.
 - **#353 — `embed_texts`가 Google 배치 임베딩 100건/요청 상한을 넘으면 400으로 실패하던 문제** — `_EMBED_BATCH_MAX`(100) 청크로 나눠 순차 호출하고 입력 순서대로 이어붙이도록 고쳤다. eval 도구뿐 아니라 §4.8 I-17 운영 배치 경로(search_doc 임베딩)도 공유하는 잠복 결함이었다. 계약(api-spec) 무변경.
 - **#323 — `set_summary` 무잠금 read-then-write 에 per-user `mutation_lock` 추가 — #150 사용자 편집 경로 선결.**
