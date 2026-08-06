@@ -233,6 +233,55 @@ class ExpectedBehaviorRow(BaseModel):
         return self
 
 
+PairCheckKind = Literal["INV", "DIR"]
+PairCheckMode = Literal["ci", "manual"]
+PairCheckDirection = Literal["non_increase", "non_decrease"]
+PairCheckMetric = Literal["push_product_count"]
+PairCheckGuard = Literal["perturbed_filters_strict_superset", "base_count_positive"]
+
+
+class PairCheckSpec(BaseModel):
+    """INV/DIR 쌍 검증 앵커 1건 (`expected/pair_checks.jsonl`, 이슈 #371 §3-a).
+
+    `case_id` 는 변형(perturbation) 케이스를 가리킨다 — 원본은 그 케이스의
+    `ComboCase.perturbation_of` 로 찾는다(둘을 이 스키마에 중복해 두지 않는다).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    case_id: str = Field(pattern=r"^combo-\d{4}$")
+    kind: PairCheckKind
+    mode: PairCheckMode
+    invariant_fields: list[str] | None = None
+    metric: PairCheckMetric | None = None
+    direction: PairCheckDirection | None = None
+    guards: list[PairCheckGuard] = Field(default_factory=list)
+    reason: str
+    link: str | None = None
+
+    @model_validator(mode="after")
+    def _kind_field_shape(self) -> "PairCheckSpec":
+        if self.kind == "INV":
+            if self.metric is not None or self.direction is not None:
+                raise ValueError(f"{self.case_id}: kind=INV must not set metric/direction")
+        else:  # DIR
+            if self.invariant_fields is not None:
+                raise ValueError(f"{self.case_id}: kind=DIR must not set invariant_fields")
+        return self
+
+    @model_validator(mode="after")
+    def _mode_requirements(self) -> "PairCheckSpec":
+        if self.mode == "manual":
+            if not self.link:
+                raise ValueError(f"{self.case_id}: mode=manual requires `link`")
+        else:  # ci
+            if self.kind == "INV" and not self.invariant_fields:
+                raise ValueError(f"{self.case_id}: mode=ci kind=INV requires invariant_fields")
+            if self.kind == "DIR" and (self.metric is None or self.direction is None):
+                raise ValueError(f"{self.case_id}: mode=ci kind=DIR requires metric+direction")
+        return self
+
+
 class Manifest(BaseModel):
     """`cases/manifest.json` — 재현 지문 (§1)."""
 

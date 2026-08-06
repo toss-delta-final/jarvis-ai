@@ -38,6 +38,16 @@
   핵심 표본)은 관측되지 않던 구멍을 발견 — 상호 배타인 `recommend_pipeline`(성공 종결)에도 같은
   세 소요 필드와 `may_auto_relax`(conditions가 검색 전/후 어느 쪽에 나갔는지, first-token 지연
   여부 판정에 필수)를 추가해 두 로그의 합집합이 전수가 되게 했다. 계약(api-spec) 무변경.
+- **#371 — combo_matrix INV/DIR 쌍 실검증 러너(`evals/combo_matrix/pair_runner.py`)** — #335 매트릭스에
+  라벨만 있고 실행이 없던 INV/DIR 3쌍을 실제로 검증한다. INV(combo-0056, rerank 실패 degrade)는
+  push 계약 형태(listType·lists 길이·필드 존재, 실측상 productIds 멀티셋까지) 동일성을 비교하고,
+  DIR(combo-0054, 카테고리 필터 추가)은 방향(push 상품 수 비증가) + 공허 통과 방지 guard(필터
+  진상위집합·base 결과 수>0)를 함께 강제한다. 분자·분모를 동봉한 `PAIR_CHECKS.md` 를 생성물로
+  남긴다. 실측 불가 축(회원 recall≥게스트 DIR, combo-0055)은 `evals/goldenset`(#333) 소관으로
+  명시 분리(mode=manual). 부수 발견: `category` 필터축이 canonical-or-null degrade(legs 미경유
+  시 무조건 null)로 인해 이 하네스 전체(#335 기존 55건 포함)에서 실제 검색 경계에 도달한 적이
+  없었다 — `pair_runner` 전용 seam(exact-match 카테고리 매핑 fake)으로 combo-0054 만 해소했고,
+  기존 55건의 잔여 맹점은 후속 이슈로 이관(README 정정). 계약(api-spec) 무변경.
 - **#331 — 카테고리 매핑·선택 평가 하네스(`evals/category_probe/`) 신설** — 발화→카테고리 정확도가
   골든셋 슬라이스 9건에만 얹혀 단독으로 잴 방법이 없었다(`evals/README.md` 공백 표). `evals/intent_probe`
   확립 규약(전역 페이서·실패는 표본이 아님·단일 실행 판정 금지)을 승계해, 배포 파이프라인과 같은 함수
