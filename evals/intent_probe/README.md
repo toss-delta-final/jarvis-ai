@@ -108,6 +108,19 @@ replace, 남은 11건은 `decompose` 추출 실패) · 인라인 `categoryAction
   (확정 4 · 되물음 1 · 확정금지 1, #300 — #118 이관)
 - 컨텍스트 9종 — `none` / `lastRecommendations` / `pendingCart` / `categoryPrior` /
   **`screenSingle`/`screenTriple`/`screenFive`/`screenNine`/`screenNamed`**(#300)
+- **group → 허용 컨텍스트 매핑(#313)** — 어떤 group 이 어떤 컨텍스트를 선언할 수 있는지는
+  `schema.py` 의 `GROUP_ALLOWED_CONTEXTS` 가 데이터로 강제한다:
+
+  | group | 허용 컨텍스트 |
+  |---|---|
+  | `option_answer` · `switch` | `pendingCart` 만 |
+  | `category_action` | `categoryPrior` 만 |
+  | `screen` | screen 컨텍스트(`screenSingle`/`screenTriple`/`screenFive`/`screenNine`/`screenNamed`) 중 1개 |
+  | `cart_control` · `demonstrative` · `order_status` · `general` | `none` / `lastRecommendations` / `pendingCart` — 특수 컨텍스트 선언 불가 |
+
+  다음 사람이 컨텍스트를 추가할 때 **이 매핑에 한 줄을 넣지 않으면 아무 발화도 그것을 못 쓴다**
+  (안전한 기본값). `AnchorSet.model_validate` 가 매핑을 벗어난 컨텍스트 선언·중복 컨텍스트를
+  거부한다.
 - `categoryPrior`(#84) 는 `categoryPriorFilters`(직전 카테고리가 있는 스레드 —
   `음향가전 > 이어폰`)를 PRIOR_FILTERS 로 싣고 **LAST_RECOMMENDATIONS 는 싣지 않는다.** 직전 추천
   목록이 붙으면 그 상품명이 카테고리 판정에 섞여(#118 라운드 2 실측) 재려는 축이 오염되기 때문이며,
