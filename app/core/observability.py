@@ -117,6 +117,9 @@ class RequestObservation:
     context_id: str | None = None
     first_event_at: float | None = None
     first_text_token_at: float | None = None
+    # 이슈 #396 — 구매자 progress stage 별 최초 발생 시각(started 기준 ms). 판매자
+    # progress(`{"text": …}`)는 stage 가 없어 여기 섞이지 않는다(record_frame 참조).
+    progress_stages: dict[str, int] = field(default_factory=dict)
     assistant_parts: list[str] = field(default_factory=list)
     model_calls: list[ModelCall] = field(default_factory=list)
     lane: str | None = None
@@ -224,14 +227,24 @@ class RequestObservation:
         return round((self.first_text_token_at - self.started) * 1000)
 
     def record_frame(self, frame: str, now: float) -> None:
-        """첫 SSE 이벤트와 첫 non-empty token 텍스트를 분리해 기록한다."""
+        """첫 SSE 이벤트와 첫 non-empty token 텍스트를 분리해 기록한다.
+
+        `record_frame`은 모든 SSE 프레임마다 불리는 핫 패스라, 프레임을 한 번만 파싱하고
+        (`_parse_frame_payload`) token/progress 추출은 그 결과에서 각각 뽑는다 — 예전엔 두
+        추출 함수가 독립적으로 `json.loads`를 해 프레임당 파싱 비용이 배가됐었다(PR #407
+        리뷰). `first_event_at`은 파싱 성공 여부와 무관하게 프레임 도착 자체로 기록한다.
+        """
         if frame.strip() and self.first_event_at is None:
             self.first_event_at = now
-        text = _extract_token_text(frame)
+        payload = _parse_frame_payload(frame)
+        text = _extract_token_text(payload)
         if text:
             if self.first_text_token_at is None:
                 self.first_text_token_at = now
             self.assistant_parts.append(text)
+        stage = _extract_progress_stage(payload)
+        if stage and stage not in self.progress_stages:
+            self.progress_stages[stage] = round((now - self.started) * 1000)
 
     async def finish(
         self,
@@ -316,6 +329,8 @@ class RequestObservation:
             "messageLength": self.message_length,
             "messageHash": self.message_hash,
             # [PII] 사용자 message 원문은 여기에 절대 포함하지 않는다(§6.3 b).
+            # 닫힌 어휘(stage 이름)만 담는다 — 이슈 #396, record_frame/_extract_progress_stage.
+            "progressStages": self.progress_stages or None,
         }
         logger.info(json.dumps(record, ensure_ascii=False))
         if self.trace is not None:
@@ -332,8 +347,16 @@ class RequestObservation:
         self.finished = True
 
 
-def _extract_token_text(frame: str) -> str | None:
-    """SSE `data:` 프레임에서 token 이벤트의 text 만 추출한다."""
+def _parse_frame_payload(frame: str) -> dict | None:
+    """SSE `data:` 프레임을 **한 번만** 파싱해 payload dict 를 돌려준다.
+
+    비-JSON·JSON 이지만 dict 가 아닌 프레임은 `None` — 호출부(`record_frame`)는 이 `None`
+    을 그대로 "추출 실패"로 받아들이면 되므로 예외가 전파되지 않는다. `_extract_token_text`·
+    `_extract_progress_stage` 가 이전엔 각자 이 파싱(strip → `data:` 제거 → `json.loads`)을
+    독립적으로 했는데, `record_frame` 이 모든 SSE 프레임마다 불리는 핫 패스라 프레임당 파싱
+    비용이 배가되고 있었다(PR #407 리뷰) — 파싱을 여기 한 곳으로 모으고 타입별 필드 추출은
+    이 결과에서 한다.
+    """
     try:
         line = frame.strip()
         if line.startswith("data:"):
@@ -341,11 +364,29 @@ def _extract_token_text(frame: str) -> str | None:
         payload = json.loads(line)
     except (ValueError, TypeError):
         return None
-    if not isinstance(payload, dict) or payload.get("type") != "token":
+    return payload if isinstance(payload, dict) else None
+
+
+def _extract_token_text(payload: dict | None) -> str | None:
+    """이미 파싱된 프레임 payload 에서 token 이벤트의 text 만 추출한다."""
+    if payload is None or payload.get("type") != "token":
         return None
     data = payload.get("data") or {}
     text = data.get("text") if isinstance(data, dict) else None
     return text if isinstance(text, str) else None
+
+
+def _extract_progress_stage(payload: dict | None) -> str | None:
+    """이미 파싱된 프레임 payload 에서 구매자 `progress` 이벤트의 `stage` 만 추출한다(이슈 #396).
+
+    판매자 `progress`(`{"text": …}`)는 `stage` 키가 없어 `None` 을 돌려주므로 두 레인이
+    섞이지 않는다 — 닫힌 어휘(stage 이름)만 다루며 사용자 문구·검색어는 절대 싣지 않는다.
+    """
+    if payload is None or payload.get("type") != "progress":
+        return None
+    data = payload.get("data") or {}
+    stage = data.get("stage") if isinstance(data, dict) else None
+    return stage if isinstance(stage, str) else None
 
 
 def start_observation(
