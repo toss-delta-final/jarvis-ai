@@ -975,6 +975,39 @@ def test_unresolved_notice_lists_names_and_guides_action_marker() -> None:
     assert "빼줘" in text
 
 
+def test_unresolved_notice_marks_purchase_state() -> None:
+    """삭제 되물음 목록도 조회와 **같은 라벨**을 붙인다(#310, REQ-CART-037).
+
+    안 붙이면 같은 장바구니가 질문 방식에 따라 다르게 보인다 — "뭐 있어?"에는 (판매 종료)가
+    보이는데 "빼줘"에는 이름만 나온다. 게다가 삭제 문맥은 판매 종료 항목을 빼도록 돕는
+    자리라 라벨이 가장 쓸모 있는 곳이다."""
+    from app.agents.buyer.cart.remove import _unresolved_notice
+
+    sold_out = _item(2, 20, "린넨 셔츠")
+    sold_out.purchase_state = "SOLD_OUT"
+    hidden = _item(3, 30, "가죽 지갑")
+    hidden.purchase_state = "HIDDEN"
+
+    text = _unresolved_notice([_item(1, 10, "이어폰"), sold_out, hidden])
+    assert "린넨 셔츠 (품절)" in text
+    assert "가죽 지갑 (판매 종료)" in text
+    assert "이어폰," in text  # 상태 없는 항목은 라벨 없이 그대로
+
+
+def test_unresolved_notice_example_avoids_unavailable_item() -> None:
+    """예시로 드는 상품은 **살 수 있는 항목**을 우선한다.
+
+    예시는 "이렇게 답하세요"라고 권하는 자리인데 첫 항목이 품절이면 못 사는 상품을 예시로 들게
+    된다. 다만 이 되물음의 목적은 삭제 대상 좁히기라 못 사는 항목도 삭제 후보로는 유효하므로,
+    전부 못 사는 경우엔 그대로 첫 항목을 쓴다(예시가 사라지는 게 더 나쁘다)."""
+    from app.agents.buyer.cart.remove import _unresolved_notice
+
+    sold_out = _item(1, 10, "린넨 셔츠")
+    sold_out.purchase_state = "SOLD_OUT"
+    text = _unresolved_notice([sold_out, _item(2, 20, "이어폰")])
+    assert "'이어폰 빼줘'" in text
+
+
 async def test_remove_ambiguous_asks_with_action_marker_guidance_via_stream() -> None:
     """`stream_cart_remove` 수준에서도 같은 사실 — 장바구니 [이어폰, 케이스]에서 표지 없는
     "빼줘"는 되물음이고, 그 문구가 두 상품명과 동작 표지 예시를 모두 담는다(라운드 19 패킷

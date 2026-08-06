@@ -13,6 +13,7 @@ import logging
 from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.identity import cart_identity
 from app.agents.buyer.cart.negation import has_any_negation, matches_name_unnegated
+from app.agents.buyer.cart.purchase_state import state_suffix
 from app.agents.buyer.cart.state import CartStateStore, LastAdd
 from app.core.text import _strip_unsafe
 from app.schemas.chat import ActionData, DoneData, TokenData
@@ -261,9 +262,21 @@ def _unresolved_notice(items: list[CartViewItem]) -> str:
     → 다시 2건 모호. `_display_name_with_option` 으로 옵션 구분자를 붙여(예: "이어폰 (블랙)")
     목록·예시 둘 다에 실으면, `_resolve_remove_targets` 가 그 구분자 형태를 이름 매칭 후보로
     인식하므로 예시대로 답한 다음 턴이 실제로 1건까지 좁혀진다.
+
+    **[#310]** 목록에 구매 가능 상태 라벨을 함께 싣는다 — 안 붙이면 같은 장바구니가 질문 방식에
+    따라 다르게 보인다("뭐 있어?"에는 (판매 종료)가 보이는데 "빼줘"에는 이름만). 삭제 문맥은
+    판매 종료 항목을 빼도록 돕는 자리라 라벨이 가장 쓸모 있는 곳이기도 하다.
     """
-    names = ", ".join(_display_name_with_option(item) for item in items)
-    example = _display_name_with_option(items[0])
+    names = ", ".join(
+        f"{_display_name_with_option(item)}{state_suffix(item.purchase_state)}" for item in items
+    )
+    # 예시는 "이렇게 답하세요"라고 권하는 자리라 **살 수 있는 항목**을 우선한다 — 첫 항목이
+    # 품절이면 못 사는 상품을 예시로 들게 된다. 다만 못 사는 항목도 삭제 대상으로는 유효하므로
+    # 전부 못 사는 경우엔 그대로 첫 항목을 쓴다(예시가 사라지는 쪽이 더 나쁘다).
+    example_item = next(
+        (item for item in items if item.purchase_state in (None, "AVAILABLE")), items[0]
+    )
+    example = _display_name_with_option(example_item)
     return (
         f"지금 장바구니에 있는 상품: {names}. 예) '{example} 빼줘'처럼 상품명과 함께 말씀해 주세요."
     )
