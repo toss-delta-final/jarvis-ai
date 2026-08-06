@@ -24,14 +24,28 @@ logger = logging.getLogger(__name__)
 _REASON_MAX_CHARS = 200
 # __cause__/__context__ 체인 추적 상한 (순환/과다 중첩 방어).
 _REASON_MAX_DEPTH = 5
-# 로그 인젝션(CWE-117) 방어용 제어문자 이스케이프 표.
-# 예외 메시지에는 **서명 검증 이전** 값이 섞인다 — PyJWKClientError 는 JWT 헤더의 `kid` 를
-# 그대로 메시지에 싣고, dev 모드 decode 는 서명을 아예 안 본다. 개행이 그대로 나가면 공격자가
-# 유효 서명 없이도 가짜 "auth rejected ..." 줄을 로그에 심을 수 있다.
-_CONTROL_ESCAPES = str.maketrans(
-    {codepoint: f"\\x{codepoint:02x}" for codepoint in [*range(0x20), 0x7F]}
-    | {0x09: "\\t", 0x0A: "\\n", 0x0D: "\\r"}
-)
+# 흔한 제어문자는 읽기 좋은 형태로 남긴다 (아래 _escape_unprintable).
+_SHORT_ESCAPES = {"\t": "\\t", "\n": "\\n", "\r": "\\r"}
+
+
+def _escape_unprintable(text: str) -> str:
+    """로그 한 줄의 구조를 바꿀 수 있는 문자를 전부 이스케이프한다 (로그 인젝션, CWE-117).
+
+    401 사유에 섞이는 값은 **서명 검증 이전** 입력이다 — PyJWKClientError 는 JWT 헤더의
+    `kid` 를 메시지에 그대로 싣고, dev 모드 decode 는 서명을 아예 보지 않는다. 개행이 그대로
+    나가면 공격자가 유효 서명 없이도 가짜 "auth rejected ..." 줄을 로그에 심을 수 있다.
+
+    이스케이프 대상을 손으로 열거하지 않는다 — C0/DEL 만 막으면 NEL(U+0085)·LINE
+    SEPARATOR(U+2028)처럼 뷰어·파서가 개행으로 읽는 문자가 빠진다(PR #409 리뷰 2R).
+    `str.isprintable()` 은 제어(Cc)·형식(Cf, 예: 양방향 재정의 U+202E)·줄/문단 구분자
+    (Zl/Zp)를 모두 비출력으로 판정하므로 그 판정을 그대로 신뢰한다.
+    """
+    if text.isprintable():
+        return text
+    return "".join(
+        _SHORT_ESCAPES.get(char) or (char if char.isprintable() else f"\\u{ord(char):04x}")
+        for char in text
+    )
 
 
 def _reason_chain(exc: BaseException) -> str:
@@ -47,14 +61,14 @@ def _reason_chain(exc: BaseException) -> str:
     변경을 가리는 것이 이 로그의 목적이다.
 
     [보안] 메시지에 섞이는 토큰 유래 값(`kid`·`sub_type`)은 **서명 검증 이전** 값이라 공격자
-    제어다. 제어문자를 이스케이프해 로그 인젝션(CWE-117)을 막는다.
+    제어다. 비출력 문자를 이스케이프해 로그 인젝션(CWE-117)을 막는다(_escape_unprintable).
     """
     parts: list[str] = []
     seen: set[int] = set()
     current: BaseException | None = exc
     while current is not None and id(current) not in seen and len(parts) < _REASON_MAX_DEPTH:
         seen.add(id(current))
-        message = str(current).translate(_CONTROL_ESCAPES)[:_REASON_MAX_CHARS]
+        message = _escape_unprintable(str(current))[:_REASON_MAX_CHARS]
         parts.append(f"{type(current).__name__}: {message}" if message else type(current).__name__)
         current = current.__cause__ or current.__context__
     return " <- ".join(parts)

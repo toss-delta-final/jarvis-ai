@@ -217,7 +217,10 @@ def test_401_log_escapes_attacker_controlled_control_chars(
     읽히므로 공격자가 유효 서명 없이 임의 문자열을 넣을 수 있다.
     """
     forged = "auth rejected code=TOKEN_INVALID dep=get_identity path=/chat rid=deadbeef reason=ok"
-    token = sign_ticket(rsa_key, f"kid-x\n{forged}\r\t", ticket_claims())
+    # C0 뿐 아니라 뷰어·파서가 개행으로 읽는 NEL(U+0085)·LINE/PARAGRAPH SEPARATOR
+    # (U+2028/U+2029)와 양방향 재정의(U+202E)까지 같은 토큰에 심는다.
+    breakers = "\n\r\t\x85\u2028\u2029\u202e"
+    token = sign_ticket(rsa_key, f"kid-x{breakers}{forged}", ticket_claims())
 
     with caplog.at_level(logging.WARNING, logger=DEPS_LOGGER):
         resp = client.post("/chat", json=_chat_body(), headers=_bearer(token))
@@ -226,11 +229,21 @@ def test_401_log_escapes_attacker_controlled_control_chars(
     records = _auth_records(caplog)
     assert len(records) == 1, "위조 줄이 별도 레코드로 갈라지지 않는다"
     message = records[0].getMessage()
-    assert "\n" not in message and "\r" not in message and "\t" not in message
+    for breaker in breakers:
+        assert breaker not in message, f"비출력 문자 {breaker!r} 가 그대로 실렸다"
     assert "\\n" in message and "\\r" in message and "\\t" in message
+    assert "\\u0085" in message and "\\u2028" in message and "\\u2029" in message
     # 위조 문자열은 한 줄 안의 reason= 값에 갇힌다 — 새 로그 레코드로 갈라지지 않는다.
     assert message.startswith("auth rejected code=TOKEN_INVALID dep=get_identity path=/chat")
     assert forged in message.split("reason=", 1)[1]
+
+
+def test_escape_keeps_printable_text_intact() -> None:
+    """이스케이프는 비출력 문자만 건드린다 — 한글·기호는 그대로여야 진단이 읽힌다."""
+    assert deps._escape_unprintable("인증 실패: scope 불일치 (a/b) 100%") == (
+        "인증 실패: scope 불일치 (a/b) 100%"
+    )
+    assert deps._escape_unprintable("a\u2028b") == "a\\u2028b"
 
 
 def test_seller_lane_401_logs_require_seller_dependency(
