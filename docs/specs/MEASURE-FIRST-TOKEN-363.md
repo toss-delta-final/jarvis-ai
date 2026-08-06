@@ -166,16 +166,49 @@ timeout_s`를 **기동 시점에** 검증한다.
   오늘 기본값(`category_expand_enabled=True`)에서 `1+1+1=3`, §4 실측과 일치한다.
   `category_expand_enabled=False`(확장 자체를 끈 배포)에서는 `1+0+1=2`로 현재 식과 같아진다 —
   이 경우 F-1/#343 경로 자체가 없으니 과소계상도 없다.
-- **적용 범위 — 이번 PR은 가드(런타임 동작)를 바꾸지 않는다.** 기동 검증기를 고치면 위 위험
-  구간(t∈[3.33s, 5.0s))에서 **운영이 새로 부팅에 실패**할 수 있다 — 배포·인프라에 영향을 주는
-  변경은 사람 승인 게이트(CLAUDE.md)이고, 이슈 #363 자체도 가드는 "설계"까지만 요구하고 적용은
-  별도 이슈로 넘긴다. 오늘 기본값(3.0s)은 보정식으로도 `3×3.0=9.0<10.0`이라 통과하므로, 이
-  PR 범위에서 즉시 깨지는 배포는 없다.
-- **불일치를 테스트로 고정** — `tests/unit/test_config.py::
-  test_deferred_first_event_i1_calls_known_undercount_vs_actual_rescue_chain_stages`가 "가드
-  모델(2) ≠ 실측 단 수(3, 출처: AC2 `test_worst_case_rescue_chain_sequential_stages_before_
-  first_sse`)"를 나란히 상수로 박아 둔다 — 둘 중 하나만 바뀌면(가드 식이 보정되거나, 실측 단
-  수가 다시 달라지면) 실패해야 한다. 보정식을 적용하는 후속 이슈에서 이 테스트도 함께 갱신한다.
+- **적용 범위 — #383 에서 적용 완료.** `_deferred_first_event_i1_calls`(순수 함수,
+  config.py)가 위 보정식으로 바뀌었고 `_require_search_retry_within_stream_budget`
+  (config.py, `Settings` 모델 검증기)이 `category_expand_enabled=self.category_expand_
+  enabled`를 넘긴다. 위 위험 구간
+  (t∈[3.33s, 5.0s))은 이제 **기동 거절 구간**이다 — 배포·인프라 영향 검토(CLAUDE.md 사람 승인
+  게이트)는 오케스트레이터가 실측으로 끝냈다: `.github/workflows/deploy.yml`(77-113행)이 운영
+  env 파일을 매 배포마다 고정 키 목록으로 전면 재작성하는데, 그 목록에 `SPRING_TIMEOUT_S`·
+  `STREAM_FIRST_TOKEN_TIMEOUT_S`·`CATEGORY_EXPAND_ENABLED`·`RELAXATION_*` 는 하나도 없다 —
+  운영은 코드 기본값(`spring_timeout_s=3.0`)으로 돈다. 오늘 기본값은 보정식으로 `3×3.0=9.0
+  <10.0`이라 통과하므로, 이 적용으로 새로 부팅에 실패하는 배포는 없다.
+- **구제 폴백 항은 재시도 억제 대상이 아니다(#383 R5, PR #414 Claude 리뷰 실측 확인)** —
+  `graph.py::stream_recommendation` 에서 `spring_client.suppress_search_retry()` 로
+  재시도를 끄는 `with` 블록은 저장소 전체에 본 검색(`asyncio.gather` 호출)과 자동완화
+  probe(`_probe(cand)`) 를 감싼 두 곳뿐이고, F-1/#343 구제 재검색(같은 함수의
+  `_run_search_unfiltered()` 호출 두 곳 — F-1 폴백·억제-후 재판정)은 그 블록 밖이라
+  `spring_client.py::search` 의 `settings.spring_max_retries + 1` 을 그대로 받아 항상
+  재시도한다. 그래서 세 항을 균질하게 `spring_timeout_s` 로 값 매기면(`deferred_calls ×
+  spring_timeout_s`) 구제 항 하나를 과소평가한다 — `_require_search_retry_within_stream_
+  budget` 의 가드 OFF 분기는 이제 `suppressed_calls × spring_timeout_s + rescue_calls ×
+  budget`(`budget = spring_timeout_s × (spring_max_retries+1)`)로 항별로 나눠 잰다. **위
+  위험 구간 산술도 `spring_max_retries` 에 따라 달라진다** — `spring_max_retries=0`(오늘
+  기본값, #394)이면 `budget == spring_timeout_s` 라 위 §5 산술이 그대로 성립하지만,
+  `spring_max_retries=1`(허용 상한)이면 실제 직렬 합은 `2t + 1×(t×2) = 4t` 로 늘어나
+  위험 구간이 `t ∈ [2.5, 5.0)`로 넓어진다(`.env.example` 이 한때 `SPRING_MAX_RETRIES=1`
+  을 예시로 실었던 것과 기본 `spring_timeout_s=3.0`이 만나면 실제로 걸렸다 — 예시 값을
+  코드 기본값 0으로 정정했다).
+- **불일치를 일치로 고정** — `tests/unit/test_config.py::
+  test_deferred_first_event_i1_calls_matches_actual_rescue_chain_stages`(#383, 종전
+  `..._known_undercount_vs_actual_rescue_chain_stages`를 개명·정정)가 이제 "가드 모델(3) ==
+  실측 단 수(3, 출처: AC2 `test_worst_case_rescue_chain_sequential_stages_before_first_sse`)"를
+  일치로 고정한다 — 둘 중 하나만 어긋나면(가드 식이 다시 과소계상하거나, 실측 단 수가 달라지면)
+  실패해야 한다.
+- **#384(`docs/specs/DESIGN-SHARED-BUDGET-384.md`, PR #417) 정합 — 두 사실을 갱신한다**(그
+  문서 자체는 다른 레인 소유라 여기서 고치지 않는다):
+  1. §1(d) 각주①이 지적한 **재시도 억제 스코프 비대칭**(구제 1단은 `suppress_search_retry()`
+     밖이라 재시도가 살아 있다)을 **이 PR(R5)이 이미 반영했다** — 위 "구제 폴백 항은 재시도
+     억제 대상이 아니다" 항목이 그 대응이다. #384 D7 이 인용한 "#383의 제안식은 이 비대칭을
+     반영하지 않는다"는 서술은 **이 PR 이후로는 해소된 상태**다.
+  2. #384 §1(a)가 재기준선한 사실(#396 progress 상시화로 첫 SSE 가 `conditions` 아닌
+     `progress` 라 first-token 관문을 그 프레임이 먼저 충족한다)로, **위 §4.1의 "최악 경로는
+     오늘 이미 first-token 을 넘어 504" 결론은 더 이상 유효하지 않다** — `_require_search_
+     retry_within_stream_budget` docstring의 "구매자 progress 이벤트는 #396 이 이미 구현했다"
+     단락(#383 R3 정정)이 같은 사실을 이미 반영해 뒀다.
 
 ## 6. 이번에 추가한 계측 필드
 
