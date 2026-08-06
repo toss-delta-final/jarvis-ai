@@ -51,6 +51,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from app.core.config import get_settings  # noqa: E402
 from evals.combo_matrix.fakes import (  # noqa: E402
     RecordingPush,
     make_exact_match_category_mapping,
@@ -215,18 +216,35 @@ async def _execute(case: ComboCase) -> Projection:
     search = make_recording_filtering_search()
     push = RecordingPush()
     map_categories = make_exact_match_category_mapping()
-    events = await _collect(
-        run_buyer_turn(
-            request,
-            identity,
-            llm=llm,
-            search=search,
-            push_fn=push,
-            popular_fn=make_popular(),
-            order_status_fn=make_order_status_ok,
-            map_categories=map_categories,
+    # [#393] 이 러너는 "Spring I-1 WHERE 계약 대역"으로 **필터 배관**(하드필터가 실제로 search
+    # 콜러블에 도달하는가)을 잰다 — #393 의 최소 필터 가드(후보 **소스** 라우팅, payload 0개 턴을
+    # I-3 로 돌림)는 아예 다른 축이다. 가드를 켜 두면 category/keyword/brand/color/price 가
+    # 전부 absent 인 base arm(예: combo-0022, rating_min·total_budget 만 present)이 search 에
+    # 도달하지 못해 위 `if not search.calls` 로 "미지원"이 돼 버려 그 축의 필터 배관을 아예 못
+    # 잰다 — 그 turn 은 오늘 실제로 무필터 I-1 을 부르는 turn 이므로(#393 이 고치는 바로 그
+    # 경우) 이 v1 하네스가 재려는 "필터가 배관을 타는가"라는 질문 자체가 성립하지 않는다.
+    # 그래서 **이 실행 한정으로만** 가드를 끈다 — 케이스 정의·축 할당·기대값(`combo_cases.jsonl`
+    # ·`expected/*.jsonl`)은 건드리지 않는다. 가드 자체의 회귀는 이 하네스가 아니라 #393 전용
+    # 단위/통합 테스트(`tests/unit/test_search_guard_393.py`·`test_recommendation.py`)가 지킨다.
+    # 자세한 배경은 README.md "알려진 관측 한계" 절 참조.
+    settings = get_settings()
+    guard_was_enabled = settings.search_filter_guard_enabled
+    settings.search_filter_guard_enabled = False
+    try:
+        events = await _collect(
+            run_buyer_turn(
+                request,
+                identity,
+                llm=llm,
+                search=search,
+                push_fn=push,
+                popular_fn=make_popular(),
+                order_status_fn=make_order_status_ok,
+                map_categories=map_categories,
+            )
         )
-    )
+    finally:
+        settings.search_filter_guard_enabled = guard_was_enabled
     if not search.calls:
         raise UnsupportedPairAxes(
             f"{case.case_id}: search 콜러블이 호출되지 않았다 — v1 pair_runner 는 단일 검색 "

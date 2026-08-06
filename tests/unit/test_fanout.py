@@ -2109,9 +2109,15 @@ async def test_default_settings_combination_expands_broad_turn() -> None:
 # 않아 이 경로를 구제하지 못한다.
 
 
-async def test_zero_result_expansion_falls_back_to_unfiltered_search_once() -> None:
+async def test_zero_result_expansion_falls_back_to_unfiltered_search_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """[F-1] 확장 leg 이 전부 0건 → 카테고리 없이 1회 재검색해 결과를 노출하고, 확장 고지
-    token 은 내지 않는다(무필터로 찾았는데 "중분류를 훑었다"고 하면 거짓 고지가 된다)."""
+    token 은 내지 않는다(무필터로 찾았는데 "중분류를 훑었다"고 하면 거짓 고지가 된다).
+
+    [PR #411 Claude 리뷰 2라운드] 이 재검색은 payload 파라미터 0개라 기본값에선 가드가 막는다 —
+    이 테스트는 재검색이 **실제로 성공**하는 경로 자체를 보므로 가드를 끈다."""
+    monkeypatch.setattr(get_settings(), "search_filter_guard_enabled", False)
     calls: list = []
 
     async def _search(filters, exclude_product_ids=None):
@@ -2183,6 +2189,64 @@ async def test_normal_fanout_zero_result_is_not_rescued_by_unfiltered_fallback()
     assert done["finishReason"] == "zero_result"
 
 
+async def test_expanded_turn_unfiltered_rescue_skips_spring_when_payload_empty() -> None:
+    """[PR #411 Claude 리뷰 2라운드] 확장 턴은 `filters.category` 가 이미 None 이고(PR #318
+    R6-1) 다른 축도 없으면(`_broad_decompose` 의 `filters: {}`) F-1 무필터 재검색(`_run_search_
+    unfiltered`) 의 payload 가 파라미터 0개다 — 이 PR 이 막으려는 바로 그 12.3MB 무필터 I-1
+    이라 Spring 을 아예 부르지 않는다. 운영에서는 어차피 3초 타임아웃으로 예외가 나 원래(0건)
+    결과를 유지하는 것과 결과가 같다 — 3초만 아낀다."""
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters.category)
+        return _res()  # 확장 leg 전부 0건
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="화장품 추천해줘"),
+            _member(),
+            llm=FakeLLM(decompose=_broad_decompose()),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_broad_mapper(),
+        )
+    )
+
+    # 본 검색(확장 leaf 8개)만 나갔다 — F-1 무필터 재검색(category=None)은 Spring 을 안 불렀다.
+    assert len(calls) == len(_BROAD_LEAVES)
+    assert None not in calls
+    assert not any(e["type"] == "error" for e in events)
+    done = next(e for e in events if e["type"] == "done")["data"]
+    assert done["finishReason"] == "zero_result"
+
+
+async def test_expanded_turn_unfiltered_rescue_can_be_rolled_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[롤백] `search_filter_guard_enabled=False` 면 종전대로 F-1 무필터 재검색이 나간다."""
+    monkeypatch.setattr(get_settings(), "search_filter_guard_enabled", False)
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters.category)
+        return _res()  # 확장 leg + 무필터 재검색 전부 0건
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="화장품 추천해줘"),
+            _member(),
+            llm=FakeLLM(decompose=_broad_decompose()),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_broad_mapper(),
+        )
+    )
+
+    # 확장 leaf 8개 + 무필터 재검색(category=None) 1회 — 검색 호출이 한 번 더 늘어난다.
+    assert len(calls) == len(_BROAD_LEAVES) + 1
+    assert calls.count(None) == 1
+
+
 # ── #343 — 억제-후 재판정: 확장 leg 검색은 히트를 내는데 최근구매 exact 제외·소모품 카테고리
 # 억제(`_post_filter`)가 그 전량을 지워 candidates 가 0이 되는 턴을 무필터 재검색으로 구제한다.
 # 위 F-1 은 억제 **이전** `search_result.total_count` 만 보므로 이 갭을 못 잡는다(PR #318 리뷰
@@ -2242,9 +2306,13 @@ async def test_post_suppress_zero_result_rescued_by_unfiltered_search(
 ) -> None:
     """[#343 갭 증명] 확장 leg 검색은 히트를 내지만(101) 그 전량이 최근구매 exact 제외에 걸려
     candidates 가 0이 된다 — 무필터 재검색이 억제 대상이 아닌 상품을 돌려주면 채택해 노출하고,
-    확장 고지 token 은 내지 않는다(무필터로 찾았는데 "중분류를 훑었다"는 거짓 고지가 된다)."""
+    확장 고지 token 은 내지 않는다(무필터로 찾았는데 "중분류를 훑었다"는 거짓 고지가 된다).
+
+    [PR #411 Claude 리뷰 2라운드] 재검색이 payload 파라미터 0개라 기본값에선 가드가 막는다 —
+    이 테스트는 재검색이 실제로 성공하는 경로를 보므로 가드를 끈다."""
     _fix_now(monkeypatch)
     monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases_cat((101, "c", "이전 구매")))
+    monkeypatch.setattr(get_settings(), "search_filter_guard_enabled", False)
     calls: list = []
 
     async def _search(filters, exclude_product_ids=None):
@@ -2274,9 +2342,13 @@ async def test_post_suppress_fallback_reapplies_post_filter_to_unfiltered_result
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """[#343 이중 억제] 무필터 재검색 결과에 1라운드에서 억제된 상품(101)이 다시 섞여 있어도,
-    재적용된 `_post_filter` 가 다시 걸러낸다 — 채택된 결과에 101 이 없어야 한다."""
+    재적용된 `_post_filter` 가 다시 걸러낸다 — 채택된 결과에 101 이 없어야 한다.
+
+    [PR #411 Claude 리뷰 2라운드] 재검색이 payload 파라미터 0개라 기본값에선 가드가 막는다 —
+    이 테스트는 재검색이 실제로 성공하는 경로를 보므로 가드를 끈다."""
     _fix_now(monkeypatch)
     monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases_cat((101, "c", "이전 구매")))
+    monkeypatch.setattr(get_settings(), "search_filter_guard_enabled", False)
 
     async def _search(filters, exclude_product_ids=None):
         if filters.category is None:
@@ -2345,9 +2417,13 @@ async def test_post_suppress_fallback_reapply_failure_keeps_original_state(
 ) -> None:
     """[#343 F-1 리뷰] 무필터 재검색은 성공하는데 그 결과에 재적용된 `_post_filter` 가 예외를
     내면(부가 기능 실패) 원래(억제된) 상태를 유지한 채 zero_result 로 정상 종료한다 — conditions·
-    zero_result 안내 없이 스트림이 죽으면 안 된다(§7 "부가 기능 실패가 턴을 죽이지 않는다")."""
+    zero_result 안내 없이 스트림이 죽으면 안 된다(§7 "부가 기능 실패가 턴을 죽이지 않는다").
+
+    [PR #411 Claude 리뷰 2라운드] 재검색이 payload 파라미터 0개라 기본값에선 가드가 막는다 —
+    이 테스트는 재검색이 실제로 성공하는 경로를 보므로 가드를 끈다."""
     _fix_now(monkeypatch)
     monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases_cat((101, "c", "이전 구매")))
+    monkeypatch.setattr(get_settings(), "search_filter_guard_enabled", False)
 
     class _ExplodingProduct:
         """`.category` 접근 시 예외를 낸다 — 재적용된 `_post_filter` 만 이 상품을 만난다."""
@@ -2448,9 +2524,13 @@ async def test_post_suppress_fallback_skipped_when_pre_suppress_f1_already_ran(
 ) -> None:
     """[#343 상호배타] 검색 자체가 0건이면 기존(억제-이전) F-1 폴백이 무필터 재검색을 이미
     소비한다 — 그 결과가 전량 억제돼도 두 번째 무필터 재검색은 없다(턴당 무필터 재검색 왕복은
-    최대 1회, `category_expand_notice_suppressed` 상호배타 가드)."""
+    최대 1회, `category_expand_notice_suppressed` 상호배타 가드).
+
+    [PR #411 Claude 리뷰 2라운드] 재검색이 payload 파라미터 0개라 기본값에선 가드가 막는다 —
+    이 테스트는 재검색이 실제로 성공하는 경로를 보므로 가드를 끈다."""
     _fix_now(monkeypatch)
     monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases_cat((101, "c", "이전 구매")))
+    monkeypatch.setattr(get_settings(), "search_filter_guard_enabled", False)
     calls: list = []
 
     async def _search(filters, exclude_product_ids=None):
@@ -2479,11 +2559,16 @@ async def test_post_suppress_fallback_skipped_when_pre_suppress_f1_already_ran(
 
 
 async def test_f1_fallback_success_log_includes_elapsed_ms(
+    monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """[#363 AC1] F-1 성공 로그(`category_expand_zero_fallback`)에 이 왕복의 `elapsed_ms` 가
     실린다 — 배포 후 지연 분포를 로그만으로 관측하기 위한 계측(설계 근거는
-    docs/specs/MEASURE-FIRST-TOKEN-363.md)."""
+    docs/specs/MEASURE-FIRST-TOKEN-363.md).
+
+    [PR #411 Claude 리뷰 2라운드] 재검색이 payload 파라미터 0개라 기본값에선 가드가 막는다 —
+    이 테스트는 재검색이 실제로 성공하는 경로를 보므로 가드를 끈다."""
+    monkeypatch.setattr(get_settings(), "search_filter_guard_enabled", False)
 
     async def _search(filters, exclude_product_ids=None):
         return _res(101, 102) if filters.category is None else _res()  # 확장 leg 은 전부 0건
@@ -2508,9 +2593,13 @@ async def test_post_suppress_fallback_success_log_includes_elapsed_ms(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """[#363 AC1] #343 성공 로그(`category_expand_post_suppress_fallback`)에도 재검색 +
-    `_post_filter` 재적용까지의 `elapsed_ms` 가 실린다."""
+    `_post_filter` 재적용까지의 `elapsed_ms` 가 실린다.
+
+    [PR #411 Claude 리뷰 2라운드] 재검색이 payload 파라미터 0개라 기본값에선 가드가 막는다 —
+    이 테스트는 재검색이 실제로 성공하는 경로를 보므로 가드를 끈다."""
     _fix_now(monkeypatch)
     monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases_cat((101, "c", "이전 구매")))
+    monkeypatch.setattr(get_settings(), "search_filter_guard_enabled", False)
 
     async def _search(filters, exclude_product_ids=None):
         if filters.category is None:  # 무필터 재검색
@@ -2544,9 +2633,13 @@ async def test_post_suppress_fallback_reapply_failure_counts_rescue_elapsed_once
     확인한다. 고쳐진 코드는 `_post_filter` 성공 시점에만 값을 미리 계산해 두고(예외 시엔 None
     유지), `finally` 한 곳에서만 더한다 — try 본문과 except 양쪽에서 각자 더하던 이전 구조라면
     이 경로에서도(그리고 `_post_filter` 성공 뒤 상태 반영 단계가 나중에 실패하는, 로그로는
-    관측되지 않는 다른 하위 경로에서는 확실히) 이중 계상이 재발할 수 있다."""
+    관측되지 않는 다른 하위 경로에서는 확실히) 이중 계상이 재발할 수 있다.
+
+    [PR #411 Claude 리뷰 2라운드] 재검색이 payload 파라미터 0개라 기본값에선 가드가 막는다 —
+    이 테스트는 재검색이 실제로 성공하는(그 뒤 재적용이 실패하는) 경로를 보므로 가드를 끈다."""
     _fix_now(monkeypatch)
     monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases_cat((101, "c", "이전 구매")))
+    monkeypatch.setattr(get_settings(), "search_filter_guard_enabled", False)
 
     delay_s = 0.05  # [#363 R5 와 같은 이유] 이중 계상 여부를 시간값으로 구분하려면 실측 가능한
     # 지연이 있어야 한다 — 0이면 두 번 더해도 여전히 0이라 회귀를 못 잡는다.
@@ -2599,9 +2692,14 @@ async def test_post_suppress_fallback_unfiltered_search_failure_counts_rescue_el
     (`fallback_bundle is None`) 경로 — 기존 6건 어디도 이 하위 경로를 caplog 로 수치 검증하지
     않았다. `_post_filter`를 아예 못 부르니 이중 계상 위험 자체는 없지만(else 분기가 단일
     누적), 세 경로(성공·`_post_filter`예외·재검색자체실패) 모두 정확히 1회라는 R4 요구를
-    이 경로까지 실제로 채워 고정한다."""
+    이 경로까지 실제로 채워 고정한다.
+
+    [PR #411 Claude 리뷰 2라운드] 재검색이 payload 파라미터 0개라 기본값에선 가드가 막아
+    `search()` 콜러블 자체가 안 불린다 — 이 테스트는 **`search()` 가 실제로 불렸다가 실패하는**
+    경로를 보므로 가드를 끈다."""
     _fix_now(monkeypatch)
     monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases_cat((101, "c", "이전 구매")))
+    monkeypatch.setattr(get_settings(), "search_filter_guard_enabled", False)
 
     delay_s = 0.05
 
@@ -2640,9 +2738,13 @@ async def test_recommend_pipeline_logs_rescue_elapsed_when_fallback_succeeds_may
     "지연을 감수하고 구제된" 표본은 그 로그에만 있다. `_broad_decompose()` 기본값은 비카테고리
     완화 필드가 하나도 안 걸려 `may_auto_relax=False`다(비교 대상은 아래 `..._true` 테스트).
     지연을 주입해 `rescue_elapsed_ms > 0`이 우연이 아님을 수치로 보장한다(0 비교만 하면
-    vacuous하게 통과할 수 있다 — 상한도 같이 걸어 다른 값이 새어 들어온 게 아님을 확인)."""
+    vacuous하게 통과할 수 있다 — 상한도 같이 걸어 다른 값이 새어 들어온 게 아님을 확인).
+
+    [PR #411 Claude 리뷰 2라운드] 재검색이 payload 파라미터 0개라 기본값에선 가드가 막는다 —
+    이 테스트는 재검색이 실제로 성공하는 경로를 보므로 가드를 끈다."""
     _fix_now(monkeypatch)
     monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases_cat((101, "c", "이전 구매")))
+    monkeypatch.setattr(get_settings(), "search_filter_guard_enabled", False)
 
     delay_s = 0.05
 
@@ -2683,9 +2785,14 @@ async def test_recommend_pipeline_logs_may_auto_relax_true_when_relaxable_field_
     갈리는지 확인한다(한쪽만 보면 구현이 상수를 실어도 테스트가 통과한다) — `ratingMin` 이
     설정된 턴은 `may_auto_relax=True`(§3 근거: `build_relaxation_candidates` 가 후보를 내는
     턴과 conditions 를 검색 뒤로 미루는 턴은 같은 판정을 공유한다). 구제(#343) 자체는 여기서도
-    성공해 `recommend_pipeline` 으로 내려간다."""
+    성공해 `recommend_pipeline` 으로 내려간다.
+
+    [PR #411 Claude 리뷰 2라운드] `ratingMin` 은 Spring payload 축이 아니라 재검색이 여전히
+    파라미터 0개라 기본값에선 가드가 막는다 — 이 테스트는 재검색이 실제로 성공하는 경로를
+    보므로 가드를 끈다."""
     _fix_now(monkeypatch)
     monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases_cat((101, "c", "이전 구매")))
+    monkeypatch.setattr(get_settings(), "search_filter_guard_enabled", False)
 
     async def _search(filters, exclude_product_ids=None):
         if filters.category is None:  # 무필터 재검색 — 성공, 201 이 살아남는다
@@ -2734,7 +2841,12 @@ async def test_worst_case_rescue_chain_sequential_stages_before_first_sse(
     자동완화 루프 다음·칩 probe 앞). 이 순서가 "구제 체인이 first-token 을 얼마나 미루는가"라는
     이 이슈의 실측 핵심이다 — 칩 probe 가 conditions 보다 앞으로 오게 바뀌면(=first-token 이 한
     단 더 늦어지면) 이 테스트가 실패해야 한다.
+
+    [PR #411 Claude 리뷰 2라운드] `ratingMin` 은 Spring payload 축이 아니라 #343 무필터 재검색이
+    여전히 파라미터 0개라 기본값에선 가드가 막는다 — 이 테스트는 3단이 실제로 순차 실행되는
+    경로를 보므로 가드를 끈다.
     """
+    monkeypatch.setattr(get_settings(), "search_filter_guard_enabled", False)
     monkeypatch.setattr(get_settings(), "consumable_categories", ["생활용품"])
     _fix_now(monkeypatch)
     monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases_cat((900, "생활용품", "휴지")))
@@ -2779,12 +2891,20 @@ async def test_worst_case_rescue_chain_sequential_stages_before_first_sse(
         if line.startswith("data:"):
             events.append((time.monotonic(), json.loads(line[len("data:") :].strip())))
 
-    # progress_events_enabled 기본 on(#396) — progress 는 decompose 직전에 즉시 나가 항상
-    # events[0]. 이 테스트가 재는 "첫 SSE" 는 순차 단(fan-out) 완료 뒤 나가는 첫 실질 이벤트
-    # (conditions)라 events[1] 로 옮긴다.
-    assert events[0][1]["type"] == "progress"
-    assert events[1][1]["type"] == "conditions"  # 이 턴의 첫 실질 SSE 이벤트
-    first_sse_at = events[1][0]
+    # progress 다회 emit(#396) — analyzing·mapping·searching·relaxing 4개가 conditions 앞에
+    # 온다(이 턴은 may_auto_relax=True 라 conditions 가 자동완화 루프 뒤로 미뤄지고, 그 루프가
+    # 실제로 probe 하므로 relaxing 도 낀다). 이 테스트가 재는 "첫 SSE" 는 순차 단(fan-out) 완료
+    # 뒤 나가는 첫 실질 이벤트(conditions)라 events[4] 로 옮긴다 — progress 프레임 자체는 I/O
+    # 없이 즉시 나가 call_starts 클러스터링에 영향을 주지 않는다.
+    assert [e["type"] for _, e in events[:4]] == ["progress"] * 4
+    assert [e["data"]["stage"] for _, e in events[:4]] == [
+        "analyzing",
+        "mapping",
+        "searching",
+        "relaxing",
+    ]
+    assert events[4][1]["type"] == "conditions"  # 이 턴의 첫 실질 SSE 이벤트
+    first_sse_at = events[4][0]
     done = next(e for _, e in events if e["type"] == "done")["data"]
     assert done["finishReason"] == "zero_result"
 
