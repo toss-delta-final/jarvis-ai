@@ -10,6 +10,17 @@
 ## [Unreleased]
 
 ### Added
+- **#331 — 카테고리 매핑·선택 평가 하네스(`evals/category_probe/`) 신설** — 발화→카테고리 정확도가
+  골든셋 슬라이스 9건에만 얹혀 단독으로 잴 방법이 없었다(`evals/README.md` 공백 표). `evals/intent_probe`
+  확립 규약(전역 페이서·실패는 표본이 아님·단일 실행 판정 금지)을 승계해, 배포 파이프라인과 같은 함수
+  (`decompose` → `map_categories`)를 같은 순서·인자로 부르고 `search_categories_pg`/`exact_lookup`/
+  `embed_texts` 는 실물에 위임하며 기록만 하는 래퍼로 leg·anchor_kind 별 top-k 히트를 계측한다(#344
+  임계 스윕용 `hits.csv`). 앵커 38셀(single 14 MFT+8 INV·multi 6·none 5·notInCatalog 5, goldenset
+  `category_mapping_failure` 9건 중 8건을 caseId 로 승계)은 라이브 pg-catalog canonical 표기(`대분류 >
+  잎`)를 쓰고 스키마(accept `" > "` 1회·발화 누출 금지)+런타임 pre-flight(accept 실재·notInCatalog
+  키워드는 leaf 수준에서 부재 확인) 2단으로 검증한다. trivial baseline(임베딩 최근접, LLM 0콜)을
+  1급 산출물로 동봉(§328 1항). CI 미포함(수동 도구), 유닛테스트는 전부 가짜라 API/pg 콜 0. 계약
+  (api-spec) 무변경.
 - **#334 — 필터 추출 축별 분해 지표 신설(`evals/filter_axes`)** — 기존 Filter Accuracy(합집합 분모 단일값)로는 어느 축이 과·소추출인지 알 수 없었다. 축별 valueStrict/presence precision·recall(micro, 분모 0은 None)·trivial(빈 필터) baseline·INV/DIR/회원-게스트(#119) 수동 probe를 추가하고, `evals/metrics` 러너·리포트(`filter_axes.csv`)에 병행 배선했다(`filterAccuracy` 등 기존 키·정의는 불변). ablation baseline `20260803-dev-full-n5`을 오프라인 재채점한 `evals/filter_axes/baselines/20260803-dev-full-n5-rescored/`로 합집합 단일값이 감춘 원인 축(keyword 어휘 불일치·category 소/과추출 정반대 방향)을 실측 산출물로 증명했다. 계약(api-spec) 무변경.
 - **#332 — 니즈 전개(legs) 평가 하네스 `evals/legs_probe`** — #198 의 핵심 지표("case==3 인데
   legs<=1")가 로그 관측(`decompose_case`)에만 있어 프롬프트를 바꿔도 실측 없이 판단해야 했다.
