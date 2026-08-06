@@ -1,0 +1,170 @@
+{
+  "categoryProbe": {
+    "attemptMultiplier": 3,
+    "axisDefinitions": {
+      "invAgreement": {
+        "denominator": "4그룹",
+        "numerator": "그룹 내 전 변형의 다수결 top-1 canonical 이 서로 동일하고 null 아님 (동률은 다수결 없음=None 이라 불합의로 센다)"
+      },
+      "multiCoverage": {
+        "denominator": "multi 6셀 × 기대 leg 수 × N",
+        "numerator": "기대 leg 별로 accept ∈ legs (leg 단위 집계)"
+      },
+      "multiExactSet": {
+        "denominator": "multi 6셀 × N",
+        "numerator": "legs 집합이 기대 leg 집합과 정확히 일치(여분 leg 없음)"
+      },
+      "noneNoForce": {
+        "denominator": "none 5셀 × N",
+        "numerator": "legs == [] (오답 canonical 을 강제하지 않음)"
+      },
+      "notInCatalogNoForce": {
+        "denominator": "notInCatalog 5셀 × N",
+        "numerator": "legs == [] (오답 canonical 을 강제하지 않음)"
+      },
+      "top1Single": {
+        "denominator": "single(MFT+INV) 22셀 × N",
+        "numerator": "최종 legs 에 기대 leg 의 accept 중 하나가 존재"
+      },
+      "topKInclusion": {
+        "denominator": "single(MFT+INV) 22셀 × N",
+        "numerator": "기대 accept 중 하나가 이긴 앵커의 top-5 후보(계측 hits 기준) 또는 최종 legs(exact match 는 hits 없이 바로 canonical 을 내므로 포함) 안에 존재 — decompose 가 leg 자체를 안 냈으면 분자 불충족"
+      }
+    },
+    "budget": {
+      "budgetExceeded": false,
+      "budgetExceededReason": null,
+      "callCount": 330,
+      "costGateStatus": "unknown",
+      "limits": {
+        "maxCalls": 912,
+        "maxCostUsd": 20.0,
+        "maxTotalTokens": 30000000
+      },
+      "tokenGateStatus": "unknown",
+      "totalCostUsd": 0.05444929999999999,
+      "totalTokens": 798304,
+      "unknownCostCallCount": 102,
+      "unknownTokenCallCount": 102
+    },
+    "cellIds": [
+      "multi-mft-001",
+      "multi-mft-002",
+      "multi-mft-003",
+      "multi-mft-004",
+      "multi-mft-005",
+      "multi-mft-006",
+      "none-mft-001",
+      "none-mft-002",
+      "none-mft-003",
+      "none-mft-004",
+      "none-mft-005",
+      "notincatalog-mft-001",
+      "notincatalog-mft-002",
+      "notincatalog-mft-003",
+      "notincatalog-mft-004",
+      "notincatalog-mft-005",
+      "single-inv-color-a1",
+      "single-inv-color-a2",
+      "single-inv-color-b1",
+      "single-inv-color-b2",
+      "single-inv-notation-a1",
+      "single-inv-notation-a2",
+      "single-inv-notation-b1",
+      "single-inv-notation-b2",
+      "single-mft-001",
+      "single-mft-002",
+      "single-mft-003",
+      "single-mft-004",
+      "single-mft-005",
+      "single-mft-006",
+      "single-mft-007",
+      "single-mft-008",
+      "single-mft-009",
+      "single-mft-010",
+      "single-mft-011",
+      "single-mft-012",
+      "single-mft-013",
+      "single-mft-014"
+    ],
+    "concurrency": 4,
+    "dictionary": {
+      "rowCount": 1007,
+      "sha256": "fb9ca975af1ea86ce013caeb018b7adcefc80a96d529aad0dd0555e464f21fe6"
+    },
+    "dryRun": false,
+    "fixtureName": "anchors.json",
+    "fixtureVersion": "category-probe-anchors-v1",
+    "modelConfig": {
+      "fastModel": "gpt-5-nano",
+      "fastReasoningEffort": "minimal",
+      "maxRetries": 0,
+      "provider": "openai",
+      "smartModel": "gpt-5.6-luna",
+      "smartReasoningEffort": "medium",
+      "timeoutS": 30.0
+    },
+    "n": 8,
+    "notGoldenset": "추천 품질이 아니라 발화→카테고리 매핑·선택 정확도다. evals/goldenset 과 숫자를 섞지 말 것.",
+    "pacer": {
+      "acquireCount": 330,
+      "estimatedTokensPerCall": 3900,
+      "maxRpm": 45,
+      "maxTpm": 200000,
+      "maxWaitS": 25.896,
+      "totalWaitS": 260.892,
+      "waitCount": 159,
+      "windowS": 60.0
+    },
+    "singleRunNotAVerdict": "단일 실행은 채택 판정이 아니다 — 독립 2~3회 분포로 판정한다.",
+    "thresholds": {
+      "categoryDistanceMax": 0.22,
+      "categoryDistanceOverrideMargin": 0.035,
+      "categorySelectMarginMax": 0.02
+    },
+    "tier": "fast"
+  },
+  "commitSha": "7a9ca1f3cc8bef5f9077ebf29d2919afaec62047",
+  "dirty": true,
+  "hashes": {
+    "anchorFixture": "0c8aafe4f0a84ee8c2eacdfe04f91d35b6dde65d974972c03fe8af69a500fe58",
+    "categoryProbeModules": {
+      "__init__.py": "78273e86c728dcc41d1d39648a49742120c9dd787c34c7697980f7486c999563",
+      "__main__.py": "7832e6f7869ca089babb060c2b6cc91e617e9d94f1ac306ef9e0bab942a476b6",
+      "baseline.py": "fc8d1679cf327769871b467a2b68bdeb67af14d8a7a085ba331db15c170ce7e1",
+      "cli.py": "6ac1c982a2a89695e27bd349574193403d565e44d381b2a1c33a02182093023d",
+      "client.py": "889bb49d4580dddd66e45176d8c3e5548c0a2cc425c0ef74432dc2260d020a33",
+      "fakes.py": "5d4235c24af2210e6b4ad8877fadd1c05fb6e20caf0d1f843536eeee62b2483a",
+      "loader.py": "20361092d172ae013d3badecd460095c0ebb1d55abf8fd5690fd8a33116eabe4",
+      "manifest.py": "f66dc2a5019e93b3d516efe97b07f084c7096ab604887ce19ad503bc3de432c8",
+      "metrics.py": "036f1fb0e51f985d46ae4600d7260a6c172cea75bb1d39fab4cc9f0228f031f1",
+      "report.py": "a4bd7d5d2b02c354d434a3c747293c0a8cfc70dda8adb2fe25211b84c68928ed",
+      "runner.py": "1e3cc37ffa7437470c3a83ccef2fb911b1d05b36f216e85e0798adcff3801616",
+      "schema.py": "0be43971801c063e1a5cddef5eed83797a2fdc792ed8d055112dd0b113fb56cc"
+    },
+    "categorySelectSystemPrompt": "d750dbf8e329055614b78b3dff2fc3867a963bef3ab44f40559e850f5d8614c9",
+    "config": "3a57ca78e4b43b41e1356fdffc8ee74f27c7258aeac1c398b1a9625c9743a68b",
+    "datasetManifest": "0f3b91efa922a56d5c053ae26203dc3aaaef0fb0213df744c9dcc48fc8331af7",
+    "decomposeSystemPrompt": "11c6fe3bfa0c938b83c78297c9678b4ae50bae630e727ec542c968c5a9c41cbb",
+    "fixtures": {
+      "catalog_snapshot.json": "db16232a30b1dad49dc9102c25988842cb7878ee522bd2c92c60bed68caf8301",
+      "purchase_history.json": "d9068b703e5ade93df6ab642dc9259b997fc891b6261d64d47968244921b6f74",
+      "search_responses.json": "88eeb27452236d0a9779de3ecb8ab3258503f1d5528f3b832ea2df1488754cf0"
+    },
+    "prompts": {
+      "categorySelect": "443d382220887ff6170c388801ebd0790bf4e248236c5d00248c7ca9cee71da2",
+      "decompose": "eb8f273161857b2017ce62685eb1b80735b013a9bb09abd8ea09373521c9b10c",
+      "rerank": "ae3b549237b354f718fc08966a383613e5fec8d200c8d07daed038cda552ea7c"
+    },
+    "uvLock": "bc79d52c10d7cefba24d91d30408e0777ed75ae64d738e047d74bb325437ec9c"
+  },
+  "image": null,
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "pythonVersion": "3.12.3",
+  "run": {
+    "command": "uv run python -m evals.category_probe --out evals/category_probe/baselines/fast-2026-08-06 --tier fast",
+    "runId": "8ba3dbe7-2d84-4db2-b1d2-14db8dd2e418",
+    "timestamp": "2026-08-05T23:45:07.928669+00:00"
+  },
+  "seed": 20260806
+}
