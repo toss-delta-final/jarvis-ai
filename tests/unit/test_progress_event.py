@@ -765,6 +765,53 @@ def test_seller_progress_text_only_not_recorded_in_progress_stages() -> None:
     assert observer.progress_stages == {}
 
 
+def test_record_frame_survives_malformed_frames_and_still_marks_first_event() -> None:
+    """비-JSON·깨진 프레임에서도 `record_frame` 은 예외를 던지지 않고, `first_event_at` 은
+    파싱 성공 여부와 무관하게 "빈 프레임이 아니다"만으로 기록된다(#396, 파싱 1회 통합 리뷰).
+
+    파싱을 한 곳(`_parse_frame_payload`)으로 합치면서 `first_event_at` 조건이 실수로
+    `payload is not None` 으로 바뀌면 이 테스트가 깨진다 — 그게 이 통합의 가장 깨지기 쉬운
+    지점이다.
+    """
+    observer = RequestObservation(
+        request_id="req-289-malformed",
+        conversation_id="conv",
+        thread_id="thread",
+        user_id="42",
+        brand_id=None,
+        role="buyer",
+        store=None,  # type: ignore[arg-type]
+        message_length=0,
+        message_hash="h",
+        started=0.0,
+        pending_message="",
+        pending_key="k",
+    )
+    observer.record_frame("data: {this is not json\n\n", 1.0)
+    assert observer.first_event_at == 1.0
+    assert observer.progress_stages == {}
+    assert observer.assistant_parts == []
+
+    observer2 = RequestObservation(
+        request_id="req-289-malformed-2",
+        conversation_id="conv",
+        thread_id="thread",
+        user_id="42",
+        brand_id=None,
+        role="buyer",
+        store=None,  # type: ignore[arg-type]
+        message_length=0,
+        message_hash="h",
+        started=0.0,
+        pending_message="",
+        pending_key="k",
+    )
+    # 파싱은 성공하지만 dict 가 아닌 JSON(리스트) — 역시 예외 없이 흡수돼야 한다.
+    observer2.record_frame("data: [1, 2, 3]\n\n", 2.0)
+    assert observer2.first_event_at == 2.0
+    assert observer2.progress_stages == {}
+
+
 # ─────────── AC-4.6 — 판매자 스트림은 플래그 무관 무영향 ───────────
 
 
