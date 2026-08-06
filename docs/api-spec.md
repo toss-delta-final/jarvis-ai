@@ -1196,7 +1196,7 @@ Authorization: Bearer {STREAM_TICKET}   ← 기존 chat:stream 스트림 티켓 
 
 | 파라미터 | 타입 | 필수 | 설명 |
 |---|---|---|---|
-| `includeSuppressed` | bool | 아니오 | 기본 `false`. `true`면 사용자가 삭제(suppress)한 edge를 `suppressed: true`로 함께 반환한다(되돌리기 UI 전용). **민감 카테고리 제외분은 이 플래그와 무관하게 절대 반환하지 않는다**(아래 규약) |
+| `includeSuppressed` | bool | 아니오 | 기본 `false`. `true`면 사용자가 삭제(suppress)한 edge를 `suppressed: true`로 함께 반환한다(되돌리기 UI 전용). **[개정 v0.26.0] 반환 대상은 undo 창이 아직 열려 있는 것뿐이다** — 창이 닫힌 edge는 원문이 물리 삭제돼 반환할 것이 없다(§3.9.2). **민감 카테고리 제외분은 이 플래그와 무관하게 절대 반환하지 않는다**(아래 규약) |
 
 #### 성공 응답 — 200
 
@@ -1314,11 +1314,11 @@ Authorization: Bearer {STREAM_TICKET}   ← 기존 chat:stream 스트림 티켓 
 | `edges[].firstSeenAt` | string | 최초 관측 시각(ISO-8601) |
 | `edges[].lastConfirmedAt` | string | 최근 재확인 시각(ISO-8601). 정렬 키 |
 | `edges[].editable` | bool | `false`면 §3.9.1 수정 불가(`purchased`). 삭제(suppress)는 가능 |
-| `edges[].suppressed` | bool | 사용자가 삭제한 tombstone. **기본 응답에는 `true`가 없다**(`includeSuppressed=true`에서만) |
-| `edges[].suppressedAt` | string \| null | 삭제 시각 |
+| `edges[].suppressed` | bool | 사용자가 삭제했고 **undo 창이 아직 열려 있는** edge. **기본 응답에는 `true`가 없다**(`includeSuppressed=true`에서만). 창이 닫히면 원문이 물리 삭제돼 이 배열에서 사라진다(§3.9.2) |
+| `edges[].suppressedAt` | string \| null | 삭제 시각. undo 창 만료 시각은 이 값 + 서버 config이며 **와이어에 싣지 않는다**(§3.9.2) |
 | `edges[].challenged` | bool | `origin == "user"` 이후 반대 관측이 config 임계 이상 쌓임. **상태는 바뀌지 않으며** FE가 "다시 반영할까요?"를 물을 수 있는 힌트다 |
 | `edges[].derivedFromSensitive` | bool | 민감 주제에서 **원인을 버리고 파생된** 커머스 취향. `true`면 근거·라벨 원문이 일절 제공되지 않는다 |
-| `suppressedCount` | number | 사용자가 삭제한 edge 수. **민감 제외분은 포함하지 않는다**(아래 규약) |
+| `suppressedCount` | number | 사용자가 삭제했고 **undo 창이 열려 있는** edge 수 — 되돌릴 수 있는 것의 개수다. **[개정 v0.26.0] 창이 닫히면 줄어든다**(누적 삭제 총계가 아니다). 영구 tombstone은 원문 없는 차단 표식이라 세지 않는다. **민감 제외분도 포함하지 않는다**(아래 규약) |
 | `unprojectedCount` | number | 구조화 트리플이 없어 아직 그래프로 변환되지 않은 fact 수. 정상값은 `0`(관측용) |
 | `truncated` | bool | `edges`가 config `profile_graph_max_edges`에서 절단됨 |
 
@@ -1479,13 +1479,26 @@ Body 없음(I-12 삭제 선례와 동일 — 신원·대상이 전부 경로에 
 | `edgeId` | string | 삭제한 edge |
 | `suppressed` | bool | 항상 `true` |
 | `suppressedAt` | string | 삭제 시각 |
-| `restorable` | bool | §3.9.3으로 되돌릴 수 있는지(항상 `true`, 초기화 전까지) |
+| `restorable` | bool | §3.9.3으로 되돌릴 수 있는지. **[개정 v0.26.0]** 응답 시점에는 항상 `true`이지만 그 유효 범위는 **undo 창 이내**다 — 창이 닫히면 원문이 물리 삭제되어 이후 restore는 `404`다(아래 규약) |
 | `replayed` | bool | 재전송 판정 |
 
 **규약**
 
-- **삭제는 tombstone(suppress)이다** — 프로젝션·요약·추천에서 **즉시 제외**되지만 이력은 보존되고 복구 가능하다. 억제 경로를 만들면 되돌리기 경로도 함께 만든다는 규칙을 따른다.
-- 이미 suppress된 edge에 같은 `If-Match`로 재전송하면 `replayed: true`(상태·버전 불변).
+- **[개정 v0.26.0, #322] 삭제는 "즉시 억제 → undo 창 → 원문 물리 삭제"다.**
+
+  ```
+  사용자 삭제
+    → 즉시 투영·요약·랭킹에서 제외 (suppressed, §3.9.3으로 복구 가능)
+    → undo 창 (config `graph_undo_window_s`, 기본 5분)
+    → 만료 시 원문 edge·근거 fact 물리 삭제 (purge)
+    → tombstone(내용 파생 id)만 잔존 — 원문 없음, 재승격 차단 전용
+  ```
+
+  구 계약(v0.22.0)은 억제만 하고 원문을 무기한 보관했다. **사용자가 "지웠다"고 믿는 문장의 원문을 계속 들고 있을 이유가 없다**(데이터 최소화). 구 계약이 원문을 남긴 명분은 복구 가능성이었는데, undo 창이 그 역할을 대신한다. 규격은 `SPEC-PROFILE-GRAPH-149` §6.3.
+- **tombstone은 시간 경과로 만료되지 않는다.** 만료시키면 undo 창이 닫힌 직후 세션 버퍼 flush(주기 `profile_idle_sweep_interval_s`)가 돌면서 **같은 발화가 재승격돼 방금 지운 취향이 몇 분 뒤 부활**한다. 다만 "영구"는 *자동 만료 없음*이지 *사용자도 못 지움*이 아니다 — 전체 초기화(§3.9.4)는 tombstone도 함께 지운다. 억제 해제는 §3.9.3(창 이내) 또는 **사용자의 명시적 재입력**으로만 일어난다.
+- **[HARD] undo 창 길이는 서버 config이며 와이어에 싣지 않는다.** 잔여 시간 표시가 필요하면 FE 표현 계약(🟡 C-25)에서 다룬다 — 튜너블을 와이어에 노출하면 값을 바꿀 때마다 계약 변경이 된다.
+- **확인 UX는 파괴력에 비례한다** — 개별 삭제는 **확인 다이얼로그 없이 즉시 + undo**, 확인이 필수인 것은 복구 불가한 **전체 초기화(§3.9.4)뿐**이다. (채팅으로 삭제를 받는 경로("내 취향 지워줘")는 구매자 SSE에 판매자 `draft` 같은 승인 이벤트가 없어 **신규 계약이 필요**하다 — 본 계약 범위 밖이며 별도 판단이다, §3.2 HITL·#78 선례.)
+- 이미 suppress된 edge에 같은 `If-Match`로 재전송하면 `replayed: true`(상태·버전 불변). **단 undo 창이 이미 닫힌 edge는 `404`다**(아래 §3.9.3 규약과 같은 이유).
 - **`purchased` edge도 숨길 수 있다.** 단 **이것이 재구매 dedup(결정 14-F, §4.7)에 영향을 주지 않는다** — dedup은 프로필이 아니라 질의 시점 I-19를 읽는다. "구매 기록을 지웠으니 다시 추천되겠지"는 성립하지 않는다.
 
 #### 3.9.3 `POST {AI_SERVER}/internal/profile/{userId}/graph/edges/{edgeId}/restore` (I-31) — 삭제 되돌리기
@@ -1507,7 +1520,12 @@ Body 없음(I-12 삭제 선례와 동일 — 신원·대상이 전부 경로에 
 
 필드 의미는 §3.9.2와 같다(`restorable` 없음).
 
-**규약** — suppress 상태가 아닌 edge에 대한 restore는 **no-op 200**(`replayed: true`, 버전 불변). 전체 초기화(§3.9.4)로 물리 삭제된 뒤에는 `404 PROFILE_EDGE_NOT_FOUND`다.
+**규약**
+
+- suppress 상태가 아닌 edge에 대한 restore는 **no-op 200**(`replayed: true`, 버전 불변).
+- **물리 삭제된 뒤에는 `404 PROFILE_EDGE_NOT_FOUND`다.** 물리 삭제 트리거는 두 가지다 — 전체 초기화(§3.9.4)와 **[신규 v0.26.0] undo 창 만료**(§3.9.2).
+- **[HARD, v0.26.0] purge된 edge에 대한 재전송은 멱등 원장 히트 여부와 무관하게 `404`다.** 파생 키 원장(§3.9 preamble)은 재전송에 최초 응답을 그대로 재생하는데, **원장 TTL(`graph_idempotency_ttl_h`, 시간 단위)이 undo 창(분 단위)보다 길다.** 규정이 없으면 창이 닫혀 원문이 사라진 뒤 도착한 restore 재전송이 원장에 히트해 **"복구됨" 200을 재생**한다 — 실제로는 되돌릴 대상이 없는데 클라이언트에는 성공으로 보인다. purge 시점에 해당 edge의 원장 항목을 무효화한다.
+- **논리적 만료가 물리 삭제 실행보다 우선한다** — 스윕이 아직 돌지 않아 저장소에 행이 남아 있어도, `suppressedAt + graph_undo_window_s`가 지난 edge는 이미 purge된 것으로 취급한다(restore `404`, §3.8 조회 미노출). 만료 판정과 삭제 실행 사이의 레이스를 계약이 막는다(`SPEC-PROFILE-GRAPH-149` REQ-PGRAPH-027).
 
 #### 3.9.4 `POST {AI_SERVER}/internal/profile/{userId}/graph/reset` (I-32) — 전체 초기화(물리 삭제)
 

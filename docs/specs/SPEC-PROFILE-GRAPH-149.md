@@ -102,9 +102,10 @@ issue_number: 149
 | **투영(projection)** | 저장된 구조화 트리플에서 결정론적으로 파생한 node·edge 집합. 저장 모델과 다른 표현이며 별도 정본이 아니다 |
 | **트리플(triple)** | `(사용자, predicate, 대상 node)`. `SPEC-PROFILE-001` §5.1 구조화 블록에 대응하는 기계 판독 형태 |
 | **`edgeKey`** | `"{predicate}|{nodeId}"`. `SPEC-PROFILE-001` §5.2 `GateState.preference_key`와 **동일 개념이며 저장 위치도 하나다** |
-| **suppress(tombstone)** | 사용자가 지운 edge. 투영·요약·랭킹에서 즉시 제외되고 이력은 남으며 **복구 가능** |
+| **suppress** | 사용자가 지운 edge 중 **undo 창(`graph_undo_window_s`)이 아직 열려 있는** 것. 투영·요약·랭킹에서 즉시 제외되지만 원문(라벨·`evidence_refs`·근거 fact)은 그대로 남아 **복구 가능**하다 |
+| **tombstone(영구)** | undo 창 만료 후 남는 **최소 레코드** — `edge_key`(내용 파생 id)만 보관해 같은 취향의 재승격을 차단한다. 원문 필드는 이 시점에 물리 삭제되며 **복구 불가**다. **시간 경과로 만료되지 않지만**(만료시키면 재승격으로 부활한다 — §6.3) 사용자의 명시적 전체 초기화(§6.7)는 함께 지운다 — "영구"는 *자동 만료 없음*이지 *사용자도 못 지움*이 아니다 |
 | **제외(sensitive exclusion)** | 민감 주제 유래로 아예 노출되지 않는 항목. **suppress와 다르다** — 카운트에도 세지 않고 복구 대상도 아니다 |
-| **purge** | 물리 삭제. 사용자 요청 전체 초기화와 민감 파생 보존기간 만료에만 발생 |
+| **purge** | 물리 삭제. **트리거 3종**: (1) 사용자 요청 전체 초기화(§6.7), (2) 민감 파생 보존기간(`graph_sensitive_retention_days`) 만료(§6.8), (3) **[신규 v0.2.0] 개별 삭제 undo 창 만료**(§6.3). (3)에서 남는 tombstone은 purge 대상이 아니다 |
 | **pin(사용자 의도 고정)** | 사용자 편집이 기계 재파생보다 우선한다는 표식. 만료되지 않는다 |
 | **`graphVersion`** | 와이어에 노출하는 불투명 낙관적 동시성 토큰. 내부 단조 증가 `revision`에서 만든다 |
 | **파생 멱등 키** | `profile-graph-{action}:{userId}:{scopeId}:{ifMatch}`. 클라이언트가 지정하지 않는다 |
@@ -171,7 +172,7 @@ class GraphEdge(BaseModel):
     decay_evaluated_at: str       # 감쇠 시계 — 배치당 1회 고정 (§6.2)
     valid_from: str | None        # 승격 시각
     superseded_by: str | None     # 충돌 패자 → 승자 edge_id
-    suppressed_at: str | None
+    suppressed_at: str | None         # 삭제 시각 — undo 창 만료 판정의 기준 (§6.3)
     user_intent: UserIntent | None    # pin (§6.4)
     challenge_count: int
     derived_from_sensitive: bool
@@ -193,6 +194,12 @@ class GraphDocument(BaseModel):
 
 `graphVersion`(와이어) = `"g" + str(revision)`. **[HARD] 클라이언트는 이 값을 파싱·비교하지 않는다** —
 형식은 내부 구현이고 계약은 "불투명 동등성"뿐이다.
+
+**[v0.2.0] 영구 tombstone 은 `GraphEdge` 가 아니다.** undo 창이 만료된 edge 는 문서의 `edges` 에서
+제거되고, 그 자리에 **`edge_key` 만 담는 최소 레코드**가 남는다(§6.3 REQ-PGRAPH-025). 원문 필드
+(`node_id` 가 가리키는 라벨·`evidence_refs`·근거 fact)는 물리 삭제된다. 이 레코드는 재승격 차단
+(REQ-PGRAPH-026)에만 쓰이므로 투영·카운트 어디에도 나타나지 않는다 — 정확한 저장 형태는 #150 이
+정한다(같은 `GraphDocument` 안의 별도 리스트 / 별도 테이블 모두 §7.1 의 원자성 요건을 만족한다).
 
 ### 5.4 사용자 의도 · 감사
 
@@ -275,6 +282,8 @@ class GraphAuditRecord(BaseModel):
 ### 6.3 상태 기계
 
 - **REQ-PGRAPH-020** 상태는 `active`(±`promoted`) / `suppressed` / `superseded` / purged(부재)여야 한다.
+  **[v0.2.0]** `suppressed`는 **유계 상태**다 — undo 창 만료와 함께 purged 로 넘어가고 최소
+  tombstone 만 남는다(아래 신설 절). 나머지 셋의 수명은 변하지 않는다.
 - **REQ-PGRAPH-021** 기본 투영은 `active` + `promoted`만 포함해야 한다. `suppressed`는 명시 요청 시에만,
   `superseded`는 노출하지 않는다.
 - **REQ-PGRAPH-022** `suppressed`·`superseded` edge는 요약 생성 입력과 랭킹(rerank 주입·홈 프로필
@@ -284,6 +293,37 @@ class GraphAuditRecord(BaseModel):
   **삭제 기능이 겉모습만 남는다**. 이것은 선택이 아니라 선결 조건이다.
 - **REQ-PGRAPH-024** `purchased` edge의 억제는 **재구매 dedup(결정 14-F)에 영향을 주지 않아야** 한다 —
   dedup은 프로필이 아니라 질의 시점 구매 이력(api-spec §4.7)을 읽는다. 계약·SPEC 양쪽에 명시한다.
+
+#### undo 창과 원문 물리 삭제 [v0.2.0 신설, 이슈 #322]
+
+> 구 계약(v0.1.0)은 개별 삭제를 억제로만 처리하고 원문을 무기한 보관했다. **사용자가 "지웠다"고
+> 믿는 문장의 원문을 계속 들고 있을 이유가 없다**(데이터 최소화). 구 계약이 원문을 남긴 명분은
+> 복구 가능성이었고, undo 창이 그 역할을 대신한다.
+
+- **REQ-PGRAPH-025** [HARD] `suppressed` edge가 `suppressed_at + graph_undo_window_s`를 지나면
+  시스템은 **원문을 물리 삭제해야** 한다 — `GraphEdge`의 라벨 참조·`evidence_refs`와 그 refs가
+  가리키는 근거 fact를 포함한다. 남는 것은 `edge_key`(또는 그 해시)뿐인 **최소 tombstone**이며,
+  이것은 시간 경과로 만료되지 않는다.
+- **REQ-PGRAPH-026** [HARD] consolidation은 영구 tombstone 집합의 `edge_key`에 대해 **재승격을
+  금지해야** 한다.
+  - **근거(실측)**: 세션 버퍼 flush 는 `profile_idle_sweep_interval_s`(기본 60초) 주기 스케줄러로
+    돈다(이슈 #79). tombstone 까지 만료시키거나 조회하지 않으면 **undo 창이 닫힌 직후 flush 가
+    돌면서 같은 발화가 재승격돼 방금 지운 취향이 몇 분 뒤 부활한다.**
+  - 이 조항은 **REQ-PGRAPH-023의 대체가 아니라 강화**다. 023은 "consolidation 이 그래프를 입력으로
+    읽어야 억제가 실효한다"인데, 원문 물리 삭제 후에는 **읽을 edge 자체가 없다** — 그래서 읽을
+    대상이 tombstone 집합으로 하나 더 늘어난다. 둘 다 필요하며 중복 조항이 아니다.
+- **REQ-PGRAPH-027** [HARD] **논리적 만료는 물리 삭제 실행과 무관하게 즉시 유효해야** 한다 —
+  스윕이 아직 돌지 않아 저장소에 행이 남아 있어도, 만료 시각이 지난 edge 는 읽기 경로(투영 조회·
+  restore)에서 **이미 purge 된 것으로 취급**해야 한다(조회 미노출, restore `404`). 이 조항이
+  만료 판정과 삭제 실행 사이의 레이스를 막으므로, **집행 메커니즘(주기 스윕 / lazy purge on read)은
+  본 SPEC이 지정하지 않고 #150 에 맡긴다** — 관측 가능한 결과만 계약한다.
+- **REQ-PGRAPH-028** [HARD] purge 된 edge 를 대상으로 하는 재전송은 **멱등 원장 히트 여부와
+  무관하게 `404`** 여야 하며, purge 시점에 해당 edge 의 원장 항목을 무효화해야 한다.
+  - **근거**: REQ-PGRAPH-043 의 원장 TTL(`graph_idempotency_ttl_h`, 시간 단위)이 undo 창(분 단위)보다
+    **길다**. 규정이 없으면 창이 닫혀 원문이 사라진 뒤 도착한 restore 재전송이 원장에 히트해
+    **"복구됨" 응답을 재생**한다 — 되돌릴 대상이 없는데 호출자에게는 성공으로 보인다.
+- **REQ-PGRAPH-029** 억제 해제는 undo 창 이내의 명시적 restore, 또는 창이 닫힌 뒤에는 **사용자의
+  명시적 재입력**으로만 일어나야 한다. 기계 재파생은 어느 경우에도 해제 사유가 아니다.
 
 ### 6.4 사용자 의도 고정(pin) — 기능이 연극이 되지 않게 하는 조항
 
@@ -295,6 +335,15 @@ class GraphAuditRecord(BaseModel):
   사용자 편집이 시스템을 눈멀게 만들면 나중에 아무 근거도 제시할 수 없다.)
 - **REQ-PGRAPH-032** [HARD] pin은 **만료되지 않아야 한다**(`expires_at`은 항상 없음). 만료를 두면
   사용자의 수정이 조용히 되돌려지고, 그것이 바로 이 기능이 존재하는 이유를 무효화한다.
+  - **[구분 명시 v0.2.0] REQ-PGRAPH-032(pin 만료 없음)와 undo 창(§6.3 REQ-PGRAPH-025~029)은
+    서로 다른 것을 만료시킨다.** pin 이 만료되지 않는다는 것은 *사용자 의도*(사용자가 확정한
+    edge 의 상태·관계·확신도)를 **기계가 조용히 되돌리지 못한다**는 보장이다. undo 창이
+    만료시키는 것은 *원문 보관 기간*뿐이며, 창이 닫혀도 tombstone 은 남아 REQ-PGRAPH-032 가
+    지키는 사용자 의도 불변을 **삭제 방향으로** 계속 지킨다(REQ-PGRAPH-026 의 재승격 금지가
+    그 집행이다). **pin 이 걸린 edge 를 사용자가 삭제하면 undo 창을 거쳐 원문이 물리 삭제되는
+    것이 맞는 동작이다** — pin 은 "기계가 덮어쓰지 못한다"이지 "사용자 자신도 못 지운다"가
+    아니다. REQ-PGRAPH-035 가 최신성 불변식에 대해 같은 오독 방지 문장을 남긴 것과 같은 이유로
+    이 문장을 SPEC 에 박아 둔다.
 - **REQ-PGRAPH-033** pin 이후 반대 관측이 `graph_pin_challenge_count`에 도달하면 `challenged`를
   참으로 표시해야 하며 **상태는 바꾸지 않아야** 한다. 취향 변화의 반영은 **명시적 사용자 동작**으로만
   일어난다. 설정값 `0`은 이 신호를 끈다.
@@ -384,8 +433,15 @@ class GraphAuditRecord(BaseModel):
 - **REQ-PGRAPH-076** [HARD] 민감 제외분은 **어떤 카운트에도 포함하지 않아야** 하며 placeholder도
   두지 않아야 한다. 사용자 삭제 개수에 섞으면 **그 카운트가 곧 유출**이다.
 - **REQ-PGRAPH-077** `derived_from_sensitive` edge와 그 근거는 `graph_sensitive_retention_days` 경과
-  후 **물리 삭제**해야 한다. 이것이 기계 경로 하드 삭제가 *의무*인 유일하고 좁은 예외이며,
-  `SPEC-PROFILE-001` REQ-PROF-034의 명시적 carve-out으로 기록한다.
+  후 **물리 삭제**해야 한다.
+  - **[개정 v0.2.0] 기계 경로 하드 삭제가 *의무*인 예외는 이제 2건이다** —
+    (1) 본 조항(민감 파생 보존기간 만료), (2) **REQ-PGRAPH-025(개별 삭제 undo 창 만료)**.
+    둘 다 `SPEC-PROFILE-001` REQ-PROF-034의 명시적 carve-out 으로 기록한다. **성격이 다르다**:
+    (1)은 *기계가 판정한 민감도*를 근거로 기계가 시작하는 삭제이고, (2)는 *사용자의 명시적
+    삭제 요청*을 유예 후에 실행하는 것이라 **기계가 개시한 삭제가 아니라 사용자 요청의 지연
+    집행**이다. 그래서 (2)는 REQ-PROF-034 가 금지하는 "기계가 조용히 지우는 것"에 애초에
+    해당하지 않는다 — 목록에 함께 적는 것은 *하드 삭제가 일어나는 지점을 한곳에서 셀 수 있게*
+    하기 위해서다. **v0.1.0 이 "유일하고 좁은 예외"라고 단정했으므로 그 문장을 여기서 갱신한다.**
 - **REQ-PGRAPH-078** 구매 출처 근거는 주문 식별자·상품명을 노출할 수 있다 — 사용자 본인의 주문
   데이터이고 주문 내역에서 이미 보이며, **가장 설명력 높은 근거**다("7월 10일 무선 키보드 구매").
 
@@ -393,6 +449,11 @@ class GraphAuditRecord(BaseModel):
 
 - **REQ-PGRAPH-080** 모든 상태 변경은 감사 행을 남겨야 한다(api-spec §6.3 (c) 필드).
   상태를 바꾸지 않는 요청(no-op·재전송)은 남기지 않는다.
+  - **[예외 v0.2.0] undo 창 만료 purge 는 별도 감사 행을 남기지 않는다.** 최초 `edgeSuppress`
+    행 + `suppressed_at` + `graph_undo_window_s` 로 **결정론적으로 재구성되므로** 추적성이
+    손상되지 않는다. `action` enum 을 늘리지 않는 이유는 이것이 **actor 없는 시스템 동작**이라
+    `actor_fp`(peppered HMAC of userId)를 만들 대상이 없기 때문이다 — 시스템 상수를 억지로
+    넣으면 "누가 했는가"를 기록하는 필드가 아무것도 식별하지 못하게 된다.
 - **REQ-PGRAPH-081** [HARD] 감사에 노드 라벨·fact 원문·근거 원문을 저장해서는 안 된다 — 지문만
   남긴다. 취향 대상 라벨 자체가 민감할 수 있어, 변경 전후 값을 텍스트로 남기면 감사 로그가
   투영 경계의 [HARD]를 우회하는 구멍이 된다.
@@ -492,6 +553,7 @@ class GraphAuditRecord(BaseModel):
 | 선행조건 불일치 | `If-Match` ≠ 현재 버전 | `409` + 최신 버전 병기 | 부분 적용 없음 |
 | 재전송 | 파생 키 원장 히트 | 최초 응답 재생 + 표식 | 부작용 1회만 |
 | 대상 부재·타인 소유 | 스코프 조회 0행 | `404`(구분 없음) | 열거 불가 |
+| undo 창 만료 대상 | `suppressed_at + graph_undo_window_s` 경과 | `404` — **원장 히트여도** (REQ-PGRAPH-028) | purge 후 복구 응답 없음 |
 | 수정 불가 대상 | `editable == false` | `409` | 구매 사실 불변 |
 | resolver 어휘·임베딩 불가 | 조회 실패 | 정확 일치만 사용, **추측하지 않음** | 틀린 노드 0 |
 | 저장소 일시 장애 | 타임아웃·연결 실패 | `503`, 변경 미적용 | 문서 무손상 |
@@ -521,6 +583,9 @@ class GraphAuditRecord(BaseModel):
 | AC-PGRAPH-10 | **삭제한 취향이 다음 요약에 다시 나타나지 않는다** | REQ-PGRAPH-022·023 |
 | AC-PGRAPH-11 | 그래프가 꽉 찬 상태에서도 회원·게스트 필터 생성 프롬프트가 동등하고, 커밋된 평가 baseline이 회귀하지 않는다 | REQ-PGRAPH-113·114 |
 | AC-PGRAPH-12 | 같은 관측 집합을 두 번 재생하면 동일한 문서가 나온다(감쇠 시계 고정 확인) | REQ-PGRAPH-015 |
+| AC-PGRAPH-13 | **undo 창 이내에는 복구되고, 창이 지나면 원문이 남지 않는다** — 만료 후 restore 는 `404`, 투영·`suppressedCount` 어디에도 나타나지 않으며, **스윕을 의도적으로 멈춘 픽스처에서도** 만료 시각이 지난 edge 는 이미 없는 것으로 응답한다 | REQ-PGRAPH-025·027 |
+| AC-PGRAPH-14 | **undo 창이 닫힌 취향이 다음 배치에서 부활하지 않는다** — 같은 발화를 재주입하고 flush 를 돌려도 재승격되지 않는다 | REQ-PGRAPH-026 |
+| AC-PGRAPH-15 | **purge 후 도착한 재전송이 "복구됨"을 재생하지 않는다** — 멱등 원장에 최초 응답이 남아 있는 상태에서도 `404` 다 | REQ-PGRAPH-028 |
 
 **DoD**: 위 인수 기준 통과 + api-spec §3.8·§3.9와 필드·오류 코드가 완전 일치 + `SPEC-PROFILE-001`
 v0.7.0 개정 조항과 상충 없음 + 회귀 테스트가 "되돌리면 깨지는지"로 검증됨.
@@ -578,14 +643,26 @@ v0.7.0 개정 조항과 상충 없음 + 회귀 테스트가 "되돌리면 깨지
 `graph_node_distance_max` · `graph_node_override_margin` · `graph_pin_challenge_count` ·
 `graph_demote_margin` · `graph_evidence_refs_max` · `graph_sensitive_retention_days` ·
 `graph_audit_retention_days` · `graph_idempotency_ttl_h` · `graph_require_verified_for_ranking` ·
-`graph_seed_legs_max` · `graph_optout_cache_ttl_s`. 승격 임계는 **기존 게이트 임계를 재사용**한다 —
-두 번째 임계 키를 만들지 않는다.
+`graph_seed_legs_max` · `graph_optout_cache_ttl_s` · **`graph_undo_window_s`**(v0.2.0 신설).
+승격 임계는 **기존 게이트 임계를 재사용**한다 — 두 번째 임계 키를 만들지 않는다.
+
+- **`graph_undo_window_s`** — 개별 삭제 후 원문을 보관하는 유예(§6.3 REQ-PGRAPH-025). 기본
+  **300초(5분)**. **[HARD] 와이어에 노출하지 않는다** — 튜너블을 계약에 실으면 값을 바꿀 때마다
+  계약 변경이 된다(FE 잔여 시간 표시 요구는 api-spec 🟡 C-25 소관).
+- **tombstone 영구성은 튜너블이 아니다** — 만료 설정을 두면 REQ-PGRAPH-026 이 무력화돼 지운
+  취향이 부활하므로, "끌 수 있는 안전장치"로 만들지 않는다.
+- **`graph_idempotency_ttl_h` > `graph_undo_window_s` 를 전제한다** — 그래서 REQ-PGRAPH-028 이
+  필요하다. 두 값의 대소로 정확성을 맞추려는 설정은 **금지**한다(운영자가 값을 바꾸면 조용히
+  깨지는 불변식을 만든다).
 
 ### 안전·일관성 불변식 (must-hold)
 
 - 투영은 LLM 0회·결정론적이며 정렬은 전순서다(REQ-PGRAPH-002·003).
 - 같은 트리플은 항상 같은 식별자이며 중복 node·edge는 구조적으로 불가능하다(REQ-PGRAPH-010).
 - 사용자 편집은 기계 재파생에 덮이지 않고 그 보장은 만료되지 않는다(REQ-PGRAPH-031·032).
+- 개별 삭제는 undo 창 이내에만 복구 가능하고, 창이 닫히면 원문이 남지 않으며, 지운 취향은
+  tombstone 때문에 재승격되지 않는다(REQ-PGRAPH-025·026). **만료되는 것은 원문 보관 기간이지
+  사용자 의도가 아니다**(REQ-PGRAPH-032 구분 문장).
 - 사용자 요청 삭제는 기계 자동 삭제 금지의 적용 범위 밖이며 **항상 감사된다**(REQ-PGRAPH-062·080).
 - 근거 원문·민감 주제 라벨·프로필 마크다운 본문·모델 식별자는 와이어에 나가지 않으며, 이 보장은
   **민감 판정 성공 여부와 무관하다**(REQ-PGRAPH-074·075).
