@@ -41,6 +41,28 @@
 
 ---
 
+## [2026-08-06] 함수 시그니처를 바꿀 때 호출부 grep 을 `tests`·`evals` 로만 하면 `scripts/` 가 사각지대다
+- 증상: #396(이슈)/PR #407 에서 `_prepare_recommendation` 을 코루틴 → async generator 로
+  바꾸고 키워드 전용 필수 인자 `out` 을 추가했다. 그때 "`tests/`·`evals/` grep 0건"을
+  근거로 "다른 호출부 없음"이라 판단했는데, `scripts/capture_i1_wire_132.py:63`·
+  `scripts/verify_regression6_217.py:78` 두 곳이 여전히 `await _prepare_recommendation(...)`
+  (구 코루틴 형태, `out=` 없음)로 남아 있었다. 방치했으면 `out` 누락으로 즉시
+  `TypeError`, `out=` 만 채워도 async generator 를 `await` 해 또 다른 `TypeError`(제너레이터
+  객체만 만들어지고 body 는 한 줄도 안 돈다)로 죽는 상태였다. `pytest` 가 `scripts/` 를
+  실행하지 않아 CI 전 구간이 초록이었고, Claude PR Review 가 인라인으로 잡았다.
+- 원인: 호출부 조사를 `tests/`·`evals/` 로만 했다. 이 저장소는 실측·회귀 검증을
+  `scripts/` 의 일회성 스크립트로 남기는 관행이 있고(`verify_regression6_217.py` 는
+  docstring 에 "프로덕션 `_prepare_recommendation` 을 **그대로 호출**한다"고 명시까지
+  해뒀다), 그 디렉터리가 pytest 실행 범위 밖이라 사각지대가 됐다.
+- 규칙: **함수 시그니처·호출 규약(코루틴↔제너레이터 전환 포함)을 바꿀 때 호출부 grep 은
+  저장소 전체**로 한다(`app`·`tests`·`evals`·`scripts`·`docs`). 특히 **pytest 가 실행하지
+  않는 `scripts/` 는 CI 가 지켜주지 않으므로** grep 결과를 눈으로 확인하고, 가능하면
+  스크립트를 실제로 한 번 돌려본다.
+- 관련: #396, PR #407, `app/agents/buyer/graph.py::_prepare_recommendation`,
+  `scripts/capture_i1_wire_132.py`, `scripts/verify_regression6_217.py`
+
+---
+
 ## [2026-08-06] 진단용으로 로그에 싣는 예외 메시지에는 "검증 이전" 값이 섞여 있다
 - 증상: #408 에서 401 사유를 남기려고 `__cause__` 체인의 `str(exc)` 를 그대로 로그 문자열에
   이어붙였다. 그런데 PyJWT 의 `PyJWKClientError` 메시지는 JWT 헤더의 `kid` 를 그대로 싣는다
@@ -101,6 +123,8 @@
 - 관련: #310, #305, `app/schemas/spring.py::CartViewItem`·`::WishlistItem`·
   `::_degrade_unknown_purchase_state`, `app/services/spring_client.py::_parse_wishlist_items`,
   SPEC-CART-001 REQ-CART-037, api-spec §4.9 v0.26.3
+
+---
 
 ## [2026-08-06] 전용 검증자를 일반형으로 흡수할 때 판단 기준이 바뀌면, 그 간극을 메우는 이음매 검증자에도 변이 시험이 필요하다
 - 증상: #313 에서 그룹별 전용 검증자 둘을 일반형 매핑 하나로 흡수하면서, 두 검증자의
