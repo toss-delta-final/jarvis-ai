@@ -27,6 +27,7 @@ from app.agents.buyer.recommendation.no_condition import (
 )
 from app.agents.buyer.recommendation.search_guard import (
     is_category_mapping_dropped,
+    is_popular_fallback_safe,
     is_unfiltered_payload,
 )
 from app.agents.buyer.recommendation.underspecified import (
@@ -944,6 +945,11 @@ async def stream_recommendation(
         first-token 10s 상한을 넘길 수 있다(#277 이 고친 바로 그 실패 모양) — 미루지 않는
         턴은 `conditions` 가 이미 나가 관문을 통과한 뒤라 안전하다.
 
+        [PR #411 Claude 리뷰] payload 축이 `keyword`/가격(`is_popular_fallback_safe`) 밖이면
+        B 를 발동하지 않는다 — `brand=["나이키"]` 처럼 인기 후보가 걸러주지 못하는 축이 남아
+        있으면 대체 후 `conditions` 칩("나이키")과 실제 후보가 어긋난다. 그 경우는 종전 동작
+        (0건 응답)을 그대로 둔다.
+
         leg 맵은 빈 dict 다 — 인기 목록은 카테고리 fan-out 이 아니라 단일 목록이다.
         """
         nonlocal popular_degraded, category_unmapped_zero_result
@@ -953,6 +959,12 @@ async def stream_recommendation(
                 settings.search_filter_guard_enabled
                 and not may_auto_relax
                 and is_category_mapping_dropped(decision)
+                # [PR #411 Claude 리뷰] payload 축이 keyword/가격 밖이면(brand·color 등) B 를
+                # 발동하지 않는다 — 인기 후보는 그 축을 걸러주지 않는데 `conditions` 칩은
+                # `decision.filters` 그대로 파생돼(state.build_condition_chips) 표시-실제가
+                # 어긋난다("나이키" 칩이 뜬 채 나이키 아닌 상품이 나간다). 자세한 근거는
+                # `search_guard._POPULAR_SAFE_AXES` 참조.
+                and is_popular_fallback_safe(decision)
                 and found is not None
                 and not found[0].products
             ):

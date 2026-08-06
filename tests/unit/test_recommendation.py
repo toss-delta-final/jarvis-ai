@@ -6577,6 +6577,74 @@ async def test_category_mapping_dropped_deferred_turn_does_not_fall_back() -> No
     assert popular_calls == []  # 그러나 0건이어도 인기 상품으로 새지 않는다
 
 
+async def test_category_mapping_dropped_with_brand_does_not_fall_back() -> None:
+    """[PR #411 Claude 리뷰 — "나이키 신발" 회귀] payload 에 `brand` 가 남아 있으면 매핑 드롭
+    0건이어도 B 를 발동하지 않는다 — 인기 후보는 브랜드를 걸러주지 않는데 `conditions` 칩엔
+    "나이키"가 그대로 떠 표시-실제가 어긋난다. 종전 동작(0건 응답)을 그대로 유지한다."""
+    search, search_calls = _counting_search_calls(products=[])
+    popular, popular_calls = _recording_popular()
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="나이키 신발 추천해줘", thread_id="shoe-mapping-dropped-brand"),
+            _guest(),
+            llm=FakeLLM(decompose=_shoe_decompose(extra_filters={"brand": ["나이키"]})),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+            map_categories=_failed_mapping,
+        )
+    )
+
+    # 브랜드 검색은 그대로 나갔다(+ 0건이라 브랜드 완화 칩 probe 재검색이 더 갈 수 있다, #113).
+    assert search_calls
+    assert search_calls[0].brand == ["나이키"]
+    assert popular_calls == []  # B 미발동 — 인기 상품으로 새지 않는다
+    types = _types(events)
+    assert "error" not in types
+    assert types[-1] == "done"
+    conditions_event = next(e for e in events if e["type"] == "conditions")
+    chips = conditions_event["data"]["chips"]
+    # 브랜드 칩이 conditions 에 그대로 있다 — 실제로 브랜드 검색이 나갔고 결과가 0건이었으므로
+    # 표시(칩)와 실제(요청)가 일치한다.
+    assert any(c["field"] == "brand" for c in chips)
+
+
+async def test_category_mapping_dropped_with_price_still_falls_back_to_popular() -> None:
+    """[PR #411 Claude 리뷰] `keyword`+가격만 남은 매핑 드롭 0건 턴은 여전히 B 가 발동한다 —
+    가격은 `within_price_range` 로 인기 후보에 실제로 적용되는 안전한 축이다."""
+    over_budget = SpringProduct(
+        product_id=901, name="비싼 신발", price=90000, category="신발", brand="b"
+    )
+    under_budget = SpringProduct(
+        product_id=902, name="싼 신발", price=30000, category="신발", brand="b"
+    )
+    search, search_calls = _counting_search_calls(products=[])
+    popular, popular_calls = _recording_popular(products=[over_budget, under_budget])
+    push = _RecordingPush()
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="5만원 이하 신발 추천해줘", thread_id="shoe-mapping-dropped-price"),
+            _guest(),
+            llm=FakeLLM(decompose=_shoe_decompose(extra_filters={"priceMax": 50000})),
+            search=search,
+            push_fn=push,
+            popular_fn=popular,
+            map_categories=_failed_mapping,
+        )
+    )
+
+    # 본 검색은 그대로 나갔다(+ 0건이라 가격 완화 칩 probe 재검색이 더 갈 수 있다, #113).
+    assert search_calls
+    assert popular_calls == [get_settings().popular_candidate_size]  # B 발동
+    exposed = set(_only_list(push.pushes[0]).product_ids)
+    assert 901 not in exposed  # priceMax 초과 — within_price_range 로 걸러짐
+    assert 902 in exposed
+    texts = [e["data"]["text"] for e in events if e["type"] == "token"]
+    assert any(get_settings().category_unmapped_notice in t for t in texts)
+
+
 async def test_unfiltered_bypass_popular_candidates_drop_rating_below_threshold() -> None:
     """[C] rating_min 만 있는 턴이 A 로 인기 후보를 받을 때 평점 미달 후보는 제외된다 —
     조건 칩엔 "평점 4.5 이상"이 떠 있는데 후보가 그 조건을 안 지키는 표시-실제 불일치를 막는다.
