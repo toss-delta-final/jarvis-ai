@@ -1,0 +1,155 @@
+"""개인화 그래프 내부 저장 모델 (SPEC-PROFILE-GRAPH-149 §5.1~5.4).
+
+`("graph", user_id)` / `"v1"` 단일 jsonb 문서에 들어가는 **저장 모델**이고 와이어 모델이 아니다 —
+그래서 `app/schemas/`(camelCase CamelModel 규약 디렉터리)가 아니라 여기 둔다. 와이어 계약은
+api-spec §3.8·§3.9가 소유하며 그 표면 구현은 이슈 #150이다.
+
+사용자당 항목 1개로 두는 이유는 §7.1이다: per-user advisory 잠금이 별도 연결 풀에서 잡혀 store
+트랜잭션과 결합되지 않아 **다중 항목 원자성이 없다** — N개로 쪼개면 전부 찢어진 쓰기 상태를 만든다.
+
+SPEC §5.2는 필드에 기본값을 두지 않는다. 여기서도 두지 않는다(`GraphNode.resolution` 제외) —
+병합 엔진이 edge 를 만들 때 `suppressed_at`·`superseded_by` 같은 상태 필드를 **의식적으로**
+정하게 강제하는 것이 목적이다. 기본값을 주면 tombstone 관련 필드를 빠뜨려도 조용히 통과한다.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import unicodedata
+from typing import Literal
+
+from pydantic import BaseModel
+
+NodeType = Literal[
+    "brand", "category", "attribute", "priceBand", "ratingBand", "product", "situation"
+]
+Predicate = Literal["prefers", "likes", "avoids", "interestedIn", "purchased"]
+EdgeStatus = Literal["active", "suppressed", "superseded"]
+
+_EDGE_ID_PREFIX = "e_"
+_EDGE_ID_HEX_LEN = 16  # api-spec §3.8 `edgeId` = "e_" + 16자 hex
+
+
+def normalize_label(text: str) -> str:
+    """`node_id` 라벨 부분 정규화 — NFKC + 공백 정리 + casefold.
+
+    **조사·어미는 건드리지 않는다**(REQ-PGRAPH-017) — 한국어 형태소까지 접으면 "노이즈캔슬링이"와
+    "노이즈캔슬링"이 합쳐지는 정도를 넘어 정당한 취향 신호를 잃는다. fact 수준 dedup 이 문자열
+    완전 일치를 유지하는 것과 같은 경계다.
+
+    이 함수가 합쳐 주는 것은 **표기 변형뿐**이다(`SONY`/`sony`/`ＳＯＮＹ`). `소니`↔`SONY` 같은
+    문자 체계 차이나 `쏘니` 같은 오타 수렴은 정규화가 아니라 **통제 어휘 스냅**의 몫이며
+    (§6.2 resolver), 브랜드 어휘는 아직 없다(OPEN-G2 / api-spec C-28).
+    """
+    return unicodedata.normalize("NFKC", " ".join(text.split())).casefold()
+
+
+def make_node_id(node_type: str, label: str) -> str:
+    """`"{type}:{정규화 라벨}"` (REQ-PGRAPH-010)."""
+    return f"{node_type}:{normalize_label(label)}"
+
+
+def make_edge_key(predicate: str, node_id: str) -> str:
+    """`"{predicate}|{node_id}"` — `SPEC-PROFILE-001` §5.2 `GateState.preference_key`와 동일 개념."""
+    return f"{predicate}|{node_id}"
+
+
+def make_edge_id(edge_key: str) -> str:
+    """`"e_" + sha256(edge_key)[:16]` (REQ-PGRAPH-010).
+
+    **랜덤 식별자를 쓰면 재파생이 tombstone 을 우회하므로 이 결정론성은 기능 요구사항이다.**
+    내장 `hash()` 는 PYTHONHASHSEED 랜덤화로 프로세스마다 값이 달라져 여기 쓸 수 없다 —
+    `hashlib` 고정(docs/lessons.md 2026-08-06 항목).
+    """
+    digest = hashlib.sha256(edge_key.encode("utf-8")).hexdigest()
+    return _EDGE_ID_PREFIX + digest[:_EDGE_ID_HEX_LEN]
+
+
+class NodeResolution(BaseModel):
+    """노드 식별에 쓴 판정 근거 — **와이어 미노출**(SPEC §5.1).
+
+    거리·margin 을 저장하는 목적은 임계 재측정이다(OPEN-G1 / #344): resolver 기본값은 다른 앵커
+    분포에서 측정된 값이라 이 저장소에서 다시 재야 하는데, 판정 시점의 수치를 남기지 않으면
+    "표본 0"이 근거가 아니라 질문이 된다(docs/lessons.md 2026-08-05 실측 프로브 항목).
+
+    와이어에 싣지 않는 이유는 임베딩 내부값에 FE 로직이 결합되면 모델·어휘 교체가 곧 계약 변경이
+    되기 때문이다(`DESIGN-CATEGORY-HYBRID-59` §10).
+    """
+
+    # exact=어휘 정확 일치 / embedding=최근접 스냅 / rule=결정론적 파서(밴드) / no_vocabulary=어휘 부재
+    method: Literal["exact", "embedding", "rule", "no_vocabulary"]
+    distance: float | None = None  # 임베딩 경로만 — 밴드·정확 일치는 거리 개념이 없다
+    margin: float | None = None  # top1-top2 차. 히트 1건이면 확신을 잴 수 없어 None
+    lexicon_version: str | None = None  # 스냅 대상 어휘 식별자. 어휘가 없으면 None
+    anchor_phrase: str  # 스냅에 실제 쓴 발화 파생 구절 — LLM 라벨이 아니다(REQ-PGRAPH-012a)
+    resolved_at: str  # ISO-8601
+
+
+class GraphNode(BaseModel):
+    """edge 가 참조하는 대상. 자신을 참조하는 non-purged edge 가 없으면 존재하지 않는다(SPEC §5.1).
+
+    **믿음·출처를 노드에 두지 않는다** — 같은 브랜드를 좋아하면서 특정 카테고리에서만 회피할 수
+    있어, 확신도를 노드에 두면 그 상태를 표현할 수 없다. 그래서 confidence·evidence 는 전부 edge 다.
+    """
+
+    node_id: str  # "{type}:{정규화 라벨}"
+    type: NodeType
+    label: str  # 사람이 읽는 이름(상한: profile_graph_label_max_chars)
+    verified: bool  # 통제 어휘에 스냅됐는가 — 실패해도 노출은 하되 신뢰하지 않는다(REQ-PGRAPH-013)
+    resolution: NodeResolution | None = None
+
+
+class UserIntent(BaseModel):
+    """사용자 편집 고정(pin) 표식 (SPEC §5.4, §6.4).
+
+    본 이슈(#356)는 사용자 변경 경로가 없어 항상 `None` 이다 — 스키마 자리만 만든다.
+    쓰기 경로는 #150(API)·#358(저널·CAS)이 만든다.
+    """
+
+    kind: Literal["assert", "correct", "suppress"]
+    asserted_at: str
+    expires_at: None = None  # [HARD] 항상 None — 사용자 의도는 만료되지 않는다(§6.4)
+    mutation_id: str
+    prior_predicate: str | None = None
+
+
+class GraphEdge(BaseModel):
+    """믿음과 출처의 소재 (SPEC §5.2).
+
+    `status` 와 `promoted` 는 **직교**한다 — 사용자가 지운(suppressed) 취향도 게이트 통과분일 수
+    있고, 그 사실을 지웠다는 이유로 잊으면 복구가 성립하지 않는다.
+    """
+
+    edge_key: str  # "{predicate}|{node_id}"
+    edge_id: str  # "e_" + sha256(edge_key)[:16] — 재파생에 안정
+    node_id: str  # 대상. from 은 항상 사용자 자신이라 저장하지 않는다
+    predicate: Predicate
+    status: EdgeStatus
+    promoted: bool  # 게이트 통과 여부(status 와 직교)
+    origin: Literal["machine", "user"]
+    source_latest: Literal["conversation", "purchase", "user"]
+    confidence: float  # 내부 수치 — 와이어에는 3버킷 라벨만 나간다
+    evidence_count: int
+    evidence_by_source: dict[str, int]
+    evidence_refs: list[str]  # fact key 참조(상한: graph_evidence_refs_max)
+    first_observed_at: str
+    last_observed_at: str
+    decay_evaluated_at: str  # 감쇠 시계 — 배치당 1회 고정(§6.2, 관측별 현재시각 금지)
+    valid_from: str | None  # 승격 시각
+    superseded_by: str | None  # 충돌 패자 → 승자 edge_id
+    suppressed_at: str | None
+    user_intent: UserIntent | None  # pin(§6.4) — #356 범위에서는 항상 None
+    challenge_count: int
+    derived_from_sensitive: bool
+    sensitive_topic: str | None  # 보존기간 판정용 — **와이어 미노출**(§6.8)
+
+
+class GraphDocument(BaseModel):
+    """`("graph", user_id)` / `"v1"` 단일 jsonb 문서 (SPEC §5.3, §7.1의 원자성 근거)."""
+
+    revision: int  # 단조 증가. 초기화로도 되돌리지 않는다(REQ-PGRAPH-042 — 집행은 #358)
+    nodes: list[GraphNode]
+    edges: list[GraphEdge]
+    unprojected_count: int  # 트리플을 못 만든 fact 개수만. 내용은 어떤 형태로도 싣지 않는다
+    purged_at: str | None
+    updated_at: str
