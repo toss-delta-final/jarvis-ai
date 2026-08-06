@@ -2148,6 +2148,8 @@ async def test_search_retries_once_on_timeout(monkeypatch: pytest.MonkeyPatch) -
     import app.services.spring_client as sc
     from app.schemas.spring import ProductSearchFilters
 
+    # [#394] 기본값이 0으로 바뀌어 재시도 루프 자체를 켜서 검증하려면 명시 주입이 필요하다.
+    monkeypatch.setattr(get_settings(), "spring_max_retries", 1)
     calls = _counting_client(
         monkeypatch, httpx.TimeoutException("slow"), httpx.Response(200, json=_I1_OK)
     )
@@ -2163,6 +2165,8 @@ async def test_search_gives_up_after_configured_retries(monkeypatch: pytest.Monk
     import app.services.spring_client as sc
     from app.schemas.spring import ProductSearchFilters
 
+    # [#394] 기본값이 0으로 바뀌어 재시도 루프 자체를 켜서 검증하려면 명시 주입이 필요하다.
+    monkeypatch.setattr(get_settings(), "spring_max_retries", 1)
     calls = _counting_client(monkeypatch, httpx.TimeoutException("slow"))
     with pytest.raises(SpringUnavailableError):
         await sc.search_products(ProductSearchFilters())
@@ -2176,6 +2180,8 @@ async def test_search_retries_on_connect_error(monkeypatch: pytest.MonkeyPatch) 
     import app.services.spring_client as sc
     from app.schemas.spring import ProductSearchFilters
 
+    # [#394] 기본값이 0으로 바뀌어 재시도 루프 자체를 켜서 검증하려면 명시 주입이 필요하다.
+    monkeypatch.setattr(get_settings(), "spring_max_retries", 1)
     calls = _counting_client(
         monkeypatch, httpx.ConnectError("refused"), httpx.Response(200, json=_I1_OK)
     )
@@ -2190,6 +2196,8 @@ async def test_search_retries_on_5xx(monkeypatch: pytest.MonkeyPatch) -> None:
     import app.services.spring_client as sc
     from app.schemas.spring import ProductSearchFilters
 
+    # [#394] 기본값이 0으로 바뀌어 재시도 루프 자체를 켜서 검증하려면 명시 주입이 필요하다.
+    monkeypatch.setattr(get_settings(), "spring_max_retries", 1)
     calls = _counting_client(monkeypatch, httpx.Response(503), httpx.Response(200, json=_I1_OK))
     assert len((await sc.search_products(ProductSearchFilters())).products) == 1
     assert len(calls) == 2
@@ -2208,6 +2216,8 @@ async def test_search_retries_on_remote_disconnect(monkeypatch: pytest.MonkeyPat
     from app.schemas.spring import ProductSearchFilters
 
     assert not isinstance(httpx.RemoteProtocolError("x"), httpx.NetworkError)  # 전제 고정
+    # [#394] 기본값이 0으로 바뀌어 재시도 루프 자체를 켜서 검증하려면 명시 주입이 필요하다.
+    monkeypatch.setattr(get_settings(), "spring_max_retries", 1)
     calls = _counting_client(
         monkeypatch,
         httpx.RemoteProtocolError("server disconnected"),
@@ -2231,6 +2241,8 @@ async def test_retry_log_labels_disconnect_as_connection_error(
     import app.services.spring_client as sc
     from app.schemas.spring import ProductSearchFilters
 
+    # [#394] 기본값이 0으로 바뀌어 재시도 루프 자체를 켜서 검증하려면 명시 주입이 필요하다.
+    monkeypatch.setattr(get_settings(), "spring_max_retries", 1)
     _counting_client(
         monkeypatch, httpx.RemoteProtocolError("disconnected"), httpx.Response(200, json=_I1_OK)
     )
@@ -2256,6 +2268,8 @@ async def test_search_retries_transient_4xx(monkeypatch: pytest.MonkeyPatch, sta
     import app.services.spring_client as sc
     from app.schemas.spring import ProductSearchFilters
 
+    # [#394] 기본값이 0으로 바뀌어 재시도 루프 자체를 켜서 검증하려면 명시 주입이 필요하다.
+    monkeypatch.setattr(get_settings(), "spring_max_retries", 1)
     calls = _counting_client(monkeypatch, httpx.Response(status), httpx.Response(200, json=_I1_OK))
     assert len((await sc.search_products(ProductSearchFilters())).products) == 1
     assert len(calls) == 2
@@ -2347,6 +2361,19 @@ async def test_search_retry_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> 
     assert len(calls) == 1
 
 
+async def test_search_retry_default_config_calls_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[#394] 명시 주입 없이 **기본 설정 그대로** 검색은 1회만 호출된다 — 재시도 한시적 비활성."""
+    import httpx
+
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    calls = _counting_client(monkeypatch, httpx.TimeoutException("slow"))
+    with pytest.raises(SpringUnavailableError):
+        await sc.search_products(ProductSearchFilters())
+    assert len(calls) == 1
+
+
 async def test_recommendation_deferred_conditions_suppresses_search_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2369,7 +2396,8 @@ async def test_recommendation_deferred_conditions_suppresses_search_retry(
     )
 
     assert len(calls) == 1
-    assert _types(events) == ["conditions", "error"]
+    # progress_events_enabled 기본 on(#396) — 스트림 맨 앞에 progress 프레임이 추가된다.
+    assert _types(events) == ["progress", "conditions", "error"]
     assert events[-1]["data"]["code"] == "SEARCH_FAILED"
 
 
@@ -2384,6 +2412,8 @@ async def test_recommendation_nondeferred_conditions_keeps_search_retry(
     """
     import httpx
 
+    # [#394] 기본값이 0으로 바뀌어 재시도 루프 자체를 켜서 검증하려면 명시 주입이 필요하다.
+    monkeypatch.setattr(get_settings(), "spring_max_retries", 1)
     calls = _counting_client(monkeypatch, httpx.Response(503))
     events = await _collect(
         run_buyer_turn(
@@ -2401,7 +2431,8 @@ async def test_recommendation_nondeferred_conditions_keeps_search_retry(
     )
 
     assert len(calls) == 2
-    assert _types(events) == ["conditions", "error"]
+    # progress_events_enabled 기본 on(#396) — 스트림 맨 앞에 progress 프레임이 추가된다.
+    assert _types(events) == ["progress", "conditions", "error"]
     assert events[-1]["data"]["code"] == "SEARCH_FAILED"
 
 
@@ -2412,6 +2443,8 @@ async def test_recommendation_deferred_conditions_retry_can_be_restored_by_guard
     import httpx
 
     monkeypatch.setattr(get_settings(), "search_retry_on_deferred_conditions", True)
+    # [#394] 기본값이 0으로 바뀌어 재시도 루프 자체를 켜서 검증하려면 명시 주입이 필요하다.
+    monkeypatch.setattr(get_settings(), "spring_max_retries", 1)
     calls = _counting_client(monkeypatch, httpx.Response(503))
     events = await _collect(
         run_buyer_turn(
@@ -2428,7 +2461,8 @@ async def test_recommendation_deferred_conditions_retry_can_be_restored_by_guard
     )
 
     assert len(calls) == 2
-    assert _types(events) == ["conditions", "error"]
+    # progress_events_enabled 기본 on(#396) — 스트림 맨 앞에 progress 프레임이 추가된다.
+    assert _types(events) == ["progress", "conditions", "error"]
     assert events[-1]["data"]["code"] == "SEARCH_FAILED"
 
 
@@ -2438,6 +2472,8 @@ async def test_recommendation_relaxation_chip_probe_keeps_search_retry(
     """conditions 뒤 완화 칩 probe는 첫 이벤트 예산 밖이라 I-1 재시도를 유지한다(#277)."""
     import httpx
 
+    # [#394] 기본값이 0으로 바뀌어 재시도 루프 자체를 켜서 검증하려면 명시 주입이 필요하다.
+    monkeypatch.setattr(get_settings(), "spring_max_retries", 1)
     empty = httpx.Response(200, json={"success": True, "data": []})
     calls = _counting_client(
         monkeypatch,
@@ -2461,7 +2497,9 @@ async def test_recommendation_relaxation_chip_probe_keeps_search_retry(
     )
 
     assert len(calls) == 4
-    assert _types(events)[0] == "conditions"
+    # progress_events_enabled 기본 on(#396) — 스트림 맨 앞에 progress 프레임이 추가된다.
+    assert _types(events)[0] == "progress"
+    assert _types(events)[1] == "conditions"
     assert "suggestions" in _types(events)
     assert _types(events)[-1] == "done"
 
@@ -5002,7 +5040,8 @@ async def test_order_status_branch_is_early_and_passes_request_id() -> None:
     )
 
     assert calls == [42]
-    assert _types(events) == ["token", "done"]
+    # progress_events_enabled 기본 on(#396) — 스트림 맨 앞에 progress 프레임이 추가된다.
+    assert _types(events) == ["progress", "token", "done"]
     assert events[-1]["data"]["finishReason"] == "stop"
     assert [tier for tier, _ in llm.calls] == ["fast"]
 
@@ -5028,7 +5067,8 @@ async def test_order_status_default_dependency_is_resolved_at_call_time(
         )
     )
     assert calls == [42]
-    assert _types(events) == ["token", "done"]
+    # progress_events_enabled 기본 on(#396) — 스트림 맨 앞에 progress 프레임이 추가된다.
+    assert _types(events) == ["progress", "token", "done"]
 
 
 async def test_non_callable_order_status_dependency_only_errors_on_selected_route() -> None:
@@ -5050,7 +5090,8 @@ async def test_non_callable_order_status_dependency_only_errors_on_selected_rout
             order_status_fn=object(),
         )
     )
-    assert _types(events) == ["token", "done"]
+    # progress_events_enabled 기본 on(#396) — 스트림 맨 앞에 progress 프레임이 추가된다.
+    assert _types(events) == ["progress", "token", "done"]
 
 
 async def test_order_status_clears_pending_without_copying_response_into_buyer_state() -> None:
@@ -6097,7 +6138,7 @@ _PRICED_POPULAR = [
 async def test_budget_only_turn_filters_popular_by_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """"총 5만원 있어 아무거나" — 인기 상품 중 **예산 이하만** 후보로 남는다.
+    """ "총 5만원 있어 아무거나" — 인기 상품 중 **예산 이하만** 후보로 남는다.
 
     세트로 묶지 않는다: 무엇을 몇 개 살지 사용자가 말하지 않아 조합 기준이 없다. 대신 예산 안의
     대안을 보여주고 대화로 되묻는다.
@@ -6196,7 +6237,9 @@ async def test_profile_path_discloses_dedup_failure_like_the_other_paths(
         raise SpringUnavailableError("orders down")
 
     monkeypatch.setattr(_sc_mod, "get_recent_purchases", _boom)
-    monkeypatch.setattr(get_settings(), "dedup_skipped_notice", "최근 구매 내역을 확인하지 못했어요.")
+    monkeypatch.setattr(
+        get_settings(), "dedup_skipped_notice", "최근 구매 내역을 확인하지 못했어요."
+    )
     _inject_profile(monkeypatch, vector=[1.0, 0.0, 0.0], store=_catalog_store([201, 202]))
     search, _ = _counting_search_calls()
     popular, popular_calls = _recording_popular()
@@ -6223,8 +6266,9 @@ async def _failed_mapping(*args, **kwargs):
 
     return CategoryMapping()
 
+
 async def test_multi_item_utterance_with_failed_mapping_keeps_normal_search() -> None:
-    """"이어폰이랑 노트북 추천해줘" — 매핑이 실패해도 인기 상품으로 새면 안 된다(PR #311 리뷰).
+    """ "이어폰이랑 노트북 추천해줘" — 매핑이 실패해도 인기 상품으로 새면 안 된다(PR #311 리뷰).
 
     상품 2개 지목은 `cat_signal` 승격 조건(leg 1개)에 안 걸려 출처 검사를 통과하고, 매핑까지
     실패하면 `category_legs` 도 빈다. `category_queries` 를 안 보면 사용자가 명시적으로 말한

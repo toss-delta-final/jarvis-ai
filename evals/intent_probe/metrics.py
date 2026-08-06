@@ -116,6 +116,15 @@ def _screen_resolution_matches(sample: Sample, utterance: Utterance, anchors: An
     return predicate(sample, utterance, anchors) if predicate is not None else False
 
 
+def _condition_only_no_category_query(sample: Sample, _: Utterance, __: AnchorSet) -> bool:
+    """[#344 라운드 2] 조건 전용 발화에서 decompose 가 `categoryQueries` 를 하나도 못박지
+    않았는가(leg 이 0개 — `sample.category_legs` 는 `serialize_category_legs` 가 빈 리스트를
+    빈 문자열로 만든다, `runner.serialize_category_legs([]) == ""`). leg 을 하나라도 내면
+    불충족이다 — 그 텍스트가 임베딩 앵커로 흘러 #222 확장이 무관 카테고리로 fan-out 하는
+    입구가 된다."""
+    return sample.category_legs == ""
+
+
 @dataclass(frozen=True)
 class AxisSpec:
     """축 하나의 정의. `numerator`/`denominator` 는 사람이 읽는 정의 문장이다."""
@@ -317,6 +326,23 @@ AXES: tuple[AxisSpec, ...] = (
             "baselines/fast-2026-08-04-prompt-e5e19582 (이 축이 존재하지 않던 런)",
             "baselines/fast-2026-08-05-84 (이 축이 존재하지 않던 런)",
             "#118 원 프로브(이관 전, #300 흡수 후 삭제됨)의 adopted 변형 표 — 해소기 통과 후 48/48, 프롬프트 층(SCREEN 블록 채택안·해소기 전) 27/48. screen 을 아예 안 실은 `before` 9/48 은 설계 자체가 달라 어느 쪽과도 비교하지 않는다",
+        ),
+    ),
+    # [#344 라운드 2] 조건 전용 발화("평점 좋은 걸로 보여줘" 등, 카테고리 어휘 없이 조건만 말하는
+    # 턴)가 `categoryQueries` 를 비우는 계약은 지금 프롬프트의 우연한 동작이고 코드가 강제하지
+    # 않는다 — 이 축은 그 불변식을 decompose 계약 단계에서 고정한다. category_probe 의 none
+    # 슬라이스(임베딩 매핑 단계)와 같은 발화 문구로 같은 현상을 서로 다른 단계에서 잰다.
+    AxisSpec(
+        axis_id="conditionOnlyNoCategoryQuery",
+        title="조건 전용 categoryQueries 비움",
+        numerator="categoryLegs(leg 원문 직렬화)가 빈 문자열인 표본 수 — decompose 가 이 발화에서 "
+        "categoryQueries 를 하나도 못박지 않은 경우",
+        denominator="조건 전용 5발화 × none 컨텍스트 × N (N=8 이면 40)",
+        predicate=_condition_only_no_category_query,
+        not_comparable_with=(
+            "baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)",
+            "baselines/fast-2026-08-05-84 (이 축이 존재하지 않던 런)",
+            "baselines/fast-2026-08-05-300-screen (이 축이 존재하지 않던 런)",
         ),
     ),
 )

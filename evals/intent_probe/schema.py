@@ -39,6 +39,10 @@ CATEGORY_PRIOR_CONTEXT_ID = "categoryPrior"
 # [#300] screen 지시어 해소(#118)를 재는 그룹 — #118 이 만든 두 번째 프로브(PR #292, 이후
 # #300 이 이 하네스로 흡수하며 삭제했다)의 screen 셀 6종을 옮긴다.
 SCREEN_GROUP = "screen"
+# [#344 라운드 2] 조건 전용 발화(카테고리 어휘 없이 조건만 말하는 턴, "평점 좋은 걸로 보여줘")가
+# `categoryQueries` 를 비우는 불변식을 재는 그룹 — 지금은 프롬프트의 우연한 동작이고 코드가
+# 강제하지 않는다(`category_mapping._collect_expansion_leaves` docstring [#222 R2 F-2] 참조).
+CONDITION_ONLY_GROUP = "condition_only"
 GROUPS = frozenset(
     {
         "cart_control",
@@ -49,6 +53,7 @@ GROUPS = frozenset(
         "general",
         CATEGORY_ACTION_GROUP,
         SCREEN_GROUP,
+        CONDITION_ONLY_GROUP,
     }
 )
 # [#313] group → 허용 컨텍스트 매핑. "이 축이 무엇을 재는가"의 선언 그 자체다 — 여기 한 줄이
@@ -66,6 +71,9 @@ GROUP_ALLOWED_CONTEXTS: dict[str, frozenset[str]] = {
     "general": frozenset({"none", "lastRecommendations", "pendingCart"}),
     CATEGORY_ACTION_GROUP: frozenset({CATEGORY_PRIOR_CONTEXT_ID}),
     SCREEN_GROUP: frozenset(SCREEN_CONTEXT_IDS),
+    # [#344 라운드 3] 이 축의 정의가 "무프라이어(none) 컨텍스트에서 조건만 말하는 턴"이므로
+    # 허용 컨텍스트는 `none` 하나뿐이다.
+    CONDITION_ONLY_GROUP: frozenset({"none"}),
 }
 INTENTS = ("recommend", "cart_add", "cart_view", "order_status", "general")
 CATEGORY_ACTIONS = ("carry", "clear", "replace")
@@ -109,7 +117,10 @@ SCREEN_AXIS_IDS = frozenset(
         "screenResolution",
     }
 )
-AXIS_IDS = LEGACY_AXIS_IDS | CATEGORY_ACTION_AXIS_IDS | SCREEN_AXIS_IDS
+# [#344 라운드 2] 조건 전용 발화 축 — 커밋된 기준선(`baselines/fast-2026-08-04`·
+# `baselines/fast-2026-08-05-84`·`baselines/fast-2026-08-05-300-screen`)에는 **존재하지 않는다.**
+CONDITION_ONLY_AXIS_IDS = frozenset({"conditionOnlyNoCategoryQuery"})
+AXIS_IDS = LEGACY_AXIS_IDS | CATEGORY_ACTION_AXIS_IDS | SCREEN_AXIS_IDS | CONDITION_ONLY_AXIS_IDS
 # [#300, F-2] productIdRule → 그 규칙이 재는 컴포넌트 축. `screenResolution`(합계 축)은 모든
 # screen 발화가 공통으로 선언해야 하므로 이 맵에는 넣지 않는다 —
 # `Utterance._screen_axes_match_the_rule` 이 `{매핑값, "screenResolution"}` 을 강제한다.
@@ -482,6 +493,34 @@ class Utterance(CamelModel):
                 f"{self.utterance_id}: {sorted(declared & CATEGORY_ACTION_AXIS_IDS)} 는 "
                 f"group='{CATEGORY_ACTION_GROUP}' 발화만 선언할 수 있습니다 "
                 "— 다른 그룹이 섞이면 신규 축의 분모가 정의(카테고리 11발화)와 어긋납니다"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _condition_only_group_is_isolated(self) -> "Utterance":
+        """[#344 라운드 2] 조건 전용 축은 기존 축과 표본을 섞지 않는다 — 다른 그룹과 같은 이유
+        (`_category_action_group_is_isolated`·`_screen_group_is_isolated` 참조).
+
+        [#344 라운드 3] 컨텍스트가 `none` 하나여야 한다는 제약은 [#313]
+        `GROUP_ALLOWED_CONTEXTS`(`_contexts_are_within_the_group_allowlist`)로 옮겨졌다 —
+        `condition_only` 의 허용 컨텍스트가 `{"none"}` 하나뿐이라 그 매핑만으로 이미 충분하다
+        (`_category_action_group_is_isolated` 가 categoryPrior 단일 제약을 옮긴 것과 같은 정리).
+        """
+        declared = set(self.axes)
+        if self.group == CONDITION_ONLY_GROUP:
+            legacy = sorted(
+                declared & (LEGACY_AXIS_IDS | CATEGORY_ACTION_AXIS_IDS | SCREEN_AXIS_IDS)
+            )
+            if legacy:
+                raise ValueError(
+                    f"{self.utterance_id}: 조건 전용 발화는 기존 축 {legacy} 를 선언할 수 없습니다 "
+                    "— 새 셀이 기존 축의 분모를 늘리면 커밋된 기준선과 그 축을 비교할 수 없게 됩니다"
+                )
+        elif declared & CONDITION_ONLY_AXIS_IDS:
+            raise ValueError(
+                f"{self.utterance_id}: {sorted(declared & CONDITION_ONLY_AXIS_IDS)} 는 "
+                f"group='{CONDITION_ONLY_GROUP}' 발화만 선언할 수 있습니다 "
+                "— 다른 그룹이 섞이면 신규 축의 분모가 정의(조건 전용 5발화)와 어긋납니다"
             )
         return self
 

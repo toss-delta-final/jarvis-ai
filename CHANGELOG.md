@@ -114,6 +114,28 @@
   - **아직 안 되는 것 3가지 — 릴리스 노트만 보고 "이제 다 된다"로 읽지 말 것.** (1) **Spring 이 I-24~I-28 을 아직 구현 진행 중**이라 배포 전에는 이 발화들이 호출은 나가도 응답을 못 받아 실패 안내로 끝난다. (2) **FE `ChatAction` 유니온에 신규 8종이 아직 없다** — FE 수신부가 붙기 전에는 성공해도 화면에 반영되지 않는다. (3) **수량 변경(I-25)은 계약만 등재됐고 AI 는 미구현**이다(대응 이슈 없음, §4.13) — "3개로 바꿔줘"류 발화는 아직 아무 동작도 하지 않는다.
 
 ### Changed
+- **#394 — I-1 검색 재시도를 한시적으로 끈다(`spring_max_retries` 기본 1→0)** — 운영 실측
+  (2026-08-06): I-1 이 `SEARCH_FAILED` 로 떨어진 요청은 Spring 이 실패한 게 아니라 200 인데
+  3s 예산을 넘긴 지연이었다. 그 상태에서 재시도는 backoff 없이 성공했을 쿼리를 즉시 한 번 더
+  돌려 Spring 부하만 2배로 만들고, 사용자에겐 6초 뒤 실패를 준다. **BE 검색 쿼리 개선(리뷰
+  집계 비정규화, BE #395) 배포 후 원복 검토** — 구매자 `progress` 이벤트(#289)로 first-token
+  관문이 풀릴 때도 함께 재검토한다. 상한(`le=1`)·타임아웃 값·재시도 루프 로직은 불변, 계약
+  (api-spec) 무변경.
+- **#396 — 구매자 `progress` SSE 이벤트 플래그 기본 on 전환 + 운영 기동 가드 제거** —
+  #289 가 계약 등재(v0.21.0)·FE 확인 완료 뒤에만 켜라고 못박아둔 잠금이 2026-08-06 FE
+  구현 완료 통보로 해제됐다. `progress_events_enabled` 기본값을 `false` → `true` 로
+  뒤집고, `_require_pepper_in_prod` 의 운영(jwks)·스테이징 기동 가드(플래그 on 이면
+  기동 실패)를 삭제했다 — 가드 제거 자체가 해제 절차의 일부였다(다른 fail-closed 가드
+  pepper·internal token·jwks_url·google_api_key·state store·session claim TTL 은
+  무변경). 기본값이 뒤집히며 구매자 스트림을 도는 다른 테스트 다수에서 이벤트 목록
+  맨 앞에 `progress` 프레임이 하나 더 붙어 깨졌고(`test_buyer_tracing.py`·`test_cart.py`·
+  `test_category_scope_84.py`·`test_condition_actions.py`·`test_fanout.py`·
+  `test_recommendation.py`), 기대값을 새 현실에 맞춰 갱신했다(단언 약화·스킵 없음).
+  `test_progress_event.py`는 명시적 off 강제(`monkeypatch`)로 escape hatch 회귀 4건을
+  보존하고, 기본값 자체를 직접 고정하는 테스트와 가드 제거를 고정하는 성공 테스트 2건을
+  추가했다. **와이어 계약(이벤트 이름·페이로드·필드·횟수·상대 순서) 은 이번에 하나도
+  바꾸지 않았다** — 바뀌는 것은 "잠겨 있다"는 구현/배포 상태뿐이며, 되돌리려면
+  `PROGRESS_EVENTS_ENABLED=false` 한 줄. (api-spec §3.1·§2.9 c, v0.26.2)
 - **#313 — group→컨텍스트 매핑을 데이터(`GROUP_ALLOWED_CONTEXTS`)로 강제, #300·#84 전용 검증자를 일반형으로 흡수** —
   `evals/intent_probe/schema.py` 에 group → 허용 컨텍스트 매핑을 데이터로 두고 `Utterance`
   검증자(`_contexts_are_within_the_group_allowlist`)가 강제한다. 매핑에 없는 group 은 어떤
@@ -167,7 +189,8 @@
 - **#285 — 챗봇 장바구니 삭제·수량 변경·찜 추가·해제·목록 internal 계약 초안을 정본에 등재** — Notion 「📡 API 명세서」에 I-24~I-28로 등재했다. 발명이 아니라 FE↔BE 정본 실측(C-4 삭제·C-3 수량 변경·M-5 찜 추가·M-6 찜 해제·M-4 찜 목록)의 의미론과 I-2/I-18의 internal 규약(`X-Internal-Token`, AI가 검증한 JWT `sub` 유래 신원, 3초 타임아웃, 응답 envelope)을 이식한 제안이며, I-25 수량 변경은 이슈 본문에 없던 신규 편입이다. 아직 BE 협의 전으로 각 정본 페이지에 초안 배너가 있고 잔여 안건은 이슈 #285 코멘트에 남겼으며, 사본 `docs/api-spec.md` 동기화와 CH-2 `action` 8종 확장은 협의 후 진행한다.
 
 ### Fixed
-- **#325 — I-17 증분 배치가 enrichment 토큰 예산 소진(`openai.LengthFinishReasonError`)으로 운영 정지되던 문제** — 운영 fast tier(gpt-5-nano, reasoning 모델)에서 하드코딩 `max_tokens=600` 전량이 `reasoning_tokens`로 소진돼 본문 0자로 매 5분 주기 정지했다. `enrichment_max_tokens`(기본 2048)·`enrichment_reasoning_effort`(기본 minimal, 배포 변수 `OPENAI_FAST_REASONING_EFFORT` 와 무관하게 고정) 를 config 로 주입하고 `LLMClient.complete` 에 keyword-only `reasoning_effort` 파라미터를 추가했다(OpenAI 캐시 키에 override 포함해 캐시 오염 방지, Anthropic 은 무시). 함께 `artifacts_batch._drain` 의 head-of-line blocking 도 고쳤다 — ON_SALE 단건 실패는 `enrichment_item_attempts`(기본 2) 회 재시도 후 dead-letter 기록으로 격리하고 다음 항목으로 계속하며, 페이지 실패 비율이 `artifacts_batch_failure_ratio_threshold`(기본 0.5) 이상이면(광역 장애로 간주) `PageFailureThresholdExceeded` 를 던져 그 페이지 커서만 미전진(자연 복구)한다. 단, 운영 증분 페이지는 대개 1~3건이라 표본이 `artifacts_batch_failure_min_sample`(기본 5) 미만이면 비율 판정을 생략하고 격리+전진한다 — poison 단건과 광역 장애를 소량 표본만으로 구별할 수 없기 때문이며, 이 가드가 없으면 운영에서 가장 흔한 "문제 상품 1건" 상황에서 ratio=1.0 으로 여전히 head-of-line blocking 이 재현됐다. HIDDEN 삭제 실패는 격리하지 않고 그대로 전파(fail-closed 유지). `BatchResult.failed` 신설, scheduler·run_batch 요약 로그·failed>0 시 별도 ERROR 로그로 관측 사각을 없앴다. **PR #399 리뷰 대응(정밀화)**: 소량 표본에서는 비율 가드가 사실상 죽은 코드가 돼 광역 장애(임베딩 API 다운 등)까지 매번 poison 단건으로 오분류될 수 있음이 지적됐다 — 격리 후보를 enrichment(LLM 호출+파싱) 단계의 내용 실패로 구조적으로 한정하고, 임베딩·스토어 실패와 재시도 소진 후 타임아웃 계열(`app.core.llm.is_timeout_error`)로 판정된 enrichment 실패는 격리하지 않고 그대로 전파하도록 고쳐, 페이지 크기와 무관하게 광역 장애를 자연 복구 경로로 보낸다. 비율 가드는 이제 2선 방어. 복구 규약 변경을 반영해 계약(api-spec §4.8, v0.26.2) 개정.
+- **#325 — I-17 증분 배치가 enrichment 토큰 예산 소진(`openai.LengthFinishReasonError`)으로 운영 정지되던 문제** — 운영 fast tier(gpt-5-nano, reasoning 모델)에서 하드코딩 `max_tokens=600` 전량이 `reasoning_tokens`로 소진돼 본문 0자로 매 5분 주기 정지했다. `enrichment_max_tokens`(기본 2048)·`enrichment_reasoning_effort`(기본 minimal, 배포 변수 `OPENAI_FAST_REASONING_EFFORT` 와 무관하게 고정) 를 config 로 주입하고 `LLMClient.complete` 에 keyword-only `reasoning_effort` 파라미터를 추가했다(OpenAI 캐시 키에 override 포함해 캐시 오염 방지, Anthropic 은 무시). 함께 `artifacts_batch._drain` 의 head-of-line blocking 도 고쳤다 — ON_SALE 단건 실패는 `enrichment_item_attempts`(기본 2) 회 재시도 후 dead-letter 기록으로 격리하고 다음 항목으로 계속하며, 페이지 실패 비율이 `artifacts_batch_failure_ratio_threshold`(기본 0.5) 이상이면(광역 장애로 간주) `PageFailureThresholdExceeded` 를 던져 그 페이지 커서만 미전진(자연 복구)한다. 단, 운영 증분 페이지는 대개 1~3건이라 표본이 `artifacts_batch_failure_min_sample`(기본 5) 미만이면 비율 판정을 생략하고 격리+전진한다 — poison 단건과 광역 장애를 소량 표본만으로 구별할 수 없기 때문이며, 이 가드가 없으면 운영에서 가장 흔한 "문제 상품 1건" 상황에서 ratio=1.0 으로 여전히 head-of-line blocking 이 재현됐다. HIDDEN 삭제 실패는 격리하지 않고 그대로 전파(fail-closed 유지). `BatchResult.failed` 신설, scheduler·run_batch 요약 로그·failed>0 시 별도 ERROR 로그로 관측 사각을 없앴다. **PR #399 리뷰 대응(정밀화)**: 소량 표본에서는 비율 가드가 사실상 죽은 코드가 돼 광역 장애(임베딩 API 다운 등)까지 매번 poison 단건으로 오분류될 수 있음이 지적됐다 — 격리 후보를 enrichment(LLM 호출+파싱) 단계의 내용 실패로 구조적으로 한정하고, 임베딩·스토어 실패와 재시도 소진 후 타임아웃 계열(`app.core.llm.is_timeout_error`)로 판정된 enrichment 실패는 격리하지 않고 그대로 전파하도록 고쳐, 페이지 크기와 무관하게 광역 장애를 자연 복구 경로로 보낸다. 비율 가드는 이제 2선 방어. 복구 규약 변경을 반영해 계약(api-spec §4.8, v0.26.3) 개정.
+- **#344 — `category_distance_max` 등 카테고리 거리·마진 임계가 사전 재시드(2,056행 → leaf 1,007행) 이후로 stale이던 문제** — `evals/category_probe` 기준선(`baselines/fast-2026-08-06`, hits.csv 앵커 38셀×N=8·176표본)을 오프라인 스윕한 결과 `category_distance_max`를 0.22 → **0.26**으로 올렸다(single 정답 med 0.2416·q3 0.2579 vs notInCatalog 최소 d1 0.2621 사이에서 nic 무강제 0/40을 지키는 최대 컷 — 거리컷 드롭이 107/176 → **30/176**으로 줄고 채택 정답이 61/176 → **130/176**으로 늘었다, 오답채택은 0 → 8). 이 측정은 이 프로브 176표본 범위이며, 이슈 본문이 인용한 골든셋 150건 컷 통과 회복(#222 별도 실측)은 이번 재측정으로 확인하지 않았다 — 범위 밖. `category_distance_override_margin`(0.035)·`category_select_margin_max`(0.02)는 재검증만 하고 값은 유지했다. 재측정을 `hits.csv` 원시 top-k 거리만으로 런 재실행 없이 반복할 수 있도록 오프라인 스윕 도구 `evals/category_probe/sweep.py`(API·pg·LLM 콜 0)를 신설했다. 계약(api-spec) 무변경.
 - **#353 — `embed_texts`가 Google 배치 임베딩 100건/요청 상한을 넘으면 400으로 실패하던 문제** — `_EMBED_BATCH_MAX`(100) 청크로 나눠 순차 호출하고 입력 순서대로 이어붙이도록 고쳤다. eval 도구뿐 아니라 §4.8 I-17 운영 배치 경로(search_doc 임베딩)도 공유하는 잠복 결함이었다. 계약(api-spec) 무변경.
 - **#323 — `set_summary` 무잠금 read-then-write 에 per-user `mutation_lock` 추가 — #150 사용자 편집 경로 선결.**
 - **#368 — `stream_wishlist_add`만 `SpringUnavailableError`를 개별 처리하지 않아 범용 catch-all(INTERNAL)로 새던 문제(#335 매트릭스 미정의 셀 실측 발견)** — 호출부의 예외 처리 범위를 형제 cart_add(`graph.py:453`)와 통일해, `except (WishlistError, SpringUnavailableError):`로 넓혔다. 기본 어댑터 `add_wishlist`(I-26)는 실패를 전부 `WishlistError`로 내므로 그 경로는 종전과 동일하지만, 주입된 `add_wishlist_fn`(평가 하네스 degrade 주입 등)이 `SpringUnavailableError`를 낼 때는 이 except 없이는 INTERNAL로 새던 것을 기존 `WISHLIST_ADD_FAILED`/`WISHLIST_ERROR` degrade로 끝나게 했다(신규 오류 코드·문구 없음, 형제 cart_add도 어댑터가 내지 않는 이 예외를 같은 이유로 방어한다). 계약(api-spec) 무변경.
