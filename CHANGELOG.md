@@ -30,6 +30,34 @@
   고쳤다 — 가격 미상(`price: null`)은 그대로 통과시킨다. 기존 커밋 데이터에는 가격 위반
   후보가 0건이었으므로 이번 수정으로 기존 케이스의 노출·지표는 바뀌지 않았다(실측 확인).
   계약(api-spec) 무변경.
+- **#363 — 구제 체인(#222 F-1·#343 억제-후 재판정) first-token 지연 계측 + 최악 경로 순차 왕복
+  상한 회귀 테스트 — "예산 내"가 아니라 이미 데드라인 초과, 기동 가드(#288) 과소계상도 발견**
+  — 운영 로그(`recommend_zero_result`·`category_expand_post_suppress_fallback`)는 배포 1일
+  미만이거나 아직 미배포라 실측이 불가해(근거 `docs/specs/MEASURE-FIRST-TOKEN-363.md` §2), 대신
+  `category_expand_zero_fallback`/`category_expand_post_suppress_fallback` 성공 로그에
+  `elapsed_ms`를, `recommend_zero_result`에 `rescue_elapsed_ms`·`relax_probes`·
+  `relax_auto_elapsed_ms`(자동완화, first SSE **이전**)·`relax_chip_elapsed_ms`(칩 probe, first
+  SSE **이후** — 합치면 아직 스트림에 안 나간 소요가 섞여 과대계상되므로 필드를 분리했다)를
+  추가해 다음 배포부터 실측 가능하게 했다. fake 로 재현한 최악 경로(확장 턴 전량 억제 + #343
+  폴백 실패 + 자동완화 probe 실패)로 first SSE(conditions) 이전 순차 Spring 왕복이 **정확히
+  3단**(초기 fan-out + #343 폴백 + 자동완화 probe)임을 회귀 테스트로 고정했다. **최악 상한
+  3단×`spring_timeout_s`(3s)=9.0s를 first-token 을 실제로 끊는 예산과 비교하면 30s
+  (`stream_total_timeout_buyer_s`, 첫 이벤트 이후만 덮는 전체 상한)가 아니라 10s
+  (`stream_first_token_timeout_s`, 첫 이벤트 이전 상한)여야 하고, 그 기준으로는 소모율 90%에
+  선행 decompose LLM head(p95≈3.0s, #151)를 더하면 12.0s>10.0s — 최악 경로는 오늘 설정에서
+  이미 first-token 데드라인을 넘어 504가 된다**(PR #362 리뷰의 "3단 적층 ≈9s" 우려를 수치로
+  확인·정정, 이슈 본문의 "30s 예산 내" 전제는 반증됨). 기동 가드
+  `_deferred_first_event_i1_calls`(#288)도 이 3단 중 구제 폴백 항을 빠뜨려 항상 2로
+  과소계상한다는 것을 발견 — `spring_timeout_s ∈ [10/3, 5.0)` 구간은 가드를 통과하면서 실제로는
+  데드라인을 넘는다. 보정된 일반형(`1 + (1 if category_expand_enabled else 0) + min(...)`)을
+  문서화하고 가드/실측 값의 불일치(2 vs 3)를 `tests/unit/test_config.py`에 회귀 테스트로
+  고정했다 — 런타임 가드 동작은 배포 영향을 고려해 이번 PR에서 바꾸지 않는다(적용은 후속
+  이슈). 공유 왕복 예산/first-token 데드라인 가드 설계도 후속 이슈로 넘긴다(§4·§5가 이미
+  "유의" 판정 근거이므로 후속은 실빈도 실측이 목적). **Claude PR Review(#379) 반영** — 위 계측
+  필드가 `recommend_zero_result`(0건 종결)에만 있어 **구제가 실제로 성공한 턴**(이 이슈가 재려는
+  핵심 표본)은 관측되지 않던 구멍을 발견 — 상호 배타인 `recommend_pipeline`(성공 종결)에도 같은
+  세 소요 필드와 `may_auto_relax`(conditions가 검색 전/후 어느 쪽에 나갔는지, first-token 지연
+  여부 판정에 필수)를 추가해 두 로그의 합집합이 전수가 되게 했다. 계약(api-spec) 무변경.
 - **#371 — combo_matrix INV/DIR 쌍 실검증 러너(`evals/combo_matrix/pair_runner.py`)** — #335 매트릭스에
   라벨만 있고 실행이 없던 INV/DIR 3쌍을 실제로 검증한다. INV(combo-0056, rerank 실패 degrade)는
   push 계약 형태(listType·lists 길이·필드 존재, 실측상 productIds 멀티셋까지) 동일성을 비교하고,
