@@ -26,7 +26,9 @@ def test_catalog_artifact_store_satisfies_shared_protocol():
 
 
 class _EnrichLLM:
-    async def complete(self, *, system, user, tier, max_tokens=1024, json_output=True):
+    async def complete(
+        self, *, system, user, tier, max_tokens=1024, json_output=True, reasoning_effort=None
+    ):
         return json.dumps(
             {"tags": ["여행", "방수"], "attributes": {"소재": "나일론"}}, ensure_ascii=False
         )
@@ -105,7 +107,9 @@ async def test_enrich_product_returns_extras():
 class _SituationLLM:
     """situation_tags 를 함께 주는 LLM — 확장된 enrichment 스키마(#148)."""
 
-    async def complete(self, *, system, user, tier, max_tokens=1024, json_output=True):
+    async def complete(
+        self, *, system, user, tier, max_tokens=1024, json_output=True, reasoning_effort=None
+    ):
         return json.dumps(
             {
                 "tags": ["여행"],
@@ -696,9 +700,7 @@ async def test_color_harvest_only_adds_pending_new_terms(monkeypatch):
     assert seen == [({"방수": True}, True)]
 
 
-async def test_color_harvest_count_limit_logs_and_does_not_kill_i17_artifact(
-    monkeypatch, caplog
-):
+async def test_color_harvest_count_limit_logs_and_does_not_kill_i17_artifact(monkeypatch, caplog):
     settings = get_settings().model_copy(
         update={
             "color_synonym_batch_harvest_enabled": True,
@@ -708,9 +710,7 @@ async def test_color_harvest_count_limit_logs_and_does_not_kill_i17_artifact(
         }
     )
     store = CatalogArtifactStore()
-    change = _change(1).model_copy(
-        update={"attributes": {"색상": ["블랙", "화이트", "레드"]}}
-    )
+    change = _change(1).model_copy(update={"attributes": {"색상": ["블랙", "화이트", "레드"]}})
     harvested: list[str] = []
 
     def harvest(
@@ -865,6 +865,829 @@ async def test_background_harvest_logs_only_late_failure(caplog):
     assert "late harvest failure" in caplog.text
 
 
+# ── 이슈 #325: enrichment 토큰 예산 + _drain 항목 격리(head-of-line blocking 해소) ──
+
+
+class _CapturingLLM:
+    """enrichment 호출 kwargs(max_tokens·reasoning_effort)를 캡처하는 fake(#325 회귀 방지)."""
+
+    def __init__(self):
+        self.calls: list[tuple[int, str | None]] = []
+
+    async def complete(
+        self, *, system, user, tier, max_tokens=1024, json_output=True, reasoning_effort=None
+    ):
+        self.calls.append((max_tokens, reasoning_effort))
+        return json.dumps({"tags": ["여행"], "attributes": {}}, ensure_ascii=False)
+
+
+async def test_enrich_product_sends_configured_max_tokens_and_effort():
+    """#325 회귀 방지 — 600 하드코딩 대신 settings.enrichment_max_tokens/effort 를 싣는다."""
+    settings = get_settings().model_copy(
+        update={"enrichment_max_tokens": 3333, "enrichment_reasoning_effort": "low"}
+    )
+    llm = _CapturingLLM()
+    await enrich_product({"name": "파우치", "category": "여행용품"}, llm=llm, settings=settings)
+    assert llm.calls == [(3333, "low")]
+
+
+class _FlakyLLM:
+    """상품명별 실패 횟수를 지정해 재시도·단건 격리 테스트에 쓴다(#325)."""
+
+    def __init__(self, fail_counts=None, always_fail=None):
+        self._fail_counts = dict(fail_counts or {})
+        self._always_fail = set(always_fail or [])
+        self.calls_by_name: dict[str, int] = {}
+
+    async def complete(
+        self, *, system, user, tier, max_tokens=1024, json_output=True, reasoning_effort=None
+    ):
+        payload = json.loads(user)
+        name = payload.get("name")
+        self.calls_by_name[name] = self.calls_by_name.get(name, 0) + 1
+        if name in self._always_fail:
+            from app.core.llm import LLMError
+
+            raise LLMError(f"boom: {name}")
+        remaining = self._fail_counts.get(name, 0)
+        if remaining > 0:
+            self._fail_counts[name] = remaining - 1
+            from app.core.llm import LLMError
+
+            raise LLMError(f"flaky boom: {name}")
+        return json.dumps({"tags": ["여행"], "attributes": {}}, ensure_ascii=False)
+
+
+async def test_drain_isolates_single_item_failure(caplog):
+    """3건 중 1건 실패 → 나머지 2건 처리·upsert, failed=1, 커서 전진, ERROR 로그에 product_id."""
+    store = CatalogArtifactStore()
+    changes = [
+        _change(1, name="상품A"),
+        _change(2, name="상품B-실패"),
+        _change(3, name="상품C"),
+    ]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _FlakyLLM(always_fail=["상품B-실패"])
+    with caplog.at_level("ERROR"):
+        result = await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=get_settings()
+        )
+
+    assert result.processed == 2
+    assert result.failed == 1
+    assert store.get(1) is not None
+    assert store.get(2) is None
+    assert store.get(3) is not None
+    assert store.get_cursor() == "c1"
+    assert "product_id=2" in caplog.text
+
+
+async def test_drain_retries_then_succeeds():
+    """1차 실패 → 2차 성공이면 processed 에 포함, failed=0."""
+    store = CatalogArtifactStore()
+    changes = [_change(1, name="플레이키")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _FlakyLLM(fail_counts={"플레이키": 1})
+    settings = get_settings().model_copy(update={"enrichment_item_attempts": 2})
+    result = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+    )
+
+    assert result.processed == 1
+    assert result.failed == 0
+    assert llm.calls_by_name["플레이키"] == 2
+    assert store.get(1) is not None
+
+
+async def test_drain_dead_letters_after_attempts_exhausted():
+    """attempts 초과 시 dead-letter(격리) — 재시도 횟수만큼만 호출.
+
+    페이지 표본(3)이 artifacts_batch_failure_min_sample(5) 미만이라 비율 가드는 애초에
+    평가되지 않는다 — 이 테스트는 단건 격리(retry exhaustion) 만 검증하고, 임계 가드는 별도
+    테스트가 담당한다. 성공 항목 2건은 processed 카운트도 함께 확인하기 위한 것이다.
+    """
+    store = CatalogArtifactStore()
+    changes = [_change(1, name="영구실패"), _change(2, name="성공A"), _change(3, name="성공B")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _FlakyLLM(always_fail=["영구실패"])
+    settings = get_settings().model_copy(update={"enrichment_item_attempts": 3})
+    result = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+    )
+
+    assert result.failed == 1
+    assert result.processed == 2
+    assert llm.calls_by_name["영구실패"] == 3
+    assert store.get(1) is None
+
+
+async def test_drain_page_failure_threshold_blocks_cursor_advance():
+    """표본(5) ≥ min_sample(5) 이고 전부 실패(ratio=1.0 ≥ 0.5) → 예외 전파 + 커서 미전진."""
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    names = [f"실패{i}" for i in range(5)]
+    changes = [_change(i + 1, name=name) for i, name in enumerate(names)]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _FlakyLLM(always_fail=names)
+    with pytest.raises(_batch.PageFailureThresholdExceeded):
+        await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=get_settings()
+        )
+
+    assert store.get_cursor() == "checkpoint"
+    for i in range(1, 6):
+        assert store.get(i) is None
+
+
+@pytest.mark.parametrize(
+    ("fail_names", "expect_advance"),
+    [
+        (["A-실패", "B-실패"], True),  # 2/8 = 0.25 < 0.5 → 전진
+        (["A-실패", "B-실패", "C-실패", "D-실패"], False),  # 4/8 = 0.5 ≥ 0.5 → 미전진
+    ],
+)
+async def test_drain_page_failure_threshold_boundary(fail_names, expect_advance):
+    """표본(8) ≥ min_sample(5) 이라 비율 가드 경계(0.5)가 그대로 유효하다."""
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    changes = [
+        _change(1, name="A-실패"),
+        _change(2, name="B-실패"),
+        _change(3, name="C-실패"),
+        _change(4, name="D-실패"),
+        _change(5, name="E"),
+        _change(6, name="F"),
+        _change(7, name="G"),
+        _change(8, name="H"),
+    ]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _FlakyLLM(always_fail=fail_names)
+
+    if expect_advance:
+        result = await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=get_settings()
+        )
+        assert result.failed == len(fail_names)
+        assert store.get_cursor() == "c1"
+    else:
+        with pytest.raises(_batch.PageFailureThresholdExceeded):
+            await run_artifacts_batch(
+                fetch=fetch, llm=llm, embed=_embed, store=store, settings=get_settings()
+            )
+        assert store.get_cursor() == "checkpoint"
+
+
+async def test_drain_single_item_page_isolates_and_advances_default_settings(caplog):
+    """[#325] 핵심 회귀 — 운영 증분 페이지는 대개 1~3건, 성공 패딩 없이 항목 1건짜리 페이지를
+    기본 Settings() 그대로 재현한다(운영 시나리오 그대로).
+
+    수정 전에는 표본=1, ratio=1/1=1.0 ≥ artifacts_batch_failure_ratio_threshold(0.5) 로
+    PageFailureThresholdExceeded 가 던져져 커서가 막혔다 — #325 가 보고한 "문제 상품 1건이
+    매 주기 실패" 그 상황이다. 수정 후에는 표본(1) < artifacts_batch_failure_min_sample(5)
+    이라 비율 가드를 건너뛰고 격리+전진한다.
+    """
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    changes = [_change(1, name="문제상품")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _FlakyLLM(always_fail=["문제상품"])
+    with caplog.at_level("WARNING"):
+        result = await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=get_settings()
+        )
+
+    assert result.failed == 1
+    assert result.processed == 0
+    assert store.get(1) is None
+    assert store.get_cursor() == "c1"
+    assert "product_id=1" in caplog.text  # dead-letter ERROR 로그
+    assert "표본 부족" in caplog.text  # min_sample 미달 WARNING 로그
+    assert "failed=1" in caplog.text
+    assert "min_sample=5" in caplog.text
+
+
+async def test_drain_hidden_delete_failure_is_not_isolated():
+    """HIDDEN 삭제 실패는 격리 대상이 아니다 — 그대로 전파(api-spec §4.8 fail-closed)."""
+
+    class _FailingDeleteStore(CatalogArtifactStore):
+        def delete(self, product_id):
+            raise RuntimeError("delete boom")
+
+    store = _FailingDeleteStore()
+    store.set_cursor("checkpoint")
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(
+            items=[_change(1, status="HIDDEN")], next_cursor="c1", has_more=False
+        )
+
+    with pytest.raises(RuntimeError, match="delete boom"):
+        await run_artifacts_batch(
+            fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store, settings=get_settings()
+        )
+    assert store.get_cursor() == "checkpoint"
+
+
+async def test_drain_isolation_applies_under_full_rebuild_with_atomic_replace():
+    """full_rebuild 경로에서도 단건 격리가 동작 — replace_all 원자성은 불변(#325).
+
+    페이지 표본(3)이 min_sample(5) 미만이라 비율 가드는 평가되지 않는다 — 이 테스트는 격리가
+    full_rebuild 임시 스토어·원자 교체 경로에서도 동작함을 검증한다.
+    """
+    store = CatalogArtifactStore()
+    stale = CatalogArtifact(product_id=99, search_doc="stale", embedding=[0.0, 1.0])
+    store.upsert(stale)
+    changes = [_change(1, name="A"), _change(2, name="B-실패"), _change(3, name="C")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _FlakyLLM(always_fail=["B-실패"])
+    result = await run_artifacts_batch(
+        fetch=fetch,
+        llm=llm,
+        embed=_embed,
+        store=store,
+        settings=get_settings(),
+        full_rebuild=True,
+    )
+
+    assert result.processed == 2
+    assert result.failed == 1
+    assert store.get(99) is None  # 원자 교체로 stale 제거
+    assert store.get(1) is not None
+    assert store.get(2) is None
+    assert store.get(3) is not None
+
+
+async def test_default_settings_batch_isolation_smoke():
+    """[#325] 새 튜너블을 하나도 override 하지 않은 기본 Settings() 조합 스모크 테스트.
+
+    lessons: 과거 모든 테스트가 기본값을 덮어써 기본 조합 결함이 출하된 전례가 있다. 페이지
+    표본(3)이 기본 min_sample(5) 미만이라 비율 가드는 평가되지 않는다 — 1건짜리 페이지 회귀는
+    test_drain_single_item_page_isolates_and_advances_default_settings 가 전담한다.
+    """
+    store = CatalogArtifactStore()
+    changes = [
+        _change(1, name="기본값A"),
+        _change(2, name="기본값B-실패"),
+        _change(3, name="기본값C"),
+    ]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _FlakyLLM(always_fail=["기본값B-실패"])
+    result = await run_artifacts_batch(fetch=fetch, llm=llm, embed=_embed, store=store)
+
+    assert result.processed == 2
+    assert result.failed == 1
+    assert store.get(1) is not None
+    assert store.get(2) is None
+    assert store.get(3) is not None
+    assert store.get_cursor() == "c1"
+
+
+# ── 라운드 3(#325, PR #399 Claude 리뷰 대응): 격리 후보를 실패 "종류"로 가른다 ──
+#
+# 리뷰 지적: 운영 증분 페이지는 대개 1~3건이라 page_total < min_sample(5) 가 거의 항상 참이고,
+# 그러면 비율 가드는 사실상 죽은 코드가 된다 — embed()·store.upsert() 같은 인프라 장애도 매번
+# "poison 단건"으로 오분류돼 dead-letter 처리된 채 커서가 전진한다. 아래는 격리 후보를
+# enrich_product 단계의 내용 실패로만 구조적으로 한정해 이를 해소했음을 고정한다.
+
+
+class _FailingEmbed:
+    """embed() 가 항상 예외를 내는 fake — 인프라 장애가 격리되지 않음을 검증한다(#325 R3)."""
+
+    def __call__(self, texts):
+        raise RuntimeError("embed API down")
+
+
+class _FailingUpsertStore(CatalogArtifactStore):
+    """store.upsert() 가 항상 예외를 내는 스토어 — 인프라 장애가 격리되지 않음을 검증한다(#325 R3)."""
+
+    def upsert(self, artifact):
+        raise RuntimeError("catalog store down")
+
+
+async def test_drain_embed_failure_is_not_isolated_multi_item_page():
+    """3건짜리 페이지에서 embed() 가 항상 예외 → 예외가 그대로 전파되고 커서는 미전진(#325 R3).
+
+    수정 전에는 이 실패도 _process_change 전체를 감싼 broad except 에 잡혀 단건 격리 대상이
+    됐다 — 임베딩 API 전면 다운 같은 광역 장애가 매번 poison 단건으로 오분류되던 리뷰 지적
+    시나리오다.
+    """
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    changes = [_change(1, name="A"), _change(2, name="B"), _change(3, name="C")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    with pytest.raises(RuntimeError, match="embed API down"):
+        await run_artifacts_batch(
+            fetch=fetch,
+            llm=_EnrichLLM(),
+            embed=_FailingEmbed(),
+            store=store,
+            settings=get_settings(),
+        )
+
+    assert store.get_cursor() == "checkpoint"
+    assert store.get(1) is None
+    assert store.get(2) is None
+    assert store.get(3) is None
+
+
+async def test_drain_upsert_failure_is_not_isolated_multi_item_page():
+    """3건짜리 페이지에서 store.upsert() 가 항상 예외 → 예외가 그대로 전파되고 커서는 미전진(#325 R3)."""
+    store = _FailingUpsertStore()
+    store.set_cursor("checkpoint")
+    changes = [_change(1, name="A"), _change(2, name="B"), _change(3, name="C")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    with pytest.raises(RuntimeError, match="catalog store down"):
+        await run_artifacts_batch(
+            fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store, settings=get_settings()
+        )
+
+    assert store.get_cursor() == "checkpoint"
+
+
+async def test_drain_embed_failure_propagates_even_on_single_item_page():
+    """[#325 R3 핵심 회귀] 리뷰어가 지적한 시나리오 그대로 — 표본 1건짜리 페이지에서도 embed
+    실패는 격리되지 않고 전파된다. 표본 하한(min_sample)은 비율 가드에만 적용되고,
+    embed/store 실패는 애초에 격리 후보가 아니므로 비율 가드 자체를 거치지 않는다 — 페이지
+    크기와 무관하게 광역 장애가 자연 복구 경로로 간다는 것이 이번 라운드의 핵심 수정이다.
+    """
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    changes = [_change(1, name="문제상품")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    with pytest.raises(RuntimeError, match="embed API down"):
+        await run_artifacts_batch(
+            fetch=fetch,
+            llm=_EnrichLLM(),
+            embed=_FailingEmbed(),
+            store=store,
+            settings=get_settings(),
+        )
+
+    assert store.get_cursor() == "checkpoint"
+    assert store.get(1) is None
+
+
+class _TimeoutLLM:
+    """enrich_product 호출이 항상 타임아웃 계열 예외를 내는 fake(#325 R3).
+
+    cause_chain=True 면 ``LLMError(...) from TimeoutError()`` 형태로 원인 체인에만 타임아웃을
+    심어 ``is_timeout_error`` 의 ``__cause__`` 추적이 실제 _drain 판정에 쓰이는지 고정한다 —
+    OpenAILLM.complete 이 SDK 예외를 이 형태로 감싸는 실제 규약을 재현한다.
+    """
+
+    def __init__(self, *, cause_chain=False):
+        self._cause_chain = cause_chain
+        self.calls = 0
+
+    async def complete(
+        self, *, system, user, tier, max_tokens=1024, json_output=True, reasoning_effort=None
+    ):
+        self.calls += 1
+        if self._cause_chain:
+            from app.core.llm import LLMError
+
+            try:
+                raise TimeoutError("upstream timed out")
+            except TimeoutError as exc:
+                raise LLMError("timeout") from exc
+        raise TimeoutError("upstream timed out")
+
+
+async def test_drain_enrichment_timeout_not_isolated_direct():
+    """enrich_product 가 TimeoutError 자체를 내면 재시도 소진 후 격리 없이 전파 + 커서 미전진
+    (#325 R3 규칙 2). LLM API 자체가 응답하지 않는 상황은 항목 내용과 무관한 광역 장애다.
+    """
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    changes = [_change(1, name="문제상품")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _TimeoutLLM()
+    settings = get_settings()
+    with pytest.raises(TimeoutError):
+        await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+        )
+
+    assert llm.calls == settings.enrichment_item_attempts  # 재시도 상한만큼 시도 후 전파
+    assert store.get_cursor() == "checkpoint"
+    assert store.get(1) is None
+
+
+async def test_drain_enrichment_timeout_not_isolated_cause_chain():
+    """LLMError(...) from TimeoutError() 형태(원인 체인)도 타임아웃으로 판정돼 격리 없이 전파된다
+    — OpenAILLM.complete 이 SDK 예외를 ``raise LLMError(str(exc)) from exc`` 로 감싸는 실제
+    경로를 재현해 is_timeout_error 의 원인 체인 추적이 _drain 판정에 실제로 쓰이는지 고정한다
+    (#325 R3 규칙 2, 문자열 매칭 금지).
+    """
+    from app.core.llm import LLMError
+
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    changes = [_change(1, name="문제상품")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _TimeoutLLM(cause_chain=True)
+    with pytest.raises(LLMError):
+        await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=get_settings()
+        )
+
+    assert store.get_cursor() == "checkpoint"
+    assert store.get(1) is None
+
+
+# ── 라운드 4(#325 R4, PR #399 Claude 리뷰 2차 대응): 상품별 연속 실패 스트릭 → 시간 유계 격리 ──
+#
+# 리뷰 지적 2건(둘 다 타당): (1) artifacts_batch.py:273 — 특정 상품에서 결정적으로 재현되는
+# poison 타임아웃은 재시도를 다 써도 격리되지 않고 매 주기 같은 자리에서 영원히 실패한다.
+# (2) artifacts_batch.py:172 — _finish_change(embed·upsert) 실패를 무조건 인프라로 규정했지만
+# 실제로는 그 상품 하나의 콘텐츠 문제(embedding_meta_complete CHECK 위반, 콘텐츠 필터 등)일
+# 수 있어 같은 커서에서 영구히 막힌다. 광역 장애와 항목 고유 실패는 단일 주기 관측만으로는
+# 구별할 수 없으므로, 같은 상품의 "주기를 가로지르는" 연속 실패 횟수로 시간 유계를 건다
+# (artifacts_batch_item_dead_letter_cycles, 기본 3).
+
+
+async def test_drain_embed_poison_propagates_then_isolates_at_cycle_limit(caplog):
+    """embed 실패 poison — 상한(기본 3) 전 두 번은 전파, 세 번째 주기에 격리(리뷰 코멘트 2)."""
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    changes = [_change(1, name="문제상품")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    settings = get_settings()
+    assert settings.artifacts_batch_item_dead_letter_cycles == 3  # 기본값 전제 명시
+
+    for _ in range(settings.artifacts_batch_item_dead_letter_cycles - 1):
+        with pytest.raises(RuntimeError, match="embed API down"):
+            await run_artifacts_batch(
+                fetch=fetch,
+                llm=_EnrichLLM(),
+                embed=_FailingEmbed(),
+                store=store,
+                settings=settings,
+            )
+        assert store.get_cursor() == "checkpoint"
+        assert store.get(1) is None
+
+    with caplog.at_level("ERROR"):
+        result = await run_artifacts_batch(
+            fetch=fetch, llm=_EnrichLLM(), embed=_FailingEmbed(), store=store, settings=settings
+        )
+
+    assert result.failed == 1
+    assert result.processed == 0
+    assert store.get_cursor() == "c1"
+    assert store.get(1) is None
+    assert "product_id=1" in caplog.text
+    assert "streak=3/3" in caplog.text
+
+
+async def test_drain_upsert_poison_propagates_then_isolates_at_cycle_limit(caplog):
+    """store.upsert 실패 poison — 상한 전 두 번은 전파, 세 번째 주기에 격리(리뷰 코멘트 2)."""
+    store = _FailingUpsertStore()
+    store.set_cursor("checkpoint")
+    changes = [_change(1, name="문제상품")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    settings = get_settings()
+
+    for _ in range(settings.artifacts_batch_item_dead_letter_cycles - 1):
+        with pytest.raises(RuntimeError, match="catalog store down"):
+            await run_artifacts_batch(
+                fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store, settings=settings
+            )
+        assert store.get_cursor() == "checkpoint"
+
+    with caplog.at_level("ERROR"):
+        result = await run_artifacts_batch(
+            fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store, settings=settings
+        )
+
+    assert result.failed == 1
+    assert store.get_cursor() == "c1"
+    assert store.get(1) is None
+    assert "product_id=1" in caplog.text
+    assert "streak=3/3" in caplog.text
+
+
+async def test_drain_timeout_poison_propagates_then_isolates_at_cycle_limit(caplog):
+    """타임아웃 poison — 특정 상품에서 결정적으로 재현되는 타임아웃도 상한 전엔 전파, 상한에서
+    격리된다(리뷰 코멘트 1). 수정 전에는 이 시나리오가 매 주기 같은 자리에서 영원히 실패했다.
+    """
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    changes = [_change(1, name="문제상품")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    settings = get_settings()
+    llm = _TimeoutLLM()
+
+    for _ in range(settings.artifacts_batch_item_dead_letter_cycles - 1):
+        with pytest.raises(TimeoutError):
+            await run_artifacts_batch(
+                fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+            )
+        assert store.get_cursor() == "checkpoint"
+
+    with caplog.at_level("ERROR"):
+        result = await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+        )
+
+    assert result.failed == 1
+    assert store.get_cursor() == "c1"
+    assert store.get(1) is None
+    assert "product_id=1" in caplog.text
+    assert "streak=3/3" in caplog.text
+
+
+async def test_drain_transient_infra_failure_does_not_isolate_and_resets_streak():
+    """일시적 장애(1회 실패 후 정상)는 격리되지 않고 커서가 전진하며, 스트릭도 리셋돼 이후 다시
+    실패해도 3회차가 아니라 1회차부터 다시 센다.
+    """
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    changes = [_change(1, name="가끔실패")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    settings = get_settings()
+
+    with pytest.raises(RuntimeError, match="embed API down"):
+        await run_artifacts_batch(
+            fetch=fetch, llm=_EnrichLLM(), embed=_FailingEmbed(), store=store, settings=settings
+        )
+    assert store.get_cursor() == "checkpoint"
+
+    result = await run_artifacts_batch(
+        fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store, settings=settings
+    )
+    assert result.processed == 1
+    assert result.failed == 0
+    assert store.get_cursor() == "c1"
+    assert store.get(1) is not None
+
+    # 스트릭이 리셋됐으므로 다시 실패해도 상한 미만(2회)은 전파돼야 한다 — 3회차가 아니라
+    # 1회차부터 다시 센다는 것이 이 테스트의 핵심.
+    store.set_cursor("checkpoint2")
+    for _ in range(settings.artifacts_batch_item_dead_letter_cycles - 1):
+        with pytest.raises(RuntimeError, match="embed API down"):
+            await run_artifacts_batch(
+                fetch=fetch,
+                llm=_EnrichLLM(),
+                embed=_FailingEmbed(),
+                store=store,
+                settings=settings,
+            )
+        assert store.get_cursor() == "checkpoint2"
+
+    result2 = await run_artifacts_batch(
+        fetch=fetch, llm=_EnrichLLM(), embed=_FailingEmbed(), store=store, settings=settings
+    )
+    assert result2.failed == 1
+    assert store.get_cursor() == "c1"
+
+
+async def test_drain_item_failure_streak_is_per_product():
+    """스트릭은 상품별로 독립 — A 상품이 2회 실패한 상태에서 B 상품이 처음 실패하면 B 는 전파된다."""
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    change_a = _change(1, name="A")
+
+    async def fetch_a(cursor, limit):
+        return ProductChangesPage(items=[change_a], next_cursor="ca", has_more=False)
+
+    settings = get_settings()
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="embed API down"):
+            await run_artifacts_batch(
+                fetch=fetch_a,
+                llm=_EnrichLLM(),
+                embed=_FailingEmbed(),
+                store=store,
+                settings=settings,
+            )
+    assert store.get_cursor() == "checkpoint"
+
+    change_b = _change(2, name="B")
+
+    async def fetch_b(cursor, limit):
+        return ProductChangesPage(items=[change_b], next_cursor="cb", has_more=False)
+
+    with pytest.raises(RuntimeError, match="embed API down"):
+        await run_artifacts_batch(
+            fetch=fetch_b, llm=_EnrichLLM(), embed=_FailingEmbed(), store=store, settings=settings
+        )
+    # B 는 이번이 첫 실패(streak=1 < 3)라 전파된다 — A 의 스트릭과 섞이지 않는다.
+    assert store.get_cursor() == "checkpoint"
+    assert store.get(2) is None
+
+
+# ── 라운드 5(#325 R5, PR #399 Claude 리뷰 3차 대응): 3선(비율 가드)에도 시간 유계를 건다 ──
+#
+# 리뷰 지적(타당): R4 의 시간 유계는 2선(타임아웃·embed·store 전파)에만 걸려 있고 3선(비율
+# 가드)에는 없었다. 특정 카테고리 상품들의 프롬프트 회귀로 enrich 내용 실패가 다건 동시
+# 발생하면 1선이 매 주기 즉시 격리해(스트릭을 쌓지 않고 pop) 2선 상한이 영원히 걸리지 않고,
+# 페이지 실패율은 매 주기 똑같이 임계를 넘어 PageFailureThresholdExceeded 가 반복돼 커서가
+# 전진하지 않는다 — 같은 페이지가 무기한 재조회된다("stuck-batch 를 시간 유계로 닫는다"는
+# 목표가 3선에는 적용되지 않아, 3선이 원래 잡으려던 바로 그 케이스에서 #325 증상이 재현).
+# 아래는 같은 커서에서 비율 가드가 연속 발동한 횟수로 3선도 시간 유계를 거는 것을 고정한다.
+
+
+async def test_drain_page_failure_threshold_repeats_then_advances_at_cycle_limit(caplog):
+    """비율 가드 반복 발동 → 상한(기본 3)에서 커서 전진(#325 R5 리뷰 시나리오 그대로).
+
+    표본(5) ≥ min_sample(5) 이고 전부 1선(enrich 내용 실패)인 페이지를 반복 실행 → 1·2회차는
+    PageFailureThresholdExceeded + 커서 미전진, 3회차는 예외 없이 커서 전진 + ERROR 로그.
+    """
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    names = [f"실패{i}" for i in range(5)]
+    changes = [_change(i + 1, name=name) for i, name in enumerate(names)]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _FlakyLLM(always_fail=names)
+    settings = get_settings()
+    assert settings.artifacts_batch_page_failure_max_cycles == 3  # 기본값 전제 명시
+
+    for _ in range(settings.artifacts_batch_page_failure_max_cycles - 1):
+        with pytest.raises(_batch.PageFailureThresholdExceeded):
+            await run_artifacts_batch(
+                fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+            )
+        assert store.get_cursor() == "checkpoint"
+
+    with caplog.at_level("ERROR"):
+        result = await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+        )
+
+    assert result.failed == 5
+    assert store.get_cursor() == "c1"
+    assert "cursor=checkpoint" in caplog.text
+    assert "streak=3/3" in caplog.text
+
+
+async def test_drain_page_failure_streak_resets_when_cycle_breaks():
+    """연속이 끊기면 카운터가 리셋된다 — 다시 임계 초과가 나도 3회차가 아니라 1회차부터 다시
+    센다(#325 R5).
+    """
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    fail_names = [f"실패{i}" for i in range(5)]
+    fail_changes = [_change(i + 1, name=name) for i, name in enumerate(fail_names)]
+    ok_names = [f"성공{i}" for i in range(5)]
+    ok_changes = [_change(i + 100, name=name) for i, name in enumerate(ok_names)]
+
+    call_count = 0
+
+    async def fetch(cursor, limit):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            # 2회차만 정상 페이지 — next_cursor 를 같은 "checkpoint" 로 되돌려 3회차가 같은
+            # 커서에서 다시 임계 초과를 재현하게 한다(카운터가 리셋됐는지가 이 테스트의 핵심).
+            return ProductChangesPage(items=ok_changes, next_cursor="checkpoint", has_more=False)
+        return ProductChangesPage(items=fail_changes, next_cursor="c1", has_more=False)
+
+    llm = _FlakyLLM(always_fail=fail_names)
+    settings = get_settings()
+
+    # 1회차: 임계 초과 → 전파, 커서 "checkpoint" 카운터=1.
+    with pytest.raises(_batch.PageFailureThresholdExceeded):
+        await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+        )
+    assert store.get_cursor() == "checkpoint"
+
+    # 2회차: 정상 페이지 → 전진 + 카운터 리셋(연속만 세므로).
+    result = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+    )
+    assert result.processed == 5
+    assert store.get_cursor() == "checkpoint"
+
+    # 3회차: 다시 임계 초과 — 리셋됐으므로 상한(3)이 아니라 1회차부터 다시 세어 여전히 전파된다.
+    with pytest.raises(_batch.PageFailureThresholdExceeded):
+        await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+        )
+    assert store.get_cursor() == "checkpoint"
+
+
+async def test_drain_page_failure_streak_is_per_cursor():
+    """페이지 실패 연속 발동 카운터는 커서별로 독립적이다 — 커서 A 가 2회 발동한 상태에서
+    커서 B 가 처음 발동하면 B 는 예외를 던진다(#325 R5).
+    """
+    store_a = CatalogArtifactStore()
+    store_a.set_cursor("A")
+    names_a = [f"A실패{i}" for i in range(5)]
+    changes_a = [_change(i + 1, name=name) for i, name in enumerate(names_a)]
+
+    async def fetch_a(cursor, limit):
+        return ProductChangesPage(items=changes_a, next_cursor="Ac1", has_more=False)
+
+    llm_a = _FlakyLLM(always_fail=names_a)
+    settings = get_settings()
+
+    for _ in range(settings.artifacts_batch_page_failure_max_cycles - 1):
+        with pytest.raises(_batch.PageFailureThresholdExceeded):
+            await run_artifacts_batch(
+                fetch=fetch_a, llm=llm_a, embed=_embed, store=store_a, settings=settings
+            )
+    assert store_a.get_cursor() == "A"
+
+    store_b = CatalogArtifactStore()
+    store_b.set_cursor("B")
+    names_b = [f"B실패{i}" for i in range(5)]
+    changes_b = [_change(i + 1000, name=name) for i, name in enumerate(names_b)]
+
+    async def fetch_b(cursor, limit):
+        return ProductChangesPage(items=changes_b, next_cursor="Bc1", has_more=False)
+
+    llm_b = _FlakyLLM(always_fail=names_b)
+
+    # B 는 이번이 첫 발동(streak=1 < 상한)이라 전파된다 — A 의 카운터와 섞이지 않는다.
+    with pytest.raises(_batch.PageFailureThresholdExceeded):
+        await run_artifacts_batch(
+            fetch=fetch_b, llm=llm_b, embed=_embed, store=store_b, settings=settings
+        )
+    assert store_b.get_cursor() == "B"
+
+
+async def test_drain_hidden_delete_failure_still_propagates_unbounded():
+    """HIDDEN 삭제 실패는 3선 시간 유계 대상이 아니다 — 상한 횟수보다 더 반복해도 매번
+    전파되고 커서는 미전진(api-spec §4.8 fail-closed 규약, #325 R5).
+    """
+
+    class _FailingDeleteStore(CatalogArtifactStore):
+        def delete(self, product_id):
+            raise RuntimeError("delete boom")
+
+    store = _FailingDeleteStore()
+    store.set_cursor("checkpoint")
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(
+            items=[_change(1, status="HIDDEN")], next_cursor="c1", has_more=False
+        )
+
+    settings = get_settings()
+    for _ in range(settings.artifacts_batch_page_failure_max_cycles + 2):
+        with pytest.raises(RuntimeError, match="delete boom"):
+            await run_artifacts_batch(
+                fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store, settings=settings
+            )
+        assert store.get_cursor() == "checkpoint"
+
+
 async def test_color_harvest_cancellation_propagates(monkeypatch):
     import asyncio
 
@@ -882,3 +1705,238 @@ async def test_color_harvest_cancellation_propagates(monkeypatch):
             store=CatalogArtifactStore(),
             settings=settings,
         )
+
+
+# ── 라운드 6(#325 R6, PR #399 Claude 리뷰 4차 대응): 콘텐츠 실패 화이트리스트 ──
+#
+# 리뷰 지적(타당): 예전 판정("타임아웃이면 2선, 아니면 1선")은 블랙리스트라 is_timeout_error
+# 가 모르는 예외(openai.RateLimitError 429·APIConnectionError·InternalServerError 5xx 등
+# 흔한 일시적 인프라 장애)가 전부 콘텐츠 실패로 오분류돼 첫 주기에 곧바로 영구 격리됐다 —
+# R4·R5 의 시간 유계 보호를 통째로 우회하는 경로였다. _is_enrichment_content_failure 로
+# 화이트리스트를 도입해 "모르면 2선"을 기본값으로 뒤집는다.
+
+
+class _RaisingLLM:
+    """호출마다 주어진 예외를 내는 fake — 콘텐츠 실패 화이트리스트 판정 테스트 전용(#325 R6)."""
+
+    def __init__(self, exc_factory):
+        self._exc_factory = exc_factory
+        self.calls = 0
+
+    async def complete(
+        self, *, system, user, tier, max_tokens=1024, json_output=True, reasoning_effort=None
+    ):
+        self.calls += 1
+        raise self._exc_factory()
+
+
+class _TextLLM:
+    """설정된 원문을 그대로 반환하는 fake — extract_json 이 실제로 던지는 경로를 재현한다."""
+
+    def __init__(self, text: str):
+        self._text = text
+        self.calls = 0
+
+    async def complete(
+        self, *, system, user, tier, max_tokens=1024, json_output=True, reasoning_effort=None
+    ):
+        self.calls += 1
+        return self._text
+
+
+class _FakeRateLimitError(Exception):
+    """openai.RateLimitError(429) 자리를 대신하는 SDK 미의존 더미(#325 R6)."""
+
+
+class _FakeConnectionError(Exception):
+    """openai.APIConnectionError/InternalServerError(5xx) 자리를 대신하는 SDK 미의존 더미."""
+
+
+def _wrapped(cause_cls):
+    """provider SDK 예외를 ``raise LLMError(...) from exc`` 로 감싸는 실제 규약을 재현한다."""
+
+    def factory():
+        from app.core.llm import LLMError
+
+        try:
+            raise cause_cls("infra hiccup")
+        except cause_cls as exc:
+            raise LLMError("boom") from exc
+
+    return factory
+
+
+async def test_drain_rate_limit_propagates_then_isolates_at_cycle_limit(caplog):
+    """[#325 R6 핵심 회귀] rate limit 계열(LLMError from 미지 예외)은 화이트리스트 밖이라
+    2선이다 — 1회차엔 예외 전파 + 커서 미전진, 상한(기본 3) 주기째에야 격리한다. 예전
+    블랙리스트 판정에서는 1회차부터 즉시(영구) 격리됐다(리뷰 시나리오 그대로).
+    """
+    from app.core.llm import LLMError
+
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    changes = [_change(1, name="문제상품")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    settings = get_settings()
+    assert settings.artifacts_batch_item_dead_letter_cycles == 3  # 기본값 전제 명시
+    llm = _RaisingLLM(_wrapped(_FakeRateLimitError))
+
+    for _ in range(settings.artifacts_batch_item_dead_letter_cycles - 1):
+        with pytest.raises(LLMError):
+            await run_artifacts_batch(
+                fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+            )
+        assert store.get_cursor() == "checkpoint"
+        assert store.get(1) is None
+
+    with caplog.at_level("ERROR"):
+        result = await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+        )
+
+    assert result.failed == 1
+    assert store.get_cursor() == "c1"
+    assert store.get(1) is None
+    assert "product_id=1" in caplog.text
+    assert "streak=3/3" in caplog.text
+
+
+async def test_drain_connection_error_not_isolated_immediately():
+    """연결 오류·5xx 계열(LLMError from 미지 예외)도 같은 형태로 화이트리스트 밖 — 1회차엔
+    격리 없이 그대로 전파하고 커서는 미전진한다.
+    """
+    from app.core.llm import LLMError
+
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    changes = [_change(1, name="문제상품")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _RaisingLLM(_wrapped(_FakeConnectionError))
+    settings = get_settings()
+    with pytest.raises(LLMError):
+        await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+        )
+
+    assert llm.calls == settings.enrichment_item_attempts
+    assert store.get_cursor() == "checkpoint"
+    assert store.get(1) is None
+
+
+async def test_drain_json_parse_failure_isolates_immediately():
+    """extract_json 의 실제 json.loads 실패(원인 ValueError/JSONDecodeError) — 화이트리스트
+    1선, 1주기째에 격리+커서 전진(#325 R6)."""
+    store = CatalogArtifactStore()
+    changes = [_change(1, name="깨진JSON")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _TextLLM("{이건 유효한 JSON 이 아님}")
+    result = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=get_settings()
+    )
+
+    assert result.failed == 1
+    assert result.processed == 0
+    assert store.get_cursor() == "c1"
+    assert store.get(1) is None
+
+
+async def test_drain_bare_llm_error_isolates_immediately():
+    """extract_json 이 "JSON 을 찾지 못함"으로 내는 원인 없는 LLMError — 화이트리스트 1선,
+    1주기째에 격리+커서 전진(#325 R6). 가짜 예외가 아니라 실제 extract_json 경로를 그대로
+    통과시킨다(LLM 이 JSON 이 아닌 평문을 반환)."""
+    store = CatalogArtifactStore()
+    changes = [_change(1, name="평문응답")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _TextLLM("죄송합니다, JSON 을 만들 수 없어요.")
+    result = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=get_settings()
+    )
+
+    assert result.failed == 1
+    assert result.processed == 0
+    assert store.get_cursor() == "c1"
+    assert store.get(1) is None
+
+
+async def test_drain_output_length_error_isolates_immediately():
+    """[#325 원 사례] openai.LengthFinishReasonError(출력 예산 소진) — 화이트리스트 1선,
+    1주기째에 격리+커서 전진. OpenAILLM.complete 이 SDK 예외를
+    ``raise LLMError(str(exc)) from exc`` 로 감싸는 실제 규약을 재현한다.
+    """
+    openai = pytest.importorskip("openai")
+    from types import SimpleNamespace
+
+    from app.core.llm import LLMError
+
+    store = CatalogArtifactStore()
+    changes = [_change(1, name="긴응답")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    def factory():
+        inner = openai.LengthFinishReasonError(completion=SimpleNamespace(usage=None))
+        raise LLMError(str(inner)) from inner
+
+    llm = _RaisingLLM(factory)
+    result = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=get_settings()
+    )
+
+    assert result.failed == 1
+    assert result.processed == 0
+    assert store.get_cursor() == "c1"
+    assert store.get(1) is None
+
+
+async def test_drain_llm_not_configured_not_isolated_immediately():
+    """LLMNotConfigured 는 LLMError 하위타입이지만 화이트리스트에서 명시적으로 제외돼 2선이다
+    — 1회차엔 격리 없이 전파, 커서 미전진(#325 R6)."""
+    from app.core.llm import LLMNotConfigured
+
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    changes = [_change(1, name="구성오류")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _RaisingLLM(lambda: LLMNotConfigured("anthropic API key is not configured"))
+    settings = get_settings()
+    with pytest.raises(LLMNotConfigured):
+        await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+        )
+
+    assert llm.calls == settings.enrichment_item_attempts
+    assert store.get_cursor() == "checkpoint"
+    assert store.get(1) is None
+
+
+def test_is_enrichment_content_failure_direct():
+    """``_is_enrichment_content_failure`` 자체를 직접 두 극단으로 고정한다 — 원인 없는
+    LLMError(True) vs 완전히 무관한 예외(False). 나머지 경계(원인 타입별)는 위 _drain
+    통합 테스트가 덮는다."""
+    from app.core.llm import LLMError
+
+    assert _batch._is_enrichment_content_failure(LLMError("JSON 못 찾음")) is True
+    assert _batch._is_enrichment_content_failure(RuntimeError("모르는 실패")) is False
+
+
+def test_is_enrichment_content_failure_excludes_llm_not_configured():
+    """LLMNotConfigured 는 원인 없는 LLMError 형태여도 명시적으로 제외된다(#325 R6)."""
+    from app.core.llm import LLMNotConfigured
+
+    assert _batch._is_enrichment_content_failure(LLMNotConfigured("no key")) is False

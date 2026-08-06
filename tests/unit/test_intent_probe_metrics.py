@@ -114,6 +114,8 @@ def test_expected_denominators_match_issue_240_shape() -> None:
         "screenReask": 8,
         "screenNoHallucination": 8,
         "screenResolution": 48,
+        # [#344 라운드 2] 조건 전용 5발화 × none 컨텍스트 × N=8.
+        "conditionOnlyNoCategoryQuery": 40,
     }
 
 
@@ -694,3 +696,51 @@ def test_diagnostics_count_prompt_layer_hits_resolver_overrides_and_out_of_list_
     assert counts["screenResolverOverrideCount"] == 5 * N
     # screenReask 1발화가 두 목록 밖 id 를 확정한 채로 남았다 — 위험한 실패.
     assert counts["screenOutOfListConfirmCount"] == 1 * N
+
+
+# ─────────── [#344 라운드 2] 조건 전용 발화 categoryQueries 비움 불변식 ───────────
+
+CONDITION_ONLY_CELLS = [cell for cell in CELLS if cell.utterance.group == "condition_only"]
+
+
+def _condition_only_result(cell, *, category_legs: str) -> CellResult:  # noqa: ANN001
+    return CellResult(
+        cell_id=cell.cell_id,
+        utterance_id=cell.utterance.utterance_id,
+        context_id=cell.context.context_id,
+        group="condition_only",
+        samples=[
+            _sample(cell.cell_id, index, intent="recommend", category_legs=category_legs)
+            for index in range(N)
+        ],
+        attempts=N,
+        filled=True,
+    )
+
+
+def test_condition_only_axis_scores_full_marks_when_legs_stay_empty() -> None:
+    assert len(CONDITION_ONLY_CELLS) == 5, "조건 전용 셀이 없다 — 픽스처가 어긋났다"
+    results = [_condition_only_result(cell, category_legs="") for cell in CONDITION_ONLY_CELLS]
+    axes = score_all(results, ANCHORS, n=N)
+    assert axes["conditionOnlyNoCategoryQuery"].numerator == 40
+    assert axes["conditionOnlyNoCategoryQuery"].denominator == 40
+
+
+def test_condition_only_axis_is_not_vacuous_a_single_leg_fails_the_sample() -> None:
+    """[A-2 와 같은 이유] 엔진을 무조건 통과로 변이시켜도 이 축이 그걸 잡는가를 자문하고
+    실제로 확인한다 — leg 을 **하나라도** 내면 그 표본은 불충족이어야 한다."""
+    cell = CONDITION_ONLY_CELLS[0]
+    result = _condition_only_result(cell, category_legs="음향가전 > 이어폰|무선 이어폰")
+    axes = score_all([result], ANCHORS, n=N)
+    assert axes["conditionOnlyNoCategoryQuery"].numerator == 0
+    assert axes["conditionOnlyNoCategoryQuery"].denominator == N
+
+
+def test_condition_only_axis_counts_only_its_own_bucket() -> None:
+    """새 셀이 기존 축의 분모를 늘리면 안 된다 — 조건 전용 셀만 채점해도 기존 축은 0이어야 한다."""
+    results = [_condition_only_result(cell, category_legs="") for cell in CONDITION_ONLY_CELLS]
+    axes = score_all(results, ANCHORS, n=N)
+    assert axes["mainIntent"].expected_denominator == 0
+    assert axes["general"].expected_denominator == 0
+    assert axes["categoryAction3Way"].expected_denominator == 0
+    assert axes["screenResolution"].expected_denominator == 0

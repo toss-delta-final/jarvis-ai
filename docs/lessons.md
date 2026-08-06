@@ -52,6 +52,483 @@
     다음 사람이 같은 판단을 처음부터 다시 한다.
 - 관련: 이슈 #269 · PR #284 · 이슈 #345, `docs/specs/DESIGN-SELLER-PERIOD.md`
 
+## [2026-08-06] 기동 검증식을 좁히면, 그 식을 사람에게 설명하는 문구도 같은 PR 에서 좁힌다
+- 증상: #383 이 기동 가드 계수를 2 → 3 으로 좁혀 `SPRING_TIMEOUT_S ∈ [3.33s, 5.0s)` 를 새로
+  기동 거절 구간으로 만들었는데, 같은 규칙을 운영자에게 설명하는 문서 두 곳이 옛 상한 그대로
+  남아 있었다. `.env.example` 의 `SPRING_MAX_RETRIES` 위 주석은 `SPRING_TIMEOUT_S ×
+  (SPRING_MAX_RETRIES+1) < STREAM_FIRST_TOKEN_TIMEOUT_S` 만 적어 두어, 그 문구만 따른 운영자가
+  `SPRING_MAX_RETRIES=0, SPRING_TIMEOUT_S=4.0`(4.0 < 10.0 이라 "안전")을 넣으면 앱이 기동에
+  실패한다. 오류 메시지의 `recovery` 문구도 새 손잡이 `CATEGORY_EXPAND_ENABLED=false` 를
+  "disable deferral with ..." 목록에 붙여 **미룸을 끄는 손잡이인 것처럼** 안내했다(실제로는
+  미룸은 그대로 돌고 직렬 계수만 3→2 로 내려갈 뿐이다).
+- 원인: 검증식을 고칠 때 "코드 + 테스트 + 설계 문서"까지는 갱신했지만, **그 식을 사람에게
+  설명하는 표면**(예시 env 주석, 기동 실패 메시지의 복구 안내)을 같은 갱신 단위로 보지 않았다.
+  가드는 **좁아지는 방향**으로 바뀌었기 때문에, 낡은 안내는 단순 stale 이 아니라 **실패하는
+  설정을 안전하다고 권하는** 안내가 된다.
+- 규칙: 기동 검증식(예산·계수)을 **좁히는** 변경은 같은 PR 에서 ①`.env.example` 등 그 규칙을
+  서술한 운영자 문서 ②실패 시 나가는 `recovery`/오류 문구 를 함께 좁힌다. 손잡이를 안내 문구에
+  추가할 때는 **그 손잡이가 실제로 무엇을 바꾸는지와 문장의 동사가 일치하는지** 확인한다(계수를
+  낮추는 손잡이를 "disable" 목록에 넣지 않는다). 새 상한을 실제 값으로 한 번 시뮬레이션해
+  거절/통과 경계를 확인하는 것도 함께(이번엔 3.4s 거절·3.3s 통과로 실측했다).
+- 덧: `docs/api-spec.md` §2.9(c) 타임아웃 기준표의 I-1 재시도 행에 있는 "Spring 직렬
+  구간을 `2 × 3s = 6s` 로 묶는다" 서술도 같은 이유로 실측(3단)과 어긋나 있으나, **정본
+  개정은 사람 승인 게이트라 이 PR 범위 밖으로 남겼다** — 후속 이슈 대상.
+- 덧(R5): 새 항을 식에 더할 때는 **그 항이 기존 항과 같은 값 매김을 받는지**(재시도 억제
+  여부 등)까지 확인한다 — 계수를 고치면서 값 매김을 균질하게 가정해 같은 과소평가를 항
+  하나에서 되풀이했고, Claude PR 리뷰가 잡았다.
+- 관련: `app/core/config.py::_deferred_first_event_i1_calls`·
+  `::_require_search_retry_within_stream_budget`, `.env.example` 의 `SPRING_MAX_RETRIES`
+  주석 블록, `docs/specs/MEASURE-FIRST-TOKEN-363.md` §5, 이슈 #383(#363 후속), 커밋 `b700e7e`
+
+## [2026-08-06] fake 가 "표현 불가"를 예외로 던지면, 앱이 그걸 삼켜서 INV 비교가 "둘 다 실패"로 공허 통과할 수 있다
+- 증상: #381 에서 `RecordingFilteringSearch`(combo_matrix eval 하네스)가 keyword·color·
+  attr_conditions 처럼 흉내 낼 수 없는 필터가 present 면 "조용히 무시하지 않겠다"는 의도로
+  `ValueError` 를 던지게 해 뒀다(#371 결정). 그런데 앱은 그 예외를 검색 실패로 삼켜
+  `terminal=error`/`errorCode=SEARCH_FAILED` 로 낙성했고, INV 쌍 검증(base=rerank 성공 ·
+  perturbed=rerank_failed)은 **둘 다 이 상태로 우연히 동일**해 "불변식이 성립한다"고 pass 했다
+  (`combo-0055`, 실측: 두 arm 모두 `productIdsMultiset: []`). `pair_checks.jsonl` 의 커밋된
+  `reason` 문구는 심지어 그 상태의 실측과도 어긋나는 값(`[101,102,103,104]`)을 적고 있었는데도
+  같은 이유로 아무도 못 잡았다 — 비교 대상 자체가 항상 "같은 실패"로 수렴해서다.
+- 원인: "표현 불가 축은 조용히 무시하지 말고 시끄럽게 실패시키자"는 의도 자체는 맞았지만,
+  **누구에게 시끄러운가**를 안 물었다. 예외를 던지면 그 fake 를 부르는 앱 코드의 관점에선 그냥
+  "검색 실패"라는 하나의 알려진 실패 모드로 흡수되고, 그 실패 모드는 서로 다른 두 실행(base·
+  perturbed)에서 **값과 무관하게 항상 같은 결과**를 낸다 — 비교 자체가 무의미해지는데 겉보기엔
+  "성립"으로 보인다. "단언이 상수라 못 깨진다"는 흔한 공허 통과와는 결이 다르다 — 여기서는 단언
+  자체는 정상인데 **비교 대상 두 값이 실행 중에 같은 예외로 수렴**해서 공허해졌다 — 정적
+  분석(상수 리터럴 찾기)으로는 안 잡히고 실행해서 값을 봐야 드러난다.
+- 규칙: fake 가 "이 축은 흉내 못 낸다"를 표시해야 하면, **앱의 정상 실패 경로로 새게 만들지
+  말고 관측 데이터에 별도 필드로 기록**한다(예: `unapplied_calls`/`unappliedSearchFilters`) —
+  실행은 계속하게 둬서 비교 대상이 실제 값으로 갈라질 여지를 남긴다. 예외를 던지는 게 유일한
+  옵션처럼 보이면, 그 예외가 도달하는 곳(catch 블록)이 비교하는 두 실행 모두에서 같은 도착지인지
+  먼저 확인하라 — 같다면 그 예외는 "시끄러운 실패"가 아니라 "조용한 동일화"다.
+- 관련: #371, #381, `evals/combo_matrix/fakes.py::RecordingFilteringSearch`,
+  `evals/combo_matrix/expected/pair_checks.jsonl`(combo-0055),
+  [[2026-08-06] eval 하네스가 "이 축을 잰다"고 문서에 쓰려면 주입값이 아니라 실제 도달값을
+  실측해야 한다] 와 같은 #371/combo_matrix 계열 발견
+
+## [2026-08-06] 함수 시그니처를 바꿀 때 호출부 grep 을 `tests`·`evals` 로만 하면 `scripts/` 가 사각지대다
+- 증상: #396(이슈)/PR #407 에서 `_prepare_recommendation` 을 코루틴 → async generator 로
+  바꾸고 키워드 전용 필수 인자 `out` 을 추가했다. 그때 "`tests/`·`evals/` grep 0건"을
+  근거로 "다른 호출부 없음"이라 판단했는데, `scripts/capture_i1_wire_132.py:63`·
+  `scripts/verify_regression6_217.py:78` 두 곳이 여전히 `await _prepare_recommendation(...)`
+  (구 코루틴 형태, `out=` 없음)로 남아 있었다. 방치했으면 `out` 누락으로 즉시
+  `TypeError`, `out=` 만 채워도 async generator 를 `await` 해 또 다른 `TypeError`(제너레이터
+  객체만 만들어지고 body 는 한 줄도 안 돈다)로 죽는 상태였다. `pytest` 가 `scripts/` 를
+  실행하지 않아 CI 전 구간이 초록이었고, Claude PR Review 가 인라인으로 잡았다.
+- 원인: 호출부 조사를 `tests/`·`evals/` 로만 했다. 이 저장소는 실측·회귀 검증을
+  `scripts/` 의 일회성 스크립트로 남기는 관행이 있고(`verify_regression6_217.py` 는
+  docstring 에 "프로덕션 `_prepare_recommendation` 을 **그대로 호출**한다"고 명시까지
+  해뒀다), 그 디렉터리가 pytest 실행 범위 밖이라 사각지대가 됐다.
+- 규칙: **함수 시그니처·호출 규약(코루틴↔제너레이터 전환 포함)을 바꿀 때 호출부 grep 은
+  저장소 전체**로 한다(`app`·`tests`·`evals`·`scripts`·`docs`). 특히 **pytest 가 실행하지
+  않는 `scripts/` 는 CI 가 지켜주지 않으므로** grep 결과를 눈으로 확인하고, 가능하면
+  스크립트를 실제로 한 번 돌려본다.
+- 관련: #396, PR #407, `app/agents/buyer/graph.py::_prepare_recommendation`,
+  `scripts/capture_i1_wire_132.py`, `scripts/verify_regression6_217.py`
+
+## [2026-08-06] 진단용으로 로그에 싣는 예외 메시지에는 "검증 이전" 값이 섞여 있다
+- 증상: #408 에서 401 사유를 남기려고 `__cause__` 체인의 `str(exc)` 를 그대로 로그 문자열에
+  이어붙였다. 그런데 PyJWT 의 `PyJWKClientError` 메시지는 JWT 헤더의 `kid` 를 그대로 싣는다
+  (`Unable to find a signing key that matches: "<kid>"`). `kid` 는 **서명 검증 이전**에 읽는
+  값이라 공격자가 유효 서명 없이 임의 문자열을 넣을 수 있고, 개행이 그대로 나가면 로그에
+  가짜 `auth rejected ...` 줄을 심을 수 있다(로그 인젝션, CWE-117). dev 모드는 서명을 아예
+  안 보므로 `unknown sub_type: <값>` 도 같다. 길이 상한(`[:200]`)은 개행을 막지 못한다.
+- 원인: "예외 메시지는 라이브러리가 쓴 문장"이라고 전제했다. 실제로는 **입력이 보간된 문장**
+  이고, 그 입력이 신뢰 경계의 어느 쪽인지는 예외마다 다르다. 로그에 싣기로 한 순간
+  PII 검토(무엇을 안 남길까)는 했지만 무결성 검토(누가 이 문자열을 쓸 수 있나)는 빠졌다.
+- 규칙: **인증 실패 경로의 값을 로그에 싣을 때는 비출력 문자를 이스케이프한다.** 특히 서명·서버
+  검증을 통과하기 *전에* 읽히는 값(JWT 헤더 `kid`·`alg`, dev 모드 클레임, 헤더/쿼리 원문)은
+  전부 공격자 제어로 간주한다. 로그 필드의 검토 항목은 두 개다 — ①비밀/PII 를 안 싣는가
+  ②남의 입력이 로그 **구조**를 바꿀 수 있는가.
+- 덧: **이스케이프 대상을 손으로 열거하지 마라.** 1차 수정은 C0(0x00–0x1F)+DEL 표를 직접
+  적었는데, 리뷰 2라운드가 NEL(U+0085)·LINE SEPARATOR(U+2028)·PARAGRAPH SEPARATOR(U+2029)가
+  통과한다고 지적했다 — 뷰어·JS 파서는 이것들도 개행으로 읽는다. 열거는 언제나 부분집합이
+  된다. 표준 판정(`str.isprintable()` = Cc·Cf·Zl·Zp·Zs 를 비출력으로 봄)을 쓰면 양방향
+  재정의(U+202E) 같은 미래의 변종까지 자동으로 걸린다. 한글은 Lo 라 그대로 남는다.
+- 관련: #408, PR #409 Claude 리뷰, `app/api/deps.py::_reason_chain`·`_CONTROL_ESCAPES`,
+  `tests/unit/test_auth_401_reason_log.py::test_401_log_escapes_attacker_controlled_control_chars`
+
+## [2026-08-06] 의존성 함수에 파라미터를 더하면 그게 곧 공개 계약이다 — keyword-only 도 예외가 아니다
+- 증상: #408 에서 401 로그에 어느 의존성을 거쳤는지 싣으려고 `get_identity` 에
+  `*, dependency: str = "get_identity"` 를 붙였다. 내부 표식이라 와이어와 무관하다고 생각했는데,
+  FastAPI 는 `inspect.signature` 로 파라미터를 훑으면서 **KEYWORD_ONLY 를 구분하지 않는다** —
+  그대로 뒀으면 `/chat`·`/seller/chat`·`/profile/me` 에 `?dependency=` 쿼리 파라미터가
+  생기고 OpenAPI 에도 노출됐다(계약 무변경 이슈에서 계약이 바뀔 뻔했다).
+- 원인: "의존성 함수의 시그니처 = 요청 파싱 명세"라는 것을 내부용 인자에는 적용하지 않았다.
+  Python 문법상의 사적임(keyword-only·언더스코어 접두)은 프레임워크에 아무 신호도 주지 않는다.
+- 규칙: **의존성 함수 시그니처에는 요청에서 오는 것만 둔다.** 내부 컨텍스트가 필요하면 파라미터
+  대신 **private 헬퍼로 분리해 호출부에서 넘긴다**(`_identity_or_401(..., dependency=...)`).
+  요청 객체가 필요할 때는 `request: Request = None` 으로 두면 FastAPI 주입은 그대로 받으면서
+  의존성 밖 직접 호출(단위 테스트)도 깨지지 않는다 — `Request` 타입은 필드가 아니라 특수
+  주입으로 처리돼 기본값이 무시되고 쿼리 파라미터로도 새지 않는다. 다만 이건 **추측하지 말고
+  `app.openapi()` 로 실측**할 것(파라미터 목록에 새 항목이 없어야 한다).
+- 관련: #408, `app/api/deps.py::get_identity`·`::require_seller`·`::verify_service_token`,
+  FastAPI 0.139 `analyze_param`
+
+## [2026-08-06] 소비자 없는 필드의 "안전해 보이는" 기본값은, 소비가 붙는 순간 주장으로 승격된다
+- 증상: PR #305 가 `WishlistItem.purchase_state` 를 선언하며 기본값을 `"AVAILABLE"` 로 뒀다.
+  그때는 읽는 코드가 0건이라 아무 해도 없었다. 그런데 #310 이 이 값을 읽어 "품절이에요"를
+  가르기 시작하자, **키가 오지 않은 응답이 "구매 가능이 확인됨"으로 읽히게** 됐다 — BE 가
+  아직 필드를 안 내려주는 구간에서 품절 상품을 "살 수 있다"고 안내하는 fail-open 이다.
+- 원인: 기본값을 정할 때의 기준이 "구 필드(`purchasable=true`)와 의미를 맞춘다"였다. 구 필드와의
+  하위 호환은 **소비자가 있을 때만** 의미가 있는데, 소비자가 없으니 그 기준이 검증되지 않은 채
+  통과했다. 미수신(키 없음)과 명시적 값은 **다른 사실**인데 기본값이 둘을 같은 것으로 뭉갠다.
+- 규칙: **BE 가 아직 안 내려주는 필드의 기본값은 "구 필드와 의미 동일"이 아니라 "아직 아무것도
+  주장하지 않음"(`None`)으로 둔다.** 소비를 붙이는 이슈에서 승격 여부를 정한다. 이 저장소는 이미
+  같은 구분을 명문화해 뒀다 — `spring_client.py::_envelope_success_false` 의 *"`success` 키가
+  없으면 false 로 간주하지 않는다 — '명시 안 됨'과 '명시적 false'는 다른 사실이다"*. 선언만 하고
+  소비를 미루는 PR 은 그 자리에 "소비가 붙을 때 기본값을 재검토하라"는 주석을 남긴다(#305 는
+  실제로 남겼고, 그래서 #310 이 놓치지 않았다).
+- 덧: **미지 값(계약 밖 enum)의 처방은 흐름마다 다를 수 있다.** 찜은 항목 단위 skip 이 맞지만
+  장바구니는 관대 강등(필드만 `None`)이 맞다 — 장바구니 항목이 목록에서 조용히 사라지면
+  "전부 빼줘"가 일부만 지우고 성공을 보고한다. 원칙("거짓 안내를 막는다")이 같아도 파괴적
+  후속 동작의 유무에 따라 최적 수단이 갈린다. 대칭이 곧 정답은 아니다.
+- 관련: #310, #305, `app/schemas/spring.py::CartViewItem`·`::WishlistItem`·
+  `::_degrade_unknown_purchase_state`, `app/services/spring_client.py::_parse_wishlist_items`,
+  SPEC-CART-001 REQ-CART-037, api-spec §4.9 v0.26.3
+
+---
+
+## [2026-08-06] 전용 검증자를 일반형으로 흡수할 때 판단 기준이 바뀌면, 그 간극을 메우는 이음매 검증자에도 변이 시험이 필요하다
+- 증상: #313 에서 그룹별 전용 검증자 둘을 일반형 매핑 하나로 흡수하면서, 두 검증자의
+  **판단 기준이 서로 달랐다**(삭제한 #300 검증자는 `includeScreen` **플래그** 기준, 새 매핑은
+  contextId **문자열** 기준). 그 간극을 메우려고 `ProbeContext._include_screen_matches_context_id`
+  이음매 검증자를 신설했는데, **그 검증자에는 테스트가 하나도 붙지 않았다** — 리뷰에서 변이
+  시험(본문을 `return self` 로 무력화)을 돌리자 130개 테스트가 전부 초록으로 통과해 드러났다.
+- 원인: 신규 테스트를 "이슈가 요구한 조작 목록"에만 맞춰 썼기 때문이다. 이음매 검증자는
+  이슈 본문이 요구한 항목이 아니라 **흡수 과정에서 파생된** 것이라 완료조건 체크리스트
+  어디에도 없었고, 전체 스위트가 초록이라 부재가 보이지 않았다.
+- 규칙: **검증자를 일반형으로 흡수·통합할 때 기준(플래그 vs 문자열 등)이 바뀌면 그 간극을
+  메우는 이음매 검증자를 반드시 함께 만들고, 신설한 검증자마다 본문을 `return self` 로
+  무력화해 실제로 실패하는 테스트가 있는지 변이 시험으로 확인한다.** 전체 스위트가 초록인
+  것은 새 검증자가 지켜지고 있다는 증거가 아니다 — 아무도 안 지키는 코드도 초록이다.
+  완료조건 체크리스트를 채운 것과 변경이 테스트로 고정된 것은 다른 사실이다.
+- 관련: #313, #300, `evals/intent_probe/schema.py`, `tests/unit/test_intent_probe_fixtures.py`
+
+---
+
+## [2026-08-06] 데이터가 새 코드 경로를 처음 태우면, 게이트가 깨져도 범인은 앱이 아니라 하네스일 수 있다
+- 증상: #370 이 골든셋에 처음으로 유의미한 수(47건)의 가격 위반 후보를 주입하자
+  `tests/eval/test_goldenset_eval.py` 의 critical PR 게이트가 갑자기 깨졌다. 표면적으로는
+  "앱이 하드 제약을 위반한 상품을 노출한다"로 읽혔다.
+- 원인: 앱 결함이 아니라 eval 하네스의 mock 충실도 격차였다. `evals/metrics/harness.py` 의
+  `_CaseTransport` 가 Spring `/internal/products/search` 를 mock 하면서 요청의
+  `minPrice`/`maxPrice` 를 무시하고 fixture 후보를 전부 돌려줬다. 실 서비스는
+  `app/services/spring_client.py` 가 그 파라미터를 I-1 에 실어 **Spring 이 서버사이드로**
+  거른다(앱의 로컬 `within_price_range` 는 인기상품 폴백 경로 전용이라 이 경로를 타지 않는다).
+  #333 의 기존 `price_violation` 채널이 실측 0% 에 가까워서 이 격차가 한 번도 발현된 적이
+  없었다 — 데이터가 그 코드 경로를 태우지 않는 동안은 하네스가 틀려도 아무도 모른다.
+- 규칙: eval 하네스의 fake 외부 서비스는 "앱이 실제로 보낸 요청 파라미터"를 기준으로 실
+  서비스 동작을 흉내내야 하며, 새로운 실패 모드를 데이터로 넣을 때는 그 실패 모드를 판정하는
+  경로가 하네스에서 실제로 살아 있는지 먼저 확인한다. 통과하던 게이트가 데이터 추가 후
+  깨지면 앱을 고치기 전에 하네스가 실서비스와 다른지부터 확인한다(반대로 고치면 실서비스에
+  없는 로직을 앱에 심게 된다). 케이스의 정답 라벨(`hardConstraints`)로 mock 을 거르면 안
+  된다 — 그러면 decompose 가 필터를 놓치는 진짜 실패 모드를 영원히 못 잡는다.
+- 관련: #370, #333, `evals/metrics/harness.py::_CaseTransport`,
+  `app/services/spring_client.py`, `tests/eval/test_goldenset_eval.py`
+
+---
+
+## [2026-08-06] eval 하네스가 "이 축을 잰다"고 문서에 쓰려면 주입값이 아니라 실제 도달값을 실측해야 한다
+- 증상: #371(combo_matrix INV/DIR 쌍 실검증 러너) 작업 중, `evals/combo_matrix/README.md` 가
+  "category 필터축은 `ProductSearchFilters.category`(하드필터 문자열)만 잰다"고 적어 놨는데,
+  `searchFilters` 프로젝션을 처음 실측 캡처해 보니 combo-0054(DIR, category 필터 추가) 의
+  base·perturbed 양쪽 `searchFilters.category` 가 **둘 다 항상 None** 이었다 — decompose 산출
+  JSON 에 `filters.category="무선이어폰"` 을 분명히 채웠는데도 검색 호출에는 한 번도 도달하지
+  않았다.
+- 원인: `app/agents/buyer/graph.py:520-537` 의 canonical-or-null degrade 가
+  `decision.category_legs` 가 비면 `decision.filters.category` 를 무조건 `None` 으로 지운다
+  ("미검증 원문이 Spring 검색으로 새지 않게" — 프로덕션 정상 설계, 버그 아님). `category_legs`
+  는 오직 decompose 의 `categoryQueries`→`map_categories` 매핑으로만 채워지는데,
+  `evals/combo_matrix/runner.py::build_decompose_json` 은 `categoryQueries` 를 한 번도 채우지
+  않고 `fakes.map_categories_noop` 은 항상 빈 legs 를 돌려준다 — 그래서 `filters.category` 를
+  아무리 채워도 항상 지워졌다. `category` 축은 #335 의 기존 55건 MFT 케이스를 포함해 이 하네스
+  전체에서 **처음부터 실제 검색 경계에 도달한 적이 없었는데**, 아무도 `searchFilters` 자체를
+  캡처한 적이 없어(#119 관측 로그는 축 **이름**만 봄, 값이 실제로 필터에 실렸는지는 안 봄) 지금까지
+  드러나지 않았다.
+- 규칙: **eval 하네스 문서에 "이 축을 잰다"고 쓰려면, 그 축이 파이프라인 경계(예: search 콜러블이
+  실제로 받는 인자)까지 도달하는지를 실측 캡처로 확인하고 나서 쓴다** — 주입한 decompose/입력
+  값이 아니라 **경계 도달값**을 봐야 한다. 특히 canonical-or-null 처럼 "원본을 재검증 없이는
+  못 믿어 지운다"는 설계(§20·§115 계열)가 있는 필드는, 상류에서 값이 있어 보여도 하류의 신뢰
+  게이트를 통과하지 못하면 조용히 null 이 된다 — fake/stub 이 그 신뢰 게이트를 만족시키는지
+  (여기서는 legs 매핑) 별도로 확인해야 한다. 이 발견은 `pair_runner.py` 전용 seam(exact-match
+  카테고리 매핑 fake)으로 그 쌍 하나만 고쳤고, 기존 55건의 잔여 맹점은 후속 이슈로 남겼다 —
+  구조 변경이 필요한 발견은 코드를 먼저 고치지 말고 오케스트레이터에게 보고하고 결정을 받았다.
+- 관련: #371, `app/agents/buyer/graph.py:520-537`·`:349`, `evals/combo_matrix/runner.py::build_decompose_json`,
+  `evals/combo_matrix/fakes.py::map_categories_noop`·`make_exact_match_category_mapping`(신규),
+  `evals/combo_matrix/README.md` "알려진 관측 한계" 절 정정
+
+---
+
+## [2026-08-06] degrade 주입 fake 가 실제 어댑터의 실패 규약과 다른 예외 타입을 던지면 관측·이슈가 인공물을 잰다
+- 증상: #335 매트릭스가 `wishlist_add × spring_timeout` 셀에서 "`SpringUnavailableError` 미처리로
+  INTERNAL 로 샌다"를 관측했고 이슈 #368 이 그 관측을 근거로 열렸는데, PR #374 리뷰에서 실제
+  `add_wishlist` 어댑터(I-26)는 그 예외를 **한 번도 내지 않는다**는 것이 드러났다. 관측된 예외는
+  러너가 주입한 fake(`evals/combo_matrix/runner.py:177-184`)가 던진 것이었다.
+- 원인: degrade 주입 fake 가 **그 어댑터의 실제 실패 규약과 다른 예외 타입**을 던졌다. 조회 계열
+  (`get_cart`/`get_wishlist`)은 `SpringUnavailableError`, 변경 계열(`add_to_cart`/`add_wishlist`)은
+  `CartError`/`WishlistError` 로 규약이 **갈리는데** 주입은 한 타입으로 통일돼 있었다. 그래서 그 축의
+  관측은 실제 프로덕션 경로가 아니라 fake 의 인공물을 쟀다.
+- 규칙: degrade·실패 주입 fake 를 만들 때는 **그 함수의 실제 실패 규약(어댑터 docstring·raise 문)을
+  먼저 확인**하고 같은 예외 타입으로 던져라 — 성공 fake 의 반환 스키마를 맞추는 것(아래 "성공 fake"
+  가 실 스키마와 다른 모양이어도 게스트 게이트 뒤에 있으면 영원히 안 드러난다 항목)과 같은 규칙의
+  실패 경로 버전이다. 그리고 그런 관측에서 유도한 이슈는 **본문의 근거 문장을 어댑터 실측으로
+  재검증한 뒤** 코드 주석에 옮겨라 — 주석은 다음 사람이 계약을 배우는 자리라 틀린 근거가 그대로
+  학습된다(PR #374 에서 실제로 주석·docstring·CHANGELOG 3곳에 오기재로 퍼졌다).
+- 관련: #368, PR #374, `app/services/spring_client.py::add_wishlist`(I-26)·`::get_wishlist`(I-28),
+  `evals/combo_matrix/runner.py::_observe_chat`(담기 어댑터 주입부), `app/agents/buyer/cart/graph.py::stream_cart_add`
+
+---
+
+## [2026-08-06] 평가 하네스는 측정 대상이 "내부에서 흡수한" 인프라 실패를 정상 오답 표본으로 센다
+- 증상: #331 카테고리 프로브 리뷰에서 `search_top_k` 가 항상 `TimeoutError` 를 던지도록 한
+  재현을 돌렸더니 `filled=True · samples=1 · failures=0 · legs=[]` 가 나왔다 — pg 가 전면
+  장애인데 러너는 그것을 "매핑이 카테고리를 못 냈다"는 **정상 오답 표본**으로 세어 분포에
+  섞었다. `failures.csv` 에도 남지 않아 산출물만 보고는 사후 식별조차 불가능했다. 즉 인프라
+  순간 장애가 그대로 "매핑 정확도 하락"으로 보고될 수 있었다.
+- 원인: 러너가 "실패"를 **함수 밖으로 전파된 예외**로만 정의했는데, 측정 대상인
+  `map_categories` 는 설계상 실패를 삼키고 degrade 한 결과를 **정상 반환**한다(canonical-or-null
+  #20·#115 — 카테고리는 선택 필터라 매핑이 죽어도 검색은 계속돼야 하므로 그 자체는 옳은
+  동작이다). **배포 코드가 견고할수록 하네스는 그 실패를 못 본다**는 역설이고, 실패 신호는
+  반환값이 아니라 구조화 로그(`category_leg_search_failed`·`category_embed_failed` 등)에만
+  있었다.
+- 규칙: **비-예외 degrade 를 하는 함수를 재는 하네스는 "예외가 없었다"를 성공으로 삼지 마라.**
+  측정 대상이 남기는 인프라 실패 이벤트를 캡처해 그 시도를 표본에서 빼고 재시도하며, 실패
+  레코드로 산출물에 남긴다(#260 "실패는 표본이 아니다" 규약의 확장). 단, **정책적
+  degrade**(예산 상한 `max_calls`·LLM 미구성 등 배포의 정상 동작)와 **인프라 실패**는 이벤트
+  `reason` 으로 갈라라 — 뭉뚱그리면 이번엔 반대로 정상 동작 표본을 버려 분모가 왜곡된다. 새
+  프로브를 만들 때 **측정 대상의 try/except 를 먼저 읽고 "이 함수가 무엇을 삼키는가" 목록을
+  만드는 것이 첫 수순**이다.
+- 관련: #331, PR #373, `evals/category_probe/runner.py`(`_INFRA_FAILURE_EVENTS` ·
+  `_SELECT_UNAVAILABLE_POLICY_REASONS` · `_infra_failure_event`),
+  `app/agents/buyer/recommendation/category_mapping.py`(gather `return_exceptions=True` ·
+  단계별 try 격리), `evals/README.md` 3항
+
+---
+
+## [2026-08-06] 임시 수정 원복을 문자열 치환("첫 매치")으로 하면 나란히 있는 동형 fixture 를 바꿔친다
+- 증상: #372 리뷰 라운드 1 검증 중, 테스트가 공허 통과가 아닌지 확인하려고
+  `tests/unit/test_underspecified_answer_turn.py` 의 A-1 fixture(`_CATEGORY_ANSWER_DECOMPOSE`)
+  에서 `categoryQueries` 를 임시로 비웠다가, 복원할 때 `str.replace(old, new, 1)` 로 되돌렸다.
+  그런데 되돌릴 패턴(`"categoryQueries": [],\n    "filters": {"priceMax": 50000},\n}`)이 **바로
+  위의 다른 fixture(`_PRICE_MAX_DECOMPOSE`)와 완전히 동일**했다 — 첫 매치가 그쪽이라, 복원이
+  엉뚱한 fixture 에 카테고리를 심고 원래 fixture 는 비운 채로 남겼다. 두 fixture 가 동시에
+  잘못된 상태가 됐는데 **테스트는 그래도 통과**했다(A-1 의 1턴이 과소지정이 아니게 됐는데도
+  되물음 단언이 `or "이어폰" in t` 폴백으로 초록이었다). `git status` 도 신규(untracked) 파일이라
+  `git checkout` 으로 되돌릴 수 없었고, diff 로도 드러나지 않았다. 눈으로 fixture 를 다시 읽고서야
+  발견했다.
+- 원인: 테스트 fixture 파일은 **비슷한 dict 리터럴이 여러 개 나란히 있는 게 정상**이라, 문자열
+  치환의 "첫 매치"가 의도한 그 fixture 라는 보장이 없다. 원복 확인도 "테스트가 다시 초록이다"
+  로만 했는데, 단언에 `or "이어폰" in t` 같은 관대한 폴백이 섞여 있으면 fixture 가 뒤바뀐
+  상태에서도 전체가 초록으로 나온다 — 통과가 "원복이 맞다"를 보증하지 않는다.
+- 규칙: 임시 수정→원복은 **문자열 치환으로 하지 말고** 원본 사본을 떠 두고 파일째 되돌려라
+  (`cp <파일> <파일>.bak` 후 자가 검증 → `cp <파일>.bak <파일>` 로 복원 — `mv`/`cp` 는 신규
+  untracked 파일에도 `git checkout` 과 달리 그대로 통한다). 원복 후에는 **테스트 통과만으로
+  확인하지 말고 해당 지점을 눈으로 다시 읽어 확인하라** — 특히 단언에 `or` 폴백이 섞여 있는
+  테스트는 fixture 가 틀려도 초록일 수 있다.
+- 관련: #372 리뷰 라운드 1, `tests/unit/test_underspecified_answer_turn.py`
+  `_CATEGORY_ANSWER_DECOMPOSE`/`_PRICE_MAX_DECOMPOSE`
+
+---
+
+## [2026-08-06] "성공 fake" 가 실 스키마와 다른 모양이어도 게스트 게이트 뒤에 있으면 영원히 안 드러난다
+- 증상: #335 리뷰 R8(order_status×spring_timeout 실측 추가) 작업 중, 기존
+  `evals/combo_matrix/fakes.py::make_order_status_ok` 가 `{"orderId": ..., "status": ...}` 같은
+  무관한 dict 를 돌려주고 있었다 — 실제 소비 코드(`app/agents/buyer/order_status.py`
+  `format_order_status`)는 `summary.orders`(리스트 속성)를 읽는다. `AttributeError` 가 나야
+  정상인데, 커밋된 order_status 케이스는 전부 `identity=guest` 라 `member_order_identity` 가
+  `fetch_order_status` 호출 자체를 게이트로 막아 이 fake 가 실제로는 **단 한 번도 실행되지
+  않았다** — 그래서 몇 라운드의 리뷰·테스트를 거치는 동안 아무도 이 결함을 못 봤다.
+- 원인: "성공 경로 fake"를 실 반환 스키마(Pydantic 모델 등) 검증 없이 손으로 지어낸 dict 로
+  때웠고, 그 fake 가 게스트/미인증처럼 **더 이른 게이트가 걸리는 조합에서만** 커버리지가
+  있었다 — 실행이 "안 죽었다"는 사실이 "fake 가 맞다"를 보증하지 않는다.
+- 규칙: 콜러블을 fake 로 주입할 때는 그 반환값을 **소비하는 코드가 실제로 읽는 속성**을 실
+  스키마(가능하면 실제 Pydantic 모델 인스턴스)로 만족시켜라 — 임시 dict 는 "일단 안 죽으면
+  맞다"는 착시를 준다. 그리고 그 fake 가 **성공 경로까지 실제로 도달하는 identity/조건** 조합의
+  케이스가 최소 1건 있는지 확인하라(게스트·미인증 전용 케이스만 있으면 성공 fake 자체가
+  검증된 적이 없다) — #335 의 cart/wishlist 계열에서 이미 같은 패턴(웜업·숫자 user_id 누락)을
+  겪었으니, 이 부류의 fixture 는 항상 "실 스키마 + 실제로 그 경로에 도달하는 identity" 둘 다
+  갖췄는지 짝지어 점검한다.
+- 관련: #335, `evals/combo_matrix/fakes.py::make_order_status_ok`,
+  `app/agents/buyer/order_status.py::format_order_status`, `app/schemas/spring.py::OrderStatusSummary`
+
+---
+
+## [2026-08-06] cart/wishlist fake identity 는 숫자 문자열이어야 한다 + 담기 fake 는 직전 추천을 먼저 채워야 한다
+- 증상: #335 리뷰 R3(`wishlist_add×member×spring_timeout` 직접 관측 케이스 추가) 작업 중, 회원
+  identity 로 wishlist_add 를 실행해도 매번 "찜에는 로그인이 필요해요"만 나왔다 —
+  `identity.is_guest=False` 로 만들었는데도 게스트와 똑같이 처리됐다. 그다음엔 "어떤 상품을
+  찜할까요?" 되물음만 나왔다 — degrade(SpringUnavailableError) 를 주입해도 그 코드에 전혀
+  안 닿았다.
+- 원인: ① `app/agents/buyer/cart/identity.py::cart_identity` 는 `int(identity.user_id)` 파싱에
+  실패하면(예: `"combo-0057"` 같은 비숫자 문자열) `ValueError` 를 흡수하고 (None, None) 을
+  돌려줘 **회원을 게스트/익명과 구분 없이** 취급한다 — 회원 fake identity 의 `user_id` 는
+  **숫자 문자열**이어야 한다. ② `app/agents/buyer/graph.py:994-1019` 의 담기 허용목록
+  (`allowed_product_ids` = 직전 추천 ∪ screen.products)은 그 안에 없는 상품을 조용히 되물음으로
+  돌린다 — cart_add/wishlist_add 를 fake 로 구동하려면 **같은 thread_id 로 먼저 recommend 턴을
+  1회 태워 대상 productId 를 직전 추천에 올려야** Spring 호출부(add_to_cart_fn/add_wishlist_fn)
+  에 실제로 도달한다.
+- 규칙: cart/wishlist 계열을 fake 로 단위 테스트할 때 ① `Identity.user_id` 는 회원이면 숫자
+  문자열(`str(int)`)로 채운다(비숫자면 `cart_identity` 가 조용히 익명 취급 — 예외도 안 던진다).
+  ② cart_add/wishlist_add 관측 전에는 같은 identity·thread_id 로 정상 recommend 웜업 턴을 먼저
+  실행해 last_reco 를 채운다 — 웜업 없이 degrade 를 주입하면 그 축은 절대 그 코드에 도달하지
+  못한 채 매번 같은 되물음만 관측된다(관측이 "항상 똑같다"면 이 두 가지부터 의심).
+- 관련: #335, `evals/combo_matrix/runner.py::_identity_for`·`_warm_up_last_reco`,
+  `app/agents/buyer/cart/identity.py`, `app/agents/buyer/graph.py:994-1019`
+
+---
+
+## [2026-08-06] 결정론 생성기에서 `hash(str)`을 seed 파생에 쓰면 PYTHONHASHSEED 랜덤화로 재현성이 깨진다
+- 증상: #335 pairwise 케이스 생성기(`evals/combo_matrix/generator.py`)를 같은 `axes.json`+같은
+  seed 로 연속 두 번 돌렸는데 `combo_cases.jsonl` 의 sha256 이 매번 달랐다 — 케이스 순서·내용
+  자체가 프로세스마다 달라지는 재현성 결함이었다.
+- 원인: 위험 3-wise 축쌍마다 별도 `random.Random` 시드를 파생시키며 `doc.seed ^ hash(rt.id)`
+  (`rt.id` 는 문자열)를 썼다. Python 은 문자열 `hash()` 를 **프로세스마다 무작위 솔트**로 계산한다
+  (해시 충돌 기반 DoS 방지, PYTHONHASHSEED 미고정 시 기본 동작) — 그래서 같은 문자열도 프로세스마다
+  다른 정수를 내고, 그 값으로 만든 `random.Random` 시드가 매번 달라 그 라운드의 탐욕 선택 결과가
+  갈렸다. `random.Random(int)` 자체는 결정론이지만 **입력이 이미 비결정론**이었던 것.
+- 규칙: **결정론이 요구되는 코드(생성기 seed 파생·캐시 키·해시 기반 정렬 등)에서 문자열을
+  다이제스트할 때는 절대 내장 `hash()` 를 쓰지 않는다** — `hashlib.sha256(text.encode()).digest()`
+  처럼 프로세스 불변인 안정 해시만 쓴다. `PYTHONHASHSEED=0` 로 환경을 고정하는 우회도 있지만,
+  코드가 그 환경변수에 의존한다는 사실 자체를 감추므로 안정 해시가 근본 해결이다. 재현성을
+  주장하는 코드를 작성/리뷰할 때는 `PYTHONHASHSEED=random uv run <재현 명령>` 을 최소 2회 돌려
+  출력이 바이트 동일한지 실측하라 — 기본 랜덤 시드 그대로면 이런 버그가 세션 내내 숨는다.
+- 관련: #335, `evals/combo_matrix/generator.py` `_stable_hash`(수정 후),
+  `tests/eval/test_combo_matrix_eval.py::test_regeneration_matches_committed_cases_byte_identical`
+
+---
+
+## [2026-08-06] 머지 커밋 전에 conflict marker 잔존 여부를 grep으로 확인한다
+- 증상: #333 Part 3 작업 중 repo 루트 `CHANGELOG.md`에서 `<<<<<<< HEAD`/`=======`/
+  `>>>>>>> origin/dev` 충돌 표지 3줄이 그대로 커밋돼 있는 것을 발견했다(`git log -1 -- CHANGELOG.md`
+  기준 `fdc4af0 Merge branch 'dev' into ...`에서 유입). 두 브랜치가 각자 `### Added`에 다른
+  항목(#290, #116·#117)을 추가했을 뿐 실제로 내용이 충돌하지 않는 순수 additive 변경이었는데도,
+  머지 시 표지를 지우지 않고 그대로 커밋해 `dev`/`main` 이력에 깨진 마크다운이 남았다.
+- 원인: 이 프로젝트에 커밋 전 `<<<<<<<`/`=======`/`>>>>>>>` 리터럴을 잡는 pre-commit/CI 검사가
+  없다(`conventional-pre-commit`은 메시지 형식만 본다). 사람이 머지 후 diff를 훑지 않으면
+  마크다운 렌더링이 깨져도 아무 도구도 막지 않는다.
+- 규칙:
+  - **머지 커밋(특히 `--no-verify`로 훅을 건너뛴 경우) 직후 `git grep -n "^<<<<<<<\\|^=======\\|^>>>>>>>" -- '*.md'`
+    로 잔존 표지를 확인한다** — 특히 `CHANGELOG.md`처럼 여러 브랜치가 동시에 append하는 파일.
+  - 발견 시 내용이 additive(서로 다른 섹션/항목 추가)라면 표지만 제거하고 양쪽 내용을 모두
+    보존한다 — 어느 쪽도 버리지 않는다.
+- 관련: 커밋 `fdc4af0`, 이슈 #333 Part 3, `CHANGELOG.md`
+
+## [2026-08-06] Google GenAI 배치 임베딩은 100건/요청 상한이 있다 — 청크 없이 부르면 데이터셋이 커지는 순간 깨진다
+- 증상: `evals/scoring/snapshot_embeddings.py`가 골든셋 dev 질의 임베딩을 재생성하다가
+  `google.genai.errors.ClientError: 400 INVALID_ARGUMENT ... at most 100 requests can be in
+  one batch`로 실패했다. v1(31건)에서는 100 미만이라 한 번도 드러나지 않다가, v2.1(103건)로
+  dev 케이스가 늘어나며 처음 노출됐다.
+- 원인: `app/pipelines/embedding.py`의 `embed_texts()`가 `texts` 전체를 한 번의
+  `embed_content(contents=list(texts), ...)` 호출로 보냈다 — Google `BatchEmbedContentsRequest`가
+  요청당 100건까지만 허용하는 것을 코드가 몰랐다. 이 함수는 eval 스크립트뿐 아니라 §4.8 I-17
+  운영 배치 경로도 공유하므로, search_doc 배치가 100건을 넘기면 프로덕션에서도 같은 방식으로
+  깨질 수 있었다. **이 결함은 이번 이슈(#333 Part 3)의 소관인 `evals/**` 밖 — 발견·보고만 하고
+  `app/pipelines/embedding.py` 자체는 원복했다**(오케스트레이터가 후속 GitHub 이슈로 이관 예정).
+  이번 PR은 eval 전용 호출부(`evals/scoring/snapshot_embeddings.py`)에서만 청크로 대응했다.
+- 규칙:
+  - **외부 API에 리스트를 통째로 넘기는 코드를 새로 짜거나 건드릴 때는 그 API의 배치 상한을
+    공식 문서에서 확인하고, 상한이 있으면 처음부터 청크 분할로 짠다** — "지금 입력이 작아서
+    안 걸린다"는 근거가 되지 않는다(데이터가 자라면 반드시 걸린다).
+  - **핸드오버가 소관 범위 밖(app/**)이라 지정한 파일에서 진짜 결함을 발견해도, 그 자리에서
+    고치지 말고 발견·보고만 한다** — 소관 밖 수정은 다른 레인(#318 등)과 충돌 위험을 만든다.
+    이 PR의 소관인 eval 경로에서 같은 문제를 우회 대응(청크 호출부 이동)하고, 원인 파일 수정은
+    별도 이슈로 넘긴다.
+- 관련: 이슈 #333 Part 3, `app/pipelines/embedding.py` `embed_texts()`(원복, 미수정),
+  `evals/scoring/snapshot_embeddings.py`(청크 호출부 신설)
+## [2026-08-05] 임의 순서 기준선을 두지 않으면 랭커가 개선인지 손해인지 모른다
+- 증상: #275 조사에서 student(현행 6성분 스코어러) 오라클 상한을 탐색했더니(E2) "상한
+  0.738210"이 나와 teacher(0.782943)에 근접하는 듯 보였다. 재현·반증(E4)하니 이 값은
+  `recency` 성분에만 값을 몰아주고 나머지 실질 신호를 전부 0으로 만든 **축퇴 해**였다 —
+  `ScoringBuyerAdapter` 가 `recency_by_product=None` 을 주입해 이 축이 항상 0(무주입 무력
+  축)인데, `EvaluationSettings` 검증자는 "5개 양의 신호 가중치 중 하나 이상 양수"만 요구해
+  이 축에 값을 몰아주는 시도를 걸러내지 못했다. 그 해의 순위는 dev search fixture 32/32 건이
+  이미 productId 오름차순으로 기록돼 있어(`search_responses.json`) 커밋된 `passthrough`
+  baseline 0.738210(`evals/scoring/baselines/dev-v1/comparison.md`)과 완전히 같았다 —
+  즉 **"아무 순서나 그대로 둔 것"과 같은 값이었다.** 현행 튜닝된 스코어러(0.616852)는 그
+  0.738210 보다 **0.121358 낮다**(paired bootstrap 95% CI [0.039814, 0.206934]).
+- 원인: 오라클 탐색·teacher-fit 탐색 어느 쪽도 "탐색이 no-op 으로 수렴할 수 있는가"를
+  자체적으로 배제하지 않았다. `passthrough` 를 "검색 순위 기준선"으로 잘못 해석해, 실제로는
+  **임의 순서 기준선**인 그 값과 튜닝된 가중치를 직접 비교하지 않은 채 진행했다 — 그 결과
+  현행 스코어러가 "아무것도 하지 않는 것보다 나쁘다"는 사실이 여러 리포에서 한 번도
+  표면화되지 않았다.
+- 규칙: 랭킹/스코어링 튜닝을 평가할 때는 **"아무 순서나 그대로 두는" no-op 기준선을 항상
+  1급 baseline 으로 사전 등록**하고, 튜닝된 결과·오라클 상한·teacher 모두를 이 기준선과
+  paired bootstrap CI 로 대조한다. 오라클 탐색 코드에는 "결과 순위가 no-op 과 최소 1케이스
+  달라야 한다"는 축퇴 배제 제약을 항상 넣는다(무력한 축이 있다면 탐색 공간에서도 뺀다).
+  fixture/골든셋이 productId 오름차순 같은 결정론적 순서로 저장돼 있다면 그 자체가 숨은
+  no-op 후보임을 의심한다.
+- 관련: #275, `docs/research/RESEARCH-TEACHER-275.md` §3, `docs/research/research-275-harness/e4_analyze.py`,
+  `evals/scoring/baselines/dev-v1/comparison.md`, `evals/goldenset/fixtures/search_responses.json`
+
+---
+
+## [2026-08-05] 유닛 테스트가 로컬에 떠 있는 실 Spring 을 잡아 결과가 뒤집힌다 — 주입하지 않은 기본값은 하네스 경계 밖이다
+- 증상: #330 문서 작업 중 **코드 무변경** 상태에서 `uv run pytest` 가 3건 실패로 뒤집혔다 —
+  `tests/unit/test_fanout.py::test_empty_legs_clears_unvalidated_filters_category`,
+  `tests/unit/test_recommendation.py::test_recommendation_without_repurchase_keeps_exact_exclusion[decompose0]`·
+  `[decompose1]`. 같은 트리·같은 명령이 같은 날 오전에는 3376 passed 였고, clean base(6cec23a)에서도
+  실패가 재현됐다(워커 stash 실측).
+- 원인: `app/agents/buyer/graph.py:545` 의 `popular_fn = popular_fn or spring_client.get_popular_products`
+  (#162 I-3)에서, `run_buyer_turn` 유닛 테스트들이 `search=`·`push_fn=`·`map_categories=` 는 fake 로
+  주입하면서 **`popular_fn` 은 주입하지 않는다.** 문제의 턴은 decompose 산출이 조건 없음으로 판정돼
+  (`is_no_condition_turn`) 인기 상품(I-3) 경로로 가는데, **localhost:8080 에 실 Spring(BE 개발 서버)이
+  떠 있으면** I-3 이 실제로 성공해 조건 없는 턴이 검색을 생략한다 → 테스트의 `calls` 가 빈 배열 →
+  `IndexError`. Spring 이 죽어 있으면 `popular_degraded` 로 검색 폴백을 타서 통과한다. 2026-08-05 오후
+  다른 작업 레인이 BE 스택(jarvis-mariadb 컨테이너 + Spring 8080, health 200 확인)을 띄우면서 결과가
+  뒤집혔다. CI(GitHub Actions)에는 Spring 이 없어 항상 통과한다 — **로컬에서만, BE 를 띄운 순간부터
+  깨진다.** 검증: `SPRING_BASE_URL=http://localhost:59999 uv run pytest <3건>` → 3 passed, 전체
+  스위트 → 3376 passed(2026-08-05 실측).
+- 규칙:
+  - **그래프 하네스 유닛 테스트는 네트워크로 나가는 콜러블 전부를 주입한다** — `search`·`push_fn` 만
+    fake 고 `popular_fn` 이 기본값이면 그 테스트는 유닛이 아니라 로컬 환경(8080 에 뭐가 떠 있는가)
+    의존이다.
+  - **그래프에 외부 호출 파라미터를 새로 추가하면 기존 테스트 헬퍼에 그 fake 를 같이 추가한다** —
+    #162 가 `popular_fn` 을 추가할 때 기존 fanout/recommendation 테스트는 그대로 뒀고, 그 결함은
+    Spring 이 실제로 떠 있는 날에만 드러난다(잠복 flaky).
+  - **로컬 pytest 가 코드 무변경으로 뒤집히면 코드 diff 가 아니라 환경부터 본다** — `docker ps` 와
+    8080 health 확인이 첫 수순이다. 임시 우회는 `SPRING_BASE_URL` 을 죽은 포트로 돌려 CI 동등 조건을
+    만드는 것.
+  - 테스트 자체의 수정(`popular_fn` fake 주입)은 코드 변경이라 이 문서 레인(#330) 범위 밖 — 별도
+    이슈로 처리한다.
+- 관련: #162, PR #311, `app/agents/buyer/graph.py`(`popular_fn` 기본값), `tests/unit/test_fanout.py`,
+  `tests/unit/test_recommendation.py`
+
+---
+## [2026-08-05] 거리 임계는 사전에 종속된다 — taxonomy·임베딩 모델·task_type 이 바뀌면 재측정 없이는 무효
+- 증상: #222 라이브 실측(라이브 pg-catalog, leaf 1,007행)에서 `category_distance_max=0.22` 가
+  협소 발화 20건 중 10건, 상품명 150건 골든셋 기준 90%를 드롭했다. `DESIGN-CATEGORY-HYBRID-59.md`
+  §10 이 이미 "이 값은 임베딩 모델·task_type·사전(2,056 leaf)에 종속되며 재측정 없이는 무효"라고
+  경고해 뒀는데, 사전이 구 taxonomy(2,056행)에서 현 라이브 taxonomy(leaf 1,007행)로 바뀐 뒤
+  그 재측정이 아직 이뤄지지 않은 채로 남아 있었다.
+- 원인: 임계값(코사인 거리)은 절대 상수가 아니라 "이 사전 + 이 임베딩 구성에서 정답과 오답이
+  갈리는 경계"를 실측으로 고정한 값이다. 사전 행 수·표기 체계가 바뀌면 문서·앵커 분포 자체가
+  달라져 종전 경계가 더 이상 유효하지 않다 — 코드는 아무 에러도 내지 않고 조용히 더 많은 leg 을
+  드롭할 뿐이라(canonical-or-null degrade) 증상이 "품질 저하"로만 나타나 원인 추적이 늦어진다.
+- 규칙: 카테고리·임베딩 사전(taxonomy)이 재시드되거나 임베딩 모델·task_type 이 바뀌면 거리·마진
+  임계(`category_distance_max`·`category_distance_override_margin`·`category_select_margin_max`)
+  를 **재측정 없이 그대로 쓰지 않는다.** 재측정은 이 PR 처럼 급한 기능 PR에 끼워 넣지 말고 **별도
+  이슈로 분리**한다 — 임계 튜닝은 앵커 수십~수백 건의 실측을 요구해 기능 구현과 섞으면 두 변경의
+  회귀 원인이 뒤섞인다.
+- 관련: #222, `app/core/config.py` `category_distance_max` 근처 주석,
+  `docs/specs/DESIGN-CATEGORY-HYBRID-59.md` §10 "튜너블 불변식"
+
+## [2026-08-05] 카테고리 사전이 비어 있으면 매핑이 "조용히" 무필터로 degrade 한다 — 사전 의존 기능은 행 수부터 확인한다
+- 증상: #222 작업 착수 시점에 로컬 `pg-catalog.categories` 가 **0행**이었다. 매핑
+  (`map_categories`)은 canonical-or-null 불변식대로 히트 0건을 정상적으로 빈 legs 로 처리해
+  에러 없이 무필터 검색으로 넘어갔으므로, 카탈로그가 비어 있다는 사실이 로그나 예외 어디에도
+  드러나지 않았다. 오케스트레이터가 라이브 트리(leaf 1,007행)를 별도로 시드한 뒤에야 이 결함이
+  드러났다.
+- 원인: canonical-or-null degrade(#20·#115)는 "매핑이 실패해도 검색은 계속돼야 한다"는 설계
+  의도대로 정확히 동작한 것이라 **버그가 아니다.** 문제는 그 정상 degrade 가 "카테고리 사전이
+  통째로 비어 있다"는 훨씬 심각한 상태와 "이 발화는 매핑하기 어렵다"는 정상적인 개별 실패를
+  **구분 없이 같은 신호**로 취급한다는 데 있다 — 전자는 이 기능 자체가 사실상 항상 무필터로만
+  동작한다는 뜻인데, 증상은 후자와 똑같이 "품질이 낮다"로만 보인다.
+- 규칙: `categories`·`category_search_pool` 처럼 사전(seed) 데이터에 의존하는 기능을 다루기
+  전에는 **행 수를 먼저 확인**한다(`SELECT count(*) FROM categories`). 0행이거나 비정상적으로
+  적으면 착수 전에 `~/inte-final/_sql`(정본 시드 소스) 등에서 먼저 시드하거나, 그 사실을 실측
+  보고서에 명시해 "결과가 전부 무필터 degrade 였다"는 착각을 방지한다.
+- 관련: #222, `app/agents/buyer/recommendation/category_mapping.py` canonical-or-null 불변식
 ## [2026-08-05] 병합 충돌 마커가 dev 에 커밋된 채 3커밋을 살아남았다 — 병합 커밋도 diff 검토 대상이다
 - 증상: `CHANGELOG.md` 의 `[Unreleased] > Added` 절에 `<<<<<<< HEAD`/`=======`/`>>>>>>> origin/dev`
   충돌 마커가 그대로 커밋돼(89e13fd, #302 로 dev 병합) 이후 dev 병합 커밋들에도 계속 남아 있었다.
@@ -64,6 +541,9 @@
     `git grep -nE '^(<{7}|={7}|>{7})' -- .` 로 잔여 마커를 확인한다(코드가 아닌 md·설정 파일 포함).
   - 충돌 마커는 발견 즉시 **별도 fix 커밋**으로 정리한다 — 기능 커밋에 섞으면 리뷰에서 묻힌다.
 - 관련: `CHANGELOG.md`, 커밋 89e13fd(#302), 정리 커밋은 #297 브랜치.
+
+---
+
 
 ## [2026-08-05] `pre-commit run --all-files` 는 `ruff format`(인수 없이)과 같은 뿌리의 드리프트를 좁은 스코프 브랜치 전체에 드러낸다
 - 증상: #281 작업에서 커밋 전 훅 호환성을 확인하려고 `uv run pre-commit run --all-files` 를
@@ -131,6 +611,9 @@
   말고 그대로 던져야 한다(안 그러면 예산 상한이 무력화된다).
 - 관련: #281, `evals/priority_probe/client.py::RawCapture`,
   `evals/priority_probe/runner.py::run_cell_classifier`, TASK-3-CORRECTION
+
+---
+
 ## [2026-08-05] 코드가 런타임에 읽는 repo 파일은 배포 이미지에 들어 있는지 실측한다
 - 증상: dev→main 승격(#316) 사전 점검에서, 운영 이미지로 앱을 띄우면 부팅이 실패하는 결함을
   발견했다. `session_context.initialize()`(#187)가 `db/profile/init/03_chat_session_contexts.sql`

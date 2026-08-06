@@ -341,9 +341,17 @@ async def test_existing_three_field_request_keeps_prior_and_event_sequence() -> 
 
     assert search.filters[-1].category == "무선이어폰"
     assert search.filters[-1].price_max == 50000
+    # progress 다회 emit(#396) — 리파인(carry) 턴은 카테고리를 승계해 매핑을 태우지 않으므로
+    # mapping 은 없고, analyzing 뒤 searching·reranking·publishing 이 각 지점에서 낀다.
     assert [event["type"] for event in events] == [
+        "progress",
         "conditions",
+        "progress",
+        "progress",
         "token",
+        "progress",
         "products.ready",
         "done",
     ]
+    progress_stages = [e["data"]["stage"] for e in events if e["type"] == "progress"]
+    assert progress_stages == ["analyzing", "searching", "reranking", "publishing"]

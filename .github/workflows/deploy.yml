@@ -91,11 +91,20 @@ jobs:
             OPENAI_FAST_REASONING_EFFORT=${{ vars.OPENAI_FAST_REASONING_EFFORT }}
             OPENAI_SMART_REASONING_EFFORT=${{ vars.OPENAI_SMART_REASONING_EFFORT }}
             APP_ENVIRONMENT=${{ vars.APP_ENVIRONMENT }}
+            # [2026-08-06] 클라이언트 IP 판별 — 도메인 전환 후 실측한 값이다.
+            #   브라우저 → Cloudflare → ALB → FastAPI 경로라 XFF 가 2개
+            #   (사용자IP, Cloudflare IP)로 도착한다. 오른쪽에서 2번째가 사용자.
+            #   백엔드는 nginx 가 한 번 더 붙여 3이다(값이 서로 다른 게 정상).
+            #   ALB 는 Cloudflare IP 대역으로만 열려 있어 XFF 위조 경로는 차단됨.
+            TRUST_FORWARDED_FOR=${{ vars.TRUST_FORWARDED_FOR }}
+            FORWARDED_FOR_TRUSTED_HOPS=${{ vars.FORWARDED_FOR_TRUSTED_HOPS }}
             LANGSMITH_TRACING=${{ vars.LANGSMITH_TRACING }}
             LANGSMITH_API_KEY=${{ secrets.LANGSMITH_API_KEY }}
             LANGSMITH_PROJECT=${{ vars.LANGSMITH_PROJECT }}
             LANGSMITH_TRACING_SAMPLING_RATE=${{ vars.LANGSMITH_TRACING_SAMPLING_RATE }}
             LANGSMITH_EXPORT_TIMEOUT_S=${{ vars.LANGSMITH_EXPORT_TIMEOUT_S }}
+            # [#326] 콘텐츠 추적 모드 — 미설정(빈 값)은 앱이 off 로 해석한다(빈 문자열 내성 validator).
+            LANGSMITH_TRACE_CONTENT=${{ vars.LANGSMITH_TRACE_CONTENT }}
             GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}
             PII_HASH_PEPPER=${{ secrets.PII_HASH_PEPPER }}
             EMBEDDING_MODEL_ID=${{ vars.EMBEDDING_MODEL_ID }}

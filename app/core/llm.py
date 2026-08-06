@@ -96,6 +96,45 @@ def is_timeout_error(exc: BaseException | None) -> bool:
     return False
 
 
+@lru_cache(maxsize=1)
+def _output_length_exception_types() -> tuple[type[BaseException], ...]:
+    """출력 토큰 예산 소진으로 볼 예외 타입 집합 — 설치된 SDK 만 지연 수집한다.
+
+    ``_timeout_exception_types`` 와 같은 규약: import 실패를 무시해 SDK 미설치
+    환경(테스트 등)에서도 이 모듈이 죽지 않는다.
+    """
+    types_: list[type[BaseException]] = []
+    for module_name, attr in (("openai", "LengthFinishReasonError"),):
+        try:
+            module = import_module(module_name)
+        except ImportError:  # pragma: no cover - SDK 미설치 환경
+            continue
+        candidate = getattr(module, attr, None)
+        if isinstance(candidate, type) and issubclass(candidate, BaseException):
+            types_.append(candidate)
+    return tuple(types_)
+
+
+def is_output_length_error(exc: BaseException | None) -> bool:
+    """예외(와 그 원인 체인)가 출력 토큰 예산 소진인지 **타입으로** 판정한다(#325 R6).
+
+    ``openai.LengthFinishReasonError`` 는 응답이 ``finish_reason="length"`` 로 끊겨
+    구조화 출력 파싱 자체가 불가능할 때 SDK 가 던진다 — #325 의 원 사례이며, 같은
+    입력을 다시 보내도 같은 자리에서 끊기는 그 항목 고유의 결정적 실패다.
+    ``is_timeout_error`` 와는 판정 대상이 겹치지 않는 별도 헬퍼로 둔다 — 그 함수는
+    사용자 대면 ``LLM_TIMEOUT`` 매핑에 쓰이므로 판정 범위를 넓히면 무관한 계약 표면이
+    틀어진다.
+    """
+    seen: set[int] = set()
+    current = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, _output_length_exception_types()):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def resolve_model_id(settings: Settings, tier: ModelTier) -> str:
     """API key와 무관하게 활성 provider의 tier별 모델 ID를 해석한다."""
     if tier not in ("fast", "smart"):
@@ -169,9 +208,20 @@ class LLMClient(Protocol):
     """LLM 호출 계약. tier("fast"|"smart")로 호출 — decompose·enrichment·delta(fast) / rerank·consolidate(smart)."""
 
     async def complete(
-        self, *, system: str, user: str, tier: str, max_tokens: int = 1024, json_output: bool = True
+        self,
+        *,
+        system: str,
+        user: str,
+        tier: str,
+        max_tokens: int = 1024,
+        json_output: bool = True,
+        reasoning_effort: str | None = None,
     ) -> str:
-        """단발 완성 텍스트를 반환한다. json_output=False 는 마크다운/평문 태스크(예: 프로필 요약)."""
+        """단발 완성 텍스트를 반환한다. json_output=False 는 마크다운/평문 태스크(예: 프로필 요약).
+
+        reasoning_effort: None 이면 tier 기본 effort(현행 동작 불변). 값이 주어지면 그 호출만
+        tier 기본 대신 그 effort 로 강제한다(#325 enrichment 등 구조화 추출 전용 안정화).
+        """
         ...
 
     def stream(
@@ -194,6 +244,12 @@ def _as_text(content: Any) -> str:
                 parts.append(block["text"])
         return "".join(parts)
     return str(content)
+
+
+def _record_content(system: str, user: str, output: str | None) -> None:
+    """[#326] 콘텐츠 추적 모드에서 활성 LLM span 에 prompt·응답 원문을 싣는다(모드 off 면 no-op)."""
+    if (trace := current_request_trace()) and trace.captures_content:
+        trace.record_llm_content(system=system, user=user, output=output)
 
 
 def _record_usage(message: Any, model: str) -> None:
@@ -249,9 +305,18 @@ class AnthropicLLM:
         return self._cache[key]
 
     async def complete(
-        self, *, system: str, user: str, tier: str, max_tokens: int = 1024, json_output: bool = True
+        self,
+        *,
+        system: str,
+        user: str,
+        tier: str,
+        max_tokens: int = 1024,
+        json_output: bool = True,
+        reasoning_effort: str | None = None,
     ) -> str:
         # json_output: Anthropic 은 프롬프트 기반 JSON 이라 무시(시그니처 정합용).
+        # reasoning_effort: Anthropic 은 effort 개념이 없어 무시한다(#325).
+        del reasoning_effort
         from langchain_core.messages import HumanMessage, SystemMessage
 
         model = self._resolve(tier)
@@ -265,7 +330,9 @@ class AnthropicLLM:
         except Exception as exc:  # noqa: BLE001 - SDK 예외를 LLMError 로 통일 매핑
             raise LLMError(str(exc)) from exc
         _record_usage(resp, model)
-        return _as_text(resp.content)
+        text = _as_text(resp.content)
+        _record_content(system, user, text)
+        return text
 
     async def stream(
         self, *, system: str, user: str, tier: str, max_tokens: int = 1024
@@ -275,6 +342,10 @@ class AnthropicLLM:
         model = self._resolve(tier)
         started = perf_counter()
         first_text = True
+        # [#326] 콘텐츠 추적 모드에서만 응답 원문을 누적한다(off 면 메모리 비용 0).
+        collected: list[str] | None = None
+        if (t := current_request_trace()) and t.captures_content:
+            collected = []
         try:
             with tracing_context(enabled=False):
                 async for chunk in self._chat(model, max_tokens).astream(
@@ -289,11 +360,17 @@ class AnthropicLLM:
                                 trace.record_provider_ttft(
                                     int(round((perf_counter() - started) * 1000))
                                 )
+                        if collected is not None:
+                            collected.append(text)
                         yield text
         except LLMError:
             raise
         except Exception as exc:  # noqa: BLE001
             raise LLMError(str(exc)) from exc
+        finally:
+            # [#326] 부분 소비·중단 시에도 그때까지 모인 응답을 콘텐츠로 남긴다(모드 off 면 None).
+            if collected is not None:
+                _record_content(system, user, "".join(collected))
 
 
 class OpenAILLM:
@@ -320,7 +397,7 @@ class OpenAILLM:
         self._max_retries = max_retries
         self._models = {"fast": fast_model, "smart": smart_model}
         self._reasoning = {"fast": fast_reasoning_effort, "smart": smart_reasoning_effort}
-        self._cache: dict[tuple[str, int, bool], Any] = {}
+        self._cache: dict[tuple[str, int, bool, str | None], Any] = {}
 
     def _resolve(self, tier: str) -> tuple[str, str]:
         try:
@@ -328,15 +405,16 @@ class OpenAILLM:
         except KeyError:
             raise LLMError(f"unknown tier: {tier!r}") from None
 
-    def _chat(self, tier: str, max_tokens: int, *, json_mode: bool) -> Any:
+    def _chat(
+        self, tier: str, max_tokens: int, *, json_mode: bool, effort_override: str | None = None
+    ) -> Any:
         from langchain_openai import ChatOpenAI
 
-        model, effort = self._resolve(tier)
-        key = (
-            tier,
-            max_tokens,
-            json_mode,
-        )  # tier→(model,effort) 결정적 — effort 구분 위해 tier 로 키
+        model, tier_effort = self._resolve(tier)
+        effort = effort_override if effort_override is not None else tier_effort
+        # effort_override 를 키에 포함 — 같은 (tier, max_tokens, json) 에서 override 유/무가
+        # 섞이면 먼저 만든 클라이언트가 재사용돼 effort 가 조용히 무시된다(#325 캐시 오염).
+        key = (tier, max_tokens, json_mode, effort_override)
         if key not in self._cache:
             kwargs: dict[str, Any] = {
                 "model": model,
@@ -353,22 +431,31 @@ class OpenAILLM:
         return self._cache[key]
 
     async def complete(
-        self, *, system: str, user: str, tier: str, max_tokens: int = 1024, json_output: bool = True
+        self,
+        *,
+        system: str,
+        user: str,
+        tier: str,
+        max_tokens: int = 1024,
+        json_output: bool = True,
+        reasoning_effort: str | None = None,
     ) -> str:
         from langchain_core.messages import HumanMessage, SystemMessage
 
         model, _ = self._resolve(tier)
         try:
             with tracing_context(enabled=False):
-                resp = await self._chat(tier, max_tokens, json_mode=json_output).ainvoke(
-                    [SystemMessage(content=system), HumanMessage(content=user)]
-                )
+                resp = await self._chat(
+                    tier, max_tokens, json_mode=json_output, effort_override=reasoning_effort
+                ).ainvoke([SystemMessage(content=system), HumanMessage(content=user)])
         except LLMError:
             raise
         except Exception as exc:  # noqa: BLE001
             raise LLMError(str(exc)) from exc
         _record_usage(resp, model)
-        return _as_text(resp.content)
+        text = _as_text(resp.content)
+        _record_content(system, user, text)
+        return text
 
     async def stream(
         self, *, system: str, user: str, tier: str, max_tokens: int = 1024
@@ -378,6 +465,10 @@ class OpenAILLM:
         model, _ = self._resolve(tier)
         started = perf_counter()
         first_text = True
+        # [#326] 콘텐츠 추적 모드에서만 응답 원문을 누적한다(off 면 메모리 비용 0).
+        collected: list[str] | None = None
+        if (t := current_request_trace()) and t.captures_content:
+            collected = []
         try:
             with tracing_context(enabled=False):
                 async for chunk in self._chat(tier, max_tokens, json_mode=False).astream(
@@ -392,11 +483,17 @@ class OpenAILLM:
                                 trace.record_provider_ttft(
                                     int(round((perf_counter() - started) * 1000))
                                 )
+                        if collected is not None:
+                            collected.append(text)
                         yield text
         except LLMError:
             raise
         except Exception as exc:  # noqa: BLE001
             raise LLMError(str(exc)) from exc
+        finally:
+            # [#326] 부분 소비·중단 시에도 그때까지 모인 응답을 콘텐츠로 남긴다(모드 off 면 None).
+            if collected is not None:
+                _record_content(system, user, "".join(collected))
 
 
 def get_llm() -> LLMClient | None:

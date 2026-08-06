@@ -1,0 +1,26 @@
+{
+  "datasetVersion": "2.0.0",
+  "seed": 335335,
+  "axesSha256": "5591f97fe07bdad896b5b9b7249fd92d3aef4851dc2411125306eb9704902ba6",
+  "casesSha256": "1775f18441427525b0dd5ff0e2d291b7173756f85a4f853b45d96a3e53fc6fa2",
+  "caseCount": 57,
+  "generatorParams": {
+    "leavesTotal": 6261,
+    "validPairs": 1092,
+    "uncoveredPairs": [],
+    "riskTriples": {
+      "budget_buyall_strength": {
+        "targets": 13,
+        "covered": 13
+      },
+      "unspecified_identity_surface": {
+        "targets": 9,
+        "covered": 9
+      },
+      "context_intent_case": {
+        "targets": 41,
+        "covered": 41
+      }
+    }
+  }
+}

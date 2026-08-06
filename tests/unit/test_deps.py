@@ -10,8 +10,10 @@ from app.core.auth import Identity
 
 
 def _patch_identity(monkeypatch: pytest.MonkeyPatch, identity: Identity) -> None:
-    """get_identity 를 고정 Identity 반환으로 패치."""
-    monkeypatch.setattr(deps, "get_identity", lambda authorization=None: identity)
+    """토큰 검증(_identity_or_401)을 고정 Identity 반환으로 패치."""
+    monkeypatch.setattr(
+        deps, "_identity_or_401", lambda request=None, authorization=None, **_: identity
+    )
 
 
 def test_require_seller_accepts_seller_with_brand_id(monkeypatch: pytest.MonkeyPatch) -> None:

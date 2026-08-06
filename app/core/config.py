@@ -62,8 +62,9 @@ def _deferred_first_event_i1_calls(
     relaxation_max_rounds: int,
     auto_fields: list[str],
     chip_fields: list[str],
+    category_expand_enabled: bool,
 ) -> int:
-    """미룬 턴의 첫 이벤트(`conditions`) 앞에 직렬로 놓이는 I-1 호출 수 (#288).
+    """미룬 턴의 첫 이벤트(`conditions`) 앞에 직렬로 놓이는 I-1 호출 수 (#288, #383 보정).
 
     순수 함수 + 모듈 수준으로 둔 이유는 `_require_search_retry_within_stream_budget` 를
     테스트가 실제 config 조합(교집합 ≥ 2)으로 부를 유일한 표면이기 때문이다 — `Settings` 는
@@ -74,11 +75,62 @@ def _deferred_first_event_i1_calls(
     후보 생성기(`build_relaxation_candidates`)는 `chip_fields` 를 순회하므로 `auto_fields` 에만
     있고 `chip_fields` 에 없는 필드는 후보 자체가 안 생긴다 → 교집합으로 센다. 루프는
     `rounds >= relaxation_max_rounds` 에서 break 하므로 `min` 으로 상한을 씌운다.
+
+    **`category_expand_enabled` 항의 근거(#383, docs/specs/MEASURE-FIRST-TOKEN-363.md §5)** —
+    구제 폴백 한 단이 위 두 항에 빠져 있어 실측 구제 체인 단 수(3, `test_fanout.py`
+    `test_worst_case_rescue_chain_sequential_stages_before_first_sse`)를 과소계상했다:
+    - F-1(#222)에는 별도 kill-switch가 없다. `category_expand_enabled`(기본 `True`)가 F-1·#343
+      둘의 공통 전제(`decision.category_expanded`)를 잠근다 — #343 자신의 플래그
+      (`category_expand_post_suppress_fallback_enabled`)를 꺼도 F-1은 살아 있다.
+    - F-1 과 #343 은 `category_expand_notice_suppressed` 로 상호배타라 한 턴에 최대 1회만
+      돈다 — 그래서 항이 아니라 **존재 여부**(0 또는 1)만 더한다.
+    - `search_filter_guard_enabled`(#393, 기본 `True`)는 이 항을 없애지 않는다:
+      `graph.py`의 스킵은 무필터 payload 의 필터 축이 0개일 때만 걸리고, 카테고리 외 축을 준
+      턴은 재검색이 그대로 돈다 — 최악 경로에는 이 단이 남으므로 식에
+      `search_filter_guard_enabled` 항은 추가하지 않는다.
+    이 항은 **미룸이 성립한 뒤에만**(아래 조기 return 0 을 통과한 뒤에만) 더한다 — F-1/#343 재검색은
+    본 검색이 이미 미뤄진 뒤에만 도는 후속 단계이지, 그 자체로 미룸을 만들지 않기 때문이다.
     """
     intersection_size = len(set(auto_fields) & set(chip_fields))
     if relaxation_max_rounds <= 0 or intersection_size == 0:
         return 0  # may_auto_relax가 False — conditions가 검색 앞에 나가 직렬 검증 대상이 아니다
-    return 1 + min(relaxation_max_rounds, intersection_size)
+    return 1 + (1 if category_expand_enabled else 0) + min(relaxation_max_rounds, intersection_size)
+
+
+def _deferred_first_event_rescue_i1_calls(
+    *,
+    relaxation_max_rounds: int,
+    auto_fields: list[str],
+    chip_fields: list[str],
+    category_expand_enabled: bool,
+) -> int:
+    """위 총합 중 **구제 폴백 항(0 또는 1)만** 떼어낸다 (#383 R5, PR #414 Claude 리뷰).
+
+    존재 이유는 값 매김이 다르기 때문이다 — `_require_search_retry_within_stream_budget` 의
+    가드 OFF 분기(기본)는 `graph.py::stream_recommendation` 의 `suppress_deferred_search_
+    retry = may_auto_relax and not search_retry_on_deferred_conditions` 로 재시도를
+    끄는데, 그 `with spring_client.suppress_search_retry()` 블록은 저장소 전체에 **딱 두
+    곳**뿐이다(같은 함수 안에서 본 검색을 감싼 곳, 자동 완화 probe `_probe(cand)` 를 감싼
+    곳 — 둘 다 `await` 직후 블록을 닫는다). F-1(#222) 구제 폴백과 #343 억제-후 재판정
+    (둘 다 같은 함수의 `_run_search_unfiltered()` 호출)은 그 블록 **밖**에서 돈다 —
+    `spring_client.py::search` 의 `attempts = 1 if _search_retry_suppressed.get() else
+    settings.spring_max_retries + 1` 을 그대로 타므로 가드 OFF 여도 **항상**
+    `SPRING_MAX_RETRIES` 만큼 재시도한다. 그래서 이 항만은 `spring_timeout_s` 가 아니라
+    `budget = spring_timeout_s * (spring_max_retries + 1)` 으로 값을 매겨야 한다 — 총합
+    함수와 세 항을 균질하게 `spring_timeout_s` 로 매기면 `SPRING_MAX_RETRIES=1`
+    (`.env.example` 이 한때 싣던 값)에서 이 항을 과소평가한다(이 이슈가 원래 고치려던
+    실패 모드를 항 하나에서 되풀이하는 셈이다).
+
+    구제 경로 자체를 억제하도록 `graph.py` 를 바꾸는 선택지는 **런타임 동작 변경**이라
+    범위 밖이다(#384/#288 소관) — 여기서는 가드가 현실을 정확히 재는 것만 고친다.
+
+    조기 return 0 은 총합 함수와 **같은 조건**(미룸 불성립)을 쓴다 — 그래야
+    `rescue ≤ total` 과 `total == 0 → rescue == 0` 두 불변식이 항상 성립한다.
+    """
+    intersection_size = len(set(auto_fields) & set(chip_fields))
+    if relaxation_max_rounds <= 0 or intersection_size == 0:
+        return 0
+    return 1 if category_expand_enabled else 0
 
 
 class Settings(BaseSettings):
@@ -98,6 +150,24 @@ class Settings(BaseSettings):
     langsmith_project: str = "jarvis-ai-local"
     langsmith_tracing_sampling_rate: float = Field(default=1.0, ge=0.0, le=1.0)
     langsmith_export_timeout_s: float = Field(default=0.5, gt=0.0, le=5.0)
+    # [#326] 콘텐츠 추적 모드 — 켜면 발화·LLM prompt/응답 원문·Spring 페이로드가 트레이스에
+    # 실린다(기본 off = #141 비유출 동작 유지). **실사용자 오픈 전 디버깅 구간 전용** —
+    # 규약·kill switch 절차는 DEPLOY.md §8. per-value 절단 상한은 max_chars.
+    langsmith_trace_content: bool = False
+    langsmith_trace_content_max_chars: int = Field(default=20000, gt=0)
+
+    @field_validator("langsmith_trace_content", "langsmith_trace_content_max_chars", mode="before")
+    @classmethod
+    def _empty_trace_content_settings_use_default(cls, value: object, info) -> object:
+        # 배포 워크플로가 미설정 vars 를 빈 문자열로 기록한다 — bool/int 파싱 실패로 기동이
+        # 죽지 않게 빈 값은 필드 기본값으로 해석한다(2026-08-05 APP_ENVIRONMENT 빈 값 부팅
+        # 실패 교훈). max_chars 는 아직 deploy.yml 에 배선되지 않았지만 나란한 필드라 같은
+        # 방식으로 배선되기 쉬워 선제 적용한다(PR #327 리뷰).
+        if isinstance(value, str) and value.strip() == "":
+            # Field 선언의 기본값을 그대로 참조한다 — 여기 값을 복제하면 선언만 바꿨을 때
+            # "미설정 → 빈 문자열" 경로가 조용히 어긋난다(PR #327 리뷰).
+            return cls.model_fields[info.field_name].default
+        return value
 
     # ── LLM provider 토글 (이슈 #40) ──
     # "openai"(기본) | "anthropic". 호출부는 tier("fast"|"smart")로 부르고 provider 가 모델을 해석한다.
@@ -144,6 +214,54 @@ class Settings(BaseSettings):
     # 초과 시 embed_texts 가 예외 → EmbeddingRerankBackend 가 Spring 순서 degrade(#101 #7, PR#166).
     embedding_timeout_s: float = 3.0
     catalog_batch_page_size: int = 500  # I-17 배치 페이지 크기(§4.8, config 주입)
+    # [#325] 운영 fast tier(gpt-5-nano, reasoning 모델)에서 하드코딩 max_tokens=600 전량이
+    # reasoning_tokens 로 소진돼 본문 0자 → openai.LengthFinishReasonError 로 매 5분 주기 정지.
+    # JSON 본문(태그 5~12 + 상황태그 3~7 + 속성 dict, 수백 토큰)이 reasoning 몫을 뺀 뒤에도
+    # 남도록 여유를 둔다 — color_synonym_llm_max_tokens(2048) 전례와 같은 스케일.
+    enrichment_max_tokens: int = Field(default=2048, ge=1)
+    # [#325] enrichment(구조화 추출) 전용 effort — 배포 변수 OPENAI_FAST_REASONING_EFFORT 가
+    # fast tier 기본 effort 를 무엇으로 덮든 이 값으로 고정된다(#178 tool 동반 호출 effort
+    # 강등과 같은 계열: 특정 호출 용도는 tier 기본과 독립적으로 안전값을 강제).
+    enrichment_reasoning_effort: str = "minimal"
+    # [#325] _drain 항목별 재시도 상한 — 일시 플레이크(파싱 실패·비결정 출력) 구제용. LLM
+    # 전송 자체의 재시도는 langchain max_retries 가 이미 담당한다.
+    enrichment_item_attempts: int = Field(default=2, ge=1)
+    # [#325 R3] 2선 방어(비율 가드) — 1선은 artifacts_batch._drain 의 구조적 판정이다:
+    # embed()·store.upsert() 실패와, enrichment 재시도 소진 후 타임아웃 계열로 판정된 실패는
+    # 격리하지 않고 그대로 전파해 이미 광역 장애로 처리된다. 이 비율 가드는 그 1선을 통과한
+    # 뒤에도 남는 경우 — 인프라는 멀쩡한데 enrichment 결과 자체가 대량으로 깨지는 경우(프롬프트
+    # 회귀, 모델 교체 사고 등) — 를 잡는다. 페이지 내 ON_SALE 실패 비율이 이 값 이상이면
+    # (그리고 failed>0) 커서를 전진시키지 않고 예외를 던져 자연 복구(동일 커서 재개)로 돌아간다.
+    artifacts_batch_failure_ratio_threshold: float = Field(default=0.5, gt=0.0, le=1.0)
+    # [#325 R3] 위 2선 비율 가드가 유효하려면 최소 표본이 필요하다 — 운영 증분 배치는 5분
+    # 주기에 실제 변경분만 담겨 페이지가 대개 1~3건이라(catalog_batch_page_size 는 요청 상한일
+    # 뿐), poison 단건 상품 하나만 있어도 ratio=1/1=1.0 로 대량 결과 회귀와 구별이 안 된다.
+    # 표본이 이 값 미만이면 비율 가드를 건너뛰고 격리+전진한다 — 소량 표본 판정 불능은 1선
+    # (증명된 콘텐츠 실패 화이트리스트 판정)이 이미 광역 장애를 걸러낸 뒤라 안전하다. 남는 소수 항목 격리는
+    # dead-letter ERROR 로그와 failed 카운트로 드러나며 run_batch --full(전체 재구축)로
+    # 복구 가능한 유계 하방이다.
+    artifacts_batch_failure_min_sample: int = Field(default=5, ge=1)
+    # [#325 R4] 광역 장애와 항목 고유 결정적 실패는 한 주기 관측으로는 원리적으로 구별할 수
+    # 없다 — 비율(R2)·단계(R3)·예외 타입(R3) 모두 각각 구멍이 남았다. 실제로 둘을 가르는
+    # 신호는 시간이다: 광역 장애는 언젠가 끝나고, 항목 고유 실패는 몇 번을 다시 해도 같은
+    # 자리에서 실패한다. 전파(자연 복구)는 유지하되, 같은 상품이 이 횟수만큼 "주기를
+    # 가로질러" 연속 실패하면 항목 고유 실패로 확정하고 격리(dead-letter)한다. 기본
+    # 3 × catalog_batch_interval_s(300s) ≈ 15분이 배치가 상품 1건 때문에 막힐 수 있는
+    # 상한이다 — 이 안에서 끝나는 장애는 종전대로 자연 복구되고, 그보다 긴 장애는 그
+    # 페이지의 항목들이 격리되지만 dead-letter ERROR 로그로 드러나며 run_batch --full
+    # (전체 재구축)로 복구 가능하다.
+    artifacts_batch_item_dead_letter_cycles: int = Field(default=3, ge=1)
+    # [#325 R5] 3선(비율 가드) 방어에도 같은 시간 유계 원리를 적용한다 — 1선(항목별 즉시 격리)이
+    # 특정 카테고리 상품들의 프롬프트 회귀로 다건을 매 주기 즉시 격리하면(스트릭을 쌓지 않고
+    # pop 하므로 2선 상한이 걸리지 않는다), 페이지 실패율이 매 주기 똑같이 임계를 넘어
+    # PageFailureThresholdExceeded 가 반복되고 커서가 전진하지 않아 같은 페이지가 무기한
+    # 재조회된다(3선이 스스로 #325 의 무기한 정지를 재현). 같은 커서에서 비율 가드가 이 횟수만큼
+    # 연속 발동하면 대량 파손이 자연 회복되지 않는 것으로 보고 그 페이지를 격리(항목들은 이미
+    # 1선/2선에서 dead-letter 기록됨)하고 커서를 전진시킨다. 기본
+    # 3 × catalog_batch_interval_s(300s) ≈ 15분이 대량 파손으로 배치가 멈춰 있을 수 있는
+    # 상한이다 — 이 상한이 없으면 3선이 잡으려던 바로 그 케이스(대량 내용 파손)에서 #325 증상이
+    # 그대로 재현된다. 상한 도달은 dead-letter ERROR 로 드러나며 복구는 run_batch --full.
+    artifacts_batch_page_failure_max_cycles: int = Field(default=3, ge=1)
     catalog_vector_overfetch: int = 4  # 방식1 hydrate 후 필터·품절 제거 대비 벡터 여유조회 배수
     # 방식2 DB 재정렬 1회 반환 행 가드. 현 카탈로그 7,220건 전량도 p50 49ms라 기본값은
     # 실사용에서 걸리지 않는다. 카탈로그 성장 시 응답 행 수만 제한하며, 실질 지연 상한은
@@ -521,6 +639,46 @@ class Settings(BaseSettings):
         '"무선 이어폰"처럼 어떤 상품을 찾으시는지 알려주시면 더 잘 추천해드릴 수 있어요.'
     )
 
+    # ── 과소지정 발화 되묻기 (#336, `docs/specs/SPEC-UNDERSPECIFIED-336.md`) ──
+    # 마스터 스위치 — off 면 `underspecified.is_underspecified_turn` 이 항상 False 다(AC: 한
+    # 번에 전체 롤백). 기본 off — 이 기능은 no_condition(#162) 위에 얹는 확장이라, 검증 전
+    # 기본 배포에 영향을 주지 않는다.
+    underspecified_reask_enabled: bool = False
+    # 제약(가격)만 있는 턴의 인기 상품 고지 — no_condition_notice_popular 와 같은 톤이되, 실제로
+    # 가격 필터를 통과한 후보라는 사실만 말한다(거짓 주장 금지, #132). no_condition 턴에는 내지
+    # 않는다(그 턴은 no_condition_notice_* 가 이미 담당 — 중복 고지 방지).
+    underspecified_notice: str = "조건에 맞는 인기 상품으로 골라봤어요."
+    # generic 되물음 — 노출 후보에서 예시를 뽑을 수 없을 때(취향 랭킹 경로·0건·예시 cap=0) 쓴다.
+    # [리뷰 F3] 기동 검증 없음 — 이 리포의 고지 config 들은 "빈 값 = 그 고지만 끄는 스위치"
+    # 관례다(`dedup_skipped_notice` 와 동일 판단). **빈 값(`_strip_unsafe` 정제 후 포함)이면
+    # 되물음 token 만 꺼진다** — 후보 소스 스왑(I-3 + 가격 필터)·자동완화 억제·조건 칩 등 다른
+    # 동작은 그대로 유지된다. 문구 하나로 기동을 막을 만큼 이 필드가 계약을 진 것은 아니다.
+    underspecified_reask_question: str = "어떤 상품을 찾으시는지 조금 더 알려주시겠어요?"
+    # 노출 후보 기반 예시 되물음 — `{categories}` 자리표시자 필수(없거나 포맷 실패 시 위 generic
+    # 으로 폴백, `underspecified.build_reask_question` 참조).
+    underspecified_reask_question_examples: str = (
+        "{categories} 중에 찾으시는 게 있을까요? 아니면 다른 상품을 알려주셔도 좋아요."
+    )
+    # 예시로 뽑을 카테고리 최대 개수 — 0 이면 예시 없이 항상 generic 질문.
+    underspecified_reask_examples_max: int = Field(default=3, ge=0)
+
+    # ── 검색 필터 가드 (#393, api-spec §4.17) ──
+    # 운영 실측(2026-08-06): I-1 이 SEARCH_FAILED 로 떨어진 요청은 Spring 이 실패한 게 아니라
+    # 200 인데 3s 예산을 넘긴 지연이었다 — 무필터 I-1 이 매칭 전량(실측 12.3MB)을 돌려줬기
+    # 때문이다. 마스터 스위치 — off 면 `search_guard.is_unfiltered_payload`/
+    # `is_category_mapping_dropped` 판정 자체는 그대로 두고 호출부(`recommendation/graph.py`)가
+    # 결과를 쓰지 않는다(AC: 한 번에 전체 롤백). **기본 on** — 이 가드가 막는 것은 매칭 전량
+    # 응답이라 하방이 유계이고, off 는 운영 롤백 스위치다.
+    search_filter_guard_enabled: bool = True
+    # [#393 B] 카테고리 매핑이 드롭돼 검색이 0건이라 인기 상품으로 답하는 턴의 고지. 문안은
+    # 튜너블이지만 발신은 아니다(no_condition_notice_* 와 같은 규약) — 없으면 사용자가 인기
+    # 상품을 자기가 말한 상품군으로 오해한다. 실패 단계명·오류 코드는 싣지 않는다
+    # (api-spec §3.3 "단계별 상세는 서버 로그 전용").
+    category_unmapped_notice: str = (
+        "말씀하신 상품을 정확히 찾지 못해, 지금 인기 있는 상품으로 골라봤어요. "
+        "브랜드나 가격대를 함께 알려주시면 더 잘 찾아드릴게요."
+    )
+
     # ── 홈 추천 랭킹 (I-22, api-spec §3.7 · 이슈 #148) ──
     # 질의 벡터 = 시그널 상품 임베딩의 가중 평균. cart 는 "담기까지 갔다"는 강한 신호라 조회보다 높게,
     # 조회는 최신일수록 높게(recency decay 를 인덱스 거듭제곱으로 적용) — §3.7 signals 표.
@@ -616,14 +774,27 @@ class Settings(BaseSettings):
     # 가 기동 시 강제한다.
     category_search_pool_max_size: int = 20
     # [#115] 최근접 채택 상한 — 채택 거리가 이 값을 **초과**하면 그 leg 를 canonical 없이 드롭한다
-    # (§4 거리 조건부 채택. 종전 never-null "멀어도 억지로 채택"은 폐기). 거리 0.22 초과는 "맞는 칸이
-    # taxonomy 에 없다"의 신호다 — "부모님 환갑 선물"이 출산/돌기념품(0.2971)으로 붕괴하는 식.
-    # ⚠️ 재튜닝 조건: 이 값은 **임베딩 모델·task_type·사전에 종속**된다(gemini-embedding-001 1536-dim
-    # L2 정규화 + 앵커 RETRIEVAL_QUERY / 시드 RETRIEVAL_DOCUMENT, categories 2056 leaf 기준 실측).
-    # 셋 중 하나라도 바뀌면 재측정 없이는 무효다. 실측 경계 여유가 0.005 뿐이므로(정답 최대 0.2168
-    # vs 오분류 최소 0.2221) §11 거리 로그로 분포를 관측하며 조정한다.
+    # (§4 거리 조건부 채택. 종전 never-null "멀어도 억지로 채택"은 폐기). 거리 초과는 "맞는 칸이
+    # taxonomy 에 없다"의 신호다.
+    # [#344 재측정] 사전이 leaf 2,056행 → **1,007행**으로 교체돼 0.22(2056행 기준)가 stale 이었다.
+    # 기준선 `evals/category_probe/baselines/fast-2026-08-06`(hits.csv, 앵커 38셀×N=8) 오프라인
+    # 스윕 결과 **0.26** 으로 올린다 — single 슬라이스 winner top-1 거리가 정답 med 0.2416·q3
+    # 0.2579·max 0.3239 인데 notInCatalog(사전에 칸 없음, 오강제 금지 가드레일) 최소 d1 이
+    # 0.2621(`수예 재료`, margin 0.0275)이라 **0.26 이 nic 무강제(0/40)를 지키는 최대 컷**이다
+    # (0.265 부터 오강제 7건). 0.22→채택 61/176·드롭 107, **0.26→채택 130·오답채택 8·드롭 30·
+    # nic 0/40**, 0.28→채택 147 이지만 nic 7/40 로 붕괴 — 그 사이에서 채택을 최대화하는 값.
+    # ⚠️ 이 상향은 공짜가 아니다 — 오답채택이 0.22 에서 **0** 이던 것이 0.26 에서 **8** 로 생긴다.
+    # 그래도 같은 구간에서 정답 채택이 61→130(+69)이라 손익은 성립한다: 미회수(드롭)는 무필터로
+    # 안전하게 퇴화하지만 오분류 유입은 검색을 틀린 칸으로 좁혀 정답 상품을 후보에서 배제한다는
+    # §4 비대칭(아래 override_margin 주석)에 비춰도, 협소 발화 69건을 살리는 대가로 8건을 틀린
+    # 칸으로 보내는 쪽이 순이득이다.
+    # ⚠️ 재튜닝 조건: 이 값은 **임베딩 모델·task_type·사전**에 종속된다(gemini-embedding-001
+    # 1536-dim L2 정규화 + 앵커 RETRIEVAL_QUERY / 시드 RETRIEVAL_DOCUMENT). 셋 중 하나라도 바뀌면
+    # 재측정 없이는 무효다 — `evals/category_probe/manifest.py` 의 `dictionaryHash`(categories
+    # 행 수 + 정렬된 canonical 전체의 sha256)로 과거 런과 사전 상태가 같은지 대조할 수 있다.
+    # 재측정은 `uv run python -m evals.category_probe.sweep --run <hits.csv 있는 런 디렉터리>`.
     # 절단 튜너블(ge=0)이 아니라 비교 임계라 코사인 거리 정의역 [0,2] 로 범위 검증한다.
-    category_distance_max: float = Field(default=0.22, ge=0.0, le=2.0)
+    category_distance_max: float = Field(default=0.26, ge=0.0, le=2.0)
     # [#115 §4.5] 거리컷 마진 예외 — 거리가 임계를 넘어도 마진이 이 값 **이상**이면 채택한다.
     # 근거(76 앵커 실측): 거리는 도메인 어휘 차이에 오염된다. 식품은 상품명과 leaf 이름이 달라
     # 정답 매핑도 멀고(`돼지 등뼈`→`축산 > 돼지고기` 0.2661, `미역`→`수산 > 해조류` 0.2436),
@@ -636,11 +807,16 @@ class Settings(BaseSettings):
     # **전부 채택**이 되므로(마진 ≥ 0), 끄려면 임계보다 큰 값(예 2.0)을 준다.
     # ⚠️ `category_select_margin_max`(§4.4 애매 판정)보다 **커야** 한다 — 두 구간은 정반대 상태라
     # 겹치면 안 된다(아래 _require_margin_bands_disjoint 가 기동 시 강제).
+    # [#344 재검증] leaf 1,007행 기준선 재측정에서도 이 값을 옮길 근거가 없었다 — 거리 초과 채택
+    # 예외가 정답 6건을 구제하면서 nic 최대 마진 0.0338, 오답 셀(single-mft-009) 마진 0.0341 을
+    # **0.0012 차로** 배제한다(0.26 컷 기준 재확인). 값 유지.
     category_distance_override_margin: float = Field(default=0.035, ge=0.0, le=2.0)
     # [#115] top-k LLM 택일 트리거(§4.4) — 마진(2위−1위 거리차)이 이 값 **이하**면 애매한 판정으로
     # 보고 select_category 로 후보 중 택일한다. 거리컷이 못 잡는 구멍용: 추상 라벨('선물용품')은
     # 거리 0.2074(컷 통과)인데 뜻이 틀리고, 마진은 0.0095 로 얇다. 마진을 드롭 조건으로 쓰면
     # '양말'(1·2위 둘 다 정답, 마진 0.0088)을 오탐하므로 드롭이 아니라 택일 트리거로만 쓴다.
+    # [#344 재검증] leaf 1,007행 기준선 재측정에서도 이동 근거 없음 — 값 유지(override_margin 과의
+    # 밴드 분리 제약은 `_require_margin_bands_disjoint` 가 그대로 강제).
     category_select_margin_max: float = Field(default=0.02, ge=0.0, le=2.0)
     # 턴당 택일 LLM 호출 상한 — fan-out 5 leg 이 모두 애매하면 턴 LLM 이 2→7회로 뛴다. 초과 leg 는
     # 임베딩 top-1 을 그대로 쓴다(종전 동작). ge=0 — 0 이면 택일 기능 off.
@@ -648,7 +824,52 @@ class Settings(BaseSettings):
     # #217 로 매핑이 턴에 2회 불리게 된 뒤로는 **호출부가 남은 예산을 계산해 넘겨야** 상한이 지켜진다
     # (`graph._map_or_empty(select_max_calls=...)` ← `CategoryMapping.select_calls`).
     # 매핑을 부르는 새 경로를 만들 때 이 배선을 빠뜨리면 상한이 조용히 배수로 깨진다.
+    # [#344 관측] 거리컷 상향(0.22→0.26)으로 애매 판정(택일 트리거)이 늘었다 — 같은 기준선
+    # (`fast-2026-08-06`, 304 표본)에서 25 → **88** 회로 3.5배 증가(표본당 0.29회). 턴당 상한 2 는
+    # 여전히 이 트리거율을 덮지만(fan-out 5 leg 전부가 동시에 애매할 확률이 낮다), 이 상한을 다시
+    # 만질 때는 이 관측을 먼저 볼 것 — 거리컷이 더 오르면 트리거율도 함께 오른다. **값은 유지.**
     category_select_max_calls: int = Field(default=2, ge=0)
+
+    # ── 광역 발화 → leaf fan-out (이슈 #222) ──
+    # 이슈 원안(top-k 의 공통 조상으로 광역/협소 판정)은 오케스트레이터 실측으로 기각(정확도 0.50,
+    # 우연 수준). 채택안은 판정기를 만들지 않는다 — 매핑이 canonical 을 못 낸 leg
+    # (`CategoryMapping.unresolved`, #217 이 이미 만든 신호)을 트리거로, 그 앵커의 의미 기반
+    # top-N leaf 를 그대로 fan-out leg 으로 쓴다(`CategoryMapping.expansion_leaves`). 협소 발화는
+    # canonical 을 내므로 이 경로에 애초에 진입하지 않는다 — 그 자체는 구조적이다.
+    # [PR #318 리뷰 R14-2] 단 이 "진입하지 않는다"는 **거리 임계가 정상 튜닝돼 있을 때만**
+    # 성립한다 — 재측정 완료(#344, 0.26). 잔존 드롭(정당: 사전에 칸이 없거나 d1>0.26)이 이
+    # 확장 폴백으로 가는 것은 여전히 정상 동작이다 — 확장 top-N 은 의미 최근접이라 정답 leaf 가
+    # 대체로 상위에 포함되고(실측: "무선 이어폰" top-1 = 음향가전 > 이어폰) leg 마다
+    # keyword·semantic_query 가 유지되므로, 무필터 degrade(종전 동작) 대비 악화는 아니다.
+    category_expand_enabled: bool = True  # 광역 fan-out 롤백 스위치
+    # [PR #318 리뷰 R5-1] **턴 전체 상한**이다 — unresolved leg 당 상한이 아니다. unresolved leg
+    # 이 여럿이면 `category_mapping._collect_expansion_leaves` 가 leg 마다 모은 후보를 라운드로빈
+    # 인터리브(`recommendation/graph._merge_fanout_results` 와 같은 규약)로 평탄화한 뒤 이 값으로
+    # 한 번만 자른다 — leg 별로 이 값을 각각 적용하면 먼저 처리된 leg 이 예산을 통째로 가져가고
+    # 뒤 leg 은 0개가 된다(사용자가 명시한 두 번째 니즈가 검색조차 안 되는 조용한 손실).
+    # 확장 leg 수 상한. category_fanout_max 와 같은 이유로 le=MAX_LISTS — 확장 턴이 case 3 과
+    # 겹치면 leg 마다 목록이 생겨 계약 상한(§4.2 lists ≤ 10)을 넘긴다.
+    category_expand_legs: int = Field(default=8, ge=0, le=MAX_LISTS)
+    category_expand_notice_enabled: bool = True  # 확장 고지 문구 on/off
+    # 확장 leaf 의 중분류(leaf 이름의 " > " 앞부분, 중복 제거) 목록을 끼울 자리 하나({items}).
+    # 문구는 LLM 이 짓지 않는다 — DB 값 그대로 조립해 존재하지 않는 카테고리를 말하지 않는다(#59 재발 방지).
+    category_expand_notice: str = "{items} 에서 관련 상품을 찾아봤어요."
+    # [#343] 확장 턴에서 검색은 히트를 냈는데 `_post_filter`(최근구매 exact 제외 + 소모품 카테고리
+    # 억제)가 전량을 지워 candidates 가 0이 되는 갭을 무필터 재검색으로 구제한다. 결함을 고치는
+    # 플래그는 기본 on(팀 방침) — 하방이 유계(추가 왕복은 상호배타 가드로 턴당 최대 1회분)라
+    # off 로 안전하게 시작할 근거가 없다. "재검색 상한" 수치 config 는 따로 두지 않는다 — 재검색은
+    # 결정론적(같은 쿼리 = 같은 결과)이라 2회 이상 시도가 무의미하고, 턴당 무필터 재검색 1회는
+    # `category_expand_notice_suppressed` 상호배타 가드로 구조적으로 강제된다.
+    category_expand_post_suppress_fallback_enabled: bool = True
+
+    # ── Case 3 니즈별 그룹 출력 (이슈 #168) ──
+    # split 턴의 니즈당 rerank 입력 후보 quota. 실측(실 카탈로그 leaf 폭 9~17): merge_cap=30 은
+    # 5니즈 턴에서 니즈당 6개로 자연 공급량보다 아래를 절단해 per-need expose_max(9) 도달 불가.
+    category_group_per_need_candidates: int = Field(default=10, ge=1)
+    group_notice_enabled: bool = True  # 니즈별 그룹 서술 on/off
+    # 니즈 그룹 서술 자리 하나({items}) — "라벨1 N개 · 라벨2 M개" 형태로 결정론 조립한다
+    # (#222 확장 고지와 같은 패턴, LLM 이 짓지 않는다).
+    group_notice: str = "니즈별로 나눠 담았어요 — {items}"
 
     # ── 목적·상황형 발화의 상품 전개 (이슈 #198·#217, DESIGN-NEEDS-EXPANSION-198) ──
     # "집들이 선물" 처럼 무엇을 살지 사용자가 말하지 않은 발화를 구체 상품 목록으로 전개한다
@@ -1094,11 +1315,20 @@ class Settings(BaseSettings):
     # **상한이 1인 이유(PR #235 리뷰)**: backoff 가 구현에 없다. 2·3 을 허용하면 "1 을 넘기려면
     # backoff 가 필요하다"고 적어 둔 위험을 설정 한 줄로 열어 주는 셈이라, **현재 구현이 감당하는
     # 값만** 받는다. 더 올리려면 backoff 를 먼저 만들고 이 상한을 함께 푼다.
-    spring_max_retries: int = Field(default=1, ge=0, le=1)
+    # [#394 한시적 조치] 기본값을 1→0 으로 내린다. 운영 실측(2026-08-06): I-1 이 SEARCH_FAILED 로
+    # 떨어진 두 건 모두 Spring 은 200 을 줬다 — 실패가 아니라 3s 예산을 넘긴 지연이었다. 그 상태에서
+    # 재시도는 성공했을 쿼리를 backoff 없이 즉시 한 번 더 돌려 Spring 부하만 2배로 만들고, 사용자는
+    # 6초 뒤 실패를 받는다. **원복 조건**: BE 검색 쿼리 개선(리뷰 집계 비정규화, BE #395)이 배포되면
+    # 재검토한다. 구매자 progress 이벤트(#289)로 first-token 관문이 풀릴 때도 함께 재검토한다.
+    # `=1` 로 되돌리면 이 필드가 원래 규정하던 재시도 동작(위 주석)으로 완전히 복귀한다.
+    spring_max_retries: int = Field(default=0, ge=0, le=1)
     # [#277] conditions 를 검색 뒤로 미룬 턴은 첫 이벤트 앞에 I-1 이 최대 2회 직렬이라,
     # 재시도까지 얹으면 first-token 상한을 넘어 이벤트 0건·504가 될 수 있다. 한 번의 일시
     # 지연을 살리는 대가가 턴 전체의 침묵이므로 기본값은 그 턴만 재시도를 끈다.
-    # 구매자 progress 이벤트가 계약에 등재돼 검색 전에 첫 프레임을 낼 수 있으면 원복 가능하다.
+    # 원복 전제(구매자 progress 계약 등재 + 플래그 on)는 #396 으로 충족됐다. 그래도 원복은
+    # 하지 않는다 — #394(커밋 2168e9b)가 이미 다른 이유(Spring 부하 실측)로 `spring_max_retries`
+    # 기본값을 1→0 으로 내렸고, 이 필드의 원복 여부는 그 조치와 함께 판단해야 하는 별도
+    # 결정이다. #396 이슈 본문도 이를 비범위로 못박았다.
     search_retry_on_deferred_conditions: bool = False
     # [#132 PR #293 리뷰] I-1 응답 파싱 **전용** 스레드풀 크기. `asyncio.to_thread` 의 앱 전역
     # 기본 executor 를 쓰면, 총시간 가드가 버린(=await 는 취소됐지만 계속 도는) 파싱 스레드가
@@ -1157,9 +1387,9 @@ class Settings(BaseSettings):
     benchmark_request_timeout_s: float = 120.0
 
     # ── 구매자 골든셋(#142, evals/goldenset) ──
-    # 초기 데이터셋은 30~50건으로 작게 시작해 사람이 전수 검수할 수 있게 한다.
+    # v2(#333)는 서빙 후보 상한(30)까지 후보를 채우는 슬라이스 쿼터 확장을 담아 160으로 올린다.
     goldenset_min_cases: int = 30
-    goldenset_max_cases: int = 50
+    goldenset_max_cases: int = 160
     # 문자 3-gram Jaccard가 이 값을 넘는 split 간 query는 leakage로 본다.
     goldenset_near_dup_jaccard_max: float = 0.6
     # split 간 정답 집합이 절반보다 많이 겹치면 동일 시나리오 누출로 본다.
@@ -1168,6 +1398,15 @@ class Settings(BaseSettings):
     goldenset_snapshot_per_query_max: int = 30
     # 43건 중 12건을 봉인하는 v1 목표 비중이며 감사 보고에 사용한다.
     goldenset_holdout_ratio: float = 0.3
+    # #333: 순위 평가 대상 케이스의 후보 하한. nDCG@10 컷오프가 구조적으로 발동하려면
+    # 최소 이 개수는 있어야 한다(narrow-domain 케이스는 notes 접두 문구로 예외).
+    goldenset_min_ranking_candidates: int = 20
+    # #333: 후보 깊이 목표 — 서빙 상한(30)과 동일하게 맞춘다.
+    goldenset_target_candidates: int = 30
+    # #333 리뷰 F-5-1(#329 권고 3): 순위 평가 대상 케이스의 등급≥1 후보 비율 상한. v1 평균이
+    # 0.389로 이 값을 넘어 하드 네거티브가 사실상 없었다 — 초과 케이스는 notes 접두 문구
+    # relevant-ratio-exempt: 로만 예외를 허용한다.
+    goldenset_max_relevant_ratio: float = 0.25
 
     # ── 구매자 추천 평가 지표(#143, evals/metrics) ──
     eval_buyer_k_list: tuple[int, ...] = (5, 10, 20)
@@ -1199,12 +1438,19 @@ class Settings(BaseSettings):
     # 현행 0.15를 중심으로 0~4배 범위를 대칭적이지 않은 실용 구간으로 탐색한다.
     personalization_eval_weight_sweep: tuple[float, ...] = (0.0, 0.075, 0.15, 0.30, 0.60)
 
-    # ── 구매자 progress 이벤트 (이슈 #289, 계약 미등재 — 정본 등재 전까지 기본 off) ──
-    # 정본(Notion CH-2)·api-spec §3.1 등재 전에는 켜지 않는다. 켜면 구매자 스트림에 신규
-    # 이벤트 타입(`progress`)이 나가므로 와이어 계약 변경이다 — 이 PR 은 절대 켜지 않은 채 끝난다.
-    progress_events_enabled: bool = False
+    # ── 구매자 progress 이벤트 (이슈 #396, 계약 등재 완료 — 기본 on) ──
+    # 정본(Notion CH-2)·api-spec §3.1 v0.21.0 등재와 FE 구현 완료(2026-08-06)로 전제가
+    # 충족돼 기본 on 으로 해제했다(#289 후속). 되돌리려면 PROGRESS_EVENTS_ENABLED=false.
+    progress_events_enabled: bool = True
     # 빈 문자열이면 프레임 `data`에 `message` 키 자체를 싣지 않는다(app/agents/buyer/_frames.py).
     progress_analyzing_message: str = "요청을 확인하고 있어요"
+    # 다회 emit·어휘 확장(이슈 #396, api-spec §3.1 v0.27.0) — stage 6종 추가. 규약은 위와 동일.
+    progress_mapping_message: str = "카테고리를 찾고 있어요"
+    progress_expanding_message: str = "어떤 상품이 필요한지 넓혀 보고 있어요"
+    progress_searching_message: str = "상품을 검색하고 있어요"
+    progress_relaxing_message: str = "조건을 조금 넓혀 다시 찾고 있어요"
+    progress_reranking_message: str = "가장 잘 맞는 걸 고르고 있어요"
+    progress_publishing_message: str = "추천 목록을 준비하고 있어요"
 
     # ── 요청 바디 크기 상한 (이슈 #299, api-spec §2.5·§2.8) ──
     # 레이트 리밋(§2.8)은 요청 **건수**만 세므로 10회로도 임의 크기 바디를 보낼 수 있다.
@@ -1308,6 +1554,10 @@ class Settings(BaseSettings):
             raise ValueError("골든셋 질의별 스냅샷 상한은 0보다 커야 합니다")
         if not 0 < self.goldenset_holdout_ratio < 1:
             raise ValueError("골든셋 holdout 비율은 0과 1 사이여야 합니다")
+        if not 0 < self.goldenset_min_ranking_candidates <= self.goldenset_target_candidates:
+            raise ValueError("골든셋 순위 평가 후보 하한은 0보다 크고 목표 후보 수 이하여야 합니다")
+        if not 0 < self.goldenset_max_relevant_ratio < 1:
+            raise ValueError("골든셋 등급≥1 후보 비율 상한은 0과 1 사이여야 합니다")
         return self
 
     @model_validator(mode="after")
@@ -1427,6 +1677,10 @@ class Settings(BaseSettings):
         스스로 보장한다(PR #188 리뷰) — 호출부(`decompose._parse_category_queries`·`expand_needs`)의
         절단에만 기대면 새 호출부 하나가 풀을 넘기고, 증상이 다른 요청의 PoolTimeout 이라 원인
         추적이 어렵다. 절단이 실제로 발생하면 `category_legs_truncated` 로 관측된다.
+
+        [#222] 확장 leg(`category_expand_legs`)은 이 전제와 무관하다 — 광역 fan-out 후보는
+        `expansion_leaves`(이미 조회된 히트를 슬라이스)로 채우고 pg 앵커 조회를 새로 하지 않으므로
+        `2 × category_fanout_max` 동시 조회 전제가 그대로 성립한다.
         """
         need = 2 * self.category_fanout_max
         if self.category_search_pool_max_size < need:
@@ -1608,15 +1862,21 @@ class Settings(BaseSettings):
         **이 식은 단일 I-1 호출 예산만 본다**(#277). 종전의 배타성 전제는 실측으로 반증됐다:
         본 검색이 1 차 타임아웃 뒤 2 차에 0 건으로 성공하면 재시도를 쓰고도 완화 probe 가 돈다.
         기본 설정은 미룬 턴의 재시도를 건너뛰어 첫 이벤트 앞 직렬 합을
-        `2 * spring_timeout_s`(6s)로 묶는다. `SEARCH_RETRY_ON_DEFERRED_CONDITIONS=true`로
-        종전 동작을 되살리면 두 호출이 각각 재시도해 최대 12s가 되고, #277의 이벤트 0건·504
-        조합도 다시 열린다.
+        `3 * spring_timeout_s`(9s, #383 보정 후)로 묶는다. `SEARCH_RETRY_ON_DEFERRED_CONDITIONS=
+        true`로 종전 동작을 되살리면 세 호출이 각각 재시도해 최대 18s가 되고, #277의 이벤트
+        0건·504 조합도 다시 열린다.
 
-        **직렬 합의 일반형**(#288) — 상수 `2` 는 `_deferred_first_event_i1_calls` 가 계산하는
-        `1 + min(relaxation_max_rounds, |relaxation_auto_fields ∩ relaxation_chip_fields|)` 로
+        **직렬 합의 일반형**(#288, #383 보정) — 상수는 `_deferred_first_event_i1_calls` 가
+        계산하는
+        `1 + (1 if category_expand_enabled else 0) +
+        min(relaxation_max_rounds, |relaxation_auto_fields ∩ relaxation_chip_fields|)` 로
         바뀐다. 각 항의 출처:
         - `1`: 본 검색 1회(`asyncio.gather(_run_search(), _fetch_purchases())` — I-19 는 병렬이라
           합산 대상이 아니고, fan-out leg 도 병렬이라 1회분).
+        - `1 if category_expand_enabled else 0`(#383): 본 검색이 0건일 때 F-1(#222)·#343 이 여는
+          카테고리 무필터 재검색 한 단. 둘은 `category_expand_notice_suppressed` 로 상호배타라
+          한 턴 최대 1회이므로 항이 아니라 존재 여부만 더한다 — 근거는
+          `_deferred_first_event_i1_calls` docstring.
         - **교집합**(합집합·`auto_fields` 단독이 아니라): 후보 생성기 `build_relaxation_candidates`
           가 `relaxation_chip_fields` 를 **순회**하며 후보를 만들고, 자동 완화 루프는 그중
           `relaxation_auto_fields` 에 든 것만 쓴다. 칩 목록에 없는 자동 필드는 후보 자체가 안
@@ -1630,15 +1890,35 @@ class Settings(BaseSettings):
           에서 break 하므로, probe 횟수는 교집합 크기와 라운드 상한 중 작은 쪽으로 잡힌다.
         - 1 회 호출의 벽시계 예산(`budget`/`spring_timeout_s`)은 아래 가드 ON/OFF 분기 그대로다.
 
-        **오늘 이 식의 값은 항상 2 다** — `_forbid_auto_relaxing_explicit_constraints` 가
-        `relaxation_auto_fields ⊆ {ratingMin}` 로 잠가 교집합이 항상 ≤ 1 이기 때문이다. 그래도
-        상수 `2` 대신 일반형을 쓰는 이유는, 그 허용 목록이 넓어지는 순간(`graph.py` 의
-        `may_auto_relax` 주석이 "목록이 넓어지면"을 명시적으로 예상한다) 상수는 **조용히
-        과소평가**되어 #277 이 없앤 이벤트 0건·504 조합이 되살아나기 때문이다. 계수를 다른
-        검증기의 허용 목록에 암묵적으로 의존시키지 않는다(lessons 2026-08-04
+        **오늘 이 식의 값은 기본 설정에서 3 이다**(#383 보정 후) — `1`(본 검색) +
+        `1`(`category_expand_enabled` 기본 `True`) + `min(3, 1)`(교집합, 자동 목록이
+        `_forbid_auto_relaxing_explicit_constraints` 로 `{ratingMin}` 부분집합에 잠겨 있어 항상
+        ≤ 1). `CATEGORY_EXPAND_ENABLED=false` 면 그 항이 빠져 종전대로 2 다. 상수 대신 일반형을
+        쓰는 이유는, 자동 완화 허용 목록이 넓어지거나(`graph.py` 의 `may_auto_relax` 주석이
+        "목록이 넓어지면"을 명시적으로 예상한다) `category_expand_enabled` 가 꺼지는 순간 상수는
+        **조용히 어긋나** #277 이 없앤 이벤트 0건·504 조합이 되살아나기 때문이다. 계수를 다른
+        검증기의 허용 목록·플래그에 암묵적으로 의존시키지 않는다(lessons 2026-08-04
         "상한이 안전한지는 단일 호출 예산이 아니라 첫 이벤트 앞 직렬 합으로 잰다").
 
-        가드 ON/OFF 설정은 각각 직렬 합 `calls * budget`/`calls * spring_timeout_s`로 검증한다.
+        가드 ON 설정은 직렬 합 `calls * budget`로 검증한다 — `search_retry_on_deferred_
+        conditions=True` 면 `graph.py::stream_recommendation` 의 `suppress_deferred_
+        search_retry` 산출부가 항상 False 라 세 항 모두 재시도하기 때문이다. **가드
+        OFF(기본)는 항이 균질하지 않다**(#383 R5, PR #414 Claude 리뷰) — 본 검색·
+        자동완화 probe 는 `spring_client.suppress_search_retry()` 로 억제돼(그 `with`
+        블록은 저장소 전체에, 같은 함수 안 본 검색을 감싼 곳과 자동완화 probe
+        `_probe(cand)` 를 감싼 곳 딱 두 곳뿐) 1회분(`spring_timeout_s`)이지만, F-1/#343
+        구제 폴백(같은 함수의 `_run_search_unfiltered()` 호출 두 곳)은 그 블록 밖이라
+        억제되지 않고 `spring_client.py::search` 의 `settings.spring_max_retries + 1`
+        을 그대로 받는다 — 세 항을 균질하게 `spring_timeout_s` 로 매기면 이 한 항을
+        과소평가해 이 이슈가
+        고치려던 실패 모드를 되풀이한다(`SPRING_MAX_RETRIES=1` + 기본 타임아웃이면 가드
+        계산 9.0 < 10.0 로 통과시키지만 실제 최악은 3.0+3.0+3.0×2=12.0 > 10.0). 그래서
+        OFF 분기는 `suppressed_calls * spring_timeout_s + rescue_calls * budget`
+        (`_deferred_first_event_rescue_i1_calls` 가 `rescue_calls` 를 뗀다, `rescue ≤
+        total`·`total == 0 → rescue == 0` 두 불변식 보장)로 나눠 잰다. **구제 경로를
+        `graph.py` 에서 억제하도록 런타임을 바꾸는 선택지는 범위 밖**이다(#384/#288 소관) —
+        가드가 현실을 정확히 재게만 고친다. 오늘 기본값(`spring_max_retries=0`, #394)에서는
+        `budget == spring_timeout_s` 라 항별 값 매김이 갈리지 않아 영향이 없다(9.0 그대로).
         게이트는 `calls == 0`(= `graph.py`의 `may_auto_relax`가 False)일 때만 검증을 건너뛰어,
         실제로 미루지 않는 설정을 일어나지 않는 직렬 호출 때문에 막지 않는다(#277 4차 원칙을
         일반형으로 그대로 유지).
@@ -1646,8 +1926,20 @@ class Settings(BaseSettings):
         **커버하지 않는 것**(누락이 아니라 판단): LLM head(#151 baseline p95 ≈3.0s)와 pg 왕복은
         이 식에 없고, `conditions` 뒤에 도는 완화 칩 probe(`relaxation_max_probes`)도 첫 이벤트
         예산 밖이다(그 probe는 이미 첫 이벤트가 나간 뒤라 first-token 상한과 무관하다). head 를
-        포함한 타임아웃 재배분은 #288 의 잔여 후보로 남는다. 구매자 `progress` 이벤트(#289)가
-        계약에 등재되면 미룸 자체가 사라져 이 검증기는 보험 계층이 된다.
+        포함한 타임아웃 재배분은 #288 의 잔여 후보로 남는다. F-1·#343 구제 폴백은 #383 부터 이
+        식에 들어왔다(더 이상 커버 밖이 아니다).
+
+        **구매자 `progress` 이벤트(#289)는 #396 이 이미 구현했다 — "미룸 자체가 사라진다"는
+        낡은 서술이다(#383 R3 정정).** `graph.py::stream_recommendation` 이 본 검색 **직전**에
+        `progress_frame("searching", ...)` 을 내보내고(`progress_events_enabled` 기본
+        `True`, 위 필드), 이 스트림의 첫 이벤트는 이제 `conditions` 가 아니라 그 `progress`
+        프레임이다. `conditions` 는 여전히 검색 **뒤**로 미뤄진다 — 사라지는 것은 미룸
+        자체가 아니라 **미룸이 first-token 을 늦추는 효과**다: `stream.py` 의 `ft_deadline`
+        이 이 `progress` 프레임으로 이미 충족되므로, `progress_events_enabled=True`(오늘
+        기본값)인 배포에서 이 검증기의 first-token 비교는 실제로 도달하기 전에 이미 안전한
+        **보험 계층**이고, 그 플래그를 끄면 다시 실질 가드가 된다. **계수를
+        `progress_events_enabled` 에 연동하지는 않는다** — 식·기본값·런타임 로직은 그대로이며,
+        그 연동 여부는 #384/#288 잔여 후보로 남긴다.
 
         **계약 무변경**: 이 검증은 내부 기동 로직이고 AI→Spring 3s 규약과 미룬 턴 재시도
         스킵은 api-spec §2.9(c)(v0.20.2)에 이미 등재돼 있다 — 이 변경으로 와이어·명세를
@@ -1675,23 +1967,43 @@ class Settings(BaseSettings):
             relaxation_max_rounds=self.relaxation_max_rounds,
             auto_fields=self.relaxation_auto_fields,
             chip_fields=self.relaxation_chip_fields,
+            category_expand_enabled=self.category_expand_enabled,
         )
         if deferred_calls == 0:
             return self
         if self.search_retry_on_deferred_conditions:
+            # ON 분기: graph.py::stream_recommendation 의 suppress_deferred_search_retry
+            # 산출부가 항상 False 라 세 항
+            # 전부(본 검색·자동완화 probe·구제 폴백) 재시도한다 — 균질하게 budget 으로 맞는다.
             serial_budget = deferred_calls * budget
             serial_formula = f"{deferred_calls} * SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1)"
             recovery = (
                 "disable SEARCH_RETRY_ON_DEFERRED_CONDITIONS, lower SPRING_TIMEOUT_S, "
-                "or disable deferral with RELAXATION_MAX_ROUNDS=0 or "
-                "RELAXATION_AUTO_FIELDS=[]"
+                "disable deferral with RELAXATION_MAX_ROUNDS=0 or "
+                "RELAXATION_AUTO_FIELDS=[], or drop the rescue-fallback call with "
+                "CATEGORY_EXPAND_ENABLED=false"
             )
         else:
-            serial_budget = deferred_calls * self.spring_timeout_s
-            serial_formula = f"{deferred_calls} * SPRING_TIMEOUT_S"
+            # OFF 분기(기본, #383 R5): 본 검색·자동완화 probe 는 suppress_search_retry() 로
+            # 억제돼 1회분(spring_timeout_s)이지만, 구제 폴백(F-1/#343)은 그 with 블록 밖이라
+            # 억제되지 않는다 — 균질하게 spring_timeout_s 로 매기면 그 한 항을 과소평가한다
+            # (_deferred_first_event_rescue_i1_calls docstring 근거). 항별로 나눠 값을 매긴다.
+            rescue_calls = _deferred_first_event_rescue_i1_calls(
+                relaxation_max_rounds=self.relaxation_max_rounds,
+                auto_fields=self.relaxation_auto_fields,
+                chip_fields=self.relaxation_chip_fields,
+                category_expand_enabled=self.category_expand_enabled,
+            )
+            suppressed_calls = deferred_calls - rescue_calls
+            serial_budget = suppressed_calls * self.spring_timeout_s + rescue_calls * budget
+            serial_formula = (
+                f"{suppressed_calls} * SPRING_TIMEOUT_S + "
+                f"{rescue_calls} * SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1)"
+            )
             recovery = (
-                "lower SPRING_TIMEOUT_S or disable deferral with "
-                "RELAXATION_MAX_ROUNDS=0 or RELAXATION_AUTO_FIELDS=[]"
+                "lower SPRING_TIMEOUT_S, disable deferral with "
+                "RELAXATION_MAX_ROUNDS=0 or RELAXATION_AUTO_FIELDS=[], or "
+                "drop the rescue-fallback call with CATEGORY_EXPAND_ENABLED=false"
             )
         if serial_budget >= self.stream_first_token_timeout_s:
             raise ValueError(
@@ -1729,6 +2041,8 @@ class Settings(BaseSettings):
             "NO_CONDITION_NOTICE_POPULAR": (self.no_condition_notice_popular, "§4.17"),
             "NO_CONDITION_NOTICE_PROFILE": (self.no_condition_notice_profile, "§4.17"),
             "NO_CONDITION_NOTICE_BUDGET": (self.no_condition_notice_budget, "§4.17"),
+            # [#393] 카테고리 매핑 드롭 + 0건 → 인기 상품 대체 고지도 같은 이유로 필수다.
+            "CATEGORY_UNMAPPED_NOTICE": (self.category_unmapped_notice, "§4.17"),
         }
         for name, (value, section) in required.items():
             if not _strip_unsafe(value):
@@ -1853,23 +2167,6 @@ class Settings(BaseSettings):
         # 반복한다(PR #42 리뷰, 이슈 #31). 런타임 무한 no-op 대신 기동 시점에 fail-fast.
         if self.auth_mode == "jwks" and not self.google_api_key:
             raise ValueError("GOOGLE_API_KEY must be set when auth_mode=jwks")
-        # [#289] 계약 미등재 이벤트가 운영 와이어에 나가는 사고 방지 — 이 플래그는 정본
-        # (Notion CH-2)·api-spec §3.1 등재와 FE 미지 type 무시 확인이 **둘 다** 끝난 뒤에만
-        # 켤 수 있다. bool 필드라 .env 한 줄로 뒤집히는데, 지금 그걸 막는 게 사람의 규율뿐이라
-        # 운영 레인에서는 기동으로 막는다(위 pepper/토큰 가드와 같은 fail-closed 규약).
-        # **판정 축은 auth_mode == "jwks" 와 app_environment in staging/production 의 합집합이다**
-        # — auth_mode 는 인증 "방식" 선택이라 실트래픽을 보장하지 않고(dev 인증으로 도는
-        # staging 도 있다), app_environment 는 실트래픽 축이지만 운영이 dev 인증으로 도는
-        # 조합을 놓칠 수 있다. 둘 중 하나만 해당해도 막는다(fail-closed 는 넓게 잡는다).
-        # **이 가드 제거가 플래그를 켜는 절차의 일부다** — 등재·FE 확인이 끝나면 이 분기를
-        # 지운다(scratchpad/draft-progress-contract.md §9 체크리스트).
-        if (
-            self.auth_mode == "jwks" or self.app_environment in ("staging", "production")
-        ) and self.progress_events_enabled:
-            raise ValueError(
-                "PROGRESS_EVENTS_ENABLED must stay false until the progress event "
-                "is registered in the API contract (#289)"
-            )
         if self.state_store_pool_max_size < 1:
             raise ValueError("STATE_STORE_POOL_MAX_SIZE must be at least 1")
         if self.state_store_migration_timeout_s <= 0:

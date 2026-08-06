@@ -1,8 +1,8 @@
 {
-  "provenance": "reconstructed-from-issue-240-and-pr-239; category_action group added by #84 (mixed utterances in round 3); screen cells absorbed from #118 by #300",
+  "provenance": "reconstructed-from-issue-240-and-pr-239; category_action group added by #84 (mixed utterances in round 3); screen cells absorbed from #118 by #300; condition_only group added by #344 round 2",
   "sha256": {
-    "anchors_a.json": "cf3f099a71a21faa70114642ab5273c4ad2d1494564541a5fd6eac3db0db6023",
-    "anchors_b.json": "63b2bc92324fe0d883c129974a705517ebf2056f2593b4a6f7e00c477ce24dea"
+    "anchors_a.json": "4ff8a70df15bc8ac9a8aa9036bc6c89d22aeb8f64a2e7c2cc3c6fdd1daea3ac6",
+    "anchors_b.json": "0f1781d841de52d75fa7660edc2a7136e7857e1344a77297bfcadbc54a5a1c06"
   },
-  "version": "intent-probe-anchors-manifest-v4"
+  "version": "intent-probe-anchors-manifest-v5"
 }

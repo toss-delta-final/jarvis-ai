@@ -1,5 +1,5 @@
 {
-  "fixtureVersion": "intent-probe-anchors-a-v4",
+  "fixtureVersion": "intent-probe-anchors-a-v5",
   "schemaVersion": "1.2.0",
   "reaskProductId": 101,
   "reaskProductListPosition": 1,
@@ -1032,6 +1032,61 @@
         "screenResolution"
       ],
       "note": "#118 원본 라벨: 301 확정 금지 — 두 목록 밖 id 를 확정하지 않는다."
+    },
+    {
+      "utteranceId": "condition-only-001",
+      "group": "condition_only",
+      "text": "5만원 이하 아무거나 추천해줘",
+      "contexts": ["none"],
+      "expected": {
+        "intent": "recommend"
+      },
+      "axes": ["conditionOnlyNoCategoryQuery"],
+      "note": "[#344 라운드 2] 조건 전용 발화 — category_probe none 슬라이스와 같은 문구다. decompose 가 categoryQueries 를 비워 내는 계약은 지금 프롬프트의 우연한 동작이고 코드가 강제하지 않는다([#222 R2 F-2] category_mapping._collect_expansion_leaves docstring 참조). 오케스트레이터 실측(2026-08-06, none 슬라이스 40표본): 이 문구가 3건 누출됐다."
+    },
+    {
+      "utteranceId": "condition-only-002",
+      "group": "condition_only",
+      "text": "평점 좋은 걸로 보여줘",
+      "contexts": ["none"],
+      "expected": {
+        "intent": "recommend"
+      },
+      "axes": ["conditionOnlyNoCategoryQuery"],
+      "note": "[#344 라운드 2] 조건 전용 발화 — category_probe none 슬라이스와 같은 문구다."
+    },
+    {
+      "utteranceId": "condition-only-003",
+      "group": "condition_only",
+      "text": "인기 많은 거 추천해줘",
+      "contexts": ["none"],
+      "expected": {
+        "intent": "recommend"
+      },
+      "axes": ["conditionOnlyNoCategoryQuery"],
+      "note": "[#344 라운드 2] 조건 전용 발화 — category_probe none 슬라이스와 같은 문구다."
+    },
+    {
+      "utteranceId": "condition-only-004",
+      "group": "condition_only",
+      "text": "무료배송 되는 걸로 찾아줘",
+      "contexts": ["none"],
+      "expected": {
+        "intent": "recommend"
+      },
+      "axes": ["conditionOnlyNoCategoryQuery"],
+      "note": "[#344 라운드 2] 조건 전용 발화 — category_probe none 슬라이스와 같은 문구다. 오케스트레이터 실측: 이 문구가 3건 누출됐다."
+    },
+    {
+      "utteranceId": "condition-only-005",
+      "group": "condition_only",
+      "text": "가성비 좋은 거 추천해줘",
+      "contexts": ["none"],
+      "expected": {
+        "intent": "recommend"
+      },
+      "axes": ["conditionOnlyNoCategoryQuery"],
+      "note": "[#344 라운드 2] 조건 전용 발화 — category_probe none 슬라이스와 같은 문구다. 오케스트레이터 실측: 이 문구가 4건 누출됐고(그중 1건은 '가성비 좋은 무선 이어폰'으로 없던 카테고리까지 창작), 그래서 불변식이 이미 ~25% 흔들린다는 것이 이 축을 만든 동기다."
     }
   ]
 }

@@ -193,21 +193,73 @@ class UnsafeTelemetryError(ValueError):
     """Raised when a trace payload may contain raw or sensitive data."""
 
 
-def validate_export_payload(payload: object) -> None:
-    """Fail closed when an export payload contains unsafe keys or canary values."""
+# [#326] 콘텐츠 서브트리에서 숫자열 카나리아까지 면제되는 키 — **입력 방향(inputs) 전용**.
+# `record_request_content(input_text=…)`/`record_llm_content(system=…, user=…)` 가 쓰는 키와
+# 정확히 일치한다. 사용자가 직접 타이핑한 텍스트라 가격·수량 등 숫자 오탐이 잦은 자리다.
+# **출력 방향(outputs)은 키와 무관하게 전부 strict** — LLM 응답은 사용자 입력이 아니라 모델
+# 생성물이라 도구가 가져온 백엔드 데이터(회원 전화번호·주민번호)를 그대로 옮겨 적을 수 있고
+# (seller 레인이 SSE 직전 `mask_output` 을 두는 것과 같은 위협 모델), 캡처 시점은 그 마스킹
+# **이전**이기 때문이다(PR #327 리뷰). Spring `requestBody`/`responseBody` 도 inputs 안에
+# 있지만 이 목록에 없어 strict 다. 기본이 strict 라서 새 콘텐츠 작성자가 키를 추가해도
+# 조용히 면제를 얻지 못한다.
+_LLM_CONTENT_KEYS = frozenset({"message", "system", "user"})
 
-    _validate_value(payload)
+
+def validate_export_payload(payload: object, *, allow_content: bool = False) -> None:
+    """Fail closed when an export payload contains unsafe keys or canary values.
+
+    [#326] `allow_content=True` 는 콘텐츠 추적 모드 전용이다 — run payload 의 `inputs`/`outputs`
+    서브트리에서 **구조 검증(키 allowlist·raw-data 키 금지)만** 면제한다(발화·prompt·응답·
+    Spring 페이로드가 실리는 자리라 이 면제가 곧 기능이다). 텍스트 카나리아
+    (`_TEXT_CANARY_PATTERNS`: bearer 토큰·`sk-`/`lsv2_` API 키·이메일)는 콘텐츠 안에서도
+    **계속 적용**되고, 숫자열 카나리아(휴대폰·주민번호)는 **입력 방향의 발화·prompt 키**
+    (`_LLM_CONTENT_KEYS`)에서만 면제된다 — Spring 페이로드와 **모든 출력(outputs)** 은 전체
+    카나리아 대상이다(LLM 응답은 모델 생성물이라 업스트림 데이터와 같은 위협 모델).
+    걸리면 기존 fail-closed 대로 trace 전체가 버려진다 — 콘텐츠 모드에서 이메일·
+    토큰·업스트림 PII 가 섞인 요청의 트레이스가 사라지는 것은 의도된 트레이드오프다.
+    metadata allowlist 와 나머지 필드의 검증은 그대로 유지된다.
+    """
+
+    _validate_value(payload, allow_content=allow_content)
 
 
-def _validate_value(value: object, *, metadata: bool = False, opaque: bool = False) -> None:
+def _validate_value(
+    value: object,
+    *,
+    metadata: bool = False,
+    opaque: bool = False,
+    allow_content: bool = False,
+    content: str | None = None,
+) -> None:
     """`opaque` 는 이 값이 서버 생성 불투명 식별자로 **확인됐다**는 뜻이다(`_is_opaque_identifier`).
 
-    면제는 `_NUMERIC_CANARY_PATTERNS` 에만 적용된다 — 토큰·키·이메일 카나리아는 어떤 필드에서도
-    끄지 않는다(`_OPAQUE_METADATA_SHAPES` 주석 참조).
+    `content` 는 [#326] 콘텐츠 서브트리 안에서의 검증 강도다 — `"strict"`(기본: 구조 검증만
+    면제, 카나리아 전체 적용) 또는 `"lenient"`(`_LLM_CONTENT_KEYS` 의 발화·LLM 원문: 숫자열
+    카나리아까지 면제). 토큰·키·이메일 카나리아(`_TEXT_CANARY_PATTERNS`)는 **어떤 필드에서도
+    끄지 않는다**(`validate_export_payload` docstring 참조).
     """
     if isinstance(value, Mapping):
         for raw_key, nested in value.items():
             key = str(raw_key)
+            if content is None and allow_content and not metadata and key in ("inputs", "outputs"):
+                # 콘텐츠 컨테이너 진입 — inputs 는 안의 키가 강도를 결정하고("auto"),
+                # outputs 는 전부 strict 다(모델 생성물 = 업스트림 데이터와 같은 위협 모델).
+                _validate_value(
+                    nested,
+                    allow_content=allow_content,
+                    content="auto" if key == "inputs" else "strict",
+                )
+                continue
+            if content is not None:
+                # 콘텐츠 서브트리 — 키 검사 없이 카나리아만 본다. 강도는 발화·LLM 원문 키만
+                # lenient, 나머지(Spring 페이로드 등)는 strict(숫자열 카나리아 유지). 한 번
+                # 정해진 강도는 더 깊은 값에 그대로 상속된다.
+                if content == "auto":
+                    mode = "lenient" if key in _LLM_CONTENT_KEYS else "strict"
+                else:
+                    mode = content
+                _validate_value(nested, allow_content=allow_content, content=mode)
+                continue
             normalized_key = re.sub(r"[^a-z0-9]", "", key.lower())
             if metadata and key not in SAFE_METADATA_KEYS:
                 raise UnsafeTelemetryError("metadata key is not allowlisted")
@@ -221,18 +273,27 @@ def _validate_value(value: object, *, metadata: bool = False, opaque: bool = Fal
                 nested,
                 metadata=key == "metadata",
                 opaque=_is_opaque_identifier(key, nested, metadata=metadata),
+                allow_content=allow_content,
             )
         return
     if isinstance(value, (list, tuple)):
         for nested in value:
-            _validate_value(nested, metadata=metadata, opaque=opaque)
+            _validate_value(
+                nested,
+                metadata=metadata,
+                opaque=opaque,
+                allow_content=allow_content,
+                content=content,
+            )
         return
     if isinstance(value, BaseException):
-        _validate_value(value.args)
-        _validate_value(vars(value))
+        _validate_value(value.args, allow_content=allow_content, content=content)
+        _validate_value(vars(value), allow_content=allow_content, content=content)
         return
     if isinstance(value, str):
-        patterns = _TEXT_CANARY_PATTERNS if opaque else _CANARY_PATTERNS
+        # lenient 콘텐츠(발화·LLM 원문)만 숫자열 카나리아를 끈다 — 가격·수량 오탐 회피.
+        # strict 콘텐츠(Spring 페이로드)와 일반 필드는 전체 카나리아 대상이다.
+        patterns = _TEXT_CANARY_PATTERNS if (opaque or content == "lenient") else _CANARY_PATTERNS
         if any(pattern.search(value) for pattern in patterns):
             raise UnsafeTelemetryError("sensitive value canary detected")
 
@@ -248,6 +309,10 @@ class TraceNode:
     ended_at: datetime | None = None
     metadata: dict[str, SafeScalar] = field(default_factory=dict)
     error_type: str | None = None
+    # [#326] 콘텐츠 추적 모드 전용 — capture_content=False 인 trace 에서는 항상 빈 dict 로
+    # 남는다(기록 API 가 gate 를 통과시키지 않는다). export 는 이 dict 를 그대로 싣는다.
+    inputs: dict[str, str] = field(default_factory=dict)
+    outputs: dict[str, str] = field(default_factory=dict)
 
 
 class TraceExporter(Protocol):
@@ -286,10 +351,14 @@ class RequestTrace:
         lane: str,
         environment: str,
         payload_validator: Callable[[object], None],
+        capture_content: bool = False,
+        content_max_chars: int = 0,
     ) -> None:
         trace_id = uuid4()
         self._exporter = exporter
         self._payload_validator = payload_validator
+        self._capture_content = capture_content
+        self._content_max_chars = content_max_chars
         self._root_id = trace_id
         self._nodes = [
             TraceNode(
@@ -344,6 +413,82 @@ class RequestTrace:
     def record_provider_ttft(self, milliseconds: int) -> None:
         if not self._is_closing():
             self._nodes[0].metadata.setdefault("provider_ttft_ms", milliseconds)
+
+    @property
+    def captures_content(self) -> bool:
+        """[#326] 콘텐츠 추적 모드가 켜진 살아있는 trace 인가 — 호출부의 수집 비용 가드용."""
+        return self._capture_content and not self._is_closing()
+
+    def _clip(self, value: object) -> str:
+        text = value if isinstance(value, str) else repr(value)
+        limit = self._content_max_chars
+        if limit > 0 and len(text) > limit:
+            return text[:limit] + f"…[truncated {len(text) - limit} chars]"
+        return text
+
+    def record_request_content(
+        self, *, input_text: str | None = None, output_text: str | None = None
+    ) -> None:
+        """[#326] 루트 span 에 사용자 발화/최종 응답 원문을 싣는다(콘텐츠 모드에서만)."""
+        if not self.captures_content:
+            return
+        root = self._nodes[0]
+        if input_text is not None:
+            root.inputs["message"] = self._clip(input_text)
+        if output_text is not None:
+            root.outputs["message"] = self._clip(output_text)
+
+    def record_llm_content(
+        self,
+        *,
+        system: str | None = None,
+        user: str | None = None,
+        output: str | None = None,
+        transcript: str | None = None,
+    ) -> None:
+        """[#326] 활성 LLM span 에 prompt·응답 원문을 싣는다(콘텐츠 모드에서만).
+
+        `record_llm_usage` 와 같은 활성 span 탐색을 쓴다 — llm.py 초크포인트 한 곳에서 부르면
+        모든 `llm.*` span 이 원문을 얻는다.
+
+        `user` 는 **사용자가 직접 타이핑한 발화에서 파생된 prompt 전용**이다(lenient —
+        숫자열 카나리아 면제). agent 대화 히스토리처럼 tool 결과(백엔드 데이터)가 섞이는
+        텍스트는 `transcript` 로 넘겨라 — `_LLM_CONTENT_KEYS` 에 없는 키라 strict(전체
+        카나리아)로 검증된다(PR #327 리뷰).
+        """
+        if not self.captures_content:
+            return
+        stack = _active_span_stack.get()
+        if not stack:
+            return
+        node = next(
+            (candidate for candidate in reversed(self._nodes) if candidate.id == stack[-1]), None
+        )
+        if node is None or node.run_type != "llm":
+            return
+        if system is not None:
+            node.inputs["system"] = self._clip(system)
+        if user is not None:
+            node.inputs["user"] = self._clip(user)
+        if transcript is not None:
+            node.inputs["transcript"] = self._clip(transcript)
+        if output is not None:
+            node.outputs["content"] = self._clip(output)
+
+    def record_span_content(
+        self,
+        node: TraceNode,
+        *,
+        inputs: Mapping[str, object] | None = None,
+        outputs: Mapping[str, object] | None = None,
+    ) -> None:
+        """[#326] 임의 span 노드에 콘텐츠를 싣는다(콘텐츠 모드에서만) — Spring 페이로드용."""
+        if not self.captures_content:
+            return
+        if inputs:
+            node.inputs.update({key: self._clip(value) for key, value in inputs.items()})
+        if outputs:
+            node.outputs.update({key: self._clip(value) for key, value in outputs.items()})
 
     def attach_observation(self, observation: ObservationSink) -> None:
         """샘플링된 trace의 bounded 상태를 요청 로그 sink와 연결한다."""
@@ -505,6 +650,34 @@ class NoopRequestTrace(RequestTrace):
     def record_provider_ttft(self, milliseconds: int) -> None:
         del milliseconds
 
+    @property
+    def captures_content(self) -> bool:
+        return False
+
+    def record_request_content(
+        self, *, input_text: str | None = None, output_text: str | None = None
+    ) -> None:
+        del input_text, output_text
+
+    def record_llm_content(
+        self,
+        *,
+        system: str | None = None,
+        user: str | None = None,
+        output: str | None = None,
+        transcript: str | None = None,
+    ) -> None:
+        del system, user, output, transcript
+
+    def record_span_content(
+        self,
+        node: TraceNode,
+        *,
+        inputs: Mapping[str, object] | None = None,
+        outputs: Mapping[str, object] | None = None,
+    ) -> None:
+        del node, inputs, outputs
+
     def attach_observation(self, observation: ObservationSink) -> None:
         self._observation = observation
         if self._lane in OBSERVABILITY_LANES:
@@ -585,11 +758,15 @@ class TraceFactory:
         enabled: bool,
         sampling_rate: float,
         payload_validator: Callable[[object], None] = validate_export_payload,
+        capture_content: bool = False,
+        content_max_chars: int = 0,
     ) -> None:
         self._exporter = exporter
         self._enabled = enabled
         self._sampling_rate = sampling_rate
         self._payload_validator = payload_validator
+        self._capture_content = capture_content
+        self._content_max_chars = content_max_chars
 
     def start_request(
         self,
@@ -612,20 +789,25 @@ class TraceFactory:
             lane=lane,
             environment=environment,
             payload_validator=self._payload_validator,
+            capture_content=self._capture_content,
+            content_max_chars=self._content_max_chars,
         )
 
 
 class LangSmithTraceExporter:
     """Explicit, bounded LangSmith batch exporter with no global auto-tracing."""
 
-    def __init__(self, client: Any, project_name: str, timeout_s: float) -> None:
+    def __init__(
+        self, client: Any, project_name: str, timeout_s: float, *, allow_content: bool = False
+    ) -> None:
         self._client = client
         self._project_name = project_name
         self._timeout_s = timeout_s
+        self._allow_content = allow_content
 
     async def export(self, nodes: tuple[TraceNode, ...]) -> None:
         payloads = _build_export_payloads(nodes, project_name=self._project_name)
-        validate_export_payload(payloads)
+        validate_export_payload(payloads, allow_content=self._allow_content)
         try:
             async with asyncio.timeout(self._timeout_s):
                 await asyncio.to_thread(self._client.batch_ingest_runs, create=payloads)
@@ -659,8 +841,9 @@ def _build_export_payloads(
             "run_type": node.run_type,
             "start_time": node.started_at,
             "end_time": node.ended_at,
-            "inputs": {},
-            "outputs": {},
+            # [#326] capture_content=False 인 trace 의 노드는 항상 빈 dict 다(기존 동작과 동일).
+            "inputs": dict(node.inputs),
+            "outputs": dict(node.outputs),
             "extra": {"metadata": metadata},
         }
         if project_name is not None:
@@ -720,14 +903,27 @@ def get_trace_factory() -> TraceFactory:
         omit_traced_runtime_info=True,
         tracing_sampling_rate=1.0,
     )
+    # [#326] 콘텐츠 추적 모드 — 기본 off. 켜면 발화·LLM 원문·Spring 페이로드가 실리므로
+    # 실사용자 오픈 전 디버깅 구간에서만 켠다(DEPLOY.md §8 규약).
+    capture_content = settings.langsmith_trace_content
+    if capture_content:
+        logger.warning("LangSmith content tracing ON — raw payloads will be exported (#326)")
     _trace_factory = TraceFactory(
         exporter=LangSmithTraceExporter(
             client,
             settings.langsmith_project,
             settings.langsmith_export_timeout_s,
+            allow_content=capture_content,
         ),
         enabled=True,
         sampling_rate=settings.langsmith_tracing_sampling_rate,
+        payload_validator=(
+            (lambda payload: validate_export_payload(payload, allow_content=True))
+            if capture_content
+            else validate_export_payload
+        ),
+        capture_content=capture_content,
+        content_max_chars=settings.langsmith_trace_content_max_chars,
     )
     return _trace_factory
 
