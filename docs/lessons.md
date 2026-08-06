@@ -13,6 +13,23 @@
 
 ---
 
+## [2026-08-06] 의존성 함수에 파라미터를 더하면 그게 곧 공개 계약이다 — keyword-only 도 예외가 아니다
+- 증상: #408 에서 401 로그에 어느 의존성을 거쳤는지 싣으려고 `get_identity` 에
+  `*, dependency: str = "get_identity"` 를 붙였다. 내부 표식이라 와이어와 무관하다고 생각했는데,
+  FastAPI 는 `inspect.signature` 로 파라미터를 훑으면서 **KEYWORD_ONLY 를 구분하지 않는다** —
+  그대로 뒀으면 `/chat`·`/seller/chat`·`/profile/me` 에 `?dependency=` 쿼리 파라미터가
+  생기고 OpenAPI 에도 노출됐다(계약 무변경 이슈에서 계약이 바뀔 뻔했다).
+- 원인: "의존성 함수의 시그니처 = 요청 파싱 명세"라는 것을 내부용 인자에는 적용하지 않았다.
+  Python 문법상의 사적임(keyword-only·언더스코어 접두)은 프레임워크에 아무 신호도 주지 않는다.
+- 규칙: **의존성 함수 시그니처에는 요청에서 오는 것만 둔다.** 내부 컨텍스트가 필요하면 파라미터
+  대신 **private 헬퍼로 분리해 호출부에서 넘긴다**(`_identity_or_401(..., dependency=...)`).
+  요청 객체가 필요할 때는 `request: Request = None` 으로 두면 FastAPI 주입은 그대로 받으면서
+  의존성 밖 직접 호출(단위 테스트)도 깨지지 않는다 — `Request` 타입은 필드가 아니라 특수
+  주입으로 처리돼 기본값이 무시되고 쿼리 파라미터로도 새지 않는다. 다만 이건 **추측하지 말고
+  `app.openapi()` 로 실측**할 것(파라미터 목록에 새 항목이 없어야 한다).
+- 관련: #408, `app/api/deps.py::get_identity`·`::require_seller`·`::verify_service_token`,
+  FastAPI 0.139 `analyze_param`
+
 ## [2026-08-06] 소비자 없는 필드의 "안전해 보이는" 기본값은, 소비가 붙는 순간 주장으로 승격된다
 - 증상: PR #305 가 `WishlistItem.purchase_state` 를 선언하며 기본값을 `"AVAILABLE"` 로 뒀다.
   그때는 읽는 코드가 0건이라 아무 해도 없었다. 그런데 #310 이 이 값을 읽어 "품절이에요"를
