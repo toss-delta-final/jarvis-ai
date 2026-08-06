@@ -23,8 +23,11 @@
   수를 따로** 확인한다 — `search_categories_pg` 가 `embedding IS NOT NULL` 로 거르므로 행만
   있고 임베딩이 없으면 사전이 0행인 것과 동일하게 죽기 때문이다(둘 다 구성 오류로 ERROR 로그,
   `category_dictionary_startup_check` 설정으로 `off`/`log`(기본)/`fail` 선택 — 기본이 `fail`
-  이 아닌 이유는 사전 결측이 서비스 전면 중단보다 하방이 얕은 상태이기 때문). DB 연결 실패는
-  기동을 막지 않는다. `evals/category_probe/manifest.py::dictionary_fingerprint` 에
+  이 아닌 이유는 사전 결측이 서비스 전면 중단보다 하방이 얕은 상태이기 때문). `log`/`off` 는
+  DB 연결 실패로 기동을 막지 않지만, `fail` 은 사전이 건강함을 확인하지 못하면(도달 불가 포함)
+  기동을 거부한다 — `psycopg` 가 연결 실패에 구조화된 판별자를 주지 않아 "일시적 불통"과
+  "영구적 구성 오류"(DSN 오타 등)를 예외 타입으로 구분할 수 없기 때문이다(리뷰 대응).
+  `evals/category_probe/manifest.py::dictionary_fingerprint` 에
   `canonicalSha256`/`seed`/`matchesSeed` 를 추가해 라이브 DB 상태를 정본과 대조할 수 있게
   했다(기존 `rowCount`/`sha256` 은 과거 런 비교를 위해 그대로 보존). `category_distance_max`
   값 자체는 바꾸지 않았다.

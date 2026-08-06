@@ -163,8 +163,12 @@ def unreachable_db_error_types() -> tuple[type[BaseException], ...]:
 
     `psycopg.OperationalError` 는 `OSError` 를 상속하지 않는다(psycopg 3 는 독자 예외 계층을
     쓴다) — 그래서 `OSError` 만으로는 연결 거부·타임아웃을 다 못 잡는다. `app/main.py` 가 이
-    튜플로 `except` 해 모든 모드에서 WARNING 으로 낮춘다 — `app/main.py` 는 psycopg 를 import
-    하지 않아야 하므로(lazy-import 관례) 이 모듈이 대신 노출한다(#401 라운드 5 리뷰 F7).
+    튜플로 `except` 해 `log`/`off` 모드에서는 WARNING 으로 낮추고, `fail` 모드에서는 ERROR 로
+    남긴 뒤 전파해 기동을 거부한다(#401 라운드 7 리뷰 F8 — `psycopg.OperationalError` 는 일시적
+    도달 불가와 비밀번호·dbname 오타 같은 영구적 구성 오류를 구조화된 판별자 없이 같은 타입으로
+    내므로, `fail` 처럼 강한 검증을 opt-in 한 모드에서는 "확인하지 못하면 거부"로 다룬다).
+    `app/main.py` 는 psycopg 를 import 하지 않아야 하므로(lazy-import 관례) 이 모듈이 타입을
+    대신 노출한다(#401 라운드 5 리뷰 F7).
     """
     import psycopg  # noqa: PLC0415 - LAZY import(pg 미설치 환경 유닛테스트 회피)
 
@@ -179,9 +183,11 @@ def check_category_dictionary(dsn: str, *, mode: Literal["off", "log", "fail"]) 
 
     DB 오류를 두 갈래로 나눈다(#401 라운드 4 리뷰 F6 — 전부 "연결 실패"로 뭉뚱그리면
     `categories` 테이블/컬럼 누락 같은 명백한 구성 오류가 `fail` 모드에서도 조용히 통과했다):
-    - `psycopg.OperationalError`(연결 거부·타임아웃·DNS 등) — "지금 조회할 수 없음"이지 구성
-      오류가 아니다. 여기서 잡지 않고 그대로 전파한다 — 호출부(app/main.py `_lifespan`)가
-      **모든 모드에서** WARNING 으로 낮춰 기동을 막지 않는다.
+    - `psycopg.OperationalError`(연결 거부·타임아웃·DNS 등 — 비밀번호·dbname 오타 같은 영구적
+      구성 오류도 같은 타입으로 나온다) — 여기서 잡지 않고 그대로 전파한다. 이 값이 호출부
+      (app/main.py `_lifespan`)에서 `log`/`off` 는 WARNING(계속), `fail` 은 ERROR(기동 거부)로
+      갈린다 — `psycopg` 가 연결 수립 실패에 구조화된 판별자를 주지 않아(실측 확인, #401 라운드
+      7 리뷰 F8) 여기서 "진짜 구성 오류"만 골라낼 수 없다. `unreachable_db_error_types()` 참고.
     - 그 밖의 `psycopg.Error`(`UndefinedTable`·권한 오류·문법 오류 등) — 테이블 자체가 없는
       것은 사전 결측의 가장 극단적인 형태라 **구성 오류로 취급**한다. 0행/0임베딩과 같은 처방:
       ERROR 로그(실제 예외 타입·메시지를 실어 오진단을 막는다) + `fail` 이면 기동 거부.

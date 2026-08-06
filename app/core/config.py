@@ -717,8 +717,17 @@ class Settings(BaseSettings):
     # 가 기동 시 강제한다.
     category_search_pool_max_size: int = 20
     # [#401] 기동 시 categories 0행/0임베딩 가드(app/pipelines/category_seed.py
-    # check_category_dictionary) 를 어떻게 처리할지. "off"=검사 생략, "log"=ERROR 로그만,
-    # "fail"=CategoryDictionaryError 로 기동 거부.
+    # check_category_dictionary) 를 어떻게 처리할지. "off"=검사 생략, "log"=원인별로 로그만
+    # 남기고 계속(ERROR/WARNING, 아래 참조), "fail"=사전이 건강함을 **확인하지 못하면** 기동
+    # 거부(app/main.py::_check_category_dictionary_startup).
+    # [라운드 7 F8] "fail" 은 원인을 "구성 오류"로 좁혀 잡지 않는다 — 0행/0임베딩·
+    # `UndefinedTable` 같은 비연결 DB 오류뿐 아니라 **도달 불가**(`OSError`·
+    # `psycopg.OperationalError`)와 가드 코드 자체의 예상 못 한 예외까지 전부 거부 사유다.
+    # `psycopg.OperationalError` 하나에 일시적 도달 불가(연결 거부·타임아웃)와 영구적 구성
+    # 오류(비밀번호·dbname 오타)가 구조화된 판별자 없이 섞여 나온다(실측 확인, 메시지 문자열은
+    # 서버 `lc_messages` 에 따라 지역화돼 매칭에 못 쓴다) — 그래서 "진짜 구성 오류만" 골라
+    # 거부하는 분류는 불가능하고, "fail" 을 건 이상 확인 실패 자체를 거부 사유로 삼는다(로그
+    # 문구는 원인별로 계속 구분해 남긴다 — 거부 여부만 같아질 뿐 진단 정보는 그대로 유지).
     # 기본이 "fail" 이 아닌 이유: 사전 결측은 map_categories 가 canonical-or-null 로 무필터
     # 퇴화하는 상태다 — 카테고리 매핑만 못 쓸 뿐 서비스는 계속 응답 가능하다. 반면 기동 거부는
     # 서비스 전면 중단이라 하방이 무계다(§4 거리컷과 같은 "미회수는 안전, 오염이 위험" 비대칭의

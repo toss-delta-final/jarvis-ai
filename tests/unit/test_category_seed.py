@@ -170,7 +170,8 @@ def test_check_category_dictionary_operational_error_propagates_unwrapped(
     monkeypatch, mode
 ) -> None:
     """연결 실패(OperationalError)는 log·fail 모드 어느 쪽에서도 CategoryDictionaryError 로
-    바뀌지 않고 그대로 전파돼야 한다 — 호출부(app/main.py)가 이걸 보고 WARNING 으로 낮춘다.
+    바뀌지 않고 그대로 전파돼야 한다 — 이 함수는 예외를 분류하지 않는다. 모드별로 WARNING(계속)
+    인지 ERROR(기동 거부)인지는 호출부(app/main.py)가 정한다(#401 라운드 7 리뷰 F8).
     """
     import psycopg
 

@@ -621,20 +621,25 @@ async def test_category_dictionary_startup_check_runs_in_thread_with_settings_ds
     assert captured["thread"] != "MainThread"
 
 
-# --- 도달 불가 vs 예상 못 한 가드 버그 (이슈 #401 라운드 5 리뷰 F7) ----------------------------
+# --- 도달 불가 vs 예상 못 한 가드 버그 (이슈 #401 라운드 5 리뷰 F7, 라운드 7 리뷰 F8) --------
 #
 # 라운드 4 까지는 CategoryDictionaryError 가 아니면 전부 "연결 실패"로 뭉뚱그려, 가드 코드
-# 자체의 버그(TypeError 등)도 조용히 삼켜졌다. 이제 세 갈래(구성 오류·도달 불가·예상 못 한
-# 버그)로 나뉜다 — 도달 불가는 모든 모드에서 WARNING, 예상 못 한 버그는 fail 모드에서만 전파.
+# 자체의 버그(TypeError 등)도 조용히 삼켜졌다. F7 이 세 갈래(구성 오류·도달 불가·예상 못 한
+# 버그)로 나눴는데, F7 은 "도달 불가는 모든 모드에서 WARNING"으로 뒀었다. 리뷰가 실측으로
+# 반박했다 — `psycopg.OperationalError` 는 일시적 도달 불가(연결 거부·타임아웃)와 영구적
+# 구성 오류(비밀번호·dbname 오타)를 구조화된 판별자 없이 같은 타입으로 낸다. 그래서 F8 은
+# 예외 타입 분류를 더 정교하게 하는 대신 `fail` 의 의미를 바꿨다 — "확인하지 못하면 거부".
+# `log`/`off` 의 동작(도달 불가는 WARNING 후 계속)은 F7 그대로 변경 없음.
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["off", "log", "fail"])
-async def test_category_dictionary_startup_check_survives_psycopg_operational_error_in_every_mode(
+@pytest.mark.parametrize("mode", ["off", "log"])
+async def test_category_dictionary_startup_check_survives_psycopg_operational_error_outside_fail_mode(
     monkeypatch, caplog, mode
 ) -> None:
     """`psycopg.OperationalError` 는 `OSError` 를 상속하지 않는다 — `OSError` 만 잡으면 이
-    타입을 놓친다. 세 모드 모두에서 WARNING 후 계속돼야 한다(도달 불가는 모드 무관).
+    타입을 놓친다. `off`/`log`(F7 이 정한 기존 동작, F8 에서도 변경 없음)에서는 WARNING 후
+    계속돼야 한다.
     """
     import psycopg
 
@@ -652,11 +657,43 @@ async def test_category_dictionary_startup_check_survives_psycopg_operational_er
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "exc_factory",
+    [OSError, lambda: __import__("psycopg").OperationalError("connection refused")],
+    ids=["OSError", "psycopg.OperationalError"],
+)
+async def test_category_dictionary_startup_check_unreachable_rejects_in_fail_mode(
+    monkeypatch, caplog, exc_factory
+) -> None:
+    """[F8] `fail` 은 도달 불가도 "확인 실패"로 다뤄 기동을 거부해야 한다 — 잘못된 DSN(비밀번호·
+    dbname 오타)이 `psycopg.OperationalError` 로만 나오고 `fail` 을 건 운영자가 가장 잡고 싶은
+    실수이기 때문이다. 로그는 ERROR 이고 "도달 불가" 원인을 정직하게 남긴다(뭉개지 않는다).
+    """
+
+    def raise_unreachable(dsn: str, *, mode: str) -> None:
+        raise exc_factory()
+
+    monkeypatch.setattr(main_mod, "check_category_dictionary", raise_unreachable)
+    settings = Settings(_env_file=None, category_dictionary_startup_check="fail")
+    monkeypatch.setattr(main_mod, "get_settings", lambda: settings)
+
+    with caplog.at_level("ERROR"):
+        with pytest.raises(Exception) as exc_info:  # OSError·psycopg.OperationalError 둘 다 받는다
+            await main_mod._check_category_dictionary_startup()
+
+    # CategoryDictionaryError 로 둔갑시키지 않고 원인 예외 그대로 전파돼야 진단이 보존된다.
+    assert not isinstance(exc_info.value, CategoryDictionaryError)
+    assert "ERROR" in caplog.text
+    assert "could not reach the database" in caplog.text
+    assert "failing startup" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_category_dictionary_startup_check_unexpected_bug_propagates_in_fail_mode(
     monkeypatch, caplog
 ) -> None:
-    """가드 코드 자체의 버그(예: `TypeError`)는 `fail` 모드에서 전파돼야 `fail` 계약("구성 오류면
-    반드시 기동을 거부한다")이 그 버그 앞에서 무력화되지 않는다. 로그 문구는 "도달 불가"라고
+    """가드 코드 자체의 버그(예: `TypeError`)는 `fail` 모드에서 전파돼야 `fail` 계약("확인하지
+    못하면 반드시 기동을 거부한다")이 그 버그 앞에서 무력화되지 않는다. 로그 문구는 "도달 불가"라고
     오진단하면 안 된다.
     """
 
@@ -698,11 +735,12 @@ async def test_category_dictionary_startup_check_unexpected_bug_only_logs_outsid
 
 
 @pytest.mark.asyncio
-async def test_category_dictionary_startup_check_three_branches_take_different_paths(
+async def test_category_dictionary_startup_check_all_causes_reject_in_fail_mode(
     monkeypatch,
 ) -> None:
-    """세 갈래(구성 오류·도달 불가·예상 못 한 버그)가 실제로 다른 경로를 타는지 한 곳에서
-    단언한다 — 뭉뚱그리는 회귀(예: 전부 삼킴, 전부 전파)가 나면 이 테스트가 실패해야 한다.
+    """[F8] `fail` 에서는 세 갈래(구성 오류·도달 불가·예상 못 한 버그) 모두 기동을 거부해야
+    한다 — 원인이 뭐든 "확인하지 못하면 거부"가 `fail` 의 계약이다. 하나라도 삼켜지면(예:
+    도달 불가만 예외적으로 통과) 이 테스트가 실패해야 한다.
     """
     settings = Settings(_env_file=None, category_dictionary_startup_check="fail")
     monkeypatch.setattr(main_mod, "get_settings", lambda: settings)
@@ -721,8 +759,45 @@ async def test_category_dictionary_startup_check_three_branches_take_different_p
         await main_mod._check_category_dictionary_startup()
 
     monkeypatch.setattr(main_mod, "check_category_dictionary", raise_operational_error)
-    await main_mod._check_category_dictionary_startup()  # 삼켜져야 함(예외 없음)
+    with pytest.raises(OSError):  # [F8] 이제 fail 에서는 삼켜지지 않는다
+        await main_mod._check_category_dictionary_startup()
 
     monkeypatch.setattr(main_mod, "check_category_dictionary", raise_type_error)
     with pytest.raises(TypeError):  # fail 모드라 전파돼야 함(CategoryDictionaryError 로 둔갑 금지)
         await main_mod._check_category_dictionary_startup()
+
+
+@pytest.mark.asyncio
+async def test_category_dictionary_startup_check_log_messages_stay_distinct_in_fail_mode(
+    monkeypatch, caplog
+) -> None:
+    """[F8] `fail` 에서 거부 여부는 세 갈래 모두 같아졌지만(전부 거부), **로그 문구는 원인별로
+    계속 구분**돼야 한다 — 진단 정보까지 뭉개면 안 된다(이 수정의 회귀 위험).
+    """
+    settings = Settings(_env_file=None, category_dictionary_startup_check="fail")
+    monkeypatch.setattr(main_mod, "get_settings", lambda: settings)
+
+    def raise_operational_error(dsn: str, *, mode: str) -> None:
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(main_mod, "check_category_dictionary", raise_operational_error)
+    with caplog.at_level("ERROR"):
+        with pytest.raises(OSError):
+            await main_mod._check_category_dictionary_startup()
+    unreachable_log = caplog.text
+    assert "could not reach the database" in unreachable_log
+    caplog.clear()
+
+    def raise_type_error(dsn: str, *, mode: str) -> None:
+        raise TypeError("unexpected bug in guard")
+
+    monkeypatch.setattr(main_mod, "check_category_dictionary", raise_type_error)
+    with caplog.at_level("ERROR"):
+        with pytest.raises(TypeError):
+            await main_mod._check_category_dictionary_startup()
+    unexpected_log = caplog.text
+    assert "failed unexpectedly" in unexpected_log
+
+    # 두 원인이 서로의 문구를 침범하면 안 된다 — 진단이 뭉개졌다는 신호다.
+    assert "failed unexpectedly" not in unreachable_log
+    assert "could not reach the database" not in unexpected_log
