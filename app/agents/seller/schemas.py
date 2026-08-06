@@ -65,9 +65,15 @@ class AnalysisPlan(BaseModel):
     """analysis_planner 의 구조화 출력 (SPEC §2 — 워커 선택 + 기간 표현, smart tier).
 
     기간의 날짜 환산은 LLM 소관이 아니다(장치 ④) — planner 는 질문의 기간 표현을
-    정규 어휘(period_expr)로 재표현만 하고, 실제 (from, to) 환산은 파이프라인 코드가
-    `calc.normalize_period` 로 수행한다(pipeline.resolve_plan). 환산 불가 표현은
-    ValueError → 되묻기 token 경로(2026-07-18 확정 — "이번 달" 등은 지원하지 않는다).
+    **그대로 옮겨적기만** 하고, 실제 (from, to) 환산과 지원 여부 판정은 파이프라인
+    코드가 `period.resolve_period` 로 수행한다(pipeline.resolve_plan).
+
+    [#345] **이 description 은 PLANNER_PROMPT `[기간]` 절과 한 쌍이다.** 구조화 출력이라
+    LLM 이 프롬프트와 이 설명을 함께 읽으므로, 한쪽만 고치면 서로 반대를 지시해 planner
+    산출이 비결정적이 된다 — 어휘 규약을 바꿀 때는 반드시 둘을 같은 커밋에서 고친다.
+    또한 planner 는 **기간을 이유로 clarification 을 쓰지 않는다**: 기간 관련 사용자
+    대면 문구(되묻기·확인)의 소유자는 period.py 하나다
+    (docs/specs/DESIGN-SELLER-PERIOD.md §4.2).
 
     clarification 이 비어있지 않으면 계획 불성립 — 호출부는 팬아웃 대신 되묻기
     token 으로 전환한다(DraftProposal.clarification 과 동일 패턴).
@@ -81,15 +87,20 @@ class AnalysisPlan(BaseModel):
     period_expr: str = Field(
         default="최근",
         description=(
-            "정규 어휘로 재표현한 기간 — '지난달'/'최근 N일'/'어제'/"
-            "'YYYY-MM-DD~YYYY-MM-DD'(질문에 명시된 날짜 옮겨적기만). "
-            "기간 언급이 없으면 '최근'(기본 일수는 코드 소관)"
+            "판매자가 말한 기간 표현을 그대로 옮겨적은 값 — 단위를 바꾸거나 날짜를 "
+            "계산하지 않는다('최근 3개월'·'이번 달'·'상반기'도 그대로). 표기만 정규화: "
+            "연·월·일이 다 있으면 'YYYY-MM-DD~YYYY-MM-DD', 연도가 없으면 'M월 D일~M월 D일'. "
+            "기간 언급이 없으면 '최근'(기본 일수는 코드 소관). "
+            "해석 불가 여부와 되묻기 문구는 코드가 정한다 — 기간을 이유로 clarification 금지"
         ),
     )
     reason: str = Field(description="분석 선택 근거 한 문장 — 오분류 디버깅·회귀 테스트용")
     clarification: str = Field(
         default="",
-        description="기간·범위 해석 불능 시 되물을 질문 — 비어있지 않으면 계획 불성립",
+        description=(
+            "어떤 분석을 원하는지 파악하지 못했을 때 되물을 질문 — 비어있지 않으면 계획 "
+            "불성립. 기간을 이유로는 쓰지 않는다(#345 — 기간 문구는 period.py 소유)"
+        ),
     )
     wants_chart: bool = Field(
         default=False,

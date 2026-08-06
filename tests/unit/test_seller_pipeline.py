@@ -58,11 +58,53 @@ def test_resolve_plan_empty_analyses_raises() -> None:
 
 
 def test_resolve_plan_unsupported_period_propagates() -> None:
-    """미지원 기간 표현("이번 달")은 normalize_period 의 ValueError 가 전파된다."""
+    """해석 불가 기간 표현("작년 여름")은 period.resolve_period 의 ValueError 가 전파된다.
+
+    [#345] 종전에는 "이번 달" 이 이 케이스였다 — 어휘 확장으로 지금은 확인 후 통과다.
+    """
     with pytest.raises(ValueError):
         pipeline.resolve_plan(
-            _plan(period_expr="이번 달"), today=dt.date(2026, 7, 18), recent_default_days=7
+            _plan(period_expr="작년 여름"), today=dt.date(2026, 7, 18), recent_default_days=7
         )
+
+
+# ── #345 P1: 확인 흐름 계약 (어휘 판정 자체는 test_seller_period.py) ──────────────
+
+
+def test_resolve_plan_canonical_vocab_never_needs_confirmation() -> None:
+    """회귀 가드 — 기존 어휘 5종은 needs_confirmation=False 로 통과한다(#345 완료 조건).
+
+    이 테스트가 깨지면 잘 쓰던 판매자에게 없던 확인 왕복을 새로 물린 것이다.
+    """
+    today = dt.date(2026, 8, 6)
+    for expr in ("지난달", "최근 7일", "최근", "어제", "2026-06-01~2026-06-30"):
+        resolved = pipeline.resolve_plan(
+            _plan(period_expr=expr), today=today, recent_default_days=7
+        )
+        assert resolved.needs_confirmation is False, expr
+
+
+def test_resolve_plan_expanded_vocab_needs_confirmation() -> None:
+    """신규 어휘는 값이 나오되 확인 대기 신호를 함께 올린다(#345)."""
+    today = dt.date(2026, 8, 6)
+    for expr in ("이번 달", "올해", "상반기", "최근 3개월"):
+        resolved = pipeline.resolve_plan(
+            _plan(period_expr=expr), today=today, recent_default_days=7
+        )
+        assert resolved.needs_confirmation is True, expr
+        assert resolved.period_expr == expr
+        assert resolved.date_to <= dt.date(2026, 8, 5)  # R1 — 오늘 제외
+
+
+def test_period_confirmation_text_shows_resolved_dates() -> None:
+    """확인 문구는 어휘가 아니라 **환산된 날짜**를 되돌려 보여준다(DESIGN §4.3)."""
+    resolved = pipeline.resolve_plan(
+        _plan(period_expr="이번 달"), today=dt.date(2026, 8, 6), recent_default_days=7
+    )
+    text = pipeline.period_confirmation_text(resolved)
+    assert "2026-08-01" in text
+    assert "2026-08-05" in text
+    assert "이번 달" in text
 
 
 def test_resolve_plan_wants_chart_from_plan_field() -> None:
