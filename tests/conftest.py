@@ -30,7 +30,7 @@ from app.core.ratelimit import reset_limiter
 from app.core.session_context import close_session_lifecycle
 from app.core.stream import get_registry
 from app.pipelines.artifact_store import reset_catalog_store
-from app.pipelines.artifacts_batch import reset_item_failure_streaks
+from app.pipelines.artifacts_batch import reset_batch_failure_state
 from app.services import spring_client as _spring_client
 
 
@@ -50,7 +50,7 @@ def _reset_infra_state():
     reset_repurchase_store()
     reset_profile_store()
     reset_catalog_store()
-    reset_item_failure_streaks()
+    reset_batch_failure_state()
     get_registry()._active.clear()
     get_registry()._fences.clear()
     get_registry()._scope_idle.clear()
@@ -63,7 +63,7 @@ def _reset_infra_state():
     reset_repurchase_store()
     reset_profile_store()
     reset_catalog_store()
-    reset_item_failure_streaks()
+    reset_batch_failure_state()
     get_registry()._active.clear()
     get_registry()._fences.clear()
     get_registry()._scope_idle.clear()

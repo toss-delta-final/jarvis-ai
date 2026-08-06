@@ -199,6 +199,17 @@ class Settings(BaseSettings):
     # 페이지의 항목들이 격리되지만 dead-letter ERROR 로그로 드러나며 run_batch --full
     # (전체 재구축)로 복구 가능하다.
     artifacts_batch_item_dead_letter_cycles: int = Field(default=3, ge=1)
+    # [#325 R5] 3선(비율 가드) 방어에도 같은 시간 유계 원리를 적용한다 — 1선(항목별 즉시 격리)이
+    # 특정 카테고리 상품들의 프롬프트 회귀로 다건을 매 주기 즉시 격리하면(스트릭을 쌓지 않고
+    # pop 하므로 2선 상한이 걸리지 않는다), 페이지 실패율이 매 주기 똑같이 임계를 넘어
+    # PageFailureThresholdExceeded 가 반복되고 커서가 전진하지 않아 같은 페이지가 무기한
+    # 재조회된다(3선이 스스로 #325 의 무기한 정지를 재현). 같은 커서에서 비율 가드가 이 횟수만큼
+    # 연속 발동하면 대량 파손이 자연 회복되지 않는 것으로 보고 그 페이지를 격리(항목들은 이미
+    # 1선/2선에서 dead-letter 기록됨)하고 커서를 전진시킨다. 기본
+    # 3 × catalog_batch_interval_s(300s) ≈ 15분이 대량 파손으로 배치가 멈춰 있을 수 있는
+    # 상한이다 — 이 상한이 없으면 3선이 잡으려던 바로 그 케이스(대량 내용 파손)에서 #325 증상이
+    # 그대로 재현된다. 상한 도달은 dead-letter ERROR 로 드러나며 복구는 run_batch --full.
+    artifacts_batch_page_failure_max_cycles: int = Field(default=3, ge=1)
     catalog_vector_overfetch: int = 4  # 방식1 hydrate 후 필터·품절 제거 대비 벡터 여유조회 배수
     # 방식2 DB 재정렬 1회 반환 행 가드. 현 카탈로그 7,220건 전량도 p50 49ms라 기본값은
     # 실사용에서 걸리지 않는다. 카탈로그 성장 시 응답 행 수만 제한하며, 실질 지연 상한은

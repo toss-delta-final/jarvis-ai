@@ -700,9 +700,7 @@ async def test_color_harvest_only_adds_pending_new_terms(monkeypatch):
     assert seen == [({"방수": True}, True)]
 
 
-async def test_color_harvest_count_limit_logs_and_does_not_kill_i17_artifact(
-    monkeypatch, caplog
-):
+async def test_color_harvest_count_limit_logs_and_does_not_kill_i17_artifact(monkeypatch, caplog):
     settings = get_settings().model_copy(
         update={
             "color_synonym_batch_harvest_enabled": True,
@@ -712,9 +710,7 @@ async def test_color_harvest_count_limit_logs_and_does_not_kill_i17_artifact(
         }
     )
     store = CatalogArtifactStore()
-    change = _change(1).model_copy(
-        update={"attributes": {"색상": ["블랙", "화이트", "레드"]}}
-    )
+    change = _change(1).model_copy(update={"attributes": {"색상": ["블랙", "화이트", "레드"]}})
     harvested: list[str] = []
 
     def harvest(
@@ -1530,6 +1526,166 @@ async def test_drain_item_failure_streak_is_per_product():
     # B 는 이번이 첫 실패(streak=1 < 3)라 전파된다 — A 의 스트릭과 섞이지 않는다.
     assert store.get_cursor() == "checkpoint"
     assert store.get(2) is None
+
+
+# ── 라운드 5(#325 R5, PR #399 Claude 리뷰 3차 대응): 3선(비율 가드)에도 시간 유계를 건다 ──
+#
+# 리뷰 지적(타당): R4 의 시간 유계는 2선(타임아웃·embed·store 전파)에만 걸려 있고 3선(비율
+# 가드)에는 없었다. 특정 카테고리 상품들의 프롬프트 회귀로 enrich 내용 실패가 다건 동시
+# 발생하면 1선이 매 주기 즉시 격리해(스트릭을 쌓지 않고 pop) 2선 상한이 영원히 걸리지 않고,
+# 페이지 실패율은 매 주기 똑같이 임계를 넘어 PageFailureThresholdExceeded 가 반복돼 커서가
+# 전진하지 않는다 — 같은 페이지가 무기한 재조회된다("stuck-batch 를 시간 유계로 닫는다"는
+# 목표가 3선에는 적용되지 않아, 3선이 원래 잡으려던 바로 그 케이스에서 #325 증상이 재현).
+# 아래는 같은 커서에서 비율 가드가 연속 발동한 횟수로 3선도 시간 유계를 거는 것을 고정한다.
+
+
+async def test_drain_page_failure_threshold_repeats_then_advances_at_cycle_limit(caplog):
+    """비율 가드 반복 발동 → 상한(기본 3)에서 커서 전진(#325 R5 리뷰 시나리오 그대로).
+
+    표본(5) ≥ min_sample(5) 이고 전부 1선(enrich 내용 실패)인 페이지를 반복 실행 → 1·2회차는
+    PageFailureThresholdExceeded + 커서 미전진, 3회차는 예외 없이 커서 전진 + ERROR 로그.
+    """
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    names = [f"실패{i}" for i in range(5)]
+    changes = [_change(i + 1, name=name) for i, name in enumerate(names)]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _FlakyLLM(always_fail=names)
+    settings = get_settings()
+    assert settings.artifacts_batch_page_failure_max_cycles == 3  # 기본값 전제 명시
+
+    for _ in range(settings.artifacts_batch_page_failure_max_cycles - 1):
+        with pytest.raises(_batch.PageFailureThresholdExceeded):
+            await run_artifacts_batch(
+                fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+            )
+        assert store.get_cursor() == "checkpoint"
+
+    with caplog.at_level("ERROR"):
+        result = await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+        )
+
+    assert result.failed == 5
+    assert store.get_cursor() == "c1"
+    assert "cursor=checkpoint" in caplog.text
+    assert "streak=3/3" in caplog.text
+
+
+async def test_drain_page_failure_streak_resets_when_cycle_breaks():
+    """연속이 끊기면 카운터가 리셋된다 — 다시 임계 초과가 나도 3회차가 아니라 1회차부터 다시
+    센다(#325 R5).
+    """
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    fail_names = [f"실패{i}" for i in range(5)]
+    fail_changes = [_change(i + 1, name=name) for i, name in enumerate(fail_names)]
+    ok_names = [f"성공{i}" for i in range(5)]
+    ok_changes = [_change(i + 100, name=name) for i, name in enumerate(ok_names)]
+
+    call_count = 0
+
+    async def fetch(cursor, limit):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            # 2회차만 정상 페이지 — next_cursor 를 같은 "checkpoint" 로 되돌려 3회차가 같은
+            # 커서에서 다시 임계 초과를 재현하게 한다(카운터가 리셋됐는지가 이 테스트의 핵심).
+            return ProductChangesPage(items=ok_changes, next_cursor="checkpoint", has_more=False)
+        return ProductChangesPage(items=fail_changes, next_cursor="c1", has_more=False)
+
+    llm = _FlakyLLM(always_fail=fail_names)
+    settings = get_settings()
+
+    # 1회차: 임계 초과 → 전파, 커서 "checkpoint" 카운터=1.
+    with pytest.raises(_batch.PageFailureThresholdExceeded):
+        await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+        )
+    assert store.get_cursor() == "checkpoint"
+
+    # 2회차: 정상 페이지 → 전진 + 카운터 리셋(연속만 세므로).
+    result = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+    )
+    assert result.processed == 5
+    assert store.get_cursor() == "checkpoint"
+
+    # 3회차: 다시 임계 초과 — 리셋됐으므로 상한(3)이 아니라 1회차부터 다시 세어 여전히 전파된다.
+    with pytest.raises(_batch.PageFailureThresholdExceeded):
+        await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+        )
+    assert store.get_cursor() == "checkpoint"
+
+
+async def test_drain_page_failure_streak_is_per_cursor():
+    """페이지 실패 연속 발동 카운터는 커서별로 독립적이다 — 커서 A 가 2회 발동한 상태에서
+    커서 B 가 처음 발동하면 B 는 예외를 던진다(#325 R5).
+    """
+    store_a = CatalogArtifactStore()
+    store_a.set_cursor("A")
+    names_a = [f"A실패{i}" for i in range(5)]
+    changes_a = [_change(i + 1, name=name) for i, name in enumerate(names_a)]
+
+    async def fetch_a(cursor, limit):
+        return ProductChangesPage(items=changes_a, next_cursor="Ac1", has_more=False)
+
+    llm_a = _FlakyLLM(always_fail=names_a)
+    settings = get_settings()
+
+    for _ in range(settings.artifacts_batch_page_failure_max_cycles - 1):
+        with pytest.raises(_batch.PageFailureThresholdExceeded):
+            await run_artifacts_batch(
+                fetch=fetch_a, llm=llm_a, embed=_embed, store=store_a, settings=settings
+            )
+    assert store_a.get_cursor() == "A"
+
+    store_b = CatalogArtifactStore()
+    store_b.set_cursor("B")
+    names_b = [f"B실패{i}" for i in range(5)]
+    changes_b = [_change(i + 1000, name=name) for i, name in enumerate(names_b)]
+
+    async def fetch_b(cursor, limit):
+        return ProductChangesPage(items=changes_b, next_cursor="Bc1", has_more=False)
+
+    llm_b = _FlakyLLM(always_fail=names_b)
+
+    # B 는 이번이 첫 발동(streak=1 < 상한)이라 전파된다 — A 의 카운터와 섞이지 않는다.
+    with pytest.raises(_batch.PageFailureThresholdExceeded):
+        await run_artifacts_batch(
+            fetch=fetch_b, llm=llm_b, embed=_embed, store=store_b, settings=settings
+        )
+    assert store_b.get_cursor() == "B"
+
+
+async def test_drain_hidden_delete_failure_still_propagates_unbounded():
+    """HIDDEN 삭제 실패는 3선 시간 유계 대상이 아니다 — 상한 횟수보다 더 반복해도 매번
+    전파되고 커서는 미전진(api-spec §4.8 fail-closed 규약, #325 R5).
+    """
+
+    class _FailingDeleteStore(CatalogArtifactStore):
+        def delete(self, product_id):
+            raise RuntimeError("delete boom")
+
+    store = _FailingDeleteStore()
+    store.set_cursor("checkpoint")
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(
+            items=[_change(1, status="HIDDEN")], next_cursor="c1", has_more=False
+        )
+
+    settings = get_settings()
+    for _ in range(settings.artifacts_batch_page_failure_max_cycles + 2):
+        with pytest.raises(RuntimeError, match="delete boom"):
+            await run_artifacts_batch(
+                fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store, settings=settings
+            )
+        assert store.get_cursor() == "checkpoint"
 
 
 async def test_color_harvest_cancellation_propagates(monkeypatch):

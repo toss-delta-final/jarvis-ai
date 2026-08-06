@@ -19,6 +19,15 @@ enrichment 단계라도 재시도 소진 후 타임아웃 계열로 판정되는
 실패로 확정해 격리한다. 그 미만이면 종전대로 전파(자연 복구)한다 — "언제까지나 막히지
 않는다"를 보장하는 2선.
 
+[#325 R5] 3선(비율 가드)에는 R4의 시간 유계가 걸려 있지 않았다 — 1선이 다건을 매 주기
+즉시 격리하는 광역 파손(프롬프트 회귀 등)에서는 2선 스트릭이 쌓이지 않으므로, 비율 가드만
+같은 커서에서 매 주기 반복 발동해 커서가 영원히 전진하지 않을 수 있었다(3선이 스스로 #325
+의 무기한 정지를 재현). 그래서 같은 커서에서 비율 가드가 연속 발동한 횟수를 세고,
+``artifacts_batch_page_failure_max_cycles``(기본 3주기 ≈ 15분)에 도달하면 그 페이지를
+격리(항목은 이미 1·2선에서 dead-letter 기록됨)하고 커서를 전진시킨다. 다만 HIDDEN 삭제
+실패·status 계약 위반(ProductChange 단계)은 이 시간 유계의 대상이 아니다 — api-spec §4.8 이
+명시한 fail-closed 규약(항목별 ack/DLQ 계약 부재)이라 계속 무기한 전파한다.
+
 증분(기본): 대상 스토어에 직접 upsert 하고 페이지마다 커서 전진.
 전체 재구축(full_rebuild): since="0" 부터 **임시 스토어**에 쌓은 뒤, 성공 시 원자 교체(replace_all)한다
   — 재구축 중 실패해도 기존 정상 데이터가 보존되고, 더 이상 존재하지 않는 상품의 stale artifact 가 제거된다.
@@ -92,6 +101,44 @@ def _bump_item_failure_streak(product_id: int) -> int:
     return streak
 
 
+# [#325 R5] 커서별 3선(비율 가드) 연속 발동 횟수(cursor → 연속 발동 횟수, 주기 간 유지) — 2선
+# (R4)과 같은 시간 신호를 3선에도 적용한다. 1선이 다건을 매 주기 즉시 격리하는 광역 파손에서는
+# 2선 스트릭이 쌓이지 않아 그 상한이 걸리지 않고, 비율 가드만 같은 커서에서 매 주기 반복
+# 발동해 커서가 영원히 전진하지 않을 수 있다(config.artifacts_batch_page_failure_max_cycles).
+# 키는 그 페이지를 가져온 커서(fetch 에 넘긴 값)다 — hasMore 로 여러 페이지를 도는 경우
+# 페이지마다 다른 페이지 정체성을 나타낸다. 프로세스 메모리, 재시작 시 리셋(의도된 단순화).
+_page_failure_streaks: dict[str, int] = {}
+# 방어적 메모리 상한(튜너블 아님) — _ITEM_FAILURE_STREAK_MAX_ENTRIES 와 같은 방식.
+_PAGE_FAILURE_STREAK_MAX_ENTRIES = 10_000
+
+
+def reset_page_failure_streaks() -> None:
+    """모듈 수준 커서별 3선(비율 가드) 연속 발동 횟수를 비운다 — 테스트 간 격리용(#325 R5)."""
+    _page_failure_streaks.clear()
+
+
+def reset_batch_failure_state() -> None:
+    """artifacts_batch 모듈 수준 실패 상태(항목 스트릭 + 페이지 스트릭)를 모두 비운다(#325 R5)."""
+    reset_item_failure_streaks()
+    reset_page_failure_streaks()
+
+
+def _bump_page_failure_streak(cursor: str) -> int:
+    """cursor 의 비율 가드 연속 발동 횟수를 1 늘리고 반환한다. 상한 초과 시 방어적으로 전체를 비운다."""
+    if (
+        cursor not in _page_failure_streaks
+        and len(_page_failure_streaks) >= _PAGE_FAILURE_STREAK_MAX_ENTRIES
+    ):
+        _log.warning(
+            "I-17 페이지 실패 스트릭 캐시가 상한(%d)에 도달 — 방어적으로 비움",
+            _PAGE_FAILURE_STREAK_MAX_ENTRIES,
+        )
+        _page_failure_streaks.clear()
+    streak = _page_failure_streaks.get(cursor, 0) + 1
+    _page_failure_streaks[cursor] = streak
+    return streak
+
+
 @dataclass
 class BatchResult:
     processed: int
@@ -151,9 +198,7 @@ async def _harvest_change_colors(change: ProductChange, *, settings: Settings) -
                 settings.color_synonym_cluster_threshold,
                 max_terms=settings.color_synonym_harvest_max_terms_per_product,
                 max_term_length=settings.color_synonym_harvest_max_term_length,
-                scan_max_values=(
-                    settings.color_synonym_harvest_scan_max_values_per_product
-                ),
+                scan_max_values=(settings.color_synonym_harvest_scan_max_values_per_product),
             )
         finally:
             # wait_for가 먼저 끝나도 실제 worker가 종료될 때까지 슬롯을 계속 점유한다.
@@ -285,14 +330,26 @@ async def _drain(
       고유 실패로 확정해 **격리**(dead-letter ERROR, product_id·스트릭·상한·단계 표기)하고
       다음 항목으로 계속한다 — failed 증가, 스트릭 삭제.
     - **3선(비율, 방어)**: 페이지의 ON_SALE 표본이 settings.artifacts_batch_failure_min_sample
-      이상이고 실패 비율이 settings.artifacts_batch_failure_ratio_threshold 이상이면
-      PageFailureThresholdExceeded 를 던져 커서를 전진시키지 않는다 — 인프라는 멀쩡한데
-      enrichment 결과 자체가 대량으로 깨지는 경우(프롬프트 회귀 등)를 잡는다. 표본이
-      min_sample 미만이면 비율 판정을 생략하고 격리+전진한다.
+      이상이고 실패 비율이 settings.artifacts_batch_failure_ratio_threshold 이상이면 — 그
+      페이지를 가져온 커서(fetch 에 넘긴 값)의 연속 발동 횟수를 +1 한다. 표본이 min_sample
+      미만이면 비율 판정을 생략하고 격리+전진한다.
+      - 연속 발동이 settings.artifacts_batch_page_failure_max_cycles 미만이면 종전대로
+        PageFailureThresholdExceeded 를 던져 커서를 전진시키지 않는다(자연 복구) — WARNING 로
+        현재 연속 횟수/상한을 남긴다. 인프라는 멀쩡한데 enrichment 결과 자체가 대량으로 깨지는
+        경우(프롬프트 회귀 등)를 잡는다.
+      - 상한 이상이면 대량 파손이 자연 회복되지 않는 것으로 확정해 **던지지 않는다** — ERROR 로
+        연속 횟수/상한·failed·page_total·커서를 남기고 그 페이지를 그대로 커서 전진시킨다
+        (항목들은 이미 1선/2선에서 dead-letter 기록됨). 연속 발동 카운터는 삭제한다(#325 R5) —
+        1선이 다건을 매 주기 즉시 격리하는 광역 파손에서는 2선 스트릭이 쌓이지 않아 그 상한이
+        걸리지 않고, 이 3선 시간 유계가 없으면 비율 가드 자체가 #325 의 무기한 정지를
+        재현한다. 페이지가 비율 임계를 넘지 않고 정상 종료하면 그 커서의 카운터를 삭제한다
+        (연속만 센다).
 
-    HIDDEN 삭제 실패·status 파싱 실패(ProductChange 단계)는 격리 대상이 아니라 그대로 전파한다
-    (스트릭 대상도 아니다). 이미 성공한 앞 페이지는 artifact와 커서가 함께 저장된 유효
-    체크포인트이므로 롤백하지 않는다.
+    HIDDEN 삭제 실패·status 파싱 실패(ProductChange 단계)는 이 시간 유계의 대상이 아니라
+    그대로(무기한) 전파한다(스트릭 대상도 아니다) — api-spec §4.8 이 명시적으로 정한 fail-closed
+    규약이다: 항목별 ack/DLQ 계약이 없어 skip-전진하면 삭제 이벤트가 영구 유실되므로, 승인받은
+    개정 범위 밖인 이 경로만은 시간 유계에서 제외된다. 이미 성공한 앞 페이지는 artifact와
+    커서가 함께 저장된 유효 체크포인트이므로 롤백하지 않는다.
     """
     cursor = start_cursor
     processed = hidden = pages = failed = 0
@@ -387,13 +444,44 @@ async def _drain(
                     page_total,
                     settings.artifacts_batch_failure_min_sample,
                 )
+                _page_failure_streaks.pop(cursor, None)
             else:
                 ratio = page_failed / page_total
                 if ratio >= settings.artifacts_batch_failure_ratio_threshold:
-                    raise PageFailureThresholdExceeded(
-                        f"I-17 페이지 실패율 임계 초과: failed={page_failed} total={page_total} "
-                        f"ratio={ratio:.2f}"
+                    # [#325 R5] 3선도 2선(R4)과 같은 시간 유계 — 같은 커서에서 비율 가드가
+                    # 연속 발동한 횟수로 대량 파손의 자연 회복 여부를 판정한다.
+                    page_streak = _bump_page_failure_streak(cursor)
+                    page_cycles_limit = settings.artifacts_batch_page_failure_max_cycles
+                    if page_streak < page_cycles_limit:
+                        _log.warning(
+                            "I-17 페이지 실패율 임계 연속 발동 — 전파(자연 복구): "
+                            "cursor=%s failed=%d total=%d ratio=%.2f streak=%d/%d",
+                            cursor,
+                            page_failed,
+                            page_total,
+                            ratio,
+                            page_streak,
+                            page_cycles_limit,
+                        )
+                        raise PageFailureThresholdExceeded(
+                            f"I-17 페이지 실패율 임계 초과: failed={page_failed} "
+                            f"total={page_total} ratio={ratio:.2f}"
+                        )
+                    _page_failure_streaks.pop(cursor, None)
+                    _log.error(
+                        "I-17 페이지 실패율 임계 연속 발동 상한 도달 — 격리 후 전진: "
+                        "cursor=%s failed=%d total=%d ratio=%.2f streak=%d/%d",
+                        cursor,
+                        page_failed,
+                        page_total,
+                        ratio,
+                        page_streak,
+                        page_cycles_limit,
                     )
+                else:
+                    _page_failure_streaks.pop(cursor, None)
+        else:
+            _page_failure_streaks.pop(cursor, None)
         if page.next_cursor:
             cursor = page.next_cursor
         if persist_cursor:
