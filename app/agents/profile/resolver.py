@@ -66,6 +66,24 @@ class ResolvedTriple:
     edge_key: str
     edge_id: str
 
+    def as_payload(self, *, salience: float, source: str) -> dict:
+        """fact 값(`graph_triples`)에 저장하는 직렬화 형태 — **이 모양이 병합 엔진의 입력 계약**이다.
+
+        `graph_merge` 가 여기서 읽는 것이 전부이므로 필드를 빼면 병합이 조용히 값을 잃는다.
+        `salience` 를 함께 싣는 이유는 confidence 가 관측 salience 의 감쇠 가중 EMA 라서다
+        (REQ-PGRAPH-015) — 게이트 판정 직후 버려지던 신호를 여기서 처음으로 영속한다
+        (SPEC-PROFILE-001 OPEN-P12 가 지적한 "누적할 상태가 없다"의 해소 지점).
+        관측 시각과 fact key 는 store item 이 이미 갖고 있어 중복 저장하지 않는다.
+        """
+        return {
+            "node": self.node.model_dump(mode="json"),
+            "predicate": self.predicate,
+            "edge_key": self.edge_key,
+            "edge_id": self.edge_id,
+            "salience": salience,
+            "source": source,
+        }
+
 
 async def resolve_triple(
     *,
