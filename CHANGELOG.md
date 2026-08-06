@@ -10,6 +10,30 @@
 ## [Unreleased]
 
 ### Added
+- **#363 — 구제 체인(#222 F-1·#343 억제-후 재판정) first-token 지연 계측 + 최악 경로 순차 왕복
+  상한 회귀 테스트 — "예산 내"가 아니라 이미 데드라인 초과, 기동 가드(#288) 과소계상도 발견**
+  — 운영 로그(`recommend_zero_result`·`category_expand_post_suppress_fallback`)는 배포 1일
+  미만이거나 아직 미배포라 실측이 불가해(근거 `docs/specs/MEASURE-FIRST-TOKEN-363.md` §2), 대신
+  `category_expand_zero_fallback`/`category_expand_post_suppress_fallback` 성공 로그에
+  `elapsed_ms`를, `recommend_zero_result`에 `rescue_elapsed_ms`·`relax_probes`·
+  `relax_auto_elapsed_ms`(자동완화, first SSE **이전**)·`relax_chip_elapsed_ms`(칩 probe, first
+  SSE **이후** — 합치면 아직 스트림에 안 나간 소요가 섞여 과대계상되므로 필드를 분리했다)를
+  추가해 다음 배포부터 실측 가능하게 했다. fake 로 재현한 최악 경로(확장 턴 전량 억제 + #343
+  폴백 실패 + 자동완화 probe 실패)로 first SSE(conditions) 이전 순차 Spring 왕복이 **정확히
+  3단**(초기 fan-out + #343 폴백 + 자동완화 probe)임을 회귀 테스트로 고정했다. **최악 상한
+  3단×`spring_timeout_s`(3s)=9.0s를 first-token 을 실제로 끊는 예산과 비교하면 30s
+  (`stream_total_timeout_buyer_s`, 첫 이벤트 이후만 덮는 전체 상한)가 아니라 10s
+  (`stream_first_token_timeout_s`, 첫 이벤트 이전 상한)여야 하고, 그 기준으로는 소모율 90%에
+  선행 decompose LLM head(p95≈3.0s, #151)를 더하면 12.0s>10.0s — 최악 경로는 오늘 설정에서
+  이미 first-token 데드라인을 넘어 504가 된다**(PR #362 리뷰의 "3단 적층 ≈9s" 우려를 수치로
+  확인·정정, 이슈 본문의 "30s 예산 내" 전제는 반증됨). 기동 가드
+  `_deferred_first_event_i1_calls`(#288)도 이 3단 중 구제 폴백 항을 빠뜨려 항상 2로
+  과소계상한다는 것을 발견 — `spring_timeout_s ∈ [10/3, 5.0)` 구간은 가드를 통과하면서 실제로는
+  데드라인을 넘는다. 보정된 일반형(`1 + (1 if category_expand_enabled else 0) + min(...)`)을
+  문서화하고 가드/실측 값의 불일치(2 vs 3)를 `tests/unit/test_config.py`에 회귀 테스트로
+  고정했다 — 런타임 가드 동작은 배포 영향을 고려해 이번 PR에서 바꾸지 않는다(적용은 후속
+  이슈). 공유 왕복 예산/first-token 데드라인 가드 설계도 후속 이슈로 넘긴다(§4·§5가 이미
+  "유의" 판정 근거이므로 후속은 실빈도 실측이 목적). 계약(api-spec) 무변경.
 - **#334 — 필터 추출 축별 분해 지표 신설(`evals/filter_axes`)** — 기존 Filter Accuracy(합집합 분모 단일값)로는 어느 축이 과·소추출인지 알 수 없었다. 축별 valueStrict/presence precision·recall(micro, 분모 0은 None)·trivial(빈 필터) baseline·INV/DIR/회원-게스트(#119) 수동 probe를 추가하고, `evals/metrics` 러너·리포트(`filter_axes.csv`)에 병행 배선했다(`filterAccuracy` 등 기존 키·정의는 불변). ablation baseline `20260803-dev-full-n5`을 오프라인 재채점한 `evals/filter_axes/baselines/20260803-dev-full-n5-rescored/`로 합집합 단일값이 감춘 원인 축(keyword 어휘 불일치·category 소/과추출 정반대 방향)을 실측 산출물로 증명했다. 계약(api-spec) 무변경.
 - **#332 — 니즈 전개(legs) 평가 하네스 `evals/legs_probe`** — #198 의 핵심 지표("case==3 인데
   legs<=1")가 로그 관측(`decompose_case`)에만 있어 프롬프트를 바꿔도 실측 없이 판단해야 했다.

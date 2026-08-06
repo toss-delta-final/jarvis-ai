@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import Counter
 from collections.abc import AsyncIterator
 from contextlib import nullcontext
@@ -931,6 +932,11 @@ async def stream_recommendation(
     # `recommend_zero_result` 로그의 had_candidates=True & category_expanded=True 조합으로
     # 배포 후 후속 관측한다).
     category_expand_notice_suppressed = False
+    # [#363] F-1 폴백과 #343 재판정이 쓴 무필터 재검색 왕복의 누적 소요 — 시도했으나 구제
+    # 실패로 0건 종결된 턴에서도 남아야 아래 `recommend_zero_result` 로그로 최악 경로 지연을
+    # 관측할 수 있다(시도가 없으면 0). 성공 시 각 이벤트 로그의 `elapsed_ms` 는 그 왕복 1회분,
+    # 이 변수는 한 턴에 F-1+#343 이 함께 시도됐을 경우의 합이다(상호배타 가드로 실질 1회분).
+    rescue_elapsed_ms = 0
 
     async def _run_search_unfiltered() -> tuple[ProductSearchResult, dict[int, int]] | None:
         """카테고리를 빼고 1회만 재검색한다 — 비-fan-out 단일검색과 같은 계약(§6 `_run_search`
@@ -949,7 +955,10 @@ async def stream_recommendation(
             return None
 
     if decision.category_expanded and search_result.total_count == 0:
+        _f1_fallback_started_at = time.monotonic()
         fallback_bundle = await _run_search_unfiltered()
+        _f1_fallback_elapsed_ms = round((time.monotonic() - _f1_fallback_started_at) * 1000)
+        rescue_elapsed_ms += _f1_fallback_elapsed_ms
         if fallback_bundle is not None:
             search_result, leg_of = fallback_bundle
             # 무필터로 실제 되돌아갔으니 "중분류를 훑었다"는 확장 고지는 이제 거짓 고지다 —
@@ -957,7 +966,11 @@ async def stream_recommendation(
             # 한다 — 실제로 안 쓴 확장 leg 8개를 카테고리 칩으로 보여주면 더 큰 거짓말이 된다).
             category_expand_notice_suppressed = True
             logger.info(
-                "category_expand_zero_fallback", extra={"legs": len(decision.category_legs)}
+                "category_expand_zero_fallback",
+                extra={
+                    "legs": len(decision.category_legs),
+                    "elapsed_ms": _f1_fallback_elapsed_ms,
+                },
             )
 
     # 최근 구매(윈도우·취소반품 필터) → exact 제외 + 소모품 카테고리 억제(결정 14-F).
@@ -1080,9 +1093,15 @@ async def stream_recommendation(
         and not category_expand_notice_suppressed
     ):
         post_suppress_fallback_attempted = True
+        _post_suppress_fallback_started_at = time.monotonic()
         fallback_bundle = await _run_search_unfiltered()
         if fallback_bundle is not None:
             refetched, _ = fallback_bundle  # leg_of 는 이 함수 계약상 항상 빈 dict
+            # [#363 R4] `_post_filter` 가 성공한 시점의 소요를 여기 잡아 두고, 아래 `finally`에서
+            # **정확히 1회만** `rescue_elapsed_ms`에 더한다 — `_post_filter` 성공 뒤(상태 대입·
+            # `logger.info`) 코드가 나중에 예외를 내도 이중 계상되지 않도록, try 본문 안에서
+            # 직접 누적하지 않는다.
+            _post_suppress_fallback_elapsed_ms: int | None = None
             # 후보는 이미 0건으로 확정돼 있고 이 재판정은 구제라는 **부가 기능**이다 — 첫 번째
             # `_post_filter(search_result)`(994행)와 달리 여기서 예외가 나도 후보 확정 자체는
             # 이미 끝나 있어 raise 할 이유가 없다. 감싸지 않으면 재적용(`_post_filter` 자체는
@@ -1096,6 +1115,12 @@ async def stream_recommendation(
                     refiltered_received,
                     refiltered_had_candidates,
                 ) = _post_filter(refetched)
+                # [#363] 재검색 + `_post_filter` 재적용까지를 이 블록의 소요로 잰다 — 후속
+                # `_post_filter` 가 재검색 왕복만큼 무겁지 않다는 보장이 없어 왕복만 재면 과소
+                # 계상된다.
+                _post_suppress_fallback_elapsed_ms = round(
+                    (time.monotonic() - _post_suppress_fallback_started_at) * 1000
+                )
                 if refiltered.products:
                     result = refiltered
                     suppressed_by_cat = refiltered_suppressed_by_cat
@@ -1109,7 +1134,10 @@ async def stream_recommendation(
                     category_expand_notice_suppressed = True
                     logger.info(
                         "category_expand_post_suppress_fallback",
-                        extra={"legs": len(decision.category_legs)},
+                        extra={
+                            "legs": len(decision.category_legs),
+                            "elapsed_ms": _post_suppress_fallback_elapsed_ms,
+                        },
                     )
                 # 재적용 후에도 0건이면 위에서 result·suppressed_by_cat·candidates 를 갱신하지
                 # 않았으므로 원래(억제된) 상태가 그대로 유지된다 — 되돌리기 칩·안내 문구는 원래
@@ -1119,7 +1147,21 @@ async def stream_recommendation(
                 logger.warning(
                     "category_expand_post_suppress_fallback_failed", extra={"reason": str(exc)}
                 )
-        # fallback_bundle 이 None(재검색 실패)이어도 같은 이유로 원래 상태를 그대로 둔다.
+            finally:
+                # [#363 R4] 성공(사전 계산값 재사용) · `_post_filter` 자체 실패(여기서 재계산) ·
+                # 성공 후 늦은 예외(사전 계산값 재사용, 재계산해 이중으로 재지 않는다) 세 경로 전부
+                # 정확히 1회만 더한다.
+                rescue_elapsed_ms += (
+                    _post_suppress_fallback_elapsed_ms
+                    if _post_suppress_fallback_elapsed_ms is not None
+                    else round((time.monotonic() - _post_suppress_fallback_started_at) * 1000)
+                )
+        else:
+            # fallback_bundle 이 None(재검색 실패)이어도 같은 이유로 원래 상태를 그대로 둔다 —
+            # 시도 자체는 있었으니 [#363] 소요는 남긴다.
+            rescue_elapsed_ms += round(
+                (time.monotonic() - _post_suppress_fallback_started_at) * 1000
+            )
 
     # ── 0건/소량 조건 완화 (#113, api-spec §3.1 · SPEC-RECOMMEND-001 §6.6) ──
     # estCount 는 page-local 로 못 구한다 — priceMax·brand·color 는 Spring I-1 쿼리 파라미터라 탈락
@@ -1155,6 +1197,14 @@ async def stream_recommendation(
     # 손잡이 하나가 하나씩만 맡아야 설정값이 이름대로 동작한다.
     probe_budget = settings.relaxation_max_probes  # 완화 칩 probe 상한(자동 완화와 무관)
     probes_spent = 0  # 관측용 — 이 턴이 실제로 쓴 추가 Spring 호출 수
+    # [#363 R3] 자동완화 루프와 칩 probe는 first SSE(conditions) **기준으로 서로 다른 쪽**에
+    # 있다 — `may_auto_relax=True`인 턴은 conditions를 자동완화 루프 직후·칩 probe **이전**에
+    # 내보낸다(아래 `if may_auto_relax: yield sse("conditions", ...)`). 한 필드에 합치면 칩
+    # probe 몫이 섞여 들어와 first-token 지연을 과대계상하므로 반드시 나눈다 — first-token
+    # 지연 판정 기준은 `rescue_elapsed_ms + relax_auto_elapsed_ms`만 봐야 한다(chip 몫 제외,
+    # 근거는 docs/specs/MEASURE-FIRST-TOKEN-363.md).
+    relax_auto_elapsed_ms = 0  # 자동완화 루프 소요 — first SSE 이전
+    relax_chip_elapsed_ms = 0  # 완화 칩 probe 소요 — first SSE 이후
 
     async def _probe(cand: RelaxationCandidate):
         """완화 필터로 재검색해 본 경로와 같은 사후필터를 통과시킨다. 실패면 None(그 후보만 탈락).
@@ -1190,6 +1240,7 @@ async def stream_recommendation(
         # (`build_relaxation_candidates`)과 루프 자체는 밖이었다. 여기서 터지면 아래 conditions
         # 발신까지 못 가 조건 칩이 사라진다. 자동 완화는 **선택 기능**이라 실패는 삼키고
         # 완화 없이 계속한다(§7) — 0건 안내와 완화 칩 경로는 그대로 살아 있다.
+        _auto_relax_started_at = time.monotonic()
         try:
             relax_candidates = build_relaxation_candidates(decision.filters, settings)
             auto_fields = set(settings.relaxation_auto_fields)
@@ -1227,6 +1278,8 @@ async def stream_recommendation(
         except Exception as exc:  # noqa: BLE001 - 자동 완화 실패가 턴을 죽이지 않게(degrade)
             # CancelledError(BaseException)는 전파돼 협조적 취소가 보존된다.
             logger.warning("relaxation_auto_failed", extra={"reason": str(exc)})
+        # [#363] 성공·예외 어느 쪽이든 이 루프가 돈 만큼은 소요다.
+        relax_auto_elapsed_ms += round((time.monotonic() - _auto_relax_started_at) * 1000)
     # [#113 PR #248 리뷰] **이 턴에 실제로 적용된 필터**. 자동 완화가 채택됐으면 그 값이 반영된
     # 사본이고 아니면 원본이다. 조건 칩 표시와 **완화 칩 후보 생성**이 같은 기준을 쓰게 하는 게
     # 핵심이다 — 원본으로 후보를 만들면 "평점 4.0" 이 화면에 떠 있는데 그 옆 가격 칩은 4.5 기준으로
@@ -1264,6 +1317,7 @@ async def stream_recommendation(
     if not underspecified and (not candidates or len(candidates) < settings.relaxation_min_results):
         # 자동 완화 루프와 같은 이유로 전체를 감싼다(PR #248 2차 리뷰) — 후보 생성·칩 조립은
         # `_probe` 바깥이라 방어가 없었다. 완화 칩은 **부가 제안**이라 실패하면 칩 없이 계속한다.
+        _chip_probe_started_at = time.monotonic()
         try:
             if not relax_candidates:
                 relax_candidates = build_relaxation_candidates(effective_filters, settings)
@@ -1309,6 +1363,8 @@ async def stream_recommendation(
             # CancelledError(BaseException)는 전파돼 협조적 취소가 보존된다.
             logger.warning("relaxation_chips_failed", extra={"reason": str(exc)})
             relaxation_chips = []
+        # [#363] 성공·예외 어느 쪽이든 이 블록이 쓴 만큼은 소요다.
+        relax_chip_elapsed_ms += round((time.monotonic() - _chip_probe_started_at) * 1000)
 
     # [#113] 이번 턴에 제안한 칩을 스레드에 기억한다 — FE 는 칩을 누르면 label 을 그대로 다음 턴
     # message 로 보내므로(jarvis-frontend `applySuggestion`), 다음 턴에 그 label 을 만나면 LLM 이
@@ -1391,6 +1447,16 @@ async def stream_recommendation(
                 # [#343] 위 억제-후 재판정을 시도했는지 — 수정 후에도 이 조합이 남을 때 "폴백을
                 # 시도했는데도 정말 0건"인지 "플래그 off 로 갭이 그대로"인지 로그로 갈라야 한다.
                 "post_suppress_fallback_attempted": post_suppress_fallback_attempted,
+                # [#363] 이 턴이 F-1/#343 구제·완화(자동+칩 probe)에 쓴 소요(ms) — 시도 없으면
+                # 0. 이슈 #363 이 실측 불가로 판정한 지연을 배포 후 운영 로그만으로 관측하기
+                # 위한 계측(설계·가드는 후속 이슈).
+                "rescue_elapsed_ms": rescue_elapsed_ms,
+                "relax_probes": probes_spent,
+                # [#363 R3] first SSE(conditions) **이전**(자동완화)과 **이후**(칩 probe)를 반드시
+                # 나눈다 — 합치면 first-token 지연 판정(rescue_elapsed_ms + relax_auto_elapsed_ms)
+                # 이 아직 스트림에 영향 없는 칩 probe 소요까지 끌어와 과대계상된다.
+                "relax_auto_elapsed_ms": relax_auto_elapsed_ms,
+                "relax_chip_elapsed_ms": relax_chip_elapsed_ms,
             },
         )
         return

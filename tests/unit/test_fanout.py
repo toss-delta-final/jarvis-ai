@@ -6,7 +6,9 @@ productId dedup + round-robin 인터리브(한 카테고리 독점 방지) + mer
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -2471,6 +2473,265 @@ async def test_post_suppress_fallback_skipped_when_pre_suppress_f1_already_ran(
     assert calls.count(None) == 1  # F-1 이 쓴 1회뿐 — #343 이 두 번째를 돌리지 않았다
     done = next(e for e in events if e["type"] == "done")["data"]
     assert done["finishReason"] == "zero_result"
+
+
+# ── #363 — 구제 체인 지연 계측 + 최악 경로 순차 왕복 상한 회귀 가드 ──────────────────
+
+
+async def test_f1_fallback_success_log_includes_elapsed_ms(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """[#363 AC1] F-1 성공 로그(`category_expand_zero_fallback`)에 이 왕복의 `elapsed_ms` 가
+    실린다 — 배포 후 지연 분포를 로그만으로 관측하기 위한 계측(설계 근거는
+    docs/specs/MEASURE-FIRST-TOKEN-363.md)."""
+
+    async def _search(filters, exclude_product_ids=None):
+        return _res(101, 102) if filters.category is None else _res()  # 확장 leg 은 전부 0건
+
+    caplog.set_level("INFO", logger="app.agents.buyer.recommendation.graph")
+    await _collect(
+        run_buyer_turn(
+            _req(message="화장품 추천해줘"),
+            _member(),
+            llm=FakeLLM(decompose=_broad_decompose()),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_broad_mapper(),
+        )
+    )
+    record = next(r for r in caplog.records if r.msg == "category_expand_zero_fallback")
+    assert isinstance(record.elapsed_ms, int)
+    assert record.elapsed_ms >= 0
+
+
+async def test_post_suppress_fallback_success_log_includes_elapsed_ms(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """[#363 AC1] #343 성공 로그(`category_expand_post_suppress_fallback`)에도 재검색 +
+    `_post_filter` 재적용까지의 `elapsed_ms` 가 실린다."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases_cat((101, "c", "이전 구매")))
+
+    async def _search(filters, exclude_product_ids=None):
+        if filters.category is None:  # 무필터 재검색
+            return _res(201, 202)
+        return _res(101)  # 확장 leg 은 전부 최근구매 101 만 낸다 → 사후필터가 전량 제외
+
+    caplog.set_level("INFO", logger="app.agents.buyer.recommendation.graph")
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="화장품 추천해줘"),
+            _member_num(),
+            llm=FakeLLM(decompose=_broad_decompose()),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_broad_mapper(),
+        )
+    )
+    done = next(e for e in events if e["type"] == "done")["data"]
+    assert done["finishReason"] != "zero_result"  # 재판정이 구제했다
+    record = next(r for r in caplog.records if r.msg == "category_expand_post_suppress_fallback")
+    assert isinstance(record.elapsed_ms, int)
+    assert record.elapsed_ms >= 0
+
+
+async def test_post_suppress_fallback_reapply_failure_counts_rescue_elapsed_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """[#363 R4] `_post_filter` 재적용 자체가 예외를 내는 경로(원본 시나리오는
+    `test_post_suppress_fallback_reapply_failure_keeps_original_state`, 그 fake 패턴을 그대로
+    쓴다)에서 `rescue_elapsed_ms`가 이 왕복을 **정확히 1회만** 반영하는지 지연을 주입해 수치로
+    확인한다. 고쳐진 코드는 `_post_filter` 성공 시점에만 값을 미리 계산해 두고(예외 시엔 None
+    유지), `finally` 한 곳에서만 더한다 — try 본문과 except 양쪽에서 각자 더하던 이전 구조라면
+    이 경로에서도(그리고 `_post_filter` 성공 뒤 상태 반영 단계가 나중에 실패하는, 로그로는
+    관측되지 않는 다른 하위 경로에서는 확실히) 이중 계상이 재발할 수 있다."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases_cat((101, "c", "이전 구매")))
+
+    delay_s = 0.05  # [#363 R5 와 같은 이유] 이중 계상 여부를 시간값으로 구분하려면 실측 가능한
+    # 지연이 있어야 한다 — 0이면 두 번 더해도 여전히 0이라 회귀를 못 잡는다.
+
+    class _ExplodingProduct:
+        """`.category` 접근 시 예외를 낸다 — 재적용된 `_post_filter` 만 이 상품을 만난다."""
+
+        product_id = 999
+
+        @property
+        def category(self):
+            raise RuntimeError("post_filter boom")
+
+    async def _search(filters, exclude_product_ids=None):
+        await asyncio.sleep(delay_s)
+        if filters.category is None:  # 무필터 재검색 — 성공하지만 사후필터 재적용이 터진다
+            return SimpleNamespace(products=[_ExplodingProduct()], total_count=1)
+        return _res(101)  # 확장 leg 전량 최근구매 101 만 낸다 → 사후필터가 전량 제외
+
+    caplog.set_level("INFO", logger="app.agents.buyer.recommendation.graph")
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="화장품 추천해줘"),
+            _member_num(),
+            llm=FakeLLM(decompose=_broad_decompose()),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_broad_mapper(),
+        )
+    )
+    assert not any(e["type"] == "error" for e in events)
+    done = next(e for e in events if e["type"] == "done")["data"]
+    assert done["finishReason"] == "zero_result"
+    warn = next(
+        r for r in caplog.records if r.msg == "category_expand_post_suppress_fallback_failed"
+    )
+    assert warn.reason == "post_filter boom"
+
+    zero_log = next(r for r in caplog.records if r.msg == "recommend_zero_result")
+    # [#363 R4] 왕복 1회분(delay_s ≈ 50ms)만 반영돼야 한다 — 이중 계상 버그가 재발하면 같은
+    # 구간이 두 번 더해져 대략 2배(≈100ms)로 튄다. 상한을 1.5배 지점에 둬 그 둘을 가른다.
+    assert zero_log.rescue_elapsed_ms >= round(delay_s * 1000 * 0.5)
+    assert zero_log.rescue_elapsed_ms < round(delay_s * 1000 * 1.5)
+
+
+async def test_post_suppress_fallback_unfiltered_search_failure_counts_rescue_elapsed_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """[#363 R4] 무필터 재검색 자체가 실패해 `_run_search_unfiltered()`가 None 을 돌려주는
+    (`fallback_bundle is None`) 경로 — 기존 6건 어디도 이 하위 경로를 caplog 로 수치 검증하지
+    않았다. `_post_filter`를 아예 못 부르니 이중 계상 위험 자체는 없지만(else 분기가 단일
+    누적), 세 경로(성공·`_post_filter`예외·재검색자체실패) 모두 정확히 1회라는 R4 요구를
+    이 경로까지 실제로 채워 고정한다."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases_cat((101, "c", "이전 구매")))
+
+    delay_s = 0.05
+
+    async def _search(filters, exclude_product_ids=None):
+        if filters.category is None:  # 무필터 재검색 — 재시도까지 전부 실패
+            await asyncio.sleep(delay_s)
+            raise SpringUnavailableError("unfiltered search down")
+        return _res(101)  # 확장 leg 전량 최근구매 101 만 낸다 → 사후필터가 전량 제외
+
+    caplog.set_level("INFO", logger="app.agents.buyer.recommendation.graph")
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="화장품 추천해줘"),
+            _member_num(),
+            llm=FakeLLM(decompose=_broad_decompose()),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_broad_mapper(),
+        )
+    )
+    assert not any(e["type"] == "error" for e in events)
+    done = next(e for e in events if e["type"] == "done")["data"]
+    assert done["finishReason"] == "zero_result"
+
+    zero_log = next(r for r in caplog.records if r.msg == "recommend_zero_result")
+    assert zero_log.post_suppress_fallback_attempted is True
+    assert zero_log.rescue_elapsed_ms >= round(delay_s * 1000 * 0.5)
+    assert zero_log.rescue_elapsed_ms < round(delay_s * 1000 * 1.5)
+
+
+async def test_worst_case_rescue_chain_sequential_stages_before_first_sse(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """[#363 최악 경로 회귀 가드] 확장 턴이 검색 히트를 내지만(①) 최근구매 억제가 전량 제거하고
+    (②) #343 무필터 재검색도 전량 억제되며(③) 자동완화 probe 도 실패하는(④) 턴에서, **첫 SSE
+    이벤트(conditions) 발신 이전** 순차 Spring 왕복은 정확히 3단이다: 초기 fan-out(leg 8개 병렬
+    1단) + #343 무필터 폴백(1단) + 자동완화 probe(`relaxation_auto_fields=["ratingMin"]` 하나뿐
+    이라 후보도 1개 — 최대 1라운드, 1단). PR #362 리뷰가 지적한 "3단 순차 적층 ≈9s"
+    (spring_timeout_s=3s × 3단)와 정확히 일치한다(docs/specs/MEASURE-FIRST-TOKEN-363.md §4 산출
+    근거).
+
+    완화 **칩** probe(잠재적 4번째 단)는 conditions 가 이미 나간 **뒤**에 돈다 — 비카테고리 완화
+    후보(ratingMin)가 있는 턴은 `may_auto_relax=True` 라 conditions 를 자동완화 루프 직후·칩
+    probe **이전**에 내보내기 때문이다(graph.py `if may_auto_relax: yield sse("conditions", ...)`,
+    자동완화 루프 다음·칩 probe 앞). 이 순서가 "구제 체인이 first-token 을 얼마나 미루는가"라는
+    이 이슈의 실측 핵심이다 — 칩 probe 가 conditions 보다 앞으로 오게 바뀌면(=first-token 이 한
+    단 더 늦어지면) 이 테스트가 실패해야 한다.
+    """
+    monkeypatch.setattr(get_settings(), "consumable_categories", ["생활용품"])
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases_cat((900, "생활용품", "휴지")))
+    leaf_order = [c for c, _ in _BROAD_LEAVES]
+
+    # [#363 R5] 0.01s(임계 5ms)는 부하 걸린 CI 러너에서 병렬 fan-out 8개의 시작 시각 산포가
+    # 임계를 넘어 한 단이 둘로 갈릴 수 있다 — 0.05s(임계 25ms)로 올려 "병렬 시작 시각의 산포
+    # ≪ 단 간격" 여유를 넉넉히 둔다(4단 × 0.05s = 총 0.2s 수준의 추가 실행 시간만 든다).
+    delay_s = 0.05  # [지연 특성 관측] 단마다 이만큼 걸린다고 두고 합산 지연을 하한으로 잰다.
+    call_starts: list[float] = []
+
+    async def _search(filters, exclude_product_ids=None):
+        call_starts.append(time.monotonic())
+        await asyncio.sleep(delay_s)
+        if filters.category is None:
+            return _res_cat((501, "생활용품"))  # #343 무필터 재검색도 전량 소모품 억제 대상
+        if filters.rating_min is not None and filters.rating_min < 4.5:
+            # 자동완화·칩 probe 가 쓰는 완화 필터(평점 4.0) — 둘 다 전량 실패시킨다.
+            raise SpringUnavailableError("relaxation probe down")
+        idx = leaf_order.index(filters.category)
+        return _res_cat((100 + idx, "생활용품"))  # 8 leg 전부 소모품 카테고리 상품만 낸다
+
+    caplog.set_level("INFO", logger="app.agents.buyer.recommendation.graph")
+    decompose = {
+        "intent": "recommend",
+        "reply": "",
+        "case": 2,
+        "filters": {"ratingMin": 4.5},  # 비카테고리 완화 후보 1개 — may_auto_relax=True 를 만든다
+        "categoryQueries": [{"category": None, "query": "화장품"}],
+    }
+    turn_started_at = time.monotonic()
+    events: list[tuple[float, dict]] = []
+    async for frame in run_buyer_turn(
+        _req(message="화장품 추천해줘"),
+        _member_num(),
+        llm=FakeLLM(decompose=decompose),
+        search=_search,
+        push_fn=_RecordingPush(),
+        map_categories=_broad_mapper(),
+    ):
+        line = frame.strip()
+        if line.startswith("data:"):
+            events.append((time.monotonic(), json.loads(line[len("data:") :].strip())))
+
+    assert events[0][1]["type"] == "conditions"  # 이 턴의 첫 SSE 이벤트
+    first_sse_at = events[0][0]
+    done = next(e for _, e in events if e["type"] == "done")["data"]
+    assert done["finishReason"] == "zero_result"
+
+    # 순차 "단" 경계는 시작 시각 간격으로 클러스터링한다 — 병렬 fan-out 은 거의 동시에 시작하니
+    # (간격 ≪ delay_s) 한 단으로 뭉치고, 단 사이는 실제 검색 지연(delay_s)만큼 벌어진다.
+    ordered = sorted(call_starts)
+    stages: list[list[float]] = []
+    for t in ordered:
+        if stages and t - stages[-1][-1] <= delay_s / 2:
+            stages[-1].append(t)
+        else:
+            stages.append([t])
+
+    # 호출 수(병렬 fan-out 포함 총 25회)와 순차 단 수(4단)를 구분해서 기록한다.
+    assert [len(s) for s in stages] == [8, 1, 8, 8]  # fan-out / #343 폴백 / 자동완화 / 칩 probe
+    assert sum(len(s) for s in stages) == 25
+
+    stages_before_first_sse = [s for s in stages if s[0] < first_sse_at]
+    # [#363 회귀 가드] 여기가 3보다 커지면 first-token 이전 순차 왕복이 한 단 더 늘어난 것이다.
+    assert len(stages_before_first_sse) == 3
+    calls_before_first_sse = sum(len(s) for s in stages_before_first_sse)
+    assert calls_before_first_sse == 17  # 8(fan-out) + 1(#343 폴백) + 8(자동완화 probe)
+
+    # 단 수만큼 합산 지연이 실제로 나타난다 — flaky 방지를 위해 하한만 assert(PR #248 패턴과 동일).
+    elapsed_before_first_sse = first_sse_at - turn_started_at
+    assert elapsed_before_first_sse >= 3 * delay_s
+
+    zero_log = next(r for r in caplog.records if r.msg == "recommend_zero_result")
+    assert zero_log.post_suppress_fallback_attempted is True
+    assert zero_log.rescue_elapsed_ms > 0  # #343 폴백 왕복(결과는 전량 억제)에 쓴 소요
+    assert zero_log.relax_probes == 2  # 자동완화 1 + 칩 probe 1(같은 유일 필드 ratingMin 재시도)
+    # [#363 R3] 자동완화(first SSE 이전)와 칩 probe(first SSE 이후)를 별도 필드로 갈라 관측한다 —
+    # 합쳐진 단일 필드였다면 아직 스트림에 영향 없는 칩 probe 소요까지 first-token 지연에
+    # 섞여 들어간다.
+    assert zero_log.relax_auto_elapsed_ms > 0  # 자동완화 왕복(실패)에 쓴 소요 — first SSE 이전
+    assert zero_log.relax_chip_elapsed_ms > 0  # 칩 probe 왕복(실패)에 쓴 소요 — first SSE 이후
 
 
 # ── R4-1 (PR #318 리뷰) — 확장 턴은 split_by_need 를 통과하면 안 된다 ──────────────
