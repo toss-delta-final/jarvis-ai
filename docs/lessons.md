@@ -13,6 +13,24 @@
 
 ---
 
+## [2026-08-06] 카테고리 사전은 행 수가 아니라 임베딩 채워진 행 수가 실효 사전이다
+- 증상: #401 실측에서 `categories` 행이 1,007개 있어도 `embedding` 컬럼이 전부 `NULL` 이면
+  `app/pipelines/category_search.py::search_categories_pg` 가 `WHERE embedding IS NOT NULL` 로
+  걸러 매핑이 0행일 때와 똑같이 조용히 죽는다는 걸 확인했다. "행 수만 세는 가드"는 반쪽이다 —
+  시드(행 생성)와 임베딩 구축이 2단계로 분리된 설계(`db/catalog/init/02_categories.sql` 주석)
+  라서, 1단계만 끝난 상태(행 있음·임베딩 없음)를 "정상"으로 오판할 수 있다.
+- 원인: "사전이 비어 있다"를 "행 수 0" 하나로만 정의했다. 실제로는 검색 쿼리가 소비하는
+  조건(`embedding IS NOT NULL`)이 곧 실효 사전의 정의인데, 가드를 만들 때 그 쿼리 조건을
+  다시 확인하지 않고 테이블 스키마(행 존재 여부)만 봤다.
+- 규칙: **"사전이 비었다"를 판정하는 가드는 런타임 조회가 실제로 필터링하는 조건과 같은 조건을
+  세야 한다.** 테이블에 행이 있다는 사실과 그 행이 검색에 쓰인다는 사실은 다르다. 2단계로 분리된
+  파이프라인(행 생성 → 배치가 나머지 컬럼을 채움)에서는 최소 두 카운트(총 행 수, 소비 조건을
+  만족하는 행 수)를 따로 재고 각각을 구성 오류 후보로 다뤄야 한다.
+- 관련: #401, `app/pipelines/category_seed.py::DictionaryCounts`·`evaluate_dictionary_counts`·
+  `check_category_dictionary`, `app/pipelines/category_search.py::search_categories_pg`
+
+---
+
 ## [2026-08-06] 기동 검증식을 좁히면, 그 식을 사람에게 설명하는 문구도 같은 PR 에서 좁힌다
 - 증상: #383 이 기동 가드 계수를 2 → 3 으로 좁혀 `SPRING_TIMEOUT_S ∈ [3.33s, 5.0s)` 를 새로
   기동 거절 구간으로 만들었는데, 같은 규칙을 운영자에게 설명하는 문서 두 곳이 옛 상한 그대로
@@ -40,6 +58,8 @@
 - 관련: `app/core/config.py::_deferred_first_event_i1_calls`·
   `::_require_search_retry_within_stream_budget`, `.env.example` 의 `SPRING_MAX_RETRIES`
   주석 블록, `docs/specs/MEASURE-FIRST-TOKEN-363.md` §5, 이슈 #383(#363 후속), 커밋 `b700e7e`
+
+---
 
 ## [2026-08-06] fake 가 "표현 불가"를 예외로 던지면, 앱이 그걸 삼켜서 INV 비교가 "둘 다 실패"로 공허 통과할 수 있다
 - 증상: #381 에서 `RecordingFilteringSearch`(combo_matrix eval 하네스)가 keyword·color·
