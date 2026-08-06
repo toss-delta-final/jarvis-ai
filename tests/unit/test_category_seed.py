@@ -7,6 +7,8 @@ DB upsert(pg-catalog)는 통합 테스트 소관(@pytest.mark.integration). 가�
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 import app.pipelines.category_seed as category_seed
@@ -65,7 +67,7 @@ def test_seed_from_file_default_embed_uses_document_task_type(monkeypatch, tmp_p
     """
     captured: dict = {}
 
-    def fake_embed_texts(texts, *, task_type=None):
+    def fake_embed_texts(texts, *, task_type=None, total_timeout_s=None):
         captured["task_type"] = task_type
         return [[0.0] for _ in texts]
 
@@ -76,6 +78,27 @@ def test_seed_from_file_default_embed_uses_document_task_type(monkeypatch, tmp_p
 
     category_seed.seed_from_file(str(src), "postgresql://x")
     assert captured["task_type"] == "RETRIEVAL_DOCUMENT"
+
+
+def test_seed_from_file_default_embed_opts_out_of_total_timeout(monkeypatch, tmp_path) -> None:
+    """[#391] embed 미주입 기본 바인딩은 total_timeout_s=math.inf 를 실어 hot path 총 예산을
+    명시적으로 제외한다 — 카테고리 leaf 2056건(21청크)은 그 예산을 적용하면 정상 시드가
+    도중에 EmbeddingError 로 실패한다. functools.partial 내부 구조가 아니라 _embed_texts 로
+    실제 전달되는 호출 계약(kwargs)을 스파이로 검증한다.
+    """
+    captured: dict = {}
+
+    def fake_embed_texts(texts, *, task_type=None, total_timeout_s=None):
+        captured["total_timeout_s"] = total_timeout_s
+        return [[0.0] for _ in texts]
+
+    monkeypatch.setattr(category_seed, "_embed_texts", fake_embed_texts)
+    monkeypatch.setattr(category_seed, "upsert_categories", lambda dsn, rows, model: len(rows))
+    src = tmp_path / "categories.json"
+    src.write_text('["가전 > TV"]', encoding="utf-8")
+
+    category_seed.seed_from_file(str(src), "postgresql://x")
+    assert captured["total_timeout_s"] == math.inf
 
 
 # --- 0행/0임베딩 가드 (이슈 #401) ------------------------------------------------------------
