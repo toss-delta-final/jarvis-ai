@@ -77,6 +77,36 @@
 
 ---
 
+## [2026-08-06] 기동 검증식을 좁히면, 그 식을 사람에게 설명하는 문구도 같은 PR 에서 좁힌다
+- 증상: #383 이 기동 가드 계수를 2 → 3 으로 좁혀 `SPRING_TIMEOUT_S ∈ [3.33s, 5.0s)` 를 새로
+  기동 거절 구간으로 만들었는데, 같은 규칙을 운영자에게 설명하는 문서 두 곳이 옛 상한 그대로
+  남아 있었다. `.env.example` 의 `SPRING_MAX_RETRIES` 위 주석은 `SPRING_TIMEOUT_S ×
+  (SPRING_MAX_RETRIES+1) < STREAM_FIRST_TOKEN_TIMEOUT_S` 만 적어 두어, 그 문구만 따른 운영자가
+  `SPRING_MAX_RETRIES=0, SPRING_TIMEOUT_S=4.0`(4.0 < 10.0 이라 "안전")을 넣으면 앱이 기동에
+  실패한다. 오류 메시지의 `recovery` 문구도 새 손잡이 `CATEGORY_EXPAND_ENABLED=false` 를
+  "disable deferral with ..." 목록에 붙여 **미룸을 끄는 손잡이인 것처럼** 안내했다(실제로는
+  미룸은 그대로 돌고 직렬 계수만 3→2 로 내려갈 뿐이다).
+- 원인: 검증식을 고칠 때 "코드 + 테스트 + 설계 문서"까지는 갱신했지만, **그 식을 사람에게
+  설명하는 표면**(예시 env 주석, 기동 실패 메시지의 복구 안내)을 같은 갱신 단위로 보지 않았다.
+  가드는 **좁아지는 방향**으로 바뀌었기 때문에, 낡은 안내는 단순 stale 이 아니라 **실패하는
+  설정을 안전하다고 권하는** 안내가 된다.
+- 규칙: 기동 검증식(예산·계수)을 **좁히는** 변경은 같은 PR 에서 ①`.env.example` 등 그 규칙을
+  서술한 운영자 문서 ②실패 시 나가는 `recovery`/오류 문구 를 함께 좁힌다. 손잡이를 안내 문구에
+  추가할 때는 **그 손잡이가 실제로 무엇을 바꾸는지와 문장의 동사가 일치하는지** 확인한다(계수를
+  낮추는 손잡이를 "disable" 목록에 넣지 않는다). 새 상한을 실제 값으로 한 번 시뮬레이션해
+  거절/통과 경계를 확인하는 것도 함께(이번엔 3.4s 거절·3.3s 통과로 실측했다).
+- 덧: `docs/api-spec.md` §2.9(c) 타임아웃 기준표의 I-1 재시도 행에 있는 "Spring 직렬
+  구간을 `2 × 3s = 6s` 로 묶는다" 서술도 같은 이유로 실측(3단)과 어긋나 있으나, **정본
+  개정은 사람 승인 게이트라 이 PR 범위 밖으로 남겼다** — 후속 이슈 대상.
+- 덧(R5): 새 항을 식에 더할 때는 **그 항이 기존 항과 같은 값 매김을 받는지**(재시도 억제
+  여부 등)까지 확인한다 — 계수를 고치면서 값 매김을 균질하게 가정해 같은 과소평가를 항
+  하나에서 되풀이했고, Claude PR 리뷰가 잡았다.
+- 관련: `app/core/config.py::_deferred_first_event_i1_calls`·
+  `::_require_search_retry_within_stream_budget`, `.env.example` 의 `SPRING_MAX_RETRIES`
+  주석 블록, `docs/specs/MEASURE-FIRST-TOKEN-363.md` §5, 이슈 #383(#363 후속), 커밋 `b700e7e`
+
+---
+
 ## [2026-08-06] fake 가 "표현 불가"를 예외로 던지면, 앱이 그걸 삼켜서 INV 비교가 "둘 다 실패"로 공허 통과할 수 있다
 - 증상: #381 에서 `RecordingFilteringSearch`(combo_matrix eval 하네스)가 keyword·color·
   attr_conditions 처럼 흉내 낼 수 없는 필터가 present 면 "조용히 무시하지 않겠다"는 의도로
@@ -103,8 +133,6 @@
   [[2026-08-06] eval 하네스가 "이 축을 잰다"고 문서에 쓰려면 주입값이 아니라 실제 도달값을
   실측해야 한다] 와 같은 #371/combo_matrix 계열 발견
 
----
-
 ## [2026-08-06] 함수 시그니처를 바꿀 때 호출부 grep 을 `tests`·`evals` 로만 하면 `scripts/` 가 사각지대다
 - 증상: #396(이슈)/PR #407 에서 `_prepare_recommendation` 을 코루틴 → async generator 로
   바꾸고 키워드 전용 필수 인자 `out` 을 추가했다. 그때 "`tests/`·`evals/` grep 0건"을
@@ -124,8 +152,6 @@
   스크립트를 실제로 한 번 돌려본다.
 - 관련: #396, PR #407, `app/agents/buyer/graph.py::_prepare_recommendation`,
   `scripts/capture_i1_wire_132.py`, `scripts/verify_regression6_217.py`
-
----
 
 ## [2026-08-06] 진단용으로 로그에 싣는 예외 메시지에는 "검증 이전" 값이 섞여 있다
 - 증상: #408 에서 401 사유를 남기려고 `__cause__` 체인의 `str(exc)` 를 그대로 로그 문자열에
