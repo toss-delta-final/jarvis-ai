@@ -170,6 +170,29 @@ async def test_embedding_rerank_degrades_to_spring_order_on_embed_failure(monkey
     assert result.total_count == 3
 
 
+async def test_embedding_rerank_degrades_to_spring_order_on_total_budget_exceeded(monkeypatch):
+    """[#391] embed_texts 총 시간 예산 초과(EmbeddingError)도 동일하게 Spring 순서로 degrade한다."""
+    store = _seed_store()
+
+    def boom_embed(texts):
+        raise _embedding.EmbeddingError(
+            "embed_texts: 총 시간 예산 초과 — 입력 250건/3청크 중 1청크 완료, "
+            "경과 4.10s + 요청당 3.00s > 예산 3.00s (embedding_total_timeout_s)"
+        )
+
+    async def fake_search(filters):
+        return ProductSearchResult(
+            products=[SpringProduct(product_id=i, name=f"p{i}", price=10) for i in (3, 2, 1)],
+            total_count=3,
+        )
+
+    monkeypatch.setattr(spring_client, "search_products", fake_search)
+    backend = EmbeddingRerankBackend(store=store, embed=boom_embed)
+    result = await backend.search(ProductSearchFilters(semantic_query="여행 방수", limit=10))
+    assert [p.product_id for p in result.products] == [3, 2, 1]  # Spring 순서 그대로(재정렬 skip)
+    assert result.total_count == 3
+
+
 async def test_embedding_rerank_backend_uses_single_vector_query(monkeypatch):
     """[#254] 재정렬은 top_k_by_vector 1회로 후보 집합만 순위화한다(N+1 아님)."""
     store = _seed_store()

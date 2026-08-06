@@ -13,8 +13,11 @@ google-genai SDK 는 함수 내부에서 LAZY import 한다(app/core/llm.py Anth
 from __future__ import annotations
 
 import math
+import time
 
 from app.core.config import get_settings
+
+_monotonic = time.monotonic  # 라이브 호출 seam — 테스트가 emb._monotonic 을 결정론적 fake 로 대체
 
 _CLIENT_CACHE: dict[str, object] = {}
 
@@ -75,28 +78,60 @@ def _l2_normalize(vec: list[float]) -> list[float]:
     return [x / norm for x in vec]
 
 
-def embed_texts(texts: list[str], *, task_type: str | None = None) -> list[list[float]]:
+def embed_texts(
+    texts: list[str], *, task_type: str | None = None, total_timeout_s: float | None = None
+) -> list[list[float]]:
     """텍스트 목록을 Google gemini-embedding-001 API 로 임베딩한다 (§4.8).
 
     config.embedding_dim 을 output_dimensionality 로 요청하고, 응답을 수동 L2 정규화한다.
     task_type 지정 시 비대칭 검색용으로 전달한다(문서=RETRIEVAL_DOCUMENT / 질의=RETRIEVAL_QUERY).
     google_api_key 미구성 시 곧바로 EmbeddingError — 배치·테스트는 embed 콜러블을 주입한다.
     입력이 `_EMBED_BATCH_MAX`(100건)를 넘으면 청크로 나눠 순차 호출하고 순서대로 이어붙인다(#353).
-    `embedding_timeout_s` 는 청크(HTTP 요청) **1건당** 상한이라 청크가 여러 개면 총 소요는
-    청크 수만큼 누적될 수 있다 — hot path(SSE) 호출부는 질의 1건씩만 넘겨 이 누적을 피한다
-    (PR #388 리뷰).
+
+    `total_timeout_s` 는 이 호출 1회 전체의 벽시계 예산이다(#391) — `embedding_timeout_s` 는
+    청크(HTTP 요청) 1건당 상한이라 청크가 여러 개면 총 소요가 누적될 수 있는 것과 구분된다.
+    None(기본)이면 `config.embedding_total_timeout_s` 를 쓰고, `math.inf` 를 주면 예산 없이
+    전 청크를 낸다(오프라인 1회 빌드용 명시 opt-out — category_seed.seed_from_file). 그 외 숫자를
+    주면 config 기본값을 덮어쓴다. **`embedding_timeout_s` 이상이어야 하며, 미만이면 `ValueError`**
+    (config 쪽 기동 검증기와 같은 불변식을 인자 경로에도 강제 — #391 PR #412). 첫 청크는 예산과
+    무관하게 항상 시도하고(빈 입력이면 호출 0회),
+    두 번째 이후 청크는 내기 전에 `경과 + embedding_timeout_s > 예산` 이면 EmbeddingError 를 던져
+    청크를 내지 않는다 — 이 규칙으로 총 벽시계는 `max(embedding_timeout_s, total_timeout_s)`
+    이하로 유계다(SDK 가 자기 타임아웃을 지킨다는 전제). 예산 초과는 `EmbeddingError` →
+    `EmbeddingRerankBackend` 가 Spring 순서로 degrade한다(#101 #7, PR#166).
     """
     settings = get_settings()
     if not settings.google_api_key:
         raise EmbeddingError("embed_texts: google_api_key 미구성 — Google 임베딩 API 호출 불가")
 
+    budget = settings.embedding_total_timeout_s if total_timeout_s is None else total_timeout_s
+    per_request_timeout = settings.embedding_timeout_s
+    if budget < per_request_timeout:
+        raise ValueError(
+            f"embed_texts: total_timeout_s={budget} 는 embedding_timeout_s={per_request_timeout} "
+            "미만일 수 없다 — 미만이면 1청크 호출(hot path 전부)은 예산 검사(idx==0)가 건너뛰어져 "
+            "값이 무효고, 다중 청크 호출은 정상 상황에서도 상시 거부된다(config 쪽 "
+            "_require_embedding_total_timeout_covers_request_timeout 과 같은 불변식, #391 PR #412)"
+        )
+
     from google.genai import types  # noqa: PLC0415
 
     client = _client(settings.google_api_key)
+    chunks = [
+        texts[start : start + _EMBED_BATCH_MAX] for start in range(0, len(texts), _EMBED_BATCH_MAX)
+    ]
     try:
         raw: list[list[float]] = []
-        for start in range(0, len(texts), _EMBED_BATCH_MAX):
-            chunk = texts[start : start + _EMBED_BATCH_MAX]
+        start_time = _monotonic()
+        for idx, chunk in enumerate(chunks):
+            if idx > 0:
+                elapsed = _monotonic() - start_time
+                if elapsed + per_request_timeout > budget:
+                    raise EmbeddingError(
+                        f"embed_texts: 총 시간 예산 초과 — 입력 {len(texts)}건/{len(chunks)}청크 중 "
+                        f"{idx}청크 완료, 경과 {elapsed:.2f}s + 요청당 {per_request_timeout:.2f}s "
+                        f"> 예산 {budget:.2f}s (embedding_total_timeout_s)"
+                    )
             response = client.models.embed_content(
                 model=settings.embedding_model_id,
                 contents=chunk,

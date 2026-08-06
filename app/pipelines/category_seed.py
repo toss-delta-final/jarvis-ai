@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import functools
 import json
+import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -84,7 +85,11 @@ def seed_from_file(
     관례에 맞춰 RETRIEVAL_DOCUMENT 로 바인딩한다(질의 쪽 map_categories=query, 이슈 #65·PR #73 리뷰).
     """
     settings = get_settings()
-    embed = embed or functools.partial(_embed_texts, task_type=settings.embedding_task_document)
+    # 오프라인 1회 빌드(SSE hot path 아님) — 카테고리 leaf 2056건은 21청크라, hot path 총 예산
+    # (embedding_total_timeout_s, #391)을 그대로 적용하면 정상 시드가 도중에 거부된다.
+    embed = embed or functools.partial(
+        _embed_texts, task_type=settings.embedding_task_document, total_timeout_s=math.inf
+    )
     model = model or settings.embedding_model_id
     rows = embed_categories(load_leaves(source_path), embed)
     return upsert_categories(dsn, rows, model)

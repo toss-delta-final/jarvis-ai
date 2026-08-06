@@ -213,6 +213,15 @@ class Settings(BaseSettings):
     # 탄다. 상한 없으면 느린 응답이 SSE first-token 을 무기한 블로킹한다(CLAUDE.md 'AI→외부 3s' 규약).
     # 초과 시 embed_texts 가 예외 → EmbeddingRerankBackend 가 Spring 순서 degrade(#101 #7, PR#166).
     embedding_timeout_s: float = 3.0
+    # embedding_timeout_s 는 청크(HTTP 요청) 1건당 상한인 반면, 이건 embed_texts 호출 1회
+    # 전체의 벽시계 상한이다(#391) — 100건 초과 입력은 여러 청크로 나뉘어 순차 호출되므로
+    # 요청당 상한만으로는 총 소요가 청크 수만큼 누적될 수 있다. hot path 규약은 "질의 1건
+    # (=청크 1개)"이라 CLAUDE.md 'AI→외부 3s' 규약에 맞춰 기본값을 요청당 상한과 같은 3.0s 로
+    # 둔다 — 즉 기본 설정에서 100건 초과 입력은 두 번째 청크를 내기 전에 거부된다. 초과 시
+    # embed_texts 가 EmbeddingError → EmbeddingRerankBackend 가 Spring 순서로 degrade한다
+    # (#101 #7, PR#166). 오프라인 1회 빌드(category_seed.seed_from_file)는
+    # embed_texts(..., total_timeout_s=math.inf) 로 이 예산을 명시 제외한다.
+    embedding_total_timeout_s: float = Field(default=3.0, gt=0.0)
     catalog_batch_page_size: int = 500  # I-17 배치 페이지 크기(§4.8, config 주입)
     # [#325] 운영 fast tier(gpt-5-nano, reasoning 모델)에서 하드코딩 max_tokens=600 전량이
     # reasoning_tokens 로 소진돼 본문 0자 → openai.LengthFinishReasonError 로 매 5분 주기 정지.
@@ -1736,6 +1745,25 @@ class Settings(BaseSettings):
                 f"{self.color_synonym_query_timeout_s}): "
                 "the app-side clock must degrade first and the DB clock must later reclaim "
                 "the connection"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_embedding_total_timeout_covers_request_timeout(self) -> "Settings":
+        """embed_texts 총 예산이 요청 1건당 상한보다 작으면 기동 실패 (#391 PR #412 Claude 리뷰).
+
+        경계(같은 값)는 허용한다 — 기본값 3.0 == 3.0 이 "hot path 는 청크 1개분"이라는 의도된
+        조합이다. 이보다 작게 잡으면 1청크 호출(idx==0, 현재 hot path 전부)은 예산 검사 자체를
+        건너뛰므로 설정을 줄여도 아무 효과가 없고, 2청크 이상 호출은 정상 상황에서도 두 번째
+        청크에서 거의 항상 거부된다 — 설정이 의미하는 바와 실제 동작이 갈린다.
+        """
+        if self.embedding_total_timeout_s < self.embedding_timeout_s:
+            raise ValueError(
+                "EMBEDDING_TOTAL_TIMEOUT_S must be >= EMBEDDING_TIMEOUT_S "
+                f"(got {self.embedding_total_timeout_s} < {self.embedding_timeout_s}): "
+                "a smaller total budget has no effect on single-chunk (hot path) calls "
+                "since idx==0 always skips the budget check, while multi-chunk calls would "
+                "be rejected almost every time even under normal conditions"
             )
         return self
 
