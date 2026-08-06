@@ -41,6 +41,9 @@ GROUP_COUNTS = {
     "category_action": 15,
     # [#300] #118 이관 — 확정 4(단일/순번/좌표/이름) · 되물음 1(안전 셀) · 확정금지 1.
     "screen": 6,
+    # [#344 라운드 2] 조건 전용 발화(카테고리 어휘 없이 조건만 말하는 턴) — categoryQueries 비움
+    # 불변식.
+    "condition_only": 5,
 }
 # [#300, D-4] #118 원본(PR #292, 이관 전 별도 프로브의 신규(screen) 그룹 — #300 이 흡수하며
 # 삭제했다)에서 **문자 단위로 옮긴** 발화 6종 — 이 목록 자체가 표본 동일성 요구사항이라
@@ -62,7 +65,7 @@ def _raw(name: str = "b") -> dict:
 @pytest.mark.parametrize("name", ["a", "b"])
 def test_committed_anchor_sets_load_and_match_manifest_hash(name: str) -> None:
     anchors = load_anchor_set(name)
-    assert anchors.fixture_version == f"intent-probe-anchors-{name}-v4"
+    assert anchors.fixture_version == f"intent-probe-anchors-{name}-v5"
 
 
 @pytest.mark.parametrize("name", ["a", "b"])
@@ -86,12 +89,13 @@ def test_screen_utterances_are_verbatim_from_issue_118() -> None:
     assert texts == SCREEN_TEXTS
 
 
-def test_cell_count_is_74_and_matches_group_context_product() -> None:
+def test_cell_count_is_79_and_matches_group_context_product() -> None:
     anchors = load_anchor_set("b")
     cells = build_cells(anchors)
     # 발화 × 컨텍스트: 대조군 18 + 지시대명사 12 + 옵션 4 + 전환 7 + 주문 6 + 일반 6
-    # + [#84] 카테고리 15(단일 컨텍스트) + [#300] screen 6(단일 컨텍스트) = 74
-    assert len(cells) == 74
+    # + [#84] 카테고리 15(단일 컨텍스트) + [#300] screen 6(단일 컨텍스트)
+    # + [#344 라운드 2] 조건 전용 5(단일 컨텍스트) = 79
+    assert len(cells) == 79
     per_group: dict[str, int] = {}
     for cell in cells:
         per_group[cell.utterance.group] = per_group.get(cell.utterance.group, 0) + 1
@@ -104,6 +108,7 @@ def test_cell_count_is_74_and_matches_group_context_product() -> None:
         "general": 6,
         "category_action": 15,
         "screen": 6,
+        "condition_only": 5,
     }
 
 
@@ -643,4 +648,47 @@ def test_screen_product_name_overlapping_screen_last_recommendations_is_rejected
     # screenLastRecommendations[0] 과 같은 이름을 screen-single 상품에 심는다.
     data["screens"][0]["products"][0]["name"] = "리필 세탁 세제 2L"
     with pytest.raises(ValidationError, match="screenLastRecommendations"):
+        AnchorSet.model_validate(data)
+
+
+# ─────────── [#344 라운드 2] 조건 전용 발화 categoryQueries 비움 불변식 ───────────
+
+
+def _condition_only_utterance(data: dict) -> dict:
+    return next(u for u in data["utterances"] if u["group"] == "condition_only")
+
+
+def test_condition_only_utterances_are_verbatim_from_category_probe_none_slice() -> None:
+    """category_probe none 슬라이스와 같은 문구여야 두 하네스가 같은 현상을 재는지 비교할 수 있다."""
+    anchors = load_anchor_set("b")
+    texts = {u.text for u in anchors.utterances if u.group == "condition_only"}
+    assert texts == {
+        "5만원 이하 아무거나 추천해줘",
+        "평점 좋은 걸로 보여줘",
+        "인기 많은 거 추천해줘",
+        "무료배송 되는 걸로 찾아줘",
+        "가성비 좋은 거 추천해줘",
+    }
+
+
+def test_condition_only_utterance_must_use_only_the_none_context() -> None:
+    data = _raw("b")
+    _condition_only_utterance(data)["contexts"] = ["none", "categoryPrior"]
+    with pytest.raises(ValidationError, match="none"):
+        AnchorSet.model_validate(data)
+
+
+def test_condition_only_utterance_declaring_a_legacy_axis_is_rejected() -> None:
+    data = _raw("b")
+    _condition_only_utterance(data)["axes"].append("mainIntent")
+    with pytest.raises(ValidationError, match="mainIntent"):
+        AnchorSet.model_validate(data)
+
+
+def test_non_condition_only_utterance_declaring_the_new_axis_is_rejected() -> None:
+    data = _raw("b")
+    next(u for u in data["utterances"] if u["group"] == "general")["axes"].append(
+        "conditionOnlyNoCategoryQuery"
+    )
+    with pytest.raises(ValidationError, match="conditionOnlyNoCategoryQuery"):
         AnchorSet.model_validate(data)
