@@ -174,15 +174,18 @@ class Settings(BaseSettings):
     # [#325] _drain 항목별 재시도 상한 — 일시 플레이크(파싱 실패·비결정 출력) 구제용. LLM
     # 전송 자체의 재시도는 langchain max_retries 가 이미 담당한다.
     enrichment_item_attempts: int = Field(default=2, ge=1)
-    # [#325] 페이지 내 ON_SALE 실패 비율이 이 값 이상이면(그리고 failed>0) 커서를 전진시키지
-    # 않고 예외를 던진다 — 임베딩 API 장애 같은 광역 장애는 자연 복구(동일 커서 재개)를 유지하고,
-    # 단건 poison 상품만 격리 대상으로 삼는다.
+    # [#325 R3] 2선 방어(비율 가드) — 1선은 artifacts_batch._drain 의 구조적 판정이다:
+    # embed()·store.upsert() 실패와, enrichment 재시도 소진 후 타임아웃 계열로 판정된 실패는
+    # 격리하지 않고 그대로 전파해 이미 광역 장애로 처리된다. 이 비율 가드는 그 1선을 통과한
+    # 뒤에도 남는 경우 — 인프라는 멀쩡한데 enrichment 결과 자체가 대량으로 깨지는 경우(프롬프트
+    # 회귀, 모델 교체 사고 등) — 를 잡는다. 페이지 내 ON_SALE 실패 비율이 이 값 이상이면
+    # (그리고 failed>0) 커서를 전진시키지 않고 예외를 던져 자연 복구(동일 커서 재개)로 돌아간다.
     artifacts_batch_failure_ratio_threshold: float = Field(default=0.5, gt=0.0, le=1.0)
-    # [#325] 위 비율 가드가 유효하려면 최소 표본이 필요하다 — 운영 증분 배치는 5분 주기에
-    # 실제 변경분만 담겨 페이지가 대개 1~3건이라(catalog_batch_page_size 는 요청 상한일 뿐),
-    # poison 단건 상품 하나만 있어도 ratio=1/1=1.0 로 광역 장애와 구별이 안 된다. 표본이 이
-    # 값 미만이면 비율 가드를 건너뛰고 격리+전진해 head-of-line blocking 을 확실히 없앤다
-    # (#325). 광역 장애가 소량 페이지와 겹치면 그 주기의 소수 항목이 함께 격리되는데, 이는
+    # [#325 R3] 위 2선 비율 가드가 유효하려면 최소 표본이 필요하다 — 운영 증분 배치는 5분
+    # 주기에 실제 변경분만 담겨 페이지가 대개 1~3건이라(catalog_batch_page_size 는 요청 상한일
+    # 뿐), poison 단건 상품 하나만 있어도 ratio=1/1=1.0 로 대량 결과 회귀와 구별이 안 된다.
+    # 표본이 이 값 미만이면 비율 가드를 건너뛰고 격리+전진한다 — 소량 표본 판정 불능은 1선
+    # (구조·타임아웃 판정)이 이미 광역 장애를 걸러낸 뒤라 안전하다. 남는 소수 항목 격리는
     # dead-letter ERROR 로그와 failed 카운트로 드러나며 run_batch --full(전체 재구축)로
     # 복구 가능한 유계 하방이다.
     artifacts_batch_failure_min_sample: int = Field(default=5, ge=1)

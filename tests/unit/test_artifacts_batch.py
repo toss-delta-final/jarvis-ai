@@ -1170,6 +1170,174 @@ async def test_default_settings_batch_isolation_smoke():
     assert store.get_cursor() == "c1"
 
 
+# ── 라운드 3(#325, PR #399 Claude 리뷰 대응): 격리 후보를 실패 "종류"로 가른다 ──
+#
+# 리뷰 지적: 운영 증분 페이지는 대개 1~3건이라 page_total < min_sample(5) 가 거의 항상 참이고,
+# 그러면 비율 가드는 사실상 죽은 코드가 된다 — embed()·store.upsert() 같은 인프라 장애도 매번
+# "poison 단건"으로 오분류돼 dead-letter 처리된 채 커서가 전진한다. 아래는 격리 후보를
+# enrich_product 단계의 내용 실패로만 구조적으로 한정해 이를 해소했음을 고정한다.
+
+
+class _FailingEmbed:
+    """embed() 가 항상 예외를 내는 fake — 인프라 장애가 격리되지 않음을 검증한다(#325 R3)."""
+
+    def __call__(self, texts):
+        raise RuntimeError("embed API down")
+
+
+class _FailingUpsertStore(CatalogArtifactStore):
+    """store.upsert() 가 항상 예외를 내는 스토어 — 인프라 장애가 격리되지 않음을 검증한다(#325 R3)."""
+
+    def upsert(self, artifact):
+        raise RuntimeError("catalog store down")
+
+
+async def test_drain_embed_failure_is_not_isolated_multi_item_page():
+    """3건짜리 페이지에서 embed() 가 항상 예외 → 예외가 그대로 전파되고 커서는 미전진(#325 R3).
+
+    수정 전에는 이 실패도 _process_change 전체를 감싼 broad except 에 잡혀 단건 격리 대상이
+    됐다 — 임베딩 API 전면 다운 같은 광역 장애가 매번 poison 단건으로 오분류되던 리뷰 지적
+    시나리오다.
+    """
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    changes = [_change(1, name="A"), _change(2, name="B"), _change(3, name="C")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    with pytest.raises(RuntimeError, match="embed API down"):
+        await run_artifacts_batch(
+            fetch=fetch,
+            llm=_EnrichLLM(),
+            embed=_FailingEmbed(),
+            store=store,
+            settings=get_settings(),
+        )
+
+    assert store.get_cursor() == "checkpoint"
+    assert store.get(1) is None
+    assert store.get(2) is None
+    assert store.get(3) is None
+
+
+async def test_drain_upsert_failure_is_not_isolated_multi_item_page():
+    """3건짜리 페이지에서 store.upsert() 가 항상 예외 → 예외가 그대로 전파되고 커서는 미전진(#325 R3)."""
+    store = _FailingUpsertStore()
+    store.set_cursor("checkpoint")
+    changes = [_change(1, name="A"), _change(2, name="B"), _change(3, name="C")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    with pytest.raises(RuntimeError, match="catalog store down"):
+        await run_artifacts_batch(
+            fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store, settings=get_settings()
+        )
+
+    assert store.get_cursor() == "checkpoint"
+
+
+async def test_drain_embed_failure_propagates_even_on_single_item_page():
+    """[#325 R3 핵심 회귀] 리뷰어가 지적한 시나리오 그대로 — 표본 1건짜리 페이지에서도 embed
+    실패는 격리되지 않고 전파된다. 표본 하한(min_sample)은 비율 가드에만 적용되고,
+    embed/store 실패는 애초에 격리 후보가 아니므로 비율 가드 자체를 거치지 않는다 — 페이지
+    크기와 무관하게 광역 장애가 자연 복구 경로로 간다는 것이 이번 라운드의 핵심 수정이다.
+    """
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    changes = [_change(1, name="문제상품")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    with pytest.raises(RuntimeError, match="embed API down"):
+        await run_artifacts_batch(
+            fetch=fetch,
+            llm=_EnrichLLM(),
+            embed=_FailingEmbed(),
+            store=store,
+            settings=get_settings(),
+        )
+
+    assert store.get_cursor() == "checkpoint"
+    assert store.get(1) is None
+
+
+class _TimeoutLLM:
+    """enrich_product 호출이 항상 타임아웃 계열 예외를 내는 fake(#325 R3).
+
+    cause_chain=True 면 ``LLMError(...) from TimeoutError()`` 형태로 원인 체인에만 타임아웃을
+    심어 ``is_timeout_error`` 의 ``__cause__`` 추적이 실제 _drain 판정에 쓰이는지 고정한다 —
+    OpenAILLM.complete 이 SDK 예외를 이 형태로 감싸는 실제 규약을 재현한다.
+    """
+
+    def __init__(self, *, cause_chain=False):
+        self._cause_chain = cause_chain
+        self.calls = 0
+
+    async def complete(
+        self, *, system, user, tier, max_tokens=1024, json_output=True, reasoning_effort=None
+    ):
+        self.calls += 1
+        if self._cause_chain:
+            from app.core.llm import LLMError
+
+            try:
+                raise TimeoutError("upstream timed out")
+            except TimeoutError as exc:
+                raise LLMError("timeout") from exc
+        raise TimeoutError("upstream timed out")
+
+
+async def test_drain_enrichment_timeout_not_isolated_direct():
+    """enrich_product 가 TimeoutError 자체를 내면 재시도 소진 후 격리 없이 전파 + 커서 미전진
+    (#325 R3 규칙 2). LLM API 자체가 응답하지 않는 상황은 항목 내용과 무관한 광역 장애다.
+    """
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    changes = [_change(1, name="문제상품")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _TimeoutLLM()
+    settings = get_settings()
+    with pytest.raises(TimeoutError):
+        await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+        )
+
+    assert llm.calls == settings.enrichment_item_attempts  # 재시도 상한만큼 시도 후 전파
+    assert store.get_cursor() == "checkpoint"
+    assert store.get(1) is None
+
+
+async def test_drain_enrichment_timeout_not_isolated_cause_chain():
+    """LLMError(...) from TimeoutError() 형태(원인 체인)도 타임아웃으로 판정돼 격리 없이 전파된다
+    — OpenAILLM.complete 이 SDK 예외를 ``raise LLMError(str(exc)) from exc`` 로 감싸는 실제
+    경로를 재현해 is_timeout_error 의 원인 체인 추적이 _drain 판정에 실제로 쓰이는지 고정한다
+    (#325 R3 규칙 2, 문자열 매칭 금지).
+    """
+    from app.core.llm import LLMError
+
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    changes = [_change(1, name="문제상품")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _TimeoutLLM(cause_chain=True)
+    with pytest.raises(LLMError):
+        await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=get_settings()
+        )
+
+    assert store.get_cursor() == "checkpoint"
+    assert store.get(1) is None
+
+
 async def test_color_harvest_cancellation_propagates(monkeypatch):
     import asyncio
 

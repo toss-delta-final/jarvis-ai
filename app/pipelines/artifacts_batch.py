@@ -4,10 +4,13 @@ fetch_product_changes 로 변경분을 커서 기반 pull(hasMore 루프) → HI
 ON_SALE 은 enrich(Haiku) → search_doc 조립 → 임베딩 → artifact_store upsert. 커서는 페이지 처리
 성공 후에만 전진한다.
 
-[#325] ON_SALE 단건 실패(예: enrichment 파싱 실패)는 attempts 회 재시도 후 격리(dead-letter
-기록)하고 페이지를 계속 진행한다 — 실패 상품 1개가 그 뒤 모든 변경을 영구 차단하던
-head-of-line blocking 을 없앤다. 페이지 실패 비율이 임계 이상이면(광역 장애로 간주) 그
-페이지는 커서를 전진시키지 않고 예외를 던져 자연 복구(동일 커서 재개)로 되돌아간다.
+[#325] ON_SALE 단건 실패는 격리 후보를 실패 **종류**로 가른다 — enrich_product(LLM 호출+
+JSON 파싱) 단계의 내용 실패만 attempts 회 재시도 후 격리(dead-letter 기록)하고 페이지를
+계속 진행한다(head-of-line blocking 해소). embed()·store.upsert() 같은 인프라 실패와,
+enrichment 단계라도 재시도 소진 후 타임아웃 계열로 판정되는 실패는 항목 내용과 무관한
+광역 장애로 보고 격리하지 않고 그대로 전파한다 — 그 페이지는 커서를 전진시키지 않고
+자연 복구(동일 커서 재개)로 되돌아간다. 페이지 ON_SALE 실패 비율 가드는 이제 2선 방어다
+(인프라는 멀쩡한데 enrichment 결과가 대량으로 깨지는 경우, 예: 프롬프트 회귀).
 
 증분(기본): 대상 스토어에 직접 upsert 하고 페이지마다 커서 전진.
 전체 재구축(full_rebuild): since="0" 부터 **임시 스토어**에 쌓은 뒤, 성공 시 원자 교체(replace_all)한다
@@ -26,7 +29,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from app.core.config import Settings, get_settings
-from app.core.llm import LLMClient, get_llm
+from app.core.llm import LLMClient, get_llm, is_timeout_error
 from app.pipelines import embedding as _embedding
 from app.pipelines import color_synonym_seed
 from app.pipelines.artifact_store import (
@@ -131,14 +134,16 @@ async def _harvest_change_colors(change: ProductChange, *, settings: Settings) -
         raise
 
 
-async def _process_change(
-    change: ProductChange,
-    *,
-    llm: LLMClient,
-    embed: Embed,
-    store: ArtifactStore,
-    settings: Settings,
-) -> None:
+async def _enrich_change(
+    change: ProductChange, *, llm: LLMClient, settings: Settings
+) -> tuple[dict, dict]:
+    """ON_SALE 항목의 enrich_product 단계만 수행한다 — 격리 후보가 되는 유일한 단계(#325 R3).
+
+    embed()·store.upsert() 는 이 함수 밖(``_finish_change``)에서 수행되므로, 그 실패는 이
+    함수의 예외 표면에 섞이지 않는다. ``_drain`` 의 단건 재시도/격리 루프가 이 함수만
+    감싸는 구조로 embed·store 실패를 격리 경로에서 원천 배제한다(타입 매칭이 아니라
+    "어느 단계가 실패했는가"라는 구조로 판정).
+    """
     product = {
         "name": change.name,
         "description": change.description,
@@ -147,6 +152,24 @@ async def _process_change(
         "attributes": change.attributes,
     }
     extras = await enrich_product(product, llm=llm, settings=settings)
+    return product, extras
+
+
+async def _finish_change(
+    change: ProductChange,
+    product: dict,
+    extras: dict,
+    *,
+    embed: Embed,
+    store: ArtifactStore,
+    settings: Settings,
+) -> None:
+    """enrich 이후 단계(임베딩·upsert·색상 수확) — 이 단계 실패는 격리하지 않고 그대로 전파한다.
+
+    embed()·store.upsert() 실패는 항목 내용과 무관한 인프라 장애(#325 R3 규칙 1)이므로
+    여기서 삼키지 않는다 — 호출부(``_drain``)가 그대로 전파받아 페이지 커서를 전진시키지
+    않는다(자연 복구).
+    """
     doc = _embedding.build_search_doc({**product, "extras": extras})
     vec = embed([doc])[0]
     store.upsert(
@@ -173,6 +196,24 @@ async def _process_change(
             _log.warning("색상 표기 수확 실패 — I-17 생성물 갱신은 계속", exc_info=True)
 
 
+async def _process_change(
+    change: ProductChange,
+    *,
+    llm: LLMClient,
+    embed: Embed,
+    store: ArtifactStore,
+    settings: Settings,
+) -> None:
+    """ON_SALE 항목 1건을 처음부터 끝까지 처리한다(enrich → embed/upsert/색상 수확).
+
+    ``_drain`` 은 이 함수를 그대로 쓰지 않고 ``_enrich_change``/``_finish_change`` 를 나눠
+    호출한다 — 재시도·격리는 enrich 단계에만 걸려야 하기 때문이다(#325 R3). 이 함수는
+    단건 처리가 필요한 다른 호출부(테스트 등)를 위한 합성 편의 함수다.
+    """
+    product, extras = await _enrich_change(change, llm=llm, settings=settings)
+    await _finish_change(change, product, extras, embed=embed, store=store, settings=settings)
+
+
 async def _drain(
     fetch: Fetch,
     start_cursor: str,
@@ -185,13 +226,23 @@ async def _drain(
 ) -> BatchResult:
     """start_cursor 부터 hasMore 소진까지 target 에 반영한다. persist_cursor=True 면 페이지마다 커서 전진.
 
-    ON_SALE 단건 실패는 settings.enrichment_item_attempts 회 재시도 후 격리(dead-letter 로그)하고
-    다음 항목으로 진행한다(#325 head-of-line blocking 해소). 페이지의 ON_SALE 표본이
-    settings.artifacts_batch_failure_min_sample 이상이고 실패 비율이
-    settings.artifacts_batch_failure_ratio_threshold 이상이면 광역 장애로 보고
-    PageFailureThresholdExceeded 를 던진다 — 그 페이지는 커서를 전진시키지 않는다(자연 복구).
-    표본이 min_sample 미만이면 비율 판정을 생략하고 격리+전진한다 — 운영 증분 페이지는 대개
-    소수 항목이라(#325) poison 단건과 광역 장애를 비율만으로 구별할 수 없기 때문이다.
+    격리 대상은 실패 **종류**로 가른다(#325 R3) — 비율은 poison 단건과 광역 장애를 구별하는
+    대리 지표일 뿐이고, 운영 증분 페이지처럼 소량 표본에서는 그 대리가 무너진다:
+
+    - **1선(구조)**: ``_enrich_change``(enrich_product 단계)의 내용 실패만
+      settings.enrichment_item_attempts 회 재시도 후 격리(dead-letter 로그)하고 다음 항목으로
+      진행한다(#325 head-of-line blocking 해소). ``_finish_change``(embed()·store.upsert())
+      실패는 항목 내용과 무관한 인프라 장애이므로 격리하지 않고 그대로 전파한다 — 그 페이지는
+      커서를 전진시키지 않는다(자연 복구, 동일 커서 재개).
+    - **1선(타임아웃)**: enrich 단계 실패라도 재시도 소진 후 그 예외(또는 원인 체인)가
+      ``app.core.llm.is_timeout_error`` 로 타임아웃 계열이면(LLM API 자체가 응답하지 않는
+      광역 장애) 격리하지 않고 그대로 전파한다.
+    - **2선(비율, 방어)**: 페이지의 ON_SALE 표본이 settings.artifacts_batch_failure_min_sample
+      이상이고 실패 비율이 settings.artifacts_batch_failure_ratio_threshold 이상이면
+      PageFailureThresholdExceeded 를 던져 커서를 전진시키지 않는다 — 인프라는 멀쩡한데
+      enrichment 결과 자체가 대량으로 깨지는 경우(프롬프트 회귀 등)를 잡는다. 표본이
+      min_sample 미만이면 비율 판정을 생략하고 격리+전진한다.
+
     HIDDEN 삭제 실패·status 파싱 실패(ProductChange 단계)는 격리 대상이 아니라 그대로 전파한다.
     이미 성공한 앞 페이지는 artifact와 커서가 함께 저장된 유효 체크포인트이므로 롤백하지 않는다.
     """
@@ -206,20 +257,20 @@ async def _drain(
                 hidden += 1
                 continue
             last_exc: Exception | None = None
+            product = extras = None
             for _attempt in range(settings.enrichment_item_attempts):
                 try:
-                    await _process_change(
-                        change, llm=llm, embed=embed, store=target, settings=settings
-                    )
-                except Exception as exc:  # noqa: BLE001 - 항목 격리(#325), 다음 시도/항목으로 계속
+                    product, extras = await _enrich_change(change, llm=llm, settings=settings)
+                except Exception as exc:  # noqa: BLE001 - enrich 단계만 격리 후보(#325 R3)
                     last_exc = exc
                     continue
                 last_exc = None
                 break
-            if last_exc is None:
-                processed += 1
-                page_succeeded += 1
-            else:
+            if last_exc is not None:
+                if is_timeout_error(last_exc):
+                    # enrichment 재시도를 소진해도 원인이 타임아웃 계열이면 항목 내용과 무관한
+                    # 광역 장애(LLM API 무응답)로 본다 — 격리하지 않고 그대로 전파한다(#325 R3).
+                    raise last_exc
                 failed += 1
                 page_failed += 1
                 _log.error(
@@ -228,6 +279,15 @@ async def _drain(
                     settings.enrichment_item_attempts,
                     exc_info=last_exc,
                 )
+                continue
+            # enrichment 성공 — 나머지 단계(embed·upsert·색상 수확)는 격리하지 않고 그대로 전파한다
+            # (인프라 장애는 항목 내용과 무관, #325 R3 규칙 1).
+            assert product is not None and extras is not None  # 위 분기에서 성공만 여기 도달
+            await _finish_change(
+                change, product, extras, embed=embed, store=target, settings=settings
+            )
+            processed += 1
+            page_succeeded += 1
         pages += 1
         page_total = page_failed + page_succeeded
         if page_failed > 0 and page_total > 0:
