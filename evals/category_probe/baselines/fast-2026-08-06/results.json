@@ -1,0 +1,647 @@
+{
+  "axes": {
+    "invAgreement": {
+      "axisId": "invAgreement",
+      "definition": {
+        "denominator": "4그룹",
+        "numerator": "그룹 내 전 변형의 다수결 top-1 canonical 이 서로 동일하고 null 아님 (동률은 다수결 없음=None 이라 불합의로 센다)"
+      },
+      "denominator": 4,
+      "expectedDenominator": 4,
+      "numerator": 1,
+      "ratio": 0.25,
+      "title": "INV 표기 변형 합의",
+      "unfilledSampleCount": 0
+    },
+    "multiCoverage": {
+      "axisId": "multiCoverage",
+      "definition": {
+        "denominator": "multi 6셀 × 기대 leg 수 × N",
+        "numerator": "기대 leg 별로 accept ∈ legs (leg 단위 집계)"
+      },
+      "denominator": 104,
+      "expectedDenominator": 104,
+      "numerator": 54,
+      "ratio": 0.5192307692307693,
+      "title": "fan-out leg 커버리지",
+      "unfilledSampleCount": 0
+    },
+    "multiExactSet": {
+      "axisId": "multiExactSet",
+      "definition": {
+        "denominator": "multi 6셀 × N",
+        "numerator": "legs 집합이 기대 leg 집합과 정확히 일치(여분 leg 없음)"
+      },
+      "denominator": 48,
+      "expectedDenominator": 48,
+      "numerator": 16,
+      "ratio": 0.3333333333333333,
+      "title": "fan-out leg 집합 정확 일치",
+      "unfilledSampleCount": 0
+    },
+    "noneNoForce": {
+      "axisId": "noneNoForce",
+      "definition": {
+        "denominator": "none 5셀 × N",
+        "numerator": "legs == [] (오답 canonical 을 강제하지 않음)"
+      },
+      "denominator": 40,
+      "expectedDenominator": 40,
+      "numerator": 39,
+      "ratio": 0.975,
+      "title": "카테고리 무지정 → 무필터",
+      "unfilledSampleCount": 0
+    },
+    "notInCatalogNoForce": {
+      "axisId": "notInCatalogNoForce",
+      "definition": {
+        "denominator": "notInCatalog 5셀 × N",
+        "numerator": "legs == [] (오답 canonical 을 강제하지 않음)"
+      },
+      "denominator": 40,
+      "expectedDenominator": 40,
+      "numerator": 40,
+      "ratio": 1.0,
+      "title": "사전에 없는 카테고리 → 무필터",
+      "unfilledSampleCount": 0
+    },
+    "top1Single": {
+      "axisId": "top1Single",
+      "definition": {
+        "denominator": "single(MFT+INV) 22셀 × N",
+        "numerator": "최종 legs 에 기대 leg 의 accept 중 하나가 존재"
+      },
+      "denominator": 176,
+      "expectedDenominator": 176,
+      "numerator": 60,
+      "ratio": 0.3409090909090909,
+      "title": "단일 카테고리 top-1 일치",
+      "unfilledSampleCount": 0
+    },
+    "topKInclusion": {
+      "axisId": "topKInclusion",
+      "definition": {
+        "denominator": "single(MFT+INV) 22셀 × N",
+        "numerator": "기대 accept 중 하나가 이긴 앵커의 top-5 후보(계측 hits 기준) 또는 최종 legs(exact match 는 hits 없이 바로 canonical 을 내므로 포함) 안에 존재 — decompose 가 leg 자체를 안 냈으면 분자 불충족"
+      },
+      "denominator": 176,
+      "expectedDenominator": 176,
+      "numerator": 163,
+      "ratio": 0.9261363636363636,
+      "title": "이긴 앵커 top-5 포함",
+      "unfilledSampleCount": 0
+    }
+  },
+  "baseline": {
+    "baselineTop1Single": {
+      "axisId": "baselineTop1Single",
+      "definition": {
+        "denominator": "single 22셀(결정론 1회)",
+        "numerator": "임베딩 최근접 top-1 ∈ accept"
+      },
+      "denominator": 22,
+      "numerator": 20,
+      "ratio": 0.9090909090909091,
+      "title": "trivial baseline top-1"
+    },
+    "baselineTopK": {
+      "axisId": "baselineTopK",
+      "definition": {
+        "denominator": "single 22셀(결정론 1회)",
+        "numerator": "accept ∈ baseline top-5"
+      },
+      "denominator": 22,
+      "numerator": 20,
+      "ratio": 0.9090909090909091,
+      "title": "trivial baseline top-5 포함"
+    },
+    "note": "none/notInCatalog 슬라이스에서 baseline 은 항상 top-1 을 강제하므로 정의상 0% 다 — baseline 은 기권할 수 없다는 사실 자체가 정보다(§6)."
+  },
+  "budget": {
+    "budgetExceeded": false,
+    "budgetExceededReason": null,
+    "callCount": 330,
+    "costGateStatus": "unknown",
+    "limits": {
+      "maxCalls": 912,
+      "maxCostUsd": 20.0,
+      "maxTotalTokens": 30000000
+    },
+    "tokenGateStatus": "unknown",
+    "totalCostUsd": 0.05444929999999999,
+    "totalTokens": 798304,
+    "unknownCostCallCount": 102,
+    "unknownTokenCallCount": 102
+  },
+  "cellCount": 38,
+  "cells": [
+    {
+      "attempts": 8,
+      "cellId": "multi-mft-001",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "multi",
+      "testType": "MFT"
+    },
+    {
+      "attempts": 8,
+      "cellId": "multi-mft-002",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "multi",
+      "testType": "MFT"
+    },
+    {
+      "attempts": 8,
+      "cellId": "multi-mft-003",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "multi",
+      "testType": "MFT"
+    },
+    {
+      "attempts": 8,
+      "cellId": "multi-mft-004",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "multi",
+      "testType": "MFT"
+    },
+    {
+      "attempts": 8,
+      "cellId": "multi-mft-005",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "multi",
+      "testType": "MFT"
+    },
+    {
+      "attempts": 8,
+      "cellId": "multi-mft-006",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "multi",
+      "testType": "MFT"
+    },
+    {
+      "attempts": 8,
+      "cellId": "none-mft-001",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "none",
+      "testType": "MFT"
+    },
+    {
+      "attempts": 8,
+      "cellId": "none-mft-002",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "none",
+      "testType": "MFT"
+    },
+    {
+      "attempts": 8,
+      "cellId": "none-mft-003",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "none",
+      "testType": "MFT"
+    },
+    {
+      "attempts": 8,
+      "cellId": "none-mft-004",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "none",
+      "testType": "MFT"
+    },
+    {
+      "attempts": 8,
+      "cellId": "none-mft-005",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "none",
+      "testType": "MFT"
+    },
+    {
+      "attempts": 8,
+      "cellId": "notincatalog-mft-001",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "notInCatalog",
+      "testType": "MFT"
+    },
+    {
+      "attempts": 8,
+      "cellId": "notincatalog-mft-002",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "notInCatalog",
+      "testType": "MFT"
+    },
+    {
+      "attempts": 8,
+      "cellId": "notincatalog-mft-003",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "notInCatalog",
+      "testType": "MFT"
+    },
+    {
+      "attempts": 8,
+      "cellId": "notincatalog-mft-004",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "notInCatalog",
+      "testType": "MFT"
+    },
+    {
+      "attempts": 8,
+      "cellId": "notincatalog-mft-005",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "notInCatalog",
+      "testType": "MFT"
+    },
+    {
+      "attempts": 8,
+      "cellId": "single-inv-color-a1",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "single",
+      "testType": "INV"
+    },
+    {
+      "attempts": 8,
+      "cellId": "single-inv-color-a2",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "single",
+      "testType": "INV"
+    },
+    {
+      "attempts": 8,
+      "cellId": "single-inv-color-b1",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "single",
+      "testType": "INV"
+    },
+    {
+      "attempts": 8,
+      "cellId": "single-inv-color-b2",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "single",
+      "testType": "INV"
+    },
+    {
+      "attempts": 8,
+      "cellId": "single-inv-notation-a1",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "single",
+      "testType": "INV"
+    },
+    {
+      "attempts": 8,
+      "cellId": "single-inv-notation-a2",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "single",
+      "testType": "INV"
+    },
+    {
+      "attempts": 8,
+      "cellId": "single-inv-notation-b1",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "single",
+      "testType": "INV"
+    },
+    {
+      "attempts": 8,
+      "cellId": "single-inv-notation-b2",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "single",
+      "testType": "INV"
+    },
+    {
+      "attempts": 8,
+      "cellId": "single-mft-001",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "single",
+      "testType": "MFT"
+    },
+    {
+      "attempts": 8,
+      "cellId": "single-mft-002",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "single",
+      "testType": "MFT"
+    },
+    {
+      "attempts": 8,
+      "cellId": "single-mft-003",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "single",
+      "testType": "MFT"
+    },
+    {
+      "attempts": 8,
+      "cellId": "single-mft-004",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "single",
+      "testType": "MFT"
+    },
+    {
+      "attempts": 8,
+      "cellId": "single-mft-005",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "single",
+      "testType": "MFT"
+    },
+    {
+      "attempts": 8,
+      "cellId": "single-mft-006",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "single",
+      "testType": "MFT"
+    },
+    {
+      "attempts": 8,
+      "cellId": "single-mft-007",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "single",
+      "testType": "MFT"
+    },
+    {
+      "attempts": 8,
+      "cellId": "single-mft-008",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "single",
+      "testType": "MFT"
+    },
+    {
+      "attempts": 8,
+      "cellId": "single-mft-009",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "single",
+      "testType": "MFT"
+    },
+    {
+      "attempts": 9,
+      "cellId": "single-mft-010",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 1,
+      "sampleCount": 8,
+      "sliceId": "single",
+      "testType": "MFT"
+    },
+    {
+      "attempts": 8,
+      "cellId": "single-mft-011",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "single",
+      "testType": "MFT"
+    },
+    {
+      "attempts": 8,
+      "cellId": "single-mft-012",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "single",
+      "testType": "MFT"
+    },
+    {
+      "attempts": 8,
+      "cellId": "single-mft-013",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "single",
+      "testType": "MFT"
+    },
+    {
+      "attempts": 8,
+      "cellId": "single-mft-014",
+      "failureCount": 0,
+      "filled": true,
+      "intentSlipCount": 0,
+      "sampleCount": 8,
+      "sliceId": "single",
+      "testType": "MFT"
+    }
+  ],
+  "confusion": [
+    {
+      "actual": "∅",
+      "count": 40,
+      "expected": "남성가방 > 백팩"
+    },
+    {
+      "actual": "∅",
+      "count": 24,
+      "expected": "음향가전 > 이어폰"
+    },
+    {
+      "actual": "∅",
+      "count": 24,
+      "expected": "여성의류 > 원피스"
+    },
+    {
+      "actual": "∅",
+      "count": 16,
+      "expected": "노트북 > 삼성전자"
+    },
+    {
+      "actual": "∅",
+      "count": 10,
+      "expected": "남성의류 > 청바지"
+    },
+    {
+      "actual": "∅",
+      "count": 8,
+      "expected": "남성신발 > 운동화"
+    },
+    {
+      "actual": "∅",
+      "count": 8,
+      "expected": "선케어 > 선크림/선블록"
+    },
+    {
+      "actual": "∅",
+      "count": 8,
+      "expected": "기저귀 > 일회용기저귀"
+    },
+    {
+      "actual": "∅",
+      "count": 8,
+      "expected": "문구/사무용품 > 문구용품"
+    },
+    {
+      "actual": "∅",
+      "count": 8,
+      "expected": "세제/방향/살충 > 세탁세제"
+    },
+    {
+      "actual": "∅",
+      "count": 8,
+      "expected": "축산 > 돼지고기"
+    },
+    {
+      "actual": "∅",
+      "count": 2,
+      "expected": "건강식품 > 인삼/한방재료"
+    },
+    {
+      "actual": "∅",
+      "count": 2,
+      "expected": "우유/유제품 > 우유"
+    }
+  ],
+  "diagnostics": {
+    "definition": {
+      "distanceRejectedCount": "category_distance_rejected 이벤트 발생 수",
+      "exactHitCount": "category_mapped(exact match) 이벤트 발생 수",
+      "expansionTakenCount": "expansion_leaves 가 비어있지 않은 표본 수",
+      "intentSlipCount": "decompose 가 recommend 가 아닌 intent 를 내 버린 시도 수 — 라우팅 미끄러짐은 evals/intent_probe 가 재는 축이다",
+      "noLegCount": "single/multi 표본 중 decompose 가 categoryQueries 를 하나도 못 낸 수 — 매핑 실패와 추출 실패를 가른다",
+      "selectChangedCount": "category_selected(changed=true) 이벤트 발생 수",
+      "selectNullCount": "category_select_null 이벤트 발생 수"
+    },
+    "distanceRejectedCount": 201,
+    "exactHitCount": 0,
+    "expansionTakenCount": 187,
+    "intentSlipCount": 1,
+    "noLegCount": 8,
+    "selectChangedCount": 8,
+    "selectNullCount": 3
+  },
+  "distanceDistribution": {
+    "correct": {
+      "count": 60,
+      "median": 0.2194,
+      "q1": 0.2104,
+      "q3": 0.2378
+    },
+    "incorrect": {
+      "count": 0,
+      "median": null,
+      "q1": null,
+      "q3": null
+    },
+    "note": "채택(배포 자체 계측) distance 기준 — exact match 표본(거리 개념 없음)은 제외."
+  },
+  "dryRun": false,
+  "fixture": {
+    "name": "anchors.json",
+    "sha256": "0c8aafe4f0a84ee8c2eacdfe04f91d35b6dde65d974972c03fe8af69a500fe58",
+    "version": "category-probe-anchors-v1"
+  },
+  "modelConfig": {
+    "fastModel": "gpt-5-nano",
+    "fastReasoningEffort": "minimal",
+    "maxRetries": 0,
+    "provider": "openai",
+    "smartModel": "gpt-5.6-luna",
+    "smartReasoningEffort": "medium",
+    "timeoutS": 30.0
+  },
+  "n": 8,
+  "pacer": {
+    "acquireCount": 330,
+    "estimatedTokensPerCall": 3900,
+    "maxRpm": 45,
+    "maxTpm": 200000,
+    "maxWaitS": 25.896,
+    "totalWaitS": 260.892,
+    "waitCount": 159,
+    "windowS": 60.0
+  },
+  "tier": "fast",
+  "unfilledCells": []
+}

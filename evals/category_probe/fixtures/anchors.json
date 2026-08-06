@@ -1,0 +1,567 @@
+{
+  "schemaVersion": "1.0.0",
+  "fixtureVersion": "category-probe-anchors-v1",
+  "cells": [
+    {
+      "cellId": "single-mft-001",
+      "utterance": "한방재료 추천",
+      "sliceId": "single",
+      "testType": "MFT",
+      "expectedLegs": [
+        {
+          "accept": [
+            "건강식품 > 인삼/한방재료"
+          ]
+        }
+      ],
+      "boundaryNote": "건강식품 > 인삼/한방재료 만 정답 — 축구·야구 문자열 근접 결과(구기/라켓/스포츠 > 축구·야구)는 형태소 우연 겹침일 뿐 의미가 다르므로 오답이다(goldenset buy-cmap-0006 노트 승계).",
+      "caseId": "buy-cmap-0006"
+    },
+    {
+      "cellId": "single-mft-002",
+      "utterance": "출근용 선크림 추천",
+      "sliceId": "single",
+      "testType": "MFT",
+      "expectedLegs": [
+        {
+          "accept": [
+            "선케어 > 선크림/선블록"
+          ]
+        }
+      ],
+      "boundaryNote": "선케어 > 선크림/선블록 이 정답 — 파운데이션·톤업크림 등 다른 메이크업 카테고리는 SPF 여부와 무관하게 오답이다(goldenset buy-srch-0002 승계).",
+      "caseId": "buy-srch-0002"
+    },
+    {
+      "cellId": "single-mft-003",
+      "utterance": "체육수업용 축구공 추천",
+      "sliceId": "single",
+      "testType": "MFT",
+      "expectedLegs": [
+        {
+          "accept": [
+            "구기/라켓/스포츠 > 축구"
+          ]
+        }
+      ],
+      "boundaryNote": "구기/라켓/스포츠 > 축구 가 정답 — 스포츠모자·붓 같은 무관 카테고리로 새는 것이 #344 이 잡은 실패 모양이다(goldenset buy-srch-0005 승계).",
+      "caseId": "buy-srch-0005"
+    },
+    {
+      "cellId": "single-mft-004",
+      "utterance": "야구 장비 추천",
+      "sliceId": "single",
+      "testType": "MFT",
+      "expectedLegs": [
+        {
+          "accept": [
+            "구기/라켓/스포츠 > 야구"
+          ]
+        }
+      ],
+      "boundaryNote": "구기/라켓/스포츠 > 야구 가 정답 — '장비'라는 넓은 말 때문에 모자·의류 등 인접 스포츠용품으로 새면 오답이다(goldenset buy-srch-0007 승계).",
+      "caseId": "buy-srch-0007"
+    },
+    {
+      "cellId": "single-mft-005",
+      "utterance": "서울 멸균우유 대용량",
+      "sliceId": "single",
+      "testType": "MFT",
+      "expectedLegs": [
+        {
+          "accept": [
+            "우유/유제품 > 우유"
+          ]
+        }
+      ],
+      "boundaryNote": "우유/유제품 > 우유 가 정답 — 두유·치즈·요구르트는 같은 상위 카테고리라도 잎이 달라 오답이다(goldenset buy-cmap-0002 승계).",
+      "caseId": "buy-cmap-0002"
+    },
+    {
+      "cellId": "single-mft-006",
+      "utterance": "고양이 대용량 사료 추천",
+      "sliceId": "single",
+      "testType": "MFT",
+      "expectedLegs": [
+        {
+          "accept": [
+            "고양이용품 > 사료"
+          ]
+        }
+      ],
+      "boundaryNote": "고양이용품 > 사료 가 정답 — 강아지용품 > 사료(다른 동물)나 고양이용품 > 간식(다른 잎)은 인접 카테고리라도 오답이다(goldenset buy-cold-0001 승계).",
+      "caseId": "buy-cold-0001"
+    },
+    {
+      "cellId": "single-mft-007",
+      "utterance": "아기 여름 기저귀 추천",
+      "sliceId": "single",
+      "testType": "MFT",
+      "expectedLegs": [
+        {
+          "accept": [
+            "기저귀 > 일회용기저귀"
+          ]
+        }
+      ],
+      "boundaryNote": "기저귀 > 일회용기저귀 가 정답 — '여름'이 수영장기저귀를 암시할 수 있으나 이 발화는 일상용 일회용 기저귀를 가리키므로 천기저귀·수영장기저귀는 오답이다(goldenset buy-gust-0001 승계).",
+      "caseId": "buy-gust-0001"
+    },
+    {
+      "cellId": "single-mft-008",
+      "utterance": "A4 복사용지 2500매 찾아줘",
+      "sliceId": "single",
+      "testType": "MFT",
+      "expectedLegs": [
+        {
+          "accept": [
+            "문구/사무용품 > 문구용품"
+          ]
+        }
+      ],
+      "boundaryNote": "문구/사무용품 > 문구용품 이 정답 — 상품 자체가 복사용지지만 이 taxonomy 엔 하위 잎이 더 쪼개져 있지 않아 문구용품이 최선의 canonical 이다(goldenset buy-cmap-0003 승계, 원 주석은 상품이 샤워기로 오분류됐던 사고를 지적한다).",
+      "caseId": "buy-cmap-0003"
+    },
+    {
+      "cellId": "single-mft-009",
+      "utterance": "실내건조 섬유유연제 찾아줘",
+      "sliceId": "single",
+      "testType": "MFT",
+      "expectedLegs": [
+        {
+          "accept": [
+            "세제/방향/살충 > 세탁세제"
+          ]
+        }
+      ],
+      "boundaryNote": "세제/방향/살충 > 세탁세제 가 정답 — 이 taxonomy 엔 섬유유연제 전용 잎이 없어 세탁세제가 최선의 canonical 이다. 주방세제·청소세제/세정제는 다른 용도라 오답이다(goldenset buy-cmap-0004 승계, 원 주석은 쿠션으로 오분류됐던 사고를 지적한다).",
+      "caseId": "buy-cmap-0004"
+    },
+    {
+      "cellId": "single-mft-010",
+      "utterance": "감자탕 재료 추천",
+      "sliceId": "single",
+      "testType": "MFT",
+      "expectedLegs": [
+        {
+          "accept": [
+            "축산 > 돼지고기"
+          ]
+        }
+      ],
+      "boundaryNote": "축산 > 돼지고기 가 정답 — 감자탕·뼈해장국의 핵심 재료가 돼지등뼈/돼지고기이므로. 소고기 등 다른 축산 잎은 오답이다(goldenset buy-srch-0001 승계).",
+      "caseId": "buy-srch-0001"
+    },
+    {
+      "cellId": "single-mft-011",
+      "utterance": "노트북 사고 싶어",
+      "sliceId": "single",
+      "testType": "MFT",
+      "expectedLegs": [
+        {
+          "accept": [
+            "노트북 > 삼성전자",
+            "노트북 > ASUS",
+            "노트북 > LG전자"
+          ]
+        }
+      ],
+      "boundaryNote": "이 taxonomy 는 노트북을 브랜드별 잎(노트북 > 삼성전자·ASUS·LG전자)으로만 나눠 브랜드 미지정 발화는 taxonomy 구조상 정당하게 모호하다 — 3개 브랜드 잎 중 하나면 정답, 노트북가방(남성가방·여성가방 하위)은 다른 상품이라 오답이다."
+    },
+    {
+      "cellId": "single-mft-012",
+      "utterance": "전기면도기 사고 싶어",
+      "sliceId": "single",
+      "testType": "MFT",
+      "expectedLegs": [
+        {
+          "accept": [
+            "이미용가전 > 전기면도기"
+          ]
+        }
+      ],
+      "boundaryNote": "이미용가전 > 전기면도기 가 정답 — 이미용가전의 다른 잎(고데기·드라이어 등)은 오답이다."
+    },
+    {
+      "cellId": "single-mft-013",
+      "utterance": "백팩 사고 싶어",
+      "sliceId": "single",
+      "testType": "MFT",
+      "expectedLegs": [
+        {
+          "accept": [
+            "남성가방 > 백팩",
+            "여성가방 > 백팩"
+          ]
+        }
+      ],
+      "boundaryNote": "이 taxonomy 는 가방을 성별로 나눠(남성가방 > 백팩·여성가방 > 백팩) 성별 미지정 발화는 정당하게 모호하다 — 숄더백·토트백 등 다른 가방 유형 잎은 오답이다."
+    },
+    {
+      "cellId": "single-mft-014",
+      "utterance": "캠핑 텐트 추천해줘",
+      "sliceId": "single",
+      "testType": "MFT",
+      "expectedLegs": [
+        {
+          "accept": [
+            "캠핑 > 텐트",
+            "캠핑 > 텐트/타프 용품"
+          ]
+        }
+      ],
+      "boundaryNote": "캠핑 > 텐트 와 캠핑 > 텐트/타프 용품 은 실제로 구분이 흐린 인접 잎이라 둘 다 정답으로 인정한다 — 캠핑의자·랜턴류(이 taxonomy 엔 leaf 자체가 없음)로 새면 애초에 이 발화가 가리키는 상품이 아니므로 오답이다."
+    },
+    {
+      "cellId": "single-inv-color-a1",
+      "utterance": "빨간 원피스 보여줘",
+      "sliceId": "single",
+      "testType": "INV",
+      "expectedLegs": [
+        {
+          "accept": [
+            "여성의류 > 원피스",
+            "브랜드 여성의류 > 원피스",
+            "캐주얼/유니섹스 > 원피스"
+          ]
+        }
+      ],
+      "boundaryNote": "색상 수식어는 filters.color 로 빠지고 카테고리 판정에는 영향이 없어야 한다 — '빨간'과 '레드'는 동의어라 같은 canonical(원피스 계열)로 수렴해야 한다.",
+      "invGroupId": "inv-color-dress"
+    },
+    {
+      "cellId": "single-inv-color-a2",
+      "utterance": "레드 원피스 보여줘",
+      "sliceId": "single",
+      "testType": "INV",
+      "expectedLegs": [
+        {
+          "accept": [
+            "여성의류 > 원피스",
+            "브랜드 여성의류 > 원피스",
+            "캐주얼/유니섹스 > 원피스"
+          ]
+        }
+      ],
+      "boundaryNote": "a1 과 동일 — '빨간'/'레드'는 동의어이므로 카테고리 판정이 색상 표기에 흔들리면 안 된다.",
+      "invGroupId": "inv-color-dress"
+    },
+    {
+      "cellId": "single-inv-color-b1",
+      "utterance": "까만 백팩 추천해줘",
+      "sliceId": "single",
+      "testType": "INV",
+      "expectedLegs": [
+        {
+          "accept": [
+            "남성가방 > 백팩",
+            "여성가방 > 백팩"
+          ]
+        }
+      ],
+      "boundaryNote": "'까만'/'블랙'은 동의어(#258 색상 동의어 계열) — 색상 표기가 카테고리 판정을 바꾸면 안 된다.",
+      "invGroupId": "inv-color-backpack"
+    },
+    {
+      "cellId": "single-inv-color-b2",
+      "utterance": "블랙 백팩 추천해줘",
+      "sliceId": "single",
+      "testType": "INV",
+      "expectedLegs": [
+        {
+          "accept": [
+            "남성가방 > 백팩",
+            "여성가방 > 백팩"
+          ]
+        }
+      ],
+      "boundaryNote": "b1 과 동일 — '까만'/'블랙' 표기 차이가 결과를 흔들면 안 된다.",
+      "invGroupId": "inv-color-backpack"
+    },
+    {
+      "cellId": "single-inv-notation-a1",
+      "utterance": "청바지 사고 싶어",
+      "sliceId": "single",
+      "testType": "INV",
+      "expectedLegs": [
+        {
+          "accept": [
+            "남성의류 > 청바지",
+            "여성의류 > 청바지",
+            "브랜드 여성의류 > 청바지",
+            "캐주얼/유니섹스 > 청바지"
+          ]
+        }
+      ],
+      "boundaryNote": "decompose 프롬프트 자체가 '청바지'↔'청바지 데님 팬츠'를 동의어로 예시하므로(§_SYSTEM), 표기가 달라도 같은 청바지 계열 canonical 로 수렴해야 한다.",
+      "invGroupId": "inv-notation-denim"
+    },
+    {
+      "cellId": "single-inv-notation-a2",
+      "utterance": "데님 팬츠 추천해줘",
+      "sliceId": "single",
+      "testType": "INV",
+      "expectedLegs": [
+        {
+          "accept": [
+            "남성의류 > 청바지",
+            "여성의류 > 청바지",
+            "브랜드 여성의류 > 청바지",
+            "캐주얼/유니섹스 > 청바지"
+          ]
+        }
+      ],
+      "boundaryNote": "a1 과 동일 상품을 가리키는 다른 표기 — '데님 팬츠'는 taxonomy 에 별도 잎이 없어 청바지로 수렴해야 한다.",
+      "invGroupId": "inv-notation-denim"
+    },
+    {
+      "cellId": "single-inv-notation-b1",
+      "utterance": "무선 이어폰 찾아줘",
+      "sliceId": "single",
+      "testType": "INV",
+      "expectedLegs": [
+        {
+          "accept": [
+            "음향가전 > 이어폰"
+          ]
+        }
+      ],
+      "boundaryNote": "decompose 프롬프트가 '무선 이어폰'↔'무선 블루투스 이어폰'을 동의어로 예시한다 — 표기 차이로 카테고리가 갈리면 안 된다.",
+      "invGroupId": "inv-notation-earphone"
+    },
+    {
+      "cellId": "single-inv-notation-b2",
+      "utterance": "무선 블루투스 이어폰 보여줘",
+      "sliceId": "single",
+      "testType": "INV",
+      "expectedLegs": [
+        {
+          "accept": [
+            "음향가전 > 이어폰"
+          ]
+        }
+      ],
+      "boundaryNote": "b1 과 동일 상품의 동의어 표기 — 같은 canonical 로 수렴해야 한다.",
+      "invGroupId": "inv-notation-earphone"
+    },
+    {
+      "cellId": "multi-mft-001",
+      "utterance": "이어폰이랑 텐트 추천해줘",
+      "sliceId": "multi",
+      "testType": "MFT",
+      "expectedLegs": [
+        {
+          "accept": [
+            "음향가전 > 이어폰"
+          ]
+        },
+        {
+          "accept": [
+            "캠핑 > 텐트",
+            "캠핑 > 텐트/타프 용품"
+          ]
+        }
+      ],
+      "boundaryNote": "서로 다른 두 상품을 한 번에 요구하는 fan-out 발화 — 이어폰 leg 과 텐트 leg 둘 다 나와야 하고, 한쪽만 나오면 정답 상품군이 절반 누락된다."
+    },
+    {
+      "cellId": "multi-mft-002",
+      "utterance": "청바지랑 운동화 사고 싶어",
+      "sliceId": "multi",
+      "testType": "MFT",
+      "expectedLegs": [
+        {
+          "accept": [
+            "남성의류 > 청바지",
+            "여성의류 > 청바지",
+            "브랜드 여성의류 > 청바지",
+            "캐주얼/유니섹스 > 청바지"
+          ]
+        },
+        {
+          "accept": [
+            "남성신발 > 운동화",
+            "여성신발 > 운동화",
+            "브랜드 남성신발 > 운동화",
+            "브랜드 여성신발 > 운동화",
+            "스포츠 신발 > 운동화/스니커즈"
+          ]
+        }
+      ],
+      "boundaryNote": "의류+신발 fan-out — 청바지 계열 leg 과 운동화 계열 leg 둘 다 나와야 한다. 성별 미지정은 각 leg 안에서 정당하게 모호하다(각 leg 의 accept 가 taxonomy 성별 분기를 모두 포함)."
+    },
+    {
+      "cellId": "multi-mft-003",
+      "utterance": "고양이 사료랑 간식 사고 싶어",
+      "sliceId": "multi",
+      "testType": "MFT",
+      "expectedLegs": [
+        {
+          "accept": [
+            "고양이용품 > 사료"
+          ]
+        },
+        {
+          "accept": [
+            "고양이용품 > 간식"
+          ]
+        }
+      ],
+      "boundaryNote": "같은 상위 카테고리(고양이용품) 안의 서로 다른 잎 2개를 요구하는 fan-out — 사료 leg 과 간식 leg 둘 다 나와야 하며, 하나로 합쳐지면(예: 사료만) 간식이 누락된 실패다."
+    },
+    {
+      "cellId": "multi-mft-004",
+      "utterance": "축구공이랑 야구 글러브 추천해줘",
+      "sliceId": "multi",
+      "testType": "MFT",
+      "expectedLegs": [
+        {
+          "accept": [
+            "구기/라켓/스포츠 > 축구"
+          ]
+        },
+        {
+          "accept": [
+            "구기/라켓/스포츠 > 야구"
+          ]
+        }
+      ],
+      "boundaryNote": "같은 상위 카테고리(구기/라켓/스포츠) 안의 서로 다른 종목 잎 2개 — 축구 leg 과 야구 leg 둘 다 나와야 한다."
+    },
+    {
+      "cellId": "multi-mft-005",
+      "utterance": "노트북이랑 백팩 필요해",
+      "sliceId": "multi",
+      "testType": "MFT",
+      "expectedLegs": [
+        {
+          "accept": [
+            "노트북 > 삼성전자",
+            "노트북 > ASUS",
+            "노트북 > LG전자"
+          ]
+        },
+        {
+          "accept": [
+            "남성가방 > 백팩",
+            "여성가방 > 백팩"
+          ]
+        }
+      ],
+      "boundaryNote": "전자기기+가방 fan-out — 노트북 leg(브랜드 미지정 모호는 정당) 과 백팩 leg(성별 미지정 모호는 정당) 둘 다 나와야 한다."
+    },
+    {
+      "cellId": "multi-mft-006",
+      "utterance": "원피스랑 선크림이랑 백팩 사고 싶어",
+      "sliceId": "multi",
+      "testType": "MFT",
+      "expectedLegs": [
+        {
+          "accept": [
+            "여성의류 > 원피스",
+            "브랜드 여성의류 > 원피스",
+            "캐주얼/유니섹스 > 원피스"
+          ]
+        },
+        {
+          "accept": [
+            "선케어 > 선크림/선블록"
+          ]
+        },
+        {
+          "accept": [
+            "남성가방 > 백팩",
+            "여성가방 > 백팩"
+          ]
+        }
+      ],
+      "boundaryNote": "3-way fan-out(의류+뷰티+가방) — 서로 무관한 상품 3개를 동시에 요구하므로 leg 3개가 모두 나와야 하고, 하나라도 누락되면 사용자가 요청한 상품 중 하나를 놓친 것이다."
+    },
+    {
+      "cellId": "none-mft-001",
+      "utterance": "5만원 이하 아무거나 추천해줘",
+      "sliceId": "none",
+      "testType": "MFT",
+      "expectedLegs": [],
+      "boundaryNote": "가격 조건만 있고 상품 유형 지정이 없다 — legs 를 강제하면 #22 카테고리 강제 금지 불변식 위반. 빈 배열이 정답이다."
+    },
+    {
+      "cellId": "none-mft-002",
+      "utterance": "평점 좋은 걸로 보여줘",
+      "sliceId": "none",
+      "testType": "MFT",
+      "expectedLegs": [],
+      "boundaryNote": "평점 조건만 있고 상품 유형 지정이 없다 — 빈 배열이 정답이다."
+    },
+    {
+      "cellId": "none-mft-003",
+      "utterance": "인기 많은 거 추천해줘",
+      "sliceId": "none",
+      "testType": "MFT",
+      "expectedLegs": [],
+      "boundaryNote": "인기도 조건만 있고 상품 유형 지정이 없다 — 빈 배열이 정답이다."
+    },
+    {
+      "cellId": "none-mft-004",
+      "utterance": "무료배송 되는 걸로 찾아줘",
+      "sliceId": "none",
+      "testType": "MFT",
+      "expectedLegs": [],
+      "boundaryNote": "배송 조건만 있고 상품 유형 지정이 없다 — 빈 배열이 정답이다."
+    },
+    {
+      "cellId": "none-mft-005",
+      "utterance": "가성비 좋은 거 추천해줘",
+      "sliceId": "none",
+      "testType": "MFT",
+      "expectedLegs": [],
+      "boundaryNote": "가성비라는 추상 조건만 있고 상품 유형 지정이 없다 — 빈 배열이 정답이다."
+    },
+    {
+      "cellId": "notincatalog-mft-001",
+      "utterance": "드론 추천해줘",
+      "sliceId": "notInCatalog",
+      "testType": "MFT",
+      "expectedLegs": [],
+      "boundaryNote": "라이브 categories 사전에 '드론'을 포함하는 잎이 없다(사전 조회로 부재 확인) — canonical 을 강제하면 안 되고 legs 빈 배열이 정답이다. expansion_leaves 는 진단으로만 기록한다.",
+      "absentKeyword": "드론"
+    },
+    {
+      "cellId": "notincatalog-mft-002",
+      "utterance": "텀블러 추천해줘",
+      "sliceId": "notInCatalog",
+      "testType": "MFT",
+      "expectedLegs": [],
+      "boundaryNote": "라이브 categories 사전에 '텀블러'를 포함하는 잎이 없다 — 이유용품 > 아동용물병만 근접하지만 타깃이 달라 강제 대상이 아니다. legs 빈 배열이 정답이다.",
+      "absentKeyword": "텀블러"
+    },
+    {
+      "cellId": "notincatalog-mft-003",
+      "utterance": "전기 주전자 추천해줘",
+      "sliceId": "notInCatalog",
+      "testType": "MFT",
+      "expectedLegs": [],
+      "boundaryNote": "라이브 categories 사전에 '주전자'·'포트'(전기포트 의미)를 포함하는 잎이 없다(사전 조회 확인, '포트' 히트는 신발 컴포트화뿐) — legs 빈 배열이 정답이다.",
+      "absentKeyword": "주전자"
+    },
+    {
+      "cellId": "notincatalog-mft-004",
+      "utterance": "공기청정기 추천해줘",
+      "sliceId": "notInCatalog",
+      "testType": "MFT",
+      "expectedLegs": [],
+      "boundaryNote": "라이브 categories 사전에 '공기청정기'·'청정기'를 포함하는 잎이 없다 — legs 빈 배열이 정답이다.",
+      "absentKeyword": "청정기"
+    },
+    {
+      "cellId": "notincatalog-mft-005",
+      "utterance": "수예 재료 찾아줘",
+      "sliceId": "notInCatalog",
+      "testType": "MFT",
+      "expectedLegs": [],
+      "boundaryNote": "라이브 categories 사전에 '수예'는 홈패브릭/수예 > 방석·쿠션 뿐이라 공예 재료 의미의 잎이 없다(goldenset buy-cmap-0005 노트: 실검색 0건이며 문자열 근접으로 알콜스왑 침/바늘이 노출되면 실패하는 지목 케이스) — legs 빈 배열이 정답이다.",
+      "caseId": "buy-cmap-0005",
+      "absentKeyword": "수예"
+    }
+  ]
+}
