@@ -189,6 +189,16 @@ class Settings(BaseSettings):
     # dead-letter ERROR 로그와 failed 카운트로 드러나며 run_batch --full(전체 재구축)로
     # 복구 가능한 유계 하방이다.
     artifacts_batch_failure_min_sample: int = Field(default=5, ge=1)
+    # [#325 R4] 광역 장애와 항목 고유 결정적 실패는 한 주기 관측으로는 원리적으로 구별할 수
+    # 없다 — 비율(R2)·단계(R3)·예외 타입(R3) 모두 각각 구멍이 남았다. 실제로 둘을 가르는
+    # 신호는 시간이다: 광역 장애는 언젠가 끝나고, 항목 고유 실패는 몇 번을 다시 해도 같은
+    # 자리에서 실패한다. 전파(자연 복구)는 유지하되, 같은 상품이 이 횟수만큼 "주기를
+    # 가로질러" 연속 실패하면 항목 고유 실패로 확정하고 격리(dead-letter)한다. 기본
+    # 3 × catalog_batch_interval_s(300s) ≈ 15분이 배치가 상품 1건 때문에 막힐 수 있는
+    # 상한이다 — 이 안에서 끝나는 장애는 종전대로 자연 복구되고, 그보다 긴 장애는 그
+    # 페이지의 항목들이 격리되지만 dead-letter ERROR 로그로 드러나며 run_batch --full
+    # (전체 재구축)로 복구 가능하다.
+    artifacts_batch_item_dead_letter_cycles: int = Field(default=3, ge=1)
     catalog_vector_overfetch: int = 4  # 방식1 hydrate 후 필터·품절 제거 대비 벡터 여유조회 배수
     # 방식2 DB 재정렬 1회 반환 행 가드. 현 카탈로그 7,220건 전량도 p50 49ms라 기본값은
     # 실사용에서 걸리지 않는다. 카탈로그 성장 시 응답 행 수만 제한하며, 실질 지연 상한은

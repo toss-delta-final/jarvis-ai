@@ -1338,6 +1338,200 @@ async def test_drain_enrichment_timeout_not_isolated_cause_chain():
     assert store.get(1) is None
 
 
+# ── 라운드 4(#325 R4, PR #399 Claude 리뷰 2차 대응): 상품별 연속 실패 스트릭 → 시간 유계 격리 ──
+#
+# 리뷰 지적 2건(둘 다 타당): (1) artifacts_batch.py:273 — 특정 상품에서 결정적으로 재현되는
+# poison 타임아웃은 재시도를 다 써도 격리되지 않고 매 주기 같은 자리에서 영원히 실패한다.
+# (2) artifacts_batch.py:172 — _finish_change(embed·upsert) 실패를 무조건 인프라로 규정했지만
+# 실제로는 그 상품 하나의 콘텐츠 문제(embedding_meta_complete CHECK 위반, 콘텐츠 필터 등)일
+# 수 있어 같은 커서에서 영구히 막힌다. 광역 장애와 항목 고유 실패는 단일 주기 관측만으로는
+# 구별할 수 없으므로, 같은 상품의 "주기를 가로지르는" 연속 실패 횟수로 시간 유계를 건다
+# (artifacts_batch_item_dead_letter_cycles, 기본 3).
+
+
+async def test_drain_embed_poison_propagates_then_isolates_at_cycle_limit(caplog):
+    """embed 실패 poison — 상한(기본 3) 전 두 번은 전파, 세 번째 주기에 격리(리뷰 코멘트 2)."""
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    changes = [_change(1, name="문제상품")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    settings = get_settings()
+    assert settings.artifacts_batch_item_dead_letter_cycles == 3  # 기본값 전제 명시
+
+    for _ in range(settings.artifacts_batch_item_dead_letter_cycles - 1):
+        with pytest.raises(RuntimeError, match="embed API down"):
+            await run_artifacts_batch(
+                fetch=fetch,
+                llm=_EnrichLLM(),
+                embed=_FailingEmbed(),
+                store=store,
+                settings=settings,
+            )
+        assert store.get_cursor() == "checkpoint"
+        assert store.get(1) is None
+
+    with caplog.at_level("ERROR"):
+        result = await run_artifacts_batch(
+            fetch=fetch, llm=_EnrichLLM(), embed=_FailingEmbed(), store=store, settings=settings
+        )
+
+    assert result.failed == 1
+    assert result.processed == 0
+    assert store.get_cursor() == "c1"
+    assert store.get(1) is None
+    assert "product_id=1" in caplog.text
+    assert "streak=3/3" in caplog.text
+
+
+async def test_drain_upsert_poison_propagates_then_isolates_at_cycle_limit(caplog):
+    """store.upsert 실패 poison — 상한 전 두 번은 전파, 세 번째 주기에 격리(리뷰 코멘트 2)."""
+    store = _FailingUpsertStore()
+    store.set_cursor("checkpoint")
+    changes = [_change(1, name="문제상품")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    settings = get_settings()
+
+    for _ in range(settings.artifacts_batch_item_dead_letter_cycles - 1):
+        with pytest.raises(RuntimeError, match="catalog store down"):
+            await run_artifacts_batch(
+                fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store, settings=settings
+            )
+        assert store.get_cursor() == "checkpoint"
+
+    with caplog.at_level("ERROR"):
+        result = await run_artifacts_batch(
+            fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store, settings=settings
+        )
+
+    assert result.failed == 1
+    assert store.get_cursor() == "c1"
+    assert store.get(1) is None
+    assert "product_id=1" in caplog.text
+    assert "streak=3/3" in caplog.text
+
+
+async def test_drain_timeout_poison_propagates_then_isolates_at_cycle_limit(caplog):
+    """타임아웃 poison — 특정 상품에서 결정적으로 재현되는 타임아웃도 상한 전엔 전파, 상한에서
+    격리된다(리뷰 코멘트 1). 수정 전에는 이 시나리오가 매 주기 같은 자리에서 영원히 실패했다.
+    """
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    changes = [_change(1, name="문제상품")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    settings = get_settings()
+    llm = _TimeoutLLM()
+
+    for _ in range(settings.artifacts_batch_item_dead_letter_cycles - 1):
+        with pytest.raises(TimeoutError):
+            await run_artifacts_batch(
+                fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+            )
+        assert store.get_cursor() == "checkpoint"
+
+    with caplog.at_level("ERROR"):
+        result = await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+        )
+
+    assert result.failed == 1
+    assert store.get_cursor() == "c1"
+    assert store.get(1) is None
+    assert "product_id=1" in caplog.text
+    assert "streak=3/3" in caplog.text
+
+
+async def test_drain_transient_infra_failure_does_not_isolate_and_resets_streak():
+    """일시적 장애(1회 실패 후 정상)는 격리되지 않고 커서가 전진하며, 스트릭도 리셋돼 이후 다시
+    실패해도 3회차가 아니라 1회차부터 다시 센다.
+    """
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    changes = [_change(1, name="가끔실패")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    settings = get_settings()
+
+    with pytest.raises(RuntimeError, match="embed API down"):
+        await run_artifacts_batch(
+            fetch=fetch, llm=_EnrichLLM(), embed=_FailingEmbed(), store=store, settings=settings
+        )
+    assert store.get_cursor() == "checkpoint"
+
+    result = await run_artifacts_batch(
+        fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store, settings=settings
+    )
+    assert result.processed == 1
+    assert result.failed == 0
+    assert store.get_cursor() == "c1"
+    assert store.get(1) is not None
+
+    # 스트릭이 리셋됐으므로 다시 실패해도 상한 미만(2회)은 전파돼야 한다 — 3회차가 아니라
+    # 1회차부터 다시 센다는 것이 이 테스트의 핵심.
+    store.set_cursor("checkpoint2")
+    for _ in range(settings.artifacts_batch_item_dead_letter_cycles - 1):
+        with pytest.raises(RuntimeError, match="embed API down"):
+            await run_artifacts_batch(
+                fetch=fetch,
+                llm=_EnrichLLM(),
+                embed=_FailingEmbed(),
+                store=store,
+                settings=settings,
+            )
+        assert store.get_cursor() == "checkpoint2"
+
+    result2 = await run_artifacts_batch(
+        fetch=fetch, llm=_EnrichLLM(), embed=_FailingEmbed(), store=store, settings=settings
+    )
+    assert result2.failed == 1
+    assert store.get_cursor() == "c1"
+
+
+async def test_drain_item_failure_streak_is_per_product():
+    """스트릭은 상품별로 독립 — A 상품이 2회 실패한 상태에서 B 상품이 처음 실패하면 B 는 전파된다."""
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    change_a = _change(1, name="A")
+
+    async def fetch_a(cursor, limit):
+        return ProductChangesPage(items=[change_a], next_cursor="ca", has_more=False)
+
+    settings = get_settings()
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="embed API down"):
+            await run_artifacts_batch(
+                fetch=fetch_a,
+                llm=_EnrichLLM(),
+                embed=_FailingEmbed(),
+                store=store,
+                settings=settings,
+            )
+    assert store.get_cursor() == "checkpoint"
+
+    change_b = _change(2, name="B")
+
+    async def fetch_b(cursor, limit):
+        return ProductChangesPage(items=[change_b], next_cursor="cb", has_more=False)
+
+    with pytest.raises(RuntimeError, match="embed API down"):
+        await run_artifacts_batch(
+            fetch=fetch_b, llm=_EnrichLLM(), embed=_FailingEmbed(), store=store, settings=settings
+        )
+    # B 는 이번이 첫 실패(streak=1 < 3)라 전파된다 — A 의 스트릭과 섞이지 않는다.
+    assert store.get_cursor() == "checkpoint"
+    assert store.get(2) is None
+
+
 async def test_color_harvest_cancellation_propagates(monkeypatch):
     import asyncio
 
