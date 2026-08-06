@@ -446,3 +446,48 @@ def test_embed_texts_explicit_total_timeout_overrides_config(monkeypatch):
 
     assert len(client.models.calls) == 2
     assert len(out) == 103
+
+
+def test_embed_texts_explicit_total_timeout_below_request_timeout_raises_value_error(monkeypatch):
+    """[#391 PR#412 F-2] 인자 `total_timeout_s` 도 embedding_timeout_s 미만이면 즉시 ValueError —
+    첫 청크보다 먼저 걸려 API 호출은 0회다(EmbeddingError 로 래핑돼 degrade 경로에 흡수되지 않는다).
+    """
+    settings = Settings(
+        _env_file=None,
+        google_api_key="test-key",
+        embedding_dim=3,
+        embedding_normalized=False,
+        embedding_timeout_s=3.0,
+    )
+    monkeypatch.setattr(emb, "get_settings", lambda: settings)
+    client = _ChunkCapturingClient()
+    monkeypatch.setattr(emb, "_client", lambda api_key: client)
+
+    with pytest.raises(ValueError) as exc_info:
+        emb.embed_texts(["t0"], total_timeout_s=1.0)
+
+    assert not isinstance(exc_info.value, emb.EmbeddingError)  # degrade 경로에 흡수되지 않아야 함
+    message = str(exc_info.value)
+    assert "1.0" in message
+    assert "3.0" in message
+    assert client.models.calls == []  # 가드가 첫 청크보다 먼저 걸린다
+
+
+def test_embed_texts_explicit_total_timeout_equal_to_request_timeout_is_allowed(monkeypatch):
+    """[#391 PR#412 F-2] 경계(같은 값)는 허용 — 부등호를 `<` → `<=` 로 바꾸면 이 테스트가 깨진다."""
+    settings = Settings(
+        _env_file=None,
+        google_api_key="test-key",
+        embedding_dim=3,
+        embedding_normalized=False,
+        embedding_timeout_s=3.0,
+    )
+    monkeypatch.setattr(emb, "get_settings", lambda: settings)
+    client = _ChunkCapturingClient()
+    monkeypatch.setattr(emb, "_client", lambda api_key: client)
+    monkeypatch.setattr(emb, "_monotonic", _FakeClock([0.0]))
+
+    out = emb.embed_texts(["t0"], total_timeout_s=3.0)
+
+    assert len(client.models.calls) == 1
+    assert len(out) == 1
