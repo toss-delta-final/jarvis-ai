@@ -13,6 +13,52 @@
 
 ---
 
+## [2026-08-06] degrade 주입 fake 가 실제 어댑터의 실패 규약과 다른 예외 타입을 던지면 관측·이슈가 인공물을 잰다
+- 증상: #335 매트릭스가 `wishlist_add × spring_timeout` 셀에서 "`SpringUnavailableError` 미처리로
+  INTERNAL 로 샌다"를 관측했고 이슈 #368 이 그 관측을 근거로 열렸는데, PR #374 리뷰에서 실제
+  `add_wishlist` 어댑터(I-26)는 그 예외를 **한 번도 내지 않는다**는 것이 드러났다. 관측된 예외는
+  러너가 주입한 fake(`evals/combo_matrix/runner.py:177-184`)가 던진 것이었다.
+- 원인: degrade 주입 fake 가 **그 어댑터의 실제 실패 규약과 다른 예외 타입**을 던졌다. 조회 계열
+  (`get_cart`/`get_wishlist`)은 `SpringUnavailableError`, 변경 계열(`add_to_cart`/`add_wishlist`)은
+  `CartError`/`WishlistError` 로 규약이 **갈리는데** 주입은 한 타입으로 통일돼 있었다. 그래서 그 축의
+  관측은 실제 프로덕션 경로가 아니라 fake 의 인공물을 쟀다.
+- 규칙: degrade·실패 주입 fake 를 만들 때는 **그 함수의 실제 실패 규약(어댑터 docstring·raise 문)을
+  먼저 확인**하고 같은 예외 타입으로 던져라 — 성공 fake 의 반환 스키마를 맞추는 것(아래 "성공 fake"
+  가 실 스키마와 다른 모양이어도 게스트 게이트 뒤에 있으면 영원히 안 드러난다 항목)과 같은 규칙의
+  실패 경로 버전이다. 그리고 그런 관측에서 유도한 이슈는 **본문의 근거 문장을 어댑터 실측으로
+  재검증한 뒤** 코드 주석에 옮겨라 — 주석은 다음 사람이 계약을 배우는 자리라 틀린 근거가 그대로
+  학습된다(PR #374 에서 실제로 주석·docstring·CHANGELOG 3곳에 오기재로 퍼졌다).
+- 관련: #368, PR #374, `app/services/spring_client.py::add_wishlist`(I-26)·`::get_wishlist`(I-28),
+  `evals/combo_matrix/runner.py:177-190`, `app/agents/buyer/cart/graph.py:453`
+
+---
+
+## [2026-08-06] 평가 하네스는 측정 대상이 "내부에서 흡수한" 인프라 실패를 정상 오답 표본으로 센다
+- 증상: #331 카테고리 프로브 리뷰에서 `search_top_k` 가 항상 `TimeoutError` 를 던지도록 한
+  재현을 돌렸더니 `filled=True · samples=1 · failures=0 · legs=[]` 가 나왔다 — pg 가 전면
+  장애인데 러너는 그것을 "매핑이 카테고리를 못 냈다"는 **정상 오답 표본**으로 세어 분포에
+  섞었다. `failures.csv` 에도 남지 않아 산출물만 보고는 사후 식별조차 불가능했다. 즉 인프라
+  순간 장애가 그대로 "매핑 정확도 하락"으로 보고될 수 있었다.
+- 원인: 러너가 "실패"를 **함수 밖으로 전파된 예외**로만 정의했는데, 측정 대상인
+  `map_categories` 는 설계상 실패를 삼키고 degrade 한 결과를 **정상 반환**한다(canonical-or-null
+  #20·#115 — 카테고리는 선택 필터라 매핑이 죽어도 검색은 계속돼야 하므로 그 자체는 옳은
+  동작이다). **배포 코드가 견고할수록 하네스는 그 실패를 못 본다**는 역설이고, 실패 신호는
+  반환값이 아니라 구조화 로그(`category_leg_search_failed`·`category_embed_failed` 등)에만
+  있었다.
+- 규칙: **비-예외 degrade 를 하는 함수를 재는 하네스는 "예외가 없었다"를 성공으로 삼지 마라.**
+  측정 대상이 남기는 인프라 실패 이벤트를 캡처해 그 시도를 표본에서 빼고 재시도하며, 실패
+  레코드로 산출물에 남긴다(#260 "실패는 표본이 아니다" 규약의 확장). 단, **정책적
+  degrade**(예산 상한 `max_calls`·LLM 미구성 등 배포의 정상 동작)와 **인프라 실패**는 이벤트
+  `reason` 으로 갈라라 — 뭉뚱그리면 이번엔 반대로 정상 동작 표본을 버려 분모가 왜곡된다. 새
+  프로브를 만들 때 **측정 대상의 try/except 를 먼저 읽고 "이 함수가 무엇을 삼키는가" 목록을
+  만드는 것이 첫 수순**이다.
+- 관련: #331, PR #373, `evals/category_probe/runner.py`(`_INFRA_FAILURE_EVENTS` ·
+  `_SELECT_UNAVAILABLE_POLICY_REASONS` · `_infra_failure_event`),
+  `app/agents/buyer/recommendation/category_mapping.py`(gather `return_exceptions=True` ·
+  단계별 try 격리), `evals/README.md` 3항
+
+---
+
 ## [2026-08-06] "성공 fake" 가 실 스키마와 다른 모양이어도 게스트 게이트 뒤에 있으면 영원히 안 드러난다
 - 증상: #335 리뷰 R8(order_status×spring_timeout 실측 추가) 작업 중, 기존
   `evals/combo_matrix/fakes.py::make_order_status_ok` 가 `{"orderId": ..., "status": ...}` 같은
