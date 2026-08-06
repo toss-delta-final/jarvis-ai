@@ -166,16 +166,21 @@ timeout_s`를 **기동 시점에** 검증한다.
   오늘 기본값(`category_expand_enabled=True`)에서 `1+1+1=3`, §4 실측과 일치한다.
   `category_expand_enabled=False`(확장 자체를 끈 배포)에서는 `1+0+1=2`로 현재 식과 같아진다 —
   이 경우 F-1/#343 경로 자체가 없으니 과소계상도 없다.
-- **적용 범위 — 이번 PR은 가드(런타임 동작)를 바꾸지 않는다.** 기동 검증기를 고치면 위 위험
-  구간(t∈[3.33s, 5.0s))에서 **운영이 새로 부팅에 실패**할 수 있다 — 배포·인프라에 영향을 주는
-  변경은 사람 승인 게이트(CLAUDE.md)이고, 이슈 #363 자체도 가드는 "설계"까지만 요구하고 적용은
-  별도 이슈로 넘긴다. 오늘 기본값(3.0s)은 보정식으로도 `3×3.0=9.0<10.0`이라 통과하므로, 이
-  PR 범위에서 즉시 깨지는 배포는 없다.
-- **불일치를 테스트로 고정** — `tests/unit/test_config.py::
-  test_deferred_first_event_i1_calls_known_undercount_vs_actual_rescue_chain_stages`가 "가드
-  모델(2) ≠ 실측 단 수(3, 출처: AC2 `test_worst_case_rescue_chain_sequential_stages_before_
-  first_sse`)"를 나란히 상수로 박아 둔다 — 둘 중 하나만 바뀌면(가드 식이 보정되거나, 실측 단
-  수가 다시 달라지면) 실패해야 한다. 보정식을 적용하는 후속 이슈에서 이 테스트도 함께 갱신한다.
+- **적용 범위 — #383 에서 적용 완료.** `_deferred_first_event_i1_calls`(config.py:60-81)가 위
+  보정식으로 바뀌었고 `_require_search_retry_within_stream_budget`(config.py:1816~)이
+  `category_expand_enabled=self.category_expand_enabled`를 넘긴다. 위 위험 구간
+  (t∈[3.33s, 5.0s))은 이제 **기동 거절 구간**이다 — 배포·인프라 영향 검토(CLAUDE.md 사람 승인
+  게이트)는 오케스트레이터가 실측으로 끝냈다: `.github/workflows/deploy.yml`(77-113행)이 운영
+  env 파일을 매 배포마다 고정 키 목록으로 전면 재작성하는데, 그 목록에 `SPRING_TIMEOUT_S`·
+  `STREAM_FIRST_TOKEN_TIMEOUT_S`·`CATEGORY_EXPAND_ENABLED`·`RELAXATION_*` 는 하나도 없다 —
+  운영은 코드 기본값(`spring_timeout_s=3.0`)으로 돈다. 오늘 기본값은 보정식으로 `3×3.0=9.0
+  <10.0`이라 통과하므로, 이 적용으로 새로 부팅에 실패하는 배포는 없다.
+- **불일치를 일치로 고정** — `tests/unit/test_config.py::
+  test_deferred_first_event_i1_calls_matches_actual_rescue_chain_stages`(#383, 종전
+  `..._known_undercount_vs_actual_rescue_chain_stages`를 개명·정정)가 이제 "가드 모델(3) ==
+  실측 단 수(3, 출처: AC2 `test_worst_case_rescue_chain_sequential_stages_before_first_sse`)"를
+  일치로 고정한다 — 둘 중 하나만 어긋나면(가드 식이 다시 과소계상하거나, 실측 단 수가 달라지면)
+  실패해야 한다.
 
 ## 6. 이번에 추가한 계측 필드
 

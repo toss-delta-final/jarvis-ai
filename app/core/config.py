@@ -62,8 +62,9 @@ def _deferred_first_event_i1_calls(
     relaxation_max_rounds: int,
     auto_fields: list[str],
     chip_fields: list[str],
+    category_expand_enabled: bool,
 ) -> int:
-    """미룬 턴의 첫 이벤트(`conditions`) 앞에 직렬로 놓이는 I-1 호출 수 (#288).
+    """미룬 턴의 첫 이벤트(`conditions`) 앞에 직렬로 놓이는 I-1 호출 수 (#288, #383 보정).
 
     순수 함수 + 모듈 수준으로 둔 이유는 `_require_search_retry_within_stream_budget` 를
     테스트가 실제 config 조합(교집합 ≥ 2)으로 부를 유일한 표면이기 때문이다 — `Settings` 는
@@ -74,11 +75,26 @@ def _deferred_first_event_i1_calls(
     후보 생성기(`build_relaxation_candidates`)는 `chip_fields` 를 순회하므로 `auto_fields` 에만
     있고 `chip_fields` 에 없는 필드는 후보 자체가 안 생긴다 → 교집합으로 센다. 루프는
     `rounds >= relaxation_max_rounds` 에서 break 하므로 `min` 으로 상한을 씌운다.
+
+    **`category_expand_enabled` 항의 근거(#383, docs/specs/MEASURE-FIRST-TOKEN-363.md §5)** —
+    구제 폴백 한 단이 위 두 항에 빠져 있어 실측 구제 체인 단 수(3, `test_fanout.py`
+    `test_worst_case_rescue_chain_sequential_stages_before_first_sse`)를 과소계상했다:
+    - F-1(#222)에는 별도 kill-switch가 없다. `category_expand_enabled`(기본 `True`)가 F-1·#343
+      둘의 공통 전제(`decision.category_expanded`)를 잠근다 — #343 자신의 플래그
+      (`category_expand_post_suppress_fallback_enabled`)를 꺼도 F-1은 살아 있다.
+    - F-1 과 #343 은 `category_expand_notice_suppressed` 로 상호배타라 한 턴에 최대 1회만
+      돈다 — 그래서 항이 아니라 **존재 여부**(0 또는 1)만 더한다.
+    - `search_filter_guard_enabled`(#393, 기본 `True`)는 이 항을 없애지 않는다:
+      `graph.py`의 스킵은 무필터 payload 의 필터 축이 0개일 때만 걸리고, 카테고리 외 축을 준
+      턴은 재검색이 그대로 돈다 — 최악 경로에는 이 단이 남으므로 식에
+      `search_filter_guard_enabled` 항은 추가하지 않는다.
+    이 항은 **미룸이 성립한 뒤에만**(아래 조기 return 0 을 통과한 뒤에만) 더한다 — F-1/#343 재검색은
+    본 검색이 이미 미뤄진 뒤에만 도는 후속 단계이지, 그 자체로 미룸을 만들지 않기 때문이다.
     """
     intersection_size = len(set(auto_fields) & set(chip_fields))
     if relaxation_max_rounds <= 0 or intersection_size == 0:
         return 0  # may_auto_relax가 False — conditions가 검색 앞에 나가 직렬 검증 대상이 아니다
-    return 1 + min(relaxation_max_rounds, intersection_size)
+    return 1 + (1 if category_expand_enabled else 0) + min(relaxation_max_rounds, intersection_size)
 
 
 class Settings(BaseSettings):
@@ -1750,15 +1766,21 @@ class Settings(BaseSettings):
         **이 식은 단일 I-1 호출 예산만 본다**(#277). 종전의 배타성 전제는 실측으로 반증됐다:
         본 검색이 1 차 타임아웃 뒤 2 차에 0 건으로 성공하면 재시도를 쓰고도 완화 probe 가 돈다.
         기본 설정은 미룬 턴의 재시도를 건너뛰어 첫 이벤트 앞 직렬 합을
-        `2 * spring_timeout_s`(6s)로 묶는다. `SEARCH_RETRY_ON_DEFERRED_CONDITIONS=true`로
-        종전 동작을 되살리면 두 호출이 각각 재시도해 최대 12s가 되고, #277의 이벤트 0건·504
-        조합도 다시 열린다.
+        `3 * spring_timeout_s`(9s, #383 보정 후)로 묶는다. `SEARCH_RETRY_ON_DEFERRED_CONDITIONS=
+        true`로 종전 동작을 되살리면 세 호출이 각각 재시도해 최대 18s가 되고, #277의 이벤트
+        0건·504 조합도 다시 열린다.
 
-        **직렬 합의 일반형**(#288) — 상수 `2` 는 `_deferred_first_event_i1_calls` 가 계산하는
-        `1 + min(relaxation_max_rounds, |relaxation_auto_fields ∩ relaxation_chip_fields|)` 로
+        **직렬 합의 일반형**(#288, #383 보정) — 상수는 `_deferred_first_event_i1_calls` 가
+        계산하는
+        `1 + (1 if category_expand_enabled else 0) +
+        min(relaxation_max_rounds, |relaxation_auto_fields ∩ relaxation_chip_fields|)` 로
         바뀐다. 각 항의 출처:
         - `1`: 본 검색 1회(`asyncio.gather(_run_search(), _fetch_purchases())` — I-19 는 병렬이라
           합산 대상이 아니고, fan-out leg 도 병렬이라 1회분).
+        - `1 if category_expand_enabled else 0`(#383): 본 검색이 0건일 때 F-1(#222)·#343 이 여는
+          카테고리 무필터 재검색 한 단. 둘은 `category_expand_notice_suppressed` 로 상호배타라
+          한 턴 최대 1회이므로 항이 아니라 존재 여부만 더한다 — 근거는
+          `_deferred_first_event_i1_calls` docstring.
         - **교집합**(합집합·`auto_fields` 단독이 아니라): 후보 생성기 `build_relaxation_candidates`
           가 `relaxation_chip_fields` 를 **순회**하며 후보를 만들고, 자동 완화 루프는 그중
           `relaxation_auto_fields` 에 든 것만 쓴다. 칩 목록에 없는 자동 필드는 후보 자체가 안
@@ -1772,12 +1794,14 @@ class Settings(BaseSettings):
           에서 break 하므로, probe 횟수는 교집합 크기와 라운드 상한 중 작은 쪽으로 잡힌다.
         - 1 회 호출의 벽시계 예산(`budget`/`spring_timeout_s`)은 아래 가드 ON/OFF 분기 그대로다.
 
-        **오늘 이 식의 값은 항상 2 다** — `_forbid_auto_relaxing_explicit_constraints` 가
-        `relaxation_auto_fields ⊆ {ratingMin}` 로 잠가 교집합이 항상 ≤ 1 이기 때문이다. 그래도
-        상수 `2` 대신 일반형을 쓰는 이유는, 그 허용 목록이 넓어지는 순간(`graph.py` 의
-        `may_auto_relax` 주석이 "목록이 넓어지면"을 명시적으로 예상한다) 상수는 **조용히
-        과소평가**되어 #277 이 없앤 이벤트 0건·504 조합이 되살아나기 때문이다. 계수를 다른
-        검증기의 허용 목록에 암묵적으로 의존시키지 않는다(lessons 2026-08-04
+        **오늘 이 식의 값은 기본 설정에서 3 이다**(#383 보정 후) — `1`(본 검색) +
+        `1`(`category_expand_enabled` 기본 `True`) + `min(3, 1)`(교집합, 자동 목록이
+        `_forbid_auto_relaxing_explicit_constraints` 로 `{ratingMin}` 부분집합에 잠겨 있어 항상
+        ≤ 1). `CATEGORY_EXPAND_ENABLED=false` 면 그 항이 빠져 종전대로 2 다. 상수 대신 일반형을
+        쓰는 이유는, 자동 완화 허용 목록이 넓어지거나(`graph.py` 의 `may_auto_relax` 주석이
+        "목록이 넓어지면"을 명시적으로 예상한다) `category_expand_enabled` 가 꺼지는 순간 상수는
+        **조용히 어긋나** #277 이 없앤 이벤트 0건·504 조합이 되살아나기 때문이다. 계수를 다른
+        검증기의 허용 목록·플래그에 암묵적으로 의존시키지 않는다(lessons 2026-08-04
         "상한이 안전한지는 단일 호출 예산이 아니라 첫 이벤트 앞 직렬 합으로 잰다").
 
         가드 ON/OFF 설정은 각각 직렬 합 `calls * budget`/`calls * spring_timeout_s`로 검증한다.
@@ -1789,7 +1813,8 @@ class Settings(BaseSettings):
         이 식에 없고, `conditions` 뒤에 도는 완화 칩 probe(`relaxation_max_probes`)도 첫 이벤트
         예산 밖이다(그 probe는 이미 첫 이벤트가 나간 뒤라 first-token 상한과 무관하다). head 를
         포함한 타임아웃 재배분은 #288 의 잔여 후보로 남는다. 구매자 `progress` 이벤트(#289)가
-        계약에 등재되면 미룸 자체가 사라져 이 검증기는 보험 계층이 된다.
+        계약에 등재되면 미룸 자체가 사라져 이 검증기는 보험 계층이 된다. F-1·#343 구제 폴백은
+        #383 부터 이 식에 들어왔다(더 이상 커버 밖이 아니다).
 
         **계약 무변경**: 이 검증은 내부 기동 로직이고 AI→Spring 3s 규약과 미룬 턴 재시도
         스킵은 api-spec §2.9(c)(v0.20.2)에 이미 등재돼 있다 — 이 변경으로 와이어·명세를
@@ -1817,6 +1842,7 @@ class Settings(BaseSettings):
             relaxation_max_rounds=self.relaxation_max_rounds,
             auto_fields=self.relaxation_auto_fields,
             chip_fields=self.relaxation_chip_fields,
+            category_expand_enabled=self.category_expand_enabled,
         )
         if deferred_calls == 0:
             return self
@@ -1825,15 +1851,17 @@ class Settings(BaseSettings):
             serial_formula = f"{deferred_calls} * SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1)"
             recovery = (
                 "disable SEARCH_RETRY_ON_DEFERRED_CONDITIONS, lower SPRING_TIMEOUT_S, "
-                "or disable deferral with RELAXATION_MAX_ROUNDS=0 or "
-                "RELAXATION_AUTO_FIELDS=[]"
+                "disable deferral with RELAXATION_MAX_ROUNDS=0 or "
+                "RELAXATION_AUTO_FIELDS=[], or drop the rescue-fallback call with "
+                "CATEGORY_EXPAND_ENABLED=false"
             )
         else:
             serial_budget = deferred_calls * self.spring_timeout_s
             serial_formula = f"{deferred_calls} * SPRING_TIMEOUT_S"
             recovery = (
-                "lower SPRING_TIMEOUT_S or disable deferral with "
-                "RELAXATION_MAX_ROUNDS=0 or RELAXATION_AUTO_FIELDS=[]"
+                "lower SPRING_TIMEOUT_S, disable deferral with "
+                "RELAXATION_MAX_ROUNDS=0 or RELAXATION_AUTO_FIELDS=[], or "
+                "drop the rescue-fallback call with CATEGORY_EXPAND_ENABLED=false"
             )
         if serial_budget >= self.stream_first_token_timeout_s:
             raise ValueError(
