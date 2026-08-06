@@ -408,14 +408,25 @@ class BuyerChatRequest(ChatRequest):
 
 
 class ProgressData(CamelModel):
-    """`progress` 이벤트 페이로드 (api-spec §3.1 (1), 이슈 #289 — 계약 등재 2026-08-05).
+    """`progress` 이벤트 페이로드 (api-spec §3.1 (1), 이슈 #289 — 계약 등재 2026-08-05
+    / 다회 emit·어휘 확장 이슈 #396 — api-spec §3.1 v0.27.0).
 
-    stage 확정 어휘는 `analyzing` 1종이며 `Literal` 로 강제한다(searching/relaxing/reranking 은
-    후속 확장 후보·미구현) — 어휘를 넓히려면 계약(§3.1) 개정과 이 `Literal` 을 함께 고친다.
+    stage 확정 어휘는 7종(`analyzing`·`mapping`·`expanding`·`searching`·`relaxing`·
+    `reranking`·`publishing`)이며 개방형(open set) — FE 는 모르는 값을 무시하고 오류로 다루지
+    않는다. 그래도 서버 쪽은 `Literal` 로 강제한다 — 어휘를 넓히려면 계약(§3.1) 개정과 이
+    `Literal` 을 함께 고친다.
     message 는 선택 — 서버가 비우면 와이어에서 키 자체가 빠진다(`app/agents/buyer/_frames.py`).
     """
 
-    stage: Literal["analyzing"]
+    stage: Literal[
+        "analyzing",
+        "mapping",
+        "expanding",
+        "searching",
+        "relaxing",
+        "reranking",
+        "publishing",
+    ]
     message: str | None = None
 
 

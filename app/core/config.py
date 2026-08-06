@@ -1355,6 +1355,13 @@ class Settings(BaseSettings):
     progress_events_enabled: bool = True
     # 빈 문자열이면 프레임 `data`에 `message` 키 자체를 싣지 않는다(app/agents/buyer/_frames.py).
     progress_analyzing_message: str = "요청을 확인하고 있어요"
+    # 다회 emit·어휘 확장(이슈 #396, api-spec §3.1 v0.27.0) — stage 6종 추가. 규약은 위와 동일.
+    progress_mapping_message: str = "카테고리를 찾고 있어요"
+    progress_expanding_message: str = "어떤 상품이 필요한지 넓혀 보고 있어요"
+    progress_searching_message: str = "상품을 검색하고 있어요"
+    progress_relaxing_message: str = "조건을 조금 넓혀 다시 찾고 있어요"
+    progress_reranking_message: str = "가장 잘 맞는 걸 고르고 있어요"
+    progress_publishing_message: str = "추천 목록을 준비하고 있어요"
 
     # ── 요청 바디 크기 상한 (이슈 #299, api-spec §2.5·§2.8) ──
     # 레이트 리밋(§2.8)은 요청 **건수**만 세므로 10회로도 임의 크기 바디를 보낼 수 있다.
@@ -1812,9 +1819,20 @@ class Settings(BaseSettings):
         **커버하지 않는 것**(누락이 아니라 판단): LLM head(#151 baseline p95 ≈3.0s)와 pg 왕복은
         이 식에 없고, `conditions` 뒤에 도는 완화 칩 probe(`relaxation_max_probes`)도 첫 이벤트
         예산 밖이다(그 probe는 이미 첫 이벤트가 나간 뒤라 first-token 상한과 무관하다). head 를
-        포함한 타임아웃 재배분은 #288 의 잔여 후보로 남는다. 구매자 `progress` 이벤트(#289)가
-        계약에 등재되면 미룸 자체가 사라져 이 검증기는 보험 계층이 된다. F-1·#343 구제 폴백은
-        #383 부터 이 식에 들어왔다(더 이상 커버 밖이 아니다).
+        포함한 타임아웃 재배분은 #288 의 잔여 후보로 남는다. F-1·#343 구제 폴백은 #383 부터 이
+        식에 들어왔다(더 이상 커버 밖이 아니다).
+
+        **구매자 `progress` 이벤트(#289)는 #396 이 이미 구현했다 — "미룸 자체가 사라진다"는
+        낡은 서술이다(#383 R3 정정).** `graph.py:1007-1008` 이 본 검색 **직전**에
+        `progress_frame("searching", ...)` 을 내보내고(`progress_events_enabled` 기본
+        `True`, 위 필드), 이 스트림의 첫 이벤트는 이제 `conditions` 가 아니라 그 `progress`
+        프레임이다. `conditions` 는 여전히 검색 **뒤**로 미뤄진다 — 사라지는 것은 미룸
+        자체가 아니라 **미룸이 first-token 을 늦추는 효과**다: `stream.py` 의 `ft_deadline`
+        이 이 `progress` 프레임으로 이미 충족되므로, `progress_events_enabled=True`(오늘
+        기본값)인 배포에서 이 검증기의 first-token 비교는 실제로 도달하기 전에 이미 안전한
+        **보험 계층**이고, 그 플래그를 끄면 다시 실질 가드가 된다. **계수를
+        `progress_events_enabled` 에 연동하지는 않는다** — 식·기본값·런타임 로직은 그대로이며,
+        그 연동 여부는 #384/#288 잔여 후보로 남긴다.
 
         **계약 무변경**: 이 검증은 내부 기동 로직이고 AI→Spring 3s 규약과 미룬 턴 재시도
         스킵은 api-spec §2.9(c)(v0.20.2)에 이미 등재돼 있다 — 이 변경으로 와이어·명세를
