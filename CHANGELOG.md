@@ -23,6 +23,28 @@
   (`docs/specs/DESIGN-SHARED-BUDGET-384.md`)
 
 ### Added
+- **#396 — 구매자 `progress` 다회 emit + `stage` 어휘 확장(1종 → 7종, 개방형)** —
+  `analyzing` 1종·턴당 최대 1회이던 진행 표시를 파이프라인의 실제 경계마다 stage 를 바꿔
+  내보내도록 확장했다. `mapping`(카테고리 매핑 중)·`expanding`(니즈 전개 중, #198)·
+  `searching`(상품 후보 검색 중)·`relaxing`(조건 완화 재검색 중)·`reranking`(재정렬 중)·
+  `publishing`(목록 준비 중, I-21 push 직전) 6종을 추가하고 계약을 `0~1회` → `0회 이상`으로
+  개정했다(FE 는 모르는 `stage` 를 무시하는 개방형 규약). `app/agents/buyer/graph.py::
+  _prepare_recommendation` 은 mapping/expanding 프레임을 내야 해서 코루틴 → async
+  generator 로 바꿨다(반환값은 전용 홀더 `_PrepareRecommendationOut` 에 담아 전달 —
+  generator 는 `return` 값을 줄 수 없다). `relaxing` 은 자동 완화 루프가 **실제로 probe**
+  했을 때만 나가도록 지역 플래그로 지켰다(루프 진입만으로 내면 probe 0회인 턴에도 뜨는
+  거짓 신호가 된다). `mapping` 은 리파인 승계(`carry`)·카테고리 리셋(`clear`) 분기에서는
+  매핑 자체를 안 태우므로 나가지 않고, 전개 성공 후 재매핑에서도 같은 논리 단계의 연장이라
+  다시 내지 않는다. `app/core/observability.py::RequestObservation` 에 stage 별 최초 발생
+  시각(`started` 기준 ms)을 `progressStages` 로 로그에 남기되, 판매자 `progress`(`{"text"}`,
+  `stage` 없음)는 섞이지 않게 분리했다. 기본값 다회 emit 화로 `test_buyer_tracing`·
+  `test_condition_actions`·`test_fanout`·`test_recommendation` 의 이벤트 인덱스 가정이
+  깨져 실제 stage 시퀀스로 갱신했다(단언 약화 없음). **기존 6종의 이름·페이로드·상대 순서는
+  불변**(추가 전용) — `conditions`는 여전히 검색·자동 완화 뒤다. `progress`는 `token` 이후
+  (`publishing`)에도 올 수 있다. PR #407 리뷰로 드러난 `_prepare_recommendation` 제너레이터
+  전환의 사각지대(`scripts/capture_i1_wire_132.py`·`scripts/verify_regression6_217.py` 호출부
+  2곳이 `TypeError` 로 깨져 있었다)도 함께 async generator 소비 형태로 갱신했다. (api-spec
+  §2.2·§3.1, v0.27.0)
 - **#310 — `purchaseState` 로 품절·판매종료를 갈라 안내한다(장바구니·찜)** (api-spec §4.9·§4.16,
   v0.26.3 / SPEC-CART-001 v0.2.6 REQ-CART-037) — 지금까지는 장바구니·찜에서 상품의 구매 가능
   여부를 파싱조차 안 해 "구매 불가 상태예요"조차 말하지 못했다. 품절은 기다리면 되고 판매
