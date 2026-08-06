@@ -1,0 +1,278 @@
+{
+  "schemaVersion": "1.0.0",
+  "fixtureVersion": "underspec-anchors-v1",
+  "utterances": [
+    {
+      "caseId": "buy-under-0002",
+      "slice": "no_condition",
+      "testType": "MFT",
+      "utterance": "아무거나 추천해줘",
+      "expectedReask": true,
+      "sourceCaseId": "buy-under-0002",
+      "note": "cases.json 승계 — 무조건(#162 no_condition 셀), 축이 전부 비면 트리거된다."
+    },
+    {
+      "caseId": "under-nc-0001",
+      "slice": "no_condition",
+      "testType": "MFT",
+      "utterance": "뭐 좋은 거 없어?",
+      "expectedReask": true,
+      "note": "의문형 — 무엇을 찾는지 지정 없이 되묻는 발화."
+    },
+    {
+      "caseId": "under-nc-0002",
+      "slice": "no_condition",
+      "testType": "MFT",
+      "utterance": "아무거나 하나 골라줘",
+      "expectedReask": true,
+      "note": "명령형 — 지정 없음."
+    },
+    {
+      "caseId": "under-nc-0003",
+      "slice": "no_condition",
+      "testType": "MFT",
+      "utterance": "그냥 추천해줘",
+      "expectedReask": true,
+      "note": "구어체 축약 — 지정 없음."
+    },
+    {
+      "caseId": "under-nc-0004",
+      "slice": "no_condition",
+      "testType": "MFT",
+      "utterance": "뭐라도 사고 싶은데 추천 좀 해줘",
+      "expectedReask": true,
+      "note": "구어체 — 목적·카테고리 신호 없이 구매 의도만 표현."
+    },
+    {
+      "caseId": "buy-under-0003",
+      "slice": "constraint_price",
+      "testType": "MFT",
+      "utterance": "5만원 이하로 아무거나 추천해줘",
+      "expectedReask": true,
+      "constraintAxes": ["filters.price_max"],
+      "sourceCaseId": "buy-under-0003",
+      "note": "cases.json 승계 — 제약-축(price_max)만 있는 턴, no_condition 은 아니지만 트리거된다."
+    },
+    {
+      "caseId": "under-cp-0001",
+      "slice": "constraint_price",
+      "testType": "MFT",
+      "utterance": "3만원 이상으로 아무거나 보여줄래?",
+      "expectedReask": true,
+      "constraintAxes": ["filters.price_min"],
+      "note": "하한만 있는 제약-축(price_min), 의문형."
+    },
+    {
+      "caseId": "under-cp-0002",
+      "slice": "constraint_price",
+      "testType": "MFT",
+      "utterance": "10만원 이내에서 뭐든 괜찮아",
+      "expectedReask": true,
+      "constraintAxes": ["filters.price_max"],
+      "note": "상한만 있는 제약-축(price_max), 구어체."
+    },
+    {
+      "caseId": "under-cp-0003",
+      "slice": "constraint_price",
+      "testType": "MFT",
+      "utterance": "2만원에서 5만원 사이로 아무거나",
+      "expectedReask": true,
+      "constraintAxes": ["filters.price_min", "filters.price_max"],
+      "note": "상하한 범위 제약-축."
+    },
+    {
+      "caseId": "under-cp-0004",
+      "slice": "constraint_price",
+      "testType": "MFT",
+      "utterance": "가격대 6만원 밑으로 아무거나 있어?",
+      "expectedReask": true,
+      "constraintAxes": ["filters.price_max"],
+      "note": "상한만 있는 제약-축, 의문형."
+    },
+    {
+      "caseId": "buy-under-0001",
+      "slice": "constraint_budget_set",
+      "testType": "MFT",
+      "utterance": "5만원 이내로 아무거나 세트로 추천해줘",
+      "expectedReask": true,
+      "constraintAxes": ["totalBudget", "buyAll"],
+      "sourceCaseId": "buy-under-0001",
+      "note": "cases.json 승계 — 총액 예산 + 전부구매, what-축 미지정. total_budget·buy_all 은 제약(비차단)."
+    },
+    {
+      "caseId": "under-cbs-0001",
+      "slice": "constraint_budget_set",
+      "testType": "MFT",
+      "utterance": "10만원 안에서 전부 챙겨줄 수 있어?",
+      "expectedReask": true,
+      "constraintAxes": ["totalBudget", "buyAll"],
+      "note": "총액+전부구매 신호, 의문형."
+    },
+    {
+      "caseId": "under-cbs-0002",
+      "slice": "constraint_budget_set",
+      "testType": "MFT",
+      "utterance": "총 8만원으로 세트 구성해줘",
+      "expectedReask": true,
+      "constraintAxes": ["totalBudget", "buyAll"],
+      "note": "총액+세트 구성 신호."
+    },
+    {
+      "caseId": "under-cbs-0003",
+      "slice": "constraint_budget_set",
+      "testType": "MFT",
+      "utterance": "예산 6만원 다 써서 이것저것 담아줘",
+      "expectedReask": true,
+      "constraintAxes": ["totalBudget", "buyAll"],
+      "note": "구어체 — 총액 예산을 다 써서 여러 개를 담는 신호."
+    },
+    {
+      "caseId": "buy-under-0004",
+      "slice": "what_axis",
+      "testType": "INV",
+      "utterance": "이어폰 추천해줘",
+      "expectedReask": false,
+      "referenceAxes": ["categoryQueries"],
+      "sourceCaseId": "buy-under-0004",
+      "note": "cases.json 승계(category) — 매핑 전 원시 카테고리 신호(category_queries)도 지목이다."
+    },
+    {
+      "caseId": "buy-under-0005",
+      "slice": "what_axis",
+      "testType": "INV",
+      "utterance": "삼성 제품 아무거나",
+      "expectedReask": false,
+      "referenceAxes": ["filters.brand"],
+      "sourceCaseId": "buy-under-0005",
+      "note": "cases.json 승계(brand) — what-축(brand)이 있으면 지목이다."
+    },
+    {
+      "caseId": "under-wa-0001",
+      "slice": "what_axis",
+      "testType": "INV",
+      "utterance": "노트북 하나 추천해줘",
+      "expectedReask": false,
+      "referenceAxes": ["categoryQueries"],
+      "note": "category — 구체 상품명 지목."
+    },
+    {
+      "caseId": "under-wa-0002",
+      "slice": "what_axis",
+      "testType": "INV",
+      "utterance": "LG 가전 아무거나 있어?",
+      "expectedReask": false,
+      "referenceAxes": ["filters.brand"],
+      "note": "brand — 영문 브랜드명 지목, 의문형."
+    },
+    {
+      "caseId": "under-wa-0003",
+      "slice": "what_axis",
+      "testType": "INV",
+      "utterance": "노란색으로 아무거나 골라줘",
+      "expectedReask": false,
+      "referenceAxes": ["filters.color"],
+      "note": "color — 색상 지목."
+    },
+    {
+      "caseId": "under-wa-0004",
+      "slice": "what_axis",
+      "testType": "INV",
+      "utterance": "초록색 제품 뭐 있어?",
+      "expectedReask": false,
+      "referenceAxes": ["filters.color"],
+      "note": "color — 색상 지목, 의문형."
+    },
+    {
+      "caseId": "under-wa-0005",
+      "slice": "what_axis",
+      "testType": "INV",
+      "utterance": "레트로 무드등 아무거나 보여줘",
+      "expectedReask": false,
+      "referenceAxes": ["filters.keyword", "categoryQueries"],
+      "note": "keyword — 구체 상품명 지목. filters.keyword 또는 categoryQueries 어느 채널로 실려도 차단이다(§D8 채널 불확실성)."
+    },
+    {
+      "caseId": "under-wa-0006",
+      "slice": "what_axis",
+      "testType": "INV",
+      "utterance": "미니멀 텀블러 아무거나 있어?",
+      "expectedReask": false,
+      "referenceAxes": ["filters.keyword", "categoryQueries"],
+      "note": "keyword — 구체 상품명 지목, 의문형. 채널 불확실성은 under-wa-0005 와 같다."
+    },
+    {
+      "caseId": "buy-under-0007",
+      "slice": "blocking_rating",
+      "testType": "INV",
+      "utterance": "평점 4 이상 아무거나",
+      "expectedReask": false,
+      "referenceAxes": ["filters.rating_min"],
+      "sourceCaseId": "buy-under-0007",
+      "note": "cases.json 승계 — 보수 경계, rating_min 은 차단-축이다(SPEC §2.1)."
+    },
+    {
+      "caseId": "under-br-0001",
+      "slice": "blocking_rating",
+      "testType": "INV",
+      "utterance": "별점 4.5 이상인 거 아무거나 보여줘",
+      "expectedReask": false,
+      "referenceAxes": ["filters.rating_min"],
+      "note": "'별점' 표현, 소수점 평점."
+    },
+    {
+      "caseId": "under-br-0002",
+      "slice": "blocking_rating",
+      "testType": "INV",
+      "utterance": "평점 4점대 이상으로만 보여줘",
+      "expectedReask": false,
+      "referenceAxes": ["filters.rating_min"],
+      "note": "'~점대' 구어체 표현."
+    },
+    {
+      "caseId": "under-br-0003",
+      "slice": "blocking_rating",
+      "testType": "INV",
+      "utterance": "리뷰 평점 4 넘는 것만 아무거나",
+      "expectedReask": false,
+      "referenceAxes": ["filters.rating_min"],
+      "note": "'리뷰 평점' 표현."
+    },
+    {
+      "caseId": "under-br-0004",
+      "slice": "blocking_rating",
+      "testType": "INV",
+      "utterance": "평점 3.5 이상이면 뭐든 좋아",
+      "expectedReask": false,
+      "referenceAxes": ["filters.rating_min"],
+      "note": "낮은 평점 하한, 구어체."
+    },
+    {
+      "caseId": "buy-under-0006",
+      "slice": "multiturn_gate",
+      "testType": "INV",
+      "utterance": "그중에 5만원 이하",
+      "priorExists": true,
+      "expectedReask": false,
+      "sourceCaseId": "buy-under-0006",
+      "note": "cases.json 승계 — 멀티턴(prior 존재), 첫 턴 한정이라 트리거하지 않는다."
+    },
+    {
+      "caseId": "under-mg-0001",
+      "slice": "multiturn_gate",
+      "testType": "INV",
+      "utterance": "거기서 더 싼 걸로 하나 줘",
+      "priorExists": true,
+      "expectedReask": false,
+      "note": "멀티턴 리파인 — 게이트가 발동해야 한다."
+    },
+    {
+      "caseId": "under-mg-0002",
+      "slice": "multiturn_gate",
+      "testType": "INV",
+      "utterance": "이전 목록 중에 저렴한 쪽으로",
+      "priorExists": true,
+      "expectedReask": false,
+      "note": "멀티턴 리파인, 다른 표현형."
+    }
+  ]
+}
