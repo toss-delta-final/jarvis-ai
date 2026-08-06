@@ -1348,6 +1348,13 @@ class Settings(BaseSettings):
     progress_events_enabled: bool = True
     # 빈 문자열이면 프레임 `data`에 `message` 키 자체를 싣지 않는다(app/agents/buyer/_frames.py).
     progress_analyzing_message: str = "요청을 확인하고 있어요"
+    # 다회 emit·어휘 확장(이슈 #396, api-spec §3.1 v0.27.0) — stage 6종 추가. 규약은 위와 동일.
+    progress_mapping_message: str = "카테고리를 찾고 있어요"
+    progress_expanding_message: str = "어떤 상품이 필요한지 넓혀 보고 있어요"
+    progress_searching_message: str = "상품을 검색하고 있어요"
+    progress_relaxing_message: str = "조건을 조금 넓혀 다시 찾고 있어요"
+    progress_reranking_message: str = "가장 잘 맞는 걸 고르고 있어요"
+    progress_publishing_message: str = "추천 목록을 준비하고 있어요"
 
     # ── 요청 바디 크기 상한 (이슈 #299, api-spec §2.5·§2.8) ──
     # 레이트 리밋(§2.8)은 요청 **건수**만 세므로 10회로도 임의 크기 바디를 보낼 수 있다.

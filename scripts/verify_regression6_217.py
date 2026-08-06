@@ -22,7 +22,11 @@ import logging
 import sys
 from types import SimpleNamespace
 
-from app.agents.buyer.graph import ThreadFilterStore, _prepare_recommendation
+from app.agents.buyer.graph import (
+    ThreadFilterStore,
+    _PrepareRecommendationOut,
+    _prepare_recommendation,
+)
 from app.agents.buyer.recommendation.decompose import decompose
 from app.core.config import get_settings
 from app.core.llm import get_llm
@@ -75,7 +79,10 @@ async def _run_one(utterance: str, cap: _Capture) -> tuple[list[str], int, list[
         category_fanout_max=s.category_fanout_max,
     )
     cap.events.clear()
-    await _prepare_recommendation(
+    # `_prepare_recommendation` 은 progress 프레임(mapping/expanding)을 내야 해서 async
+    # generator 다 — 이 스크립트는 프레임을 쓰지 않고 `decision` 부수효과만 보므로 그냥 버린다.
+    out = _PrepareRecommendationOut()
+    async for _ in _prepare_recommendation(
         request=SimpleNamespace(message=utterance, session_id="s", thread_id="t"),
         decision=decision,
         prior=None,
@@ -86,7 +93,9 @@ async def _run_one(utterance: str, cap: _Capture) -> tuple[list[str], int, list[
         observer=None,
         thread_store=ThreadFilterStore(),
         thread_key="regression-217",
-    )
+        out=out,
+    ):
+        pass
     return [c for c, _ in decision.category_legs], decision.case, list(cap.events)
 
 
