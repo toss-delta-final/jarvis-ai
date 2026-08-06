@@ -18,6 +18,9 @@ from app.core.config import get_settings
 
 _CLIENT_CACHE: dict[str, object] = {}
 
+_EMBED_BATCH_MAX = 100  # Google BatchEmbedContentsRequest 상한(초과 시 400 INVALID_ARGUMENT) —
+# Google API 자체 상한이라 튜너블 아님(config 주입 금지, 모듈 상수로 고정). #353.
+
 
 class EmbeddingError(Exception):
     """임베딩 호출 실패(오류/미구성). 상위(배치)는 그대로 전파해 자연 재개(§4.8)."""
@@ -78,6 +81,7 @@ def embed_texts(texts: list[str], *, task_type: str | None = None) -> list[list[
     config.embedding_dim 을 output_dimensionality 로 요청하고, 응답을 수동 L2 정규화한다.
     task_type 지정 시 비대칭 검색용으로 전달한다(문서=RETRIEVAL_DOCUMENT / 질의=RETRIEVAL_QUERY).
     google_api_key 미구성 시 곧바로 EmbeddingError — 배치·테스트는 embed 콜러블을 주입한다.
+    입력이 `_EMBED_BATCH_MAX`(100건)를 넘으면 청크로 나눠 순차 호출하고 순서대로 이어붙인다(#353).
     """
     settings = get_settings()
     if not settings.google_api_key:
@@ -87,15 +91,18 @@ def embed_texts(texts: list[str], *, task_type: str | None = None) -> list[list[
 
     client = _client(settings.google_api_key)
     try:
-        response = client.models.embed_content(
-            model=settings.embedding_model_id,
-            contents=list(texts),
-            config=types.EmbedContentConfig(
-                output_dimensionality=settings.embedding_dim,
-                **({"task_type": task_type} if task_type else {}),
-            ),
-        )
-        raw = [[float(x) for x in item.values] for item in response.embeddings]
+        raw: list[list[float]] = []
+        for start in range(0, len(texts), _EMBED_BATCH_MAX):
+            chunk = texts[start : start + _EMBED_BATCH_MAX]
+            response = client.models.embed_content(
+                model=settings.embedding_model_id,
+                contents=chunk,
+                config=types.EmbedContentConfig(
+                    output_dimensionality=settings.embedding_dim,
+                    **({"task_type": task_type} if task_type else {}),
+                ),
+            )
+            raw.extend([float(x) for x in item.values] for item in response.embeddings)
         # settings.embedding_normalized 를 실제 분기 조건으로 사용 — 기록되는 normalized
         # 프로비넌스와 실제 정규화 동작이 어긋나지 않게 한다(이슈 #65 PR 리뷰).
         out = [_l2_normalize(vec) for vec in raw] if settings.embedding_normalized else raw
