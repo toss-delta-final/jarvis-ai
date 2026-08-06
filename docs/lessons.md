@@ -13,6 +13,30 @@
 
 ---
 
+## [2026-08-06] 테스트 스위트 실행 중에 커밋하면 eval 결정론 테스트가 깨진다
+- 증상: `uv run pytest` 를 백그라운드로 돌려 둔 채 그 사이에 `git commit` 을 했더니
+  `tests/eval/test_personalization_eval.py::test_personalization_run_is_deterministic_across_environment_and_clock`
+  1건이 실패했다(4235 passed / 1 failed). 코드 변경과 무관했고, 그 테스트를 **단독으로
+  재실행하면 통과**하며, 트리를 고정한 뒤 전체 재실행도 4236 passed 로 통과했다.
+- 원인: 그 테스트는 `evals.personalization.cli.main` 을 **두 번** 돌려
+  `evals.personalization.cli.normalize_paired_artifacts` 로 산출물을 바이트 비교하는데,
+  정규화는 `run_manifest.json` 의 **`run` 키만** 제거한다
+  (`evals.metrics.report.normalize_artifacts` ·
+  `evals.personalization.cli.normalize_paired_artifacts`). 반면
+  `evals.metrics.run_manifest.build_run_manifest` 는 `commitSha`(`git rev-parse HEAD`)와
+  `dirty`(`git status --porcelain`)를 **실행 시점의 라이브 git 상태**에서 읽는다. 두 번의
+  `main()` 호출 사이에 커밋이 끼면 `commitSha` 가 바뀌고 `dirty` 가 true→false 로 뒤집혀 두
+  매니페스트가 달라진다 — 테스트가 잡아낸 것은 코드 비결정론이 아니라 **테스트 도중 바뀐 리포
+  상태**다.
+- 규칙: `uv run pytest`(특히 `tests/eval/`)가 도는 동안 **작업 트리를 바꾸지 않는다** —
+  커밋·`git add`·`checkout`·포맷터 실행을 스위트가 끝난 뒤로 미룬다. 백그라운드로 돌렸다면
+  더더욱 그렇다(끝난 줄 알기 쉽다). 반대로, eval 결정론 테스트가 **혼자 돌리면 통과하는데
+  전체 런에서만 깨진다면** 코드를 의심하기 전에 "그 런 도중 내가 리포를 건드렸는가"를 먼저
+  확인한다.
+- 관련: `evals.metrics.run_manifest.build_run_manifest`(`commitSha`·`dirty`) ·
+  `evals.metrics.report.normalize_artifacts` ·
+  `evals.personalization.cli.normalize_paired_artifacts` · #380
+
 ## [2026-08-06] `ruff format`/`--fix` 는 쓰기 명령이다 — `ruff check` 와 같은 감각으로 전체 스코프에 돌리면 안 된다
 - 증상: #380 리뷰 라운드 1 작업 중 `uv run ruff format .` 을 스코프 없이 전체 리포에 돌렸다.
   의도한 건 이번 작업이 만진 `evals/underspecified_probe/`·`tests/unit/test_underspecified_probe_*.py`
