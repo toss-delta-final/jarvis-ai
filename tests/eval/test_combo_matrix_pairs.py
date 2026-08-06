@@ -111,17 +111,18 @@ async def test_ci_pairs_pass_verdict() -> None:
 # ─────────── 4. 공허 방지 fixture 가드 ───────────
 
 
-async def test_combo_0054_fixture_actually_narrows() -> None:
-    """combo-0054 의 base_count > perturbed_count(엄격 감소) — PAIR_CATALOG 가 category 필터를
-    실제로 태우는지의 sanity. 누가 PAIR_CATALOG 를 바꿔 필터가 안 물게 되면 여기서 시끄럽게 깨진다."""
+async def test_combo_0053_fixture_actually_narrows() -> None:
+    """combo-0053(#367 재생성 이후 case id — 구 combo-0054)의 base_count > perturbed_count(엄격
+    감소) — PAIR_CATALOG 가 category 필터를 실제로 태우는지의 sanity. 누가 PAIR_CATALOG 를 바꿔
+    필터가 안 물게 되면 여기서 시끄럽게 깨진다."""
     specs = {s.case_id: s for s in load_pair_checks()}
     cases = {c.case_id: c for c in load_cases()}
-    results = await run_pair_checks([specs["combo-0054"]], cases)
+    results = await run_pair_checks([specs["combo-0053"]], cases)
     result = results[0]
     assert result.metric_base is not None
     assert result.metric_perturbed is not None
     assert result.metric_base > result.metric_perturbed, (
-        f"combo-0054: base={result.metric_base}, perturbed={result.metric_perturbed} — "
+        f"combo-0053: base={result.metric_base}, perturbed={result.metric_perturbed} — "
         "필터 추가가 결과 수를 실제로 줄이지 않는다(공허 통과 위험)"
     )
 
@@ -140,11 +141,11 @@ async def test_pair_checks_md_regeneration_matches_committed() -> None:
 # ─────────── 6. manual 분리 회귀 가드 ───────────
 
 
-def test_combo_0055_is_manual_with_goldenset_link() -> None:
-    """combo-0055 spec 이 mode=manual 이고 link 가 goldenset 을 가리키는지(규약 3항 분리의
-    회귀 가드)."""
+def test_combo_0054_is_manual_with_goldenset_link() -> None:
+    """combo-0054(#367 재생성 이후 case id — 구 combo-0055) spec 이 mode=manual 이고 link 가
+    goldenset 을 가리키는지(규약 3항 분리의 회귀 가드)."""
     specs = {s.case_id: s for s in load_pair_checks()}
-    spec = specs["combo-0055"]
+    spec = specs["combo-0054"]
     assert spec.mode == "manual"
     assert spec.link is not None and "goldenset" in spec.link
 

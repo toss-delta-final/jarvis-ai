@@ -56,6 +56,25 @@ GROUPS = frozenset(
         CONDITION_ONLY_GROUP,
     }
 )
+# [#313] group → 허용 컨텍스트 매핑. "이 축이 무엇을 재는가"의 선언 그 자체다 — 여기 한 줄이
+# 없으면 그 group 은 어떤 컨텍스트도 선언할 수 없다(안전한 기본값). #84 `_category_action_group_is_isolated`
+# 와 #300 `_non_screen_utterances_cannot_reference_screen_contexts` 가 각자 자기 그룹만 지키던
+# 전용 검증자였고, 그 사이에 `option_answer`·`switch` 처럼 아무도 지키지 않은 그룹이 남아 있었다
+# — 이 매핑을 강제하는 일반형 검증자(`Utterance._contexts_are_within_the_group_allowlist`)가 그
+# 자리를 메운다.
+GROUP_ALLOWED_CONTEXTS: dict[str, frozenset[str]] = {
+    "cart_control": frozenset({"none", "lastRecommendations", "pendingCart"}),
+    "demonstrative": frozenset({"none", "lastRecommendations", "pendingCart"}),
+    "option_answer": frozenset({"pendingCart"}),
+    "switch": frozenset({"pendingCart"}),
+    "order_status": frozenset({"none", "lastRecommendations", "pendingCart"}),
+    "general": frozenset({"none", "lastRecommendations", "pendingCart"}),
+    CATEGORY_ACTION_GROUP: frozenset({CATEGORY_PRIOR_CONTEXT_ID}),
+    SCREEN_GROUP: frozenset(SCREEN_CONTEXT_IDS),
+    # [#344 라운드 3] 이 축의 정의가 "무프라이어(none) 컨텍스트에서 조건만 말하는 턴"이므로
+    # 허용 컨텍스트는 `none` 하나뿐이다.
+    CONDITION_ONLY_GROUP: frozenset({"none"}),
+}
 INTENTS = ("recommend", "cart_add", "cart_view", "order_status", "general")
 CATEGORY_ACTIONS = ("carry", "clear", "replace")
 # [#300] screen 셀의 productIdRule 3종. 이슈 본문은 "2종"이라 했지만 실제 셀은 세 모양이다 —
@@ -217,6 +236,25 @@ class ProbeContext(CamelModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _include_screen_matches_context_id(self) -> "ProbeContext":
+        """[#313] `includeScreen` 플래그와 `context_id` 가 screen 컨텍스트인지가 어긋나면 안 된다.
+
+        `GROUP_ALLOWED_CONTEXTS`(`Utterance._contexts_are_within_the_group_allowlist`)는 contextId
+        **문자열** 기준으로 group↔컨텍스트를 제약한다. 반면 `_screen_utterances_reference_a_screen_context`
+        (AnchorSet)는 `includeScreen` **플래그** 기준이다. 둘이 같은 뜻이라는 전제가 깨지면(예:
+        `context_id="none"` 인데 `include_screen=true`) 매핑이 우회된다 — 그래서 두 기준이 항상
+        일치하도록 여기서 양방향으로 강제한다.
+        """
+        is_screen_id = self.context_id in SCREEN_CONTEXT_IDS
+        if self.include_screen != is_screen_id:
+            raise ValueError(
+                f"{self.context_id}: includeScreen({self.include_screen}) 이 contextId 의 screen "
+                f"여부({is_screen_id})와 어긋납니다 — 이 둘이 어긋나면 group→컨텍스트 매핑을 "
+                "우회할 수 있습니다"
+            )
+        return self
+
 
 class Expected(CamelModel):
     """이 발화의 정답. productIdRule 은 cart.productId 채점 규칙이다."""
@@ -279,6 +317,49 @@ class Utterance(CamelModel):
         if unknown:
             raise ValueError(f"알 수 없는 축(axis): {sorted(unknown)}")
         return value
+
+    @model_validator(mode="after")
+    def _contexts_are_within_the_group_allowlist(self) -> "Utterance":
+        """[#313] group 이 선언할 수 있는 컨텍스트를 `GROUP_ALLOWED_CONTEXTS` 로 강제한다.
+
+        왜: 개별 그룹 전용 검증자(#84 `_category_action_group_is_isolated`, #300
+        `_non_screen_utterances_cannot_reference_screen_contexts`)는 각자 자기 그룹만 지켰고,
+        그 사이에 `option_answer`·`switch` 처럼 아무도 지키지 않은 그룹이 남았다. 이 둘은 분모가
+        안 변하는 컨텍스트 치환이라 기존 수치 가드(`test_existing_axis_denominators_are_unaffected_by_screen_cells`)
+        를 통과한다 — `option-answer-001` 의 contexts 를 `pendingCart`→`none` 으로 바꾸면
+        `optionAnswer` 분모는 32 로 그대로인데 프롬프트에 PENDING_CART(옵션 목록)가 안 실려
+        LLM 이 고를 대상 자체가 없어져 조용히 ~0/32 로 떨어진다. `switch-001` 의
+        `pendingCart`→`lastRecommendations` 도 같은 모양이다(되물음이 없어 "되물음 상품이 아닌
+        목록 내 상품" 술어가 성립 불가). 그 표를 받아 든 사람은 이를 #240 계열의 「픽스처 결함을
+        프롬프트 회귀로 오독」한다.
+
+        [#300 → #313] 이 검증자는 `AnchorSet._non_screen_utterances_cannot_reference_screen_contexts`
+        를 흡수해 삭제했다. 그 검증자가 잡던 재현도 여전히 여기서 잡힌다: `cart-control-001` 의
+        contexts 에 `"screenTriple"` 을 추가하면(비-screen 그룹의 screen 컨텍스트 선언) 그 발화의
+        셀이 3 → 4 로 늘어나 `cartControl` 분모(N=8 이면 144)가 조용히 152 가 됐었다 — 이제는
+        `cart_control` 의 허용 목록({'lastRecommendations', 'none', 'pendingCart'})에
+        `screenTriple` 이 없어 이 매핑 하나가 거부한다. #300 이 남긴 categoryPrior 관련 ⚠️(같은
+        구멍이 있는데 범위 밖이라 의도적으로 고치지 않는다)도 이 일반형 매핑이 흡수해 해소됐다 —
+        `categoryPrior` 는 `category_action` 만의 허용 컨텍스트라 다른 그룹은 애초에 선언할 수
+        없다.
+        """
+        if self.group not in GROUP_ALLOWED_CONTEXTS:
+            raise ValueError(
+                f"{self.utterance_id}: group={self.group!r} 은 GROUP_ALLOWED_CONTEXTS 에 없습니다 "
+                "— 매핑에 한 줄을 넣지 않으면 이 group 은 어떤 컨텍스트도 선언할 수 없습니다"
+            )
+        if len(self.contexts) != len(set(self.contexts)):
+            raise ValueError(f"{self.utterance_id}: contexts 에 중복이 있습니다: {self.contexts}")
+        allowed = GROUP_ALLOWED_CONTEXTS[self.group]
+        disallowed = sorted(set(self.contexts) - allowed)
+        if disallowed:
+            raise ValueError(
+                f"{self.utterance_id}: group={self.group!r} 은 컨텍스트 {sorted(allowed)} 만 선언할 "
+                f"수 있는데 {disallowed} 를 선언했습니다 — 새 셀이 기존 축의 분모를 늘리거나(분모가"
+                " 변하는 경우) 프롬프트에 실리지 않는 컨텍스트를 재는(분모가 안 변하는 경우) 축"
+                " 오염 경로입니다"
+            )
+        return self
 
     @model_validator(mode="after")
     def _expectations_match_group(self) -> "Utterance":
@@ -389,8 +470,9 @@ class Utterance(CamelModel):
 
         신규 셀이 `mainIntent` 같은 기존 축의 분모를 늘리면 커밋된 기준선과 그 축을 비교할 수
         없게 된다 — 회귀 0을 증명하려고 만든 축이 스스로 비교 불가가 되는 자기모순이다.
-        그래서 (a) 기대 categoryAction 선언 강제, (b) 컨텍스트는 `categoryPrior` 하나,
-        (c) 기존 축 선언 금지, (역) 다른 그룹의 신규 축 선언 금지를 스키마가 막는다.
+        그래서 (a) 기대 categoryAction 선언 강제, (b) 기존 축 선언 금지, (역) 다른 그룹의 신규 축
+        선언 금지를 스키마가 막는다. 컨텍스트는 `categoryPrior` 하나여야 한다는 제약은 [#313]
+        `GROUP_ALLOWED_CONTEXTS`(`_contexts_are_within_the_group_allowlist`)로 옮겨졌다.
         """
         declared = set(self.axes)
         if self.group == CATEGORY_ACTION_GROUP:
@@ -398,12 +480,6 @@ class Utterance(CamelModel):
                 raise ValueError(
                     f"{self.utterance_id}: 카테고리 발화는 기대 categoryAction 을 선언해야 합니다 "
                     "— intent 만 맞고 승계 판정이 틀린 답을 정답으로 세면 축이 무의미해집니다"
-                )
-            if self.contexts != [CATEGORY_PRIOR_CONTEXT_ID]:
-                raise ValueError(
-                    f"{self.utterance_id}: 카테고리 발화의 contexts 는 "
-                    f"['{CATEGORY_PRIOR_CONTEXT_ID}'] 하나여야 합니다 — 직전 카테고리가 없는 "
-                    "컨텍스트에서는 carry/clear/replace 의 정답이 성립하지 않습니다"
                 )
             legacy = sorted(declared & LEGACY_AXIS_IDS)
             if legacy:
@@ -423,16 +499,15 @@ class Utterance(CamelModel):
     @model_validator(mode="after")
     def _condition_only_group_is_isolated(self) -> "Utterance":
         """[#344 라운드 2] 조건 전용 축은 기존 축과 표본을 섞지 않는다 — 다른 그룹과 같은 이유
-        (`_category_action_group_is_isolated`·`_screen_group_is_isolated` 참조)."""
+        (`_category_action_group_is_isolated`·`_screen_group_is_isolated` 참조).
+
+        [#344 라운드 3] 컨텍스트가 `none` 하나여야 한다는 제약은 [#313]
+        `GROUP_ALLOWED_CONTEXTS`(`_contexts_are_within_the_group_allowlist`)로 옮겨졌다 —
+        `condition_only` 의 허용 컨텍스트가 `{"none"}` 하나뿐이라 그 매핑만으로 이미 충분하다
+        (`_category_action_group_is_isolated` 가 categoryPrior 단일 제약을 옮긴 것과 같은 정리).
+        """
         declared = set(self.axes)
         if self.group == CONDITION_ONLY_GROUP:
-            if self.contexts != ["none"]:
-                raise ValueError(
-                    f"{self.utterance_id}: 조건 전용 발화의 contexts 는 ['none'] 하나여야 합니다 "
-                    "— 이 축은 category_probe none 슬라이스와 같은 현상(조건 전용 발화가 categoryQueries"
-                    "를 새는지)을 decompose 계약 단계에서 재는 것이 목적이라 직전 카테고리·추천 맥락이"
-                    "섞이면 안 됩니다"
-                )
             legacy = sorted(
                 declared & (LEGACY_AXIS_IDS | CATEGORY_ACTION_AXIS_IDS | SCREEN_AXIS_IDS)
             )
@@ -544,35 +619,6 @@ class AnchorSet(CamelModel):
                     f"{utterance.utterance_id}: contexts[0]={utterance.contexts[0]!r} 는 screen "
                     "컨텍스트(includeScreen=true)가 아닙니다"
                 )
-        return self
-
-    @model_validator(mode="after")
-    def _non_screen_utterances_cannot_reference_screen_contexts(self) -> "AnchorSet":
-        """[#300, 리뷰 1차 F-1] screen 이 아닌 발화는 screen 컨텍스트를 선언할 수 없다.
-
-        `Utterance._screen_group_is_isolated` 는 (a) screen 그룹의 기존 축 선언과 (b) 비-screen
-        그룹의 screen **축** 선언만 막는다 — 비-screen 발화가 `contexts` 에 screen 컨텍스트를
-        끼워 넣는 것은 막지 않는다. 재현: `cart-control-001` 의 contexts 에 `"screenTriple"` 을
-        추가하면 스키마를 통과하고 그 발화의 셀이 3 → 4 로 늘어나 `cartControl` 분모(N=8 이면
-        144)가 조용히 152 가 된다 — 새 셀이 기존 축의 분모를 늘리면 커밋된 기준선과 비교할 수
-        없게 되는데, 이는 이 하네스가 존재하는 이유 그 자체다.
-
-        ⚠️ `categoryPrior` 에도 같은 구멍이 있다(#84 부터 존재 — 카테고리 발화가 아닌 발화가
-        `categoryPrior` 를 선언해도 막지 않는다). 이 PR 이 만든 컨텍스트가 아니고 범위 밖이라
-        **의도적으로 고치지 않는다** — 다음 사람이 같은 판단을 반복하지 않도록 여기 남긴다.
-        """
-        by_id = {context.context_id: context for context in self.contexts}
-        for utterance in self.utterances:
-            if utterance.group == SCREEN_GROUP:
-                continue
-            for context_id in utterance.contexts:
-                context = by_id.get(context_id)
-                if context is not None and context.include_screen:
-                    raise ValueError(
-                        f"{utterance.utterance_id}: group={utterance.group!r} 발화는 screen "
-                        f"컨텍스트 {context_id!r} 를 선언할 수 없습니다 — 새 셀이 기존 축의 "
-                        "분모를 늘리면 커밋된 기준선과 비교가 깨집니다"
-                    )
         return self
 
     @model_validator(mode="after")
