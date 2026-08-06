@@ -257,20 +257,22 @@ async def test_unrelated_answer_turn_completes_without_dying(flag_on) -> None:
     _assert_no_reask_leak(texts)
 
 
-async def test_refusal_answer_turn_falls_back_to_unfiltered_search(flag_on) -> None:
+async def test_refusal_answer_turn_falls_back_to_popular_not_unfiltered_search(flag_on) -> None:
     """A-3 거부 답변 — "그냥 아무거나 줘"(좁히기 거부) 도 실사용자에게 실제로 뭔가는 준다.
 
     1턴은 되묻는다. 2턴은 사용자가 카테고리를 답하지 않고 무조건 발화를 반복해 **좁히기를
     명시적으로 거부**한 시나리오다(1턴째의 "첫 요청이 원래 무조건"과는 성격이 다르다).
 
-    **실측한 경로**: 2턴째는 `prior is not None` 이라 `is_underspecified_turn`·`is_no_condition_
-    turn` 이 둘 다 그 자리에서 False 로 떨어진다(§2 조건 ②, 둘 다 첫 턴 한정). 그 결과 이 턴은
-    과소지정 되물음도, #162 인기 후보(I-3) 폴백도 타지 않고 **무필터 I-1 검색**으로 떨어진다
-    (semantic_query 는 decompose 의 폴백 체인이 1턴째 저장된 원문을 이어받아 채운다, SPEC §5.2 와
-    동일 메커니즘). 이건 #372 가 만든 회귀가 아니라 **prior 유무로 갈리는 기존(#162 이전) 멀티턴
-    경계**다 — "안 죽는다"만으로는 부족하다는 지시대로, 무엇을 주는지(무필터 검색 결과 전량)까지
-    단언으로 고정한다. 이 경계 자체를 좁히는 것(예: 2턴+ 에도 popular 폴백 적용)은 #372 소관 밖이라
-    보고서에 관찰로만 남긴다.
+    **종전 동결(#372) → #393 이 좁힌 경계**: 2턴째는 `prior is not None` 이라
+    `is_underspecified_turn`·`is_no_condition_turn` 이 둘 다 그 자리에서 False 로 떨어진다
+    (§2 조건 ②, 둘 다 첫 턴 한정). #372 는 그 결과 이 턴이 **무필터 I-1 검색**(파라미터 0개 =
+    운영 실측 7.74초·12.3MB)으로 떨어지는 것을 "prior 유무로 갈리는 기존 멀티턴 경계"로 보고
+    관찰로만 남겼다(#393 로 처리하라는 지시와 함께). #393 의 최소 필터 가드(`search_guard.
+    is_unfiltered_payload`)는 **의도 판정이 아니라 payload 사실 판정**이라 no_condition/
+    underspecified 와 달리 첫 턴에 한정되지 않는다 — 답이 "파라미터 0개"면 턴 번호와 무관하게
+    12.3MB 응답을 막는 마지막 방어선이 발동해야 하기 때문이다(되묻기 다음 턴이 실사용에서 실제로
+    밟는 경로라 오히려 더 중요하다). `search_filter_guard_enabled=False` 면 종전 동작(무필터
+    I-1)이 그대로 재현된다 — 아래 롤백 테스트가 그 회귀를 지킨다.
     """
     identity = _member()
     search, search_calls = _counting_search_calls()
@@ -302,10 +304,63 @@ async def test_refusal_answer_turn_falls_back_to_unfiltered_search(flag_on) -> N
         )
     )
 
-    assert search_calls  # 무필터 I-1 로 떨어진다(관찰) — 필터가 전부 빈 채로 호출된다
+    assert search_calls == []  # 무필터 I-1 이 나가지 않는다 — #393 이 좁힌 경계의 핵심
+    assert popular_calls == [get_settings().popular_candidate_size]  # I-3 로 갔다
+
+    assert len(push2.pushes) == 1
+    pushed_ids = {pid for entry in push2.pushes[0].lists for pid in entry.product_ids}
+    assert pushed_ids == {p.product_id for p in DEFAULT_PRODUCTS}  # 인기 후보 집합과 일치
+
+    types = _types(second_events)
+    assert "error" not in types
+    assert "products.ready" in types
+    assert types[-1] == "done"
+    texts = _reask_tokens(second_events)
+    _assert_no_reask_leak(texts)  # 되물음 미반복
+    # 사용자가 인기 상품을 자기 조건이 반영된 결과로 오해하지 않게 고지가 나간다.
+    assert any(get_settings().no_condition_notice_popular in t for t in texts)
+
+
+async def test_refusal_answer_turn_falls_back_to_unfiltered_search_when_guard_disabled(
+    flag_on, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """[#393 롤백] `search_filter_guard_enabled=False` 면 종전 동작(무필터 I-1)이 그대로
+    재현된다 — 종전 동작이 회귀 검출 없이 사라지지 않게 남겨 둔다."""
+    monkeypatch.setattr(get_settings(), "search_filter_guard_enabled", False)
+    identity = _member()
+    search, search_calls = _counting_search_calls()
+    popular, popular_calls = _recording_popular()
+    thread_id = "answer-turn-refusal-guard-off"
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="5만원 이하로 아무거나 추천해줘", thread_id=thread_id),
+            identity,
+            llm=FakeLLM(decompose=_PRICE_MAX_DECOMPOSE),
+            search=search,
+            push_fn=_RecordingPush(),
+            popular_fn=popular,
+        )
+    )
+    search_calls.clear()
+    popular_calls.clear()
+    push2 = _RecordingPush()
+
+    second_events = await _collect(
+        run_buyer_turn(
+            _req(message="그냥 아무거나 줘", thread_id=thread_id),
+            identity,
+            llm=FakeLLM(decompose=_BARE_DECOMPOSE),
+            search=search,
+            push_fn=push2,
+            popular_fn=popular,
+        )
+    )
+
+    assert search_calls  # 무필터 I-1 로 떨어진다 — 필터가 전부 빈 채로 호출된다
     assert search_calls[0].category is None
     assert search_calls[0].price_max is None
-    assert popular_calls == []  # I-3 폴백은 없다(prior 존재로 #162 경로도 막힘)
+    assert popular_calls == []  # I-3 폴백은 없다(prior 존재로 #162 경로도 막힘, 가드도 off)
 
     assert len(push2.pushes) == 1
     pushed_ids = {pid for entry in push2.pushes[0].lists for pid in entry.product_ids}
