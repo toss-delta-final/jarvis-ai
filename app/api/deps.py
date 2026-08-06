@@ -24,6 +24,14 @@ logger = logging.getLogger(__name__)
 _REASON_MAX_CHARS = 200
 # __cause__/__context__ 체인 추적 상한 (순환/과다 중첩 방어).
 _REASON_MAX_DEPTH = 5
+# 로그 인젝션(CWE-117) 방어용 제어문자 이스케이프 표.
+# 예외 메시지에는 **서명 검증 이전** 값이 섞인다 — PyJWKClientError 는 JWT 헤더의 `kid` 를
+# 그대로 메시지에 싣고, dev 모드 decode 는 서명을 아예 안 본다. 개행이 그대로 나가면 공격자가
+# 유효 서명 없이도 가짜 "auth rejected ..." 줄을 로그에 심을 수 있다.
+_CONTROL_ESCAPES = str.maketrans(
+    {codepoint: f"\\x{codepoint:02x}" for codepoint in [*range(0x20), 0x7F]}
+    | {0x09: "\\t", 0x0A: "\\n", 0x0D: "\\r"}
+)
 
 
 def _reason_chain(exc: BaseException) -> str:
@@ -37,13 +45,16 @@ def _reason_chain(exc: BaseException) -> str:
     라이브러리/자체 예외 메시지만 남긴다. 자체 메시지 중 값을 끼우는 것은 신원 판별자
     `sub_type`(member|guest 집합) 하나뿐이며, 이는 식별자가 아니라 유형 값이고 §2.3 클레임
     변경을 가리는 것이 이 로그의 목적이다.
+
+    [보안] 메시지에 섞이는 토큰 유래 값(`kid`·`sub_type`)은 **서명 검증 이전** 값이라 공격자
+    제어다. 제어문자를 이스케이프해 로그 인젝션(CWE-117)을 막는다.
     """
     parts: list[str] = []
     seen: set[int] = set()
     current: BaseException | None = exc
     while current is not None and id(current) not in seen and len(parts) < _REASON_MAX_DEPTH:
         seen.add(id(current))
-        message = str(current)[:_REASON_MAX_CHARS]
+        message = str(current).translate(_CONTROL_ESCAPES)[:_REASON_MAX_CHARS]
         parts.append(f"{type(current).__name__}: {message}" if message else type(current).__name__)
         current = current.__cause__ or current.__context__
     return " <- ".join(parts)
