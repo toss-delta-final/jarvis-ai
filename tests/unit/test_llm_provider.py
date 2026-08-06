@@ -15,7 +15,14 @@ from pydantic import ValidationError
 
 from app.core import llm as llm_mod
 from app.core.config import Settings
-from app.core.llm import AnthropicLLM, LLMError, OpenAILLM, get_llm, is_timeout_error
+from app.core.llm import (
+    AnthropicLLM,
+    LLMError,
+    OpenAILLM,
+    get_llm,
+    is_output_length_error,
+    is_timeout_error,
+)
 from app.core.tracing import FakeTraceExporter, TraceFactory, bind_request_trace, trace_span
 
 
@@ -83,6 +90,52 @@ def test_is_timeout_error_survives_self_referencing_chain() -> None:
     second.__cause__ = first
 
     assert is_timeout_error(first) is False
+
+
+# ─────────── is_output_length_error — 출력 토큰 예산 소진 판정 (#325 R6) ───────────
+
+
+def test_is_output_length_error_detects_direct_type() -> None:
+    """openai.LengthFinishReasonError 를 직접 타입으로 잡는다(#325 원 사례)."""
+    from types import SimpleNamespace
+
+    openai = pytest.importorskip("openai")
+    exc = openai.LengthFinishReasonError(completion=SimpleNamespace(usage=None))
+    assert is_output_length_error(exc) is True
+
+
+def test_is_output_length_error_follows_cause_chain() -> None:
+    """OpenAILLM.complete 이 ``raise LLMError(str(exc)) from exc`` 로 감싸는 실제 경로처럼
+    원인 체인에만 있어도 잡아야 한다."""
+    from types import SimpleNamespace
+
+    openai = pytest.importorskip("openai")
+    inner = openai.LengthFinishReasonError(completion=SimpleNamespace(usage=None))
+    try:
+        try:
+            raise inner
+        except openai.LengthFinishReasonError:
+            raise LLMError("wrapped") from inner
+    except LLMError as wrapped:
+        assert is_output_length_error(wrapped) is True
+
+
+def test_is_output_length_error_rejects_unrelated() -> None:
+    """무관한 예외·None 은 False — 타임아웃도 출력 예산 소진이 아니다."""
+    assert is_output_length_error(RuntimeError("boom")) is False
+    assert is_output_length_error(LLMError("모델 응답 파싱 실패")) is False
+    assert is_output_length_error(TimeoutError()) is False
+    assert is_output_length_error(None) is False
+
+
+def test_is_output_length_error_survives_self_referencing_chain() -> None:
+    """원인 체인이 순환해도 무한 루프에 빠지지 않는다(is_timeout_error 와 같은 안전장치)."""
+    first = RuntimeError("a")
+    second = RuntimeError("b")
+    first.__cause__ = second
+    second.__cause__ = first
+
+    assert is_output_length_error(first) is False
 
 
 # ─────────── tier 매핑 ───────────

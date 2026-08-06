@@ -96,6 +96,45 @@ def is_timeout_error(exc: BaseException | None) -> bool:
     return False
 
 
+@lru_cache(maxsize=1)
+def _output_length_exception_types() -> tuple[type[BaseException], ...]:
+    """출력 토큰 예산 소진으로 볼 예외 타입 집합 — 설치된 SDK 만 지연 수집한다.
+
+    ``_timeout_exception_types`` 와 같은 규약: import 실패를 무시해 SDK 미설치
+    환경(테스트 등)에서도 이 모듈이 죽지 않는다.
+    """
+    types_: list[type[BaseException]] = []
+    for module_name, attr in (("openai", "LengthFinishReasonError"),):
+        try:
+            module = import_module(module_name)
+        except ImportError:  # pragma: no cover - SDK 미설치 환경
+            continue
+        candidate = getattr(module, attr, None)
+        if isinstance(candidate, type) and issubclass(candidate, BaseException):
+            types_.append(candidate)
+    return tuple(types_)
+
+
+def is_output_length_error(exc: BaseException | None) -> bool:
+    """예외(와 그 원인 체인)가 출력 토큰 예산 소진인지 **타입으로** 판정한다(#325 R6).
+
+    ``openai.LengthFinishReasonError`` 는 응답이 ``finish_reason="length"`` 로 끊겨
+    구조화 출력 파싱 자체가 불가능할 때 SDK 가 던진다 — #325 의 원 사례이며, 같은
+    입력을 다시 보내도 같은 자리에서 끊기는 그 항목 고유의 결정적 실패다.
+    ``is_timeout_error`` 와는 판정 대상이 겹치지 않는 별도 헬퍼로 둔다 — 그 함수는
+    사용자 대면 ``LLM_TIMEOUT`` 매핑에 쓰이므로 판정 범위를 넓히면 무관한 계약 표면이
+    틀어진다.
+    """
+    seen: set[int] = set()
+    current = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, _output_length_exception_types()):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def resolve_model_id(settings: Settings, tier: ModelTier) -> str:
     """API key와 무관하게 활성 provider의 tier별 모델 ID를 해석한다."""
     if tier not in ("fast", "smart"):

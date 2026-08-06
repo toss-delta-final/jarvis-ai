@@ -5,12 +5,20 @@ ON_SALE 은 enrich(Haiku) → search_doc 조립 → 임베딩 → artifact_store
 성공 후에만 전진한다.
 
 [#325] ON_SALE 단건 실패는 격리 후보를 실패 **종류**로 가른다 — enrich_product(LLM 호출+
-JSON 파싱) 단계의 내용 실패만 attempts 회 재시도 후 격리(dead-letter 기록)하고 페이지를
-계속 진행한다(head-of-line blocking 해소). embed()·store.upsert() 같은 인프라 실패와,
-enrichment 단계라도 재시도 소진 후 타임아웃 계열로 판정되는 실패는 항목 내용과 무관한
-광역 장애로 보고 원칙적으로 격리하지 않고 그대로 전파한다 — 그 페이지는 커서를 전진시키지
-않고 자연 복구(동일 커서 재개)로 되돌아간다. 페이지 ON_SALE 실패 비율 가드는 3선 방어다
-(인프라는 멀쩡한데 enrichment 결과가 대량으로 깨지는 경우, 예: 프롬프트 회귀).
+JSON 파싱) 단계의 증명된 콘텐츠 실패만 attempts 회 재시도 후 격리(dead-letter 기록)하고
+페이지를 계속 진행한다(head-of-line blocking 해소). embed()·store.upsert() 같은 인프라
+실패와, enrichment 단계라도 재시도 소진 후 콘텐츠 실패로 확정되지 않는 실패(429·연결
+오류·5xx·타임아웃·모르는 예외 포함)는 항목 내용과 무관한 광역 장애 후보로 보고 원칙적으로
+격리하지 않고 그대로 전파한다 — 그 페이지는 커서를 전진시키지 않고 자연 복구(동일 커서
+재개)로 되돌아간다. 페이지 ON_SALE 실패 비율 가드는 3선 방어다(인프라는 멀쩡한데
+enrichment 결과가 대량으로 깨지는 경우, 예: 프롬프트 회귀).
+
+[#325 R6] 콘텐츠 실패 판정은 **화이트리스트**다(``_is_enrichment_content_failure``) —
+"모르는 실패는 시간 유계 경로(2선)로 보내고, 즉시 격리(1선)는 증명된 콘텐츠 실패에만"이
+기본값 방향이다. 예전(R3) 판정은 "타임아웃이 아니면 콘텐츠"라는 블랙리스트여서, 429·5xx
+같은 흔한 일시적 인프라 장애가 R4·R5 의 시간 유계 보호를 우회해 첫 주기에 영구 격리됐다
+(PR #399 리뷰 3차). ``is_timeout_error``(app/core/llm.py)는 사용자 대면 ``LLM_TIMEOUT``
+매핑 전용이라 판정 범위를 그대로 두고, 콘텐츠 실패 판정은 별도 헬퍼로 분리했다.
 
 [#325 R4] 다만 광역 장애와 항목 고유 결정적 실패는 단일 주기 관측으로는 원리적으로 구별할
 수 없다 — 실제로 둘을 가르는 신호는 시간이다. 그래서 위 전파 대상(embed·store 인프라 실패,
@@ -45,7 +53,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from app.core.config import Settings, get_settings
-from app.core.llm import LLMClient, get_llm, is_timeout_error
+from app.core.llm import LLMClient, LLMError, LLMNotConfigured, get_llm, is_output_length_error
 from app.pipelines import embedding as _embedding
 from app.pipelines import color_synonym_seed
 from app.pipelines.artifact_store import (
@@ -299,6 +307,43 @@ async def _process_change(
     await _finish_change(change, product, extras, embed=embed, store=store, settings=settings)
 
 
+def _is_enrichment_content_failure(exc: BaseException) -> bool:
+    """enrich 단계 실패가 **증명된 콘텐츠 실패**인지 판정한다(#325 R6) — True 만 1선(즉시 격리).
+
+    PR #399 리뷰(3차): 예전 판정은 "타임아웃이면 2선, 아니면 1선"이라는 **블랙리스트**였다.
+    ``is_timeout_error`` 가 아는 타입은 ``TimeoutError``·``httpx.TimeoutException``·
+    ``anthropic/openai APITimeoutError`` 뿐이라, ``openai.RateLimitError``(429)·
+    ``APIConnectionError``·``InternalServerError``(5xx) 같은 명백한 일시적 인프라 장애가
+    "타임아웃 아님 = 콘텐츠 실패"로 오분류돼 첫 주기에 곧바로 영구 격리됐다 — R4·R5 가 만든
+    시간 유계 보호를 흔한 장애가 통째로 우회한 것이다.
+
+    안전한 기본값은 반대다: **모르는 실패는 시간 유계 경로(2선)로 보내고, 즉시 격리는
+    증명된 콘텐츠 실패에만** 적용한다(화이트리스트). 2선으로 보낸 실패도 계속 반복되면
+    결국 스트릭 상한에서 격리되므로, 오판의 비용은 최대 몇 주기 지연뿐이다 — 반면 인프라
+    장애를 콘텐츠로 오판하면 되돌릴 수 없는 영구 손실이다.
+
+    True(1선)로 여기 열거하는 것만 즉시 격리한다:
+    - ``is_output_length_error`` — 출력 토큰 예산 소진(#325 원 사례). 같은 상품이면 재시도해도
+      같은 자리에서 끊기는, 정의상 그 항목 고유의 결정적 실패다.
+    - ``LLMError`` 이면서 원인 체인이 **없거나**(``extract_json`` 의 "JSON 을 찾지 못함"/
+      "객체가 아님" — LLM 이 아예 JSON 을 안 준 경우) 원인이 ``ValueError``/``TypeError``
+      (``json.loads`` 실패 — ``JSONDecodeError`` 는 ``ValueError`` 하위)인 경우. LLM 이 반환한
+      텍스트 자체가 깨진 경우로, 인프라가 아니라 그 응답 내용의 문제다.
+
+    False(2선)는 그 외 전부다 — 429·연결 오류·5xx·타임아웃·모르는 예외. ``LLMNotConfigured``
+    는 ``LLMError`` 의 하위타입이라 원인 체인 규칙에 걸릴 수 있어 **명시적으로 제외**한다
+    (API key 미구성은 항목과 무관한 구성 오류이지 콘텐츠 실패가 아니다).
+    """
+    if isinstance(exc, LLMNotConfigured):
+        return False
+    if is_output_length_error(exc):
+        return True
+    if isinstance(exc, LLMError):
+        cause = exc.__cause__
+        return cause is None or isinstance(cause, (ValueError, TypeError))
+    return False
+
+
 async def _drain(
     fetch: Fetch,
     start_cursor: str,
@@ -311,24 +356,28 @@ async def _drain(
 ) -> BatchResult:
     """start_cursor 부터 hasMore 소진까지 target 에 반영한다. persist_cursor=True 면 페이지마다 커서 전진.
 
-    격리 대상은 실패 **종류**로 가른다(#325 R3) — 비율은 poison 단건과 광역 장애를 구별하는
-    대리 지표일 뿐이고, 운영 증분 페이지처럼 소량 표본에서는 그 대리가 무너진다. 다만 종류
-    판정도 단일 주기 관측만으로는 광역 장애와 항목 고유 결정적 실패를 구별하지 못하므로(#325
-    R4), "그 종류"로 전파 대상이 된 실패는 상품별 연속 실패 스트릭으로 시간 유계를 건다:
+    격리 대상은 실패 **종류**로 가른다 — 비율은 poison 단건과 광역 장애를 구별하는 대리
+    지표일 뿐이고, 운영 증분 페이지처럼 소량 표본에서는 그 대리가 무너진다. 종류 판정도
+    단일 주기 관측만으로는 광역 장애와 항목 고유 결정적 실패를 구별하지 못하므로(#325 R4),
+    전파 대상이 된 실패는 상품별 연속 실패 스트릭으로 시간 유계를 건다. 규칙은 네 갈래로
+    정리되고 이 순서로 적용된다(#325 R6, api-spec §4.8):
 
     - **성공** → ``_item_failure_streaks`` 에서 해당 product_id 를 삭제(연속만 센다).
-    - **1선(구조) — enrich 내용 실패**: ``_enrich_change``(enrich_product 단계)의 내용 실패만
+    - **1선 — enrich 의 증명된 콘텐츠 실패**: ``_enrich_change``(enrich_product 단계)에서
+      ``_is_enrichment_content_failure`` 가 True 로 판정하는 실패(출력 예산 소진, 원인 없는/
+      ValueError·TypeError 원인의 LLMError — JSON 파싱 자체가 깨진 경우)만
       settings.enrichment_item_attempts 회 재시도 후 **즉시** 격리(dead-letter 로그)하고 다음
       항목으로 진행한다(#325 head-of-line blocking 해소). 정의상 항목 고유 실패이므로 스트릭
       판정을 거치지 않는다 — 스트릭도 삭제한다(격리했으므로 다음 주기 큐에 없다).
-    - **2선(시간 유계) — 타임아웃·embed·store**: enrich 재시도 소진 후 그 예외(또는 원인
-      체인)가 ``app.core.llm.is_timeout_error`` 로 타임아웃 계열이거나, ``_finish_change``
-      (embed()·store.upsert())가 실패하면 — 항목 내용과 무관한 인프라 장애 후보이지만 단일
-      주기로는 poison 단건과 구별 불가하므로 — 해당 product_id 스트릭을 +1 한다.
-      스트릭이 settings.artifacts_batch_item_dead_letter_cycles 미만이면 종전대로 **전파**
-      (자연 복구, 커서 미전진) — WARNING 로 현재 스트릭/상한을 남긴다. 상한 이상이면 항목
-      고유 실패로 확정해 **격리**(dead-letter ERROR, product_id·스트릭·상한·단계 표기)하고
-      다음 항목으로 계속한다 — failed 증가, 스트릭 삭제.
+    - **2선(시간 유계) — 그 외 모든 단건 실패**: enrich 재시도 소진 후에도
+      ``_is_enrichment_content_failure`` 가 False 인 실패(429·연결 오류·5xx·타임아웃·모르는
+      예외 포함 — "모르면 2선"이 기본값), 또는 ``_finish_change``(embed()·store.upsert())의
+      실패는 — 항목 내용과 무관한 인프라 장애 후보이지만 단일 주기로는 poison 단건과 구별
+      불가하므로 — 해당 product_id 스트릭을 +1 한다. 스트릭이
+      settings.artifacts_batch_item_dead_letter_cycles 미만이면 종전대로 **전파**(자연 복구,
+      커서 미전진) — WARNING 로 현재 스트릭/상한을 남긴다. 상한 이상이면 항목 고유 실패로
+      확정해 **격리**(dead-letter ERROR, product_id·스트릭·상한·단계 표기)하고 다음 항목으로
+      계속한다 — failed 증가, 스트릭 삭제.
     - **3선(비율, 방어)**: 페이지의 ON_SALE 표본이 settings.artifacts_batch_failure_min_sample
       이상이고 실패 비율이 settings.artifacts_batch_failure_ratio_threshold 이상이면 — 그
       페이지를 가져온 커서(fetch 에 넘긴 값)의 연속 발동 횟수를 +1 한다. 표본이 min_sample
@@ -344,12 +393,12 @@ async def _drain(
         걸리지 않고, 이 3선 시간 유계가 없으면 비율 가드 자체가 #325 의 무기한 정지를
         재현한다. 페이지가 비율 임계를 넘지 않고 정상 종료하면 그 커서의 카운터를 삭제한다
         (연속만 센다).
-
-    HIDDEN 삭제 실패·status 파싱 실패(ProductChange 단계)는 이 시간 유계의 대상이 아니라
-    그대로(무기한) 전파한다(스트릭 대상도 아니다) — api-spec §4.8 이 명시적으로 정한 fail-closed
-    규약이다: 항목별 ack/DLQ 계약이 없어 skip-전진하면 삭제 이벤트가 영구 유실되므로, 승인받은
-    개정 범위 밖인 이 경로만은 시간 유계에서 제외된다. 이미 성공한 앞 페이지는 artifact와
-    커서가 함께 저장된 유효 체크포인트이므로 롤백하지 않는다.
+    - **계약(fail-closed, 불변)** — HIDDEN 삭제 실패·status 파싱 실패(ProductChange 단계)는
+      이 시간 유계의 대상이 아니라 그대로(무기한) 전파한다(스트릭 대상도 아니다) — api-spec
+      §4.8 이 명시적으로 정한 fail-closed 규약이다: 항목별 ack/DLQ 계약이 없어 skip-전진하면
+      삭제 이벤트가 영구 유실되므로, 승인받은 개정 범위 밖인 이 경로만은 시간 유계에서
+      제외된다. 이미 성공한 앞 페이지는 artifact와 커서가 함께 저장된 유효 체크포인트이므로
+      롤백하지 않는다.
     """
     cursor = start_cursor
     processed = hidden = pages = failed = 0
@@ -374,9 +423,9 @@ async def _drain(
 
             stage_exc: Exception | None = None
             stage = ""
-            if last_exc is not None and not is_timeout_error(last_exc):
-                # enrichment 내용 실패(타임아웃 아님) — 정의상 항목 고유 실패이므로 스트릭
-                # 판정 없이 즉시 격리한다(#325 R3 규칙 1 그대로).
+            if last_exc is not None and _is_enrichment_content_failure(last_exc):
+                # 증명된 콘텐츠 실패(#325 R6 화이트리스트) — 정의상 항목 고유 실패이므로
+                # 스트릭 판정 없이 즉시 격리한다(1선).
                 _item_failure_streaks.pop(change.product_id, None)
                 failed += 1
                 page_failed += 1
@@ -388,9 +437,10 @@ async def _drain(
                 )
                 continue
             if last_exc is not None:
-                # enrichment 재시도 소진 후에도 타임아웃 계열 — 광역 장애 후보, 스트릭 판정(아래).
+                # 콘텐츠 화이트리스트 밖(429·연결 오류·5xx·타임아웃·모르는 예외 포함) — 광역
+                # 장애 후보로 취급해 스트릭 판정(아래). "모르면 2선"이 기본값이다(#325 R6).
                 stage_exc = last_exc
-                stage = "enrichment_timeout"
+                stage = "enrichment"
             else:
                 # enrichment 성공 — 나머지 단계(embed·upsert·색상 수확)는 인프라 장애 후보다.
                 assert product is not None and extras is not None

@@ -1705,3 +1705,238 @@ async def test_color_harvest_cancellation_propagates(monkeypatch):
             store=CatalogArtifactStore(),
             settings=settings,
         )
+
+
+# ── 라운드 6(#325 R6, PR #399 Claude 리뷰 4차 대응): 콘텐츠 실패 화이트리스트 ──
+#
+# 리뷰 지적(타당): 예전 판정("타임아웃이면 2선, 아니면 1선")은 블랙리스트라 is_timeout_error
+# 가 모르는 예외(openai.RateLimitError 429·APIConnectionError·InternalServerError 5xx 등
+# 흔한 일시적 인프라 장애)가 전부 콘텐츠 실패로 오분류돼 첫 주기에 곧바로 영구 격리됐다 —
+# R4·R5 의 시간 유계 보호를 통째로 우회하는 경로였다. _is_enrichment_content_failure 로
+# 화이트리스트를 도입해 "모르면 2선"을 기본값으로 뒤집는다.
+
+
+class _RaisingLLM:
+    """호출마다 주어진 예외를 내는 fake — 콘텐츠 실패 화이트리스트 판정 테스트 전용(#325 R6)."""
+
+    def __init__(self, exc_factory):
+        self._exc_factory = exc_factory
+        self.calls = 0
+
+    async def complete(
+        self, *, system, user, tier, max_tokens=1024, json_output=True, reasoning_effort=None
+    ):
+        self.calls += 1
+        raise self._exc_factory()
+
+
+class _TextLLM:
+    """설정된 원문을 그대로 반환하는 fake — extract_json 이 실제로 던지는 경로를 재현한다."""
+
+    def __init__(self, text: str):
+        self._text = text
+        self.calls = 0
+
+    async def complete(
+        self, *, system, user, tier, max_tokens=1024, json_output=True, reasoning_effort=None
+    ):
+        self.calls += 1
+        return self._text
+
+
+class _FakeRateLimitError(Exception):
+    """openai.RateLimitError(429) 자리를 대신하는 SDK 미의존 더미(#325 R6)."""
+
+
+class _FakeConnectionError(Exception):
+    """openai.APIConnectionError/InternalServerError(5xx) 자리를 대신하는 SDK 미의존 더미."""
+
+
+def _wrapped(cause_cls):
+    """provider SDK 예외를 ``raise LLMError(...) from exc`` 로 감싸는 실제 규약을 재현한다."""
+
+    def factory():
+        from app.core.llm import LLMError
+
+        try:
+            raise cause_cls("infra hiccup")
+        except cause_cls as exc:
+            raise LLMError("boom") from exc
+
+    return factory
+
+
+async def test_drain_rate_limit_propagates_then_isolates_at_cycle_limit(caplog):
+    """[#325 R6 핵심 회귀] rate limit 계열(LLMError from 미지 예외)은 화이트리스트 밖이라
+    2선이다 — 1회차엔 예외 전파 + 커서 미전진, 상한(기본 3) 주기째에야 격리한다. 예전
+    블랙리스트 판정에서는 1회차부터 즉시(영구) 격리됐다(리뷰 시나리오 그대로).
+    """
+    from app.core.llm import LLMError
+
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    changes = [_change(1, name="문제상품")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    settings = get_settings()
+    assert settings.artifacts_batch_item_dead_letter_cycles == 3  # 기본값 전제 명시
+    llm = _RaisingLLM(_wrapped(_FakeRateLimitError))
+
+    for _ in range(settings.artifacts_batch_item_dead_letter_cycles - 1):
+        with pytest.raises(LLMError):
+            await run_artifacts_batch(
+                fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+            )
+        assert store.get_cursor() == "checkpoint"
+        assert store.get(1) is None
+
+    with caplog.at_level("ERROR"):
+        result = await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+        )
+
+    assert result.failed == 1
+    assert store.get_cursor() == "c1"
+    assert store.get(1) is None
+    assert "product_id=1" in caplog.text
+    assert "streak=3/3" in caplog.text
+
+
+async def test_drain_connection_error_not_isolated_immediately():
+    """연결 오류·5xx 계열(LLMError from 미지 예외)도 같은 형태로 화이트리스트 밖 — 1회차엔
+    격리 없이 그대로 전파하고 커서는 미전진한다.
+    """
+    from app.core.llm import LLMError
+
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    changes = [_change(1, name="문제상품")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _RaisingLLM(_wrapped(_FakeConnectionError))
+    settings = get_settings()
+    with pytest.raises(LLMError):
+        await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+        )
+
+    assert llm.calls == settings.enrichment_item_attempts
+    assert store.get_cursor() == "checkpoint"
+    assert store.get(1) is None
+
+
+async def test_drain_json_parse_failure_isolates_immediately():
+    """extract_json 의 실제 json.loads 실패(원인 ValueError/JSONDecodeError) — 화이트리스트
+    1선, 1주기째에 격리+커서 전진(#325 R6)."""
+    store = CatalogArtifactStore()
+    changes = [_change(1, name="깨진JSON")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _TextLLM("{이건 유효한 JSON 이 아님}")
+    result = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=get_settings()
+    )
+
+    assert result.failed == 1
+    assert result.processed == 0
+    assert store.get_cursor() == "c1"
+    assert store.get(1) is None
+
+
+async def test_drain_bare_llm_error_isolates_immediately():
+    """extract_json 이 "JSON 을 찾지 못함"으로 내는 원인 없는 LLMError — 화이트리스트 1선,
+    1주기째에 격리+커서 전진(#325 R6). 가짜 예외가 아니라 실제 extract_json 경로를 그대로
+    통과시킨다(LLM 이 JSON 이 아닌 평문을 반환)."""
+    store = CatalogArtifactStore()
+    changes = [_change(1, name="평문응답")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _TextLLM("죄송합니다, JSON 을 만들 수 없어요.")
+    result = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=get_settings()
+    )
+
+    assert result.failed == 1
+    assert result.processed == 0
+    assert store.get_cursor() == "c1"
+    assert store.get(1) is None
+
+
+async def test_drain_output_length_error_isolates_immediately():
+    """[#325 원 사례] openai.LengthFinishReasonError(출력 예산 소진) — 화이트리스트 1선,
+    1주기째에 격리+커서 전진. OpenAILLM.complete 이 SDK 예외를
+    ``raise LLMError(str(exc)) from exc`` 로 감싸는 실제 규약을 재현한다.
+    """
+    openai = pytest.importorskip("openai")
+    from types import SimpleNamespace
+
+    from app.core.llm import LLMError
+
+    store = CatalogArtifactStore()
+    changes = [_change(1, name="긴응답")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    def factory():
+        inner = openai.LengthFinishReasonError(completion=SimpleNamespace(usage=None))
+        raise LLMError(str(inner)) from inner
+
+    llm = _RaisingLLM(factory)
+    result = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=get_settings()
+    )
+
+    assert result.failed == 1
+    assert result.processed == 0
+    assert store.get_cursor() == "c1"
+    assert store.get(1) is None
+
+
+async def test_drain_llm_not_configured_not_isolated_immediately():
+    """LLMNotConfigured 는 LLMError 하위타입이지만 화이트리스트에서 명시적으로 제외돼 2선이다
+    — 1회차엔 격리 없이 전파, 커서 미전진(#325 R6)."""
+    from app.core.llm import LLMNotConfigured
+
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    changes = [_change(1, name="구성오류")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _RaisingLLM(lambda: LLMNotConfigured("anthropic API key is not configured"))
+    settings = get_settings()
+    with pytest.raises(LLMNotConfigured):
+        await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+        )
+
+    assert llm.calls == settings.enrichment_item_attempts
+    assert store.get_cursor() == "checkpoint"
+    assert store.get(1) is None
+
+
+def test_is_enrichment_content_failure_direct():
+    """``_is_enrichment_content_failure`` 자체를 직접 두 극단으로 고정한다 — 원인 없는
+    LLMError(True) vs 완전히 무관한 예외(False). 나머지 경계(원인 타입별)는 위 _drain
+    통합 테스트가 덮는다."""
+    from app.core.llm import LLMError
+
+    assert _batch._is_enrichment_content_failure(LLMError("JSON 못 찾음")) is True
+    assert _batch._is_enrichment_content_failure(RuntimeError("모르는 실패")) is False
+
+
+def test_is_enrichment_content_failure_excludes_llm_not_configured():
+    """LLMNotConfigured 는 원인 없는 LLMError 형태여도 명시적으로 제외된다(#325 R6)."""
+    from app.core.llm import LLMNotConfigured
+
+    assert _batch._is_enrichment_content_failure(LLMNotConfigured("no key")) is False

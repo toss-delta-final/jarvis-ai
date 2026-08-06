@@ -185,7 +185,7 @@ class Settings(BaseSettings):
     # 주기에 실제 변경분만 담겨 페이지가 대개 1~3건이라(catalog_batch_page_size 는 요청 상한일
     # 뿐), poison 단건 상품 하나만 있어도 ratio=1/1=1.0 로 대량 결과 회귀와 구별이 안 된다.
     # 표본이 이 값 미만이면 비율 가드를 건너뛰고 격리+전진한다 — 소량 표본 판정 불능은 1선
-    # (구조·타임아웃 판정)이 이미 광역 장애를 걸러낸 뒤라 안전하다. 남는 소수 항목 격리는
+    # (증명된 콘텐츠 실패 화이트리스트 판정)이 이미 광역 장애를 걸러낸 뒤라 안전하다. 남는 소수 항목 격리는
     # dead-letter ERROR 로그와 failed 카운트로 드러나며 run_batch --full(전체 재구축)로
     # 복구 가능한 유계 하방이다.
     artifacts_batch_failure_min_sample: int = Field(default=5, ge=1)
