@@ -13,6 +13,26 @@
 
 ---
 
+## [2026-08-06] `ruff format`/`--fix` 는 쓰기 명령이다 — `ruff check` 와 같은 감각으로 전체 스코프에 돌리면 안 된다
+- 증상: #380 리뷰 라운드 1 작업 중 `uv run ruff format .` 을 스코프 없이 전체 리포에 돌렸다.
+  의도한 건 이번 작업이 만진 `evals/underspecified_probe/`·`tests/unit/test_underspecified_probe_*.py`
+  뿐이었는데, `app/agents/buyer/recommendation/no_condition.py`·`app/pipelines/*`·
+  `evals/ablation/*`·`evals/scoring/*`·`data-analysis/*`·`tests/unit/*`(이번 작업과 무관한
+  기존 테스트 파일들) 등 무관 파일 30개가 재포맷돼 diff 에 섞였다. `git status --short` 로
+  뒤늦게 발견해 `git checkout --` 로 전부 되돌렸다.
+- 원인: `ruff check .`(읽기 전용, 검사만 하고 파일을 안 바꾼다)를 전체 스코프로 돌리는 것과
+  같은 감각으로 `ruff format`/`ruff check --fix`(둘 다 **파일을 실제로 고쳐 쓴다**)도 전체
+  스코프(`.`)에 돌렸다. CLAUDE.md 커밋 워크플로 2항의 "`uv run ruff check --fix && uv run ruff
+  format` 로 린트 자동 정리"는 **"내가 만진 파일"을 전제로 한 문장**이지 리포 전체를 뜻하지
+  않는데, 그 전제를 놓쳤다.
+- 규칙: **`ruff check .` 은 전체 스코프로 돌려도 된다(읽기 전용)** — 반면 `ruff format`·
+  `--fix` 는 **항상 이번 작업이 실제로 만진 경로만** 인자로 준다(예:
+  `uv run ruff format evals/underspecified_probe/ tests/unit/test_underspecified_probe_*.py`).
+  실수로 전체 스코프에 쓰기 명령을 돌렸다면 커밋 전에 `git status --short` 로 무관 파일이
+  섞였는지 반드시 확인하고 `git checkout -- <무관 파일들>` 로 되돌린다 — "전체 검사 통과"와
+  "전체 포맷 실행"은 안전성이 다른 동작이다.
+- 관련: #380, `docs/specs/SPEC-UNDERSPECIFIED-336.md` §7.3, 리뷰 라운드 1 보고 §5
+
 ## [2026-08-06] 진단용으로 로그에 싣는 예외 메시지에는 "검증 이전" 값이 섞여 있다
 - 증상: #408 에서 401 사유를 남기려고 `__cause__` 체인의 `str(exc)` 를 그대로 로그 문자열에
   이어붙였다. 그런데 PyJWT 의 `PyJWKClientError` 메시지는 JWT 헤더의 `kid` 를 그대로 싣는다
