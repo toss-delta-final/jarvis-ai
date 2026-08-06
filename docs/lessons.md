@@ -13,6 +13,91 @@
 
 ---
 
+## [2026-08-06] 함수 시그니처를 바꿀 때 호출부 grep 을 `tests`·`evals` 로만 하면 `scripts/` 가 사각지대다
+- 증상: #396(이슈)/PR #407 에서 `_prepare_recommendation` 을 코루틴 → async generator 로
+  바꾸고 키워드 전용 필수 인자 `out` 을 추가했다. 그때 "`tests/`·`evals/` grep 0건"을
+  근거로 "다른 호출부 없음"이라 판단했는데, `scripts/capture_i1_wire_132.py:63`·
+  `scripts/verify_regression6_217.py:78` 두 곳이 여전히 `await _prepare_recommendation(...)`
+  (구 코루틴 형태, `out=` 없음)로 남아 있었다. 방치했으면 `out` 누락으로 즉시
+  `TypeError`, `out=` 만 채워도 async generator 를 `await` 해 또 다른 `TypeError`(제너레이터
+  객체만 만들어지고 body 는 한 줄도 안 돈다)로 죽는 상태였다. `pytest` 가 `scripts/` 를
+  실행하지 않아 CI 전 구간이 초록이었고, Claude PR Review 가 인라인으로 잡았다.
+- 원인: 호출부 조사를 `tests/`·`evals/` 로만 했다. 이 저장소는 실측·회귀 검증을
+  `scripts/` 의 일회성 스크립트로 남기는 관행이 있고(`verify_regression6_217.py` 는
+  docstring 에 "프로덕션 `_prepare_recommendation` 을 **그대로 호출**한다"고 명시까지
+  해뒀다), 그 디렉터리가 pytest 실행 범위 밖이라 사각지대가 됐다.
+- 규칙: **함수 시그니처·호출 규약(코루틴↔제너레이터 전환 포함)을 바꿀 때 호출부 grep 은
+  저장소 전체**로 한다(`app`·`tests`·`evals`·`scripts`·`docs`). 특히 **pytest 가 실행하지
+  않는 `scripts/` 는 CI 가 지켜주지 않으므로** grep 결과를 눈으로 확인하고, 가능하면
+  스크립트를 실제로 한 번 돌려본다.
+- 관련: #396, PR #407, `app/agents/buyer/graph.py::_prepare_recommendation`,
+  `scripts/capture_i1_wire_132.py`, `scripts/verify_regression6_217.py`
+
+---
+
+## [2026-08-06] 진단용으로 로그에 싣는 예외 메시지에는 "검증 이전" 값이 섞여 있다
+- 증상: #408 에서 401 사유를 남기려고 `__cause__` 체인의 `str(exc)` 를 그대로 로그 문자열에
+  이어붙였다. 그런데 PyJWT 의 `PyJWKClientError` 메시지는 JWT 헤더의 `kid` 를 그대로 싣는다
+  (`Unable to find a signing key that matches: "<kid>"`). `kid` 는 **서명 검증 이전**에 읽는
+  값이라 공격자가 유효 서명 없이 임의 문자열을 넣을 수 있고, 개행이 그대로 나가면 로그에
+  가짜 `auth rejected ...` 줄을 심을 수 있다(로그 인젝션, CWE-117). dev 모드는 서명을 아예
+  안 보므로 `unknown sub_type: <값>` 도 같다. 길이 상한(`[:200]`)은 개행을 막지 못한다.
+- 원인: "예외 메시지는 라이브러리가 쓴 문장"이라고 전제했다. 실제로는 **입력이 보간된 문장**
+  이고, 그 입력이 신뢰 경계의 어느 쪽인지는 예외마다 다르다. 로그에 싣기로 한 순간
+  PII 검토(무엇을 안 남길까)는 했지만 무결성 검토(누가 이 문자열을 쓸 수 있나)는 빠졌다.
+- 규칙: **인증 실패 경로의 값을 로그에 싣을 때는 비출력 문자를 이스케이프한다.** 특히 서명·서버
+  검증을 통과하기 *전에* 읽히는 값(JWT 헤더 `kid`·`alg`, dev 모드 클레임, 헤더/쿼리 원문)은
+  전부 공격자 제어로 간주한다. 로그 필드의 검토 항목은 두 개다 — ①비밀/PII 를 안 싣는가
+  ②남의 입력이 로그 **구조**를 바꿀 수 있는가.
+- 덧: **이스케이프 대상을 손으로 열거하지 마라.** 1차 수정은 C0(0x00–0x1F)+DEL 표를 직접
+  적었는데, 리뷰 2라운드가 NEL(U+0085)·LINE SEPARATOR(U+2028)·PARAGRAPH SEPARATOR(U+2029)가
+  통과한다고 지적했다 — 뷰어·JS 파서는 이것들도 개행으로 읽는다. 열거는 언제나 부분집합이
+  된다. 표준 판정(`str.isprintable()` = Cc·Cf·Zl·Zp·Zs 를 비출력으로 봄)을 쓰면 양방향
+  재정의(U+202E) 같은 미래의 변종까지 자동으로 걸린다. 한글은 Lo 라 그대로 남는다.
+- 관련: #408, PR #409 Claude 리뷰, `app/api/deps.py::_reason_chain`·`_CONTROL_ESCAPES`,
+  `tests/unit/test_auth_401_reason_log.py::test_401_log_escapes_attacker_controlled_control_chars`
+
+## [2026-08-06] 의존성 함수에 파라미터를 더하면 그게 곧 공개 계약이다 — keyword-only 도 예외가 아니다
+- 증상: #408 에서 401 로그에 어느 의존성을 거쳤는지 싣으려고 `get_identity` 에
+  `*, dependency: str = "get_identity"` 를 붙였다. 내부 표식이라 와이어와 무관하다고 생각했는데,
+  FastAPI 는 `inspect.signature` 로 파라미터를 훑으면서 **KEYWORD_ONLY 를 구분하지 않는다** —
+  그대로 뒀으면 `/chat`·`/seller/chat`·`/profile/me` 에 `?dependency=` 쿼리 파라미터가
+  생기고 OpenAPI 에도 노출됐다(계약 무변경 이슈에서 계약이 바뀔 뻔했다).
+- 원인: "의존성 함수의 시그니처 = 요청 파싱 명세"라는 것을 내부용 인자에는 적용하지 않았다.
+  Python 문법상의 사적임(keyword-only·언더스코어 접두)은 프레임워크에 아무 신호도 주지 않는다.
+- 규칙: **의존성 함수 시그니처에는 요청에서 오는 것만 둔다.** 내부 컨텍스트가 필요하면 파라미터
+  대신 **private 헬퍼로 분리해 호출부에서 넘긴다**(`_identity_or_401(..., dependency=...)`).
+  요청 객체가 필요할 때는 `request: Request = None` 으로 두면 FastAPI 주입은 그대로 받으면서
+  의존성 밖 직접 호출(단위 테스트)도 깨지지 않는다 — `Request` 타입은 필드가 아니라 특수
+  주입으로 처리돼 기본값이 무시되고 쿼리 파라미터로도 새지 않는다. 다만 이건 **추측하지 말고
+  `app.openapi()` 로 실측**할 것(파라미터 목록에 새 항목이 없어야 한다).
+- 관련: #408, `app/api/deps.py::get_identity`·`::require_seller`·`::verify_service_token`,
+  FastAPI 0.139 `analyze_param`
+
+## [2026-08-06] 소비자 없는 필드의 "안전해 보이는" 기본값은, 소비가 붙는 순간 주장으로 승격된다
+- 증상: PR #305 가 `WishlistItem.purchase_state` 를 선언하며 기본값을 `"AVAILABLE"` 로 뒀다.
+  그때는 읽는 코드가 0건이라 아무 해도 없었다. 그런데 #310 이 이 값을 읽어 "품절이에요"를
+  가르기 시작하자, **키가 오지 않은 응답이 "구매 가능이 확인됨"으로 읽히게** 됐다 — BE 가
+  아직 필드를 안 내려주는 구간에서 품절 상품을 "살 수 있다"고 안내하는 fail-open 이다.
+- 원인: 기본값을 정할 때의 기준이 "구 필드(`purchasable=true`)와 의미를 맞춘다"였다. 구 필드와의
+  하위 호환은 **소비자가 있을 때만** 의미가 있는데, 소비자가 없으니 그 기준이 검증되지 않은 채
+  통과했다. 미수신(키 없음)과 명시적 값은 **다른 사실**인데 기본값이 둘을 같은 것으로 뭉갠다.
+- 규칙: **BE 가 아직 안 내려주는 필드의 기본값은 "구 필드와 의미 동일"이 아니라 "아직 아무것도
+  주장하지 않음"(`None`)으로 둔다.** 소비를 붙이는 이슈에서 승격 여부를 정한다. 이 저장소는 이미
+  같은 구분을 명문화해 뒀다 — `spring_client.py::_envelope_success_false` 의 *"`success` 키가
+  없으면 false 로 간주하지 않는다 — '명시 안 됨'과 '명시적 false'는 다른 사실이다"*. 선언만 하고
+  소비를 미루는 PR 은 그 자리에 "소비가 붙을 때 기본값을 재검토하라"는 주석을 남긴다(#305 는
+  실제로 남겼고, 그래서 #310 이 놓치지 않았다).
+- 덧: **미지 값(계약 밖 enum)의 처방은 흐름마다 다를 수 있다.** 찜은 항목 단위 skip 이 맞지만
+  장바구니는 관대 강등(필드만 `None`)이 맞다 — 장바구니 항목이 목록에서 조용히 사라지면
+  "전부 빼줘"가 일부만 지우고 성공을 보고한다. 원칙("거짓 안내를 막는다")이 같아도 파괴적
+  후속 동작의 유무에 따라 최적 수단이 갈린다. 대칭이 곧 정답은 아니다.
+- 관련: #310, #305, `app/schemas/spring.py::CartViewItem`·`::WishlistItem`·
+  `::_degrade_unknown_purchase_state`, `app/services/spring_client.py::_parse_wishlist_items`,
+  SPEC-CART-001 REQ-CART-037, api-spec §4.9 v0.26.3
+
+---
+
 ## [2026-08-06] 전용 검증자를 일반형으로 흡수할 때 판단 기준이 바뀌면, 그 간극을 메우는 이음매 검증자에도 변이 시험이 필요하다
 - 증상: #313 에서 그룹별 전용 검증자 둘을 일반형 매핑 하나로 흡수하면서, 두 검증자의
   **판단 기준이 서로 달랐다**(삭제한 #300 검증자는 `includeScreen` **플래그** 기준, 새 매핑은
@@ -100,7 +185,7 @@
   재검증한 뒤** 코드 주석에 옮겨라 — 주석은 다음 사람이 계약을 배우는 자리라 틀린 근거가 그대로
   학습된다(PR #374 에서 실제로 주석·docstring·CHANGELOG 3곳에 오기재로 퍼졌다).
 - 관련: #368, PR #374, `app/services/spring_client.py::add_wishlist`(I-26)·`::get_wishlist`(I-28),
-  `evals/combo_matrix/runner.py:177-190`, `app/agents/buyer/cart/graph.py:453`
+  `evals/combo_matrix/runner.py::_observe_chat`(담기 어댑터 주입부), `app/agents/buyer/cart/graph.py::stream_cart_add`
 
 ---
 

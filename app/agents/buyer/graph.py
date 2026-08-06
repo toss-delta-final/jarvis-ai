@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from typing import cast
 
 from langgraph.store.base import BaseStore
@@ -316,6 +316,18 @@ async def _map_or_empty(
         return CategoryMapping()
 
 
+@dataclass
+class _PrepareRecommendationOut:
+    """`_prepare_recommendation` 결과 홀더.
+
+    이 함수는 SSE 프레임(`mapping`/`expanding` progress)을 내야 해서 async generator 로
+    바뀌었는데, generator 는 `return` 값을 줄 수 없다(`yield` 만 밖으로 흐른다) — 그래서
+    호출부가 만들어 넘긴 이 홀더에 결과를 채워 넣는 방식으로 대체한다.
+    """
+
+    reverted: frozenset[str] = field(default_factory=frozenset)
+
+
 async def _prepare_recommendation(
     *,
     request,
@@ -328,8 +340,9 @@ async def _prepare_recommendation(
     observer,
     thread_store: ThreadFilterStore,
     thread_key: str,
+    out: _PrepareRecommendationOut,
     scope_free: bool | None = None,
-) -> frozenset[str]:
+) -> AsyncIterator[str]:
     """Prepare mapped recommendation state inside the recommendation graph span."""
     # recommend — 카테고리 하이브리드 매핑(이슈 #59, 방식 A): decompose 추측을 canonical 로
     # 보정(canonical-or-null). 매핑이 죽거나 신호가 없으면 category 없이(전체) 검색으로 degrade.
@@ -345,8 +358,9 @@ async def _prepare_recommendation(
         category=prior.category if prior is not None else None,
         semantic_query=prior.semantic_query if prior is not None else None,
     )
+    has_category_signal = any(q.raw_category or q.query for q in decision.category_queries)
     action = resolve_category_action(
-        has_category_signal=any(q.raw_category or q.query for q in decision.category_queries),
+        has_category_signal=has_category_signal,
         scope_free=scope_free,
         has_new_category_signal=has_new_category_signal(decision.category_queries, echo_tokens),
     )
@@ -389,6 +403,15 @@ async def _prepare_recommendation(
         # [#217] 순서가 뒤집혔다 — **매핑을 먼저** 돌리고 그 실패를 전개 트리거로 쓴다(§4·§6.1).
         # 초판은 목적 marker 열거로 매핑 전에 미리 맞혔는데, 열거는 목록에 없는 표현을 놓치고
         # 목록을 늘리면 이미 정답 매핑되는 표현이 파괴됐다(§4.0).
+        # 매핑을 실제로 태우는 턴에서만 낸다. `carry`(리파인 승계)·`clear`(카테고리 리셋)는 이
+        # else 분기 자체에 안 들어오지만, **이 분기가 곧 "매핑을 태운다"는 아니다** — prior 가
+        # 없는 첫 턴은 action == "carry" 여도 위 `if prior is not None and ...` 가드를 못 통과해
+        # 여기로 떨어진다(카테고리 신호가 하나도 없어도). 그 턴은 `map_categories` 규칙 (4)
+        # ("raw·query 모두 없으면 신호 없음으로 보고 leg 를 만들지 않는다")대로 매퍼가 아무 일도
+        # 하지 않으므로, `has_category_signal`(위에서 이미 계산해 판정과 emit 이 같은 값을
+        # 쓴다 — 판정 규칙을 두 벌로 만들지 않는다)이 False 면 이 stage 를 내지 않는다.
+        if settings.progress_events_enabled and has_category_signal:
+            yield progress_frame("mapping", settings.progress_mapping_message)
         mapper = map_categories or _map_categories
         mapping = await _map_or_empty(
             mapper, decision.category_queries, request.message, settings, llm, observer
@@ -413,6 +436,8 @@ async def _prepare_recommendation(
                         "unresolved": mapping.unresolved,
                     },
                 )
+                if settings.progress_events_enabled:
+                    yield progress_frame("expanding", settings.progress_expanding_message)
                 expander = expand_needs or _expand_needs
                 # observer 는 전개기까지 내려보낸다 — 모델 호출을 하는 쪽이 기록해야(§6.3) LLM 을
                 # 쓰지 않는 전개기(방식 B·C)에 유령 호출이 남지 않는다.
@@ -424,6 +449,9 @@ async def _prepare_recommendation(
                 if items:
                     # raw 는 싣지 않는다 — 매핑이 query 우선이라(#115 §4.3.1) raw 는 폴백일 뿐이고,
                     # 창작 라벨은 표기 불일치·가짜 근접으로 해가 더 크다.
+                    # 여기서는 `mapping` progress 를 다시 내지 않는다 — 전개 후 재매핑은 위에서
+                    # 이미 알린 "매핑 중" 논리 단계의 연장이지, 사용자 입장에서 새로 시작하는
+                    # 단계가 아니다.
                     expanded = await _map_or_empty(
                         mapper,
                         [CategoryQuery(None, name) for name in items],
@@ -555,7 +583,7 @@ async def _prepare_recommendation(
         ],
     )
     reverted = await revert_store.get(thread_key)
-    return frozenset(reverted)
+    out.reverted = frozenset(reverted)
 
 
 async def run_buyer_turn(
@@ -1124,7 +1152,10 @@ async def run_buyer_turn(
     if trace := current_request_trace():
         trace.set_lane("recommend")
     with trace_span("buyer.graph.recommendation", "chain"):
-        reverted = await _prepare_recommendation(
+        # `_prepare_recommendation` 은 progress 프레임(mapping/expanding)을 내야 해서 async
+        # generator 다 — `return` 을 못 쓰므로 결과는 이 홀더에 담아 받는다.
+        prepare_out = _PrepareRecommendationOut()
+        async for frame in _prepare_recommendation(
             request=request,
             decision=decision,
             prior=prior,
@@ -1135,11 +1166,14 @@ async def run_buyer_turn(
             observer=observer,
             thread_store=thread_store,
             thread_key=thread_key,
+            out=prepare_out,
             # [#84] `RouteDecision` 에 싣지 않는다 — 그것은 **decompose 산출**을 담는 자료구조이고
             # 이 값은 다른 호출에서 온 별개 신호다. 섞으면 다음 사람이 decompose 가 낸 값으로
             # 오해하고, 그 오해 위에서 프롬프트를 고치게 된다.
             scope_free=scope_free,
-        )
+        ):
+            yield frame
+        reverted = prepare_out.reverted
         # [#162] 조건 없음 판정은 **여기서** 한다 — `prior`(첫 턴 여부)가 이 스코프에만 있고,
         # `_prepare_recommendation` 이 카테고리 매핑·승계를 끝낸 뒤라야 `category_legs` 가 확정된다.
         no_condition = is_no_condition_turn(decision, prior)

@@ -535,6 +535,20 @@ def _search_query_params(
     return params
 
 
+def search_filter_axes(
+    filters: ProductSearchFilters, *, color_values: list[str] | None = None
+) -> set[str]:
+    """실제 I-1 로 나가는 쿼리 파라미터 키 집합 (#393).
+
+    판정이 **decompose 산출**(어떤 필드가 채워졌는가)이 아니라 **최종 payload**(실제로 Spring
+    에 나가는 파라미터가 무엇인가) 기준이 되게 하는 단일 출처다 — `_search_query_params` 를
+    그대로 위임한다(축 목록 사본을 두면 새 필터가 생겼을 때 한쪽만 늘어나 드리프트한다).
+    `rating_min`·`attr_conditions`·`exclude_product_ids` 는 **AI 사후필터**(search_service)라
+    Spring payload 축이 아니다 — 아무리 값이 있어도 Spring 은 매칭 전량을 내려준다.
+    """
+    return set(_search_query_params(filters, color_values=color_values).keys())
+
+
 def _parse_search_response(data: object) -> ProductSearchResult:
     """BE I-1 응답 → ProductSearchResult (§4.6, v0.15.5).
 
@@ -1164,10 +1178,17 @@ def _parse_wishlist_items(raw: list) -> list[WishlistItem]:
     해제(#116·#117)가 통째로 막힌다 — 한 항목의 검증 실패가 전체를 죽이는 구조 자체가 문제다.
 
     이 저장소의 기존 관행을 따른다 — `_parse_cart_error` 가 "형식 이상 옵션은 건너뜀 — 되물음
-    흐름 전체가 죽지 않게" 로 옵션 배열을 항목 단위로 방어하는 것과 같은 처리다. **`PurchaseState`
-    Literal·기본값(`"AVAILABLE"`)은 바꾸지 않는다**(#310 지시서의 결정 유지) — 여기서 바꾸는 것은
-    파싱 견고성뿐이다. 검증에 실패한 항목만 건너뛰고 나머지는 살리며, 건너뛴 수는 BE 계약
-    드리프트 관측을 위해 warning 으로 남긴다(조용히 사라지면 드리프트를 알 방법이 없다).
+    흐름 전체가 죽지 않게" 로 옵션 배열을 항목 단위로 방어하는 것과 같은 처리다. 검증에 실패한
+    항목만 건너뛰고 나머지는 살리며, 건너뛴 수는 BE 계약 드리프트 관측을 위해 warning 으로
+    남긴다(조용히 사라지면 드리프트를 알 방법이 없다).
+
+    **[#310] 미수신 기본값은 `None`(모름)으로 바뀌었다** — 종전 `"AVAILABLE"` 은 소비자가 없던
+    시절의 값이고, 이제 이 값을 읽어 안내 문구를 가르므로 기본값이 주장으로 승격된다.
+    **장바구니(`CartViewItem`)는 이 함수와 처방이 다르다** — 거기선 미지 값이 와도 항목을
+    skip 하지 않고 필드만 `None` 으로 강등한다(`app/schemas/spring.py::_degrade_unknown_purchase_state`).
+    찜은 항목이 목록에서 빠져도 파괴적 후속 동작이 없지만, 장바구니 항목은 "전부 빼줘"의
+    입력이라 사라지면 일부만 지우고 성공을 보고하게 된다. 원칙("거짓 안내를 막는다")은 같고
+    최적 수단만 다르다.
 
     응답 구조 자체가 깨진 경우(`items` 가 list 가 아님)는 이 함수가 보지 않는다 — 호출부가 그
     형태 붕괴는 종전대로 fail-closed(`SpringUnavailableError`)로 처리한다. **원본이 비어 있지

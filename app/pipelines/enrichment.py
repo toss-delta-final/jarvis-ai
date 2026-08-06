@@ -29,8 +29,10 @@ _ENRICH_SYSTEM = """당신은 커머스 카탈로그의 상품 태깅기입니�
 async def enrich_product(product: dict, *, llm: LLMClient, settings: Settings) -> dict:
     """단일 상품 enrichment (§4.8 배치 1단계). extras(추론 태그·속성) dict 를 반환한다.
 
-    product = {name, description, category, brand, attributes}. LLM 실패(LLMError)는 호출측(배치)으로
-    전파 — 커서 미전진으로 다음 주기 재개(자연 복구, §4.8).
+    product = {name, description, category, brand, attributes}. LLM 실패(LLMError)는 호출측
+    (artifacts_batch._drain)으로 전파 — 단건 재시도 후에도 실패하면 그 상품만 격리(dead-letter
+    기록)하고 배치는 계속 진행한다. 페이지 실패 비율이 임계 이상일 때만 커서 미전진으로 자연
+    복구한다(#325, §4.8).
     반환 형식: {"tags": [...], "situation_tags": [...], "attributes": {...}}.
 
     **[#148] `situation_tags` 는 홈 추천 reason 의 재료다** — I-22 는 요청 경로에서 문장을 만들지
@@ -46,7 +48,13 @@ async def enrich_product(product: dict, *, llm: LLMClient, settings: Settings) -
         "attributes": product.get("attributes"),
     }
     user = json.dumps(payload, ensure_ascii=False)
-    raw = await llm.complete(system=_ENRICH_SYSTEM, user=user, tier="fast", max_tokens=600)
+    raw = await llm.complete(
+        system=_ENRICH_SYSTEM,
+        user=user,
+        tier="fast",
+        max_tokens=settings.enrichment_max_tokens,
+        reasoning_effort=settings.enrichment_reasoning_effort,
+    )
     data = extract_json(raw)
     tags = data.get("tags")
     situation = data.get("situation_tags")
