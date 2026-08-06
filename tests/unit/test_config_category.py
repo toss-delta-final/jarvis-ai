@@ -102,6 +102,38 @@ def test_needs_expansion_tier_rejects_unknown_value() -> None:
         Settings(_env_file=None, needs_expansion_tier="fasttt")
 
 
+def test_category_dictionary_startup_check_defaults_to_log() -> None:
+    """[#401] 기본은 `log`(구성 오류를 시끄럽게 만들되 기동은 막지 않는다) — `fail` 이 아니다.
+
+    사전 결측은 map_categories 가 canonical-or-null 로 무필터 퇴화하는 상태라 서비스는 계속
+    응답 가능하다. 기동 거부(`fail`)는 서비스 전면 중단이라 하방이 무겁다 — 그래서 결함 교정은
+    기본 on 이고 거부는 옵트인이다(app/core/config.py 필드 주석 참조).
+    """
+    settings = Settings(_env_file=None)
+    assert settings.category_dictionary_startup_check == "log"
+
+
+def test_category_dictionary_startup_check_rejects_unknown_value() -> None:
+    """오타는 부팅 시 막는다 — Literal 로 좁혀 pydantic 이 걸러낸다(다른 tier 필드들과 같은 관례)."""
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, category_dictionary_startup_check="warn")
+
+
+def test_category_dictionary_startup_check_accepts_off_and_fail() -> None:
+    assert (
+        Settings(
+            _env_file=None, category_dictionary_startup_check="off"
+        ).category_dictionary_startup_check
+        == "off"
+    )
+    assert (
+        Settings(
+            _env_file=None, category_dictionary_startup_check="fail"
+        ).category_dictionary_startup_check
+        == "fail"
+    )
+
+
 def test_override_margin_must_exceed_select_trigger() -> None:
     """[PR #188 리뷰] 마진 예외(§4.5)와 택일 트리거(§4.4)의 구간은 겹치면 안 된다.
 
