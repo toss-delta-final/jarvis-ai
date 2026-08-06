@@ -557,6 +557,23 @@ class Settings(BaseSettings):
     # 예시로 뽑을 카테고리 최대 개수 — 0 이면 예시 없이 항상 generic 질문.
     underspecified_reask_examples_max: int = Field(default=3, ge=0)
 
+    # ── 검색 필터 가드 (#393, api-spec §4.17) ──
+    # 운영 실측(2026-08-06): I-1 이 SEARCH_FAILED 로 떨어진 요청은 Spring 이 실패한 게 아니라
+    # 200 인데 3s 예산을 넘긴 지연이었다 — 무필터 I-1 이 매칭 전량(실측 12.3MB)을 돌려줬기
+    # 때문이다. 마스터 스위치 — off 면 `search_guard.is_unfiltered_payload`/
+    # `is_category_mapping_dropped` 판정 자체는 그대로 두고 호출부(`recommendation/graph.py`)가
+    # 결과를 쓰지 않는다(AC: 한 번에 전체 롤백). **기본 on** — 이 가드가 막는 것은 매칭 전량
+    # 응답이라 하방이 유계이고, off 는 운영 롤백 스위치다.
+    search_filter_guard_enabled: bool = True
+    # [#393 B] 카테고리 매핑이 드롭돼 검색이 0건이라 인기 상품으로 답하는 턴의 고지. 문안은
+    # 튜너블이지만 발신은 아니다(no_condition_notice_* 와 같은 규약) — 없으면 사용자가 인기
+    # 상품을 자기가 말한 상품군으로 오해한다. 실패 단계명·오류 코드는 싣지 않는다
+    # (api-spec §3.3 "단계별 상세는 서버 로그 전용").
+    category_unmapped_notice: str = (
+        "말씀하신 상품을 정확히 찾지 못해, 지금 인기 있는 상품으로 골라봤어요. "
+        "브랜드나 가격대를 함께 알려주시면 더 잘 찾아드릴게요."
+    )
+
     # ── 홈 추천 랭킹 (I-22, api-spec §3.7 · 이슈 #148) ──
     # 질의 벡터 = 시그널 상품 임베딩의 가중 평균. cart 는 "담기까지 갔다"는 강한 신호라 조회보다 높게,
     # 조회는 최신일수록 높게(recency decay 를 인덱스 거듭제곱으로 적용) — §3.7 signals 표.
@@ -1927,6 +1944,8 @@ class Settings(BaseSettings):
             "NO_CONDITION_NOTICE_POPULAR": (self.no_condition_notice_popular, "§4.17"),
             "NO_CONDITION_NOTICE_PROFILE": (self.no_condition_notice_profile, "§4.17"),
             "NO_CONDITION_NOTICE_BUDGET": (self.no_condition_notice_budget, "§4.17"),
+            # [#393] 카테고리 매핑 드롭 + 0건 → 인기 상품 대체 고지도 같은 이유로 필수다.
+            "CATEGORY_UNMAPPED_NOTICE": (self.category_unmapped_notice, "§4.17"),
         }
         for name, (value, section) in required.items():
             if not _strip_unsafe(value):

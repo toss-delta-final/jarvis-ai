@@ -257,6 +257,34 @@ def _apply_attr_conditions(products: list, conditions: dict[str, str]) -> list:
     return products
 
 
+def apply_ai_side_filters(products: list, filters: ProductSearchFilters) -> list:
+    """rating_min 사후필터 + attr_conditions 하드필터 — Spring payload 축이 아닌 AI 사후필터.
+
+    [#393 C] `search_catalog`(정상 검색 경로)와 인기 상품 폴백 경로(`recommendation/graph.py`
+    `_run_candidate_source`, 매핑 드롭·무필터 우회 시 인기 상품으로 후보를 대체하는 자리) 가
+    **같은 함수를 공유**한다 — 복제하면 "같은 판정을 두 곳에 둔다"는 규약 위반이다(#336 이 거부한
+    자리). 인기 후보로 대체된 턴은 조건 칩에 "평점 4.0 이상"이 떠 있는데 후보는 그 조건을 안
+    지키는 표시-실제 불일치가 생길 수 있어(rating_min·attr_conditions 는 payload 축이 아니라
+    Spring 이 걸러주지 않는다), 인기 후보에도 이 사후필터를 그대로 적용해야 정직성이 유지된다.
+    `exclude_product_ids`(dedup)는 그래프 하류가 담당하므로 여기 넣지 않는다.
+    """
+    if filters.rating_min is not None:
+        threshold = filters.rating_min
+        # '반증된 것만' 제거(#100 P0 / #171): 실제 리뷰가 있는데 하한 미달인 상품만 탈락시킨다.
+        # 데이터 부재는 보존 — ① rating=None(무평점) ② review_count==0(리뷰가 아예 없어 나온
+        # rating=0 은 저평점이 반증된 게 아니라 데이터 부재)은 rerank 가 판단하도록 남긴다.
+        # review_count 가 None(BE 미전송)이면 rating 이 지배하는 구 동작으로 폴백한다.
+        products = [
+            p for p in products if p.rating is None or p.review_count == 0 or p.rating >= threshold
+        ]
+
+    # 명시 속성 하드필터(PR②) — SpringProduct.attributes 관대 매칭, 축 부재는 보존(#100 P0), 0건이면
+    # 축별 완화. 추측 선호(소프트)는 여기서 안 거르고 rerank(원문+attributes)에 맡긴다.
+    if filters.attr_conditions:
+        products = _apply_attr_conditions(products, filters.attr_conditions)
+    return products
+
+
 async def search_catalog(
     filters: ProductSearchFilters,
     exclude_product_ids: list[int] | None = None,
@@ -286,20 +314,8 @@ async def search_catalog(
         excluded = set(exclude_product_ids)
         products = [p for p in products if p.product_id not in excluded]
 
-    if filters.rating_min is not None:
-        threshold = filters.rating_min
-        # '반증된 것만' 제거(#100 P0 / #171): 실제 리뷰가 있는데 하한 미달인 상품만 탈락시킨다.
-        # 데이터 부재는 보존 — ① rating=None(무평점) ② review_count==0(리뷰가 아예 없어 나온
-        # rating=0 은 저평점이 반증된 게 아니라 데이터 부재)은 rerank 가 판단하도록 남긴다.
-        # review_count 가 None(BE 미전송)이면 rating 이 지배하는 구 동작으로 폴백한다.
-        products = [
-            p for p in products if p.rating is None or p.review_count == 0 or p.rating >= threshold
-        ]
-
-    # 명시 속성 하드필터(PR②) — SpringProduct.attributes 관대 매칭, 축 부재는 보존(#100 P0), 0건이면
-    # 축별 완화. 추측 선호(소프트)는 여기서 안 거르고 rerank(원문+attributes)에 맡긴다.
-    if filters.attr_conditions:
-        products = _apply_attr_conditions(products, filters.attr_conditions)
+    # rating_min 사후필터 + attr_conditions 하드필터 — 인기 상품 폴백 경로와 공유(#393 C).
+    products = apply_ai_side_filters(products, filters)
 
     # total_count = 사후필터 통과 매칭 수(전량). top-K 절단은 graph dedup 이후로 이동(#101).
     return ProductSearchResult(products=products, total_count=len(products))

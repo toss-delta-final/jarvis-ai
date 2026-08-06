@@ -535,6 +535,20 @@ def _search_query_params(
     return params
 
 
+def search_filter_axes(
+    filters: ProductSearchFilters, *, color_values: list[str] | None = None
+) -> set[str]:
+    """실제 I-1 로 나가는 쿼리 파라미터 키 집합 (#393).
+
+    판정이 **decompose 산출**(어떤 필드가 채워졌는가)이 아니라 **최종 payload**(실제로 Spring
+    에 나가는 파라미터가 무엇인가) 기준이 되게 하는 단일 출처다 — `_search_query_params` 를
+    그대로 위임한다(축 목록 사본을 두면 새 필터가 생겼을 때 한쪽만 늘어나 드리프트한다).
+    `rating_min`·`attr_conditions`·`exclude_product_ids` 는 **AI 사후필터**(search_service)라
+    Spring payload 축이 아니다 — 아무리 값이 있어도 Spring 은 매칭 전량을 내려준다.
+    """
+    return set(_search_query_params(filters, color_values=color_values).keys())
+
+
 def _parse_search_response(data: object) -> ProductSearchResult:
     """BE I-1 응답 → ProductSearchResult (§4.6, v0.15.5).
 
