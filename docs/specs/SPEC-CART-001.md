@@ -1,6 +1,6 @@
 ---
 id: SPEC-CART-001
-version: 0.2.5
+version: 0.2.6
 status: draft
 created: 2026-07-17
 author: navis
@@ -17,6 +17,7 @@ issue_number: null
 
 ## HISTORY
 
+- **v0.2.6 (2026-08-06, 이슈 #310)** — **`purchaseState` 소비 신설**(REQ-CART-037, §5.2 I-18 형상에 `purchase_state` 추가): I-18 응답의 `SOLD_OUT`/`HIDDEN`을 사유별로 갈라 안내한다 — 품절은 기다리면 되고 판매 종료는 다른 걸 찾아야 하므로 사용자가 취할 행동이 다르다. **미수신(`None`)은 "모름"으로 두고 안내하지 않는다** — 구매 가능으로 단정하면 못 사는 상품을 살 수 있다고 안내하게 된다. 문구는 프롬프트가 아니라 결정론적 분기로 생성하며, 조회·삭제 되물음 목록에 같은 규칙을 적용한다(같은 장바구니가 질문 방식에 따라 다르게 보이면 안 된다). **계약 변경은 api-spec v0.25.1 선행**(§4.9 필드 등재 — BE jarvis-backend#91 이 이미 보내던 필드의 사본 동기화). 판정 권위는 Spring 유지(결정 7) — AI는 표시만 하고 담기를 차단하지 않는다.
 - **v0.2.5 (2026-07-31, 이슈 #114)** — **유일 옵션 자동 선택** 신설(REQ-CART-026/027, REQ-CART-020 단서 추가, §7 오류표 갱신): `CART_OPTION_REQUIRED` 의 옵션 후보가 **1개뿐이면** 되묻지 않고 그 `optionId` 로 즉시 재담기한다 — 선택지가 하나면 되물어도 답이 정해져 있어 불필요한 왕복만 생긴다. **계약 변경 없음**(AI 가 I-2 를 `optionId` 로 재호출할 뿐 — api-spec §4.1·SSE·스키마 불변). 자동 선택 재시도는 **1회**로 고정하고, 후보가 2개 이상이면 기존 되물음 멀티턴을 그대로 유지한다.
 - **v0.2.4 (2026-07-19)** — PR #17 리뷰(별도 사항) + PR #21과의 병합: `productName`/`optionName`(C-16)이 BE I-18 문서(2026-07-18)로 필수 포함 확정됨을 반영해 REQ-CART-036·OPEN-CART-2를 완전히 해소(v0.2.3/PR #21 시점엔 이 부분만 미확정으로 남아 있었음). `CART_QUERY_INVALID`(I-18 400) 오류 처리를 §7에 신설. `reason`·options 구조를 SPEC에 값으로 직접 중복 기재하지 않고 api-spec §4.1 참조로 전환(§5.3, REQ-CART-025/051) — REQ-CART-025엔 PR #21의 방어적 스킵 문구를 유지. 경로 B productId 요구사항은 PR #21이 붙인 `REQ-CART-001a` 번호를 그대로 채택(중복 REQ-CART-008 제거). PRD-RECOMMEND-PROFILE-AGENT.md에도 동일 내용 반영, api-spec 참조 버전 v0.15.8 유지.
 - **v0.2.3 (2026-07-19, PR #21)** — api-spec v0.15.8 동기화(#17 리뷰 반영): (1) `OUT_OF_STOCK` **폐기**(v0.15.5 C-3 해소 — 담기 재고검증 없음, 재고 차감=주문 시점) → 담기 실패 **2종**(`PRODUCT_NOT_FOUND`/`CART_ERROR`); §5.3·REQ-CART-015·051·EX-CART-2·§7 오류표·OPEN-CART-1 반영. (2) **옵션 스키마 확정**(BE 2026-07-18) — `CART_OPTION_REQUIRED` → `error.detail.options: [{optionId, name, extraPrice}]`, REQ-CART-025·OPEN-CART-2 해소. (3) **경로 B productId 해소 요구사항 신설**(REQ-CART-001a) — SSE에 카드가 없어 productId 를 직전 추천(last_reco) 문맥에서 확정하고 미노출 상품 담기를 차단(코드 구현 정합). 참조 버전 v0.15.3→v0.15.8.
@@ -128,6 +129,8 @@ class CartItem(BaseModel):
     option_name: str | None       # 필수 포함 확정(BE 2026-07-18, REQ-CART-036)
     quantity: int
     price: float | None
+    purchase_state: PurchaseState | None = None   # AVAILABLE|SOLD_OUT|HIDDEN (REQ-CART-037)
+                                                  # 미수신은 None("모름") — 구매 가능으로 단정하지 않는다
 ```
 
 ### 5.3 SSE `action` 페이로드 (FE 대면, camelCase)
@@ -186,11 +189,15 @@ class CartItem(BaseModel):
 - **REQ-CART-032** (Unwanted): **If** I-18 조회가 실패(타임아웃·오류)하면, **then** the cart 서브그래프 **shall** 보유 안내 없이 I-2 담기를 **정상 진행**한다 — 조회 실패가 담기를 막지 **않는다**(degrade).
 - **REQ-CART-033** (Ubiquitous): I-18 호출은 담기(I-2) 호출과 **독립적으로 실패해도 무방**하며, 순서상 담기 전에 시도하되 필수 선행 조건은 아니다.
 
-### 6.5 장바구니 질의 응답 (cart query, REQ-CART-034~036)
+### 6.5 장바구니 질의 응답 (cart query, REQ-CART-034~037)
 
 - **REQ-CART-034** (Event-Driven): **When** 사용자가 "장바구니에 뭐 있어?"류 발화를 하면, the cart 서브그래프 **shall** `GET /internal/cart`(I-18)를 조회하고 결과를 **별도 SSE 이벤트 없이 `token` 텍스트**로 자연어 응답한다.
 - **REQ-CART-035** (State-Driven): **While** 장바구니가 비어 있는 동안, the cart 서브그래프 **shall** 오류가 아닌 정상 응답으로 "장바구니가 비어 있다"는 취지를 안내한다(`items: []`는 200 정상).
 - **REQ-CART-036** (Ubiquitous, 2026-07-19 확정): 자연어 응답 생성에는 `productName`(상품명)이 필요하며, I-18 응답에 `productName`/`optionName`이 **필수 포함**됨이 BE 문서로 확정됐다(2026-07-18).
+- **REQ-CART-037** (Event-Driven, 2026-08-06 신설 — 이슈 #310): **When** I-18 응답 항목의 `purchaseState`가 `SOLD_OUT` 또는 `HIDDEN`이면, the cart 서브그래프 **shall** 그 항목에 **사유별로 갈리는 상태 라벨**을 함께 안내한다 — 품절은 기다리면 되고 판매 종료는 다른 걸 찾아야 하므로 사용자가 취할 행동이 다르다. **If** `purchaseState`가 미수신(`None`)이거나 `AVAILABLE`이면, **then** 아무 라벨도 붙이지 않는다 — **미수신을 "구매 가능"으로 단정하지 않는다**(모름은 주장이 아니다).
+  - 문구 생성은 **프롬프트가 아니라 결정론적 분기**여야 한다(상태→문구 매핑이 단위 테스트 가능해야 한다). 본 서브그래프의 다른 안내 문구와 같은 규약(`_unresolved_notice` 계열).
+  - 같은 규칙을 **장바구니 조회·삭제 되물음 목록에 함께** 적용한다 — 같은 장바구니가 질문 방식에 따라 다르게 보이면 안 된다.
+  - 판정 권위는 **Spring**이다(결정 7). AI는 받은 상태를 표시할 뿐 재고·판매상태를 스스로 판정하지 않으며, 담기 차단도 하지 않는다(Spring이 I-2에서 검증해 오류 코드로 알린다).
 
 ### 6.6 게스트 처리 (guest handling, REQ-CART-040~042)
 
