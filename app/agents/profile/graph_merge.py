@@ -9,12 +9,16 @@
   - **tombstone 은 근거가 사라져도 남는다.** fact cap 트리밍(`profile_max_facts`)으로 증거가
     밀려났다고 `suppressed` edge 를 지우면, 같은 취향이 다음 배치에 새 `active` edge 로 부활해
     삭제가 조용히 무력화된다(AC-PROF-31).
-  - **절단도 tombstone 을 먼저 지킨다.** 상한을 넘겨 자를 때 tombstone 이 먼저 잘리면 같은 일이
-    벌어진다.
+  - **절단도 사용자 삭제를 먼저 지킨다.** 상한을 넘겨 자를 때 tombstone 이 먼저 잘리면 같은 일이
+    벌어진다 — 그래서 `suppressed`·pin 은 상한보다 우선한다(`_truncate`).
+
+`logger` 는 있지만 판정 입력이 아니다 — 절단이 상한을 넘겨 보존한 사실만 알린다. 같은 관측을
+두 번 재생하면 로그와 무관하게 같은 문서가 나온다.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -41,6 +45,8 @@ _PREDICATE_ORDER: dict[str, int] = {
 _CONFLICTING: frozenset[frozenset[str]] = frozenset({frozenset({"likes", "avoids"})})
 _ROUND = 6  # 고정 소수점 — 부동소수 꼬리가 재생 동일성을 깨지 않게(REQ-PGRAPH-015)
 _SECONDS_PER_DAY = 86400.0
+
+logger = logging.getLogger(__name__)
 
 
 def empty_document(now: str) -> GraphDocument:
@@ -220,10 +226,16 @@ def _decay_factor(start: str, end: str, half_life_days: float) -> float:
 
 
 def _elapsed_days(start: str, end: str) -> float:
+    """못 재면 0일로 본다 — 재지 못한 시간을 감쇠로 추측하지 않는다.
+
+    `TypeError` 를 함께 잡는 이유는 `datetime` 뺄셈이 **naive-aware 혼합에서 `ValueError` 가
+    아니라 `TypeError`** 를 내기 때문이다. 지금은 양쪽 소스가 모두 aware 지만(`_now_iso` 와
+    store 의 `created_at`), 파싱만 막는 가드는 그 전제가 깨지는 순간 배치를 통째로 죽인다.
+    """
     try:
         delta = datetime.fromisoformat(end) - datetime.fromisoformat(start)
-    except ValueError:
-        return 0.0  # 파싱 불가 타임스탬프로 감쇠를 추측하지 않는다
+    except (ValueError, TypeError):
+        return 0.0
     return delta.total_seconds() / _SECONDS_PER_DAY
 
 
@@ -300,20 +312,48 @@ def _resolve_conflicts(edges: list[GraphEdge]) -> list[GraphEdge]:
     return list(resolved.values())
 
 
-def _truncate(edges: list[GraphEdge], limit: int) -> list[GraphEdge]:
-    """상한 초과 시 절단 — **tombstone 을 먼저 지킨다**.
+def _is_user_tombstone(edge: GraphEdge) -> bool:
+    """복구 경로가 없는 tombstone — 사용자 삭제(`suppressed`)와 pin(`user_intent`)."""
+    return edge.status == "suppressed" or edge.user_intent is not None
 
-    tombstone 이 먼저 잘리면 지운 취향이 다음 배치에 부활한다. 나머지는 확신도 높은 순으로
-    남기고, 동률은 `edge_id` 로 갈라 절단 결과까지 결정론적으로 만든다.
+
+def _truncate(edges: list[GraphEdge], limit: int) -> list[GraphEdge]:
+    """상한 초과 시 절단 — **사용자 삭제는 상한보다 우선한다**.
+
+    세 등급이고, 등급이 낮은 쪽부터 밀린다:
+
+    1. `suppressed`·pin — **자르지 않는다.** 잘리면 `_carried_tombstones` 가 보존할 대상을 잃고
+       같은 취향이 다음 배치에 새 `active` 로 부활한다(AC-PROF-31). 이쪽만 복구 경로가 없다.
+    2. `superseded` — 자를 수 있다. 근거 fact 가 남아 있으면 다음 배치에 다시 파생되고
+       `_resolve_conflicts` 가 같은 판정을 반복하므로 **자기복구**된다.
+    3. `active` — 남는 자리를 확신도 높은 순으로 채운다.
+
+    1등급만으로 상한을 넘으면 상한을 넘긴 채 보존하고 경고한다 — 저장 폭주 방어보다 삭제 실효가
+    앞선다. 그 상태는 정리·초기화 신호이지(REQ-PGRAPH-005) 조용히 지울 근거가 아니다.
+    동률은 `edge_id` 로 갈라 절단 결과까지 결정론적으로 만든다.
     """
     if len(edges) <= limit:
         return edges
-    protected = [e for e in edges if e.status != "active" or e.user_intent is not None]
+
+    kept = [e for e in edges if _is_user_tombstone(e)]
+    if len(kept) >= limit:
+        if len(kept) > limit:
+            logger.warning(
+                "profile_graph_protected_over_cap",
+                extra={
+                    "protected": len(kept),
+                    "limit": limit,
+                    "dropped": len(edges) - len(kept),
+                },
+            )
+        return kept
+
     rest = sorted(
-        (e for e in edges if e not in protected),
-        key=lambda e: (-e.confidence, e.edge_id),
+        (e for e in edges if not _is_user_tombstone(e)),
+        # `status == "active"` 가 False(0) < True(1) 라 superseded 가 앞선다.
+        key=lambda e: (e.status == "active", -e.confidence, e.edge_id),
     )
-    return (protected + rest)[:limit]
+    return kept + rest[: limit - len(kept)]
 
 
 def _nodes_for(

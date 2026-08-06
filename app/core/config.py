@@ -1027,8 +1027,10 @@ class Settings(BaseSettings):
     graph_evidence_refs_max: int = Field(default=20, ge=1)
     profile_graph_label_max_chars: int = Field(default=60, ge=1)
     # 문서 edge 개수 상한. suppressed·superseded 는 영구 보존이라 단일 jsonb 가 단조 증가하므로
-    # 저장 폭주는 여기서 막는다(절단 시 tombstone 을 우선 보존한다 — 지운 취향이 절단으로
-    # 되살아나면 삭제가 무력화된다).
+    # 저장 폭주는 여기서 막는다. 다만 **사용자 삭제(suppressed·pin)에는 걸리지 않는다** — 절단이
+    # tombstone 을 지우면 지운 취향이 다음 배치에 active 로 부활하고 복구 경로가 없다. 밀리는
+    # 순서는 superseded(재파생으로 자기복구) → active 이고, 사용자 삭제만으로 이 값을 넘으면
+    # 넘긴 채 보존하고 경고한다(graph_merge._truncate).
     profile_graph_max_edges: int = Field(default=200, ge=1)
     # 와이어 3버킷 라벨의 경계 2개. **버킷 경계는 계약이 아니다**(§6 공통 규약) — 내부 수치는
     # 노출하지 않고 라벨만 나간다.

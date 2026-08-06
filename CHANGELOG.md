@@ -24,7 +24,10 @@
   고정 — 배치마다 재계산하면 임계·어휘가 바뀔 때 같은 fact가 다른 `node_id`로 붙는다.
   `priceBand`·`ratingBand`·`product`는 임베딩 없이 규칙·정확 일치(REQ-PGRAPH-014), 어휘 없는
   kind는 `verified:false`로 남기고(C-28 미해결 상태에서도 동작) 어휘가 있는데 못 붙으면 드롭한다.
-  병합은 감쇠 가중 EMA·승격/강등 히스테리시스·충돌 supersede(삭제 금지)·tombstone 무조건 보존.
+  병합은 감쇠 가중 EMA·승격/강등 히스테리시스·충돌 supersede(삭제 금지)·tombstone 보존이며,
+  edge 상한 절단에서도 **사용자 삭제(`suppressed`·pin)는 상한보다 우선**한다 — 잘리면 다음
+  배치에 `active`로 부활해 복구 경로가 없다. 밀리는 순서는 `superseded`(재파생으로 자기복구) →
+  `active`이고, 사용자 삭제만으로 상한을 넘으면 넘긴 채 보존하고 경고 로그를 남긴다.
   요약 입력은 살아 있는 edge + 트리플 없는 fact이고 `suppressed`/`superseded`와 그 근거 fact
   원문은 제외한다 — 입력이 비면 기존 요약을 **보존**하고 `NO_WORK`(빈 문자열로 덮으면 요약은
   사라지는데 홈 랭킹은 캐리오버된 옛 벡터로 계속 개인화한다). LLM은 그래프 락 밖에서 부른다
@@ -35,7 +38,7 @@
   동봉했다(OPEN-G8). 발표·수동 검증용 시드 스크립트 신설.
   **비범위**: 그래프 API 표면(#150) · 저널·revision CAS·멱등 원장(#358) · pin 규약 ·
   브랜드 어휘 수집(C-28). `purchased` edge는 대화에서 만들지 않는다(원천은 질의 시점 I-19).
-  (SPEC-PROFILE-GRAPH-149 v0.1.1, SPEC-PROFILE-001 v0.7.1 — api-spec 무개정)
+  (SPEC-PROFILE-GRAPH-149 v0.2.2, SPEC-PROFILE-001 v0.8.1 — api-spec 무개정)
 - **#396 — 구매자 `progress` 다회 emit + `stage` 어휘 확장(1종 → 7종, 개방형)** —
   `analyzing` 1종·턴당 최대 1회이던 진행 표시를 파이프라인의 실제 경계마다 stage 를 바꿔
   내보내도록 확장했다. `mapping`(카테고리 매핑 중)·`expanding`(니즈 전개 중, #198)·

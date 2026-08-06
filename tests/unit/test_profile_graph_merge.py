@@ -6,6 +6,7 @@
 """
 
 import inspect
+import logging
 
 import pytest
 
@@ -206,6 +207,23 @@ def test_confidence_decays_with_elapsed_time(settings: Settings) -> None:
     assert stale.edges[0].confidence < fresh.edges[0].confidence
 
 
+def test_timezone_mixed_timestamps_skip_decay_instead_of_killing_the_batch(
+    settings: Settings,
+) -> None:
+    """오프셋 없는 관측 시각이 섞여도 배치를 죽이지 않는다 — 감쇠를 포기할 뿐이다.
+
+    `datetime` 뺄셈은 naive-aware 혼합에서 `ValueError` 가 아니라 **`TypeError`** 를 낸다.
+    파싱 실패만 막는 가드는 이 경우를 놓쳐 consolidation 이 통째로 죽는다.
+    """
+    naive = "2026-08-01T00:00:00"  # 오프셋 없음 — `now` 는 aware 다
+
+    document = build_graph_document(
+        [_fact("f1", created_at=naive)], existing=empty_document(NOW), settings=settings, now=NOW
+    )
+
+    assert document.edges[0].confidence == pytest.approx(0.9)  # 추측 대신 감쇠 미적용
+
+
 def _between_thresholds(settings: Settings) -> float:
     """승격 임계와 강등 임계 사이의 salience — 관측이 `now` 면 감쇠가 0이라 곧 confidence 다."""
     promote = settings.profile_gate_threshold
@@ -388,6 +406,129 @@ def test_truncation_keeps_tombstones_first(settings: Settings) -> None:
     assert document.edges[0].status == "suppressed"
 
 
+def test_truncation_never_drops_user_deletions_even_past_the_cap(settings: Settings) -> None:
+    """사용자 삭제가 상한보다 많아도 하나도 잘리지 않는다 — 상한을 넘겨서라도 지킨다.
+
+    `_carried_tombstones` 는 **문서에 남아 있는** tombstone 만 보존할 수 있다. 절단이 tombstone
+    자체를 지우면 다음 배치에 같은 `edge_key` 가 새 `active` 로 살아난다(AC-PROF-31 회귀).
+    """
+    tight = Settings(_env_file=None, profile_graph_max_edges=2)
+    existing = _document_of(
+        [
+            _stored_edge("소니", status="suppressed", suppressed_at=NOW),
+            _stored_edge("애플", status="suppressed", suppressed_at=NOW),
+            _stored_edge("삼성", status="suppressed", suppressed_at=NOW),
+        ]
+    )
+    facts = [_fact("f1", triples=[_triple("brand:엘지", label="엘지")])]
+
+    document = build_graph_document(facts, existing=existing, settings=tight, now=NOW)
+
+    assert {e.edge_key for e in document.edges if e.status == "suppressed"} == {
+        "likes|brand:소니",
+        "likes|brand:애플",
+        "likes|brand:삼성",
+    }
+
+
+def test_deleted_preference_does_not_resurrect_after_truncation(settings: Settings) -> None:
+    """절단을 거친 다음 배치에서 지운 취향이 다시 언급돼도 `active` 로 부활하지 않는다.
+
+    앞 테스트가 "남는다"를 잰다면 이 테스트는 "남아서 실제로 막는다"를 잰다 — 억제 실효가
+    이 이슈의 존재 이유라 절단 경계에서 한 번 더 고정한다.
+    """
+    tight = Settings(_env_file=None, profile_graph_max_edges=2)
+    # 소니를 **맨 뒤**에 둔다 — 앞에 두면 상한 안에 우연히 들어가 절단을 통과해 버린다.
+    existing = _document_of(
+        [
+            _stored_edge("애플", status="suppressed", suppressed_at=NOW),
+            _stored_edge("삼성", status="suppressed", suppressed_at=NOW),
+            _stored_edge("소니", status="suppressed", suppressed_at=NOW),
+        ]
+    )
+    first = build_graph_document(
+        [_fact("f1", triples=[_triple("brand:엘지", label="엘지")])],
+        existing=existing,
+        settings=tight,
+        now=NOW,
+    )
+
+    second = build_graph_document(
+        [
+            _fact("f1", triples=[_triple("brand:엘지", label="엘지")]),
+            _fact("f2", triples=[_triple("brand:소니", label="소니")]),  # 지운 취향 재언급
+        ],
+        existing=first,
+        settings=tight,
+        now=NOW,
+    )
+
+    revived = _edge_by_key(second, "likes|brand:소니")
+    assert revived is not None
+    assert revived.status == "suppressed"
+
+
+def test_truncation_drops_machine_superseded_before_user_deletions(settings: Settings) -> None:
+    """`superseded` 는 잘려도 재파생으로 자기복구되지만 `suppressed` 는 복구 경로가 없다.
+
+    그래서 두 tombstone 을 같은 등급으로 두지 않는다 — 밀려나는 쪽은 항상 기계 판정이다.
+    문서 등장 순서가 아니라 확신도로 갈리는지도 함께 고정한다(순서 우연으로 통과하지 않게).
+    """
+    tight = Settings(_env_file=None, profile_graph_max_edges=2)
+    existing = _document_of(
+        [
+            _stored_edge("애플", status="superseded", superseded_by="e_x", confidence=0.1),
+            _stored_edge("삼성", status="superseded", superseded_by="e_y", confidence=0.9),
+            _stored_edge("소니", status="suppressed", suppressed_at=NOW),
+        ]
+    )
+    facts = [_fact("f1", triples=[_triple("brand:엘지", label="엘지")])]
+
+    document = build_graph_document(facts, existing=existing, settings=tight, now=NOW)
+
+    assert len(document.edges) == 2
+    sony = _edge_by_key(document, "likes|brand:소니")
+    assert sony is not None and sony.status == "suppressed"  # 사용자 삭제는 무조건 남고
+    assert _edge_by_key(document, "likes|brand:삼성") is not None  # 확신도 높은 쪽이 남고
+    assert _edge_by_key(document, "likes|brand:애플") is None  # 낮은 쪽이 밀린다
+
+
+def test_truncation_keeps_active_edges_within_the_remaining_budget(settings: Settings) -> None:
+    """tombstone 이 상한 안이면 남은 자리는 `active` 가 확신도 순으로 채운다.
+
+    tombstone 우선이 "이번 배치 반영 0건"을 뜻하지 않는다는 경계다.
+    """
+    tight = Settings(_env_file=None, profile_graph_max_edges=2)
+    existing = _document_of([_stored_edge("소니", status="suppressed", suppressed_at=NOW)])
+    facts = [
+        _fact("f1", triples=[_triple("brand:엘지", label="엘지", salience=0.9)]),
+        _fact("f2", triples=[_triple("brand:애플", label="애플", salience=0.2)]),
+    ]
+
+    document = build_graph_document(facts, existing=existing, settings=tight, now=NOW)
+
+    assert {e.edge_key for e in document.edges} == {"likes|brand:소니", "likes|brand:엘지"}
+
+
+def test_truncation_logs_when_user_deletions_alone_exceed_the_cap(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """상한을 넘겨 보존하는 것은 의도된 선택이므로 **조용히** 넘기지 않는다 — 정리 신호다."""
+    tight = Settings(_env_file=None, profile_graph_max_edges=1)
+    existing = _document_of(
+        [
+            _stored_edge("소니", status="suppressed", suppressed_at=NOW),
+            _stored_edge("애플", status="suppressed", suppressed_at=NOW),
+        ]
+    )
+
+    with caplog.at_level(logging.WARNING, logger="app.agents.profile.graph_merge"):
+        document = build_graph_document([], existing=existing, settings=tight, now=NOW)
+
+    assert len(document.edges) == 2  # 상한(1)을 넘겨서라도 삭제는 지킨다
+    assert "profile_graph_protected_over_cap" in caplog.text
+
+
 # ─────────── revision ───────────
 
 
@@ -439,14 +580,42 @@ def test_revision_increases_when_confidence_crosses_a_bucket(settings: Settings)
 
 
 def _document_with(**overrides: object) -> GraphDocument:
+    return _document_of([_stored_edge(**overrides)])
+
+
+def _document_of(edges: list[GraphEdge]) -> GraphDocument:
+    """이미 만든 edge 들로 기존 문서를 구성한다 — 노드는 edge 가 가리키는 것만 채운다."""
+    nodes = {
+        edge.node_id: GraphNode(
+            node_id=edge.node_id,
+            type="brand",
+            label=edge.node_id.split(":", 1)[1],
+            verified=False,
+        )
+        for edge in edges
+    }
+    return GraphDocument(
+        revision=1,
+        nodes=list(nodes.values()),
+        edges=edges,
+        unprojected_count=0,
+        purged_at=None,
+        updated_at="2026-07-01T00:00:00+00:00",
+    )
+
+
+def _stored_edge(
+    label: str = "소니", *, predicate: str = "likes", **overrides: object
+) -> GraphEdge:
     from app.agents.profile.graph_models import make_edge_id
 
-    edge_key = "likes|brand:소니"
+    node_id = f"brand:{label}"
+    edge_key = f"{predicate}|{node_id}"
     base: dict = {
         "edge_key": edge_key,
         "edge_id": make_edge_id(edge_key),
-        "node_id": "brand:소니",
-        "predicate": "likes",
+        "node_id": node_id,
+        "predicate": predicate,
         "status": "active",
         "promoted": False,
         "origin": "machine",
@@ -467,11 +636,4 @@ def _document_with(**overrides: object) -> GraphDocument:
         "sensitive_topic": None,
     }
     base.update(overrides)
-    return GraphDocument(
-        revision=1,
-        nodes=[GraphNode(node_id="brand:소니", type="brand", label="소니", verified=False)],
-        edges=[GraphEdge(**base)],
-        unprojected_count=0,
-        purged_at=None,
-        updated_at="2026-07-01T00:00:00+00:00",
-    )
+    return GraphEdge(**base)

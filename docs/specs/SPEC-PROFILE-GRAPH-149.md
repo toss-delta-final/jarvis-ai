@@ -1,6 +1,6 @@
 ---
 id: SPEC-PROFILE-GRAPH-149
-version: 0.2.1
+version: 0.2.2
 status: draft
 created: 2026-08-05
 updated: 2026-08-06
@@ -28,6 +28,14 @@ issue_number: 149
 
 ## HISTORY
 
+- **v0.2.2 (2026-08-06, 이슈 #356 / PR #410 리뷰)** — **REQ-PGRAPH-005 절단 우선순위 명시**(계약
+  변경 없음, 와이어 무변경). v0.2.1 까지는 "상한을 넘으면 절단한다"만 있고 **무엇을 먼저 자르는지**가
+  없어, tombstone 이 상한을 넘긴 계정에서 `suppressed` 자체가 잘릴 수 있었다. 그러면
+  REQ-PGRAPH-022/023(억제 실효)이 조용히 진다 — 잘린 tombstone 은 다음 배치에 같은 `edge_key` 가
+  새 `active` 로 파생되는 것을 막지 못하고, **사용자 삭제에는 복구 경로가 없다**. 세 등급으로
+  못박는다: `suppressed`·pin 은 **상한보다 우선**(넘겨서라도 보존, 대신 경고 로그) → `superseded`
+  (근거가 남아 있으면 재파생·재판정으로 자기복구하므로 절단 가능) → `active`. "상한을 넘긴 문서"는
+  REQ-PGRAPH-005 가 말한 **정리·초기화 신호**이지 삭제를 지울 근거가 아니다.
 - **v0.2.1 (2026-08-06, 이슈 #356)** — OPEN-G0 착수에 맞춘 **정정·보강**(계약 변경 없음, 요구사항 무개정).
   (1) §11 설정 목록에 **`graph_decay_half_life_days` 추가** — §6 공통 규약이 "반감기"를 튜너블로
   열거하는데 키 목록에서 빠져 있었다. 이 키는 REQ-PGRAPH-016의 전제다: 게이트가 `salience ≥ 임계`인
@@ -299,6 +307,13 @@ class GraphAuditRecord(BaseModel):
 - **REQ-PGRAPH-005** `edges`가 `profile_graph_max_edges`를 넘으면 절단하고 `truncated`를 참으로
   표시해야 한다. **페이지네이션은 도입하지 않는다** — 개인 프로필이 상한을 넘는 것은 정리·초기화
   신호이며 페이지를 넘길 대상이 아니다.
+  - **[HARD, 신설 v0.2.2] 절단 우선순위** — 밀려나는 순서는 `active` → `superseded` →
+    (자르지 않음) `suppressed`·pin이다. `suppressed`·pin은 **상한보다 우선**하며, 그것만으로
+    상한을 넘으면 넘긴 채 보존하고 경고를 남긴다.
+  - **근거**: `superseded`는 근거 fact가 남아 있으면 다음 배치에 재파생·재판정으로 **자기복구**되지만
+    `suppressed`에는 복구 경로가 없다. 잘린 tombstone은 같은 `edge_key`가 새 `active`로 파생되는 것을
+    막지 못해 **지운 취향이 부활**하고, REQ-PGRAPH-022/023(억제 실효)이 조용히 무력화된다.
+    저장 폭주 방어는 삭제 실효보다 뒤에 선다.
 - **REQ-PGRAPH-006** **[신설 v0.2.0, 이슈 #322]** `evidence_count`는 **내부 전용**이어야 하며 와이어에
   노출해서는 안 된다. 확신도는 `confidence` 3버킷으로만 표현한다.
   - **근거**: `profile_buffer_repeat_cap`(기본 2)이 같은 발화를 2회로 잘라 세션 버퍼에 담으므로

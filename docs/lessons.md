@@ -13,6 +13,42 @@
 
 ---
 
+## [2026-08-06] `datetime` 뺄셈은 naive-aware 혼합에서 `ValueError` 가 아니라 `TypeError` 다
+- 증상: #356 `graph_merge._elapsed_days` 가 "파싱 불가 타임스탬프로 감쇠를 추측하지 않는다"며
+  `except ValueError` 로 감쌌는데, 오프셋 없는 관측 시각이 하나라도 섞이면
+  `TypeError: can't subtract offset-naive and offset-aware datetimes` 로 **가드를 통과해**
+  consolidation 배치가 통째로 죽는다. 현재 소스는 양쪽 다 aware 라(`_now_iso` ·
+  store 의 `created_at TIMESTAMP WITH TIME ZONE`) 재현되지 않는 잠재 결함이었고, PR #410
+  전체 점검에서 코드를 읽다 찾았다.
+- 원인: `datetime.fromisoformat` 의 실패(`ValueError`)만 떠올리고 **뺄셈 자체의 실패**를 빼놓았다.
+  방어 코드를 쓸 때 "무엇이 실패하나"를 함수 단위가 아니라 **식(expression) 단위**로 세지 않았다.
+- 규칙: 시각 연산 방어는 `except (ValueError, TypeError)` 로 잡는다. 더 일반적으로, `try` 안에
+  **연산이 두 개 이상 있으면 각각의 예외 타입을 따로 확인**한다 — 파싱과 연산은 다른 예외를 낸다.
+  tz 혼합을 "우리 코드에선 안 생긴다"로 넘기지 않는다(전제가 깨지는 비용이 배치 전멸이다).
+- 관련: `app/agents/profile/graph_merge.py::_elapsed_days`, 이슈 #356 / PR #410
+
+---
+
+## [2026-08-06] 방어용 상한과 HARD 불변식이 같은 자료를 두고 만나면, 우선순위를 안 적은 쪽이 조용히 진다
+- 증상: #356 `_truncate` 는 "tombstone 을 먼저 지킨다"고 docstring 에 적고 `(protected + rest)[:limit]`
+  로 구현했다. `protected` 가 `profile_graph_max_edges`(200)를 **넘는 순간** 그 슬라이스는
+  protected 자체의 꼬리를 잘라내, 지킨다고 적힌 tombstone 이 사라진다. tombstone 이 없어지면
+  `_carried_tombstones` 가 보존할 대상을 잃고 같은 `edge_key` 가 다음 배치에 새 `active` 로
+  파생돼 **지운 취향이 부활**한다(AC-PROF-31 — 이 이슈의 존재 이유가 무력화된다).
+  기존 테스트는 `protected(1) <= limit(1)` 만 재고 있어 경계를 못 잡았고, PR #410 Claude 리뷰가 잡았다.
+- 원인: 상한(저장 폭주 방어)과 불변식(삭제 실효, HARD)이 **같은 리스트를 두고 충돌**하는데 둘의
+  우선순위를 코드에도 SPEC 에도 안 적었다. 안 적으면 자료구조 연산(여기서는 슬라이스)의 우연한
+  성질이 대신 결정한다 — 그리고 그 결정은 대개 "먼저 쓴 쪽"이 아니라 "나중에 자르는 쪽"이 이긴다.
+- 규칙: **상한을 다루는 코드는 "무엇을 먼저 자르는가"를 명시**하고, 상한 안에 든 경우와 **넘는
+  경우를 따로 테스트**한다(`n <= limit` 만 재는 테스트는 상한 코드를 검증하지 않은 것이다).
+  HARD 불변식과 방어용 상한이 부딪히면 **불변식이 이기고, 상한 초과는 로그로 드러낸다** — 조용히
+  넘기지도, 조용히 지우지도 않는다. 복구 경로가 있는 항목(`superseded`: 재파생으로 자기복구)과
+  없는 항목(`suppressed`: 사용자 삭제)을 한 등급으로 묶지 않는다.
+- 관련: `app/agents/profile/graph_merge.py::_truncate`, `app/core/config.py::profile_graph_max_edges`,
+  SPEC-PROFILE-GRAPH-149 REQ-PGRAPH-005(v0.2.2 절단 우선순위), 이슈 #356 / PR #410
+
+---
+
 ## [2026-08-06] 워크트리의 `docker compose ps` 가 비어도 컨테이너는 떠 있다 — "DB 없음"을 가정하지 마라
 
 - 증상: `#356` 시드 스크립트를 돌리기 전 `docker compose ps` 로 확인했더니 서비스가 하나도 없어
