@@ -141,6 +141,21 @@ top-5 → top-1. **LLM 0콜, 거리컷·택일 없음.** 셀당 결정론 1회. 
 수를 함께 남긴다. `report.md` 의 top-1 distance 분포(정답/오답 중앙값·사분위) 절도 이 계측을
 요약한다.
 
+`sweep.py` 가 이 오프라인 스윕 실행기다(API·pg·LLM 콜 0, `category_mapping.py` §4 의 채택
+규칙을 그대로 재현):
+
+```bash
+uv run python -m evals.category_probe.sweep --run evals/category_probe/baselines/fast-2026-08-06
+# 여러 런 합산 + 런별 분리
+uv run python -m evals.category_probe.sweep --run <dir1> --run <dir2> --dmax-grid 0.24,0.26,0.28
+```
+
+이 기준선(`baselines/fast-2026-08-06`, 사전 leaf 1,007행) 스윕으로 `category_distance_max` 를
+0.22 → **0.26** 으로 올렸다(#344) — single 정답 med 거리 0.2416·q3 0.2579 vs notInCatalog 최소
+d1 0.2621 사이에서 nic 무강제(0/40)를 지키는 최대 컷이다. `category_distance_override_margin`
+(0.035)·`category_select_margin_max`(0.02) 는 재검증만 하고 값은 유지했다. 근거는
+`app/core/config.py` `category_distance_max` 주석 참조.
+
 ## run manifest
 
 `evals/metrics/run_manifest.py::build_run_manifest` 를 확장한다(`manifest.py`). 앵커 sha256 ·
