@@ -227,6 +227,11 @@ def test_buyer_sse_is_identical_with_tracing_disabled(
         if line.startswith("data: ")
     ]
     expected = [
+        # progress_events_enabled 기본 on(#396) — 스트림 맨 앞에 progress 프레임이 추가된다.
+        {
+            "type": "progress",
+            "data": {"stage": "analyzing", "message": get_settings().progress_analyzing_message},
+        },
         {
             "type": "token",
             "data": {"text": "tracing-independent buyer response"},
@@ -404,14 +409,16 @@ def test_buyer_endpoint_canaries_reach_production_seams_but_not_trace_payloads(
     ]
 
     assert second.status_code == sdk_exception.status_code == 200
-    assert [event["type"] for event in sdk_exception_events] == ["error"]
-    assert sdk_exception_events[0]["data"] | {"requestId": None} == {
+    # progress_events_enabled 기본 on(#396) — provider 예외는 progress emit(decompose 직전)
+    # 이후에 발생하므로 progress 가 error 앞에 먼저 나간다.
+    assert [event["type"] for event in sdk_exception_events] == ["progress", "error"]
+    assert sdk_exception_events[1]["data"] | {"requestId": None} == {
         "code": "LLM_UNAVAILABLE",
         "message": "질의를 이해하지 못했어요.",
         "requestId": None,
         "retryable": True,
     }
-    assert sdk_exception_events[0]["data"]["requestId"]
+    assert sdk_exception_events[1]["data"]["requestId"]
     assert PRIVACY_CANARIES["provider_exception"] not in sdk_exception.text
     assert serialized_operations
     _assert_canaries_absent(
@@ -564,6 +571,9 @@ async def test_buyer_spring_retry_still_exports_one_span(
     "503 뒤 200" 은 성공한 호출이므로 2xx 다. 재시도 사실은 구조화 로그로만 관측한다.
     """
     from app.services import spring_client
+
+    # [#394] 기본값이 0으로 바뀌어 재시도 루프 자체를 켜서 검증하려면 명시 주입이 필요하다.
+    monkeypatch.setattr(get_settings(), "spring_max_retries", 1)
 
     calls: list[int] = []
 
@@ -1069,8 +1079,9 @@ async def test_cart_merge_failure_marks_routed_cart_without_changing_frames(
     assert by_name["llm.decompose"].parent_id == by_name["buyer.routing"].id
     assert by_name["buyer.graph.cart"].parent_id == root.id
     events = [json.loads(frame.removeprefix("data:").strip()) for frame in frames]
-    assert [event["type"] for event in events] == ["action", "done"]
-    assert events[0]["data"] == {
+    # progress_events_enabled 기본 on(#396) — 스트림 맨 앞에 progress 프레임이 추가된다.
+    assert [event["type"] for event in events] == ["progress", "action", "done"]
+    assert events[1]["data"] == {
         "type": "CART_ADDED",
         "message": "장바구니에 담았어요.",
         "cartItemId": 1,

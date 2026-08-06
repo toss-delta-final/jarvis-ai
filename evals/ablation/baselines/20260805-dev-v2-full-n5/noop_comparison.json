@@ -1,0 +1,2170 @@
+{
+  "comparisons": {
+    "pipeline-pipelineNoop": {
+      "bootstrapCi95": {
+        "high": 0.1556513247733518,
+        "low": 0.0632438392056272
+      },
+      "caseDeltas": [
+        {
+          "caseId": "buy-budg-0001",
+          "delta": 0.10430399263498047,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-budg-0002",
+          "delta": 0.12121956386540572,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-budg-0003",
+          "delta": 0.3801167613825307,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-budg-0004",
+          "delta": 0.02287734146433551,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-budg-0005",
+          "delta": 0.2950078292005569,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-budg-0006",
+          "delta": 0.19410032171755454,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-budg-0007",
+          "delta": -0.06617008693630777,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-budg-0008",
+          "delta": 0.009350367324199527,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-budg-0009",
+          "delta": -0.017628593676853432,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-budg-0010",
+          "delta": 0.14517087110621074,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cmap-0001",
+          "delta": 0.01309970435483887,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cmap-0002",
+          "delta": 0.31753528423390875,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cmap-0003",
+          "delta": -0.14831865373171438,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cmap-0004",
+          "delta": 0.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cmap-0006",
+          "delta": 0.06155842078750917,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cold-0001",
+          "delta": 0.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cold-0002",
+          "delta": 0.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-gust-0001",
+          "delta": 0.6620918959117289,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-gust-0002",
+          "delta": 0.17651209424419267,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0001",
+          "delta": 0.08136457522459828,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0002",
+          "delta": 0.14157072605145837,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0003",
+          "delta": -0.05421875084289002,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0004",
+          "delta": -0.17663099742435961,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0005",
+          "delta": 0.24605326477502598,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0006",
+          "delta": 0.020450407466357845,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0007",
+          "delta": 0.026783563201598692,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0008",
+          "delta": -0.17537828375860548,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0009",
+          "delta": 0.05373389052553257,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0010",
+          "delta": -0.009449651578953833,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-over-0001",
+          "delta": -0.04228301017445257,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-over-0002",
+          "delta": -0.03249172896981034,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-over-0003",
+          "delta": 0.38171149795072135,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0001",
+          "delta": 0.16646487671750665,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0002",
+          "delta": 0.02207986440655829,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0003",
+          "delta": 0.3502850791844685,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0004",
+          "delta": 0.04143630706989554,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0005",
+          "delta": 0.2857653075561337,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0006",
+          "delta": 0.009534893549110857,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0007",
+          "delta": 0.028038683255145913,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0008",
+          "delta": 0.00972782374321568,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0009",
+          "delta": -0.007906192465741202,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-repu-0001",
+          "delta": -0.07342073155078854,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-repu-0002",
+          "delta": 0.4955093926408985,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-repu-0004",
+          "delta": 0.026363153233121217,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-repu-0005",
+          "delta": 0.1311503661710669,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-repu-0006",
+          "delta": -0.10826235691311906,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-repu-0007",
+          "delta": 0.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-repu-0008",
+          "delta": 0.0038969249905181913,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0001",
+          "delta": 0.295256197142834,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0002",
+          "delta": -0.009746361377610646,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0003",
+          "delta": 0.14722519516566124,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0004",
+          "delta": 0.6131471927654584,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0005",
+          "delta": 0.4147271680177752,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0006",
+          "delta": 0.5780881920943772,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0007",
+          "delta": 0.093854487554765,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0008",
+          "delta": 0.20026334056696782,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0009",
+          "delta": -0.17522274424000428,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0010",
+          "delta": 0.008614348123846538,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0011",
+          "delta": -0.037078584502095224,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0012",
+          "delta": 0.4987341646581128,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0013",
+          "delta": -0.0771951819240434,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0014",
+          "delta": 0.055500706890746376,
+          "nLeft": 5,
+          "nRight": 5
+        }
+      ],
+      "excludedCaseIds": [
+        {
+          "caseId": "buy-cmap-0005",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirc-0001",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirc-0002",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirc-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirc-0004",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirc-0005",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirc-0006",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirm-0001",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirm-0002",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirm-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirm-0004",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirm-0005",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirm-0006",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-fail-0001",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-fail-0002",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-fail-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0001",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0002",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0004",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0005",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0006",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0007",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0008",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0009",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0010",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0011",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0012",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0001",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0002",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0004",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0005",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0006",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0007",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0008",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0009",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0010",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0011",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0012",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-repu-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        }
+      ],
+      "label": "confirmatory",
+      "leftArm": "pipeline",
+      "meanDelta": 0.10836893756216259,
+      "missingLeftCount": 0,
+      "missingRightCount": 0,
+      "pairedCaseIds": [
+        "buy-budg-0001",
+        "buy-budg-0002",
+        "buy-budg-0003",
+        "buy-budg-0004",
+        "buy-budg-0005",
+        "buy-budg-0006",
+        "buy-budg-0007",
+        "buy-budg-0008",
+        "buy-budg-0009",
+        "buy-budg-0010",
+        "buy-cmap-0001",
+        "buy-cmap-0002",
+        "buy-cmap-0003",
+        "buy-cmap-0004",
+        "buy-cmap-0006",
+        "buy-cold-0001",
+        "buy-cold-0002",
+        "buy-gust-0001",
+        "buy-gust-0002",
+        "buy-mult-0001",
+        "buy-mult-0002",
+        "buy-mult-0003",
+        "buy-mult-0004",
+        "buy-mult-0005",
+        "buy-mult-0006",
+        "buy-mult-0007",
+        "buy-mult-0008",
+        "buy-mult-0009",
+        "buy-mult-0010",
+        "buy-over-0001",
+        "buy-over-0002",
+        "buy-over-0003",
+        "buy-pers-0001",
+        "buy-pers-0002",
+        "buy-pers-0003",
+        "buy-pers-0004",
+        "buy-pers-0005",
+        "buy-pers-0006",
+        "buy-pers-0007",
+        "buy-pers-0008",
+        "buy-pers-0009",
+        "buy-repu-0001",
+        "buy-repu-0002",
+        "buy-repu-0004",
+        "buy-repu-0005",
+        "buy-repu-0006",
+        "buy-repu-0007",
+        "buy-repu-0008",
+        "buy-srch-0001",
+        "buy-srch-0002",
+        "buy-srch-0003",
+        "buy-srch-0004",
+        "buy-srch-0005",
+        "buy-srch-0006",
+        "buy-srch-0007",
+        "buy-srch-0008",
+        "buy-srch-0009",
+        "buy-srch-0010",
+        "buy-srch-0011",
+        "buy-srch-0012",
+        "buy-srch-0013",
+        "buy-srch-0014"
+      ],
+      "pairedCount": 62,
+      "rightArm": "pipelineNoop",
+      "summary": {
+        "iqr": 0.20200651418329574,
+        "mean": 0.10836893756216259,
+        "median": 0.027411123228372303,
+        "n": 62,
+        "sd": 0.19585367631404269
+      },
+      "verdict": "pipelineWins"
+    },
+    "pipeline-scoring": {
+      "bootstrapCi95": {
+        "high": 0.3639058147711321,
+        "low": 0.23235651095227816
+      },
+      "caseDeltas": [
+        {
+          "caseId": "buy-budg-0001",
+          "delta": 0.6813991749922337,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-budg-0002",
+          "delta": 0.3827773733769867,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-budg-0003",
+          "delta": 0.8080824371047751,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-budg-0004",
+          "delta": 0.10200520386069917,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-budg-0005",
+          "delta": 0.11098665504742566,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-budg-0006",
+          "delta": 0.2654789900777478,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-budg-0007",
+          "delta": 0.2813153813811686,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-budg-0008",
+          "delta": 0.2455048009682571,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-budg-0009",
+          "delta": 0.09069584871741881,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-budg-0010",
+          "delta": 0.29884049403557106,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cmap-0001",
+          "delta": 0.22174039959203928,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cmap-0002",
+          "delta": 0.3903800499921016,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cmap-0003",
+          "delta": 0.49916685671178246,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cmap-0004",
+          "delta": 0.16844537041637742,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cmap-0006",
+          "delta": 0.6096199500078983,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cold-0001",
+          "delta": -0.08455586954608463,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cold-0002",
+          "delta": 0.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-gust-0001",
+          "delta": 0.3690702464285426,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-gust-0002",
+          "delta": 0.31523068111404245,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0001",
+          "delta": 0.4577496686138181,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0002",
+          "delta": 0.27544381194861844,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0003",
+          "delta": -0.13613694289026612,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0004",
+          "delta": 0.3735132980155341,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0005",
+          "delta": 0.7338839366111645,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0006",
+          "delta": 0.10887179015955994,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0007",
+          "delta": 0.45195535052438773,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0008",
+          "delta": -0.16965633096329386,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0009",
+          "delta": 0.35897583027826807,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0010",
+          "delta": 0.09142011016920792,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-over-0001",
+          "delta": 0.3761067654887525,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-over-0002",
+          "delta": 0.07199264770722624,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-over-0003",
+          "delta": 1.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0001",
+          "delta": 0.4007345166051134,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0002",
+          "delta": 0.23399765710966813,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0003",
+          "delta": 0.5779517362908855,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0004",
+          "delta": 0.18795989514560374,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0005",
+          "delta": 0.25446542065028355,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0006",
+          "delta": 0.05194165596702949,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0007",
+          "delta": 0.48609440423222106,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0008",
+          "delta": 0.1440674228732447,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0009",
+          "delta": 0.25278920471734356,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-repu-0001",
+          "delta": 0.1438458840975156,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-repu-0002",
+          "delta": 0.9261859507142916,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-repu-0004",
+          "delta": 0.3381951353419697,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-repu-0005",
+          "delta": 0.6361682877199558,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-repu-0006",
+          "delta": -0.17299053488128638,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-repu-0007",
+          "delta": 0.4,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-repu-0008",
+          "delta": 0.3469443488621542,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0001",
+          "delta": 0.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0002",
+          "delta": 0.3015826022971429,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0003",
+          "delta": 0.03747814770059388,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0004",
+          "delta": 0.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0005",
+          "delta": 0.2781491965442199,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0006",
+          "delta": 0.5,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0007",
+          "delta": 0.7520766061280473,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0008",
+          "delta": 0.8007009469609213,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0009",
+          "delta": -0.10204504501586986,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0010",
+          "delta": 0.31443716375570996,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0011",
+          "delta": 0.24614048388359577,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0012",
+          "delta": 0.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0013",
+          "delta": 0.17492177794955371,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0014",
+          "delta": 0.16497966625437088,
+          "nLeft": 5,
+          "nRight": 5
+        }
+      ],
+      "excludedCaseIds": [
+        {
+          "caseId": "buy-cmap-0005",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirc-0001",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirc-0002",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirc-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirc-0004",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirc-0005",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirc-0006",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirm-0001",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirm-0002",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirm-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirm-0004",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirm-0005",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirm-0006",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-fail-0001",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-fail-0002",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-fail-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0001",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0002",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0004",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0005",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0006",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0007",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0008",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0009",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0010",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0011",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0012",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0001",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0002",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0004",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0005",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0006",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0007",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0008",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0009",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0010",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0011",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0012",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-repu-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        }
+      ],
+      "label": "exploratory",
+      "leftArm": "pipeline",
+      "meanDelta": 0.297210911481391,
+      "missingLeftCount": 0,
+      "missingRightCount": 0,
+      "pairedCaseIds": [
+        "buy-budg-0001",
+        "buy-budg-0002",
+        "buy-budg-0003",
+        "buy-budg-0004",
+        "buy-budg-0005",
+        "buy-budg-0006",
+        "buy-budg-0007",
+        "buy-budg-0008",
+        "buy-budg-0009",
+        "buy-budg-0010",
+        "buy-cmap-0001",
+        "buy-cmap-0002",
+        "buy-cmap-0003",
+        "buy-cmap-0004",
+        "buy-cmap-0006",
+        "buy-cold-0001",
+        "buy-cold-0002",
+        "buy-gust-0001",
+        "buy-gust-0002",
+        "buy-mult-0001",
+        "buy-mult-0002",
+        "buy-mult-0003",
+        "buy-mult-0004",
+        "buy-mult-0005",
+        "buy-mult-0006",
+        "buy-mult-0007",
+        "buy-mult-0008",
+        "buy-mult-0009",
+        "buy-mult-0010",
+        "buy-over-0001",
+        "buy-over-0002",
+        "buy-over-0003",
+        "buy-pers-0001",
+        "buy-pers-0002",
+        "buy-pers-0003",
+        "buy-pers-0004",
+        "buy-pers-0005",
+        "buy-pers-0006",
+        "buy-pers-0007",
+        "buy-pers-0008",
+        "buy-pers-0009",
+        "buy-repu-0001",
+        "buy-repu-0002",
+        "buy-repu-0004",
+        "buy-repu-0005",
+        "buy-repu-0006",
+        "buy-repu-0007",
+        "buy-repu-0008",
+        "buy-srch-0001",
+        "buy-srch-0002",
+        "buy-srch-0003",
+        "buy-srch-0004",
+        "buy-srch-0005",
+        "buy-srch-0006",
+        "buy-srch-0007",
+        "buy-srch-0008",
+        "buy-srch-0009",
+        "buy-srch-0010",
+        "buy-srch-0011",
+        "buy-srch-0012",
+        "buy-srch-0013",
+        "buy-srch-0014"
+      ],
+      "pairedCount": 62,
+      "rightArm": "scoring",
+      "summary": {
+        "iqr": 0.29186272644555344,
+        "mean": 0.297210911481391,
+        "median": 0.27679650424641916,
+        "n": 62,
+        "sd": 0.26416118796615295
+      },
+      "verdict": "pipelineWins"
+    },
+    "scoring-scoringNoop": {
+      "bootstrapCi95": {
+        "high": 0.09430633712477246,
+        "low": 0.024205832048389518
+      },
+      "caseDeltas": [
+        {
+          "caseId": "buy-budg-0001",
+          "delta": 0.022557250667555456,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-budg-0002",
+          "delta": -0.06386351852309727,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-budg-0003",
+          "delta": -0.08484946226286497,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-budg-0004",
+          "delta": 0.16247785393047937,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-budg-0005",
+          "delta": 0.3581841887176751,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-budg-0006",
+          "delta": 0.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-budg-0007",
+          "delta": 0.2094950753933273,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-budg-0008",
+          "delta": -0.07294691573542865,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-budg-0009",
+          "delta": -0.09080922256209317,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-budg-0010",
+          "delta": 0.15659677538971511,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cmap-0001",
+          "delta": 0.02853414091516171,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cmap-0002",
+          "delta": 0.02706248872493322,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cmap-0003",
+          "delta": -0.21746600929662896,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cmap-0004",
+          "delta": 0.13812822596635177,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cmap-0006",
+          "delta": 0.23936043176429644,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cold-0001",
+          "delta": 0.06083352273540876,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-cold-0002",
+          "delta": 0.19213031160897087,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-gust-0001",
+          "delta": 0.27472256646343524,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-gust-0002",
+          "delta": 0.07750548832340129,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0001",
+          "delta": 0.16995895626477212,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0002",
+          "delta": -0.05072433796302567,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0003",
+          "delta": 0.0056654863577244585,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0004",
+          "delta": 0.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0005",
+          "delta": 0.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0006",
+          "delta": 0.13057077806813788,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0007",
+          "delta": 0.09726961010026391,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0008",
+          "delta": -0.004654350295498988,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0009",
+          "delta": 0.18203303893231776,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-mult-0010",
+          "delta": -0.06815356287301588,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-over-0001",
+          "delta": -0.010617418530983691,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-over-0002",
+          "delta": 0.04061466121226276,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-over-0003",
+          "delta": 0.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0001",
+          "delta": 0.12121745585766158,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0002",
+          "delta": 0.02281890342545878,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0003",
+          "delta": 0.006378041225316489,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0004",
+          "delta": -0.13052673053615638,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0005",
+          "delta": 0.0728860663945643,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0006",
+          "delta": 0.04139631567533797,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0007",
+          "delta": -0.05888007741600615,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0008",
+          "delta": 0.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-pers-0009",
+          "delta": 0.11193928069233683,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-repu-0001",
+          "delta": 0.09938084928075613,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-repu-0002",
+          "delta": 0.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-repu-0004",
+          "delta": 0.12054791141002685,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-repu-0005",
+          "delta": 0.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-repu-0006",
+          "delta": -0.012933658425836325,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-repu-0007",
+          "delta": 0.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-repu-0008",
+          "delta": -0.19742099272578165,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0001",
+          "delta": 0.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0002",
+          "delta": 0.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0003",
+          "delta": 0.3330999358830078,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0004",
+          "delta": 0.6666666666666667,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0005",
+          "delta": 0.0,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0006",
+          "delta": 0.14379281289197782,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0007",
+          "delta": 0.0205655539631949,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0008",
+          "delta": 0.016000535178729708,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0009",
+          "delta": 0.10353721617356737,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0010",
+          "delta": 0.0211390066911763,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0011",
+          "delta": -0.004511644378516921,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0012",
+          "delta": 0.34907907019286744,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0013",
+          "delta": -0.020946223557266053,
+          "nLeft": 5,
+          "nRight": 5
+        },
+        {
+          "caseId": "buy-srch-0014",
+          "delta": -0.11314719276545837,
+          "nLeft": 5,
+          "nRight": 5
+        }
+      ],
+      "excludedCaseIds": [
+        {
+          "caseId": "buy-cmap-0005",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirc-0001",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirc-0002",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirc-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirc-0004",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirc-0005",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirc-0006",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirm-0001",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirm-0002",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirm-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirm-0004",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirm-0005",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-dirm-0006",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-fail-0001",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-fail-0002",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-fail-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0001",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0002",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0004",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0005",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0006",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0007",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0008",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0009",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0010",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0011",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invc-0012",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0001",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0002",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0004",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0005",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0006",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0007",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0008",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0009",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0010",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0011",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-invw-0012",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        },
+        {
+          "caseId": "buy-repu-0003",
+          "nLeft": 0,
+          "nRight": 0,
+          "reason": "missingBoth"
+        }
+      ],
+      "label": "exploratory",
+      "leftArm": "scoring",
+      "meanDelta": 0.058414437988567394,
+      "missingLeftCount": 0,
+      "missingRightCount": 0,
+      "pairedCaseIds": [
+        "buy-budg-0001",
+        "buy-budg-0002",
+        "buy-budg-0003",
+        "buy-budg-0004",
+        "buy-budg-0005",
+        "buy-budg-0006",
+        "buy-budg-0007",
+        "buy-budg-0008",
+        "buy-budg-0009",
+        "buy-budg-0010",
+        "buy-cmap-0001",
+        "buy-cmap-0002",
+        "buy-cmap-0003",
+        "buy-cmap-0004",
+        "buy-cmap-0006",
+        "buy-cold-0001",
+        "buy-cold-0002",
+        "buy-gust-0001",
+        "buy-gust-0002",
+        "buy-mult-0001",
+        "buy-mult-0002",
+        "buy-mult-0003",
+        "buy-mult-0004",
+        "buy-mult-0005",
+        "buy-mult-0006",
+        "buy-mult-0007",
+        "buy-mult-0008",
+        "buy-mult-0009",
+        "buy-mult-0010",
+        "buy-over-0001",
+        "buy-over-0002",
+        "buy-over-0003",
+        "buy-pers-0001",
+        "buy-pers-0002",
+        "buy-pers-0003",
+        "buy-pers-0004",
+        "buy-pers-0005",
+        "buy-pers-0006",
+        "buy-pers-0007",
+        "buy-pers-0008",
+        "buy-pers-0009",
+        "buy-repu-0001",
+        "buy-repu-0002",
+        "buy-repu-0004",
+        "buy-repu-0005",
+        "buy-repu-0006",
+        "buy-repu-0007",
+        "buy-repu-0008",
+        "buy-srch-0001",
+        "buy-srch-0002",
+        "buy-srch-0003",
+        "buy-srch-0004",
+        "buy-srch-0005",
+        "buy-srch-0006",
+        "buy-srch-0007",
+        "buy-srch-0008",
+        "buy-srch-0009",
+        "buy-srch-0010",
+        "buy-srch-0011",
+        "buy-srch-0012",
+        "buy-srch-0013",
+        "buy-srch-0014"
+      ],
+      "pairedCount": 62,
+      "rightArm": "scoringNoop",
+      "summary": {
+        "iqr": 0.1257291002361785,
+        "mean": 0.058414437988567394,
+        "median": 0.0208522803271856,
+        "n": 62,
+        "sd": 0.14163437735064535
+      },
+      "verdict": "scoringWins"
+    }
+  },
+  "noopDefinition": "각 arm이 그 케이스·반복에서 실제로 노출한 rankedProductIds(중복 제거)를 productId 오름차순으로 재정렬한 결정론 파생(F-4b, evals.metrics.runner._noop_output 재사용). 추가 LLM 호출 0.",
+  "requiredNRecalculation": {
+    "pipeline-pipelineNoop": {
+      "observedMeanDelta": 0.10836893756216259,
+      "observedSd": 0.19585367631404269,
+      "requiredNCeil": 26,
+      "requiredNFor80PowerAlpha05": 25.636659292041305
+    },
+    "pipeline-scoring": {
+      "observedMeanDelta": 0.297210911481391,
+      "observedSd": 0.26416118796615295,
+      "requiredNCeil": 7,
+      "requiredNFor80PowerAlpha05": 6.20034886265208
+    },
+    "scoring-scoringNoop": {
+      "observedMeanDelta": 0.058414437988567394,
+      "observedSd": 0.14163437735064535,
+      "requiredNCeil": 47,
+      "requiredNFor80PowerAlpha05": 46.1428650749434
+    }
+  },
+  "slicePipelineNoopHolmBonferroni": {
+    "guest": {
+      "ci": {
+        "high": 0.2427796707898863,
+        "low": 0.05900286075241938
+      },
+      "holmConfidence": 0.975,
+      "holmStep": 1,
+      "meanDelta": 0.14773096687328907,
+      "n": 31,
+      "significant": true
+    },
+    "member": {
+      "ci": {
+        "high": 0.12431922715717074,
+        "low": 0.018482932977177523
+      },
+      "holmConfidence": 0.95,
+      "holmStep": 2,
+      "meanDelta": 0.06900690825103609,
+      "n": 31,
+      "significant": true
+    }
+  }
+}

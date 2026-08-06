@@ -45,6 +45,7 @@ from app.agents.buyer.recommendation.decompose import (
 from app.agents.buyer.recommendation.needs_expansion import detect_expansion_need
 from app.agents.buyer.recommendation.needs_expansion import expand_needs as _expand_needs
 from app.agents.buyer.recommendation.no_condition import is_no_condition_turn
+from app.agents.buyer.recommendation.underspecified import is_underspecified_turn
 from app.agents.buyer.recommendation.relaxation import FIELD_TO_ATTR as RELAXATION_FIELD_TO_ATTR
 from app.agents.buyer.recommendation.state import get_relaxation_offer_store, get_revert_store
 from app.agents.buyer.recommendation.graph import stream_recommendation
@@ -489,11 +490,11 @@ async def _prepare_recommendation(
         # [#222] 매핑이 leg 를 하나도 못 냈고 확장 후보가 있으면 그것으로 fan-out 한다.
         # **legs 가 비었을 때만** 발동한다 — canonical 을 낸 발화는 이 분기에 진입하지 않는다,
         # 그 자체는 구조적이다. [PR #318 리뷰 R14-2] 단, "협소 발화는 canonical 을 내므로 이
-        # 경로에 안 들어온다"는 **거리 임계가 정상 튜닝돼 있을 때만** 성립한다 — 현 임계는
-        # stale(#344)이라 협소 발화도 canonical 을 못 내 이 경로로 들어올 수 있다(lessons.md
-        # 실측). 그 경우에도 확장 top-N 은 의미 최근접이라 정답 leaf 가 대체로 상위에 포함되고
+        # 경로에 안 들어온다"는 **거리 임계가 정상 튜닝돼 있을 때만** 성립한다 — 재측정 완료
+        # (#344, 0.26). 잔존 드롭(정당: 사전에 칸이 없거나 d1>0.26)이 이 경로로 들어오는 것은
+        # 여전히 정상 동작이다 — 확장 top-N 은 의미 최근접이라 정답 leaf 가 대체로 상위에 포함되고
         # (실측: "무선 이어폰" top-1 = 음향가전 > 이어폰) leg 마다 keyword·semantic_query 가
-        # 유지되므로, 무필터 degrade(종전 동작) 대비 악화는 아니다 — 임계 재측정은 #344.
+        # 유지되므로, 무필터 degrade(종전 동작) 대비 악화는 아니다.
         # 멀티 니즈 중 일부만 unresolved 인 턴의 부분 확장은 v1 범위 밖이다.
         # [#222 F-3] #217 이 위 needs_expansion 블록에서 먼저 legs 를 채우면(예: "화장품 추천해줘"
         # → case 3 게이트 통과 → LLM 전개로 재매핑 성공) 이 경로는 타지 않는다 — 이 폴백이 새로
@@ -1142,6 +1143,9 @@ async def run_buyer_turn(
         # [#162] 조건 없음 판정은 **여기서** 한다 — `prior`(첫 턴 여부)가 이 스코프에만 있고,
         # `_prepare_recommendation` 이 카테고리 매핑·승계를 끝낸 뒤라야 `category_legs` 가 확정된다.
         no_condition = is_no_condition_turn(decision, prior)
+        # [#336] 과소지정(no_condition 의 상위 집합) 판정 — 같은 이유로 여기서 한다(`prior`·
+        # 확정된 `category_legs` 가 이 스코프에만 있다).
+        underspecified = is_underspecified_turn(decision, prior, settings)
         async for frame in stream_recommendation(
             request=request,
             decision=decision,
@@ -1161,6 +1165,7 @@ async def run_buyer_turn(
             observer=observer,
             request_id=resolved_request_id,
             no_condition=no_condition,
+            underspecified=underspecified,
             popular_fn=popular_fn,
             # [#119] 개인화 off(A/B baseline arm)면 취향 랭킹도 함께 끈다 — rerank 주입과 같은
             # 스위치를 따라야 arm 이 "개인화 없음"으로 일관된다.

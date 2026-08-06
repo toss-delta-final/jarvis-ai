@@ -1,0 +1,8 @@
+caseId,reason,duplicateCount,unknownProductIds,violations
+buy-cmap-0004,listQualityViolation,0,[],"[{""constraint"":""mustExclude"",""productId"":1679183612}]"
+buy-cmap-0005,emptyRelevance,0,[],[]
+buy-fail-0001,emptyRelevance,0,[],[]
+buy-fail-0002,emptyRelevance,0,[],[]
+buy-fail-0003,emptyRelevance,0,[],[]
+buy-over-0003,listQualityViolation,0,[],"[{""constraint"":""forbiddenProductId"",""productId"":9406282766},{""constraint"":""mustExclude"",""productId"":9406282766}]"
+buy-repu-0003,emptyRelevance,0,[],[]

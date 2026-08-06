@@ -1,68 +1,89 @@
 {
-  "adjudicators": [],
+  "adjudicationSummary": {
+    "agreementRate": 0.8912,
+    "agreementRateFormula": "(340 - gradeErrorLabelCount) / 340",
+    "appliedDisputes": 44,
+    "gradeErrorLabelCount": 37,
+    "note": "#329 권고 8(agreement 인쇄) 1차 이행 — adjudicator-omx-01의 dispute 45건 재검증·반영 결과.",
+    "partiallyRejectedDisputes": 1,
+    "partiallyRejectedNote": "buy-pers-0004: 인용 2건 중 productId 3700228373는 이미 relevant(grade2)로 라벨되어 있어 '암묵 0' 주장이 사실과 다름(반려) — 나머지 1건(8108120723)은 사실 확인되어 반영.",
+    "reviewScope": {
+      "explicitLabelsReviewed": 340,
+      "implicitZeroSampleReviewed": 820,
+      "invDirCasesReviewed": 36
+    },
+    "totalDisputes": 45
+  },
+  "adjudicators": [
+    {
+      "id": "adjudicator-omx-01",
+      "role": "adjudicator"
+    }
+  ],
   "auditReport": "audit/leakage_report.json",
+  "confirmatory": {
+    "alphaCorrection": "holm-bonferroni-3",
+    "confirmatorySlices": [
+      "guest",
+      "member",
+      "budget"
+    ],
+    "exploratoryRule": "슬라이스 N<30 또는 미등록 슬라이스",
+    "primaryMetric": "overall.ndcgAtK.10"
+  },
   "counts": {
     "bySlice": {
       "dev": {
+        "budget": 12,
         "category_mapping_failure": 9,
         "cold_start": 2,
         "failure": 5,
-        "guest": 20,
-        "multi_constraint": 4,
-        "personalization": 8,
-        "personalization_overreach": 3,
-        "repurchase": 3,
-        "search": 26
+        "guest": 68,
+        "member": 35,
+        "multi_constraint": 12,
+        "personalization": 11,
+        "personalization_overreach": 6,
+        "repurchase": 8,
+        "search": 62,
+        "single_need": 71
       },
       "holdout": {
-        "category_mapping_failure": 2,
-        "cold_start": 0,
-        "failure": 2,
-        "guest": 10,
-        "multi_constraint": 0,
-        "personalization": 2,
-        "personalization_overreach": 0,
-        "repurchase": 1,
-        "search": 10
-      },
-      "total": {
-        "category_mapping_failure": 11,
-        "cold_start": 2,
-        "failure": 7,
-        "guest": 30,
-        "multi_constraint": 4,
-        "personalization": 10,
-        "personalization_overreach": 3,
-        "repurchase": 4,
-        "search": 36
+        "category_mapping_failure": 6,
+        "failure": 5,
+        "guest": 12,
+        "member": 12,
+        "personalization": 7,
+        "repurchase": 6,
+        "search": 19,
+        "single_need": 18
       }
     },
-    "dev": 31,
-    "holdout": 12,
-    "total": 43
+    "dev": 103,
+    "holdout": 24,
+    "total": 127
   },
   "createdAt": "2026-08-02",
-  "datasetHash": "764bc148858cb9c04b9da7a210a5479f7f0daa04bec61563c7f94233e9646b04",
+  "datasetHash": "ef3a5af8b303041d9f44c156d687e3572feed33d2e85469dce1e0aa49a7ecf37",
   "datasetName": "buyer-goldenset",
-  "datasetVersion": "1.0.0",
+  "datasetVersion": "2.2.0",
   "files": [
     {
-      "bytes": 2324,
+      "bytes": 21520,
       "path": "CHANGELOG.md",
       "records": 0,
-      "sha256": "a68b8895fad6c3bb307aef4814712389f44d484baf8498e07ac0b3264190cf2b"
+      "sha256": "50f35d3548982b3aabab7a46e819a029ddde54d9499e349f8fbd5dd562ec1e88"
     },
     {
-      "bytes": 4743,
+      "bytes": 28828,
       "path": "GUIDE.md",
       "records": 0,
-      "sha256": "6d14c34709489e959e9be1dc3a07aa8dd3156ca33676e545afbdb53340e58082"
+      "sha256": "245bf30585594573c720673bfc8ea734317d8dbd3d73ae1ec5e4ac1eff829084"
     },
     {
-      "bytes": 1602,
+      "bytes": 7863,
       "path": "README.md",
       "records": 0,
-      "sha256": "f1d8d11d864fdb88f442a1c0b4f95a18e93246097b19b3b59803e7264054544a"
+      "sha256": "9fca8c65711191d02552e0735fc979fad68d93889d04bd9d4d3724ed94f7b23d"
     },
     {
       "bytes": 110,
@@ -71,58 +92,82 @@
       "sha256": "f3752f48ee915e79685ff539e71941fb3a6a37853ffd063cd10b8b4ee8289e2b"
     },
     {
-      "bytes": 3164,
-      "path": "audit/leakage_report.json",
-      "records": 9,
-      "sha256": "14fbdee2cba63f077981f4158b0d16c1639e9673d5b275fb0dde8a2d5a8df156"
-    },
-    {
-      "bytes": 1336,
-      "path": "audit/leakage_report.md",
-      "records": 0,
-      "sha256": "97484ca82cbb6e4e01695b4b1ace68c34cf598b2dbacb7081ba90e71d39e7c74"
-    },
-    {
-      "bytes": 9825,
+      "bytes": 12089,
       "path": "audit.py",
       "records": 0,
-      "sha256": "e7521dab28fa48ace08beb2c1e2fb12d8da5e353119893e2acf4f3cdd9866eba"
+      "sha256": "bf7b866628694e2a2d27ffb5243b94c6aa6538d2291859e2b84983258b606555"
     },
     {
-      "bytes": 27284,
+      "bytes": 6336,
+      "path": "audit/leakage_report.json",
+      "records": 0,
+      "sha256": "e6d6b5301e8c3d2b4920313fa75c4671c816f4d55a457a17110ec593f05b8fbb"
+    },
+    {
+      "bytes": 3242,
+      "path": "audit/leakage_report.md",
+      "records": 0,
+      "sha256": "40b2a4e05de02fd3a93727b2254b05ae6a3910c4bc393f63940a1c34a9667941"
+    },
+    {
+      "bytes": 3589,
+      "path": "backfill_label_provenance.py",
+      "records": 0,
+      "sha256": "a40e49c27fed00e7d5d45dbfe796caa39c354874143e3de5cbaa754cf265278f"
+    },
+    {
+      "bytes": 16080,
+      "path": "campaign_v2.py",
+      "records": 0,
+      "sha256": "e359a4b795df6187512d66af05a084af934ef7174ac926ba6ebcb0640a719129"
+    },
+    {
+      "bytes": 142395,
       "path": "cases/buyer_dev.jsonl",
-      "records": 31,
-      "sha256": "2ef8c19cd6ce55c547e9b143120e58c436d3476a48911223075204cd765ae40d"
+      "records": 103,
+      "sha256": "c1bab25161324a4248ade092aabb623ef2287a846787fd9390276ac2fe570cf8"
     },
     {
-      "bytes": 6255,
+      "bytes": 22815,
       "path": "cases/buyer_holdout.jsonl",
-      "records": 12,
-      "sha256": "4148ccdd280836099e235b3743e21ad88f576e76fee535ee9984618a0743bcca"
+      "records": 24,
+      "sha256": "d1713422c334098f514beb3ca76c2b15263c23587dc33f55cfccc87c0bf9080a"
     },
     {
-      "bytes": 4406,
+      "bytes": 11195,
       "path": "cases/buyer_holdout_labels.jsonl",
-      "records": 12,
-      "sha256": "214cce95f67bf161cbdd08c2604c06b1a9b6296d73f4e504b2bd51b71aa043d2"
+      "records": 24,
+      "sha256": "21de9801fc9111d33c8fe3e7b84a6b7e142afc02af33a92de7116e397461993f"
     },
     {
-      "bytes": 855830,
+      "bytes": 14037834,
       "path": "fixtures/catalog_snapshot.json",
-      "records": 335,
-      "sha256": "db16232a30b1dad49dc9102c25988842cb7878ee522bd2c92c60bed68caf8301"
+      "records": 0,
+      "sha256": "f98539b2d8d2fea60c586cf31499ecf9187ae815d389dd3f1312f05f3fec840d"
     },
     {
-      "bytes": 6075,
+      "bytes": 15738,
       "path": "fixtures/purchase_history.json",
-      "records": 11,
-      "sha256": "d9068b703e5ade93df6ab642dc9259b997fc891b6261d64d47968244921b6f74"
+      "records": 0,
+      "sha256": "d4203b8d31ef2bbc4c46d5bff6e1eb672c189ffc449299a898eaeb9adf687e3b"
     },
     {
-      "bytes": 17516,
+      "bytes": 536944,
       "path": "fixtures/search_responses.json",
-      "records": 43,
-      "sha256": "88eeb27452236d0a9779de3ecb8ab3258503f1d5528f3b832ea2df1488754cf0"
+      "records": 0,
+      "sha256": "9b95d071e0075a8a976bdeabfe1dfc11bf2aa63ca31bc277afa3cc52baf13c1e"
+    },
+    {
+      "bytes": 18965,
+      "path": "inject.py",
+      "records": 0,
+      "sha256": "b6d5e1ba6a53881b8a93bddfd503ee47d09b44157af5565ff6822b79c79c65a8"
+    },
+    {
+      "bytes": 13067,
+      "path": "inject_violation_negatives.py",
+      "records": 0,
+      "sha256": "eda364aa5ff635b4bd330886937ef788f2aba63a3f674bc9a2a173ee2b684f8c"
     },
     {
       "bytes": 4109,
@@ -131,31 +176,183 @@
       "sha256": "9c9c0ff282ddc24765f92aad4d8c31e0a671db5324361bb10ceb8ad869bb5b08"
     },
     {
-      "bytes": 12238,
-      "path": "schema.py",
+      "bytes": 9980,
+      "path": "migrate_v1_to_v2.py",
       "records": 0,
-      "sha256": "789681e0e5facd32535c4ddd01b5185fc2205bc5c65834a4892f49358fff19fc"
+      "sha256": "1073256fe6495f4113940581952cdbb0017f33d15c1ab069c8abdafb9b02d390"
     },
     {
-      "bytes": 2711,
+      "bytes": 30674,
+      "path": "schema.py",
+      "records": 0,
+      "sha256": "22a6890d313ec69d9a5e724c930c0e475cf27ee5d2d4fa66494b1e6832cf5d46"
+    },
+    {
+      "bytes": 8507,
       "path": "snapshot.py",
       "records": 0,
-      "sha256": "43c66784b2e3cb345c858fff7465774100b6518ef9c807ef2aeab7a0f9d48724"
+      "sha256": "f68782e7350fc23a8c068182eb1f2f6bfafbb5349d2667c39359791dc8332cbd"
     }
   ],
+  "hardNegativeInjection": {
+    "note": "케이스 사정으로 어긋나면 fixture candidates provenance의 실제 수가 정본이다.",
+    "rules": [
+      "semantic_near",
+      "price_violation",
+      "attr_violation",
+      "category_violation",
+      "other_brand",
+      "broadened_search",
+      "random_catalog"
+    ],
+    "targetMix": {
+      "otherBrandBroadenedRandomApprox": 0.25,
+      "semanticNearMin": 0.5,
+      "violationApprox": 0.25
+    }
+  },
   "labelers": [
     {
       "id": "labeler-01",
       "role": "labeler"
+    },
+    {
+      "id": "labeler-02",
+      "role": "labeler"
     }
   ],
   "provenance": {
-    "catalogSnapshotRecordedAt": "2026-08-03T00:20:00+09:00",
-    "catalogSource": "pg-catalog(local dev) 7220 products + live Spring I-1 @ localhost:8080",
+    "catalogSnapshotRecordedAt": "2026-08-05T00:00:00+09:00",
+    "catalogSource": "pg-catalog(local dev) 6,559 products + live Spring I-1 @ localhost:8080",
     "curated": 30,
     "productionDerived": 0,
-    "synthetic": 13
+    "synthetic": 97
   },
-  "schemaVersion": "1.0.0",
-  "usagePermission": "internal-only"
+  "schemaVersion": "2.1.0",
+  "sliceQuotaFill": {
+    "dev": {
+      "budget": {
+        "actual": 12,
+        "target": 12
+      },
+      "category_mapping_failure": {
+        "actual": 9,
+        "target": 8
+      },
+      "guest": {
+        "actual": 68,
+        "target": 30
+      },
+      "invDirGroupsMin": {
+        "actual": 18,
+        "target": 18
+      },
+      "member": {
+        "actual": 35,
+        "target": 30
+      },
+      "multi_constraint": {
+        "actual": 12,
+        "target": 12
+      },
+      "nonRankingFailureMftMin": {
+        "actual": 5,
+        "shortfallReason": "당시 하향 사유 기록 없음(소급 불가) — #370 실측에서 처음 발견, evals/README.md 공통 규약 '비순위(0건 failure MFT) ≥ 6' 목표 대비 1건 미달. 조정·재케이스화는 이 이슈 범위 밖.",
+        "target": 6
+      },
+      "personalization_overreach": {
+        "actual": 6,
+        "target": 6
+      },
+      "repurchase": {
+        "actual": 8,
+        "target": 8
+      },
+      "single_need": {
+        "actual": 71,
+        "target": 24
+      }
+    },
+    "holdout": {
+      "category_mapping_failure": {
+        "actual": 6,
+        "target": 6
+      },
+      "failure": {
+        "actual": 5,
+        "shortfallReason": "GUIDE.md v2 절 §7-2(#333 라운드2 판정 승인) — holdout 총량 24건 고정 + category_mapping_failure·failure 상호배타로 두 태그를 동시에 채울 수 없는 수학적 한계. dev confirmatory 사전 등록 위반이 아님을 이미 확정.",
+        "target": 6
+      },
+      "guest": {
+        "actual": 12,
+        "target": 12
+      },
+      "member": {
+        "actual": 12,
+        "target": 12
+      },
+      "personalization": {
+        "actual": 7,
+        "target": 6
+      },
+      "repurchase": {
+        "actual": 6,
+        "target": 6
+      },
+      "search": {
+        "actual": 19,
+        "target": 6
+      },
+      "total": {
+        "actual": 24,
+        "target": 24
+      }
+    }
+  },
+  "sliceQuotas": {
+    "budget": 12,
+    "category_mapping_failure": 8,
+    "guest": 30,
+    "holdout": {
+      "guest": 12,
+      "member": 12,
+      "requiredSlicesMinEach": 6,
+      "total": 24
+    },
+    "invDirGroupsMin": 18,
+    "member": 30,
+    "multi_constraint": 12,
+    "nonRankingFailureMftMin": 6,
+    "personalization_overreach": 6,
+    "repurchase": 8,
+    "single_need": 24
+  },
+  "usagePermission": "internal-only",
+  "violationNegatives": {
+    "capPerCase": 4,
+    "holdoutNote": "이번 이슈(#370) 범위 밖 — sealed 라벨(buyer_holdout_labels.jsonl) 접근 없이는 holdout의 relevantProductIds/hardConstraints를 알 수 없어 위반 판정 자체가 불가능하다. sealed 라벨 접근 절차 설계는 후속 이슈.",
+    "rules": {
+      "attr_violation": {
+        "actualCandidates": 0,
+        "actualCases": 0,
+        "minCases": 2,
+        "minPerCase": 1,
+        "shortfallReason": "attrConditions 보유 3케이스(buy-fail-0001/buy-mult-0001/buy-mult-0002) 전부 케이스 조건 키가 catalog attributes의 실제 키와 이름이 달라(예: 차단지수≠SPF지수, 크기≠사이즈, 중량 키 자체가 catalog에 없음) schema.judge_attr_violation(동의어 매핑 없이 정확한 키 일치만 판정)로 위반을 확정할 후보가 0건이다. 조작하지 않고 미달로 기록(패킷 §2 명시적 허용). 상세: evals/goldenset/inject_violation_negatives.py의 ATTR_VIOLATION_CANDIDATE_CASES."
+      },
+      "category_violation": {
+        "actualCandidates": 5,
+        "actualCases": 4,
+        "minCases": 4,
+        "minPerCase": 1,
+        "shortfallReason": null
+      },
+      "price_violation": {
+        "actualCandidates": 47,
+        "actualCases": 13,
+        "minCases": 8,
+        "minPerCase": 2,
+        "shortfallReason": null
+      }
+    }
+  }
 }

@@ -1,26 +1,32 @@
 {
   "coverage": {
     "dev": {
+      "budget": 12,
       "category_mapping_failure": 9,
       "cold_start": 2,
       "failure": 5,
-      "guest": 20,
-      "multi_constraint": 4,
-      "personalization": 8,
-      "personalization_overreach": 3,
-      "repurchase": 3,
-      "search": 26
+      "guest": 68,
+      "member": 35,
+      "multi_constraint": 12,
+      "personalization": 11,
+      "personalization_overreach": 6,
+      "repurchase": 8,
+      "search": 62,
+      "single_need": 71
     },
     "holdout": {
-      "category_mapping_failure": 2,
+      "budget": 0,
+      "category_mapping_failure": 6,
       "cold_start": 0,
-      "failure": 2,
-      "guest": 10,
+      "failure": 5,
+      "guest": 12,
+      "member": 12,
       "multi_constraint": 0,
-      "personalization": 2,
+      "personalization": 7,
       "personalization_overreach": 0,
-      "repurchase": 1,
-      "search": 10
+      "repurchase": 6,
+      "search": 19,
+      "single_need": 18
     }
   },
   "coverageLimitations": [
@@ -29,119 +35,245 @@
     "holdout personalization_overreach slice 표본이 0건입니다"
   ],
   "holdoutRatio": {
-    "actual": 0.27907,
+    "actual": 0.188976,
     "target": 0.3,
     "tolerance": 0.05
   },
-  "nonDiscriminativeRankingCases": [
-    {
-      "candidateCount": 1,
-      "caseId": "buy-srch-0001",
-      "relevantCount": 1
-    },
-    {
-      "candidateCount": 2,
-      "caseId": "buy-srch-0003",
-      "relevantCount": 2
-    },
-    {
-      "candidateCount": 1,
-      "caseId": "buy-gust-0001",
-      "relevantCount": 1
-    },
-    {
-      "candidateCount": 5,
-      "caseId": "buy-cmap-0002",
-      "relevantCount": 5
-    },
-    {
-      "candidateCount": 5,
-      "caseId": "buy-mult-0002",
-      "relevantCount": 5
-    },
-    {
-      "candidateCount": 1,
-      "caseId": "buy-pers-0003",
-      "relevantCount": 1
-    },
-    {
-      "candidateCount": 1,
-      "caseId": "buy-srch-0004",
-      "relevantCount": 1
-    },
-    {
-      "candidateCount": 1,
-      "caseId": "buy-srch-0006",
-      "relevantCount": 1
-    }
-  ],
+  "nonDiscriminativeRankingCases": [],
   "queryPairs": [
     {
       "kind": "queryNearDuplicate",
-      "left": "buy-srch-0003",
-      "right": "buy-repu-0001",
+      "left": "buy-dirc-0001",
+      "right": "buy-invc-0004",
+      "score": 0.625
+    },
+    {
+      "kind": "queryNearDuplicate",
+      "left": "buy-dirm-0001",
+      "right": "buy-dirm-0002",
+      "score": 1.0
+    },
+    {
+      "kind": "queryNearDuplicate",
+      "left": "buy-dirm-0001",
+      "right": "buy-invc-0001",
+      "score": 0.615385
+    },
+    {
+      "kind": "queryNearDuplicate",
+      "left": "buy-dirm-0001",
+      "right": "buy-invc-0002",
+      "score": 0.666667
+    },
+    {
+      "kind": "queryNearDuplicate",
+      "left": "buy-dirm-0002",
+      "right": "buy-invc-0001",
+      "score": 0.615385
+    },
+    {
+      "kind": "queryNearDuplicate",
+      "left": "buy-dirm-0002",
+      "right": "buy-invc-0002",
+      "score": 0.666667
+    },
+    {
+      "kind": "queryNearDuplicate",
+      "left": "buy-dirm-0003",
+      "right": "buy-dirm-0004",
+      "score": 1.0
+    },
+    {
+      "kind": "queryNearDuplicate",
+      "left": "buy-dirm-0005",
+      "right": "buy-dirm-0006",
+      "score": 1.0
+    },
+    {
+      "kind": "queryNearDuplicate",
+      "left": "buy-invc-0001",
+      "right": "buy-invc-0002",
+      "score": 0.615385
+    },
+    {
+      "kind": "queryNearDuplicate",
+      "left": "buy-invc-0011",
+      "right": "buy-srch-0010",
       "score": 0.636364
+    },
+    {
+      "kind": "queryNearDuplicate",
+      "left": "buy-invw-0011",
+      "right": "buy-pers-0004",
+      "score": 1.0
+    },
+    {
+      "kind": "queryNearDuplicate",
+      "left": "buy-repu-0001",
+      "right": "buy-srch-0003",
+      "score": 0.636364
+    },
+    {
+      "kind": "queryNearDuplicate",
+      "left": "buy-fail-1003",
+      "right": "buy-fail-1004",
+      "score": 0.882353
+    },
+    {
+      "kind": "queryNearDuplicate",
+      "left": "buy-fail-1003",
+      "right": "buy-fail-1005",
+      "score": 0.882353
+    },
+    {
+      "kind": "queryNearDuplicate",
+      "left": "buy-fail-1004",
+      "right": "buy-fail-1005",
+      "score": 0.882353
     }
   ],
   "relevantPairs": [],
   "summary": {
-    "devCases": 31,
-    "holdoutCases": 12,
+    "devCases": 103,
+    "holdoutCases": 24,
     "violationCount": 0,
-    "warningCount": 2
+    "warningCount": 16
+  },
+  "violationNegativeFill": {
+    "dev": {
+      "attr_violation": {
+        "actualCandidates": 0,
+        "actualCases": 0,
+        "casesCandidateCounts": {}
+      },
+      "category_violation": {
+        "actualCandidates": 5,
+        "actualCases": 4,
+        "casesCandidateCounts": {
+          "buy-cmap-0004": 1,
+          "buy-over-0003": 2,
+          "buy-repu-0001": 1,
+          "buy-repu-0003": 1
+        }
+      },
+      "price_violation": {
+        "actualCandidates": 47,
+        "actualCases": 13,
+        "casesCandidateCounts": {
+          "buy-budg-0002": 4,
+          "buy-budg-0003": 4,
+          "buy-budg-0005": 2,
+          "buy-budg-0006": 4,
+          "buy-budg-0008": 4,
+          "buy-budg-0009": 4,
+          "buy-budg-0010": 4,
+          "buy-mult-0001": 4,
+          "buy-mult-0003": 4,
+          "buy-mult-0004": 2,
+          "buy-mult-0006": 3,
+          "buy-mult-0007": 4,
+          "buy-pers-0001": 4
+        }
+      }
+    }
   },
   "violations": [],
   "warnings": [
     {
       "kind": "queryNearDuplicate",
-      "left": "buy-srch-0003",
-      "right": "buy-repu-0001",
+      "left": "buy-dirc-0001",
+      "right": "buy-invc-0004",
+      "score": 0.625
+    },
+    {
+      "kind": "queryNearDuplicate",
+      "left": "buy-dirm-0001",
+      "right": "buy-dirm-0002",
+      "score": 1.0
+    },
+    {
+      "kind": "queryNearDuplicate",
+      "left": "buy-dirm-0001",
+      "right": "buy-invc-0001",
+      "score": 0.615385
+    },
+    {
+      "kind": "queryNearDuplicate",
+      "left": "buy-dirm-0001",
+      "right": "buy-invc-0002",
+      "score": 0.666667
+    },
+    {
+      "kind": "queryNearDuplicate",
+      "left": "buy-dirm-0002",
+      "right": "buy-invc-0001",
+      "score": 0.615385
+    },
+    {
+      "kind": "queryNearDuplicate",
+      "left": "buy-dirm-0002",
+      "right": "buy-invc-0002",
+      "score": 0.666667
+    },
+    {
+      "kind": "queryNearDuplicate",
+      "left": "buy-dirm-0003",
+      "right": "buy-dirm-0004",
+      "score": 1.0
+    },
+    {
+      "kind": "queryNearDuplicate",
+      "left": "buy-dirm-0005",
+      "right": "buy-dirm-0006",
+      "score": 1.0
+    },
+    {
+      "kind": "queryNearDuplicate",
+      "left": "buy-invc-0001",
+      "right": "buy-invc-0002",
+      "score": 0.615385
+    },
+    {
+      "kind": "queryNearDuplicate",
+      "left": "buy-invc-0011",
+      "right": "buy-srch-0010",
       "score": 0.636364
     },
     {
-      "cases": [
-        {
-          "candidateCount": 1,
-          "caseId": "buy-srch-0001",
-          "relevantCount": 1
-        },
-        {
-          "candidateCount": 2,
-          "caseId": "buy-srch-0003",
-          "relevantCount": 2
-        },
-        {
-          "candidateCount": 1,
-          "caseId": "buy-gust-0001",
-          "relevantCount": 1
-        },
-        {
-          "candidateCount": 5,
-          "caseId": "buy-cmap-0002",
-          "relevantCount": 5
-        },
-        {
-          "candidateCount": 5,
-          "caseId": "buy-mult-0002",
-          "relevantCount": 5
-        },
-        {
-          "candidateCount": 1,
-          "caseId": "buy-pers-0003",
-          "relevantCount": 1
-        },
-        {
-          "candidateCount": 1,
-          "caseId": "buy-srch-0004",
-          "relevantCount": 1
-        },
-        {
-          "candidateCount": 1,
-          "caseId": "buy-srch-0006",
-          "relevantCount": 1
-        }
-      ],
-      "kind": "nonDiscriminativeRanking"
+      "kind": "queryNearDuplicate",
+      "left": "buy-invw-0011",
+      "right": "buy-pers-0004",
+      "score": 1.0
+    },
+    {
+      "kind": "queryNearDuplicate",
+      "left": "buy-repu-0001",
+      "right": "buy-srch-0003",
+      "score": 0.636364
+    },
+    {
+      "kind": "queryNearDuplicate",
+      "left": "buy-fail-1003",
+      "right": "buy-fail-1004",
+      "score": 0.882353
+    },
+    {
+      "kind": "queryNearDuplicate",
+      "left": "buy-fail-1003",
+      "right": "buy-fail-1005",
+      "score": 0.882353
+    },
+    {
+      "kind": "queryNearDuplicate",
+      "left": "buy-fail-1004",
+      "right": "buy-fail-1005",
+      "score": 0.882353
+    },
+    {
+      "actual": 0.188976,
+      "kind": "holdoutRatioDrift",
+      "target": 0.3,
+      "tolerance": 0.05
     }
   ]
 }

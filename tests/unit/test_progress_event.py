@@ -1,8 +1,9 @@
-"""구매자 SSE `progress` 이벤트 회귀 (이슈 #289) — 계약 미등재·플래그 gated.
+"""구매자 SSE `progress` 이벤트 회귀 (이슈 #289, 기본 on 전환은 #396) — 계약 등재 완료.
 
-`app/core/config.py::progress_events_enabled` 기본값은 False. 플래그 off = 기존 7종
-이벤트와 순서가 바이트 동일해야 하고, on = `progress`가 스트림 첫 프레임으로 추가되며
-나머지 이벤트 순서는 불변이어야 한다(§3.1 순서 계약 불변, `docs/api-spec.md` §3.1).
+`app/core/config.py::progress_events_enabled` 기본값은 True(#396, 2026-08-06 FE 구현
+완료로 해제). 플래그 off(명시적 escape hatch) = 기존 7종 이벤트와 순서가 바이트 동일해야
+하고, on(기본) = `progress`가 스트림 첫 프레임으로 추가되며 나머지 이벤트 순서는
+불변이어야 한다(§3.1 순서 계약 불변, `docs/api-spec.md` §3.1).
 """
 
 from __future__ import annotations
@@ -208,11 +209,23 @@ def test_progress_data_rejects_unregistered_stage() -> None:
         ProgressData(stage="searching")
 
 
+def test_progress_events_enabled_defaults_to_true() -> None:
+    """#396 — 인자 없이 만든 `Settings()`의 기본값이 True 인지 직접 고정한다.
+
+    다른 모든 테스트가 값을 명시로 주입해서 돌기 때문에, 이 테스트가 없으면 기본값 자체가
+    틀려도(예: 되돌림 실수로 다시 False 가 돼도) 아무도 못 잡는다.
+    """
+    from app.core.config import Settings
+
+    assert Settings().progress_events_enabled is True
+
+
 # ─────────── AC-4.1/2 — 대표 턴 유형: 플래그 off 바이트 동일 / on 첫 프레임 progress ───────────
 
 
-async def test_progress_flag_off_wire_identical_recommend() -> None:
-    """플래그 off(기본값) — 추천 턴에 progress 타입이 없다."""
+async def test_progress_flag_off_wire_identical_recommend(monkeypatch: pytest.MonkeyPatch) -> None:
+    """플래그 off(명시 강제, #396 이후 기본값은 on) — 추천 턴에 progress 타입이 없다."""
+    monkeypatch.setattr(get_settings(), "progress_events_enabled", False)
     events = await _run_recommend("reco-289-off")
     assert "progress" not in _types(events)
     assert _types(events)[-1] == "done"
@@ -222,6 +235,7 @@ async def test_progress_flag_on_prepends_progress_recommend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """플래그 on — progress 가 정확히 1회·맨 앞, 이후 시퀀스는 off 와 동일(추천 턴)."""
+    monkeypatch.setattr(get_settings(), "progress_events_enabled", False)
     off_types = _types(await _run_recommend("reco-289-cmp-off"))
     monkeypatch.setattr(get_settings(), "progress_events_enabled", True)
     on_events = await _run_recommend("reco-289-cmp-on")
@@ -235,6 +249,8 @@ async def test_progress_flag_on_prepends_progress_recommend(
 
 
 async def test_progress_flag_off_wire_identical_cart_add(monkeypatch: pytest.MonkeyPatch) -> None:
+    """플래그 off(명시 강제, #396 이후 기본값은 on)."""
+    monkeypatch.setattr(get_settings(), "progress_events_enabled", False)
     events = await _run_cart_add("cart-289-off", monkeypatch)
     assert "progress" not in _types(events)
     assert _types(events)[-1] == "done"
@@ -244,13 +260,18 @@ async def test_progress_flag_on_prepends_progress_cart_add(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """플래그 on — 비추천(담기) 턴에서도 progress 가 맨 앞에 오고 이후 순서는 불변."""
+    monkeypatch.setattr(get_settings(), "progress_events_enabled", False)
     off_types = _types(await _run_cart_add("cart-289-cmp-off", monkeypatch))
     monkeypatch.setattr(get_settings(), "progress_events_enabled", True)
     on_types = _types(await _run_cart_add("cart-289-cmp-on", monkeypatch))
     assert on_types == ["progress"] + off_types
 
 
-async def test_progress_flag_off_wire_identical_order_status() -> None:
+async def test_progress_flag_off_wire_identical_order_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """플래그 off(명시 강제, #396 이후 기본값은 on)."""
+    monkeypatch.setattr(get_settings(), "progress_events_enabled", False)
     events = await _run_order_status("order-289-off")
     assert "progress" not in _types(events)
     assert _types(events) == ["token", "done"]
@@ -259,13 +280,16 @@ async def test_progress_flag_off_wire_identical_order_status() -> None:
 async def test_progress_flag_on_prepends_progress_order_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(get_settings(), "progress_events_enabled", False)
     off_types = _types(await _run_order_status("order-289-cmp-off"))
     monkeypatch.setattr(get_settings(), "progress_events_enabled", True)
     on_types = _types(await _run_order_status("order-289-cmp-on"))
     assert on_types == ["progress"] + off_types
 
 
-async def test_progress_flag_off_wire_identical_general() -> None:
+async def test_progress_flag_off_wire_identical_general(monkeypatch: pytest.MonkeyPatch) -> None:
+    """플래그 off(명시 강제, #396 이후 기본값은 on)."""
+    monkeypatch.setattr(get_settings(), "progress_events_enabled", False)
     events = await _run_general("general-289-off")
     assert "progress" not in _types(events)
     assert _types(events) == ["token", "done"]
@@ -275,6 +299,7 @@ async def test_progress_flag_on_prepends_progress_general(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """플래그 on — 비추천(일반 대화) 턴에서도 progress 가 맨 앞에 오고 이후 순서는 불변."""
+    monkeypatch.setattr(get_settings(), "progress_events_enabled", False)
     off_types = _types(await _run_general("general-289-cmp-off"))
     monkeypatch.setattr(get_settings(), "progress_events_enabled", True)
     on_types = _types(await _run_general("general-289-cmp-on"))
@@ -437,26 +462,26 @@ def test_seller_analysis_progress_unaffected_by_buyer_progress_flag(
         hitl.set_checkpointer(None)
 
 
-# ─────────── R4-1 — 운영 레인(jwks)에서 플래그가 켜져 있으면 기동 실패 ───────────
+# ─────────── R4-1 — #289 가 뒀던 운영 레인(jwks) 기동 가드를 #396 에서 제거, 가드
+# 되살아나지 않았음을 고정 ───────────
 
 
-def test_progress_events_enabled_fails_startup_in_jwks_mode() -> None:
-    """운영(jwks)에서 PROGRESS_EVENTS_ENABLED=true 이면 Settings 기동이 실패한다.
+def test_progress_events_enabled_succeeds_startup_in_jwks_mode() -> None:
+    """운영(jwks)에서 PROGRESS_EVENTS_ENABLED=true 여도 Settings 기동이 성공한다.
 
-    계약 미등재 이벤트가 .env 실수 한 줄로 운영 와이어에 나가는 사고를 막는
-    fail-closed 가드다(`_require_pepper_in_prod`, 이 파일의 pepper/토큰 가드와 같은 관용구).
+    #289 가 계약 미등재 사고를 막으려 뒀던 가드를, 등재(api-spec §3.1 v0.21.0)·FE 확인
+    완료(2026-08-06)로 #396 에서 제거했다 — 이 테스트는 가드가 되살아나지 않았음을 고정한다.
     """
     from app.core.config import Settings
 
-    with pytest.raises(Exception, match="PROGRESS_EVENTS_ENABLED"):
-        Settings(
-            auth_mode="jwks",
-            jwks_url="http://x",
-            pii_hash_pepper="p",
-            internal_api_token="tok",
-            google_api_key="k",
-            progress_events_enabled=True,
-        )
+    Settings(
+        auth_mode="jwks",
+        jwks_url="http://x",
+        pii_hash_pepper="p",
+        internal_api_token="tok",
+        google_api_key="k",
+        progress_events_enabled=True,
+    )  # ok
 
 
 def test_progress_events_disabled_succeeds_startup_in_jwks_mode() -> None:
@@ -473,21 +498,19 @@ def test_progress_events_disabled_succeeds_startup_in_jwks_mode() -> None:
     )  # ok
 
 
-def test_progress_events_enabled_fails_startup_in_staging_even_with_dev_auth() -> None:
-    """R5-1 — `auth_mode`는 인증 방식일 뿐 실트래픽을 보장하지 않는다.
+def test_progress_events_enabled_succeeds_startup_in_staging_even_with_dev_auth() -> None:
+    """R5-1 — dev 인증으로 도는 staging(실 FE 가 붙을 수 있음) 조합에서도 기동이 성공한다.
 
-    dev 인증으로 도는 staging(실 FE 가 붙을 수 있음)도 `app_environment` 축으로 막아야
-    한다 — jwks 단독 판정이면 이 조합이 가드를 그냥 통과해 계약 미등재 이벤트가 실
-    클라이언트로 나간다(리뷰 4차 지적).
+    #289 가 계약 미등재 사고를 막으려 뒀던 가드를, 등재(api-spec §3.1 v0.21.0)·FE 확인
+    완료(2026-08-06)로 #396 에서 제거했다 — 이 테스트는 가드가 되살아나지 않았음을 고정한다.
     """
     from app.core.config import Settings
 
-    with pytest.raises(Exception, match="PROGRESS_EVENTS_ENABLED"):
-        Settings(
-            auth_mode="dev",
-            app_environment="staging",
-            progress_events_enabled=True,
-        )
+    Settings(
+        auth_mode="dev",
+        app_environment="staging",
+        progress_events_enabled=True,
+    )  # ok
 
 
 def test_progress_events_enabled_succeeds_startup_in_local_dev() -> None:

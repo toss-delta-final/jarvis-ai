@@ -124,10 +124,10 @@ def test_degrade_notice_defaults():
 
 
 def test_search_retry_defaults_fit_first_token_budget():
-    """기본값(3s×2=6s)이 first-token 10s 예산 안에 들어온다 (#133)."""
+    """기본값(3s×1=3s, #394 로 재시도 한시적 비활성)이 first-token 10s 예산 안에 들어온다 (#133)."""
     settings = Settings(_env_file=None)
 
-    assert settings.spring_max_retries == 1
+    assert settings.spring_max_retries == 0
     assert settings.spring_timeout_s * (settings.spring_max_retries + 1) < (
         settings.stream_first_token_timeout_s
     )
@@ -161,17 +161,27 @@ def test_search_retry_budget_must_also_fit_the_first_token_window():
     import pytest
     from pydantic import ValidationError
 
+    # [#394] 기본값이 0으로 바뀌어 이 검증기(재시도 1회 가정) 자체를 겨눈 값들은 명시 주입한다.
     # 전체 상한(30s)은 통과하지만 first-token(10s)은 못 넘는 구간 — 종전이면 조용히 통과했다.
     with pytest.raises(ValidationError, match="first-token budget"):
-        Settings(_env_file=None, spring_timeout_s=6.0)  # 6 × 2 = 12s
+        Settings(_env_file=None, spring_timeout_s=6.0, spring_max_retries=1)  # 6 × 2 = 12s
 
     # 반대 방향 — first-token 상한을 낮추는 설정도 같은 쌍으로 잡힌다.
     with pytest.raises(ValidationError, match="first-token budget"):
-        Settings(_env_file=None, stream_first_token_timeout_s=5.0)  # 기본 예산 6s > 5s
+        Settings(
+            _env_file=None, stream_first_token_timeout_s=5.0, spring_max_retries=1
+        )  # 예산 6s > 5s
 
     # 예산을 함께 줄이면 정상 — 검증은 **쌍**을 보지 한쪽 값을 금지하지 않는다.
-    assert Settings(_env_file=None, stream_first_token_timeout_s=5.0, spring_timeout_s=2.0)
-    assert Settings(_env_file=None, spring_timeout_s=4.0)  # 8s < 10s — 여유가 있으면 통과
+    assert Settings(
+        _env_file=None,
+        stream_first_token_timeout_s=5.0,
+        spring_timeout_s=2.0,
+        spring_max_retries=1,
+    )
+    assert Settings(
+        _env_file=None, spring_timeout_s=4.0, spring_max_retries=1
+    )  # 8s < 10s — 여유가 있으면 통과
 
 
 def test_deferred_retry_guard_rejects_default_serial_budget():
@@ -179,8 +189,10 @@ def test_deferred_retry_guard_rejects_default_serial_budget():
     import pytest
     from pydantic import ValidationError
 
+    # [#394] 재시도 자체는 기본 0으로 꺼졌으니, 가드가 재시도 1회를 가정한 직렬 합을 여전히
+    # 올바르게 계산하는지는 명시 주입으로 겨눈다.
     with pytest.raises(ValidationError) as exc_info:
-        Settings(_env_file=None, search_retry_on_deferred_conditions=True)
+        Settings(_env_file=None, search_retry_on_deferred_conditions=True, spring_max_retries=1)
 
     message = str(exc_info.value)
     assert "disable SEARCH_RETRY_ON_DEFERRED_CONDITIONS" in message
@@ -265,6 +277,37 @@ def test_deferred_first_event_i1_calls_matches_default_config():
         )
         == 2
     )
+
+
+def test_deferred_first_event_i1_calls_known_undercount_vs_actual_rescue_chain_stages():
+    """[#363 R2] 알려진 불일치 — 가드 모델(2)과 실측 구제 체인 단 수(3)가 다르다.
+
+    `_deferred_first_event_i1_calls`(#288)는 "본 검색 1 + 자동완화 probe"만 세고, #222 F-1 /
+    #343 억제-후 재판정의 무필터 재검색 한 단을 빠뜨린다 — 그 함수 docstring이 스스로 경고한
+    실패 모드(config.py:1727-1733, "상수는 조용히 과소평가된다")를 실측으로 확인한 값이다.
+    실측 3은 `tests/unit/test_fanout.py::
+    test_worst_case_rescue_chain_sequential_stages_before_first_sse`가 first SSE 이전 순차
+    Spring 왕복 수로 직접 센 값(상세 근거는 docs/specs/MEASURE-FIRST-TOKEN-363.md §5)이며,
+    이 테스트는 그 숫자를 상수로 옮겨와 가드 모델과 나란히 둔다.
+
+    **이 테스트가 실패해야 하는 조건**: 가드 식(`_deferred_first_event_i1_calls`)이 #288 일반형
+    을 §5가 제안한 보정식으로 바꿔 기본 설정 값이 3이 되거나, 실측 구제 체인 단 수가 (코드
+    변경으로) 3이 아니게 됐는데 이 테스트가 갱신되지 않은 경우 — 즉 "둘 중 하나만 바뀐" 상태를
+    잡는다. 보정식을 적용하는 후속 이슈에서는 이 테스트도 함께 갱신해 두 값을 다시 맞출 것.
+    """
+    from app.core.config import _deferred_first_event_i1_calls
+
+    guard_model_calls = _deferred_first_event_i1_calls(
+        relaxation_max_rounds=3,
+        auto_fields=["ratingMin"],
+        chip_fields=["priceMax", "ratingMin", "brand", "color"],
+    )
+    actual_rescue_chain_stages = 3  # 출처: test_fanout.py 위 AC2 테스트(§5) — 이 상수를 실측이
+    # 바뀔 때 여기서도 갱신한다.
+
+    assert guard_model_calls == 2  # 가드가 실제로 계산하는 값(오늘 기준)
+    assert actual_rescue_chain_stages == 3  # 실측 값(오늘 기준)
+    assert guard_model_calls != actual_rescue_chain_stages  # [#363] 알려진 불일치 — 고정한다
 
 
 def test_deferred_first_event_i1_calls_zero_when_relaxation_disabled():

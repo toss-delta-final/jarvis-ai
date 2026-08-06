@@ -28,10 +28,10 @@ def test_manifest_file_hashes_match_committed_files() -> None:
 
 def test_committed_dataset_has_required_counts_and_slice_coverage() -> None:
     manifest = json.loads((ROOT / "manifest.json").read_text())
-    assert manifest["counts"]["total"] == 43
-    assert manifest["counts"]["dev"] == 31
-    assert manifest["counts"]["holdout"] == 12
-    assert 30 <= manifest["counts"]["total"] <= 50
+    assert manifest["counts"]["total"] == 127
+    assert manifest["counts"]["dev"] == 103
+    assert manifest["counts"]["holdout"] == 24
+    assert 30 <= manifest["counts"]["total"] <= 160
     assert all(count > 0 for count in manifest["counts"]["bySlice"]["dev"].values())
     required = {"search", "personalization", "repurchase", "category_mapping_failure", "failure"}
     assert required <= {
@@ -122,31 +122,70 @@ def test_holdout_ratio_config_changes_audit_warning(
     assert any(item["kind"] == "holdoutRatioDrift" for item in report["warnings"])
 
 
+def _non_discriminative_case(template: GoldenCase, case_id: str, fixture_id: str) -> GoldenCase:
+    # v2 데이터는 실제 하드 네거티브가 섞여 있어 후보=정답인 케이스가 더 이상 존재하지
+    # 않는다(#333 Part 2 라이브 캠페인의 의도된 결과) — 그래서 이 경고 자체는 합성
+    # 케이스로 독립 검증한다(백워드 호환 테스트와 동일 패턴).
+    return GoldenCase.model_validate(
+        {
+            **template.model_dump(by_alias=True),
+            "caseId": case_id,
+            "searchFixtureId": fixture_id,
+            "relevantProductIds": [111, 222],
+            "relevanceGrades": {"111": 2, "222": 2},
+            "idealOrder": [111, 222],
+        }
+    )
+
+
 def test_audit_reports_exact_non_discriminative_ranking_cases() -> None:
-    report = run_audit(write=False)
+    dev = _load_labeled_holdout_for_audit("dev")
+    non_discriminative = _non_discriminative_case(dev[0], "buy-test-9001", "dev-audit-test-9001")
+    responses = json.loads((ROOT / "fixtures" / "search_responses.json").read_text())
+    responses["dev-audit-test-9001"] = {
+        "request": {},
+        "productIds": [111, 222],
+        "totalCount": 2,
+        "recordedAt": "2026-08-05T00:00:00+09:00",
+        "source": "live-spring-i1",
+    }
+    report = run_audit(
+        dev_cases=[*dev, non_discriminative], search_responses=responses, write=False
+    )
     warning = next(
         item for item in report["warnings"] if item["kind"] == "nonDiscriminativeRanking"
     )
-    assert warning["cases"] == [
-        {"caseId": "buy-srch-0001", "candidateCount": 1, "relevantCount": 1},
-        {"caseId": "buy-srch-0003", "candidateCount": 2, "relevantCount": 2},
-        {"caseId": "buy-gust-0001", "candidateCount": 1, "relevantCount": 1},
-        {"caseId": "buy-cmap-0002", "candidateCount": 5, "relevantCount": 5},
-        {"caseId": "buy-mult-0002", "candidateCount": 5, "relevantCount": 5},
-        {"caseId": "buy-pers-0003", "candidateCount": 1, "relevantCount": 1},
-        {"caseId": "buy-srch-0004", "candidateCount": 1, "relevantCount": 1},
-        {"caseId": "buy-srch-0006", "candidateCount": 1, "relevantCount": 1},
-    ]
+    assert {"caseId": "buy-test-9001", "candidateCount": 2, "relevantCount": 2} in warning["cases"]
 
 
 def test_audit_removes_case_after_distractor_is_injected() -> None:
+    dev = _load_labeled_holdout_for_audit("dev")
+    non_discriminative = _non_discriminative_case(dev[0], "buy-test-9002", "dev-audit-test-9002")
     responses = json.loads((ROOT / "fixtures" / "search_responses.json").read_text())
-    responses["dev-001"]["productIds"].append(999_999_999)
-    report = run_audit(search_responses=responses, write=False)
-    warning = next(
-        item for item in report["warnings"] if item["kind"] == "nonDiscriminativeRanking"
+    responses["dev-audit-test-9002"] = {
+        "request": {},
+        "productIds": [111, 222],
+        "totalCount": 2,
+        "recordedAt": "2026-08-05T00:00:00+09:00",
+        "source": "live-spring-i1",
+    }
+    before = run_audit(
+        dev_cases=[*dev, non_discriminative], search_responses=responses, write=False
     )
-    assert "buy-srch-0001" not in {item["caseId"] for item in warning["cases"]}
+    before_warning = next(
+        item for item in before["warnings"] if item["kind"] == "nonDiscriminativeRanking"
+    )
+    assert "buy-test-9002" in {item["caseId"] for item in before_warning["cases"]}
+
+    responses["dev-audit-test-9002"]["productIds"].append(999_999_999)
+    after = run_audit(dev_cases=[*dev, non_discriminative], search_responses=responses, write=False)
+    after_cases = {
+        item["caseId"]
+        for warning in after["warnings"]
+        if warning["kind"] == "nonDiscriminativeRanking"
+        for item in warning["cases"]
+    }
+    assert "buy-test-9002" not in after_cases
 
 
 def test_audit_detects_combined_regression_for_backward_compatibility() -> None:

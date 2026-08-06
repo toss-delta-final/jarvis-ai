@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import Counter
 from collections.abc import AsyncIterator
 from contextlib import nullcontext
@@ -23,6 +24,10 @@ from app.agents.buyer.recommendation.no_condition import (
     has_total_budget,
     rank_by_profile,
     within_budget,
+)
+from app.agents.buyer.recommendation.underspecified import (
+    build_reask_question,
+    within_price_range,
 )
 from app.agents.buyer.recommendation.rerank import rerank
 from app.agents.buyer.recommendation.relaxation import (
@@ -447,6 +452,10 @@ async def stream_recommendation(
     # [#162] 조건이 하나도 없는 발화인가(`no_condition.is_no_condition_turn` 판정 결과).
     # 판정은 호출부(buyer/graph.py)에서 한다 — 그쪽에만 `prior`(첫 턴 여부)가 있다.
     no_condition: bool = False,
+    # [#336] 과소지정 발화인가(`underspecified.is_underspecified_turn` 판정 결과). no_condition
+    # 은 이 집합의 부분집합이다 — 판정은 호출부에서 한다(그쪽에만 `prior` 가 있다, no_condition
+    # 과 같은 근거). 기본 False 라 미주입 호출·기존 테스트는 그대로 통과한다.
+    underspecified: bool = False,
     popular_fn=None,  # I-3 조회. 미지정 시 라이브 기본값(테스트는 fake 주입)
     # [#162] 미리 만들어 둔 취향 벡터(`read_profile_summary()["embedding"]`). 회원이면서 벡터가
     # 있을 때만 취향 랭킹 경로를 탄다 — 게스트·신규회원·구 요약(벡터 없음)은 인기 상품으로 간다.
@@ -513,9 +522,15 @@ async def stream_recommendation(
     # 후보는 안 나오는" 경우(올림 단위 때문에 못 넓히는 priceMax 등)가 생겨 헛되이 미루게 된다.
     # 완화 가능 여부의 정의를 두 곳에 두지 않는다. 순수 함수라 검색 왕복도 늘지 않는다.
     try:
-        may_auto_relax = settings.relaxation_max_rounds > 0 and any(
-            candidate.field in settings.relaxation_auto_fields
-            for candidate in build_relaxation_candidates(decision.filters, settings)
+        # [#336] 과소지정 턴은 자동완화·완화칩을 타지 않는다 — 자동완화 probe 는 0건 재검색을
+        # 카테고리 없이 부르는데, 그건 이 턴이 되묻기로 처리하려는 바로 그 무필터 검색이다.
+        may_auto_relax = (
+            not underspecified
+            and settings.relaxation_max_rounds > 0
+            and any(
+                candidate.field in settings.relaxation_auto_fields
+                for candidate in build_relaxation_candidates(decision.filters, settings)
+            )
         )
     except Exception as exc:  # noqa: BLE001 - 판정 실패가 conditions 를 통째로 막지 않게
         # 이 호출은 conditions 발신 **이전** 경로라, 터지면 이벤트가 하나도 안 나간 채 스트림이
@@ -781,6 +796,15 @@ async def stream_recommendation(
                     trace.mark_degraded("push_skipped")
                 if push_notice := _strip_unsafe(settings.push_skipped_notice):
                     yield sse("token", TokenData(text=push_notice).model_dump(by_alias=True))
+            # [리뷰 F2] 되물음은 **여기**(push 성공/실패 분기 뒤)로 옮겼다 — push 앞에서 내면
+            # products.ready 도 카드도 없는데 질문이 먼저 나가 "표시=실제"(#51)가 깨진다. 이
+            # 경로는 categoryName 이 없어(AI 카탈로그 인덱스) 성공·실패 둘 다 generic 질문뿐이라
+            # (D3 emit 지점 1) 분기마다 다른 문구를 만들 필요는 없다 — 성공 시엔 위 products.ready
+            # 뒤, 실패 시엔 위 push_skipped_notice 뒤로 자연히 온다.
+            if underspecified and (
+                question := _strip_unsafe(settings.underspecified_reask_question)
+            ):
+                yield sse("token", TokenData(text=question).model_dump(by_alias=True))
             # [#311 리뷰] 하류의 dedup 실패 고지 지점(아래 `if dedup_degraded ...`)에 이 경로는
             # 도달하지 못한다 — 여기서 `done` 을 내고 return 하기 때문이다. 같은 검사를 넣어
             # 경로 간 비대칭을 없앤다. 기본값이 빈 값(미고지)이라 오늘은 아무것도 안 나가지만,
@@ -794,7 +818,9 @@ async def stream_recommendation(
         if trace := current_request_trace():
             trace.mark_degraded("profile_ranking_fallback")
 
-    # [#162] 조건이 하나도 없는 턴은 후보 소스를 I-3(인기 상품, §4.17)로 바꾼다.
+    # [#162/#336] 조건이 하나도 없는 턴(no_condition) + 제약만 있는 턴(underspecified)은
+    # 후보 소스를 I-3(인기 상품, §4.17)로 바꾼다. `no_condition ⊂ underspecified` 라 후자만
+    # 검사하면 되지만, 조건식을 읽는 사람이 두 판정의 관계를 다시 추론하지 않도록 명시한다.
     popular_degraded = False
 
     async def _run_candidate_source():
@@ -804,10 +830,15 @@ async def stream_recommendation(
         (실측 7,245건·13.33MB)을 받는데, 그 상위는 사용자 의도와 무관하다. I-1 정본이
         "정형조건 없는 요청 차단은 LLM 단 책임"으로 규정한 자리다(§4.6·§4.17).
 
+        [#336] 가격 제약만 있는 턴(예: "5만원 이하로 아무거나")도 같은 이유로 여기로 온다 —
+        price 파라미터만 실린 I-1 은 여전히 매칭 수천 건을 돌려주고(무필터 실측의 아류),
+        semantic 정렬 입력이 발화 원문 폴백이라 상위가 의도와 무관하다. I-3 는 price 가 있어
+        예산·가격 준수를 입증할 수 있다(#162 와 같은 논리, SPEC-UNDERSPECIFIED-336 §3).
+
         leg 맵은 빈 dict 다 — 인기 목록은 카테고리 fan-out 이 아니라 단일 목록이다.
         """
         nonlocal popular_degraded
-        if not no_condition:
+        if not (no_condition or underspecified):
             return await _run_search()
         try:
             found = await popular_fn(settings.popular_candidate_size)
@@ -815,15 +846,35 @@ async def stream_recommendation(
             logger.warning("popular_products_failed", extra={"reason": str(exc)})
             found = None
         if found is not None:
-            # [#311 리뷰] 총액 예산을 말한 턴은 **예산 안의 후보만** 남긴다. 세트로 묶지 않고
-            # 대안으로 보여주므로 상품 하나가 예산 이하이면 된다 — 무엇을 몇 개 살지 사용자가
-            # 말하지 않은 턴에 조합을 지어내면 근거 없는 세트가 된다(`has_total_budget` 참조).
-            if decision.total_budget is not None:
-                affordable = within_budget(found.products, decision.total_budget)
-                found = ProductSearchResult(products=affordable, total_count=len(affordable))
-            # **0건도 성공이다**(§4.17) — 빈 배열이면 하류 zero-result 경로가 카드 없이 답한다.
-            # 여기서 degrade 로 처리하면 이 이슈가 없애려는 무필터 I-1 을 도로 부른다.
-            return (found, {})
+            # [리뷰 R1] 필터링~재조립 전체를 try 로 감싼다 — 이 구간은 `asyncio.gather`(위
+            # 호출부)를 타는 코루틴 안이라, 여기서 예외가 새면 제너레이터가 done 도 error 도
+            # 없이 그대로 죽는다(`no_condition.rank_by_profile` [PR #311 리뷰] 주석이 같은
+            # 파일에서 재현 확인한 바로 그 실패 모양). §7 원칙("실패해도 턴을 죽이지 않는다")
+            # 에 맞춰 실패 시 `found = None` 으로 떨궈 아래 popular_degraded 폴백(무필터
+            # `_run_search`)으로 합류시킨다 — I-3 자체 실패와 같은 처치다.
+            try:
+                # [#311 리뷰] 총액 예산을 말한 턴은 **예산 안의 후보만** 남긴다. 세트로 묶지
+                # 않고 대안으로 보여주므로 상품 하나가 예산 이하이면 된다 — 무엇을 몇 개 살지
+                # 사용자가 말하지 않은 턴에 조합을 지어내면 근거 없는 세트가 된다
+                # (`has_total_budget` 참조).
+                products = found.products
+                if decision.total_budget is not None:
+                    products = within_budget(products, decision.total_budget)
+                # [#336] 상품당 가격 제약(priceMin/priceMax) — 총액 예산과 별개 축이라 함께
+                # 적용될 수 있다. 둘 다 없으면 `within_price_range` 는 사본만 돌려줘
+                # 순서·내용이 그대로다.
+                products = within_price_range(
+                    products, decision.filters.price_min, decision.filters.price_max
+                )
+                if len(products) != len(found.products):
+                    found = ProductSearchResult(products=products, total_count=len(products))
+                # **0건도 성공이다**(§4.17) — 빈 배열이면 하류 zero-result 경로가 카드 없이
+                # 답한다. 여기서 degrade 로 처리하면 이 이슈가 없애려는 무필터 I-1 을 도로
+                # 부른다.
+                return (found, {})
+            except Exception as exc:  # noqa: BLE001 - 필터링 실패로 스트림을 죽이지 않는다
+                logger.warning("popular_candidate_filter_failed", extra={"reason": str(exc)})
+                found = None
         popular_degraded = True
         if trace := current_request_trace():
             trace.mark_degraded("popular_fallback")
@@ -876,26 +927,38 @@ async def stream_recommendation(
     # 사전 확률이 올라간다("기존 갭이라 무관"이 아니라 "기존 갭인데 이 PR 이 노출 확률을 올린다").
     # 그래서 후속 이슈는 이 PR 이 확률을 올린 갭의 후속으로 우선순위를 매겨야 한다. 억제 이후
     # 기준으로 다시 판정하려면 폴백 재검색 뒤 억제를 다시 돌려야 해서(순서·중복 억제 문제가
-    # 새로 생긴다) 여기서 처리하지 않고 별도 이슈 #343 으로 분리한다(착수 전 아래
-    # `recommend_zero_result` 로그의 had_candidates=True & category_expanded=True 빈도를 먼저
-    # 확인).
+    # 새로 생긴다) — 억제-후 재판정은 아래 [#343] 블록(`candidates = result.products` 직후)이
+    # 담당한다(갭 실재는 PR #318 리뷰에서 재현·확정했고, 운영 실빈도는 아직 미확인이다 — 아래
+    # `recommend_zero_result` 로그의 had_candidates=True & category_expanded=True 조합으로
+    # 배포 후 후속 관측한다).
     category_expand_notice_suppressed = False
+    # [#363] F-1 폴백과 #343 재판정이 쓴 무필터 재검색 왕복의 누적 소요 — 시도했으나 구제
+    # 실패로 0건 종결된 턴에서도 남아야 아래 `recommend_zero_result` 로그로 최악 경로 지연을
+    # 관측할 수 있다(시도가 없으면 0). 성공 시 각 이벤트 로그의 `elapsed_ms` 는 그 왕복 1회분,
+    # 이 변수는 한 턴에 F-1+#343 이 함께 시도됐을 경우의 합이다(상호배타 가드로 실질 1회분).
+    rescue_elapsed_ms = 0
+
+    async def _run_search_unfiltered() -> tuple[ProductSearchResult, dict[int, int]] | None:
+        """카테고리를 빼고 1회만 재검색한다 — 비-fan-out 단일검색과 같은 계약(§6 `_run_search`
+        의 `if not legs` 분기와 동일 처리, leg_of 는 leg 개념이 없으니 빈 dict).
+
+        [#343] 억제-이전 F-1 폴백과 억제-이후 재판정이 함께 쓴다 — 지역 함수를 두 곳에 각자
+        정의하면 같은 판정 개념이 한쪽만 고쳐지는 드리프트가 생긴다(lessons)."""
+        unfiltered = decision.filters.model_copy(update={"category": None})
+        try:
+            found = await search(unfiltered, exclude_product_ids=None)
+            return (found, {}) if found is not None else None
+        except SpringUnavailableError:
+            return None
+        except Exception as exc:  # noqa: BLE001 - 재검색 실패는 원래(0건) 결과를 유지
+            logger.warning("category_expand_zero_fallback_failed", extra={"reason": str(exc)})
+            return None
+
     if decision.category_expanded and search_result.total_count == 0:
-
-        async def _run_search_unfiltered() -> tuple[ProductSearchResult, dict[int, int]] | None:
-            """카테고리를 빼고 1회만 재검색한다 — 비-fan-out 단일검색과 같은 계약(§6 `_run_search`
-            의 `if not legs` 분기와 동일 처리, leg_of 는 leg 개념이 없으니 빈 dict)."""
-            unfiltered = decision.filters.model_copy(update={"category": None})
-            try:
-                found = await search(unfiltered, exclude_product_ids=None)
-                return (found, {}) if found is not None else None
-            except SpringUnavailableError:
-                return None
-            except Exception as exc:  # noqa: BLE001 - 재검색 실패는 원래(0건) 결과를 유지
-                logger.warning("category_expand_zero_fallback_failed", extra={"reason": str(exc)})
-                return None
-
+        _f1_fallback_started_at = time.monotonic()
         fallback_bundle = await _run_search_unfiltered()
+        _f1_fallback_elapsed_ms = round((time.monotonic() - _f1_fallback_started_at) * 1000)
+        rescue_elapsed_ms += _f1_fallback_elapsed_ms
         if fallback_bundle is not None:
             search_result, leg_of = fallback_bundle
             # 무필터로 실제 되돌아갔으니 "중분류를 훑었다"는 확장 고지는 이제 거짓 고지다 —
@@ -903,7 +966,11 @@ async def stream_recommendation(
             # 한다 — 실제로 안 쓴 확장 leg 8개를 카테고리 칩으로 보여주면 더 큰 거짓말이 된다).
             category_expand_notice_suppressed = True
             logger.info(
-                "category_expand_zero_fallback", extra={"legs": len(decision.category_legs)}
+                "category_expand_zero_fallback",
+                extra={
+                    "legs": len(decision.category_legs),
+                    "elapsed_ms": _f1_fallback_elapsed_ms,
+                },
             )
 
     # 최근 구매(윈도우·취소반품 필터) → exact 제외 + 소모품 카테고리 억제(결정 14-F).
@@ -983,9 +1050,7 @@ async def stream_recommendation(
             else settings.embedding_rerank_limit
         )
         return (
-            ProductSearchResult(
-                products=survivors[:rerank_input_limit], total_count=matched
-            ),
+            ProductSearchResult(products=survivors[:rerank_input_limit], total_count=matched),
             suppressed,
             seen,
             bool(found.products),
@@ -1010,6 +1075,93 @@ async def stream_recommendation(
             )
         raise
     candidates = result.products
+
+    # [#343] 억제-후 재판정 — 검색은 히트를 냈는데 위 `_post_filter`(최근구매 exact 제외 + 소모품
+    # 카테고리 억제)가 전량을 지워 candidates 가 0이 된 확장 턴을 무필터 재검색으로 구제한다.
+    # 위 F-1(883행)은 억제 **이전** `search_result.total_count` 만 보므로 이 갭을 못 잡는다
+    # (PR #318 리뷰 R6-4, #222 가 후보 풀을 앵커 근방 leaf 8개로 좁혀 이 사전 확률을 구조적으로
+    # 높였다). `not category_expand_notice_suppressed` 는 상호배타 가드다 — 억제-이전 F-1 이 이미
+    # 무필터 재검색 1회를 써서 채택했으면 여기서 또 돌지 않는다(재검색은 결정론적이라 같은 쿼리를
+    # 두 번 돌려도 결과가 같으므로 2회 이상 시도는 무의미하고, 이 가드로 턴당 무필터 재검색
+    # 왕복은 최대 1회로 고정된다 — Spring 3s 타임아웃 1회분, 구매자 스트림 30s 예산 §2.9 안).
+    post_suppress_fallback_attempted = False
+    if (
+        settings.category_expand_post_suppress_fallback_enabled
+        and decision.category_expanded
+        and not candidates
+        and had_candidates
+        and not category_expand_notice_suppressed
+    ):
+        post_suppress_fallback_attempted = True
+        _post_suppress_fallback_started_at = time.monotonic()
+        fallback_bundle = await _run_search_unfiltered()
+        if fallback_bundle is not None:
+            refetched, _ = fallback_bundle  # leg_of 는 이 함수 계약상 항상 빈 dict
+            # [#363 R4] `_post_filter` 가 성공한 시점의 소요를 여기 잡아 두고, 아래 `finally`에서
+            # **정확히 1회만** `rescue_elapsed_ms`에 더한다 — `_post_filter` 성공 뒤(상태 대입·
+            # `logger.info`) 코드가 나중에 예외를 내도 이중 계상되지 않도록, try 본문 안에서
+            # 직접 누적하지 않는다.
+            _post_suppress_fallback_elapsed_ms: int | None = None
+            # 후보는 이미 0건으로 확정돼 있고 이 재판정은 구제라는 **부가 기능**이다 — 첫 번째
+            # `_post_filter(search_result)`(994행)와 달리 여기서 예외가 나도 후보 확정 자체는
+            # 이미 끝나 있어 raise 할 이유가 없다. 감싸지 않으면 재적용(`_post_filter` 자체는
+            # 이미 자기 예외를 삼키는 `_run_search_unfiltered` 와 달리 무방어라 이 try 의 주 보호
+            # 대상이다)이 실패한 순간 conditions 도 zero_result 안내도 없이 스트림이 죽는다 —
+            # `_probe`·relaxation 루프와 같은 "부가 기능 실패가 턴을 죽이지 않는다"(§7) 원칙.
+            try:
+                (
+                    refiltered,
+                    refiltered_suppressed_by_cat,
+                    refiltered_received,
+                    refiltered_had_candidates,
+                ) = _post_filter(refetched)
+                # [#363] 재검색 + `_post_filter` 재적용까지를 이 블록의 소요로 잰다 — 후속
+                # `_post_filter` 가 재검색 왕복만큼 무겁지 않다는 보장이 없어 왕복만 재면 과소
+                # 계상된다.
+                _post_suppress_fallback_elapsed_ms = round(
+                    (time.monotonic() - _post_suppress_fallback_started_at) * 1000
+                )
+                if refiltered.products:
+                    result = refiltered
+                    suppressed_by_cat = refiltered_suppressed_by_cat
+                    received = refiltered_received
+                    had_candidates = refiltered_had_candidates
+                    candidates = result.products
+                    leg_of = {}  # leg 개념 없음 — 기존 F-1 과 동일 규약, split_by_need 자연 차단
+                    # 무필터로 실제 찾았으니 "중분류를 훑었다"는 확장 고지는 이제 거짓 고지다
+                    # (F-1 과 같은 원칙, 883행 참조). `decision.category_expanded` 자체는
+                    # 건드리지 않는다.
+                    category_expand_notice_suppressed = True
+                    logger.info(
+                        "category_expand_post_suppress_fallback",
+                        extra={
+                            "legs": len(decision.category_legs),
+                            "elapsed_ms": _post_suppress_fallback_elapsed_ms,
+                        },
+                    )
+                # 재적용 후에도 0건이면 위에서 result·suppressed_by_cat·candidates 를 갱신하지
+                # 않았으므로 원래(억제된) 상태가 그대로 유지된다 — 되돌리기 칩·안내 문구는 원래
+                # 억제 기준으로 조립돼야 한다(재검색분으로 교체하면 안 된다).
+            except Exception as exc:  # noqa: BLE001 - 재판정 실패는 원래(억제된) 상태를 유지
+                # CancelledError(BaseException)는 전파돼 협조적 취소가 보존된다.
+                logger.warning(
+                    "category_expand_post_suppress_fallback_failed", extra={"reason": str(exc)}
+                )
+            finally:
+                # [#363 R4] 성공(사전 계산값 재사용) · `_post_filter` 자체 실패(여기서 재계산) ·
+                # 성공 후 늦은 예외(사전 계산값 재사용, 재계산해 이중으로 재지 않는다) 세 경로 전부
+                # 정확히 1회만 더한다.
+                rescue_elapsed_ms += (
+                    _post_suppress_fallback_elapsed_ms
+                    if _post_suppress_fallback_elapsed_ms is not None
+                    else round((time.monotonic() - _post_suppress_fallback_started_at) * 1000)
+                )
+        else:
+            # fallback_bundle 이 None(재검색 실패)이어도 같은 이유로 원래 상태를 그대로 둔다 —
+            # 시도 자체는 있었으니 [#363] 소요는 남긴다.
+            rescue_elapsed_ms += round(
+                (time.monotonic() - _post_suppress_fallback_started_at) * 1000
+            )
 
     # ── 0건/소량 조건 완화 (#113, api-spec §3.1 · SPEC-RECOMMEND-001 §6.6) ──
     # estCount 는 page-local 로 못 구한다 — priceMax·brand·color 는 Spring I-1 쿼리 파라미터라 탈락
@@ -1045,6 +1197,14 @@ async def stream_recommendation(
     # 손잡이 하나가 하나씩만 맡아야 설정값이 이름대로 동작한다.
     probe_budget = settings.relaxation_max_probes  # 완화 칩 probe 상한(자동 완화와 무관)
     probes_spent = 0  # 관측용 — 이 턴이 실제로 쓴 추가 Spring 호출 수
+    # [#363 R3] 자동완화 루프와 칩 probe는 first SSE(conditions) **기준으로 서로 다른 쪽**에
+    # 있다 — `may_auto_relax=True`인 턴은 conditions를 자동완화 루프 직후·칩 probe **이전**에
+    # 내보낸다(아래 `if may_auto_relax: yield sse("conditions", ...)`). 한 필드에 합치면 칩
+    # probe 몫이 섞여 들어와 first-token 지연을 과대계상하므로 반드시 나눈다 — first-token
+    # 지연 판정 기준은 `rescue_elapsed_ms + relax_auto_elapsed_ms`만 봐야 한다(chip 몫 제외,
+    # 근거는 docs/specs/MEASURE-FIRST-TOKEN-363.md).
+    relax_auto_elapsed_ms = 0  # 자동완화 루프 소요 — first SSE 이전
+    relax_chip_elapsed_ms = 0  # 완화 칩 probe 소요 — first SSE 이후
 
     async def _probe(cand: RelaxationCandidate):
         """완화 필터로 재검색해 본 경로와 같은 사후필터를 통과시킨다. 실패면 None(그 후보만 탈락).
@@ -1071,11 +1231,16 @@ async def stream_recommendation(
             )
             return None
 
-    if not candidates:
+    # [#336] 과소지정 턴은 자동완화 루프 자체를 태우지 않는다 — `may_auto_relax`(위 §)는 이
+    # 턴에서 이미 False 로 잠겨 있지만, 이 루프는 `may_auto_relax` 를 보지 않고 `not candidates`
+    # 만으로 도는 별개 게이트라 명시적으로 한 번 더 막는다(안 막으면 가격 폭을 넓힌 재검색이
+    # I-1 로 나가 "카테고리 없이 되묻는다"는 이 이슈의 취지를 어긴다).
+    if not candidates and not underspecified:
         # [PR #248 2차 리뷰] 루프 전체를 감싼다 — `_probe` 안쪽은 이미 방어하지만 후보 생성
         # (`build_relaxation_candidates`)과 루프 자체는 밖이었다. 여기서 터지면 아래 conditions
         # 발신까지 못 가 조건 칩이 사라진다. 자동 완화는 **선택 기능**이라 실패는 삼키고
         # 완화 없이 계속한다(§7) — 0건 안내와 완화 칩 경로는 그대로 살아 있다.
+        _auto_relax_started_at = time.monotonic()
         try:
             relax_candidates = build_relaxation_candidates(decision.filters, settings)
             auto_fields = set(settings.relaxation_auto_fields)
@@ -1113,6 +1278,8 @@ async def stream_recommendation(
         except Exception as exc:  # noqa: BLE001 - 자동 완화 실패가 턴을 죽이지 않게(degrade)
             # CancelledError(BaseException)는 전파돼 협조적 취소가 보존된다.
             logger.warning("relaxation_auto_failed", extra={"reason": str(exc)})
+        # [#363] 성공·예외 어느 쪽이든 이 루프가 돈 만큼은 소요다.
+        relax_auto_elapsed_ms += round((time.monotonic() - _auto_relax_started_at) * 1000)
     # [#113 PR #248 리뷰] **이 턴에 실제로 적용된 필터**. 자동 완화가 채택됐으면 그 값이 반영된
     # 사본이고 아니면 원본이다. 조건 칩 표시와 **완화 칩 후보 생성**이 같은 기준을 쓰게 하는 게
     # 핵심이다 — 원본으로 후보를 만들면 "평점 4.0" 이 화면에 떠 있는데 그 옆 가격 칩은 4.5 기준으로
@@ -1143,10 +1310,14 @@ async def stream_recommendation(
         )
 
     # 완화 칩 — 0건이거나 소량(config 임계 미만)일 때 남은 예산만큼 후보를 probe 한다.
+    # [#336] 과소지정 턴은 이 probe 도 태우지 않는다(위 자동완화 루프와 같은 이유) — 완화 칩은
+    # `may_auto_relax`(auto_fields 화이트리스트)와 무관하게 filters 에 설정된 모든 축(가격 포함)
+    # 에서 후보를 만들어 실제로 I-1 을 부른다.
     relaxation_chips: list[SuggestionChip] = []
-    if not candidates or len(candidates) < settings.relaxation_min_results:
+    if not underspecified and (not candidates or len(candidates) < settings.relaxation_min_results):
         # 자동 완화 루프와 같은 이유로 전체를 감싼다(PR #248 2차 리뷰) — 후보 생성·칩 조립은
         # `_probe` 바깥이라 방어가 없었다. 완화 칩은 **부가 제안**이라 실패하면 칩 없이 계속한다.
+        _chip_probe_started_at = time.monotonic()
         try:
             if not relax_candidates:
                 relax_candidates = build_relaxation_candidates(effective_filters, settings)
@@ -1192,6 +1363,8 @@ async def stream_recommendation(
             # CancelledError(BaseException)는 전파돼 협조적 취소가 보존된다.
             logger.warning("relaxation_chips_failed", extra={"reason": str(exc)})
             relaxation_chips = []
+        # [#363] 성공·예외 어느 쪽이든 이 블록이 쓴 만큼은 소요다.
+        relax_chip_elapsed_ms += round((time.monotonic() - _chip_probe_started_at) * 1000)
 
     # [#113] 이번 턴에 제안한 칩을 스레드에 기억한다 — FE 는 칩을 누르면 label 을 그대로 다음 턴
     # message 로 보내므로(jarvis-frontend `applySuggestion`), 다음 턴에 그 label 을 만나면 LLM 이
@@ -1247,6 +1420,10 @@ async def stream_recommendation(
         else:
             text = "찾은 상품이 모두 최근에 구매하신 것들이에요. 다른 상품을 추천해 드릴까요?"
         yield sse("token", TokenData(text=text).model_dump(by_alias=True))
+        # [#336] 과소지정 턴의 0건 경로 — 카드가 없으니 노출 후보가 없다(D3 emit 지점 3,
+        # generic 질문만). "카드 없는 답 + 되물음"으로 다음 턴에 카테고리를 지목할 실마리를 준다.
+        if underspecified and (question := _strip_unsafe(settings.underspecified_reask_question)):
+            yield sse("token", TokenData(text=question).model_dump(by_alias=True))
         # 전부 억제됐어도 되돌리기 칩은 준다(사용자가 복원 가능) + 0건 완화 칩(#113).
         if zero_chips := revert_chips + relaxation_chips:
             yield sse("suggestions", SuggestionsData(chips=zero_chips).model_dump(by_alias=True))
@@ -1267,6 +1444,23 @@ async def stream_recommendation(
                 # 확장 턴 여부 — #222 가 발생 확률을 높인 갭(F-1 미구제)의 빈도를 이 조합
                 # (had_candidates=True & category_expanded=True)으로 관측한다(PR #318 리뷰).
                 "category_expanded": decision.category_expanded,
+                # [#343] 위 억제-후 재판정을 시도했는지 — 수정 후에도 이 조합이 남을 때 "폴백을
+                # 시도했는데도 정말 0건"인지 "플래그 off 로 갭이 그대로"인지 로그로 갈라야 한다.
+                "post_suppress_fallback_attempted": post_suppress_fallback_attempted,
+                # [#363] 이 턴이 F-1/#343 구제·완화(자동+칩 probe)에 쓴 소요(ms) — 시도 없으면
+                # 0. 이슈 #363 이 실측 불가로 판정한 지연을 배포 후 운영 로그만으로 관측하기
+                # 위한 계측(설계·가드는 후속 이슈).
+                "rescue_elapsed_ms": rescue_elapsed_ms,
+                "relax_probes": probes_spent,
+                # [#363 R3] first SSE(conditions) **이전**(자동완화)과 **이후**(칩 probe)를 반드시
+                # 나눈다 — 합치면 first-token 지연 판정(rescue_elapsed_ms + relax_auto_elapsed_ms)
+                # 이 아직 스트림에 영향 없는 칩 probe 소요까지 끌어와 과대계상된다.
+                "relax_auto_elapsed_ms": relax_auto_elapsed_ms,
+                "relax_chip_elapsed_ms": relax_chip_elapsed_ms,
+                # [#363 R7] False면 conditions가 검색 이전에 이미 나가(545행) 위 소요가
+                # first-token 을 전혀 늦추지 않는다 — `recommend_pipeline`과 같은 근거로 여기도
+                # 싣는다(판정 시 True인 턴만 봐야 한다).
+                "may_auto_relax": may_auto_relax,
             },
         )
         return
@@ -1312,9 +1506,7 @@ async def stream_recommendation(
             query_to_need_idx = {q: idx for idx, q in enumerate(distinct_queries)}
             leaf_query = [query for _, query in need_legs]
             leg_of = {pid: query_to_need_idx[leaf_query[leaf]] for pid, leaf in leg_of.items()}
-            need_legs = [
-                (need_legs[first_leaf_for_query[q]][0], q) for q in distinct_queries
-            ]
+            need_legs = [(need_legs[first_leaf_for_query[q]][0], q) for q in distinct_queries]
             expansion_grouped_by_need = True
     # [#222 PR #318 리뷰] 확장 턴(category_expanded)은 **기본적으로** 니즈 경계로 쪼개지 않는다
     # (조건 칩을 category_expanded 로 억제한 것과 같은 원칙, #51 표시=실제) — 단 위에서 니즈
@@ -1614,6 +1806,17 @@ async def stream_recommendation(
             "relax_field": adopted_field,  # 자동 완화로 채택된 필드(없으면 null)
             "relax_probes": probes_spent,  # 이 턴에 쓴 완화 재검색 횟수
             "relax_chips": len(relaxation_chips),
+            # [#363 R7] `recommend_zero_result`(0건 종결, 곧장 return)와 이 로그(성공 종결)는
+            # 같은 턴에서 상호 배타다 — 합쳐서 봐야 "구제를 시도한 전체 턴"이 된다. 구제가
+            # 실제로 통해 지연된 첫 토큰이라도 결과를 받은 턴이야말로 이 이슈가 재려는 표본이라,
+            # 0건 로그에만 있으면 그 절반이 관측되지 않는다. 값의 정의는 zero_result 쪽과
+            # 동일한 변수를 그대로 싣는다.
+            "rescue_elapsed_ms": rescue_elapsed_ms,
+            "relax_auto_elapsed_ms": relax_auto_elapsed_ms,
+            "relax_chip_elapsed_ms": relax_chip_elapsed_ms,
+            # [#363 R7] False면 conditions가 검색 이전에 이미 나가(545행) 위 소요가 first-token
+            # 을 전혀 늦추지 않는다 — 이 필드 없이는 로그만으로 지연 여부를 가릴 수 없다.
+            "may_auto_relax": may_auto_relax,
             # [#119] 회원/게스트 턴을 사후 분리해 깔때기(received·after_dedup)를 대조하기 위한
             # 조인 키. 개인화가 후보를 줄이면 회원 쪽 received 가 작게 나온다.
             "profile_present": bool(profile),
@@ -1742,6 +1945,19 @@ async def stream_recommendation(
             raw_notice = settings.no_condition_notice_popular
         if notice := _strip_unsafe(raw_notice):
             yield sse("token", TokenData(text=notice).model_dump(by_alias=True))
+
+    # [#336] 제약만 있는 턴(과소지정 ∧ not no_condition)의 인기 상품 고지 — 위 no_condition
+    # 블록과 상호배타다(no_condition 은 이미 자기 고지를 냈다). 실제로 가격 필터를 통과한 인기
+    # 상품이라 참인 문구다(SPEC-UNDERSPECIFIED-336 §4). `popular_degraded` 면 인기 주장 고지는
+    # 스킵한다 — 그 턴은 무필터 검색으로 떨어진 결과라 "인기 상품"이 거짓이 된다(#162 와 같은
+    # 정직성 규약). 되물음은 아래에서 no_condition 여부와 무관하게 낸다.
+    if underspecified and not no_condition and not popular_degraded:
+        if underspecified_notice := _strip_unsafe(settings.underspecified_notice):
+            yield sse("token", TokenData(text=underspecified_notice).model_dump(by_alias=True))
+
+    # [리뷰 F2] 카테고리 되물음(D3 emit 지점 2) 은 여기서 내지 않는다 — push 가 성공했는지가
+    # 아직 정해지지 않아, "무선이어폰 중에…" 라고 예시를 들며 되물으면서 정작 그 상품이 화면에
+    # 뜨지도 않을 수 있다(표시=실제 #51 위반). push 결과가 정해진 뒤(아래, done 직전)로 옮겼다.
 
     # [#133] 최근 구매 제외(I-19) 실패 고지 — **기본 미고지**(config 기본값 "")다. 조회 실패는
     # "중복이 노출됐다"가 아니라 "걸러내지 못했다"라 실제 중복 여부를 알 수 없어 매 턴 노이즈가
@@ -1927,6 +2143,21 @@ async def stream_recommendation(
             trace.mark_degraded("push_skipped")
         if push_notice := _strip_unsafe(settings.push_skipped_notice):
             yield sse("token", TokenData(text=push_notice).model_dump(by_alias=True))
+
+    # [리뷰 F2] 카테고리 되물음(D3 emit 지점 2, no_condition ⊂ underspecified 라 두 턴 모두
+    # 여기서 낸다) — push 결과가 정해진 **뒤**라 표시=실제(#51)를 지킨다.
+    #   - push 성공: 노출 후보(실제로 push 된 상품, `ranked_ids`) 기반 예시 질문.
+    #   - push 실패: 보여준 게 없으니 예시 없이 generic 질문만(되묻기 자체는 유지 — 다음 턴을
+    #     위한 질문이라 카드 유무와 무관하게 유효하다).
+    if underspecified:
+        if pushed:
+            id_to_product = {p.product_id: p for p in candidates}
+            exposed_products = [id_to_product[pid] for pid in ranked_ids if pid in id_to_product]
+            reask_question = build_reask_question(exposed_products, settings)
+        else:
+            reask_question = _strip_unsafe(settings.underspecified_reask_question)
+        if reask_question:
+            yield sse("token", TokenData(text=reask_question).model_dump(by_alias=True))
 
     yield sse(
         "done",

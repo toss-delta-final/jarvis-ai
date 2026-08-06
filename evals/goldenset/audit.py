@@ -10,7 +10,7 @@ from pathlib import Path
 
 from app.core.config import get_settings
 from evals.goldenset.loader import ROOT, _load_labeled_holdout_for_audit
-from evals.goldenset.schema import ALLOWED_SLICES, GoldenCase
+from evals.goldenset.schema import ALLOWED_SLICES, GoldenCase, all_candidates_are_correct
 
 
 def dataset_hash(files: list[dict]) -> str:
@@ -38,6 +38,39 @@ def _jaccard(left: set, right: set) -> float:
 def _coverage(cases: list[GoldenCase]) -> dict[str, int]:
     counts = Counter(slice_name for case in cases for slice_name in case.slices)
     return {slice_name: counts.get(slice_name, 0) for slice_name in sorted(ALLOWED_SLICES)}
+
+
+_VIOLATION_NEGATIVE_RULES = ("price_violation", "category_violation", "attr_violation")
+
+
+def _violation_negative_fill(
+    cases: list[GoldenCase], search_responses: dict[str, dict]
+) -> dict[str, dict]:
+    """#370 — rule별 위반 네거티브 태그 후보의 dev 실채움(케이스 수·후보 수)을 센다.
+
+    사전 등록 quota(manifest.violationNegatives, §2)는 dev 기준이므로 이 함수도 전달받은
+    ``cases``를 그대로 쓴다 — 호출부가 dev만 넘기면 dev 실채움, dev+holdout을 넘기면 합산이다.
+    """
+    candidate_counts: dict[str, dict[str, int]] = {rule: {} for rule in _VIOLATION_NEGATIVE_RULES}
+    for case in cases:
+        if not case.search_fixture_id:
+            continue
+        fixture = search_responses.get(case.search_fixture_id)
+        if not fixture:
+            continue
+        for candidate in fixture.get("candidates", []):
+            rule = candidate.get("rule")
+            if rule in candidate_counts:
+                per_case = candidate_counts[rule]
+                per_case[case.case_id] = per_case.get(case.case_id, 0) + 1
+    return {
+        rule: {
+            "actualCases": len(counts),
+            "actualCandidates": sum(counts.values()),
+            "casesCandidateCounts": dict(sorted(counts.items())),
+        }
+        for rule, counts in candidate_counts.items()
+    }
 
 
 def run_audit(
@@ -147,14 +180,14 @@ def run_audit(
     for case in all_cases:
         if "failure" in case.slices:
             continue
-        candidate_count = len(responses[case.search_fixture_id]["productIds"])
-        relevant_count = len(case.relevant_product_ids)
-        if candidate_count <= relevant_count:
+        candidate_ids = responses[case.search_fixture_id]["productIds"]
+        # F-1(#333 리뷰): 개수 비교가 아니라 집합 포함으로 "전부 정답"(비판별)을 판정한다.
+        if all_candidates_are_correct(candidate_ids, case.relevant_product_ids):
             non_discriminative_ranking_cases.append(
                 {
                     "caseId": case.case_id,
-                    "candidateCount": candidate_count,
-                    "relevantCount": relevant_count,
+                    "candidateCount": len(candidate_ids),
+                    "relevantCount": len(case.relevant_product_ids),
                 }
             )
     if non_discriminative_ranking_cases:
@@ -192,6 +225,9 @@ def run_audit(
         "coverage": coverage,
         "coverageLimitations": coverage_limitations,
         "nonDiscriminativeRankingCases": non_discriminative_ranking_cases,
+        "violationNegativeFill": {
+            "dev": _violation_negative_fill(dev, responses),
+        },
     }
     if write:
         audit_dir = root / "audit"
@@ -220,6 +256,11 @@ def run_audit(
                 warning_lines.append(f"- 순위 판별 불가 후보/정답: {cases}")
         if not warning_lines:
             warning_lines = ["- 없음"]
+        violation_negative_fill = report["violationNegativeFill"]["dev"]
+        violation_negative_lines = [
+            f"- `{rule}`: 케이스 {data['actualCases']}건 / 후보 {data['actualCandidates']}건"
+            for rule, data in sorted(violation_negative_fill.items())
+        ]
         markdown = (
             "# 구매자 골든셋 누출 감사\n\n"
             f"- 위반: **{len(violations)}건**\n"
@@ -230,6 +271,10 @@ def run_audit(
             + "\n\n후보가 전부 정답인 케이스들은 순위 지표"
             "(nDCG·MRR·Precision@k)의 분모에서 제외해야 한다. "
             "노출·필터·하드제약 검증에는 계속 사용한다."
+            + "\n\n## 위반 네거티브 채널 실채움(dev, #370)\n\n"
+            "manifest.json의 `violationNegatives`가 유형별 최소 케이스·최소 후보 사전 등록치를,"
+            " 아래는 실제 채운 값을 담는다(둘의 대조는 CI 유닛 테스트가 강제한다).\n\n"
+            + "\n".join(violation_negative_lines)
             + "\n\n## 커버리지\n\n```json\n"
             + json.dumps(coverage, ensure_ascii=False, sort_keys=True, indent=2)
             + "\n```\n\n## v1 커버리지 한계\n\n"
