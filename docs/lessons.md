@@ -13,6 +13,31 @@
 
 ---
 
+## [2026-08-06] 임시 수정 원복을 문자열 치환("첫 매치")으로 하면 나란히 있는 동형 fixture 를 바꿔친다
+- 증상: #372 리뷰 라운드 1 검증 중, 테스트가 공허 통과가 아닌지 확인하려고
+  `tests/unit/test_underspecified_answer_turn.py` 의 A-1 fixture(`_CATEGORY_ANSWER_DECOMPOSE`)
+  에서 `categoryQueries` 를 임시로 비웠다가, 복원할 때 `str.replace(old, new, 1)` 로 되돌렸다.
+  그런데 되돌릴 패턴(`"categoryQueries": [],\n    "filters": {"priceMax": 50000},\n}`)이 **바로
+  위의 다른 fixture(`_PRICE_MAX_DECOMPOSE`)와 완전히 동일**했다 — 첫 매치가 그쪽이라, 복원이
+  엉뚱한 fixture 에 카테고리를 심고 원래 fixture 는 비운 채로 남겼다. 두 fixture 가 동시에
+  잘못된 상태가 됐는데 **테스트는 그래도 통과**했다(A-1 의 1턴이 과소지정이 아니게 됐는데도
+  되물음 단언이 `or "이어폰" in t` 폴백으로 초록이었다). `git status` 도 신규(untracked) 파일이라
+  `git checkout` 으로 되돌릴 수 없었고, diff 로도 드러나지 않았다. 눈으로 fixture 를 다시 읽고서야
+  발견했다.
+- 원인: 테스트 fixture 파일은 **비슷한 dict 리터럴이 여러 개 나란히 있는 게 정상**이라, 문자열
+  치환의 "첫 매치"가 의도한 그 fixture 라는 보장이 없다. 원복 확인도 "테스트가 다시 초록이다"
+  로만 했는데, 단언에 `or "이어폰" in t` 같은 관대한 폴백이 섞여 있으면 fixture 가 뒤바뀐
+  상태에서도 전체가 초록으로 나온다 — 통과가 "원복이 맞다"를 보증하지 않는다.
+- 규칙: 임시 수정→원복은 **문자열 치환으로 하지 말고** 원본 사본을 떠 두고 파일째 되돌려라
+  (`cp <파일> <파일>.bak` 후 자가 검증 → `cp <파일>.bak <파일>` 로 복원 — `mv`/`cp` 는 신규
+  untracked 파일에도 `git checkout` 과 달리 그대로 통한다). 원복 후에는 **테스트 통과만으로
+  확인하지 말고 해당 지점을 눈으로 다시 읽어 확인하라** — 특히 단언에 `or` 폴백이 섞여 있는
+  테스트는 fixture 가 틀려도 초록일 수 있다.
+- 관련: #372 리뷰 라운드 1, `tests/unit/test_underspecified_answer_turn.py`
+  `_CATEGORY_ANSWER_DECOMPOSE`/`_PRICE_MAX_DECOMPOSE`
+
+---
+
 ## [2026-08-06] "성공 fake" 가 실 스키마와 다른 모양이어도 게스트 게이트 뒤에 있으면 영원히 안 드러난다
 - 증상: #335 리뷰 R8(order_status×spring_timeout 실측 추가) 작업 중, 기존
   `evals/combo_matrix/fakes.py::make_order_status_ok` 가 `{"orderId": ..., "status": ...}` 같은
