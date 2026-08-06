@@ -10,6 +10,17 @@
 ## [Unreleased]
 
 ### Added
+- **#331 — 카테고리 매핑·선택 평가 하네스(`evals/category_probe/`) 신설** — 발화→카테고리 정확도가
+  골든셋 슬라이스 9건에만 얹혀 단독으로 잴 방법이 없었다(`evals/README.md` 공백 표). `evals/intent_probe`
+  확립 규약(전역 페이서·실패는 표본이 아님·단일 실행 판정 금지)을 승계해, 배포 파이프라인과 같은 함수
+  (`decompose` → `map_categories`)를 같은 순서·인자로 부르고 `search_categories_pg`/`exact_lookup`/
+  `embed_texts` 는 실물에 위임하며 기록만 하는 래퍼로 leg·anchor_kind 별 top-k 히트를 계측한다(#344
+  임계 스윕용 `hits.csv`). 앵커 38셀(single 14 MFT+8 INV·multi 6·none 5·notInCatalog 5, goldenset
+  `category_mapping_failure` 9건 중 8건을 caseId 로 승계)은 라이브 pg-catalog canonical 표기(`대분류 >
+  잎`)를 쓰고 스키마(accept `" > "` 1회·발화 누출 금지)+런타임 pre-flight(accept 실재·notInCatalog
+  키워드는 leaf 수준에서 부재 확인) 2단으로 검증한다. trivial baseline(임베딩 최근접, LLM 0콜)을
+  1급 산출물로 동봉(§328 1항). CI 미포함(수동 도구), 유닛테스트는 전부 가짜라 API/pg 콜 0. 계약
+  (api-spec) 무변경.
 - **#372 — #336 되물음 답변 턴 멀티턴 테스트 + 완화칩 우선순위 규칙 문서화(플래그 기본 off 유지)** — 적대적 심사가 짚은 두 갭을 메웠다. ① 되묻는 턴까지만 테스트되고 답변 다음 턴이 검증된 적이 없었다 — 신규 `tests/unit/test_underspecified_answer_turn.py` 가 같은 thread_id 2턴을 구동해 정상 카테고리 답변(PRIOR_FILTERS 승계를 `FakeLLM.calls` 로 배관 실측 + 답변한 카테고리·승계 price_max 가 실제 검색 필터에 실림을 직접 단언)·무관 답변(general 폴백, 죽지 않음)·recommend 레인 안에서 카테고리 아닌 축(색상)만 답한 턴·거부 답변("그냥 아무거나" 반복 시 무필터 I-1 로 떨어지는 기존 멀티턴 경계를 관찰로 고정) 네 시나리오를 고정했다. ② flag on 시 완화칩이 과소지정 턴에서 차단되는 동작(SPEC §7-4)이 "알려진 한계"로만 적혀 있어 우선순위 규칙도 회귀 테스트도 없었다 — reask > relaxation chips 우선순위를 `SPEC-UNDERSPECIFIED-336.md` §7.2 에 명문화하고(api-spec §3.1 `suggestions` 는 조건부 이벤트라 미발신이 계약 위반이 아님을 근거로 적시), 차단 재현 핀·비과소지정 턴 회귀 가드·답변 턴 칩 복원·자동완화 두 게이트가 유효 설정에서 관측 불가능함을 고정하는 구조 테스트(SPEC 문구도 실제 커버리지에 맞게 정정)로 그 경계(해당 턴 한정)를 고정했다. `underspecified_reask_enabled` 기본값은 그대로 False — 플래그 전환은 이 이슈 소관 밖(§7.3 에 남은 게이트로 명시, 거부 답변의 무필터 폴백 경계도 후속 이슈 후보로 추가). 계약(api-spec) 무변경.
 - **#334 — 필터 추출 축별 분해 지표 신설(`evals/filter_axes`)** — 기존 Filter Accuracy(합집합 분모 단일값)로는 어느 축이 과·소추출인지 알 수 없었다. 축별 valueStrict/presence precision·recall(micro, 분모 0은 None)·trivial(빈 필터) baseline·INV/DIR/회원-게스트(#119) 수동 probe를 추가하고, `evals/metrics` 러너·리포트(`filter_axes.csv`)에 병행 배선했다(`filterAccuracy` 등 기존 키·정의는 불변). ablation baseline `20260803-dev-full-n5`을 오프라인 재채점한 `evals/filter_axes/baselines/20260803-dev-full-n5-rescored/`로 합집합 단일값이 감춘 원인 축(keyword 어휘 불일치·category 소/과추출 정반대 방향)을 실측 산출물로 증명했다. 계약(api-spec) 무변경.
 - **#332 — 니즈 전개(legs) 평가 하네스 `evals/legs_probe`** — #198 의 핵심 지표("case==3 인데
@@ -70,6 +81,7 @@
 - **#285 — 챗봇 장바구니 삭제·수량 변경·찜 추가·해제·목록 internal 계약 초안을 정본에 등재** — Notion 「📡 API 명세서」에 I-24~I-28로 등재했다. 발명이 아니라 FE↔BE 정본 실측(C-4 삭제·C-3 수량 변경·M-5 찜 추가·M-6 찜 해제·M-4 찜 목록)의 의미론과 I-2/I-18의 internal 규약(`X-Internal-Token`, AI가 검증한 JWT `sub` 유래 신원, 3초 타임아웃, 응답 envelope)을 이식한 제안이며, I-25 수량 변경은 이슈 본문에 없던 신규 편입이다. 아직 BE 협의 전으로 각 정본 페이지에 초안 배너가 있고 잔여 안건은 이슈 #285 코멘트에 남겼으며, 사본 `docs/api-spec.md` 동기화와 CH-2 `action` 8종 확장은 협의 후 진행한다.
 
 ### Fixed
+- **#368 — `stream_wishlist_add`만 `SpringUnavailableError`를 개별 처리하지 않아 범용 catch-all(INTERNAL)로 새던 문제(#335 매트릭스 미정의 셀 실측 발견)** — 호출부의 예외 처리 범위를 형제 cart_add(`graph.py:453`)와 통일해, `except (WishlistError, SpringUnavailableError):`로 넓혔다. 기본 어댑터 `add_wishlist`(I-26)는 실패를 전부 `WishlistError`로 내므로 그 경로는 종전과 동일하지만, 주입된 `add_wishlist_fn`(평가 하네스 degrade 주입 등)이 `SpringUnavailableError`를 낼 때는 이 except 없이는 INTERNAL로 새던 것을 기존 `WISHLIST_ADD_FAILED`/`WISHLIST_ERROR` degrade로 끝나게 했다(신규 오류 코드·문구 없음, 형제 cart_add도 어댑터가 내지 않는 이 예외를 같은 이유로 방어한다). 계약(api-spec) 무변경.
 - **#343 — 확장 턴에서 검색은 히트를 냈는데 최근구매 exact 제외·소모품 카테고리 억제(`_post_filter`)가 전량을 지워 0건으로 끝나던 문제** — 기존 F-1(#222) 폴백은 억제 **이전** `total_count` 만 봐서 이 갭을 못 잡았다(PR #318 리뷰 R6-4). `candidates` 가 0이 된 확장 턴에 한해 무필터로 1회 재검색하고 그 결과에도 사후필터를 다시 적용(이중 억제)해 채택하며, 억제-이전 F-1 이 이미 재검색을 썼으면 상호배타 가드로 재발동하지 않는다(턴당 무필터 재검색 최대 1회). 신규 `category_expand_post_suppress_fallback_enabled`(기본 on). 계약(api-spec) 무변경.
 - **#319 — 배포 이미지에 `db/`가 없어 운영 컨테이너 부팅이 실패하던 문제** — `session_context.initialize()`(#187)가 부팅 시 `db/profile/init/03_chat_session_contexts.sql`을 파일로 읽는데 `Dockerfile`은 `app/`만 COPY 하고 `.dockerignore`는 `db/`를 명시 제외해, 컨테이너 안에서 `FileNotFoundError` → lifespan 실패 → 헬스체크 실패 → 자동 롤백으로 이어졌다(dev→main 승격 #316 사전 점검에서 발견 — 로컬·CI는 repo 루트에서 실행돼 잡히지 않았다). 최종 스테이지에 `COPY db /app/db`를 추가하고 `.dockerignore` 제외를 해제했으며, 빌드한 이미지 안에서 경로 해석·파일 존재를 실측으로 확인했다. 계약(api-spec) 무변경.
 - **#84 — 카테고리-무관 리셋 발화가 직전 카테고리로 강제로 좁혀지던 문제** — 멀티턴 승계 가드가 "이번 턴 카테고리 신호 없음"을 **무조건 리파인**으로 읽어, 이어폰을 보던 스레드에서 "5만원 이하 아무거나"라고 해도 이어폰 안에서만 검색됐다(실 LLM 프로브로 먼저 재현: `categoryClear 0/32`). **전용 마이크로 분류기**(`app/agents/buyer/recommendation/category_scope.py`)를 도입해 고쳤다 — "이번 발화가 상품 종류를 놓겠다는 말인가"만 판정하는 짧은 호출을 `decompose` 와 **병렬**로 띄우고, 그 `scopeFree` 를 승계 가드가 소비한다. `clear` 로 확정된 턴은 legs 를 비워 무필터(#22)로 복원한다. 판정 정본은 순수 함수 `resolve_category_action` 하나다(그래프와 프로브가 같은 규칙을 쓴다). 그래프 휴리스틱("아무거나" 키워드 매칭)은 쓰지 않는다 — 표현 열거는 목록 밖 발화를 놓치고 목록을 늘리면 정상 발화가 깨진다(#217 §4.0 과 같은 교훈). 계약(api-spec) 무변경.
