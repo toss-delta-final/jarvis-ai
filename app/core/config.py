@@ -161,6 +161,15 @@ class Settings(BaseSettings):
     # 탄다. 상한 없으면 느린 응답이 SSE first-token 을 무기한 블로킹한다(CLAUDE.md 'AI→외부 3s' 규약).
     # 초과 시 embed_texts 가 예외 → EmbeddingRerankBackend 가 Spring 순서 degrade(#101 #7, PR#166).
     embedding_timeout_s: float = 3.0
+    # embedding_timeout_s 는 청크(HTTP 요청) 1건당 상한인 반면, 이건 embed_texts 호출 1회
+    # 전체의 벽시계 상한이다(#391) — 100건 초과 입력은 여러 청크로 나뉘어 순차 호출되므로
+    # 요청당 상한만으로는 총 소요가 청크 수만큼 누적될 수 있다. hot path 규약은 "질의 1건
+    # (=청크 1개)"이라 CLAUDE.md 'AI→외부 3s' 규약에 맞춰 기본값을 요청당 상한과 같은 3.0s 로
+    # 둔다 — 즉 기본 설정에서 100건 초과 입력은 두 번째 청크를 내기 전에 거부된다. 초과 시
+    # embed_texts 가 EmbeddingError → EmbeddingRerankBackend 가 Spring 순서로 degrade한다
+    # (#101 #7, PR#166). 오프라인 1회 빌드(category_seed.seed_from_file)는
+    # embed_texts(..., total_timeout_s=math.inf) 로 이 예산을 명시 제외한다.
+    embedding_total_timeout_s: float = Field(default=3.0, gt=0.0)
     catalog_batch_page_size: int = 500  # I-17 배치 페이지 크기(§4.8, config 주입)
     catalog_vector_overfetch: int = 4  # 방식1 hydrate 후 필터·품절 제거 대비 벡터 여유조회 배수
     # 방식2 DB 재정렬 1회 반환 행 가드. 현 카탈로그 7,220건 전량도 p50 49ms라 기본값은
