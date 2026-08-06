@@ -135,7 +135,7 @@
   보존하고, 기본값 자체를 직접 고정하는 테스트와 가드 제거를 고정하는 성공 테스트 2건을
   추가했다. **와이어 계약(이벤트 이름·페이로드·필드·횟수·상대 순서) 은 이번에 하나도
   바꾸지 않았다** — 바뀌는 것은 "잠겨 있다"는 구현/배포 상태뿐이며, 되돌리려면
-  `PROGRESS_EVENTS_ENABLED=false` 한 줄. `uv run pytest` 4047 passed. (api-spec §3.1·§2.9 c, v0.26.2)
+  `PROGRESS_EVENTS_ENABLED=false` 한 줄. (api-spec §3.1·§2.9 c, v0.26.2)
 - **#313 — group→컨텍스트 매핑을 데이터(`GROUP_ALLOWED_CONTEXTS`)로 강제, #300·#84 전용 검증자를 일반형으로 흡수** —
   `evals/intent_probe/schema.py` 에 group → 허용 컨텍스트 매핑을 데이터로 두고 `Utterance`
   검증자(`_contexts_are_within_the_group_allowlist`)가 강제한다. 매핑에 없는 group 은 어떤
