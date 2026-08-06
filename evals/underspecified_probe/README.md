@@ -27,7 +27,9 @@ SPEC-UNDERSPECIFIED-336 §7.3 이 남긴 게이트 잔여 항목 1("실 LLM deco
    스키마(`filters`)에는 애초에 `category` 키가 없다 — decompose 는 이 필드를 절대 직접 채우지
    않는다(오직 `_prepare_recommendation` 의 카테고리 매핑만 채운다). 프로덕션에서는 매핑 결과가
    없으면 `_prepare_recommendation` 이 `decision.filters.category = None` 으로 **덮어써 지운다**
-   (`app/agents/buyer/graph.py:520-537`). 즉 decompose 가 `category_queries` 없이
+   (`app/agents/buyer/graph.py::_prepare_recommendation` — `category_legs` 가 있고
+   `category_expanded` 가 아니면 대표 canonical 을 싣고, 그 외(매핑 결과 없음)는 미검증
+   `filters.category` 를 비운다). 즉 decompose 가 `category_queries` 없이
    `filters.category` 만 에코한 표본이 이 하네스에서 what-축으로 차단되는 시나리오는 애초에
    재현되지 않는다(그 값 자체가 이 하네스에서 나올 수 없다). 진단 카운터
    **`categoryEchoWithoutQueriesCount`**(`filters.category` 가 비어 있지 않은데
@@ -48,9 +50,10 @@ SPEC-UNDERSPECIFIED-336 §7.3 이 남긴 게이트 잔여 항목 1("실 LLM deco
    수 없다. union(전개 후 판정) 실측은 **후속 이슈 후보**로 남긴다(`legs_probe` 의 union
    커버리지 선례와 동형).
 4. **프로덕션은 `intent == "recommend"` 인 턴에서만 판정을 호출한다** `[F-1, 2차 리뷰어
-   발견]`**.** `app/agents/buyer/graph.py` 는 `general`·`cart_view`·`order_status`·`cart_add`·
-   `cart_remove`·`wishlist_add`·`wishlist_remove` 분기에서 전부 `is_underspecified_turn` 호출
-   이전에 return 한다. decompose 가 앵커를 그 intent 로 라우팅한 표본(예: "뭐 좋은 거 없어?"가
+   발견]`**.** `app/agents/buyer/graph.py::run_buyer_turn` 은 `decision.intent` 가
+   `general`·`cart_view`·`order_status`·`cart_add`·`cart_remove`·`wishlist_add`·
+   `wishlist_remove` 인 분기에서 전부 `is_underspecified_turn` 호출 이전에 return 한다.
+   decompose 가 앵커를 그 intent 로 라우팅한 표본(예: "뭐 좋은 거 없어?"가
    fast 티어에서 `general` 로 라우팅되는 경우)은 프로덕션 판정 함수에 도달조차 하지 않으므로,
    confirmatory 축(`missRate`·`falseAlarmRate`·`falseAlarmRateWithGateSlice`·`judgmentAccuracy`·
    `judgmentAccuracyWithGateSlice`·`missRateUnderExpansionAssumption`·`expansionGateWouldFireRate`)
