@@ -33,7 +33,7 @@
   후속 동작의 유무에 따라 최적 수단이 갈린다. 대칭이 곧 정답은 아니다.
 - 관련: #310, #305, `app/schemas/spring.py::CartViewItem`·`::WishlistItem`·
   `::_degrade_unknown_purchase_state`, `app/services/spring_client.py::_parse_wishlist_items`,
-  SPEC-CART-001 REQ-CART-037, api-spec §4.9 v0.26.1
+  SPEC-CART-001 REQ-CART-037, api-spec §4.9 v0.26.2
 
 ## [2026-08-06] 전용 검증자를 일반형으로 흡수할 때 판단 기준이 바뀌면, 그 간극을 메우는 이음매 검증자에도 변이 시험이 필요하다
 - 증상: #313 에서 그룹별 전용 검증자 둘을 일반형 매핑 하나로 흡수하면서, 두 검증자의

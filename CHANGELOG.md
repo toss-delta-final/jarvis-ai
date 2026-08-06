@@ -11,7 +11,7 @@
 
 ### Added
 - **#310 — `purchaseState` 로 품절·판매종료를 갈라 안내한다(장바구니·찜)** (api-spec §4.9·§4.16,
-  v0.26.1 / SPEC-CART-001 v0.2.6 REQ-CART-037) — 지금까지는 장바구니·찜에서 상품의 구매 가능
+  v0.26.2 / SPEC-CART-001 v0.2.6 REQ-CART-037) — 지금까지는 장바구니·찜에서 상품의 구매 가능
   여부를 파싱조차 안 해 "구매 불가 상태예요"조차 말하지 못했다. 품절은 기다리면 되고 판매
   종료는 다른 걸 찾아야 하므로 **사용자가 취할 행동이 다르다**. `CartViewItem` 에
   `purchaseState` 파싱을 추가하고(BE `InternalCartResponse.Item` 에 실재하는데 선언이 없어
