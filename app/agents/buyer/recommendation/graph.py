@@ -1060,8 +1060,26 @@ async def stream_recommendation(
         의 `if not legs` 분기와 동일 처리, leg_of 는 leg 개념이 없으니 빈 dict).
 
         [#343] 억제-이전 F-1 폴백과 억제-이후 재판정이 함께 쓴다 — 지역 함수를 두 곳에 각자
-        정의하면 같은 판정 개념이 한쪽만 고쳐지는 드리프트가 생긴다(lessons)."""
+        정의하면 같은 판정 개념이 한쪽만 고쳐지는 드리프트가 생긴다(lessons).
+
+        [PR #411 Claude 리뷰 2라운드] `_run_search` 의 probe 가드(위, `search_probe_unfiltered_
+        skipped`)와 같은 성질의 누락이었다 — `category_expanded` 턴은 `category_legs` 가 차 있어
+        `is_unfiltered_payload` 가 조기에 False 라 A 가 이 재검색을 보호하지 못했다. 확장 턴은
+        `filters.category` 가 이미 None 이므로(PR #318 R6-1) 사용자가 다른 축을 안 준 순수
+        카테고리 발화면 이 재검색 payload 가 파라미터 0개 — 이 PR 이 막으려는 바로 그 12.3MB
+        무필터 I-1 이다. **운영에서는 결과가 같고 3초 빠르다**: 그 무필터 재검색은 오늘 실측상
+        7.74초·12.3MB 라 AI 3초 타임아웃에 걸려 `search` 가 예외를 내고, 이 함수는 그 예외를
+        삼켜 어차피 `None`(원래 0건 유지)으로 끝난다 — 이 가드는 결과를 바꾸지 않고 Spring 에
+        무거운 쿼리를 안 보내고 사용자 대기를 3초 줄인다. 카탈로그가 작을 때만 결과가 갈리며
+        (그때는 F-1 구제가 성공한다), 그 경우를 위해 `search_filter_guard_enabled=False` 롤백이
+        있다. 로그 이름은 probe 가드와 구분한다 — 어느 경로가 얼마나 막히는지 관측에서 갈려야
+        한다."""
         unfiltered = decision.filters.model_copy(update={"category": None})
+        if settings.search_filter_guard_enabled and not spring_client.search_filter_axes(
+            unfiltered
+        ):
+            logger.info("search_rescue_unfiltered_skipped")
+            return None
         try:
             found = await search(unfiltered, exclude_product_ids=None)
             return (found, {}) if found is not None else None
