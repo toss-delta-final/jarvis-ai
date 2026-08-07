@@ -221,6 +221,54 @@
   - **아직 안 되는 것 3가지 — 릴리스 노트만 보고 "이제 다 된다"로 읽지 말 것.** (1) **Spring 이 I-24~I-28 을 아직 구현 진행 중**이라 배포 전에는 이 발화들이 호출은 나가도 응답을 못 받아 실패 안내로 끝난다. (2) **FE `ChatAction` 유니온에 신규 8종이 아직 없다** — FE 수신부가 붙기 전에는 성공해도 화면에 반영되지 않는다. (3) **수량 변경(I-25)은 계약만 등재됐고 AI 는 미구현**이다(대응 이슈 없음, §4.13) — "3개로 바꿔줘"류 발화는 아직 아무 동작도 하지 않는다.
 
 ### Changed
+- **#457 — Claude PR Review 를 full/skip/incremental/integration 4모드로 분리해 CI 병목을 줄인다** —
+  종전엔 `opened`·`synchronize` 마다 PR 전체를 `--max-turns 120`으로 재리뷰해, 리뷰 라운드가
+  반복되는 큰 PR(#444: 16파일 +1,292/-29 7커밋, #213: 20파일 +2,264/-22 25커밋)에서 같은 코드
+  영역을 push 마다 다시 훑었다. `.github/scripts/review_mode.py`(표준 라이브러리만, `detect`/
+  `save-state` 서브커맨드)가 Claude 프롬프트가 아니라 **git 으로 결정론적으로** 모드를 정한다
+  (`.github/workflows/claude-review.yml` detect 스텝). `opened`는 그대로 full(120턴, PR 전체
+  diff) — 프롬프트 범위는 `app/` 아래 Python 코드에서 **PR 전체 변경**으로 넓혔다(`docs/`·
+  `*.md` 제외는 유지, 이슈 §Prompt 원칙 문구를 그대로 승계). `on.pull_request.paths` 를
+  `app/**` 로 좁히지 **않은** 결정과 짝을 이룬다 — 좁혔다면 CI·테스트·eval 변경이 영구히
+  리뷰되지 않는 사각이 생긴다. `synchronize`는 마지막 성공 리뷰 이후의 **base 대비 PR patch**
+  (`git diff <base> <head>` 를 파일별로 쪼갠 조각의 sha256 지문 — hunk 위치는 그대로 보존하고,
+  바이너리는 `index <sha>..<sha>` 줄을 유일한 내용 신호로 보존한다)를 이전 patch 와 비교해
+  갈린다 — PR 이 안 건드린 파일만 base 에서 바뀐 "dev 동기화만"은 skip(Claude 미실행, job 은
+  그대로 success 로 끝나 머지 게이트가 pending 에 걸리지 않는다), PR 자체 수정은
+  incremental(40→60→100, target 은 `.claude-review/target.diff` 로 파일 범위를 좁혀 PR 전체를
+  다시 훑지 않는다), PR 이 건드리는 파일을 dev 도 같이 바꿔 최종 통합 결과가 달라지는 경우는
+  integration(60→80→100, `base-context.diff` 로 겹치는 파일의 dev 변경만 얹는다) — skip 조건보다
+  **integration 판정을 먼저** 본다(patch 자체는 같아도 통합 결과가 달라졌으면 skip 이 아니다).
+  통합 판정의 "base 변경"은 **merge-base 가 아니라 base 브랜치 tip**(`git rev-parse
+  origin/<base>`) 기준이고, PR 고유 patch 계산은 merge-base 기준이다 — merge-base 만 보면
+  PR 이 dev 를 실제로 머지하지 않는 한 dev 가 아무리 전진해도 그대로라, "dev 가 PR 파일을
+  바꿨지만 PR 은 아직 안 받은" 통합 변화를 skip 으로 놓친다. budget 승급은 단순 LOC 가 아니라
+  대상 파일 수·`app/api|schemas|core|pipelines/**`·`docs/api-spec.md`·`.github/workflows/**`
+  같은 고영향 경로도 본다. reviewed state 는 **신규 시크릿·`permissions:` 확장 없이**(기존
+  `pull-requests: write` 그대로) PR 코멘트 1개(`<!-- claude-review-state:v1 -->` 마커, 매번
+  in-place PATCH)에 저장한다 — commit status·check run·git notes 는 각각 `statuses`/`checks`/
+  `contents: write` 가 더 필요해 탈락시켰다. 이 저장소는 **PUBLIC** 이라 아무나 마커 코멘트를
+  위조해 리뷰를 skip 시킬 수 있으므로, state 코멘트는 **`github-actions[bot]` 작성분만**
+  신뢰하고(그 외는 `::warning::` 후 무시, 신뢰 코멘트가 없으면 안전하게 full). 리뷰 성공 판정은
+  (`anthropics/claude-code-action@v1` 은 `conclusion` 출력이 없어) `execution_file` 을 직접 읽어
+  뒤에서부터 찾은 마지막 `type=="result"` 메시지가 `subtype=="success"` 이고 `is_error` 가
+  아닐 때만 state 를 갱신한다 — 파일 없음·파싱 실패·`error_max_turns`·workflow cancel 은 전부
+  갱신하지 않아 다음 실행이 안전하게 full 로 fallback 한다. `detect`/`save-state` 는 gh api
+  일시 실패·git 명령 오류 등 **어떤 예외에서도 job 을 실패시키지 않고** full 로 fail-safe 한다
+  — job 이 죽으면 review 체크가 빨간불이 되어 이슈 §"실패 시 fallback"(false skip 회피)과
+  정반대가 되기 때문이다. 한글 등 비-ASCII 파일명은 git 기본값(`core.quotePath=true`)이
+  따옴표 인코딩해 헤더 파싱이 그 파일을 놓칠 수 있어, 모든 git 호출에 `-c
+  core.quotePath=false` 를 주고 `git diff --name-only -z` 권위 목록과 지문 파일 집합이
+  어긋나면 예외를 던져 같은 fail-safe(full)로 떨어지는 불변식 검사를 걸었다. 리뷰 범위 필터
+  (`**/*.md`·`docs/**` 제외)를 모드 판별에도 그대로 적용해, 거의 모든 PR 이 건드리는
+  `CHANGELOG.md` 때문에 dev 동기화마다 integration 오탐이 나는 것을 막았다. **synthetic
+  rebase(옛 patch 를 새 base 에 재현)는 쓰지 않는다** — 파일 범위 제한만으로 무관한 dev 변경
+  혼입을 conflict 위험 없이 막을 수 있어 기각했다. 테스트(`tests/unit/test_review_mode.py`,
+  48건, `.github/` 가 패키지가 아니라 `importlib.util.spec_from_file_location` 으로 로드)는
+  실 git 저장소 시나리오를 돌리며 판정 분기 여러 곳을 일부러 반대로 바꿔 실제로 깨지는 것을
+  확인한 뒤 원복했다(공허한 통과 테스트 방지). `on.pull_request.paths` 로 리뷰 대상을
+  `app/**` 로 좁히는 것·`concurrency:` 블록·기존 draft/fork/`skip-claude-review`(#347) 게이트·
+  `paths-ignore` 는 이번 범위 밖이라 손대지 않았다 — 계약(api-spec) 변경 없음.
 - **#386 — `evals/combo_matrix` 재생성(`datasetVersion` 2.0.0 → 3.0.0, 케이스 57 → 62)** —
   `RouteDecision.intent` Literal 확장이 `test_intent_axis_matches_route_decision_literal` 을
   깨뜨리므로(그러라고 있는 가드다) 매트릭스를 함께 갱신했다. greedy pairwise 가 pair 우주를
