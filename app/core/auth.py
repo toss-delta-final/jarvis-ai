@@ -10,11 +10,14 @@
 
 [변경] 기존 "secret"(HS256 공유 시크릿) 모드는 제거했다 — Spring 이 RS256+JWKS 로 확정.
 
-스트림 티켓 클레임 (§2.3 v0.10.0):
+스트림 티켓 클레임 (§2.3 v0.28.0, #439 — CH-6 정본 2026-07-18):
   - sub      : 사용자 식별자 (회원/판매자=숫자 문자열, 게스트=UUID, §2.6)
-  - sub_type : member | guest — 티켓 정본 클레임. 그 외 값은 fail-closed 거부.
+  - sub_type : member | guest — **모든 티켓의 필수 클레임**이며 구매자 신원 유형의 유일한
+               정본이다. 그 외 값·누락은 fail-closed 거부.
   - scope    : 용도 검증 (확정값 chat:stream, config 주입)
-  - role     : JWKS에서는 판매자 exact lowercase "seller" 전용. buyer role 대체 금지.
+  - role     : 선택적 권한 클레임. 있으면 exact lowercase "seller"이고 그 티켓의
+               sub_type은 반드시 "member"여야 한다(판매자 티켓은 sub_type="member"를
+               항상 동반 — BE StreamTicketProvider 실측). buyer role 대체 금지.
   - brandId  : 판매자(role="seller") 브랜드 id — {brandId} path용, 요청 본문 불신(§2.6).
   - sessionId: 구매자 티켓이 증명한 Spring 접속 id — /chat body와 일치해야 한다.
 
@@ -96,13 +99,18 @@ def _norm_role(role: object) -> str | None:
 def _claims_to_identity(claims: dict, *, require_identity_claim: bool = False) -> Identity:
     """검증된 클레임 dict → Identity 매핑.
 
-    우선순위 (§2.3 v0.10.0):
-      1. JWKS role == "seller" 정확 일치 → 판매자 (seller_id=sub, brand_id=brandId).
-      2. sub_type == member|guest      → 티켓 정본 클레임. 그 외 값은 fail-closed 거부.
-      3. dev의 구 role 폴백(GUEST/USER 등) → 로컬 호환 유지.
+    §2.3 v0.28.0(#439, XOR 폐지 — CH-6 정본 2026-07-18 실측 반영) 판정 순서:
+      1. require_identity_claim=True(JWKS 실배선 레인)는 sub_type이 모든 티켓의 필수
+         클레임이다 — member|guest exact 문자열이 아니면 즉시 거부.
+      2. role은 선택적 권한 클레임 — 있으면 정확히 "seller"이고 그 티켓의 sub_type이
+         "member"여야 한다(판매자 티켓은 sub_type="member"를 항상 동반, BE
+         StreamTicketProvider 실측). role이 판정의 우선 축이다: role="seller"+
+         sub_type="member"는 판매자로 판정한다(sub_type="member"가 판매자 신원을
+         빼앗지 않는다).
+      3. dev의 구 role 폴백(GUEST/USER 등) → require_identity_claim=False 로컬 호환 유지.
 
-    require_identity_claim=True(JWKS 실배선 레인)는 exact lowercase role="seller"가
-    아니면 정확한 sub_type=member|guest를 요구한다. dev 모드만 legacy role을 관용한다.
+    dev 모드(require_identity_claim=False)만 legacy role을 관용한다 — 이 분기는 이번
+    개정 대상이 아니다.
     """
     subject = claims.get(CLAIM_SUBJECT)
     raw_role = claims.get(CLAIM_ROLE)
@@ -111,17 +119,14 @@ def _claims_to_identity(claims: dict, *, require_identity_claim: bool = False) -
     session_id = claims.get(CLAIM_SESSION_ID)
 
     if require_identity_claim:
-        role_present = CLAIM_ROLE in claims
-        sub_type_present = CLAIM_SUB_TYPE in claims
-        if role_present == sub_type_present:
-            raise AuthError("exactly one identity discriminator is required")
-        if role_present and (not isinstance(raw_role, str) or raw_role != ROLE_SELLER):
-            raise AuthError("invalid seller role claim")
-        if sub_type_present and (
-            not isinstance(sub_type, str) or sub_type not in (SUB_TYPE_MEMBER, SUB_TYPE_GUEST)
-        ):
-            raise AuthError("invalid buyer sub_type claim")
-    if (require_identity_claim and raw_role == ROLE_SELLER) or (
+        # sub_type 은 모든 티켓의 필수 클레임 (CH-6 정본, 2026-07-18).
+        if not isinstance(sub_type, str) or sub_type not in (SUB_TYPE_MEMBER, SUB_TYPE_GUEST):
+            raise AuthError("invalid sub_type claim")
+        # role 은 선택적 권한 클레임 — 있으면 정확히 "seller"이고 회원이어야 한다.
+        if CLAIM_ROLE in claims:
+            if raw_role != ROLE_SELLER or sub_type != SUB_TYPE_MEMBER:
+                raise AuthError("invalid seller role claim")
+    if (require_identity_claim and CLAIM_ROLE in claims) or (
         not require_identity_claim and role == ROLE_SELLER.upper()
     ):
         if require_identity_claim:
@@ -177,11 +182,9 @@ def _claims_to_identity(claims: dict, *, require_identity_claim: bool = False) -
                 session_id=session_id,
             )
         # 미지 sub_type — 정본 값 집합(member|guest) 밖은 신원 판정 불가로 거부.
+        # (require_identity_claim=True는 위 필수 클레임 검사에서 이미 걸러져 도달하지
+        # 않는다 — dev 레인 전용 도달 경로다.)
         raise AuthError(f"unknown sub_type: {sub_type}")
-    if require_identity_claim:
-        # 운영 티켓은 구매자 신원 유형을 오직 정본 sub_type으로 판정한다. role은
-        # 판매자 전용 discriminator이며 legacy/미지 role을 buyer로 관용하지 않는다.
-        raise AuthError("missing exact buyer sub_type claim")
     if role == ROLE_GUEST:
         return Identity(
             user_id=None,
