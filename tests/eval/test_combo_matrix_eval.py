@@ -8,6 +8,7 @@ import typing
 import pytest
 
 from app.services.spring_client import CartError, WishlistError
+from evals.combo_matrix.__main__ import refresh_observed
 from evals.combo_matrix.generator import (
     FILTER_AXES,
     add_directed_cases,
@@ -33,7 +34,12 @@ from evals.combo_matrix.runner import (
     build_decompose_json,
     observe,
 )
-from evals.combo_matrix.schema import AxesDocument, ComboCase, ExpectedBehaviorRow
+from evals.combo_matrix.schema import (
+    OBSERVED_GUARDED_FIELDS,
+    AxesDocument,
+    ComboCase,
+    ExpectedBehaviorRow,
+)
 
 pytestmark = pytest.mark.eval
 
@@ -131,6 +137,63 @@ def test_context_axis_is_subset_of_intent_probe_context_ids() -> None:
     doc = load_axes()
     axes_context = set(doc.axis_by_id()["context"].value_ids()) - {"n/a"}
     assert axes_context <= set(CONTEXT_IDS)
+
+
+# ─────────── 4a. observed 드리프트 가드 (이슈 #424) ───────────
+
+
+async def test_observed_guarded_fields_match_recomputed_values_for_all_ci_rows() -> None:
+    """`expected_behavior.jsonl` 의 `observed` 는 러너 재실행 **기록**이라, 다른 레인이 SSE 이벤트를
+    바꾸면 커밋본이 조용히 낡아도 아무 테스트도 잡지 못했다(#424 — PR #420 작업 중 실측 2회, 둘 다
+    `eventTypes` 만 드리프트했고 핵심 계약 필드는 불변). 전량 byte diff 는 SSE 를 건드리는 모든
+    레인(동시 6~8개)에 이 eval 데이터 재생성을 강제해 레인 결합 비용이 크므로, `OBSERVED_
+    GUARDED_FIELDS`(schema.py, 근거 동봉)로 추린 핵심 계약 필드만 딕셔너리째(키 존재 여부 포함)
+    대조한다.
+
+    **행 범위: `status` 와 무관하게 `observed` 가 있는 모든 ci 행**(partial 인 combo-0038 포함) —
+    이건 기록 신선도 검사이지 미정의 동작의 스펙화가 아니다. `status`·`expected`·`undefined_tuple`
+    은 이 테스트가 보지 않으며, 기록이 낡는 문제는 defined/partial 을 가리지 않는다.
+    """
+    committed_rows = {r.case_id: r for r in load_expected()}
+    _, refreshed_rows = await refresh_observed(write=False)
+
+    mismatches: list[tuple[str, dict, dict]] = []
+    for refreshed in refreshed_rows:
+        committed = committed_rows[refreshed.case_id]
+        if committed.observed is None:
+            continue  # manual 행(observed 항상 null) — 대조 대상 아님
+        committed_proj = {
+            k: v for k, v in committed.observed.items() if k in OBSERVED_GUARDED_FIELDS
+        }
+        refreshed_proj = {
+            k: v for k, v in (refreshed.observed or {}).items() if k in OBSERVED_GUARDED_FIELDS
+        }
+        if committed_proj != refreshed_proj:
+            mismatches.append((refreshed.case_id, committed_proj, refreshed_proj))
+
+    if not mismatches:
+        return
+
+    lines = [
+        "observed 핵심 계약 필드 드리프트 감지 — 커밋본과 재실행 결과가 어긋난다:",
+    ]
+    for case_id, committed_proj, refreshed_proj in mismatches:
+        for key in sorted(set(committed_proj) | set(refreshed_proj)):
+            old = committed_proj.get(key, "<필드 없음>")
+            new = refreshed_proj.get(key, "<필드 없음>")
+            if old != new:
+                lines.append(f"  {case_id}.{key}: 커밋본={old!r} → 재실행={new!r}")
+    lines.append("")
+    lines.append("조치: `uv run python -m evals.combo_matrix refresh-observed` 로 갱신한 뒤")
+    lines.append(
+        "evals/combo_matrix/README.md 「관측 재생성 이력」에 무엇이 왜 바뀌었는지"
+        "(실측 개선/회귀/필드 추가) 판정을 남길 것."
+    )
+    lines.append(
+        "eventTypes·lastTokenText·notes 만 바뀐 경우엔 이 가드가 깨지지 않는다 — "
+        "이 가드가 깨졌다면 핵심 계약 필드가 실제로 바뀐 것이다(OBSERVED_GUARDED_FIELDS 참조)."
+    )
+    pytest.fail("\n".join(lines))
 
 
 # ─────────── 5. 커버리지 하한 ───────────
@@ -326,6 +389,64 @@ async def test_home_profile_unavailable_injection_actually_runs() -> None:
     assert observed is not None
     assert observed["profileHookInvoked"] is True, observed
     assert observed["outcome"] == "PERSONALIZED", observed
+
+
+# ─────────── 6c. overspecified_zero 판정 잠금 (이슈 #425) ───────────
+
+
+async def test_overspecified_zero_has_no_relaxable_axis_so_no_relaxation_search() -> None:
+    """`constraint_strength=overspecified_zero` 는 0건이면서도 자동완화·완화칩이 돌지 않는다 —
+    갭이 아니라 **완화 가능 축이 하나도 없어서 생기는 정의된 동작**이다(#425 판정).
+
+    전제(코드 근거): `app.agents.buyer.recommendation.relaxation.FIELD_TO_ATTR` 는 `priceMax`·
+    `ratingMin`·`brand`·`color` 뿐이다(모듈 docstring "비카테고리 조건(가격 상한·평점 하한·브랜드·
+    색상)만 한 단계 푼다") — `price_min` 은 완화 축이 아니다. `app.core.config.
+    Settings._require_known_relaxation_chip_fields` 가 기동 시점에 `FIELD_TO_ATTR` 밖 이름을
+    거부하므로 config 로도 `priceMin` 을 완화 축에 넣을 수 없다. combo-0031(overspecified_zero)의
+    실현 필터는 `price_min` 하나뿐이라 `build_relaxation_candidates(filters, settings) == []` 다.
+
+    이로부터 나오는 관측(재검색 0회): `app.agents.buyer.recommendation.graph.
+    stream_recommendation` 의 `may_auto_relax` 게이트가 False, 자동완화 루프(`if not candidates
+    and not underspecified:`)는 진입해도 후보가 비어 0회 반복, 완화 칩 블록(`if not underspecified
+    and (not candidates or len(candidates) < settings.relaxation_min_results):`)도 진입해도 probe
+    후보가 비어 칩 0개 — 그래서 `searchCallCount == 1`·`finishReason == "zero_result"` 다.
+
+    이 축에 완화 가능 축이 생겼다면(예: `FIELD_TO_ATTR` 에 `price_min` 추가) #425 판정("자동완화·
+    완화칩은 돌지 않는다 — 정의된 동작")과 README 서술을 함께 재판정해야 한다.
+    """
+    from app.agents.buyer.recommendation.relaxation import build_relaxation_candidates
+    from app.core.config import get_settings
+    from app.schemas.spring import ProductSearchFilters
+
+    cases = {c.case_id: c for c in load_cases()}
+    overspecified_zero_ci_cases = [
+        c
+        for c in cases.values()
+        if c.observation_mode == "ci" and c.axes.get("constraint_strength") == "overspecified_zero"
+    ]
+    assert overspecified_zero_ci_cases, (
+        "overspecified_zero ci 케이스가 하나도 없다 — 전제 확인 불가"
+    )
+
+    settings = get_settings()
+    for case in overspecified_zero_ci_cases:
+        filters = ProductSearchFilters.model_validate(build_decompose_json(case.axes)["filters"])
+        candidates = build_relaxation_candidates(filters, settings)
+        assert candidates == [], (
+            f"{case.case_id}: 완화 후보가 생겼다 — #425 판정이 전제하는 '완화 가능 축이 하나도 "
+            f"없다'가 더 이상 성립하지 않는다(candidates={candidates}). README·판정 재검토 필요."
+        )
+
+        observed = await observe(case)
+        assert observed is not None
+        assert observed["searchCallCount"] == 1, (
+            f"{case.case_id}: searchCallCount={observed['searchCallCount']} — 완화 후보가 없는데도 "
+            "재검색이 돌았다면 #425 판정과 어긋난다."
+        )
+        assert observed["finishReason"] == "zero_result", (
+            f"{case.case_id}: finishReason={observed['finishReason']!r} — 0건 zero_result 종료가 "
+            "아니라면 #425 판정의 전제가 깨진 것이다."
+        )
 
 
 # ─────────── 7. 미정의 셀 최소 보증 ───────────
