@@ -217,12 +217,24 @@ async def _observe_chat(case: ComboCase) -> dict:
     decompose_json = build_decompose_json(axes)
     llm = ScriptedLLM(decompose=decompose_json, rerank_error=(degrade == "rerank_failed"))
     # search 실패(spring_timeout)가 최우선 — 검색 자체가 안 되면 결과 건수는 의미가 없다.
-    # 그다음 constraint_strength=overspecified_zero 는 **정의상 검색 0건**이어야 자동완화·
-    # 완화칩·zero_result 종료(recommendation/graph.py:1075-1115·:1146)가 실제로 돈다 — 0건을
-    # 돌려주는 recording 대역(`RecordingFilteringSearch(products=[])`)을 써서 표현 가능한
-    # 필터를 적용해도 항상 0건이라는 목적은 만족하면서 경계 도달 filters 도 기록한다
-    # (이슈 #381 D2·D4 — overspecified_zero 재검토: `PAIR_CATALOG` 표본으로는 필터를 실제로
-    # 적용해도 0건이 자연 발생하지 않아 주입을 유지, README "관측 재생성 이력" 참조).
+    # 그다음 constraint_strength=overspecified_zero 는 **정의상 검색 0건**이다 — 0건을 돌려주는
+    # recording 대역(`RecordingFilteringSearch(products=[])`)을 써서 표현 가능한 필터를 적용해도
+    # 항상 0건이라는 목적은 만족하면서 경계 도달 filters 도 기록한다(이슈 #381 D2·D4 —
+    # overspecified_zero 재검토: `PAIR_CATALOG` 표본으로는 필터를 실제로 적용해도 0건이 자연
+    # 발생하지 않아 주입을 유지, README "관측 재생성 이력" 참조).
+    #
+    # **실제로 도는 것은 `zero_result` 종료뿐이다 — 자동완화·완화칩은 돌지 않는다(#425 판정: 정의된
+    # 동작, 갭 아님).** combo-0031 에 present 인 필터축은 `price_min` 하나뿐인데,
+    # `app.agents.buyer.recommendation.relaxation.FIELD_TO_ATTR` 에 `price_min`(와이어명
+    # `priceMin`)이 없어(완화 축은 `priceMax`·`ratingMin`·`brand`·`color` 뿐, 모듈 docstring
+    # "비카테고리 조건(가격 상한·평점 하한·브랜드·색상)만 한 단계 푼다") `build_relaxation_
+    # candidates(filters, settings) == []` 다 — config 로도 `priceMin` 을 완화 축에 넣을 수 없다
+    # (`app.core.config.Settings._require_known_relaxation_chip_fields` 가 기동 시점에
+    # `FIELD_TO_ATTR` 밖 이름을 거부). 그 결과 `stream_recommendation`(recommendation/graph.py)의
+    # `may_auto_relax` 게이트가 False, 자동완화 루프(`if not candidates and not underspecified:`)는
+    # 진입해도 후보가 비어 0회 반복, 완화 칩 블록(`if not underspecified and (not candidates or
+    # len(candidates) < settings.relaxation_min_results):`)도 진입해도 probe 후보가 비어 칩
+    # 0개다. README 「알려진 관측 한계」의 `overspecified_zero` 항목 참조.
     # 그 외(normal)는 `fakes.make_recording_filtering_search()`(대역 카탈로그 `PAIR_CATALOG`)를
     # 써서 search 콜러블이 실제로 받은 필터를 기록한다 — category·price_min/max·brand·rating_min
     # 은 실제로 걸러지고, keyword·color·attr_conditions 는 대역이 흉내 낼 수 없어 미적용으로
@@ -349,6 +361,11 @@ async def _observe_chat(case: ComboCase) -> dict:
             "identity=guest 는 로그인 필요 게이트가 Spring 호출보다 먼저 걸려 이 케이스는 "
             "SpringUnavailableError 미처리 갭(expected_behavior.status=partial 근거)을 실제로는 "
             "밟지 않는다 — 그 갭은 identity=member 조합에서만 실측된다(README 리스크 참조)."
+        )
+    if axes.get("constraint_strength") == "overspecified_zero" and degrade != "spring_timeout":
+        notes.append(
+            "0건은 주입이며, 이 케이스에 present 인 필터축(price_min)이 완화 축이 아니라 "
+            "자동완화·완화칩은 돌지 않는다(#425 판정: 정의된 동작)"
         )
     if axes.get("constraint_strength") == "unspecified" and degrade != "none":
         notes.append(
