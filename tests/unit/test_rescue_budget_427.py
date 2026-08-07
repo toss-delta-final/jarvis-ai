@@ -624,6 +624,52 @@ async def test_narrow_mode_relaxation_disabled_still_reserves_room_for_f1_stage(
     assert calls[0] < settings.spring_search_timeout_s
 
 
+# ─────────── [PR #452 리뷰 R5] narrow 하한 clamp 가 단 상한을 넘지 않는다 ───────────
+
+
+async def test_narrow_mode_min_timeout_clamp_never_exceeds_stage_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[PR #452 리뷰 R5 — 역전 회귀] `RESCUE_STAGE_MIN_TIMEOUT_S` 를 `SPRING_SEARCH_TIMEOUT_S`
+    이상으로(잘못) 튜닝하면, 상한 clamp 가 없는 F1 하한 clamp 만으로는 "예산이 모자라
+    좁힌다"면서 원래 단 상한(`stage_cap`)보다 **더 큰** 값을 `narrow_search_budget()` 에
+    주입한다 — 좁히기가 목적과 정반대로 동작한다.
+
+    이 조합은 `Settings()` 생성자로는 못 만든다(기동 검증기가 별도로 막는다, 아래
+    `test_config.py` 참조) — 그래서 런타임 값을 `monkeypatch.setattr(settings, ...)` 로 직접
+    세워 **지역 불변식**(집행되는 narrow 예산은 항상 stage_cap 이하)만 독립적으로 겨눈다.
+    기동 검증기와 이 지역 불변식은 서로 다른 방어선이다 — 하나가 다른 하나를 대체하지 않는다.
+
+    검증 실효성: **먼저 상한 clamp 가 없는 코드(`granted = max(granted, rescue_stage_min_
+    timeout_s)`, 상한 씌우기 없음)에 돌려 역전(5.0 > stage_cap 3.0)을 확인했다**(TDD 적색).
+    """
+    settings = get_settings()
+    monkeypatch.setattr(settings, "rescue_budget_mode", "narrow")
+    # spring_search_timeout_s(3.0, attempts=1 — 이 턴은 may_auto_relax=False)보다 큰 하한.
+    monkeypatch.setattr(settings, "rescue_stage_min_timeout_s", 5.0)
+
+    calls = _record_narrow_calls(monkeypatch)
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(),  # 기본 decompose: ratingMin 미설정 → may_auto_relax=False, attempts=1
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+            turn_started_at=asyncio.get_event_loop().time() - 10_000.0,
+        )
+    )
+
+    assert "products.ready" in _types(events)
+    assert calls, "본검색 단이 narrow_search_budget 를 집행하지 않았다"
+    stage_cap = settings.spring_search_timeout_s * 1  # attempts=1(억제되는 단)
+    assert calls[0] <= stage_cap, (
+        f"got {calls[0]} > stage_cap({stage_cap}) — 좁히기가 안 좁힌 것보다 많이 줬다"
+        "(R5 역전 재현: 하한 clamp 뒤 상한을 다시 씌우지 않았다)"
+    )
+
+
 # ─────────── (4) 건너뛰기 + 거짓 신호 금지(H4) ───────────
 
 

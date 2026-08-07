@@ -70,8 +70,15 @@ def _shrink_budget(monkeypatch: pytest.MonkeyPatch, timeout_s: str = "0.05") -> 
     [#427] `search_products` 전용 타임아웃(`spring_search_timeout_s`)이 공용
     `spring_timeout_s` 와 분리됐다 — 이 헬퍼는 검색 총시간 가드(#132)를 겨누므로 전용
     타임아웃을 줄인다.
+
+    [PR #452 리뷰 R5] 기본 `RESCUE_STAGE_MIN_TIMEOUT_S`(0.5)가 `timeout_s` 를 0.5 미만으로
+    줄이면(기본 인자 "0.05" 가 그렇다) 새 기동 검증기(`RESCUE_STAGE_MIN_TIMEOUT_S <
+    SPRING_SEARCH_TIMEOUT_S`)를 어긴다 — 이 가드(#132)는 구제 체인 좁히기와 무관한 검색
+    HTTP 타임아웃 자체를 겨누는 테스트라, 그 부등식이 깨지지 않게 하한도 `timeout_s` 보다
+    작게 함께 낮춘다(검증 대상·어설션은 그대로, 무관한 설정만 맞춘다).
     """
     monkeypatch.setenv("SPRING_SEARCH_TIMEOUT_S", timeout_s)
+    monkeypatch.setenv("RESCUE_STAGE_MIN_TIMEOUT_S", str(float(timeout_s) / 10))
     get_settings.cache_clear()
 
 

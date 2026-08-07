@@ -564,8 +564,18 @@ async def stream_recommendation(
         (재시도 포함) 상한**이다(`search_products` 가 override 를 그 의미로 쓴다) — 좁힐 때
         `attempts` 를 다시 곱하지 않는다. `attempts` 는 오직 `_stage_budget` 의 `"full"`
         경계·`min()` 상한에만 쓰인다.
+
+        [PR #452 리뷰 R5] **F1 하한 clamp(아래) 는 상한(`stage_cap`)으로 다시 씌운다.**
+        `RESCUE_STAGE_MIN_TIMEOUT_S >= stage_cap`(=`spring_search_timeout_s * attempts`)로
+        튜닝되면(기동 검증기가 이제 이 조합을 막는다 — `Settings.
+        _require_rescue_stage_min_timeout_below_search_budget` 참조) 하한 clamp 만 있는
+        코드는 "예산이 모자라 좁힌다"면서 안 좁힌 것보다 **더 큰** 값을 주입한다 — 좁히기의
+        취지와 정반대다. `stage_cap` 은 항상 양수(`spring_search_timeout_s > 0`,
+        `attempts >= 1`)이므로 이 상한 clamp 는 F1 의 "집행되는 예산이 음수/0 이 아니다"라는
+        성질과 양립한다(하한이 상한을 넘는 병적 설정은 기동 검증기가 별도로 막는다).
         """
         nonlocal rescue_stage_narrowed_timeout_ms, rescue_stage_skipped_budget
+        stage_cap = settings.spring_search_timeout_s * attempts
         verdict, granted = _stage_budget(remaining_stages, attempts=attempts)
         if verdict == "full":
             return False, None
@@ -586,13 +596,17 @@ async def stream_recommendation(
             # narrow 모드: skip 판정도 narrow 로 강등해 시도한다 — 아래 clamp 로 실제 집행.
         elif settings.rescue_budget_mode == "observe":
             # 반사실 — 집행하지 않되 "narrow 였다면 이랬을 값"을 clamp 후 남긴다.
-            ms = round(max(granted, settings.rescue_stage_min_timeout_s) * 1000)
+            # [리뷰 R5] 하한 clamp 뒤 상한(stage_cap)으로 다시 씌운다 — 안 좁힌 것보다 큰 값을
+            # "narrow 였다면 이랬을 값"이라고 반사실을 내면 그 자체로 모순이다.
+            ms = round(min(stage_cap, max(granted, settings.rescue_stage_min_timeout_s)) * 1000)
             if rescue_stage_narrowed_timeout_ms is None or ms < rescue_stage_narrowed_timeout_ms:
                 rescue_stage_narrowed_timeout_ms = ms
             return False, None
         # 여기 도달하면 narrow 를 실제로 집행한다(verdict 는 원래 "narrow"이거나, allow_skip=True
         # + narrow 모드로 강등 실행되는 "skip"이다) — [F1] 항상 최소 하한 이상으로 clamp 한다.
-        granted = max(granted, settings.rescue_stage_min_timeout_s)
+        # [리뷰 R5] 하한 clamp 뒤 상한(stage_cap)으로 다시 씌운다 — 좁히기는 절대 안 좁힌
+        # 것보다 많이 주지 않는다(설정과 무관하게 항상 성립해야 하는 지역 불변식).
+        granted = min(stage_cap, max(granted, settings.rescue_stage_min_timeout_s))
         ms = round(granted * 1000)
         if rescue_stage_narrowed_timeout_ms is None or ms < rescue_stage_narrowed_timeout_ms:
             rescue_stage_narrowed_timeout_ms = ms

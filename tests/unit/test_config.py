@@ -867,6 +867,32 @@ def test_search_retries_capped_at_implemented_value():
         Settings(_env_file=None, spring_max_retries=2)
 
 
+def test_rescue_stage_min_timeout_must_be_below_search_budget():
+    """[PR #452 리뷰 R5 — 기동 검증기] `RESCUE_STAGE_MIN_TIMEOUT_S >= SPRING_SEARCH_TIMEOUT_S`
+    면 기동을 막는다 — `attempts >= 1` 이라 어떤 단이든 `stage_cap`(=`spring_search_timeout_s *
+    attempts`)의 최솟값은 `spring_search_timeout_s`(attempts=1) 다. 이 부등식이 깨지면 F1
+    하한 clamp 가 원래 단 상한보다 큰 값을 주입해(R5) 좁히기가 목적과 정반대로 동작한다.
+
+    기본값(0.5 < 3.0)은 통과해야 한다 — 이 검증기가 오늘 배포를 새로 막지 않는지 확인한다.
+
+    검증 실효성: **먼저 이 검증기가 없던 코드에 돌려 통과(=ValidationError 미발생)를
+    확인했다**(TDD 적색).
+    """
+    import pytest
+    from pydantic import ValidationError
+
+    assert Settings(_env_file=None)  # 기본값 불변 — 새 검증기가 오늘 배포를 막지 않는다.
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None, rescue_stage_min_timeout_s=3.0, spring_search_timeout_s=3.0)
+    assert "RESCUE_STAGE_MIN_TIMEOUT_S must be < SPRING_SEARCH_TIMEOUT_S" in str(exc_info.value)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, rescue_stage_min_timeout_s=5.0, spring_search_timeout_s=3.0)
+
+    assert Settings(_env_file=None, rescue_stage_min_timeout_s=2.9, spring_search_timeout_s=3.0)
+
+
 def test_color_synonym_expansion_requires_array_contract_attestation() -> None:
     import pytest
     from pydantic import ValidationError

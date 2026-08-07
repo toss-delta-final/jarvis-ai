@@ -2033,6 +2033,36 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _require_rescue_stage_min_timeout_below_search_budget(self) -> "Settings":
+        """구제 단 하한 clamp 가 단 상한 이상이면 기동 실패 (#427, PR #452 리뷰 R5).
+
+        `_apply_stage_budget`(`app/agents/buyer/recommendation/graph.py::
+        stream_recommendation`)의 F1 하한 clamp 는 좁혀 집행할 예산을
+        `rescue_stage_min_timeout_s` 이상으로 끌어올린 뒤, 안 좁힌 것보다 많이 주지 않도록
+        단 상한(`stage_cap = spring_search_timeout_s * attempts`)으로 다시 씌운다(R5). 그
+        상한 clamp 가 의미를 가지려면 하한이 **어떤 단에서도** 상한보다 작아야 한다 —
+        `attempts >= 1` 이라 `stage_cap` 의 최솟값은 `spring_search_timeout_s`
+        (attempts=1, 억제되는 단)다. 그래서 `rescue_stage_min_timeout_s <
+        spring_search_timeout_s` 하나만 확인하면 모든 단에서 하한이 상한 아래임이 보장된다.
+
+        이 부등식이 깨지면(`RESCUE_STAGE_MIN_TIMEOUT_S >= SPRING_SEARCH_TIMEOUT_S`) 상한
+        clamp 가 없던 시절엔 F1 하한 clamp 가 "예산이 모자라 좁힌다"면서 원래 상한보다 더 큰
+        값을 `narrow_search_budget()` 에 주입해 좁히기가 목적과 정반대로 동작했다(R5 가 코드
+        로 고친 결함) — 지금은 상한 clamp 가 그 역전을 흡수하지만, 그러면 `narrow`/
+        `narrow_skip` 이 이 조합에서 사실상 항상 안 좁힌 값(`stage_cap`)만 내는 죽은 손잡이가
+        된다. 그래서 이 조합 자체를 기동에서 막는다 — 런타임의 clamp 는 방어벽이지 정상 설정
+        경로가 아니다.
+        """
+        if self.rescue_stage_min_timeout_s >= self.spring_search_timeout_s:
+            raise ValueError(
+                "RESCUE_STAGE_MIN_TIMEOUT_S must be < SPRING_SEARCH_TIMEOUT_S "
+                f"(got {self.rescue_stage_min_timeout_s} >= {self.spring_search_timeout_s}): "
+                "the narrow-clamp floor would meet or exceed the smallest possible per-call "
+                "search budget, making the F1 floor clamp a dead handle that never narrows"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _require_general_lane_within_stream_cap(self) -> "Settings":
         """판매자 general 레인 직렬 예산이 스트림 전체 상한을 넘으면 기동 실패 (#266 P1 리뷰).
 
