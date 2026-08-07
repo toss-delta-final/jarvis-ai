@@ -13,6 +13,30 @@
 
 ---
 
+## [2026-08-07] 같은 계열 지적이 반복되면 **그 건이 아니라 계열을 막는 가드**를 세운다
+- 증상: PR #410 리뷰가 20건 나왔는데 절반이 두 뿌리였다. ① **LLM 출력을 경계에서 안 막음**
+  (`predicate`·`source` Literal → `salience` 범위 → `anchor_phrase` 길이 → 상품 id 표기 →
+  숫자 크기, 6건) ② **낡은 값과 새 값을 같은 자로 비교**(저장 상한 `evidence_refs` 로 요약 판정 →
+  지문의 `resolution`·`evidence_*` → 이월 tombstone 의 confidence 박제, 4건). 매번 **지적된 한
+  건만** 고쳐서 다음 인스턴스를 리뷰가 계속 찾아냈다 — 두더지잡기였다.
+- 원인: 수정 단위를 "리뷰가 가리킨 줄"로 잡았다. 같은 계열이 두 번 나온 시점에 **그 계열의 표면
+  전체**를 훑었어야 했는데, 매번 국소 수정으로 닫으니 리뷰만이 전수 조사 역할을 했다.
+- 규칙: **같은 계열 지적이 2회 이상이면 국소 수정을 멈추고 (a) 그 계열의 표면을 전수 정리하고
+  (b) 새 인스턴스가 자동으로 걸리는 가드를 만든다.** 가드는 "표에 적은 것만 검사"가 아니라
+  **산출물 전체를 훑는 불변식**이어야 한다 — 이번 ②의 가드
+  `{e.decay_evaluated_at for e in document.edges} == {now}` 는 어떤 경로로 만들어진 edge 든
+  걸리지만, ①의 적대적 입력 표는 표에 없는 새 필드를 못 잡는다(그건 가드가 아니라 회귀 테스트다).
+  전수 불변식을 못 세우는 계열은 그 한계를 **명시**하고 넘어간다.
+- 덧: 리뷰 대응에는 **멈추는 기준**도 필요하다. 재현되고 영향 있으면 고치고, 잠재+저비용이면
+  고치고, 설계 논쟁이거나 이미 근거를 적어둔 지점의 재지적이면 **회신만 하고 코드는 두는 것**이
+  정당한 마무리다(이번 `product` `verified=False` 가 그 사례).
+- 관련: `app/agents/profile/graph_merge.py::_carried_tombstones`,
+  `tests/unit/test_profile_graph_merge.py::test_decay_clock_is_one_snapshot_per_batch`,
+  `tests/unit/test_profile_resolver.py::test_numeric_labels_are_bounded_by_domain_range`,
+  이슈 #356 / PR #410
+
+---
+
 ## [2026-08-07] 선례를 옮길 때는 **tier·모델이 같은지** 먼저 본다 — 값이 모델 종속이면 그대로 400 이 된다
 - 증상: #356 델타 추출이 `max_tokens=800` 하드코딩 탓에 출력 예산 소진으로 죽는 걸 프로브가 잡아,
   #325(enrichment) 선례를 그대로 옮겨 `max_tokens` 상향 + `reasoning_effort="minimal"` 고정을

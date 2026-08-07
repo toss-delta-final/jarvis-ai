@@ -111,15 +111,66 @@ def test_observation_order_does_not_depend_on_input_order(settings: Settings) ->
 
 
 def test_decay_clock_is_one_snapshot_per_batch(settings: Settings) -> None:
-    """감쇠 시계는 배치당 1회 고정 — 관측별 현재시각을 쓰면 재생이 깨진다(REQ-PGRAPH-015)."""
+    """감쇠 시계는 배치당 1회 고정 — 관측별 현재시각을 쓰면 재생이 깨진다(REQ-PGRAPH-015).
+
+    **문서에 실리는 모든 edge를 검사한다** — 어떤 경로로 만들어졌든(신규 관측·이월 tombstone·
+    앞으로 생길 무엇이든) 시계가 다르면 여기서 걸린다. 시계가 갈리면 `_truncate` 의 확신도 정렬과
+    `_resolve_conflicts` 의 승자 판정이 **서로 다른 자로 잰 값을 비교**하게 된다(PR #410 리뷰).
+    이 단언이 그 계열 전체를 막는 구조적 가드다 — 표에 적은 것만 재는 방식이 아니다.
+    """
+    stale = "2026-01-01T00:00:00+00:00"  # 반감기를 여러 번 넘긴 옛 배치 시각
+    existing = _document_of(
+        [
+            _stored_edge(
+                "삼성",
+                status="suppressed",
+                suppressed_at=stale,
+                confidence=0.95,
+                decay_evaluated_at=stale,
+                last_observed_at=stale,
+            )
+        ]
+    )
     facts = [
         _fact("f1"),
         _fact("f2", fact="다른 취향", triples=[_triple("brand:애플", label="애플")]),
     ]
 
-    document = build_graph_document(facts, existing=empty_document(NOW), settings=settings, now=NOW)
+    document = build_graph_document(facts, existing=existing, settings=settings, now=NOW)
 
+    assert len(document.edges) == 3  # 신규 2 + 이월 tombstone 1
     assert {e.decay_evaluated_at for e in document.edges} == {NOW}
+
+
+def test_carried_tombstone_confidence_decays_to_the_batch_clock(settings: Settings) -> None:
+    """이월 tombstone 의 확신도는 **이번 배치 시각으로** 감쇠한다 — 옛 값이 박제되면 안 된다.
+
+    근거가 사라진 tombstone 은 계속 이월되는데, 확신도를 그대로 두면 반감기를 여러 번 넘긴 값이
+    방금 관측된 edge 와 같은 자로 비교된다 — `_truncate` 의 `-confidence` 정렬에서 7개월 묵은
+    0.95 가 방금 들어온 0.5 를 이기고 살아남는다. `decay_evaluated_at` 이 존재하는 이유가
+    "이 값이 언제 기준인가"를 남기기 위해서인데, 그걸 갱신하지 않으면 필드가 뜻을 잃는다.
+    """
+    stale = "2026-01-01T00:00:00+00:00"
+    existing = _document_of(
+        [
+            _stored_edge(
+                "삼성",
+                status="suppressed",
+                suppressed_at=stale,
+                confidence=0.95,
+                decay_evaluated_at=stale,
+                last_observed_at=stale,
+            )
+        ]
+    )
+
+    document = build_graph_document([], existing=existing, settings=settings, now=NOW)
+
+    carried = document.edges[0]
+    assert carried.status == "suppressed"  # 보존 자체는 그대로다(AC-PROF-31)
+    assert carried.confidence < 0.95  # 7개월치 감쇠가 반영됐다
+    assert carried.decay_evaluated_at == NOW
+    assert carried.last_observed_at == stale  # 관측 **사실**은 시간이 지나도 안 바뀐다
 
 
 # ─────────── 병합 (REQ-PGRAPH-015) ───────────
@@ -731,14 +782,29 @@ def test_truncation_drops_machine_superseded_before_user_deletions(settings: Set
     문서 등장 순서가 아니라 확신도로 갈리는지도 함께 고정한다(순서 우연으로 통과하지 않게).
     """
     tight = Settings(_env_file=None, profile_graph_max_edges=2)
+    # 두 패자에게 **문서·근거 양쪽에 있는 승자**를 준다 — 상대가 없으면 `_revive_orphan_superseded`
+    # 가 둘 다 active 로 되살려, 이 테스트가 재려는 "superseded 등급 안의 우선순위"가 성립하지 않는다.
     existing = _document_of(
         [
-            _stored_edge("애플", status="superseded", superseded_by="e_x", confidence=0.1),
-            _stored_edge("삼성", status="superseded", superseded_by="e_y", confidence=0.9),
+            _stored_edge(
+                "애플",
+                status="superseded",
+                superseded_by=make_edge_id("avoids|brand:애플"),
+                confidence=0.1,
+            ),
+            _stored_edge(
+                "삼성",
+                status="superseded",
+                superseded_by=make_edge_id("avoids|brand:삼성"),
+                confidence=0.9,
+            ),
             _stored_edge("소니", status="suppressed", suppressed_at=NOW),
         ]
     )
-    facts = [_fact("f1", triples=[_triple("brand:엘지", label="엘지")])]
+    facts = [
+        _fact("f1", triples=[_triple("brand:애플", "avoids", label="애플")]),  # 승자
+        _fact("f2", triples=[_triple("brand:삼성", "avoids", label="삼성")]),  # 승자
+    ]
 
     document = build_graph_document(facts, existing=existing, settings=tight, now=NOW)
 

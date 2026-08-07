@@ -111,7 +111,7 @@ def build_graph_document(
         _merge_edge(obs_list, prior=prior.get(key), settings=settings, now=now)
         for key, obs_list in grouped.items()
     ]
-    edges.extend(_carried_tombstones(existing, seen=set(grouped)))
+    edges.extend(_carried_tombstones(existing, seen=set(grouped), settings=settings, now=now))
     edges = _resolve_conflicts(edges)
     # 절단 여부는 **개수 차이로** 판정한다 — `_truncate` 의 두 분기(일반 절단·사용자 삭제가 상한을
     # 넘겨 보존)를 한 규칙으로 덮고, "상한을 넘겼다"가 아니라 "버린 게 있다"라는 뜻이 그대로 산다.
@@ -323,22 +323,46 @@ def _valid_from(prior: GraphEdge | None, *, promoted: bool, now: str) -> str | N
     return now
 
 
-def _carried_tombstones(existing: GraphDocument, *, seen: set[str]) -> list[GraphEdge]:
+def _carried_tombstones(
+    existing: GraphDocument, *, seen: set[str], settings: Settings, now: str
+) -> list[GraphEdge]:
     """이번 배치에 근거가 없는 edge 중 **보존 대상만** 살린다.
 
     `suppressed`·`superseded`·사용자 pin 은 근거가 0이어도 남긴다. 사라지면 같은 취향이 다음
     배치에 새 `active` edge 로 부활해 삭제가 조용히 무력화된다(AC-PROF-31).
     반대로 그냥 `active` 인 edge 는 근거가 없어지면 함께 사라진다 — 보존은 tombstone 한정이다.
+
+    **이월할 때 확신도를 이번 배치 시각으로 감쇠시킨다**(PR #410 리뷰). 안 그러면 마지막 관측
+    시점의 값이 박제되어, `_truncate` 의 `-confidence` 정렬과 `_resolve_conflicts` 의 승자 판정이
+    **서로 다른 시각으로 잰 값을 같은 자로 비교**하게 된다 — 7개월 묵은 0.95 가 방금 관측된 0.5 를
+    이기고 살아남는다. `decay_evaluated_at` 이 존재하는 이유가 "이 값이 언제 기준인가"를 남기기
+    위해서인데, 갱신하지 않으면 그 필드가 뜻을 잃는다.
+
+    감쇠는 `decay_evaluated_at → now` 로 **누적** 적용한다(관측이 남아 있는 edge 는 `_confidence`
+    가 매 배치 전량 재계산하지만, 여기는 근거가 없어 재계산할 원본이 없다). 반감기 지수는
+    `0.5^(Δ1/h) · 0.5^(Δ2/h) = 0.5^((Δ1+Δ2)/h)` 라 나눠 적용해도 값이 같고, 입력이 같으면 결과도
+    같아 재생 동일성(REQ-PGRAPH-015)은 유지된다. `last_observed_at` 은 **관측 사실**이라 건드리지
+    않는다 — 시간이 흘러도 "마지막으로 언제 말했나"는 변하지 않는다.
     """
+    half_life = settings.graph_decay_half_life_days
     carried: list[GraphEdge] = []
     for edge in existing.edges:
         if edge.edge_key in seen:
             continue
         if edge.status == "active" and edge.user_intent is None:
             continue
+        decayed = round(
+            edge.confidence * _decay_factor(edge.decay_evaluated_at, now, half_life), _ROUND
+        )
         carried.append(
             edge.model_copy(
-                update={"evidence_count": 0, "evidence_refs": [], "evidence_by_source": {}}
+                update={
+                    "evidence_count": 0,
+                    "evidence_refs": [],
+                    "evidence_by_source": {},
+                    "confidence": decayed,
+                    "decay_evaluated_at": now,
+                }
             )
         )
     return carried

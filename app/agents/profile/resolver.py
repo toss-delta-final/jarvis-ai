@@ -53,6 +53,11 @@ _POSITIVE_PREDICATE: dict[str, Predicate] = {
 _BAND_RE = re.compile(r"^(\d+)-(\d+)$")
 _PRODUCT_ID_RE = re.compile(r"^\d+$")
 _RATING_SCALE_MAX = 5  # 별점 도메인 상수 — 비즈니스 튜너블이 아니다(HTTP status code 와 동급)
+# 숫자 라벨의 **크기** 상한. 형식(`^\d+$`)만 보면 30자리도 통과하고 `int()` 는 파이썬 임의 정밀도라
+# 예외도 안 난다 — 존재할 수 없는 productId 노드가 문서 상한 슬롯을 영구히 차지하고, 소비자(#150)가
+# Long 으로 파싱하면 오버플로우다(PR #410 리뷰). 상품 id 는 BIGINT 라는 CLAUDE.md 규약에서 오는
+# **도메인 상수**지 튜너블이 아니다 — 값을 낮추면 정당한 id 가 드롭되고 높이면 DB 가 못 받는다.
+_BIGINT_MAX = 9_223_372_036_854_775_807
 _CATEGORY_LEXICON = "catalog_categories"
 
 
@@ -198,6 +203,8 @@ def _resolve_band(kind: str, label: str, *, anchor_phrase: str, now: str) -> Gra
     low, high = int(match.group(1)), int(match.group(2))
     if low >= high:
         return None
+    if high > _BIGINT_MAX:  # 형식만 보면 30자리도 통과한다 — 크기도 도메인 범위 안이어야 한다
+        return None
     if kind == "ratingBand" and high > _RATING_SCALE_MAX:
         return None
 
@@ -234,7 +241,10 @@ def _resolve_product(label: str, *, anchor_phrase: str, now: str) -> GraphNode |
     # 상품이 `product:7`·`product:007` 로 갈리고, 사용자가 지운 상품이 다른 표기로 다시 언급될 때
     # 새 active 노드로 부활해 tombstone 을 우회한다 — 식별자 결정론은 이 이슈의 기능 요구사항이다
     # (REQ-PGRAPH-010, PR #410 리뷰). 정상 id 에는 no-op 이다.
-    canonical = str(int(label))
+    product_id = int(label)
+    if product_id > _BIGINT_MAX:  # BIGINT 밖이면 존재할 수 없는 id 다 — 형식만으로는 안 걸린다
+        return None
+    canonical = str(product_id)
     return GraphNode(
         node_id=make_node_id("product", canonical),
         type="product",

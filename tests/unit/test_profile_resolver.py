@@ -468,6 +468,47 @@ async def test_blank_label_drops(settings: Settings) -> None:
     assert await _resolve(settings, label="   ", embed=_never_embed()) is None
 
 
+# ─────────── LLM 통제 필드의 경계 — **전수 표** ───────────
+#
+# 이 표가 이 파일의 규약이다: **LLM 이 값을 정하는 필드는 전부 여기 한 줄씩 있어야 한다.**
+# 필드를 하나 더하거나 새 kind 를 만들면 여기 줄이 늘어야 하고, 안 늘면 그 필드는 무검증이다.
+# 지금까지 PR #410 리뷰가 이 계열로만 여섯 번 나왔다 — `predicate`·`source` Literal, `salience`
+# 범위, `anchor_phrase` 길이, 상품 id 표기, 숫자 크기. 한 건씩 고치는 대신 표로 세운다.
+_BIGINT_MAX = 9_223_372_036_854_775_807  # Spring productId 상한(CLAUDE.md — 숫자 id 는 BIGINT)
+
+
+@pytest.mark.parametrize(
+    ("kind", "label", "kept"),
+    [
+        # 숫자 **크기** — 형식이 맞아도 도메인 범위를 벗어나면 존재할 수 없는 대상이다.
+        ("product", str(_BIGINT_MAX), True),
+        ("product", str(_BIGINT_MAX + 1), False),
+        ("product", "9" * 30, False),
+        ("priceBand", f"1-{_BIGINT_MAX}", True),
+        ("priceBand", f"1-{_BIGINT_MAX + 1}", False),
+        ("priceBand", "1-" + "9" * 30, False),
+        # 숫자 **형식** — 이미 막고 있던 것들(회귀 가드로 표에 함께 둔다).
+        ("product", "12345", True),
+        ("product", "abc", False),
+        ("priceBand", "50000-30000", False),  # min >= max
+        ("ratingBand", "4-6", False),  # 평점 스케일 밖
+    ],
+)
+async def test_numeric_labels_are_bounded_by_domain_range(
+    settings: Settings, kind: str, label: str, kept: bool
+) -> None:
+    """숫자 라벨은 형식뿐 아니라 **크기**도 도메인 범위 안이어야 한다 (PR #410 리뷰).
+
+    `^\\d+$` 는 자릿수를 보지 않고 `int()` 는 파이썬 임의 정밀도라 예외도 안 난다 — 30자리 숫자가
+    그대로 통과해 **존재할 수 없는 productId** 노드가 만들어지고, 문서 상한
+    (`profile_graph_max_edges`) 슬롯을 영구히 차지한다. 소비자(#150)가 Long 으로 파싱하면
+    오버플로우다. 밴드도 같은 이유로 상한을 받는다.
+    """
+    resolved = await _resolve(settings, kind=kind, label=label, embed=_never_embed())
+
+    assert (resolved is not None) is kept
+
+
 async def test_anchor_phrase_is_bounded_by_the_utterance_cap() -> None:
     """앵커도 상한을 받는다 — 저장(jsonb)과 임베딩 페이로드 양쪽에 실리기 때문이다.
 
