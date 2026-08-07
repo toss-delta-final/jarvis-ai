@@ -149,6 +149,137 @@ async def test_numeric_labels_converge_to_one_node_id(
     assert node_ids == {expected_node_id}
 
 
+# ─────────── LLM 통제 필드의 경계 — **구조적 가드 + 전수 표** ───────────
+#
+# `resolve_triple` 의 인자는 두 종류다: **LLM 이 값을 정하는 것**과 호출부가 주입하는 것(설정·시계·
+# I/O seam). 앞쪽은 전부 검증 대상이고, 아래 표에 한 줄씩 있어야 한다.
+#
+# 지금까지 PR #410 리뷰가 이 계열로만 일곱 번 나왔다 — `predicate`·`source` Literal, `salience`
+# 범위, `anchor_phrase` 길이, 상품 id 표기, 숫자 크기, 그리고 `polarity` 반전. 매번 "새 필드를
+# 표에 넣는 것"을 사람이 기억해야 했던 게 원인이라, **시그니처를 훑어 기계가 강제**하게 한다.
+_INJECTED_PARAMS = {
+    "settings",
+    "now",
+    "brand_lexicon",
+    "embed",
+    "category_exact",
+    "category_search",
+}
+_LLM_CONTROLLED = {"kind", "label", "anchor_phrase", "polarity", "predicate_hint"}
+
+
+def test_every_llm_controlled_field_is_registered() -> None:
+    """LLM 이 값을 정하는 인자는 **전부 아래 적대적 입력 표에 등록**돼 있어야 한다.
+
+    새 필드를 더하면 여기서 깨진다 — 그때 표에 줄을 넣으라는 뜻이다. 이 단언이 없으면 "표에 적은
+    것만 검사한다"가 되어, 새 필드가 무검증으로 들어가도 아무도 모른다(그 결과가 리뷰 일곱 번이다).
+    """
+    import inspect
+
+    params = set(inspect.signature(resolve_triple).parameters) - _INJECTED_PARAMS
+
+    assert params == _LLM_CONTROLLED
+
+
+@pytest.mark.parametrize(
+    ("polarity", "expected"),
+    [
+        ("negative", "avoids"),
+        ("positive", "likes"),
+        # 표기 흔들림은 **정규화로 흡수**한다 — 대소문자·공백 때문에 극성이 뒤집히면 안 된다.
+        ("Negative", "avoids"),
+        (" negative ", "avoids"),
+        ("NEGATIVE", "avoids"),
+        ("Positive", "likes"),
+        # 어휘 밖은 **드롭**한다. 긍정으로 흘려보내면 "싫어한다"가 "좋아한다"로 확정 저장된다 —
+        # 이 파일의 다른 필드가 전부 "실패는 드롭"인데 여기만 의미가 반전됐다(PR #410 리뷰).
+        ("부정", None),
+        ("neg", None),
+        ("", None),
+    ],
+)
+async def test_polarity_never_flips_silently(
+    settings: Settings, polarity: str, expected: str | None
+) -> None:
+    """극성은 뒤집히느니 드롭한다 — 반대 취향을 확정 저장하는 것이 가장 나쁜 실패다.
+
+    "소니는 별로예요" 가 `likes 소니` 로 저장되면 요약·rerank 가 사용자가 싫다고 말한 것을 밀어
+    올린다. 에러도 로그도 없어 발견도 안 된다.
+    """
+    resolved = await _resolve(settings, polarity=polarity, embed=_never_embed())
+
+    assert (resolved.predicate if resolved else None) == expected
+
+
+@pytest.mark.parametrize("hint", ["purchased", "Purchased", " purchased ", "PURCHASED"])
+async def test_purchased_hint_is_rejected_regardless_of_casing(
+    settings: Settings, hint: str
+) -> None:
+    """`purchased` 거부가 대소문자 하나로 뚫리면 안 된다 — 리뷰가 짚은 `polarity` 와 같은 결함이다.
+
+    구매 사실의 원천은 질의 시점 구매 이력(I-19)이지 발화가 아니다(REQ-PGRAPH-078 · 결정 14-F).
+    거부가 우회되면 대화로 만든 구매 기록이 취향으로 확정 저장된다.
+    """
+    resolved = await _resolve(
+        settings, kind="product", label="123", predicate_hint=hint, embed=_never_embed()
+    )
+
+    assert resolved is None
+
+
+_BIGINT_MAX = 9_223_372_036_854_775_807  # Spring productId 상한(CLAUDE.md — 숫자 id 는 BIGINT)
+
+
+@pytest.mark.parametrize(
+    ("kind", "label", "kept"),
+    [
+        # 숫자 **크기** — 형식이 맞아도 도메인 범위를 벗어나면 존재할 수 없는 대상이다.
+        ("product", str(_BIGINT_MAX), True),
+        ("product", str(_BIGINT_MAX + 1), False),
+        ("product", "9" * 30, False),
+        ("priceBand", f"1-{_BIGINT_MAX}", True),
+        ("priceBand", f"1-{_BIGINT_MAX + 1}", False),
+        ("priceBand", "1-" + "9" * 30, False),
+        # 숫자 **형식** — 이미 막고 있던 것들(회귀 가드로 표에 함께 둔다).
+        ("product", "12345", True),
+        ("product", "abc", False),
+        ("priceBand", "50000-30000", False),  # min >= max
+        ("ratingBand", "4-6", False),  # 평점 스케일 밖
+    ],
+)
+async def test_numeric_labels_are_bounded_by_domain_range(
+    settings: Settings, kind: str, label: str, kept: bool
+) -> None:
+    """숫자 라벨은 형식뿐 아니라 **크기**도 도메인 범위 안이어야 한다 (PR #410 리뷰).
+
+    `^\\d+$` 는 자릿수를 보지 않고 `int()` 는 파이썬 임의 정밀도라 예외도 안 난다 — 30자리 숫자가
+    그대로 통과해 **존재할 수 없는 productId** 노드가 만들어지고, 문서 상한
+    (`profile_graph_max_edges`) 슬롯을 영구히 차지한다. 소비자(#150)가 Long 으로 파싱하면
+    오버플로우다. 밴드도 같은 이유로 상한을 받는다.
+    """
+    resolved = await _resolve(settings, kind=kind, label=label, embed=_never_embed())
+
+    assert (resolved is not None) is kept
+
+
+async def test_anchor_phrase_is_bounded_by_the_utterance_cap() -> None:
+    """앵커도 상한을 받는다 — 저장(jsonb)과 임베딩 페이로드 양쪽에 실리기 때문이다.
+
+    상한을 `chat_message_max_chars` 로 잡는 근거는 **인용 구절은 인용 대상보다 길 수 없다**는
+    것이다(`anchorPhrase` 는 "발화에서 그대로 인용한 구절"이고 발화 자체가 그 값으로 묶인다).
+    정상 앵커는 한국어 구절 10~30자라 절대 안 잘리고, 지시를 어긴 비정상 출력만 막는다 —
+    라벨 상한(60자)을 재사용하면 정당한 인용이 잘려 **임베딩 입력이 바뀌므로** 쓰지 않는다
+    (앵커를 라벨 대신 쓰는 이유가 #59 의 오분류 실측이다). PR #410 리뷰.
+    """
+    tight = Settings(_env_file=None, chat_message_max_chars=10)
+
+    resolved = await _resolve(tight, anchor_phrase="가" * 500, embed=_never_embed())
+
+    assert resolved is not None
+    assert resolved.node.resolution is not None
+    assert resolved.node.resolution.anchor_phrase == "가" * 10
+
+
 # ─────────── 어휘 없는 kind: seam 만 만들고 verified:false (REQ-PGRAPH-013) ───────────
 
 
@@ -462,66 +593,3 @@ async def test_label_is_truncated_to_configured_cap(settings: Settings) -> None:
 
     assert resolved is not None
     assert resolved.node.label == "가나다라"
-
-
-async def test_blank_label_drops(settings: Settings) -> None:
-    assert await _resolve(settings, label="   ", embed=_never_embed()) is None
-
-
-# ─────────── LLM 통제 필드의 경계 — **전수 표** ───────────
-#
-# 이 표가 이 파일의 규약이다: **LLM 이 값을 정하는 필드는 전부 여기 한 줄씩 있어야 한다.**
-# 필드를 하나 더하거나 새 kind 를 만들면 여기 줄이 늘어야 하고, 안 늘면 그 필드는 무검증이다.
-# 지금까지 PR #410 리뷰가 이 계열로만 여섯 번 나왔다 — `predicate`·`source` Literal, `salience`
-# 범위, `anchor_phrase` 길이, 상품 id 표기, 숫자 크기. 한 건씩 고치는 대신 표로 세운다.
-_BIGINT_MAX = 9_223_372_036_854_775_807  # Spring productId 상한(CLAUDE.md — 숫자 id 는 BIGINT)
-
-
-@pytest.mark.parametrize(
-    ("kind", "label", "kept"),
-    [
-        # 숫자 **크기** — 형식이 맞아도 도메인 범위를 벗어나면 존재할 수 없는 대상이다.
-        ("product", str(_BIGINT_MAX), True),
-        ("product", str(_BIGINT_MAX + 1), False),
-        ("product", "9" * 30, False),
-        ("priceBand", f"1-{_BIGINT_MAX}", True),
-        ("priceBand", f"1-{_BIGINT_MAX + 1}", False),
-        ("priceBand", "1-" + "9" * 30, False),
-        # 숫자 **형식** — 이미 막고 있던 것들(회귀 가드로 표에 함께 둔다).
-        ("product", "12345", True),
-        ("product", "abc", False),
-        ("priceBand", "50000-30000", False),  # min >= max
-        ("ratingBand", "4-6", False),  # 평점 스케일 밖
-    ],
-)
-async def test_numeric_labels_are_bounded_by_domain_range(
-    settings: Settings, kind: str, label: str, kept: bool
-) -> None:
-    """숫자 라벨은 형식뿐 아니라 **크기**도 도메인 범위 안이어야 한다 (PR #410 리뷰).
-
-    `^\\d+$` 는 자릿수를 보지 않고 `int()` 는 파이썬 임의 정밀도라 예외도 안 난다 — 30자리 숫자가
-    그대로 통과해 **존재할 수 없는 productId** 노드가 만들어지고, 문서 상한
-    (`profile_graph_max_edges`) 슬롯을 영구히 차지한다. 소비자(#150)가 Long 으로 파싱하면
-    오버플로우다. 밴드도 같은 이유로 상한을 받는다.
-    """
-    resolved = await _resolve(settings, kind=kind, label=label, embed=_never_embed())
-
-    assert (resolved is not None) is kept
-
-
-async def test_anchor_phrase_is_bounded_by_the_utterance_cap() -> None:
-    """앵커도 상한을 받는다 — 저장(jsonb)과 임베딩 페이로드 양쪽에 실리기 때문이다.
-
-    상한을 `chat_message_max_chars` 로 잡는 근거는 **인용 구절은 인용 대상보다 길 수 없다**는
-    것이다(`anchorPhrase` 는 "발화에서 그대로 인용한 구절"이고 발화 자체가 그 값으로 묶인다).
-    정상 앵커는 한국어 구절 10~30자라 절대 안 잘리고, 지시를 어긴 비정상 출력만 막는다 —
-    라벨 상한(60자)을 재사용하면 정당한 인용이 잘려 **임베딩 입력이 바뀌므로** 쓰지 않는다
-    (앵커를 라벨 대신 쓰는 이유가 #59 의 오분류 실측이다). PR #410 리뷰.
-    """
-    tight = Settings(_env_file=None, chat_message_max_chars=10)
-
-    resolved = await _resolve(tight, anchor_phrase="가" * 500, embed=_never_embed())
-
-    assert resolved is not None
-    assert resolved.node.resolution is not None
-    assert resolved.node.resolution.anchor_phrase == "가" * 10

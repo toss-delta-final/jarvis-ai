@@ -162,11 +162,23 @@ def _decide_predicate(kind: str, polarity: str, predicate_hint: str) -> Predicat
     아니라서, 대화로 구매 사실을 만들면 재구매 dedup(결정 14-F)과 근거 노출 규약(REQ-PGRAPH-078)의
     전제가 함께 깨진다. 구매 언급을 `likes` 로 강등해 살리는 선택지도 있으나, 사용자가 잘못 생긴
     노드를 지울 경로(#150)가 아직 없어 **되돌릴 수 없는 쪽의 오류**가 된다.
+
+    **두 필드 모두 정규화한 뒤 어휘로 판정한다**(PR #410 리뷰). 종전에는 `polarity == "negative"`
+    문자열 동등 비교라, `"Negative"`·`" negative "` 처럼 표기만 흔들려도 **긍정으로 떨어졌다** —
+    "소니는 별로예요"가 `likes 소니` 로 확정 저장되고 요약·rerank 가 사용자가 싫다고 말한 것을
+    밀어 올린다. 이 파일의 다른 필드는 전부 "실패는 드롭"인데 여기만 **의미가 반전**됐다.
+    같은 이유로 `purchased` 거부도 대소문자 하나로 뚫렸다(리뷰가 짚지 않은 자매 결함).
+
+    어휘 밖은 긍정으로 흘려보내지 않고 **드롭**한다 — 극성을 모르면 취향의 방향을 모르는 것이고,
+    반대 취향을 확정 저장하는 것보다 없는 편이 낫다(REQ-PGRAPH-012b 와 같은 정신).
     """
-    if predicate_hint == "purchased":
+    if predicate_hint.strip().casefold() == "purchased":
         return None
-    if polarity == "negative":
+    normalized = polarity.strip().casefold()
+    if normalized == "negative":
         return "avoids"
+    if normalized != "positive":
+        return None
     return _POSITIVE_PREDICATE.get(kind)
 
 
