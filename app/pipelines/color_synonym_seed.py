@@ -1085,6 +1085,14 @@ def load_seed_rows(path: str | Path) -> list[SeedColorTermRow]:
             )
         if canonical is not None and not isinstance(canonical, str):
             raise ValueError(f"색상 동의어 정본 시드 canonical은 문자열/null이어야 함: {item!r}")
+        # 빈 문자열은 "canonical 없음"의 유효한 표현이 아니다 — WHERE canonical IS NOT NULL 을
+        # 통과해 build_synonym_map 의 groups.setdefault(canonical, ...) 가 ""를 키로 삼아
+        # 서로 무관한 승인 행을 한 묶음으로 잘못 합친다(PR #447 리뷰 R1). "없음"은 None 으로만
+        # 표현한다.
+        if canonical is not None and not canonical.strip():
+            raise ValueError(
+                f"색상 동의어 정본 시드 canonical은 빈 문자열일 수 없음(없으면 null): {item!r}"
+            )
         if status not in _SEED_STATUSES:
             raise ValueError(f"색상 동의어 정본 시드 status 위반({status!r}): {item!r}")
         if provenance not in _SEED_PROVENANCES:
@@ -1093,6 +1101,13 @@ def load_seed_rows(path: str | Path) -> list[SeedColorTermRow]:
             not isinstance(doc_count, int) or isinstance(doc_count, bool)
         ):
             raise ValueError(f"색상 동의어 정본 시드 doc_count는 정수/null이어야 함: {item!r}")
+        # status=approved 인데 canonical 이 없으면(None) build_synonym_map 필터
+        # (canonical IS NOT NULL)에 걸려 조용히 사전에서 빠진다 — 검수자는 승인했다고 믿는데
+        # 런타임에는 존재하지 않는 모순 상태다.
+        if status == "approved" and canonical is None:
+            raise ValueError(
+                f"색상 동의어 정본 시드 status=approved 인데 canonical 이 없음(null): {item!r}"
+            )
         rows.append(SeedColorTermRow(term, canonical, status, provenance, doc_count))
     return rows
 

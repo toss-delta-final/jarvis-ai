@@ -903,6 +903,86 @@ def test_load_seed_rows_rejects_provenance_outside_enum(tmp_path) -> None:
         seed.load_seed_rows(path)
 
 
+def test_load_seed_rows_rejects_approved_row_with_empty_string_canonical(tmp_path) -> None:
+    """빈 문자열은 WHERE canonical IS NOT NULL 을 통과해 build_synonym_map 이 ""를 키로
+    무관한 승인 행들을 한 묶음으로 잘못 합친다(PR #447 리뷰 R1) — canonical 없음은 null 로만."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙",
+                "canonical": "",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 1,
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="canonical"):
+        seed.load_seed_rows(path)
+
+
+def test_load_seed_rows_rejects_approved_row_with_null_canonical(tmp_path) -> None:
+    """status=approved 인데 canonical 이 없으면 build_synonym_map 필터에 걸려 조용히
+    사전에서 빠진다 — 검수자는 승인했다고 믿는데 런타임엔 존재하지 않는 모순 상태다."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙",
+                "canonical": None,
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 1,
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="canonical"):
+        seed.load_seed_rows(path)
+
+
+def test_load_seed_rows_rejects_empty_string_canonical_regardless_of_status(tmp_path) -> None:
+    """빈 문자열은 status 와 무관하게 거부한다 — approved 만이 아니라 pending_review 도 대상."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙",
+                "canonical": "",
+                "status": "pending_review",
+                "provenance": "human",
+                "doc_count": 1,
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="canonical"):
+        seed.load_seed_rows(path)
+
+
+def test_load_seed_rows_accepts_pending_review_row_with_explicit_null_canonical(tmp_path) -> None:
+    """정본 789행 중 190행이 이 상태(canonical=None, status=pending_review) — 여기서
+    막으면 실제 정본이 로드 불가가 된다(정상 경로 회귀 방지)."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "미상토큰",
+                "canonical": None,
+                "status": "pending_review",
+                "provenance": "human",
+                "doc_count": 1,
+            }
+        ],
+    )
+
+    rows = seed.load_seed_rows(path)
+
+    assert rows == [seed.SeedColorTermRow("미상토큰", None, "pending_review", "human", 1)]
+
+
 def test_upsert_seed_sql_is_authoritative_not_review_protected() -> None:
     """검수 보호 CASE 가드(UPSERT_COLOR_TERM_SQL)와 달리, 시드 upsert는 파일 값을 그대로 반영한다."""
     sql = seed.UPSERT_SEED_COLOR_TERM_SQL
