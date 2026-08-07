@@ -983,6 +983,61 @@ def test_load_seed_rows_accepts_pending_review_row_with_explicit_null_canonical(
     assert rows == [seed.SeedColorTermRow("미상토큰", None, "pending_review", "human", 1)]
 
 
+def test_load_seed_rows_rejects_duplicate_term_with_conflicting_fields(tmp_path) -> None:
+    """`_execute_seed_upserts`가 rows 순서대로 ON CONFLICT (term) DO UPDATE 를 실행하므로,
+    같은 term 이 두 번(다른 status/canonical) 있으면 배열 순서에 좌우돼 나중 행이 앞 행을
+    조용히 덮는다(PR #447 리뷰 R2)."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙",
+                "canonical": "블랙",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 100,
+            },
+            {
+                "term": "블랙",
+                "canonical": None,
+                "status": "pending_review",
+                "provenance": "seed_llm_assignment",
+                "doc_count": 1,
+            },
+        ],
+    )
+
+    with pytest.raises(ValueError, match="term 중복"):
+        seed.load_seed_rows(path)
+
+
+def test_load_seed_rows_accepts_distinct_terms(tmp_path) -> None:
+    """정상 회귀 — 서로 다른 term 이면 중복 가드가 발화하지 않는다."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙",
+                "canonical": "블랙",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 100,
+            },
+            {
+                "term": "화이트",
+                "canonical": "화이트",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 90,
+            },
+        ],
+    )
+
+    rows = seed.load_seed_rows(path)
+
+    assert [row.term for row in rows] == ["블랙", "화이트"]
+
+
 def test_upsert_seed_sql_is_authoritative_not_review_protected() -> None:
     """검수 보호 CASE 가드(UPSERT_COLOR_TERM_SQL)와 달리, 시드 upsert는 파일 값을 그대로 반영한다."""
     sql = seed.UPSERT_SEED_COLOR_TERM_SQL

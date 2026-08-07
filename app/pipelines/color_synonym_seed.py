@@ -31,6 +31,11 @@ FetchFn = Callable[[str | None, int], Awaitable[ProductChangesPage]]
 _EMBED_BATCH_SIZE = 20
 SEED_LLM_PROVENANCE = "seed_llm_assignment"
 BATCH_EMBEDDING_PROVENANCE = "batch_embedding_unverified"
+# 사람 검수 결과(오버레이 approved/rejected)의 provenance. DB CHECK(03_color_synonyms.sql)와
+# scripts/derive_color_synonym_seed.py 양쪽이 이미 "human" 리터럴을 쓰고 있어 이 상수는 이
+# 모듈 안(정본 시드 로더 검증)에서만 쓴다 — 그 스크립트는 app 모듈을 lazy import 로만 참조하는
+# 관례라 거기로 끌고 가지 않는다(PR #447 리뷰 R3).
+HUMAN_PROVENANCE = "human"
 _EXCLUDED_TERM_LOG_PREVIEW = 5
 
 
@@ -1044,7 +1049,7 @@ async def build(
 
 
 _SEED_STATUSES = frozenset({"pending_review", "approved", "rejected"})
-_SEED_PROVENANCES = frozenset({"seed_llm_assignment", "batch_embedding_unverified", "human"})
+_SEED_PROVENANCES = frozenset({SEED_LLM_PROVENANCE, BATCH_EMBEDDING_PROVENANCE, HUMAN_PROVENANCE})
 
 
 @dataclass(frozen=True)
@@ -1071,6 +1076,7 @@ def load_seed_rows(path: str | Path) -> list[SeedColorTermRow]:
     if not isinstance(data, list):
         raise ValueError(f"색상 동의어 정본 시드는 배열이어야 함: {path}")
     rows: list[SeedColorTermRow] = []
+    seen_terms: set[str] = set()
     for item in data:
         if not isinstance(item, dict):
             raise ValueError(f"색상 동의어 정본 시드 항목은 객체여야 함: {item!r}")
@@ -1083,6 +1089,14 @@ def load_seed_rows(path: str | Path) -> list[SeedColorTermRow]:
             raise ValueError(
                 f"색상 동의어 정본 시드 term은 비어 있지 않은 문자열이어야 함: {item!r}"
             )
+        # _execute_seed_upserts 가 rows 순서대로 ON CONFLICT (term) DO UPDATE 를 실행하므로,
+        # 같은 term 이 두 번 있으면(다른 status/canonical 이어도) 배열 순서에 좌우돼 나중 행이
+        # 앞 행을 조용히 덮는다(PR #447 리뷰 R2). DB UNIQUE(term) 과 같은 기준으로 원문 term
+        # 중복만 판정한다 — 표기 정규화(`_norm`) 충돌 판정은 파생 스크립트(apply_overlay)의
+        # 책임이라 여기서 끌어오지 않는다.
+        if term in seen_terms:
+            raise ValueError(f"색상 동의어 정본 시드 term 중복: {term!r} ({item!r})")
+        seen_terms.add(term)
         if canonical is not None and not isinstance(canonical, str):
             raise ValueError(f"색상 동의어 정본 시드 canonical은 문자열/null이어야 함: {item!r}")
         # 빈 문자열은 "canonical 없음"의 유효한 표현이 아니다 — WHERE canonical IS NOT NULL 을
