@@ -260,10 +260,10 @@
   - **아직 안 되는 것 3가지 — 릴리스 노트만 보고 "이제 다 된다"로 읽지 말 것.** (1) **Spring 이 I-24~I-28 을 아직 구현 진행 중**이라 배포 전에는 이 발화들이 호출은 나가도 응답을 못 받아 실패 안내로 끝난다. (2) **FE `ChatAction` 유니온에 신규 8종이 아직 없다** — FE 수신부가 붙기 전에는 성공해도 화면에 반영되지 않는다. (3) **수량 변경(I-25)은 계약만 등재됐고 AI 는 미구현**이다(대응 이슈 없음, §4.13) — "3개로 바꿔줘"류 발화는 아직 아무 동작도 하지 않는다.
 
 ### Changed
-- **#386 — `evals/combo_matrix` 재생성(`datasetVersion` 2.0.0 → 3.0.0, 케이스 57 → 61)** —
+- **#386 — `evals/combo_matrix` 재생성(`datasetVersion` 2.0.0 → 3.0.0, 케이스 57 → 62)** —
   `RouteDecision.intent` Literal 확장이 `test_intent_axis_matches_route_decision_literal` 을
   깨뜨리므로(그러라고 있는 가드다) 매트릭스를 함께 갱신했다. greedy pairwise 가 pair 우주를
-  다시 보므로 케이스가 대거 재배치됐다(축 조합이 유지된 것은 18건). `wishlist_view` 는
+  다시 보므로 케이스가 대거 재배치됐다(축 조합이 유지된 것은 28건). `wishlist_view` 는
   `directedCase`(회원 × spring_timeout)를 포함해 ci 케이스 3건을 갖는다 — 조회 degrade 가
   `action` 이 아니라 `token` 이라는 계약이 이 매트릭스에서 직접 관측된다. 번호에 의존하던
   테스트 2개는 spec 의 성격(`kind`·`metric`·`mode`)으로 찾도록 고쳐, 재생성마다 번호를
