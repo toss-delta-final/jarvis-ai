@@ -439,6 +439,44 @@ def test_startup_guard_first_token_check_still_gated_by_deferral_when_auto_relax
     assert settings.relaxation_max_rounds == 0
 
 
+def test_startup_guard_message_wording_differs_between_deferral_agnostic_and_first_token_branches():
+    """[PR #452 리뷰 G3] 미룸과 무관한 분기(구매자 30s·observe 꼬리 예약)와 first-token 분기는
+    오류 메시지·복구 안내 문구가 실제로 갈려야 한다 — R3 로 30s·observe-tail 비교가 미룸과
+    무관해졌는데 메시지가 여전히 "deferred"/"disable deferral" 이라고 말하면, R3 가 코드에서
+    없앤 혼동("우리는 미루는 설정이 아닌데 왜 이 오류가 뜨지")을 메시지가 그대로 재생산한다
+    (리뷰 지적).
+
+    검증 실효성: 두 분기가 다시 같은 `recovery` 문자열을 공유하도록 되돌리면(G3 결함 재현)
+    미룸-무관 분기의 메시지에도 "the deferred I-1 serial budget"·"disable deferral" 이 섞여
+    들어와 아래 부정 어설션이 깨진다.
+    """
+    import pytest
+    from pydantic import ValidationError
+
+    # 미룸과 무관한 분기(observe 꼬리 예약, RELAXATION_MAX_ROUNDS=0이라 애초에 미루지 않는다) —
+    # "deferred"/"disable deferral" 을 쓰면 안 된다.
+    with pytest.raises(ValidationError) as physical_exc:
+        Settings(_env_file=None, relaxation_max_rounds=0, spring_search_timeout_s=8.0)
+    physical_message = str(physical_exc.value)
+    assert "the serial I-1 budget across the buyer turn" in physical_message
+    assert "the deferred I-1 serial budget" not in physical_message
+    assert "disable deferral" not in physical_message
+
+    # first-token 분기 — 이 조합(rounds=3 기본, 교집합 성립)은 실제로 미룸 게이트가 걸리므로
+    # "deferred"/"disable deferral" 이 정확한 표현이다.
+    with pytest.raises(ValidationError) as deferred_exc:
+        Settings(
+            _env_file=None,
+            spring_max_retries=1,
+            spring_search_timeout_s=4.0,
+            rescue_budget_mode="narrow",
+            progress_events_enabled=False,
+        )
+    deferred_message = str(deferred_exc.value)
+    assert "the deferred I-1 serial budget" in deferred_message
+    assert "disable deferral" in deferred_message
+
+
 def test_deferred_first_event_i1_calls_matches_default_config():
     """기본 조합(rounds=3, auto=["ratingMin"], chip 4종)의 직렬 호출 수는 3이다(#383 보정식).
 

@@ -2140,43 +2140,64 @@ class Settings(BaseSettings):
             spring_max_retries=self.spring_max_retries,
             search_retry_on_deferred_conditions=self.search_retry_on_deferred_conditions,
         )
-        recovery = (
-            (
-                "disable SEARCH_RETRY_ON_DEFERRED_CONDITIONS, "
-                if self.search_retry_on_deferred_conditions
-                else ""
-            )
+        recovery_prefix = (
+            "disable SEARCH_RETRY_ON_DEFERRED_CONDITIONS, "
+            if self.search_retry_on_deferred_conditions
+            else ""
+        )
+        # [PR #452 리뷰 G3] 아래 두 recovery 문구는 서로 다른 검사를 향한다 — 섞어 쓰면 R3 가
+        # 코드에서 없앤 혼동(미루지 않는 설정인데 "deferred"·"disable deferral" 오류가 뜬다)을
+        # 메시지가 그대로 재생산한다.
+        # `recovery_physical`: 구매자 30s·observe 꼬리 예약 비교(미룸과 무관, 물리 계수) 전용 —
+        # "deferral" 을 암시하지 않는다. 손잡이 효과도 정확히 적는다:
+        # RELAXATION_MAX_ROUNDS=0/RELAXATION_AUTO_FIELDS=[] 는 검사를 통째로 없애지 않고
+        # auto_relax 항 하나만 뺀다(main·rescue 항은 그대로 남는다, R3 이후).
+        recovery_physical = (
+            recovery_prefix
+            + "lower SPRING_SEARCH_TIMEOUT_S (the per-call budget), drop the auto-relax term "
+            "with RELAXATION_MAX_ROUNDS=0 or RELAXATION_AUTO_FIELDS=[] (this only removes the "
+            "auto-relax stage — the main search and, if enabled, the rescue fallback still "
+            "count), or drop the rescue-fallback term with CATEGORY_EXPAND_ENABLED=false"
+        )
+        # `recovery_deferred`: first-token 비교 전용 — 이 분기는 실제로 미룸 게이트가 걸리므로
+        # (`may_auto_relax=False` 턴은 이 체인이 `conditions` 뒤라 검증 대상이 아니다)
+        # "disable deferral" 표현이 정확하다.
+        recovery_deferred = (
+            recovery_prefix
             + "lower SPRING_SEARCH_TIMEOUT_S, disable deferral with RELAXATION_MAX_ROUNDS=0 "
             "or RELAXATION_AUTO_FIELDS=[], or drop the rescue-fallback call with "
             "CATEGORY_EXPAND_ENABLED=false"
         )
-        # [#427, PR #452 리뷰 R3] 구매자 전체 상한과는 상시 비교한다(물리 계수 — 위 docstring
-        # 참조) — 본검색·F-1/#343 은 미룸 여부와 무관하게 이 30s 예산을 쓴다. `deferred_calls
-        # == 0` 조기 return 은 더 이상 없다: 그 조기 return 이 바로 이 비교까지 건너뛰게
-        # 만들던 결함이었다(R3).
+        # [#427, PR #452 리뷰 R3·G3] 구매자 전체 상한과는 상시 비교한다(물리 계수 — 위
+        # docstring 참조) — 본검색·F-1/#343 은 미룸 여부와 무관하게 이 30s 예산을 쓴다.
+        # `deferred_calls == 0` 조기 return 은 더 이상 없다: 그 조기 return 이 바로 이 비교까지
+        # 건너뛰게 만들던 결함이었다(R3). 메시지도 "첫 conditions 앞" 이 아니라 "턴 전체에서
+        # 도는 직렬 I-1 구간"으로 잰다는 것을 말한다 — "deferred" 를 쓰지 않는다(G3).
         if serial_budget >= self.stream_total_timeout_buyer_s:
             raise ValueError(
-                f"the deferred I-1 serial budget ({physical_calls} calls) must be < "
-                f"STREAM_TOTAL_TIMEOUT_BUYER_S (got {serial_budget} >= "
-                f"{self.stream_total_timeout_buyer_s}): {recovery}"
+                f"the serial I-1 budget across the buyer turn ({physical_calls} calls: main "
+                "search + rescue fallback + auto-relax, regardless of whether conditions is "
+                f"deferred) must be < STREAM_TOTAL_TIMEOUT_BUYER_S (got {serial_budget} >= "
+                f"{self.stream_total_timeout_buyer_s}): {recovery_physical}"
             )
-        # [#427, PR #452 리뷰 R3] observe 모드일 때만 꼬리 예약을 뺀 값과 비교한다 — 마찬가지로
-        # 물리 계수, 미룸과 무관하게 상시.
+        # [#427, PR #452 리뷰 R3·G3] observe 모드일 때만 꼬리 예약을 뺀 값과 비교한다 —
+        # 마찬가지로 물리 계수, 미룸과 무관하게 상시.
         if self.rescue_budget_mode == "observe":
             tail_budget = self.stream_total_timeout_buyer_s - self.rescue_tail_reserve_s
             if serial_budget >= tail_budget:
                 raise ValueError(
-                    f"the deferred I-1 serial budget ({physical_calls} calls) must be < "
-                    "STREAM_TOTAL_TIMEOUT_BUYER_S - RESCUE_TAIL_RESERVE_S "
+                    f"the serial I-1 budget across the buyer turn ({physical_calls} calls) "
+                    "must be < STREAM_TOTAL_TIMEOUT_BUYER_S - RESCUE_TAIL_RESERVE_S "
                     f"(got {serial_budget} >= {tail_budget}) when RESCUE_BUDGET_MODE=observe: "
-                    f"{recovery}, or set RESCUE_BUDGET_MODE=narrow so the runtime narrowing "
-                    "enforces the tail reserve instead"
+                    f"{recovery_physical}, or set RESCUE_BUDGET_MODE=narrow so the runtime "
+                    "narrowing enforces the tail reserve instead"
                 )
         # [PR #452 리뷰 R3] first-token 비교만 미룸 게이트를 유지한다(design D6) —
         # `may_auto_relax=False` 턴은 F-1/#343/자동완화가 `conditions` **뒤**에 돌아 첫 이벤트
         # 앞 직렬 호출이 아니다. `_deferred_first_event_i1_calls` 래퍼가 그 게이트를 적용해
         # 불성립이면 0을 낸다 — 게이트가 성립하면 물리 계수와 같은 값이라 `serial_budget` 을
-        # 다시 계산하지 않는다.
+        # 다시 계산하지 않는다. 이 분기만 "deferred"/`recovery_deferred` 를 쓴다(G3) — 여기는
+        # 실제로 미룸 게이트가 검사 여부를 가른다.
         if not self.progress_events_enabled:
             deferred_calls = _deferred_first_event_i1_calls(
                 relaxation_max_rounds=self.relaxation_max_rounds,
@@ -2190,7 +2211,7 @@ class Settings(BaseSettings):
                     f"STREAM_FIRST_TOKEN_TIMEOUT_S (got {serial_budget} >= "
                     f"{self.stream_first_token_timeout_s}) when PROGRESS_EVENTS_ENABLED=false: "
                     f"deferred conditions put {deferred_calls} serial I-1 calls before the "
-                    f"first event; {recovery}"
+                    f"first event; {recovery_deferred}"
                 )
         return self
 
