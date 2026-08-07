@@ -419,6 +419,22 @@
 - **#299 — 요청 바디 크기 상한** — 필드별 상한(`chat_message_max_chars`·`screen_products_raw_scan_max` 등)은 흩어져 있고 상한 없는 필드(`conditionActions` 등)도 계속 생기는데, 레이트 리밋(§2.8)은 요청 **건수**만 세 임의 크기 바디를 반복 전송할 수 있었다. `app/core/body_limit.py`에 `BodySizeLimitMiddleware`(순수 ASGI)를 신설해 `Content-Length` 초과는 바디를 읽기 전에, 헤더가 없는(chunked) 경우는 `receive`를 감싼 실수신 바이트 누적으로 상한(`request_body_max_bytes`, 기본 1MiB — 필드 상한이 절단 없이 받아들이는 최대 정상 페이로드의 약 4.8배)을 넘기면 거절한다. 초과 응답은 새 코드를 내지 않고 기존 `400 BAD_REQUEST` 봉투를 그대로 쓴다(§2.5에 413/`PAYLOAD_TOO_LARGE`가 없어 신설은 별도 명세 개정 대상) — 와이어 계약 변경 0. 미들웨어는 레이트 리밋 **바깥**(거대 바디가 JWT 서명 검증 비용·레이트 리밋 슬롯을 소모하지 않게)·CORS **안쪽**(400 응답에도 CORS 헤더가 실리게)에 등록한다.
 
 ### Docs
+- **#436 — api-spec 구현 반영 상태 표기 갱신(계약 불변, 서술만)** — I-24~I-31 세 지점의 상태
+  마커가 낡아 있어 #435 원인 추적이 "FE 수신부가 없어서인가"를 먼저 의심하며 한 라운드를
+  버렸다. BE(`jarvis-backend` main `17bb44d`)·FE(`jarvis-frontend` main `08cd2c5`)를
+  2026-08-08 GitHub API로 실측해 사본을 정렬했다: (1) I-24~I-28 "Spring 구현 진행 중, 배포
+  전 무응답"은 사실이 아니었다 — BE PR #92(I-24·I-25)·#93(I-26~I-28), 400 code·id 타입 정렬
+  PR #112로 **전부 구현됨**. (2) §3.1 "FE `ChatAction` 유니온에 신규 8종이 아직 없다"도 사실이
+  아니었다 — FE PR #79로 **10종 전부** 수신 가능(`ActionFailReason.WISHLIST_ERROR`·
+  `isWishlistMutatingAction()` 포함). (3) I-29~I-31 "🔶 초안, BE 협의 전"도 사실이 아니었다 —
+  BE PR #105·#108·#106으로 **구현됨**(BE javadoc이 노션 "협의사항 확정 반영"을 직접 인용).
+  (4) `CART_QUANTITY_CHANGED`/`CART_QUANTITY_CHANGE_FAILED` 2종은 **AI 측만 여전히 미구현** —
+  세 지점 모두 이 사실을 축 분리로 유지해 "Spring·FE가 됐으니 AI도 됐다"는 오독을 막았다.
+  §3.1 상태 서술을 `AI 구현`·`Spring 구현`·`FE 수신` 3축 bullet으로 분리하고, 표기 규약에
+  "상태 마커에는 근거(리포·브랜치·PR·실측일)를 병기한다"·"세 축을 뭉뚱그리지 않는다" 2항목을
+  신설해 재발을 막는다. §4.20 `sort` 파라미터표(`rating`)와 BE 실측(`ratingAsc`만 허용) 간
+  불일치 1건을 발견했으나 **관측만 ⚠️로 기록**하고 계약값·코드는 바꾸지 않았다(정본 대조가
+  선행돼야 해 해소는 별도 이슈). (api-spec §3.1·§4.12~4.16·§4.18~4.20, v0.28.1)
 - **#425 — overspecified_zero 는 완화 축이 없어 재검색이 안 돈다, 정의된 동작으로 판정** —
   combo_matrix 매트릭스가 README·`expected_behavior.jsonl` 의 `expected` 서술("0건이면 자동 완화·
   완화 칩으로 대안 제시")과 실측(combo-0031: `searchCallCount=1`·`finishReason=zero_result`,
