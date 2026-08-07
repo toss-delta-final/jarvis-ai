@@ -13,6 +13,61 @@
 
 ---
 
+## [2026-08-07] PR 이 리뷰 워크플로 자신을 고치면 Claude 리뷰는 그 PR 에서 돌지 않는다
+- 증상: PR #459(`.github/workflows/claude-review.yml` 을 수정하는 PR)의 review run
+  (`gh run view 31169027311`)에 `##[warning]Skipping action due to workflow validation:
+  Workflow validation failed. The workflow file must exist and have identical content to the
+  version on the repository's default branch.` 가 찍히며 액션이 통째로 건너뛰어졌다. **체크는
+  초록(success)이라 겉보기엔 리뷰가 끝난 것처럼 보이는데 실제로는 리뷰가 0줄도 돌지 않았다** —
+  "리뷰 통과"로 오독하기 쉽다. 액션이 `execution_file` 을 만들지 않으므로, 그 파일로 성공을
+  판정하는 후속 스텝(`save-state`)도 "미완료"로 본다. 대조 근거: 같은 시각 워크플로를 건드리지
+  않은 다른 PR 의 run(`31168319751`)에는 이 경고가 0건이고
+  `Log saved to /home/runner/work/_temp/claude-execution-output.json` 이 정상적으로 찍혔다.
+- 원인: `anthropics/claude-code-action@v1` 자체의 보호장치 — 워크플로 파일이 **기본 브랜치
+  버전과 바이트 단위로 동일**해야만 실행된다(PR 이 워크플로를 고쳐 시크릿을 빼돌리는 것을 막는
+  장치). 이 저장소의 기본 브랜치는 `dev` 다(`gh repo view --json defaultBranchRef` 실측).
+- 규칙: 리뷰 워크플로(`.github/workflows/claude-review.yml`)를 바꾸는 PR 은 **그 PR 자체로는
+  Claude 리뷰를 받을 수 없다** — 사람 리뷰나 별도 교차 리뷰로 대체하고, PR 본문에 그 사실을
+  적는다. 그런 PR 에서 review 체크가 초록인 것을 "리뷰 통과"로 읽지 마라. Actions 로그에서
+  `Skipping action due to workflow validation` 유무를 확인한다. 워크플로 변경의 실제 동작 검증은
+  **기본 브랜치에 병합된 다음** 첫 PR 들에서 한다.
+- 관련: #457, PR #459, `.github/workflows/claude-review.yml`, run 31169027311(경고 발생) ·
+  run 31168319751(정상 실행 대조)
+
+## [2026-08-07] `git diff` 출력을 정규식으로 파싱하면 파일이 조용히 사라진다
+- 증상: 비-ASCII(한글) 경로가 있으면 git 이 기본값(`core.quotePath=true`)으로 따옴표 인코딩해
+  `diff --git "a/app/\355\225\234..." "b/..."` 형태로 내는데, `^diff --git a/(.*) b/(.*)$` 류
+  정규식이 이 줄을 못 잡아 그 파일이 파싱 결과(지문 딕셔너리)에서 **통째로 빠졌다**(#457 프로브
+  실측: keys 에 아예 없음). 빠진 파일은 "변경 없음"으로 오판돼 리뷰 없이 통과한다. 반대 방향
+  실수도 같이 나왔다 — 바이너리 파일은 `index <sha>..<sha>` 줄이 유일한 내용 신호인데, 그 줄을
+  "잡음"으로 보고 정규화(제거)하면 서로 다른 바이너리 내용이 같은 지문이 된다(실측으로 지문
+  일치를 직접 확인).
+- 원인: git 산출물(diff·경로 목록)을 파이썬 정규식으로 파싱할 때, git 의 기본 인코딩/이스케이프
+  동작을 신뢰하지 않고 "보통은 이렇게 나온다"는 가정으로 정규식을 짰다. 또한 diff 안의 각 줄이
+  "잡음"인지 "유일한 내용 신호"인지를 그 줄이 사라졌을 때 어떤 정보가 없어지는지로 따지지 않고
+  일괄로 정규화했다.
+- 규칙: git 산출물을 파싱할 때는 (a) `-c core.quotePath=false` 로 원문 경로를 그대로 받고,
+  (b) `git diff --name-only -z` 처럼 **권위 있는 목록과 대조하는 불변식**을 걸어 파싱 결과와
+  어긋나면 조용히 넘어가지 말고 안전 방향으로 fail-safe 하며, (c) 특정 줄을 정규화(제거)하기
+  전에 "그 줄을 지우면 어떤 정보가 사라지는가"를 먼저 묻는다(바이너리의 `index` 줄처럼 유일한
+  신호일 수 있다).
+- 관련: #457, `.github/scripts/review_mode.py`(`split_patch_by_file`·
+  `_validate_fingerprint_coverage`·`_normalize_for_fingerprint`)
+
+## [2026-08-07] PUBLIC 저장소의 PR 코멘트는 신뢰 저장소가 아니다 — 작성자를 확인해야 한다
+- 증상: CI 상태(Claude 리뷰의 "마지막 성공 리뷰" 지점)를 PR 코멘트 마커에 저장하면서 작성자를
+  확인하지 않았다 — 아무 GitHub 사용자나 같은 마커가 든 코멘트를 위조해 올리면 다음 실행이 그걸
+  "마지막 성공 리뷰"로 믿어 **코드리뷰 게이트를 통째로 끌 수 있는** 경로가 생겼다(`gh repo view`
+  실측: 이 저장소는 PUBLIC 이라 아무나 코멘트를 달 수 있다).
+- 원인: "코멘트에 마커가 있으면 우리가 쓴 것"이라고 암묵적으로 가정했다 — 신원(작성자)과 형식
+  (마커 문자열)을 구분하지 않았다. 설계 단계에서 "이 상태 저장소를 외부 입력이 조작할 수 있는가"
+  를 묻지 않았다.
+- 규칙: GitHub 코멘트/이슈 본문처럼 **누구나 쓸 수 있는 곳**에 CI 가 읽는 상태를 둘 때는
+  마커/형식뿐 아니라 **작성자(`user.login`+`user.type`)를 반드시 검증**하고, 신뢰할 수 있는
+  작성자의 것이 없으면 "상태 없음"으로 취급해 안전한 방향(재검사·재실행)으로 떨어진다. 새 저장
+  메커니즘을 설계할 때는 "외부 입력만으로 이 게이트를 끌 수 있는가"를 가장 먼저 묻는다.
+- 관련: #457, `.github/scripts/review_mode.py`(`filter_trusted_state_comments`)
+
 ## [2026-08-07] 카테고리 임베딩은 "소속"이 아니라 "경로 문자열과의 표면 근접"을 잰다
 - 증상: "과일 추천해줘"류 발화가 전개(#217)로 "바나나·사과·배·오렌지"를 냈는데 재매핑에서
   "배"가 여성가방·신생아의류·실버용품·유아목욕용품 같은 무관 카테고리로 흩어졌다(#428). 거리컷
@@ -79,6 +134,7 @@
 - 관련: 이슈 #426(#381 후속) · `evals/combo_matrix/fakes.py`(`SpringWhereCatalogBackend`) ·
   `evals/filter_axes/probe.py:83-125`(같은 패턴의 선례가 이미 repo 에 있었는데 참조되지 않았다) ·
   `evals/combo_matrix/README.md` "필터링 검색 대역의 성격"
+
 ## [2026-08-07] `uv run ruff check --fix && uv run ruff format` 커밋 워크플로 문구를 문자 그대로 실행하면 무관 파일 30개가 재포맷된다
 - 증상: #439 구현 검증 단계에서 CLAUDE.md 커밋 워크플로 2항을 그대로 `uv run ruff check --fix &&
   uv run ruff format`으로 실행했더니 `ruff check`는 `All checks passed!`였지만 `ruff format`은
