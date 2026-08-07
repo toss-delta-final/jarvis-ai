@@ -10,6 +10,45 @@
 ## [Unreleased]
 
 ### Added
+- **#356 — consolidation 구조화 트리플 산출 + 그래프 입력 전환(OPEN-G0 해소)** —
+  취향을 자유형 한국어 문장 하나가 아니라 `주어–술어–목적어` 트리플로 만들고, consolidation이
+  fact 목록 대신 **그래프 문서를 입력으로 읽게** 했다. 지금까지는 지울 수 있는 단위가 없어
+  사용자가 취향을 삭제해도 다음 배치가 다시 써넣었다 — 삭제 기능이 겉모습만 남는 상태였다.
+  트리플 생산과 입력 전환을 **한 PR로** 낸 이유가 그것이다(REQ-PGRAPH-023 [HARD]).
+  신규 `app/agents/profile/graph_models.py`(GraphNode/GraphEdge/GraphDocument, 내부 저장 모델) ·
+  `resolver.py`(kind별 결정론적 식별) · `graph_merge.py`(순수 함수 병합 엔진).
+  식별자는 `node_id = "{type}:{정규화 라벨}"` · `edge_id = "e_" + sha256(edge_key)[:16]`로
+  고정했다(REQ-PGRAPH-010) — 랜덤 id면 재파생이 tombstone을 우회한다. `hashlib` 고정(내장
+  `hash()`는 PYTHONHASHSEED 랜덤화로 프로세스마다 값이 달라진다). LLM은 타입 붙은 제안까지만
+  내고 키는 코드가 확정한다(REQ-PGRAPH-011, #115 실측 근거). resolve는 **쓰기 시 1회**로
+  고정 — 배치마다 재계산하면 임계·어휘가 바뀔 때 같은 fact가 다른 `node_id`로 붙는다.
+  `priceBand`·`ratingBand`·`product`는 임베딩 없이 규칙·정확 일치(REQ-PGRAPH-014), 어휘 없는
+  kind는 `verified:false`로 남기고(C-28 미해결 상태에서도 동작) 어휘가 있는데 못 붙으면 드롭한다.
+  병합은 감쇠 가중 EMA·승격/강등 히스테리시스·충돌 supersede(삭제 금지)·tombstone 보존이며,
+  edge 상한 절단에서도 **사용자 삭제(`suppressed`·pin)는 상한보다 우선**한다 — 잘리면 다음
+  배치에 `active`로 부활해 복구 경로가 없다. **먼저 밀려나는 순서는 `active` → `superseded` →
+  (자르지 않음) `suppressed`·pin**이다. 직관과 반대로 보이지만 잃는 것이 다르다 — `active`가
+  잘려도 그 fact는 요약 입력에 남지만(문서에 없는 `edge_key`는 `active`로 간주된다), `superseded`가
+  잘리면 같은 규칙 때문에 **진 취향이 요약에 되살아난다**. 사용자 삭제만으로 상한을 넘으면
+  넘긴 채 보존하고 경고 로그를 남긴다. 상충 판정은 쌍 열거가 아니라 **`avoids` vs 임의의 긍정**
+  (`prefers`·`likes`·`interestedIn`)이다 — `{likes, avoids}`만 등록하면 resolver가 kind별로 다른
+  긍정을 만드는 탓에 7개 kind 중 4개가 판정 밖에 남아 모순된 두 취향이 둘 다 `active`로 공존한다.
+  요약 입력은 살아 있는 edge + 트리플 없는 fact이고 `suppressed`/`superseded`와 그 근거 fact
+  원문은 제외한다 — 입력이 비면 기존 요약을 **보존**하고 `NO_WORK`(빈 문자열로 덮으면 요약은
+  사라지는데 홈 랭킹은 캐리오버된 옛 벡터로 계속 개인화한다). LLM은 그래프 락 밖에서 부른다
+  (`#323`의 요약 락과 중첩하면 advisory 풀 커넥션을 둘 점유해 구매자 턴까지 말라 죽는다).
+  신규 config 11종 전부 주입(`graph_node_distance_max`·`graph_decay_half_life_days` 등) —
+  거리 임계는 #59 값을 **상속하지 않는다**(앵커 분포가 다르다, OPEN-G1/#344 재측정 대기).
+  프롬프트 교체는 `profile_graph_delta_enabled` 롤백 스위치 뒤에 두고 분포 비교 프로브를
+  동봉했다(OPEN-G8). 발표·수동 검증용 시드 스크립트 신설.
+  **델타·요약 LLM 출력 예산도 하드코딩(800/1000)에서 `profile_delta_max_tokens`·
+  `profile_summary_max_tokens`(각 2048)로 이관했다** — 구조화 필드가 늘어 출력이 길어지자
+  운영 smart tier(reasoning 모델)에서 추론 토큰이 예산을 먼저 먹어 분포 프로브 4세션 중 2건이
+  `LengthFinishReasonError`로 죽었고(구 프롬프트 0건), 이관 후 0건이 됐다. 세션 버퍼는 보존된 채
+  재시도되지만 같은 입력이면 또 실패해 방치하면 그 사용자의 승격이 버퍼 상한까지 멈춘다(#325 계열).
+  **비범위**: 그래프 API 표면(#150) · 저널·revision CAS·멱등 원장(#358) · pin 규약 ·
+  브랜드 어휘 수집(C-28). `purchased` edge는 대화에서 만들지 않는다(원천은 질의 시점 I-19).
+  (SPEC-PROFILE-GRAPH-149 v0.2.6, SPEC-PROFILE-001 v0.8.1 — api-spec 무개정)
 - **#424 — combo_matrix `observed` 드리프트 가드 신설** — `expected_behavior.jsonl` 의 `observed`
   는 러너 재실행 **기록**이라, 다른 레인이 SSE 이벤트를 바꾸면 커밋본이 조용히 낡아도 아무
   테스트도 잡지 못했다(PR #420 작업 중 실측 2회, 둘 다 `eventTypes` 만 드리프트하고 핵심 계약

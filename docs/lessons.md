@@ -184,6 +184,212 @@
   문자열이 리포 판과 같아 여전히 유효하다. 어느 축에 어느 런을 썼는지 산출물 README 에 적어라.
 - 관련: #430 · `evals/intent_probe/README.md` 「⚠️ `--prompt`/`--prompt-rev` 런은 screen 축을
   재지 못한다」절 · `evals/intent_probe/baselines/fast-2026-08-07-430-after-1/README.md`
+## [2026-08-07] 변이 검증 원복에 `git checkout --` 을 쓰면 **미커밋 신규 테스트가 함께 날아간다**
+- 증상: 수정이 효력 있는지 보려고 코드를 일시 변이시킨 뒤 `git checkout -- tests/...` 로 되돌렸다.
+  그런데 그 테스트 파일에는 **아직 커밋 안 한 신규 테스트**가 들어 있었고, checkout 이 HEAD 상태로
+  되돌리면서 통째로 삭제됐다. 그대로 커밋했으면 "회귀 테스트를 붙였다"는 커밋 메시지와 달리
+  **코드 수정만 들어가고 테스트는 없는 커밋**이 나갈 뻔했다(`git show --stat` 이 파일 1개만
+  보여줘서 알아챘다). 복원하며 이미 있던 테스트를 다시 붙여 **중복까지 만들었다**.
+- 원인: 변이 검증의 원복 수단으로 **작업 트리 기준(checkout)** 을 썼다. 변이는 "지금 상태"에서
+  일시적으로 벗어났다 돌아오는 것인데, checkout 의 기준점은 "지금"이 아니라 HEAD 다. 미커밋
+  변경이 있으면 두 기준이 어긋난다.
+- 규칙: 변이 검증 원복은 **파일 사본**으로 한다(`cp file bak` → 변이 → `cp bak file`). git 명령을
+  원복에 쓰지 않는다. 그리고 변이 검증이 끝나면 **`git status`·`git show --stat` 으로 의도한
+  파일이 전부 들어갔는지 확인**한 뒤 커밋한다 — 특히 "테스트를 추가했다"고 적은 커밋에 테스트
+  파일이 없으면 그 자체가 신호다.
+- 관련: 이슈 #356 / PR #410, `tests/unit/test_profile_resolver.py`
+
+---
+
+## [2026-08-07] 같은 계열 지적이 반복되면 **그 건이 아니라 계열을 막는 가드**를 세운다
+- 증상: PR #410 리뷰가 20건 나왔는데 절반이 두 뿌리였다. ① **LLM 출력을 경계에서 안 막음**
+  (`predicate`·`source` Literal → `salience` 범위 → `anchor_phrase` 길이 → 상품 id 표기 →
+  숫자 크기, 6건) ② **낡은 값과 새 값을 같은 자로 비교**(저장 상한 `evidence_refs` 로 요약 판정 →
+  지문의 `resolution`·`evidence_*` → 이월 tombstone 의 confidence 박제, 4건). 매번 **지적된 한
+  건만** 고쳐서 다음 인스턴스를 리뷰가 계속 찾아냈다 — 두더지잡기였다.
+- 원인: 수정 단위를 "리뷰가 가리킨 줄"로 잡았다. 같은 계열이 두 번 나온 시점에 **그 계열의 표면
+  전체**를 훑었어야 했는데, 매번 국소 수정으로 닫으니 리뷰만이 전수 조사 역할을 했다.
+- 규칙: **같은 계열 지적이 2회 이상이면 국소 수정을 멈추고 (a) 그 계열의 표면을 전수 정리하고
+  (b) 새 인스턴스가 자동으로 걸리는 가드를 만든다.** 가드는 "표에 적은 것만 검사"가 아니라
+  **산출물 전체를 훑는 불변식**이어야 한다 — 이번 ②의 가드
+  `{e.decay_evaluated_at for e in document.edges} == {now}` 는 어떤 경로로 만들어진 edge 든
+  걸리지만, ①의 적대적 입력 표는 표에 없는 새 필드를 못 잡는다(그건 가드가 아니라 회귀 테스트다).
+  전수 불변식을 못 세우는 계열은 그 한계를 **명시**하고 넘어간다.
+- 덧: 리뷰 대응에는 **멈추는 기준**도 필요하다. 재현되고 영향 있으면 고치고, 잠재+저비용이면
+  고치고, 설계 논쟁이거나 이미 근거를 적어둔 지점의 재지적이면 **회신만 하고 코드는 두는 것**이
+  정당한 마무리다(이번 `product` `verified=False` 가 그 사례).
+- 관련: `app/agents/profile/graph_merge.py::_carried_tombstones`,
+  `tests/unit/test_profile_graph_merge.py::test_decay_clock_is_one_snapshot_per_batch`,
+  `tests/unit/test_profile_resolver.py::test_numeric_labels_are_bounded_by_domain_range`,
+  이슈 #356 / PR #410
+
+---
+
+## [2026-08-07] 선례를 옮길 때는 **tier·모델이 같은지** 먼저 본다 — 값이 모델 종속이면 그대로 400 이 된다
+- 증상: #356 델타 추출이 `max_tokens=800` 하드코딩 탓에 출력 예산 소진으로 죽는 걸 프로브가 잡아,
+  #325(enrichment) 선례를 그대로 옮겨 `max_tokens` 상향 + `reasoning_effort="minimal"` 고정을
+  넣었다. 그러자 프로브가 **8/8 전부 실패**했다 — `400 Unsupported value: 'reasoning_effort'
+  does not support 'minimal' with this mode`. #325 는 **fast tier(gpt-5-nano)** 이고 델타 추출은
+  **smart tier(gpt-5.6-luna)** 라, 같은 문자열이 한쪽에선 되고 한쪽에선 거절된다. 이 모델은
+  이미 `openai_tool_reasoning_incompatible_models` 에 올라 있었는데 확인하지 않았다.
+- 원인 둘: (1) "같은 함정 → 같은 대응"으로 선례를 통째 복사했다. 함정(출력 예산)은 같아도 대응
+  일부(effort 값)는 **모델 능력에 종속**이라 이식 대상이 아니었다. (2) 애초에 effort 고정은
+  **측정된 문제를 푸는 데 필요 없었다** — 실패 원인은 예산이었고 `max_tokens` 만으로 0건이 됐다.
+  필요 없는 노브를 얹었다가 그 노브가 전부를 깨뜨렸다.
+- 규칙: 다른 이슈의 대응을 옮길 때는 **어떤 값이 모델·tier 종속인지 먼저 가른다**(`max_tokens`
+  는 이식 가능, `reasoning_effort`·모델 id·tool 지원 여부는 아니다). 그리고 **측정이 요구하지
+  않은 노브는 넣지 않는다** — 측정으로 확인한 최소 변경부터 적용하고, 그것으로 해결되면 거기서
+  멈춘다. 이번엔 노브를 빼자 테스트 fake 5개 파일 수정도 통째로 불필요해졌다.
+- 관련: `app/core/config.py::profile_delta_max_tokens`, `app/agents/profile/builder.py`,
+  `openai_tool_reasoning_incompatible_models`, 이슈 #356 / #325 / PR #410
+
+---
+
+## [2026-08-07] 프로브가 프로덕션 호출을 **복제**하면, 이미 고친 결함을 계속 "실패"로 보고한다
+- 증상: `scripts/probe_delta_prompt_356.py` 가 `llm.complete(..., max_tokens=800)` 로 프로덕션
+  호출을 베껴 두고 있었다. 그 800 이 원인이라 `builder` 쪽을 config 주입(2048)으로 고쳤는데,
+  프로브를 다시 돌려도 **똑같이 2건 실패**로 나왔다. 프로브가 자기 하드코딩을 계속 쓰고 있어서다.
+  "고쳤는데 왜 그대로지"로 한참 헤맬 뻔했다.
+- 원인: 프로브의 목적은 **프로덕션이 무엇을 하는지 재는 것**인데, 호출 파라미터를 프로덕션에서
+  읽지 않고 손으로 옮겨 적었다. 그 순간 프로브는 프로덕션이 아니라 "예전의 프로덕션"을 잰다.
+- 규칙: 계측 스크립트는 **프로덕션 코드를 부르거나 프로덕션 설정을 읽는다.** 파라미터·정규식·
+  임계를 스크립트에 베껴 쓰지 않는다(같은 이유로 이 프로브의 밴드 라벨 검사도 정규식을 복제하지
+  않고 `_resolve_band` 를 직접 부른다). 베낀 값이 하나라도 있으면 그 값이 갈리는 순간 프로브
+  결과는 근거가 아니라 오해가 된다.
+- 관련: `scripts/probe_delta_prompt_356.py::run_prompt`·`_band_accepted`,
+  `app/agents/profile/builder.py::generate_session_delta`, 이슈 #356 / PR #410
+
+---
+
+## [2026-08-07] 명세의 "예: A vs B"를 목록으로 옮기면, 예시가 규칙이 되어 나머지가 조용히 빠진다
+- 증상: #356 `_resolve_conflicts` 가 상충 쌍을 `_CONFLICTING = {{"likes", "avoids"}}` 하나로
+  하드코딩했다. 그런데 `resolver._POSITIVE_PREDICATE` 는 kind 마다 다른 긍정을 만든다
+  (`priceBand`·`ratingBand`·`attribute` → `prefers`, `situation` → `interestedIn`). 그래서
+  "3만원대를 선호한다" + "3만원대는 싫다" 가 **둘 다 `active` 로 공존**하고, `_summary_input` 은
+  non-active 만 거르므로 모순된 두 fact 가 요약 LLM 입력에 **함께** 들어갔다(실측 재현:
+  `['30000-50000 를 선호한다', '30000-50000 를 싫어한다']`). 7개 kind 중 4개가 구멍이었다.
+  Claude PR 리뷰가 잡았다.
+- 원인: SPEC REQ-PGRAPH-018 이 "상충하는 관계(`likes` vs `avoids` 같은 node 대상)"라고 **예시**로
+  적은 것을, 구현이 **열거해야 할 목록**으로 읽었다. 예시를 자료구조로 옮기는 순간 그 예시가
+  규칙이 되고, 예시에 없던 경우는 "빠뜨렸다"가 아니라 "원래 대상이 아니다"처럼 보인다.
+- 규칙: 명세가 "예: A" 로 쓴 것을 코드에 옮길 때는 **A 를 등록하지 말고 A 를 만들어내는 성질을
+  구현한다.** 여기서는 쌍 3개를 등록하는 대신 "부정 vs 임의의 긍정"으로 판정을 바꿨다 —
+  긍정 predicate 가 하나 더 생겨도 자동으로 따라온다. 옮긴 뒤에는 **명세 쪽에 그 성질을 명시**해
+  다음 사람이 같은 오독을 하지 않게 한다(v0.2.3 명확화). 열거가 불가피하면 열거 대상을 만드는
+  원본(여기서는 `resolver._POSITIVE_PREDICATE`)과 **한 테스트에서 대조**한다.
+- 관련: `app/agents/profile/graph_merge.py::_resolve_conflicts`(`_NEGATIVE_PREDICATE`·
+  `_POSITIVE_PREDICATES`), `app/agents/profile/resolver.py::_POSITIVE_PREDICATE`,
+  SPEC-PROFILE-GRAPH-149 REQ-PGRAPH-018(v0.2.3), 이슈 #356 / PR #410
+
+---
+
+## [2026-08-07] 직관과 반대인 설계는 **근거**를 테스트로 잠근다 — 안 그러면 다음 사람이 버그로 읽고 뒤집는다
+- 증상: #356 `_truncate` 는 절단 시 `active`(살아 있는 취향)를 `superseded`(충돌에서 진 취향)보다
+  **먼저** 버린다. 리뷰가 이를 "정렬 방향이 뒤집혔다"는 버그로 읽고 부등호를 뒤집으라고 제안했다.
+  실제로 뒤집어 돌려 보니 요약 입력이 `['소니를 싫어한다', '애플을 좋아한다']` 에서
+  `['소니를 좋아한다', '소니를 싫어한다', ...]` 로 바뀌었다 — **진 취향이 부활**한다.
+- 원인 둘: (1) docstring 을 "등급이 낮은 쪽부터 밀린다"로 써서 1/2/3 번호를 반대로 읽을 여지를
+  남겼다. **방향을 서술어로 쓰지 않고 등급 번호에 맡긴 것**이 잘못이다. (2) 더 중요하게,
+  이 순서를 정당화하는 **비대칭이 테스트에 없었다** — `builder._summary_input` 이 문서에 없는
+  `edge_key` 를 `active` 로 간주하므로, active 가 잘려도 그 fact 는 요약에 남지만 superseded 가
+  잘리면 진 취향의 원문이 통과한다. 이 비대칭이 순서의 유일한 근거인데 어디에도 안 적혀 있었다.
+- 규칙: 설계가 **직관과 반대 방향**이면 (a) 방향을 문장으로 명시하고("먼저 밀려나는 순서: A → B"),
+  (b) **왜 그 방향인지의 근거 자체를 테스트로 잠근다.** 결과만 잠그면 다음 사람이 "이게 왜
+  이렇지?" 하고 뒤집을 때 테스트가 함께 고쳐질 뿐이다. 리뷰가 방향을 반대로 읽었다면 그건
+  리뷰어의 오독이기 전에 **코드가 방향을 설명하지 못한 증거**다.
+- 관련: `app/agents/profile/graph_merge.py::_truncate`,
+  `tests/unit/test_profile_consolidate_graph.py::test_truncated_superseded_edge_lets_the_losing_preference_back_into_summary`,
+  이슈 #356 / PR #410
+
+---
+
+## [2026-08-07] 검증 없는 dataclass 를 경유하면 스키마 위반이 **한참 뒤에** 터져 배치를 죽인다
+- 증상: #356 `graph_merge._observation` 이 저장 payload 를 읽으면서 `node` 만
+  `GraphNode.model_validate` 로 검증하고 `predicate`·`edge_key`·`edge_id` 는 그대로 통과시켰다.
+  받는 그릇 `_Observation` 이 **검증 없는 plain dataclass** 라 아무 값이나 실린다. 그래서
+  `predicate="hates"` 같은 손상 payload 는 "모양이 깨진 항목은 조용히 버린다"는 그 함수의
+  docstring 을 통과하고, 한참 뒤 `_merge_edge` 의 `GraphEdge(...)` 생성에서야 처음으로
+  `ValidationError` 를 냈다. 그 지점엔 잡는 코드가 없어 `finalizer` 최상위 `except Exception`
+  까지 새고, 손상 fact 는 저장소에서 자동으로 안 지워지므로 **session-end 마다 같은 자리에서
+  RETRYABLE 만 반복**된다(poison record). REQ-PGRAPH-004 의 degrade("못 만든 fact 는 개수만
+  센다")를 우회한 셈이다. Claude PR 리뷰가 잡았다.
+- 원인: "검증했다"를 **필드 단위가 아니라 객체 단위**로 셌다 — payload 안에 pydantic 모델
+  필드(`node`)가 하나 있으니 검증이 걸렸다고 여겼다. 나머지 필드는 나중에 pydantic 모델로
+  들어가긴 하지만, 그 "나중"이 **degrade 경계 밖**이라는 것이 문제였다.
+- 규칙: **경계에서 들어오는 payload 는 뒤에서 강제될 제약을 그 경계에서 미리 건다.** 중간에
+  검증 없는 dataclass·`TypedDict`·`dict` 를 경유한다면, 그 지점이 곧 검증 공백이다. 특히
+  "여기서 걸러 degrade 한다"고 docstring 에 적은 함수는 **적은 만큼 실제로 거르는지** 손상값
+  파라미터라이즈 테스트로 확인한다. 방어를 호출부(배치 전체)로 올리는 선택지는 마지막이다 —
+  거기서 잡으면 손상 1건 때문에 배치 전체가 버려진다.
+- 관련: `app/agents/profile/graph_merge.py::_observation`(`_PREDICATES`),
+  `::_merge_edge`, `app/agents/profile/finalizer.py:171`, 이슈 #356 / PR #410
+
+---
+
+## [2026-08-06] `datetime` 뺄셈은 naive-aware 혼합에서 `ValueError` 가 아니라 `TypeError` 다
+- 증상: #356 `graph_merge._elapsed_days` 가 "파싱 불가 타임스탬프로 감쇠를 추측하지 않는다"며
+  `except ValueError` 로 감쌌는데, 오프셋 없는 관측 시각이 하나라도 섞이면
+  `TypeError: can't subtract offset-naive and offset-aware datetimes` 로 **가드를 통과해**
+  consolidation 배치가 통째로 죽는다. 현재 소스는 양쪽 다 aware 라(`_now_iso` ·
+  store 의 `created_at TIMESTAMP WITH TIME ZONE`) 재현되지 않는 잠재 결함이었고, PR #410
+  전체 점검에서 코드를 읽다 찾았다.
+- 원인: `datetime.fromisoformat` 의 실패(`ValueError`)만 떠올리고 **뺄셈 자체의 실패**를 빼놓았다.
+  방어 코드를 쓸 때 "무엇이 실패하나"를 함수 단위가 아니라 **식(expression) 단위**로 세지 않았다.
+- 규칙: 시각 연산 방어는 `except (ValueError, TypeError)` 로 잡는다. 더 일반적으로, `try` 안에
+  **연산이 두 개 이상 있으면 각각의 예외 타입을 따로 확인**한다 — 파싱과 연산은 다른 예외를 낸다.
+  tz 혼합을 "우리 코드에선 안 생긴다"로 넘기지 않는다(전제가 깨지는 비용이 배치 전멸이다).
+- 관련: `app/agents/profile/graph_merge.py::_elapsed_days`, 이슈 #356 / PR #410
+
+---
+
+## [2026-08-06] 방어용 상한과 HARD 불변식이 같은 자료를 두고 만나면, 우선순위를 안 적은 쪽이 조용히 진다
+- 증상: #356 `_truncate` 는 "tombstone 을 먼저 지킨다"고 docstring 에 적고 `(protected + rest)[:limit]`
+  로 구현했다. `protected` 가 `profile_graph_max_edges`(200)를 **넘는 순간** 그 슬라이스는
+  protected 자체의 꼬리를 잘라내, 지킨다고 적힌 tombstone 이 사라진다. tombstone 이 없어지면
+  `_carried_tombstones` 가 보존할 대상을 잃고 같은 `edge_key` 가 다음 배치에 새 `active` 로
+  파생돼 **지운 취향이 부활**한다(AC-PROF-31 — 이 이슈의 존재 이유가 무력화된다).
+  기존 테스트는 `protected(1) <= limit(1)` 만 재고 있어 경계를 못 잡았고, PR #410 Claude 리뷰가 잡았다.
+- 원인: 상한(저장 폭주 방어)과 불변식(삭제 실효, HARD)이 **같은 리스트를 두고 충돌**하는데 둘의
+  우선순위를 코드에도 SPEC 에도 안 적었다. 안 적으면 자료구조 연산(여기서는 슬라이스)의 우연한
+  성질이 대신 결정한다 — 그리고 그 결정은 대개 "먼저 쓴 쪽"이 아니라 "나중에 자르는 쪽"이 이긴다.
+- 규칙: **상한을 다루는 코드는 "무엇을 먼저 자르는가"를 명시**하고, 상한 안에 든 경우와 **넘는
+  경우를 따로 테스트**한다(`n <= limit` 만 재는 테스트는 상한 코드를 검증하지 않은 것이다).
+  HARD 불변식과 방어용 상한이 부딪히면 **불변식이 이기고, 상한 초과는 로그로 드러낸다** — 조용히
+  넘기지도, 조용히 지우지도 않는다. 복구 경로가 있는 항목(`superseded`: 재파생으로 자기복구)과
+  없는 항목(`suppressed`: 사용자 삭제)을 한 등급으로 묶지 않는다.
+- 관련: `app/agents/profile/graph_merge.py::_truncate`, `app/core/config.py::profile_graph_max_edges`,
+  SPEC-PROFILE-GRAPH-149 REQ-PGRAPH-005(v0.2.2 절단 우선순위), 이슈 #356 / PR #410
+
+---
+
+## [2026-08-06] 워크트리의 `docker compose ps` 가 비어도 컨테이너는 떠 있다 — "DB 없음"을 가정하지 마라
+
+- 증상: `#356` 시드 스크립트를 돌리기 전 `docker compose ps` 로 확인했더니 서비스가 하나도 없어
+  "InMemory 폴백으로 돌겠구나" 하고 실행했는데, 실제로는 **실 pg-profile 에 연결**돼
+  `EmbeddingError: google_api_key 미구성` 으로 죽었다. 스크립트 docstring 에는 그 반대로
+  "GOOGLE_API_KEY 가 없으면 category 노드만 드롭되고 나머지는 정상 생성된다"고 적혀 있었다.
+- 원인 두 가지가 겹쳤다.
+  (1) **compose 프로젝트 이름은 디렉터리마다 다르다.** 메인 체크아웃에서 띄운
+      `jarvis-ai-final-pg-profile-1` 은 워크트리의 `docker compose ps` 목록에 안 잡히지만
+      호스트 포트 5434 는 그대로 열려 있어 `profile_db_url` 이 그냥 붙는다. 워크트리는 코드만
+      격리하고 **호스트 포트는 공유**한다.
+  (2) `add_fact` 는 store 의 semantic 인덱스(`fields: ["fact"]`, REQ-PROF-070/071)를 타므로
+      **fact 를 하나 넣을 때마다 실 임베딩 API 를 부른다.** 실 pg-profile 을 쓰는 한
+      GOOGLE_API_KEY 는 선택이 아니라 필수인데, 임베딩을 "category 어휘 스냅에만 쓴다"고
+      착각해 전제를 잘못 적었다.
+- 규칙:
+  - 워크트리에서 인프라 유무를 판단할 때는 `docker compose ps` 가 아니라 **`docker ps`** 로 본다.
+    폴백 경로를 전제한 스크립트·테스트는 특히 그렇다(로컬에 떠 있는 실 Spring 을 유닛 테스트가
+    잡아 결과가 뒤집힌 2026-08-05 항목과 같은 부류다 — 주입하지 않은 기본값은 하네스 경계 밖이다).
+  - 스크립트 docstring 의 `전제`·`비용` 절은 **한 번 실행해 보고 적는다.** 추측으로 적으면 그
+    문장이 다음 사람에게 그대로 틀린 근거가 된다.
+  - "이 기능은 임베딩을 쓰는가"를 판단할 때 내가 직접 부르는 곳만 보지 말고 **저장소 인덱스
+    설정(`index=`)** 도 확인한다. 쓰기 한 번이 곧 임베딩 한 번인 경로가 있다.
+- 관련: `scripts/seed_profile_graph_356.py`, `app/agents/profile/store.py`(`_pg_index_config`),
+  `app/pipelines/embedding.py:84`, 이슈 #356
+
+---
+
 ## [2026-08-07] PR 이 리뷰 워크플로 자신을 고치면 Claude 리뷰는 그 PR 에서 돌지 않는다
 - 증상: PR #459(`.github/workflows/claude-review.yml` 을 수정하는 PR)의 review run
   (`gh run view 31169027311`)에 `##[warning]Skipping action due to workflow validation:
