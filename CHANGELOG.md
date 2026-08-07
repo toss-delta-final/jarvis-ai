@@ -221,6 +221,20 @@
   - **아직 안 되는 것 3가지 — 릴리스 노트만 보고 "이제 다 된다"로 읽지 말 것.** (1) **Spring 이 I-24~I-28 을 아직 구현 진행 중**이라 배포 전에는 이 발화들이 호출은 나가도 응답을 못 받아 실패 안내로 끝난다. (2) **FE `ChatAction` 유니온에 신규 8종이 아직 없다** — FE 수신부가 붙기 전에는 성공해도 화면에 반영되지 않는다. (3) **수량 변경(I-25)은 계약만 등재됐고 AI 는 미구현**이다(대응 이슈 없음, §4.13) — "3개로 바꿔줘"류 발화는 아직 아무 동작도 하지 않는다.
 
 ### Changed
+- **#426 — combo_matrix 하네스가 하드필터 8축을 전부 실제로 잰다(검색 대역을 `SearchBackend`
+  경계로 이동)** — #381 이 남긴 3축(`keyword`·`color`·`attr_conditions`)은 "못 쟀다"고
+  `unappliedSearchFilters` 에 기록만 했는데, 그 축들은 present/absent 가 결과에 아무 차이를
+  만들지 않아 앱이 망가져도 하네스가 초록불이었다. 대역을 `run_buyer_turn(search=...)`(=
+  `search_catalog` 를 통째로 대체)에서 `search_catalog(backend=...)`로 한 층 내려, Spring 와이어
+  6축만 대역이 WHERE 계약으로 흉내 내고 AI 사후필터(`rating_min`·`attr_conditions`)는 **배포
+  코드가 그대로 돌게** 했다(`evals/filter_axes/probe.py` 와 같은 패턴). 부수 효과로 대역이 앱과
+  **반대 의미로** 재구현해 두었던 `rating_min` 판정(무평점 상품 처리)이 삭제됐다. `PAIR_CATALOG`
+  픽스처에 `summary`·`attributes` 를 채우고, `attr_conditions` 사후필터의 호출·필터링량을
+  `observed.attrConditionsPostFilter` 로 계측한다. 세 축이 결과를 실제로 가르는 것은 directed
+  케이스 3건(combo-0063/0064/0065, 62→65건)이 변이 시험과 함께 상시 검증한다. `keyword` 가
+  category leg 유무로 경계 도달이 갈리는 것은 대역 한계가 아니라 앱의 정의된 동작(#51)임을
+  README 에 분리 서술했다. combo-0058 INV 는 공허해지는 `unappliedSearchFilters` 를
+  `attrConditionsPostFilter` 로 교체. `app/` 무변경 · 계약 무변경.
 - **#386 — `evals/combo_matrix` 재생성(`datasetVersion` 2.0.0 → 3.0.0, 케이스 57 → 62)** —
   `RouteDecision.intent` Literal 확장이 `test_intent_axis_matches_route_decision_literal` 을
   깨뜨리므로(그러라고 있는 가드다) 매트릭스를 함께 갱신했다. greedy pairwise 가 pair 우주를
