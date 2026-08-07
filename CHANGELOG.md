@@ -48,7 +48,7 @@
   재시도되지만 같은 입력이면 또 실패해 방치하면 그 사용자의 승격이 버퍼 상한까지 멈춘다(#325 계열).
   **비범위**: 그래프 API 표면(#150) · 저널·revision CAS·멱등 원장(#358) · pin 규약 ·
   브랜드 어휘 수집(C-28). `purchased` edge는 대화에서 만들지 않는다(원천은 질의 시점 I-19).
-  (SPEC-PROFILE-GRAPH-149 v0.2.3, SPEC-PROFILE-001 v0.8.1 — api-spec 무개정)
+  (SPEC-PROFILE-GRAPH-149 v0.2.4, SPEC-PROFILE-001 v0.8.1 — api-spec 무개정)
 - **#424 — combo_matrix `observed` 드리프트 가드 신설** — `expected_behavior.jsonl` 의 `observed`
   는 러너 재실행 **기록**이라, 다른 레인이 SSE 이벤트를 바꾸면 커밋본이 조용히 낡아도 아무
   테스트도 잡지 못했다(PR #420 작업 중 실측 2회, 둘 다 `eventTypes` 만 드리프트하고 핵심 계약

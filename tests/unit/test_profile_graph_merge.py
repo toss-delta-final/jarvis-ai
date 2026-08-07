@@ -328,13 +328,85 @@ def test_decay_alone_can_demote_a_promoted_edge(settings: Settings) -> None:
     assert edge.promoted is False
 
 
-def test_valid_from_is_kept_across_batches(settings: Settings) -> None:
-    """승격 시각은 재승격마다 갱신하지 않는다 — 언제부터 그 취향이었는지가 흐려진다."""
+def test_valid_from_is_kept_while_promotion_continues(settings: Settings) -> None:
+    """**승격이 이어지는 동안은** 갱신하지 않는다 — 언제부터 그 취향이었는지가 흐려진다."""
     existing = _document_with(confidence=0.9, promoted=True, valid_from="2026-07-01T00:00:00+00:00")
 
     document = build_graph_document([_fact("f1")], existing=existing, settings=settings, now=NOW)
 
     assert document.edges[0].valid_from == "2026-07-01T00:00:00+00:00"
+
+
+def test_valid_from_clears_on_demotion(settings: Settings) -> None:
+    """강등되면 `valid_from` 은 비운다 — "승격 시각"인데 승격 상태가 아니면 값이 남을 이유가 없다.
+
+    강등은 흔하다. 감쇠 반감기 30일·강등 임계 0.4 에서 **약 40일 침묵이면 내려온다**(실측).
+    값이 남으면 `valid_from is not None` 이 "지금 승격됨"을 뜻하지 못하고, 아래 재승격 테스트의
+    문제로 이어진다(PR #410 리뷰).
+    """
+    low = settings.profile_gate_threshold - settings.graph_demote_margin - 0.1
+    existing = _document_with(confidence=0.9, promoted=True, valid_from="2026-01-01T00:00:00+00:00")
+
+    document = build_graph_document(
+        [_fact("f1", created_at=NOW, triples=[_triple(salience=low)])],
+        existing=existing,
+        settings=settings,
+        now=NOW,
+    )
+
+    edge = document.edges[0]
+    assert edge.promoted is False
+    assert edge.valid_from is None
+
+
+def test_valid_from_is_the_repromotion_time_not_the_first(settings: Settings) -> None:
+    """강등 뒤 재승격하면 **그때** 시각이다 — 최초 승격 시각을 물고 가지 않는다.
+
+    "1월에 좋아함 → 40일 침묵으로 강등 → 8월에 다시 좋아함" 에서 8월이 맞다. 1월을 유지하면
+    #150 이 이 값을 노출할 때 "1월부터 관심"이라고 보여주는데, 2~7월엔 프로필에서 빠져 있었다.
+    최초 관측 시각은 `first_observed_at` 이 이미 갖고 있어 의미가 겹치지도 않는다.
+    """
+    demoted = _document_with(
+        confidence=0.1,
+        promoted=False,
+        valid_from=None,  # 위 테스트대로 강등 시 비워진 상태
+        first_observed_at="2026-01-01T00:00:00+00:00",
+    )
+    repromoted_at = "2026-08-07T00:00:00+00:00"
+
+    document = build_graph_document(
+        [_fact("f1", created_at=repromoted_at, triples=[_triple(salience=0.95)])],
+        existing=demoted,
+        settings=settings,
+        now=repromoted_at,
+    )
+
+    edge = document.edges[0]
+    assert edge.promoted is True
+    assert edge.valid_from == repromoted_at
+    assert edge.first_observed_at == "2026-01-01T00:00:00+00:00"  # 최초 관측은 따로 보존된다
+
+
+def test_revision_ignores_evidence_fields_which_are_wire_invisible(settings: Settings) -> None:
+    """`evidence_*` 는 와이어 미노출이라 revision 을 움직이면 안 된다 (PR #410 리뷰).
+
+    `evidence_count` 는 api-spec v0.26.0 이 명시적으로 와이어에서 뺐고(REQ-PGRAPH-006 —
+    `profile_buffer_repeat_cap` 이 관측 횟수를 잘라 정확한 수를 셀 수 없다), `evidence_by_source`·
+    `evidence_refs` 도 §5.2 내부 전용이다. fact cap 트리밍으로 오래된 근거가 밀려나면 이 값들만
+    바뀌는데(`last_observed_at` 은 최댓값, `first_observed_at` 은 prior 승계라 그대로), 그때
+    revision 이 오르면 #150 의 `If-Match` 토큰이 와이어 무변경인데도 무효가 된다.
+    """
+    old = _fact("f1", created_at="2026-08-01T00:00:00+00:00")
+    new = _fact("f2", created_at="2026-08-05T00:00:00+00:00")
+
+    first = build_graph_document(
+        [old, new], existing=empty_document(NOW), settings=settings, now=NOW
+    )
+    second = build_graph_document([new], existing=first, settings=settings, now=NOW)  # f1 트리밍
+
+    assert second.edges[0].evidence_count != first.edges[0].evidence_count  # 실제로 달라졌다
+    assert second.edges[0].last_observed_at == first.edges[0].last_observed_at  # 와이어는 그대로
+    assert second.revision == first.revision
 
 
 # ─────────── 상태 보존 — 이 이슈의 존재 이유 ───────────

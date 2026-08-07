@@ -292,10 +292,23 @@ def _promoted(confidence: float, *, prior: GraphEdge | None, settings: Settings)
 
 
 def _valid_from(prior: GraphEdge | None, *, promoted: bool, now: str) -> str | None:
-    """승격 시각. 이미 승격돼 있었으면 **갱신하지 않는다** — 언제부터인지가 흐려진다."""
+    """**지금 승격이 언제 시작됐는가.** 승격이 이어지는 동안은 갱신하지 않고, 강등되면 비운다.
+
+    강등 시 `None` 으로 비우는 이유(PR #410 리뷰):
+      - 이름과 정의가 "승격 시각"(§5.2)인데 승격 상태가 아닌 edge 에 값이 남으면 뜻이 없다.
+        비워두면 `valid_from is not None` 자체가 "지금 승격됨"을 뜻한다.
+      - 강등은 예외가 아니라 **흔한 상태 전이**다 — 반감기 30일·강등 임계 0.4 에서 약 40일
+        침묵이면 내려온다(실측). 값을 유지하면 재승격 때 최초 시각을 물고 가, #150 이 이 값을
+        노출할 때 "1월부터 관심"이라고 보여주는데 실제로는 8월에 다시 생긴 관심이 된다.
+      - "최초 승격 시각"이 필요하면 `first_observed_at` 이 이미 그 자리에 가깝다 — 값을 유지하면
+        두 필드가 사실상 같은 것을 가리킨다.
+
+    강등돼도 **edge 자체와 근거는 그대로 남는다**(`status` 와 `promoted` 는 직교) — 여기서 비우는
+    것은 "이번 승격 구간"의 시작 시각뿐이다.
+    """
     if not promoted:
-        return prior.valid_from if prior else None
-    if prior is not None and prior.valid_from:
+        return None
+    if prior is not None and prior.promoted and prior.valid_from:
         return prior.valid_from
     return now
 
@@ -500,7 +513,18 @@ def _fingerprint(document: GraphDocument, settings: Settings) -> str:
     들어오면 와이어에 안 보이는 변화로 `If-Match` 토큰이 무효가 된다(PR #410 리뷰).
     """
     bounds = settings.profile_graph_confidence_buckets
-    volatile_edge = {"decay_evaluated_at", "confidence"}
+    # `evidence_*` 도 와이어 미노출이다 — `evidence_count` 는 api-spec v0.26.0 이 명시적으로 뺐고
+    # (REQ-PGRAPH-006: `profile_buffer_repeat_cap` 이 관측 횟수를 잘라 정확한 수를 셀 수 없다),
+    # `evidence_by_source`·`evidence_refs` 는 §5.2 내부 전용이다. fact cap 트리밍으로 오래된 근거가
+    # 밀려나면 이 값들만 바뀌는데(last_observed_at 은 최댓값, first_observed_at 은 prior 승계),
+    # 그때 revision 이 오르면 #150 의 If-Match 토큰이 와이어 무변경인데도 무효가 된다.
+    volatile_edge = {
+        "decay_evaluated_at",
+        "confidence",
+        "evidence_count",
+        "evidence_by_source",
+        "evidence_refs",
+    }
     volatile_node = {"resolution"}
     edges = []
     for edge in document.edges:
