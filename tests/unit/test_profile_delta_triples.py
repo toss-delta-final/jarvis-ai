@@ -38,9 +38,11 @@ class _StructuredLLM:
             ]
         )
         self.systems: list[str] = []
+        self.budgets: list[int] = []
 
     async def complete(self, *, system, user, tier, max_tokens=1024, json_output=True):
         self.systems.append(system)
+        self.budgets.append(max_tokens)  # 예산이 **설정에서 온 값인지** 재려면 붙잡아야 한다
         if "델타 추출기" in system:
             return json.dumps({"deltas": self._deltas}, ensure_ascii=False)
         return "# 요약"
@@ -271,3 +273,22 @@ async def test_resolver_failure_does_not_break_promotion(monkeypatch) -> None:
     assert promoted == ["소니 브랜드를 선호한다"]
     records = await store.get_fact_records("7")
     assert records[0].graph_triples == []
+
+
+# ─────────── 출력 예산 배선 ───────────
+
+
+async def test_delta_call_uses_the_configured_output_budget() -> None:
+    """델타 호출이 **설정값을 실제로 넘기는지** 잰다 — 값만 있고 배선이 없으면 소용없다.
+
+    하드코딩 800 이 운영 smart tier(reasoning 모델)에서 추론 토큰에 소진돼 분포 프로브 4세션 중
+    2건이 `LengthFinishReasonError` 로 죽었고(#325 계열), 이관 후 0건이 됐다. 그래서 이 배선이
+    되돌려지면 같은 장애가 돌아온다 — Settings 필드 존재만 확인하는 테스트는 그것을 못 잡는다
+    (변이 검증에서 실제로 드러난 공백이다).
+    """
+    tuned = Settings(_env_file=None, profile_delta_max_tokens=4242)
+    llm = _StructuredLLM()
+
+    await _run(llm, tuned)
+
+    assert llm.budgets == [4242]
