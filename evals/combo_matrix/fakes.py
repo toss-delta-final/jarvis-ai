@@ -43,9 +43,15 @@ CATALOG_PRODUCTS = [
 ]
 
 
-# INV/DIR 쌍 검증(이슈 #371) 전용 카탈로그 — 기존 `CATALOG_PRODUCTS` 3건 + category 가 다른 1건.
-# category 하드필터를 추가했을 때 결과 수가 **실제로** 줄어드는 것을 보여주려면(combo-0054 DIR),
-# 필터를 안 태우면 아무 의미 없는 검증이 된다 — 그래서 다른 category 값이 최소 1건 필요하다.
+# INV/DIR 쌍 검증(이슈 #371) 전용 카탈로그 — 기존 `CATALOG_PRODUCTS` 3건 + 하드필터가 **실제로**
+# 결과를 줄인다는 것을 보이기 위한 대조군. 필터를 태워도 건수가 안 줄면 DIR 쌍이 공허하게 통과한다.
+#   · 104(여행용품) — `category` 하드필터용 대조군(#371).
+#   · 105(3만원 미만) — `price_min` 하드필터용 대조군(#386). 재생성으로 DIR 쌍이 흔드는 축이
+#     category 에서 price_min 으로 바뀌었는데, 기존 4건의 가격이 전부 3만원 이상이라
+#     `price_min=30000` 을 태워도 4/4 가 그대로 통과했다(base=3, perturbed=3 — 실측 확인).
+#     104 를 더한 것과 **같은 이유·같은 해법**이다.
+#     `brand`·`rating` 은 일부러 다른 값으로 둔다 — 필터 8축이 전부 present 인 케이스가
+#     product 101 하나만 남긴다는 기존 전제(테스트가 고정)를 이 상품이 흔들면 안 된다.
 # `CATALOG_PRODUCTS`/`make_search` 는 기존 관측(observed) 데이터·기존 테스트의 전제라 건드리지 않는다.
 PAIR_CATALOG = [
     *CATALOG_PRODUCTS,
@@ -56,6 +62,14 @@ PAIR_CATALOG = [
         rating=4.0,
         category="여행용품",
         brand="트래블러",
+    ),
+    SpringProduct(
+        product_id=105,
+        name="무선 이어폰 D",
+        price=19000,
+        rating=3.8,
+        category="무선이어폰",
+        brand="스포츠몰",
     ),
 ]
 

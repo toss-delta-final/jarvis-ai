@@ -446,7 +446,9 @@ async def generate_pair_checks_md(write: bool = True) -> tuple[str, list[PairRes
     results = await run_pair_checks(specs, cases_by_id)
     text = render_pair_checks_md(results, cases_by_id)
     if write:
-        PAIR_CHECKS_MD_PATH.write_text(text, encoding="utf-8")
+        # LF 고정 — `test_pair_checks_md_regeneration_matches_committed` 가 바이트 동일을
+        # 요구하므로 줄바꿈이 갈리면 재생성한 사람만 통과한다(`__main__.py::regenerate` 주석 참조).
+        PAIR_CHECKS_MD_PATH.write_text(text, encoding="utf-8", newline="\n")
     return text, results
 
 
