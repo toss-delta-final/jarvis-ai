@@ -12,7 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agents.buyer.cart.graph import stream_cart_add, stream_cart_view
+from app.agents.buyer.cart.graph import _options_text, stream_cart_add, stream_cart_view
+from app.agents.buyer.cart.options import OptionHint
 from app.agents.buyer.cart.state import CartStateStore, PendingAdd
 from app.agents.buyer.graph import run_buyer_turn as _production_run_buyer_turn
 from app.agents.buyer.recommendation.state import CartIntent
@@ -2349,7 +2350,9 @@ async def test_cart_state_store_all_operations_have_query_deadline(
 # ─────────── 유일 옵션 자동 선택 (이슈 #114) ───────────
 
 
-async def _run_add(store, cart, add_fn, *, get_cart_fn=None, thread_key="m:t"):
+async def _run_add(
+    store, cart, add_fn, *, get_cart_fn=None, thread_key="m:t", message="", condition_terms=()
+):
     """자동 선택 테스트 공용 구동 — 담기 스트림 이벤트 목록을 돌려준다."""
     return await _collect(
         stream_cart_add(
@@ -2360,6 +2363,8 @@ async def _run_add(store, cart, add_fn, *, get_cart_fn=None, thread_key="m:t"):
             settings=get_settings(),
             add_fn=add_fn,
             get_cart_fn=get_cart_fn or _empty_cart(),
+            message=message,
+            condition_terms=condition_terms,
         )
     )
 
@@ -2565,6 +2570,298 @@ async def test_cart_add_autoselect_invalid_falls_back_to_reask() -> None:
     assert "action" not in _types(events)  # 상한(기본 1) 내 → 재질문
     pending = await store.get_pending("m:t")
     assert pending is not None and pending.attempts == 1
+
+
+# ─────────── I-1 options·optionCount 소비 — 되물음 좁히기 (이슈 #455) ───────────
+
+
+async def test_cart_add_single_option_still_autoselects_with_hint_present() -> None:
+    """(#114 회귀) 힌트 optionCount==1 + 400 목록 1개여도 좁히기 로직이 개입하지 않는다.
+
+    유일 옵션 자동 선택(#114)은 힌트로 게이팅하지 않는다 — 힌트가 있어도 없어도 동작은 같다.
+    """
+    store = CartStateStore()
+    calls: list[int | None] = []
+
+    async def add_fn(req):
+        calls.append(req.option_id)
+        if req.option_id is None:
+            raise CartOptionRequired([CartOption(option_id=7, name="단일 사이즈")])
+        return AddToCartResult(success=True, cart_item_id=70)
+
+    await store.set_last_reco("m:t", [(1, "상품")], option_hints={1: OptionHint(names=(), total=1)})
+
+    events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
+
+    assert calls == [None, 7]
+    assert "token" not in _types(events)
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADDED" and action["cartItemId"] == 70
+    assert await store.get_pending("m:t") is None
+
+
+async def test_cart_add_narrows_by_message_to_single_candidate() -> None:
+    """(핵심 이득) 이번 발화가 후보 3개 중 1개만 매칭하면 되묻지 않고 같은 턴에 담는다."""
+    store = CartStateStore()
+    calls: list[int | None] = []
+
+    async def add_fn(req):
+        calls.append(req.option_id)
+        if req.option_id is None:
+            raise CartOptionRequired(
+                [
+                    CartOption(option_id=5, name="레드"),
+                    CartOption(option_id=6, name="블루"),
+                    CartOption(option_id=7, name="그린"),
+                ]
+            )
+        return AddToCartResult(success=True, cart_item_id=80)
+
+    events = await _run_add(
+        store, CartIntent(product_id=1, quantity=1), add_fn, message="레드로 담아줘"
+    )
+
+    assert calls == [None, 5]  # 되물음 왕복 없이 I-2 는 2회 호출
+    assert "token" not in _types(events)
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADDED" and action["cartItemId"] == 80
+    assert "레드" in action["message"]
+    assert await store.get_pending("m:t") is None
+
+
+async def test_cart_add_narrowed_reask_hides_unmatched_options() -> None:
+    """(좁힌 되물음) 조건에 맞는 2개만 문구에 실리고 나머지 2개는 문구에 없다 — pending 은 전체 4개."""
+    store = CartStateStore()
+    all_options = [
+        CartOption(option_id=1, name="코튼 화이트"),
+        CartOption(option_id=2, name="코튼 블랙"),
+        CartOption(option_id=3, name="울 그레이"),
+        CartOption(option_id=4, name="폴리 네이비"),
+    ]
+
+    async def add_fn(req):
+        raise CartOptionRequired(all_options)
+
+    events = await _run_add(
+        store,
+        CartIntent(product_id=1, quantity=1),
+        add_fn,
+        message="아무거나 담아줘",
+        condition_terms=("코튼",),
+    )
+
+    assert "action" not in _types(events)
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert "코튼 화이트" in token and "코튼 블랙" in token
+    assert "울 그레이" not in token and "폴리 네이비" not in token
+
+    pending = await store.get_pending("m:t")
+    assert pending is not None
+    assert [o.option_id for o in pending.options] == [1, 2, 3, 4]  # 전체 저장
+
+
+async def test_cart_add_narrowing_no_match_degrades_to_today_text() -> None:
+    """(degrade — 못 좁힘) 조건이 아무것도 매칭 안 되면 문구가 오늘과 바이트 동일."""
+    store = CartStateStore()
+    options = [CartOption(option_id=1, name="블루"), CartOption(option_id=2, name="그린")]
+
+    async def add_fn(req):
+        raise CartOptionRequired(options)
+
+    events = await _run_add(
+        store, CartIntent(product_id=1, quantity=1), add_fn, message="레드로 주세요"
+    )
+
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token == f"옵션을 선택해 주세요: {_options_text(options)}. 어떤 걸로 담을까요?"
+
+
+async def test_cart_add_narrowing_all_match_degrades_to_today_text() -> None:
+    """(degrade — 전부 매칭) 모든 옵션이 매칭되면 좁힌 게 아니므로 문구가 오늘과 동일."""
+    store = CartStateStore()
+    options = [CartOption(option_id=1, name="레드"), CartOption(option_id=2, name="레드/M")]
+
+    async def add_fn(req):
+        raise CartOptionRequired(options)
+
+    events = await _run_add(
+        store, CartIntent(product_id=1, quantity=1), add_fn, message="레드 담아줘"
+    )
+
+    assert "action" not in _types(events)
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token == f"옵션을 선택해 주세요: {_options_text(options)}. 어떤 걸로 담을까요?"
+
+
+async def test_cart_add_accumulated_condition_does_not_autoselect() -> None:
+    """(누적 조건은 자동 선택하지 않는다) 이번 발화에 없는 조건으로 1개만 매칭돼도 자동 선택 안 함."""
+    store = CartStateStore()
+    options = [
+        CartOption(option_id=1, name="레드"),
+        CartOption(option_id=2, name="블루"),
+        CartOption(option_id=3, name="그린"),
+    ]
+    calls: list[int | None] = []
+
+    async def add_fn(req):
+        calls.append(req.option_id)
+        raise CartOptionRequired(options)
+
+    events = await _run_add(
+        store,
+        CartIntent(product_id=1, quantity=1),
+        add_fn,
+        message="아무거나 담아줘",
+        condition_terms=("레드",),
+    )
+
+    assert calls == [None]  # 재호출 없음 — 자동 선택 안 됨
+    assert "action" not in _types(events)
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert "레드" in token
+    assert "블루" not in token and "그린" not in token
+    pending = await store.get_pending("m:t")
+    assert pending is not None and len(pending.options) == 3
+
+
+async def test_cart_add_narrows_without_any_hint_present() -> None:
+    """(미전송) 힌트가 아예 없어도(재추천 없이 바로 담기 등) 좁히기 동작은 그대로다."""
+    store = CartStateStore()
+    assert await store.get_option_hint("m:t", 1) is None
+    calls: list[int | None] = []
+
+    async def add_fn(req):
+        calls.append(req.option_id)
+        if req.option_id is None:
+            raise CartOptionRequired(
+                [CartOption(option_id=5, name="레드"), CartOption(option_id=6, name="블루")]
+            )
+        return AddToCartResult(success=True, cart_item_id=81)
+
+    events = await _run_add(
+        store, CartIntent(product_id=1, quantity=1), add_fn, message="레드로 담아줘"
+    )
+
+    assert calls == [None, 5]
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADDED"
+
+
+async def test_cart_add_option_count_mismatch_skips_autoselect() -> None:
+    """(`optionCount` 불일치) 힌트 total=5 인데 400 목록이 3개면 자동 선택하지 않고 되묻는다."""
+    store = CartStateStore()
+    options = [
+        CartOption(option_id=1, name="레드"),
+        CartOption(option_id=2, name="블루"),
+        CartOption(option_id=3, name="그린"),
+    ]
+    calls: list[int | None] = []
+
+    async def add_fn(req):
+        calls.append(req.option_id)
+        raise CartOptionRequired(options)
+
+    await store.set_last_reco("m:t", [(1, "상품")], option_hints={1: OptionHint(names=(), total=5)})
+
+    events = await _run_add(
+        store, CartIntent(product_id=1, quantity=1), add_fn, message="레드로 담아줘"
+    )
+
+    assert calls == [None]  # 재호출(자동 선택) 없음 — 정합 가드가 막는다
+    assert "action" not in _types(events)
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert "레드" in token
+
+
+async def test_cart_add_truncated_hint_names_do_not_crash_narrowing() -> None:
+    """(절단 수신) 힌트 이름 20개·optionCount 25 를 받아도 좁히기 대상은 400 목록이고, 길이 불일치가
+    예외를 만들지 않는다."""
+    store = CartStateStore()
+    options = [CartOption(option_id=1, name="블루"), CartOption(option_id=2, name="그린")]
+
+    async def add_fn(req):
+        raise CartOptionRequired(options)
+
+    truncated_names = tuple(f"색상{i}" for i in range(20))
+    await store.set_last_reco(
+        "m:t", [(1, "상품")], option_hints={1: OptionHint(names=truncated_names, total=25)}
+    )
+
+    events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn, message="아무거나")
+
+    assert "action" not in _types(events)
+    assert "token" in _types(events)  # 예외 없이 되물음으로 degrade
+
+
+async def test_cart_add_empty_options_falls_back_to_hint_names() -> None:
+    """(400 목록 비었을 때 I-1 이름 폴백) 힌트 이름 + total 로 되묻고, 위험 문자는 제거된다."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        raise CartOptionRequired([])
+
+    await store.set_last_reco(
+        "m:t",
+        [(1, "상품")],
+        option_hints={
+            1: OptionHint(names=("블\x1b[31m랙​", "화이트", "레드"), total=5),
+        },
+    )
+
+    events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
+
+    assert "action" not in _types(events)
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert "블[31m랙" in token
+    assert "화이트" in token and "레드" in token
+    assert "외 2개" in token
+    assert all(ch not in token for ch in ("\x1b", "​"))
+
+
+async def test_cart_state_store_option_hint_round_trip_and_pruning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(상태) set_last_reco(option_hints=) 후 get_option_hint 가 값을 주고, 상한 프루닝으로 빠진
+    pid 의 힌트는 사라지며, pg-profile 저장 값에는 옵션명이 없다."""
+    store = CartStateStore()
+
+    await store.set_last_reco(
+        "s",
+        [(1, "상품1"), (2, "상품2")],
+        option_hints={
+            1: OptionHint(names=("레드", "블루"), total=2),
+            2: OptionHint(names=("M",), total=1),
+        },
+    )
+
+    assert await store.get_option_hint("s", 1) == OptionHint(names=("레드", "블루"), total=2)
+    assert await store.get_option_hint("s", 2) == OptionHint(names=("M",), total=1)
+    assert await store.get_option_hint("s", 999) is None
+
+    # pg-profile 에 저장된 값에는 옵션명이 없다 — 상품 원본 컬럼 사본 금지 규칙(CLAUDE.md).
+    raw = await store._store.aget(store._ns("s"), "last_reco")
+    dumped = repr(raw.value)
+    assert "레드" not in dumped and "블루" not in dumped
+
+    # 상한 프루닝 — product 1 을 상한 밖으로 밀어내면 힌트도 함께 사라진다.
+    monkeypatch.setattr(get_settings(), "last_reco_max", 1)
+    await store.set_last_reco("s", [(3, "상품3")])  # 힌트 없이 새 항목만 추가
+
+    assert await store.get_option_hint("s", 1) is None  # capped 밖으로 밀려나 프루닝됨
+    assert await store.get_option_hint("s", 2) is None
+
+
+async def test_cart_state_store_option_hint_partial_update_keeps_missing_pids() -> None:
+    """힌트가 안 온 pid 의 기존 힌트는 지우지 않는다(부분 갱신) — 이름 캐시와 같은 어조."""
+    store = CartStateStore()
+    await store.set_last_reco(
+        "s", [(1, "상품1")], option_hints={1: OptionHint(names=("레드",), total=1)}
+    )
+
+    # 같은 pid 가 다시 승계되는 턴에 힌트를 안 실어도(예: 프로필 랭킹 경로) 기존 힌트가 남는다.
+    await store.set_last_reco("s", [(1, "상품1")])
+
+    assert await store.get_option_hint("s", 1) == OptionHint(names=("레드",), total=1)
 
 
 async def test_last_reco_name_cache_is_bounded_lru(monkeypatch: pytest.MonkeyPatch) -> None:

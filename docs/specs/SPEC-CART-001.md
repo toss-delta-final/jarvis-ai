@@ -1,6 +1,6 @@
 ---
 id: SPEC-CART-001
-version: 0.2.6
+version: 0.2.7
 status: draft
 created: 2026-07-17
 author: navis
@@ -17,6 +17,7 @@ issue_number: null
 
 ## HISTORY
 
+- **v0.2.7 (2026-08-08, 이슈 #455)** — **I-1 `options`·`optionCount`(api-spec §4.6, #278 관대 수신 등재분) 소비 신설**(REQ-CART-053~055, §7 오류표·§8 AC-CART-11/12 갱신): 사용자가 이번 발화에서 말한 조건으로 `CART_OPTION_REQUIRED` 후보(이 400 응답 자신의 `error.detail.options[].name` — **I-1 `options`가 아니다**)가 **정확히 1개**로 좁혀지면 REQ-CART-026과 동일하게 되묻지 않고 그 `optionId`로 재담기한다(REQ-CART-053) — I-1 `options`는 이름만 오고 이 매칭에도 쓰이지 않으므로 `optionId`는 여전히 이 400 응답에서만 얻는다. 후보가 0개(못 좁힘) 또는 전부(안 좁혀짐) 매칭되면 자동 선택하지 않고 REQ-CART-020의 오늘 문구로 degrade한다(REQ-CART-054). 조건으로 좁혀지면(이번 발화 또는 누적) 되물음 문구엔 좁힌 후보만 싣되, 되물음 상태(REQ-CART-024)엔 항상 전체 목록을 저장하고, I-1 `optionCount`가 I-2 400 목록 개수와 다르면(절단·드리프트) 자동 선택을 하지 않는다(REQ-CART-055). **선제 되물음(I-2 호출 전 질문)은 채택하지 않는다** — I-1 이름에는 `optionId`가 없어 먼저 물어도 다음 턴에 I-2를 한 번 더 불러야 하므로 내부 왕복이 줄지 않고, stale한 이름으로 존재하지 않는 옵션을 물을 위험만 늘어난다(이슈 #455 설계 판단). `optionCount == 1`도 같은 이유로 내부 왕복을 줄이지 못하며, 줄어드는 것은 후보가 정확히 1개로 좁혀질 때의 **사용자 턴 하나**뿐이다. **계약 변경 없음**(api-spec v0.28.1 — 이미 등재된 수신 필드의 AI 소비 여부만 바뀐다, 엔드포인트·SSE·오류 코드 불변).
 - **v0.2.6 (2026-08-06, 이슈 #310)** — **`purchaseState` 소비 신설**(REQ-CART-037, §5.2 I-18 형상에 `purchase_state` 추가): I-18 응답의 `SOLD_OUT`/`HIDDEN`을 사유별로 갈라 안내한다 — 품절은 기다리면 되고 판매 종료는 다른 걸 찾아야 하므로 사용자가 취할 행동이 다르다. **미수신(`None`)은 "모름"으로 두고 안내하지 않는다** — 구매 가능으로 단정하면 못 사는 상품을 살 수 있다고 안내하게 된다. 문구는 프롬프트가 아니라 결정론적 분기로 생성하며, 조회·삭제 되물음 목록에 같은 규칙을 적용한다(같은 장바구니가 질문 방식에 따라 다르게 보이면 안 된다). **계약 변경은 api-spec v0.26.3 선행**(§4.9 필드 등재 — BE jarvis-backend#91 이 이미 보내던 필드의 사본 동기화). 판정 권위는 Spring 유지(결정 7) — AI는 표시만 하고 담기를 차단하지 않는다.
 - **v0.2.5 (2026-07-31, 이슈 #114)** — **유일 옵션 자동 선택** 신설(REQ-CART-026/027, REQ-CART-020 단서 추가, §7 오류표 갱신): `CART_OPTION_REQUIRED` 의 옵션 후보가 **1개뿐이면** 되묻지 않고 그 `optionId` 로 즉시 재담기한다 — 선택지가 하나면 되물어도 답이 정해져 있어 불필요한 왕복만 생긴다. **계약 변경 없음**(AI 가 I-2 를 `optionId` 로 재호출할 뿐 — api-spec §4.1·SSE·스키마 불변). 자동 선택 재시도는 **1회**로 고정하고, 후보가 2개 이상이면 기존 되물음 멀티턴을 그대로 유지한다.
 - **v0.2.4 (2026-07-19)** — PR #17 리뷰(별도 사항) + PR #21과의 병합: `productName`/`optionName`(C-16)이 BE I-18 문서(2026-07-18)로 필수 포함 확정됨을 반영해 REQ-CART-036·OPEN-CART-2를 완전히 해소(v0.2.3/PR #21 시점엔 이 부분만 미확정으로 남아 있었음). `CART_QUERY_INVALID`(I-18 400) 오류 처리를 §7에 신설. `reason`·options 구조를 SPEC에 값으로 직접 중복 기재하지 않고 api-spec §4.1 참조로 전환(§5.3, REQ-CART-025/051) — REQ-CART-025엔 PR #21의 방어적 스킵 문구를 유지. 경로 B productId 요구사항은 PR #21이 붙인 `REQ-CART-001a` 번호를 그대로 채택(중복 REQ-CART-008 제거). PRD-RECOMMEND-PROFILE-AGENT.md에도 동일 내용 반영, api-spec 참조 버전 v0.15.8 유지.
@@ -181,6 +182,9 @@ class CartItem(BaseModel):
 - **REQ-CART-025** (Ubiquitous, 2026-07-19 확정): options 목록 **shall** api-spec §4.1이 정의하는 구조를 따른다(정확한 필드는 본 SPEC에 중복 기재하지 않음). 되물음 문구 생성은 그 구조의 표시명 필드(`name`)를 사용하며, 형식 이상 항목은 방어적으로 건너뛴다.
 - **REQ-CART-026** (Event-Driven, 2026-07-31 이슈 #114): **When** `CART_OPTION_REQUIRED`의 옵션 후보가 **정확히 1개**이고 그것이 직전 호출에 실은 `optionId`와 다르면, the cart 서브그래프 **shall** 되묻지 **않고** 그 `optionId`로 I-2를 즉시 재호출하며, 성공 시 자동 선택한 옵션의 표시 라벨(표시명 + 추가금이 있으면 함께 — 되물음 문구와 **동일한 규칙**, REQ-CART-025)을 담기 안내 문구(`action.message`)에 밝힌다. 자동 선택은 사용자가 고를 기회 자체가 없으므로 추가금을 숨기면 결제 단계에서야 알게 된다 — 선택지가 하나면 되물어도 답이 정해져 있어 왕복만 늘어난다. 합산 안내(REQ-CART-031)의 근거 보유 수량은 **확정된 `optionId` 기준**으로 센다 — 담기 전 조회 시점엔 `optionId`가 미상이라 그 상품의 다른 옵션(후보에서 빠진 옛 옵션 등) 보유까지 합산될 수 있고, 그러면 안내가 Spring의 실제 합산 결과와 어긋난다. 후보가 2개 이상이면 AI가 임의로 고르지 **않는다**(REQ-CART-020 유지).
 - **REQ-CART-027** (Unwanted, 2026-07-31 이슈 #114): **If** 자동 선택 재담기(REQ-CART-026)가 다시 실패하면, **then** the cart 서브그래프 **shall** 추가 자동 재시도 없이 그 실패 코드의 기존 처리를 따른다 — `CART_OPTION_REQUIRED` 재발은 되물음(REQ-CART-020), `CART_OPTION_INVALID`는 상한 있는 재시도(REQ-CART-022/023), 그 밖은 `action` 매핑(REQ-CART-013/014, api-spec §4.1). 자동 선택은 **1회로 고정**한다(무한 재시도 금지).
+- **REQ-CART-053** (Event-Driven, 2026-08-08 이슈 #455): **When** `CART_OPTION_REQUIRED`의 옵션 후보가 2개 이상이고 그중 **이번 발화**에서 사용자가 언급한 어휘로 매칭되는 후보가 **정확히 1개**이면, the cart 서브그래프 **shall** REQ-CART-026과 동일하게 되묻지 **않고** 그 `optionId`로 I-2를 즉시 재호출한다 — **매칭 대상은 이 400 응답 자신의 `error.detail.options[].name`(api-spec §4.1)이며, I-1(§4.6) `options`가 아니다**(I-1 이름은 400 목록이 비었을 때의 문구 폴백에만 쓰인다, REQ-CART-055). `optionId`는 이 절차로 유추하지 **않고** 항상 이 400 응답이 준 값을 쓴다. 누적 조건(이전 턴에서 말했지만 이번 발화에는 없는 조건)은 이 자동 선택의 근거로 **쓰지 않는다** — 되물음 문구를 좁히는 데만 쓴다(REQ-CART-055).
+- **REQ-CART-054** (Unwanted, 2026-08-08 이슈 #455): **If** REQ-CART-053의 조건 매칭 결과가 0개이거나 2개 이상이면, **then** the cart 서브그래프 **shall** 자동 선택하지 않고 REQ-CART-020의 되물음으로 degrade한다 — 매칭 어휘 자체가 없거나(못 좁힘) 후보 전부가 매칭되면(좁힌 게 아님) 오늘과 동일한 되물음 문구를 낸다(REQ-CART-020, 문구 불변).
+- **REQ-CART-055** (Event-Driven, 2026-08-08 이슈 #455): **When** `CART_OPTION_REQUIRED`의 옵션 후보가 조건 매칭으로 좁혀지면(이번 발화 또는 누적 조건, REQ-CART-053/054), the cart 서브그래프 **shall** 되물음 문구에 **좁혀진 후보만** 나열한다 — 단 다음 턴 옵션 해석(REQ-CART-021)이 좁힌 목록 밖 응답도 처리할 수 있어야 하므로, 되물음 상태(REQ-CART-024)에 저장하는 후보 목록은 **항상 I-2가 준 전체 목록**이다(문구만 좁히고 상태는 좁히지 않는다). **If** I-1(§4.6) `optionCount`가 I-2 400 목록의 개수와 다르면(절단·드리프트), **then** REQ-CART-053의 자동 선택은 수행하지 **않고** 좁힌 목록으로 되묻는다 — 정합 불일치를 조용히 무시하고 엉뚱한 옵션을 담는 것보다 되묻는 것이 안전하다. **If** I-2 400 목록이 비어 있고 I-1 `options` 이름이 있으면, **then** 되물음 문구는 그 I-1 이름을 원천으로 쓰고 `optionCount`가 표시한 이름 수보다 크면 절단분을 밝힌다("… 외 N개").
 
 ### 6.4 담기 전 보유 조회 (pre-add lookup, REQ-CART-030~033)
 
@@ -217,7 +221,7 @@ class CartItem(BaseModel):
 
 | 실패 지점 | 감지 | 처리 | 안전 불변식 |
 |---|---|---|---|
-| I-2 `CART_OPTION_REQUIRED` | 400 응답 | 후보 1개면 자동 선택 재담기(REQ-CART-026), 2개 이상이면 되물음 멀티턴(REQ-CART-020) | 실패 action emit 금지, 자동 선택 재시도 1회(REQ-CART-027) |
+| I-2 `CART_OPTION_REQUIRED` | 400 응답 | 후보 1개면 자동 선택 재담기(REQ-CART-026), 2개 이상이어도 이번 발화로 1개로 좁혀지면 자동 선택(REQ-CART-053), 그 외엔 좁힌(REQ-CART-055) 또는 전체(REQ-CART-020) 목록으로 되물음 | 실패 action emit 금지, 자동 선택 재시도 1회(REQ-CART-027), `optionCount` 불일치 시 자동 선택 금지(REQ-CART-055) |
 | I-2 `CART_OPTION_INVALID` | 400 응답 | 되물음 1회 재시도 후 실패 시 CART_ERROR(REQ-CART-022/023) | 무한 재시도 금지 |
 | I-2 `PRODUCT_NOT_FOUND` | 404 응답 | `action`(CART_ADD_FAILED, PRODUCT_NOT_FOUND) | 후보 날조 금지 |
 | I-2 `INTERNAL_TOKEN_INVALID` | 401 응답 | `action`(CART_ERROR) + 서버 로그, 내부 원인 미노출 | 사용자에 내부 오류 상세 노출 금지 |
@@ -240,11 +244,13 @@ class CartItem(BaseModel):
 - **AC-CART-08 (신원 IDOR 방지)**: **Given** 임의의 담기/조회 요청, **When** 처리되면, **Then** `userId`/`guestId`는 요청 본문이 아니라 JWT `sub`에서 도출된 값이다(REQ-CART-002).
 - **AC-CART-09 (수량 상한)**: **Given** config 수량 상한(1~99), **When** 범위 밖 수량이 추출되면, **Then** I-2 호출 전 상한 내로 처리된다(REQ-CART-004).
 - **AC-CART-10 (추천 외 상품 담기 차단)**: **Given** 직전 추천 목록에 없는 `productId`, **When** 담기 시도, **Then** I-2를 호출하지 않고 안내 문구로 종결한다(REQ-CART-001a).
+- **AC-CART-11 (이번 발화로 옵션 좁혀 자동 선택)**: **Given** `CART_OPTION_REQUIRED` 후보 3개, **When** 이번 발화가 그중 1개만 매칭하는 조건("레드로 담아줘")을 담고 있으면, **Then** 되묻지 않고 그 `optionId`로 같은 턴에 담긴다(REQ-CART-053).
+- **AC-CART-12 (좁혀진 되물음과 정합 가드)**: **Given** `CART_OPTION_REQUIRED` 후보 4개 중 조건 매칭 2개, **When** 담기 시도, **Then** 되물음 문구엔 매칭 2개만 실리고 되물음 상태(pending)엔 4개 전부 저장된다(REQ-CART-055) — 또한 I-1 `optionCount`가 400 목록 개수와 다르면 조건이 1개로 좁혀져도 자동 선택하지 않는다(REQ-CART-054/055).
 
 ### Definition of Done
 
-- [ ] REQ-CART-001~052 전 항목이 테스트로 커버됨.
-- [ ] AC-CART-01~10 전 시나리오가 통과(pytest, Spring 목(mock) 또는 계약 테스트).
+- [ ] REQ-CART-001~055 전 항목이 테스트로 커버됨.
+- [ ] AC-CART-01~12 전 시나리오가 통과(pytest, Spring 목(mock) 또는 계약 테스트).
 - [ ] `CartIntent`/`AddToCartRequest`/`CartItem`/SSE `action` 스키마가 Pydantic 모델로 구현되고 스키마 계약 테스트 존재.
 - [ ] 하드 불변식(AI 직접 write 금지, 신원 JWT 도출, 되물음 시 action 미emit, 조회 실패 degrade, 묶음은 개별 호출) 회귀 테스트 존재.
 - [ ] §9의 미해결 항목이 후속 Spring 협의/이슈로 등록됨.

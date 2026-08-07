@@ -10,6 +10,14 @@
 ## [Unreleased]
 
 ### Added
+- **#455 — I-1 `options`·`optionCount` 소비로 옵션 되물음 단축(api-spec §4.6·§4.1, v0.28.1)** —
+  사용자가 이번 발화에서 말한 조건으로 `CART_OPTION_REQUIRED` 후보가 정확히 1개로 좁혀지면
+  되묻지 않고 같은 턴에 담고, 여러 개로만 좁혀지면 좁힌 목록으로 되묻는다(`optionId`는 여전히
+  I-2 400 응답에서만 얻는다 — 이름으로 유추하지 않는다). `optionCount`는 자동 선택의 정합
+  가드로 쓴다(불일치 시 자동 선택 금지). 발화 매칭은 부분 문자열이 아니라 토큰 경계 + 조사
+  허용목록으로 판정해 "블루투스"에 "블루"가 우연히 걸리는 것을 막는다. 신규
+  `app/agents/buyer/cart/options.py`(순수 좁히기 함수) · 튜너블 2종
+  (`cart_option_narrow_min_term_len`·`cart_option_match_suffixes`).
 - **#356 — consolidation 구조화 트리플 산출 + 그래프 입력 전환(OPEN-G0 해소)** —
   취향을 자유형 한국어 문장 하나가 아니라 `주어–술어–목적어` 트리플로 만들고, consolidation이
   fact 목록 대신 **그래프 문서를 입력으로 읽게** 했다. 지금까지는 지울 수 있는 단위가 없어

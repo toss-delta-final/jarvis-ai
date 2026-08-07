@@ -26,6 +26,7 @@ from pydantic import ValidationError
 from app.agents.buyer._frames import progress as progress_frame
 from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.graph import stream_cart_add, stream_cart_view
+from app.agents.buyer.cart.options import condition_terms as cart_condition_terms
 from app.agents.buyer.cart.remove import stream_cart_remove
 from app.agents.buyer.cart.state import get_cart_store
 from app.agents.buyer.cart.wishlist import (
@@ -1137,6 +1138,9 @@ async def run_buyer_turn(
                 message=request.message,
                 allowed_product_ids=allowed,
                 screen_reason=screen_reason,
+                # [이슈 #455] 누적 필터(prior) 우선 + 이번 턴 산출(decision.filters) — 옵션 되물음
+                # 좁히기의 조건어 원천. 담기 흐름 밖의 다른 라우팅·프롬프트는 건드리지 않는다.
+                condition_terms=cart_condition_terms(prior, decision.filters),
                 observer=observer,
             ):
                 yield frame
