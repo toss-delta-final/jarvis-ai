@@ -1,10 +1,19 @@
 """`cart_add` 로 라우팅된 발화의 삭제·찜 오담기 방어 (이슈 #116·#117, 패킷 §4).
 
-decompose(app/agents/buyer/recommendation/decompose.py)는 다른 이슈(#84) 소유라 이 레인에서
-`cart_remove`/`wishlist_add`/`wishlist_remove` intent 를 새로 만들 수 없다. 대신 `cart_add` 로
-이미 들어온 발화 중 **명백한** 것만 결정론적으로 갈라낸다 — LLM 을 새로 부르지 않고, 프롬프트도
-고치지 않는다. `cart_add` 로 라우팅되지 않는 발화("장바구니에서 빼줘"가 보통 가는 `cart_view`류)
-는 이 판별기가 구조적으로 보지 못한다(결함이 아니라 경계, decompose intent 신설은 #84 몫).
+이 판별기가 생긴 당시에는 decompose(app/agents/buyer/recommendation/decompose.py)가 다른
+이슈(#84) 소유라 이 레인에서 `cart_remove`/`wishlist_add`/`wishlist_remove` intent 를 새로
+만들 수 없었다. 대신 `cart_add` 로 이미 들어온 발화 중 **명백한** 것만 결정론적으로 갈라낸다
+— LLM 을 새로 부르지 않고, 프롬프트도 고치지 않는다.
+
+**[#116·#117 이후]** 그 세 intent 는 decompose 가 직접 산출하게 됐고(`RouteDecision.intent`),
+이 판별기는 **2선 방어**로 남았다 — decompose 가 여전히 `cart_add` 로 오분류한 발화를 여기서
+다시 갈라낸다(`buyer/graph.py` 라우팅 docstring 참조).
+
+`cart_add` 로 라우팅되지 않는 발화는 이 판별기가 **구조적으로 보지 못한다**(결함이 아니라
+경계). 반환 어휘에 조회 계열(`cart_view`·`wishlist_view`)이 없는 것도 같은 이유다 — 조회
+발화는 애초에 여기 도달하지 않는다. **[#386]** 그래서 찜 조회 오분류 방어는 이 파일이 아니라
+`wishlist.py::_resolve_wishlist_remove_target` 의 조회 표지 가드가 맡는다(그쪽이 실제로
+파괴적 동작이 일어나는 지점이다).
 """
 
 from __future__ import annotations

@@ -70,6 +70,7 @@ def test_profile_injection_defaults() -> None:
         "cart_view",
         "cart_remove",
         "wishlist_remove",
+        "wishlist_view",
     ]
 
 

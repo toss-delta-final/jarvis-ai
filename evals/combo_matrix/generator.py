@@ -288,6 +288,7 @@ _INTENT_UTTERANCE = {
     "cart_remove": "방금 담은 거 빼줘",
     "wishlist_add": "이거 찜해줘",
     "wishlist_remove": "찜 목록에서 빼줘",
+    "wishlist_view": "내가 뭐 찜했지?",
 }
 
 _FILTER_PHRASES = {

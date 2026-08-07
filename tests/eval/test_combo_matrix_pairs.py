@@ -111,18 +111,24 @@ async def test_ci_pairs_pass_verdict() -> None:
 # ─────────── 4. 공허 방지 fixture 가드 ───────────
 
 
-async def test_combo_0053_fixture_actually_narrows() -> None:
-    """combo-0053(#367 재생성 이후 case id — 구 combo-0054)의 base_count > perturbed_count(엄격
-    감소) — PAIR_CATALOG 가 category 필터를 실제로 태우는지의 sanity. 누가 PAIR_CATALOG 를 바꿔
-    필터가 안 물게 되면 여기서 시끄럽게 깨진다."""
+async def test_hard_filter_pair_fixture_actually_narrows() -> None:
+    """하드필터 추가 쌍의 base_count > perturbed_count(엄격 감소) — PAIR_CATALOG 가 그 필터를
+    실제로 태우는지의 sanity. 누가 PAIR_CATALOG 를 바꿔 필터가 안 물게 되면 여기서 시끄럽게 깨진다.
+
+    case id 는 재생성마다 바뀐다(구 combo-0054 → #367 이후 combo-0053 → #386 이후 combo-0056,
+    흔드는 축도 category → price_min 으로 바뀌었다) — **번호를 박지 않고 spec 의 성격으로 찾는다.**
+    """
     specs = {s.case_id: s for s in load_pair_checks()}
     cases = {c.case_id: c for c in load_cases()}
-    results = await run_pair_checks([specs["combo-0053"]], cases)
+    dir_specs = [s for s in specs.values() if s.kind == "DIR" and s.metric == "push_product_count"]
+    assert len(dir_specs) == 1, dir_specs
+    results = await run_pair_checks(dir_specs, cases)
     result = results[0]
     assert result.metric_base is not None
     assert result.metric_perturbed is not None
     assert result.metric_base > result.metric_perturbed, (
-        f"combo-0053: base={result.metric_base}, perturbed={result.metric_perturbed} — "
+        f"{result.spec.case_id}: base={result.metric_base}, "
+        f"perturbed={result.metric_perturbed} — "
         "필터 추가가 결과 수를 실제로 줄이지 않는다(공허 통과 위험)"
     )
 
@@ -141,12 +147,17 @@ async def test_pair_checks_md_regeneration_matches_committed() -> None:
 # ─────────── 6. manual 분리 회귀 가드 ───────────
 
 
-def test_combo_0054_is_manual_with_goldenset_link() -> None:
-    """combo-0054(#367 재생성 이후 case id — 구 combo-0055) spec 이 mode=manual 이고 link 가
-    goldenset 을 가리키는지(규약 3항 분리의 회귀 가드)."""
+def test_recall_pair_is_manual_with_goldenset_link() -> None:
+    """recall 쌍(identity guest→member) spec 이 mode=manual 이고 link 가 goldenset 을 가리키는지
+    (규약 3항 분리의 회귀 가드).
+
+    위 하드필터 쌍과 같은 이유로 case id 를 박지 않는다 — 재생성마다 번호가 밀린다
+    (구 combo-0055 → #367 이후 combo-0054 → #386 이후 combo-0057).
+    """
     specs = {s.case_id: s for s in load_pair_checks()}
-    spec = specs["combo-0054"]
-    assert spec.mode == "manual"
+    manual_specs = [s for s in specs.values() if s.mode == "manual"]
+    assert len(manual_specs) == 1, manual_specs
+    spec = manual_specs[0]
     assert spec.link is not None and "goldenset" in spec.link
 
 
