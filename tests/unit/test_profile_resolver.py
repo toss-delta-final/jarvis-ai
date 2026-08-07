@@ -407,3 +407,21 @@ async def test_label_is_truncated_to_configured_cap(settings: Settings) -> None:
 
 async def test_blank_label_drops(settings: Settings) -> None:
     assert await _resolve(settings, label="   ", embed=_never_embed()) is None
+
+
+async def test_anchor_phrase_is_bounded_by_the_utterance_cap() -> None:
+    """앵커도 상한을 받는다 — 저장(jsonb)과 임베딩 페이로드 양쪽에 실리기 때문이다.
+
+    상한을 `chat_message_max_chars` 로 잡는 근거는 **인용 구절은 인용 대상보다 길 수 없다**는
+    것이다(`anchorPhrase` 는 "발화에서 그대로 인용한 구절"이고 발화 자체가 그 값으로 묶인다).
+    정상 앵커는 한국어 구절 10~30자라 절대 안 잘리고, 지시를 어긴 비정상 출력만 막는다 —
+    라벨 상한(60자)을 재사용하면 정당한 인용이 잘려 **임베딩 입력이 바뀌므로** 쓰지 않는다
+    (앵커를 라벨 대신 쓰는 이유가 #59 의 오분류 실측이다). PR #410 리뷰.
+    """
+    tight = Settings(_env_file=None, chat_message_max_chars=10)
+
+    resolved = await _resolve(tight, anchor_phrase="가" * 500, embed=_never_embed())
+
+    assert resolved is not None
+    assert resolved.node.resolution is not None
+    assert resolved.node.resolution.anchor_phrase == "가" * 10

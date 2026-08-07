@@ -110,6 +110,14 @@ async def resolve_triple(
     if not clean_label:
         return None
 
+    # 앵커도 상한을 받는다 — 저장(단일 jsonb 문서의 `NodeResolution.anchor_phrase`)과 임베딩
+    # 페이로드 양쪽에 실려서, 무제한이면 문서와 API 요청이 통제 없이 커진다(PR #410 리뷰).
+    # 상한이 `chat_message_max_chars` 인 근거는 **인용 구절은 인용 대상보다 길 수 없다**는 것이다.
+    # 라벨 상한(60자)을 재사용하지 않는다 — 정당한 인용이 잘리면 임베딩 입력이 바뀌어 카테고리
+    # 판정이 달라진다. 앵커를 라벨 대신 쓰는 이유 자체가 #59 의 오분류 실측이라(§6.2a) 그쪽을
+    # 건드리는 상한은 위험 대비 이득이 없다. 정상 앵커(한국어 구절 10~30자)는 안 잘린다.
+    anchor_phrase = " ".join(anchor_phrase.split())[: settings.chat_message_max_chars]
+
     predicate = _decide_predicate(kind, polarity, predicate_hint)
     if predicate is None:
         return None
@@ -320,7 +328,8 @@ async def _resolve_category(
             ),
         )
 
-    anchor = " ".join(anchor_phrase.split())
+    # 공백 정리·길이 상한은 `resolve_triple` 이 이미 걸었다 — 여기서 다시 걸면 두 곳이 갈릴 수 있다.
+    anchor = anchor_phrase
     if not anchor:
         return None
 

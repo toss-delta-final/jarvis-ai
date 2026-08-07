@@ -502,6 +502,35 @@ def test_superseded_revives_when_its_winner_is_gone(settings: Settings) -> None:
     assert revived.superseded_by is None
 
 
+@pytest.mark.parametrize("bad", [5.0, -1.0, 1.5])
+def test_out_of_range_salience_cannot_distort_confidence(settings: Settings, bad: float) -> None:
+    """범위 밖 `salience` 가 EMA 를 망가뜨리지 않는다 — 경계에서 `[0,1]` 로 잡는다.
+
+    EMA 식 `confidence + (1-confidence)*salience` 는 양쪽이 `[0,1]` 이라는 전제로 쓰였다.
+    `salience=5` 면 관측 2건에서 `5 + (1-5)*5 = -15` 로 진동하고, 마지막 `max/min` 클램프는
+    **최종값만** 잡으므로 루프 중간 오염은 못 막는다 — 강하게 반복 언급한 취향이 confidence 0
+    으로 떨어져 승격에서 조용히 빠진다(PR #410 리뷰).
+
+    게이트는 `salience >= threshold` 만 보므로 상한 밖 값도 그대로 저장된다. 프롬프트의
+    "0.0~1.0" 은 강제되지 않는 소프트 제약이라, 읽는 쪽에서 잡는다(저장된 오염값도 함께 막힌다).
+    """
+    triples = [_triple(), _triple()]
+    for triple in triples:
+        triple["salience"] = bad
+    facts = [
+        _fact("f1", created_at="2026-08-01T00:00:00+00:00", triples=[triples[0]]),
+        _fact("f2", created_at="2026-08-02T00:00:00+00:00", triples=[triples[1]]),
+    ]
+
+    document = build_graph_document(facts, existing=empty_document(NOW), settings=settings, now=NOW)
+
+    edge = document.edges[0]
+    assert 0.0 <= edge.confidence <= 1.0
+    if bad > 1.0:
+        # 상한 밖 강한 신호는 "가장 강한 관측"으로 다뤄야 한다 — 진동해서 0 이 되면 안 된다.
+        assert edge.confidence > settings.profile_gate_threshold
+
+
 def test_corrupt_source_is_dropped_not_raised(settings: Settings) -> None:
     """`source` 도 `GraphEdge.source_latest` Literal 이라 여기서 걸러야 한다 (PR #410 리뷰).
 

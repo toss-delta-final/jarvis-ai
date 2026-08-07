@@ -171,7 +171,11 @@ def _observation(record: FactRecord, triple: dict) -> _Observation | None:
             predicate=predicate,
             edge_key=edge_key,
             edge_id=edge_id,
-            salience=float(triple.get("salience") or 0.0),
+            # `_confidence` 의 EMA 식은 salience 가 [0,1] 이라는 전제로 쓰였다 — 5 가 들어오면
+            # `c + (1-c)*5` 가 진동해(관측 2건이면 -15) 강하게 반복 언급한 취향이 confidence 0
+            # 으로 떨어진다. 마지막 클램프는 최종값만 잡으므로 여기서 막아야 한다. 게이트는
+            # 하한만 보고 프롬프트의 "0.0~1.0" 은 강제되지 않는 소프트 제약이다(PR #410 리뷰).
+            salience=min(1.0, max(0.0, float(triple.get("salience") or 0.0))),
             source=source,
         )
     except Exception:  # noqa: BLE001 - 구 형식·손상 payload 는 unprojected 취급
