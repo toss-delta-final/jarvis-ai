@@ -394,9 +394,7 @@ async def test_home_profile_unavailable_injection_actually_runs() -> None:
 # ─────────── 6c. overspecified_zero 판정 잠금 (이슈 #425) ───────────
 
 
-async def test_overspecified_zero_axis_has_no_relaxable_filter_axis_so_no_relaxation_search_runs() -> (
-    None
-):
+async def test_overspecified_zero_has_no_relaxable_axis_so_no_relaxation_search() -> None:
     """`constraint_strength=overspecified_zero` 는 0건이면서도 자동완화·완화칩이 돌지 않는다 —
     갭이 아니라 **완화 가능 축이 하나도 없어서 생기는 정의된 동작**이다(#425 판정).
 

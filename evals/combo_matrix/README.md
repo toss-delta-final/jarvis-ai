@@ -209,7 +209,7 @@ defined 로 전환됐다. 잔존 미정의는 #336(무지정+예산+세트) 1건
   `tests/unit/test_relaxation.py`(`test_auto_relaxation_emits_notice_and_recovers_products` 등)
   소관이고, 이 하네스의 고정 대역 카탈로그 + 0건 주입으로는 "완화가 결과를 **살린다**"를 표현할 수
   없다(주입이 항상 0건이라 probe 도 0건 → 채택 자체가 불가능). 이 판정은
-  `test_overspecified_zero_axis_has_no_relaxable_filter_axis_so_no_relaxation_search_runs`
+  `test_overspecified_zero_has_no_relaxable_axis_so_no_relaxation_search`
   (`tests/eval/test_combo_matrix_eval.py`)가 잠근다.
   `degrade=spring_timeout` 과 겹치면 검색 실패가 우선한다(0건 성공보다 상위 실패, `failing_search`).
 - **`constraint_strength=unspecified` + degrade≠none 조합은 `search`/`rerank` degrade 를 실제로
