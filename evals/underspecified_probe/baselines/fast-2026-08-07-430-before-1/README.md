@@ -23,7 +23,7 @@ uv run python -m evals.underspecified_probe --out <dir> --tier fast
 | `priorGateInvariant` | 0/240 | 0/240 | 0/240 |
 
 **before 노이즈 폭은 0pp 다** — 두 독립 런이 소수점까지 같은 값(111/112)을 냈고, 기준선과도
-1표본 차이다. after 런의 하락(9.8% · 2.7%)이 노이즈일 수 없다는 근거가 여기 있다.
+1표본 차이다. 출고판 after 런의 하락(**9.8% · 6.2%**)이 노이즈일 수 없다는 근거가 여기 있다.
 
 `nonRecommendIntentCount` 는 `{}` — 240표본 전부 `intent=="recommend"` 로 라우팅됐다(F-1 의
 intent 필터가 이 런에서는 분모를 바꾸지 않았다).

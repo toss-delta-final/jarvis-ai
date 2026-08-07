@@ -1,9 +1,9 @@
 {
-  "commitSha": "7272822258624fa0e070916309df1112e6bb7c69",
+  "commitSha": "8e67de9bf2facbf0c53520d97ba87375aae74f28",
   "dirty": true,
   "hashes": {
     "anchorFixture": "cdadb1cac1d88c7d6fa2904ca2f5c29065ad4c6663e47d46cd7b8be2ea384b8c",
-    "config": "e1df3497893c4b7daa3ae6f25b446c8f47f4f3c147c1e58b6e3671eed726a4e4",
+    "config": "8d737b6e500064788a1ac7957c1b079857182130d776c8679847c4571873bf83",
     "datasetManifest": "6bc8e13f22aca475dde02f2062eb9270d6ac8abc3c47e90875e22c511567dfd9",
     "fixtures": {
       "catalog_snapshot.json": "f98539b2d8d2fea60c586cf31499ecf9187ae815d389dd3f1312f05f3fec840d",
@@ -11,10 +11,10 @@
       "search_responses.json": "9b95d071e0075a8a976bdeabfe1dfc11bf2aa63ca31bc277afa3cc52baf13c1e"
     },
     "prompts": {
-      "decompose": "9d6636e63fd0ffc03cf7d84390ed2b4188bb04ac3786741f0fdd78b5dae04a60",
+      "decompose": "f24b8ceac1111206da3cfb78265ef6ed4321dc8549370d5634b7f4315de820e3",
       "rerank": "ae3b549237b354f718fc08966a383613e5fec8d200c8d07daed038cda552ea7c"
     },
-    "systemPrompt": "81e3770e13402b92df917c3869441f5bab3404afa5aa273b672c48d043ba3c38",
+    "systemPrompt": "865ed6fd771e18bbaa69c681a40ae8c39e71680cc111acc2754f3f1797be5928",
     "underspecifiedProbeModules": {
       "__init__.py": "52c881ade0772de0b1d0e81e3e419eb9e88a9d72c464696885b00d7ebb99c917",
       "__main__.py": "f3540f645f9e59fd5826e9d1061c7c7ef72e6feecb8e13f8ea45e904c7ccfa40",
@@ -33,9 +33,9 @@
   "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
   "pythonVersion": "3.12.3",
   "run": {
-    "command": "uv run python -m evals.underspecified_probe --out /tmp/claude-1000/-home-uuser-orca-workspaces-jarvis-ai-fix-430-anything-utterance-fabrication/bcba9f9f-5434-4e1c-9a71-37d376d20d23/scratchpad/us-F-1 --tier fast",
-    "runId": "f1ee2b4f-410c-4351-b060-bd50dc4b6a10",
-    "timestamp": "2026-08-07T10:57:32.425035+00:00"
+    "command": "uv run python -m evals.underspecified_probe --out /tmp/claude-1000/-home-uuser-orca-workspaces-jarvis-ai-fix-430-anything-utterance-fabrication/bcba9f9f-5434-4e1c-9a71-37d376d20d23/scratchpad/us-narrow-1 --tier fast",
+    "runId": "e30e0e80-4606-4586-8c3c-ad68a0909293",
+    "timestamp": "2026-08-07T13:04:05.957313+00:00"
   },
   "seed": 20260806,
   "underspecifiedProbe": {
@@ -97,10 +97,10 @@
         "maxTotalTokens": 30000000
       },
       "tokenGateStatus": "unknown",
-      "totalCostUsd": 0.05475600000000002,
-      "totalTokens": 827713,
-      "unknownCostCallCount": 23,
-      "unknownTokenCallCount": 23
+      "totalCostUsd": 0.05659230000000001,
+      "totalTokens": 869612,
+      "unknownCostCallCount": 28,
+      "unknownTokenCallCount": 28
     },
     "categoryFanoutMax": 5,
     "cellIds": [
@@ -159,15 +159,15 @@
       "estimatedTokensPerCall": 3900,
       "maxRpm": 45,
       "maxTpm": 200000,
-      "maxWaitS": 34.396,
-      "totalWaitS": 187.36,
-      "waitCount": 76,
+      "maxWaitS": 35.999,
+      "totalWaitS": 189.603,
+      "waitCount": 68,
       "windowS": 60.0
     },
     "prompt": {
-      "charCount": 7280,
-      "sha12": "81e3770e1340",
-      "sha256": "81e3770e13402b92df917c3869441f5bab3404afa5aa273b672c48d043ba3c38",
+      "charCount": 7838,
+      "sha12": "865ed6fd771e",
+      "sha256": "865ed6fd771e18bbaa69c681a40ae8c39e71680cc111acc2754f3f1797be5928",
       "source": "repo:_SYSTEM"
     },
     "repurchaseMax": 5,

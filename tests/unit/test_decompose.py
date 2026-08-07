@@ -518,7 +518,7 @@ def test_semantic_query_rule_teaches_empty_when_nothing_names_a_product() -> Non
     이 문장이 없던 판을 `evals/underspecified_probe` 로 재면 `missRate` 가 **111/112(99.1%)**
     였다(fast·N=8 독립 2런, 둘 다 같은 값) — LLM 이 "아무거나"류 발화에도 의미쿼리를 지어내
     `semantic_query_is_fallback` 이 항상 False 가 되고 `is_underspecified_turn` 이 되물음을
-    100% 껐다. 이 문장을 넣은 판은 같은 하네스에서 **약 10%** 다.
+    100% 껐다. 출고되는 판은 같은 하네스에서 **11/112(9.8%) · 7/112(6.2%)** 다.
 
     **위치가 효과를 바꾼다** — 같은 취지를 상단 JSON 스키마 줄(`"semanticQuery": ...`)에만 적은
     변형은 24.1%, 규칙 절 불릿으로 적은 변형은 17.0% 였다. 그래서 이 검사는 "문면 어딘가에
@@ -540,9 +540,10 @@ def test_empty_semantic_query_trigger_is_scoped_to_context_not_only_the_utteranc
     이 좁힘이 하중 문구다. "발화에 없으면 비워라 / 지어내지 마라"로만 쓴 판은 모델이 그것을
     **"맥락에서 끌어와 해소하는 것도 하지 마라"** 로 일반화해, 발화 자체에는 상품 의미가 없고
     SCREEN·LAST_RECOMMENDATIONS 맥락에만 있는 화면 지시어 발화("이거 담아줘"·"3번째 거")를
-    깎았다 — `evals/intent_probe` 실측 `screenExactPick` 32/32·32/32 → **30·27**(긴 판) ·
-    **30·30**(짧은 판). 트리거를 맥락까지 포함해 좁힌 이 판은 **31·31** 로 대부분 회수했고,
-    `screenOutOfListConfirmCount` 도 2~5 → 1 로 줄었다.
+    깎았다 — `evals/intent_probe` 실측(픽스처 v5) `screenExactPick` 32/32·32/32 → **30·27**
+    (긴 판) · **30·30**(짧은 판). 트리거를 맥락까지 포함해 좁히자 **31·31·29** 로 대부분
+    회수했고, `screenOutOfListConfirmCount` 도 2~5 → 1·1·3 으로 줄었다(출고판은 픽스처 v6 에서
+    31·30 / 1·2 — 픽스처가 달라 v5 수치와 직접 빼지 말 것).
 
     좁힘은 회귀 회피용 임기응변이 아니라 **코드 의미와 일치**한다 —
     `semantic_query_is_fallback = not (llm_sq or cat_signal or prior_sq)` 이라 맥락(prior)이
@@ -557,6 +558,32 @@ def test_empty_semantic_query_trigger_is_scoped_to_context_not_only_the_utteranc
     trigger = rule.split("흔한 표현만.", 1)[1].split("빈 문자열", 1)[0]
     for context_source in ("PRIOR_FILTERS", "LAST_RECOMMENDATIONS", "SCREEN"):
         assert context_source in trigger, f"비움 트리거가 {context_source} 맥락을 빠뜨렸다"
+
+
+def test_empty_semantic_query_trigger_counts_brand_and_color_as_product_cues() -> None:
+    """[#430] 비움 트리거의 단서 목록에 **브랜드·색상**이 있어야 한다 — 추출 실패의 백스톱이다.
+
+    브랜드만 말한 발화("삼성 제품 아무거나"·"LG 가전 아무거나 있어?")에서 모델이 그 브랜드를
+    `filters.brand` 로 **추출하지 못하는** 표본이 원래부터 있었다. 단서 목록이 `종류·용도·상황·
+    목적` 뿐이면 그런 턴은 규칙상 "단서 없음"이라 `semanticQuery` 까지 비고, what-축이 전부 비어
+    과소지정 판정이 True 로 뒤집힌다(= 오탐). 전에는 지어낸 `semanticQuery` 가 그 추출 실패를
+    가려주고 있었다.
+
+    실측(`evals/underspecified_probe`, fast·N=8, 전부 `repo:_SYSTEM`): 단서 목록에 브랜드·색상이
+    **없던** 판은 `falseAlarmRate` 가 1.9% → 3.8% → 4.8% 로 **단조 상승**해 사전 등록 상한
+    3.6% 를 3런 중 2런에서 넘겼고(오탐 11건 중 9건이 브랜드-only 앵커), **넣은** 판은 1.9%·2.9%
+    로 두 런 모두 상한 아래다.
+
+    이 열 글자가 공짜는 아니었다 — 같은 픽스처에서 10자만 다른 `evals/intent_probe` 대조에서
+    `categoryClear` 31·31 → 28·28, `demonstrative`·`mainIntent` 도 각 −3 이다(대신 10축이 올랐다).
+    그 거래를 되돌리려면 이 테스트를 의도적으로 고쳐야 한다 — 조용히 사라지지 않게 못박는다.
+    """
+    from app.agents.buyer.recommendation.decompose import _SYSTEM
+
+    rule = _SYSTEM.split("- recommend:", 1)[1].split("- case:", 1)[0]
+    trigger = rule.split("흔한 표현만.", 1)[1].split("빈 문자열", 1)[0]
+    for cue in ("브랜드", "색상"):
+        assert cue in trigger, f"비움 트리거의 단서 목록에서 {cue} 가 빠졌다"
 
 
 async def test_empty_llm_semantic_query_marks_fallback_without_emptying_search_input() -> None:

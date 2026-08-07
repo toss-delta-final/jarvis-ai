@@ -1,8 +1,15 @@
 # #430 타축 회귀 대조 — after 런 1/3 (2026-08-07)
 
+> ⚠️ **이 런은 `#428` 병합 전 판(`81e3770e1340`)을 픽스처 **v5**(79셀)로 잰 기록이다.**
+> 출고되는 판은 `865ed6fd771e` 이고 그 대조는 `../fast-2026-08-07-430-v6-adopted-1/README.md`
+> (픽스처 v6·85셀)에 있다. **두 표의 축 수치를 같은 표에서 빼지 마라** — 프롬프트도 픽스처도
+> 다르다. 이 디렉터리는 "맥락까지 좁힌 트리거가 `screenExactPick` 을 회수했다"는 병합 전
+> 근거로 남긴다.
+
+
 `decompose._SYSTEM` 을 #430 이 고친 뒤(sha12 `81e3770e1340`) intent 라우팅 축이 깎이지 않았는지
-보는 런. **이 디렉터리 README 가 intent 쪽 대조표의 정본**이다(같은 날 before 2런 ·
-after 3런). 이슈 #430 의 채택 판정 전체 맥락은
+보는 런. **병합 전(v5) 대조표의 정본**이다(같은 날 before 2런 · after 3런) — 출고판 대조표의
+정본은 `../fast-2026-08-07-430-v6-adopted-1/README.md` 다. 이슈 #430 의 채택 판정 전체 맥락은
 `evals/underspecified_probe/baselines/fast-2026-08-07-430-after-1/README.md`.
 
 ```bash
@@ -81,7 +88,8 @@ uv run python -m evals.intent_probe --out <dir> --tier fast
 ## 산출물 배치
 
 - `fast-2026-08-07-430-before-1`·`-before-2` — 변경 전(`11c6fe3bfa0c`), `repo:_SYSTEM`.
-- `fast-2026-08-07-430-after-1`·`-after-2`·`-after-3` — 채택안 F(`81e3770e1340`), `repo:_SYSTEM`.
+- `fast-2026-08-07-430-after-1`·`-after-2`·`-after-3` — 당시 채택안 F(`81e3770e1340`, 병합 전),
+  `repo:_SYSTEM`. 이후 `#428` 병합과 브랜드·색상 10자 추가로 출고판은 `865ed6fd771e` 가 됐다.
   `-after-3` 은 `categoryReplace` 저점(18)을 정리하려고 추가한 런이고, screen 축 3번째 표본도
   같이 얻었다.
 - 탈락 후보(c3n `2eeab1f8a6ac` · S `f2c711d279a8` · B `6ae48dfa3f5f`)의 런은 **커밋하지 않았다** —

@@ -251,15 +251,27 @@ cases.json 승계 7건(위 매핑표) + 신규 23건.
 `baselines/fast-2026-08-06/` — 최초 실 LLM 기준선(fast 티어). 그 디렉터리의 README 가 표를
 해석하고, 단일 실행이라 채택 판정 근거가 아니라는 경고를 담는다.
 
-`baselines/fast-2026-08-07-430-{before,after}-{1,2}/` — #430(decompose 프롬프트 수정)의 채택
-판정 4런. before 2런(`_SYSTEM` sha12 `11c6fe3bfa0c`) `missRate` **99.1% · 99.1%** → after 2런
-(채택안 sha12 `81e3770e1340`, `source=repo:_SYSTEM`) **9.8% · 2.7%**, `falseAlarmRate`
-0.0%·0.0% → 1.9%·0.0%. 판정표·가드축 해석·후보 선별표(탈락안 8종의 sha12·수치)·`intent_probe`
-타축 대조는 `fast-2026-08-07-430-after-1/README.md` 가 정본이다.
+`baselines/fast-2026-08-07-430-{before-1,before-2,merged-1,merged-2,merged-3,after-1,after-2}/`
+— #430(decompose 프롬프트 수정)의 채택 판정 7런. 전부 `source=repo:_SYSTEM` 이다.
 
-두 가지를 그 README 없이 인용하지 말 것:
+| 팔 | `_SYSTEM` sha12 | 런 | `missRate` | `falseAlarmRate` | 가드축/32 |
+|---|---|---|---|---|---|
+| before | `11c6fe3bfa0c` | 2 | 99.1% · 99.1% | 0.0% · 0.0% | 0 · 0 |
+| 병합판(#428 548자 포함) | `f99a98867e4a` | 3 | 11.6 · 6.2 · 15.2% | 1.9 · **3.8** · **4.8%** | 0 · 2 · 1 |
+| **출고판(+브랜드·색상 10자)** | **`865ed6fd771e`** | 2 | **9.8% · 6.2%** | **1.9% · 2.9%** | 1 · 0 |
+
+`origin/dev` 병합이 `_SYSTEM` 을 바꿔(#428 이 548자 추가) 오탐율이 **단조 상승**해 사전 등록
+상한(3.6%)을 3런 중 2런에서 넘겼고, 비움 트리거의 단서 목록에 브랜드·색상 **10자**를 더해
+되찾았다. 병합판 3런(`-merged-*`)은 그 인과의 근거라 함께 커밋돼 있다. 판정표·가드축 해석·
+후보 선별 이력(탈락안 9종의 sha12·수치)·`intent_probe` 타축 대조는
+`fast-2026-08-07-430-after-1/README.md` 가 정본이다.
+
+세 가지를 그 README 없이 인용하지 말 것:
 1. **`semanticQueryIsFallback` 을 `what_axis`+`blocking_rating` 104분모로 뭉치지 말 것** —
    앵커별로 쪼개면 위반이 전부 "상품 의미가 애초에 발화에 없는" 앵커(색상만·평점만)에서 온다.
-   증류할 상품명이 실제로 있는 category·keyword 4앵커(32표본)에서는 before·after 모두 0/32 다.
-2. **이 변경에는 잔여 회귀가 있다** — `evals/intent_probe` 의 `screenExactPick` 이
-   32·32 → 31·31·29 다(안전축 `screenNoHallucination`·`screenReask` 는 무회귀).
+   증류할 상품명이 실제로 있는 category·keyword 4앵커(32표본)에서는 before 0/32, 출고판 1/32·0/32 다.
+2. **이 변경에는 잔여 회귀가 있다** — `evals/intent_probe` 의 `categoryClear` 가 같은 픽스처
+   대조에서 31·31 → **28·28**(−3), `demonstrative`·`mainIntent` 도 각 −3 이다(대신 10축 상승,
+   `screenExactPick`·안전축은 무회귀).
+3. **`-after-{1,2}` 는 한 번 교체됐다** — 처음에는 병합 전 판(`81e3770e1340`)을 쟀는데 병합으로
+   출고물과 달라져 출고판 런으로 갈아끼웠다(§4-6 출고물 == 측정물).

@@ -1,29 +1,29 @@
 # 과소지정 판정 축 실 LLM 프로브 리포트
 
-prompt=81e3770e1340 (repo:_SYSTEM) · tier=fast · model=gpt-5-nano · fixture=underspec-anchors-v1 · N=8 · underspecifiedReaskEnabled=True
+prompt=865ed6fd771e (repo:_SYSTEM) · tier=fast · model=gpt-5-nano · fixture=underspec-anchors-v1 · N=8 · underspecifiedReaskEnabled=True
 
 > **이건 골든셋이 아니다.** 추천 품질이 아니라 `is_underspecified_turn` 판정의 실 LLM 반복 분포를 잰 표다. 프로덕션은 decompose 뒤에 카테고리 매핑·`needs_expansion` 보정을 거치므로(§측정 범위와 한계, README 참조) 이 표의 수치를 사용자 체감 되물음율로 곧바로 읽으면 오독이다.
 
 ## Primary confirmatory 지표 — missRate
 
-`missRate`: 3/112 (2.7%)
-CI95 [0.9%, 7.6%]
+`missRate`: 7/112 (6.2%)
+CI95 [3.1%, 12.3%]
 
 슬라이스별(사전 등록: no_condition · constraint_price):
 
 | 슬라이스 | 점수 | CI95 |
 |---|---|---|
-| no_condition | 0/40 (0.0%) | [0.0%, 8.8%] |
-| constraint_price | 2/40 (5.0%) | [1.4%, 16.5%] |
-| constraint_budget_set | 1/32 (3.1%) (exploratory: N<40) | [0.6%, 15.7%] |
+| no_condition | 1/40 (2.5%) | [0.4%, 12.9%] |
+| constraint_price | 3/40 (7.5%) | [2.6%, 19.9%] |
+| constraint_budget_set | 3/32 (9.4%) (exploratory: N<40) | [3.2%, 24.2%] |
 | what_axis | 0/0 (해당 없음) | N/A |
 | blocking_rating | 0/0 (해당 없음) | N/A |
 | multiturn_gate | 0/0 (해당 없음) | N/A |
 
 ## Confirmatory-secondary 지표 — falseAlarmRate
 
-`falseAlarmRate`(multiturn_gate 제외): 0/104 (0.0%)
-CI95 [0.0%, 3.6%]
+`falseAlarmRate`(multiturn_gate 제외): 3/104 (2.9%)
+CI95 [1.0%, 8.1%]
 
 슬라이스별(사전 등록: what_axis · blocking_rating):
 
@@ -32,7 +32,7 @@ CI95 [0.0%, 3.6%]
 | no_condition | 0/0 (해당 없음) | N/A |
 | constraint_price | 0/0 (해당 없음) | N/A |
 | constraint_budget_set | 0/0 (해당 없음) | N/A |
-| what_axis | 0/64 (0.0%) | [0.0%, 5.7%] |
+| what_axis | 3/64 (4.7%) | [1.6%, 12.9%] |
 | blocking_rating | 0/40 (0.0%) | [0.0%, 8.8%] |
 | multiturn_gate | 0/0 (해당 없음) | N/A |
 
@@ -40,16 +40,16 @@ CI95 [0.0%, 3.6%]
 
 | 축 | 점수 | CI95 | 성격 | 분자 정의 | 분모 정의 |
 |---|---|---|---|---|---|
-| `expansionGateWouldFireRate` 전개 게이트 발동률(판정 True 표본 중) | 55/109 (50.5%) | CI95 [41.2%, 59.7%] | exploratory | detect_expansion_need(...) 가 사유를 돌려준 표본 | 판정 True 인 recommend 표본(F-1) |
-| `falseAlarmRate` 오탐율 | 0/104 (0.0%) | CI95 [0.0%, 3.6%] | confirmatory-secondary | 판정 True | expectedReask=false 앵커의 recommend 표본(multiturn_gate 슬라이스 제외)(F-1) |
-| `falseAlarmRateWithGateSlice` 오탐율 | 0/128 (0.0%) | CI95 [0.0%, 2.9%] | exploratory | 판정 True | expectedReask=false 앵커의 recommend 표본(게이트 포함)(F-1) |
-| `falseAlarmRateWithNonRecommendIntent` 오탐율(비-recommend 포함, 참고용) | 0/104 (0.0%) | CI95 [0.0%, 3.6%] | exploratory | 판정 True | expectedReask=false 표본(intent 무관, multiturn_gate 제외, 포함판) |
+| `expansionGateWouldFireRate` 전개 게이트 발동률(판정 True 표본 중) | 60/108 (55.6%) | CI95 [46.2%, 64.6%] | exploratory | detect_expansion_need(...) 가 사유를 돌려준 표본 | 판정 True 인 recommend 표본(F-1) |
+| `falseAlarmRate` 오탐율 | 3/104 (2.9%) | CI95 [1.0%, 8.1%] | confirmatory-secondary | 판정 True | expectedReask=false 앵커의 recommend 표본(multiturn_gate 슬라이스 제외)(F-1) |
+| `falseAlarmRateWithGateSlice` 오탐율 | 3/128 (2.3%) | CI95 [0.8%, 6.7%] | exploratory | 판정 True | expectedReask=false 앵커의 recommend 표본(게이트 포함)(F-1) |
+| `falseAlarmRateWithNonRecommendIntent` 오탐율(비-recommend 포함, 참고용) | 3/104 (2.9%) | CI95 [1.0%, 8.1%] | exploratory | 판정 True | expectedReask=false 표본(intent 무관, multiturn_gate 제외, 포함판) |
 | `flagOffInvariant` flag off 불변식 | 0/240 (0.0%) | CI95 [0.0%, 1.6%] | invariant | underspecified_reask_enabled=False 로 재판정했을 때 True 인 표본 수 | 전 표본(intent 무관 — 판정 함수 게이트 자체를 보는 불변식, F-1) |
-| `judgmentAccuracy` 판정 정확도 | 213/216 (98.6%) | CI95 [96.0%, 99.5%] | exploratory | 판정 == expectedReask | recommend 표본(게이트 제외)(F-1) |
-| `judgmentAccuracyWithGateSlice` 판정 정확도 | 237/240 (98.8%) | CI95 [96.4%, 99.6%] | exploratory | 판정 == expectedReask | recommend 표본(게이트 포함)(F-1) |
-| `missRate` 미탐율 | 3/112 (2.7%) | CI95 [0.9%, 7.6%] | confirmatory-primary | 판정 False | expectedReask=true 앵커의 recommend 표본 — 프로덕션은 intent==recommend 인 턴에서만 is_underspecified_turn 을 호출한다(F-1) |
-| `missRateUnderExpansionAssumption` 미탐율(전개 가정 상한) | 58/112 (51.8%) | CI95 [42.6%, 60.8%] | exploratory | (판정 False) 또는 (판정 True ∧ detect_expansion_need 가 사유를 돌려줌) | expectedReask=true 앵커의 recommend 표본(F-1) |
-| `missRateWithNonRecommendIntent` 미탐율(비-recommend 포함, 참고용) | 3/112 (2.7%) | CI95 [0.9%, 7.6%] | exploratory | 판정 False | expectedReask=true 앵커의 표본 전부(intent 무관, 포함판) |
+| `judgmentAccuracy` 판정 정확도 | 206/216 (95.4%) | CI95 [91.7%, 97.5%] | exploratory | 판정 == expectedReask | recommend 표본(게이트 제외)(F-1) |
+| `judgmentAccuracyWithGateSlice` 판정 정확도 | 230/240 (95.8%) | CI95 [92.5%, 97.7%] | exploratory | 판정 == expectedReask | recommend 표본(게이트 포함)(F-1) |
+| `missRate` 미탐율 | 7/112 (6.2%) | CI95 [3.1%, 12.3%] | confirmatory-primary | 판정 False | expectedReask=true 앵커의 recommend 표본 — 프로덕션은 intent==recommend 인 턴에서만 is_underspecified_turn 을 호출한다(F-1) |
+| `missRateUnderExpansionAssumption` 미탐율(전개 가정 상한) | 65/112 (58.0%) | CI95 [48.8%, 66.8%] | exploratory | (판정 False) 또는 (판정 True ∧ detect_expansion_need 가 사유를 돌려줌) | expectedReask=true 앵커의 recommend 표본(F-1) |
+| `missRateWithNonRecommendIntent` 미탐율(비-recommend 포함, 참고용) | 7/112 (6.2%) | CI95 [3.1%, 12.3%] | exploratory | 판정 False | expectedReask=true 앵커의 표본 전부(intent 무관, 포함판) |
 | `priorGateInvariant` prior 게이트 불변식 | 0/240 (0.0%) | CI95 [0.0%, 1.6%] | invariant | prior=ProductSearchFilters() 로 재판정했을 때 True 인 표본 수 | 전 표본(intent 무관 — 판정 함수 게이트 자체를 보는 불변식, F-1) |
 
 ## 슬라이스별 병기
@@ -58,9 +58,9 @@ CI95 [0.0%, 3.6%]
 
 | 슬라이스 | 점수 | CI95 |
 |---|---|---|
-| no_condition | 0/40 (0.0%) | [0.0%, 8.8%] |
-| constraint_price | 2/40 (5.0%) | [1.4%, 16.5%] |
-| constraint_budget_set | 1/32 (3.1%) (exploratory: N<40) | [0.6%, 15.7%] |
+| no_condition | 1/40 (2.5%) | [0.4%, 12.9%] |
+| constraint_price | 3/40 (7.5%) | [2.6%, 19.9%] |
+| constraint_budget_set | 3/32 (9.4%) (exploratory: N<40) | [3.2%, 24.2%] |
 | what_axis | 0/0 (해당 없음) | N/A |
 | blocking_rating | 0/0 (해당 없음) | N/A |
 | multiturn_gate | 0/0 (해당 없음) | N/A |
@@ -69,9 +69,9 @@ CI95 [0.0%, 3.6%]
 
 | 슬라이스 | 점수 | CI95 |
 |---|---|---|
-| no_condition | 0/40 (0.0%) | [0.0%, 8.8%] |
-| constraint_price | 2/40 (5.0%) | [1.4%, 16.5%] |
-| constraint_budget_set | 1/32 (3.1%) (exploratory: N<40) | [0.6%, 15.7%] |
+| no_condition | 1/40 (2.5%) | [0.4%, 12.9%] |
+| constraint_price | 3/40 (7.5%) | [2.6%, 19.9%] |
+| constraint_budget_set | 3/32 (9.4%) (exploratory: N<40) | [3.2%, 24.2%] |
 | what_axis | 0/0 (해당 없음) | N/A |
 | blocking_rating | 0/0 (해당 없음) | N/A |
 | multiturn_gate | 0/0 (해당 없음) | N/A |
@@ -83,7 +83,7 @@ CI95 [0.0%, 3.6%]
 | no_condition | 0/0 (해당 없음) | N/A |
 | constraint_price | 0/0 (해당 없음) | N/A |
 | constraint_budget_set | 0/0 (해당 없음) | N/A |
-| what_axis | 0/64 (0.0%) | [0.0%, 5.7%] |
+| what_axis | 3/64 (4.7%) | [1.6%, 12.9%] |
 | blocking_rating | 0/40 (0.0%) | [0.0%, 8.8%] |
 | multiturn_gate | 0/0 (해당 없음) | N/A |
 
@@ -94,7 +94,7 @@ CI95 [0.0%, 3.6%]
 | no_condition | 0/0 (해당 없음) | N/A |
 | constraint_price | 0/0 (해당 없음) | N/A |
 | constraint_budget_set | 0/0 (해당 없음) | N/A |
-| what_axis | 0/64 (0.0%) | [0.0%, 5.7%] |
+| what_axis | 3/64 (4.7%) | [1.6%, 12.9%] |
 | blocking_rating | 0/40 (0.0%) | [0.0%, 8.8%] |
 | multiturn_gate | 0/24 (0.0%) (exploratory: N<40) | [0.0%, 13.8%] |
 
@@ -105,7 +105,7 @@ CI95 [0.0%, 3.6%]
 | no_condition | 0/0 (해당 없음) | N/A |
 | constraint_price | 0/0 (해당 없음) | N/A |
 | constraint_budget_set | 0/0 (해당 없음) | N/A |
-| what_axis | 0/64 (0.0%) | [0.0%, 5.7%] |
+| what_axis | 3/64 (4.7%) | [1.6%, 12.9%] |
 | blocking_rating | 0/40 (0.0%) | [0.0%, 8.8%] |
 | multiturn_gate | 0/0 (해당 없음) | N/A |
 
@@ -113,10 +113,10 @@ CI95 [0.0%, 3.6%]
 
 | 슬라이스 | 점수 | CI95 |
 |---|---|---|
-| no_condition | 40/40 (100.0%) | [91.2%, 100.0%] |
-| constraint_price | 38/40 (95.0%) | [83.5%, 98.6%] |
-| constraint_budget_set | 31/32 (96.9%) (exploratory: N<40) | [84.3%, 99.4%] |
-| what_axis | 64/64 (100.0%) | [94.3%, 100.0%] |
+| no_condition | 39/40 (97.5%) | [87.1%, 99.6%] |
+| constraint_price | 37/40 (92.5%) | [80.1%, 97.4%] |
+| constraint_budget_set | 29/32 (90.6%) (exploratory: N<40) | [75.8%, 96.8%] |
+| what_axis | 61/64 (95.3%) | [87.1%, 98.4%] |
 | blocking_rating | 40/40 (100.0%) | [91.2%, 100.0%] |
 | multiturn_gate | 0/0 (해당 없음) | N/A |
 
@@ -124,10 +124,10 @@ CI95 [0.0%, 3.6%]
 
 | 슬라이스 | 점수 | CI95 |
 |---|---|---|
-| no_condition | 40/40 (100.0%) | [91.2%, 100.0%] |
-| constraint_price | 38/40 (95.0%) | [83.5%, 98.6%] |
-| constraint_budget_set | 31/32 (96.9%) (exploratory: N<40) | [84.3%, 99.4%] |
-| what_axis | 64/64 (100.0%) | [94.3%, 100.0%] |
+| no_condition | 39/40 (97.5%) | [87.1%, 99.6%] |
+| constraint_price | 37/40 (92.5%) | [80.1%, 97.4%] |
+| constraint_budget_set | 29/32 (90.6%) (exploratory: N<40) | [75.8%, 96.8%] |
+| what_axis | 61/64 (95.3%) | [87.1%, 98.4%] |
 | blocking_rating | 40/40 (100.0%) | [91.2%, 100.0%] |
 | multiturn_gate | 24/24 (100.0%) (exploratory: N<40) | [86.2%, 100.0%] |
 
@@ -135,9 +135,9 @@ CI95 [0.0%, 3.6%]
 
 | 슬라이스 | 점수 | CI95 |
 |---|---|---|
-| no_condition | 40/40 (100.0%) | [91.2%, 100.0%] |
-| constraint_price | 2/40 (5.0%) | [1.4%, 16.5%] |
-| constraint_budget_set | 16/32 (50.0%) (exploratory: N<40) | [33.6%, 66.4%] |
+| no_condition | 38/40 (95.0%) | [83.5%, 98.6%] |
+| constraint_price | 4/40 (10.0%) | [4.0%, 23.1%] |
+| constraint_budget_set | 23/32 (71.9%) (exploratory: N<40) | [54.6%, 84.4%] |
 | what_axis | 0/0 (해당 없음) | N/A |
 | blocking_rating | 0/0 (해당 없음) | N/A |
 | multiturn_gate | 0/0 (해당 없음) | N/A |
@@ -146,10 +146,10 @@ CI95 [0.0%, 3.6%]
 
 | 슬라이스 | 점수 | CI95 |
 |---|---|---|
-| no_condition | 40/40 (100.0%) | [91.2%, 100.0%] |
-| constraint_price | 0/38 (0.0%) (exploratory: N<40) | [0.0%, 9.2%] |
-| constraint_budget_set | 15/31 (48.4%) (exploratory: N<40) | [32.0%, 65.2%] |
-| what_axis | 0/0 (해당 없음) | N/A |
+| no_condition | 37/39 (94.9%) (exploratory: N<40) | [83.1%, 98.6%] |
+| constraint_price | 1/37 (2.7%) (exploratory: N<40) | [0.5%, 13.8%] |
+| constraint_budget_set | 20/29 (69.0%) (exploratory: N<40) | [50.8%, 82.7%] |
+| what_axis | 2/3 (66.7%) (exploratory: N<40) | [20.8%, 93.9%] |
 | blocking_rating | 0/0 (해당 없음) | N/A |
 | multiturn_gate | 0/0 (해당 없음) | N/A |
 
@@ -181,11 +181,11 @@ baseline `missRate` = 1.0 (구조적 — 항상 False 를 내므로 expectedReas
 
 | | LLM judgmentAccuracy | baseline judgmentAccuracy |
 |---|---|---|
-| **전체(게이트 제외)** | 98.6% | 48.1% |
-| no_condition | 100.0% | 0.0% |
-| constraint_price | 95.0% | 0.0% |
-| constraint_budget_set | 96.9% (exploratory: N<40) | 0.0% |
-| what_axis | 100.0% | 100.0% |
+| **전체(게이트 제외)** | 95.4% | 48.1% |
+| no_condition | 97.5% | 0.0% |
+| constraint_price | 92.5% | 0.0% |
+| constraint_budget_set | 90.6% (exploratory: N<40) | 0.0% |
+| what_axis | 95.3% | 100.0% |
 | blocking_rating | 100.0% | 100.0% |
 | multiturn_gate | N/A (해당 없음) | 100.0% |
 
@@ -193,14 +193,15 @@ baseline `missRate` = 1.0 (구조적 — 항상 False 를 내므로 expectedReas
 
 ## 원인 축 분해 (이슈 완료 조건 3)
 
-outcome 분포: {'correctReject': 128, 'hit': 109, 'miss': 3}
+outcome 분포: {'correctReject': 125, 'falseAlarm': 3, 'hit': 105, 'miss': 7}
 
 ### 미탐 원인 축(ablation 이 뒤집은 축 — 복수 가능, `multiple` = 단일 축으로 안 뒤집힘)
 
 | 축 | 미탐 표본 수 |
 |---|---|
+| `filters.attrConditions` | 2 |
 | `multiple` | 2 |
-| `semanticQueryIsFallback` | 1 |
+| `semanticQueryIsFallback` | 3 |
 
 ### 미탐 `blockingAxes` 조합별 분포 (F-2 — 실측 조합, 서술 아님)
 
@@ -210,11 +211,14 @@ outcome 분포: {'correctReject': 128, 'hit': 109, 'miss': 3}
 | blockingAxes 조합 | 미탐 표본 수 |
 |---|---|
 | `categoryQueries;semanticQueryIsFallback` | 2 |
-| `semanticQueryIsFallback` | 1 |
+| `filters.attrConditions` | 2 |
+| `semanticQueryIsFallback` | 3 |
 
 ### 오탐 원인 축(앵커 referenceAxes — 채워졌어야 할 축)
 
-(오탐 없음)
+| 축 | 오탐 표본 수 |
+|---|---|
+| `filters.brand` | 3 |
 
 표본별 상세(`verdict`·`expectedReask`·`outcome`·`causeAxes`·`blockingAxes`)는 `samples.csv` 에 실려 있다 — 런 재실행 없이 재집계할 수 있다.
 
@@ -227,8 +231,8 @@ outcome 분포: {'correctReject': 128, 'hit': 109, 'miss': 3}
 
 - `categoryEchoWithoutQueriesCount`: 0 — filters.category 가 비어 있지 않은데 categoryQueries 는 빈 표본 수 — §D10 항목 2(프로덕션이 필터를 덮어쓰는 괴리)의 노출 크기
 - `nonRecommendIntentCount`(앵커별·intent별, F-1): {} — intent != 'recommend' 표본 수(앵커별·intent별) — 프로덕션은 이 표본에서 is_underspecified_turn 에 도달하지 않는다(F-1). confirmatory 축 분모에서 제외된 표본의 노출 크기이며, 그 실패는 intent 라우팅 축(evals/intent_probe)의 소관이다.
-- `expansionGateWouldFireRate`: 55/109 (50.5%)
-- `missRateUnderExpansionAssumption`: 58/112 (51.8%)
+- `expansionGateWouldFireRate`: 60/108 (55.6%)
+- `missRateUnderExpansionAssumption`: 65/112 (58.0%)
 
 ## 셀별 표본 수
 
@@ -284,4 +288,4 @@ outcome 분포: {'correctReject': 128, 'hit': 109, 'miss': 3}
 3. 단일 실행은 채택 판정이 아니다 — 독립 2~3회 분포로 판정한다.
 4. 이건 골든셋이 아니다 — decompose 직후·판정 직전의 형상만 잰다. #372 의 되물음 답변 턴 결정론 fixture 실측과 숫자를 섞지 말 것.
 
-페이싱 실측: 대기 135회 / 허용 45 rpm.
+페이싱 실측: 대기 67회 / 허용 45 rpm.
