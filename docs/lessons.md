@@ -13,6 +13,109 @@
 
 ---
 
+## [2026-08-07] "플래그 뒤에 있는 줄 알았던" 산출 신호에 **플래그 없는 두 번째 소비자**가 있었다
+- 증상: #430 은 `decompose` 프롬프트를 고쳐 `semantic_query_is_fallback` 이 정직해지게 만든
+  작업이고, 이슈·패킷 모두 그 효과를 **`underspecified_reask_enabled`(기본 False)로 게이트된
+  #336 되물음**으로만 서술했다. 그런데 `grep semantic_query_is_fallback app/` 를 돌리면
+  소비자가 둘이다 — `underspecified.is_underspecified_turn`(플래그 있음, 오늘 무동작)과
+  **`no_condition.is_no_condition_turn`(#162, api-spec §4.17 — 플래그가 없다. 오늘 켜져 있다)**.
+  즉 "플래그를 켜지 않았으니 운영 동작은 그대로"라는 전제가 틀렸다. 산출물로 재보니
+  `semanticQueryIsFallback=true` 표본이 1/240 → 163~164/240 이었고, 그중 더 엄격한
+  `is_no_condition_turn` 조건까지 통과하는 `no_condition` 슬라이스가 39~40/40 이었다.
+- 원인: 게이트는 **신호 생산자**가 아니라 **소비자마다** 따로 걸려 있다. 신호를 고치면
+  게이트 없는 소비자는 즉시 영향을 받는데, 이슈 제목·설계 문서가 한 소비자만 이름 붙여
+  부르면 나머지가 시야에서 사라진다. 이번엔 결과가 좋은 방향(#162 가 문서상 "계약 위반"이라
+  부르던 무필터 I-1 호출이 멈춘다)이었지만, 그건 운이지 설계가 아니다.
+- 규칙: **산출 신호(플래그·불리언·판정 축)를 고칠 때는 `grep` 으로 소비자를 전부 세고, 각
+  소비자의 게이트 유무를 표로 적어라.** "이 변경은 플래그 뒤에 있다"는 주장은 소비자 목록
+  없이는 하지 마라. 그리고 게이트 없는 소비자가 있으면 그 영향 규모를 **같은 산출물에서
+  수치로** 재서 PR 본문에 전용 절로 싣는다 — 사람이 머지 판단할 때 놓치면 안 되는 사실이다.
+- 관련: #430 · #162 · #336 · `app/agents/buyer/recommendation/no_condition.py` ·
+  `app/agents/buyer/recommendation/underspecified.py` ·
+  `evals/underspecified_probe/baselines/fast-2026-08-07-430-after-1/README.md`
+
+## [2026-08-07] 안 먹히는 프롬프트 지시는 문구가 나빠서가 아니라 **같은 절 뒤쪽의 무조건 긍정 명령에 져서**다
+- 증상: `decompose._SYSTEM` 은 `- recommend:` 불릿 **첫 문장**에서 이미 "정확한 수치 제약은
+  filters 에 넣고 semanticQuery 로 근사하지 마세요"라고 지시하고 있었는데, 실측
+  (`evals/underspecified_probe` 2026-08-06 기준선)은 정확히 그 반대였다 —
+  `"5만원 이하로 아무거나 추천해줘"` → `semanticQuery = "5만원 이하 아무거나"` 가 **8/8**.
+  #430 은 처음에 이 문장을 고치는 것을 「할 일」로 받았다.
+- 원인: 같은 불릿의 **마지막 문장**이 `"semanticQuery 는 동의어·상위어를 함께 담은 의미 중심
+  자연어로 쓰세요"` 라는 **무조건 긍정 명령**이었다. 앞의 금지형("~하지 마세요")은 "대신 무엇을
+  쓰라"가 없어 대안이 되지 못하고, 뒤의 긍정 명령이 "이 필드는 항상 풍부하게 채운다"로 읽힌다.
+  **모델이 어느 문장을 읽고 있었는지가 산출물에 직접 찍혀 있었다** — `semanticQuery` 산출로
+  `'의미 중심 자연어'`(기준선 `under-nc-0003`) · `'무엇을 살지에 대한 의미 중심의 일반 추천'`
+  (후보 런)처럼 **그 문장의 문면을 그대로 에코**한 표본이 나왔다.
+  실측이 이 인과를 두 방향으로 뒷받침한다: ① 금지형 문장은 **손대지 않은 채** 같은 불릿
+  **끝에** "발화에 찾는 상품의 의미가 하나도 없으면 빈 문자열로 두라"를 덧붙이자 `missRate`
+  99.1% → 17.0%(수치 에코도 함께 줄었다). ② 반대로 금지형 문장을 긍정형으로 **재작성**한
+  두 후보는 수치 에코를 줄이지 못하고 primary 를 깎았다(17.0% → 23.2% / 48.2%).
+  즉 수치 에코는 그 문장의 어휘 문제가 아니라 **"이 필드는 비울 수 없다"가 유효 규칙이었기
+  때문**이고, 비울 수 있게 하자 부수적으로 사라졌다.
+- 규칙: 프롬프트 지시가 "이미 있는데 안 먹힌다"면 **그 문장을 고치기 전에** 같은 절 뒤쪽에
+  같은 필드를 **무조건 채우라고 시키는 문장**이 있는지부터 찾아라. 그리고 실측 산출물에서
+  **프롬프트 문면이 그대로 에코된 표본**을 찾아라 — 그게 "모델이 어느 문장을 읽고 있는가"의
+  직접 증거이고, 산문 추측보다 강하다. 안 먹히는 지시의 수정은 **채택 여부와 진단이 별개**다:
+  진단해서 원인을 적되, 재작성이 primary 축을 깎으면 반려하는 것이 근거 있는 결론이다.
+- 관련: #430(PR 진행 중) · `app/agents/buyer/recommendation/decompose.py::_SYSTEM` ·
+  `evals/underspecified_probe/baselines/fast-2026-08-07-430-after-1/README.md`(후보 선별표)
+
+## [2026-08-07] 새 프롬프트 규칙의 비용은 **길이가 아니라 기존 규칙과의 문면 충돌**이다 — 길이 가설을 세우고 3후보로 반증했다
+- 증상: #430 이 `decompose._SYSTEM` 에 "찾는 상품의 의미가 **발화에** 없으면 `semanticQuery` 는
+  빈 문자열" 규칙을 넣자 목표 축은 크게 좋아졌는데(`missRate` 99.1% → 약 10%)
+  `evals/intent_probe` 의 **`screenExactPick` 이 32/32·32/32 → 30·27** 로 깎이고 진단
+  `screenOutOfListConfirmCount`(화면 목록 **밖** productId 를 확정하려 든 횟수)가 0·0 → 2·5 로 올랐다.
+- 반증 궤적(이게 이 항목의 핵심이다): 처음 세운 가설은 **"긴 프롬프트에 문면을 더한 것 자체가
+  비용(주의 경쟁)"** 이었다. 그래서 추가 문면을 줄여 가며 3후보를 각 2런씩 쟀다 —
+  +268자 `screenExactPick` 평균 **28.5** → +161자 **30.0** → +110자(가장 짧음) **30.0**.
+  **가장 짧은 판이 나아지지 않았다 → 길이 가설은 반증됐다.**
+- 원인(반증 뒤에 선 가설): `_SYSTEM` 에는 이미 "상품명 없는 지시대명사는
+  PRIOR_FILTERS.semanticQuery 또는 LAST_RECOMMENDATIONS 맥락의 **상품**을 가리킵니다"가 있다.
+  screen 셀의 발화("이거 담아줘"·"3번째 거")는 **발화 자체에는 상품 의미가 없고 맥락에만 있다** —
+  두 규칙의 교집합이 정확히 이 입력이다. 모델이 새 규칙의 "발화에 없으면 비워라·지어내지 마라"를
+  **"맥락에서 끌어와 해소하는 것도 하지 마라"** 로 일반화하면 관측(`screenExactPick` 하락 +
+  목록 밖 확정 시도 증가)과 부합한다. 트리거를 **"발화에도 PRIOR_FILTERS·LAST_RECOMMENDATIONS·
+  SCREEN 맥락에도 없으면"** 으로 좁힌 판(+143자 — 반증된 최단판보다 **길다**)이 31·31·29(평균
+  30.33)로 가장 나았다. 좁힘은 회귀 회피용 임기응변이 아니라 **코드 의미와 일치**한다 —
+  `semantic_query_is_fallback = not (llm_sq or cat_signal or prior_sq)` 이라 맥락이 있으면
+  플래그는 어차피 False 이고 판정은 `prior is None` 첫 턴 한정이다. 넓게 쓴 문면이 코드보다
+  넓게 말하고 있었던 것이다. 다만 **완전히 회복되지는 않았다**(잔여 −1.67) — 약 −2 는 이 규칙에
+  내재하는 비용으로 보인다.
+- 규칙: **긴 프롬프트에 규칙을 더할 때는, 그 규칙이 기존 규칙과 겹치는 입력이 무엇인지 먼저
+  찾고 그 교집합에서 두 규칙이 서로 반대를 지시하지 않는지 확인한다.** 새 규칙의 트리거는
+  **코드가 실제로 보는 조건과 같은 넓이**로 써라 — 코드보다 넓게 쓰면 코드가 안 보는 입력까지
+  끌려간다. 회귀가 나면 "문면을 줄이면 낫겠지"부터 시도하지 말고 **줄여 보고 반증하라**(싸다).
+  그리고 회귀 축은 **하위축 합인지 독립 축인지** 먼저 가려라 — `screenResolution` 은
+  `screenExactPick`+`screenNoHallucination`+`screenReask` 의 합이라 "두 축이 깎였다"로 쓰면
+  같은 사실을 두 번 센 것이 된다.
+- 곁가지(같이 잰 것): 같은 취지를 **상단 JSON 스키마 줄**에만 적은 판은 `missRate` 24.1%,
+  **규칙 절 불릿**으로 적은 판은 17.0% 였다 — 스키마 줄은 값의 **형식**을 말하는 자리라 행동
+  규칙의 무게가 실리지 않는다. 또 같은 취지를 두 군데에 서로 다른 말로 적으면 **인용 가능한
+  문면이 두 개**가 돼 모델이 빈 문자열 대신 그 말을 적는다(실측 산출 `'상품 의미'` ·
+  `'상품의 의미를 추출하지 못해 빈 문자열'`, `missRate` 17.0% → 48.2%). 규칙은 **행동을
+  지시하는 절에 한 군데만** 적는다.
+- 관련: #430 · `evals/underspecified_probe/baselines/fast-2026-08-07-430-after-1/README.md`
+  (후보 선별표 — sha12 로 재현 가능) ·
+  `evals/intent_probe/baselines/fast-2026-08-07-430-after-1/README.md`(타축 대조표) ·
+  [2026-08-07] 「안 먹히는 프롬프트 지시는…」 항목
+
+## [2026-08-07] `evals/intent_probe --prompt` 는 screen 축을 **재지 못한다** — 후보를 리포에 넣고 재야 한다
+- 증상: #430 에서 `--prompt <후보파일>` 로 before 팔을 잰 뒤 after(리포 `_SYSTEM`)와 대조했더니
+  screen 축이 어긋났다. 같은 before 프롬프트인데 진단 `screenPromptLayerHitCount` 가
+  `--prompt` 런 16·18 대 리포 런 21·28 로 갈렸다 — 프롬프트가 같은데 값이 다르면 계측이 틀린 것이다.
+- 원인: `SystemPromptOverrideLLM`(`evals/intent_probe/client.py`)은 통과하는 decompose
+  `complete` 의 system 을 후보 텍스트로 갈아끼우는데, **screen 이 실린 셀은 프로덕션에서
+  `_SYSTEM_WITH_SCREEN`**(= `_SYSTEM` + `_SCREEN_CART_RULE`)을 쓴다. 오버라이드가 그 문면까지
+  평평한 후보 텍스트로 덮어 화면 지목 규칙이 통째로 빠진 채 측정된다. `PASSTHROUGH_SYSTEMS` 는
+  보조 분류기만 보호하고 이 변형은 보호하지 않는다.
+- 규칙: **screen 축(`screenExactPick`·`screenResolution`·`screenNoHallucination`·`screenReask`
+  와 두 screen 진단)이 걸린 후보는 `--prompt` 로 재지 마라** — 후보를 리포 `_SYSTEM` 에 넣고
+  `--prompt` 없이 돌려 `prompt.source == "repo:_SYSTEM"` 으로 만든다(before 팔도 파일을 되돌려
+  같은 방식으로). `--prompt` 런을 **통째로 버리지는 마라** — 비-screen 축에서는 프롬프트
+  문자열이 리포 판과 같아 여전히 유효하다. 어느 축에 어느 런을 썼는지 산출물 README 에 적어라.
+- 관련: #430 · `evals/intent_probe/README.md` 「⚠️ `--prompt`/`--prompt-rev` 런은 screen 축을
+  재지 못한다」절 · `evals/intent_probe/baselines/fast-2026-08-07-430-after-1/README.md`
+
 ## [2026-08-07] `uv run ruff check --fix && uv run ruff format` 커밋 워크플로 문구를 문자 그대로 실행하면 무관 파일 30개가 재포맷된다
 - 증상: #439 구현 검증 단계에서 CLAUDE.md 커밋 워크플로 2항을 그대로 `uv run ruff check --fix &&
   uv run ruff format`으로 실행했더니 `ruff check`는 `All checks passed!`였지만 `ruff format`은

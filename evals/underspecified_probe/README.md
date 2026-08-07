@@ -250,3 +250,16 @@ cases.json 승계 7건(위 매핑표) + 신규 23건.
 
 `baselines/fast-2026-08-06/` — 최초 실 LLM 기준선(fast 티어). 그 디렉터리의 README 가 표를
 해석하고, 단일 실행이라 채택 판정 근거가 아니라는 경고를 담는다.
+
+`baselines/fast-2026-08-07-430-{before,after}-{1,2}/` — #430(decompose 프롬프트 수정)의 채택
+판정 4런. before 2런(`_SYSTEM` sha12 `11c6fe3bfa0c`) `missRate` **99.1% · 99.1%** → after 2런
+(채택안 sha12 `81e3770e1340`, `source=repo:_SYSTEM`) **9.8% · 2.7%**, `falseAlarmRate`
+0.0%·0.0% → 1.9%·0.0%. 판정표·가드축 해석·후보 선별표(탈락안 8종의 sha12·수치)·`intent_probe`
+타축 대조는 `fast-2026-08-07-430-after-1/README.md` 가 정본이다.
+
+두 가지를 그 README 없이 인용하지 말 것:
+1. **`semanticQueryIsFallback` 을 `what_axis`+`blocking_rating` 104분모로 뭉치지 말 것** —
+   앵커별로 쪼개면 위반이 전부 "상품 의미가 애초에 발화에 없는" 앵커(색상만·평점만)에서 온다.
+   증류할 상품명이 실제로 있는 category·keyword 4앵커(32표본)에서는 before·after 모두 0/32 다.
+2. **이 변경에는 잔여 회귀가 있다** — `evals/intent_probe` 의 `screenExactPick` 이
+   32·32 → 31·31·29 다(안전축 `screenNoHallucination`·`screenReask` 는 무회귀).

@@ -331,6 +331,27 @@ field`(B-4) — 위 커버리지 정정의 근거 불변식을 고정한다(행�
    고치면(이 이슈의 비범위) 그 값이 어떻게 바뀔지는 이 실측만으로 모른다. **기본값 전환은
    이 실측만으로 하지 않는다** — 그 결정은 별도 이슈의 몫이다(§6, 이 문서의 기존 금지 사항
    유지).
+
+   **[2026-08-07 갱신 — #430 이 프롬프트를 고치고 다시 쟀다]** 위 문단의 "프롬프트를 고치면
+   그 값이 어떻게 바뀔지는 모른다"에 답이 생겼다. #430 이 `decompose._SYSTEM` 의 `- recommend:`
+   규칙 절 끝에 규칙 **한 줄**("찾는 상품의 의미(종류·용도·상황·목적)가 발화에도 PRIOR_FILTERS·
+   LAST_RECOMMENDATIONS·SCREEN 맥락에도 없으면 `semanticQuery` 는 빈 문자열")을 넣고, 같은
+   하네스·같은 앵커(`underspec-anchors-v1`)·같은 티어(fast, `gpt-5-nano`)로 **전/후 각 2런**을
+   쟀다(`evals/underspecified_probe/baselines/fast-2026-08-07-430-{before,after}-{1,2}/`):
+   `missRate` **99.1% · 99.1% → 9.8% · 2.7%**, `falseAlarmRate` **0.0% · 0.0% → 1.9% ·
+   0.0%**(after 1 의 오탐 2건은 같은 앵커 `buy-under-0005` "삼성 제품 아무거나" — 그 표본에서
+   모델이 브랜드를 `filters.brand` 로 추출하지 못한 것이고, 전에는 지어낸 `semanticQuery` 가
+   그 실패를 가려주고 있었다), `judgmentAccuracy` 48.6% → 94.0% · 98.6%,
+   `flagOffInvariant`·`priorGateInvariant` 는 4런 모두 0/240. 판정 코드(§2 판정식)는 **한 줄도
+   바뀌지 않았다.** 판정표·가드축 해석·탈락 후보 8종의 수치는
+   `fast-2026-08-07-430-after-1/README.md` 가 정본이다.
+   **잔여 회귀 1건을 알고 채택했다** — `evals/intent_probe` 의 `screenExactPick` 이
+   32·32 → 31·31·29 다(안전축 `screenNoHallucination`·`screenReask` 는 전 런 8/8 무회귀).
+   이슈 「할 일」 ②(수치 제약 지시 재작성)·③(`attrConditions` 억제)은 진단만 하고 채택은
+   반려했다 — 둘 다 다른 축을 깎았다. 상세는 같은 README 와 `docs/lessons.md` 2026-08-07 항목.
+   **이 갱신도 기본값 전환 판단은 하지 않는다** — 그 결정은 여전히 별도 이슈(#431)의 몫이고,
+   §6 의 금지 사항은 그대로다. 다만 "플래그를 켜도 되물음이 조용히 아무 일도 하지 않는다"는
+   위 문단의 진단은 더 이상 사실이 아니다.
 2. **[리뷰 R1-F4] 되물음에 거부 답변("그냥 아무거나 줘")한 사용자는 인기 상품(I-3)이 아니라
    무필터 검색(I-1) 결과를 받는다** — `test_refusal_answer_turn_falls_back_to_unfiltered_
    search`(A-3)의 실측이다. 원인은 `is_underspecified_turn`·`is_no_condition_turn` 둘 다

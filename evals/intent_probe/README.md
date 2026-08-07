@@ -53,6 +53,20 @@ uv run python -m evals.intent_probe --dump-prompt system.txt
 `priorFilters` 에 `category` 가 없어 게이트(`prior_category` 가 있어야 호출)가 열리지 않는다
 (D-6 실측 확인, `baselines/fast-2026-08-05-300-screen/`).
 
+## ⚠️ `--prompt`/`--prompt-rev` 런은 screen 축을 재지 못한다
+
+`SystemPromptOverrideLLM` 은 통과하는 decompose `complete` 의 system 을 후보 텍스트로
+갈아끼우는데, **screen 이 실린 셀은 프로덕션에서 `_SYSTEM_WITH_SCREEN`**(= `_SYSTEM` +
+`_SCREEN_CART_RULE`)을 쓴다. 오버라이드가 그 문면까지 평평한 후보 텍스트로 덮으므로,
+`--prompt` 런의 **screen 축 4개**(`screenExactPick`·`screenResolution`·
+`screenNoHallucination`·`screenReask`)와 진단 `screenPromptLayerHitCount`·
+`screenOutOfListConfirmCount` 는 `repo:_SYSTEM` 런과 **비교할 수 없다**(#430 에서 실측 발견 —
+같은 before 프롬프트인데 `screenPromptLayerHitCount` 가 16·18 대 21·28 로 갈렸다).
+
+**screen 축이 걸린 후보를 잴 때는 후보를 리포 `_SYSTEM` 에 넣고 `--prompt` 없이 돌려라**
+(`prompt.source` 가 `repo:_SYSTEM` 이어야 한다). 비-screen 축만 볼 때는 `--prompt` 런이 그대로
+유효하다 — 그 셀들에서는 프롬프트 문자열이 리포 판과 같다.
+
 ## 기준선
 
 `baselines/fast-2026-08-04/` — 현재 `_SYSTEM`(`e5e7f9b8d844`) × `fast`(gpt-5-nano) × 앵커 B.
@@ -77,6 +91,14 @@ replace, 남은 11건은 `decompose` 추출 실패) · 인라인 `categoryAction
 별도 프로브(#118, PR #292 — #300 이 흡수하며 삭제했다)의 채택 근거(48/48 · 안전 셀 8/8 ·
 오담기 0)를 `screenResolution` 47/48 · `screenReask` 8/8 · `screenNoHallucination` 8/8 로
 재현한다. 그 디렉터리 README 에 셀별 원본(해소기 전) vs 최종값 대조표가 있다.
+
+`baselines/fast-2026-08-07-430-{before-1,before-2,after-1,after-2,after-3}/` — **#430
+(decompose 프롬프트 수정)의 타축 회귀 대조**. 전부 `source=repo:_SYSTEM`(위 ⚠️ 절 참조 —
+screen 축 때문에 `--prompt` 로 잴 수 없었다). before `11c6fe3bfa0c` 2런 vs after
+`81e3770e1340` 3런. **깎인 독립 축은 `screenExactPick` 하나**(32·32 → 31·31·29, 진단
+`screenOutOfListConfirmCount` 0·0 → 1·1·3)이고 안전축 `screenNoHallucination`·`screenReask` 는
+전 런 8/8 무회귀다. `conditionOnlyNoCategoryQuery`·`switchAll7`·`categoryMixedReplace` 등은
+개선됐다. 전 축 대조표·각주·후보별 평균은 `fast-2026-08-07-430-after-1/README.md` 가 정본이다.
 
 ## CI 에서 돌리지 않는다
 
