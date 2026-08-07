@@ -302,13 +302,36 @@ defined 로 전환됐다. 잔존 미정의는 #336(무지정+예산+세트) 1건
 combo-0023·0026·0031·0035~0039·0053~0055(11건)는 리뷰 라운드 2 에서 2차 드리프트(다단계 emit)로
 `eventTypes` 가 한 번 더 갱신됐다(위 공통 배경 참조) — 다른 필드·판정은 그대로다.
 
-**관찰(후속 이슈 후보, 이 PR 에서 구현하지 않는다)**: `observed` 는 다른 레인이 SSE 이벤트를 바꿀
-때마다(이번엔 두 번) 조용히 낡는데, 커밋된 값과 재실행 값을 대조하는 가드가 없어서 아무도 모른다
-— `refresh-observed` 로 손으로 재생성해야만 드러난다. 가드(예: PR CI 에서 `refresh_observed
-(write=False)` 결과와 커밋본을 diff)를 넣으면 이 드리프트를 자동으로 잡을 수 있지만, **SSE 이벤트
-구조를 건드리는 모든 레인의 PR 이 이 eval 데이터 재생성을 강제당한다**(레인 간 결합 — SSE 스트림을
-고치는 팀이 매번 combo_matrix 를 같이 갱신해야 한다). 이 트레이드오프(드리프트 조기 발견 vs. 레인
-결합 비용)의 판단은 후속 이슈로 미룬다 — 이 PR 은 구현하지 않는다.
+**드리프트 가드(#424)**: 위에서 두 차례 확인했듯 `observed` 는 다른 레인이 SSE 이벤트를 바꿀 때마다
+조용히 낡는데, 그동안은 커밋된 값과 재실행 값을 대조하는 가드가 없어서 아무도 몰랐다 —
+`refresh-observed` 로 손으로 재생성해야만 드러났다. `test_observed_guarded_fields_match_recomputed_
+values_for_all_ci_rows`(`tests/eval/test_combo_matrix_eval.py`)가 이 가드다: PR 에서 매번
+`refresh_observed(write=False)` 를 재실행해 커밋본과 딕셔너리째(키 존재 여부 포함) 대조한다.
+
+전량 byte diff 가 아니라 **핵심 계약 필드만** 고른 이유는 SSE 를 건드리는 모든 레인(동시 6~8개)이
+이 eval 데이터 재생성을 강제당하는 레인 결합 비용 때문이다 — 실측상 두 차례 드리프트가 전부
+`eventTypes` 하나였고, 이벤트 추가는 다른 레인의 정상 작업이다. 필드 경계(`OBSERVED_GUARDED_FIELDS`,
+`evals/combo_matrix/schema.py`):
+
+- **포함**(바뀌면 파이프라인 동작이 실제로 바뀐 것): `terminal`·`finishReason`·`errorCode`·
+  `actionType`·`actionReason`(SSE 종료/오류/액션 계약), `pushCount`·`pushProductCount`·`listType`
+  (push 결과 형태), `searchCallCount`·`searchFilters`·`unappliedSearchFilters`(검색 경계 도달값,
+  #381), `unhandledException`(안전망 dict 낙성 회귀), `outcome`·`itemCount`·`exception`·
+  `statusCode`(HOME 계약), `profileHookInvoked`·`buildReasonsInvoked`·`reasonsFilledCount`·
+  `reasonsNull`(HOME 계측).
+- **제외**(다른 레인의 정상 작업이라 대조하면 소음): `eventTypes`(SSE 이벤트 추가, 실측 2회 드리프트
+  전부 이 필드), `lastTokenText`(문구, 계약 아님), `notes`/`note`(관측 한계 서술).
+
+**행 범위**: `status` 와 무관하게 `observed` 가 있는 모든 ci 행(partial 인 combo-0038 포함) — 이건
+기록 신선도 검사이지 미정의 동작의 스펙화가 아니다. `expected`·`status`·`undefined_tuple` 은 이
+가드가 보지 않는다.
+
+**깨졌을 때 조치**: `uv run python -m evals.combo_matrix refresh-observed` 로 갱신 → 위 표에 행을
+추가해 무엇이 왜 바뀌었는지(실측 개선/회귀/필드 추가) 판정을 남긴다.
+
+변이 시험으로 경계가 실제로 작동함을 확인했다(2026-08-07): combo-0031 의 `finishReason` 을
+`zero_result`→`stop` 로 바꾸면 가드가 깨지고(핵심 계약 필드), `eventTypes` 맨 앞 이벤트를 지우면
+가드는 그대로 통과한다(제외 필드) — 둘 다 원복 후 확인.
 
 ## 관측 러너가 안 쓰는 것
 

@@ -15,6 +15,49 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 # (제약 인지 covering array 의 표준 처리, packet §2).
 NA = "n/a"
 
+# `expected/expected_behavior.jsonl` 의 `observed` 는 러너를 실제로 돌려 기록한 관측값이라
+# 커밋본과 재실행 결과가 드리프트해도 아무 테스트도 잡지 못한다(이슈 #424) — 다른 레인이 SSE
+# 이벤트를 바꾸면 이 필드가 조용히 낡는다(실측 2회, 전부 `eventTypes` 하나만 바뀜). 그렇다고
+# `observed` 전체를 byte diff 로 잠그면 SSE 를 건드리는 모든 레인(동시 6~8개)이 이 eval 데이터
+# 재생성을 강제당한다 — 그래서 **핵심 계약 필드만** 골라 대조한다.
+#
+# 포함(핵심 계약 필드 — 바뀌면 파이프라인 동작이 실제로 바뀐 것이다):
+#   terminal·finishReason·errorCode·actionType·actionReason — SSE 종료/오류/액션 계약
+#   pushCount·pushProductCount·listType — push 결과 형태
+#   searchCallCount·searchFilters·unappliedSearchFilters — 검색 경계 도달값(#381)
+#   unhandledException — `_observe_chat` 안전망이 dict 로 낙성하는 회귀(§ runner.py 모듈 docstring)
+#   outcome·itemCount·exception·statusCode — HOME(I-22) 계약
+#   profileHookInvoked·buildReasonsInvoked·reasonsFilledCount·reasonsNull — HOME 계측
+# 제외(다른 레인의 정상 작업이라 대조하면 소음이 된다):
+#   eventTypes — SSE 이벤트 추가는 다른 레인의 정상 작업이고, 실측상 두 차례 드리프트가
+#     전부 이 필드 하나였다(#396 progress emit 확장 등)
+#   lastTokenText — 사용자 노출 문구(계약 아님, 문구 톤 조정이 정상 작업)
+#   notes·note — 하네스가 붙이는 관측 한계 서술(관측 로직 자체는 계약이 아니다)
+OBSERVED_GUARDED_FIELDS: frozenset[str] = frozenset(
+    {
+        "terminal",
+        "finishReason",
+        "errorCode",
+        "actionType",
+        "actionReason",
+        "pushCount",
+        "pushProductCount",
+        "listType",
+        "searchCallCount",
+        "searchFilters",
+        "unappliedSearchFilters",
+        "unhandledException",
+        "outcome",
+        "itemCount",
+        "exception",
+        "statusCode",
+        "profileHookInvoked",
+        "buildReasonsInvoked",
+        "reasonsFilledCount",
+        "reasonsNull",
+    }
+)
+
 ChecklistType = Literal["MFT", "INV", "DIR"]
 ObservationMode = Literal["ci", "manual"]
 ExpectedStatus = Literal["defined", "partial", "undefined"]

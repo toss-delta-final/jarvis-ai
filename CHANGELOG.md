@@ -10,6 +10,21 @@
 ## [Unreleased]
 
 ### Added
+- **#424 — combo_matrix `observed` 드리프트 가드 신설** — `expected_behavior.jsonl` 의 `observed`
+  는 러너 재실행 **기록**이라, 다른 레인이 SSE 이벤트를 바꾸면 커밋본이 조용히 낡아도 아무
+  테스트도 잡지 못했다(PR #420 작업 중 실측 2회, 둘 다 `eventTypes` 만 드리프트하고 핵심 계약
+  필드는 불변). 전량 byte diff 는 SSE 를 건드리는 모든 레인(동시 6~8개)에 이 eval 데이터
+  재생성을 강제해 레인 결합 비용이 크므로, 핵심 계약 필드(`terminal`·`finishReason`·`errorCode`·
+  `actionType`·`actionReason`·`pushCount`·`pushProductCount`·`listType`·`searchCallCount`·
+  `searchFilters`·`unappliedSearchFilters`·`unhandledException`·HOME 계약/계측 4종)만 골라
+  `OBSERVED_GUARDED_FIELDS`(`evals/combo_matrix/schema.py`)로 추리고, `eventTypes`·
+  `lastTokenText`·`notes`/`note` 는 다른 레인의 정상 작업이라 제외했다. 새 테스트
+  `test_observed_guarded_fields_match_recomputed_values_for_all_ci_rows`
+  (`tests/eval/test_combo_matrix_eval.py`)가 PR 마다 `refresh_observed(write=False)` 결과와
+  커밋본을 딕셔너리째(키 존재 여부 포함) 대조하며, `status` 와 무관하게 `observed` 가 있는 모든
+  ci 행(partial 인 combo-0038 포함)을 본다 — 기록 신선도 검사이지 미정의 동작의 스펙화가
+  아니다. 변이 시험으로 경계를 확인했다: `finishReason` 변경은 가드를 깨뜨리고 `eventTypes`
+  변경은 통과시킨다(둘 다 원복). 계약(api-spec) 무변경.
 - **#380 — 과소지정 판정 축 실 LLM 실측 하네스 신설(`evals/underspecified_probe`)** — SPEC-
   UNDERSPECIFIED-336 §7.3 이 남긴 게이트 잔여 항목("실 LLM 이 판정 축을 실제 발화에서 얼마나
   정확히 산출하는지 실측하지 않았다")을 채운다. 30 앵커(cases.json 승계 7 + 신규 23) × N=8 =

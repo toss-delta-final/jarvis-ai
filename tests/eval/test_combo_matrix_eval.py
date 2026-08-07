@@ -26,6 +26,7 @@ from evals.combo_matrix.loader import (
     load_expected,
     load_manifest,
 )
+from evals.combo_matrix.__main__ import refresh_observed
 from evals.combo_matrix.report import coverage_report
 from evals.combo_matrix.runner import (
     _failing_add_to_cart,
@@ -33,7 +34,12 @@ from evals.combo_matrix.runner import (
     build_decompose_json,
     observe,
 )
-from evals.combo_matrix.schema import AxesDocument, ComboCase, ExpectedBehaviorRow
+from evals.combo_matrix.schema import (
+    OBSERVED_GUARDED_FIELDS,
+    AxesDocument,
+    ComboCase,
+    ExpectedBehaviorRow,
+)
 
 pytestmark = pytest.mark.eval
 
@@ -131,6 +137,63 @@ def test_context_axis_is_subset_of_intent_probe_context_ids() -> None:
     doc = load_axes()
     axes_context = set(doc.axis_by_id()["context"].value_ids()) - {"n/a"}
     assert axes_context <= set(CONTEXT_IDS)
+
+
+# ─────────── 4a. observed 드리프트 가드 (이슈 #424) ───────────
+
+
+async def test_observed_guarded_fields_match_recomputed_values_for_all_ci_rows() -> None:
+    """`expected_behavior.jsonl` 의 `observed` 는 러너 재실행 **기록**이라, 다른 레인이 SSE 이벤트를
+    바꾸면 커밋본이 조용히 낡아도 아무 테스트도 잡지 못했다(#424 — PR #420 작업 중 실측 2회, 둘 다
+    `eventTypes` 만 드리프트했고 핵심 계약 필드는 불변). 전량 byte diff 는 SSE 를 건드리는 모든
+    레인(동시 6~8개)에 이 eval 데이터 재생성을 강제해 레인 결합 비용이 크므로, `OBSERVED_
+    GUARDED_FIELDS`(schema.py, 근거 동봉)로 추린 핵심 계약 필드만 딕셔너리째(키 존재 여부 포함)
+    대조한다.
+
+    **행 범위: `status` 와 무관하게 `observed` 가 있는 모든 ci 행**(partial 인 combo-0038 포함) —
+    이건 기록 신선도 검사이지 미정의 동작의 스펙화가 아니다. `status`·`expected`·`undefined_tuple`
+    은 이 테스트가 보지 않으며, 기록이 낡는 문제는 defined/partial 을 가리지 않는다.
+    """
+    committed_rows = {r.case_id: r for r in load_expected()}
+    _, refreshed_rows = await refresh_observed(write=False)
+
+    mismatches: list[tuple[str, dict, dict]] = []
+    for refreshed in refreshed_rows:
+        committed = committed_rows[refreshed.case_id]
+        if committed.observed is None:
+            continue  # manual 행(observed 항상 null) — 대조 대상 아님
+        committed_proj = {
+            k: v for k, v in committed.observed.items() if k in OBSERVED_GUARDED_FIELDS
+        }
+        refreshed_proj = {
+            k: v for k, v in (refreshed.observed or {}).items() if k in OBSERVED_GUARDED_FIELDS
+        }
+        if committed_proj != refreshed_proj:
+            mismatches.append((refreshed.case_id, committed_proj, refreshed_proj))
+
+    if not mismatches:
+        return
+
+    lines = [
+        "observed 핵심 계약 필드 드리프트 감지 — 커밋본과 재실행 결과가 어긋난다:",
+    ]
+    for case_id, committed_proj, refreshed_proj in mismatches:
+        for key in sorted(set(committed_proj) | set(refreshed_proj)):
+            old = committed_proj.get(key, "<필드 없음>")
+            new = refreshed_proj.get(key, "<필드 없음>")
+            if old != new:
+                lines.append(f"  {case_id}.{key}: 커밋본={old!r} → 재실행={new!r}")
+    lines.append("")
+    lines.append("조치: `uv run python -m evals.combo_matrix refresh-observed` 로 갱신한 뒤")
+    lines.append(
+        "evals/combo_matrix/README.md 「관측 재생성 이력」에 무엇이 왜 바뀌었는지"
+        "(실측 개선/회귀/필드 추가) 판정을 남길 것."
+    )
+    lines.append(
+        "eventTypes·lastTokenText·notes 만 바뀐 경우엔 이 가드가 깨지지 않는다 — "
+        "이 가드가 깨졌다면 핵심 계약 필드가 실제로 바뀐 것이다(OBSERVED_GUARDED_FIELDS 참조)."
+    )
+    pytest.fail("\n".join(lines))
 
 
 # ─────────── 5. 커버리지 하한 ───────────
