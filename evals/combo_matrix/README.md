@@ -201,14 +201,15 @@ defined 로 전환됐다. 잔존 미정의는 #336(무지정+예산+세트) 1건
   (`if not candidates and not underspecified:`)는 진입해도 후보가 비어 0회 반복, 완화 칩 블록
   (`if not underspecified and (not candidates or len(candidates) < settings.relaxation_min_results):`)
   도 진입해도 probe 후보가 비어 칩 0개다. **갭이 아니라 정의된 동작이므로 `UNDEFINED_CELLS.md` 에
-  등재하지 않는다.** 0건 주입 유지 결정(위 문단)도 이 판정 위에 서 있다 — present 축 구성을 바꿔
-  자연 발생을 노려도 `price_min` 하나뿐인 present 축 구성 자체는 안 바뀌므로 완화 축이 새로 생기지
-  않는다(present 축 구성을 바꾸는 건 `axes.json`/케이스 재생성을 흔드는 별개 작업이다). **자동완화
+  등재하지 않는다.** 0건 주입 유지 결정(위 문단)도 이 판정 위에 서 있다 — 표본값(`runner.
+  _FILTER_SAMPLE`)을 과지정 값으로 바꿔 자연 0건을 노려도, 이 케이스에 present 인 축은 여전히
+  `price_min` 하나라 완화 축이 새로 생기지 않는다. present 축 구성 자체를 바꾸려면
+  `axes.json`/케이스 재생성(바이트 동일 재현 가드)을 흔들어야 해서 별개 작업이다. **자동완화
   전용 축을 이 매트릭스에 새로 뽑지도 않는다** — 자동완화의 실검증은 이미
   `tests/unit/test_relaxation.py`(`test_auto_relaxation_emits_notice_and_recovers_products` 등)
   소관이고, 이 하네스의 고정 대역 카탈로그 + 0건 주입으로는 "완화가 결과를 **살린다**"를 표현할 수
   없다(주입이 항상 0건이라 probe 도 0건 → 채택 자체가 불가능). 이 판정은
-  `test_overspecified_zero_axis_has_no_relaxable_filter_axis_so_no_research_runs`
+  `test_overspecified_zero_axis_has_no_relaxable_filter_axis_so_no_relaxation_search_runs`
   (`tests/eval/test_combo_matrix_eval.py`)가 잠근다.
   `degrade=spring_timeout` 과 겹치면 검색 실패가 우선한다(0건 성공보다 상위 실패, `failing_search`).
 - **`constraint_strength=unspecified` + degrade≠none 조합은 `search`/`rerank` degrade 를 실제로
@@ -331,6 +332,11 @@ combo-0023·0026·0031·0035~0039·0053~0055(11건)는 리뷰 라운드 2 에서
    1건을 추가했다(`refresh-observed` 재실행, 「알려진 관측 한계」`overspecified_zero` 항목 참조).
    `notes` 는 `OBSERVED_GUARDED_FIELDS`(#424 드리프트 가드, 아래 절) 제외 필드라 이 재생성으로도
    가드는 계속 통과한다 — 실측으로 경계 설계가 맞음을 확인했다. 다른 행·필드는 바뀌지 않았다.
+   같은 날 리뷰 라운드 2 로 combo-0031 행의 `expected` 서술도 실측에 맞게 정정했다(evidence 에
+   `relaxation.py::FIELD_TO_ATTR` 1건 추가) — **실측(`observed`)이 있고 그 실측과 어긋나는 행만**
+   정정 대상이다. 나머지 `overspecified_zero` 행(combo-0030·0032·0033·0034)은 전부
+   `observation_mode=manual`(`observed` null)이라 실측 근거가 없고, present 필터축도 완화 축
+   (brand·color 등)이라 그 서술이 틀렸다고 말할 근거가 없어 건드리지 않았다.
 
 **드리프트 가드(#424)**: 위에서 두 차례 확인했듯 `observed` 는 다른 레인이 SSE 이벤트를 바꿀 때마다
 조용히 낡는데, 그동안은 커밋된 값과 재실행 값을 대조하는 가드가 없어서 아무도 몰랐다 —

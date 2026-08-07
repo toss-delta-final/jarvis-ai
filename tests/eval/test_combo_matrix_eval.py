@@ -8,6 +8,7 @@ import typing
 import pytest
 
 from app.services.spring_client import CartError, WishlistError
+from evals.combo_matrix.__main__ import refresh_observed
 from evals.combo_matrix.generator import (
     FILTER_AXES,
     add_directed_cases,
@@ -26,7 +27,6 @@ from evals.combo_matrix.loader import (
     load_expected,
     load_manifest,
 )
-from evals.combo_matrix.__main__ import refresh_observed
 from evals.combo_matrix.report import coverage_report
 from evals.combo_matrix.runner import (
     _failing_add_to_cart,
@@ -394,7 +394,9 @@ async def test_home_profile_unavailable_injection_actually_runs() -> None:
 # ─────────── 6c. overspecified_zero 판정 잠금 (이슈 #425) ───────────
 
 
-async def test_overspecified_zero_axis_has_no_relaxable_filter_axis_so_no_research_runs() -> None:
+async def test_overspecified_zero_axis_has_no_relaxable_filter_axis_so_no_relaxation_search_runs() -> (
+    None
+):
     """`constraint_strength=overspecified_zero` 는 0건이면서도 자동완화·완화칩이 돌지 않는다 —
     갭이 아니라 **완화 가능 축이 하나도 없어서 생기는 정의된 동작**이다(#425 판정).
 

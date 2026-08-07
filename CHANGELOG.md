@@ -274,11 +274,11 @@
   돈다는 서술)을 정정하고 `observed.notes` 에 이 판정을 남기도록 `refresh-observed` 를 1회
   재실행했다(combo-0031 의 `notes` 만 변경, #424 드리프트 가드는 여전히 통과 — `notes` 는 가드
   제외 필드라 경계 설계가 맞다는 실측 증거). 새 잠금 테스트
-  `test_overspecified_zero_axis_has_no_relaxable_filter_axis_so_no_research_runs`
+  `test_overspecified_zero_axis_has_no_relaxable_filter_axis_so_no_relaxation_search_runs`
   (`tests/eval/test_combo_matrix_eval.py`)이 완화 후보 0건 전제와 그로부터 나오는 관측(재검색
-  0회)을 함께 고정한다. **0건 주입은 유지**한다(#381 결론 유지) — 자연 발생시키려면 과지정
-  전용 표본값이 필요한데 present 축 구성(`price_min` 하나) 자체는 안 바뀌어 완화 축이 새로
-  생기지 않는다. **자동완화 전용 축도 이 매트릭스에 새로 뽑지 않는다** — 자동완화 실검증은
+  0회)을 함께 고정한다. **0건 주입은 유지**한다(#381 결론 유지) — 표본값을 과지정 값으로 바꿔
+  자연 0건을 노려도 이 케이스에 present 인 축은 여전히 `price_min` 하나라 완화 축이 새로 생기지
+  않는다. **자동완화 전용 축도 이 매트릭스에 새로 뽑지 않는다** — 자동완화 실검증은
   이미 `tests/unit/test_relaxation.py` 소관이고, 이 하네스의 고정 대역 카탈로그 + 0건 주입으로는
   "완화가 결과를 살린다"를 표현할 수 없다. `expected_behavior.jsonl` 의 `status`·`expected`·
   `undefined_tuple` 은 건드리지 않았다(미정의 셀 등재 아님). `app/` 무변경, 계약(api-spec) 무변경.
