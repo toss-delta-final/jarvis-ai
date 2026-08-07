@@ -10,6 +10,58 @@
 ## [Unreleased]
 
 ### Added
+- **#424 — combo_matrix `observed` 드리프트 가드 신설** — `expected_behavior.jsonl` 의 `observed`
+  는 러너 재실행 **기록**이라, 다른 레인이 SSE 이벤트를 바꾸면 커밋본이 조용히 낡아도 아무
+  테스트도 잡지 못했다(PR #420 작업 중 실측 2회, 둘 다 `eventTypes` 만 드리프트하고 핵심 계약
+  필드는 불변). 전량 byte diff 는 SSE 를 건드리는 모든 레인(동시 6~8개)에 이 eval 데이터
+  재생성을 강제해 레인 결합 비용이 크므로, 핵심 계약 필드(`terminal`·`finishReason`·`errorCode`·
+  `actionType`·`actionReason`·`pushCount`·`pushProductCount`·`listType`·`searchCallCount`·
+  `searchFilters`·`unappliedSearchFilters`·`unhandledException`·HOME 계약/계측 4종)만 골라
+  `OBSERVED_GUARDED_FIELDS`(`evals/combo_matrix/schema.py`)로 추리고, `eventTypes`·
+  `lastTokenText`·`notes`/`note` 는 다른 레인의 정상 작업이라 제외했다. 새 테스트
+  `test_observed_guarded_fields_match_recomputed_values_for_all_ci_rows`
+  (`tests/eval/test_combo_matrix_eval.py`)가 PR 마다 `refresh_observed(write=False)` 결과와
+  커밋본을 딕셔너리째(키 존재 여부 포함) 대조하며, `status` 와 무관하게 `observed` 가 있는 모든
+  ci 행(partial 인 combo-0038 포함)을 본다 — 기록 신선도 검사이지 미정의 동작의 스펙화가
+  아니다. 변이 시험으로 경계를 확인했다: `finishReason` 변경은 가드를 깨뜨리고 `eventTypes`
+  변경은 통과시킨다(둘 다 원복). 계약(api-spec) 무변경.
+- **#380 — 과소지정 판정 축 실 LLM 실측 하네스 신설(`evals/underspecified_probe`)** — SPEC-
+  UNDERSPECIFIED-336 §7.3 이 남긴 게이트 잔여 항목("실 LLM 이 판정 축을 실제 발화에서 얼마나
+  정확히 산출하는지 실측하지 않았다")을 채운다. 30 앵커(cases.json 승계 7 + 신규 23) × N=8 =
+  240콜을 `is_underspecified_turn`·`detect_expansion_need` 프로덕션 함수에 그대로 넣어(판정
+  로직 복제 금지) `missRate`(confirmatory-primary)·`falseAlarmRate`(confirmatory-secondary)를
+  Wilson CI·trivial baseline 대조·원인 축 분해(ablation, `blockingAxes` 조합별 집계)·불변
+  재판정(flag off·prior 게이트)과 함께 잰다. confirmatory 분모는 `intent=="recommend"` 표본만
+  쓴다 — 프로덕션은 그 턴에서만 판정을 호출한다(`nonRecommendIntentCount` 진단으로 노출 크기를
+  남긴다). `fast`(gpt-5-nano) 1회 실측(리뷰 라운드 1 수정 반영 재실행):
+  **`missRate` 112/112(100.0%)** · **`falseAlarmRate` 0/104(0.0%)** — 미탐 원인
+  `blockingAxes` 조합은 `semanticQueryIsFallback` 단독 82.1% · `filters.attrConditions`
+  동반 9.8% · `categoryQueries` 동반 8.0%(fast 티어가 "아무거나"류 발화에도 의미쿼리·속성
+  조건을 스스로 채워 넣는다). `judgmentAccuracy`(48.1%)는 이번 런에서 trivial baseline 과
+  동률이다. 기본값(`underspecified_reask_enabled`)은 전환하지 않는다 — 이 실측은 그 전제
+  하나를 채웠을 뿐이다(`docs/specs/SPEC-UNDERSPECIFIED-336.md` §7.3,
+  `evals/underspecified_probe/baselines/fast-2026-08-06/`).
+- **#401 — 카테고리 사전 시드 정본을 repo 로 편입하고 0행/0임베딩 가드를 둔다** — 발화→카테고리
+  매핑(`category_distance_max=0.26`, #344)의 근거 사전(leaf 1,007행)이 지금까지 repo 밖
+  (`~/inte-final/_sql`)에만 있어 아무도 그 근거를 재현·검증할 수 없었고, `db/catalog/init/
+  02_categories.sql` 은 스키마만 만들어 fresh 환경은 `categories` 0행으로 뜬 채 조용히 무필터로
+  퇴화했다(개별 발화 매핑 실패와 사전 전체 결측이 같은 신호로 보임). MariaDB 카탈로그 덤프에서
+  leaf 1,007개를 codepoint 정렬로 뽑아 `db/catalog/seed/categories.json` 정본을 만들고
+  (`scripts/derive_category_seed.py`, `--check` 모드로 재현 검증 가능, 새 의존성 없음),
+  같은 원천에서 부트스트랩 SQL `db/catalog/init/04_categories_seed.sql`(embedding NULL, 2단계
+  분리 설계 유지)을 생성했다. `app/pipelines/category_seed.py` 에 `check_category_dictionary`
+  가드를 추가해 기동 시(`app/main.py` lifespan) categories 총 행 수와 **embedding 채워진 행
+  수를 따로** 확인한다 — `search_categories_pg` 가 `embedding IS NOT NULL` 로 거르므로 행만
+  있고 임베딩이 없으면 사전이 0행인 것과 동일하게 죽기 때문이다(둘 다 구성 오류로 ERROR 로그,
+  `category_dictionary_startup_check` 설정으로 `off`/`log`(기본)/`fail` 선택 — 기본이 `fail`
+  이 아닌 이유는 사전 결측이 서비스 전면 중단보다 하방이 얕은 상태이기 때문). `log`/`off` 는
+  DB 연결 실패로 기동을 막지 않지만, `fail` 은 사전이 건강함을 확인하지 못하면(도달 불가 포함)
+  기동을 거부한다 — `psycopg` 가 연결 실패에 구조화된 판별자를 주지 않아 "일시적 불통"과
+  "영구적 구성 오류"(DSN 오타 등)를 예외 타입으로 구분할 수 없기 때문이다(리뷰 대응).
+  `evals/category_probe/manifest.py::dictionary_fingerprint` 에
+  `canonicalSha256`/`seed`/`matchesSeed` 를 추가해 라이브 DB 상태를 정본과 대조할 수 있게
+  했다(기존 `rowCount`/`sha256` 은 과거 런 비교를 위해 그대로 보존). `category_distance_max`
+  값 자체는 바꾸지 않았다.
 - **#396 — 구매자 `progress` 다회 emit + `stage` 어휘 확장(1종 → 7종, 개방형)** —
   `analyzing` 1종·턴당 최대 1회이던 진행 표시를 파이프라인의 실제 경계마다 stage 를 바꿔
   내보내도록 확장했다. `mapping`(카테고리 매핑 중)·`expanding`(니즈 전개 중, #198)·
@@ -205,6 +257,44 @@
 - **#299 — 요청 바디 크기 상한** — 필드별 상한(`chat_message_max_chars`·`screen_products_raw_scan_max` 등)은 흩어져 있고 상한 없는 필드(`conditionActions` 등)도 계속 생기는데, 레이트 리밋(§2.8)은 요청 **건수**만 세 임의 크기 바디를 반복 전송할 수 있었다. `app/core/body_limit.py`에 `BodySizeLimitMiddleware`(순수 ASGI)를 신설해 `Content-Length` 초과는 바디를 읽기 전에, 헤더가 없는(chunked) 경우는 `receive`를 감싼 실수신 바이트 누적으로 상한(`request_body_max_bytes`, 기본 1MiB — 필드 상한이 절단 없이 받아들이는 최대 정상 페이로드의 약 4.8배)을 넘기면 거절한다. 초과 응답은 새 코드를 내지 않고 기존 `400 BAD_REQUEST` 봉투를 그대로 쓴다(§2.5에 413/`PAYLOAD_TOO_LARGE`가 없어 신설은 별도 명세 개정 대상) — 와이어 계약 변경 0. 미들웨어는 레이트 리밋 **바깥**(거대 바디가 JWT 서명 검증 비용·레이트 리밋 슬롯을 소모하지 않게)·CORS **안쪽**(400 응답에도 CORS 헤더가 실리게)에 등록한다.
 
 ### Docs
+- **#425 — overspecified_zero 는 완화 축이 없어 재검색이 안 돈다, 정의된 동작으로 판정** —
+  combo_matrix 매트릭스가 README·`expected_behavior.jsonl` 의 `expected` 서술("0건이면 자동 완화·
+  완화 칩으로 대안 제시")과 실측(combo-0031: `searchCallCount=1`·`finishReason=zero_result`,
+  재검색 0회)이 어긋난다고 표시해 갭인지 확인했다. 판정: **갭이 아니라 정의된 동작** — combo-0031
+  에 present 인 필터축은 `price_min` 하나뿐인데
+  `app.agents.buyer.recommendation.relaxation.FIELD_TO_ATTR` 에 `price_min` 이 없어(완화 축은
+  `priceMax`·`ratingMin`·`brand`·`color` 뿐) `build_relaxation_candidates() == []` 다 — config
+  로도 넣을 수 없다(`Settings._require_known_relaxation_chip_fields` 기동 검증). 그 결과
+  `stream_recommendation` 의 `may_auto_relax` 게이트·자동완화 루프·완화 칩 probe 가 전부 조용히
+  0회로 빈다. **대조군 재검토도 정정했다**: combo-0026·0054·0055 의 `searchCallCount:5`,
+  combo-0053 의 `:2` 는 README 가 "자동완화 재검색"이라 잘못 서술하고 있었는데, 실제로는 **완화
+  칩 estCount probe**(주검색 1 + 칩 probe N)다 — 이 매트릭스의 ci 케이스 어디에서도 자동완화
+  루프(`relaxation_auto_fields` 화이트리스트)는 한 번도 실행된 적이 없다(0건이면서 완화 가능
+  축이 present 인 조합이 데이터에 없어서). `runner.py::_observe_chat` 의 오래된 주석(자동완화가
+  돈다는 서술)을 정정하고 `observed.notes` 에 이 판정을 남기도록 `refresh-observed` 를 1회
+  재실행했다(combo-0031 의 `notes` 만 변경, #424 드리프트 가드는 여전히 통과 — `notes` 는 가드
+  제외 필드라 경계 설계가 맞다는 실측 증거). 새 잠금 테스트
+  `test_overspecified_zero_has_no_relaxable_axis_so_no_relaxation_search`
+  (`tests/eval/test_combo_matrix_eval.py`)이 완화 후보 0건 전제와 그로부터 나오는 관측(재검색
+  0회)을 함께 고정한다. **0건 주입은 유지**한다(#381 결론 유지) — 표본값을 과지정 값으로 바꿔
+  자연 0건을 노려도 이 케이스에 present 인 축은 여전히 `price_min` 하나라 완화 축이 새로 생기지
+  않는다. **자동완화 전용 축도 이 매트릭스에 새로 뽑지 않는다** — 자동완화 실검증은
+  이미 `tests/unit/test_relaxation.py` 소관이고, 이 하네스의 고정 대역 카탈로그 + 0건 주입으로는
+  "완화가 결과를 살린다"를 표현할 수 없다. `expected_behavior.jsonl` 의 `status`·`undefined_tuple`
+  은 건드리지 않았다(미정의 셀 등재 아님) — `expected`·`evidence` 는 실측(`observed`)이 있고 그
+  실측과 어긋나는 combo-0031 행 하나만 코드 근거(`relaxation.py::FIELD_TO_ATTR`)와 함께
+  정정했다(리뷰 라운드 2). `app/` 무변경, 계약(api-spec) 무변경.
+- **#384 — #363 후속: 구제~자동완화를 아우르는 공유 왕복 예산/first-token 데드라인 가드 설계** —
+  #363의 전제("첫 SSE=`conditions`, 예산=first-token 10s")가 #396(구매자 `progress` 상시화,
+  api-spec v0.26.2)으로 깨져 재기준선했다. 구속 예산은 이제 `stream_total_timeout_buyer_s`(30s)
+  + 체감 지연이고, 오늘 기본값(`spring_max_retries=0`)에서는 여유(40%)가 있으나 재시도 억제
+  스코프 비대칭(이 문서가 새로 발견) 때문에 **#394 원복(재시도 1로 복귀) 단독으로도 여유가
+  즉시 50%로 줄고, #394+#306(미룬 턴 재시도 스킵)을 함께 원복하면 70%까지** 깎인다 — 공유
+  예산은 "지금 필요한 가드"가 아니라 "#394/#306 원복의 선행 조건"으로 판정하고, 원복 시 사람
+  판단 없이 등급이 정해지도록 3단 등급(관측/좁히기/좁히기+건너뛰기)의 진입 임계값(1급 지표
+  자체의 이론 최댓값 대비 비율로 정의 — 30s 대비 고정 비율은 그 지표의 도달 가능 범위 밖이라
+  기각)을 사전 결속했다. 코드·계약 변경 없음(개정안은 문서 안에 diff로만 제시).
+  (`docs/specs/DESIGN-SHARED-BUDGET-384.md`)
 - **#367 — HOME(I-22) 실패 모드 어휘 4종을 api-spec §3.7 에 현행 추인으로 규범화(v0.26.1, 와이어 불변) + combo_matrix degrade 축을 지면별 어휘로 갱신(HOME 미정의 셀 3건 해소)** — #335 매트릭스가 발견한 `surface=HOME × degrade∈{embedding_missing,rerank_failed,spring_timeout}` 미정의 셀(CHAT 검색/rerank 실패 어휘가 HOME엔 대응 경로가 없음)을 승인된 A안(현행 추인, 코드 무변경)으로 해소한다. `docs/api-spec.md` §3.7에 「HOME 실패 모드(degrade) 어휘」 소절을 신설해 `profile_unavailable`(200 degrade)·`catalog_unavailable`(503)·`catalog_timeout`(504)·`reason_degraded`(200+reason null) 4종을 규범화하고, 실패 응답표 503/504 행의 조건 서술 드리프트를 정정했다. `evals/combo_matrix/axes.json`의 `degrade` 축을 지면별 어휘로 갱신하고(`datasetVersion` 2.0.0) excludes 제약 2건으로 지면 밖 조합을 금지, `runner.py::_observe_home`에 신규 4종 관측 주입을 추가했다. 재생성 결과 케이스 58→57건, pairwise 2-wise 100%(1092/1092) 유지, UNDEFINED_CELLS.md는 미정의 셀 5→1건(잔존 #336)으로 줄었다 — #368(94f0fb2)이 이미 고친 `wishlist_add` SpringUnavailableError 갭도 재관측으로 defined 전환됐다.
 - **#322 — #149 개인화 그래프 계약 개정: 개별 삭제 undo 창·원문 물리 삭제, 전체 초기화 범위에 대화 전사록 포함** — 구현(#150) 착수 전에 계약이 서로 모순 없이 한 방향을 가리키게 정리했다. **[HARD] 조항 2건이 뒤집힌다.** 계약만이며 코드 변경은 없다. (api-spec §2.5·§3.8·§3.9·§5, v0.26.0 / `docs/specs/SPEC-PROFILE-GRAPH-149.md` v0.2.0 / `SPEC-PROFILE-001` v0.8.0)
   - **개별 삭제 = 즉시 억제 → undo 창(기본 5분, config) → 원문 물리 삭제, tombstone 만 잔존.** 구 계약은 억제만 하고 원문을 무기한 보관했는데, 사용자가 "지웠다"고 믿는 문장의 원문을 들고 있을 이유가 없다(데이터 최소화). tombstone 에 시간 만료를 두지 않는 근거는 실측이다 — 세션 버퍼 flush 가 `profile_idle_sweep_interval_s`(60초) 주기로 돌아, 만료시키면 창이 닫힌 직후 같은 발화가 재승격돼 방금 지운 취향이 부활한다. **REQ-PGRAPH-032(pin 만료 없음)와의 구분 문장**을 SPEC 에 박았다 — 만료되는 것은 *원문 보관 기간*이지 *사용자 의도*가 아니다.
@@ -230,7 +320,12 @@
 - **#285 — 챗봇 장바구니 삭제·수량 변경·찜 추가·해제·목록 internal 계약 초안을 정본에 등재** — Notion 「📡 API 명세서」에 I-24~I-28로 등재했다. 발명이 아니라 FE↔BE 정본 실측(C-4 삭제·C-3 수량 변경·M-5 찜 추가·M-6 찜 해제·M-4 찜 목록)의 의미론과 I-2/I-18의 internal 규약(`X-Internal-Token`, AI가 검증한 JWT `sub` 유래 신원, 3초 타임아웃, 응답 envelope)을 이식한 제안이며, I-25 수량 변경은 이슈 본문에 없던 신규 편입이다. 아직 BE 협의 전으로 각 정본 페이지에 초안 배너가 있고 잔여 안건은 이슈 #285 코멘트에 남겼으며, 사본 `docs/api-spec.md` 동기화와 CH-2 `action` 8종 확장은 협의 후 진행한다.
 
 ### Fixed
+- **#439 — 스트림 티켓 신원 discriminator XOR 규약이 운영에서 실제 발급되는 판매자 티켓을 전부 거부하던 문제(api-spec §2.3, v0.28.0)** — 종전 `_claims_to_identity`(jwks 레인)는 `role`과 `sub_type`이 함께 있으면 값과 무관하게 `401 TOKEN_INVALID`(`exactly one identity discriminator is required`)였다. BE `StreamTicketProvider` 실측과 CH-6 정본(2026-07-18 확정)을 확인한 결과 실제 발급 형식은 "`sub_type`은 모든 티켓 공통, 판매자만 `role="seller"`·`brandId` 추가"이며 판매자 티켓은 `sub_type="member"`를 항상 동반한다 — 즉 XOR 규약이 BE가 실제로 발급하는 판매자 티켓을 전부 거부하고 있었고, 이것이 운영 `/seller/chat 401`(#408이 사유 로깅을 넣은 바로 그 401)의 원인이었다. `sub_type`을 모든 티켓의 필수 클레임으로, `role`을 선택적 권한 클레임(있으면 exact `"seller"` + `sub_type="member"` 요구)으로 재정의해 XOR을 폐지했다 — `role="seller"`+`sub_type="member"` both-claims 티켓을 신규 수용하고, `sub_type` 없는 판매자 티켓만 종전 허용에서 `401`로 강화했다(CH-6 정본상 실존하지 않는 형식이라 와이어 영향 0). BE 확답에 따라 구매자 티켓에는 `role`을 싣지 않으므로 buyer role 값(`"buyer"` 등 추측 상수)은 신설하지 않았다. 401 사유 문자열은 `invalid sub_type claim`/`invalid seller role claim` 2종으로 정리했고 #408 로그 경로에 그대로 반영됨을 테스트로 확인했다. dev 레인(`AUTH_MODE=dev`)은 이번 개정 대상이 아니며 무변경이다.
+- **#391 — `embed_texts` 총 소요가 청크 수만큼 무제한 누적될 수 있던 문제(#353 후속)** — `embedding_timeout_s` 는 청크(HTTP 요청) 1건당 상한이라, 100건을 넘는 입력이 여러 청크로 나뉘면 `embed_texts` 한 번의 총 소요가 `청크 수 × embedding_timeout_s` 까지 누적될 수 있었다. 방식2(`embedding_rerank`)가 hot path 기본이라 이 누적은 SSE first-token 예산을 잠식하는데도, 종전엔 함수 단위 총 시간 상한이 코드로 강제되지 않고 docstring 주의문에만 의존했다. 신규 `embedding_total_timeout_s`(기본 3.0s, `embedding_timeout_s` 절 안)로 `embed_texts` 호출 1회 전체의 벽시계 예산을 두고, 첫 청크는 예산과 무관하게 항상 시도하되 두 번째 이후 청크는 내기 전에 `경과 + embedding_timeout_s > 예산` 이면 청크를 내지 않고 `EmbeddingError` 를 던진다(부분 결과 금지 — 호출부가 `zip(..., strict=True)` 등 위치 기반으로 인덱싱해 짧은 결과는 조용한 오정렬을 낳는다) — 기존 degrade 경로(`EmbeddingRerankBackend` → Spring 순서, #101/#7)로 자연히 이어진다. 오프라인 1회 빌드(`category_seed.seed_from_file`, 카테고리 leaf 2056건 → 21청크)는 `embed_texts(..., total_timeout_s=math.inf)` 로 이 예산을 명시 제외한다. 계약(api-spec) 무변경.
+- **#383 — 기동 가드 `_deferred_first_event_i1_calls` 가 구제 폴백 한 단을 과소계상하던 문제(#363 followup)** — #363 이 실측으로 고정해 둔 불일치(가드 모델 2 ≠ 실측 구제 체인 단 수 3, `test_fanout.py` `test_worst_case_rescue_chain_sequential_stages_before_first_sse`)를 §5 가 제안한 보정식으로 해소했다. `1 + (1 if category_expand_enabled else 0) + min(relaxation_max_rounds, |relaxation_auto_fields ∩ relaxation_chip_fields|)` — F-1(#222)에는 별도 kill-switch가 없어 `category_expand_enabled`(기본 `True`)가 F-1·#343 둘의 공통 전제를 잠그고, 둘은 `category_expand_notice_suppressed` 로 상호배타라 한 턴 최대 1회이므로 항이 아니라 존재 여부만 더한다(`search_filter_guard_enabled`(#393)는 무필터 축 0개 턴만 스킵하므로 이 항을 없애지 않는다 — 항에 넣지 않았다). 기본 설정 값은 2 → **3**이 되고(`3 × 3.0 = 9.0 < 10.0`, 기동 통과), 오류 메시지 `recovery` 문구에 새 손잡이 `CATEGORY_EXPAND_ENABLED=false`를 추가했다. 배포 영향은 실측으로 배제했다 — `.github/workflows/deploy.yml`이 운영 env 파일을 매 배포마다 고정 키 목록으로 전면 재작성하는데 그 목록에 `SPRING_TIMEOUT_S`·`CATEGORY_EXPAND_ENABLED`·`RELAXATION_*`는 없어 운영은 코드 기본값으로 돈다. 런타임 동작(`graph.py`)·기본값·계약(api-spec) 무변경 — 기동 시점 검증식만 고쳤다. **PR #414 Claude 리뷰 대응**: 세 항을 균질하게 `spring_timeout_s` 로 값 매기면 구제 폴백 항을 과소평가한다는 지적을 코드로 재현·확인했다 — `graph.py::stream_recommendation` 에서 `spring_client.suppress_search_retry()` 로 재시도를 끄는 `with` 블록은 본 검색(`asyncio.gather` 호출)과 자동완화 probe(`_probe(cand)`) 를 감싼 두 곳뿐이고, F-1/#343 구제 재검색(같은 함수의 `_run_search_unfiltered()` 호출 두 곳 — F-1 폴백·억제-후 재판정)은 그 블록 밖이라 `spring_client.py::search` 의 `attempts = 1 if _search_retry_suppressed.get() else settings.spring_max_retries + 1` 를 그대로 받아 항상 재시도한다(`SPRING_MAX_RETRIES=1` + 기본 타임아웃이면 가드 계산 9.0<10.0 이 통과시키지만 실제 최악은 3.0+3.0+3.0×2=12.0>10.0). 가드 OFF(기본) 분기를 `suppressed_calls × spring_timeout_s + rescue_calls × budget`(신설 순수 함수 `_deferred_first_event_rescue_i1_calls` 가 구제 항만 뗀다, `rescue ≤ total`·`total==0→rescue==0` 불변식 보장)로 항별로 나눠 값을 매기도록 고쳤다. `.env.example` 의 `SPRING_MAX_RETRIES` 예시값도 1 → **0**으로 정정했다(코드 기본값이 이미 0, #394) — 예시 그대로 부팅하면 새 식에서 기동이 거절되던 상태였다. 오늘 기본값(`spring_max_retries=0`)에서는 `budget == spring_timeout_s` 라 항별 값 매김이 갈리지 않아 영향 없음(9.0 그대로).
 - **#325 — I-17 증분 배치가 enrichment 토큰 예산 소진(`openai.LengthFinishReasonError`)으로 운영 정지되던 문제** — 운영 fast tier(gpt-5-nano, reasoning 모델)에서 하드코딩 `max_tokens=600` 전량이 `reasoning_tokens`로 소진돼 본문 0자로 매 5분 주기 정지했다. `enrichment_max_tokens`(기본 2048)·`enrichment_reasoning_effort`(기본 minimal, 배포 변수 `OPENAI_FAST_REASONING_EFFORT` 와 무관하게 고정) 를 config 로 주입하고 `LLMClient.complete` 에 keyword-only `reasoning_effort` 파라미터를 추가했다(OpenAI 캐시 키에 override 포함해 캐시 오염 방지, Anthropic 은 무시). 함께 `artifacts_batch._drain` 의 head-of-line blocking 도 고쳤다 — ON_SALE 단건 실패는 `enrichment_item_attempts`(기본 2) 회 재시도 후 dead-letter 기록으로 격리하고 다음 항목으로 계속하며, 페이지 실패 비율이 `artifacts_batch_failure_ratio_threshold`(기본 0.5) 이상이면(광역 장애로 간주) `PageFailureThresholdExceeded` 를 던져 그 페이지 커서만 미전진(자연 복구)한다. 단, 운영 증분 페이지는 대개 1~3건이라 표본이 `artifacts_batch_failure_min_sample`(기본 5) 미만이면 비율 판정을 생략하고 격리+전진한다 — poison 단건과 광역 장애를 소량 표본만으로 구별할 수 없기 때문이며, 이 가드가 없으면 운영에서 가장 흔한 "문제 상품 1건" 상황에서 ratio=1.0 으로 여전히 head-of-line blocking 이 재현됐다. HIDDEN 삭제 실패는 격리하지 않고 그대로 전파(fail-closed 유지). `BatchResult.failed` 신설, scheduler·run_batch 요약 로그·failed>0 시 별도 ERROR 로그로 관측 사각을 없앴다. **PR #399 리뷰 대응(정밀화)**: 소량 표본에서는 비율 가드가 사실상 죽은 코드가 돼 광역 장애(임베딩 API 다운 등)까지 매번 poison 단건으로 오분류될 수 있음이 지적됐다 — 격리 후보를 enrichment(LLM 호출+파싱) 단계의 내용 실패로 구조적으로 한정하고, 임베딩·스토어 실패와 재시도 소진 후 타임아웃 계열(`app.core.llm.is_timeout_error`)로 판정된 enrichment 실패는 격리하지 않고 그대로 전파하도록 고쳐, 페이지 크기와 무관하게 광역 장애를 자연 복구 경로로 보낸다. 비율 가드는 이제 2선 방어. **PR #399 리뷰 2차 대응(시간 유계)**: 위 "종류로 가른다" 규칙의 대칭적 구멍 2건이 지적됐다 — (1) 특정 상품에서만 결정적으로 재현되는 poison 타임아웃은 재시도를 다 써도 격리되지 않아 매 주기 같은 자리에서 영원히 실패했고, (2) `_finish_change`(embed·upsert) 실패를 무조건 인프라로 규정해 실제로는 그 상품 하나의 콘텐츠 문제(예: enrichment 산출 `extras`가 `embedding_meta_complete` CHECK 위반)일 수 있는 결정적 실패도 영구히 막혔다. 광역 장애와 항목 고유 결정적 실패는 단일 주기 관측만으로는 원리적으로 구별 불가하다는 것이 진단이었다 — 실제로 갈리는 신호는 시간(연속 주기 수)이다. 상품별 연속 실패 스트릭(모듈 메모리, 주기 간 유지, 성공 시 리셋)을 신설해 `artifacts_batch_item_dead_letter_cycles`(기본 3주기 ≈ 15분) 미만이면 종전대로 전파(자연 복구)하고, 도달하면 항목 고유 실패로 확정해 dead-letter 격리한다. enrich 내용 실패(1선)는 정의상 항목 고유이므로 스트릭 판정 없이 즉시 격리하는 종전 동작을 유지한다. 스트릭은 프로세스 재시작 시 리셋되는 인메모리 카운터(영속화는 범위 밖)이며, 스케줄러 잡의 `max_instances=1`·단일 프로세스 전제로 충분하다. 비율 가드는 이제 3선 방어. **PR #399 리뷰 3차 대응(3선도 시간 유계)**: 위 시간 유계가 2선에만 걸려 있어, 1선이 특정 카테고리 상품들의 프롬프트 회귀로 다건을 매 주기 즉시 격리하면(스트릭을 쌓지 않고 pop) 2선 상한이 걸리지 않고, 페이지 실패율은 매 주기 똑같이 임계를 넘어 `PageFailureThresholdExceeded` 가 반복돼 커서가 영원히 전진하지 않는 구멍이 지적됐다 — 3선이 원래 잡으려던 바로 그 케이스(대량 내용 파손)에서 #325 증상이 재현되는 셈이다. 같은 커서(그 페이지를 가져온 fetch 값)에서 비율 가드가 연속 발동한 횟수를 세는 모듈 카운터(프로세스 메모리, 주기 간 유지, 페이지 정상 종료 시 리셋)를 신설해 `artifacts_batch_page_failure_max_cycles`(기본 3주기 ≈ 15분) 미만이면 종전대로 전파(자연 복구)하고, 도달하면 대량 파손이 자연 회복되지 않는 것으로 확정해 그 페이지를 격리(항목들은 이미 1·2선에서 dead-letter 기록됨) 후 커서를 전진시킨다. `HIDDEN` 삭제 실패·`status` 계약 위반은 항목별 ack/DLQ 계약이 없어 이 시간 유계의 대상에서 제외되며 종전대로 무기한 fail-closed 다(api-spec §4.8 명시). **PR #399 리뷰 4차 대응(콘텐츠 실패 화이트리스트)**: 1선 판정("타임아웃이면 2선, 아니면 1선")이 블랙리스트라 `is_timeout_error` 가 모르는 예외(`openai.RateLimitError` 429·`APIConnectionError`·`InternalServerError` 5xx 등 흔한 일시적 인프라 장애)가 전부 콘텐츠 실패로 오분류돼 첫 주기에 곧바로 영구 격리됨이 지적됐다 — R4·R5 가 만든 시간 유계 보호를 흔한 장애가 통째로 우회하는 구멍이었다. `app.core.llm.is_output_length_error`(출력 토큰 예산 소진 전용, `is_timeout_error` 판정 범위는 불변)와 `artifacts_batch._is_enrichment_content_failure` 화이트리스트를 신설해 판정 방향을 뒤집었다 — **1선(즉시 격리)은 증명된 콘텐츠 실패(출력 예산 소진, 원인 없는/ValueError·TypeError 원인의 LLMError)에만 적용하고, 그 외 전부(모르는 실패 포함)는 2선(시간 유계 스트릭)으로 보낸다.** `LLMNotConfigured` 는 `LLMError` 하위타입이지만 항목과 무관한 구성 오류라 화이트리스트에서 명시적으로 제외했다. 복구 규약 변경을 반영해 계약(api-spec §4.8, v0.27.1 — 새 버전 행 없이 같은 개정 정밀화) 갱신.
+- **#381 — combo_matrix 관측 러너가 필터 축을 검색 경계에서 재지 않아 필터 배관 회귀를 못 잡던 문제** — `_observe_chat` 이 항상 고정 3건을 돌려주는 `make_search()` 를 써서 category·price·brand·rating_min 하드필터가 실제로 search 콜러블에 도달하는지 관측하지 못했다(`category` 축은 `#371` 실측 결과 canonical-or-null degrade 로 legs 없이는 항상 `None` 지워져 하네스 전체에서 검색 경계에 도달한 적이 없었다). `fakes.make_recording_filtering_search()`(대역 카탈로그 `PAIR_CATALOG`)로 바꿔 `observed.searchFilters`(경계 도달값, camelCase 8축)·`searchCallCount`·`pushProductCount`·`unappliedSearchFilters` 를 새로 관측하고, `build_decompose_json` 이 `category=="present"` 면 `categoryQueries` 를 채워 `map_categories` 를 exact-match 대역으로 바꿔 leg 를 실현시켰다(`pair_runner.py` 의 구 `_pair_decompose_json` 전용 seam을 이 본체로 흡수, 두 러너가 이제 seam을 공유). `RecordingFilteringSearch` 가 표현 불가 필터(keyword·color·attr_conditions)를 만나면 `ValueError` 로 즉시 실패시키던 것도 고쳤다 — 그 예외가 앱의 검색 실패 처리에 삼켜져 "공허 통과 방지"가 아니라 **공허 통과를 만들고 있었다**(combo-0055 INV 쌍이 base·perturbed 둘 다 `SEARCH_FAILED` 로 우연히 "동일"해 pass하던 실측 발견) — 이제 미적용으로만 기록하고 표현 가능한 축만 적용해 계속한다. `expected_behavior.jsonl` 의 `observed` 를 재실행으로 갱신하는 `refresh-observed` 서브커맨드(덮어쓰기 전용, 판정은 사람이)를 추가했다. 계약(api-spec) 무변경.
+- **#376 — combo_matrix 러너가 담기 계열 타임아웃(`degrade=spring_timeout`)에 실 어댑터가 내지 않는 `SpringUnavailableError` 를 주입해 "이 예외를 처리하는가"를 검증하지 못하던 문제** — 실 어댑터(`app/services/spring_client.py::add_wishlist`/`add_to_cart`)는 `httpx.HTTPError`(타임아웃 포함)를 각각 `WishlistError`/`CartError` 로 낙성한다. 주입 예외를 그 실제 타입으로 바꾸고, 러너가 몽키패치하는 두 fake 를 모듈 레벨로 노출해 타입을 직접 잠그는 회귀 테스트를 추가했다(되돌리면 깨짐을 변이 시험으로 확인). `fakes.failing_search`(`SpringUnavailableError`)·`fakes.failing_order_status`(`OrderStatusUnavailableError`)·HOME 주입(`RuntimeError`/`TimeoutError`)은 실 어댑터 규약과 이미 일치해 손대지 않았다. `expected_behavior.jsonl` combo-0004·combo-0056 의 `expected` 문구도 실제 규약에 맞게 정정했다. 계약(api-spec) 무변경.
 - **#408 — 401 이 사유 없이 로그에 남아 운영 장애 원인을 분리할 수 없던 문제** — 운영 `POST /chat` 이 게스트·회원 전원 401 `TOKEN_INVALID` 인데 BE 가 인프라(JWKS 200·kid 일치·키 해시 동일·이미지 롤백 무효)를 전부 배제하고도 AI 쪽 사유를 알 수 없었다. `app/api/deps.py` 의 401 매핑 3곳(`get_identity`·`require_seller` 경유·`verify_service_token`)이 예외 타입 + 메시지 + `__cause__` 체인을 WARNING 으로 남긴다 — PyJWT 는 실제 사유(`InvalidSignatureError`·`InvalidAudienceError`·`InvalidIssuerError`·`MissingRequiredClaimError`·`PyJWKClientError`)를 원 예외에만 담고 `core.auth` 가 그것을 `AuthError` 로 감싸므로 종전 로그에는 아무것도 남지 않았다. `requestId` 는 §2.5 오류 봉투·`X-Request-Id` 응답 헤더와 같은 값이라 FE 신고 건과 바로 대조된다. **토큰 원문·서명·클레임 식별자는 싣지 않는다**(회귀 테스트로 고정). 예외 메시지에 섞이는 **서명 검증 이전** 값(`PyJWKClientError` 가 그대로 싣는 JWT 헤더 `kid`, dev 모드 `sub_type`)은 비출력 문자(`str.isprintable()` 기준 — 제어 Cc·형식 Cf·줄/문단 구분자 Zl/Zp)를 이스케이프해 로그 인젝션(CWE-117)을 막는다 — 그 값들은 유효 서명 없이도 공격자가 지정할 수 있어, 개행을 흘리면 가짜 `auth rejected` 줄을 심을 수 있다(PR 리뷰 반영). 같은 줄의 `path` 도 같은 처리를 태운다 — 현재 라우트는 전부 고정 리터럴이라 잠복이지만, path 파라미터 라우트에 이 의존성이 붙는 순간 외부 통제 값이 된다. 검증 로직·계약(api-spec) 무변경 — 관측만 추가.
 - **#344 — `category_distance_max` 등 카테고리 거리·마진 임계가 사전 재시드(2,056행 → leaf 1,007행) 이후로 stale이던 문제** — `evals/category_probe` 기준선(`baselines/fast-2026-08-06`, hits.csv 앵커 38셀×N=8·176표본)을 오프라인 스윕한 결과 `category_distance_max`를 0.22 → **0.26**으로 올렸다(single 정답 med 0.2416·q3 0.2579 vs notInCatalog 최소 d1 0.2621 사이에서 nic 무강제 0/40을 지키는 최대 컷 — 거리컷 드롭이 107/176 → **30/176**으로 줄고 채택 정답이 61/176 → **130/176**으로 늘었다, 오답채택은 0 → 8). 이 측정은 이 프로브 176표본 범위이며, 이슈 본문이 인용한 골든셋 150건 컷 통과 회복(#222 별도 실측)은 이번 재측정으로 확인하지 않았다 — 범위 밖. `category_distance_override_margin`(0.035)·`category_select_margin_max`(0.02)는 재검증만 하고 값은 유지했다. 재측정을 `hits.csv` 원시 top-k 거리만으로 런 재실행 없이 반복할 수 있도록 오프라인 스윕 도구 `evals/category_probe/sweep.py`(API·pg·LLM 콜 0)를 신설했다. 계약(api-spec) 무변경.
 - **#353 — `embed_texts`가 Google 배치 임베딩 100건/요청 상한을 넘으면 400으로 실패하던 문제** — `_EMBED_BATCH_MAX`(100) 청크로 나눠 순차 호출하고 입력 순서대로 이어붙이도록 고쳤다. eval 도구뿐 아니라 §4.8 I-17 운영 배치 경로(search_doc 임베딩)도 공유하는 잠복 결함이었다. 계약(api-spec) 무변경.

@@ -6,6 +6,8 @@ google-genai SDK는 _client() 심(seam)을 통해 주입형 fake 로 대체한�
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from app.core.config import Settings
@@ -168,7 +170,10 @@ def test_embed_texts_chunks_over_100_and_preserves_order(monkeypatch):
     monkeypatch.setattr(emb, "_client", lambda api_key: client)
 
     texts = [f"t{i}" for i in range(103)]
-    out = emb.embed_texts(texts)
+    # 이 테스트는 청크 분할·순서 보존만 본다(#391 총 예산은 별도 테스트) — 기본 config 는
+    # embedding_timeout_s == embedding_total_timeout_s(3.0s)라 실제 경과시간(>0)이 조금만
+    # 있어도 두 번째 청크가 예산 초과로 거부돼 이 테스트와 무관한 이유로 실패한다. opt-out.
+    out = emb.embed_texts(texts, total_timeout_s=math.inf)
 
     assert len(client.models.calls) == 2
     assert len(client.models.calls[0]) == 100
@@ -192,7 +197,8 @@ def test_embed_texts_passes_task_type_on_every_chunk(monkeypatch):
     monkeypatch.setattr(emb, "_client", lambda api_key: client)
 
     texts = [f"t{i}" for i in range(103)]
-    emb.embed_texts(texts, task_type="RETRIEVAL_QUERY")
+    # #391 총 예산과 무관한 테스트 — opt-out(사유는 위 chunks_over_100 테스트와 동일).
+    emb.embed_texts(texts, task_type="RETRIEVAL_QUERY", total_timeout_s=math.inf)
 
     assert len(client.models.calls) == 2
     assert [c.task_type for c in client.models.configs] == ["RETRIEVAL_QUERY", "RETRIEVAL_QUERY"]
@@ -251,3 +257,237 @@ def test_client_sets_http_timeout_from_config(monkeypatch):
 
     assert captured["http_options"] is not None
     assert captured["http_options"].timeout == 3000  # 3.0s → 3000ms(HttpOptions.timeout 은 ms)
+
+
+class _FakeClock:
+    """`emb._monotonic` 을 대체하는 결정론적 fake — 호출 순서대로 미리 정한 시각을 돌려준다."""
+
+    def __init__(self, times: list[float]) -> None:
+        self._times = iter(times)
+
+    def __call__(self) -> float:
+        return next(self._times)
+
+
+def test_embed_texts_total_budget_completes_all_chunks_in_order(monkeypatch):
+    """[#391] 예산 안이면 전 청크를 내고 결과는 입력 순서대로 이어붙는다."""
+    settings = Settings(
+        _env_file=None,
+        google_api_key="test-key",
+        embedding_dim=3,
+        embedding_normalized=False,
+        embedding_timeout_s=1.0,
+        embedding_total_timeout_s=3.0,
+    )
+    monkeypatch.setattr(emb, "get_settings", lambda: settings)
+    client = _ChunkCapturingClient()
+    monkeypatch.setattr(emb, "_client", lambda api_key: client)
+    monkeypatch.setattr(emb, "_monotonic", _FakeClock([0.0, 0.1]))  # 청크당 0.1s 경과
+
+    texts = [f"t{i}" for i in range(103)]
+    out = emb.embed_texts(texts)
+
+    assert len(client.models.calls) == 2
+    assert len(out) == 103
+    for i, vec in enumerate(out):
+        assert vec == pytest.approx([float(i), 0.0, 0.0])
+
+
+def test_embed_texts_total_budget_exceeded_raises_before_next_chunk(monkeypatch):
+    """[#391] 예산 초과 시 다음 청크를 내지 않고 EmbeddingError — API 호출은 정확히 1회."""
+    settings = Settings(
+        _env_file=None,
+        google_api_key="test-key",
+        embedding_dim=3,
+        embedding_normalized=False,
+        embedding_timeout_s=3.0,
+        embedding_total_timeout_s=3.0,
+    )
+    monkeypatch.setattr(emb, "get_settings", lambda: settings)
+    client = _ChunkCapturingClient()
+    monkeypatch.setattr(emb, "_client", lambda api_key: client)
+    monkeypatch.setattr(emb, "_monotonic", _FakeClock([0.0, 10.0]))  # 첫 청크 이후 크게 경과
+
+    texts = [f"t{i}" for i in range(103)]
+    with pytest.raises(emb.EmbeddingError) as exc_info:
+        emb.embed_texts(texts)
+
+    assert len(client.models.calls) == 1  # 두 번째 청크는 나가지 않음
+    message = str(exc_info.value)
+    assert "10.00s" in message  # 경과
+    assert "3.00s" in message  # 예산·요청당 상한
+
+
+def test_embed_texts_total_budget_boundary_exactly_equal_is_allowed(monkeypatch):
+    """[#391] 선제 검사는 `>` — 경과+요청당 == 예산이면 허용(다음 청크를 낸다)."""
+    settings = Settings(
+        _env_file=None,
+        google_api_key="test-key",
+        embedding_dim=3,
+        embedding_normalized=False,
+        embedding_timeout_s=1.0,
+        embedding_total_timeout_s=2.0,
+    )
+    monkeypatch.setattr(emb, "get_settings", lambda: settings)
+    client = _ChunkCapturingClient()
+    monkeypatch.setattr(emb, "_client", lambda api_key: client)
+    monkeypatch.setattr(emb, "_monotonic", _FakeClock([0.0, 1.0]))  # 1.0 + 1.0 == 2.0(예산)
+
+    texts = [f"t{i}" for i in range(103)]
+    emb.embed_texts(texts)
+
+    assert len(client.models.calls) == 2  # 경계에서 거부되지 않음(>= 로 바뀌면 이 단언이 깨짐)
+
+
+def test_embed_texts_total_budget_boundary_just_over_rejects(monkeypatch):
+    """[#391] 예산을 아주 조금이라도 넘으면 다음 청크를 거부한다(> 를 >= 로 바꾸면 이 단언이 깨짐)."""
+    settings = Settings(
+        _env_file=None,
+        google_api_key="test-key",
+        embedding_dim=3,
+        embedding_normalized=False,
+        embedding_timeout_s=1.0,
+        embedding_total_timeout_s=2.0,
+    )
+    monkeypatch.setattr(emb, "get_settings", lambda: settings)
+    client = _ChunkCapturingClient()
+    monkeypatch.setattr(emb, "_client", lambda api_key: client)
+    monkeypatch.setattr(emb, "_monotonic", _FakeClock([0.0, 1.000001]))  # 예산을 아주 조금 초과
+
+    texts = [f"t{i}" for i in range(103)]
+    with pytest.raises(emb.EmbeddingError):
+        emb.embed_texts(texts)
+
+    assert len(client.models.calls) == 1
+
+
+def test_embed_texts_first_chunk_always_attempted_despite_tiny_budget(monkeypatch):
+    """[#391] 예산이 아주 작아도 첫 청크는 항상 시도한다 — 1건 입력은 성공."""
+    settings = Settings(
+        _env_file=None,
+        google_api_key="test-key",
+        embedding_dim=3,
+        embedding_normalized=False,
+        embedding_timeout_s=0.001,
+        embedding_total_timeout_s=0.001,  # #391 PR#412 기동 검증기: total >= request 최소 조합
+    )
+    monkeypatch.setattr(emb, "get_settings", lambda: settings)
+    client = _ChunkCapturingClient()
+    monkeypatch.setattr(emb, "_client", lambda api_key: client)
+    monkeypatch.setattr(emb, "_monotonic", _FakeClock([0.0]))
+
+    out = emb.embed_texts(["t0"])
+
+    assert len(client.models.calls) == 1
+    assert len(out) == 1
+
+
+def test_embed_texts_first_chunk_always_attempted_then_second_rejected(monkeypatch):
+    """[#391] 예산이 아주 작으면 101건 입력은 첫 청크(100건) 성공 뒤 두 번째 청크에서 거부된다."""
+    settings = Settings(
+        _env_file=None,
+        google_api_key="test-key",
+        embedding_dim=3,
+        embedding_normalized=False,
+        embedding_timeout_s=0.001,
+        embedding_total_timeout_s=0.001,  # #391 PR#412 기동 검증기: total >= request 최소 조합
+    )
+    monkeypatch.setattr(emb, "get_settings", lambda: settings)
+    client = _ChunkCapturingClient()
+    monkeypatch.setattr(emb, "_client", lambda api_key: client)
+    monkeypatch.setattr(emb, "_monotonic", _FakeClock([0.0, 0.001]))  # 미세하게라도 경과하면 거부
+
+    texts = [f"t{i}" for i in range(101)]
+    with pytest.raises(emb.EmbeddingError):
+        emb.embed_texts(texts)
+
+    assert len(client.models.calls) == 1
+
+
+def test_embed_texts_total_timeout_inf_opts_out_of_budget(monkeypatch):
+    """[#391] total_timeout_s=math.inf 는 시계가 예산을 한참 넘겨도 전 청크를 낸다(opt-out)."""
+    settings = Settings(
+        _env_file=None,
+        google_api_key="test-key",
+        embedding_dim=3,
+        embedding_normalized=False,
+        embedding_timeout_s=3.0,
+        embedding_total_timeout_s=3.0,
+    )
+    monkeypatch.setattr(emb, "get_settings", lambda: settings)
+    client = _ChunkCapturingClient()
+    monkeypatch.setattr(emb, "_client", lambda api_key: client)
+    monkeypatch.setattr(emb, "_monotonic", _FakeClock([0.0, 1000.0, 2000.0]))
+
+    texts = [f"t{i}" for i in range(250)]
+    out = emb.embed_texts(texts, total_timeout_s=math.inf)
+
+    assert len(client.models.calls) == 3
+    assert len(out) == 250
+
+
+def test_embed_texts_explicit_total_timeout_overrides_config(monkeypatch):
+    """[#391] 명시 `total_timeout_s` 인자가 config 기본값을 덮어쓴다."""
+    settings = Settings(
+        _env_file=None,
+        google_api_key="test-key",
+        embedding_dim=3,
+        embedding_normalized=False,
+        embedding_timeout_s=1.0,
+        embedding_total_timeout_s=1.0,  # #391 PR#412 기동 검증기상 최소 조합 — 경과>0 이면 거부된다
+    )
+    monkeypatch.setattr(emb, "get_settings", lambda: settings)
+    client = _ChunkCapturingClient()
+    monkeypatch.setattr(emb, "_client", lambda api_key: client)
+    monkeypatch.setattr(emb, "_monotonic", _FakeClock([0.0, 0.1]))
+
+    texts = [f"t{i}" for i in range(103)]
+    out = emb.embed_texts(texts, total_timeout_s=100.0)  # 명시 인자가 config 를 덮어써 통과시킨다
+
+    assert len(client.models.calls) == 2
+    assert len(out) == 103
+
+
+def test_embed_texts_explicit_total_timeout_below_request_timeout_raises_value_error(monkeypatch):
+    """[#391 PR#412 F-2] 인자 `total_timeout_s` 도 embedding_timeout_s 미만이면 즉시 ValueError —
+    첫 청크보다 먼저 걸려 API 호출은 0회다(EmbeddingError 로 래핑돼 degrade 경로에 흡수되지 않는다).
+    """
+    settings = Settings(
+        _env_file=None,
+        google_api_key="test-key",
+        embedding_dim=3,
+        embedding_normalized=False,
+        embedding_timeout_s=3.0,
+    )
+    monkeypatch.setattr(emb, "get_settings", lambda: settings)
+    client = _ChunkCapturingClient()
+    monkeypatch.setattr(emb, "_client", lambda api_key: client)
+
+    with pytest.raises(ValueError) as exc_info:
+        emb.embed_texts(["t0"], total_timeout_s=1.0)
+
+    assert not isinstance(exc_info.value, emb.EmbeddingError)  # degrade 경로에 흡수되지 않아야 함
+    message = str(exc_info.value)
+    assert "1.0" in message
+    assert "3.0" in message
+    assert client.models.calls == []  # 가드가 첫 청크보다 먼저 걸린다
+
+
+def test_embed_texts_explicit_total_timeout_equal_to_request_timeout_is_allowed(monkeypatch):
+    """[#391 PR#412 F-2] 경계(같은 값)는 허용 — 부등호를 `<` → `<=` 로 바꾸면 이 테스트가 깨진다."""
+    settings = Settings(
+        _env_file=None,
+        google_api_key="test-key",
+        embedding_dim=3,
+        embedding_normalized=False,
+        embedding_timeout_s=3.0,
+    )
+    monkeypatch.setattr(emb, "get_settings", lambda: settings)
+    client = _ChunkCapturingClient()
+    monkeypatch.setattr(emb, "_client", lambda api_key: client)
+    monkeypatch.setattr(emb, "_monotonic", _FakeClock([0.0]))
+
+    out = emb.embed_texts(["t0"], total_timeout_s=3.0)
+
+    assert len(client.models.calls) == 1
+    assert len(out) == 1

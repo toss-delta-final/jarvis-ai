@@ -57,3 +57,12 @@ def dump_cases_jsonl(cases: list[ComboCase]) -> str:
         for case in cases
     ]
     return "\n".join(lines) + "\n"
+
+
+def dump_expected_jsonl(rows: list[ExpectedBehaviorRow]) -> str:
+    """`expected_behavior.jsonl` 정본 직렬화 — 스키마 필드 선언 순서를 그대로 쓴다(커밋본과 동일한
+    키 순서, `dump_cases_jsonl` 과 달리 sort_keys 를 쓰지 않는다 — 커밋본이 그렇지 않다)."""
+    lines = [
+        json.dumps(row.model_dump(mode="json", by_alias=True), ensure_ascii=False) for row in rows
+    ]
+    return "\n".join(lines) + "\n"

@@ -296,10 +296,41 @@ field`(B-4) — 위 커버리지 정정의 근거 불변식을 고정한다(행�
 
 **게이트 잔여 항목(후속 이슈 후보)**:
 
-1. 실 LLM decompose 가 과소지정 판정 축(§2.1~§2.2)을 실제 발화에서 얼마나 정확히 산출하는지는
-   이 이슈에서도 실측하지 않았다(A 절 fixture 는 전부 "LLM 이 이렇게 낸다"는 가정을 손으로
-   채운 결정론 fixture 다, CI 결정론 규약). 기본 on 전환을 검토할 때는
-   `evals/underspecified_cases`(§8) 같은 실 LLM 기반 골든셋 실측이 먼저 필요하다.
+1. **[#380 로 실측했다, 리뷰 라운드 1 수정 반영 재실행]** 실 LLM decompose 가 과소지정 판정 축
+   (§2.1~§2.2)을 실제 발화에서 얼마나 정확히 산출하는지, `evals/underspecified_probe`(30 앵커
+   × N=8 = 240콜, `fast` 티어 `gpt-5-nano`, 2026-08-06 1회 실행)가 재봤다: `missRate`(미탐율,
+   "무엇을 찾는지 지정하지 않은 발화인데 되물음이 트리거되지 않는 비율", `intent=="recommend"`
+   표본만 분모에 넣는다 — 프로덕션은 그 턴에서만 판정을 호출한다) = **112/112 (100.0%)**,
+   CI95 [96.7%, 100.0%]. `falseAlarmRate`(오탐율, `multiturn_gate` 슬라이스 제외) =
+   **0/104 (0.0%)**, CI95 [0.0%, 3.6%]. 원인은 `blockingAxes` 조합별 실측(서술이 아니라
+   산출물 집계)으로 정확히 셋으로 나뉜다 — 미탐 112건 중 `semanticQueryIsFallback` 단독
+   92건(82.1%) · `filters.attrConditions;semanticQueryIsFallback` 11건(9.8%) ·
+   `categoryQueries;semanticQueryIsFallback` 9건(8.0%). `_SYSTEM` 프롬프트가 semanticQuery 를
+   "찾는 상품의 의미"로만 정의하고 "지정할 게 없으면 비워라"는 지시를 두지 않아, fast 티어가
+   "아무거나 추천해줘"류 발화에도 의미쿼리를 스스로 채워 넣거나(92+9건) 속성 조건까지
+   지어내는 것으로 보인다(11건, `filters.attrConditions`) — `_SYSTEM` 은 attrConditions 를
+   "사용자가 명시한 속성만" 담으라고 지시하는데 무조건 발화에도 이 축이 채워졌다는 뜻이다.
+   반대로 `what_axis`/`blocking_rating`(브랜드·카테고리·색상·키워드·평점 신호가 있는 발화)
+   에서는 `falseAlarmRate` 0.0%·`judgmentAccuracy` 100.0% 로 판정이 완벽했다 — **판정 코드
+   (`is_underspecified_turn`) 자체는 정상이고, 문제는 그 판정이 소비하는 decompose 산출이
+   "무조건" 계열 발화에서 체계적으로 어긋난다는 데 있다.** 전체 `judgmentAccuracy`(48.1%)는
+   이번 런에서 trivial baseline(항상 reask=false, 48.1%)과 **정확히 동률**이다.
+   `flagOffInvariant`·`priorGateInvariant`(§D9, LLM 콜 0 재판정) 는 240/240 위반 없음. 산출물
+   전문은 `evals/underspecified_probe/baselines/fast-2026-08-06/`(README·results.json 외
+   5종, `samples.csv` 에 `intent`·`semanticQuery` 원문 포함).
+   **측정 범위와 한계**: 이 실측은 decompose 직후·판정 직전 형상만 잰다 — 카테고리 매핑과
+   `needs_expansion`(#217) 의 전개 LLM 생성은 부르지 않지만, 게이트 판정 함수
+   `detect_expansion_need` 자체는 진단 목적으로 매 표본 부른다. 이번 런은 판정 True(=되물음
+   트리거) 표본이 0건이라 전개 게이트가 그 판정을 뒤집을 기회 자체가 없었다(`evals/
+   underspecified_probe/README.md` §측정 범위와 한계 참조). **이 실측이 기본 on 전환 판단에
+   말해주는 것**: `falseAlarmRate` 0.0%(사용자 체감 하방이 더 나쁜 축)는 안심할 수 있지만,
+   `missRate` 100.0%는 "플래그를 켜도 되물음이 조용히 아무 일도 하지 않는다"와 거의 같다 —
+   이슈가 지목한 두 위험 중 코드 테스트로 못 잡는 쪽이 바로 이것이었고, 지금 그 값이
+   나쁘다. **말해주지 못하는 것**: 단일 실행(독립 재현 미확인, 다만 리뷰 라운드 1 전 실측
+   111/112(99.1%)과 같은 방향·비슷한 크기라 우연으로 보이지는 않는다)이고, 프롬프트를
+   고치면(이 이슈의 비범위) 그 값이 어떻게 바뀔지는 이 실측만으로 모른다. **기본값 전환은
+   이 실측만으로 하지 않는다** — 그 결정은 별도 이슈의 몫이다(§6, 이 문서의 기존 금지 사항
+   유지).
 2. **[리뷰 R1-F4] 되물음에 거부 답변("그냥 아무거나 줘")한 사용자는 인기 상품(I-3)이 아니라
    무필터 검색(I-1) 결과를 받는다** — `test_refusal_answer_turn_falls_back_to_unfiltered_
    search`(A-3)의 실측이다. 원인은 `is_underspecified_turn`·`is_no_condition_turn` 둘 다

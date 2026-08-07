@@ -104,6 +104,10 @@ def client(dev_settings: Settings, monkeypatch: pytest.MonkeyPatch) -> TestClien
     lifespan 이 진짜 BackgroundScheduler 를 기동하지 않도록 no-op 으로 대체한다 — 이 하니스가
     검증하려는 건 auth/buyer flow 등이지 배치 스케줄러가 아니다. 스케줄러 자체 검증은
     tests/unit/test_scheduler.py·test_main_lifespan.py 소관(PR #42 리뷰).
+    같은 이유로 카테고리 사전 기동 가드(`check_category_dictionary`, 이슈 #401)도 no-op 으로
+    막는다 — 안 막으면 이 하니스가 `settings.catalog_db_url`(앰비언트 env/.env 반영,
+    `get_settings()` 는 `lru_cache` 없음)로 매 테스트마다 실 psycopg 연결을 시도한다(라운드 9
+    리뷰 F9, 라운드 2 F2 가 유닛 쪽에 이미 적용한 것과 같은 조치의 통합 쪽 누락분).
     """
     import app.main as main_mod
     from app.core import session_context
@@ -114,6 +118,7 @@ def client(dev_settings: Settings, monkeypatch: pytest.MonkeyPatch) -> TestClien
     monkeypatch.setattr(main_mod, "initialize_session_lifecycle", initialize_test_lifecycle)
     monkeypatch.setattr(main_mod, "start_scheduler", lambda: None)
     monkeypatch.setattr(main_mod, "stop_scheduler", lambda: None)
+    monkeypatch.setattr(main_mod, "check_category_dictionary", lambda dsn, *, mode: None)
     with TestClient(app) as test_client:
         yield test_client
 
