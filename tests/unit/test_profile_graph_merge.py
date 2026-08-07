@@ -525,6 +525,25 @@ def test_truncation_drops_machine_superseded_before_user_deletions(settings: Set
     assert _edge_by_key(document, "likes|brand:애플") is None  # 낮은 쪽이 밀린다
 
 
+def test_truncation_drops_active_before_superseded(settings: Settings) -> None:
+    """`active` 가 `superseded` 보다 **먼저** 밀린다 — 잃는 것이 서로 다르기 때문이다.
+
+    `active` 가 잘려도 그 fact 는 `_summary_input` 에 그대로 남지만(문서에 없는 edge_key 는
+    `active` 로 간주된다), `superseded` 가 잘리면 같은 규칙 때문에 **진 취향이 요약에 되살아난다.**
+    방향을 반대로 읽기 쉬운 지점이라(PR #410 리뷰) 순서 자체를 여기서 고정한다.
+    """
+    tight = Settings(_env_file=None, profile_graph_max_edges=1)
+    existing = _document_of(
+        [_stored_edge("애플", status="superseded", superseded_by="e_x", confidence=0.1)]
+    )
+    # 새 active 는 확신도가 훨씬 높다 — 그래도 superseded 가 남아야 한다(확신도로 갈리지 않는다).
+    facts = [_fact("f1", triples=[_triple("brand:엘지", label="엘지", salience=0.99)])]
+
+    document = build_graph_document(facts, existing=existing, settings=tight, now=NOW)
+
+    assert [(e.edge_key, e.status) for e in document.edges] == [("likes|brand:애플", "superseded")]
+
+
 def test_truncation_keeps_active_edges_within_the_remaining_budget(settings: Settings) -> None:
     """tombstone 이 상한 안이면 남은 자리는 `active` 가 확신도 순으로 채운다.
 

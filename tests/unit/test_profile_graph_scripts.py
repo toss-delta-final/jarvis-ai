@@ -87,3 +87,24 @@ def test_probe_compares_both_prompts(probe_script) -> None:
 
     assert probe_script._DELTA_SYSTEM is builder._DELTA_SYSTEM
     assert probe_script._DELTA_SYSTEM_LEGACY is builder._DELTA_SYSTEM_LEGACY
+
+
+def test_probe_does_not_hardcode_a_provider_key(probe_script) -> None:
+    """미구성 안내가 provider 를 단정하면 키를 엉뚱한 곳에 채우게 만든다.
+
+    `get_llm()` 은 `settings.llm_provider` 로 갈리는데(기본 openai), 안내만 ANTHROPIC 을 가리키면
+    그대로 따른 사람은 Anthropic 키를 채우고도 여전히 안 도는 상태에서 다른 곳을 뒤진다.
+    낡은 안내는 stale 이 아니라 **틀린 곳을 고치게 하는** 안내다(docs/lessons.md #383 항목과 같은 부류).
+    """
+    source = (REPO_ROOT / "scripts" / "probe_delta_prompt_356.py").read_text(encoding="utf-8")
+    body = source.split('"""', 2)[-1]  # docstring 은 두 키를 모두 설명하므로 본문만 본다
+
+    assert "settings.llm_provider" in body or "llm_provider" in body
+    assert "OPENAI_API_KEY" in body and "ANTHROPIC_API_KEY" in body  # 양쪽을 갈라 안내한다
+
+
+def test_probe_reports_provider_and_model(probe_script) -> None:
+    """분포 수치는 **어느 모델에서 쟀는지**와 함께여야 근거가 된다 — 모델이 바뀌면 분포도 바뀐다."""
+    from app.core.llm import resolve_model_id
+
+    assert probe_script.resolve_model_id is resolve_model_id

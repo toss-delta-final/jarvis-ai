@@ -342,16 +342,21 @@ def _is_user_tombstone(edge: GraphEdge) -> bool:
 def _truncate(edges: list[GraphEdge], limit: int) -> list[GraphEdge]:
     """상한 초과 시 절단 — **사용자 삭제는 상한보다 우선한다**.
 
-    세 등급이고, 등급이 낮은 쪽부터 밀린다:
+    **먼저 밀려나는 순서: `active` → `superseded` → (자르지 않음) `suppressed`·pin.**
+    직관과 반대로 보이지만 — 살아 있는 취향을 죽은 취향보다 먼저 버린다 — **잃는 것이 서로 다르다**
+    (PR #410 리뷰에서 방향을 반대로 읽어 테스트로 고정한 지점):
 
-    1. `suppressed`·pin — **자르지 않는다.** 잘리면 `_carried_tombstones` 가 보존할 대상을 잃고
-       같은 취향이 다음 배치에 새 `active` 로 부활한다(AC-PROF-31). 이쪽만 복구 경로가 없다.
-    2. `superseded` — 자를 수 있다. 근거 fact 가 남아 있으면 다음 배치에 다시 파생되고
-       `_resolve_conflicts` 가 같은 판정을 반복하므로 **자기복구**된다.
-    3. `active` — 남는 자리를 확신도 높은 순으로 채운다.
+    - `active` 가 잘려도 **개인화 내용은 안 줄어든다.** `builder._summary_input` 은 문서에 없는
+      `edge_key` 를 `active` 로 간주해 통과시키므로, 그 fact 는 요약 입력에 그대로 남는다.
+      빠지는 것은 그래프 표현뿐이고 다음 배치에 같은 fact 에서 다시 파생된다.
+    - `superseded` 가 잘리면 **진 취향이 요약에 되살아난다.** 위와 같은 규칙 때문에 그 fact 가
+      `active` 로 간주되어, 요약 LLM 이 "소니를 좋아한다"와 "소니를 싫어한다"를 동시에 받는다.
+      즉 `superseded` 는 죽은 데이터가 아니라 **"이 fact 를 요약에 넣지 마라"는 살아 있는 표식**이다.
+    - `suppressed`·pin 은 아예 자르지 않는다. 잘리면 `_carried_tombstones` 가 보존할 대상을 잃고
+      같은 취향이 다음 배치에 새 `active` 로 부활한다(AC-PROF-31). 이쪽만 복구 경로가 없다.
 
-    1등급만으로 상한을 넘으면 상한을 넘긴 채 보존하고 경고한다 — 저장 폭주 방어보다 삭제 실효가
-    앞선다. 그 상태는 정리·초기화 신호이지(REQ-PGRAPH-005) 조용히 지울 근거가 아니다.
+    `suppressed`·pin 만으로 상한을 넘으면 상한을 넘긴 채 보존하고 경고한다 — 저장 폭주 방어보다
+    삭제 실효가 앞선다. 그 상태는 정리·초기화 신호이지(REQ-PGRAPH-005) 조용히 지울 근거가 아니다.
     동률은 `edge_id` 로 갈라 절단 결과까지 결정론적으로 만든다.
     """
     if len(edges) <= limit:
@@ -372,7 +377,8 @@ def _truncate(edges: list[GraphEdge], limit: int) -> list[GraphEdge]:
 
     rest = sorted(
         (e for e in edges if not _is_user_tombstone(e)),
-        # `status == "active"` 가 False(0) < True(1) 라 superseded 가 앞선다.
+        # 아래 slice 는 **앞쪽을 보존**한다. `status == "active"` 가 False(0) < True(1) 라
+        # superseded 가 앞서고, 그래서 active 가 먼저 밀린다 — 의도대로다(docstring 근거 참조).
         key=lambda e: (e.status == "active", -e.confidence, e.edge_id),
     )
     return kept + rest[: limit - len(kept)]

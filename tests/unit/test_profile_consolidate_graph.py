@@ -10,10 +10,10 @@
 
 import pytest
 
-from app.agents.profile.builder import ConsolidationResult, consolidate
+from app.agents.profile.builder import ConsolidationResult, _summary_input, consolidate
 from app.agents.profile.graph_merge import empty_document
 from app.agents.profile.graph_models import GraphDocument, GraphEdge, GraphNode, make_edge_id
-from app.agents.profile.store import get_profile_store
+from app.agents.profile.store import FactRecord, get_profile_store
 from app.core.config import get_settings
 from app.core.llm import LLMError
 
@@ -377,3 +377,40 @@ async def test_summary_input_is_derived_from_graph_not_raw_fact_list(marker: str
     await consolidate("7", llm=llm, settings=get_settings())
 
     assert marker not in llm.summary_inputs[0]
+
+
+# ─────────── 절단 순서의 근거 (graph_merge._truncate) ───────────
+#
+# `_truncate` 가 `active` 를 `superseded` 보다 **먼저** 버리는 이유가 여기 있다. 순서 자체는
+# test_profile_graph_merge.py 가 고정하고, 여기서는 **그 순서를 정당화하는 비대칭**을 잰다 —
+# 근거가 테스트로 안 잠기면 다음 사람이 "죽은 edge 를 살아 있는 edge 보다 먼저 지킨다"를
+# 버그로 읽고 뒤집는다(PR #410 리뷰에서 실제로 그렇게 읽혔다).
+
+
+def _record(key: str, text: str, triples: list[dict]) -> FactRecord:
+    return FactRecord(fact_key=key, fact=text, created_at=NOW, graph_triples=triples)
+
+
+def test_truncated_superseded_edge_lets_the_losing_preference_back_into_summary() -> None:
+    """`superseded` 가 절단으로 사라지면 진 취향이 요약 입력에 되살아난다 — 그래서 먼저 지킨다.
+
+    문서에 없는 `edge_key` 는 `active` 로 간주된다(저장 한계가 개인화 내용을 줄이지 않게 한 규칙).
+    그 규칙이 `superseded` 에는 반대로 작용한다 — 표식이 사라지면 원문이 통과한다.
+    """
+    facts = [_record("f1", "소니를 좋아한다", [_triple()])]
+    with_marker = _document([_edge("superseded", superseded_by="e_x", evidence_refs=["f1"])])
+    without_marker = _document([])  # 절단으로 표식이 사라진 상태
+
+    assert _summary_input(with_marker, facts) == []
+    assert _summary_input(without_marker, facts) == ["소니를 좋아한다"]  # 진 취향 부활
+
+
+def test_truncated_active_edge_still_keeps_its_fact_in_summary() -> None:
+    """`active` 가 절단돼도 그 fact 는 요약 입력에 남는다 — 잃는 것은 그래프 표현뿐이다.
+
+    두 손실의 크기가 다르다는 것이 절단 순서의 근거다.
+    """
+    facts = [_record("f1", "소니를 좋아한다", [_triple()])]
+
+    assert _summary_input(_document([_edge("active")]), facts) == ["소니를 좋아한다"]
+    assert _summary_input(_document([]), facts) == ["소니를 좋아한다"]  # 절단돼도 동일

@@ -19,16 +19,22 @@
 라벨이다). 그 구축은 별도 이슈이며, 여기서는 **라벨 없이 잴 수 있는 것만** 잰다.
 
 전제
-    ANTHROPIC_API_KEY 구성                    # 실 LLM 을 호출한다
+    설정된 provider 의 API key      # LLM_PROVIDER=openai 면 OPENAI_API_KEY, anthropic 이면
+                                    # ANTHROPIC_API_KEY. 어느 쪽인지 하드코딩하지 않는다 —
+                                    # get_llm() 이 settings.llm_provider 로 갈리므로 한쪽을
+                                    # 단정하면 키를 엉뚱한 곳에 채우게 안내한다.
     uv run python scripts/probe_delta_prompt_356.py [--sessions 12] [--turns 3]
 
 비용
     **실 LLM 을 호출한다.** 세션당 2회(구 프롬프트 1 + 신 프롬프트 1) × --sessions.
     기본값이면 24회다. resolver 는 부르지 않으므로 임베딩 비용은 없다.
+    표본을 줄여 먼저 감을 보려면 --sessions 4(8회).
 
 판정
     이 스크립트는 합격/불합격을 정하지 않는다. 출력은 PR 본문에 붙여 사람이 읽는 근거다 —
     임계를 정할 표본이 없는 상태에서 자동 판정을 만들면 마술 상수가 하나 더 생긴다.
+    그 근거에는 **어느 provider·모델로 쟀는지**가 포함된다 — 모델이 바뀌면 분포도 바뀌므로,
+    provider·모델 없는 승격률 숫자는 나중에 재현·비교가 안 된다. 그래서 실행 첫 줄에 찍는다.
 """
 
 from __future__ import annotations
@@ -50,7 +56,7 @@ from app.agents.buyer.recommendation.state import extract_json  # noqa: E402
 from app.agents.profile.builder import _DELTA_SYSTEM, _DELTA_SYSTEM_LEGACY  # noqa: E402
 from app.agents.profile.gate import should_promote  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
-from app.core.llm import get_llm  # noqa: E402
+from app.core.llm import get_llm, resolve_model_id  # noqa: E402
 
 _GOLDENSET = REPO_ROOT / "evals" / "goldenset" / "cases" / "buyer_dev.jsonl"
 
@@ -161,11 +167,16 @@ async def main() -> int:
         print("표본 0 — 골든셋 경로를 확인하라(표본 0 은 근거가 아니라 질문이다)")
         return 1
 
+    provider = settings.llm_provider
     llm = get_llm()
     if llm is None:
-        print("LLM 미구성 — ANTHROPIC_API_KEY 를 설정하라")
+        # provider 를 하드코딩하면 키를 엉뚱한 곳에 채우게 안내한다 — 실제 설정을 읽어 알린다.
+        key_env = "OPENAI_API_KEY" if provider == "openai" else "ANTHROPIC_API_KEY"
+        print(f"LLM 미구성(LLM_PROVIDER={provider}) — {key_env} 를 설정하라")
         return 1
 
+    model = resolve_model_id(settings, "smart")  # 프로브는 smart tier 로만 부른다
+    print(f"provider={provider} model={model}  # 이 분포는 이 모델에서 잰 값이다")
     print(f"세션 {len(sessions)}개 × 발화 {args.turns}개, LLM 호출 {2 * len(sessions)}회")
     legacy = [await run_prompt(llm, _DELTA_SYSTEM_LEGACY, s, settings) for s in sessions]
     structured = [await run_prompt(llm, _DELTA_SYSTEM, s, settings) for s in sessions]
