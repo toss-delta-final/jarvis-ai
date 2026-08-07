@@ -577,6 +577,53 @@ async def test_narrow_mode_suppressed_stage_stays_at_single_attempt_cap(
     )
 
 
+# ─────────── [PR #452 리뷰 R3] 본검색 남은 단 수가 F-1 몫을 반영한다 ───────────
+
+
+async def test_narrow_mode_relaxation_disabled_still_reserves_room_for_f1_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[PR #452 리뷰 R3 — 런타임 과다 승인 회귀] `RELAXATION_MAX_ROUNDS=0`(자동완화 끔) +
+    `CATEGORY_EXPAND_ENABLED=True`(기본)에서도 F-1 재검색은 `may_auto_relax` 와 무관하게 돈다
+    (design DESIGN-SHARED-BUDGET-384.md §3 D6) — 본검색의 `remaining_stages` 는 본검색(1) +
+    F-1(1) = 2 여야 뒤따르는 F-1 몫이 남는다. 옛 코드는 `_rescue_chain_stage_counts` 가 조기
+    return 으로 세 항 전부 0을 내(`max(0,1)+0+0=1`) 본검색이 잔여를 통째로 쓴다.
+
+    window=5.0s(rescue_tail_reserve_s=25.0)로 압박하면: n=1(옛 코드) → granted=
+    min(3.0,5.0)=3.0=cap → `"full"`(안 좁힘, `narrow_search_budget` 미호출). n=2(고친 코드)
+    → granted=min(3.0,2.5)=2.5<cap → 실제로 좁혀진다.
+
+    검증 실효성: **먼저 옛 코드에 돌려 실패(calls 가 빔)를 확인했다**(TDD 적색). 런타임의
+    `max(_rescue_stage_counts.main, 1)` 보정을 없애지 않고 그대로 두면(R3 를 계수 함수만
+    고치고 소비처를 안 고치면) `_rescue_stage_counts.main` 이 1(고친 함수)이라 `max(1,1)=1`
+    로 여전히 1이 나와 이 테스트가 계속 깨진다 — 계수·소비처 둘 다 고쳐야 통과한다.
+    """
+    settings = get_settings()
+    monkeypatch.setattr(settings, "rescue_budget_mode", "narrow")
+    monkeypatch.setattr(settings, "relaxation_max_rounds", 0)
+    monkeypatch.setattr(settings, "rescue_tail_reserve_s", 25.0)  # window=5.0s
+
+    calls = _record_narrow_calls(monkeypatch)
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(),
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+            turn_started_at=asyncio.get_event_loop().time(),
+        )
+    )
+
+    assert "products.ready" in _types(events)
+    assert calls, (
+        "본검색 단이 narrow_search_budget 를 집행하지 않았다 — remaining_stages 가 여전히 1로 "
+        "잡혀(F-1 몫을 반영 못 함) 5.0s 잔여를 'full'(3.0s 이하)로 오판했다(R3 재현)"
+    )
+    assert calls[0] < settings.spring_search_timeout_s
+
+
 # ─────────── (4) 건너뛰기 + 거짓 신호 금지(H4) ───────────
 
 

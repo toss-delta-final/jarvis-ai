@@ -58,23 +58,31 @@ ROUTE_INTENTS = frozenset(
 
 
 class RescueStageCounts(NamedTuple):
-    """첫 `conditions` 앞 직렬 Spring 구간의 이론적 최악 단 수 — 억제 스코프별로 나눈다 (#427 D7).
+    """구매자 30s 예산 안에서 도는 Spring I-1 호출의 이론적 최악 단 수 — 억제 스코프별로
+    나눈다 (#427 D7, PR #452 리뷰 R3 로 재정의).
 
     DESIGN-SHARED-BUDGET-384 §3 D7 이 요구하는 **단일 계수 원천**이다. 기동 검증기
     (`_require_search_retry_within_stream_budget`)와 런타임 좁히기(D4, "남은 단 수" 계산,
     `app/agents/buyer/recommendation/graph.py::stream_recommendation`)가 이 함수 하나만
     호출해야 한쪽만 고쳐지는 드리프트(#383 이 고친 것과 같은 실패 모드)를 구조적으로 막는다.
 
-    조기 return(전부 0)은 "미룸(`graph.py` 의 `may_auto_relax`)이 성립하지 않으면 첫
-    `conditions` 앞 직렬 검증 대상이 아니다"는 #288 의 판단을 그대로 잇는다 — `main` 도 함께
-    0 이 되는 것은 "이 계수가 실제로 도는 검색 단 수"가 아니라 "미룬 턴의 첫 이벤트 앞
-    직렬 예산 모델"이기 때문이다(본검색 자체는 미룸 여부와 무관하게 항상 실행된다 —
-    `_rescue_chain_stage_counts` 의 소비처는 이 사실을 알고 `main` 을 최소 1 로 보정해 쓴다).
+    [PR #452 리뷰 R3] **세 항은 물리적 사실이다 — `may_auto_relax`(미룸) 게이트로 조기 return
+    하지 않는다.** 종전에는 `relaxation_max_rounds<=0` 이거나 교집합이 비면 세 항 전부 0을
+    돌려줬는데, 그건 "미룸이 성립하지 않으면 첫 `conditions` 앞 직렬 검증 대상이 아니다"
+    (#288)라는 **first-token 비교 전용** 판단을 세 항 전부에 잘못 적용한 것이었다: 본검색은
+    `may_auto_relax` 와 무관하게 항상 돌고, F-1/#343 재검색(`rescue`)의 게이트
+    (`decision.category_expanded and search_result.total_count == 0`)도 `may_auto_relax` 와
+    독립이다(design D6). 조기 return 은 구매자 30s 상한 비교(#427 이 비교 대상을
+    first-token 에서 30s 로 넓혔다)까지 함께 건너뛰게 만들어, `RELAXATION_MAX_ROUNDS=0`
+    조합에서 F-1 의 재시도 총량이 30s 예산에 기여하는지를 기동 검증이 아예 안 하는 구멍이
+    됐다. **미룸(deferral) 제약이 실제로 필요한 곳(first-token 비교)에만**
+    `_deferred_first_event_i1_calls`/`_deferred_first_event_rescue_i1_calls` 래퍼가 그 게이트를
+    적용한다 — 이 함수 자신은 게이트하지 않는다.
     """
 
-    main: int  # 본검색 — 미룸이 성립한 뒤에만 1, 아니면(조기 return) 0
-    rescue: int  # F-1/#343 구제 재검색(상호배타, 최대 1) — suppress_search_retry() 밖이라 항상 재시도한다
-    auto_relax: int  # 자동완화 probe — min(relaxation_max_rounds, |auto_fields ∩ chip_fields|)
+    main: int  # 본검색 — 미룸 여부와 무관하게 항상 1
+    rescue: int  # F-1/#343 구제 재검색(상호배타, 최대 1) — category_expand_enabled 에만 의존
+    auto_relax: int  # 자동완화 probe — min(relaxation_max_rounds, |auto_fields ∩ chip_fields|), 0 미만으로 내려가지 않는다
 
 
 def _rescue_chain_stage_counts(
@@ -84,17 +92,24 @@ def _rescue_chain_stage_counts(
     chip_fields: list[str],
     category_expand_enabled: bool,
 ) -> RescueStageCounts:
-    """`RescueStageCounts` 계산 (#288, #383 보정, #427 D7 로 3 항 분해).
+    """`RescueStageCounts` 계산 (#288, #383 보정, #427 D7 로 3 항 분해, PR #452 리뷰 R3 로
+    물리적 사실만 담게 재정의).
 
     순수 함수 + 모듈 수준으로 둔 이유는 `_require_search_retry_within_stream_budget` 를
     테스트가 실제 config 조합(교집합 ≥ 2)으로 부를 유일한 표면이기 때문이다 — `Settings` 는
     `relaxation_auto_fields` 를 `{"ratingMin"}` 부분집합으로 잠그므로(`_forbid_auto_relaxing_
     explicit_constraints`) 인스턴스 경로만으로는 이 식의 `min`/교집합 분기를 실측할 수 없다.
 
-    `graph.py` 의 `may_auto_relax` 판정·자동 완화 루프와 **같은 식**이어야 어긋나지 않는다:
-    후보 생성기(`build_relaxation_candidates`)는 `chip_fields` 를 순회하므로 `auto_fields` 에만
-    있고 `chip_fields` 에 없는 필드는 후보 자체가 안 생긴다 → 교집합으로 센다. 루프는
-    `rounds >= relaxation_max_rounds` 에서 break 하므로 `min` 으로 상한을 씌운다.
+    `graph.py` 의 `may_auto_relax` 판정·자동 완화 루프와 **다른 식**임에 주의하라(R3) —
+    `may_auto_relax` 는 `not underspecified and relaxation_max_rounds > 0 and any(후보.field
+    in auto_fields)` 로 **턴별 판정**(그 턴의 실제 후보 유무·`underspecified` 를 본다)인 반면,
+    이 함수는 **설정만으로 정하는 상한 모델**이라 `underspecified` 를 모르고(config 가 알 수
+    없는 턴별 정보다) `auto_relax` 항의 상한만 같은 `rounds`/교집합 식으로 잰다: 후보 생성기
+    (`build_relaxation_candidates`)는 `chip_fields` 를 순회하므로 `auto_fields` 에만 있고
+    `chip_fields` 에 없는 필드는 후보 자체가 안 생긴다 → 교집합으로 센다. 루프는
+    `rounds >= relaxation_max_rounds` 에서 break 하므로 `min` 으로 상한을 씌운다(0 미만으로는
+    안 내려가게 `max(..., 0)` 로 하한을 둔다 — `relaxation_max_rounds` 는 음수를 막는 필드
+    제약이 없다).
 
     **`category_expand_enabled` 항(=`rescue`)의 근거(#383, docs/specs/MEASURE-FIRST-TOKEN-363.md
     §5)** — 구제 폴백 한 단이 과거 두 항에 빠져 있어 실측 구제 체인 단 수(3, `test_fanout.py`
@@ -108,18 +123,16 @@ def _rescue_chain_stage_counts(
       `graph.py`의 스킵은 무필터 payload 의 필터 축이 0개일 때만 걸리고, 카테고리 외 축을 준
       턴은 재검색이 그대로 돈다 — 최악 경로에는 이 단이 남으므로 식에
       `search_filter_guard_enabled` 항은 추가하지 않는다.
-    `rescue` 항은 **미룸이 성립한 뒤에만**(아래 조기 return 0 을 통과한 뒤에만) 더한다 —
-    F-1/#343 재검색은 본 검색이 이미 미뤄진 뒤에만 도는 후속 단계이지, 그 자체로 미룸을
-    만들지 않기 때문이다.
+    [PR #452 리뷰 R3] `rescue` 항은 더 이상 미룸 성립 여부로 걸리지 않는다 — F-1/#343 재검색은
+    본검색이 실제로 미뤄졌는지와 무관하게 `decision.category_expanded and search_result.
+    total_count == 0` 만으로 돈다(design D6). 미룸 제약은 이 함수가 아니라 first-token 비교가
+    필요한 소비처(아래 `_deferred_first_event_i1_calls`)에 둔다.
     """
     intersection_size = len(set(auto_fields) & set(chip_fields))
-    if relaxation_max_rounds <= 0 or intersection_size == 0:
-        # may_auto_relax가 False — conditions가 검색 앞에 나가 직렬 검증 대상이 아니다.
-        return RescueStageCounts(main=0, rescue=0, auto_relax=0)
     return RescueStageCounts(
         main=1,
         rescue=1 if category_expand_enabled else 0,
-        auto_relax=min(relaxation_max_rounds, intersection_size),
+        auto_relax=max(min(relaxation_max_rounds, intersection_size), 0),
     )
 
 
@@ -166,7 +179,17 @@ def _deferred_first_event_i1_calls(
     [#427 D7] 구현은 `_rescue_chain_stage_counts` 로 위임한다 — 세 항의 정의·근거는 그
     함수 docstring 참조. 이 함수는 총합(`main + rescue + auto_relax`)만 남긴 하위 호환
     래퍼다(기존 두 불변식 `rescue ≤ total`·`total == 0 → rescue == 0` 을 그대로 보존한다).
+
+    [PR #452 리뷰 R3] `_rescue_chain_stage_counts` 는 더 이상 미룸(`may_auto_relax`) 게이트로
+    조기 return 하지 않는다(물리적 사실만 담는다) — **이 함수 이름이 뜻하는 "첫 이벤트 앞"
+    이라는 미룸 전제는 이 래퍼가 직접 적용한다.** `may_auto_relax=False` 턴은 F-1/#343/자동
+    완화가 `conditions` **뒤**에 돌아(`graph.py`, design D6) 첫 이벤트 앞 직렬 호출이 아예
+    없으므로 0을 낸다 — first-token 비교(`_require_search_retry_within_stream_budget`)에만
+    쓰는 값이다. 구매자 30s 상한·observe 꼬리 예약 비교는 미룸과 무관하므로 이 게이트가 적용
+    안 된 `_rescue_chain_stage_counts` 를 직접 쓴다(그 검증기 참조).
     """
+    if relaxation_max_rounds <= 0 or not (set(auto_fields) & set(chip_fields)):
+        return 0  # may_auto_relax가 False — conditions가 검색 앞에 나가 직렬 검증 대상이 아니다.
     counts = _rescue_chain_stage_counts(
         relaxation_max_rounds=relaxation_max_rounds,
         auto_fields=auto_fields,
@@ -203,10 +226,15 @@ def _deferred_first_event_rescue_i1_calls(
     구제 경로 자체를 억제하도록 `graph.py` 를 바꾸는 선택지는 **런타임 동작 변경**이라
     범위 밖이다(#384/#288 소관) — 여기서는 가드가 현실을 정확히 재는 것만 고친다.
 
-    [#427 D7] 구현은 `_rescue_chain_stage_counts` 로 위임한다 — 조기 return 0 은 총합 함수와
-    **같은 조건**(미룸 불성립)을 쓴다 — 그래야 `rescue ≤ total` 과 `total == 0 → rescue == 0`
-    두 불변식이 항상 성립한다.
+    [#427 D7] 구현은 `_rescue_chain_stage_counts` 로 위임한다.
+
+    [PR #452 리뷰 R3] 미룸 게이트는 이 함수가 직접 적용한다(위 `_deferred_first_event_i1_
+    calls` 와 **같은 조건** — 그래야 `rescue ≤ total` 과 `total == 0 → rescue == 0` 두
+    불변식이 항상 성립한다). `_rescue_chain_stage_counts` 자신은 더 이상 조기 return 하지
+    않는다(물리적 사실만 담는다, 위 참조).
     """
+    if relaxation_max_rounds <= 0 or not (set(auto_fields) & set(chip_fields)):
+        return 0  # may_auto_relax가 False — 위 총합 함수와 같은 게이트(불변식 보존).
     counts = _rescue_chain_stage_counts(
         relaxation_max_rounds=relaxation_max_rounds,
         auto_fields=auto_fields,
@@ -2050,9 +2078,17 @@ class Settings(BaseSettings):
         정의(각 항의 출처·§1(d) 각주①의 억제 스코프 비대칭·"오늘 기본값에서 3"인 근거)는 그
         두 함수의 docstring 참조 — 여기서 다시 적지 않는다(드리프트 방지 원칙 그대로).
 
-        게이트는 `deferred_calls == 0`(= `graph.py`의 `may_auto_relax`가 False)일 때만 검증을
-        건너뛰어, 실제로 미루지 않는 설정을 일어나지 않는 직렬 호출 때문에 막지 않는다(#277 4차
-        원칙을 일반형으로 그대로 유지).
+        [PR #452 리뷰 R3] **게이트(=`deferred_calls == 0`, `graph.py`의 `may_auto_relax`가
+        False)는 first-token 비교에만 적용한다** — 구매자 30s 상한·observe 꼬리 예약 비교는
+        더 이상 이 게이트로 건너뛰지 않는다. 종전에는 `_rescue_chain_stage_counts` 자체가
+        게이트로 조기 return 해 `main`(본검색)까지 0이 됐고, 그 결과 30s·observe-tail 비교가
+        `RELAXATION_MAX_ROUNDS=0` 같은 설정에서 아예 실행되지 않는 구멍이었다 — 본검색·F-1/
+        #343 은 `may_auto_relax` 와 무관하게 항상 돌아 30s 예산을 쓰는데(design D6), 그 사실을
+        검증하지 않은 채 통과시킨 것이다. first-token 비교만 게이트를 유지하는 이유는 그
+        비교의 전제(#288: "미루지 않는 턴은 그 체인이 첫 이벤트 앞에 없다")가 유일하게 미룸
+        여부에 좌우되기 때문이다 — 30s·observe-tail 비교는 미룸과 무관한 턴 전체 시간
+        비교라 이 전제가 아예 필요 없다(#277 4차 원칙은 first-token 비교에 한해 그대로
+        유지한다).
 
         **커버하지 않는 것**(누락이 아니라 판단): LLM head(#151 baseline p95 ≈3.0s)와 pg 왕복은
         이 식에 없고, `conditions` 뒤에 도는 완화 칩 probe(`relaxation_max_probes`)도 첫 이벤트
@@ -2088,15 +2124,16 @@ class Settings(BaseSettings):
                 "conditions is deferred past the search on auto-relaxable turns (#113), "
                 "so search retries consume the first-token budget and would 504"
             )
+        # [PR #452 리뷰 R3] `counts`(=`_rescue_chain_stage_counts`)는 이제 물리적 사실이라
+        # `main`(본검색)이 미룸 여부와 무관하게 항상 1 이다 — `physical_calls` 는 그래서
+        # `RELAXATION_MAX_ROUNDS=0` 이어도 0 이 되지 않는다(F-1/#343 이 남아 있으면 ≥ 2).
         counts = _rescue_chain_stage_counts(
             relaxation_max_rounds=self.relaxation_max_rounds,
             auto_fields=self.relaxation_auto_fields,
             chip_fields=self.relaxation_chip_fields,
             category_expand_enabled=self.category_expand_enabled,
         )
-        deferred_calls = counts.main + counts.rescue + counts.auto_relax
-        if deferred_calls == 0:
-            return self
+        physical_calls = counts.main + counts.rescue + counts.auto_relax
         serial_budget = _rescue_chain_serial_budget_s(
             counts=counts,
             search_timeout_s=self.spring_search_timeout_s,
@@ -2113,32 +2150,48 @@ class Settings(BaseSettings):
             "or RELAXATION_AUTO_FIELDS=[], or drop the rescue-fallback call with "
             "CATEGORY_EXPAND_ENABLED=false"
         )
-        # [#427] 구매자 전체 상한과는 상시 비교한다 — 위 docstring 참조.
+        # [#427, PR #452 리뷰 R3] 구매자 전체 상한과는 상시 비교한다(물리 계수 — 위 docstring
+        # 참조) — 본검색·F-1/#343 은 미룸 여부와 무관하게 이 30s 예산을 쓴다. `deferred_calls
+        # == 0` 조기 return 은 더 이상 없다: 그 조기 return 이 바로 이 비교까지 건너뛰게
+        # 만들던 결함이었다(R3).
         if serial_budget >= self.stream_total_timeout_buyer_s:
             raise ValueError(
-                f"the deferred I-1 serial budget ({deferred_calls} calls) must be < "
+                f"the deferred I-1 serial budget ({physical_calls} calls) must be < "
                 f"STREAM_TOTAL_TIMEOUT_BUYER_S (got {serial_budget} >= "
                 f"{self.stream_total_timeout_buyer_s}): {recovery}"
             )
-        # [#427] observe 모드일 때만 꼬리 예약을 뺀 값과 비교한다 — 위 docstring 참조.
+        # [#427, PR #452 리뷰 R3] observe 모드일 때만 꼬리 예약을 뺀 값과 비교한다 — 마찬가지로
+        # 물리 계수, 미룸과 무관하게 상시.
         if self.rescue_budget_mode == "observe":
             tail_budget = self.stream_total_timeout_buyer_s - self.rescue_tail_reserve_s
             if serial_budget >= tail_budget:
                 raise ValueError(
-                    f"the deferred I-1 serial budget ({deferred_calls} calls) must be < "
+                    f"the deferred I-1 serial budget ({physical_calls} calls) must be < "
                     "STREAM_TOTAL_TIMEOUT_BUYER_S - RESCUE_TAIL_RESERVE_S "
                     f"(got {serial_budget} >= {tail_budget}) when RESCUE_BUDGET_MODE=observe: "
                     f"{recovery}, or set RESCUE_BUDGET_MODE=narrow so the runtime narrowing "
                     "enforces the tail reserve instead"
                 )
-        if not self.progress_events_enabled and serial_budget >= self.stream_first_token_timeout_s:
-            raise ValueError(
-                f"the deferred I-1 serial budget ({deferred_calls} calls) must be < "
-                f"STREAM_FIRST_TOKEN_TIMEOUT_S (got {serial_budget} >= "
-                f"{self.stream_first_token_timeout_s}) when PROGRESS_EVENTS_ENABLED=false: "
-                f"deferred conditions put {deferred_calls} serial I-1 calls before the first "
-                f"event; {recovery}"
+        # [PR #452 리뷰 R3] first-token 비교만 미룸 게이트를 유지한다(design D6) —
+        # `may_auto_relax=False` 턴은 F-1/#343/자동완화가 `conditions` **뒤**에 돌아 첫 이벤트
+        # 앞 직렬 호출이 아니다. `_deferred_first_event_i1_calls` 래퍼가 그 게이트를 적용해
+        # 불성립이면 0을 낸다 — 게이트가 성립하면 물리 계수와 같은 값이라 `serial_budget` 을
+        # 다시 계산하지 않는다.
+        if not self.progress_events_enabled:
+            deferred_calls = _deferred_first_event_i1_calls(
+                relaxation_max_rounds=self.relaxation_max_rounds,
+                auto_fields=self.relaxation_auto_fields,
+                chip_fields=self.relaxation_chip_fields,
+                category_expand_enabled=self.category_expand_enabled,
             )
+            if deferred_calls > 0 and serial_budget >= self.stream_first_token_timeout_s:
+                raise ValueError(
+                    f"the deferred I-1 serial budget ({deferred_calls} calls) must be < "
+                    f"STREAM_FIRST_TOKEN_TIMEOUT_S (got {serial_budget} >= "
+                    f"{self.stream_first_token_timeout_s}) when PROGRESS_EVENTS_ENABLED=false: "
+                    f"deferred conditions put {deferred_calls} serial I-1 calls before the "
+                    f"first event; {recovery}"
+                )
         return self
 
     @model_validator(mode="after")

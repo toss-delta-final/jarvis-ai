@@ -1146,13 +1146,15 @@ async def stream_recommendation(
     # 미룬 턴은 첫 이벤트 앞 본 검색·자동 완화 probe만 재시도를 끈다(#277). conditions 뒤의
     # 완화 칩 probe는 첫 이벤트 예산 밖이라 제외하며, 이 with는 await 뒤 즉시 닫아 yield·다음
     # 턴으로 ContextVar가 새지 않게 한다. progress 이벤트가 계약에 생기면 이 스킵은 원복 가능하다.
-    # [#427 D4] 본검색 — 절대 건너뛰지 않는다(allow_skip=False). 남은 단 수는 본검색 자신(최소
-    # 1) + 이 턴에 이론상 남은 구제 체인(rescue·auto_relax)이다.
+    # [#427 D4] 본검색 — 절대 건너뛰지 않는다(allow_skip=False). 남은 단 수는 본검색 자신(1) +
+    # 이 턴에 이론상 남은 구제 체인(rescue·auto_relax)이다.
+    # [PR #452 리뷰 R3] `_rescue_stage_counts.main` 은 이제 물리적 사실이라 항상 1 이다(#427
+    # D6 — 본검색은 `may_auto_relax` 와 무관하게 항상 돈다) — `max(..., 1)` 보정은 더 이상
+    # 필요 없다(옛 `_rescue_chain_stage_counts` 가 미룸 게이트로 조기 return 하던 시절의
+    # 방어였다). 그대로 두면 `RELAXATION_MAX_ROUNDS=0` 턴에서 F-1 몫을 셈에서 빠뜨린다.
     # allow_skip=False 라 반환되는 skip 플래그는 항상 False — 버린다.
     _, _main_narrow_budget = _apply_stage_budget(
-        max(_rescue_stage_counts.main, 1)
-        + _rescue_stage_counts.rescue
-        + _rescue_stage_counts.auto_relax,
+        _rescue_stage_counts.main + _rescue_stage_counts.rescue + _rescue_stage_counts.auto_relax,
         allow_skip=False,
         attempts=_suppressed_search_attempts,
     )

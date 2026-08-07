@@ -329,6 +329,116 @@ def test_deferred_retry_default_path_allows_disabled_relaxation():
     assert settings.relaxation_max_rounds == 0
 
 
+# ─────────── [PR #452 리뷰 R3] 구제 체인 계수 — 미룸 게이트와 물리적 사실을 분리한다 ───────────
+#
+# `_rescue_chain_stage_counts` 는 `relaxation_max_rounds<=0`(또는 교집합 0, = `may_auto_relax`
+# 불성립)이면 세 항 전부(`main` 까지) 0을 냈다. 그런데 본검색(`main`)과 F-1/#343 재검색
+# (`rescue`)은 `may_auto_relax` 와 무관하게 항상 돈다(design DESIGN-SHARED-BUDGET-384.md §3
+# D6) — 조기 return 은 first-token 비교 전용 판단(#288)을 세 항 전부에 잘못 적용해, 구매자
+# 30s 상한·observe 꼬리 예약 비교까지 함께 건너뛰게 만들었다(#427 이 새로 넣은 코드의 결함).
+
+
+def test_rescue_chain_stage_counts_no_longer_gates_main_and_rescue_on_auto_relax():
+    """[PR #452 리뷰 R3] `_rescue_chain_stage_counts` 는 이제 물리적 사실만 담는다 —
+    `relaxation_max_rounds<=0`(또는 교집합 0)이어도 `main`·`rescue` 는 0으로 꺼지지 않는다.
+    `auto_relax` 만 그 조건에서 자연히 0이 된다(더 이상 조기 return 이 아니라 `min` 식 자체가
+    0을 낸다).
+    """
+    from app.core.config import _rescue_chain_stage_counts
+
+    rounds_disabled = _rescue_chain_stage_counts(
+        relaxation_max_rounds=0,
+        auto_fields=["ratingMin"],
+        chip_fields=["priceMax", "ratingMin", "brand", "color"],
+        category_expand_enabled=True,
+    )
+    assert rounds_disabled.main == 1
+    assert rounds_disabled.rescue == 1
+    assert rounds_disabled.auto_relax == 0
+
+    intersection_disabled = _rescue_chain_stage_counts(
+        relaxation_max_rounds=3,
+        auto_fields=[],
+        chip_fields=["priceMax", "ratingMin"],
+        category_expand_enabled=True,
+    )
+    assert intersection_disabled.main == 1
+    assert intersection_disabled.rescue == 1
+    assert intersection_disabled.auto_relax == 0
+
+    # category_expand_enabled=False 는 종전대로 rescue 항만 없앤다 — main 은 여전히 1이다.
+    rescue_disabled = _rescue_chain_stage_counts(
+        relaxation_max_rounds=0,
+        auto_fields=["ratingMin"],
+        chip_fields=["priceMax", "ratingMin", "brand", "color"],
+        category_expand_enabled=False,
+    )
+    assert rescue_disabled.main == 1
+    assert rescue_disabled.rescue == 0
+    assert rescue_disabled.auto_relax == 0
+
+
+def test_startup_guard_buyer_cap_still_checked_when_auto_relax_disabled():
+    """[PR #452 리뷰 R3 — 기동 검증 구멍] `RELAXATION_MAX_ROUNDS=0` 이어도 F-1 재검색
+    (`category_expand_enabled=True`, 기본)은 여전히 돈다 — 구매자 30s 상한 비교는 미룸과
+    무관하게 늘 걸려야 한다.
+
+    `SPRING_SEARCH_TIMEOUT_S=16.0` 이면 물리 계수(main=1+rescue=1+auto_relax=0) 직렬 합은
+    `(1+0)*16.0 + 1*(16.0*1) = 32.0` ≥ `STREAM_TOTAL_TIMEOUT_BUYER_S`(30.0) 다.
+
+    검증 실효성: 옛 코드(조기 return)는 `RELAXATION_MAX_ROUNDS=0` 이면 `deferred_calls == 0`
+    이라 이 비교 자체를 건너뛰어 이 조합도 기동을 통과시켰다 — **먼저 옛 코드에 돌려 통과(=
+    ValidationError 미발생)를 확인했다**(TDD 적색).
+    """
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None, relaxation_max_rounds=0, spring_search_timeout_s=16.0)
+
+    assert "STREAM_TOTAL_TIMEOUT_BUYER_S" in str(exc_info.value)
+
+
+def test_startup_guard_observe_tail_still_checked_when_auto_relax_disabled():
+    """[PR #452 리뷰 R3 — 기동 검증 구멍] observe 꼬리 예약 비교도 미룸과 무관하게 늘 걸린다.
+
+    `SPRING_SEARCH_TIMEOUT_S=8.0` 이면 물리 계수 직렬 합은 `8.0 + 8.0 = 16.0` — 구매자 30s
+    (30.0)는 안 넘지만 observe 꼬리 예약 비교(30-15=15.0)는 넘는다. 이 값으로 30s 비교가
+    아니라 observe 분기만 겨눈다.
+
+    검증 실효성: 옛 코드는 이 조합도 조기 return 으로 통과시켰다 — **먼저 옛 코드에 돌려
+    통과를 확인했다**(TDD 적색).
+    """
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None, relaxation_max_rounds=0, spring_search_timeout_s=8.0)
+
+    assert "RESCUE_BUDGET_MODE=observe" in str(exc_info.value)
+
+
+def test_startup_guard_first_token_check_still_gated_by_deferral_when_auto_relax_disabled():
+    """[PR #452 리뷰 R3 — first-token 비교는 미룸 게이트를 유지한다] `RELAXATION_MAX_ROUNDS=0`
+    이면 F-1 재검색은 `conditions` 발신 **뒤**에 돈다(`may_auto_relax=False`, design D6) —
+    first-token 비교는 이 조합에서 계속 건너뛰어야 한다.
+
+    `SPRING_SEARCH_TIMEOUT_S=6.0` 이면 물리 계수 직렬 합은 `6.0 + 6.0 = 12.0` 로
+    `STREAM_FIRST_TOKEN_TIMEOUT_S`(10.0)는 넘지만 구매자 30s(30.0)·observe 꼬리 예약(15.0)
+    은 넘지 않게 골라 위 두 검증과 섞이지 않는다.
+
+    검증 실효성: first-token 비교가 (미룸 게이트 없이) 물리 계수를 그대로 쓰도록 회귀하면
+    이 조합이 `STREAM_FIRST_TOKEN_TIMEOUT_S` 위반으로 거절돼 이 테스트가 깨진다.
+    """
+    settings = Settings(
+        _env_file=None,
+        relaxation_max_rounds=0,
+        spring_search_timeout_s=6.0,
+        progress_events_enabled=False,
+    )
+    assert settings.relaxation_max_rounds == 0
+
+
 def test_deferred_first_event_i1_calls_matches_default_config():
     """기본 조합(rounds=3, auto=["ratingMin"], chip 4종)의 직렬 호출 수는 3이다(#383 보정식).
 
