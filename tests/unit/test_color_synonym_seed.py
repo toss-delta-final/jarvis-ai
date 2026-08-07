@@ -1154,6 +1154,82 @@ def test_load_seed_rows_accepts_pending_review_row_pointing_at_approved_anchor(t
     assert {row.term for row in rows} == {"다크그린", "그린"}
 
 
+def test_load_seed_rows_rejects_term_with_leading_or_trailing_whitespace(tmp_path) -> None:
+    """생성물은 바이트 정본이라 로더가 조용히 strip 하면 파일 값과 DB 적재 값이 갈라진다
+    (PR #447 리뷰 R5) — 정규화하지 않고 거부한다."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": " 블랙",
+                "canonical": "블랙",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 1,
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="term에 앞뒤 공백"):
+        seed.load_seed_rows(path)
+
+
+def test_load_seed_rows_rejects_canonical_with_leading_or_trailing_whitespace(tmp_path) -> None:
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙",
+                "canonical": "블랙 ",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 1,
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="canonical에 앞뒤 공백"):
+        seed.load_seed_rows(path)
+
+
+def test_load_seed_rows_rejects_term_with_embedded_newline(tmp_path) -> None:
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙\n",
+                "canonical": "블랙",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 1,
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="term에 앞뒤 공백"):
+        seed.load_seed_rows(path)
+
+
+def test_load_seed_rows_accepts_term_and_canonical_without_whitespace(tmp_path) -> None:
+    """정상 회귀 — 공백 없는 정상 행은 그대로 통과한다."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙",
+                "canonical": "블랙",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 1,
+            }
+        ],
+    )
+
+    rows = seed.load_seed_rows(path)
+
+    assert rows == [seed.SeedColorTermRow("블랙", "블랙", "approved", "human", 1)]
+
+
 def test_upsert_seed_sql_is_authoritative_not_review_protected() -> None:
     """검수 보호 CASE 가드(UPSERT_COLOR_TERM_SQL)와 달리, 시드 upsert는 파일 값을 그대로 반영한다."""
     sql = seed.UPSERT_SEED_COLOR_TERM_SQL

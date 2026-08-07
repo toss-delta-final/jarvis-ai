@@ -1089,6 +1089,15 @@ def load_seed_rows(path: str | Path) -> list[SeedColorTermRow]:
             raise ValueError(
                 f"색상 동의어 정본 시드 term은 비어 있지 않은 문자열이어야 함: {item!r}"
             )
+        # 이 파일은 생성물이라 바이트가 derive --check·커밋된 sha256 으로 고정돼 있다 — 로더가
+        # 조용히 strip 하면 파일 내용과 DB 에 들어가는 값이 갈라져 "repo 파일이 바이트 단위
+        # 정본"이라는 이 PR 의 핵심 성질이 깨진다. extract_color_terms 가 셀러 자유 텍스트를
+        # strip 하는 것과는 신뢰 경계가 다르다(PR #447 리뷰 R5) — 여기는 고치지 않고 거부한다.
+        if term != term.strip():
+            raise ValueError(
+                f"색상 동의어 정본 시드 term에 앞뒤 공백/개행이 있음(허용 안 함) — "
+                f"scripts/derive_color_synonym_seed.py 로 재생성하라: {item!r}"
+            )
         # _execute_seed_upserts 가 rows 순서대로 ON CONFLICT (term) DO UPDATE 를 실행하므로,
         # 같은 term 이 두 번 있으면(다른 status/canonical 이어도) 배열 순서에 좌우돼 나중 행이
         # 앞 행을 조용히 덮는다(PR #447 리뷰 R2). DB UNIQUE(term) 과 같은 기준으로 원문 term
@@ -1106,6 +1115,13 @@ def load_seed_rows(path: str | Path) -> list[SeedColorTermRow]:
         if canonical is not None and not canonical.strip():
             raise ValueError(
                 f"색상 동의어 정본 시드 canonical은 빈 문자열일 수 없음(없으면 null): {item!r}"
+            )
+        # term 과 같은 이유(생성물 바이트 정본, PR #447 리뷰 R5) — canonical 도 조용히 strip 하지
+        # 않고 거부한다.
+        if canonical is not None and canonical != canonical.strip():
+            raise ValueError(
+                f"색상 동의어 정본 시드 canonical에 앞뒤 공백/개행이 있음(허용 안 함) — "
+                f"scripts/derive_color_synonym_seed.py 로 재생성하라: {item!r}"
             )
         if status not in _SEED_STATUSES:
             raise ValueError(f"색상 동의어 정본 시드 status 위반({status!r}): {item!r}")
