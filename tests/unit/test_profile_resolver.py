@@ -90,6 +90,36 @@ async def test_rule_kinds_drop_on_unparseable_label(
     embed.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("kind", "variants", "expected_node_id"),
+    [
+        ("product", ["7", "007", "0000007"], "product:7"),
+        ("priceBand", ["30-50", "030-050"], "priceBand:30-50"),  # 밴드는 이미 수렴한다
+        ("ratingBand", ["4-5", "04-05"], "ratingBand:4-5"),
+    ],
+)
+async def test_numeric_labels_converge_to_one_node_id(
+    settings: Settings, kind: str, variants: list[str], expected_node_id: str
+) -> None:
+    """자리수 표기가 달라도 같은 대상이면 **하나의 `node_id`** 로 수렴한다 (REQ-PGRAPH-010).
+
+    식별자 결정론은 이 이슈의 기능 요구사항이다 — 갈라지면 사용자가 지운 취향이 다른 표기로
+    다시 언급될 때 **새 `active` 노드로 부활**해 tombstone 을 우회한다. `_resolve_band` 는
+    `int()` 왕복으로 이미 수렴시키는데 `_resolve_product` 만 원문 문자열을 그대로 써서
+    `product:7` 과 `product:007` 이 갈렸다(PR #410 리뷰).
+
+    `normalize_label` 은 NFKC·공백·casefold 만 하므로 앞자리 0 을 없애 주지 않는다 — 숫자 정규화는
+    파서의 몫이다.
+    """
+    node_ids = set()
+    for label in variants:
+        resolved = await _resolve(settings, kind=kind, label=label, embed=_never_embed())
+        assert resolved is not None, f"{kind} {label!r} 이 드롭됐다"
+        node_ids.add(resolved.node.node_id)
+
+    assert node_ids == {expected_node_id}
+
+
 # ─────────── 어휘 없는 kind: seam 만 만들고 verified:false (REQ-PGRAPH-013) ───────────
 
 

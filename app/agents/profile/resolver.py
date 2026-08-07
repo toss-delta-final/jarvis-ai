@@ -219,10 +219,16 @@ def _resolve_product(label: str, *, anchor_phrase: str, now: str) -> GraphNode |
     """
     if not _PRODUCT_ID_RE.match(label):
         return None
+    # 밴드와 같은 규약으로 **정수 왕복 정규화**한다 — 정규식이 "007" 과 "7" 을 둘 다 통과시키는데
+    # `normalize_label` 은 NFKC·공백·casefold 만 해서 앞자리 0 을 없애지 않는다. 그대로 두면 같은
+    # 상품이 `product:7`·`product:007` 로 갈리고, 사용자가 지운 상품이 다른 표기로 다시 언급될 때
+    # 새 active 노드로 부활해 tombstone 을 우회한다 — 식별자 결정론은 이 이슈의 기능 요구사항이다
+    # (REQ-PGRAPH-010, PR #410 리뷰). 정상 id 에는 no-op 이다.
+    canonical = str(int(label))
     return GraphNode(
-        node_id=make_node_id("product", label),
+        node_id=make_node_id("product", canonical),
         type="product",
-        label=label,
+        label=canonical,
         verified=True,
         resolution=_resolution("rule", anchor_phrase=anchor_phrase, now=now),
     )
