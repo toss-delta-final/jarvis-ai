@@ -158,6 +158,37 @@ def _rescue_chain_serial_budget_s(
     강제된다). 나머지(본검색·자동완화 probe)만 억제된다. `True` 면 억제 산출부
     (`suppress_deferred_search_retry`) 자체가 항상 False 라 세 항 모두 재시도 예산을 쓴다.
 
+    [PR #452 리뷰 R4] **OFF 분기(`search_retry_on_deferred_conditions=False`)는 억제가 실제로
+    걸리는 턴과 안 걸리는 턴, 상호배타인 두 유형의 `max` 다.** `suppress_deferred_search_retry
+    = may_auto_relax and not search_retry_on_deferred_conditions`(`graph.py`)이고
+    `may_auto_relax` 는 **턴별**(그 턴의 `underspecified`·실제 완화 후보 유무)이라, 이 함수는
+    (config 만 보는 순수 함수라 `underspecified` 를 모른다, R3 의 `_rescue_chain_stage_counts`
+    docstring 과 같은 이유) 어느 쪽이 이 턴에 해당하는지 판정하지 않고 **두 유형의 상한을 모두
+    재서 큰 쪽을 쓴다**:
+
+    - **A. 억제가 걸리는 턴**(`may_auto_relax=True`) — `main`·`auto_relax` 는 억제된 1회분
+      (`search_timeout_s`), `rescue` 는 억제 밖이라 재시도 전액(`retried_budget`):
+      `(main + auto_relax) * search_timeout_s + rescue * retried_budget`.
+    - **B. 억제가 안 걸리는 턴**(`may_auto_relax=False`) — `main`·`rescue` 모두 재시도 전액
+      (`retried_budget`), 그리고 **`auto_relax` 는 0 단이다** — 자동완화 루프는
+      `relaxation_auto_fields` 후보가 있어야 돌고 그 후보 유무가 정확히 `may_auto_relax` 를
+      가르는 조건이라(`build_relaxation_candidates`·`graph.py` 의 `may_auto_relax` 판정),
+      `auto_relax` 후보가 있는데 `may_auto_relax=False` 인 턴은 존재할 수 없다:
+      `(main + rescue) * retried_budget`.
+
+    `main` 은 항상 1(R3)이라 `A - B = search_timeout_s * (auto_relax - spring_max_retries)`
+    라는 정확한 식이 성립한다(`rescue` 항은 상쇄돼 사라진다) — 부호로 어느 쪽이 최악인지
+    바로 읽힌다: `auto_relax > spring_max_retries` 면 A, `auto_relax < spring_max_retries` 면
+    B, 같으면 둘이 정확히 같다. **오늘 기본값(`auto_relax=1`)은 `spring_max_retries` 가 취할
+    수 있는 두 값(0·1, `le=1` 필드 제약) 모두에서 `auto_relax >= spring_max_retries` 라 A 가
+    최악이거나 A=B 다** — 그래서 `max(A, B)` 로 바꿔도 오늘 기본값에서 결과값은 항상 A(=이
+    함수를 R4 이전으로 되돌렸을 때의 값)와 같다. `auto_relax == 0`(`RELAXATION_MAX_ROUNDS=0`
+    또는 자동/칩 교집합 공집합)으로 낮추고 `spring_max_retries=1` 을 켜야만(`auto_relax(0) <
+    retries(1)`) B 가 A 를 넘어선다 — R3 가 이 함수의 30s·observe 꼬리 예약 비교를 미룸과
+    무관하게 상시 적용하도록 넓혀서, 그 조합에서 A 만 쓰던 종전 값매김이 실제 최악 벽시계를
+    과소평가하는 결함으로 드러났다(R3 가 열어 준 검증 범위가 아니었다면 드러나지 않았을
+    내부 불일치).
+
     기동 검증(`_require_search_retry_within_stream_budget`)과 런타임 좁히기(D4, 그래프의
     "남은 단 수" 계산) **둘 다** 이 함수 하나만 호출한다 — 한쪽만 고쳐지는 드리프트를
     막는다(#383 이 고친 것과 같은 실패 모드, D7).
@@ -165,7 +196,11 @@ def _rescue_chain_serial_budget_s(
     retried_budget = search_timeout_s * (spring_max_retries + 1)
     if search_retry_on_deferred_conditions:
         return (counts.main + counts.rescue + counts.auto_relax) * retried_budget
-    return (counts.main + counts.auto_relax) * search_timeout_s + counts.rescue * retried_budget
+    scenario_a_suppressed = (
+        counts.main + counts.auto_relax
+    ) * search_timeout_s + counts.rescue * retried_budget
+    scenario_b_unsuppressed = (counts.main + counts.rescue) * retried_budget
+    return max(scenario_a_suppressed, scenario_b_unsuppressed)
 
 
 def _deferred_first_event_i1_calls(

@@ -477,6 +477,98 @@ def test_startup_guard_message_wording_differs_between_deferral_agnostic_and_fir
     assert "disable deferral" in deferred_message
 
 
+# ─────────── [PR #452 리뷰 R4] 직렬 예산 값매김 — 억제 여부로 갈리는 두 턴 유형의 max ───────
+
+
+def test_rescue_chain_serial_budget_s_off_branch_uses_worst_of_both_suppression_scenarios():
+    """[PR #452 리뷰 R4 — 과소평가 회귀] `auto_relax == 0`(`RELAXATION_MAX_ROUNDS=0` 또는
+    교집합 공집합)이면 `may_auto_relax` 는 항상 False 라 억제가 걸리지 않는다 — 본검색·구제
+    폴백 모두 재시도 전액(`retried_budget`)을 쓴다. `spring_max_retries=1` 이면 이 값
+    (main+rescue)*retried 이, 종전 공식(main+auto_relax)*t + rescue*retried 보다 크다.
+
+    검증 실효성: **먼저 옛 코드(항상 A 만 계산)에 돌려 과소평가를 확인했다**(TDD 적색) —
+    옛 공식은 `(1+0)*3.0 + 1*6.0 = 9.0` 을 내는데 실제 최악(B)은
+    `(1+1)*6.0 = 12.0` 이다. `max` 로 고치지 않으면 9.0 을 내 이 어설션이 깨진다.
+    """
+    from app.core.config import RescueStageCounts, _rescue_chain_serial_budget_s
+
+    counts = RescueStageCounts(main=1, rescue=1, auto_relax=0)
+    serial_budget = _rescue_chain_serial_budget_s(
+        counts=counts,
+        search_timeout_s=3.0,
+        spring_max_retries=1,
+        search_retry_on_deferred_conditions=False,
+    )
+    assert serial_budget == 12.0, (
+        f"got {serial_budget} — B 시나리오((main+rescue)*retried=12.0)가 아니라 "
+        "A 시나리오((main+auto_relax)*t+rescue*retried=9.0)로 과소평가했다(R4 재현)"
+    )
+
+
+def test_rescue_chain_serial_budget_s_off_branch_default_counts_unchanged():
+    """[PR #452 리뷰 R4 — 기본값 불변] 기본 계수(main=1, rescue=1, auto_relax=1)는
+    `spring_max_retries` 가 취할 수 있는 두 값(0·1) 모두에서 `auto_relax >= spring_max_retries`
+    라 A 가 최악이거나 A=B 다 — `max` 로 바꿔도 오늘 값(9.0, `spring_max_retries=0`)이
+    그대로여야 한다.
+    """
+    from app.core.config import RescueStageCounts, _rescue_chain_serial_budget_s
+
+    counts = RescueStageCounts(main=1, rescue=1, auto_relax=1)
+    unchanged = _rescue_chain_serial_budget_s(
+        counts=counts,
+        search_timeout_s=3.0,
+        spring_max_retries=0,
+        search_retry_on_deferred_conditions=False,
+    )
+    assert unchanged == 9.0
+
+    tied = _rescue_chain_serial_budget_s(
+        counts=counts,
+        search_timeout_s=3.0,
+        spring_max_retries=1,
+        search_retry_on_deferred_conditions=False,
+    )
+    assert tied == 12.0  # auto_relax(1) == spring_max_retries(1) — A=B, 동률.
+
+
+def test_rescue_chain_serial_budget_s_off_branch_prefers_suppressed_scenario_when_auto_relax_is_large():
+    """[PR #452 리뷰 R4] `auto_relax >= 2` 면 억제가 걸리는 턴(A)이 최악이다 — `max` 가 실제로
+    양쪽을 다 재고 있다는 증거(한쪽만 상수로 고정해도 통과하는 공허한 어설션이 아니다).
+    """
+    from app.core.config import RescueStageCounts, _rescue_chain_serial_budget_s
+
+    counts = RescueStageCounts(main=1, rescue=1, auto_relax=2)
+    serial_budget = _rescue_chain_serial_budget_s(
+        counts=counts,
+        search_timeout_s=3.0,
+        spring_max_retries=1,
+        search_retry_on_deferred_conditions=False,
+    )
+    # A = (1+2)*3.0 + 1*6.0 = 15.0, B = (1+1)*6.0 = 12.0 — A 가 더 크다.
+    assert serial_budget == 15.0
+
+
+def test_startup_guard_catches_unsuppressed_worst_case_that_scenario_a_alone_missed():
+    """[PR #452 리뷰 R4 — 기동 검증 구멍] `Settings` 인스턴스 경로 — `RELAXATION_MAX_ROUNDS=0`
+    (`auto_relax=0`) + `SPRING_MAX_RETRIES=1` + `SPRING_SEARCH_TIMEOUT_S=4.0` 조합은 B 시나리오
+    (`(main+rescue)*retried = 2*8.0 = 16.0`)가 observe 꼬리 예약(30-15=15.0)을 넘는데, 옛
+    공식(A 만 계산 = `(1+0)*4.0 + 1*8.0 = 12.0`)은 그 아래라 기동을 통과시켰다.
+
+    검증 실효성: **먼저 옛 코드에 돌려 통과(=ValidationError 미발생)를 확인했다**(TDD 적색).
+    """
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(
+            _env_file=None,
+            relaxation_max_rounds=0,
+            spring_max_retries=1,
+            spring_search_timeout_s=4.0,
+        )
+    assert "RESCUE_BUDGET_MODE=observe" in str(exc_info.value)
+
+
 def test_deferred_first_event_i1_calls_matches_default_config():
     """기본 조합(rounds=3, auto=["ratingMin"], chip 4종)의 직렬 호출 수는 3이다(#383 보정식).
 
