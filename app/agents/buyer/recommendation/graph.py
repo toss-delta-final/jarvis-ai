@@ -513,7 +513,11 @@ async def stream_recommendation(
         """
         if rescue_deadline is None:
             return "full", settings.spring_search_timeout_s
-        remaining = rescue_deadline - time.monotonic()
+        # [PR #452 리뷰 R1] `rescue_deadline` 의 원점은 `open_stream` 의 `loop.time()` 이다 —
+        # 데드라인과 비교하는 이 지점만 같은 시계(`asyncio.get_running_loop().time()`)를 써야
+        # D2 의 "원점 일치" 가 실측 우연이 아니라 증명이 된다(uvloop 는 `time.monotonic()` 과
+        # 같다는 보장이 언어 차원에 없다).
+        remaining = rescue_deadline - asyncio.get_running_loop().time()
         n = max(remaining_stages, 1)
         granted = min(settings.spring_search_timeout_s, remaining / n)
         if granted >= settings.spring_search_timeout_s:
