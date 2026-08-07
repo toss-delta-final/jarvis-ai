@@ -437,6 +437,146 @@ async def test_narrow_mode_h4_relaxing_frame_implies_the_probe_actually_ran(
     ), "10,000초 지난 턴은 clamp 가 하한 그대로 걸려야 한다"
 
 
+# ─────────── [PR #452 리뷰 R2] "full" 판정 상한이 재시도 배수를 반영한다 ───────────
+#
+# `_stage_budget` 은 `granted >= spring_search_timeout_s` 면 `"full"`(안 좁힘)을 낸다. 그런데
+# `spring_client.search_products` 가 실제로 쓰는 벽시계 상한은 `spring_search_timeout_s *
+# attempts` 다(`attempts = 1 if _search_retry_suppressed.get() else spring_max_retries + 1`).
+# 아래 본검색 시나리오는 `may_auto_relax=False`(FakeLLM() 기본 decompose 는 ratingMin 이
+# 없어 완화 후보가 안 생긴다)라 `suppress_deferred_search_retry=False` — F-1/#343 재검색과
+# 같은 "항상 재시도" 축을 탄다. 이 세 테스트가 함께 "런타임 attempts 규칙 ≡ search_products
+# attempts 규칙"을 고정한다: 하나만 바뀌면(예: graph.py 가 suppress 여부를 무시하고 상수를
+# 쓰면) 아래 중 하나가 반드시 깨진다.
+
+
+async def test_narrow_mode_stage_cap_accounts_for_retry_attempts_before_narrowing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[PR #452 리뷰 R2 — 과다 승인 회귀] `spring_max_retries=1` 이면 본검색(이 턴은 suppress
+    되지 않는다)의 실제 단 상한은 `spring_search_timeout_s * 2 = 6.0s` 다. 잔여 예산을
+    (3.0s, 6.0s) 구간(=4.5s)으로 몰아넣으면, 옛 코드(상한을 1회분 3.0s 로 고정)는 `granted
+    >= 3.0` 이라 `"full"` 로 오판해 `narrow_search_budget` 을 아예 안 부른다 — rescue_deadline
+    을 최대 `spring_search_timeout_s` 만큼 과다 승인한다(리뷰 지적 그대로).
+
+    검증 실효성: `_stage_budget` 의 `stage_cap` 을 `spring_search_timeout_s` 상수로 되돌리면
+    (R2 결함 재현) `granted`(4.5s)가 그 상수(3.0s) 이상이라 `"full"` 로 오판되고 `calls` 가
+    비어 이 테스트가 깨진다. **먼저 이 테스트를 수정 전 코드에 돌려 실패를 확인했다**(TDD).
+    """
+    settings = get_settings()
+    monkeypatch.setattr(settings, "rescue_budget_mode", "narrow")
+    monkeypatch.setattr(settings, "spring_max_retries", 1)
+    # rescue_deadline 원점부터 window=13.5s, 남은 단 수 3(main=1 + rescue=1 + auto_relax=1,
+    # 기본 설정값 — `_rescue_chain_stage_counts` 참조)으로 균등 배분하면 granted≈4.5s. 옛
+    # 상한(3.0s)은 넘지만 새 상한(6.0s = 3.0×2)은 안 넘는다.
+    monkeypatch.setattr(settings, "rescue_tail_reserve_s", 16.5)
+
+    calls = _record_narrow_calls(monkeypatch)
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(),  # 기본 decompose: ratingMin 미설정 → may_auto_relax=False(항상 재시도)
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+            turn_started_at=asyncio.get_event_loop().time(),
+        )
+    )
+
+    assert "products.ready" in _types(events)
+    assert calls, (
+        "본검색 단이 narrow_search_budget 를 집행하지 않았다 — attempts=2(spring_max_retries=1)"
+        "인 단을 1회분 상한(3.0s)으로 오판해 'full' 로 통과시켰다(R2 과다 승인 재현)"
+    )
+    stage_cap = settings.spring_search_timeout_s * 2  # attempts = spring_max_retries(1) + 1
+    assert calls[0] < stage_cap
+    assert calls[0] > settings.spring_search_timeout_s, (
+        "옛 1회분 상한(3.0s)보다 큰 값이 실제로 집행돼야 과다 승인이 없었다는 증거가 된다"
+    )
+
+
+async def test_default_spring_max_retries_stage_cap_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[PR #452 리뷰 R2 — 기본값 불변] `spring_max_retries=0`(오늘 배포 기본값)이면
+    `attempts=1` 이라 상한은 R2 수정 전후로 `spring_search_timeout_s` 그대로다. 위 테스트와
+    똑같은 압박(window=13.5s, granted≈4.5s)을 주고 `spring_max_retries` 만 0 으로 두면 여전히
+    `"full"`(안 좁힘)이어야 한다 — 옛 코드도 이 지점에서 이미 `"full"` 이었으므로 이 어설션은
+    "R2 수정이 오늘 기본 배포 동작을 바꾸지 않는다"를 직접 잰다.
+
+    검증 실효성: attempts 산출이 `suppress_deferred_search_retry` 를 무시하고 항상
+    `spring_max_retries + 1` 을 쓰는 회귀가 나면(그 자체는 이 값에 영향 없지만) 대신 상한
+    계산이 `attempts` 를 아예 무시하지 않고 엉뚱한 값(예: 상수 1 대신 2)을 곱하는 회귀가 나면
+    `calls` 가 채워져 이 테스트가 깨진다.
+    """
+    settings = get_settings()
+    assert settings.spring_max_retries == 0  # 기본값 전제
+    monkeypatch.setattr(settings, "rescue_budget_mode", "narrow")
+    monkeypatch.setattr(settings, "rescue_tail_reserve_s", 16.5)  # 위 테스트와 같은 압박
+
+    calls = _record_narrow_calls(monkeypatch)
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(),
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+            turn_started_at=asyncio.get_event_loop().time(),
+        )
+    )
+
+    assert "products.ready" in _types(events)
+    assert not calls, (
+        "attempts=1(spring_max_retries=0)인데 narrow_search_budget 가 집행됐다 — "
+        "상한이 attempts 배수를 잘못 곱하는 회귀다(기본 배포 동작이 바뀌면 안 된다)"
+    )
+
+
+async def test_narrow_mode_suppressed_stage_stays_at_single_attempt_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[PR #452 리뷰 R2 — attempts 규칙 ≡ search_products 규칙] 이 턴은 `ratingMin` 이 설정돼
+    `may_auto_relax=True`(기본 `search_retry_on_deferred_conditions=False`)라
+    `suppress_deferred_search_retry=True` — 본검색은 `spring_client.suppress_search_retry()`
+    로 감싸여 `spring_client.search_products` 의 `attempts` 가 `_search_retry_suppressed.get()`
+    로 강제 1 이 된다. `spring_max_retries=1` 이어도 이 단의 실제 상한은 여전히
+    `spring_search_timeout_s * 1 = 3.0s` 다 — 위 두 테스트와 **같은 압박**(granted≈4.5s)을
+    줘도 `"full"`(안 좁힘)이어야 한다.
+
+    검증 실효성: graph.py 의 attempts 산출이 `suppress_deferred_search_retry` 를 무시하고
+    상수 `spring_max_retries + 1` 을 그대로 쓰는 회귀가 나면(= `search_products` 의 억제
+    규칙과 어긋나면) 상한이 6.0s 로 오판돼 이 턴이 narrow 로 좁혀지고 `calls` 가 채워져
+    이 테스트가 깨진다 — `test_narrow_mode_stage_cap_accounts_for_retry_attempts_before_
+    narrowing`(억제 안 됨 → narrow) 과 정확히 반대 결과가 나와야 두 축이 함께 고정된다.
+    """
+    settings = get_settings()
+    assert settings.search_retry_on_deferred_conditions is False  # 기본값 전제
+    monkeypatch.setattr(settings, "rescue_budget_mode", "narrow")
+    monkeypatch.setattr(settings, "spring_max_retries", 1)
+    monkeypatch.setattr(settings, "rescue_tail_reserve_s", 16.5)  # 위 두 테스트와 같은 압박
+
+    calls = _record_narrow_calls(monkeypatch)
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(decompose=_decompose_with(ratingMin=4.5)),  # may_auto_relax=True
+            search=_make_search(DEFAULT_PRODUCTS),  # 필터 무시 — 완화 루프를 태우지 않는다
+            push_fn=_RecordingPush(),
+            turn_started_at=asyncio.get_event_loop().time(),
+        )
+    )
+
+    assert "products.ready" in _types(events)
+    assert not calls, (
+        "억제된(suppress_deferred_search_retry=True) 단인데도 narrow_search_budget 가 "
+        "집행됐다 — attempts 산출이 search_products 의 억제 규칙과 어긋난다"
+    )
+
+
 # ─────────── (4) 건너뛰기 + 거짓 신호 금지(H4) ───────────
 
 

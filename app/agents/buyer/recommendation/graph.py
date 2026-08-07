@@ -503,31 +503,42 @@ async def stream_recommendation(
     rescue_stage_narrowed_timeout_ms: int | None = None
     rescue_stage_skipped_budget = False
 
-    def _stage_budget(remaining_stages: int) -> tuple[str, float]:
+    def _stage_budget(remaining_stages: int, *, attempts: int) -> tuple[str, float]:
         """이 단 진입 직전 잔여 예산 판정 (D3·D4). 반환은 (verdict, 이 단에 줄 수 있는 초).
 
         verdict 는 `"full"`(좁히지 않는다) / `"narrow"`(좁혀서 시도) / `"skip"`(건너뛴다
         — 호출부가 이 단의 skip 허용 여부에 따라 실제로 건너뛸지 narrow 로 강등할지 정한다).
         남은 단 수로 균등 배분한다(D4) — 지금 단이 잔여를 통째로 쓰면 뒤에 남은 단이 곧바로
         굶는다. `remaining_stages` 는 이 단을 포함해 이 턴에 이론상 남아 있는 단 수다.
+
+        [PR #452 리뷰 R2] `attempts` 는 이 단이 실제로 밟을 시도 횟수 —
+        `spring_client.search_products` 의 `attempts = 1 if _search_retry_suppressed.get()
+        else spring_max_retries + 1` 산출식과 **글자 그대로 같은 규칙**이어야 한다(호출부가
+        넘긴다, D7 — `config.py::_rescue_chain_serial_budget_s` 가 같은 비대칭을 기동 검증
+        쪽에서 모델링한다). 단 상한(`stage_cap`)은 `spring_search_timeout_s * attempts` 다 —
+        `"full"` 판정을 1 회분 상한으로 고정하면, 재시도가 있는 단은 그 배만큼 벽시계를 실제로
+        쓰는데도 좁히지 않고 통과시켜 `rescue_deadline` 을 과다 승인한다.
         """
+        stage_cap = settings.spring_search_timeout_s * attempts
         if rescue_deadline is None:
-            return "full", settings.spring_search_timeout_s
+            return "full", stage_cap
         # [PR #452 리뷰 R1] `rescue_deadline` 의 원점은 `open_stream` 의 `loop.time()` 이다 —
         # 데드라인과 비교하는 이 지점만 같은 시계(`asyncio.get_running_loop().time()`)를 써야
         # D2 의 "원점 일치" 가 실측 우연이 아니라 증명이 된다(uvloop 는 `time.monotonic()` 과
         # 같다는 보장이 언어 차원에 없다).
         remaining = rescue_deadline - asyncio.get_running_loop().time()
         n = max(remaining_stages, 1)
-        granted = min(settings.spring_search_timeout_s, remaining / n)
-        if granted >= settings.spring_search_timeout_s:
-            return "full", settings.spring_search_timeout_s
+        # 균등 배분(remaining / n)은 근사다 — 단별 상한(stage_cap)이 서로 달라 엄밀히는 가중
+        # 배분이 맞지만, 그 정밀화는 이 수정 범위 밖이다(R2 는 "full" 경계와 상한만 바꾼다).
+        granted = min(stage_cap, remaining / n)
+        if granted >= stage_cap:
+            return "full", stage_cap
         if granted >= settings.rescue_stage_min_timeout_s:
             return "narrow", granted
         return "skip", granted
 
     def _apply_stage_budget(
-        remaining_stages: int, *, allow_skip: bool
+        remaining_stages: int, *, allow_skip: bool, attempts: int
     ) -> tuple[bool, float | None]:
         """`_stage_budget` 판정을 관측 필드에 반영하고, `rescue_budget_mode` 에 따라
         (건너뛸지, narrow 로 줄 budget_s) 를 반환한다 (D4).
@@ -548,9 +559,14 @@ async def stream_recommendation(
         `skip → narrow` 강등과, `narrow`(narrow_skip 아님) 모드에서 `skip` 판정을 그대로
         집행하는 경로. 데드라인을 최대 `rescue_stage_min_timeout_s` 만큼 넘길 수 있지만 그건
         `rescue_tail_reserve_s` 가 흡수한다 — 예산이 없다고 요청 자체를 안 보내는 것보다 낫다.
+
+        [PR #452 리뷰 R2] `narrow_search_budget()` 로 주입하는 `granted` 는 이미 **총시간
+        (재시도 포함) 상한**이다(`search_products` 가 override 를 그 의미로 쓴다) — 좁힐 때
+        `attempts` 를 다시 곱하지 않는다. `attempts` 는 오직 `_stage_budget` 의 `"full"`
+        경계·`min()` 상한에만 쓰인다.
         """
         nonlocal rescue_stage_narrowed_timeout_ms, rescue_stage_skipped_budget
-        verdict, granted = _stage_budget(remaining_stages)
+        verdict, granted = _stage_budget(remaining_stages, attempts=attempts)
         if verdict == "full":
             return False, None
         if verdict == "skip" and not allow_skip:
@@ -661,6 +677,15 @@ async def stream_recommendation(
     suppress_deferred_search_retry = (
         may_auto_relax and not settings.search_retry_on_deferred_conditions
     )
+    # [PR #452 리뷰 R2] `_apply_stage_budget` 의 `attempts` 산출 — `spring_client.search_
+    # products` 의 `attempts = 1 if _search_retry_suppressed.get() else spring_max_retries +
+    # 1` 과 글자 그대로 같은 규칙이어야 한다(D7). 본검색·자동완화 probe 는
+    # `suppress_deferred_search_retry` 아래서만(`spring_client.suppress_search_retry()` 로
+    # 감싼 두 곳) 재시도를 끈다 — `_suppressed_search_attempts`. F-1/#343 재검색은 그 블록
+    # **밖**이라 항상 재시도한다(`config.py::_rescue_chain_serial_budget_s` 의 비대칭 모델과
+    # 동일) — `_full_retry_attempts`.
+    _full_retry_attempts = settings.spring_max_retries + 1
+    _suppressed_search_attempts = 1 if suppress_deferred_search_retry else _full_retry_attempts
     # [#393 A] 최종 payload 기준 최소 필터 가드 — **의도 판정이 아니라 payload 사실 판정**이다
     # ("이번 턴이 Spring 쿼리 파라미터 0개로 나가는가"만 본다). no_condition/underspecified 처럼
     # `prior is None`(첫 턴) 에 한정하지 않는다 — 그 둘은 "리파인/칩 제거/카테고리-무관 리셋"
@@ -1129,6 +1154,7 @@ async def stream_recommendation(
         + _rescue_stage_counts.rescue
         + _rescue_stage_counts.auto_relax,
         allow_skip=False,
+        attempts=_suppressed_search_attempts,
     )
     _main_narrow_cm = (
         spring_client.narrow_search_budget(_main_narrow_budget)
@@ -1230,8 +1256,10 @@ async def stream_recommendation(
     if decision.category_expanded and search_result.total_count == 0:
         # [#427 D4] F-1 구제 재검색 — 남은 단은 이 단(1) + 이 턴에 이론상 남은 자동완화 단.
         # narrow_skip 모드에서만 실제로 건너뛴다(allow_skip=True).
+        # [PR #452 리뷰 R2] `suppress_search_retry()` 블록 밖이라 항상 재시도한다(위 주석
+        # 참조) — attempts=_full_retry_attempts.
         _f1_skip, _f1_narrow_budget = _apply_stage_budget(
-            1 + _rescue_stage_counts.auto_relax, allow_skip=True
+            1 + _rescue_stage_counts.auto_relax, allow_skip=True, attempts=_full_retry_attempts
         )
         if _f1_skip:
             logger.info("rescue_stage_skipped_budget", extra={"stage": "f1_fallback"})
@@ -1382,8 +1410,9 @@ async def stream_recommendation(
     ):
         # [#427 D4] #343 억제-후 재판정 — F-1 과 상호배타(위 가드)이므로 "남은 단"은 F-1 과
         # 같은 식(이 단(1) + 이 턴에 이론상 남은 자동완화 단)이다.
+        # [PR #452 리뷰 R2] F-1 과 같은 이유로 항상 재시도한다 — attempts=_full_retry_attempts.
         _post_suppress_skip, _post_suppress_narrow_budget = _apply_stage_budget(
-            1 + _rescue_stage_counts.auto_relax, allow_skip=True
+            1 + _rescue_stage_counts.auto_relax, allow_skip=True, attempts=_full_retry_attempts
         )
         if _post_suppress_skip:
             logger.info("rescue_stage_skipped_budget", extra={"stage": "post_suppress_fallback"})
@@ -1567,8 +1596,10 @@ async def stream_recommendation(
                 # 예산 부족으로 이 라운드를 건너뛰면 relaxing 을 emit 하지 않는다(거짓 신호
                 # 금지). 남은 단 수는 이 단을 포함해 아직 남은 자동완화 라운드 수다.
                 _auto_relax_stages_left = max(_rescue_stage_counts.auto_relax - rounds + 1, 1)
+                # [PR #452 리뷰 R2] 본검색과 같은 억제 스코프(아래 `with` 가 같은 조건으로
+                # 감싼다) — attempts=_suppressed_search_attempts.
                 _relax_skip, _relax_narrow_budget = _apply_stage_budget(
-                    _auto_relax_stages_left, allow_skip=True
+                    _auto_relax_stages_left, allow_skip=True, attempts=_suppressed_search_attempts
                 )
                 if _relax_skip:
                     logger.info(
