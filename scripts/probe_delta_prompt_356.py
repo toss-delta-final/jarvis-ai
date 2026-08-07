@@ -55,10 +55,18 @@ if sys.platform == "win32":
 from app.agents.buyer.recommendation.state import extract_json  # noqa: E402
 from app.agents.profile.builder import _DELTA_SYSTEM, _DELTA_SYSTEM_LEGACY  # noqa: E402
 from app.agents.profile.gate import should_promote  # noqa: E402
+from app.agents.profile.resolver import _resolve_band  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
-from app.core.llm import get_llm, resolve_model_id  # noqa: E402
+from app.core.llm import (  # noqa: E402
+    get_llm,
+    is_output_length_error,
+    is_timeout_error,
+    resolve_model_id,
+)
 
 _GOLDENSET = REPO_ROOT / "evals" / "goldenset" / "cases" / "buyer_dev.jsonl"
+# 엄격 파서(§6.2 REQ-PGRAPH-014)를 타는 kind — 라벨이 "최소-최대" 숫자여야 노드가 생긴다.
+_BAND_KINDS = frozenset({"priceBand", "ratingBand"})
 
 
 def load_sessions(count: int, turns: int) -> list[list[str]]:
@@ -85,11 +93,17 @@ def load_sessions(count: int, turns: int) -> list[list[str]]:
 async def run_prompt(llm, system: str, buffer: list[str], settings) -> dict:
     """한 세션에 프롬프트 하나를 적용하고 관측치를 뽑는다."""
     try:
+        # 호출 파라미터는 **프로덕션 설정을 그대로 쓴다**(builder.generate_session_delta 와 동일).
+        # 여기에 숫자를 베껴 쓰면 프로덕션이 예산을 고쳐도 프로브는 옛 값을 계속 재서,
+        # 이미 고친 실패를 "여전히 실패한다"고 보고한다(실제로 한 번 그렇게 잘못 읽었다).
         raw = await llm.complete(
-            system=system, user="\n".join(buffer), tier="smart", max_tokens=800
+            system=system,
+            user="\n".join(buffer),
+            tier="smart",
+            max_tokens=settings.profile_delta_max_tokens,
         )
     except Exception as exc:  # noqa: BLE001 - 전송 실패와 출력 실패를 갈라 기록한다
-        return {"transport_error": type(exc).__name__}
+        return {"transport_error": _error_signature(exc)}
 
     data = extract_json(raw)
     if not isinstance(data, dict) or not isinstance(data.get("deltas"), list):
@@ -99,6 +113,8 @@ async def run_prompt(llm, system: str, buffer: list[str], settings) -> dict:
     promoted = 0
     kinds: Counter[str] = Counter()
     missing_fields = 0
+    band_ok = 0
+    band_bad: list[str] = []
     for delta in deltas:
         if should_promote(
             salience=_as_float(delta.get("salience")),
@@ -112,12 +128,61 @@ async def run_prompt(llm, system: str, buffer: list[str], settings) -> dict:
             kinds[kind] += 1
         elif system is _DELTA_SYSTEM:
             missing_fields += 1  # 신 프롬프트인데 구조화 필드가 없다
+        if kind in _BAND_KINDS:
+            label = str(delta.get("label") or "")
+            if _band_accepted(kind, label, settings):
+                band_ok += 1
+            else:
+                band_bad.append(label)
     return {
         "deltas": len(deltas),
         "promoted": promoted,
         "kinds": kinds,
         "missing_structured": missing_fields,
+        "band_ok": band_ok,
+        "band_bad": band_bad,
     }
+
+
+def _error_signature(exc: BaseException) -> str:
+    """전송 실패를 **원인까지** 식별한다 — `LLMError` 는 래퍼라 타입만으론 아무것도 안 보인다.
+
+    `complete()` 는 SDK 예외를 `raise LLMError(str(exc)) from exc` 로 감싸므로 원본 타입은
+    `__cause__` 에만 남는다. 여기서 `LLMError` 만 찍으면 "실패했다"까지고 "왜"가 없다 —
+    #408 이 401 로그에서 같은 결론에 도달했다(예외 타입·메시지·cause 체인을 남긴다).
+
+    분류는 **프로덕션 판별기를 그대로 부른다**(`is_output_length_error`·`is_timeout_error`).
+    프로브가 자체 판정을 만들면 운영이 "예산 소진"으로 보는 것을 프로브만 다르게 부를 수 있다.
+    """
+    if is_output_length_error(exc):
+        return "출력 예산 소진(max_tokens)"  # #325 와 같은 함정 — reasoning 토큰이 본문을 밀어낸다
+    if is_timeout_error(exc):
+        return "타임아웃"
+    chain: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        chain.append(type(current).__name__)
+        current = current.__cause__ or current.__context__
+    return " <- ".join(chain) + f": {str(exc)[:120]}"
+
+
+def _band_accepted(kind: str, label: str, settings) -> bool:
+    """이 라벨을 `_resolve_band` 가 실제로 받는가 — **프로덕션 파서를 그대로 부른다**.
+
+    kind 개수만 세면 "priceBand 9건"이 나와도 그 라벨이 `"3만원 이하"` 여서 파서가 전부
+    드롭했을 수 있다. 그러면 **밴드 노드는 0개**인데 출력은 건강해 보인다. 여기서 재는 것이
+    이 PR 의 실제 위험(엄격 파서가 받을 라벨이 LLM 에서 나오는가)이다.
+
+    정규식을 복제하지 않고 `_resolve_band` 를 부르는 이유는 규칙이 하나 더 있기 때문이다 —
+    `low < high`, ratingBand 는 상한 5. 복제하면 그 규칙들이 조용히 갈린다.
+    """
+    clean = " ".join(label.split())[: settings.profile_graph_label_max_chars]
+    return (
+        _resolve_band(kind, clean, anchor_phrase="probe", now="1970-01-01T00:00:00+00:00")
+        is not None
+    )
 
 
 def _as_float(value: object) -> float:
@@ -138,14 +203,31 @@ def summarize(label: str, results: list[dict]) -> None:
     for r in usable:
         kinds.update(r.get("kinds", {}))
 
+    # 전송 실패는 **타입**이 곧 대응이다 — 출력 토큰 예산 소진(#325 LengthFinishReasonError)과
+    # 타임아웃과 인증 오류는 고칠 곳이 전부 다르다. 개수만 세면 어디를 볼지 알 수 없다.
+    error_types = Counter(r["transport_error"] for r in results if "transport_error" in r)
+
     print(f"\n── {label} ──")
     print(f"  세션               {sessions}")
-    print(f"  전송 실패          {transport}")  # 모델 출력 실패와 구분해서 센다
+    detail = f"  {dict(error_types.most_common())}" if error_types else ""
+    print(f"  전송 실패          {transport}{detail}")  # 모델 출력 실패와 구분해서 센다
     print(f"  JSON 스키마 위반   {violations} ({_pct(violations, sessions)})")
     print(f"  델타 총계          {deltas} (세션당 {deltas / max(1, len(usable)):.2f})")
     print(f"  승격               {promoted} ({_pct(promoted, deltas)})")
     if kinds:
         print(f"  kind 분포          {dict(kinds.most_common())}")
+
+    # kind 개수가 아니라 **파서가 실제로 받는 라벨**을 센다 — 이 PR 의 실제 위험 지점이다.
+    band_ok = sum(r.get("band_ok", 0) for r in usable)
+    band_bad = [label for r in usable for label in r.get("band_bad", [])]
+    if band_ok or band_bad:
+        total = band_ok + len(band_bad)
+        print(
+            f"  밴드 라벨 파싱     {band_ok}/{total} ({_pct(band_ok, total)}) — _resolve_band 통과"
+        )
+        if band_bad:
+            print(f"    드롭된 라벨      {band_bad[:8]}")
+
     missing = sum(r.get("missing_structured", 0) for r in usable)
     if missing:
         print(f"  구조화 필드 누락   {missing}")
@@ -186,6 +268,8 @@ async def main() -> int:
     print(
         "\n판정은 사람이 한다 — 승격률이 크게 움직였으면 profile_gate_threshold 의 의미가 함께"
         "\n바뀐 것이고, priceBand 가 0건이면 엄격 파서가 받을 라벨이 안 나온다는 뜻이다."
+        "\nkind 개수가 아니라 **밴드 라벨 파싱** 줄을 봐라 — kind 는 잡혔는데 라벨이 드롭되면"
+        "\n밴드 노드는 0개다. 전송 실패는 타입까지 보고 원인을 가른다(예산 소진 vs 타임아웃)."
     )
     return 0
 

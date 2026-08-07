@@ -1137,6 +1137,23 @@ class Settings(BaseSettings):
     profile_facts_query_margin: int = 50
     profile_session_buffer_cap: int = 100  # 세션 transient 버퍼 발화 개수 상한(무제한 누적 방어)
 
+    # [#356] 델타 추출 LLM 출력 예산. **하드코딩 800 을 실측으로 걷어낸 값이다** —
+    # 구조화 제안 필드(kind·label·anchorPhrase·polarity·predicateHint)를 요구하면서 출력이
+    # 길어졌는데, 운영 smart tier(gpt-5.6-luna, reasoning 모델)에서 추론 토큰이 예산을 먼저 먹어
+    # 분포 프로브 4세션 중 2건이 openai.LengthFinishReasonError 로 죽었다(구 프롬프트는 0건).
+    # #325 가 enrichment 에서 밟은 것과 같은 함정이다. 실패는 세션 버퍼가 보존된 채 재시도되지만
+    # 같은 입력이면 또 실패하므로, 방치하면 그 사용자의 승격이 버퍼 상한까지 멈춘다.
+    #
+    # #325 는 여기에 effort 고정(`minimal`)까지 얹었지만 **그쪽은 fast tier(gpt-5-nano)** 다.
+    # 같은 값을 smart tier 의 gpt-5.6-luna 에 넣으면 400 이 온다(실측: `Unsupported value:
+    # 'reasoning_effort' does not support 'minimal' with this mode`, 프로브 8/8 실패) —
+    # 이 모델은 tool 동반 호출에서도 effort 를 못 받아 openai_tool_reasoning_incompatible_models
+    # 에 이미 올라 있다. 예산 문제는 이 키 하나로 풀리므로 effort 노브는 만들지 않는다.
+    profile_delta_max_tokens: int = Field(default=2048, ge=1)
+    # [#356] 요약 재작성 LLM 출력 예산(하드코딩 1000 이관). 산출은 profile_summary_max_chars 로
+    # 다시 잘리므로 여기서는 그 길이가 reasoning 몫을 뺀 뒤에도 남을 만큼만 잡는다.
+    profile_summary_max_tokens: int = Field(default=2048, ge=1)
+
     # ── 개인화 그래프 (이슈 #356, SPEC-PROFILE-GRAPH-149 §11) ──
     # resolver 어휘 스냅 거리 컷. **category_distance_max(0.22)를 그대로 옮기지 않는다** — 그 값은
     # decompose 가 만든 카테고리 질의 앵커에서 측정됐고 여기 앵커는 발화 파생 구절이라 분포가

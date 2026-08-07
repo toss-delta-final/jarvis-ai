@@ -153,7 +153,40 @@ async def test_suppressed_preference_does_not_return_to_summary() -> None:
 
 
 async def test_superseded_edge_is_excluded_from_summary_input() -> None:
-    await _seed_suppressed_plus_live("superseded", superseded_by="e_other")
+    """충돌에서 진 취향의 근거 fact 는 요약 입력에서 빠진다.
+
+    승자(`avoids`)를 **문서와 fact 양쪽에** 둔다 — 승자가 없으면 병합이 패자를 되살리므로
+    (상대 없는 `superseded` 는 유지할 근거가 없다, `_revive_orphan_superseded`) 이 시나리오
+    자체가 성립하지 않는다. 승자 fact 원문에 "소니"를 넣지 않아 단언이 패자만 겨냥한다.
+    """
+    store = await get_profile_store()
+    await store.add_fact("7", "소니 브랜드를 선호한다", graph_triples=[_triple()])
+    await store.add_fact(
+        "7", "애플 브랜드를 선호한다", graph_triples=[_triple("brand:애플", label="애플")]
+    )
+    await store.add_fact(
+        "7", "그 브랜드는 이제 별로다", graph_triples=[_triple("brand:소니", "avoids")]
+    )
+    records = await store.get_fact_records("7")
+    sony_key = next(r.fact_key for r in records if "소니 브랜드" in r.fact)
+    winner_key = "avoids|brand:소니"
+    await store.set_graph(
+        "7",
+        _document(
+            [
+                _edge(
+                    "superseded", evidence_refs=[sony_key], superseded_by=make_edge_id(winner_key)
+                ),
+                _edge(
+                    "active",
+                    edge_key=winner_key,
+                    edge_id=make_edge_id(winner_key),
+                    predicate="avoids",
+                    evidence_refs=[],
+                ),
+            ]
+        ),
+    )
     llm = _CapturingLLM()
 
     await consolidate("7", llm=llm, settings=get_settings())

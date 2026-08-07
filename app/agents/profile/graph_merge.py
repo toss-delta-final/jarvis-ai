@@ -25,6 +25,7 @@ from datetime import datetime
 from typing import get_args
 
 from app.agents.profile.graph_models import (
+    EdgeSource,
     GraphDocument,
     GraphEdge,
     GraphNode,
@@ -46,6 +47,9 @@ _PREDICATE_ORDER: dict[str, int] = {
 # `_PREDICATE_ORDER` 를 재사용하면 정렬 순서와 검증 어휘가 한 자료에 묶여, 한쪽만 고칠 때
 # 다른 쪽이 조용히 따라 바뀐다.
 _PREDICATES: frozenset[str] = frozenset(get_args(Predicate))
+_SOURCES: frozenset[str] = frozenset(
+    get_args(EdgeSource)
+)  # 같은 이유로 `EdgeSource` 가 단일 출처다
 # 같은 노드를 두고 서로 못 서는 관계. **쌍 목록이 아니라 의미로 판정한다** — 부정 하나 vs
 # 임의의 긍정이다(REQ-PGRAPH-018). `{likes, avoids}` 쌍만 등록했더니 resolver 가 kind 별로 다른
 # 긍정을 만드는 탓에(priceBand·ratingBand·attribute → prefers, situation → interestedIn)
@@ -155,8 +159,10 @@ def _observation(record: FactRecord, triple: dict) -> _Observation | None:
         predicate = triple["predicate"]
         edge_key = str(triple["edge_key"])
         edge_id = str(triple["edge_id"])
+        source = str(triple.get("source") or "conversation")
         # `GraphEdge` 가 나중에 강제할 제약을 여기서 미리 건다 — 늦게 터지면 배치가 죽는다.
-        if predicate not in _PREDICATES or not edge_key or not edge_id:
+        # Literal 필드는 **전부** 본다. 하나라도 빼면 그 필드 하나로 같은 poison record 가 난다.
+        if predicate not in _PREDICATES or source not in _SOURCES or not edge_key or not edge_id:
             return None
         return _Observation(
             observed_at=record.created_at,
@@ -166,7 +172,7 @@ def _observation(record: FactRecord, triple: dict) -> _Observation | None:
             edge_key=edge_key,
             edge_id=edge_id,
             salience=float(triple.get("salience") or 0.0),
-            source=str(triple.get("source") or "conversation"),
+            source=source,
         )
     except Exception:  # noqa: BLE001 - 구 형식·손상 payload 는 unprojected 취급
         return None
@@ -345,7 +351,31 @@ def _resolve_conflicts(edges: list[GraphEdge]) -> list[GraphEdge]:
             resolved[edge.edge_key] = edge.model_copy(
                 update={"status": "superseded", "superseded_by": winner.edge_id}
             )
-    return list(resolved.values())
+    return _revive_orphan_superseded(resolved)
+
+
+def _revive_orphan_superseded(resolved: dict[str, GraphEdge]) -> list[GraphEdge]:
+    """상대가 사라진 `superseded` 는 `active` 로 되돌린다 (PR #410 리뷰).
+
+    `superseded` 는 "저 edge 에게 졌다"는 **상대적** 상태다. 승자가 없어지면 근거가 사라진
+    표식이므로 유지할 이유가 없다. 그런데 `_carried_tombstones` 는 비대칭이라 이 상황이 실제로
+    생긴다 — 패자(`superseded`)는 근거 0건이어도 carry 되지만, 승자였던 `active` edge 는 fact cap
+    트리밍(`profile_max_facts`)으로 근거가 밀리면 후보 목록에서 통째로 빠진다.
+
+    되돌리지 않으면 `_resolve_conflicts` 는 "부정 없음"으로 보고 건너뛰고 `_merge_edge` 는
+    `prior.status` 를 승계하므로, 사용자가 취향을 되돌려 새 관측을 아무리 쌓아도 그 edge 는
+    **영구히 `superseded`** 다. 요약 입력에서도 영영 빠진다 — 단방향 상태는 REQ-PGRAPH-015 의
+    재생 동일성 취지와도 어긋난다.
+
+    **`suppressed` 는 건드리지 않는다.** 그쪽은 상대가 아니라 사용자 의도가 근거라 상대가 없다.
+    """
+    present = {edge.edge_id for edge in resolved.values()}
+    return [
+        edge.model_copy(update={"status": "active", "superseded_by": None})
+        if edge.status == "superseded" and edge.superseded_by not in present
+        else edge
+        for edge in resolved.values()
+    ]
 
 
 def _is_user_tombstone(edge: GraphEdge) -> bool:

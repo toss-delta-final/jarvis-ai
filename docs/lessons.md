@@ -13,6 +13,42 @@
 
 ---
 
+## [2026-08-07] 선례를 옮길 때는 **tier·모델이 같은지** 먼저 본다 — 값이 모델 종속이면 그대로 400 이 된다
+- 증상: #356 델타 추출이 `max_tokens=800` 하드코딩 탓에 출력 예산 소진으로 죽는 걸 프로브가 잡아,
+  #325(enrichment) 선례를 그대로 옮겨 `max_tokens` 상향 + `reasoning_effort="minimal"` 고정을
+  넣었다. 그러자 프로브가 **8/8 전부 실패**했다 — `400 Unsupported value: 'reasoning_effort'
+  does not support 'minimal' with this mode`. #325 는 **fast tier(gpt-5-nano)** 이고 델타 추출은
+  **smart tier(gpt-5.6-luna)** 라, 같은 문자열이 한쪽에선 되고 한쪽에선 거절된다. 이 모델은
+  이미 `openai_tool_reasoning_incompatible_models` 에 올라 있었는데 확인하지 않았다.
+- 원인 둘: (1) "같은 함정 → 같은 대응"으로 선례를 통째 복사했다. 함정(출력 예산)은 같아도 대응
+  일부(effort 값)는 **모델 능력에 종속**이라 이식 대상이 아니었다. (2) 애초에 effort 고정은
+  **측정된 문제를 푸는 데 필요 없었다** — 실패 원인은 예산이었고 `max_tokens` 만으로 0건이 됐다.
+  필요 없는 노브를 얹었다가 그 노브가 전부를 깨뜨렸다.
+- 규칙: 다른 이슈의 대응을 옮길 때는 **어떤 값이 모델·tier 종속인지 먼저 가른다**(`max_tokens`
+  는 이식 가능, `reasoning_effort`·모델 id·tool 지원 여부는 아니다). 그리고 **측정이 요구하지
+  않은 노브는 넣지 않는다** — 측정으로 확인한 최소 변경부터 적용하고, 그것으로 해결되면 거기서
+  멈춘다. 이번엔 노브를 빼자 테스트 fake 5개 파일 수정도 통째로 불필요해졌다.
+- 관련: `app/core/config.py::profile_delta_max_tokens`, `app/agents/profile/builder.py`,
+  `openai_tool_reasoning_incompatible_models`, 이슈 #356 / #325 / PR #410
+
+---
+
+## [2026-08-07] 프로브가 프로덕션 호출을 **복제**하면, 이미 고친 결함을 계속 "실패"로 보고한다
+- 증상: `scripts/probe_delta_prompt_356.py` 가 `llm.complete(..., max_tokens=800)` 로 프로덕션
+  호출을 베껴 두고 있었다. 그 800 이 원인이라 `builder` 쪽을 config 주입(2048)으로 고쳤는데,
+  프로브를 다시 돌려도 **똑같이 2건 실패**로 나왔다. 프로브가 자기 하드코딩을 계속 쓰고 있어서다.
+  "고쳤는데 왜 그대로지"로 한참 헤맬 뻔했다.
+- 원인: 프로브의 목적은 **프로덕션이 무엇을 하는지 재는 것**인데, 호출 파라미터를 프로덕션에서
+  읽지 않고 손으로 옮겨 적었다. 그 순간 프로브는 프로덕션이 아니라 "예전의 프로덕션"을 잰다.
+- 규칙: 계측 스크립트는 **프로덕션 코드를 부르거나 프로덕션 설정을 읽는다.** 파라미터·정규식·
+  임계를 스크립트에 베껴 쓰지 않는다(같은 이유로 이 프로브의 밴드 라벨 검사도 정규식을 복제하지
+  않고 `_resolve_band` 를 직접 부른다). 베낀 값이 하나라도 있으면 그 값이 갈리는 순간 프로브
+  결과는 근거가 아니라 오해가 된다.
+- 관련: `scripts/probe_delta_prompt_356.py::run_prompt`·`_band_accepted`,
+  `app/agents/profile/builder.py::generate_session_delta`, 이슈 #356 / PR #410
+
+---
+
 ## [2026-08-07] 명세의 "예: A vs B"를 목록으로 옮기면, 예시가 규칙이 되어 나머지가 조용히 빠진다
 - 증상: #356 `_resolve_conflicts` 가 상충 쌍을 `_CONFLICTING = {{"likes", "avoids"}}` 하나로
   하드코딩했다. 그런데 `resolver._POSITIVE_PREDICATE` 는 kind 마다 다른 긍정을 만든다

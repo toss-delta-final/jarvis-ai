@@ -186,8 +186,27 @@ def test_profile_graph_confidence_buckets_must_be_two_ascending_interior_points(
         ("profile_graph_label_max_chars", 0),
         ("profile_graph_max_edges", 0),
         ("graph_node_distance_max", -0.1),
+        ("profile_delta_max_tokens", 0),
+        ("profile_summary_max_tokens", 0),
     ],
 )
 def test_profile_graph_tunables_reject_nonpositive(field: str, value: float) -> None:
     with pytest.raises(ValidationError):
         Settings(_env_file=None, **{field: value})
+
+
+def test_llm_output_budgets_are_injected_not_hardcoded() -> None:
+    """델타·요약 LLM 예산은 설정 주입이다 (CLAUDE.md 튜너블 하드코딩 금지).
+
+    실측 근거가 있다: 구조화 프롬프트 전환으로 출력이 길어지자 하드코딩 800 에서 reasoning
+    토큰이 예산을 먼저 먹어 분포 프로브 4세션 중 2건이 `LengthFinishReasonError` 로 죽었다
+    (#325 가 enrichment 에서 밟은 것과 같은 함정). 값을 바꿔 재현·완화할 수 있어야 한다.
+    """
+    tuned = Settings(_env_file=None, profile_delta_max_tokens=4096, profile_summary_max_tokens=512)
+
+    assert tuned.profile_delta_max_tokens == 4096
+    assert tuned.profile_summary_max_tokens == 512
+    # 기본값은 하드코딩이던 800/1000 보다 넉넉해야 한다 — 그게 이 이관의 이유다.
+    default = Settings(_env_file=None)
+    assert default.profile_delta_max_tokens > 800
+    assert default.profile_summary_max_tokens > 1000

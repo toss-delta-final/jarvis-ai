@@ -25,6 +25,10 @@ NodeType = Literal[
 ]
 Predicate = Literal["prefers", "likes", "avoids", "interestedIn", "purchased"]
 EdgeStatus = Literal["active", "suppressed", "superseded"]
+# 관측 출처. **이름을 붙여 두는 이유**는 `graph_merge._observation` 이 저장 payload 를 검증할 때
+# 이 어휘를 단일 출처로 삼기 때문이다 — 인라인 Literal 로 두면 검증 쪽이 값을 복제하게 되고,
+# 한쪽만 늘렸을 때 다른 쪽이 조용히 어긋난다(`Predicate`·`EdgeStatus` 와 같은 규약).
+EdgeSource = Literal["conversation", "purchase", "user"]
 
 _EDGE_ID_PREFIX = "e_"
 _EDGE_ID_HEX_LEN = 16  # api-spec §3.8 `edgeId` = "e_" + 16자 hex
@@ -127,7 +131,7 @@ class GraphEdge(BaseModel):
     status: EdgeStatus
     promoted: bool  # 게이트 통과 여부(status 와 직교)
     origin: Literal["machine", "user"]
-    source_latest: Literal["conversation", "purchase", "user"]
+    source_latest: EdgeSource
     confidence: float  # 내부 수치 — 와이어에는 3버킷 라벨만 나간다
     evidence_count: int
     evidence_by_source: dict[str, int]

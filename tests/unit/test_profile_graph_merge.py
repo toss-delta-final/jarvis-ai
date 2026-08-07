@@ -11,7 +11,7 @@ import logging
 import pytest
 
 from app.agents.profile.graph_merge import build_graph_document, empty_document
-from app.agents.profile.graph_models import GraphDocument, GraphEdge, GraphNode
+from app.agents.profile.graph_models import GraphDocument, GraphEdge, GraphNode, make_edge_id
 from app.agents.profile.store import FactRecord
 from app.core.config import Settings
 
@@ -463,6 +463,64 @@ def test_purchased_does_not_conflict_with_avoids(settings: Settings) -> None:
     assert {e.status for e in document.edges} == {"active"}
 
 
+def test_superseded_revives_when_its_winner_is_gone(settings: Settings) -> None:
+    """상대가 사라진 `superseded` 는 되살아난다 — 아니면 사용자가 취향을 되돌려도 복구 불가다.
+
+    `_carried_tombstones` 는 비대칭이다: `superseded` 는 근거 0건이어도 carry 되지만 승자였던
+    `active` edge 는 fact cap 트리밍으로 근거가 밀리면 후보 목록에서 통째로 빠진다. 그러면
+    `_resolve_conflicts` 는 "부정 없음"으로 보고 건너뛰고, `_merge_edge` 는 `prior.status` 를
+    승계하므로 패자는 새 관측이 아무리 쌓여도 **영구히 `superseded`** 다(PR #410 리뷰).
+    """
+    # 1) 충돌 → avoids 가 이기고 likes 가 superseded
+    first = build_graph_document(
+        [
+            _fact(
+                "f1", created_at="2026-08-01T00:00:00+00:00", triples=[_triple(predicate="likes")]
+            ),
+            _fact(
+                "f2", created_at="2026-08-05T00:00:00+00:00", triples=[_triple(predicate="avoids")]
+            ),
+        ],
+        existing=empty_document(NOW),
+        settings=settings,
+        now=NOW,
+    )
+    loser = _edge_by_key(first, "likes|brand:소니")
+    assert loser is not None and loser.status == "superseded"
+
+    # 2) 승자(avoids)의 근거 fact 가 cap 트리밍으로 사라지고, 사용자가 취향을 되돌려 다시 말한다
+    second = build_graph_document(
+        [_fact("f3", created_at="2026-08-09T00:00:00+00:00", triples=[_triple(predicate="likes")])],
+        existing=first,
+        settings=settings,
+        now=NOW,
+    )
+
+    revived = _edge_by_key(second, "likes|brand:소니")
+    assert revived is not None
+    assert revived.status == "active"
+    assert revived.superseded_by is None
+
+
+def test_corrupt_source_is_dropped_not_raised(settings: Settings) -> None:
+    """`source` 도 `GraphEdge.source_latest` Literal 이라 여기서 걸러야 한다 (PR #410 리뷰).
+
+    `predicate`·`edge_key`·`edge_id` 만 검증하고 `source` 를 빠뜨리면 같은 poison record 가
+    `source` 값 하나로 재현된다 — `_merge_edge` 의 `GraphEdge(source_latest=...)` 에서 터진다.
+    """
+    broken = _triple()
+    broken["source"] = "telepathy"  # Literal 밖
+    facts = [
+        _fact("f1", triples=[broken]),
+        _fact("f2", triples=[_triple("brand:애플", label="애플")]),
+    ]
+
+    document = build_graph_document(facts, existing=empty_document(NOW), settings=settings, now=NOW)
+
+    assert document.unprojected_count == 1
+    assert [e.node_id for e in document.edges] == ["brand:애플"]
+
+
 def test_supersede_does_not_touch_unrelated_nodes(settings: Settings) -> None:
     facts = [
         _fact("f1", triples=[_triple(predicate="likes")]),
@@ -598,11 +656,21 @@ def test_truncation_drops_active_before_superseded(settings: Settings) -> None:
     방향을 반대로 읽기 쉬운 지점이라(PR #410 리뷰) 순서 자체를 여기서 고정한다.
     """
     tight = Settings(_env_file=None, profile_graph_max_edges=1)
+    # 승자(avoids|brand:애플)를 문서·근거 양쪽에 둔다 — 상대가 없으면 병합이 패자를 되살려
+    # (`_revive_orphan_superseded`) 절단 순서를 재는 시나리오가 성립하지 않는다.
+    winner_key = "avoids|brand:애플"
     existing = _document_of(
-        [_stored_edge("애플", status="superseded", superseded_by="e_x", confidence=0.1)]
+        [
+            _stored_edge(
+                "애플", status="superseded", superseded_by=make_edge_id(winner_key), confidence=0.1
+            )
+        ]
     )
     # 새 active 는 확신도가 훨씬 높다 — 그래도 superseded 가 남아야 한다(확신도로 갈리지 않는다).
-    facts = [_fact("f1", triples=[_triple("brand:엘지", label="엘지", salience=0.99)])]
+    facts = [
+        _fact("f1", triples=[_triple("brand:애플", "avoids", label="애플")]),
+        _fact("f2", triples=[_triple("brand:엘지", label="엘지", salience=0.99)]),
+    ]
 
     document = build_graph_document(facts, existing=existing, settings=tight, now=NOW)
 

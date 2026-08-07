@@ -37,10 +37,15 @@
   원문은 제외한다 — 입력이 비면 기존 요약을 **보존**하고 `NO_WORK`(빈 문자열로 덮으면 요약은
   사라지는데 홈 랭킹은 캐리오버된 옛 벡터로 계속 개인화한다). LLM은 그래프 락 밖에서 부른다
   (`#323`의 요약 락과 중첩하면 advisory 풀 커넥션을 둘 점유해 구매자 턴까지 말라 죽는다).
-  신규 config 9종 전부 주입(`graph_node_distance_max`·`graph_decay_half_life_days` 등) —
+  신규 config 11종 전부 주입(`graph_node_distance_max`·`graph_decay_half_life_days` 등) —
   거리 임계는 #59 값을 **상속하지 않는다**(앵커 분포가 다르다, OPEN-G1/#344 재측정 대기).
   프롬프트 교체는 `profile_graph_delta_enabled` 롤백 스위치 뒤에 두고 분포 비교 프로브를
   동봉했다(OPEN-G8). 발표·수동 검증용 시드 스크립트 신설.
+  **델타·요약 LLM 출력 예산도 하드코딩(800/1000)에서 `profile_delta_max_tokens`·
+  `profile_summary_max_tokens`(각 2048)로 이관했다** — 구조화 필드가 늘어 출력이 길어지자
+  운영 smart tier(reasoning 모델)에서 추론 토큰이 예산을 먼저 먹어 분포 프로브 4세션 중 2건이
+  `LengthFinishReasonError`로 죽었고(구 프롬프트 0건), 이관 후 0건이 됐다. 세션 버퍼는 보존된 채
+  재시도되지만 같은 입력이면 또 실패해 방치하면 그 사용자의 승격이 버퍼 상한까지 멈춘다(#325 계열).
   **비범위**: 그래프 API 표면(#150) · 저널·revision CAS·멱등 원장(#358) · pin 규약 ·
   브랜드 어휘 수집(C-28). `purchased` edge는 대화에서 만들지 않는다(원천은 질의 시점 I-19).
   (SPEC-PROFILE-GRAPH-149 v0.2.3, SPEC-PROFILE-001 v0.8.1 — api-spec 무개정)

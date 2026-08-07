@@ -54,7 +54,6 @@ _BAND_RE = re.compile(r"^(\d+)-(\d+)$")
 _PRODUCT_ID_RE = re.compile(r"^\d+$")
 _RATING_SCALE_MAX = 5  # 별점 도메인 상수 — 비즈니스 튜너블이 아니다(HTTP status code 와 동급)
 _CATEGORY_LEXICON = "catalog_categories"
-_CATEGORY_TOP_K = 5
 
 
 @dataclass(frozen=True)
@@ -328,7 +327,10 @@ async def _resolve_category(
     try:
         # 앵커는 질의 쪽이라 task_type 비대칭을 지킨다(시드는 RETRIEVAL_DOCUMENT, #65).
         vectors = await asyncio.to_thread(embed, [anchor])
-        rows = await asyncio.to_thread(category_search, vectors[0], dsn, k=_CATEGORY_TOP_K)
+        # top-k 는 기존 `category_top_k` 를 재사용한다 — 같은 연산(앵커 최근접 조회)이고, margin
+        # 계산은 top1·top2 만 쓰므로 k>=2 이후로는 값이 결과를 바꾸지 않는다. 거리 임계와 달리
+        # 앵커 분포에 종속하지 않아 두 번째 키를 만들 이유가 없다(graph_node_distance_max 주석 참조).
+        rows = await asyncio.to_thread(category_search, vectors[0], dsn, k=settings.category_top_k)
     except Exception:  # noqa: BLE001 - 임베딩·검색 장애는 드롭
         return None
 

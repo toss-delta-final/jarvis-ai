@@ -121,7 +121,7 @@ async def generate_session_delta(
         system=_DELTA_SYSTEM if structured else _DELTA_SYSTEM_LEGACY,
         user="\n".join(buffer),
         tier="smart",
-        max_tokens=800,
+        max_tokens=settings.profile_delta_max_tokens,
     )
     data = extract_json(raw)
     promoted: list[str] = []
@@ -216,7 +216,7 @@ async def consolidate(user_id: str, *, llm, settings) -> ConsolidationResult:
             system=_CONSOLIDATE_SYSTEM,
             user="\n".join(summary_input),
             tier="smart",
-            max_tokens=1000,
+            max_tokens=settings.profile_summary_max_tokens,
             json_output=False,  # 마크다운 요약 — OpenAI response_format=json 강제 금지(리뷰 #44)
         )
     except LLMError:
