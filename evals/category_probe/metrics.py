@@ -107,7 +107,7 @@ def score_top1_single(results: list[CellResult], anchors: AnchorSet, *, n: int) 
         expected_denominator=expected,
         unfilled_sample_count=expected - denominator,
         definition_numerator="최종 legs 에 기대 leg 의 accept 중 하나가 존재",
-        definition_denominator="single(MFT+INV) 22셀 × N",
+        definition_denominator="single(MFT+INV) 30셀 × N",
     )
 
 
@@ -147,7 +147,7 @@ def score_topk_inclusion(
             "최종 legs(exact match 는 hits 없이 바로 canonical 을 내므로 포함) 안에 존재 "
             "— decompose 가 leg 자체를 안 냈으면 분자 불충족"
         ),
-        definition_denominator="single(MFT+INV) 22셀 × N",
+        definition_denominator="single(MFT+INV) 30셀 × N",
     )
 
 

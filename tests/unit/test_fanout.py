@@ -7,6 +7,7 @@ productId dedup + round-robin 인터리브(한 카테고리 독점 방지) + mer
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import time
 from datetime import datetime
@@ -17,6 +18,7 @@ import pytest
 from app.agents.buyer.graph import get_thread_store
 from app.agents.buyer.graph import run_buyer_turn as _production_run_buyer_turn
 from app.agents.buyer.recommendation.category_mapping import CategoryMapping
+from app.agents.buyer.recommendation.category_mapping import map_categories as _real_map_categories
 from app.agents.buyer.recommendation.graph import _merge_fanout_results
 from app.agents.buyer.recommendation.state import build_condition_chips
 from app.agents.buyer.session_state import context_thread_key
@@ -3910,3 +3912,267 @@ async def test_default_settings_combination_splits_and_groups_case3_turn() -> No
     assert len(push.pushes[0].lists) == 4
     tokens = [e["data"]["text"] for e in events if e["type"] == "token"]
     assert any("니즈별로 나눠 담았어요" in t for t in tokens)
+
+
+# ── #428 전개 후 재매핑 배선 — sibling_expansion 플래그 ───────────────────────────
+#
+# 전개 아이템(#217)은 하나의 니즈에서 나온 형제라 매퍼의 대분류 합의 필터를 켤 수 있지만, 첫
+# 매핑(원 발화, 서로 다른 니즈들일 수 있음)은 그 필터를 켜면 안 된다("캠핑용품이랑
+# 낚시용품"처럼 대분류가 갈리는 것이 정상인 턴을 오염시킨다). 그래프가 두 호출에 각각 옳은
+# 값을 넘기는지 배선을 고정한다.
+#
+# [#428 리뷰 5차 R5-1] 전개 재매핑 호출도 **무조건 True 가 아니다** — 원 발화가 이미 서로 다른
+# 니즈를 2개 이상 명시했으면(`case=3` 은 다중 상품도 포함, `"이어폰이랑 노트북"`) 전개 산출도
+# 그 니즈들에 걸쳐 섞일 수 있어(Claude PR Review, PR #444) 형제 전제가 깨진다 — 그때는 False 로
+# 끈다. 아래 세 테스트가 니즈 개수(0·1·2)로 게이트가 갈리는 것을 함께 고정한다.
+
+
+async def test_sibling_expansion_flag_wired_false_first_true_second() -> None:
+    """[#428 배선 고정 / 리뷰 5차 R5-1] 원 발화 니즈 **0개**(`categoryQueries: []`) 턴에서,
+    매퍼가 받은 `sibling_expansion` 이 첫 호출은 False, 전개 후 재매핑(두 번째) 호출은 True 다
+    — 니즈가 없으면(=멀티 니즈가 아니면) R5-1 게이트를 통과해 필터가 켜진다.
+    `test_sibling_expansion_flag_gated_off_when_two_needs_signaled`(니즈 2개 → 전개도 False)와
+    짝을 이룬다 — 니즈 개수가 게이트를 가른다는 것을 두 테스트가 함께 고정한다."""
+    seen: list[bool] = []
+
+    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **kw):
+        seen.append(kw.get("sibling_expansion"))
+        # 첫 호출(원 발화)은 신호가 없어 매핑 실패, 전개 호출은 그대로 canonical 로 흘려보낸다.
+        if not category_queries:
+            return CategoryMapping(legs=[], unresolved=[])
+        return CategoryMapping(legs=[(q.query, q.query) for q in category_queries])
+
+    async def _expand(utterance, **_):
+        return ["디퓨저", "식기 세트"]
+
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters.category)
+        return _res(101)
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="집들이 선물로 뭐 사갈까"),
+            _member(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "reply": "",
+                    "case": 3,
+                    "filters": {},
+                    "categoryQueries": [],
+                }
+            ),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_map,
+            expand_needs=_expand,
+        )
+    )
+    assert seen == [False, True]  # 첫 호출 False / 전개 재매핑 True
+
+
+async def test_sibling_expansion_flag_gated_off_when_two_needs_signaled() -> None:
+    """[#428 리뷰 5차 R5-1 배선 고정] 원 발화가 서로 다른 니즈를 **2개** 명시했으면
+    (`categoryQueries` 신호 leg 2개, `"이어폰이랑 노트북 추천해줘"`) 그 중 하나 이상이 매핑
+    실패해 전개가 트리거되는 턴에서도, 매퍼가 받은 `sibling_expansion` 이 **첫 호출 False /
+    전개 재매핑 호출도 False** 다 — 니즈가 2개면 전개 산출이 그 니즈들에 걸쳐 섞일 수 있어
+    합의 필터를 끈다. `test_sibling_expansion_flag_wired_false_first_true_second`(니즈 0개 →
+    전개 True)와 짝을 이룬다."""
+    seen: list[bool] = []
+
+    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **kw):
+        seen.append(kw.get("sibling_expansion"))
+        if len(category_queries) == 2:
+            # 첫 호출(원 발화) — 이어폰은 매핑되고 노트북은 실패해 전개를 트리거한다.
+            return CategoryMapping(legs=[("가전 > 이어폰/헤드폰", "이어폰")], unresolved=["노트북"])
+        return CategoryMapping(legs=[(q.query, q.query) for q in category_queries])
+
+    async def _expand(utterance, **_):
+        return ["디퓨저", "식기 세트"]
+
+    async def _search(filters, exclude_product_ids=None):
+        return _res(101)
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="이어폰이랑 노트북 추천해줘"),
+            _member(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "reply": "",
+                    "case": 3,
+                    "filters": {},
+                    "categoryQueries": [
+                        {"category": None, "query": "이어폰"},
+                        {"category": None, "query": "노트북"},
+                    ],
+                }
+            ),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_map,
+            expand_needs=_expand,
+        )
+    )
+    assert seen == [False, False]  # 니즈 2개 → 전개 재매핑도 False
+
+
+async def test_sibling_expansion_flag_gated_on_when_one_need_signaled() -> None:
+    """[#428 리뷰 5차 R5-1 배선 고정] 원 발화가 니즈 **1개**만 명시했으면(`categoryQueries` 신호
+    leg 1개) 그 leg 이 매핑 실패해 전개가 트리거돼도 형제 전제가 성립하므로 합의 필터를 켠다 —
+    전개 재매핑(두 번째) 호출의 `sibling_expansion` 이 True 다(단일 니즈는 R5-1 게이트를
+    통과한다)."""
+    seen: list[bool] = []
+
+    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **kw):
+        seen.append(kw.get("sibling_expansion"))
+        if len(category_queries) == 1:
+            return CategoryMapping(legs=[], unresolved=["집들이 선물"])
+        return CategoryMapping(legs=[(q.query, q.query) for q in category_queries])
+
+    async def _expand(utterance, **_):
+        return ["디퓨저", "식기 세트"]
+
+    async def _search(filters, exclude_product_ids=None):
+        return _res(101)
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="집들이 선물로 뭐 사갈까"),
+            _member(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "reply": "",
+                    "case": 3,
+                    "filters": {},
+                    "categoryQueries": [{"category": None, "query": "집들이 선물"}],
+                }
+            ),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_map,
+            expand_needs=_expand,
+        )
+    )
+    assert seen == [False, True]  # 니즈 1개 → 전개 재매핑은 True(형제 전제 성립)
+
+
+# #428 로컬 pg-catalog 실측(2026-08-07, 사전 1,007행 / 임베딩 결측 0) — 4형제 전개의 top-8 히트.
+# `test_category_mapping.py` 의 `_FRUIT_HITS` 와 같은 실측값이다(독립 테스트 모듈이라 복제 유지).
+_FRUIT_HITS = {
+    "바나나": [
+        ("과일 > 수입과일", 0.2908),
+        ("과일 > 국산과일", 0.3220),
+        ("과일 > 냉동/간편과일", 0.3278),
+        ("과자/간식 > 원물간식", 0.3287),
+        ("과일 > 과일선물세트", 0.3307),
+        ("꽃/원예 > 꽃/식물", 0.3332),
+        ("유아동식/영양제 > 유아동 간식", 0.3367),
+        ("과자/간식 > 빵/베이커리", 0.3467),
+    ],
+    "사과": [
+        ("과일 > 국산과일", 0.2732),
+        ("과일 > 수입과일", 0.2812),
+        ("과일 > 과일선물세트", 0.2960),
+        ("과일 > 냉동/간편과일", 0.3232),
+        ("과자/간식 > 원물간식", 0.3249),
+        ("꽃/원예 > 꽃/식물", 0.3323),
+        ("커피/생수/음료 > 주스/과즙음료", 0.3348),
+        ("건과/견과 > 견과류", 0.3433),
+    ],
+    "배": [
+        ("여성가방 > 백팩", 0.3184),
+        ("신생아의류 (0~24개월) > 배냇저고리", 0.3248),
+        ("여성가방 > 스포츠가방", 0.3292),
+        ("실버용품 > 환자용 배변용품", 0.3297),
+        ("유아목욕/스킨케어 > 유아목욕용품", 0.3323),
+        ("과일 > 국산과일", 0.3330),
+        ("과자/간식 > 빵/베이커리", 0.3354),
+        ("구기/라켓/스포츠 > 야구", 0.3358),
+    ],
+    "오렌지": [
+        ("커피/생수/음료 > 주스/과즙음료", 0.3164),
+        ("과일 > 수입과일", 0.3216),
+        ("과일 > 과일선물세트", 0.3244),
+        ("과일 > 국산과일", 0.3287),
+        ("꽃/원예 > 꽃/식물", 0.3417),
+        ("과자/간식 > 원물간식", 0.3419),
+        ("가공식품 > 잼", 0.3455),
+        ("과일 > 냉동/간편과일", 0.3461),
+    ],
+}
+
+
+def _fruit_probe_mapper():
+    """실물 `map_categories` 에 #428 실측 히트를 주입하는 파샬 — embed/search 만 fake, 나머지
+    (거리컷·인터리브·합의 필터)는 실제 프로덕션 로직 그대로 태운다."""
+    embedded: list[str] = []
+
+    def _embed(texts: list[str]) -> list[list[float]]:
+        embedded[:] = texts
+        return [[float(i)] for i in range(len(texts))]
+
+    def _search(vec, dsn, *, k):
+        text = embedded[int(vec[0])]
+        return _FRUIT_HITS.get(text, [])[:k]
+
+    def _exact(values, dsn):
+        return set()
+
+    return functools.partial(
+        _real_map_categories, embed=_embed, search_top_k=_search, exact_lookup=_exact
+    )
+
+
+async def test_fruit_recommend_turn_expands_to_fruit_only_legs_not_popular_fallback() -> None:
+    """[#428 이 이슈의 사용자 가시 회귀, 리뷰 1차 F-1 갱신] "나 아기 키우는데 과일 추천해줘"
+    — decompose 가 D1(`categoryQueries: []`, `case=3`)을 내도 전개 후 재매핑이 **과일 계열로만**
+    fan-out 된다.
+
+    수정 전에는 "배"의 동음이의어(가방·배냇저고리·배변용품) 노이즈가 살아남아 8개 leg 중
+    절반이 무관 카테고리였고, 그 노이즈가 fan-out 검색·rerank 입력을 그대로 먹어 인기 상품
+    폴백·rerank 지연(운영 실측 8.80s)의 원인이 됐다(#428 이슈 코멘트 ③). 형제 합의 필터가
+    "배"의 노이즈만 걸러 이제는 **과일 대분류만** 남는다(리뷰 1차 F-1 — 지지 집계를 top-1 로
+    좁혀 "과자/간식" 같은 꼬리 순위 우연한 겹침이 승자가 되지 않는다).
+    """
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters.category)
+        return _res(101)
+
+    async def _expand(utterance, **_):
+        return ["바나나", "사과", "배", "오렌지"]
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(message="나 아기 키우는데 과일 추천해줘"),
+            _member(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "reply": "",
+                    "case": 3,
+                    "filters": {},
+                    "categoryQueries": [],
+                }
+            ),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_fruit_probe_mapper(),
+            expand_needs=_expand,
+        )
+    )
+    assert calls  # fan-out 검색이 실제로 발동했다(인기 상품 폴백으로 새지 않음)
+    mids = {c.split(" > ", 1)[0] for c in calls if c}
+    # [F-3] 노이즈 부재 단언을 등호 단언보다 먼저 둔다 — 실패 시 어느 노이즈가 살아남았는지가
+    # 먼저 드러나야 진단이 빠르다(아래 등호 단언에 이미 포함돼 항상 참이긴 하지만, 실패 원인을
+    # 이름으로 남기는 것이 이 단언의 목적이다).
+    assert not any(mid in mids for mid in ("여성가방", "신생아의류", "실버용품"))
+    assert mids == {"과일"}
+    done = next(e for e in events if e["type"] == "done")["data"]
+    assert done["finishReason"] != "zero_result"

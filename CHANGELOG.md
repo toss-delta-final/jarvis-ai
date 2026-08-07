@@ -290,6 +290,41 @@
   (픽스처 내용 불변). 프로덕션 코드·프롬프트 무접촉. 계약(api-spec) 무변경.
 - **#347 — Claude PR Review 에 `skip-claude-review` 라벨 게이트 추가** — 워크플로 job `if:` 에 라벨 조건을 더해, 리뷰가 불필요한 PR(대량 병합 정합·실험 브랜치)을 PR 단위로 끌 수 있게 했다. 기본 동작(라벨 없음 = 리뷰 실행)은 불변이며, 라벨 부착/제거는 다음 push 부터 적용된다. 계약(api-spec) 무변경.
 
+### Fixed
+- **#428 — 전개(#217) 후 재매핑에서 동음이의어 노이즈 leg 이 살아남아 "과일 추천해줘"가 인기
+  상품으로 답하던 문제** — decompose 가 `categoryQueries: []`(D1)를 내는 회차에서 전개 아이템
+  ("바나나"·"사과"·"배"·"오렌지")을 재매핑하면, "배" 같은 동음이의어가 거리컷(0.26)에 전량
+  드롭돼 대신 top-8 이 `expansion_leaves` 로 들어가는데 그 top-8 에 여성가방·신생아의류 등
+  무관 카테고리가 섞여 fan-out·rerank 입력을 오염시켰다(운영 실측 rerank 2.50s→8.80s). 임계는
+  건드리지 않고(#344 가 캘리브레이션한 값), `map_categories` 에 `sibling_expansion` 플래그와
+  대분류 합의 필터(`_consensus_filter`)를 신설했다 — 전개가 낸 형제 leg 들의 **최근접(top-1)
+  대분류가 둘 이상 일치**하면 그 대분류만 남기고 한 형제만 최근접으로 지목한 대분류(노이즈)는
+  버린다. 원 매핑(서로 다른 니즈들)에는 적용하지 않는다. (리뷰 1차 정정: 초판은 지지 집계를
+  leg 의 후보 전체로 해 "잡동사니 대분류"가 여러 leg 꼬리에 우연히 걸쳐 승자가 되는 결함이
+  있었다 — 예: "집들이 선물"[디퓨저·캔들·와인잔·식기 세트] 전개에서 향수·조명·주방잡화라는
+  정답급 후보를 버리고 `주얼리`만 남겼다. top-1 만 세도록 고쳐 이질적 전개는 그대로 보존된다.)
+  (리뷰 3차 R3-1: 형제가 4~5개일 때 고정 지지 2가 나머지 다수의 정당하게 다른 상품군을
+  통째로 지우는 결함을 Claude PR Review 가 지적 — 리뷰어의 두 처방(과반 임계·`zeroed_legs`
+  과반 시 건너뛰기)은 실측상 `#428` 본체를 깨거나(과일 A 회차 지지 2/4) "신학기 준비물"[책가방·
+  필통·물통] 재현 사례를 못 잡아 기각하고, 대신 승자 대분류가 형제 전원의 후보에 있을 때만
+  좁히고 한 형제라도 후보가 없으면 필터 전체를 미적용하는 가드를 채택했다 — 이제 leg 자체가
+  탈락하는 경로가 구조적으로 사라진다.)
+  (리뷰 5차 R5-1: `case=3` 이 서로 다른 상품 2개 이상도 포함하고 전개는 발화 전체를 한 번에
+  묶어 처리하므로, 원 발화가 이미 니즈 2개 이상을 명시했으면 전개 산출도 그 니즈들에 걸쳐
+  섞일 수 있다는 Claude PR Review 지적을 채택 — 니즈별 leg 수가 불균등하면 동률 보존·R3-1
+  가드도 뚫릴 수 있고, 실측 무재현은 "구조적으로 막혔다"는 증명이 아니라는 리뷰어 메타 지적을
+  받아들여 직전 라운드의 기각 판단을 번복했다. `graph.py` 의 전개 재매핑 호출부에
+  `sibling_expansion=count_signal_legs(decision.category_queries) < 2` 게이트를 걸어 다중
+  니즈 턴에만 합의 필터를 끈다(신호 판정식은 `needs_expansion.count_signal_legs` 로 통일해
+  `detect_expansion_need` 와 규칙을 한 벌로 유지). `category_expansion_consensus`·
+  `_skipped` 로그에 `source_legs`(이번 매핑의 입력 leg 수)를 추가해 이 상호작용이 실제로
+  발동한 턴을 운영에서 식별할 수 있게 했다.)
+  `evals/category_probe` 에 인스턴스형 앵커 8셀(v1 38 → v2 46)을 추가해 이 실패 모드를 상시
+  계측한다. 임계·계약(api-spec) 무변경.
+  (리뷰 6차: `_consensus_filter` 의 미적용 사유(`single_leg`·`no_consensus`·
+  `leg_without_winning_mid`) 를 항상 `category_expansion_consensus_skipped` 의 `reason` 필드로
+  관측해, `sibling_expansion=False` 만이 유일한 무기록 상태가 되게 했다 — 필터 동작 무변경.)
+
 ### Removed
 - **#300 — #118(PR #292)이 만든 이관 전 별도 프로브 스크립트 삭제, screen 지시어 해소 6셀을 `evals/intent_probe`로 흡수** — 그 프로브가 #260이 정본으로 고정한 하네스와 측정 대상이 겹쳐 「프로브 중복 제작 3회차」였다(`docs/lessons.md`). `AnchorSet`에 `screens`·`screenLastRecommendations`를 추가하고 `ProbeContext.includeScreen`/`screenRef`/`lastRecommendationsRef`로 화면 컨텍스트 5종을 표현했으며, 러너가 `decompose` 다음 `resolve_screen_reference`를 배포 경로(`graph.py` cart_add 분기)와 같은 조건·인자로 불러 축 4종(`screenExactPick`/`screenReask`/`screenNoHallucination`/`screenResolution`)과 진단 3종(`screenPromptLayerHitCount`/`screenResolverOverrideCount`/`screenOutOfListConfirmCount`)을 신설했다. 이관 표본이 원본과 문자 단위로 동일함을 JSON diff로 증명했고, 흡수 후 기준선(`baselines/fast-2026-08-05-300-screen/`)이 #118 채택 근거(48/48·안전 셀 8/8·오담기 0)를 47/48·8/8·오담기 0으로 재현했다. `decompose._SYSTEM` 등 프로덕션 로직·프롬프트는 한 글자도 바꾸지 않았다(픽스처 v1.2.0/v4). 계약(api-spec) 무변경.
 
