@@ -345,9 +345,10 @@ cases.json 승계 7건(위 매핑표) + 신규 23건.
 
 `baselines/README.md` — 기준선 색인. 여러 판(프롬프트 세대·티어별)이 쌓여 있으므로 **정본이
 무엇인지는 그 색인에서 확인해라**(#433) — 요약하면 `#430` before·`#431` 전환 판단의 정본은
-`fast-2026-08-08-run1~3`(현행 dev 프롬프트, n=3 분포)이고, `fast-2026-08-06`(+run2/run3)은
-pre-#386 프롬프트 세대의 역사 기록이다. union(전개 후 판정, #432) 실측은 같은 색인의 D family
-참조.
+`fast-2026-08-08-run1~3`(`e62fd0f6e03d`, n=3 분포)이고, `fast-2026-08-06`(+run2/run3)은
+pre-#386 프롬프트 세대(`11c6fe3bfa0c`)의 역사 기록이다. **프롬프트 세대는 이제 셋이다**
+(`11c6fe3bfa0c` → `e62fd0f6e03d` → `865ed6fd771e`(#430 이후, 현행)) — 자세한 계보는 색인의
+G-1 참조. union(전개 후 판정, #432) 실측은 같은 색인의 D family 참조.
 
 `baselines/fast-2026-08-07-430-{before-1,before-2,merged-1,merged-2,merged-3,after-1,after-2}/`
 — #430(decompose 프롬프트 수정)의 채택 판정 7런. 전부 `source=repo:_SYSTEM` 이다.

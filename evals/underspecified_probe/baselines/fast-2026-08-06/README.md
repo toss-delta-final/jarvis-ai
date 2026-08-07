@@ -182,9 +182,10 @@ SPEC-UNDERSPECIFIED-336 §7.3 게이트 잔여 항목 1을 고정 데이터셋 �
 세 판이 소수점까지 완전히 일치한다 — 편차 0%p. 상세·`blockingAxes` 조합 분포는
 `../README.md`(기준선 색인) 참조.
 
-**⚠️ 이 family(prompt `11c6fe3bfa0c`)는 pre-#386 프롬프트 세대다.** `app/agents/buyer/
-recommendation/decompose.py::_SYSTEM` 은 커밋 `3547e43`(#386 `wishlist_view` intent 신설)
-이후 바뀌었다(현행 dev 프롬프트 sha12 는 `e62fd0f6e03d`) — 이 family 를 `#430`(프롬프트 수정)
-의 after 판과 대조하면 안 된다. `#430` before·`#431` 전환 판단의 정본은
-`../fast-2026-08-08-run1~3`(현행 dev 프롬프트) 이다. 자세한 내용은 `../README.md`(기준선
-색인)를 봐라.
+**⚠️ 이 family(prompt `11c6fe3bfa0c`)는 pre-#386 프롬프트 세대(세대 1/3)다.** `app/agents/
+buyer/recommendation/decompose.py::_SYSTEM` 은 커밋 `3547e43`(#386 `wishlist_view` intent
+신설)로 세대 2(`e62fd0f6e03d`)가, 커밋 `55d93bd`(#430, PR #460)로 세대 3(`865ed6fd771e`,
+**현행**)이 바뀌었다 — 이 family 를 `#430`(프롬프트 수정)의 after 판과 대조하면 안 된다.
+`#430` before·`#431` 전환 판단의 정본은 `../fast-2026-08-08-run1~3`(세대 2 `e62fd0f6e03d`,
+착수 당시 현행이었으나 #430 back-merge 로 지금은 아니다) 이다. 자세한 내용·세대 계보는
+`../README.md`(기준선 색인)의 G-1 을 봐라.

@@ -5,12 +5,40 @@
 
 ## 정본 선언
 
+> ⚠️ **G-1(2차 리뷰) — "현행"이라는 말은 해시 없이 쓰지 않는다.** 이 문서는 두 번 낡았다
+> (#386 머지 때 한 번, #430 back-merge 때 또 한 번) — "현행 dev 프롬프트"라고만 적으면 다음
+> 머지에서 또 거짓이 된다. 아래부터는 프롬프트를 가리킬 때 항상 해시를 함께 적는다.
+
 | family | 디렉터리 | prompt sha12 | 정본 여부 |
 |---|---|---|---|
-| **A — 현행 dev 프롬프트** | `fast-2026-08-08-run1`·`run2`·`run3` | `e62fd0f6e03d` | ✅ **`#430` before · `#431` 전환 판단의 정본** |
+| **A — pre-#430 프롬프트 세대** | `fast-2026-08-08-run1`·`run2`·`run3` | `e62fd0f6e03d` | ✅ **`#430` 의 before 기준선(n=3, 99.1~100.0%) · `#431` 전환 판단의 정본** |
 | B — pre-#386 프롬프트(역사 기록) | `fast-2026-08-06`(run1, 커밋된 기준선)·`run2`·`run3` | `11c6fe3bfa0c` | ❌ 역사 기록. **`#430` after 와 대조하지 마라** |
-| C — 티어 대조(현행 dev 프롬프트, smart) | `smart-2026-08-08-run1` | `e62fd0f6e03d` | 참고(원인 축 분해의 티어 대조 전용, 채택 판정 대상 아님) |
-| D — union(전개 후 판정, #432) | `union-smart-2026-08-08-run1`(진단 티어)·`union-fast-2026-08-08-run1`(프로덕션 티어) | `e62fd0f6e03d` | 참고 전용. smart 판은 **프로덕션 동작이 아니다**(#431 근거로 직접 인용 금지), fast 판은 **#430 미머지 상태**(전복 축 해당 없음) — 상세는 각 디렉터리 README |
+| C — 티어 대조(pre-#430 프롬프트, smart) | `smart-2026-08-08-run1` | `e62fd0f6e03d` | 참고(원인 축 분해의 티어 대조 전용, 채택 판정 대상 아님) |
+| D — union(전개 후 판정, #432) | `union-smart-2026-08-08-run1`(진단 티어, pre-#430)·`union-fast-2026-08-08-run1`(프로덕션 티어, pre-#430)·`union-fast-2026-08-08-post430-run1`(프로덕션 티어, **post-#430**, G-3) | `e62fd0f6e03d`(첫 2판)·`865ed6fd771e`(post430 판) | 참고 전용. smart 판은 **프로덕션 동작이 아니다**(#431 근거로 직접 인용 금지) — 상세는 각 디렉터리 README |
+| E — **#430 채택 판정(다른 레인 소유, G-2)** | `fast-2026-08-07-430-{before-1,before-2,merged-1,merged-2,merged-3,after-1,after-2}`(7개, `ls` 로 직접 확인) | `11c6fe3bfa0c`(before)·`f99a98867e4a`(merged, ⚠️G-4)·`865ed6fd771e`(after) | 이 색인이 인용하지 않는다 — **`fast-2026-08-07-430-after-1/README.md` 가 그 레인의 정본**(#430/#431 소관). 이 문서는 존재만 가리킨다 |
+
+(리뷰 findings-432-r2 는 이 family 를 10개로 셌다 — `evals/intent_probe/baselines/` 아래의
+`fast-2026-08-07-430-after-3`·`-v6-adopted-{1,2}`(intent_probe 소관, **다른 하네스**)까지
+합산한 수로 보인다. `evals/underspecified_probe/baselines/` 안에는 `ls` 로 확인한 7개뿐이다.)
+
+> ⚠️ **G-4(2차 리뷰, 관측 사실만 — 판단은 #430 레인 소관)**: `fast-2026-08-07-430-merged-1~3`
+> 의 `run_manifest.json.hashes.systemPrompt` 는 `f99a98867e4a` 인데, 이 브랜치에 머지된
+> `dev` 의 프롬프트는 `865ed6fd771e` 다(직접 대조: 위 세 디렉터리 전부 `f99a98867e4a`, 현재
+> HEAD dry-run 은 `865ed6fd771e`). 즉 `-merged-*` 세 판은 최종 머지본과 **다른 프롬프트
+> 문면**에서 돌았을 가능성이 있다 — 인용 전에 #430 레인에 확인할 것. 이 해시 불일치를
+> 우리가 판정하거나 그 산출물을 고치지 않는다(다른 레인의 소관).
+
+**G-1 — 프롬프트 세대는 이제 셋이다**(back-merge 로 `#430` 이 들어왔다):
+
+| 세대 | sha12 | 도입 커밋 | 이 색인에서의 family |
+|---|---|---|---|
+| 1 | `11c6fe3bfa0c` | #380 최초 커밋 | B (`fast-2026-08-06*`) |
+| 2 | `e62fd0f6e03d` | #386(`3547e43`, `wishlist_view`) | A·C·D(smart·fast pre-#430) — 착수 당시 "현행"이었으나 지금은 **pre-#430** |
+| 3 | `865ed6fd771e` | #430(`55d93bd`, PR #460) | **현재 dev/이 브랜치 HEAD** — D(`union-fast-…-post430-run1`, G-3)만 이 세대 |
+
+`865ed6fd771e` 가 지금 이 브랜치의 실제 "현행"이다(`uv run python -m evals.underspecified_probe
+--out <tmp> --dry-run` 로 직접 재확인 가능) — A family(세대 2)는 **더 이상 현행이 아니지만**,
+`#430` 의 before 로서의 가치는 그대로다(그게 원래 목적이었다).
 
 **정본은 A family 3판의 분포다 — 단일 판이 아니다.** 대표값 하나를 인용해야 하면
 `missRate` **중앙값 판**을 써라 — {run1 99.1%, run2 99.1%, run3 100.0%}의 중앙값은 99.1%이고,
@@ -54,8 +82,9 @@ recommend 라우팅)이므로 `fast-2026-08-08-run2`(111/112, 99.1%)를 대표 �
   맞을 수 있으니, 재실행 전에 반드시 위 `git diff` 로 코드 라인 변경 여부부터 확인해라.
 
 두 프롬프트 세대를 각각 굳혔다 — 다운스트림(#430 after 대조, #431 전환 판단)이 쓰는 before 는
-현행 dev 프롬프트여야 하지만, #433 이 문자 그대로 요구한 "커밋된 기준선(옛 프롬프트)의 n=3"도
-채웠다.
+당시(#433 착수 시점) 현행이던 `e62fd0f6e03d`(세대 2)여야 하지만, #433 이 문자 그대로 요구한
+"커밋된 기준선(옛 프롬프트, 세대 1)의 n=3"도 채웠다. **`e62fd0f6e03d` 는 이후 `#430`
+back-merge 로 더 이상 현행이 아니게 됐다**(현행은 세대 3 `865ed6fd771e`) — G-1 참조.
 
 ## 실행 6판
 
@@ -182,38 +211,49 @@ confirmatory 축의 결론(미탐율 fast ≈100%, smart ≈54%)은 판마다 �
 
 ## 폐기한 판
 
-없음 — 6판(#433) + 2판(#432 union) 전부 §게이트 6항목을 첫 시도에 통과했다.
+없음 — 6판(#433) + 3판(#432 union, G-3 의 post-#430 판 포함) 전부 §게이트 6항목을 첫
+시도에 통과했다.
 
-## D family — union(전개 후 판정) 실측 (#432)
+## D family — union(전개 후 판정) 실측 (#432, G-3 로 3판째 추가)
 
-`--union` 으로 카테고리 매핑·`needs_expansion` 보정까지 실제로 태워 잰 2판. 상세 해석·시드
-재현성은 각 디렉터리의 README 참조(경고 문구를 맨 위에 둔다 — smart 는 프로덕션 티어가
-아니고, fast 는 `#430` 미머지 상태다).
+`--union` 으로 카테고리 매핑·`needs_expansion` 보정까지 실제로 태워 잰 3판(2판은 pre-#430,
+1판은 **post-#430** — G-3). 상세 해석·시드 재현성은 각 디렉터리의 README 참조(경고 문구를
+맨 위에 둔다 — smart 는 프로덕션 티어가 아니고, pre-#430 fast 판은 프롬프트 세대가 낡았다).
 
-| 축 | union-smart-run1 | union-fast-run1 |
-|---|---|---|
-| `missRate` → `missRateAfterExpansion` | 56/104 (53.8%) → 59/104 (56.7%) | 112/112 (100.0%) → 112/112 (100.0%) |
-| `falseAlarmRate` → `falseAlarmRateAfterExpansion` | 0/104 (0.0%) → 0/104 (0.0%) | 0/104 (0.0%) → 0/104 (0.0%) |
-| `expansionSuppressionRate` | 3/48 (6.2%) | 0/0 — 해당 없음 |
-| `expansionGateWouldFireRate`(가정) → `expansionGateFiredRate`(실측) | 3/48 (6.2%) → 47/232 (20.3%) | 0/0 — 해당 없음 → 78/240 (32.5%) |
-| `unionStageErrorCount` | 0 | 0 |
-| 관측 비용(부분합) | $0.1842(`unknownCostCallCount`=105) | $0.0500(`unknownCostCallCount`=115) |
+| 축 | union-smart-run1(pre-#430) | union-fast-run1(pre-#430) | union-fast-post430-run1(**post-#430**, G-3) |
+|---|---|---|---|
+| prompt sha12 | `e62fd0f6e03d` | `e62fd0f6e03d` | **`865ed6fd771e`** |
+| `missRate` → `missRateAfterExpansion` | 56/104 (53.8%) → 59/104 (56.7%) | 112/112 (100.0%) → 112/112 (100.0%) | 8/112 (7.1%) → 62/112 (55.4%) |
+| `falseAlarmRate` → `falseAlarmRateAfterExpansion` | 0/104 (0.0%) → 0/104 (0.0%) | 0/104 (0.0%) → 0/104 (0.0%) | 2/104 (1.9%) → 1/104 (1.0%) |
+| `expansionSuppressionRate` | 3/48 (6.2%) | 0/0 — 해당 없음 | **55/106 (51.9%)** |
+| `expansionGateWouldFireRate`(가정) → `expansionGateFiredRate`(실측) | 3/48 (6.2%) → 47/232 (20.3%) | 0/0 — 해당 없음 → 78/240 (32.5%) | 56/106 (52.8%) → 91/240 (37.9%) |
+| `unionStageErrorCount` | 0 | 0 | 0 |
+| 관측 비용(부분합) | $0.1842(`unknownCostCallCount`=105) | $0.0500(`unknownCostCallCount`=115) | $0.0536(`unknownCostCallCount`=122) |
 
-두 판 다 `unionStageErrorCount=0`(240 표본 전부 union 단계 성공) — pg-catalog 시드
-(`categoriesWithEmbedding`=1007·`productDocumentCount`=6559)·임베딩 모델
-(`gemini-embedding-001`)·튜너블 9종이 두 판에서 동일하고 `Settings` 기본값과도 일치한다
+세 판 다 `unionStageErrorCount=0`(240 표본 전부 union 단계 성공 — post430 판은 콘솔에
+`category_embed_failed` 경고 2회가 찍혔지만 leg 단위 격리로 흡수돼 union 단계 자체는
+실패하지 않았다) — pg-catalog 시드(`categoriesWithEmbedding`=1007·`productDocumentCount`
+=6559)·임베딩 모델(`gemini-embedding-001`)이 세 판에서 동일하고, 튜너블(post430 판은
+F-2 이후 14종, 앞 두 판은 9종만 기록)도 `Settings` 기본값과 전부 일치한다
 (`tunablesDifferFromDefault`=`[]`, 각 `run_manifest.json` 참조).
 
-**핵심 발견**: `expansionGateFiredRate`(실측)가 `expansionGateWouldFireRate`(가정)보다 뚜렷이
-크다(smart 20.3% vs 6.2%, fast 32.5% vs 해당 없음) — 가정판(`unresolved=[]`)은 D2
-(`mapping_failed`) 규칙이 구조적으로 발동할 수 없어 전개 게이트의 실제 노출을 과소평가하고
-있었다. smart 판은 `expectedReask=true` 표본 중 decompose 가 이미 맞힌(판정 True) 48건에서
-3건(6.2%)이 union 단계의 카테고리 매핑으로 되물음이 **억제**됐다 — `missRateAfterExpansion`
-이 `missRate` 보다 높아지는 것은 이 하네스의 구조적 불변식이다(union 은 판정을 True→False
-로만 뒤집을 수 있다, 각 디렉터리 README §해석 참조).
+**핵심 발견 1(pre-#430)**: `expansionGateFiredRate`(실측)가 `expansionGateWouldFireRate`
+(가정)보다 뚜렷이 크다(smart 20.3% vs 6.2%, fast 32.5% vs 해당 없음) — 가정판
+(`unresolved=[]`)은 D2(`mapping_failed`) 규칙이 구조적으로 발동할 수 없어 전개 게이트의
+실제 노출을 과소평가하고 있었다.
 
-D family 는 **단일 실행**이다(각 1회) — 채택 판정 근거가 아니다. `#430` 머지 후 fast 판
-재실행, 그리고 union 자체도 독립 2~3판이 필요하면 별도 후속으로 검토한다(이 PR 범위 밖).
+**핵심 발견 2(post-#430, G-3 — `#431` 이 실제로 쓸 재료)**: `#430` 이후 decompose 단계
+`missRate` 는 100%→7.1%로 크게 개선됐지만(그 판정 자체는 `#430`/`#431` 레인 소관), **union
+(전개 후) 판정에서는 그 개선의 절반 이상이 다시 지워진다.** decompose 가 정확히 "되물어야
+한다"고 판정한 106건 중 55건(51.9%)이 카테고리 매핑·전개 단계에서 카테고리를 실제로 채워
+최종 판정이 False 로 뒤집힌다 — `missRateAfterExpansion`(55.4%)이 `missRate`(7.1%)보다
+훨씬 높은 것이 그 증거다(union 은 판정을 True→False 로만 뒤집을 수 있다는 이 하네스의
+구조적 불변식과 일치, 각 디렉터리 README §해석 참조). smart 판(pre-#430, 억제 6.2%)과
+post-#430 fast 판(억제 51.9%)의 억제율 차이가 큰 것은 프롬프트 세대·티어·모델이 모두 달라
+단일 요인으로 분해할 수 없다 — 이 판만으로 원인을 단정하지 않는다.
+
+D family 는 **단일 실행**이다(각 1회) — 채택 판정 근거가 아니다. union 자체도 독립 2~3판이
+필요하면 별도 후속으로 검토한다(이 PR 범위 밖).
 
 ## 재현 명령
 
