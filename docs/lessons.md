@@ -13,6 +13,383 @@
 
 ---
 
+## [2026-08-08] 낡은 코드 주석이 **회귀의 심각도 판단을 뒤집었다** — 심각도 근거는 주석이 아니라 정본에서 가져와라
+- 증상: #430 이 `screenExactPick` 회귀를 만났을 때, `decompose.py` 의 screen 절 주석
+  ("FE 는 아직 screen 을 보내지 않으므로 그쪽이 절대다수 경로다")을 근거로 **"휴면 경로라 심각도가
+  낮다"** 는 판단이 한 라운드 동안 유지됐다. 정본을 직접 열어 보니 틀렸다 —
+  `docs/api-spec.md` §3.1 은 "**현재 UI로 실제 오는 값은 3종**이다 — `chat`(구매자 인기상품
+  패널)·`seller_orders`·`seller_products`"라고 적고 있고, §3.1 은 **v0.20.3(2026-08-04)에서
+  `screen` 수신 구현으로 개정**됐다. 즉 살아 있는 경로였고, 그 주석은 개정 전에 쓰여 그대로 남아
+  있었다.
+- 원인: 계약이 개정될 때 **정본(`docs/api-spec.md`)은 갱신되고 그 계약을 소비하는 코드의 산문
+  주석은 갱신되지 않는다.** 주석은 테스트도 린트도 지키지 않으므로 낡아도 아무것도 붉어지지
+  않는다. 그리고 주석은 코드 옆에 있어서 **정본보다 먼저 읽히기 때문에** 틀렸을 때 비용이 크다 —
+  이번엔 "고칠까 말까"를 가르는 심각도 판단의 입력이 됐다.
+- 규칙: **회귀의 심각도를 "그 경로는 안 쓰인다"로 낮추려거든 근거를 코드 주석이 아니라 정본
+  (`docs/api-spec.md` 해당 § + 그 §의 개정 이력 행)에서 가져와라.** 주석은 단서일 뿐 근거가
+  아니다. 그리고 계약 § 을 개정하는 PR 은 그 § 을 인용하는 코드 주석을 `grep` 으로 찾아 함께
+  고쳐라(`grep -rn "§3.1" app/` 수준이면 충분하다).
+- 관련: #430 · #118 · `app/agents/buyer/recommendation/decompose.py` screen 절 주석(이 항목과
+  같은 커밋에서 정정) · `docs/api-spec.md` §3.1 `pageType` 어휘 절 · v0.20.3(2026-08-04) 개정 행
+
+## [2026-08-07] **병합이 측정물을 바꾼다** — 프롬프트를 고치는 PR 은 병합 직후 `_SYSTEM` sha 를 다시 확인해야 한다
+- 증상: #430 은 `decompose._SYSTEM` 을 고치고 전/후 각 2런으로 채택 판정까지 끝낸 뒤 PR 을 열고
+  `origin/dev` 를 병합했다. 그런데 **#386(PR #441, 커밋 `3547e43`, `wishlist_view` 의도 신설)이
+  같은 `_SYSTEM` 에 548자를 더해 놓았다** —
+  `_SYSTEM` sha 가 `81e3770e1340`(내가 잰 판) → `f99a98867e4a`(병합 결과 = 실제로 출고될 판)로
+  바뀌었다. 즉 **채택 기준 "출고물 == 측정물"이 코드 한 줄 안 고치고 병합만으로 깨졌다.**
+  재측정해 보니 형식 문제가 아니었다: `falseAlarmRate` 가 1.9 → 3.8 → 4.8% 로 **단조 상승**해
+  사전 등록 상한(3.6%)을 3런 중 2런에서 넘겼다.
+- 원인: 프롬프트는 **레인 간 공유 자산**인데 diff 상으로는 서로 다른 줄을 건드리므로 충돌이
+  나지 않는다. Git 은 조용히 병합하고, 두 레인이 각자 자기 축만 재고 넘어가면 **합쳐진 문면을
+  아무도 재지 않은 채** 출고된다. 이 리포는 이미 "문면을 더하면 다른 축이 깎인다"를 실측해
+  뒀는데(#430 자신이 +268자로 `screenExactPick` −3.5 를 쟀다), 그 지식이 **병합**에는 적용되지
+  않고 있었다.
+- 규칙: **`_SYSTEM`(또는 공유 프롬프트)을 건드리는 PR 은 병합 직후 sha 를 다시 계산하고, 채택
+  근거로 쓴 산출물의 `run_manifest.prompt.sha256` 과 대조하라.** 다르면 그 산출물은 더 이상
+  근거가 아니다 — **재측정한다.** PR 을 열기 전에 `git log origin/dev -- <프롬프트 파일>` 로
+  다른 레인이 같은 파일을 건드렸는지 먼저 보는 것이 더 싸다. 그리고 채택 산출물 디렉터리에는
+  잰 프롬프트의 sha 를 반드시 적어 둬라 — 그래야 다음 사람이 대조할 수 있다.
+- 규칙 2(귀속): **병합이 무엇을 바꿨는지 귀속할 때 `origin/dev` 의 최신 커밋을 범인으로 적지
+  마라 — `git log <base>..origin/dev -- <파일>` 로 그 파일을 실제로 건드린 커밋을 찾아라.**
+  이 항목의 초판은 병합 시점 `origin/dev` 의 최신 커밋(#428, `af32255`)만 보고 귀속했다가,
+  실제 원인(**#386**, PR #441, 커밋 `3547e43`)과 다른 번호를 문서·커밋 메시지·후속 이슈 4건에
+  퍼뜨렸다. `git log 7272822..origin/dev -- app/agents/buyer/recommendation/decompose.py` 는
+  커밋을 **하나**만 돌려준다 — 그 한 줄이면 끝났을 일이다. "최신 커밋"과 "그 파일을 바꾼 커밋"은
+  다른 질문이고, 귀속은 **후자**로만 답해야 한다.
+- 관련: #430 · #386(PR #441, 커밋 `3547e43`) ·
+  `evals/underspecified_probe/baselines/fast-2026-08-07-430-merged-{1,2,3}/`(병합판 3런 —
+  이 인과의 근거) · `.../fast-2026-08-07-430-after-1/README.md`
+
+## [2026-08-07] "최소 델타면 안전하다"는 틀렸다 — **10자가 3개 축을 −3 시켰다**
+- 증상: 위 병합 사고를 수습하려고 비움 트리거의 단서 목록에 브랜드·색상을 더했다 —
+  `의미(종류·용도·상황·목적)` → `단서(종류·용도·상황·목적·브랜드·색상)`, 순증 **10자**
+  (`_SYSTEM` 7828 → 7838자, 0.13%). 목표는 달성했다(`falseAlarmRate` 1.9·2.9% 로 상한 복귀).
+  그런데 같은 픽스처에서 **이 10자만 다른** `evals/intent_probe` 대조에서 `categoryClear` 가
+  **31·31 → 28·28**, `demonstrative`·`mainIntent` 도 각 **−3** 이었다. 팔 내부 분산이 0이라
+  노이즈로 볼 수 없다.
+- 원인: 델타의 **크기**가 아니라 **무엇을 규칙의 술어에 넣었는가**가 문제다. 색상·브랜드는
+  `filters.color`/`filters.brand` 로 가는 축인데 그것을 비움 트리거의 **단서**로 격상시키면,
+  그 어휘가 등장하는 다른 판정(카테고리 리셋·지시대명사 해소)도 함께 흔들린다. 같은 −3 이 세
+  축에 동시에 찍힌 것이 "한 원인이 여러 축에 비친다"는 신호다. 이 캠페인은 앞서 **길이 가설도
+  반증**했다(+268자 → +161자 → +110자로 줄여도 `screenExactPick` 이 회복되지 않았고, 오히려
+  **더 긴** +143자 판이 가장 좋았다). 즉 문면 비용은 길이의 함수가 아니다.
+- 규칙: **프롬프트 델타의 안전성을 글자 수로 판단하지 마라.** 규칙의 술어에 새 어휘를 넣을
+  때는 "그 어휘가 이 프롬프트의 **다른 판정**에도 등장하는가"를 먼저 찾고, 등장하면 그 축들을
+  **같은 표에서 함께 재라.** 그리고 델타가 아무리 작아도 **타축 측정을 생략하지 마라** —
+  10자로 3축이 움직였다.
+- 관련: #430 · `evals/intent_probe/baselines/fast-2026-08-07-430-v6-{merged,adopted}-*/`
+  (같은 픽스처·10자만 다른 귀속 대조) · [2026-08-07] 「새 프롬프트 규칙의 비용은 길이가 아니라
+  기존 규칙과의 문면 충돌이다」 항목(길이 가설 반증 궤적)
+
+## [2026-08-07] "플래그 뒤에 있는 줄 알았던" 산출 신호에 **플래그 없는 두 번째 소비자**가 있었다
+- 증상: #430 은 `decompose` 프롬프트를 고쳐 `semantic_query_is_fallback` 이 정직해지게 만든
+  작업이고, 이슈·패킷 모두 그 효과를 **`underspecified_reask_enabled`(기본 False)로 게이트된
+  #336 되물음**으로만 서술했다. 그런데 `grep semantic_query_is_fallback app/` 를 돌리면
+  소비자가 둘이다 — `underspecified.is_underspecified_turn`(플래그 있음, 오늘 무동작)과
+  **`no_condition.is_no_condition_turn`(#162, api-spec §4.17 — 플래그가 없다. 오늘 켜져 있다)**.
+  즉 "플래그를 켜지 않았으니 운영 동작은 그대로"라는 전제가 틀렸다. 산출물로 재보니
+  `semanticQueryIsFallback=true` 표본이 1/240 → 163~164/240 이었고, 그중 더 엄격한
+  `is_no_condition_turn` 조건까지 통과하는 `no_condition` 슬라이스가 39~40/40 이었다.
+- 원인: 게이트는 **신호 생산자**가 아니라 **소비자마다** 따로 걸려 있다. 신호를 고치면
+  게이트 없는 소비자는 즉시 영향을 받는데, 이슈 제목·설계 문서가 한 소비자만 이름 붙여
+  부르면 나머지가 시야에서 사라진다. 이번엔 결과가 좋은 방향(#162 가 문서상 "계약 위반"이라
+  부르던 무필터 I-1 호출이 멈춘다)이었지만, 그건 운이지 설계가 아니다.
+- 규칙: **산출 신호(플래그·불리언·판정 축)를 고칠 때는 `grep` 으로 소비자를 전부 세고, 각
+  소비자의 게이트 유무를 표로 적어라.** "이 변경은 플래그 뒤에 있다"는 주장은 소비자 목록
+  없이는 하지 마라. 그리고 게이트 없는 소비자가 있으면 그 영향 규모를 **같은 산출물에서
+  수치로** 재서 PR 본문에 전용 절로 싣는다 — 사람이 머지 판단할 때 놓치면 안 되는 사실이다.
+- 관련: #430 · #162 · #336 · `app/agents/buyer/recommendation/no_condition.py` ·
+  `app/agents/buyer/recommendation/underspecified.py` ·
+  `evals/underspecified_probe/baselines/fast-2026-08-07-430-after-1/README.md`
+
+## [2026-08-07] 안 먹히는 프롬프트 지시는 문구가 나빠서가 아니라 **같은 절 뒤쪽의 무조건 긍정 명령에 져서**다
+- 증상: `decompose._SYSTEM` 은 `- recommend:` 불릿 **첫 문장**에서 이미 "정확한 수치 제약은
+  filters 에 넣고 semanticQuery 로 근사하지 마세요"라고 지시하고 있었는데, 실측
+  (`evals/underspecified_probe` 2026-08-06 기준선)은 정확히 그 반대였다 —
+  `"5만원 이하로 아무거나 추천해줘"` → `semanticQuery = "5만원 이하 아무거나"` 가 **8/8**.
+  #430 은 처음에 이 문장을 고치는 것을 「할 일」로 받았다.
+- 원인: 같은 불릿의 **마지막 문장**이 `"semanticQuery 는 동의어·상위어를 함께 담은 의미 중심
+  자연어로 쓰세요"` 라는 **무조건 긍정 명령**이었다. 앞의 금지형("~하지 마세요")은 "대신 무엇을
+  쓰라"가 없어 대안이 되지 못하고, 뒤의 긍정 명령이 "이 필드는 항상 풍부하게 채운다"로 읽힌다.
+  **모델이 어느 문장을 읽고 있었는지가 산출물에 직접 찍혀 있었다** — `semanticQuery` 산출로
+  `'의미 중심 자연어'`(기준선 `under-nc-0003`) · `'무엇을 살지에 대한 의미 중심의 일반 추천'`
+  (후보 런)처럼 **그 문장의 문면을 그대로 에코**한 표본이 나왔다.
+  실측이 이 인과를 두 방향으로 뒷받침한다: ① 금지형 문장은 **손대지 않은 채** 같은 불릿
+  **끝에** "발화에 찾는 상품의 의미가 하나도 없으면 빈 문자열로 두라"를 덧붙이자 `missRate`
+  99.1% → 17.0%(수치 에코도 함께 줄었다). ② 반대로 금지형 문장을 긍정형으로 **재작성**한
+  두 후보는 수치 에코를 줄이지 못하고 primary 를 깎았다(17.0% → 23.2% / 48.2%).
+  즉 수치 에코는 그 문장의 어휘 문제가 아니라 **"이 필드는 비울 수 없다"가 유효 규칙이었기
+  때문**이고, 비울 수 있게 하자 부수적으로 사라졌다.
+- 규칙: 프롬프트 지시가 "이미 있는데 안 먹힌다"면 **그 문장을 고치기 전에** 같은 절 뒤쪽에
+  같은 필드를 **무조건 채우라고 시키는 문장**이 있는지부터 찾아라. 그리고 실측 산출물에서
+  **프롬프트 문면이 그대로 에코된 표본**을 찾아라 — 그게 "모델이 어느 문장을 읽고 있는가"의
+  직접 증거이고, 산문 추측보다 강하다. 안 먹히는 지시의 수정은 **채택 여부와 진단이 별개**다:
+  진단해서 원인을 적되, 재작성이 primary 축을 깎으면 반려하는 것이 근거 있는 결론이다.
+- 관련: #430(PR 진행 중) · `app/agents/buyer/recommendation/decompose.py::_SYSTEM` ·
+  `evals/underspecified_probe/baselines/fast-2026-08-07-430-after-1/README.md`(후보 선별표)
+
+## [2026-08-07] 새 프롬프트 규칙의 비용은 **길이가 아니라 기존 규칙과의 문면 충돌**이다 — 길이 가설을 세우고 3후보로 반증했다
+- 증상: #430 이 `decompose._SYSTEM` 에 "찾는 상품의 의미가 **발화에** 없으면 `semanticQuery` 는
+  빈 문자열" 규칙을 넣자 목표 축은 크게 좋아졌는데(`missRate` 99.1% → 약 10%)
+  `evals/intent_probe` 의 **`screenExactPick` 이 32/32·32/32 → 30·27** 로 깎이고 진단
+  `screenOutOfListConfirmCount`(화면 목록 **밖** productId 를 확정하려 든 횟수)가 0·0 → 2·5 로 올랐다.
+- 반증 궤적(이게 이 항목의 핵심이다): 처음 세운 가설은 **"긴 프롬프트에 문면을 더한 것 자체가
+  비용(주의 경쟁)"** 이었다. 그래서 추가 문면을 줄여 가며 3후보를 각 2런씩 쟀다 —
+  +268자 `screenExactPick` 평균 **28.5** → +161자 **30.0** → +110자(가장 짧음) **30.0**.
+  **가장 짧은 판이 나아지지 않았다 → 길이 가설은 반증됐다.**
+- 원인(반증 뒤에 선 가설): `_SYSTEM` 에는 이미 "상품명 없는 지시대명사는
+  PRIOR_FILTERS.semanticQuery 또는 LAST_RECOMMENDATIONS 맥락의 **상품**을 가리킵니다"가 있다.
+  screen 셀의 발화("이거 담아줘"·"3번째 거")는 **발화 자체에는 상품 의미가 없고 맥락에만 있다** —
+  두 규칙의 교집합이 정확히 이 입력이다. 모델이 새 규칙의 "발화에 없으면 비워라·지어내지 마라"를
+  **"맥락에서 끌어와 해소하는 것도 하지 마라"** 로 일반화하면 관측(`screenExactPick` 하락 +
+  목록 밖 확정 시도 증가)과 부합한다. 트리거를 **"발화에도 PRIOR_FILTERS·LAST_RECOMMENDATIONS·
+  SCREEN 맥락에도 없으면"** 으로 좁힌 판(+143자 — 반증된 최단판보다 **길다**)이 31·31·29(평균
+  30.33)로 가장 나았다. 좁힘은 회귀 회피용 임기응변이 아니라 **코드 의미와 일치**한다 —
+  `semantic_query_is_fallback = not (llm_sq or cat_signal or prior_sq)` 이라 맥락이 있으면
+  플래그는 어차피 False 이고 판정은 `prior is None` 첫 턴 한정이다. 넓게 쓴 문면이 코드보다
+  넓게 말하고 있었던 것이다. 다만 **완전히 회복되지는 않았다**(잔여 −1.67) — 약 −2 는 이 규칙에
+  내재하는 비용으로 보인다.
+- 규칙: **긴 프롬프트에 규칙을 더할 때는, 그 규칙이 기존 규칙과 겹치는 입력이 무엇인지 먼저
+  찾고 그 교집합에서 두 규칙이 서로 반대를 지시하지 않는지 확인한다.** 새 규칙의 트리거는
+  **코드가 실제로 보는 조건과 같은 넓이**로 써라 — 코드보다 넓게 쓰면 코드가 안 보는 입력까지
+  끌려간다. 회귀가 나면 "문면을 줄이면 낫겠지"부터 시도하지 말고 **줄여 보고 반증하라**(싸다).
+  그리고 회귀 축은 **하위축 합인지 독립 축인지** 먼저 가려라 — `screenResolution` 은
+  `screenExactPick`+`screenNoHallucination`+`screenReask` 의 합이라 "두 축이 깎였다"로 쓰면
+  같은 사실을 두 번 센 것이 된다.
+- 곁가지(같이 잰 것): 같은 취지를 **상단 JSON 스키마 줄**에만 적은 판은 `missRate` 24.1%,
+  **규칙 절 불릿**으로 적은 판은 17.0% 였다 — 스키마 줄은 값의 **형식**을 말하는 자리라 행동
+  규칙의 무게가 실리지 않는다. 또 같은 취지를 두 군데에 서로 다른 말로 적으면 **인용 가능한
+  문면이 두 개**가 돼 모델이 빈 문자열 대신 그 말을 적는다(실측 산출 `'상품 의미'` ·
+  `'상품의 의미를 추출하지 못해 빈 문자열'`, `missRate` 17.0% → 48.2%). 규칙은 **행동을
+  지시하는 절에 한 군데만** 적는다.
+- 관련: #430 · `evals/underspecified_probe/baselines/fast-2026-08-07-430-after-1/README.md`
+  (후보 선별표 — sha12 로 재현 가능) ·
+  `evals/intent_probe/baselines/fast-2026-08-07-430-after-1/README.md`(타축 대조표) ·
+  [2026-08-07] 「안 먹히는 프롬프트 지시는…」 항목
+
+## [2026-08-07] `evals/intent_probe --prompt` 는 screen 축을 **재지 못한다** — 후보를 리포에 넣고 재야 한다
+- 증상: #430 에서 `--prompt <후보파일>` 로 before 팔을 잰 뒤 after(리포 `_SYSTEM`)와 대조했더니
+  screen 축이 어긋났다. 같은 before 프롬프트인데 진단 `screenPromptLayerHitCount` 가
+  `--prompt` 런 16·18 대 리포 런 21·28 로 갈렸다 — 프롬프트가 같은데 값이 다르면 계측이 틀린 것이다.
+- 원인: `SystemPromptOverrideLLM`(`evals/intent_probe/client.py`)은 통과하는 decompose
+  `complete` 의 system 을 후보 텍스트로 갈아끼우는데, **screen 이 실린 셀은 프로덕션에서
+  `_SYSTEM_WITH_SCREEN`**(= `_SYSTEM` + `_SCREEN_CART_RULE`)을 쓴다. 오버라이드가 그 문면까지
+  평평한 후보 텍스트로 덮어 화면 지목 규칙이 통째로 빠진 채 측정된다. `PASSTHROUGH_SYSTEMS` 는
+  보조 분류기만 보호하고 이 변형은 보호하지 않는다.
+- 규칙: **screen 축(`screenExactPick`·`screenResolution`·`screenNoHallucination`·`screenReask`
+  와 두 screen 진단)이 걸린 후보는 `--prompt` 로 재지 마라** — 후보를 리포 `_SYSTEM` 에 넣고
+  `--prompt` 없이 돌려 `prompt.source == "repo:_SYSTEM"` 으로 만든다(before 팔도 파일을 되돌려
+  같은 방식으로). `--prompt` 런을 **통째로 버리지는 마라** — 비-screen 축에서는 프롬프트
+  문자열이 리포 판과 같아 여전히 유효하다. 어느 축에 어느 런을 썼는지 산출물 README 에 적어라.
+- 관련: #430 · `evals/intent_probe/README.md` 「⚠️ `--prompt`/`--prompt-rev` 런은 screen 축을
+  재지 못한다」절 · `evals/intent_probe/baselines/fast-2026-08-07-430-after-1/README.md`
+## [2026-08-07] 변이 검증 원복에 `git checkout --` 을 쓰면 **미커밋 신규 테스트가 함께 날아간다**
+- 증상: 수정이 효력 있는지 보려고 코드를 일시 변이시킨 뒤 `git checkout -- tests/...` 로 되돌렸다.
+  그런데 그 테스트 파일에는 **아직 커밋 안 한 신규 테스트**가 들어 있었고, checkout 이 HEAD 상태로
+  되돌리면서 통째로 삭제됐다. 그대로 커밋했으면 "회귀 테스트를 붙였다"는 커밋 메시지와 달리
+  **코드 수정만 들어가고 테스트는 없는 커밋**이 나갈 뻔했다(`git show --stat` 이 파일 1개만
+  보여줘서 알아챘다). 복원하며 이미 있던 테스트를 다시 붙여 **중복까지 만들었다**.
+- 원인: 변이 검증의 원복 수단으로 **작업 트리 기준(checkout)** 을 썼다. 변이는 "지금 상태"에서
+  일시적으로 벗어났다 돌아오는 것인데, checkout 의 기준점은 "지금"이 아니라 HEAD 다. 미커밋
+  변경이 있으면 두 기준이 어긋난다.
+- 규칙: 변이 검증 원복은 **파일 사본**으로 한다(`cp file bak` → 변이 → `cp bak file`). git 명령을
+  원복에 쓰지 않는다. 그리고 변이 검증이 끝나면 **`git status`·`git show --stat` 으로 의도한
+  파일이 전부 들어갔는지 확인**한 뒤 커밋한다 — 특히 "테스트를 추가했다"고 적은 커밋에 테스트
+  파일이 없으면 그 자체가 신호다.
+- 관련: 이슈 #356 / PR #410, `tests/unit/test_profile_resolver.py`
+
+---
+
+## [2026-08-07] 같은 계열 지적이 반복되면 **그 건이 아니라 계열을 막는 가드**를 세운다
+- 증상: PR #410 리뷰가 20건 나왔는데 절반이 두 뿌리였다. ① **LLM 출력을 경계에서 안 막음**
+  (`predicate`·`source` Literal → `salience` 범위 → `anchor_phrase` 길이 → 상품 id 표기 →
+  숫자 크기, 6건) ② **낡은 값과 새 값을 같은 자로 비교**(저장 상한 `evidence_refs` 로 요약 판정 →
+  지문의 `resolution`·`evidence_*` → 이월 tombstone 의 confidence 박제, 4건). 매번 **지적된 한
+  건만** 고쳐서 다음 인스턴스를 리뷰가 계속 찾아냈다 — 두더지잡기였다.
+- 원인: 수정 단위를 "리뷰가 가리킨 줄"로 잡았다. 같은 계열이 두 번 나온 시점에 **그 계열의 표면
+  전체**를 훑었어야 했는데, 매번 국소 수정으로 닫으니 리뷰만이 전수 조사 역할을 했다.
+- 규칙: **같은 계열 지적이 2회 이상이면 국소 수정을 멈추고 (a) 그 계열의 표면을 전수 정리하고
+  (b) 새 인스턴스가 자동으로 걸리는 가드를 만든다.** 가드는 "표에 적은 것만 검사"가 아니라
+  **산출물 전체를 훑는 불변식**이어야 한다 — 이번 ②의 가드
+  `{e.decay_evaluated_at for e in document.edges} == {now}` 는 어떤 경로로 만들어진 edge 든
+  걸리지만, ①의 적대적 입력 표는 표에 없는 새 필드를 못 잡는다(그건 가드가 아니라 회귀 테스트다).
+  전수 불변식을 못 세우는 계열은 그 한계를 **명시**하고 넘어간다.
+- 덧: 리뷰 대응에는 **멈추는 기준**도 필요하다. 재현되고 영향 있으면 고치고, 잠재+저비용이면
+  고치고, 설계 논쟁이거나 이미 근거를 적어둔 지점의 재지적이면 **회신만 하고 코드는 두는 것**이
+  정당한 마무리다(이번 `product` `verified=False` 가 그 사례).
+- 관련: `app/agents/profile/graph_merge.py::_carried_tombstones`,
+  `tests/unit/test_profile_graph_merge.py::test_decay_clock_is_one_snapshot_per_batch`,
+  `tests/unit/test_profile_resolver.py::test_numeric_labels_are_bounded_by_domain_range`,
+  이슈 #356 / PR #410
+
+---
+
+## [2026-08-07] 선례를 옮길 때는 **tier·모델이 같은지** 먼저 본다 — 값이 모델 종속이면 그대로 400 이 된다
+- 증상: #356 델타 추출이 `max_tokens=800` 하드코딩 탓에 출력 예산 소진으로 죽는 걸 프로브가 잡아,
+  #325(enrichment) 선례를 그대로 옮겨 `max_tokens` 상향 + `reasoning_effort="minimal"` 고정을
+  넣었다. 그러자 프로브가 **8/8 전부 실패**했다 — `400 Unsupported value: 'reasoning_effort'
+  does not support 'minimal' with this mode`. #325 는 **fast tier(gpt-5-nano)** 이고 델타 추출은
+  **smart tier(gpt-5.6-luna)** 라, 같은 문자열이 한쪽에선 되고 한쪽에선 거절된다. 이 모델은
+  이미 `openai_tool_reasoning_incompatible_models` 에 올라 있었는데 확인하지 않았다.
+- 원인 둘: (1) "같은 함정 → 같은 대응"으로 선례를 통째 복사했다. 함정(출력 예산)은 같아도 대응
+  일부(effort 값)는 **모델 능력에 종속**이라 이식 대상이 아니었다. (2) 애초에 effort 고정은
+  **측정된 문제를 푸는 데 필요 없었다** — 실패 원인은 예산이었고 `max_tokens` 만으로 0건이 됐다.
+  필요 없는 노브를 얹었다가 그 노브가 전부를 깨뜨렸다.
+- 규칙: 다른 이슈의 대응을 옮길 때는 **어떤 값이 모델·tier 종속인지 먼저 가른다**(`max_tokens`
+  는 이식 가능, `reasoning_effort`·모델 id·tool 지원 여부는 아니다). 그리고 **측정이 요구하지
+  않은 노브는 넣지 않는다** — 측정으로 확인한 최소 변경부터 적용하고, 그것으로 해결되면 거기서
+  멈춘다. 이번엔 노브를 빼자 테스트 fake 5개 파일 수정도 통째로 불필요해졌다.
+- 관련: `app/core/config.py::profile_delta_max_tokens`, `app/agents/profile/builder.py`,
+  `openai_tool_reasoning_incompatible_models`, 이슈 #356 / #325 / PR #410
+
+---
+
+## [2026-08-07] 프로브가 프로덕션 호출을 **복제**하면, 이미 고친 결함을 계속 "실패"로 보고한다
+- 증상: `scripts/probe_delta_prompt_356.py` 가 `llm.complete(..., max_tokens=800)` 로 프로덕션
+  호출을 베껴 두고 있었다. 그 800 이 원인이라 `builder` 쪽을 config 주입(2048)으로 고쳤는데,
+  프로브를 다시 돌려도 **똑같이 2건 실패**로 나왔다. 프로브가 자기 하드코딩을 계속 쓰고 있어서다.
+  "고쳤는데 왜 그대로지"로 한참 헤맬 뻔했다.
+- 원인: 프로브의 목적은 **프로덕션이 무엇을 하는지 재는 것**인데, 호출 파라미터를 프로덕션에서
+  읽지 않고 손으로 옮겨 적었다. 그 순간 프로브는 프로덕션이 아니라 "예전의 프로덕션"을 잰다.
+- 규칙: 계측 스크립트는 **프로덕션 코드를 부르거나 프로덕션 설정을 읽는다.** 파라미터·정규식·
+  임계를 스크립트에 베껴 쓰지 않는다(같은 이유로 이 프로브의 밴드 라벨 검사도 정규식을 복제하지
+  않고 `_resolve_band` 를 직접 부른다). 베낀 값이 하나라도 있으면 그 값이 갈리는 순간 프로브
+  결과는 근거가 아니라 오해가 된다.
+- 관련: `scripts/probe_delta_prompt_356.py::run_prompt`·`_band_accepted`,
+  `app/agents/profile/builder.py::generate_session_delta`, 이슈 #356 / PR #410
+
+---
+
+## [2026-08-07] 명세의 "예: A vs B"를 목록으로 옮기면, 예시가 규칙이 되어 나머지가 조용히 빠진다
+- 증상: #356 `_resolve_conflicts` 가 상충 쌍을 `_CONFLICTING = {{"likes", "avoids"}}` 하나로
+  하드코딩했다. 그런데 `resolver._POSITIVE_PREDICATE` 는 kind 마다 다른 긍정을 만든다
+  (`priceBand`·`ratingBand`·`attribute` → `prefers`, `situation` → `interestedIn`). 그래서
+  "3만원대를 선호한다" + "3만원대는 싫다" 가 **둘 다 `active` 로 공존**하고, `_summary_input` 은
+  non-active 만 거르므로 모순된 두 fact 가 요약 LLM 입력에 **함께** 들어갔다(실측 재현:
+  `['30000-50000 를 선호한다', '30000-50000 를 싫어한다']`). 7개 kind 중 4개가 구멍이었다.
+  Claude PR 리뷰가 잡았다.
+- 원인: SPEC REQ-PGRAPH-018 이 "상충하는 관계(`likes` vs `avoids` 같은 node 대상)"라고 **예시**로
+  적은 것을, 구현이 **열거해야 할 목록**으로 읽었다. 예시를 자료구조로 옮기는 순간 그 예시가
+  규칙이 되고, 예시에 없던 경우는 "빠뜨렸다"가 아니라 "원래 대상이 아니다"처럼 보인다.
+- 규칙: 명세가 "예: A" 로 쓴 것을 코드에 옮길 때는 **A 를 등록하지 말고 A 를 만들어내는 성질을
+  구현한다.** 여기서는 쌍 3개를 등록하는 대신 "부정 vs 임의의 긍정"으로 판정을 바꿨다 —
+  긍정 predicate 가 하나 더 생겨도 자동으로 따라온다. 옮긴 뒤에는 **명세 쪽에 그 성질을 명시**해
+  다음 사람이 같은 오독을 하지 않게 한다(v0.2.3 명확화). 열거가 불가피하면 열거 대상을 만드는
+  원본(여기서는 `resolver._POSITIVE_PREDICATE`)과 **한 테스트에서 대조**한다.
+- 관련: `app/agents/profile/graph_merge.py::_resolve_conflicts`(`_NEGATIVE_PREDICATE`·
+  `_POSITIVE_PREDICATES`), `app/agents/profile/resolver.py::_POSITIVE_PREDICATE`,
+  SPEC-PROFILE-GRAPH-149 REQ-PGRAPH-018(v0.2.3), 이슈 #356 / PR #410
+
+---
+
+## [2026-08-07] 직관과 반대인 설계는 **근거**를 테스트로 잠근다 — 안 그러면 다음 사람이 버그로 읽고 뒤집는다
+- 증상: #356 `_truncate` 는 절단 시 `active`(살아 있는 취향)를 `superseded`(충돌에서 진 취향)보다
+  **먼저** 버린다. 리뷰가 이를 "정렬 방향이 뒤집혔다"는 버그로 읽고 부등호를 뒤집으라고 제안했다.
+  실제로 뒤집어 돌려 보니 요약 입력이 `['소니를 싫어한다', '애플을 좋아한다']` 에서
+  `['소니를 좋아한다', '소니를 싫어한다', ...]` 로 바뀌었다 — **진 취향이 부활**한다.
+- 원인 둘: (1) docstring 을 "등급이 낮은 쪽부터 밀린다"로 써서 1/2/3 번호를 반대로 읽을 여지를
+  남겼다. **방향을 서술어로 쓰지 않고 등급 번호에 맡긴 것**이 잘못이다. (2) 더 중요하게,
+  이 순서를 정당화하는 **비대칭이 테스트에 없었다** — `builder._summary_input` 이 문서에 없는
+  `edge_key` 를 `active` 로 간주하므로, active 가 잘려도 그 fact 는 요약에 남지만 superseded 가
+  잘리면 진 취향의 원문이 통과한다. 이 비대칭이 순서의 유일한 근거인데 어디에도 안 적혀 있었다.
+- 규칙: 설계가 **직관과 반대 방향**이면 (a) 방향을 문장으로 명시하고("먼저 밀려나는 순서: A → B"),
+  (b) **왜 그 방향인지의 근거 자체를 테스트로 잠근다.** 결과만 잠그면 다음 사람이 "이게 왜
+  이렇지?" 하고 뒤집을 때 테스트가 함께 고쳐질 뿐이다. 리뷰가 방향을 반대로 읽었다면 그건
+  리뷰어의 오독이기 전에 **코드가 방향을 설명하지 못한 증거**다.
+- 관련: `app/agents/profile/graph_merge.py::_truncate`,
+  `tests/unit/test_profile_consolidate_graph.py::test_truncated_superseded_edge_lets_the_losing_preference_back_into_summary`,
+  이슈 #356 / PR #410
+
+---
+
+## [2026-08-07] 검증 없는 dataclass 를 경유하면 스키마 위반이 **한참 뒤에** 터져 배치를 죽인다
+- 증상: #356 `graph_merge._observation` 이 저장 payload 를 읽으면서 `node` 만
+  `GraphNode.model_validate` 로 검증하고 `predicate`·`edge_key`·`edge_id` 는 그대로 통과시켰다.
+  받는 그릇 `_Observation` 이 **검증 없는 plain dataclass** 라 아무 값이나 실린다. 그래서
+  `predicate="hates"` 같은 손상 payload 는 "모양이 깨진 항목은 조용히 버린다"는 그 함수의
+  docstring 을 통과하고, 한참 뒤 `_merge_edge` 의 `GraphEdge(...)` 생성에서야 처음으로
+  `ValidationError` 를 냈다. 그 지점엔 잡는 코드가 없어 `finalizer` 최상위 `except Exception`
+  까지 새고, 손상 fact 는 저장소에서 자동으로 안 지워지므로 **session-end 마다 같은 자리에서
+  RETRYABLE 만 반복**된다(poison record). REQ-PGRAPH-004 의 degrade("못 만든 fact 는 개수만
+  센다")를 우회한 셈이다. Claude PR 리뷰가 잡았다.
+- 원인: "검증했다"를 **필드 단위가 아니라 객체 단위**로 셌다 — payload 안에 pydantic 모델
+  필드(`node`)가 하나 있으니 검증이 걸렸다고 여겼다. 나머지 필드는 나중에 pydantic 모델로
+  들어가긴 하지만, 그 "나중"이 **degrade 경계 밖**이라는 것이 문제였다.
+- 규칙: **경계에서 들어오는 payload 는 뒤에서 강제될 제약을 그 경계에서 미리 건다.** 중간에
+  검증 없는 dataclass·`TypedDict`·`dict` 를 경유한다면, 그 지점이 곧 검증 공백이다. 특히
+  "여기서 걸러 degrade 한다"고 docstring 에 적은 함수는 **적은 만큼 실제로 거르는지** 손상값
+  파라미터라이즈 테스트로 확인한다. 방어를 호출부(배치 전체)로 올리는 선택지는 마지막이다 —
+  거기서 잡으면 손상 1건 때문에 배치 전체가 버려진다.
+- 관련: `app/agents/profile/graph_merge.py::_observation`(`_PREDICATES`),
+  `::_merge_edge`, `app/agents/profile/finalizer.py:171`, 이슈 #356 / PR #410
+
+---
+
+## [2026-08-06] `datetime` 뺄셈은 naive-aware 혼합에서 `ValueError` 가 아니라 `TypeError` 다
+- 증상: #356 `graph_merge._elapsed_days` 가 "파싱 불가 타임스탬프로 감쇠를 추측하지 않는다"며
+  `except ValueError` 로 감쌌는데, 오프셋 없는 관측 시각이 하나라도 섞이면
+  `TypeError: can't subtract offset-naive and offset-aware datetimes` 로 **가드를 통과해**
+  consolidation 배치가 통째로 죽는다. 현재 소스는 양쪽 다 aware 라(`_now_iso` ·
+  store 의 `created_at TIMESTAMP WITH TIME ZONE`) 재현되지 않는 잠재 결함이었고, PR #410
+  전체 점검에서 코드를 읽다 찾았다.
+- 원인: `datetime.fromisoformat` 의 실패(`ValueError`)만 떠올리고 **뺄셈 자체의 실패**를 빼놓았다.
+  방어 코드를 쓸 때 "무엇이 실패하나"를 함수 단위가 아니라 **식(expression) 단위**로 세지 않았다.
+- 규칙: 시각 연산 방어는 `except (ValueError, TypeError)` 로 잡는다. 더 일반적으로, `try` 안에
+  **연산이 두 개 이상 있으면 각각의 예외 타입을 따로 확인**한다 — 파싱과 연산은 다른 예외를 낸다.
+  tz 혼합을 "우리 코드에선 안 생긴다"로 넘기지 않는다(전제가 깨지는 비용이 배치 전멸이다).
+- 관련: `app/agents/profile/graph_merge.py::_elapsed_days`, 이슈 #356 / PR #410
+
+---
+
+## [2026-08-06] 방어용 상한과 HARD 불변식이 같은 자료를 두고 만나면, 우선순위를 안 적은 쪽이 조용히 진다
+- 증상: #356 `_truncate` 는 "tombstone 을 먼저 지킨다"고 docstring 에 적고 `(protected + rest)[:limit]`
+  로 구현했다. `protected` 가 `profile_graph_max_edges`(200)를 **넘는 순간** 그 슬라이스는
+  protected 자체의 꼬리를 잘라내, 지킨다고 적힌 tombstone 이 사라진다. tombstone 이 없어지면
+  `_carried_tombstones` 가 보존할 대상을 잃고 같은 `edge_key` 가 다음 배치에 새 `active` 로
+  파생돼 **지운 취향이 부활**한다(AC-PROF-31 — 이 이슈의 존재 이유가 무력화된다).
+  기존 테스트는 `protected(1) <= limit(1)` 만 재고 있어 경계를 못 잡았고, PR #410 Claude 리뷰가 잡았다.
+- 원인: 상한(저장 폭주 방어)과 불변식(삭제 실효, HARD)이 **같은 리스트를 두고 충돌**하는데 둘의
+  우선순위를 코드에도 SPEC 에도 안 적었다. 안 적으면 자료구조 연산(여기서는 슬라이스)의 우연한
+  성질이 대신 결정한다 — 그리고 그 결정은 대개 "먼저 쓴 쪽"이 아니라 "나중에 자르는 쪽"이 이긴다.
+- 규칙: **상한을 다루는 코드는 "무엇을 먼저 자르는가"를 명시**하고, 상한 안에 든 경우와 **넘는
+  경우를 따로 테스트**한다(`n <= limit` 만 재는 테스트는 상한 코드를 검증하지 않은 것이다).
+  HARD 불변식과 방어용 상한이 부딪히면 **불변식이 이기고, 상한 초과는 로그로 드러낸다** — 조용히
+  넘기지도, 조용히 지우지도 않는다. 복구 경로가 있는 항목(`superseded`: 재파생으로 자기복구)과
+  없는 항목(`suppressed`: 사용자 삭제)을 한 등급으로 묶지 않는다.
+- 관련: `app/agents/profile/graph_merge.py::_truncate`, `app/core/config.py::profile_graph_max_edges`,
+  SPEC-PROFILE-GRAPH-149 REQ-PGRAPH-005(v0.2.2 절단 우선순위), 이슈 #356 / PR #410
+
+---
+
+## [2026-08-06] 워크트리의 `docker compose ps` 가 비어도 컨테이너는 떠 있다 — "DB 없음"을 가정하지 마라
+
+- 증상: `#356` 시드 스크립트를 돌리기 전 `docker compose ps` 로 확인했더니 서비스가 하나도 없어
+  "InMemory 폴백으로 돌겠구나" 하고 실행했는데, 실제로는 **실 pg-profile 에 연결**돼
+  `EmbeddingError: google_api_key 미구성` 으로 죽었다. 스크립트 docstring 에는 그 반대로
+  "GOOGLE_API_KEY 가 없으면 category 노드만 드롭되고 나머지는 정상 생성된다"고 적혀 있었다.
+- 원인 두 가지가 겹쳤다.
+  (1) **compose 프로젝트 이름은 디렉터리마다 다르다.** 메인 체크아웃에서 띄운
+      `jarvis-ai-final-pg-profile-1` 은 워크트리의 `docker compose ps` 목록에 안 잡히지만
+      호스트 포트 5434 는 그대로 열려 있어 `profile_db_url` 이 그냥 붙는다. 워크트리는 코드만
+      격리하고 **호스트 포트는 공유**한다.
+  (2) `add_fact` 는 store 의 semantic 인덱스(`fields: ["fact"]`, REQ-PROF-070/071)를 타므로
+      **fact 를 하나 넣을 때마다 실 임베딩 API 를 부른다.** 실 pg-profile 을 쓰는 한
+      GOOGLE_API_KEY 는 선택이 아니라 필수인데, 임베딩을 "category 어휘 스냅에만 쓴다"고
+      착각해 전제를 잘못 적었다.
+- 규칙:
+  - 워크트리에서 인프라 유무를 판단할 때는 `docker compose ps` 가 아니라 **`docker ps`** 로 본다.
+    폴백 경로를 전제한 스크립트·테스트는 특히 그렇다(로컬에 떠 있는 실 Spring 을 유닛 테스트가
+    잡아 결과가 뒤집힌 2026-08-05 항목과 같은 부류다 — 주입하지 않은 기본값은 하네스 경계 밖이다).
+  - 스크립트 docstring 의 `전제`·`비용` 절은 **한 번 실행해 보고 적는다.** 추측으로 적으면 그
+    문장이 다음 사람에게 그대로 틀린 근거가 된다.
+  - "이 기능은 임베딩을 쓰는가"를 판단할 때 내가 직접 부르는 곳만 보지 말고 **저장소 인덱스
+    설정(`index=`)** 도 확인한다. 쓰기 한 번이 곧 임베딩 한 번인 경로가 있다.
+- 관련: `scripts/seed_profile_graph_356.py`, `app/agents/profile/store.py`(`_pg_index_config`),
+  `app/pipelines/embedding.py:84`, 이슈 #356
+
+---
+
 ## [2026-08-07] PR 이 리뷰 워크플로 자신을 고치면 Claude 리뷰는 그 PR 에서 돌지 않는다
 - 증상: PR #459(`.github/workflows/claude-review.yml` 을 수정하는 PR)의 review run
   (`gh run view 31169027311`)에 `##[warning]Skipping action due to workflow validation:
