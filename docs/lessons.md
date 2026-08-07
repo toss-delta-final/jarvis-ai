@@ -56,6 +56,29 @@
   라운드에서 "정작 이 이슈가 고치려는 턴엔 그 신호가 없다"는 기각 논증이 틀렸음을 인정하고
   번복했다: 신호 0개 = 게이트 통과 = 필터 켠 채 유지이지, 게이트 무력화가 아니었다).
 
+## [2026-08-07] "대역이 흉내 낼 수 없다"고 선언하기 전에 대역을 한 층 아래로 내려 봐라
+- 증상: `evals/combo_matrix` 하네스가 하드필터 8축 중 3축(`keyword`·`color`·`attr_conditions`)을
+  "대역이 표현할 수 없는 축"으로 선언하고 `observed.unappliedSearchFilters` 에 이름만 기록하고
+  있었다(#381 D1). 정직한 기록이었지만 그 축들은 present/absent 가 결과에 아무 차이를 만들지
+  않아, **앱 코드가 망가져도 하네스는 초록불**이었다. 실제로 대역이 재구현해 둔 `rating_min` 은
+  앱과 의미가 반대였는데(대역 `rating is not None and rating >= min` vs 앱 "반증된 것만 제거")
+  아무도 못 봤고, `attr_conditions` 판정 코드(축별 완화 재시도 포함)는 하네스에서 **한 번도
+  실행된 적이 없었다**.
+- 원인: 대역이 선 자리가 잘못됐다. `run_buyer_turn(search=...)` 주입은 `search_catalog` 를
+  **통째로** 대체해, 그 안의 dedup·`rating_min`·`attr_conditions` 사후필터 단계까지 같이
+  삼켰다. 사라진 단계를 대역이 손으로 메꾸다 보니 (a) 앱 판정을 재구현하게 되고(규약 위반)
+  (b) 재구현이 앱과 어긋나고 (c) 어긋난 사실이 드러날 경로가 없었다. "대역이 흉내 낼 수 없다"는
+  결론은 **그 자리에서만** 참이었다 — 한 층 아래 `SearchBackend`(실제 네트워크 경계)로 내리면
+  배포 코드가 그대로 돌아서 흉내 낼 필요 자체가 없어진다.
+- 규칙: 대역이 "이 축은 표현 불가"라고 선언하려 할 때, **그 선언을 문서·데이터에 적기 전에 대역이
+  선 자리(seam)를 한 층 아래로 내려서 같은 결론이 나오는지 먼저 확인한다.** 판단 기준은
+  `fakes.py` 규약 그대로 — 대역은 **네트워크를 건너가는 경계**에만 서고, 그 안쪽은 배포 코드가
+  돌아야 한다. 대역이 앱 내부 함수를 대체하고 있으면 그건 이미 자리가 잘못된 신호다.
+  덧붙여 **하네스가 "이 축을 관측한다"고 적어 둔 축은 present/absent 로 관측값이 실제로 갈리는지
+  변이 시험으로 확인한다** — 안 갈리면 그 축은 재고 있는 게 아니다.
+- 관련: 이슈 #426(#381 후속) · `evals/combo_matrix/fakes.py`(`SpringWhereCatalogBackend`) ·
+  `evals/filter_axes/probe.py:83-125`(같은 패턴의 선례가 이미 repo 에 있었는데 참조되지 않았다) ·
+  `evals/combo_matrix/README.md` "필터링 검색 대역의 성격"
 ## [2026-08-07] `uv run ruff check --fix && uv run ruff format` 커밋 워크플로 문구를 문자 그대로 실행하면 무관 파일 30개가 재포맷된다
 - 증상: #439 구현 검증 단계에서 CLAUDE.md 커밋 워크플로 2항을 그대로 `uv run ruff check --fix &&
   uv run ruff format`으로 실행했더니 `ruff check`는 `All checks passed!`였지만 `ruff format`은
