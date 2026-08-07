@@ -128,6 +128,28 @@ async def test_add_fact_dedup_stays_exact_string_match() -> None:
     assert records[0].graph_triples == [{"node_id": "brand:소니"}]  # 재승격은 스킵(멱등)
 
 
+async def test_add_fact_backfills_triples_onto_a_fact_that_had_none() -> None:
+    """트리플 없이 저장된 fact 는 나중에 resolve 가 성공하면 **채워진다** (PR #410 리뷰).
+
+    resolver 는 임베딩 백엔드 장애를 예외 전파 대신 **드롭**으로 처리한다(그래야 배치 전체가
+    영구 RETRYABLE 이 되지 않는다). 그래서 장애 중에는 트리플 없는 fact 가 저장되는데, dedup 이
+    `graph_triples` 를 안 보고 무조건 return 하면 백엔드가 복구되어 같은 취향이 다시 승격돼도
+    새 트리플이 버려진다 — **일시적 장애가 영구 손실**이 되고 그 취향은 계속 unprojected 로만
+    잡혀 그래프에 영영 안 실린다.
+
+    중복 fact 는 여전히 안 쌓인다(항목 수는 1). 채우는 것은 값뿐이다.
+    """
+    store = await get_profile_store()
+
+    await store.add_fact("u1", "소니 선호")  # 1차: resolve 실패 → 트리플 없음
+    await store.add_fact("u1", "소니 선호", graph_triples=[{"node_id": "brand:소니"}])  # 2차: 성공
+
+    records = await store.get_fact_records("u1")
+
+    assert len(records) == 1  # 중복은 그대로 막는다
+    assert records[0].graph_triples == [{"node_id": "brand:소니"}]
+
+
 # ─────────── 그래프 문서 read/write ───────────
 
 

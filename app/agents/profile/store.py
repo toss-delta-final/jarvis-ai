@@ -359,7 +359,22 @@ class ProfileStore:
             # session finalizer 재처리(clear_session_ctx_upto 실패·I-20 재전송·다음 idle sweep)로 같은
             # 델타가 다시 뽑혀도 중복 fact 가 안 쌓이게 하는데, dedup 을 cap 분기 안에만 두면 새
             # 호출부가 cap 인자를 실수로 빠뜨렸을 때 이 보호가 조용히 무력화된다(PR #47 후속 리뷰).
-            if any(it.value["fact"] == fact for it in items):
+            existing = next((it for it in items if it.value["fact"] == fact), None)
+            if existing is not None:
+                # **트리플이 비어 있으면 채운다** — resolver 는 임베딩 백엔드 장애를 예외 전파
+                # 대신 드롭으로 처리하므로(그래야 배치가 영구 RETRYABLE 이 안 된다) 장애 중에는
+                # 트리플 없는 fact 가 저장된다. 여기서 무조건 return 하면 복구 후 같은 취향이
+                # 다시 승격돼도 새 트리플이 버려져 **일시적 장애가 영구 손실**이 되고, 그 취향은
+                # 계속 unprojected 로만 잡혀 그래프에 영영 안 실린다(PR #410 리뷰).
+                # 채우는 것은 값뿐이고 항목은 그대로라, 중복 방지(PR #47)는 유지된다.
+                if graph_triples and not existing.value.get("graph_triples"):
+                    await run_with_query_timeout(
+                        self._store.aput(
+                            (_FACTS_NS_ROOT, user_id),
+                            existing.key,
+                            {**existing.value, "graph_triples": graph_triples},
+                        )
+                    )
                 return
             # fact 항목은 증거 저장소로 유지하고 **값에 필드만 더한다**(SPEC-PROFILE-GRAPH-149
             # §7.1) — fact 쪽 스키마 마이그레이션은 없다. 트리플이 없으면 키를 아예 넣지 않아

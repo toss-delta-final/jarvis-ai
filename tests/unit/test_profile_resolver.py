@@ -61,10 +61,39 @@ async def test_rule_kinds_resolve_without_embedding(
 
     assert resolved is not None
     assert resolved.node.node_id == expected_node_id
-    assert resolved.node.verified is True  # 자기완결적 판정 — 외부 어휘가 필요 없다
     assert resolved.node.resolution is not None
     assert resolved.node.resolution.method == "rule"
     embed.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("kind", "label", "expected_verified"),
+    [
+        ("priceBand", "30000-50000", True),  # 자기완결 — 밴드는 자기 라벨이 곧 정의다
+        ("ratingBand", "4-5", True),
+        ("product", "12345", False),  # 외부 엔티티 **참조** — 통제 어휘에 스냅되는 게 아니다
+    ],
+)
+async def test_rule_kinds_claim_verified_only_when_self_contained(
+    settings: Settings, kind: str, label: str, expected_verified: bool
+) -> None:
+    """`verified` 는 "통제 어휘에 스냅됐는가"다 — 정규식 통과는 그 축의 답이 아니다.
+
+    밴드는 라벨 자체가 정의라(가격 30000~50000) 외부 어휘 없이 자기완결적으로 참이다. 반면
+    `product` 는 **외부 엔티티를 가리키는 참조**다 — 숫자 형식이 맞다고 그 상품이 있다는 뜻이
+    아니고, 있더라도 품절·판매종료로 사라진다(#310). 그래서 쓰기 시점 존재 검증은 애초에 답이
+    될 수 없고(읽을 때 또 틀린다), 존재 확인은 소비 시점(#150 → Spring 조회)의 책임이다.
+    AI 는 상품 원본을 소유하지 않는다(CLAUDE.md) — pg-catalog `products` 는 I-17 배치가 처리한
+    분만 있어 대조 대상으로도 부적합하다(신상품이 거짓 음성이 된다).
+
+    `verified=False` 는 미구현 표식이 아니라 **정확한 답**이다. REQ-PGRAPH-013 이 이 상태를
+    정의한다 — "노출은 하되 신뢰하지 않는다". `brand` 도 같은 이유로 False 다(어휘 미확보).
+    (PR #410 리뷰)
+    """
+    resolved = await _resolve(settings, kind=kind, label=label, embed=_never_embed())
+
+    assert resolved is not None
+    assert resolved.node.verified is expected_verified
 
 
 @pytest.mark.parametrize(

@@ -212,10 +212,20 @@ def _resolve_band(kind: str, label: str, *, anchor_phrase: str, now: str) -> Gra
 
 
 def _resolve_product(label: str, *, anchor_phrase: str, now: str) -> GraphNode | None:
-    """상품은 숫자 productId 정확 일치만 (REQ-PGRAPH-014).
+    """상품은 숫자 productId 형식 일치만 (REQ-PGRAPH-014). **`verified` 는 False 다.**
 
     AI 카탈로그는 상품 원본 컬럼(상품명)을 저장하지 않으므로(CLAUDE.md) 이름으로 붙일 어휘가
     아예 없다 — 이름 비슷한 것을 근접 탐색으로 고르면 **다른 상품**을 취향으로 박게 된다.
+
+    `verified=False` 인 이유(PR #410 리뷰) — 미구현 표식이 아니라 **정확한 답**이다:
+      - `verified` 의 축은 "통제 어휘에 스냅됐는가"인데, 상품 id 는 어휘의 원소가 아니라
+        **외부 엔티티를 가리키는 참조**다. 정규식 통과는 그 축의 답이 될 수 없다.
+      - 쓰기 시점 존재 검증은 애초에 답이 아니다 — 있던 상품도 품절·판매종료로 사라진다(#310).
+        참조는 **읽을 때** 확인해야 하고, 그건 소비자(#150 → Spring 조회)의 책임이다.
+      - 대조할 어휘도 없다: pg-catalog `products` 는 I-17 배치가 처리한 분만 있어 신상품이
+        거짓 음성이 되고, 상품 원본은 Spring 이 소유한다.
+    REQ-PGRAPH-013 이 이 상태를 정의한다 — "노출은 하되 신뢰하지 않는다". `brand` 도 통제 어휘
+    미확보(C-28)로 같은 값이다. **카탈로그 조회를 붙여 True 로 올리는 방향으로 고치지 말 것.**
     """
     if not _PRODUCT_ID_RE.match(label):
         return None
@@ -229,7 +239,7 @@ def _resolve_product(label: str, *, anchor_phrase: str, now: str) -> GraphNode |
         node_id=make_node_id("product", canonical),
         type="product",
         label=canonical,
-        verified=True,
+        verified=False,  # 형식 일치일 뿐 어휘 스냅이 아니다 — 위 docstring 참조
         resolution=_resolution("rule", anchor_phrase=anchor_phrase, now=now),
     )
 
