@@ -724,6 +724,39 @@ def test_revision_increases_on_substantive_change(settings: Settings) -> None:
     assert document.revision == existing.revision + 1
 
 
+def test_revision_ignores_node_resolution_which_is_wire_invisible(settings: Settings) -> None:
+    """`NodeResolution` 은 **와이어 미노출** 판정 근거다 — 그것만 달라지면 revision 은 그대로다.
+
+    edge 쪽에서 `confidence`·`decay_evaluated_at` 을 비교에서 뺀 것과 같은 규약이다(§5.1 —
+    `resolution` 은 임계 재측정용 내부값이라 FE 에 나가지 않는다). 지금은 `resolution` 이 바뀌는
+    경로가 항상 edge 변화를 동반해 이 규칙이 **우연히** 지켜지는데, 어휘 갱신 후 재파생(#150)이나
+    임계 재측정 후 재resolve(#344)가 들어오면 그 우연이 깨진다 — 그때 와이어에 안 보이는 변화로
+    #150 의 `If-Match` 토큰이 무효가 된다(PR #410 리뷰가 지적한 위험, 인과는 달랐다).
+    """
+    stale = _triple()
+    stale["node"]["resolution"] = {
+        "method": "no_vocabulary",
+        "anchor_phrase": "소니 좋아",
+        "resolved_at": "2026-08-01T00:00:00+00:00",
+    }
+    fresh = _triple()
+    fresh["node"]["resolution"] = {  # 같은 노드, 판정 근거만 새로 찍혔다
+        "method": "no_vocabulary",
+        "anchor_phrase": "소니 좋아",
+        "resolved_at": "2026-08-07T00:00:00+00:00",
+    }
+
+    first = build_graph_document(
+        [_fact("f1", triples=[stale])], existing=empty_document(NOW), settings=settings, now=NOW
+    )
+    second = build_graph_document(
+        [_fact("f1", triples=[fresh])], existing=first, settings=settings, now=NOW
+    )
+
+    assert second.nodes[0].resolution != first.nodes[0].resolution  # 실제로 달라졌다
+    assert second.revision == first.revision  # 그래도 와이어 내용은 그대로다
+
+
 def test_revision_is_stable_when_only_decay_moved_confidence(settings: Settings) -> None:
     """감쇠로 confidence 소수점만 움직이면 올리지 않는다.
 

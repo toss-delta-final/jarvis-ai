@@ -487,12 +487,24 @@ def _confidence_bucket(confidence: float, bounds: list[float]) -> int:
 
 
 def _fingerprint(document: GraphDocument, settings: Settings) -> str:
+    """**와이어에 나가는 내용만** 지문에 넣는다 — 내부 판정값은 revision 을 움직이지 않는다.
+
+    edge 의 `confidence`·`decay_evaluated_at` 과 **같은 이유로 node 의 `resolution` 도 뺀다**
+    (§5.1 — 거리·margin·판정 시각은 임계 재측정용 내부값이라 FE 에 나가지 않는다).
+    지금은 `resolution` 이 바뀌는 경로가 항상 edge 변화를 동반해 빼지 않아도 결과가 같지만,
+    그건 설계가 아니라 우연이다 — 어휘 갱신 후 재파생(#150)·임계 재측정 후 재resolve(#344)가
+    들어오면 와이어에 안 보이는 변화로 `If-Match` 토큰이 무효가 된다(PR #410 리뷰).
+    """
     bounds = settings.profile_graph_confidence_buckets
-    volatile = {"decay_evaluated_at", "confidence"}
+    volatile_edge = {"decay_evaluated_at", "confidence"}
+    volatile_node = {"resolution"}
     edges = []
     for edge in document.edges:
-        payload = {k: v for k, v in edge.model_dump(mode="json").items() if k not in volatile}
+        payload = {k: v for k, v in edge.model_dump(mode="json").items() if k not in volatile_edge}
         payload["confidence_bucket"] = _confidence_bucket(edge.confidence, bounds)
         edges.append(payload)
-    nodes = [node.model_dump(mode="json") for node in document.nodes]
+    nodes = [
+        {k: v for k, v in node.model_dump(mode="json").items() if k not in volatile_node}
+        for node in document.nodes
+    ]
     return repr((nodes, edges, document.unprojected_count, document.purged_at))
