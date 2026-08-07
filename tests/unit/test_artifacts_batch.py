@@ -2575,6 +2575,177 @@ async def test_content_retry_cycles_two_retries_exactly_twice():
     assert llm.calls_by_name["영구노이즈"] == calls_after_3
 
 
+# ── PR 리뷰 라운드 2 — T1: enrichment 무관 필드만 갱신되는 poison 상품도 예산이 소진된다 ──
+
+
+async def test_content_retry_budget_carries_over_when_enrichment_inputs_unchanged(caplog):
+    """[T1] 가격·재고처럼 enrichment 와 무관한 필드(``updated_at``)만 매 주기 갱신되는 poison
+    상품도 유계 주기 안에 dead-letter 된다(기본 예산 1). 수정 전에는 ``_drain`` 이 매 주기 그
+    상품의 대기 항목을 pop 하고 ``retry_attempts=0`` 으로 재등재해 예산이 영원히 소진되지
+    않았다 — 재시도 패스가 손도 대기 전에 다음 주기 새 변경분이 도착해 항상 리셋됐기 때문
+    이다. 이 테스트는 수정 전 코드에서 반드시 실패한다(2주기가 지나도 큐에 남아 있다)."""
+    store = CatalogArtifactStore()
+    cycle = 0
+
+    async def fetch(cursor, limit):
+        nonlocal cycle
+        cycle += 1
+        # 매 주기 같은 enrichment 입력(name·description·category·brand·attributes)에
+        # updated_at 만 갱신된 새 ProductChange — Spring 이 가격·재고 변경으로 이 product 를
+        # 다시 보내는 실제 상황을 재현한다.
+        change = ProductChange(
+            product_id=1,
+            status="ON_SALE",
+            updated_at=f"2026-07-{20 + cycle:02d}T00:00:00Z",
+            name="포이즌",
+            description="설명",
+            category="여행용품",
+            brand="트래블",
+            attributes={"방수": True},
+        )
+        return ProductChangesPage(items=[change], next_cursor=f"c{cycle}", has_more=False)
+
+    settings = get_settings()
+    assert settings.artifacts_batch_content_retry_cycles == 1  # 기본값 전제 명시
+    llm = _FlakyLLM(always_fail=["포이즌"])
+
+    result1 = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+    )
+    assert result1.failed == 1
+    assert 1 in _batch._content_retry_queue
+    assert _batch._content_retry_queue[1].retry_attempts == 0
+
+    with caplog.at_level("ERROR"):
+        result2 = await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+        )
+
+    assert result2.failed == 1
+    assert 1 not in _batch._content_retry_queue  # 이전 예산(0)을 이어받아 +1 → 곧바로 dead-letter
+    assert "예산 소진" in caplog.text
+
+
+async def test_content_retry_budget_resets_when_enrichment_inputs_change(caplog):
+    """[T1] enrichment 가 실제로 쓰는 필드가 바뀌면 새 내용으로 취급해 예산을 0 부터 다시
+    준다 — #421 의 원래 취지(우연히 연속 실패한 *정상* 상품을 첫 주기에 오격리하지 않는다)가
+    이번 수정으로 깨지지 않았음을 고정한다."""
+    store = CatalogArtifactStore()
+
+    async def fetch_cycle1(cursor, limit):
+        return ProductChangesPage(
+            items=[_change(1, name="콘텐츠A")], next_cursor="c1", has_more=False
+        )
+
+    async def fetch_cycle2(cursor, limit):
+        return ProductChangesPage(
+            items=[_change(1, name="콘텐츠B")], next_cursor="c2", has_more=False
+        )
+
+    settings = get_settings()
+    assert settings.artifacts_batch_content_retry_cycles == 1  # 기본값 전제 명시
+    llm = _FlakyLLM(always_fail=["콘텐츠A", "콘텐츠B"])
+
+    result1 = await run_artifacts_batch(
+        fetch=fetch_cycle1, llm=llm, embed=_embed, store=store, settings=settings
+    )
+    assert result1.failed == 1
+    assert _batch._content_retry_queue[1].retry_attempts == 0
+
+    result2 = await run_artifacts_batch(
+        fetch=fetch_cycle2, llm=llm, embed=_embed, store=store, settings=settings
+    )
+    assert result2.failed == 1
+    assert 1 in _batch._content_retry_queue  # 새 내용 — 아직 격리되지 않는다
+    assert _batch._content_retry_queue[1].retry_attempts == 0  # 예산이 리셋됐다
+    assert _batch._content_retry_queue[1].change.name == "콘텐츠B"
+
+
+# ── PR 리뷰 라운드 2 — T2: 재시도 시점 인프라 실패는 콘텐츠 예산을 태우지 않는다 ──
+
+
+async def test_content_retry_pass_finish_failure_does_not_burn_content_budget(caplog):
+    """[T2] 재시도 시점에 enrich 는 성공했지만 finish(embed) 가 인프라 실패하면 콘텐츠
+    예산(retry_attempts)을 태우지 않고 ``_drain`` 2선과 동일한 시간 유계 스트릭으로 판정한다
+    — 스트릭이 상한에 도달해야 비로소 격리된다. 수정 전에는 이 실패도 retry_attempts 를
+    소진시켜(기본 예산 1) 첫 재시도 만에 정상 상품을 영구 격리했다 — #421 이 없애려던
+    오격리를 재시도 패스 안에서 재현하는 셈이었다."""
+    store = CatalogArtifactStore()
+    call_count = 0
+
+    async def fetch(cursor, limit):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return ProductChangesPage(
+                items=[_change(1, name="노이즈상품")], next_cursor="c1", has_more=False
+            )
+        return ProductChangesPage(items=[], next_cursor="c1", has_more=False)
+
+    settings = get_settings().model_copy(
+        update={
+            "artifacts_batch_content_retry_cycles": 1,
+            "artifacts_batch_item_dead_letter_cycles": 2,
+        }
+    )
+    llm = _FlakyLLM(fail_counts={"노이즈상품": settings.enrichment_item_attempts})
+
+    result1 = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+    )
+    assert result1.failed == 1
+    assert 1 in _batch._content_retry_queue
+    assert _batch._content_retry_queue[1].retry_attempts == 0
+
+    # cycle2: LLM 은 이제 성공(fail_counts 소진)하지만 finish(embed) 는 항상 실패한다.
+    with caplog.at_level("WARNING"):
+        result2 = await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_FailingEmbed(), store=store, settings=settings
+        )
+    assert result2.recovered == 0
+    assert result2.failed == 0  # 아직 격리 아님 — 스트릭 누적 중
+    assert 1 in _batch._content_retry_queue
+    assert _batch._content_retry_queue[1].retry_attempts == 0  # 콘텐츠 예산은 그대로
+    assert "스트릭 누적" in caplog.text
+
+    # cycle3: 스트릭이 상한(2)에 도달해서야 격리된다.
+    result3 = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_FailingEmbed(), store=store, settings=settings
+    )
+    assert result3.failed == 1
+    assert 1 not in _batch._content_retry_queue
+
+
+async def test_content_retry_pass_content_failure_still_burns_budget():
+    """[T2] 재시도에서 콘텐츠 실패면 종전대로 예산을 소진한다(기존 동작 유지 — 회귀 없음)."""
+    store = CatalogArtifactStore()
+    change = _change(1, name="영구노이즈")
+    call_count = 0
+
+    async def fetch(cursor, limit):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return ProductChangesPage(items=[change], next_cursor="c1", has_more=False)
+        return ProductChangesPage(items=[], next_cursor="c1", has_more=False)
+
+    settings = get_settings()
+    assert settings.artifacts_batch_content_retry_cycles == 1  # 기본값 전제 명시
+    llm = _FlakyLLM(always_fail=["영구노이즈"])
+
+    result1 = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+    )
+    assert result1.failed == 1
+    assert 1 in _batch._content_retry_queue
+
+    result2 = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+    )
+    assert result2.failed == 1  # 콘텐츠 실패 — 예산(1) 소진, 곧바로 격리
+    assert 1 not in _batch._content_retry_queue
+
+
 # ── PR 리뷰 라운드 1 — F5: pg 폴백 clear 는 DB 성공 여부와 무관하게 항상 적용 ──
 
 
@@ -2608,3 +2779,63 @@ def test_pg_store_clear_failure_streak_always_clears_fallback_even_when_db_fails
 
     # DB DELETE 는 실패했지만(_BoomPool), 인메모리 폴백은 항상 clear 됐다 — 다음 bump 는 1부터.
     assert store._failure_streak_fallback.bump("item", "1", ttl_s=60) == 1
+
+
+# ── PR 리뷰 라운드 2 — T3: 폴백 WARNING latch 가 DB 복구 후 재발 시에도 다시 뜨는지 ──
+
+
+def test_pg_store_fallback_warning_refires_after_recovery(caplog):
+    """[T3] ``_failure_streak_fallback_warned`` 는 latch 가 아니다 — DB 경로가 정상 종료하면
+    False 로 되돌아가, 이후 다시 장애가 나면 WARNING 이 다시 뜬다. 수정 전에는 한 번 True 가
+    되면 인스턴스 수명 동안 리셋되지 않아 pg 순단 1회 → 복구 → 훨씬 심각한 재발 장애에도
+    조용히 넘어갔다. 회귀 테스트: 실패 → 성공 → 실패 시 WARNING 이 두 번 남는다."""
+    from app.pipelines.artifact_store import FailureStreakTable
+    from app.pipelines.pg_artifact_store import PgCatalogArtifactStore
+
+    store = object.__new__(PgCatalogArtifactStore)  # __init__(dsn) 의 실 커넥션 없이 구성
+    store._failure_streak_schema_ready = True  # ensure_schema 분기를 건드리지 않는다
+    store._failure_streak_fallback = FailureStreakTable()
+    store._failure_streak_fallback_warned = False
+
+    class _BoomConnCtx:
+        def __enter__(self):
+            raise RuntimeError("db down")
+
+        def __exit__(self, *exc):
+            return False
+
+    class _BoomPool:
+        def connection(self):
+            return _BoomConnCtx()
+
+    class _OkConnCtx:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, *args, **kwargs):
+            return self
+
+        def fetchone(self):
+            return (1,)
+
+    class _OkPool:
+        def connection(self):
+            return _OkConnCtx()
+
+    with caplog.at_level("WARNING"):
+        store._pool = _BoomPool()
+        store.bump_failure_streak("item", "1", ttl_s=60)  # 실패 1회차 — WARNING
+        assert store._failure_streak_fallback_warned is True
+
+        store._pool = _OkPool()
+        store.bump_failure_streak("item", "1", ttl_s=60)  # DB 복구 — latch 가 풀린다
+        assert store._failure_streak_fallback_warned is False
+
+        store._pool = _BoomPool()
+        store.bump_failure_streak("item", "1", ttl_s=60)  # 재발 — WARNING 이 다시 떠야 한다
+        assert store._failure_streak_fallback_warned is True
+
+    assert caplog.text.count("인메모리 폴백으로 전환") == 2

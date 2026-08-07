@@ -328,8 +328,21 @@
   (기본 1주기, 0 이면 종전대로 즉시 격리)로 cross-cycle 재시도 예산을 준다 — 1주기 안에서는
   즉시 격리하는 대신 재시도 대기 큐에 등재하고, 다음 주기 재시도 패스(`_run_content_retry_pass`)가
   같은 페이로드로 다시 시도해 성공하면 회복(`BatchResult.recovered`), 예산 소진 시에만
-  dead-letter 격리한다(콘텐츠/인프라 실패 종류를 가리지 않고 예산을 소진시킨다 — 재시도 큐는
-  이미 콘텐츠 실패로 판정된 항목만 담으므로 하방이 유계다). **재시도 패스는 그 주기 `_drain`
+  dead-letter 격리한다. **PR 리뷰 라운드 2 T1 대응**: 새 페이지 항목이 도착할 때마다 대기
+  항목을 무조건 버리고 예산을 0 으로 재등재하던 것을 — enrichment 가 실제로 쓰는 필드
+  (`name`·`description`·`category`·`brand`·`attributes`)가 이전 대기 항목과 같으면 그 예산을
+  이어받아(`_enrichment_inputs_unchanged`) 소진시키도록 고쳤다 — 가격·재고처럼 그 입력에 들지
+  않는 필드만 매 주기 갱신되는 poison 상품은, 재시도 패스가 손도 대기 전에 다음 주기 새
+  변경분이 도착해 매번 리셋되는 바람에 예산이 영원히 소진되지 않고(dead-letter ERROR 가 안
+  뜨고 WARNING 만 반복) 있었다. 내용이 실제로 바뀌면 종전대로 0 부터 새 예산을 준다(#421
+  원래 취지 유지). **PR 리뷰 라운드 2 T2 대응**: 재시도 패스가 재시도 시점 실패를 종류
+  불문 예산 소진으로 단순화했던 것도 고쳤다 — 재시도에서 enrich 는 살아났는데
+  `_finish_change`(embed·store)만 일시 장애로 실패하면, 그 한 번의 불운이 기본 예산(1)을
+  대신 태워 정상 상품을 영구 격리하고 있었다(#421 이 없애려던 오격리를 재시도 패스 안에서
+  재현). 이제 재시도 시점 실패도 `_is_enrichment_content_failure` 로 다시 갈라 콘텐츠
+  실패만 예산을 소진시키고, 그 외(재시도 시점 enrich 비콘텐츠 실패·finish 실패)는 예산을
+  건드리지 않고 `_drain` 2선과 같은 `bump_failure_streak` 시간 유계 스트릭으로 판정한다
+  (`artifacts_batch_item_dead_letter_cycles` 도달 시에만 격리). **재시도 패스는 그 주기 `_drain`
   이 hasMore 를 소진해 정상 완료한 뒤에만 돈다**(PR 리뷰 라운드 1 F1 대응) — 정상 완료는
   Spring 이 지금까지 발행한 변경분을 전부 소비했다는 뜻이라 그 시점 큐 잔여 항목이 그 사이
   `HIDDEN` 이 된 적이 없음을 보장하고(유령 상품 금지), `_drain` 이 중단된 주기(2선 전파·
@@ -367,7 +380,22 @@
   실패로 쌓인 스트릭이 다음 성공까지 남아 있으면 이후 무관한 재입고
   실패와 합산돼 상한에 조기 도달할 수 있었다). 예산 카운터는 "N 이면 정확히 N 회"
   불변식(경계값 off-by-one 방지)으로 확정했다. `reset_batch_failure_state()`는 이제 #421
-  재시도 큐만 비운다(스트릭은 스토어 수명과 함께 간다). (api-spec §4.8, v0.28.1)
+  재시도 큐만 비운다(스트릭은 스토어 수명과 함께 간다). **PR 리뷰 라운드 2 T3 대응**:
+  `PgCatalogArtifactStore` 의 폴백 WARNING 플래그(`_failure_streak_fallback_warned`)가
+  latch 였던 것도 고쳤다 — 한 번 True 가 되면 인스턴스 수명 동안 리셋되지 않아, pg 순단
+  1회로 latch 된 뒤 DB 가 복구돼도 그 뒤 더 심각한 장애가 나면 조용히 넘어갔다(F5 가
+  "폴백을 프로세스 수명 latch 로 승격하면 안 된다"고 정한 원칙이 이 플래그에는 지켜지지
+  않고 있었다). 3개 DB 경로(`bump_failure_streak`·`clear_failure_streak`·
+  `purge_stale_failure_streaks`)가 정상 종료할 때마다 플래그를 False 로 되돌려
+  (`_mark_failure_streak_healthy`), 다음 장애가 다시 WARNING 을 낼 수 있게 했다. **PR 리뷰
+  라운드 2 T4 대응**: `FailureStreakTable` 의 방어적 메모리 상한(`_FAILURE_STREAK_MAX_ENTRIES`
+  =10,000)이 item·page 를 한 dict 에 합쳐 "합산 10,000"으로 적용되고 있던 것도 고쳤다 —
+  구 동작(item 10,000·page 10,000, 총량 20,000)의 절반으로 줄어 있었을 뿐 아니라, 상한
+  초과 시 `clear()` 가 item·page 를 한꺼번에 날려 대량 실패 상황(카탈로그 전량 동시 실패
+  등)에서 스트릭이 통째로 리셋되면 이 이슈가 고치려던 "상한에 영영 도달하지 못한다"가
+  그대로 재현될 수 있었다. `FailureStreakTable` 내부 저장소를 kind 별 독립 하위 dict 로
+  나눠 상한과 방어적 비움을 kind 단위로 적용하도록 고쳤다(item 10,000·page 10,000 이
+  독립). (api-spec §4.8, v0.28.1)
 - **#439 — 스트림 티켓 신원 discriminator XOR 규약이 운영에서 실제 발급되는 판매자 티켓을 전부 거부하던 문제(api-spec §2.3, v0.28.0)** — 종전 `_claims_to_identity`(jwks 레인)는 `role`과 `sub_type`이 함께 있으면 값과 무관하게 `401 TOKEN_INVALID`(`exactly one identity discriminator is required`)였다. BE `StreamTicketProvider` 실측과 CH-6 정본(2026-07-18 확정)을 확인한 결과 실제 발급 형식은 "`sub_type`은 모든 티켓 공통, 판매자만 `role="seller"`·`brandId` 추가"이며 판매자 티켓은 `sub_type="member"`를 항상 동반한다 — 즉 XOR 규약이 BE가 실제로 발급하는 판매자 티켓을 전부 거부하고 있었고, 이것이 운영 `/seller/chat 401`(#408이 사유 로깅을 넣은 바로 그 401)의 원인이었다. `sub_type`을 모든 티켓의 필수 클레임으로, `role`을 선택적 권한 클레임(있으면 exact `"seller"` + `sub_type="member"` 요구)으로 재정의해 XOR을 폐지했다 — `role="seller"`+`sub_type="member"` both-claims 티켓을 신규 수용하고, `sub_type` 없는 판매자 티켓만 종전 허용에서 `401`로 강화했다(CH-6 정본상 실존하지 않는 형식이라 와이어 영향 0). BE 확답에 따라 구매자 티켓에는 `role`을 싣지 않으므로 buyer role 값(`"buyer"` 등 추측 상수)은 신설하지 않았다. 401 사유 문자열은 `invalid sub_type claim`/`invalid seller role claim` 2종으로 정리했고 #408 로그 경로에 그대로 반영됨을 테스트로 확인했다. dev 레인(`AUTH_MODE=dev`)은 이번 개정 대상이 아니며 무변경이다.
 - **#391 — `embed_texts` 총 소요가 청크 수만큼 무제한 누적될 수 있던 문제(#353 후속)** — `embedding_timeout_s` 는 청크(HTTP 요청) 1건당 상한이라, 100건을 넘는 입력이 여러 청크로 나뉘면 `embed_texts` 한 번의 총 소요가 `청크 수 × embedding_timeout_s` 까지 누적될 수 있었다. 방식2(`embedding_rerank`)가 hot path 기본이라 이 누적은 SSE first-token 예산을 잠식하는데도, 종전엔 함수 단위 총 시간 상한이 코드로 강제되지 않고 docstring 주의문에만 의존했다. 신규 `embedding_total_timeout_s`(기본 3.0s, `embedding_timeout_s` 절 안)로 `embed_texts` 호출 1회 전체의 벽시계 예산을 두고, 첫 청크는 예산과 무관하게 항상 시도하되 두 번째 이후 청크는 내기 전에 `경과 + embedding_timeout_s > 예산` 이면 청크를 내지 않고 `EmbeddingError` 를 던진다(부분 결과 금지 — 호출부가 `zip(..., strict=True)` 등 위치 기반으로 인덱싱해 짧은 결과는 조용한 오정렬을 낳는다) — 기존 degrade 경로(`EmbeddingRerankBackend` → Spring 순서, #101/#7)로 자연히 이어진다. 오프라인 1회 빌드(`category_seed.seed_from_file`, 카테고리 leaf 2056건 → 21청크)는 `embed_texts(..., total_timeout_s=math.inf)` 로 이 예산을 명시 제외한다. 계약(api-spec) 무변경.
 - **#383 — 기동 가드 `_deferred_first_event_i1_calls` 가 구제 폴백 한 단을 과소계상하던 문제(#363 followup)** — #363 이 실측으로 고정해 둔 불일치(가드 모델 2 ≠ 실측 구제 체인 단 수 3, `test_fanout.py` `test_worst_case_rescue_chain_sequential_stages_before_first_sse`)를 §5 가 제안한 보정식으로 해소했다. `1 + (1 if category_expand_enabled else 0) + min(relaxation_max_rounds, |relaxation_auto_fields ∩ relaxation_chip_fields|)` — F-1(#222)에는 별도 kill-switch가 없어 `category_expand_enabled`(기본 `True`)가 F-1·#343 둘의 공통 전제를 잠그고, 둘은 `category_expand_notice_suppressed` 로 상호배타라 한 턴 최대 1회이므로 항이 아니라 존재 여부만 더한다(`search_filter_guard_enabled`(#393)는 무필터 축 0개 턴만 스킵하므로 이 항을 없애지 않는다 — 항에 넣지 않았다). 기본 설정 값은 2 → **3**이 되고(`3 × 3.0 = 9.0 < 10.0`, 기동 통과), 오류 메시지 `recovery` 문구에 새 손잡이 `CATEGORY_EXPAND_ENABLED=false`를 추가했다. 배포 영향은 실측으로 배제했다 — `.github/workflows/deploy.yml`이 운영 env 파일을 매 배포마다 고정 키 목록으로 전면 재작성하는데 그 목록에 `SPRING_TIMEOUT_S`·`CATEGORY_EXPAND_ENABLED`·`RELAXATION_*`는 없어 운영은 코드 기본값으로 돈다. 런타임 동작(`graph.py`)·기본값·계약(api-spec) 무변경 — 기동 시점 검증식만 고쳤다. **PR #414 Claude 리뷰 대응**: 세 항을 균질하게 `spring_timeout_s` 로 값 매기면 구제 폴백 항을 과소평가한다는 지적을 코드로 재현·확인했다 — `graph.py::stream_recommendation` 에서 `spring_client.suppress_search_retry()` 로 재시도를 끄는 `with` 블록은 본 검색(`asyncio.gather` 호출)과 자동완화 probe(`_probe(cand)`) 를 감싼 두 곳뿐이고, F-1/#343 구제 재검색(같은 함수의 `_run_search_unfiltered()` 호출 두 곳 — F-1 폴백·억제-후 재판정)은 그 블록 밖이라 `spring_client.py::search` 의 `attempts = 1 if _search_retry_suppressed.get() else settings.spring_max_retries + 1` 를 그대로 받아 항상 재시도한다(`SPRING_MAX_RETRIES=1` + 기본 타임아웃이면 가드 계산 9.0<10.0 이 통과시키지만 실제 최악은 3.0+3.0+3.0×2=12.0>10.0). 가드 OFF(기본) 분기를 `suppressed_calls × spring_timeout_s + rescue_calls × budget`(신설 순수 함수 `_deferred_first_event_rescue_i1_calls` 가 구제 항만 뗀다, `rescue ≤ total`·`total==0→rescue==0` 불변식 보장)로 항별로 나눠 값을 매기도록 고쳤다. `.env.example` 의 `SPRING_MAX_RETRIES` 예시값도 1 → **0**으로 정정했다(코드 기본값이 이미 0, #394) — 예시 그대로 부팅하면 새 식에서 기동이 거절되던 상태였다. 오늘 기본값(`spring_max_retries=0`)에서는 `budget == spring_timeout_s` 라 항별 값 매김이 갈리지 않아 영향 없음(9.0 그대로).

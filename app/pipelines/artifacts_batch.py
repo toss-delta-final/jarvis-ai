@@ -103,13 +103,20 @@ _background_harvest_tasks: set[asyncio.Task[int]] = set()
 @dataclass
 class _PendingContentRetry:
     change: ProductChange
-    # [F4 정합] "지금까지 실제로 실행된 cross-cycle 재시도 횟수" — 등재 시 0(아직 cross-cycle
-    # 재시도를 한 번도 안 함)에서 시작해, 재시도 패스가 시도할 때마다(성공 여부와 무관하게
-    # "시도했다"는 사실 자체가 아니라 "실패했다"는 사실에) +1 한다. 격리 여부는
+    # [F4 정합] "지금까지 실제로 실패로 확정된 cross-cycle 재시도 횟수" — 등재 시 0(아직 재시도
+    # 실패가 한 번도 없음)에서 시작해 +1 한다. 격리 여부는
     # ``retry_attempts < artifacts_batch_content_retry_cycles`` 로 판정한다 — 이 불변식이라야
     # ``artifacts_batch_content_retry_cycles=N`` 이 "cross-cycle 재시도가 정확히 N 회 일어난
     # 뒤에야 영구 격리"라는 이름·문서 그대로의 뜻이 된다(등재 시 1로 시작하면 N≥2 에서 실제
     # 재시도가 N-1 회로 한 주기 모자라게 끝났다 — PR 리뷰 라운드 1 F4).
+    #
+    # [T1, PR 리뷰 라운드 2] 이 카운터를 소진시키는 "실패"는 ``_run_content_retry_pass``
+    # (cross-cycle 재시도)뿐 아니라 ``_drain`` 자신의 재처리도 포함한다 — enrichment 가 실제로
+    # 쓰는 필드(name·description·category·brand·attributes)가 이전 대기 항목과 같은 채로 새
+    # 페이지 항목이 도착하면(가격·재고처럼 enrichment 와 무관한 필드만 갱신), 그 재실패도 같은
+    # poison 내용에 대한 재시도이므로 예산을 태운다. 안 그러면 그런 항목은 매 주기
+    # "등재 → 이번 주기 skip(F1) → 다음 주기 새 변경분 도착 → 0 으로 재등재"를 반복해 예산이
+    # 영원히 소진되지 않는다(dead-letter ERROR 가 영영 안 뜨고 WARNING 만 반복).
     retry_attempts: int
 
 
@@ -135,8 +142,30 @@ def reset_batch_failure_state() -> None:
     _content_retry_enqueued_this_drain.clear()
 
 
-def _enqueue_content_retry(change: ProductChange) -> None:
-    """콘텐츠 실패 항목을 다음 주기 재시도 큐에 신규 등재한다(retry_attempts=0)(#421).
+def _enrichment_inputs_unchanged(old: ProductChange, new: ProductChange) -> bool:
+    """``_enrich_change`` 가 실제로 쓰는 필드만 비교한다(T1, PR 리뷰 라운드 2).
+
+    가격·재고처럼 enrichment 결과에 영향을 주지 않는 필드(``updated_at`` 등)는 비교하지
+    않는다 — 그런 필드만 매 주기 바뀌는 poison 상품을 "내용이 바뀌었다"고 오판하면
+    cross-cycle 재시도 예산이 매번 리셋돼 결정적 실패가 영원히 dead-letter 되지 않는다.
+    dict(``attributes``) 비교는 파이썬 ``==`` 가 키 순서와 무관하게 내용으로 비교하므로
+    별도 정규화가 필요 없다(결정적).
+    """
+    return (
+        old.name == new.name
+        and old.description == new.description
+        and old.category == new.category
+        and old.brand == new.brand
+        and old.attributes == new.attributes
+    )
+
+
+def _enqueue_content_retry(change: ProductChange, *, retry_attempts: int = 0) -> None:
+    """콘텐츠 실패 항목을 다음 주기 재시도 큐에 (재)등재한다(#421).
+
+    ``retry_attempts``(기본 0 — 신규 콘텐츠)는 호출부(``_drain``)가 판정해서 넘긴다 — [T1,
+    PR 리뷰 라운드 2] 이전 대기 항목과 enrichment 입력이 같으면 그 예산을 이어받아(+1) 넘기고,
+    다르면 0(새 내용에는 새 예산)을 넘긴다.
 
     상한(``_CONTENT_RETRY_MAX_PENDING``) 도달 시 가장 오래된 항목을 축출하고 ERROR
     dead-letter 로 남긴다 — 조용한 유실 금지. ``_content_retry_enqueued_this_drain`` 에도
@@ -154,7 +183,9 @@ def _enqueue_content_retry(change: ProductChange) -> None:
             _CONTENT_RETRY_MAX_PENDING,
             oldest_id,
         )
-    _content_retry_queue[change.product_id] = _PendingContentRetry(change=change, retry_attempts=0)
+    _content_retry_queue[change.product_id] = _PendingContentRetry(
+        change=change, retry_attempts=retry_attempts
+    )
     _content_retry_enqueued_this_drain.add(change.product_id)
 
 
@@ -395,8 +426,13 @@ async def _drain(
       [#421] ``artifacts_batch_content_retry_cycles`` 가 0 이면 종전대로 **즉시** 영구
       격리(dead-letter ERROR)하고, 1 이상이면 재시도 대기 큐에 등재(WARNING)해 다음 주기
       재시도 패스(``_run_content_retry_pass``)로 넘긴다 — JSON 파싱 실패는 LLM 샘플링
-      노이즈로도 나므로 우연히 연속 실패한 정상 상품을 즉시 오격리하지 않기 위해서다. 어느
-      쪽이든 ``failed``/``page_failed`` 는 증가한다(3선 비율 가드 동작 불변 — 그 항목은
+      노이즈로도 나므로 우연히 연속 실패한 정상 상품을 즉시 오격리하지 않기 위해서다. [T1,
+      PR 리뷰 라운드 2] 이 페이지 항목이 같은 product 의 **이전 대기 항목과 enrichment
+      입력이 동일**하면(가격·재고처럼 무관한 필드만 갱신) 그 예산을 이어받아 소진시키고,
+      소진되면 이 시점에 곧바로 격리한다 — 그래야 그런 poison 상품이 매 주기
+      "등재→skip→새 변경분에 0 으로 재등재"를 반복하며 예산을 영원히 소진하지 못하는 것을
+      막는다(``_enrichment_inputs_unchanged``). 어느 쪽이든 ``failed``/``page_failed`` 는
+      증가한다(3선 비율 가드 동작 불변 — 그 항목은
       이번 주기에 실제로 반영되지 않았다).
     - **2선(시간 유계) — 그 외 모든 단건 실패**: enrich 재시도 소진 후에도
       ``_is_enrichment_content_failure`` 가 False 인 실패(429·연결 오류·5xx·타임아웃·모르는
@@ -437,9 +473,11 @@ async def _drain(
         page_failed = page_succeeded = 0
         for change in page.items:
             # [#421] 이 페이지가 이 product 에 대한 새 변경분을 들고 왔다 — HIDDEN·ON_SALE
-            # 불문 낡은 대기 페이로드를 먼저 버린다. 재시도 패스가 HIDDEN 상품을 되살려 유령
-            # 상품을 만드는 것을 막는다(큐 정합성).
-            _content_retry_queue.pop(change.product_id, None)
+            # 불문 낡은 대기 페이로드를 먼저 뗀다. 재시도 패스가 HIDDEN 상품을 되살려 유령
+            # 상품을 만드는 것을 막는다(큐 정합성). [T1, PR 리뷰 라운드 2] ON_SALE 이면 뗀
+            # 항목을 잠시 들고 있는다 — 아래 콘텐츠 실패 분기에서 enrichment 입력이 실제로
+            # 같은지 판정할 근거로 쓰고, 쓰이지 않으면(성공·2선 실패) 그냥 버려진다.
+            previous_retry = _content_retry_queue.pop(change.product_id, None)
             if change.status == _HIDDEN:
                 target.delete(change.product_id)
                 # [F3, #416 후속] 삭제 성공은 그 항목의 정상 처리이므로 스트릭도 성공과
@@ -480,17 +518,39 @@ async def _drain(
                         exc_info=last_exc,
                     )
                 else:
-                    # [#421] JSON 파싱 실패는 LLM 샘플링 노이즈로도 나므로, 즉시 영구 격리 대신
-                    # 다음 주기 재시도 기회를 준다 — 첫 주기 오격리를 막는다. retry_attempts 는
-                    # 0(아직 cross-cycle 재시도 전)에서 시작한다(F4).
-                    _enqueue_content_retry(change)
-                    _log.warning(
-                        "I-17 콘텐츠 실패 — 다음 주기 재시도 예약: product_id=%s "
-                        "retry_attempts=0/%d",
-                        change.product_id,
-                        retry_budget,
-                        exc_info=last_exc,
-                    )
+                    # [T1, PR 리뷰 라운드 2] 이전 대기 항목과 enrichment 입력이 같으면 그
+                    # 예산을 이어받아 +1 한다 — 이번 _drain 자신의 재실패도 같은 poison
+                    # 내용에 대한 cross-cycle 재시도로 셈해야, 가격·재고처럼 enrichment 와
+                    # 무관한 필드만 매 주기 바뀌는 poison 상품이 "등재 → 이번 주기 skip(F1)
+                    # → 다음 주기 새 변경분에 0 으로 재등재"를 반복하며 예산을 영원히
+                    # 소진하지 못하는 것을 막는다. 내용이 실제로 바뀌면(#421 원 취지) 새
+                    # 예산 — 0부터 다시 준다.
+                    retry_attempts = 0
+                    if previous_retry is not None and _enrichment_inputs_unchanged(
+                        previous_retry.change, change
+                    ):
+                        retry_attempts = previous_retry.retry_attempts + 1
+                    if retry_attempts >= retry_budget:
+                        _log.error(
+                            "I-17 콘텐츠 재시도 예산 소진(내용 불변 반복 실패) — 격리 기록 "
+                            "후 계속: product_id=%s retry_attempts=%d/%d",
+                            change.product_id,
+                            retry_attempts,
+                            retry_budget,
+                            exc_info=last_exc,
+                        )
+                    else:
+                        # [#421] JSON 파싱 실패는 LLM 샘플링 노이즈로도 나므로, 즉시 영구
+                        # 격리 대신 다음 주기 재시도 기회를 준다 — 첫 주기 오격리를 막는다.
+                        _enqueue_content_retry(change, retry_attempts=retry_attempts)
+                        _log.warning(
+                            "I-17 콘텐츠 실패 — 다음 주기 재시도 예약: product_id=%s "
+                            "retry_attempts=%d/%d",
+                            change.product_id,
+                            retry_attempts,
+                            retry_budget,
+                            exc_info=last_exc,
+                        )
                 continue
             if last_exc is not None:
                 # 콘텐츠 화이트리스트 밖(429·연결 오류·5xx·타임아웃·모르는 예외 포함) — 광역
@@ -755,21 +815,34 @@ async def _run_content_retry_pass(
     경우)은 이 skip 과 무관하게 그 다음다음 주기부터 정상적으로 예산을 받는다.
 
     본 루프(``_drain``)와 동일하게 ``settings.enrichment_item_attempts`` 회 재시도한다.
-    콘텐츠/인프라를 가리지 않고 실패마다 예산을 소진시킨다 — 재시도 큐는 이미 **콘텐츠
-    실패로 판정된** 항목만 담으므로, 인프라 실패로 예산을 태워도 하방은 현행과 같은 "그
-    상품만 stale + ERROR 가시화 + run_batch --full 복구"로 유계다. 여기에 실패 종류별 분기와
-    별도 상한을 더하면 지금 고치는 것보다 큰 상태기계를 새로 만든다.
 
-    ``retry_attempts``(F4 정합) 는 "지금까지 실제로 실행된 cross-cycle 재시도 횟수"다 —
-    등재 시 0에서 시작해 이 함수가 시도를 실패로 확정할 때만 +1 하고,
+    [T2, PR 리뷰 라운드 2] 재시도 시점의 실패는 ``_drain`` 과 동일한 기준으로 갈린다 —
+    ``_is_enrichment_content_failure`` 가 True 인 **증명된 콘텐츠 실패만**
+    ``retry_attempts`` (콘텐츠 예산)을 소진시킨다. 그 외(enrich 단계의 비콘텐츠 실패
+    429·5xx·타임아웃·모르는 예외, 그리고 ``_finish_change`` 인프라 실패)는 콘텐츠가 이미
+    한 번 살아났다는 뜻이므로 예산을 태우지 않고, ``_drain`` 2선과 같은
+    ``failure_store.bump_failure_streak(item, product_id)`` 시간 유계 스트릭으로 판정한다
+    (``artifacts_batch_item_dead_letter_cycles`` 도달 시 격리, 항목은 그 전까지 큐에 남는다).
+    수정 전에는 실패 종류를 가리지 않고 재시도 시점 실패마다 콘텐츠 예산을 소진시켰는데,
+    기본 예산이 1이면 "재시도 시점에 콘텐츠는 살아났지만 embed·store 가 하필 그 순간
+    일시 장애"라는 단 한 번의 불운이 정상 상품을 영구 격리했다 — #421 이 없애려던 바로 그
+    오격리를 재시도 패스 안에서 재현하고 있었다.
+
+    ``retry_attempts``(F4 정합) 는 "지금까지 실제로 콘텐츠 실패로 확정된 cross-cycle
+    재시도 횟수"다 — 등재 시 0에서 시작해 이 함수가 **콘텐츠 실패**를 확정할 때만 +1 하고,
     ``retry_attempts < budget`` 이면 유지, 아니면 격리한다. 이 불변식이라야
-    ``artifacts_batch_content_retry_cycles=N`` 이 "cross-cycle 재시도가 정확히 N 회 일어난
-    뒤에야 영구 격리"라는 뜻이 된다.
+    ``artifacts_batch_content_retry_cycles=N`` 이 "cross-cycle 콘텐츠 재시도가 정확히 N 회
+    일어난 뒤에야 영구 격리"라는 뜻이 된다.
 
     이 패스의 실패는 절대 밖으로 전파하지 않는다 — 커서·본 배치 진행을 건드리면 안 되고,
-    ``PageFailureThresholdExceeded`` 판정 대상도 아니다. 반환은 (recovered, dead_lettered).
+    ``PageFailureThresholdExceeded`` 판정 대상도 아니다(2선 스트릭으로 보내는 것과 스트릭
+    상한 도달 시 격리하는 것 모두 이 함수 안에서 끝나며, 절대 raise 하지 않는다). 반환은
+    (recovered, dead_lettered) — dead_lettered 는 콘텐츠 예산 소진과 스트릭 상한 도달을
+    합산한다.
     """
     budget = settings.artifacts_batch_content_retry_cycles
+    ttl_s = settings.artifacts_batch_failure_streak_ttl_s
+    streak_cycles_limit = settings.artifacts_batch_item_dead_letter_cycles
     recovered = 0
     dead_lettered = 0
     for product_id in sorted(_content_retry_queue):
@@ -790,13 +863,18 @@ async def _run_content_retry_pass(
                     continue
                 last_exc = None
                 break
+
+            # [T2] enrich 실패라면 여기서 콘텐츠/비콘텐츠를 판정한다. finish 실패는
+            # _drain 과 동일하게 항상 비콘텐츠(2선)다 — enrich 가 성공했다는 것 자체가
+            # 콘텐츠는 이미 살아났다는 뜻이라 콘텐츠 실패일 수 없다.
+            is_content_failure = last_exc is not None and _is_enrichment_content_failure(last_exc)
             if last_exc is None:
                 assert product is not None and extras is not None
                 try:
                     await _finish_change(
                         change, product, extras, embed=embed, store=store, settings=settings
                     )
-                except Exception as exc:  # noqa: BLE001 - 실패 종류 불문 예산 소진(위 docstring)
+                except Exception as exc:  # noqa: BLE001 - finish 실패는 항상 2선(T2)
                     last_exc = exc
 
             if last_exc is None:
@@ -811,26 +889,56 @@ async def _run_content_retry_pass(
                 )
                 continue
 
-            pending.retry_attempts += 1
-            if pending.retry_attempts < budget:
-                _log.warning(
-                    "I-17 콘텐츠 재시도 실패 — 다음 주기 재시도 유지: product_id=%s "
-                    "retry_attempts=%d/%d",
-                    product_id,
-                    pending.retry_attempts,
-                    budget,
-                    exc_info=last_exc,
-                )
+            if is_content_failure:
+                pending.retry_attempts += 1
+                if pending.retry_attempts < budget:
+                    _log.warning(
+                        "I-17 콘텐츠 재시도 실패(콘텐츠 예산 소진) — 다음 주기 재시도 유지: "
+                        "product_id=%s retry_attempts=%d/%d",
+                        product_id,
+                        pending.retry_attempts,
+                        budget,
+                        exc_info=last_exc,
+                    )
+                else:
+                    _content_retry_queue.pop(product_id, None)
+                    dead_lettered += 1
+                    _log.error(
+                        "I-17 콘텐츠 재시도 예산 소진 — 격리: product_id=%s retry_attempts=%d/%d",
+                        product_id,
+                        pending.retry_attempts,
+                        budget,
+                        exc_info=last_exc,
+                    )
             else:
-                _content_retry_queue.pop(product_id, None)
-                dead_lettered += 1
-                _log.error(
-                    "I-17 콘텐츠 재시도 예산 소진 — 격리: product_id=%s retry_attempts=%d/%d",
-                    product_id,
-                    pending.retry_attempts,
-                    budget,
-                    exc_info=last_exc,
+                # [T2] 재시도 시점 인프라 실패(enrich 비콘텐츠 또는 finish) — 콘텐츠 예산은
+                # 그대로 두고 _drain 2선과 동일한 시간 유계 스트릭으로 판정한다.
+                streak = failure_store.bump_failure_streak(
+                    FAILURE_STREAK_KIND_ITEM, str(product_id), ttl_s=ttl_s
                 )
+                if streak < streak_cycles_limit:
+                    _log.warning(
+                        "I-17 콘텐츠 재시도 중 인프라 실패(스트릭 누적) — 큐 유지: "
+                        "product_id=%s streak=%d/%d retry_attempts=%d/%d",
+                        product_id,
+                        streak,
+                        streak_cycles_limit,
+                        pending.retry_attempts,
+                        budget,
+                        exc_info=last_exc,
+                    )
+                else:
+                    _content_retry_queue.pop(product_id, None)
+                    failure_store.clear_failure_streak(FAILURE_STREAK_KIND_ITEM, str(product_id))
+                    dead_lettered += 1
+                    _log.error(
+                        "I-17 콘텐츠 재시도 중 인프라 실패 스트릭 상한 도달 — 격리: "
+                        "product_id=%s streak=%d/%d",
+                        product_id,
+                        streak,
+                        streak_cycles_limit,
+                        exc_info=last_exc,
+                    )
         except Exception:  # noqa: BLE001 - [#421] 재시도 패스는 항목 단위로도 본 배치에 전파하지 않는다
             _log.exception("I-17 콘텐츠 재시도 패스 예외 — 본 배치 계속: product_id=%s", product_id)
     return recovered, dead_lettered

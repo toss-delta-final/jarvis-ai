@@ -116,17 +116,33 @@ def test_failure_streak_table_purge_stale_removes_only_expired():
     assert table.bump(FAILURE_STREAK_KIND_ITEM, "old", ttl_s=60) == 1
 
 
-def test_failure_streak_table_max_entries_defensively_clears():
-    """방어적 메모리 상한 도달 시 전체를 비운다 — 운영 조정 대상이 아닌 순수 방어(#416)."""
+def test_failure_streak_table_max_entries_defensively_clears_per_kind_only():
+    """[T4, PR 리뷰 라운드 2] 방어적 메모리 상한은 kind 별로 독립 적용된다 — 한 kind 가
+    상한에 닿아 방어적으로 비워져도 다른 kind 스트릭은 보존된다.
+
+    수정 전에는 item·page 를 한 dict 에 합쳐 상한(10,000)을 "합산"으로 적용해 구 동작
+    (item 10,000 · page 10,000, 총량 20,000)의 절반으로 줄어 있었고, 상한 초과 시
+    ``clear()`` 가 item·page 를 한꺼번에 날렸다 — 대량 실패 상황(카탈로그 전량 동시 실패
+    등)에서 스트릭이 통째로 리셋되면 #416 이 고치려던 "상한에 영영 도달하지 못한다"가
+    그대로 재현됐다."""
     from app.pipelines import artifact_store as _artifact_store
 
     table = FailureStreakTable(clock=lambda: 0.0)
+    table.bump(FAILURE_STREAK_KIND_PAGE, "cursor-x", ttl_s=60)  # 보존 확인 대상
+
     for i in range(_artifact_store._FAILURE_STREAK_MAX_ENTRIES):
         table.bump(FAILURE_STREAK_KIND_ITEM, str(i), ttl_s=60)
-    assert len(table._entries) == _artifact_store._FAILURE_STREAK_MAX_ENTRIES
+    assert (
+        len(table._entries[FAILURE_STREAK_KIND_ITEM]) == _artifact_store._FAILURE_STREAK_MAX_ENTRIES
+    )
+    # item kind 가 상한에 닿았지만 page kind 엔트리는 그대로 살아 있다(이어서 2가 된다).
+    assert table.bump(FAILURE_STREAK_KIND_PAGE, "cursor-x", ttl_s=60) == 2
 
     table.bump(FAILURE_STREAK_KIND_ITEM, "overflow", ttl_s=60)
-    assert len(table._entries) == 1  # 상한 도달 → 방어적으로 비운 뒤 새 엔트리 1개만 남는다
+    # 상한 도달 → item kind 만 방어적으로 비운 뒤 새 엔트리 1개만 남는다.
+    assert len(table._entries[FAILURE_STREAK_KIND_ITEM]) == 1
+    assert table.bump(FAILURE_STREAK_KIND_ITEM, "0", ttl_s=60) == 1  # item 은 비워져 1부터
+    assert table.bump(FAILURE_STREAK_KIND_PAGE, "cursor-x", ttl_s=60) == 3  # page 는 안 지워짐
 
 
 # ── 이슈 #416: CatalogArtifactStore(인메모리) 실패 스트릭 위임 ──

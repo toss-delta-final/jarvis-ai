@@ -116,6 +116,18 @@ class PgCatalogArtifactStore:
             )
             self._failure_streak_fallback_warned = True
 
+    def _mark_failure_streak_healthy(self) -> None:
+        """DB 경로가 정상 종료하면 폴백 WARNING latch 를 되돌린다(T3, PR 리뷰 라운드 2).
+
+        수정 전에는 ``_failure_streak_fallback_warned`` 가 한 번 True 가 되면 인스턴스 수명
+        동안 다시 False 로 돌아가지 않아, pg 순단 1회로 latch 된 뒤 DB 가 복구돼도 그 뒤
+        더 심각한 장애(테이블 삭제 등)가 나면 조용히 넘어갔다 — F5(``clear_failure_streak``)
+        가 "폴백을 프로세스 수명 latch 로 승격하면 안 된다"고 정한 원칙이 이 WARNING
+        플래그에는 지켜지지 않고 있었다. 3개 DB 경로가 정상 종료할 때마다 호출해, 다음
+        장애가 다시 WARNING 을 낼 수 있게 한다.
+        """
+        self._failure_streak_fallback_warned = False
+
     def bump_failure_streak(self, kind: str, key: str, *, ttl_s: float) -> int:
         """단일 원자 UPSERT — 다중 인스턴스에서도 정확하도록(#416).
 
@@ -139,6 +151,7 @@ class PgCatalogArtifactStore:
                     """,
                     (kind, key, ttl_s),
                 ).fetchone()
+            self._mark_failure_streak_healthy()
             return row[0]
         except Exception:  # noqa: BLE001 - 실패 격리 폴백(#416) — 배치를 죽이지 않는다
             self._warn_failure_streak_fallback()
@@ -167,6 +180,7 @@ class PgCatalogArtifactStore:
                     "DELETE FROM batch_failure_state WHERE kind = %s AND state_key = %s",
                     (kind, key),
                 )
+            self._mark_failure_streak_healthy()
         except Exception:  # noqa: BLE001 - 실패 격리 폴백(#416)
             self._warn_failure_streak_fallback()
         finally:
@@ -184,6 +198,7 @@ class PgCatalogArtifactStore:
                     """,
                     (ttl_s,),
                 ).fetchall()
+            self._mark_failure_streak_healthy()
             return len(rows)
         except Exception:  # noqa: BLE001 - 실패 격리 폴백(#416)
             self._warn_failure_streak_fallback()

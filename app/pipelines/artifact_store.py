@@ -27,7 +27,10 @@ FAILURE_STREAK_KIND_ITEM = "item"  # key = str(product_id), artifacts_batch 2선
 FAILURE_STREAK_KIND_PAGE = "page"  # key = cursor, artifacts_batch 3선
 
 # 방어적 메모리 상한(튜너블 아님) — 구 _ITEM_FAILURE_STREAK_MAX_ENTRIES/_PAGE_FAILURE_STREAK_MAX_ENTRIES
-# (artifacts_batch.py, #325)와 동일 취지·동일 값. item·page 합산 엔트리 수에 적용한다.
+# (artifacts_batch.py, #325)와 동일 값(10,000)을 kind 별로 독립 적용한다(item 10,000 · page
+# 10,000 — 합산이 아니다). [T4, PR 리뷰 라운드 2] 한 dict(kind, key) 로 합치면서 상한을
+# "합산 10,000"으로 잘못 적용해 구 동작(각 10,000, 총량 20,000)의 절반으로 줄어 있었다 —
+# FailureStreakTable 을 kind 별 하위 dict 로 나눠 다시 독립시킨다.
 _FAILURE_STREAK_MAX_ENTRIES = 10_000
 
 
@@ -45,21 +48,26 @@ class FailureStreakTable:
 
     def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
         self._clock = clock
-        self._entries: dict[tuple[str, str], _FailureStreakEntry] = {}
+        # [T4, PR 리뷰 라운드 2] kind 별 독립 하위 dict — 방어적 상한(_FAILURE_STREAK_MAX_ENTRIES)과
+        # 상한 초과 시 비움을 kind 단위로 적용하기 위해서다(합산 dict 는 한 kind 의 항목 수가
+        # 다른 kind 의 방어적 비움에 영향을 주고, 대량 실패 상황에서 그 비움이 #416 이 고치려던
+        # "상한에 영영 도달하지 못한다"를 재현한다).
+        self._entries: dict[str, dict[str, _FailureStreakEntry]] = {}
 
     def bump(self, kind: str, key: str, *, ttl_s: float) -> int:
         """(kind, key) 스트릭을 1 늘리고 반환한다. 마지막 갱신이 ttl_s 보다 오래됐으면 1로 리셋."""
         now = self._clock()
-        entry_key = (kind, key)
-        entry = self._entries.get(entry_key)
+        kind_entries = self._entries.setdefault(kind, {})
+        entry = kind_entries.get(key)
         if entry is None:
-            if len(self._entries) >= _FAILURE_STREAK_MAX_ENTRIES:
+            if len(kind_entries) >= _FAILURE_STREAK_MAX_ENTRIES:
                 _log.warning(
-                    "I-17 실패 스트릭 캐시가 상한(%d)에 도달 — 방어적으로 비움",
+                    "I-17 실패 스트릭 캐시가 kind=%s 상한(%d)에 도달 — 그 kind 만 방어적으로 비움",
+                    kind,
                     _FAILURE_STREAK_MAX_ENTRIES,
                 )
-                self._entries.clear()
-            self._entries[entry_key] = _FailureStreakEntry(count=1, updated_at=now)
+                kind_entries.clear()
+            kind_entries[key] = _FailureStreakEntry(count=1, updated_at=now)
             return 1
         if now - entry.updated_at > ttl_s:
             entry.count = 1
@@ -69,15 +77,20 @@ class FailureStreakTable:
         return entry.count
 
     def clear(self, kind: str, key: str) -> None:
-        self._entries.pop((kind, key), None)
+        kind_entries = self._entries.get(kind)
+        if kind_entries is not None:
+            kind_entries.pop(key, None)
 
     def purge_stale(self, ttl_s: float) -> int:
-        """마지막 갱신이 ttl_s 보다 오래된 엔트리를 모두 지우고 지운 개수를 반환한다."""
+        """마지막 갱신이 ttl_s 보다 오래된 엔트리를 모든 kind 에서 지우고 지운 개수를 반환한다."""
         now = self._clock()
-        stale = [k for k, entry in self._entries.items() if now - entry.updated_at > ttl_s]
-        for k in stale:
-            del self._entries[k]
-        return len(stale)
+        removed = 0
+        for kind_entries in self._entries.values():
+            stale = [k for k, entry in kind_entries.items() if now - entry.updated_at > ttl_s]
+            for k in stale:
+                del kind_entries[k]
+            removed += len(stale)
+        return removed
 
 
 @dataclass
