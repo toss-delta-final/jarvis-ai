@@ -1912,3 +1912,86 @@ async def test_consensus_log_suppressed_when_filter_not_applied(caplog) -> None:
             settings=_settings(expand_legs=4),
         )
     assert not [r for r in caplog.records if r.msg == "category_expansion_consensus"]
+
+
+# ── #428 리뷰 2차(PR #444 Claude Review) — `category_expand_legs=0` IndexError 회귀 ──────
+#
+# `category_expand_legs` 는 `ge=0` 필드(`app/core/config.py:879`)라 0 은 합법값이다. 0이면
+# `_collect_expansion_leaves` 의 `hits[: 0]` 슬라이스가 빈 리스트를 내고, 그 빈 리스트가
+# `expansion_by_leg[i]` 에 그대로 담기면 `_consensus_filter` 의 `leaves[0]`(top-1) 인덱싱이
+# IndexError 를 낸다. 더 심각한 건 원래 호출 위치가 조립 루프의 격리 try/except **밖**이라,
+# 이 예외가 `map_categories` 전체를 던져 이미 채택된 canonical 까지 버렸다(리뷰 2차 R2-3).
+
+
+async def test_expand_legs_zero_does_not_crash_and_yields_no_expansion_leaves() -> None:
+    """[#428 리뷰 2차 R2-1/R2-2 회귀·필수] `category_expand_legs=0` + unresolved leg 2개 이상 +
+    `sibling_expansion=True` 에서 예외 없이 정상 반환하고 `expansion_leaves == []` 다."""
+    hits = {
+        "김밥 재료": [("채소 > 파/마늘/양념채소", 0.30), ("수산 > 어묵/맛살", 0.31)],
+        "떡볶이 재료": [("채소 > 파/마늘/양념채소", 0.29), ("냉장식품 > 밥류", 0.32)],
+    }
+    m = _FakeMapper(exact=set(), nearest={}, hits=hits)
+    out = await m.run_full(
+        [CategoryQuery(None, "김밥 재료"), CategoryQuery(None, "떡볶이 재료")],
+        settings=_settings(expand_legs=0, expand_enabled=True),
+        sibling_expansion=True,
+    )
+    assert out.expansion_leaves == []
+    assert out.unresolved == ["김밥 재료", "떡볶이 재료"]  # #217 전개 트리거는 그대로 살아있다
+
+
+async def test_expand_legs_zero_suppresses_expansion_leaves_log(caplog) -> None:
+    """[#428 리뷰 2차 R2-1 회귀] `category_expand_legs=0` 이면 `category_expansion_leaves`
+    로그가 나오지 않는다 — 종전엔 빈 leg 도 담겨 `count: 0` 으로 무의미하게 찍혔다."""
+    hits = {
+        "김밥 재료": [("채소 > 파/마늘/양념채소", 0.30), ("수산 > 어묵/맛살", 0.31)],
+        "떡볶이 재료": [("채소 > 파/마늘/양념채소", 0.29), ("냉장식품 > 밥류", 0.32)],
+    }
+    m = _FakeMapper(exact=set(), nearest={}, hits=hits)
+    with caplog.at_level("INFO"):
+        await m.run_full(
+            [CategoryQuery(None, "김밥 재료"), CategoryQuery(None, "떡볶이 재료")],
+            settings=_settings(expand_legs=0, expand_enabled=True),
+            sibling_expansion=True,
+        )
+    assert not [r for r in caplog.records if r.msg == "category_expansion_leaves"]
+
+
+async def test_consensus_filter_failure_preserves_accepted_legs(monkeypatch, caplog) -> None:
+    """[#428 리뷰 2차 R2-3 회귀·핵심] `_consensus_filter` 가 예외를 던져도 `map_categories` 는
+    던지지 않는다 — ① 원본 `expansion_leaves` 를 그대로 내고 ② `category_expansion_consensus_
+    failed` 로그를 남기며 ③ **이미 채택된 canonical(`legs`)이 보존**된다.
+
+    ③ 이 핵심이다 — 이 호출이 조립 루프의 try/except 밖에 있어 예외가 `map_categories` 전체를
+    던지면 `_map_or_empty`(graph.py)가 빈 `CategoryMapping` 으로 degrade 해, 이미 DB 검증된
+    exact 매치까지 버린다(Claude PR Review, PR #444). 거리컷 통과 leg 하나(exact match)와
+    드롭된 leg 둘을 섞어야 이 보존을 실제로 잰다.
+    """
+    import app.agents.buyer.recommendation.category_mapping as cm
+
+    def _raise(_expansion_by_leg):
+        raise RuntimeError("consensus filter boom")
+
+    monkeypatch.setattr(cm, "_consensus_filter", _raise)
+
+    hits = {
+        "김밥 재료": [("채소 > 파/마늘/양념채소", 0.30), ("수산 > 어묵/맛살", 0.31)],
+        "떡볶이 재료": [("채소 > 파/마늘/양념채소", 0.29), ("냉장식품 > 밥류", 0.32)],
+    }
+    m = _FakeMapper(exact={"PC부품 > CPU"}, nearest={}, hits=hits)
+    with caplog.at_level("WARNING"):
+        out = await m.run_full(
+            [
+                CategoryQuery("PC부품 > CPU", "cpu"),  # exact match — 거리컷 무관하게 채택
+                CategoryQuery(None, "김밥 재료"),  # 거리컷 드롭 → expansion_leaves 후보
+                CategoryQuery(None, "떡볶이 재료"),  # 거리컷 드롭 → expansion_leaves 후보
+            ],
+            settings=_settings(expand_legs=8),
+            sibling_expansion=True,
+        )
+    assert out.legs == [("PC부품 > CPU", "cpu")]  # ③ 이미 채택된 canonical 이 보존된다
+    # ① 필터 미적용 원본(인터리브·dedup_truncate 는 정상 통과) — 노이즈 걸러내기 전 8종 이하 원본
+    assert out.expansion_leaves  # 원본 후보가 그대로 살아있다(빈 리스트로 날아가지 않음)
+    record = _record(caplog, "category_expansion_consensus_failed")
+    assert record.reason == "consensus filter boom"
+    assert record.error_type == "RuntimeError"

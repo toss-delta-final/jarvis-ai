@@ -177,6 +177,13 @@ def _consensus_filter(
 
     support: dict[str, set[int]] = {}
     for leg_i, leaves in expansion_by_leg.items():
+        # [#428 리뷰 2차 R2-2] 빈 leg 은 건너뛴다 — R2-1 이 유일한 유입 경로(`_collect_
+        # expansion_leaves`)를 막았지만, 이 함수는 주입형 seam 을 가진 모듈의 private 헬퍼라
+        # 미래의 호출부가 빈 리스트를 다시 넘길 수 있다. `leaves[0]`(top-1) 인덱싱은 빈 리스트에
+        # IndexError 를 내므로(Claude PR Review, PR #444) 방어가 아니라 **의미상 옳은 처리**로
+        # 건너뛴다 — 지지할 후보가 없는 leg 은 애초에 셀 것이 없다.
+        if not leaves:
+            continue
         # [F-1] top-1 만 — leg 의 최선의 답만 지지로 센다(위 docstring 근거).
         top1_mid = leaves[0][0].split(" > ", 1)[0]
         support.setdefault(top1_mid, set()).add(leg_i)
@@ -192,6 +199,13 @@ def _consensus_filter(
     dropped_leaves = 0
     zeroed_legs = 0
     for leg_i, leaves in expansion_by_leg.items():
+        # [#428 리뷰 2차 R2-2] 원래 비어 있던 leg 은 필터가 "0개로 걸러낸" 것이 아니므로
+        # `zeroed_legs`(필터 발동 결과 관측용)에 섞이지 않게 건너뛴다 — 섞이면 "형제 합의에서
+        # 벗어나 탈락"과 "애초에 후보가 없었다"가 같은 카운터로 뭉개져 관측이 오염된다. `kept`
+        # 계산은 빈 리스트에도 안전(자연히 빈 채로 나옴)하지만, 통계 오염을 막기 위해 아예
+        # 건너뛴다.
+        if not leaves:
+            continue
         kept = [
             (canonical, query)
             for canonical, query in leaves
@@ -593,6 +607,15 @@ async def map_categories(
         if not hits:
             return
         leaves = hits[: settings.category_expand_legs]
+        # [#428 리뷰 2차 R2-1] `category_expand_legs=0`(ge=0 필드, 합법값)이면 슬라이스가 빈
+        # 리스트가 된다 — 빈 leg 을 담으면 `expansion_by_leg[i] = []`가 그대로 들어가 하류
+        # `_consensus_filter` 가 `leaves[0]`(top-1)을 인덱싱하다 IndexError 를 낸다(Claude PR
+        # Review, PR #444). 여기서 거른다: 후보 0개 leg 은 "그래도 어디를 볼 것인가"라는
+        # `expansion_by_leg` 계약상 담을 것이 없고, 로그도 `count: 0`으로 무의미하게 쌓인다.
+        # **동작 변화는 없다** — expand_legs=0 이면 최종 `dedup_truncate(..., 0)` 가 어차피 전부
+        # 잘라내므로, 이 가드는 그 결과를 앞당길 뿐 무의미한 저장·로그만 없앤다.
+        if not leaves:
+            return
         mids: list[str] = []
         seen_mid: set[str] = set()
         for canonical, _distance in leaves:
@@ -717,10 +740,24 @@ async def map_categories(
     # 다른 니즈)에는 적용하지 않는다. 필터가 실제로 돌아 무언가 걸렀는지와 애초에 돌지 않았는지를
     # 로그로 구분한다(둘 다 무기록이면 "합의가 돌았는데 아무것도 안 걸렀다"와 "합의를 돌리지
     # 않았다"를 사후에 구분할 수 없다).
+    # [#428 리뷰 2차 R2-3] 이 호출도 조립 루프(위 `category_assembly_failed`)·택일 단계
+    # (`category_select_stage_failed`)와 같은 이유로 자체 격리한다 — 여기서 예외가 나면
+    # `map_categories` 가 통째로 던지고 `_map_or_empty`(graph.py)가 **빈 CategoryMapping**으로
+    # degrade 해 이미 DB 검증된 exact 매치와 채택 canonical 까지 전부 버린다(Claude PR Review,
+    # PR #444 — 조립 루프의 try/except **밖**에 있던 것이 진짜 위험이었다). 합의는 개선 시도일
+    # 뿐이므로 실패 시 필터를 건너뛰고 `expansion_by_leg` 원본을 그대로 쓴다(#217 "§7 후퇴 없음"과
+    # 같은 원칙). 여기 도달하는 것은 I/O 실패가 아니다 — 조회·택일은 이미 각자 격리돼 있으므로
+    # **순수 로직 오류**다(형제 except 절들과 동일 서술, `error_type` 도 동일 규약으로 싣는다).
     if sibling_expansion:
-        expansion_by_leg, consensus_stats = _consensus_filter(expansion_by_leg)
-        if consensus_stats is not None:
-            logger.info("category_expansion_consensus", extra=consensus_stats)
+        try:
+            expansion_by_leg, consensus_stats = _consensus_filter(expansion_by_leg)
+            if consensus_stats is not None:
+                logger.info("category_expansion_consensus", extra=consensus_stats)
+        except Exception as exc:  # noqa: BLE001 - 합의 필터 실패: 원본 expansion_by_leg 를 보존한다
+            logger.warning(
+                "category_expansion_consensus_failed",
+                extra={"reason": str(exc), "error_type": type(exc).__name__},
+            )
 
     return CategoryMapping(
         legs=dedup_truncate(result, fanout_max),

@@ -42,6 +42,9 @@
   필터 초판은 과일 케이스 하나로만 검증됐고 그 케이스에서만 우연히 잘 들었다.
 - 관련: `app/agents/buyer/recommendation/category_mapping.py::_consensus_filter` ·
   `evals/category_probe/fixtures/anchors.json`(`instance-mft-*`) · #344 · #428
+- 리뷰 2차(Claude PR Review, PR #444) 추가: 새 후처리 단계를 기존 격리 `try/except` **밖**에
+  붙이면 그 모듈이 지켜 온 부분 성공 보존 불변식이 조용히 깨진다 — 격리 규약이 있는 모듈에
+  단계를 추가할 때는 그 규약 안쪽에 넣었는지 먼저 확인할 것.
 
 ## [2026-08-06] 테스트 스위트 실행 중에 커밋하면 eval 결정론 테스트가 깨진다
 - 증상: `uv run pytest` 를 백그라운드로 돌려 둔 채 그 사이에 `git commit` 을 했더니
