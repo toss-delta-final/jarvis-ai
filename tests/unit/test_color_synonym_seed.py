@@ -217,7 +217,10 @@ async def test_llm_assignment_rejects_hallucinated_terms_exactly() -> None:
     )
     assert "검정" in _group_members(result)["블랙"]
     assert all("오white" not in members for members in _group_members(result).values())
-    assert any("환각" in rejection.reason and "오white" in rejection.terms for rejection in result.rejections)
+    assert any(
+        "환각" in rejection.reason and "오white" in rejection.terms
+        for rejection in result.rejections
+    )
 
 
 async def test_llm_assignment_rejects_duplicate_exclusive_assignments() -> None:
@@ -667,13 +670,16 @@ def test_batch_harvest_releases_db_connection_before_embedding(monkeypatch) -> N
 
     monkeypatch.setattr(seed, "_get_pool", lambda dsn: Pool())
 
-    assert seed.harvest_new_terms(
-        "dsn",
-        {"색상": "남색"},
-        embed,
-        "model",
-        0.84,
-    ) == 1
+    assert (
+        seed.harvest_new_terms(
+            "dsn",
+            {"색상": "남색"},
+            embed,
+            "model",
+            0.84,
+        )
+        == 1
+    )
     assert active_connections == 0
     assert max_active_connections == 1
 
@@ -786,3 +792,232 @@ async def test_build_offloads_all_blocking_stages_from_event_loop(monkeypatch, t
     assert result.upserted_rows == 1
     assert set(stage_threads) == {"embed", "write", "upsert"}
     assert all(thread_id != loop_thread for thread_id in stage_threads.values())
+
+
+# --- 정본 시드 적재 (`load_seed_rows`/`seed_from_file`, 이슈 #258 §4.5) --------------------
+
+
+def _write_seed_json(tmp_path, rows: list[dict]):
+    path = tmp_path / "color_synonyms.json"
+    path.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def test_load_seed_rows_parses_valid_file(tmp_path) -> None:
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙",
+                "canonical": "블랙",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 2358,
+            },
+            {
+                "term": "다크그린",
+                "canonical": "그린",
+                "status": "pending_review",
+                "provenance": "seed_llm_assignment",
+                "doc_count": 22,
+            },
+        ],
+    )
+
+    rows = seed.load_seed_rows(path)
+
+    assert rows == [
+        seed.SeedColorTermRow("블랙", "블랙", "approved", "human", 2358),
+        seed.SeedColorTermRow("다크그린", "그린", "pending_review", "seed_llm_assignment", 22),
+    ]
+
+
+def test_load_seed_rows_rejects_non_array_root(tmp_path) -> None:
+    path = tmp_path / "bad.json"
+    path.write_text(json.dumps({"not": "an array"}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="배열"):
+        seed.load_seed_rows(path)
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"canonical": "블랙", "status": "approved", "provenance": "human", "doc_count": 1},
+        {"term": "블랙", "canonical": "블랙", "provenance": "human", "doc_count": 1},
+        {"term": "블랙", "canonical": "블랙", "status": "approved", "doc_count": 1},
+    ],
+)
+def test_load_seed_rows_rejects_missing_required_keys(tmp_path, row) -> None:
+    """term·status·provenance는 필수(nullable 아님) — 없으면 거부한다."""
+    path = _write_seed_json(tmp_path, [row])
+
+    with pytest.raises(ValueError):
+        seed.load_seed_rows(path)
+
+
+def test_load_seed_rows_accepts_missing_nullable_canonical_and_doc_count(tmp_path) -> None:
+    """canonical·doc_count는 DB 스키마상 nullable — 키 자체가 없어도 None 으로 로드된다."""
+    path = _write_seed_json(
+        tmp_path, [{"term": "미상토큰", "status": "pending_review", "provenance": "human"}]
+    )
+
+    rows = seed.load_seed_rows(path)
+
+    assert rows == [seed.SeedColorTermRow("미상토큰", None, "pending_review", "human", None)]
+
+
+def test_load_seed_rows_rejects_status_outside_enum(tmp_path) -> None:
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙",
+                "canonical": "블랙",
+                "status": "확정",
+                "provenance": "human",
+                "doc_count": 1,
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="status"):
+        seed.load_seed_rows(path)
+
+
+def test_load_seed_rows_rejects_provenance_outside_enum(tmp_path) -> None:
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙",
+                "canonical": "블랙",
+                "status": "approved",
+                "provenance": "사람이_그냥_넣음",
+                "doc_count": 1,
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="provenance"):
+        seed.load_seed_rows(path)
+
+
+def test_upsert_seed_sql_is_authoritative_not_review_protected() -> None:
+    """검수 보호 CASE 가드(UPSERT_COLOR_TERM_SQL)와 달리, 시드 upsert는 파일 값을 그대로 반영한다."""
+    sql = seed.UPSERT_SEED_COLOR_TERM_SQL
+    assert "canonical = EXCLUDED.canonical" in sql
+    assert "status = EXCLUDED.status" in sql
+    assert "provenance = EXCLUDED.provenance" in sql
+    assert "doc_count = EXCLUDED.doc_count" in sql
+    assert "CASE" not in sql
+    assert "embedding = COALESCE(EXCLUDED.embedding, color_synonyms.embedding)" in sql
+
+
+def test_execute_seed_upserts_passes_file_values_straight_through() -> None:
+    calls = []
+
+    class Conn:
+        def execute(self, sql, params):
+            calls.append((sql, params))
+
+    rows = [seed.SeedColorTermRow("곤색", "네이비", "approved", "human", 5)]
+
+    count = seed._execute_seed_upserts(Conn(), rows, {}, "model")
+
+    assert count == 1
+    sql, params = calls[0]
+    assert sql is seed.UPSERT_SEED_COLOR_TERM_SQL
+    assert params == ("곤색", "네이비", "approved", None, None, "human", 5)
+
+
+def test_seed_from_file_upserts_authoritative_rows_and_skips_non_color_embedding(
+    monkeypatch, tmp_path
+) -> None:
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙",
+                "canonical": "블랙",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 2358,
+            },
+            {
+                "term": "기타",
+                "canonical": None,
+                "status": "pending_review",
+                "provenance": "seed_llm_assignment",
+                "doc_count": 70,
+            },
+        ],
+    )
+
+    embed_calls: list[list[str]] = []
+
+    def embed(terms):
+        embed_calls.append(list(terms))
+        return [[1.0, 0.0] for _ in terms]
+
+    captured: list[seed.SeedColorTermRow] = []
+
+    def fake_seed_color_terms(dsn, rows, embeddings, model):
+        captured.extend(rows)
+        assert "기타" not in embeddings
+        assert "블랙" in embeddings
+        return len(rows)
+
+    monkeypatch.setattr(seed, "seed_color_terms", fake_seed_color_terms)
+
+    count = seed.seed_from_file(path, "dsn", embed=embed, model="test-model")
+
+    assert count == 2
+    assert embed_calls == [["블랙"]]
+    assert {row.term for row in captured} == {"블랙", "기타"}
+
+
+def test_seed_from_file_does_not_call_embed_on_empty_seed_file(monkeypatch, tmp_path) -> None:
+    path = _write_seed_json(tmp_path, [])
+    embed_calls = []
+
+    def embed(terms):
+        embed_calls.append(terms)
+        return []
+
+    monkeypatch.setattr(seed, "seed_color_terms", lambda *args, **kwargs: 0)
+
+    count = seed.seed_from_file(path, "dsn", embed=embed, model="test-model")
+
+    assert count == 0
+    assert embed_calls == []
+
+
+def test_seed_from_file_is_idempotent_across_repeated_runs(monkeypatch, tmp_path) -> None:
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙",
+                "canonical": "블랙",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 2358,
+            }
+        ],
+    )
+
+    def embed(terms):
+        return [[1.0, 0.0] for _ in terms]
+
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        seed,
+        "seed_color_terms",
+        lambda dsn, rows, embeddings, model: calls.append((rows, embeddings, model)) or len(rows),
+    )
+
+    seed.seed_from_file(path, "dsn", embed=embed, model="test-model")
+    seed.seed_from_file(path, "dsn", embed=embed, model="test-model")
+
+    assert calls[0] == calls[1]

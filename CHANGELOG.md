@@ -10,6 +10,27 @@
 ## [Unreleased]
 
 ### Added
+- **#258 — 색상 동의어 사전 정본을 repo 로 편입하고 1차 사람 검수 결과를 고정한다** — A 파트
+  (PR #273)가 만든 789행 색상 표기 동의어 사전이 지금까지 로컬 pg-catalog 안에만 있었는데,
+  원천 I-17(Spring)이 2026-08-07 실측(`scripts/check_spring_connection.py`)에서 도달 불가로
+  확인돼 DB 를 날리면 재수확이 불가능하다는 것이 드러났다. `#401`(카테고리 사전) 이 만든
+  `db/catalog/seed/` 전례를 그대로 따라 정본을 repo 로 편입한다. 라이브 pg-catalog
+  `color_synonyms`(기계 산출: term/canonical/provenance/doc_count) 위에 사람 검수 오버레이
+  `db/catalog/seed/color_synonyms_review.json` 을 적용해 `db/catalog/seed/color_synonyms.json`
+  정본(789행)과 부트스트랩 SQL `db/catalog/init/05_color_synonyms_seed.sql` 을 같은 원천에서
+  함께 만드는 `scripts/derive_color_synonym_seed.py`(`--check` 모드 지원, 새 의존성 없음)를
+  신설했다. 오버레이는 오버레이 내부 정합성 → 하네스트 대비 존재성 → 의미 규칙(고아 승인
+  금지·2단계 체인/순환 금지·`_norm` 충돌 없음) 순으로 검증하고 위반 시 조용히 무시하지 않고
+  실패한다. 1차 검수 결과 46행(앵커 15 + 한글 고유어/한자어 ↔ 외래어 표기의 1:1 자명 대응
+  동의어 31)을 `approved`/`human` 으로 고정했다 — `곤색`은 LLM 이 `블루`로 배정했으나(seed_llm_
+  assignment) 검수에서 `네이비`로 정정(紺色=감색=navy), 검수 overlay 가 LLM 배정을 덮어쓸 수
+  있어야 한다는 요구의 실제 사례다. `app/pipelines/color_synonym_seed.py` 에 `load_seed_rows`/
+  `seed_from_file`(+ 새 상수 `UPSERT_SEED_COLOR_TERM_SQL`)을 추가해 정본 파일의 `status`/
+  `canonical`/`provenance`를 항상 권위 있게(authoritative) 반영하도록 했다 — 기존
+  `UPSERT_COLOR_TERM_SQL`(배치 수확이 사람 검수 결과를 덮지 않도록 보호하는 CASE 가드형)과는
+  별개 경로다. `color_synonym_expansion_enabled`/`color_synonym_array_contract_ready` 기본값
+  (둘 다 `False`)과 I-1 질의 확장 배선(#273 기 반영)은 변경하지 않는다 — 런타임 동작 변화는
+  이 PR 의 범위 밖이다.
 - **#380 — 과소지정 판정 축 실 LLM 실측 하네스 신설(`evals/underspecified_probe`)** — SPEC-
   UNDERSPECIFIED-336 §7.3 이 남긴 게이트 잔여 항목("실 LLM 이 판정 축을 실제 발화에서 얼마나
   정확히 산출하는지 실측하지 않았다")을 채운다. 30 앵커(cases.json 승계 7 + 신규 23) × N=8 =
@@ -242,6 +263,13 @@
 - **#299 — 요청 바디 크기 상한** — 필드별 상한(`chat_message_max_chars`·`screen_products_raw_scan_max` 등)은 흩어져 있고 상한 없는 필드(`conditionActions` 등)도 계속 생기는데, 레이트 리밋(§2.8)은 요청 **건수**만 세 임의 크기 바디를 반복 전송할 수 있었다. `app/core/body_limit.py`에 `BodySizeLimitMiddleware`(순수 ASGI)를 신설해 `Content-Length` 초과는 바디를 읽기 전에, 헤더가 없는(chunked) 경우는 `receive`를 감싼 실수신 바이트 누적으로 상한(`request_body_max_bytes`, 기본 1MiB — 필드 상한이 절단 없이 받아들이는 최대 정상 페이로드의 약 4.8배)을 넘기면 거절한다. 초과 응답은 새 코드를 내지 않고 기존 `400 BAD_REQUEST` 봉투를 그대로 쓴다(§2.5에 413/`PAYLOAD_TOO_LARGE`가 없어 신설은 별도 명세 개정 대상) — 와이어 계약 변경 0. 미들웨어는 레이트 리밋 **바깥**(거대 바디가 JWT 서명 검증 비용·레이트 리밋 슬롯을 소모하지 않게)·CORS **안쪽**(400 응답에도 CORS 헤더가 실리게)에 등록한다.
 
 ### Docs
+- **#258 — I-1 `color` 반복 파라미터(BE 송부용 계약 제안문)** — 현행 `color: string | null`
+  단일값 LIKE 필터로는 표기 분포가 극단적으로 치우친 색상 동의어(`블랙` 2,358 vs `검정` 11)를
+  원리적으로 못 잡는다는 실측 근거와 함께, `brandName` 방법 D(§4.6, v0.15.23)와 동일 규약인
+  반복 파라미터(`color=네이비&color=남색`) → BE `OR` 매칭을 제안한다. 대안(콤마 구분 단일
+  문자열·BE DB 정규 컬럼·AI 다중 fan-out·런타임 벡터/LLM 확장) 탈락 이유와 하위 호환·롤아웃
+  순서를 정리했다. `docs/api-spec.md` 는 건드리지 않는다 — 계약 개정은 사람 승인 게이트다.
+  (`docs/specs/PROPOSAL-I1-COLOR-ARRAY-258.md`)
 - **#384 — #363 후속: 구제~자동완화를 아우르는 공유 왕복 예산/first-token 데드라인 가드 설계** —
   #363의 전제("첫 SSE=`conditions`, 예산=first-token 10s")가 #396(구매자 `progress` 상시화,
   api-spec v0.26.2)으로 깨져 재기준선했다. 구속 예산은 이제 `stream_total_timeout_buyer_s`(30s)

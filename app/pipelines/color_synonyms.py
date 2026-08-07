@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Iterable
 
 _pools: dict[str, object] = {}
 _pool_lock = threading.Lock()
@@ -41,6 +42,26 @@ def _get_pool(dsn: str):
     return pool
 
 
+def build_synonym_map(rows: Iterable[tuple[str, str, int | None]]) -> dict[str, list[str]]:
+    """`(term, canonical, doc_count)` 행에서 정규화 표기→결정적 묶음 사전을 만든다(순수 함수).
+
+    `load_synonym_map`의 DB 질의 결과와 정본 JSON(검수 완료 승인 행)이 같은 규칙으로
+    묶이는지를 이 함수 하나로 검증할 수 있도록 DB I/O 와 그룹핑 로직을 분리했다(#258 리뷰 F2)
+    — DB 호출부는 이 함수를 감싸기만 하고, 정렬·`_norm` 적용 순서는 이 함수가 유일한 정본이다.
+    행은 이미 `status='approved' AND canonical IS NOT NULL` 로 걸러졌다고 가정한다.
+    """
+    groups: dict[str, list[tuple[str, int]]] = {}
+    for term, canonical, doc_count in rows:
+        groups.setdefault(canonical, []).append((term, doc_count or 0))
+
+    mapping: dict[str, list[str]] = {}
+    for members in groups.values():
+        ordered = [term for term, _ in sorted(members, key=lambda item: (-item[1], item[0]))]
+        for term in ordered:
+            mapping[_norm(term)] = ordered.copy()
+    return mapping
+
+
 def load_synonym_map(dsn: str) -> dict[str, list[str]]:
     """승인되고 canonical 이 있는 행만 읽어 정규화 표기→결정적 묶음 사전을 만든다."""
     from app.core.config import get_settings  # noqa: PLC0415 - 순환 임포트 회피(모듈 관례)
@@ -57,16 +78,7 @@ def load_synonym_map(dsn: str) -> dict[str, list[str]]:
             """
         ).fetchall()
 
-    groups: dict[str, list[tuple[str, int]]] = {}
-    for term, canonical, doc_count in rows:
-        groups.setdefault(canonical, []).append((term, doc_count or 0))
-
-    mapping: dict[str, list[str]] = {}
-    for members in groups.values():
-        ordered = [term for term, _ in sorted(members, key=lambda item: (-item[1], item[0]))]
-        for term in ordered:
-            mapping[_norm(term)] = ordered.copy()
-    return mapping
+    return build_synonym_map(rows)
 
 
 def reset_cache() -> None:
