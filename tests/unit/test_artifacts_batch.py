@@ -3151,3 +3151,173 @@ def test_pg_store_fallback_warning_refires_after_recovery(caplog):
         assert store._failure_streak_fallback_warned is True
 
     assert caplog.text.count("인메모리 폴백으로 전환") == 2
+
+
+# ── PR 리뷰 라운드 6 — T8: 간헐적 DB 실패에서도 폴백 진행분을 흡수해 지연을 줄인다 ──
+
+
+class _BoomConnCtx:
+    """DB 커넥션 획득 자체가 실패하는 가짜(T8 전용 — 위 F5/T3 테스트의 로컬 클래스와 동형)."""
+
+    def __enter__(self):
+        raise RuntimeError("db down")
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _BoomPool:
+    def connection(self):
+        return _BoomConnCtx()
+
+
+class _StatefulFakeDB:
+    """(kind, key) → streak 를 흉내 내는 가짜 DB 상태(순수 인메모리, T8 회귀 테스트 전용).
+
+    실제 SQL 문 2종(메인 UPSERT·흡수 UPDATE)을 텍스트로 구분해 반영한다.
+    """
+
+    def __init__(self):
+        self.streaks: dict[tuple[str, str], int] = {}
+
+    def execute(self, sql, params):
+        if "INSERT INTO batch_failure_state" in sql:
+            kind, key, _ttl_s = params
+            new = self.streaks.get((kind, key), 0) + 1  # 테스트는 즉시 연속 호출 — TTL 안 지남
+            self.streaks[(kind, key)] = new
+            return _FakeCursor((new,))
+        if "UPDATE batch_failure_state" in sql:
+            streak, kind, key = params
+            self.streaks[(kind, key)] = streak
+            return _FakeCursor(None)
+        raise AssertionError(f"예상 못 한 SQL: {sql}")
+
+
+class _FakeCursor:
+    def __init__(self, fetchone_result):
+        self._fetchone_result = fetchone_result
+
+    def fetchone(self):
+        return self._fetchone_result
+
+
+class _StatefulConnCtx:
+    def __init__(self, db):
+        self._db = db
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        return self._db.execute(sql, params)
+
+
+class _StatefulPool:
+    def __init__(self, db):
+        self._db = db
+
+    def connection(self):
+        return _StatefulConnCtx(self._db)
+
+
+class _BoomUpdateConnCtx:
+    """메인 UPSERT 는 성공하지만 그 다음 흡수 UPDATE 만 실패하는 가짜 커넥션(T8 전용)."""
+
+    def __init__(self, db):
+        self._db = db
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        if "UPDATE batch_failure_state" in sql:
+            raise RuntimeError("db down mid-absorb")
+        return self._db.execute(sql, params)
+
+
+class _BoomUpdatePool:
+    def __init__(self, db):
+        self._db = db
+
+    def connection(self):
+        return _BoomUpdateConnCtx(self._db)
+
+
+def _new_pg_store_for_t8():
+    from app.pipelines.artifact_store import FailureStreakTable
+    from app.pipelines.pg_artifact_store import PgCatalogArtifactStore
+
+    store = object.__new__(PgCatalogArtifactStore)  # __init__(dsn) 의 실 커넥션 없이 구성
+    store._failure_streak_schema_ready = True  # ensure_schema 분기를 건드리지 않는다
+    store._failure_streak_fallback = FailureStreakTable()
+    store._failure_streak_fallback_warned = False
+    return store
+
+
+def test_pg_store_bump_absorbs_fallback_progress_across_intermittent_failures():
+    """[T8] DB 실패 → 성공 → 실패 → 성공을 번갈아도, 성공 경로가 그 사이 폴백에 쌓인
+    진행분을 흡수해 상한 도달을 앞당긴다. 수정 전에는 DB·폴백이 각자 자기 성공분만 세어
+    (비교·흡수 없이) 4번째 호출의 반환값이 2([1,1,2,2])에 그쳤다 — DB 는 짝수번째
+    호출(2번째·4번째)에서만 자기 스트릭을 1→2 로 올리고, 홀수번째(1번째·3번째)에 폴백에서
+    쌓인 값은 그대로 버려졌다. 이 테스트는 수정 전 코드에서 [1, 1, 2, 2]가 나와(4번째
+    값이 3이 아니라 2) 반드시 실패한다."""
+    db = _StatefulFakeDB()
+    store = _new_pg_store_for_t8()
+    boom_pool = _BoomPool()
+    ok_pool = _StatefulPool(db)
+
+    results = []
+    for pool in (boom_pool, ok_pool, boom_pool, ok_pool):
+        store._pool = pool
+        results.append(store.bump_failure_streak("item", "1", ttl_s=3600))
+
+    # 1번째(fail): 폴백 1. 2번째(ok): db 자체 1, 폴백(1)+1=2 흡수 → 2. 3번째(fail): 폴백
+    # 은 흡수 후 비워졌으므로 다시 1부터. 4번째(ok): db 자체(2 에서 이어) 3, 폴백(1)+1=2
+    # 이므로 db 쪽 3 이 이긴다 — 흡수 UPDATE 없이도 db 단독 진행이 이미 앞서 있다.
+    assert results == [1, 2, 1, 3]
+
+
+def test_pg_store_bump_clears_fallback_after_absorbing_progress():
+    """[T8] 폴백 진행분을 흡수한 뒤에는 폴백 엔트리가 비워져, 다음 성공에서 같은 진행분을
+    또 세지 않는다(이중 계수 방지)."""
+    db = _StatefulFakeDB()
+    store = _new_pg_store_for_t8()
+
+    store._pool = _BoomPool()
+    store.bump_failure_streak("item", "1", ttl_s=3600)  # 폴백에 1 쌓임
+    assert store._failure_streak_fallback.peek("item", "1", ttl_s=3600) == 1
+
+    store._pool = _StatefulPool(db)
+    result = store.bump_failure_streak("item", "1", ttl_s=3600)  # 흡수: 폴백(1)+1=2 > db 1
+    assert result == 2
+    # [T8 핵심] 흡수 후 폴백 엔트리는 비워진다.
+    assert store._failure_streak_fallback.peek("item", "1", ttl_s=3600) == 0
+
+    # 다음 DB 성공은 이미 비워진 폴백을 다시 더하지 않고 db 자체 값(2)에서만 +1 한다.
+    result2 = store.bump_failure_streak("item", "1", ttl_s=3600)
+    assert result2 == 3
+
+
+def test_pg_store_bump_falls_back_when_absorb_update_fails():
+    """[T8] 메인 UPSERT 는 성공했지만 흡수 UPDATE 만 실패하면, 예외가 밖으로 나오지 않고
+    조용히 폴백 경로로 넘어간다 — 이 메서드는 절대 예외를 밖으로 내지 않는다는 현행
+    불변식이 흡수 경로에도 그대로 적용됨을 고정한다."""
+    db = _StatefulFakeDB()
+    store = _new_pg_store_for_t8()
+
+    store._pool = _BoomPool()
+    store.bump_failure_streak("item", "1", ttl_s=3600)  # 폴백에 1 쌓임(흡수 대상 진행분)
+    assert store._failure_streak_fallback.peek("item", "1", ttl_s=3600) == 1
+
+    store._pool = _BoomUpdatePool(db)
+    # 폴백(1)+1=2 > 메인 UPSERT 가 돌려준 값(1) 이라 흡수 UPDATE 를 시도하는데, 이 가짜
+    # 커넥션은 그 UPDATE 만 실패시킨다 — 예외가 새면 이 호출 자체가 raise 해야 한다.
+    result = store.bump_failure_streak("item", "1", ttl_s=3600)
+
+    assert result == 2  # raise 없이 폴백 경로로 넘어가 폴백 자신의 bump(): 1 → 2

@@ -133,6 +133,33 @@ class PgCatalogArtifactStore:
 
         마지막 갱신이 ttl_s 보다 오래됐으면 1로 리셋, 아니면 +1 을 SQL 한 문장으로 수행한다
         (읽고-쓰는 두 단계로 나누면 동시 인스턴스 사이에 레이스가 생긴다).
+
+        [T8, PR 리뷰 라운드 6] **DB 성공 경로가 폴백의 진행분을 흡수한다.** DB 가 간헐적으로
+        실패/성공을 오가면(pg 순단·네트워크 flap 등) 실패한 호출은 인메모리 폴백에 쌓이고
+        성공한 호출은 DB 에 쌓여, 두 저장소가 각자 자기 몫만 세면 실제 연속 실패 횟수보다
+        낮은 값 사이를 오간다 — DB 행 자체는 지워지지 않고 성공한 bump 마다 단조 증가하므로
+        **정지가 아니라 지연**이지만(DB 성공률 p 면 대략 1/p 배 느리게라도 상한엔 도달한다),
+        지연은 실재하고 고칠 값은 싸다. 이번 DB 성공 직전까지 같은 (kind, key) 로 폴백에
+        쌓인 진행분을 ``peek`` 하고(TTL 은 폴백의 ``bump()`` 와 동일 기준 — 끊겼으면 0),
+        **이번 호출 자체가 그 진행분 위에 이어지는 다음 1회**이므로 ``peek 값 + 1`` 과 DB
+        가 자체적으로 계산한 값 중 **더 큰 쪽을 최종 스트릭으로 삼는다**(둘 다 폴백이 비어
+        있으면 항상 DB 값과 같아 기존 동작과 다르지 않다). 더 크면 그 값으로 DB 를 맞춰
+        UPDATE 해 이후 DB 단독 경로가 이어받게 하고, 어느 쪽이든 폴백 엔트리는 흡수 완료로
+        지운다(같은 진행분을 두 번 세지 않는다). 흡수 UPDATE 가 실패하면 이 메서드를 감싼
+        예외 처리로 자연히 흘러가 폴백이 이어받는다(psycopg 커넥션은 `with` 블록 예외 시
+        트랜잭션 전체를 롤백하므로 방금 성공했던 원 UPSERT 도 함께 취소돼 이중 계수가
+        생기지 않는다) — 이 함수는 여전히 절대 예외를 밖으로 내지 않는다.
+
+        **남는 한계(알고 받아들인 것)**: 폴백을 흡수 후 비우기 때문에, 흡수 **직후** 다시
+        DB 가 실패하면 그 다음 폴백 ``bump()`` 는(폴백 자신의 기록이 막 지워졌으므로) 0
+        부터 다시 세기 시작한다 — 그래서 이 흡수는 임의의 교차 패턴에서 "정확히 호출
+        횟수만큼"을 수학적으로 보장하지는 못하고, **상한 도달까지의 지연을 줄이는 것**까지만
+        보장한다(실측: 실패→성공→실패→성공 4회에서 수정 전 2, 수정 후 3 — 상한 3 기준으로
+        6회째가 아니라 4회째에 도달). 완벽한 재현(모든 교차 패턴에서 호출 수 = 스트릭)을
+        하려면 폴백을 지우지 않고 흡수값으로 동기화해 둬야 하는데, 그러면 폴백이 실패
+        전용 임시 저장소가 아니라 DB 의 상시 그림자 사본이 돼 이 이슈의 범위를 넘어선다.
+        그 외 남는 한계는 ``clear_failure_streak`` docstring 의 "남는 드리프트 창"(실패한
+        DELETE 로 DB 에 남는 stale streak) 뿐이다.
         """
         try:
             self._ensure_failure_streak_schema()
@@ -151,8 +178,25 @@ class PgCatalogArtifactStore:
                     """,
                     (kind, key, ttl_s),
                 ).fetchone()
+                streak = row[0]
+                # [T8] 이 호출 자체가 폴백 진행분 위에 이어지는 "다음 1회"이므로 +1 해 비교한다
+                # — 안 그러면(단순 max) 실패 1회 뒤 성공 1회처럼 폴백이 딱 1만큼만 앞서 있는
+                # 흔한 패턴에서 DB 자체 값을 절대 못 넘어서 흡수가 사실상 죽은 코드가 된다.
+                fallback_progress = self._failure_streak_fallback.peek(kind, key, ttl_s=ttl_s) + 1
+                if fallback_progress > streak:
+                    # [T8] 폴백 쪽 진행분이 더 크다 — DB 를 그 값으로 맞춰 이어받게 한다.
+                    conn.execute(
+                        """
+                        UPDATE batch_failure_state SET streak = %s, updated_at = now()
+                        WHERE kind = %s AND state_key = %s
+                        """,
+                        (fallback_progress, kind, key),
+                    )
+                    streak = fallback_progress
+                # [T8] 흡수 완료(또는 애초에 폴백이 더 작았음) — 두 번 세지 않도록 지운다.
+                self._failure_streak_fallback.clear(kind, key)
             self._mark_failure_streak_healthy()
-            return row[0]
+            return streak
         except Exception:  # noqa: BLE001 - 실패 격리 폴백(#416) — 배치를 죽이지 않는다
             self._warn_failure_streak_fallback()
             return self._failure_streak_fallback.bump(kind, key, ttl_s=ttl_s)

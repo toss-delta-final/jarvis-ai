@@ -76,6 +76,22 @@ class FailureStreakTable:
         entry.updated_at = now
         return entry.count
 
+    def peek(self, kind: str, key: str, *, ttl_s: float) -> int:
+        """(kind, key) 의 현재 스트릭을 변경 없이 반환한다(없거나 만료됐으면 0).
+
+        [T8, PR 리뷰 라운드 6] ``PgCatalogArtifactStore.bump_failure_streak`` 가 DB 성공
+        경로에서 이 폴백 표에 남아 있는 진행분(간헐적 DB 실패로 여기 쌓인 것)을 흡수할 때
+        쓴다 — ``bump()`` 와 같은 TTL 기준으로 "연속"이 끊겼으면 0 을 돌려줘 무관한 과거
+        진행분이 새 DB 스트릭에 섞이지 않게 한다.
+        """
+        kind_entries = self._entries.get(kind)
+        if kind_entries is None:
+            return 0
+        entry = kind_entries.get(key)
+        if entry is None or self._clock() - entry.updated_at > ttl_s:
+            return 0
+        return entry.count
+
     def clear(self, kind: str, key: str) -> None:
         kind_entries = self._entries.get(kind)
         if kind_entries is not None:
