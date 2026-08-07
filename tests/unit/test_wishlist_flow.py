@@ -1218,6 +1218,47 @@ async def test_view_guard_survives_missing_spaces() -> None:
         assert not _actions(events), message
 
 
+async def test_remove_evidence_covers_phrasing_variants() -> None:
+    """[#386 리뷰 후속] 해제 근거 판정이 표현 변형을 흡수해야 한다.
+
+    가드를 뒤집으면서 `wishlist_remove_markers` 의 역할이 **정반대로** 바뀌었다 — 이전에는
+    "가드를 걸지 않을 예외"라 목록이 불완전해도 무해했지만, 이후에는 "해제를 허용할 근거"라
+    **누락이 곧 기능 손실**이다. 그런데 목록은 그대로 둔 채 극성만 뒤집어서, `"찜 목록에서 빼줘"`
+    (combo_matrix 가 쓰는 발화)가 되물음으로 떨어졌다 — `evals/combo_matrix` 의 observed
+    드리프트 가드(#424)가 잡았다.
+
+    그래서 판정을 목록 매칭이 아니라 **"찜 계열 명사 + 해제 동사"의 결합**으로 구조화했다.
+    """
+    removed: list[int] = []
+
+    async def remove_wishlist_fn(product_id, *, user_id):
+        removed.append(product_id)
+
+    for message in (
+        "찜 빼줘",
+        "찜빼줘",
+        "찜 해제해줘",
+        "찜 취소",
+        "찜 목록에서 빼줘",
+        "위시리스트에서 빼줘",
+        "찜 목록에서 지워줘",
+        "찜 리스트에서 제거해줘",
+        "위시리스트에서 삭제해줘",
+    ):
+        removed.clear()
+        await _collect(
+            stream_wishlist_remove(
+                identity=_member(),
+                cart=CartIntent(),
+                message=message,
+                settings=get_settings(),
+                get_wishlist_fn=_wishlist(_wishlist_item(10, "이어폰")),
+                remove_wishlist_fn=remove_wishlist_fn,
+            )
+        )
+        assert removed == [10], f"해제 발화인데 되물음으로 떨어졌다: {message!r}"
+
+
 async def test_no_auto_select_without_positive_remove_evidence() -> None:
     """[#386 리뷰] 마커 목록 **밖** 표현에서도 자동 선택이 일어나면 안 된다.
 

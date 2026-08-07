@@ -48,24 +48,43 @@ def _display_wishlist_name(item: WishlistItem) -> str:
 
 
 def _matches_ignoring_whitespace(message: str, markers: list[str]) -> bool:
-    """공백을 무시하고 표지를 찾는다 — 한국어 채팅은 띄어쓰기를 자주 생략한다.
+    """공백을 무시하고 표지 하나라도 있는지 본다 — 한국어 채팅은 띄어쓰기를 자주 생략한다.
 
-    호출부(`_resolve_wishlist_remove_target` 의 해제 근거 판정)는 **파괴적 동작을 허용할지**를
-    가르는 자리라 표기 변형에 특히 취약했다. 정확 부분 문자열로 비교하면 `"찜빼줘"` 가 표지
-    `"찜 빼줘"` 를 못 맞춰 정상 해제가 되물음으로 떨어진다(반대로 옛 설계에서는 `"위시리스트뭐있어"`
-    가 조회 표지를 못 맞춰 찜이 **삭제**됐다 — PR #441 리뷰에서 재현).
-
-    **여기서의 오탐 방향**: 표지가 넓어져 해제 근거가 더 잘 서면 자동 선택이 더 자주 허용된다.
-    그래서 `docs/lessons.md` 의 "부분 문자열 표지의 파괴력이 크면 좁게 잡아라"(`"전부"` ⊂
-    `"전부터"`)가 **그대로 적용되는** 자리다 — `wishlist_remove_markers` 는 지금처럼 어미까지
-    갖춘 구만 담아야 하고, 명사 하나짜리 표지를 넣으면 안 된다. 공백만 지우는 것은 같은 구의
-    표기 변형을 흡수할 뿐 표지의 의미 범위를 넓히지 않는다.
+    호출부(`_has_removal_evidence`)는 **파괴적 동작을 허용할지**를 가르는 자리라 표기 변형에
+    특히 취약하다. 정확 부분 문자열로 비교하면 `"찜빼줘"` 가 `"찜 빼줘"` 를 못 맞춰 정상 해제가
+    되물음으로 떨어졌다(PR #441 리뷰에서 재현).
 
     `negation.matches_name_unnegated` 의 조사·filler 스킵을 쓰지 않는 이유는 대상이 다르기
-    때문이다 — 저쪽은 **상품명**(경계가 중요)이고 이쪽은 **어미까지 갖춘 구**다.
+    때문이다 — 저쪽은 **상품명**(경계가 중요)이고 이쪽은 짧은 표지다.
     """
     squeezed = "".join(message.split())
     return any("".join(marker.split()) in squeezed for marker in markers)
+
+
+def _has_removal_evidence(message: str, settings) -> bool:
+    """발화에 **찜 해제 의도의 적극적 근거**가 있는가 — 찜 계열 명사 + 해제 동사의 결합.
+
+    목록 매칭(`wishlist_remove_markers`)이 아니라 두 축의 결합으로 판정한다. 그 목록은 원래
+    `classify_cart_utterance` 의 **라우팅 표지**이고 "가드를 걸지 않을 예외"로 쓰일 때는 누락돼도
+    무해했는데, 이 함수가 "해제를 허용할 근거"로 쓰면서 **누락이 곧 기능 손실**이 됐다. 실제로
+    목록을 그대로 근거로 썼더니 `"찜 목록에서 빼줘"`(combo_matrix 가 쓰는 발화)가 되물음으로
+    떨어졌다 — `evals/combo_matrix` 의 observed 드리프트 가드(#424)가 잡았다.
+
+    두 축으로 나누면 목록을 전수로 유지하지 않아도 표현 변형을 흡수한다:
+    `"찜 목록에서 빼줘"` · `"위시리스트에서 삭제해줘"` · `"찜 리스트에서 제거해줘"` 전부 성립.
+
+    **동사 표지가 짧아도 되는 이유**: 명사 축과 **함께** 있어야만 근거가 서기 때문이다.
+    `"빼"` 하나로는 아무 근거도 만들지 못하므로 `docs/lessons.md` 의 "명사 하나짜리 표지 금지"가
+    겨냥한 위험(표지 하나가 단독으로 파괴적 동작을 발동)이 생기지 않는다 — `"장바구니에서 빼줘"`
+    에는 찜 명사가 없어 근거가 안 선다.
+
+    **낮은 정밀도가 안전한 방향인 이유**: 이 판정은 규칙 2·3(코드가 대상을 고르는 규칙)의 문지기일
+    뿐이고, 통과해도 부정 가드·이름 언급 가드를 다시 지나야 한다. 반대로 판정이 못 서면 결과는
+    되물음(파괴적 동작 없음)이다.
+    """
+    return _matches_ignoring_whitespace(
+        message, settings.wishlist_scope_markers
+    ) and _matches_ignoring_whitespace(message, settings.wishlist_removal_verb_markers)
 
 
 def _wishlist_unresolved_notice(items: list[WishlistItem]) -> str:
@@ -231,8 +250,9 @@ def _resolve_wishlist_remove_target(
     # 그런 발화가 여기 왔다는 것 자체가 이미 오분류이므로 되물음이 옳은 처분이고, #116·#117 이
     # 세운 "애매하면 파괴적 동작을 하지 않는다"와 같은 방향이다(기존 테스트 334건 무회귀 확인).
     #
-    # 비교는 **공백을 무시한다**(`_matches_ignoring_whitespace`) — 근거는 그 헬퍼 docstring.
-    if not _matches_ignoring_whitespace(message, settings.wishlist_remove_markers):
+    # 근거 판정은 찜 계열 명사 + 해제 동사의 결합이다(`_has_removal_evidence`) — 라우팅 표지
+    # 목록을 그대로 쓰면 `"찜 목록에서 빼줘"` 같은 정상 해제가 막힌다(그 헬퍼 docstring 참조).
+    if not _has_removal_evidence(message, settings):
         return None
 
     if cart.product_id is not None and not has_negation and not name_mentioned:
