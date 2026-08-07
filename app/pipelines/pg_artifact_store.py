@@ -7,16 +7,33 @@ CatalogArtifactStore(artifact_store.py, 인메모리)와 동일한 메서드 시
 tests/integration/에 별도로 둔다(@pytest.mark.integration, 실 pg-catalog 필요).
 
 배치 커서는 products 와 별도로 batch_state(단일 행) 테이블에 영속한다(db/catalog/init/00_products.sql).
+
+[이슈 #416] 실패 스트릭(bump/clear/purge_stale)은 batch_failure_state 테이블에 영속한다 —
+첫 사용 시 idempotent DDL 을 1회(advisory lock 으로 중복 방지) 적용한다
+(app/agents/profile/session_activity.py::ensure_schema_on_connection 과 같은 관례, 다만 이
+스토어는 동기 ConnectionPool 이라 asyncio.Lock 대신 threading.Lock 으로 인스턴스 내 중복
+초기화만 막고, 인스턴스 간(다른 프로세스) 경합은 pg_advisory_xact_lock 으로 막는다). 3개 메서드
+모두 실패 시 예외를 삼키고 인메모리 FailureStreakTable 폴백으로 위임한다 — 폴백 동작이 곧
+현행(프로세스 메모리) 동작이라 테이블 부재·pg 순단 상황에서도 배치가 죽지 않고 하한이 보장된다.
 """
 
 from __future__ import annotations
+
+import logging
+import threading
 
 from pgvector import Vector
 from pgvector.psycopg import register_vector
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
-from app.pipelines.artifact_store import CatalogArtifact
+from app.pipelines.artifact_store import CatalogArtifact, FailureStreakTable
+
+_log = logging.getLogger(__name__)
+
+# pg_advisory_xact_lock 키 — session_activity.py/processed_events.py 와 같은 관례
+# (hashtextextended 로 해시해 사용, 다른 스키마 락 키와 충돌하지 않게 이름공간을 문자열에 담음).
+_FAILURE_STATE_SCHEMA_LOCK_KEY = "schema:batch_failure_state"
 
 
 def _to_list(value: object) -> list[float]:
@@ -52,9 +69,125 @@ class PgCatalogArtifactStore:
 
     def __init__(self, dsn: str) -> None:
         self._pool = ConnectionPool(dsn, configure=register_vector, open=True)
+        self._failure_streak_schema_ready = False
+        self._failure_streak_schema_lock = threading.Lock()
+        self._failure_streak_fallback = FailureStreakTable()
+        self._failure_streak_fallback_warned = False
 
     def close(self) -> None:
         self._pool.close()
+
+    def _ensure_failure_streak_schema(self) -> None:
+        """batch_failure_state idempotent DDL — 인스턴스당 1회(#416).
+
+        session_activity.py::ensure_schema_on_connection 과 같은 관례: 인스턴스 내 중복
+        실행은 threading.Lock 으로, 다른 프로세스/인스턴스와의 경합은 advisory lock 으로 막는다.
+        """
+        if self._failure_streak_schema_ready:
+            return
+        with self._failure_streak_schema_lock:
+            if self._failure_streak_schema_ready:
+                return
+            with self._pool.connection() as conn, conn.transaction():
+                conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (_FAILURE_STATE_SCHEMA_LOCK_KEY,),
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS batch_failure_state (
+                        kind       text        NOT NULL,
+                        state_key  text        NOT NULL,
+                        streak     int         NOT NULL,
+                        updated_at timestamptz NOT NULL DEFAULT now(),
+                        PRIMARY KEY (kind, state_key)
+                    )
+                    """
+                )
+            self._failure_streak_schema_ready = True
+
+    def _warn_failure_streak_fallback(self) -> None:
+        """폴백 전환을 1회만 WARNING 남긴다 — 매 호출마다 남기면 로그가 폭주한다(#416)."""
+        if not self._failure_streak_fallback_warned:
+            _log.warning(
+                "batch_failure_state 저장 실패 — 인메모리 폴백으로 전환"
+                "(재시작 시 스트릭 리셋, 종전(#325) 동작과 같은 하한)",
+                exc_info=True,
+            )
+            self._failure_streak_fallback_warned = True
+
+    def bump_failure_streak(self, kind: str, key: str, *, ttl_s: float) -> int:
+        """단일 원자 UPSERT — 다중 인스턴스에서도 정확하도록(#416).
+
+        마지막 갱신이 ttl_s 보다 오래됐으면 1로 리셋, 아니면 +1 을 SQL 한 문장으로 수행한다
+        (읽고-쓰는 두 단계로 나누면 동시 인스턴스 사이에 레이스가 생긴다).
+        """
+        try:
+            self._ensure_failure_streak_schema()
+            with self._pool.connection() as conn:
+                row = conn.execute(
+                    """
+                    INSERT INTO batch_failure_state (kind, state_key, streak, updated_at)
+                    VALUES (%s, %s, 1, now())
+                    ON CONFLICT (kind, state_key) DO UPDATE SET
+                        streak = CASE
+                            WHEN batch_failure_state.updated_at
+                                < now() - make_interval(secs => %s) THEN 1
+                            ELSE batch_failure_state.streak + 1 END,
+                        updated_at = now()
+                    RETURNING streak
+                    """,
+                    (kind, key, ttl_s),
+                ).fetchone()
+            return row[0]
+        except Exception:  # noqa: BLE001 - 실패 격리 폴백(#416) — 배치를 죽이지 않는다
+            self._warn_failure_streak_fallback()
+            return self._failure_streak_fallback.bump(kind, key, ttl_s=ttl_s)
+
+    def clear_failure_streak(self, kind: str, key: str) -> None:
+        """DB DELETE 를 시도하고, 성공 여부와 무관하게 인메모리 폴백 표도 항상 clear 한다.
+
+        [F5, PR 리뷰 라운드 1] 폴백을 latch 하지 않고(#416 이 고치려던 잦은 재시작 시나리오를
+        도로 무력화하므로) 매 호출 DB↔인메모리를 오가는 구조상, "성공 처리 후 DELETE 만 DB
+        오류"가 나면 인메모리만 clear 되고 DB 쪽엔 stale streak 이 남는 드리프트가 생긴다.
+        인메모리 clear 는 dict pop 이라 비용이 0 이므로 DB 결과와 무관하게 항상 적용해
+        (bump 는 성공했는데 clear 만 실패하는) 드리프트의 절반을 없앤다.
+
+        **남는 드리프트 창(알고 받아들인 한계)**: DELETE 자체가 실패하면 DB 쪽에는 stale
+        streak 이 남는다 — 다음 단일 실패가 그 stale 값 위에 누적돼 실제보다 빨리 상한에
+        닿아 오격리될 수 있다. 이 창은 막지 않는다(폴백을 프로세스 수명 latch 로 승격하면
+        #416 의 "재시작이 잦아도 유계 수렴" 목표가 무력화된다). 대신
+        ``artifacts_batch_failure_streak_ttl_s``(기본 1h) 로 유계이고, 결과는 dead-letter
+        ERROR 로그로 드러나며 ``run_batch --full`` 로 복구 가능하다.
+        """
+        try:
+            self._ensure_failure_streak_schema()
+            with self._pool.connection() as conn:
+                conn.execute(
+                    "DELETE FROM batch_failure_state WHERE kind = %s AND state_key = %s",
+                    (kind, key),
+                )
+        except Exception:  # noqa: BLE001 - 실패 격리 폴백(#416)
+            self._warn_failure_streak_fallback()
+        finally:
+            self._failure_streak_fallback.clear(kind, key)
+
+    def purge_stale_failure_streaks(self, ttl_s: float) -> int:
+        try:
+            self._ensure_failure_streak_schema()
+            with self._pool.connection() as conn:
+                rows = conn.execute(
+                    """
+                    DELETE FROM batch_failure_state
+                    WHERE updated_at < now() - make_interval(secs => %s)
+                    RETURNING 1
+                    """,
+                    (ttl_s,),
+                ).fetchall()
+            return len(rows)
+        except Exception:  # noqa: BLE001 - 실패 격리 폴백(#416)
+            self._warn_failure_streak_fallback()
+            return self._failure_streak_fallback.purge_stale(ttl_s)
 
     def upsert(self, artifact: CatalogArtifact) -> None:
         with self._pool.connection() as conn:

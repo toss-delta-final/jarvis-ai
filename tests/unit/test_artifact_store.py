@@ -1,4 +1,10 @@
-from app.pipelines.artifact_store import CatalogArtifact, CatalogArtifactStore
+from app.pipelines.artifact_store import (
+    FAILURE_STREAK_KIND_ITEM,
+    FAILURE_STREAK_KIND_PAGE,
+    CatalogArtifact,
+    CatalogArtifactStore,
+    FailureStreakTable,
+)
 
 
 def test_get_many_returns_dict_of_found_only():
@@ -54,3 +60,89 @@ def test_top_k_by_vector_include_contract():
     assert store.top_k_by_vector([1.0, 0.0], k=3, include=set()) == []
     assert store.top_k_by_vector([1.0, 0.0], k=3, include=None) == [1, 2, 3]
     assert store.top_k_by_vector([1.0, 0.0], k=3, include={1, 2}, exclude={1}) == [2]
+
+
+# ── 이슈 #416: FailureStreakTable — cross-cycle 연속 실패 스트릭 TTL 리셋 ──
+
+
+def test_failure_streak_table_bumps_and_returns_running_count():
+    table = FailureStreakTable(clock=lambda: 0.0)
+    assert table.bump(FAILURE_STREAK_KIND_ITEM, "1", ttl_s=60) == 1
+    assert table.bump(FAILURE_STREAK_KIND_ITEM, "1", ttl_s=60) == 2
+    assert table.bump(FAILURE_STREAK_KIND_ITEM, "1", ttl_s=60) == 3
+
+
+def test_failure_streak_table_resets_after_ttl_elapses():
+    """마지막 갱신이 ttl_s 보다 오래되면 다음 bump 는 1 로 리셋된다 — 무관한 과거 실패가
+    "연속"으로 합산되지 않는다(#416)."""
+    now = [1000.0]
+    table = FailureStreakTable(clock=lambda: now[0])
+
+    assert table.bump(FAILURE_STREAK_KIND_ITEM, "1", ttl_s=60) == 1
+    now[0] += 10
+    assert table.bump(FAILURE_STREAK_KIND_ITEM, "1", ttl_s=60) == 2
+    now[0] += 61  # ttl_s(60) 초과
+    assert table.bump(FAILURE_STREAK_KIND_ITEM, "1", ttl_s=60) == 1
+
+
+def test_failure_streak_table_kinds_and_keys_are_independent():
+    table = FailureStreakTable(clock=lambda: 0.0)
+    table.bump(FAILURE_STREAK_KIND_ITEM, "1", ttl_s=60)
+    table.bump(FAILURE_STREAK_KIND_ITEM, "1", ttl_s=60)
+    assert table.bump(FAILURE_STREAK_KIND_PAGE, "1", ttl_s=60) == 1  # 다른 kind, 같은 key
+    assert table.bump(FAILURE_STREAK_KIND_ITEM, "2", ttl_s=60) == 1  # 같은 kind, 다른 key
+
+
+def test_failure_streak_table_clear_removes_entry():
+    table = FailureStreakTable(clock=lambda: 0.0)
+    table.bump(FAILURE_STREAK_KIND_ITEM, "1", ttl_s=60)
+    table.bump(FAILURE_STREAK_KIND_ITEM, "1", ttl_s=60)
+    table.clear(FAILURE_STREAK_KIND_ITEM, "1")
+    assert table.bump(FAILURE_STREAK_KIND_ITEM, "1", ttl_s=60) == 1  # clear 후 다시 1부터
+    table.clear(FAILURE_STREAK_KIND_ITEM, "missing")  # 없는 키 clear 는 조용히 무시
+
+
+def test_failure_streak_table_purge_stale_removes_only_expired():
+    now = [0.0]
+    table = FailureStreakTable(clock=lambda: now[0])
+    table.bump(FAILURE_STREAK_KIND_ITEM, "old", ttl_s=60)
+    now[0] = 30.0
+    table.bump(FAILURE_STREAK_KIND_ITEM, "fresh", ttl_s=60)
+    now[0] = 1000.0
+
+    purged = table.purge_stale(ttl_s=60)
+
+    assert purged == 2  # "old"(1000s 경과)·"fresh"(970s 경과) 둘 다 60s 를 넘음
+    assert table.bump(FAILURE_STREAK_KIND_ITEM, "old", ttl_s=60) == 1
+
+
+def test_failure_streak_table_max_entries_defensively_clears():
+    """방어적 메모리 상한 도달 시 전체를 비운다 — 운영 조정 대상이 아닌 순수 방어(#416)."""
+    from app.pipelines import artifact_store as _artifact_store
+
+    table = FailureStreakTable(clock=lambda: 0.0)
+    for i in range(_artifact_store._FAILURE_STREAK_MAX_ENTRIES):
+        table.bump(FAILURE_STREAK_KIND_ITEM, str(i), ttl_s=60)
+    assert len(table._entries) == _artifact_store._FAILURE_STREAK_MAX_ENTRIES
+
+    table.bump(FAILURE_STREAK_KIND_ITEM, "overflow", ttl_s=60)
+    assert len(table._entries) == 1  # 상한 도달 → 방어적으로 비운 뒤 새 엔트리 1개만 남는다
+
+
+# ── 이슈 #416: CatalogArtifactStore(인메모리) 실패 스트릭 위임 ──
+
+
+def test_catalog_artifact_store_delegates_failure_streak_to_table():
+    store = CatalogArtifactStore()
+    assert store.bump_failure_streak(FAILURE_STREAK_KIND_ITEM, "1", ttl_s=60) == 1
+    assert store.bump_failure_streak(FAILURE_STREAK_KIND_ITEM, "1", ttl_s=60) == 2
+    store.clear_failure_streak(FAILURE_STREAK_KIND_ITEM, "1")
+    assert store.bump_failure_streak(FAILURE_STREAK_KIND_ITEM, "1", ttl_s=60) == 1
+
+
+def test_catalog_artifact_store_purge_stale_failure_streaks():
+    store = CatalogArtifactStore()
+    store._failure_streaks = FailureStreakTable(clock=lambda: 0.0)
+    store.bump_failure_streak(FAILURE_STREAK_KIND_PAGE, "c1", ttl_s=60)
+    store._failure_streaks._clock = lambda: 1000.0
+    assert store.purge_stale_failure_streaks(ttl_s=60) == 1

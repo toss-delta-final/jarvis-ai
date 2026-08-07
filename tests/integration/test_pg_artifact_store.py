@@ -264,6 +264,58 @@ def test_check_rejects_missing_provenance():
                 )
 
 
+# ── 이슈 #416: batch_failure_state 영속화(실 pg-catalog) ──
+
+
+@pytest.fixture
+def failure_streak_store(store):
+    """store 픽스처와 같은 dsn 을 쓰되, 스트릭 상태를 테스트 전후로 정리한다."""
+    store.clear_failure_streak("item", "int-test-item")
+    store.clear_failure_streak("page", "int-test-page")
+    yield store
+    store.clear_failure_streak("item", "int-test-item")
+    store.clear_failure_streak("page", "int-test-page")
+
+
+def test_batch_failure_state_table_self_creates(failure_streak_store):
+    """첫 사용 시 idempotent DDL 로 batch_failure_state 테이블이 자가 생성된다(#416)."""
+    assert failure_streak_store.bump_failure_streak("item", "int-test-item", ttl_s=3600.0) == 1
+
+
+def test_batch_failure_state_bump_accumulates_across_store_instances(failure_streak_store):
+    """서로 다른 두 스토어 인스턴스(=두 프로세스 모사)에서 bump 가 누적된다(#416)."""
+    assert failure_streak_store.bump_failure_streak("item", "int-test-item", ttl_s=3600.0) == 1
+
+    other = PgCatalogArtifactStore(get_settings().catalog_db_url)
+    try:
+        assert other.bump_failure_streak("item", "int-test-item", ttl_s=3600.0) == 2
+        assert other.bump_failure_streak("item", "int-test-item", ttl_s=3600.0) == 3
+    finally:
+        other.close()
+
+
+def test_batch_failure_state_ttl_resets(failure_streak_store):
+    """마지막 갱신이 ttl_s 보다 오래되면 다음 bump 는 1 로 리셋된다(#416)."""
+    import time
+
+    assert failure_streak_store.bump_failure_streak("item", "int-test-item", ttl_s=3600.0) == 1
+    assert failure_streak_store.bump_failure_streak("item", "int-test-item", ttl_s=3600.0) == 2
+    time.sleep(1.1)
+    # ttl_s=1 보다 오래(1.1s) 지났으니 "연속"이 끊겨 다음 bump 는 1 로 리셋된다.
+    assert failure_streak_store.bump_failure_streak("item", "int-test-item", ttl_s=1.0) == 1
+
+
+def test_batch_failure_state_clear_and_purge_stale(failure_streak_store):
+    """clear·purge_stale_failure_streaks 가 실제로 행을 지운다(#416)."""
+    failure_streak_store.bump_failure_streak("item", "int-test-item", ttl_s=3600.0)
+    failure_streak_store.clear_failure_streak("item", "int-test-item")
+    assert failure_streak_store.bump_failure_streak("item", "int-test-item", ttl_s=3600.0) == 1
+
+    failure_streak_store.bump_failure_streak("page", "int-test-page", ttl_s=3600.0)
+    purged = failure_streak_store.purge_stale_failure_streaks(ttl_s=0.000001)
+    assert purged >= 1
+
+
 @pytest.mark.integration
 def test_loader_persists_provenance(tmp_path):
     import json

@@ -919,7 +919,11 @@ class _FlakyLLM:
 
 
 async def test_drain_isolates_single_item_failure(caplog):
-    """3건 중 1건 실패 → 나머지 2건 처리·upsert, failed=1, 커서 전진, ERROR 로그에 product_id."""
+    """3건 중 1건 실패 → 나머지 2건 처리·upsert, failed=1, 커서 전진, ERROR 로그에 product_id.
+
+    content_retry_cycles=0 — 이 테스트는 1선 즉시 격리 자체(#325)를 검증한다. 기본값(1주기
+    재시도, #421)에서의 동작은 test_drain_content_failure_recovers_on_next_cycle 등이 담당한다.
+    """
     store = CatalogArtifactStore()
     changes = [
         _change(1, name="상품A"),
@@ -931,9 +935,10 @@ async def test_drain_isolates_single_item_failure(caplog):
         return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
 
     llm = _FlakyLLM(always_fail=["상품B-실패"])
+    settings = get_settings().model_copy(update={"artifacts_batch_content_retry_cycles": 0})
     with caplog.at_level("ERROR"):
         result = await run_artifacts_batch(
-            fetch=fetch, llm=llm, embed=_embed, store=store, settings=get_settings()
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
         )
 
     assert result.processed == 2
@@ -1544,6 +1549,9 @@ async def test_drain_page_failure_threshold_repeats_then_advances_at_cycle_limit
 
     표본(5) ≥ min_sample(5) 이고 전부 1선(enrich 내용 실패)인 페이지를 반복 실행 → 1·2회차는
     PageFailureThresholdExceeded + 커서 미전진, 3회차는 예외 없이 커서 전진 + ERROR 로그.
+
+    content_retry_cycles=0 — 이 테스트는 3선(페이지 비율 가드) 자체를 검증하며, 1선 항목이
+    #421 재시도 큐로 새지 않고 매 주기 결정적으로 페이지 비율에 반영되게 고정한다.
     """
     store = CatalogArtifactStore()
     store.set_cursor("checkpoint")
@@ -1554,7 +1562,7 @@ async def test_drain_page_failure_threshold_repeats_then_advances_at_cycle_limit
         return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
 
     llm = _FlakyLLM(always_fail=names)
-    settings = get_settings()
+    settings = get_settings().model_copy(update={"artifacts_batch_content_retry_cycles": 0})
     assert settings.artifacts_batch_page_failure_max_cycles == 3  # 기본값 전제 명시
 
     for _ in range(settings.artifacts_batch_page_failure_max_cycles - 1):
@@ -1940,3 +1948,663 @@ def test_is_enrichment_content_failure_excludes_llm_not_configured():
     from app.core.llm import LLMNotConfigured
 
     assert _batch._is_enrichment_content_failure(LLMNotConfigured("no key")) is False
+
+
+# ── 이슈 #421: 1선 콘텐츠 실패 cross-cycle 재시도 예산 ──
+#
+# JSON 파싱 실패는 LLM 샘플링 노이즈(코드펜스 혼입 등)로도 나므로, 우연히 attempts 회 연속
+# 실패한 정상 상품이 2선·3선과 달리 시간 유계 없이 첫 주기에 영구 격리되던 결함(#421)의 수정을
+# 고정한다. 아래 테스트는 always_fail/fail_counts 로 만드는 실패가 전부 원인 없는 LLMError —
+# 화이트리스트(#325 R6) 1선(콘텐츠 실패) 판정을 그대로 통과한다.
+
+
+async def test_content_retry_recovers_on_next_cycle(caplog):
+    """[#421 이슈 완료 조건] 1주기: 콘텐츠 실패 → 영구 격리 ERROR 없음, 커서 전진, 대기 등재.
+    2주기: 같은 상품이 성공 → artifact 가 upsert 되고 recovered==1, 큐가 빈다.
+
+    fetch 는 첫 호출에만 그 상품을 싣는다(F1·F2 PR 리뷰 라운드 1) — 실제로 Spring 은 같은
+    변경분을 매 주기 다시 보내지 않으므로, 2주기의 회복은 재시도 패스(``_run_content_retry_pass``)
+    가 해낸 것이어야 한다. 매 주기 같은 페이지가 오는 낡은 fetch 를 쓰면 2주기의 ``_drain``
+    자체가(재시도 패스와 무관하게) 그 상품을 다시 처리해 회복시켜 버려 이 테스트가 검증하려는
+    바(재시도 패스의 회복)를 가린다.
+    """
+    store = CatalogArtifactStore()
+    call_count = 0
+
+    async def fetch(cursor, limit):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return ProductChangesPage(
+                items=[_change(1, name="노이즈상품")], next_cursor="c1", has_more=False
+            )
+        return ProductChangesPage(items=[], next_cursor="c1", has_more=False)
+
+    settings = get_settings()
+    llm = _FlakyLLM(fail_counts={"노이즈상품": settings.enrichment_item_attempts})
+
+    with caplog.at_level("WARNING"):
+        result1 = await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+        )
+
+    assert result1.failed == 1
+    assert result1.processed == 0
+    assert store.get(1) is None
+    assert store.get_cursor() == "c1"
+    assert "다음 주기 재시도 예약" in caplog.text
+    assert "격리 기록 후 계속" not in caplog.text  # 영구 격리 ERROR 없음
+    assert 1 in _batch._content_retry_queue
+    assert result1.retry_pending == 1
+
+    result2 = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+    )
+
+    assert result2.recovered == 1
+    assert result2.failed == 0
+    assert store.get(1) is not None
+    assert 1 not in _batch._content_retry_queue
+    assert result2.retry_pending == 0
+
+
+async def test_content_retry_converges_deterministically_after_budget_exhausted(caplog):
+    """[#421] 매번 콘텐츠 실패 → 예산(기본 1) 소진 주기에 ERROR dead-letter 1회 + 큐에서 제거,
+    그 다음 주기에는 재시도하지 않는다(LLM 호출 횟수로 고정)."""
+    store = CatalogArtifactStore()
+    change = _change(1, name="영구노이즈")
+    call_count = 0
+
+    async def fetch(cursor, limit):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return ProductChangesPage(items=[change], next_cursor="c1", has_more=False)
+        return ProductChangesPage(items=[], next_cursor="c1", has_more=False)
+
+    settings = get_settings()
+    assert settings.artifacts_batch_content_retry_cycles == 1  # 기본값 전제 명시
+    llm = _FlakyLLM(always_fail=["영구노이즈"])
+
+    result1 = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+    )
+    assert result1.failed == 1
+    assert 1 in _batch._content_retry_queue
+    calls_after_cycle1 = llm.calls_by_name["영구노이즈"]
+    assert calls_after_cycle1 == settings.enrichment_item_attempts
+
+    with caplog.at_level("ERROR"):
+        result2 = await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+        )
+    assert result2.failed == 1
+    assert result2.recovered == 0
+    assert 1 not in _batch._content_retry_queue
+    assert "재시도 예산 소진" in caplog.text
+    calls_after_cycle2 = llm.calls_by_name["영구노이즈"]
+    assert calls_after_cycle2 == calls_after_cycle1 + settings.enrichment_item_attempts
+
+    result3 = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+    )
+    assert result3.failed == 0
+    assert result3.recovered == 0
+    assert llm.calls_by_name["영구노이즈"] == calls_after_cycle2  # 더 이상 호출되지 않는다
+
+
+async def test_content_retry_cycles_zero_preserves_immediate_isolation():
+    """[#421 회귀 탈출구] artifacts_batch_content_retry_cycles=0 → 종전대로 첫 주기 즉시 영구
+    격리 — 큐에 등재되지 않는다."""
+    store = CatalogArtifactStore()
+    changes = [_change(1, name="즉시격리")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    settings = get_settings().model_copy(update={"artifacts_batch_content_retry_cycles": 0})
+    llm = _FlakyLLM(always_fail=["즉시격리"])
+    result = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+    )
+
+    assert result.failed == 1
+    assert result.recovered == 0
+    assert result.retry_pending == 0
+    assert 1 not in _batch._content_retry_queue
+    assert store.get(1) is None
+    assert store.get_cursor() == "c1"
+
+
+async def test_content_retry_queue_dropped_when_product_goes_hidden():
+    """[#421][F1 강화, PR 리뷰 라운드 1] 대기 중인 product 가 HIDDEN 으로 오면 재시도 패스가
+    그것을 다시 upsert 하지 않는다(유령 상품 방지). F1(재시도는 _drain 정상 완료 뒤에만)
+    적용 후에는 _drain 자신이 HIDDEN 변경분을 처리하며 큐 항목을 먼저 팝하므로, 재시도
+    패스가 도는 시점엔 이미 큐에 없다 — 최종 상태만이 아니라 **upsert 호출 자체가 한 번도
+    없었음**을 직접 검증해 "일단 살렸다가 삭제로 지워지는" 중간 복원 가능성까지 배제한다
+    (기존 테스트는 최종 상태만 봐서 이를 못 잡는다는 리뷰 지적)."""
+    upsert_calls: list[int] = []
+
+    class _SpyStore(CatalogArtifactStore):
+        def upsert(self, artifact):
+            upsert_calls.append(artifact.product_id)
+            super().upsert(artifact)
+
+    store = _SpyStore()
+    on_sale_change = _change(1, name="사라질상품")
+    hidden_change = _change(1, status="HIDDEN")
+    call_count = 0
+
+    async def fetch(cursor, limit):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return ProductChangesPage(items=[on_sale_change], next_cursor="c1", has_more=False)
+        return ProductChangesPage(items=[hidden_change], next_cursor="c2", has_more=False)
+
+    settings = get_settings()
+    llm = _FlakyLLM(fail_counts={"사라질상품": settings.enrichment_item_attempts})
+
+    result1 = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+    )
+    assert result1.failed == 1
+    assert 1 in _batch._content_retry_queue
+
+    result2 = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+    )
+    assert result2.hidden == 1
+    assert result2.recovered == 0
+    assert store.get(1) is None
+    assert 1 not in _batch._content_retry_queue
+    assert 1 not in upsert_calls  # [F1 강화] 유령 상품 생성 자체가 한 번도 없었다(중간 상태 포함)
+
+
+async def test_content_retry_pass_only_runs_after_drain_completes_successfully(caplog):
+    """[F1 blocker 회귀, PR 리뷰 라운드 1] 대기 중 상품이 있는 주기에 fetch 가 실패해 _drain
+    이 중단되면 재시도 패스가 아예 돌지 않는다 — 그 사이 HIDDEN 으로 바뀌었을 수 있는 상품을
+    낡은 페이로드로 되살리면 §4.8 fail-closed 를 정면으로 뚫는다. LLM 은 이번엔 성공하도록
+    설정해 두므로, "재시도 패스가 돌았다면 회복했을 것"이라는 사실로 "안 돌았다"를 증명한다.
+    다음 주기에 _drain 이 정상 완료하면 그제서야 재시도 패스가 돌아 회복된다 — 호출 횟수로
+    "_drain 정상 완료 주기에만 재시도" 를 고정한다.
+    """
+    store = CatalogArtifactStore()
+    cycle = 0
+
+    async def fetch(cursor, limit):
+        nonlocal cycle
+        cycle += 1
+        if cycle == 1:
+            return ProductChangesPage(
+                items=[_change(1, name="포이즌")], next_cursor="c1", has_more=False
+            )
+        if cycle == 2:
+            raise RuntimeError("fetch network glitch")
+        return ProductChangesPage(items=[], next_cursor="c1", has_more=False)
+
+    settings = get_settings()
+    llm = _FlakyLLM(fail_counts={"포이즌": settings.enrichment_item_attempts})
+
+    result1 = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+    )
+    assert result1.failed == 1
+    assert 1 in _batch._content_retry_queue
+    calls_after_cycle1 = llm.calls_by_name["포이즌"]
+
+    with pytest.raises(RuntimeError, match="fetch network glitch"):
+        await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+        )
+
+    # _drain 이 fetch 실패로 중단됐으므로 재시도 패스가 돌지 않는다 — LLM 은 이제 성공하도록
+    # 설정돼 있지만(fail_counts 소진) 그 사실이 반영되면 안 된다.
+    assert store.get(1) is None
+    assert 1 in _batch._content_retry_queue
+    assert llm.calls_by_name["포이즌"] == calls_after_cycle1  # 추가 호출 없음
+
+    result3 = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+    )
+    assert result3.recovered == 1
+    assert store.get(1) is not None
+    assert 1 not in _batch._content_retry_queue
+    assert llm.calls_by_name["포이즌"] > calls_after_cycle1  # 이제서야 재시도 패스가 호출됐다
+
+
+def test_content_retry_queue_evicts_oldest_at_cap(caplog):
+    """[#421] 큐 상한(``_CONTENT_RETRY_MAX_PENDING``) 도달 시 가장 오래된 항목을 축출하고
+    ERROR dead-letter 로 남긴다 — 조용한 유실 금지."""
+    for i in range(_batch._CONTENT_RETRY_MAX_PENDING):
+        _batch._enqueue_content_retry(_change(i, name=f"p{i}"))
+    assert len(_batch._content_retry_queue) == _batch._CONTENT_RETRY_MAX_PENDING
+
+    with caplog.at_level("ERROR"):
+        _batch._enqueue_content_retry(_change(_batch._CONTENT_RETRY_MAX_PENDING, name="new"))
+
+    assert len(_batch._content_retry_queue) == _batch._CONTENT_RETRY_MAX_PENDING
+    assert 0 not in _batch._content_retry_queue  # 가장 오래된(product_id=0) 축출
+    assert _batch._CONTENT_RETRY_MAX_PENDING in _batch._content_retry_queue
+    assert "product_id=0" in caplog.text
+    assert "상한" in caplog.text
+
+
+async def test_full_rebuild_clears_content_retry_queue():
+    """[#421] full_rebuild=True 는 재시도 패스를 돌리지 않고 큐를 비운다 — 전체 재구축이 모든
+    항목을 어차피 다시 처리한다."""
+    store = CatalogArtifactStore()
+    _batch._content_retry_queue[1] = _batch._PendingContentRetry(
+        change=_change(1), retry_attempts=0
+    )
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=[], next_cursor=None, has_more=False)
+
+    await run_artifacts_batch(
+        fetch=fetch,
+        llm=_EnrichLLM(),
+        embed=_embed,
+        store=store,
+        settings=get_settings(),
+        full_rebuild=True,
+    )
+
+    assert _batch._content_retry_queue == {}
+
+
+async def test_content_retry_pass_failure_does_not_kill_batch(monkeypatch, caplog):
+    """[#421] 재시도 패스 실패는 절대 전파하지 않는다 — 예외가 나도 본 배치(_drain)가 정상
+    진행하고 커서가 전진한다."""
+    store = CatalogArtifactStore()
+    _batch._content_retry_queue[1] = _batch._PendingContentRetry(
+        change=_change(1), retry_attempts=0
+    )
+
+    async def boom(**kwargs):
+        raise RuntimeError("retry pass exploded")
+
+    monkeypatch.setattr(_batch, "_run_content_retry_pass", boom)
+
+    changes = [_change(2, name="정상")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    with caplog.at_level("ERROR"):
+        result = await run_artifacts_batch(
+            fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store, settings=get_settings()
+        )
+
+    assert result.processed == 1
+    assert store.get(2) is not None
+    assert store.get_cursor() == "c1"
+    assert "재시도 패스 실패" in caplog.text
+
+
+# ── 이슈 #416: 2선·3선 연속 실패 스트릭의 cross-cycle 영속화(스토어 위임) ──
+#
+# 프로세스가 수렴 창(기본 3주기 ≈ 15분)보다 자주 재시작되면 프로세스 메모리 스트릭이 매번
+# 0으로 리셋돼 poison 상품이 dead-letter 상한에 영영 도달하지 못하던 결함(#416)의 수정을
+# 고정한다. 아래 테스트는 매 주기 CatalogArtifactStore 인스턴스를 새로 만들어(프로세스 재시작
+# 모사) 스트릭 저장소(FailureStreakTable)만 공유하는 가짜 영속 스토어로 재현한다.
+
+
+async def test_item_streak_converges_across_simulated_process_restarts():
+    """[#416 이슈 완료 조건] 매 주기 스토어 인스턴스를 새로 만들어도(재시작 모사) 스트릭
+    저장소만 영속되면 dead_letter_cycles 주기째에 격리된다."""
+    from app.pipelines.artifact_store import FailureStreakTable
+
+    shared_streaks = FailureStreakTable()
+    changes = [_change(1, name="포이즌")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    settings = get_settings()
+
+    def new_store():
+        s = CatalogArtifactStore()
+        s._failure_streaks = shared_streaks  # "재시작"해도 스트릭 저장소만은 살아남는다(pg 모사)
+        return s
+
+    for _ in range(settings.artifacts_batch_item_dead_letter_cycles - 1):
+        store = new_store()
+        with pytest.raises(RuntimeError, match="embed API down"):
+            await run_artifacts_batch(
+                fetch=fetch, llm=_EnrichLLM(), embed=_FailingEmbed(), store=store, settings=settings
+            )
+        assert store.get(1) is None
+
+    store = new_store()
+    result = await run_artifacts_batch(
+        fetch=fetch, llm=_EnrichLLM(), embed=_FailingEmbed(), store=store, settings=settings
+    )
+    assert result.failed == 1
+    assert store.get(1) is None
+
+
+async def test_item_streak_never_converges_if_reset_every_restart_regression_guard():
+    """대조군(#416 회귀 방지) — 스트릭까지 매 주기 새로 만들면(구 프로세스 메모리 동작) 영원히
+    격리되지 않는다(연속 배포·크래시 루프 조건에서 재현되던 stuck-batch)."""
+    changes = [_change(1, name="포이즌")]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    settings = get_settings()
+
+    for _ in range(settings.artifacts_batch_item_dead_letter_cycles + 5):
+        store = CatalogArtifactStore()  # 매 주기 완전히 새 스토어 — 스트릭도 함께 리셋(구 동작)
+        with pytest.raises(RuntimeError, match="embed API down"):
+            await run_artifacts_batch(
+                fetch=fetch, llm=_EnrichLLM(), embed=_FailingEmbed(), store=store, settings=settings
+            )
+        assert store.get(1) is None  # dead_letter_cycles 에 영영 도달하지 못해 격리되지 않는다
+
+
+async def test_page_streak_converges_across_simulated_process_restarts():
+    """[#416] 3선(페이지 비율 가드) 연속 발동 카운터도 스토어 인스턴스 교체를 가로질러
+    누적된다 — 2선과 같은 시간 유계 원리(#325 R5)가 재시작에도 유지된다."""
+    from app.pipelines.artifact_store import FailureStreakTable
+
+    shared_streaks = FailureStreakTable()
+    names = [f"실패{i}" for i in range(5)]
+    changes = [_change(i + 1, name=name) for i, name in enumerate(names)]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    # content_retry_cycles=0 — 이 테스트는 3선 자체를 검증하며, 1선 항목이 #421 재시도 큐로
+    # 새지 않고 매 주기 결정적으로 페이지 비율에 반영되게 고정한다.
+    settings = get_settings().model_copy(update={"artifacts_batch_content_retry_cycles": 0})
+    llm = _FlakyLLM(always_fail=names)
+
+    def new_store():
+        s = CatalogArtifactStore()
+        s._failure_streaks = shared_streaks
+        s.set_cursor("checkpoint")
+        return s
+
+    for _ in range(settings.artifacts_batch_page_failure_max_cycles - 1):
+        store = new_store()
+        with pytest.raises(_batch.PageFailureThresholdExceeded):
+            await run_artifacts_batch(
+                fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+            )
+        assert store.get_cursor() == "checkpoint"
+
+    store = new_store()
+    result = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+    )
+    assert result.failed == 5
+    assert store.get_cursor() == "c1"
+
+
+async def test_full_rebuild_records_streaks_on_real_store_not_temp_store():
+    """[#416] full_rebuild 에서도 스트릭은 임시 스토어(work)가 아니라 진짜 store 에 기록된다
+    — rebuild() 내부 임시 CatalogArtifactStore 는 replace_all 로 버려지므로, 스트릭을 거기
+    두면 다음 관측 시 증발한다. 2선(전파) 경로 실패로 검증한다 — 1선(내용 실패)은 성공 시
+    스트릭을 clear 하므로 이 구분에 적합하지 않다.
+    """
+    from app.pipelines.artifact_store import FAILURE_STREAK_KIND_ITEM
+
+    store = CatalogArtifactStore()
+    settings = get_settings()
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(
+            items=[_change(9, name="poison")], next_cursor="c1", has_more=False
+        )
+
+    with pytest.raises(RuntimeError, match="embed API down"):
+        await run_artifacts_batch(
+            fetch=fetch,
+            llm=_EnrichLLM(),
+            embed=_FailingEmbed(),
+            store=store,
+            settings=settings,
+            full_rebuild=True,
+        )
+
+    # 스트릭이 진짜 store 에 남았다면(임시 work 가 아니라) 직접 bump 시 1이 아니라 2부터
+    # 이어서 센다 — work 에 기록됐다면 이 store 는 처음 보는 값이라 1이 나왔을 것이다.
+    assert store.bump_failure_streak(FAILURE_STREAK_KIND_ITEM, "9", ttl_s=3600.0) == 2
+
+
+async def test_pg_store_failure_streak_api_falls_back_on_exception(monkeypatch, caplog):
+    """[#416] PgCatalogArtifactStore 의 3개 실패 스트릭 메서드는 DB 오류 시 인메모리 폴백으로
+    위임하고 예외를 밖으로 내지 않는다 — 폴백 동작이 곧 종전(프로세스 메모리) 동작이라
+    테이블 부재·pg 순단에도 배치가 죽지 않는다. 실 커넥션 풀 없이 스트릭 관련 인스턴스
+    필드만 갖춘 최소 구성으로 검증한다(DB 접속 자체는 이 테스트의 관심사가 아니다)."""
+    import threading
+
+    from app.pipelines.artifact_store import FailureStreakTable
+    from app.pipelines.pg_artifact_store import PgCatalogArtifactStore
+
+    store = object.__new__(PgCatalogArtifactStore)  # __init__(dsn) 의 실 커넥션 없이 구성
+    store._failure_streak_schema_ready = False
+    store._failure_streak_schema_lock = threading.Lock()
+    store._failure_streak_fallback = FailureStreakTable()
+    store._failure_streak_fallback_warned = False
+
+    def boom_ensure():
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(store, "_ensure_failure_streak_schema", boom_ensure)
+
+    with caplog.at_level("WARNING"):
+        assert store.bump_failure_streak("item", "1", ttl_s=60) == 1
+        assert store.bump_failure_streak("item", "1", ttl_s=60) == 2
+        store.clear_failure_streak("item", "1")
+        assert store.bump_failure_streak("item", "1", ttl_s=60) == 1
+        assert store.purge_stale_failure_streaks(ttl_s=60) == 0
+
+    assert "인메모리 폴백" in caplog.text
+
+
+def test_default_settings_failure_streak_ttl_exceeds_convergence_window():
+    """[공통 #14 기본값 정합] 스트릭 TTL(#416) 기본값이 수렴 창(dead_letter_cycles ×
+    catalog_batch_interval_s)보다 길다 — 짧으면 정상 재시작 빈도에서도 "연속" 판정이 끊겨
+    dead-letter 상한에 영영 도달하지 못하는 회귀가 조용히 재현된다."""
+    settings = get_settings()
+    convergence_window_s = (
+        settings.artifacts_batch_item_dead_letter_cycles * settings.catalog_batch_interval_s
+    )
+    assert settings.artifacts_batch_failure_streak_ttl_s > convergence_window_s
+
+
+# ── PR 리뷰 라운드 1 — F2: 재등재 증폭 방지(F1 이 대부분을 없앤다는 것을 실측으로 고정) ──
+
+
+async def test_content_retry_default_settings_no_amplification_at_page_failure_limit():
+    """[F2] 출하 기본값(content_retry_cycles=1) 그대로 5건 콘텐츠 실패 페이지가 3선 상한까지
+    가는 시나리오에서 주기별 LLM 호출 수가 고정된다 — F1(재시도는 _drain 정상 완료 뒤에만 +
+    이번 실행 등재분 skip)이 재시도 패스의 같은 주기 중복 처리를 없애 "10 → 30 → 50" 식
+    증폭이 사라졌음을 실측한다. 기존 3선 테스트들은 전부 ``content_retry_cycles=0`` 으로
+    덮어써 이 기본값 조합을 검증하지 않았다(리뷰 지적) — 이 테스트가 그 기본값 판이다.
+    """
+    store = CatalogArtifactStore()
+    names = [f"실패{i}" for i in range(5)]
+    changes = [_change(i + 1, name=name) for i, name in enumerate(names)]
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
+
+    llm = _FlakyLLM(always_fail=names)
+    settings = get_settings()
+    assert settings.artifacts_batch_content_retry_cycles == 1  # 기본값 전제 명시
+    assert settings.artifacts_batch_page_failure_max_cycles == 3  # 기본값 전제 명시
+
+    expected_calls_per_cycle = len(names) * settings.enrichment_item_attempts  # 5 × 2 = 10
+    per_cycle_calls: list[int] = []
+    prev_total = 0
+
+    for _ in range(settings.artifacts_batch_page_failure_max_cycles - 1):
+        with pytest.raises(_batch.PageFailureThresholdExceeded):
+            await run_artifacts_batch(
+                fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+            )
+        total = sum(llm.calls_by_name.values())
+        per_cycle_calls.append(total - prev_total)
+        prev_total = total
+
+    result = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+    )
+    total = sum(llm.calls_by_name.values())
+    per_cycle_calls.append(total - prev_total)
+
+    # 매 주기 정확히 "5건 × attempts" 만큼만 호출된다 — 재시도 패스가 겹쳐 배가되지 않는다.
+    assert per_cycle_calls == [expected_calls_per_cycle] * 3
+    assert result.failed == 5
+    assert store.get_cursor() == "c1"
+
+
+# ── PR 리뷰 라운드 1 — F3: HIDDEN 삭제 성공이 item 스트릭을 clear 하는지 ──
+
+
+async def test_hidden_delete_success_clears_item_streak():
+    """[F3] HIDDEN 삭제 성공은 그 항목의 정상 처리이므로 item 스트릭을 clear 한다 — 아니면
+    영속화(TTL 기본 1h) 이후로 "ON_SALE 인프라 실패 2회 → HIDDEN 삭제 → 1시간 안에 재판매 →
+    재판매 후 첫 실패가 과거 2와 합쳐져 3/3 으로 즉시 오격리" 가 가능해진다.
+    """
+    store = CatalogArtifactStore()
+    store.set_cursor("checkpoint")
+    settings = get_settings()
+
+    async def fetch_fail(cursor, limit):
+        return ProductChangesPage(items=[_change(1, name="A")], next_cursor="c1", has_more=False)
+
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="embed API down"):
+            await run_artifacts_batch(
+                fetch=fetch_fail,
+                llm=_EnrichLLM(),
+                embed=_FailingEmbed(),
+                store=store,
+                settings=settings,
+            )
+    assert store.get_cursor() == "checkpoint"  # streak=2(<3) 라 아직 전파만 됨
+
+    async def fetch_hidden(cursor, limit):
+        return ProductChangesPage(
+            items=[_change(1, status="HIDDEN")], next_cursor="c2", has_more=False
+        )
+
+    result = await run_artifacts_batch(
+        fetch=fetch_hidden, llm=_EnrichLLM(), embed=_embed, store=store, settings=settings
+    )
+    assert result.hidden == 1
+    assert store.get_cursor() == "c2"
+
+    # 재판매(같은 product_id 의 새 ON_SALE) — 스트릭이 clear 됐다면 이번 1회 실패는
+    # streak=1<3 이라 전파(커서 미전진)돼야 한다. F3 이전이었다면 과거 2 와 합쳐져
+    # streak=3/3 으로 즉시 격리되어(예외 없이) 커서가 "c3" 로 전진했을 것이다.
+    async def fetch_resale(cursor, limit):
+        return ProductChangesPage(
+            items=[_change(1, name="A-재판매")], next_cursor="c3", has_more=False
+        )
+
+    with pytest.raises(RuntimeError, match="embed API down"):
+        await run_artifacts_batch(
+            fetch=fetch_resale,
+            llm=_EnrichLLM(),
+            embed=_FailingEmbed(),
+            store=store,
+            settings=settings,
+        )
+    assert store.get_cursor() == "c2"  # 전파됐으므로 미전진(격리됐다면 "c3" 로 전진했을 것)
+
+
+# ── PR 리뷰 라운드 1 — F4: 재시도 예산 카운터 불변식(N 회 정확히 재시도 후 격리) ──
+
+
+async def test_content_retry_cycles_two_retries_exactly_twice():
+    """[F4] ``artifacts_batch_content_retry_cycles=2`` 면 cross-cycle 재시도가 정확히 2회
+    일어난 뒤에야 영구 격리된다 — 등재 시 ``retry_attempts=0`` 에서 시작해 실패마다 +1 하는
+    불변식을 고정한다(수정 전에는 등재 시 1로 시작해 N≥2 에서 재시도가 N-1 회로 한 주기
+    모자랐다)."""
+    store = CatalogArtifactStore()
+    call_count = 0
+
+    async def fetch(cursor, limit):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return ProductChangesPage(
+                items=[_change(1, name="영구노이즈")], next_cursor="c1", has_more=False
+            )
+        return ProductChangesPage(items=[], next_cursor="c1", has_more=False)
+
+    settings = get_settings().model_copy(update={"artifacts_batch_content_retry_cycles": 2})
+    llm = _FlakyLLM(always_fail=["영구노이즈"])
+
+    result1 = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+    )
+    assert result1.failed == 1
+    assert 1 in _batch._content_retry_queue
+    calls_after_1 = llm.calls_by_name["영구노이즈"]
+
+    # cycle2: cross-cycle 재시도 1회차 — 실패하지만 예산(2) 미만이라 큐에 남는다.
+    result2 = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+    )
+    assert result2.failed == 0
+    assert result2.recovered == 0
+    assert 1 in _batch._content_retry_queue
+    calls_after_2 = llm.calls_by_name["영구노이즈"]
+    assert calls_after_2 == calls_after_1 + settings.enrichment_item_attempts
+
+    # cycle3: cross-cycle 재시도 2회차 — 예산 소진, 이제서야 격리.
+    result3 = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+    )
+    assert result3.failed == 1
+    assert 1 not in _batch._content_retry_queue
+    calls_after_3 = llm.calls_by_name["영구노이즈"]
+    assert calls_after_3 == calls_after_2 + settings.enrichment_item_attempts
+
+    # cycle4: 이미 격리됐으므로 더 이상 호출되지 않는다.
+    result4 = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+    )
+    assert result4.failed == 0
+    assert llm.calls_by_name["영구노이즈"] == calls_after_3
+
+
+# ── PR 리뷰 라운드 1 — F5: pg 폴백 clear 는 DB 성공 여부와 무관하게 항상 적용 ──
+
+
+def test_pg_store_clear_failure_streak_always_clears_fallback_even_when_db_fails():
+    """[F5] ``clear_failure_streak`` 는 DB DELETE 가 실패해도 인메모리 폴백 표를 항상
+    clear 한다 — "성공 처리 후 DELETE 만 DB 오류" 시나리오에서 인메모리에만 stale 값이
+    남는 드리프트 절반을 없앤다(dict pop 이라 비용 0)."""
+    from app.pipelines.artifact_store import FailureStreakTable
+    from app.pipelines.pg_artifact_store import PgCatalogArtifactStore
+
+    store = object.__new__(PgCatalogArtifactStore)  # __init__(dsn) 의 실 커넥션 없이 구성
+    store._failure_streak_schema_ready = True  # ensure_schema 분기를 건드리지 않는다
+    store._failure_streak_fallback = FailureStreakTable()
+    store._failure_streak_fallback_warned = False
+    store._failure_streak_fallback.bump("item", "1", ttl_s=60)  # 이전 폴백 잔재를 미리 심어둔다
+
+    class _BoomConnCtx:
+        def __enter__(self):
+            raise RuntimeError("db down mid-delete")
+
+        def __exit__(self, *exc):
+            return False
+
+    class _BoomPool:
+        def connection(self):
+            return _BoomConnCtx()
+
+    store._pool = _BoomPool()
+
+    store.clear_failure_streak("item", "1")
+
+    # DB DELETE 는 실패했지만(_BoomPool), 인메모리 폴백은 항상 clear 됐다 — 다음 bump 는 1부터.
+    assert store._failure_streak_fallback.bump("item", "1", ttl_s=60) == 1
