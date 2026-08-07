@@ -22,6 +22,7 @@ from app.agents.buyer._frames import sse
 from app.agents.buyer.recommendation.budget_sets import BudgetSet, BudgetSetPlan, build_budget_sets
 from app.agents.buyer.recommendation.need_priority import classify_need_priorities
 from app.agents.buyer.recommendation.no_condition import (
+    dedup_exposed_names,
     has_total_budget,
     rank_by_profile,
     within_budget,
@@ -796,7 +797,7 @@ async def stream_recommendation(
             profile_vec, exclude=profile_exclude, settings=settings
         )
         if profile_ranked is not None:
-            ranked_by_profile, profile_reason_by_id = profile_ranked
+            ranked_by_profile, profile_reason_by_id, profile_name_by_id = profile_ranked
             exposed = ranked_by_profile[: settings.expose_max]
             profile_entry = RecommendationListEntry(
                 list_id=uuid4().hex,
@@ -834,11 +835,34 @@ async def stream_recommendation(
                         list_ids=[profile_entry.list_id],
                     ).model_dump(by_alias=True),
                 )
-                # 담기 해소용 보관 — 이 경로는 **상품명을 모른다**(AI 인덱스에 원본 컬럼 없음).
-                # 빈 이름으로 넣어 id 기반 담기 가드(#118)는 살리고, 이름 지칭("그 이어폰")만
-                # 이 턴에서 해소되지 않는다.
+                # 담기 해소용 보관 — [#435] 이 경로도 이제 상품명을 싣는다(AI 인덱스에 원본
+                # 컬럼은 없지만, 임베딩 입력으로 이미 조립된 `search_doc` 첫 줄에서 최선노력
+                # 복원한다 — `no_condition.rank_by_profile` 참조). 추출 실패·노출 집합 내 중복
+                # (G2)이면 오늘처럼 빈 이름으로 degrade 하고, id 기반 담기 가드(#118)는 이름
+                # 유무와 무관하게 그대로 산다.
                 if cart_store is not None and thread_key is not None:
-                    await cart_store.set_last_reco(thread_key, [(pid, "") for pid in exposed])
+                    # [#435 리뷰 C1] G2 판정 범위를 이번 턴 노출 집합 → **스레드 누적 last_reco
+                    # 와의 합집합**으로 넓힌다. 이번 턴만 보면 못 잡는 경우가 남는다 — 이름 없는
+                    # 상품(name 미상)은 search_doc 첫 줄이 category 로 밀리는데(예: "생활용품"),
+                    # 턴 1 이 [101]→"생활용품"을 유일하게 저장하고 턴 3 이 [202]→"생활용품"도
+                    # 그 턴 안에서는 유일해 그대로 저장되면, 누적 `last_reco` 에 다른 productId
+                    # 둘이 같은 이름으로 남아 "생활용품 찜해줘"에 LLM 이 임의로 하나를 확정한다
+                    # (오확정). 누적 이름은 정상 경로(B, Spring 원본 이름)에서 온 것도 섞여 있어
+                    # 그쪽과 겹쳐도 같은 이유로 버린다 — 조회 실패는 이름 보강 없이 degrade한다
+                    # (선택 필드, §7 "실패해도 턴을 죽이지 않는다").
+                    try:
+                        accumulated_names = dict(await cart_store.get_last_reco(thread_key))
+                    except Exception as exc:  # noqa: BLE001 - 이름 보강 실패로 담기 흐름을 죽이지 않는다
+                        logger.warning(
+                            "profile_accumulated_names_failed", extra={"reason": str(exc)}
+                        )
+                        accumulated_names = {}
+                    exposed_names = dedup_exposed_names(
+                        exposed, profile_name_by_id, accumulated_names
+                    )
+                    await cart_store.set_last_reco(
+                        thread_key, [(pid, exposed_names.get(pid, "")) for pid in exposed]
+                    )
             else:
                 if trace := current_request_trace():
                     trace.mark_degraded("push_skipped")
