@@ -108,10 +108,11 @@ def build_results(
     pacer: dict[str, Any],
     budget: dict[str, Any],
     dry_run: bool,
+    union_enabled: bool = False,
 ) -> dict[str, Any]:
     axes = scored["axes"]
     slices = scored["slices"]
-    return {
+    payload = {
         "prompt": prompt,
         "tier": tier,
         "modelConfig": model_config,
@@ -145,6 +146,12 @@ def build_results(
         ],
         "sampleRows": sample_rows_payload,
     }
+    if union_enabled:
+        # [F-4, 리뷰 findings-432-r1] 기본(off) 산출물 형상을 그대로 얼린다(§2-1) — union 관련
+        # 키는 union_enabled 일 때만 넣는다. off 에서 이 키가 섞이면 #433 이 굳힌 6판과 구조
+        # 비교를 할 때 union 을 안 켰는데도 키가 달라진다.
+        payload["unionEnabled"] = True
+    return payload
 
 
 def _axis_row(axis_id: str, axis: dict[str, Any]) -> str:
@@ -337,6 +344,57 @@ def render_report(results: dict[str, Any]) -> str:
         f"- `expansionGateWouldFireRate`: {_fmt_score(axes['expansionGateWouldFireRate'])}",
         f"- `missRateUnderExpansionAssumption`: {_fmt_score(axes['missRateUnderExpansionAssumption'])}",
     ]
+    if results.get("unionEnabled"):
+        lines.append(
+            f"- `unionStageErrorCount`: {results['diagnostics']['unionStageErrorCount']}"
+            f" — {results['diagnostics']['definition']['unionStageErrorCount']}"
+        )
+
+    if results.get("unionEnabled"):
+        lines += [
+            "",
+            "## union(전개 후 판정) — #432",
+            "",
+            "> **오염 통제(§2-6)**: 이 절의 축은 전부 exploratory 다 — confirmatory 로 승격하지 "
+            "않는다. `#331`(카테고리 매핑 품질)·`#332`(니즈 전개 품질)의 실패가 이 표에 섞인다 — "
+            "분해는 `samples.csv` 의 `unionMappedLegCount`·`unionExpansionReason`·"
+            "`unionCategoryExpanded` 컬럼으로 읽는다. union 단계에서 예외가 난 표본은 버리지 "
+            "않고 union 축 **분모에서만** 제외한다(`unionStageErrorCount` 위 참조).",
+            "",
+            "| 축 | decompose 직후 | union(전개 후) |",
+            "|---|---|---|",
+            f"| 미탐율 | `missRate` {_fmt_score(axes['missRate'])} | "
+            f"`missRateAfterExpansion` {_fmt_score(axes['missRateAfterExpansion'])} |",
+            f"| 오탐율 | `falseAlarmRate` {_fmt_score(axes['falseAlarmRate'])} | "
+            f"`falseAlarmRateAfterExpansion` {_fmt_score(axes['falseAlarmRateAfterExpansion'])} |",
+            f"| 전개 게이트 발동률(분모가 서로 다르다 — 아래 참조) | `expansionGateWouldFireRate` "
+            f"{_fmt_score(axes['expansionGateWouldFireRate'])} | `expansionGateFiredRate` "
+            f"{_fmt_score(axes['expansionGateFiredRate'])} |",
+            "",
+            f"`expansionSuppressionRate`(전개가 되물음을 꺼뜨린 비율, decompose True → union "
+            f"False): {_fmt_score(axes['expansionSuppressionRate'])}"
+            + (
+                f" CI95 {_ci_text(axes['expansionSuppressionRate'])}"
+                if axes["expansionSuppressionRate"]["ci95"]
+                else ""
+            ),
+            "",
+            "위 두 miss 축의 분모는 `expectedReask=true` 앵커의 recommend 표본(라벨 기준)이고, "
+            "`expansionSuppressionRate` 의 분모는 라벨과 무관한 decompose 판정 True 표본이다 — "
+            "**분모가 다르므로 두 miss 축의 차이가 `expansionSuppressionRate` 와 같지 않다**"
+            "(F-1, 2차 리뷰어 발견). `expansionSuppressionRate` 는 독립 축으로 읽어라 — 두 miss "
+            '축은 "전개 후 미탐이 어떻게 되는가"를, 억제율은 "판정 True 였던 것 중 몇 %가 '
+            '꺼졌는가"를 각각 답한다.',
+            "",
+            "`expansionGateWouldFireRate` 와 `expansionGateFiredRate` 도 **분모가 다른 별개 "
+            '질문**이다(F-5) — 전자는 "판정 True 표본 중 몇 %가 게이트에 걸리나", 후자는 '
+            '"전체 recommend 표본 중 몇 %에서 게이트가 실제로 발동하나"를 답한다. 분모를 '
+            "일부러 좁히지 않았다 — 판정 True 표본은 정의상 `category_queries` 가 비어 있고, "
+            "`detect_expansion_need([], case=…, unresolved=…)` 는 `unresolved` 값과 무관하게 "
+            "`no_legs` 를 돌려주므로 그 좁은 분모 안에서는 두 값이 **구조적으로 항상 같다**(분모를 "
+            "좁히면 이 축이 기존 축의 복제가 되어 새로 재는 정보가 0 이 된다). 넓은 분모라서 "
+            "비로소 D2(`mapping_failed`)가 처음 관측된다 — 두 수치를 직접 비율로 대조하지 마라.",
+        ]
 
     lines += ["", "## 셀별 표본 수", "", "| 셀 | 슬라이스 | 표본 | 시도 |", "|---|---|---|---|"]
     for cell in results["cells"]:
@@ -380,6 +438,19 @@ def render_report(results: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+UNION_SAMPLE_COLUMNS = (
+    "unionVerdict",
+    "unionOutcome",
+    "unionMappedLegCount",
+    "unionCategoryExpanded",
+    "unionFiltersCategory",
+    "unionExpansionReason",
+    "unionBlockingAxes",
+    "unionStageLatencyMs",
+    "unionStageError",
+)
+
+
 def write_artifacts(
     out: Path,
     *,
@@ -387,50 +458,64 @@ def write_artifacts(
     manifest: dict[str, Any],
     cells: list[CellResult],
     sample_rows_payload: list[dict[str, Any]],
+    union_enabled: bool = False,
 ) -> None:
-    """산출물 6종을 결정론적으로 쓴다."""
+    """산출물 6종을 결정론적으로 쓴다.
+
+    [#432] `union_enabled=False`(기본)면 `samples.csv` 에 union 컬럼이 **아예 없다** — 기존
+    산출물 형상이 그대로 얼어 있어야 #433 이 굳힌 6판과 계속 비교 가능하다."""
     out.mkdir(parents=True, exist_ok=True)
     _write_json(out / "results.json", results)
     _write_json(out / "run_manifest.json", manifest)
     (out / "report.md").write_text(render_report(results), encoding="utf-8", newline="\n")
-    _write_csv(
-        out / "samples.csv",
-        [
-            "caseId",
-            "n",
-            "slice",
-            "intent",
-            "case",
-            "semanticQueryIsFallback",
-            "semanticQuery",
-            "verdict",
-            "expectedReask",
-            "outcome",
-            "causeAxes",
-            "blockingAxes",
-            "expansionReason",
-            "latencyMs",
-        ],
-        [
-            {
-                "caseId": row["caseId"],
-                "n": row["n"],
-                "slice": row["slice"],
-                "intent": row["intent"],
-                "case": row["case"],
-                "semanticQueryIsFallback": row["semanticQueryIsFallback"],
-                "semanticQuery": row["semanticQuery"] or "",
-                "verdict": row["verdict"],
-                "expectedReask": row["expectedReask"],
-                "outcome": row["outcome"],
-                "causeAxes": ";".join(row["causeAxes"]),
-                "blockingAxes": ";".join(row["blockingAxes"]),
-                "expansionReason": row["expansionReason"] or "",
-                "latencyMs": row["latencyMs"],
-            }
-            for row in sample_rows_payload
-        ],
-    )
+    sample_columns = [
+        "caseId",
+        "n",
+        "slice",
+        "intent",
+        "case",
+        "semanticQueryIsFallback",
+        "semanticQuery",
+        "verdict",
+        "expectedReask",
+        "outcome",
+        "causeAxes",
+        "blockingAxes",
+        "expansionReason",
+        "latencyMs",
+    ]
+    if union_enabled:
+        sample_columns.extend(UNION_SAMPLE_COLUMNS)
+    sample_rows_csv = []
+    for row in sample_rows_payload:
+        csv_row = {
+            "caseId": row["caseId"],
+            "n": row["n"],
+            "slice": row["slice"],
+            "intent": row["intent"],
+            "case": row["case"],
+            "semanticQueryIsFallback": row["semanticQueryIsFallback"],
+            "semanticQuery": row["semanticQuery"] or "",
+            "verdict": row["verdict"],
+            "expectedReask": row["expectedReask"],
+            "outcome": row["outcome"],
+            "causeAxes": ";".join(row["causeAxes"]),
+            "blockingAxes": ";".join(row["blockingAxes"]),
+            "expansionReason": row["expansionReason"] or "",
+            "latencyMs": row["latencyMs"],
+        }
+        if union_enabled:
+            csv_row["unionVerdict"] = row.get("unionVerdict")
+            csv_row["unionOutcome"] = row.get("unionOutcome") or ""
+            csv_row["unionMappedLegCount"] = row.get("unionMappedLegCount")
+            csv_row["unionCategoryExpanded"] = row.get("unionCategoryExpanded")
+            csv_row["unionFiltersCategory"] = row.get("unionFiltersCategory") or ""
+            csv_row["unionExpansionReason"] = row.get("unionExpansionReason") or ""
+            csv_row["unionBlockingAxes"] = ";".join(row.get("unionBlockingAxes") or [])
+            csv_row["unionStageLatencyMs"] = row.get("unionStageLatencyMs")
+            csv_row["unionStageError"] = row.get("unionStageError") or ""
+        sample_rows_csv.append(csv_row)
+    _write_csv(out / "samples.csv", sample_columns, sample_rows_csv)
     _write_csv(
         out / "cells.csv",
         ["cellId", "caseId", "slice", "sampleCount", "attempts", "failureCount", "filled"],

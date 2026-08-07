@@ -10,6 +10,42 @@
 ## [Unreleased]
 
 ### Added
+- **#432 — 과소지정 프로브에 union 측정 모드를 넣어 전개 후 판정까지 잰다** — 기존
+  `evals/underspecified_probe` 는 decompose 직후·판정 직전 형상만 쟀다. `--union`(기본 off)을
+  켜면 `app.agents.buyer.graph._prepare_recommendation`(카테고리 매핑 + `needs_expansion`
+  #217 보정)을 decompose 산출의 깊은 사본에서 그대로 태워 "전개 후 판정"까지 재고,
+  `missRateAfterExpansion`·`falseAlarmRateAfterExpansion`·`expansionSuppressionRate`·
+  `expansionGateFiredRate`(가정판 `expansionGateWouldFireRate` 의 실측 대응물) 4축을 추가한다.
+  union 단계 전용 LLM 은 decompose 프롬프트 오버라이드가 없는 `PacedLLM`(같은 delegate·pacer)
+  이라 보조 LLM 노드(카테고리 택일·전개)가 후보 프롬프트로 덮이지 않는다. 실측 2판: smart
+  티어(진단용, 프로덕션 아님)에서 `missRate` 56/104→`missRateAfterExpansion` 59/104,
+  `expansionSuppressionRate` 3/48(6.2%), `expansionGateFiredRate` 47/232(20.3%, 가정판
+  6.2%보다 훨씬 크다 — D2 규칙이 가정판에서는 구조적으로 발동할 수 없었다); fast
+  티어(프로덕션, `#430` 미머지라 전복 축은 해당 없음)에서 `expansionGateFiredRate`
+  78/240(32.5%)만 실측됐다. union 축은 전부 exploratory 이고 union 단계 실패 표본은 버리지
+  않고 union 축 분모에서만 제외한다(`unionStageErrorCount`, 실측 2판 모두 0). `--union` 없는
+  기본 실행의 산출물 형상은 그대로 얼려 `#433` 이 굳힌 6판과 계속 비교 가능하다.
+  `evals/legs_probe` 의 union 후속과는 앵커·정답지가 달라 묶지 않는다. **2차 리뷰 후속
+  (G-3)** — `#430` back-merge 로 fast 티어의 선행 조건(판정 True 표본 존재)이 충족돼
+  `union-fast-2026-08-08-post430-run1`(prompt `865ed6fd771e`)을 추가로 돌렸다:
+  `missRate` 8/112(7.1%)→`missRateAfterExpansion` 62/112(55.4%),
+  `expansionSuppressionRate` **55/106(51.9%)** — decompose 단계가 정확히 되물어야 한다고
+  판정한 표본의 절반 이상이 전개(카테고리 매핑) 단계에서 억제된다. `#431` 전환 판단의 실제
+  재료는 이 판이다. 기준선 색인의 프롬프트 세대 라벨도 "현행 dev 프롬프트"에서 해시 표기로
+  바로잡았다(`#386`·`#430` 두 차례 머지로 낡았던 라벨, G-1).
+- **#433 — 과소지정 프로브 기준선을 n=1 에서 두 프롬프트 세대 각각의 n=3 분포로 굳힌다** —
+  #380 이 커밋한 `fast-2026-08-06/` 은 단일 실행이라 `#430` before·`#431` 전환 판단의 근거로
+  쓰기엔 재현성이 없었다. 착수 전 실측에서 `hashes.systemPrompt` 가 커밋된 기준선과 현재 HEAD
+  사이에 다르다는 사실을 발견했다(`#386` `wishlist_view` intent 신설이 decompose `_SYSTEM` 을
+  바꿈) — 두 프롬프트 세대를 각각 독립 3회씩 굳혔다: 현행 dev 프롬프트(`e62fd0f6e03d`)
+  `fast-2026-08-08-run1~3`(missRate 99.1~100.0%, 편차 0.9%p, **`#430` before 정본**)와
+  pre-#386 프롬프트(`11c6fe3bfa0c`) `fast-2026-08-06-run2`·`run3`(missRate 100.0%, 편차 0%p,
+  역사 기록). `smart` 티어 1회(`missRate` 53.8%)도 추가해 원인 축 분해가 티어에 따라
+  달라지는지 봤다 — `semanticQueryIsFallback` 단독 비율(88~93%)은 티어 무관하게 안정적이지만
+  `missRate` 자체는 fast 대비 smart 가 훨씬 낮다. 기준선 색인
+  `evals/underspecified_probe/baselines/README.md` 신설(정본 하나만 인용하도록). 프롬프트·
+  하네스 코드는 바꾸지 않았다(`metrics.py` docstring 의 비-recommend intent 목록에
+  `wishlist_view` 한 단어만 추가, 계측 동작 불변).
 - **#356 — consolidation 구조화 트리플 산출 + 그래프 입력 전환(OPEN-G0 해소)** —
   취향을 자유형 한국어 문장 하나가 아니라 `주어–술어–목적어` 트리플로 만들고, consolidation이
   fact 목록 대신 **그래프 문서를 입력으로 읽게** 했다. 지금까지는 지울 수 있는 단위가 없어
