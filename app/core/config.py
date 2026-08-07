@@ -53,6 +53,7 @@ ROUTE_INTENTS = frozenset(
         "cart_remove",
         "wishlist_add",
         "wishlist_remove",
+        "wishlist_view",
     }
 )
 
@@ -1009,6 +1010,29 @@ class Settings(BaseSettings):
     # 찜 지시 표지 — "찜한 거 담아줘"·"찜해둔 이어폰 담아줘"류에서 찜은 지시 대상을 수식할 뿐
     # 동작이 아니다. 이 표지가 있으면 찜 판정에 개입하지 않는다(그 발화의 동사는 담기다).
     wishlist_reference_markers: list[str] = ["찜한", "찜해둔", "찜해 놓은", "찜했던"]
+    # [#386] 찜 **조회** 표지 — 오분류가 파괴적으로 끝나는 것을 막는 결정론 가드에만 쓴다
+    # (`wishlist.py::_resolve_wishlist_remove_target` 규칙 3). 라우팅 판정에는 쓰지 않는다.
+    #
+    # 왜 필요한가: 조회 발화가 `wishlist_remove` 로 오분류되면, 찜이 정확히 1건일 때 규칙 3이
+    # "이름도 문맥 id 도 없으니 그 1건"이라며 **사용자가 요청하지 않은 삭제**를 한다. 반대 방향
+    # (해제 발화가 조회로 감)은 목록만 보여주고 끝나 무해하다 — 대가가 비대칭이라 조회 쪽으로
+    # 보수적으로 기운다(docs/lessons.md "결정적으로 풀리는 규칙을 확률적 계층에 맡기지 않는다").
+    #
+    # ⚠️ 명사 하나짜리 표지를 만들지 않는다(docs/lessons.md — "전부" ⊂ "전부터" 부류의 재발
+    # 방지). "찜"·"목록" 단독은 `wishlist_add_markers` 의 "찜 목록에 넣어줘"에 그대로 묻히므로
+    # **어미까지 갖춘 조회 구**만 담는다. 오탐해도 결과는 되물음(파괴적 동작 없음)이라 이 방향의
+    # 실수는 싸다 — 그래도 좁게 두는 편이 진단하기 쉽다.
+    wishlist_view_markers: list[str] = [
+        "뭐 찜했",
+        "뭘 찜했",
+        "찜한 거 보여",
+        "찜한 것 보여",
+        "찜 목록 보여",
+        "찜 목록 알려",
+        "찜 목록 확인",
+        "위시리스트 보여",
+        "위시리스트 뭐",
+    ]
     # 부정·유보 표지(2차 리뷰 지적 1·2·3, `intent_guard.py::_matches_unnegated`) — 표지 출현
     # 바로 뒤 짧은 창 안에 이 표지 중 하나가 오면 그 표지 출현은 없는 것으로 친다("장바구니에
     # 넣지는 마" 의 담기 표지 무효화, "빼줘야 할까"의 삭제 표지 무효화). 이 규칙은 **개입을
@@ -1166,8 +1190,9 @@ class Settings(BaseSettings):
     # 상한을 완전히 끄려면(종전 동작) profile_session_buffer_cap 이상으로 올린다.
     profile_buffer_repeat_cap: int = Field(default=2, ge=2)
     # 취향 신호가 **구조적으로** 없는 intent 만 버퍼에서 뺀다(REQ-PROF-026) — 주문조회
-    # ("주문 어디까지 왔어")·장바구니 조회("장바구니 보여줘")는 상태 조회라 원하는 게 뭔지에
-    # 대한 정보가 0인데, 매 세션 반복되며 슬라이딩 윈도우를 채워 정작 취향 발화를 밀어낸다.
+    # ("주문 어디까지 왔어")·장바구니 조회("장바구니 보여줘")·찜 목록 조회("내가 뭐 찜했지?",
+    # #386)는 상태 조회라 원하는 게 뭔지에 대한 정보가 0인데, 매 세션 반복되며 슬라이딩
+    # 윈도우를 채워 정작 취향 발화를 밀어낸다.
     #
     # general·cart_add 는 **일부러 남긴다**(PR #223 리뷰 확인):
     #  - general: "나 소니 좋아해" 같은 명시적 취향 표명이 잡담 턴으로 들어온다.
@@ -1198,6 +1223,9 @@ class Settings(BaseSettings):
         "cart_view",
         "cart_remove",
         "wishlist_remove",
+        # [#386] cart_view·order_status 와 같은 부류(취향 신호 0인 상태 조회)다 —
+        # cart_remove·wishlist_remove 처럼 "부호가 반대인 신호"라서 빼는 것이 아니다.
+        "wishlist_view",
     ]
     # I-20 처리 중 claim lease. delta+consolidation LLM 2단계의 기본 최악시간(약 120s)보다
     # 길게 두되, 프로세스 crash 잔재가 영구 duplicate가 되지 않도록 유한하게 유지한다.

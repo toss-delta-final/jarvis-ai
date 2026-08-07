@@ -11,7 +11,11 @@ import json
 
 from app.agents.buyer.cart.graph import stream_cart_add
 from app.agents.buyer.cart.state import CartStateStore, PendingAdd
-from app.agents.buyer.cart.wishlist import stream_wishlist_add, stream_wishlist_remove
+from app.agents.buyer.cart.wishlist import (
+    stream_wishlist_add,
+    stream_wishlist_remove,
+    stream_wishlist_view,
+)
 from app.agents.buyer.recommendation.state import CartIntent
 from app.core.auth import Identity
 from app.core.config import get_settings
@@ -1133,3 +1137,159 @@ async def test_stream_cart_add_delegates_to_wishlist_remove_clears_stale_pending
         )
     )
     assert await store.get_pending(thread_key) is None
+
+
+async def test_view_utterance_misrouted_to_remove_does_not_auto_delete_single_item() -> None:
+    """[#386] 조회 발화가 `wishlist_remove` 로 오분류돼도 찜이 지워지면 안 된다.
+
+    재현(가드 제거 시): 찜이 `[10=이어폰]` 1건뿐인 상태에서 "찜 목록 보여줘"가 해제로 라우팅되면,
+    이름도 문맥 id 도 안 잡혀 규칙 3(목록 1건 자동 선택)이 실행돼 **사용자가 요청하지 않은
+    이어폰이 해제된다.** 오분류의 대가가 비대칭이라(반대 방향은 목록만 보여주고 끝) 조회 쪽으로
+    보수적으로 기운다.
+    """
+
+    async def remove_wishlist_fn(product_id, *, user_id):
+        raise AssertionError("조회 발화인데 remove_wishlist_fn 이 호출됐다")
+
+    events = await _collect(
+        stream_wishlist_remove(
+            identity=_member(),
+            cart=CartIntent(),
+            message="찜 목록 보여줘",
+            settings=get_settings(),
+            get_wishlist_fn=_wishlist(_wishlist_item(10, "이어폰")),
+            remove_wishlist_fn=remove_wishlist_fn,
+        )
+    )
+    assert _types(events) == ["token", "done"]
+    assert not _actions(events)
+
+
+async def test_view_utterance_with_stale_context_id_does_not_auto_delete() -> None:
+    """[#386] 문맥 id(2번 규칙)로도 자동 해제되면 안 된다 — 규칙 3과 같은 사유다."""
+
+    async def remove_wishlist_fn(product_id, *, user_id):
+        raise AssertionError("조회 발화인데 remove_wishlist_fn 이 호출됐다")
+
+    events = await _collect(
+        stream_wishlist_remove(
+            identity=_member(),
+            cart=CartIntent(product_id=20),
+            message="내가 뭐 찜했지?",
+            settings=get_settings(),
+            get_wishlist_fn=_wishlist(_wishlist_item(10, "이어폰"), _wishlist_item(20, "케이스")),
+            remove_wishlist_fn=remove_wishlist_fn,
+        )
+    )
+    assert _types(events) == ["token", "done"]
+    assert not _actions(events)
+
+
+async def test_view_marker_with_remove_marker_still_removes() -> None:
+    """가드가 정상 해제를 막지 않는다 — 해제 표지가 함께 있으면 그 발화의 동사에 해제가 있다."""
+    removed: list[int] = []
+
+    async def remove_wishlist_fn(product_id, *, user_id):
+        removed.append(product_id)
+
+    events = await _collect(
+        stream_wishlist_remove(
+            identity=_member(),
+            cart=CartIntent(),
+            message="찜 목록 보여주고 이어폰 찜 빼줘",
+            settings=get_settings(),
+            get_wishlist_fn=_wishlist(_wishlist_item(10, "이어폰")),
+            remove_wishlist_fn=remove_wishlist_fn,
+        )
+    )
+    assert removed == [10]
+    assert _actions(events)[0]["type"] == "WISHLIST_REMOVED"
+
+
+# ─────────── stream_wishlist_view (이슈 #386, I-28 §4.16) ───────────
+
+
+async def test_wishlist_view_guest_makes_zero_internal_calls() -> None:
+    """게스트 찜 목록 조회는 계약에 없다(회원 전용 I-26/I-27/I-28, M-4) — internal 호출 전에
+    로그인 안내로 끝낸다(api-spec §3.1 게스트 문단). `action` 은 내지 않는다."""
+
+    async def get_wishlist_fn(user_id):
+        raise AssertionError("게스트인데 get_wishlist_fn 이 호출됐다")
+
+    events = await _collect(
+        stream_wishlist_view(identity=_guest(), get_wishlist_fn=get_wishlist_fn)
+    )
+    assert _types(events) == ["token", "done"]
+    assert not _actions(events)
+    assert events[0]["data"]["text"] == "찜 목록 조회에는 로그인이 필요해요."
+
+
+async def test_wishlist_view_anon_makes_zero_internal_calls() -> None:
+    async def get_wishlist_fn(user_id):
+        raise AssertionError("익명인데 get_wishlist_fn 이 호출됐다")
+
+    events = await _collect(stream_wishlist_view(identity=_anon(), get_wishlist_fn=get_wishlist_fn))
+    assert _types(events) == ["token", "done"]
+    assert not _actions(events)
+
+
+async def test_wishlist_view_empty_is_guidance_not_error() -> None:
+    """0건은 오류가 아니다 — 기존 찜 해제 흐름과 같은 문구를 재사용한다."""
+    events = await _collect(stream_wishlist_view(identity=_member(), get_wishlist_fn=_wishlist()))
+    assert _types(events) == ["token", "done"]
+    assert events[0]["data"]["text"] == "찜한 상품이 없어요."
+
+
+async def test_wishlist_view_lists_names_with_purchase_state_labels() -> None:
+    """목록은 `token` 텍스트로만 답한다 — 상품 카드도 `action` 도 없다(경로 B, api-spec §4.16).
+
+    항목별 구매 가능 상태 라벨은 `state_suffix` 를 재사용한다(#310, 장바구니 조회와 같은 규칙).
+    다만 문단 끝 **행동 안내 문장**(`state_advice_lines`)은 붙이지 않는다 — 그 문구는 장바구니
+    어휘("다시 담을 수 있어요")이고, 예시로 드는 `'{품목} 빼줘'` 는 `intent_guard` 가 의도적으로
+    `cart_add` 로 떨어뜨리는 발화라(알려진 거짓음성) 답할 수 없는 안내가 된다.
+    """
+    items = (
+        WishlistItem(product_id=10, name="무선 이어폰", purchase_state="AVAILABLE"),
+        WishlistItem(product_id=20, name="가죽 크로스백", purchase_state="SOLD_OUT"),
+        WishlistItem(product_id=30, name="캠핑 랜턴", purchase_state="HIDDEN"),
+    )
+    events = await _collect(
+        stream_wishlist_view(identity=_member(), get_wishlist_fn=_wishlist(*items))
+    )
+    assert _types(events) == ["token", "done"]
+    assert not _actions(events)
+    text = events[0]["data"]["text"]
+    assert text == "찜한 상품이에요:\n무선 이어폰\n가죽 크로스백 (품절)\n캠핑 랜턴 (판매 종료)"
+    assert "다시 담을 수 있어요" not in text
+    assert "빼는 걸 추천" not in text
+
+
+async def test_wishlist_view_sanitizes_seller_supplied_names() -> None:
+    """상품명은 판매자 입력이라 반드시 `_strip_unsafe` 를 거친다(`remove.py` 와 같은 규약)."""
+    items = (WishlistItem(product_id=10, name="이어\n폰​", purchase_state="AVAILABLE"),)
+    events = await _collect(
+        stream_wishlist_view(identity=_member(), get_wishlist_fn=_wishlist(*items))
+    )
+    text = events[0]["data"]["text"]
+    assert "이어\n폰" not in text
+    assert "​" not in text
+
+
+async def test_wishlist_view_spring_unavailable_degrades_to_token_not_action() -> None:
+    """조회 실패는 `token` 안내 + 정상 `done` 이다 — `action` 을 내지 않는다.
+
+    `ActionData.type` 유니온(api-spec §3.1)에 조회 실패 어휘가 아예 없다. 형제
+    `stream_wishlist_remove` 가 `action(WISHLIST_REMOVE_FAILED)` 을 내는 것은 그쪽이 **변경 턴의
+    선행 조회**이기 때문이고, 이 턴은 상태를 바꾸지 않는다. 개별 처리하지 않으면 상위 스트림의
+    범용 catch-all 이 `error(INTERNAL)` 로 내보낸다(#368).
+    """
+
+    async def get_wishlist_fn(user_id):
+        raise SpringUnavailableError("wishlist down")
+
+    events = await _collect(
+        stream_wishlist_view(identity=_member(), get_wishlist_fn=get_wishlist_fn)
+    )
+    assert _types(events) == ["token", "done"]
+    assert not _actions(events)
+    assert events[0]["data"]["text"] == "찜 목록을 불러오지 못했어요. 잠시 후 다시 시도해 주세요."
