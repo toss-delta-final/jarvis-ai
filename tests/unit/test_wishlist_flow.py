@@ -1191,6 +1191,80 @@ async def test_view_utterance_with_stale_context_id_does_not_auto_delete() -> No
     assert not _actions(events)
 
 
+async def test_view_guard_survives_missing_spaces() -> None:
+    """[#386 리뷰] 띄어쓰기를 생략한 조회 발화에서도 가드가 살아 있어야 한다.
+
+    재현(정규화 전): `"위시리스트뭐있어"` 는 표지 `"위시리스트 뭐"` 와 공백 때문에 부분 문자열
+    매칭이 안 돼 `view_only=False` 로 떨어졌고, 찜이 1건이면 규칙 3이 그대로 실행돼 **삭제됐다.**
+    가드가 필요한 상황(LLM 이 조회 발화를 해제로 오분류)과 표지가 빗나가는 상황이 겹치므로,
+    바로 그 순간에 최후 방어선이 사라지는 셈이었다. 한국어 채팅에서 띄어쓰기 생략은 흔하다.
+    """
+    for message in ("위시리스트뭐있어", "내가뭐찜했지", "찜목록보여줘", "찜한거보여줘"):
+
+        async def remove_wishlist_fn(product_id, *, user_id):
+            raise AssertionError(f"조회 발화인데 remove_wishlist_fn 이 호출됐다: {message!r}")
+
+        events = await _collect(
+            stream_wishlist_remove(
+                identity=_member(),
+                cart=CartIntent(),
+                message=message,
+                settings=get_settings(),
+                get_wishlist_fn=_wishlist(_wishlist_item(10, "이어폰")),
+                remove_wishlist_fn=remove_wishlist_fn,
+            )
+        )
+        assert _types(events) == ["token", "done"], message
+        assert not _actions(events), message
+
+
+async def test_no_auto_select_without_positive_remove_evidence() -> None:
+    """[#386 리뷰] 마커 목록 **밖** 표현에서도 자동 선택이 일어나면 안 된다.
+
+    공백 정규화(위 테스트)는 구멍을 좁혔을 뿐 닫지 못했다 — 아래 발화들은 전부 자연스러운 조회
+    요청인데 조회 표지 목록에 없어서 그대로 삭제됐다(재현 확인). 표지를 계속 늘리는 것은
+    두더지잡기라, 규칙 2·3(사용자가 이름을 대지 않은 대상을 코드가 고르는 규칙)이 **해제 표지라는
+    적극적 근거**를 요구하도록 뒤집었다.
+    """
+    for message in ("내 찜 뭐야", "찜 리스트 좀", "찜해둔거 뭐뭐 있지", "찜한거 리스트"):
+
+        async def remove_wishlist_fn(product_id, *, user_id):
+            raise AssertionError(f"해제 근거가 없는데 remove_wishlist_fn 이 호출됐다: {message!r}")
+
+        events = await _collect(
+            stream_wishlist_remove(
+                identity=_member(),
+                cart=CartIntent(),
+                message=message,
+                settings=get_settings(),
+                get_wishlist_fn=_wishlist(_wishlist_item(10, "이어폰")),
+                remove_wishlist_fn=remove_wishlist_fn,
+            )
+        )
+        assert _types(events) == ["token", "done"], message
+        assert not _actions(events), message
+
+
+async def test_context_id_rule_also_needs_remove_evidence() -> None:
+    """규칙 2(문맥 id)도 같은 근거를 요구한다 — 규칙 3만 막으면 한쪽으로 그대로 샌다."""
+
+    async def remove_wishlist_fn(product_id, *, user_id):
+        raise AssertionError("해제 근거가 없는데 remove_wishlist_fn 이 호출됐다")
+
+    events = await _collect(
+        stream_wishlist_remove(
+            identity=_member(),
+            cart=CartIntent(product_id=20),
+            message="내 찜 뭐야",
+            settings=get_settings(),
+            get_wishlist_fn=_wishlist(_wishlist_item(10, "이어폰"), _wishlist_item(20, "케이스")),
+            remove_wishlist_fn=remove_wishlist_fn,
+        )
+    )
+    assert _types(events) == ["token", "done"]
+    assert not _actions(events)
+
+
 async def test_view_marker_with_remove_marker_still_removes() -> None:
     """가드가 정상 해제를 막지 않는다 — 해제 표지가 함께 있으면 그 발화의 동사에 해제가 있다."""
     removed: list[int] = []
