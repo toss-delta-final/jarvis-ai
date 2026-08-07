@@ -1123,6 +1123,34 @@ def load_seed_rows(path: str | Path) -> list[SeedColorTermRow]:
                 f"색상 동의어 정본 시드 status=approved 인데 canonical 이 없음(null): {item!r}"
             )
         rows.append(SeedColorTermRow(term, canonical, status, provenance, doc_count))
+
+    # 2차 패스 — 행 단위 루프에서는 뒤에 올 행을 알 수 없으므로, 파일 전체를 다 읽은 뒤
+    # canonical 의 참조 무결성을 검증한다. scripts/derive_color_synonym_seed.py::apply_overlay
+    # 가 수확 집합(DB) 기준으로 이미 강제하는 것과 같은 세 규칙을 시드 파일(정본 JSON) 기준으로
+    # 지킨다 — 원천이 다를 뿐 불변식은 같다(#258 리뷰 R4). 위반해도 조용히 통과하면
+    # build_synonym_map 이 그 canonical 을 그룹 키로 못 찾아 "승인이 조용히 아무 일도 하지
+    # 않는" 상태가 된다.
+    by_term = {row.term: row for row in rows}
+    for row in rows:
+        if row.canonical is None:
+            continue
+        target = by_term.get(row.canonical)
+        if target is None:
+            raise ValueError(
+                f"색상 동의어 정본 시드 canonical이 파일 안 term을 가리키지 않음: "
+                f"{row.term!r} → {row.canonical!r}"
+            )
+        if row.status == "approved" and target.status != "approved":
+            raise ValueError(
+                f"고아 승인 — {row.term!r}(approved)의 canonical {row.canonical!r}이 "
+                f"approved가 아님(status={target.status!r})"
+            )
+        if target.canonical != row.canonical:
+            raise ValueError(
+                f"2단계 체인/순환 금지 위반: {row.term!r} → {row.canonical!r} → "
+                f"{target.canonical!r}"
+            )
+
     return rows
 
 

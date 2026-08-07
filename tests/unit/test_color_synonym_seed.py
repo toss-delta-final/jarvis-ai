@@ -815,6 +815,13 @@ def test_load_seed_rows_parses_valid_file(tmp_path) -> None:
                 "doc_count": 2358,
             },
             {
+                "term": "그린",
+                "canonical": "그린",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 287,
+            },
+            {
                 "term": "다크그린",
                 "canonical": "그린",
                 "status": "pending_review",
@@ -828,6 +835,7 @@ def test_load_seed_rows_parses_valid_file(tmp_path) -> None:
 
     assert rows == [
         seed.SeedColorTermRow("블랙", "블랙", "approved", "human", 2358),
+        seed.SeedColorTermRow("그린", "그린", "approved", "human", 287),
         seed.SeedColorTermRow("다크그린", "그린", "pending_review", "seed_llm_assignment", 22),
     ]
 
@@ -1036,6 +1044,114 @@ def test_load_seed_rows_accepts_distinct_terms(tmp_path) -> None:
     rows = seed.load_seed_rows(path)
 
     assert [row.term for row in rows] == ["블랙", "화이트"]
+
+
+def test_load_seed_rows_rejects_canonical_not_present_as_a_term(tmp_path) -> None:
+    """canonical이 파일 안에 실재하는 term을 가리키지 않으면(앵커 누락·오타) build_synonym_map
+    이 그 canonical을 그룹 키로 못 찾아 "승인이 조용히 아무 일도 하지 않는" 상태가 된다
+    (PR #447 리뷰 R4)."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "남색",
+                "canonical": "네이비",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 8,
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="term을 가리키지 않음"):
+        seed.load_seed_rows(path)
+
+
+def test_load_seed_rows_rejects_orphan_approval(tmp_path) -> None:
+    """approved 행의 canonical 행이 approved가 아니면(pending_review) 고아 승인이다."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "남색",
+                "canonical": "네이비",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 8,
+            },
+            {
+                "term": "네이비",
+                "canonical": "네이비",
+                "status": "pending_review",
+                "provenance": "seed_llm_assignment",
+                "doc_count": 632,
+            },
+        ],
+    )
+
+    with pytest.raises(ValueError, match="고아 승인"):
+        seed.load_seed_rows(path)
+
+
+def test_load_seed_rows_rejects_two_step_canonical_chain(tmp_path) -> None:
+    """X→Y→Z 2단계 체인 — status와 무관하게 X의 확장이 조용히 무력화된다."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "X",
+                "canonical": "Y",
+                "status": "pending_review",
+                "provenance": "seed_llm_assignment",
+                "doc_count": 1,
+            },
+            {
+                "term": "Y",
+                "canonical": "Z",
+                "status": "pending_review",
+                "provenance": "seed_llm_assignment",
+                "doc_count": 1,
+            },
+            {
+                "term": "Z",
+                "canonical": "Z",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 1,
+            },
+        ],
+    )
+
+    with pytest.raises(ValueError, match="2단계 체인/순환 금지"):
+        seed.load_seed_rows(path)
+
+
+def test_load_seed_rows_accepts_pending_review_row_pointing_at_approved_anchor(tmp_path) -> None:
+    """정상 회귀 — 정본 실제 형태(예: 다크그린→그린): pending_review 행이 approved 앵커를
+    canonical로 가리키면 통과해야 한다. 여기서 막으면 정본 743행 중 상당수가 로드 불가가 된다."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "다크그린",
+                "canonical": "그린",
+                "status": "pending_review",
+                "provenance": "seed_llm_assignment",
+                "doc_count": 22,
+            },
+            {
+                "term": "그린",
+                "canonical": "그린",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 287,
+            },
+        ],
+    )
+
+    rows = seed.load_seed_rows(path)
+
+    assert {row.term for row in rows} == {"다크그린", "그린"}
 
 
 def test_upsert_seed_sql_is_authoritative_not_review_protected() -> None:
