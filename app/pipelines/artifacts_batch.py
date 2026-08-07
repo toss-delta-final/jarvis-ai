@@ -828,6 +828,13 @@ async def _run_content_retry_pass(
     일시 장애"라는 단 한 번의 불운이 정상 상품을 영구 격리했다 — #421 이 없애려던 바로 그
     오격리를 재시도 패스 안에서 재현하고 있었다.
 
+    [T5, PR 리뷰 라운드 3] 콘텐츠 실패 분기는 큐 유지/즉시 격리 결과와 무관하게 **항상**
+    item 스트릭을 clear 한다(``_drain`` 의 대응 분기와 동일 불변식) — 콘텐츠 실패는 정의상
+    항목 고유 실패라 2선 스트릭의 "연속"을 끊어야 한다(#325 R6). T2 가 이 함수에 2선 스트릭
+    경로를 처음 넣으며 이 clear 를 빠뜨려, "인프라 실패(streak bump) → 콘텐츠 실패(clear
+    없이 retry_attempts 만 +1) → 인프라 실패(streak 가 안 끊기고 이어짐)" 순서에서 연속이
+    아닌 인프라 실패가 연속으로 오판돼 실제보다 이르게 격리될 수 있었다.
+
     ``retry_attempts``(F4 정합) 는 "지금까지 실제로 콘텐츠 실패로 확정된 cross-cycle
     재시도 횟수"다 — 등재 시 0에서 시작해 이 함수가 **콘텐츠 실패**를 확정할 때만 +1 하고,
     ``retry_attempts < budget`` 이면 유지, 아니면 격리한다. 이 불변식이라야
@@ -890,6 +897,14 @@ async def _run_content_retry_pass(
                 continue
 
             if is_content_failure:
+                # [T5, PR 리뷰 라운드 3] 콘텐츠 실패는 정의상 항목 고유 실패이므로 2선 스트릭의
+                # "연속"을 끊는다(#325 R6 의도, _drain 의 대응 분기와 동일) — 큐 유지/즉시 격리
+                # 결과와 무관하게 항상 clear 한다. 안 그러면 인프라 실패(streak bump)와 콘텐츠
+                # 실패가 번갈아 나도 스트릭이 안 끊겨(인프라→콘텐츠→인프라 순서에서 마지막
+                # streak 가 1 이 아니라 2), item_dead_letter_cycles 가 요구하는 "연속 인프라
+                # 실패"가 아닌데도 실제보다 이르게 격리될 수 있었다(T2 가 재시도 패스에 2선
+                # 스트릭 경로를 새로 넣으며 생긴 비대칭).
+                failure_store.clear_failure_streak(FAILURE_STREAK_KIND_ITEM, str(product_id))
                 pending.retry_attempts += 1
                 if pending.retry_attempts < budget:
                     _log.warning(

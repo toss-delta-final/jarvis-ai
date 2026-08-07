@@ -2746,6 +2746,107 @@ async def test_content_retry_pass_content_failure_still_burns_budget():
     assert 1 not in _batch._content_retry_queue
 
 
+# ── PR 리뷰 라운드 3 — T5: 재시도 패스의 콘텐츠 실패도 2선 스트릭의 "연속"을 끊어야 한다 ──
+
+
+class _PhasedLLM:
+    """공유 ``mode`` dict 의 ``"enrich"`` 값에 따라 콘텐츠 성공/실패를 낸다 — cycle 별로
+    시나리오를 조립하는 fake(T5 회귀, PR 리뷰 라운드 3)."""
+
+    def __init__(self, mode):
+        self._mode = mode
+        self.calls = 0
+
+    async def complete(
+        self, *, system, user, tier, max_tokens=1024, json_output=True, reasoning_effort=None
+    ):
+        self.calls += 1
+        if self._mode["enrich"] == "fail":
+            from app.core.llm import LLMError
+
+            raise LLMError("boom")  # 원인 없음 — 콘텐츠 실패 화이트리스트(#325 R6) 통과
+        return json.dumps({"tags": ["여행"], "attributes": {}}, ensure_ascii=False)
+
+
+class _PhasedEmbed:
+    """공유 ``mode`` dict 의 ``"finish"`` 값에 따라 embed 성공/실패를 낸다(T5 회귀)."""
+
+    def __init__(self, mode):
+        self._mode = mode
+
+    def __call__(self, texts):
+        if self._mode["finish"] == "fail":
+            raise RuntimeError("embed API down")
+        return [[float(len(t)), 1.0] for t in texts]
+
+
+async def test_content_retry_streak_resets_on_content_failure_between_infra_failures(caplog):
+    """[T5] 재시도 패스에서 인프라 실패 → 콘텐츠 실패 → 인프라 실패 순서가 나면, 콘텐츠
+    실패가 2선 스트릭의 "연속"을 끊어야 한다(``_drain`` 의 대응 분기와 동일 불변식, #325 R6
+    — 콘텐츠 실패는 정의상 항목 고유다) — 마지막 인프라 실패의 streak 는 1 이어야 한다.
+    수정 전에는 콘텐츠 실패 분기가 스트릭을 clear 하지 않아 끊기지 않고 이어져(1 →
+    안 지워짐 → 2) 연속이 아닌 인프라 실패가 연속으로 오판됐다 — 이 테스트는 수정 전
+    코드에서 마지막 streak 가 2 로 찍혀 반드시 실패한다."""
+    store = CatalogArtifactStore()
+    mode = {"enrich": "fail", "finish": "ok"}
+    llm = _PhasedLLM(mode)
+    embed = _PhasedEmbed(mode)
+    cycle = 0
+
+    async def fetch(cursor, limit):
+        nonlocal cycle
+        cycle += 1
+        if cycle == 1:
+            return ProductChangesPage(
+                items=[_change(1, name="시나리오상품")], next_cursor="c1", has_more=False
+            )
+        return ProductChangesPage(items=[], next_cursor="c1", has_more=False)
+
+    settings = get_settings().model_copy(
+        update={
+            "artifacts_batch_content_retry_cycles": 2,
+            "artifacts_batch_item_dead_letter_cycles": 3,
+        }
+    )
+
+    # cycle1: _drain 자체에서 콘텐츠 실패 → 큐 등재(retry_attempts=0).
+    result1 = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=embed, store=store, settings=settings
+    )
+    assert result1.failed == 1
+    assert 1 in _batch._content_retry_queue
+
+    # cycle2: 재시도 패스 — enrich 성공, finish(embed) 인프라 실패 → streak=1, 큐 유지.
+    mode["enrich"] = "ok"
+    mode["finish"] = "fail"
+    result2 = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=embed, store=store, settings=settings
+    )
+    assert result2.recovered == 0
+    assert result2.failed == 0
+    assert 1 in _batch._content_retry_queue
+
+    # cycle3: 재시도 패스 — 다시 콘텐츠 실패로 돌아간다. 스트릭이 여기서 끊겨야 한다.
+    mode["enrich"] = "fail"
+    result3 = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=embed, store=store, settings=settings
+    )
+    assert result3.failed == 0  # 예산(2) 미소진 — 아직 큐에 남는다(retry_attempts=1/2)
+    assert 1 in _batch._content_retry_queue
+
+    # cycle4: 재시도 패스 — 다시 인프라 실패. 끊겼다면 streak=1(수정 전엔 2로 이어짐).
+    mode["enrich"] = "ok"
+    mode["finish"] = "fail"
+    with caplog.at_level("WARNING"):
+        result4 = await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=embed, store=store, settings=settings
+        )
+    assert result4.failed == 0
+    assert 1 in _batch._content_retry_queue
+    assert "streak=1/3" in caplog.text
+    assert "streak=2/3" not in caplog.text
+
+
 # ── PR 리뷰 라운드 1 — F5: pg 폴백 clear 는 DB 성공 여부와 무관하게 항상 적용 ──
 
 
