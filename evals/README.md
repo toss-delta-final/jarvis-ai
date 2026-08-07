@@ -54,7 +54,7 @@
 | 니즈 전개(legs) | 없음(#198 지표가 로그 관측뿐) | **공백** | **#332** |
 | 필터 추출 단독 | `evals/filter_axes`(축별 P/R·trivial baseline·INV/DIR/pair probe·ablation 재채점) | 있음 | #334 |
 | 기능 조합 커버리지 | 없음 | **공백** | **#335** |
-| 과소지정 판정 축 | `evals/underspecified_probe`(30셀 × N=8, 런당 ≈$0.03~0.10) | 있음 | #380 |
+| 과소지정 판정 축 | `evals/underspecified_probe`(30셀 × N=8, 런당 ≈$0.03~0.10) | 있음 — 기준선 n=3(#433, `baselines/README.md` 색인) | #380 · #433 |
 | 완화(relaxation)·칩 | 유닛 테스트만 | 미착수 | #328 체크리스트 보존 |
 | 예산 세트(#60)·priority(#281) | 유닛 테스트만 | 미착수 | #328 체크리스트 보존 |
 | degrade 경로(임베딩 누락·rerank 실패·타임아웃) | 산발 | 미착수 | #328 체크리스트 보존 |

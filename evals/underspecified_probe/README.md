@@ -52,7 +52,8 @@ SPEC-UNDERSPECIFIED-336 §7.3 이 남긴 게이트 잔여 항목 1("실 LLM deco
 4. **프로덕션은 `intent == "recommend"` 인 턴에서만 판정을 호출한다** `[F-1, 2차 리뷰어
    발견]`**.** `app/agents/buyer/graph.py::run_buyer_turn` 은 `decision.intent` 가
    `general`·`cart_view`·`order_status`·`cart_add`·`cart_remove`·`wishlist_add`·
-   `wishlist_remove` 인 분기에서 전부 `is_underspecified_turn` 호출 이전에 return 한다.
+   `wishlist_remove`·`wishlist_view`(#386) 인 분기에서 전부 `is_underspecified_turn` 호출
+   이전에 return 한다.
    decompose 가 앵커를 그 intent 로 라우팅한 표본(예: "뭐 좋은 거 없어?"가
    fast 티어에서 `general` 로 라우팅되는 경우)은 프로덕션 판정 함수에 도달조차 하지 않으므로,
    confirmatory 축(`missRate`·`falseAlarmRate`·`falseAlarmRateWithGateSlice`·`judgmentAccuracy`·
@@ -248,5 +249,7 @@ cases.json 승계 7건(위 매핑표) + 신규 23건.
 
 ## 기준선
 
-`baselines/fast-2026-08-06/` — 최초 실 LLM 기준선(fast 티어). 그 디렉터리의 README 가 표를
-해석하고, 단일 실행이라 채택 판정 근거가 아니라는 경고를 담는다.
+`baselines/README.md` — 기준선 색인. 여러 판(프롬프트 세대·티어별)이 쌓여 있으므로 **정본이
+무엇인지는 그 색인에서 확인해라**(#433) — 요약하면 `#430` before·`#431` 전환 판단의 정본은
+`fast-2026-08-08-run1~3`(현행 dev 프롬프트, n=3 분포)이고, `fast-2026-08-06`(+run2/run3)은
+pre-#386 프롬프트 세대의 역사 기록이다.

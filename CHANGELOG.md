@@ -10,6 +10,19 @@
 ## [Unreleased]
 
 ### Added
+- **#433 — 과소지정 프로브 기준선을 n=1 에서 두 프롬프트 세대 각각의 n=3 분포로 굳힌다** —
+  #380 이 커밋한 `fast-2026-08-06/` 은 단일 실행이라 `#430` before·`#431` 전환 판단의 근거로
+  쓰기엔 재현성이 없었다. 착수 전 실측에서 `hashes.systemPrompt` 가 커밋된 기준선과 현재 HEAD
+  사이에 다르다는 사실을 발견했다(`#386` `wishlist_view` intent 신설이 decompose `_SYSTEM` 을
+  바꿈) — 두 프롬프트 세대를 각각 독립 3회씩 굳혔다: 현행 dev 프롬프트(`e62fd0f6e03d`)
+  `fast-2026-08-08-run1~3`(missRate 99.1~100.0%, 편차 0.9%p, **`#430` before 정본**)와
+  pre-#386 프롬프트(`11c6fe3bfa0c`) `fast-2026-08-06-run2`·`run3`(missRate 100.0%, 편차 0%p,
+  역사 기록). `smart` 티어 1회(`missRate` 53.8%)도 추가해 원인 축 분해가 티어에 따라
+  달라지는지 봤다 — `semanticQueryIsFallback` 단독 비율(88~93%)은 티어 무관하게 안정적이지만
+  `missRate` 자체는 fast 대비 smart 가 훨씬 낮다. 기준선 색인
+  `evals/underspecified_probe/baselines/README.md` 신설(정본 하나만 인용하도록). 프롬프트·
+  하네스 코드는 바꾸지 않았다(`metrics.py` docstring 의 비-recommend intent 목록에
+  `wishlist_view` 한 단어만 추가, 계측 동작 불변).
 - **#424 — combo_matrix `observed` 드리프트 가드 신설** — `expected_behavior.jsonl` 의 `observed`
   는 러너 재실행 **기록**이라, 다른 레인이 SSE 이벤트를 바꾸면 커밋본이 조용히 낡아도 아무
   테스트도 잡지 못했다(PR #420 작업 중 실측 2회, 둘 다 `eventTypes` 만 드리프트하고 핵심 계약

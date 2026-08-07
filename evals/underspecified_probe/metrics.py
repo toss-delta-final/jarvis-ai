@@ -117,10 +117,10 @@ def _recommend_pairs(pairs: list[Pair]) -> list[Pair]:
     """[F-1] confirmatory 분모를 프로덕션이 실제로 판정을 호출하는 표본으로 좁힌다.
 
     `app/agents/buyer/graph.py::run_buyer_turn` 은 `decision.intent` 가 `general`·`cart_view`·
-    `order_status`·`cart_add`·`cart_remove`·`wishlist_add`·`wishlist_remove` 인 분기에서 전부
-    `is_underspecified_turn` 호출 **이전에 return** 한다 — 그 표본은 프로덕션에서 판정 함수에
-    도달조차 하지 않는다. 그 표본을 미탐/오탐으로 세면 intent 라우팅 축(`evals/intent_probe`
-    소관)의 실패를 과소지정 판정 축의 실패로 오귀속한다.
+    `order_status`·`cart_add`·`cart_remove`·`wishlist_add`·`wishlist_remove`·
+    `wishlist_view`(#386) 인 분기에서 전부 `is_underspecified_turn` 호출 **이전에 return** 한다
+    — 그 표본은 프로덕션에서 판정 함수에 도달조차 하지 않는다. 그 표본을 미탐/오탐으로 세면
+    intent 라우팅 축(`evals/intent_probe` 소관)의 실패를 과소지정 판정 축의 실패로 오귀속한다.
     """
     return [(s, a) for s, a in pairs if s.intent == "recommend"]
 
