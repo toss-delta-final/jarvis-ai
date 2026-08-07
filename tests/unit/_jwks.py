@@ -62,9 +62,13 @@ def ticket_claims(**overrides) -> dict:
 
 
 def seller_ticket_claims(**overrides) -> dict:
-    """§2.3 seller 티켓 shape: buyer sub_type 없이 exact role과 brandId만 둔다."""
+    """§2.3 v0.28.0 seller 티켓 shape (#439, CH-6 정본 2026-07-18 BE 실측).
+
+    판매자 티켓도 sub_type="member"를 항상 동반한다 — buyer sub_type 은 모든 티켓
+    공통이고, 판매자만 role="seller"·brandId 를 추가로 싣는다(sub_type을 떼어내는
+    구 XOR 가정은 실존하지 않는 형태였다).
+    """
     claims = ticket_claims()
-    claims.pop("sub_type")
     claims.update({"role": "seller", "brandId": 77})
     claims.update(overrides)
     return claims

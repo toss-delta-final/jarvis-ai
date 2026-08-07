@@ -13,6 +13,29 @@
 
 ---
 
+## [2026-08-07] `uv run ruff check --fix && uv run ruff format` 커밋 워크플로 문구를 문자 그대로 실행하면 무관 파일 30개가 재포맷된다
+- 증상: #439 구현 검증 단계에서 CLAUDE.md 커밋 워크플로 2항을 그대로 `uv run ruff check --fix &&
+  uv run ruff format`으로 실행했더니 `ruff check`는 `All checks passed!`였지만 `ruff format`은
+  `30 files reformatted, 448 files left unchanged`를 냈다 — 이번에 만진 파일은 6개뿐인데
+  `data-analysis/*`·`evals/ablation/*`·`evals/scoring/*`·`docs/research/research-275-harness/*`·
+  `tests/unit/test_color_synonym*` 등 이 리포에서 지금까지 `ruff format`이 한 번도 전면 적용된 적
+  없던 파일들이 함께 재작성돼 diff가 +1622/−587로 부풀었다. `git status --short`로 발견해
+  `git checkout --`로 전부 되돌렸다.
+- 원인: 이 항목의 실수 자체는 [2026-08-06] `ruff format`/`--fix` 항목과 같은 패턴(쓰기 명령을
+  전체 스코프로 돌림)의 재발이지만, 이번엔 **왜 이 패턴이 평소 드러나지 않는지**가 추가로
+  드러났다 — `.pre-commit-config.yaml`의 `ruff-format` 훅은 **스테이징된 파일에만** 걸리고
+  CI는 `ruff check`만 강제한다(`ruff format --check` 게이트가 없다). 그래서 리포 전체가
+  `ruff format` 기준으로 정합한 적이 없어도 아무도 알아채지 못했고, 누구든 커밋 워크플로 2항을
+  스코프 없이 실행하면 매번 같은 무관 파일 30개가 걸려든다.
+- 규칙: 커밋 전 포맷은 **`uv run ruff format <이번에 실제로 만진 파일 경로만>`**으로 항상
+  경로를 한정한다. `uv run ruff format`/`ruff check --fix`를 스코프 없이(`.` 또는 인자 생략)
+  돌렸다면 실행 직후 `git status --short`로 무관 파일이 섞였는지 반드시 확인하고
+  `git checkout -- <무관 파일들>`로 되돌린다. 리포 전체를 `ruff format` 기준으로 맞추는 일은
+  **이번 작업 범위가 아니라 별도 이슈**로 다룬다 — 부수 효과로 슬쩍 끼워넣지 않는다.
+- 관련: #439, CLAUDE.md 「Git」절 커밋 워크플로 2번, `.pre-commit-config.yaml`(`ruff-format` 훅
+  스테이징 파일 한정), [2026-08-06] `ruff format`/`--fix` 는 쓰기 명령이다 항목(같은 패턴의
+  선례, 이번엔 CI/pre-commit이 왜 못 잡는지가 새로 드러남)
+
 ## [2026-08-06] 테스트 스위트 실행 중에 커밋하면 eval 결정론 테스트가 깨진다
 - 증상: `uv run pytest` 를 백그라운드로 돌려 둔 채 그 사이에 `git commit` 을 했더니
   `tests/eval/test_personalization_eval.py::test_personalization_run_is_deterministic_across_environment_and_clock`
