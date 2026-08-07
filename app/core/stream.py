@@ -421,7 +421,7 @@ class _LifecycleStreamingResponse(StreamingResponse):
 async def open_stream(
     request: Request,
     stream_key: str,
-    inner_factory: Callable[[], AsyncIterator[str]],
+    inner_factory: Callable[[float], AsyncIterator[str]],
     *,
     observer: RequestObservation | None = None,
     role: Literal["buyer", "seller"] | None = None,
@@ -434,6 +434,12 @@ async def open_stream(
 
     role 미지정은 기존 전체 상한을 유지한다. 명시하지 않은 호출자가 조용히 더 좁은 구매자
     상한으로 잘리지 않도록, 역할을 명시한 호출자만 좁은 예산을 받는다.
+
+    [#427, DESIGN-SHARED-BUDGET-384 §3 D2] `inner_factory` 는 이 함수가 실제로 `deadline`
+    계산에 쓰는 `start`(`loop.time()`)를 받는다 — 구제 체인 공유 예산(`rescue_deadline`)이
+    이 스트림의 실제 데드라인과 같은 원점에서 파생돼야 `rescue_deadline ≤ deadline` 부등식이
+    항상 성립한다는 것을 보장할 수 있다(D2). 아래 `start = loop.time()` 대입 **바로 아래**에서
+    호출해야 한다 — 순서가 바뀌면 다른 원점을 넘기게 된다.
     """
     settings = get_settings()
     registry = get_registry()
@@ -499,7 +505,7 @@ async def open_stream(
 
     start = loop.time()
     try:
-        agen = inner_factory()
+        agen = inner_factory(start)
     except Exception:
         # 그래프 진입 검증 등 inner_factory 동기 예외 — 슬롯·턴 누수 방지.
         registry.release(stream_key)

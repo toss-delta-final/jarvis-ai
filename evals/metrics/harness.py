@@ -189,7 +189,7 @@ class OfflineBuyerAdapter:
             internal_token=self.settings.internal_api_token,
         )
 
-        def _client() -> httpx.AsyncClient:
+        def _client(*, timeout: float | None = None) -> httpx.AsyncClient:
             return httpx.AsyncClient(
                 base_url=self.settings.spring_base_url,
                 timeout=self.settings.spring_timeout_s,

@@ -2010,7 +2010,7 @@ async def test_search_products_parses_i1_items(monkeypatch: pytest.MonkeyPatch) 
             ]
         },
     }
-    monkeypatch.setattr(sc, "_client", lambda: _FakeClient(payload))
+    monkeypatch.setattr(sc, "_client", lambda *, timeout=None: _FakeClient(payload))
     res = await sc.search_products(ProductSearchFilters())
     assert len(res.products) == 1
     assert res.products[0].category == "의류" and res.products[0].brand == "B"
@@ -2034,7 +2034,7 @@ async def test_search_products_parses_i1_array_envelope(monkeypatch: pytest.Monk
             }
         ],
     }
-    monkeypatch.setattr(sc, "_client", lambda: _FakeClient(payload))
+    monkeypatch.setattr(sc, "_client", lambda *, timeout=None: _FakeClient(payload))
     res = await sc.search_products(ProductSearchFilters())
     assert len(res.products) == 1
     assert res.products[0].category == "의류" and res.products[0].brand == "B"
@@ -2048,7 +2048,7 @@ async def test_search_products_malformed_maps_to_search_failed(
     from app.schemas.spring import ProductSearchFilters
 
     payload = {"success": True, "data": {"items": [{"name": "x"}]}}  # productId 없음
-    monkeypatch.setattr(sc, "_client", lambda: _FakeClient(payload))
+    monkeypatch.setattr(sc, "_client", lambda *, timeout=None: _FakeClient(payload))
     with pytest.raises(SpringUnavailableError):
         await sc.search_products(ProductSearchFilters())
 
@@ -2066,7 +2066,7 @@ async def test_search_products_unknown_envelope_fails_closed(
     from app.schemas.spring import ProductSearchFilters
 
     payload = {"success": True, "data": {"products": [{"productId": 1}]}}  # 미인식 형태
-    monkeypatch.setattr(sc, "_client", lambda: _FakeClient(payload))
+    monkeypatch.setattr(sc, "_client", lambda *, timeout=None: _FakeClient(payload))
     with caplog.at_level("WARNING"):
         with pytest.raises(SpringUnavailableError):
             await sc.search_products(ProductSearchFilters())
@@ -2081,7 +2081,7 @@ async def test_search_products_parses_bare_list_body(monkeypatch: pytest.MonkeyP
     payload = [
         {"productId": 7, "name": "모자", "price": 9900, "categoryName": "잡화", "brandName": "B"}
     ]
-    monkeypatch.setattr(sc, "_client", lambda: _FakeClient(payload))
+    monkeypatch.setattr(sc, "_client", lambda *, timeout=None: _FakeClient(payload))
     res = await sc.search_products(ProductSearchFilters())
     assert [p.product_id for p in res.products] == [7]
 
@@ -2093,7 +2093,7 @@ async def test_search_products_missing_data_key_fails_closed(
     import app.services.spring_client as sc
     from app.schemas.spring import ProductSearchFilters
 
-    monkeypatch.setattr(sc, "_client", lambda: _FakeClient({"success": True}))
+    monkeypatch.setattr(sc, "_client", lambda *, timeout=None: _FakeClient({"success": True}))
     with caplog.at_level("WARNING"):
         with pytest.raises(SpringUnavailableError):
             await sc.search_products(ProductSearchFilters())
@@ -2130,7 +2130,7 @@ def _counting_client(monkeypatch: pytest.MonkeyPatch, *responses):
     monkeypatch.setattr(
         sc,
         "_client",
-        lambda: httpx.AsyncClient(
+        lambda *, timeout=None: httpx.AsyncClient(
             base_url="http://spring.test", transport=httpx.MockTransport(_handler)
         ),
     )
@@ -2861,7 +2861,7 @@ async def test_get_recent_purchases_parses_and_collects_ids(
             ]
         },
     }
-    monkeypatch.setattr(_sc_mod, "_client", lambda: _FakeClient(body))
+    monkeypatch.setattr(_sc_mod, "_client", lambda *, timeout=None: _FakeClient(body))
     res = await _REAL_GET_RECENT(123)
     assert res.purchased_product_ids() == {552, 88}
 
@@ -2872,7 +2872,7 @@ async def test_get_recent_purchases_failure_degrades(monkeypatch: pytest.MonkeyP
         "success": True,
         "data": {"orders": [{"orderId": 1, "orderedAt": "x", "items": [{"orderItemId": 1}]}]},
     }
-    monkeypatch.setattr(_sc_mod, "_client", lambda: _FakeClient(body))
+    monkeypatch.setattr(_sc_mod, "_client", lambda *, timeout=None: _FakeClient(body))
     with pytest.raises(SpringUnavailableError):
         await _REAL_GET_RECENT(1)
 

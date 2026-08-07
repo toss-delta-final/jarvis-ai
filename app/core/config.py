@@ -15,7 +15,7 @@ from __future__ import annotations
 import math
 import os
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -57,14 +57,34 @@ ROUTE_INTENTS = frozenset(
 )
 
 
-def _deferred_first_event_i1_calls(
+class RescueStageCounts(NamedTuple):
+    """첫 `conditions` 앞 직렬 Spring 구간의 이론적 최악 단 수 — 억제 스코프별로 나눈다 (#427 D7).
+
+    DESIGN-SHARED-BUDGET-384 §3 D7 이 요구하는 **단일 계수 원천**이다. 기동 검증기
+    (`_require_search_retry_within_stream_budget`)와 런타임 좁히기(D4, "남은 단 수" 계산,
+    `app/agents/buyer/recommendation/graph.py::stream_recommendation`)가 이 함수 하나만
+    호출해야 한쪽만 고쳐지는 드리프트(#383 이 고친 것과 같은 실패 모드)를 구조적으로 막는다.
+
+    조기 return(전부 0)은 "미룸(`graph.py` 의 `may_auto_relax`)이 성립하지 않으면 첫
+    `conditions` 앞 직렬 검증 대상이 아니다"는 #288 의 판단을 그대로 잇는다 — `main` 도 함께
+    0 이 되는 것은 "이 계수가 실제로 도는 검색 단 수"가 아니라 "미룬 턴의 첫 이벤트 앞
+    직렬 예산 모델"이기 때문이다(본검색 자체는 미룸 여부와 무관하게 항상 실행된다 —
+    `_rescue_chain_stage_counts` 의 소비처는 이 사실을 알고 `main` 을 최소 1 로 보정해 쓴다).
+    """
+
+    main: int  # 본검색 — 미룸이 성립한 뒤에만 1, 아니면(조기 return) 0
+    rescue: int  # F-1/#343 구제 재검색(상호배타, 최대 1) — suppress_search_retry() 밖이라 항상 재시도한다
+    auto_relax: int  # 자동완화 probe — min(relaxation_max_rounds, |auto_fields ∩ chip_fields|)
+
+
+def _rescue_chain_stage_counts(
     *,
     relaxation_max_rounds: int,
     auto_fields: list[str],
     chip_fields: list[str],
     category_expand_enabled: bool,
-) -> int:
-    """미룬 턴의 첫 이벤트(`conditions`) 앞에 직렬로 놓이는 I-1 호출 수 (#288, #383 보정).
+) -> RescueStageCounts:
+    """`RescueStageCounts` 계산 (#288, #383 보정, #427 D7 로 3 항 분해).
 
     순수 함수 + 모듈 수준으로 둔 이유는 `_require_search_retry_within_stream_budget` 를
     테스트가 실제 config 조합(교집합 ≥ 2)으로 부를 유일한 표면이기 때문이다 — `Settings` 는
@@ -76,8 +96,8 @@ def _deferred_first_event_i1_calls(
     있고 `chip_fields` 에 없는 필드는 후보 자체가 안 생긴다 → 교집합으로 센다. 루프는
     `rounds >= relaxation_max_rounds` 에서 break 하므로 `min` 으로 상한을 씌운다.
 
-    **`category_expand_enabled` 항의 근거(#383, docs/specs/MEASURE-FIRST-TOKEN-363.md §5)** —
-    구제 폴백 한 단이 위 두 항에 빠져 있어 실측 구제 체인 단 수(3, `test_fanout.py`
+    **`category_expand_enabled` 항(=`rescue`)의 근거(#383, docs/specs/MEASURE-FIRST-TOKEN-363.md
+    §5)** — 구제 폴백 한 단이 과거 두 항에 빠져 있어 실측 구제 체인 단 수(3, `test_fanout.py`
     `test_worst_case_rescue_chain_sequential_stages_before_first_sse`)를 과소계상했다:
     - F-1(#222)에는 별도 kill-switch가 없다. `category_expand_enabled`(기본 `True`)가 F-1·#343
       둘의 공통 전제(`decision.category_expanded`)를 잠근다 — #343 자신의 플래그
@@ -88,13 +108,72 @@ def _deferred_first_event_i1_calls(
       `graph.py`의 스킵은 무필터 payload 의 필터 축이 0개일 때만 걸리고, 카테고리 외 축을 준
       턴은 재검색이 그대로 돈다 — 최악 경로에는 이 단이 남으므로 식에
       `search_filter_guard_enabled` 항은 추가하지 않는다.
-    이 항은 **미룸이 성립한 뒤에만**(아래 조기 return 0 을 통과한 뒤에만) 더한다 — F-1/#343 재검색은
-    본 검색이 이미 미뤄진 뒤에만 도는 후속 단계이지, 그 자체로 미룸을 만들지 않기 때문이다.
+    `rescue` 항은 **미룸이 성립한 뒤에만**(아래 조기 return 0 을 통과한 뒤에만) 더한다 —
+    F-1/#343 재검색은 본 검색이 이미 미뤄진 뒤에만 도는 후속 단계이지, 그 자체로 미룸을
+    만들지 않기 때문이다.
     """
     intersection_size = len(set(auto_fields) & set(chip_fields))
     if relaxation_max_rounds <= 0 or intersection_size == 0:
-        return 0  # may_auto_relax가 False — conditions가 검색 앞에 나가 직렬 검증 대상이 아니다
-    return 1 + (1 if category_expand_enabled else 0) + min(relaxation_max_rounds, intersection_size)
+        # may_auto_relax가 False — conditions가 검색 앞에 나가 직렬 검증 대상이 아니다.
+        return RescueStageCounts(main=0, rescue=0, auto_relax=0)
+    return RescueStageCounts(
+        main=1,
+        rescue=1 if category_expand_enabled else 0,
+        auto_relax=min(relaxation_max_rounds, intersection_size),
+    )
+
+
+def _rescue_chain_serial_budget_s(
+    *,
+    counts: RescueStageCounts,
+    search_timeout_s: float,
+    spring_max_retries: int,
+    search_retry_on_deferred_conditions: bool,
+) -> float:
+    """첫 `conditions` 앞 직렬 Spring 구간(본검색 + F-1/#343 재검색 + 자동완화 probe) 직렬
+    최악 벽시계 (#427 D7).
+
+    이름은 "rescue_chain"이지만 계산 대상은 §2 가 정의한 좁은 "구제 체인"(F-1/#343+자동완화,
+    본검색 제외)이 아니라 본검색을 포함한 넓은 "첫 conditions 앞 직렬 Spring 구간"이다
+    (DESIGN-SHARED-BUDGET-384 §2 용어 정의 F2).
+
+    §1(d) 각주①의 억제 스코프 비대칭을 반영한다 — `search_retry_on_deferred_conditions=False`
+    (기본값)일 때 F-1/#343 재검색(`counts.rescue`)은 `graph.py::stream_recommendation` 의
+    `suppress_search_retry()` 컨텍스트 **밖**에서 돌아 재시도가 억제되지 않는다
+    (`spring_client.py::search_products` 의 `attempts` 계산이 그 블록 안에서만 1회로
+    강제된다). 나머지(본검색·자동완화 probe)만 억제된다. `True` 면 억제 산출부
+    (`suppress_deferred_search_retry`) 자체가 항상 False 라 세 항 모두 재시도 예산을 쓴다.
+
+    기동 검증(`_require_search_retry_within_stream_budget`)과 런타임 좁히기(D4, 그래프의
+    "남은 단 수" 계산) **둘 다** 이 함수 하나만 호출한다 — 한쪽만 고쳐지는 드리프트를
+    막는다(#383 이 고친 것과 같은 실패 모드, D7).
+    """
+    retried_budget = search_timeout_s * (spring_max_retries + 1)
+    if search_retry_on_deferred_conditions:
+        return (counts.main + counts.rescue + counts.auto_relax) * retried_budget
+    return (counts.main + counts.auto_relax) * search_timeout_s + counts.rescue * retried_budget
+
+
+def _deferred_first_event_i1_calls(
+    *,
+    relaxation_max_rounds: int,
+    auto_fields: list[str],
+    chip_fields: list[str],
+    category_expand_enabled: bool,
+) -> int:
+    """미룬 턴의 첫 이벤트(`conditions`) 앞에 직렬로 놓이는 I-1 호출 수 (#288, #383 보정).
+
+    [#427 D7] 구현은 `_rescue_chain_stage_counts` 로 위임한다 — 세 항의 정의·근거는 그
+    함수 docstring 참조. 이 함수는 총합(`main + rescue + auto_relax`)만 남긴 하위 호환
+    래퍼다(기존 두 불변식 `rescue ≤ total`·`total == 0 → rescue == 0` 을 그대로 보존한다).
+    """
+    counts = _rescue_chain_stage_counts(
+        relaxation_max_rounds=relaxation_max_rounds,
+        auto_fields=auto_fields,
+        chip_fields=chip_fields,
+        category_expand_enabled=category_expand_enabled,
+    )
+    return counts.main + counts.rescue + counts.auto_relax
 
 
 def _deferred_first_event_rescue_i1_calls(
@@ -115,22 +194,26 @@ def _deferred_first_event_rescue_i1_calls(
     (둘 다 같은 함수의 `_run_search_unfiltered()` 호출)은 그 블록 **밖**에서 돈다 —
     `spring_client.py::search` 의 `attempts = 1 if _search_retry_suppressed.get() else
     settings.spring_max_retries + 1` 을 그대로 타므로 가드 OFF 여도 **항상**
-    `SPRING_MAX_RETRIES` 만큼 재시도한다. 그래서 이 항만은 `spring_timeout_s` 가 아니라
-    `budget = spring_timeout_s * (spring_max_retries + 1)` 으로 값을 매겨야 한다 — 총합
-    함수와 세 항을 균질하게 `spring_timeout_s` 로 매기면 `SPRING_MAX_RETRIES=1`
+    `SPRING_MAX_RETRIES` 만큼 재시도한다. 그래서 이 항만은 검색 예산 1 회분이 아니라
+    `budget = 검색예산 * (spring_max_retries + 1)` 으로 값을 매겨야 한다 — 총합 함수와
+    세 항을 균질하게 검색예산 1 회분으로 매기면 `SPRING_MAX_RETRIES=1`
     (`.env.example` 이 한때 싣던 값)에서 이 항을 과소평가한다(이 이슈가 원래 고치려던
     실패 모드를 항 하나에서 되풀이하는 셈이다).
 
     구제 경로 자체를 억제하도록 `graph.py` 를 바꾸는 선택지는 **런타임 동작 변경**이라
     범위 밖이다(#384/#288 소관) — 여기서는 가드가 현실을 정확히 재는 것만 고친다.
 
-    조기 return 0 은 총합 함수와 **같은 조건**(미룸 불성립)을 쓴다 — 그래야
-    `rescue ≤ total` 과 `total == 0 → rescue == 0` 두 불변식이 항상 성립한다.
+    [#427 D7] 구현은 `_rescue_chain_stage_counts` 로 위임한다 — 조기 return 0 은 총합 함수와
+    **같은 조건**(미룸 불성립)을 쓴다 — 그래야 `rescue ≤ total` 과 `total == 0 → rescue == 0`
+    두 불변식이 항상 성립한다.
     """
-    intersection_size = len(set(auto_fields) & set(chip_fields))
-    if relaxation_max_rounds <= 0 or intersection_size == 0:
-        return 0
-    return 1 if category_expand_enabled else 0
+    counts = _rescue_chain_stage_counts(
+        relaxation_max_rounds=relaxation_max_rounds,
+        auto_fields=auto_fields,
+        chip_fields=chip_fields,
+        category_expand_enabled=category_expand_enabled,
+    )
+    return counts.rescue
 
 
 class Settings(BaseSettings):
@@ -1333,6 +1416,15 @@ class Settings(BaseSettings):
     stream_disconnect_poll_s: float = 0.5
     # AI→Spring 콜백 타임아웃 (§2.9 c, BE I-2 기준 통일). 실제 호출부에서 사용.
     spring_timeout_s: float = 3.0
+    # [#427] I-1 검색 전용 타임아웃 — `spring_timeout_s`(전 구간 공용)와 분리한다. 기본값은
+    # api-spec §2.9(c) "AI→Spring 전 구간 3s 통일"과 **같은 값**이다 — 이 필드 신설 자체가
+    # 기본 배포의 타임아웃을 바꾸지 않는다. **상향은 계약 개정(§2.9(c)) 선행이 필요하다** —
+    # 명세를 고치지 않고 이 값만 올리면 와이어 계약과 실제 동작이 어긋난다. 분리하는 이유는
+    # #394 가 기각된 사유("스칼라 하나를 공유해 전 구간이 함께 늘어난다", §5.1)를 되풀이하지
+    # 않기 위해서다 — 검색 예산을 구제 체인 공유 예산(DESIGN-SHARED-BUDGET-384 §5.1)에 맞춰
+    # 조정할 때 I-2 담기·I-18/I-19 조회·I-3 인기·I-21 push·판매자 레인까지 함께 늘어나지
+    # 않아야 한다. 소비처는 `spring_client.py::search_products` 뿐이다.
+    spring_search_timeout_s: float = Field(default=3.0, gt=0.0)
     # [#133] I-1 검색 재시도 횟수 (SPEC-RECOMMEND-001 §오류처리가 이미 규정한 동작).
     # 타임아웃 3s 는 일시 지연이 재시도로 살아나는 폭인데 LLM 만 재시도를 갖고 검색은 0회였다.
     # **재시도가 의미 있는 실패만** 대상이다 — 타임아웃·연결 오류·응답 중단·5xx·일시 4xx(408·429). 4xx 계약 오류와 응답
@@ -1357,6 +1449,21 @@ class Settings(BaseSettings):
     # 기본값을 1→0 으로 내렸고, 이 필드의 원복 여부는 그 조치와 함께 판단해야 하는 별도
     # 결정이다. #396 이슈 본문도 이를 비범위로 못박았다.
     search_retry_on_deferred_conditions: bool = False
+    # [#427, DESIGN-SHARED-BUDGET-384 §3 D7] 구제 체인(F-1/#343/자동완화 probe) 예산 집행
+    # 강도 — observe: 판정만 계산·로그(반사실), 실제 집행 없음(기본, 오늘 동작 불변).
+    # narrow: 잔여 예산이 모자란 단의 타임아웃을 좁혀 시도한다(건너뛰지 않는다). narrow_skip:
+    # narrow 로도 부족한(최소 하한 미만) 단은 건너뛴다. §4 Lv0~Lv2 등급의 런타임 스위치이며,
+    # #394(spring_max_retries) 원복은 이 값을 narrow 이상으로 함께 올려야 한다(§4 결론).
+    rescue_budget_mode: Literal["observe", "narrow", "narrow_skip"] = "observe"
+    # 구제 체인 한 단에 줄 수 있는 최소 타임아웃 — 미만이면 시도해도 성공 가망이 없다고 보고
+    # narrow_skip 모드에서 그 단을 건너뛴다(본검색 제외, 본검색은 항상 시도한다). 실측(#385)
+    # 전 잠정값 — DESIGN-SHARED-BUDGET-384 §3 D7 "예: 0.5"를 그대로 채택한다.
+    rescue_stage_min_timeout_s: float = Field(default=0.5, gt=0.0)
+    # 구제 체인 잔여 예산 계산의 데드라인에서 미리 떼어 두는 꼬리(rerank·I-21 push) 몫 —
+    # `rescue_deadline = turn_started_at + (stream_total_timeout_buyer_s - 이 값)`
+    # (DESIGN-SHARED-BUDGET-384 §3 D2). rerank 실 p95 는 #385 실측 전까지 **미확인**이라,
+    # 보수적으로 `llm_timeout_s`(30.0)의 절반을 예약해 둔다 — 실측 후 좁힌다(§3 D2 "꼬리 예약").
+    rescue_tail_reserve_s: float = Field(default=15.0, ge=0.0)
     # [#132 PR #293 리뷰] I-1 응답 파싱 **전용** 스레드풀 크기. `asyncio.to_thread` 의 앱 전역
     # 기본 executor 를 쓰면, 총시간 가드가 버린(=await 는 취소됐지만 계속 도는) 파싱 스레드가
     # 임베딩·카테고리 매핑·색상 사전과 같은 풀을 놓고 경쟁해 무관한 요청까지 대기시킨다.
@@ -1834,6 +1941,23 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _require_rescue_tail_reserve_within_buyer_cap(self) -> "Settings":
+        """꼬리 예약이 구매자 전체 상한 이상이면 기동 실패 (#427, DESIGN-SHARED-BUDGET-384 §3 D2).
+
+        `rescue_deadline = turn_started_at + (stream_total_timeout_buyer_s -
+        rescue_tail_reserve_s)`(`app/agents/buyer/recommendation/graph.py::stream_
+        recommendation`) — 예약이 전체 예산 이상이면 구제 체인 몫이 음수/0 이 되어 모든 턴이
+        예산 판정에서 즉시 `skip`(또는 `narrow` 강등)으로 떨어진다. 그 자체가 설정 오류다.
+        """
+        if self.rescue_tail_reserve_s >= self.stream_total_timeout_buyer_s:
+            raise ValueError(
+                "RESCUE_TAIL_RESERVE_S must be < STREAM_TOTAL_TIMEOUT_BUYER_S "
+                f"(got {self.rescue_tail_reserve_s} >= {self.stream_total_timeout_buyer_s}): "
+                "the rescue chain budget would be zero or negative for every turn"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _require_general_lane_within_stream_cap(self) -> "Settings":
         """판매자 general 레인 직렬 예산이 스트림 전체 상한을 넘으면 기동 실패 (#266 P1 리뷰).
 
@@ -1888,86 +2012,47 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _require_search_retry_within_stream_budget(self) -> "Settings":
-        """I-1 검색 재시도 총량이 스트림 전체 상한을 넘으면 기동 실패 (#133).
+        """I-1 검색 재시도 총량이 스트림 전체 상한을 넘으면 기동 실패 (#133, #427 재기준선).
 
-        **전체 상한과 비교하는 이유**(PR #241/#138 lessons 로 정정): 재시도가 갉아먹는 것은 턴
-        전체 시간이다. `llm_timeout_s * (llm_max_retries + 1)` 과 같은 결의 예산식이며, 한쪽만
-        튜닝하면 조용히 어긋나는 쌍이라 기동 시점에 고정한다. 비교 대상은 **구매자 전체
-        상한**(`stream_total_timeout_buyer_s`, #138)이다 — I-1 검색은 구매자 추천 경로에서만
-        돌고, 그 경로를 실제로 끊는 것은 판매자와 공용인 90s 가 아니라 구매자 전용 30s 다.
+        [#427, DESIGN-SHARED-BUDGET-384 §1(a)] **first-token 비교는 `progress_events_enabled
+        is False` 일 때만 한다** — 이 검증기는 원래 "추천 경로의 첫 이벤트가 `conditions`(또는
+        미룬 턴은 검색 뒤 `conditions`)이고, first-token 상한(10s)이 그 앞의 검색·재시도를
+        가둔다"는 전제로 first-token 과 비교했다. `progress_events_enabled=True`(기본, #396,
+        api-spec v0.26.2)면 첫 SSE 는 `conditions` 가 아니라 decompose **앞**의
+        `progress`(`app/agents/buyer/graph.py::run_buyer_turn`, 실측 p50 ≈12ms)라, 구제
+        체인(F-1/#343/자동완화 probe) 전체가 first-token 관문 **밖**에서 돈다 — 이 검증기의
+        옛 docstring 이 "그 플래그를 끄면 다시 실질 가드가 된다 / 연동 여부는 #384·#288 잔여
+        후보로 남긴다"고 적어 둔 바로 그 판단을 이 이슈(#384 후속 (i))가 내린다. 플래그를
+        끄면(운영 롤백 등) 다시 실질 가드가 필요하므로 그때만 비교한다.
 
-        **first-token 상한과도 비교한다**(#113 PR #248 3차 리뷰로 정정): 이 docstring 은 원래
-        "추천 경로의 첫 이벤트는 `conditions` 이고 검색은 그 뒤라 검색 재시도는 first-token
-        예산을 한 톨도 쓰지 않는다"고 적고 있었다. **#113 이 그 순서를 바꿨다** — 자동 완화가
-        검색 **후에** 조건을 바꿀 수 있는 턴(기본 설정에선 `ratingMin` 이 걸린 턴)은 표시-실제
-        불일치를 막으려고 `conditions` 를 검색 뒤로 미룬다(§3.1 이 conditions 를 0~1 회로
-        못박아 "고쳐서 재전송"이 불가능하다). 그 턴에서는 검색 재시도가 first-token 예산을
-        **실제로 쓸 수 있다.** 기본값은 아래 가드로 재시도를 끄지만, 가드를 되돌릴 때 이 전제를
-        놓치면 초판의 "emit 순서를 코드로 확인하지 않은 오류"를 방향만 바꿔 되풀이하게 된다.
+        **전체 상한과는 상시 비교한다**(PR #241/#138 lessons 로 정정, #427 로 유지) — 재시도가
+        갉아먹는 것은 턴 전체 시간이다. `llm_timeout_s * (llm_max_retries + 1)` 과 같은 결의
+        예산식이며, 한쪽만 튜닝하면 조용히 어긋나는 쌍이라 기동 시점에 고정한다. 비교 대상은
+        **구매자 전체 상한**(`stream_total_timeout_buyer_s`, #138)이다 — I-1 검색은 구매자
+        추천 경로에서만 돌고, 그 경로를 실제로 끊는 것은 판매자와 공용인 90s 가 아니라 구매자
+        전용 30s 다.
+
+        [#427] **I-1 검색 예산은 `spring_search_timeout_s` 로 잰다**(단일 호출 예산·직렬 합
+        둘 다) — `spring_timeout_s`(AI→Spring 전 구간 공용)와 분리됐다(#394 가 기각된 "스칼라
+        하나를 공유해 전 구간이 함께 늘어난다" 실패 모드를 되풀이하지 않기 위해서다).
 
         **이 식은 단일 I-1 호출 예산만 본다**(#277). 종전의 배타성 전제는 실측으로 반증됐다:
         본 검색이 1 차 타임아웃 뒤 2 차에 0 건으로 성공하면 재시도를 쓰고도 완화 probe 가 돈다.
         기본 설정은 미룬 턴의 재시도를 건너뛰어 첫 이벤트 앞 직렬 합을
-        `3 * spring_timeout_s`(9s, #383 보정 후)로 묶는다. `SEARCH_RETRY_ON_DEFERRED_CONDITIONS=
-        true`로 종전 동작을 되살리면 세 호출이 각각 재시도해 최대 18s가 되고, #277의 이벤트
-        0건·504 조합도 다시 열린다.
+        `3 * spring_search_timeout_s`(9s, #383 보정 후)로 묶는다. `SEARCH_RETRY_ON_DEFERRED_
+        CONDITIONS=true`로 종전 동작을 되살리면 세 호출이 각각 재시도해 최대 18s가 되고, #277의
+        이벤트 0건·504 조합도 다시 열린다.
 
-        **직렬 합의 일반형**(#288, #383 보정) — 상수는 `_deferred_first_event_i1_calls` 가
-        계산하는
-        `1 + (1 if category_expand_enabled else 0) +
-        min(relaxation_max_rounds, |relaxation_auto_fields ∩ relaxation_chip_fields|)` 로
-        바뀐다. 각 항의 출처:
-        - `1`: 본 검색 1회(`asyncio.gather(_run_search(), _fetch_purchases())` — I-19 는 병렬이라
-          합산 대상이 아니고, fan-out leg 도 병렬이라 1회분).
-        - `1 if category_expand_enabled else 0`(#383): 본 검색이 0건일 때 F-1(#222)·#343 이 여는
-          카테고리 무필터 재검색 한 단. 둘은 `category_expand_notice_suppressed` 로 상호배타라
-          한 턴 최대 1회이므로 항이 아니라 존재 여부만 더한다 — 근거는
-          `_deferred_first_event_i1_calls` docstring.
-        - **교집합**(합집합·`auto_fields` 단독이 아니라): 후보 생성기 `build_relaxation_candidates`
-          가 `relaxation_chip_fields` 를 **순회**하며 후보를 만들고, 자동 완화 루프는 그중
-          `relaxation_auto_fields` 에 든 것만 쓴다. 칩 목록에 없는 자동 필드는 후보 자체가 안
-          생겨 probe 가 돌지 않는다. `_forbid_auto_relaxing_explicit_constraints` 가 자동 목록을
-          칩 목록의 부분집합으로 이미 강제하지만, 그 검증기는 **이 검증기보다 아래에 선언**돼
-          있고 pydantic 의 `mode="after"` 검증기는 선언 순으로 돈다 — 이 검증기가 도는 시점에는
-          그 조합이 아직 거절되지 않았을 수 있어 자기 입력만으로 정확해야 한다. 교집합이 비어
-          이 검증을 건너뛰어도 그 조합은 아래 검증기가 결국 거절하므로 조용히 통과하는 설정이
-          생기지는 않는다.
-        - `min(relaxation_max_rounds, ...)`: 자동 완화 루프가 `rounds >= relaxation_max_rounds`
-          에서 break 하므로, probe 횟수는 교집합 크기와 라운드 상한 중 작은 쪽으로 잡힌다.
-        - 1 회 호출의 벽시계 예산(`budget`/`spring_timeout_s`)은 아래 가드 ON/OFF 분기 그대로다.
+        **직렬 합 계산은 `_rescue_chain_stage_counts`/`_rescue_chain_serial_budget_s`
+        (#427 D7) 로 위임한다** — 런타임 좁히기(`app/agents/buyer/recommendation/
+        graph.py::stream_recommendation`)와 이 기동 검증이 **같은 함수**에서 계수를 얻어야
+        한쪽만 고쳐지는 드리프트(#383 이 고친 것과 같은 실패 모드)를 구조적으로 막는다. 계수
+        정의(각 항의 출처·§1(d) 각주①의 억제 스코프 비대칭·"오늘 기본값에서 3"인 근거)는 그
+        두 함수의 docstring 참조 — 여기서 다시 적지 않는다(드리프트 방지 원칙 그대로).
 
-        **오늘 이 식의 값은 기본 설정에서 3 이다**(#383 보정 후) — `1`(본 검색) +
-        `1`(`category_expand_enabled` 기본 `True`) + `min(3, 1)`(교집합, 자동 목록이
-        `_forbid_auto_relaxing_explicit_constraints` 로 `{ratingMin}` 부분집합에 잠겨 있어 항상
-        ≤ 1). `CATEGORY_EXPAND_ENABLED=false` 면 그 항이 빠져 종전대로 2 다. 상수 대신 일반형을
-        쓰는 이유는, 자동 완화 허용 목록이 넓어지거나(`graph.py` 의 `may_auto_relax` 주석이
-        "목록이 넓어지면"을 명시적으로 예상한다) `category_expand_enabled` 가 꺼지는 순간 상수는
-        **조용히 어긋나** #277 이 없앤 이벤트 0건·504 조합이 되살아나기 때문이다. 계수를 다른
-        검증기의 허용 목록·플래그에 암묵적으로 의존시키지 않는다(lessons 2026-08-04
-        "상한이 안전한지는 단일 호출 예산이 아니라 첫 이벤트 앞 직렬 합으로 잰다").
-
-        가드 ON 설정은 직렬 합 `calls * budget`로 검증한다 — `search_retry_on_deferred_
-        conditions=True` 면 `graph.py::stream_recommendation` 의 `suppress_deferred_
-        search_retry` 산출부가 항상 False 라 세 항 모두 재시도하기 때문이다. **가드
-        OFF(기본)는 항이 균질하지 않다**(#383 R5, PR #414 Claude 리뷰) — 본 검색·
-        자동완화 probe 는 `spring_client.suppress_search_retry()` 로 억제돼(그 `with`
-        블록은 저장소 전체에, 같은 함수 안 본 검색을 감싼 곳과 자동완화 probe
-        `_probe(cand)` 를 감싼 곳 딱 두 곳뿐) 1회분(`spring_timeout_s`)이지만, F-1/#343
-        구제 폴백(같은 함수의 `_run_search_unfiltered()` 호출 두 곳)은 그 블록 밖이라
-        억제되지 않고 `spring_client.py::search` 의 `settings.spring_max_retries + 1`
-        을 그대로 받는다 — 세 항을 균질하게 `spring_timeout_s` 로 매기면 이 한 항을
-        과소평가해 이 이슈가
-        고치려던 실패 모드를 되풀이한다(`SPRING_MAX_RETRIES=1` + 기본 타임아웃이면 가드
-        계산 9.0 < 10.0 로 통과시키지만 실제 최악은 3.0+3.0+3.0×2=12.0 > 10.0). 그래서
-        OFF 분기는 `suppressed_calls * spring_timeout_s + rescue_calls * budget`
-        (`_deferred_first_event_rescue_i1_calls` 가 `rescue_calls` 를 뗀다, `rescue ≤
-        total`·`total == 0 → rescue == 0` 두 불변식 보장)로 나눠 잰다. **구제 경로를
-        `graph.py` 에서 억제하도록 런타임을 바꾸는 선택지는 범위 밖**이다(#384/#288 소관) —
-        가드가 현실을 정확히 재게만 고친다. 오늘 기본값(`spring_max_retries=0`, #394)에서는
-        `budget == spring_timeout_s` 라 항별 값 매김이 갈리지 않아 영향이 없다(9.0 그대로).
-        게이트는 `calls == 0`(= `graph.py`의 `may_auto_relax`가 False)일 때만 검증을 건너뛰어,
-        실제로 미루지 않는 설정을 일어나지 않는 직렬 호출 때문에 막지 않는다(#277 4차 원칙을
-        일반형으로 그대로 유지).
+        게이트는 `deferred_calls == 0`(= `graph.py`의 `may_auto_relax`가 False)일 때만 검증을
+        건너뛰어, 실제로 미루지 않는 설정을 일어나지 않는 직렬 호출 때문에 막지 않는다(#277 4차
+        원칙을 일반형으로 그대로 유지).
 
         **커버하지 않는 것**(누락이 아니라 판단): LLM head(#151 baseline p95 ≈3.0s)와 pg 왕복은
         이 식에 없고, `conditions` 뒤에 도는 완화 칩 probe(`relaxation_max_probes`)도 첫 이벤트
@@ -1975,87 +2060,82 @@ class Settings(BaseSettings):
         포함한 타임아웃 재배분은 #288 의 잔여 후보로 남는다. F-1·#343 구제 폴백은 #383 부터 이
         식에 들어왔다(더 이상 커버 밖이 아니다).
 
-        **구매자 `progress` 이벤트(#289)는 #396 이 이미 구현했다 — "미룸 자체가 사라진다"는
-        낡은 서술이다(#383 R3 정정).** `graph.py::stream_recommendation` 이 본 검색 **직전**에
-        `progress_frame("searching", ...)` 을 내보내고(`progress_events_enabled` 기본
-        `True`, 위 필드), 이 스트림의 첫 이벤트는 이제 `conditions` 가 아니라 그 `progress`
-        프레임이다. `conditions` 는 여전히 검색 **뒤**로 미뤄진다 — 사라지는 것은 미룸
-        자체가 아니라 **미룸이 first-token 을 늦추는 효과**다: `stream.py` 의 `ft_deadline`
-        이 이 `progress` 프레임으로 이미 충족되므로, `progress_events_enabled=True`(오늘
-        기본값)인 배포에서 이 검증기의 first-token 비교는 실제로 도달하기 전에 이미 안전한
-        **보험 계층**이고, 그 플래그를 끄면 다시 실질 가드가 된다. **계수를
-        `progress_events_enabled` 에 연동하지는 않는다** — 식·기본값·런타임 로직은 그대로이며,
-        그 연동 여부는 #384/#288 잔여 후보로 남긴다.
+        [#427, DESIGN-SHARED-BUDGET-384 §3 D2] **`rescue_budget_mode == "observe"` 일 때만**
+        직렬 합을 `stream_total_timeout_buyer_s - rescue_tail_reserve_s` 와 추가로 비교한다.
+        근거: `narrow`/`narrow_skip` 에서는 런타임 좁히기(`stream_recommendation`)가 꼬리
+        예약을 **실제로 집행**하므로 이론적 직렬 합이 그 값을 넘어도 실제로는 넘지 못한다.
+        `observe` 는 아무것도 집행하지 않으므로 설정 자체가 안전해야 한다. **집행이 런타임에
+        있거나 기동에 있거나, 둘 중 하나는 항상 있다.**
 
         **계약 무변경**: 이 검증은 내부 기동 로직이고 AI→Spring 3s 규약과 미룬 턴 재시도
         스킵은 api-spec §2.9(c)(v0.20.2)에 이미 등재돼 있다 — 이 변경으로 와이어·명세를
-        건드리지 않는다.
+        건드리지 않는다(`spring_search_timeout_s` 기본값도 3.0 이라 오늘 값은 그대로다).
         """
-        budget = self.spring_timeout_s * (self.spring_max_retries + 1)
+        budget = self.spring_search_timeout_s * (self.spring_max_retries + 1)
         if budget >= self.stream_total_timeout_buyer_s:
             raise ValueError(
-                "SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1) must be < "
+                "SPRING_SEARCH_TIMEOUT_S * (SPRING_MAX_RETRIES + 1) must be < "
                 f"STREAM_TOTAL_TIMEOUT_BUYER_S (got {budget} >= "
                 f"{self.stream_total_timeout_buyer_s}): "
                 "search retries alone would exhaust the buyer turn budget"
             )
-        # 단일 I-1 예산은 가드와 무관하게 비교하고, 아래 검증은 graph.py의 may_auto_relax 전제
-        # (calls > 0, 즉 rounds > 0 && 교집합 존재)에서만 ON/OFF 각각의 실제 직렬 합을 비교한다.
-        if budget >= self.stream_first_token_timeout_s:
+        # [#427] first-token 비교는 progress_events_enabled=False 일 때만 — 위 docstring 참조.
+        if not self.progress_events_enabled and budget >= self.stream_first_token_timeout_s:
             raise ValueError(
-                "SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1) must be < "
+                "SPRING_SEARCH_TIMEOUT_S * (SPRING_MAX_RETRIES + 1) must be < "
                 f"STREAM_FIRST_TOKEN_TIMEOUT_S (got {budget} >= "
-                f"{self.stream_first_token_timeout_s}): "
+                f"{self.stream_first_token_timeout_s}) when PROGRESS_EVENTS_ENABLED=false: "
                 "conditions is deferred past the search on auto-relaxable turns (#113), "
                 "so search retries consume the first-token budget and would 504"
             )
-        deferred_calls = _deferred_first_event_i1_calls(
+        counts = _rescue_chain_stage_counts(
             relaxation_max_rounds=self.relaxation_max_rounds,
             auto_fields=self.relaxation_auto_fields,
             chip_fields=self.relaxation_chip_fields,
             category_expand_enabled=self.category_expand_enabled,
         )
+        deferred_calls = counts.main + counts.rescue + counts.auto_relax
         if deferred_calls == 0:
             return self
-        if self.search_retry_on_deferred_conditions:
-            # ON 분기: graph.py::stream_recommendation 의 suppress_deferred_search_retry
-            # 산출부가 항상 False 라 세 항
-            # 전부(본 검색·자동완화 probe·구제 폴백) 재시도한다 — 균질하게 budget 으로 맞는다.
-            serial_budget = deferred_calls * budget
-            serial_formula = f"{deferred_calls} * SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1)"
-            recovery = (
-                "disable SEARCH_RETRY_ON_DEFERRED_CONDITIONS, lower SPRING_TIMEOUT_S, "
-                "disable deferral with RELAXATION_MAX_ROUNDS=0 or "
-                "RELAXATION_AUTO_FIELDS=[], or drop the rescue-fallback call with "
-                "CATEGORY_EXPAND_ENABLED=false"
+        serial_budget = _rescue_chain_serial_budget_s(
+            counts=counts,
+            search_timeout_s=self.spring_search_timeout_s,
+            spring_max_retries=self.spring_max_retries,
+            search_retry_on_deferred_conditions=self.search_retry_on_deferred_conditions,
+        )
+        recovery = (
+            (
+                "disable SEARCH_RETRY_ON_DEFERRED_CONDITIONS, "
+                if self.search_retry_on_deferred_conditions
+                else ""
             )
-        else:
-            # OFF 분기(기본, #383 R5): 본 검색·자동완화 probe 는 suppress_search_retry() 로
-            # 억제돼 1회분(spring_timeout_s)이지만, 구제 폴백(F-1/#343)은 그 with 블록 밖이라
-            # 억제되지 않는다 — 균질하게 spring_timeout_s 로 매기면 그 한 항을 과소평가한다
-            # (_deferred_first_event_rescue_i1_calls docstring 근거). 항별로 나눠 값을 매긴다.
-            rescue_calls = _deferred_first_event_rescue_i1_calls(
-                relaxation_max_rounds=self.relaxation_max_rounds,
-                auto_fields=self.relaxation_auto_fields,
-                chip_fields=self.relaxation_chip_fields,
-                category_expand_enabled=self.category_expand_enabled,
-            )
-            suppressed_calls = deferred_calls - rescue_calls
-            serial_budget = suppressed_calls * self.spring_timeout_s + rescue_calls * budget
-            serial_formula = (
-                f"{suppressed_calls} * SPRING_TIMEOUT_S + "
-                f"{rescue_calls} * SPRING_TIMEOUT_S * (SPRING_MAX_RETRIES + 1)"
-            )
-            recovery = (
-                "lower SPRING_TIMEOUT_S, disable deferral with "
-                "RELAXATION_MAX_ROUNDS=0 or RELAXATION_AUTO_FIELDS=[], or "
-                "drop the rescue-fallback call with CATEGORY_EXPAND_ENABLED=false"
-            )
-        if serial_budget >= self.stream_first_token_timeout_s:
+            + "lower SPRING_SEARCH_TIMEOUT_S, disable deferral with RELAXATION_MAX_ROUNDS=0 "
+            "or RELAXATION_AUTO_FIELDS=[], or drop the rescue-fallback call with "
+            "CATEGORY_EXPAND_ENABLED=false"
+        )
+        # [#427] 구매자 전체 상한과는 상시 비교한다 — 위 docstring 참조.
+        if serial_budget >= self.stream_total_timeout_buyer_s:
             raise ValueError(
-                f"{serial_formula} must be < STREAM_FIRST_TOKEN_TIMEOUT_S "
-                f"(got {serial_budget} >= "
-                f"{self.stream_first_token_timeout_s}): "
+                f"the deferred I-1 serial budget ({deferred_calls} calls) must be < "
+                f"STREAM_TOTAL_TIMEOUT_BUYER_S (got {serial_budget} >= "
+                f"{self.stream_total_timeout_buyer_s}): {recovery}"
+            )
+        # [#427] observe 모드일 때만 꼬리 예약을 뺀 값과 비교한다 — 위 docstring 참조.
+        if self.rescue_budget_mode == "observe":
+            tail_budget = self.stream_total_timeout_buyer_s - self.rescue_tail_reserve_s
+            if serial_budget >= tail_budget:
+                raise ValueError(
+                    f"the deferred I-1 serial budget ({deferred_calls} calls) must be < "
+                    "STREAM_TOTAL_TIMEOUT_BUYER_S - RESCUE_TAIL_RESERVE_S "
+                    f"(got {serial_budget} >= {tail_budget}) when RESCUE_BUDGET_MODE=observe: "
+                    f"{recovery}, or set RESCUE_BUDGET_MODE=narrow so the runtime narrowing "
+                    "enforces the tail reserve instead"
+                )
+        if not self.progress_events_enabled and serial_budget >= self.stream_first_token_timeout_s:
+            raise ValueError(
+                f"the deferred I-1 serial budget ({deferred_calls} calls) must be < "
+                f"STREAM_FIRST_TOKEN_TIMEOUT_S (got {serial_budget} >= "
+                f"{self.stream_first_token_timeout_s}) when PROGRESS_EVENTS_ENABLED=false: "
                 f"deferred conditions put {deferred_calls} serial I-1 calls before the first "
                 f"event; {recovery}"
             )

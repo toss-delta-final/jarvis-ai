@@ -128,18 +128,22 @@ def test_search_retry_defaults_fit_first_token_budget():
     settings = Settings(_env_file=None)
 
     assert settings.spring_max_retries == 0
-    assert settings.spring_timeout_s * (settings.spring_max_retries + 1) < (
+    assert settings.spring_search_timeout_s * (settings.spring_max_retries + 1) < (
         settings.stream_first_token_timeout_s
     )
 
 
 def test_search_retry_budget_overrun_fails_startup():
-    """재시도 총량이 **턴 전체 예산**을 넘으면 기동을 막는다 — 살리려던 턴을 죽이는 설정이다."""
+    """재시도 총량이 **턴 전체 예산**을 넘으면 기동을 막는다 — 살리려던 턴을 죽이는 설정이다.
+
+    [#427] 이 검증은 이제 `spring_search_timeout_s`(검색 전용)로 잰다 — 공용 `spring_timeout_s`
+    를 올려도 이 검증에는 영향이 없다(분리 회귀, `test_config_search.py` 참조).
+    """
     import pytest
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError, match="exhaust the buyer turn budget"):
-        Settings(_env_file=None, spring_max_retries=1, spring_timeout_s=20.0)
+        Settings(_env_file=None, spring_max_retries=1, spring_search_timeout_s=20.0)
 
     # 판매자와 공용인 90s 가 아니라 구매자 전용 30s 와 비교한다 — I-1 검색은 구매자 경로 전용이라
     # 느슨한 쪽과 비교하면 검증이 이름만 남는다(#138 로 두 상한이 갈렸다).
@@ -147,70 +151,97 @@ def test_search_retry_budget_overrun_fails_startup():
 
 
 def test_search_retry_budget_must_also_fit_the_first_token_window():
-    """[#113 PR #248 3차 리뷰] 재시도 총량은 **first-token 상한** 안에도 들어와야 한다.
+    """[#113 PR #248 3차 리뷰, #427 재기준선] 단일 I-1 호출 예산은 first-token 상한과도
+    비교되지만, 이제 `PROGRESS_EVENTS_ENABLED=false` 일 때만이다.
 
     이 검증기는 원래 "추천 경로의 첫 이벤트는 `conditions` 이고 검색은 그 뒤라, 검색 재시도는
     first-token 예산을 한 톨도 쓰지 않는다"를 전제로 전체 상한(30s)과만 비교했다. **#113 이 그
     순서를 바꿨다** — 자동 완화가 검색 후에 조건을 바꿀 수 있는 턴은 표시-실제 불일치를 막으려고
-    `conditions` 를 검색 뒤로 미룬다. 그 턴에서는 검색 재시도가 first-token 예산을 실제로 쓰고,
-    넘기면 `stream.py` 의 `ft_deadline` 이 스트림을 끊어 504(UPSTREAM_TIMEOUT)가 된다.
-
-    전체 상한(30s)만 보면 12s 짜리 설정이 조용히 통과해 그 턴들을 죽인다 — 두 상한을 **함께**
-    본다. 재시도 횟수는 이미 `le=1` 로 묶여 있으므로 실제 튜닝 벡터는 타임아웃 값 쪽이다.
+    `conditions` 를 검색 뒤로 미룬다. #427 은 그 전제를 다시 갈아엎었다 — `progress_events_
+    enabled=True`(기본, #396)면 첫 SSE 는 `conditions` 가 아니라 decompose 앞의 `progress`라
+    first-token 관문 자체가 이 검색 재시도 앞에 있지 않다(DESIGN-SHARED-BUDGET-384 §1(a)). 그래서
+    이 비교는 `progress_events_enabled=False`(운영 롤백 등) 일 때만 다시 실질 가드가 된다.
     """
     import pytest
     from pydantic import ValidationError
 
     # [#394] 기본값이 0으로 바뀌어 이 검증기(재시도 1회 가정) 자체를 겨눈 값들은 명시 주입한다.
-    # 전체 상한(30s)은 통과하지만 first-token(10s)은 못 넘는 구간 — 종전이면 조용히 통과했다.
-    # 이 두 케이스는 단일 I-1 호출 예산(budget >= stream_first_token_timeout_s) 자체를 겨누므로
-    # #383 의 미룸 직렬 합 계수(3) 와 무관하게 그대로 유지한다.
     with pytest.raises(ValidationError, match="first-token budget"):
-        Settings(_env_file=None, spring_timeout_s=6.0, spring_max_retries=1)  # 6 × 2 = 12s
+        Settings(
+            _env_file=None,
+            spring_search_timeout_s=6.0,
+            spring_max_retries=1,
+            progress_events_enabled=False,
+        )  # 6 × 2 = 12s
 
     # 반대 방향 — first-token 상한을 낮추는 설정도 같은 쌍으로 잡힌다.
     with pytest.raises(ValidationError, match="first-token budget"):
         Settings(
-            _env_file=None, stream_first_token_timeout_s=5.0, spring_max_retries=1
+            _env_file=None,
+            stream_first_token_timeout_s=5.0,
+            spring_max_retries=1,
+            progress_events_enabled=False,
         )  # 예산 6s > 5s
+
+    # [리뷰 F2 수정] progress_events_enabled=True(기본)면 이 관문 자체가 적용되지 않는다 —
+    # 위 첫 raise 와 **정확히 같은 조합**(검색예산 6.0, retries=1 → 단일 호출 예산
+    # 6×2=12.0 ≥ first-token 10.0, 그 자체로는 여전히 위반)이 progress=True 에서는 이 비교를
+    # 그냥 건너뛰어 통과한다는 것을 실제로 잰다. RESCUE_BUDGET_MODE=narrow 로 두어 observe
+    # 꼬리 예약 비교(직렬 합 24.0 ≥ 15.0, 이 테스트가 겨누는 것과 다른 축)가 끼어들지 않게
+    # 한다 — 안 그러면 그 검증기가 먼저 걸려 이 assert 가 "first-token 관문이 꺼졌다"를
+    # 증명하지 못한다.
+    assert Settings(
+        _env_file=None,
+        spring_search_timeout_s=6.0,
+        spring_max_retries=1,
+        rescue_budget_mode="narrow",
+    )
 
     # 예산을 함께 줄이면 정상 — 검증은 **쌍**을 보지 한쪽 값을 금지하지 않는다.
     # [#383 R5] 미룸 직렬 합은 이제 항이 균질하지 않다 — 기본 설정(rescue_calls=1,
-    # suppressed_calls=2)에서 spring_max_retries=1 이면 budget=spring_timeout_s×2, 직렬 합은
-    # suppressed×spring_timeout_s + rescue×budget = 2×spring_timeout_s + 1×(spring_timeout_s×2)
-    # = 4×spring_timeout_s 다(구제 폴백은 억제 밖이라 재시도를 그대로 받으므로 3×가 아니라
-    # 4×). 종전 값(first-token=5.0, spring_timeout_s=2.0)은 4×2.0=8.0 ≥ 5.0 으로 그 자체가
-    # 걸린다 — 이 assert 가 겨누는 것은 단일 호출 예산 vs first-token 쌍이지 미룸 직렬 합이
-    # 아니므로, first-token 상한을 9.0 으로 올려 단일 호출 예산(4.0)도, 미룸 직렬 합(8.0)도
-    # 함께 통과하는 조합으로 조정한다.
+    # suppressed_calls=2)에서 spring_max_retries=1 이면 budget=검색예산×2, 직렬 합은
+    # suppressed×검색예산 + rescue×budget = 2×검색예산 + 1×(검색예산×2) = 4×검색예산이다
+    # (구제 폴백은 억제 밖이라 재시도를 그대로 받으므로 3×가 아니라 4×). 종전 값
+    # (first-token=5.0, 검색예산=2.0)은 4×2.0=8.0 ≥ 5.0 으로 그 자체가 걸린다 — 이 assert 가
+    # 겨누는 것은 단일 호출 예산 vs first-token 쌍이지 미룸 직렬 합이 아니므로, first-token
+    # 상한을 9.0 으로 올려 단일 호출 예산(4.0)도, 미룸 직렬 합(8.0)도 함께 통과하는 조합으로
+    # 조정한다.
     assert Settings(
         _env_file=None,
         stream_first_token_timeout_s=9.0,
-        spring_timeout_s=2.0,
+        spring_search_timeout_s=2.0,
         spring_max_retries=1,
+        progress_events_enabled=False,
     )
-    # [#383 R5] spring_timeout_s=2.5 는 미룸 직렬 합 4×2.5=10.0 ≥ 10.0(기본 first-token)으로
-    # 동률 거절된다 — 단일 호출 예산 검증(5.0s < 10s)만 겨누도록 spring_timeout_s=1.8 로
-    # 낮춘다. 단일 호출 예산 3.6s(<10s) 는 여전히 여유가 있고, 미룸 직렬 합 4×1.8=7.2 도
-    # 10.0 아래다.
+    # [#383 R5] 검색예산=2.5 는 미룸 직렬 합 4×2.5=10.0 ≥ 10.0(기본 first-token)으로 동률
+    # 거절된다 — 단일 호출 예산 검증(5.0s < 10s)만 겨누도록 검색예산=1.8 로 낮춘다. 단일 호출
+    # 예산 3.6s(<10s) 는 여전히 여유가 있고, 미룸 직렬 합 4×1.8=7.2 도 10.0 아래다.
     assert Settings(
-        _env_file=None, spring_timeout_s=1.8, spring_max_retries=1
+        _env_file=None,
+        spring_search_timeout_s=1.8,
+        spring_max_retries=1,
+        progress_events_enabled=False,
     )  # 3.6s < 10s 이고 4×1.8=7.2s < 10s — 여유가 있으면 통과
 
 
 def test_deferred_retry_guard_rejects_default_serial_budget():
-    """미룬 턴 재시도 가드는 기본 12s 직렬 합이 first-event 10s를 넘으면 기동을 막는다."""
+    """미룬 턴 재시도 가드는 기본 18s 직렬 합이 observe 모드 꼬리 예약 비교(30-15=15s)를
+    넘으면 기동을 막는다 (#427 재기준선 — 종전은 first-token 10s 였다).
+    """
     import pytest
     from pydantic import ValidationError
 
     # [#394] 재시도 자체는 기본 0으로 꺼졌으니, 가드가 재시도 1회를 가정한 직렬 합을 여전히
-    # 올바르게 계산하는지는 명시 주입으로 겨눈다.
+    # 올바르게 계산하는지는 명시 주입으로 겨눈다. 기본 검색예산(3.0)·counts(1,1,1) 에서 ON
+    # 분기 직렬 합은 3 × (3.0×2) = 18.0 이고, observe 모드(기본) 꼬리 예약 비교(30-15=15.0)
+    # 를 넘는다.
     with pytest.raises(ValidationError) as exc_info:
         Settings(_env_file=None, search_retry_on_deferred_conditions=True, spring_max_retries=1)
 
     message = str(exc_info.value)
+    assert "RESCUE_BUDGET_MODE=observe" in message
     assert "disable SEARCH_RETRY_ON_DEFERRED_CONDITIONS" in message
-    assert "lower SPRING_TIMEOUT_S" in message
+    assert "lower SPRING_SEARCH_TIMEOUT_S" in message
     assert "RELAXATION_MAX_ROUNDS=0" in message
     # [#383] 새 손잡이 — 구제 폴백 항을 끄는 방법도 안내한다(가드 ON 분기).
     assert "CATEGORY_EXPAND_ENABLED=false" in message
@@ -265,15 +296,20 @@ def test_deferred_retry_guard_allows_reduced_timeout_and_default_off():
 
 
 def test_deferred_retry_default_path_rejects_serial_budget_when_retries_zero():
-    """기본 경로의 우연한 통과를 막는다(#277 리뷰 3차)."""
+    """기본 경로의 우연한 통과를 막는다(#277 리뷰 3차).
+
+    [#427] 검색예산=6.0, retries=0 이면 OFF 분기 직렬 합은 (1+1)×6.0 + 1×6.0 = 18.0 이고,
+    observe 모드(기본) 꼬리 예약 비교(30-15=15.0)를 넘는다.
+    """
     import pytest
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError) as exc_info:
-        Settings(_env_file=None, spring_max_retries=0, spring_timeout_s=6.0)
+        Settings(_env_file=None, spring_max_retries=0, spring_search_timeout_s=6.0)
 
     message = str(exc_info.value)
-    assert "SPRING_TIMEOUT_S" in message
+    assert "RESCUE_BUDGET_MODE=observe" in message
+    assert "SPRING_SEARCH_TIMEOUT_S" in message
     assert "RELAXATION_MAX_ROUNDS=0" in message
     # [#383] 새 손잡이 — 구제 폴백 항을 끄는 방법도 안내한다(가드 OFF 분기).
     assert "CATEGORY_EXPAND_ENABLED=false" in message
@@ -501,27 +537,28 @@ def test_default_settings_pass_deferred_serial_budget_by_formula():
 
 def test_deferred_retry_guard_off_meters_rescue_fallback_at_full_retry_budget():
     """[#383 R5, PR #414 Claude 리뷰] 가드 OFF 분기에서 구제 폴백 항만은 재시도 억제 밖이라
-    `budget`(=spring_timeout_s×(retries+1))로 매겨야 한다 — 균질하게 spring_timeout_s 로만
-    매기면 이 항을 과소평가해 이 이슈가 원래 고치려던 실패 모드를 되풀이한다.
+    `budget`(=검색예산×(retries+1))로 매겨야 한다 — 균질하게 검색예산 1 회분으로만 매기면 이
+    항을 과소평가해 이 이슈가 원래 고치려던 실패 모드를 되풀이한다.
 
-    기본 타임아웃(spring_timeout_s=3.0, stream_first_token_timeout_s=10.0)에서
-    `spring_max_retries=1` 이면 억제된 두 항(본 검색·자동완화 probe)은 2×3.0=6.0 이지만
-    구제 폴백 한 항은 재시도를 그대로 받아 1×(3.0×2)=6.0 이 되어 합이 12.0 ≥ 10.0 으로
-    거절된다. `category_expand_enabled=False` 로 구제 폴백 항 자체를 빼면 억제된 두 항만
-    남아 2×3.0=6.0 < 10.0 으로 통과한다 — 이 대비가 "구제 항만 budget 으로 매긴다"를
-    실제로 검사하는 유일한 테스트다.
+    [#427] 기본 검색예산(3.0)에서는 이 비대칭이 observe 모드 꼬리 예약 비교(30-15=15) 아래라
+    드러나지 않는다(억제된 두 항 2×3.0=6.0 + 구제 폴백 1×(3.0×2)=6.0 = 12.0 < 15.0) —
+    검색예산을 4.0 으로 올려 임계값을 넘긴다: 억제된 두 항은 2×4.0=8.0, 구제 폴백 한 항은
+    재시도를 그대로 받아 1×(4.0×2)=8.0 이 되어 합이 16.0 ≥ 15.0 으로 거절된다.
+    `category_expand_enabled=False` 로 구제 폴백 항 자체를 빼면 억제된 두 항만 남아
+    2×4.0=8.0 < 15.0 으로 통과한다 — 이 대비가 "구제 항만 budget 으로 매긴다"를 실제로
+    검사하는 유일한 테스트다.
     """
     import pytest
     from pydantic import ValidationError
 
-    with pytest.raises(ValidationError, match="3 serial I-1 calls"):
-        Settings(_env_file=None, spring_max_retries=1)
+    with pytest.raises(ValidationError, match=r"\(3 calls\)"):
+        Settings(_env_file=None, spring_max_retries=1, spring_search_timeout_s=4.0)
 
-    assert (
-        Settings(
-            _env_file=None, spring_max_retries=1, category_expand_enabled=False
-        ).category_expand_enabled
-        is False
+    assert Settings(
+        _env_file=None,
+        spring_max_retries=1,
+        spring_search_timeout_s=4.0,
+        category_expand_enabled=False,
     )
 
 
@@ -529,23 +566,21 @@ def test_deferred_first_event_i1_calls_category_expand_enabled_false_lowers_sett
     """[#383] `Settings` 인스턴스 경로 — `category_expand_enabled=False` 가 실제로 검증기 계수를
     낮춰 기동 통과/실패를 가른다. 호출부가 새 인자를 실제로 넘기는지 잡는 유일한 테스트다.
 
-    `spring_max_retries=0, spring_timeout_s=4.0` 조합은 계수 3(기본)에서 3×4.0=12.0 ≥ 10.0 로
-    거절되지만, `category_expand_enabled=False` 로 계수를 2로 낮추면 2×4.0=8.0 < 10.0 으로
+    [#427] `spring_max_retries=0, spring_search_timeout_s=6.0` 조합은 계수 3(기본)에서 직렬 합
+    (1+1)×6.0 + 1×6.0 = 18.0 이 observe 모드 꼬리 예약 비교(30-15=15)를 넘어 거절되지만,
+    `category_expand_enabled=False` 로 계수를 2로 낮추면 (1+1)×6.0=12.0 < 15.0 으로
     통과한다 — 양쪽 방향을 함께 검사한다.
     """
     import pytest
     from pydantic import ValidationError
 
-    # [F3 리뷰] "must be < STREAM_FIRST_TOKEN_TIMEOUT_S" 는 단일 호출 예산 검증의 메시지와도
-    # 부분 일치한다 — 이 조합(budget 4.0 < 10.0)에서는 그 검증이 발화하지 않아 우연히 통과하지만,
-    # 두 검증이 뒤바뀌어도 초록으로 남지 않도록 미룸 직렬 합 분기 전용 문구를 겨눈다.
-    with pytest.raises(ValidationError, match="3 serial I-1 calls"):
-        Settings(_env_file=None, spring_max_retries=0, spring_timeout_s=4.0)
+    with pytest.raises(ValidationError, match=r"\(3 calls\)"):
+        Settings(_env_file=None, spring_max_retries=0, spring_search_timeout_s=6.0)
 
     assert Settings(
         _env_file=None,
         spring_max_retries=0,
-        spring_timeout_s=4.0,
+        spring_search_timeout_s=6.0,
         category_expand_enabled=False,
     )
 
@@ -553,30 +588,32 @@ def test_deferred_first_event_i1_calls_category_expand_enabled_false_lowers_sett
 def test_deferred_retry_guard_off_rejects_serial_budget_tie():
     """동률(==)도 거절한다 — 어느 시계가 먼저 터지는지가 지터로 갈리는 비결정성을 막는다.
 
-    [#383] 계수가 3이 되어 종전 동률 쌍(spring_timeout_s=5.0)은 더 이상 정확한 동률이 아니다
-    (3×5.0=15.0 은 이미 15.0 ≥ 10.0 으로 확실히 거절되지만 "바로 아래"가 동률 경계를 겨누지
-    못한다). 부동소수 오차 없는 깨끗한 동률 쌍으로 다시 세운다:
-    `spring_max_retries=0, spring_timeout_s=3.0`(기본값) 이면 계수 3 × 3.0 = 9.0 인데,
-    `stream_first_token_timeout_s=9.0` 으로 두면 정확히 9.0 == 9.0 동률이다.
+    [#427] 비교 대상이 구매자 전체 상한(STREAM_TOTAL_TIMEOUT_BUYER_S, 상시 비교, observe
+    모드와 무관)으로 바뀌었다 — `SPRING_SEARCH_TIMEOUT_S=4.0, SPRING_MAX_RETRIES=0`(기본)
+    이면 직렬 합은 (1+1)×4.0 + 1×4.0 = 12.0 이고, `STREAM_TOTAL_TIMEOUT_BUYER_S=12.0` 으로
+    두면 정확히 동률이다(STREAM_FIRST_TOKEN_TIMEOUT_S 기본 10.0 이하 제약도 만족한다).
     """
     import pytest
     from pydantic import ValidationError
 
+    # RESCUE_TAIL_RESERVE_S(기본 15.0)는 STREAM_TOTAL_TIMEOUT_BUYER_S 미만이어야 하는 별개
+    # 검증기(_require_rescue_tail_reserve_within_buyer_cap)가 있다 — 이 동률 테스트는 그 값과
+    # 무관하게 버퍼 상한 경계만 겨누므로 0.0 으로 낮춰 무력화한다.
     with pytest.raises(ValidationError) as exc_info:
         Settings(
             _env_file=None,
-            spring_max_retries=0,
-            spring_timeout_s=3.0,
-            stream_first_token_timeout_s=9.0,
+            spring_search_timeout_s=4.0,
+            stream_total_timeout_buyer_s=12.0,
+            rescue_tail_reserve_s=0.0,
         )
 
-    assert "must be < STREAM_FIRST_TOKEN_TIMEOUT_S" in str(exc_info.value)
-    # 바로 위(9.0 < 9.1)는 통과 — 검증이 쌍을 보지 한쪽 값을 금지하지 않는다.
+    assert "must be < STREAM_TOTAL_TIMEOUT_BUYER_S" in str(exc_info.value)
+    # 바로 위(12.0 < 12.1)는 통과 — 검증이 쌍을 보지 한쪽 값을 금지하지 않는다.
     assert Settings(
         _env_file=None,
-        spring_max_retries=0,
-        spring_timeout_s=3.0,
-        stream_first_token_timeout_s=9.1,
+        spring_search_timeout_s=4.0,
+        stream_total_timeout_buyer_s=12.1,
+        rescue_tail_reserve_s=0.0,
     )
 
 

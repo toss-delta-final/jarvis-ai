@@ -599,11 +599,17 @@ async def run_buyer_turn(
     popular_fn=None,
     observer=None,
     request_id: str | None = None,
+    turn_started_at: float | None = None,
 ) -> AsyncIterator[str]:
     """구매자 1턴을 SSE 프레임으로 스트리밍한다(open_stream 이 감싸는 inner).
 
     llm/search/push_fn/map_categories 미지정 시 라이브 기본값 — 테스트는 fake 를 주입한다.
     LLM 미구성(개발·CI)이면 네트워크 호출 없이 곧바로 LLM_UNAVAILABLE error 를 낸다.
+
+    [#427] `turn_started_at` 은 `open_stream` 이 잡은 스트림 시작 절대 시각(`loop.time()`)
+    이다 — 구제 체인 공유 예산(`stream_recommendation` 의 `rescue_deadline`)이 이 값을 원점으로
+    파생한다. 그대로 `stream_recommendation` 에 전달한다(새로 시각을 찍지 않는다 — 원점이
+    갈리면 D2 의 부등식 증명이 깨진다).
     """
     settings = get_settings()
     resolved_request_id = cast(
@@ -1204,5 +1210,6 @@ async def run_buyer_turn(
             # [#119] 개인화 off(A/B baseline arm)면 취향 랭킹도 함께 끈다 — rerank 주입과 같은
             # 스위치를 따라야 arm 이 "개인화 없음"으로 일관된다.
             profile_vec=(None if settings.profile_injection_scope == "off" else profile_vec),
+            turn_started_at=turn_started_at,
         ):
             yield frame
