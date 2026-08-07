@@ -39,6 +39,22 @@
   **비범위**: 그래프 API 표면(#150) · 저널·revision CAS·멱등 원장(#358) · pin 규약 ·
   브랜드 어휘 수집(C-28). `purchased` edge는 대화에서 만들지 않는다(원천은 질의 시점 I-19).
   (SPEC-PROFILE-GRAPH-149 v0.2.2, SPEC-PROFILE-001 v0.8.1 — api-spec 무개정)
+- **#380 — 과소지정 판정 축 실 LLM 실측 하네스 신설(`evals/underspecified_probe`)** — SPEC-
+  UNDERSPECIFIED-336 §7.3 이 남긴 게이트 잔여 항목("실 LLM 이 판정 축을 실제 발화에서 얼마나
+  정확히 산출하는지 실측하지 않았다")을 채운다. 30 앵커(cases.json 승계 7 + 신규 23) × N=8 =
+  240콜을 `is_underspecified_turn`·`detect_expansion_need` 프로덕션 함수에 그대로 넣어(판정
+  로직 복제 금지) `missRate`(confirmatory-primary)·`falseAlarmRate`(confirmatory-secondary)를
+  Wilson CI·trivial baseline 대조·원인 축 분해(ablation, `blockingAxes` 조합별 집계)·불변
+  재판정(flag off·prior 게이트)과 함께 잰다. confirmatory 분모는 `intent=="recommend"` 표본만
+  쓴다 — 프로덕션은 그 턴에서만 판정을 호출한다(`nonRecommendIntentCount` 진단으로 노출 크기를
+  남긴다). `fast`(gpt-5-nano) 1회 실측(리뷰 라운드 1 수정 반영 재실행):
+  **`missRate` 112/112(100.0%)** · **`falseAlarmRate` 0/104(0.0%)** — 미탐 원인
+  `blockingAxes` 조합은 `semanticQueryIsFallback` 단독 82.1% · `filters.attrConditions`
+  동반 9.8% · `categoryQueries` 동반 8.0%(fast 티어가 "아무거나"류 발화에도 의미쿼리·속성
+  조건을 스스로 채워 넣는다). `judgmentAccuracy`(48.1%)는 이번 런에서 trivial baseline 과
+  동률이다. 기본값(`underspecified_reask_enabled`)은 전환하지 않는다 — 이 실측은 그 전제
+  하나를 채웠을 뿐이다(`docs/specs/SPEC-UNDERSPECIFIED-336.md` §7.3,
+  `evals/underspecified_probe/baselines/fast-2026-08-06/`).
 - **#401 — 카테고리 사전 시드 정본을 repo 로 편입하고 0행/0임베딩 가드를 둔다** — 발화→카테고리
   매핑(`category_distance_max=0.26`, #344)의 근거 사전(leaf 1,007행)이 지금까지 repo 밖
   (`~/inte-final/_sql`)에만 있어 아무도 그 근거를 재현·검증할 수 없었고, `db/catalog/init/
