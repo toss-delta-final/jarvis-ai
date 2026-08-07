@@ -171,21 +171,46 @@ defined 로 전환됐다. 잔존 미정의는 #336(무지정+예산+세트) 1건
   `search` 가 아예 안 불린 케이스는 `observed.searchCallCount == 0`·`searchFilters == null` 로
   구별된다(예: `constraint_strength=unspecified` 5건 — popular_fn 우선). ci·CHAT·recommend 케이스
   11건 중 search 가 실제로 불리는 건 **6건**(combo-0023·0026·0031·0053·0054·0055), 나머지 5건은
-  popular_fn 우선이라 안 불린다(위 「popular_fn 우선」 항목). 검색이 여러 번 불릴 수 있으면(자동완화
-  재검색) **첫 호출(주 검색)** 만 쓴다 — 재검색이 축을 하나씩 완화하며 값이 바뀌므로 마지막 호출을
-  쓰면 "주입에 가장 가까운 값"이라는 의도가 깨진다(`pair_runner.py` 와 같은 규약). `observed` 에
-  `pushProductCount`(push 된 상품 수 합, 기존 `pushCount`=이벤트 수와 혼동 금지)도 추가해 필터가
-  실제로 결과를 줄였다는 가시적 결과를 데이터로 남긴다.
+  popular_fn 우선이라 안 불린다(위 「popular_fn 우선」 항목). 검색이 여러 번 불릴 수 있으면(완화
+  재검색 — **자동완화 루프** 또는 **완화 칩 estCount probe**, 이 매트릭스 ci 케이스는 실측상 전부
+  후자다. 아래 `overspecified_zero` 항목·「관측 재생성 이력」참조) **첫 호출(주 검색)** 만 쓴다 —
+  재검색이 축을 하나씩 완화하며 값이 바뀌므로 마지막 호출을 쓰면 "주입에 가장 가까운 값"이라는
+  의도가 깨진다(`pair_runner.py` 와 같은 규약). `observed` 에 `pushProductCount`(push 된 상품 수
+  합, 기존 `pushCount`=이벤트 수와 혼동 금지)도 추가해 필터가 실제로 결과를 줄였다는 가시적 결과를
+  데이터로 남긴다.
 - **`constraint_strength=overspecified_zero` 는 검색 0건을 직접 주입한다**(D4, #381 재검토 — 결론:
   유지) — `RecordingFilteringSearch(products=[])`(빈 카탈로그, `degrade=spring_timeout` 이 아닐 때만)
   로 표현 가능한 필터를 적용해도 항상 0건이 되게 하면서 경계 도달 `searchFilters` 도 함께 기록한다.
   0건을 **자연 발생**시키지 않고 주입을 유지하는 근거를 실측으로 확인했다: combo-0031 의 표본
   필터값은 `price_min=20000` 뿐인데, `PAIR_CATALOG` 4건의 가격(39000·48000·89000·30000)이 전부
   20000 이상이라 **필터를 실제로 적용해도 4/4 건이 그대로 통과한다**(0건이 자연 발생하지 않는다).
-  0건을 자연 발생시키려면 비현실적인 과지정 표본값이 따로 필요한데, 그러면 자동완화가 그 축을 풀고
-  재검색해 종료가 `zero_result` 가 아니라 `stop` 이 될 수 있다 — 그건 "자동완화 실검증"이라는 별개
-  축(후속 이슈 후보, 이 이슈 범위 밖)이다. 정의(필터 과지정→0건→자동완화·완화칩·`zero_result`
-  종료)가 실제로 실행되고 관측된다(`finishReason=zero_result`·`pushCount=0`·`pushProductCount=0`).
+  0건을 자연 발생시키려면 비현실적인 과지정 표본값이 따로 필요한데, 그래도 이 케이스에서
+  자동완화·완화칩이 도는 건 아니다(아래 참조) — present 인 필터축(`price_min`) 자체가 완화 축이
+  아니라서다.
+
+  **#425 판정(정의된 동작, 갭 아님) — 실제로 관측되는 건 `zero_result` 종료뿐이다.** 실측:
+  `finishReason=zero_result`·`pushCount=0`·`pushProductCount=0`·`searchCallCount=1`(주검색 1회뿐,
+  재검색 없음). 자동완화·완화칩이 안 도는 이유는 `price_min` 이 완화 축이 아니라서다 —
+  `app.agents.buyer.recommendation.relaxation.FIELD_TO_ATTR` 는 `priceMax`·`ratingMin`·`brand`·
+  `color` 뿐이고(모듈 docstring "비카테고리 조건(가격 상한·평점 하한·브랜드·색상)만 한 단계 푼다"),
+  `build_relaxation_candidates` 는 `FIELD_TO_ATTR` 밖 필드를 조용히 `continue` 로 건너뛴다. config
+  로도 `priceMin` 을 넣을 수 없다 — `app.core.config.Settings._require_known_relaxation_chip_fields`
+  가 기동 시점에 `FIELD_TO_ATTR` 밖 이름을 거부한다. 그래서 combo-0031 은
+  `build_relaxation_candidates(filters, settings) == []` 이고, `stream_recommendation`
+  (`app/agents/buyer/recommendation/graph.py`)의 `may_auto_relax` 게이트가 False, 자동완화 루프
+  (`if not candidates and not underspecified:`)는 진입해도 후보가 비어 0회 반복, 완화 칩 블록
+  (`if not underspecified and (not candidates or len(candidates) < settings.relaxation_min_results):`)
+  도 진입해도 probe 후보가 비어 칩 0개다. **갭이 아니라 정의된 동작이므로 `UNDEFINED_CELLS.md` 에
+  등재하지 않는다.** 0건 주입 유지 결정(위 문단)도 이 판정 위에 서 있다 — 표본값(`runner.
+  _FILTER_SAMPLE`)을 과지정 값으로 바꿔 자연 0건을 노려도, 이 케이스에 present 인 축은 여전히
+  `price_min` 하나라 완화 축이 새로 생기지 않는다. present 축 구성 자체를 바꾸려면
+  `axes.json`/케이스 재생성(바이트 동일 재현 가드)을 흔들어야 해서 별개 작업이다. **자동완화
+  전용 축을 이 매트릭스에 새로 뽑지도 않는다** — 자동완화의 실검증은 이미
+  `tests/unit/test_relaxation.py`(`test_auto_relaxation_emits_notice_and_recovers_products` 등)
+  소관이고, 이 하네스의 고정 대역 카탈로그 + 0건 주입으로는 "완화가 결과를 **살린다**"를 표현할 수
+  없다(주입이 항상 0건이라 probe 도 0건 → 채택 자체가 불가능). 이 판정은
+  `test_overspecified_zero_has_no_relaxable_axis_so_no_relaxation_search`
+  (`tests/eval/test_combo_matrix_eval.py`)가 잠근다.
   `degrade=spring_timeout` 과 겹치면 검색 실패가 우선한다(0건 성공보다 상위 실패, `failing_search`).
 - **`constraint_strength=unspecified` + degrade≠none 조합은 `search`/`rerank` degrade 를 실제로
   타지 않는다** — 무지정 턴의 후보 소스는 `popular_fn`(I-3)이 먼저이고(`graph.py:797-830`),
@@ -295,20 +320,54 @@ defined 로 전환됐다. 잔존 미정의는 #336(무지정+예산+세트) 1건
 | combo-0035·0036·0037·0038·0039 (constraint_strength=unspecified 5건) | `progress` 이벤트 + `pushProductCount`(실측값)·`searchCallCount:0`·`searchFilters:null`·`unappliedSearchFilters:[]` 추가 | **필드 추가** | popular_fn(I-3) 우선이라 search 자체가 안 불린다(코드 정의 우선순위, 갭 아님 — 기존 note 그대로). `pushCount`(이벤트 수)는 불변, `pushProductCount` 는 처음 관측된 값. |
 | combo-0023 (price_min, embedding_missing) | `progress` 이벤트 + `pushProductCount:4`·`searchCallCount:1`·`searchFilters`(`priceMin:20000`, 나머지 null)·`unappliedSearchFilters:[]` 추가 | **필드 추가 + 실측 개선(경계값 최초 기록)** | `PAIR_CATALOG` 4건이 `price_min=20000` 을 전부 만족(D4 근거 숫자와 동일 계산) — 필터가 있어도 이 표본에선 안 줄어드는 사례를 데이터로 처음 확인. `terminal`/`pushCount`/`listType` 은 불변. |
 | combo-0031 (overspecified_zero) | `progress` 이벤트 + `pushProductCount:0`·`searchCallCount:1`·`searchFilters`(`priceMin:20000`)·`unappliedSearchFilters:[]` 추가 | **필드 추가 + 실측 개선** | 0건 주입(`RecordingFilteringSearch(products=[])`)이 경계 도달 filters 도 함께 기록하게 됐다(D2) — `finishReason=zero_result`·`pushCount=0` 은 불변. |
-| combo-0026·0054·0055 (필터 8축 전부 present, degrade rerank_failed/embedding_missing) | `progress`+`suggestions` 이벤트 추가, `searchCallCount:1→5`(0055 는 신규), `searchFilters`(`keyword:null` — #51 규칙으로 leg 검색어에서 drop, `color`/`attrConditions` 는 present 유지), `unappliedSearchFilters:["color","attrConditions"]`, `pushProductCount`(실측값 1) 추가 | **실측 개선 — #371 잔여 맹점(category 축 미도달) 해소(D5)** | 예전엔 `category` 축이 항상 canonical-or-null degrade 로 `None` 지워져 leg 가 안 생겼다 — D5 로 leg 가 1개 생기면서 자동완화 재검색(축별 순차 완화, 5회 호출)이 처음으로 실제 실행됐다. `terminal=done`·`pushCount=1`·`listType=PICK_ONE` 은 불변(핵심 계약 유지) — combo-0055 는 특히 `pair_runner` 쪽 INV 검증과 짝을 이룬다(아래 참조, D1 로 양쪽 arm 이 `error`→`done` 으로 바뀜). |
-| combo-0053 (category+rating_min, embedding_missing) | `progress`+`suggestions` 이벤트 추가, `searchCallCount:0→2`, `searchFilters`(`category:무선이어폰`·`ratingMin:4.0`) 신규, `pushProductCount:2` | **실측 개선 — #371 잔여 맹점 해소(D5), 처음으로 search 를 탄다** | 배경(패킷 §"이미 실측한 사실") 대로 category 축을 실현하니 비로소 search 경계에 도달했다 — 예전엔 `category` 지워짐 → 하드필터가 `rating_min` 뿐 → `#393` 최소 필터 가드가 이 턴을 I-3(인기)로 돌려 search 자체가 안 불렸다. `terminal=done`·`listType=PICK_ONE` 은 불변. |
+| combo-0026·0054·0055 (필터 8축 전부 present, degrade rerank_failed/embedding_missing) | `progress`+`suggestions` 이벤트 추가, `searchCallCount:1→5`(0055 는 신규), `searchFilters`(`keyword:null` — #51 규칙으로 leg 검색어에서 drop, `color`/`attrConditions` 는 present 유지), `unappliedSearchFilters:["color","attrConditions"]`, `pushProductCount`(실측값 1) 추가 | **실측 개선 — #371 잔여 맹점(category 축 미도달) 해소(D5)** | 예전엔 `category` 축이 항상 canonical-or-null degrade 로 `None` 지워져 leg 가 안 생겼다 — D5 로 leg 가 1개 생기면서 **완화 칩 estCount probe**(주검색 1 + 칩 probe 4 = 5회, `relaxation_max_probes` 기본값)가 처음으로 실제 실행됐다 — **자동완화 루프가 아니다**(#425 재판정, 아래 참조): 결과가 1건(`not candidates` False)이라 자동완화 루프 자체는 안 돈다. `terminal=done`·`pushCount=1`·`listType=PICK_ONE` 은 불변(핵심 계약 유지) — combo-0055 는 특히 `pair_runner` 쪽 INV 검증과 짝을 이룬다(아래 참조, D1 로 양쪽 arm 이 `error`→`done` 으로 바뀜). |
+| combo-0053 (category+rating_min, embedding_missing) | `progress`+`suggestions` 이벤트 추가, `searchCallCount:0→2`, `searchFilters`(`category:무선이어폰`·`ratingMin:4.0`) 신규, `pushProductCount:2` | **실측 개선 — #371 잔여 맹점 해소(D5), 처음으로 search 를 탄다** | 배경(패킷 §"이미 실측한 사실") 대로 category 축을 실현하니 비로소 search 경계에 도달했다 — 예전엔 `category` 지워짐 → 하드필터가 `rating_min` 뿐 → `#393` 최소 필터 가드가 이 턴을 I-3(인기)로 돌려 search 자체가 안 불렸다. `searchCallCount:2` 는 **완화 칩 estCount probe**(주검색 1 + 칩 probe 1, 완화 후보가 `ratingMin` 1개뿐) 다 — 결과 2건 < `relaxation_min_results`(3)라 칩 probe 블록이 돌지만, 자동완화 루프는 `not candidates`(0건)가 아니라서 안 돈다(#425 재판정). `terminal=done`·`listType=PICK_ONE` 은 불변. |
 
 위 표의 "progress"/"progress+suggestions 이벤트" 서술은 1차 드리프트(단일 emit) 기준이다 —
 combo-0023·0026·0031·0035~0039·0053~0055(11건)는 리뷰 라운드 2 에서 2차 드리프트(다단계 emit)로
 `eventTypes` 가 한 번 더 갱신됐다(위 공통 배경 참조) — 다른 필드·판정은 그대로다.
 
-**관찰(후속 이슈 후보, 이 PR 에서 구현하지 않는다)**: `observed` 는 다른 레인이 SSE 이벤트를 바꿀
-때마다(이번엔 두 번) 조용히 낡는데, 커밋된 값과 재실행 값을 대조하는 가드가 없어서 아무도 모른다
-— `refresh-observed` 로 손으로 재생성해야만 드러난다. 가드(예: PR CI 에서 `refresh_observed
-(write=False)` 결과와 커밋본을 diff)를 넣으면 이 드리프트를 자동으로 잡을 수 있지만, **SSE 이벤트
-구조를 건드리는 모든 레인의 PR 이 이 eval 데이터 재생성을 강제당한다**(레인 간 결합 — SSE 스트림을
-고치는 팀이 매번 combo_matrix 를 같이 갱신해야 한다). 이 트레이드오프(드리프트 조기 발견 vs. 레인
-결합 비용)의 판단은 후속 이슈로 미룬다 — 이 PR 은 구현하지 않는다.
+3. **3차(#425 판정, 2026-08-07)** — combo-0031 의 `notes` 에 "0건은 주입이며, 이 케이스에 present
+   인 필터축(price_min)이 완화 축이 아니라 자동완화·완화칩은 돌지 않는다(#425 판정: 정의된 동작)"
+   1건을 추가했다(`refresh-observed` 재실행, 「알려진 관측 한계」`overspecified_zero` 항목 참조).
+   `notes` 는 `OBSERVED_GUARDED_FIELDS`(#424 드리프트 가드, 아래 절) 제외 필드라 이 재생성으로도
+   가드는 계속 통과한다 — 실측으로 경계 설계가 맞음을 확인했다. 다른 행·필드는 바뀌지 않았다.
+   같은 날 리뷰 라운드 2 로 combo-0031 행의 `expected` 서술도 실측에 맞게 정정했다(evidence 에
+   `relaxation.py::FIELD_TO_ATTR` 1건 추가) — **실측(`observed`)이 있고 그 실측과 어긋나는 행만**
+   정정 대상이다. 나머지 `overspecified_zero` 행(combo-0030·0032·0033·0034)은 전부
+   `observation_mode=manual`(`observed` null)이라 실측 근거가 없고, present 필터축도 완화 축
+   (brand·color 등)이라 그 서술이 틀렸다고 말할 근거가 없어 건드리지 않았다.
+
+**드리프트 가드(#424)**: 위에서 두 차례 확인했듯 `observed` 는 다른 레인이 SSE 이벤트를 바꿀 때마다
+조용히 낡는데, 그동안은 커밋된 값과 재실행 값을 대조하는 가드가 없어서 아무도 몰랐다 —
+`refresh-observed` 로 손으로 재생성해야만 드러났다. `test_observed_guarded_fields_match_recomputed_
+values_for_all_ci_rows`(`tests/eval/test_combo_matrix_eval.py`)가 이 가드다: PR 에서 매번
+`refresh_observed(write=False)` 를 재실행해 커밋본과 딕셔너리째(키 존재 여부 포함) 대조한다.
+
+전량 byte diff 가 아니라 **핵심 계약 필드만** 고른 이유는 SSE 를 건드리는 모든 레인(동시 6~8개)이
+이 eval 데이터 재생성을 강제당하는 레인 결합 비용 때문이다 — 실측상 두 차례 드리프트가 전부
+`eventTypes` 하나였고, 이벤트 추가는 다른 레인의 정상 작업이다. 필드 경계(`OBSERVED_GUARDED_FIELDS`,
+`evals/combo_matrix/schema.py`):
+
+- **포함**(바뀌면 파이프라인 동작이 실제로 바뀐 것): `terminal`·`finishReason`·`errorCode`·
+  `actionType`·`actionReason`(SSE 종료/오류/액션 계약), `pushCount`·`pushProductCount`·`listType`
+  (push 결과 형태), `searchCallCount`·`searchFilters`·`unappliedSearchFilters`(검색 경계 도달값,
+  #381), `unhandledException`(안전망 dict 낙성 회귀), `outcome`·`itemCount`·`exception`·
+  `statusCode`(HOME 계약), `profileHookInvoked`·`buildReasonsInvoked`·`reasonsFilledCount`·
+  `reasonsNull`(HOME 계측).
+- **제외**(다른 레인의 정상 작업이라 대조하면 소음): `eventTypes`(SSE 이벤트 추가, 실측 2회 드리프트
+  전부 이 필드), `lastTokenText`(문구, 계약 아님), `notes`/`note`(관측 한계 서술).
+
+**행 범위**: `status` 와 무관하게 `observed` 가 있는 모든 ci 행(partial 인 combo-0038 포함) — 이건
+기록 신선도 검사이지 미정의 동작의 스펙화가 아니다. `expected`·`status`·`undefined_tuple` 은 이
+가드가 보지 않는다.
+
+**깨졌을 때 조치**: `uv run python -m evals.combo_matrix refresh-observed` 로 갱신 → 위 표에 행을
+추가해 무엇이 왜 바뀌었는지(실측 개선/회귀/필드 추가) 판정을 남긴다.
+
+변이 시험으로 경계가 실제로 작동함을 확인했다(2026-08-07): combo-0031 의 `finishReason` 을
+`zero_result`→`stop` 로 바꾸면 가드가 깨지고(핵심 계약 필드), `eventTypes` 맨 앞 이벤트를 지우면
+가드는 그대로 통과한다(제외 필드) — 둘 다 원복 후 확인.
 
 ## 관측 러너가 안 쓰는 것
 
