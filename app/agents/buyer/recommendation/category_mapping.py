@@ -32,6 +32,12 @@ SearchFn = Callable[..., list[tuple[str, float]]]  # (category, distance) 오름
 ExactFn = Callable[[Sequence[str], str], set[str]]
 SelectFn = Callable[..., Awaitable[str | None]]  # top-k 택일(§4.4 #115) — 후보 밖이면 None
 
+# #428 대분류 합의 필터의 최소 지지 leg 수 — 튜너블이 아니라 **합의의 정의상 최소값**이다(1개
+# leg 만의 지목은 "형제간 합의"가 아니라 그 leg 단독의 의견이라 노이즈와 구분할 신호가 없다).
+# `CLAUDE.md` "튜너블 하드코딩 금지"는 실측으로 캘리브레이션하는 값(거리컷 등)에 대한 규율이고,
+# 이 값은 실측과 무관한 개념 정의라 config 로 뺄 대상이 아니다.
+_CONSENSUS_MIN_SUPPORT_LEGS = 2
+
 # 채택 후보 = (canonical, 채택 거리, 마진) — 마진은 히트 1건이면 None(§11 #115)
 _Picked = tuple[str, float, float | None]
 # leg 최종 승자 = 후보 + 이긴 앵커 종류("raw"|"query", §4.3 #115)
@@ -133,6 +139,115 @@ def _interleave_by_leg(
     return out
 
 
+def _consensus_filter(
+    expansion_by_leg: dict[int, list[tuple[str, str | None]]],
+) -> tuple[dict[int, list[tuple[str, str | None]]], dict[str, object]]:
+    """[#428] 전개 형제(sibling) leg 사이 **최근접(top-1) 대분류 합의**로 동음이의어 노이즈를
+    걸러낸다.
+
+    전개 아이템(#217)은 하나의 니즈에서 나온 형제들이라 서로의 카테고리를 검증할 수 있다 —
+    **두 형제 이상의 최근접 대분류가 서로 일치하면** 그 대분류(동률이면 전부)가 사용자가 말한
+    상품군이고, 후보 전체를 거기로 좁힌다. 최근접이 갈리면(= 최다 지지가 1개 leg 뿐) 형제간
+    합의가 없다는 뜻이라 아무것도 하지 않는다.
+
+    [#428 리뷰 1차 F-1] 지지 집계는 **각 leg 의 top-1 하나만** 본다 — leg 의 top-k 전체(최대
+    `category_expand_legs`개)에서 셌던 초판은 "어느 발화에나 조금씩 가까운 잡동사니 대분류"가
+    꼬리 순위에서 여러 leg 에 걸쳐 우연히 겹쳐 승자가 되는 결함이 있었다. 실측: "집들이 선물"
+    전개(디퓨저·캔들·와인잔·식기 세트)에서 향수·조명·주방잡화라는 정답급 후보를 전부 버리고
+    `주얼리`(전 leg 의 5~7위에 조금씩 걸침)만 남겼다. 형제가 서로를 검증한다는 신호는 **각자가
+    자기 최선의 답으로 같은 곳을 가리킬 때** 성립하지, 꼬리에서 우연히 겹칠 때 성립하지 않는다
+    — 이건 "몇 개까지 셀까"라는 튜너블이 아니라 합의라는 개념 자체의 정의다(집계 창을 2~5 로
+    넓혀가며 실측했고 4 이상부터 잡동사니 대분류가 다시 승자가 된다. 1~3 은 실측 시나리오
+    전부에서 결과가 동일해 임의 상수가 필요 없는 top-1 을 정본으로 한다). **필터링(무엇을
+    남길지)은 여전히 leg 의 후보 전체를 대상으로 한다** — 좁아지는 건 "누가 승자 대분류인가"를
+    세는 창일 뿐, 승자 대분류에 속한 leaf 는 순위와 무관하게 전부 살아남는다.
+
+    [#428 리뷰 3차 R3-1] **필터는 leg 을 없애지 않고 후보만 좁힌다.** 승자 대분류(들)로 각 leg 을
+    걸러 본 결과 **후보가 0개가 되는 형제가 하나라도 있으면 필터를 전혀 적용하지 않고**(부분 적용
+    금지) 원본을 그대로 반환한다 — 그 형제의 후보 목록 어디에도 승자 대분류가 없다는 것은 그
+    형제가 정말로 다른 상품군이라는 뜻이지, 합의에서 벗어난 노이즈가 아니기 때문이다. 반대로
+    `#428` 과일 케이스에서 동음이의어 `"배"`는 최근접이 `여성가방 > 백팩`이어도 6위에
+    `과일 > 국산과일`을 갖고 있다 — 같은 상품군에 속한다는 증거가 후보 안에 남아 있어 가드를
+    통과한다. (리뷰어가 제안한 "형제 수 대비 과반" 임계는 `#428` 본체를 깬다 — 과일 A 회차는
+    지지 2/4로 과반이 아니다.) 초판 서술("형제 사이 형평을 깨고 소수 의견을 탈락시킨다",
+    `_interleave_by_leg` R5-1 형평 규약과 별개)은 이 가드로 더는 사실이 아니다 — leg 자체가
+    탈락하는 경로가 구조적으로 없어졌다.
+
+    합의가 성립하지 않으면(기여 leg 2개 미만, 또는 최다 지지가 1개 leg 뿐) 아무것도 하지 않고
+    원본을 그대로 반환한다 — "이사 갈 때 필요한 것들" → 행거·커튼·이불처럼 형제들이 애초에
+    이질적인 전개는 대분류가 갈리는 것이 정상이라 합의 신호 자체가 없다.
+
+    [#428 리뷰 6차 R6-1] **미적용(None) 반환은 없다** — 적용이든 미적용이든 항상 stats dict 를
+    낸다. 미적용 사유는 `category_select_unavailable` 과 같은 규약으로 `reason` 필드 하나로
+    구분한다(`single_leg`·`no_consensus`·`leg_without_winning_mid`) — 호출부가 이 `reason` 을
+    그대로 로그에 싣는다.
+    """
+    if len(expansion_by_leg) < _CONSENSUS_MIN_SUPPORT_LEGS:
+        return expansion_by_leg, {
+            "skipped": True,
+            "reason": "single_leg",
+            "legs": len(expansion_by_leg),
+        }
+
+    support: dict[str, set[int]] = {}
+    for leg_i, leaves in expansion_by_leg.items():
+        # [#428 리뷰 2차 R2-2] 빈 leg 은 건너뛴다 — R2-1 이 유일한 유입 경로(`_collect_
+        # expansion_leaves`)를 막았지만, 이 함수는 주입형 seam 을 가진 모듈의 private 헬퍼라
+        # 미래의 호출부가 빈 리스트를 다시 넘길 수 있다. `leaves[0]`(top-1) 인덱싱은 빈 리스트에
+        # IndexError 를 내므로(Claude PR Review, PR #444) 방어가 아니라 **의미상 옳은 처리**로
+        # 건너뛴다 — 지지할 후보가 없는 leg 은 애초에 셀 것이 없다.
+        if not leaves:
+            continue
+        # [F-1] top-1 만 — leg 의 최선의 답만 지지로 센다(위 docstring 근거).
+        top1_mid = leaves[0][0].split(" > ", 1)[0]
+        support.setdefault(top1_mid, set()).add(leg_i)
+
+    max_support = max((len(legs) for legs in support.values()), default=0)
+    if max_support < _CONSENSUS_MIN_SUPPORT_LEGS:
+        return expansion_by_leg, {
+            "skipped": True,
+            "reason": "no_consensus",
+            "legs": len(expansion_by_leg),
+            "max_support": max_support,
+        }
+
+    winning_mids = sorted(mid for mid, legs in support.items() if len(legs) == max_support)
+    winning = set(winning_mids)
+
+    filtered: dict[int, list[tuple[str, str | None]]] = {}
+    dropped_leaves = 0
+    for leg_i, leaves in expansion_by_leg.items():
+        # [#428 리뷰 2차 R2-2] 원래 비어 있던 leg 은 필터가 "0개로 걸러낸" 것이 아니므로 건너뛴다.
+        if not leaves:
+            continue
+        kept = [
+            (canonical, query)
+            for canonical, query in leaves
+            if canonical.split(" > ", 1)[0] in winning
+        ]
+        if not kept:
+            # [#428 리뷰 3차 R3-1] 가드 — 이 leg 은 후보 목록 어디에도 승자 대분류가 없다(=
+            # 정당하게 다른 상품군). 부분 적용 금지: 지금까지 좁힌 다른 leg 도 버리고 원본
+            # expansion_by_leg 전체를 그대로 반환한다.
+            return expansion_by_leg, {
+                "skipped": True,
+                "reason": "leg_without_winning_mid",
+                "legs": len(expansion_by_leg),
+                "max_support": max_support,
+                "winning_mids": winning_mids,
+            }
+        dropped_leaves += len(leaves) - len(kept)
+        filtered[leg_i] = kept
+    stats = {
+        "skipped": False,
+        "legs": len(expansion_by_leg),
+        "max_support": max_support,
+        "winning_mids": winning_mids,
+        "dropped_leaves": dropped_leaves,
+    }
+    return filtered, stats
+
+
 async def map_categories(
     *,
     category_queries: Sequence[CategoryQuery],
@@ -146,8 +261,15 @@ async def map_categories(
     select_category: SelectFn = _select_category,
     select_max_calls: int | None = None,
     observer=None,
+    sibling_expansion: bool = False,
 ) -> CategoryMapping:
     """decompose 추측들을 canonical (category, query) leg 리스트로 보정한다.
+
+    `sibling_expansion` — 입력 leg 들이 **하나의 니즈에서 전개된 형제 아이템**임을 호출부가
+    보증한다(#217 전개 후 재매핑). 참이면 `expansion_leaves` 조립에 대분류 합의 필터
+    (`_consensus_filter`, #428) — **두 형제 이상의 최근접(top-1) 대분류가 일치**하면 그
+    대분류로 후보를 좁히는 필터 — 를 건다. 원 매핑(서로 다른 니즈)에는 적용하지 않는다 — 그쪽은
+    대분류가 갈리는 것이 정상이다.
 
     각 leg 의 query 는 그 카테고리 전용 검색 키워드(fan-out leg keyword, §6·§9) — 매핑 전
     추측(raw)이 어디로 보정되든 원 추측의 query 를 그대로 이어 붙인다.
@@ -507,6 +629,15 @@ async def map_categories(
         if not hits:
             return
         leaves = hits[: settings.category_expand_legs]
+        # [#428 리뷰 2차 R2-1] `category_expand_legs=0`(ge=0 필드, 합법값)이면 슬라이스가 빈
+        # 리스트가 된다 — 빈 leg 을 담으면 `expansion_by_leg[i] = []`가 그대로 들어가 하류
+        # `_consensus_filter` 가 `leaves[0]`(top-1)을 인덱싱하다 IndexError 를 낸다(Claude PR
+        # Review, PR #444). 여기서 거른다: 후보 0개 leg 은 "그래도 어디를 볼 것인가"라는
+        # `expansion_by_leg` 계약상 담을 것이 없고, 로그도 `count: 0`으로 무의미하게 쌓인다.
+        # **동작 변화는 없다** — expand_legs=0 이면 최종 `dedup_truncate(..., 0)` 가 어차피 전부
+        # 잘라내므로, 이 가드는 그 결과를 앞당길 뿐 무의미한 저장·로그만 없앤다.
+        if not leaves:
+            return
         mids: list[str] = []
         seen_mid: set[str] = set()
         for canonical, _distance in leaves:
@@ -626,6 +757,55 @@ async def map_categories(
             "category_assembly_failed",
             extra={"reason": str(exc), "error_type": type(exc).__name__},
         )
+
+    # [#428] 전개 후 재매핑(sibling_expansion=True)에만 대분류 합의 필터를 건다 — 원 매핑(서로
+    # 다른 니즈)에는 적용하지 않는다.
+    # [#428 리뷰 6차 R6-1/R6-2] 라운드 1엔 여기서 "필터가 실제로 돌아 무언가 걸렀는지와 애초에
+    # 돌지 않았는지를 로그로 구분한다"고 썼지만 사실이 아니었다(#444 Claude 리뷰 5차 지적) —
+    # `_consensus_filter` 가 미적용을 `None` 으로 냈던 시절엔 `consensus_stats is not None` 게이트
+    # 때문에 "합의가 성립하지 않아 미적용"과 "sibling_expansion=False 라 애초에 안 돌았다"가 둘 다
+    # 무기록이라 로그만으로 구분되지 않았다. 이제 `_consensus_filter` 는 미적용 사유
+    # (`single_leg`·`no_consensus`·`leg_without_winning_mid`)도 전부 stats 로 반환하므로, 적용·
+    # 미적용(사유 3종) 전부가 로그를 남기고 **`sibling_expansion=False` 만 유일한 무기록 상태**가
+    # 된다 — 로그 유무 자체가 "이 턴에 합의 필터가 실제로 돌았는가"의 신뢰 가능한 신호다. 이
+    # 구분이 있어야 아래 `source_legs`(R5-2, "발동한 턴을 운영에서 식별")가 실제로 쓸모 있다 —
+    # 무기록 상태가 여러 원인을 덮으면 "이 로그가 남았다 = 특정 상황"이라는 R5-2 의 전제가
+    # 깨진다.
+    # [#428 리뷰 2차 R2-3] 이 호출도 조립 루프(위 `category_assembly_failed`)·택일 단계
+    # (`category_select_stage_failed`)와 같은 이유로 자체 격리한다 — 여기서 예외가 나면
+    # `map_categories` 가 통째로 던지고 `_map_or_empty`(graph.py)가 **빈 CategoryMapping**으로
+    # degrade 해 이미 DB 검증된 exact 매치와 채택 canonical 까지 전부 버린다(Claude PR Review,
+    # PR #444 — 조립 루프의 try/except **밖**에 있던 것이 진짜 위험이었다). 합의는 개선 시도일
+    # 뿐이므로 실패 시 필터를 건너뛰고 `expansion_by_leg` 원본을 그대로 쓴다(#217 "§7 후퇴 없음"과
+    # 같은 원칙). 여기 도달하는 것은 I/O 실패가 아니다 — 조회·택일은 이미 각자 격리돼 있으므로
+    # **순수 로직 오류**다(형제 except 절들과 동일 서술, `error_type` 도 동일 규약으로 싣는다).
+    if sibling_expansion:
+        try:
+            expansion_by_leg, consensus_stats = _consensus_filter(expansion_by_leg)
+            # [#428 리뷰 6차 R6-1] `_consensus_filter` 는 이제 미적용도 항상 stats 를 낸다 —
+            # `reason`(`single_leg`·`no_consensus`·`leg_without_winning_mid`)으로 사유를 가른다.
+            # 별개 이벤트를 사유마다 만들지 않고 `category_select_unavailable` 과 같은 규약으로
+            # `category_expansion_consensus_skipped` 하나에 `reason` 필드로 싣는다.
+            skipped = consensus_stats.pop("skipped")
+            event = (
+                "category_expansion_consensus_skipped"
+                if skipped
+                else "category_expansion_consensus"
+            )
+            # [#428 리뷰 5차 R5-2] "원 발화의 leg 수"를 그대로 실으려면 map_categories 에
+            # 관측 전용 파라미터를 새로 뚫어야 하는데, 그건 매퍼 인터페이스를 관측 목적으로
+            # 오염시킨다. 대신 R5-1 이 게이트를 상류(graph.py)로 옮겼으므로 "이 로그가
+            # 남았다 = 원 발화 신호 leg 이 0~1개였다"가 이미 함의된다. `source_legs`(이번
+            # 매핑의 입력 leg 수 = 전개 재매핑에서는 곧 전개 아이템 수)는 그 위에 "형제 몇
+            # 개가 합의에 참여했나"를 더해, 이 상호작용이 실제로 발동한 턴을 사후 분석할 수
+            # 있게 한다.
+            logger.info(event, extra={**consensus_stats, "source_legs": len(queries)})
+        except Exception as exc:  # noqa: BLE001 - 합의 필터 실패: 원본 expansion_by_leg 를 보존한다
+            logger.warning(
+                "category_expansion_consensus_failed",
+                extra={"reason": str(exc), "error_type": type(exc).__name__},
+            )
+
     return CategoryMapping(
         legs=dedup_truncate(result, fanout_max),
         unresolved=unresolved,

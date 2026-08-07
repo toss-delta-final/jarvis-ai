@@ -35,7 +35,7 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
 반드시 아래 JSON 만 출력하세요(설명·코드펜스 금지):
 {
   "intent": "recommend" | "cart_add" | "cart_view" | "order_status" | "general" |
-    "cart_remove" | "wishlist_add" | "wishlist_remove",
+    "cart_remove" | "wishlist_add" | "wishlist_remove" | "wishlist_view",
   "reply": "intent가 general일 때만 줄 짧은 한국어 답변, 아니면 빈 문자열",
   "case": 1 | 2 | 3,
   "semanticQuery": "정형 제약을 제외한 벡터 검색용 자연어",
@@ -61,6 +61,8 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
   그 외 잡담·무관 질문이면 general.
   담은 상품을 빼거나 삭제해 달라는 요청이면 cart_remove, 상품을 찜/위시리스트에 추가해 달라는
   요청이면 wishlist_add, 찜한 상품을 해제·취소해 달라는 요청이면 wishlist_remove입니다.
+  USER_MESSAGE에 **"찜"이나 "위시리스트"를 직접 명시하고 그 목록의 내용 조회를 요청할 때만**
+  wishlist_view입니다.
 - order_status 긍정 예: "내 주문 어디까지 왔어?", "배송 상태 알려줘", "최근 주문 진행 상황".
 - order_status로 분류하지 않는 예: "배송 빠른 상품 추천해줘"는 recommend,
   "이 상품 주문하고 싶어"는 기존 상품 추천/장바구니 의미, "주문 취소 방법"은 general,
@@ -73,6 +75,8 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
   1-2) "찜해줘"·"위시리스트에 추가해줘" 같은 **명시적 찜 추가 동사**가 있으면 wishlist_add.
   1-3) "빼줘"·"삭제해줘" 같은 **명시적 삭제 동사**가 있으면 cart_remove.
   2) 그 외에는 USER_MESSAGE에 "장바구니"가 직접 나오면서 그 내용을 조회할 때만 cart_view.
+  2-1) 그 외에는 USER_MESSAGE에 "찜"·"위시리스트"가 직접 나오면서 그 목록을 조회할 때만
+     wishlist_view. 예: "내가 뭐 찜했지?", "찜한 거 보여줘", "위시리스트 뭐 있어?".
   3) 그 외에 "그거"·"저번에 그거" 같은 상품 지시대명사가 있으면 항상 recommend.
 - PENDING_CART가 있다는 사실만으로 이번 발화를 옵션 답변으로 보지 마세요. USER_MESSAGE가 options의
   이름·번호·순번을 실제로 고르는 0) 발화는 먼저 옵션 답변으로 처리하고, 그 외 "그거 보여줘"·
@@ -80,11 +84,16 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
 - cart_view로 분류하지 않는 예: "그거 보여줘" → recommend, "저번에 그거 다시 보여줘" →
   recommend, "그거 또 사고 싶어" → recommend. "보여줘"·"뭐 있어?" 동사만으로 cart_view를
   선택하지 마세요. "사고 싶어"는 명시적 담기 동사가 아니므로 cart_add가 아니라 recommend입니다.
+- wishlist_view로 분류하지 않는 예: "보여줘"·"뭐 있어?" 동사만으로 wishlist_view를 선택하지
+  마세요 — "찜"·"위시리스트"라는 말이 발화에 없으면 wishlist_view가 아닙니다. "찜한 거 담아줘"는
+  담기 동사가 있으므로 cart_add, "찜한 거 빼줘"·"찜 해제해줘"는 해제 동사가 있으므로 조회가
+  아닙니다. "찜한 거 보여주지 마"처럼 조회를 **거부**하는 발화도 wishlist_view가 아닙니다.
 - 상품명 없는 지시대명사는 PRIOR_FILTERS.semanticQuery 또는 LAST_RECOMMENDATIONS 맥락의 **상품**을
   가리킵니다. 두 맥락이 비어 있어도 상품 요청으로 보고 recommend로 분류하세요. 이 경계는
   PENDING_CART가 있어도 옵션 답변이 아닌 상품 요청에 그대로 적용합니다.
 - JSON 출력 직전에 intent를 검산하세요. cart_view인데 USER_MESSAGE에 "장바구니"가 없으면 recommend로
   고치세요. cart_add인데 명시적 담기 동사도 실제 옵션 답변도 없으면 recommend로 고치세요.
+  wishlist_view인데 USER_MESSAGE에 "찜"도 "위시리스트"도 없으면 recommend로 고치세요.
 - recommend: 정확한 수치 제약은 filters 에 넣고 semanticQuery 로 근사하지 마세요.
   PRIOR_FILTERS 가 있으면 병합(좁히면 add, 모순되면 replace)하세요.
   색상 조건(예: "빨간", "검정")이 있으면 filters.color 에 넣으세요.
@@ -549,6 +558,7 @@ async def decompose(
             "cart_remove",
             "wishlist_add",
             "wishlist_remove",
+            "wishlist_view",
         )
         else "recommend"
     )

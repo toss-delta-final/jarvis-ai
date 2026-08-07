@@ -577,6 +577,13 @@ async def test_order_status_intent_is_preserved() -> None:
     assert decision.intent == "order_status"
 
 
+async def test_wishlist_view_intent_is_preserved() -> None:
+    """[#386] 허용 목록에 없으면 LLM 이 옳게 뽑아도 조용히 `recommend` 로 강등된다 —
+    가장 눈에 안 띄는 드리프트라 파싱 계층에서 못을 박는다."""
+    decision = await _run(_raw(intent="wishlist_view"))
+    assert decision.intent == "wishlist_view"
+
+
 def test_order_status_prompt_has_five_way_positive_and_negative_rules() -> None:
     from app.agents.buyer.recommendation.decompose import _SYSTEM
 
@@ -590,6 +597,30 @@ def test_order_status_prompt_has_five_way_positive_and_negative_rules() -> None:
         "예전에 뭘 샀지",
     ):
         assert phrase in _SYSTEM
+
+
+def test_wishlist_view_prompt_rule_is_appended_without_disturbing_the_ladder() -> None:
+    """[#386] 찜 조회 규칙이 프롬프트에 실렸는지 + **기존 사다리를 건드리지 않았는지**.
+
+    이 테스트는 "그 문구가 LLM 을 실제로 그렇게 움직인다"의 증거가 아니다 — 그건
+    `evals/intent_probe` 소관이다(docs/lessons.md). 여기서 고정하는 것은 두 가지뿐이다:
+    ① 규칙이 삭제되지 않았다 ② 새 규칙이 `2-1)` 로 **덧붙었지** 기존 번호를 재배열하지 않았다.
+    ②가 중요한 이유는 `0)`·`3)` 줄이 다른 테스트에서 바이트 단위로 핀돼 있어서, 재번호하는
+    순간 #234/#239/#240 이 실측으로 세운 하중 문구가 통째로 깨지기 때문이다.
+    """
+    from app.agents.buyer.recommendation.decompose import _SYSTEM
+
+    assert '"wishlist_view"' in _SYSTEM
+    rule = _SYSTEM.split("- order_status로 분류하지 않는 예:", 1)[1].split("- recommend:", 1)[0]
+    # 사다리 항목은 줄머리(들여쓰기 2칸)로 찾는다 — `"3) "` 만으로는 `"1-3) "` 에 먼저 걸린다.
+    assert "\n  2-1) " in rule
+    # 담기가 조회보다 먼저 판정된다("찜한 거 담아줘" → cart_add) — 순서 자체를 고정한다.
+    assert rule.index("\n  1) ") < rule.index("\n  2-1) ") < rule.index("\n  3) ")
+    assert "wishlist_view로 분류하지 않는 예:" in rule
+    for phrase in ("내가 뭐 찜했지?", "찜한 거 보여줘", "위시리스트 뭐 있어?"):
+        assert phrase in rule
+    for phrase in ("찜한 거 담아줘", "찜한 거 보여주지 마"):
+        assert phrase in rule
 
 
 def test_pronoun_intent_prompt_keeps_product_requests_out_of_cart_view() -> None:

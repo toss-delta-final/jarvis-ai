@@ -67,13 +67,18 @@ def regenerate(*, write: bool) -> tuple[str, dict]:
         }
     )
     if write:
-        CASES_PATH.write_text(text, encoding="utf-8")
+        # `newline="\n"` 필수 — 저장소 표준이 LF 다(`.gitattributes`: `* text=auto eol=lf`,
+        # "CRLF 오염 재발 방지"). Windows 기본 변환으로 CRLF 를 쓰면 `axesSha256` 이
+        # `read_bytes()` 기반이라 로컬 해시와 CI(LF 체크아웃) 해시가 갈려, 재생성한 사람만
+        # 통과하고 CI 는 깨진다(#386 에서 실제로 밟았다).
+        CASES_PATH.write_text(text, encoding="utf-8", newline="\n")
         MANIFEST_PATH.write_text(
             json.dumps(
                 manifest.model_dump(mode="json", by_alias=True), ensure_ascii=False, indent=2
             )
             + "\n",
             encoding="utf-8",
+            newline="\n",
         )
     return text, manifest.model_dump(mode="json", by_alias=True)
 
@@ -99,7 +104,7 @@ async def refresh_observed(*, write: bool) -> tuple[str, list[ExpectedBehaviorRo
         updated_rows.append(row.model_copy(update={"observed": new_observed}))
     text = dump_expected_jsonl(updated_rows)
     if write:
-        EXPECTED_PATH.write_text(text, encoding="utf-8")
+        EXPECTED_PATH.write_text(text, encoding="utf-8", newline="\n")  # LF 고정(위 근거 참조)
     return text, updated_rows
 
 

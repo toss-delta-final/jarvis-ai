@@ -53,6 +53,7 @@ ROUTE_INTENTS = frozenset(
         "cart_remove",
         "wishlist_add",
         "wishlist_remove",
+        "wishlist_view",
     }
 )
 
@@ -1009,6 +1010,13 @@ class Settings(BaseSettings):
     # 찜 지시 표지 — "찜한 거 담아줘"·"찜해둔 이어폰 담아줘"류에서 찜은 지시 대상을 수식할 뿐
     # 동작이 아니다. 이 표지가 있으면 찜 판정에 개입하지 않는다(그 발화의 동사는 담기다).
     wishlist_reference_markers: list[str] = ["찜한", "찜해둔", "찜해 놓은", "찜했던"]
+    # ⚠️ [#440] **찜 조회/해제를 가르는 표지 목록은 두지 않는다.** #386 에서 두 번 시도했다가
+    # 둘 다 뺐다 — 조회 표지 목록은 조회 표현을 전수로 알아야 성립해 `"내 찜 뭐야"` 류에서 뚫렸고,
+    # 반대로 "찜 명사 + 해제 동사" 결합은 짧은 표지가 다른 낱말에 묻혀(`"찜"` ⊂ `찜닭`,
+    # `"빼"` ⊂ `빼고`) `"찜닭 빼고 보여줘"` 를 해제 근거로 오인했다. 바로 위
+    # `cart_remove_markers` 주석이 이미 경고한 그 함정이다. 어절 경계가 없는 한국어에서
+    # 부분 문자열만으로 이 둘을 가르려면 인접성 판정이 필요하고, 그건 `negation.py`·`remove.py`
+    # 와 얽힌 별도 작업이라 #440 으로 옮겼다.
     # 부정·유보 표지(2차 리뷰 지적 1·2·3, `intent_guard.py::_matches_unnegated`) — 표지 출현
     # 바로 뒤 짧은 창 안에 이 표지 중 하나가 오면 그 표지 출현은 없는 것으로 친다("장바구니에
     # 넣지는 마" 의 담기 표지 무효화, "빼줘야 할까"의 삭제 표지 무효화). 이 규칙은 **개입을
@@ -1166,8 +1174,9 @@ class Settings(BaseSettings):
     # 상한을 완전히 끄려면(종전 동작) profile_session_buffer_cap 이상으로 올린다.
     profile_buffer_repeat_cap: int = Field(default=2, ge=2)
     # 취향 신호가 **구조적으로** 없는 intent 만 버퍼에서 뺀다(REQ-PROF-026) — 주문조회
-    # ("주문 어디까지 왔어")·장바구니 조회("장바구니 보여줘")는 상태 조회라 원하는 게 뭔지에
-    # 대한 정보가 0인데, 매 세션 반복되며 슬라이딩 윈도우를 채워 정작 취향 발화를 밀어낸다.
+    # ("주문 어디까지 왔어")·장바구니 조회("장바구니 보여줘")·찜 목록 조회("내가 뭐 찜했지?",
+    # #386)는 상태 조회라 원하는 게 뭔지에 대한 정보가 0인데, 매 세션 반복되며 슬라이딩
+    # 윈도우를 채워 정작 취향 발화를 밀어낸다.
     #
     # general·cart_add 는 **일부러 남긴다**(PR #223 리뷰 확인):
     #  - general: "나 소니 좋아해" 같은 명시적 취향 표명이 잡담 턴으로 들어온다.
@@ -1198,6 +1207,9 @@ class Settings(BaseSettings):
         "cart_view",
         "cart_remove",
         "wishlist_remove",
+        # [#386] cart_view·order_status 와 같은 부류(취향 신호 0인 상태 조회)다 —
+        # cart_remove·wishlist_remove 처럼 "부호가 반대인 신호"라서 빼는 것이 아니다.
+        "wishlist_view",
     ]
     # I-20 처리 중 claim lease. delta+consolidation LLM 2단계의 기본 최악시간(약 120s)보다
     # 길게 두되, 프로세스 crash 잔재가 영구 duplicate가 되지 않도록 유한하게 유지한다.
