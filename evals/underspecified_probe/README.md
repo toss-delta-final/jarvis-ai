@@ -47,8 +47,11 @@ SPEC-UNDERSPECIFIED-336 §7.3 이 남긴 게이트 잔여 항목 1("실 LLM deco
    분모: 판정 True 표본)와 **`missRateUnderExpansionAssumption`**(전개가 항상 leg 을 낸다고
    가정한 **상한**, D8 참조)을 싣는다. `unresolved=[]` 는 이 하네스가 카테고리 매핑(2단계)을
    돌리지 않는다는 사실의 정직한 반영이다 — D2(`mapping_failed`) 규칙은 이 하네스에서 발동할
-   수 없다. union(전개 후 판정) 실측은 **후속 이슈 후보**로 남긴다(`legs_probe` 의 union
-   커버리지 선례와 동형).
+   수 없다. **`--union` 모드(#432)로 이제 실측 가능하다** — §union 측정 모드 참조. 기본(off)
+   실행에서는 여전히 이 두 가정 축(`expansionGateWouldFireRate`·
+   `missRateUnderExpansionAssumption`)만 남는다 — 기본 실행의 축 정의를 얼려야 #433 이 굳힌
+   6판과 앞으로의 판들이 계속 비교 가능하기 때문이다(`evals/README.md` 규약 8). `--union` 은
+   **추가 모드**이지 기존 측정의 대체가 아니다.
 4. **프로덕션은 `intent == "recommend"` 인 턴에서만 판정을 호출한다** `[F-1, 2차 리뷰어
    발견]`**.** `app/agents/buyer/graph.py::run_buyer_turn` 은 `decision.intent` 가
    `general`·`cart_view`·`order_status`·`cart_add`·`cart_remove`·`wishlist_add`·
@@ -113,11 +116,16 @@ uv run python -m evals.underspecified_probe --out /tmp/probe --dry-run
 
 # 후보 decompose 프롬프트 재기(intent_probe.client 재사용)
 uv run python -m evals.underspecified_probe --out artifacts/cand1 --prompt cand1.txt
+
+# [#432] union 모드 — 전개 후 판정까지 실제로 잰다(기본 off, pgvector·추가 LLM 콜 필요).
+# 먼저 --dry-run 으로 배관만 확인(pg 접근 0), 그다음 --budget-usd 를 명시해 실 실행.
+uv run python -m evals.underspecified_probe --out /tmp/probe --dry-run --union
+uv run python -m evals.underspecified_probe --out evals/underspecified_probe/baselines/union-smart-<날짜>-run1 --tier smart --union --budget-usd 6.0
 ```
 
 기본 규모: 30셀 × N=8(`--n`) = 240콜, 45rpm 페이서 기준 약 6~8분, `fast` 티어 대략
 USD 0.03~0.10(legs_probe 312콜 실측 부분합 $0.07 에서 환산). `--budget-usd` 기본 5.0 이면
-충분하다.
+충분하다. **`--union` 은 콜 수가 크게 늘어난다** — §union 측정 모드 참조.
 
 ## 축과 정의
 
@@ -137,6 +145,10 @@ USD 0.03~0.10(legs_probe 312콜 실측 부분합 $0.07 에서 환산). `--budget
 | `expansionGateWouldFireRate` | `detect_expansion_need(...)` 가 사유를 돌려준 표본 | 판정 True 인 recommend 표본 | exploratory(진단) |
 | `flagOffInvariant` | `underspecified_reask_enabled=False` 재판정 True 표본 수 | 전 표본(intent 무관 — 판정 게이트 자체를 보는 불변식) | invariant(0이어야 한다) |
 | `priorGateInvariant` | `prior=ProductSearchFilters()` 재판정 True 표본 수 | 전 표본(intent 무관) | invariant(0이어야 한다) |
+| `missRateAfterExpansion`(#432, `--union` 전용) | union 판정 False | `missRate` 와 동일(union 실패 표본 제외) | exploratory |
+| `falseAlarmRateAfterExpansion`(#432, `--union` 전용) | union 판정 True | `falseAlarmRate` 와 동일(union 실패 표본 제외) | exploratory |
+| `expansionSuppressionRate`(#432, `--union` 전용) | decompose 판정 True ∧ union 판정 False | decompose 판정 True 인 recommend 표본(union 실패 제외) | exploratory |
+| `expansionGateFiredRate`(#432, `--union` 전용) | union 단계에서 `detect_expansion_need` 가 **실제 unresolved** 로 사유를 돌려준 표본 | recommend 표본(union 실패 제외) | exploratory — `expansionGateWouldFireRate`(가정)의 실측 대응물 |
 
 **primary 선정 사유**: `missRate` 는 "플래그를 켜도 되물음이 조용히 아무 일도 하지 않는가"를
 직접 재는 축이고, 이슈가 지목한 두 위험 중 코드 테스트로 절대 못 잡는 쪽이다. `falseAlarmRate`
@@ -173,6 +185,75 @@ False 이므로 오탐이 성립하지 않는다) · `judgmentAccuracy` = `expec
 표본 수 / recommend 표본 수(F-1 — 실측과 같은 분모). `report.md` 에 LLM vs baseline 대조표가
 실리고, 분모 정의가 다른 값을 대조하지 않는다(#234/#240 사고 — `legs_probe` README `[R4-2]`
 참조).
+
+## union 측정 모드 (#432)
+
+`--union`(기본 off)을 켜면 decompose 직후·판정 직전 형상만 재던 기본 모드에 더해
+`app.agents.buyer.graph._prepare_recommendation`(카테고리 매핑 + `needs_expansion` 보정)을
+**decompose 산출의 깊은 사본**에서 그대로 태워 "전개 후 판정"까지 잰다. §측정 범위와 한계
+항목 3 이 두 가정 축(`expansionGateWouldFireRate`·`missRateUnderExpansionAssumption`)으로만
+남겨 뒀던 간극을 이제 실측한다.
+
+**설계**: `evals/underspecified_probe/union.py::run_union_stage`. 판정 로직뿐 아니라 매핑·
+전개·합집합·`filters.category` 확정 **순서도** 이 파일에 옮겨 적지 않는다(#380 이 판정식
+복제를 금지한 것과 같은 규약) — `_prepare_recommendation` 을 항상 프로덕션 기본
+(`map_categories=None, expand_needs=None`)으로 그대로 부른다. union 단계 전용 LLM 은
+decompose 프롬프트 오버라이드가 **없는** `PacedLLM(delegate, pacer=pacer)`(같은 delegate·같은
+pacer, `evals/intent_probe/client.py`) — `SystemPromptOverrideLLM` 을 union 단계에 물리면
+그 안의 보조 LLM 노드(카테고리 택일·전개)가 decompose 후보 프롬프트로 조용히 덮여 망가진다.
+
+`detect_expansion_need` 의 **실제** `unresolved` 인자 기반 반환값(`expansionGateFiredRate` 의
+근거)은 프로덕션 함수 호출 순서를 다시 구현하지 않고, 그 함수를 감싸는 call-through spy
+(`unittest.mock.patch.object`, 동작은 원본과 100% 동일하고 반환값만 곁다리로 관측)로 얻는다 —
+전역 함수 하나를 잠깐 패치하므로 union 단계 호출 전체를 모듈 잠금(`_UNION_STAGE_LOCK`)으로
+직렬화한다(decompose 단계의 `--concurrency` 는 영향받지 않는다, union 부가 단계만 순차 실행).
+
+**오염 통제**: union 축에는 `#331`(카테고리 매핑 품질)·`#332`(니즈 전개 품질)의 실패가 섞인다
+— 없앨 수 없어 대신 **보이게** 만든다. union 축은 전부 `exploratory` 다(confirmatory 로
+승격하지 않는다). 분해는 `samples.csv` 의 `unionMappedLegCount`·`unionExpansionReason`·
+`unionCategoryExpanded` 컬럼으로 읽는다. union 단계에서 예외가 나도(pg 다운·임베딩 실패)
+**표본을 버리지 않는다** — `unionStageError` 에 사유를 남기고 그 표본을 union 축
+**분모에서만** 제외하며 `unionStageErrorCount` 진단으로 센다(표본을 버리면 #331/#332 의
+인프라 실패가 decompose 단계 분포까지 조용히 깎는다).
+
+**예산 범위**: `BudgetTracker` 는 LLM 콜만 센다 — union 이 추가로 부르는 **임베딩 호출은
+예산·페이서에 안 잡힌다**(관측 비용은 LLM 콜만의 부분합). 추정 금액을 지어내지 않는다 —
+"집계되지 않는다"고만 기록한다(`run_manifest.json.underspecifiedProbe.union
+.embeddingCallsNotCountedInBudget`).
+
+**시드 의존·재현성**: union 숫자는 로컬 pg-catalog 시드에 의존한다.
+`run_manifest.json.underspecifiedProbe.union` 에 `categories`/`product_document` 행 수,
+임베딩 모델(`embeddingModelId`), union 경로가 읽는 튜너블 전부의 실제 값
+(`needs_expansion_enabled`·`category_expand_enabled`·`category_fanout_max`·`category_top_k`·
+`category_distance_max`·`category_distance_override_margin`·`category_select_max_calls`·
+`category_expand_legs`·`category_scope_classifier_enabled`)과 그 값이 `Settings` 기본값과
+다른 것이 있으면 목록(`tunablesDifferFromDefault`)을 박는다 — 다른 것이 있으면 CLI 가 stderr
+에 경고를 찍는다(로컬 `.env` 가 측정 대상을 조용히 바꾸는 것을 막는다).
+
+**부작용**: `_prepare_recommendation` 끝부분이 `get_revert_store()` 를 부른다(pg-profile,
+실패 시 InMemory 폴백) — 판정에 영향 없는 부작용이지만 로컬 dev DB 에 되돌리기 키가 쓰일 수
+있다.
+
+**pre-flight**: `--union` 인데 pg-catalog 가 안 붙거나 `categories.embedding` 이 전부 비어
+있으면 LLM 콜 이전에 **종료 코드 2** 로 거절한다(`evals/category_probe/loader.py
+::preflight_check_catalog` 는 앵커 accept 라벨을 검증하는 함수라 이 하네스에는 재사용할 수
+없다 — 이 하네스에는 그런 라벨이 없다). `--dry-run --union` 은 pg 접근이 **0** 이어야 한다 —
+union 단계를 아예 부르지 않고 표본마다 "건너뜀"(`unionStageError`)만 기록한다(배관 확인
+전용, 실측이 아니다).
+
+**`evals/legs_probe` 의 union 후속과는 묶지 않는다**(#432 체크리스트 5항). 두 하네스는
+앵커·분모·정답지가 다르다(legs_probe 는 leg 산출 분포, 여기는 과소지정 판정) — 하나로 합치면
+`evals/README.md` 규약 2("하나의 거대 골든셋으로 합치지 않는다, caseId 척추만 공유")를
+정면으로 어긴다. 공유해야 할 것은 코드가 아니라 규약이다 — 실제로 공유되는 건 "프로덕션
+함수를 그대로 부른다"는 규칙이고, 그건 이미 양쪽이 지키고 있다. legs_probe 의 union 커버리지는
+별도 후속으로 남는다.
+
+**선행 조건 미충족**: #430(프롬프트 수정)이 아직 dev 에 머지되지 않은 동안은 `missRate` 가
+fast 티어에서 사실상 100% 라 `expansionSuppressionRate` 의 분모(decompose 판정 True 인
+recommend 표본)가 0~1 이라 사실상 `해당 없음` 이다 — **fast(프로덕션) 티어의 판정 전복 축은
+#430 머지 후 재실행해야 값이 생긴다.** `smart` 티어는 판정 True 표본이 이미 있어(#433 smart
+1판 실측 48건) 오늘도 실측된다 — 단 smart 는 **프로덕션 동작이 아니다**, `#431` 전환 근거로
+직접 인용하지 말 것. 상세·실측값은 `baselines/README.md`(기준선 색인) 참조.
 
 ## 원인 축 분해 (이슈 완료 조건 3)
 

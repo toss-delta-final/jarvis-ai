@@ -10,6 +10,7 @@
 | **A — 현행 dev 프롬프트** | `fast-2026-08-08-run1`·`run2`·`run3` | `e62fd0f6e03d` | ✅ **`#430` before · `#431` 전환 판단의 정본** |
 | B — pre-#386 프롬프트(역사 기록) | `fast-2026-08-06`(run1, 커밋된 기준선)·`run2`·`run3` | `11c6fe3bfa0c` | ❌ 역사 기록. **`#430` after 와 대조하지 마라** |
 | C — 티어 대조(현행 dev 프롬프트, smart) | `smart-2026-08-08-run1` | `e62fd0f6e03d` | 참고(원인 축 분해의 티어 대조 전용, 채택 판정 대상 아님) |
+| D — union(전개 후 판정, #432) | `union-smart-2026-08-08-run1`(진단 티어)·`union-fast-2026-08-08-run1`(프로덕션 티어) | `e62fd0f6e03d` | 참고 전용. smart 판은 **프로덕션 동작이 아니다**(#431 근거로 직접 인용 금지), fast 판은 **#430 미머지 상태**(전복 축 해당 없음) — 상세는 각 디렉터리 README |
 
 **정본은 A family 3판의 분포다 — 단일 판이 아니다.** 대표값 하나를 인용해야 하면
 `missRate` **중앙값 판**을 써라 — {run1 99.1%, run2 99.1%, run3 100.0%}의 중앙값은 99.1%이고,
@@ -181,8 +182,39 @@ confirmatory 축의 결론(미탐율 fast ≈100%, smart ≈54%)은 판마다 �
 
 ## 폐기한 판
 
-없음 — 6판 전부 §게이트 6항목을 첫 시도에 통과했다.
+없음 — 6판(#433) + 2판(#432 union) 전부 §게이트 6항목을 첫 시도에 통과했다.
+
+## D family — union(전개 후 판정) 실측 (#432)
+
+`--union` 으로 카테고리 매핑·`needs_expansion` 보정까지 실제로 태워 잰 2판. 상세 해석·시드
+재현성은 각 디렉터리의 README 참조(경고 문구를 맨 위에 둔다 — smart 는 프로덕션 티어가
+아니고, fast 는 `#430` 미머지 상태다).
+
+| 축 | union-smart-run1 | union-fast-run1 |
+|---|---|---|
+| `missRate` → `missRateAfterExpansion` | 56/104 (53.8%) → 59/104 (56.7%) | 112/112 (100.0%) → 112/112 (100.0%) |
+| `falseAlarmRate` → `falseAlarmRateAfterExpansion` | 0/104 (0.0%) → 0/104 (0.0%) | 0/104 (0.0%) → 0/104 (0.0%) |
+| `expansionSuppressionRate` | 3/48 (6.2%) | 0/0 — 해당 없음 |
+| `expansionGateWouldFireRate`(가정) → `expansionGateFiredRate`(실측) | 3/48 (6.2%) → 47/232 (20.3%) | 0/0 — 해당 없음 → 78/240 (32.5%) |
+| `unionStageErrorCount` | 0 | 0 |
+| 관측 비용(부분합) | $0.1842(`unknownCostCallCount`=105) | $0.0500(`unknownCostCallCount`=115) |
+
+두 판 다 `unionStageErrorCount=0`(240 표본 전부 union 단계 성공) — pg-catalog 시드
+(`categoriesWithEmbedding`=1007·`productDocumentCount`=6559)·임베딩 모델
+(`gemini-embedding-001`)·튜너블 9종이 두 판에서 동일하고 `Settings` 기본값과도 일치한다
+(`tunablesDifferFromDefault`=`[]`, 각 `run_manifest.json` 참조).
+
+**핵심 발견**: `expansionGateFiredRate`(실측)가 `expansionGateWouldFireRate`(가정)보다 뚜렷이
+크다(smart 20.3% vs 6.2%, fast 32.5% vs 해당 없음) — 가정판(`unresolved=[]`)은 D2
+(`mapping_failed`) 규칙이 구조적으로 발동할 수 없어 전개 게이트의 실제 노출을 과소평가하고
+있었다. smart 판은 `expectedReask=true` 표본 중 decompose 가 이미 맞힌(판정 True) 48건에서
+3건(6.2%)이 union 단계의 카테고리 매핑으로 되물음이 **억제**됐다 — `missRateAfterExpansion`
+이 `missRate` 보다 높아지는 것은 이 하네스의 구조적 불변식이다(union 은 판정을 True→False
+로만 뒤집을 수 있다, 각 디렉터리 README §해석 참조).
+
+D family 는 **단일 실행**이다(각 1회) — 채택 판정 근거가 아니다. `#430` 머지 후 fast 판
+재실행, 그리고 union 자체도 독립 2~3판이 필요하면 별도 후속으로 검토한다(이 PR 범위 밖).
 
 ## 재현 명령
 
-§실행 6판 참조.
+§실행 6판 참조(#433). D family(union) 재현 명령은 각 디렉터리 README 참조.

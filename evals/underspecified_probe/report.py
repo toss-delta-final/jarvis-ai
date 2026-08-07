@@ -108,6 +108,7 @@ def build_results(
     pacer: dict[str, Any],
     budget: dict[str, Any],
     dry_run: bool,
+    union_enabled: bool = False,
 ) -> dict[str, Any]:
     axes = scored["axes"]
     slices = scored["slices"]
@@ -120,6 +121,7 @@ def build_results(
         "judgment": judgment,
         "cellCount": len(cells),
         "dryRun": dry_run,
+        "unionEnabled": union_enabled,
         "axes": {axis_id: axis.as_dict() for axis_id, axis in axes.items()},
         "slices": {
             axis_id: {slice_name: axis.as_dict() for slice_name, axis in per_slice.items()}
@@ -337,6 +339,44 @@ def render_report(results: dict[str, Any]) -> str:
         f"- `expansionGateWouldFireRate`: {_fmt_score(axes['expansionGateWouldFireRate'])}",
         f"- `missRateUnderExpansionAssumption`: {_fmt_score(axes['missRateUnderExpansionAssumption'])}",
     ]
+    if results.get("unionEnabled"):
+        lines.append(
+            f"- `unionStageErrorCount`: {results['diagnostics']['unionStageErrorCount']}"
+            f" — {results['diagnostics']['definition']['unionStageErrorCount']}"
+        )
+
+    if results.get("unionEnabled"):
+        lines += [
+            "",
+            "## union(전개 후 판정) — #432",
+            "",
+            "> **오염 통제(§2-6)**: 이 절의 축은 전부 exploratory 다 — confirmatory 로 승격하지 "
+            "않는다. `#331`(카테고리 매핑 품질)·`#332`(니즈 전개 품질)의 실패가 이 표에 섞인다 — "
+            "분해는 `samples.csv` 의 `unionMappedLegCount`·`unionExpansionReason`·"
+            "`unionCategoryExpanded` 컬럼으로 읽는다. union 단계에서 예외가 난 표본은 버리지 "
+            "않고 union 축 **분모에서만** 제외한다(`unionStageErrorCount` 위 참조).",
+            "",
+            "| 축 | decompose 직후 | union(전개 후) |",
+            "|---|---|---|",
+            f"| 미탐율 | `missRate` {_fmt_score(axes['missRate'])} | "
+            f"`missRateAfterExpansion` {_fmt_score(axes['missRateAfterExpansion'])} |",
+            f"| 오탐율 | `falseAlarmRate` {_fmt_score(axes['falseAlarmRate'])} | "
+            f"`falseAlarmRateAfterExpansion` {_fmt_score(axes['falseAlarmRateAfterExpansion'])} |",
+            f"| 전개 게이트 발동률 | `expansionGateWouldFireRate`(가정) "
+            f"{_fmt_score(axes['expansionGateWouldFireRate'])} | `expansionGateFiredRate`(실측) "
+            f"{_fmt_score(axes['expansionGateFiredRate'])} |",
+            "",
+            f"`expansionSuppressionRate`(전개가 되물음을 꺼뜨린 비율, decompose True → union "
+            f"False): {_fmt_score(axes['expansionSuppressionRate'])}"
+            + (
+                f" CI95 {_ci_text(axes['expansionSuppressionRate'])}"
+                if axes["expansionSuppressionRate"]["ci95"]
+                else ""
+            ),
+            "",
+            '`missRateAfterExpansion` 과 `missRate` 의 차이가 곧 "전개가 되물음을 얼마나 '
+            '꺼뜨리는가"다(#432 체크리스트 3항) — 두 값을 위 표에서 나란히 읽는다.',
+        ]
 
     lines += ["", "## 셀별 표본 수", "", "| 셀 | 슬라이스 | 표본 | 시도 |", "|---|---|---|---|"]
     for cell in results["cells"]:
@@ -380,6 +420,19 @@ def render_report(results: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+UNION_SAMPLE_COLUMNS = (
+    "unionVerdict",
+    "unionOutcome",
+    "unionMappedLegCount",
+    "unionCategoryExpanded",
+    "unionFiltersCategory",
+    "unionExpansionReason",
+    "unionBlockingAxes",
+    "unionStageLatencyMs",
+    "unionStageError",
+)
+
+
 def write_artifacts(
     out: Path,
     *,
@@ -387,50 +440,64 @@ def write_artifacts(
     manifest: dict[str, Any],
     cells: list[CellResult],
     sample_rows_payload: list[dict[str, Any]],
+    union_enabled: bool = False,
 ) -> None:
-    """산출물 6종을 결정론적으로 쓴다."""
+    """산출물 6종을 결정론적으로 쓴다.
+
+    [#432] `union_enabled=False`(기본)면 `samples.csv` 에 union 컬럼이 **아예 없다** — 기존
+    산출물 형상이 그대로 얼어 있어야 #433 이 굳힌 6판과 계속 비교 가능하다."""
     out.mkdir(parents=True, exist_ok=True)
     _write_json(out / "results.json", results)
     _write_json(out / "run_manifest.json", manifest)
     (out / "report.md").write_text(render_report(results), encoding="utf-8", newline="\n")
-    _write_csv(
-        out / "samples.csv",
-        [
-            "caseId",
-            "n",
-            "slice",
-            "intent",
-            "case",
-            "semanticQueryIsFallback",
-            "semanticQuery",
-            "verdict",
-            "expectedReask",
-            "outcome",
-            "causeAxes",
-            "blockingAxes",
-            "expansionReason",
-            "latencyMs",
-        ],
-        [
-            {
-                "caseId": row["caseId"],
-                "n": row["n"],
-                "slice": row["slice"],
-                "intent": row["intent"],
-                "case": row["case"],
-                "semanticQueryIsFallback": row["semanticQueryIsFallback"],
-                "semanticQuery": row["semanticQuery"] or "",
-                "verdict": row["verdict"],
-                "expectedReask": row["expectedReask"],
-                "outcome": row["outcome"],
-                "causeAxes": ";".join(row["causeAxes"]),
-                "blockingAxes": ";".join(row["blockingAxes"]),
-                "expansionReason": row["expansionReason"] or "",
-                "latencyMs": row["latencyMs"],
-            }
-            for row in sample_rows_payload
-        ],
-    )
+    sample_columns = [
+        "caseId",
+        "n",
+        "slice",
+        "intent",
+        "case",
+        "semanticQueryIsFallback",
+        "semanticQuery",
+        "verdict",
+        "expectedReask",
+        "outcome",
+        "causeAxes",
+        "blockingAxes",
+        "expansionReason",
+        "latencyMs",
+    ]
+    if union_enabled:
+        sample_columns.extend(UNION_SAMPLE_COLUMNS)
+    sample_rows_csv = []
+    for row in sample_rows_payload:
+        csv_row = {
+            "caseId": row["caseId"],
+            "n": row["n"],
+            "slice": row["slice"],
+            "intent": row["intent"],
+            "case": row["case"],
+            "semanticQueryIsFallback": row["semanticQueryIsFallback"],
+            "semanticQuery": row["semanticQuery"] or "",
+            "verdict": row["verdict"],
+            "expectedReask": row["expectedReask"],
+            "outcome": row["outcome"],
+            "causeAxes": ";".join(row["causeAxes"]),
+            "blockingAxes": ";".join(row["blockingAxes"]),
+            "expansionReason": row["expansionReason"] or "",
+            "latencyMs": row["latencyMs"],
+        }
+        if union_enabled:
+            csv_row["unionVerdict"] = row.get("unionVerdict")
+            csv_row["unionOutcome"] = row.get("unionOutcome") or ""
+            csv_row["unionMappedLegCount"] = row.get("unionMappedLegCount")
+            csv_row["unionCategoryExpanded"] = row.get("unionCategoryExpanded")
+            csv_row["unionFiltersCategory"] = row.get("unionFiltersCategory") or ""
+            csv_row["unionExpansionReason"] = row.get("unionExpansionReason") or ""
+            csv_row["unionBlockingAxes"] = ";".join(row.get("unionBlockingAxes") or [])
+            csv_row["unionStageLatencyMs"] = row.get("unionStageLatencyMs")
+            csv_row["unionStageError"] = row.get("unionStageError") or ""
+        sample_rows_csv.append(csv_row)
+    _write_csv(out / "samples.csv", sample_columns, sample_rows_csv)
     _write_csv(
         out / "cells.csv",
         ["cellId", "caseId", "slice", "sampleCount", "attempts", "failureCount", "filled"],
