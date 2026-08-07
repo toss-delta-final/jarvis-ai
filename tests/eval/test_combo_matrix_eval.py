@@ -7,7 +7,10 @@ import typing
 
 import pytest
 
+from app.schemas.spring import ProductSearchFilters
+from app.services import search_service
 from app.services.spring_client import CartError, WishlistError
+from evals.combo_matrix import fakes
 from evals.combo_matrix.__main__ import refresh_observed
 from evals.combo_matrix.generator import (
     FILTER_AXES,
@@ -29,6 +32,7 @@ from evals.combo_matrix.loader import (
 )
 from evals.combo_matrix.report import coverage_report
 from evals.combo_matrix.runner import (
+    _SEARCH_FILTER_KEYS,
     _failing_add_to_cart,
     _failing_add_wishlist,
     build_decompose_json,
@@ -552,22 +556,141 @@ async def test_search_filters_is_boundary_value_not_injected_value() -> None:
     assert search_filters["color"] == "블랙"
 
 
-async def test_unapplied_search_filters_are_loud_for_unrepresentable_axes() -> None:
-    """D8-3(D1 loudness) — keyword·color·attr_conditions 가 present 인 ci 케이스는
-    `unappliedSearchFilters` 에 그 축들이 반드시 나타나고, 표현 가능한 축만 present 인 케이스는
-    비어 있다."""
-    cases = {c.case_id: c for c in load_cases()}
-    with_unrepresentable = await observe(
-        cases["combo-0058"]
-    )  # keyword·color·attr_conditions 전부 present
-    assert set(with_unrepresentable["unappliedSearchFilters"]) == {"color", "attrConditions"}, (
-        with_unrepresentable["unappliedSearchFilters"]
+async def test_every_filter_axis_is_actually_measured_by_some_ci_case() -> None:
+    """D8-3(#426) — 하드필터 8축 **각각**에 대해, 그 축이 검색 경계에서 실제로 재진 ci 케이스가
+    최소 1건 존재한다.
+
+    #381 이 남긴 공백을 실행 가능한 게이트로 바꾼 테스트다. 예전 D8-3 은
+    `unappliedSearchFilters == {"color","attrConditions"}` 를 단언했는데, 그건 "이 축을 못 잰다"를
+    고정하는 단언이라 못 재는 상태가 영구화된다. 여기서는 반대로 **재고 있음**을 요구한다.
+
+    - Spring 와이어 7축: 경계 도달값(`observed.searchFilters[k]`)이 non-null 인 케이스가 있는가.
+      `keyword` 는 `#51 drop_keyword`(category leg 가 있으면 앱이 leg 검색어에서 비운다) 때문에
+      **category 가 없는 케이스**가 있어야만 도달한다 — 대역의 한계가 아니라 앱의 정의된 동작이다.
+    - `attr_conditions` 는 Spring payload 축이 아니라 AI 사후필터라 `searchFilters` 로는 잴 수
+      없다 — 사후필터가 실제로 호출됐는지(`attrConditionsPostFilter.invoked`)로 잰다.
+    """
+    # `attrConditions` 는 Spring 에 안 나가는 AI 사후필터 축이라 `searchFilters` 에 값이 실려
+    # 있어도 그건 "경계까지 실려 갔다"일 뿐 "적용됐다"가 아니다 — 그 축만 계측으로 판정한다.
+    wire_axes = tuple(k for k in _SEARCH_FILTER_KEYS if k != "attrConditions")
+    measured: set[str] = set()
+    for case in load_cases():
+        if case.observation_mode != "ci":
+            continue
+        observed = await observe(case)
+        if not observed:
+            continue
+        for key, value in (observed.get("searchFilters") or {}).items():
+            if key in wire_axes and value not in (None, "", [], {}):
+                measured.add(key)
+        if (observed.get("attrConditionsPostFilter") or {}).get("invoked"):
+            measured.add("attrConditions")
+
+    missing = set(_SEARCH_FILTER_KEYS) - measured
+    assert not missing, (
+        f"검색 경계에서 한 번도 재지지 않은 하드필터 축: {sorted(missing)} — 그 축은 present/absent 가 "
+        "결과에 아무 차이를 만들지 않아, 망가져도 이 하네스가 초록불로 보고한다(이슈 #426)"
     )
 
-    # (#386 재생성 전에는 combo-0023 이 이 자리였다 — 표현 가능한 축만 present 인 ci 케이스로
-    # 옮겼다. 그쪽은 price_min, 이쪽은 category 가 present 인데 이 단언과는 무관하다.)
-    representable_only = await observe(cases["combo-0057"])  # category 만 present
-    assert representable_only["unappliedSearchFilters"] == []
+
+async def test_unapplied_axes_are_loud_when_the_fake_cannot_express_them() -> None:
+    """D8-3b(D1 loudness 드리프트 가드) — `_UNREPRESENTABLE_FILTER_CAMEL` 에 축을 넣으면 그 축이
+    present 인 호출에서 `unapplied_calls` 에 실린다.
+
+    #426 이후 이 목록은 비어 있다(8축 전부 재진다). 그래서 `unappliedSearchFilters == []` 를
+    단언하면 빈 리스트끼리 비교하는 **공허한 단언**이 된다 — `docs/lessons.md` 가 기록한 실패다.
+    대신 loudness 메커니즘 자체가 살아 있음을 성질로 잠근다: 미래에 대역이 표현 못 하는 축이
+    생겨 목록에 등록되면, 조용히 무시되지 않고 데이터로 드러나야 한다.
+    """
+    assert fakes._UNREPRESENTABLE_FILTER_CAMEL == {}, (
+        "#426 기준 대역은 8축을 전부 표현한다 — 축이 추가됐다면 README '알려진 관측 한계'도 함께 갱신할 것"
+    )
+    search = fakes.make_recording_filtering_search()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(fakes, "_UNREPRESENTABLE_FILTER_CAMEL", {"color": "color"})
+        await search(ProductSearchFilters(color="블랙"))
+        await search(ProductSearchFilters(category="무선이어폰"))
+    assert search.unapplied_calls == [["color"], []], search.unapplied_calls
+
+
+async def test_keyword_axis_actually_narrows_and_dies_under_mutation() -> None:
+    """D8-5(#426, 변이 시험) — combo-0063(keyword 만 present)은 대역의 keyword 매칭으로 후보가
+    실제로 줄고, 그 매칭을 없애면 관측이 **달라진다**.
+
+    "필터가 걸린다"는 단언은 필터를 빼도 값이 같으면 아무것도 검증하지 않는다(공허). 그래서
+    실제로 빼 보고 죽는지 확인한다 — 이슈 #426 체크리스트 5번.
+    """
+    cases = {c.case_id: c for c in load_cases()}
+    observed = await observe(cases["combo-0063"])
+    assert observed["searchFilters"]["keyword"] == "가벼운", (
+        "category leg 가 없으면 #51 drop_keyword 가 발동하지 않아 keyword 가 경계까지 살아 있어야 한다"
+    )
+    assert observed["pushProductCount"] == 3, (
+        "PAIR_CATALOG 5건 중 name+summary+attributes 에 '가벼운' 이 없는 102·105 가 탈락해 "
+        "3건이어야 한다(105 는 summary/attributes 가 비어 있어 LIKE 대상이 name 뿐이다 — "
+        "데이터 부재로 제외되는 것이 Spring LIKE 의 실제 동작이다)"
+    )
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(fakes.SpringWhereCatalogBackend, "search", _search_ignoring("keyword"))
+        mutated = await observe(cases["combo-0063"])
+    assert mutated["pushProductCount"] == 5, (
+        "keyword 매칭을 빼도 결과가 같다면 이 케이스는 keyword 축을 재고 있지 않다(공허한 단언)"
+    )
+
+
+async def test_color_axis_actually_narrows_and_dies_under_mutation() -> None:
+    """D8-6(#426, 변이 시험) — combo-0064(color 만 present)에서 color 가 결정타다."""
+    cases = {c.case_id: c for c in load_cases()}
+    observed = await observe(cases["combo-0064"])
+    assert observed["searchFilters"]["color"] == "블랙"
+    assert observed["pushProductCount"] == 3, (
+        "attributes 색상이 블랙이 아닌 102 와 attributes 자체가 없는 105 가 탈락해 3건이어야 한다"
+    )
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(fakes.SpringWhereCatalogBackend, "search", _search_ignoring("color"))
+        mutated = await observe(cases["combo-0064"])
+    assert mutated["pushProductCount"] == 5, (
+        "color 매칭을 빼도 결과가 같다면 이 케이스는 color 축을 재고 있지 않다(공허한 단언)"
+    )
+
+
+async def test_attr_conditions_post_filter_actually_narrows_and_dies_under_mutation() -> None:
+    """D8-7(#426, 변이 시험) — combo-0065(attr_conditions 만 present)은 **사후필터가 실제로
+    호출돼** 후보를 좁히고, 그 사후필터를 무력화하면 관측이 달라진다.
+
+    이 케이스는 Spring 와이어 축이 전부 absent 라 #393 A 로 후보 소스가 I-3(인기 상품)이 된다 —
+    `searchCallCount == 0` 이라 search 대역이 아예 개입하지 않고, 사후필터 계측만이 이 축의
+    유일한 관측 수단이다(계측을 fakes 인스턴스가 아니라 runner 스파이로 둔 이유).
+    """
+    cases = {c.case_id: c for c in load_cases()}
+    observed = await observe(cases["combo-0065"])
+    assert observed["searchCallCount"] == 0, "이 케이스는 인기 상품 폴백 경로여야 한다(#393 A)"
+    assert observed["attrConditionsPostFilter"] == {
+        "invoked": True,
+        "inputCount": 3,
+        "outputCount": 2,
+    }, observed["attrConditionsPostFilter"]
+    assert observed["pushProductCount"] == 2, "방수=False 인 102 가 실제로 걸러져야 한다"
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(search_service, "_apply_attr_conditions", lambda products, conditions: products)
+        mutated = await observe(cases["combo-0065"])
+    assert mutated["pushProductCount"] == 3, (
+        "사후필터를 무력화해도 결과가 같다면 이 케이스는 attr_conditions 축을 재고 있지 않다"
+    )
+
+
+def _search_ignoring(axis: str):
+    """`SpringWhereCatalogBackend.search` 에서 축 하나를 무시하는 변이체 — 원본을 복사하지 않고
+    필터 객체에서 그 축만 지운 뒤 원본에 위임한다(대역 로직을 두 벌 갖지 않기 위해)."""
+    original = fakes.SpringWhereCatalogBackend.search
+
+    async def _mutated(self, filters):
+        return await original(self, filters.model_copy(update={axis: None}))
+
+    return _mutated
 
 
 async def test_search_not_called_cases_report_zero_call_count_and_null_filters() -> None:

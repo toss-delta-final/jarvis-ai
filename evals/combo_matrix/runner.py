@@ -17,13 +17,20 @@
   `rerank_failed`·`spring_timeout`)은 `axes.json` 의 excludes 제약으로 HOME 조합 자체가 생성되지
   않는다. HOME 은 `none`·`profile_unavailable`·`catalog_unavailable`·`catalog_timeout`·
   `reason_degraded` 5종만 실행한다(api-spec §3.7 v0.26.1 규범).
-- **필터 축의 검색 경계 관측(#381)** — 이 러너는 `fakes.make_recording_filtering_search()` 를 써서
-  search 콜러블이 실제로 받은 `ProductSearchFilters`(경계 도달값)를 `observed.searchFilters` 에
-  담는다. `category`(exact-match 매핑, `fakes.make_exact_match_category_mapping()`)·
-  `price_min`·`price_max`·`brand`·`rating_min` 은 `SpringProduct` 로 표현 가능해 실제로 걸러지고,
-  `keyword`·`color`·`attr_conditions` 는 대역이 흉내 낼 수 없어(판정 로직 재구현 금지) present 로
-  들어와도 **미적용으로 기록**만 하고(`observed.unappliedSearchFilters`) 나머지 축만 적용한다.
-  search 가 아예 안 불린 케이스(popular 경로·담기 계열 등)는 `observed.searchCallCount == 0` 이고
+- **필터 축의 검색 경계 관측(#381 → #426)** — 이 러너는 `fakes.make_recording_filtering_search()`
+  를 써서 search 콜러블이 실제로 받은 `ProductSearchFilters`(경계 도달값)를
+  `observed.searchFilters` 에 담는다. 대역은 `search_catalog` 를 대체하지 않고 그 아래
+  `SearchBackend` 자리에 서므로(#426), **하드필터 8축이 전부 실제로 걸러진다** — Spring 와이어
+  축(keyword·category·price·brand·color)은 대역이 WHERE 계약으로, AI 사후필터 축
+  (rating_min·attr_conditions)은 배포 코드(`apply_ai_side_filters`)가. `attr_conditions` 는
+  Spring 에 안 나가는 축이라 `searchFilters` 에 값이 실려 있어도 적용 여부를 알 수 없어,
+  사후필터 호출 자체를 `observed.attrConditionsPostFilter` 로 계측한다(attr 축 present 행 한정).
+- **`keyword` 는 category leg 가 있으면 경계에 도달하지 않는다** — `#51` 규칙
+  (`recommendation/graph.py` 의 `drop_keyword`)이 leg 검색어에서 keyword 를 비우기 때문이다.
+  **대역의 한계가 아니라 앱의 정의된 동작**이고, 그래서 `searchFilters.keyword` 는 category 가
+  present 인 케이스에서 `null` 이 정상이다. keyword 축을 실제로 재는 것은 category 가 없는
+  directed 케이스가 담당한다(§ `axes.json` directedCases, README "알려진 관측 한계").
+- search 가 아예 안 불린 케이스(popular 경로·담기 계열 등)는 `observed.searchCallCount == 0` 이고
   `searchFilters` 는 `null` 이다 — "안 불렸다"와 "전부 null 이었다"를 데이터에서 구별한다(§ README
   "알려진 관측 한계"). 상세 근거는 `evals/combo_matrix/README.md` 참조.
 """
@@ -40,6 +47,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from app.core.auth import Identity  # noqa: E402
 from app.services import home_recommendation as home_svc  # noqa: E402
+from app.services import search_service  # noqa: E402
 from app.services import spring_client  # noqa: E402
 from app.schemas.spring import WishlistItem, WishlistView  # noqa: E402
 from app.services.spring_client import (  # noqa: E402
@@ -272,9 +280,9 @@ async def _observe_chat(case: ComboCase) -> dict:
     # len(candidates) < settings.relaxation_min_results):`)도 진입해도 probe 후보가 비어 칩
     # 0개다. README 「알려진 관측 한계」의 `overspecified_zero` 항목 참조.
     # 그 외(normal)는 `fakes.make_recording_filtering_search()`(대역 카탈로그 `PAIR_CATALOG`)를
-    # 써서 search 콜러블이 실제로 받은 필터를 기록한다 — category·price_min/max·brand·rating_min
-    # 은 실제로 걸러지고, keyword·color·attr_conditions 는 대역이 흉내 낼 수 없어 미적용으로
-    # 기록만 한다(D1, `fakes.RecordingFilteringSearch` 참조).
+    # 써서 search 콜러블이 실제로 받은 필터를 기록한다 — [#426] 대역이 `SearchBackend` 자리에
+    # 서므로 Spring 와이어 축(keyword·category·price·brand·color)은 대역이, AI 사후필터 축
+    # (rating_min·attr_conditions)은 배포 코드가 실제로 적용한다(`fakes.RecordingFilteringSearch`).
     if degrade == "spring_timeout":
         raw_search = failing_search
     elif axes.get("constraint_strength") == "overspecified_zero":
@@ -322,6 +330,27 @@ async def _observe_chat(case: ComboCase) -> dict:
             _failing_get_wishlist if degrade == "spring_timeout" else _ok_get_wishlist
         )
         spring_client.remove_wishlist = _ok_remove_wishlist
+
+    # [#426] attr_conditions 사후필터 계측 — 대역이 흉내 내는 게 아니라(그건 앱 판정 로직
+    # 재구현 금지 위반) **배포 함수가 실제로 호출됐는지·무엇을 걸렀는지**를 관측한다(HOME 러너의
+    # `profileHookInvoked`/`buildReasonsInvoked` 와 같은 계열, § `_observe_home`).
+    # 패치 대상이 `apply_ai_side_filters` 가 아니라 `_apply_attr_conditions` 인 이유 둘:
+    #   ① `apply_ai_side_filters` 는 rating_min 만 present 여도 호출돼 신호가 뭉개진다.
+    #      `_apply_attr_conditions` 는 `filters.attr_conditions` 가 truthy 일 때만 불린다
+    #      (`search_service.py` `if filters.attr_conditions:`) — 호출됨 == 이 축이 평가됨.
+    #   ② `recommendation/graph.py` 는 `from ... import apply_ai_side_filters` 로 이름을
+    #      바인딩해 가서 `search_service.apply_ai_side_filters` 패치가 안 먹지만,
+    #      `_apply_attr_conditions` 는 정의 모듈 전역으로 조회되므로 인기 상품 폴백 경로
+    #      (`_run_candidate_source`, search 대역이 아예 개입하지 않는 자리)까지 한 번에 잡힌다.
+    attr_post_filter_calls: list[tuple[int, int]] = []
+    original_apply_attr_conditions = search_service._apply_attr_conditions
+
+    def _apply_attr_conditions_spy(products, conditions):
+        result = original_apply_attr_conditions(products, conditions)
+        attr_post_filter_calls.append((len(products), len(result)))
+        return result
+
+    search_service._apply_attr_conditions = _apply_attr_conditions_spy
     try:
         events = await _collect(
             run_buyer_turn(
@@ -364,6 +393,7 @@ async def _observe_chat(case: ComboCase) -> dict:
         if patch_wishlist_read:
             spring_client.get_wishlist = original_get_wishlist
             spring_client.remove_wishlist = original_remove_wishlist
+        search_service._apply_attr_conditions = original_apply_attr_conditions
     event_types = [e["type"] for e in events]
     terminal = events[-1] if events else None
     # action/token 이벤트는 degrade 결과(CART_ADD_FAILED reason 등)를 실어 나르는데, 예전엔
@@ -401,6 +431,18 @@ async def _observe_chat(case: ComboCase) -> dict:
             else []
         ),
     }
+    # [#426] attr_conditions 축이 present 인 케이스에만 싣는다 — 그 축이 없는 행에까지 필드를
+    # 늘리면 `refresh-observed` diff 가 전 행으로 번져 케이스별 사람 판정이 불가능해진다.
+    # 첫 호출(주 검색/주 후보 확보) 기준 — `searchFilters`·`unappliedSearchFilters` 와 같은 규약.
+    # `invoked=true, input==output`(호출됐지만 안 걸렀다)과 `invoked=false`(아예 안 돌았다)를
+    # 데이터에서 구별한다.
+    if axes.get("attr_conditions") == "present":
+        first_call = attr_post_filter_calls[0] if attr_post_filter_calls else None
+        observed["attrConditionsPostFilter"] = {
+            "invoked": first_call is not None,
+            "inputCount": first_call[0] if first_call else 0,
+            "outputCount": first_call[1] if first_call else 0,
+        }
     # 여러 관측 한계가 동시에 해당할 수 있다(예: combo-0038 unspecified+embedding_missing) —
     # 단일 `note` 덮어쓰기는 먼저 붙인 한계를 지운다(리뷰 R4). 리스트로 전부 append.
     notes: list[str] = []
