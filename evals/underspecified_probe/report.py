@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from evals.metrics.run_manifest import VOLATILE_MANIFEST_KEYS
 from evals.underspecified_probe.metrics import (
     CONFIRMATORY_FALSE_ALARM_SLICES,
     CONFIRMATORY_MISS_SLICES,
@@ -18,7 +19,9 @@ from evals.underspecified_probe.metrics import (
 from evals.underspecified_probe.runner import CellResult
 from evals.underspecified_probe.schema import SLICES
 
-VOLATILE_JSON_KEYS = frozenset({"run", "dirty", "timestamp", "latencyMs", "totalWaitS", "maxWaitS"})
+VOLATILE_JSON_KEYS = VOLATILE_MANIFEST_KEYS | frozenset(
+    {"timestamp", "latencyMs", "totalWaitS", "maxWaitS"}
+)
 VOLATILE_CSV_COLUMNS = frozenset({"latencyMs"})
 
 TRAPS = (
